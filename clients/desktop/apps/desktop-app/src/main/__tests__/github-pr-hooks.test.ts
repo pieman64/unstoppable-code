@@ -242,8 +242,8 @@ describe('tracked PR preview projection', () => {
 
   it('releases a held cold read and starts no later reads after its deadline', async () => {
     const fs = jest.requireActual<typeof Fs>('node:fs/promises');
-    let release: (value: Buffer) => void = (): void => undefined;
-    const held = new Promise<Buffer>((resolve) => {
+    let release: (value: Buffer<ArrayBuffer>) => void = (): void => undefined;
+    const held = new Promise<Buffer<ArrayBuffer>>((resolve) => {
       release = resolve;
     });
     const read = jest.spyOn(fs, 'readFile').mockImplementationOnce(() => held);
@@ -349,8 +349,8 @@ describe('tracked PR preview projection', () => {
     });
     resetPrPreviewIndexForTests();
     const fs = jest.requireActual<typeof Fs>('node:fs/promises');
-    let release: (value: Buffer) => void = (): void => undefined;
-    const held = new Promise<Buffer>((resolve) => {
+    let release: (value: Buffer<ArrayBuffer>) => void = (): void => undefined;
+    const held = new Promise<Buffer<ArrayBuffer>>((resolve) => {
       release = resolve;
     });
     const read = jest.spyOn(fs, 'readFile').mockImplementationOnce(() => held);

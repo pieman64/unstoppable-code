@@ -64,9 +64,16 @@ async function launchWithSkill(apiKey, prefix) {
   return { electronApp, userDataDir, page };
 }
 
+// CAN-4267: the skill's Customize Installed row carries Share in its ⋯ menu.
+const INSTALLED_ROW_ID = `customize-row-skill:custom:app:${SKILL_NAME}`;
+const INSTALLED_MENU_ID = `customize-row-menu-skill:custom:app:${SKILL_NAME}`;
+
 async function openShareDialog(page) {
-  const shareButton = page.getByTestId(`skill-share-custom:app-${SKILL_NAME}`);
-  await shareButton.click();
+  await page
+    .getByTestId('customize-section-installed')
+    .getByTestId(INSTALLED_MENU_ID)
+    .click();
+  await page.getByTestId(`${INSTALLED_MENU_ID}-share`).click();
   const dialog = page.getByTestId('share-skill-modal');
   await expect(dialog).toBeVisible();
   return dialog;
@@ -174,14 +181,20 @@ test('CAN-3847: sharing a skill is one step and keeps the local skill', async ()
     await expect(submit).toBeEnabled({ timeout: 30_000 });
     await submit.click();
 
-    await expect(dialog).toHaveCount(0, { timeout: 30_000 });
-    const toast = page
-      .getByTestId('toast-card')
-      .filter({ hasText: 'shared' })
-      .first();
-    await expect(toast).toBeVisible();
+    // The dialog stays open on its success notice; no toast is raised.
+    await expect(dialog.getByTestId('share-skill-success')).toContainText(
+      'shared',
+      { timeout: 30_000 },
+    );
     await expect(
-      page.locator('tbody button', { hasText: SKILL_NAME }).first(),
+      page.getByTestId('toast-card').filter({ hasText: 'shared' }),
+    ).toHaveCount(0);
+    await dialog.getByTestId('share-skill-done').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      page
+        .getByTestId('customize-section-installed')
+        .getByTestId(INSTALLED_ROW_ID),
     ).toBeVisible();
     expect(existsSync(path.join(skillDir(userDataDir), 'SKILL.md'))).toBe(true);
   } finally {

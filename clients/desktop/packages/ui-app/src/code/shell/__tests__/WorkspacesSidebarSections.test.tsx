@@ -1,18 +1,21 @@
 /** @jest-environment jsdom */
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import type { SidebarItemGroup } from '@canopy/protocol/sidebar';
 import type { PortalSessionShellState } from '@canopy/protocol/portal';
-import { WorktreeActionsMenu } from '@canopy/ui-shared/components';
+import {
+  WorktreeActionsMenu,
+  buttonClassName,
+} from '@canopy/ui-shared/components';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 import {
-  WorkspacesSidebarSections,
+  WorkspacesSidebarSections as WorkspacesSidebarSectionsComponent,
   pickWorktreeRowOverrides,
   type ArchivedWorktreeEntry,
   type CoworkWorkspaceSlotContext,
@@ -22,6 +25,28 @@ import {
   type WorkspacesSidebarSectionsProps,
   type WorktreeRowOverrides,
 } from '../WorkspacesSidebarSections';
+
+const createPendingWorktree: NonNullable<
+  WorkspacesSidebarSectionsProps['onCreateWorktree']
+> = () => Promise.resolve({ status: 'pending' });
+
+type TestWorkspacesSidebarSectionsProps = Omit<
+  WorkspacesSidebarSectionsProps,
+  'onCreateWorktree'
+> & {
+  readonly onCreateWorktree?: WorkspacesSidebarSectionsProps['onCreateWorktree'];
+};
+
+function WorkspacesSidebarSections(
+  props: TestWorkspacesSidebarSectionsProps,
+): JSX.Element {
+  return (
+    <WorkspacesSidebarSectionsComponent
+      {...props}
+      onCreateWorktree={props.onCreateWorktree ?? createPendingWorktree}
+    />
+  );
+}
 
 const capabilities: CanopyCapabilities = {
   localExecution: false,
@@ -125,12 +150,12 @@ describe('WorkspacesSidebarSections', () => {
         scrollIntoViewDescriptor,
       );
     } else {
-      delete HTMLElement.prototype.scrollIntoView;
+      Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
     }
     if (matchMediaDescriptor) {
       Object.defineProperty(window, 'matchMedia', matchMediaDescriptor);
     } else {
-      delete window.matchMedia;
+      Reflect.deleteProperty(window, 'matchMedia');
     }
   });
 
@@ -349,6 +374,62 @@ describe('WorkspacesSidebarSections', () => {
         .querySelector('[data-sidebar-group-drag-source="item:visible"]')
         ?.getAttribute('data-drag-disabled'),
     ).toBe('true');
+  });
+
+  it("sums a group's background tasks in its header while no row works or is unread (turn-state phase 41f)", () => {
+    state.worktrees = [
+      { ...state.worktrees[0], backgroundTasks: 2 },
+      state.worktrees[1],
+      {
+        localId: 'second',
+        workspaceLocalId: 'workspace',
+        branch: 'second',
+        backgroundTasks: 1,
+      },
+    ];
+    state.workspaces[0].itemGroups = [
+      {
+        id: 'grp-background',
+        name: 'Background',
+        color: 'neutral',
+        collapsed: true,
+        memberIds: ['visible', 'second'],
+      },
+    ];
+    const renderGroups = (): void =>
+      act(() =>
+        root.render(
+          <WorkspacesSidebarSections
+            state={state}
+            capabilities={{ ...capabilities, itemGrouping: true }}
+            selected={null}
+            onSelectWorktree={jest.fn()}
+            itemGroupCommandsFor={() => ({
+              create: jest.fn(),
+              update: jest.fn(),
+              ungroup: jest.fn(),
+              moveItem: jest.fn(),
+              moveGroup: jest.fn(),
+            })}
+          />,
+        ),
+      );
+    renderGroups();
+    const header = (): Element | null =>
+      container.querySelector('[data-testid="sidebar-item-group-header"]');
+    expect(
+      header()?.querySelector('[aria-label="3 background tasks running"]'),
+    ).not.toBeNull();
+
+    // Unread outranks background work, as on desktop's Cowork headers.
+    state.worktrees[2] = { ...state.worktrees[2], hasUnread: true };
+    renderGroups();
+    expect(
+      header()?.querySelector('[aria-label="Unread work in group"]'),
+    ).not.toBeNull();
+    expect(
+      header()?.querySelector('[aria-label="3 background tasks running"]'),
+    ).toBeNull();
   });
 
   it('renders additive group metadata without mutation controls on an older host', () => {
@@ -879,7 +960,7 @@ describe('WorkspacesSidebarSections', () => {
   // wired one up.
   describe('right-click actions menu', () => {
     function renderWithMenu(
-      items: readonly Parameters<typeof WorktreeActionsMenu>[0]['items'],
+      items: Readonly<Parameters<typeof WorktreeActionsMenu>[0]['items']>,
     ): void {
       act(() => {
         root.render(
@@ -2381,7 +2462,7 @@ describe('WorkspacesSidebarSections', () => {
         expect(container.textContent).toContain('Release');
         expect(headerCreate()).toBeNull();
 
-        if (props.isWorkspaceCommandDisabled === undefined) {
+        if (!('isWorkspaceCommandDisabled' in props)) {
           // With commands available the menu and editor still open, minus New.
           open('sidebar-item-group-menu-trigger');
           expect(
@@ -3407,16 +3488,26 @@ describe('WorkspacesSidebarSections', () => {
     });
     expect(onRestoreArchived).toHaveBeenCalledWith('workspace', 'archived');
     expect(onDeleteArchived).toHaveBeenCalledWith('workspace', 'archived');
-    // The delete control warms to the destructive ink under the pointer;
-    // `hover:text-danger` was never a role the stylesheet generates.
+    // Delete repeats on every archived row, so it is the quiet row action
+    // beside Restore; the danger lives in the confirmation step.
     const deleteTokens =
       container
         .querySelector<HTMLButtonElement>(
           '[aria-label="Delete Feature branch"]',
         )
         ?.className.split(/\s+/) ?? [];
-    expect(deleteTokens).toContain('hover:fg-destructive');
-    expect(deleteTokens.some((token) => token.includes('danger'))).toBe(false);
+    expect(deleteTokens).toEqual(
+      expect.arrayContaining(
+        buttonClassName({
+          variant: 'ghost-quiet',
+          size: 'compact',
+          iconOnly: true,
+        })
+          .split(/\s+/)
+          .filter(Boolean),
+      ),
+    );
+    expect(deleteTokens).not.toContain('fg-destructive');
   });
 
   it('settles a failed controlled archived load and retries after collapse', async () => {
@@ -3935,7 +4026,7 @@ describe('WorkspacesSidebarSections', () => {
       });
 
       const badge = container.querySelector<HTMLElement>(
-        '[aria-label="Pipeline running"][tabindex="0"]',
+        '[aria-label="Workflow running"][tabindex="0"]',
       );
       if (!badge) throw new Error('pipeline badge not rendered');
 
@@ -4046,25 +4137,27 @@ describe('WorkspacesSidebarSections', () => {
 
     try {
       act(renderSections);
-      let badge = container.querySelector<HTMLElement>(
-        '[aria-label="Pipeline running"][tabindex="0"]',
+      const firstBadge = container.querySelector<HTMLElement>(
+        '[aria-label="Workflow running"][tabindex="0"]',
       );
-      if (!badge) throw new Error('pipeline badge not rendered');
+      if (!firstBadge) throw new Error('pipeline badge not rendered');
 
       act(() => {
-        badge.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-        badge.dispatchEvent(
+        firstBadge.dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+        firstBadge.dispatchEvent(
           new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
         );
-        badge.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+        firstBadge.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
         jest.advanceTimersByTime(500);
       });
       expect(container.textContent).not.toContain('Pipeline popover');
 
       scrollable = true;
       act(renderSections);
-      badge = container.querySelector<HTMLElement>(
-        '[aria-label="Pipeline running"][tabindex="0"]',
+      const badge = container.querySelector<HTMLElement>(
+        '[aria-label="Workflow running"][tabindex="0"]',
       );
       if (!badge) throw new Error('pipeline badge not rendered');
       act(() => {
@@ -4109,7 +4202,7 @@ describe('WorkspacesSidebarSections', () => {
       });
 
       const badge = container.querySelector<HTMLElement>(
-        '[aria-label="Pipeline running"][tabindex="0"]',
+        '[aria-label="Workflow running"][tabindex="0"]',
       );
       if (!badge) throw new Error('pipeline badge not rendered');
 
@@ -4161,7 +4254,7 @@ describe('WorkspacesSidebarSections', () => {
     });
 
     const badge = container.querySelector<HTMLElement>(
-      '[aria-label="Pipeline running"][tabindex="0"]',
+      '[aria-label="Workflow running"][tabindex="0"]',
     );
     if (!badge) throw new Error('pipeline badge not rendered');
 

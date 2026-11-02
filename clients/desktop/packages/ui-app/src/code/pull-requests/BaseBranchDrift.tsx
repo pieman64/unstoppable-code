@@ -2,6 +2,7 @@
 
 import type { JSX } from 'react';
 import {
+  Button,
   DialogModal,
   RichHoverTooltip,
   ThinkingSpinner,
@@ -120,25 +121,21 @@ export function AlignBaseBranchConfirmation({
       </div>
       <div className="flex items-center justify-end gap-2 border-t p-4">
         {!pending && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary/80"
-          >
+          <Button size="compact" onClick={onClose}>
             Cancel
-          </button>
+          </Button>
         )}
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="compact"
           data-testid="pr-status-base-branch-drift-confirm"
           onClick={onConfirm}
           disabled={pending}
           aria-busy={pending}
-          className="focus-ring inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90"
         >
           {pending && <ThinkingSpinner tone="emphasis" quiet />}
           {pending ? 'Updating base branch…' : 'Update base branch'}
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );

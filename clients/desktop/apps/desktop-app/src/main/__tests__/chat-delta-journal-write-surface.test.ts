@@ -35,9 +35,13 @@ const WRITE_SURFACE = [
   /\bChatDeltaJournalWriter\b/,
   /\bpromoteToDeltaJournal\b/,
   /\bdemoteFromDeltaJournal\b/,
+  /\bpromoteToFormat4Journal\b/,
+  /\btransitionFormat4ToCheckpointed\b/,
   /\bDELTA_JOURNAL_MANIFEST_VERSION\b/,
   /\bDELTA_JOURNAL_FORMAT\b/,
+  /\bDELTA_JOURNAL_V2_FORMAT\b/,
   /['"]chat-delta-journal-v1['"]/,
+  /['"]chat-delta-journal-v2['"]/,
 ];
 
 function sources(directory: string): string[] {
@@ -63,7 +67,7 @@ function violations(path: string, text: string): string[] {
   return WRITE_SURFACE.filter((pattern) => {
     if (path === FORMAT && pattern.source.includes('DELTA_JOURNAL'))
       return false;
-    if (path === FORMAT && pattern.source.includes('chat-delta-journal-v1'))
+    if (path === FORMAT && pattern.source.includes('chat-delta-journal-v'))
       return false;
     return pattern.test(text);
   }).map((pattern) => `${path} matches ${pattern.source}`);

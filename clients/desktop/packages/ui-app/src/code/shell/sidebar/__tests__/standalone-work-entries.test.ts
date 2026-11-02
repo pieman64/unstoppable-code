@@ -118,6 +118,16 @@ describe('groupStandaloneChatsIntoWorkEntries', () => {
     expect(row?.unreadChats.map((entry) => entry.localId)).toEqual(['a', 'c']);
   });
 
+  it("sums its chats' background tasks (turn-state phase 41b)", () => {
+    const [row] = groupStandaloneChatsIntoWorkEntries([
+      chat({ localId: 'a', workEntryId: 'e1', backgroundTasks: 2 }),
+      chat({ localId: 'b', workEntryId: 'e1' }),
+      chat({ localId: 'c', workEntryId: 'e1', backgroundTasks: 1 }),
+    ]);
+
+    expect(row?.backgroundTasks).toBe(3);
+  });
+
   it('reports no activity and no unread when no sibling has them', () => {
     const [row] = groupStandaloneChatsIntoWorkEntries([
       chat({ localId: 'a', workEntryId: 'e1', hasUnread: false }),

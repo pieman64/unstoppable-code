@@ -12,8 +12,6 @@ import {
 } from '@/stores/panelLayoutStore';
 import { useBrowserStore } from '@/stores/browserStore';
 import { consumePendingBrowserUrlFocus } from '@/lib/browserUrlFocus';
-import { MAX_TABS_PER_GROUP } from '@canopy/ui-shared/panels';
-import { useGitHubStore } from '@/stores/githubStore';
 import { requestTerminalSpawn } from '@/lib/terminalSpawnRequests';
 import { runNewTabShortcut } from '../newTabShortcut';
 
@@ -83,7 +81,7 @@ it('binds a new Browser tab on the keystroke, before its session exists', async 
   }
 });
 
-it('refuses Cmd+T in a full terminal row before a terminal is spawned', () => {
+it('spawns a terminal on Cmd+T in a terminal row with 20+ tabs', () => {
   const TERMINAL_KEY = makeWorktreePanelKey(PROJECT_ID, 'worktree-terminal');
   const store = usePanelLayoutStore.getState();
   store.initializeLayout(TERMINAL_KEY, {
@@ -98,32 +96,28 @@ it('refuses Cmd+T in a full terminal row before a terminal is spawned', () => {
     ],
     containerSize: { width: 1200, height: 700 },
   });
-  for (let index = 1; index < MAX_TABS_PER_GROUP; index += 1) {
+  for (let index = 1; index <= 20; index += 1) {
     store.addTab(TERMINAL_KEY, 'group-terminal', 'terminal', {
       instance: { terminalId: `terminal-${index}` },
       activate: false,
     });
   }
-  store.setTabRowLimit(MAX_TABS_PER_GROUP);
-  try {
-    const kind = runNewTabShortcut({
-      projectId: PROJECT_ID,
-      worktreeId: 'worktree-terminal',
-      target: null,
-      createChatTab: jest.fn(),
-    });
+  jest.mocked(requestTerminalSpawn).mockClear();
 
-    expect(kind).toBe('terminal');
-    expect(requestTerminalSpawn).not.toHaveBeenCalled();
-    expect(
-      useGitHubStore
-        .getState()
-        .toasts.some((toast) => toast.message === 'Tab limit reached (20)'),
-    ).toBe(true);
-  } finally {
-    store.setTabRowLimit(null);
-    useGitHubStore.setState({ toasts: [] });
-  }
+  const kind = runNewTabShortcut({
+    projectId: PROJECT_ID,
+    worktreeId: 'worktree-terminal',
+    target: null,
+    createChatTab: jest.fn(),
+  });
+
+  expect(kind).toBe('terminal');
+  expect(requestTerminalSpawn).toHaveBeenCalledWith({
+    projectId: PROJECT_ID,
+    worktreeId: 'worktree-terminal',
+    layoutKey: TERMINAL_KEY,
+    mode: 'new-tab',
+  });
 });
 
 it('opens a chat instead of a Browser tab in a window that shows another computer', async () => {

@@ -39,6 +39,20 @@ export interface BillingLaneAvailability {
   creditsEligible: boolean | undefined;
 }
 
+/**
+ * Whether every turn this account can run bills to AI Credits: credits are
+ * eligible and neither Claude nor Codex has native access (subscription,
+ * Environments credential or ready account proxy). Unknown facts never count
+ * as credits-only, so a subscriber keeps cost while a probe is in flight.
+ */
+export function isAiCreditsOnlyBilling(a: BillingLaneAvailability): boolean {
+  return (
+    a.creditsEligible === true &&
+    a.claudeNativeAuth === false &&
+    a.codexNativeAuth === false
+  );
+}
+
 export interface LaneModelDefaults {
   claude: ProviderModelSelection;
   codex: ProviderModelSelection;
@@ -118,6 +132,26 @@ export type DefaultModelLaneResolution =
        */
       hasPolicyAllowedLane: boolean;
     };
+
+/**
+ * Whether the signed-in ChatGPT account can run `model` on the Codex lane.
+ *
+ * `accountModels` is the account's own `model/list` ids (both `id` and `model`
+ * of every non-hidden entry). `null`, `undefined` and an EMPTY set all mean
+ * UNKNOWN and answer `true`: like the UNKNOWN policy rule on
+ * {@link LaneDefaultRepairHooks.isPolicyBlocked}, an unknown list must never
+ * trigger a repair or hide every Codex model (CAN-4716).
+ *
+ * Both hosts wrap their `isRunnableOnLane` hook with this for `codex-native`,
+ * and Auto routing applies the same match, so there is one rule.
+ */
+export function isCodexModelAvailableToAccount(
+  model: string,
+  accountModels: ReadonlySet<string> | null | undefined,
+): boolean {
+  if (!accountModels || accountModels.size === 0) return true;
+  return accountModels.has(model);
+}
 
 /**
  * Host-supplied primitives for {@link repairLaneDefaults}.
@@ -366,13 +400,16 @@ function runnableOnLane(
   model: ChatModel,
   gatewayRoutesHydrated: boolean,
   isModelInRegistry: (model: ChatModel) => boolean,
+  codexAccountModels: ReadonlySet<string> | null | undefined,
 ): { runnable: boolean; provisional: boolean } {
   if (lane === 'claude-native' || lane === 'codex-native') {
     return {
       runnable:
         isModelInRegistry(model) &&
         getExecutionHarnessForModel(model) ===
-          (lane === 'claude-native' ? 'claude' : 'codex'),
+          (lane === 'claude-native' ? 'claude' : 'codex') &&
+        (lane === 'claude-native' ||
+          isCodexModelAvailableToAccount(model, codexAccountModels)),
       provisional: false,
     };
   }
@@ -410,6 +447,13 @@ export function resolveDefaultModelLane(input: {
   creditsCandidates?: readonly ChatModel[];
   /** Present only when an org has made its gateway the only route. */
   orgGateway?: EnforcedOrgGatewayLane;
+  /**
+   * The signed-in ChatGPT account's `model/list` ids. A `codex-native`
+   * candidate the account cannot run falls through to the next lane instead
+   * of being returned. Unknown (`null`/absent/empty) changes nothing; see
+   * {@link isCodexModelAvailableToAccount}.
+   */
+  codexAccountModels?: ReadonlySet<string> | null;
   /**
    * The saved credential is a guest. The AI Credits lane then defaults only
    * to guest-allowlisted models; see {@link laneCandidates}.
@@ -509,6 +553,7 @@ export function resolveDefaultModelLane(input: {
         selection.model,
         input.gatewayRoutesHydrated,
         input.isModelInRegistry,
+        input.codexAccountModels,
       );
       if (!runtime.runnable) continue;
       const lastKnown =
@@ -555,6 +600,7 @@ export function resolveDefaultModelLane(input: {
         selection.model,
         input.gatewayRoutesHydrated,
         input.isModelInRegistry,
+        input.codexAccountModels,
       ).runnable;
     }),
   );

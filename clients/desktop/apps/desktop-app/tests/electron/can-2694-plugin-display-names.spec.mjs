@@ -19,31 +19,40 @@ test('humanizes marketplace plugin names and preserves manifest names', async ()
     await app.waitForShell();
     await app.openPluginsPage();
     await app.openPluginsTab('marketplace');
-    await window.getByTestId('marketplace-row-demo/market').click();
-    const row = window.getByTestId('plugin-row-alpha-tool');
+    await window
+      .locator(
+        '[data-testid="marketplace-source-row"][data-source-id="demo/market"]',
+      )
+      .getByTestId('marketplace-source-open')
+      .click();
+    const row = window.locator(
+      '[data-testid="marketplace-source-plugin"][data-plugin-key="alpha-tool"]',
+    );
     await expect(row.getByText('Alpha Tool', { exact: true })).toBeVisible();
     // The fixture description contains "alpha-tool (external)"; assert the
     // name itself, not unrelated description copy.
     await expect(
       row.getByText('alpha-tool', { exact: true }),
     ).not.toBeVisible();
-    await row.click();
-    const dialog = window.getByRole('dialog').filter({
-      has: window.locator('#plugin-detail-title'),
-    });
-    await expect(dialog.locator('#plugin-detail-title')).toHaveText(
+    await row.getByText('Alpha Tool', { exact: true }).click();
+    // A source plugin opens as a Customize detail page (CAN-4267), which
+    // leaves through its breadcrumb rather than a dialog Back/Close.
+    const detail = window.getByTestId('plugins-entry-detail');
+    await expect(detail.locator('#plugin-detail-title')).toHaveText(
       'Alpha Tool',
     );
-    await dialog.getByTestId('plugin-detail-back').click();
+    await window.getByTestId('plugins-entry-detail-breadcrumb-sources').click();
     await window
-      .getByRole('dialog')
-      .filter({ has: row })
-      .getByRole('button', { name: 'Close', exact: true })
+      .locator(
+        '[data-testid="marketplace-source-row"][data-source-id="curated/cloud"]',
+      )
+      .getByTestId('marketplace-source-open')
       .click();
-    await window.getByTestId('marketplace-row-curated/cloud').click();
     await expect(
       window
-        .getByTestId('plugin-row-writer-toolkit')
+        .locator(
+          '[data-testid="marketplace-source-plugin"][data-plugin-key="writer-toolkit"]',
+        )
         .getByText('Writer Toolkit', { exact: true }),
     ).toBeVisible();
   } finally {

@@ -1,5 +1,7 @@
 export * from './document';
 export * from './parse-pipeline';
+export * from './serialize-pipeline';
 export * from './normalize-pipeline';
 export * from './catalog-validation';
 export * from './automation-target';
+export * from './assets';

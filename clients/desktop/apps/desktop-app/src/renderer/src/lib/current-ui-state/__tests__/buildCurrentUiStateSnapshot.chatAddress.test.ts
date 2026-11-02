@@ -19,6 +19,8 @@ function tab(id: string): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     providerType: 'claude',
   };
 }

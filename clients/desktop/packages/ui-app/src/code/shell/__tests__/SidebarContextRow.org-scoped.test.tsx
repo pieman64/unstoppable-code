@@ -114,8 +114,9 @@ describe('resolveSidebarContextActions (CAN-4057)', () => {
 
   it.each([
     ['MEMBER', false, false, false, false],
+    ['MEMBER', true, false, false, false],
     ['ADMIN', false, true, false, true],
-    ['ADMIN', true, true, false, true],
+    ['ADMIN', true, true, true, true],
     ['OWNER', false, true, false, true],
     ['OWNER', true, true, true, true],
   ] as const)(
@@ -182,7 +183,7 @@ describe('SidebarContextRow organization actions (CAN-4057)', () => {
   function render({
     orgScoped,
     ...props
-  }: Partial<SidebarContextRowProps> & {
+  }: Omit<Partial<SidebarContextRowProps>, 'orgScoped'> & {
     orgScoped?: Partial<SidebarContextOrgScopedActions>;
   } = {}): void {
     act(() => {
@@ -341,6 +342,7 @@ describe('SidebarContextRow organization actions (CAN-4057)', () => {
         'account-personal-activity-row',
         'account-context-statistics-row',
         'account-invite-team-row',
+        'sidebar-context-menu-item-ai-credits',
         'sidebar-context-organization-settings',
       ],
     ],
@@ -401,48 +403,51 @@ describe('SidebarContextRow organization actions (CAN-4057)', () => {
     expect(query('account-personal-activity-row')).not.toBeNull();
   });
 
-  it('closes the menu before each action and targets the selected organization', () => {
-    render({ context: ACME_CONTEXT });
-    for (const [testId, check] of [
-      [
-        'account-personal-activity-row',
-        (): void =>
-          expect(onOpenPath).toHaveBeenCalledWith(`/organization/${ACME}`),
-      ],
-      [
-        'account-context-statistics-row',
-        (): void =>
-          expect(onOpenPath).toHaveBeenCalledWith(
-            `/organization/${ACME}/statistics`,
-          ),
-      ],
-      [
-        'account-invite-team-row',
-        (): void =>
-          expect(onInviteToTeam).toHaveBeenCalledWith(memberships('OWNER')[0]),
-      ],
-      [
-        'sidebar-context-menu-item-ai-credits',
-        (): void =>
-          expect(onOpenPath).toHaveBeenCalledWith(
-            `/organization/${ACME}/settings?tab=billing`,
-          ),
-      ],
-      [
-        'sidebar-context-organization-settings',
-        (): void =>
-          expect(onOpenPath).toHaveBeenCalledWith(
-            `/organization/${ACME}/settings`,
-          ),
-      ],
-    ] as const) {
-      openMenu();
-      act(() => query(testId)?.click());
-      expect(trigger().getAttribute('aria-expanded')).toBe('false');
-      check();
-    }
-    expect(onSelect).not.toHaveBeenCalled();
-  });
+  it.each(['OWNER', 'ADMIN'] as const)(
+    'closes the menu before each action for %s and targets the selected organization',
+    (role) => {
+      render({ context: ACME_CONTEXT, organizations: memberships(role) });
+      for (const [testId, check] of [
+        [
+          'account-personal-activity-row',
+          (): void =>
+            expect(onOpenPath).toHaveBeenCalledWith(`/organization/${ACME}`),
+        ],
+        [
+          'account-context-statistics-row',
+          (): void =>
+            expect(onOpenPath).toHaveBeenCalledWith(
+              `/organization/${ACME}/statistics`,
+            ),
+        ],
+        [
+          'account-invite-team-row',
+          (): void =>
+            expect(onInviteToTeam).toHaveBeenCalledWith(memberships(role)[0]),
+        ],
+        [
+          'sidebar-context-menu-item-ai-credits',
+          (): void =>
+            expect(onOpenPath).toHaveBeenCalledWith(
+              `/organization/${ACME}/settings?tab=billing`,
+            ),
+        ],
+        [
+          'sidebar-context-organization-settings',
+          (): void =>
+            expect(onOpenPath).toHaveBeenCalledWith(
+              `/organization/${ACME}/settings`,
+            ),
+        ],
+      ] as const) {
+        openMenu();
+        act(() => query(testId)?.click());
+        expect(trigger().getAttribute('aria-expanded')).toBe('false');
+        check();
+      }
+      expect(onSelect).not.toHaveBeenCalled();
+    },
+  );
 
   it('opens Create a team from Personal', () => {
     render();
@@ -477,37 +482,61 @@ describe('SidebarContextRow organization actions (CAN-4057)', () => {
     expect(query('sidebar-context-menu-item-ai-credits-balance')).toBeNull();
   });
 
-  it('shows a known zero and no number while unknown', () => {
-    const refresh = jest.fn();
-    render({
-      context: ACME_CONTEXT,
-      orgScoped: {
-        credits: { organizationId: ACME, balanceCredits: 0, refresh },
-      },
-    });
-    openMenu();
-    expect(
-      query('sidebar-context-menu-item-ai-credits-balance')?.textContent,
-    ).toBe('0');
-    render({
-      context: ACME_CONTEXT,
-      orgScoped: {
-        credits: { organizationId: ACME, balanceCredits: null, refresh },
-      },
-    });
-    expect(query('sidebar-context-menu-item-ai-credits')?.textContent).toBe(
-      'AI Credits',
-    );
-    expect(query('sidebar-context-menu-item-ai-credits-balance')).toBeNull();
-  });
+  it.each(['OWNER', 'ADMIN'] as const)(
+    'shows %s a known zero and no number while unknown',
+    (role) => {
+      const refresh = jest.fn();
+      render({
+        context: ACME_CONTEXT,
+        organizations: memberships(role),
+        orgScoped: {
+          credits: { organizationId: ACME, balanceCredits: 0, refresh },
+        },
+      });
+      openMenu();
+      expect(
+        query('sidebar-context-menu-item-ai-credits-balance')?.textContent,
+      ).toBe('0');
+      render({
+        context: ACME_CONTEXT,
+        organizations: memberships(role),
+        orgScoped: {
+          credits: { organizationId: ACME, balanceCredits: null, refresh },
+        },
+      });
+      expect(query('sidebar-context-menu-item-ai-credits')?.textContent).toBe(
+        'AI Credits',
+      );
+      expect(query('sidebar-context-menu-item-ai-credits-balance')).toBeNull();
+    },
+  );
 
-  it('removes the pool row while open when the viewer stops being its OWNER', () => {
+  it('keeps the row for OWNER to ADMIN, then removes it on demotion to MEMBER', () => {
     render({ context: ACME_CONTEXT });
     openMenu();
     expect(query('sidebar-context-menu-item-ai-credits')).not.toBeNull();
     render({ context: ACME_CONTEXT, organizations: memberships('ADMIN') });
+    expect(query('sidebar-context-menu-item-ai-credits')).not.toBeNull();
+    render({ context: ACME_CONTEXT, organizations: memberships('MEMBER') });
     expect(query('sidebar-context-menu-item-ai-credits')).toBeNull();
-    expect(query('account-invite-team-row')).not.toBeNull();
+    expect(query('account-invite-team-row')).toBeNull();
+  });
+
+  it('uses the selected Admin organization independently of collection order and encodes its billing destination', () => {
+    const id = 'team/with space';
+    render({
+      context: { kind: 'organization', organizationId: id },
+      organizations: [
+        ...memberships('OWNER'),
+        { id, name: 'Team', role: 'ADMIN' },
+      ],
+    });
+    openMenu();
+    act(() => query('sidebar-context-menu-item-ai-credits')?.click());
+    expect(onOpenPath).toHaveBeenCalledWith(
+      '/organization/team%2Fwith%20space/settings?tab=billing',
+    );
+    expect(trigger().getAttribute('aria-expanded')).toBe('false');
   });
 
   it('reports each open and close', () => {

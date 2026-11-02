@@ -26,6 +26,62 @@ describe('composer capability catalog', () => {
       commands.find((command) => command.name === 'workspace')?.disabledReason,
     ).toBeTruthy();
   });
+  it('projects plugin member search identity without changing invocation or order', () => {
+    const entry = (
+      id: string,
+      name: string,
+      sourceName?: string,
+    ): Parameters<typeof buildComposerCommands>[0][number] => ({
+      name,
+      insertText: `$${name} `,
+      description: '',
+      section: 'available',
+      inventoryEntry: {
+        id,
+        provider: 'codex',
+        kind: 'plugin_command',
+        name,
+        displayName: name,
+        description: '',
+        insertText: `$${name} `,
+        invocationKey: name,
+        enableRef: {
+          kind: 'plugin',
+          marketplaceId: 'market',
+          pluginName: 'code-review',
+        },
+        ...(sourceName !== undefined ? { sourceName } : {}),
+      },
+    });
+    const members = buildComposerCommands(
+      [
+        entry('a', 'review-deep-thing', 'review/deep:thing'),
+        entry('b', 'loop', '  '),
+      ],
+      { home: false, supportedActions: [] },
+    );
+    expect(
+      members.map(({ name, namespace, memberName, insertText }) => ({
+        name,
+        namespace,
+        memberName,
+        insertText,
+      })),
+    ).toEqual([
+      {
+        name: 'review-deep-thing',
+        namespace: 'code-review',
+        memberName: 'review/deep:thing',
+        insertText: '$review-deep-thing ',
+      },
+      {
+        name: 'loop',
+        namespace: 'code-review',
+        memberName: undefined,
+        insertText: '$loop ',
+      },
+    ]);
+  });
   it('offers workspace and fast controls only when the host supports them', () => {
     const commands = buildComposerCommands([], { home: true, fast: true });
     expect(

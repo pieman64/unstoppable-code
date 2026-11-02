@@ -19,6 +19,126 @@ const receipt: InstallReceipt = {
   authorizedAt: '2026-09-23T00:00:00.000Z',
 };
 let dir: string;
+it('fails strict skill lookup when corrupt provenance could otherwise look absent', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  await writeFile(
+    join(dir, 'resource-install-receipts.json'),
+    JSON.stringify({
+      version: 1,
+      byAccount: { a: [{ ...receipt, authorizedAt: null }] },
+    }),
+  );
+  await expect(store.find('skills', 'r', true)).rejects.toThrow(
+    'Invalid resource install receipt',
+  );
+  await expect(store.listForAccount(true)).rejects.toThrow(
+    'Invalid resource install receipt',
+  );
+});
+it('preserves distinct per-copy baselines when updating only one alias', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const oldHash = 'a'.repeat(64);
+  const newHash = 'b'.repeat(64);
+  await store.record({
+    ...receipt,
+    localResourceIds: ['one', 'two'],
+    localContentHashes: { one: oldHash, two: oldHash },
+  });
+  await store.record({
+    ...receipt,
+    hash: newHash,
+    localResourceIds: ['one'],
+    localContentHashes: { one: newHash },
+  });
+  expect(await store.find('skills', 'r')).toMatchObject({
+    localResourceIds: ['one', 'two'],
+    localContentHashes: { one: newHash, two: oldHash },
+  });
+});
+
+it('preserves primary identity across dependency writes and compensates an aborted primary alias', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const primary = {
+    ...receipt,
+    localResourceIds: ['primary'],
+    localResourceRoles: { primary: 'primary' as const },
+  };
+  await store.record(primary);
+  const dependency = {
+    ...receipt,
+    localResourceIds: ['dependency'],
+    localResourceRoles: { dependency: 'dependency' as const },
+  };
+  await store.record(dependency);
+  const previous = await store.find('skills', 'r');
+  expect(previous).toMatchObject({
+    localResourceIds: ['primary', 'dependency'],
+    localResourceRoles: { primary: 'primary' as const },
+  });
+  const alias = {
+    ...receipt,
+    localResourceIds: ['alias'],
+    localResourceRoles: { alias: 'primary' as const },
+  };
+  await store.record(alias);
+  expect(await store.find('skills', 'r')).toMatchObject({
+    localResourceRoles: {
+      primary: 'primary',
+      dependency: 'dependency',
+      alias: 'primary',
+    },
+  });
+  await store.rollbackInstall(alias, previous);
+  expect(await store.find('skills', 'r')).toEqual(previous);
+});
+
+it('does not infer per-copy baselines for legacy multi-alias receipts', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  await store.record({ ...receipt, localResourceIds: ['one', 'two'] });
+  const updated: InstallReceipt = {
+    ...receipt,
+    hash: 'b'.repeat(64),
+    localResourceIds: ['one'],
+    localContentHashes: { one: 'b'.repeat(64) },
+  };
+  const previous = await store.find('skills', 'r');
+  await store.record(updated);
+  expect((await store.find('skills', 'r'))?.localContentHashes).toEqual({
+    one: 'b'.repeat(64),
+  });
+  await store.rollbackInstall(updated, previous);
+  expect(await store.find('skills', 'r')).toEqual(previous);
+});
+
+it('does not rollback a winning per-copy update even with identical share metadata', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const previous: InstallReceipt = {
+    ...receipt,
+    localResourceIds: ['one', 'two'],
+    localContentHashes: { one: 'a'.repeat(64), two: 'a'.repeat(64) },
+  };
+  const attempt: InstallReceipt = {
+    ...previous,
+    hash: 'b'.repeat(64),
+    authorizedAt: '2026-10-29T12:00:00Z',
+    localResourceIds: ['one'],
+    localContentHashes: { one: 'b'.repeat(64) },
+  };
+  const winner: InstallReceipt = {
+    ...attempt,
+    localResourceIds: ['two'],
+    localContentHashes: { two: 'c'.repeat(64) },
+  };
+  await store.record(previous);
+  await store.record(attempt);
+  await store.record(winner);
+  await store.rollbackInstall(attempt, previous);
+  expect(await store.find('skills', 'r')).toMatchObject({
+    hash: attempt.hash,
+    localResourceIds: ['one', 'two'],
+    localContentHashes: { one: 'b'.repeat(64), two: 'c'.repeat(64) },
+  });
+});
 it('keeps the original organization receipt in the team lane after Personal is replaced', async (): Promise<void> => {
   const store = createResourceInstallReceiptsStore('a', dir);
   await store.record(receipt);
@@ -336,9 +456,106 @@ it('removes only added aliases when no concurrent aliases remain', async (): Pro
   await store.record(installed);
   await store.rollbackInstall(installed, previous);
   expect(await store.find('skills', 'r')).toEqual({
-    ...installed,
+    ...previous,
     localResourceIds: ['previous'],
   });
+});
+
+it('normalizes names on record, find, list and local lookup, including older persisted rows', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const named = {
+    ...receipt,
+    localResourceIds: ['copy'],
+    sharedByName: ' Lena ',
+    ownerName: ' Acme ',
+    teamName: '  ',
+  };
+  const normalized = {
+    ...receipt,
+    localResourceIds: ['copy'],
+    sharedByName: 'Lena',
+    ownerName: 'Acme',
+  };
+  await store.record(named);
+  expect(await store.find('skills', 'r')).toEqual(normalized);
+  expect(await store.listForAccount()).toEqual([normalized]);
+  expect(
+    JSON.parse(
+      await readFile(join(dir, 'resource-install-receipts.json'), 'utf8'),
+    ),
+  ).toEqual({ version: 1, byAccount: { a: [normalized] } });
+  await writeFile(
+    join(dir, 'resource-install-receipts.json'),
+    JSON.stringify({ version: 1, byAccount: { a: [named] } }),
+  );
+  expect(await store.find('skills', 'r')).toEqual(normalized);
+  expect(await store.findLocal('skills', 'copy')).toEqual({
+    accountId: 'a',
+    receipt: normalized,
+  });
+});
+
+it.each(['sharedByName', 'ownerName', 'teamName'])(
+  'rejects and ignores persisted non-string %s without erasing malformed rows',
+  async (field) => {
+    const store = createResourceInstallReceiptsStore('a', dir);
+    const invalid = { ...receipt, [field]: 42 };
+    await expect(store.record(invalid)).rejects.toThrow(
+      'Invalid resource install receipt',
+    );
+    const file = join(dir, 'resource-install-receipts.json');
+    await writeFile(
+      file,
+      JSON.stringify({ version: 1, byAccount: { a: [invalid] } }),
+    );
+    expect(await store.listForAccount()).toEqual([]);
+    await store.record({ ...receipt, remoteId: 'valid' });
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({
+      version: 1,
+      byAccount: { a: [invalid, { ...receipt, remoteId: 'valid' }] },
+    });
+  },
+);
+
+it('replaces the display snapshot and restores it with the installed hash on an aborted update', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const previous = {
+    ...receipt,
+    localResourceIds: ['copy'],
+    sharedByName: 'Lena',
+    ownerName: 'Acme',
+    teamName: 'Release',
+  };
+  await store.record(previous);
+  const replacement = {
+    ...receipt,
+    localResourceIds: ['copy'],
+    hash: 'v2',
+    authorizedAt: '2026-10-26T00:00:00Z',
+    ownerName: 'Renamed',
+  };
+  await store.record(replacement);
+  expect(await store.find('skills', 'r')).toEqual(replacement);
+  await store.rollbackInstall(replacement, previous);
+  expect(await store.find('skills', 'r')).toEqual(previous);
+  await store.record(replacement);
+  expect(await store.find('skills', 'r')).toEqual(replacement);
+});
+
+it('preserves a concurrent display snapshot when rolling back an older attempt', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const previous = {
+    ...receipt,
+    sharedByName: 'Lena',
+    localResourceIds: ['copy'],
+  };
+  const attempt = { ...previous, hash: 'v2' };
+  const concurrent = { ...attempt, sharedByName: 'Sam' };
+  await store.record(previous);
+  await store.record(attempt);
+  await store.record(concurrent);
+  await store.rollbackInstall(attempt, previous);
+  expect(await store.find('skills', 'r')).toEqual(concurrent);
 });
 
 it('keeps queued pipeline receipts bound to the captured account handle', async (): Promise<void> => {
@@ -443,4 +660,58 @@ it('retains the Public collection source across durable receipt reloads', async 
       'public-a',
     ),
   ).toEqual(publicReceipt);
+});
+
+it('retains uninstall history without erasing origin, and reactivates only the reinstalled alias', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  await store.record({ ...receipt, localResourceIds: ['one', 'two'] });
+  const removal = {
+    ...receipt,
+    localResourceIds: ['one'],
+    uninstalledLocalResourceIds: ['one'],
+  };
+  await store.record(removal);
+  await store.record({ ...receipt, localResourceIds: ['two'] });
+  expect(await store.find('skills', 'r')).toMatchObject({
+    localResourceIds: ['one', 'two'],
+    uninstalledLocalResourceIds: ['one'],
+    ownerContext: receipt.ownerContext,
+  });
+  expect(await store.findLocal('skills', 'one')).toBeDefined();
+  await store.record({ ...receipt, localResourceIds: ['one'] });
+  expect(await store.find('skills', 'r')).toMatchObject({
+    uninstalledLocalResourceIds: [],
+  });
+});
+
+it('restores intentional removal when a reinstall fails before publishing its file', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const removed = {
+    ...receipt,
+    localResourceIds: ['one'],
+    uninstalledLocalResourceIds: ['one'],
+  };
+  await store.record(removed);
+  const attempt = { ...receipt, localResourceIds: ['one'], hash: 'new' };
+  await store.record(attempt);
+  await store.rollbackInstall(attempt, removed);
+  expect(await store.find('skills', 'r')).toEqual(removed);
+});
+
+it('an intentional removal preserves a newer receipt snapshot written after removal was prepared', async () => {
+  const store = createResourceInstallReceiptsStore('a', dir);
+  const old = { ...receipt, localResourceIds: ['one'] };
+  const newer = {
+    ...old,
+    hash: 'newer',
+    authorizedAt: '2026-10-29T18:00:00.000Z',
+    sharedByName: 'New author',
+  };
+  await store.record(old);
+  await store.record(newer);
+  await store.record({ ...old, uninstalledLocalResourceIds: ['one'] });
+  expect(await store.find('skills', 'r')).toEqual({
+    ...newer,
+    uninstalledLocalResourceIds: ['one'],
+  });
 });

@@ -1,0 +1,2867 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`worktree:health-check multi-repo worktrees carries the Git error of a single repository issue 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "one-broken",
+    "createdAt": "<time>",
+    "id": "one-broken",
+    "includedRepoIds": [
+      "alpha",
+      "beta"
+    ],
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "one-broken",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "one-broken"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "one-broken",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "one-broken",
+          "repoId": "beta",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "invalid-git-worktree",
+      "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/one-broken",
+      "gitError": "Missing gitdir target: <root>/admin/beta-missing",
+      "repoIssues": [
+        {
+          "repoId": "beta",
+          "repoName": "Beta",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/one-broken/repos/beta",
+          "code": "invalid-git-worktree",
+          "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+          "gitError": "Missing gitdir target: <root>/admin/beta-missing"
+        }
+      ]
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "invalid-git-worktree",
+    "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/one-broken",
+    "gitError": "Missing gitdir target: <root>/admin/beta-missing",
+    "repoIssues": [
+      {
+        "repoId": "beta",
+        "repoName": "Beta",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/one-broken/repos/beta",
+        "code": "invalid-git-worktree",
+        "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+        "gitError": "Missing gitdir target: <root>/admin/beta-missing"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees checks every directory under repos/ without includedRepoIds 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "untracked",
+    "createdAt": "<time>",
+    "id": "untracked",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "untracked"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "beta",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "gamma",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-repository",
+      "message": "One or more repositories in this project are missing.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/untracked",
+      "gitError": "<undefined>",
+      "repoIssues": [
+        {
+          "repoId": "beta",
+          "repoName": "Beta",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/beta",
+          "code": "missing-repository",
+          "message": "Repository directory is missing from this worktree."
+        },
+        {
+          "repoId": "gamma",
+          "repoName": "gamma",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/gamma",
+          "code": "missing-repository",
+          "message": "Repository directory is missing from this worktree."
+        },
+        {
+          "repoId": "notes",
+          "repoName": "notes",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/notes",
+          "code": "missing-git-metadata",
+          "message": "Git metadata is missing for this worktree.",
+          "gitError": "<undefined>"
+        }
+      ]
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-repository",
+    "message": "One or more repositories in this project are missing.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/untracked",
+    "gitError": "<undefined>",
+    "repoIssues": [
+      {
+        "repoId": "beta",
+        "repoName": "Beta",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/beta",
+        "code": "missing-repository",
+        "message": "Repository directory is missing from this worktree."
+      },
+      {
+        "repoId": "gamma",
+        "repoName": "gamma",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/gamma",
+        "code": "missing-repository",
+        "message": "Repository directory is missing from this worktree."
+      },
+      {
+        "repoId": "notes",
+        "repoName": "notes",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/notes",
+        "code": "missing-git-metadata",
+        "message": "Git metadata is missing for this worktree.",
+        "gitError": "<undefined>"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees checks only included repositories and skips payload directories 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "branchName": "tracked",
+    "createdAt": "<time>",
+    "id": "tracked",
+    "includedRepoIds": [
+      "alpha"
+    ],
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "tracked",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "tracked"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "tracked",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    }
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": null,
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees clears a stored issue when the root and every member are healthy 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "branchName": "all-healthy",
+    "createdAt": "<time>",
+    "id": "all-healthy",
+    "replica": {
+      "state": "never-recorded"
+    }
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": null,
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees names a present repository by its configured name, even when empty 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "unnamed-broken",
+    "createdAt": "<time>",
+    "id": "unnamed-broken",
+    "includedRepoIds": [
+      "gamma"
+    ],
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "unnamed-broken",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "unnamed-broken"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "unnamed-broken",
+          "repoId": "gamma",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-git-metadata",
+      "message": "Git metadata is missing for this worktree.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/unnamed-broken",
+      "gitError": "<undefined>",
+      "repoIssues": [
+        {
+          "repoId": "gamma",
+          "repoName": "",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/unnamed-broken/repos/gamma",
+          "code": "missing-git-metadata",
+          "message": "Git metadata is missing for this worktree.",
+          "gitError": "<undefined>"
+        }
+      ]
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-git-metadata",
+    "message": "Git metadata is missing for this worktree.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/unnamed-broken",
+    "gitError": "<undefined>",
+    "repoIssues": [
+      {
+        "repoId": "gamma",
+        "repoName": "",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/unnamed-broken/repos/gamma",
+        "code": "missing-git-metadata",
+        "message": "Git metadata is missing for this worktree.",
+        "gitError": "<undefined>"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees never validates the root of a workspace without a source repository: Git root 1`] = `
+{
+  "changedLists": [
+    "multi-no-source-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "git-root",
+    "createdAt": "<time>",
+    "id": "git-root",
+    "includedRepoIds": [
+      "alpha"
+    ],
+    "replica": {
+      "state": "never-recorded"
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "invalid-git-worktree",
+      "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-no-source-ws/worktrees/git-root",
+      "gitError": "<undefined>",
+      "repoIssues": [
+        {
+          "repoId": "alpha",
+          "repoName": "Alpha",
+          "repoPath": "<root>/data/workspaces/multi-no-source-ws/worktrees/git-root/repos/alpha",
+          "code": "invalid-git-worktree",
+          "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+          "gitError": "<undefined>"
+        }
+      ]
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "invalid-git-worktree",
+    "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-no-source-ws/worktrees/git-root",
+    "gitError": "<undefined>",
+    "repoIssues": [
+      {
+        "repoId": "alpha",
+        "repoName": "Alpha",
+        "repoPath": "<root>/data/workspaces/multi-no-source-ws/worktrees/git-root/repos/alpha",
+        "code": "invalid-git-worktree",
+        "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+        "gitError": "<undefined>"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees never validates the root of a workspace without a source repository: plain root 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "branchName": "plain-root",
+    "createdAt": "<time>",
+    "id": "plain-root",
+    "includedRepoIds": [
+      "alpha"
+    ],
+    "replica": {
+      "state": "never-recorded"
+    }
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": null,
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees records a missing worktree root without repository issues 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "root-missing",
+    "createdAt": "<time>",
+    "id": "root-missing",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-missing",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "root-missing"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-missing",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-missing",
+          "repoId": "beta",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-missing",
+          "repoId": "gamma",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/root-missing",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/root-missing",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees reports a source-backed root that is not a checkout 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "root-broken",
+    "createdAt": "<time>",
+    "id": "root-broken",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-broken",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "root-broken"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-broken",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-broken",
+          "repoId": "beta",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "root-broken",
+          "repoId": "gamma",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-git-metadata",
+      "message": "Git metadata is missing for this worktree.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/root-broken",
+      "gitError": "<undefined>",
+      "repoIssues": [
+        {
+          "repoId": "__workspace_root__",
+          "repoName": "Project root",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/root-broken",
+          "code": "missing-git-metadata",
+          "message": "Git metadata is missing for this worktree.",
+          "gitError": "<undefined>"
+        }
+      ]
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-git-metadata",
+    "message": "Git metadata is missing for this worktree.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/root-broken",
+    "gitError": "<undefined>",
+    "repoIssues": [
+      {
+        "repoId": "__workspace_root__",
+        "repoName": "Project root",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/root-broken",
+        "code": "missing-git-metadata",
+        "message": "Git metadata is missing for this worktree.",
+        "gitError": "<undefined>"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees reports configured repository ids of any length 1`] = `
+{
+  "changedLists": [
+    "odd-ids-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "odd",
+    "createdAt": "<time>",
+    "id": "odd",
+    "replica": {
+      "state": "never-recorded"
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-repository",
+      "message": "One or more repositories in this project are missing.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd",
+      "gitError": "<undefined>",
+      "repoIssues": [
+        {
+          "repoId": "",
+          "repoName": "Empty",
+          "repoPath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd/repos",
+          "code": "missing-repository",
+          "message": "Repository directory is missing from this worktree."
+        },
+        {
+          "repoId": "<600 c>",
+          "repoName": "Long",
+          "repoPath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd/repos/<600 c>",
+          "code": "missing-repository",
+          "message": "Repository directory is missing from this worktree."
+        },
+        {
+          "repoId": "<200 d>",
+          "repoName": "<200 d>",
+          "repoPath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd/repos/<200 d>",
+          "code": "missing-git-metadata",
+          "message": "Git metadata is missing for this worktree.",
+          "gitError": "<undefined>"
+        }
+      ]
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-repository",
+    "message": "One or more repositories in this project are missing.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd",
+    "gitError": "<undefined>",
+    "repoIssues": [
+      {
+        "repoId": "",
+        "repoName": "Empty",
+        "repoPath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd/repos",
+        "code": "missing-repository",
+        "message": "Repository directory is missing from this worktree."
+      },
+      {
+        "repoId": "<600 c>",
+        "repoName": "Long",
+        "repoPath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd/repos/<600 c>",
+        "code": "missing-repository",
+        "message": "Repository directory is missing from this worktree."
+      },
+      {
+        "repoId": "<200 d>",
+        "repoName": "<200 d>",
+        "repoPath": "<root>/data/workspaces/odd-ids-ws/worktrees/odd/repos/<200 d>",
+        "code": "missing-git-metadata",
+        "message": "Git metadata is missing for this worktree.",
+        "gitError": "<undefined>"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check multi-repo worktrees reports the first issue code and no Git error for several issues 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "two-broken",
+    "createdAt": "<time>",
+    "id": "two-broken",
+    "includedRepoIds": [
+      "alpha"
+    ],
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "two-broken",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "two-broken"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "two-broken",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "invalid-git-worktree",
+      "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/two-broken",
+      "gitError": "<undefined>",
+      "repoIssues": [
+        {
+          "repoId": "alpha",
+          "repoName": "Alpha",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/two-broken/repos/alpha",
+          "code": "invalid-git-worktree",
+          "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+          "gitError": "Missing gitdir target: <root>/admin/two-broken-alpha"
+        },
+        {
+          "repoId": "__workspace_root__",
+          "repoName": "Project root",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/two-broken",
+          "code": "missing-git-metadata",
+          "message": "Git metadata is missing for this worktree.",
+          "gitError": "<undefined>"
+        }
+      ]
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "invalid-git-worktree",
+    "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/two-broken",
+    "gitError": "<undefined>",
+    "repoIssues": [
+      {
+        "repoId": "alpha",
+        "repoName": "Alpha",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/two-broken/repos/alpha",
+        "code": "invalid-git-worktree",
+        "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+        "gitError": "Missing gitdir target: <root>/admin/two-broken-alpha"
+      },
+      {
+        "repoId": "__workspace_root__",
+        "repoName": "Project root",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/two-broken",
+        "code": "missing-git-metadata",
+        "message": "Git metadata is missing for this worktree.",
+        "gitError": "<undefined>"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check refusals keeps identifier validation messages: {"projectId":"","worktreeId":"healthy"} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals keeps identifier validation messages: {"projectId":"Bad","worktreeId":"healthy"} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals keeps identifier validation messages: {"projectId":"single-ws","worktreeId":""} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals keeps identifier validation messages: {"projectId":"single-ws","worktreeId":"../escape"} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals keeps identifier validation messages: {"projectId":"single-ws"} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals keeps identifier validation messages: {"projectId":42,"worktreeId":"healthy"} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals refuses the shared-container viewer before validating the worktree: {"projectId":"shared-container-viewer","worktreeId":""} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Shared-container recipient workspaces are read-only",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals refuses the shared-container viewer before validating the worktree: {"projectId":"shared-container-viewer","worktreeId":"container-01"} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Shared-container recipient workspaces are read-only",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check refusals refuses the shared-container viewer before validating the worktree: {"projectId":"shared-container-viewer","worktreeId":7} 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "Shared-container recipient workspaces are read-only",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks a registry-backed chat scope as its real worktree: code review, healthy 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "branchName": "healthy",
+    "createdAt": "<time>",
+    "id": "healthy",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "healthy",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "healthy"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    }
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": null,
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks a registry-backed chat scope as its real worktree: code review, missing 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "missing",
+    "createdAt": "<time>",
+    "id": "missing",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/missing",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    },
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "missing",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "missing"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/missing",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks a registry-backed chat scope as its real worktree: plan explore 1`] = `
+{
+  "changedLists": [
+    "multi-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "untracked",
+    "createdAt": "<time>",
+    "id": "untracked",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-repository",
+      "message": "One or more repositories in this project are missing.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/untracked",
+      "gitError": "<undefined>",
+      "repoIssues": [
+        {
+          "repoId": "beta",
+          "repoName": "Beta",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/beta",
+          "code": "missing-repository",
+          "message": "Repository directory is missing from this worktree."
+        },
+        {
+          "repoId": "gamma",
+          "repoName": "gamma",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/gamma",
+          "code": "missing-repository",
+          "message": "Repository directory is missing from this worktree."
+        },
+        {
+          "repoId": "notes",
+          "repoName": "notes",
+          "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/notes",
+          "code": "missing-git-metadata",
+          "message": "Git metadata is missing for this worktree.",
+          "gitError": "<undefined>"
+        }
+      ]
+    },
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "untracked"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "beta",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "untracked",
+          "repoId": "gamma",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-repository",
+    "message": "One or more repositories in this project are missing.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/multi-ws/worktrees/untracked",
+    "gitError": "<undefined>",
+    "repoIssues": [
+      {
+        "repoId": "beta",
+        "repoName": "Beta",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/beta",
+        "code": "missing-repository",
+        "message": "Repository directory is missing from this worktree."
+      },
+      {
+        "repoId": "gamma",
+        "repoName": "gamma",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/gamma",
+        "code": "missing-repository",
+        "message": "Repository directory is missing from this worktree."
+      },
+      {
+        "repoId": "notes",
+        "repoName": "notes",
+        "repoPath": "<root>/data/workspaces/multi-ws/worktrees/untracked/repos/notes",
+        "code": "missing-git-metadata",
+        "message": "Git metadata is missing for this worktree.",
+        "gitError": "<undefined>"
+      }
+    ]
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks a shared-container run directory a registry entry borrows 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "id": "viewer--scope",
+    "branchName": "viewer--scope",
+    "createdAt": "<time>"
+  }
+}",
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks cowork, standalone chat, App Advisor and unknown scopes: app-advisor 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "id": "home",
+    "branchName": "home",
+    "createdAt": "<time>",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/app-workspaces/app-advisor/home",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/app-workspaces/app-advisor/home",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks cowork, standalone chat, App Advisor and unknown scopes: cowork-ws 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "id": "home",
+    "branchName": "home",
+    "createdAt": "<time>",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/cowork-ws/worktrees/home",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/cowork-ws/worktrees/home",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks cowork, standalone chat, App Advisor and unknown scopes: ghost-ws 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "id": "feature-01",
+    "branchName": "feature-01",
+    "createdAt": "<time>",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/ghost-ws/worktrees/feature-01",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/ghost-ws/worktrees/feature-01",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks cowork, standalone chat, App Advisor and unknown scopes: standalone-chat 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "id": "cowork-ws",
+    "branchName": "cowork-ws",
+    "createdAt": "<time>",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/cowork-ws/home",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/cowork-ws/home",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks identifiers longer than a canonical scope carries: long project 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "id": "feature-01",
+    "branchName": "feature-01",
+    "createdAt": "<time>",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/<513 a>/worktrees/feature-01",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/<513 a>/worktrees/feature-01",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+}
+`;
+
+exports[`worktree:health-check scopes checks identifiers longer than a canonical scope carries: long worktree 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "id": "<513 b>",
+    "branchName": "<513 b>",
+    "createdAt": "<time>",
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/<513 b>",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/<513 b>",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+}
+`;
+
+exports[`worktree:health-check scopes judges a chat scope by the real workspace's repositories and includedRepoIds: tracked 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "branchName": "tracked",
+    "createdAt": "<time>",
+    "id": "tracked",
+    "includedRepoIds": [
+      "alpha"
+    ],
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "tracked",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "tracked"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        },
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "multi-ws",
+          "worktreeId": "tracked",
+          "repoId": "alpha",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "unknown"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    }
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": null,
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check scopes keeps the registry errors of unregistered chat scopes: code review 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "No code-review target registered for scope unregistered--scope",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check scopes keeps the registry errors of unregistered chat scopes: plan explore 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "error": {
+      "message": "No plan-explore target registered for plan unregistered-plan",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees answers with a best-effort row for a worktree missing from the list 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "id": "unlisted",
+    "branchName": "unlisted",
+    "createdAt": "<time>"
+  }
+}",
+  },
+  "recordedRow": null,
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees classifies .git files by their gitdir pointer: file-gitdir 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "file-gitdir",
+    "createdAt": "<time>",
+    "id": "file-gitdir",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "file-gitdir",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "file-gitdir"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "git-error",
+      "message": "Git could not validate this worktree.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/file-gitdir",
+      "gitError": "Git health check failed\\n<git stderr>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "git-error",
+    "message": "Git could not validate this worktree.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/file-gitdir",
+    "gitError": "Git health check failed\\n<git stderr>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees classifies .git files by their gitdir pointer: missing-gitdir 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "missing-gitdir",
+    "createdAt": "<time>",
+    "id": "missing-gitdir",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "missing-gitdir",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "missing-gitdir"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "invalid-git-worktree",
+      "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/missing-gitdir",
+      "gitError": "Missing gitdir target: <root>/admin/missing",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "invalid-git-worktree",
+    "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/missing-gitdir",
+    "gitError": "Missing gitdir target: <root>/admin/missing",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees classifies .git files by their gitdir pointer: no-gitdir-line 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "no-gitdir-line",
+    "createdAt": "<time>",
+    "id": "no-gitdir-line",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "no-gitdir-line",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "no-gitdir-line"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "invalid-git-worktree",
+      "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/no-gitdir-line",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "invalid-git-worktree",
+    "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/no-gitdir-line",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees classifies .git files by their gitdir pointer: relative-gitdir 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "relative-gitdir",
+    "createdAt": "<time>",
+    "id": "relative-gitdir",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "relative-gitdir",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "relative-gitdir"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "invalid-git-worktree",
+      "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/relative-gitdir",
+      "gitError": "Missing gitdir target: <root>/data/workspaces/single-ws/admin/relative",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "invalid-git-worktree",
+    "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/relative-gitdir",
+    "gitError": "Missing gitdir target: <root>/data/workspaces/single-ws/admin/relative",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees clears a stored issue and the split recovery flag on a healthy checkout 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "branchName": "healthy",
+    "createdAt": "<time>",
+    "id": "healthy",
+    "replica": {
+      "state": "never-recorded"
+    }
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": null,
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees confirms a .git directory with Git: bare 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "bare",
+    "createdAt": "<time>",
+    "id": "bare",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "bare",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "bare"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "invalid-git-worktree",
+      "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/bare",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "invalid-git-worktree",
+    "message": "Git metadata for this worktree is incomplete or points to a missing location.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/bare",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees confirms a .git directory with Git: work tree 1`] = `
+{
+  "changedLists": [],
+  "outcome": {
+    "response": "{
+  "healthy": true,
+  "worktree": {
+    "branchName": "git-dir",
+    "createdAt": "<time>",
+    "id": "git-dir",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "git-dir",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "git-dir"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    }
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": null,
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees records a directory without Git metadata 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "no-git",
+    "createdAt": "<time>",
+    "id": "no-git",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "no-git",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "no-git"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-git-metadata",
+      "message": "Git metadata is missing for this worktree.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/no-git",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-git-metadata",
+    "message": "Git metadata is missing for this worktree.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/no-git",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;
+
+exports[`worktree:health-check single-repo worktrees records a missing worktree directory 1`] = `
+{
+  "changedLists": [
+    "single-ws",
+  ],
+  "outcome": {
+    "response": "{
+  "healthy": false,
+  "worktree": {
+    "branchName": "missing",
+    "createdAt": "<time>",
+    "id": "missing",
+    "replica": {
+      "state": "recorded",
+      "repositories": [
+        {
+          "authorityId": "local-desktop",
+          "workspaceId": "single-ws",
+          "worktreeId": "missing",
+          "repoId": "__workspace_root__",
+          "targetId": {
+            "primaryAuthorityId": "local-desktop",
+            "targetId": "in_process_worker"
+          },
+          "replicaId": "<uuid>",
+          "remoteIdentity": {
+            "state": "unknown"
+          },
+          "branchName": {
+            "state": "known",
+            "value": "missing"
+          },
+          "baseOid": {
+            "state": "unknown"
+          },
+          "localHeadOid": {
+            "state": "unknown"
+          },
+          "observedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "expectedRemoteHeadOid": {
+            "state": "unknown"
+          },
+          "syncMode": {
+            "state": "unconfigured"
+          },
+          "syncState": "not-yet-observed"
+        }
+      ],
+      "primarySnapshotRevision": {
+        "state": "unknown"
+      }
+    },
+    "healthIssue": {
+      "status": "broken",
+      "code": "missing-worktree-path",
+      "message": "Worktree directory does not exist.",
+      "checkedAt": "<time>",
+      "worktreePath": "<root>/data/workspaces/single-ws/worktrees/missing",
+      "gitError": "<undefined>",
+      "repoIssues": "<undefined>"
+    }
+  },
+  "issue": {
+    "status": "broken",
+    "code": "missing-worktree-path",
+    "message": "Worktree directory does not exist.",
+    "checkedAt": "<time>",
+    "worktreePath": "<root>/data/workspaces/single-ws/worktrees/missing",
+    "gitError": "<undefined>",
+    "repoIssues": "<undefined>"
+  }
+}",
+  },
+  "recordedRow": {
+    "healthIssue": "<the response issue>",
+    "splitRecoveryRequired": null,
+  },
+}
+`;

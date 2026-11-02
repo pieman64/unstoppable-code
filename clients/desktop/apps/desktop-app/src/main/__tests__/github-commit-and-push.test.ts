@@ -1,6 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+jest.mock('../lib/desktop-telemetry', () => ({
+  recordGitCommitTelemetry: jest.fn(),
+  recordPullRequestOpenedTelemetry: jest.fn(),
+  recordPullRequestMergedTelemetry: jest.fn(),
+}));
+import { recordGitCommitTelemetry } from '../lib/desktop-telemetry';
 jest.mock('node:fs/promises', () => ({
   readdir: jest.fn(),
 }));
@@ -172,6 +178,8 @@ const mockedTriggerWorktreePrecommitFailureHook = jest.mocked(
 );
 const mockedReadPreferencesFile = jest.mocked(readPreferencesFile);
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+// The user flows pass fetchOrigin a signal so failures are not swallowed.
+const ANY_SIGNAL: unknown = expect.any(AbortSignal);
 
 type HandlerFn = (
   event: any,
@@ -236,7 +244,13 @@ describe('githubCommitAndPush handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    registerGitHubHandlers(() => mockWindow as any, {
+      // These tests reach no projected pull request read.
+      dispatcher: {} as never,
+      resolveCaller: () => {
+        throw new Error('No projected pull request read in this test.');
+      },
+    });
     handler = getCommitAndPushHandler();
     generateMessagesHandler = getGenerateMessagesHandler();
   });
@@ -253,14 +267,14 @@ describe('githubCommitAndPush handler', () => {
     mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
     mockedGetRemoteUrl.mockResolvedValue('git@github.com:org/single-repo.git');
     mockedHasRemoteTrackingBranch.mockResolvedValue(true);
-    mockedHasUncommittedChanges.mockResolvedValue(true);
+    mockedHasUncommittedChanges.mockReset().mockResolvedValue(true);
     mockedHasUnpulledCommits.mockResolvedValue(false);
     mockedHasUnpushedCommits.mockResolvedValue(false);
     mockedGetCurrentBranch.mockResolvedValue('feature-branch');
     mockedGetUncommittedDiff.mockResolvedValue('working tree diff');
     mockedIsRebaseInProgress.mockResolvedValue(false);
     mockedStageAllChanges.mockResolvedValue();
-    mockedCommitWithMessage.mockResolvedValue('abc123');
+    mockedCommitWithMessage.mockReset().mockResolvedValue('abc123');
     mockedPushBranch.mockResolvedValue();
     mockedGenerateCommitMessage.mockResolvedValue('feat: generated');
     mockedResolveCommitGenerationModelCandidates.mockResolvedValue(
@@ -274,6 +288,139 @@ describe('githubCommitAndPush handler', () => {
       commitInstructionMode: 'append',
     } as any);
     mockedLaunchRebaseResolutionChat.mockResolvedValue({ chatId: 'chat-1' });
+  });
+
+  it('uses pull_request flow and the original target count for a reviewed continuation', async () => {
+    await handler(
+      {},
+      {
+        projectId: 'project-a',
+        worktreeId: 'wt-1',
+        source: 'chat',
+        telemetryFlow: 'pull_request',
+        telemetryRepoCount: 3,
+      },
+    );
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith({
+      projectId: 'project-a',
+      source: 'chat',
+      flow: 'pull_request',
+      repoCount: 3,
+    });
+  });
+
+  it.each([0, -1, 1.5, Infinity, 'private-count'])(
+    'ignores invalid original target counts: %s',
+    async (telemetryRepoCount) => {
+      // Exercise malformed IPC input outside the typed request contract.
+      await Reflect.apply(handler, undefined, [
+        {},
+        {
+          projectId: 'project-a',
+          worktreeId: 'wt-1',
+          commitOnly: true,
+          telemetryRepoCount,
+          telemetryFlow: 'private-flow',
+        },
+      ]);
+      expect(recordGitCommitTelemetry).toHaveBeenCalledWith({
+        projectId: 'project-a',
+        source: 'manual',
+        flow: 'commit',
+        repoCount: 1,
+      });
+    },
+  );
+
+  it('counts a completed commit even when cancellation wins at the next checkpoint', async () => {
+    const request = {
+      projectId: 'project-a',
+      worktreeId: 'wt-1',
+      operationId: 'cancel-after-commit',
+      commitOnly: true,
+    };
+    mockedCommitWithMessage.mockImplementationOnce(() => {
+      requestGitActionCancellation(request);
+      return Promise.resolve('completed-commit');
+    });
+    const result = await handler({}, request);
+    expect(result.cancelled).toBe(true);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the target count across successful, skipped and failed repositories', async () => {
+    mockedIsMultiRepoWorkspace.mockReturnValue(true);
+    mockedResolveWorktreeCwd.mockReturnValue('/workspace/wt');
+    mockedReaddir.mockResolvedValue(
+      ['repo-a', 'repo-b', 'repo-c'].map((name) => ({
+        name,
+        isDirectory: (): boolean => true,
+      })) as any,
+    );
+    mockedHasUncommittedChanges.mockImplementation((path) =>
+      Promise.resolve(!path.endsWith('repo-b')),
+    );
+    mockedCommitWithMessage.mockImplementation((path) => {
+      if (path.endsWith('repo-c'))
+        return Promise.reject(new Error('commit failed'));
+      return Promise.resolve('sha');
+    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+        commitOnly: true,
+        source: 'invalid' as never,
+      },
+    );
+    expect(result.repos).toHaveLength(1);
+    expect(result.skippedRepos).toHaveLength(1);
+    expect(result.failedRepos).toHaveLength(1);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(1);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith({
+      projectId: 'workspace-a',
+      source: 'manual',
+      flow: 'commit',
+      repoCount: 3,
+    });
+  });
+
+  it('counts a chat commit before a later push failure', async () => {
+    mockedPushBranch.mockRejectedValueOnce(new Error('push failed'));
+    const result = await handler(
+      {},
+      { projectId: 'project-a', worktreeId: 'wt-1', source: 'chat' },
+    );
+    expect(result.failedRepos).toHaveLength(1);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(1);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith({
+      projectId: 'project-a',
+      source: 'chat',
+      flow: 'commit_and_push',
+      repoCount: 1,
+    });
+  });
+
+  it('ignores telemetry exceptions and records no event for failed commits', async () => {
+    jest.mocked(recordGitCommitTelemetry).mockImplementationOnce(() => {
+      throw new Error('telemetry');
+    });
+    expect(
+      (
+        await handler(
+          {},
+          { projectId: 'project-a', worktreeId: 'wt-1', commitOnly: true },
+        )
+      ).repos,
+    ).toHaveLength(1);
+    jest.clearAllMocks();
+    mockedCommitWithMessage.mockRejectedValueOnce(new Error('commit failed'));
+    await handler(
+      {},
+      { projectId: 'project-a', worktreeId: 'wt-1', commitOnly: true },
+    );
+    expect(recordGitCommitTelemetry).not.toHaveBeenCalled();
   });
 
   it('generates commit-only messages without requiring remote tracking', async () => {
@@ -331,7 +478,9 @@ describe('githubCommitAndPush handler', () => {
     expect(mockedStageAllChanges).not.toHaveBeenCalled();
     expect(mockedCommitWithMessage).not.toHaveBeenCalled();
     expect(mockedPushBranch).not.toHaveBeenCalled();
-    expect(mockedFetchOrigin).toHaveBeenCalledWith('/workspace/single-repo');
+    expect(mockedFetchOrigin).toHaveBeenCalledWith('/workspace/single-repo', {
+      signal: ANY_SIGNAL,
+    });
   });
 
   it('commits successfully when a reviewed message is provided', async () => {
@@ -386,7 +535,9 @@ describe('githubCommitAndPush handler', () => {
     ]);
     expect(result.failedRepos).toEqual([]);
     expect(result.skippedRepos).toEqual([]);
-    expect(mockedFetchOrigin).toHaveBeenCalledWith('/workspace/single-repo');
+    expect(mockedFetchOrigin).toHaveBeenCalledWith('/workspace/single-repo', {
+      signal: ANY_SIGNAL,
+    });
     expect(mockedPushBranch).toHaveBeenCalledWith('/workspace/single-repo');
     expect(mockedGenerateCommitMessage).not.toHaveBeenCalled();
     expect(mockedStageAllChanges).not.toHaveBeenCalled();
@@ -455,6 +606,115 @@ describe('githubCommitAndPush handler', () => {
     expect(mockedPushBranch).not.toHaveBeenCalled();
   });
 
+  // fetchOrigin swallows every error unless the caller passes a signal.
+  it('fails the repo when the prerequisite fetch fails instead of pushing over stale refs', async () => {
+    mockedFetchOrigin.mockImplementationOnce((_repoPath, options) =>
+      options?.signal === undefined
+        ? Promise.resolve()
+        : Promise.reject(new Error('fatal: unable to access origin')),
+    );
+
+    const result = await handler({} as any, {
+      projectId: 'project-a',
+      worktreeId: 'wt-1',
+    });
+
+    expect(result.repos).toEqual([]);
+    expect(result.failedRepos).toEqual([
+      {
+        repoId: SINGLE_REPO_USAGE_REPO_ID,
+        repoName: 'single-repo',
+        error: 'fatal: unable to access origin',
+        status: 'failed',
+      },
+    ]);
+    const options = mockedFetchOrigin.mock.calls[0]?.[1];
+    expect(options?.signal?.aborted).toBe(false);
+    expect(mockedStageAllChanges).not.toHaveBeenCalled();
+    expect(mockedCommitWithMessage).not.toHaveBeenCalled();
+    expect(mockedPushBranch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'stops before committing or pushing when the branch changes during the fetch (has changes: %s)',
+    async (hasChanges) => {
+      mockedHasUncommittedChanges.mockResolvedValue(hasChanges);
+      mockedHasUnpushedCommits.mockResolvedValue(true);
+      mockedFetchOrigin.mockImplementationOnce(() => {
+        mockedGetCurrentBranch.mockResolvedValue('other-branch');
+        return Promise.resolve();
+      });
+
+      const result = await handler({} as any, {
+        projectId: 'project-a',
+        worktreeId: 'wt-1',
+        expectedHeadBranch: 'feature-branch',
+      });
+
+      expect(result.failedRepos).toEqual([
+        expect.objectContaining({
+          repoName: 'single-repo',
+          error: 'The branch changed. Start a new push.',
+        }),
+      ]);
+      expect(mockedStageAllChanges).not.toHaveBeenCalled();
+      expect(mockedCommitWithMessage).not.toHaveBeenCalled();
+      expect(mockedPushBranch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'stops before pushing when the branch changes during the pre-push pull (has changes: %s)',
+    async (hasChanges) => {
+      mockedHasUncommittedChanges.mockResolvedValue(hasChanges);
+      mockedHasUnpulledCommits.mockResolvedValue(true);
+      mockedHasUnpushedCommits.mockResolvedValue(true);
+      mockedPullBranchRebase.mockImplementationOnce(() => {
+        mockedGetCurrentBranch.mockResolvedValue('other-branch');
+        return Promise.resolve();
+      });
+
+      const result = await handler({} as any, {
+        projectId: 'project-a',
+        worktreeId: 'wt-1',
+        pullFirst: true,
+        expectedHeadBranch: 'feature-branch',
+      });
+
+      expect(mockedPullBranchRebase).toHaveBeenCalledWith(
+        '/workspace/single-repo',
+        'feature-branch',
+      );
+      expect(result.failedRepos).toEqual([
+        expect.objectContaining({
+          error: 'The branch changed. Start a new push.',
+        }),
+      ]);
+      expect(mockedCommitWithMessage).not.toHaveBeenCalled();
+      expect(mockedPushBranch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stops before pushing when the branch changes while committing', async () => {
+    mockedCommitWithMessage.mockImplementationOnce(() => {
+      mockedGetCurrentBranch.mockResolvedValue('other-branch');
+      return Promise.resolve('abc123');
+    });
+
+    const result = await handler({} as any, {
+      projectId: 'project-a',
+      worktreeId: 'wt-1',
+      expectedHeadBranch: 'feature-branch',
+    });
+
+    expect(result.failedRepos).toEqual([
+      expect.objectContaining({
+        error: 'The branch changed. Start a new push.',
+      }),
+    ]);
+    expect(mockedPushBranch).not.toHaveBeenCalled();
+  });
+
   it('pulls with rebase before pushing existing commits when pullFirst is requested', async () => {
     mockedHasUncommittedChanges.mockResolvedValue(false);
     mockedHasUnpulledCommits.mockResolvedValue(true);
@@ -516,6 +776,7 @@ describe('githubCommitAndPush handler', () => {
       const result = await handler({} as any, request);
 
       expect(result.cancelled).toBe(true);
+      expect(recordGitCommitTelemetry).not.toHaveBeenCalled();
       expect(mockedLaunchRebaseResolutionChat).not.toHaveBeenCalled();
       expect(mockedPushBranch).not.toHaveBeenCalled();
       expect(mockedStageAllChanges).not.toHaveBeenCalled();
@@ -605,6 +866,10 @@ describe('githubCommitAndPush handler', () => {
     expect(mockedStageAllChanges).toHaveBeenCalledTimes(2);
     expect(mockedCommitWithMessage).toHaveBeenCalledTimes(2);
     expect(mockedPushBranch).toHaveBeenCalledTimes(2);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(2);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith(
+      expect.objectContaining({ repoCount: 2 }),
+    );
   });
 
   it('passes the fallback chain to the commit message preview', async () => {
@@ -724,13 +989,17 @@ describe('githubCommitAndPush handler', () => {
       sourceRepoPath: '/workspace/source',
       repos: [],
     } as any);
-    mockedReaddir.mockResolvedValue([] as any);
+    mockedReaddir.mockResolvedValue([]);
     mockedGetRemoteUrl.mockResolvedValue(null);
-    mockedValidateId.mockImplementation((value: string): void => {
-      if (value === WORKSPACE_ROOT_REPO_ID) {
-        throw new Error('project root repo id should bypass validateId');
-      }
-    });
+    mockedValidateId.mockImplementation(
+      (value: unknown, label: string): void => {
+        if (value === WORKSPACE_ROOT_REPO_ID) {
+          throw new Error(
+            `project root repo id should bypass ${label} validation`,
+          );
+        }
+      },
+    );
 
     const result = await handler({} as any, {
       projectId: 'workspace-a',

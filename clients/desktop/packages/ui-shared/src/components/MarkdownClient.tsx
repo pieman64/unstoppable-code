@@ -12,19 +12,52 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import MarkdownToJsx, { compiler } from 'markdown-to-jsx';
+import MarkdownToJsx, { compiler, RuleType } from 'markdown-to-jsx';
 import { prepareMarkdownRender, type MarkdownProps } from './markdown-render';
+import { useSingleDollarMathEnabled } from './use-single-dollar-math';
+import {
+  loadedSmoothMarkdown,
+  useSmoothStreaming,
+  type SmoothMarkdownTools,
+} from './streaming-text';
+
+const SMOOTH_MARKDOWN_TOOLS: SmoothMarkdownTools = {
+  compiler,
+  prepareMarkdownRender,
+  textRule: RuleType.text,
+};
 
 /** Browser-safe markdown renderer shared by desktop, web, and ui-app. */
-export const Markdown = memo(function Markdown({
+export const Markdown = memo(function Markdown(
+  props: MarkdownProps,
+): JSX.Element {
+  // Smooth streaming (Labs): decided once, when the document mounts. One
+  // that mounts streaming with the switch on (and its renderer loaded) keeps
+  // the paced, fading renderer for its lifetime, so the end of the stream
+  // never re-mounts the reply; one already on screen when the switch flips
+  // stays as it is.
+  const smoothStreaming = useSmoothStreaming();
+  const [SmoothRenderer] = useState(() =>
+    props.streaming && smoothStreaming ? loadedSmoothMarkdown() : null,
+  );
+  return SmoothRenderer ? (
+    <SmoothRenderer {...props} tools={SMOOTH_MARKDOWN_TOOLS} />
+  ) : (
+    <StandardMarkdown {...props} />
+  );
+});
+
+function StandardMarkdown({
   children,
   options,
   streaming,
   progressive,
 }: MarkdownProps): JSX.Element {
+  // The setting is read inside prepareMarkdownRender; subscribing re-renders.
+  const singleDollarMath = useSingleDollarMathEnabled();
   const prepared = useMemo(
     () => prepareMarkdownRender(children, options, streaming),
-    [children, options, progressive, streaming],
+    [children, options, progressive, streaming, singleDollarMath],
   );
   const minimumCharacters = progressive?.minimumCharacters ?? 16_000;
   const initialBlocks = Math.max(1, progressive?.initialBlocks ?? 12);
@@ -132,4 +165,4 @@ export const Markdown = memo(function Markdown({
       {prepared.markdown}
     </MarkdownToJsx>
   );
-});
+}

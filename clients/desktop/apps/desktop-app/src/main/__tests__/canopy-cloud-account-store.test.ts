@@ -597,7 +597,7 @@ describe('Canopy Cloud account store', () => {
     'allows a %s credential save after explicit reset of a native decrypt failure',
     async (mode) => {
       const unreadable = Buffer.from('unreadable-ciphertext');
-      let authoritativeBytes: Buffer | null = unreadable;
+      let authoritativeBytes: typeof unreadable | null = unreadable;
       mockedReadFile.mockImplementation((filePath) =>
         filePath === '/mock/userData/canopy-cloud-account.enc' &&
         authoritativeBytes
@@ -797,7 +797,8 @@ describe('Canopy Cloud account store', () => {
   });
 
   it('returns not-needed on a second recovery request', async () => {
-    let authoritativeBytes: Buffer | null = Buffer.from('unreadable');
+    const unreadable = Buffer.from('unreadable');
+    let authoritativeBytes: typeof unreadable | null = unreadable;
     mockedReadFile.mockImplementation(() =>
       authoritativeBytes
         ? Promise.resolve(authoritativeBytes)
@@ -824,7 +825,8 @@ describe('Canopy Cloud account store', () => {
 
   it('does not remove a readable credential saved while recovery waits for the lock', async () => {
     let releaseWrite!: () => void;
-    let authoritativeBytes: Buffer | null = Buffer.from('unreadable');
+    const unreadable = Buffer.from('unreadable');
+    let authoritativeBytes: typeof unreadable | null = unreadable;
     mockedReadFile.mockImplementation(() =>
       authoritativeBytes
         ? Promise.resolve(authoritativeBytes)

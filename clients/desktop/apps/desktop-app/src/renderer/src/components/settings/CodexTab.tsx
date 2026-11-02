@@ -32,8 +32,10 @@ import {
 } from '@canopy/ui-shared';
 import {
   Button,
+  ErrorState,
   Notice,
-  NoticeButton,
+  Radio,
+  TextLinkButton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -42,6 +44,7 @@ import {
   type MultiAgentField,
   saveMultiAgentPreference,
 } from './codexTabHelpers';
+import { IdleTimeoutMinutesRow } from './IdleTimeoutMinutesRow';
 import {
   SettingsGroup,
   SettingsPage,
@@ -77,6 +80,7 @@ function CodexDefaultSpeed({
   onChange,
 }: CodexDefaultSpeedProps): JSX.Element {
   const headingId = useId();
+  const labelId = useId();
 
   const capabilities = useCodexSpeedCapabilities({ enabled: true });
   const candidate =
@@ -112,71 +116,84 @@ function CodexDefaultSpeed({
     </>
   );
   return (
-    <section>
-      <h2 id={headingId} className="text-s font-medium fg-primary">
-        Speed
-      </h2>
-      <p className="text-s fg-secondary mt-0.5">
-        The speed new Codex chats request. Each chat can change it for its next
-        message. {CODEX_SPEED_USAGE_HELP}{' '}
-        <button
-          type="button"
-          data-testid="settings-codex-speed-help"
-          onClick={(): void => {
-            void window.api.browser.openExternal({ url: CODEX_SPEED_HELP_URL });
-          }}
-          className="focus-ring rounded font-medium fg-accent hover:underline"
-        >
-          Learn more
-        </button>
-      </p>
-
-      <div
-        role="radiogroup"
-        aria-labelledby={headingId}
-        data-testid="settings-codex-fast-mode-default"
-        className="mt-4 space-y-2"
-      >
-        {CODEX_SPEED_CHOICES.map((choice) => {
-          const state = states[choice];
-          return (
-            <label
-              key={choice}
-              className="flex items-center gap-2 text-s fg-primary"
-            >
-              <input
-                type="radio"
-                name="settings-codex-default-speed"
-                value={choice}
-                checked={speed === choice}
-                disabled={!state.selectable}
-                onChange={(): void => onChange(choice)}
-                className="h-4 w-4 bg-base"
-                data-testid={`settings-codex-speed-default-${choice}`}
-              />
-              <span>{CODEX_SPEED_LABELS[choice]}</span>
-              {!state.selectable && state.shortReason && (
-                <span className="fg-tertiary">{state.shortReason}</span>
-              )}
-            </label>
-          );
-        })}
-      </div>
-      {
-        // Early access: the action is a Settings capsule like every other.
-        <Button
-          size="compact"
-          data-testid="settings-codex-speed-refresh"
-          disabled={refreshing}
-          onClick={(): void => {
-            void refresh();
-          }}
-          className="mt-2"
-        >
-          {refreshLabel}
-        </Button>
+    <SettingsSection
+      title="Speed"
+      headingId={headingId}
+      description={
+        <>
+          Each chat can change it for its next message. {CODEX_SPEED_USAGE_HELP}{' '}
+          <TextLinkButton
+            data-testid="settings-codex-speed-help"
+            onClick={(): void => {
+              void window.api.browser.openExternal({
+                url: CODEX_SPEED_HELP_URL,
+              });
+            }}
+          >
+            Learn more
+          </TextLinkButton>
+        </>
       }
-    </section>
+    >
+      <SettingsGroup>
+        <SettingsRow
+          label="Default speed"
+          labelId={labelId}
+          description="The speed new Codex chats request."
+        >
+          <div
+            role="radiogroup"
+            aria-labelledby={labelId}
+            data-testid="settings-codex-fast-mode-default"
+            className="flex flex-col gap-3"
+          >
+            {CODEX_SPEED_CHOICES.map((choice) => {
+              const state = states[choice];
+              return (
+                <label
+                  key={choice}
+                  className={`flex items-center gap-2.5 text-s fg-primary ${
+                    state.selectable ? 'cursor-pointer' : 'cursor-not-allowed'
+                  }`}
+                >
+                  <Radio
+                    name="settings-codex-default-speed"
+                    value={choice}
+                    checked={speed === choice}
+                    disabled={!state.selectable}
+                    onChange={(): void => onChange(choice)}
+                    data-testid={`settings-codex-speed-default-${choice}`}
+                  />
+                  <span>{CODEX_SPEED_LABELS[choice]}</span>
+                  {!state.selectable && state.shortReason && (
+                    <span className="text-xs fg-tertiary">
+                      {state.shortReason}
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label="Speed availability"
+          description="Check which speeds your Codex connection offers now."
+          control={
+            <Button
+              size="compact"
+              variant="secondary"
+              data-testid="settings-codex-speed-refresh"
+              disabled={refreshing}
+              onClick={(): void => {
+                void refresh();
+              }}
+            >
+              {refreshLabel}
+            </Button>
+          }
+        />
+      </SettingsGroup>
+    </SettingsSection>
   );
 }
 interface CodexSubagentLimitProps {
@@ -246,16 +263,6 @@ function CodexSubagentLimit({
   );
 }
 
-const MIN_IDLE_TIMEOUT_MINUTES = 1;
-const MAX_IDLE_TIMEOUT_MINUTES = 120;
-
-function clampIdleTimeoutMinutes(value: number): number {
-  return Math.min(
-    MAX_IDLE_TIMEOUT_MINUTES,
-    Math.max(MIN_IDLE_TIMEOUT_MINUTES, Math.trunc(value)),
-  );
-}
-
 interface CodexMultiAgentSettingsProps {
   preferences: PreferencesData;
   onToggle: (field: MultiAgentField, value: boolean) => void;
@@ -305,7 +312,6 @@ export function CodexMultiAgentSettings({
 
 export function CodexTab(): JSX.Element {
   const [prefs, setPrefs] = useState<PreferencesData | null>(null);
-  const [inputValue, setInputValue] = useState<string>('');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -315,19 +321,12 @@ export function CodexTab(): JSX.Element {
     void window.api
       .loadPreferences()
       .then((p: PreferencesData) => {
-        const minutes =
-          typeof p.codexAppServerIdleTimeoutMinutes === 'number' &&
-          Number.isFinite(p.codexAppServerIdleTimeoutMinutes)
-            ? p.codexAppServerIdleTimeoutMinutes
-            : DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES;
         setPrefs(p);
-        setInputValue(String(minutes));
         setLoadError(null);
       })
       .catch(() => {
         setPrefs(null);
-        setInputValue('');
-        setLoadError('Could not load Codex settings.');
+        setLoadError("Couldn't load Codex settings.");
       });
   }, []);
 
@@ -335,14 +334,12 @@ export function CodexTab(): JSX.Element {
     loadPreferences();
   }, [loadPreferences]);
 
-  function commit(nextValue: number): void {
+  function commit(clamped: number): void {
     if (!prefs) return;
-    const clamped = clampIdleTimeoutMinutes(nextValue);
     const previous = prefs;
     // Optimistically reflect the clamped value so the UI does not flicker
     // while the save round-trip is in flight.
     setPrefs({ ...prefs, codexAppServerIdleTimeoutMinutes: clamped });
-    setInputValue(String(clamped));
     setSaveError(null);
     void window.api
       .savePreferences({
@@ -350,11 +347,9 @@ export function CodexTab(): JSX.Element {
       })
       .then((normalized: PreferencesData) => {
         setPrefs(normalized);
-        setInputValue(String(normalized.codexAppServerIdleTimeoutMinutes));
       })
       .catch(() => {
         setPrefs(previous);
-        setInputValue(String(previous.codexAppServerIdleTimeoutMinutes));
         setSaveError('Could not save Codex settings.');
       });
   }
@@ -369,7 +364,6 @@ export function CodexTab(): JSX.Element {
       void saveMultiAgentPreference(field, next)
         .then((normalized: PreferencesData) => {
           setPrefs(normalized);
-          setInputValue(String(normalized.codexAppServerIdleTimeoutMinutes));
         })
         .catch(() => {
           // Roll the optimistic change back on failure.
@@ -440,13 +434,11 @@ export function CodexTab(): JSX.Element {
   if (loadError) {
     return (
       <SettingsPage title="Codex" dataTestId="settings-tab-codex">
-        <Notice
-          intent="destructive"
-          data-testid="settings-codex-load-error"
-          actions={<NoticeButton onClick={loadPreferences}>Retry</NoticeButton>}
-        >
-          {loadError}
-        </Notice>
+        <ErrorState
+          message={loadError}
+          onRetry={loadPreferences}
+          testId="settings-codex-load-error"
+        />
       </SettingsPage>
     );
   }
@@ -474,47 +466,15 @@ export function CodexTab(): JSX.Element {
 
       <SettingsSection title="App server">
         <SettingsGroup>
-          <SettingsRow
-            label="Idle timeout"
-            htmlFor="settings-codex-idle-timeout-minutes"
+          <IdleTimeoutMinutesRow
+            id="settings-codex-idle-timeout-minutes"
             description="Suspend idle Codex app-server processes after this long. Chat sessions are kept."
-            control={
-              <>
-                <SettingsTextField
-                  id="settings-codex-idle-timeout-minutes"
-                  type="number"
-                  width="xs"
-                  min={MIN_IDLE_TIMEOUT_MINUTES}
-                  max={MAX_IDLE_TIMEOUT_MINUTES}
-                  step={1}
-                  value={inputValue}
-                  data-testid="settings-codex-idle-timeout-minutes"
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>): void => {
-                    setInputValue(e.target.value);
-                  }}
-                  onBlur={(e: React.FocusEvent<HTMLInputElement>): void => {
-                    const raw = parseInt(e.target.value, 10);
-                    if (!Number.isFinite(raw)) {
-                      // Restore the last persisted value if the user left
-                      // garbage in the field.
-                      setInputValue(
-                        String(prefs.codexAppServerIdleTimeoutMinutes),
-                      );
-                      return;
-                    }
-                    commit(raw);
-                  }}
-                  onKeyDown={(
-                    e: React.KeyboardEvent<HTMLInputElement>,
-                  ): void => {
-                    if (e.key === 'Enter') {
-                      e.currentTarget.blur();
-                    }
-                  }}
-                />
-                <span className="text-xs fg-secondary">minutes</span>
-              </>
+            minutes={
+              Number.isFinite(prefs.codexAppServerIdleTimeoutMinutes)
+                ? prefs.codexAppServerIdleTimeoutMinutes
+                : DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES
             }
+            onCommit={commit}
           />
         </SettingsGroup>
       </SettingsSection>

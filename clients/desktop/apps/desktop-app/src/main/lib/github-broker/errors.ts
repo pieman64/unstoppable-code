@@ -17,7 +17,8 @@ export class GitHubBrokerError extends Error {
   readonly code: GitHubBrokerErrorCode;
   readonly retriable: boolean;
   readonly status?: number;
-  readonly cause?: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
   /** For `rate_limited`: when the broker will send this request again (epoch ms). */
   readonly retryAt?: number;
   /** For `rate_limited`: the quota bucket that is paused or reserved. */

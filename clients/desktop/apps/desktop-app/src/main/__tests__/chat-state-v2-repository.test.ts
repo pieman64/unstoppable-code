@@ -1,3 +1,9 @@
+import { createRepositoryTranscriptPortFixture } from './helpers/repository-transcript-port-fixture';
+import { delegationTranscriptMessages } from '@canopy/agent-transcript';
+import type { CardStateV1 } from '@canopy/protocol/canopy-core';
+import { format4Scope } from './helpers/chat-format4-scope';
+import { scopeSource } from './helpers/chat-delta-journal-harness';
+import { ChatDeltaJournalWriter } from '../lib/chat-delta-journal/writer';
 import type { McpActivationRecord } from '@canopy/protocol/mcp-servers';
 import type { ChatStateV2RepositoryOptions } from '../services/chat-state-v2-repository';
 import type { TranscriptDescriptor } from '@canopy/agent-transcript/transcript-storage';
@@ -21,6 +27,15 @@ import { ChatStateRevisionConflictError } from '../services/chat-state-repositor
 import { ChatStateRepositoryLoadError } from '../services/chat-state-contracts';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
 import * as legacyChatMigration from '../lib/legacy-chat-migration';
+import * as delegationRecovery from '../agents/delegation/recovery';
+import * as recordV3 from '@canopy/desktop-shared/node/delegation/record-v3';
+import { routeFixture } from '../../../../../packages/desktop-shared/src/node/delegation/__tests__/fixtures';
+import type { StoredDelegationLegacy } from '@canopy/desktop-shared/node/delegation/broker';
+import { FileDelegationStorage } from '@canopy/desktop-shared/node/delegation/storage';
+import { ChatStateService } from '../services/chat-state-service';
+import * as resolveWorktree from '../lib/resolve-worktree';
+import * as dataPaths from '../lib/paths';
+import { managedDelegationRecordReader } from '../agents/delegation/host-read-composition';
 import {
   CapturedTranscriptPreview,
   ChatTranscriptLog,
@@ -31,6 +46,7 @@ import {
   ChatArtifactMaintenance,
 } from '../lib/chat-artifact-maintenance';
 import { ChatStorageTransactions } from '../lib/chat-storage-transactions';
+import { DELTA_JOURNAL_FILE_NAME } from '../lib/chat-delta-journal/format';
 import { VisualStagingStoreImpl } from '../lib/visual-staging';
 import { ChatVisualStagingSweep } from '../lib/chat-visual-staging-sweep';
 import {
@@ -73,6 +89,104 @@ const row: PersistedChatMessage = {
   blocks: [{ type: 'text', text: 'preserved' }],
 };
 
+function recoveryRecord(version: 1 | 2): StoredDelegationLegacy {
+  const id = `00000000-0000-4000-8000-00000000000${version}`;
+  return {
+    version,
+    ...(version === 2 ? { transcriptRevision: 1 } : {}),
+    parent: {
+      ...scope,
+      harnessId: 'codex',
+      chatId: 'chat',
+      sessionKey: 's2/recovery/chat',
+      turnId: row.id,
+      toolCallId: `spawn-${version}`,
+      runtimeGeneration: 1,
+      depth: 0,
+    },
+    task: {
+      modelId: 'model',
+      description: 'Recover legacy sibling',
+      prompt: 'Retained task',
+      contextPolicy: 'task_only',
+      isolation: 'shared_worktree',
+      executionMode: 'background',
+    },
+    callKey: 'a'.repeat(64),
+    route: routeFixture({
+      selectedModelId: 'model',
+      runtimeModelId: 'model',
+      harnessId: 'codex',
+    }),
+    requestHash: 'b'.repeat(64),
+    createdAt: 100,
+    state: {
+      delegationId: id,
+      runGeneration: 1,
+      sequence: 1,
+      status: 'running',
+      outputTruncated: false,
+      transcript: [
+        {
+          id: 'retained',
+          type: 'text',
+          text: 'Retained answer',
+          sequence: 1,
+          occurredAt: 110,
+        },
+      ],
+    },
+    launch: {
+      version: 1,
+      delegationId: id,
+      runGeneration: 1,
+      launchKey: 'a'.repeat(64),
+      phase: 'starting',
+    },
+    delivery: { status: 'unclaimed' },
+  };
+}
+
+function streamRecoveryRecord(): ReturnType<
+  typeof recordV3.decodeStoredDelegationV3
+> {
+  const legacy = recoveryRecord(2);
+  const id = '00000000-0000-4000-8000-000000000003';
+  return recordV3.decodeStoredDelegationV3({
+    ...legacy,
+    version: 3,
+    state: {
+      delegationId: id,
+      runGeneration: 1,
+      sequence: 1,
+      status: 'running',
+      outputTruncated: false,
+    },
+    launch: { ...legacy.launch, delegationId: id },
+    readMetadata: {
+      originAt: 100,
+      lastActivityAt: 120,
+      current: {
+        store: 'stream',
+        target: {
+          kind: 'delegation',
+          chatId: 'chat',
+          delegationId: id,
+          runGeneration: 1,
+        },
+      },
+    },
+    registration: {
+      runGeneration: 1,
+      createdAt: 100,
+      store: 'stream',
+      origin: { kind: 'launch' },
+      executionMode: 'background',
+    },
+    receipts: { commandReceipts: [], stopReceipts: [] },
+  });
+}
+
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
 }
@@ -89,6 +203,15 @@ function asAsync<T>(source: Iterable<T>): AsyncIterable<T> {
     },
   };
 }
+
+async function locateMessage(
+  repository: ChatStateV2Repository,
+  chatId: string,
+  messageId: string,
+): Promise<'missing' | 'active' | { committed: true; last: boolean }> {
+  return repository.locateMessage(scope, chatId, messageId);
+}
+
 // These tests do real filesystem and git work. Under a loaded multi-worker
 // Jest run they have exceeded Jest's default 5 s, so leave headroom here.
 jest.setTimeout(30_000);
@@ -127,6 +250,675 @@ describe('v2 scope repository admission', () => {
   });
   const options = (): ChatStateV2RepositoryOptions => ({
     resolvePaths: (): typeof paths => paths,
+  });
+
+  it('preserves per-execution outcomes through V2 restart after an unrelated next prompt', async () => {
+    const repository = repositoryForTest(options());
+    const timers: PersistedChatMessage[] = [
+      'completed',
+      'cancelled',
+      'failed',
+      undefined,
+    ].map((outcome, index) => ({
+      id: `T${index}:timer`,
+      role: 'system',
+      timestamp: 100 + index,
+      blocks: [
+        {
+          type: 'turn_timer',
+          turnId: `T${index}`,
+          userMessageId: row.id,
+          startedAt: 100 + index,
+          completedAt: 200 + index,
+          ...(outcome === 'completed' ||
+          outcome === 'cancelled' ||
+          outcome === 'failed'
+            ? { outcome }
+            : {}),
+        },
+      ],
+    }));
+    const nextPrompt: PersistedChatMessage = {
+      ...row,
+      id: 'next-prompt',
+      timestamp: 300,
+    };
+    await repository.transact(
+      scope,
+      [...timers, nextPrompt].map((message) => ({
+        type: 'message.upserted',
+        chatId: 'chat',
+        message,
+      })),
+      { source: 'migration' },
+    );
+    await repository.drainAll();
+    const reopened = repositoryForTest(options());
+    const saved = await reopened.getState(scope, {
+      chatIds: ['chat'],
+      fullTranscript: true,
+    });
+    expect(saved.tabsFile.tabs[0].messages).toEqual([
+      row,
+      ...timers,
+      nextPrompt,
+    ]);
+  });
+
+  it('installs the pure source in the default service repository before its first format-3 load', async () => {
+    jest
+      .spyOn(resolveWorktree, 'resolveChatTabsFilePath')
+      .mockReturnValue(paths.tabs);
+    jest
+      .spyOn(resolveWorktree, 'resolveChatArchivesFilePath')
+      .mockReturnValue(paths.archives);
+    jest
+      .spyOn(resolveWorktree, 'resolveChatJournalFilePath')
+      .mockReturnValue(paths.journal);
+    jest.spyOn(dataPaths, 'getWorktreeDataDir').mockReturnValue(root);
+    const storage = new FileDelegationStorage(join(root, 'delegation', 'runs'));
+    const stream = streamRecoveryRecord();
+    // Materialize a format-3 backing before constructing the production default.
+    const seed = repositoryForTest(options());
+    await seed.getState(scope);
+    await seed.drainAll();
+    expect(await ChatStorageV2.fromLegacyPaths(paths).format()).toBe('v3');
+    for (const record of [recoveryRecord(1), recoveryRecord(2), stream])
+      await storage.commit(record);
+    const metadata = jest.spyOn(recordV3, 'readMetadataOfRecord');
+    const recovery = jest.spyOn(
+      delegationRecovery,
+      'loadDelegationRecoveryMutations',
+    );
+    const load = jest.spyOn(ChatStateV2Repository.prototype, 'getState');
+    const service = new ChatStateService();
+    expect(load).not.toHaveBeenCalled();
+    expect(metadata).not.toHaveBeenCalled();
+    expect(recovery).not.toHaveBeenCalled();
+    try {
+      await service.getCompatibilityTabs(scope, {
+        chatIds: ['chat'],
+        fullTranscript: true,
+        rawStreamCards: true,
+      });
+      expect(recovery).toHaveBeenCalledTimes(1);
+      expect(recovery.mock.calls[0]?.[3]?.readMetadata).toBe(metadata);
+      expect(metadata).toHaveBeenCalledTimes(3);
+      expect(
+        metadata.mock.calls.map(([record], index) => ({
+          record,
+          result: metadata.mock.results[index],
+        })),
+      ).toEqual(
+        expect.arrayContaining([
+          {
+            record: recoveryRecord(1),
+            result: { type: 'return', value: undefined },
+          },
+          {
+            record: recoveryRecord(2),
+            result: { type: 'return', value: undefined },
+          },
+          {
+            record: stream,
+            result: { type: 'return', value: stream.readMetadata },
+          },
+        ]),
+      );
+    } finally {
+      await service.drain();
+    }
+  });
+
+  it('finishes real serialized mixed recovery without registry, descriptor, stored-row or reader re-entry', async () => {
+    jest.spyOn(dataPaths, 'getWorktreeDataDir').mockReturnValue(root);
+    const stream = streamRecoveryRecord();
+    const seeded = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [row] }]),
+    );
+    const reference = await seeded.backend.storage.transcripts.artifacts.put(
+      'chat',
+      'a'.repeat(80_000),
+    );
+    const parent = delegationTranscriptMessages({
+      delegationId: stream.state.delegationId,
+      runGeneration: 1,
+      sequence: 1,
+      parentHarnessId: 'codex',
+      parentTurnId: row.id,
+      parentToolCallId: stream.parent.toolCallId,
+      createdAt: 100,
+      task: stream.task,
+      snapshot: {
+        ...stream.state,
+        routeSnapshot: {
+          selectedModelId: 'model',
+          runtimeModelId: 'model',
+          harnessId: 'codex',
+          runtimeKind: 'sdk',
+          runnerRegistrationId: 'runner',
+          runtimeVersion: '1',
+          adapterVersion: '1',
+          modelSource: 'agent',
+          providerType: 'openai',
+          assignmentRevision: '1',
+          billingAuthority: 'local',
+          aiCreditsRouted: false,
+          capabilities: [],
+          supportedThinkingLevels: [],
+          capabilitySnapshotHash: 'hash',
+          capabilityGeneration: 1,
+          policyRevision: '1',
+        },
+      },
+      transcript: [],
+    })[0];
+    const block = parent?.blocks[0];
+    if (!parent || block?.type !== 'delegated_agent_call')
+      throw new Error('Missing stream card');
+    const stored: PersistedChatMessage = {
+      ...parent,
+      blocks: [
+        {
+          ...block,
+          transcriptStore: 'chat-stream-v2',
+          partialTextRef: reference,
+          finalTextRef: reference,
+        },
+      ],
+    };
+    try {
+      await seeded.backend.transact(
+        () => [{ type: 'message.upserted', chatId: 'chat', message: stored }],
+        { source: 'provider' },
+      );
+      await seeded.backend.flush();
+    } finally {
+      seeded.backend.releaseJournal();
+      await seeded.backend.disposeArtifactMaintenance();
+    }
+    const records = [recoveryRecord(1), recoveryRecord(2), stream];
+    const storage = new FileDelegationStorage(join(root, 'delegation', 'runs'));
+    for (const record of records) await storage.commit(record);
+    const fail = (): never => {
+      throw new Error('Recovery must not re-enter a serialized read port');
+    };
+    const forbidden = [
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'result')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'receipt')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'resultBySettlementKey')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'resultByGeneration')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'generation')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'resultsPage')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'generationsPage')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'resultAnswerRange')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'itemAdmission')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'appendDelegationReceipt')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'registerGeneration')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'settleDelegationResult')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'readStoredParentMessage')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Repository.prototype, 'getChildStreamState')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'childStreamDescriptor')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'result')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'receipt')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'resultBySettlementKey')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'resultByGeneration')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'generation')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'resultsPage')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'generationsPage')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'resultAnswerRange')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'itemAdmission')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'registerGeneration')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'settleDelegationResult')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'appendDelegationReceipt')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatStateV2Backend.prototype, 'readStoredParentMessage')
+        .mockImplementation(fail),
+      jest
+        .spyOn(ChatDeltaJournalWriter.prototype, 'childDescriptor')
+        .mockImplementation(fail),
+      jest
+        .spyOn(managedDelegationRecordReader, 'resolveActivity')
+        .mockImplementation(fail),
+      jest
+        .spyOn(managedDelegationRecordReader, 'resolveGenerationHeader')
+        .mockImplementation(fail),
+      jest
+        .spyOn(managedDelegationRecordReader, 'resolveGenerationList')
+        .mockImplementation(fail),
+      jest
+        .spyOn(managedDelegationRecordReader, 'resolveGenerationOutcome')
+        .mockImplementation(fail),
+    ];
+    const recovery = jest.spyOn(
+      delegationRecovery,
+      'loadDelegationRecoveryMutations',
+    );
+    // Recovery orders mutations by directory listing order, which differs by platform.
+    const load = jest.spyOn(FileDelegationStorage.prototype, 'load');
+    const repository = repositoryForTest({
+      ...options(),
+      enableFormat4: true,
+      delegationReadMetadata: recordV3.readMetadataOfRecord,
+    });
+    const state = await repository.getState(scope, {
+      chatIds: ['chat'],
+      fullTranscript: true,
+      rawStreamCards: true,
+    });
+    expect(repository.getLifecycle(scope)).toBe('ready');
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(1);
+    const loaded = load.mock.results[0];
+    if (loaded?.type !== 'return') throw new Error('Expected loaded records');
+    const expected = delegationRecovery.delegationRecoveryMutations(
+      scope,
+      {
+        version: 1,
+        activeTabId: 'chat',
+        tabs: [
+          {
+            id: 'chat',
+            title: 'Chat',
+            createdAt: '2026-09-05',
+            messages: [row, stored],
+          },
+        ],
+      },
+      { version: 1, archived: [] },
+      await loaded.value,
+      recordV3.readMetadataOfRecord,
+    );
+    expect(await recovery.mock.results[0]?.value).toEqual(expected);
+    expect(expected.length).toBeGreaterThan(0);
+    const messages = state.tabsFile.tabs[0]?.messages ?? [];
+    expect(messages.find((message) => message.id === stored.id)).toEqual(
+      stored,
+    );
+    const cards = messages
+      .flatMap((message) => message.blocks)
+      .filter((candidate) => candidate.type === 'delegated_agent_call');
+    for (const legacy of records.slice(0, 2)) {
+      expect(cards).toContainEqual(
+        expect.objectContaining({
+          delegationId: legacy.state.delegationId,
+          status: 'interrupted',
+        }),
+      );
+    }
+    expect(
+      cards.filter(
+        (candidate) => candidate.delegationId === stream.state.delegationId,
+      ),
+    ).toEqual(stored.blocks);
+    for (const method of forbidden) expect(method).not.toHaveBeenCalled();
+  });
+  it('loads startup recovery from raw cards with injected metadata and no registry re-entry', async () => {
+    const readMetadata = jest.fn(() => undefined);
+    // Assign structurally so the red still compiles before the option is added.
+    const recoveryOptions = {
+      ...options(),
+      delegationReadMetadata: readMetadata,
+    };
+    const repository = repositoryForTest(recoveryOptions);
+    jest
+      .spyOn(delegationRecovery, 'hasDelegationRecoveryRecords')
+      .mockResolvedValue(true);
+    const recovery = jest
+      .spyOn(delegationRecovery, 'loadDelegationRecoveryMutations')
+      .mockResolvedValue([]);
+    const state = jest.spyOn(ChatStateV2Backend.prototype, 'state');
+    const generation = jest.spyOn(ChatStateV2Backend.prototype, 'generation');
+    const descriptor = jest.spyOn(
+      ChatStateV2Backend.prototype,
+      'childStreamDescriptor',
+    );
+    await repository.getState(scope);
+    expect(state).toHaveBeenNthCalledWith(1, {
+      chatIds: ['chat'],
+      fullTranscript: true,
+      rawStreamCards: true,
+    });
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(recovery.mock.calls[0]?.[0]).toEqual(scope);
+    expect(recovery.mock.calls[0]?.[1].tabs.map((tab) => tab.id)).toEqual([
+      'chat',
+    ]);
+    expect(recovery.mock.calls[0]?.[2].archived).toEqual([]);
+    expect(recovery.mock.calls[0]?.slice(3)).toEqual([{ readMetadata }]);
+    expect(generation).not.toHaveBeenCalled();
+    expect(descriptor).not.toHaveBeenCalled();
+  });
+
+  it('preserves raw stream-card reference pairs when startup recovery changes a legacy sibling', async () => {
+    const seeded = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [row] }]),
+    );
+    const reference = await seeded.backend.storage.transcripts.artifacts.put(
+      'chat',
+      'a'.repeat(80_000),
+    );
+    const parent = delegationTranscriptMessages({
+      delegationId: 'child',
+      runGeneration: 1,
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: 'turn',
+      parentToolCallId: 'spawn',
+      createdAt: 1,
+      task: {
+        description: 'Stored task',
+        prompt: 'Stored prompt',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: 'child',
+        status: 'running',
+        finalText: 'stored preview',
+        outputTruncated: true,
+        routeSnapshot: {
+          selectedModelId: 'model',
+          runtimeModelId: 'model',
+          harnessId: 'claude',
+          runtimeKind: 'local',
+          runnerRegistrationId: 'claude-local',
+          runtimeVersion: '1',
+          adapterVersion: '1',
+          modelSource: 'catalog',
+          providerType: 'claude',
+          assignmentRevision: 'test-assignment',
+          billingAuthority: 'local',
+          aiCreditsRouted: false,
+          capabilities: [],
+          supportedThinkingLevels: [],
+          capabilitySnapshotHash: 'test-capabilities',
+          capabilityGeneration: 1,
+          policyRevision: 'test-policy',
+        },
+      },
+      transcript: [],
+    })[0];
+    const block = parent?.blocks[0];
+    if (!parent || block?.type !== 'delegated_agent_call')
+      throw new Error('Missing fixture card');
+    const stored: PersistedChatMessage = {
+      ...parent,
+      blocks: [
+        {
+          ...block,
+          transcriptStore: 'chat-stream-v2',
+          finalTextRef: reference,
+        },
+      ],
+    };
+    const target = {
+      kind: 'delegation',
+      chatId: 'chat',
+      delegationId: 'child',
+      runGeneration: 1,
+    } satisfies Parameters<ChatStateV2Backend['registerTranscriptStream']>[0];
+    const cardState: CardStateV1 = {
+      version: 1,
+      status: 'running',
+      resultIndex: null,
+      error: null,
+      usage: null,
+      workspaceRevision: null,
+      workspaceDiscarded: false,
+      stopOutcome: null,
+      controlOutcome: null,
+      attribution: null,
+      capabilitySummary: null,
+      nestedChildSummary: null,
+      partialPreview: null,
+      finalPreview: 'descriptor preview',
+    };
+    try {
+      await seeded.backend.transact(
+        () => [{ type: 'message.upserted', chatId: 'chat', message: stored }],
+        { source: 'provider' },
+      );
+      await seeded.backend.registerTranscriptStream(target);
+      const descriptor = await seeded.backend.childStreamDescriptor(target);
+      if (!descriptor) throw new Error('Missing fixture descriptor');
+      await seeded.backend.updateChildStreamCardState(
+        target,
+        descriptor.streamRevision,
+        cardState,
+      );
+      await seeded.backend.flush();
+    } finally {
+      seeded.backend.releaseJournal();
+      await seeded.backend.disposeArtifactMaintenance();
+    }
+    jest
+      .spyOn(delegationRecovery, 'hasDelegationRecoveryRecords')
+      .mockResolvedValue(true);
+    const recovery = jest
+      .spyOn(delegationRecovery, 'loadDelegationRecoveryMutations')
+      .mockImplementation((_scope, tabs) => {
+        const tab = tabs.tabs.find((candidate) => candidate.id === 'chat');
+        if (!tab) throw new Error('Missing recovery tab');
+        return Promise.resolve([
+          {
+            type: 'messages.replaced',
+            chatId: 'chat',
+            removedMessageIds: [],
+            messages: tab.messages.map((message) =>
+              message.id === row.id
+                ? {
+                    ...message,
+                    blocks: [
+                      { type: 'text', text: 'legacy sibling recovered' },
+                    ],
+                  }
+                : message,
+            ),
+          },
+        ]);
+      });
+    const generation = jest.spyOn(ChatStateV2Backend.prototype, 'generation');
+    const streamDescriptor = jest.spyOn(
+      ChatDeltaJournalWriter.prototype,
+      'childDescriptor',
+    );
+    const body = jest.spyOn(ChatTranscriptArtifacts.prototype, 'readRange');
+    const repository = repositoryForTest({ ...options(), enableFormat4: true });
+    const raw = await repository.getState(scope, {
+      chatIds: ['chat'],
+      fullTranscript: true,
+      rawStreamCards: true,
+    });
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(generation).not.toHaveBeenCalled();
+    expect(streamDescriptor).not.toHaveBeenCalled();
+    expect(body).not.toHaveBeenCalled();
+    expect(
+      raw.tabsFile.tabs[0]?.messages.find(
+        (message) => message.id === stored.id,
+      ),
+    ).toEqual(stored);
+    expect(
+      raw.tabsFile.tabs[0]?.messages.find((message) => message.id === row.id)
+        ?.blocks,
+    ).toEqual([{ type: 'text', text: 'legacy sibling recovered' }]);
+    const overlaid = await repository.getState(scope, {
+      chatIds: ['chat'],
+      fullTranscript: true,
+    });
+    const projected = overlaid.tabsFile.tabs[0]?.messages.find(
+      (message) => message.id === stored.id,
+    )?.blocks[0];
+    expect(projected).toMatchObject({ finalText: 'descriptor preview' });
+    expect(projected).not.toHaveProperty('finalTextRef');
+    expect(streamDescriptor).toHaveBeenCalled();
+    expect(body).not.toHaveBeenCalled();
+    await repository.flushScope(scope);
+    const fresh = new ChatStateV2Backend(
+      ChatStorageV2.fromLegacyPaths(paths, { maxManifestVersion: 4 }),
+      { enableFormat4: true, deltaJournal: {} },
+    );
+    try {
+      await fresh.load();
+      const freshRaw = await fresh.state({
+        chatIds: ['chat'],
+        fullTranscript: true,
+        rawStreamCards: true,
+      });
+      expect(
+        freshRaw.tabsFile.tabs[0]?.messages.find(
+          (message) => message.id === stored.id,
+        ),
+      ).toEqual(stored);
+    } finally {
+      fresh.releaseJournal();
+      await fresh.disposeArtifactMaintenance();
+    }
+  });
+
+  it('reads a stored parent row without invoking the state selection overlay', async () => {
+    const repository = repositoryForTest(options());
+    await repository.getState(scope);
+    const state = jest.spyOn(ChatStateV2Backend.prototype, 'state');
+    await expect(
+      repository.readStoredParentMessage(scope, 'chat', 'user'),
+    ).resolves.toEqual(row);
+    expect(state).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { limit: 0 },
+    { limit: 201 },
+    { limit: 1.5 },
+    { encodedBudget: -1 },
+    { encodedBudget: 4 * 1024 * 1024 + 1 },
+    { streamRevision: -1 },
+    { beforeSequence: 0 },
+    { beforeSequence: 1.5 },
+  ])(
+    'rejects a malformed compatibility request before loading storage: %p',
+    async (invalid) => {
+      const repository = repositoryForTest(options());
+      const load = jest.spyOn(ChatStateV2Backend.prototype, 'load');
+      await expect(
+        repository.childStreamCompatibilityPage(scope, {
+          target: {
+            kind: 'delegation',
+            chatId: 'chat',
+            delegationId: 'child',
+            runGeneration: 1,
+          },
+          streamRevision: 0,
+          limit: 5,
+          encodedBudget: 1024,
+          ...invalid,
+        }),
+      ).resolves.toMatchObject({ ok: false, code: 'invalid_request' });
+      expect(load).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns not-found for compatibility pages whose target stream is absent', async () => {
+    const seeded = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [row] }]),
+    );
+    await seeded.backend.flush();
+    seeded.backend.releaseJournal();
+    await seeded.backend.disposeArtifactMaintenance();
+    const repository = repositoryForTest({ ...options(), enableFormat4: true });
+    await expect(
+      repository.childStreamCompatibilityPage(scope, {
+        target: {
+          kind: 'delegation',
+          chatId: 'chat',
+          delegationId: 'child',
+          runGeneration: 1,
+        },
+        streamRevision: 0,
+        limit: 5,
+        encodedBudget: 1024,
+      }),
+    ).resolves.toMatchObject({ ok: false, code: 'not_found' });
+  });
+
+  it('does not arm an idle checkpoint for child-only journal records', () => {
+    const repository = repositoryForTest(options());
+    const entry = {
+      lifecycle: 'ready',
+      deleting: false,
+      backend: {
+        wantsRepromotion: (): boolean => false,
+        pendingJournalRecords: (): number => 1,
+        journalCheckpointDue: (): boolean => false,
+        pendingPrimaryRecordCount: (): number => 0,
+        journalIdleCheckpointWanted: (): boolean => true,
+      },
+      journalIdleTimer: undefined,
+    };
+    const schedule: unknown = Reflect.get(repository, 'scheduleJournalWork');
+    if (typeof schedule !== 'function') throw new Error('Missing scheduler');
+    Reflect.apply(schedule, repository, [entry]);
+    expect(entry.journalIdleTimer).toBeUndefined();
   });
   const previewIt =
     typeof Reflect.get(
@@ -707,6 +1499,144 @@ describe('v2 scope repository admission', () => {
     expect((await repository.page(scope, 'chat')).totalMessages).toBe(1503);
   }, 120_000);
 
+  it('locates missing, active, last, and nonlast messages', async () => {
+    const messages = [
+      { ...row, id: 'committed-first' },
+      { ...row, id: 'committed-last', role: 'assistant' as const },
+    ];
+    await writeFile(
+      paths.tabs,
+      JSON.stringify({
+        version: 1,
+        activeTabId: 'chat',
+        tabs: [
+          { id: 'chat', title: 'Chat', createdAt: '2026-09-05', messages },
+        ],
+      }),
+    );
+    const repository = repositoryForTest(options());
+    await repository.getState(scope);
+
+    expect(await locateMessage(repository, 'chat', 'unknown')).toBe('missing');
+    expect(await locateMessage(repository, 'chat', 'committed-first')).toEqual({
+      committed: true,
+      last: false,
+    });
+    expect(await locateMessage(repository, 'chat', 'committed-last')).toEqual({
+      committed: true,
+      last: true,
+    });
+
+    await repository.transact(
+      scope,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat',
+          runtime: { status: 'streaming', queuedMessageIds: [] },
+        },
+        {
+          type: 'message.upserted',
+          chatId: 'chat',
+          message: {
+            ...row,
+            id: 'active-assistant',
+            role: 'assistant',
+            blocks: [{ type: 'text', text: 'in progress' }],
+          },
+        },
+      ],
+      { source: 'provider' },
+    );
+    expect(await locateMessage(repository, 'chat', 'active-assistant')).toBe(
+      'active',
+    );
+    expect(await locateMessage(repository, 'chat', 'committed-last')).toEqual({
+      committed: true,
+      last: false,
+    });
+  });
+
+  it('locates a committed row outside the current page without scanning history', async () => {
+    const messages = Array.from(
+      { length: 1_105 },
+      (_, index): PersistedChatMessage => ({
+        ...row,
+        id: `offpage-${index}`,
+        role: index === 0 ? 'user' : 'assistant',
+        timestamp: index + 1,
+      }),
+    );
+    await writeFile(
+      paths.tabs,
+      JSON.stringify({
+        version: 1,
+        activeTabId: 'chat',
+        tabs: [
+          { id: 'chat', title: 'Chat', createdAt: '2026-09-05', messages },
+        ],
+      }),
+    );
+    const repository = repositoryForTest(options());
+    await repository.getState(scope);
+    const page = await repository.page(scope, 'chat');
+    expect(page.messages.some((message) => message.id === 'offpage-0')).toBe(
+      false,
+    );
+
+    const iterate = jest.spyOn(ChatTranscriptLog.prototype, 'iterate');
+    const iterateLogical = jest.spyOn(
+      ChatTranscriptLog.prototype,
+      'iterateLogical',
+    );
+    expect(await locateMessage(repository, 'chat', 'offpage-0')).toEqual({
+      committed: true,
+      last: false,
+    });
+    expect(iterate).not.toHaveBeenCalled();
+    expect(iterateLogical).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it('reads journal-projected active rows without changing the journal', async () => {
+    const repository = repositoryForTest({
+      ...options(),
+      deltaJournalIdleCheckpointMs: 60_000,
+    });
+    await repository.getState(scope);
+    const store = ChatStorageV2.fromLegacyPaths(paths);
+    expect(await store.format()).toBe('v3');
+    await repository.transact(
+      scope,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat',
+          runtime: { status: 'streaming', queuedMessageIds: [] },
+        },
+        {
+          type: 'message.upserted',
+          chatId: 'chat',
+          message: {
+            ...row,
+            id: 'journal-active',
+            role: 'assistant',
+            blocks: [{ type: 'text', text: 'journal projection' }],
+          },
+        },
+      ],
+      { source: 'provider' },
+    );
+
+    const journalPath = join(store.directory, DELTA_JOURNAL_FILE_NAME);
+    const before = await readFile(journalPath);
+    const revision = await repository.getRevision(scope);
+    expect(await locateMessage(repository, 'chat', 'journal-active')).toBe(
+      'active',
+    );
+    expect(await readFile(journalPath)).toEqual(before);
+    expect(await repository.getRevision(scope)).toBe(revision);
+  }, 30_000);
+
   it.each(['connecting', 'replaced-block', 'omitted'] as const)(
     'keeps canonical MCP recovery rows through a %s compatibility save',
     async (staleKind) => {
@@ -862,7 +1792,7 @@ describe('v2 scope repository admission', () => {
           },
         },
       ],
-      { source: 'renderer' },
+      { source: 'renderer-command' },
     );
     const sourceMetadata = await repository.getState(scope);
     await repository.copyChats(scope, destinationScope, sourceMetadata);
@@ -1089,6 +2019,8 @@ describe('v2 scope repository admission', () => {
     expect(output.startsWith(range.text)).toBe(true);
     expect(Buffer.byteLength(range.text)).toBeLessThanOrEqual(32);
     expect(range.nextOffset).toBe(Buffer.byteLength(range.text));
+    if (range.nextOffset === undefined)
+      throw new Error('Missing next tool output offset');
     await repository.toolOutput(
       scope,
       'chat',
@@ -2539,6 +3471,62 @@ describe('v2 scope repository legacy path resolution', () => {
     await expect(
       readFile(join(workspaceDir, 'chat-archives', 'home.json')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('format-4 registry receipt repository facade', () => {
+  it('serializes concurrent receipt conflicts, preserves replay without a journal and rejects disposed writes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repository-receipt-facade-'));
+    const fixture = await createRepositoryTranscriptPortFixture(root)();
+    const entry: Parameters<
+      ChatStateV2Repository['appendDelegationReceipt']
+    >[1] = {
+      version: 1,
+      kind: 'receipt',
+      chatId: 'chat',
+      receiptKind: 'stop',
+      key: 'a'.repeat(64),
+      delegationId: 'child',
+      runGeneration: 1,
+      operationId: 'abcdef12-3456-7890-abcd-1234567890ab',
+      requestHash: 'b'.repeat(64),
+      operation: 'stop',
+      admittedAt: 1,
+      reply: { kind: 'stop', ackStatus: 'completed', runGeneration: 1 },
+    };
+    try {
+      const attempts = await Promise.allSettled([
+        fixture.repository.appendDelegationReceipt(fixture.scope, entry),
+        fixture.repository.appendDelegationReceipt(fixture.scope, {
+          ...entry,
+          admittedAt: 2,
+        }),
+      ]);
+      expect(attempts[0]).toEqual({
+        status: 'fulfilled',
+        value: { entry, replayed: false },
+      });
+      expect(attempts[1]).toMatchObject({
+        status: 'rejected',
+        reason: { failure: { code: 'conflict' } },
+      });
+      await fixture.noJournal();
+      expect(await fixture.service.receipt(fixture.scope, entry)).toEqual(
+        entry,
+      );
+      expect(
+        await fixture.service.appendDelegationReceipt(fixture.scope, entry),
+      ).toEqual({ entry, replayed: true });
+      expect(await fixture.store.journalFile()).toBeUndefined();
+      const disposed = fixture.repository;
+      await fixture.close();
+      await expect(
+        disposed.appendDelegationReceipt(fixture.scope, entry),
+      ).rejects.toThrow();
+    } finally {
+      await fixture.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

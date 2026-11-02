@@ -222,4 +222,98 @@ describe('aiCreditsBannerStore', () => {
       ).toBe(false);
     });
   });
+  describe('restoreUsageLimit (CAN-4759)', () => {
+    const OTHER = { projectId: 'p2', worktreeId: 'w2', chatId: 'c2' };
+    const store = (): ReturnType<typeof useAiCreditsBannerStore.getState> =>
+      useAiCreditsBannerStore.getState();
+
+    it('shows a limit the user dismissed before choosing credits', () => {
+      store().setUsageLimit(TARGET, { provider: 'claude', resetsAt: 1_000 });
+      store().dismissUsageLimit(TARGET, 'claude:1000');
+      expect(visibleBanner()).toBeNull();
+
+      store().restoreUsageLimit(TARGET, {
+        provider: 'claude',
+        resetsAt: 1_000,
+      });
+      expect(visibleBanner()).toEqual({
+        provider: 'claude',
+        resetsAt: 1_000,
+        dismissKey: 'claude:1000',
+      });
+    });
+
+    it('restores after the banner state was cleared entirely', () => {
+      store().setUsageLimit(TARGET, { provider: 'codex', resetsAt: 2_000 });
+      store().clearUsageLimitForChat(TARGET);
+      expect(visibleBanner()).toBeNull();
+
+      store().restoreUsageLimit(TARGET, { provider: 'codex', resetsAt: 2_000 });
+      expect(visibleBanner()?.provider).toBe('codex');
+      expect(visibleBanner()?.resetsAt).toBe(2_000);
+    });
+
+    it('treats a later identical limit event as a no-op and can be dismissed again', () => {
+      store().restoreUsageLimit(TARGET, {
+        provider: 'claude',
+        resetsAt: 1_000,
+      });
+      const before = store().usageLimitByChat;
+      store().setUsageLimit(TARGET, { provider: 'claude', resetsAt: 1_000 });
+      expect(store().usageLimitByChat).toBe(before);
+      expect(visibleBanner()).not.toBeNull();
+
+      store().dismissUsageLimit(TARGET, 'claude:1000');
+      expect(visibleBanner()).toBeNull();
+    });
+
+    it('is replaced by a newer limit event', () => {
+      store().restoreUsageLimit(TARGET, {
+        provider: 'claude',
+        resetsAt: 1_000,
+      });
+      store().setUsageLimit(TARGET, { provider: 'claude', resetsAt: 5_000 });
+      expect(visibleBanner()?.resetsAt).toBe(5_000);
+    });
+
+    it('never rolls a newer limit back to the captured value', () => {
+      store().setUsageLimit(TARGET, { provider: 'claude', resetsAt: 5_000 });
+      store().dismissUsageLimit(TARGET, 'claude:5000');
+      store().restoreUsageLimit(TARGET, {
+        provider: 'claude',
+        resetsAt: 1_000,
+      });
+      expect(visibleBanner()?.resetsAt).toBe(5_000);
+    });
+
+    it('replaces a limit recorded for another provider', () => {
+      store().setUsageLimit(TARGET, { provider: 'codex', resetsAt: 5_000 });
+      store().restoreUsageLimit(TARGET, {
+        provider: 'claude',
+        resetsAt: 1_000,
+      });
+      expect(visibleBanner()?.provider).toBe('claude');
+      expect(visibleBanner()?.resetsAt).toBe(1_000);
+    });
+
+    it('leaves other targets and unrelated state untouched', () => {
+      store().setRoutingActive(TARGET, true);
+      store().setNoBillingSource(TARGET, { provider: 'claude', detectedAt: 1 });
+      store().setUsageLimit(OTHER, { provider: 'codex', resetsAt: 9_000 });
+      store().dismissUsageLimit(OTHER, 'codex:9000');
+
+      store().restoreUsageLimit(TARGET, {
+        provider: 'claude',
+        resetsAt: 1_000,
+      });
+
+      expect(store().routingActiveByChat['p/w/c']?.active).toBe(true);
+      expect(store().noBillingSourceByChat['p/w/c']).toEqual({
+        provider: 'claude',
+        detectedAt: 1,
+      });
+      expect(selectVisibleUsageLimitBanner(store(), OTHER)).toBeNull();
+      expect(store().usageLimitByChat['p2/w2/c2']?.resetsAt).toBe(9_000);
+    });
+  });
 });

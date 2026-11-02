@@ -169,6 +169,8 @@ function makeTab(
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
     sdkSessionId: 'sdk-abc',

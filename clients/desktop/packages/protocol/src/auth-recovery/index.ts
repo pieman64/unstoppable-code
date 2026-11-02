@@ -8,6 +8,16 @@ export type {
   AuthSettingsTarget,
   CanopyAuthFailureEventData,
 } from './types';
+export type {
+  CodexAccountModelAccessFailure,
+  CodexAccountModelAccessFailureKind,
+} from './model-access';
+export {
+  CANOPY_MODEL_ACCESS_FAILURE_FIELD,
+  MAX_MODEL_ACCESS_STRING_LENGTH,
+  isCodexAccountModelAccessFailure,
+  readCodexAccountModelAccessFailure,
+} from './model-access';
 export {
   CANOPY_AUTH_FAILURE_EVENT_TYPE,
   isAuthDependencyFailure,

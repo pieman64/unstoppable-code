@@ -30,6 +30,7 @@ import {
   CanopyOperationError,
   canopyInvalidArgumentError,
   canopyCapabilityUnavailableError,
+  canopyPermissionDeniedError,
   canopyUnavailableError,
 } from '@canopy/core-runtime';
 import { validateChatCommandRequest } from '../ipc/chat-state';
@@ -354,6 +355,7 @@ export const CHAT_COMMAND_ROUTES: Partial<
   'chat.reorder_tabs': route('core.chat.update'),
   'chat.patch_tab_settings': route('core.chat.update'),
   'chat.set_model': route('core.chat.update'),
+  'chat.set_approval_mode': route('core.chat.update'),
   'chat.mark_read': route('core.chat.update'),
   'chat.mark_unread': route('core.chat.update'),
   'chat.mark_archive_read': route('core.chat.update'),
@@ -676,6 +678,17 @@ export function createCoreChatCommandAdapter(
         capture.releaseAdmission?.();
       }
       return CoreChatLifecycleResultSchema.parse(await result);
+    }
+    // Approval mode changes only through main's trusted dispatch (the capture
+    // above), which the approval-mode setter uses to order the write against
+    // the live runtimes.
+    if (
+      isRecord(params.action) &&
+      params.action.type === 'chat.set_approval_mode'
+    ) {
+      throw canopyPermissionDeniedError(
+        'Approval mode changes only through the approval-mode setter.',
+      );
     }
     const action = await restoreLegacyAction(params.action, params);
     let reconstructed: ChatCommandRequest;

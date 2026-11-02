@@ -132,10 +132,9 @@ describe('canopy-injected-tools registry', () => {
       'stop_delegate',
       'update_ledger_entry',
       'watch_command',
-      'watch_delegates',
       'watch_github_items',
     ]);
-    expect(CANOPY_INJECTED_TOOL_ENTRIES).toHaveLength(49);
+    expect(CANOPY_INJECTED_TOOL_ENTRIES).toHaveLength(48);
   });
 
   it('exposes ShowVisual on only the four native chat proxy surfaces', () => {

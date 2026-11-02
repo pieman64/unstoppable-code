@@ -1,7 +1,14 @@
 import type { AgentModelConfig, ScheduledActivity } from '../../types';
 import type { ShareablePluginRef } from '@canopy/protocol/plugins';
 import type { SharedAutomationModelConfig } from '@canopy/protocol/automations';
-import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
+import {
+  MAX_SHARED_AUTOMATION_BYTES,
+  validateSharedAutomationDocument,
+} from '@canopy/protocol/automations';
+import type {
+  PipelinePackagePackagedPipeline,
+  PipelineShareInstallPin,
+} from '@canopy/protocol/pipelines';
 import {
   buildSharedAutomationDocument,
   automationActionUsesIfCommandOutput,
@@ -13,6 +20,12 @@ import {
 } from '../automation-sharing';
 import { AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES } from '../automations';
 import { buildInstallAutomationRequest } from '../automation-install';
+import {
+  chatAutomationToPipeline,
+  ownedPipelineToChatAction,
+} from '../chat-automation-conversion';
+import { parsePipelineText } from '../../pipelines/parse-pipeline';
+import { serializePipelineDocument } from '@canopy/pipeline-interop/serialize-pipeline';
 
 const pluginRef: ShareablePluginRef = {
   type: 'skill',
@@ -585,7 +598,12 @@ describe('buildSharedAutomationDocument', () => {
           chatId: 'chat-1',
           prompt: 'Continue.',
           attachmentPaths: ['/Users/author/secret.txt'],
-          fileReferences: [{ path: 'src/index.ts' }],
+          fileReferences: [
+            {
+              displayPath: 'src/index.ts',
+              absolutePath: '/Users/author/src/index.ts',
+            },
+          ],
           inputMode: 'typed',
           workspaceName: SECRET_WORKSPACE_NAME,
           chatTitle: 'Review',
@@ -867,6 +885,8 @@ describe('buildSharedAutomationDocument', () => {
       'installed_prompt_reference',
       'session_target_unresolved',
       'pipeline_target_unresolved',
+      'pipeline_dependencies_stale',
+      'installed_pipeline_dependencies',
     ]);
   });
 
@@ -1267,6 +1287,133 @@ describe('ScheduledActivity share metadata passthrough', () => {
   });
 });
 
+describe('pipeline destinations', () => {
+  function pipelineActivity(
+    target: Extract<
+      ScheduledActivity['action'],
+      { type: 'worktree_pipeline' }
+    >['target'],
+  ): ScheduledActivity {
+    return baseActivity({
+      action: {
+        type: 'worktree_pipeline',
+        ...(target?.kind === 'global'
+          ? {}
+          : { workspaceId: SECRET_WORKSPACE_ID }),
+        ...(target ? { target } : {}),
+        pipelineId: 'bundled-review',
+        pipelineSource: 'bundled',
+      },
+    });
+  }
+
+  it('keeps a legacy action at the portable workspace kind and version', () => {
+    const result = buildSharedAutomationDocument(pipelineActivity(undefined), {
+      description: '',
+      pipelineResolution: { status: 'resolved', scopes: ['directory'] },
+      resolvedPlugins: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.document.action.type !== 'worktree_pipeline')
+      return;
+    expect(result.document.version).toBe(1);
+    expect(result.document.action.target).toEqual({ kind: 'workspace' });
+    expect(result.notices).toContain('workspace_binding_stripped');
+  });
+
+  it.each([
+    ['new_worktree', { kind: 'new_worktree' as const }, ['worktree']],
+    [
+      'task',
+      { kind: 'task' as const, taskId: SECRET_WORKTREE_ID },
+      ['worktree'],
+    ],
+    ['project', { kind: 'project' as const }, ['directory']],
+  ])(
+    'shares a %s destination as v6 without local ids',
+    (kind, target, scopes) => {
+      const result = buildSharedAutomationDocument(pipelineActivity(target), {
+        description: '',
+        pipelineResolution: { status: 'resolved', scopes },
+        resolvedPlugins: [],
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok || result.document.action.type !== 'worktree_pipeline')
+        return;
+      expect(result.document.version).toBe(6);
+      expect(result.document.action.target).toEqual({ kind });
+      expect(result.notices).toContain('workspace_binding_stripped');
+      expectAbsent(JSON.stringify(result.document), [
+        SECRET_WORKSPACE_ID,
+        SECRET_WORKTREE_ID,
+      ]);
+    },
+  );
+
+  it('shares a global destination with no binding notice', () => {
+    const result = buildSharedAutomationDocument(
+      pipelineActivity({ kind: 'global' }),
+      {
+        description: '',
+        pipelineResolution: { status: 'resolved', scopes: ['global'] },
+        resolvedPlugins: [],
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.document.action.type !== 'worktree_pipeline')
+      return;
+    expect(result.document.version).toBe(6);
+    expect(result.document.action.target).toEqual({ kind: 'global' });
+    expect(result.notices).not.toContain('workspace_binding_stripped');
+  });
+
+  it('refuses a global destination whose pipeline cannot run without a project', () => {
+    const result = buildSharedAutomationDocument(
+      pipelineActivity({ kind: 'global' }),
+      {
+        description: '',
+        pipelineResolution: { status: 'resolved', scopes: ['directory'] },
+        resolvedPlugins: [],
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      reasons: ['pipeline_target_unresolved'],
+      detail:
+        "This workflow can't run without a project. Choose a workflow that runs with no project, or choose a project.",
+    });
+  });
+
+  it('carries an included run condition on a v6 destination', () => {
+    const result = buildSharedAutomationDocument(
+      baseActivity({
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: SECRET_WORKSPACE_ID,
+          target: { kind: 'new_worktree' },
+          pipelineId: 'bundled-review',
+          pipelineSource: 'bundled',
+        },
+        ifCommand: '  test -f ready  ',
+      }),
+      {
+        description: '',
+        pipelineResolution: { status: 'resolved', scopes: ['worktree'] },
+        resolvedPlugins: [],
+        includeRunCondition: true,
+      },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      document: {
+        version: 6,
+        action: { target: { kind: 'new_worktree' } },
+        runCondition: { command: 'test -f ready' },
+      },
+    });
+  });
+});
+
 describe('run-condition sharing', () => {
   const narrowedPipeline = baseActivity({
     action: {
@@ -1399,5 +1546,502 @@ describe('run-condition sharing', () => {
         pipelineId: 'review',
       }),
     ).toBeNull();
+  });
+});
+
+describe('packaged pipelines (shared document v5)', () => {
+  const capabilityPackage = {
+    version: 1,
+    digest: `pp:v1:${'d'.repeat(43)}`,
+  } as const;
+  const WORKER_ID = '8f14e45f-ceea-467a-9575-0b5b4b2b1c11';
+  const ENTRY_ID = 'C9F0F895-FB98-4B91-8C6E-2A5C1D0E4B22';
+
+  function spansOf(
+    prompt: string,
+    text: string,
+  ): Array<{ textStart: number; text: string }> {
+    const spans: Array<{ textStart: number; text: string }> = [];
+    for (
+      let index = prompt.indexOf(text);
+      index !== -1;
+      index = prompt.indexOf(text, index + text.length)
+    ) {
+      spans.push({ textStart: index, text });
+    }
+    return spans;
+  }
+
+  function packaged(
+    overrides: Partial<PipelinePackagePackagedPipeline> &
+      Pick<PipelinePackagePackagedPipeline, 'key'>,
+  ): PipelinePackagePackagedPipeline {
+    return {
+      resourceId: `automation-pipeline-${overrides.key}`,
+      name: 'Pipeline',
+      pipelineContentHash: 'e'.repeat(64),
+      source: 'user',
+      isActionPipeline: false,
+      optional: false,
+      promptSpans: [],
+      ...overrides,
+    };
+  }
+
+  function expectStrictlyValid(document: unknown): void {
+    expect(validateSharedAutomationDocument(document)).toMatchObject({
+      ok: true,
+    });
+  }
+
+  it.each(['user', 'project'] as const)(
+    'references a packaged %s action pipeline instead of an inline copy',
+    (pipelineSource) => {
+      const rawPipeline = 'name: Local\non: dispatch\njobs: {}\n';
+      const result = buildSharedAutomationDocument(
+        baseActivity({
+          action: {
+            type: 'worktree_pipeline',
+            workspaceId: SECRET_WORKSPACE_ID,
+            pipelineId: 'mine',
+            pipelineSource,
+            pipelineName: 'Local review',
+          },
+        }),
+        {
+          description: '',
+          sessionTargetKind: 'single-repo',
+          pipelineRawContent: rawPipeline,
+          pipelineContentHash: 'b'.repeat(64),
+          capabilityPackage,
+          packagedPipelines: [
+            packaged({
+              key: 'action',
+              isActionPipeline: true,
+              pipelineContentHash: 'b'.repeat(64),
+              source: pipelineSource,
+            }),
+          ],
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok || result.document.action.type !== 'worktree_pipeline')
+        return;
+      expect(result.document.version).toBe(5);
+      expect(result.document.action.pipeline).toEqual({
+        source: 'packaged',
+        key: 'action',
+        pipelineContentHash: 'b'.repeat(64),
+        name: 'Local review',
+      });
+      expect(JSON.stringify(result.document)).not.toContain('jobs: {}');
+      expect(result.notices).toContain('pipeline_definition_bundled');
+      expectStrictlyValid(result.document);
+    },
+  );
+
+  it('publishes a packaged action pipeline with a destination at version 6', () => {
+    const result = buildSharedAutomationDocument(
+      baseActivity({
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: SECRET_WORKSPACE_ID,
+          target: { kind: 'new_worktree' },
+          pipelineId: 'mine',
+          pipelineSource: 'user',
+          pipelineName: 'Local review',
+        },
+      }),
+      {
+        description: '',
+        pipelineRawContent:
+          'name: Local\non: dispatch\nscope: worktree\njobs: {}\n',
+        pipelineContentHash: 'b'.repeat(64),
+        capabilityPackage,
+        packagedPipelines: [
+          packaged({
+            key: 'action',
+            isActionPipeline: true,
+            pipelineContentHash: 'b'.repeat(64),
+          }),
+        ],
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.document.action.type !== 'worktree_pipeline')
+      return;
+    expect(result.document.version).toBe(6);
+    expect(result.document.action.target).toEqual({ kind: 'new_worktree' });
+    expect(result.document.action.pipeline).toMatchObject({
+      source: 'packaged',
+      key: 'action',
+    });
+    expectStrictlyValid(result.document);
+  });
+
+  it('keeps bundled pipeline refs and their version when packaged pipelines are offered', () => {
+    const result = buildSharedAutomationDocument(
+      baseActivity({
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: SECRET_WORKSPACE_ID,
+          pipelineId: 'code-review',
+          pipelineSource: 'bundled',
+        },
+      }),
+      {
+        description: '',
+        sessionTargetKind: 'single-repo',
+        pipelineResolution: { status: 'resolved', scopes: ['directory'] },
+        capabilityPackage,
+        packagedPipelines: [
+          packaged({ key: 'action', isActionPipeline: true }),
+        ],
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.document.action.type !== 'worktree_pipeline')
+      return;
+    expect(result.document.version).toBe(1);
+    expect(result.document.action.pipeline).toEqual({
+      source: 'bundled',
+      pipelineId: 'code-review',
+    });
+  });
+
+  it('refuses a packaged action pipeline whose local bytes changed after analysis', () => {
+    const result = buildSharedAutomationDocument(
+      baseActivity({
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: SECRET_WORKSPACE_ID,
+          pipelineId: 'mine',
+          pipelineSource: 'user',
+        },
+      }),
+      {
+        description: '',
+        sessionTargetKind: 'single-repo',
+        pipelineRawContent: 'name: Local\non: dispatch\njobs: {}\n',
+        pipelineContentHash: 'c'.repeat(64),
+        capabilityPackage,
+        packagedPipelines: [
+          packaged({
+            key: 'action',
+            isActionPipeline: true,
+            pipelineContentHash: 'b'.repeat(64),
+          }),
+        ],
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      reasons: ['pipeline_dependencies_stale'],
+    });
+  });
+
+  it('emits prompt pipeline dependencies with interleaved and repeated spans at version 5', () => {
+    const prompt = `Run ${ENTRY_ID} with ${WORKER_ID}; when ${ENTRY_ID} fails, retry.`;
+    const result = buildSharedAutomationDocument(
+      baseActivity({
+        action: { type: 'app_advisor_prompt', prompt },
+      }),
+      {
+        description: '',
+        resolvedPlugins: [],
+        capabilityPackage,
+        packagedPipelines: [
+          packaged({
+            key: ENTRY_ID.toLowerCase(),
+            name: 'Entry',
+            pipelineContentHash: '1'.repeat(64),
+            promptSpans: spansOf(prompt, ENTRY_ID),
+          }),
+          packaged({
+            key: WORKER_ID,
+            name: 'Worker',
+            pipelineContentHash: '2'.repeat(64),
+            promptSpans: spansOf(prompt, WORKER_ID),
+          }),
+        ],
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.document.action.type !== 'app_advisor_prompt')
+      return;
+    expect(result.document.version).toBe(5);
+    expect(result.document.action.prompt).toBe(prompt);
+    expect(result.document.action.pipelineDependencies).toEqual([
+      {
+        key: ENTRY_ID.toLowerCase(),
+        pipeline: {
+          source: 'packaged',
+          key: ENTRY_ID.toLowerCase(),
+          pipelineContentHash: '1'.repeat(64),
+          name: 'Entry',
+        },
+        promptSpans: [
+          { textStart: 4, text: ENTRY_ID },
+          { textStart: prompt.lastIndexOf(ENTRY_ID), text: ENTRY_ID },
+        ],
+      },
+      {
+        key: WORKER_ID,
+        pipeline: {
+          source: 'packaged',
+          key: WORKER_ID,
+          pipelineContentHash: '2'.repeat(64),
+          name: 'Worker',
+        },
+        promptSpans: [
+          { textStart: prompt.indexOf(WORKER_ID), text: WORKER_ID },
+        ],
+      },
+    ]);
+    expectStrictlyValid(result.document);
+  });
+
+  it('refuses to re-share an installed copy whose prompt points at packaged pipelines', () => {
+    const result = buildSharedAutomationDocument(
+      baseActivity({
+        action: { type: 'app_advisor_prompt', prompt: `Run ${WORKER_ID}.` },
+        installedFrom: {
+          remoteId: 'remote-1',
+          contentHash: 'a'.repeat(64),
+          installedAt: '2026-10-01T00:00:00.000Z',
+          capabilityPackage,
+          pipelineDependencies: [
+            {
+              key: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+              localPipelineId: WORKER_ID,
+              pipelineContentHash: '2'.repeat(64),
+            },
+          ],
+        },
+      }),
+      { description: '', resolvedPlugins: [], capabilityPackage },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reasons: ['installed_pipeline_dependencies'],
+    });
+  });
+
+  it('carries prompt dependencies for every shareable prompt shape', () => {
+    const prompt = `Use ${WORKER_ID}.`;
+    const packagedPipelines = [
+      packaged({ key: WORKER_ID, promptSpans: spansOf(prompt, WORKER_ID) }),
+    ];
+    const actions: ScheduledActivity['action'][] = [
+      { type: 'standalone_prompt', chatProjectId: 'cowork-1', prompt },
+      { type: 'worktree_prompt', workspaceId: SECRET_WORKSPACE_ID, prompt },
+      {
+        type: 'worktree_session_prompt',
+        workspaceId: SECRET_WORKSPACE_ID,
+        worktreeId: SECRET_WORKTREE_ID,
+        chatId: 'chat-1',
+        prompt,
+      },
+    ];
+    for (const action of actions) {
+      const result = buildSharedAutomationDocument(baseActivity({ action }), {
+        description: '',
+        sessionTargetKind: 'single-repo',
+        resolvedPlugins: [],
+        capabilityPackage,
+        packagedPipelines,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok || result.document.action.type === 'worktree_pipeline')
+        continue;
+      expect(result.document.version).toBe(5);
+      expect(result.document.action.pipelineDependencies).toHaveLength(1);
+      expectStrictlyValid(result.document);
+    }
+  });
+
+  it('keeps the current version for an automation without packaged pipelines', () => {
+    const plain = buildSharedAutomationDocument(baseActivity(), {
+      description: '',
+      resolvedPlugins: [],
+      packagedPipelines: [],
+    });
+    expect(plain).toMatchObject({ ok: true, document: { version: 1 } });
+    if (plain.ok) {
+      expect(plain.document.action).not.toHaveProperty('pipelineDependencies');
+    }
+    const gated = buildSharedAutomationDocument(
+      baseActivity({ ifCommand: 'test -f ready' }),
+      { description: '', resolvedPlugins: [], includeRunCondition: true },
+    );
+    expect(gated).toMatchObject({ ok: true, document: { version: 4 } });
+  });
+
+  it('refuses spans that no longer match the prompt instead of shifting them', () => {
+    const prompt = `Use ${WORKER_ID}.`;
+    const result = buildSharedAutomationDocument(
+      baseActivity({ action: { type: 'app_advisor_prompt', prompt } }),
+      {
+        description: '',
+        resolvedPlugins: [],
+        capabilityPackage,
+        packagedPipelines: [
+          packaged({
+            key: WORKER_ID,
+            promptSpans: [{ textStart: 0, text: WORKER_ID }],
+          }),
+        ],
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      reasons: ['pipeline_dependencies_stale'],
+    });
+    if (!result.ok) {
+      expect(result.detail).toMatch(/does not match the prompt/);
+    }
+    expect(AUTOMATION_SHARE_BLOCK_MESSAGES.pipeline_dependencies_stale).toBe(
+      'This automation changed after its workflows were checked. Check them again before sharing.',
+    );
+  });
+
+  it('builds a small document when the packaged pipelines exceed the document cap', () => {
+    const description = 'x'.repeat(300 * 1024);
+    const rawPipeline = `name: Big\ndescription: ${description}\non: dispatch\njobs: {}\n`;
+    const activity = baseActivity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: SECRET_WORKSPACE_ID,
+        pipelineId: 'mine',
+        pipelineSource: 'user',
+      },
+    });
+    const options = {
+      description: '',
+      sessionTargetKind: 'single-repo' as const,
+      pipelineRawContent: rawPipeline,
+      pipelineContentHash: 'b'.repeat(64),
+      capabilityPackage,
+    };
+    const inline = buildSharedAutomationDocument(activity, options);
+    expect(inline).toMatchObject({ ok: false, reasons: ['document_invalid'] });
+
+    const result = buildSharedAutomationDocument(activity, {
+      ...options,
+      packagedPipelines: [
+        packaged({
+          key: 'action',
+          isActionPipeline: true,
+          pipelineContentHash: 'b'.repeat(64),
+        }),
+        // A worker pipeline the action reaches through a child ref is
+        // packaged too, but only the package carries its YAML.
+        packaged({ key: WORKER_ID, pipelineContentHash: '2'.repeat(64) }),
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const bytes = new TextEncoder().encode(
+      JSON.stringify(result.document),
+    ).length;
+    expect(bytes).toBeLessThan(4 * 1024);
+    expect(bytes).toBeLessThan(MAX_SHARED_AUTOMATION_BYTES);
+    expectStrictlyValid(result.document);
+  });
+});
+
+// CAN-4551: a converted chat automation shares as a v6 document with its
+// owned pipeline inline, and installs back with only its destination rebound.
+describe('a converted chat automation', () => {
+  it('keeps its prompt and references through share and install', () => {
+    const prompt = 'Review @notes.md for ${{ github.ref }}';
+    const references = [
+      {
+        kind: 'file' as const,
+        textStart: 7,
+        displayText: '@notes.md',
+        root: { kind: 'workspace' as const },
+        relativePath: 'notes.md',
+      },
+    ];
+    const { pipeline, inputs } = chatAutomationToPipeline({
+      name: 'Notes digest',
+      action: {
+        type: 'standalone_prompt',
+        chatProjectId: SECRET_WORKSPACE_ID,
+        prompt,
+        promptReferences: references,
+      },
+    });
+    const rawPipeline = serializePipelineDocument(pipeline);
+    const built = buildSharedAutomationDocument(
+      baseActivity({
+        name: 'Notes digest',
+        executionContext: 'personal',
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'global' },
+          pipelineId: 'owned-1',
+          pipelineSource: 'user',
+          pipelineName: pipeline.name,
+          inputs,
+        },
+      }),
+      {
+        description: '',
+        pipelineRawContent: rawPipeline,
+        pipelineContentHash: 'c'.repeat(64),
+      },
+    );
+    expect(built.ok).toBe(true);
+    if (!built.ok || built.document.action.type !== 'worktree_pipeline') return;
+    expect(built.document.version).toBe(6);
+    expect(built.document.action.pipeline).toMatchObject({
+      source: 'inline',
+      rawPipeline,
+    });
+    expect(built.document.action.inputKeys).toEqual(['project_id']);
+    // The destination is the recipient's to choose; only its key travels.
+    expect(JSON.stringify(built.document)).not.toContain(SECRET_WORKSPACE_ID);
+
+    const installed = buildInstallAutomationRequest(
+      {
+        id: '4f6b0f5e-2f66-4be4-9f8e-1f0a54a1c111',
+        contentHash: 'a'.repeat(64),
+        automation: built.document,
+      },
+      {
+        inputs: { project_id: 'recipient-cowork' },
+        bundledPipelineLocalId: 'local-1',
+        // The install dialog reads the bundled pipeline's scope.
+        pipelineResolution: { status: 'resolved', scopes: pipeline.scope },
+      },
+      '2026-10-29T00:00:00.000Z',
+    );
+    if (!installed.ok) throw new Error(installed.error);
+    const action = installed.request.action;
+    if (action.type !== 'worktree_pipeline') throw new Error('not a pipeline');
+    expect(action).toMatchObject({
+      target: { kind: 'global' },
+      pipelineId: 'local-1',
+      inputs: { project_id: 'recipient-cowork' },
+    });
+    // Nobody re-enters the prompt: the installed copy maps back to it.
+    expect(
+      ownedPipelineToChatAction(
+        parsePipelineText(rawPipeline),
+        action.inputs ?? {},
+        () => true,
+      ),
+    ).toEqual({
+      type: 'standalone_prompt',
+      chatProjectId: 'recipient-cowork',
+      prompt,
+      promptReferences: references,
+    });
   });
 });

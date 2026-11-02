@@ -113,6 +113,7 @@ function renderForm(
     correctionOf?: { title: string } | null;
     problem?: string | null;
     autoFocusContent?: boolean;
+    referencesFiles?: boolean;
   } = {},
 ): void {
   act(() =>
@@ -123,6 +124,7 @@ function renderForm(
         saving={false}
         problem={handlers.problem ?? null}
         autoFocusContent={handlers.autoFocusContent}
+        referencesFiles={handlers.referencesFiles}
         ownerControl={(labelId) => (
           <button type="button" id={`${labelId}-picker`}>
             You
@@ -290,6 +292,14 @@ describe('LedgerEntryForm', () => {
     expect(
       rows[1]?.querySelector('[data-picker-selected-check="true"]'),
     ).not.toBeNull();
+  });
+
+  it('leaves Files out where entries cannot reference them', () => {
+    renderForm(BLANK, { referencesFiles: false });
+    expect(container.textContent).not.toContain('Files');
+
+    renderForm(BLANK);
+    expect(container.textContent).toContain('Files');
   });
 
   it("sets and clears a file's line", () => {
@@ -520,7 +530,7 @@ describe('LedgerOwnerPicker', () => {
     expect(chat?.textContent).toContain('Parser fixes');
     expect(chat?.textContent).toContain('Chat');
     expect(agent?.textContent).toContain(
-      'Pipeline run 12345678, job review, step agent',
+      'Workflow run 12345678, job review, step agent',
     );
     expect(agent?.getAttribute('title')).toContain('Checkpoint checkpoint-1');
     expect(byTestId('ledger-owner-menu').textContent).toContain(

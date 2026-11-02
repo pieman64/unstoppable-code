@@ -80,6 +80,9 @@ export interface PanelGridHostProps {
   onTabIntent?: PanelTabBarProps['onTabIntent'];
   /** Plain-string title resolver for tooltips + close-button accessible names. */
   getTabTitle?: (tab: PanelTabModel) => string;
+  renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
+  /** Persistent attention remains visible when a fill tab shrinks to its icon. */
+  renderTabAttention?: (tab: PanelTabModel) => ReactNode;
   /**
    * Optional per-tab RICH tooltip renderer, forwarded to every group's tab
    * bar and collapsed icon bar. A non-null result replaces the plain/native
@@ -188,6 +191,8 @@ export function PanelGridHost({
   renderTabLabel,
   onTabIntent,
   getTabTitle,
+  renderTabAccessibleStatus,
+  renderTabAttention,
   renderTabTooltip,
   renderTabHoverCard,
   renderTabTrailing,
@@ -500,6 +505,7 @@ export function PanelGridHost({
               callbacks={callbacks}
               renderTabIcon={renderCollapsedTabIcon ?? renderTabIcon}
               getTabTitle={getTabTitle}
+              renderTabAccessibleStatus={renderTabAccessibleStatus}
               renderTabTooltip={renderTabTooltip}
             />,
             branch.element,
@@ -541,9 +547,11 @@ export function PanelGridHost({
               renderTabLabel={renderTabLabel}
               onTabIntent={onTabIntent}
               getTabTitle={getTabTitle}
+              renderTabAccessibleStatus={renderTabAccessibleStatus}
               renderTabTooltip={renderTabTooltip}
               renderTabHoverCard={renderTabHoverCard}
               renderTabTrailing={renderTabTrailing}
+              renderTabAttention={renderTabAttention}
               canCloseTab={canCloseTab}
               tabStyle={tabStyle}
               addTab={addTabForGroup?.(group)}

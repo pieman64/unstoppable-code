@@ -31,18 +31,54 @@ function build(
 ): ReturnType<typeof createInProcessWorkerBinding> {
   const pair = serializingWorkerPair();
   pairs.push(pair);
-  return createInProcessWorkerBinding(
-    createCanopyDispatcher({
+  const definitions = {
+    queries: WORKER_QUERY_DEFINITIONS,
+    instructions: {},
+    streams: {},
+  };
+  return createInProcessWorkerBinding({
+    dispatcher: createCanopyDispatcher({
       profile: 'worker',
-      definitions: WORKER_QUERY_DEFINITIONS,
+      definitions,
       handlers: {
-        'worker.filesystem.roots.list': handler,
-        'worker.filesystem.directory.list': () => ({ entries: [] }),
+        queries: {
+          'worker.filesystem.roots.list': handler,
+          'worker.filesystem.directory.list': () => ({ entries: [] }),
+          'worker.filesystem.file.read': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.filesystem.search': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.filesystem.link.resolve': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.git.branch.list': () => ({
+            branches: [],
+            defaultBranch: null,
+            defaultBranchSource: null,
+          }),
+          'worker.git.executable.get': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.git.remote.get': () => ({
+            origin: { state: 'absent' as const },
+          }),
+          'worker.git.worktree.health.get': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.git.diff.get': (): never => {
+            throw new Error('Not exercised.');
+          },
+        },
+        instructions: {},
+        streams: {},
       },
     }),
-    { ...caller, grants },
+    definitions,
+    caller: { ...caller, grants },
     pair,
-  );
+  });
 }
 const error = { payload: { kind: 'invalid_argument' } };
 it('copies validated requests, metadata and results and fixes the worker caller', async () => {
@@ -106,13 +142,17 @@ it('preserves deadline and cancellation admission', async () => {
   ).rejects.toMatchObject({ payload: { kind: 'cancelled' } });
   expect(handler).not.toHaveBeenCalled();
 });
-it('fails closed for unwired operation kinds', async () => {
-  await expect(
-    build().instruction('worker.example.write', {}),
-  ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
-  await expect(
-    build().openStream('worker.example.events', {}),
-  ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+it('fails closed for names the binding does not declare under that kind', async () => {
+  const binding = build();
+  for (const name of ['worker.example.write', 'worker.filesystem.roots.list'])
+    await expect(binding.instruction(name, params)).rejects.toMatchObject({
+      payload: { kind: 'capability_unavailable' },
+    });
+  for (const name of ['worker.example.events', 'worker.filesystem.roots.list'])
+    await expect(binding.openStream(name, params)).rejects.toMatchObject({
+      payload: { kind: 'capability_unavailable' },
+    });
+  expect(pairs[pairs.length - 1].client.send).not.toHaveBeenCalled();
 });
 
 it('correlates concurrent responses delivered in reverse order', async () => {

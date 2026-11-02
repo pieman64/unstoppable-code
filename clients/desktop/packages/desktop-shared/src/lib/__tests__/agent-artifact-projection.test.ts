@@ -1,9 +1,16 @@
 import type {
+  AgentArtifactReceiptV1,
+  AutomationRunArtifactReceiptV1,
+  CapabilityReferenceArtifactReceiptV1,
+  PipelineArtifactReceiptV1,
+} from '../../types/agent-artifacts';
+import type {
   PersistedChatMessage,
   PipelineRunArtifactReceiptV1,
 } from '../../types';
 import { buildPipelineRunArtifactReceipt } from '../agent-artifacts';
 import {
+  createEmptyAgentArtifactProjectionCache,
   isArtifactDispatchTool,
   projectAgentArtifactsWithCarry,
   projectPipelineRunTurnLinks,
@@ -11,16 +18,18 @@ import {
 } from '../agent-artifact-projection';
 
 const now = '2026-08-04T12:00:00.000Z';
+const scope = { projectId: 'project-1', worktreeId: 'worktree-1' };
 
 function receipt(
   executionId: string,
   operation = 'pipeline.run',
   worktreeId = 'worktree-1',
+  pipelineId = 'pipe-1',
 ): PipelineRunArtifactReceiptV1 {
   return buildPipelineRunArtifactReceipt({
     operation,
     executionId,
-    pipelineId: 'pipe-1',
+    pipelineId,
     pipelineName: 'Build',
     initialStatus: 'running',
     queuedAt: now,
@@ -62,7 +71,7 @@ function call(
 function result(
   id: string,
   toolUseId: string,
-  receipts: readonly PipelineRunArtifactReceiptV1[],
+  receipts: readonly AgentArtifactReceiptV1[],
   toolName = 'DispatchAction',
 ): PersistedChatMessage {
   return {
@@ -84,7 +93,109 @@ function result(
   };
 }
 
-const scope = { projectId: 'project-1', worktreeId: 'worktree-1' };
+function foundPipeline(
+  pipelineId: string,
+  source: 'user' | 'project' | 'shared',
+  sharedRemoteId?: string,
+): CapabilityReferenceArtifactReceiptV1 {
+  return {
+    version: 1,
+    kind: 'capability_reference',
+    operation: 'pipeline.get',
+    dedupeKey: `canopy:capability_reference:${source}:pipeline:${pipelineId}`,
+    createdAt: now,
+    itemKind: 'pipeline',
+    source,
+    sourceId: sharedRemoteId ?? pipelineId,
+    name: 'Build',
+    sourceLabel: source === 'shared' ? 'Shared' : 'Local',
+    state: 'installed',
+    relation: 'found',
+    navigationTarget: {
+      kind: 'pipeline_editor',
+      pipelineId,
+      source,
+      ...(source === 'project' ? scope : {}),
+      ...(sharedRemoteId === undefined ? {} : { sharedRemoteId }),
+    },
+  };
+}
+
+function foundAutomation(
+  activityId: string,
+): CapabilityReferenceArtifactReceiptV1 {
+  return {
+    version: 1,
+    kind: 'capability_reference',
+    operation: 'automation.get',
+    dedupeKey: `canopy:capability_reference:local:automation:${activityId}`,
+    createdAt: now,
+    itemKind: 'automation',
+    source: 'local',
+    sourceId: activityId,
+    name: 'Nightly triage',
+    sourceLabel: 'Local',
+    state: 'installed',
+    relation: 'found',
+    navigationTarget: { kind: 'automation_editor', activityId },
+  };
+}
+
+function automationRun(activityId: string): AutomationRunArtifactReceiptV1 {
+  return {
+    version: 1,
+    kind: 'automation_run',
+    operation: 'automation.run_now',
+    dedupeKey: `canopy:automation_run:local:run-1`,
+    createdAt: now,
+    activityId,
+    runId: 'run-1',
+    name: 'Nightly triage',
+    status: 'success',
+    trigger: 'manual',
+    scheduledFor: now,
+    startedAt: now,
+    navigationTarget: {
+      kind: 'automation_editor',
+      activityId,
+      section: 'runs',
+      runId: 'run-1',
+    },
+  };
+}
+
+function createdPipeline(pipelineId: string): PipelineArtifactReceiptV1 {
+  return {
+    version: 1,
+    kind: 'pipeline',
+    operation: 'pipeline.create',
+    dedupeKey: `canopy:pipeline:user:${pipelineId}`,
+    createdAt: now,
+    source: 'user',
+    localId: pipelineId,
+    name: 'Build',
+    enabled: false,
+    scopes: [],
+    runModes: [],
+    jobCount: 1,
+    stepCount: 1,
+    navigationTarget: { kind: 'pipeline_editor', pipelineId, source: 'user' },
+  };
+}
+
+/** One turn whose tool results carry `receipts`, one result per receipt. */
+function turn(
+  id: string,
+  receipts: readonly AgentArtifactReceiptV1[],
+): PersistedChatMessage[] {
+  return [
+    user(id),
+    ...receipts.flatMap((item, index) => [
+      call(`${id}-c-${index}`, `${id}-t-${index}`),
+      result(`${id}-r-${index}`, `${id}-t-${index}`, [item]),
+    ]),
+  ];
+}
 
 describe('shared agent artifact projection (CAN-3619)', () => {
   it('recognizes only action dispatch tools', () => {
@@ -163,5 +274,115 @@ describe('shared agent artifact projection (CAN-3619)', () => {
         (link) => link.userMessageId,
       ),
     ).toEqual(['u-2', 'u-1']);
+  });
+});
+
+describe('per-turn collapse by item identity (CAN-4689)', () => {
+  it.each([
+    ['local', 'pipe-1', foundPipeline('pipe-1', 'user')],
+    [
+      'project',
+      'project--.canopy/pipelines/build.yaml',
+      foundPipeline('project--.canopy/pipelines/build.yaml', 'project'),
+    ],
+    [
+      'shared',
+      'shared:canopy-cloud:rid',
+      foundPipeline('shared:canopy-cloud:rid', 'shared', 'rid'),
+    ],
+  ])(
+    'keeps only the run when a %s pipeline was found and run',
+    (_, pipelineId, found) => {
+      const run = receipt('exec-1', 'pipeline.run', 'worktree-1', pipelineId);
+      // The found tile survives projection on its own, so the drop below is
+      // the collapse and not validation.
+      expect(
+        projectAgentArtifactsWithCarry(turn('u-1', [found])).byTurn['u-1'],
+      ).toEqual([found]);
+      const projection = projectAgentArtifactsWithCarry(
+        turn('u-1', [found, run]),
+      );
+      expect(projection.byTurn['u-1']).toEqual([run]);
+    },
+  );
+
+  it('keeps only the automation run when the automation was found and run', () => {
+    const run = automationRun('act-1');
+    const projection = projectAgentArtifactsWithCarry(
+      turn('u-1', [foundAutomation('act-1'), run]),
+    );
+    expect(projection.byTurn['u-1']).toEqual([run]);
+  });
+
+  it('keeps the recommendation when the pipeline was recommended then found', () => {
+    const recommended: CapabilityReferenceArtifactReceiptV1 = {
+      ...foundPipeline('pipe-1', 'user'),
+      operation: 'capabilities.show',
+      relation: 'recommended',
+      reason: 'Runs the release checks',
+    };
+    const found = foundPipeline('pipe-1', 'user');
+    // Both references share one dedupe key, so this is the merge keeping the
+    // higher-precedence receipt, not the collapse.
+    expect(recommended.dedupeKey).toBe(found.dedupeKey);
+    expect(
+      projectAgentArtifactsWithCarry(turn('u-1', [recommended, found])).byTurn[
+        'u-1'
+      ],
+    ).toEqual([recommended]);
+    expect(
+      projectAgentArtifactsWithCarry([
+        user('u-1'),
+        call('u-1-c', 'u-1-t'),
+        result('u-1-r', 'u-1-t', [recommended, found]),
+      ]).byTurn['u-1'],
+    ).toEqual([recommended]);
+  });
+
+  it('keeps only the created receipt when the pipeline was found and created', () => {
+    const created = createdPipeline('pipe-1');
+    const projection = projectAgentArtifactsWithCarry(
+      turn('u-1', [foundPipeline('pipe-1', 'user'), created]),
+    );
+    expect(projection.byTurn['u-1']).toEqual([created]);
+  });
+
+  it('drops a found tile for a carried watched run without changing run links', () => {
+    const watch = receipt('exec-9', 'pipeline.watch');
+    const carry = { 'u-1': [watch] };
+    const withFound = projectAgentArtifactsWithCarry(
+      turn('u-1', [foundPipeline('pipe-1', 'user')]),
+      carry,
+    );
+    const withoutFound = projectAgentArtifactsWithCarry([user('u-1')], carry);
+
+    expect(withFound.byTurn['u-1']).toEqual([watch]);
+    expect(withFound.chatInitiatedPipelineRuns).toEqual({});
+    expect(projectPipelineRunTurnLinks(withFound, ['u-1'], scope)).toEqual(
+      projectPipelineRunTurnLinks(withoutFound, ['u-1'], scope),
+    );
+  });
+
+  it('keeps chat-initiated runs from contributions when a turn collapses', () => {
+    const run = receipt('exec-1');
+    const projection = projectAgentArtifactsWithCarry(
+      turn('u-1', [foundPipeline('pipe-1', 'user'), run]),
+    );
+    expect(projection.chatInitiatedPipelineRuns).toEqual({ 'exec-1': run });
+  });
+
+  it('returns the cached turn array on an unchanged second projection', () => {
+    const cache = createEmptyAgentArtifactProjectionCache();
+    const messages = [
+      ...turn('u-1', [foundPipeline('pipe-1', 'user'), receipt('exec-1')]),
+      ...turn('u-2', [foundPipeline('pipe-2', 'user')]),
+    ];
+    const first = projectAgentArtifactsWithCarry(messages, undefined, cache);
+    const second = projectAgentArtifactsWithCarry(messages, undefined, cache);
+
+    expect(first.byTurn['u-1']).toHaveLength(1);
+    expect(second.byTurn['u-1']).toBe(first.byTurn['u-1']);
+    expect(first.byTurn['u-2']).toHaveLength(1);
+    expect(second.byTurn['u-2']).toBe(first.byTurn['u-2']);
   });
 });

@@ -59,6 +59,48 @@ describe('WorktreeRow', () => {
   });
 
   describe('classic status system (subject icons + state colors)', () => {
+    it('shows the neutral background spinner while only background work runs', () => {
+      const html = renderToString(
+        <WorktreeRow
+          branchLabel="b"
+          branchName="b"
+          uiStatus="idle"
+          textScale="sidebar"
+          backgroundTasks={2}
+          hasUnread
+        />,
+      );
+      expect(html).toContain(
+        'data-testid="worktree-row-classic-background-spinner"',
+      );
+      expect(html).toContain('aria-label="2 background tasks running"');
+      expect(html).toContain('fg-tertiary');
+      expect(html).not.toContain(
+        'data-testid="worktree-row-classic-streaming-spinner"',
+      );
+      // One attention dot shows beside it, as beside the working spinner.
+      expect(html).toContain('data-testid="worktree-row-unread"');
+    });
+
+    it('lets a running turn outrank background work', () => {
+      const html = renderToString(
+        <WorktreeRow
+          branchLabel="b"
+          branchName="b"
+          uiStatus="working"
+          textScale="sidebar"
+          isStreaming
+          backgroundTasks={1}
+        />,
+      );
+      expect(html).toContain(
+        'data-testid="worktree-row-classic-streaming-spinner"',
+      );
+      expect(html).not.toContain(
+        'data-testid="worktree-row-classic-background-spinner"',
+      );
+    });
+
     it('shows the loader beside the single top-priority attention dot', () => {
       const html = renderToString(
         <WorktreeRow
@@ -767,12 +809,24 @@ describe('WorktreeRow', () => {
         'Question waiting',
         'Unread messages',
         'Review plan',
-        'Pipeline running',
+        'Workflow running',
         'Discovering environment…',
       ]) {
         expect(html).not.toContain(`title="${label}"`);
       }
     });
+  });
+
+  it('names background work when nothing else claims the list status', () => {
+    const html = renderToString(
+      <WorktreeRow
+        branchLabel="b"
+        branchName="b"
+        uiStatus="idle"
+        backgroundTasks={1}
+      />,
+    );
+    expect(html).toContain('aria-label="1 background task running"');
   });
 
   it('renders the branch label and the raw branch tooltip', () => {
@@ -830,7 +884,7 @@ describe('WorktreeRow', () => {
     expect(html).toContain('data-testid="worktree-row-unread"');
     expect(html).not.toContain('text-amber-400');
     expect(html).toContain('calm-otter');
-    expect(html).toContain('aria-label="Pipeline running"');
+    expect(html).toContain('aria-label="Workflow running"');
     expect(html).toContain('aria-label="Terminal failed"');
     expect(html).toContain('aria-label="Scripts running"');
     expect(html).toContain('tabindex="0"');
@@ -882,7 +936,7 @@ describe('WorktreeRow', () => {
     expect(html).toContain('tabindex="0"');
   });
 
-  it('uses the pre-redesign planning and done colors in classic rows', () => {
+  it('uses the orange planning shield and the shared Done glyph in classic rows', () => {
     const planning = renderToString(
       <WorktreeRow
         branchLabel="Planning"
@@ -905,11 +959,13 @@ describe('WorktreeRow', () => {
     expect(planning).toContain('data-testid="worktree-row-planning-approval"');
     expect(planning).toContain('fg-warning');
     expect(planning).not.toContain('h-2 w-2 rounded-full bg-fg-warning');
-    expect(done).toContain('fg-purple');
+    // Done is the shared status glyph: the green circled check, not purple.
+    expect(done).toContain('data-status-glyph="done"');
+    expect(done).toContain('fg-success-strong');
+    expect(done).not.toContain('fg-purple');
     expect(done).not.toContain('text-purple-400');
     // Done titles keep the same text color as every other row — no dimming.
     expect(done).not.toContain('opacity-70');
-    // Done uses the circled-checkmark glyph (DoneCheckIcon design asset).
     expect(done).toContain('data-glyph="circle-check"');
     expect(done).not.toContain('polyline');
     expect(done).not.toContain('data-testid="worktree-row-status-rail"');
@@ -1076,7 +1132,7 @@ describe('WorktreeRow', () => {
       />,
     );
     expect(paused).toContain('data-testid="worktree-row-paused-pipeline"');
-    expect(paused).toContain('aria-label="Pipeline paused"');
+    expect(paused).toContain('aria-label="Workflow paused"');
     expect(paused).not.toContain(
       'data-testid="worktree-row-planning-approval"',
     );
@@ -1149,7 +1205,7 @@ describe('WorktreeRow', () => {
     expect(unseenFailure).toContain(
       'data-testid="worktree-row-pipeline-attention"',
     );
-    expect(unseenFailure).toContain('aria-label="Pipeline failed"');
+    expect(unseenFailure).toContain('aria-label="Workflow failed"');
     expect(unseenFailure).toContain('tabindex="0"');
 
     // A paused pipeline without a chat plan renders the pipeline glyph,
@@ -1165,7 +1221,7 @@ describe('WorktreeRow', () => {
       />,
     );
     expect(paused).toContain('data-testid="worktree-row-paused-pipeline"');
-    expect(paused).toContain('aria-label="Pipeline paused"');
+    expect(paused).toContain('aria-label="Workflow paused"');
     expect(paused).toContain('tabindex="0"');
 
     // The failure dot outranks the unread dot when both are present.
@@ -1435,7 +1491,7 @@ describe('WorktreeRow', () => {
     );
     expect(running).toContain('worktree-row-pipeline-badge');
     expect(running).not.toContain('fg-info');
-    expect(running).toContain('Pipeline running');
+    expect(running).toContain('Workflow running');
 
     const failed = renderToString(
       <WorktreeRow
@@ -1449,7 +1505,7 @@ describe('WorktreeRow', () => {
     // The rail dot still carries the failure color; the badge inherits.
     expect(failed).toContain('fg-destructive');
     expect(failed).toContain('h-1.5 w-1.5 rounded-full bg-current');
-    expect(failed).toContain('Pipeline failed');
+    expect(failed).toContain('Workflow failed');
 
     const unseen = renderToString(
       <WorktreeRow
@@ -1471,7 +1527,7 @@ describe('WorktreeRow', () => {
         pipelineStatus="paused"
       />,
     );
-    expect(paused).toContain('Pipeline paused');
+    expect(paused).toContain('Workflow paused');
     expect(paused).not.toContain('fg-secondary');
   });
 
@@ -1694,7 +1750,7 @@ describe('WorktreeRow', () => {
       />,
     );
     expect(html).toContain('data-testid="worktree-row-paused-pipeline"');
-    expect(html).toContain('aria-label="Pipeline paused"');
+    expect(html).toContain('aria-label="Workflow paused"');
     expect(html).not.toContain('data-testid="worktree-row-planning-approval"');
     expect(html).toMatch(/fg-warning[^>]*>\s*<svg[^>]*data-app-icon/);
     expect(html).not.toContain('fg-orange');
@@ -3015,8 +3071,24 @@ describe('WorktreeRow', () => {
     );
     expect(html).toContain('PR merged');
     expect(html).toContain('aria-label="PR merged"');
-    expect(html).toContain('fg-purple');
-    expect(html).toContain('h-1.5 w-1.5 rounded-full bg-current');
+    expect(html).toContain('data-status-glyph="done"');
+    expect(html).not.toContain('h-1.5 w-1.5 rounded-full bg-current');
+  });
+
+  it('draws a done worktree whose pull request merged with the Merged glyph', () => {
+    const html = renderToString(
+      <WorktreeRow
+        branchLabel="b"
+        branchName="b"
+        uiStatus="done"
+        runtimeState="done"
+        doneLabel="PR merged"
+        lastKnownPrStatus={{ state: 'merged', label: 'PR #12' }}
+      />,
+    );
+    expect(html).toContain('data-status-glyph="merged"');
+    expect(html).toContain('fg-special-strong');
+    expect(html).not.toContain('data-status-glyph="done"');
   });
 
   it('shows the running-setup label when setupPhase=running-setup', () => {
@@ -3352,13 +3424,14 @@ describe('WorktreeRow', () => {
       expect(html).not.toContain('bg-fg-secondary/16');
     });
 
-    it('renders working as the accent pipeline icon in the rail', () => {
+    it('renders working as the shared neutral Running glyph in the rail', () => {
       const html = renderToString(
         <WorktreeRow branchLabel="b" branchName="b" uiStatus="working" />,
       );
       expect(html).toContain('data-testid="worktree-row-working-pipeline"');
-      // Accent = "running" (spinner/loaders); purple stays reserved for done.
-      expect(html).toContain('fg-accent');
+      // A background workflow is the neutral spinner, never the accent.
+      expect(html).toContain('data-status-glyph="running"');
+      expect(html).not.toMatch(/fg-accent|fg-info/);
       expect(html).not.toContain('fg-purple');
       expect(html).not.toContain(
         'h-1.5 w-1.5 rounded-full bg-current fg-purple',

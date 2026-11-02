@@ -38,7 +38,7 @@ const mockAppDiagnostic = jest.fn<void, [Record<string, unknown>]>();
 const mockConvert = jest.fn();
 const mockConvertMultiRepo = jest.fn();
 const mockList = jest.fn();
-let mockItems: Array<Record<string, unknown>> = [];
+let mockItems: Array<Record<string, unknown> & { id: string }> = [];
 const mockOwnershipType = jest.fn((): string => 'single-repo');
 /** The in-memory pass ledger the production store is swapped for. */
 let mockLedger: OrgProjectMigrationPassesFile | null = null;

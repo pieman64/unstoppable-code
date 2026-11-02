@@ -7,6 +7,7 @@ import {
 import { buildDesktopPrivacyOptInDeepLink } from '../share-deep-link';
 import {
   DESKTOP_SHARE_DEEP_LINK_MAX_LENGTH,
+  buildDesktopOrganizationsSettingsDeepLink,
   buildDesktopPrivacySettingsDeepLink,
   buildDesktopRemoteControlDeepLink,
   buildDesktopShareDeepLink,
@@ -60,6 +61,55 @@ describe('desktop Settings deep links', () => {
     'canopy://settings/privacy',
   ])('rejects non-canonical destination URL %s', (url) => {
     expect(parseDesktopSettingsDeepLink(url, SCHEME)).toBeNull();
+  });
+});
+
+describe('desktop Organizations settings deep links (CAN-5111)', () => {
+  it('builds and parses the exact Organizations destination', () => {
+    const url = buildDesktopOrganizationsSettingsDeepLink(SCHEME);
+    expect(url).toBe('unstoppable-code://settings/organization');
+    expect(parseDesktopSettingsDeepLink(url, SCHEME)).toEqual({
+      destination: 'settings',
+      section: 'organizations',
+    });
+  });
+
+  it('never attaches a privacy opt-in to the Organizations destination', () => {
+    const parsed = parseDesktopSettingsDeepLink(
+      buildDesktopOrganizationsSettingsDeepLink(SCHEME),
+      SCHEME,
+    );
+    expect(parsed).not.toHaveProperty('optIn');
+  });
+
+  it.each([
+    'unstoppable-code://settings/organizations',
+    'unstoppable-code://settings/organization/',
+    'unstoppable-code://settings/organization/extra',
+    'unstoppable-code://settings/organization?code=abc123',
+    'unstoppable-code://settings/organization?',
+    'unstoppable-code://settings/organization#invite',
+    'unstoppable-code://SETTINGS/organization',
+    'unstoppable-code://settings/Organization',
+    'UNSTOPPABLE-CODE://settings/organization',
+    'unstoppable-code://settings:0/organization',
+    'unstoppable-code://@settings/organization',
+    'unstoppable-code://settings/../organization',
+    ' unstoppable-code://settings/organization',
+    'unstoppable-code://settings/organization ',
+    'canopy://settings/organization',
+    'unstoppable-code://settings/organization' + 'a'.repeat(256),
+  ])('rejects non-canonical destination URL %s', (url) => {
+    expect(parseDesktopSettingsDeepLink(url, SCHEME)).toBeNull();
+  });
+
+  it('validates the scheme', () => {
+    expect(() =>
+      buildDesktopOrganizationsSettingsDeepLink('bad scheme'),
+    ).toThrow();
+    expect(
+      parseDesktopSettingsDeepLink('Canopy://settings/organization', 'Canopy'),
+    ).toBeNull();
   });
 });
 
@@ -280,6 +330,27 @@ describe('parseDesktopShareDeepLink', () => {
         SCHEME,
       ),
     ).toEqual({ entity: 'skill', externalId: UUID, intent: 'install' });
+  });
+
+  it('does not accept skill provenance from deep-link query parameters', () => {
+    const query = new URLSearchParams({
+      audience: 'ORGANIZATION',
+      name: 'Forged sharer',
+      owner: 'Forged organization',
+      shareScope: 'team',
+      sharedBy: JSON.stringify({ name: 'Forged sharer' }),
+    });
+    expect(
+      parseDesktopShareDeepLink(
+        `${SCHEME}://share/skills/${UUID}?${query.toString()}`,
+        SCHEME,
+      ),
+    ).toEqual({
+      entity: 'skill',
+      externalId: UUID,
+      intent: 'install',
+      audience: 'ORGANIZATION',
+    });
   });
 
   it('round-trips intent and source through the builder', () => {

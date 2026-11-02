@@ -5,6 +5,7 @@ jest.mock('../lib/github-client', () => ({
 import { getGitHubClient } from '../lib/github-client';
 import {
   invalidateGitHubRepoListCache,
+  listUserRepoSnapshot,
   listUserRepos,
 } from '../lib/github-repo-listing';
 
@@ -22,7 +23,8 @@ interface FakeRepo {
   fork: boolean;
   archived: boolean;
   default_branch: string;
-  updated_at: string;
+  updated_at: string | null;
+  permissions?: { admin: boolean; push: boolean; pull: boolean };
 }
 
 interface FakeRepoListParams {
@@ -253,5 +255,59 @@ describe('listUserRepos', () => {
 
     expect(second[0]?.fullName).toBe('owner/repo-2');
     expect(enqueue).toHaveBeenCalledTimes(2);
+  });
+});
+
+// CAN-4109: the snapshot core.integration.resource.list pages.
+describe('listUserRepoSnapshot', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    invalidateGitHubRepoListCache();
+  });
+
+  it('reads the legacy rows and their access in one order, as one snapshot', async () => {
+    mockPagedResponses([
+      [
+        {
+          ...makeRepo(0),
+          permissions: { admin: true, push: true, pull: true },
+        },
+        { ...makeRepo(1), updated_at: null },
+      ],
+    ]);
+
+    const snapshot = await listUserRepoSnapshot();
+
+    expect(snapshot.repos.map((repo) => repo.fullName)).toEqual([
+      'owner/repo-0',
+      'owner/repo-1',
+    ]);
+    expect(snapshot.repos[1].updatedAt).toBeNull();
+    expect(snapshot.access).toEqual([
+      {
+        fullName: 'owner/repo-0',
+        htmlUrl: 'https://github.com/owner/repo-0',
+        permissions: { pull: true, push: true, admin: true },
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
+      {
+        fullName: 'owner/repo-1',
+        htmlUrl: 'https://github.com/owner/repo-1',
+        permissions: { pull: false, push: false, admin: false },
+        updatedAt: null,
+      },
+    ]);
+    await expect(listUserRepos()).resolves.toBe(snapshot.repos);
+  });
+
+  it('keeps one snapshot id until the listing is re-read', async () => {
+    mockPagedResponses([[makeRepo(0)], [makeRepo(0)]]);
+
+    const first = await listUserRepoSnapshot();
+    await expect(listUserRepoSnapshot()).resolves.toBe(first);
+    invalidateGitHubRepoListCache();
+    const second = await listUserRepoSnapshot();
+
+    expect(second.id).not.toBe(first.id);
   });
 });

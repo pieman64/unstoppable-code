@@ -6,6 +6,7 @@ import {
   createReadyWorktree,
   exerciseSidebarOrderWrite,
 } from './seeders/sidebar-order-writes.mjs';
+import { waitForProjectSettingsSaved } from './projectSettingsDriver.mjs';
 
 async function scrollStableLocatorIntoView(locator) {
   await expect(async () => {
@@ -279,7 +280,9 @@ test('trailing action region never toggles, the hover chevron does, and hiding r
     await expect(alwaysShow).toHaveAttribute('aria-checked', 'true');
     await alwaysShow.click();
     await expect(alwaysShow).toHaveAttribute('aria-checked', 'false');
-    await window.getByRole('button', { name: 'Save local' }).click();
+    // Project settings saves the change as it is made; Back closes it.
+    await waitForProjectSettingsSaved(app);
+    await window.getByTestId('project-settings-back').click();
     await expect(alwaysShow).toBeHidden();
 
     // The pointer is now outside the sidebar row. Saving the hide preference

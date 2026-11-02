@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type JSX,
-  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
@@ -15,36 +14,44 @@ import type {
   TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 import { isImportablePlanFile } from '@canopy/desktop-shared/importable-plan-file';
+import { useCanopyClient } from '@canopy/app-state';
+import {
+  ImportPlanPicker,
+  type ImportPlanFileRow,
+  type ImportPlanPickerGroup,
+  type ImportPlanPickerItem,
+  type ImportPlanSuggestion,
+} from '@canopy/ui-app/plans';
 import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
-import { searchFiles, type FileSearchResult } from '@/lib/fuzzySearch';
-import { getBaseName } from '@/lib/format';
+import { searchFiles } from '@/lib/fuzzySearch';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
-import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
+import { importDetectedPlan } from '@/lib/plans/import-detected-plan';
 import {
-  getFilenameMatchedIndices,
-  splitMatchSegments,
-  type MatchSegment,
-} from '@/components/file-search-palette/file-search-palette-helpers';
+  createTrackedPlanSourceLookup,
+  toSourceFileRootId,
+} from '@/lib/plans/tracked-plan-sources';
+import { getFilenameMatchedIndices } from '@/components/file-search-palette/file-search-palette-helpers';
 import { shouldFetchFileSearchPaletteEntry } from '@/components/file-search-palette/file-search-palette-state';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 const RESULT_LIMIT = 50;
 
-// Stable empty reference so the Zustand selector for detected plans does not
-// return a fresh array each render (which loops useSyncExternalStore —
-// "Maximum update depth exceeded") when no detections exist for this worktree.
+// Stable empty references so the Zustand selectors do not return a fresh
+// array each render (which loops useSyncExternalStore — "Maximum update
+// depth exceeded") when the worktree has no detections or plans.
 const EMPTY_DETECTED_PLANS: DetectedPlanEntry[] = [];
+const EMPTY_TRACKED_PLANS: TrackedPlanData[] = [];
 
 interface ImportPlanModalProps {
   projectId: string;
   worktreeId: string;
   onClose: () => void;
   onImported: (plan: TrackedPlanData) => void;
-  initialTab?: 'search' | 'detected';
+  /** Open an already-tracked plan instead of importing it again. */
+  onOpenTracked?: (planId: string) => void;
   originChatId?: string;
 }
 
@@ -53,18 +60,15 @@ export function ImportPlanModal({
   worktreeId,
   onClose,
   onImported,
-  initialTab,
+  onOpenTracked,
   originChatId,
 }: ImportPlanModalProps): JSX.Element {
-  const [activeTab, setActiveTab] = useState<'search' | 'detected'>(
-    initialTab ?? 'search',
-  );
+  const client = useCanopyClient();
   const [query, setQuery] = useState('');
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [importing, setImporting] = useState(false);
+  const [selectedGroup, setSelectedGroup] =
+    useState<ImportPlanPickerGroup | null>(null);
   const importingRef = useRef(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const itemRefs = useRef<Map<number, HTMLLIElement>>(new Map());
   const deferredQuery = useDeferredValue(query);
 
   const importTrackedPlan = useActivityStore(
@@ -73,6 +77,7 @@ export function ImportPlanModal({
   const loadDetectedPlans = useActivityStore(
     (state) => state.loadDetectedPlans,
   );
+  const loadTrackedPlans = useActivityStore((state) => state.loadTrackedPlans);
   const updateDetectedPlan = useActivityStore(
     (state) => state.updateDetectedPlan,
   );
@@ -82,6 +87,13 @@ export function ImportPlanModal({
   const detectedEntries = useActivityStore(
     (state) => state.detectedPlans[worktreeKey] ?? EMPTY_DETECTED_PLANS,
   );
+  const trackedPlans = useActivityStore(
+    (state) => state.trackedPlans[worktreeKey] ?? EMPTY_TRACKED_PLANS,
+  );
+  const trackedPlansLoaded = useActivityStore(
+    (state) => state.trackedPlanInventoryLoaded[worktreeKey] === true,
+  );
+  const chatTabs = useChatStore((state) => state.worktreeChats[worktreeKey]);
 
   const cacheKey = getWorktreeCacheKey(projectId, worktreeId);
   const { entry, error, isLoading, fetchFileIndex } = useFileListStore(
@@ -102,7 +114,37 @@ export function ImportPlanModal({
     void loadDetectedPlans(projectId, worktreeId);
   }, [loadDetectedPlans, projectId, worktreeId]);
 
-  const results = useMemo(() => {
+  // The duplicate guard needs every tracked plan, which only loads once the
+  // Plans section has shown this worktree.
+  useEffect(() => {
+    if (trackedPlansLoaded) return;
+    void loadTrackedPlans(projectId, worktreeId).catch((): void => undefined);
+  }, [loadTrackedPlans, projectId, trackedPlansLoaded, worktreeId]);
+
+  // The file root that is the worktree itself: `WORKSPACE_ROOT_REPO_ID` in a
+  // multi-repo worktree, the workspace id in a single-repo one. Main stores
+  // imports and detections of either as the workspace root.
+  const worktreeRootFileRootId = useMemo(() => {
+    const repos = entry?.data.repos ?? [];
+    return (
+      repos.find((repo) => repo.rootKind === 'workspace-root') ??
+      repos.find((repo) => repo.repoId === projectId)
+    )?.repoId;
+  }, [entry, projectId]);
+
+  const trackedPlanIdFor = useMemo(
+    () =>
+      createTrackedPlanSourceLookup(
+        trackedPlans,
+        detectedEntries,
+        worktreeRootFileRootId,
+      ),
+    [detectedEntries, trackedPlans, worktreeRootFileRootId],
+  );
+
+  // Searching the whole index is the expensive part, so it does not rerun
+  // when only the tracked plans or detections change.
+  const searchResults = useMemo(() => {
     const repos = (entry?.data.repos ?? [])
       .filter(
         (repo) =>
@@ -113,37 +155,155 @@ export function ImportPlanModal({
         files: repo.files.filter((file) => isImportablePlanFile(file.filename)),
       }));
     return searchFiles(deferredQuery, repos, RESULT_LIMIT);
-  }, [entry, deferredQuery]);
+  }, [deferredQuery, entry]);
 
-  useEffect(() => {
-    if (activeTab === 'search') {
-      inputRef.current?.focus();
-    }
-  }, [activeTab]);
+  const files = useMemo<ImportPlanFileRow[]>(
+    () =>
+      searchResults.map((result) => {
+        const trackedPlanId = trackedPlanIdFor(
+          result.repoId,
+          result.relativePath,
+        );
+        return {
+          key: `${result.repoId}:${result.absolutePath}`,
+          filename: result.filename,
+          relativePath: result.relativePath,
+          repoId: result.repoId,
+          repoName: result.repoName,
+          filenameMatchedIndices: getFilenameMatchedIndices(result),
+          pathMatchedIndices: result.matchedIndices,
+          ...(trackedPlanId ? { trackedPlanId } : {}),
+        };
+      }),
+    [searchResults, trackedPlanIdFor],
+  );
 
-  useEffect(() => {
-    if (results.length === 0) {
-      setSelectedIndex(-1);
-      return;
-    }
-    setSelectedIndex((current) => {
-      if (current < 0) return 0;
-      if (current >= results.length) return results.length - 1;
-      return current;
-    });
-  }, [results]);
+  const { suggestions, hiddenSuggestions } = useMemo(() => {
+    const needle = deferredQuery.trim().toLowerCase();
+    const toSuggestion = (e: DetectedPlanEntry): ImportPlanSuggestion => {
+      const chatTitle = chatTabs?.tabs.find(
+        (tab) => tab.id === e.detectedInChatId,
+      )?.title;
+      const trackedPlanId = trackedPlanIdFor(e.sourceRepoId, e.sourceFilePath);
+      return {
+        id: e.id,
+        sourceRepoId: e.sourceRepoId,
+        sourceFilePath: e.sourceFilePath,
+        ...(chatTitle ? { chatTitle } : {}),
+        ...(trackedPlanId ? { trackedPlanId } : {}),
+      };
+    };
+    const pending = detectedEntries
+      .filter(
+        (e) =>
+          e.status === 'detected' &&
+          (needle.length === 0 ||
+            e.sourceFilePath.toLowerCase().includes(needle)),
+      )
+      .map((e, index) => ({ e, index }))
+      // The chat that opened the picker lists its own files first.
+      .sort((a, b) => {
+        const aOrigin = a.e.detectedInChatId === originChatId ? 0 : 1;
+        const bOrigin = b.e.detectedInChatId === originChatId ? 0 : 1;
+        return aOrigin - bOrigin || a.index - b.index;
+      })
+      .map(({ e }) => toSuggestion(e));
+    return {
+      suggestions: pending,
+      hiddenSuggestions: detectedEntries
+        .filter((e) => e.status === 'dismissed')
+        .map(toSuggestion),
+    };
+  }, [
+    chatTabs,
+    deferredQuery,
+    detectedEntries,
+    originChatId,
+    trackedPlanIdFor,
+  ]);
 
-  useEffect(() => {
-    if (selectedIndex < 0) return;
-    itemRefs.current.get(selectedIndex)?.scrollIntoView({ block: 'nearest' });
-  }, [selectedIndex]);
+  const reportImportError = useCallback(
+    (err: unknown): void => {
+      addToast(
+        err instanceof Error ? err.message : 'Failed to import plan',
+        'error',
+        undefined,
+        { projectId, worktreeId },
+      );
+    },
+    [addToast, projectId, worktreeId],
+  );
 
-  const runImport = useCallback(
-    async (filePath: string | undefined, repoId?: string): Promise<void> => {
+  const runExclusive = useCallback(
+    async (task: () => Promise<void>): Promise<void> => {
       if (importingRef.current) return;
       importingRef.current = true;
       setImporting(true);
       try {
+        await task();
+      } catch (err: unknown) {
+        reportImportError(err);
+      } finally {
+        importingRef.current = false;
+        setImporting(false);
+      }
+    },
+    [reportImportError],
+  );
+
+  const handleOpenTracked = useCallback(
+    (planId: string): void => {
+      if (onOpenTracked) {
+        onOpenTracked(planId);
+        return;
+      }
+      const plan = useActivityStore
+        .getState()
+        .trackedPlans[
+          worktreeKey
+        ]?.find((candidate) => candidate.id === planId);
+      if (plan) onImported(plan);
+    },
+    [onImported, onOpenTracked, worktreeKey],
+  );
+
+  // Rows offer import until the tracked inventory loads, so recheck it before
+  // importing: a file that already is a plan opens that plan instead.
+  const findTrackedPlanId = useCallback(
+    async (repoId: string, filePath: string): Promise<string | undefined> => {
+      if (
+        !useActivityStore.getState().trackedPlanInventoryLoaded[worktreeKey]
+      ) {
+        await loadTrackedPlans(projectId, worktreeId).catch(
+          (): void => undefined,
+        );
+      }
+      const latest = useActivityStore.getState();
+      return createTrackedPlanSourceLookup(
+        latest.trackedPlans[worktreeKey] ?? EMPTY_TRACKED_PLANS,
+        latest.detectedPlans[worktreeKey] ?? EMPTY_DETECTED_PLANS,
+        worktreeRootFileRootId,
+      )(repoId, filePath);
+    },
+    [
+      loadTrackedPlans,
+      projectId,
+      worktreeId,
+      worktreeKey,
+      worktreeRootFileRootId,
+    ],
+  );
+
+  const runImport = useCallback(
+    (filePath: string | undefined, repoId?: string): Promise<void> =>
+      runExclusive(async () => {
+        if (filePath && repoId) {
+          const trackedPlanId = await findTrackedPlanId(repoId, filePath);
+          if (trackedPlanId) {
+            handleOpenTracked(trackedPlanId);
+            return;
+          }
+        }
         const plan = await importTrackedPlan(
           projectId,
           worktreeId,
@@ -156,369 +316,138 @@ export function ImportPlanModal({
         }
         // A null result from Browse means the native dialog was cancelled;
         // keep the modal open so the user can pick again.
-      } catch (err: unknown) {
-        addToast(
-          err instanceof Error ? err.message : 'Failed to import plan',
-          'error',
-          undefined,
-          { projectId, worktreeId },
-        );
-      } finally {
-        importingRef.current = false;
-        setImporting(false);
-      }
-    },
-    [addToast, importTrackedPlan, onClose, onImported, projectId, worktreeId],
-  );
-
-  const runImportDetectedEntry = useCallback(
-    async (entry: DetectedPlanEntry): Promise<void> => {
-      if (importingRef.current) return;
-      importingRef.current = true;
-      setImporting(true);
-      try {
-        const plan = await importTrackedPlan(
-          projectId,
-          worktreeId,
-          entry.sourceFilePath,
-          entry.sourceRepoId,
-        );
-        if (plan) {
-          await updateDetectedPlan(projectId, worktreeId, entry.id, {
-            status: 'imported',
-            importedPlanId: plan.id,
-          });
-          onImported(plan);
-          if (originChatId) {
-            useChatStore
-              .getState()
-              .queuePlanImportInstruction(originChatId, entry.sourceFilePath);
-          }
-        }
-      } catch (err: unknown) {
-        addToast(
-          err instanceof Error ? err.message : 'Failed to import plan',
-          'error',
-          undefined,
-          { projectId, worktreeId },
-        );
-      } finally {
-        importingRef.current = false;
-        setImporting(false);
-      }
-    },
+      }),
     [
-      addToast,
+      findTrackedPlanId,
+      handleOpenTracked,
       importTrackedPlan,
+      onClose,
       onImported,
-      originChatId,
       projectId,
-      updateDetectedPlan,
+      runExclusive,
       worktreeId,
     ],
   );
 
-  const runDismissDetectedEntry = useCallback(
-    async (entry: DetectedPlanEntry): Promise<void> => {
-      try {
-        await updateDetectedPlan(projectId, worktreeId, entry.id, {
-          status: 'dismissed',
+  const runImportSuggestion = useCallback(
+    (suggestion: ImportPlanSuggestion): Promise<void> =>
+      runExclusive(async () => {
+        const detected = detectedEntries.find((e) => e.id === suggestion.id);
+        if (!detected) return;
+        const trackedPlanId = await findTrackedPlanId(
+          detected.sourceRepoId,
+          detected.sourceFilePath,
+        );
+        if (trackedPlanId) {
+          handleOpenTracked(trackedPlanId);
+          return;
+        }
+        // Only the chat that found the file hears about its import; the
+        // picker also lists other chats' suggestions.
+        const plan = await importDetectedPlan({
+          projectId,
+          worktreeId,
+          entry: detected,
+          ...(originChatId && detected.detectedInChatId === originChatId
+            ? { originChatId }
+            : {}),
         });
-      } catch (err: unknown) {
+        if (plan) onImported(plan);
+      }),
+    [
+      detectedEntries,
+      findTrackedPlanId,
+      handleOpenTracked,
+      onImported,
+      originChatId,
+      projectId,
+      runExclusive,
+      worktreeId,
+    ],
+  );
+
+  const handleImport = useCallback(
+    (item: ImportPlanPickerItem): void => {
+      if (item.kind === 'suggestion') {
+        void runImportSuggestion(item.suggestion);
+        return;
+      }
+      void runImport(item.file.relativePath, item.file.repoId);
+    },
+    [runImport, runImportSuggestion],
+  );
+
+  const handleDismiss = useCallback(
+    (suggestion: ImportPlanSuggestion): void => {
+      void updateDetectedPlan(projectId, worktreeId, suggestion.id, {
+        status: 'dismissed',
+      }).catch((err: unknown) => {
         addToast(
-          err instanceof Error ? err.message : 'Failed to dismiss plan',
+          err instanceof Error ? err.message : 'Failed to hide plan',
           'error',
           undefined,
           { projectId, worktreeId },
         );
-      }
+      });
     },
     [addToast, projectId, updateDetectedPlan, worktreeId],
   );
 
-  function handleSelect(result: FileSearchResult | undefined): void {
-    if (!result) return;
-    void runImport(result.relativePath, result.repoId);
-  }
-
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (activeTab !== 'search') return;
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      if (results.length === 0) return;
-      setSelectedIndex((current) =>
-        current < 0 ? 0 : (current + 1) % results.length,
-      );
-      return;
-    }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      if (results.length === 0) return;
-      setSelectedIndex((current) =>
-        current <= 0 ? results.length - 1 : current - 1,
-      );
-      return;
-    }
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      handleSelect(selectedIndex >= 0 ? results[selectedIndex] : undefined);
-    }
-  }
-
-  const showLoading = isLoading && !entry;
-  const showEmpty = !showLoading && results.length === 0 && !error;
-
-  const scopedDetectedEntries = detectedEntries.filter(
-    (e) => !originChatId || e.detectedInChatId === originChatId,
+  const loadPreview = useCallback(
+    async (item: ImportPlanPickerItem): Promise<string | null> => {
+      const target =
+        item.kind === 'suggestion'
+          ? {
+              repoId: toSourceFileRootId(
+                item.suggestion.sourceRepoId,
+                worktreeRootFileRootId,
+              ),
+              relativePath: item.suggestion.sourceFilePath,
+            }
+          : { repoId: item.file.repoId, relativePath: item.file.relativePath };
+      // `file.read` is size-bounded by main, so a large file reads truncated.
+      const preview = await client.query('file.read', {
+        projectId,
+        worktreeId,
+        ...target,
+      });
+      return preview.content;
+    },
+    [client, projectId, worktreeId, worktreeRootFileRootId],
   );
-  const activeDetected = scopedDetectedEntries.filter(
-    (e) => e.status === 'detected' || e.status === 'imported',
-  );
-  const dismissedEntries = scopedDetectedEntries.filter(
-    (e) => e.status === 'dismissed',
-  );
+
   useCurrentUiStateReporter('plans.importModal', {
     open: true,
     projectId,
     worktreeId,
-    activeTab,
+    ...(selectedGroup ? { selectedGroup } : {}),
     importing,
-    detectedEntryCount: scopedDetectedEntries.length,
-    activeDetectedEntryCount: activeDetected.length,
-    dismissedEntryCount: dismissedEntries.length,
+    detectedEntryCount: detectedEntries.length,
+    activeDetectedEntryCount: detectedEntries.filter(
+      (e) => e.status === 'detected',
+    ).length,
+    dismissedEntryCount: hiddenSuggestions.length,
     ...(originChatId ? { originChatId } : {}),
   });
 
   return (
-    <div
-      className="fixed inset-0 z-modal flex items-start justify-center bg-overlay-scrim px-4 pt-[10vh]"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Import plan"
-        data-testid="import-plan-modal"
-        className="flex w-full max-w-160 flex-col overflow-hidden rounded-2xl bg-card shadow-xl"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={handleKeyDown}
-      >
-        <div className="flex items-center justify-between gap-4 border-b px-4 py-3">
-          <h2 className="text-s font-semibold fg-primary">Import plan</h2>
-          <button
-            type="button"
-            data-testid="import-plan-browse"
-            disabled={importing}
-            onClick={() => void runImport(undefined)}
-            className="focus-ring shrink-0 rounded-md border bg-secondary px-3 py-1.5 text-xs fg-primary transition hover:bg-accent-subtle hover:fg-accent disabled:opacity-50"
-          >
-            Browse…
-          </button>
-        </div>
-
-        <div className="flex gap-1 border-b px-4 py-2">
-          <button
-            type="button"
-            data-testid="import-plan-tab-search"
-            onClick={() => setActiveTab('search')}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-              activeTab === 'search'
-                ? 'bg-accent-subtle fg-accent'
-                : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-            }`}
-          >
-            Search
-          </button>
-          <button
-            type="button"
-            data-testid="import-plan-tab-detected"
-            onClick={() => setActiveTab('detected')}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-              activeTab === 'detected'
-                ? 'bg-accent-subtle fg-accent'
-                : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-            }`}
-          >
-            Detected
-          </button>
-        </div>
-
-        {activeTab === 'search' && (
-          <>
-            <div
-              className="border-b bg-fg-primary/[0.03] px-4 py-2 text-xs fg-secondary"
-              data-testid="import-plan-hint"
-            >
-              You can tell your agent{' '}
-              <span className="font-mono fg-primary/80">
-                {'"Import @<file> as a plan"'}
-              </span>{' '}
-              to import directly from chat
-            </div>
-
-            <div className="border-b px-4 py-3">
-              <input
-                ref={inputRef}
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  setSelectedIndex(0);
-                }}
-                placeholder="Search files (.md or .txt)…"
-                data-testid="import-plan-input"
-                className="w-full bg-transparent text-m fg-primary outline-none placeholder:fg-secondary"
-              />
-            </div>
-
-            <div className="max-h-88 overflow-y-auto">
-              {showLoading && (
-                <div className="flex items-center justify-center px-4 py-8">
-                  <LoadingSpinner tone="secondary" />
-                </div>
-              )}
-              {error && (
-                <div className="px-4 py-8 text-center text-s fg-destructive">
-                  {error}
-                </div>
-              )}
-              {showEmpty && (
-                <div className="px-4 py-8 text-center text-s fg-secondary">
-                  {deferredQuery
-                    ? 'No matching files'
-                    : 'No importable files in this worktree'}
-                </div>
-              )}
-              {!showLoading && !error && results.length > 0 && (
-                <ul role="listbox" aria-label="Files" className="py-2">
-                  {results.map((result, index) => {
-                    const isSelected = index === selectedIndex;
-                    const filenameSegments = splitMatchSegments(
-                      result.filename,
-                      getFilenameMatchedIndices(result),
-                    );
-                    const pathSegments = splitMatchSegments(
-                      result.relativePath,
-                      result.matchedIndices,
-                    );
-                    return (
-                      <li
-                        key={`${result.repoId}:${result.absolutePath}`}
-                        ref={(node): void => {
-                          if (node) {
-                            itemRefs.current.set(index, node);
-                          } else {
-                            itemRefs.current.delete(index);
-                          }
-                        }}
-                      >
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={isSelected}
-                          data-testid="import-plan-result"
-                          disabled={importing}
-                          onMouseEnter={() => setSelectedIndex(index)}
-                          onClick={() => handleSelect(result)}
-                          className={`flex w-full items-center justify-between gap-4 px-4 py-2 text-left transition-colors disabled:opacity-50 ${
-                            isSelected
-                              ? 'bg-accent-subtle fg-accent'
-                              : 'fg-primary hover:bg-secondary'
-                          }`}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-s font-medium">
-                              <HighlightedSegments
-                                segments={filenameSegments}
-                              />
-                            </div>
-                            <div className="mt-0.5 truncate text-xs fg-secondary">
-                              <HighlightedSegments segments={pathSegments} />
-                            </div>
-                          </div>
-                          <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
-                            {result.repoName}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-
-            <div className="flex items-center justify-between border-t px-4 py-3 text-xs fg-secondary">
-              <span>Enter to import</span>
-              <span>Esc to close</span>
-              <span>↑↓ to navigate</span>
-            </div>
-          </>
-        )}
-
-        {activeTab === 'detected' && (
-          <div className="max-h-104 overflow-y-auto">
-            {scopedDetectedEntries.length === 0 && (
-              <div className="px-4 py-8 text-center text-s fg-secondary">
-                No plan files detected in recent chat messages
-              </div>
-            )}
-            {activeDetected.length > 0 && (
-              <ul className="divide-y py-1">
-                {activeDetected.map((e) => (
-                  <DetectedEntryRow
-                    key={e.id}
-                    entry={e}
-                    importing={importing}
-                    onImport={(): void => {
-                      void runImportDetectedEntry(e);
-                    }}
-                    onDismiss={
-                      e.status === 'detected'
-                        ? (): void => {
-                            void runDismissDetectedEntry(e);
-                          }
-                        : undefined
-                    }
-                  />
-                ))}
-              </ul>
-            )}
-            {dismissedEntries.length > 0 && (
-              <details
-                data-testid="import-plan-dismissed-section"
-                className="group border-t"
-              >
-                <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-xs fg-secondary hover:fg-primary">
-                  <AppCatalogChevronRightMediumIcon
-                    width="12"
-                    height="12"
-                    className="shrink-0 transition group-open:rotate-90"
-                  />
-                  {dismissedEntries.length} dismissed
-                </summary>
-                <ul className="divide-y">
-                  {dismissedEntries.map((e) => (
-                    <DetectedEntryRow
-                      key={e.id}
-                      entry={e}
-                      importing={importing}
-                      onImport={(): void => {
-                        void runImportDetectedEntry(e);
-                      }}
-                      onDismiss={undefined}
-                    />
-                  ))}
-                </ul>
-              </details>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+    <ImportPlanPicker
+      suggestions={suggestions}
+      hiddenSuggestions={hiddenSuggestions}
+      files={files}
+      query={query}
+      onQueryChange={setQuery}
+      loading={isLoading && !entry}
+      error={error ?? null}
+      importing={importing}
+      onImport={handleImport}
+      onOpenTracked={handleOpenTracked}
+      onDismissSuggestion={handleDismiss}
+      onBrowse={(): void => void runImport(undefined)}
+      onClose={onClose}
+      loadPreview={loadPreview}
+      onSelectedGroupChange={setSelectedGroup}
+    />
   );
 }
 
@@ -531,109 +460,30 @@ export function ImportPlanModalHost(): JSX.Element {
   if (!importModalRequest) {
     return <></>;
   }
-  const { originChatId } = importModalRequest;
+  const { projectId, worktreeId, originChatId } = importModalRequest;
+
+  // Import runs from the plan's worktree (its plan list or a chat's detection
+  // notice), so the plan opens there, beside the chat that asked for it when
+  // there is one. An already-tracked file opens its existing plan the same way.
+  const openPlan = (planId: string): void => {
+    void openTrackedPlan(
+      { projectId, worktreeId, planId },
+      originChatId
+        ? { navigate: false, origin: { chatTabId: originChatId } }
+        : { navigate: false },
+    );
+    closeImportModal();
+  };
 
   return createPortal(
     <ImportPlanModal
-      projectId={importModalRequest.projectId}
-      worktreeId={importModalRequest.worktreeId}
-      initialTab={importModalRequest.initialTab}
+      projectId={projectId}
+      worktreeId={worktreeId}
       originChatId={originChatId}
       onClose={closeImportModal}
-      onImported={(plan): void => {
-        // Import runs from the plan's worktree (its plan list or a chat's
-        // detection banner), so the new plan opens there, beside the chat
-        // that asked for it when there is one.
-        void openTrackedPlan(
-          {
-            projectId: plan.projectId,
-            worktreeId: plan.worktreeId,
-            planId: plan.id,
-          },
-          originChatId
-            ? { navigate: false, origin: { chatTabId: originChatId } }
-            : { navigate: false },
-        );
-        closeImportModal();
-      }}
+      onImported={(plan): void => openPlan(plan.id)}
+      onOpenTracked={openPlan}
     />,
     document.body,
-  );
-}
-
-interface DetectedEntryRowProps {
-  entry: DetectedPlanEntry;
-  importing: boolean;
-  onImport: () => void;
-  onDismiss: (() => void) | undefined;
-}
-
-function DetectedEntryRow({
-  entry,
-  importing,
-  onImport,
-  onDismiss,
-}: DetectedEntryRowProps): JSX.Element {
-  const filename = getBaseName(entry.sourceFilePath);
-  const isImported = entry.status === 'imported';
-
-  return (
-    <li className="flex items-center justify-between gap-3 px-4 py-2.5">
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-s font-medium fg-primary">{filename}</div>
-        <div className="mt-0.5 truncate text-xs fg-secondary">
-          {entry.sourceFilePath}
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {isImported ? (
-          <span className="rounded-full bg-success-subtle px-2 py-0.5 text-2xs font-medium fg-success">
-            Imported
-          </span>
-        ) : null}
-        <button
-          type="button"
-          data-testid={`import-plan-detected-import-${entry.id}`}
-          disabled={importing || isImported}
-          onClick={onImport}
-          className="focus-ring rounded-md border bg-secondary px-2.5 py-1 text-xs fg-primary transition hover:bg-accent-subtle hover:fg-accent disabled:opacity-50"
-        >
-          Import
-        </button>
-        {onDismiss !== undefined ? (
-          <button
-            type="button"
-            data-testid={`import-plan-detected-dismiss-${entry.id}`}
-            disabled={importing}
-            onClick={onDismiss}
-            className="focus-ring rounded-md px-2.5 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary disabled:opacity-50"
-          >
-            Dismiss
-          </button>
-        ) : null}
-      </div>
-    </li>
-  );
-}
-
-interface HighlightedSegmentsProps {
-  segments: MatchSegment[];
-}
-
-function HighlightedSegments({
-  segments,
-}: HighlightedSegmentsProps): JSX.Element {
-  return (
-    <>
-      {segments.map((segment, index) =>
-        segment.highlighted ? (
-          <mark key={index} className="bg-transparent font-semibold fg-accent">
-            {segment.text}
-          </mark>
-        ) : (
-          <span key={index}>{segment.text}</span>
-        ),
-      )}
-    </>
   );
 }

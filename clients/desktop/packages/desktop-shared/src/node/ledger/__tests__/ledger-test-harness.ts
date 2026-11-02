@@ -10,6 +10,7 @@ import type {
   LedgerAttribution,
   LedgerAuthorDetails,
   LedgerContainer,
+  LedgerGlobalOwner,
   LedgerOrigin,
   LedgerUpdateEntryParams,
 } from '@canopy/protocol/canopy-core';
@@ -21,6 +22,7 @@ import type {
   LedgerAddEntryInput,
   LedgerCommitHookContext,
   LedgerRepositoryOptions,
+  LedgerScopeRecord,
   LedgerStoreOperation,
   LedgerUpdateEntryInput,
 } from '../types';
@@ -38,6 +40,54 @@ export function worktreeContainer(
 export const WORKTREE_CONTAINER: LedgerContainer =
   worktreeContainer('worktree-1');
 export const CONTAINER_CREATED_AT = '2026-09-01T08:00:00.000Z';
+
+export const PERSONAL_OWNER: LedgerGlobalOwner = { kind: 'personal' };
+
+export function organizationOwner(organizationId: string): LedgerGlobalOwner {
+  return { kind: 'organization', organizationId };
+}
+
+export const ORGANIZATION_OWNER = organizationOwner(
+  '00000000-0000-4000-8000-00000000a001',
+);
+export const OTHER_ORGANIZATION_OWNER = organizationOwner(
+  '00000000-0000-4000-8000-00000000a002',
+);
+
+export function globalContainer(owner: LedgerGlobalOwner): LedgerContainer {
+  return { kind: 'global', owner };
+}
+
+/** Binds the global Ledger of one owner and account under the test authority. */
+export function bindGlobal(
+  repository: LedgerRepository,
+  owner: LedgerGlobalOwner,
+  accountId: string | null,
+): LedgerScopeRecord {
+  return repository.bindGlobalScope({
+    authorityId: AUTHORITY_ID,
+    owner,
+    accountId,
+  }).scope;
+}
+
+/** The rows of `ledger_global_bindings`, ordered by owner and account key. */
+export function readGlobalBindings(
+  databasePath: string,
+): { ownerKey: string; accountKey: string; ledgerId: string }[] {
+  return readLedgerDatabase(databasePath, (raw) =>
+    raw
+      .prepare(
+        'SELECT owner_key, account_key, ledger_id FROM ledger_global_bindings ORDER BY owner_key, account_key',
+      )
+      .all()
+      .map((row) => ({
+        ownerKey: String(row.owner_key),
+        accountKey: String(row.account_key),
+        ledgerId: String(row.ledger_id),
+      })),
+  );
+}
 
 export const NO_DETAILS: LedgerAuthorDetails = {
   harness: null,

@@ -29,4 +29,6 @@ export type CodexErrorInfo =
   | { responseStreamDisconnected: { httpStatusCode: number | null } }
   | { responseTooManyFailedAttempts: { httpStatusCode: number | null } }
   | { activeTurnNotSteerable: { turnKind: NonSteerableTurnKind } }
-  | 'other';
+  | 'other'
+  | string
+  | { [key: string]: unknown };

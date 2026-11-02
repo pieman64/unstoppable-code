@@ -1,6 +1,11 @@
 import type { FeedbackSubmitRequest } from '@canopy/desktop-shared/types';
 import { requestCanopyCloudJson } from '../canopy-cloud/client';
-import { prepareFeedbackBundle } from '../feedback/feedback-bundle';
+import {
+  cleanupStaleTemporaryFeedbackBundles,
+  prepareFeedbackBundle,
+  releaseTemporaryFeedbackBundle,
+} from '../feedback/feedback-bundle';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { submitFeedback } from '../feedback/feedback-submit';
 
 jest.mock('../canopy-cloud/client', () => ({
@@ -9,6 +14,12 @@ jest.mock('../canopy-cloud/client', () => ({
 
 jest.mock('../feedback/feedback-bundle', () => ({
   prepareFeedbackBundle: jest.fn(),
+  cleanupStaleTemporaryFeedbackBundles: jest.fn(),
+  releaseTemporaryFeedbackBundle: jest.fn(),
+}));
+
+jest.mock('../lib/main-process-logging', () => ({
+  logMainProcessWarn: jest.fn(),
 }));
 
 const mockReadFile = jest.fn();
@@ -36,11 +47,14 @@ const baseRequest: FeedbackSubmitRequest = {
 
 describe('submitFeedback', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
+    jest
+      .mocked(cleanupStaleTemporaryFeedbackBundles)
+      .mockResolvedValue(undefined);
     mockReadFile.mockResolvedValue(Buffer.from('zip-bytes'));
     mockRm.mockResolvedValue(undefined);
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
-    global.fetch = fetchMock as unknown as typeof fetch;
+    global.fetch = fetchMock;
   });
 
   afterEach(() => {
@@ -113,6 +127,9 @@ describe('submitFeedback', () => {
 
     // Temp file removed.
     expect(mockRm).toHaveBeenCalledWith('/tmp/feedback.zip', { force: true });
+    expect(releaseTemporaryFeedbackBundle).toHaveBeenCalledWith(
+      '/tmp/feedback.zip',
+    );
   });
 
   it('scopes a chat-area report to the chat project with chat details included', async () => {
@@ -188,6 +205,7 @@ describe('submitFeedback', () => {
     expect(result).toEqual({ submitted: true });
     expect(mockedPrepare).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(cleanupStaleTemporaryFeedbackBundles).not.toHaveBeenCalled();
     expect(mockedRequest).toHaveBeenCalledTimes(1);
   });
 
@@ -202,7 +220,102 @@ describe('submitFeedback', () => {
 
     await expect(submitFeedback(baseRequest)).rejects.toThrow('boom');
     expect(mockRm).toHaveBeenCalledWith('/tmp/feedback.zip', { force: true });
+    expect(releaseTemporaryFeedbackBundle).toHaveBeenCalledWith(
+      '/tmp/feedback.zip',
+    );
   });
+
+  it('files exactly one report without diagnostics when preparation fails', async () => {
+    mockedPrepare.mockRejectedValueOnce(new Error('/private/secret/path'));
+    mockedRequest.mockResolvedValueOnce({
+      reportId: 'issue-uuid',
+      uploadUrl: 'unused',
+      filePath: 'unused',
+    });
+    await expect(submitFeedback(baseRequest)).resolves.toEqual({
+      submitted: true,
+    });
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+    const body = mockedRequest.mock.calls[0]?.[1]?.body;
+    expect(typeof body).toBe('string');
+    const payload: unknown =
+      typeof body === 'string' ? JSON.parse(body) : undefined;
+    expect(payload).toMatchObject({ attachDiagnostics: false });
+    expect(payload).not.toHaveProperty('diagnosticsSizeBytes');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
+  it.each(['ENOENT', 'EACCES', 'EMFILE', 'ENOSPC', '/private/token-secret'])(
+    'logs only a bounded failure category for %s',
+    async (code) => {
+      mockedPrepare.mockRejectedValueOnce(
+        Object.assign(new Error('/private/token-secret'), { code }),
+      );
+      mockedRequest.mockResolvedValueOnce({ reportId: 'issue-uuid' });
+      await submitFeedback(baseRequest);
+      expect(logMainProcessWarn).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify(jest.mocked(logMainProcessWarn).mock.calls);
+      expect(logged).not.toContain('private');
+      expect(logged).not.toContain('token-secret');
+      expect(logged).toMatch(/missing|inaccessible|resource-limit|io|unknown/);
+    },
+  );
+
+  it('does not mask authentication/report failure after preparation fallback', async () => {
+    mockedPrepare.mockRejectedValueOnce(new Error('preparation failed'));
+    mockedRequest.mockRejectedValueOnce(new Error('authentication failed'));
+    await expect(submitFeedback(baseRequest)).rejects.toThrow(
+      'authentication failed',
+    );
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps stale cleanup failure best-effort', async () => {
+    jest
+      .mocked(cleanupStaleTemporaryFeedbackBundles)
+      .mockRejectedValueOnce(new Error('sweep failed'));
+    mockedPrepare.mockResolvedValueOnce({
+      filename: 'feedback.zip',
+      absolutePath: '/tmp/feedback.zip',
+      createdAt: '',
+      sizeBytes: 1,
+    });
+    mockedRequest.mockResolvedValueOnce({ reportId: 'issue-uuid' });
+    await expect(submitFeedback(baseRequest)).resolves.toEqual({
+      submitted: true,
+    });
+    expect(mockedPrepare).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['upload', 'commit', 'cleanup'])(
+    'keeps %s failure best-effort and releases ownership',
+    async (failure) => {
+      mockedPrepare.mockResolvedValueOnce({
+        filename: 'feedback.zip',
+        absolutePath: '/tmp/feedback.zip',
+        createdAt: '',
+        sizeBytes: 1,
+      });
+      mockedRequest.mockResolvedValueOnce({
+        reportId: 'issue-uuid',
+        uploadUrl: 'https://gcs.example/upload',
+        filePath: 'feedback.zip',
+      });
+      if (failure === 'upload')
+        fetchMock.mockRejectedValueOnce(new Error('upload failed'));
+      if (failure === 'commit')
+        mockedRequest.mockRejectedValueOnce(new Error('commit failed'));
+      if (failure === 'cleanup')
+        mockRm.mockRejectedValueOnce(new Error('cleanup failed'));
+      await expect(submitFeedback(baseRequest)).resolves.toEqual({
+        submitted: true,
+      });
+      expect(releaseTemporaryFeedbackBundle).toHaveBeenCalledWith(
+        '/tmp/feedback.zip',
+      );
+    },
+  );
 
   it('rejects a blank description before doing any work', async () => {
     await expect(

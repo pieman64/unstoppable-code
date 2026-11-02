@@ -32,8 +32,14 @@ describe('ForkedFromLink', () => {
   });
 
   it('switches with the Cowork project id and resolves live or archived chats', async () => {
-    const switchChatProject = jest.fn(() => Promise.resolve(true));
-    const selectChat = jest.fn(() => Promise.resolve());
+    const switchChatProject = jest.fn<
+      Promise<boolean>,
+      Parameters<typeof initialStandaloneState.switchChatProject>
+    >(() => Promise.resolve(true));
+    const selectChat = jest.fn<
+      Promise<boolean>,
+      Parameters<typeof initialStandaloneState.selectChat>
+    >(() => Promise.resolve(true));
     useStandaloneChatStore.setState({
       activeChatProjectId: 'another-workspace',
       switchChatProject,

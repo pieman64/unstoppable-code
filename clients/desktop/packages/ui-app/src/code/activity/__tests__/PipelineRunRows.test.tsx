@@ -1,7 +1,11 @@
 /** @jest-environment jsdom */
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot } from 'react-dom/client';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
+import {
+  BADGE_MUTED_TONE_CLASS,
+  BADGE_TONE_CLASS,
+  OPERATIONAL_STATUS_COLORS,
+} from '@canopy/ui-shared/lib';
 import {
   ActiveRunRow,
   CompletedRunRow,
@@ -56,6 +60,7 @@ describe('PipelineRunRows', () => {
                   steps: {},
                 },
               },
+              job_groups: {},
               event_name: 'manual',
             }}
           />,
@@ -139,6 +144,99 @@ describe('PipelineRunRows', () => {
     expect(onResume).not.toHaveBeenCalled();
     expect(onOpenDetail).toHaveBeenCalledTimes(1);
 
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('renders no Cancel chip on an active tree row without onCancel', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <PipelineRunTreeRow
+          node={{ summary: baseSummary, depth: 0, children: [] }}
+          expandedIds={new Set()}
+          onToggleExpand={jest.fn()}
+          statesById={{}}
+          cancellingId={null}
+          resumingId={null}
+          onOpenDetail={jest.fn()}
+          onResume={jest.fn()}
+          onChatFollowUp={jest.fn()}
+          onReportChatFollowUp={jest.fn()}
+          onViewReport={jest.fn()}
+          onPipelineFollowUp={jest.fn()}
+          onOpenPlan={jest.fn()}
+          onRetry={jest.fn()}
+          onRerun={jest.fn()}
+          chatFollowUpDisabled={false}
+          retryingIds={new Set()}
+          rerunningIds={new Set()}
+          debuggingFailureId={null}
+          summaryLookup={{ 'run-1': baseSummary }}
+          onOpenSource={jest.fn()}
+          parentChain={[]}
+        />,
+      );
+    });
+    expect(
+      container.querySelector('[data-testid="pipeline-run-card-run-1"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="pipeline-run-cancel-run-1"]'),
+    ).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('renders no action chips a host did not supply', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const failed: PipelineRunSummary = {
+      ...baseSummary,
+      status: 'failure',
+      has_plan: true,
+      has_report: true,
+    };
+    act(() => {
+      root.render(
+        <CompletedRunRow
+          summary={failed}
+          onOpenDetail={jest.fn()}
+          onResumePauseReason={jest.fn()}
+          onJobClick={jest.fn()}
+          retrying={false}
+          rerunning={false}
+          debuggingFailureId={null}
+          summaryLookup={{ 'run-1': failed }}
+          onOpenSource={jest.fn()}
+        />,
+      );
+    });
+    expect(
+      container.querySelector('[data-testid="pipeline-run-card-run-1"]'),
+    ).not.toBeNull();
+    for (const action of [
+      'retry',
+      'rerun',
+      'plan',
+      'chat-follow-up',
+      'pipeline-follow-up',
+      'report-follow-up',
+      'view-report',
+      'debug-failure',
+    ]) {
+      expect(
+        container.querySelector(`[data-testid="pipeline-run-${action}-run-1"]`),
+      ).toBeNull();
+    }
+    const groupLabels = Array.from(container.querySelectorAll('span')).map(
+      (span) => span.textContent,
+    );
+    expect(groupLabels).not.toContain('Plan');
+    expect(groupLabels).not.toContain('Report');
     act(() => root.unmount());
     container.remove();
   });
@@ -388,6 +486,7 @@ describe('PipelineRunRows', () => {
           executionState={{
             pipeline_snapshot: { jobs: {} },
             jobs: {},
+            job_groups: {},
             event_name: 'manual',
           }}
           onOpenDetail={jest.fn()}
@@ -493,12 +592,8 @@ describe('PipelineRunRows', () => {
   });
 
   describe('row chip standard', () => {
-    const STATUS_BADGE_GEOMETRY = [
-      'h-5',
-      'rounded-full',
-      'text-3xs',
-      'ring-[length:var(--border-hairline)]',
-    ];
+    // The shared Badge: an 18px capsule with no ring or border.
+    const STATUS_BADGE_GEOMETRY = ['h-4.5', 'rounded-full', 'text-2xs'];
     const ACTION_BUTTON_GEOMETRY = [
       'h-6',
       'rounded-md',
@@ -576,27 +671,15 @@ describe('PipelineRunRows', () => {
 
       const statusPill = findSpan(container, 'paused');
       expectGeometry(statusPill, STATUS_BADGE_GEOMETRY);
-      expect(statusPill?.className).toContain(
-        OPERATIONAL_STATUS_COLORS.paused.backgroundSubtle,
-      );
-      expect(statusPill?.className).toContain(
-        OPERATIONAL_STATUS_COLORS.paused.foreground,
-      );
-      expect(statusPill?.className).toContain(
-        OPERATIONAL_STATUS_COLORS.paused.ring,
-      );
+      expect(statusPill?.className).toContain(BADGE_TONE_CLASS.neutral);
 
       const planBadge = findSpan(container, 'Plan updated');
       expectGeometry(planBadge, STATUS_BADGE_GEOMETRY);
-      expect(planBadge?.className).toContain(
-        OPERATIONAL_STATUS_COLORS.merged.ring,
-      );
+      expect(planBadge?.className).toContain(BADGE_TONE_CLASS.special);
 
       const inputBadge = findSpan(container, 'Input required');
       expectGeometry(inputBadge, STATUS_BADGE_GEOMETRY);
-      expect(inputBadge?.className).toContain('bg-warning-subtle');
-      expect(inputBadge?.className).toContain('fg-warning');
-      expect(inputBadge?.className).toContain('ring-line-attention/30');
+      expect(inputBadge?.className).toContain(BADGE_TONE_CLASS.warning);
 
       // The cancel control is an action chip on the shared secondary
       // surface (quaternary shell + shadow + hairline) with destructive ink.
@@ -692,6 +775,7 @@ describe('PipelineRunRows', () => {
             executionState={{
               pipeline_snapshot: { jobs: {} },
               jobs: {},
+              job_groups: {},
               event_name: 'manual',
             }}
             onOpenDetail={jest.fn()}
@@ -717,15 +801,7 @@ describe('PipelineRunRows', () => {
       // Muted status pill: same geometry, quiet colour set.
       const statusPill = findSpan(container, 'failure');
       expectGeometry(statusPill, STATUS_BADGE_GEOMETRY);
-      expect(statusPill?.className).toContain(
-        OPERATIONAL_STATUS_COLORS.failed.backgroundQuiet,
-      );
-      expect(statusPill?.className).toContain(
-        OPERATIONAL_STATUS_COLORS.failed.foregroundQuiet,
-      );
-      expect(statusPill?.className).toContain(
-        OPERATIONAL_STATUS_COLORS.failed.ringQuiet,
-      );
+      expect(statusPill?.className).toContain(BADGE_MUTED_TONE_CLASS.danger);
 
       const byTestId = (testId: string): Element | null =>
         container.querySelector(`[data-testid="${testId}"]`);
@@ -825,7 +901,7 @@ describe('PipelineRunRows', () => {
       });
 
       const disclosure = Array.from(container.querySelectorAll('button')).find(
-        (candidate) => candidate.textContent?.includes('sub-pipeline'),
+        (candidate) => candidate.textContent?.includes('sub-workflow'),
       );
       expectGeometry(disclosure, ACTION_BUTTON_GEOMETRY);
       expect(disclosure?.className).toContain('bg-quaternary');
@@ -833,5 +909,103 @@ describe('PipelineRunRows', () => {
       act(() => root.unmount());
       container.remove();
     });
+  });
+});
+
+describe('PipelineRunRows dispatched time', () => {
+  const TWO_HOURS_AFTER_START = Date.parse('2026-07-26T12:00:00.000Z');
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(TWO_HOURS_AFTER_START);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function renderRow(row: JSX.Element): {
+    container: HTMLDivElement;
+    unmount: () => void;
+  } {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    act(() => root.render(row));
+    return {
+      container,
+      unmount: (): void => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  function activeRow(summary: PipelineRunSummary): JSX.Element {
+    return (
+      <ActiveRunRow
+        summary={summary}
+        cancellingId={null}
+        resumingId={null}
+        onOpenDetail={jest.fn()}
+        onCancel={jest.fn()}
+        onResume={jest.fn()}
+        onJobClick={jest.fn()}
+        onOpenPlan={jest.fn()}
+        summaryLookup={{ [summary.id]: summary }}
+        onOpenSource={jest.fn()}
+      />
+    );
+  }
+
+  function completedRow(summary: PipelineRunSummary): JSX.Element {
+    return (
+      <CompletedRunRow
+        summary={summary}
+        onOpenDetail={jest.fn()}
+        onChatFollowUp={jest.fn()}
+        onReportChatFollowUp={jest.fn()}
+        onViewReport={jest.fn()}
+        onPipelineFollowUp={jest.fn()}
+        onOpenPlan={jest.fn()}
+        onRetry={jest.fn()}
+        onRerun={jest.fn()}
+        onResumePauseReason={jest.fn()}
+        onJobClick={jest.fn()}
+        retrying={false}
+        rerunning={false}
+        debuggingFailureId={null}
+        summaryLookup={{ [summary.id]: summary }}
+        onOpenSource={jest.fn()}
+      />
+    );
+  }
+
+  it.each([
+    ['active', activeRow(baseSummary)],
+    ['completed', completedRow({ ...baseSummary, status: 'success' })],
+  ])('labels the %s row start as dispatched', (_kind, row) => {
+    const { container, unmount } = renderRow(row);
+    const time = container.querySelector<HTMLTimeElement>(
+      '[data-testid="pipeline-run-dispatched-run-1"]',
+    );
+    expect(time?.tagName).toBe('TIME');
+    expect(time?.dateTime).toBe(baseSummary.started_at);
+    expect(time?.textContent).toBe('Dispatched 2h ago');
+    unmount();
+  });
+
+  it.each([
+    ['active', activeRow({ ...baseSummary, started_at: '' })],
+    [
+      'completed',
+      completedRow({ ...baseSummary, status: 'success', started_at: '' }),
+    ],
+  ])('shows no time on the %s row until the start is known', (_kind, row) => {
+    const { container, unmount } = renderRow(row);
+    expect(container.querySelector('time')).toBeNull();
+    expect(container.textContent).not.toContain('Dispatched');
+    expect(container.textContent).not.toContain('just now');
+    unmount();
   });
 });

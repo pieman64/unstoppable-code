@@ -3,6 +3,7 @@ import {
   buildPipelineDefaultDisplay,
   getPipelinePluginDefaultKey,
 } from '../plugin-collections';
+import type { PipelinePluginDefault } from '../../types/pipeline';
 
 function buildPipeline(
   pluginDefault: unknown,
@@ -14,7 +15,9 @@ function buildPipeline(
       {
         id: 'defaults',
         name: 'Defaults',
-        defaults: [pluginDefault],
+        // The normalizer receives YAML-parsed data at runtime; this is the
+        // explicit boundary that lets negative tests exercise malformed input.
+        defaults: [pluginDefault as PipelinePluginDefault],
       },
     ],
     jobs: {

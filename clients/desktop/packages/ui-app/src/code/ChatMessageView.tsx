@@ -9,32 +9,43 @@ import { ChatMessageAttachments } from './ChatMessageAttachments';
 import {
   Fragment,
   memo,
-  useCallback,
   useMemo,
   useState,
   type JSX,
   type ReactNode,
 } from 'react';
-import type {
-  PortalChatMessage,
-  PortalChatPart,
-} from '@canopy/protocol/portal';
-import { readPortalChatPartVisual } from '@canopy/protocol/portal';
 import {
+  foldedPortalToolOccurrenceIds,
+  isFoldedPortalToolResult,
+  pairToolResultOccurrences,
+  portalToolPartOccurrence,
+  readPortalChatPartVisual,
+  readPortalToolOutputLocator,
+  type PortalChatMessage,
+  type PortalChatPart,
+  readChatPromptSource,
+} from '@canopy/protocol/portal';
+import {
+  AutoResumeMarker,
   CanopyProxyErrorSummary,
   DEFAULT_MARKDOWN_OPTIONS,
   Markdown,
   SteeringTitle,
   hostMessagePresentation,
+  readMessageAutoResume,
   SharedChatAuthorHeader,
   UserBubble,
   hasSteeringChatPart,
+  MARKDOWN_ROOT_PROPS,
   splitSubagentReference,
   SubagentReferenceAttachment,
   useChatMessageContextMenu,
   useCleanChatLook,
+  useSmoothStreaming,
   withSoftLineBreaks,
   type MarkdownOptions,
+  type PlanCopyState,
+  type TurnTerminalStatus,
 } from '@canopy/ui-shared/components';
 import { parseCanopyProxyError } from '@canopy/protocol';
 import { FailedIcon } from '@canopy/ui-shared/icons';
@@ -94,70 +105,86 @@ function readToolResultData(
 }
 
 export function normalizeChatMessageParts(
-  parts: readonly PortalChatPart[],
+  inputParts: readonly PortalChatPart[],
 ): PortalChatPart[] {
-  const toolUseIds = new Set<string>();
-  for (const part of parts) {
-    if (part.kind !== 'tool_use') {
-      continue;
+  // A merge can keep a result part beside the call it was already folded into.
+  const folded = foldedPortalToolOccurrenceIds(inputParts);
+  const parts = inputParts;
+  const pairs = pairToolResultOccurrences(parts, (part) => {
+    if (
+      (part.kind !== 'tool_use' && part.kind !== 'tool_result') ||
+      isFoldedPortalToolResult(part, folded)
+    ) {
+      return undefined;
+    }
+    const data = isRecord(part.data) ? part.data : {};
+    if (part.kind === 'tool_use' && data['result'] !== undefined) {
+      return undefined;
+    }
+    if (part.kind === 'tool_result' && !readToolResultData(part)) {
+      return undefined;
     }
     const toolUseId = readToolUseId(part);
-    if (toolUseId) {
-      toolUseIds.add(toolUseId);
+    if (!toolUseId) {
+      return undefined;
     }
-  }
+    const occurrence = portalToolPartOccurrence(part);
+    return {
+      kind: part.kind,
+      toolUseId,
+      ...(occurrence ? { occurrenceId: occurrence.id } : {}),
+    };
+  });
+  const consumedResultIndexes = new Set(pairs.values());
 
-  const resultByToolUseId = new Map<
-    string,
-    { output: string; isError: boolean }
-  >();
-  for (const part of parts) {
-    if (part.kind !== 'tool_result') {
-      continue;
-    }
-    const toolUseId = readToolUseId(part);
-    const result = readToolResultData(part);
-    if (toolUseId && result && toolUseIds.has(toolUseId)) {
-      resultByToolUseId.set(toolUseId, result);
-    }
-  }
-
-  return parts.flatMap((part) => {
-    if (part.kind === 'tool_result') {
-      const toolUseId = readToolUseId(part);
+  return parts.flatMap((part, index) => {
+    if (
+      consumedResultIndexes.has(index) ||
+      isFoldedPortalToolResult(part, folded)
+    ) {
+      // Folding consumes output, not the visual owned by the result row.
+      // Drop the locator here too: the call now owns its full-output opener.
       const visual = readPortalChatPartVisual(part);
-      if (visual) {
-        const data = isRecord(part.data) ? part.data : {};
-        return [
-          {
-            kind: 'tool_result',
-            data: {
-              ...(toolUseId ? { toolUseId } : {}),
-              ...(readString(data, 'messageId')
-                ? { messageId: readString(data, 'messageId') }
-                : {}),
-              visual,
-            },
+      if (!visual) return [];
+      const toolUseId = readToolUseId(part);
+      const data = isRecord(part.data) ? part.data : {};
+      const messageId = readString(data, 'messageId');
+      return [
+        {
+          kind: 'tool_result',
+          data: {
+            ...(toolUseId ? { toolUseId } : {}),
+            ...(messageId ? { messageId } : {}),
+            visual,
           },
-        ];
-      }
-      return toolUseId && resultByToolUseId.has(toolUseId) ? [] : [part];
+        },
+      ];
     }
-    if (part.kind !== 'tool_use') {
+    const resultIndex = pairs.get(index);
+    if (resultIndex === undefined) {
       return [part];
     }
-    const toolUseId = readToolUseId(part);
-    const result = toolUseId ? resultByToolUseId.get(toolUseId) : undefined;
+    const resultPart = parts[resultIndex];
+    if (!resultPart || resultPart.kind !== 'tool_result') {
+      return [part];
+    }
+    const result = readToolResultData(resultPart);
     if (!result) {
       return [part];
     }
     const data = isRecord(part.data) ? part.data : {};
+    const resultOccurrence = portalToolPartOccurrence(resultPart);
+    const outputLocator = readPortalToolOutputLocator(resultPart.outputLocator);
     return [
       {
         ...part,
+        ...(resultOccurrence ? { occurrence: resultOccurrence } : {}),
         data: {
           ...data,
-          result,
+          result: {
+            ...result,
+            ...(outputLocator ? { outputLocator } : {}),
+          },
         },
       },
     ];
@@ -182,12 +209,19 @@ export interface ChatMessageViewProps {
   readonly turnTimerHostTurnGap?: boolean;
   /** Turn actions after this message's elapsed label. */
   readonly turnTimerTrailing?: ReactNode;
-  /** Clean chat look: a running step already shows what the turn is doing. */
-  readonly turnTimerLiveStatusShown?: boolean;
   /** The finished reply's text, for the timer row's Copy button. */
   readonly turnTimerCopyText?: string;
+  /** The turn's plan, whose Copy plan replaces the reply's Copy (CAN-5354). */
+  readonly turnTimerPlanCopy?: PlanCopyState;
+  /** Clean chat look: the running turn's live line, in the timer row's slot. */
+  readonly turnTimerLiveLine?: ReactNode;
   /** Keeps this message's timer row visible at rest (the newest turn). */
   readonly turnTimerAlwaysVisible?: boolean;
+  /**
+   * How the owning turn ended, resolved once by its turn group so the timer
+   * row agrees with the summary. A failed or cancelled row still wins.
+   */
+  readonly turnTimerCompletionStatus?: TurnTerminalStatus;
 }
 
 const Prose = memo(function Prose({
@@ -344,6 +378,7 @@ const StreamingProse = memo(function StreamingProse({
 }: {
   text: string;
 }): JSX.Element {
+  const clean = useCleanChatLook();
   const [cached, setCached] = useState(() =>
     appendStreamingProse(EMPTY_PROSE, text),
   );
@@ -352,13 +387,49 @@ const StreamingProse = memo(function StreamingProse({
   if (state !== cached) setCached(state);
   if (state.documentContext)
     return <Prose text={state.text} stripAgentCitations streaming />;
+  const tail = state.text.slice(state.start);
   return (
     <>
       <SettledProse blocks={state.blocks} count={state.blocks.length} />
-      <span className="whitespace-pre-wrap">
-        {state.text.slice(state.start)}
-      </span>
+      {/* Clean chat look: the tail streams in the paragraph it settles
+          into, with its margins, so finishing the reply moves nothing. */}
+      {clean && tail !== '' ? (
+        <p className="whitespace-pre-wrap">{tail}</p>
+      ) : (
+        <span className="whitespace-pre-wrap">{tail}</span>
+      )}
     </>
+  );
+});
+
+/**
+ * Smooth streaming (Labs): the whole answer goes through `Markdown`, which
+ * paces and fades it, in one element from the first delta to the finished
+ * answer, so the end of the stream never re-mounts it and cuts the last words
+ * short. While streaming it reuses the plain tail's citation scan, so a
+ * citation split across deltas stays hidden.
+ */
+const SmoothStreamingProse = memo(function SmoothStreamingProse({
+  text,
+  streaming,
+}: {
+  text: string;
+  streaming: boolean;
+}): JSX.Element {
+  const [cached, setCached] = useState(() =>
+    appendStreamingProse(EMPTY_PROSE, text),
+  );
+  const state =
+    !streaming || cached.source === text
+      ? cached
+      : appendStreamingProse(cached, text);
+  if (state !== cached) setCached(state);
+  return (
+    <Prose
+      text={streaming ? state.text : text}
+      stripAgentCitations
+      streaming={streaming}
+    />
   );
 });
 
@@ -371,22 +442,25 @@ function ChatMessageViewImpl({
   turnTimerStampAccessory,
   turnTimerHostTurnGap,
   turnTimerTrailing,
-  turnTimerLiveStatusShown,
   turnTimerCopyText,
+  turnTimerPlanCopy,
   turnTimerAlwaysVisible,
+  turnTimerLiveLine,
+  turnTimerCompletionStatus,
 }: ChatMessageViewProps): JSX.Element | null {
   const receivingContext = useAgentSentReceivingContext(explicitContext);
   const author = useChatMessageAuthor(message);
   // Clean chat look: prose and step rows sit 8px apart, as on desktop, where
   // they are separate transcript rows; step rows in a run stay together.
   const clean = useCleanChatLook();
+  const smoothStreaming = useSmoothStreaming();
   const parts = message.parts ?? EMPTY_PARTS;
   const normalizedParts = useMemo(
     () => normalizeChatMessageParts(parts),
     [parts],
   );
-  // An outside agent controls its message text, so text-derived presentation
-  // never applies to it: its trusted sender marker always shows.
+  // A message with a trusted sender shows its marker; an outside agent
+  // controls its text, so text-derived presentation never applies to it.
   const textPresentation = message.role === 'user' && !message.agentSent;
   const subagentReference = useMemo(
     () =>
@@ -397,31 +471,54 @@ function ChatMessageViewImpl({
   );
   const steeringRequest = useMemo(
     () =>
-      textPresentation ? hostMessagePresentation(message.text) : undefined,
-    [textPresentation, message.text],
+      message.role === 'user'
+        ? hostMessagePresentation(message.text, message.agentSent)
+        : undefined,
+    [message.role, message.text, message.agentSent],
   );
   const userBody =
     message.role === 'user'
       ? (steeringRequest?.text ?? subagentReference.body)
       : '';
-  // Copy message / Copy as Markdown (CAN-4277) copy the presented
-  // user body, or the agent's `message.text` (including the raw text behind
-  // a proxy-error summary). Read lazily, only while the menu is open.
-  const getMarkdown = useCallback(
-    (): string => (message.role === 'user' ? userBody : message.text),
-    [message.role, message.text, userBody],
-  );
+  // The message menu (CAN-4277) copies a selection inside the row.
   const { targetProps: contextMenuTarget, menu: contextMenu } =
     useChatMessageContextMenu({
       messageId: message.messageId,
-      getMarkdown,
-      // Rows with no whole-message text (tool-only, timers) get no Tab stop.
+      // Rows with no message text (tool-only, timers) get no Tab stop.
       focusable: (message.role === 'user' ? userBody : message.text) !== '',
     });
   if (message.role === 'user') {
     const attachments = message.attachments ?? [];
     const isSteering = hasSteeringChatPart(message.parts);
     const body = userBody;
+    // Only trusted relay provenance marks a resume; `promptSource` alone
+    // never does, and the prompt's text is never consulted.
+    const autoResume =
+      readChatPromptSource(message) === 'human'
+        ? undefined
+        : readMessageAutoResume(message);
+    const autoResumeMarker = autoResume ? (
+      <AutoResumeMarker
+        autoResume={autoResume}
+        providerName={autoResume.providerName}
+        timestamp={message.createdAtMs}
+        text={body}
+        copyText={!autoResume.resendsUserMessage ? body : undefined}
+      />
+    ) : null;
+    if (autoResume && !autoResume.resendsUserMessage) {
+      return (
+        <div
+          {...contextMenuTarget}
+          data-testid="chat-message"
+          data-role="user"
+          data-chat-message-id={message.messageId}
+        >
+          {autoResumeMarker}
+          {contextMenu}
+        </div>
+      );
+    }
     const existingHeader = steeringRequest ? (
       steeringRequest.title
     ) : isSteering ? (
@@ -438,11 +535,15 @@ function ChatMessageViewImpl({
         receivingContext={receivingContext}
         steering={isSteering}
       />
-    ) : (
-      existingHeader
+    ) : autoResume ? undefined : (
+      (existingHeader ??
+      (readChatPromptSource(message) === 'automated' ? (
+        <span>Sent automatically</span>
+      ) : undefined))
     );
     return (
       <>
+        {autoResumeMarker}
         {subagentReference.reference ? (
           <SubagentReferenceAttachment
             title={subagentReference.reference.title}
@@ -453,7 +554,9 @@ function ChatMessageViewImpl({
           dataTestId="chat-message"
           dataStatus={message.status}
           contextMenu={contextMenuTarget}
-          variant={steeringRequest?.variant ?? 'default'}
+          variant={
+            steeringRequest?.variant ?? (autoResume ? 'muted' : 'default')
+          }
           {...(header ? { header } : {})}
           {...(attachments.length > 0
             ? {
@@ -512,6 +615,8 @@ function ChatMessageViewImpl({
         data-testid="chat-message"
         data-status={message.status}
         data-role={message.role}
+        // Diagram names read headings from this message only.
+        {...MARKDOWN_ROOT_PROPS}
         // The row has no existing message-level tab stop.
         {...contextMenuTarget}
       >
@@ -528,9 +633,10 @@ function ChatMessageViewImpl({
               className={clean ? 'space-y-1' : undefined}
             >
               {normalizedParts.map((part, i) => (
-                // Parts have no protocol id yet; a kind+index key survives the
-                // append-only streaming growth better than a bare index.
-                <Fragment key={`${part.kind}-${i}`}>
+                // Stable occurrence keys survive same-message result folding.
+                <Fragment
+                  key={`${part.kind}-${portalToolPartOccurrence(part)?.id ?? i}`}
+                >
                   {clean &&
                     i > 0 &&
                     (part.kind === 'text') !==
@@ -544,9 +650,12 @@ function ChatMessageViewImpl({
                     turnTimerStampAccessory={turnTimerStampAccessory}
                     turnTimerHostTurnGap={turnTimerHostTurnGap}
                     turnTimerTrailing={turnTimerTrailing}
-                    turnTimerLiveStatusShown={turnTimerLiveStatusShown}
+                    turnTimerLiveLine={turnTimerLiveLine}
                     {...(turnTimerCopyText !== undefined
                       ? { turnTimerCopyText }
+                      : {})}
+                    {...(turnTimerPlanCopy !== undefined
+                      ? { turnTimerPlanCopy }
                       : {})}
                     {...(turnTimerAlwaysVisible === true
                       ? { turnTimerAlwaysVisible }
@@ -557,7 +666,7 @@ function ChatMessageViewImpl({
                       message.status === 'failed' ||
                       message.status === 'cancelled'
                         ? message.status
-                        : undefined
+                        : turnTimerCompletionStatus
                     }
                   />
                 </Fragment>
@@ -599,7 +708,12 @@ function ChatMessageViewImpl({
                   data-testid="chat-message-content"
                   className={PROSE_CLASSES}
                 >
-                  {isStreaming ? (
+                  {smoothStreaming ? (
+                    <SmoothStreamingProse
+                      text={message.text}
+                      streaming={isStreaming}
+                    />
+                  ) : isStreaming ? (
                     <StreamingProse text={message.text} />
                   ) : (
                     <Prose text={message.text} stripAgentCitations />

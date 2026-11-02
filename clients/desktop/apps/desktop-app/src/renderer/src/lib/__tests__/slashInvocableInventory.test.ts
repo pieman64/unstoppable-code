@@ -362,8 +362,144 @@ describe('buildSlashInventoryCommands', () => {
     expect(result.availableInventoryCommands).toHaveLength(0);
   });
 
-  it('de-dupes available rows that resolve to the same invocation', () => {
-    // Two disabled plugins exposing the same Claude command name.
+  describe('verified plugin member identity', () => {
+    const owner = {
+      marketplaceId: 'unstoppable-domains-plugins',
+      pluginName: 'ud-ecom-debugger',
+    };
+
+    it.each(['investigate', 'ecom-debugger'])(
+      'keeps the canonical discovered %s command across available, direct and Collection states',
+      (name) => {
+        const entry = makeEntry({
+          name,
+          kind: 'plugin_command',
+          invocationKey: `/${name}`,
+          enableRef: { kind: 'plugin', ...owner },
+        });
+        const canonical: SlashCommandData = {
+          name: `${owner.pluginName}:${name}`,
+          description: 'real SDK description',
+          insertText: `/${owner.pluginName}:${name} `,
+        };
+        const discovered = [canonical];
+        const direct: ChatTabPluginSelections = {
+          ...emptySelections(),
+          pluginRefs: [owner],
+        };
+        const states = [
+          { selections: emptySelections() },
+          { selections: direct },
+          {
+            selections: { ...emptySelections(), collectionIds: ['selected'] },
+            collectionRefs: { skillRefs: [], pluginRefs: [owner] },
+          },
+        ];
+        for (const state of states) {
+          const result = buildSlashInventoryCommands({
+            entries: [entry],
+            discoveredCommands: discovered,
+            ...state,
+            isDiscovering: false,
+          });
+          expect(result.discoveredCommands).toBe(discovered);
+          expect(result.discoveredCommands[0]).toBe(canonical);
+          expect(result.promotedInventoryCommands).toEqual([]);
+          expect(result.availableInventoryCommands).toEqual([]);
+          expect(canonical.insertText).toBe(`/${owner.pluginName}:${name} `);
+        }
+      },
+    );
+
+    it('qualifies inventory command labels without rewriting insertion or resolution metadata', () => {
+      const entry = makeEntry({
+        name: 'investigate',
+        kind: 'plugin_command',
+        invocationKey: '/investigate',
+        enableRef: { kind: 'plugin', ...owner },
+      });
+      for (const enabled of [false, true]) {
+        const result = buildSlashInventoryCommands({
+          entries: [entry],
+          discoveredCommands: [],
+          selections: {
+            ...emptySelections(),
+            pluginRefs: enabled ? [owner] : [],
+          },
+          isDiscovering: false,
+        });
+        const rows = enabled
+          ? result.promotedInventoryCommands
+          : result.availableInventoryCommands;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          displayName: '/ud-ecom-debugger:investigate',
+          insertText: '/investigate ',
+          section: enabled ? 'discovered' : 'available',
+        });
+        expect(rows[0].inventoryEntry).toBe(entry);
+        expect(rows[0].data).toBe(entry);
+        expect(entry.displayName).toBe('/investigate');
+        expect(entry.invocationKey).toBe('/investigate');
+      }
+    });
+
+    it.each(['plugin_skill', 'plugin_command'] as const)(
+      'preserves ambiguous marketplace owners for %s',
+      (kind) => {
+        const entries = ['market-a', 'market-b'].map((marketplaceId) =>
+          makeEntry({
+            name: 'investigate',
+            kind,
+            invocationKey: '/investigate',
+            enableRef: { kind: 'plugin', ...owner, marketplaceId },
+          }),
+        );
+        const result = buildSlashInventoryCommands({
+          entries,
+          discoveredCommands: [
+            { name: 'ud-ecom-debugger:investigate', description: 'SDK' },
+          ],
+          selections: emptySelections(),
+          isDiscovering: false,
+        });
+        expect(
+          result.availableInventoryCommands.map((row) => row.inventoryEntry),
+        ).toEqual(entries);
+      },
+    );
+
+    it.each(['plugin_skill', 'plugin_command'] as const)(
+      'does not claim a different plugin or an unqualified SDK token for %s',
+      (kind) => {
+        const entries = ['ud-ecom-debugger', 'other-plugin'].map((pluginName) =>
+          makeEntry({
+            name: 'investigate',
+            kind,
+            invocationKey: '/investigate',
+            enableRef: { kind: 'plugin', ...owner, pluginName },
+          }),
+        );
+        for (const token of ['ud-ecom-debugger:investigate', 'investigate']) {
+          const result = buildSlashInventoryCommands({
+            entries,
+            discoveredCommands: [{ name: token, description: 'SDK' }],
+            selections: emptySelections(),
+            isDiscovering: false,
+          });
+          const expected = token.includes(':')
+            ? [entries[1]]
+            : [entries[1], entries[0]];
+          expect(
+            result.availableInventoryCommands.map((row) => row.inventoryEntry),
+          ).toEqual(expected);
+        }
+      },
+    );
+  });
+
+  it('keeps distinct plugin commands with the same provisional invocation', () => {
+    // Provisional invocation spelling does not prove equal plugin ownership.
     const first = makeEntry({
       name: 'dup',
       kind: 'plugin_command',
@@ -385,10 +521,12 @@ describe('buildSlashInventoryCommands', () => {
       isDiscovering: false,
     });
 
-    expect(result.availableInventoryCommands).toHaveLength(1);
+    expect(
+      result.availableInventoryCommands.map((row) => row.inventoryEntry),
+    ).toEqual([first, second]);
   });
 
-  it('lets promoted enabled rows win over disabled rows with the same invocation', () => {
+  it('keeps a disabled command from another plugin beside an enabled command', () => {
     const disabled = makeEntry({
       name: 'shared',
       kind: 'plugin_command',
@@ -417,7 +555,9 @@ describe('buildSlashInventoryCommands', () => {
     expect(result.promotedInventoryCommands.map((cmd) => cmd.name)).toEqual([
       'shared',
     ]);
-    expect(result.availableInventoryCommands).toHaveLength(0);
+    expect(
+      result.availableInventoryCommands.map((row) => row.inventoryEntry),
+    ).toEqual([disabled]);
   });
 
   it('hides inventory rows while discovery is loading', () => {

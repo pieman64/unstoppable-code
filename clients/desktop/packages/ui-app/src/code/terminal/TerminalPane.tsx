@@ -17,6 +17,7 @@ import {
 } from '@canopy/app-state/terminal';
 import type { TerminalOutputEvent } from '@canopy/protocol/terminal';
 import { copyTextToClipboard } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { useTerminalFind } from '../../find/useTerminalFind';
 import {
   dataTransferHasFiles,
@@ -1309,15 +1310,14 @@ function TerminalPaneImpl({
           <div className="pointer-events-auto flex max-w-xl items-center gap-2 rounded bg-card/95 px-3 py-1.5 text-2xs fg-secondary shadow-sm backdrop-blur">
             <span>{readOnlyMessage}</span>
             {onRestart && (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 data-testid="terminal-restart-button"
                 onClick={onRestart}
                 disabled={restarting}
-                className="shrink-0 rounded border bg-base/60 px-2 py-1 fg-primary hover:bg-base disabled:opacity-50"
               >
                 Restart terminal
-              </button>
+              </Button>
             )}
           </div>
         </div>

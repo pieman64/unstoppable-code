@@ -1,8 +1,5 @@
 import { rm } from 'node:fs/promises';
-import type {
-  WorktreeData,
-  WorktreeHealthIssue,
-} from '@canopy/desktop-shared/types';
+import type { WorktreeHealthIssue } from '@canopy/desktop-shared/types';
 import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
 import {
   getWorkspaceDir,
@@ -16,48 +13,28 @@ import {
   w5CompositionLocks,
 } from './w5-composition-operation';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
-import { removeWorkspaceIndexEntry } from './sidebar-items';
 import { IdentifierValidationError, validateId } from './validation';
 import { WorkspaceIndexUnreadableError } from './workspace-index-repository';
 import { WorktreeRegistryUnreadableError } from './worktree-list-repository';
-import {
-  isWorkspaceWorktreeRecentlyRemoved,
-  removeWorkspaceWorktrees,
-  updateWorkspaceWorktrees,
-} from './workspace-persistence';
+import { updateWorkspaceWorktrees } from './workspace-persistence';
 
 /** CAN-3823 part B: in-process split records; checkout and item moves stay with the caller. */
 export type SplitRecordSource = 'temporary_split';
-export type SplitRecordRefusal =
-  | 'invalid-request'
-  | 'identity-changed'
-  | 'not-found'
-  | 'worktrees-unavailable'
-  | 'index-unavailable';
-
-export class SplitRecordRefusedError extends Error {
-  constructor(
-    readonly reason: SplitRecordRefusal,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'SplitRecordRefusedError';
-  }
-}
-
-/** Fields allocated from the source for a destination reservation or archive candidate. */
-export type SplitDestinationRow = Pick<
-  WorktreeData,
-  | 'id'
-  | 'createdAt'
-  | 'branchName'
-  | 'label'
-  | 'status'
-  | 'trackedBaseBranch'
-  | 'setupPhase'
-  | 'splitRecoveryRequired'
-  | 'hidden'
->;
+export {
+  SplitRecordRefusedError,
+  type SplitRecordRefusal,
+} from './worktree-record-decision-apply';
+export type { SplitDestinationRow } from './worktree-record-decisions';
+import {
+  SplitRecordRefusedError,
+  splitReservationNotFound,
+} from './worktree-record-decision-apply';
+import type { SplitDestinationRow } from './worktree-record-decisions';
+import {
+  applyWorktreeListUpdate,
+  applyWorktreeListRemoval,
+  applyWorkspaceIndexRemoval,
+} from './workspace-record-decision-port';
 
 export interface SplitRecordIdentity {
   source: SplitRecordSource;
@@ -98,29 +75,6 @@ function admit(request: {
     );
 }
 
-function assertIdentity(request: SplitRecordIdentity, row: WorktreeData): void {
-  if (row.createdAt !== request.createdAt)
-    throw new SplitRecordRefusedError(
-      'identity-changed',
-      `Destination worktree id "${request.worktreeId}" is already reserved.`,
-    );
-}
-
-function assertNotRemoved(request: SplitRecordIdentity): void {
-  if (
-    isWorkspaceWorktreeRecentlyRemoved(
-      request.workspaceId,
-      request.worktreeId,
-      request.createdAt,
-    )
-  ) {
-    throw new SplitRecordRefusedError(
-      'not-found',
-      `Split destination reservation ${request.workspaceId}/${request.worktreeId} disappeared before promotion.`,
-    );
-  }
-}
-
 function translateRefusal(error: unknown): never {
   if (error instanceof WorktreeRegistryUnreadableError)
     throw new SplitRecordRefusedError('worktrees-unavailable', error.message);
@@ -142,17 +96,9 @@ async function stageSplitDestinationReservation(request: {
   };
   admit(identity);
   try {
-    const persisted = await updateWorkspaceWorktrees(
+    const { worktrees: persisted } = await applyWorktreeListUpdate(
       request.workspaceId,
-      (rows) => {
-        const existing = rows.find((row) => row.id === identity.worktreeId);
-        if (existing) {
-          assertIdentity(identity, existing);
-          return rows;
-        }
-        assertNotRemoved(identity);
-        return [...rows, request.worktree];
-      },
+      { kind: 'split.destination.reserve', worktree: request.worktree },
       EXISTING_LIST,
     );
     if (
@@ -162,10 +108,7 @@ async function stageSplitDestinationReservation(request: {
           row.createdAt === identity.createdAt,
       )
     ) {
-      throw new SplitRecordRefusedError(
-        'not-found',
-        `Split destination reservation ${request.workspaceId}/${identity.worktreeId} disappeared before promotion.`,
-      );
+      throw splitReservationNotFound(request.workspaceId, identity.worktreeId);
     }
   } catch (error) {
     translateRefusal(error);
@@ -193,12 +136,12 @@ export async function removeSplitDestinationRecord(
 ): Promise<void> {
   admit(request);
   try {
-    await removeWorkspaceWorktrees(
+    await applyWorktreeListRemoval(
       request.workspaceId,
-      (row) =>
-        row.id === request.worktreeId && row.createdAt === request.createdAt,
-      undefined,
-      undefined,
+      {
+        kind: 'split.destination.remove',
+        worktree: { id: request.worktreeId, createdAt: request.createdAt },
+      },
       EXISTING_LIST,
     );
   } catch (error) {
@@ -224,22 +167,13 @@ export async function markSplitRecoveryRecord(
     );
   }
   try {
-    const persisted = await updateWorkspaceWorktrees(
+    const { worktrees: persisted } = await applyWorktreeListUpdate(
       request.workspaceId,
-      (rows) => {
-        const current = rows.find((row) => row.id === request.worktreeId);
-        if (current) assertIdentity(request, current);
-        else assertNotRemoved(request);
-        const recovered: WorktreeData = {
-          ...(current ?? request.fallbackWorktree),
-          splitRecoveryRequired: true,
-          healthIssue: request.healthIssue,
-        };
-        delete recovered.hidden;
-        recovered.setupPhase = undefined;
-        return current
-          ? rows.map((row) => (row === current ? recovered : row))
-          : [...rows, recovered];
+      {
+        kind: 'split.destination.recovery',
+        worktree: { id: request.worktreeId, createdAt: request.createdAt },
+        fallbackWorktree: request.fallbackWorktree,
+        healthIssue: request.healthIssue,
       },
       EXISTING_LIST,
     );
@@ -249,10 +183,7 @@ export async function markSplitRecoveryRecord(
           row.id === request.worktreeId && row.createdAt === request.createdAt,
       )
     ) {
-      throw new SplitRecordRefusedError(
-        'not-found',
-        `Split destination reservation ${request.workspaceId}/${request.worktreeId} disappeared before promotion.`,
-      );
+      throw splitReservationNotFound(request.workspaceId, request.worktreeId);
     }
   } catch (error) {
     translateRefusal(error);
@@ -265,23 +196,12 @@ export async function promoteSplitDestinationRecord(
 ): Promise<void> {
   admit(request);
   try {
-    await updateWorkspaceWorktrees(
+    await applyWorktreeListUpdate(
       request.workspaceId,
-      (rows) => {
-        const current = rows.find((row) => row.id === request.worktreeId);
-        if (!current)
-          throw new SplitRecordRefusedError(
-            'not-found',
-            `Split destination reservation ${request.workspaceId}/${request.worktreeId} disappeared before promotion.`,
-          );
-        assertIdentity(request, current);
-        const ready: WorktreeData = {
-          ...current,
-          branchName: request.branchName,
-          setupPhase: 'git-ready',
-        };
-        delete ready.splitRecoveryRequired;
-        return rows.map((row) => (row === current ? ready : row));
+      {
+        kind: 'split.destination.promote',
+        worktree: { id: request.worktreeId, createdAt: request.createdAt },
+        branchName: request.branchName,
       },
       EXISTING_LIST,
     );
@@ -303,24 +223,9 @@ export async function recordSplitArchiveDestination(request: {
   };
   admit(identity);
   try {
-    const persisted = await updateWorkspaceWorktrees(
+    const { worktrees: persisted } = await applyWorktreeListUpdate(
       request.workspaceId,
-      (rows) => {
-        const current = rows.find((row) => row.id === identity.worktreeId);
-        if (current) assertIdentity(identity, current);
-        else assertNotRemoved(identity);
-        const recorded: WorktreeData = current
-          ? { ...current, branchName: request.worktree.branchName }
-          : { ...request.worktree };
-        if (request.worktree.status !== undefined)
-          recorded.status = request.worktree.status;
-        delete recorded.hidden;
-        delete recorded.setupPhase;
-        delete recorded.splitRecoveryRequired;
-        return current
-          ? rows.map((row) => (row === current ? recorded : row))
-          : [...rows, recorded];
-      },
+      { kind: 'split.destination.archive', worktree: request.worktree },
       EXISTING_LIST,
     );
     if (
@@ -330,10 +235,7 @@ export async function recordSplitArchiveDestination(request: {
           row.createdAt === identity.createdAt,
       )
     ) {
-      throw new SplitRecordRefusedError(
-        'not-found',
-        `Split destination reservation ${request.workspaceId}/${identity.worktreeId} disappeared before promotion.`,
-      );
+      throw splitReservationNotFound(request.workspaceId, identity.worktreeId);
     }
   } catch (error) {
     translateRefusal(error);
@@ -369,7 +271,9 @@ export async function removeSplitCreatedWorkspace(request: {
           async (rows) => {
             if (rows.length > 0 || (await request.containsRollbackData()))
               return rows;
-            await removeWorkspaceIndexEntry(request.workspaceId);
+            await applyWorkspaceIndexRemoval(request.workspaceId, {
+              kind: 'split.created-workspace.cleanup',
+            });
             for (const worktreeId of request.worktreeIds) {
               await removePersistedWorktreeDataDirectory(
                 request.workspaceId,

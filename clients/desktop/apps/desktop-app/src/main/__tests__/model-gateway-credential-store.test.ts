@@ -120,7 +120,9 @@ beforeEach(() => {
       return Promise.reject(
         Object.assign(new Error('missing'), { code: 'ENOENT' }),
       );
-    return Promise.resolve(options === 'utf8' ? bytes.toString('utf8') : bytes);
+    return Promise.resolve(
+      options === 'utf8' ? bytes.toString('utf8') : Buffer.from(bytes),
+    );
   });
   jest
     .mocked(writeFileAtomically)
@@ -242,6 +244,33 @@ it('ignores a late runtime rejection from an older credential generation', async
   ).resolves.toBe(false);
   await expect(loadModelGatewayCredential('org-1')).resolves.toMatchObject({
     apiKey: 'sk-current',
+    lastError: undefined,
+  });
+});
+
+it('does not apply an account-bound late rejection to the newly signed-in account', async () => {
+  await saveModelGatewayCredential({
+    organizationId: 'org-1',
+    apiKey: 'sk-current-account',
+    baseUrlAtSave: 'https://gateway.acme.test',
+  });
+  const current = await loadModelGatewayCredential('org-1');
+  const rejectForAccount: (
+    organizationId: string,
+    lastError: string,
+    expectedUpdatedAt: string | undefined,
+    expectedAccountId: string,
+  ) => Promise<boolean> = markModelGatewayCredentialRejected;
+  await expect(
+    rejectForAccount(
+      'org-1',
+      'Gateway returned HTTP 401.',
+      current?.updatedAt,
+      'previous-account',
+    ),
+  ).resolves.toBe(false);
+  await expect(loadModelGatewayCredential('org-1')).resolves.toMatchObject({
+    apiKey: 'sk-current-account',
     lastError: undefined,
   });
 });
@@ -676,3 +705,20 @@ it('ignores wrong-identity internal shared gateway data without altering the sou
   expect(writeFileAtomically).not.toHaveBeenCalled();
   expect(rm).not.toHaveBeenCalled();
 });
+
+it.each([true, false])(
+  'retains explicit validation success %s across store reads',
+  async (validated) => {
+    const input = {
+      organizationId: 'org-1',
+      apiKey: 'sk-validation',
+      baseUrlAtSave: 'https://gateway.acme.test',
+      validated,
+    };
+    await saveModelGatewayCredential(input);
+    resetModelGatewayCredentialStoreForTests();
+    await expect(loadModelGatewayCredential('org-1')).resolves.toMatchObject({
+      validated,
+    });
+  },
+);

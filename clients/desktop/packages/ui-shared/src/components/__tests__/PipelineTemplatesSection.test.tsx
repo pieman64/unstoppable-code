@@ -144,7 +144,7 @@ it('hides an empty catalog but keeps no-match filters reachable in an already op
     document.querySelector('[data-testid="curated-pipeline-search"]'),
   ).not.toBeNull();
   expect(document.body.textContent).toContain(
-    'No pipeline templates match these filters.',
+    'No workflow templates match these filters.',
   );
 });
 
@@ -224,7 +224,7 @@ it('shows a first-page failure with a retry, then the templates once it succeeds
     container.querySelector(
       '[data-testid="pipeline-templates-section-status"] [role="status"]',
     )?.textContent,
-  ).toBe('Loading pipeline templates…');
+  ).toBe('Loading workflow templates…');
 
   act(() => root.render(<PipelineTemplatesSection catalog={catalog} />));
   expect(

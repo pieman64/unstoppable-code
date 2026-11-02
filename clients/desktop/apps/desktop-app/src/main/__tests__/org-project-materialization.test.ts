@@ -12,9 +12,11 @@ import {
   rm,
   writeFile,
   symlink,
+  lstat,
+  readlink,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type {
   OrgProjectSetupProgress,
   OrgProjectSummary,
@@ -31,7 +33,17 @@ import {
   createOrgProjectMaterialization,
   type OrgProjectMaterializationDeps,
 } from '../lib/org-project-materialization';
-import { cloneRepoWithProgress, parseCloneProgress } from '../lib/git';
+import {
+  cloneRepoWithProgress,
+  parseCloneProgress,
+  initLocalRepo,
+} from '../lib/git';
+import { multiRepoSetupManifest } from '../lib/org-project-multi-repo';
+import {
+  normalizeSetupJournal,
+  type SetupPhase,
+} from '../lib/org-project-setup-journal';
+import { readCanopyJson, hasManifestRepos } from '../lib/canopy-json';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import { WorkspaceIdentityInUseError } from '../lib/workspace-service';
 import { createActivityRepairLedger } from '../lib/activity-scope-repair';
@@ -188,6 +200,11 @@ let createMultiRepoProject: jest.MockedFunction<
 let createCoworkProject: jest.MockedFunction<
   OrgProjectMaterializationDeps['cloud']['createMemberCoworkProject']
 >;
+let bindMulti: jest.MockedFunction<
+  NonNullable<
+    OrgProjectMaterializationDeps['workspace']['createBoundMultiRepoWorkspace']
+  >
+>;
 let service: ReturnType<typeof createOrgProjectMaterialization>;
 async function terminal(): Promise<OrgProjectSetupProgress> {
   for (let i = 0; i < 500; i += 1) {
@@ -262,13 +279,19 @@ beforeEach(async (): Promise<void> => {
   sidebarItems = [];
   indexAuthority = 'ok';
   ownership = new Map();
-  remoteUrl = jest.fn(
-    (): Promise<string | null> =>
-      Promise.resolve('git@github.com:owner/repo.git'),
+  remoteUrl = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['workspace']['readRemoteUrl']>,
+    Parameters<OrgProjectMaterializationDeps['workspace']['readRemoteUrl']>
+  >(
+    (): ReturnType<
+      OrgProjectMaterializationDeps['workspace']['readRemoteUrl']
+    > => Promise.resolve('git@github.com:owner/repo.git'),
   );
   journalPhases = [];
   journalFiles = new Set();
-  journalWritten = jest.fn((): Promise<void> => Promise.resolve());
+  journalWritten = jest.fn<Promise<void>, [string]>(
+    (): Promise<void> => Promise.resolve(),
+  );
   jest
     .spyOn(atomicFile, 'writeFileAtomically')
     .mockImplementation(async (path, data, options): Promise<void> => {
@@ -291,13 +314,24 @@ beforeEach(async (): Promise<void> => {
       }
       await writeAtomic(path, data, options);
     });
-  refresh = jest.fn(
-    (): Promise<DesktopOrgProjectCatalogSnapshot> => Promise.resolve(snapshot),
+  refresh = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['catalog']['refresh']>,
+    Parameters<OrgProjectMaterializationDeps['catalog']['refresh']>
+  >(
+    (): ReturnType<OrgProjectMaterializationDeps['catalog']['refresh']> =>
+      Promise.resolve(snapshot),
   );
-  coworkSetUp = jest.fn(() =>
-    Promise.resolve({ instanceId: 'cowork-instance' }),
+  coworkSetUp = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['cowork']['setUp']>,
+    Parameters<OrgProjectMaterializationDeps['cowork']['setUp']>
+  >(
+    (): ReturnType<OrgProjectMaterializationDeps['cowork']['setUp']> =>
+      Promise.resolve({ instanceId: 'cowork-instance' }),
   );
-  claim = jest.fn(
+  claim = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['cloud']['claim']>,
+    Parameters<OrgProjectMaterializationDeps['cloud']['claim']>
+  >(
     (): ReturnType<OrgProjectMaterializationDeps['cloud']['claim']> =>
       Promise.resolve({
         instanceId,
@@ -307,22 +341,74 @@ beforeEach(async (): Promise<void> => {
       }),
   );
   reports = [];
-  createMultiRepoProject = jest.fn(
-    (): Promise<OrgProjectSummary> =>
-      Promise.reject(new Error('no multi-repo project in this test')),
+  createMultiRepoProject = jest.fn<
+    ReturnType<
+      OrgProjectMaterializationDeps['cloud']['createMemberMultiRepoProject']
+    >,
+    Parameters<
+      OrgProjectMaterializationDeps['cloud']['createMemberMultiRepoProject']
+    >
+  >(
+    (): ReturnType<
+      OrgProjectMaterializationDeps['cloud']['createMemberMultiRepoProject']
+    > => Promise.reject(new Error('no multi-repo project in this test')),
   );
-  createCoworkProject = jest.fn(
-    (): Promise<OrgProjectSummary> =>
-      Promise.reject(new Error('no Cowork project in this test')),
+  createCoworkProject = jest.fn<
+    ReturnType<
+      OrgProjectMaterializationDeps['cloud']['createMemberCoworkProject']
+    >,
+    Parameters<
+      OrgProjectMaterializationDeps['cloud']['createMemberCoworkProject']
+    >
+  >(
+    (): ReturnType<
+      OrgProjectMaterializationDeps['cloud']['createMemberCoworkProject']
+    > => Promise.reject(new Error('no Cowork project in this test')),
   );
-  complete = jest.fn(async (): Promise<void> => {});
-  detach = jest.fn(async (): Promise<void> => {});
-  moveActivity = jest.fn(async (): Promise<void> => {});
+  complete = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['cloud']['complete']>,
+    Parameters<OrgProjectMaterializationDeps['cloud']['complete']>
+  >(
+    (): ReturnType<OrgProjectMaterializationDeps['cloud']['complete']> =>
+      Promise.resolve(),
+  );
+  detach = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['cloud']['detach']>,
+    Parameters<OrgProjectMaterializationDeps['cloud']['detach']>
+  >(
+    (): ReturnType<OrgProjectMaterializationDeps['cloud']['detach']> =>
+      Promise.resolve(),
+  );
+  moveActivity = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['cloud']['moveActivity']>,
+    Parameters<OrgProjectMaterializationDeps['cloud']['moveActivity']>
+  >(
+    (): ReturnType<OrgProjectMaterializationDeps['cloud']['moveActivity']> =>
+      Promise.resolve(),
+  );
   reportActivityMove = jest.fn();
-  returnActivity = jest.fn(async (): Promise<void> => {});
-  returnPersonalActivity = jest.fn(async (): Promise<void> => {});
+  returnActivity = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['cloud']['returnActivity']>,
+    Parameters<OrgProjectMaterializationDeps['cloud']['returnActivity']>
+  >(
+    (): ReturnType<OrgProjectMaterializationDeps['cloud']['returnActivity']> =>
+      Promise.resolve(),
+  );
+  returnPersonalActivity = jest.fn<
+    ReturnType<
+      OrgProjectMaterializationDeps['cloud']['returnPersonalActivity']
+    >,
+    Parameters<OrgProjectMaterializationDeps['cloud']['returnPersonalActivity']>
+  >(
+    (): ReturnType<
+      OrgProjectMaterializationDeps['cloud']['returnPersonalActivity']
+    > => Promise.resolve(),
+  );
   // Just me by default: bound work keeps its private rows private (CAN-3517).
-  sharingFor = jest.fn(
+  sharingFor = jest.fn<
+    ReturnType<OrgProjectMaterializationDeps['activityRepair']['sharingFor']>,
+    Parameters<OrgProjectMaterializationDeps['activityRepair']['sharingFor']>
+  >(
     (): ReturnType<
       OrgProjectMaterializationDeps['activityRepair']['sharingFor']
     > =>
@@ -360,9 +446,42 @@ beforeEach(async (): Promise<void> => {
       );
     },
   );
-  removeBound = jest.fn((): Promise<boolean> => Promise.resolve(true));
-  applyManagedPrivateMemory = jest.fn(async (): Promise<void> => {});
-  rebindBackgroundExecution = jest.fn(async (): Promise<void> => {});
+  removeBound = jest.fn<
+    ReturnType<
+      OrgProjectMaterializationDeps['workspace']['removeBoundWorkspace']
+    >,
+    Parameters<
+      OrgProjectMaterializationDeps['workspace']['removeBoundWorkspace']
+    >
+  >(
+    (): ReturnType<
+      OrgProjectMaterializationDeps['workspace']['removeBoundWorkspace']
+    > => Promise.resolve(true),
+  );
+  applyManagedPrivateMemory = jest.fn<
+    ReturnType<
+      OrgProjectMaterializationDeps['workspace']['applyManagedPrivateMemory']
+    >,
+    Parameters<
+      OrgProjectMaterializationDeps['workspace']['applyManagedPrivateMemory']
+    >
+  >(
+    (): ReturnType<
+      OrgProjectMaterializationDeps['workspace']['applyManagedPrivateMemory']
+    > => Promise.resolve(),
+  );
+  rebindBackgroundExecution = jest.fn<
+    ReturnType<
+      OrgProjectMaterializationDeps['backgroundExecution']['ownershipChanged']
+    >,
+    Parameters<
+      OrgProjectMaterializationDeps['backgroundExecution']['ownershipChanged']
+    >
+  >(
+    (): ReturnType<
+      OrgProjectMaterializationDeps['backgroundExecution']['ownershipChanged']
+    > => Promise.resolve(),
+  );
   deps = {
     catalog: {
       list: (): Promise<DesktopOrgProjectCatalogSnapshot> =>
@@ -830,6 +949,36 @@ it('cancels the clone, removes staging, and detaches', async (): Promise<void> =
   expect(await readdir(destination)).toEqual([]);
   expect(detach).toHaveBeenCalledWith(instanceId);
 });
+it('refuses a different account joining an active local setup', async () => {
+  clone.mockImplementation(async (_url, _dest, options): Promise<void> => {
+    await new Promise<void>((_resolve, reject) =>
+      options.signal.addEventListener(
+        'abort',
+        () => reject(new Error('aborted')),
+        { once: true },
+      ),
+    );
+  });
+  await service.startSetup(projectId, destination);
+  while (!clone.mock.calls.length)
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  try {
+    const foreignScope = {
+      organizationId,
+      accountId: 'another-account',
+      deviceId: 'device',
+    };
+    expect(service.getProgress(projectId, foreignScope)).toBeNull();
+    await expect(service.cancelSetup(projectId, foreignScope)).rejects.toThrow(
+      'another account',
+    );
+    await expect(
+      service.startSetup(projectId, destination, foreignScope),
+    ).rejects.toThrow('another account');
+  } finally {
+    await service.cancelSetup(projectId);
+  }
+});
 it('refuses revoked access before promoting', async (): Promise<void> => {
   deps.catalog.refresh = (): Promise<DesktopOrgProjectCatalogSnapshot> =>
     Promise.resolve({ ...snapshot, projects: [] });
@@ -1049,13 +1198,6 @@ it('keeps a checkout the workspace index already knows about', async (): Promise
   bind.mockImplementationOnce((): Promise<never> => {
     sidebarItems.push({
       id: 'repo',
-      name: 'repo',
-      type: 'single-repo',
-      repoPath: join(destination, 'repo'),
-      color: '',
-      collapsed: false,
-      order: 0,
-      worktrees: [],
     });
     return Promise.reject(new Error('worktrees.json write failed'));
   });
@@ -1184,15 +1326,15 @@ it('does not terminalize a leftover journal whose key it could not spend', async
   expect((await journal()).phase).toBe('cloning');
 });
 
-it('starts fresh when the nonce store is corrupt', async (): Promise<void> => {
-  // Unreadable and unusable are different answers. Content that cannot be
-  // parsed says nothing about what keys were spent, and one corrupt
-  // bookkeeping file must not make the project impossible to set up — so it
-  // takes the empty default every persisted file here takes.
+it('preserves a corrupt nonce store without allocating another claim', async (): Promise<void> => {
   await mkdir(join(root, 'journals'), { recursive: true });
   await writeFile(join(root, 'journals', 'attempt-nonces.json'), '{ not json');
   await service.startSetup(projectId, destination);
-  expect((await terminal()).state).toBe('ready');
+  expect((await terminal()).state).toBe('failed');
+  expect(claim).not.toHaveBeenCalled();
+  expect(
+    await readFile(join(root, 'journals', 'attempt-nonces.json'), 'utf8'),
+  ).toBe('{ not json');
 });
 
 it('does not mistake an unreadable nonce store for an empty one', async (): Promise<void> => {
@@ -1430,13 +1572,6 @@ it('replays the workspace id the retained key was computed over', async (): Prom
   // Something else takes the obvious name before the retry.
   sidebarItems.push({
     id: 'repo',
-    name: 'repo',
-    type: 'single-repo',
-    repoPath: join(root, 'elsewhere'),
-    color: '',
-    collapsed: false,
-    order: 1,
-    worktrees: [],
   });
   reports = [];
   await service.startSetup(projectId, destination);
@@ -4058,6 +4193,15 @@ describe('Personal Cowork conversion', (): void => {
     );
   });
 
+  it('sends a caller creation key instead of the per-workspace key', async (): Promise<void> => {
+    await expect(
+      service.convertCoworkWorkspace(request, { creationKey: 'fork-copy-key' }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(createCoworkProject.mock.calls[0]?.[0].creationKey).toBe(
+      'fork-copy-key',
+    );
+  });
+
   it('sends a new creation key when the project was renamed after a failed attempt', async (): Promise<void> => {
     complete.mockRejectedValueOnce(
       new CanopyCloudClientError('http-error', 'gone', 409, 'conflict'),
@@ -4150,4 +4294,646 @@ describe('Personal Cowork conversion', (): void => {
     });
     expect(createCoworkProject).toHaveBeenCalledTimes(1);
   });
+});
+
+async function sharedFixture(): Promise<void> {
+  deps.resolveDeviceId = (): Promise<string> =>
+    Promise.resolve('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+  deps.cloneBase = join(root, 'bare');
+  await mkdir(join(deps.cloneBase, 'owner'), { recursive: true });
+  git(root, [
+    'clone',
+    '--bare',
+    origin,
+    join(deps.cloneBase, 'owner', 'repo.git'),
+  ]);
+  git(root, [
+    'clone',
+    '--bare',
+    origin,
+    join(deps.cloneBase, 'owner', 'api.git'),
+  ]);
+  deps.git.initializeRoot = (path): Promise<void> => {
+    git(path, ['init']);
+    return Promise.resolve();
+  };
+  clone.mockImplementation(async (url, path, options) => {
+    await cloneRepoWithProgress(url, path, {
+      ...options,
+      nonInteractive: true,
+    });
+  });
+  deps.workspace.readRemoteUrl = (path): Promise<string> =>
+    Promise.resolve(
+      execFileSync('git', ['remote', 'get-url', 'origin'], {
+        cwd: path,
+        encoding: 'utf8',
+      }).trim(),
+    );
+  bindMulti = jest.fn(async (input) => {
+    await bind(input.path, input.localWorkspaceId, input.owner);
+    if (!sidebarItems.some((item) => item.id === input.localWorkspaceId))
+      sidebarItems.push({ id: input.localWorkspaceId, owner: input.owner });
+  });
+  deps.workspace.createBoundMultiRepoWorkspace = bindMulti;
+  const primary = project.repository;
+  if (!primary) throw new Error('fixture repository missing');
+  snapshot.projects = [
+    {
+      ...project,
+      topology: 'multi-repo',
+      materializationVersion: 1,
+      repositoriesComplete: true,
+      repositoryCount: 2,
+      repositories: [primary, { ...primary, name: 'api', providerRepoId: '2' }],
+    },
+  ];
+}
+
+it('materializes every repository of a versioned shared multi-repo definition (CAN-3571)', async () => {
+  await sharedFixture();
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'ready' });
+  expect(clone).toHaveBeenCalledTimes(2);
+  expect(createMultiRepoProject).not.toHaveBeenCalled();
+  const input = bindMulti.mock.calls[0]?.[0];
+  expect(input?.repositories).toHaveLength(2);
+  if (!input) throw new Error('binding missing');
+  expect(
+    await readFile(
+      join(input.path, input.repositories[0]?.relativePath ?? '', 'README.md'),
+      'utf8',
+    ),
+  ).toBe('fixture');
+  expect(complete).toHaveBeenCalledWith(
+    instanceId,
+    expect.objectContaining({ expectedDefinitionRevision: 1 }),
+  );
+});
+it('seeds a complete managed root that can create a real task worktree', async () => {
+  await sharedFixture();
+  deps.git.initializeRoot = async (path, name, repositories): Promise<void> => {
+    await initLocalRepo(
+      path,
+      name,
+      repositories ? multiRepoSetupManifest(repositories) : undefined,
+    );
+  };
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'ready' });
+  const bound = bindMulti.mock.calls[0]?.[0];
+  if (!bound) throw new Error('binding missing');
+  const task = join(root, 'new-task');
+  git(bound.path, ['worktree', 'add', '-b', 'fresh-task', task]);
+  const manifest = await readCanopyJson(task);
+  expect(hasManifestRepos(manifest) ? manifest.repos : []).toHaveLength(2);
+  expect(await readFile(join(task, '.gitignore'), 'utf8')).toContain('repos/');
+});
+it('leaves sources and the shared definition intact when a later clone fails', async () => {
+  await sharedFixture();
+  clone
+    .mockImplementationOnce(async (url, path, options) => {
+      await cloneRepoWithProgress(url, path, {
+        ...options,
+        nonInteractive: true,
+      });
+    })
+    .mockRejectedValueOnce(new Error('later clone failed'));
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'failed' });
+  expect(bind).not.toHaveBeenCalled();
+  expect(complete).not.toHaveBeenCalled();
+  expect(await readFile(join(root, 'seed', 'README.md'), 'utf8')).toBe(
+    'fixture',
+  );
+  expect(await readdir(destination)).toEqual([]);
+  expect(moveActivity).not.toHaveBeenCalled();
+  expect(rebindBackgroundExecution).not.toHaveBeenCalled();
+  expect(detach).toHaveBeenCalledWith(instanceId, undefined, {
+    operationId,
+    fencingGeneration: 7,
+  });
+});
+it('retains owned staging and recovery identity when fenced cancellation is unconfirmed', async () => {
+  await sharedFixture();
+  clone.mockRejectedValueOnce(new Error('clone interrupted'));
+  detach.mockRejectedValueOnce(
+    new CanopyCloudClientError('network-error', 'release response lost'),
+  );
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'failed' });
+  const saved = await journal();
+  expect(saved.phase).toBe('cloning');
+  expect(await exists(String(saved.stagingPath))).toBe(true);
+  expect(detach).toHaveBeenCalledWith(instanceId, undefined, {
+    operationId,
+    fencingGeneration: 7,
+  });
+});
+it('retains the same complete checkout and journal after a lost completion response', async () => {
+  await sharedFixture();
+  complete.mockRejectedValueOnce(
+    new CanopyCloudClientError('network-error', 'Response lost'),
+  );
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({
+    state: 'failed',
+    errorCode: 'completion-pending',
+  });
+  const saved = await journal();
+  expect(saved).toMatchObject({
+    version: 2,
+    phase: 'completing',
+    definitionRevision: 1,
+  });
+  expect(detach).not.toHaveBeenCalled();
+  reports = [];
+  service = createOrgProjectMaterialization(deps);
+  service.subscribe((progress) => reports.push(progress));
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'ready' });
+  expect(clone).toHaveBeenCalledTimes(2);
+  expect(complete).toHaveBeenCalledTimes(2);
+  expect(await readdir(destination)).toHaveLength(1);
+});
+it('preserves a promoted destination when binding fails and retries the same identity', async () => {
+  await sharedFixture();
+  const binding = deps.workspace.createBoundMultiRepoWorkspace?.bind(undefined);
+  if (!binding) throw new Error('binding missing');
+  deps.workspace.createBoundMultiRepoWorkspace = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('disk full'))
+    .mockImplementation(binding);
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'failed' });
+  const saved = await journal();
+  expect(saved.phase).toBe('bound');
+  expect(detach).not.toHaveBeenCalled();
+  expect(await readdir(destination)).toHaveLength(1);
+  reports = [];
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'ready' });
+  expect(clone).toHaveBeenCalledTimes(2);
+});
+it('refuses a stale fence before promotion and never publishes a binding', async () => {
+  await sharedFixture();
+  claim.mockImplementation(
+    (): ReturnType<OrgProjectMaterializationDeps['cloud']['claim']> =>
+      Promise.resolve({
+        instanceId,
+        operationId,
+        fencingGeneration: clone.mock.calls.length >= 2 ? 8 : 7,
+        state: 'CLAIMED',
+      }),
+  );
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({
+    state: 'failed',
+    errorCode: 'superseded',
+  });
+  expect(bind).not.toHaveBeenCalled();
+  expect(complete).not.toHaveBeenCalled();
+});
+
+it('materializes independent complete checkouts on a second device without sharing dirty work', async () => {
+  await sharedFixture();
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ state: 'ready' });
+  const first = bindMulti.mock.calls[0]?.[0];
+  if (!first) throw new Error('first binding missing');
+  const secondRoot = join(root, 'device-two-destination');
+  await mkdir(secondRoot);
+  const secondBinding: jest.MockedFunction<
+    NonNullable<
+      OrgProjectMaterializationDeps['workspace']['createBoundMultiRepoWorkspace']
+    >
+  > = jest.fn((input): Promise<void> => {
+    void input;
+    return Promise.resolve();
+  });
+  const secondDeps: OrgProjectMaterializationDeps = {
+    ...deps,
+    paths: {
+      ...deps.paths,
+      setupsDir: (): string => join(root, 'device-two-journals'),
+    },
+    resolveDeviceId: (): Promise<string> =>
+      Promise.resolve('ffffffff-ffff-4fff-8fff-ffffffffffff'),
+    readItems: (): Promise<SidebarItem[]> => Promise.resolve([]),
+    readItemsSnapshot: (): ReturnType<
+      OrgProjectMaterializationDeps['readItemsSnapshot']
+    > => Promise.resolve({ authority: 'ok', items: [] }),
+    workspace: {
+      ...deps.workspace,
+      createBoundMultiRepoWorkspace: secondBinding,
+    },
+    cloud: {
+      ...deps.cloud,
+      claim: (): ReturnType<OrgProjectMaterializationDeps['cloud']['claim']> =>
+        Promise.resolve({
+          instanceId: '11111111-1111-4111-8111-111111111111',
+          operationId: '22222222-2222-4222-8222-222222222222',
+          fencingGeneration: 1,
+          state: 'CLAIMED',
+        }),
+    },
+  };
+  const second = createOrgProjectMaterialization(secondDeps);
+  reports = [];
+  second.subscribe((progress) => reports.push(progress));
+  await second.startSetup(projectId, secondRoot);
+  expect(await terminal()).toMatchObject({ state: 'ready' });
+  const bound = secondBinding.mock.calls[0]?.[0];
+  if (!bound) throw new Error('second binding missing');
+  expect(bound.owner.instanceId).not.toBe(first.owner.instanceId);
+  expect(bound.repositories).toHaveLength(2);
+  const firstRepo = first.repositories[0];
+  const secondRepo = bound.repositories[0];
+  if (!firstRepo || !secondRepo) throw new Error('complete repository missing');
+  await writeFile(
+    join(first.path, firstRepo.relativePath, 'README.md'),
+    'device one dirty work',
+  );
+  expect(
+    await readFile(
+      join(bound.path, secondRepo.relativePath, 'README.md'),
+      'utf8',
+    ),
+  ).toBe('fixture');
+  expect(await readFile(join(root, 'seed', 'README.md'), 'utf8')).toBe(
+    'fixture',
+  );
+  expect(createMultiRepoProject).not.toHaveBeenCalled();
+});
+it('preserves another account recovery journal without exposing its instance', async () => {
+  await sharedFixture();
+  complete.mockRejectedValue(
+    new CanopyCloudClientError('network-error', 'Response lost'),
+  );
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({ errorCode: 'completion-pending' });
+  const saved = await journal();
+  const access = await deps.access();
+  deps.access = (): ReturnType<OrgProjectMaterializationDeps['access']> =>
+    Promise.resolve({ ...access, accountId: 'another-account' });
+  reports = [];
+  await service.startSetup(projectId, destination);
+  expect(await terminal()).toMatchObject({
+    state: 'failed',
+    errorCode: 'access-removed',
+    instanceId: null,
+  });
+  expect(await journal()).toEqual(saved);
+  expect(clone).toHaveBeenCalledTimes(2);
+  expect(detach).not.toHaveBeenCalled();
+});
+
+describe('shared setup preserves populated sources across recovery (CAN-3571)', () => {
+  let sourcePaths: string[];
+  let originals: SidebarItem[];
+  let sourceDefinitions: OrgProjectSummary[];
+  let before: Record<string, unknown>;
+  let ownershipWrites: jest.SpiedFunction<
+    OrgProjectMaterializationDeps['workspace']['updateOwnership']
+  >;
+
+  // Include Git metadata and linked worktrees; no mutable source data is
+  // excluded. Only the new destination and its setup journal may change.
+  async function sourceSnapshot(): Promise<Record<string, unknown>> {
+    const files: Record<string, unknown> = {};
+    async function visit(path: string): Promise<void> {
+      const info = await lstat(path);
+      if (info.isSymbolicLink()) {
+        files[path] = { mode: info.mode, target: await readlink(path) };
+      } else if (info.isDirectory()) {
+        files[path] = { mode: info.mode, directory: true };
+        for (const name of (await readdir(path)).sort())
+          await visit(join(path, name));
+      } else {
+        files[path] = {
+          mode: info.mode,
+          content: (await readFile(path)).toString('base64'),
+        };
+      }
+    }
+    for (const path of sourcePaths) await visit(path);
+    return {
+      files,
+      items: (await deps.readItems()).filter((item) =>
+        originals.some((original) => original.id === item.id),
+      ),
+      definitions: snapshot.projects.filter((row) =>
+        sourceDefinitions.some((original) => original.id === row.id),
+      ),
+    };
+  }
+
+  beforeEach(async () => {
+    await sharedFixture();
+    sourcePaths = [];
+    originals = [];
+    sourceDefinitions = [];
+    for (const name of ['web', 'api']) {
+      const index = originals.length;
+      const id = `source-${name}`;
+      const repo = join(root, id);
+      const worktree = join(root, `${id}-worktree`);
+      const metadata = join(root, 'workspaces', id);
+      git(root, ['clone', origin, repo]);
+      git(repo, ['worktree', 'add', '-b', 'populated-work', worktree]);
+      await writeFile(join(repo, 'README.md'), 'uncommitted source edit');
+      await writeFile(join(worktree, 'untracked.txt'), 'in-progress task');
+      await mkdir(join(metadata, 'worktree-data', 'feature', 'chats'), {
+        recursive: true,
+      });
+      const owner: WorkspaceOwnerBinding = {
+        type: 'organization',
+        organizationId,
+        projectId:
+          index === 0
+            ? '11111111-1111-4111-8111-111111111111'
+            : '22222222-2222-4222-8222-222222222222',
+        instanceId:
+          index === 0
+            ? '33333333-3333-4333-8333-333333333333'
+            : '44444444-4444-4444-8444-444444444444',
+        bindingGeneration: 1,
+      };
+      const item: SidebarItem = {
+        id,
+        name,
+        type: 'single-repo',
+        repoPath: repo,
+        owner,
+        color: '',
+        collapsed: false,
+        order: index,
+        worktrees: [],
+      };
+      for (const [file, value] of Object.entries({
+        'workspace.json': { ...item, hooks: { beforeTask: 'source-hook' } },
+        'worktrees.json': { worktrees: [{ id: 'feature', path: worktree }] },
+        'watchers.json': { watchers: [{ id: 'watcher', workspaceId: id }] },
+        'automations.json': { activities: [{ id: 'timer', workspaceId: id }] },
+        'worktree-data/feature/chats/index.json': { chats: ['chat'] },
+        'worktree-data/feature/chats/chat.json': { messages: ['source work'] },
+      }))
+        await writeFile(join(metadata, file), JSON.stringify(value));
+      originals.push(item);
+      sourceDefinitions.push({ ...project, id: owner.projectId, name });
+      sourcePaths.push(repo, worktree, metadata);
+    }
+    snapshot.projects.push(...sourceDefinitions);
+    const readDestinationItems = deps.readItems.bind(deps);
+    deps.readItems = async (): Promise<SidebarItem[]> => [
+      ...originals,
+      ...(await readDestinationItems()),
+    ];
+    ownershipWrites = jest.spyOn(deps.workspace, 'updateOwnership');
+    before = structuredClone(await sourceSnapshot());
+  });
+
+  afterEach(async () => {
+    expect(await sourceSnapshot()).toEqual(before);
+    expect(ownershipWrites).not.toHaveBeenCalled();
+    expect(moveActivity).not.toHaveBeenCalled();
+    expect(returnActivity).not.toHaveBeenCalled();
+    expect(returnPersonalActivity).not.toHaveBeenCalled();
+    expect(rebindBackgroundExecution).not.toHaveBeenCalled();
+    expect(createMultiRepoProject).not.toHaveBeenCalled();
+    expect(removeBound).not.toHaveBeenCalled();
+    for (const [, id] of bind.mock.calls)
+      expect(originals.map((item) => item.id)).not.toContain(id);
+  });
+
+  it('completes fresh setup without consuming either populated source', async () => {
+    await service.startSetup(projectId, destination);
+    expect(await terminal()).toMatchObject({ state: 'ready' });
+    expect(bindMulti).toHaveBeenCalledTimes(1);
+    expect(clone).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['cloning', 'validated', 'promoted', 'bound', 'completing'])(
+    'keeps sources intact when a %s journal write fails, including retry',
+    async (phase) => {
+      let failed = false;
+      journalWritten.mockImplementation((current): Promise<void> => {
+        if (current === phase && !failed) {
+          failed = true;
+          return Promise.reject(
+            new Error('ENOSPC: injected journal write failure'),
+          );
+        }
+        return Promise.resolve();
+      });
+      await service.startSetup(projectId, destination);
+      expect(await terminal()).toMatchObject({ state: 'failed' });
+      expect(failed).toBe(true);
+      expect(await sourceSnapshot()).toEqual(before);
+      reports = [];
+      service = createOrgProjectMaterialization(deps);
+      service.subscribe((progress) => reports.push(progress));
+      await service.startSetup(projectId, destination);
+      expect(await terminal()).toMatchObject({ state: 'ready' });
+      expect(await readdir(destination)).toHaveLength(1);
+    },
+  );
+
+  it.each<[SetupPhase, boolean]>([
+    ['cloning', true],
+    ['validated', true],
+    ['promoted', true],
+    ['promoted', false],
+    ['bound', false],
+    ['completing', false],
+  ])('recovers a durable %s checkpoint (staged: %s)', async (phase, staged) => {
+    complete.mockRejectedValueOnce(
+      new CanopyCloudClientError('network-error', 'completion reply lost'),
+    );
+    await service.startSetup(projectId, destination);
+    expect(await terminal()).toMatchObject({ errorCode: 'completion-pending' });
+    const path = await journalFile();
+    const saved = normalizeSetupJournal(await journal());
+    if (!saved || saved.version !== 2) throw new Error('v2 journal missing');
+    saved.phase = phase;
+    if (staged) await rename(saved.finalPath, saved.stagingPath);
+    if (phase !== 'completing') sidebarItems = [];
+    await writeAtomic(path, JSON.stringify(saved));
+    clone.mockClear();
+    bindMulti.mockClear();
+    reports = [];
+    service = createOrgProjectMaterialization(deps);
+    service.subscribe((progress) => reports.push(progress));
+    await service.startSetup(projectId, destination);
+    expect(await terminal()).toMatchObject({ state: 'ready' });
+    expect(clone).not.toHaveBeenCalled();
+    if (phase !== 'completing')
+      expect(bindMulti.mock.calls[0]?.[0]).toMatchObject({
+        localWorkspaceId: saved.localWorkspaceId,
+        owner: { instanceId: saved.instanceId, projectId: saved.projectId },
+      });
+    expect(await readdir(destination)).toEqual([basename(saved.finalPath)]);
+  });
+
+  it('cancels and awaits an active clone before releasing only the new claim', async () => {
+    let entered: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    clone.mockImplementationOnce(async (_url, _path, { signal }) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('cancelled')), {
+          once: true,
+        });
+        entered();
+      });
+    });
+    await service.startSetup(projectId, destination);
+    await started;
+    await service.cancelSetup(projectId);
+    expect(await terminal()).toMatchObject({ state: 'cancelled' });
+    expect(bindMulti).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(detach).toHaveBeenCalledWith(instanceId, undefined, {
+      operationId,
+      fencingGeneration: 7,
+    });
+    expect(await readdir(destination)).toEqual([]);
+  });
+
+  it('cleans only the new staging after a later clone fails, then retries', async () => {
+    const realClone = clone.getMockImplementation();
+    if (!realClone) throw new Error('clone implementation missing');
+    clone
+      .mockImplementationOnce(realClone)
+      .mockRejectedValueOnce(new Error('second clone failed'));
+    await service.startSetup(projectId, destination);
+    expect(await terminal()).toMatchObject({
+      state: 'failed',
+      errorCode: 'clone-failed',
+    });
+    expect(await readdir(destination)).toEqual([]);
+    expect(await sourceSnapshot()).toEqual(before);
+    reports = [];
+    await service.startSetup(projectId, destination);
+    expect(await terminal()).toMatchObject({ state: 'ready' });
+    expect(bindMulti).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    'keeps the promoted checkout when an expired lease is reclaimed (superseded: %s)',
+    async (superseded) => {
+      const access = await deps.access();
+      deps.access = (): ReturnType<OrgProjectMaterializationDeps['access']> =>
+        Promise.resolve({
+          ...access,
+          capabilities: [...access.capabilities, 'org-project-reclaim-v1'],
+        });
+      complete.mockRejectedValueOnce(
+        new CanopyCloudClientError(
+          'http-error',
+          'lease expired',
+          409,
+          'conflict',
+        ),
+      );
+      await service.startSetup(projectId, destination);
+      expect(await terminal()).toMatchObject({ errorCode: 'claim-expired' });
+      const saved = normalizeSetupJournal(await journal());
+      if (!saved || saved.version !== 2) throw new Error('v2 journal missing');
+      expect(saved.phase).toBe('reclaiming');
+      if (superseded)
+        claim.mockRejectedValueOnce(
+          new CanopyCloudClientError(
+            'http-error',
+            'superseded',
+            409,
+            'conflict',
+          ),
+        );
+      else
+        claim.mockResolvedValueOnce({
+          instanceId,
+          operationId: '55555555-5555-4555-8555-555555555555',
+          fencingGeneration: 8,
+          state: 'CLAIMED',
+        });
+      reports = [];
+      service = createOrgProjectMaterialization(deps);
+      service.subscribe((progress) => reports.push(progress));
+      await service.startSetup(projectId, destination);
+      expect(await terminal()).toMatchObject(
+        superseded
+          ? { state: 'failed', errorCode: 'superseded' }
+          : { state: 'ready' },
+      );
+      expect(clone).toHaveBeenCalledTimes(2);
+      expect(detach).not.toHaveBeenCalled();
+      expect(await exists(saved.finalPath)).toBe(true);
+      expect(claim).toHaveBeenLastCalledWith(
+        projectId,
+        expect.objectContaining({
+          localWorkspaceId: saved.localWorkspaceId,
+          expectedDefinitionRevision: 1,
+          materializationVersion: 1,
+          reclaim: { instanceId, operationId, fencingGeneration: 7 },
+        }),
+      );
+    },
+  );
+
+  it('does not touch either source when access is revoked during cloning', async () => {
+    const realClone = clone.getMockImplementation();
+    if (!realClone) throw new Error('clone implementation missing');
+    clone.mockImplementation(async (...args) => {
+      await realClone(...args);
+      if (clone.mock.calls.length === 2)
+        snapshot.projects = snapshot.projects.map((row) =>
+          row.id === projectId
+            ? { ...row, capabilities: { ...row.capabilities, use: false } }
+            : row,
+        );
+    });
+    await service.startSetup(projectId, destination);
+    expect(await terminal()).toMatchObject({
+      state: 'failed',
+      errorCode: 'access-removed',
+    });
+    expect(bindMulti).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(await readdir(destination)).toEqual([]);
+  });
+
+  it.each([true, false])(
+    'preserves an untrusted recovery journal (unknown version: %s)',
+    async (unknownVersion) => {
+      complete.mockRejectedValueOnce(
+        new CanopyCloudClientError('network-error', 'reply lost'),
+      );
+      await service.startSetup(projectId, destination);
+      expect(await terminal()).toMatchObject({
+        errorCode: 'completion-pending',
+      });
+      const path = await journalFile();
+      const saved = await journal();
+      const corrupt = unknownVersion
+        ? JSON.stringify({ ...saved, version: 99 })
+        : '{broken';
+      await writeAtomic(path, corrupt);
+      clone.mockClear();
+      bindMulti.mockClear();
+      complete.mockClear();
+      reports = [];
+      service = createOrgProjectMaterialization(deps);
+      service.subscribe((progress) => reports.push(progress));
+      await service.startSetup(projectId, destination);
+      expect(await terminal()).toMatchObject({ state: 'failed' });
+      expect(await readFile(path, 'utf8')).toBe(corrupt);
+      expect(await readdir(destination)).toHaveLength(1);
+      expect(clone).not.toHaveBeenCalled();
+      expect(bindMulti).not.toHaveBeenCalled();
+      expect(complete).not.toHaveBeenCalled();
+      expect(detach).not.toHaveBeenCalled();
+    },
+  );
 });

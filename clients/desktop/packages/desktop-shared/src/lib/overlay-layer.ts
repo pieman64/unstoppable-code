@@ -5,6 +5,7 @@ export const OVERLAY_LAYER_FRAME_PREFIX = 'canopy-overlay-layer:';
 
 export const OVERLAY_LAYER_SLOTS: readonly OverlayLayerSlot[] = [
   'notifications',
+  'above-browser',
 ];
 
 export function isOverlayLayerSlot(value: unknown): value is OverlayLayerSlot {

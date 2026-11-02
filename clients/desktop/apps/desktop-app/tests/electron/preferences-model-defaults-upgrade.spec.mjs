@@ -19,9 +19,14 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
-import { seedWorktreeChat } from './seeders/index.mjs';
+import { CHAT_EFFORT_TRIGGER_TEST_ID } from './effortPanel.mjs';
+import { seedCoworkWorkspace, seedWorktreeChat } from './seeders/index.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedModelDefaultsGatewayCatalog } from './seeders/seedUnavailableModelDefaults.mjs';
+import {
+  chooseSettingsOption,
+  settingsOptionState,
+} from './helpers/settingsSelect.mjs';
 
 const SAVED_MODEL_PREFERENCES = {
   defaultChatProvider: 'codex',
@@ -126,6 +131,15 @@ function modelRow(chatTab, title) {
     : heading.locator('../../..');
 }
 
+// A group's + opens the add-panel menu; its New Chat item creates the chat tab.
+async function addChatTab(window) {
+  await window.getByTestId('panel-add-tab-group-chat').click();
+  await window
+    .getByTestId('panel-add-menu')
+    .getByTestId('panel-add-menu-item-new-chat')
+    .click();
+}
+
 test('preserves saved model defaults while upgrading preferences', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-model-defaults-upgrade-'),
@@ -154,18 +168,18 @@ test('preserves saved model defaults while upgrading preferences', async () => {
     const worktreeDefaults = modelRow(chatTab, 'Default code model');
     await expect(
       worktreeDefaults.getByTestId('chat-defaults-model-codex'),
-    ).toHaveValue('gpt-5.6-sol');
+    ).toHaveAttribute('data-value', 'gpt-5.6-sol');
 
     const standaloneDefaults = modelRow(chatTab, 'Default chat model');
     await expect(
       standaloneDefaults.getByTestId('chat-defaults-model-codex'),
-    ).toHaveValue('gpt-5.6-terra');
+    ).toHaveAttribute('data-value', 'gpt-5.6-terra');
 
     await expect(
       modelRow(chatTab, 'Plan parsing and diagrams model')
-        .locator('select')
+        .locator('button[role="combobox"]')
         .first(),
-    ).toHaveValue('sonnet');
+    ).toHaveAttribute('data-value', 'sonnet');
 
     expect(readPersistedPreferences(userDataDir)).toMatchObject({
       ...SAVED_MODEL_PREFERENCES,
@@ -206,17 +220,17 @@ test('loads Settings with prototype-looking saved model IDs', async () => {
       modelRow(chatTab, 'Default code model').getByTestId(
         'chat-defaults-model-codex',
       ),
-    ).toHaveValue('constructor');
+    ).toHaveAttribute('data-value', 'constructor');
     const creditsModel = modelRow(chatTab, 'Default code model').getByTestId(
       'chat-defaults-model-aiCredits',
     );
-    await expect(creditsModel).toHaveValue('constructor');
-    await expect(creditsModel.locator('option:checked')).toHaveText(
-      /^constructor(?: \(unavailable\))?$/,
-    );
+    await expect(creditsModel).toHaveAttribute('data-value', 'constructor');
+    await expect(creditsModel).toHaveText(/^constructor(?: \(unavailable\))?$/);
     await expect(
-      modelRow(chatTab, 'Chat title model').locator('select').first(),
-    ).toHaveValue('constructor');
+      modelRow(chatTab, 'Chat title model')
+        .locator('button[role="combobox"]')
+        .first(),
+    ).toHaveAttribute('data-value', 'constructor');
     await window.getByTestId('settings-auto-retry-transient-chats').click();
     await expect
       .poll(
@@ -292,51 +306,74 @@ test('retains unavailable saved models across unrelated Settings saves and resta
         const select = modelRow(chatTab, title).getByTestId(
           'chat-defaults-model-codex',
         );
-        await expect(select).toHaveValue(model);
-        await expect(select.locator('option:checked')).toHaveText(
-          `${model} (unavailable)`,
-        );
-        await expect(select.locator('option:checked')).toBeDisabled();
+        await expect(select).toHaveAttribute('data-value', model);
+        await expect(select).toHaveText(`${model} (unavailable)`);
+        expect(
+          (
+            await settingsOptionState(
+              select,
+              await select.getAttribute('data-value'),
+            )
+          )?.disabled,
+        ).toBe(true);
       }
       const summaryModel = modelRow(chatTab, 'Chat title model')
-        .locator('select')
+        .locator('button[role="combobox"]')
         .first();
-      await expect(summaryModel).toHaveValue('gpt-future-summary');
-      await expect(summaryModel.locator('option:checked')).toHaveText(
-        'gpt-future-summary (unavailable)',
+      await expect(summaryModel).toHaveAttribute(
+        'data-value',
+        'gpt-future-summary',
       );
-      await expect(summaryModel.locator('option:checked')).toBeDisabled();
+      await expect(summaryModel).toHaveText('gpt-future-summary (unavailable)');
+      expect(
+        (
+          await settingsOptionState(
+            summaryModel,
+            await summaryModel.getAttribute('data-value'),
+          )
+        )?.disabled,
+      ).toBe(true);
       await expect(
         modelRow(chatTab, 'Default code model').getByTestId(
           'chat-defaults-thinking-codex',
         ),
-      ).toHaveValue('ultra');
+      ).toHaveAttribute('data-value', 'ultra');
       await expect(
         modelRow(chatTab, 'Chat title model').getByRole('combobox', {
           name: 'Thinking level',
         }),
-      ).toHaveValue('ultra');
+      ).toHaveAttribute('data-value', 'ultra');
 
       const creditsModel = modelRow(chatTab, 'Default code model').getByTestId(
         'chat-defaults-model-aiCredits',
       );
-      await expect(creditsModel).toHaveValue('gateway-retired-default');
-      await expect(creditsModel.locator('option:checked')).toHaveText(
+      await expect(creditsModel).toHaveAttribute(
+        'data-value',
+        'gateway-retired-default',
+      );
+      await expect(creditsModel).toHaveText(
         'gateway-retired-default (unavailable)',
       );
-      await expect(creditsModel.locator('option:checked')).toBeDisabled();
+      expect(
+        (
+          await settingsOptionState(
+            creditsModel,
+            await creditsModel.getAttribute('data-value'),
+          )
+        )?.disabled,
+      ).toBe(true);
       const creditsThinking = modelRow(
         chatTab,
         'Default code model',
       ).getByTestId('chat-defaults-thinking-aiCredits');
-      await expect(creditsThinking).toHaveValue('ultra');
+      await expect(creditsThinking).toHaveAttribute('data-value', 'ultra');
       await expect(creditsThinking).toBeDisabled();
 
       if (!restarting) {
         await closeCanopy(electronApp, userDataDir, { keepUserData: true });
         electronApp = undefined;
       } else {
-        await creditsModel.selectOption('');
+        await chooseSettingsOption(creditsModel, '');
         await expect
           .poll(
             () =>
@@ -388,7 +425,7 @@ test('starts usable chats while preserving an unavailable saved default', async 
         modelRow(chatTab, 'Default code model').getByTestId(
           'chat-defaults-model-codex',
         ),
-      ).toHaveValue('gpt-future-code');
+      ).toHaveAttribute('data-value', 'gpt-future-code');
       const autoRetry = window.getByTestId(
         'settings-auto-retry-transient-chats',
       );
@@ -403,8 +440,7 @@ test('starts usable chats while preserving an unavailable saved default', async 
       await app.closeSettings();
       await app.openMainPage();
       await app.selectWorktree('demo-main');
-      await window.getByTestId('panel-add-tab-group-chat').click();
-      await window.getByTestId('panel-add-menu-item-new-chat').click();
+      await addChatTab(window);
       await expect
         .poll(() =>
           window.evaluate(async () => {
@@ -447,6 +483,215 @@ test('starts usable chats while preserving an unavailable saved default', async 
         electronApp = undefined;
       }
     }
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-4646: GPT-6.1 Sol declares Low as its lowest effort. Both default groups
+// must offer it, keep it through restart, and hand it to new chats.
+const SOL_LOW = { model: 'gpt-6.1-sol', thinkingLevel: 'low' };
+
+async function expectSolLowDefaults(chatTab) {
+  for (const title of ['Default code model', 'Default chat model']) {
+    const group = modelRow(chatTab, title);
+    await expect(
+      group.getByTestId('chat-defaults-model-codex'),
+    ).toHaveAttribute('data-value', SOL_LOW.model);
+    const thinking = group.getByTestId('chat-defaults-thinking-codex');
+    await expect(thinking).toHaveAttribute('data-value', 'low');
+    await expect(thinking).toHaveText('Low');
+  }
+}
+
+function readActiveChat(window, target) {
+  return window.evaluate(async (scope) => {
+    const snapshot = await window.api.chat.getState(scope);
+    const tab = snapshot.tabsFile.tabs.find(
+      (candidate) => candidate.id === snapshot.tabsFile.activeTabId,
+    );
+    return {
+      model: tab?.model,
+      thinkingLevel: tab?.modelConfig?.thinkingLevel,
+    };
+  }, target);
+}
+
+async function sendFromComposer(window, electronApp, text) {
+  const composer = window
+    .locator('[data-chat-composer-root="true"]')
+    .filter({ visible: true })
+    .first();
+  await expect(
+    composer.getByTestId(CHAT_EFFORT_TRIGGER_TEST_ID),
+  ).toHaveAttribute('data-thinking-level', 'low');
+  await composer.getByRole('textbox').first().fill(text);
+  await window
+    .getByRole('button', { name: 'Send message', exact: true })
+    .filter({ visible: true })
+    .first()
+    .click();
+  await expect
+    .poll(() =>
+      electronApp.evaluate((_electron, message) => {
+        const request = globalThis.__solLowSends?.find(
+          (candidate) => candidate.text === message,
+        );
+        return request
+          ? {
+              model: request.model,
+              thinkingLevel: request.modelConfig?.thinkingLevel,
+            }
+          : undefined;
+      }, text),
+    )
+    .toEqual(SOL_LOW);
+}
+
+test('selects GPT-6.1 Sol Low in both default groups and starts new chats with it', async () => {
+  test.setTimeout(300_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-model-defaults-sol-low-'),
+  );
+  const astraHigh = { model: 'gpt-6-astra', thinkingLevel: 'high' };
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: 'demo-ts-pnpm-vite',
+    worktreeId: 'demo-main',
+    providerType: 'codex',
+    tabs: [
+      {
+        id: 'original',
+        title: 'Original chat',
+        model: astraHigh.model,
+        modelConfig: { thinkingLevel: astraHigh.thinkingLevel },
+      },
+    ],
+  });
+  // A project default model overrides Default chat model, so leave it unset.
+  const { workspaceId: coworkId, chatId: seededCoworkChatId } =
+    seedCoworkWorkspace({ userDataDir, defaultModel: null, mergeIndex: true });
+  const savedPreferences = {
+    ...SAVED_MODEL_PREFERENCES,
+    defaultChatModelByProvider: {
+      ...SAVED_MODEL_PREFERENCES.defaultChatModelByProvider,
+      codex: astraHigh,
+    },
+    defaultWorktreeModelByProvider: {
+      ...SAVED_MODEL_PREFERENCES.defaultWorktreeModelByProvider,
+      codex: astraHigh,
+    },
+  };
+  const ollamaExecutable = path.join(userDataDir, 'ollama');
+  writeFileSync(ollamaExecutable, "#!/bin/sh\necho 'ollama version 0.14.0'\n");
+  chmodSync(ollamaExecutable, 0o755);
+  seedPreUpgradePreferences(userDataDir, ollamaExecutable, savedPreferences);
+
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy({ userDataDir }));
+    let window = await electronApp.firstWindow();
+    let app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openSettings();
+    await app.openSettingsSection('chat');
+    const chatTab = window.getByTestId('settings-tab-chat');
+    for (const title of ['Default code model', 'Default chat model']) {
+      const group = modelRow(chatTab, title);
+      await chooseSettingsOption(
+        group.getByTestId('chat-defaults-model-codex'),
+        SOL_LOW.model,
+      );
+      const thinking = group.getByTestId('chat-defaults-thinking-codex');
+      expect((await settingsOptionState(thinking, 'low'))?.label).toBe('Low');
+      await chooseSettingsOption(thinking, 'low');
+      await expect(thinking).toHaveAttribute('data-value', 'low');
+    }
+    await expect
+      .poll(() => {
+        const preferences = readPersistedPreferences(userDataDir);
+        return [
+          preferences.defaultWorktreeModelByProvider.codex,
+          preferences.defaultChatModelByProvider.codex,
+        ];
+      })
+      .toEqual([SOL_LOW, SOL_LOW]);
+
+    await app.closeSettings();
+    await app.openSettings();
+    await app.openSettingsSection('chat');
+    await expectSolLowDefaults(window.getByTestId('settings-tab-chat'));
+
+    await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+    electronApp = undefined;
+    ({ electronApp } = await launchCanopy({ userDataDir }));
+    window = await electronApp.firstWindow();
+    app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openSettings();
+    await app.openSettingsSection('chat');
+    await expectSolLowDefaults(window.getByTestId('settings-tab-chat'));
+    await app.closeSettings();
+
+    await electronApp.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('chat:send-message');
+      globalThis.__solLowSends = [];
+      ipcMain.handle('chat:send-message', (_event, request) => {
+        globalThis.__solLowSends.push(request);
+      });
+    });
+
+    // New worktree chat: Default code model.
+    await app.openMainPage();
+    await app.selectWorktree('demo-main');
+    await addChatTab(window);
+    await expect
+      .poll(() =>
+        readActiveChat(window, {
+          projectId: 'demo-ts-pnpm-vite',
+          worktreeId: 'demo-main',
+        }),
+      )
+      .toEqual(SOL_LOW);
+    await sendFromComposer(window, electronApp, 'Use the Sol Low code default');
+
+    // New standalone chat: Default chat model.
+    const coworkHeader = window.getByTestId(
+      `sidebar-cowork-project-${coworkId}-header`,
+    );
+    await expect(coworkHeader).toBeVisible();
+    await coworkHeader.hover();
+    await window
+      .getByTestId(`sidebar-cowork-project-${coworkId}-new-chat`)
+      .click();
+    let coworkEntryId;
+    await expect
+      .poll(async () => {
+        const { entries } = await window.evaluate(
+          (projectId) => window.api.workEntries.list({ projectId }),
+          coworkId,
+        );
+        coworkEntryId = entries.find(
+          (entry) => entry.id !== seededCoworkChatId,
+        )?.id;
+        return coworkEntryId;
+      })
+      .toBeTruthy();
+    await expect
+      .poll(() =>
+        readActiveChat(window, {
+          projectId: coworkId,
+          worktreeId: coworkEntryId,
+        }),
+      )
+      .toEqual(SOL_LOW);
+    await sendFromComposer(window, electronApp, 'Use the Sol Low chat default');
+
+    expect(readPersistedPreferences(userDataDir)).toMatchObject({
+      defaultWorktreeModelByProvider: { codex: SOL_LOW },
+      defaultChatModelByProvider: { codex: SOL_LOW },
+    });
   } finally {
     if (electronApp) await closeCanopy(electronApp, userDataDir);
   }

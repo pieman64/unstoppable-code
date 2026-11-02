@@ -12,10 +12,13 @@ const PANEL_COMMANDS = SHARED_PANEL_COMMANDS satisfies readonly {
 }[];
 
 export {
+  findEditableSafePanelShortcut,
   getPanelCommand,
   isPanelCommandAvailable,
+  matchesPanelShortcutBinding,
   PANEL_SHORTCUT_BINDINGS,
   runPanelCommand,
+  selectAdjacentPanelTab,
   type PanelCommand,
   type PanelCommandId,
   type PanelShortcutBinding,

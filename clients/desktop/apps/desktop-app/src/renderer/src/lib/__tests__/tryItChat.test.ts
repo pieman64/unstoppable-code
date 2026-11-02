@@ -4,10 +4,13 @@
 import type { TryItCapability } from '@canopy/protocol/try-it';
 import {
   createTryItChatLauncher,
+  subscribeTryItChatLaunch,
   tryItChatPluginSelections,
+  TryItStageCancelledError,
   type TryItChatDeps,
   type TryItChatLocation,
   type TryItChatStorage,
+  type TryItStageDestination,
 } from '../tryItChat';
 
 jest.mock('@/stores/standaloneChatStore', () => ({
@@ -24,7 +27,12 @@ const linear: TryItCapability = {
   name: 'Linear',
 };
 
-const location: TryItChatLocation = {
+const worktree: TryItChatLocation = {
+  projectId: 'checkout',
+  worktreeId: 'checkout-latency',
+};
+
+const chats: TryItChatLocation = {
   projectId: 'cowork-default',
   worktreeId: 'entry-1',
 };
@@ -43,39 +51,78 @@ function memoryStorage(): TryItChatStorage & {
 }
 
 type CreateChatParams = Parameters<TryItChatDeps['createChat']>[0];
-type CreateChatMock = jest.Mock<Promise<void>, [CreateChatParams]>;
-type OpenChatMock = jest.Mock<
-  Promise<'opened' | 'missing'>,
-  [TryItChatLocation, string]
->;
+type StageDraftParams = Parameters<TryItChatDeps['stageDraft']>[0];
 
-function setup(overrides: Partial<TryItChatDeps> = {}): {
-  deps: TryItChatDeps;
+function setup(
+  options: {
+    target?: TryItStageDestination;
+    overrides?: Partial<TryItChatDeps>;
+  } = {},
+): {
   storage: ReturnType<typeof memoryStorage>;
-  createChat: CreateChatMock;
-  openChat: OpenChatMock;
+  target: { current: TryItStageDestination };
+  drafts: Set<string>;
+  createChat: jest.Mock<Promise<TryItChatLocation>, [CreateChatParams]>;
+  openChat: jest.Mock<
+    Promise<'opened' | 'missing'>,
+    [TryItChatLocation, string]
+  >;
+  stageDraft: jest.Mock<Promise<void>, [StageDraftParams]>;
+  showChat: jest.Mock<Promise<void>, [TryItChatLocation, string]>;
   launcher: ReturnType<typeof createTryItChatLauncher>;
 } {
   const storage = memoryStorage();
   let id = 0;
-  const createChat: CreateChatMock = jest.fn((params: CreateChatParams) => {
+  const target = {
+    current: options.target ?? {
+      kind: 'existing' as const,
+      location: worktree,
+      chatId: 'grace-chat',
+    },
+  };
+  const drafts = new Set<string>();
+  const stagedIds = new Map<string, Set<string>>();
+  const createChat = jest.fn((params: CreateChatParams) => {
+    const location =
+      params.target.kind === 'new-tab' ? params.target.location : chats;
     params.onChatCreated(location);
+    return Promise.resolve(location);
+  });
+  const openChat = jest.fn<
+    Promise<'opened' | 'missing'>,
+    [TryItChatLocation, string]
+  >(() => Promise.resolve('opened'));
+  const stageDraft = jest.fn((params: StageDraftParams) => {
+    drafts.add(params.chatId);
+    const ids = stagedIds.get(params.chatId) ?? new Set<string>();
+    ids.add(params.stagingId);
+    stagedIds.set(params.chatId, ids);
     return Promise.resolve();
   });
-  const openChat: OpenChatMock = jest.fn(() => Promise.resolve('opened'));
+  const showChat = jest.fn<Promise<void>, [TryItChatLocation, string]>(() =>
+    Promise.resolve(),
+  );
   const deps: TryItChatDeps = {
     storage,
     newId: () => `id-${++id}`,
+    resolveTarget: () => Promise.resolve(target.current),
     createChat,
     openChat,
-    resumeChat: jest.fn(() => Promise.resolve()),
-    ...overrides,
+    hasDraft: (chatId) => drafts.has(chatId),
+    isStageAccepted: (chatId, stagingId) =>
+      stagedIds.get(chatId)?.has(stagingId) === true,
+    stageDraft,
+    showChat,
+    ...options.overrides,
   };
   return {
-    deps,
     storage,
+    target,
+    drafts,
     createChat,
     openChat,
+    stageDraft,
+    showChat,
     launcher: createTryItChatLauncher(deps),
   };
 }
@@ -85,6 +132,55 @@ const request = {
   capability: linear,
   prompt: 'Summarize my open Linear issues.',
 };
+
+it('recovers a partially created worktree chat instead of creating another', async () => {
+  const { launcher, createChat, stageDraft } = setup({
+    target: { kind: 'new-tab', location: worktree },
+  });
+  stageDraft.mockRejectedValueOnce(new Error('temporary staging failure'));
+  await expect(launcher.start(request)).rejects.toThrow('temporary');
+  await launcher.start(request);
+  expect(createChat).toHaveBeenCalledTimes(1);
+  expect(stageDraft.mock.calls[1][0].chatId).toBe(
+    stageDraft.mock.calls[0][0].chatId,
+  );
+});
+
+it('never reopens a fallback across navigation contexts', async () => {
+  const { launcher, createChat, openChat } = setup({
+    target: { kind: 'standalone' },
+  });
+  await launcher.start({ ...request, contextKey: 'personal' });
+  await launcher.start({ ...request, contextKey: 'org:other' });
+  expect(openChat).not.toHaveBeenCalled();
+  expect(createChat).toHaveBeenCalledTimes(2);
+});
+
+it('notifies launch observers after accepted local and cross-window writes', async () => {
+  const { launcher } = setup();
+  const observed: (string | undefined)[] = [];
+  const unsubscribe = subscribeTryItChatLaunch(() => {
+    observed.push(
+      launcher.readLaunch(request.accountId, request.capability)?.status,
+    );
+  });
+  try {
+    await launcher.start(request);
+    expect(observed.at(-1)).toBe('staged');
+    const count = observed.length;
+    window.dispatchEvent(new StorageEvent('storage', { key: 'unrelated' }));
+    expect(observed).toHaveLength(count);
+    window.dispatchEvent(
+      new StorageEvent('storage', { key: 'canopy:try-it-launch:other' }),
+    );
+    expect(observed).toHaveLength(count + 1);
+    unsubscribe();
+    window.dispatchEvent(new StorageEvent('storage'));
+    expect(observed).toHaveLength(count + 1);
+  } finally {
+    unsubscribe();
+  }
+});
 
 describe('tryItChatPluginSelections', () => {
   it('selects the installed runtime reference', () => {
@@ -116,202 +212,311 @@ describe('tryItChatPluginSelections', () => {
 });
 
 describe('createTryItChatLauncher', () => {
-  it('does not create or send when recoverable storage is unavailable', async () => {
-    const { launcher, createChat } = setup({ storage: null });
-    await expect(launcher.start(request)).rejects.toThrow('storage');
+  it('stages into the current worktree chat without creating one', async () => {
+    const { launcher, createChat, stageDraft } = setup();
+    await expect(launcher.start(request)).resolves.toBe('staged');
     expect(createChat).not.toHaveBeenCalled();
-  });
-
-  it('does not create when reading an earlier receipt fails', async () => {
-    const { launcher, createChat } = setup({
-      storage: {
-        getItem: () => {
-          throw new Error('read failed');
-        },
-        setItem: () => {},
-      },
-    });
-    await expect(launcher.start(request)).rejects.toThrow('read failed');
-    expect(createChat).not.toHaveBeenCalled();
-  });
-
-  it('does not create or send when persisting launch intent fails', async () => {
-    const { launcher, createChat } = setup({
-      storage: {
-        getItem: () => null,
-        setItem: () => {
-          throw new Error('quota');
-        },
-      },
-    });
-    await expect(launcher.start(request)).rejects.toThrow('quota');
-    expect(createChat).not.toHaveBeenCalled();
-  });
-
-  it('creates one chat and sends the prompt once with the capability selected', async () => {
-    const { launcher, createChat } = setup();
-    await launcher.start(request);
-    expect(createChat).toHaveBeenCalledTimes(1);
-    expect(createChat.mock.calls[0][0]).toMatchObject({
-      chatId: 'id-2',
-      message: request.prompt,
-      pluginSelections: { unresolvedCapabilities: [linear] },
-    });
-    expect(launcher.readLaunch('account:1', linear)).toMatchObject({
-      status: 'completed',
-      requestId: 'id-1',
-      chatId: 'id-2',
-      location,
-    });
-  });
-
-  it('creates the chat on the supported harness model without changing the launch', async () => {
-    const { launcher, createChat } = setup();
-    const model = { model: 'gpt-5.5', thinkingLevel: 'medium' as const };
-    await launcher.start({ ...request, model });
-    expect(createChat).toHaveBeenCalledTimes(1);
-    expect(createChat.mock.calls[0][0]).toMatchObject({
-      chatId: 'id-2',
-      message: request.prompt,
-      model,
-    });
-    // The receipt keys and ids are the same as a default-model launch.
-    expect(launcher.readLaunch('account:1', linear)).toMatchObject({
-      status: 'completed',
-      requestId: 'id-1',
-      chatId: 'id-2',
-    });
-    await launcher.start({ ...request, model });
-    expect(createChat).toHaveBeenCalledTimes(1);
-  });
-
-  it('leaves the model unset when the default harness can run the capability', async () => {
-    const { launcher, createChat } = setup();
-    await launcher.start(request);
-    expect(createChat.mock.calls[0][0]).not.toHaveProperty('model');
-  });
-
-  it('joins concurrent activations of the same capability', async () => {
-    let release: () => void = () => {};
-    const createChat: CreateChatMock = jest.fn(
-      (params: CreateChatParams) =>
-        new Promise<void>((resolve) => {
-          params.onChatCreated(location);
-          release = resolve;
-        }),
+    expect(stageDraft).toHaveBeenCalledTimes(1);
+    expect(stageDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        location: worktree,
+        chatId: 'grace-chat',
+        prompt: request.prompt,
+        pluginSelections: tryItChatPluginSelections(request),
+      }),
     );
-    const { launcher } = setup({ createChat });
-    const first = launcher.start(request);
-    const second = launcher.start(request);
-    expect(second).toBe(first);
-    release();
-    await Promise.all([first, second]);
-    expect(launcher.readLaunch('account:1', linear)?.status).toBe('completed');
-    expect(createChat).toHaveBeenCalledTimes(1);
-  });
-
-  it('reopens a completed launch without creating or sending again', async () => {
-    const { deps, createChat, openChat } = setup();
-    await createTryItChatLauncher(deps).start(request);
-    // A fresh launcher stands in for a remount or reload.
-    await createTryItChatLauncher(deps).start(request);
-    expect(createChat).toHaveBeenCalledTimes(1);
-    expect(openChat).toHaveBeenCalledWith(location, 'id-2');
-  });
-
-  it('reopens a launch whose response was lost after the chat existed', async () => {
-    const { deps, openChat, storage } = setup({
-      createChat: (params: CreateChatParams): Promise<void> => {
-        params.onChatCreated(location);
-        // The process stops here: no acknowledgement reaches the launcher.
-        return new Promise<void>(() => {});
-      },
+    expect(launcher.readLaunch('account:1', linear)).toEqual({
+      version: 2,
+      operation: 'stage-draft',
+      accountId: 'account:1',
+      requestId: 'id-1',
+      stagingId: stageDraft.mock.calls[0][0].stagingId,
+      capability: linear,
+      chatId: 'grace-chat',
+      prompt: request.prompt,
+      destination: 'worktree',
+      status: 'staged',
+      location: worktree,
     });
-    void createTryItChatLauncher(deps).start(request);
-    await Promise.resolve();
-    const stored: string | undefined = Array.from(storage.values.values())[0];
-    const parsed: unknown = JSON.parse(stored ?? 'null');
-    expect(parsed).toMatchObject({ status: 'pending', location });
-
-    const createAfterReload: CreateChatMock = jest.fn(() => Promise.resolve());
-    await createTryItChatLauncher({
-      ...deps,
-      createChat: createAfterReload,
-    }).start(request);
-    expect(deps.resumeChat).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId: 'id-2', requestId: 'id-1', location }),
-    );
-    expect(createAfterReload).not.toHaveBeenCalled();
-    expect(openChat).toHaveBeenCalledWith(location, 'id-2');
-    expect(
-      createTryItChatLauncher(deps).readLaunch(request.accountId, linear)
-        ?.status,
-    ).toBe('completed');
   });
 
-  it('starts a new launch once the earlier chat is confirmed deleted', async () => {
-    const { deps, createChat, openChat } = setup();
-    const launcher = createTryItChatLauncher(deps);
+  it('creates an empty chat in the worktree when none is editable', async () => {
+    const { launcher, createChat, stageDraft } = setup({
+      target: { kind: 'new-tab', location: worktree },
+    });
+    await launcher.start({
+      ...request,
+      model: { model: 'gpt-5', thinkingLevel: 'medium' },
+    });
+    expect(createChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { kind: 'new-tab', location: worktree },
+        chatId: 'id-2',
+        model: { model: 'gpt-5', thinkingLevel: 'medium' },
+      }),
+    );
+    expect(stageDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ location: worktree, chatId: 'id-2' }),
+    );
+    expect(launcher.readLaunch('account:1', linear)).toMatchObject({
+      destination: 'worktree',
+      status: 'staged',
+      chatId: 'id-2',
+      location: worktree,
+    });
+  });
+
+  it('creates an empty standalone chat when no worktree is selected', async () => {
+    const { launcher, createChat, stageDraft } = setup({
+      target: { kind: 'standalone' },
+    });
+    await launcher.start(request);
+    expect(createChat).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { kind: 'standalone' } }),
+    );
+    expect(stageDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ location: chats, chatId: 'id-2' }),
+    );
+    expect(launcher.readLaunch('account:1', linear)).toMatchObject({
+      destination: 'standalone',
+      location: chats,
+    });
+  });
+
+  it('reopens the staged draft instead of appending another starter', async () => {
+    const { launcher, stageDraft } = setup();
+    await launcher.start(request);
+    await expect(launcher.start(request)).resolves.toBe('reopened');
+    expect(stageDraft).toHaveBeenCalledTimes(2);
+    expect(stageDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        location: worktree,
+        chatId: 'grace-chat',
+        pluginSelections: tryItChatPluginSelections(request),
+        preserveDraft: true,
+      }),
+    );
+  });
+
+  it('stages again once the draft was cleared or sent', async () => {
+    const { launcher, stageDraft, drafts } = setup();
+    await launcher.start(request);
+    drafts.clear();
+    await expect(launcher.start(request)).resolves.toBe('staged');
+    expect(stageDraft).toHaveBeenCalledTimes(2);
+  });
+
+  it('appends a fresh starter to a new draft after the prior draft was sent', async () => {
+    let accepted = true;
+    const { launcher, stageDraft } = setup({
+      overrides: { isStageAccepted: () => accepted },
+    });
+    await launcher.start(request);
+    // Send retires the prior insertion receipt; the user then types new text.
+    accepted = false;
+    await expect(launcher.start(request)).resolves.toBe('staged');
+    expect(stageDraft).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ preserveDraft: true }),
+    );
+  });
+
+  it('follows the current destination over an earlier launch', async () => {
+    const { launcher, stageDraft, target } = setup();
+    await launcher.start(request);
+    target.current = {
+      kind: 'existing',
+      location: worktree,
+      chatId: 'another-chat',
+    };
+    await expect(launcher.start(request)).resolves.toBe('staged');
+    expect(stageDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ chatId: 'another-chat' }),
+    );
+  });
+
+  it('reuses the earlier standalone fallback chat', async () => {
+    const { launcher, createChat, openChat, stageDraft, drafts } = setup({
+      target: { kind: 'standalone' },
+    });
+    await launcher.start(request);
+    await expect(launcher.start(request)).resolves.toBe('reopened');
+    expect(openChat).toHaveBeenCalledWith(chats, 'id-2');
+    drafts.clear();
+    await expect(launcher.start(request)).resolves.toBe('staged');
+    expect(createChat).toHaveBeenCalledTimes(1);
+    expect(stageDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ location: chats, chatId: 'id-2' }),
+    );
+    await expect(launcher.start(request)).resolves.toBe('reopened');
+    expect(createChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates a new standalone chat once the earlier one is confirmed gone', async () => {
+    const { launcher, createChat, openChat } = setup({
+      target: { kind: 'standalone' },
+    });
     await launcher.start(request);
     openChat.mockResolvedValueOnce('missing');
     await launcher.start(request);
     expect(createChat).toHaveBeenCalledTimes(2);
-    expect(createChat.mock.calls[1][0].chatId).not.toBe(
-      createChat.mock.calls[0][0].chatId,
-    );
   });
 
-  it('keeps a failed launch recoverable and retries with the same ids', async () => {
-    const createChat: CreateChatMock = jest
-      .fn<Promise<void>, [CreateChatParams]>()
-      .mockRejectedValueOnce(new Error('create failed'))
-      .mockImplementationOnce((params: CreateChatParams) => {
-        params.onChatCreated(location);
-        return Promise.resolve();
-      });
-    const { launcher } = setup({ createChat });
-    await expect(launcher.start(request)).rejects.toThrow('create failed');
-    expect(launcher.readLaunch('account:1', linear)).toMatchObject({
-      status: 'pending',
-      requestId: 'id-1',
-      chatId: 'id-2',
-    });
-    expect(launcher.readLaunch('account:1', linear)?.location).toBeUndefined();
-    await launcher.start(request);
-    expect(createChat.mock.calls[1][0].chatId).toBe('id-2');
-    expect(launcher.readLaunch('account:1', linear)?.status).toBe('completed');
+  it('joins concurrent activations into one launch', async () => {
+    const { launcher, stageDraft } = setup();
+    await Promise.all([launcher.start(request), launcher.start(request)]);
+    expect(stageDraft).toHaveBeenCalledTimes(1);
   });
 
-  it('never reuses another account’s launch', async () => {
-    const { launcher, createChat, openChat } = setup();
-    await launcher.start(request);
-    await launcher.start({ ...request, accountId: 'account:2' });
-    expect(createChat).toHaveBeenCalledTimes(2);
-    expect(openChat).not.toHaveBeenCalled();
-    expect(launcher.readLaunch('account:2', linear)?.chatId).not.toBe(
-      launcher.readLaunch('account:1', linear)?.chatId,
-    );
-  });
-
-  it('keeps launches of different capabilities apart', async () => {
-    const { launcher, createChat } = setup();
+  it('stages a different capability once beside the first', async () => {
+    const { launcher, stageDraft } = setup();
     const other: TryItCapability = { ...linear, catalogId: 'github' };
     await launcher.start(request);
     await launcher.start({ ...request, capability: other });
-    expect(createChat).toHaveBeenCalledTimes(2);
-    expect(launcher.readLaunch('account:1', linear)?.status).toBe('completed');
-    expect(launcher.readLaunch('account:1', other)?.status).toBe('completed');
+    expect(stageDraft).toHaveBeenCalledTimes(2);
+    await launcher.start({ ...request, capability: other });
+    expect(stageDraft).toHaveBeenCalledTimes(3);
+    expect(stageDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ preserveDraft: true }),
+    );
   });
 
-  it('ignores a malformed stored launch', async () => {
-    const { launcher, storage, createChat } = setup();
+  it('never reuses a launch across accounts', async () => {
+    const { launcher, stageDraft } = setup();
     await launcher.start(request);
-    const key: string | undefined = Array.from(storage.values.keys())[0];
+    await launcher.start({ ...request, accountId: 'account:2' });
+    expect(stageDraft).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not stage when recoverable storage is unavailable', async () => {
+    const { launcher, stageDraft, createChat } = setup({
+      overrides: { storage: null },
+    });
+    await expect(launcher.start(request)).rejects.toThrow('storage');
+    expect(createChat).not.toHaveBeenCalled();
+    expect(stageDraft).not.toHaveBeenCalled();
+  });
+
+  it('cancels without staging when the account changes during launch', async () => {
+    let current = true;
+    const { launcher, stageDraft } = setup({
+      overrides: {
+        resolveTarget: () => {
+          current = false;
+          return Promise.resolve({
+            kind: 'existing',
+            location: worktree,
+            chatId: 'grace-chat',
+          });
+        },
+      },
+    });
+    await expect(
+      launcher.start({ ...request, isCurrent: () => current }),
+    ).rejects.toBeInstanceOf(TryItStageCancelledError);
+    expect(stageDraft).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed staging recoverable without claiming it was staged', async () => {
+    const { launcher, stageDraft } = setup();
+    stageDraft.mockRejectedValueOnce(new Error('tab closed'));
+    await expect(launcher.start(request)).rejects.toThrow('tab closed');
+    expect(launcher.readLaunch('account:1', linear)?.status).toBe('staging');
+    await expect(launcher.start(request)).resolves.toBe('staged');
+  });
+
+  it.each<TryItStageDestination>([
+    { kind: 'existing', location: worktree, chatId: 'grace-chat' },
+    { kind: 'new-tab', location: worktree },
+    { kind: 'standalone' },
+  ])(
+    'finalizes an accepted $kind draft after its completion write fails',
+    async (target) => {
+      const { launcher, storage, stageDraft, createChat } = setup({ target });
+      const save = storage.setItem;
+      let failCompletion = true;
+      storage.setItem = (key, value): void => {
+        const candidate: unknown = JSON.parse(value);
+        if (
+          failCompletion &&
+          typeof candidate === 'object' &&
+          candidate !== null &&
+          'status' in candidate &&
+          candidate.status === 'staged'
+        ) {
+          failCompletion = false;
+          throw new Error('completion write unavailable');
+        }
+        save(key, value);
+      };
+      await expect(launcher.start(request)).rejects.toThrow('completion write');
+      const pending = launcher.readLaunch(request.accountId, linear);
+      expect(pending?.status).toBe('staging');
+      const creations = createChat.mock.calls.length;
+      await expect(launcher.start(request)).resolves.toBe('reopened');
+      expect(launcher.readLaunch(request.accountId, linear)).toEqual({
+        ...pending,
+        status: 'staged',
+      });
+      expect(stageDraft).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          preserveDraft: true,
+          chatId: pending?.chatId,
+        }),
+      );
+      expect(createChat).toHaveBeenCalledTimes(creations);
+    },
+  );
+
+  it.each(['pending', 'completed'])(
+    'never resumes or reopens a legacy %s launch',
+    async (status) => {
+      const { launcher, storage, openChat, stageDraft, showChat } = setup({
+        overrides: { isStageAccepted: () => false },
+      });
+      await launcher.start(request);
+      const key = Array.from(storage.values.keys())[0];
+      if (key === undefined) throw new Error('launch not stored');
+      storage.values.set(
+        key,
+        JSON.stringify({
+          version: 1,
+          accountId: 'account:1',
+          requestId: 'legacy',
+          capability: linear,
+          chatId: 'grace-chat',
+          prompt: request.prompt,
+          destination: 'standalone',
+          status,
+          location: worktree,
+        }),
+      );
+      expect(launcher.readLaunch('account:1', linear)).toMatchObject({
+        version: 1,
+        status,
+      });
+      stageDraft.mockClear();
+      await expect(launcher.start(request)).resolves.toBe('staged');
+      expect(openChat).not.toHaveBeenCalled();
+      expect(showChat).not.toHaveBeenCalled();
+      expect(stageDraft).toHaveBeenCalledTimes(1);
+      expect(launcher.readLaunch('account:1', linear)).toMatchObject({
+        version: 2,
+        status: 'staged',
+      });
+    },
+  );
+
+  it('recovers an accepted draft from its target receipt when the launch is malformed', async () => {
+    const { launcher, storage, stageDraft } = setup();
+    await launcher.start(request);
+    const key = Array.from(storage.values.keys())[0];
     if (key === undefined) throw new Error('launch not stored');
-    storage.values.set(key, '{"version":1,"accountId":"account:1"}');
+    storage.values.set(key, '{"version":2,"accountId":"account:1"}');
     expect(launcher.readLaunch('account:1', linear)).toBeNull();
     await launcher.start(request);
-    expect(createChat).toHaveBeenCalledTimes(2);
+    expect(stageDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ preserveDraft: true }),
+    );
   });
 });
 
@@ -321,7 +526,7 @@ describe('rebindLaunch', () => {
     fromAccountId: 'guest',
     toAccountId: 'account:1',
     capability: linear,
-    chatId: 'id-2',
+    chatId: 'grace-chat',
   };
 
   function withRemove(storage: ReturnType<typeof memoryStorage>): void {
@@ -332,37 +537,36 @@ describe('rebindLaunch', () => {
     });
   }
 
-  it('moves the guest launch so the account reopens the same chat', async () => {
-    const { launcher, storage, openChat, createChat } = setup();
+  it('moves the guest launch so the account reopens the same draft', async () => {
+    const { launcher, storage, stageDraft } = setup();
     withRemove(storage);
     await launcher.start(guest);
     expect(launcher.rebindLaunch(move)).toBe('rebound');
     expect(launcher.readLaunch('guest', linear)).toBeNull();
     expect(launcher.readLaunch('account:1', linear)).toMatchObject({
       accountId: 'account:1',
-      chatId: 'id-2',
+      chatId: 'grace-chat',
       requestId: 'id-1',
-      status: 'completed',
-      location,
+      status: 'staged',
+      location: worktree,
     });
-    await launcher.start(request);
-    expect(openChat).toHaveBeenCalledWith(location, 'id-2');
-    expect(createChat).toHaveBeenCalledTimes(1);
+    await expect(launcher.start(request)).resolves.toBe('reopened');
+    expect(stageDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ preserveDraft: true }),
+    );
     // Repeating the rebind is harmless.
     expect(launcher.rebindLaunch(move)).toBe('missing');
   });
 
   it('never overwrites another launch for the account', async () => {
-    const { launcher } = setup();
+    const { launcher, target } = setup();
     await launcher.start(request);
+    target.current = { kind: 'existing', location: worktree, chatId: 'other' };
     await launcher.start(guest);
     const accountLaunch = launcher.readLaunch('account:1', linear);
-    expect(
-      launcher.rebindLaunch({
-        ...move,
-        chatId: launcher.readLaunch('guest', linear)?.chatId ?? '',
-      }),
-    ).toBe('conflict');
+    expect(launcher.rebindLaunch({ ...move, chatId: 'other' })).toBe(
+      'conflict',
+    );
     expect(launcher.readLaunch('account:1', linear)).toEqual(accountLaunch);
     expect(launcher.readLaunch('guest', linear)).not.toBeNull();
   });
@@ -385,28 +589,5 @@ describe('rebindLaunch', () => {
     storage.setItem = setItem;
     expect(launcher.readLaunch('guest', linear)).not.toBeNull();
     expect(launcher.readLaunch('account:1', linear)).toBeNull();
-  });
-});
-
-describe('continueChat', () => {
-  it('reuses the continuation ID and joins concurrent attempts at the acknowledged resume seam', async () => {
-    const { launcher, deps, createChat } = setup();
-    const params = {
-      location,
-      chatId: 'chat',
-      requestId: 'continuation',
-      message: 'Preserved prompt',
-      pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
-    };
-    await Promise.all([
-      launcher.continueChat(params),
-      launcher.continueChat(params),
-    ]);
-    expect(deps.resumeChat).toHaveBeenCalledTimes(1);
-    expect(deps.resumeChat).toHaveBeenCalledWith({
-      ...params,
-      durableContinuation: true,
-    });
-    expect(createChat).not.toHaveBeenCalled();
   });
 });

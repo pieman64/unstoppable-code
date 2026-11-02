@@ -1,11 +1,19 @@
-import type { LedgerViewScope } from '@canopy/protocol/ledger-view';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import {
+  isLedgerTaskViewScope,
+  type LedgerViewScope,
+} from '@canopy/protocol/ledger-view';
+import type { WorkspaceContextOrganization } from '@canopy/protocol/workspace-context';
 import {
   APP_ADVISOR_PROJECT_ID,
   type CoworkWorkEntryMeta,
   type SidebarItem,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
-import type { LedgerFeedScopeOption } from '@canopy/ui-app/ledger';
+import {
+  ledgerGlobalContextLabel,
+  type LedgerFeedScopeOption,
+} from '@canopy/ui-app/ledger';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { getWorktreeBranchDisplayName } from '@/lib/worktreeDisplayName';
 
@@ -22,6 +30,12 @@ export interface LedgerFeedScopeSources {
   readonly coworkEntries: Readonly<
     Record<string, readonly CoworkWorkEntryMeta[]>
   >;
+  /**
+   * The signed-in account's organizations, which name a global (workflow)
+   * Ledger's owner. Never the selected context: a workflow's owner is its
+   * run's, whatever the sidebar shows.
+   */
+  readonly organizations: readonly WorkspaceContextOrganization[];
 }
 
 function worktreeName(worktree: WorktreeData): string {
@@ -36,12 +50,28 @@ function worktreeName(worktree: WorktreeData): string {
       });
 }
 
-/** A scope's project and task, or null when this device does not list it. */
+/**
+ * A scope's project and task, or null when this device does not list it. A
+ * global (workflow) scope reads `Workflows · Personal` or `Workflows ·
+ * {organization}`, and `Workflows` for an organization the account no longer
+ * has.
+ */
 export function describeLedgerScope(
   scope: LedgerViewScope,
   sources: LedgerFeedScopeSources,
 ): string | null {
-  if (scope.projectId === APP_ADVISOR_PROJECT_ID) return 'Advisor';
+  if (!isLedgerTaskViewScope(scope)) {
+    const { owner } = scope;
+    const organizationName =
+      owner.kind === 'organization'
+        ? sources.organizations.find(
+            (organization) =>
+              organization.id.toLowerCase() === owner.organizationId,
+          )?.name
+        : undefined;
+    return ledgerGlobalContextLabel(owner, organizationName);
+  }
+  if (scope.projectId === APP_ADVISOR_PROJECT_ID) return ORCHESTRATOR_LABEL;
   const project = sources.projects.find((item) => item.id === scope.projectId);
   if (project === undefined) return null;
   const projectName = getWorkspaceDisplayName(project);

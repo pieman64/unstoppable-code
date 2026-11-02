@@ -1,7 +1,11 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState, type JSX } from 'react';
 import type { DetectedMcpServerInfo } from '@canopy/desktop-shared/types/mcp-servers';
-import { McpServersSectionBody } from '@canopy/ui-app';
+import {
+  McpServersSectionBody,
+  type McpServersSectionBodyProps,
+  type McpServersSectionItem,
+} from '@canopy/ui-app';
 import {
   PanelSection,
   type CollapsedIconColor,
@@ -26,6 +30,10 @@ export function getMcpProxyToggleInactiveTitle(): string {
 
 interface McpServersPanelCardProps {
   servers: DetectedMcpServerInfo[];
+  getRowNavigation?: McpServersSectionBodyProps['getRowNavigation'];
+  getRowSettings?: McpServersSectionBodyProps['getRowSettings'];
+  renderRowExtra?: McpServersSectionBodyProps['renderRowExtra'];
+  onCancelSignIn?: (server: McpServersSectionItem) => void;
   warnings: string[];
   loading: boolean;
   error: string | null;
@@ -67,6 +75,10 @@ export function McpServersPanelCard({
   onConnect,
   onRefresh,
   onSetCanopyProxyEnabled,
+  getRowNavigation,
+  getRowSettings,
+  renderRowExtra,
+  onCancelSignIn,
 }: McpServersPanelCardProps): JSX.Element {
   const chrome = useActivitySectionChrome();
   const sectionTitle = useEarlyAccessTitle('MCP Servers');
@@ -107,6 +119,10 @@ export function McpServersPanelCard({
       >
         <McpServersSectionBody
           servers={servers}
+          getRowNavigation={getRowNavigation}
+          getRowSettings={getRowSettings}
+          renderRowExtra={renderRowExtra}
+          onCancelSignIn={onCancelSignIn}
           warnings={warnings}
           loading={loading}
           error={error}

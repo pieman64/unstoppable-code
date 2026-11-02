@@ -76,7 +76,7 @@ const sharedDetail: SharedSkillDetail = {
   rawSkill: '---\nname: helper\n---\nBody\n',
   contentHash: 'hash',
   publicShare: null,
-  createdBy: { id: 'user-a', name: 'User' },
+  createdBy: { id: 'user-a', name: 'User', email: null },
   createdAt: '',
   updatedAt: '',
   canUpdate: true,
@@ -127,7 +127,9 @@ jest.mock('../../pipelines/canopy-server-client', () => ({
 import {
   installSkillCapabilityPackage,
   installSubjectCapabilityPackage,
+  removeMaterializedSkillFolder,
   type InstallSubjectCapabilityPackageResult,
+  type ReservedSkillFolder,
 } from '../skill-package-install';
 
 // The cache install recomputes the digest over the manifest, so a fabricated
@@ -401,7 +403,13 @@ describe('installSkillCapabilityPackage', () => {
       if (kind === 'reused') {
         const { recordSharedSkillInstall } =
           await import('../skill-install-context');
-        await recordSharedSkillInstall(sharedDetail, 'custom:app/sibling');
+        await recordSharedSkillInstall(
+          sharedDetail,
+          'custom:app/sibling',
+          undefined,
+          undefined,
+          'dependency',
+        );
       }
       const result = await install(digest);
       const name = kind === 'renamed' ? 'sibling-2' : 'sibling';
@@ -409,6 +417,12 @@ describe('installSkillCapabilityPackage', () => {
         { name: 'sibling', localName: name },
       ]);
       const store = createResourceInstallReceiptsStore('user-a');
+      expect(await store.find('skills', sharedDetail.id)).toMatchObject({
+        localResourceRoles: {
+          'custom:app/helper': 'primary',
+          [`custom:app/${name}`]: 'dependency',
+        },
+      });
       expect(
         (await store.findLocal('skills', `custom:app/${name}`))?.receipt
           .localResourceIds,
@@ -427,6 +441,33 @@ describe('installSkillCapabilityPackage', () => {
     },
   );
 
+  it('advances the installed hash and display snapshot after a successful replacement', async () => {
+    mockContextEnabled.mockReturnValue(true);
+    const digest = await serve(manifest());
+    const store = createResourceInstallReceiptsStore('user-a');
+    const { recordSharedSkillInstall } =
+      await import('../skill-install-context');
+    await recordSharedSkillInstall(
+      {
+        ...sharedDetail,
+        rawSkill: 'previous source',
+        createdBy: { ...sharedDetail.createdBy, name: 'Previous sharer' },
+      },
+      'custom:app/helper',
+    );
+    const previous = await store.find('skills', sharedDetail.id);
+    await install(digest);
+    const updated = await store.find('skills', sharedDetail.id);
+    expect(updated?.hash).toBe(
+      createHash('sha256').update(sharedDetail.rawSkill).digest('hex'),
+    );
+    expect(updated?.hash).not.toBe(previous?.hash);
+    expect(updated?.sharedByName).toBe(sharedDetail.createdBy.name);
+    expect(updated?.localResourceIds).toEqual(
+      expect.arrayContaining(['custom:app/helper', 'custom:app/sibling']),
+    );
+  });
+
   it.each(['copy', 'ledger', 'context'])(
     'rolls back dependency bindings and files after %s failure while retaining prior primary origin',
     async (failure): Promise<void> => {
@@ -435,7 +476,14 @@ describe('installSkillCapabilityPackage', () => {
       const store = createResourceInstallReceiptsStore('user-a');
       const { recordSharedSkillInstall } =
         await import('../skill-install-context');
-      await recordSharedSkillInstall(sharedDetail, 'custom:app/helper');
+      await recordSharedSkillInstall(
+        {
+          ...sharedDetail,
+          rawSkill: 'previous source',
+          createdBy: { ...sharedDetail.createdBy, name: 'Previous sharer' },
+        },
+        'custom:app/helper',
+      );
       const previous = await store.find('skills', sharedDetail.id);
       const fsPromises =
         jest.requireActual<typeof FsPromisesModule>('node:fs/promises');
@@ -470,13 +518,8 @@ describe('installSkillCapabilityPackage', () => {
         spy.mockRestore();
       }
       expect(boundBeforeWrite).toBe(true);
-      // Rollback keeps the prior origin and bindings; the receipt store may
-      // retain the aborted write's authorization timestamp (it never deletes).
       const retained = await store.find('skills', sharedDetail.id);
-      expect({ ...retained, authorizedAt: undefined }).toEqual({
-        ...previous,
-        authorizedAt: undefined,
-      });
+      expect(retained).toEqual(previous);
       expect(
         await store.findLocal('skills', 'custom:app/sibling'),
       ).toBeUndefined();
@@ -593,9 +636,11 @@ describe('installSkillCapabilityPackage', () => {
       },
     });
 
+    // Each local skill names the manifest resource it came from, so a caller
+    // mapping packaged definitions never guesses between equal root names.
     expect(result.installedSkills).toEqual([
-      { name: 'helper', localName: 'helper' },
-      { name: 'sibling', localName: 'sibling' },
+      { name: 'helper', localName: 'helper', resourceId: 'primary' },
+      { name: 'sibling', localName: 'sibling', resourceId: 'sibling' },
     ]);
     expect(mockUpsertInstall).toHaveBeenCalledWith(
       expect.any(String),
@@ -815,6 +860,11 @@ describe('installSkillCapabilityPackage', () => {
     // Kept silently would leave the recipient believing they have the
     // publisher's version, so the kept path is reported.
     expect(result.keptLocalFiles).toEqual(['helper/references/guide.md']);
+    expect(mockUpsertInstall).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ supportingFilesComplete: false }),
+    );
+    expect(result.supportingFilesComplete).toBe(false);
   });
 
   it('does not report an existing file identical to the packaged one', async () => {
@@ -826,6 +876,7 @@ describe('installSkillCapabilityPackage', () => {
     const result = await install(digest);
 
     expect(result.keptLocalFiles).toEqual([]);
+    expect(result.supportingFilesComplete).toBe(true);
   });
 
   it('finds the shared skill by content when its packaged folder name differs', async () => {
@@ -947,6 +998,7 @@ describe('installSkillCapabilityPackage', () => {
     expect(finalizeInstall.mock.calls[0]?.[0].installedSkills).toContainEqual({
       name: 'helper',
       localName: 'helper',
+      resourceId: 'primary',
     });
     expect(rollbackFinalization).toHaveBeenCalledTimes(1);
     expect(finalized).toBe(false);
@@ -1082,5 +1134,133 @@ describe('installSkillCapabilityPackage', () => {
         packageDigest: digest,
       }),
     );
+  });
+
+  describe('reporting and removing materialized folders', () => {
+    function fetchBlob(sha256: string): Promise<Uint8Array> {
+      const bytes = blobs.get(sha256);
+      if (!bytes) return Promise.reject(new Error(`missing blob ${sha256}`));
+      return Promise.resolve(bytes);
+    }
+
+    async function installSubject(
+      onSkillFolderReserved: (folder: ReservedSkillFolder) => Promise<void>,
+    ): Promise<InstallSubjectCapabilityPackageResult> {
+      const value = manifest();
+      const digest = await computePipelinePackageDigest(value);
+      return installSubjectCapabilityPackage({
+        owner: { kind: 'shared-container', localId: 'fork' },
+        packageRef: { version: 1, digest },
+        download: { digest, manifest: value },
+        fetchBlob,
+        onSkillFolderReserved,
+      });
+    }
+
+    function siblingFiles(): Array<{ path: string; sha256: string }> {
+      const sibling = manifest().resources.find(
+        (resource) => resource.id === 'sibling',
+      );
+      return (sibling?.trees[0]?.entries ?? []).map((entry) => ({
+        path: entry.path,
+        sha256: entry.sha256,
+      }));
+    }
+
+    it('reports each folder as created or reused before writing into it', async () => {
+      const seen: Array<ReservedSkillFolder & { hadSkillMd: boolean }> = [];
+      const record = async (folder: ReservedSkillFolder): Promise<void> => {
+        const hadSkillMd = await stat(
+          join(skillsRoot.path, 'custom-app', folder.localName, 'SKILL.md'),
+        ).then(
+          () => true,
+          () => false,
+        );
+        seen.push({ ...folder, hadSkillMd });
+      };
+      const first = await installSubject(record);
+      await installSubject(record);
+
+      // The result itself is unchanged for existing callers.
+      expect(first.installedSkills).toEqual([
+        { name: 'helper', localName: 'helper', resourceId: 'primary' },
+        { name: 'sibling', localName: 'sibling', resourceId: 'sibling' },
+      ]);
+      expect(
+        seen.map(({ localName, created, hadSkillMd }) => ({
+          localName,
+          created,
+          hadSkillMd,
+        })),
+      ).toEqual([
+        { localName: 'helper', created: true, hadSkillMd: false },
+        { localName: 'sibling', created: true, hadSkillMd: false },
+        { localName: 'helper', created: false, hadSkillMd: true },
+        { localName: 'sibling', created: false, hadSkillMd: true },
+      ]);
+      expect(seen[1]?.files).toEqual(siblingFiles());
+    });
+
+    it('rolls back a folder whose report failed', async () => {
+      await expect(
+        installSubject(() => Promise.reject(new Error('journal unwritable'))),
+      ).rejects.toThrow('journal unwritable');
+      await expect(
+        stat(join(skillsRoot.path, 'custom-app', 'helper')),
+      ).rejects.toThrow();
+    });
+
+    it('removes a folder only while it holds nothing but the packaged files', async () => {
+      await installSubject(() => Promise.resolve());
+      const folder = join(skillsRoot.path, 'custom-app', 'sibling');
+      await expect(
+        removeMaterializedSkillFolder('sibling', siblingFiles()),
+      ).resolves.toBe('removed');
+      await expect(stat(folder)).rejects.toThrow();
+      await expect(
+        removeMaterializedSkillFolder('sibling', siblingFiles()),
+      ).resolves.toBe('missing');
+    });
+
+    it('keeps a folder the user edited or added to', async () => {
+      await installSubject(() => Promise.resolve());
+      const folder = join(skillsRoot.path, 'custom-app', 'sibling');
+      await writeFile(join(folder, 'SKILL.md'), 'MINE', 'utf8');
+      await expect(
+        removeMaterializedSkillFolder('sibling', siblingFiles()),
+      ).resolves.toBe('kept');
+      await expect(readFile(join(folder, 'SKILL.md'), 'utf8')).resolves.toBe(
+        'MINE',
+      );
+
+      const helper = join(skillsRoot.path, 'custom-app', 'helper');
+      await mkdir(join(helper, 'notes'), { recursive: true });
+      await writeFile(join(helper, 'notes', 'mine.md'), 'mine', 'utf8');
+      const helperFiles = (
+        manifest().resources.find((resource) => resource.id === 'primary')
+          ?.trees[0]?.entries ?? []
+      ).map((entry) => ({ path: entry.path, sha256: entry.sha256 }));
+      await expect(
+        removeMaterializedSkillFolder('helper', helperFiles),
+      ).resolves.toBe('kept');
+      await expect(
+        readFile(join(helper, 'notes', 'mine.md'), 'utf8'),
+      ).resolves.toBe('mine');
+    });
+
+    it('removes a partly written folder whose files are all packaged ones', async () => {
+      const folder = join(skillsRoot.path, 'custom-app', 'sibling');
+      await mkdir(folder, { recursive: true });
+      await expect(
+        removeMaterializedSkillFolder('sibling', siblingFiles()),
+      ).resolves.toBe('removed');
+      await expect(stat(folder)).rejects.toThrow();
+    });
+
+    it('refuses a folder name that is not one path segment', async () => {
+      await expect(
+        removeMaterializedSkillFolder('../escape', siblingFiles()),
+      ).rejects.toThrow('Invalid');
+    });
   });
 });

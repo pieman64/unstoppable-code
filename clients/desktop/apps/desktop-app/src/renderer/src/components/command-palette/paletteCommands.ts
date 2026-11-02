@@ -26,7 +26,6 @@ import {
   openSessionBreakdownPanel,
 } from '@/lib/cost/open-cost-panels';
 import { PANEL_COMMANDS, runPanelCommand } from '@/lib/panels/commands';
-import { refuseFullNewChatRow } from '@/lib/panels/chat-panel-sync';
 import { useActivityStore } from '@/stores/activityStore';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -603,17 +602,7 @@ export function buildBaseCommands(
             };
           }
           navigation.navigate('main');
-          // A full row refuses (with its note) before the chat exists.
-          if (
-            !refuseFullNewChatRow(
-              makeWorktreePanelKey(
-                latestSelectedWorktree.projectId,
-                latestSelectedWorktree.worktreeId,
-              ),
-            )
-          ) {
-            chat.createTab();
-          }
+          chat.createTab();
           return { closePalette: true };
         case 'close-chat-tab':
           if (

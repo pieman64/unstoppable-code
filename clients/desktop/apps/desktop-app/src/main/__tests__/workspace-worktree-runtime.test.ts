@@ -122,8 +122,13 @@ jest.mock('../lib/workspace-persistence', () => ({
 jest.mock('../lib/code-graph-scheduler', () => ({
   scheduleCodeGraphBuild: jest.fn(),
 }));
+jest.mock('../lib/main-process-logging', () => ({
+  logMainProcessWarn: jest.fn(),
+}));
 
 import { mkdir } from 'node:fs/promises';
+import { BrowserWindow } from 'electron';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { scheduleCodeGraphBuild } from '../lib/code-graph-scheduler';
 import { triggerDiscovery } from '../ipc/worktree-discovery';
 import {
@@ -140,10 +145,19 @@ import {
   DEFAULT_PREFERENCES,
   readPreferencesFile,
 } from '../lib/preferences-store';
-import { getResolvedScriptDefinition } from '../lib/script-resolver';
+import {
+  getResolvedScriptDefinition,
+  resolveWorkspaceRepoScripts,
+} from '../lib/script-resolver';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import type {
+  WorktreeSetupObserver,
+  WorktreeSetupScriptResult,
+} from '../lib/worktree-setup-result';
 import { sendToWindow } from '../lib/window-send';
 import { isWorkspaceWorktreeCurrent } from '../lib/workspace-persistence';
 import {
+  runWorkspaceWorktreePostCreateSetup,
   startWorkspaceRepoSetupAndDiscovery,
   startWorkspaceWorktreePostCreateSetup,
 } from '../lib/workspace-worktree-runtime';
@@ -695,5 +709,469 @@ describe('startWorkspaceWorktreePostCreateSetup', () => {
         ([options]) => options.timeoutSeconds,
       ),
     ).toEqual([null, null]);
+  });
+});
+
+describe('runWorkspaceWorktreePostCreateSetup', () => {
+  const WORKSPACE_ROOT =
+    '/mock/workspaces/test-workspace/worktrees/test-animal';
+  const REPO_A = { id: 'repo-a', name: 'Repo A', repoPath: '/repos/repo-a' };
+  const REPO_B = { id: 'repo-b', name: 'Repo B', repoPath: '/repos/repo-b' };
+
+  function recordingObserver(): {
+    observer: WorktreeSetupObserver;
+    events: string[];
+    completed: WorktreeSetupScriptResult[];
+  } {
+    const events: string[] = [];
+    const completed: WorktreeSetupScriptResult[] = [];
+    return {
+      events,
+      completed,
+      observer: {
+        onResolved: (configured): void => {
+          events.push(`resolved:${String(configured)}`);
+        },
+        onScriptStarted: (script): void => {
+          events.push(`started:${script.scriptKey}`);
+        },
+        onScriptCompleted: (script): void => {
+          events.push(`completed:${script.scriptKey}`);
+          completed.push(script);
+        },
+      },
+    };
+  }
+
+  function configureScripts(names: readonly string[]): void {
+    mockedGetResolvedScriptDefinition.mockImplementation(
+      (_scripts, scriptName) =>
+        names.includes(scriptName)
+          ? { command: `run ${scriptName}` }
+          : undefined,
+    );
+  }
+
+  function scriptResponse(
+    exitCode: number | null,
+    timedOut = false,
+  ): Awaited<ReturnType<typeof runShellScript>> {
+    return {
+      success: exitCode === 0 && !timedOut,
+      exitCode,
+      output: '',
+      timedOut,
+      durationMs: 25,
+    };
+  }
+
+  beforeEach(() => {
+    jest.mocked(resolveWorkspaceRepoScripts).mockResolvedValue({});
+    let runCounter = 0;
+    mockedStartScriptRunLog.mockImplementation(
+      ({ projectId, worktreeId, script }) => {
+        runCounter += 1;
+        return Promise.resolve({
+          projectId,
+          worktreeId,
+          script,
+          runId: `run-${runCounter}`,
+        });
+      },
+    );
+  });
+
+  it('is skipped with onResolved(false) once when no scripts are configured', async () => {
+    const recorder = recordingObserver();
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+      observer: recorder.observer,
+    });
+
+    expect(result).toEqual({ status: 'skipped', scripts: [] });
+    expect(recorder.events).toEqual(['resolved:false']);
+    expect(mockedScheduleCodeGraphBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns before-setup, every repository in configured order, then after-setup', async () => {
+    configureScripts(['before-setup', 'setup', 'after-setup']);
+    let releaseRepoA = (): void => undefined;
+    mockedRunShellScript.mockImplementation((options) => {
+      if (options.cwd.endsWith('/repo-a')) {
+        // Repo A finishes after repo B to prove results keep configured order.
+        return new Promise((resolve) => {
+          releaseRepoA = (): void => resolve(scriptResponse(0));
+        });
+      }
+      if (options.cwd.endsWith('/repo-b')) {
+        return Promise.resolve(scriptResponse(4));
+      }
+      return Promise.resolve(scriptResponse(0));
+    });
+    const recorder = recordingObserver();
+
+    const pending = runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A, REPO_B],
+      getWindow: () => null,
+      observer: recorder.observer,
+    });
+    await flushTurns(10);
+    expect(recorder.completed.map((script) => script.scriptKey)).toEqual([
+      'workspace-root:before-setup',
+      'workspace-repo:repo-b:setup',
+    ]);
+    releaseRepoA();
+    const result = await pending;
+
+    expect(result.status).toBe('failed');
+    expect(
+      result.scripts.map((script) => ({
+        scriptKey: script.scriptKey,
+        target: script.target,
+        lifecycle: script.lifecycle,
+        repoId: script.repoId,
+        status: script.status,
+        exitCode: script.exitCode,
+      })),
+    ).toEqual([
+      {
+        scriptKey: 'workspace-root:before-setup',
+        target: 'workspace-root',
+        lifecycle: 'before-setup',
+        repoId: undefined,
+        status: 'succeeded',
+        exitCode: 0,
+      },
+      {
+        scriptKey: 'workspace-repo:repo-a:setup',
+        target: 'workspace-repo',
+        lifecycle: 'setup',
+        repoId: 'repo-a',
+        status: 'succeeded',
+        exitCode: 0,
+      },
+      {
+        scriptKey: 'workspace-repo:repo-b:setup',
+        target: 'workspace-repo',
+        lifecycle: 'setup',
+        repoId: 'repo-b',
+        status: 'failed',
+        exitCode: 4,
+      },
+      {
+        scriptKey: 'workspace-root:after-setup',
+        target: 'workspace-root',
+        lifecycle: 'after-setup',
+        repoId: undefined,
+        status: 'succeeded',
+        exitCode: 0,
+      },
+    ]);
+    expect(result.scripts.every((script) => script.logRef !== null)).toBe(true);
+    expect(new Set(result.scripts.map((script) => script.runId)).size).toBe(4);
+    expect(recorder.events[0]).toBe('resolved:true');
+    expect(
+      recorder.events.filter((event) => event.startsWith('resolved')),
+    ).toHaveLength(1);
+    expect(recorder.completed).toHaveLength(4);
+  });
+
+  it('stops after a failed before-setup and reports only that script', async () => {
+    configureScripts(['before-setup', 'setup', 'after-setup']);
+    mockedRunShellScript.mockResolvedValueOnce(scriptResponse(2));
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+    });
+
+    expect(mockedRunShellScript).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: 'failed',
+      scripts: [
+        {
+          scriptKey: 'workspace-root:before-setup',
+          lifecycle: 'before-setup',
+          status: 'failed',
+          exitCode: 2,
+        },
+      ],
+    });
+    expect(result.scripts).toHaveLength(1);
+    expect(mockedTriggerDiscovery).toHaveBeenCalled();
+  });
+
+  it('settles every repository when one repository branch rejects', async () => {
+    configureScripts(['setup', 'after-setup']);
+    jest
+      .mocked(resolveWorkspaceRepoScripts)
+      .mockImplementation((_workspaceId, repoId) =>
+        repoId === 'repo-a'
+          ? Promise.reject(new Error('unreadable canopy.json'))
+          : Promise.resolve({}),
+      );
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A, REPO_B],
+      getWindow: () => null,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(
+      result.scripts.map((script) => [
+        script.scriptKey,
+        script.status,
+        script.exitCode,
+      ]),
+    ).toEqual([
+      ['workspace-repo:repo-a:setup', 'failed', 1],
+      ['workspace-repo:repo-b:setup', 'succeeded', 0],
+      ['workspace-root:after-setup', 'succeeded', 0],
+    ]);
+    expect(result.scripts[0]?.logRef).toBeNull();
+  });
+
+  it('reports a repository script deadline as timed out', async () => {
+    configureScripts(['setup']);
+    mockedRunShellScript.mockResolvedValueOnce(scriptResponse(null, true));
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+    });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      scripts: [{ status: 'timed_out', exitCode: null, timedOut: true }],
+    });
+    expect(mockedRunShellScript.mock.calls[0]?.[0]?.timeoutSeconds).toBe(300);
+  });
+
+  it('keeps interactive scripts without a deadline', async () => {
+    mockedGetResolvedScriptDefinition.mockImplementation(
+      (_scripts, scriptName) =>
+        scriptName === 'setup'
+          ? { command: 'npm run setup', interactive: true }
+          : undefined,
+    );
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(mockedRunShellScript.mock.calls[0]?.[0]?.timeoutSeconds).toBeNull();
+    expect(mockedRunShellScript.mock.calls[0]?.[0]?.interactive).toBe(true);
+  });
+
+  it('does not fail or delay setup when observer callbacks throw, reject or hang', async () => {
+    configureScripts(['before-setup', 'setup']);
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+      observer: {
+        onResolved: (): void => {
+          throw new Error('secret repo name');
+        },
+        onScriptStarted: (): Promise<void> =>
+          new Promise<void>(() => undefined),
+        onScriptCompleted: (): Promise<void> =>
+          Promise.reject(new Error('secret branch')),
+      },
+    });
+    await flushTurns(2);
+
+    expect(result.status).toBe('completed');
+    expect(result.scripts).toHaveLength(2);
+    expect(jest.mocked(logMainProcessWarn)).toHaveBeenCalledTimes(3);
+    expect(
+      JSON.stringify(jest.mocked(logMainProcessWarn).mock.calls),
+    ).not.toContain('secret');
+  });
+
+  it('resolves with the cancelled run and skips after-setup when removal cancels repo setup', async () => {
+    let stopRepoSetup = (): void => undefined;
+    configureScripts(['setup', 'after-setup']);
+    mockedRunShellScript.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          stopRepoSetup = (): void => resolve(scriptResponse(null));
+        }),
+    );
+    const pending = runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+    });
+    await flushTurns(3);
+    expect(mockedRunShellScript).toHaveBeenCalledTimes(1);
+
+    cancelWorkspaceTargetRuntimePreparation('test-workspace', 'test-animal');
+    stopRepoSetup();
+    const result = await pending;
+
+    expect(mockedRunShellScript).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('failed');
+    expect(result.scripts).toEqual([
+      expect.objectContaining({
+        scriptKey: 'workspace-repo:repo-a:setup',
+        status: 'cancelled',
+        exitCode: null,
+      }),
+    ]);
+    expect(mockedTriggerDiscovery).not.toHaveBeenCalled();
+    expect(mockedScheduleCodeGraphBuild).not.toHaveBeenCalled();
+  });
+
+  it('suppresses discovery for a stale worktree while still returning results', async () => {
+    configureScripts(['before-setup']);
+    mockedIsWorkspaceWorktreeCurrent.mockResolvedValue(false);
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [],
+      getWindow: () => null,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.scripts).toHaveLength(1);
+    expect(mockedTriggerDiscovery).not.toHaveBeenCalled();
+    expect(mockedScheduleCodeGraphBuild).not.toHaveBeenCalled();
+  });
+
+  it('returns a failed result instead of rejecting when preferences cannot be read', async () => {
+    jest
+      .mocked(readPreferencesFile)
+      .mockRejectedValueOnce(new Error('preferences unreadable'));
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+    });
+
+    expect(result).toEqual({
+      status: 'failed',
+      scripts: [],
+      detail: 'preferences unreadable',
+    });
+    expect(mockedScheduleCodeGraphBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report an errored run as resolved with nothing configured', async () => {
+    jest
+      .mocked(readPreferencesFile)
+      .mockRejectedValueOnce(new Error('preferences unreadable'));
+    const recorder = recordingObserver();
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => null,
+      observer: recorder.observer,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(recorder.events).toEqual([]);
+  });
+
+  it('keeps the scripts result when post-setup discovery throws', async () => {
+    configureScripts(['before-setup']);
+    mockedTriggerDiscovery.mockImplementationOnce(() => {
+      throw new Error('discovery failed');
+    });
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [],
+      getWindow: () => null,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.scripts).toHaveLength(1);
+  });
+
+  it('keeps a completed repository result when its branch rejects afterwards', async () => {
+    configureScripts(['setup']);
+    mockedSendToWindow.mockImplementation((_window, channel) => {
+      if (channel === IPC_CHANNELS.scriptComplete) {
+        throw new Error('renderer gone');
+      }
+      return true;
+    });
+    const recorder = recordingObserver();
+    const window = new BrowserWindow();
+
+    const result = await runWorkspaceWorktreePostCreateSetup({
+      workspaceId: 'test-workspace',
+      worktreeId: 'test-animal',
+      workspaceRootPath: WORKSPACE_ROOT,
+      repos: [REPO_A],
+      getWindow: () => window,
+      observer: recorder.observer,
+    });
+
+    expect(recorder.completed).toHaveLength(1);
+    expect(result.scripts).toEqual([recorder.completed[0]]);
+    expect(result.scripts[0]).toMatchObject({
+      scriptKey: 'workspace-repo:repo-a:setup',
+      status: 'succeeded',
+      exitCode: 0,
+    });
+    // The canonical log keeps the real completion; it is not rewritten.
+    expect(mockedCompleteScriptRunLog).toHaveBeenCalledTimes(1);
+    expect(
+      mockedCompleteScriptRunLog.mock.calls[0]?.[0].response,
+    ).toMatchObject({ success: true, exitCode: 0 });
+  });
+
+  it('keeps the fire-and-forget wrapper resolving undefined', async () => {
+    configureScripts(['before-setup']);
+    mockedRunShellScript.mockResolvedValueOnce(scriptResponse(5));
+
+    await expect(
+      startWorkspaceWorktreePostCreateSetup({
+        workspaceId: 'test-workspace',
+        worktreeId: 'test-animal',
+        workspaceRootPath: WORKSPACE_ROOT,
+        repos: [REPO_A],
+        getWindow: () => null,
+      }),
+    ).resolves.toBeUndefined();
   });
 });

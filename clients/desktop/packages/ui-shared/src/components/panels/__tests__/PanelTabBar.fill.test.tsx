@@ -1,15 +1,19 @@
 /**
  * @jest-environment jsdom
  */
-// The `fill` tab style (early access): Chrome-style tiles that never scroll.
-// The classic style, and behaviour both styles share, live in
-// PanelTabBar.test.tsx.
+// The `fill` tab style: Chrome-style tiles that shrink to a square, then the
+// strip scrolls, with a "N running" hint for running tabs scrolled out of view
+// and the ⌄ list of every tab (PanelTabListButton.test.tsx). The classic
+// style, and behaviour both styles share, live in PanelTabBar.test.tsx.
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PanelTabModel } from '../../../panels/registry-types';
 import {
+  PANEL_TAB_BUSY_ATTRIBUTE,
+  PanelFillChatTabGlyph,
   PanelTabBar,
   PanelTabNumber,
+  PanelTabStyleProvider,
   usePanelTabPosition,
 } from '../PanelTabBar';
 
@@ -139,53 +143,6 @@ describe('PanelTabBar (fill) label/trailing seams', () => {
     ).not.toBeNull();
   });
 
-  describe('full row', () => {
-    it('disables the add buttons and explains why on hover', () => {
-      const onAddTab = jest.fn();
-      const onQuickAdd = jest.fn();
-      render({
-        addTab: {
-          label: 'New Chat',
-          onAddTab,
-          quickAdd: { label: 'Add another Terminal', onQuickAdd },
-          fullNote: 'This tab row is full.',
-        },
-      });
-      const add = container.querySelector<HTMLButtonElement>(
-        '[data-testid="panel-add-tab-group-1"]',
-      );
-      const quickAdd = container.querySelector<HTMLButtonElement>(
-        '[data-testid="panel-quick-add-group-1"]',
-      );
-      expect(add?.disabled).toBe(true);
-      expect(quickAdd?.disabled).toBe(true);
-      act(() => {
-        add?.click();
-        quickAdd?.click();
-      });
-      expect(onAddTab).not.toHaveBeenCalled();
-      expect(onQuickAdd).not.toHaveBeenCalled();
-
-      act(() => {
-        add?.parentElement?.dispatchEvent(
-          new MouseEvent('mouseover', { bubbles: true }),
-        );
-      });
-      expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe(
-        'This tab row is full.',
-      );
-    });
-
-    it('keeps the add buttons enabled while the row has room', () => {
-      render({ addTab: { label: 'New Chat', onAddTab: jest.fn() } });
-      expect(
-        container.querySelector<HTMLButtonElement>(
-          '[data-testid="panel-add-tab-group-1"]',
-        )?.disabled,
-      ).toBe(false);
-    });
-  });
-
   it('lets the remaining tabs re-share the row at once after a pointer close', () => {
     const tabs: PanelTabModel[] = [
       { panelId: 'panel-1', kind: 'chat', title: 'Chat One' },
@@ -212,266 +169,292 @@ describe('PanelTabBar (fill) label/trailing seams', () => {
     expect(remaining.map((tab) => tab.style.flexBasis)).toEqual(['', '']);
   });
 
-  describe('fitting a crowded row', () => {
-    let barWidth = 1000;
-    let sheet: HTMLStyleElement;
+  describe('a crowded row', () => {
+    const CROWDED: PanelTabModel[] = Array.from({ length: 22 }, (_, index) => ({
+      panelId: `panel-${index + 1}`,
+      kind: 'chat',
+      title: `Chat ${index + 1}`,
+    }));
+    /** Tabs 4, 19 and 21 are working. */
+    const BUSY = new Set(['panel-4', 'panel-19', 'panel-21']);
 
-    // Sizes the measurement reads; tabs report none here.
-    let WIDTHS: Array<[string, number]> = [];
-
-    beforeEach(() => {
-      WIDTHS = [
-        ['canopy-panel-add-tab-root', 28],
-        ['canopy-panel-tab-pinned-divider', 1],
-      ];
-      // The fill strips' 4px end padding and the pinned divider's 4px
-      // margins, as panels.css sets them (read through computed style).
-      sheet = document.createElement('style');
-      sheet.textContent =
-        '.canopy-panel-tab-strip { padding: 0 4px; }' +
-        '.canopy-panel-tab-pinned-divider { margin: 0 4px; }';
-      document.head.append(sheet);
-      jest
-        .spyOn(Element.prototype, 'getBoundingClientRect')
-        .mockImplementation(function (this: Element): DOMRect {
-          const width = this.classList.contains('canopy-panel-tab-bar')
-            ? barWidth
-            : (WIDTHS.find(([name]) => this.classList.contains(name))?.[1] ??
-              0);
-          return new DOMRect(0, 0, width, 28);
-        });
-    });
-
-    afterEach(() => {
-      jest.restoreAllMocks();
-      sheet.remove();
-    });
-
-    // `active` names the selected tab; by default none is, so the tiles
-    // share the row evenly.
-    function renderRow(
-      count: number,
-      width: number,
-      pinned = 0,
-      active = 'none',
-    ): HTMLElement {
-      barWidth = width;
-      render({
-        activePanelId: active,
-        tabs: Array.from({ length: count }, (_value, index) => ({
-          panelId: `panel-${index + 1}`,
-          kind: 'chat',
-          title: `Chat ${index + 1}`,
-          ...(index < pinned ? { pinned: true } : {}),
-        })),
-        addTab: { label: 'New tab', onAddTab: jest.fn() },
-      });
-      const bar = container.querySelector('.canopy-panel-tab-bar');
-      if (!(bar instanceof HTMLElement)) throw new Error('bar not rendered');
-      return bar;
+    function strip(): HTMLDivElement {
+      const element = container.querySelector(
+        '[data-testid="panel-tab-strip-group-1"]',
+      );
+      if (!(element instanceof HTMLDivElement)) {
+        throw new Error('tab strip not rendered');
+      }
+      return element;
     }
 
-    const floor = (bar: HTMLElement): string =>
-      bar.style.getPropertyValue('--canopy-panel-tab-floor');
-    const gap = (bar: HTMLElement): string =>
-      bar.style.getPropertyValue('--canopy-panel-tab-gap');
-
-    // Room for tiles and gaps: the bar less the strip's 8px of end padding and
-    // the 28px add button.
-    it('keeps the 20px floor and 4px gaps while every tab fits at them', () => {
-      const bar = renderRow(3, 1000);
-      expect(floor(bar)).toBe('20px');
-      expect(gap(bar)).toBe('4px');
-    });
-
-    it('lowers the floor so 20 tabs fit a 440px row', () => {
-      // (440 - 36 - 19 gaps * 4) / 20 = 16.4, rounded down (never up, so
-      // rounding cannot push the last tab out).
-      const bar = renderRow(20, 440);
-      expect(floor(bar)).toBe('16.39px');
-      expect(gap(bar)).toBe('4px');
-    });
-
-    it('narrows the gaps before the tiles go below their 14px icon', () => {
-      // (320 - 36 - 20 * 14) / 19 gaps = 0.21
-      const bar = renderRow(20, 320);
-      expect(floor(bar)).toBe('14px');
-      expect(gap(bar)).toBe('0.21px');
-    });
-
-    it('counts the pinned strip, its divider, and its gaps', () => {
-      // Room: 440 - 2 strips * 8 - divider (1 + 8) - 28 = 387; gaps: 3 pinned
-      // + 15 unpinned. (387 - 18 * 4) / 20 = 15.75.
-      const bar = renderRow(20, 440, 4);
-      expect(floor(bar)).toBe('15.75px');
-      expect(gap(bar)).toBe('4px');
-      expect(bar.style.getPropertyValue('--canopy-panel-pinned-count')).toBe(
-        '4',
-      );
-    });
-
-    it('keeps pinned tiles square while the other tabs can give way', () => {
-      // Room: 1000 - 2 strips * 8 - divider (1 + 8) - 28 = 947. One 28px
-      // pinned tile leaves 919 for 3 tabs, which still fit at 20px.
-      const bar = renderRow(4, 1000, 1);
-      expect(bar.style.getPropertyValue('--canopy-panel-pinned-floor')).toBe(
-        '28px',
-      );
-      expect(floor(bar)).toBe('20px');
-    });
-
-    it('takes the pinned tiles out of the room the other tabs share', () => {
-      // Room: 400 - 16 - 9 - 28 = 347, less 2 square pinned tiles and their
-      // gap (60) = 287 for 14 tabs: (287 - 13 * 4) / 14 = 16.78.
-      const bar = renderRow(16, 400, 2);
-      expect(bar.style.getPropertyValue('--canopy-panel-pinned-floor')).toBe(
-        '28px',
-      );
-      expect(floor(bar)).toBe('16.78px');
-    });
-
-    it('shrinks pinned tiles with the rest once the others reach their icons', () => {
-      // The 440px row above: square pinned tiles would leave the other 16
-      // tabs less than their 14px icons, so all 20 share the floor.
-      const bar = renderRow(20, 440, 4);
-      expect(bar.style.getPropertyValue('--canopy-panel-pinned-floor')).toBe(
-        '15.75px',
-      );
-    });
-
-    it('clears its sizing when the row turns classic', () => {
-      const bar = renderRow(20, 440);
-      expect(floor(bar)).not.toBe('');
-
-      render({
-        tabs: Array.from({ length: 20 }, (_value, index) => ({
-          panelId: `panel-${index + 1}`,
-          kind: 'chat',
-          title: `Chat ${index + 1}`,
-        })),
-        tabStyle: 'classic',
-      });
-
-      for (const name of [
-        '--canopy-panel-tab-floor',
-        '--canopy-panel-tab-gap',
-        '--canopy-panel-pinned-count',
-        '--canopy-panel-pinned-floor',
-      ]) {
-        expect(bar.style.getPropertyValue(name)).toBe('');
-      }
-    });
-
-    it('re-measures when the add control grows without the bar resizing', () => {
-      const observed: Element[] = [];
-      let notify = (): void => undefined;
-      class RecordingResizeObserver {
-        constructor(callback: () => void) {
-          notify = callback;
-        }
-        observe(target: Element): void {
-          observed.push(target);
-        }
-        disconnect(): void {}
-      }
-      Object.defineProperty(window, 'ResizeObserver', {
-        configurable: true,
-        writable: true,
-        value: RecordingResizeObserver,
-      });
-      try {
-        const bar = renderRow(20, 440);
-        expect(floor(bar)).toBe('16.39px');
-        const addRoot = bar.querySelector('.canopy-panel-add-tab-root');
-        expect(observed).toContain(addRoot);
-
-        // A quick-add button appears beside `+`: the control doubles.
-        const addWidth = WIDTHS.findIndex(
-          ([name]) => name === 'canopy-panel-add-tab-root',
-        );
-        WIDTHS[addWidth] = ['canopy-panel-add-tab-root', 56];
-        act(() => notify());
-        // (440 - 8 - 56 - 76) / 20 = 15
-        expect(floor(bar)).toBe('15px');
-      } finally {
-        Reflect.deleteProperty(window, 'ResizeObserver');
-      }
-    });
-
-    it('never floors a lone selected tab above 96px', () => {
-      // One tab in a wide row: the floor stays 96px, so the tab keeps its
-      // default width instead of stretching across the row.
-      const bar = renderRow(1, 1000, 0, 'panel-1');
-      expect(
-        bar.style.getPropertyValue('--canopy-panel-tab-active-floor'),
-      ).toBe('96px');
-    });
-
-    it('keeps the selected tab 96px wide while the others can give way', () => {
-      // Room 964: the selected tab takes 96, the rest stay at their floor.
-      const bar = renderRow(20, 1000, 0, 'panel-5');
-      expect(
-        bar.style.getPropertyValue('--canopy-panel-tab-active-floor'),
-      ).toBe('96px');
-      expect(floor(bar)).toBe('20px');
-    });
-
-    it('gives the selected tab what the others spare above their icons', () => {
-      // Room 404: 404 - 19 gaps * 4 - 19 icons * 14 = 62 for the selected
-      // tab; (404 - 62 - 76) / 19 = 14 for each of the others.
-      const bar = renderRow(20, 440, 0, 'panel-5');
-      expect(
-        bar.style.getPropertyValue('--canopy-panel-tab-active-floor'),
-      ).toBe('62px');
-      expect(floor(bar)).toBe('14px');
-      expect(gap(bar)).toBe('4px');
-    });
-
-    it('shrinks tiles below their icon only once the gaps are gone', () => {
-      // (250 - 36) / 20 = 10.7
-      const bar = renderRow(20, 250);
-      expect(floor(bar)).toBe('10.7px');
-      expect(gap(bar)).toBe('0px');
-    });
-  });
-
-  describe('no strip scrolling', () => {
-    function stripMetrics(element: HTMLElement, scrollWidth: number): void {
+    /**
+     * Lays the strip out as a browser would (jsdom has none): 28px squares
+     * 4px apart in a 300px viewport scrolled to `scrollLeft`.
+     */
+    /** `shift` moves every tab (as a wider selected tab would). */
+    function layOut(element: HTMLDivElement, shift = 0): void {
       Object.defineProperty(element, 'scrollWidth', {
         configurable: true,
-        value: scrollWidth,
+        value: 22 * 32,
       });
       Object.defineProperty(element, 'clientWidth', {
         configurable: true,
-        value: 100,
+        value: 300,
       });
+      element.getBoundingClientRect = (): DOMRect => new DOMRect(0, 0, 300, 28);
+      element
+        .querySelectorAll<HTMLElement>('[role="tab"]')
+        .forEach((tab, index) => {
+          tab.getBoundingClientRect = (): DOMRect =>
+            new DOMRect(index * 32 + shift - element.scrollLeft, 0, 28, 28);
+        });
     }
 
-    it('renders no scroll fades or scrollbar thumb', () => {
+    function renderCrowded(activePanelId = 'panel-1'): HTMLDivElement {
       render({
-        tabs: [{ ...TABS[0], pinned: true }, TABS[1]],
+        tabs: CROWDED,
+        activePanelId,
+        renderTabIcon: (tab) => (
+          <PanelFillChatTabGlyph busy={BUSY.has(tab.panelId)} />
+        ),
       });
-      expect(container.querySelector('.canopy-scroll-fade')).toBeNull();
-      expect(container.querySelector('.canopy-scroll-thumb')).toBeNull();
-    });
+      const element = strip();
+      layOut(element);
+      act(() => {
+        element.dispatchEvent(new Event('scroll'));
+      });
+      return element;
+    }
 
-    it('leaves wheel input to the page instead of panning the strip', () => {
-      render();
-      const strip = container.querySelector(
-        '[data-testid="panel-tab-strip-group-1"]',
-      );
-      if (!(strip instanceof HTMLDivElement)) {
-        throw new Error('tab strip not rendered');
-      }
-      stripMetrics(strip, 400);
+    it('scrolls instead of shrinking past the square: fades, thumb and wheel panning', () => {
+      const element = renderCrowded();
+      expect(
+        container
+          .querySelector('.canopy-scroll-fade-end')
+          ?.getAttribute('data-visible'),
+      ).toBe('true');
+      expect(
+        container
+          .querySelector('.canopy-scroll-thumb')
+          ?.getAttribute('data-overflow'),
+      ).toBe('true');
 
-      const proceeded = strip.dispatchEvent(
+      const proceeded = element.dispatchEvent(
         new WheelEvent('wheel', { deltaY: 50, cancelable: true }),
       );
-
-      expect(proceeded).toBe(true);
-      expect(strip.scrollLeft).toBe(0);
+      expect(element.scrollLeft).toBe(50);
+      // The strip took the wheel, so the page does not scroll.
+      expect(proceeded).toBe(false);
     });
+
+    it('brings the current tab back into view when it is picked from the list', () => {
+      Element.prototype.scrollIntoView = jest.fn();
+      const element = renderCrowded('panel-10');
+      // The user scrolls tab 10 (288-316) out of view.
+      element.scrollLeft = 500;
+      act(() => {
+        element.dispatchEvent(new Event('scroll'));
+      });
+      act(() => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="panel-tab-list-group-1"]',
+          )
+          ?.click();
+      });
+      act(() => {
+        document
+          .querySelector<HTMLElement>(
+            '[data-testid="panel-tab-list-row-panel-10"]',
+          )
+          ?.click();
+      });
+      const rect = container
+        .querySelector('[data-testid="panel-tab-panel-10"]')
+        ?.getBoundingClientRect();
+      expect(rect?.left).toBeGreaterThanOrEqual(0);
+      expect(rect?.right).toBeLessThanOrEqual(300);
+    });
+
+    it('reveals the selected tab in its new strip when it is pinned', () => {
+      renderCrowded('panel-15');
+      const pinnedTabs = CROWDED.map((model, index) =>
+        index < 10 || model.panelId === 'panel-15'
+          ? { ...model, pinned: true }
+          : model,
+      );
+      const renderWith = (models: PanelTabModel[]): void => {
+        render({
+          tabs: models,
+          activePanelId: 'panel-15',
+          renderTabIcon: (tab) => (
+            <PanelFillChatTabGlyph busy={BUSY.has(tab.panelId)} />
+          ),
+        });
+      };
+      renderWith(pinnedTabs);
+      const pinnedStrip = container.querySelector<HTMLDivElement>(
+        '.canopy-panel-tab-strip-wrap-pinned .canopy-panel-tab-strip',
+      );
+      if (pinnedStrip === null) throw new Error('No pinned strip');
+      // The pinned strip overflows a 100px viewport with its 11 tiles; tiles
+      // are measured where they sit, so a remounted tile is laid out too.
+      Object.defineProperty(pinnedStrip, 'scrollWidth', {
+        configurable: true,
+        value: 11 * 32,
+      });
+      Object.defineProperty(pinnedStrip, 'clientWidth', {
+        configurable: true,
+        value: 100,
+      });
+      const rect = jest
+        .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+        .mockImplementation(function (this: HTMLElement): DOMRect {
+          if (this === pinnedStrip) return new DOMRect(0, 0, 100, 28);
+          if (
+            pinnedStrip.contains(this) &&
+            this.getAttribute('role') === 'tab'
+          ) {
+            const index = Array.from(
+              pinnedStrip.querySelectorAll('[role="tab"]'),
+            ).indexOf(this);
+            return new DOMRect(index * 32 - pinnedStrip.scrollLeft, 0, 28, 28);
+          }
+          // Everything else keeps jsdom's empty box (the unpinned strip
+          // and its tabs carry their own).
+          return new DOMRect(0, 0, 0, 0);
+        });
+      act(() => {
+        pinnedStrip.dispatchEvent(new Event('scroll'));
+      });
+      // Unpin tab 15 alone, then pin it again: the pin change alone
+      // reveals it in the pinned strip.
+      renderWith(
+        pinnedTabs.map((model) =>
+          model.panelId === 'panel-15' ? { ...model, pinned: false } : model,
+        ),
+      );
+      pinnedStrip.scrollLeft = 0;
+      renderWith(pinnedTabs);
+      rect.mockRestore();
+      // The last pinned tile (index 10, 320-348) is right-aligned.
+      expect(pinnedStrip.scrollLeft).toBe(348 - 100);
+    });
+
+    it('keeps the selected tab in view when the strip gets narrower', async () => {
+      const element = renderCrowded('panel-15');
+      // Tab 15 (448-476) sits at the right of the 300px strip.
+      element.scrollLeft = 196;
+      await act(async () => {
+        element.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      // The split is dragged narrower; the strip still overflows.
+      Object.defineProperty(element, 'clientWidth', {
+        configurable: true,
+        value: 200,
+      });
+      element.getBoundingClientRect = (): DOMRect => new DOMRect(0, 0, 200, 28);
+      await act(async () => {
+        element.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      const rect = container
+        .querySelector('[data-testid="panel-tab-panel-15"]')
+        ?.getBoundingClientRect();
+      expect(rect?.left).toBeGreaterThanOrEqual(0);
+      expect(rect?.right).toBeLessThanOrEqual(200);
+    });
+
+    it('shows no running hint while the row fits', () => {
+      render({
+        tabs: CROWDED.slice(0, 5),
+        renderTabIcon: (tab) => (
+          <PanelFillChatTabGlyph busy={BUSY.has(tab.panelId)} />
+        ),
+      });
+      expect(
+        container.querySelector('.canopy-panel-tab-edge-count'),
+      ).toBeNull();
+    });
+
+    it('ends the row with the ⌄ list after the `+`, as the same shared control', () => {
+      render({
+        tabs: CROWDED,
+        addTab: { label: 'New Chat', onAddTab: jest.fn() },
+      });
+      const bar = container.querySelector('.canopy-panel-tab-bar');
+      const roots = Array.from(bar?.children ?? []).slice(-2);
+      expect(roots.map((root) => root.className)).toEqual([
+        'canopy-panel-add-tab-root',
+        'canopy-panel-tab-list-root',
+      ]);
+      const add = container.querySelector(
+        '[data-testid="panel-add-tab-group-1"]',
+      );
+      const list = container.querySelector(
+        '[data-testid="panel-tab-list-group-1"]',
+      );
+      // Both are the shared titlebar icon button on the tab-strip surface.
+      expect(add?.classList.contains('canopy-panel-add-tab')).toBe(true);
+      expect(list?.classList.contains('canopy-panel-add-tab')).toBe(true);
+      expect(list?.getAttribute('aria-label')).toBe('All tabs');
+    });
+  });
+});
+
+describe('PanelFillChatTabGlyph', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('draws the running spinner marked busy, else the tab number', () => {
+    act(() => {
+      root.render(
+        <PanelTabStyleProvider value="fill">
+          <PanelTabBar
+            tabStyle="fill"
+            groupId="group-1"
+            tabs={TABS}
+            activePanelId="panel-1"
+            onSelectTab={jest.fn()}
+            onCloseTab={jest.fn()}
+            renderTabIcon={(tab) => (
+              <PanelFillChatTabGlyph
+                busy={tab.panelId === 'panel-2'}
+                data-testid={`glyph-${tab.panelId}`}
+              />
+            )}
+          />
+        </PanelTabStyleProvider>,
+      );
+    });
+    const idle = container.querySelector('[data-testid="glyph-panel-1"]');
+    expect(idle?.textContent).toBe('1');
+    expect(idle?.hasAttribute(PANEL_TAB_BUSY_ATTRIBUTE)).toBe(false);
+    const busy = container.querySelector('[data-testid="glyph-panel-2"]');
+    expect(busy?.getAttribute(PANEL_TAB_BUSY_ATTRIBUTE)).toBe('true');
+    expect(busy?.querySelector('[data-testid="panel-tab-number"]')).toBeNull();
+  });
+
+  it('draws nothing for an idle tab outside a fill tab slot', () => {
+    act(() => {
+      root.render(<PanelFillChatTabGlyph busy={false} data-testid="glyph" />);
+    });
+    expect(container.querySelector('[data-testid="glyph"]')).toBeNull();
   });
 });
 

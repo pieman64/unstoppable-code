@@ -1,3 +1,4 @@
+import { resolveChatModelChangeHarness } from '@canopy/desktop-shared/lib/chat-model-selection';
 import {
   type AgentProviderType,
   type ChatModelChangeNotice,
@@ -16,7 +17,8 @@ import {
   pinInheritingAgentModel,
   resolveProviderModelConfig,
 } from '@canopy/desktop-shared/types';
-import { advanceThinkingLevel } from '@canopy/protocol/thinking';
+import { clampModelThinkingLevel } from '@canopy/protocol/thinking';
+import { advanceThinkingControlLevel } from '@canopy/ui-shared/lib';
 import { isModelBlocked } from '@canopy/desktop-shared/lib/model-policy';
 import {
   DEFAULT_CODEX_SPEED,
@@ -303,12 +305,11 @@ export const createModelsSlice: StateCreator<
         requestedModel,
         resolveTabDefaults(sel.projectId, get().modelDefaults).model,
       );
-      const selectedHarness =
-        executionHarness ??
-        (currentTab?.model === model &&
-        currentTab.executionHarnessExplicitlyChosen
-          ? currentTab.executionHarness
-          : undefined);
+      const selectedHarness = resolveChatModelChangeHarness(
+        currentTab,
+        model,
+        executionHarness,
+      );
       const newProviderType = getProviderForChatModel(model, selectedHarness);
       if (!newProviderType) {
         set((state) =>
@@ -371,11 +372,7 @@ export const createModelsSlice: StateCreator<
                   ).thinkingLevel
                 : undefined;
               const selectionHarness =
-                executionHarness ??
-                (t.model === model && t.executionHarnessExplicitlyChosen
-                  ? t.executionHarness
-                  : undefined) ??
-                getExecutionHarnessForModel(model) ??
+                resolveChatModelChangeHarness(t, model, executionHarness) ??
                 newProviderType;
               const baseLevel = perProviderDefault ?? t.thinkingLevel;
               const thinkingLevel = normalizeThinkingForProvider(
@@ -462,6 +459,7 @@ export const createModelsSlice: StateCreator<
                   t.usage,
                   model,
                   isTabAiCreditsRouted({ ...t, model, ...selectedBilling }),
+                  selectionHarness === 'ollama' ? undefined : selectionHarness,
                 ),
               };
               if (
@@ -500,7 +498,10 @@ export const createModelsSlice: StateCreator<
               } else {
                 delete nextTab.interfaceMode;
               }
-              if (tabIsFresh) {
+              if (selectionHarness === 'opencode') {
+                nextTab.executionHarness = 'opencode';
+                nextTab.executionHarnessExplicitlyChosen = true;
+              } else if (tabIsFresh) {
                 // A preallocated provider session does not capture a harness.
                 // Resolve the current assignment when the first turn starts.
                 if (executionHarness) {
@@ -610,6 +611,29 @@ export const createModelsSlice: StateCreator<
           if (!isCurrentRequest()) return false;
           if (billingFramework)
             get().rememberBillingFramework(billingFramework);
+          const failureId = currentTab.provisionalFirstSend?.failure?.failureId;
+          if (failureId) {
+            set((state) =>
+              updateCapturedChatTab(state, context, (tab) => {
+                const record = tab.provisionalFirstSend;
+                if (
+                  record?.phase !== 'failed' ||
+                  record.failure?.failureId !== failureId
+                )
+                  return tab;
+                return {
+                  ...tab,
+                  provisionalFirstSend: {
+                    ...record,
+                    failure: {
+                      ...record.failure,
+                      recoveryModelSelectionAccepted: true,
+                    },
+                  },
+                };
+              }),
+            );
+          }
           requestTabDiscovery({
             projectId: sel.projectId,
             worktreeId: sel.worktreeId,
@@ -748,6 +772,14 @@ export const createModelsSlice: StateCreator<
         // main's session gate decides against that tab's real owner.
         let worktreeChanged = false;
         const tabs = worktreeChat.tabs.map((tab) => {
+          // OpenCode resume binds the model and funding authority. A policy or
+          // catalog refresh cannot substitute another runtime or paid route.
+          // Preserve the choice; send-time admission explains its unavailability.
+          if (
+            tab.executionHarness === 'opencode' ||
+            tab.providerType === 'opencode'
+          )
+            return tab;
           const inOwnerScope =
             ownerScope === undefined ||
             ownerScope.isTabInOwnerScope(
@@ -1191,14 +1223,8 @@ export const createModelsSlice: StateCreator<
     if (!tab) return;
     if (tab.kind === 'file') return;
 
-    // Model-aware UI cycle keyed to the captured/effective execution harness:
-    // a Codex-harnessed model cycles Codex effort tiers, a Claude-harnessed
-    // model cycles Claude thinking tiers, and gateway-advertised supported
-    // levels (hydrated into the model registry) constrain both. Canonical
-    // `low` is hidden from the UI; surface it as `medium` for cycle position
-    // lookup. Tiers the model does not support (Codex `max`, `ultra` outside
-    // models that declare it) are omitted from the cycle, and the current
-    // value is clamped to a cycle entry the same way it displays.
+    // Cycle the model's canonical set using the same helper as the shared
+    // effort controls. Legacy capability fallbacks still exclude Low.
     const providerType =
       tab.executionHarness ??
       (tab.model ? getExecutionHarnessForModel(tab.model) : undefined) ??
@@ -1213,7 +1239,11 @@ export const createModelsSlice: StateCreator<
       providerType,
       tab.executionHarness,
     );
-    const next = advanceThinkingLevel(tab.thinkingLevel, cycle);
+    const next = advanceThinkingControlLevel(
+      clampModelThinkingLevel(tab.thinkingLevel, cycle),
+      cycle,
+      cycle.includes('low'),
+    );
 
     set((state) =>
       updateCapturedChatTab(state, context, (t) => ({

@@ -4,7 +4,7 @@ import type {
   ExecutionLifecycleHooks,
   StepPostProcessContext,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
-import { getWakeLockService } from '../power/wake-lock-service';
+import { getExecutionAccounting } from '../execution-accounting';
 import {
   finishPipelineExecutionTelemetry,
   startPipelineExecutionTelemetry,
@@ -14,12 +14,15 @@ import { isSpaceNotificationDeliverable } from '../lib/space-notification-gate';
 
 export function createDesktopLifecycleHooks(): ExecutionLifecycleHooks {
   const settled = new Set<string>();
+  const awake = new Map<string, () => void>();
 
   return {
     onExecutionStart: (state): void => {
-      getWakeLockService().acquire(
-        `pipeline:${state.id}`,
-        'pipeline execution',
+      // Core accounting owns which execution families keep the computer awake.
+      awake.get(state.id)?.();
+      awake.set(
+        state.id,
+        getExecutionAccounting().keepAwake('pipeline', state.id),
       );
       startPipelineExecutionTelemetry(state);
     },
@@ -29,7 +32,8 @@ export function createDesktopLifecycleHooks(): ExecutionLifecycleHooks {
       }
       settled.add(state.id);
       finishPipelineExecutionTelemetry(state);
-      getWakeLockService().release(`pipeline:${state.id}`);
+      awake.get(state.id)?.();
+      awake.delete(state.id);
     },
   };
 }

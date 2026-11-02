@@ -76,6 +76,17 @@ export interface OverlayScrollAreaProps {
    */
   readonly edgeFadeEdges?: 'both' | 'bottom';
   /**
+   * The top fade's length when it should differ from `edgeFadeSize`: a list
+   * under a header can fade in early at the top while its bottom stays crisp
+   * against the next surface.
+   */
+  readonly edgeFadeTopSize?: number;
+  /**
+   * A fully clear band at the bottom edge, below the bottom fade: rows are
+   * gone before they reach the surface underneath. Defaults to 0.
+   */
+  readonly edgeFadeBottomInset?: number;
+  /**
    * Height of content pinned to the viewport top (a sticky table header).
    * The top fade starts below it, so the pinned content stays sharp and the
    * rows scrolling under it fade instead.
@@ -135,6 +146,8 @@ export function OverlayScrollArea({
   thumbEndInset = THUMB_END_INSET_PX,
   edgeFadeSize = 0,
   edgeFadeEdges = 'both',
+  edgeFadeTopSize,
+  edgeFadeBottomInset = 0,
   edgeFadeTopInset = 0,
   observeMutations = true,
 }: OverlayScrollAreaProps): JSX.Element {
@@ -213,13 +226,14 @@ export function OverlayScrollArea({
           viewport.scrollTop > EDGE_TOLERANCE_PX;
         const bottom =
           overflow && maxScrollTop - viewport.scrollTop > EDGE_TOLERANCE_PX;
+        const topFade = edgeFadeTopSize ?? edgeFadeSize;
         const topStops =
           edgeFadeTopInset > 0
-            ? `black ${edgeFadeTopInset}px, ${top ? 'transparent' : 'black'} ${edgeFadeTopInset}px, black ${edgeFadeTopInset + (top ? edgeFadeSize : 0)}px`
-            : `${top ? 'transparent' : 'black'}, black ${top ? edgeFadeSize : 0}px`;
+            ? `black ${edgeFadeTopInset}px, ${top ? 'transparent' : 'black'} ${edgeFadeTopInset}px, black ${edgeFadeTopInset + (top ? topFade : 0)}px`
+            : `${top ? 'transparent' : 'black'}, black ${top ? topFade : 0}px`;
         const mask =
           top || bottom
-            ? `linear-gradient(to bottom, ${topStops}, black calc(100% - ${bottom ? edgeFadeSize : 0}px), ${bottom ? 'transparent' : 'black'})`
+            ? `linear-gradient(to bottom, ${topStops}, black calc(100% - ${bottom ? edgeFadeSize + edgeFadeBottomInset : 0}px), ${bottom ? `transparent calc(100% - ${edgeFadeBottomInset}px), transparent` : 'black'})`
             : 'none';
         if (paintedMask !== mask) {
           viewport.style.maskImage = mask;
@@ -270,6 +284,8 @@ export function OverlayScrollArea({
     thumbEndInset,
     edgeFadeSize,
     edgeFadeEdges,
+    edgeFadeTopSize,
+    edgeFadeBottomInset,
     edgeFadeTopInset,
   ]);
 

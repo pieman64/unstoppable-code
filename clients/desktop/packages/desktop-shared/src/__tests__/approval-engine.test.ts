@@ -19,6 +19,7 @@ import {
 import { getAppAdvisorLedgerToolNames } from '../lib/app-advisor-tools';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '../lib/canopy-injected-tools';
 import type {
+  ApprovalCheck,
   ApprovalRule,
   ApprovalEvaluationContext,
 } from '../types/approvals';
@@ -43,6 +44,92 @@ function ctx(
     ...overrides,
   };
 }
+
+describe('safety denial reasons', () => {
+  it.each(['ask', 'auto'] as const)(
+    'reports existing denials in %s without changing policy',
+    (mode) => {
+      for (const [command, safetyReason] of [
+        ['git push --force origin HEAD', 'force-push'],
+        ['git push -f origin master', 'force-push'],
+        ['git push --force', 'force-push'],
+        ['git -C /repo push --force origin main', 'force-push'],
+        [
+          'sudo /usr/bin/git -C /repo push -vf origin refs/heads/main',
+          'force-push',
+        ],
+        ['env git push --force-with-lease origin main', 'force-push'],
+        ['rm -rf /', 'destructive-delete'],
+        ['find . -delete', 'destructive-delete'],
+        ['git push --delete origin main', 'destructive-delete'],
+        ['git push origin :master', 'destructive-delete'],
+        ['mkfs /dev/sda', 'disk-write'],
+        ['dd if=/dev/zero of=/dev/sda', 'disk-write'],
+        ['echo $(git push --force origin HEAD)', 'unverifiable-command'],
+        ['sh -c "git push --force origin HEAD"', 'unverifiable-command'],
+        ['echo safe; git push -f origin main; mkfs /dev/sda', 'force-push'],
+        ['mkfs /dev/sda; git push -f origin main', 'disk-write'],
+        ['git push -f origin main; echo $(date)', 'unverifiable-command'],
+        ['git push -f origin main; find . -delete', 'destructive-delete'],
+      ]) {
+        expect(
+          evaluateApproval({ kind: 'command', command }, ctx({ mode })),
+        ).toEqual({
+          outcome: 'deny',
+          safety: true,
+          safetyReason,
+        });
+      }
+    },
+  );
+
+  it('preserves saved rule precedence and the Full access bypass without safety metadata', () => {
+    const saved = rule({
+      behavior: 'deny',
+      target: { kind: 'command', pattern: 'git status' },
+    });
+    expect(
+      evaluateApproval(
+        { kind: 'command', command: 'git status' },
+        ctx({ rules: { session: [saved], project: [], global: [] } }),
+      ),
+    ).toEqual({ outcome: 'deny', matchedRule: saved });
+    const allow = rule({
+      behavior: 'allow',
+      target: { kind: 'command', pattern: 'git push *' },
+    });
+    expect(
+      evaluateApproval(
+        { kind: 'command', command: 'git push -f origin main' },
+        ctx({ rules: { session: [allow], project: [], global: [] } }),
+      ),
+    ).toEqual({ outcome: 'deny', safety: true, safetyReason: 'force-push' });
+    expect(
+      evaluateApproval(
+        { kind: 'command', command: 'git push -f origin main' },
+        ctx({ mode: 'full-access' }),
+      ),
+    ).toEqual({ outcome: 'allow' });
+  });
+
+  it('identifies unprovable path resolution conservatively', () => {
+    expect(
+      evaluateApproval(
+        {
+          kind: 'command',
+          command: 'rm -rf ./link',
+          pathResolutionFailed: true,
+          protectedRoots: ['/'],
+        },
+        ctx(),
+      ),
+    ).toEqual({
+      outcome: 'deny',
+      safety: true,
+      safetyReason: 'unverifiable-command',
+    });
+  });
+});
 
 describe('splitCommandChain', () => {
   it('splits on shell operators and newlines', () => {
@@ -1686,7 +1773,7 @@ describe('evaluateApproval', () => {
     ).toEqual({ outcome: 'prompt' });
   });
   it('fails closed when canonical PowerShell Remove-Item operands reach protected roots', () => {
-    for (const [command, pattern, resolvedPath, protectedRoots] of [
+    const cases: Array<readonly [string, string, string, string[]]> = [
       [
         'Remove-Item -Recurse -Force C:\\Users\\tester',
         'Remove-Item -Recurse *',
@@ -1699,21 +1786,24 @@ describe('evaluateApproval', () => {
         'C:\\',
         ['C:\\'],
       ],
-      ...['ri', 'rmdir', 'rd', 'del', 'erase'].flatMap((alias) => [
-        [
-          `${alias} -Recurse -Force C:\\`,
-          `${alias} -Recurse *`,
-          'C:\\',
-          ['C:\\'],
+      ...['ri', 'rmdir', 'rd', 'del', 'erase'].flatMap(
+        (alias): Array<[string, string, string, string[]]> => [
+          [
+            `${alias} -Recurse -Force C:\\`,
+            `${alias} -Recurse *`,
+            'C:\\',
+            ['C:\\'],
+          ],
+          [
+            `C:\\PowerShell\\${alias}.exe -Recurse -Force C:\\Users\\tester`,
+            `${alias}.exe -Recurse *`,
+            'C:\\Users\\tester',
+            ['C:\\', 'C:\\Users\\tester'],
+          ],
         ],
-        [
-          `C:\\PowerShell\\${alias}.exe -Recurse -Force C:\\Users\\tester`,
-          `${alias}.exe -Recurse *`,
-          'C:\\Users\\tester',
-          ['C:\\', 'C:\\Users\\tester'],
-        ],
-      ]),
-    ] as const) {
+      ),
+    ];
+    for (const [command, pattern, resolvedPath, protectedRoots] of cases) {
       const allowRemoveItem = ctx({
         rules: {
           session: [
@@ -2135,6 +2225,116 @@ describe('evaluateApproval', () => {
         commandContext,
       ),
     ).toEqual({ outcome: 'prompt' });
+  });
+  describe('a protected file-name glob', () => {
+    const backups = '/srv/canopy/preferences.backup-*.json';
+    const allowAll = (pathCaseInsensitive = false): ApprovalEvaluationContext =>
+      ctx({
+        protectedFileWritePaths: [backups],
+        pathCaseInsensitive,
+        rules: {
+          session: [
+            rule({
+              behavior: 'allow',
+              target: { kind: 'file-write', path: '/**' },
+            }),
+            rule({
+              behavior: 'allow',
+              target: { kind: 'command', pattern: 'rm *' },
+            }),
+          ],
+          project: [],
+          global: [],
+        },
+      });
+    const write = (path: string): ApprovalCheck => ({
+      kind: 'file-write',
+      path,
+      resolvedPath: path,
+    });
+    const remove = (command: string, path: string): ApprovalCheck => ({
+      kind: 'command',
+      command,
+      resolvedPaths: [path],
+    });
+
+    it('prompts for every file the glob names, and only those', () => {
+      const backup =
+        '/srv/canopy/preferences.backup-2026-10-23T00-00-00-000Z.json';
+      expect(evaluateApproval(write(backup), allowAll()).outcome).toBe(
+        'prompt',
+      );
+      expect(
+        evaluateApproval(
+          write('/srv/canopy/preferences.backup-x.json.bak'),
+          allowAll(),
+        ).outcome,
+      ).toBe('allow');
+      expect(
+        evaluateApproval(
+          write('/srv/canopy/nested/preferences.backup-x.json'),
+          allowAll(),
+        ).outcome,
+      ).toBe('allow');
+      expect(
+        evaluateApproval(write('/srv/canopy/preferences.json'), allowAll())
+          .outcome,
+      ).toBe('allow');
+    });
+
+    it('folds case only where the volume is case-insensitive', () => {
+      const upper = '/SRV/Canopy/Preferences.Backup-X.JSON';
+      expect(evaluateApproval(write(upper), allowAll(true)).outcome).toBe(
+        'prompt',
+      );
+      expect(evaluateApproval(write(upper), allowAll()).outcome).toBe('allow');
+    });
+
+    it('prompts for a command naming a match, or recursively removing its folder', () => {
+      expect(
+        evaluateApproval(
+          remove(
+            'rm /srv/canopy/preferences.backup-x.json',
+            '/srv/canopy/preferences.backup-x.json',
+          ),
+          allowAll(),
+        ).outcome,
+      ).toBe('prompt');
+      expect(
+        evaluateApproval(
+          remove('rm -rf /srv/canopy', '/srv/canopy'),
+          allowAll(),
+        ).outcome,
+      ).toBe('prompt');
+      expect(
+        evaluateApproval(remove('rm /srv/canopy', '/srv/canopy'), allowAll())
+          .outcome,
+      ).toBe('allow');
+      expect(
+        evaluateApproval(
+          remove('rm -rf /srv/canopy/nested', '/srv/canopy/nested'),
+          allowAll(),
+        ).outcome,
+      ).toBe('allow');
+    });
+
+    it.each([
+      ['/srv/canopy/**', 'prompt'],
+      ['/srv/canopy', 'prompt'],
+      ['/srv/canopy/*.json', 'prompt'],
+      ['/srv/canopy/preferences.backup-1.json', 'prompt'],
+      ['/**', 'prompt'],
+      ['/srv/canopy/nested/**', 'allow'],
+      ['/srv/canopy/notes.json', 'allow'],
+      ['/elsewhere/**', 'allow'],
+    ])('treats a write grant over %s as reaching it: %s', (path, outcome) => {
+      expect(
+        evaluateApproval(
+          { kind: 'file-write', path, isGrant: true },
+          allowAll(),
+        ).outcome,
+      ).toBe(outcome);
+    });
   });
   it('safety-denies Windows separators hidden from POSIX parsing', () => {
     expect(
@@ -2838,11 +3038,24 @@ describe('isApprovalMode', () => {
 describe('browser-upload checks', () => {
   const upload = (
     ...displayPaths: string[]
-  ): Parameters<typeof evaluateApproval>[0] => ({
+  ): Extract<
+    Parameters<typeof evaluateApproval>[0],
+    { kind: 'browser-upload' }
+  > => ({
     kind: 'browser-upload',
     origin: 'https://upload.example',
     topOrigin: 'https://app.example',
     files: displayPaths.map((displayPath) => ({ displayPath, sizeBytes: 4 })),
+  });
+  const uploadFromOrigin = (
+    origin: string,
+    ...displayPaths: string[]
+  ): Extract<
+    Parameters<typeof evaluateApproval>[0],
+    { kind: 'browser-upload' }
+  > => ({
+    ...upload(...displayPaths),
+    origin,
   });
 
   it('prompts in every mode when no rule matches, including Full Access', () => {
@@ -2868,7 +3081,7 @@ describe('browser-upload checks', () => {
     });
     expect(
       evaluateApproval(
-        { ...upload('report.csv'), origin: 'https://upload.example.evil' },
+        uploadFromOrigin('https://upload.example.evil', 'report.csv'),
         ctx({ rules, mode: 'full-access' }),
       ),
     ).toEqual({ outcome: 'prompt' });

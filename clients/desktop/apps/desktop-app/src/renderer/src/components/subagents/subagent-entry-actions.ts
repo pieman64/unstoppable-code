@@ -1,6 +1,6 @@
 /**
  * Entry points into the subagent viewer from a root chat (D1, D2): Open chat
- * on agent cards and View tree in Agent activity.
+ * on agent cards and the background drawer's agent rows, and its View tree.
  *
  * The chat's message list provides one stable value for its open, editable
  * root chat; read-only and detached viewers provide none, so their cards

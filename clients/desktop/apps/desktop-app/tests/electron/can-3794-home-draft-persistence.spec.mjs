@@ -18,6 +18,10 @@ import { selectWorkspaceContext } from './workspaceContextMenu.mjs';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  publisherSkills,
+  startPublisherSkillsFixture,
+} from './publisherSkillsFixture.mjs';
 
 async function logicalText(editor) {
   return editor.evaluate((element) =>
@@ -627,36 +631,64 @@ test('CAN-3933: a task sent to the default new worktree is purged from New Task'
   }
 });
 
+// The Getting started CTA that first exercised this retired with CAN-4010;
+// a Marketplace skill's Try now stages its starter prompt the same way
+// (`requestHomeComposerText`) when no worktree is selected.
 test('a staged starter prompt replaces a retained draft before Home restores it', async () => {
-  test.setTimeout(120_000);
-  const { electronApp, userDataDir } = await launchCanopy({
-    userDataDir: seedWelcomeChecklist({
-      pendingEntry: 'plan-mode',
-      roles: ['other'],
-    }),
-    seedDemoWorkspaces: true,
-    demoWorkspaceApps: ['ts-pnpm-vite'],
-  });
+  test.setTimeout(180_000);
+  const fixture = await startPublisherSkillsFixture();
+  const skill = publisherSkills[0];
   try {
-    const window = await electronApp.firstWindow();
-    const app = new CanopyAppDriver(window);
-    await app.waitForShell();
-    await window.getByTestId('sidebar-create-task').click();
-    const editor = window
-      .getByTestId('page-home')
-      .getByTestId('home-composer-editor');
-    await typeLines(editor, ['old retained draft']);
-    await app.openPluginsPage();
-    await window.getByTestId('sidebar-onboarding-suggestion-cta').click();
-    await expect(editor).toBeVisible();
-    await expect(editor).toContainText('Help me plan a project');
-    const replacement = await logicalText(editor);
-    expect(replacement).not.toContain('old retained draft');
-    await app.selectWorktree('demo-main');
-    await window.getByTestId('sidebar-create-task').click();
-    await expect.poll(() => logicalText(editor)).toBe(replacement);
+    const { electronApp, userDataDir } = await launchCanopy({
+      userDataDir: seedWelcomeChecklist({ roles: ['other'] }),
+      seedDemoWorkspaces: true,
+      demoWorkspaceApps: ['ts-pnpm-vite'],
+      env: { CANOPY_E2E_CLOUD_BASE_URL: fixture.baseUrl },
+    });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await window.getByTestId('sidebar-create-task').click();
+      const editor = window
+        .getByTestId('page-home')
+        .getByTestId('home-composer-editor');
+      await typeLines(editor, ['old retained draft']);
+      await app.openPluginsPage();
+      await window.getByTestId('plugins-type-tab-skill').click();
+      await window.getByTestId('plugins-search').fill(skill.name);
+      await window
+        .getByTestId(`plugins-entry-add-public-share:skill:${skill.externalId}`)
+        .click();
+      const review = window.getByTestId('deep-link-share-landing');
+      await review.getByTestId('deep-link-share-install').click();
+      await expect(review).toHaveCount(0);
+      await expect(window.getByText('Skill installed.').last()).toBeVisible();
+      // Install lands on the installed skill; Try now is on its Marketplace row.
+      await app.openPluginsPage();
+      await window.getByTestId('plugins-type-tab-skill').click();
+      await window.getByTestId('plugins-search').fill(skill.name);
+      await window
+        .getByTestId(`customize-row-public-share:skill:${skill.externalId}`)
+        .click();
+      await window
+        .getByTestId('plugins-entry-detail')
+        .getByTestId('deep-link-share-try')
+        .click();
+      await expect(editor).toBeVisible();
+      await expect(editor).toContainText(
+        `Using the ${skill.name} skill, run one quick, real example`,
+      );
+      const replacement = await logicalText(editor);
+      expect(replacement).not.toContain('old retained draft');
+      await app.selectWorktree('demo-main');
+      await window.getByTestId('sidebar-create-task').click();
+      await expect.poll(() => logicalText(editor)).toBe(replacement);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
   } finally {
-    await closeCanopy(electronApp, userDataDir);
+    await fixture.close();
   }
 });
 

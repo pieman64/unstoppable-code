@@ -105,8 +105,10 @@ describe('local memory helper owner and memory options', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    jest.mocked(runStructuredHelper).mockResolvedValue({ result: 'ok' });
-    mockCodexRun.mockResolvedValue({ result: 'ok' });
+    jest
+      .mocked(runStructuredHelper)
+      .mockResolvedValue({ value: 'ok', usage: {} });
+    mockCodexRun.mockResolvedValue({ value: 'ok', usage: {} });
   });
 
   it('keeps existing callers on the workspace owner with memory enabled', async () => {

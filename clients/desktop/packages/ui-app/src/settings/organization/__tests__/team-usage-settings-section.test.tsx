@@ -879,7 +879,7 @@ describe('TeamDataSharingSection data sharing card', () => {
 
     billingFailure = false;
     const retry = Array.from(document.body.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     expect(retry).toBeDefined();
     await act(async () => {

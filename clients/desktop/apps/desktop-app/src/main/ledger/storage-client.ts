@@ -202,6 +202,10 @@ export function createWorkerLedgerStoreClient(
       call('bindScope', [input], BindScopeResultSchema),
     findScope: (input): Promise<LedgerScopeRecord | null> =>
       call('findScope', [input], ScopeRecordSchema.nullable()),
+    bindGlobalScope: (input): Promise<LedgerBindScopeResult> =>
+      call('bindGlobalScope', [input], BindScopeResultSchema),
+    findGlobalScope: (input): Promise<LedgerScopeRecord | null> =>
+      call('findGlobalScope', [input], ScopeRecordSchema.nullable()),
     getScope: (ledgerId): Promise<LedgerScopeRecord | null> =>
       call('getScope', [ledgerId], ScopeRecordSchema.nullable()),
     registerActor: (input): Promise<LedgerRegisterActorResult> =>

@@ -1,6 +1,3 @@
-/* eslint-disable no-restricted-imports -- The generated-token drift check intentionally launches the Node generator. */
-import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
 import { AGENT_VISUAL_THEME_VARIABLES } from '../agent-visual-html';
 import { AGENT_VISUAL_THEME_DEFAULTS } from '../agent-visual-theme-defaults';
 
@@ -67,15 +64,4 @@ it('gives visuals six distinct chart colors that keep their hue across themes', 
   const swatch = (name: (typeof THEME_NAMES)[number]): string | undefined =>
     AGENT_VISUAL_THEME_DEFAULTS.canopy[name].light['--categorical-1'];
   expect(swatch('retro')).not.toBe(swatch('default'));
-});
-
-it('matches the generator', () => {
-  const root = resolve(__dirname, '../../../../..');
-  expect(() =>
-    execFileSync(
-      process.execPath,
-      [resolve(root, 'scripts/brand/generate-theme-tokens.mjs'), '--check'],
-      { cwd: root },
-    ),
-  ).not.toThrow();
 });

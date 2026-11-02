@@ -1,4 +1,8 @@
 import type { PrMergeQueueHistory } from '@canopy/desktop-shared/types/github';
+import type {
+  CorePullRequestCheck,
+  CorePullRequestState,
+} from '@canopy/protocol/canopy-core';
 import { isGitHubRepositoryName } from '@canopy/protocol/reference-previews';
 import {
   getGitHubBroker,
@@ -56,6 +60,35 @@ export interface GitHubPullRequestStatusView {
   fetchedAt: string;
 }
 
+/**
+ * What a read adds for the canonical `core.pullRequest.*` projection, beside
+ * the view: GitHub's own values, with continuations while checks or review
+ * threads have pages left. Kept apart from the view, so the view's callers
+ * see exactly what they saw before.
+ */
+export interface GitHubPullRequestDetail {
+  /** GitHub's title, unnormalized. */
+  readonly title: string;
+  /** Empty when GitHub has none. */
+  readonly body: string;
+  readonly baseSha: string | null;
+  readonly updatedAt: string;
+  readonly commentCount: number;
+  readonly checks: readonly CorePullRequestCheck[];
+  /** GitHub's continuation past `checks`; `null` once every context is read. */
+  readonly checksAfter: string | null;
+  readonly reviewThreadCount: number;
+  readonly unresolvedReviewThreadCount: number;
+  /** GitHub's continuation past the counted threads; `null` once all are. */
+  readonly reviewThreadsAfter: string | null;
+}
+
+/** A view with its detail, every check and thread read. */
+export interface GitHubPullRequestProjection {
+  readonly view: GitHubPullRequestStatusView;
+  readonly detail: GitHubPullRequestDetail;
+}
+
 export interface GitHubPullRequestStatusOptions {
   priority?: GitHubRequestPriority;
   signal?: AbortSignal;
@@ -90,21 +123,34 @@ const MAX_REPOSITORY_NAME_LENGTH = 201;
 const MAX_CHECK_NAME_LENGTH = 200;
 const MAX_FAILED_NAMES = 20;
 const CHECK_CONTEXTS_PAGE_SIZE = 100;
+const REVIEW_THREADS_PAGE_SIZE = 100;
+// Follow-up pages per list, so a pathological pull request cannot loop.
+const MAX_FOLLOW_UP_PAGES = 50;
 const CHECKS_ERROR_PATH = ['repository', 'pullRequest', 'commits'];
 
-const PULL_REQUEST_STATUS_QUERY = `
-  query ($owner: String!, $name: String!, $number: Int!) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $number) {
+const CHECK_CONTEXT_FIELDS = `
+                    __typename
+                    ... on CheckRun { id name status conclusion detailsUrl completedAt }
+                    ... on StatusContext { id context state targetUrl createdAt }`;
+
+// One pull request's fields: the shared status view's, plus the canonical
+// `core.pullRequest.*` projection's (body, base commit, update time, check
+// context ids, URLs and times, thread and comment counts) with continuations
+// for checks and review threads past their first page.
+const PULL_REQUEST_FIELDS = `
         id
+        number
         state
         merged
         mergedAt
         closedAt
+        updatedAt
         url
         title
+        body
         isDraft
         baseRefName
+        baseRefOid
         headRefName
         headRefOid
         headRepository { nameWithOwner }
@@ -113,6 +159,12 @@ const PULL_REQUEST_STATUS_QUERY = `
         mergeCommit { oid }
         isInMergeQueue
         mergeQueueEntry { id enqueuedAt state position }
+        comments { totalCount }
+        reviewThreads(first: ${REVIEW_THREADS_PAGE_SIZE}) {
+          totalCount
+          pageInfo { hasNextPage endCursor }
+          nodes { isResolved }
+        }
         commits(last: 1) {
           nodes {
             commit {
@@ -120,17 +172,63 @@ const PULL_REQUEST_STATUS_QUERY = `
                 state
                 contexts(first: ${CHECK_CONTEXTS_PAGE_SIZE}) {
                   totalCount
-                  nodes {
-                    __typename
-                    ... on CheckRun { name status conclusion }
-                    ... on StatusContext { context state }
+                  pageInfo { hasNextPage endCursor }
+                  nodes {${CHECK_CONTEXT_FIELDS}
                   }
                 }
               }
             }
           }
-        }
+        }`;
+
+const PULL_REQUEST_STATUS_QUERY = `
+  query ($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {${PULL_REQUEST_FIELDS}
         queueEvents: timelineItems(itemTypes: ${QUEUE_EVENT_ITEM_TYPES}, last: ${QUEUE_EVENTS_PAGE_SIZE}) {${QUEUE_EVENTS_FIELDS}
+        }
+      }
+    }
+  }
+`;
+
+const PULL_REQUEST_LIST_QUERY = `
+  query ($owner: String!, $name: String!, $states: [PullRequestState!], $first: Int!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequests(states: $states, first: $first, after: $after, orderBy: { field: UPDATED_AT, direction: DESC }) {
+        pageInfo { hasNextPage endCursor }
+        nodes {${PULL_REQUEST_FIELDS}
+        }
+      }
+    }
+  }
+`;
+
+const CHECK_CONTEXTS_PAGE_QUERY = `
+  query ($owner: String!, $name: String!, $oid: GitObjectID!, $after: String!) {
+    repository(owner: $owner, name: $name) {
+      object(oid: $oid) {
+        ... on Commit {
+          statusCheckRollup {
+            contexts(first: ${CHECK_CONTEXTS_PAGE_SIZE}, after: $after) {
+              pageInfo { hasNextPage endCursor }
+              nodes {${CHECK_CONTEXT_FIELDS}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const REVIEW_THREADS_PAGE_QUERY = `
+  query ($owner: String!, $name: String!, $number: Int!, $after: String!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        reviewThreads(first: ${REVIEW_THREADS_PAGE_SIZE}, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { isResolved }
         }
       }
     }
@@ -439,6 +537,217 @@ function withoutChecksErrors(body: Record<string, unknown>): {
   };
 }
 
+const CHECK_RUN_STATUSES: Readonly<
+  Record<string, CorePullRequestCheck['status']>
+> = {
+  QUEUED: 'queued',
+  WAITING: 'queued',
+  PENDING: 'queued',
+  REQUESTED: 'queued',
+  IN_PROGRESS: 'in_progress',
+  COMPLETED: 'completed',
+};
+
+const CHECK_RUN_CONCLUSIONS: Readonly<
+  Record<string, NonNullable<CorePullRequestCheck['conclusion']>>
+> = {
+  SUCCESS: 'success',
+  FAILURE: 'failure',
+  CANCELLED: 'cancelled',
+  TIMED_OUT: 'timed_out',
+  ACTION_REQUIRED: 'action_required',
+  NEUTRAL: 'neutral',
+  SKIPPED: 'skipped',
+  STALE: 'neutral',
+  STARTUP_FAILURE: 'failure',
+};
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function count(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function checkRunRow(
+  node: Record<string, unknown>,
+  checkId: string,
+): CorePullRequestCheck | null {
+  if (typeof node.name !== 'string') return null;
+  // A status GitHub adds later reads as queued: never as completed.
+  const status =
+    (typeof node.status === 'string'
+      ? CHECK_RUN_STATUSES[node.status]
+      : undefined) ?? 'queued';
+  const completed = status === 'completed';
+  const conclusion =
+    completed && typeof node.conclusion === 'string'
+      ? (CHECK_RUN_CONCLUSIONS[node.conclusion] ?? null)
+      : null;
+  return {
+    checkId,
+    name: node.name,
+    status,
+    conclusion,
+    url: nullableString(node.detailsUrl),
+    completedAt: completed ? nullableString(node.completedAt) : null,
+  };
+}
+
+function statusContextRow(
+  node: Record<string, unknown>,
+  checkId: string,
+): CorePullRequestCheck | null {
+  if (typeof node.context !== 'string') return null;
+  const pending = node.state === 'PENDING' || node.state === 'EXPECTED';
+  if (pending)
+    return {
+      checkId,
+      name: node.context,
+      status: 'queued',
+      conclusion: null,
+      url: nullableString(node.targetUrl),
+      completedAt: null,
+    };
+  return {
+    checkId,
+    name: node.context,
+    status: 'completed',
+    conclusion: node.state === 'SUCCESS' ? 'success' : 'failure',
+    url: nullableString(node.targetUrl),
+    completedAt: nullableString(node.createdAt),
+  };
+}
+
+/** One status rollup context as a canonical check row; `null` when malformed. */
+function checkRow(node: unknown): CorePullRequestCheck | null {
+  if (!isRecord(node) || typeof node.id !== 'string' || node.id === '')
+    return null;
+  if (node.__typename === 'CheckRun') return checkRunRow(node, node.id);
+  if (node.__typename === 'StatusContext')
+    return statusContextRow(node, node.id);
+  return null;
+}
+
+/** A connection's page: rows, and the continuation while pages remain. */
+function connectionPage<T>(
+  connection: unknown,
+  row: (node: unknown) => T | null,
+): { rows: T[]; after: string | null } | null {
+  if (!isRecord(connection) || !Array.isArray(connection.nodes)) return null;
+  const rows: T[] = [];
+  for (const node of connection.nodes) {
+    const mapped = row(node);
+    if (mapped === null) return null;
+    rows.push(mapped);
+  }
+  const pageInfo = isRecord(connection.pageInfo) ? connection.pageInfo : null;
+  if (!pageInfo || typeof pageInfo.hasNextPage !== 'boolean') return null;
+  if (!pageInfo.hasNextPage) return { rows, after: null };
+  const after = nullableString(pageInfo.endCursor);
+  return after === null ? null : { rows, after };
+}
+
+function headRollupContexts(pullRequest: Record<string, unknown>): unknown {
+  const commits = isRecord(pullRequest.commits) ? pullRequest.commits : null;
+  const nodes = Array.isArray(commits?.nodes) ? commits.nodes : [];
+  const head: unknown = nodes[nodes.length - 1];
+  const commit = isRecord(head) && isRecord(head.commit) ? head.commit : null;
+  const rollup =
+    commit && isRecord(commit.statusCheckRollup)
+      ? commit.statusCheckRollup
+      : null;
+  return rollup ? rollup.contexts : undefined;
+}
+
+function threadResolution(node: unknown): { resolved: boolean } | null {
+  return isRecord(node) && typeof node.isResolved === 'boolean'
+    ? { resolved: node.isResolved }
+    : null;
+}
+
+/**
+ * The canonical detail of one pull request's fields, or `null` when GitHub
+ * omitted any of them: a partial read never fills placeholder values.
+ */
+function pullRequestDetail(
+  pullRequest: Record<string, unknown>,
+  checksAvailable: boolean,
+): GitHubPullRequestDetail | null {
+  const updatedAt = nullableString(pullRequest.updatedAt);
+  const comments = isRecord(pullRequest.comments)
+    ? count(pullRequest.comments.totalCount)
+    : null;
+  const threads = isRecord(pullRequest.reviewThreads)
+    ? pullRequest.reviewThreads
+    : null;
+  const threadCount = threads ? count(threads.totalCount) : null;
+  const threadPage = connectionPage(threads, threadResolution);
+  const { title, body, baseRefOid } = pullRequest;
+  if (
+    updatedAt === null ||
+    !Number.isFinite(Date.parse(updatedAt)) ||
+    comments === null ||
+    threadCount === null ||
+    threadPage === null ||
+    typeof title !== 'string' ||
+    !(typeof body === 'string' || body === null) ||
+    !(typeof baseRefOid === 'string' || baseRefOid === null)
+  )
+    return null;
+  let checks: { rows: CorePullRequestCheck[]; after: string | null } = {
+    rows: [],
+    after: null,
+  };
+  // Withheld checks, or a head commit without a rollup, list none.
+  const contexts = checksAvailable
+    ? headRollupContexts(pullRequest)
+    : undefined;
+  if (contexts !== undefined) {
+    const page = connectionPage(contexts, checkRow);
+    if (page === null) return null;
+    checks = page;
+  }
+  return {
+    title,
+    body: body ?? '',
+    baseSha: nullableString(baseRefOid),
+    updatedAt,
+    commentCount: comments,
+    checks: checks.rows,
+    checksAfter: checks.after,
+    reviewThreadCount: threadCount,
+    unresolvedReviewThreadCount: threadPage.rows.filter(
+      (thread) => !thread.resolved,
+    ).length,
+    reviewThreadsAfter: threadPage.after,
+  };
+}
+
+// The detail each read produced, keyed by its view, so views stay exactly
+// what their callers saw before; a seeded view has none.
+const detailByView = new WeakMap<
+  GitHubPullRequestStatusView,
+  GitHubPullRequestDetail
+>();
+
+/** The canonical detail the read behind this view produced, if any. */
+export function githubPullRequestDetailOf(
+  view: GitHubPullRequestStatusView,
+): GitHubPullRequestDetail | undefined {
+  return detailByView.get(view);
+}
+
+/** Whether every check and review thread of the detail has been read. */
+export function isCompleteGitHubPullRequestDetail(
+  detail: GitHubPullRequestDetail,
+): boolean {
+  return detail.checksAfter === null && detail.reviewThreadsAfter === null;
+}
+
 /**
  * Map one status query body to the shared view and the watcher's read. The
  * lifecycle fields classify exactly as {@link normalizeGitHubPullRequestRead}
@@ -464,29 +773,29 @@ export function normalizeGitHubPullRequestStatus(
       ? repository.pullRequest
       : {};
   const { snapshot } = watcher;
-  return {
-    view: {
-      ref: { owner: ref.owner, repo: ref.repo, number: ref.number },
-      url: snapshot.url,
-      title: viewTitle(pullRequest.title),
-      state: snapshot.state,
-      isDraft: pullRequest.isDraft === true,
-      headBranch:
-        boundedString(pullRequest.headRefName, MAX_REF_NAME_LENGTH) ?? '',
-      baseBranch: snapshot.baseRefName,
-      headSha: snapshot.headSha,
-      headRepository: headRepositoryName(pullRequest.headRepository),
-      mergeable: toMergeable(pullRequest.mergeable),
-      reviewDecision: toReviewDecision(pullRequest.reviewDecision),
-      checks: checksSummary(pullRequest, filtered.checksAvailable),
-      mergeQueue: {
-        inQueue: snapshot.queue !== null,
-        position: snapshot.queue?.position ?? null,
-      },
-      fetchedAt: observedAt,
+  const view: GitHubPullRequestStatusView = {
+    ref: { owner: ref.owner, repo: ref.repo, number: ref.number },
+    url: snapshot.url,
+    title: viewTitle(pullRequest.title),
+    state: snapshot.state,
+    isDraft: pullRequest.isDraft === true,
+    headBranch:
+      boundedString(pullRequest.headRefName, MAX_REF_NAME_LENGTH) ?? '',
+    baseBranch: snapshot.baseRefName,
+    headSha: snapshot.headSha,
+    headRepository: headRepositoryName(pullRequest.headRepository),
+    mergeable: toMergeable(pullRequest.mergeable),
+    reviewDecision: toReviewDecision(pullRequest.reviewDecision),
+    checks: checksSummary(pullRequest, filtered.checksAvailable),
+    mergeQueue: {
+      inQueue: snapshot.queue !== null,
+      position: snapshot.queue?.position ?? null,
     },
-    watcher,
+    fetchedAt: observedAt,
   };
+  const detail = pullRequestDetail(pullRequest, filtered.checksAvailable);
+  if (detail) detailByView.set(view, detail);
+  return { view, watcher };
 }
 
 function isGraphQlRateLimited(body: unknown): boolean {
@@ -684,6 +993,354 @@ export async function getGitHubPullRequestStatus(
     options.caller,
   );
   return record.view;
+}
+
+export interface GitHubPullRequestProjectionOptions {
+  /** `true` reads GitHub; `false` may answer from a fresh cached read. */
+  refresh: boolean;
+  signal?: AbortSignal;
+  /** Spend-summary label for the broker. */
+  caller?: string;
+}
+
+interface GraphQlReadOptions {
+  priority: GitHubRequestPriority;
+  signal?: AbortSignal;
+  caller?: string;
+}
+
+function malformedRead(message: string): GitHubBrokerError {
+  return new GitHubBrokerError('invalid_response', message);
+}
+
+/** One GraphQL read through the broker, mapped while the response is held. */
+async function graphQlRead<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  options: GraphQlReadOptions,
+  map: (body: unknown) => T,
+): Promise<T> {
+  const result = await getGitHubBroker().execute<T>(
+    async (octokit): Promise<GitHubRawResponse<T>> => {
+      const route: string = 'POST /graphql';
+      const response = await octokit.request(route, { query, variables });
+      const body: unknown = response.data;
+      if (isGraphQlRateLimited(body)) {
+        throw new GitHubGraphQlRateLimitError(response.headers);
+      }
+      return {
+        status: response.status,
+        headers: response.headers,
+        data: map(body),
+      };
+    },
+    {
+      priority: options.priority,
+      operation: 'read',
+      idempotency: 'safe',
+      timeoutMs: READ_TIMEOUT_MS,
+      resource: 'graphql',
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.caller ? { caller: options.caller } : {}),
+    },
+  );
+  if (result.kind !== 'read') {
+    throw malformedRead('GitHub pull request read returned a mutation result.');
+  }
+  return result.data;
+}
+
+/** A follow-up page's data; any GraphQL error fails the whole projection. */
+function followUpData(body: unknown): Record<string, unknown> {
+  if (
+    !isRecord(body) ||
+    (body.errors !== undefined &&
+      (!Array.isArray(body.errors) || body.errors.length > 0)) ||
+    !isRecord(body.data)
+  ) {
+    throw malformedRead('GitHub returned errors for a pull request page.');
+  }
+  return body.data;
+}
+
+function nested(value: unknown, ...path: string[]): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+/**
+ * Reads the check and review-thread pages past the first, so the detail
+ * lists every check of the head commit and counts every unresolved thread.
+ */
+async function completeDetail(
+  ref: GitHubPullRequestRef,
+  view: GitHubPullRequestStatusView,
+  detail: GitHubPullRequestDetail,
+  options: GraphQlReadOptions,
+): Promise<GitHubPullRequestDetail> {
+  if (isCompleteGitHubPullRequestDetail(detail)) return detail;
+  const checks = [...detail.checks];
+  let checksAfter = detail.checksAfter;
+  for (let pages = 0; checksAfter !== null; pages += 1) {
+    if (pages >= MAX_FOLLOW_UP_PAGES || !view.headSha)
+      throw malformedRead('GitHub reported more checks than the host reads.');
+    const page = await graphQlRead(
+      CHECK_CONTEXTS_PAGE_QUERY,
+      {
+        owner: ref.owner,
+        name: ref.repo,
+        oid: view.headSha,
+        after: checksAfter,
+      },
+      options,
+      (body) =>
+        connectionPage(
+          nested(
+            followUpData(body),
+            'repository',
+            'object',
+            'statusCheckRollup',
+            'contexts',
+          ),
+          checkRow,
+        ),
+    );
+    if (!page) throw malformedRead('GitHub returned a malformed checks page.');
+    checks.push(...page.rows);
+    checksAfter = page.after;
+  }
+  let unresolved = detail.unresolvedReviewThreadCount;
+  let threadsAfter = detail.reviewThreadsAfter;
+  for (let pages = 0; threadsAfter !== null; pages += 1) {
+    if (pages >= MAX_FOLLOW_UP_PAGES)
+      throw malformedRead(
+        'GitHub reported more review threads than the host reads.',
+      );
+    const page = await graphQlRead(
+      REVIEW_THREADS_PAGE_QUERY,
+      {
+        owner: ref.owner,
+        name: ref.repo,
+        number: ref.number,
+        after: threadsAfter,
+      },
+      options,
+      (body) =>
+        connectionPage(
+          nested(
+            followUpData(body),
+            'repository',
+            'pullRequest',
+            'reviewThreads',
+          ),
+          threadResolution,
+        ),
+    );
+    if (!page)
+      throw malformedRead('GitHub returned a malformed review threads page.');
+    unresolved += page.rows.filter((thread) => !thread.resolved).length;
+    threadsAfter = page.after;
+  }
+  return {
+    ...detail,
+    checks,
+    checksAfter: null,
+    unresolvedReviewThreadCount: unresolved,
+    reviewThreadsAfter: null,
+  };
+}
+
+/**
+ * One pull request for `core.pullRequest.get`: the shared read model's view
+ * and its detail, every check and review thread read. With `refresh` false a
+ * fresh cached read that carries detail answers; otherwise it joins or starts
+ * the shared read, as {@link getGitHubPullRequestStatus} does.
+ */
+export async function readGitHubPullRequestProjection(
+  ref: GitHubPullRequestRef,
+  options: GitHubPullRequestProjectionOptions,
+): Promise<GitHubPullRequestProjection> {
+  assertValidRef(ref);
+  if (options.signal?.aborted) throw cancelledError();
+  const key = cacheKey(ref);
+  const cached = cache.get(key);
+  let view: GitHubPullRequestStatusView | undefined;
+  if (
+    !options.refresh &&
+    cached &&
+    detailByView.has(cached.view) &&
+    isFresh(cached.viewAtMs, githubPullRequestTtlMs(cached.view), Date.now())
+  ) {
+    touch(key, cached);
+    view = cached.view;
+  }
+  view ??= (
+    await sharedRead(ref, 'interactive', options.signal, options.caller)
+  ).view;
+  const detail = detailByView.get(view);
+  if (!detail) {
+    throw malformedRead('GitHub omitted pull request projection fields.');
+  }
+  const complete = await completeDetail(ref, view, detail, {
+    priority: 'interactive',
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.caller ? { caller: options.caller } : {}),
+  });
+  if (complete !== detail) detailByView.set(view, complete);
+  return { view, detail: complete };
+}
+
+const GRAPHQL_STATES: Readonly<Record<CorePullRequestState, string>> = {
+  open: 'OPEN',
+  closed: 'CLOSED',
+  merged: 'MERGED',
+};
+
+export interface GitHubPullRequestListPage {
+  states: readonly CorePullRequestState[];
+  first: number;
+  after: string | null;
+}
+
+/** Every listed node's errors, rebased onto the single-read path. */
+function nodeErrors(body: Record<string, unknown>): {
+  byNode: Map<number, unknown[]>;
+  other: boolean;
+} {
+  const byNode = new Map<number, unknown[]>();
+  let other = false;
+  const errors: unknown[] = Array.isArray(body.errors) ? body.errors : [];
+  for (const error of errors) {
+    const path: unknown[] | null =
+      isRecord(error) && Array.isArray(error.path) ? error.path : null;
+    const node = path?.[3];
+    if (
+      isRecord(error) &&
+      path &&
+      path[0] === 'repository' &&
+      path[1] === 'pullRequests' &&
+      path[2] === 'nodes' &&
+      typeof node === 'number' &&
+      path[4] === 'commits'
+    ) {
+      const rebased: Record<string, unknown> = {
+        ...error,
+        path: ['repository', 'pullRequest', ...path.slice(4)],
+      };
+      byNode.set(node, [...(byNode.get(node) ?? []), rebased]);
+    } else {
+      other = true;
+    }
+  }
+  return { byNode, other };
+}
+
+/**
+ * One page of a repository's pull requests for `core.pullRequest.list`, each
+ * mapped as a single read is, with every check and review thread read. The
+ * page is not stored in the shared read model: its views are what this call
+ * read, and other readers keep their own reads.
+ */
+export async function listGitHubPullRequestProjections(
+  repository: { owner: string; repo: string },
+  page: GitHubPullRequestListPage,
+  options: { signal?: AbortSignal; caller?: string },
+): Promise<{
+  pullRequests: GitHubPullRequestProjection[];
+  endCursor: string | null;
+}> {
+  assertValidRef({ ...repository, number: 1 });
+  if (options.signal?.aborted) throw cancelledError();
+  const readOptions: GraphQlReadOptions = {
+    priority: 'interactive',
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.caller ? { caller: options.caller } : {}),
+  };
+  const observedAt = new Date().toISOString();
+  const listed = await graphQlRead(
+    PULL_REQUEST_LIST_QUERY,
+    {
+      owner: repository.owner,
+      name: repository.repo,
+      states: page.states.map((state) => GRAPHQL_STATES[state]),
+      first: page.first,
+      after: page.after,
+    },
+    readOptions,
+    (body) => {
+      if (!isRecord(body)) throw malformedRead('GitHub returned no data.');
+      const errors = nodeErrors(body);
+      const connection = nested(body, 'data', 'repository', 'pullRequests');
+      if (nested(body, 'data', 'repository') === null) {
+        throw new GitHubBrokerError(
+          'not_found',
+          'GitHub repository was not found.',
+        );
+      }
+      if (errors.other || !isRecord(connection)) {
+        throw malformedRead(
+          'GitHub returned errors for the pull request list.',
+        );
+      }
+      const nodes = Array.isArray(connection.nodes) ? connection.nodes : null;
+      const pageInfo = isRecord(connection.pageInfo)
+        ? connection.pageInfo
+        : null;
+      if (!nodes || !pageInfo || typeof pageInfo.hasNextPage !== 'boolean') {
+        throw malformedRead('GitHub returned a malformed pull request list.');
+      }
+      const endCursor = pageInfo.hasNextPage
+        ? nullableString(pageInfo.endCursor)
+        : null;
+      if (pageInfo.hasNextPage && endCursor === null) {
+        throw malformedRead('GitHub returned a list page without a cursor.');
+      }
+      return {
+        endCursor,
+        items: nodes.map((node: unknown, index) => {
+          const number = isRecord(node) ? node.number : undefined;
+          if (typeof number !== 'number') {
+            throw malformedRead(
+              'GitHub returned a pull request without a number.',
+            );
+          }
+          const ref = { ...repository, number };
+          assertValidRef(ref);
+          const nodeErrorList = errors.byNode.get(index);
+          const { view } = normalizeGitHubPullRequestStatus(
+            {
+              data: { repository: { pullRequest: node } },
+              ...(nodeErrorList ? { errors: nodeErrorList } : {}),
+            },
+            ref,
+            observedAt,
+          );
+          const detail = detailByView.get(view);
+          if (!detail) {
+            throw malformedRead(
+              'GitHub omitted pull request projection fields.',
+            );
+          }
+          return { ref, view, detail };
+        }),
+      };
+    },
+  );
+  const pullRequests: GitHubPullRequestProjection[] = [];
+  for (const item of listed.items) {
+    const detail = await completeDetail(
+      item.ref,
+      item.view,
+      item.detail,
+      readOptions,
+    );
+    pullRequests.push({ view: item.view, detail });
+  }
+  return { pullRequests, endCursor: listed.endCursor };
 }
 
 function queueHistoryOf(

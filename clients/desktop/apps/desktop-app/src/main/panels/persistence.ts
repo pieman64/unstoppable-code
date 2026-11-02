@@ -94,6 +94,14 @@ export class PanelLayoutPersistenceStore {
     });
   }
 
+  /**
+   * Drops a write still in its debounce window without touching the file, for
+   * callers that are about to remove the worktree's data directory themselves.
+   */
+  public cancelPendingWrite(projectId: string, worktreeId: string): void {
+    this.clearPendingWrite(worktreeKey(projectId, worktreeId));
+  }
+
   /** Synchronously flushes every pending write (app-quit / fatal-exit hook). */
   public flushAllSync(): void {
     for (const key of Array.from(this.pendingWrites.keys())) {

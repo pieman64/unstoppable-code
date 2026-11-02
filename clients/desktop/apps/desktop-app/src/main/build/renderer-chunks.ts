@@ -1,5 +1,8 @@
 import type { Plugin } from 'vite';
-import { isDatadogRendererModule } from './renderer-obfuscation';
+
+function isDatadogRendererModule(id: string): boolean {
+  return id.includes('/node_modules/@datadog/');
+}
 
 /**
  * Vite's dynamic-import preload helper. Every chunk that lazy-loads another
@@ -12,8 +15,7 @@ const VITE_PRELOAD_HELPER_ID = '\0vite/preload-helper.js';
 
 /**
  * Renderer `manualChunks`. Names starting with `vendor-` (and the Datadog
- * chunk) are third-party code that release obfuscation leaves alone; see
- * `shouldObfuscateRendererChunk`.
+ * chunk) hold third-party code.
  */
 export function rendererManualChunk(id: string): string | undefined {
   if (id === VITE_PRELOAD_HELPER_ID) {

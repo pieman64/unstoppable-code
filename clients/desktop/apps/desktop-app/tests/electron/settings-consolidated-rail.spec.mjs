@@ -9,13 +9,13 @@ import {
   readHostedSettingsRequests,
   registerHostedSettingsScenario,
 } from './seeders/index.mjs';
-import { seedWelcomeChecklist } from './seeders/seedWelcomeChecklist.mjs';
 
 /**
  * The consolidated desktop Settings rail (CAN-4421): with hosted account
- * settings available, the local app group (General, Privacy, Remote access,
- * Display, labeled with the product name) sits on top, the hosted Account
- * group follows it, then Organizations, then Agents (starting with "Providers"), Tools, Workflow and
+ * settings available, the scope picker and the hosted Account rows sit on
+ * top (the Organizations list is in the picker's menu), then the local app
+ * group (General, Privacy, Remote access, Display, labeled with the product
+ * name), then Agents (starting with "Providers"), Tools, Workflow and
  * Advanced. The local Notifications row is gone; its rows, the cloud sign-in,
  * GitHub, Linear and the personal catalog live in the "On this computer"
  * region of the hosted Account, Notifications, Integrations and Public profile
@@ -26,9 +26,8 @@ import { seedWelcomeChecklist } from './seeders/seedWelcomeChecklist.mjs';
  */
 
 const HOSTED_RAIL_GROUPS = [
-  'settings-nav-group-personal',
   'settings-nav-group-account',
-  'settings-nav-group-organizations',
+  'settings-nav-group-personal',
   'settings-nav-group-agents',
   'settings-nav-group-integrations',
   'settings-nav-group-workflow',
@@ -291,7 +290,6 @@ test.describe('Settings rail with hosted account settings (CAN-4421)', () => {
       for (const [groupTestId, name] of [
         ['settings-nav-group-account', 'Account'],
         ['settings-nav-group-personal', readBrandAppName()],
-        ['settings-nav-group-organizations', 'Organizations'],
         ['settings-nav-group-agents', 'Agents'],
         ['settings-nav-group-integrations', 'Tools'],
       ]) {
@@ -490,31 +488,6 @@ test.describe('Settings rail with hosted account settings (CAN-4421)', () => {
     }
   });
 
-  test('the Home Linear connect opens Integrations and scrolls to the Linear key', async () => {
-    test.setTimeout(120_000);
-    const userDataDir = seedWelcomeChecklist({ pendingEntry: 'github' });
-    const { electronApp } = await launchCanopy({ userDataDir });
-    try {
-      const window = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(window);
-      await app.waitForShell();
-      await window.getByTestId('sidebar-create-task').click();
-      const tools = window.getByTestId('home-onboarding-tool-recommendations');
-      await tools.getByTestId('home-onboarding-tool-linear').click();
-
-      await expect(window.getByTestId('settings-overlay')).toBeVisible();
-      await app.expectAccountSettingsPage('integrations');
-      const linearInput = window.getByTestId('settings-linear-token-input');
-      await expect(linearInput).toBeFocused();
-      await expect(linearInput).toBeInViewport();
-      expect(await selectedRailRows(window)).toEqual([
-        'settings-nav-account-integrations',
-      ]);
-    } finally {
-      await closeCanopy(electronApp, userDataDir);
-    }
-  });
-
   test('signed in: Account shows the shared panel and the device card; disconnecting stays on Account', async () => {
     test.setTimeout(150_000);
     const apiKey = 'csk_settings_consolidated_rail_signed_in';
@@ -598,10 +571,8 @@ test.describe('Settings rail with hosted account settings (CAN-4421)', () => {
         operationDelaysMs: { 'settings.bootstrap': BOOTSTRAP_DELAY_MS },
       },
     });
-    const expectedRows = [
-      ...SIGNED_IN_ACCOUNT_ROWS,
-      'settings-nav-organizations-list',
-    ];
+    // The Organizations list is in the rail's scope menu, not a row.
+    const expectedRows = SIGNED_IN_ACCOUNT_ROWS;
     const first = await launchCanopy();
     const { userDataDir } = first;
     try {
@@ -752,7 +723,7 @@ test.describe('Settings rail with hosted account settings (CAN-4421)', () => {
     }
   });
 
-  test('guest: a guest is signed out for hosted settings, with no drip panel', async () => {
+  test('guest: a guest is signed out for hosted settings and keeps daily credits in Providers', async () => {
     test.setTimeout(120_000);
     const { electronApp, userDataDir } = await launchCanopy();
     try {
@@ -778,10 +749,14 @@ test.describe('Settings rail with hosted account settings (CAN-4421)', () => {
       await expect(
         window.getByTestId('settings-daily-credit-drip'),
       ).toHaveCount(0);
+      // A guest has no hosted Billing page, so Providers keeps the daily
+      // credits switch that the recovery offer points to (CAN-5214).
       await app.openSettingsSection('account');
       await expect(
-        window.getByTestId('settings-daily-credit-drip'),
-      ).toHaveCount(0);
+        window
+          .getByTestId('settings-tab-account')
+          .getByTestId('settings-daily-credit-drip'),
+      ).toBeVisible();
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

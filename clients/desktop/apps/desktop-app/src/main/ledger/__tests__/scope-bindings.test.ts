@@ -223,6 +223,84 @@ describe('LedgerScopeBindings', () => {
     expect(fixture.client.callCount('bindScope')).toBe(2);
   });
 
+  describe('global (workflow) Ledgers', () => {
+    it('binds one per owner and account, read afresh on every use', async () => {
+      let accountId: string | null = 'account-1';
+      const scopes = new LedgerScopeBindings({
+        store: (): LedgerStoreClient => fixture.client,
+        getAccountId: (): Promise<string | null> => Promise.resolve(accountId),
+      });
+
+      const personal = await scopes.resolveGlobal({ kind: 'personal' });
+      const again = await scopes.resolveGlobal({ kind: 'personal' });
+      accountId = null;
+      const signedOut = await scopes.resolveGlobal({ kind: 'personal' });
+      accountId = 'account-2';
+      const other = await scopes.resolveGlobal({ kind: 'personal' });
+
+      expect(again).toBe(personal);
+      expect(personal.container).toEqual({
+        kind: 'global',
+        owner: { kind: 'personal' },
+      });
+      expect(
+        [personal, signedOut, other].map((scope) => scope.accountId),
+      ).toEqual(['account-1', null, 'account-2']);
+      expect(
+        new Set([personal, signedOut, other].map((scope) => scope.ledgerId))
+          .size,
+      ).toBe(3);
+      await expect(
+        scopes.findGlobal({ kind: 'personal' }, 'account-1'),
+      ).resolves.toEqual(personal);
+    });
+
+    it('binds none while the account cannot be read, never the signed-out one', async () => {
+      const scopes = new LedgerScopeBindings({
+        store: (): LedgerStoreClient => fixture.client,
+        getAccountId: (): Promise<string | null> => Promise.resolve(null),
+        getGlobalAccountId: (): Promise<string | null> =>
+          Promise.reject(new Error('The account could not be read')),
+      });
+
+      await expect(scopes.resolveGlobal({ kind: 'personal' })).rejects.toThrow(
+        'The account could not be read',
+      );
+      expect(fixture.repository.getStorageCounts().scopes).toBe(0);
+    });
+
+    it('finds a bound incarnation, and never mints one from a binding alone', async () => {
+      const { scopes } = createBindings();
+      const bound = await scopes.resolveGlobal({ kind: 'personal' });
+
+      await expect(
+        createBindings().scopes.resolve(
+          bound.container,
+          bound.containerCreatedAt,
+        ),
+      ).resolves.toEqual(bound);
+      await expect(
+        scopes.resolve(bound.container, '2026-01-01T00:00:00.000Z'),
+      ).rejects.toMatchObject({ reason: 'NOT_FOUND' });
+      expect(fixture.repository.getStorageCounts().scopes).toBe(1);
+    });
+
+    it('never reads a container creation time for a global Ledger', async () => {
+      const readers: LedgerContainerCreatedAtReaders = {
+        worktreeCreatedAt: jest.fn(),
+        workEntryCreatedAt: jest.fn(),
+      };
+
+      await expect(
+        resolveLedgerContainerCreatedAt(
+          { kind: 'global', owner: { kind: 'personal' } },
+          readers,
+        ),
+      ).resolves.toBeNull();
+      expect(readers.worktreeCreatedAt).not.toHaveBeenCalled();
+    });
+  });
+
   it('tries a failed bind again on the next use', async () => {
     const { scopes } = createBindings();
     fixture.client.failNext(

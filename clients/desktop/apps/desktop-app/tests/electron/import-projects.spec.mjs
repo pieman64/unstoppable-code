@@ -20,6 +20,7 @@ import {
   seedExternalProjectImportFixture,
   writeImportFixtureTranscript,
 } from './seeders/seedExternalProjectImportFixture.mjs';
+import { memoryRowSelector } from './memoryRows.mjs';
 
 // CAN-2439: bulk-import local Claude and Codex projects.
 // CAN-3076: recognizable project and chat titles throughout.
@@ -415,9 +416,13 @@ test.describe('import projects from Claude and Codex', () => {
 
       // The profile shows up with the rest of the user's memory.
       await app.openSettingsSection('memory');
-      await expect(window.getByTestId('memory-explorer-user')).toContainText(
+      const memories = window.getByTestId('memory-explorer-user');
+      await memories
+        .locator(memoryRowSelector('topics/chat-history-profile.md'))
+        .getByTestId('memory-row-open')
+        .click({ timeout: 30_000 });
+      await expect(memories.getByTestId('memory-detail-body')).toContainText(
         'Unstoppable Domains',
-        { timeout: 30_000 },
       );
 
       const indexPath = path.join(userDataDir, 'workspaces', 'index.json');

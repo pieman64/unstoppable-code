@@ -15,6 +15,7 @@ export const INDEX_WORKER_METHODS = [
   'setSourceFingerprint',
   'listSourceFileKeys',
   'deleteSourceFile',
+  'getMetadata',
   'setMetadata',
   'getIndexedBodiesIfTranscriptUnchanged',
   'getIndexedCommittedFingerprint',
@@ -24,6 +25,11 @@ export const INDEX_WORKER_METHODS = [
   'stageScopeDoc',
   'commitStagedScope',
   'discardStagedScope',
+  'beginChildDocumentStage',
+  'reuseChildDocument',
+  'stageChildDocument',
+  'commitChildDocumentStage',
+  'discardChildDocumentStage',
 ] as const satisfies readonly (keyof ChatSearchIndexer)[];
 export type IndexWorkerMethod = (typeof INDEX_WORKER_METHODS)[number];
 export type AsyncIndexMethods = {

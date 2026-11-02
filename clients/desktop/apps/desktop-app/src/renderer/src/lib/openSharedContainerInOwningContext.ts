@@ -121,7 +121,11 @@ export async function openSharedContainerInOwningContext({
   // keeps the record it has, so this cannot move the share, and it is the one
   // place that drops run consent when the owner identity changed.
   if (mode === 'accept') {
-    await replicas.acceptContainer({ ...entry, shouldOpen: isCurrent });
+    await replicas.acceptContainer({
+      ...entry,
+      ...(listed ? { containerType: listed.container.containerType } : {}),
+      shouldOpen: isCurrent,
+    });
   } else {
     await replicas.openContainer(entry);
   }

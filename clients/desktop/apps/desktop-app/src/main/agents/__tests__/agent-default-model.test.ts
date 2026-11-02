@@ -50,7 +50,6 @@ beforeEach(() => {
   );
   mockIsCowork.mockReturnValue(false);
   mockLaneDefault.mockResolvedValue({
-    providerType: 'codex',
     model: 'gpt-5.5',
     thinkingLevel: 'high',
   });
@@ -185,7 +184,6 @@ describe('resolveSendModelPin', () => {
 
   it('refuses a route pinned to a default an Agent cannot run on', async () => {
     mockLaneDefault.mockResolvedValue({
-      providerType: 'codex',
       model: 'removed-default',
       thinkingLevel: 'high',
     });
@@ -202,7 +200,6 @@ describe('resolveSendModelPin', () => {
 
   it('refuses a default that is itself an Agent', async () => {
     mockLaneDefault.mockResolvedValue({
-      providerType: 'claude',
       model: 'agent_model_pinned',
       thinkingLevel: 'high',
     });
@@ -245,7 +242,6 @@ describe('resolveCatalogAgentDefaultModel', () => {
     mockIsCowork.mockImplementation((projectId) => projectId === 'cowork-1');
     mockLaneDefault.mockImplementation((_preferences, lane) =>
       Promise.resolve({
-        providerType: lane === 'chat' ? 'claude' : 'codex',
         model: lane === 'chat' ? 'claude-sonnet-4-6' : 'gpt-5.5',
         thinkingLevel: 'high',
       }),
@@ -265,7 +261,6 @@ describe('resolveCatalogAgentDefaultModel', () => {
 
   it('follows a default-model setting change at once', async () => {
     mockLaneDefault.mockResolvedValueOnce({
-      providerType: 'codex',
       model: 'gpt-5.5',
       thinkingLevel: 'high',
     });
@@ -273,7 +268,6 @@ describe('resolveCatalogAgentDefaultModel', () => {
       'gpt-5.5',
     );
     mockLaneDefault.mockResolvedValueOnce({
-      providerType: 'claude',
       model: 'claude-sonnet-4-6',
       thinkingLevel: 'high',
     });

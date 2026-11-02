@@ -8,6 +8,9 @@ import {
   isEmptyPipelinePackageSummary,
   pipelinePackageKindLabel,
   pipelinePackageRequirementKindLabel,
+  PIPELINE_PACKAGE_DEFINITION_ONLY_WARNING,
+  AUTOMATION_PACKAGE_BUNDLED_NOTE,
+  AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE,
   PIPELINE_PACKAGE_EMPTY_DEPENDENCIES,
   PIPELINE_PACKAGE_NOT_INCLUDED_HEADING,
   PIPELINE_PACKAGE_PUBLISHER_NOTE,
@@ -94,6 +97,20 @@ describe('kind labels', () => {
     expect(pipelinePackageKindLabel('plugin_skill')).toBe('Skill');
     expect(pipelinePackageKindLabel('plugin_command')).toBe('Command');
     expect(pipelinePackageKindLabel('plugin_agent')).toBe('Agent');
+  });
+
+  it('names workflow kinds as workflows, never pipelines (CAN-4651)', () => {
+    expect(pipelinePackageKindLabel('pipeline_action')).toBe('Workflow action');
+    expect(pipelinePackageKindLabel('child_pipeline')).toBe('Child workflow');
+    expect(pipelinePackageKindLabel('pipeline_definition')).toBe('Workflow');
+    for (const copy of [
+      PIPELINE_PACKAGE_DEFINITION_ONLY_WARNING,
+      AUTOMATION_PACKAGE_BUNDLED_NOTE,
+      AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE,
+    ]) {
+      expect(copy).not.toMatch(/pipeline/i);
+      expect(copy).toContain('workflow');
+    }
   });
 
   it('labels every environment requirement kind', () => {

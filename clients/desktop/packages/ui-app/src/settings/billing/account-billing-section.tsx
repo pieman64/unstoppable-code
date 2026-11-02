@@ -8,11 +8,6 @@ import {
   type JSX,
   type RefObject,
 } from 'react';
-import {
-  CircleDollarSign,
-  CreditCard,
-  History,
-} from '@canopy/ui-shared/icons/AppIcons';
 import type { AiCreditsLedgerEntry } from '@canopy/protocol';
 import {
   organizationBillingPath,
@@ -22,18 +17,21 @@ import { planDisplayNameFromKey } from '@canopy/protocol/settings/billing-plan-c
 import {
   formatCardLabel,
   formatCredits,
+  formatDate,
   formatExpiry,
   formatMonthDay,
   formatUsd,
 } from '@canopy/ui-shared/lib';
 import {
   BillingHistoryTable as SharedBillingHistoryTable,
+  Button,
+  buttonClassName,
   CreditLedgerTable as SharedCreditLedgerTable,
   ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_CLASS,
-  SETTINGS_CARD_ICON_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
   SETTINGS_CARD_TITLE_CLASS,
   SettingsCard,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
@@ -97,17 +95,6 @@ function accountInvoiceHref(invoice: { id: string }): string {
 }
 
 type Status = 'loading' | 'ready' | 'error';
-
-/* -------------------------------------------------------------------------- */
-/* Small formatting helpers                                                   */
-/* -------------------------------------------------------------------------- */
-
-/** Locale date, falling back to the raw value when unparseable. */
-function formatDate(iso: string): string {
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return iso;
-  return new Date(ms).toLocaleDateString();
-}
 
 /* -------------------------------------------------------------------------- */
 /* BillingSection container                                                   */
@@ -324,18 +311,6 @@ export function BillingSection({
     charges.length > 0 ||
     (openCardRequestId !== null && paymentsAvailable);
   const showPaymentSubcard = paymentsAvailable || hasSavedCard;
-  // While an uncovered user is trialing Pro, the plan card shows the primary
-  // "Add a card to keep Pro" CTA. Demote the credits-wallet "Buy credits" button
-  // to a secondary style so that upgrade stays the single primary action; when
-  // not trialing there is no competing primary, so "Buy credits" keeps the fill.
-  const planTrialing =
-    !orgCovered &&
-    !freeAccess &&
-    (summary?.status === 'TRIALING' || summary?.trial?.active === true);
-  const topUpVariant: 'primary' | 'secondary' = planTrialing
-    ? 'secondary'
-    : 'primary';
-
   // A plain stack, not a card: an outer card around these three only wrapped a
   // heading ("Billing") that the tab the viewer clicked already says, and pushed
   // every real card down a level into `border`-on-`bg-card` subcards that read
@@ -402,7 +377,6 @@ export function BillingSection({
           are usage-based and independent of seat coverage, so an org-covered
           user still has a personal wallet. Self-loads its own credits balance. */}
         <AiCreditsCard
-          topUpVariant={topUpVariant}
           freeAccess={freeAccess}
           intentTarget={intentTarget}
           reloadSignal={creditsReloadSignal}
@@ -466,7 +440,6 @@ function BillingHistoryCard({
 }): JSX.Element {
   return (
     <SettingsCard
-      icon={<History size={18} />}
       title="Billing history"
       subtitle="Charges billed to your card in USD."
       // Namespaced: a bare `billing-history-card` would prefix-collide with the
@@ -505,10 +478,8 @@ function BillingHistoryCard({
 /* OrgCoverageCard                                                             */
 /* -------------------------------------------------------------------------- */
 
-const PRIMARY_CTA_CLASS =
-  'inline-flex rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90';
-const SECONDARY_CTA_CLASS =
-  'inline-flex rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary';
+/** The organization billing links: Settings capsules, secondary like every page action. */
+const ORG_BILLING_LINK_CLASS = buttonClassName({ size: 'compact' });
 
 /**
  * The manageable org whose billing link is emphasized, or null when none is
@@ -584,7 +555,7 @@ function OrgCoverageCard({
     personalPending !== null &&
     isCancellationLapsed(personalPending.effectiveAt);
   // It *replaces* `PlanCard`, so it lands at the same level and carries the same
-  // shell — including the `CreditCard` medallion and the `h2` heading. The old
+  // shell — the grouped box and the `h2` heading. The old
   // `mt-4` is gone: the stack's `gap-6` owns spacing between cards now.
   return (
     <section
@@ -592,111 +563,112 @@ function OrgCoverageCard({
       className={SETTINGS_CARD_CLASS}
       data-testid="billing-org-coverage"
     >
-      <div className="flex items-start gap-3">
-        <span className={SETTINGS_CARD_ICON_CLASS}>
-          <CreditCard size={18} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
-                <SubscriptionPlanPill
-                  chrome={chrome}
-                  dataTestId="billing-plan-pill"
-                />
-              </div>
-              <p
-                className={withPrivacyClass(
-                  'mt-1 text-s fg-secondary',
-                  single ? blockClassName : '',
-                )}
-              >
-                {single && soleOrg !== undefined
-                  ? `Your seat is covered by ${soleOrg.name}, so no personal payment method is required for your plan.`
-                  : 'Your seat is covered by your organization, so no personal payment method is required for your plan.'}
-              </p>
-              {personalPending !== null ? (
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className={SETTINGS_CARD_TITLE_CLASS}>
+                    Subscription plan
+                  </h2>
+                  <SubscriptionPlanPill
+                    chrome={chrome}
+                    dataTestId="billing-plan-pill"
+                  />
+                </div>
                 <p
-                  className="mt-2 text-xs fg-secondary"
-                  data-testid="billing-org-coverage-cancels-on"
+                  className={withPrivacyClass(
+                    'mt-1 text-s fg-secondary',
+                    single ? blockClassName : '',
+                  )}
                 >
-                  {personalPendingLapsed
-                    ? 'Your personal plan is ending. Access will end shortly.'
-                    : `Your personal plan cancels on ${formatDate(
-                        personalPending.effectiveAt,
-                      )}. You can resume any time before then.`}
+                  {single && soleOrg !== undefined
+                    ? `Your seat is covered by ${soleOrg.name}, so no personal payment method is required for your plan.`
+                    : 'Your seat is covered by your organization, so no personal payment method is required for your plan.'}
                 </p>
-              ) : null}
-            </div>
-            {/* A covered member normally has no personal plan and therefore no
+                {personalPending !== null ? (
+                  <p
+                    className="mt-2 text-xs fg-secondary"
+                    data-testid="billing-org-coverage-cancels-on"
+                  >
+                    {personalPendingLapsed
+                      ? 'Your personal plan is ending. Access will end shortly.'
+                      : `Your personal plan cancels on ${formatDate(
+                          personalPending.effectiveAt,
+                        )}. You can resume any time before then.`}
+                  </p>
+                ) : null}
+              </div>
+              {/* A covered member normally has no personal plan and therefore no
                 menu. This branch replaces `PlanCard` entirely, so without the
                 menu here a user holding a REDUNDANT personal plan (the case
                 `buildCoverageNotes` already flags) would have no cancel path at
                 all. The menu self-suppresses when there is no live personal
                 subscription, which is exactly the "don't show it to plain org
                 members" rule. */}
-            {summary !== null && slots !== null ? (
-              <slots.SubscriptionActionsMenu
-                scope="user"
-                summary={summary}
-                onChanged={onChanged}
-              />
-            ) : null}
-          </div>
-          {listedOrgs.length > 0 && (
-            <ul className="mt-3 list-disc space-y-1 pl-5">
-              {listedOrgs.map((org) => (
-                <li
-                  key={org.id}
-                  className={withPrivacyClass(
-                    'text-s fg-primary',
-                    blockClassName,
-                  )}
-                >
-                  {org.name}
-                </li>
-              ))}
-            </ul>
-          )}
-          {primary && (
-            <div className="mt-4">
-              <SettingsLink
-                href={organizationBillingPath(primary.id)}
-                data-testid="billing-org-primary-cta"
-                className={withPrivacyClass(
-                  PRIMARY_CTA_CLASS,
-                  single ? '' : blockClassName,
-                )}
-              >
-                {single
-                  ? 'Manage organization billing'
-                  : `Manage ${primary.name} billing`}
-              </SettingsLink>
+              {summary !== null && slots !== null ? (
+                <slots.SubscriptionActionsMenu
+                  scope="user"
+                  summary={summary}
+                  onChanged={onChanged}
+                />
+              ) : null}
             </div>
-          )}
-          {otherManageable.length > 0 && (
-            <div className="mt-4">
-              <p className="text-xs font-medium fg-secondary">
-                {primary ? 'Other organizations' : 'Organizations you manage'}
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {otherManageable.map((org) => (
-                  <SettingsLink
+            {listedOrgs.length > 0 && (
+              <ul className="mt-3 list-disc space-y-1 pl-5">
+                {listedOrgs.map((org) => (
+                  <li
                     key={org.id}
-                    href={organizationBillingPath(org.id)}
-                    data-testid="billing-org-secondary-cta"
                     className={withPrivacyClass(
-                      SECONDARY_CTA_CLASS,
+                      'text-s fg-primary',
                       blockClassName,
                     )}
                   >
-                    {`Manage ${org.name} billing`}
-                  </SettingsLink>
+                    {org.name}
+                  </li>
                 ))}
+              </ul>
+            )}
+            {primary && (
+              <div className="mt-4">
+                <SettingsLink
+                  href={organizationBillingPath(primary.id)}
+                  data-testid="billing-org-primary-cta"
+                  className={withPrivacyClass(
+                    ORG_BILLING_LINK_CLASS,
+                    single ? '' : blockClassName,
+                  )}
+                >
+                  {single
+                    ? 'Manage organization billing'
+                    : `Manage ${primary.name} billing`}
+                </SettingsLink>
               </div>
-            </div>
-          )}
+            )}
+            {otherManageable.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs font-medium fg-secondary">
+                  {primary ? 'Other organizations' : 'Organizations you manage'}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {otherManageable.map((org) => (
+                    <SettingsLink
+                      key={org.id}
+                      href={organizationBillingPath(org.id)}
+                      data-testid="billing-org-secondary-cta"
+                      className={withPrivacyClass(
+                        ORG_BILLING_LINK_CLASS,
+                        blockClassName,
+                      )}
+                    >
+                      {`Manage ${org.name} billing`}
+                    </SettingsLink>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </section>
@@ -750,21 +722,20 @@ function PlanCard({
         className={SETTINGS_CARD_CLASS}
         data-testid="billing-plan-card"
       >
-        <div className="flex items-start gap-3">
-          <span className={SETTINGS_CARD_ICON_CLASS}>
-            <CreditCard size={18} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
-            {/* The failure MESSAGE is the stack's `ErrorBanner` above, so this
+        <div className={SETTINGS_CARD_GROUP_CLASS}>
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+              {/* The failure MESSAGE is the stack's `ErrorBanner` above, so this
                 branch stays a neutral placeholder rather than repeating it. */}
-            {loading ? (
-              <BillingCardBodySkeleton className="mt-3" />
-            ) : (
-              <p className="mt-1 text-s fg-secondary">
-                No plan details available.
-              </p>
-            )}
+              {loading ? (
+                <BillingCardBodySkeleton className="mt-3" />
+              ) : (
+                <p className="mt-1 text-s fg-secondary">
+                  No plan details available.
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </section>
@@ -801,116 +772,114 @@ function PlanCard({
       className={SETTINGS_CARD_CLASS}
       data-testid="billing-plan-card"
     >
-      <div className="flex items-start gap-3">
-        <span className={SETTINGS_CARD_ICON_CLASS}>
-          <CreditCard size={18} />
-        </span>
-        <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
-              <PlanPill
-                planDisplayName={plan ? plan.displayName : 'Free'}
-                dataTestId="billing-plan-pill"
-              />
-              {trial?.active && <TrialBadge endsAt={trial.endsAt} />}
-              {seatCount !== null && seatCount > 0 && (
-                <span className="text-xs fg-secondary">
-                  {`${seatCount} ${seatCount === 1 ? 'seat' : 'seats'}`}
-                </span>
-              )}
-            </div>
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <div className="flex items-start gap-3">
+          <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+                <PlanPill
+                  planDisplayName={plan ? plan.displayName : 'Free'}
+                  dataTestId="billing-plan-pill"
+                />
+                {trial?.active && <TrialBadge endsAt={trial.endsAt} />}
+                {seatCount !== null && seatCount > 0 && (
+                  <span className="text-xs fg-secondary">
+                    {`${seatCount} ${seatCount === 1 ? 'seat' : 'seats'}`}
+                  </span>
+                )}
+              </div>
 
-            <p className="mt-1 text-xs fg-secondary">
-              {showTrialNudge
-                ? `You're on a free trial — nothing's due yet. Upgrade to ${proName} to lock in your access.`
-                : 'Your plan and next payment.'}
-            </p>
+              <p className="mt-1 text-xs fg-secondary">
+                {showTrialNudge
+                  ? `You're on a free trial — nothing's due yet. Upgrade to ${proName} to lock in your access.`
+                  : 'Your plan and next payment.'}
+              </p>
 
-            {/* A pending cancellation REPLACES the next-billing line: there is no
+              {/* A pending cancellation REPLACES the next-billing line: there is no
               next charge, and a silently-canceling plan that still advertises a
               billing date is the single most common cancellation support ticket.
               While trialing, the countdown pill + the nudge above already convey
               the timing, so the plain "Next billing" line is redundant. */}
-            {pendingCancellation !== null ? (
-              <>
+              {pendingCancellation !== null ? (
+                <>
+                  <p
+                    className="mt-2 text-s fg-secondary"
+                    data-testid="billing-cancels-on"
+                  >
+                    {pendingCancellationLapsed
+                      ? 'Canceling'
+                      : `Cancels on ${formatDate(
+                          pendingCancellation.effectiveAt,
+                        )}`}
+                  </p>
+                  <p
+                    className="mt-1 text-xs fg-secondary"
+                    data-testid="billing-pending-cancel-notice"
+                  >
+                    {pendingCancellationLapsed
+                      ? 'Your plan is ending. Access will end shortly.'
+                      : `Your plan stays active until ${formatDate(
+                          pendingCancellation.effectiveAt,
+                        )}. You can resume any time before then.`}
+                  </p>
+                </>
+              ) : complimentary ? (
                 <p
                   className="mt-2 text-s fg-secondary"
-                  data-testid="billing-cancels-on"
+                  data-testid="billing-complimentary"
                 >
-                  {pendingCancellationLapsed
-                    ? 'Canceling'
-                    : `Cancels on ${formatDate(
-                        pendingCancellation.effectiveAt,
-                      )}`}
+                  Complimentary
                 </p>
-                <p
-                  className="mt-1 text-xs fg-secondary"
-                  data-testid="billing-pending-cancel-notice"
-                >
-                  {pendingCancellationLapsed
-                    ? 'Your plan is ending. Access will end shortly.'
-                    : `Your plan stays active until ${formatDate(
-                        pendingCancellation.effectiveAt,
-                      )}. You can resume any time before then.`}
-                </p>
-              </>
-            ) : complimentary ? (
-              <p
-                className="mt-2 text-s fg-secondary"
-                data-testid="billing-complimentary"
-              >
-                Complimentary
-              </p>
-            ) : (
-              !(trial?.active ?? false) &&
-              nextBillingAmountUsd !== null &&
-              nextBillingDate !== null && (
-                <p className="mt-2 text-s fg-secondary">
-                  {`Next billing: ${formatUsd(
-                    nextBillingAmountUsd,
-                  )} on ${formatDate(nextBillingDate)}`}
-                </p>
-              )
-            )}
+              ) : (
+                !(trial?.active ?? false) &&
+                nextBillingAmountUsd !== null &&
+                nextBillingDate !== null && (
+                  <p className="mt-2 text-s fg-secondary">
+                    {`Next billing: ${formatUsd(
+                      nextBillingAmountUsd,
+                    )} on ${formatDate(nextBillingDate)}`}
+                  </p>
+                )
+              )}
 
-            {summary.coverageNotes.length > 0 && (
-              <ul className="mt-2 flex flex-col gap-1">
-                {summary.coverageNotes.map((note) => (
-                  <li key={note} className="text-xs fg-secondary">
-                    {note}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+              {summary.coverageNotes.length > 0 && (
+                <ul className="mt-2 flex flex-col gap-1">
+                  {summary.coverageNotes.map((note) => (
+                    <li key={note} className="text-xs fg-secondary">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
 
-          <div className="flex shrink-0 items-center gap-2">
-            <PaymentAreaCta
-              action="subscription"
-              offered={recovery !== null}
-              plan={recovery?.plan}
-              variant="primary"
-              testId="billing-manage-billing-on-web"
-              inline={
-                slots !== null ? (
-                  <>
-                    {slots.publishableKey && (
-                      <slots.PersonalPlanSubscribeCta
+            <div className="flex shrink-0 items-center gap-2">
+              <PaymentAreaCta
+                action="subscription"
+                offered={recovery !== null}
+                plan={recovery?.plan}
+                testId="billing-manage-billing-on-web"
+                inline={
+                  slots !== null ? (
+                    <>
+                      {slots.publishableKey && (
+                        <slots.PersonalPlanSubscribeCta
+                          summary={summary}
+                          onSubscribed={onCardMutated}
+                          intentPlanKey={intentPlanKey}
+                        />
+                      )}
+                      <slots.SubscriptionActionsMenu
+                        scope="user"
                         summary={summary}
-                        onSubscribed={onCardMutated}
-                        intentPlanKey={intentPlanKey}
+                        onChanged={onCardMutated}
                       />
-                    )}
-                    <slots.SubscriptionActionsMenu
-                      scope="user"
-                      summary={summary}
-                      onChanged={onCardMutated}
-                    />
-                  </>
-                ) : null
-              }
-            />
+                    </>
+                  ) : null
+                }
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -965,14 +934,14 @@ function BillingTransactions({
         </p>
       )}
       {hasMore && (
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={() => void handleLoadMore()}
           disabled={loadingMore}
-          className="mt-3 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-3"
         >
           {loadingMore ? 'Loading…' : 'Load more'}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -1007,17 +976,10 @@ const FREE_ACCESS_CREDITS_SUBTITLE =
  * web handoff) owns the shared "Buy credits" flow's card capture.
  */
 function AiCreditsCard({
-  topUpVariant = 'primary',
   freeAccess = false,
   intentTarget,
   reloadSignal,
 }: {
-  /**
-   * Visual weight of the "Buy credits" button. Demoted to `'secondary'` while
-   * the plan card is showing its primary "Add a card to keep Pro" trial CTA, so
-   * the page keeps a single primary action.
-   */
-  topUpVariant?: 'primary' | 'secondary';
   /** Free access has no plan quota, so the subtitle names daily credits. */
   freeAccess?: boolean;
   /** The page's top-up or automatic top-up intent, once read. */
@@ -1124,7 +1086,6 @@ function AiCreditsCard({
     <>
       {creditPoolSubscription}
       <SettingsCard
-        icon={<CircleDollarSign size={18} />}
         title="AI credits"
         subtitle={
           freeAccess
@@ -1175,7 +1136,6 @@ function AiCreditsCard({
         </div>
         <PaymentAreaCta
           action="top-up"
-          variant={topUpVariant}
           testId="billing-buy-credits-handoff"
           inline={
             slots !== null ? (
@@ -1184,7 +1144,7 @@ function AiCreditsCard({
                 creditPriceUsd={summary.creditPriceUsd}
                 onToppedUp={() => void load({ silent: true })}
                 testIdPrefix=""
-                variant={topUpVariant}
+                variant="secondary"
                 intent={
                   intentTarget?.kind === 'top-up' ? intentTarget.intent : null
                 }
@@ -1292,10 +1252,7 @@ function SavedCardSection({
   if (!paymentsAvailable) {
     if (!cardLabel) return null;
     return (
-      <div
-        className="rounded-lg bg-muted p-4"
-        data-testid="billing-payment-method"
-      >
+      <div className="border-b pb-4" data-testid="billing-payment-method">
         <p className="text-s font-medium fg-primary">Payment method</p>
         <p className={cardLabelClass}>{cardLabel}</p>
       </div>
@@ -1303,10 +1260,7 @@ function SavedCardSection({
   }
 
   return (
-    <div
-      className="rounded-lg bg-muted p-4"
-      data-testid="billing-payment-method"
-    >
+    <div className="border-b pb-4" data-testid="billing-payment-method">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-s font-medium fg-primary">Payment method</p>

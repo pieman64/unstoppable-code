@@ -67,9 +67,9 @@ export function PlanReadyPipelineModal({
     <PipelineTriggerModal
       triggerType="plan_ready"
       labels={{
-        title: 'Run pipeline',
-        selectSubtitle: 'Select a pipeline with plan_ready trigger',
-        emptyMessage: 'No pipelines with plan_ready trigger found',
+        title: 'Run workflow',
+        selectSubtitle: 'Select a workflow with plan_ready trigger',
+        emptyMessage: 'No workflows with plan_ready trigger found',
       }}
       cwd={resolvedCwd}
       repoChoices={resolvedRepoChoices}

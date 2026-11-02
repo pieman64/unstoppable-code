@@ -77,10 +77,18 @@ jest.mock('../lib/code-graph-scheduler', () => ({
 // `getWorkspaceById` reads the index entry directly (shadow-free); derive it
 // from the same `listWorkspaceItems` fixture this suite already sets. The
 // rest of sidebar-items stays real.
-jest.mock('../lib/sidebar-items', () => ({
-  ...jest.requireActual<typeof SidebarItemsModule>('../lib/sidebar-items'),
-  readWorkspaceIndexEntry: jest.fn(),
-}));
+jest.mock('../lib/sidebar-items', () => {
+  const actual = jest.requireActual<typeof SidebarItemsModule>(
+    '../lib/sidebar-items',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      readWorkspaceIndexEntry: { value: jest.fn(), enumerable: true },
+    },
+  );
+});
 jest.mock('../lib/resolve-worktree', () => ({
   resolveWorktreeCwd: jest.fn(
     (projectId: string, worktreeId: string) =>
@@ -300,6 +308,7 @@ import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { isMultiRepoWorkspace } from '../lib/workspace-registry';
 import { registerIpcHandler } from '../ipc/register';
 import { registerWorktreeHandlers } from '../ipc/worktrees';
+import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
 
 const mockedMkdir = jest.mocked(mkdir);
 const mockedReadFile = jest.mocked(readFile);
@@ -513,7 +522,7 @@ beforeEach(() => {
     },
   ]);
 
-  registerWorktreeHandlers(() => null);
+  registerWorktreeHandlers(() => null, unusedGitReadRuntime());
 
   const createCall = mockedRegisterIpcHandler.mock.calls.find(
     ([channel]) => channel === 'worktree:create',

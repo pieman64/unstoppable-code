@@ -5,12 +5,14 @@ import type {
 } from '@canopy/desktop-shared/node/ledger';
 import type { LedgerContainer } from '@canopy/protocol/canopy-core';
 import {
+  LEDGER_SYNC_GLOBAL_SCHEMA_VERSION,
   LEDGER_SYNC_LIMITS,
   LEDGER_SYNC_SCHEMA_VERSION,
   type LedgerRequestedAudience,
   type LedgerScopeAudience,
-  type LedgerScopeKind,
+  type LedgerScopeRegisterRequest,
   type LedgerSyncEvent,
+  type LedgerTaskScopeKind,
   type LedgerWriterSession,
 } from '@canopy/protocol/ledger-sync';
 import type { LedgerSyncStoreClient } from './ledger-store-client';
@@ -53,6 +55,10 @@ import {
  *   under the old choice, and the next pass sends audience changes first.
  * - The account is refused: everything waits for the account or its policy
  *   to change, or for the next periodic check.
+ * - A global (workflow) scope syncs only to a mirror that advertises
+ *   `ledger-global-v1`, at schema version 2. Until then it waits, holding its
+ *   events in order; task scopes keep syncing. A mirror that refuses one it
+ *   advertised (a rollback) sends it back to waiting, never to repair.
  */
 
 /** Bytes kept for a push's envelope, beside its events' payloads. */
@@ -104,7 +110,10 @@ const STOP_WAIT_MS = 2_000;
 const SCOPE_TURNS_MAX = 3;
 
 const SCOPE_KIND: {
-  readonly [Kind in LedgerContainer['kind']]: LedgerScopeKind;
+  readonly [Kind in Exclude<
+    LedgerContainer['kind'],
+    'global'
+  >]: LedgerTaskScopeKind;
 } = {
   code_worktree: 'code_worktree',
   cowork_entry: 'cowork_entry',
@@ -124,6 +133,7 @@ export interface LedgerSyncDiagnostic {
     | 'drain_timeout'
     | 'drain_incomplete'
     | 'rebind_failed'
+    | 'global_waiting'
     | 'unexpected';
   readonly detail: string;
 }
@@ -168,8 +178,19 @@ export interface LedgerSyncServiceOptions {
   readonly readWorkspaceOwner: (
     container: LedgerContainer,
   ) => Promise<LedgerWorkspaceOwner>;
+  /**
+   * Whether the mirror advertises `ledger-global-v1`, the sole gate for
+   * global (workflow) scopes. `live` skips what the account last stored and
+   * asks the mirror again. Fails closed. Without it, global scopes wait.
+   */
+  readonly supportsGlobalScopes?: (options: {
+    readonly live: boolean;
+  }) => Promise<boolean>;
   /** A scope's entries changed sync state without a new revision. */
-  readonly onScopeSyncChanged: (container: LedgerContainer) => void;
+  readonly onScopeSyncChanged: (
+    container: LedgerContainer,
+    ledgerId: string,
+  ) => void;
   /** The mirror reported a prohibition this device had not heard of. */
   readonly onProhibited: () => void;
   readonly recordDiagnostic: (diagnostic: LedgerSyncDiagnostic) => void;
@@ -215,6 +236,11 @@ interface PassTurn {
   readonly session: LedgerWriterSession;
   /** Workspace owners read during the pass, by workspace. */
   readonly owners: Map<string, Promise<LedgerWorkspaceOwner>>;
+  /**
+   * Whether global (workflow) scopes may sync during the pass. Read once,
+   * and turned off for the rest of it when the mirror refuses one.
+   */
+  globalSupported: boolean;
   /** The service's generation when the account was read. */
   readonly generation: number;
 }
@@ -266,10 +292,54 @@ function toWireEvent(event: LedgerOutboxEventRecord): LedgerSyncEvent {
 }
 
 /** The workspace a container's owner is read from. */
-function ownerKey(container: LedgerContainer): string {
+function ownerKey(
+  container: Exclude<LedgerContainer, { kind: 'global' }>,
+): string {
   return container.kind === 'advisor_entry'
     ? container.appWorkspaceId
     : container.workspaceId;
+}
+
+/** The task audience a task scope asks for; policy never names another. */
+function taskAudience(
+  audience: LedgerRequestedAudience,
+): Extract<LedgerRequestedAudience, { kind: 'private' | 'organization' }> {
+  return audience.kind === 'organization_global'
+    ? { kind: 'private' }
+    : audience;
+}
+
+/** The global audience a global scope asks for; policy never names another. */
+function globalAudience(
+  audience: LedgerRequestedAudience,
+): Extract<
+  LedgerRequestedAudience,
+  { kind: 'private' | 'organization_global' }
+> {
+  return audience.kind === 'organization' ? { kind: 'private' } : audience;
+}
+
+/** An organization's lease, which the mirror enforces and sync reconfirms. */
+function isOrganizationAudience(audience: {
+  readonly kind: LedgerScopeAudience['kind'];
+}): boolean {
+  return (
+    audience.kind === 'organization' || audience.kind === 'organization_global'
+  );
+}
+
+function isGlobalRecord(record: LedgerScopeSyncRecord): boolean {
+  return record.scope.scope.container.kind === 'global';
+}
+
+/**
+ * A refusal of a global scope that may say the mirror does not take global
+ * scopes after all: it refused the request as malformed, or answered as a
+ * server without the routes would. Only a fresh capability check tells a
+ * rollback from a refusal of this one scope.
+ */
+function isGlobalRefusal(failure: LedgerSyncFailure): boolean {
+  return failure.kind === 'repair' && failure.reason === 'invalid_request';
 }
 
 export class LedgerSyncService {
@@ -310,6 +380,17 @@ export class LedgerSyncService {
   private startupNotBefore = 0;
   /** Drains that timed out and still hold the queue. */
   private stalledDrains = 0;
+  /**
+   * The mirror's last answer about global scopes, kept until `until`: a
+   * mirror without them is asked again only at the next periodic check, or
+   * sooner when the account or its policy changes.
+   */
+  private globalSupport: {
+    readonly supported: boolean;
+    readonly until: number;
+  } | null = null;
+  /** The mirror refused a global scope: ask it afresh until it says yes. */
+  private globalLiveCheckDue = false;
 
   private readonly timing: LedgerSyncTiming;
 
@@ -352,6 +433,8 @@ export class LedgerSyncService {
       this.fullPassDue = true;
       this.prohibited = { accountId: '', until: 0 };
       this.refusedAudiences.clear();
+      // A reconnect or an account refresh may bring global scopes.
+      this.globalSupport = null;
     }
     if (this.stopped) return;
     this.schedule(
@@ -587,18 +670,21 @@ export class LedgerSyncService {
     account: LedgerSyncAccount | null,
     owners: Map<string, Promise<LedgerWorkspaceOwner>>,
   ): Promise<LedgerSyncDisposition> {
-    // Only a scope that may be shared needs its workspace's owner read.
+    // Only a scope that may be shared needs its workspace's owner read. A
+    // global one's owner is its container's.
     let owner: LedgerWorkspaceOwner = { kind: 'unknown' };
+    const { container } = scope;
     if (
       isLedgerScopeOfAccount(scope.accountId, account) &&
       account.summaries === 'organization' &&
-      scope.container.kind !== 'advisor_entry'
+      container.kind !== 'advisor_entry' &&
+      container.kind !== 'global'
     ) {
-      const key = ownerKey(scope.container);
+      const key = ownerKey(container);
       let reading = owners.get(key);
       if (reading === undefined) {
         reading = this.options
-          .readWorkspaceOwner(scope.container)
+          .readWorkspaceOwner(container)
           .catch((): LedgerWorkspaceOwner => ({ kind: 'unknown' }));
         owners.set(key, reading);
       }
@@ -619,10 +705,67 @@ export class LedgerSyncService {
 
   /** What the mirror enforces: a lapsed organization lease reads private. */
   private liveAudience(audience: LedgerScopeAudience): LedgerScopeAudience {
-    return audience.kind === 'organization' &&
+    return audience.kind !== 'private' &&
       Date.parse(audience.expiresAt) <= this.now()
       ? PRIVATE_AUDIENCE
       : audience;
+  }
+
+  /**
+   * Whether global scopes may sync now: only once the mirror advertises
+   * `ledger-global-v1` (Decision 11). A missing or failing answer waits.
+   */
+  private async isGlobalSupported(): Promise<boolean> {
+    const now = this.now();
+    if (this.globalSupport !== null && now < this.globalSupport.until) {
+      return this.globalSupport.supported;
+    }
+    const check = this.options.supportsGlobalScopes;
+    let supported = false;
+    if (check !== undefined) {
+      try {
+        supported = await check({ live: this.globalLiveCheckDue });
+      } catch {
+        supported = false;
+      }
+    }
+    // After a rollback the account's stored list may still name the
+    // capability, so only a live yes ends the live checks.
+    if (supported) this.globalLiveCheckDue = false;
+    // A yes is asked again each pass for free (the account stores it); a no
+    // is kept until the next periodic check.
+    this.globalSupport = {
+      supported,
+      until: supported ? now : now + this.timing.periodicCheckMs,
+    };
+    return supported;
+  }
+
+  /**
+   * Whether the mirror, asked afresh after refusing a global scope, no longer
+   * advertises global scopes: a rollback, not a refusal of that scope alone.
+   */
+  private async globalRolledBack(): Promise<boolean> {
+    this.globalSupport = null;
+    this.globalLiveCheckDue = true;
+    return !(await this.isGlobalSupported());
+  }
+
+  /**
+   * The mirror refused a global scope and, asked afresh, no longer advertises
+   * support, as when it rolled back: every global scope waits again, the
+   * capability is asked afresh at the next periodic check, and nothing is
+   * marked for repair.
+   */
+  private globalRefused(turn: PassTurn, detail: string): ScopeOutcome {
+    turn.globalSupported = false;
+    this.globalSupport = {
+      supported: false,
+      until: this.now() + this.timing.periodicCheckMs,
+    };
+    this.globalLiveCheckDue = true;
+    this.options.recordDiagnostic({ code: 'global_waiting', detail });
+    return DONE;
   }
 
   private async pass(): Promise<void> {
@@ -650,7 +793,20 @@ export class LedgerSyncService {
     for (const record of records) this.rememberMirror(record);
     // Signed out, nothing is the account's to send or to narrow.
     if (account === null || session === null) return;
-    const turn: PassTurn = { account, session, owners: new Map(), generation };
+    const turn: PassTurn = {
+      account,
+      session,
+      owners: new Map(),
+      generation,
+      // Only the account's own global scopes sync, so only they ask.
+      globalSupported: records.some(
+        (record) =>
+          isGlobalRecord(record) &&
+          isLedgerScopeOfAccount(record.scope.accountId, account),
+      )
+        ? await this.isGlobalSupported()
+        : false,
+    };
     const ended = await this.syncScopes(records, turn, full);
     if (ended === null) {
       this.retryAttempts = 0;
@@ -818,12 +974,14 @@ export class LedgerSyncService {
   ): Promise<ScopeOutcome> {
     const { ledgerId } = record.scope.scope;
     if (this.unregistrable.has(ledgerId)) return DONE;
+    // A global scope waits for a mirror that holds global scopes.
+    if (isGlobalRecord(record) && !turn.globalSupported) return DONE;
     const plan = await this.planFor(record, turn);
     if (plan.mirror.audience === null || plan.applied) return DONE;
     if (plan.disposition.kind === 'hold') {
       if (
         !plan.disposition.canNarrow ||
-        plan.mirror.audience.kind !== 'organization'
+        !isOrganizationAudience(plan.mirror.audience)
       ) {
         return DONE;
       }
@@ -863,6 +1021,9 @@ export class LedgerSyncService {
   ): Promise<ScopeOutcome> {
     const { ledgerId } = record.scope.scope;
     if (this.unregistrable.has(ledgerId)) return DONE;
+    // A global scope waits, its events held in order, for a mirror that
+    // holds global scopes; it is never marked for repair over it.
+    if (isGlobalRecord(record) && !turn.globalSupported) return DONE;
     const plan = await this.planFor(record, turn);
     // A scope that waits uploads nothing; `changeAudience` narrows it.
     if (plan.disposition.kind === 'hold') return DONE;
@@ -904,7 +1065,7 @@ export class LedgerSyncService {
   }): boolean {
     return (
       !plan.applied ||
-      (plan.audience.kind === 'organization' &&
+      (isOrganizationAudience(plan.audience) &&
         this.isLeaseDue(plan.mirror.confirmedAt))
     );
   }
@@ -927,19 +1088,41 @@ export class LedgerSyncService {
     if (await this.isSuperseded(turn)) return SUPERSEDED;
     const { ledgerId, container } = record.scope.scope;
     const writerEpoch = this.epochs.get(ledgerId);
+    const common = {
+      ledgerId,
+      accountId: turn.account.id,
+      session: turn.session,
+      ...(writerEpoch === undefined ? {} : { writerEpoch }),
+    };
+    // A global scope registers at version 2 and pins the owner its container
+    // names, private or not; a task scope at version 1.
+    const request: LedgerScopeRegisterRequest =
+      container.kind === 'global'
+        ? {
+            schemaVersion: LEDGER_SYNC_GLOBAL_SCHEMA_VERSION,
+            ...common,
+            scopeKind: 'global',
+            globalOwner: container.owner,
+            audience: globalAudience(audience),
+          }
+        : {
+            schemaVersion: LEDGER_SYNC_SCHEMA_VERSION,
+            ...common,
+            scopeKind: SCOPE_KIND[container.kind],
+            audience: taskAudience(audience),
+          };
     const result = await this.options.mirror.register(
-      {
-        schemaVersion: LEDGER_SYNC_SCHEMA_VERSION,
-        ledgerId,
-        accountId: turn.account.id,
-        scopeKind: SCOPE_KIND[container.kind],
-        session: turn.session,
-        ...(writerEpoch === undefined ? {} : { writerEpoch }),
-        audience,
-      },
+      request,
       this.abort.signal,
     );
     if (!result.ok) {
+      if (
+        isGlobalRecord(record) &&
+        isGlobalRefusal(result.failure) &&
+        (await this.globalRolledBack())
+      ) {
+        return this.globalRefused(turn, 'register');
+      }
       return this.registrationRefused(record, result.failure, {
         ...options,
         audience,
@@ -1030,9 +1213,12 @@ export class LedgerSyncService {
       before.kind !== audience.kind ||
       (before.kind === 'organization' &&
         audience.kind === 'organization' &&
-        before.trackedWorkspaceId !== audience.trackedWorkspaceId)
+        before.trackedWorkspaceId !== audience.trackedWorkspaceId) ||
+      (before.kind === 'organization_global' &&
+        audience.kind === 'organization_global' &&
+        before.organizationId !== audience.organizationId)
     ) {
-      this.options.onScopeSyncChanged(container);
+      this.options.onScopeSyncChanged(container, ledgerId);
     }
   }
 
@@ -1044,14 +1230,14 @@ export class LedgerSyncService {
     this.repairTried.add(ledgerId);
     await this.options.store().setScopeRepair({ ledgerId, reason });
     this.options.recordDiagnostic({ code: 'repair', detail: reason });
-    this.options.onScopeSyncChanged(container);
+    this.options.onScopeSyncChanged(container, ledgerId);
     return { kind: 'repair' };
   }
 
   private async repaired(record: LedgerScopeSyncRecord): Promise<void> {
     const { ledgerId, container } = record.scope.scope;
     await this.options.store().setScopeRepair({ ledgerId, reason: null });
-    this.options.onScopeSyncChanged(container);
+    this.options.onScopeSyncChanged(container, ledgerId);
   }
 
   /** Pushes the scope's outbox, a batch at a time, until it is empty. */
@@ -1075,7 +1261,11 @@ export class LedgerSyncService {
       if (await this.isSuperseded(turn)) return SUPERSEDED;
       const result = await this.options.mirror.push(
         {
-          schemaVersion: LEDGER_SYNC_SCHEMA_VERSION,
+          // One push carries one scope, so never mixes versions.
+          schemaVersion:
+            container.kind === 'global'
+              ? LEDGER_SYNC_GLOBAL_SCHEMA_VERSION
+              : LEDGER_SYNC_SCHEMA_VERSION,
           ledgerId,
           accountId: turn.account.id,
           writerEpoch,
@@ -1085,6 +1275,13 @@ export class LedgerSyncService {
         this.abort.signal,
       );
       if (!result.ok) {
+        if (
+          isGlobalRecord(record) &&
+          isGlobalRefusal(result.failure) &&
+          (await this.globalRolledBack())
+        ) {
+          return this.globalRefused(turn, 'push');
+        }
         return this.pushRefused(record, result.failure, turn.account.id);
       }
       // Only what this batch carried is acknowledged, and no more than the
@@ -1099,7 +1296,7 @@ export class LedgerSyncService {
       await this.options
         .store()
         .acknowledgeOutbox({ ledgerId, sequence: acknowledged });
-      this.options.onScopeSyncChanged(container);
+      this.options.onScopeSyncChanged(container, ledgerId);
     }
   }
 
@@ -1175,6 +1372,8 @@ export class LedgerSyncService {
       session,
       owners,
       generation,
+      // Only task scopes retire, so a drain never sends a global one.
+      globalSupported: false,
     });
     if (outcome.kind === 'superseded') return 'superseded';
     if (outcome.kind === 'stop') this.drainStopped(outcome.failure, generation);

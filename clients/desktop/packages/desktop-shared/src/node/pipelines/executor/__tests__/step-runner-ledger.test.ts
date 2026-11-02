@@ -16,6 +16,7 @@ import {
   pipelineLedgerAttemptOutcome,
   recordedLedgerAgentSession,
   resolvePipelineLedgerAgent,
+  resolvePipelineLedgerTarget,
 } from '../pipeline-ledger';
 import { runStep } from '../step-runner';
 import type {
@@ -204,7 +205,11 @@ describe('pipeline agent Ledger identity', () => {
     model: CLAUDE_MODEL,
     permissionPresetInput: 'read_only',
     hostRoute: true,
-    worktreeScoped: true,
+    target: {
+      kind: 'task' as const,
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+    },
   };
 
   it('covers exactly the five agent actions, never the helper-like steps', () => {
@@ -247,7 +252,12 @@ describe('pipeline agent Ledger identity', () => {
     };
     // CLI-run pipelines have no host Ledger route.
     expect(reason({ hostRoute: false })).toBe('no_host_route');
-    expect(reason({ worktreeScoped: false })).toBe('no_worktree_scope');
+    // A run without a worktree records globally unless its owner is
+    // malformed, which fails closed.
+    expect(
+      reason({ target: { kind: 'global', owner: { kind: 'personal' } } }),
+    ).toBeUndefined();
+    expect(reason({ target: undefined })).toBe('malformed_owner');
     expect(reason({ provider: 'ollama', model: OLLAMA_MODEL })).toBe(
       'no_tool_support',
     );
@@ -280,6 +290,73 @@ describe('pipeline agent Ledger identity', () => {
       kind: 'agent',
       harness: 'claude',
       permissionPreset: 'read_only',
+    });
+  });
+
+  describe('resolvePipelineLedgerTarget', () => {
+    const ORG_A = '0b4f8a52-7c1d-4e8a-9f3b-2d6c1e5a7b90';
+
+    it('records a run with a worktree to its task, whoever owns it', () => {
+      expect(
+        resolvePipelineLedgerTarget({
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          executionContext: `org:${ORG_A}`,
+        }),
+      ).toEqual({
+        kind: 'task',
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      });
+    });
+
+    it("records a global or directory run to its persisted owner's Ledger", () => {
+      expect(
+        resolvePipelineLedgerTarget({
+          projectId: undefined,
+          worktreeId: undefined,
+          executionContext: 'personal',
+        }),
+      ).toEqual({ kind: 'global', owner: { kind: 'personal' } });
+      // A directory run in an organization's project still records to the
+      // run's own owner, never the project's organization.
+      expect(
+        resolvePipelineLedgerTarget({
+          projectId: 'org-project',
+          worktreeId: undefined,
+          executionContext: 'personal',
+        }),
+      ).toEqual({ kind: 'global', owner: { kind: 'personal' } });
+      expect(
+        resolvePipelineLedgerTarget({
+          projectId: undefined,
+          worktreeId: undefined,
+          executionContext: `org:${ORG_A}`,
+        }),
+      ).toEqual({
+        kind: 'global',
+        owner: { kind: 'organization', organizationId: ORG_A },
+      });
+    });
+
+    it('reads a legacy run without an owner as Personal', () => {
+      expect(
+        resolvePipelineLedgerTarget({
+          projectId: undefined,
+          worktreeId: undefined,
+          executionContext: undefined,
+        }),
+      ).toEqual({ kind: 'global', owner: { kind: 'personal' } });
+    });
+
+    it('fails closed on a malformed owner', () => {
+      expect(
+        resolvePipelineLedgerTarget({
+          projectId: undefined,
+          worktreeId: undefined,
+          executionContext: 'org:not-a-uuid',
+        }),
+      ).toBeUndefined();
     });
   });
 
@@ -436,6 +513,11 @@ describe('runStep with the pipeline Ledger port', () => {
     expect(request).toMatchObject({
       executionId: 'exec-ledger',
       pipelineName: 'Release',
+      target: {
+        kind: 'task',
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      },
       projectId: 'workspace-1',
       worktreeId: 'worktree-1',
       physicalJobId: 'build__variant_1',
@@ -463,6 +545,67 @@ describe('runStep with the pipeline Ledger port', () => {
     expect(port.outcomes).toEqual([{ kind: 'settled' }]);
     // The worker's own route serves the tools; no subprocess route opens.
     expect(port.subprocessOpens).toEqual([]);
+  });
+
+  it("opens a global run's attempt in its persisted owner's Ledger", async () => {
+    const ORG_B = '7f0c1d2e-3b4a-4c5d-8e6f-901234567890';
+    const port = installPort(runtime);
+    runtime.agentPromptWorker = {
+      runAgentPrompt: (): Promise<AgentPromptWorkerResult> =>
+        Promise.resolve(workerSuccess()),
+    };
+
+    await runStep(
+      workerStep({
+        projectId: undefined,
+        worktreeId: undefined,
+        executionContext: `org:${ORG_B}`,
+      }),
+    );
+    // A directory run keeps its project for approval policy, but records
+    // to the run's owner.
+    await runStep(
+      workerStep({
+        projectId: 'workspace-1',
+        worktreeId: undefined,
+        executionContext: 'personal',
+      }),
+    );
+
+    expect(port.requests[0]?.target).toEqual({
+      kind: 'global',
+      owner: { kind: 'organization', organizationId: ORG_B },
+    });
+    expect(port.requests[0]).not.toHaveProperty('projectId');
+    expect(port.requests[1]?.target).toEqual({
+      kind: 'global',
+      owner: { kind: 'personal' },
+    });
+    expect(port.requests[1]?.projectId).toBe('workspace-1');
+    expect(port.requests[1]).not.toHaveProperty('worktreeId');
+  });
+
+  it('never opens an attempt for a run whose owner is malformed', async () => {
+    const port = installPort(runtime);
+    const requests: AgentPromptWorkerRequest[] = [];
+    runtime.agentPromptWorker = {
+      runAgentPrompt: (request): Promise<AgentPromptWorkerResult> => {
+        requests.push(request);
+        return Promise.resolve(workerSuccess());
+      },
+    };
+
+    const result = await runStep(
+      workerStep({
+        projectId: undefined,
+        worktreeId: undefined,
+        executionContext: 'org:bogus',
+      }),
+    );
+
+    expect(result.status).toBe('success');
+    expect(port.requests).toEqual([]);
+    expect(requests[0]).not.toHaveProperty('ledgerAttemptKey');
   });
 
   it("hands the host the step's configured secrets, to mask out of Ledger entries", async () => {

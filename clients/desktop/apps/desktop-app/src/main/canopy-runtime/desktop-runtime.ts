@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { basename, join, sep } from 'node:path';
 import {
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
   type CanopyStreamCursor,
+  type CanopyInstructionDefinitionMap,
   type CanopyInstructionHandlerMap,
   type CanopyQueryHandlerMap,
   type CanopyQueryParams,
@@ -14,22 +16,36 @@ import {
   type CanopyStreamEnd,
   type WorkerFilesystemDirectoryListParams,
   type WorkerFilesystemDirectoryListResult,
+  type WorkerFilesystemFileReadResult,
+  type WorkerFilesystemLinkResolveMode,
+  type WorkerFilesystemLinkResolveResult,
   type WorkerFilesystemRootsListParams,
   type WorkerFilesystemRootsListResult,
+  type WorkerFilesystemSearchResult,
+  type WorkerFilesystemWatchParams,
   type CoreChatTranscriptPageParams,
   type CoreChatTranscriptPageResult,
   type CoreChatTranscriptSearchParams,
   type CoreChatTranscriptSearchResult,
   type CoreChatToolOutputReadParams,
   type CoreChatToolOutputReadResult,
+  WORKER_FILESYSTEM_SEARCH_MAX_LIMIT,
 } from '@canopy/protocol/canopy-core';
+import {
+  createFilesystemSearchEngine,
+  type FilesystemSearchPage,
+} from '@canopy/core-runtime/node';
+import type { FileIndexingPreferences } from '@canopy/protocol/file-indexing';
 import {
   CANOPY_DEFAULT_SHUTDOWN_TIMEOUT_MS,
   CanopyOperationError,
   canopyUnavailableError,
   createCanopyDispatcher,
   createCanopyRuntime,
+  createDirectLocalWorkerTransport,
+  createWorkerExecutorReceipts,
   type CanopyDispatcher,
+  type CanopyDispatcherStreamHandlerMap,
   type CanopyRuntimeQueries,
   type CanopyRuntimeStreams,
   type RuntimeService,
@@ -38,11 +54,19 @@ import {
   type CanopyStreamFrame,
   type CanopyStreamHandle,
   type CanopyStreamOptions,
+  canopyCapabilityUnavailableError,
 } from '@canopy/core-runtime';
 import type {
   ChatStateCommandPort,
   ChatStateSnapshot,
   ChatStateChangedEvent,
+  FileContentReadIdentity,
+  FileContentResponse,
+  FileIndexEntry,
+  FileIndexRequest,
+  FileIndexResponse,
+  RepoFileIndex,
+  FileReferenceResolveResponse,
   FileTreeDirectoryResponse,
   FileTreeRootsResponse,
   SidebarItemsFile,
@@ -55,18 +79,24 @@ import { createCoreChatStateAdapter } from './core-chat-state-adapter';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { createCoreChatEventsAdapter } from './core-chat-events-adapter';
 import {
+  coalesceFileIndexBuild,
+  explorerIndexEntriesPerRoot,
   listFileTreeDirectory,
   listFileTreeRoots,
 } from '../services/files-service';
+import type { FileBrowserRoot } from '../lib/file-browser-roots';
+import { validateId } from '../lib/validation';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import { createCoreChatCommandAdapter } from './core-chat-command-adapter';
 import { getChatStateService } from '../services/chat-state-service';
 import { createCoreChatMessageAdapter } from './core-chat-message-command-adapter';
 import {
   createCoreWorkspaceAdapter,
+  createCoreWorkspaceReadSnapshots,
   type CoreWorkspaceReadDetail,
   type CoreWorkspaceReadServices,
 } from './core-workspace-adapter';
+import type { CoreReadSnapshotLimits } from '@canopy/core-runtime/node/workspace/core-workspace-read-snapshots';
 import {
   createCoreLedgerInstructionHandlers,
   createCoreLedgerQueryHandlers,
@@ -74,12 +104,82 @@ import {
 } from '../ledger/core-ledger-adapter';
 import type { LedgerService } from '../ledger/service';
 import { createCoreCostAdapter } from './core-cost-adapter';
+import { createCoreWorkspaceInstructionsAdapter } from './core-workspace-instructions-adapter';
+import { createCoreWorkspaceItemsAdapter } from './core-workspace-items-adapter';
+import { createCoreInitiatedWorkSourceAdapter } from './core-initiated-work-source-adapter';
+import { createCoreExecutionAdapter } from './core-execution-adapter';
+import type { CoreHookSourceHost } from '@canopy/core-runtime/node/initiated-work/hook-sources';
+import type { HookAction } from '@canopy/desktop-shared/hooks';
+import type { CoreWorkspaceInstructionsHost } from '@canopy/core-runtime/node/workspace/workspace-instructions';
+import type { CoreWorkspaceItemHandlerOptions } from '@canopy/core-runtime/node/workspace/workspace-items';
+import {
+  createCoreSharedMultiRepoHandlers,
+  type SharedMultiRepoHost,
+  type SharedMultiRepoCoordinator,
+} from '@canopy/core-runtime/node/workspace/org-shared-multi-repo';
+import { createCoreWorkspaceRepoRulesAdapter } from './core-workspace-repo-rules-adapter';
+import { createCorePipelineDefinitionAdapter } from './core-pipeline-definition-adapter';
+import { createCoreScriptDefinitionsAdapter } from './core-script-definitions-adapter';
+import { createCoreIntegrationAdapter } from './core-integration-adapter';
+import { createCorePullRequestAdapter } from './core-pull-request-adapter';
+import type {
+  CoreIntegrationHost,
+  CorePullRequestHost,
+} from '@canopy/core-runtime/node/github';
+import {
+  createWorkerGitAdapter,
+  type DesktopHealthWorktree,
+} from './worker-git-adapter';
+import { createWorkerGitSyncWriteAdapter } from './worker-git-sync-adapter';
+import type {
+  WorkerGitBranchListHost,
+  WorkerGitBranchWriteHost,
+  WorkerGitDiffHost,
+  WorkerGitExecutableHost,
+  WorkerGitRemoteHost,
+  WorkerGitSyncWriteHost,
+  WorkerGitWorktreeHealthHost,
+} from '@canopy/core-runtime/node/git';
+import type { CoreWorkspaceRepoRulesHost } from '@canopy/core-runtime/node/workspace/workspace-repo-rules';
+import type { CorePipelineDefinitionHost } from '@canopy/core-runtime/node/pipeline';
+import type { CoreScriptDefinitionsHost } from '@canopy/core-runtime/node/script/core-script-definitions';
+import {
+  createCoreAnnotationAdapter,
+  type CoreAnnotationAdapter,
+} from './core-annotation-adapter';
+import { publishFileAnnotationsUpdated } from './annotation-update-publisher';
+import {
+  createCoreOperationAdapter,
+  type CoreOperationAdapter,
+} from './core-operation-adapter';
+import { LocalWorkerExecution } from '@canopy/core-runtime/node/operations';
 import type { CostService } from '../cost-index/service';
 import {
   createWorkerFilesystemAdapter,
   WorkerFilesystemAdapterError,
   type WorkerFilesystemServices,
 } from './worker-filesystem-adapter';
+import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
+import type { FilesystemLinkResolved } from '@canopy/core-runtime/node';
+import type { FileBrowserRootsResult } from '../lib/file-browser-roots';
+import {
+  createWorkerFilesystemReadAdapter,
+  DEFAULT_FILE_READ_SERVICES,
+  LEGACY_FILE_CONTENT_MAX_BYTES,
+  missingFileContent,
+  projectLegacyFileContent,
+  resolveLegacyFileReadIdentity,
+  type WorkerFilesystemReadServices,
+} from './worker-filesystem-read-adapter';
+import {
+  createWorkerFilesystemSearchAdapter,
+  DEFAULT_FILE_SEARCH_SERVICES,
+  type WorkerFilesystemSearchServices,
+} from './worker-filesystem-search-adapter';
+import {
+  createWorkerFilesystemWatchAdapter,
+  type WorkerFilesystemWatchAdapterOptions,
+} from './worker-filesystem-watch-adapter';
 import {
   createCoreChatReadAdapter,
   type CoreChatReadServices,
@@ -88,13 +188,42 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 import type {
   DaemonFilesRoute,
   DaemonFilesRouteRequest,
+  DaemonFilesSearchWalk,
 } from './daemon-files-route';
+import type {
+  FilesystemEntryDeleteIo,
+  FilesystemEntryTransferIo,
+  FilesystemFileWriteIo,
+} from '@canopy/core-runtime/node';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import type {
+  FileTreeMutationRequest,
+  FileTreeMutationResponse,
+} from '@canopy/desktop-shared/types';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { electronTrashServices } from './electron-trash-services';
+import {
+  DESKTOP_INSTRUCTION_DEFINITIONS,
+  type DesktopInstructionDefinitions,
+} from './desktop-instruction-definitions';
+import {
+  createDesktopEntryMutationHost,
+  createFileTreeEntryForLegacyIpc,
+  createWorkerFilesystemMutationAdapter,
+  deleteFileTreeEntryForLegacyIpc,
+  saveTextFileForLegacyIpc,
+  transferFileTreeEntryForLegacyIpc,
+  type DesktopEntryMutationPlatform,
+  type LegacyTextFileSave,
+} from './worker-filesystem-mutation-adapter';
 
 export interface CreateDesktopRuntimeOptions {
   services?: WorkerFilesystemServices;
   runtimeServices?: readonly RuntimeService[];
   getChatStatePort?: () => ChatStateCommandPort | null;
   workspaceServices?: CoreWorkspaceReadServices;
+  /** Retention bounds for list continuation; defaults otherwise. */
+  workspaceReadSnapshotLimits?: CoreReadSnapshotLimits;
   chatServices?: CoreChatReadServices;
   chatCommandPort?: ChatStateCommandPort;
   adapters?: DesktopDomainAdapter[];
@@ -105,12 +234,82 @@ export interface CreateDesktopRuntimeOptions {
   ledgerService?: LedgerService;
   /** Handler logic for `core.cost.*`; tests may inject an isolated service. */
   costService?: CostService;
+  /** Host port for `core.workspace.instructions.*`; defaults to the desktop files. */
+  workspaceInstructionsHost?: CoreWorkspaceInstructionsHost;
+  /** Hosts and providers for `core.workspace.item.*`; default to the desktop stores. */
+  workspaceItems?: Partial<CoreWorkspaceItemHandlerOptions>;
+  /** Host port for `core.initiatedWork.source.*`; defaults to the desktop hook files. */
+  hookSourceHost?: CoreHookSourceHost<HookAction>;
+  /** Host port for `core.workspace.repoRules.*`; defaults to the desktop policy. */
+  repoRulesHost?: CoreWorkspaceRepoRulesHost;
+  /** Host port for `core.pipeline.definition.*`; defaults to the desktop sources. */
+  pipelineDefinitionHost?: CorePipelineDefinitionHost;
+  sharedMultiRepoHost?: SharedMultiRepoHost;
+  /** Host port for `core.script.definition.*`; defaults to the desktop sources. */
+  scriptDefinitionsHost?: CoreScriptDefinitionsHost;
+  /** Host port for `worker.git.branch.list`; defaults to the desktop checkouts. */
+  workerGitHost?: WorkerGitBranchListHost<string>;
+  /** Host port for `worker.git.executable.get`; defaults to the desktop detection. */
+  workerGitExecutableHost?: WorkerGitExecutableHost;
+  /** Host port for `worker.git.remote.get`; defaults to the workspace records. */
+  workerGitRemoteHost?: WorkerGitRemoteHost<string>;
+  /** Host port for `worker.git.worktree.health.get`; defaults to the desktop checkouts. */
+  workerGitWorktreeHealthHost?: WorkerGitWorktreeHealthHost<DesktopHealthWorktree>;
+  /** Host port for `worker.git.diff.get`; defaults to the desktop checkouts. */
+  workerGitDiffHost?: WorkerGitDiffHost<string>;
+  /**
+   * Host port for `worker.git.checkout` and `worker.git.branch.create`;
+   * defaults to the desktop checkouts.
+   */
+  workerGitBranchWriteHost?: WorkerGitBranchWriteHost<string>;
+  /** Host port for `worker.git.fetch` and `worker.git.pull`; defaults to the desktop checkouts. */
+  workerGitSyncWriteHost?: WorkerGitSyncWriteHost<string>;
+  /** Host port for `core.integration.*`; defaults to the desktop GitHub connections. */
+  integrationHost?: CoreIntegrationHost;
+  /** Host port for `core.pullRequest.*`; defaults to the desktop records and GitHub handle. */
+  pullRequestHost?: CorePullRequestHost;
+  /** Handler logic for `core.annotation.*`; tests may inject an isolated adapter. */
+  annotationAdapter?: CoreAnnotationAdapter;
+  /**
+   * The operation service behind `core.operation.*`; tests may inject one
+   * over an isolated ledger. The runtime closes it at shutdown.
+   */
+  operationAdapter?: CoreOperationAdapter;
   shutdownTimeoutMs?: number;
   /**
    * The opt-in daemon route for file-tree IPC reads. Resolved per routable
    * request; absent keeps every read on the direct reader.
    */
   daemonFilesRoute?: () => DaemonFilesRoute;
+  /**
+   * Native watch and resolution dependencies for `worker.filesystem.watch`.
+   * The stream always runs in process; it is never routed to the daemon.
+   */
+  filesystemWatch?: Omit<
+    WorkerFilesystemWatchAdapterOptions,
+    'onAttached' | 'onAttachFailed'
+  >;
+  /** Roots source for `worker.filesystem.file.read`; tests inject one. */
+  fileReadServices?: WorkerFilesystemReadServices;
+  /** Roots, preferences and Git for `worker.filesystem.search`. */
+  fileSearchServices?: WorkerFilesystemSearchServices;
+  /**
+   * The `PlatformServices` members `worker.filesystem.entry.*` uses. Defaults
+   * to this host's OS and the Electron Trash adapter; a value without
+   * `trash` makes every Trash request fail before any effect.
+   */
+  platform?: DesktopEntryMutationPlatform;
+  /** Test seams around `worker.filesystem.entry.delete`'s effect. */
+  entryDeleteIo?: FilesystemEntryDeleteIo;
+  /** Test seams around `worker.filesystem.entry.copy` and `.move` effects. */
+  entryTransferIo?: FilesystemEntryTransferIo;
+  /** Test seams around `worker.filesystem.file.write` and `.directory.create`. */
+  fileWriteIo?: FilesystemFileWriteIo;
+}
+
+function defaultEntryMutationPlatform(): DesktopEntryMutationPlatform {
+  // Only win32 changes the path rules; any other host keeps POSIX's.
+  return { os: hostOperatingSystem() ?? 'linux', trash: electronTrashServices };
 }
 
 export interface DesktopDomainAdapter {
@@ -136,6 +335,118 @@ type FileTreeProjectionContext =
   | RootsProjectionContext
   | DirectoryProjectionContext;
 
+/** One scoped `file:read-content` request's projection state. */
+interface FileReadProjectionContext {
+  /** Set only by the `file:read-content` IPC handler; other callers stay direct. */
+  route?: DaemonFilesRouteRequest;
+  roots?: {
+    projectId: string;
+    worktreeId: string;
+    value: Awaited<
+      ReturnType<WorkerFilesystemReadServices['getFileBrowserRoots']>
+    >;
+  };
+  read?: Parameters<typeof projectLegacyFileContent>[0];
+  /** A markdown base outside every root, as the renderer spelled it. */
+  linkHostBase?: string;
+  link?: FilesystemLinkResolved;
+}
+
+/** A `file-reference:resolve` request, addressed as the renderer sent it. */
+export interface DesktopLinkResolveRequest {
+  scope: { workspaceId: string; worktreeId: string };
+  mode: WorkerFilesystemLinkResolveMode;
+  href: string;
+  /** Markdown mode: the host path of the file the link is relative to. */
+  baseFilePath?: string;
+}
+
+type LinkBaseProjection =
+  | { kind: 'root'; fileRootId: string; relativePath: string }
+  | { kind: 'host'; absolutePath: string };
+
+/**
+ * Projects a markdown base path onto the deepest root whose spelling
+ * contains it. Lexical on purpose: URL resolution uses the base's spelling,
+ * and `<root>/<relativePath>` rebuilds that spelling exactly. A base no root
+ * spells, or one that is not a safe root-relative file path (a root itself,
+ * a trailing separator, `.` or `..` segments), stays a host path.
+ */
+function projectLinkBase(
+  roots: FileBrowserRootsResult,
+  baseFilePath: string,
+): LinkBaseProjection {
+  let owner: {
+    fileRootId: string;
+    relativePath: string;
+    depth: number;
+  } | null = null;
+  for (const root of roots.roots) {
+    const trimmed = root.absolutePath.replace(/[\\/]+$/, '');
+    const prefix = trimmed === '' ? root.absolutePath : trimmed;
+    if (!baseFilePath.startsWith(prefix)) continue;
+    const rest = baseFilePath.slice(prefix.length);
+    // A backslash is a file name character on POSIX, a separator on Windows.
+    if (!(sep === '\\' ? /^[\\/]/ : /^\//).test(rest)) continue;
+    const relativePath =
+      sep === '\\' ? rest.slice(1).replace(/\\/g, '/') : rest.slice(1);
+    if (!isSafePortableRelativePath(relativePath)) continue;
+    if (owner && owner.depth >= prefix.length) continue;
+    owner = { fileRootId: root.repoId, relativePath, depth: prefix.length };
+  }
+  return owner
+    ? {
+        kind: 'root',
+        fileRootId: owner.fileRootId,
+        relativePath: owner.relativePath,
+      }
+    : { kind: 'host', absolutePath: baseFilePath };
+}
+
+/**
+ * Link failures the legacy projections answer as `null`: every typed
+ * `worker.filesystem.link.*` failure, and a request the operation's schema
+ * refuses (an over-long link).
+ */
+function isUnresolvedLink(error: unknown): boolean {
+  return (
+    error instanceof CanopyOperationError &&
+    (error.payload.code?.startsWith('worker.filesystem.link.') === true ||
+      (error.payload.code === undefined &&
+        error.payload.kind === 'invalid_argument'))
+  );
+}
+
+/** One root's pages of a `file-index:get` projection. */
+interface FileSearchProjectionContext {
+  /** Set only by the `file-index:get` IPC handler; other callers stay direct. */
+  route?: { request: DaemonFilesRouteRequest; walk: DaemonFilesSearchWalk };
+  projectId: string;
+  worktreeId: string;
+  root: FileBrowserRoot;
+  fileIndexing: FileIndexingPreferences;
+  page: FilesystemSearchPage | null;
+}
+
+/** A scoped `file:read-content` request, addressed as the renderer sent it. */
+export interface DesktopFileContentRequest {
+  scope: { workspaceId: string; worktreeId: string };
+  absolutePath: string;
+  /** When set, read as addressed instead of mapping `absolutePath`. */
+  file?: FileContentReadIdentity;
+}
+
+/** The legacy file-tree projection's view of one watch stream's attachment. */
+interface WatchProjectionContext {
+  attached(): void;
+  failed(error: unknown): void;
+}
+
+type FileTreeWatchHandle = CanopyStreamHandle<
+  CanopyStreamItem<'worker.filesystem.watch'>,
+  CanopyStreamEnd<'worker.filesystem.watch'>
+>;
+
 interface WorkspaceProjectionContext {
   sidebar?: SidebarItemsFile;
   sidebarDetail?: CoreWorkspaceReadDetail;
@@ -144,6 +455,7 @@ interface WorkspaceProjectionContext {
   worktrees?: WorktreeData[];
   worktreesDetail?: CoreWorkspaceReadDetail;
   worktree?: WorktreeData;
+  worktreeDetail?: CoreWorkspaceReadDetail;
 }
 
 interface ChatReadProjectionContext {
@@ -157,7 +469,7 @@ interface ChatReadProjectionContext {
 
 export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   typeof CANOPY_QUERY_DEFINITIONS & CanopyRuntimeQueries,
-  typeof CANOPY_INSTRUCTION_DEFINITIONS,
+  DesktopInstructionDefinitions,
   typeof CANOPY_STREAM_DEFINITIONS & CanopyRuntimeStreams
 > {
   openChatEventsForLegacyIpc(
@@ -178,6 +490,35 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   /** Resolves the original event for a legacy-push frame, including from `onFrame`. */
   takeChatEventForLegacyIpc(cursor: CanopyStreamCursor): ChatStateChangedEvent;
   closeChatEventsForLegacyIpc(): void;
+  /**
+   * Opens an in-process `worker.filesystem.watch` stream for the file-tree
+   * IPC. `attached` settles once its native handle is attached, or rejects
+   * with the original failure when the stream ends first.
+   */
+  openFileTreeWatchForLegacyIpc(
+    params: WorkerFilesystemWatchParams,
+    options: CanopyStreamOptions<
+      CanopyStreamFrame<
+        CanopyStreamItem<'worker.filesystem.watch'>,
+        CanopyStreamEnd<'worker.filesystem.watch'>
+      >
+    >,
+  ): Promise<{ handle: FileTreeWatchHandle; attached: Promise<void> }>;
+  /**
+   * Opens an in-process `gitHead` watch stream for main's branch observer,
+   * with the same `attached` contract as the file-tree projection.
+   */
+  openGitHeadWatchForBranchObserver(
+    params: Pick<WorkerFilesystemWatchParams, 'scope' | 'fileRootId'>,
+    options: CanopyStreamOptions<
+      CanopyStreamFrame<
+        CanopyStreamItem<'worker.filesystem.watch'>,
+        CanopyStreamEnd<'worker.filesystem.watch'>
+      >
+    >,
+  ): Promise<{ handle: FileTreeWatchHandle; attached: Promise<void> }>;
+  /** Closes every in-process watch stream; runs before runtime shutdown. */
+  closeFileTreeWatchesForLegacyIpc(): void;
   queryChatStateForLegacyIpc(
     params: CanopyQueryParams<'core.chat.snapshot.get'>,
     options: CanopyQueryOptions,
@@ -186,6 +527,12 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
     legacyResult: ChatStateSnapshot;
   }>;
   isShuttingDown(): boolean;
+  /**
+   * Dispatch and placement records for work on the builtin local worker
+   * (CAN-4132): each worker instruction a core domain sends becomes a child
+   * of its parent operation, recorded before it starts.
+   */
+  readonly localWorker: LocalWorkerExecution;
   queryWorkspaceListForLegacyIpc(
     params: CanopyQueryParams<'core.workspace.list'>,
     options: CanopyQueryOptions,
@@ -219,6 +566,8 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   ): Promise<{
     canonicalResult: CanopyQueryResult<'core.worktree.get'> | null;
     legacyResult: WorktreeData;
+    /** Authority of the read that produced `legacyResult`, when known. */
+    legacyAuthority?: CoreWorkspaceReadDetail;
   }>;
   queryFileTreeRootsForLegacyIpc(
     params: WorkerFilesystemRootsListParams,
@@ -235,6 +584,42 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   ): Promise<{
     canonicalResult: WorkerFilesystemDirectoryListResult;
     legacyResult: FileTreeDirectoryResponse;
+  }>;
+  /**
+   * Scoped `file:read-content` over `worker.filesystem.file.read`. A path
+   * that does not exist answers `missing` with no canonical result, as the
+   * legacy reader did.
+   */
+  queryFileContentForLegacyIpc(
+    request: DesktopFileContentRequest,
+    options: CanopyQueryOptions,
+    route?: DaemonFilesRouteRequest,
+  ): Promise<{
+    canonicalResult: WorkerFilesystemFileReadResult | null;
+    legacyResult: FileContentResponse;
+  }>;
+  /**
+   * `file-index:get` over `worker.filesystem.search`: one search per root,
+   * paged, inside the shared index coalescer. The response is the legacy
+   * index; local paths come from the walk.
+   */
+  queryFileIndexForLegacyIpc(
+    request: FileIndexRequest,
+    options: CanopyQueryOptions,
+    route?: DaemonFilesRouteRequest,
+  ): Promise<FileIndexResponse>;
+  /**
+   * `file-reference:resolve` over `worker.filesystem.link.resolve`. Every
+   * link failure answers `null`, as the legacy resolvers did; a roots read
+   * failure still throws.
+   */
+  queryLinkResolveForLegacyIpc(
+    request: DesktopLinkResolveRequest,
+    options: CanopyQueryOptions,
+    route?: DaemonFilesRouteRequest,
+  ): Promise<{
+    canonicalResult: WorkerFilesystemLinkResolveResult | null;
+    legacyResult: FileReferenceResolveResponse;
   }>;
   queryChatTranscriptPageForLegacyIpc(
     params: CoreChatTranscriptPageParams,
@@ -259,6 +644,41 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
     canonicalResult: CoreChatToolOutputReadResult;
     legacyResult: ChatToolOutputResponse;
   }>;
+  /**
+   * A `file-tree:mutate` delete over `worker.filesystem.entry.delete`,
+   * answered and failing as `mutateFileTree` did.
+   */
+  deleteFileTreeEntryForLegacyIpc(
+    request: Extract<FileTreeMutationRequest, { operation: 'delete' }>,
+    options: { caller: CanopyCallerDescriptor },
+  ): Promise<FileTreeMutationResponse>;
+  /**
+   * A `file-tree:mutate` copy or move over `worker.filesystem.entry.copy` or
+   * `.move`, answered and failing as `mutateFileTree` did.
+   */
+  transferFileTreeEntryForLegacyIpc(
+    request: Extract<FileTreeMutationRequest, { operation: 'copy' | 'move' }>,
+    options: { caller: CanopyCallerDescriptor },
+  ): Promise<FileTreeMutationResponse>;
+  /**
+   * A `file-tree:mutate` create over `worker.filesystem.directory.create` and
+   * `.file.write`, answered and failing as `mutateFileTree` did.
+   */
+  createFileTreeEntryForLegacyIpc(
+    request: Extract<
+      FileTreeMutationRequest,
+      { operation: 'create-file' | 'create-directory' }
+    >,
+    options: { caller: CanopyCallerDescriptor },
+  ): Promise<FileTreeMutationResponse>;
+  /**
+   * A `file:save-content` text save over `worker.filesystem.file.write`;
+   * `unrouted` leaves a save-only root to the caller's direct write.
+   */
+  saveTextFileForLegacyIpc(
+    save: LegacyTextFileSave,
+    options: { caller: CanopyCallerDescriptor },
+  ): Promise<'written' | 'unrouted'>;
 }
 
 let activeDesktopRuntime: DesktopCanopyDispatcher | null = null;
@@ -276,15 +696,17 @@ export function getActiveDesktopRuntimeIfAccepting(): DesktopCanopyDispatcher | 
 }
 
 /**
- * Once the legacy read was captured, a canonical projection or validation
- * failure must not replace it: legacy callers get `canonicalResult: null`.
+ * Once the legacy read was captured, a canonical projection, validation or
+ * list-retention failure must not replace it: legacy callers get
+ * `canonicalResult: null`. A refused list cursor is never captured.
  */
 function recoverLegacyWorkspaceRead(error: unknown, captured: unknown): null {
   if (
     captured !== undefined &&
     error instanceof CanopyOperationError &&
     (error.payload.kind === 'invalid_argument' ||
-      error.payload.kind === 'internal')
+      error.payload.kind === 'internal' ||
+      error.payload.kind === 'resource_exhausted')
   ) {
     return null;
   }
@@ -309,6 +731,10 @@ export function createDesktopRuntime(
   );
   const workspaceProjectionContext =
     new AsyncLocalStorage<WorkspaceProjectionContext>();
+  // List continuation lives and ends with this runtime.
+  const workspaceReadSnapshots = createCoreWorkspaceReadSnapshots(
+    options.workspaceReadSnapshotLimits,
+  );
   const workspaceAdapter = createCoreWorkspaceAdapter(
     options.workspaceServices,
     {
@@ -330,11 +756,14 @@ export function createDesktopRuntime(
         context.worktrees = result;
         context.worktreesDetail = detail;
       },
-      captureWorktree: (result): void => {
+      captureWorktree: (result, detail): void => {
         const context = workspaceProjectionContext.getStore();
-        if (context) context.worktree = result;
+        if (!context) return;
+        context.worktree = result;
+        context.worktreeDetail = detail;
       },
     },
+    workspaceReadSnapshots,
   );
   const chatReadProjectionContext =
     new AsyncLocalStorage<ChatReadProjectionContext>();
@@ -391,6 +820,72 @@ export function createDesktopRuntime(
       },
     },
   );
+  const fileReadProjectionContext =
+    new AsyncLocalStorage<FileReadProjectionContext>();
+  const fileReadServices: WorkerFilesystemReadServices =
+    options.fileReadServices ?? DEFAULT_FILE_READ_SERVICES;
+  const readAdapter = createWorkerFilesystemReadAdapter({
+    services: fileReadServices,
+    projection: {
+      roots: (projectId, worktreeId) => {
+        const roots = fileReadProjectionContext.getStore()?.roots;
+        return roots?.projectId === projectId && roots.worktreeId === worktreeId
+          ? roots.value
+          : null;
+      },
+      capture: (read): void => {
+        const context = fileReadProjectionContext.getStore();
+        if (context) context.read = read;
+      },
+      linkHostBase: () =>
+        fileReadProjectionContext.getStore()?.linkHostBase ?? null,
+      captureLink: (resolved): void => {
+        const context = fileReadProjectionContext.getStore();
+        if (context) context.link = resolved;
+      },
+    },
+  });
+  const fileSearchProjectionContext =
+    new AsyncLocalStorage<FileSearchProjectionContext>();
+  const fileSearchServices: WorkerFilesystemSearchServices =
+    options.fileSearchServices ?? DEFAULT_FILE_SEARCH_SERVICES;
+  // Paused walks behind this dispatcher's `worker.filesystem.search` cursors.
+  const searchEngine = createFilesystemSearchEngine();
+  const searchAdapter = createWorkerFilesystemSearchAdapter({
+    engine: searchEngine,
+    services: fileSearchServices,
+    projection: {
+      root: (projectId, worktreeId, fileRootId) => {
+        const context = fileSearchProjectionContext.getStore();
+        return context?.projectId === projectId &&
+          context.worktreeId === worktreeId &&
+          context.root.repoId === fileRootId
+          ? { root: context.root, fileIndexing: context.fileIndexing }
+          : null;
+      },
+      capture: (page): void => {
+        const context = fileSearchProjectionContext.getStore();
+        if (context) context.page = page;
+      },
+    },
+  });
+  const watchProjectionContext =
+    new AsyncLocalStorage<WatchProjectionContext>();
+  const watchAdapter = createWorkerFilesystemWatchAdapter({
+    ...options.filesystemWatch,
+    onAttached: (): void => watchProjectionContext.getStore()?.attached(),
+    onAttachFailed: (_context, error): void =>
+      watchProjectionContext.getStore()?.failed(error),
+  });
+  const entryMutationHost = createDesktopEntryMutationHost(
+    options.platform ?? defaultEntryMutationPlatform(),
+  );
+  const mutationAdapter = createWorkerFilesystemMutationAdapter(
+    entryMutationHost,
+    options.entryDeleteIo,
+    options.entryTransferIo,
+    options.fileWriteIo,
+  );
   const translateAdapterCall = async <Result>(
     call: () => Result | Promise<Result>,
   ): Promise<Result> => {
@@ -410,6 +905,9 @@ export function createDesktopRuntime(
       'core.chat.transcript.page': chatAdapter['core.chat.transcript.page'],
       'core.chat.transcript.search': chatAdapter['core.chat.transcript.search'],
       'core.chat.toolOutput.read': chatAdapter['core.chat.toolOutput.read'],
+      'core.chat.content.read': chatAdapter['core.chat.content.read'],
+      'core.chat.transcript.blocks.page':
+        chatAdapter['core.chat.transcript.blocks.page'],
       'core.chat.visual.read': chatAdapter['core.chat.visual.read'],
       'worker.filesystem.roots.list': (params, context) => {
         const direct = (): Promise<WorkerFilesystemRootsListResult> =>
@@ -451,6 +949,46 @@ export function createDesktopRuntime(
             },
           });
       },
+      'worker.filesystem.file.read': (params, context) => {
+        const direct = async (): Promise<WorkerFilesystemFileReadResult> =>
+          readAdapter['worker.filesystem.file.read'](params, context);
+        const store = fileReadProjectionContext.getStore();
+        if (!store?.route || !options.daemonFilesRoute) return direct();
+        return options.daemonFilesRoute().file(params, context, store.route, {
+          direct,
+          capture: (read): void => {
+            store.read = read;
+          },
+        });
+      },
+      'worker.filesystem.search': (params, context) => {
+        const direct = async (): Promise<WorkerFilesystemSearchResult> =>
+          searchAdapter['worker.filesystem.search'](params, context);
+        const store = fileSearchProjectionContext.getStore();
+        if (!store?.route || !options.daemonFilesRoute) return direct();
+        return options
+          .daemonFilesRoute()
+          .search(params, context, store.route.request, {
+            direct,
+            walk: store.route.walk,
+            capture: (page): void => {
+              store.page = page;
+            },
+          });
+      },
+      'worker.filesystem.link.resolve': (params, context) => {
+        const direct = async (): Promise<WorkerFilesystemLinkResolveResult> =>
+          readAdapter['worker.filesystem.link.resolve'](params, context);
+        const store = fileReadProjectionContext.getStore();
+        if (!store?.route || !options.daemonFilesRoute) return direct();
+        return options.daemonFilesRoute().link(params, context, store.route, {
+          direct,
+          hostBase: store.linkHostBase !== undefined,
+          capture: (resolved): void => {
+            store.link = resolved;
+          },
+        });
+      },
     };
 
   const ledgerService = options.ledgerService ?? getDesktopLedgerService();
@@ -469,11 +1007,92 @@ export function createDesktopRuntime(
         return serviceModule.getDesktopCostService();
       }),
   );
+  const workspaceInstructionsAdapter = createCoreWorkspaceInstructionsAdapter(
+    options.workspaceInstructionsHost,
+  );
+  const workspaceItemsAdapter = createCoreWorkspaceItemsAdapter(
+    options.workspaceItems,
+  );
+  const initiatedWorkSourceAdapter = createCoreInitiatedWorkSourceAdapter(
+    options.hookSourceHost,
+  );
+  const executionAdapter = createCoreExecutionAdapter();
+  const sharedMultiRepoAdapter = createCoreSharedMultiRepoHandlers(
+    options.sharedMultiRepoHost ?? {
+      load: async (): Promise<SharedMultiRepoCoordinator> =>
+        (
+          await import('./core-shared-multi-repo-host')
+        ).desktopSharedMultiRepoHost.load(),
+    },
+  );
+  const repoRulesAdapter = createCoreWorkspaceRepoRulesAdapter(
+    options.repoRulesHost,
+  );
+  const pipelineDefinitionAdapter = createCorePipelineDefinitionAdapter(
+    options.pipelineDefinitionHost,
+  );
+  const scriptDefinitionsAdapter = createCoreScriptDefinitionsAdapter(
+    options.scriptDefinitionsHost,
+  );
+  const workerGitAdapter = createWorkerGitAdapter(
+    options.workerGitHost,
+    options.workerGitExecutableHost,
+    options.workerGitRemoteHost,
+    options.workerGitWorktreeHealthHost,
+    options.workerGitDiffHost,
+    options.workerGitBranchWriteHost,
+  );
+  const workerGitSyncAdapter: DesktopDomainAdapter = {
+    instructions: createWorkerGitSyncWriteAdapter(
+      options.workerGitSyncWriteHost,
+    ),
+  };
+  const integrationAdapter = createCoreIntegrationAdapter(
+    options.integrationHost,
+  );
+  const pullRequestAdapter = createCorePullRequestAdapter(
+    options.pullRequestHost,
+  );
+  const annotationAdapter =
+    options.annotationAdapter ??
+    createCoreAnnotationAdapter({ publish: publishFileAnnotationsUpdated });
+  const operationAdapter =
+    options.operationAdapter ?? createCoreOperationAdapter();
+  const operationQueriesAndInstructions: DesktopDomainAdapter = {
+    queries: operationAdapter.queries,
+    instructions: operationAdapter.instructions,
+  };
+  // shortcut: desktop's stop does not reach the dispatcher yet, so this
+  // catalog operation (served by the web core, CAN-4156) is refused here and
+  // left out of the core+worker manifest (runtime-profiles.yaml); CAN-5485
+  // routes desktop's stop through it.
+  const turnAdapter: DesktopDomainAdapter = {
+    instructions: {
+      'core.chat.turn.cancel': () => {
+        throw canopyCapabilityUnavailableError();
+      },
+    },
+  };
   const adapters: DesktopDomainAdapter[] = [
     commandAdapter,
+    turnAdapter,
     messageAdapter,
     ledgerAdapter,
     costAdapter,
+    workspaceInstructionsAdapter,
+    workspaceItemsAdapter,
+    initiatedWorkSourceAdapter,
+    { queries: executionAdapter.queries },
+    repoRulesAdapter,
+    pipelineDefinitionAdapter,
+    sharedMultiRepoAdapter,
+    scriptDefinitionsAdapter,
+    workerGitAdapter,
+    workerGitSyncAdapter,
+    integrationAdapter,
+    pullRequestAdapter,
+    annotationAdapter,
+    operationQueriesAndInstructions,
     ...(options.adapters ?? []),
   ];
   const queries: Partial<CanopyQueryHandlerMap<CanopyHandlerContext>> = {
@@ -483,8 +1102,13 @@ export function createDesktopRuntime(
   const instructions: Partial<
     CanopyInstructionHandlerMap<CanopyHandlerContext>
   > = {};
-  const streams: Partial<CanopyStreamHandlerMap<CanopyHandlerContext>> = {
+  const streams: Partial<
+    CanopyDispatcherStreamHandlerMap<typeof CANOPY_STREAM_DEFINITIONS>
+  > = {
     ...chatEventsAdapter.handlers,
+    ...watchAdapter.handlers,
+    ...operationAdapter.streams,
+    ...executionAdapter.streams,
   };
   for (const entry of adapters) {
     for (const name of Object.keys(entry.queries ?? {}))
@@ -501,6 +1125,30 @@ export function createDesktopRuntime(
     Object.assign(streams, entry.streams);
   }
 
+  // Worker-plane instructions run on this dispatcher; their receipts let
+  // the local worker execution resolve an unknown reply (CAN-4132). Only the
+  // composed registry's worker instructions are wrapped: the git branch
+  // writes (CAN-4108), the entry instructions (CAN-5502) and the git fetch
+  // and pull (CAN-5517), which the transport carries. file.write and
+  // directory.create stay outside it.
+  const instructionDefinitions: CanopyInstructionDefinitionMap =
+    CANOPY_INSTRUCTION_DEFINITIONS;
+  const workerInstructions: CanopyInstructionDefinitionMap = Object.fromEntries(
+    Object.entries(instructionDefinitions).filter(
+      ([, definition]) => definition.plane === 'worker',
+    ),
+  );
+  const workerReceipts = createWorkerExecutorReceipts(workerInstructions);
+  const workerHandlers = workerReceipts.wrap(
+    Object.fromEntries(
+      Object.entries({ ...instructions, ...mutationAdapter }).flatMap(
+        ([name, handler]) =>
+          Object.prototype.hasOwnProperty.call(workerInstructions, name)
+            ? [[name, handler]]
+            : [],
+      ),
+    ),
+  );
   const owned = (
     name: string,
     ...maps: Array<object | undefined>
@@ -525,7 +1173,7 @@ export function createDesktopRuntime(
     },
     definitions: {
       queries: CANOPY_QUERY_DEFINITIONS,
-      instructions: CANOPY_INSTRUCTION_DEFINITIONS,
+      instructions: DESKTOP_INSTRUCTION_DEFINITIONS,
       streams: CANOPY_STREAM_DEFINITIONS,
     },
     owners: [
@@ -537,16 +1185,53 @@ export function createDesktopRuntime(
           'core.chat.transcript.page',
           'core.chat.transcript.search',
           'core.chat.toolOutput.read',
+          'core.chat.content.read',
+          'core.chat.transcript.blocks.page',
           'core.chat.visual.read',
         ],
       },
-      owned('worker.filesystem', adapter),
+      owned(
+        'worker.filesystem',
+        adapter,
+        readAdapter,
+        searchAdapter,
+        watchAdapter.handlers,
+        mutationAdapter,
+      ),
       owned('core.workspace', workspaceAdapter),
       owned('core.chat.events', chatEventsAdapter.handlers),
+      ownedAdapter('core.chat.turn', turnAdapter),
       ownedAdapter('core.chat.commands', commandAdapter),
       ownedAdapter('core.chat.messages', messageAdapter),
       ownedAdapter('core.ledger', ledgerAdapter),
       ownedAdapter('core.cost', costAdapter),
+      ownedAdapter('core.workspace.instructions', workspaceInstructionsAdapter),
+      ownedAdapter('core.workspace.item', workspaceItemsAdapter),
+      ownedAdapter('core.initiatedWork.source', initiatedWorkSourceAdapter),
+      owned(
+        'core.execution',
+        executionAdapter.queries,
+        executionAdapter.streams,
+      ),
+      ownedAdapter('core.workspace.repoRules', repoRulesAdapter),
+      ownedAdapter('core.pipeline', pipelineDefinitionAdapter),
+      ownedAdapter('core.workspace.sharedMultiRepo', sharedMultiRepoAdapter),
+      ownedAdapter('core.script.definition', scriptDefinitionsAdapter),
+      owned(
+        'worker.git',
+        workerGitAdapter.queries,
+        workerGitAdapter.instructions,
+        workerGitSyncAdapter.instructions,
+      ),
+      ownedAdapter('core.integration', integrationAdapter),
+      ownedAdapter('core.pullRequest', pullRequestAdapter),
+      ownedAdapter('core.annotation', annotationAdapter),
+      owned(
+        'core.operation',
+        operationAdapter.queries,
+        operationAdapter.instructions,
+        operationAdapter.streams,
+      ),
       ...(options.adapters ?? []).map((entry, index) =>
         ownedAdapter(`desktop.adapter.${index}`, entry),
       ),
@@ -561,7 +1246,17 @@ export function createDesktopRuntime(
         definitions: input.definitions,
         handlers: {
           queries: { ...queries, ...input.runtimeHandlers.queries },
-          instructions,
+          // The filesystem write and entry instructions are keyed with no
+          // retained outcome by decision (Mike, q-14 D3, 2026-10-31) until
+          // CAN-4733, so a reused key re-executes: file.write and
+          // directory.create bypass the receipts, and the entry receipts never
+          // replay. The explorer and text save mint one per call; relay and
+          // preload rewrite same-key retries to `never`.
+          instructions: {
+            ...instructions,
+            ...mutationAdapter,
+            ...workerHandlers,
+          },
           streams: { ...streams, ...input.runtimeHandlers.streams },
         },
         shutdownTimeoutMs,
@@ -570,6 +1265,27 @@ export function createDesktopRuntime(
   // Startup failure is reported through runtime health.
   void runtime.start().catch(() => undefined);
   const dispatcher = runtime.dispatcher;
+  const localWorker = new LocalWorkerExecution({
+    operations: operationAdapter.service,
+    transport: createDirectLocalWorkerTransport({
+      dispatcher,
+      instructions: workerInstructions,
+      caller: {
+        principalId: 'core',
+        clientInstanceId: 'desktop-core',
+        authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+        interfaceKind: 'desktop',
+        grants: Array.from(
+          new Set(
+            Object.values(workerInstructions).flatMap(
+              ({ requiredGrants }) => requiredGrants,
+            ),
+          ),
+        ),
+      },
+      receipts: workerReceipts,
+    }),
+  });
   const takeChatEventForLegacyIpc = (
     cursor: CanopyStreamCursor,
   ): ChatStateChangedEvent => {
@@ -594,6 +1310,61 @@ export function createDesktopRuntime(
       ),
       takeLegacyEvent: takeChatEventForLegacyIpc,
     });
+  const legacyWatchHandles = new Set<FileTreeWatchHandle>();
+  const openFileTreeWatchForLegacyIpc: DesktopCanopyDispatcher['openFileTreeWatchForLegacyIpc'] =
+    async (params, streamOptions) => {
+      let settle: { resolve(): void; reject(error: unknown): void } | null =
+        null;
+      const attached = new Promise<void>((resolve, reject) => {
+        settle = { resolve, reject };
+      });
+      // A projection that closes before attaching never awaits this promise.
+      attached.catch(() => undefined);
+      const finish = (error?: unknown): void => {
+        const current = settle;
+        settle = null;
+        if (!current) return;
+        if (error === undefined) current.resolve();
+        else current.reject(error);
+      };
+      // The end frame can arrive before openStream resolves.
+      const opened: { handle?: FileTreeWatchHandle; ended: boolean } = {
+        ended: false,
+      };
+      const onFrame = streamOptions.onFrame;
+      const context: WatchProjectionContext = {
+        attached: () => finish(),
+        failed: (error) => finish(error),
+      };
+      const handle = await watchProjectionContext.run(context, () =>
+        dispatcher.openStream('worker.filesystem.watch', params, {
+          ...streamOptions,
+          onFrame: (frame): void => {
+            if (frame.kind === 'end') {
+              opened.ended = true;
+              if (opened.handle) legacyWatchHandles.delete(opened.handle);
+              finish(
+                new CanopyOperationError(
+                  frame.error ?? {
+                    kind: 'cancelled',
+                    message: 'The filesystem watch ended before attaching.',
+                    retry: { kind: 'never' },
+                  },
+                ),
+              );
+            }
+            onFrame?.(frame);
+          },
+        }),
+      );
+      opened.handle = handle;
+      if (!opened.ended) legacyWatchHandles.add(handle);
+      return { handle, attached };
+    };
+  const closeFileTreeWatchesForLegacyIpc = (): void => {
+    for (const handle of Array.from(legacyWatchHandles)) handle.close();
+    legacyWatchHandles.clear();
+  };
   const queryChatStateForLegacyIpc = async (
     params: CanopyQueryParams<'core.chat.snapshot.get'>,
     queryOptions: CanopyQueryOptions,
@@ -652,6 +1423,275 @@ export function createDesktopRuntime(
       throw new Error('Filesystem directory projection was not captured.');
     }
     return { canonicalResult, legacyResult: context.legacyResult };
+  };
+  const queryFileContentForLegacyIpc = async (
+    request: DesktopFileContentRequest,
+    queryOptions: CanopyQueryOptions,
+    route?: DaemonFilesRouteRequest,
+  ): Promise<{
+    canonicalResult: WorkerFilesystemFileReadResult | null;
+    legacyResult: FileContentResponse;
+  }> => {
+    const { workspaceId: projectId, worktreeId } = request.scope;
+    const missing = (): {
+      canonicalResult: null;
+      legacyResult: FileContentResponse;
+    } => ({
+      canonicalResult: null,
+      legacyResult: missingFileContent(basename(request.absolutePath)),
+    });
+    const roots = await fileReadServices.getFileBrowserRoots(
+      projectId,
+      worktreeId,
+    );
+    const identity =
+      request.file ??
+      (await resolveLegacyFileReadIdentity(roots, request.absolutePath));
+    if (identity === null) return missing();
+    const context: FileReadProjectionContext = {
+      roots: { projectId, worktreeId, value: roots },
+      ...(route && { route }),
+    };
+    let canonicalResult: WorkerFilesystemFileReadResult;
+    try {
+      canonicalResult = await fileReadProjectionContext.run(context, () =>
+        dispatcher.query(
+          'worker.filesystem.file.read',
+          {
+            scope: request.scope,
+            fileRootId: identity.fileRootId,
+            relativePath: identity.relativePath,
+            maxBytes: LEGACY_FILE_CONTENT_MAX_BYTES,
+          },
+          queryOptions,
+        ),
+      );
+    } catch (error) {
+      if (
+        error instanceof CanopyOperationError &&
+        error.payload.code === 'worker.filesystem.file.notFound'
+      )
+        return missing();
+      throw error;
+    }
+    if (!context.read)
+      throw new Error('File read projection was not captured.');
+    return {
+      canonicalResult,
+      legacyResult: projectLegacyFileContent(context.read),
+    };
+  };
+  /**
+   * One root of `file-index:get`: mentions page at the largest limit until
+   * the walk ends (uncapped, as before); the explorer takes the root's share
+   * of the 25,000-entry cap and releases the rest of the walk.
+   */
+  const indexRootForLegacyIpc = async (
+    request: FileIndexRequest,
+    root: FileBrowserRoot,
+    fileIndexing: FileIndexingPreferences,
+    cap: number,
+    queryOptions: CanopyQueryOptions,
+    route: FileSearchProjectionContext['route'],
+  ): Promise<RepoFileIndex> => {
+    const explorer = request.purpose === 'file-explorer';
+    const context: FileSearchProjectionContext = {
+      ...(route && { route }),
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+      root,
+      fileIndexing,
+      page: null,
+    };
+    const files: FileIndexEntry[] = [];
+    let cursor: string | undefined;
+    let truncated = false;
+    for (;;) {
+      const result = await fileSearchProjectionContext.run(context, () =>
+        dispatcher.query(
+          'worker.filesystem.search',
+          {
+            scope: {
+              workspaceId: request.projectId,
+              worktreeId: request.worktreeId,
+            },
+            fileRootId: root.repoId,
+            query: '',
+            mode: 'name',
+            purpose: explorer ? 'file-explorer' : 'mentions',
+            limit: Math.min(
+              WORKER_FILESYSTEM_SEARCH_MAX_LIMIT,
+              cap - files.length,
+            ),
+            ...(cursor !== undefined && { cursor }),
+          },
+          queryOptions,
+        ),
+      );
+      const page = context.page;
+      context.page = null;
+      if (page?.files.length !== result.matches.length)
+        throw new Error('File search projection was not captured.');
+      result.matches.forEach((match, index) => {
+        const walked = page.files[index];
+        if (walked?.relativePath !== match.path)
+          throw new Error('File search projection does not match its page.');
+        files.push({
+          relativePath: match.path,
+          filename: match.name,
+          absolutePath: walked.absolutePath,
+          isIgnored: match.isIgnored,
+        });
+      });
+      truncated = result.truncated;
+      if (result.nextCursor === null) break;
+      if (files.length >= cap) {
+        // A daemon cursor is not this engine's; its walk idles out there.
+        if (route?.walk.backend !== 'daemon')
+          searchEngine.release(result.nextCursor);
+        break;
+      }
+      cursor = result.nextCursor;
+    }
+    return {
+      repoId: root.repoId,
+      repoName: root.repoName,
+      absolutePath: root.absolutePath,
+      rootKind: root.rootKind,
+      files,
+      truncated,
+    };
+  };
+  const indexForLegacyIpc = async (
+    request: FileIndexRequest,
+    queryOptions: CanopyQueryOptions,
+    route: FileSearchProjectionContext['route'],
+  ): Promise<FileIndexResponse> => {
+    const [{ roots }, fileIndexing] = await Promise.all([
+      fileSearchServices.getFileBrowserRoots(
+        request.projectId,
+        request.worktreeId,
+      ),
+      fileSearchServices.readFileIndexingPreferences(),
+    ]);
+    const cap =
+      request.purpose === 'file-explorer'
+        ? explorerIndexEntriesPerRoot(roots.length)
+        : Number.POSITIVE_INFINITY;
+    return {
+      repos: await Promise.all(
+        roots.map((root) =>
+          indexRootForLegacyIpc(
+            request,
+            root,
+            fileIndexing,
+            cap,
+            queryOptions,
+            route,
+          ),
+        ),
+      ),
+    };
+  };
+  const queryFileIndexForLegacyIpc = async (
+    request: FileIndexRequest,
+    queryOptions: CanopyQueryOptions,
+    route?: DaemonFilesRouteRequest,
+  ): Promise<FileIndexResponse> => {
+    validateId(request.projectId, 'projectId');
+    validateId(request.worktreeId, 'worktreeId');
+    // Decided once per index, before its first page: every root and cursor
+    // stays on this backend, in the walk's own coalescing lane.
+    const scope = {
+      workspaceId: request.projectId,
+      worktreeId: request.worktreeId,
+    };
+    const walk =
+      route && options.daemonFilesRoute
+        ? {
+            request: route,
+            walk: options
+              .daemonFilesRoute()
+              .searchWalk(scope, queryOptions.caller, route),
+          }
+        : undefined;
+    const build = (): Promise<FileIndexResponse> =>
+      indexForLegacyIpc(request, queryOptions, walk).catch((error: unknown) => {
+        // Retained direct callers can join this walk, so it fails with the
+        // walk's own error, as their direct walk would.
+        throw error instanceof CanopyOperationError &&
+          error.runtimeCause instanceof Error
+          ? error.runtimeCause
+          : error;
+      });
+    return coalesceFileIndexBuild(
+      request,
+      undefined,
+      build,
+      walk?.walk.lane ?? undefined,
+    );
+  };
+  const queryLinkResolveForLegacyIpc = async (
+    request: DesktopLinkResolveRequest,
+    queryOptions: CanopyQueryOptions,
+    route?: DaemonFilesRouteRequest,
+  ): Promise<{
+    canonicalResult: WorkerFilesystemLinkResolveResult | null;
+    legacyResult: FileReferenceResolveResponse;
+  }> => {
+    const { workspaceId: projectId, worktreeId } = request.scope;
+    const roots = await fileReadServices.getFileBrowserRoots(
+      projectId,
+      worktreeId,
+    );
+    const base =
+      request.mode === 'markdown' && request.baseFilePath !== undefined
+        ? projectLinkBase(roots, request.baseFilePath)
+        : null;
+    const context: FileReadProjectionContext = {
+      roots: { projectId, worktreeId, value: roots },
+      ...(route && { route }),
+      ...(base?.kind === 'host' && { linkHostBase: base.absolutePath }),
+    };
+    let canonicalResult: WorkerFilesystemLinkResolveResult;
+    try {
+      canonicalResult = await fileReadProjectionContext.run(context, () =>
+        dispatcher.query(
+          'worker.filesystem.link.resolve',
+          {
+            scope: request.scope,
+            mode: request.mode,
+            href: request.href,
+            ...(base?.kind === 'root' && {
+              base: {
+                fileRootId: base.fileRootId,
+                relativePath: base.relativePath,
+              },
+            }),
+          },
+          queryOptions,
+        ),
+      );
+    } catch (error) {
+      if (isUnresolvedLink(error))
+        return { canonicalResult: null, legacyResult: null };
+      throw error;
+    }
+    const resolved = context.link;
+    if (!resolved)
+      throw new Error('Link resolution projection was not captured.');
+    return {
+      canonicalResult,
+      legacyResult: {
+        // Authorized by real paths, addressed through the root's spelling.
+        absolutePath: join(
+          resolved.rootAbsolutePath,
+          ...canonicalResult.relativePath.split('/'),
+        ),
+        filename: canonicalResult.name,
+        kind: canonicalResult.kind,
+      },
+    };
   };
   const queryWorkspaceListForLegacyIpc = async (
     params: CanopyQueryParams<'core.workspace.list'>,
@@ -739,6 +1779,7 @@ export function createDesktopRuntime(
   ): Promise<{
     canonicalResult: CanopyQueryResult<'core.worktree.get'> | null;
     legacyResult: WorktreeData;
+    legacyAuthority?: CoreWorkspaceReadDetail;
   }> => {
     const context: WorkspaceProjectionContext = {};
     const canonicalResult = await workspaceProjectionContext
@@ -750,7 +1791,13 @@ export function createDesktopRuntime(
       );
     if (!context.worktree)
       throw new Error('Worktree projection was not captured.');
-    return { canonicalResult, legacyResult: context.worktree };
+    return {
+      canonicalResult,
+      legacyResult: context.worktree,
+      ...(context.worktreeDetail
+        ? { legacyAuthority: context.worktreeDetail }
+        : {}),
+    };
   };
   let shuttingDown = false;
   // The kernel admits queries until its final phase; legacy IPC stops at shutdown.
@@ -762,6 +1809,7 @@ export function createDesktopRuntime(
       shuttingDown ? Promise.reject(canopyUnavailableError()) : read(...args);
   const desktopDispatcher: DesktopCanopyDispatcher = Object.assign(dispatcher, {
     isShuttingDown: (): boolean => shuttingDown,
+    localWorker,
     queryWorkspaceListForLegacyIpc: refuseOnceShuttingDown(
       queryWorkspaceListForLegacyIpc,
     ),
@@ -774,7 +1822,12 @@ export function createDesktopRuntime(
         activeDesktopRuntime = null;
       chatEventsAdapter.closeLegacy();
       legacyEvents.length = 0;
+      workspaceReadSnapshots.close();
+      // An open stream is an active call that shutdown would wait out.
+      closeFileTreeWatchesForLegacyIpc();
       await runtime.shutdown('desktop');
+      // Unfinished work stays recorded; the next launch reconciles it.
+      operationAdapter.close();
     },
     queryChatStateForLegacyIpc: refuseOnceShuttingDown(
       queryChatStateForLegacyIpc,
@@ -793,11 +1846,126 @@ export function createDesktopRuntime(
       chatEventsAdapter.closeLegacy();
       legacyEvents.length = 0;
     },
+    openFileTreeWatchForLegacyIpc: refuseOnceShuttingDown(
+      openFileTreeWatchForLegacyIpc,
+    ),
+    openGitHeadWatchForBranchObserver: refuseOnceShuttingDown(
+      (
+        params: Pick<WorkerFilesystemWatchParams, 'scope' | 'fileRootId'>,
+        streamOptions: Parameters<
+          DesktopCanopyDispatcher['openGitHeadWatchForBranchObserver']
+        >[1],
+      ) =>
+        openFileTreeWatchForLegacyIpc(
+          { ...params, subject: 'gitHead' },
+          streamOptions,
+        ),
+    ),
+    closeFileTreeWatchesForLegacyIpc,
     queryFileTreeRootsForLegacyIpc: refuseOnceShuttingDown(
       queryFileTreeRootsForLegacyIpc,
     ),
     queryFileTreeDirectoryForLegacyIpc: refuseOnceShuttingDown(
       queryFileTreeDirectoryForLegacyIpc,
+    ),
+    queryFileContentForLegacyIpc: refuseOnceShuttingDown(
+      queryFileContentForLegacyIpc,
+    ),
+    queryFileIndexForLegacyIpc: refuseOnceShuttingDown(
+      queryFileIndexForLegacyIpc,
+    ),
+    queryLinkResolveForLegacyIpc: refuseOnceShuttingDown(
+      queryLinkResolveForLegacyIpc,
+    ),
+    deleteFileTreeEntryForLegacyIpc: refuseOnceShuttingDown(
+      (
+        request: Extract<FileTreeMutationRequest, { operation: 'delete' }>,
+        deleteOptions: { caller: CanopyCallerDescriptor },
+      ) =>
+        deleteFileTreeEntryForLegacyIpc(
+          (params, instructionOptions) =>
+            dispatcher.instruction(
+              'worker.filesystem.entry.delete',
+              params,
+              instructionOptions,
+            ),
+          entryMutationHost,
+          request,
+          deleteOptions,
+        ),
+    ),
+    transferFileTreeEntryForLegacyIpc: refuseOnceShuttingDown(
+      (
+        request: Extract<
+          FileTreeMutationRequest,
+          { operation: 'copy' | 'move' }
+        >,
+        transferOptions: { caller: CanopyCallerDescriptor },
+      ) =>
+        transferFileTreeEntryForLegacyIpc(
+          {
+            copy: (params, instructionOptions) =>
+              dispatcher.instruction(
+                'worker.filesystem.entry.copy',
+                params,
+                instructionOptions,
+              ),
+            move: (params, instructionOptions) =>
+              dispatcher.instruction(
+                'worker.filesystem.entry.move',
+                params,
+                instructionOptions,
+              ),
+          },
+          entryMutationHost,
+          request,
+          transferOptions,
+        ),
+    ),
+    createFileTreeEntryForLegacyIpc: refuseOnceShuttingDown(
+      (
+        request: Extract<
+          FileTreeMutationRequest,
+          { operation: 'create-file' | 'create-directory' }
+        >,
+        createOptions: { caller: CanopyCallerDescriptor },
+      ) =>
+        createFileTreeEntryForLegacyIpc(
+          {
+            file: (params, instructionOptions) =>
+              dispatcher.instruction(
+                'worker.filesystem.file.write',
+                params,
+                instructionOptions,
+              ),
+            directory: (params, instructionOptions) =>
+              dispatcher.instruction(
+                'worker.filesystem.directory.create',
+                params,
+                instructionOptions,
+              ),
+          },
+          entryMutationHost,
+          request,
+          createOptions,
+        ),
+    ),
+    saveTextFileForLegacyIpc: refuseOnceShuttingDown(
+      (
+        save: LegacyTextFileSave,
+        saveOptions: { caller: CanopyCallerDescriptor },
+      ) =>
+        saveTextFileForLegacyIpc(
+          (params, instructionOptions) =>
+            dispatcher.instruction(
+              'worker.filesystem.file.write',
+              params,
+              instructionOptions,
+            ),
+          entryMutationHost,
+          save,
+          saveOptions,
+        ),
     ),
     queryChatTranscriptPageForLegacyIpc: refuseOnceShuttingDown(
       async (

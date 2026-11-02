@@ -81,6 +81,14 @@ describe('form fields', () => {
     expect(html).toContain('field-resize-grip');
   });
 
+  it('sets a TextArea in monospace for code', () => {
+    const html = renderToStaticMarkup(<TextArea mono rows={4} />);
+    expect(html).toContain('rows="4"');
+    expect(html).toContain('font-mono');
+    expect(html).toContain('field-resize-grip');
+    expect(renderToStaticMarkup(<TextArea />)).not.toContain('font-mono');
+  });
+
   it('draws a Canopy select: a field trigger with the app chevron, not a native select', () => {
     const html = renderToStaticMarkup(
       <Select

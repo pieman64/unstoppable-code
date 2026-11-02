@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- The daemon's node-pty files (CAN-5068), applied by scripts/mac-sign.cjs:
+         pty.node loads into the daemon, which keeps library validation, and
+         spawn-helper only execs the shell. Neither needs an entitlement; never
+         add the main app's library-validation or dyld keys (W10). -->
+</dict>
+</plist>

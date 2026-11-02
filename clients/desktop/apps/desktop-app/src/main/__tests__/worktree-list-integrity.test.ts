@@ -41,6 +41,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { WorktreeData } from '@canopy/desktop-shared/types';
 import type * as AtomicFileModule from '../lib/atomic-file';
+import { writeFileAtomically } from '../lib/atomic-file';
 import {
   getSidebarItemGroupsFilePath,
   getWorkspaceWorktreesFilePath,
@@ -232,6 +233,28 @@ describe('worktree list integrity (real fs)', () => {
     expect((await readList()).worktrees).toEqual([
       row('otter', { pinned: true }),
     ]);
+  });
+
+  it('writes the list once when its post-commit notification fails', async () => {
+    await writeList({ version: 1, worktrees: [row('otter')] });
+    const listWrites = (): number =>
+      jest
+        .mocked(writeFileAtomically)
+        .mock.calls.filter(([filePath]) => filePath === listPath).length;
+    jest.mocked(schedulePortalStructuralSync).mockImplementationOnce(() => {
+      throw new Error('notification failed');
+    });
+
+    await expect(
+      updateWorkspaceWorktrees(WORKSPACE_ID, (worktrees) => [
+        ...worktrees,
+        row('swift'),
+      ]),
+    ).rejects.toThrow('notification failed');
+
+    expect(listWrites()).toBe(1);
+    expect((await readList()).worktrees).toEqual([row('otter'), row('swift')]);
+    expect(wasRecentWorktreesSelfWrite(WORKSPACE_ID)).toBe(true);
   });
 
   describe('sidebar-group reconciliation', () => {

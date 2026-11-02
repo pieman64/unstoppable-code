@@ -16,7 +16,9 @@ class MockCanopyCloudClientError extends Error {
 jest.mock('../canopy-cloud/client', () => ({
   requestCanopyCloudJson: (...args: unknown[]): unknown =>
     requestCanopyCloudJsonMock(...args),
-  CanopyCloudClientError: MockCanopyCloudClientError,
+  get CanopyCloudClientError(): typeof MockCanopyCloudClientError {
+    return MockCanopyCloudClientError;
+  },
 }));
 
 import {

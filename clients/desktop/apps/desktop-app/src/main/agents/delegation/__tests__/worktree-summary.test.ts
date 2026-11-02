@@ -28,11 +28,12 @@ jest.mock('../../claude-process-host-runner', () => ({
     // CANOPY_GIT_EXECUTABLE may name git by absolute path.
     if (/^git(\.exe)?$/i.test(options.command.split(/[\\/]/).pop() ?? ''))
       mockGitArguments.push([...options.args]);
+    const stdio: ['pipe', 'pipe', 'pipe'] = ['pipe', 'pipe', 'pipe'];
     const processOptions = {
       cwd: options.cwd,
       env: options.env,
       signal: options.signal,
-      stdio: 'pipe',
+      stdio,
     };
     return mockHangGit
       ? spawn(

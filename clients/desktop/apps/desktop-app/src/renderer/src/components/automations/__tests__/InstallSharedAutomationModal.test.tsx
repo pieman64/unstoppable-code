@@ -21,18 +21,24 @@ Object.defineProperty(globalThis, 'crypto', {
 });
 import type { SharedAutomationDetail } from '@canopy/protocol/automations';
 import { CHAT_LABEL } from '@canopy/protocol';
-import type { ScheduledActivity } from '@canopy/desktop-shared/types';
+import type {
+  AutomationCreateRequest,
+  AutomationUpdateRequest,
+  ScheduledActivity,
+} from '@canopy/desktop-shared/types';
 import { AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES } from '@canopy/desktop-shared/lib/automations';
+import { AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE } from '@canopy/desktop-shared/lib/automation-install';
 import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
 import type { UnifiedTableRow } from '@/hooks/useUnifiedTableData';
 import { serializePipelineDocument } from '@/lib/pipelineDocument';
+import { useProjectsStore } from '@/stores/projectsStore';
 
-const mockCreate = jest.fn<Promise<unknown>, [unknown]>();
-const mockUpdate = jest.fn<Promise<unknown>, [unknown]>();
+const mockCreate = jest.fn<Promise<unknown>, [AutomationCreateRequest]>();
+const mockUpdate = jest.fn<Promise<unknown>, [AutomationUpdateRequest]>();
 const mockListPipelines = jest.fn<Promise<unknown>, []>();
 const mockVerifyPin = jest.fn<Promise<unknown>, [unknown]>();
 const mockReadiness = jest.fn<Promise<unknown>, [unknown]>();
-const mockInstallPackage = jest.fn<Promise<void>, [unknown]>();
+const mockInstallPackage = jest.fn<Promise<unknown>, [unknown]>();
 const mockDelete = jest.fn<Promise<unknown>, [unknown]>();
 const mockSavePipeline = jest.fn<Promise<unknown>, [unknown]>();
 const mockDeletePipeline = jest.fn<Promise<unknown>, [string]>();
@@ -88,7 +94,7 @@ beforeEach(() => {
     distributionMode: 'definition_only',
   });
   mockReadiness.mockResolvedValue({ status: 'ready', requirements: [] });
-  mockInstallPackage.mockResolvedValue();
+  mockInstallPackage.mockResolvedValue(undefined);
   mockDelete.mockResolvedValue({ ok: true });
   mockDone.mockClear();
   mockSavePipeline.mockResolvedValue({
@@ -183,7 +189,12 @@ function pipelineDetail(): SharedAutomationDetail {
     actionType: 'worktree_pipeline',
     contentHash: 'a'.repeat(64),
     shareScope: 'team',
-    owner: { type: 'team', id: 'team-1', name: 'Platform' },
+    owner: {
+      type: 'team',
+      id: 'team-1',
+      name: 'Platform',
+      organization: { id: 'org-1', name: 'Acme' },
+    },
     createdAt: '2026-08-19T00:00:00.000Z',
     updatedAt: '2026-08-19T00:00:00.000Z',
     createdBy: { id: 'user-1', name: 'Alex', email: null },
@@ -286,6 +297,7 @@ function renderModal(
     id: string;
     name: string;
     type: 'single-repo' | 'multi-repo' | 'cowork';
+    lacksProjectFolder?: boolean;
   }> = [{ id: 'workspace-1', name: 'Canopy', type: 'single-repo' }],
   publicShare = false,
   source?: InstallAutomationSource,
@@ -916,6 +928,48 @@ describe('InstallSharedAutomationModal', () => {
     });
   });
 
+  it('never names a project for a stale copy with no project', () => {
+    const copy = (
+      id: string,
+      action: ScheduledActivity['action'],
+    ): ScheduledActivity => ({
+      version: 1,
+      id,
+      name: id,
+      enabled: true,
+      schedule: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+      action,
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      failureCount: 0,
+      installedFrom: {
+        remoteId: pipelineDetail().id,
+        contentHash: 'b'.repeat(64),
+        installedAt: '2026-08-01T00:00:00.000Z',
+      },
+    });
+    const pipeline = {
+      type: 'worktree_pipeline',
+      pipelineId: 'code-review',
+      pipelineSource: 'bundled',
+      inputs: {},
+    } as const;
+    renderModal([
+      copy('project-copy', { ...pipeline, workspaceId: 'workspace-1' }),
+      // The inert `workspaceId` on a global action names no project.
+      copy('global-copy', {
+        ...pipeline,
+        target: { kind: 'global' },
+        workspaceId: 'workspace-1',
+      }),
+    ]);
+
+    const options = Array.from(
+      byTestId('install-automation-copy')?.querySelectorAll('option') ?? [],
+    ).map((option) => option.textContent);
+    expect(options).toEqual(['project-copy — Canopy', 'global-copy']);
+  });
+
   it('materializes packaged resources before completing install, without listing them (CAN-3710)', async () => {
     mockReadiness.mockResolvedValue({
       status: 'ready',
@@ -967,6 +1021,279 @@ describe('InstallSharedAutomationModal', () => {
         )
         .digest('hex'),
     });
+  });
+
+  it('installs packaged pipelines in main on Submit and points the prompt at the local copies', async () => {
+    const authorId = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const localId = '9b2c1d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+    const base = packagedPromptDetail();
+    const detail: SharedAutomationDetail = {
+      ...base,
+      automation: {
+        ...base.automation,
+        version: 5,
+        action: {
+          type: 'standalone_prompt',
+          target: { kind: 'cowork' },
+          prompt: `Run ${authorId} today.`,
+          plugins: [],
+          pipelineDependencies: [
+            {
+              key: authorId,
+              pipeline: {
+                source: 'packaged',
+                key: authorId,
+                pipelineContentHash: 'c'.repeat(64),
+                name: 'Journey specialist',
+              },
+              promptSpans: [{ textStart: 4, text: authorId }],
+            },
+          ],
+        },
+      },
+    };
+    mockInstallPackage.mockImplementation((request) => {
+      const stage =
+        typeof request === 'object' && request !== null && 'stage' in request
+          ? request.stage
+          : undefined;
+      if (stage === 'pipelines-preview') {
+        return Promise.resolve({
+          pipelines: [
+            {
+              key: authorId,
+              pipelineContentHash: 'c'.repeat(64),
+              outcome: 'created',
+              rewrites: false,
+              rawPipeline: 'name: Journey specialist\n',
+              assetChanges: [],
+            },
+          ],
+        });
+      }
+      return Promise.resolve(
+        stage === 'pipelines'
+          ? {
+              pipelines: [
+                {
+                  key: authorId,
+                  localPipelineId: localId,
+                  pipelineContentHash: 'c'.repeat(64),
+                  outcome: 'created',
+                },
+              ],
+            }
+          : undefined,
+      );
+    });
+    const installedActivity: ScheduledActivity = {
+      version: 1,
+      id: 'installed',
+      name: detail.name,
+      enabled: false,
+      schedule: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+      action: {
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: `Run ${localId} today.`,
+      },
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z',
+      failureCount: 0,
+    };
+    mockCreate.mockResolvedValueOnce({ ok: true, activity: installedActivity });
+    renderModal(undefined, detail, [
+      { id: 'cowork-1', name: 'Research', type: 'cowork' },
+    ]);
+    await flush();
+
+    // The review reads Stage A's dry run; opening the dialog writes nothing,
+    // so cancelling leaves no pipeline, install record or file behind.
+    expect(mockInstallPackage).toHaveBeenCalledTimes(1);
+    expect(mockInstallPackage).toHaveBeenCalledWith({
+      stage: 'pipelines-preview',
+      remoteId: detail.id,
+      packageRef: detail.automation.capabilityPackage,
+    });
+    expect(
+      byTestId(`install-automation-packaged-pipeline-${authorId}`)?.dataset
+        .status,
+    ).toBe('new');
+    expect(
+      byTestId('install-automation-packaged-pipelines')?.textContent,
+    ).toContain('Journey specialist');
+
+    await selectTarget('install-automation-cowork-project', 'cowork-1');
+    expect(mockInstallPackage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'pipelines' }),
+    );
+    await submit();
+
+    expect(mockInstallPackage).toHaveBeenCalledWith({
+      stage: 'pipelines',
+      remoteId: detail.id,
+      packageRef: detail.automation.capabilityPackage,
+    });
+    const created = mockCreate.mock.calls[0]?.[0];
+    expect(created).toMatchObject({
+      action: { prompt: `Run ${localId} today.` },
+      installedFrom: {
+        pipelineDependencies: [
+          {
+            key: authorId,
+            localPipelineId: localId,
+            pipelineContentHash: 'c'.repeat(64),
+          },
+        ],
+      },
+    });
+    expect(mockInstallPackage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        localAutomationId: 'installed',
+        packageRef: detail.automation.capabilityPackage,
+      }),
+    );
+    expect(mockSavePipeline).not.toHaveBeenCalled();
+  });
+
+  it('previews an update of packaged pipelines: the new YAML, file changes, and a local edit refusal', async () => {
+    const authorId = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const localId = '9b2c1d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+    const base = packagedPromptDetail();
+    const detail: SharedAutomationDetail = {
+      ...base,
+      automation: {
+        ...base.automation,
+        version: 5,
+        action: {
+          type: 'standalone_prompt',
+          target: { kind: 'cowork' },
+          prompt: `Run ${authorId} today.`,
+          plugins: [],
+          pipelineDependencies: [
+            {
+              key: authorId,
+              pipeline: {
+                source: 'packaged',
+                key: authorId,
+                pipelineContentHash: 'd'.repeat(64),
+                name: 'Journey specialist',
+              },
+              promptSpans: [{ textStart: 4, text: authorId }],
+            },
+          ],
+        },
+      },
+    };
+    const existing: ScheduledActivity = {
+      version: 1,
+      id: 'activity-installed',
+      name: detail.name,
+      enabled: false,
+      schedule: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+      action: {
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: `Run ${localId} today.`,
+      },
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      failureCount: 0,
+      installedFrom: {
+        remoteId: detail.id,
+        contentHash: 'b'.repeat(64),
+        installedAt: '2026-08-01T00:00:00.000Z',
+        capabilityPackage: { version: 1, digest: `pp:v1:${'B'.repeat(43)}` },
+        pipelineDependencies: [
+          {
+            key: authorId,
+            localPipelineId: localId,
+            pipelineContentHash: 'c'.repeat(64),
+          },
+        ],
+      },
+    };
+    const existingPipelines = [
+      {
+        key: authorId,
+        localPipelineId: localId,
+        expectedContentHash: 'c'.repeat(64),
+      },
+    ];
+    mockInstallPackage.mockImplementation((request) =>
+      Promise.resolve(
+        typeof request === 'object' &&
+          request !== null &&
+          'stage' in request &&
+          request.stage === 'pipelines-preview'
+          ? {
+              pipelines: [
+                {
+                  key: authorId,
+                  localPipelineId: localId,
+                  pipelineContentHash: 'd'.repeat(64),
+                  outcome: 'reused',
+                  rewrites: true,
+                  rawPipeline: 'name: Journey specialist v2\n',
+                  assetChanges: [
+                    {
+                      assetId: 'specialists',
+                      installMode: 'replace',
+                      added: [],
+                      updated: [],
+                      overwritten: ['mine.json'],
+                      kept: [],
+                    },
+                  ],
+                },
+              ],
+            }
+          : undefined,
+      ),
+    );
+    renderModal([existing], detail, [
+      { id: 'cowork-1', name: 'Research', type: 'cowork' },
+    ]);
+    await flush();
+
+    // The review reads Stage A's dry run; nothing is installed before Submit.
+    expect(mockInstallPackage).toHaveBeenCalledTimes(1);
+    expect(mockInstallPackage).toHaveBeenCalledWith({
+      stage: 'pipelines-preview',
+      remoteId: detail.id,
+      packageRef: detail.automation.capabilityPackage,
+      existingPipelines,
+    });
+    const row = byTestId(`install-automation-packaged-pipeline-${authorId}`);
+    expect(row?.dataset.status).toBe('update');
+    expect(
+      byTestId(`install-automation-packaged-pipeline-${authorId}-yaml`)
+        ?.textContent,
+    ).toBe('name: Journey specialist v2\n');
+    expect(
+      byTestId(`install-automation-packaged-pipeline-${authorId}-files`)
+        ?.textContent,
+    ).toContain('Overwrites 1 file you changed in “specialists”: mine.json');
+    act(() => {
+      root?.unmount();
+    });
+    root = null;
+
+    // A local edit refuses the update in the review, before Submit.
+    mockInstallPackage.mockReset();
+    mockInstallPackage.mockRejectedValue(
+      new Error(AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE),
+    );
+    renderModal([existing], detail, [
+      { id: 'cowork-1', name: 'Research', type: 'cowork' },
+    ]);
+    await flush();
+    expect(byTestId('install-automation-pipelines-blocked')?.textContent).toBe(
+      AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE,
+    );
+    expect(
+      byTestId('install-automation-submit')?.hasAttribute('disabled'),
+    ).toBe(true);
   });
 
   it('removes a prior capability package when an update no longer requires one', async () => {
@@ -1079,6 +1406,156 @@ describe('InstallSharedAutomationModal', () => {
 });
 
 // ---------------------------------------------------------------------------
+// CAN-4550: pipeline destinations.
+// ---------------------------------------------------------------------------
+
+function destinationDetail(
+  kind: 'global' | 'task' | 'project' | 'new_worktree',
+): SharedAutomationDetail {
+  const base = pipelineDetail();
+  return {
+    ...base,
+    automation: {
+      ...base.automation,
+      version: 6,
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind },
+        pipeline: { source: 'bundled', pipelineId: 'code-review' },
+        inputKeys: [],
+      },
+    },
+  };
+}
+
+describe('InstallSharedAutomationModal pipeline destinations (CAN-4550)', () => {
+  it('installs a pipeline with no project without a project picker', async () => {
+    mockGetPipeline.mockResolvedValue({
+      success: true,
+      data: {
+        info: { id: 'code-review', name: 'Review', source: 'bundled' },
+        content: {
+          name: 'Review',
+          on: 'dispatch',
+          scope: ['global'],
+          jobs: {},
+        },
+      },
+    });
+    renderModal(undefined, destinationDetail('global'));
+    await waitForTargets();
+    expect(byTestId('install-automation-workspace')).toBeNull();
+    expect(byTestId('install-automation-task')).toBeNull();
+    await submit();
+
+    const request = mockCreate.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId: 'code-review',
+      },
+    });
+    expect(request).not.toHaveProperty('action.workspaceId');
+  });
+
+  it("never prefills a project from a no-project copy's inert workspaceId", async () => {
+    const existing: ScheduledActivity = {
+      version: 1,
+      id: 'global-copy',
+      name: 'Global copy',
+      enabled: true,
+      schedule: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        workspaceId: 'workspace-1',
+        pipelineId: 'code-review',
+        pipelineSource: 'bundled',
+        inputs: {},
+      },
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      failureCount: 0,
+      installedFrom: {
+        remoteId: pipelineDetail().id,
+        contentHash: 'b'.repeat(64),
+        installedAt: '2026-08-01T00:00:00.000Z',
+      },
+    };
+    renderModal([existing], destinationDetail('project'), [
+      { id: 'workspace-1', name: 'Canopy', type: 'single-repo' },
+      { id: 'workspace-2', name: 'Other', type: 'single-repo' },
+    ]);
+    await waitForTargets();
+
+    const picker = byTestId('install-automation-workspace');
+    expect(picker instanceof HTMLSelectElement && picker.value).toBe('');
+  });
+
+  it('offers no project without a folder for a project-folder destination', async () => {
+    renderModal(undefined, destinationDetail('project'), [
+      { id: 'workspace-1', name: 'Canopy', type: 'single-repo' },
+      {
+        id: 'multi-1',
+        name: 'No root',
+        type: 'multi-repo',
+        lacksProjectFolder: true,
+      },
+    ]);
+    await waitForTargets();
+
+    const picker = byTestId('install-automation-workspace');
+    if (!(picker instanceof HTMLSelectElement)) throw new Error('No picker');
+    expect(
+      Array.from(picker.options)
+        .map((option) => option.value)
+        .filter(Boolean),
+    ).toEqual(['workspace-1']);
+  });
+
+  it('asks for a task before installing an existing-task destination', async () => {
+    useProjectsStore.setState({
+      projects: [
+        {
+          id: 'workspace-1',
+          name: 'Canopy',
+          type: 'single-repo',
+          worktrees: [{ id: 'wt-1', branchName: 'feature' }],
+        },
+      ],
+    } as unknown as Parameters<typeof useProjectsStore.setState>[0]);
+    renderModal(undefined, destinationDetail('task'));
+    await selectTarget('install-automation-workspace', 'workspace-1');
+    await flush();
+
+    const task = byTestId('install-automation-task');
+    expect(task).toBeInstanceOf(HTMLButtonElement);
+    expect(
+      byTestId('install-automation-submit')?.hasAttribute('disabled'),
+    ).toBe(true);
+    expect(document.body.textContent).toContain(
+      'Pick a task to run the workflow in.',
+    );
+
+    act(() => task?.click());
+    const option = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).find((candidate) => candidate.textContent?.includes('feature'));
+    act(() => option?.click());
+    await submit();
+
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'workspace-1',
+        target: { kind: 'task', taskId: 'wt-1' },
+      },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CAN-3135: bundled (`inline`) pipeline + anonymous public installs.
 // ---------------------------------------------------------------------------
 
@@ -1161,6 +1638,83 @@ describe('InstallSharedAutomationModal bundled pipeline (CAN-3135)', () => {
     expect(mockSavePipeline).toHaveBeenCalledWith(
       expect.objectContaining({ rawContent: rawPipeline }),
     );
+  });
+
+  it('reads a packaged action pipeline from the preview and saves it only on Submit', async () => {
+    const localId = '9b2c1d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+    const pipelineContentHash = createHash('sha256')
+      .update(BUNDLED_YAML)
+      .digest('hex');
+    const base = inlinePipelineDetail();
+    const detail = {
+      ...base,
+      automation: {
+        ...base.automation,
+        version: 5,
+        capabilityPackage: { version: 1, digest: `pp:v1:${'A'.repeat(43)}` },
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'workspace' },
+          pipeline: {
+            source: 'packaged',
+            key: 'action',
+            pipelineContentHash,
+            name: 'Bundled review',
+          },
+          inputKeys: [],
+        },
+      },
+    } as SharedAutomationDetail;
+    mockInstallPackage.mockImplementation((request) => {
+      const stage =
+        typeof request === 'object' && request !== null && 'stage' in request
+          ? request.stage
+          : undefined;
+      if (stage === 'pipelines-preview') {
+        return Promise.resolve({
+          pipelines: [
+            {
+              key: 'action',
+              pipelineContentHash,
+              outcome: 'created',
+              rewrites: false,
+              rawPipeline: BUNDLED_YAML,
+              assetChanges: [],
+            },
+          ],
+        });
+      }
+      return Promise.resolve(
+        stage === 'pipelines'
+          ? {
+              pipelines: [
+                {
+                  key: 'action',
+                  localPipelineId: localId,
+                  pipelineContentHash,
+                  outcome: 'created',
+                },
+              ],
+            }
+          : undefined,
+      );
+    });
+    renderModal(undefined, detail, undefined, true);
+    await flush();
+
+    await selectTarget('install-automation-workspace', 'workspace-1');
+    expect(mockInstallPackage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'pipelines' }),
+    );
+    await submit();
+
+    expect(mockInstallPackage).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'pipelines' }),
+    );
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({
+      action: { pipelineId: localId },
+    });
+    expect(mockSavePipeline).not.toHaveBeenCalled();
   });
 
   it('verifies the bundled bytes locally and never calls the authenticated pin check', async () => {
@@ -1826,7 +2380,7 @@ describe('InstallSharedAutomationModal install copy (CAN-3651)', () => {
     renderModal(undefined, unresolvedPipelineDetail());
     await flush();
 
-    expect(submitReason()).toBe('Choose a pipeline to continue');
+    expect(submitReason()).toBe('Choose a workflow to continue');
     expect(
       byTestId('install-automation-workspace')?.querySelectorAll('option'),
     ).toHaveLength(1);

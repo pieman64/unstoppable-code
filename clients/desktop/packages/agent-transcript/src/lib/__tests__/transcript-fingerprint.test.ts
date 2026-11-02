@@ -135,6 +135,23 @@ describe('blockFingerprint', () => {
     },
   );
 
+  it('uses receipt identity rather than identical command text or timestamps', () => {
+    const block = {
+      type: 'approval_safety_denied_info',
+      receiptId: 'r1',
+      timestamp: 1,
+      reason: 'force-push',
+      mode: 'ask',
+      command: 'git push -f origin main',
+    } as const;
+    expect(blockFingerprint(block)).toBe(
+      blockFingerprint({ ...block, timestamp: 2 }),
+    );
+    expect(blockFingerprint(block)).not.toBe(
+      blockFingerprint({ ...block, receiptId: 'r2' }),
+    );
+  });
+
   it('fingerprints approval_resolution_info by its resolution identity', () => {
     expect(
       blockFingerprint({
@@ -153,13 +170,16 @@ describe('blockFingerprint', () => {
   it('distinguishes two resolutions that differ only in previousMode', () => {
     // `previousMode` decides whether the receipt credits a mode switch, so two
     // receipts that read differently must not share a fingerprint.
-    const base = {
+    const base: Extract<
+      PersistedChatBlock,
+      { type: 'approval_resolution_info' }
+    > = {
       type: 'approval_resolution_info',
       timestamp: 42,
       resolvedBy: 'mode-change',
       mode: 'auto',
       titles: ['ls apps/web/src/app/'],
-    } as const;
+    };
     expect(blockFingerprint({ ...base, previousMode: 'ask' })).not.toBe(
       blockFingerprint(base),
     );
@@ -219,6 +239,7 @@ describe('LAYOUT_BLOCK_TYPES', () => {
         // The account proxy's switch line (CAN-4021).
         'account_proxy_switch',
         'approval_resolution_info',
+        'approval_safety_denied_info',
         'automation_info',
         'builtin_gh_chat_info',
         'claude_terminal_sync_warning',

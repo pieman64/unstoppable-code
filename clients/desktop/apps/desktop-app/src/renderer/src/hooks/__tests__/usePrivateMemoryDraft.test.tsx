@@ -120,6 +120,34 @@ describe('usePrivateMemoryDraft', () => {
     expect(latest.dirty).toBe(false);
   });
 
+  it('keeps a change made while the save was in flight', async () => {
+    render({ id: 'alpha' });
+    let finish: () => void = () => undefined;
+    savePrivateMemory.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    act(() => latest.setChecked(true));
+    let saving: Promise<boolean> = Promise.resolve(true);
+    act(() => {
+      saving = latest.save();
+    });
+    // Changed back before the first save lands.
+    act(() => latest.setChecked(false));
+    await act(async () => {
+      finish();
+      await saving;
+    });
+    expect(savePrivateMemory).toHaveBeenCalledWith('alpha', true);
+
+    // The reloaded row says true; the later choice is still the draft.
+    render({ id: 'alpha', privateMemory: true });
+    expect(latest.checked).toBe(false);
+    expect(latest.dirty).toBe(true);
+  });
+
   it('shows the inherited value, locked, and names the organization', () => {
     mockProjectsState.projects = [
       { id: 'alpha', owner: { organizationId: 'org-a' } },

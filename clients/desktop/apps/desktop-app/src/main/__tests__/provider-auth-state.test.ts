@@ -4,7 +4,6 @@ import path from 'node:path';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
 
 const mockInvalidateProviderAuthSessions = jest.fn();
-const mockExecFile = jest.fn();
 const mockCodexReadAccount = jest.fn();
 const mockSuspendWorkersForExternalAuthChange = jest.fn();
 const mockCodexAdminRequest = jest.fn<unknown, [string, unknown?]>(
@@ -17,18 +16,24 @@ const mockCodexAdminRequest = jest.fn<unknown, [string, unknown?]>(
     );
   },
 );
-const mockGetEnhancedEnv = jest.fn(() => ({ PATH: '/mock/bin' }));
+const mockGetEnhancedEnv = jest.fn(
+  (): NodeJS.ProcessEnv => ({
+    PATH: '/mock/bin',
+  }),
+);
 const mockReadClaudeOauthCredentials = jest.fn();
 const mockFetchMockControlPlaneRecord = jest.fn();
 const mockGetMockLlmOrigin = jest.fn((): string | null => null);
 
 jest.mock('node:child_process', () => ({
-  execFile: mockExecFile,
+  execFile: jest.fn(),
 }));
 
 jest.mock('../pipelines/config-paths', () => ({
   getBundledClaudeBinaryPath: jest.fn(() => '/mock/bin/claude'),
-  getEnhancedEnv: mockGetEnhancedEnv,
+  get getEnhancedEnv(): typeof mockGetEnhancedEnv {
+    return mockGetEnhancedEnv;
+  },
 }));
 
 jest.mock('../codex/runtime-service', () => ({
@@ -45,20 +50,27 @@ jest.mock('../codex/runtime-service', () => ({
 }));
 
 jest.mock('../lib/e2e-mock-control-plane', () => ({
-  fetchMockControlPlaneRecord: mockFetchMockControlPlaneRecord,
-  getMockLlmOrigin: mockGetMockLlmOrigin,
+  get fetchMockControlPlaneRecord(): typeof mockFetchMockControlPlaneRecord {
+    return mockFetchMockControlPlaneRecord;
+  },
+  get getMockLlmOrigin(): typeof mockGetMockLlmOrigin {
+    return mockGetMockLlmOrigin;
+  },
 }));
 
 jest.mock('../agents/session-manager', () => ({
-  invalidateProviderAuthSessions: mockInvalidateProviderAuthSessions,
+  get invalidateProviderAuthSessions(): typeof mockInvalidateProviderAuthSessions {
+    return mockInvalidateProviderAuthSessions;
+  },
 }));
 
 jest.mock('../auth/claude-oauth-credentials', () => ({
-  readClaudeOauthCredentials: mockReadClaudeOauthCredentials,
+  get readClaudeOauthCredentials(): typeof mockReadClaudeOauthCredentials {
+    return mockReadClaudeOauthCredentials;
+  },
 }));
 
 const mockRecordAppDiagnostic = jest.fn();
-const mockLogMainProcessWarn = jest.fn();
 const mockLogMainProcessInfo = jest.fn();
 
 jest.mock('../observability', () => ({
@@ -68,13 +80,17 @@ jest.mock('../observability', () => ({
 }));
 
 jest.mock('../lib/main-process-logging', () => ({
-  logMainProcessInfo: mockLogMainProcessInfo,
-  logMainProcessWarn: mockLogMainProcessWarn,
+  get logMainProcessInfo(): typeof mockLogMainProcessInfo {
+    return mockLogMainProcessInfo;
+  },
+  logMainProcessWarn: jest.fn(),
 }));
 
 const mockInvalidateCodexSpeedCatalog = jest.fn();
 jest.mock('../model-routing/codex-account-models', () => ({
-  invalidateCodexSpeedCatalog: mockInvalidateCodexSpeedCatalog,
+  get invalidateCodexSpeedCatalog(): typeof mockInvalidateCodexSpeedCatalog {
+    return mockInvalidateCodexSpeedCatalog;
+  },
 }));
 
 // The cached managed-runtime preflight the Portal availability peeks read.
@@ -109,6 +125,13 @@ import {
   subscribeConfirmedProviderAuth,
   type ConfirmedProviderAuthEvent,
 } from '../auth/provider-auth-state';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+
+const mockLogMainProcessWarn = jest.mocked(logMainProcessWarn);
+
+const mockExecFile = jest.requireMock<{ execFile: jest.Mock }>(
+  'node:child_process',
+).execFile;
 
 test('managed sign-in rejects a fresh confirmed signed-out account', async () => {
   await expect(
@@ -1802,15 +1825,18 @@ describe('buildClaudeAuthStatusFromPayload structured identity', () => {
     expect(result.accountKind).toBe('subscription');
   });
 
-  it('marks an API-key login as api_key with no email', () => {
-    const result = buildClaudeAuthStatusFromPayload({
-      loggedIn: true,
-      email: 'ignored@example.com',
-      authMethod: 'API key',
-    });
-    expect(result.accountKind).toBe('api_key');
-    expect(result.planType).toBeNull();
-  });
+  it.each(['api_key', 'apiKey', 'api-key'])(
+    'marks %s authentication as api_key with no email',
+    (authMethod) => {
+      const result = buildClaudeAuthStatusFromPayload({
+        loggedIn: true,
+        email: 'ignored@example.com',
+        authMethod,
+      });
+      expect(result.accountKind).toBe('api_key');
+      expect(result.planType).toBeNull();
+    },
+  );
 
   it('marks an unauthenticated payload as unknown with null identity', () => {
     const result = buildClaudeAuthStatusFromPayload({ loggedIn: false });

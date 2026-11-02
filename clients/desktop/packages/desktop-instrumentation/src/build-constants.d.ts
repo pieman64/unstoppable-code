@@ -1,4 +1,5 @@
 declare const __CANOPY_APP_VERSION__: string | undefined;
+declare const __CANOPY_RELEASE_FLAVOR__: string | undefined;
 declare const __CANOPY_DATADOG_ENABLED__: boolean | undefined;
 declare const __CANOPY_DATADOG_CLIENT_TOKEN__: string | undefined;
 declare const __CANOPY_DATADOG_APPLICATION_ID__: string | undefined;

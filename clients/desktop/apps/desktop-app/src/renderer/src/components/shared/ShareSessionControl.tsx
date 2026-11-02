@@ -267,7 +267,7 @@ export function ShareSessionControl({
           aria-pressed={isShared}
           data-testid={resolvedTestId}
           data-shared={isShared ? 'true' : 'false'}
-          className={`focus-ring flex h-6 w-6 items-center justify-center rounded-md border transition disabled:cursor-not-allowed disabled:opacity-50 ${
+          className={`focus-ring flex h-6 w-6 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
             isShared
               ? 'border-line-accent/30 bg-accent-subtle fg-accent'
               : 'bg-fg-primary/[0.04] fg-primary/80 hover:bg-fg-primary/[0.08] hover:fg-primary'

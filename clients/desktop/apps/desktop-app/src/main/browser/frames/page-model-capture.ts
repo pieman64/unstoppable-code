@@ -3,6 +3,7 @@ import {
   decodeDOMSnapshot,
   decodeDomTree,
   decodeLayoutViewport,
+  decodeLayoutZoom,
   PAGE_MODEL_COMPUTED_STYLES,
   restoreWhitespaceText,
   type DecodedDOMSnapshot,
@@ -24,8 +25,11 @@ import { requestPiercedDocument } from './pierced-document';
 export interface SessionCapture {
   sessionId: string;
   tree: DecodedDomTree;
+  /** Geometry already in CSS pixels; see `decodeDOMSnapshot`. */
   snapshot: DecodedDOMSnapshot;
   layoutViewport?: { width: number; height: number };
+  /** Layout units per CSS pixel the snapshot was normalized with. */
+  layoutZoom: number;
   /** `#document` nodes in this session, by frame ID. */
   documents: Map<string, DomTreeNode>;
   /** Frame owner elements (`iframe`, `frame`, ...) by the child's frame ID. */
@@ -86,6 +90,7 @@ export function indexCapture(
   tree: DecodedDomTree,
   snapshot: DecodedDOMSnapshot,
   layoutViewport: { width: number; height: number } | undefined,
+  layoutZoom = 1,
 ): SessionCapture {
   const snapshotFrameByRoot = new Map<number, string>();
   for (const document of snapshot.documents) {
@@ -123,6 +128,7 @@ export function indexCapture(
     tree,
     snapshot,
     ...(layoutViewport === undefined ? {} : { layoutViewport }),
+    layoutZoom,
     documents,
     owners,
     documentFrameIds,
@@ -132,12 +138,15 @@ export function indexCapture(
 /**
  * Captures one session: the pierced document (structure), the DOM snapshot
  * (layout, styles and live values by backend node ID) and layout metrics.
- * One 10 s attempt and one 2 s retry; a failed session is omitted.
+ * One 10 s attempt and one 2 s retry; a failed session is omitted. Snapshot
+ * geometry is normalized to CSS pixels with the session's layout zoom, else
+ * `fallbackLayoutZoom` (the root session's) when its metrics are missing.
  */
 export async function captureSession(
   deps: PageModelDeps,
   sessionId: string,
   expectedFrameId: string,
+  fallbackLayoutZoom = 1,
 ): Promise<SessionCapture | undefined> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     ensureNotAborted(deps.signal);
@@ -174,8 +183,14 @@ export async function captureSession(
             return undefined;
           }),
         ]);
+      const layoutZoom =
+        decodeLayoutZoom(metricsResponse) ?? fallbackLayoutZoom;
       const tree = decodeDomTree(documentResponse);
-      const snapshot = decodeDOMSnapshot(snapshotResponse);
+      const snapshot = decodeDOMSnapshot(
+        snapshotResponse,
+        PAGE_MODEL_COMPUTED_STYLES,
+        layoutZoom,
+      );
       if (!tree || !snapshot) {
         throw new Error('Malformed frame snapshot.');
       }
@@ -185,6 +200,7 @@ export async function captureSession(
         tree,
         snapshot,
         decodeLayoutViewport(metricsResponse),
+        layoutZoom,
       );
       if (!capture.documents.has(expectedFrameId)) {
         throw new Error('The frame document is missing from its session.');

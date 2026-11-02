@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 // Opaque public IDs, validated without normalization.
 const idSchema = z.string().min(1).max(512).regex(/\S/);
+// Trimmed like chat.create.model.
+const modelIdSchema = z.string().trim().min(1).max(512);
 // Outgoing text is nonblank, untrimmed and deliberately unbounded.
 const textSchema = z.string().min(1).regex(/\S/);
 
@@ -105,18 +107,23 @@ export const projectsCreateTaskActionSchema = z.strictObject({
   projectId: idSchema,
   title: titleSchema.optional(),
   initialMessage: textSchema.optional(),
+  /** Model id from models.list, including an installed custom Agent. */
+  model: modelIdSchema.optional(),
 });
 export const projectsCreateTaskChatActionSchema = z.strictObject({
   type: z.literal('projects.create_task_chat'),
   projectId: idSchema,
   taskId: idSchema,
   initialMessage: textSchema.optional(),
+  /** Model id from models.list, including an installed custom Agent. */
+  model: modelIdSchema.optional(),
 });
 export const botsCreateTaskActionSchema = z.strictObject({
   type: z.literal('bots.create_task'),
   botId: idSchema,
   title: titleSchema.optional(),
-  initialMessage: textSchema,
+  /** Optional (D6): without it the task and its founding chat are created empty. */
+  initialMessage: textSchema.optional(),
 });
 export const botsCreateTaskChatActionSchema = z.strictObject({
   type: z.literal('bots.create_task_chat'),

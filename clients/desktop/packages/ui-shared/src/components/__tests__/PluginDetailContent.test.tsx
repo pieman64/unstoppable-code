@@ -8,6 +8,7 @@ import type {
   PluginProviderFacet,
 } from '@canopy/protocol/plugins';
 
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   PluginDetailContent,
   type PluginDetailContentPlugin,
@@ -301,6 +302,18 @@ describe('PluginDetailContent', () => {
     expect(toggleLabel?.getAttribute('aria-hidden')).toBe('true');
     expect(toggleLabel?.parentElement).toBe(toggle?.parentElement);
     expect(toggleLabel?.parentElement?.className).toContain('gap-1.5');
+    // CAN-4842: the switch heads the content it changes; the chrome row
+    // holds page actions only.
+    expect(
+      container
+        .querySelector('[data-testid="plugin-detail-provider-toggle-row"]')
+        ?.contains(toggle),
+    ).toBe(true);
+    expect(
+      container
+        .querySelector('[data-testid="plugin-detail-chrome"]')
+        ?.contains(toggle),
+    ).toBe(false);
     expect(container.textContent).toContain('Plugin Claude');
     expect(container.textContent).toContain('1.0.0');
 
@@ -498,6 +511,69 @@ describe('PluginDetailContent', () => {
     expect(container.querySelector('h2')?.textContent).toBe(
       'Facet Display Name',
     );
+  });
+
+  it('opens the settings of an installed server hidden behind the plugin', () => {
+    const onOpenEntryId = jest.fn();
+    render({
+      plugin: makePlugin({
+        details: makeDetails({
+          mcpServers: [
+            { name: 'slack', type: 'http', url: 'https://mcp.slack.test/mcp' },
+            { name: 'notes', type: 'http', url: 'https://notes.test/mcp' },
+          ],
+        }),
+      }),
+      bundledServerRows: [
+        {
+          serverName: 'slack',
+          endpoint: 'http:mcp.slack.test',
+          entryId: 'mcp-local:slack-row',
+          serverId: 'slack-row',
+        },
+      ],
+      onOpenEntryId,
+    });
+
+    const settings = container.querySelector(
+      '[data-testid="plugin-detail-mcp-server-settings-slack"] button',
+    );
+    expect(settings?.textContent).toContain('Open server settings');
+    act(() => {
+      settings?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenEntryId).toHaveBeenCalledWith('mcp-local:slack-row');
+    // A bundled server with no installed row stays plain text.
+    expect(
+      container.querySelector(
+        '[data-testid="plugin-detail-mcp-server-settings-notes"]',
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps bundled server names plain without an entry opener', () => {
+    render({
+      plugin: makePlugin({
+        details: makeDetails({
+          mcpServers: [
+            { name: 'slack', type: 'http', url: 'https://mcp.slack.test/mcp' },
+          ],
+        }),
+      }),
+      bundledServerRows: [
+        {
+          serverName: 'slack',
+          endpoint: 'http:mcp.slack.test',
+          entryId: 'mcp-local:slack-row',
+          serverId: 'slack-row',
+        },
+      ],
+    });
+    expect(
+      container.querySelector(
+        '[data-testid="plugin-detail-mcp-server-settings-slack"]',
+      ),
+    ).toBeNull();
   });
 
   it('lazily reads component content through the injected callback', async () => {
@@ -770,6 +846,88 @@ describe('PluginDetailContent', () => {
     expect(container.textContent).toContain('related content slot');
   });
 
+  function expectInDocumentOrder(nodes: readonly (Element | null)[]): void {
+    nodes.forEach((node, index) => {
+      expect(node).not.toBeNull();
+      const next = nodes[index + 1];
+      if (node && next) {
+        expect(
+          node.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    });
+  }
+
+  const sectionHeading = (text: string): Element | null =>
+    Array.from(
+      container.querySelectorAll(
+        '[data-testid="plugin-detail-section-heading"]',
+      ),
+    ).find((heading) => heading.textContent === text) ??
+    Array.from(container.querySelectorAll('h3, summary, button')).find(
+      (heading) => heading.textContent?.trim() === text,
+    ) ??
+    null;
+
+  it('renders host slots in order (CAN-4842)', () => {
+    render({
+      plugin: makePlugin({
+        details: makeDetails({
+          hasReadme: true,
+          skills: [{ name: 'Skill', description: 'S', path: 'skills/s' }],
+          mcpServers: [
+            { name: 'm', type: 'http', url: 'https://m.example.test/mcp' },
+          ],
+        }),
+      }),
+      readme: { body: 'Readme body' },
+      updateNotice: <p data-testid="t-update" />,
+      statusContent: <p data-testid="t-status" />,
+      harnessRows: [
+        { id: 'claude', name: 'Claude', installation: 'Installed' },
+      ],
+      installActions: <p data-testid="t-install" />,
+      sharedContent: <p data-testid="t-shared" />,
+    });
+    const byId = (id: string): Element | null =>
+      container.querySelector(`[data-testid="${id}"]`);
+    expectInDocumentOrder([
+      container.querySelector('#plugin-detail-title'),
+      byId('t-update'),
+      byId('t-status'),
+      byId('plugin-harness-connections'),
+      byId('t-install'),
+      sectionHeading('MCP servers'),
+      byId('t-shared'),
+      sectionHeading('README'),
+      sectionHeading('Skills'),
+    ]);
+  });
+
+  it('leaves no wrapper for empty slots (CAN-4842)', () => {
+    const plugin = makePlugin({
+      details: makeDetails({
+        skills: [{ name: 'Skill', description: 'S', path: 'skills/s' }],
+      }),
+    });
+    render({ plugin });
+    const column = container.firstElementChild;
+    const bare = column?.childElementCount ?? 0;
+    render({
+      plugin,
+      updateNotice: <p />,
+      statusContent: <p />,
+      harnessRows: [
+        { id: 'claude', name: 'Claude', installation: 'Installed' },
+      ],
+      sharedContent: <p />,
+    });
+    // Each filled slot adds exactly its own node; no wrapper around it.
+    expect(container.firstElementChild?.childElementCount).toBe(bare + 4);
+    render({ plugin, harnessRows: [] });
+    expect(container.firstElementChild?.childElementCount).toBe(bare);
+  });
+
   it('offers keyboard-native descriptions without requiring a component source file', () => {
     const description =
       'Detailed third-party instructions that remain available on demand.';
@@ -811,15 +969,22 @@ describe('PluginDetailContent', () => {
     );
   });
 
-  it('keeps technical server details collapsed and available on demand', () => {
+  it('shows MCP servers in an always-visible section before the README (CAN-4842)', () => {
     render({
       plugin: makePlugin({
         details: makeDetails({
+          hasReadme: true,
           mcpServers: [
             {
               name: 'mail',
               type: 'http',
               url: 'https://mail.example.test/mcp',
+            },
+            {
+              name: 'local',
+              type: 'command',
+              command: 'mail-mcp',
+              args: ['--x'],
             },
           ],
           skills: [
@@ -829,19 +994,110 @@ describe('PluginDetailContent', () => {
               description: 'Search mail',
             },
           ],
+          agents: [
+            { name: 'Agent', description: 'Detail', filePath: 'agents/x.md' },
+          ],
+          commands: [
+            {
+              name: 'Command',
+              description: 'Detail',
+              filePath: 'commands/x.md',
+            },
+          ],
         }),
       }),
     });
-    const disclosure = Array.from(container.querySelectorAll('details')).find(
-      (element) =>
-        element.querySelector('summary')?.textContent?.trim() === 'MCP servers',
+    expect(
+      Array.from(container.querySelectorAll('summary')).some(
+        (summary) => summary.textContent?.trim() === 'MCP servers',
+      ),
+    ).toBe(false);
+    const heading = sectionHeading('MCP servers');
+    const section = heading?.closest('section');
+    expect(section).not.toBeNull();
+    expect(
+      Array.from(section?.querySelectorAll('thead th') ?? []).map(
+        (cell) => cell.textContent,
+      ),
+    ).toEqual(['Name', 'Status', 'Actions']);
+    expect(section?.querySelector('thead th:last-child span')?.className).toBe(
+      'sr-only',
     );
-    expect(disclosure).not.toBeNull();
-    expect(disclosure?.open).toBe(false);
-    expect(disclosure?.textContent).toContain('https://mail.example.test/mcp');
-    expect(findButton('Find messages').closest('details')).toBeNull();
-    act(() => disclosure?.querySelector('summary')?.click());
-    expect(disclosure?.open).toBe(true);
+    expect(section?.textContent).toContain('https://mail.example.test/mcp');
+    const command = Array.from(section?.querySelectorAll('span') ?? []).find(
+      (span) => span.textContent === 'mail-mcp --x',
+    );
+    expect(command?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
+    expect(
+      Array.from(
+        container.querySelectorAll(
+          '[data-testid="plugin-detail-section-heading"]',
+        ),
+      ).map((node) => node.textContent),
+    ).toEqual(['MCP servers', 'README', 'Skills', 'Agents', 'Commands']);
+  });
+
+  it('reads "Not configured yet" without a host status and renders the host status cell', () => {
+    const plugin = makePlugin({
+      details: makeDetails({
+        mcpServers: [
+          { name: 'a', type: 'http', url: 'https://a.example.test/mcp' },
+          { name: 'b', type: 'http', url: 'https://b.example.test/mcp' },
+        ],
+      }),
+    });
+    render({ plugin });
+    expect(
+      Array.from(
+        container.querySelectorAll(
+          '[data-testid="plugin-detail-mcp-status-unavailable"]',
+        ),
+      ).map((node) => node.textContent),
+    ).toEqual(['Not configured yet', 'Not configured yet']);
+    render({
+      plugin,
+      renderMcpServerStatus: (server) =>
+        server.name === 'a' ? <span data-testid="t-health-a" /> : undefined,
+    });
+    const rowA = container.querySelector('[data-mcp-member="a"]');
+    const rowB = container.querySelector('[data-mcp-member="b"]');
+    expect(rowA?.querySelector('[data-testid="t-health-a"]')).not.toBeNull();
+    expect(
+      rowA?.querySelector(
+        '[data-testid="plugin-detail-mcp-status-unavailable"]',
+      ),
+    ).toBeNull();
+    expect(
+      rowB?.querySelector(
+        '[data-testid="plugin-detail-mcp-status-unavailable"]',
+      )?.textContent,
+    ).toBe('Not configured yet');
+  });
+
+  it('renders no empty components wrapper for an MCP-only plugin and hides the section with the components', () => {
+    const plugin = makePlugin({
+      details: makeDetails({
+        mcpServers: [
+          { name: 'a', type: 'http', url: 'https://a.example.test/mcp' },
+        ],
+      }),
+    });
+    render({ plugin });
+    const column = container.firstElementChild;
+    expect(
+      Array.from(column?.children ?? []).filter(
+        (child) =>
+          child.tagName === 'DIV' &&
+          child.classList.contains('gap-6') &&
+          child.childElementCount === 0,
+      ),
+    ).toHaveLength(0);
+    expect(container.textContent).not.toContain(
+      'No components found for this provider.',
+    );
+    expect(sectionHeading('MCP servers')).not.toBeNull();
+    render({ plugin, hideComponents: true });
+    expect(sectionHeading('MCP servers')).toBeNull();
   });
 
   it('uses one heading treatment for README and component sections', () => {
@@ -882,5 +1138,141 @@ describe('PluginDetailContent', () => {
       'Commands',
     ]);
     expect(new Set(headings.map((heading) => heading.className)).size).toBe(1);
+  });
+  it('opens and focuses the exact provider member once per navigation request', () => {
+    const claude = makeFacet({
+      details: makeDetails({
+        mcpServers: [
+          {
+            name: 'same',
+            type: 'http',
+            url: 'https://claude.example.test/mcp',
+          },
+        ],
+      }),
+    });
+    const codex = makeFacet({
+      provider: 'codex',
+      details: makeDetails({
+        mcpServers: [
+          { name: 'same', type: 'http', url: 'https://codex.example.test/mcp' },
+        ],
+      }),
+    });
+    const plugin = makePlugin({
+      providerSupport: { claude: 'native', codex: 'native' },
+      facets: { claude, codex },
+    });
+    const mcpTarget = {
+      serverName: 'same',
+      provider: 'codex' as const,
+      requestId: 'one',
+    };
+    render({ plugin, mcpTarget });
+    const member = container.querySelector<HTMLTableRowElement>(
+      '[data-mcp-member="same"]',
+    );
+    expect(member?.textContent).toContain('https://codex.example.test/mcp');
+    expect(document.activeElement).toBe(member);
+    expect(member?.closest('details')).toBeNull();
+    // The same request does not refocus; a new request does.
+    act(() => {
+      if (document.activeElement instanceof HTMLElement)
+        document.activeElement.blur();
+    });
+    render({ plugin: { ...plugin }, mcpTarget: { ...mcpTarget } });
+    expect(document.activeElement).not.toBe(member);
+    render({ plugin, mcpTarget: { ...mcpTarget, requestId: 'two' } });
+    expect(document.activeElement).toBe(
+      container.querySelector('[data-mcp-member="same"]'),
+    );
+  });
+
+  it('links a hidden server only on the provider member with its endpoint (CAN-3653)', () => {
+    const claude = makeFacet({
+      details: makeDetails({
+        mcpServers: [
+          {
+            name: 'same',
+            type: 'http',
+            url: 'https://claude.example.test/mcp',
+          },
+        ],
+      }),
+    });
+    const codex = makeFacet({
+      provider: 'codex',
+      details: makeDetails({
+        mcpServers: [
+          { name: 'same', type: 'http', url: 'https://codex.example.test/mcp' },
+        ],
+      }),
+    });
+    const plugin = makePlugin({
+      providerSupport: { claude: 'native', codex: 'native' },
+      facets: { claude, codex },
+    });
+    const props = {
+      plugin,
+      bundledServerRows: [
+        {
+          serverName: 'same',
+          endpoint: 'http:claude.example.test',
+          entryId: 'mcp-local:claude-row',
+          serverId: 'claude-row',
+        },
+      ],
+      onOpenEntryId: jest.fn(),
+    };
+    const settings = (): Element | null =>
+      container.querySelector(
+        '[data-testid="plugin-detail-mcp-server-settings-same"]',
+      );
+    render({
+      ...props,
+      mcpTarget: { serverName: 'same', provider: 'codex', requestId: 'one' },
+    });
+    expect(
+      container.querySelector('[data-mcp-member="same"]')?.textContent,
+    ).toContain('https://codex.example.test/mcp');
+    expect(settings()).toBeNull();
+    render({
+      ...props,
+      mcpTarget: { serverName: 'same', provider: 'claude', requestId: 'two' },
+    });
+    expect(
+      container.querySelector('[data-mcp-member="same"]')?.textContent,
+    ).toContain('https://claude.example.test/mcp');
+    expect(settings()).not.toBeNull();
+  });
+
+  it('shows an unavailable target without selecting an unrelated provider member', () => {
+    render({
+      plugin: makePlugin({
+        facets: {
+          claude: makeFacet({
+            details: makeDetails({
+              mcpServers: [
+                {
+                  name: 'same',
+                  type: 'http',
+                  url: 'https://claude.example.test/mcp',
+                },
+              ],
+            }),
+          }),
+        },
+      }),
+      mcpTarget: {
+        serverName: 'same',
+        provider: 'codex',
+        requestId: 'missing',
+      },
+    });
+    expect(
+      container.querySelector('[data-testid="plugin-mcp-target-unavailable"]')
+        ?.textContent,
+    ).toBe('This MCP server is no longer available');
+    expect(document.activeElement?.hasAttribute('data-mcp-member')).toBe(false);
   });
 });

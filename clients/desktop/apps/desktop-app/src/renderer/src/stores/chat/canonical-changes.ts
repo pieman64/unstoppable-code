@@ -17,6 +17,7 @@ import type {
   PersistedPendingQuestion,
 } from '@canopy/desktop-shared/types';
 import { resolveProviderModelConfig } from '@canopy/desktop-shared/types';
+import { overlayStreamBackedDelegationCard } from '@canopy/agent-transcript';
 import {
   mergeAgentModelConfig,
   readCodexSpeedRecord,
@@ -40,6 +41,7 @@ import {
   reconcilePendingTurn,
   reconcileQueueDispatch,
   presentDequeuedMessage,
+  retireRemovedPendingTurn,
 } from './optimistic-presentation';
 import {
   codexSpeedFields,
@@ -47,12 +49,30 @@ import {
   recordCanonicalCodexSpeedWhilePending,
   tabRequestedCodexSpeed,
 } from './codex-speed';
+import {
+  canKeepTranscriptWindowAfterReset,
+  rebaseTranscriptWindow,
+} from './transcript-reset';
 import { fromPersistedTab, relabelFileTabs } from './persisted-tabs';
 import { resolveTabProviderType } from './tab-utils';
-import type { ChatTab, PendingQuestion, WorktreeChatState } from './types';
+import {
+  preserveProvisionalFirstSendTitle,
+  reconcileProvisionalTerminalFirstSend,
+  cancelProvisionalFirstSendQueue,
+  withdrawProvisionalFirstSendFromTab,
+} from './provisional-first-send';
+import {
+  SENDING_LEASE_MS,
+  type ChatTab,
+  type DelegationStreamScopeHints,
+  type PendingQuestion,
+  type SendingLease,
+  type WorktreeChatState,
+} from './types';
 
 /** The per-scope projection pieces committed deltas may modify. */
 export interface CanonicalScopeProjection {
+  delegationStreamHints?: DelegationStreamScopeHints;
   chatState: WorktreeChatState;
   archives: ArchivedChatSummary[];
   runtimeByChatId: Record<string, ChatRuntimeState>;
@@ -119,6 +139,126 @@ export function emptyCompletionRecoveryForRuntime(
 }
 
 /**
+ * A lease for a send, resume or hook start the renderer shows as starting
+ * before canonical runtime reports it. It writes no tab status.
+ */
+export function createSendingLease(
+  userMessageId: string,
+  kind: SendingLease['kind'],
+  now: number,
+): SendingLease {
+  return {
+    userMessageId,
+    kind,
+    issuedAt: now,
+    deadline: now + SENDING_LEASE_MS,
+    state: 'pending',
+  };
+}
+
+export function hasPendingSendingLease(
+  tab: Pick<ChatTab, 'sendingLease'>,
+  now: number,
+): boolean {
+  const lease = tab.sendingLease;
+  return lease?.state === 'pending' && now < lease.deadline;
+}
+
+/**
+ * Whether canonical runtime ends a lease: it shows the leased turn running
+ * (acknowledged), or the chat failed or was cancelled after the lease was
+ * issued. A settled status from before the send (the stopped turn a new
+ * message follows) does not end it. A hook has no correlated user message, so
+ * any running turn counts.
+ */
+function runtimeEndsSendingLease(
+  lease: SendingLease,
+  runtime: ChatRuntimeState,
+): boolean {
+  if (chatRuntimeStatusToTabStatus(runtime) === 'streaming') {
+    const activeUserMessageId = runtime.activeTurn?.userMessageId;
+    return (
+      activeUserMessageId === undefined ||
+      activeUserMessageId === lease.userMessageId ||
+      lease.kind === 'hook'
+    );
+  }
+  return (
+    (runtime.status === 'failed' ||
+      runtime.status === 'cancelled' ||
+      runtime.status === 'interrupted') &&
+    (runtime.lastActivityAt ?? 0) >= lease.issuedAt
+  );
+}
+
+/** Drop the tab's lease when canonical runtime acknowledges or ends it. */
+export function settleSendingLease(
+  tab: ChatTab,
+  runtime: ChatRuntimeState | undefined,
+): ChatTab {
+  if (
+    !tab.sendingLease ||
+    !runtime ||
+    !runtimeEndsSendingLease(tab.sendingLease, runtime)
+  ) {
+    return tab;
+  }
+  const next = { ...tab };
+  delete next.sendingLease;
+  return next;
+}
+
+/** Drop one lease, if it is still the tab's lease. */
+export function withoutSendingLease(
+  tab: ChatTab,
+  userMessageId: string,
+): ChatTab {
+  if (tab.sendingLease?.userMessageId !== userMessageId) return tab;
+  const next = { ...tab };
+  delete next.sendingLease;
+  return next;
+}
+
+/**
+ * Mark a lease that reached its deadline without an acknowledgement expired.
+ * It stays on the tab as evidence of uncertain delivery until canonical
+ * runtime or the command reply settles it, or a newer send replaces it.
+ * Returns the same `worktreeChats` object when nothing changed.
+ */
+export function expireSendingLease(
+  worktreeChats: Record<string, WorktreeChatState>,
+  key: string,
+  chatId: string,
+  userMessageId: string,
+  now: number,
+): Record<string, WorktreeChatState> {
+  const wc = worktreeChats[key];
+  const tab = wc?.tabs.find((candidate) => candidate.id === chatId);
+  const lease = tab?.sendingLease;
+  if (
+    !wc ||
+    !lease ||
+    lease.userMessageId !== userMessageId ||
+    lease.state !== 'pending' ||
+    now < lease.deadline
+  ) {
+    return worktreeChats;
+  }
+  const expired: SendingLease = { ...lease, state: 'expired' };
+  return {
+    ...worktreeChats,
+    [key]: {
+      ...wc,
+      tabs: wc.tabs.map((candidate) =>
+        candidate.id === chatId
+          ? { ...candidate, sendingLease: expired }
+          : candidate,
+      ),
+    },
+  };
+}
+
+/**
  * Project canonical runtime state onto a batch of tabs, for the snapshot
  * install path (hydrate and refresh). The incremental `runtime.patched` change
  * below does the same thing one tab at a time; both live here so the two
@@ -129,9 +269,10 @@ export function applyRuntimeStatusesToTabs(
   tabs: ChatTab[],
   runtimeByChatId: Record<string, ChatRuntimeState>,
 ): ChatTab[] {
-  return tabs.map((tab) => {
-    const runtime = runtimeByChatId[tab.id];
-    if (!runtime) return tab;
+  return tabs.map((current) => {
+    const runtime = runtimeByChatId[current.id];
+    if (!runtime) return current;
+    const tab = settleSendingLease(current, runtime);
     const status = chatRuntimeStatusToTabStatus(runtime);
     const error = status === 'error' ? (runtime.error?.message ?? null) : null;
     const lastEventAt = latestChatActivityAt(
@@ -211,7 +352,9 @@ export function preserveRendererOnlyTabFields(
         window && nextRevision !== undefined
           ? {
               ...window,
-              transcriptRevision: nextRevision,
+              ...(previous.transcriptLoaded !== false
+                ? { transcriptRevision: nextRevision }
+                : {}),
               totalMessages:
                 next.transcript?.messageCount ??
                 next.transcript?.committedMessageCount ??
@@ -233,15 +376,6 @@ export function preserveRendererOnlyTabFields(
     };
   }
 
-  const nextMessageIds = new Set(next.messages.map((message) => message.id));
-  const transientSetupMessages = previous.messages.filter(
-    (message) =>
-      message.role === 'system' &&
-      message.blocks.length === 1 &&
-      message.blocks[0].type === 'pending_setup_info' &&
-      !nextMessageIds.has(message.id),
-  );
-
   const preserved: ChatTab = {
     ...next,
     ...(previous.transcriptStale ? { transcriptStale: true } : {}),
@@ -261,9 +395,7 @@ export function preserveRendererOnlyTabFields(
     messages:
       previous.queuedHookPlaceholder === true
         ? previous.messages
-        : transientSetupMessages.length > 0
-          ? [...transientSetupMessages, ...next.messages]
-          : next.messages,
+        : next.messages,
     ...(previous.queuedForSetup !== undefined
       ? { queuedForSetup: previous.queuedForSetup }
       : {}),
@@ -307,15 +439,22 @@ export function preserveRendererOnlyTabFields(
     ...(previous.stoppedTurnResume !== undefined
       ? { stoppedTurnResume: previous.stoppedTurnResume }
       : {}),
+    // Renderer-only optimistic send state; canonical runtime settles it.
+    ...(previous.sendingLease !== undefined
+      ? { sendingLease: previous.sendingLease }
+      : {}),
     // The route main reported for the live session. Main never commits it,
     // so a canonical tab cannot carry it and must not drop it.
     ...(previous.accountProxyRouted !== undefined
       ? { accountProxyRouted: previous.accountProxyRouted }
       : {}),
   };
-  return preservePendingUserMessages(
-    preserved,
-    preserved.messages,
+  return reconcileProvisionalTerminalFirstSend(
+    preservePendingUserMessages(
+      preserveProvisionalFirstSendTitle(previous, preserved),
+      preserved.messages,
+      authoritativeMessages,
+    ),
     authoritativeMessages,
   );
 }
@@ -400,6 +539,9 @@ function applySettingsPatchToTab(
     if (value === null) Reflect.deleteProperty(next, key);
     else defineChatTabMetadataProperty(next, key, value);
   }
+  // Mirrors main's reducer: only `chat.mark_unread` sets the manual flag, so
+  // any other unread write replaces the user's mark.
+  if (metadata.unread !== undefined) delete next.unreadMarkedManually;
   if (planMode !== undefined) next.planMode = planMode ?? false;
   if (proposalMode !== undefined) {
     next.proposalMode = proposalMode ?? 'optional';
@@ -477,6 +619,8 @@ function applySettingsPatchToTab(
       usage,
       next.model,
       next.aiCreditsRouted,
+      next.executionHarness ??
+        (next.providerType === 'opencode' ? 'opencode' : undefined),
     );
   }
   return next;
@@ -517,6 +661,42 @@ function applyOneChange(
   todoProjection: TodoProjection,
 ): CanonicalScopeProjection {
   switch (change.type) {
+    case 'delegation.card_state_updated':
+      // Card state is descriptor metadata: it overlays a loaded stream card
+      // and never inserts a row. An unloaded card arrives merged when it loads.
+      return {
+        ...projection,
+        chatState: updateTabMessages(
+          projection.chatState,
+          change.chatId,
+          (messages) => {
+            let changed = false;
+            const next = messages.map((message) => {
+              let blocksChanged = false;
+              const blocks = message.blocks.map((block) => {
+                if (
+                  block.type !== 'delegated_agent_call' ||
+                  block.transcriptStore !== 'chat-stream-v2' ||
+                  block.delegationId !== change.delegationId ||
+                  block.runGeneration !== change.runGeneration
+                )
+                  return block;
+                blocksChanged = true;
+                return overlayStreamBackedDelegationCard(
+                  block,
+                  change.cardState,
+                  change.streamRevision,
+                );
+              });
+              if (!blocksChanged) return message;
+              changed = true;
+              return { ...message, blocks };
+            });
+            return changed ? next : messages;
+          },
+          todoProjection,
+        ),
+      };
     case 'tab.upserted': {
       const converted = fromPersistedTab(change.tab);
       const tabs = projection.chatState.tabs.slice();
@@ -647,19 +827,37 @@ function applyOneChange(
       };
     }
     case 'message.removed': {
+      const chatState = updateTabMessages(
+        projection.chatState,
+        change.chatId,
+        (messages) => {
+          const next = messages.filter(
+            (message) => message.id !== change.messageId,
+          );
+          return next.length === messages.length ? messages : next;
+        },
+        todoProjection,
+      );
+      // Host queue cancellation names the original submission, even though
+      // its prompt never entered the transcript. Retire that ownership and
+      // the send's pending turn, whose open timer would otherwise close
+      // whichever turn is newest and show it as running.
+      const tabs = chatState.tabs.map((tab) => {
+        if (tab.id !== change.chatId) return tab;
+        const withdrawn =
+          tab.provisionalFirstSend?.userMessageId === change.messageId
+            ? withdrawProvisionalFirstSendFromTab(
+                cancelProvisionalFirstSendQueue(tab, change.messageId),
+                change.messageId,
+              )
+            : tab;
+        return retireRemovedPendingTurn(withdrawn, change.messageId);
+      });
       return {
         ...projection,
-        chatState: updateTabMessages(
-          projection.chatState,
-          change.chatId,
-          (messages) => {
-            const next = messages.filter(
-              (message) => message.id !== change.messageId,
-            );
-            return next.length === messages.length ? messages : next;
-          },
-          todoProjection,
-        ),
+        chatState: tabs.every((tab, index) => tab === chatState.tabs[index])
+          ? chatState
+          : { ...chatState, tabs },
       };
     }
     case 'transcript.updated': {
@@ -676,8 +874,31 @@ function applyOneChange(
                   currentTodos: change.transcript.todos,
                   currentTaskTodos: change.transcript.taskTodos,
                   ...(change.reset
-                    ? { transcriptLoaded: false, transcriptWindow: undefined }
-                    : tab.transcriptWindow
+                    ? {
+                        transcriptLoaded: false,
+                        transcriptWindow: tab.transcriptWindow
+                          ? {
+                              ...tab.transcriptWindow,
+                              transcriptRevision:
+                                change.transcript.transcriptRevision,
+                              totalMessages:
+                                change.transcript.messageCount ??
+                                change.transcript.committedMessageCount ??
+                                tab.transcriptWindow.totalMessages,
+                            }
+                          : {
+                              view: 'turns',
+                              turns: [],
+                              messageOrdinals: {},
+                              totalMessages:
+                                change.transcript.messageCount ??
+                                change.transcript.committedMessageCount ??
+                                0,
+                              transcriptRevision:
+                                change.transcript.transcriptRevision,
+                            },
+                      }
+                    : tab.transcriptWindow && tab.transcriptLoaded !== false
                       ? {
                           transcriptWindow: {
                             ...tab.transcriptWindow,
@@ -733,7 +954,8 @@ function applyOneChange(
       );
       let chatState = projection.chatState;
       if (index !== -1) {
-        const tab = chatState.tabs[index];
+        const currentTab = chatState.tabs[index];
+        const tab = settleSendingLease(currentTab, change.runtime);
         const status = chatRuntimeStatusToTabStatus(change.runtime);
         const error =
           status === 'error' ? (change.runtime.error?.message ?? null) : null;
@@ -750,6 +972,7 @@ function applyOneChange(
         );
         if (
           pendingTurnStopped ||
+          tab !== currentTab ||
           tab.status !== status ||
           tab.error !== error ||
           tab.lastEventAt !== lastEventAt ||
@@ -826,6 +1049,60 @@ function applyOneChange(
   }
 }
 
+/** Collect invalidation even when the card's message is not loaded. */
+function applyDelegationHintChange(
+  projection: CanonicalScopeProjection,
+  change: ChatStateChange,
+): CanonicalScopeProjection {
+  const hints = projection.delegationStreamHints;
+  if (change.type === 'tab.removed') {
+    if (!hints) return projection;
+    const prefix = `${change.tabId}:`;
+    const entries = Object.entries(hints.runs);
+    const kept = entries.filter(([key]) => !key.startsWith(prefix));
+    return kept.length === entries.length
+      ? projection
+      : {
+          ...projection,
+          delegationStreamHints: { ...hints, runs: Object.fromEntries(kept) },
+        };
+  }
+  if (change.type !== 'delegation.card_state_updated') return projection;
+  const current: DelegationStreamScopeHints = hints ?? { epoch: 0, runs: {} };
+  const prefix = `${change.chatId}:${change.delegationId}:`;
+  const key = `${prefix}${change.runGeneration}`;
+  const entries = Object.entries(current.runs);
+  const generations = entries.filter(([run]) => run.startsWith(prefix));
+  // An event for an older run must not resurrect its retired generation.
+  if (
+    generations.some(
+      ([run]) => Number(run.slice(prefix.length)) > change.runGeneration,
+    )
+  ) {
+    return projection;
+  }
+  const previous = current.runs[key];
+  const streamRevision = Math.max(
+    previous?.streamRevision ?? 0,
+    change.streamRevision,
+  );
+  const cardRevision = Math.max(
+    previous?.cardRevision ?? 0,
+    change.cardRevision,
+  );
+  if (
+    previous?.streamRevision === streamRevision &&
+    previous.cardRevision === cardRevision
+  ) {
+    return projection;
+  }
+  const runs = Object.fromEntries(
+    entries.filter(([run]) => !run.startsWith(prefix)),
+  );
+  runs[key] = { streamRevision, cardRevision };
+  return { ...projection, delegationStreamHints: { ...current, runs } };
+}
+
 /**
  * Apply an ordered list of committed canonical changes to a scope projection.
  * Pure: returns new objects, never mutates inputs, and performs no I/O.
@@ -851,6 +1128,7 @@ export function applyCanonicalChanges(
   let next = projection;
   for (let changeIndex = 0; changeIndex < changes.length; changeIndex += 1) {
     const change = changes[changeIndex];
+    next = applyDelegationHintChange(next, change);
     recordTranscriptPerformanceCounter(
       `canonical_change_${change.type.replace(/\./g, '_')}`,
     );
@@ -914,7 +1192,41 @@ export function applyCanonicalChanges(
       (lastTranscriptUpdateByChat.get(change.chatId) ?? -1) > changeIndex
         ? 'transcript'
         : 'derive';
-    next = applyOneChange(next, change, ctx, todoProjection);
+    if (change.type === 'transcript.updated' && change.reset) {
+      const previous = projection.chatState.tabs.find(
+        (tab) => tab.id === change.chatId,
+      );
+      if (previous && canKeepTranscriptWindowAfterReset(previous, changes)) {
+        // The rank-safe window stays loaded, but adopts canonical descriptor metadata.
+        next = applyOneChange(
+          next,
+          { ...change, reset: false },
+          ctx,
+          todoProjection,
+        );
+        next = {
+          ...next,
+          chatState: {
+            ...next.chatState,
+            tabs: next.chatState.tabs.map((tab) =>
+              tab.id === change.chatId
+                ? {
+                    ...tab,
+                    transcriptWindow: rebaseTranscriptWindow(
+                      { ...previous, transcriptWindow: tab.transcriptWindow },
+                      tab.messages,
+                    ),
+                  }
+                : tab,
+            ),
+          },
+        };
+      } else {
+        next = applyOneChange(next, change, ctx, todoProjection);
+      }
+    } else {
+      next = applyOneChange(next, change, ctx, todoProjection);
+    }
     if (change.type === 'message.upserted') {
       const messageId = change.message.id;
       const tabs = next.chatState.tabs.map((tab) => {
@@ -926,7 +1238,10 @@ export function applyCanonicalChanges(
             !tab.pendingQueueDispatch)
         )
           return tab;
-        tab = reconcileQueueDispatch(tab, [change.message]);
+        tab = reconcileProvisionalTerminalFirstSend(
+          reconcileQueueDispatch(tab, [change.message]),
+          [change.message],
+        );
         const users = tab.pendingUserMessages?.filter(
           (message) => message.id !== messageId,
         );

@@ -58,7 +58,6 @@ function installApi(codeGraph: CodeGraphPreferences): MockApi {
         credentialSource: null,
         capabilities: [],
         storageAvailable: true,
-        account: null,
       }),
     savePreferences: jest.fn((patch) =>
       Promise.resolve(makeTestPreferences({ codeGraph, ...patch })),

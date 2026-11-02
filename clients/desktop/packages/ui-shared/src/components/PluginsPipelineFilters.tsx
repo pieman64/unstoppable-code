@@ -116,7 +116,7 @@ export function PluginsPipelineFilters({
   return (
     <div
       role="group"
-      aria-label="Filter pipelines"
+      aria-label="Filter workflows"
       data-testid="plugins-pipeline-filters"
       className="-mr-2.5 flex flex-wrap items-center gap-0"
     >

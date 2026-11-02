@@ -1,6 +1,8 @@
 import { OpenCodeConnection } from './OpenCodeConnection';
 import { AccountProxyOptInSection } from './account-proxy/AccountProxyOptInSection';
 import { isCursorHarnessReleased } from '@/lib/cursor-settings';
+import { isCopilotHarnessReleased } from '@/lib/copilot-settings';
+import { isOpenCodeHarnessReleased } from '@/lib/opencode-settings';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
@@ -10,7 +12,6 @@ import { ManagedDelegationSettings } from './ManagedDelegationSettings';
 import { CopilotConnection } from './CopilotConnection';
 import { CursorConnection } from './CursorConnection';
 import { CursorApprovalCheck } from './CursorApprovalCheck';
-import { ChatLiveStepWindowSection } from './ChatLiveStepWindowSection';
 import { DesktopLabsSettingsSection } from './hosted/DesktopLabsSettingsSection';
 import { RemoteControlOptInSection } from './RemoteControlOptInSection';
 import { RendererCodeCacheSection } from './RendererCodeCacheSection';
@@ -19,9 +20,9 @@ import { SettingsPage, SettingsLoading } from './SettingsLayout';
 /**
  * Settings → Labs tab. Hosts experimental features that are still
  * being evaluated: the early access master switch, managed delegation, the
- * Cursor harness diagnostics, the remote access opt-in, faster window
- * opening, and the live step window for chats. Code Graph has its own
- * settings page.
+ * Cursor harness diagnostics, the remote access opt-in and faster window
+ * opening. How much of an agent's work chats show is under Display →
+ * Appearance. Code Graph has its own settings page.
  */
 export function ExperimentsTab(): JSX.Element {
   const opencodeHarnessEnabled = useFeatureFlagsStore((state) =>
@@ -34,6 +35,8 @@ export function ExperimentsTab(): JSX.Element {
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key),
   );
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
+  const copilotReleased = useFeatureFlagsStore(isCopilotHarnessReleased);
+  const opencodeReleased = useFeatureFlagsStore(isOpenCodeHarnessReleased);
   const accountProxyFlagEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key),
   );
@@ -51,6 +54,7 @@ export function ExperimentsTab(): JSX.Element {
       | 'managedDelegationMode'
       | 'managedDelegationMaxConcurrent'
       | 'managedDelegationMaxDepth'
+      | 'managedDelegationLifetimeLimit'
       | '__managedDelegationRevocationIncomplete'
       | 'remoteControlEnabled'
     >
@@ -69,6 +73,7 @@ export function ExperimentsTab(): JSX.Element {
           managedDelegationMode: prefs.managedDelegationMode,
           managedDelegationMaxConcurrent: prefs.managedDelegationMaxConcurrent,
           managedDelegationMaxDepth: prefs.managedDelegationMaxDepth,
+          managedDelegationLifetimeLimit: prefs.managedDelegationLifetimeLimit,
           __managedDelegationRevocationIncomplete:
             prefs.__managedDelegationRevocationIncomplete,
           remoteControlEnabled: prefs.remoteControlEnabled,
@@ -106,6 +111,9 @@ export function ExperimentsTab(): JSX.Element {
       <DesktopLabsSettingsSection />
 
       <ManagedDelegationSettings
+        initialLifetimeLimit={
+          delegationPreferences.managedDelegationLifetimeLimit
+        }
         initialMaxDepth={delegationPreferences.managedDelegationMaxDepth}
         initialMaxConcurrent={
           delegationPreferences.managedDelegationMaxConcurrent
@@ -122,8 +130,8 @@ export function ExperimentsTab(): JSX.Element {
           <CursorApprovalCheck />
         </>
       )}
-      {copilotHarnessEnabled && <CopilotConnection />}
-      {opencodeHarnessEnabled && <OpenCodeConnection />}
+      {copilotHarnessEnabled && !copilotReleased && <CopilotConnection />}
+      {opencodeHarnessEnabled && !opencodeReleased && <OpenCodeConnection />}
       {accountProxyFlagEnabled && <AccountProxyOptInSection />}
       {remoteControlFlagEnabled && localWindow && (
         <RemoteControlOptInSection
@@ -136,7 +144,6 @@ export function ExperimentsTab(): JSX.Element {
           }}
         />
       )}
-      <ChatLiveStepWindowSection />
       <RendererCodeCacheSection />
     </SettingsPage>
   );

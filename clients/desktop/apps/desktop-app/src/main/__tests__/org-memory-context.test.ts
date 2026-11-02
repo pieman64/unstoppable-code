@@ -236,7 +236,8 @@ describe('organization memory context helpers', () => {
       }),
     ).toBe(false);
     // Human-driven surfaces keep fetching.
-    for (const initiationSource of ['user', 'portal', 'app_advisor']) {
+    const humanInitiationSources = ['user', 'portal', 'app_advisor'] as const;
+    for (const initiationSource of humanInitiationSources) {
       expect(
         shouldFetchMemory({
           ...base,

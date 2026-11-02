@@ -122,16 +122,18 @@ export async function desktopAgentActionCall(
     'action' in rawArgs
       ? rawArgs.action
       : null;
-  const experimentWrite =
+  // App Advisor has no action runtime; its chat keys these writes' replays.
+  const advisorScopedWrite =
     typeof action === 'object' &&
     action !== null &&
     'type' in action &&
     (action.type === 'experiments.set_enabled' ||
+      action.type === 'pipeline.run' ||
       (typeof action.type === 'string' &&
         action.type.startsWith('installed_items.')));
   const scoped =
     runtime.worktreeActionRuntime ??
-    (experimentWrite ? runtime.worktreeWatcherRuntime : undefined);
+    (advisorScopedWrite ? runtime.worktreeWatcherRuntime : undefined);
   const call: AgentActionCall<CanopyInjectedToolRuntime> = {
     host: runtime,
     toolUseId: context?.toolUseId,
@@ -147,7 +149,15 @@ export async function desktopAgentActionCall(
         }
       : {}),
   };
-  if (!keyedByTurn(key, rawArgs)) return call;
+  // A run replays by tool call. A worktree chat's MCP request id restarts with
+  // each connection, so the turn, when known, keeps a later turn's call from
+  // replaying an earlier run; a run never requires one.
+  const pipelineRun =
+    typeof action === 'object' &&
+    action !== null &&
+    'type' in action &&
+    action.type === 'pipeline.run';
+  if (!keyedByTurn(key, rawArgs) && !pipelineRun) return call;
   const turnKey = await resolveDesktopTurnKey(call);
   return turnKey ? { ...call, turnKey } : call;
 }

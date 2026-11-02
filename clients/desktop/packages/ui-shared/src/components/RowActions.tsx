@@ -42,7 +42,7 @@ export function RowActionTray({
 
   return (
     <div
-      className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-card px-0.5 py-0.5 shadow-sm transition ${visibilityClasses}`}
+      className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-card px-0.5 py-0.5 shadow-sm transition-opacity ${visibilityClasses}`}
       data-testid={testId}
     >
       {children}

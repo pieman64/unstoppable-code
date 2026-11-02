@@ -172,6 +172,7 @@ function FileCsvPreviewImpl({
       ref={scrollBinding?.ref}
       onScroll={scrollBinding?.onScroll}
       data-testid="file-viewer-csv-table-scroll"
+      data-selectable
       className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto`}
     >
       <table className="w-full border-collapse text-xs">

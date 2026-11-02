@@ -104,9 +104,9 @@ function makeClient(): CanopyClient {
       terminalPty: false,
       fileSystemAccess: 'read',
       voice: false,
-      settingsScope: 'limited',
-      pipelines: 'view-only',
-      routing: 'portal',
+      settingsScope: 'api-keys-only',
+      pipelines: 'read-only',
+      routing: 'url',
       overviewNotifications: true,
     },
     query<K extends QueryName>(): Promise<QueryMap[K]['result']> {

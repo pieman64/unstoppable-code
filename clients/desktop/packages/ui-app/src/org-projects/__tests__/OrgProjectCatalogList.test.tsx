@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { OrgProjectSummary } from '@canopy/protocol/org-projects';
 import {
   orgProjectCatalogOption,
+  isOrgProjectCloudAddSupported,
   OrgProjectCatalogList,
   type OrgProjectCatalogListProps,
 } from '../OrgProjectCatalogList';
@@ -230,6 +231,68 @@ describe('OrgProjectCatalogList', () => {
       expect(onAdd).not.toHaveBeenCalled();
     });
 
+    it('names the desktop destination beside Add to Cloud', () => {
+      renderCloud(
+        [project('payments'), project('billing')],
+        {},
+        {
+          addedProjectIds: new Set(['billing']),
+        },
+      );
+      expect(
+        byTestId('add-workspace-org-catalog-add-payments')?.textContent,
+      ).toBe('Add to desktop');
+      expect(
+        byTestId('add-workspace-org-catalog-added-billing')?.textContent,
+      ).toBe('On desktop');
+      // Two actions on the row: Add to Cloud is not the accent one.
+      expect(
+        byTestId('add-workspace-org-catalog-add-cloud-payments')?.className,
+      ).not.toContain('bg-accent');
+    });
+
+    it('offers only the cloud when the host offers no Add', () => {
+      renderCloud(
+        [
+          project('payments'),
+          project('billing'),
+          project('opened'),
+          project('notes', { kind: 'COWORK', repository: null }),
+          project('local', { repository: null, memberOwned: true }),
+        ],
+        { copies: new Set(['opened']) },
+        { addOffered: false, addedProjectIds: new Set(['billing']) },
+      );
+      expect(
+        container.querySelector(
+          '[data-testid^="add-workspace-org-catalog-add-"]:not([data-testid^="add-workspace-org-catalog-add-cloud-"])',
+        ),
+      ).toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid^="add-workspace-org-catalog-added-"]',
+        ),
+      ).toBeNull();
+      // Even alone on the row it is never a solid accent (CAN-3909).
+      expect(
+        byTestId('add-workspace-org-catalog-add-cloud-payments')?.className,
+      ).not.toContain('bg-accent');
+      expect(
+        byTestId('add-workspace-org-catalog-add-cloud-billing'),
+      ).not.toBeNull();
+      expect(
+        byTestId('add-workspace-org-catalog-open-cloud-opened')?.textContent,
+      ).toBe('Open');
+      // Rows the cloud cannot take say why instead of showing nothing.
+      for (const id of ['notes', 'local'])
+        expect(
+          byTestId(`add-workspace-org-catalog-desktop-only-${id}`)?.textContent,
+        ).toBe('Desktop only');
+      expect(
+        byTestId('add-workspace-org-catalog-desktop-only-payments'),
+      ).toBeNull();
+    });
+
     it('offers Open instead once the host has a cloud copy', () => {
       const target = project('payments');
       renderCloud([target], { copies: new Set(['payments']) });
@@ -275,6 +338,12 @@ describe('OrgProjectCatalogList', () => {
       render({ projects: [project('payments')] });
       expect(
         byTestId('add-workspace-org-catalog-add-cloud-payments'),
+      ).toBeNull();
+      expect(
+        byTestId('add-workspace-org-catalog-add-payments')?.textContent,
+      ).toBe('Add');
+      expect(
+        byTestId('add-workspace-org-catalog-desktop-only-payments'),
       ).toBeNull();
     });
   });
@@ -469,4 +538,17 @@ describe('orgProjectCatalogOption', () => {
       scopedSummary: 'Team projects',
     });
   });
+});
+
+test('a complete shared multi-repo definition never offers a primary-only cloud copy', () => {
+  const base = withRepository('shared', { providerRepoId: '1' });
+  const multi: OrgProjectSummary = {
+    ...base,
+    topology: 'multi-repo',
+    materializationVersion: 1,
+    repositoriesComplete: true,
+    repositoryCount: 1,
+    repositories: base.repository ? [base.repository] : [],
+  };
+  expect(isOrgProjectCloudAddSupported(multi)).toBe(false);
 });

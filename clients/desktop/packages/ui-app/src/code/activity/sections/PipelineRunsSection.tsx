@@ -138,7 +138,7 @@ function PipelineRunRow({
       className={
         active
           ? 'rounded-lg border bg-fg-primary/[0.03] px-3 py-3'
-          : 'group/pipeline-run relative rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition hover:bg-fg-primary/[0.03]'
+          : 'group/pipeline-run relative rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:bg-fg-primary/[0.03]'
       }
       data-testid={`pipeline-run-row-${run.localId ?? run.pipelineLocalId ?? run.pipelineName}`}
     >
@@ -193,7 +193,7 @@ export function PipelineRunsSection({
         className="text-xs fg-secondary"
         data-testid="activity-pipeline-runs-empty"
       >
-        No pipeline runs.
+        No workflow runs.
       </p>
     );
   const sorted = [...runs].sort((a, b) =>

@@ -151,6 +151,10 @@ test('the prompt Add menu paints over the edit shell and yields to the unsaved-c
     const shell = window.getByTestId('workflow-edit-shell');
     await expect(shell).toBeVisible();
     const definition = shell.getByTestId('workflow-edit-section-definition');
+    // A new workflow opens with no project; App Advisor has the prompt.
+    await definition
+      .getByTestId('automations-form-action-type-app_advisor')
+      .click();
     await definition
       .getByTestId('automations-form-name')
       .fill('Stacking tiers check');

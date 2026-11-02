@@ -34,6 +34,7 @@ jest.mock('../agents/ai-credits-routing', () => ({
 const mockNativeAccountChangedAt: Partial<Record<'claude' | 'codex', number>> =
   {};
 jest.mock('../agents/native-account-change', () => ({
+  getNativeSubscriptionRestoredAt: (): number | undefined => undefined,
   getNativeAccountChangedAt: (
     provider: 'claude' | 'codex',
   ): number | undefined => mockNativeAccountChangedAt[provider],
@@ -106,6 +107,7 @@ function initTestGatewayModels(): void {
       {
         modelId: 'deepseek-v4-pro',
         gatewayId: 'deepseek/deepseek-v4-pro',
+        family: 'deepseek',
         recommendedHarness: 'codex',
         gatewayOnly: true,
         contextWindow: 1_000_000,
@@ -116,6 +118,7 @@ function initTestGatewayModels(): void {
       {
         modelId: 'gpt-5.6-sol',
         gatewayId: 'openai/gpt-5.6-sol',
+        family: 'gpt',
         recommendedHarness: 'codex',
         gatewayOnly: false,
         contextWindow: 400_000,
@@ -128,6 +131,59 @@ function initTestGatewayModels(): void {
 }
 
 describe('resolveSessionRoutingSignature', () => {
+  it('records explicit OpenCode gateway execution as routed without native fallback', () => {
+    expect(
+      resolveSessionRoutingSignature(
+        makeOpts({ model: 'gpt-5.6-sol' }),
+        'opencode',
+      ),
+    ).toBe('routed:gpt-5.6-sol');
+    expect(activationMock).not.toHaveBeenCalled();
+    expect(peekMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps native OpenCode routing independent of global or per-chat credits', () => {
+    activationMock.mockReturnValue({ modelId: 'gpt-5.6-sol' });
+    expect(
+      resolveSessionRoutingSignature(
+        makeOpts({
+          model: 'opencode:fixture%2Fmodel',
+          aiCreditsRouting: activeRouting,
+        }),
+        'opencode',
+      ),
+    ).toBe('native');
+    expect(activationMock).not.toHaveBeenCalled();
+  });
+
+  it('records the organization gateway identity for OpenCode', () => {
+    const models = getAiGatewayModelEntries();
+    const routes = getGatewayModelEntries();
+    initAiGatewayModels(
+      models,
+      routes.map((route) =>
+        route.modelId === 'gpt-5.6-sol'
+          ? {
+              ...route,
+              origin: 'org-gateway' as const,
+              organizationId: 'org-1',
+              baseUrl: 'https://gateway.acme.test',
+            }
+          : route,
+      ),
+    );
+    try {
+      expect(
+        resolveSessionRoutingSignature(
+          makeOpts({ model: 'gpt-5.6-sol' }),
+          'opencode',
+        ),
+      ).toBe('routed:org:org-1:https://gateway.acme.test:gpt-5.6-sol');
+    } finally {
+      initAiGatewayModels(models, routes);
+    }
+  });
+
   beforeAll(() => {
     initTestGatewayModels();
   });
@@ -238,12 +294,7 @@ describe('resolveSessionRoutingSignature', () => {
     expect(routed).not.toBe(overridden);
   });
 
-  // ECW-9091: the subscription override is only honorable when a native login
-  // exists to bill. `resolveAiCreditsRoutingAttempt` step 2 returns native ONLY
-  // on a confirmed `checkNativeAuth()`, then falls through to `no-native-auth`
-  // credits routing — so a `native-forced` signature here would report native
-  // while the spawn actually bills credits.
-  it('is routed when the subscription override cannot be honored (no native login)', () => {
+  it('keeps an explicit native attempt despite a negative auth probe', () => {
     peekMock.mockReturnValue({ ollama: true, claude: false });
     activationMock.mockReturnValue(null);
 
@@ -252,7 +303,7 @@ describe('resolveSessionRoutingSignature', () => {
         makeOpts({ subscriptionBillingOverride: true }),
         'claude',
       ),
-    ).toBe('routed:claude-opus-4.8');
+    ).toBe('native-forced');
   });
 
   it('stays native-forced when the override is honorable', () => {
@@ -279,7 +330,7 @@ describe('resolveSessionRoutingSignature', () => {
     ).toBe('native-forced');
   });
 
-  it('an active session-override still wins over the subscription override', () => {
+  it('subscription override wins over stale active session routing', () => {
     const signature = resolveSessionRoutingSignature(
       makeOpts({
         aiCreditsRouting: activeRouting,
@@ -287,7 +338,7 @@ describe('resolveSessionRoutingSignature', () => {
       }),
       'codex',
     );
-    expect(signature).toBe('routed:gateway-slug');
+    expect(signature).toBe('native-forced');
     // active is handled inline before the activation helper is consulted.
     expect(activationMock).not.toHaveBeenCalled();
   });

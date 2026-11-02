@@ -7,6 +7,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { injectChatEvent } from './seeders/injectChatEvent.mjs';
+import { publishTurnLifecycle } from './seeders/publishTurnLifecycle.mjs';
 import { seedStoredPipeline } from './seeders/seedStoredPipeline.mjs';
 import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
@@ -1068,6 +1069,13 @@ test('in-flight turn text stays searchable without rewriting committed search te
     await expect(chatResults).toHaveCount(1, { timeout: 15_000 });
 
     await inject({ type: 'canopy_user_prompt' });
+    await publishTurnLifecycle(electronApp, {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId,
+      turnUserMessageId: turnId,
+      phase: 'start',
+    });
     await draft(
       `${chatId}-draft-1`,
       'The firstdraftneedle meets lanternsharedneedle.',
@@ -1095,6 +1103,13 @@ test('in-flight turn text stays searchable without rewriting committed search te
     await input.fill('lanternsharedneedle');
     await expect(chatResults).toHaveCount(1, { timeout: 15_000 });
 
+    await publishTurnLifecycle(electronApp, {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId,
+      turnUserMessageId: turnId,
+      phase: 'end',
+    });
     await inject({ type: 'codex', event: { type: 'turn.completed' } });
     await expect.poll(inFlightBodies, { timeout: 15_000 }).toEqual([]);
     for (const needle of ['firstdraftneedle', 'seconddraftneedle']) {

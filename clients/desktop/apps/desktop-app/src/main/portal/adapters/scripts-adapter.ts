@@ -9,10 +9,10 @@ import { logMainProcessError } from '../../lib/main-process-logging';
 import { sendToWindow } from '../../lib/window-send';
 import {
   cancelScript,
-  getScriptSourceInfo,
   readAndEmitScriptRunTail,
   runScript,
 } from '../../services/scripts-service';
+import { readPortalScriptSourceInfo } from '../portal-workspace-reads';
 import type { PortalAdapterContext } from './types';
 import { failServiceError, isRecord } from './validation';
 
@@ -100,7 +100,9 @@ export async function handlePortalScriptSourceInfo(
   try {
     context.complete(
       command,
-      await getScriptSourceInfo(command.payload as ScriptSourceInfoRequest),
+      await readPortalScriptSourceInfo(
+        command.payload as ScriptSourceInfoRequest,
+      ),
     );
   } catch (error) {
     failServiceError(command, context, error);

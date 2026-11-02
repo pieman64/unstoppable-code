@@ -80,6 +80,7 @@ function makeEntries(count: number): CoworkWorkEntryMeta[] {
     createdAt: `2026-07-0${(index % 9) + 1}T10:00:00.000Z`,
     lastMessageAt: `2026-07-0${(index % 9) + 1}T11:00:00.000Z`,
     status: 'active',
+    chatCount: 1,
   }));
 }
 
@@ -563,6 +564,7 @@ describe('SidebarChatsSection', () => {
           title: 'New chat',
           createdAt: '2026-07-01T10:00:00.000Z',
           status: 'active',
+          chatCount: 0,
         },
       ]);
       const { container, root } = await renderChats();

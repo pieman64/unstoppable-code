@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import type * as AtomicFileModule from '../../lib/atomic-file';
 
 const schedulePortalStructuralSync = jest.fn<void, []>();
@@ -169,6 +170,45 @@ function deps(
 
 async function settle(service: SpaceNotificationPolicyService): Promise<void> {
   await service.sync();
+}
+
+const persistedRevisionsSchema = z.object({
+  spaces: z.record(z.string(), z.object({ revision: z.number() })),
+});
+
+/** Waits until the account's policy file on disk holds `revision` for `key`.
+ * Gives up after `timeoutMs` so a lost write fails on the caller's assertion
+ * instead of the test timeout. */
+async function waitForPersistedRevision(
+  key: string,
+  revision: number,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const names = await readdir(dir).catch((): string[] => []);
+    for (const name of names) {
+      // Skip in-progress atomic-write temp files (`.<name>.<pid>.<uuid>.tmp`).
+      if (name.startsWith('.') || !name.endsWith('.json')) continue;
+      const raw = await readFile(join(dir, name), 'utf8').catch(() => '{}');
+      let json: unknown = null;
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        // Unreadable as JSON: not written yet, so poll again.
+      }
+      const persisted = persistedRevisionsSchema.safeParse(json);
+      if (
+        persisted.success &&
+        persisted.data.spaces[key]?.revision === revision
+      )
+        return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  // Deadline hit. The caller's restart assertion then shows what the file
+  // still holds. The write takes milliseconds, so an older revision after 3 s
+  // points to a lost or overwritten write rather than a slow runner.
 }
 
 beforeEach(async () => {
@@ -378,7 +418,9 @@ it('saves a choice, reports conflicts, and reconciles a lost response', async ()
   // Another device changed it first: the authoritative choice is shown.
   const elsewhere: ServerSpace = { ...MUTED, revision: 2, override: 'all' };
   request
-    .mockRejectedValueOnce(new CanopyCloudClientError('http', 'conflict', 409))
+    .mockRejectedValueOnce(
+      new CanopyCloudClientError('http-error', 'conflict', 409),
+    )
     .mockResolvedValueOnce(
       syncBody([
         { workspaceId: 'project-1', spaceId: 'worktree-1', policy: elsewhere },
@@ -393,7 +435,9 @@ it('saves a choice, reports conflicts, and reconciles a lost response', async ()
 
   // A notification is being delivered for this space: try again shortly.
   request
-    .mockRejectedValueOnce(new CanopyCloudClientError('http', 'busy', 423))
+    .mockRejectedValueOnce(
+      new CanopyCloudClientError('http-error', 'busy', 423),
+    )
     .mockResolvedValueOnce(
       syncBody([
         { workspaceId: 'project-1', spaceId: 'worktree-1', policy: elsewhere },
@@ -492,12 +536,16 @@ it('persists the newest choice when an older policy-file write finishes last', a
     writesEnabled: true,
   });
   await service.set({ ...SCOPE, override: null, expectedRevision: 1 });
-  // Let the reset's write run (or queue) before the stalled Mute write lands.
+  // Give an unserialized reset write time to land before the stalled Mute
+  // write, so a regression lets the older write finish last. Serialized
+  // writes queue the reset behind the Mute write, so this never decides a
+  // passing run.
   await new Promise((resolve) => setTimeout(resolve, 50));
   release();
   await landed;
-  // Any write queued behind the Mute write runs next.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // The reset write queued behind the Mute write runs next (mkdir plus an
+  // atomic write); wait for it on disk rather than for a fixed delay.
+  await waitForPersistedRevision('project-1\u001fworktree-1', 2);
   service.stop();
 
   // Restart offline: the newest choice (no override) is what was kept.

@@ -34,8 +34,7 @@ import {
   SettingsIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
-  Button,
-  DialogModal,
+  Dot,
   RenameDialog,
   ChatPreviewPopover,
   ActionMenuItems,
@@ -58,16 +57,21 @@ import {
   sidebarItemGroupColor,
   type WorktreeMenuItem,
   LoadingSpinner,
+  AgentStateGlyph,
+  isSpaceNotificationMuted,
 } from '@canopy/ui-shared/components';
+import { useBackgroundTaskCounts } from '@/hooks/useBackgroundTaskCounts';
 import {
   useSidebarItemGroupsStore,
   sidebarItemGroupScopeKey,
+  observeCoworkSidebarEntries,
 } from '@/stores/sidebarItemGroupsStore';
 import type { SidebarItemGroup as GroupData } from '@canopy/protocol/sidebar';
 import { useSpaceNotificationControlsEnabled } from '@/hooks/useSpaceNotificationSidebarProps';
 import {
   spaceNotificationMenuStateFor,
   useSpaceNotificationStore,
+  type SpaceNotificationStore,
 } from '@/stores/spaceNotificationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { ProjectIcon } from '../shared/ProjectIcon';
@@ -96,6 +100,7 @@ import {
   sharedWorktreeKey,
   useSharedContainersStore,
 } from '@/stores/sharedContainersStore';
+import { withSelectionGroupItems } from '@canopy/ui-app';
 import {
   ArchivedContainersNavLink,
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
@@ -105,12 +110,20 @@ import {
   ARCHIVE_TOOLTIP,
   deleteRetentionTooltip,
   type WorkEntryRemovalMode,
-} from '../standalone-chat/WorkEntryListItem';
+} from '@canopy/ui-app/sidebar';
+import { WorkEntryRemovalConfirmDialog } from '../standalone-chat/WorkEntryRemovalConfirmDialog';
 import {
   selectWorktreeHasLiveDelegates,
   useDelegationActivityStore,
 } from '@/stores/delegationActivityStore';
-import { DELEGATES_BLOCK_REMOVAL_TOOLTIP } from '@/stores/chat/close-guard';
+import {
+  removalBlockedReason,
+  recheckWorktreeRemovalBlockedReason,
+} from '@/stores/chat/close-guard';
+import {
+  selectWorktreeProviderBlocksClose,
+  useLiveBackgroundTaskStore,
+} from '@/stores/liveBackgroundTaskStore';
 import {
   scheduleStickyCollapseScrollAdjust,
   SidebarNoneFoundRow,
@@ -122,6 +135,11 @@ import {
   resolveSidebarSortMode,
   type CodeSidebarItemGroupCommands,
   type SidebarItemGroupBlock,
+  SidebarSelectionRowsReporter,
+  workEntryRowKey,
+  workEntryRowMultiSelectProps,
+  type SidebarSelectionRow,
+  type WorkEntryMultiSelectBinding,
 } from '@canopy/ui-app/sidebar';
 import { useStickyWorkspaceSlotHost } from '@canopy/ui-app/sidebar';
 import {
@@ -139,6 +157,25 @@ import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posth
 const EMPTY_ITEM_GROUPS: GroupData[] = [];
 const EMPTY_WORK_ENTRIES: CoworkWorkEntryMeta[] = [];
 const EMPTY_LEGACY_ARCHIVED: StandaloneChatMeta[] = [];
+const NO_MUTED_ENTRIES: ReadonlySet<string> = new Set();
+
+/**
+ * Whether a Work Entry's acknowledged notification choice is Mute. A muted
+ * entry hides its blue unread dot, on its row and in its group's rollup, while
+ * its chats keep their unread state (CAN-4378).
+ */
+function isWorkEntrySpaceMuted(
+  state: Pick<SpaceNotificationStore, 'snapshot' | 'progress'>,
+  workspaceId: string,
+  entryId: string,
+): boolean {
+  return isSpaceNotificationMuted(
+    spaceNotificationMenuStateFor(state, {
+      projectId: workspaceId,
+      worktreeId: entryId,
+    }),
+  );
+}
 
 /** Collapsed groups retain the live status of every member, including hidden rows. */
 function CoworkGroupStatus({
@@ -158,30 +195,53 @@ function CoworkGroupStatus({
         : entry.hasActiveChat === true;
     }),
   );
-  const delegates = useDelegationActivityStore((state) =>
-    entries.some((entry) =>
-      selectWorktreeHasLiveDelegates(state, workspaceId, entry.id),
-    ),
+  const backgroundCounts = useBackgroundTaskCounts(
+    workspaceId,
+    entries.map((entry) => entry.id),
+  );
+  const backgroundTasks = entries.reduce(
+    (total, entry) => total + (backgroundCounts[entry.id] ?? 0),
+    0,
+  );
+  const notificationControlsEnabled = useSpaceNotificationControlsEnabled();
+  // Scalar selector: the muted members' ids, joined, so an unrelated save
+  // does not re-render the group.
+  const mutedEntryIds = useSpaceNotificationStore((state) =>
+    notificationControlsEnabled
+      ? entries
+          .filter((entry) =>
+            isWorkEntrySpaceMuted(state, workspaceId, entry.id),
+          )
+          .map((entry) => entry.id)
+          .join('\n')
+      : '',
+  );
+  const mutedEntries = useMemo(
+    () =>
+      mutedEntryIds === ''
+        ? NO_MUTED_ENTRIES
+        : new Set(mutedEntryIds.split('\n')),
+    [mutedEntryIds],
   );
   const unread = useChatStore((state) =>
     entries.some((entry) => {
+      if (mutedEntries.has(entry.id)) return false;
       const live = state.worktreeChats[`${workspaceId}/${entry.id}`];
       return live?.tabs.length
         ? live.tabs.some((tab) => tab.unread === true)
         : (entry.unreadChats?.length ?? 0) > 0;
     }),
   );
-  if (streaming || delegates)
+  if (streaming)
     return (
       <span aria-label="Active work in group">
         <LoadingSpinner sizePx={14} decorative />
       </span>
     );
-  return unread ? (
-    <span
-      className="h-1.5 w-1.5 rounded-full bg-accent"
-      aria-label="Unread work in group"
-    />
+  // Unread outranks background work: a long-running server would hide it.
+  if (unread) return <Dot tone="unread" label="Unread work in group" />;
+  return backgroundTasks > 0 ? (
+    <AgentStateGlyph state="background" backgroundTasks={backgroundTasks} />
   ) : null;
 }
 
@@ -191,7 +251,7 @@ function CoworkGroupStatus({
  * chats are hydrated in the chat store, else the list-derived
  * `entry.unreadChats` refs (which carry title/provider/preview main-side).
  */
-function buildWorkEntryUnreadRows(
+export function buildWorkEntryUnreadRows(
   entryKey: string,
   entry: CoworkWorkEntryMeta,
 ): ChatPreviewRow[] {
@@ -209,6 +269,7 @@ function buildWorkEntryUnreadRows(
               : `New ${CHAT_UNIT_LABEL}`,
           providerType: tab.providerType,
           preview: getChatTabAgentResponsePreview(tab),
+          ...(tab.unreadMarkedManually === true ? { markedUnread: true } : {}),
         };
       });
   }
@@ -222,6 +283,7 @@ function buildWorkEntryUnreadRows(
           : `New ${CHAT_UNIT_LABEL}`,
       providerType: ref.providerType,
       preview: ref.preview,
+      ...(ref.markedUnread === true ? { markedUnread: true } : {}),
     };
   });
 }
@@ -238,7 +300,11 @@ interface SidebarWorkEntryRowProps {
    * Remove the entry into the workspace's retained containers: `delete`
    * keeps it for the retention window, `archive` keeps it until deleted.
    */
-  onDelete: (entryId: string, options: { mode: WorkEntryRemovalMode }) => void;
+  /** Settles once the removal finished or failed (failures are swallowed). */
+  onDelete: (
+    entryId: string,
+    options: { mode: WorkEntryRemovalMode },
+  ) => Promise<void>;
   /**
    * Toggles the entry's user-driven completion flag. Cowork has no PR-merge
    * signal, so this is the only "finished" marker an entry carries.
@@ -273,6 +339,11 @@ interface SidebarWorkEntryRowProps {
    * the Projects band sits below that header (see sticky-selected-item.ts).
    */
   selectedPinSeat?: SelectedPinSeat;
+  /**
+   * The rail's bulk selection (CAN-3975); absent where the host wired no
+   * Work Entry removal. A pinned copy never takes it.
+   */
+  workEntryMultiSelect?: WorkEntryMultiSelectBinding;
 }
 
 interface SidebarWorkEntryUnreadPreviewProps {
@@ -375,6 +446,7 @@ function SidebarWorkEntryRowContent({
   groupMenu,
   sortMode,
   membershipDragEnabled,
+  workEntryMultiSelect,
 }: SidebarWorkEntryRowProps): JSX.Element {
   const selectedWorkEntry = useStandaloneChatStore(
     (s) =>
@@ -385,6 +457,21 @@ function SidebarWorkEntryRowContent({
     : false;
   const isPinnedCopy = pinnedSurface !== undefined;
   const rowTestId = `sidebar-work-entry-${entry.id}`;
+  const selectionBinding = isPinnedCopy ? undefined : workEntryMultiSelect;
+  const selectionKey = workEntryRowKey(workspaceId, entry.id);
+  const batchRemoving = selectionBinding?.isRemoving(selectionKey) === true;
+  const multiSelect = useMemo(
+    () =>
+      selectionBinding === undefined
+        ? undefined
+        : workEntryRowMultiSelectProps(
+            selectionBinding,
+            workspaceId,
+            selectionKey,
+            selectionBinding.isSelectable(workspaceId) && !deleting,
+          ),
+    [selectionBinding, workspaceId, selectionKey, deleting],
+  );
   // Early access moves the row's status to a leading dot and shows its
   // last-activity age on the right: the watermark the Last updated sort uses.
   const earlyAccess = useLabsExperimentEnabled('sidebar');
@@ -422,6 +509,29 @@ function SidebarWorkEntryRowContent({
   }, [entry.id, isPinnedCopy, sharedContainerInviteVisible, workspaceId]);
   const [confirmingRemoval, setConfirmingRemoval] =
     useState<WorkEntryRemovalMode | null>(null);
+  // The confirmation stays open, busy, until the removal settles: a removed
+  // entry unmounts with its row, and a failed one closes the dialog.
+  const [removalRequested, setRemovalRequested] = useState(false);
+  const [isRecheckingRemoval, setIsRecheckingRemoval] = useState(false);
+  const [removalCheckReason, setRemovalCheckReason] = useState<string>();
+  // Bumped whenever a pending confirmation stops being current (cancel,
+  // dismiss, a new confirmation, unmount), so a slow re-check cannot remove.
+  const removalAttemptRef = useRef(0);
+  useEffect(
+    () => (): void => {
+      removalAttemptRef.current += 1;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (confirmingRemoval === null) return;
+    void useLiveBackgroundTaskStore
+      .getState()
+      .ensureWorktreesHydrated([
+        { projectId: workspaceId, worktreeId: entry.id },
+      ]);
+  }, [confirmingRemoval, entry.id, workspaceId]);
 
   const entryKey = `${workspaceId}/${entry.id}`;
   // Live tab state wins for entries hydrated in the chat store (visited this
@@ -458,12 +568,28 @@ function SidebarWorkEntryRowContent({
   const hasLiveDelegates = useDelegationActivityStore((state) =>
     selectWorktreeHasLiveDelegates(state, workspaceId, entry.id),
   );
-  const isThinking =
-    hasLiveDelegates || (liveStreaming ?? entry.hasActiveChat ?? false);
-  const removalDisabledReason = hasLiveDelegates
-    ? DELEGATES_BLOCK_REMOVAL_TOOLTIP
-    : undefined;
-  const hasUnread = liveUnread ?? (entry.unreadChats?.length ?? 0) > 0;
+  const hasLiveProviderWork = useLiveBackgroundTaskStore((state) =>
+    selectWorktreeProviderBlocksClose(state, workspaceId, entry.id),
+  );
+  // A running turn draws the Working spinner; delegates and provider tasks
+  // alone draw the background one (turn-state D15).
+  const isThinking = liveStreaming ?? entry.hasActiveChat ?? false;
+  const backgroundTasks =
+    useBackgroundTaskCounts(workspaceId, [entry.id])[entry.id] ?? 0;
+  const removalDisabledReason = removalBlockedReason(
+    hasLiveDelegates ? 'delegates' : hasLiveProviderWork ? 'background' : null,
+  );
+  useEffect(() => {
+    if (removalDisabledReason === undefined) setRemovalCheckReason(undefined);
+  }, [removalDisabledReason]);
+  const notificationControlsEnabled = useSpaceNotificationControlsEnabled();
+  const spaceMuted = useSpaceNotificationStore(
+    (state) =>
+      notificationControlsEnabled &&
+      isWorkEntrySpaceMuted(state, workspaceId, entry.id),
+  );
+  const hasUnread =
+    !spaceMuted && (liveUnread ?? (entry.unreadChats?.length ?? 0) > 0);
   const isDone = entry.status === 'done';
 
   const groupedDrag = useContext(WorktreeSortableStateContext);
@@ -495,12 +621,61 @@ function SidebarWorkEntryRowContent({
   const handleOpen = useCallback((): void => {
     onSelect(entry.id);
   }, [onSelect, entry.id]);
-  const handleDeleteButton = useCallback((): void => {
-    setConfirmingRemoval('delete');
+  const beginRemovalConfirmation = useCallback(
+    (mode: WorkEntryRemovalMode): void => {
+      removalAttemptRef.current += 1;
+      setRemovalCheckReason(undefined);
+      setRemovalRequested(false);
+      setConfirmingRemoval(mode);
+    },
+    [],
+  );
+  const cancelRemovalConfirmation = useCallback((): void => {
+    removalAttemptRef.current += 1;
+    setConfirmingRemoval(null);
   }, []);
-  const handleArchiveButton = useCallback((): void => {
-    setConfirmingRemoval('archive');
-  }, []);
+  const handleDeleteButton = useCallback(
+    (): void => beginRemovalConfirmation('delete'),
+    [beginRemovalConfirmation],
+  );
+  const handleArchiveButton = useCallback(
+    (): void => beginRemovalConfirmation('archive'),
+    [beginRemovalConfirmation],
+  );
+  const handleConfirmRemoval = useCallback(async (): Promise<void> => {
+    if (confirmingRemoval === null || removalRequested || deleting) return;
+    removalAttemptRef.current += 1;
+    const attempt = removalAttemptRef.current;
+    setIsRecheckingRemoval(true);
+    setRemovalCheckReason(undefined);
+    try {
+      const reason = await recheckWorktreeRemovalBlockedReason([
+        { projectId: workspaceId, worktreeId: entry.id },
+      ]);
+      if (attempt !== removalAttemptRef.current) return;
+      if (reason !== undefined) {
+        setRemovalCheckReason(reason);
+        return;
+      }
+      setRemovalRequested(true);
+      setIsRecheckingRemoval(false);
+      await onDelete(entry.id, { mode: confirmingRemoval });
+      // A removed entry has unmounted with its row by now; a failed one
+      // closes the dialog unless the user already started another attempt.
+      if (attempt !== removalAttemptRef.current) return;
+      setRemovalRequested(false);
+      setConfirmingRemoval(null);
+    } finally {
+      setIsRecheckingRemoval(false);
+    }
+  }, [
+    confirmingRemoval,
+    deleting,
+    entry.id,
+    onDelete,
+    removalRequested,
+    workspaceId,
+  ]);
   const handleTogglePinButton = useMemo(
     () =>
       onSetPinned === undefined
@@ -511,62 +686,104 @@ function SidebarWorkEntryRowContent({
 
   const entryPinned = entry.pinned === true;
   const renderMenu = useCallback(
-    (menu: WorkEntryRowMenuRenderProps): JSX.Element => (
-      <AnchoredMenu
-        open={menu.open}
-        onClose={menu.close}
-        anchorRef={menu.anchorRef}
-        anchorPoint={menu.anchorPoint}
-        placement="below-start"
-        portal
-        testId={menu.popoverTestId}
-        // Sized to the widest label instead of a fixed w-40, which wrapped
-        // longer actions such as "Invite a teammate" onto a second line
-        // inside the fixed-height rows. w-40 stays as the floor.
-        className="sidebar-instant-interactions w-45"
-      >
-        <SidebarWorkEntryMenuItems
-          workspaceId={workspaceId}
-          entryId={entry.id}
-          menu={menu}
-          // Early access folds the choices into "Notifications ›", as the
-          // worktree menu and the portal's Chats rows do.
-          notificationsPresentation={earlyAccess ? 'submenu' : 'group'}
-          afterPin={
-            groupMenu && !isPinnedCopy ? (
+    (menu: WorkEntryRowMenuRenderProps): JSX.Element => {
+      // Built only while open: a closed menu reads no selection state.
+      const selectionMenu =
+        menu.open && selectionBinding !== undefined
+          ? selectionBinding.menuItemsFor(selectionKey, {
+              toggleSelection: `${rowTestId}-toggle-selection`,
+              bulkPin: `${rowTestId}-bulk-pin`,
+              bulkDone: `${rowTestId}-bulk-done`,
+              bulkNotifications: `${rowTestId}-bulk-notifications`,
+              bulkArchive: `${rowTestId}-bulk-archive`,
+              bulkDelete: `${rowTestId}-bulk-delete`,
+              clearSelection: `${rowTestId}-clear-selection`,
+            })
+          : undefined;
+      const selectionItems = selectionMenu?.items ?? [];
+      const runSelectionItem = (action: WorktreeMenuItem): void => {
+        menu.close();
+        action.onSelect?.();
+      };
+      return (
+        <AnchoredMenu
+          open={menu.open}
+          onClose={menu.close}
+          anchorRef={menu.anchorRef}
+          anchorPoint={menu.anchorPoint}
+          placement="below-start"
+          portal
+          testId={menu.popoverTestId}
+          // Sized to the widest label instead of a fixed w-40, which wrapped
+          // longer actions such as "Invite a teammate" onto a second line
+          // inside the fixed-height rows. w-40 stays as the floor.
+          className="sidebar-instant-interactions w-45"
+        >
+          {selectionMenu?.replacesMenu === true ? (
+            <ActionMenuRowStyle>
               <WorktreeActionMenuItems
-                items={groupMenu}
-                onSelect={(action): void => {
-                  menu.close();
-                  action.onSelect?.();
-                }}
+                // The selection's group moves sit after its Pin row, as the
+                // row's own group items do.
+                items={withSelectionGroupItems(
+                  selectionItems,
+                  groupMenu && !isPinnedCopy ? groupMenu : [],
+                )}
+                onSelect={runSelectionItem}
               />
-            ) : undefined
-          }
-          pinned={entryPinned}
-          onTogglePin={
-            onSetPinned === undefined
-              ? undefined
-              : (pinned): void => onSetPinned(entry.id, pinned)
-          }
-          onRename={(): void => {
-            setRenaming(true);
-          }}
-          done={isDone}
-          onToggleDone={(status): void => onSetStatus(entry.id, status)}
-          onShare={
-            sharedContainerInviteVisible
-              ? (): void => setInvitingTeammate(true)
-              : undefined
-          }
-          onArchive={(): void => setConfirmingRemoval('archive')}
-          archiveTitle={ARCHIVE_TOOLTIP}
-          onDelete={(): void => setConfirmingRemoval('delete')}
-          deleteTitle={deleteTitle}
-          removalDisabledReason={removalDisabledReason}
-        />
-      </AnchoredMenu>
-    ),
+            </ActionMenuRowStyle>
+          ) : (
+            <SidebarWorkEntryMenuItems
+              workspaceId={workspaceId}
+              entryId={entry.id}
+              menu={menu}
+              // Early access folds the choices into "Notifications ›", as the
+              // worktree menu and the portal's Chats rows do.
+              notificationsPresentation={earlyAccess ? 'submenu' : 'group'}
+              afterPin={
+                groupMenu && !isPinnedCopy ? (
+                  <WorktreeActionMenuItems
+                    items={groupMenu}
+                    onSelect={(action): void => {
+                      menu.close();
+                      action.onSelect?.();
+                    }}
+                  />
+                ) : undefined
+              }
+              pinned={entryPinned}
+              onTogglePin={
+                onSetPinned === undefined
+                  ? undefined
+                  : (pinned): void => onSetPinned(entry.id, pinned)
+              }
+              onRename={(): void => {
+                setRenaming(true);
+              }}
+              done={isDone}
+              onToggleDone={(status): void => onSetStatus(entry.id, status)}
+              onShare={
+                sharedContainerInviteVisible
+                  ? (): void => setInvitingTeammate(true)
+                  : undefined
+              }
+              onArchive={handleArchiveButton}
+              archiveTitle={ARCHIVE_TOOLTIP}
+              onDelete={handleDeleteButton}
+              deleteTitle={deleteTitle}
+              removalDisabledReason={removalDisabledReason}
+              beforeRemoval={
+                selectionItems.length > 0 ? (
+                  <WorktreeActionMenuItems
+                    items={selectionItems}
+                    onSelect={runSelectionItem}
+                  />
+                ) : undefined
+              }
+            />
+          )}
+        </AnchoredMenu>
+      );
+    },
     [
       groupMenu,
       isPinnedCopy,
@@ -580,6 +797,11 @@ function SidebarWorkEntryRowContent({
       sharedContainerInviteVisible,
       deleteTitle,
       removalDisabledReason,
+      selectionBinding,
+      selectionKey,
+      rowTestId,
+      handleArchiveButton,
+      handleDeleteButton,
     ],
   );
   // The preview reads the latest entry once, when it opens, so the row's
@@ -628,6 +850,7 @@ function SidebarWorkEntryRowContent({
         statusPlacement={earlyAccess ? 'leading' : 'trailing'}
         selected={selected}
         working={isThinking}
+        backgroundTasks={backgroundTasks}
         hasPendingQuestion={hasPendingQuestion}
         hasUnread={hasUnread}
         sharedWithTeammates={showSharedBadge}
@@ -636,7 +859,8 @@ function SidebarWorkEntryRowContent({
         pinnedSurface={pinnedSurface}
         selectedPinSeat={selectedPinSeat}
         disableSelectedPin={disableSelectedPin === true}
-        removing={deleting}
+        removing={deleting || batchRemoving}
+        multiSelect={multiSelect}
         drag={drag}
         onOpen={handleOpen}
         onDelete={handleDeleteButton}
@@ -663,7 +887,7 @@ function SidebarWorkEntryRowContent({
       )}
       {renaming && (
         <RenameDialog
-          title={`Rename ${CHAT_UNIT_LABEL}`}
+          title={`Rename ${CHAT_UNIT_LABEL.toLowerCase()}`}
           label="Name"
           initialValue={entry.title}
           submitLabel="Rename"
@@ -680,49 +904,21 @@ function SidebarWorkEntryRowContent({
         />
       )}
       {confirmingRemoval !== null && (
-        <DialogModal
-          onClose={() => setConfirmingRemoval(null)}
-          title={`${confirmingRemoval === 'archive' ? 'Archive' : 'Delete'} ${CHAT_UNIT_LABEL}?`}
-          titleId={`delete-work-entry-${entry.id}-title`}
-          maxWidth="sm"
-          headerBorder={false}
-          dataTestId={`sidebar-work-entry-${entry.id}-delete-dialog`}
-        >
-          <div className="space-y-4 px-5 pb-5">
-            <p className="text-s fg-secondary">
-              {confirmingRemoval === 'archive'
-                ? `This archives this ${CHAT_UNIT_LABEL} and its messages. Archived ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()} are kept until you delete them.`
-                : `This deletes this ${CHAT_UNIT_LABEL} and its messages. Deleted ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()} are kept for ${effectiveRetentionDays} ${effectiveRetentionDays === 1 ? 'day' : 'days'}, then removed.`}
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => setConfirmingRemoval(null)}
-                disabled={deleting}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                variant="primary"
-                onClick={() => {
-                  const mode = confirmingRemoval;
-                  setConfirmingRemoval(null);
-                  onDelete(entry.id, { mode });
-                }}
-                disabled={deleting}
-                data-testid={workEntryRowTestId(
-                  rowTestId,
-                  '-confirm-delete',
-                  pinnedSurface,
-                )}
-              >
-                {confirmingRemoval === 'archive' ? 'Archive' : 'Delete'}
-              </Button>
-            </div>
-          </div>
-        </DialogModal>
+        <WorkEntryRemovalConfirmDialog
+          mode={confirmingRemoval}
+          entryTitle={entry.title}
+          retentionDays={effectiveRetentionDays}
+          rowTestId={rowTestId}
+          pinnedSurface={pinnedSurface}
+          entryId={entry.id}
+          busy={removalRequested || deleting}
+          blockedReason={removalDisabledReason ?? removalCheckReason}
+          // The re-check disables the action but keeps Cancel live, so the
+          // user can still back out while it runs.
+          confirmDisabled={isRecheckingRemoval}
+          onCancel={cancelRemovalConfirmation}
+          onConfirm={() => void handleConfirmRemoval()}
+        />
       )}
     </>
   );
@@ -794,6 +990,11 @@ export interface SidebarCoworkWorkspaceRowProps {
    * reference stable so the memoized row does not re-render.
    */
   onMoveToOrganizationRequested?: (workspaceId: string) => void;
+  /**
+   * The rail's bulk selection for this workspace's Work Entry rows
+   * (CAN-3975); absent where the host wired no Work Entry removal.
+   */
+  workEntryMultiSelect?: WorkEntryMultiSelectBinding;
 }
 
 /**
@@ -820,6 +1021,7 @@ function SidebarCoworkWorkspaceRowImpl({
   excludeFromWorkspaceList,
   listsNoneFoundWhenEmpty = false,
   onMoveToOrganizationRequested,
+  workEntryMultiSelect,
 }: SidebarCoworkWorkspaceRowProps): JSX.Element {
   const [showAllEntries, setShowAllEntries] = useState(false);
   // Early access: the list disclosure reads More / Less, with no count, and
@@ -907,10 +1109,30 @@ function SidebarCoworkWorkspaceRowImpl({
       .hydrate(scope)
       .catch(() => undefined);
   }, [scope]);
+  useEffect(() => {
+    observeCoworkSidebarEntries(item.id, storedWorkEntries);
+  }, [item.id, storedWorkEntries]);
+  const placementOrder = useSidebarItemGroupsStore(
+    (state) => state.orderByScope[scopeKey],
+  );
+  const placedWorkEntries = useMemo(() => {
+    if (!placementOrder || entrySortMode !== 'manual') return storedWorkEntries;
+    const entries = new Map(
+      storedWorkEntries.map((entry) => [entry.id, entry]),
+    );
+    return [
+      ...placementOrder.flatMap((id) => {
+        const entry = entries.get(id);
+        entries.delete(id);
+        return entry ? [entry] : [];
+      }),
+      ...Array.from(entries.values()),
+    ];
+  }, [storedWorkEntries, placementOrder, entrySortMode]);
   const visibleWorkEntries = useMemo(
     () =>
       orderWorkEntryRows(
-        storedWorkEntries.filter(
+        placedWorkEntries.filter(
           (entry) =>
             entry.hasUserChanges === true ||
             entry.pinned === true ||
@@ -919,7 +1141,7 @@ function SidebarCoworkWorkspaceRowImpl({
         ),
         entrySortMode,
       ),
-    [storedWorkEntries, openEmptyEntryId, entrySortMode],
+    [placedWorkEntries, openEmptyEntryId, entrySortMode],
   );
   const itemBlocks = useMemo(
     () =>
@@ -1040,7 +1262,9 @@ function SidebarCoworkWorkspaceRowImpl({
     item.archiveRetentionDays,
   );
 
-  const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null);
+  const [removingEntryIds, setRemovingEntryIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const contextMenuAnchorRef = useRef<HTMLSpanElement | null>(null);
   const contextMenuReturnFocusRef = useRef<HTMLElement | null>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -1220,7 +1444,7 @@ function SidebarCoworkWorkspaceRowImpl({
           onDelete={handleDeleteEntry}
           onSetStatus={handleSetEntryStatus}
           onSetPinned={handleSetEntryPinned}
-          deleting={selectedEntry.id === deletingEntryId}
+          deleting={removingEntryIds.has(selectedEntry.id)}
           effectiveRetentionDays={effectiveRetentionDays}
           pinnedSurface={surface}
         />
@@ -1363,16 +1587,23 @@ function SidebarCoworkWorkspaceRowImpl({
   );
 
   const handleDeleteEntry = useCallback(
-    (entryId: string, options: { mode: WorkEntryRemovalMode }): void => {
-      setDeletingEntryId(entryId);
-      void deleteWorkEntry(entryId, item.id, {
+    (
+      entryId: string,
+      options: { mode: WorkEntryRemovalMode },
+    ): Promise<void> => {
+      setRemovingEntryIds((current) => new Set(current).add(entryId));
+      return deleteWorkEntry(entryId, item.id, {
         lockAfterArchive: options.mode === 'archive',
       })
         .catch(() => {
           // Delete failures should not break the sidebar.
         })
         .finally(() => {
-          setDeletingEntryId(null);
+          setRemovingEntryIds((current) => {
+            const next = new Set(current);
+            next.delete(entryId);
+            return next;
+          });
         });
     },
     [deleteWorkEntry, item.id],
@@ -1412,16 +1643,19 @@ function SidebarCoworkWorkspaceRowImpl({
         return;
       }
       void groupStore
-        .moveItem({
-          scope,
-          itemId,
-          groupId: drop.groupId,
-          ...(drop.before
-            ? { before: drop.before }
-            : drop.after
-              ? { after: drop.after }
-              : {}),
-        })
+        .moveItem(
+          {
+            scope,
+            itemId,
+            groupId: drop.groupId,
+            ...(drop.before
+              ? { before: drop.before }
+              : drop.after
+                ? { after: drop.after }
+                : {}),
+          },
+          drop.membershipOnly,
+        )
         .catch(reportGroupError);
     },
     moveGroup: (groupId, drop): void => {
@@ -1454,9 +1688,10 @@ function SidebarCoworkWorkspaceRowImpl({
         onDelete={handleDeleteEntry}
         onSetStatus={handleSetEntryStatus}
         onSetPinned={handleSetEntryPinned}
-        deleting={entry.id === deletingEntryId}
+        deleting={removingEntryIds.has(entry.id)}
         effectiveRetentionDays={effectiveRetentionDays}
         disableSelectedPin={disableSelectedPin}
+        workEntryMultiSelect={workEntryMultiSelect}
         selectedPinSeat={selectedPinSeat}
         groupMenu={menu}
         sortMode={entrySortMode}
@@ -1477,6 +1712,16 @@ function SidebarCoworkWorkspaceRowImpl({
       unitLabel={unitLabel}
       rowGap="hairline"
       itemGap={compactDisclosure ? 'hairline' : undefined}
+      // A drag of a selected entry carries the whole selection.
+      selectionCount={workEntryMultiSelect?.selection.count}
+      isItemSelected={
+        workEntryMultiSelect?.selection.active === true
+          ? (id): boolean =>
+              workEntryMultiSelect.selection.isSelected(
+                workEntryRowKey(item.id, id),
+              )
+          : undefined
+      }
       renderRow={(id, menu): ReactNode => renderEntry(id, menu)}
       renderPreview={(id): ReactNode => (
         <div className="flex h-7 items-center px-1.5 text-s fg-primary">
@@ -1702,6 +1947,37 @@ function SidebarCoworkWorkspaceRowImpl({
     );
   };
 
+  // The rows on screen, in order, for the bulk selection: rows past the cap
+  // or inside a collapsed group are not rendered, so ranges and select-all
+  // never reach them.
+  const renderedEntryIds: readonly string[] =
+    workEntryMultiSelect === undefined
+      ? []
+      : expanded && listsContent
+        ? cappedBlocks.visible.flatMap((block) => block.visibleItemIds)
+        : showsCollapsedSelectedEntry
+          ? [selectedEntry.id]
+          : [];
+  const selectionRows: SidebarSelectionRow[] = renderedEntryIds.flatMap(
+    (id): SidebarSelectionRow[] => {
+      const entry = visibleWorkEntries.find((candidate) => candidate.id === id);
+      return entry === undefined || workEntryMultiSelect === undefined
+        ? []
+        : [
+            {
+              key: workEntryRowKey(item.id, id),
+              kind: 'work-entry',
+              selectable:
+                workEntryMultiSelect.isSelectable(item.id) &&
+                !removingEntryIds.has(id),
+              label: entry.title,
+              projectName: item.name,
+              open: id === selectedEntryId,
+            },
+          ];
+    },
+  );
+
   return (
     <div
       ref={(node): void => {
@@ -1728,6 +2004,13 @@ function SidebarCoworkWorkspaceRowImpl({
       data-testid={`sidebar-cowork-project-${item.id}`}
       data-onboarding-anchor={isTourAnchor ? 'sidebar-chat' : undefined}
     >
+      {workEntryMultiSelect !== undefined && (
+        <SidebarSelectionRowsReporter
+          listId={item.id}
+          rows={selectionRows}
+          onRowsChange={workEntryMultiSelect.onRowsChange}
+        />
+      )}
       {workspaceDropIndicatorPosition && (
         <span
           aria-hidden="true"

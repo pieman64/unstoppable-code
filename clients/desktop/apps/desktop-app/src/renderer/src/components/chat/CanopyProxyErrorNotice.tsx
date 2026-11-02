@@ -7,7 +7,6 @@ import {
   useState,
   type JSX,
 } from 'react';
-import type { NativeAiCreditsAvailability } from '@canopy/desktop-shared/types';
 import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
 import {
   MODEL_LIBRARY_UNLOCK_COPY,
@@ -23,8 +22,6 @@ import {
 import { copyTextToClipboard } from '@/lib/clipboard';
 import {
   CONTACT_ORG_ADMIN_COPY,
-  resolveAiCreditsCoverage,
-  useGetAiCreditsAction,
   useUnlockModelsAction,
   type UnlockModelsResult,
 } from '@/lib/openBillingPage';
@@ -34,8 +31,8 @@ import {
   useChatStore,
   useChatTabRenderState,
   type ChatMessage,
-  type ChatTab,
 } from '@/stores/chatStore';
+import { resolveChat } from './resolve-chat-target';
 import type {
   CanopyProxyError,
   CanopyProxyErrorCode,
@@ -49,7 +46,6 @@ type NoticeAction =
   | 'settings'
   | 'retry'
   | 'copy-id'
-  | 'billing'
   | 'unlock'
   | 'organizations';
 
@@ -103,14 +99,13 @@ function noticeCopy(code: CanopyProxyErrorCode): NoticeCopy {
         action: 'copy-id',
       };
     case 'no_billing_source':
-      // "didn't cover" rather than "ran out": the hosted `billed === null`
-      // behind this 402 means no positive personal balance AND no funded
-      // eligible org pool, which is equally the state of someone who never had
-      // credits (CAN-2413 review). Kept in step with `NoBillingSourceBanner`.
+      // Not rendered here: the transcript shows the shared stop line and the
+      // composer's No billing source banner owns the payment choice
+      // (CAN-5160). Kept for exhaustiveness, with the same words.
       return {
-        title: 'This message needed AI Credits',
-        body: `Your ${brand} AI Credits didn't cover this message. Add credits, then send it again.`,
-        action: 'billing',
+        title: 'Chat stopped',
+        body: 'Choose how to pay for this message to keep going.',
+        action: 'copy-id',
       };
     case 'session_budget_exhausted':
       return {
@@ -173,15 +168,6 @@ function noticeCopy(code: CanopyProxyErrorCode): NoticeCopy {
   }
 }
 
-interface ResolvedChat {
-  target: { projectId: string; worktreeId: string; chatId: string };
-  messages: ChatMessage[];
-}
-
-function selectMessages(tabs: ChatTab[], tabId: string): ChatMessage[] {
-  return tabs.find((tab) => tab.id === tabId)?.messages ?? [];
-}
-
 /**
  * Retry re-uses the shared resume-prompt helper on the *complete* transcript.
  *
@@ -197,37 +183,6 @@ function computeProxyRetryPrompt(
   messages: ChatMessage[],
 ): ReturnType<typeof computeUsageLimitResumePrompt> {
   return computeUsageLimitResumePrompt(messages);
-}
-
-/**
- * Recover the `(projectId, worktreeId, chatId)` triple from the tab id the
- * block renderer already carries, rather than threading a chat target down
- * through every intermediate chat component. Cowork work entries occupy the
- * `worktreeId` slot in the same map, so this resolves both surfaces.
- */
-function resolveChat(tabId: string | undefined): ResolvedChat | null {
-  if (!tabId) {
-    return null;
-  }
-  const chats = useChatStore.getState().worktreeChats;
-  for (const [key, state] of Object.entries(chats)) {
-    if (!state.tabs.some((tab) => tab.id === tabId)) {
-      continue;
-    }
-    const separator = key.indexOf('/');
-    if (separator <= 0 || separator === key.length - 1) {
-      continue;
-    }
-    return {
-      target: {
-        projectId: key.slice(0, separator),
-        worktreeId: key.slice(separator + 1),
-        chatId: tabId,
-      },
-      messages: selectMessages(state.tabs, tabId),
-    };
-  }
-  return null;
 }
 
 /**
@@ -388,105 +343,25 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
     })();
   }, [correlationId]);
 
-  // Shared with `NoBillingSourceBanner` so both surfaces route the purchase
-  // through the same cloud-connect gate.
-  //
-  // The availability read is LAZY — on click, not on render (CAN-2413 review).
-  // An earlier revision skipped it entirely on the reasoning that it only fed
-  // the unauthenticated pricing-URL fallback. That was wrong:
-  // `resolveAiCreditsCoverage` also decides purchase-vs-contact-admin, and the
-  // hosted `billed: null` that produces this very 402 fires for an org member
-  // whose eligible pool is empty just as much as for an uncovered individual.
-  // Those members cannot buy credits, so an unconditional "Get AI Credits"
-  // marched them into a billing flow they have no way to complete, while the
-  // composer banner (which does read coverage) correctly told them to contact
-  // their admin — the two surfaces disagreed about the same failure.
-  //
-  // Doing it on click keeps the original constraint intact: this block lives in
-  // the transcript and still fires zero IPC per render, no matter how many
-  // historical notices a long chat accumulates.
-  const getAiCredits = useGetAiCreditsAction();
-  const [coverageChecking, setCoverageChecking] = useState(false);
-  const [contactAdmin, setContactAdmin] = useState(false);
-  const [recovered, setRecovered] = useState(false);
-  // Transcript blocks unmount routinely (tab switch, navigation), and this
-  // handler awaits IPC. Without a guard the continuation still runs after the
-  // block is gone: the `setState` calls warn, and — the real problem —
-  // `getAiCredits` enters the APP-WIDE `cloudConnectGateStore`, so a stale
-  // hand-off could pop a billing/sign-in flow in whatever the user navigated
-  // to, or clobber a connect request another surface had already queued
-  // (CAN-2413 review round 2).
-  //
-  // Set inside the effect body rather than relying on the `useRef(true)`
-  // initializer, so a double-invoke (StrictMode, or React 19 `<Activity>`
-  // reuse) re-arms instead of leaving the ref permanently false and silently
-  // dead-ending every later click.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    // Re-armed with the ref, and for the same reason. A read in flight at hide
-    // time takes the `!mountedRef.current` early return, so under `<Activity>`
-    // reuse the preserved state would come back with `coverageChecking: true`
-    // and both buttons permanently disabled — the same latch class round 3
-    // removed from `contactAdmin`.
-    setCoverageChecking(false);
-    return (): void => {
-      mountedRef.current = false;
-    };
-  }, []);
-  const handleGetCredits = useCallback((): void => {
-    if (coverageChecking) {
-      return;
-    }
-    setCoverageChecking(true);
-    // Re-resolve on every attempt rather than latching. An org member whose
-    // admin has since raised the quota would otherwise be stuck looking at
-    // static admin copy for the life of the mounted block, with no way back to
-    // an actionable button.
-    setContactAdmin(false);
-    void (async (): Promise<void> => {
-      let availability: NativeAiCreditsAvailability | null = null;
-      try {
-        availability = await window.api.loadNativeAiCreditsAvailability();
-      } catch {
-        // Fall through with a null read: `resolveAiCreditsCoverage(null)`
-        // reports no contact-admin state, so a failed probe keeps today's
-        // behavior (open billing) rather than stranding a user who CAN buy
-        // behind an admin message that does not apply to them.
-        availability = null;
-      }
-      if (!mountedRef.current) {
-        return;
-      }
-      const { showContactAdmin, canSpendCredits } =
-        resolveAiCreditsCoverage(availability);
-      setCoverageChecking(false);
-      // Coverage is sufficient again — the admin raised the quota, or credits
-      // were added in another window. Opening billing here would sell a user
-      // something the read just confirmed they already have (CAN-2413 review
-      // round 5). `canSpendCredits: true` carries `showPurchase: false` AND
-      // `showContactAdmin: false`, the same shape as an inconclusive read, so
-      // it has to be checked explicitly or it falls through to the purchase.
-      if (canSpendCredits) {
-        setContactAdmin(false);
-        setRecovered(true);
-        return;
-      }
-      if (showContactAdmin) {
-        setContactAdmin(true);
-        return;
-      }
-      getAiCredits(availability);
-    })();
-  }, [coverageChecking, getAiCredits]);
-
   // ---- `model_locked` (CAN-4028): purchase recovery, not the coverage flow.
   //
   // Scoped to THIS chat's owner, so an organization's work opens the
   // organization's billing (or tells a member who cannot fund it to ask an
   // admin) instead of selling a personal purchase that would not unlock it.
-  // The scope hook only memoizes an object: like the billing branch, this
-  // block fires zero IPC until the button is pressed.
+  // The scope hook only memoizes an object: this block fires zero IPC until
+  // the button is pressed.
+  //
+  // Transcript blocks unmount routinely (tab switch, navigation) while the
+  // unlock awaits IPC, so its continuation checks this before setting state.
+  // Re-armed inside the effect so a double-invoke (StrictMode, `<Activity>`
+  // reuse) does not leave it permanently false.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return (): void => {
+      mountedRef.current = false;
+    };
+  }, []);
   const unlockScope = useChatTargetAiCreditsScope(retryTarget);
   const unlockModels = useUnlockModelsAction(unlockScope);
   const [unlockResult, setUnlockResult] = useState<
@@ -522,7 +397,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
       } catch {
         result = { outcome: 'failed' };
       }
-      // Same guard as the billing branch: the block can unmount mid-read.
+      // The block can unmount mid-read.
       if (!mountedRef.current) return;
       setUnlockResult(result.outcome === 'sign-in' ? null : result);
     })();
@@ -596,33 +471,6 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
     })();
   }, [originChatTabId, sourceText, correlationId]);
 
-  // The billing branch's outcome lines live with the error id as supporting
-  // detail: they describe the state the last coverage read found, not an
-  // action, so they read under the message rather than among the buttons.
-  //
-  // Deliberately NO Retry alongside the billing actions: until credits exist a
-  // retry fails identically, and each click would dispatch another billed,
-  // non-idempotent turn against the same wall.
-  const billingStatus =
-    copy.action === 'billing' ? (
-      recovered ? (
-        <div data-testid="chat-canopy-proxy-error-credits-recovered">
-          Your credits are available again — send your message.
-        </div>
-      ) : contactAdmin ? (
-        /* The admin copy keeps a live action beside it (CAN-2413 review
-           round 3). Replacing the button outright made `contactAdmin` a
-           one-way latch for the life of the mounted block: the only
-           caller of `handleGetCredits` was gone, so the reset inside it
-           was unreachable and a member whose admin had since raised the
-           quota had no way back to a usable action short of switching
-           tabs. "Check again" re-runs the same coverage read. */
-        <div data-testid="chat-canopy-proxy-error-contact-admin">
-          {CONTACT_ORG_ADMIN_COPY}
-        </div>
-      ) : null
-    ) : null;
-
   // The unlock branch's outcome line, in the same supporting slot.
   const unlockStatus =
     copy.action !== 'unlock' ? null : unlocked ? (
@@ -643,7 +491,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
       </div>
     ) : null;
 
-  const detail = billingStatus ?? unlockStatus ?? undefined;
+  const detail = unlockStatus ?? undefined;
 
   // The error id rides inline at the end of the message (design owner,
   // 2026-09-17): it is part of the explanation, not a second line. The label
@@ -661,18 +509,17 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
   ) : null;
 
   // One recommended action per state: Retry where it is offered, otherwise
-  // the action the copy points at (Open settings, Get AI Credits / Check
-  // again, or Copy id when reporting the id IS the next step). Copy id is the
-  // quiet alternative everywhere else.
+  // the action the copy points at (Open settings, the unlock purchase, or
+  // Copy id when reporting the id IS the next step). Copy id is the quiet
+  // alternative everywhere else.
   const copyIdVariant = copy.action === 'copy-id' ? 'primary' : 'secondary';
 
-  // Never hand the notice an empty actions row (a recovered billing notice
-  // with no correlation id has nothing left to offer).
+  // Never hand the notice an empty actions row (an unlocked notice with no
+  // correlation id has nothing left to offer).
   const hasActions =
     Boolean(correlationId) ||
     copy.action === 'settings' ||
     copy.action === 'organizations' ||
-    (copy.action === 'billing' && !recovered) ||
     (copy.action === 'unlock' && !unlocked) ||
     copy.action === 'retry';
 
@@ -706,27 +553,6 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
         >
           View organizations
         </NoticeButton>
-      ) : null}
-      {copy.action === 'billing' && !recovered ? (
-        contactAdmin ? (
-          <NoticeButton
-            variant="primary"
-            data-testid="chat-canopy-proxy-error-recheck-credits"
-            onClick={handleGetCredits}
-            disabled={coverageChecking}
-          >
-            Check again
-          </NoticeButton>
-        ) : (
-          <NoticeButton
-            variant="primary"
-            data-testid="chat-canopy-proxy-error-get-credits"
-            onClick={handleGetCredits}
-            disabled={coverageChecking}
-          >
-            Get AI Credits
-          </NoticeButton>
-        )
       ) : null}
       {copy.action === 'unlock' && !unlocked ? (
         <NoticeButton

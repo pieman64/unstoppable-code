@@ -57,9 +57,7 @@ describe('globalPluginDefaultsStore', () => {
     };
     loadPreferencesMock
       .mockRejectedValueOnce(new Error('temporary failure'))
-      .mockResolvedValueOnce({
-        globalPluginSelections,
-      } as PreferencesData);
+      .mockResolvedValueOnce(makeTestPreferences({ globalPluginSelections }));
 
     await expect(
       useGlobalPluginDefaultsStore.getState().hydrate(),
@@ -92,7 +90,7 @@ describe('globalPluginDefaultsStore', () => {
 
     expect(second).toBe(first);
     expect(loadPreferencesMock).toHaveBeenCalledTimes(1);
-    resolvePreferences({} as PreferencesData);
+    resolvePreferences(makeTestPreferences());
     await expect(first).resolves.toBe(true);
   });
 });

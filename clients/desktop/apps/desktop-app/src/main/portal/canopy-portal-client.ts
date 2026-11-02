@@ -220,6 +220,7 @@ export async function sendPortalHeartbeat(input: {
   signal?: AbortSignal;
   capabilities?: PortalHeartbeatRequest['capabilities'];
   clientVersion?: PortalHeartbeatRequest['clientVersion'];
+  clientPlatform?: PortalHeartbeatRequest['clientPlatform'];
 }): Promise<PortalHeartbeatResponse> {
   return requestJson<PortalHeartbeatResponse>(
     `${API_PREFIX}/portal/sessions/${input.sessionId}/heartbeat`,
@@ -229,6 +230,9 @@ export async function sendPortalHeartbeat(input: {
       body: JSON.stringify({
         capabilities: input.capabilities,
         clientVersion: input.clientVersion,
+        ...(input.clientPlatform === undefined
+          ? {}
+          : { clientPlatform: input.clientPlatform }),
       }),
     },
     { timeoutMs: CANOPY_PORTAL_HEARTBEAT_TIMEOUT_MS },

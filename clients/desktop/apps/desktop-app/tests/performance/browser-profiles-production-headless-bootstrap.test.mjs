@@ -186,6 +186,23 @@ test('adapter suppresses activation before import and retains immutable all-wind
   advisor.emit('show');
   assert.equal(snapshot().valid, false);
 });
+test('adapter records native creation and first ready-to-show on one monotonic clock', () => {
+  const electron = native();
+  let clock = 10;
+  const snapshot = load().installAdapter(electron, {}, { now: () => clock });
+  clock = 25;
+  const main = new electron.BrowserWindow(1);
+  electron.app.emit('browser-window-created', {}, main);
+  clock = 40;
+  main.emit('ready-to-show');
+  clock = 50;
+  main.emit('ready-to-show');
+  assert.deepEqual(snapshot().timings, {
+    installedAtMs: 10,
+    windows: [{ id: 1, createdAtMs: 25, firstReadyToShowAtMs: 40 }],
+  });
+});
+
 test('adapter fails closed on method descriptors, construction activation and bounded overflow', () => {
   const { installAdapter } = load();
   const broken = native();
@@ -595,14 +612,21 @@ test('complete expected argv rejects dropped, extra and reordered native launche
   }
 });
 
-test('expected argv pins the installed launcher source and version and rejects unknown behavior', () => {
+test('expected argv matches normalized launch args and pins the launcher source and version', async () => {
+  const { platformElectronArgs } = await import('../electron/launchCanopy.mjs');
   const f = fixture();
   try {
     const packagePath = require.resolve('playwright-core/package.json');
     const options = {
       productMainEntryPath: f.main,
       executablePath: process.execPath,
-      electronArgs: ['--user-owned'],
+      electronArgs: platformElectronArgs(
+        '/tmp/headless-argv',
+        ['--user-owned'],
+        {
+          platform: 'darwin',
+        },
+      ),
       launcherSourcePath: path.join(
         path.dirname(packagePath),
         'lib/server/electron/electron.js',

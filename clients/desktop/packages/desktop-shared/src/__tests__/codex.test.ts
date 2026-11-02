@@ -44,13 +44,14 @@ describe('Codex model config', () => {
   afterEach(() => initCodexModels([]));
 
   it.each(['gpt-6.1-sol', 'gpt-6-astra'])(
-    'maps persisted off to low for configured model %s',
+    'maps persisted off to low and keeps low for configured model %s',
     (model) => {
       const pkg: unknown = JSON.parse(
         readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
       );
       initCodexModels(parseModelPackageConfig(pkg).codexModels);
       expect(mapThinkingToReasoningEffort('off', model)).toBe('low');
+      expect(mapThinkingToReasoningEffort('low', model)).toBe('low');
       expect(mapThinkingToReasoningEffort('off', 'gpt-6-luna')).toBe('none');
     },
   );
@@ -74,7 +75,7 @@ describe('Codex model config', () => {
       {
         id: 'all-thinking-levels',
         label: 'All thinking levels',
-        supportedThinkingLevels: THINKING_LEVELS,
+        supportedThinkingLevels: [...THINKING_LEVELS],
       },
     ]);
 

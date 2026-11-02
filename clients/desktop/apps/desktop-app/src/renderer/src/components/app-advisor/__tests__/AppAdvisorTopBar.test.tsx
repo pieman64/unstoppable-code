@@ -91,7 +91,7 @@ describe('AppAdvisorTopBar', () => {
     render();
     const bar = container.querySelector('[data-testid="app-advisor-top-bar"]');
     expect(bar).toBeTruthy();
-    expect(bar?.textContent).toContain('App Advisor');
+    expect(bar?.textContent).toContain('Orchestrator');
     // New Chat and the archived-chats control moved into the panel tab strip
     // (the `+` and the tab-strip accessory) — the top bar must NOT mount a
     // second instance of either.
@@ -132,12 +132,15 @@ describe('AppAdvisorTopBar', () => {
     expect(corner()?.style.width).toBe('0px');
   });
 
-  it('omits the traffic-light reserve on non-mac platforms', () => {
-    setPlatform('win32');
-    render(true);
-    // Toggle gap (16) + 3 controls * 28 + 8.
-    expect(corner()?.style.width).toBe('108px');
-  });
+  it.each<NodeJS.Platform>(['win32', 'linux'])(
+    'omits the traffic-light reserve on %s',
+    (platform) => {
+      setPlatform(platform);
+      render(true);
+      // Toggle gap (16) + 3 controls * 28 + 8.
+      expect(corner()?.style.width).toBe('108px');
+    },
+  );
 
   it('renders nothing while no entry is active', () => {
     useStandaloneChatStore.setState({ activeWorkEntryId: null });

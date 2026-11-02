@@ -9,8 +9,8 @@ import {
   prepareExecutionResume,
   saveExecutionState,
 } from '../execution-state';
-import { resumePipeline } from '../pipeline-executor';
-import type { ExecutionRuntime, ExecutionState } from '../types';
+import { createInitialState, resumePipeline } from '../pipeline-executor';
+import type { ExecutionRuntime } from '../types';
 
 function legacyState(
   overrides: Record<string, unknown> = {},
@@ -166,11 +166,8 @@ describe('execution state status reasons', () => {
   });
 
   it('preserves a current resumable pause without a synthetic checkpoint reason', async () => {
-    const state: ExecutionState = {
-      version: 7,
-      id: 'current-paused',
-      pipeline_id: 'current-paused-pipeline',
-      pipeline_snapshot: normalizePipeline({
+    const state = createInitialState(
+      normalizePipeline({
         name: 'Current paused pipeline',
         on: 'dispatch',
         jobs: {
@@ -185,30 +182,19 @@ describe('execution state status reasons', () => {
           },
         },
       }),
-      status: 'paused',
-      status_reasons: [],
-      jobs: {
-        job: {
-          status: 'paused',
-          steps: {
-            step: {
-              status: 'pending',
-              outputs: {},
-              dynamic_env: {},
-            },
-          },
-          outputs: {},
-          retry_count: 0,
-          retry_history: [],
-          iteration_count: 0,
-        },
+      {
+        cwd: dir,
+        pipelineId: 'current-paused-pipeline',
+        runtime: createRuntime(dir),
       },
-      started_at: '2026-01-01T00:00:00.000Z',
-      cwd: dir,
-      env: {},
-      inputs: {},
-      event_name: 'dispatch',
-    };
+      'current-paused',
+    );
+    const job = state.jobs.job;
+    const step = job?.steps.step;
+    if (!job || !step) throw new Error('Expected materialized current job');
+    state.status = 'paused';
+    job.status = 'paused';
+    step.status = 'pending';
     await saveExecutionState(state, dir);
     const loaded = await loadExecutionState('current-paused', dir);
     if (!loaded) {
@@ -423,9 +409,13 @@ describe('execution state status reasons', () => {
         failure_message: 'limited',
       },
     };
+    // The provider pause replaces the fixture's input pause and its checkpoint.
+    state.pending_pauses = [];
+    state.pending_input = undefined;
     await saveExecutionState(state, dir);
     const reloaded = await loadExecutionState(state.id, dir);
     if (!reloaded) throw new Error('Expected reloaded execution');
+    expect(reloaded.status_reasons).toEqual(state.status_reasons);
     expect(reloaded.jobs.job.steps.step.agent_recovery).toEqual(
       state.jobs.job.steps.step.agent_recovery,
     );

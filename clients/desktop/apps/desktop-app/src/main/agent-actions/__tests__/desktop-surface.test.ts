@@ -30,13 +30,16 @@ const mockStartChat = jest.fn();
 const mockPostMessage = jest.fn();
 
 jest.mock('../desktop-host', () => {
-  const actual =
+  const actual = (): typeof DesktopHostModule =>
     jest.requireActual<typeof DesktopHostModule>('../desktop-host');
   const packageActual = jest.requireActual<typeof AgentActionsModule>(
     '@canopy/agent-actions',
   );
   return {
-    ...actual,
+    desktopAgentActionFamilies: (
+      ...args: Parameters<typeof DesktopHostModule.desktopAgentActionFamilies>
+    ): ReturnType<typeof DesktopHostModule.desktopAgentActionFamilies> =>
+      actual().desktopAgentActionFamilies(...args),
     desktopAgentActionPorts: (): object => ({
       environment: {
         query: jest.fn(),
@@ -88,6 +91,7 @@ jest.mock('../../canopy-runtime/desktop-runtime-access', () => ({
 }));
 
 import Ajv from 'ajv';
+import type { AnySchema } from 'ajv';
 import type { CanopyInjectedToolRuntime } from '../../canopy-tools/core';
 import {
   DELETE_WATCHERS_DESCRIPTION,
@@ -113,6 +117,15 @@ import {
   desktopAgentActionCall,
   executeDesktopAgentActionTool,
 } from '../desktop-surface';
+
+function compileActionSchema(
+  ajv: Ajv,
+  schema: unknown,
+): ReturnType<Ajv['compile']> {
+  // Shared schemas cross this host boundary as portable JSON values; Ajv
+  // expects its own schema type but still performs the same runtime compile.
+  return ajv.compile(schema as AnySchema);
+}
 
 function runtime(
   executionScope: 'worktree' | 'directory',
@@ -312,6 +325,19 @@ describe('desktop agent action call', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('keys pipeline runs by the running turn when one is known, without requiring one', async () => {
+    const run = { action: { type: 'pipeline.run', pipelineId: 'p' } };
+    // A worktree chat's MCP request id restarts with each connection, so the
+    // turn keeps a later turn's call from replaying an earlier run.
+    mockActiveTurn.mockReturnValue('u7');
+    await expect(turnKeyOf('dispatch_action', run)).resolves.toBe('chat:u7');
+    mockActiveTurn.mockReturnValue('u8');
+    await expect(turnKeyOf('dispatch_action', run)).resolves.toBe('chat:u8');
+    mockActiveTurn.mockReturnValue(undefined);
+    mockTerminalTurn.mockReturnValue(undefined);
+    await expect(turnKeyOf('dispatch_action', run)).resolves.toBeUndefined();
+  });
+
   it('keeps the turn key when a queued message is saved while the turn runs', async () => {
     mockActiveTurn.mockReturnValue('u7');
     const latestHuman = (id: string): object => ({
@@ -358,12 +384,15 @@ describe('desktop agent action tool schemas', () => {
       for (const definition of createDesktopAgentActionSurface(
         runtime(executionScope),
       ).toolDefinitions()) {
-        expect(() => ajv.compile(definition.inputSchema)).not.toThrow();
+        expect(() =>
+          compileActionSchema(ajv, definition.inputSchema),
+        ).not.toThrow();
       }
     });
 
     it(`keeps other actions' shared fields permissive in a ${executionScope} chat`, () => {
-      const validate = new Ajv().compile(
+      const validate = compileActionSchema(
+        new Ajv(),
         executionScope === 'worktree'
           ? dispatchActionJsonSchema
           : coworkDispatchActionJsonSchema,

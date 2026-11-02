@@ -408,7 +408,7 @@ test('SC1: opening a team-shared plan fetches a teammate thread without starting
     await expect(thread).toContainText(`“${SHARED_PLAN_RENDERED_QUOTE}”`);
     await expect(thread).toContainText('Open');
     await expect(thread).toContainText('1 comment');
-    await expect(thread).toContainText('pending');
+    await expect(thread).toContainText('Not sent');
     await expect(
       thread.getByRole('button', { name: 'Jump to this passage in the plan' }),
     ).toBeVisible();

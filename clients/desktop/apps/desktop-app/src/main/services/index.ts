@@ -6,14 +6,11 @@ export * from './scripts-service';
 export * from './hooks-service';
 export * from './plans-service';
 export * from './pipelines-service';
-// File-tree reads are intentionally absent: interfaces use the canonical boundary.
+// File-tree reads, mutations, text saves and the index are intentionally
+// absent: interfaces use the canonical boundary.
 export {
-  buildFileIndexes,
-  mutateFileTree,
-  readPortalFilePreview,
   savePortalFile,
   readFilePreview,
-  saveFile,
   toFileSnapshotPayload,
 } from './files-service';
 export * from './diff-service';

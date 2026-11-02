@@ -2,26 +2,47 @@ import type {
   PersistedChatMessage,
   UsageInitiationSource,
 } from '@canopy/desktop-shared/types';
+import { isInternalChatRequest } from '@canopy/desktop-shared/lib/internal-chat-row';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
+import { readAutoResumeMetadata } from '@canopy/protocol/portal';
 
 function getRequestInitiationSource(
   request: unknown,
 ): UsageInitiationSource | undefined {
-  if (!request || typeof request !== 'object') {
+  if (
+    !request ||
+    typeof request !== 'object' ||
+    !('initiationSource' in request)
+  ) {
     return undefined;
   }
-  const value = (request as Record<string, unknown>)['initiationSource'];
+  const value = request.initiationSource;
   return isUsageInitiationSource(value) ? value : undefined;
 }
 
 function getRequestAutomationName(request: unknown): string | undefined {
-  if (!request || typeof request !== 'object') {
+  if (
+    !request ||
+    typeof request !== 'object' ||
+    !('automationName' in request)
+  ) {
     return undefined;
   }
-  const value = (request as Record<string, unknown>)['automationName'];
+  const value = request.automationName;
   return typeof value === 'string' && value.trim().length > 0
     ? value.trim()
     : undefined;
+}
+
+function isInternalRequest(request: unknown): boolean {
+  if (request === null || typeof request !== 'object') return false;
+  return isInternalChatRequest({
+    managedDelegationDeliveryId:
+      'managedDelegationDeliveryId' in request &&
+      typeof request.managedDelegationDeliveryId === 'string'
+        ? request.managedDelegationDeliveryId
+        : undefined,
+  });
 }
 
 /**
@@ -44,15 +65,22 @@ export function buildAutomationInfoMessage(
   request: unknown,
   userMessageId: string,
   existingMessages: readonly PersistedChatMessage[] = [],
+  timestamp: number = Date.now(),
 ): PersistedChatMessage | null {
-  if (getRequestInitiationSource(request) !== 'automation') {
+  if (
+    isInternalRequest(request) ||
+    (typeof request === 'object' &&
+      request !== null &&
+      'autoResume' in request &&
+      readAutoResumeMetadata(request.autoResume) !== undefined) ||
+    getRequestInitiationSource(request) !== 'automation'
+  ) {
     return null;
   }
   const id = automationInfoMessageId(userMessageId);
   const existing = existingMessages.find((message) => message.id === id);
   if (existing) return existing;
   const automationName = getRequestAutomationName(request);
-  const timestamp = Date.now();
   return {
     id,
     role: 'system',

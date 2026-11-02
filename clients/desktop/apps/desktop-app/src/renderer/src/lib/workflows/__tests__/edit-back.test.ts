@@ -2,7 +2,7 @@ import type { EntryDetailReturnContext } from '@/stores/navigationStore';
 import { resolveWorkflowEditBack, workflowEditBackLabel } from '../edit-back';
 import type { WorkflowEditTarget } from '../edit-target';
 
-const marketplace = { query: 'deploy', tab: 'pipeline' as const };
+const marketplace = { query: 'deploy', tab: 'workflow' as const };
 
 describe('resolveWorkflowEditBack', () => {
   it.each<WorkflowEditTarget>([
@@ -41,7 +41,7 @@ describe('resolveWorkflowEditBack', () => {
         returnToMarketplace: marketplace,
       },
     });
-    expect(workflowEditBackLabel(target)).toBe('Pipeline');
+    expect(workflowEditBackLabel(target)).toBe('Workflow');
   });
 
   it('restores the capability detail with its whole stack', () => {
@@ -135,7 +135,7 @@ describe('resolveWorkflowEditBack', () => {
 
     const first = resolveWorkflowEditBack(automation);
     expect(first).toEqual({ kind: 'edit', target: pipeline });
-    expect(workflowEditBackLabel(automation)).toBe('Pipeline');
+    expect(workflowEditBackLabel(automation)).toBe('Workflow');
     if (first.kind !== 'edit') throw new Error('expected an edit target');
 
     // The reopened pipeline keeps its section and its own origin.

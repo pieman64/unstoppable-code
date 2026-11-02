@@ -20,6 +20,7 @@ import {
   type GitExecutableStatus,
 } from '@canopy/desktop-shared/types';
 import { registerIpcHandler } from '../ipc/register';
+import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
 
 const getLoginShellPathMock = jest.fn(() => process.env.PATH ?? '');
 const prewarmLoginShellPathMock = jest.fn<
@@ -60,15 +61,25 @@ jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
 }));
 
-let preferences: { gitExecutablePath: string };
-const mockWritePreferencesFile = jest.fn(
-  (patch: { gitExecutablePath?: string }) => {
-    if (typeof patch.gitExecutablePath === 'string') {
-      preferences.gitExecutablePath = patch.gitExecutablePath;
-    }
-    return Promise.resolve();
+// This suite never calls the dispatched status and redetect channels; the
+// worker.git.executable.get suites cover them. Loading their runtime graph
+// inside the first Browse test outran its timeout on a cold transform cache.
+jest.mock('../canopy-runtime/worker-git-dispatch', () => ({
+  getGitExecutableStatus: (): never => {
+    throw new Error('worker.git is not wired in this suite');
   },
-);
+}));
+
+let preferences: { gitExecutablePath: string };
+function recordPreferencesWrite(patch: {
+  gitExecutablePath?: string;
+}): Promise<void> {
+  if (typeof patch.gitExecutablePath === 'string') {
+    preferences.gitExecutablePath = patch.gitExecutablePath;
+  }
+  return Promise.resolve();
+}
+const mockWritePreferencesFile = jest.fn(recordPreferencesWrite);
 
 jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(() => Promise.resolve(preferences)),
@@ -107,11 +118,13 @@ function mockFile(): void {
 
 function childWithOutput(stdout = '', stderr = ''): ChildProcess {
   const child = new ChildProcess();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
+  const stdoutStream = new PassThrough();
+  const stderrStream = new PassThrough();
+  child.stdout = stdoutStream;
+  child.stderr = stderrStream;
   process.nextTick(() => {
-    if (stdout) child.stdout.emit('data', stdout);
-    if (stderr) child.stderr.emit('data', stderr);
+    if (stdout) stdoutStream.emit('data', stdout);
+    if (stderr) stderrStream.emit('data', stderr);
   });
   return child;
 }
@@ -137,6 +150,8 @@ function completeExec(
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockWritePreferencesFile.mockReset();
+  mockWritePreferencesFile.mockImplementation(recordPreferencesWrite);
   preferences = { gitExecutablePath: '' };
   process.env = { ...originalEnv };
   delete process.env.CANOPY_GIT_EXECUTABLE;
@@ -225,6 +240,112 @@ describe('git executable detection', () => {
     });
   });
 
+  it('still auto-detects when preferences refuse to clear an invalid cached path (CAN-5154)', async () => {
+    preferences.gitExecutablePath = 'C:\\bad\\git.exe';
+    process.env.CANOPY_GIT_EXECUTABLE = 'C:\\bad\\git.exe';
+    const detectedPath = 'C:\\Program Files\\Git\\cmd\\git.exe';
+    const refused = Object.assign(new Error('Preferences could not be read.'), {
+      code: 'PREFERENCES_RECOVERY_REQUIRED',
+    });
+    // The clear, then the cache of the detected path.
+    mockWritePreferencesFile
+      .mockRejectedValueOnce(refused)
+      .mockRejectedValueOnce(refused);
+    mockedExecFile.mockImplementation((...call) => {
+      const command = call[0];
+      const args = call[1] as string[] | undefined;
+      const callback = call.find((entry) => typeof entry === 'function') as
+        | ExecCallback
+        | undefined;
+      if (command === 'C:\\bad\\git.exe' && callback) {
+        callback(null, 'not git\n', '');
+      } else if (command === 'where.exe' && args?.[0] === 'git' && callback) {
+        callback(null, `${detectedPath}\n`, '');
+      } else if (command === detectedPath && callback) {
+        callback(null, 'git version 2.51.0.windows.1\n', '');
+      } else if (callback) {
+        callback(new Error('not found'), '', '');
+      }
+      return childWithOutput();
+    });
+
+    const { detectGitExecutable } = await import('../lib/git-executable');
+    expect(await detectGitExecutable({ force: true })).toMatchObject({
+      ready: true,
+      path: detectedPath,
+    });
+    expect(process.env.CANOPY_GIT_EXECUTABLE).toBe(detectedPath);
+    expect(mockWritePreferencesFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a different published override when preference writes install and then fail (CAN-5154)', async () => {
+    const overridePath = 'D:\\Tools\\Git\\cmd\\git.exe';
+    preferences.gitExecutablePath = 'C:\\bad\\git.exe';
+    process.env.CANOPY_GIT_EXECUTABLE = overridePath;
+    // Both the clear and the override's save install, then reject.
+    mockWritePreferencesFile.mockImplementation(async (patch) => {
+      await recordPreferencesWrite(patch);
+      throw new Error('The preferences folder could not be flushed.');
+    });
+    mockedExecFile.mockImplementation((...call) => {
+      const command = call[0];
+      const callback = call.find((entry) => typeof entry === 'function') as
+        | ExecCallback
+        | undefined;
+      if (command === 'C:\\bad\\git.exe' && callback) {
+        callback(null, 'not git\n', '');
+      } else if (command === overridePath && callback) {
+        callback(null, 'git version 2.51.0.windows.1\n', '');
+      } else if (callback) {
+        callback(new Error('not found'), '', '');
+      }
+      return childWithOutput();
+    });
+
+    const { detectGitExecutable } = await import('../lib/git-executable');
+    expect(await detectGitExecutable({ force: true })).toMatchObject({
+      ready: true,
+      path: overridePath,
+    });
+    expect(process.env.CANOPY_GIT_EXECUTABLE).toBe(overridePath);
+    expect(mockWritePreferencesFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('unpublishes the invalid cached path without probing it again when clearing it installs and then fails (CAN-5154)', async () => {
+    preferences.gitExecutablePath = 'C:\\bad\\git.exe';
+    process.env.CANOPY_GIT_EXECUTABLE = 'C:\\bad\\git.exe';
+    mockWritePreferencesFile.mockImplementationOnce(async (patch) => {
+      await recordPreferencesWrite(patch);
+      throw new Error('The preferences folder could not be flushed.');
+    });
+    mockedExecFile.mockImplementation((...call) => {
+      const callback = call.find((entry) => typeof entry === 'function') as
+        | ExecCallback
+        | undefined;
+      if (call[0] === 'C:\\bad\\git.exe' && callback) {
+        callback(null, 'not git\n', '');
+      } else if (callback) {
+        callback(new Error('not found'), '', '');
+      }
+      return childWithOutput();
+    });
+    mockedStat.mockImplementation((candidate) =>
+      String(candidate) === 'C:\\bad\\git.exe'
+        ? actualStat(__filename)
+        : Promise.reject(new Error('missing')),
+    );
+
+    const { detectGitExecutable } = await import('../lib/git-executable');
+    expect((await detectGitExecutable({ force: true })).ready).toBe(false);
+    expect(process.env.CANOPY_GIT_EXECUTABLE).toBeUndefined();
+    // A still-published copy would be validated again as the override.
+    expect(
+      mockedExecFile.mock.calls.filter(
+        (call) => call[0] === 'C:\\bad\\git.exe',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('clears an invalid cached path during forced redetection', async () => {
     preferences.gitExecutablePath = 'C:\\bad\\git.exe';
     mockedExecFile.mockImplementation((...call) => {
@@ -270,7 +391,7 @@ describe('git executable detection', () => {
       } else if (command === 'where.exe' && args?.[0] === 'git' && callback) {
         callback(new Error('not found'), '', '');
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { detectGitExecutable } = await import('../lib/git-executable');
@@ -310,7 +431,7 @@ describe('git executable detection', () => {
       } else if (command === detectedPath && callback) {
         callback(null, 'git version 2.51.0.windows.1\n', '');
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { detectGitExecutable } = await import('../lib/git-executable');
@@ -351,7 +472,7 @@ describe('git executable detection', () => {
       ) {
         callback(null, 'git version 2.51.0.windows.1\n', '');
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { detectGitExecutable } = await import('../lib/git-executable');
@@ -373,7 +494,7 @@ describe('git executable detection', () => {
       if (command === 'where.exe' && callback) {
         callback(new Error('not found'), '', '');
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
     mockedStat.mockRejectedValue(new Error('missing'));
 
@@ -416,7 +537,7 @@ describe('git executable detection', () => {
       } else if (command === 'C:\\Windows\\System32\\winget.exe') {
         return completeExec(null, 'installed\n') as never;
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { installGitWithWinget } = await import('../lib/git-executable');
@@ -465,7 +586,7 @@ describe('git executable detection', () => {
       } else if (command === 'C:\\Windows\\System32\\winget.exe') {
         return completeExec(new Error('winget failed'), noisy) as never;
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { installGitWithWinget } = await import('../lib/git-executable');
@@ -492,7 +613,7 @@ describe('git executable detection', () => {
       } else if (command === 'C:\\Windows\\System32\\winget.exe') {
         return completeExec(new Error('winget failed'), output) as never;
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { installGitWithWinget } = await import('../lib/git-executable');
@@ -548,12 +669,12 @@ describe('git executable IPC handlers', () => {
       ) {
         callback(new Error('not found'), '', '');
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { registerGitExecutableHandlers } =
       await import('../ipc/git-executable');
-    registerGitExecutableHandlers(() => null);
+    registerGitExecutableHandlers(() => null, unusedGitReadRuntime());
     const status = await getHandler(IPC_CHANNELS.gitExecutableBrowse)();
 
     expect(status).toMatchObject({
@@ -591,12 +712,12 @@ describe('git executable IPC handlers', () => {
       ) {
         callback(new Error('not found'), '', '');
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { registerGitExecutableHandlers } =
       await import('../ipc/git-executable');
-    registerGitExecutableHandlers(() => null);
+    registerGitExecutableHandlers(() => null, unusedGitReadRuntime());
     const status = await getHandler(IPC_CHANNELS.gitExecutableBrowse)();
 
     expect(status).toMatchObject({
@@ -622,12 +743,12 @@ describe('git executable IPC handlers', () => {
       if (command === 'where.exe' && args?.[0] === 'winget' && callback) {
         callback(new Error('not found'), '', '');
       }
-      return childWithOutput() as never;
+      return childWithOutput();
     });
 
     const { registerGitExecutableHandlers } =
       await import('../ipc/git-executable');
-    registerGitExecutableHandlers(() => null);
+    registerGitExecutableHandlers(() => null, unusedGitReadRuntime());
     const status = await getHandler(IPC_CHANNELS.gitExecutableBrowse)();
 
     expect(status).toMatchObject({
@@ -690,6 +811,7 @@ describe('spawn-time Git recovery', () => {
     const valid = 'D:\\PortableGit\\cmd\\git.exe';
     const env = { ...process.env, CANOPY_GIT_EXECUTABLE: valid };
     mockedExecFile.mockImplementation((_command, _args, _options, callback) => {
+      if (!callback) throw new Error('execFile callback was not provided');
       callback(null, 'git version 2.51.0.windows.1', '');
       return childWithOutput();
     });
@@ -718,6 +840,7 @@ describe('spawn-time Git recovery', () => {
       return actualStat(__filename);
     });
     mockedExecFile.mockImplementation((command, args, _options, callback) => {
+      if (!callback) throw new Error('execFile callback was not provided');
       if (command === 'where.exe')
         callback(null, args?.[0] === 'git' ? valid : '', '');
       else if (command === valid)
@@ -738,6 +861,7 @@ describe('spawn-time Git recovery', () => {
       Object.assign(new Error('missing'), { code: 'ENOENT' }),
     );
     mockedExecFile.mockImplementation((_command, _args, _options, callback) => {
+      if (!callback) throw new Error('execFile callback was not provided');
       callback(new Error('not found'), '', '');
       return childWithOutput();
     });
@@ -828,6 +952,28 @@ describe('macOS Git discovery without developer-tool prompts', () => {
       ).toBe(false);
     },
   );
+
+  it('uses discovered Git when preferences refuse to cache it (CAN-5154)', async () => {
+    mockWritePreferencesFile.mockRejectedValueOnce(
+      Object.assign(new Error('Preferences could not be read.'), {
+        code: 'PREFERENCES_RECOVERY_REQUIRED',
+      }),
+    );
+    mockedStat.mockImplementation((path) =>
+      String(path) === clt
+        ? actualStat(__filename)
+        : Promise.reject(new Error('missing')),
+    );
+    const { detectGitExecutable } = await import('../lib/git-executable');
+    expect(await detectGitExecutable({ force: true })).toMatchObject({
+      ready: true,
+      path: clt,
+    });
+    expect(mockWritePreferencesFile).toHaveBeenCalledWith({
+      gitExecutablePath: clt,
+    });
+    expect(process.env.CANOPY_GIT_EXECUTABLE).toBe(clt);
+  });
 
   it('finds Git that is available only through the login-shell PATH', async () => {
     const candidate = '/login-shell/bin/git';
@@ -952,7 +1098,7 @@ describe('macOS Git discovery without developer-tool prompts', () => {
   });
 });
 
-describe('Linux x64 Git requirement', () => {
+describe.each(['x64', 'arm64'])('Linux %s Git requirement', (arch) => {
   const SYSTEM_GIT = '/usr/bin/git';
   const originalArch = process.arch;
   type FileState = 'executable' | 'not-executable' | 'directory' | 'unreadable';
@@ -983,7 +1129,7 @@ describe('Linux x64 Git requirement', () => {
 
   beforeEach(async () => {
     setPlatform('linux');
-    setArch('x64');
+    setArch(arch);
     files = {};
     probes = {};
     events = [];
@@ -1024,7 +1170,7 @@ describe('Linux x64 Git requirement', () => {
     setArch(originalArch);
   });
 
-  it('requires Git only on Linux x64', async () => {
+  it('requires Git on Linux x64 and arm64', async () => {
     const { getGitExecutablePlatformStatus } =
       await import('../lib/git-executable');
     expect(getGitExecutablePlatformStatus()).toEqual({
@@ -1034,7 +1180,7 @@ describe('Linux x64 Git requirement', () => {
     setArch('arm64');
     expect(getGitExecutablePlatformStatus()).toEqual({
       platform: 'linux',
-      required: false,
+      required: true,
     });
   });
 
@@ -1887,7 +2033,7 @@ describe('Linux x64 Git requirement', () => {
       });
       const { registerGitExecutableHandlers } =
         await import('../ipc/git-executable');
-      registerGitExecutableHandlers(() => null);
+      registerGitExecutableHandlers(() => null, unusedGitReadRuntime());
       const call = mockedRegisterIpcHandler.mock.calls.find(
         ([channel]) => channel === IPC_CHANNELS.gitExecutableBrowse,
       );
@@ -1905,8 +2051,8 @@ describe('Linux x64 Git requirement', () => {
   });
 
   describe('unsupported Linux architectures', () => {
-    it('keeps Git optional and unprobed on arm64', async () => {
-      setArch('arm64');
+    it('keeps Git optional and unprobed on s390x', async () => {
+      setArch('s390x');
       install(SYSTEM_GIT);
       const { detectGitExecutable } = await import('../lib/git-executable');
 
@@ -1922,8 +2068,8 @@ describe('Linux x64 Git requirement', () => {
       expect(prewarmLoginShellPathMock).not.toHaveBeenCalled();
     });
 
-    it('keeps bare git for spawns on arm64', async () => {
-      setArch('arm64');
+    it('keeps bare git for spawns on s390x', async () => {
+      setArch('s390x');
       const { getResolvedGitExecutableForSpawn } =
         await import('../lib/git-executable');
 

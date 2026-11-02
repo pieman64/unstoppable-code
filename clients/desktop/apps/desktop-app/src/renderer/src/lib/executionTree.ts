@@ -3,6 +3,7 @@ import {
   buildExecutionTree as buildExecutionTreeImpl,
   pruneExpandedIdsToExpandableNodes as pruneExpandedIdsToExpandableNodesImpl,
   type ExecutionTreeNode as SharedExecutionTreeNode,
+  type ExecutionTreeSummary,
 } from '@canopy/ui-shared/lib/execution-tree';
 
 export type ExecutionTreeNode = SharedExecutionTreeNode<ExecutionSummary>;
@@ -20,12 +21,14 @@ export function pruneExpandedIdsToExpandableNodes(
   return pruneExpandedIdsToExpandableNodesImpl(tree, existing);
 }
 
-export function collectVisibleExecutionTreeNodes(
-  tree: ExecutionTreeNode[],
+export function collectVisibleExecutionTreeNodes<
+  Summary extends ExecutionTreeSummary,
+>(
+  tree: SharedExecutionTreeNode<Summary>[],
   expandedIds: ReadonlySet<string>,
-): ExecutionTreeNode[] {
-  const visible: ExecutionTreeNode[] = [];
-  const visit = (nodes: ExecutionTreeNode[]): void => {
+): SharedExecutionTreeNode<Summary>[] {
+  const visible: SharedExecutionTreeNode<Summary>[] = [];
+  const visit = (nodes: SharedExecutionTreeNode<Summary>[]): void => {
     for (const node of nodes) {
       visible.push(node);
       if (expandedIds.has(node.summary.id)) visit(node.children);

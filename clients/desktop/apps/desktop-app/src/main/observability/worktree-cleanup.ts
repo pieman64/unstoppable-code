@@ -355,76 +355,7 @@ export async function purgePersistedWorktreeObservabilityData(
     await rewriteAuditDayFile(filePath, `${keptLines.join('\n')}\n`);
   }
 
-  const sessionEventsDir = getAgentObservabilitySessionEventsDir();
-  let sessionEventFilenames: string[] = [];
-  try {
-    sessionEventFilenames = await readdir(sessionEventsDir);
-  } catch {
-    sessionEventFilenames = [];
-  }
-
-  for (const filename of sessionEventFilenames.filter((name) =>
-    name.endsWith('.jsonl'),
-  )) {
-    const day = filename.replace(/\.jsonl$/, '');
-    const filePath = getAgentObservabilitySessionEventsDayFilePath(day);
-    let contents = '';
-    try {
-      contents = await readFile(filePath, 'utf8');
-    } catch {
-      continue;
-    }
-
-    const keptLines: string[] = [];
-    let removedEntries = false;
-    let loggedMalformedLine = false;
-    for (const line of contents.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) {
-        continue;
-      }
-
-      const parsed = safeJsonParse(trimmed);
-      if (!parsed) {
-        if (!loggedMalformedLine) {
-          loggedMalformedLine = true;
-          writeCleanupWarning(
-            '[observability] dropping malformed session diagnostic line during worktree purge',
-            filePath,
-          );
-        }
-        removedEntries = true;
-        continue;
-      }
-
-      const entry = normalizeSessionDiagnosticRecord(parsed);
-      if (!entry) {
-        keptLines.push(trimmed);
-        continue;
-      }
-
-      if (!entryMatchesWorktree(entry, projectId, worktreeId)) {
-        keptLines.push(trimmed);
-        continue;
-      }
-
-      removedEntries = true;
-    }
-
-    if (!removedEntries) {
-      continue;
-    }
-
-    if (keptLines.length === 0) {
-      await rm(filePath, { force: true }).catch(() => {});
-      continue;
-    }
-
-    // Global app diagnostics are excluded here on purpose: only
-    // `session-events/` carries worktree identifiers and participates in
-    // per-worktree deletion.
-    await rewriteJsonlFile(filePath, `${keptLines.join('\n')}\n`);
-  }
+  await purgePersistedWorktreeSessionDiagnostics(projectId, worktreeId);
 
   const transcriptIndexDir = getAgentObservabilityTranscriptIndexDir();
   let transcriptIndexFilenames: string[] = [];
@@ -499,4 +430,81 @@ export async function purgePersistedWorktreeObservabilityData(
   }
 
   await purgeWorktreeEntriesFromSnapshot(projectId, worktreeId);
+}
+
+/** Removes a worktree's persisted session diagnostics only. */
+export async function purgePersistedWorktreeSessionDiagnostics(
+  projectId: string,
+  worktreeId: string,
+): Promise<void> {
+  const sessionEventsDir = getAgentObservabilitySessionEventsDir();
+  let sessionEventFilenames: string[] = [];
+  try {
+    sessionEventFilenames = await readdir(sessionEventsDir);
+  } catch {
+    sessionEventFilenames = [];
+  }
+
+  for (const filename of sessionEventFilenames.filter((name) =>
+    name.endsWith('.jsonl'),
+  )) {
+    const day = filename.replace(/\.jsonl$/, '');
+    const filePath = getAgentObservabilitySessionEventsDayFilePath(day);
+    let contents = '';
+    try {
+      contents = await readFile(filePath, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const keptLines: string[] = [];
+    let removedEntries = false;
+    let loggedMalformedLine = false;
+    for (const line of contents.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+
+      const parsed = safeJsonParse(trimmed);
+      if (!parsed) {
+        if (!loggedMalformedLine) {
+          loggedMalformedLine = true;
+          writeCleanupWarning(
+            '[observability] dropping malformed session diagnostic line during worktree purge',
+            filePath,
+          );
+        }
+        removedEntries = true;
+        continue;
+      }
+
+      const entry = normalizeSessionDiagnosticRecord(parsed);
+      if (!entry) {
+        keptLines.push(trimmed);
+        continue;
+      }
+
+      if (!entryMatchesWorktree(entry, projectId, worktreeId)) {
+        keptLines.push(trimmed);
+        continue;
+      }
+
+      removedEntries = true;
+    }
+
+    if (!removedEntries) {
+      continue;
+    }
+
+    if (keptLines.length === 0) {
+      await rm(filePath, { force: true }).catch(() => {});
+      continue;
+    }
+
+    // Global app diagnostics are excluded here on purpose: only
+    // `session-events/` carries worktree identifiers and participates in
+    // per-worktree deletion.
+    await rewriteJsonlFile(filePath, `${keptLines.join('\n')}\n`);
+  }
 }

@@ -10,12 +10,17 @@ export const RENDERER_RELAY_SURFACES: readonly RendererRelaySurface[] = [
   'app-advisor',
 ];
 
-// Connection setup and lease ownership stay with the relay's host, never a renderer.
+// Connection setup, lease ownership and host stores stay with the relay's
+// host, never a renderer.
 const ADMIN_METHODS: ReadonlySet<string> = new Set([
   'core.runtime.initialize',
   'worker.runtime.initialize',
 ]);
-const ADMIN_PREFIXES: readonly string[] = ['core.client.lease.'];
+const ADMIN_PREFIXES: readonly string[] = [
+  'core.client.lease.',
+  // The trusted W5 record port is Electron main's own store (W6g, CAN-5498).
+  'core.workspaceRecords.',
+];
 
 function isAdminMethod(method: string): boolean {
   return (

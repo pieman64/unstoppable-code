@@ -109,11 +109,17 @@ function emitInboxSignal(reason: InboxSignalReason = 'realtime'): void {
   }
 }
 
-function container(id: string, title: string): Record<string, unknown> {
+function container(
+  id: string,
+  title: string,
+  ownerUserId = 'owner-1',
+): SharedContainerSummary {
   return {
     id,
     organizationId: 'org-1',
-    ownerUserId: 'owner-1',
+    ownerUserId,
+    owner: { userId: ownerUserId, name: '' },
+    access: 'organization',
     containerType: 'CODE_WORKTREE',
     title,
     revision: 1,
@@ -291,7 +297,7 @@ describe('loadSharedWithMe', () => {
       ],
     });
     bridge.listSharedWithMe.mockResolvedValue({
-      containers: [{ ...container('a', 'First'), ownerUserId: 'owner-51' }],
+      containers: [container('a', 'First', 'owner-51')],
       nextCursor: null,
     });
     bridge.searchMembers.mockImplementation((request: { query?: string }) =>
@@ -430,7 +436,7 @@ describe('loadSharedWithMe', () => {
     // still entitled passed its `listEpoch !== epoch` check on resolution and
     // restored rows for organizations the account no longer belongs to.
     const slow = deferred<{
-      containers: Record<string, unknown>[];
+      containers: SharedContainerSummary[];
       nextCursor: null;
     }>();
     bridge.listSharedWithMe.mockReturnValue(slow.promise);
@@ -2124,6 +2130,23 @@ describe('acceptContainer', () => {
     expect(state.acceptedIds).toContain('c1');
     expect(state.acceptingId).toBeNull();
     expect(state.viewer?.containerId).toBe('c1');
+  });
+
+  it('forwards the listing container type as the acceptance telemetry hint', async () => {
+    useSharedContainerReplicasStore.setState({ acceptedIds: [] });
+
+    await useSharedContainerReplicasStore.getState().acceptContainer({
+      containerId: 'c1',
+      organizationId: 'org-1',
+      containerType: 'COWORK_WORK_ENTRY',
+      shouldOpen: () => false,
+    });
+
+    expect(bridge.accept).toHaveBeenCalledWith({
+      containerId: 'c1',
+      containerType: 'COWORK_WORK_ENTRY',
+      organizationId: 'org-1',
+    });
   });
 
   it('records consent without materializing when the caller is stale', async () => {

@@ -313,6 +313,7 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
           contents. The header (name, size) and footer stay recorded. */}
       <div
         className={`${POSTHOG_REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto`}
+        data-selectable
         data-testid="attachment-preview-body"
       >
         {loading && <LoadingSkeleton />}
@@ -345,7 +346,7 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
       <button
         type="button"
         onClick={handleOpen}
-        className="flex w-full shrink-0 items-center gap-1.5 border-t px-3 py-2 text-xs fg-secondary transition hover:bg-fg-primary/[0.04] hover:fg-primary"
+        className="flex w-full shrink-0 items-center gap-1.5 border-t px-3 py-2 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-primary"
       >
         <FileIcon width={12} height={12} />
         Open

@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import type { CanopyProxyError } from '@canopy/protocol';
+import { AiCreditsStopLine } from './AiCreditsStopLine';
 import { MODEL_LIBRARY_UNLOCK_COPY } from './modelLibraryLock';
 
 /**
@@ -67,6 +68,11 @@ export function CanopyProxyErrorSummary({
   error,
   dataTestId = 'canopy-proxy-error-summary',
 }: CanopyProxyErrorSummaryProps): JSX.Element {
+  // The same plain line as the desktop transcript (CAN-5160): the payment
+  // choice belongs to the composer's banner, never to a transcript panel.
+  if (error.code === 'no_billing_source') {
+    return <AiCreditsStopLine dataTestId={dataTestId} />;
+  }
   return (
     <div
       // `status` (polite), not the desktop notice's `alert` (assertive): these

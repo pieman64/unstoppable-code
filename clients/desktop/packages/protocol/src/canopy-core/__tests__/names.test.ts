@@ -59,10 +59,11 @@ describe('plane-qualified Canopy names', () => {
 
 const validWorkerName: PlaneQualifiedName<'worker'> =
   'worker.filesystem.roots.list';
+void validWorkerName;
 const definitionName: ValidPlaneQualifiedName<
   'worker.filesystem.roots.list',
   'worker'
-> = validWorkerName;
+> = 'worker.filesystem.roots.list';
 void definitionName;
 
 // @ts-expect-error names require a plane, domain, and terminal segment

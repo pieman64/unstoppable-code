@@ -2,25 +2,13 @@ import { useState, type JSX, type ReactNode } from 'react';
 import { MinusIcon, PlusIcon } from '../../icons';
 import { useCleanChatLook } from '../chat-look';
 import { STEP_ROW_BODY_CLASS, StepRow } from './StepRow';
-import {
-  LightbulbIcon,
-  ThinkingIcon as AppCatalogThinkingIcon,
-} from '../../icons/AppIcons';
-
-/**
- * Default icon for collapsed transcript blocks — the same "brain" glyph the
- * desktop renderer has always used for Thinking blocks, so both surfaces show
- * identical chrome.
- */
-function BrainIcon(): JSX.Element {
-  return <AppCatalogThinkingIcon width="14" height="14" />;
-}
+import { LightbulbIcon } from '../../icons/AppIcons';
 
 export interface CollapsibleBlockProps {
   forceExpanded?: boolean;
   label: string;
   content: string;
-  /** Override the leading icon; defaults to the shared brain glyph. */
+  /** Override the leading icon; defaults to the thinking lightbulb. */
   icon?: ReactNode;
   /**
    * Collapsed-state preview text. Defaults to the first 80 characters of the
@@ -75,6 +63,7 @@ export function CollapsibleBlock({
     return (
       <div>
         <StepRow
+          step
           icon={icon ?? <LightbulbIcon />}
           label={
             running
@@ -105,11 +94,11 @@ export function CollapsibleBlock({
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
-        className="group flex w-full items-center gap-2 py-1 text-xs fg-secondary transition"
+        className="group flex w-full items-center gap-2 py-1 text-xs fg-secondary transition-colors"
       >
         <span className="flex-shrink-0">
           <span className="block group-hover:hidden">
-            {icon ?? <BrainIcon />}
+            {icon ?? <LightbulbIcon />}
           </span>
           <span className="hidden group-hover:block">
             {isOpen ? <MinusIcon /> : <PlusIcon />}

@@ -5,10 +5,13 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { resolveEnvironmentVariables } from '@canopy/desktop-shared/lib/user-environment';
 import { AgentIcon, CommandIcon, PipelineIcon } from '@canopy/ui-shared/icons';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import {
+  SettingsSelect,
+  type SettingsSelectOption,
+} from '@canopy/ui-shared/components';
 import { BrandLogo } from '@/components/BrandLogo';
-import { SettingsSelect } from '@/components/settings/SettingsLayout';
 import { EnvironmentUsageRichTooltip } from './EnvironmentUsageRichTooltip';
+import { SettingsGroup } from '@/components/settings/SettingsLayout';
 import {
   ENVIRONMENT_RUNTIMES,
   ENVIRONMENT_RUNTIME_INDICATOR_TITLE,
@@ -111,32 +114,32 @@ export function ParentSelect({
   onChange,
 }: ParentSelectProps): JSX.Element {
   const options = useMemo(
-    () =>
-      sortEnvironments(
+    (): readonly SettingsSelectOption[] => [
+      { value: '', label: 'No parent' },
+      ...sortEnvironments(
         environments.filter(
           (environment) =>
             environment.id !== currentId && !blockedIds.has(environment.id),
         ),
-      ),
+      ).map((environment) => ({
+        value: environment.id,
+        label: environment.name,
+      })),
+    ],
     [blockedIds, currentId, environments],
   );
 
   return (
+    // The group's Name field is a text field: both take the 208px field
+    // width so their edges line up.
     <SettingsSelect
       id={id}
+      width="field"
+      options={options}
       value={value ?? ''}
-      onChange={(event) =>
-        onChange(event.target.value.length === 0 ? null : event.target.value)
-      }
+      onValueChange={(next) => onChange(next.length === 0 ? null : next)}
       data-testid="environments-parent-select"
-    >
-      <option value="">No parent</option>
-      {options.map((environment) => (
-        <option key={environment.id} value={environment.id}>
-          {environment.name}
-        </option>
-      ))}
-    </SettingsSelect>
+    />
   );
 }
 
@@ -161,34 +164,33 @@ export function ResolvedVariablesList({
   );
   if (!resolved || entries.length === 0) {
     return (
-      <p className="text-xs fg-secondary">
-        No variables resolved for this environment.
-      </p>
+      <SettingsGroup>
+        <p className="text-s fg-secondary">
+          No variables resolved for this environment.
+        </p>
+      </SettingsGroup>
     );
   }
   return (
     // Resolved `KEY=value` pairs include secret values: blocked in replay.
-    <ul
-      className={`${POSTHOG_REPLAY_BLOCK_CLASS} space-y-1`}
-      data-testid="environments-resolved-list"
-    >
+    <SettingsGroup dataTestId="environments-resolved-list" blockFromReplay>
       {entries.map(([key, value]) => {
         const source = sources.get(key);
         return (
-          <li
+          <div
             key={key}
-            className="flex items-center justify-between gap-3 rounded border bg-card/40 px-2.5 py-1.5"
+            className="flex min-h-10 items-center justify-between gap-6"
           >
-            <span className="truncate font-mono text-xs fg-primary">
-              <span className="font-semibold">{key}</span>
+            <span className="min-w-0 truncate font-mono text-xs fg-primary">
+              <span className="font-medium">{key}</span>
               <span className="fg-secondary">={value}</span>
             </span>
             {source && (
-              <span className="shrink-0 text-3xs fg-secondary">{source}</span>
+              <span className="shrink-0 text-xs fg-secondary">{source}</span>
             )}
-          </li>
+          </div>
         );
       })}
-    </ul>
+    </SettingsGroup>
   );
 }

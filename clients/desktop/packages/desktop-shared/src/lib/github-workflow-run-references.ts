@@ -51,12 +51,16 @@ export interface GitHubJobResolution {
 }
 
 export class GitHubWorkflowRunResolutionError extends Error {
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause: unknown;
+
   constructor(
     readonly itemIndex: number,
-    readonly cause: unknown,
+    cause: unknown,
   ) {
     super('GitHub workflow reference resolution failed.');
     this.name = 'GitHubWorkflowRunResolutionError';
+    this.cause = cause;
   }
 }
 

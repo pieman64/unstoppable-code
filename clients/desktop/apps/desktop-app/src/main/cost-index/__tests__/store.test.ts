@@ -19,6 +19,7 @@ import {
   onAuditEntryEnqueued,
 } from '../../observability/audit-stream-hooks';
 import type { CostIndexHost, CostScopeLocation } from '../types';
+import { appendJsonlLines } from '../../observability/jsonl-append';
 import { createCostIndexScheduler } from '../scheduler';
 import { CostIndexStore } from '../store';
 import {
@@ -476,7 +477,9 @@ describe('CostIndexStore persistence and replay', () => {
       '2026-10-08.jsonl',
     );
     await rig.store.refreshInternal('startup');
-    expect(await rig.store.catchUpAndSealDay('2026-10-08.jsonl')).toBe(true);
+    expect(
+      await rig.store.catchUpAndSealDay('2026-10-08.jsonl'),
+    ).not.toBeNull();
     const before = (await readScopeFiles(location.directory)).chats[0];
     expect(before?.sealedEntryIds).toEqual([entryId]);
 
@@ -1064,6 +1067,22 @@ describe('CostIndexStore persistence and replay', () => {
     expect(read).toMatchObject({ status: 'error', reason: 'NOT_FOUND' });
   });
 
+  it('answers NOT_FOUND with workflow copy for a run it never recorded', async () => {
+    await rig.store.refreshInternal('startup');
+
+    const read = await rig.store.getPipelineRun({
+      scope: defaultScope,
+      executionId: 'never-ran',
+    });
+    await rig.store.waitForIdle();
+
+    expect(read).toMatchObject({
+      status: 'error',
+      reason: 'NOT_FOUND',
+      message: 'Workflow run cost was not found',
+    });
+  });
+
   it('writes per-scope archive refreshes without advancing the global cursor or touching other scopes', async () => {
     const secondScope: CostScopeRef = {
       kind: 'entry',
@@ -1450,7 +1469,9 @@ describe('CostIndexStore persistence and replay', () => {
     const location = rig.live.get(key(defaultScope));
     if (location === undefined) throw new Error('Test scope missing');
     await rig.append(auditEntry('turn-day-seal'), '2026-10-08.jsonl');
-    expect(await rig.store.catchUpAndSealDay('2026-10-08.jsonl')).toBe(true);
+    expect(
+      await rig.store.catchUpAndSealDay('2026-10-08.jsonl'),
+    ).not.toBeNull();
     expect(rig.flushCount()).toBe(0);
     const afterSeal = (await readScopeFiles(location.directory)).chats[0];
     expect(Object.keys(afterSeal?.records ?? {})).toHaveLength(0);
@@ -1459,7 +1480,9 @@ describe('CostIndexStore persistence and replay', () => {
     expect(summary?.chats[0]?.turnCount).toBe(1);
 
     const restarted = new CostIndexStore(rig.host);
-    expect(await restarted.catchUpAndSealDay('2026-10-08.jsonl')).toBe(true);
+    expect(
+      await restarted.catchUpAndSealDay('2026-10-08.jsonl'),
+    ).not.toBeNull();
     expect(
       (await readSummaryFile(location.directory)).value?.chats[0]?.turnCount,
     ).toBe(1);
@@ -1480,7 +1503,9 @@ describe('CostIndexStore persistence and replay', () => {
       '2026-10-08.jsonl',
     );
     // Retention seals the day while the long turn is still running.
-    expect(await rig.store.catchUpAndSealDay('2026-10-08.jsonl')).toBe(true);
+    expect(
+      await rig.store.catchUpAndSealDay('2026-10-08.jsonl'),
+    ).not.toBeNull();
     const afterSeal = (await readScopeFiles(location.directory)).chats[0];
     expect(Object.keys(afterSeal?.records ?? {})).toEqual(['turn-long']);
     expect(afterSeal?.sealedEntryIds).toEqual(['turn-done']);
@@ -1497,7 +1522,9 @@ describe('CostIndexStore persistence and replay', () => {
     expect(completed?.chats[0]?.turnCount).toBe(2);
 
     // The next retention pass seals it with its final figures.
-    expect(await rig.store.catchUpAndSealDay('2026-10-08.jsonl')).toBe(true);
+    expect(
+      await rig.store.catchUpAndSealDay('2026-10-08.jsonl'),
+    ).not.toBeNull();
     const sealedLater = (await readScopeFiles(location.directory)).chats[0];
     expect(Object.keys(sealedLater?.records ?? {})).toHaveLength(0);
     expect(sealedLater?.sealedEntryIds).toEqual(['turn-done', 'turn-long']);
@@ -1522,7 +1549,7 @@ describe('CostIndexStore persistence and replay', () => {
       withRetainedLock: async (_scope, action) => {
         signalLock();
         await lockGate;
-        await action();
+        return await action();
       },
     };
     const store = new CostIndexStore(host);
@@ -1556,7 +1583,7 @@ describe('CostIndexStore persistence and replay', () => {
       releaseLock();
       releaseWrite();
 
-      expect(await catchUp).toBe(false);
+      expect(await catchUp).toBeNull();
       await queuedRefresh;
       const files = await readScopeFiles(location.directory);
       expect(files.chats[0]?.sealedEntryIds).toEqual([
@@ -2422,5 +2449,214 @@ describe('CostIndexStore persistence and replay', () => {
       ),
     );
     expect(await readFile(auditPath, 'utf8')).toBe(auditBefore);
+  });
+});
+
+describe('CostIndexStore checkpoint compatibility and audit file identity', () => {
+  let rig: StoreRig;
+
+  beforeEach(async () => {
+    rig = await createRig();
+    rig.addScope(defaultScope);
+  });
+
+  afterEach(async () => {
+    try {
+      await rig.store.waitForIdle();
+    } finally {
+      await rm(rig.root, { recursive: true, force: true });
+    }
+  });
+
+  function auditBytesRead(): number {
+    return rig.slices.reduce((total, bytes) => total + bytes, 0);
+  }
+
+  async function writtenCheckpoint() {
+    const checkpoint = (await readCheckpointFile(rig.checkpoint)).value;
+    if (checkpoint === null) throw new Error('Expected a written checkpoint');
+    return checkpoint;
+  }
+
+  it("keeps a version 1 checkpoint's cursors, coverage and fill state through a new store's idle refresh", async () => {
+    await rig.append(auditEntry('turn-v1-a'), '2026-10-07.jsonl');
+    await rig.append(auditEntry('turn-v1-b'), '2026-10-08.jsonl');
+    await rig.store.refreshInternal('startup');
+    await rig.store.waitForIdle();
+    const written = await writtenCheckpoint();
+    expect(
+      Object.values(written.audit).every(
+        (cursor) => cursor.ino !== undefined && cursor.ino > 0,
+      ),
+    ).toBe(true);
+    const versionOne = {
+      ...written,
+      firstBuild: {
+        at: '2026-09-01T00:00:00.000Z',
+        coverageStart: '2026-09-01',
+      },
+      retainedFillComplete: true,
+    };
+    await writeFile(rig.checkpoint, `${JSON.stringify(versionOne)}\n`, 'utf8');
+    rig.slices.length = 0;
+
+    const restarted = new CostIndexStore(rig.host);
+    expect(await restarted.hasAuditGrowth()).toBe(false);
+    await restarted.refreshInternal('idle');
+    await restarted.waitForIdle();
+
+    expect(auditBytesRead()).toBe(0);
+    const after = await writtenCheckpoint();
+    expect(after.version).toBe(1);
+    expect(after.generation).toBe(versionOne.generation);
+    expect(after.audit).toEqual(versionOne.audit);
+    expect(after.firstBuild).toEqual(versionOne.firstBuild);
+    expect(after.retainedFillComplete).toBe(true);
+    expect(await readdir(join(rig.root, 'index'))).toEqual(['checkpoint.json']);
+  });
+
+  it('reads a checkpoint from a later release as newer: no corrupt copy, one preserved original and the same coverage start', async () => {
+    const location = rig.live.get(key(defaultScope));
+    if (location === undefined) throw new Error('Test scope missing');
+    const auditPath = join(rig.audit, '2026-10-08.jsonl');
+    await rig.append(auditEntry('turn-after-downgrade'), '2026-10-08.jsonl');
+    const newer = {
+      version: 2,
+      generation: 9,
+      firstBuild: {
+        at: '2026-09-01T00:00:00.000Z',
+        coverageStart: '2026-09-01',
+      },
+      retainedFillComplete: true,
+      audit: { '2026-10-08.jsonl': { position: 4096, shard: 'a' } },
+      shards: ['written-by-a-later-release'],
+    };
+    const original = `${JSON.stringify(newer)}\n`;
+    await mkdir(join(rig.root, 'index'), { recursive: true });
+    await writeFile(rig.checkpoint, original, 'utf8');
+
+    expect(await rig.store.hasAuditGrowth()).toBe(true);
+    await rig.store.refreshInternal('startup');
+    await rig.store.waitForIdle();
+
+    const names = await readdir(join(rig.root, 'index'));
+    expect(names.filter((name) => name.includes('.corrupt-'))).toEqual([]);
+    const preserved = names.filter((name) =>
+      name.startsWith('checkpoint.json.v2-'),
+    );
+    expect(preserved).toHaveLength(1);
+    expect(
+      await readFile(join(rig.root, 'index', preserved[0] ?? ''), 'utf8'),
+    ).toBe(original);
+    const after = await writtenCheckpoint();
+    expect(after.version).toBe(1);
+    expect(after.firstBuild).toEqual(newer.firstBuild);
+    expect(after.retainedFillComplete).toBe(true);
+    expect(after.audit['2026-10-08.jsonl']?.offset).toBe(
+      (await stat(auditPath)).size,
+    );
+    expect(
+      (await persistedChat(location)).value?.records['turn-after-downgrade'],
+    ).toBeDefined();
+    // The entry was created after the preserved coverage start.
+    expect(
+      (await readSummaryFile(location.directory)).value?.coverageStart,
+    ).toBeUndefined();
+  });
+
+  it('drops the cursor of a day file that no longer exists at the end of a full pass', async () => {
+    await rig.append(auditEntry('turn-old-day'), '2026-10-07.jsonl');
+    await rig.append(auditEntry('turn-new-day'), '2026-10-08.jsonl');
+    await rig.store.refreshInternal('startup');
+    await rig.store.waitForIdle();
+    expect(Object.keys((await writtenCheckpoint()).audit).sort()).toEqual([
+      '2026-10-07.jsonl',
+      '2026-10-08.jsonl',
+    ]);
+
+    await rm(join(rig.audit, '2026-10-07.jsonl'));
+    await rig.store.refreshInternal('idle');
+    await rig.store.waitForIdle();
+
+    expect(Object.keys((await writtenCheckpoint()).audit)).toEqual([
+      '2026-10-08.jsonl',
+    ]);
+  });
+
+  it('reads a zero inode as an unknown identity, not as a replaced file', async () => {
+    await rig.append(auditEntry('turn-zero-inode'), '2026-10-08.jsonl');
+    await rig.store.refreshInternal('startup');
+    await rig.store.waitForIdle();
+    const written = await writtenCheckpoint();
+    await writeCheckpointFile(rig.checkpoint, {
+      ...written,
+      audit: Object.fromEntries(
+        Object.entries(written.audit).map(([filename, cursor]) => [
+          filename,
+          { ...cursor, ino: 0 },
+        ]),
+      ),
+    });
+    rig.slices.length = 0;
+
+    const restarted = new CostIndexStore(rig.host);
+    await restarted.refreshInternal('idle');
+    await restarted.waitForIdle();
+
+    expect(auditBytesRead()).toBe(0);
+    expect(
+      await restarted.catchUpAndSealDay('2026-10-08.jsonl'),
+    ).not.toBeNull();
+  });
+
+  it('indexes the entry appended after a torn audit fragment', async () => {
+    const location = rig.live.get(key(defaultScope));
+    if (location === undefined) throw new Error('Test scope missing');
+    const auditPath = join(rig.audit, '2026-10-08.jsonl');
+    await writeFile(
+      auditPath,
+      `${JSON.stringify(auditEntry('turn-before-tear'))}\n{"id":"turn-torn","eventTy`,
+      'utf8',
+    );
+    await rig.store.refreshInternal('startup');
+    await rig.store.waitForIdle();
+
+    await appendJsonlLines(
+      auditPath,
+      `${JSON.stringify(auditEntry('turn-after-tear'))}\n`,
+    );
+    await rig.store.refreshInternal('idle');
+    await rig.store.waitForIdle();
+
+    expect(
+      Object.keys((await persistedChat(location)).value?.records ?? {}).sort(),
+    ).toEqual(['turn-after-tear', 'turn-before-tear']);
+  });
+
+  it('preserves a corrupt archived summary once and schedules no audit replay for it', async () => {
+    const retainedScope: CostScopeRef = {
+      kind: 'retained',
+      projectId,
+      containerId: 'entry-archived',
+    };
+    const retainedLocation = rig.addScope(retainedScope, { retained: true });
+    await mkdir(retainedLocation.directory, { recursive: true });
+    await writeFile(
+      join(retainedLocation.directory, 'summary.json'),
+      '{"version":1,"projectId":',
+      'utf8',
+    );
+
+    for (let read = 0; read < 2; read += 1) {
+      const view = await rig.store.getScope({ scope: retainedScope });
+      expect(view.status).toBe('ok');
+      await rig.store.waitForIdle();
+    }
+
+    const names = await readdir(retainedLocation.directory);
+    expect(
+      names.filter((name) => name.startsWith('summary.json.corrupt-')),
+    ).toHaveLength(1);
+    expect((await readCheckpointFile(rig.checkpoint)).value).toBeNull();
   });
 });

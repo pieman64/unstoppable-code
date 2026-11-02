@@ -1,3 +1,4 @@
+import { withProviderConnectionAttempt } from '../lib/provider-connection-events';
 import { revokeDelegationLifecycle } from '../agents/delegation/lifecycle';
 import { stripVTControlCharacters } from 'node:util';
 import type {
@@ -134,6 +135,15 @@ export async function getManagedCursorRuntime(
   return { launch, env, target };
 }
 export async function connectCursor(
+  signal: AbortSignal,
+  progress: (status: CursorConnectionStatus) => void,
+): Promise<CursorConnectionStatus> {
+  return withProviderConnectionAttempt('cursor', 'native_login', signal, () =>
+    connectCursorImpl(signal, progress),
+  );
+}
+
+async function connectCursorImpl(
   signal: AbortSignal,
   progress: (status: CursorConnectionStatus) => void,
 ): Promise<CursorConnectionStatus> {
@@ -473,6 +483,22 @@ async function revokeCursorDelegations(): Promise<void> {
  * it connected but signed out, which the panel reports.
  */
 export async function changeCursorAccount(
+  signal: AbortSignal,
+  progress: (status: CursorConnectionStatus) => void,
+  intent: CursorAccountIntent,
+  /**
+   * Runs once the pre-flight checks pass and the account is about to change.
+   * The refusals above it change nothing, so a caller that drops per-account
+   * state must not do so until this fires.
+   */
+  onBeforeChange: () => Promise<void> = (): Promise<void> => Promise.resolve(),
+): Promise<CursorConnectionStatus> {
+  return withProviderConnectionAttempt('cursor', 'native_login', signal, () =>
+    changeCursorAccountImpl(signal, progress, intent, onBeforeChange),
+  );
+}
+
+async function changeCursorAccountImpl(
   signal: AbortSignal,
   progress: (status: CursorConnectionStatus) => void,
   intent: CursorAccountIntent,

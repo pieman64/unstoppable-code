@@ -929,6 +929,19 @@ const OPERATION_ROUTES = [
       respond(ctx, 200, gitHubConnection());
     },
   },
+  {
+    operation: 'organization.github.connect',
+    method: 'POST',
+    path: /^\/api\/account\/teams\/([^/]+)\/github\/connect$/,
+    handle(ctx, match) {
+      const org = editableOrgFor(ctx, match);
+      if (org === null) return;
+      // A seeded handoff only: no live installation, callback or connection write.
+      respond(ctx, 200, {
+        installUrl: 'https://github.com/apps/canopy-e2e/installations/new',
+      });
+    },
+  },
 
   /* Invitations (before `organizations/:id`, which would capture them) ----- */
   {

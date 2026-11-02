@@ -16,6 +16,7 @@ import {
   registerScenario,
   resetAll,
 } from '../control-plane.mjs';
+import { AI_GATEWAY_MODEL_CATALOG } from './ai-gateway-catalog.mjs';
 import { handleCloudRequest } from './cloud.mjs';
 
 function startServer() {
@@ -578,6 +579,47 @@ test('curated automation catalog routes page and serve detail and package data',
       { headers },
     );
     assert.equal(await blob.text(), 'blob-0');
+  } finally {
+    server.close();
+    resetAll();
+  }
+});
+
+test('CAN-4261: the curated pipeline catalog lists no templates instead of a 404', async () => {
+  resetAll();
+  const key = 'csk_can4261_curated_pipelines';
+  registerScenario(key, { cloud: {} });
+  const { server, base } = await startServer();
+
+  try {
+    const response = await fetch(
+      `${base}/api/v1/desktop-app/pipelines/curated?limit=25`,
+      { headers: { authorization: `Bearer ${key}` } },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      version: 1,
+      data: [],
+      nextCursor: null,
+    });
+  } finally {
+    server.close();
+    resetAll();
+  }
+});
+
+test('the AI Gateway catalog route serves the default catalog', async () => {
+  resetAll();
+  const { server, base } = await startServer();
+
+  try {
+    const response = await fetch(`${base}/api/v1/canopy/ai-gateway/models`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      await response.json(),
+      JSON.parse(JSON.stringify(AI_GATEWAY_MODEL_CATALOG)),
+    );
   } finally {
     server.close();
     resetAll();
@@ -2313,5 +2355,155 @@ test('CAN-4266: shared agent search reaches beyond the first 25 rows', async () 
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('automation shares advertise v5 and serve packaged pipeline and asset blobs', async () => {
+  resetAll();
+  const { createHash } = await import('node:crypto');
+  const key = 'csk_automation_pipeline_dependencies_unit';
+  registerScenario(key, { cloud: {} });
+  const pipelineBytes = Buffer.from('name: Entry\n');
+  const assetBytes = Buffer.from('{"specialist":true}\n');
+  const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const pipelineHash = sha(pipelineBytes);
+  const assetHash = sha(assetBytes);
+  const skillHash = 'a'.repeat(64);
+  const digest = `pp:v1:${'Z'.repeat(43)}`;
+  const tree = (runtimeKind, rootName, path, hash, size) => ({
+    provider: 'claude',
+    runtimeKind,
+    rootName,
+    entries: [{ path, sha256: hash, size, mode: 'read' }],
+  });
+  const manifest = {
+    version: 1,
+    pipelineContentHash: 'b'.repeat(64),
+    resources: [
+      {
+        id: 'skill',
+        kind: 'standalone_skill',
+        trees: [tree('standalone_skill', 'skill', 'SKILL.md', skillHash, 3)],
+      },
+      {
+        id: 'automation-pipeline-action',
+        kind: 'automation_pipeline',
+        pipelineKey: 'action',
+        pipelineContentHash: pipelineHash,
+        trees: [
+          tree(
+            'automation_pipeline',
+            'action',
+            'pipeline.yaml',
+            pipelineHash,
+            pipelineBytes.byteLength,
+          ),
+        ],
+      },
+      {
+        id: 'file-asset-action-specialists',
+        kind: 'file_asset',
+        pipelineKey: 'action',
+        assetId: 'specialists',
+        trees: [
+          tree(
+            'pipeline_asset',
+            'specialists',
+            'one.json',
+            assetHash,
+            assetBytes.byteLength,
+          ),
+        ],
+      },
+    ],
+  };
+  const { server, base } = await startServer();
+  const headers = {
+    authorization: `Bearer ${key}`,
+    'content-type': 'application/json',
+    'X-Pipeline-Package-Version': '6',
+  };
+  try {
+    const capabilities = (
+      await (await fetch(`${base}/.well-known/canopy`, { headers })).json()
+    ).capabilities;
+    assert.ok(capabilities.includes('automations-pipeline-dependencies-v5'));
+    assert.ok(capabilities.includes('automations-run-condition-v4'));
+
+    const prepared = await (
+      await fetch(`${base}/api/v1/pipeline-packages/uploads`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ manifest, expectedDigest: digest }),
+      })
+    ).json();
+    // The pipeline and asset bytes are requested; fixture-backed kinds are not.
+    assert.deepEqual(prepared.missingBlobs, [pipelineHash, assetHash]);
+    for (const [hash, bytes] of [
+      [pipelineHash, pipelineBytes],
+      [assetHash, assetBytes],
+    ]) {
+      const put = await fetch(
+        `${base}/api/v1/pipeline-packages/uploads/${prepared.uploadId}/blobs/${hash}`,
+        { method: 'PUT', headers, body: bytes },
+      );
+      assert.equal(put.status, 204);
+    }
+    const committed = await fetch(
+      `${base}/api/v1/pipeline-packages/uploads/${prepared.uploadId}/commit`,
+      { method: 'POST', headers },
+    );
+    assert.equal(committed.status, 200);
+
+    const created = await fetch(`${base}/api/v1/canopy/automations`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        committedPackageUploadId: prepared.uploadId,
+        automation: {
+          version: 5,
+          name: 'Packaged pipeline',
+          description: '',
+          trigger: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'workspace' },
+            pipeline: {
+              source: 'packaged',
+              key: 'action',
+              pipelineContentHash: pipelineHash,
+            },
+            inputKeys: [],
+          },
+          capabilityPackage: { version: 1, digest },
+          hasRunCondition: false,
+        },
+      }),
+    });
+    assert.equal(created.status, 201);
+    const automationId = (await created.json()).id;
+    const packagePath = `${base}/api/v1/automations/${automationId}/package`;
+    const query = `?expectedPackageDigest=${encodeURIComponent(digest)}`;
+    const served = await (
+      await fetch(`${packagePath}${query}`, { headers })
+    ).json();
+    assert.equal(served.digest, digest);
+    assert.deepEqual(
+      served.manifest.resources.map((resource) => resource.kind),
+      ['standalone_skill', 'automation_pipeline', 'file_asset'],
+    );
+    for (const [hash, bytes] of [
+      [pipelineHash, pipelineBytes],
+      [assetHash, assetBytes],
+    ]) {
+      const blob = await fetch(`${packagePath}/blobs/${hash}${query}`, {
+        headers,
+      });
+      assert.equal(blob.status, 200);
+      assert.deepEqual(Buffer.from(await blob.arrayBuffer()), bytes);
+    }
+  } finally {
+    server.close();
+    resetAll();
   }
 });

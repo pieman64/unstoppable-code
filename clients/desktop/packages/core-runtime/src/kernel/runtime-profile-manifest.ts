@@ -4,7 +4,10 @@ import {
   CANOPY_STREAM_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  CORE_MIGRATION_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
+  CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
+  CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
   type CanopyInstructionDefinitionMap,
   type CanopyOperationPlacement,
   type CanopyQueryDefinitionMap,
@@ -22,15 +25,22 @@ export const RUNTIME_PRINCIPALS = [
   'interface',
   'owning-core',
   'delegating-primary',
+  'migration-launcher',
 ] as const;
 export type RuntimePrincipal = (typeof RUNTIME_PRINCIPALS)[number];
 export type RuntimeOperationKind = 'query' | 'instruction' | 'stream';
 
 const CATALOG = {
-  query: { ...CANOPY_QUERY_DEFINITIONS, ...CORE_TRANSPORT_QUERY_DEFINITIONS },
+  query: {
+    ...CANOPY_QUERY_DEFINITIONS,
+    ...CORE_TRANSPORT_QUERY_DEFINITIONS,
+    ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
+  },
   instruction: {
     ...CANOPY_INSTRUCTION_DEFINITIONS,
     ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+    ...CORE_MIGRATION_INSTRUCTION_DEFINITIONS,
+    ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   },
   stream: {
     ...CANOPY_STREAM_DEFINITIONS,

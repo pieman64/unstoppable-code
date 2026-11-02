@@ -1,3 +1,4 @@
+import { assertSharedMultiRepoWorkReady } from './org-shared-multi-repo-readiness';
 import { z } from 'zod';
 import { withW5Commit } from './w5-commit-log-file-store';
 import { getWorkspaceWorktreesFilePath } from './paths';
@@ -36,11 +37,27 @@ export type WorktreeCreationLifecycle = Omit<
   keyof WorktreeSelectionFields | 'workspaceId' | 'w5KeyedCreation'
 >;
 
+/** The trusted host callers that record keyed worktree creation receipts. */
+export type WorktreeCreationCallerSource =
+  | 'worktree-selection'
+  | 'pipeline-host';
+
 export interface WorktreeCreationRequest<
   Kind extends WorktreeCreationWorkspaceKind = WorktreeCreationWorkspaceKind,
 > extends WorktreeCreationLifecycle {
   workspaceId: string;
   idempotencyKey?: string;
+  /**
+   * The trusted host caller a keyed receipt is recorded under, as
+   * `desktop-host:<source>`. Defaults to `worktree-selection`. Never part of
+   * the service request or the fingerprint.
+   */
+  callerSource?: WorktreeCreationCallerSource;
+  /**
+   * Called when a keyed create returns its saved outcome instead of creating.
+   * Never part of the service request or the fingerprint.
+   */
+  onKeyedReplay?: () => void;
   /** The workspace kind the caller resolved; a mismatch is refused. */
   workspaceKind: Kind;
   branch: WorktreeBranchSelection;
@@ -171,7 +188,10 @@ function admitCreation(
   request: WorktreeCreationRequest,
 ): CreateWorktreeServiceOptions {
   const { workspaceId, workspaceKind, branch, base, ...lifecycle } = request;
+  // Keyed-boundary controls: never service options or fingerprint parameters.
   delete lifecycle.idempotencyKey;
+  delete lifecycle.callerSource;
+  delete lifecycle.onKeyedReplay;
   validateId(workspaceId, 'workspaceId');
   if (!isWritableScope(workspaceId)) {
     refuseWorktreeCreation('read-only-scope', READ_ONLY_SCOPE_ERROR);
@@ -223,6 +243,8 @@ export async function createWorktreeFromSelection(
   request: WorktreeCreationRequest,
 ): Promise<WorktreeCreationOutcome> {
   const options = admitCreation(request);
+  if (request.workspaceKind === 'multi-repo')
+    await assertSharedMultiRepoWorkReady(request.workspaceId);
   if (request.idempotencyKey !== undefined) {
     const parameters = {
       workspaceId: options.workspaceId,
@@ -243,16 +265,20 @@ export async function createWorktreeFromSelection(
       seedPanelLayoutMode: options.seedPanelLayoutMode,
       surfaceNeedsRepairInResponse: options.surfaceNeedsRepairInResponse,
       deferGitSetup: options.deferGitSetup,
+      // Undefined parameters are omitted from the fingerprint, so receipts
+      // of callers that keep the timestamped default are unchanged.
+      defaultBranchNaming: options.defaultBranchNaming,
     };
     return runKeyedW5Operation(
       {
-        caller: 'desktop-host:worktree-selection',
+        caller: `desktop-host:${request.callerSource ?? 'worktree-selection'}`,
         operation: 'core.worktree.create',
         idempotencyKey: request.idempotencyKey,
         parameters,
         isPreEffectRefusal: (error) =>
           error instanceof WorktreeCreationRefusedError ||
           error instanceof IdentifierValidationError,
+        onReplay: request.onKeyedReplay,
       },
       (outcome) => worktreeReceiptSchema.parse(outcome),
       async (binding, attempt) => {

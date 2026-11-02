@@ -89,6 +89,7 @@ function uiState(): AppAdvisorUiStateEnvelope {
     digest: 'digest',
     snapshot: {
       activePage: 'main',
+      archivedContainers: { count: 0, viewerOpen: false },
       overlays: {
         commandPaletteOpen: false,
         fileSearchPaletteOpen: false,
@@ -128,7 +129,7 @@ function makeAccessors(): AppAdvisorWindowAccessors & {
       open: true,
       focused: true,
     })),
-    sendAppAdvisorWindowCommand: jest.fn(),
+    setAppAdvisorFloatingSize: jest.fn(),
   };
 }
 
@@ -305,10 +306,9 @@ describe('App Advisor IPC tool routing', () => {
 
   it('does not reuse cached page availability after a failed UI refresh', async () => {
     const cached = uiState();
-    const snapshot = {
-      ...cached.snapshot,
-      availablePages: ['home', 'agents'] as const,
-    };
+    const snapshot = { ...cached.snapshot };
+    // Keep the stale cached page values so the test still covers discarding them.
+    Reflect.set(snapshot, 'availablePages', ['home', 'agents']);
     setLatestAppAdvisorUiState({ ...cached, snapshot });
     mockedSendToWindowDetailed.mockReturnValueOnce({
       delivered: false,
@@ -963,6 +963,7 @@ describe('App Advisor IPC tool routing', () => {
           kind: 'dispatch_action',
           requestId: 'navigation-timeout',
           action: { type: 'navigation.go_to_page', page: 'overview' },
+          originWorktreeId: 'worktree-1',
         },
         accessors,
       );
@@ -1086,6 +1087,83 @@ describe('App Advisor IPC tool routing', () => {
         lastArchivedOverviewConfirmationOpened: true,
       },
     );
+  });
+
+  it("forwards the nav's open batch removal dialog as mode, count, and phase", () => {
+    const accessors = makeAccessors();
+    mockedRegisterIpcHandler.mockClear();
+    registerAppAdvisorHandlers(accessors);
+    const base = {
+      activeWorkEntryId: 'entry-1',
+      activeChatId: null,
+      navCollapsed: false,
+      settingsModalOpen: false,
+      archivedOverviewOpen: false,
+      archivedOverviewWorkspaceId: null,
+      emptyTrashConfirmationOpen: false,
+      emptyTrashRunning: false,
+      lastArchivedOverviewRequestId: null,
+      lastArchivedOverviewConfirmationOpened: null,
+    };
+
+    getHandler(IPC_CHANNELS.appAdvisorReportWindowUiState)(undefined, {
+      ...base,
+      batchRemovalDialog: {
+        open: true,
+        mode: 'delete',
+        count: 2,
+        phase: 'running',
+        label: 'must not cross',
+      },
+    });
+
+    expect(mockedSendToWindowDetailed).toHaveBeenLastCalledWith(
+      accessors.mainWindow,
+      IPC_CHANNELS.appAdvisorWindowUiStateChanged,
+      {
+        ...base,
+        groupEditorId: null,
+        batchRemovalDialog: {
+          open: true,
+          mode: 'delete',
+          count: 2,
+          phase: 'running',
+        },
+      },
+    );
+
+    getHandler(IPC_CHANNELS.appAdvisorReportWindowUiState)(undefined, {
+      ...base,
+      batchRemovalDialog: null,
+    });
+    expect(mockedSendToWindowDetailed).toHaveBeenLastCalledWith(
+      accessors.mainWindow,
+      IPC_CHANNELS.appAdvisorWindowUiStateChanged,
+      { ...base, groupEditorId: null, batchRemovalDialog: null },
+    );
+
+    expect(() =>
+      getHandler(IPC_CHANNELS.appAdvisorReportWindowUiState)(undefined, {
+        ...base,
+        batchRemovalDialog: {
+          open: true,
+          mode: 'erase',
+          count: 2,
+          phase: 'confirm',
+        },
+      }),
+    ).toThrow('Invalid App Advisor window UI state');
+    expect(() =>
+      getHandler(IPC_CHANNELS.appAdvisorReportWindowUiState)(undefined, {
+        ...base,
+        batchRemovalDialog: {
+          open: true,
+          mode: 'archive',
+          count: -1,
+          phase: 'confirm',
+        },
+      }),
+    ).toThrow('Invalid App Advisor window UI state');
   });
 
   it('validates artifact navigation and delegates only allowlisted targets', async () => {
@@ -1480,6 +1558,7 @@ describe('App Advisor IPC tool routing', () => {
           kind: 'dispatch_action',
           requestId: 'opencode-slow-connect',
           action: { type: 'opencode.connection', operation: 'connect' },
+          originWorktreeId: 'worktree-1',
         },
         makeAccessors(),
       );
@@ -1544,6 +1623,7 @@ describe('App Advisor IPC tool routing', () => {
             worktreeId: 'worktree-1',
             baseBranch: 'release/next',
           },
+          originWorktreeId: 'worktree-1',
         },
         accessors,
       );
@@ -1676,6 +1756,7 @@ describe('App Advisor renderer request replay', () => {
   ): Parameters<typeof requestAppAdvisorRendererTool>[0] => ({
     kind: 'dispatch_action',
     requestId,
+    originWorktreeId: 'wt-1',
     action: {
       type: 'worktree.create',
       workspaceId: 'ws-1',
@@ -2027,7 +2108,7 @@ describe('App Advisor ask-user settlement API (CAN-2565)', () => {
       ok: false,
       error: {
         code: 'execution_failed',
-        message: 'App Advisor question was dismissed without an answer.',
+        message: 'Orchestrator question was dismissed without an answer.',
       },
     });
 

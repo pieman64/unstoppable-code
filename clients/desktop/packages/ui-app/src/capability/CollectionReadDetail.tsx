@@ -11,10 +11,10 @@ import {
   hasMarkdownDescriptionText,
 } from '@canopy/ui-shared';
 import {
+  Button,
   DetailPageActions,
   ExecutionActionButton,
 } from '@canopy/ui-shared/components';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
 
 export type CollectionReadMemberRef =
   | ({ kind: 'skill' } & CollectionSkillRef)
@@ -99,24 +99,24 @@ export function CollectionReadDetail({
           onImport || onEdit ? (
             <>
               {onImport && (
-                <button
+                <Button
                   type="button"
+                  size="compact"
                   onClick={onImport}
                   data-testid="collection-read-action-import"
-                  className={SECONDARY_ACTION_BUTTON_CLASS}
                 >
                   Import
-                </button>
+                </Button>
               )}
               {onEdit && (
-                <button
+                <Button
                   type="button"
+                  size="compact"
                   onClick={onEdit}
                   data-testid="collection-read-action-edit"
-                  className={SECONDARY_ACTION_BUTTON_CLASS}
                 >
                   Edit
-                </button>
+                </Button>
               )}
             </>
           ) : undefined

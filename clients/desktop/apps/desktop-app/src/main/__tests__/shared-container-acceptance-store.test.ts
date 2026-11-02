@@ -465,3 +465,40 @@ describe('shared-container acceptance store', () => {
     },
   );
 });
+
+it('notifies a newly persisted acceptance once inside the serialized writer and isolates observer errors', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'accept-observer-'));
+  const previous = process.env.CANOPY_DATA_DIR;
+  process.env.CANOPY_DATA_DIR = directory;
+  try {
+    const observed = jest.fn(() => {
+      throw new Error('telemetry');
+    });
+    await Promise.all(
+      Array.from({ length: 10 }, () =>
+        acceptSharedContainer(
+          'observed',
+          undefined,
+          undefined,
+          'direct',
+          observed,
+        ),
+      ),
+    );
+    expect(observed).toHaveBeenCalledTimes(1);
+    expect(await isSharedContainerAccepted('observed')).toBe(true);
+    await forgetSharedContainerAcceptance('observed');
+    await acceptSharedContainer(
+      'observed',
+      undefined,
+      undefined,
+      'direct',
+      observed,
+    );
+    expect(observed).toHaveBeenCalledTimes(2);
+  } finally {
+    if (previous === undefined) delete process.env.CANOPY_DATA_DIR;
+    else process.env.CANOPY_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -43,6 +43,7 @@ import type { SubagentViewerCapabilities } from '@canopy/ui-app/subagents';
 import { SubagentCostSection } from '@canopy/ui-app/cost';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
 import type { DisplayMessage } from '@/components/chat/types';
+import { placeSafetyDenialReceipts } from '@/components/chat/safety-denial-placement';
 import {
   useChatStore,
   type ChatMessage,
@@ -52,10 +53,7 @@ import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
 import { desktopCostClient } from '@/lib/cost/ipc-cost-client';
 import { DESKTOP_COST_NAVIGATOR } from '@/lib/cost/cost-navigator';
 import { ChatMarkdownFileTargetContext } from '@/components/chat/chat-markdown-file-target';
-import {
-  ToolOutputReaderContext,
-  type ToolOutputReader,
-} from '@/components/chat/DeferredToolOutput';
+import { ToolOutputReaderContext, type ToolOutputReader } from '@canopy/ui-app';
 import {
   ManagedDelegationStopContext,
   type ManagedDelegationChatTarget,
@@ -290,7 +288,9 @@ function DesktopSubagentChatContent({
     return buildSubagentChatTranscript({
       tree,
       node,
-      rootMessages,
+      // Project canonical receipts before selecting this child's rows, just
+      // as the parent chat does before folding its tool results.
+      rootMessages: placeSafetyDenialReceipts([...rootMessages]),
       runs: transcriptRuns,
     });
   }, [node, rootMessages, transcriptRuns, tree]);
@@ -311,13 +311,10 @@ function DesktopSubagentChatContent({
   );
   const readToolOutput = useMemo<ToolOutputReader>(
     () =>
-      async (
-        messageId,
-        toolUseId,
-        reference,
-        offset,
-        signal,
-      ): Promise<ChatToolOutputResponse> => {
+      async (identity, offset, signal): Promise<ChatToolOutputResponse> => {
+        if (identity.kind !== 'reference')
+          throw new Error("Couldn't load full output in this view.");
+        const { messageId, toolUseId, reference } = identity;
         signal.throwIfAborted();
         const requestId = globalThis.crypto.randomUUID();
         const cancel = (): void => {

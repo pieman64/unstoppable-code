@@ -24,6 +24,9 @@ import {
   validateAutomationInstalledFrom,
   validateAutomationSharedPipelineReview,
   normalizeAutomationSharedPipelineReview,
+  MAX_AUTOMATION_PIPELINE_DEPENDENCIES,
+  normalizeAutomationDependencies,
+  validateAutomationDependencies,
 } from '../automations';
 
 function createActivity(
@@ -498,7 +501,6 @@ describe('validateAutomationTrigger', () => {
     const error = validateAutomationTrigger({
       kind: 'cron',
       expression: '0 9 * * *',
-      // @ts-expect-error testing transport-level guard
       timezone: 'utc',
     });
     expect(error).toMatch(/local/);
@@ -609,14 +611,14 @@ describe('validateAutomationAction', () => {
         type: 'standalone_prompt',
         chatProjectId: '',
         prompt: 'hi',
-      } as AutomationAction),
+      }),
     ).toMatch(/chatProjectId/);
     expect(
       validateAutomationAction({
         type: 'standalone_prompt',
         chatProjectId: 'project-1',
         prompt: '   ',
-      } as AutomationAction),
+      }),
     ).toMatch(/prompt/);
   });
 
@@ -647,7 +649,7 @@ describe('validateAutomationAction', () => {
         chatProjectId: 'project-1',
         prompt: 'Roundup',
         approvalMode: 'yolo',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/approvalMode/);
   });
 
@@ -657,14 +659,14 @@ describe('validateAutomationAction', () => {
         type: 'worktree_prompt',
         workspaceId: '',
         prompt: 'hi',
-      } as AutomationAction),
+      }),
     ).toMatch(/workspaceId/);
     expect(
       validateAutomationAction({
         type: 'worktree_prompt',
         workspaceId: 'ws',
         prompt: '',
-      } as AutomationAction),
+      }),
     ).toMatch(/prompt/);
   });
 
@@ -697,7 +699,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         modelConfig: { thinkingLevel: 'warp' },
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/thinkingLevel/);
     expect(
       validateAutomationAction({
@@ -705,7 +707,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         plugins: [{ type: 'local-plugin', id: 'private' }],
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/shareable plugin refs/);
     expect(
       validateAutomationAction({
@@ -713,7 +715,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         planMode: 'yes',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/planMode/);
     expect(
       validateAutomationAction({
@@ -721,7 +723,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         interfaceMode: 'terminal',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/interfaceMode/);
     expect(
       validateAutomationAction({
@@ -729,7 +731,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         approvalMode: 'yolo',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/approvalMode/);
   });
 
@@ -753,7 +755,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         existingBranch: '',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/existingBranch/);
   });
 
@@ -765,7 +767,7 @@ describe('validateAutomationAction', () => {
         prompt: 'Plan the release',
         existingBranch: 'feature/foo',
         baseWorktreeId: 'wt-1',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/existingBranch.*baseWorktreeId|baseWorktreeId.*existingBranch/);
   });
 
@@ -859,7 +861,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         purpose: 'not_a_real_purpose',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/purpose/);
   });
 
@@ -870,7 +872,7 @@ describe('validateAutomationAction', () => {
         workspaceId: 'ws',
         prompt: 'Plan the release',
         workspaceName: 42,
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/workspaceName/);
   });
 
@@ -942,7 +944,7 @@ describe('validateAutomationAction', () => {
         worktreeId: 'wt-1',
         chatId: 'chat-1',
         prompt: 'Continue',
-      } as AutomationAction),
+      }),
     ).toMatch(/workspaceId/);
     expect(
       validateAutomationAction({
@@ -951,7 +953,7 @@ describe('validateAutomationAction', () => {
         worktreeId: '',
         chatId: 'chat-1',
         prompt: 'Continue',
-      } as AutomationAction),
+      }),
     ).toMatch(/worktreeId/);
     expect(
       validateAutomationAction({
@@ -960,7 +962,7 @@ describe('validateAutomationAction', () => {
         worktreeId: 'wt-1',
         chatId: '',
         prompt: 'Continue',
-      } as AutomationAction),
+      }),
     ).toMatch(/chatId/);
     expect(
       validateAutomationAction({
@@ -969,7 +971,7 @@ describe('validateAutomationAction', () => {
         worktreeId: 'wt-1',
         chatId: 'chat-1',
         prompt: '   ',
-      } as AutomationAction),
+      }),
     ).toMatch(/prompt/);
   });
 
@@ -982,7 +984,7 @@ describe('validateAutomationAction', () => {
         chatId: 'chat-1',
         prompt: 'Continue',
         inputMode: 'keyboard',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/inputMode/);
     expect(
       validateAutomationAction({
@@ -992,7 +994,7 @@ describe('validateAutomationAction', () => {
         chatId: 'chat-1',
         prompt: 'Continue',
         attachmentPaths: ['/tmp/a.md', 5],
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/attachmentPaths/);
     expect(
       validateAutomationAction({
@@ -1002,7 +1004,7 @@ describe('validateAutomationAction', () => {
         chatId: 'chat-1',
         prompt: 'Continue',
         fileReferences: [{ displayPath: 'x' }],
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/fileReferences/);
     expect(
       validateAutomationAction({
@@ -1012,7 +1014,7 @@ describe('validateAutomationAction', () => {
         chatId: 'chat-1',
         prompt: 'Continue',
         attachmentPromptContexts: [{ attachmentPath: '/tmp/a.md' }],
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/attachmentPromptContexts/);
     expect(
       validateAutomationAction({
@@ -1022,7 +1024,7 @@ describe('validateAutomationAction', () => {
         chatId: 'chat-1',
         prompt: 'Continue',
         purpose: 'manual',
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/purpose/);
   });
 
@@ -1032,15 +1034,60 @@ describe('validateAutomationAction', () => {
         type: 'worktree_pipeline',
         workspaceId: '',
         pipelineId: 'pipeline-1',
-      } as AutomationAction),
+      }),
     ).toMatch(/workspaceId/);
     expect(
       validateAutomationAction({
         type: 'worktree_pipeline',
         workspaceId: 'ws',
         pipelineId: '',
-      } as AutomationAction),
+      }),
     ).toMatch(/pipelineId/);
+  });
+
+  it('validates pipeline destinations and keeps legacy messages for an absent target', () => {
+    const base = { type: 'worktree_pipeline', pipelineId: 'p-1' };
+    expect(validateAutomationAction({ ...base, workspaceId: 'ws' })).toBeNull();
+    expect(validateAutomationAction({ ...base })).toBe(
+      'Worktree pipeline action requires a workspaceId.',
+    );
+    expect(
+      validateAutomationAction({ ...base, target: { kind: 'global' } }),
+    ).toBeNull();
+    expect(
+      validateAutomationAction({
+        ...base,
+        workspaceId: 'ws',
+        target: { kind: 'task', taskId: 'wt-1' },
+      }),
+    ).toBeNull();
+    expect(
+      validateAutomationAction({
+        ...base,
+        workspaceId: 'ws',
+        target: { kind: 'elsewhere' },
+      }),
+    ).toBe(
+      'Pipeline automation target.kind must be global, new_worktree, task, or project.',
+    );
+    expect(
+      validateAutomationAction({
+        ...base,
+        target: { kind: 'global' },
+        pipelineSource: 'project',
+      }),
+    ).toBe(
+      'Project workflows need a project. Choose another workflow or a project destination.',
+    );
+    // A target on another action type is not part of its validation.
+    expect(
+      validateAutomationAction({
+        type: 'worktree_prompt',
+        workspaceId: 'ws',
+        prompt: 'Hi',
+        target: { kind: 'global' },
+      }),
+    ).toBeNull();
   });
 
   it('accepts all three Codex speeds on prompt actions and rejects invalid or contradictory ones', () => {
@@ -1060,7 +1107,7 @@ describe('validateAutomationAction', () => {
         type: 'app_advisor_prompt',
         prompt: 'Daily standup',
         modelConfig: { speed: 'turbo' },
-      } as unknown as AutomationAction),
+      }),
     ).toMatch(/speed/);
     expect(
       validateAutomationAction({
@@ -1106,6 +1153,9 @@ describe('validateAutomationAction', () => {
     expect(automationPipelineSpeedError({ speed: 'ultrafast' })).toMatch(
       /Ultra fast/,
     );
+    expect(automationPipelineSpeedError({ speed: 'ultrafast' })).toBe(
+      'Workflow automations do not support Ultra fast. Choose Regular or Fast.',
+    );
     expect(automationPipelineSpeedError({ fastMode: true })).toBeNull();
     expect(automationPipelineSpeedError(undefined)).toBeNull();
   });
@@ -1115,7 +1165,6 @@ describe('validateAutomationAction', () => {
       type: 'worktree_pipeline',
       workspaceId: 'ws',
       pipelineId: 'pipeline-1',
-      // @ts-expect-error transport-level guard
       inputs: { count: 5 },
     });
     expect(error).toMatch(/inputs\[count\] must be a string/);
@@ -1137,7 +1186,6 @@ describe('validateAutomationAction', () => {
       type: 'worktree_pipeline',
       workspaceId: 'ws',
       pipelineId: 'pipeline-1',
-      // @ts-expect-error transport-level guard
       modelConfig: { thinkingLevel: 'maximum' },
     });
     expect(error).toMatch(/modelConfig\.thinkingLevel/);
@@ -1171,7 +1219,6 @@ describe('validateAutomationAction', () => {
     expect(
       validateAutomationAction({
         ...validAction,
-        // @ts-expect-error transport-level guard
         provider: 'ollama',
       }),
     ).toMatch(/claude or codex/);
@@ -1462,7 +1509,7 @@ describe('describeAutomationAction', () => {
         type: 'app_advisor_prompt',
         prompt: 'Summarize standup',
       }),
-    ).toContain('App Advisor prompt');
+    ).toContain('Orchestrator prompt');
     expect(
       describeAutomationAction({
         type: 'standalone_prompt',
@@ -1487,6 +1534,56 @@ describe('describeAutomationAction', () => {
     ).toContain('Build');
     expect(
       describeAutomationAction({
+        type: 'worktree_pipeline',
+        workspaceId: 'ws-1',
+        pipelineId: 'pipeline-1',
+        pipelineName: 'Build',
+      }),
+    ).toBe('Run workflow "Build" on project ws-1');
+    expect(
+      describeAutomationAction({
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        workspaceId: 'ws-1',
+        pipelineId: 'pipeline-1',
+        pipelineName: 'Build',
+      }),
+    ).toBe('Run workflow "Build" with no project');
+    expect(
+      describeAutomationAction(
+        {
+          type: 'worktree_pipeline',
+          target: { kind: 'task', taskId: 'wt-1' },
+          workspaceId: 'ws-1',
+          pipelineId: 'pipeline-1',
+          pipelineName: 'Build',
+        },
+        {
+          workspaceName: () => 'Repo',
+          worktreeName: () => 'Fix login',
+        },
+      ),
+    ).toBe('Run workflow "Build" in Fix login on project Repo');
+    expect(
+      describeAutomationAction({
+        type: 'worktree_pipeline',
+        target: { kind: 'task', taskId: 'wt-1' },
+        workspaceId: 'ws-1',
+        pipelineId: 'pipeline-1',
+        pipelineName: 'Build',
+      }),
+    ).toBe('Run workflow "Build" in wt-1 on project ws-1');
+    expect(
+      describeAutomationAction({
+        type: 'worktree_pipeline',
+        target: { kind: 'project' },
+        workspaceId: 'ws-1',
+        pipelineId: 'pipeline-1',
+        pipelineName: 'Build',
+      }),
+    ).toBe('Run workflow "Build" in the ws-1 project folder');
+    expect(
+      describeAutomationAction({
         type: 'worktree_session_prompt',
         workspaceId: 'ws-1',
         worktreeId: 'wt-1',
@@ -1503,7 +1600,15 @@ describe('describeAutomationAction', () => {
         purpose: 'usage_limit_resume',
         pipelineName: 'Release',
       }),
-    ).toBe('Resume pipeline "Release" after Claude usage reset');
+    ).toBe('Resume workflow "Release" after Claude usage reset');
+    expect(
+      describeAutomationAction({
+        type: 'worktree_pipeline',
+        workspaceId: 'ws-1',
+        pipelineId: 'release',
+        pipelineName: 'Release',
+      }),
+    ).toBe('Run workflow "Release" on project ws-1');
   });
 
   it('prefers cached display labels for worktree_session_prompt', () => {
@@ -1747,5 +1852,111 @@ describe('shared pipeline review persistence', () => {
     expect(
       validateAutomationSharedPipelineReview({ ...valid, pipelineName: 42 }),
     ).toContain('pipelineName');
+  });
+});
+
+describe('automation pipeline dependencies', () => {
+  const request: AutomationCreateRequest = {
+    name: 'Specialists',
+    schedule: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+    action: { type: 'app_advisor_prompt', prompt: 'Run the specialists.' },
+  };
+
+  it('accepts user and project pipelines on create', () => {
+    expect(
+      validateAutomationCreateRequest({
+        ...request,
+        dependencies: {
+          pipelines: [
+            {
+              pipelineId: 'b1b2c3d4-0000-4000-8000-00000000000b',
+              source: 'user',
+            },
+            { pipelineId: 'project:specialists.yaml', source: 'project' },
+          ],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects malformed dependency lists', () => {
+    for (const dependencies of [
+      null,
+      [],
+      { pipelines: 'all' },
+      { pipelines: [{ pipelineId: '', source: 'user' }] },
+      { pipelines: [{ pipelineId: ' padded ', source: 'user' }] },
+      { pipelines: [{ pipelineId: 'p-1', source: 'bundled' }] },
+      { pipelines: [{ pipelineId: 7, source: 'user' }] },
+      {
+        pipelines: Array.from(
+          { length: MAX_AUTOMATION_PIPELINE_DEPENDENCIES + 1 },
+          (_, index) => ({ pipelineId: `p-${index}`, source: 'user' }),
+        ),
+      },
+    ]) {
+      expect(
+        validateAutomationCreateRequest({ ...request, dependencies }),
+      ).toEqual(expect.any(String));
+    }
+  });
+
+  it('accepts null only where an update clears the list', () => {
+    expect(validateAutomationDependencies(undefined)).toBeNull();
+    expect(validateAutomationDependencies(null)).toEqual(expect.any(String));
+    expect(
+      validateAutomationDependencies(null, { allowNull: true }),
+    ).toBeNull();
+  });
+
+  it('normalizes to known fields, deduplicated by source and id', () => {
+    expect(
+      normalizeAutomationDependencies({
+        pipelines: [
+          { pipelineId: 'p-1', source: 'user' },
+          { pipelineId: 'p-1', source: 'project' },
+          { pipelineId: 'p-1', source: 'user' },
+        ],
+      }),
+    ).toEqual({
+      pipelines: [
+        { pipelineId: 'p-1', source: 'user' },
+        { pipelineId: 'p-1', source: 'project' },
+      ],
+    });
+    expect(normalizeAutomationDependencies({ pipelines: [] })).toBeUndefined();
+  });
+
+  it('validates installed dependency provenance', () => {
+    const installedFrom = {
+      remoteId: '4f6b0f5e-2f66-4be4-9f8e-1f0a54a1c111',
+      contentHash: 'a'.repeat(64),
+      installedAt: '2026-08-20T12:00:00.000Z',
+    };
+    const entry = {
+      key: '8f14e45f-ceea-467a-9575-0b5b4b2b1c11',
+      localPipelineId: 'b1b2c3d4-0000-4000-8000-00000000000b',
+      pipelineContentHash: 'b'.repeat(64),
+    };
+    expect(
+      validateAutomationInstalledFrom({
+        ...installedFrom,
+        pipelineDependencies: [entry],
+      }),
+    ).toBeNull();
+    for (const pipelineDependencies of [
+      'all',
+      [{ ...entry, key: 'Not A Key' }],
+      [{ ...entry, localPipelineId: '../escape' }],
+      [{ ...entry, pipelineContentHash: 'short' }],
+      [entry, { ...entry, localPipelineId: 'other' }],
+    ]) {
+      expect(
+        validateAutomationInstalledFrom({
+          ...installedFrom,
+          pipelineDependencies,
+        }),
+      ).toEqual(expect.any(String));
+    }
   });
 });

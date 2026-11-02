@@ -441,13 +441,15 @@ describe('SortableWorkspacesSidebar', () => {
   it('clamps the drag transform to the vertical axis (restrictToVerticalAxis)', () => {
     const clamped = restrictToVerticalAxis({
       transform: { x: 120, y: 24, scaleX: 1, scaleY: 1 },
+      activatorEvent: null,
       active: null,
       activeNodeRect: null,
       draggingNodeRect: null,
       containerNodeRect: null,
       over: null,
       overlayNodeRect: null,
-      scale: { x: 1, y: 1 },
+      scrollableAncestors: [],
+      scrollableAncestorRects: [],
       windowRect: null,
     });
     expect(clamped).toEqual({ x: 0, y: 24, scaleX: 1, scaleY: 1 });

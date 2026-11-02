@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { decodeW5WorktreeHooksPausedOutcome } from '@canopy/core-runtime/node/w5/worktree-outcome';
 import type {
   WorkspaceConfigFile,
   WorkspacePlanDetectionConfig,
@@ -10,7 +10,9 @@ import type { W5Resource } from '@canopy/desktop-shared/node/w5-commit-log';
 import {
   isScriptDefinition,
   normalizeScriptInputMap,
+  normalizeScriptName,
   type ScriptInputMap,
+  type ScriptValue,
 } from '@canopy/desktop-shared/scripts';
 import {
   bindHookContextsWithCapturedContext,
@@ -22,7 +24,6 @@ import { validateId } from './validation';
 import {
   checkW5ExpectedRevision,
   w5ExpectedRevision,
-  w5WorktreeOutcomeSchema,
   type W5BoundaryOptions,
 } from './w5-boundary-operation';
 import { withW5Commit } from './w5-commit-log-file-store';
@@ -54,6 +55,11 @@ export type ScriptHookSettingsSource = 'desktop' | 'portal' | 'app_advisor';
  *   (timeout, shell, dev server) are kept.
  * - `repositories` replaces the scripts of each named member repository; a
  *   repository the workspace does not have is skipped, as it always was.
+ * - `definition` sets one script of the workspace, or of `repoId`, keeping the
+ *   others; `null` disables an inherited script. `remove-definition` drops
+ *   that script's setting so the inherited one applies again. Both refuse a
+ *   repository the workspace does not have
+ *   (`core.script.definition.upsert` and `.delete`, CAN-4153).
  */
 export type WorkspaceScriptsChange =
   | { kind: 'replace'; scripts: ScriptInputMap | undefined }
@@ -64,7 +70,9 @@ export type WorkspaceScriptsChange =
         repoId: string;
         scripts: ScriptInputMap | undefined;
       }>;
-    };
+    }
+  | { kind: 'definition'; repoId?: string; name: string; value: ScriptValue }
+  | { kind: 'remove-definition'; repoId?: string; name: string };
 
 /**
  * A change to a workspace's persisted hook overrides
@@ -129,15 +137,6 @@ export interface WorktreeHooksSetPausedOutcome {
   /** False when the row already had this paused set; nothing was written. */
   changed: boolean;
 }
-
-/** The saved outcome of a keyed paused-hook change: portable row fields only. */
-const pausedOutcomeSchema = z.object({
-  worktree: w5WorktreeOutcomeSchema.extend({
-    pausedHookKeys: z.array(z.string()).optional(),
-  }),
-  pausedHookKeys: z.array(z.string()),
-  changed: z.boolean(),
-});
 
 export type ScriptHookSettingsRefusal =
   | 'read-only-scope'
@@ -265,7 +264,58 @@ function admitScriptsChange(
       refuse('invalid-request', 'Invalid repository scripts.');
     }
   }
+  if (change.kind === 'definition' || change.kind === 'remove-definition') {
+    return admitDefinitionChange(change);
+  }
   return change;
+}
+
+/**
+ * One script's change, normalized as it is stored, so a keyed replay of the
+ * same edit fingerprints the same request.
+ */
+function admitDefinitionChange(
+  change: Extract<
+    WorkspaceScriptsChange,
+    { kind: 'definition' | 'remove-definition' }
+  >,
+): WorkspaceScriptsChange {
+  if (change.repoId !== undefined) validateId(change.repoId, 'repoId');
+  const rawName: unknown = change.name;
+  const name =
+    typeof rawName === 'string' ? normalizeScriptName(rawName) : undefined;
+  if (!name) refuse('invalid-request', 'Invalid script name.');
+  const repo = change.repoId === undefined ? {} : { repoId: change.repoId };
+  if (change.kind === 'remove-definition') {
+    return { kind: 'remove-definition', ...repo, name };
+  }
+  const value = normalizeScriptInputMap({ [name]: change.value })?.[name];
+  if (value === undefined) refuse('invalid-request', 'Invalid script.');
+  return { kind: 'definition', ...repo, name, value };
+}
+
+function applyDefinitionChange(
+  config: WorkspaceConfigFile,
+  workspaceId: string,
+  change: Extract<
+    WorkspaceScriptsChange,
+    { kind: 'definition' | 'remove-definition' }
+  >,
+): void {
+  const holder =
+    change.repoId === undefined
+      ? config
+      : config.repos.find((candidate) => candidate.id === change.repoId);
+  if (!holder) {
+    refuse(
+      'not-found',
+      `Repo ${change.repoId} not found in project ${workspaceId}`,
+    );
+  }
+  const scripts: ScriptInputMap = { ...holder.scripts };
+  if (change.kind === 'definition') scripts[change.name] = change.value;
+  else delete scripts[change.name];
+  holder.scripts = normalizeScriptInputMap(scripts);
 }
 
 function mergeScriptCommands(
@@ -338,6 +388,10 @@ export async function updateWorkspaceScripts(
                   if (repo)
                     repo.scripts = normalizeScriptInputMap(update.scripts);
                 }
+                return;
+              case 'definition':
+              case 'remove-definition':
+                applyDefinitionChange(config, workspaceId, change);
             }
           }),
         );
@@ -600,7 +654,7 @@ export async function setWorktreeHooksPaused(
       parameters: () => ({ workspaceId, worktreeId, change }),
     },
     () => Promise.resolve(),
-    (outcome) => pausedOutcomeSchema.parse(outcome),
+    decodeW5WorktreeHooksPausedOutcome,
     (_admitted, options, save) => {
       async function stageWorktreeHooksPaused(): Promise<WorktreeHooksSetPausedOutcome> {
         await checkW5ExpectedRevision(resource, expectedRevision);

@@ -19,8 +19,10 @@ test('local Collection modal renders UnifiedTable picker', async ({}, testInfo) 
       fullPage: true,
     });
 
-    // Open the New Collection modal so we can compare its UX with the shared one.
-    await window.getByRole('button', { name: 'Add', exact: true }).click();
+    // Open the New Collection modal so we can compare its UX with the shared
+    // one. CAN-4267: it opens from the Customize Add custom menu.
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-collection').click();
     await expect(window.locator('#collection-modal-title')).toBeVisible();
     await expect(window.getByPlaceholder('My collection')).toBeVisible();
     await expect(window.getByPlaceholder('Optional description')).toBeVisible();
@@ -39,7 +41,7 @@ test('local Collection modal renders UnifiedTable picker', async ({}, testInfo) 
   }
 });
 
-test('a local Collection description shows the Markdown hint and a plain-text row', async () => {
+test('a local Collection description shows the Markdown hint and the row names its source', async () => {
   const { electronApp, userDataDir } = await launchCanopy();
 
   try {
@@ -51,7 +53,8 @@ test('a local Collection description shows the Markdown hint and a plain-text ro
     await app.openPluginsTab('collections');
     await app.expectPluginsTab('collections');
 
-    await window.getByRole('button', { name: 'Add', exact: true }).click();
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-collection').click();
     await expect(window.locator('#collection-modal-title')).toBeVisible();
 
     const hint = window.getByTestId('collection-description-hint');
@@ -71,9 +74,17 @@ test('a local Collection description shows the Markdown hint and a plain-text ro
       .last()
       .click();
     await expect(window.locator('#collection-modal-title')).toBeHidden();
+    // Saving opens the new collection's detail; its row is on the list
+    // behind it.
+    await app.expectCreatedCustomizeDetail('Release kit');
+    await app.closeMarketplaceEntryDetail();
 
-    const row = window.getByRole('row').filter({ hasText: 'Release kit' });
-    await expect(row).toContainText('Ships a release. Tags main. Posts notes');
+    // CAN-4840: Installed rows name their source instead of the description.
+    const row = window
+      .getByTestId('customize-section-installed')
+      .locator('[data-testid^="customize-row-collection:local:"]')
+      .filter({ hasText: 'Release kit' });
+    await expect(row).toContainText('Created by you');
     await expect(row).not.toContainText('**');
   } finally {
     await closeCanopy(electronApp, userDataDir);

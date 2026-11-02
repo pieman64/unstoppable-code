@@ -36,8 +36,10 @@ describe('KeyboardShortcutsTab', () => {
 
   it('keeps panel section ids in sync with the shortcut binding table', async () => {
     const { PANEL_SHORTCUT_BINDINGS } = await import('@/lib/panels/commands');
+    // A command can have several bindings (platform scope, alternates), but
+    // appears once in the section.
     expect([...PANEL_SHORTCUT_COMMAND_IDS].sort()).toEqual(
-      PANEL_SHORTCUT_BINDINGS.map((binding) => binding.id).sort(),
+      [...new Set(PANEL_SHORTCUT_BINDINGS.map((binding) => binding.id))].sort(),
     );
   });
 });

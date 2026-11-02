@@ -18,6 +18,7 @@
 
 import type {
   ModelCatalogOption,
+  ModelCatalogHarnessChoice,
   ModelCatalogProvider,
   ModelCatalogThinkingLevel,
 } from '@canopy/protocol/models';
@@ -27,6 +28,7 @@ import { getManagedModelVendor } from './managed-model-vendor';
 import {
   getCanonicalPickerModel,
   getAiGatewayModelEntry,
+  getChatHarnessOptions,
   getEffectiveSupportedThinkingLevelsForModel,
   getModelBillingMetadata,
   getListedModelContextWindow,
@@ -40,7 +42,11 @@ import {
   pinInheritingAgentModel,
   resolveAgentModelDefinition,
 } from '../types';
-import { isGatewayOnlyModel } from './gateway-model-availability';
+import {
+  isGatewayOnlyModel,
+  resolveGatewayModelEntry,
+} from './gateway-model-availability';
+import { isOpenCodeGatewayRouteSupported } from './opencode-gateway-models';
 
 // Stale Agents still need a stable catalog section for display. This explicit
 // grouping default is not used to select a provider for runtime dispatch.
@@ -76,6 +82,37 @@ function normalizedModelSource(
       : modelSource === 'codex-managed'
         ? 'codex'
         : modelSource;
+}
+
+function harnessChoiceFields(
+  id: string,
+): Pick<ModelCatalogOption, 'harnessChoices'> {
+  const choices = getChatHarnessOptions(id).flatMap(
+    (harness): ModelCatalogHarnessChoice[] => {
+      // Cursor admission requires its opaque managed ID. Those models have
+      // their own catalog rows; this choice retains the current row's ID.
+      if (harness === 'cursor' && getModelSource(id) !== 'cursor-managed')
+        return [];
+      if (harness !== 'opencode') return [{ harness, provider: harness }];
+      const route = resolveGatewayModelEntry(id);
+      if (!route || !isOpenCodeGatewayRouteSupported(route)) return [];
+      return [
+        {
+          harness,
+          provider: harness,
+          supportedThinkingLevels: [],
+          contextWindow: route.contextWindow,
+          supportsImages: false,
+          supportsFastMode: false,
+          funding:
+            route.origin === 'org-gateway' ? 'org-gateway' : 'ai-credits',
+        },
+      ];
+    },
+  );
+  return choices.some((choice) => choice.harness === 'opencode')
+    ? { harnessChoices: choices }
+    : {};
 }
 
 function providerModelOption(
@@ -120,6 +157,7 @@ function providerModelOption(
     provider: resolvedProvider,
     source: source ?? input.provider,
     ...(effectiveHarness ? { harness: effectiveHarness } : {}),
+    ...harnessChoiceFields(id),
     kind: 'model',
     available: true,
     ...(id === input.defaultModel ? { isDefault: true } : {}),
@@ -168,6 +206,7 @@ function agentModelOption(
     provider,
     ...(source ? { source } : {}),
     ...(executionHarness ? { harness: executionHarness } : {}),
+    ...harnessChoiceFields(routeId),
     kind: 'agent',
     available: entry.available,
     ...(id === input.defaultModel ? { isDefault: true } : {}),

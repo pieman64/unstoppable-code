@@ -2,9 +2,18 @@ import type { JSX } from 'react';
 
 /**
  * `bar` holds a line of text; `circle` a person's avatar; `square` an
- * organization logo or tile; `toggle` a switch at the end of a setting row.
+ * organization logo or tile; `toggle` a switch at the end of a setting row;
+ * `dot` a status glyph or a radio; `badge` a 20px status pill; `control` a
+ * 28px capsule field or button.
  */
-export type SkeletonBlockShape = 'bar' | 'circle' | 'square' | 'toggle';
+export type SkeletonBlockShape =
+  | 'bar'
+  | 'circle'
+  | 'square'
+  | 'toggle'
+  | 'dot'
+  | 'badge'
+  | 'control';
 
 /** A bar's height, named for the text it stands in for. */
 export type SkeletonBarHeight = 'meta' | 'label' | 'text' | 'title' | 'value';
@@ -26,6 +35,9 @@ const SHAPE_CLASS: Record<Exclude<SkeletonBlockShape, 'bar'>, string> = {
   circle: 'size-8 shrink-0 rounded-full',
   square: 'size-8 shrink-0 rounded-md',
   toggle: 'h-5 w-9 shrink-0 rounded-full',
+  dot: 'size-3.5 shrink-0 rounded-full',
+  badge: 'h-5 w-16 shrink-0 rounded-full',
+  control: 'h-7 w-20 shrink-0 rounded-full',
 };
 
 const BAR_HEIGHT_CLASS: Record<SkeletonBarHeight, string> = {
@@ -52,7 +64,8 @@ const BAR_WIDTH_CLASS: Record<SkeletonBarWidth, string> = {
 /**
  * The fill and motion every block skeleton shares: the muted surface, and a
  * slow shade that stops under reduced motion. It starts at full fill, so a
- * placeholder that remounts on navigation never fades in.
+ * placeholder that remounts on navigation never fades in. Bars are capsules,
+ * like every other block that stands in for text or a control.
  */
 export const SKELETON_BLOCK_CLASS =
   'block bg-muted animate-pulse motion-reduce:animate-none';
@@ -80,7 +93,7 @@ export function SkeletonBlock({
 }: SkeletonBlockProps): JSX.Element {
   const geometry =
     shape === 'bar'
-      ? `rounded-sm ${BAR_HEIGHT_CLASS[height]} ${BAR_WIDTH_CLASS[width]}`
+      ? `rounded-full ${BAR_HEIGHT_CLASS[height]} ${BAR_WIDTH_CLASS[width]}`
       : SHAPE_CLASS[shape];
   return (
     <span

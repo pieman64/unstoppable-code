@@ -23,13 +23,15 @@ import { z } from 'zod';
 import type {
   LabsAvailabilityFallbackPolicy,
   LabsAvailabilityState,
+  ResolvedLabsAvailability,
 } from '../feature-flags/labs-availability';
-import { resolveLabsAvailability } from '../feature-flags/labs-availability';
+import { resolveLabsAvailabilityWithSource } from '../feature-flags/labs-availability';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { setExperimentalFeaturesEnabled } from '../lib/experimental-features';
 import {
   getLabsExperimentAvailabilityCachePath,
   getLabsExperimentChoicesPath,
+  getLabsExperimentPendingSyncPath,
 } from '../lib/paths';
 
 const choicesFileSchema = z.strictObject({
@@ -43,6 +45,12 @@ const availabilityFileSchema = z.strictObject({
     z.record(z.string(), z.enum(['hidden', 'offered', 'on'])),
   ),
 });
+// Signed-in choices committed locally but not yet confirmed by the account
+// service. The value to send is always the account's current local choice.
+const pendingSyncFileSchema = z.strictObject({
+  version: z.literal(1),
+  accounts: z.record(z.string(), z.array(z.string())),
+});
 type ChoicesFile = z.output<typeof choicesFileSchema>;
 type AvailabilityFile = z.output<typeof availabilityFileSchema>;
 export interface LabsAccountSession {
@@ -53,6 +61,7 @@ export interface LabsAccountSession {
 export interface LabsExperimentsDependencies {
   choicesPath: string;
   availabilityPath: string;
+  pendingSyncPath: string;
   read(path: string): unknown;
   write(path: string, data: string): Promise<void>;
   availability(): LabsAvailabilityState;
@@ -64,6 +73,8 @@ export interface LabsExperimentsDependencies {
   ): Promise<unknown>;
   diagnostic(error: unknown): void;
   mirror(enabled: boolean): void;
+  /** A PUT refusal the account service will repeat, such as the choice cap. */
+  isPermanentRejection?(error: unknown): boolean;
 }
 export class LabsExperimentError extends Error {
   constructor(
@@ -80,6 +91,7 @@ export class LabsExperimentError extends Error {
 /** One main-owned evaluator and writer for all windows and agent actions. */
 export class LabsExperimentsService {
   private accounts: ChoicesFile['accounts'];
+  private pendingSync: Record<string, string[]>;
   private contexts: AvailabilityFile['contexts'];
   private session: LabsAccountSession;
   private generation = 0;
@@ -87,6 +99,9 @@ export class LabsExperimentsService {
   private choicesReady = false;
   private listeners = new Set<(snapshot: LabsExperimentsSnapshot) => void>();
   private writes = new Map<string, Promise<unknown>>();
+  private syncs = new Map<string, Promise<void>>();
+  private queuedSyncs = new Map<string, Promise<void>>();
+  private syncSessions = new Map<string, LabsAccountSession>();
   private loads = new Set<Promise<void>>();
   private writeVersions = new Map<string, number>();
   private persistence: Promise<unknown> = Promise.resolve();
@@ -115,13 +130,22 @@ export class LabsExperimentsService {
       !Object.prototype.hasOwnProperty.call(this.accounts, session.scope)
     )
       this.accounts[session.scope] = migrateExtractedLabsChoices({});
+    const rawPendingSync = deps.read(deps.pendingSyncPath);
+    const parsedPendingSync = pendingSyncFileSchema.safeParse(rawPendingSync);
+    this.pendingSync = parsedPendingSync.data?.accounts ?? {};
+    if (rawPendingSync !== undefined && !parsedPendingSync.success)
+      deps.diagnostic(
+        new Error(
+          'Ignored an unreadable Labs pending-sync file; unsynced choices stay local until they change again.',
+        ),
+      );
     this.contexts = Object.fromEntries(
       Object.entries(
         availabilityFileSchema.safeParse(deps.read(deps.availabilityPath)).data
           ?.contexts ?? {},
       ).slice(-32),
     );
-    this.choicesReady = !session.signedIn;
+    this.choicesReady = this.hasLocalChoices(session);
     this.snapshot = this.evaluate();
     deps.mirror(this.snapshot.earlyAccessEnabled);
     if (
@@ -156,7 +180,7 @@ export class LabsExperimentsService {
       !Object.prototype.hasOwnProperty.call(this.accounts, session.scope)
     )
       this.accounts[session.scope] = migrateExtractedLabsChoices({});
-    this.choicesReady = !session.signedIn;
+    this.choicesReady = this.hasLocalChoices(session);
     this.publish();
     return this.refreshChoices();
   }
@@ -175,6 +199,8 @@ export class LabsExperimentsService {
     const generation = this.generation;
     if (!session.signedIn || !session.ready) return;
     await this.writes.get(session.scope)?.catch(() => undefined);
+    // Offer unsynced local choices first so the GET can reflect them.
+    await this.syncPending(session);
     if (generation !== this.generation) return;
     const version = this.writeVersions.get(session.scope) ?? 0;
     try {
@@ -186,7 +212,13 @@ export class LabsExperimentsService {
         version !== (this.writeVersions.get(session.scope) ?? 0)
       )
         return;
-      this.accounts = { ...this.accounts, [session.scope]: response.choices };
+      this.accounts = {
+        ...this.accounts,
+        [session.scope]: this.withPendingChoices(
+          session.scope,
+          response.choices,
+        ),
+      };
       this.choicesReady = true;
       this.publish();
       await this.persistChoices();
@@ -279,84 +311,64 @@ export class LabsExperimentsService {
             'missing_capability',
             'Experiment is unavailable.',
           );
-        if (session.signedIn) {
-          let committedChoices: Record<string, boolean> | undefined;
-          try {
-            const result = labsExperimentChoiceResultSchema.parse(
-              await this.deps.putChoice(session, request.data),
-            );
-            if (
-              result.experimentId !== request.data.experimentId ||
-              result.enabled !== request.data.enabled ||
-              (result.choices !== undefined &&
-                result.choices[request.data.experimentId] !==
-                  request.data.enabled)
-            )
-              throw new Error('Invalid experiment choice response.');
-            committedChoices = result.choices;
-          } catch (error) {
-            // An idempotent PUT can commit before its response is lost. A GET
-            // reconciles the complete server state without replaying the write.
-            this.assertGeneration(generation);
-            try {
-              const result = z
-                .strictObject({ choices: labsExperimentChoicesSchema })
-                .parse(await this.deps.fetchChoices(session));
-              this.assertGeneration(generation);
-              this.accounts = {
-                ...this.accounts,
-                [session.scope]: result.choices,
-              };
-              this.choicesReady = true;
-              this.publish();
-              await this.persistChoices().catch((cacheError) =>
-                this.deps.diagnostic(cacheError),
-              );
-              if (
-                result.choices[request.data.experimentId] ===
-                request.data.enabled
-              )
-                return this.getSnapshot();
-            } catch (loadError) {
-              this.deps.diagnostic(loadError);
-            }
-            throw error;
-          }
+        // The local commit is the save for every scope; the account service
+        // is synchronized in the background and never gates the switch.
+        const { experimentId, enabled } = request.data;
+        await this.queuePersistence(async (): Promise<void> => {
           this.assertGeneration(generation);
-          this.accounts = {
-            ...this.accounts,
-            [session.scope]: committedChoices ?? {
-              ...this.accountChoices(session.scope),
-              [request.data.experimentId]: request.data.enabled,
-            },
-          };
-          this.choicesReady = true;
-          this.publish();
-          await this.persistChoices().catch((error) =>
-            this.deps.diagnostic(error),
-          );
-        } else {
-          await this.queuePersistence(async (): Promise<void> => {
-            this.assertGeneration(generation);
-            const accounts = {
-              ...this.accounts,
-              [session.scope]: {
-                ...this.accountChoices(session.scope),
-                [request.data.experimentId]: request.data.enabled,
-              },
-            };
+          if (session.signedIn)
+            // Mark it pending on disk before the choice lands: a spare pending
+            // id only re-sends the current value, while a choice without one
+            // would be replaced by the next GET.
+            await this.deps.write(
+              this.deps.pendingSyncPath,
+              JSON.stringify({
+                version: 1,
+                accounts: this.withPendingId(session.scope, experimentId),
+              }),
+            );
+          try {
             await this.deps.write(
               this.deps.choicesPath,
-              JSON.stringify({ version: 1, accounts }),
+              JSON.stringify({
+                version: 1,
+                accounts: {
+                  ...this.accounts,
+                  [session.scope]: {
+                    ...this.accountChoices(session.scope),
+                    [experimentId]: enabled,
+                  },
+                },
+              }),
             );
-            this.accounts = {
-              ...this.accounts,
-              [session.scope]: accounts[session.scope] ?? {},
-            };
-          });
-          this.assertGeneration(generation);
-          this.publish();
-        }
+          } catch (error) {
+            // A failed save must not leave its id to re-send the old value.
+            if (session.signedIn)
+              await this.deps
+                .write(
+                  this.deps.pendingSyncPath,
+                  JSON.stringify({ version: 1, accounts: this.pendingSync }),
+                )
+                .catch((cleanupError) => this.deps.diagnostic(cleanupError));
+            throw error;
+          }
+          // Apply both in one step, from current state: a sync pass that ran
+          // during the writes may have merged a server map or cleared this id
+          // after sending the previous value.
+          this.accounts = {
+            ...this.accounts,
+            [session.scope]: {
+              ...this.accountChoices(session.scope),
+              [experimentId]: enabled,
+            },
+          };
+          if (session.signedIn)
+            this.pendingSync = this.withPendingId(session.scope, experimentId);
+        });
+        if (session.signedIn) void this.syncPending(session);
+        this.assertGeneration(generation);
+        if (session.signedIn) this.choicesReady = true;
+        this.publish();
         this.assertGeneration(generation);
         return this.getSnapshot();
       });
@@ -369,12 +381,142 @@ export class LabsExperimentsService {
       .catch(() => undefined);
     return write;
   }
+  /** Pushes the current account's unsynced choices; failures stay pending. */
+  retryPendingSync(): Promise<void> {
+    return this.syncPending(this.session);
+  }
+  /** Settles local work; background syncs are already durable as pending ids. */
   async flush(): Promise<void> {
     await Promise.allSettled([
       ...Array.from(this.writes.values()),
       ...Array.from(this.loads),
     ]);
     await this.persistence;
+  }
+  private hasLocalChoices(session: LabsAccountSession): boolean {
+    return (
+      !session.signedIn ||
+      Object.prototype.hasOwnProperty.call(this.accounts, session.scope)
+    );
+  }
+  private withPendingId(
+    scope: string,
+    experimentId: string,
+  ): Record<string, string[]> {
+    const pending = this.pendingSync[scope] ?? [];
+    return pending.includes(experimentId)
+      ? this.pendingSync
+      : { ...this.pendingSync, [scope]: [...pending, experimentId] };
+  }
+  private persistPendingSync(): Promise<void> {
+    return this.queuePersistence(() =>
+      this.deps.write(
+        this.deps.pendingSyncPath,
+        JSON.stringify({ version: 1, accounts: this.pendingSync }),
+      ),
+    );
+  }
+  /** Server choices with this account's unsynced local choices on top. */
+  private withPendingChoices(
+    scope: string,
+    server: Record<string, boolean>,
+  ): Record<string, boolean> {
+    const local = this.accountChoices(scope);
+    const merged = { ...server };
+    for (const id of this.pendingSync[scope] ?? [])
+      if (Object.prototype.hasOwnProperty.call(local, id))
+        merged[id] = local[id] ?? false;
+    return merged;
+  }
+  /** Best effort and never rejects; at most one pass waits per account. */
+  private syncPending(session: LabsAccountSession): Promise<void> {
+    if (!session.signedIn || !session.ready) return Promise.resolve();
+    const scope = session.scope;
+    // The newest credentials win; a waiting pass reads every id at its start.
+    this.syncSessions.set(scope, session);
+    const queued = this.queuedSyncs.get(scope);
+    if (queued) return queued;
+    const previous = this.syncs.get(scope) ?? Promise.resolve();
+    const sync = previous
+      .catch(() => undefined)
+      .then(() => {
+        this.queuedSyncs.delete(scope);
+        return this.pushPending(this.syncSessions.get(scope) ?? session);
+      })
+      .catch((error) => this.deps.diagnostic(error));
+    this.queuedSyncs.set(scope, sync);
+    this.syncs.set(scope, sync);
+    void sync.finally(() => {
+      if (this.syncs.get(scope) === sync) this.syncs.delete(scope);
+    });
+    return sync;
+  }
+  private async pushPending(session: LabsAccountSession): Promise<void> {
+    const scope = session.scope;
+    for (;;) {
+      const experimentId = this.pendingSync[scope]?.[0];
+      if (experimentId === undefined) return;
+      const choices = this.accountChoices(scope);
+      const enabled = Object.prototype.hasOwnProperty.call(
+        choices,
+        experimentId,
+      )
+        ? choices[experimentId]
+        : undefined;
+      let committed: Record<string, boolean> | undefined;
+      let sent = false;
+      if (enabled !== undefined) {
+        try {
+          const result = labsExperimentChoiceResultSchema.parse(
+            await this.deps.putChoice(session, { experimentId, enabled }),
+          );
+          if (
+            result.experimentId !== experimentId ||
+            result.enabled !== enabled ||
+            (result.choices !== undefined &&
+              result.choices[experimentId] !== enabled)
+          )
+            throw new Error('Invalid experiment choice response.');
+          committed = result.choices;
+          sent = true;
+        } catch (error) {
+          this.deps.diagnostic(error);
+          // Offline or transient: keep it pending for the next attempt. A
+          // refusal the server will repeat drops the id so it cannot hold back
+          // the account's other choices; the local choice then lasts until
+          // the next account refresh replaces it.
+          if (!this.deps.isPermanentRejection?.(error)) return;
+        }
+      }
+      // A newer local change to the same id stays pending for the next pass.
+      if (this.accountChoices(scope)[experimentId] === enabled) {
+        const rest = (this.pendingSync[scope] ?? []).filter(
+          (id) => id !== experimentId,
+        );
+        const pendingSync = { ...this.pendingSync };
+        if (rest.length > 0) pendingSync[scope] = rest;
+        else delete pendingSync[scope];
+        this.pendingSync = pendingSync;
+      }
+      // A GET issued before this commit must not replace it.
+      if (sent)
+        this.writeVersions.set(scope, (this.writeVersions.get(scope) ?? 0) + 1);
+      if (committed) {
+        const next = this.withPendingChoices(scope, committed);
+        if (
+          JSON.stringify(next) !== JSON.stringify(this.accountChoices(scope))
+        ) {
+          this.accounts = { ...this.accounts, [scope]: next };
+          if (scope === this.session.scope) this.publish();
+        }
+        await this.persistChoices().catch((error) =>
+          this.deps.diagnostic(error),
+        );
+      }
+      await this.persistPendingSync().catch((error) =>
+        this.deps.diagnostic(error),
+      );
+    }
   }
   private assertGeneration(generation: number): void {
     if (generation !== this.generation)
@@ -414,8 +556,8 @@ export class LabsExperimentsService {
       (state.snapshot.status === 'not_configured' ||
         state.contextIdentity !== null ||
         Object.keys(state.liveValues).length > 0);
-    const availability = (entry: LabsExperiment): LabsExperimentAvailability =>
-      resolveLabsAvailability(
+    const availability = (entry: LabsExperiment): ResolvedLabsAvailability =>
+      resolveLabsAvailabilityWithSource(
         entry,
         state,
         cached,
@@ -432,7 +574,7 @@ export class LabsExperimentsService {
       ready &&
       !!early &&
       resolveLabsExperiment({
-        availability: availability(early),
+        availability: availability(early).availability,
         choice: choice(early.id),
         earlyAccessEnabled: false,
         requiresEarlyAccess: false,
@@ -445,21 +587,25 @@ export class LabsExperimentsService {
       choicesReady: this.choicesReady,
       earlyAccessEnabled,
       updatedAt: new Date().toISOString(),
-      experiments: this.entries.map((entry) => ({
-        ...entry,
-        pages: [...entry.pages],
-        sidebarKeys: [...entry.sidebarKeys],
-        availability: availability(entry),
-        choice: choice(entry.id),
-        ...(!ready
-          ? { listed: false, enabled: false }
-          : resolveLabsExperiment({
-              availability: availability(entry),
-              choice: choice(entry.id),
-              earlyAccessEnabled,
-              requiresEarlyAccess: entry.requiresEarlyAccess,
-            })),
-      })),
+      experiments: this.entries.map((entry) => {
+        const resolved = availability(entry);
+        return {
+          ...entry,
+          pages: [...entry.pages],
+          sidebarKeys: [...entry.sidebarKeys],
+          availability: resolved.availability,
+          availabilitySource: resolved.source,
+          choice: choice(entry.id),
+          ...(!ready
+            ? { listed: false, enabled: false }
+            : resolveLabsExperiment({
+                availability: resolved.availability,
+                choice: choice(entry.id),
+                earlyAccessEnabled,
+                requiresEarlyAccess: entry.requiresEarlyAccess,
+              })),
+        };
+      }),
     };
   }
   private publish(): void {
@@ -502,10 +648,16 @@ export function labsExperimentRegistry(): readonly LabsExperiment[] {
 }
 export function labsExperimentStorageDependencies(): Pick<
   LabsExperimentsDependencies,
-  'choicesPath' | 'availabilityPath' | 'read' | 'write' | 'mirror'
+  | 'choicesPath'
+  | 'availabilityPath'
+  | 'pendingSyncPath'
+  | 'read'
+  | 'write'
+  | 'mirror'
 > {
   return {
     choicesPath: getLabsExperimentChoicesPath(),
+    pendingSyncPath: getLabsExperimentPendingSyncPath(),
     availabilityPath: getLabsExperimentAvailabilityCachePath(),
     read: readCache,
     write: async (path, data): Promise<void> => {

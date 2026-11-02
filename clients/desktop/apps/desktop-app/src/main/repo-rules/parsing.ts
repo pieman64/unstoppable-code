@@ -1,13 +1,9 @@
 import { createHash } from 'node:crypto';
 import { load, JSON_SCHEMA } from 'js-yaml';
-import type {
-  RepoRuleFlag,
-  RepoRuleProposal,
-} from '@canopy/protocol/repo-rules';
+import type { RepoRuleFlag } from '@canopy/protocol/repo-rules';
+import type { ReadRepoRule } from '@canopy/core-runtime/node/workspace/repo-rules';
 
-export interface ReadRepoRule extends RepoRuleProposal {
-  body: string;
-}
+export type { ReadRepoRule };
 export function ruleId(repoId: string, path: string): string {
   return `${repoId}:${path}`;
 }

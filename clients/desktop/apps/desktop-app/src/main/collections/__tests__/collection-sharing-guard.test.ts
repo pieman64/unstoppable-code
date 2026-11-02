@@ -1,8 +1,14 @@
 const mockRead = jest.fn();
 const mockRequest = jest.fn();
-jest.mock('../collection-store', () => ({ readCollectionConfig: mockRead }));
+jest.mock('../collection-store', () => ({
+  get readCollectionConfig(): typeof mockRead {
+    return mockRead;
+  },
+}));
 jest.mock('../../canopy-cloud/client', () => ({
-  requestCanopyCloudJson: mockRequest,
+  get requestCanopyCloudJson(): typeof mockRequest {
+    return mockRequest;
+  },
 }));
 jest.mock('../../lib/resource-context', () => ({
   resourceContextEnabled: (): boolean => false,

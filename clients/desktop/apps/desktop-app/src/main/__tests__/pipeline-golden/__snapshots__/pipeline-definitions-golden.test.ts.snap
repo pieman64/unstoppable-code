@@ -1,0 +1,2876 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Portal lists and gets each source kind for a routed worktree 1`] = `
+{
+  "getBundled": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "definition": {
+            "description": "Bundled golden fixture",
+            "icon": "🔎",
+            "jobs": [
+              {
+                "dependencies": [],
+                "id": "review",
+                "name": "Review",
+                "steps": [
+                  {
+                    "id": "say",
+                    "kind": "script",
+                    "name": "Say",
+                    "usesSummary": "Script",
+                  },
+                ],
+              },
+            ],
+            "name": "Golden bundled review",
+            "scopes": [
+              "directory",
+              "worktree",
+            ],
+            "triggerSummary": "Manual",
+          },
+          "dispatchInputs": {
+            "focus": {
+              "default": "all",
+              "type": "string",
+            },
+          },
+        },
+      },
+      "updates": [],
+    },
+  },
+  "getCurated": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.failed",
+      "payload": {
+        "error": {
+          "code": "invalid_payload",
+          "message": "Invalid pipelineId: must be lowercase alphanumeric with hyphens",
+        },
+        "generatedAt": "<timestamp>",
+        "retryable": false,
+      },
+      "updates": [],
+    },
+  },
+  "getInvalidPayload": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.failed",
+      "payload": {
+        "error": {
+          "code": "invalid_payload",
+          "message": "Invalid pipeline payload.",
+        },
+        "generatedAt": "<timestamp>",
+        "retryable": false,
+      },
+      "updates": [],
+    },
+  },
+  "getMissing": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.failed",
+      "payload": {
+        "error": {
+          "code": "not_found",
+          "message": "Workflow not found.",
+        },
+        "generatedAt": "<timestamp>",
+        "retryable": false,
+      },
+      "updates": [],
+    },
+  },
+  "getProject": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "definition": {
+            "description": "Project golden fixture",
+            "jobs": [
+              {
+                "dependencies": [],
+                "id": "check",
+                "name": "Check",
+                "steps": [
+                  {
+                    "id": "lint",
+                    "kind": "script",
+                    "name": "Lint",
+                    "usesSummary": "Script",
+                  },
+                ],
+              },
+            ],
+            "name": "Golden project pipeline",
+            "scopes": [
+              "worktree",
+            ],
+            "triggerSummary": "Manual",
+          },
+        },
+      },
+      "updates": [],
+    },
+  },
+  "getShared": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/shared-golden-1",
+    ],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "definition": {
+            "description": "Shared golden fixture",
+            "jobs": [
+              {
+                "dependencies": [],
+                "id": "review",
+                "name": "Review",
+                "steps": [
+                  {
+                    "id": "read",
+                    "kind": "script",
+                    "name": "Read",
+                    "usesSummary": "Script",
+                  },
+                ],
+              },
+            ],
+            "name": "Golden shared plan review",
+            "scopes": [
+              "worktree",
+            ],
+            "triggerSummary": "Plan ready",
+          },
+          "planReadyInputs": {
+            "depth": {
+              "default": "quick",
+              "options": [
+                "quick",
+                "deep",
+              ],
+              "type": "choice",
+            },
+          },
+        },
+      },
+      "updates": [],
+    },
+  },
+  "getSharedDispatchOnly": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/shared-golden-dispatch",
+    ],
+    "result": {
+      "event": "portal.command.failed",
+      "payload": {
+        "error": {
+          "code": "not_found",
+          "message": "Workflow not found.",
+        },
+        "generatedAt": "<timestamp>",
+        "retryable": false,
+      },
+      "updates": [],
+    },
+  },
+  "getUser": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "definition": {
+            "description": "User golden fixture",
+            "jobs": [
+              {
+                "dependencies": [],
+                "id": "build",
+                "name": "Build",
+                "steps": [
+                  {
+                    "id": "greet",
+                    "kind": "script",
+                    "name": "Greet",
+                    "usesSummary": "Script",
+                  },
+                ],
+              },
+              {
+                "dependencies": [
+                  "build",
+                ],
+                "id": "report",
+                "name": "Report",
+                "steps": [
+                  {
+                    "id": "done",
+                    "kind": "script",
+                    "name": "Done",
+                    "usesSummary": "Script",
+                  },
+                ],
+              },
+            ],
+            "name": "Golden user pipeline",
+            "scopes": [
+              "directory",
+            ],
+            "triggerSummary": "Manual, Plan ready",
+          },
+          "dispatchInputs": {
+            "greeting": {
+              "required": true,
+              "type": "string",
+            },
+          },
+        },
+      },
+      "updates": [],
+    },
+  },
+  "getWithoutWorktree": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "definition": {
+            "description": "User golden fixture",
+            "jobs": [
+              {
+                "dependencies": [],
+                "id": "build",
+                "name": "Build",
+                "steps": [
+                  {
+                    "id": "greet",
+                    "kind": "script",
+                    "name": "Greet",
+                    "usesSummary": "Script",
+                  },
+                ],
+              },
+              {
+                "dependencies": [
+                  "build",
+                ],
+                "id": "report",
+                "name": "Report",
+                "steps": [
+                  {
+                    "id": "done",
+                    "kind": "script",
+                    "name": "Done",
+                    "usesSummary": "Script",
+                  },
+                ],
+              },
+            ],
+            "name": "Golden user pipeline",
+            "scopes": [
+              "directory",
+            ],
+            "triggerSummary": "Manual, Plan ready",
+          },
+          "dispatchInputs": {
+            "greeting": {
+              "required": true,
+              "type": "string",
+            },
+          },
+        },
+      },
+      "updates": [],
+    },
+  },
+  "list": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=50&triggerType=plan_ready&shareScope=private",
+    ],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "pipelines": [
+            {
+              "description": "Bundled golden fixture",
+              "hasRequiredInputs": false,
+              "name": "Golden bundled review",
+              "origin": "bundled",
+              "pipelineId": "bundled-golden-review",
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "shareable": true,
+              "source": "golden-review.yaml",
+              "stepCount": 1,
+              "triggerTypes": [
+                "dispatch",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "description": "User golden fixture",
+              "hasRequiredInputs": true,
+              "name": "Golden user pipeline",
+              "origin": "user",
+              "pipelineId": "<user-pipeline-id>",
+              "scopes": [
+                "directory",
+              ],
+              "shareable": true,
+              "source": "<user-pipeline-id>.yaml",
+              "stepCount": 2,
+              "triggerTypes": [
+                "dispatch",
+                "plan_ready",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "description": "",
+              "hasRequiredInputs": false,
+              "name": "Golden refused",
+              "origin": "user",
+              "pipelineId": "<uuid>",
+              "scopes": [
+                "directory",
+              ],
+              "shareable": true,
+              "source": "<uuid>.yaml",
+              "stepCount": 0,
+              "triggerTypes": [
+                "dispatch",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "description": "Project golden fixture",
+              "hasRequiredInputs": false,
+              "name": "Golden project pipeline",
+              "origin": "project",
+              "pipelineId": "project--golden-project.yaml",
+              "scopes": [
+                "worktree",
+              ],
+              "shareable": true,
+              "source": "golden-project.yaml",
+              "stepCount": 1,
+              "triggerTypes": [
+                "dispatch",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "name": "Golden shared plan review",
+              "origin": "shared",
+              "pipelineId": "shared:canopy-cloud:shared-golden-1",
+              "scopes": [
+                "worktree",
+              ],
+              "source": "",
+              "triggerTypes": [
+                "plan_ready",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+          ],
+        },
+      },
+      "updates": [],
+    },
+  },
+  "listDefaultWorktree": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=50&triggerType=plan_ready&shareScope=private",
+    ],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "pipelines": [
+            {
+              "description": "Bundled golden fixture",
+              "hasRequiredInputs": false,
+              "name": "Golden bundled review",
+              "origin": "bundled",
+              "pipelineId": "bundled-golden-review",
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "shareable": true,
+              "source": "golden-review.yaml",
+              "stepCount": 1,
+              "triggerTypes": [
+                "dispatch",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "description": "User golden fixture",
+              "hasRequiredInputs": true,
+              "name": "Golden user pipeline",
+              "origin": "user",
+              "pipelineId": "<user-pipeline-id>",
+              "scopes": [
+                "directory",
+              ],
+              "shareable": true,
+              "source": "<user-pipeline-id>.yaml",
+              "stepCount": 2,
+              "triggerTypes": [
+                "dispatch",
+                "plan_ready",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "description": "",
+              "hasRequiredInputs": false,
+              "name": "Golden refused",
+              "origin": "user",
+              "pipelineId": "<uuid>",
+              "scopes": [
+                "directory",
+              ],
+              "shareable": true,
+              "source": "<uuid>.yaml",
+              "stepCount": 0,
+              "triggerTypes": [
+                "dispatch",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "description": "Project golden fixture",
+              "hasRequiredInputs": false,
+              "name": "Golden project pipeline",
+              "origin": "project",
+              "pipelineId": "project--golden-project.yaml",
+              "scopes": [
+                "worktree",
+              ],
+              "shareable": true,
+              "source": "golden-project.yaml",
+              "stepCount": 1,
+              "triggerTypes": [
+                "dispatch",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+            {
+              "name": "Golden shared plan review",
+              "origin": "shared",
+              "pipelineId": "shared:canopy-cloud:shared-golden-1",
+              "scopes": [
+                "worktree",
+              ],
+              "source": "",
+              "triggerTypes": [
+                "plan_ready",
+              ],
+              "workspaceLocalId": "golden-ws",
+              "worktreeLocalId": "golden-wt",
+            },
+          ],
+        },
+      },
+      "updates": [],
+    },
+  },
+  "listInvalidWorktree": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.failed",
+      "payload": {
+        "error": {
+          "code": "invalid_payload",
+          "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+        },
+        "generatedAt": "<timestamp>",
+        "retryable": false,
+      },
+      "updates": [],
+    },
+  },
+  "listUnknownWorktree": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "pipelines": [],
+        },
+      },
+      "updates": [],
+    },
+  },
+  "listWithoutProject": {
+    "cloudRequests": [],
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "pipelines": [],
+        },
+      },
+      "updates": [],
+    },
+  },
+}
+`;
+
+exports[`agent actions lists and gets each source kind and refuses invalid definitions 1`] = `
+{
+  "createInvalid": {
+    "cloudRequests": [],
+    "result": {
+      "isError": true,
+      "result": {
+        "error": {
+          "code": "validation_failed",
+          "message": "Unknown job dependency "missing"",
+          "retryable": false,
+        },
+        "ok": false,
+        "requestId": "",
+      },
+    },
+  },
+  "createNoJobs": {
+    "cloudRequests": [],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "agentArtifacts": [
+            {
+              "createdAt": "<timestamp>",
+              "dedupeKey": "canopy:pipeline:user:<uuid>",
+              "enabled": true,
+              "jobCount": 0,
+              "kind": "pipeline",
+              "localId": "<uuid>",
+              "name": "Golden empty",
+              "navigationTarget": {
+                "kind": "pipeline_editor",
+                "pipelineId": "<uuid>",
+                "source": "user",
+              },
+              "operation": "pipeline.create",
+              "runModes": [
+                "dispatch",
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "shareTarget": {
+                "kind": "pipeline",
+                "pipelineId": "<uuid>",
+                "source": "stored",
+              },
+              "source": "user",
+              "stepCount": 0,
+              "version": 1,
+            },
+          ],
+          "pipeline": {
+            "createdAt": "<timestamp>",
+            "description": "",
+            "filename": "<uuid>.yaml",
+            "icon": "",
+            "id": "<uuid>",
+            "name": "Golden empty",
+            "readonly": false,
+            "revision": 1,
+            "scopes": [
+              "directory",
+            ],
+            "source": "user",
+            "stepCount": 0,
+            "triggerTypes": [
+              "dispatch",
+            ],
+            "updatedAt": "<timestamp>",
+          },
+        },
+      },
+    },
+  },
+  "createShellSteps": {
+    "cloudRequests": [],
+    "result": {
+      "isError": true,
+      "result": {
+        "error": {
+          "code": "validation_failed",
+          "message": "Agent-authored pipeline definitions cannot include shell run steps. Use an existing trusted action through uses, or configure shell pipelines manually in the pipeline editor.",
+          "retryable": false,
+        },
+        "ok": false,
+        "requestId": "",
+      },
+    },
+  },
+  "createUnparseable": {
+    "cloudRequests": [],
+    "result": {
+      "isError": true,
+      "result": {
+        "error": {
+          "code": "validation_failed",
+          "message": "unexpected end of the stream within a flow collection (3:1)
+
+ 1 | pipeline:
+ 2 |   name: [unclosed
+ 3 | 
+-----^",
+          "retryable": false,
+        },
+        "ok": false,
+        "requestId": "",
+      },
+    },
+  },
+  "getBundled": {
+    "cloudRequests": [],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "agentArtifacts": [
+            {
+              "createdAt": "<timestamp>",
+              "dedupeKey": "canopy:capability_reference:bundled:pipeline:bundled-golden-review",
+              "itemKind": "pipeline",
+              "kind": "capability_reference",
+              "name": "Golden bundled review",
+              "navigationTarget": {
+                "kind": "pipeline_editor",
+                "pipelineId": "bundled-golden-review",
+                "source": "bundled",
+              },
+              "operation": "pipeline.get",
+              "relation": "found",
+              "source": "bundled",
+              "sourceId": "bundled-golden-review",
+              "sourceLabel": "Local",
+              "state": "installed",
+              "version": 1,
+            },
+          ],
+          "defaults": {},
+          "env": {},
+          "icon": "🔎",
+          "jobCount": 1,
+          "pipeline": {
+            "description": "Bundled golden fixture",
+            "filePath": "",
+            "filename": "golden-review.yaml",
+            "id": "bundled-golden-review",
+            "name": "Golden bundled review",
+            "readonly": true,
+            "runModes": [
+              {
+                "inputCount": 1,
+                "mode": "dispatch",
+              },
+            ],
+            "scopes": [
+              "directory",
+              "worktree",
+            ],
+            "source": "bundled",
+          },
+          "runModes": [
+            {
+              "inputs": [
+                {
+                  "default": "all",
+                  "description": "",
+                  "max": null,
+                  "min": null,
+                  "name": "focus",
+                  "options": null,
+                  "required": false,
+                  "type": "string",
+                },
+              ],
+              "mode": "dispatch",
+            },
+          ],
+          "stepCount": 1,
+          "version": "",
+          "yamlDefinition": "pipeline:
+  name: Golden bundled review
+  description: Bundled golden fixture
+  icon: 🔎
+  'on':
+    dispatch:
+      inputs:
+        focus:
+          type: string
+          default: all
+  scope:
+    - directory
+    - worktree
+  jobs:
+    review:
+      name: Review
+      steps:
+        - id: say
+          name: Say
+          run: echo "bundled review $FOCUS"
+          env:
+            FOCUS: \${{ inputs.focus }}
+",
+        },
+      },
+    },
+  },
+  "getCurated": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/curated?limit=100&q=golden-curated",
+    ],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "agentArtifacts": [
+            {
+              "createdAt": "<timestamp>",
+              "dedupeKey": "canopy:capability_reference:curated:pipeline:curated%3Agolden-curated",
+              "itemKind": "pipeline",
+              "kind": "capability_reference",
+              "name": "Golden curated triage",
+              "navigationTarget": {
+                "kind": "pipeline_editor",
+                "pipelineId": "curated:golden-curated",
+                "source": "curated",
+              },
+              "operation": "pipeline.get",
+              "relation": "found",
+              "source": "curated",
+              "sourceId": "curated:golden-curated",
+              "sourceLabel": "Local",
+              "state": "installed",
+              "version": 1,
+            },
+          ],
+          "defaults": {},
+          "env": {},
+          "icon": "",
+          "jobCount": 1,
+          "pipeline": {
+            "description": "Curated golden fixture",
+            "filePath": "<data>/curated-pipelines/managed/cd0e6bc46a1b204c09bc6c06748a63d7caaf6a645105d4600eaffa8e86e0b2d9/golden-curated/1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba/pipeline.yaml",
+            "filename": "golden-curated.yaml",
+            "id": "curated:golden-curated",
+            "name": "Golden curated triage",
+            "readonly": true,
+            "runModes": [
+              {
+                "inputCount": 0,
+                "mode": "dispatch",
+              },
+            ],
+            "scopes": [
+              "directory",
+              "worktree",
+            ],
+            "source": "curated",
+          },
+          "runModes": [
+            {
+              "inputs": [],
+              "mode": "dispatch",
+            },
+          ],
+          "stepCount": 1,
+          "version": "",
+          "yamlDefinition": "pipeline:
+  name: Golden curated triage
+  description: Curated golden fixture
+  'on': dispatch
+  scope:
+    - directory
+    - worktree
+  jobs:
+    triage:
+      name: Triage
+      steps:
+        - id: sort
+          name: Sort
+          run: echo curated
+",
+        },
+      },
+    },
+  },
+  "getMissing": {
+    "cloudRequests": [],
+    "result": {
+      "isError": true,
+      "result": {
+        "error": {
+          "code": "not_found",
+          "message": "Pipeline missing-pipeline was not found.",
+        },
+        "ok": false,
+        "requestId": "",
+      },
+    },
+  },
+  "getProject": {
+    "cloudRequests": [],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "agentArtifacts": [
+            {
+              "createdAt": "<timestamp>",
+              "dedupeKey": "canopy:capability_reference:project:pipeline:project--golden-project.yaml",
+              "itemKind": "pipeline",
+              "kind": "capability_reference",
+              "name": "Golden project pipeline",
+              "navigationTarget": {
+                "kind": "pipeline_editor",
+                "pipelineId": "project--golden-project.yaml",
+                "projectId": "golden-ws",
+                "source": "project",
+                "worktreeId": "golden-wt",
+              },
+              "operation": "pipeline.get",
+              "relation": "found",
+              "source": "project",
+              "sourceId": "project--golden-project.yaml",
+              "sourceLabel": "Local",
+              "state": "installed",
+              "version": 1,
+            },
+          ],
+          "defaults": {},
+          "env": {},
+          "icon": "",
+          "jobCount": 1,
+          "pipeline": {
+            "description": "Project golden fixture",
+            "filePath": "<worktree>/.canopy/pipelines/golden-project.yaml",
+            "filename": "golden-project.yaml",
+            "id": "project--golden-project.yaml",
+            "name": "Golden project pipeline",
+            "readonly": true,
+            "runModes": [
+              {
+                "inputCount": 0,
+                "mode": "dispatch",
+              },
+            ],
+            "scopes": [
+              "worktree",
+            ],
+            "source": "project",
+          },
+          "runModes": [
+            {
+              "inputs": [],
+              "mode": "dispatch",
+            },
+          ],
+          "stepCount": 1,
+          "version": "",
+          "yamlDefinition": "pipeline:
+  name: Golden project pipeline
+  description: Project golden fixture
+  'on': dispatch
+  scope:
+    - worktree
+  jobs:
+    check:
+      name: Check
+      steps:
+        - id: lint
+          name: Lint
+          run: echo lint
+",
+        },
+      },
+    },
+  },
+  "getShared": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/shared-golden-1",
+    ],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "agentArtifacts": [
+            {
+              "createdAt": "<timestamp>",
+              "dedupeKey": "canopy:capability_reference:shared:pipeline:shared-golden-1",
+              "itemKind": "pipeline",
+              "kind": "capability_reference",
+              "name": "Golden shared plan review",
+              "navigationTarget": {
+                "kind": "pipeline_editor",
+                "pipelineId": "shared:canopy-cloud:shared-golden-1",
+                "sharedRemoteId": "shared-golden-1",
+                "source": "shared",
+              },
+              "operation": "pipeline.get",
+              "relation": "found",
+              "source": "shared",
+              "sourceId": "shared-golden-1",
+              "sourceLabel": "Shared",
+              "state": "available",
+              "version": 1,
+            },
+          ],
+          "defaults": {},
+          "env": {},
+          "icon": "",
+          "jobCount": 1,
+          "pipeline": {
+            "description": "",
+            "filePath": "",
+            "filename": "",
+            "id": "shared:canopy-cloud:shared-golden-1",
+            "name": "Golden shared plan review",
+            "readonly": false,
+            "runModes": [
+              {
+                "inputCount": 1,
+                "mode": "plan_ready",
+              },
+            ],
+            "scopes": [
+              "worktree",
+            ],
+            "source": "shared",
+          },
+          "runModes": [
+            {
+              "inputs": [
+                {
+                  "default": "quick",
+                  "description": "",
+                  "max": null,
+                  "min": null,
+                  "name": "depth",
+                  "options": [
+                    "quick",
+                    "deep",
+                  ],
+                  "required": false,
+                  "type": "choice",
+                },
+              ],
+              "mode": "plan_ready",
+            },
+          ],
+          "stepCount": 1,
+          "version": "",
+          "yamlDefinition": "pipeline:
+  name: Golden shared plan review
+  description: Shared golden fixture
+  'on':
+    plan_ready:
+      inputs:
+        depth:
+          type: choice
+          options:
+            - quick
+            - deep
+          default: quick
+  scope:
+    - worktree
+  jobs:
+    review:
+      name: Review
+      steps:
+        - id: read
+          name: Read
+          run: echo "shared $DEPTH"
+          env:
+            DEPTH: \${{ inputs.depth }}
+",
+        },
+      },
+    },
+  },
+  "getUser": {
+    "cloudRequests": [],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "agentArtifacts": [
+            {
+              "createdAt": "<timestamp>",
+              "dedupeKey": "canopy:capability_reference:user:pipeline:<user-pipeline-id>",
+              "itemKind": "pipeline",
+              "kind": "capability_reference",
+              "name": "Golden user pipeline",
+              "navigationTarget": {
+                "kind": "pipeline_editor",
+                "pipelineId": "<user-pipeline-id>",
+                "source": "user",
+              },
+              "operation": "pipeline.get",
+              "relation": "found",
+              "source": "user",
+              "sourceId": "<user-pipeline-id>",
+              "sourceLabel": "Local",
+              "state": "installed",
+              "version": 1,
+            },
+          ],
+          "defaults": {},
+          "env": {},
+          "icon": "",
+          "jobCount": 2,
+          "pipeline": {
+            "description": "User golden fixture",
+            "filePath": "",
+            "filename": "<user-pipeline-id>.yaml",
+            "id": "<user-pipeline-id>",
+            "name": "Golden user pipeline",
+            "readonly": false,
+            "runModes": [
+              {
+                "inputCount": 1,
+                "mode": "dispatch",
+              },
+              {
+                "inputCount": 0,
+                "mode": "plan_ready",
+              },
+            ],
+            "scopes": [
+              "directory",
+            ],
+            "source": "user",
+          },
+          "runModes": [
+            {
+              "inputs": [
+                {
+                  "default": null,
+                  "description": "",
+                  "max": null,
+                  "min": null,
+                  "name": "greeting",
+                  "options": null,
+                  "required": true,
+                  "type": "string",
+                },
+              ],
+              "mode": "dispatch",
+            },
+            {
+              "inputs": [],
+              "mode": "plan_ready",
+            },
+          ],
+          "stepCount": 2,
+          "version": "",
+          "yamlDefinition": "pipeline:
+  name: Golden user pipeline
+  description: User golden fixture
+  'on':
+    dispatch:
+      inputs:
+        greeting:
+          type: string
+          required: true
+    plan_ready: {}
+  jobs:
+    build:
+      name: Build
+      steps:
+        - id: greet
+          name: Greet
+          run: echo "$GREETING"
+          env:
+            GREETING: \${{ inputs.greeting }}
+    report:
+      name: Report
+      needs:
+        - build
+      steps:
+        - id: done
+          name: Done
+          run: echo done
+",
+        },
+      },
+    },
+  },
+  "list": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=100&shareScope=private",
+    ],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "filters": {
+            "includeDisabled": false,
+            "limit": 20,
+            "query": "",
+            "runModes": [],
+          },
+          "pipelines": [
+            {
+              "description": "Bundled golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "golden-review.yaml",
+              "id": "bundled-golden-review",
+              "name": "Golden bundled review",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "source": "bundled",
+            },
+            {
+              "description": "Curated golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "golden-curated.yaml",
+              "id": "curated:golden-curated",
+              "name": "Golden curated triage",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "source": "curated",
+            },
+            {
+              "description": "Project golden fixture",
+              "enabled": true,
+              "filePath": "<worktree>/.canopy/pipelines/golden-project.yaml",
+              "filename": "golden-project.yaml",
+              "id": "project--golden-project.yaml",
+              "name": "Golden project pipeline",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": 0,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "worktree",
+              ],
+              "source": "project",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<uuid>.yaml",
+              "id": "<uuid>",
+              "name": "Golden refused",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 0,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "",
+              "id": "shared:canopy-cloud:shared-golden-dispatch",
+              "name": "Golden shared dispatch",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "shared",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "",
+              "id": "shared:canopy-cloud:shared-golden-1",
+              "name": "Golden shared plan review",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "worktree",
+              ],
+              "source": "shared",
+            },
+            {
+              "description": "User golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<user-pipeline-id>.yaml",
+              "id": "<user-pipeline-id>",
+              "name": "Golden user pipeline",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+                {
+                  "inputCount": 0,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+          ],
+          "returned": 7,
+          "scope": {
+            "cwd": "<worktree>",
+            "projectId": "golden-ws",
+            "worktreeId": "golden-wt",
+          },
+          "totalMatches": 7,
+          "warnings": [],
+        },
+      },
+    },
+  },
+  "listAfter": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=100&shareScope=private",
+    ],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "filters": {
+            "includeDisabled": true,
+            "limit": 20,
+            "query": "",
+            "runModes": [],
+          },
+          "pipelines": [
+            {
+              "description": "Bundled golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "golden-review.yaml",
+              "id": "bundled-golden-review",
+              "name": "Golden bundled review",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "source": "bundled",
+            },
+            {
+              "description": "Curated golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "golden-curated.yaml",
+              "id": "curated:golden-curated",
+              "name": "Golden curated triage",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "source": "curated",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<uuid>.yaml",
+              "id": "<uuid>",
+              "name": "Golden empty",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 0,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+            {
+              "description": "Project golden fixture",
+              "enabled": true,
+              "filePath": "<worktree>/.canopy/pipelines/golden-project.yaml",
+              "filename": "golden-project.yaml",
+              "id": "project--golden-project.yaml",
+              "name": "Golden project pipeline",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": 0,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "worktree",
+              ],
+              "source": "project",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<uuid>.yaml",
+              "id": "<uuid>",
+              "name": "Golden refused",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 0,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "",
+              "id": "shared:canopy-cloud:shared-golden-dispatch",
+              "name": "Golden shared dispatch",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "shared",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "",
+              "id": "shared:canopy-cloud:shared-golden-1",
+              "name": "Golden shared plan review",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "worktree",
+              ],
+              "source": "shared",
+            },
+            {
+              "description": "User golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<user-pipeline-id>.yaml",
+              "id": "<user-pipeline-id>",
+              "name": "Golden user pipeline",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+                {
+                  "inputCount": 0,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+          ],
+          "returned": 8,
+          "scope": {
+            "cwd": "<worktree>",
+            "projectId": "golden-ws",
+            "worktreeId": "golden-wt",
+          },
+          "totalMatches": 8,
+          "warnings": [],
+        },
+      },
+    },
+  },
+  "listDirectory": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=100&shareScope=private",
+    ],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "filters": {
+            "includeDisabled": false,
+            "limit": 20,
+            "query": "",
+            "runModes": [],
+          },
+          "pipelines": [
+            {
+              "description": "Bundled golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "golden-review.yaml",
+              "id": "bundled-golden-review",
+              "name": "Golden bundled review",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "source": "bundled",
+            },
+            {
+              "description": "Curated golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "golden-curated.yaml",
+              "id": "curated:golden-curated",
+              "name": "Golden curated triage",
+              "readonly": true,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+                "worktree",
+              ],
+              "source": "curated",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<uuid>.yaml",
+              "id": "<uuid>",
+              "name": "Golden refused",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 0,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "",
+              "id": "shared:canopy-cloud:shared-golden-dispatch",
+              "name": "Golden shared dispatch",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "dispatch",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "shared",
+            },
+            {
+              "description": "User golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<user-pipeline-id>.yaml",
+              "id": "<user-pipeline-id>",
+              "name": "Golden user pipeline",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+                {
+                  "inputCount": 0,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+          ],
+          "returned": 5,
+          "scope": {
+            "cwd": "<worktree>",
+            "projectId": "golden-ws",
+            "worktreeId": "golden-wt",
+          },
+          "totalMatches": 5,
+          "warnings": [],
+        },
+      },
+    },
+  },
+  "listPlanReady": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=100&shareScope=private",
+    ],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "filters": {
+            "includeDisabled": false,
+            "limit": 20,
+            "query": "",
+            "runModes": [
+              "plan_ready",
+            ],
+          },
+          "pipelines": [
+            {
+              "description": "",
+              "enabled": true,
+              "filePath": "",
+              "filename": "",
+              "id": "shared:canopy-cloud:shared-golden-1",
+              "name": "Golden shared plan review",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": null,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "worktree",
+              ],
+              "source": "shared",
+            },
+            {
+              "description": "User golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<user-pipeline-id>.yaml",
+              "id": "<user-pipeline-id>",
+              "name": "Golden user pipeline",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+                {
+                  "inputCount": 0,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+          ],
+          "returned": 2,
+          "scope": {
+            "cwd": "<worktree>",
+            "projectId": "golden-ws",
+            "worktreeId": "golden-wt",
+          },
+          "totalMatches": 2,
+          "warnings": [],
+        },
+      },
+    },
+  },
+  "listQuery": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?limit=100&q=golden+user&shareScope=private",
+    ],
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "",
+        "result": {
+          "filters": {
+            "includeDisabled": false,
+            "limit": 1,
+            "query": "golden user",
+            "runModes": [],
+          },
+          "pipelines": [
+            {
+              "description": "User golden fixture",
+              "enabled": true,
+              "filePath": "",
+              "filename": "<user-pipeline-id>.yaml",
+              "id": "<user-pipeline-id>",
+              "name": "Golden user pipeline",
+              "readonly": false,
+              "runModes": [
+                {
+                  "inputCount": 1,
+                  "mode": "dispatch",
+                },
+                {
+                  "inputCount": 0,
+                  "mode": "plan_ready",
+                },
+              ],
+              "scopes": [
+                "directory",
+              ],
+              "source": "user",
+            },
+          ],
+          "returned": 1,
+          "scope": {
+            "cwd": "<worktree>",
+            "projectId": "golden-ws",
+            "worktreeId": "golden-wt",
+          },
+          "totalMatches": 1,
+          "warnings": [],
+        },
+      },
+    },
+  },
+}
+`;
+
+exports[`desktop IPC gets each source kind and refuses unknown ones 1`] = `
+{
+  "bundledAsUser": {
+    "cloudRequests": [],
+    "result": {
+      "error": "Workflow not found: bundled-golden-review",
+      "success": false,
+    },
+  },
+  "bundledById": {
+    "cloudRequests": [],
+    "result": {
+      "data": {
+        "content": {
+          "description": "Bundled golden fixture",
+          "icon": "🔎",
+          "jobs": {
+            "review": {
+              "name": "Review",
+              "steps": [
+                {
+                  "env": {
+                    "FOCUS": "\${{ inputs.focus }}",
+                  },
+                  "id": "say",
+                  "name": "Say",
+                  "run": "echo "bundled review $FOCUS"",
+                },
+              ],
+            },
+          },
+          "name": "Golden bundled review",
+          "on": {
+            "dispatch": {
+              "inputs": {
+                "focus": {
+                  "default": "all",
+                  "type": "string",
+                },
+              },
+            },
+          },
+          "scope": [
+            "directory",
+            "worktree",
+          ],
+        },
+        "info": {
+          "createdAt": "<timestamp>",
+          "description": "Bundled golden fixture",
+          "filename": "golden-review.yaml",
+          "icon": "🔎",
+          "id": "bundled-golden-review",
+          "name": "Golden bundled review",
+          "readonly": true,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "bundled",
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "rawContent": "pipeline:
+  name: Golden bundled review
+  description: Bundled golden fixture
+  icon: "🔎"
+  on:
+    dispatch:
+      inputs:
+        focus:
+          type: string
+          default: all
+  scope: [directory, worktree]
+  jobs:
+    review:
+      name: Review
+      steps:
+        - id: say
+          name: Say
+          run: echo "bundled review $FOCUS"
+          env:
+            FOCUS: \${{ inputs.focus }}
+",
+      },
+      "success": true,
+    },
+  },
+  "bundledStored": {
+    "cloudRequests": [],
+    "result": {
+      "data": {
+        "content": {
+          "description": "Bundled golden fixture",
+          "icon": "🔎",
+          "jobs": {
+            "review": {
+              "name": "Review",
+              "steps": [
+                {
+                  "env": {
+                    "FOCUS": "\${{ inputs.focus }}",
+                  },
+                  "id": "say",
+                  "name": "Say",
+                  "run": "echo "bundled review $FOCUS"",
+                },
+              ],
+            },
+          },
+          "name": "Golden bundled review",
+          "on": {
+            "dispatch": {
+              "inputs": {
+                "focus": {
+                  "default": "all",
+                  "type": "string",
+                },
+              },
+            },
+          },
+          "scope": [
+            "directory",
+            "worktree",
+          ],
+        },
+        "info": {
+          "createdAt": "<timestamp>",
+          "description": "Bundled golden fixture",
+          "filename": "golden-review.yaml",
+          "icon": "🔎",
+          "id": "bundled-golden-review",
+          "name": "Golden bundled review",
+          "readonly": true,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "bundled",
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "rawContent": "pipeline:
+  name: Golden bundled review
+  description: Bundled golden fixture
+  icon: "🔎"
+  on:
+    dispatch:
+      inputs:
+        focus:
+          type: string
+          default: all
+  scope: [directory, worktree]
+  jobs:
+    review:
+      name: Review
+      steps:
+        - id: say
+          name: Say
+          run: echo "bundled review $FOCUS"
+          env:
+            FOCUS: \${{ inputs.focus }}
+",
+      },
+      "success": true,
+    },
+  },
+  "curated": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/curated?limit=100&q=golden-curated",
+      "GET /api/v1/desktop-app/pipelines/curated/golden-curated/content",
+    ],
+    "result": {
+      "data": {
+        "content": {
+          "description": "Curated golden fixture",
+          "jobs": {
+            "triage": {
+              "name": "Triage",
+              "steps": [
+                {
+                  "id": "sort",
+                  "name": "Sort",
+                  "run": "echo curated",
+                },
+              ],
+            },
+          },
+          "name": "Golden curated triage",
+          "on": "dispatch",
+          "scope": [
+            "directory",
+            "worktree",
+          ],
+        },
+        "info": {
+          "createdAt": "<timestamp>",
+          "curatedContentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+          "curatedKey": "golden-curated",
+          "curatedRevision": 1,
+          "description": "Curated golden fixture",
+          "filePath": "<data>/curated-pipelines/managed/cd0e6bc46a1b204c09bc6c06748a63d7caaf6a645105d4600eaffa8e86e0b2d9/golden-curated/1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba/pipeline.yaml",
+          "filename": "golden-curated.yaml",
+          "icon": "🧭",
+          "id": "curated:golden-curated",
+          "name": "Golden curated triage",
+          "readonly": true,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "curated",
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+      },
+      "success": true,
+    },
+  },
+  "curatedGet": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/curated/golden-curated/content",
+    ],
+    "result": {
+      "data": {
+        "authorName": null,
+        "authorUrl": null,
+        "categories": [
+          "triage",
+        ],
+        "contentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+        "contentSizeBytes": 244,
+        "createdAt": "<timestamp>",
+        "docsUrl": null,
+        "icon": "🧭",
+        "jobCount": 1,
+        "key": "golden-curated",
+        "name": "Golden curated triage",
+        "popular": false,
+        "rawPipeline": "pipeline:
+  name: Golden curated triage
+  description: Curated golden fixture
+  on: dispatch
+  scope: [directory, worktree]
+  jobs:
+    triage:
+      name: Triage
+      steps:
+        - id: sort
+          name: Sort
+          run: echo curated
+",
+        "revision": 1,
+        "scopes": [
+          "directory",
+          "worktree",
+        ],
+        "shortDescription": "Curated golden fixture",
+        "sortOrder": 0,
+        "stepCount": 1,
+        "triggerTypes": [
+          "dispatch",
+        ],
+        "updatedAt": "<timestamp>",
+        "version": "1.0.0",
+      },
+      "success": true,
+    },
+  },
+  "curatedGetMissing": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/curated/missing-curated/content",
+    ],
+    "result": {
+      "error": "HTTP 404: Not found",
+      "success": false,
+    },
+  },
+  "curatedMissing": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/curated?limit=100&q=missing-curated",
+    ],
+    "result": {
+      "error": "This curated workflow is no longer available. Refresh the workflow list.",
+      "success": false,
+    },
+  },
+  "invalidLookup": {
+    "cloudRequests": [],
+    "result": {
+      "error": "Invalid pipeline lookup request",
+      "success": false,
+    },
+  },
+  "missing": {
+    "cloudRequests": [],
+    "result": {
+      "error": "Workflow not found: missing-pipeline",
+      "success": false,
+    },
+  },
+  "project": {
+    "cloudRequests": [],
+    "result": {
+      "data": {
+        "content": {
+          "description": "Project golden fixture",
+          "jobs": {
+            "check": {
+              "name": "Check",
+              "steps": [
+                {
+                  "id": "lint",
+                  "name": "Lint",
+                  "run": "echo lint",
+                },
+              ],
+            },
+          },
+          "name": "Golden project pipeline",
+          "on": "dispatch",
+          "scope": [
+            "worktree",
+          ],
+        },
+        "info": {
+          "createdAt": "<timestamp>",
+          "description": "Project golden fixture",
+          "filePath": "<worktree>/.canopy/pipelines/golden-project.yaml",
+          "filename": "golden-project.yaml",
+          "icon": "",
+          "id": "project--golden-project.yaml",
+          "name": "Golden project pipeline",
+          "readonly": true,
+          "source": "project",
+          "updatedAt": "<timestamp>",
+        },
+      },
+      "success": true,
+    },
+  },
+  "projectOutsideCheckout": {
+    "cloudRequests": [],
+    "result": {
+      "error": "Workflow unavailable (unsupported-target)",
+      "success": false,
+    },
+  },
+  "shared": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/shared-golden-1",
+    ],
+    "result": {
+      "data": {
+        "content": {
+          "description": "Shared golden fixture",
+          "jobs": {
+            "review": {
+              "name": "Review",
+              "steps": [
+                {
+                  "env": {
+                    "DEPTH": "\${{ inputs.depth }}",
+                  },
+                  "id": "read",
+                  "name": "Read",
+                  "run": "echo "shared $DEPTH"",
+                },
+              ],
+            },
+          },
+          "name": "Golden shared plan review",
+          "on": {
+            "plan_ready": {
+              "inputs": {
+                "depth": {
+                  "default": "quick",
+                  "options": [
+                    "quick",
+                    "deep",
+                  ],
+                  "type": "choice",
+                },
+              },
+            },
+          },
+          "scope": [
+            "worktree",
+          ],
+        },
+        "info": {
+          "canDelete": true,
+          "canUpdate": true,
+          "createdAt": "<timestamp>",
+          "description": "",
+          "distributionMode": "definition_only",
+          "filename": "",
+          "icon": "",
+          "id": "shared:canopy-cloud:shared-golden-1",
+          "name": "Golden shared plan review",
+          "owner": {
+            "id": "acct-golden",
+            "name": "Golden",
+            "type": "user",
+          },
+          "readonly": false,
+          "remoteId": "shared-golden-1",
+          "scopes": [
+            "worktree",
+          ],
+          "serverId": "canopy-cloud",
+          "serverName": "Canopy Cloud",
+          "shareScope": "private",
+          "source": "shared",
+          "triggerTypes": [
+            "plan_ready",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+      },
+      "success": true,
+    },
+  },
+  "sharedGet": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/shared-golden-1",
+    ],
+    "result": {
+      "data": {
+        "canDelete": true,
+        "canUpdate": true,
+        "contentHash": "9104022239eed85433b7044ab9553690492d61b16af8572c6aa07acb5e7c7311",
+        "createdAt": "<timestamp>",
+        "createdBy": {
+          "id": "acct-golden",
+          "name": "Golden",
+        },
+        "description": "",
+        "distributionMode": "definition_only",
+        "icon": "",
+        "id": "shared-golden-1",
+        "name": "Golden shared plan review",
+        "owner": {
+          "id": "acct-golden",
+          "name": "Golden",
+          "type": "user",
+        },
+        "publicShare": null,
+        "rawPipeline": "pipeline:
+  name: Golden shared plan review
+  description: Shared golden fixture
+  on:
+    plan_ready:
+      inputs:
+        depth:
+          type: choice
+          options: [quick, deep]
+          default: quick
+  scope: [worktree]
+  jobs:
+    review:
+      name: Review
+      steps:
+        - id: read
+          name: Read
+          run: echo "shared $DEPTH"
+          env:
+            DEPTH: \${{ inputs.depth }}
+",
+        "scopes": [
+          "worktree",
+        ],
+        "shareScope": "private",
+        "triggerTypes": [
+          "plan_ready",
+        ],
+        "updatedAt": "<timestamp>",
+        "version": "1",
+      },
+      "success": true,
+    },
+  },
+  "sharedMissing": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/shared-missing",
+    ],
+    "result": {
+      "error": "HTTP 404: Not found",
+      "success": false,
+    },
+  },
+  "userById": {
+    "cloudRequests": [],
+    "result": {
+      "data": {
+        "content": {
+          "description": "User golden fixture",
+          "jobs": {
+            "build": {
+              "name": "Build",
+              "steps": [
+                {
+                  "env": {
+                    "GREETING": "\${{ inputs.greeting }}",
+                  },
+                  "id": "greet",
+                  "name": "Greet",
+                  "run": "echo "$GREETING"",
+                },
+              ],
+            },
+            "report": {
+              "name": "Report",
+              "needs": [
+                "build",
+              ],
+              "steps": [
+                {
+                  "id": "done",
+                  "name": "Done",
+                  "run": "echo done",
+                },
+              ],
+            },
+          },
+          "name": "Golden user pipeline",
+          "on": {
+            "dispatch": {
+              "inputs": {
+                "greeting": {
+                  "required": true,
+                  "type": "string",
+                },
+              },
+            },
+            "plan_ready": {},
+          },
+        },
+        "info": {
+          "createdAt": "<timestamp>",
+          "description": "User golden fixture",
+          "filename": "<user-pipeline-id>.yaml",
+          "icon": "",
+          "id": "<user-pipeline-id>",
+          "name": "Golden user pipeline",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "directory",
+          ],
+          "source": "user",
+          "stepCount": 2,
+          "triggerTypes": [
+            "dispatch",
+            "plan_ready",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "rawContent": "pipeline:
+  name: Golden user pipeline
+  description: User golden fixture
+  'on':
+    dispatch:
+      inputs:
+        greeting:
+          type: string
+          required: true
+    plan_ready: {}
+  jobs:
+    build:
+      name: Build
+      steps:
+        - id: greet
+          name: Greet
+          run: echo "$GREETING"
+          env:
+            GREETING: \${{ inputs.greeting }}
+    report:
+      name: Report
+      needs:
+        - build
+      steps:
+        - id: done
+          name: Done
+          run: echo done
+",
+      },
+      "success": true,
+    },
+  },
+  "userStored": {
+    "cloudRequests": [],
+    "result": {
+      "data": {
+        "content": {
+          "description": "User golden fixture",
+          "jobs": {
+            "build": {
+              "name": "Build",
+              "steps": [
+                {
+                  "env": {
+                    "GREETING": "\${{ inputs.greeting }}",
+                  },
+                  "id": "greet",
+                  "name": "Greet",
+                  "run": "echo "$GREETING"",
+                },
+              ],
+            },
+            "report": {
+              "name": "Report",
+              "needs": [
+                "build",
+              ],
+              "steps": [
+                {
+                  "id": "done",
+                  "name": "Done",
+                  "run": "echo done",
+                },
+              ],
+            },
+          },
+          "name": "Golden user pipeline",
+          "on": {
+            "dispatch": {
+              "inputs": {
+                "greeting": {
+                  "required": true,
+                  "type": "string",
+                },
+              },
+            },
+            "plan_ready": {},
+          },
+        },
+        "info": {
+          "createdAt": "<timestamp>",
+          "description": "User golden fixture",
+          "filename": "<user-pipeline-id>.yaml",
+          "icon": "",
+          "id": "<user-pipeline-id>",
+          "name": "Golden user pipeline",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "directory",
+          ],
+          "source": "user",
+          "stepCount": 2,
+          "triggerTypes": [
+            "dispatch",
+            "plan_ready",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "rawContent": "pipeline:
+  name: Golden user pipeline
+  description: User golden fixture
+  'on':
+    dispatch:
+      inputs:
+        greeting:
+          type: string
+          required: true
+    plan_ready: {}
+  jobs:
+    build:
+      name: Build
+      steps:
+        - id: greet
+          name: Greet
+          run: echo "$GREETING"
+          env:
+            GREETING: \${{ inputs.greeting }}
+    report:
+      name: Report
+      needs:
+        - build
+      steps:
+        - id: done
+          name: Done
+          run: echo done
+",
+      },
+      "success": true,
+    },
+  },
+}
+`;
+
+exports[`desktop IPC lists bundled, user and curated definitions and discovers project ones 1`] = `
+{
+  "curatedList": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/curated?limit=25",
+    ],
+    "result": {
+      "data": {
+        "data": [
+          {
+            "authorName": null,
+            "authorUrl": null,
+            "categories": [
+              "triage",
+            ],
+            "contentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+            "contentSizeBytes": 244,
+            "createdAt": "<timestamp>",
+            "docsUrl": null,
+            "icon": "🧭",
+            "jobCount": 1,
+            "key": "golden-curated",
+            "name": "Golden curated triage",
+            "popular": false,
+            "revision": 1,
+            "scopes": [
+              "directory",
+              "worktree",
+            ],
+            "shortDescription": "Curated golden fixture",
+            "sortOrder": 0,
+            "stepCount": 1,
+            "triggerTypes": [
+              "dispatch",
+            ],
+            "updatedAt": "<timestamp>",
+            "version": "1.0.0",
+          },
+        ],
+        "nextCursor": null,
+        "stale": false,
+        "version": 1,
+      },
+      "success": true,
+    },
+  },
+  "discoverMissingCwd": {
+    "cloudRequests": [],
+    "result": {
+      "data": [],
+      "success": true,
+    },
+  },
+  "discoverProject": {
+    "cloudRequests": [],
+    "result": {
+      "data": [
+        {
+          "createdAt": "<timestamp>",
+          "description": "Project golden fixture",
+          "filePath": "<worktree>/.canopy/pipelines/golden-project.yaml",
+          "filename": "golden-project.yaml",
+          "icon": "",
+          "id": "project--golden-project.yaml",
+          "name": "Golden project pipeline",
+          "readonly": true,
+          "scopes": [
+            "worktree",
+          ],
+          "source": "project",
+          "stepCount": 1,
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+      ],
+      "success": true,
+    },
+  },
+  "discoverRelativeCwd": {
+    "cloudRequests": [],
+    "result": {
+      "error": "cwd must be an absolute path",
+      "success": false,
+    },
+  },
+  "list": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines/curated?limit=100",
+    ],
+    "result": {
+      "data": [
+        {
+          "createdAt": "<timestamp>",
+          "description": "Bundled golden fixture",
+          "filename": "golden-review.yaml",
+          "icon": "🔎",
+          "id": "bundled-golden-review",
+          "name": "Golden bundled review",
+          "readonly": true,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "bundled",
+          "stepCount": 1,
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        {
+          "createdAt": "<timestamp>",
+          "description": "User golden fixture",
+          "filename": "<user-pipeline-id>.yaml",
+          "icon": "",
+          "id": "<user-pipeline-id>",
+          "name": "Golden user pipeline",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "directory",
+          ],
+          "source": "user",
+          "stepCount": 2,
+          "triggerTypes": [
+            "dispatch",
+            "plan_ready",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        {
+          "createdAt": "<timestamp>",
+          "curatedContentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+          "curatedKey": "golden-curated",
+          "curatedRevision": 1,
+          "description": "Curated golden fixture",
+          "filename": "golden-curated.yaml",
+          "icon": "🧭",
+          "id": "curated:golden-curated",
+          "name": "Golden curated triage",
+          "readonly": true,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "curated",
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+      ],
+      "success": true,
+    },
+  },
+  "sharedList": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?shareScope=private",
+    ],
+    "result": {
+      "data": {
+        "data": [
+          {
+            "canDelete": true,
+            "canUpdate": true,
+            "createdAt": "<timestamp>",
+            "createdBy": {
+              "id": "acct-golden",
+              "name": "Golden",
+            },
+            "description": "",
+            "distributionMode": "definition_only",
+            "icon": "",
+            "id": "shared-golden-1",
+            "name": "Golden shared plan review",
+            "owner": {
+              "id": "acct-golden",
+              "name": "Golden",
+              "type": "user",
+            },
+            "publicShare": null,
+            "scopes": [
+              "worktree",
+            ],
+            "shareScope": "private",
+            "triggerTypes": [
+              "plan_ready",
+            ],
+            "updatedAt": "<timestamp>",
+            "version": "1",
+          },
+          {
+            "canDelete": true,
+            "canUpdate": true,
+            "createdAt": "<timestamp>",
+            "createdBy": {
+              "id": "acct-golden",
+              "name": "Golden",
+            },
+            "description": "",
+            "distributionMode": "definition_only",
+            "icon": "",
+            "id": "shared-golden-dispatch",
+            "name": "Golden shared dispatch",
+            "owner": {
+              "id": "acct-golden",
+              "name": "Golden",
+              "type": "user",
+            },
+            "publicShare": null,
+            "scopes": [
+              "directory",
+            ],
+            "shareScope": "private",
+            "triggerTypes": [
+              "dispatch",
+            ],
+            "updatedAt": "<timestamp>",
+            "version": "1",
+          },
+        ],
+        "nextCursor": null,
+        "serverId": "canopy-cloud",
+      },
+      "success": true,
+    },
+  },
+  "sharedListPlanReady": {
+    "cloudRequests": [
+      "GET /api/v1/desktop-app/pipelines?triggerType=plan_ready&shareScope=private",
+    ],
+    "result": {
+      "data": {
+        "data": [
+          {
+            "canDelete": true,
+            "canUpdate": true,
+            "createdAt": "<timestamp>",
+            "createdBy": {
+              "id": "acct-golden",
+              "name": "Golden",
+            },
+            "description": "",
+            "distributionMode": "definition_only",
+            "icon": "",
+            "id": "shared-golden-1",
+            "name": "Golden shared plan review",
+            "owner": {
+              "id": "acct-golden",
+              "name": "Golden",
+              "type": "user",
+            },
+            "publicShare": null,
+            "scopes": [
+              "worktree",
+            ],
+            "shareScope": "private",
+            "triggerTypes": [
+              "plan_ready",
+            ],
+            "updatedAt": "<timestamp>",
+            "version": "1",
+          },
+        ],
+        "nextCursor": null,
+        "serverId": "canopy-cloud",
+      },
+      "success": true,
+    },
+  },
+}
+`;
+
+exports[`desktop IPC refuses invalid definitions on save without persisting them 1`] = `
+{
+  "listAfter": {
+    "cloudRequests": [],
+    "result": {
+      "data": [
+        {
+          "createdAt": "<timestamp>",
+          "description": "Bundled golden fixture",
+          "filename": "golden-review.yaml",
+          "icon": "🔎",
+          "id": "bundled-golden-review",
+          "name": "Golden bundled review",
+          "readonly": true,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "bundled",
+          "stepCount": 1,
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        {
+          "createdAt": "<timestamp>",
+          "description": "User golden fixture",
+          "filename": "<user-pipeline-id>.yaml",
+          "icon": "",
+          "id": "<user-pipeline-id>",
+          "name": "Golden user pipeline",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "directory",
+          ],
+          "source": "user",
+          "stepCount": 2,
+          "triggerTypes": [
+            "dispatch",
+            "plan_ready",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        {
+          "createdAt": "<timestamp>",
+          "description": "",
+          "filename": "<uuid>.yaml",
+          "icon": "",
+          "id": "<uuid>",
+          "name": "Golden refused",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "directory",
+          ],
+          "source": "user",
+          "stepCount": 0,
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        {
+          "createdAt": "<timestamp>",
+          "curatedContentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+          "curatedKey": "golden-curated",
+          "curatedRevision": 1,
+          "description": "Curated golden fixture",
+          "filename": "golden-curated.yaml",
+          "icon": "🧭",
+          "id": "curated:golden-curated",
+          "name": "Golden curated triage",
+          "readonly": true,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "curated",
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+      ],
+      "success": true,
+    },
+  },
+  "noJobs": {
+    "cloudRequests": [],
+    "result": {
+      "data": {
+        "createdAt": "<timestamp>",
+        "description": "",
+        "filename": "<uuid>.yaml",
+        "icon": "",
+        "id": "<uuid>",
+        "name": "Golden refused",
+        "readonly": false,
+        "revision": 1,
+        "scopes": [
+          "directory",
+        ],
+        "source": "user",
+        "stepCount": 0,
+        "triggerTypes": [
+          "dispatch",
+        ],
+        "updatedAt": "<timestamp>",
+      },
+      "success": true,
+    },
+  },
+  "notAPipeline": {
+    "cloudRequests": [],
+    "result": {
+      "error": "Pipeline definition must include string \`name\`, valid \`on\`, and object \`jobs\` fields",
+      "success": false,
+    },
+  },
+  "unknownDependency": {
+    "cloudRequests": [],
+    "result": {
+      "error": "Unknown job dependency "missing"",
+      "success": false,
+    },
+  },
+}
+`;

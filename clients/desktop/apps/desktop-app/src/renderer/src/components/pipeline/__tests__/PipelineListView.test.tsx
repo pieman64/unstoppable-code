@@ -56,15 +56,21 @@ const curatedSummary: CuratedPipelineSummary = {
   docsUrl: null,
 };
 
-const resolveSharedPipelineUrl = jest.fn(() =>
-  Promise.resolve('https://cloud.example.test/share/pipelines/public-1'),
+const resolveSharedPipelineUrl = jest.fn<
+  Promise<string | null>,
+  [sharePath: string]
+>(
+  (): Promise<string | null> =>
+    Promise.resolve('https://cloud.example.test/share/pipelines/public-1'),
 );
 jest.mock('@/lib/share-links', () => ({
   resolveSharedPipelineUrl: (sharePath: string): Promise<string | null> =>
     resolveSharedPipelineUrl(sharePath),
 }));
 
-const copyTextToClipboard = jest.fn(() => Promise.resolve(true));
+const copyTextToClipboard = jest.fn<Promise<boolean>, [value: string]>(
+  (): Promise<boolean> => Promise.resolve(true),
+);
 jest.mock('@/lib/clipboard', () => ({
   copyTextToClipboard: (value: string): Promise<boolean> =>
     copyTextToClipboard(value),
@@ -101,10 +107,6 @@ function makeSharedState(): SharedCloudListState {
     rows: [],
     nextCursor: null,
     error: null,
-    refreshShared: jest.fn(() => Promise.resolve()),
-    loadMoreShared: jest.fn(() => Promise.resolve()),
-    setFilters: jest.fn(),
-    removeSharedRow: jest.fn(),
   };
 }
 
@@ -222,7 +224,7 @@ describe('PipelineListView', () => {
     const main = container.querySelector<HTMLButtonElement>(
       '[data-testid="pipeline-create-new"]',
     );
-    expect(main?.textContent).toBe('New pipeline');
+    expect(main?.textContent).toBe('New workflow');
     await act(async () => {
       main?.click();
       await Promise.resolve();
@@ -550,7 +552,13 @@ describe('PipelineListView', () => {
       '[data-testid="pipeline-scope-worktree-pipeline"]',
     );
     const scopeButton = scopeCell?.querySelector('button');
-    const tooltip = scopeCell?.querySelector('[role="tooltip"]');
+    // The shared tooltip renders into a portal once the badge is hovered.
+    act(() => {
+      scopeButton?.dispatchEvent(
+        new MouseEvent('mouseover', { bubbles: true }),
+      );
+    });
+    const tooltip = document.body.querySelector('[role="tooltip"]');
 
     expect(scopeButton?.className).not.toContain('cursor-help');
     expect(scopeButton?.getAttribute('aria-describedby')).toBe(
@@ -559,8 +567,6 @@ describe('PipelineListView', () => {
     expect(scopeButton?.getAttribute('aria-label')).toBe(
       `Worktree: Runs against a ${brandText.appName} project worktree.`,
     );
-    expect(tooltip?.className).toContain('group-hover/scope:flex');
-    expect(tooltip?.className).toContain('group-focus-within/scope:flex');
     expect(tooltip?.textContent).toContain(
       `Runs against a ${brandText.appName} project worktree.`,
     );
@@ -675,7 +681,7 @@ describe('PipelineListView', () => {
     });
     expect(container.querySelectorAll('table')).toHaveLength(1);
     expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
-    expect(container.textContent).toContain('2 loaded pipelines');
+    expect(container.textContent).toContain('2 loaded workflows');
     expect(
       container.querySelector(
         '[data-testid="pipeline-row-curated:pipeline-1"]',
@@ -852,7 +858,7 @@ describe('PipelineListView', () => {
       const toggle = document.querySelector<HTMLButtonElement>(
         '[data-testid="curated-pipeline-toggle-enabled"]',
       );
-      expect(toggle?.textContent).toBe('Enable pipeline');
+      expect(toggle?.textContent).toBe('Enable workflow');
       await act(() => Promise.resolve(toggle?.click()));
       expect(onToggleEnabled).toHaveBeenCalledWith('curated:pipeline-1', true);
 
@@ -860,7 +866,7 @@ describe('PipelineListView', () => {
       const enabledToggle = document.querySelector<HTMLButtonElement>(
         '[data-testid="curated-pipeline-toggle-enabled"]',
       );
-      expect(enabledToggle?.textContent).toBe('Disable pipeline');
+      expect(enabledToggle?.textContent).toBe('Disable workflow');
       await act(() => Promise.resolve(enabledToggle?.click()));
       expect(onToggleEnabled).toHaveBeenLastCalledWith(
         'curated:pipeline-1',

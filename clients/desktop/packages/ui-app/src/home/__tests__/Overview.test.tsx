@@ -71,14 +71,14 @@ describe('Overview', () => {
     expect(out).toContain('data-testid="overview-unread-pipelines-empty"');
   });
 
-  it('uses the shared smaller title scale in the full-page layout', () => {
+  it('opens the full-page layout with the shared page header', () => {
     mockState = overview(null);
     const out = renderToString(
       <Overview layout="page" onSelectWorktree={(): void => {}} />,
     );
 
-    expect(out).toContain('text-xl font-semibold fg-primary');
-    expect(out).toContain('mb-6 space-y-2 pt-12');
+    expect(out).toContain('data-testid="page-header"');
+    expect(out).toContain('data-testid="page-header-title">Overview</h1>');
     expect(out).not.toContain('text-2xl font-semibold fg-primary');
   });
 

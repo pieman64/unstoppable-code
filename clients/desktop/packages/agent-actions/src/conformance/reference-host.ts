@@ -14,6 +14,10 @@ import type {
   CoreWorktree,
 } from '@canopy/protocol/canopy-core';
 import type { ModelCatalogOption } from '@canopy/protocol/models';
+import { createTranscriptReadActionFamily } from '../families/transcript-read/dispatch';
+import { createConformanceTranscriptStore } from './transcript-store';
+import type { AgentTranscriptReadPort } from '../port/transcript-read-port';
+import { TRANSCRIPT_READ_ACTION_TYPES } from '../families/transcript-read/actions';
 import { ENVIRONMENT_ACTION_TYPES } from '../families/environment/actions';
 import {
   createEnvironmentActionFamily,
@@ -57,6 +61,7 @@ export const REFERENCE_HOST_CAPABILITIES: AgentActionHostCapabilities = {
   executionScope: 'worktree',
   actionTypes: [
     ...ENVIRONMENT_ACTION_TYPES,
+    ...TRANSCRIPT_READ_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES,
   ],
@@ -105,6 +110,28 @@ export function createReferenceHost(
 ): AgentConformanceHost<null> {
   const capabilities = options.capabilities ?? REFERENCE_HOST_CAPABILITIES;
   const workspaceId = world.workspace.workspaceId;
+  const transcripts = createConformanceTranscriptStore(world);
+  const transcriptRead: AgentTranscriptReadPort<null> = {
+    authorizeOwner: (target, call) => {
+      const chat = world.chats.find((row) => row.chatId === target.chatId);
+      if (!chat || call.scope?.workspaceId !== workspaceId)
+        throw new AgentPortError('not_found', 'Transcript owner not found.');
+      return Promise.resolve({
+        scope: {
+          workspaceId,
+          worktreeId: chat.worktreeId,
+          chatId: chat.chatId,
+        },
+        ...(chat.state === 'archived'
+          ? { archivedContainerId: chat.worktreeId }
+          : {}),
+      });
+    },
+    page: (input, owner) => Promise.resolve(transcripts.page(input, owner)),
+    content: (input, owner) =>
+      Promise.resolve(transcripts.content(input, owner)),
+    blocks: (input, owner) => Promise.resolve(transcripts.blocks(input, owner)),
+  };
   const worktrees: ReferenceWorktree[] = [
     ...world.worktrees.map((worktree) => ({ ...worktree, workspaceId })),
     {
@@ -500,7 +527,12 @@ export function createReferenceHost(
   const surface = createAgentActionSurface<null, never>({
     brand: world.brand,
     capabilities,
-    families: [family, experiments, settings],
+    families: [
+      family,
+      createTranscriptReadActionFamily({ port: transcriptRead }),
+      experiments,
+      settings,
+    ],
     ...(offersWatchers
       ? {
           watchers: createChatWatcherTools({
@@ -560,6 +592,7 @@ export function createReferenceHost(
       };
     },
     control: {
+      transcriptReadCount: (): number => transcripts.readCount(),
       archiveChat: (chatId): Promise<void> => {
         const chat = chats.find((entry) => entry.chatId === chatId);
         if (chat) chat.state = 'archived';

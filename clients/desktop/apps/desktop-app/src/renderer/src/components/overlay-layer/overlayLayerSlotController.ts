@@ -22,10 +22,10 @@ const SWIPE_TRANSITION_MS = 450;
 const LEAVING_SELECTOR = '[data-ending-style]';
 const OVERLAY_SHADOW_ATTRIBUTES = [
   'data-expanded',
-  'data-swiping',
-  'data-wheel-swiping',
+  'data-swipe-dragging',
+  'data-swipe-settling',
+  'data-swipe-flung',
   'data-ending-style',
-  'data-swipe-direction',
 ];
 
 interface OverlayRect {
@@ -363,7 +363,7 @@ export class OverlayLayerSlotController {
       this.mainWindow.innerHeight,
       this.hasAttributeInContent('[data-expanded]'),
       this.hasAttributeInContent(
-        '[data-swiping], [data-wheel-swiping], [data-ending-style][data-swipe-direction]',
+        '[data-swipe-dragging], [data-swipe-settling], [data-swipe-flung]',
       ),
     );
   }

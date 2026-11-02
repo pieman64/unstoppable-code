@@ -3,12 +3,17 @@ import { dispatchDesktopScriptPreferences } from '../agent-actions/desktop-scrip
 import type { z } from 'zod/v4';
 import { executeShowCapabilities } from '../canopy-tools/show-capabilities';
 import {
+  appAdvisorPipelinesActionCatalog,
   searchAgentActionCatalog,
   installedItemActionCatalog,
   experimentActionCatalog,
   settingsActionCatalog,
   type AgentActionCatalogEntry,
+  type AppAdvisorPipelineRunAction,
+  type PipelineRunAction,
 } from '@canopy/agent-actions';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import { validateId } from '../lib/validation';
 import { executeDesktopAgentActionTool } from '../agent-actions/desktop-surface';
 import { startSplitAgentSchema } from '../canopy-tools/definitions';
 import { dispatchDesktopEditorSetupReview } from '../agent-actions/desktop-editor-setup-port';
@@ -22,6 +27,7 @@ import {
 } from '../canopy-tools/local-watcher-definitions';
 import type { AppAdvisorToolKey } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { searchAppAdvisorActions } from '@canopy/desktop-shared/lib/app-advisor-actions';
+import { transcriptReadActionCatalog } from '@canopy/agent-actions';
 import {
   executeCanopyInjectedTool,
   type CanopyInjectedToolContext,
@@ -54,7 +60,7 @@ import { getFeatureFlagService } from '../feature-flags';
 import { readWatcherOutputPreview } from './local-watcher-output';
 
 export const APP_ADVISOR_START_FORKED_AGENT_DESCRIPTION =
-  'Start an independent App Advisor chat in this same Work Entry from the current mid-turn context and settings. The source continues running; the child receives followUpInstruction privately and a visible Continue message. This does not create a branch or provide child inspection or automatic result delivery.';
+  'Start an independent Orchestrator chat in this same Work Entry from the current mid-turn context and settings. The source continues running; the child receives followUpInstruction privately and a visible Continue message. This does not create a branch or provide child inspection or automatic result delivery.';
 
 /**
  * The messages of a refused action. A refused union reports the issues of
@@ -100,7 +106,41 @@ function sharedEngineActionCatalog(): readonly AgentActionCatalogEntry[] {
     ...installedItemActionCatalog(),
     ...experimentActionCatalog(),
     ...settingsActionCatalog(),
+    ...appAdvisorPipelinesActionCatalog(),
   ];
+}
+
+/**
+ * App Advisor's `pipeline.run` as the shared action. A run in a task names
+ * it with `projectId` and `worktreeId`; main validates the pair and passes it
+ * as trusted context, separate from the Advisor chat that starts the run.
+ */
+function appAdvisorPipelineRunDispatch(
+  action: AppAdvisorPipelineRunAction,
+  runtime: AppAdvisorToolRuntime,
+):
+  | { action: PipelineRunAction; runtime: AppAdvisorToolRuntime }
+  | { error: string } {
+  const { projectId, worktreeId, ...shared } = action;
+  if (projectId === undefined || worktreeId === undefined)
+    return { action: shared, runtime };
+  try {
+    validateId(projectId, 'projectId');
+    validateId(worktreeId, 'worktreeId');
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  if (projectId === APP_ADVISOR_PROJECT_ID)
+    return {
+      error: 'App Advisor ids do not identify a task. Pass a real task.',
+    };
+  return {
+    action: shared,
+    runtime: {
+      ...runtime,
+      appAdvisorPipelineTarget: { projectId, worktreeId },
+    },
+  };
 }
 
 function jsonText(value: unknown): string {
@@ -367,7 +407,7 @@ export async function executeAppAdvisorTool(
   if (canonicalKey === 'start_forked_agent') {
     if (runtime.deferredToolsRuntime?.providerType === 'cursor') {
       return {
-        text: 'Cursor App Advisor chats cannot fork provider context.',
+        text: 'Cursor Orchestrator chats cannot fork provider context.',
         isError: true,
       };
     }
@@ -375,7 +415,7 @@ export async function executeAppAdvisorTool(
     if (!parsed.success) return invalidArguments('StartForkedAgent');
     if (!runtime.startForkedAgent) {
       return {
-        text: 'App Advisor fork runtime is unavailable.',
+        text: 'Orchestrator fork runtime is unavailable.',
         isError: true,
       };
     }
@@ -552,17 +592,20 @@ export async function executeAppAdvisorTool(
         sharedEngineActionCatalog(),
         parsed.data,
       );
-      const existing = searchAppAdvisorActions({
-        ...parsed.data,
-        availablePages: state?.snapshot.availablePages,
-        // Action availability accepts boolean gates, not numeric rollout values.
-        featureFlags: Object.fromEntries(
-          Object.entries(featureFlags).map(([key, value]) => [
-            key,
-            value === true,
-          ]),
-        ),
-      });
+      const existing = searchAppAdvisorActions(
+        {
+          ...parsed.data,
+          availablePages: state?.snapshot.availablePages,
+          // Action availability accepts boolean gates, not numeric rollout values.
+          featureFlags: Object.fromEntries(
+            Object.entries(featureFlags).map(([key, value]) => [
+              key,
+              value === true,
+            ]),
+          ),
+        },
+        transcriptReadActionCatalog(),
+      );
       const actions = [...sharedActions.actions, ...existing.actions].slice(
         0,
         parsed.data.limit ?? 12,
@@ -606,6 +649,28 @@ export async function executeAppAdvisorTool(
           runtime,
           context,
         );
+      if (parsed.data.action.type === 'pipeline.run') {
+        const dispatch = appAdvisorPipelineRunDispatch(
+          parsed.data.action,
+          runtime,
+        );
+        if ('error' in dispatch) {
+          return {
+            text: jsonText({
+              requestId: getDispatchRequestId(context),
+              ok: false,
+              error: { code: 'invalid_target', message: dispatch.error },
+            }),
+            isError: true,
+          };
+        }
+        return executeDesktopAgentActionTool(
+          'dispatch_action',
+          { action: dispatch.action },
+          dispatch.runtime,
+          context,
+        );
+      }
       const requestId = getDispatchRequestId(context);
       const scriptPreference = scriptPreferencesActionSchema.safeParse(
         parsed.data.action,

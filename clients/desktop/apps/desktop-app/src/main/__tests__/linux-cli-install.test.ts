@@ -5,6 +5,7 @@ jest.mock('node:fs/promises', () => {
 
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -165,6 +166,156 @@ describe('Linux complete per-user CLI install', () => {
       state: 'correct-symlink',
       managedPathEntry: path.join(home, '.local/bin'),
     });
+  });
+
+  it('persists current and outdated status across fresh services and package upgrades', async () => {
+    expect((await installer().install()).success).toBe(true);
+    expect((await installer().getStatus()).state).toBe('correct-symlink');
+    const old = await installedRoot();
+    await fs.rm(gui, { recursive: true });
+    // The installed CLI remains usable independently of the GUI package.
+    expect((await installer().getStatus()).state).toBe('correct-symlink');
+    await distribution('v2');
+    expect((await installer().getStatus()).state).toBe('outdated');
+    expect(await installedRoot()).toBe(old);
+    expect((await installer().install()).success).toBe(true);
+    expect((await installer().getStatus()).state).toBe('correct-symlink');
+    expect(await installedRoot()).not.toBe(old);
+    expect(await fs.readFile(path.join(old, 'LICENSE'), 'utf8')).toBe(
+      'license-v1',
+    );
+  });
+
+  it('detects a companion-only package upgrade and can remove an outdated launcher', async () => {
+    expect((await installer().install()).success).toBe(true);
+    await fs.writeFile(path.join(gui, 'resources/bin/rg'), 'updated-rg');
+    expect((await installer().getStatus()).state).toBe('outdated');
+    expect((await installer().uninstall()).success).toBe(true);
+    expect((await installer().getStatus()).state).toBe('missing');
+  });
+
+  it('keeps the published version when the package changes during an update', async () => {
+    expect((await installer().install()).success).toBe(true);
+    const old = await installedRoot();
+    await fs.rm(gui, { recursive: true });
+    await distribution('v2');
+    const original = fs.open;
+    let changed = false;
+    jest
+      .spyOn(fs, 'open')
+      .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        if (
+          !changed &&
+          String(args[0]) ===
+            path.join(path.dirname(bundledCliPath), 'LICENSE') &&
+          args[1] === (constants.O_RDONLY | constants.O_NOFOLLOW)
+        ) {
+          changed = true;
+          await fs.writeFile(
+            path.join(gui, 'resources/bin/rg'),
+            'mid-copy-package-change',
+          );
+        }
+        return original(...args);
+      });
+    expect(await installer().install()).toEqual({
+      success: false,
+      error: 'CLI package changed during installation. Try again.',
+    });
+    expect(await installedRoot()).toBe(old);
+    expect((await installer().getStatus()).state).toBe('outdated');
+  });
+
+  it('removes an owned launcher even when the GUI package is incomplete', async () => {
+    expect((await installer().install()).success).toBe(true);
+    await fs.unlink(path.join(gui, 'resources/bin/rg'));
+    expect(await installer().uninstall()).toEqual({
+      success: true,
+      error: null,
+    });
+    expect((await installer().getStatus()).state).toBe('missing');
+  });
+
+  it('detects same-size package replacements even when build mtimes are preserved', async () => {
+    const tool = path.join(gui, 'resources/bin/rg');
+    const timestamp = 1_700_000_000;
+    await fs.utimes(tool, timestamp, timestamp);
+    expect((await installer().install()).success).toBe(true);
+    await fs.writeFile(tool, 'rg-v2');
+    await fs.utimes(tool, timestamp, timestamp);
+    expect((await installer().getStatus()).state).toBe('outdated');
+  });
+
+  it.each([
+    `resources/cli/${BRAND.cliName}`,
+    'resources/bin/rg',
+    'resources/THIRD_PARTY_NOTICES.txt',
+    'resources/cli/resources/code-graph/parser.wasm',
+    'resources/cli/resources/code-graph/query.scm',
+    'resources/cli/node_modules/web-tree-sitter/index.js',
+    'resources/cli/node_modules/typescript/package.json',
+  ])(
+    'keeps an owned CLI removable when a package asset is truncated (%s)',
+    async (asset) => {
+      expect((await installer().install()).success).toBe(true);
+      expect((await installer().getStatus()).state).toBe('correct-symlink');
+      await fs.truncate(path.join(gui, asset), 0);
+      expect((await installer().getStatus()).state).toBe('correct-symlink');
+      expect((await installer().install()).success).toBe(false);
+      expect((await installer().uninstall()).success).toBe(true);
+      expect((await installer().getStatus()).state).toBe('missing');
+    },
+  );
+
+  it('keeps installed status across source metadata changes unrelated to package contents', async () => {
+    expect((await installer().install()).success).toBe(true);
+    await fs.chmod(bundledCliPath, 0o750);
+    await fs.chmod(path.dirname(bundledCliPath), 0o750);
+    expect((await installer().getStatus()).state).toBe('correct-symlink');
+  });
+
+  it.each([
+    'missing-tools',
+    'mixed-layout',
+    'source-symlink',
+    'reserved-receipt',
+  ])(
+    'keeps independent status and removal usable with an invalid GUI (%s)',
+    async (kind) => {
+      expect((await installer().install()).success).toBe(true);
+      if (kind === 'missing-tools')
+        await fs.rm(path.join(gui, 'resources/bin'), { recursive: true });
+      if (kind === 'mixed-layout')
+        await write(
+          path.join(path.dirname(bundledCliPath), 'rg'),
+          'partial-tool',
+          0o755,
+        );
+      if (kind === 'source-symlink') {
+        const source = path.join(gui, 'resources/bin/rg');
+        await fs.unlink(source);
+        await fs.symlink(path.join(gui, 'resources/bin/gh'), source);
+      }
+      if (kind === 'reserved-receipt')
+        await write(
+          path.join(path.dirname(bundledCliPath), '.cli-install.json'),
+          '{}',
+        );
+      expect((await installer().getStatus()).state).toBe('correct-symlink');
+      expect((await installer().install()).success).toBe(false);
+      expect((await installer().uninstall()).success).toBe(true);
+    },
+  );
+
+  it('offers a safe refresh for an older receipt without package identity', async () => {
+    expect((await installer().install()).success).toBe(true);
+    await fs.writeFile(
+      path.join(await installedRoot(), '.cli-install.json'),
+      JSON.stringify({ version: 1, cliName: BRAND.cliName }),
+    );
+    expect((await installer().getStatus()).state).toBe('outdated');
+    expect((await installer().install()).success).toBe(true);
+    expect((await installer().getStatus()).state).toBe('correct-symlink');
   });
 
   it('installs an extracted flat archive and honors absolute XDG locations with spaces', async () => {
@@ -354,7 +505,9 @@ describe('Linux complete per-user CLI install', () => {
         .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
           if (
             String(args[0]).endsWith(member) &&
-            (member !== 'codex' || args[1] === 'wx')
+            (member === 'codex'
+              ? args[1] === 'wx'
+              : args[1] === (constants.O_RDONLY | constants.O_NOFOLLOW))
           ) {
             if (member === 'codex') {
               const partial = await original(...args);
@@ -411,7 +564,9 @@ describe('Linux complete per-user CLI install', () => {
       .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
         if (
           !introduced &&
-          String(args[0]) === path.join(path.dirname(bundledCliPath), 'LICENSE')
+          String(args[0]) ===
+            path.join(path.dirname(bundledCliPath), 'LICENSE') &&
+          args[1] === (constants.O_RDONLY | constants.O_NOFOLLOW)
         ) {
           introduced = true;
           await write(launcher, 'racing unrelated command');

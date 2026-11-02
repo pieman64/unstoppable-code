@@ -27,6 +27,10 @@ export { seedOrphanedStreamingTurn } from './seedOrphanedStreamingTurn.mjs';
 export { seedUsageLimitedChats } from './seedUsageLimitedChats.mjs';
 export { injectChatEvent } from './injectChatEvent.mjs';
 export {
+  publishTurnLifecycle,
+  turnEventInjector,
+} from './publishTurnLifecycle.mjs';
+export {
   armClaudeQueryPrelude,
   readClaudeQueryPreludeState,
   resetClaudeQueryPreludes,

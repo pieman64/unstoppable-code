@@ -477,6 +477,21 @@ async function runCodeGraphBuild(
         });
         return;
       }
+      if (
+        persistedFingerprint.schemaVersion !== null &&
+        persistedFingerprint.schemaVersion > CODE_GRAPH_SCHEMA_VERSION
+      ) {
+        // A newer app version wrote this graph. Its build worker would refuse
+        // the schema, and rebuilding over it would discard that version's data.
+        recordCodeGraphRefreshTelemetry({
+          source,
+          outcome: 'fingerprint-error',
+          fingerprintDurationMs: Date.now() - fingerprintStartedAtMs,
+          metadataReadDurationMs: persistedFingerprint.durationMs,
+          metadataCacheHit: persistedFingerprint.cacheHit,
+        });
+        return;
+      }
       observedFingerprintMs = Date.now() - fingerprintStartedAtMs;
       // Derived analysis left pending by a worker that was stopped before it
       // finished (app quit, timeout) needs one more build, which publishes

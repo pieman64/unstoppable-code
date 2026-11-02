@@ -7,6 +7,7 @@ import {
 } from './calendarDateUtils';
 import {
   calendarEventChipAttributes,
+  calendarEventInteractionClasses,
   calendarEventSelectedClasses,
   calendarEventToneClasses,
   formatEventTime,
@@ -71,11 +72,11 @@ function MonthEventChip({
             : undefined
         }
         disabled={!clickable}
-        className={`flex w-full items-center gap-1 overflow-hidden rounded border px-1 py-0.5 text-left text-3xs leading-none transition ${calendarEventToneClasses(
+        className={`flex w-full items-center gap-1 overflow-hidden rounded border px-1 py-0.5 text-left text-3xs leading-none transition-colors ${calendarEventToneClasses(
           event,
-        )} ${calendarEventSelectedClasses(selected)} ${
-          clickable ? 'cursor-pointer hover:brightness-125' : 'cursor-default'
-        }`}
+        )} ${calendarEventSelectedClasses(
+          selected,
+        )} ${calendarEventInteractionClasses(event)}`}
       >
         <span className="shrink-0 tabular-nums opacity-80">
           {formatEventTime(group.at)}
@@ -181,7 +182,7 @@ export function MonthGrid({
                     onAnchorDateChange(day);
                     onCalendarViewChange('day');
                   }}
-                  className="focus-ring rounded px-1 py-0.5 text-left text-3xs font-medium fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+                  className="focus-ring rounded px-1 py-0.5 text-left text-3xs font-medium fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
                 >
                   +{moreCount} more
                 </button>

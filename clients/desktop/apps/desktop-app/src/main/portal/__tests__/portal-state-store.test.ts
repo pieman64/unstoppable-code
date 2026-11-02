@@ -7,7 +7,9 @@ const mockGetPath = jest.fn();
 
 jest.mock('electron', () => ({
   app: {
-    getPath: mockGetPath,
+    get getPath(): typeof mockGetPath {
+      return mockGetPath;
+    },
   },
 }));
 

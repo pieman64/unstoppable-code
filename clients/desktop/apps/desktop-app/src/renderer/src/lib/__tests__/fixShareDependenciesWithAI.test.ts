@@ -518,8 +518,10 @@ it.each(['worktree', 'cowork'] as const)(
     expect(sendMessage.mock.calls[1]?.[4]).toEqual(
       expect.objectContaining({
         userMessageId: (
-          sendMessage.mock.calls[0]?.[4] as { userMessageId: string }
-        ).userMessageId,
+          sendMessage.mock.calls[0]?.[4] as
+            | { userMessageId: string }
+            | undefined
+        )?.userMessageId,
       }),
     );
     expect(createTab).toHaveBeenCalledTimes(kind === 'worktree' ? 1 : 0);
@@ -579,8 +581,11 @@ it.each(['cowork', 'worktree'] as const)(
     const firstId =
       kind === 'cowork'
         ? create.mock.calls[0]?.[0].recovery?.userMessageId
-        : (sendMessage.mock.calls[0]?.[4] as { userMessageId: string })
-            .userMessageId;
+        : (
+            sendMessage.mock.calls[0]?.[4] as
+              | { userMessageId: string }
+              | undefined
+          )?.userMessageId;
     const newer = {
       ...launch,
       prompt: 'A different selected team and analysis snapshot',
@@ -599,8 +604,10 @@ it.each(['cowork', 'worktree'] as const)(
       expect.objectContaining({ throwOnDispatchFailure: true }),
     );
     const secondId = (
-      sendMessage.mock.calls.at(-1)?.[4] as { userMessageId: string }
-    ).userMessageId;
+      sendMessage.mock.calls.at(-1)?.[4] as
+        | { userMessageId: string }
+        | undefined
+    )?.userMessageId;
     expect(typeof secondId).toBe('string');
     expect(secondId).not.toBe(firstId);
     const sentCount = sendMessage.mock.calls.length;

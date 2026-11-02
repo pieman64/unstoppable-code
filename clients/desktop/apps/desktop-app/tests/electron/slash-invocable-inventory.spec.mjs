@@ -534,9 +534,10 @@ test('a typed slash trigger survives the Cursor switch committing underneath it'
     await expect(menu).toBeVisible();
     await composer.pressSequentially(COMMAND_NAME);
     const row = menu.getByTestId(`chat-input-capability-${COMMAND_NAME}`);
-    // The menu opened on the pre-switch rows: Claude's cached `/say-hi`, not
-    // the Cursor projection, so the switch really lands underneath it.
-    await expect(row).toContainText(`/${COMMAND_NAME}`);
+    // The menu opened on the pre-switch rows: Claude's cached `/say-hi`
+    // (labelled with its plugin, CAN-5271), not the Cursor projection, so the
+    // switch really lands underneath it.
+    await expect(row).toContainText(`/${PLUGIN_NAME}:${COMMAND_NAME}`);
     await expect(row).not.toContainText(`/${PLUGIN_NAME}-${COMMAND_NAME}`);
     await releasePendingModel(electronApp);
     await expect

@@ -63,7 +63,7 @@ test('pipeline popover counts entries and scrolls a large run list', async () =>
 
     // Header names the status and counts the runs behind it.
     const header = popover.getByTestId('pipeline-status-popover-header');
-    await expect(header).toHaveText(`Pipelines Completed (${RUN_COUNT})`);
+    await expect(header).toHaveText(`Workflows Completed (${RUN_COUNT})`);
 
     // Every run is mounted, but the list is bounded to roughly three rows.
     const list = popover.getByTestId('pipeline-status-popover-list');
@@ -92,7 +92,7 @@ test('pipeline popover counts entries and scrolls a large run list', async () =>
 
     // The header does not scroll away with the list.
     await expect(header).toBeVisible();
-    await expect(header).toHaveText(`Pipelines Completed (${RUN_COUNT})`);
+    await expect(header).toHaveText(`Workflows Completed (${RUN_COUNT})`);
     const headerBox = await header.boundingBox();
     const listBox = await list.boundingBox();
     expect(headerBox.y + headerBox.height).toBeLessThanOrEqual(listBox.y + 1);

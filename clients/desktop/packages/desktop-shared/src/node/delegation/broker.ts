@@ -1,6 +1,96 @@
+import { DELEGATION_APPLY_FILE_BOUND } from './apply-limits';
+import { DELEGATION_STORAGE_RECORD_MAX_BYTES } from './storage';
+import {
+  prepareCardPublication,
+  classifyCardDescriptor,
+  materializeCardDraft,
+  setCardPromptAmended,
+} from './card-publication';
+import { CardPublicationQueue } from './card-publication-queue';
+export { DELEGATION_APPLY_FILE_BOUND };
+/** Internal retained-generation reader; not a watch request or public DTO. */
+interface CapturedDelegationGeneration {
+  readonly delegationId: string;
+  readonly runGeneration: number;
+}
+import {
+  projectLegacyDelegateOutput,
+  projectRegistryDelegateOutput,
+  type RegistryBodyRead,
+  type RegistryOutputContext,
+} from './output-page';
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeManagedDelegationMaxDepth } from '@canopy/protocol/delegation/discovery';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  ReceiptQuarantine,
+  createChatReceiptLock,
+  classifyRegistryLookup,
+  receiptNotAdmitted,
+  foldReceiptActivity,
+  planReceiptFits,
+  receiptPins,
+  selectReceiptEvictee,
+  rollOverReceipt,
+  type ReceiptNotAdmitted,
+} from './broker-receipts';
+import {
+  DEFAULT_MANAGED_DELEGATION_LIFETIME_LIMIT,
+  DELEGATION_STORAGE_RECORD_LIMIT,
+  normalizeManagedDelegationMaxDepth,
+} from '@canopy/protocol/delegation/discovery';
 import { hasValidDelegationLineage, type AgentRunRequest } from './types';
+import type {
+  DelegationTranscriptPort,
+  DelegationTranscriptTarget,
+  DelegationTranscriptSettleAnswer,
+  DelegationTranscriptResultEntry,
+  DelegationTranscriptReceiptIdentity,
+  DelegationTranscriptReceiptEntry,
+  SettledDelegationErrorCode,
+} from './transcript-port';
+import {
+  captureSettlementAnswer,
+  v3StatePreview,
+  v3SettlementRequest,
+  type V3SettlementContractInput,
+} from './broker-settlement-contract';
+import {
+  settleV3Generation,
+  delegationReceiptAckToResult,
+} from './broker-settlement';
+import { delegationTranscriptSettlementDigest } from './settlement-identity';
+import type {
+  DelegationWatchBootstrapResolver,
+  DelegationGenerationOutcome,
+} from './watch-resolver';
+import {
+  handoffV3StopOutcome,
+  readV3StopOutcome,
+  type V3StopOutcomeDependencies,
+} from './broker-stop-outcome';
+import {
+  fitDelegationStopReceipt,
+  fitDelegationStopOutcomeReceipt,
+} from './receipt-reply';
+import {
+  fitDelegationReceiptAck,
+  fitDelegationReceiptFinal,
+  completeDelegationCommandReceipt,
+  projectDelegationCommandReplay,
+} from './receipt-reply';
+import {
+  decodeStoredDelegationV3,
+  legacyPrefixView,
+  currentStopPolicy,
+  delegationSettlementKey,
+  delegationStopRequestHash,
+  nextV3ReceiptAdmissionTime,
+  type StoredDelegationV3,
+  type StoredCardPublication,
+  type V3CommandReceiptEntry,
+  type V3StopReceiptEntry,
+} from './record-v3';
+import { DelegationReadMetadataError } from './record-read-metadata';
 import {
   DELEGATION_CHILD_ID_LIMIT,
   DELEGATION_NOT_DESCENDANT_ERROR,
@@ -22,9 +112,6 @@ import {
   type DelegateSettledStatus,
   type GetDelegateOutputRequest,
   type GetDelegateOutputValue,
-  type WatchDelegatesRequest,
-  type WatchDelegatesValue,
-  type DelegateWatchTarget,
   type RequestSteeringRequest,
   type DelegationApplyFailure,
   type DelegationListFilter,
@@ -159,13 +246,6 @@ export interface DelegationApplyJournal {
 /** Requests one native file-helper session serves (`file-broker.c`). */
 export const DELEGATION_FILE_SESSION_REQUESTS = 8192;
 
-/**
- * Files one apply may change, journal, record as applied, or lease. The
- * parent's file session reads each file to plan, rereads it before writing
- * and writes it: at most three requests a file, within one session.
- */
-export const DELEGATION_APPLY_FILE_BOUND = 2048;
-
 /** The version a receipt or lease records for file content: the sha256 of
  * its JSON form, so a missing file (null) has a version too. */
 export function delegationContentVersion(content: string | null): string {
@@ -230,7 +310,7 @@ export interface StoredDelegationAdmission {
   readonly grantedAt?: number;
 }
 
-export interface StoredDelegation {
+export interface StoredDelegationLegacy {
   readonly depth?: number;
   readonly parentDelegationId?: string;
   readonly parentRunGeneration?: number;
@@ -293,11 +373,106 @@ export interface StoredDelegation {
   readonly delivery: DelegationDeliveryState;
 }
 
+export type StoredDelegation = StoredDelegationLegacy | StoredDelegationV3;
+
+/** Mutable legacy arrays never become current stream state. */
+function legacyArrays(
+  record: StoredDelegation | undefined,
+): StoredDelegationLegacy | undefined {
+  return record?.version === 3 ? undefined : record;
+}
+
+/** Historical and stream command metadata for keyed replay only. */
+export function controlsForReplay(
+  record: StoredDelegation,
+): readonly StoredDelegationControl[] {
+  const prefix = legacyPrefixView(record);
+  const legacy = [
+    ...(prefix.controls ?? []),
+    ...(prefix.control ? [prefix.control] : []),
+  ];
+  if (record.version !== 3) return legacy;
+  return [
+    ...legacy,
+    ...(record.control ? [record.control] : []),
+    ...record.receipts.commandReceipts.flatMap(
+      (entry): StoredDelegationControl[] => {
+        if (entry.operation === 'stop' || entry.requestHash === null) return [];
+        return [
+          {
+            operationId: entry.operationId,
+            key: entry.key,
+            requestHash: entry.requestHash,
+            operation: entry.operation,
+            status: commandReplyStatus(entry.reply),
+          },
+        ];
+      },
+    ),
+  ];
+}
+
+function commandReplyStatus(
+  reply: V3CommandReceiptEntry['reply'],
+): StoredDelegationControl['status'] {
+  const ack = reply.ack;
+  return (
+    reply.final?.status ??
+    (ack.ok
+      ? (ack.snapshot.control?.status ??
+        (ack.outcome === 'completed' ? 'completed' : 'accepted'))
+      : 'failed')
+  );
+}
+
+function executionState(record: StoredDelegation): DelegationRunState {
+  return record.state;
+}
+
+function stopRequest(
+  record: StoredDelegation,
+): StoredDelegationLegacy['stopRequested'] {
+  const current = currentStopPolicy(record).stopRequested;
+  if (record.version !== 3) return record.stopRequested;
+  return current
+    ? {
+        operationId: current.operationId,
+        status: current.status,
+        ...(current.runGeneration == null
+          ? {}
+          : { runGeneration: current.runGeneration }),
+      }
+    : undefined;
+}
+
 export type StoredDelegateOutput = DelegateOutput & {
   readonly settledAt: number;
   /** Why this run stopped; host-only, for content-free watch exit reasons. */
   readonly stopReason?: DelegationStopReason;
 };
+
+/**
+ * Older builds read stored records with a strict schema, so the refusal and
+ * failure codes stay out of storage.
+ */
+function storedSteeringDelivery(
+  admission: ChatInputAdmission,
+): ChatInputAdmission {
+  if (admission.kind === 'accepted')
+    return {
+      kind: 'accepted',
+      attemptId: admission.attemptId,
+      ...(admission.providerTurnId
+        ? { providerTurnId: admission.providerTurnId }
+        : {}),
+    };
+  return {
+    kind: admission.kind,
+    attemptId: admission.attemptId,
+    reason: admission.reason,
+    ...(admission.fallback ? { fallback: admission.fallback } : {}),
+  };
+}
 
 function isSettledStatus(
   status: AgentDelegationSnapshot['status'],
@@ -374,7 +549,7 @@ export function delegationExitReason(
   record: StoredDelegation,
   runGeneration: number,
 ): DelegationStopReason | undefined {
-  const result = record.results?.find(
+  const result = legacyPrefixView(record).results?.find(
     (candidate) => candidate.runGeneration === runGeneration,
   );
   if (result?.stopReason) return result.stopReason;
@@ -382,7 +557,7 @@ export function delegationExitReason(
     return isSettledStatus(record.state.status)
       ? record.state.stopReason
       : undefined;
-  return record.history?.find(
+  return legacyPrefixView(record).history?.find(
     (transcript) => transcript.runGeneration === runGeneration,
   )?.snapshot.stopReason;
 }
@@ -391,11 +566,12 @@ export function delegationExitReason(
 export function normalizeStoredDelegationRecord(
   record: StoredDelegation,
 ): StoredDelegation {
-  const retained = [...(record.results ?? [])].sort(
+  if (record.version === 3) return record;
+  const retained = [...(legacyArrays(record)?.results ?? [])].sort(
     (left, right) => left.resultIndex - right.resultIndex,
   );
   const seen = new Set(retained.map((result) => result.runGeneration));
-  for (const transcript of record.history ?? []) {
+  for (const transcript of legacyArrays(record)?.history ?? []) {
     if (seen.has(transcript.runGeneration)) continue;
     const result = outputFromTranscript(transcript, retained.length + 1);
     if (!result) continue;
@@ -430,6 +606,7 @@ export function normalizeStoredDelegationRecord(
 }
 
 function withSettledResult(record: StoredDelegation): StoredDelegation {
+  if (record.version === 3) return record;
   if (!isSettledStatus(record.state.status)) return record;
   const withoutAutomaticDelivery =
     record.delivery.status === 'unclaimed' ||
@@ -442,7 +619,7 @@ function withSettledResult(record: StoredDelegation): StoredDelegation {
           },
         }
       : record;
-  const results = record.results ?? [];
+  const results = legacyArrays(record)?.results ?? [];
   if (
     results.some(
       (result) => result.runGeneration === record.state.runGeneration,
@@ -464,11 +641,40 @@ function withSettledResult(record: StoredDelegation): StoredDelegation {
 
 export interface DelegationStorage {
   load(): Promise<readonly StoredDelegation[]>;
+  /** Canonical single-record parse, used only by a pending outbox repair. */
+  loadOne?(delegationId: string): Promise<StoredDelegation | undefined>;
   commit(record: StoredDelegation): Promise<void>;
 }
 
+export type DelegationLifetimePolicy =
+  | {
+      readonly kind: 'available';
+      readonly limit: number;
+      readonly cap?: number;
+      readonly extension: 'possible' | 'at_cap' | 'none';
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly reason: 'unreadable' | 'uncertain';
+    };
+
+export type GenerationStoreDecision =
+  | 'stream'
+  | 'legacy'
+  | { readonly kind: 'refused'; readonly message: string };
+
+class GenerationStoreRefused extends Error {}
+
 export interface AgentDelegationBrokerOptions {
   readonly asyncAdmission?: boolean;
+  /** Chosen once, before the generation is durably admitted or launched. */
+  readonly generationStore?: (context: {
+    readonly record: StoredDelegation;
+    readonly kind: 'launch' | 'follow_up' | 'resume' | 'continuation';
+  }) => Promise<GenerationStoreDecision>;
+  /** Trusted fixture-only seam. No production caller supplies this option. */
+  readonly testOnlyStreamGeneration?: boolean;
+  readonly transcriptPort?: DelegationTranscriptPort;
   /** Throws DelegationApplyError when an apply changed nothing. */
   readonly manageWorkspace?: (
     parent: DelegationParentContext,
@@ -519,6 +725,12 @@ export interface AgentDelegationBrokerOptions {
   /** Live per-parent admission limit; reductions do not cancel admitted children. */
   readonly capacityForParent?: (parent: DelegationParentContext) => number;
   readonly maxDepthForParent?: (parent: DelegationParentContext) => number;
+  /** One live synchronous snapshot, consulted only for a new identity. */
+  readonly lifetimePolicy?: () => DelegationLifetimePolicy;
+  readonly onLifetimeRefusal?: (
+    parent: DelegationParentContext,
+    reason: 'capacity' | 'policy_unavailable',
+  ) => void;
   readonly observeWorkspace?: (
     signal: AbortSignal,
   ) => Promise<AgentDelegationWorkspaceObservation>;
@@ -580,11 +792,6 @@ export interface AgentDelegationBrokerOptions {
     delegationId: string,
     result: StoredDelegateOutput,
   ) => Promise<void>;
-  readonly registerWatch?: (
-    parent: DelegationParentContext,
-    request: WatchDelegatesRequest,
-    targets: readonly DelegateWatchTarget[],
-  ) => Promise<AgentDelegationResult<WatchDelegatesValue>>;
   readonly deliverUpward?: (
     parent: DelegationParentContext,
     source: { delegationId: string; description?: string },
@@ -908,7 +1115,7 @@ function authoredMessage(
   return {
     type: 'text',
     id: control.operationId,
-    sequence: (current.state.transcript ?? []).length + 1,
+    sequence: (executionState(current).transcript ?? []).length + 1,
     occurredAt: Date.now(),
     text: control.message,
     author: control.sender ?? messageAuthor(parent),
@@ -972,6 +1179,69 @@ function sameResumeRoute(
     right.authAccountKey !== undefined &&
     left.authAccountKey === right.authAccountKey
   );
+}
+
+function lifetimePolicySnapshot(
+  read: (() => DelegationLifetimePolicy) | undefined,
+): DelegationLifetimePolicy {
+  if (!read)
+    return {
+      kind: 'available',
+      limit: DEFAULT_MANAGED_DELEGATION_LIFETIME_LIMIT,
+      extension: 'none',
+    };
+  try {
+    const policy: unknown = read();
+    if (isRecord(policy)) {
+      if (
+        policy.kind === 'available' &&
+        typeof policy.limit === 'number' &&
+        Number.isSafeInteger(policy.limit) &&
+        policy.limit >= 0 &&
+        (policy.extension === 'possible' ||
+          policy.extension === 'at_cap' ||
+          policy.extension === 'none')
+      )
+        return {
+          kind: 'available',
+          limit: policy.limit,
+          ...(typeof policy.cap === 'number' &&
+          Number.isSafeInteger(policy.cap) &&
+          policy.cap >= policy.limit
+            ? { cap: policy.cap }
+            : {}),
+          extension: policy.extension,
+        };
+      if (
+        policy.kind === 'unavailable' &&
+        (policy.reason === 'unreadable' || policy.reason === 'uncertain')
+      )
+        return { kind: 'unavailable', reason: policy.reason };
+    }
+  } catch {
+    // A broken host policy must not throw past the typed admission boundary.
+  }
+  return { kind: 'unavailable', reason: 'unreadable' };
+}
+
+function lifetimeRefusalMessage(policy: DelegationLifetimePolicy): string {
+  if (policy.kind === 'unavailable')
+    return policy.reason === 'uncertain'
+      ? 'This worktree’s subagent limit record is being confirmed. New subagents are unavailable.'
+      : 'This worktree’s subagent limit record cannot be read. New subagents are unavailable.';
+  return policy.extension === 'possible'
+    ? 'This worktree has reached its lifetime subagent limit. You can extend it in Settings.'
+    : 'This worktree has reached its lifetime subagent limit. This is the most this build allows.';
+}
+
+/** Records never hold a spawn-only refusal; settlement keeps the stored domain. */
+function settledError(
+  error: AgentDelegationError,
+): AgentDelegationError & { readonly code: SettledDelegationErrorCode } {
+  const { code } = error;
+  if (code === 'lifetime_limit_reached')
+    throw new Error('A lifetime refusal cannot settle a delegation');
+  return { ...error, code };
 }
 
 function failure(
@@ -1163,6 +1433,24 @@ export const DELEGATION_APPLY_RESPONSE_WAIT_MS = 30_000;
 /** Historical generations a delegation retains before refusing continuation. */
 const MAX_RETAINED_HISTORY = 16;
 
+/** Same-process only: no answer bytes or extra repair ledger is persisted. */
+interface StreamSettlementOutbox {
+  readonly record: StoredDelegationV3;
+  readonly target: DelegationTranscriptTarget;
+  readonly key: string;
+  readonly digest: string;
+  readonly outcome: DelegationTranscriptResultEntry['outcome'];
+  readonly resultIndex: number;
+  readonly input?: V3SettlementContractInput;
+  locator?: NonNullable<StoredDelegationV3['latestResult']>;
+  stage: string;
+  attempts: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+class OutboxFenceConflict extends Error {}
+class RolloverPublicationAdvanced extends Error {}
+
 /** A retained delegation that could accept an explicit follow-up now. */
 export interface DelegationContinuationCandidate {
   readonly delegationId: string;
@@ -1183,8 +1471,34 @@ export interface DelegationLineage {
   readonly parentDescription?: string;
 }
 
+interface ReceiptAdmissionContext<Value> {
+  dispatch?: () => Promise<AgentDelegationResult<Value>>;
+}
+
+interface PreparedRecordTransaction {
+  readonly current: StoredDelegation;
+  readonly prepared: WeakSet<StoredDelegation>;
+  readonly admittedOperationIds: ReadonlySet<string>;
+  candidate?: StoredDelegation;
+  bytes?: string;
+}
+
+/** Unwinds a failed receipt transaction without inventing a failure receipt. */
+class ReceiptAdmissionFailure extends Error {
+  constructor(
+    readonly result: ReceiptNotAdmitted | { readonly kind: 'capacity' },
+    readonly uncertainWrite = false,
+    message = 'Receipt admission did not commit',
+  ) {
+    super(message);
+  }
+}
+
 /** One host instance owns a private worktree registry. No restart path launches work. */
 export class AgentDelegationBroker {
+  private readonly cardPublications: CardPublicationQueue;
+  private readonly excludedCardGenerations = new Set<string>();
+  private readonly validatedCardRecords = new WeakSet<StoredDelegationV3>();
   private readonly stoppedGenerations = new Set<string>();
   /** Immediate fence while durable revocation writes are still pending. */
   private readonly revokedDelegations = new Set<string>();
@@ -1197,6 +1511,8 @@ export class AgentDelegationBroker {
       result: Promise<AgentDelegationResult<AgentDelegationSnapshot>>;
     }
   >();
+  /** New identities not yet represented in records; never continuations. */
+  private readonly newIdentityReservations = new Set<string>();
   private readonly pending = new Map<
     string,
     {
@@ -1218,6 +1534,14 @@ export class AgentDelegationBroker {
       controller: AbortController;
     }
   >();
+  private readonly receiptLock = createChatReceiptLock();
+  private readonly receiptQuarantine = new ReceiptQuarantine();
+  private readonly settlementOutbox = new Map<string, StreamSettlementOutbox>();
+  private readonly notifiedStreamGenerations = new Set<string>();
+  private readonly outboxWaiters = new Set<() => void>();
+  private readonly recordTransaction =
+    new AsyncLocalStorage<PreparedRecordTransaction>();
+
   private readonly controlCalls = new Map<
     string,
     {
@@ -1252,6 +1576,12 @@ export class AgentDelegationBroker {
   private closed = false;
 
   constructor(private readonly options: AgentDelegationBrokerOptions) {
+    this.cardPublications = new CardPublicationQueue({
+      port: (): DelegationTranscriptPort => this.streamPort(),
+      rebase: (record, publication): Promise<StoredDelegationV3> =>
+        this.rebaseCardPublication(record, publication),
+      onError: (error): void => this.options.onError?.(error),
+    });
     for (const value of [options.capacity ?? 5, options.totalCapacity ?? 64])
       if (!Number.isInteger(value) || value < 1 || value > 64)
         throw new Error('Invalid delegation capacity');
@@ -1354,16 +1684,43 @@ export class AgentDelegationBroker {
     if (this.initialized || this.closed)
       throw new Error('Delegation broker cannot initialize twice');
     const records = await this.options.storage.load();
-    if (records.length > 512)
+    if (records.length > DELEGATION_STORAGE_RECORD_LIMIT)
       throw new Error('Delegation registry exceeds its bound');
     for (const storedRecord of records) {
-      const record = normalizeStoredDelegationRecord(storedRecord);
+      let record = normalizeStoredDelegationRecord(storedRecord);
       const id = record.state.delegationId;
       if (this.records.has(id))
         throw new Error('Duplicate delegation identity');
       this.records.set(id, record);
+      if (record.version === 3) {
+        await this.repairStreamRecord(record);
+        const repaired = this.records.get(id);
+        if (!repaired) throw new Error('Delegation repair lost its record');
+        record = repaired;
+      }
       const journal = this.restoreJournal(record);
       this.journals.set(id, journal);
+      if (record.version === 3 && record.receipts.activeStop) {
+        const stopping = record;
+        if (!isSettledStatus(record.state.status))
+          await this.update(id, (latest) => ({
+            ...latest,
+            state: {
+              ...latest.state,
+              sequence: latest.state.sequence + 1,
+              status: 'cancelled',
+              finishedAt: Date.now(),
+              stopReason: 'shutdown',
+              cancelledByUser: false,
+              stoppedBy: undefined,
+              error: undefined,
+            },
+          }));
+        await this.finishStreamStop(stopping, 'completed');
+        const latest = this.records.get(id);
+        if (!latest) throw new Error('Stop repair lost its record');
+        record = latest;
+      }
       if (record.isolationReady === false) {
         if (!this.options.reconcileWorkspaceJournal)
           throw new Error('Incomplete isolated workspace cannot be recovered');
@@ -1473,6 +1830,8 @@ export class AgentDelegationBroker {
       });
     }
     this.initialized = true;
+    for (const record of Array.from(this.records.values()))
+      if (record.version === 3) this.cardPublications.enqueue(record, true);
   }
 
   /** Restores parent files an apply wrote before the previous host stopped.
@@ -1529,7 +1888,7 @@ export class AgentDelegationBroker {
     return records
       .filter((record) => sameChat(record.parent, parent))
       .flatMap((record) => [
-        ...(record.history ?? []),
+        ...(legacyPrefixView(record).history ?? []),
         this.projectTranscript(record),
       ]);
   }
@@ -1545,6 +1904,9 @@ export class AgentDelegationBroker {
       parentTurnId: record.parent.userMessageId ?? record.parent.turnId,
       parentToolCallId: record.parent.toolCallId,
       createdAt: record.createdAt,
+      ...(record.version === 3
+        ? { transcriptStore: 'chat-stream-v2' as const }
+        : {}),
       task: {
         description: record.task.description,
         prompt: record.task.prompt,
@@ -1554,7 +1916,8 @@ export class AgentDelegationBroker {
           : { fastMode: record.task.fastMode }),
       },
       snapshot: this.project(record),
-      transcript: record.state.transcript?.map((item) => ({ ...item })) ?? [],
+      transcript:
+        executionState(record).transcript?.map((item) => ({ ...item })) ?? [],
     };
   }
 
@@ -1632,13 +1995,26 @@ export class AgentDelegationBroker {
           'Nested file grants must stay within the caller’s grants.',
         ),
       );
-    if (this.records.size + this.pending.size >= 512)
+    const policy = lifetimePolicySnapshot(this.options.lifetimePolicy);
+    if (
+      policy.kind === 'unavailable' ||
+      this.records.size + this.newIdentityReservations.size >= policy.limit
+    ) {
+      try {
+        this.options.onLifetimeRefusal?.(
+          parent,
+          policy.kind === 'unavailable' ? 'policy_unavailable' : 'capacity',
+        );
+      } catch (error) {
+        this.options.onError?.(error);
+      }
       return Promise.resolve(
-        failure(
-          'capacity_exceeded',
-          'The delegation concurrency or retained-result limit was reached.',
-        ),
+        failure('lifetime_limit_reached', lifetimeRefusalMessage(policy)),
       );
+    }
+    // Keep this reservation synchronous with the one policy read above. The
+    // lifecycle pending map also contains retained follow-ups and is not a count.
+    this.newIdentityReservations.add(callKey);
     const context = Object.freeze({ ...parent });
     const controller = new AbortController();
     this.pending.set(callKey, {
@@ -1653,7 +2029,9 @@ export class AgentDelegationBroker {
       callKey,
       requestHash,
       controller,
-    );
+    ).finally(() => {
+      if (this.newIdentityReservations.delete(callKey)) this.notify(context);
+    });
     this.calls.set(callKey, { hash: requestHash, owner, result });
     return result;
   }
@@ -1867,6 +2245,68 @@ export class AgentDelegationBroker {
     failureMessage = 'The host message could not be delivered.',
   ): Promise<AgentDelegationResult<unknown>> {
     const target = this.records.get(delegationId);
+    if (target?.version !== 3) {
+      const outcome = await this.deliverHostMessageOwned(
+        delegationId,
+        message,
+        attemptId,
+        failureMessage,
+      );
+      return 'kind' in outcome ? this.receiptUnavailable() : outcome;
+    }
+    const key = createHash('sha256')
+      .update(`host:request-steering:${attemptId}`)
+      .digest('hex');
+    return this.withReceiptAdmission(
+      { chatId: target.parent.chatId, receiptKind: 'command', key },
+      (owned) =>
+        this.deliverHostMessageOwned(
+          delegationId,
+          message,
+          attemptId,
+          failureMessage,
+          owned,
+        ),
+    );
+  }
+
+  /** Host delivery is trusted, but its retained owning session must still be live. */
+  private hostReceiptAuthorized(target: StoredDelegation): boolean {
+    let rootParent = target.parent;
+    let ancestorId = target.parent.parentDelegationId;
+    for (let depth = 0; ancestorId; depth += 1) {
+      const ancestor = this.records.get(ancestorId);
+      if (
+        depth >= 10 ||
+        !ancestor ||
+        !sameChat(ancestor.parent, target.parent) ||
+        ancestor.state.status === 'cancelled' ||
+        ancestor.state.status === 'deadline_exceeded'
+      )
+        return false;
+      rootParent = ancestor.parent;
+      ancestorId = ancestor.parentDelegationId;
+    }
+    if (!this.options.resolveHostParent) return true;
+    const live = this.options.resolveHostParent(rootParent);
+    return (
+      live !== undefined &&
+      sameChat(live, rootParent) &&
+      live.sessionKey === rootParent.sessionKey &&
+      live.harnessId === rootParent.harnessId &&
+      Number.isSafeInteger(live.runtimeGeneration) &&
+      live.runtimeGeneration > 0
+    );
+  }
+
+  private async deliverHostMessageOwned(
+    delegationId: string,
+    message: string,
+    attemptId: string = randomUUID(),
+    failureMessage = 'The host message could not be delivered.',
+    owned?: ReceiptAdmissionContext<unknown>,
+  ): Promise<AgentDelegationResult<unknown> | ReceiptNotAdmitted> {
+    const target = this.records.get(delegationId);
     if (!target)
       return failure(
         'capacity_exceeded',
@@ -1877,6 +2317,56 @@ export class AgentDelegationBroker {
         'policy_blocked',
         'This delegate was retired. Start a new delegate to continue.',
       );
+    if (target.version === 3 && !this.hostReceiptAuthorized(target))
+      return failure(
+        'parent_unavailable',
+        'The owning parent session is not ready.',
+      );
+    if (target.version === 3) {
+      const key = createHash('sha256')
+        .update(`host:request-steering:${attemptId}`)
+        .digest('hex');
+      if (
+        this.receiptReserved({
+          chatId: target.parent.chatId,
+          receiptKind: 'command',
+          key,
+        })
+      )
+        return receiptNotAdmitted('uncertain_commit');
+      const coalescedKey = createHash('sha256')
+        .update(`host:coalesce:${attemptId}`)
+        .digest('hex');
+      const hash = createHash('sha256').update(message).digest('hex');
+      const prefix =
+        this.legacyCommandReplay(
+          target.parent,
+          key,
+          hash,
+          delegationId,
+          false,
+        ) ??
+        this.legacyCommandReplay(
+          target.parent,
+          coalescedKey,
+          hash,
+          delegationId,
+          false,
+        );
+      if (prefix)
+        return prefix.ok
+          ? { ok: true, value: { attemptId, status: 'accepted' } }
+          : prefix;
+      const replay = await this.lookupCommandReceipt(
+        target.parent,
+        key,
+        createHash('sha256').update(message).digest('hex'),
+        delegationId,
+        false,
+        coalescedKey,
+      );
+      if (replay) return replay;
+    }
     // A second host message to a delegate whose continuation is still
     // queued folds into that generation's prompt instead of requesting a
     // second ticket or failing the one-pending-command rule.
@@ -1893,7 +2383,7 @@ export class AgentDelegationBroker {
       // ordinary accepted-while-busy continuation.
     }
     const harnessRevisions = new Map(this.harnessRevisions);
-    const control: NonNullable<StoredDelegation['control']> = {
+    const control: StoredDelegationControl = {
       operationId: attemptId,
       key: createHash('sha256')
         .update(`host:request-steering:${attemptId}`)
@@ -1903,10 +2393,9 @@ export class AgentDelegationBroker {
       message,
       status: 'accepted',
     };
-    const previous = [
-      ...(target.controls ?? []),
-      ...(target.control ? [target.control] : []),
-    ].find((entry) => entry.key === control.key);
+    const previous = controlsForReplay(target).find(
+      (entry) => entry.key === control.key,
+    );
     if (previous)
       return previous.requestHash === control.requestHash
         ? { ok: true, value: { attemptId, status: 'accepted' } }
@@ -1990,33 +2479,38 @@ export class AgentDelegationBroker {
     // the slot this delivery reserved for an idle target.
     let controlPersisted = false;
     try {
-      await this.update(target.state.delegationId, (current) => {
-        const prior = [
-          ...(current.controls ?? []),
-          ...(current.control ? [current.control] : []),
-        ].find((entry) => entry.key === control.key);
-        if (prior) {
-          duplicate = prior.requestHash === control.requestHash;
-          conflict = !duplicate;
-          return current;
-        }
-        if (
-          current.control?.status === 'accepted' ||
-          (current.history?.length ?? 0) >= MAX_RETAINED_HISTORY ||
-          (current.controls?.length ?? 0) >= 64
-        ) {
-          unavailable = true;
-          return current;
-        }
-        return {
-          ...current,
-          controls: [
-            ...(current.controls ?? []),
+      await this.updateAdmission(
+        target.state.delegationId,
+        control.operationId,
+        (current) => {
+          const prior = [
+            ...(legacyArrays(current)?.controls ?? []),
             ...(current.control ? [current.control] : []),
-          ],
-          control,
-        };
-      });
+          ].find((entry) => entry.key === control.key);
+          if (prior) {
+            duplicate = prior.requestHash === control.requestHash;
+            conflict = !duplicate;
+            return current;
+          }
+          if (
+            current.control?.status === 'accepted' ||
+            (legacyArrays(current)?.history?.length ?? 0) >=
+              MAX_RETAINED_HISTORY ||
+            (current.version !== 3 && (current.controls?.length ?? 0) >= 64)
+          ) {
+            unavailable = true;
+            return current;
+          }
+          return {
+            ...current,
+            controls: [
+              ...(legacyArrays(current)?.controls ?? []),
+              ...(current.control ? [current.control] : []),
+            ],
+            control,
+          };
+        },
+      );
       controlPersisted = true;
     } finally {
       if (!controlPersisted) idleAdmission?.slot.withdraw();
@@ -2035,93 +2529,117 @@ export class AgentDelegationBroker {
         'The direct parent cannot accept another retained turn.',
       );
     if (idleAdmission) {
-      // Materialize directly (skipping performControl's wait-loop, which
-      // would resolve immediately anyway for a genuinely idle target) and
-      // await it before returning, so the record's generation has already
-      // rotated by the time this call returns. Without this, a second host
-      // message arriving before materialization committed would recompute
-      // the same next-generation ticket id and collide with the first.
-      let materialized: Awaited<
-        ReturnType<typeof this.materializeContinuation>
-      >;
-      try {
-        materialized = await this.materializeContinuation(
-          deliveryParent,
-          target.state.delegationId,
-          control,
-          harnessRevisions,
-          idleAdmission.slot,
-        );
-      } catch (error) {
-        idleAdmission.slot.withdraw();
+      const slot = idleAdmission.slot;
+      const materialize = async (): Promise<AgentDelegationResult<unknown>> => {
+        // Materialize directly (skipping performControl's wait-loop, which
+        // would resolve immediately anyway for a genuinely idle target) and
+        // await it before returning, so the record's generation has already
+        // rotated by the time this call returns. Without this, a second host
+        // message arriving before materialization committed would recompute
+        // the same next-generation ticket id and collide with the first.
+        let materialized: Awaited<
+          ReturnType<typeof this.materializeContinuation>
+        >;
         try {
-          await this.update(target.state.delegationId, (current) =>
-            current.control?.operationId === attemptId
-              ? {
-                  ...current,
-                  control: {
-                    ...current.control,
-                    status: 'failed',
-                    error: failureMessage,
-                  },
-                }
-              : current,
+          materialized = await this.materializeContinuation(
+            deliveryParent,
+            target.state.delegationId,
+            control,
+            harnessRevisions,
+            slot,
           );
-        } catch (updateError) {
-          this.options.onError?.(updateError);
+        } catch (error) {
+          slot.withdraw();
+          try {
+            await this.update(target.state.delegationId, (current) =>
+              current.control?.operationId === attemptId
+                ? {
+                    ...current,
+                    control: {
+                      ...current.control,
+                      status: 'failed',
+                      error: failureMessage,
+                    },
+                  }
+                : current,
+            );
+          } catch (updateError) {
+            this.options.onError?.(updateError);
+          }
+          this.options.onError?.(error);
+          return { ok: true, value: { attemptId, status: 'accepted' } };
         }
-        this.options.onError?.(error);
+        const dispatch = (): Promise<AgentDelegationResult<unknown>> => {
+          this.launchContinuation(
+            deliveryParent,
+            target.state.delegationId,
+            materialized.next,
+            materialized.controller,
+            materialized.slot,
+          ).catch((error: unknown) => this.options.onError?.(error));
+          return Promise.resolve({
+            ok: true,
+            value: { attemptId, status: 'accepted' },
+          });
+        };
+        return dispatch();
+      };
+      if (owned && target.version === 3) {
+        owned.dispatch = materialize;
         return { ok: true, value: { attemptId, status: 'accepted' } };
       }
-      this.launchContinuation(
+      return materialize();
+    }
+    const dispatch = (): Promise<AgentDelegationResult<unknown>> => {
+      const operation = this.performControl(
         deliveryParent,
         target.state.delegationId,
-        materialized.next,
-        materialized.controller,
-        materialized.slot,
-      ).catch((error: unknown) => this.options.onError?.(error));
+        control,
+        harnessRevisions,
+        true,
+      )
+        .then(
+          () =>
+            this.update(target.state.delegationId, (current) =>
+              current.control?.operationId === attemptId
+                ? {
+                    ...current,
+                    control: { ...current.control, status: 'completed' },
+                  }
+                : current,
+            ),
+          () =>
+            this.update(target.state.delegationId, (current) =>
+              current.control?.operationId === attemptId
+                ? {
+                    ...current,
+                    control: {
+                      ...current.control,
+                      status: 'failed',
+                      error: failureMessage,
+                    },
+                  }
+                : current,
+            ),
+        )
+        .catch((error: unknown) => this.options.onError?.(error));
+      this.commands.set(operation, ownerKey(deliveryParent));
+      this.hostMessages.set(attemptId, operation);
+      void operation.finally(() => {
+        this.commands.delete(operation);
+        if (this.hostMessages.get(attemptId) === operation)
+          this.hostMessages.delete(attemptId);
+      });
+      return Promise.resolve({
+        ok: true,
+        value: { attemptId, status: 'accepted' },
+      });
+    };
+    if (owned) {
+      owned.dispatch = dispatch;
       return { ok: true, value: { attemptId, status: 'accepted' } };
     }
-    const operation = this.performControl(
-      deliveryParent,
-      target.state.delegationId,
-      control,
-      harnessRevisions,
-      true,
-    )
-      .then(
-        () =>
-          this.update(target.state.delegationId, (current) =>
-            current.control?.operationId === attemptId
-              ? {
-                  ...current,
-                  control: { ...current.control, status: 'completed' },
-                }
-              : current,
-          ),
-        () =>
-          this.update(target.state.delegationId, (current) =>
-            current.control?.operationId === attemptId
-              ? {
-                  ...current,
-                  control: {
-                    ...current.control,
-                    status: 'failed',
-                    error: failureMessage,
-                  },
-                }
-              : current,
-          ),
-      )
-      .catch((error: unknown) => this.options.onError?.(error));
-    this.commands.set(operation, ownerKey(deliveryParent));
-    this.hostMessages.set(attemptId, operation);
-    void operation.finally(() => {
-      this.commands.delete(operation);
-      if (this.hostMessages.get(attemptId) === operation)
-        this.hostMessages.delete(attemptId);
-    });
-    return { ok: true, value: { attemptId, status: 'accepted' } };
+    return dispatch();
   }
 
   /**
@@ -2137,13 +2655,16 @@ export class AgentDelegationBroker {
   ): Promise<AgentDelegationResult<unknown> | undefined> {
     const id = target.state.delegationId;
     const key = createHash('sha256')
-      .update(`host:coalesce:${attemptId}`)
+      .update(
+        target.version === 3
+          ? `host:request-steering:${attemptId}`
+          : `host:coalesce:${attemptId}`,
+      )
       .digest('hex');
     const requestHash = createHash('sha256').update(message).digest('hex');
-    const previous = [
-      ...(target.controls ?? []),
-      ...(target.control ? [target.control] : []),
-    ].find((entry) => entry.key === key);
+    const previous = controlsForReplay(target).find(
+      (entry) => entry.key === key,
+    );
     if (previous)
       return previous.requestHash === requestHash
         ? { ok: true, value: { attemptId, status: 'accepted' } }
@@ -2152,26 +2673,33 @@ export class AgentDelegationBroker {
             'A host delivery cannot change its message.',
           );
     let coalesced = false;
-    await this.update(id, (current) => {
+    await this.updateAdmission(id, attemptId, (current) => {
       // create() reads the task it launches as soon as the grant commits, so
       // a write queued behind the grant would change a prompt already read.
       if (!isQueuedContinuation(current)) return current;
       const coalescedPrompt = `${current.task.prompt}\n\n${message}`;
       if (
         coalescedPrompt.length > 32768 ||
-        (current.controls?.length ?? 0) >= 64
+        (current.version !== 3 && (current.controls?.length ?? 0) >= 64)
       )
         return current;
       coalesced = true;
       const task = { ...current.task, prompt: coalescedPrompt };
+      const amended =
+        current.version === 3
+          ? setCardPromptAmended(
+              { ...current, task },
+              this.project({ ...current, task }),
+            )
+          : current;
       return {
-        ...current,
+        ...amended,
         task,
         requestHash: createHash('sha256')
           .update(JSON.stringify(task))
           .digest('hex'),
         controls: [
-          ...(current.controls ?? []),
+          ...(legacyArrays(current)?.controls ?? []),
           {
             operationId: attemptId,
             key,
@@ -2195,12 +2723,76 @@ export class AgentDelegationBroker {
     const pending = this.hostMessages.get(attemptId);
     if (pending) await pending;
     const record = this.records.get(delegationId);
-    const control = [
-      ...(record?.controls ?? []),
-      ...(record?.control ? [record.control] : []),
-    ].find((entry) => entry.operationId === attemptId);
-    if (control?.status !== 'completed')
+    const control = [...(record ? controlsForReplay(record) : [])].find(
+      (entry) => entry.operationId === attemptId,
+    );
+    const status =
+      control?.status ??
+      (record?.version === 3
+        ? await this.archivedHostMessageStatus(record, attemptId)
+        : undefined);
+    if (status !== 'completed')
       throw new Error('The host message did not complete.');
+  }
+
+  /** Rollover archives stream receipts chat-wide, beyond any one record. */
+  private chatHasStreamRecord(parent: DelegationParentContext): boolean {
+    for (const record of Array.from(this.records.values()))
+      if (record.version === 3 && sameChat(parent, record.parent)) return true;
+    return false;
+  }
+
+  /**
+   * A legacy target never owns a stream receipt, so an archived stream
+   * receipt for its key is a call that changed its target or arguments.
+   */
+  private async archivedStreamReceipt(
+    parent: DelegationParentContext,
+    receiptKind: 'command' | 'stop',
+    key: string,
+  ): Promise<
+    | AgentDelegationResult<AgentDelegationSnapshot>
+    | ReceiptNotAdmitted
+    | undefined
+  > {
+    const found = await this.registryReceipt({
+      chatId: parent.chatId,
+      receiptKind,
+      key,
+    });
+    if (found.kind === 'absent') return undefined;
+    if (found.kind === 'not_admitted') return found;
+    return receiptKind === 'command'
+      ? failure(
+          'invalid_request',
+          'A command call cannot change its arguments.',
+        )
+      : failure('invalid_request', 'A stop call cannot change its target.');
+  }
+
+  /** A completed host delivery may have rolled over to the chat registry. */
+  private async archivedHostMessageStatus(
+    record: StoredDelegationV3,
+    attemptId: string,
+  ): Promise<StoredDelegationControl['status'] | undefined> {
+    for (const domain of ['host:request-steering', 'host:coalesce']) {
+      const found = await this.registryReceipt({
+        chatId: record.parent.chatId,
+        receiptKind: 'command',
+        key: createHash('sha256')
+          .update(`${domain}:${attemptId}`)
+          .digest('hex'),
+      });
+      if (found.kind === 'absent') continue;
+      if (
+        found.kind !== 'hit' ||
+        found.entry.delegationId !== record.state.delegationId ||
+        found.entry.reply.kind !== 'command'
+      )
+        return undefined;
+      return commandReplyStatus(found.entry.reply);
+    }
+    return undefined;
   }
 
   /** Shared children inherit the closest enclosing isolated workspace. */
@@ -2334,6 +2926,22 @@ export class AgentDelegationBroker {
     });
   }
 
+  /**
+   * Authorizes with the exact canAccess predicate: unknown or inaccessible ids
+   * return undefined. Version 3 returns 'stream'; all other records return 'legacy'.
+   * Pure in-memory classification, outside the I/O trace: no snapshot, child
+   * index, clone, await, write barrier, port/source call or I/O. Never returns
+   * the record itself.
+   */
+  recordStore(
+    parent: DelegationParentContext,
+    id: string,
+  ): 'legacy' | 'stream' | undefined {
+    const record = this.records.get(id);
+    if (!record || !this.canAccess(parent, record)) return undefined;
+    return record.version === 3 ? 'stream' : 'legacy';
+  }
+
   inspect(
     parent: DelegationParentContext,
     id: string,
@@ -2347,10 +2955,131 @@ export class AgentDelegationBroker {
   getOutput(
     parent: DelegationParentContext,
     request: GetDelegateOutputRequest,
-  ): AgentDelegationResult<GetDelegateOutputValue> {
+  ): Promise<AgentDelegationResult<GetDelegateOutputValue>> {
+    return this.readOutput(parent, request);
+  }
+
+  private async readOutput(
+    parent: DelegationParentContext,
+    request: GetDelegateOutputRequest,
+  ): Promise<AgentDelegationResult<GetDelegateOutputValue>> {
     const record = this.records.get(request.delegationId);
     if (!record || !this.canAccess(parent, record)) return notDescendant();
-    const results = record.results ?? [];
+    const prefix = legacyPrefixView(record);
+    const prefixLatest = prefix.results?.[(prefix.results?.length ?? 0) - 1];
+    const latestIndex =
+      record.version === 3
+        ? (record.latestResult?.resultIndex ??
+          prefixLatest?.resultIndex ??
+          null)
+        : (prefixLatest?.resultIndex ?? null);
+    const pinnedIndex = request.resultIndex ?? latestIndex;
+    if (
+      record.version === 3 &&
+      pinnedIndex !== null &&
+      (prefixLatest === undefined || pinnedIndex > prefixLatest.resultIndex)
+    ) {
+      // Pin all outer metadata and the locator before the first await.
+      const context: RegistryOutputContext = {
+        requestedResultIndex: pinnedIndex,
+        delivery:
+          request.offset === undefined && request.limit === undefined
+            ? { kind: 'whole' }
+            : {
+                kind: 'range',
+                offset: request.offset ?? 0,
+                limit: request.limit ?? 65_536,
+              },
+        current: {
+          delegationId: record.state.delegationId,
+          currentRunGeneration: record.state.runGeneration,
+          currentStatus: record.state.status,
+          latestResultIndex: latestIndex,
+          currentPhase: delegationPhase(record),
+          queue: this.liveQueueState(record),
+        },
+      };
+      const known =
+        record.latestResult?.resultIndex === pinnedIndex
+          ? record.latestResult
+          : undefined;
+      const port = this.streamPort();
+      const identity = {
+        chatId: record.parent.chatId,
+        delegationId: record.state.delegationId,
+        resultIndex: pinnedIndex,
+      };
+      let read: Awaited<ReturnType<DelegationTranscriptPort['result']>>;
+      try {
+        read = await port.result(identity);
+      } catch {
+        return projectRegistryDelegateOutput(
+          { kind: 'lookup_failed', code: 'storage_failure', known },
+          context,
+        );
+      }
+      if (!read.ok)
+        return projectRegistryDelegateOutput(
+          { kind: 'lookup_failed', code: read.error.code, known },
+          context,
+        );
+      let body: RegistryBodyRead = { kind: 'skipped' };
+      if (read.value.answer.kind === 'body') {
+        try {
+          if (context.delivery.kind === 'range') {
+            const page = await port.resultAnswerRange({
+              ...identity,
+              offset: context.delivery.offset,
+              limit: context.delivery.limit,
+            });
+            body = page.ok
+              ? { kind: 'range', range: page.value }
+              : { kind: 'failed', code: page.error.code };
+          } else {
+            let offset = 0;
+            const texts: string[] = [];
+            for (;;) {
+              const page = await port.resultAnswerRange({
+                ...identity,
+                offset,
+                limit: 65_536,
+              });
+              if (!page.ok) {
+                body = { kind: 'failed', code: page.error.code };
+                break;
+              }
+              const value = page.value;
+              if (
+                value.byteLength !== read.value.answer.byteLength ||
+                value.encoding !== read.value.answer.encoding ||
+                (value.nextOffset !== undefined && value.nextOffset <= offset)
+              ) {
+                body = { kind: 'failed', code: 'corruption' };
+                break;
+              }
+              texts.push(value.text);
+              if (value.nextOffset === undefined) {
+                body = {
+                  kind: 'whole',
+                  text: texts.join(''),
+                  encoding: value.encoding,
+                  byteLength: value.byteLength,
+                };
+                break;
+              }
+              offset = value.nextOffset;
+            }
+          }
+        } catch {
+          body = { kind: 'failed', code: 'storage_failure' };
+        }
+      }
+      return projectRegistryDelegateOutput(
+        { kind: 'entry', entry: read.value, body },
+        context,
+      );
+    }
+    const results = prefix.results ?? [];
     const latest = results[results.length - 1];
     const result =
       request.resultIndex === undefined
@@ -2361,13 +3090,36 @@ export class AgentDelegationBroker {
     if (request.resultIndex !== undefined && !result)
       return failure('invalid_request', 'Result index is not available.');
     const publicResult = result ? publicDelegateOutput(result) : null;
+    if (
+      publicResult &&
+      (request.offset !== undefined || request.limit !== undefined)
+    ) {
+      const page = projectLegacyDelegateOutput(
+        publicResult,
+        request.offset ?? 0,
+        request.limit ?? 65_536,
+      );
+      if (!page.ok) return page;
+      return {
+        ok: true,
+        value: structuredClone({
+          delegationId: record.state.delegationId,
+          currentRunGeneration: record.state.runGeneration,
+          currentStatus: record.state.status,
+          latestResultIndex: latestIndex,
+          result: page.value,
+          currentPhase: delegationPhase(record),
+          queue: this.liveQueueState(record),
+        }),
+      };
+    }
     return {
       ok: true,
       value: structuredClone({
         delegationId: record.state.delegationId,
         currentRunGeneration: record.state.runGeneration,
         currentStatus: record.state.status,
-        latestResultIndex: latest?.resultIndex ?? null,
+        latestResultIndex: latestIndex,
         result: publicResult,
         currentPhase: delegationPhase(record),
         queue: this.liveQueueState(record),
@@ -2421,7 +3173,10 @@ export class AgentDelegationBroker {
           runGeneration: record.state.runGeneration,
           description: record.task.description,
           chatId: record.parent.chatId,
-          createdAt: record.history?.[0]?.createdAt ?? record.createdAt,
+          createdAt:
+            record.version === 3
+              ? record.readMetadata.originAt
+              : (record.history?.[0]?.createdAt ?? record.createdAt),
         }),
       );
   }
@@ -2450,13 +3205,48 @@ export class AgentDelegationBroker {
     return (
       record.route?.capabilities.includes('resume') === true &&
       Boolean(record.state.nativeSessionId ?? record.resumeSessionId) &&
-      (record.history?.length ?? 0) < MAX_RETAINED_HISTORY &&
-      (record.controls?.length ?? 0) < 64 &&
-      record.stopRequested === undefined &&
+      (legacyArrays(record)?.history?.length ?? 0) < MAX_RETAINED_HISTORY &&
+      (record.version === 3
+        ? record.receipts.commandReceipts.length
+        : (record.controls?.length ?? 0)) < 64 &&
+      stopRequest(record) === undefined &&
       record.workspaceDiscarded !== true &&
       record.isolationReady !== false &&
       !this.hasRevokedAuthority(record)
     );
+  }
+
+  /** Retained identities only; preparation reservations never add to this count. */
+  retainedCount(): number {
+    return this.records.size;
+  }
+
+  /** One policy read and the same retained-plus-reservation predicate as admission. */
+  lifetimeSnapshot():
+    | {
+        readonly kind: 'available';
+        readonly occupied: number;
+        readonly retained: number;
+        readonly limit: number;
+        readonly cap: number;
+        readonly atLimit: boolean;
+        readonly extension: 'possible' | 'at_cap' | 'none';
+      }
+    | {
+        readonly kind: 'unavailable';
+        readonly reason: 'unreadable' | 'uncertain';
+      } {
+    const policy = lifetimePolicySnapshot(this.options.lifetimePolicy);
+    if (policy.kind === 'unavailable') return policy;
+    const retained = this.records.size;
+    const occupied = retained + this.newIdentityReservations.size;
+    return {
+      ...policy,
+      cap: policy.cap ?? DEFAULT_MANAGED_DELEGATION_LIFETIME_LIMIT,
+      occupied,
+      retained,
+      atLimit: occupied >= policy.limit,
+    };
   }
 
   /**
@@ -2518,105 +3308,173 @@ export class AgentDelegationBroker {
     );
   }
 
-  async watch(
-    parent: DelegationParentContext,
-    request: WatchDelegatesRequest,
-  ): Promise<AgentDelegationResult<WatchDelegatesValue>> {
-    if (!this.validParent(parent))
-      return failure(
-        'parent_unavailable',
-        'The delegation parent is unavailable.',
-      );
-    // A delegation of this chat outside the caller's subtree gets the same
-    // denial as every other delegation tool.
-    if (
-      request.delegationIds.some((delegationId) => {
-        const record = this.records.get(delegationId);
-        return (
-          record !== undefined &&
-          sameChat(record.parent, parent) &&
-          !this.canAccess(parent, record)
-        );
-      })
-    )
-      return notDescendant();
-    // A watch armed before any delegate exists can never fire, so refuse it
-    // with guidance rather than letting the parent wait on nothing. Unknown
-    // and other-chat IDs are reported alike so ownership does not leak.
-    const unknownIds = request.delegationIds.filter((delegationId) => {
-      const record = this.records.get(delegationId);
-      return !record || !this.canAccess(parent, record);
-    });
-    if (unknownIds.length > 0) {
-      const owned = this.list(parent);
-      return failure(
-        'invalid_request',
-        owned.some(
-          (snapshot) =>
-            snapshot.status === 'pending' || snapshot.status === 'running',
-        )
-          ? `These delegation IDs are not delegates of this chat: ${unknownIds.join(', ')}. Watch only IDs returned by Delegate Task or List Delegates.`
-          : `No delegates are active for this chat, so there is nothing to watch. Start a delegate with Delegate Task, then call Watch Delegates with the delegation ID it returns.${owned.length > 0 ? ' Finished delegates need no watch; read them with Get Delegate Output.' : ''}`,
-      );
-    }
-    const targets: DelegateWatchTarget[] = [];
-    for (const delegationId of request.delegationIds) {
-      const record = this.records.get(delegationId);
-      if (!record) continue;
-      targets.push({
-        delegationId,
-        runGeneration: record.state.runGeneration,
-      });
-    }
-    if (!this.options.registerWatch)
-      return failure(
-        'capability_unavailable',
-        'Delegate completion watches are unavailable for this host.',
-      );
-    const registered = await this.options.registerWatch(
-      parent,
-      request,
-      targets,
-    );
-    if (registered.ok)
-      for (const target of targets) {
+  async watchTargetStates(
+    targets: readonly CapturedDelegationGeneration[],
+  ): Promise<
+    Array<
+      CapturedDelegationGeneration & {
+        status: AgentDelegationSnapshot['status'];
+        resultIndex: number | null;
+        settledAt?: number;
+      }
+    >
+  > {
+    return Promise.all(
+      targets.map(async (target) => {
         const record = this.records.get(target.delegationId);
-        const result = record?.results?.find(
+        if (!record)
+          throw new Error('Captured delegate generation is unavailable');
+        const result = legacyPrefixView(record).results?.find(
           (candidate) => candidate.runGeneration === target.runGeneration,
         );
-        if (record && result)
-          await this.options.onSettled?.(
-            record.parent,
-            target.delegationId,
-            result,
+        if (record.version === 3 && !result) {
+          const resolution = await this.watchResolver().resolve(
+            { record, readMetadata: record.readMetadata },
+            target.runGeneration,
           );
-      }
-    return registered;
+          if (resolution.kind === 'unavailable')
+            throw new Error(resolution.failure.message);
+          if (resolution.kind === 'settled')
+            return {
+              ...target,
+              status: resolution.result.outcome.status,
+              resultIndex: resolution.result.resultIndex,
+              settledAt: resolution.result.outcome.finishedAt,
+            };
+          if (isSettledStatus(record.state.status))
+            throw new Error('Captured stream outcome is not durable yet');
+        }
+        if (!result && record.state.runGeneration !== target.runGeneration)
+          throw new Error('Captured delegate generation is unavailable');
+        return {
+          ...target,
+          status: result?.status ?? record.state.status,
+          resultIndex: result?.resultIndex ?? null,
+          ...(result ? { settledAt: result.settledAt } : {}),
+        };
+      }),
+    );
   }
 
-  watchTargetStates(targets: readonly DelegateWatchTarget[]): Array<
-    DelegateWatchTarget & {
-      status: AgentDelegationSnapshot['status'];
-      resultIndex: number | null;
-      settledAt?: number;
+  private receiptUnavailable<Value>(): AgentDelegationResult<Value> {
+    return {
+      ok: false,
+      error: {
+        code: 'capacity_exceeded',
+        message: 'This operation is temporarily unavailable. Try again.',
+        retryable: true,
+      },
+    };
+  }
+
+  private async withReceiptAdmission<Value>(
+    identity: DelegationTranscriptReceiptIdentity,
+    admit: (
+      owned: ReceiptAdmissionContext<Value>,
+    ) => Promise<AgentDelegationResult<Value> | ReceiptNotAdmitted>,
+  ): Promise<AgentDelegationResult<Value>> {
+    const owned: ReceiptAdmissionContext<Value> = {};
+    let outcome: AgentDelegationResult<Value> | ReceiptNotAdmitted;
+    try {
+      outcome = await this.receiptLock.run(identity, () => admit(owned));
+      if ('kind' in outcome) return this.receiptUnavailable();
+      return owned.dispatch ? await owned.dispatch() : outcome;
+    } catch (error) {
+      if (!(error instanceof ReceiptAdmissionFailure)) throw error;
+      return this.receiptUnavailable();
     }
+  }
+
+  private async registryReceipt(
+    identity: DelegationTranscriptReceiptIdentity,
+  ): Promise<
+    | { readonly kind: 'hit'; readonly entry: DelegationTranscriptReceiptEntry }
+    | { readonly kind: 'absent' }
+    | ReceiptNotAdmitted
   > {
-    return targets.map((target) => {
-      const record = this.records.get(target.delegationId);
-      if (!record)
-        throw new Error('Captured delegate generation is unavailable');
-      const result = record.results?.find(
-        (candidate) => candidate.runGeneration === target.runGeneration,
+    try {
+      const found = classifyRegistryLookup(
+        await this.streamPort().receipt(identity),
       );
-      if (!result && record.state.runGeneration !== target.runGeneration)
-        throw new Error('Captured delegate generation is unavailable');
-      return {
-        ...target,
-        status: result?.status ?? record.state.status,
-        resultIndex: result?.resultIndex ?? null,
-        ...(result ? { settledAt: result.settledAt } : {}),
-      };
+      if (
+        found.kind === 'hit' &&
+        (found.entry.chatId !== identity.chatId ||
+          found.entry.receiptKind !== identity.receiptKind ||
+          found.entry.key !== identity.key)
+      )
+        return receiptNotAdmitted('lookup', 'conflict');
+      return found;
+    } catch (thrown) {
+      return classifyRegistryLookup({ thrown });
+    }
+  }
+
+  private async lookupCommandReceipt(
+    parent: DelegationParentContext,
+    key: string,
+    hash: string,
+    id: string,
+    user: boolean,
+    alternateKey?: string,
+  ): Promise<
+    | AgentDelegationResult<AgentDelegationSnapshot>
+    | ReceiptNotAdmitted
+    | undefined
+  > {
+    if (
+      this.receiptReserved({
+        chatId: parent.chatId,
+        receiptKind: 'command',
+        key,
+      })
+    )
+      return receiptNotAdmitted('uncertain_commit');
+    const keys = alternateKey === undefined ? [key] : [key, alternateKey];
+    for (const candidateKey of keys) {
+      const prefix = this.legacyCommandReplay(
+        parent,
+        candidateKey,
+        hash,
+        id,
+        user,
+      );
+      if (prefix) return prefix;
+    }
+    for (const candidateKey of keys) {
+      const window = this.streamCommandReplay(
+        parent,
+        candidateKey,
+        hash,
+        id,
+        user,
+      );
+      if (window) return window;
+    }
+    let found = await this.registryReceipt({
+      chatId: parent.chatId,
+      receiptKind: 'command',
+      key,
     });
+    // Rollover can archive a historical host:coalesce receipt from the window.
+    if (found.kind === 'absent' && alternateKey !== undefined)
+      found = await this.registryReceipt({
+        chatId: parent.chatId,
+        receiptKind: 'command',
+        key: alternateKey,
+      });
+    if (found.kind === 'absent') return undefined;
+    if (found.kind === 'not_admitted') return found;
+    const entry = found.entry;
+    if (entry.delegationId !== id || entry.requestHash !== hash)
+      return failure(
+        'invalid_request',
+        'A command call cannot change its arguments.',
+      );
+    if (entry.reply.kind !== 'command')
+      return receiptNotAdmitted('lookup', 'corruption');
+    return delegationReceiptAckToResult(
+      projectDelegationCommandReplay(entry.reply, user ? 'user' : 'agent'),
+    );
   }
 
   manage(
@@ -2624,12 +3482,160 @@ export class AgentDelegationBroker {
     input: unknown,
     userOperationId?: string,
   ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
+    const target =
+      isRecord(input) && typeof input.delegationId === 'string'
+        ? this.records.get(input.delegationId)
+        : undefined;
+    if (target?.version !== 3)
+      return this.manageLegacy(parent, input, userOperationId);
+    if (!this.validParent(parent))
+      return Promise.resolve(
+        failure('parent_unavailable', 'The delegation parent is unavailable.'),
+      );
+    if (!this.canAccess(parent, target))
+      return Promise.resolve(notDescendant());
     const key = userOperationId
       ? durableUserMessageKey(parent, userOperationId)
       : durableParentCallKey(parent);
     const hash = createHash('sha256')
       .update(JSON.stringify(input) ?? '')
       .digest('hex');
+    if (
+      this.receiptReserved({
+        chatId: parent.chatId,
+        receiptKind: 'command',
+        key,
+      })
+    )
+      return Promise.resolve(this.receiptUnavailable());
+    const prior = this.controlCalls.get(key);
+    if (prior && prior.hash === hash) return prior.result;
+    const result = this.withReceiptAdmission<AgentDelegationSnapshot>(
+      { chatId: parent.chatId, receiptKind: 'command', key },
+      async (owned) => {
+        if (!this.validParent(parent))
+          return failure(
+            'parent_unavailable',
+            'The delegation parent is unavailable.',
+          );
+        const current = this.records.get(target.state.delegationId);
+        if (!current || !this.canAccess(parent, current))
+          return notDescendant();
+        const replay = await this.lookupCommandReceipt(
+          parent,
+          key,
+          hash,
+          current.state.delegationId,
+          userOperationId !== undefined,
+        );
+        if (replay) return replay;
+        if (current.version === 3 && current.settling)
+          return failure('runtime_error', 'Previous settlement is unresolved.');
+        const outcome = await this.admitControl(
+          parent,
+          input,
+          key,
+          hash,
+          userOperationId,
+          owned,
+        );
+        if ('kind' in outcome) return outcome;
+        const dispatch = owned.dispatch;
+        if (dispatch)
+          owned.dispatch = async (): Promise<
+            AgentDelegationResult<AgentDelegationSnapshot>
+          > => {
+            const dispatched = await dispatch();
+            const latest = this.records.get(current.state.delegationId);
+            const receipt =
+              latest?.version === 3
+                ? latest.receipts.commandReceipts.find(
+                    (entry) => entry.key === key,
+                  )
+                : undefined;
+            return receipt
+              ? delegationReceiptAckToResult(receipt.reply.ack)
+              : dispatched;
+          };
+        if (isRecord(input))
+          await this.persistStreamFailure(
+            parent,
+            input,
+            key,
+            hash,
+            userOperationId,
+            outcome,
+          );
+        const acknowledged = this.streamCommandReplay(
+          parent,
+          key,
+          hash,
+          current.state.delegationId,
+          false,
+        );
+        return acknowledged ?? outcome;
+      },
+    );
+    this.controlCalls.set(key, { hash, result });
+    const clear = (): void => {
+      if (this.controlCalls.get(key)?.result === result)
+        this.controlCalls.delete(key);
+    };
+    void result.then(clear, clear);
+    return result;
+  }
+
+  private manageLegacy(
+    parent: DelegationParentContext,
+    input: unknown,
+    userOperationId?: string,
+  ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
+    const key = userOperationId
+      ? durableUserMessageKey(parent, userOperationId)
+      : durableParentCallKey(parent);
+    // An uncertain stream commit reserves its key chat-wide, legacy targets too.
+    if (
+      this.receiptReserved({
+        chatId: parent.chatId,
+        receiptKind: 'command',
+        key,
+      })
+    )
+      return Promise.resolve(this.receiptUnavailable());
+    const hash = createHash('sha256')
+      .update(JSON.stringify(input) ?? '')
+      .digest('hex');
+    if (
+      isRecord(input) &&
+      typeof input.delegationId === 'string' &&
+      this.validParent(parent)
+    ) {
+      const target = this.records.get(input.delegationId);
+      if (target && this.canAccess(parent, target)) {
+        const legacy = this.legacyCommandReplay(
+          parent,
+          key,
+          hash,
+          input.delegationId,
+          userOperationId !== undefined,
+        );
+        if (legacy) return Promise.resolve(legacy);
+        const replay = this.streamCommandReplay(
+          parent,
+          key,
+          hash,
+          input.delegationId,
+          userOperationId !== undefined,
+        );
+        if (replay) return Promise.resolve(replay);
+      }
+      if (target?.version === 3 && this.canAccess(parent, target)) {
+        if (target.settling)
+          return Promise.resolve(
+            failure('runtime_error', 'Previous settlement is unresolved.'),
+          );
+      }
+    }
     const prior = this.controlCalls.get(key);
     if (prior)
       return prior.hash === hash
@@ -2659,17 +3665,23 @@ export class AgentDelegationBroker {
           'The command admission limit was reached.',
         ),
       );
-    const admitted = this.admitControl(
-      parent,
-      input,
-      key,
-      hash,
-      userOperationId,
-    );
-    const result = userOperationId
-      ? admitted.then(async (outcome) => {
-          try {
-            await this.persistUserMessageOutcome(
+    const admit = (): Promise<
+      AgentDelegationResult<AgentDelegationSnapshot> | ReceiptNotAdmitted
+    > => this.admitControl(parent, input, key, hash, userOperationId);
+    const admitted = this.chatHasStreamRecord(parent)
+      ? this.archivedStreamReceipt(parent, 'command', key).then(
+          (archived) => archived ?? admit(),
+        )
+      : admit();
+    const result = admitted.then(
+      async (
+        outcome,
+      ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> => {
+        if ('kind' in outcome) return this.receiptUnavailable();
+        if (isRecord(input) && typeof input.delegationId === 'string') {
+          const target = this.records.get(input.delegationId);
+          if (target?.version === 3) {
+            await this.persistStreamFailure(
               parent,
               input,
               key,
@@ -2677,14 +3689,35 @@ export class AgentDelegationBroker {
               userOperationId,
               outcome,
             );
-          } catch (error) {
-            // The accepted control (and its initial receipt) is already
-            // durable. Keep an update failure from changing its first reply.
-            this.options.onError?.(error);
+            const current = this.records.get(input.delegationId);
+            if (current?.version === 3) {
+              const receipt = current.receipts.commandReceipts.find(
+                (entry) => entry.key === key,
+              );
+              if (receipt)
+                return delegationReceiptAckToResult(receipt.reply.ack);
+            }
+            return outcome;
           }
-          return outcome;
-        })
-      : admitted;
+        }
+        if (!userOperationId) return outcome;
+        try {
+          await this.persistUserMessageOutcome(
+            parent,
+            input,
+            key,
+            hash,
+            userOperationId,
+            outcome,
+          );
+        } catch (error) {
+          // The accepted control (and its initial receipt) is already
+          // durable. Keep an update failure from changing its first reply.
+          this.options.onError?.(error);
+        }
+        return outcome;
+      },
+    );
     this.controlCalls.set(key, { hash, result });
     return result;
   }
@@ -2731,7 +3764,9 @@ export class AgentDelegationBroker {
     if (!outcome.ok) {
       const existing = Array.from(this.records.values())
         .filter((candidate) => sameChat(candidate.parent, parent))
-        .flatMap((candidate) => candidate.userMessageReceipts ?? [])
+        .flatMap(
+          (candidate) => legacyPrefixView(candidate).userMessageReceipts ?? [],
+        )
         .find((receipt) => receipt.key === key);
       if (existing) return;
       const operation = input.operation;
@@ -2751,7 +3786,10 @@ export class AgentDelegationBroker {
       };
       await this.update(record.state.delegationId, (current) => ({
         ...current,
-        userMessageReceipts: [...(current.userMessageReceipts ?? []), receipt],
+        userMessageReceipts: [
+          ...(legacyArrays(current)?.userMessageReceipts ?? []),
+          receipt,
+        ],
       }));
       return;
     }
@@ -2771,8 +3809,8 @@ export class AgentDelegationBroker {
       return {
         ...current,
         ...(current.control ? { control: attachOutcome(current.control) } : {}),
-        ...(current.controls
-          ? { controls: current.controls.map(attachOutcome) }
+        ...(legacyArrays(current)?.controls
+          ? { controls: legacyArrays(current)?.controls?.map(attachOutcome) }
           : {}),
       };
     });
@@ -2788,7 +3826,9 @@ export class AgentDelegationBroker {
       sameChat(candidate.parent, parent),
     );
     const receipt = chatRecords
-      .flatMap((candidate) => candidate.userMessageReceipts ?? [])
+      .flatMap(
+        (candidate) => legacyPrefixView(candidate).userMessageReceipts ?? [],
+      )
       .find((candidate) => candidate.key === key);
     if (receipt)
       return receipt.requestHash === requestHash &&
@@ -2801,17 +3841,16 @@ export class AgentDelegationBroker {
     const previous = chatRecords
       .map((candidate) => ({
         record: candidate,
-        control: [
-          ...(candidate.controls ?? []),
-          ...(candidate.control ? [candidate.control] : []),
-        ].find((entry) => entry.key === key),
+        control: controlsForReplay(candidate).find(
+          (entry) => entry.key === key,
+        ),
       }))
       .find(
         (
           candidate,
         ): candidate is {
           record: StoredDelegation;
-          control: NonNullable<StoredDelegation['control']>;
+          control: StoredDelegationControl;
         } => candidate.control !== undefined,
       );
     if (!previous) return undefined;
@@ -2860,7 +3899,10 @@ export class AgentDelegationBroker {
     key: string,
     requestHash: string,
     userOperationId?: string,
-  ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
+    owned?: ReceiptAdmissionContext<AgentDelegationSnapshot>,
+  ): Promise<
+    AgentDelegationResult<AgentDelegationSnapshot> | ReceiptNotAdmitted
+  > {
     if (!isRecord(input))
       return failure('invalid_request', 'Invalid delegation command.');
     const args = input;
@@ -2896,7 +3938,7 @@ export class AgentDelegationBroker {
       );
       if (prior) return prior;
     }
-    const record = this.records.get(delegationId);
+    let record = this.records.get(delegationId);
     if (!record || !this.canAccess(parent, record)) return notDescendant();
     if (
       args.message !== undefined &&
@@ -2908,17 +3950,16 @@ export class AgentDelegationBroker {
         .filter((candidate) => sameChat(parent, candidate.parent))
         .map((candidate) => ({
           record: candidate,
-          control: [
-            ...(candidate.controls ?? []),
-            ...(candidate.control ? [candidate.control] : []),
-          ].find((entry) => entry.key === key),
+          control: controlsForReplay(candidate).find(
+            (entry) => entry.key === key,
+          ),
         }))
         .find(
           (
             candidate,
           ): candidate is {
             record: StoredDelegation;
-            control: NonNullable<StoredDelegation['control']>;
+            control: StoredDelegationControl;
           } => candidate.control !== undefined,
         );
       if (previous)
@@ -2938,6 +3979,23 @@ export class AgentDelegationBroker {
               'invalid_request',
               'A command call cannot change its arguments.',
             );
+    }
+    if (record.version === 3 && record.receipts.activeStop) {
+      const pending = record.receipts.activeStop.pendingTerminalOutcome;
+      if (!pending)
+        return failure(
+          'capacity_exceeded',
+          'Wait for the accepted stop to finish.',
+        );
+      try {
+        await this.finishStreamStop(record, pending.reply.status);
+      } catch {
+        return failure('runtime_error', 'The stop outcome is not durable yet.');
+      }
+      const refreshed = this.records.get(delegationId);
+      if (!refreshed)
+        return failure('runtime_error', 'The stop record is unavailable.');
+      record = refreshed;
     }
     const continuesInactive =
       operation === 'follow_up' ||
@@ -3003,7 +4061,7 @@ export class AgentDelegationBroker {
         'policy_blocked',
         'Stop active descendants before changing their workspace.',
       );
-    if ((record.controls?.length ?? 0) >= 64)
+    if (record.version !== 3 && (record.controls?.length ?? 0) >= 64)
       return failure(
         'capacity_exceeded',
         'The retained command limit was reached.',
@@ -3050,7 +4108,8 @@ export class AgentDelegationBroker {
       );
     if (
       operation === 'resume' &&
-      record.stopRequested &&
+      record.version !== 3 &&
+      stopRequest(record) &&
       (record.stopRequests?.length ?? 0) >= MAX_RETAINED_STOP_REQUESTS
     )
       return failure(
@@ -3088,7 +4147,7 @@ export class AgentDelegationBroker {
     }
     const operationId = userOperationId ?? randomUUID();
     const harnessRevisions = new Map(this.harnessRevisions);
-    const control: NonNullable<StoredDelegation['control']> = {
+    const control: StoredDelegationControl = {
       operationId,
       key,
       requestHash,
@@ -3105,8 +4164,16 @@ export class AgentDelegationBroker {
     if (reservesWorkspace)
       this.workspaceControlReservations.set(operationId, delegationId);
     let controlPersisted = false;
+    let activeStopWon = false;
     try {
-      await this.update(args.delegationId, (current) => {
+      await this.updateAdmission(args.delegationId, operationId, (current) => {
+        // The stop can commit after the optimistic admission checks above.
+        // Refuse before accepting a command; in particular a resume cannot
+        // clear the fence until the active operation's outcome is durable.
+        if (current.version === 3 && current.receipts.activeStop) {
+          activeStopWon = true;
+          return current;
+        }
         const supersedesQueuedFollowUp =
           operation === 'interrupt' &&
           current.control?.status === 'accepted' &&
@@ -3121,19 +4188,21 @@ export class AgentDelegationBroker {
             }
           : current.control;
         const authored = authoredMessage(parent, control, current);
-        const next: StoredDelegation = {
+        const next = {
           ...current,
           ...(authored
             ? { state: appendAuthoredMessage(current.state, authored) }
             : {}),
           controls: [
-            ...(current.controls ?? []),
+            ...(legacyArrays(current)?.controls ?? []),
             ...(previousControl ? [previousControl] : []),
           ],
-          ...(operation === 'resume' && current.stopRequested
+          ...(operation === 'resume' &&
+          current.version !== 3 &&
+          current.stopRequested
             ? {
                 stopRequests: [
-                  ...(current.stopRequests ?? []),
+                  ...(legacyArrays(current)?.stopRequests ?? []),
                   current.stopRequested,
                 ],
                 stopRequested: undefined,
@@ -3151,6 +4220,11 @@ export class AgentDelegationBroker {
             }
           : next;
       });
+      if (activeStopWon)
+        return failure(
+          'capacity_exceeded',
+          'Wait for the accepted stop to finish.',
+        );
       controlPersisted = true;
     } finally {
       if (
@@ -3169,151 +4243,188 @@ export class AgentDelegationBroker {
       return failure('runtime_error', 'The admitted command is unavailable.');
     }
     if (idleAdmission) {
-      let materialized: Awaited<
-        ReturnType<typeof this.materializeContinuation>
-      >;
-      try {
-        materialized = await this.materializeContinuation(
-          parent,
-          id,
-          admitted.control ?? control,
-          harnessRevisions,
-          idleAdmission.slot,
-        );
-      } catch (error) {
-        idleAdmission.slot.withdraw();
-        const materializationError: AgentDelegationError = {
-          code: 'runtime_error',
-          message: 'The continuation could not be durably materialized.',
-          retryable: false,
-        };
+      const slot = idleAdmission.slot;
+      const materialize = async (): Promise<
+        AgentDelegationResult<AgentDelegationSnapshot>
+      > => {
+        let materialized: Awaited<
+          ReturnType<typeof this.materializeContinuation>
+        >;
         try {
-          await this.update(id, (current) =>
-            current.control?.operationId === operationId
-              ? {
-                  ...current,
-                  control: {
-                    ...current.control,
-                    status: 'failed',
-                    error: GENERIC_CONTROL_FAILURE,
-                    ...(userOperationId
-                      ? {
-                          firstOutcome: undefined,
-                          firstError: materializationError,
-                        }
-                      : {}),
-                  },
-                }
-              : current,
+          materialized = await this.materializeContinuation(
+            parent,
+            id,
+            admitted.control ?? control,
+            harnessRevisions,
+            slot,
           );
-        } catch (updateError) {
-          this.options.onError?.(updateError);
+        } catch (error) {
+          slot.withdraw();
+          const materializationError: AgentDelegationError = {
+            code: 'runtime_error',
+            message:
+              error instanceof GenerationStoreRefused
+                ? error.message
+                : 'The continuation could not be durably materialized.',
+            retryable:
+              error instanceof RolloverPublicationAdvanced ||
+              error instanceof GenerationStoreRefused,
+          };
+          try {
+            await this.update(id, (current) =>
+              current.control?.operationId === operationId
+                ? {
+                    ...current,
+                    control: {
+                      ...current.control,
+                      status: 'failed',
+                      error:
+                        error instanceof GenerationStoreRefused
+                          ? error.message
+                          : GENERIC_CONTROL_FAILURE,
+                      ...(userOperationId
+                        ? {
+                            firstOutcome: undefined,
+                            firstError: materializationError,
+                          }
+                        : {}),
+                    },
+                  }
+                : current,
+            );
+          } catch (updateError) {
+            this.options.onError?.(updateError);
+          }
+          this.options.onError?.(error);
+          return { ok: false, error: materializationError };
         }
-        this.options.onError?.(error);
-        return { ok: false, error: materializationError };
+        const dispatch = (): Promise<
+          AgentDelegationResult<AgentDelegationSnapshot>
+        > => {
+          this.launchContinuation(
+            parent,
+            id,
+            materialized.next,
+            materialized.controller,
+            materialized.slot,
+          ).catch((error: unknown) => this.options.onError?.(error));
+          this.notify(parent);
+          return Promise.resolve({
+            ok: true,
+            value: this.projectLive(materialized.next),
+          });
+        };
+        return dispatch();
+      };
+      if (owned && admitted.version === 3) {
+        owned.dispatch = materialize;
+        return { ok: true, value: this.projectLive(admitted) };
       }
-      this.launchContinuation(
+      return materialize();
+    }
+    const dispatch = async (): Promise<
+      AgentDelegationResult<AgentDelegationSnapshot>
+    > => {
+      // An apply of a settled child reports its outcome in this response when
+      // it finishes within the wait and before any approval needs the user.
+      const responseWaitMs =
+        operation === 'apply' &&
+        !this.runs.has(id) &&
+        !this.pending.has(admitted.callKey)
+          ? (this.options.applyResponseWaitMs ?? 0)
+          : 0;
+      let userDecisionPending: () => void = () => undefined;
+      const needsUser = new Promise<void>((resolve) => {
+        userDecisionPending = resolve;
+      });
+      const command = this.performControl(
         parent,
         id,
-        materialized.next,
-        materialized.controller,
-        materialized.slot,
-      ).catch((error: unknown) => this.options.onError?.(error));
-      this.notify(parent);
-      return { ok: true, value: this.projectLive(materialized.next) };
-    }
-    // An apply of a settled child reports its outcome in this response when
-    // it finishes within the wait and before any approval needs the user.
-    const responseWaitMs =
-      operation === 'apply' &&
-      !this.runs.has(id) &&
-      !this.pending.has(admitted.callKey)
-        ? (this.options.applyResponseWaitMs ?? 0)
-        : 0;
-    let userDecisionPending: () => void = () => undefined;
-    const needsUser = new Promise<void>((resolve) => {
-      userDecisionPending = resolve;
-    });
-    const command = this.performControl(
-      parent,
-      id,
-      control,
-      harnessRevisions,
-      false,
-      () => userDecisionPending(),
-    )
-      .then(
-        () =>
-          this.update(id, (current) =>
-            current.control?.operationId === operationId
-              ? {
-                  ...current,
-                  control: { ...current.control, status: 'completed' },
-                }
-              : current,
-          ),
-        (error: unknown) =>
-          this.update(id, (current) =>
-            current.control?.operationId === operationId
-              ? {
-                  ...current,
-                  ...(error instanceof DelegationApplyError && error.leases
-                    ? {
-                        applyLeases: error.leases.length
-                          ? error.leases
-                          : undefined,
-                      }
-                    : {}),
-                  control: {
-                    ...current.control,
-                    status: 'failed',
-                    ...(error instanceof DelegationApplyError
-                      ? {
-                          error: controlError(error.message),
-                          applyFailure: error.failure,
-                        }
-                      : { error: GENERIC_CONTROL_FAILURE }),
-                  },
-                }
-              : current,
-          ),
+        control,
+        harnessRevisions,
+        false,
+        () => userDecisionPending(),
       )
-      .catch((error: unknown) => this.options.onError?.(error))
-      .finally(() => {
-        this.commands.delete(command);
-        this.workspaceControlReservations.delete(operationId);
-        const workspaceCommands = this.workspaceCommands.get(id);
-        workspaceCommands?.delete(command);
-        if (!workspaceCommands?.size) this.workspaceCommands.delete(id);
-        this.notify(parent);
-      });
-    this.commands.set(command, ownerKey(parent));
-    if (operation === 'apply' || operation === 'discard') {
-      const workspaceCommands = this.workspaceCommands.get(id) ?? new Set();
-      workspaceCommands.add(command);
-      this.workspaceCommands.set(id, workspaceCommands);
-    }
-    this.notify(parent);
-    if (responseWaitMs <= 0)
+        .then(
+          () =>
+            this.update(id, (current) =>
+              current.control?.operationId === operationId
+                ? {
+                    ...current,
+                    control: { ...current.control, status: 'completed' },
+                  }
+                : current,
+            ),
+          (error: unknown) =>
+            this.update(id, (current) =>
+              current.control?.operationId === operationId
+                ? {
+                    ...current,
+                    ...(error instanceof DelegationApplyError && error.leases
+                      ? {
+                          applyLeases: error.leases.length
+                            ? error.leases
+                            : undefined,
+                        }
+                      : {}),
+                    control: {
+                      ...current.control,
+                      status: 'failed',
+                      ...(error instanceof DelegationApplyError
+                        ? {
+                            error: controlError(error.message),
+                            applyFailure: error.failure,
+                          }
+                        : { error: GENERIC_CONTROL_FAILURE }),
+                    },
+                  }
+                : current,
+            ),
+        )
+        .catch((error: unknown) => this.options.onError?.(error))
+        .finally(() => {
+          this.commands.delete(command);
+          this.workspaceControlReservations.delete(operationId);
+          const workspaceCommands = this.workspaceCommands.get(id);
+          workspaceCommands?.delete(command);
+          if (!workspaceCommands?.size) this.workspaceCommands.delete(id);
+          this.notify(parent);
+        });
+      this.commands.set(command, ownerKey(parent));
+      if (operation === 'apply' || operation === 'discard') {
+        const workspaceCommands = this.workspaceCommands.get(id) ?? new Set();
+        workspaceCommands.add(command);
+        this.workspaceCommands.set(id, workspaceCommands);
+      }
+      this.notify(parent);
+      if (responseWaitMs <= 0)
+        return { ok: true, value: this.projectLive(admitted) };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          command,
+          needsUser,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, responseWaitMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      const latest = this.records.get(id) ?? admitted;
+      const outcome =
+        latest.control?.operationId === operationId
+          ? latest.control
+          : undefined;
+      return outcome?.status === 'failed' && outcome.applyFailure
+        ? applyFailed(outcome, outcome.applyFailure)
+        : { ok: true, value: this.projectLive(latest) };
+    };
+    if (owned) {
+      owned.dispatch = dispatch;
       return { ok: true, value: this.projectLive(admitted) };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        command,
-        needsUser,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, responseWaitMs);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
     }
-    const latest = this.records.get(id) ?? admitted;
-    const outcome =
-      latest.control?.operationId === operationId ? latest.control : undefined;
-    return outcome?.status === 'failed' && outcome.applyFailure
-      ? applyFailed(outcome, outcome.applyFailure)
-      : { ok: true, value: this.projectLive(latest) };
+    return dispatch();
   }
 
   /**
@@ -3325,10 +4436,126 @@ export class AgentDelegationBroker {
    * decided before the control was even persisted), a stashed handoff from
    * the run that just ended, or a fresh request. Never launches.
    */
-  private async materializeContinuation(
+  private materializeContinuation(
     parent: DelegationParentContext,
     id: string,
-    command: NonNullable<StoredDelegation['control']>,
+    command: StoredDelegationControl,
+    harnessRevisions: ReadonlyMap<string, number>,
+    providedSlot?: AdmissionSlot,
+  ): Promise<{
+    readonly next: StoredDelegation;
+    readonly controller: AbortController;
+    readonly slot: AdmissionSlot;
+  }> {
+    // Legacy keeps its original path; only stream generations have obligations.
+    if (this.records.get(id)?.version !== 3)
+      return this.materializeContinuationAttempt(
+        parent,
+        id,
+        command,
+        harnessRevisions,
+        providedSlot,
+      );
+    return this.materializeStreamContinuation(
+      parent,
+      id,
+      command,
+      harnessRevisions,
+      providedSlot,
+    );
+  }
+
+  private async materializeStreamContinuation(
+    parent: DelegationParentContext,
+    id: string,
+    command: StoredDelegationControl,
+    harnessRevisions: ReadonlyMap<string, number>,
+    providedSlot?: AdmissionSlot,
+  ): Promise<{
+    readonly next: StoredDelegation;
+    readonly controller: AbortController;
+    readonly slot: AdmissionSlot;
+  }> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = this.records.get(id);
+      if (current?.version === 3) await this.waitForStreamRollover(current);
+      try {
+        return await this.materializeContinuationAttempt(
+          parent,
+          id,
+          command,
+          harnessRevisions,
+          attempt === 0 ? providedSlot : undefined,
+        );
+      } catch (error) {
+        if (!(error instanceof RolloverPublicationAdvanced)) throw error;
+      }
+    }
+    throw new RolloverPublicationAdvanced(
+      'Previous generation publication is still pending',
+    );
+  }
+
+  private streamNotificationComplete(record: StoredDelegationV3): boolean {
+    const target = record.readMetadata.current.target;
+    return (
+      record.latestResult?.runGeneration === target.runGeneration &&
+      (record.latestResult.notified === true ||
+        this.notifiedStreamGenerations.has(this.streamOutboxKey(target)))
+    );
+  }
+
+  /** One ten-second budget covers both obligations, entirely outside writes. */
+  private async waitForStreamRollover(
+    record: StoredDelegationV3,
+  ): Promise<void> {
+    const target = record.readMetadata.current.target;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let wake: (() => void) | undefined;
+    const notified = new Promise<void>((resolve, reject) => {
+      wake = (): void => {
+        const current = this.records.get(target.delegationId);
+        if (this.closed) reject(new Error('Delegation broker closed'));
+        else if (
+          current?.version === 3 &&
+          this.streamNotificationComplete(current)
+        )
+          resolve();
+      };
+      this.outboxWaiters.add(wake);
+      wake();
+    });
+    try {
+      await Promise.race([
+        Promise.all([
+          this.cardPublications.flush(
+            target,
+            record.cardPublication?.cardRevision ?? 0,
+          ),
+          notified,
+        ]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new RolloverPublicationAdvanced(
+                  'Previous generation publication is still pending',
+                ),
+              ),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      if (wake) this.outboxWaiters.delete(wake);
+    }
+  }
+
+  private async materializeContinuationAttempt(
+    parent: DelegationParentContext,
+    id: string,
+    command: StoredDelegationControl,
     harnessRevisions: ReadonlyMap<string, number>,
     providedSlot?: AdmissionSlot,
   ): Promise<{
@@ -3338,6 +4565,8 @@ export class AgentDelegationBroker {
   }> {
     const record = this.records.get(id);
     if (!record) throw new Error('Delegation record disappeared');
+    if (record.version === 3 && record.settling)
+      throw new Error('Previous settlement is unresolved');
     // The command retains the authority present before its acceptance commit.
     // A revocation during that commit must never authorize its continuation.
     const authorityHarnessIds = new Set<string>();
@@ -3366,7 +4595,7 @@ export class AgentDelegationBroker {
     // longer live. Only an explicit 'resume' clears stopRequested, so a
     // follow-up never silently restarts a cancelled child.
     if (
-      record.stopRequested ||
+      stopRequest(record) ||
       record.control?.operationId !== command.operationId ||
       record.control.status !== 'accepted'
     )
@@ -3376,7 +4605,7 @@ export class AgentDelegationBroker {
     if (
       !resumeSessionId ||
       !record.route ||
-      (record.history?.length ?? 0) >= 16
+      (legacyArrays(record)?.history?.length ?? 0) >= 16
     )
       throw new Error('Native child cannot continue');
     const runGeneration = record.state.runGeneration + 1;
@@ -3425,7 +4654,7 @@ export class AgentDelegationBroker {
     const controller = new AbortController();
     const continuedUserMessage =
       command.operation === 'follow_up' || command.operation === 'steer'
-        ? record.state.transcript?.find(
+        ? executionState(record).transcript?.find(
             (item) =>
               item.id === command.operationId && isAuthoredTextItem(item),
           )
@@ -3445,7 +4674,7 @@ export class AgentDelegationBroker {
     const nextState = createDelegationRunState(id, runGeneration);
     const { controlAuthor: _controlAuthor, ...retainedParent } = parent;
     void _controlAuthor;
-    const next: StoredDelegation = {
+    const nextBase = {
       ...record,
       // A new generation must not inherit a historical task deadline.
       deadlineAt: undefined,
@@ -3461,12 +4690,12 @@ export class AgentDelegationBroker {
           ? parent.parentRunGeneration
           : record.parentRunGeneration,
       task,
-      control: { ...command, status: 'completed' },
+      control: { ...command, status: 'completed' as const },
       createdAt,
       // A follow-up starts the latest transcript generation with its authored
       // user message. Keep that item out of the archived generation so there
       // is one durable copy, and provider cumulative updates retain it below.
-      history: [...(record.history ?? []), historyTranscript],
+      history: [...(legacyPrefixView(record).history ?? []), historyTranscript],
       state: continuedUserMessage
         ? appendAuthoredMessage(nextState, {
             ...continuedUserMessage,
@@ -3477,12 +4706,20 @@ export class AgentDelegationBroker {
       resumeSessionId,
       deliveryId: randomUUID(),
       delivery: {
-        status: 'suppressed',
-        reason: 'automatic_delivery_removed',
+        status: 'suppressed' as const,
+        reason: 'automatic_delivery_removed' as const,
       },
       stopRequests: [
-        ...(record.stopRequests ?? []),
-        ...(record.stopRequested ? [record.stopRequested] : []),
+        ...(legacyArrays(record)?.stopRequests ?? []),
+        ...(legacyArrays(record)?.stopRequested
+          ? [legacyArrays(record)?.stopRequested].filter(
+              (
+                entry,
+              ): entry is NonNullable<
+                StoredDelegationLegacy['stopRequested']
+              > => entry !== undefined,
+            )
+          : []),
       ],
       stopRequested: undefined,
       callKey: command.key,
@@ -3490,18 +4727,98 @@ export class AgentDelegationBroker {
         .update(JSON.stringify(task))
         .digest('hex'),
       launch: {
-        version: 1,
+        version: 1 as const,
         delegationId: id,
         runGeneration,
         launchKey: command.key,
-        phase: 'reserved',
+        phase: 'reserved' as const,
       },
       admission: slot.waited
         ? { runGeneration, state: 'waiting' as const, queuedAt: slot.queuedAt }
         : undefined,
     };
+    let next: StoredDelegation = nextBase;
     try {
-      await this.update(id, () => next);
+      if (record.version === 3) {
+        if (record.settling)
+          throw new Error('Previous generation settlement is unresolved');
+        const descriptor = await this.streamPort().generation({
+          chatId: record.parent.chatId,
+          delegationId: id,
+          runGeneration: record.state.runGeneration,
+        });
+        if (!descriptor.ok) throw new Error(descriptor.error.message);
+        next = this.prepareV3Update(record, nextBase);
+        next = {
+          ...next,
+          latestReceipt: undefined,
+          registration: {
+            runGeneration,
+            createdAt,
+            store: 'stream',
+            origin: {
+              kind: command.operation === 'resume' ? 'resume' : 'follow_up',
+              authoredItemId: command.operationId,
+              // Keep in sync with agent-transcript/lib/delegation-transcript.ts.
+              anchorMessageId: `delegated-agent-${id}-run-${runGeneration}`,
+            },
+            executionMode: task.executionMode,
+          },
+          readMetadata: {
+            ...next.readMetadata,
+            current: {
+              store: 'stream',
+              target: {
+                kind: 'delegation',
+                chatId: record.parent.chatId,
+                delegationId: id,
+                runGeneration,
+              },
+            },
+            lastActivityAt: Math.max(
+              next.readMetadata.lastActivityAt,
+              descriptor.value.stream?.latestRowTimestamp ?? 0,
+            ),
+          },
+        };
+      } else if (nextBase.version !== 3)
+        next = await this.selectGenerationStore(
+          nextBase,
+          command.operation === 'resume' ? 'resume' : 'follow_up',
+          command.operationId,
+        );
+      if (
+        controller.signal.aborted ||
+        !this.validAdmittedParent(parent) ||
+        Array.from(authorityHarnessIds).some(
+          (harnessId) =>
+            (harnessRevisions.get(harnessId) ?? 0) !==
+            (this.harnessRevisions.get(harnessId) ?? 0),
+        )
+      )
+        throw new Error('Continuation cancelled during store selection');
+      await this.update(id, (current) => {
+        // A stop can commit while the generation lookup is pending; never
+        // overwrite it with the continuation built before that wait.
+        if (
+          stopRequest(current) ||
+          current.control?.operationId !== command.operationId ||
+          current.control.status !== 'accepted'
+        )
+          throw new Error('Continuation cancelled');
+        if (
+          current.version === 3 &&
+          (current.state.runGeneration !== record.state.runGeneration ||
+            this.cardPublications.watermark(
+              current.readMetadata.current.target,
+            ) < (current.cardPublication?.cardRevision ?? 0) ||
+            !this.streamNotificationComplete(current))
+        )
+          throw new RolloverPublicationAdvanced(
+            'Previous generation publication advanced',
+          );
+        return next;
+      });
     } catch (error) {
       slot.withdraw();
       throw error;
@@ -3548,6 +4865,12 @@ export class AgentDelegationBroker {
     controller: AbortController,
     slot: AdmissionSlot,
   ): Promise<void> {
+    if (this.receiptQuarantine.isQuarantined(id)) {
+      controller.abort();
+      slot.withdraw();
+      this.pending.delete(next.callKey);
+      return Promise.resolve();
+    }
     const preparation = this.create(
       parent,
       next.task,
@@ -3585,12 +4908,13 @@ export class AgentDelegationBroker {
   private async performControl(
     parent: DelegationParentContext,
     id: string,
-    command: NonNullable<StoredDelegation['control']>,
+    command: StoredDelegationControl,
     harnessRevisions: ReadonlyMap<string, number>,
     trustedOwnership = false,
     awaitingUser?: () => void,
     providedSlot?: AdmissionSlot,
   ): Promise<void> {
+    this.checkReceiptQuarantine(id);
     if (command.operation === 'interrupt') {
       const run = this.runs.get(id);
       if (run) await this.stopRun(id, 'parent_cancelled', true);
@@ -3608,6 +4932,7 @@ export class AgentDelegationBroker {
       if (run) {
         const handle = run.handle ?? (await run.started);
         run.handle = handle;
+        this.checkReceiptQuarantine(id);
         const admission = run.lease.adapter.steer
           ? await run.lease.adapter.steer(handle, {
               delegationId: id,
@@ -3619,12 +4944,16 @@ export class AgentDelegationBroker {
               kind: 'rejected' as const,
               attemptId: command.operationId,
               reason: 'The active delegated provider does not support steering',
+              fallback: 'ordinary' as const,
             };
         await this.update(id, (current) =>
           current.control?.operationId === command.operationId
             ? {
                 ...current,
-                control: { ...current.control, steeringDelivery: admission },
+                control: {
+                  ...current.control,
+                  steeringDelivery: storedSteeringDelivery(admission),
+                },
               }
             : current,
         );
@@ -3656,15 +4985,16 @@ export class AgentDelegationBroker {
         this.listeners.add(check);
         check();
       });
+      this.checkReceiptQuarantine(id);
       const record = this.records.get(id);
       if (!record || (!trustedOwnership && !this.validParent(parent)))
         throw new Error('Parent revoked');
       if (command.operation === 'apply' || command.operation === 'discard') {
         const applying = command.operation === 'apply';
         if (
-          record.stopRequested?.status === 'accepted' &&
-          (record.stopRequested.runGeneration === undefined ||
-            record.stopRequested.runGeneration === record.state.runGeneration)
+          stopRequest(record)?.status === 'accepted' &&
+          (stopRequest(record)?.runGeneration === undefined ||
+            stopRequest(record)?.runGeneration === record.state.runGeneration)
         )
           throw applying
             ? new DelegationApplyError(
@@ -3696,6 +5026,7 @@ export class AgentDelegationBroker {
           controller,
         });
         try {
+          this.checkReceiptQuarantine(id);
           await this.options.manageWorkspace?.(
             parent,
             record,
@@ -3743,7 +5074,7 @@ export class AgentDelegationBroker {
       const currentControl = this.records.get(id)?.control;
       if (
         (!trustedOwnership && !this.validParent(parent)) ||
-        this.records.get(id)?.stopRequested ||
+        this.currentStopRequested(id) ||
         currentControl?.operationId !== command.operationId ||
         currentControl.status !== 'accepted'
       )
@@ -3795,14 +5126,64 @@ export class AgentDelegationBroker {
       );
     const record = this.records.get(id);
     if (!record || !this.canAccess(parent, record)) return notDescendant();
+    if (record.version === 3)
+      return this.withReceiptAdmission<AgentDelegationSnapshot>(
+        {
+          chatId: parent.chatId,
+          receiptKind: 'stop',
+          key: durableParentCallKey(parent),
+        },
+        async (owned) => {
+          if (!this.validParent(parent))
+            return failure(
+              'parent_unavailable',
+              'The delegation parent is unavailable.',
+            );
+          const current = this.records.get(id);
+          if (!current || !this.canAccess(parent, current))
+            return notDescendant();
+          if (current.version !== 3) throw new Error('Stop generation changed');
+          return this.requestStreamStop(parent, current, reason, owned);
+        },
+      );
     const key = durableParentCallKey(parent);
+    // An uncertain stream stop reserves its key chat-wide, legacy targets too.
+    if (
+      this.receiptReserved({ chatId: parent.chatId, receiptKind: 'stop', key })
+    )
+      return this.receiptUnavailable();
+    for (const candidate of Array.from(this.records.values())) {
+      if (candidate.version !== 3 || !sameChat(parent, candidate.parent))
+        continue;
+      const alias = candidate.receipts.stopReceipts.find(
+        (entry) => entry.key === key,
+      );
+      if (alias && alias.delegationId !== id)
+        return failure(
+          'invalid_request',
+          'A stop call cannot change its target.',
+        );
+    }
+    if (this.chatHasStreamRecord(parent)) {
+      const archived = await this.archivedStreamReceipt(parent, 'stop', key);
+      if (archived)
+        return 'kind' in archived ? this.receiptUnavailable() : archived;
+    }
     const prior = Array.from(this.records.values())
       .filter((candidate) => sameChat(parent, candidate.parent))
       .map((candidate) => ({
         delegationId: candidate.state.delegationId,
         request: [
-          ...(candidate.stopRequests ?? []),
-          ...(candidate.stopRequested ? [candidate.stopRequested] : []),
+          ...(legacyArrays(candidate)?.stopRequests ?? []),
+          ...(legacyPrefixView(candidate).stopRequested
+            ? [legacyPrefixView(candidate).stopRequested].filter(
+                (
+                  entry,
+                ): entry is NonNullable<
+                  StoredDelegationLegacy['stopRequested']
+                > => entry !== undefined,
+              )
+            : []),
         ].find((request) => request.key === key),
       }))
       .find(
@@ -3810,7 +5191,7 @@ export class AgentDelegationBroker {
           candidate,
         ): candidate is {
           delegationId: string;
-          request: NonNullable<StoredDelegation['stopRequested']>;
+          request: NonNullable<StoredDelegationLegacy['stopRequested']>;
         } => candidate.request !== undefined,
       );
     if (prior)
@@ -3832,6 +5213,7 @@ export class AgentDelegationBroker {
     if (record.stopRequested?.status === 'failed') {
       let capacityExceeded = false;
       await this.update(id, (current) => {
+        if (current.version === 3) throw new Error('Stop generation changed');
         const active = current.stopRequested;
         if (!active || active.status !== 'failed') return current;
         if ((current.stopRequests?.length ?? 0) >= MAX_RETAINED_STOP_REQUESTS) {
@@ -3840,7 +5222,10 @@ export class AgentDelegationBroker {
         }
         return {
           ...current,
-          stopRequests: [...(current.stopRequests ?? []), active],
+          stopRequests: [
+            ...(legacyArrays(current)?.stopRequests ?? []),
+            active,
+          ],
           stopRequested: undefined,
         };
       });
@@ -3855,10 +5240,13 @@ export class AgentDelegationBroker {
     }
     if (record.stopRequested) {
       await this.update(id, (current) => {
+        if (current.version === 3) throw new Error('Stop generation changed');
         const active = current.stopRequested;
         if (
           !active ||
-          current.stopRequests?.some((request) => request.key === key)
+          legacyArrays(current)?.stopRequests?.some(
+            (request) => request.key === key,
+          )
         )
           return current;
         if (
@@ -3869,7 +5257,7 @@ export class AgentDelegationBroker {
         return {
           ...current,
           stopRequests: [
-            ...(current.stopRequests ?? []),
+            ...(legacyArrays(current)?.stopRequests ?? []),
             {
               operationId: active.operationId,
               key,
@@ -3886,8 +5274,16 @@ export class AgentDelegationBroker {
           'The cancellation record is unavailable.',
         );
       const retained = [
-        ...(coalesced.stopRequests ?? []),
-        ...(coalesced.stopRequested ? [coalesced.stopRequested] : []),
+        ...(legacyArrays(coalesced)?.stopRequests ?? []),
+        ...(legacyArrays(coalesced)?.stopRequested
+          ? [legacyArrays(coalesced)?.stopRequested].filter(
+              (
+                entry,
+              ): entry is NonNullable<
+                StoredDelegationLegacy['stopRequested']
+              > => entry !== undefined,
+            )
+          : []),
       ].some((request) => request.key === key);
       return retained
         ? { ok: true, value: this.project(coalesced) }
@@ -3899,6 +5295,7 @@ export class AgentDelegationBroker {
     const operationId = randomUUID();
     let capacityExceeded = false;
     await this.update(id, (current) => {
+      if (current.version === 3) throw new Error('Stop generation changed');
       if (current.stopRequested) return current;
       if ((current.stopRequests?.length ?? 0) >= MAX_RETAINED_STOP_REQUESTS) {
         capacityExceeded = true;
@@ -3920,17 +5317,21 @@ export class AgentDelegationBroker {
         'The retained cancellation receipt limit was reached.',
       );
     const accepted = this.records.get(id);
-    if (accepted?.stopRequested?.operationId !== operationId)
+    if (
+      (accepted ? stopRequest(accepted)?.operationId : undefined) !==
+      operationId
+    )
       return accepted
         ? this.requestStop(parent, id, reason)
         : failure('runtime_error', 'The cancellation record is unavailable.');
     const command = this.stop(parent, id, reason)
       .then(async (result) => {
         await this.update(id, (current) => {
+          if (current.version === 3) throw new Error('Stop generation changed');
           const status = result.ok ? 'completed' : 'failed';
           const activeMatches =
             current.stopRequested?.operationId === operationId;
-          const aliasesMatch = current.stopRequests?.some(
+          const aliasesMatch = legacyArrays(current)?.stopRequests?.some(
             (request) => request.operationId === operationId,
           );
           return activeMatches || aliasesMatch
@@ -3940,12 +5341,12 @@ export class AgentDelegationBroker {
                   ? { ...current.stopRequested, status }
                   : current.stopRequested,
                 stopRequests: aliasesMatch
-                  ? current.stopRequests?.map((request) =>
+                  ? legacyArrays(current)?.stopRequests?.map((request) =>
                       request.operationId === operationId
                         ? { ...request, status }
                         : request,
                     )
-                  : current.stopRequests,
+                  : legacyArrays(current)?.stopRequests,
               }
             : current;
         });
@@ -3953,9 +5354,10 @@ export class AgentDelegationBroker {
       .catch(async (error: unknown) => {
         this.options.onError?.(error);
         await this.update(id, (current) => {
+          if (current.version === 3) throw new Error('Stop generation changed');
           const activeMatches =
             current.stopRequested?.operationId === operationId;
-          const aliasesMatch = current.stopRequests?.some(
+          const aliasesMatch = legacyArrays(current)?.stopRequests?.some(
             (request) => request.operationId === operationId,
           );
           return activeMatches || aliasesMatch
@@ -3965,12 +5367,12 @@ export class AgentDelegationBroker {
                   ? { ...current.stopRequested, status: 'failed' }
                   : current.stopRequested,
                 stopRequests: aliasesMatch
-                  ? current.stopRequests?.map((request) =>
+                  ? legacyArrays(current)?.stopRequests?.map((request) =>
                       request.operationId === operationId
                         ? { ...request, status: 'failed' }
                         : request,
                     )
-                  : current.stopRequests,
+                  : legacyArrays(current)?.stopRequests,
               }
             : current;
         }).catch((failure: unknown) => this.options.onError?.(failure));
@@ -3999,6 +5401,8 @@ export class AgentDelegationBroker {
       );
     const record = this.records.get(id);
     if (!record || !this.canAccess(parent, record)) return notDescendant();
+    if (this.receiptQuarantine.isQuarantined(id))
+      return this.receiptUnavailable();
     const causes = subtreeStopCauses(parent, record, reason);
     const descendants = Array.from(this.records.values()).filter((child) =>
       this.descendantOf(child, id),
@@ -4050,6 +5454,8 @@ export class AgentDelegationBroker {
     trustedOwnership = false,
   ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
     const id = record.state.delegationId;
+    if (this.receiptQuarantine.isQuarantined(id))
+      return this.receiptUnavailable();
     const preparing = this.pending.get(record.callKey);
     if (preparing) {
       claimStop(preparing, cause);
@@ -4304,6 +5710,11 @@ export class AgentDelegationBroker {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.cardPublications.close();
+    for (const entry of Array.from(this.settlementOutbox.values()))
+      clearTimeout(entry.timer);
+    this.settlementOutbox.clear();
+    for (const wake of Array.from(this.outboxWaiters)) wake();
     for (const command of Array.from(this.commandControllers.values()))
       command.controller.abort();
     for (const listener of Array.from(this.listeners)) listener();
@@ -4345,7 +5756,7 @@ export class AgentDelegationBroker {
   ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
     const createdAt = Date.now();
     const task = { ...input, executionMode: 'background' as const };
-    const record: StoredDelegation = {
+    let record: StoredDelegation = {
       version: 2,
       notificationOnly: true,
       parent,
@@ -4380,17 +5791,33 @@ export class AgentDelegationBroker {
       },
     };
     try {
-      await this.options.storage.commit(record);
-    } catch {
+      record = await this.prepare(
+        this.selectGenerationStore(record, 'launch'),
+        controller.signal,
+      );
+      if (controller.signal.aborted || !this.validAdmittedParent(parent))
+        throw new Error('Delegation admission cancelled');
+      record = await this.commitStorageRecord(record);
+    } catch (error) {
       slot.withdraw();
       this.pending.delete(callKey);
       this.notify(parent);
-      return failure(
-        'runtime_error',
-        'The delegation could not be durably admitted.',
-      );
+      return error instanceof GenerationStoreRefused
+        ? {
+            ok: false,
+            error: {
+              code: 'runtime_error',
+              message: error.message,
+              retryable: true,
+            },
+          }
+        : failure(
+            controller.signal.aborted ? 'parent_unavailable' : 'runtime_error',
+            'The delegation could not be durably admitted.',
+          );
     }
     this.records.set(id, record);
+    this.newIdentityReservations.delete(callKey);
     this.journals.set(id, this.restoreJournal(record));
     this.publishTranscript(record);
     const preparation = this.create(
@@ -4432,6 +5859,7 @@ export class AgentDelegationBroker {
     let capturedRoute: ResolvedAgentRouteSnapshot | undefined;
     const createdAt = admitted?.createdAt ?? Date.now();
     try {
+      this.checkReceiptQuarantine(id);
       if (slot) {
         const granted = await this.prepare(slot.granted, controller.signal);
         if (!granted)
@@ -4610,7 +6038,7 @@ export class AgentDelegationBroker {
           'The delegation parent stopped during workspace observation.',
         );
       }
-      const record: StoredDelegation = {
+      let record: StoredDelegation = {
         version: 2,
         ...(admitted?.notificationOnly ? { notificationOnly: true } : {}),
         ...(admitted?.transcriptRevision !== undefined
@@ -4648,12 +6076,18 @@ export class AgentDelegationBroker {
         ...(admitted?.resumeSessionId
           ? { resumeSessionId: admitted.resumeSessionId }
           : {}),
-        ...(admitted?.history ? { history: admitted.history } : {}),
-        ...(admitted?.results ? { results: admitted.results } : {}),
+        ...(legacyArrays(admitted)?.history
+          ? { history: legacyArrays(admitted)?.history }
+          : {}),
+        ...(legacyArrays(admitted)?.results
+          ? { results: legacyArrays(admitted)?.results }
+          : {}),
         ...(admitted?.control ? { control: admitted.control } : {}),
-        ...(admitted?.controls ? { controls: admitted.controls } : {}),
-        ...(admitted?.stopRequests
-          ? { stopRequests: admitted.stopRequests }
+        ...(legacyArrays(admitted)?.controls
+          ? { controls: legacyArrays(admitted)?.controls }
+          : {}),
+        ...(legacyArrays(admitted)?.stopRequests
+          ? { stopRequests: legacyArrays(admitted)?.stopRequests }
           : {}),
         ...(admitted?.spawnIdentity
           ? { spawnIdentity: admitted.spawnIdentity }
@@ -4673,6 +6107,34 @@ export class AgentDelegationBroker {
           reason: 'automatic_delivery_removed',
         },
       };
+      if (admitted?.version === 3)
+        // The admission predates preparation: carry the prepared workspace.
+        record = {
+          ...admitted,
+          route,
+          task,
+          ...(capabilityGrant ? { capabilityGrant } : {}),
+          ...(record.workspaceObservation
+            ? { workspaceObservation: record.workspaceObservation }
+            : {}),
+          ...(record.inheritedCwd ? { inheritedCwd: record.inheritedCwd } : {}),
+          ...(record.executionCwd
+            ? {
+                executionCwd: record.executionCwd,
+                ...(record.isolationBaseCwd
+                  ? { isolationBaseCwd: record.isolationBaseCwd }
+                  : {}),
+                isolationRevision: record.isolationRevision,
+              }
+            : {}),
+        };
+      else if (!admitted)
+        record = await this.prepare(
+          this.selectGenerationStore(record, 'launch'),
+          controller.signal,
+        );
+      if (controller.signal.aborted || !this.validAdmittedParent(parent))
+        throw new Error('Delegation preparation cancelled');
       if (admitted) {
         await this.update(id, (current) => {
           if (current.state.runGeneration !== record.state.runGeneration)
@@ -4695,8 +6157,9 @@ export class AgentDelegationBroker {
           };
         });
       } else {
-        await this.options.storage.commit(record);
+        record = await this.commitStorageRecord(record);
         this.records.set(id, record);
+        this.newIdentityReservations.delete(callKey);
         this.publishTranscript(record);
       }
       const journal = this.restoreJournal(record);
@@ -4717,6 +6180,14 @@ export class AgentDelegationBroker {
           value: this.projectLive(this.records.get(id) ?? record),
         };
       }
+      if (record.version === 3) {
+        const registered = await this.streamPort().registerGeneration({
+          chatId: record.parent.chatId,
+          delegationId: id,
+          ...record.registration,
+        });
+        if (!registered.ok) throw new Error(registered.error.message);
+      }
       const retainedLease = lease;
       const retainedId = id;
       const started = Promise.resolve().then(
@@ -4725,25 +6196,50 @@ export class AgentDelegationBroker {
             throw new Error('Delegation launch was already attempted');
           if (controller.signal.aborted || !this.validAdmittedParent(parent))
             throw new Error('Delegation launch cancelled');
-          return retainedLease.adapter.start(
-            {
-              delegationId: retainedId,
-              runGeneration: record.state.runGeneration,
-              launchKey: callKey,
-              ...(record.resumeSessionId
-                ? { resumeSessionId: record.resumeSessionId }
-                : {}),
-              parent,
-              task,
-              route,
-              cwd:
-                record.executionCwd ??
-                record.inheritedCwd ??
-                this.parentCwd(parent),
-              effectivePermission: 'read-only',
-              signal: controller.signal,
-            },
-            (event) => this.receive(retainedId, event),
+          this.checkReceiptQuarantine(retainedId);
+          const request: AgentRunRequest = {
+            delegationId: retainedId,
+            runGeneration: record.state.runGeneration,
+            launchKey: callKey,
+            ...(record.resumeSessionId
+              ? { resumeSessionId: record.resumeSessionId }
+              : {}),
+            parent,
+            task,
+            route,
+            cwd:
+              record.executionCwd ??
+              record.inheritedCwd ??
+              this.parentCwd(parent),
+            ...(record.version === 3
+              ? {
+                  transcriptStream: {
+                    target: record.readMetadata.current.target,
+                  },
+                }
+              : {}),
+            effectivePermission: 'read-only',
+            signal: controller.signal,
+          };
+          const target = request.transcriptStream?.target;
+          const cardIsStream =
+            this.projectTranscript(record).transcriptStore === 'chat-stream-v2';
+          if (
+            cardIsStream !== (record.version === 3) ||
+            (record.version === 3
+              ? record.registration.store !== 'stream' ||
+                record.registration.runGeneration !== request.runGeneration ||
+                record.readMetadata.current.store !== 'stream' ||
+                target?.chatId !== record.parent.chatId ||
+                target.delegationId !== retainedId ||
+                target.runGeneration !== request.runGeneration
+              : target !== undefined)
+          )
+            throw new GenerationStoreRefused(
+              'Delegation storage targets do not agree. Try again.',
+            );
+          return retainedLease.adapter.start(request, (event) =>
+            this.receive(retainedId, event),
           );
         },
       );
@@ -4783,8 +6279,17 @@ export class AgentDelegationBroker {
         .catch((error: unknown) => this.reportFailure(retainedId, error));
       this.notify(parent);
       return { ok: true, value: this.projectLive(record) };
-    } catch {
+    } catch (error) {
       if (lease && !this.runs.has(id)) lease.release();
+      if (error instanceof GenerationStoreRefused)
+        return {
+          ok: false,
+          error: {
+            code: 'runtime_error',
+            message: error.message,
+            retryable: true,
+          },
+        };
       return failure(
         controller.signal.aborted ? 'parent_unavailable' : 'runtime_error',
         'The delegation could not be prepared and durably reserved.',
@@ -4819,6 +6324,23 @@ export class AgentDelegationBroker {
     id: string,
     event: AgentDelegationEvent,
   ): Promise<void> {
+    if (this.receiptQuarantine.isQuarantined(id)) return;
+    try {
+      await this.receiveOwned(id, event);
+    } catch (error) {
+      if (
+        !(error instanceof ReceiptAdmissionFailure) ||
+        error.uncertainWrite ||
+        !this.receiptQuarantine.isQuarantined(id)
+      )
+        throw error;
+    }
+  }
+
+  private async receiveOwned(
+    id: string,
+    event: AgentDelegationEvent,
+  ): Promise<void> {
     const record = this.records.get(id);
     if (
       !record ||
@@ -4826,6 +6348,28 @@ export class AgentDelegationBroker {
       event.runGeneration !== record.state.runGeneration
     )
       return;
+    if (record.version === 3 && event.event.type === 'transcript_receipt') {
+      const receipt = event.event;
+      await this.update(id, (current) =>
+        current.version === 3
+          ? {
+              ...current,
+              latestReceipt: {
+                target: current.readMetadata.current.target,
+                streamRevision: receipt.streamRevision,
+                mutationKey: receipt.mutationKey,
+                items: receipt.items,
+                replayed: receipt.replayed,
+              },
+            }
+          : current,
+      );
+      return;
+    }
+    const terminalAnswer =
+      event.event.type === 'terminal'
+        ? captureSettlementAnswer(event.event.finalText)
+        : undefined;
     const run = this.runs.get(id);
     const interrupting =
       run?.interrupted === true && event.event.type === 'terminal';
@@ -4858,38 +6402,42 @@ export class AgentDelegationBroker {
     }
     const stopReason = run?.stopReason;
     const stopCause = run?.stopCause;
-    await this.update(id, (current) => {
-      const projected = reduceDelegationEvent(current.state, event);
-      const reduced =
-        event.event.type === 'transcript'
-          ? retainAuthoredTranscriptItems(projected, current.state)
-          : projected;
-      const nextState = interrupting
-        ? {
-            ...reduced,
-            status: 'interrupted' as const,
-            error: undefined,
-            stopReason: undefined,
-            cancelledByUser: undefined,
-            stoppedBy: undefined,
-          }
-        : reduced;
-      // A runner that reports first cannot change a stop's outcome: an
-      // attributed stop settles cancelled even when the runner says failed.
-      return {
-        ...current,
-        state:
-          stopReason &&
-          !interrupting &&
-          event.event.type === 'terminal' &&
-          (event.event.status === 'cancelled' ||
-            event.event.status === 'deadline_exceeded' ||
-            (event.event.status === 'failed' &&
-              stopCause?.reason === stopReason))
-            ? withStop(nextState, stopReason, stopCause)
-            : nextState,
-      };
-    });
+    await this.update(
+      id,
+      (current) => {
+        const projected = reduceDelegationEvent(current.state, event);
+        const reduced =
+          event.event.type === 'transcript'
+            ? retainAuthoredTranscriptItems(projected, current.state)
+            : projected;
+        const nextState = interrupting
+          ? {
+              ...reduced,
+              status: 'interrupted' as const,
+              error: undefined,
+              stopReason: undefined,
+              cancelledByUser: undefined,
+              stoppedBy: undefined,
+            }
+          : reduced;
+        // A runner that reports first cannot change a stop's outcome: an
+        // attributed stop settles cancelled even when the runner says failed.
+        return {
+          ...current,
+          state:
+            stopReason &&
+            !interrupting &&
+            event.event.type === 'terminal' &&
+            (event.event.status === 'cancelled' ||
+              event.event.status === 'deadline_exceeded' ||
+              (event.event.status === 'failed' &&
+                stopCause?.reason === stopReason))
+              ? withStop(nextState, stopReason, stopCause)
+              : nextState,
+        };
+      },
+      terminalAnswer,
+    );
     const current = this.records.get(id);
     if (!current) return;
     this.notify(current.parent);
@@ -4916,6 +6464,11 @@ export class AgentDelegationBroker {
   ): Promise<void> {
     const run = this.runs.get(id);
     if (!run) return;
+    if (this.receiptQuarantine.isQuarantined(id)) {
+      this.abortQuarantinedWork(id);
+      await this.cleanup(id, run);
+      return;
+    }
     if (run.stopping) return run.stopping;
     run.interrupted = interrupted;
     if (cause?.reason === reason) claimStop(run, cause);
@@ -4942,6 +6495,7 @@ export class AgentDelegationBroker {
         return;
       }
       run.handle = handle;
+      this.checkReceiptQuarantine(id);
       const stopped = await run.lease.adapter.stop(handle, effectiveReason);
       if (!stopped.stopped) {
         await this.markUncertain(id);
@@ -5074,6 +6628,8 @@ export class AgentDelegationBroker {
             : new Error('Delegation cleanup failed');
       };
       try {
+        if (this.receiptQuarantine.isQuarantined(id) && !run.handle)
+          run.handle = await run.started.catch(() => undefined);
         if (run.handle) await run.lease.adapter.close(run.handle);
       } catch (error) {
         captureError(error);
@@ -5179,6 +6735,7 @@ export class AgentDelegationBroker {
       { status: 'suppressed' }
     >['reason'],
   ): Promise<void> {
+    if (this.receiptQuarantine.isQuarantined(id)) return Promise.resolve();
     return this.update(id, (current) =>
       current.delivery.status === 'acknowledged' ||
       current.delivery.status === 'suppressed'
@@ -5187,58 +6744,1874 @@ export class AgentDelegationBroker {
     );
   }
 
-  private update(
+  private currentStopRequested(
     id: string,
-    change: (record: StoredDelegation) => StoredDelegation,
+  ): StoredDelegationLegacy['stopRequested'] {
+    const record = this.records.get(id);
+    return record ? stopRequest(record) : undefined;
+  }
+
+  private streamCommandReplay(
+    parent: DelegationParentContext,
+    key: string,
+    hash: string,
+    id: string,
+    user: boolean,
+  ): AgentDelegationResult<AgentDelegationSnapshot> | undefined {
+    for (const record of Array.from(this.records.values())) {
+      if (record.version !== 3 || !sameChat(parent, record.parent)) continue;
+      const entry = record.receipts.commandReceipts.find(
+        (receipt) => receipt.key === key,
+      );
+      if (!entry) continue;
+      if (entry.delegationId !== id || entry.requestHash !== hash)
+        return failure(
+          'invalid_request',
+          'A command call cannot change its arguments.',
+        );
+      const ack = projectDelegationCommandReplay(
+        entry.reply,
+        user ? 'user' : 'agent',
+      );
+      return delegationReceiptAckToResult(ack);
+    }
+    return undefined;
+  }
+
+  private legacyCommandReplay(
+    parent: DelegationParentContext,
+    key: string,
+    hash: string,
+    id: string,
+    user: boolean,
+  ): AgentDelegationResult<AgentDelegationSnapshot> | undefined {
+    for (const record of Array.from(this.records.values())) {
+      if (record.version !== 3 || !sameChat(parent, record.parent)) continue;
+      const prefix = legacyPrefixView(record);
+      const failureReceipt = prefix.userMessageReceipts?.find(
+        (entry) => entry.key === key,
+      );
+      if (failureReceipt)
+        return failureReceipt.delegationId === id &&
+          failureReceipt.requestHash === hash
+          ? { ok: false, error: structuredClone(failureReceipt.error) }
+          : failure(
+              'invalid_request',
+              'A command call cannot change its arguments.',
+            );
+      const control = [
+        ...(prefix.controls ?? []),
+        ...(prefix.control ? [prefix.control] : []),
+      ].find((entry) => entry.key === key);
+      if (!control) continue;
+      if (record.state.delegationId !== id || control.requestHash !== hash)
+        return failure(
+          'invalid_request',
+          'A command call cannot change its arguments.',
+        );
+      if (user && control.firstError)
+        return { ok: false, error: structuredClone(control.firstError) };
+      if (user && control.firstOutcome)
+        return { ok: true, value: structuredClone(control.firstOutcome) };
+      if (control.status === 'failed' && control.applyFailure)
+        return applyFailed(control, control.applyFailure);
+      return { ok: true, value: this.projectLive({ ...record, control }) };
+    }
+    return undefined;
+  }
+
+  private async persistStreamFailure(
+    parent: DelegationParentContext,
+    input: Record<string, unknown>,
+    key: string,
+    hash: string,
+    operationId: string | undefined,
+    outcome: AgentDelegationResult<AgentDelegationSnapshot>,
   ): Promise<void> {
+    if (
+      outcome.ok ||
+      !this.validParent(parent) ||
+      typeof input.delegationId !== 'string' ||
+      !isDelegationControlOperation(input.operation) ||
+      Object.keys(input).some(
+        (key) =>
+          ![
+            'delegationId',
+            'operation',
+            'message',
+            'permissions',
+            'ifBusy',
+          ].includes(key),
+      ) ||
+      (input.ifBusy !== undefined && !isDelegationIfBusy(input.ifBusy))
+    )
+      return;
+    const record = this.records.get(input.delegationId);
+    if (
+      !record ||
+      record.version !== 3 ||
+      !this.canAccess(parent, record) ||
+      record.receipts.commandReceipts.some((entry) => entry.key === key)
+    )
+      return;
+    const operation = input.operation;
+    await this.update(record.state.delegationId, (current) => {
+      if (current.version !== 3) throw new Error('Command generation changed');
+      if (current.receipts.commandReceipts.some((entry) => entry.key === key))
+        return current;
+      const fitted = fitDelegationReceiptAck(
+        {
+          chatId: current.parent.chatId,
+          delegationId: current.state.delegationId,
+          receiptKind: 'command',
+          key,
+          requestHash: hash,
+          operationId: operationId ?? randomUUID(),
+          operation,
+          runGeneration: current.state.runGeneration,
+          admittedAt: nextV3ReceiptAdmissionTime(current.receipts, Date.now()),
+        },
+        { ok: false, error: outcome.error },
+      );
+      if (
+        !fitted.ok ||
+        fitted.entry.receiptKind !== 'command' ||
+        fitted.entry.reply.kind !== 'command'
+      )
+        throw new Error('Command failure could not be fitted');
+      const entry: V3CommandReceiptEntry = {
+        ...fitted.entry,
+        receiptKind: 'command',
+        reply: fitted.entry.reply,
+      };
+      return {
+        ...current,
+        receipts: {
+          ...current.receipts,
+          commandReceipts: [...current.receipts.commandReceipts, entry],
+        },
+      };
+    });
+  }
+
+  private stopOutcomeDependencies(id: string): V3StopOutcomeDependencies {
+    return {
+      port: this.streamPort(),
+      read: (): StoredDelegationV3['receipts'] => {
+        this.checkReceiptQuarantine(id);
+        const record = this.records.get(id);
+        if (record?.version !== 3) throw new Error('Stop record disappeared');
+        return record.receipts;
+      },
+      commit: (change) =>
+        this.update(id, (record) => {
+          if (record.version !== 3) throw new Error('Stop record changed');
+          return { ...record, receipts: change(record.receipts) };
+        }),
+    };
+  }
+
+  private async finishStreamStop(
+    record: StoredDelegationV3,
+    status: 'completed' | 'failed',
+  ): Promise<void> {
+    this.checkReceiptQuarantine(record.state.delegationId);
+    const active = record.receipts.activeStop;
+    if (!active) return;
+    let outcome = active.pendingTerminalOutcome;
+    if (!outcome) {
+      const fitted = fitDelegationStopOutcomeReceipt(
+        {
+          chatId: record.parent.chatId,
+          delegationId: record.state.delegationId,
+          receiptKind: 'stop_outcome',
+          key: active.operationId,
+          operationId: active.operationId,
+          runGeneration: active.runGeneration,
+          operation: 'stop',
+          requestHash: null,
+          admittedAt: active.admittedAt,
+        },
+        { status, finishedAt: Date.now() },
+      );
+      if (
+        !fitted.ok ||
+        fitted.entry.receiptKind !== 'stop_outcome' ||
+        fitted.entry.reply.kind !== 'stop_outcome'
+      )
+        throw new Error('Stop outcome could not be fitted');
+      outcome = {
+        ...fitted.entry,
+        receiptKind: 'stop_outcome',
+        reply: fitted.entry.reply,
+      };
+    }
+    const handed = await handoffV3StopOutcome(
+      { chatId: record.parent.chatId, delegationId: record.state.delegationId },
+      outcome,
+      this.stopOutcomeDependencies(record.state.delegationId),
+    );
+    if (!handed.ok) throw new Error(handed.error.message);
+  }
+
+  private async requestStreamStop(
+    parent: DelegationParentContext,
+    record: StoredDelegationV3,
+    reason: DelegationStopReason,
+    owned: ReceiptAdmissionContext<AgentDelegationSnapshot>,
+  ): Promise<
+    AgentDelegationResult<AgentDelegationSnapshot> | ReceiptNotAdmitted
+  > {
+    const key = durableParentCallKey(parent);
+    const id = record.state.delegationId;
+    if (
+      this.receiptReserved({ chatId: parent.chatId, receiptKind: 'stop', key })
+    )
+      return receiptNotAdmitted('uncertain_commit');
+    // Immutable legacy keys retain target-only legacy replay semantics.
+    for (const candidate of Array.from(this.records.values())) {
+      if (!sameChat(parent, candidate.parent)) continue;
+      const prefix = legacyPrefixView(candidate);
+      const old = [
+        ...(prefix.stopRequests ?? []),
+        ...(prefix.stopRequested ? [prefix.stopRequested] : []),
+      ].find((entry) => entry.key === key);
+      if (old)
+        return candidate.state.delegationId === id
+          ? {
+              ok: true,
+              value: {
+                ...this.projectLive(record),
+                stopRequested: {
+                  operationId: old.operationId,
+                  status: old.status,
+                },
+              },
+            }
+          : failure('invalid_request', 'A stop call cannot change its target.');
+    }
+    for (const candidate of Array.from(this.records.values())) {
+      if (!sameChat(parent, candidate.parent)) continue;
+      if (candidate.version !== 3) continue;
+      const alias = candidate.receipts.stopReceipts.find(
+        (entry) => entry.key === key,
+      );
+      if (!alias) continue;
+      if (
+        alias.delegationId !== id ||
+        alias.requestHash !== delegationStopRequestHash(id)
+      )
+        return failure(
+          'invalid_request',
+          'A stop call cannot change its target.',
+        );
+      const resolved = await readV3StopOutcome(
+        { chatId: record.parent.chatId, delegationId: id },
+        alias,
+        this.stopOutcomeDependencies(id),
+      );
+      if (!resolved.ok)
+        return receiptNotAdmitted('lookup', resolved.error.code);
+      const status =
+        resolved.value.kind === 'active'
+          ? resolved.value.status
+          : resolved.value.outcome.reply.status;
+      return {
+        ok: true,
+        value: {
+          ...this.projectLive(record),
+          stopRequested: { operationId: alias.operationId, status },
+        },
+      };
+    }
+    const found = await this.registryReceipt({
+      chatId: parent.chatId,
+      receiptKind: 'stop',
+      key,
+    });
+    if (found.kind === 'not_admitted') return found;
+    if (found.kind === 'hit') {
+      const alias = found.entry;
+      if (
+        alias.delegationId !== id ||
+        alias.requestHash !== delegationStopRequestHash(id)
+      )
+        return failure(
+          'invalid_request',
+          'A stop call cannot change its target.',
+        );
+      if (alias.receiptKind !== 'stop' || alias.reply.kind !== 'stop')
+        return receiptNotAdmitted('lookup', 'corruption');
+      const entry: V3StopReceiptEntry = {
+        ...alias,
+        receiptKind: 'stop',
+        reply: alias.reply,
+      };
+      const resolved = await readV3StopOutcome(
+        { chatId: parent.chatId, delegationId: id },
+        entry,
+        this.stopOutcomeDependencies(id),
+      );
+      if (!resolved.ok)
+        return receiptNotAdmitted('lookup', resolved.error.code);
+      const status =
+        resolved.value.kind === 'active'
+          ? resolved.value.status
+          : resolved.value.outcome.reply.status;
+      return {
+        ok: true,
+        value: {
+          ...this.projectLive(record),
+          stopRequested: { operationId: alias.operationId, status },
+        },
+      };
+    }
+    if (record.receipts.activeStop?.pendingTerminalOutcome) {
+      try {
+        await this.finishStreamStop(
+          record,
+          record.receipts.activeStop.pendingTerminalOutcome.reply.status,
+        );
+      } catch {
+        return failure('runtime_error', 'The stop outcome is not durable yet.');
+      }
+      const refreshed = this.records.get(id);
+      if (!refreshed || refreshed.version !== 3)
+        return failure('runtime_error', 'The stop record is unavailable.');
+      record = refreshed;
+    }
+    const prior = record.receipts.activeStop;
+    let operationId = prior?.operationId ?? '';
+    let runGeneration = prior?.runGeneration ?? record.state.runGeneration;
+    let startsOperation = false;
+    await this.update(id, (current) => {
+      if (current.version !== 3) throw new Error('Stop generation changed');
+      const existing = current.receipts.stopReceipts.find(
+        (entry) => entry.key === key,
+      );
+      if (existing) {
+        operationId = existing.operationId;
+        runGeneration = existing.runGeneration ?? current.state.runGeneration;
+        return current;
+      }
+      const active = current.receipts.activeStop;
+      operationId = active?.operationId ?? randomUUID();
+      runGeneration = active?.runGeneration ?? current.state.runGeneration;
+      startsOperation = !active;
+      const admittedAt =
+        active?.admittedAt ??
+        nextV3ReceiptAdmissionTime(current.receipts, Date.now());
+      const fitted = fitDelegationStopReceipt(
+        {
+          chatId: current.parent.chatId,
+          delegationId: id,
+          receiptKind: 'stop',
+          key,
+          operationId,
+          runGeneration,
+          operation: 'stop',
+          requestHash: delegationStopRequestHash(id),
+          admittedAt,
+        },
+        active?.pendingTerminalOutcome?.reply.status ?? 'accepted',
+      );
+      if (
+        !fitted.ok ||
+        fitted.entry.receiptKind !== 'stop' ||
+        fitted.entry.reply.kind !== 'stop'
+      )
+        throw new Error('Stop alias could not be fitted');
+      const alias: V3StopReceiptEntry = {
+        ...fitted.entry,
+        receiptKind: 'stop',
+        reply: fitted.entry.reply,
+      };
+      return {
+        ...current,
+        receipts: {
+          ...current.receipts,
+          stopReceipts: [...current.receipts.stopReceipts, alias],
+          activeStop: active ?? { operationId, runGeneration, admittedAt },
+          stopFence: active
+            ? current.receipts.stopFence
+            : { operationId, status: 'accepted' },
+        },
+      };
+    });
+    const acknowledged = this.records.get(id);
+    owned.dispatch = (): Promise<
+      AgentDelegationResult<AgentDelegationSnapshot>
+    > => {
+      if (startsOperation) {
+        const command = this.stop(parent, id, reason)
+          .then(async (result) => {
+            const latest = this.records.get(id);
+            if (
+              latest?.version === 3 &&
+              latest.receipts.activeStop?.operationId === operationId &&
+              latest.receipts.activeStop.runGeneration === runGeneration
+            )
+              await this.finishStreamStop(
+                latest,
+                result.ok ? 'completed' : 'failed',
+              );
+          })
+          .catch((error: unknown) => this.options.onError?.(error))
+          .finally(() => this.commands.delete(command));
+        this.commands.set(command, ownerKey(parent));
+      }
+      return Promise.resolve(
+        acknowledged
+          ? { ok: true, value: this.project(acknowledged) }
+          : failure('runtime_error', 'Stop record unavailable.'),
+      );
+    };
+    return acknowledged
+      ? { ok: true, value: this.project(acknowledged) }
+      : failure('runtime_error', 'Stop record unavailable.');
+  }
+
+  private streamPort(): DelegationTranscriptPort {
+    if (!this.options.transcriptPort)
+      throw new Error('Stream generation requires its transcript port');
+    return this.options.transcriptPort;
+  }
+
+  private watchResolver(): DelegationWatchBootstrapResolver {
+    return {
+      resolve: async (
+        input,
+        runGeneration,
+      ): Promise<DelegationGenerationOutcome> => {
+        const record = input.record;
+        if (record.version !== 3) return { kind: 'unsettled' };
+        const result = await this.streamPort().resultByGeneration({
+          chatId: record.parent.chatId,
+          delegationId: record.state.delegationId,
+          runGeneration,
+        });
+        if (!result.ok)
+          return result.error.code === 'not_found'
+            ? { kind: 'unsettled' }
+            : { kind: 'unavailable', failure: result.error };
+        if (result.value.runGeneration !== runGeneration)
+          return {
+            kind: 'unavailable',
+            failure: {
+              code: 'corruption',
+              message: 'Watch generation mismatch',
+              retryable: false,
+            },
+          };
+        return { kind: 'settled', result: result.value };
+      },
+    };
+  }
+
+  /** P11 runs before interruption and never launches a recovered generation. */
+  private async repairStreamRecord(record: StoredDelegationV3): Promise<void> {
+    const port = this.streamPort();
+    const target = record.readMetadata.current.target;
+    const id = target.delegationId;
+    const key = delegationSettlementKey(
+      target.chatId,
+      id,
+      target.runGeneration,
+    );
+    const priorLocator = record.latestResult;
+    if (priorLocator && priorLocator.runGeneration !== target.runGeneration) {
+      const prior = await port.result({
+        chatId: target.chatId,
+        delegationId: id,
+        resultIndex: priorLocator.resultIndex,
+      });
+      if (!prior.ok) throw new Error(prior.error.message);
+      if (
+        prior.value.runGeneration !== priorLocator.runGeneration ||
+        prior.value.settlementKey !==
+          delegationSettlementKey(
+            target.chatId,
+            id,
+            priorLocator.runGeneration,
+          ) ||
+        prior.value.outcome.status !== priorLocator.status ||
+        prior.value.outcome.finishedAt !== priorLocator.settledAt
+      )
+        throw new Error('Previous locator conflicts with canonical result');
+      if (!priorLocator.notified) {
+        record = await this.notifyRepairedStreamResult(
+          record,
+          priorLocator,
+          prior.value,
+        );
+      }
+    }
+    let found = await port.resultBySettlementKey({
+      chatId: target.chatId,
+      delegationId: id,
+      settlementKey: key,
+    });
+    if (!found.ok && found.error.code === 'not_found')
+      found = await port.resultByGeneration({
+        chatId: target.chatId,
+        delegationId: id,
+        runGeneration: target.runGeneration,
+      });
+    if (!found.ok && found.error.code !== 'not_found')
+      throw new Error(found.error.message);
+    if (record.settling) {
+      await this.settleStreamRecord(record);
+      return;
+    }
+    const registered = await port.registerGeneration({
+      chatId: target.chatId,
+      delegationId: id,
+      ...record.registration,
+    });
+    if (!registered.ok) throw new Error(registered.error.message);
+    if (!found.ok) {
+      if (record.latestResult?.runGeneration === target.runGeneration)
+        throw new Error('Durable locator has no canonical registry result');
+      if (isSettledStatus(record.state.status))
+        throw new Error(
+          'Terminal stream generation has no settlement identity',
+        );
+      return;
+    }
+    const result = found.value;
+    if (
+      result.settlementKey !== key ||
+      result.runGeneration !== target.runGeneration
+    )
+      throw new Error('Canonical generation settlement identity conflicts');
+    if (
+      record.latestResult?.runGeneration === target.runGeneration &&
+      (record.latestResult.resultIndex !== result.resultIndex ||
+        record.latestResult.status !== result.outcome.status ||
+        record.latestResult.settledAt !== result.outcome.finishedAt)
+    )
+      throw new Error('Durable locator conflicts with canonical result');
+    const descriptor = await port.generation({
+      chatId: target.chatId,
+      delegationId: id,
+      runGeneration: target.runGeneration,
+    });
+    if (!descriptor.ok) throw new Error(descriptor.error.message);
+    const locator =
+      record.latestResult?.runGeneration === target.runGeneration
+        ? record.latestResult
+        : {
+            resultIndex: result.resultIndex,
+            runGeneration: result.runGeneration,
+            status: result.outcome.status,
+            settledAt: result.outcome.finishedAt,
+            ...(result.outcome.stopReason
+              ? { stopReason: result.outcome.stopReason }
+              : {}),
+          };
+    let next: StoredDelegationV3 = {
+      ...record,
+      latestResult: locator,
+      state: {
+        ...record.state,
+        ...result.outcome,
+        finishedAt: result.outcome.finishedAt,
+      },
+      readMetadata: {
+        ...record.readMetadata,
+        lastActivityAt: Math.max(
+          record.readMetadata.lastActivityAt,
+          result.outcome.finishedAt,
+          descriptor.value.stream?.latestRowTimestamp ?? 0,
+        ),
+      },
+    };
+    next = await this.commitStorageRecord(next);
+    this.records.set(id, next);
+    if (!locator.notified) {
+      await this.notifyRepairedStreamResult(next, locator, result);
+    }
+  }
+
+  private async selectGenerationStore(
+    record: StoredDelegationLegacy,
+    kind: 'launch' | 'follow_up' | 'resume' | 'continuation',
+    authoredItemId?: string,
+  ): Promise<StoredDelegation> {
+    let decision: GenerationStoreDecision;
+    try {
+      decision = this.options.testOnlyStreamGeneration
+        ? 'stream'
+        : this.options.generationStore
+          ? await this.options.generationStore({ record, kind })
+          : 'legacy';
+    } catch {
+      throw new GenerationStoreRefused(
+        'Delegation storage is unavailable. Try again.',
+      );
+    }
+    if (decision === 'legacy') return record;
+    if (decision !== 'stream')
+      throw new GenerationStoreRefused(decision.message);
+    this.streamPort();
+    const {
+      history,
+      results,
+      controls,
+      userMessageReceipts,
+      stopRequested,
+      stopRequests,
+      control,
+      state: originalState,
+      ...common
+    } = record;
+    const { transcript, ...state } = originalState;
+    void transcript;
+    // Promotion alone freezes legacy material; load and generic updates never
+    // invoke this seam. Existing prefix objects keep their exact bytes.
+    const legacyPrefix = legacyPrefixView(record);
+    const times = [
+      record.createdAt,
+      ...(history?.map((entry) => entry.createdAt) ?? []),
+      ...(results?.map((entry) => entry.settledAt) ?? []),
+      ...(controls?.map((entry) => entry.occurredAt ?? 0) ?? []),
+    ];
+    void userMessageReceipts;
+    void stopRequested;
+    void stopRequests;
+    const selected: StoredDelegationV3 = {
+      ...common,
+      version: 3,
+      state,
+      readMetadata: {
+        originAt: history?.[0]?.createdAt ?? record.createdAt,
+        lastActivityAt: Math.max(...times),
+        current: {
+          store: 'stream',
+          target: {
+            kind: 'delegation',
+            chatId: record.parent.chatId,
+            delegationId: record.state.delegationId,
+            runGeneration: record.state.runGeneration,
+          },
+        },
+      },
+      registration: {
+        runGeneration: state.runGeneration,
+        createdAt: record.createdAt,
+        store: 'stream',
+        origin: {
+          kind,
+          // Keep in sync with agent-transcript/lib/delegation-transcript.ts;
+          // avoid its schema-heavy barrel in the broker runtime.
+          anchorMessageId: `delegated-agent-${state.delegationId}${state.runGeneration > 1 ? `-run-${state.runGeneration}` : ''}`,
+          // As on an existing stream follow-up; the text is the new task.
+          ...(authoredItemId ? { authoredItemId } : {}),
+        },
+        executionMode: record.task.executionMode,
+      },
+      receipts: { commandReceipts: [], stopReceipts: [] },
+      ...(Object.keys(legacyPrefix).length ? { legacyPrefix } : {}),
+    };
+    // A command admitted by the legacy generation belongs to the frozen
+    // prefix. Never reinterpret it as a newly fitted stream receipt.
+    void control;
+    return selected;
+  }
+
+  /** Fit current acknowledgements without retaining legacy arrays or bodies. */
+  private prepareV3Update(
+    prior: StoredDelegationV3,
+    candidate: StoredDelegation,
+  ): StoredDelegationV3 {
+    const {
+      history,
+      results,
+      controls,
+      userMessageReceipts,
+      stopRequested,
+      stopRequests,
+      state: ignoredState,
+      control,
+      ...common
+    } = {
+      history: undefined,
+      results: undefined,
+      controls: undefined,
+      userMessageReceipts: undefined,
+      stopRequested: undefined,
+      stopRequests: undefined,
+      ...candidate,
+    };
+    void history;
+    void results;
+    void userMessageReceipts;
+    void stopRequested;
+    void stopRequests;
+    void ignoredState;
+    const { transcript, ...state } = executionState(candidate);
+    void transcript;
+    let receipts =
+      candidate.version === 3 ? candidate.receipts : prior.receipts;
+    const incoming: StoredDelegationControl[] = [
+      ...(controls ?? []),
+      ...(control ? [control] : []),
+    ];
+    const plans = planReceiptFits({
+      priorWindowKeys: prior.receipts.commandReceipts.map((entry) => entry.key),
+      priorControl: prior.control,
+      incomingControls: incoming,
+      admittedOperationIds:
+        this.recordTransaction.getStore()?.admittedOperationIds ?? new Set(),
+    });
+    const activityTimes = receipts.commandReceipts
+      .filter(
+        (entry) =>
+          !prior.receipts.commandReceipts.some((old) => old.key === entry.key),
+      )
+      .map((entry) => entry.admittedAt);
+    for (let index = 0; index < incoming.length; index++) {
+      const command = incoming[index];
+      if (!command || plans[index]?.kind === 'archived') continue;
+      const existing = receipts.commandReceipts.find(
+        (entry) => entry.key === command.key,
+      );
+      let entry: V3CommandReceiptEntry;
+      if (!existing) {
+        const ack = fitDelegationReceiptAck(
+          {
+            chatId: prior.parent.chatId,
+            delegationId: prior.state.delegationId,
+            receiptKind: 'command',
+            key: command.key,
+            requestHash: command.requestHash,
+            operationId: command.operationId,
+            operation: command.operation,
+            runGeneration: state.runGeneration,
+            admittedAt: nextV3ReceiptAdmissionTime(
+              receipts,
+              command.occurredAt ?? Date.now(),
+            ),
+          },
+          command.firstError
+            ? { ok: false, error: command.firstError }
+            : {
+                ok: true,
+                outcome:
+                  command.status === 'accepted' ? 'accepted' : 'completed',
+                snapshot:
+                  command.firstOutcome ??
+                  projectStoredDelegationSnapshot({
+                    ...candidate,
+                    control: command,
+                  }),
+              },
+        );
+        if (
+          !ack.ok ||
+          ack.entry.receiptKind !== 'command' ||
+          ack.entry.reply.kind !== 'command'
+        )
+          throw new Error('Command acknowledgement could not be fitted');
+        entry = {
+          ...ack.entry,
+          receiptKind: 'command',
+          reply: ack.entry.reply,
+        };
+        activityTimes.push(entry.admittedAt);
+        receipts = {
+          ...receipts,
+          commandReceipts: [...receipts.commandReceipts, entry],
+          ...(command.operation === 'resume' &&
+          entry.reply.ack.ok &&
+          !receipts.activeStop
+            ? { stopFence: undefined }
+            : {}),
+        };
+      } else entry = existing;
+      if (
+        command.status !== 'accepted' &&
+        entry.reply.ack.ok &&
+        entry.reply.ack.outcome === 'accepted' &&
+        entry.reply.final === null
+      ) {
+        const resolvedAt = Date.now();
+        const resolved = completeDelegationCommandReceipt(
+          entry,
+          fitDelegationReceiptFinal({
+            status: command.status,
+            ...(command.error
+              ? {
+                  error: {
+                    code: 'runtime_error',
+                    message: command.error,
+                    retryable: false,
+                  },
+                }
+              : {}),
+          }),
+        );
+        if (
+          !resolved.ok ||
+          resolved.entry.receiptKind !== 'command' ||
+          resolved.entry.reply.kind !== 'command'
+        )
+          throw new Error('Command outcome could not be fitted');
+        activityTimes.push(resolvedAt);
+        const finalEntry: V3CommandReceiptEntry = {
+          ...resolved.entry,
+          receiptKind: 'command',
+          reply: resolved.entry.reply,
+        };
+        receipts = {
+          ...receipts,
+          commandReceipts: receipts.commandReceipts.map((old) =>
+            old.key === entry.key ? finalEntry : old,
+          ),
+        };
+      }
+    }
+    const operationalControl: StoredDelegationControl | undefined = control;
+    const operational = operationalControl
+      ? (({ firstOutcome, firstError, ...value }): typeof value => {
+          void firstOutcome;
+          void firstError;
+          return value;
+        })(operationalControl)
+      : undefined;
+    const prepared: StoredDelegationV3 = {
+      ...common,
+      version: 3,
+      state: {
+        ...(prior.settling ? prior.state : state),
+        ...(state.partialText === undefined
+          ? {}
+          : { partialText: v3StatePreview(state.partialText) }),
+        ...(state.finalText === undefined
+          ? {}
+          : { finalText: v3StatePreview(state.finalText) }),
+      },
+      control: operational,
+      receipts,
+      registration:
+        candidate.version === 3 &&
+        candidate.state.runGeneration !== prior.state.runGeneration
+          ? candidate.registration
+          : prior.registration,
+      legacyPrefix: prior.legacyPrefix,
+      latestReceipt:
+        candidate.version === 3 ? candidate.latestReceipt : prior.latestReceipt,
+      latestResult: prior.latestResult,
+      settling: prior.settling,
+      readMetadata: {
+        ...(candidate.version === 3 &&
+        candidate.state.runGeneration !== prior.state.runGeneration
+          ? candidate.readMetadata
+          : prior.readMetadata),
+        lastActivityAt: foldReceiptActivity(
+          Math.max(
+            prior.readMetadata.lastActivityAt,
+            state.finishedAt ?? 0,
+            state.startedAt ?? 0,
+            // Only execution changes are activity; receipt-only writes are not.
+            state.runGeneration !== prior.state.runGeneration ||
+              state.status !== prior.state.status ||
+              state.sequence !== prior.state.sequence
+              ? Date.now()
+              : 0,
+          ),
+          activityTimes,
+        ),
+      },
+    };
+    return this.prepareCardRecord(prior, prepared);
+  }
+
+  /** Startup failures retain only the durable canonical result and locator. */
+  private async notifyRepairedStreamResult(
+    record: StoredDelegationV3,
+    locator: NonNullable<StoredDelegationV3['latestResult']>,
+    result: DelegationTranscriptResultEntry,
+  ): Promise<StoredDelegationV3> {
+    const target: DelegationTranscriptTarget = {
+      ...record.readMetadata.current.target,
+      runGeneration: locator.runGeneration,
+    };
+    const entry: StreamSettlementOutbox = {
+      record,
+      target,
+      key: result.settlementKey,
+      digest: result.settlementDigest,
+      outcome: result.outcome,
+      resultIndex: result.resultIndex,
+      locator,
+      stage: 'notify',
+      attempts: 0,
+    };
+    this.fenceStreamOutbox(entry, record);
+    this.settlementOutbox.set(this.streamOutboxKey(target), entry);
+    try {
+      await this.notifyStreamResult(record, locator, result.outcome);
+    } catch (error) {
+      this.options.onError?.(error);
+      this.scheduleStreamOutbox(entry);
+      return record;
+    }
+    this.completeStreamOutbox(entry);
+    const latest = this.records.get(target.delegationId);
+    if (!latest)
+      throw new OutboxFenceConflict('Notification record disappeared');
+    this.fenceStreamOutbox(entry, latest);
+    if (latest.version !== 3)
+      throw new OutboxFenceConflict('Expected stream record');
+    return this.commitStorageRecord({
+      ...latest,
+      latestResult: { ...locator, notified: true },
+    });
+  }
+
+  private streamOutboxKey(target: DelegationTranscriptTarget): string {
+    return JSON.stringify([
+      target.chatId,
+      target.delegationId,
+      target.runGeneration,
+    ]);
+  }
+
+  /** Every mutation/continuation validates the captured identity, not just g. */
+  private fenceStreamOutbox(
+    entry: StreamSettlementOutbox,
+    record: StoredDelegation,
+  ): void {
+    const intent = record.version === 3 ? record.settling : undefined;
+    const locator = record.version === 3 ? record.latestResult : undefined;
+    if (
+      record.version !== 3 ||
+      record.state.delegationId !== entry.target.delegationId ||
+      record.parent.chatId !== entry.target.chatId ||
+      (entry.input &&
+        record.state.runGeneration !== entry.target.runGeneration) ||
+      (intent &&
+        (entry.input || intent.runGeneration === entry.target.runGeneration) &&
+        (intent.runGeneration !== entry.target.runGeneration ||
+          intent.settlementKey !== entry.key ||
+          intent.expectedSettlementDigest !== entry.digest)) ||
+      (locator?.runGeneration === entry.target.runGeneration &&
+        (locator.resultIndex !== entry.resultIndex ||
+          locator.status !== entry.outcome.status ||
+          locator.settledAt !== entry.outcome.finishedAt)) ||
+      (!entry.input &&
+        (locator?.runGeneration !== entry.target.runGeneration ||
+          locator.resultIndex !== entry.resultIndex))
+    )
+      throw new OutboxFenceConflict(
+        'Settlement outbox identity conflicts with canonical record',
+      );
+  }
+
+  private completeStreamOutbox(entry: StreamSettlementOutbox): void {
+    const key = this.streamOutboxKey(entry.target);
+    if (this.settlementOutbox.get(key) !== entry) return;
+    this.notifiedStreamGenerations.add(key);
+    clearTimeout(entry.timer);
+    this.settlementOutbox.delete(key);
+    for (const wake of Array.from(this.outboxWaiters)) wake();
+  }
+
+  private failStreamOutbox(entry: StreamSettlementOutbox, error: Error): void {
+    const key = this.streamOutboxKey(entry.target);
+    if (this.settlementOutbox.get(key) !== entry) return;
+    clearTimeout(entry.timer);
+    this.settlementOutbox.delete(key);
+    this.options.onError?.(error);
+    for (const wake of Array.from(this.outboxWaiters)) wake();
+  }
+
+  /** Timers never retain a transaction context or wait on their own chain. */
+  private scheduleStreamOutbox(entry: StreamSettlementOutbox): void {
+    if (
+      this.closed ||
+      entry.timer ||
+      this.settlementOutbox.get(this.streamOutboxKey(entry.target)) !== entry
+    )
+      return;
+    this.recordTransaction.exit(() => {
+      entry.timer = setTimeout(
+        () => {
+          entry.timer = undefined;
+          void this.retryStreamOutbox(entry);
+        },
+        Math.min(30_000, 250 * 2 ** Math.min(entry.attempts++, 7)),
+      );
+      entry.timer.unref?.();
+    });
+  }
+
+  /** B2b is the sole exception to the write quarantine; native work stays aborted. */
+  private async reopenStreamOutbox(
+    entry: StreamSettlementOutbox,
+  ): Promise<void> {
+    const id = entry.target.delegationId;
+    const loaded = await this.options.storage.loadOne?.(id);
+    if (!loaded) throw new Error('Canonical outbox record unavailable');
+    this.fenceStreamOutbox(entry, loaded);
+    if (loaded.version !== 3)
+      throw new OutboxFenceConflict('Expected stream record');
+    const next =
+      loaded.settling ||
+      loaded.latestResult?.runGeneration === entry.target.runGeneration ||
+      !entry.input
+        ? loaded
+        : {
+            ...entry.record,
+            settling: entry.input.intent,
+            readMetadata: {
+              ...entry.record.readMetadata,
+              settling: { runGeneration: entry.target.runGeneration },
+            },
+          };
+    // Validate without card reads/reallocation; reaffirm exactly what load proved.
+    this.validateCardRecord(next);
+    await this.options.storage.commit(next);
+    this.records.set(id, next);
+    this.receiptQuarantine.clearAfterOutboxReaffirm(id);
+    if (this.initialized)
+      this.recordTransaction.exit(() => this.cardPublications.enqueue(next));
+  }
+
+  private async retryStreamOutbox(
+    entry: StreamSettlementOutbox,
+  ): Promise<void> {
+    const id = entry.target.delegationId;
+    const key = this.streamOutboxKey(entry.target);
     const previous = this.writes.get(id) ?? Promise.resolve();
     const next = previous.then(async (): Promise<void> => {
-      const record = this.records.get(id);
-      if (!record) throw new Error('Unknown delegation record');
-      let updated = withSettledResult({ ...change(record), version: 2 });
-      if (
-        updated.state !== record.state ||
-        updated.control !== record.control ||
-        updated.stopRequested !== record.stopRequested ||
-        updated.stopRequests !== record.stopRequests ||
-        updated.workspaceDiscarded !== record.workspaceDiscarded ||
-        updated.capabilityGrant !== record.capabilityGrant ||
-        updated.admission !== record.admission
-      )
-        updated = {
-          ...updated,
-          transcriptRevision:
-            updated.state.runGeneration !== record.state.runGeneration
-              ? 0
-              : (record.transcriptRevision ?? record.state.sequence) + 1,
-        };
-      await this.options.storage.commit(updated);
-      this.records.set(id, updated);
-      const published = updated.results?.find(
-        (result) =>
-          !(record.results ?? []).some(
-            (prior) => prior.resultIndex === result.resultIndex,
-          ),
-      );
-      if (published)
-        try {
-          await this.options.onSettled?.(
-            updated.parent,
-            updated.state.delegationId,
-            published,
-          );
-        } catch (error) {
-          this.options.onError?.(error);
-        }
-      if (
-        record.state !== updated.state ||
-        record.transcriptRevision !== updated.transcriptRevision
-      )
-        this.publishTranscript(updated);
+      if (this.closed || this.settlementOutbox.get(key) !== entry) return;
+      if (this.receiptQuarantine.isQuarantined(id))
+        await this.reopenStreamOutbox(entry);
+      const current = this.records.get(id);
+      if (!current) throw new OutboxFenceConflict('Outbox record disappeared');
+      this.fenceStreamOutbox(entry, current);
+      if (entry.locator) {
+        await this.notifyStreamResult(
+          entry.record,
+          entry.locator,
+          entry.outcome,
+        );
+        this.completeStreamOutbox(entry);
+        // Marker touches only the locator that was actually notified.
+        if (
+          current.version === 3 &&
+          current.latestResult?.runGeneration === entry.target.runGeneration &&
+          current.latestResult.resultIndex === entry.resultIndex
+        )
+          await this.commitStorageRecord({
+            ...current,
+            latestResult: { ...current.latestResult, notified: true },
+          });
+      } else await this.settleStreamRecord(entry.record);
     });
     this.writes.set(
       id,
       next.catch(() => undefined),
+    );
+    try {
+      await next;
+      const current = this.records.get(id);
+      if (
+        this.notifiedStreamGenerations.has(key) &&
+        current?.version === 3 &&
+        current.state.runGeneration === entry.target.runGeneration
+      ) {
+        this.publishTranscript(current);
+        this.notify(current.parent);
+        const run = this.runs.get(id);
+        if (run) await this.cleanup(id, run);
+      }
+    } catch (error) {
+      if (error instanceof OutboxFenceConflict)
+        this.failStreamOutbox(entry, error);
+      else {
+        this.options.onError?.(error);
+        this.scheduleStreamOutbox(entry);
+      }
+    }
+  }
+
+  private async settleStreamRecord(
+    record: StoredDelegationV3,
+    captured: ReturnType<
+      typeof captureSettlementAnswer
+    > = captureSettlementAnswer(undefined),
+  ): Promise<void> {
+    const port = this.streamPort();
+    const id = record.state.delegationId;
+    this.checkReceiptQuarantine(id);
+    const target = record.readMetadata.current.target;
+    const status = record.state.status;
+    if (!isSettledStatus(status) && !record.settling) return;
+    // Startup may replay a pre-publication intent. Allocate its pair before
+    // capturing the immutable settle request, not later in commitIntent.
+    if (!this.validatedCardRecords.has(record)) {
+      const baseline = await this.cardBaseline(record);
+      record = this.prepareCardRecord(baseline, record);
+      this.validateCardRecord(record);
+    }
+    const retained = this.settlementOutbox.get(this.streamOutboxKey(target));
+    let intent = retained?.input?.intent ?? record.settling;
+    if (!intent) {
+      if (!isSettledStatus(status)) return;
+      const outcome = {
+        status,
+        finishedAt: record.state.finishedAt ?? Date.now(),
+        ...(record.state.startedAt === undefined
+          ? {}
+          : { startedAt: record.state.startedAt }),
+        ...(record.state.error
+          ? { error: settledError(record.state.error) }
+          : {}),
+        ...(record.state.usage ? { usage: record.state.usage } : {}),
+        ...(record.state.stopReason
+          ? { stopReason: record.state.stopReason }
+          : {}),
+      };
+      const draft = {
+        runGeneration: target.runGeneration,
+        settlementKey: delegationSettlementKey(
+          target.chatId,
+          id,
+          target.runGeneration,
+        ),
+        assertedResultIndex:
+          (record.latestResult?.resultIndex ??
+            record.legacyPrefix?.results?.[
+              (record.legacyPrefix?.results?.length ?? 0) - 1
+            ]?.resultIndex ??
+            0) + 1,
+        outcome,
+        answer: captured.answer,
+        expectedSettlementDigest: '',
+      };
+      intent = {
+        ...draft,
+        expectedSettlementDigest: delegationTranscriptSettlementDigest(
+          v3SettlementRequest({
+            target,
+            registration: {
+              chatId: target.chatId,
+              delegationId: id,
+              ...record.registration,
+            },
+            intent: draft,
+            settleAnswer: captured.settleAnswer,
+            cardDraft: materializeCardDraft(record),
+            cardRevision: record.cardPublication?.cardRevision,
+          }),
+        ),
+      };
+    }
+    const stableIntent = intent;
+    const settleAnswer: DelegationTranscriptSettleAnswer = retained?.input
+      ? retained.input.settleAnswer
+      : record.settling
+        ? intent.answer === 'none'
+          ? null
+          : 'empty' in intent.answer
+            ? { role: intent.answer.role, text: '' }
+            : {
+                role: intent.answer.role,
+                lost: {
+                  sha256: intent.answer.sha256,
+                  length: intent.answer.length,
+                },
+              }
+        : captured.settleAnswer;
+    const input: V3SettlementContractInput = retained?.input ?? {
+      target,
+      intent: stableIntent,
+      settleAnswer,
+      cardDraft: materializeCardDraft(record),
+      cardRevision: record.cardPublication?.cardRevision,
+      registration: {
+        chatId: target.chatId,
+        delegationId: id,
+        ...record.registration,
+      },
+    };
+    const entry: StreamSettlementOutbox = retained ?? {
+      record,
+      input,
+      target,
+      key: stableIntent.settlementKey,
+      digest: stableIntent.expectedSettlementDigest,
+      resultIndex: stableIntent.assertedResultIndex,
+      outcome: stableIntent.outcome,
+      stage: 'intent',
+      attempts: 0,
+    };
+    this.settlementOutbox.set(this.streamOutboxKey(target), entry);
+    let rowTime = 0;
+    let uncertainWrite = false;
+    const commit = async (next: StoredDelegationV3): Promise<void> => {
+      try {
+        next = await this.commitStorageRecord(next);
+        this.records.set(id, next);
+      } catch (error) {
+        if (error instanceof ReceiptAdmissionFailure && error.uncertainWrite)
+          uncertainWrite = true;
+        throw error;
+      }
+    };
+    const current = (): StoredDelegationV3 => {
+      this.checkReceiptQuarantine(id);
+      const latest = this.records.get(id);
+      if (
+        !latest ||
+        latest.version !== 3 ||
+        latest.state.runGeneration !== target.runGeneration
+      )
+        throw new Error('Settlement generation changed');
+      this.fenceStreamOutbox(entry, latest);
+      return latest;
+    };
+    const settled = await settleV3Generation(input, {
+      commitIntent: async () => {
+        const latest = current();
+        if (
+          latest.latestResult?.runGeneration === target.runGeneration ||
+          latest.settling
+        )
+          return;
+        const next: StoredDelegationV3 = {
+          ...entry.record,
+          settling: stableIntent,
+          readMetadata: {
+            ...entry.record.readMetadata,
+            settling: { runGeneration: target.runGeneration },
+          },
+        };
+        // Intent metadata does not change the fitted draft. Preserve the
+        // prepared request pair through this full-byte admission exactly.
+        this.validateCardRecord(next);
+        await commit(next);
+      },
+      ensureRegisteredAndOpen: async (registration, target) => {
+        const registered = await port.registerGeneration(registration);
+        if (!registered.ok) return registered;
+        const descriptor = await port.generation({
+          chatId: target.chatId,
+          delegationId: id,
+          runGeneration: target.runGeneration,
+        });
+        if (!descriptor.ok) return descriptor;
+        rowTime = descriptor.value.stream?.latestRowTimestamp ?? 0;
+        return descriptor.value.stream?.status === 'settled'
+          ? { ok: true, value: descriptor.value.stream }
+          : port.open({ target });
+      },
+      resultBySettlementKey: (input) => port.resultBySettlementKey(input),
+      resultByGeneration: (input) => port.resultByGeneration(input),
+      settle: (input) => port.settle(input),
+      commitLocator: async (locator) => {
+        const latest = current();
+        const { settling: ignored, ...metadata } = latest.readMetadata;
+        void ignored;
+        await commit({
+          ...latest,
+          settling: undefined,
+          latestResult: locator,
+          readMetadata: {
+            ...metadata,
+            lastActivityAt: Math.max(
+              metadata.lastActivityAt,
+              rowTime,
+              locator.settledAt,
+            ),
+          },
+        });
+      },
+      // The queue reads and classifies the descriptor; settlement never
+      // waits on card state, so a card read failure cannot hold the locator.
+      reconcileCardPublication: () => {
+        const latest = current();
+        if (this.initialized)
+          this.recordTransaction.exit(() =>
+            this.cardPublications.enqueue(latest, true),
+          );
+        return Promise.resolve();
+      },
+      notify: async (locator) => {
+        const latest = current();
+        entry.locator = locator;
+        entry.stage = 'notify';
+        await this.notifyStreamResult(latest, locator, stableIntent.outcome);
+        this.completeStreamOutbox(entry);
+      },
+      markNotified: async (locator) => {
+        const latest = current();
+        if (
+          latest.latestResult?.resultIndex !== locator.resultIndex ||
+          latest.latestResult.runGeneration !== locator.runGeneration ||
+          latest.latestResult.status !== locator.status ||
+          latest.latestResult.settledAt !== locator.settledAt
+        )
+          throw new Error('Notification locator changed');
+        await commit({
+          ...latest,
+          latestResult: { ...locator, notified: true },
+        });
+      },
+    });
+    if (settled.kind === 'retry') {
+      entry.stage = settled.stage;
+      if (settled.error && !settled.error.retryable)
+        this.failStreamOutbox(entry, new Error(settled.error.message));
+      else this.scheduleStreamOutbox(entry);
+    } else if (settled.kind === 'conflict')
+      this.failStreamOutbox(entry, new OutboxFenceConflict(settled.reason));
+    // The frozen handoff catches dependency errors. Preserve the initiating
+    // write rejection, but let receive drop events queued behind its barrier.
+    if (uncertainWrite)
+      throw new ReceiptAdmissionFailure(
+        receiptNotAdmitted('uncertain_commit'),
+        true,
+        settled.kind === 'retry'
+          ? `Settlement pending at ${settled.stage}`
+          : 'Receipt admission did not commit',
+      );
+    this.checkReceiptQuarantine(id);
+    // The locator is durable and replays after restart: like a legacy
+    // onSettled failure, report it and let terminal cleanup run.
+    if (settled.kind === 'retry' && settled.stage === 'notify') {
+      this.options.onError?.(new Error('Settlement notification failed'));
+      return;
+    }
+    if (settled.kind === 'conflict' || settled.kind === 'retry')
+      throw new Error(
+        settled.kind === 'conflict'
+          ? settled.reason
+          : `Settlement pending at ${settled.stage}`,
+      );
+  }
+
+  private notifyStreamResult(
+    record: StoredDelegationV3,
+    locator: NonNullable<StoredDelegationV3['latestResult']>,
+    outcome: DelegationTranscriptResultEntry['outcome'],
+  ): Promise<void> {
+    return (
+      this.options.onSettled?.(record.parent, record.state.delegationId, {
+        resultIndex: locator.resultIndex,
+        runGeneration: locator.runGeneration,
+        status: locator.status,
+        settledAt: locator.settledAt,
+        outputTruncated: false,
+        ...(outcome.error ? { error: outcome.error } : {}),
+        ...(outcome.usage ? { usage: outcome.usage } : {}),
+        ...(outcome.stopReason ? { stopReason: outcome.stopReason } : {}),
+      }) ?? Promise.resolve()
+    );
+  }
+
+  /** Captures the committed revision now; never await this within a record transaction. */
+  flushCardPublication(target: DelegationTranscriptTarget): Promise<void> {
+    const record = this.records.get(target.delegationId);
+    if (
+      record?.version !== 3 ||
+      record.parent.chatId !== target.chatId ||
+      record.state.runGeneration !== target.runGeneration
+    )
+      return Promise.reject(new Error('Unknown card publication generation'));
+    return this.cardPublications.flush(
+      target,
+      record.cardPublication?.cardRevision ?? 0,
+    );
+  }
+
+  private cardGenerationKey(record: StoredDelegationV3): string {
+    const target = record.readMetadata.current.target;
+    return JSON.stringify([
+      target.chatId,
+      target.delegationId,
+      target.runGeneration,
+    ]);
+  }
+
+  private async cardBaseline(
+    record: StoredDelegationV3,
+  ): Promise<StoredDelegationV3> {
+    if (record.cardPublication) return record;
+    const descriptor = await this.streamPort().generation(
+      record.readMetadata.current.target,
+    );
+    // A failed read never fails record admission; without a rebase, a higher
+    // descriptor later classifies as a reported conflict, never a false barrier.
+    if (!descriptor.ok) return record;
+    if (
+      descriptor.value.result !== null &&
+      descriptor.value.stream?.cardState?.version !== 2
+    ) {
+      this.excludedCardGenerations.add(this.cardGenerationKey(record));
+      return record;
+    }
+    const classification = classifyCardDescriptor(
+      record,
+      descriptor.value.stream?.cardState,
+    );
+    if (classification.kind === 'conflict')
+      throw new Error('Card descriptor conflicts with record');
+    if (classification.kind === 'covered' && classification.excluded)
+      this.excludedCardGenerations.add(this.cardGenerationKey(record));
+    return classification.kind === 'rebase'
+      ? { ...record, cardPublication: classification.cardPublication }
+      : record;
+  }
+
+  private prepareCardRecord(
+    prior: StoredDelegation | undefined,
+    candidate: StoredDelegationV3,
+  ): StoredDelegationV3 {
+    const previous = prior?.version === 3 ? prior : undefined;
+    const pair = this.excludedCardGenerations.has(
+      this.cardGenerationKey(candidate),
+    )
+      ? undefined
+      : prepareCardPublication(
+          previous,
+          candidate,
+          previous === undefined
+            ? undefined
+            : projectStoredDelegationSnapshot(previous, {
+                maxDepth: this.options.maxDepthForParent?.(previous.parent),
+              }),
+          projectStoredDelegationSnapshot(candidate, {
+            maxDepth: this.options.maxDepthForParent?.(candidate.parent),
+          }),
+        );
+    const { cardPublication: ignored, ...rest } = candidate;
+    void ignored;
+    const prepared: StoredDelegationV3 = {
+      ...rest,
+      ...(pair === undefined ? {} : { cardPublication: pair }),
+    };
+    return prepared;
+  }
+
+  private validateCardRecord(record: StoredDelegationV3): void {
+    const bytes = JSON.stringify(record);
+    if (Buffer.byteLength(bytes, 'utf8') > DELEGATION_STORAGE_RECORD_MAX_BYTES)
+      throw new Error('Delegation record exceeds its byte bound');
+    decodeStoredDelegationV3(JSON.parse(bytes));
+    this.validatedCardRecords.add(record);
+  }
+
+  /** Fresh chain entry, never called recursively by preparation or settlement. */
+  private rebaseCardPublication(
+    record: StoredDelegationV3,
+    publication: StoredCardPublication,
+  ): Promise<StoredDelegationV3> {
+    const id = record.state.delegationId;
+    const previous = this.writes.get(id) ?? Promise.resolve();
+    const next = previous.then(async (): Promise<StoredDelegationV3> => {
+      this.checkReceiptQuarantine(id);
+      const latest = this.records.get(id);
+      if (
+        latest?.version !== 3 ||
+        latest.parent.chatId !== record.parent.chatId ||
+        latest.state.runGeneration !== record.state.runGeneration
+      )
+        throw new Error('Card rebase generation changed');
+      if (latest.cardPublication) return latest;
+      const baseline: StoredDelegationV3 = {
+        ...latest,
+        cardPublication: publication,
+      };
+      return this.commitStorageRecord(
+        this.prepareCardRecord(baseline, baseline),
+        baseline,
+      );
+    });
+    this.writes.set(
+      id,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
+  }
+
+  /** E1/B9: storage has no definite pre-write rejection contract. */
+  private commitStorageRecord(
+    record: StoredDelegationV3,
+    baseline?: StoredDelegationV3,
+  ): Promise<StoredDelegationV3>;
+  private commitStorageRecord(
+    record: StoredDelegation,
+  ): Promise<StoredDelegation>;
+  private async commitStorageRecord(
+    record: StoredDelegation,
+    baseline?: StoredDelegationV3,
+  ): Promise<StoredDelegation> {
+    const id = record.state.delegationId;
+    if (record.version !== 3) {
+      await this.options.storage.commit(record);
+      return record;
+    }
+    if (!this.validatedCardRecords.has(record)) {
+      const stored = baseline ?? this.records.get(id);
+      const prior =
+        stored?.version === 3 ? await this.cardBaseline(stored) : stored;
+      record = this.prepareCardRecord(prior, record);
+      this.validateCardRecord(record);
+    }
+    this.checkReceiptQuarantine(id);
+    try {
+      await this.options.storage.commit(record);
+    } catch {
+      // Install both barriers synchronously, inside the write chain and before
+      // the outer chat-key lock can release. Never infer absence from rejection.
+      this.receiptQuarantine.quarantine(id);
+      const prior = this.records.get(id);
+      for (const entry of [
+        ...record.receipts.commandReceipts,
+        ...record.receipts.stopReceipts,
+      ]) {
+        const priorWindow =
+          prior?.version === 3
+            ? entry.receiptKind === 'command'
+              ? prior.receipts.commandReceipts
+              : prior.receipts.stopReceipts
+            : [];
+        if (!priorWindow.some((old) => old.key === entry.key))
+          this.receiptQuarantine.reserve(entry);
+      }
+      this.abortQuarantinedWork(id);
+      throw new ReceiptAdmissionFailure(
+        receiptNotAdmitted('uncertain_commit'),
+        true,
+      );
+    }
+    this.records.set(id, record);
+    const committed = record;
+    if (this.initialized)
+      this.recordTransaction.exit(() =>
+        this.cardPublications.enqueue(committed),
+      );
+    return committed;
+  }
+
+  /** No settlement or record cleanup is used to retire uncertain native work. */
+  private abortQuarantinedWork(id: string): void {
+    this.continuationWaiters.delete(id);
+    this.handoffs.get(id)?.release();
+    this.handoffs.delete(id);
+    const record = this.records.get(id);
+    const pending = record ? this.pending.get(record.callKey) : undefined;
+    pending?.controller.abort();
+    pending?.slot?.withdraw();
+    for (const command of Array.from(this.commandControllers.values()))
+      if (command.delegationId === id) command.controller.abort();
+    const run = this.runs.get(id);
+    if (run) {
+      run.controller.abort();
+      run.admission?.withdraw();
+      run.lease.release();
+      void this.cleanup(id, run).catch((error: unknown) =>
+        this.options.onError?.(error),
+      );
+    }
+  }
+
+  private checkReceiptQuarantine(id: string): void {
+    if (this.receiptQuarantine.isQuarantined(id))
+      throw new ReceiptAdmissionFailure(receiptNotAdmitted('uncertain_commit'));
+  }
+
+  private receiptReserved(
+    identity: DelegationTranscriptReceiptIdentity,
+  ): boolean {
+    return this.receiptQuarantine.isReserved(identity);
+  }
+
+  private prepareRecordUpdate(
+    record: StoredDelegation,
+    changed: StoredDelegation,
+  ): StoredDelegation {
+    if (record.version === 3) {
+      const prepared = this.prepareV3Update(record, changed);
+      this.validateCardRecord(prepared);
+      return prepared;
+    }
+    if (changed.version === 3) {
+      this.validateCardRecord(changed);
+      return changed;
+    }
+    let updated = withSettledResult({ ...changed, version: 2 });
+    if (
+      updated.state !== record.state ||
+      updated.control !== record.control ||
+      stopRequest(updated) !== record.stopRequested ||
+      legacyArrays(updated)?.stopRequests !== record.stopRequests ||
+      updated.workspaceDiscarded !== record.workspaceDiscarded ||
+      updated.capabilityGrant !== record.capabilityGrant ||
+      updated.admission !== record.admission
+    )
+      updated = {
+        ...updated,
+        transcriptRevision:
+          updated.state.runGeneration !== record.state.runGeneration
+            ? 0
+            : (record.transcriptRevision ?? record.state.sequence) + 1,
+      };
+
+    return updated;
+  }
+
+  /** E4 intent is local to this admission, never later materialization. */
+  private async updateAdmission(
+    id: string,
+    operationId: string,
+    change: (current: StoredDelegation) => StoredDelegation,
+  ): Promise<void> {
+    if (this.records.get(id)?.version !== 3) return this.update(id, change);
+    await this.updateAsync(
+      id,
+      (current) => Promise.resolve(change(current)),
+      new Set([operationId]),
+    );
+  }
+
+  /** Prepare once, validate the bounded projection, then archive prior bytes. */
+  private async prepareReceiptCandidate(
+    current: StoredDelegation,
+    candidate: StoredDelegation,
+  ): Promise<StoredDelegation> {
+    if (current.version !== 3 || candidate === current)
+      return this.prepareAsyncCandidate(current, candidate);
+    const prepared = this.prepareV3Update(current, candidate);
+    const pins = receiptPins(prepared);
+    const commandIndex =
+      prepared.receipts.commandReceipts.length > 64
+        ? selectReceiptEvictee(
+            current.receipts.commandReceipts,
+            prepared.receipts.commandReceipts,
+            'command',
+            pins,
+          )
+        : undefined;
+    const stopIndex =
+      prepared.receipts.stopReceipts.length > 64
+        ? selectReceiptEvictee(
+            current.receipts.stopReceipts,
+            prepared.receipts.stopReceipts,
+            'stop',
+            pins,
+          )
+        : undefined;
+    if (
+      (prepared.receipts.commandReceipts.length > 64 &&
+        commandIndex === undefined) ||
+      (prepared.receipts.stopReceipts.length > 64 && stopIndex === undefined)
+    )
+      throw new ReceiptAdmissionFailure({ kind: 'capacity' });
+    const projected: StoredDelegationV3 = {
+      ...prepared,
+      receipts: {
+        ...prepared.receipts,
+        commandReceipts: prepared.receipts.commandReceipts.filter(
+          (_, index) => index !== commandIndex,
+        ),
+        stopReceipts: prepared.receipts.stopReceipts.filter(
+          (_, index) => index !== stopIndex,
+        ),
+      },
+    };
+    try {
+      this.rememberPreparedCandidate(current, projected);
+    } catch (error) {
+      // Only a codec rejection is a definite pre-write failure; defects throw.
+      if (!(error instanceof DelegationReadMetadataError)) throw error;
+      throw new ReceiptAdmissionFailure(receiptNotAdmitted('pre_write'));
+    }
+    const command = await rollOverReceipt({
+      priorWindow: current.receipts.commandReceipts,
+      candidateWindow: prepared.receipts.commandReceipts,
+      kind: 'command',
+      pins,
+      append: (entry) => this.streamPort().appendReceipt(entry),
+    });
+    if ('kind' in command) throw new ReceiptAdmissionFailure(command);
+    if (!command.ok) throw new ReceiptAdmissionFailure({ kind: 'capacity' });
+    const stop = await rollOverReceipt({
+      priorWindow: current.receipts.stopReceipts,
+      candidateWindow: prepared.receipts.stopReceipts,
+      kind: 'stop',
+      pins,
+      append: (entry) => this.streamPort().appendReceipt(entry),
+    });
+    if ('kind' in stop) throw new ReceiptAdmissionFailure(stop);
+    if (!stop.ok) throw new ReceiptAdmissionFailure({ kind: 'capacity' });
+    return projected;
+  }
+
+  private rememberPreparedCandidate(
+    current: StoredDelegation,
+    prepared: StoredDelegation,
+  ): StoredDelegation {
+    const transaction = this.recordTransaction.getStore();
+    if (
+      !transaction ||
+      transaction.current !== current ||
+      transaction.candidate
+    )
+      throw new Error('Record transaction preparation defect');
+    if (prepared.version === 3) this.validateCardRecord(prepared);
+    transaction.prepared.add(prepared);
+    transaction.candidate = prepared;
+    transaction.bytes = JSON.stringify(prepared);
+    return prepared;
+  }
+
+  /** Pure preparation and validation, before a callback's irreversible append. */
+  private prepareAsyncCandidate(
+    current: StoredDelegation,
+    candidate: StoredDelegation,
+  ): StoredDelegation {
+    const transaction = this.recordTransaction.getStore();
+    if (
+      !transaction ||
+      transaction.current !== current ||
+      transaction.candidate
+    )
+      throw new Error('Record transaction preparation defect');
+    const prepared =
+      candidate === current
+        ? current
+        : this.prepareRecordUpdate(current, candidate);
+    return this.rememberPreparedCandidate(current, prepared);
+  }
+
+  private async commitRecordUpdate(
+    id: string,
+    record: StoredDelegation,
+    updated: StoredDelegation,
+    terminalAnswer?: ReturnType<typeof captureSettlementAnswer>,
+  ): Promise<void> {
+    if (record.version === 3 && updated.version === 3) {
+      if (
+        updated.settling ||
+        (isSettledStatus(updated.state.status) &&
+          updated.latestResult?.runGeneration !== updated.state.runGeneration)
+      )
+        await this.settleStreamRecord(updated, terminalAnswer);
+      else {
+        updated = await this.commitStorageRecord(updated);
+        this.records.set(id, updated);
+      }
+      this.publishTranscript(this.records.get(id) ?? updated);
+      return;
+    }
+    updated = await this.commitStorageRecord(updated);
+    this.records.set(id, updated);
+    if (updated.version === 3) return;
+    const published = legacyArrays(updated)?.results?.find(
+      (result) =>
+        !(legacyArrays(record)?.results ?? []).some(
+          (prior) => prior.resultIndex === result.resultIndex,
+        ),
+    );
+    if (published)
+      try {
+        await this.options.onSettled?.(
+          updated.parent,
+          updated.state.delegationId,
+          published,
+        );
+      } catch (error) {
+        this.options.onError?.(error);
+      }
+    if (
+      record.state !== updated.state ||
+      record.transcriptRevision !== updated.transcriptRevision
+    )
+      this.publishTranscript(updated);
+  }
+
+  private update(
+    id: string,
+    change: (record: StoredDelegation) => StoredDelegation,
+    terminalAnswer?: ReturnType<typeof captureSettlementAnswer>,
+  ): Promise<void> {
+    if (this.recordTransaction.getStore())
+      throw new Error('Nested record transaction defect');
+    if (this.records.get(id)?.version === 3 && terminalAnswer === undefined)
+      return this.updateAsync(id, (current) =>
+        Promise.resolve(change(current)),
+      ).then(() => undefined);
+    const previous = this.writes.get(id) ?? Promise.resolve();
+    const next = previous.then(async (): Promise<void> => {
+      this.checkReceiptQuarantine(id);
+      const retained = this.records.get(id);
+      if (!retained) throw new Error('Unknown delegation record');
+      const record =
+        retained.version === 3 ? await this.cardBaseline(retained) : retained;
+      const changed = change(record);
+      if (record.version === 3 && changed === record) return;
+      const updated = this.prepareRecordUpdate(record, changed);
+      await this.commitRecordUpdate(id, record, updated, terminalAnswer);
+    });
+    this.writes.set(
+      id,
+      next.catch(() => undefined),
+    );
+    return next;
+  }
+
+  private updateAsync(
+    id: string,
+    prepare: (current: StoredDelegation) => Promise<StoredDelegation>,
+    admittedOperationIds: ReadonlySet<string> = new Set(),
+  ): Promise<StoredDelegation> {
+    if (this.recordTransaction.getStore())
+      throw new Error('Nested record transaction defect');
+    const previous = this.writes.get(id) ?? Promise.resolve();
+    const next = previous.then(async (): Promise<StoredDelegation> => {
+      this.checkReceiptQuarantine(id);
+      const retained = this.records.get(id);
+      if (!retained) throw new Error('Unknown delegation record');
+      const current =
+        retained.version === 3 ? await this.cardBaseline(retained) : retained;
+      const transaction: PreparedRecordTransaction = {
+        current,
+        prepared: new WeakSet(),
+        admittedOperationIds,
+      };
+      const updated = await this.recordTransaction.run(
+        transaction,
+        async (): Promise<StoredDelegation> => {
+          const candidate = await prepare(current);
+          if (transaction.candidate) {
+            if (
+              !transaction.prepared.has(candidate) ||
+              transaction.bytes !== JSON.stringify(candidate)
+            )
+              throw new Error('Record transaction changed after validation');
+            return candidate;
+          }
+          return this.prepareReceiptCandidate(current, candidate);
+        },
+      );
+      if (updated !== current)
+        await this.commitRecordUpdate(id, current, updated);
+      return this.records.get(id) ?? updated;
+    });
+    this.writes.set(
+      id,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
     );
     return next;
   }
@@ -5487,7 +8860,9 @@ export class AgentDelegationBroker {
    */
   private childIndex(parentId?: string): ReadonlyMap<string, string[]> {
     const createdAt = (record: StoredDelegation): number =>
-      record.history?.[0]?.createdAt ?? record.createdAt;
+      record.version === 3
+        ? record.readMetadata.originAt
+        : (record.history?.[0]?.createdAt ?? record.createdAt);
     const index = new Map<string, string[]>();
     for (const record of Array.from(this.records.values()).sort(
       (left, right) => createdAt(left) - createdAt(right),
@@ -5611,9 +8986,15 @@ export function projectStoredDelegationSnapshot(
     cancelledByUser,
     stoppedBy,
   } = record.state;
-  const resultIndex = record.results?.find(
-    (result) => result.runGeneration === record.state.runGeneration,
-  )?.resultIndex;
+  const resultIndex =
+    record.version === 3
+      ? record.latestResult?.runGeneration === record.state.runGeneration
+        ? record.latestResult.resultIndex
+        : undefined
+      : record.results?.find(
+          (result) => result.runGeneration === record.state.runGeneration,
+        )?.resultIndex;
+  const stopRequested = currentStopPolicy(record).stopRequested;
   return structuredClone({
     delegationId,
     depth: record.depth ?? record.parent.depth + 1,
@@ -5653,11 +9034,11 @@ export function projectStoredDelegationSnapshot(
           },
         }
       : {}),
-    ...(record.stopRequested
+    ...(stopRequested
       ? {
           stopRequested: {
-            operationId: record.stopRequested.operationId,
-            status: record.stopRequested.status,
+            operationId: stopRequested.operationId,
+            status: stopRequested.status,
           },
         }
       : {}),

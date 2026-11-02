@@ -47,6 +47,7 @@ import {
   readEffortStops,
   stepEffortAway,
 } from './effortPanel.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 // Cursor keeps its per-chat CLI profile under the worktree's data directory so
 // worktree deletion removes it; every scenario here seeds the same pair.
@@ -212,9 +213,7 @@ test('creates a custom Cursor Agent, restores its instructions, and delegates to
       .fill('CUSTOM_CURSOR_REVIEW_INSTRUCTIONS');
     await modal.getByTestId('agent-model-submit').click();
     await expect(modal).toBeHidden();
-    await expect(
-      f.window.getByTestId(`customize-row-agent:local:${agentId}`),
-    ).toBeVisible();
+    await f.driver.expectCreatedLocalAgentDetail(agentId);
     await f.restart();
     await f.openChat();
     const panel = f.window.getByTestId('panel-content-chat');
@@ -242,9 +241,10 @@ test('creates a custom Cursor Agent, restores its instructions, and delegates to
     });
     await f.driver.openSettings();
     await f.driver.openSettingsSection('experiments');
-    await f.window
-      .getByTestId('settings-managed-delegation-mode')
-      .selectOption('explicit-only');
+    await chooseSettingsOption(
+      f.window.getByTestId('settings-managed-delegation-mode'),
+      'explicit-only',
+    );
     await f.driver.closeSettings();
     writeFileSync(
       path.join(f.worktreePath, 'delegation-evidence.txt'),
@@ -321,9 +321,10 @@ test('Cursor delegates to a Cursor child, integrates its result, and disconnects
     await f.connection(true);
     await f.driver.openSettings();
     await f.driver.openSettingsSection('experiments');
-    await f.window
-      .getByTestId('settings-managed-delegation-mode')
-      .selectOption('explicit-only');
+    await chooseSettingsOption(
+      f.window.getByTestId('settings-managed-delegation-mode'),
+      'explicit-only',
+    );
     await f.driver.closeSettings();
     await f.openChat();
     const panel = f.window.getByTestId('panel-content-chat');
@@ -516,14 +517,7 @@ for (const native of ['claude', 'codex']) {
               text: `Delegation failed: ${ctx.results}`,
               stopReason: 'end_turn',
             });
-          if (!ctx.results.includes('watcherId')) {
-            return call(ctx.toolName('WatchDelegates', 'watch_delegates'), {
-              delegationIds: [id],
-              mode: 'all',
-              timeoutMs: 60000,
-            });
-          }
-          if (ctx.text.includes('watcher fired'))
+          if (ctx.item.hasDelegateNotice)
             return call(
               ctx.toolName('GetDelegateOutput', 'get_delegate_output'),
               { delegationId: id },
@@ -542,9 +536,10 @@ for (const native of ['claude', 'codex']) {
         await f.connection(true);
         await f.driver.openSettings();
         await f.driver.openSettingsSection('experiments');
-        await f.window
-          .getByTestId('settings-managed-delegation-mode')
-          .selectOption('explicit-only');
+        await chooseSettingsOption(
+          f.window.getByTestId('settings-managed-delegation-mode'),
+          'explicit-only',
+        );
         await f.driver.closeSettings();
         await f.openChat();
         const panel = f.window.getByTestId('panel-content-chat');
@@ -595,6 +590,9 @@ test('Cursor preserves an immediate text and tool burst through reload', async (
     await import('./fixtures/cursor-selection.mjs');
   const f = await launchCursorSelectionFixture();
   try {
+    await f.window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await f.connection(true);
     await f.openChat();
     const panel = f.window.getByTestId('panel-content-chat');
@@ -754,13 +752,17 @@ test('Cursor hides the local-memory citation tag live and after reload', async (
     await expect(
       panel.getByText('Cited answer.', { exact: false }),
     ).toBeVisible({ timeout: 60_000 });
-    await expect(panel.getByText(/Completed in/)).toBeVisible();
+    await expect(
+      panel.locator('[data-testid="turn-timer"][data-state="completed"]'),
+    ).toBeVisible();
     for (const reload of [false, true]) {
       if (reload) {
         await f.window.reload();
         await f.driver.waitForShell();
         await f.openChat();
-        await expect(panel.getByText(/Completed in/)).toBeVisible();
+        await expect(
+          panel.locator('[data-testid="turn-timer"][data-state="completed"]'),
+        ).toBeVisible();
       }
       await expect(
         panel.getByRole('button', { name: 'Stop generation', exact: true }),
@@ -800,6 +802,9 @@ test('Cursor notices remain visible in a completed collapsed turn after reload',
   const f = await launchCursorTranscriptFixture({ notices: true });
   try {
     await f.complete();
+    const steps = f.panel.getByRole('button', { name: /^Agent steps:/ });
+    await expect(steps).toHaveAttribute('aria-expanded', 'true');
+    await steps.click();
     for (const reload of [false, true]) {
       if (reload) {
         await f.window.reload();
@@ -840,7 +845,10 @@ test('Cursor keeps Read and Edit cards when the provider reuses a tool ID', asyn
       'git status',
     );
     await f.complete();
-    await f.panel.getByRole('button', { name: /^Agent steps:/ }).click();
+    const steps = f.panel.getByRole('button', { name: /^Agent steps:/ });
+    if ((await steps.getAttribute('aria-expanded')) !== 'true') {
+      await steps.click();
+    }
     const read = f.panel.locator('[data-tool-name="Read"]');
     const edit = f.panel.locator('[data-tool-name="Edit"]');
     await expect(read).toBeVisible();
@@ -860,18 +868,12 @@ test('Cursor native tool cards use canonical names and failure states', async ()
     await import('./fixtures/cursor-transcript.mjs');
   const f = await launchCursorTranscriptFixture();
   try {
-    for (const [name, family] of [
-      ['Read', 'read'],
-      ['Glob', 'glob'],
-      ['Grep', 'grep'],
-      ['Bash', 'bash'],
-    ]) {
+    // Clean rows retain canonical tool identity; the retired visual-family
+    // attribute is no longer part of the transcript DOM.
+    for (const name of ['Read', 'Glob', 'Grep', 'Bash']) {
       const card = f.panel.locator(`[data-tool-name="${name}"]`);
       await expect(card).toBeVisible();
-      await expect(card.locator('[data-tool-family]')).toHaveAttribute(
-        'data-tool-family',
-        family,
-      );
+      await expect(card.locator('[data-step-row]')).toBeVisible();
     }
     await expect(f.panel.locator('[data-tool-name="Read"]')).toContainText(
       'package.json',
@@ -997,9 +999,11 @@ test('Cursor completed turn collapses activity and restores its final answer', a
   try {
     await f.complete();
     const summary = f.panel.getByRole('button', { name: /^Agent steps:/ });
+    await expect(summary).toHaveAttribute('aria-expanded', 'true');
+    await summary.click();
     await expect(summary).toHaveAttribute('aria-expanded', 'false');
-    await expect(summary).toHaveAccessibleName(/1 read/);
-    await expect(summary).toHaveAccessibleName(/1 bash/);
+    await expect(summary).toHaveAccessibleName(/Read 1 file/);
+    await expect(summary).toHaveAccessibleName(/Ran 1 command/);
     await expect(
       f.panel.getByText('Checking the project files.', { exact: true }),
     ).toHaveCount(0);
@@ -1120,7 +1124,7 @@ for (const forkMode of [
           .click();
       } else {
         await panel
-          .getByRole('button', { name: 'Fork Chat', exact: true })
+          .getByRole('button', { name: 'Fork chat', exact: true })
           .last()
           .click();
       }
@@ -1397,7 +1401,7 @@ for (const destination of ['new-worktree', 'existing-worktree']) {
       });
       await experimental.hover();
       await expect(window.getByRole('tooltip')).toContainText(
-        'Experimental Cursor integration for Code chats, Cowork, App Advisor, and pipelines. Chats support plugin MCP servers, skills, and commands. Enable managed subagents for Code worktree chats in desktop Settings > Labs.',
+        'Experimental Cursor integration for Code chats, Cowork, Orchestrator, and workflows. Chats support plugin MCP servers, skills, and commands. Enable managed subagents for Code worktree chats in desktop Settings > Labs.',
       );
       await window.mouse.move(0, 0);
       // Enter the list at the Cursor section's last row, then let menu
@@ -1626,7 +1630,7 @@ for (const stopDuringAuth of [false, true]) {
       if (!stopDuringAuth && !live) {
         await restoredDriver.openAuditPage();
         await restoredWindow
-          .getByPlaceholder('Search', { exact: true })
+          .getByPlaceholder('Search the audit trail', { exact: true })
           .fill('cursor-default');
         await restoredWindow
           .locator('[data-testid^="audit-transcript-button-"]')
@@ -1909,7 +1913,7 @@ for (const tool of live
         if (!live && tool === 'Shell' && ['allow', 'stop'].includes(decision)) {
           await driver.openAuditPage();
           await window
-            .getByPlaceholder('Search', { exact: true })
+            .getByPlaceholder('Search the audit trail', { exact: true })
             .fill('cursor-default');
           const entry = window
             .getByTestId('audit-entry-list')
@@ -1956,13 +1960,13 @@ for (const tool of live
           await expect(modal).toContainText('Application stopped');
           await restarted.getByTestId('usage-limit-resume-confirm').click();
           await expect(modal).toBeHidden();
-          const queue = restarted.getByTestId('resume-queue-modal');
-          await expect(queue).toContainText('Cursor chat');
-          await expect(queue).toContainText('1 of 1 processed');
-          await queue.getByRole('button', { name: 'Done' }).click();
-          await expect(queue).toBeHidden();
-          await restartedDriver.openMainPage();
-          await restartedDriver.selectWorktree('demo-main');
+          // One confirmed chat opens directly instead of the queue dialog.
+          await expect(
+            restarted.getByTestId('resume-queue-modal'),
+          ).toBeHidden();
+          await expect(
+            restarted.locator('[data-panel-id="panel-chat-cursor-chat"]'),
+          ).toBeVisible();
           const resumedCard = restarted.getByTestId('tool-approval-card');
           await expect(resumedCard).toBeVisible();
           if (
@@ -1982,7 +1986,16 @@ for (const tool of live
             seeded.workspaces[0].worktreePath,
             'result.txt',
           );
-          await expect(resumedCard).toContainText(resumedTarget);
+          // The card names the worktree-relative target and reveals the
+          // absolute path on request (CAN-5165).
+          const resumedTargetLabel = resumedCard.getByTestId(
+            'tool-approval-file-target',
+          );
+          await expect(resumedTargetLabel).toHaveText('result.txt');
+          await resumedTargetLabel.click();
+          await expect(
+            resumedCard.getByTestId('tool-approval-file-target-full'),
+          ).toHaveText(resumedTarget);
           expect(existsSync(target)).toBe(false);
           expect(existsSync(resumedTarget)).toBe(false);
           await resumedCard.getByTestId('tool-approval-deny').click();
@@ -2084,7 +2097,7 @@ test('Cursor provider error ends as failed and a later message can succeed', asy
     ).toHaveCount(0);
     await driver.openAuditPage();
     await window
-      .getByPlaceholder('Search', { exact: true })
+      .getByPlaceholder('Search the audit trail', { exact: true })
       .fill('cursor-default');
     await window
       .locator('[data-testid^="audit-transcript-button-"]')
@@ -2418,12 +2431,15 @@ test('App Advisor operates Cursor setup and the developer diagnostic through the
     });
     expect(created.ok).toBe(true);
     await app.closeSettings();
-    await app.openPipelinesPage();
+    // create_tab already opened Workflows › Library with the assistant drawer.
+    // Clicking the current Workflows row again would return the section to
+    // its root and close the drawer (#6126), so only check the page.
+    await app.expectPipelinesPage();
     await expect(window.getByTestId('pipeline-chat-panel')).toBeVisible();
     // The default narrow drawer intentionally hides the model picker. Resize
     // through its user control before asserting the rejected model selection.
     const separator = window.getByRole('separator', {
-      name: 'Resize pipeline assistant',
+      name: 'Resize workflow assistant',
     });
     const separatorBox = await separator.boundingBox();
     const pageBox = await window
@@ -2721,8 +2737,14 @@ test('Cursor plan mode keeps its proposal pending while implementation admission
     await expect(
       window.getByTestId('plan-panel-execute-pipeline'),
     ).toBeDisabled();
-    await expect(window.getByTestId('plan-panel-execute-copy')).toBeEnabled();
+    // Copy plan sits beside Share, outside the Execute menu (CAN-5354).
+    await expect(window.getByTestId('plan-panel-execute-copy')).toHaveCount(0);
     await execute.click();
+    await expect(window.getByTestId('plan-panel-copy')).toBeEnabled();
+    await expect(window.getByTestId('plan-panel-copy')).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
     await window.reload();
     await app.waitForShell();
     await app.openMainPage();
@@ -3081,7 +3103,7 @@ test('Cursor restored Pipeline Assistant rejects a prompt before persistence whe
       .click();
     await expect(
       panel
-        .getByText('Connect Cursor in Settings to use Pipeline Assistant.', {
+        .getByText('Connect Cursor in Settings to use Workflow Assistant.', {
           exact: false,
         })
         .first(),
@@ -3174,6 +3196,7 @@ test('a Cursor Cowork chat runs the fixture turn in the Cowork folder with Cowor
     await driver.openChatPage();
     await window.getByTestId('sidebar-work-entry-seeded-cowork-chat').click();
     await window.locator('[data-testid^="panel-add-tab-"]').first().click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const panel = window
       .locator('[data-testid="panel-content-chat"]:visible')
       .first();
@@ -3400,6 +3423,7 @@ for (const route of ['canonical', 'advisor-action']) {
       await app.openChatPage();
       await window.getByTestId('sidebar-work-entry-seeded-cowork-chat').click();
       await window.locator('[data-testid^="panel-add-tab-"]').first().click();
+      await window.getByTestId('panel-add-menu-item-new-chat').click();
       const picker = window
         .locator('[data-testid="chat-model-picker"]:visible')
         .first();
@@ -3650,6 +3674,7 @@ test('a Cowork Cursor Write in Ask mode prompts through the approval card and wr
     await driver.openChatPage();
     await window.getByTestId('sidebar-work-entry-seeded-cowork-chat').click();
     await window.locator('[data-testid^="panel-add-tab-"]').first().click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const panel = window
       .locator('[data-testid="panel-content-chat"]:visible')
       .first();
@@ -4180,9 +4205,10 @@ for (const decision of ['allow', 'deny']) {
       );
       await driver.openSettings();
       await driver.openSettingsSection('experiments');
-      await window
-        .getByTestId('settings-managed-delegation-mode')
-        .selectOption('explicit-only');
+      await chooseSettingsOption(
+        window.getByTestId('settings-managed-delegation-mode'),
+        'explicit-only',
+      );
       await driver.closeSettings();
       await panel
         .getByRole('textbox')

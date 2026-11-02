@@ -74,7 +74,8 @@ export async function scanInterruptedWork(
                     String(tab.claudeTerminal.turnState),
                   )) ||
                 (record(tab.transcript) &&
-                  tab.transcript.hasActiveSidecar === true),
+                  (tab.transcript.hasOrdinaryActiveRows ??
+                    tab.transcript.hasActiveSidecar) === true),
             );
           // Journal records after a delta-journal checkpoint are replayed
           // into the index above, but descriptors of the chats they touched

@@ -99,10 +99,10 @@ describe('AppAdvisorProjectAgentAccessControl', () => {
       container.querySelector('#app-advisor-project-agent-access-label')
         ?.textContent,
     ).toBe(
-      'Allow project agents to use App Advisor chats and create automations',
+      'Allow project agents to use Orchestrator chats and create automations',
     );
     expect(container.textContent).toContain(
-      'Controls whether code and cowork agents can use App Advisor tools and create automations that prompt App Advisor.',
+      'Controls whether code and cowork agents can use Orchestrator tools and create automations that prompt Orchestrator.',
     );
     expect(
       button('app-advisor-project-agent-access-mode-enabled').getAttribute(
@@ -114,22 +114,22 @@ describe('AppAdvisorProjectAgentAccessControl', () => {
         '[data-testid="app-advisor-project-agent-access-mode-description"]',
       )?.textContent,
     ).toBe(
-      'Code and cowork agents can message, read, and watch App Advisor chats, and can create automations that prompt App Advisor.',
+      'Code and cowork agents can message, read, and watch Orchestrator chats, and can create automations that prompt Orchestrator.',
     );
   });
 
   it.each([
     [
       'enabled',
-      'Code and cowork agents can message, read, and watch App Advisor chats, and can create automations that prompt App Advisor.',
+      'Code and cowork agents can message, read, and watch Orchestrator chats, and can create automations that prompt Orchestrator.',
     ],
     [
       'selected-owners',
-      'Only agents in projects owned by the selected owners (Personal or an organization) can message, read, and watch App Advisor chats or create App Advisor automations.',
+      'Only agents in projects owned by the selected owners (Personal or an organization) can message, read, and watch Orchestrator chats or create Orchestrator automations.',
     ],
     [
       'disabled',
-      "Code and cowork agents can't message, read, or watch App Advisor chats, or create automations that prompt App Advisor. Automations that already exist keep running.",
+      "Code and cowork agents can't message, read, or watch Orchestrator chats, or create automations that prompt Orchestrator. Automations that already exist keep running.",
     ],
   ] as const)('describes the %s mode', (mode, description) => {
     renderControl({ value: { mode, selectedOwners: [] } });
@@ -337,7 +337,7 @@ describe('AppAdvisorProjectAgentAccessControl', () => {
       container.querySelector(
         '[data-testid="app-advisor-project-agent-access-no-owners"]',
       )?.textContent,
-    ).toBe('No owners selected, so no project agents can use App Advisor.');
+    ).toBe('No owners selected, so no project agents can use Orchestrator.');
   });
 
   it.each([{ disabled: true }, { saving: true }])(

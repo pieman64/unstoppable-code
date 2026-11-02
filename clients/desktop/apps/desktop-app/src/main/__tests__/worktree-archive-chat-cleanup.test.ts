@@ -142,6 +142,14 @@ jest.mock('../lib/workspace-persistence', () => ({
     }),
   ),
   readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
+  readWorkspaceWorktreesDetailed: jest.fn(async (workspaceId: string) => ({
+    worktrees: await jest
+      .requireMock<{
+        readWorkspaceWorktrees: (id: string) => Promise<unknown[]>;
+      }>('../lib/workspace-persistence')
+      .readWorkspaceWorktrees(workspaceId),
+    authority: 'ok',
+  })),
   readWorkspaceConfigDetailed: jest.fn(async (workspaceId: string) => ({
     config: await jest
       .requireMock<{
@@ -177,7 +185,16 @@ jest.mock('../ipc/worktree-discovery', () => ({
   triggerDiscovery: jest.fn(),
 }));
 jest.mock('../agents/session-manager', () => ({
+  getLiveBackgroundTasksForChat: jest.fn(() => undefined),
+  listLiveBackgroundTaskOwners: jest.fn(() => []),
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
+  subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
+  hasPendingCodexContinuation: jest.fn(() => false),
+  getChatSessionLiveness: jest.fn(() => ({
+    foreground: false,
+    background: false,
+  })),
   getGlobalPluginDefaultsRevision: jest.fn(() => 0),
   getSessionGlobalPluginDefaultsRevision: jest.fn(() => undefined),
   destroyWorktreeSessions: jest.fn(() => Promise.resolve()),
@@ -237,6 +254,7 @@ import { isRegisteredWorktreePath, removeWorktree } from '../lib/git';
 import { cleanupPersistedWorktreeData } from '../lib/worktree-data-cleanup';
 import { registerIpcHandler } from '../ipc/register';
 import { registerWorktreeHandlers } from '../ipc/worktrees';
+import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedReadFile = jest.mocked(readFile);
@@ -262,7 +280,7 @@ beforeEach(() => {
     .mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
   mockedRm.mockResolvedValue(undefined);
 
-  registerWorktreeHandlers(() => null);
+  registerWorktreeHandlers(() => null, unusedGitReadRuntime());
 
   const archiveCall = mockedRegisterIpcHandler.mock.calls.find(
     ([channel]) => channel === 'worktree:archive',

@@ -11,6 +11,12 @@ import { ChatProjectSettingsModal } from '@/components/standalone-chat/ChatProje
 import { setNativeInputValue } from '@/test-utils/dom';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { saveWorkspacePrivateMemory } from '@/lib/privateMemory';
+import { resetLiveBackgroundTaskStoreForTests } from '@/stores/liveBackgroundTaskStore';
+import {
+  resetDelegationActivityStoreForTests,
+  useDelegationActivityStore,
+} from '@/stores/delegationActivityStore';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 
 // The dialog's one Private memory write path (CAN-3562); the helper's own
 // IPC and row reload are covered in privateMemory.test.ts.
@@ -144,7 +150,17 @@ describe('ChatProjectSettingsModal', () => {
           loadClaudeMd,
           saveClaudeMd,
         },
+        activity: {
+          listLiveBgTasks: jest.fn().mockResolvedValue({ chats: {} }),
+        },
       },
+    });
+    resetLiveBackgroundTaskStoreForTests();
+    resetDelegationActivityStoreForTests();
+    useStandaloneChatStore.setState({
+      activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
+      sidebarEntriesByProject: {},
+      workEntries: [],
     });
   });
 
@@ -338,6 +354,10 @@ describe('ChatProjectSettingsModal', () => {
     });
   });
   it('does not offer a "move chats to Default" delete option — the backend has no merge disposition', async () => {
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'alpha',
+      workEntries: [],
+    });
     act(() => {
       root.render(
         <ChatProjectSettingsModal
@@ -366,6 +386,202 @@ describe('ChatProjectSettingsModal', () => {
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledWith('alpha');
     expect(onDelete.mock.calls[0]).toHaveLength(1);
+  });
+
+  it('re-checks an unvisited busy Work Entry before deleting its Cowork project', async () => {
+    useStandaloneChatStore.setState({
+      activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
+      sidebarEntriesByProject: {
+        alpha: [
+          {
+            id: 'entry-busy',
+            title: 'Background work',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastMessageAt: '2026-01-01T00:01:00.000Z',
+            chatCount: 1,
+          },
+        ],
+      },
+    });
+    const listLiveBgTasks = jest.fn().mockResolvedValue({
+      chats: {
+        'chat-root': {
+          sessionActive: true,
+          liveTasks: [{ taskId: 'agent-task', taskType: 'local_agent' }],
+        },
+      },
+    });
+    window.api.activity.listLiveBgTasks = listLiveBgTasks;
+    act(() => {
+      root.render(
+        <ChatProjectSettingsModal
+          isOpen
+          project={project({ id: 'alpha' })}
+          onClose={onClose}
+          onSave={onSave}
+          onDelete={onDelete}
+        />,
+      );
+    });
+    await flush();
+
+    clickButton(container, 'Danger');
+    clickButton(container, 'Delete project…');
+    clickButton(container, 'Confirm delete');
+    await flush();
+
+    expect(listLiveBgTasks).toHaveBeenCalledWith({
+      projectId: 'alpha',
+      worktreeId: 'entry-busy',
+    });
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      'Background agents or workflows are still running here. Stop them first.',
+    );
+  });
+
+  it('loads an inactive Cowork project entry list before checking removal', async () => {
+    const entry = {
+      id: 'entry-loaded',
+      title: 'Background work',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastMessageAt: '2026-01-01T00:01:00.000Z',
+      chatCount: 1,
+    };
+    const loadSidebarProjectEntries = jest.fn((projectId: string) => {
+      useStandaloneChatStore.setState({
+        sidebarEntriesByProject: { [projectId]: [entry] },
+      });
+      return Promise.resolve();
+    });
+    useStandaloneChatStore.setState({
+      activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
+      sidebarEntriesByProject: {},
+      loadSidebarProjectEntries,
+    });
+    const listLiveBgTasks = jest.fn().mockResolvedValue({
+      chats: {
+        'chat-root': {
+          sessionActive: true,
+          liveTasks: [{ taskId: 'agent-task', taskType: 'local_agent' }],
+        },
+      },
+    });
+    window.api.activity.listLiveBgTasks = listLiveBgTasks;
+    act(() => {
+      root.render(
+        <ChatProjectSettingsModal
+          isOpen
+          project={project({ id: 'alpha' })}
+          onClose={onClose}
+          onSave={onSave}
+          onDelete={onDelete}
+        />,
+      );
+    });
+    await flush();
+
+    clickButton(container, 'Danger');
+    clickButton(container, 'Delete project…');
+    clickButton(container, 'Confirm delete');
+    await flush();
+
+    expect(loadSidebarProjectEntries).toHaveBeenCalledWith('alpha');
+    expect(listLiveBgTasks).toHaveBeenCalledWith({
+      projectId: 'alpha',
+      worktreeId: 'entry-loaded',
+    });
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it('allows deleting a Cowork project when its entry only has shell work', async () => {
+    useStandaloneChatStore.setState({
+      activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
+      sidebarEntriesByProject: {
+        alpha: [
+          {
+            id: 'entry-shell',
+            title: 'Shell work',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastMessageAt: '2026-01-01T00:01:00.000Z',
+            chatCount: 1,
+          },
+        ],
+      },
+    });
+    window.api.activity.listLiveBgTasks = jest.fn().mockResolvedValue({
+      chats: {
+        'chat-root': {
+          sessionActive: true,
+          liveTasks: [{ taskId: 'shell-task', taskType: 'local_bash' }],
+        },
+      },
+    });
+    act(() => {
+      root.render(
+        <ChatProjectSettingsModal
+          isOpen
+          project={project({ id: 'alpha' })}
+          onClose={onClose}
+          onSave={onSave}
+          onDelete={onDelete}
+        />,
+      );
+    });
+    await flush();
+
+    clickButton(container, 'Danger');
+    clickButton(container, 'Delete project…');
+    clickButton(container, 'Confirm delete');
+    await flush();
+
+    expect(onDelete).toHaveBeenCalledWith('alpha');
+  });
+
+  it('shows the delegate removal copy when deleting a Cowork project with live delegates', async () => {
+    useStandaloneChatStore.setState({
+      activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
+      sidebarEntriesByProject: {
+        alpha: [
+          {
+            id: 'entry-delegates',
+            title: 'Delegating',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastMessageAt: '2026-01-01T00:01:00.000Z',
+            chatCount: 1,
+          },
+        ],
+      },
+    });
+    useDelegationActivityStore.getState().applyActivity({
+      projectId: 'alpha',
+      worktreeId: 'entry-delegates',
+      chatId: 'chat-root',
+      live: 1,
+      queued: 0,
+    });
+    act(() => {
+      root.render(
+        <ChatProjectSettingsModal
+          isOpen
+          project={project({ id: 'alpha' })}
+          onClose={onClose}
+          onSave={onSave}
+          onDelete={onDelete}
+        />,
+      );
+    });
+    await flush();
+
+    clickButton(container, 'Danger');
+    clickButton(container, 'Delete project…');
+    clickButton(container, 'Confirm delete');
+    await flush();
+
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      'Delegates are still running here. Stop them first.',
+    );
   });
 
   it('does not show a Danger tab for the real default cowork project', async () => {

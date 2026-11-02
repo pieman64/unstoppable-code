@@ -93,9 +93,7 @@ for (const scenario of [
       const accountRow = window.getByTestId('sidebar-account-row');
       if (!scenario.enabled) {
         await expect(
-          window
-            .getByTestId('sidebar-titlebar')
-            .getByTestId('sidebar-activity-toggle'),
+          window.getByTestId('sidebar-activity-toggle'),
         ).toBeVisible();
         await expect(contextRow).toHaveCount(0);
         await expect(window.getByTestId('sidebar-top-context-row')).toHaveCount(
@@ -132,6 +130,18 @@ for (const scenario of [
       const bell = window.getByTestId('sidebar-activity-toggle');
       await expect(bell).toHaveCount(1);
       await expectHeaderSearchBesideBell(window);
+      // The icon-only Search names its shortcut in its tooltip, as one
+      // borderless cap per key read from the shortcut registry.
+      await window.getByTestId('sidebar-search').hover();
+      const searchTip = window.getByRole('tooltip');
+      await expect(searchTip).toContainText('Search');
+      await expect(searchTip.locator('kbd')).toHaveText(
+        process.platform === 'darwin' ? ['⌘', 'K'] : ['Ctrl', 'K'],
+      );
+      await expect(searchTip.locator('kbd').first()).toHaveCSS(
+        'border-top-width',
+        '0px',
+      );
       await window.getByTestId('sidebar-search').click();
       await expect(window.getByTestId('command-palette')).toBeVisible();
       await window.keyboard.press('Escape');

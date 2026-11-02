@@ -18,9 +18,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import {
   SettingsOperationError,
   type BillingSummary,
-  type OrganizationSettingsNavTab,
-  type OrganizationSummary,
-  type SettingsBootstrap,
 } from '@canopy/protocol/settings';
 import {
   createFakeSettingsClient,
@@ -32,35 +29,12 @@ import type {
   OrganizationPromotionDialogProps,
   OrganizationSettingsSlots,
 } from '../organization-settings-slots';
-import {
-  organizationSwitchTab,
-  TeamPage,
-  type TeamPageProps,
-} from '../team-page';
+import { TeamPage, type TeamPageProps } from '../team-page';
 import {
   buildOrganizationDetail,
   OrganizationTestHost,
   seatChargeSlot,
 } from './helpers/members-section-harness';
-
-const ORGANIZATIONS: OrganizationSummary[] = [
-  {
-    id: 'org-1',
-    name: 'Acme',
-    role: 'OWNER',
-    memberCount: 1,
-    subTeamCount: 0,
-    logoUrl: null,
-  },
-  {
-    id: 'org-2',
-    name: 'Globex',
-    role: 'MEMBER',
-    memberCount: 3,
-    subTeamCount: 1,
-    logoUrl: null,
-  },
-];
 
 function summary(overrides: Partial<BillingSummary> = {}): BillingSummary {
   return {
@@ -79,41 +53,6 @@ function summary(overrides: Partial<BillingSummary> = {}): BillingSummary {
     capabilities: [],
     coverageNotes: [],
     ...overrides,
-  };
-}
-
-interface Tabs {
-  readonly visible: OrganizationSettingsNavTab[];
-  readonly disabled?: OrganizationSettingsNavTab[];
-}
-
-function bootstrapFor(organizationId: string, tabs: Tabs): SettingsBootstrap {
-  return {
-    version: 1,
-    viewer: { id: 'account-1', email: 'owner@example.com', name: null },
-    account: {
-      billingEnabled: true,
-      digestsEnabled: true,
-      integrationsEnabled: true,
-      freeAccess: false,
-    },
-    organizations: [],
-    organization: {
-      id: organizationId,
-      name: 'Globex',
-      viewerRole: 'MEMBER',
-      isPersonal: false,
-      visibleTabs: tabs.visible,
-      disabledTabs: tabs.disabled ?? [],
-      billingNeedsAttention: false,
-      billingEnabled: true,
-      memoryEnabled: false,
-      digestsEnabled: true,
-      projectsEnabled: false,
-      canViewUsageStats: false,
-      freeAccess: false,
-      lapse: null,
-    },
   };
 }
 
@@ -166,12 +105,10 @@ async function renderPage(
 ): Promise<void> {
   const props: TeamPageProps = {
     initialDetail: buildOrganizationDetail(),
-    organizations: [],
     viewerEmail: 'owner@example.com',
     billingEnabled: true,
     memoryEnabled: false,
     projectsEnabled: false,
-    billingNeedsAttention: false,
     mobileBrowser: false,
     activeTab: 'members',
     ...overrides,
@@ -506,12 +443,10 @@ describe('Members invite seat-charge cache (settings store)', () => {
             <TeamPage
               key="return-visit"
               initialDetail={buildOrganizationDetail()}
-              organizations={[]}
               viewerEmail="owner@example.com"
               billingEnabled
               memoryEnabled={false}
               projectsEnabled={false}
-              billingNeedsAttention={false}
               mobileBrowser={false}
               activeTab="members"
             />,
@@ -616,100 +551,5 @@ describe('Personal-to-team promotion', () => {
     expect(openExternal).toHaveBeenCalledWith(
       'https://canopy.test/organization/personal-1',
     );
-  });
-});
-
-describe('organization switching', () => {
-  it.each<[string, Tabs | null, OrganizationSettingsNavTab]>([
-    ['offered', { visible: ['feed', 'members'] }, 'members'],
-    ['hidden', { visible: ['feed', 'statistics'] }, 'feed'],
-    [
-      'inert while lapsed',
-      { visible: ['feed', 'members'], disabled: ['members'] },
-      'feed',
-    ],
-    ['unreadable', null, 'feed'],
-  ])(
-    'keeps the current tab only when the destination offers it (%s)',
-    (_name, tabs, expected) => {
-      expect(
-        organizationSwitchTab(
-          'members',
-          tabs === null
-            ? null
-            : { visibleTabs: tabs.visible, disabledTabs: tabs.disabled ?? [] },
-        ),
-      ).toBe(expected);
-    },
-  );
-
-  async function switchTo(organizationId: string): Promise<void> {
-    const select = byTestId('team-org-switcher');
-    if (!(select instanceof HTMLSelectElement)) throw new Error('No switcher');
-    await act(async () => {
-      select.value = organizationId;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
-    await flush();
-  }
-
-  it('selects the destination organization in the app sidebar', async () => {
-    await renderPage({ organizations: ORGANIZATIONS, activeTab: 'feed' });
-    expect(selectOrganization).not.toHaveBeenCalled();
-
-    await switchTo('org-2');
-
-    expect(selectOrganization).toHaveBeenCalledTimes(1);
-    expect(selectOrganization).toHaveBeenCalledWith('org-2');
-  });
-
-  it('retains the tab the destination organization offers', async () => {
-    client = makeClient({
-      'organization.billing.summary': () => summary(),
-      'settings.bootstrap': () =>
-        bootstrapFor('org-2', { visible: ['feed', 'members', 'settings'] }),
-    });
-    await renderPage({ organizations: ORGANIZATIONS });
-    await switchTo('org-2');
-
-    expect(
-      client.calls.find((call) => call.operation === 'settings.bootstrap')
-        ?.input,
-    ).toEqual({ organizationId: 'org-2' });
-    expect(push).toHaveBeenCalledWith('/organization/org-2/members');
-  });
-
-  it('opens the destination Feed when it does not offer the tab', async () => {
-    client = makeClient({
-      'settings.bootstrap': () =>
-        bootstrapFor('org-2', { visible: ['feed', 'members'] }),
-    });
-    await renderPage({ organizations: ORGANIZATIONS, activeTab: 'statistics' });
-    await switchTo('org-2');
-
-    expect(push).toHaveBeenCalledWith('/organization/org-2');
-  });
-
-  it('opens the destination Feed when its tabs cannot be read', async () => {
-    client = makeClient({
-      'settings.bootstrap': () => {
-        throw new SettingsOperationError({ code: 'offline' });
-      },
-    });
-    await renderPage({ organizations: ORGANIZATIONS, activeTab: 'groups' });
-    await switchTo('org-2');
-
-    expect(push).toHaveBeenCalledWith('/organization/org-2');
-  });
-
-  it('switches from Feed to Feed without reading the destination', async () => {
-    await renderPage({ organizations: ORGANIZATIONS, activeTab: 'feed' });
-    await switchTo('org-2');
-
-    expect(
-      client.calls.some((call) => call.operation === 'settings.bootstrap'),
-    ).toBe(false);
-    expect(push).toHaveBeenCalledWith('/organization/org-2');
   });
 });

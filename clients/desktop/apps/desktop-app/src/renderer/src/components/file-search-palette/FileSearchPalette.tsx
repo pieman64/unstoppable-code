@@ -16,6 +16,10 @@ import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpin
 import { getFilenameMatchedIndices } from './file-search-palette-helpers';
 import { shouldFetchFileSearchPaletteEntry } from './file-search-palette-state';
 import { HighlightedSegments, splitMatchSegments } from '@canopy/ui-shared';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { KeyHintFooter } from '@canopy/ui-shared/components';
+import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
+import { isCoworkWorkspaceFileRoot } from '@canopy/ui-shared/lib/file-root-groups';
 
 interface FileSearchPaletteProps {
   initialQuery: string;
@@ -405,7 +409,18 @@ export function FileSearchPalette({
                         </div>
                       </div>
                       <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
-                        {result.repoName}
+                        <span
+                          className={
+                            isCoworkWorkspaceFileRoot({
+                              id: result.repoId,
+                              kind: result.rootKind,
+                            })
+                              ? REPLAY_MASK_CLASS
+                              : undefined
+                          }
+                        >
+                          {result.repoName}
+                        </span>
                       </span>
                     </button>
                   </li>
@@ -414,11 +429,7 @@ export function FileSearchPalette({
             </ul>
           )}
         </div>
-        <div className="flex items-center justify-between border-t px-4 py-3 text-xs fg-secondary">
-          <span>Enter to open</span>
-          <span>Esc to close</span>
-          <span>↑↓ to navigate</span>
-        </div>
+        <KeyHintFooter hints={pickerKeyHints('open')} />
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import {
   takeChatStorageActivity,
+  CHAT_STORAGE_ACTIVITY_SCOPE_LIMIT,
   type ChatStorageActivity,
   type ChatStorageActivityWindow,
 } from '@canopy/desktop-shared/node/chat-storage-activity';
@@ -19,6 +20,22 @@ import type {
  */
 
 export const CHAT_STORAGE_ACTIVITY_INTERVAL_MS = 60_000;
+/** Provisional threshold: calibrate against measured runs, not a storage throttle. */
+export const PROVISIONAL_CHAT_TRANSCRIPT_WRITE_RATE_BYTES_PER_SECOND =
+  1024 * 1024;
+const REQUIRED_RATE_SAMPLES = 3;
+// Repeating timers fire on whole milliseconds, so the monotonic clock can
+// measure a full window a fraction of a millisecond short.
+const MIN_RATE_WINDOW_MS = CHAT_STORAGE_ACTIVITY_INTERVAL_MS * 0.9;
+const REQUIRED_RATE_OBSERVED_MS = REQUIRED_RATE_SAMPLES * MIN_RATE_WINDOW_MS;
+// A heavily delayed sampler cannot establish continuity across the missing time.
+const MAX_RATE_WINDOW_MS = CHAT_STORAGE_ACTIVITY_INTERVAL_MS * 1.5;
+
+interface WriteRateEpisode {
+  sampleCount: number;
+  observedMs: number;
+  warned: boolean;
+}
 
 export interface ChatStorageActivityDiagnosticsOptions {
   intervalMs?: number;
@@ -85,7 +102,8 @@ export function startChatStorageActivityDiagnostics(
       getObservabilityService().recordAppDiagnostic(record));
 
   let windowStartedAt = now();
-  const emit = (): void => {
+  const episodes = new Map<string, WriteRateEpisode>();
+  const emit = (fullWindow: boolean): void => {
     let window: ChatStorageActivityWindow | undefined;
     try {
       window = take();
@@ -93,10 +111,74 @@ export function startChatStorageActivityDiagnostics(
       window = undefined;
     }
     const endedAt = now();
-    const windowMs = Math.max(0, Math.round(endedAt - windowStartedAt));
+    const elapsedMs = endedAt - windowStartedAt;
+    const windowMs = Math.max(0, Math.round(elapsedMs));
     windowStartedAt = endedAt;
+    const rateWindow =
+      fullWindow &&
+      Number.isFinite(elapsedMs) &&
+      elapsedMs >= MIN_RATE_WINDOW_MS &&
+      elapsedMs <= MAX_RATE_WINDOW_MS;
+    if (!rateWindow || window === undefined) episodes.clear();
     if (window === undefined) return;
     const at = timestamp();
+    if (rateWindow) {
+      // Admission is bounded even for an injected/oversized window. Missing or
+      // evicted scopes lose their episode; they cannot bridge a quiet window.
+      const admitted = window.scopes.slice(
+        0,
+        CHAT_STORAGE_ACTIVITY_SCOPE_LIMIT,
+      );
+      const keys = new Set(admitted.map((scope) => scope.scopeKey));
+      for (const key of Array.from(episodes.keys()))
+        if (!keys.has(key)) episodes.delete(key);
+      for (const scope of admitted) {
+        const rate = (scope.activity.transcriptBytesWritten * 1000) / elapsedMs;
+        if (
+          !(rate > PROVISIONAL_CHAT_TRANSCRIPT_WRITE_RATE_BYTES_PER_SECOND) ||
+          !Number.isFinite(rate)
+        ) {
+          episodes.delete(scope.scopeKey);
+          continue;
+        }
+        const episode = episodes.get(scope.scopeKey) ?? {
+          sampleCount: 0,
+          observedMs: 0,
+          warned: false,
+        };
+        // Counters need only reach the arming boundary; retained values are bounded.
+        episode.sampleCount = Math.min(
+          REQUIRED_RATE_SAMPLES,
+          episode.sampleCount + 1,
+        );
+        episode.observedMs = Math.min(
+          REQUIRED_RATE_OBSERVED_MS + MAX_RATE_WINDOW_MS,
+          episode.observedMs + elapsedMs,
+        );
+        episodes.set(scope.scopeKey, episode);
+        if (
+          !episode.warned &&
+          episode.sampleCount >= REQUIRED_RATE_SAMPLES &&
+          episode.observedMs >= REQUIRED_RATE_OBSERVED_MS
+        ) {
+          episode.warned = true;
+          attempt(() =>
+            recordApp({
+              version: 1,
+              timestamp: at,
+              kind: 'resource_pressure_warning',
+              reason: 'chat_transcript_write_rate',
+              chatTranscriptWriteScopeDigest: scope.scopeKey,
+              chatTranscriptWriteRateBytesPerSecond: rate,
+              chatTranscriptWriteRateThresholdBytesPerSecond:
+                PROVISIONAL_CHAT_TRANSCRIPT_WRITE_RATE_BYTES_PER_SECOND,
+              chatTranscriptWriteRateObservedMs: episode.observedMs,
+              chatTranscriptWriteRateSampleCount: episode.sampleCount,
+            }),
+          );
+        }
+      }
+    }
     for (const scope of window.scopes) {
       const identity = scope.identity;
       // An unregistered scope still counts in the aggregate below.
@@ -128,13 +210,14 @@ export function startChatStorageActivityDiagnostics(
     );
   };
 
-  const timer = setInterval(emit, intervalMs);
+  const timer = setInterval(() => emit(true), intervalMs);
   timer.unref?.();
   let stopped = false;
   return (stopOptions?: { flush?: boolean }): void => {
     if (stopped) return;
     stopped = true;
     clearInterval(timer);
-    if (stopOptions?.flush === true) emit();
+    if (stopOptions?.flush === true) emit(false);
+    episodes.clear();
   };
 }

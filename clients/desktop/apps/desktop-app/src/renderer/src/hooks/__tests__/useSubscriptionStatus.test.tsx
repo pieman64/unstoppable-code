@@ -141,7 +141,7 @@ function signedOutAccount(): CanopyCloudAccountPublicState {
     hasApiKey: false,
     authMode: null,
     credentialSource: null,
-    account: null,
+    account: undefined,
   });
 }
 
@@ -157,6 +157,7 @@ function resolvedEntitlements(
     trial: null,
     billingManageableOrg: null,
     displayPlan: null,
+    billingPresentation: null,
   };
 }
 
@@ -169,6 +170,7 @@ const UNRESOLVED_ENTITLEMENTS: CanopyCloudEntitlementsState = {
   trial: null,
   billingManageableOrg: null,
   displayPlan: null,
+  billingPresentation: null,
 };
 
 /** Sign-out shape: resolved, but with no grant at all. */
@@ -181,6 +183,7 @@ const UNLINKED_ENTITLEMENTS: CanopyCloudEntitlementsState = {
   trial: null,
   billingManageableOrg: null,
   displayPlan: null,
+  billingPresentation: null,
 };
 
 interface Queues {

@@ -1,8 +1,9 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getCodeReviewRegistryFilePath } from './paths';
-import { isRecord } from './type-guards';
+import { isErrnoException, isRecord } from './type-guards';
+import { writeFileAtomically } from './atomic-file';
 
 /**
  * The real project/worktree a code-review chat scope runs against. The
@@ -45,61 +46,106 @@ function emptyRegistry(): CodeReviewRegistryFile {
 }
 
 function parseRegistry(raw: string): CodeReviewRegistryFile {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (isCodeReviewRegistryFile(parsed)) {
-      return parsed;
-    }
-  } catch {
-    // Fall through to empty registry on corrupt JSON.
+  const parsed: unknown = JSON.parse(raw);
+  if (isRecord(parsed) && parsed.version !== 1) {
+    throw new Error('Code review registry has an unsupported version.');
   }
-  return emptyRegistry();
+  if (!isCodeReviewRegistryFile(parsed)) {
+    throw new Error('Code review registry contains invalid data.');
+  }
+  return parsed;
 }
 
 /**
- * In-memory cache of the parsed registry keyed by the file's last-modified
- * time (ms). `resolveWorktreeCwd` is synchronous and may be called per turn, so
+ * Cache keyed by resolved path and last-modified time (ms).
+ * `resolveWorktreeCwd` is synchronous and may be called per turn, so
  * the synchronous read below avoids re-parsing the (tiny) registry file unless
  * it has actually changed on disk.
  */
-let cachedRegistry: { mtimeMs: number; file: CodeReviewRegistryFile } | null =
-  null;
+let cachedRegistry: {
+  filePath: string;
+  mtimeMs: number;
+  file: CodeReviewRegistryFile;
+} | null = null;
 
-async function readRegistry(): Promise<CodeReviewRegistryFile> {
+async function readRegistry(filePath: string): Promise<CodeReviewRegistryFile> {
   try {
-    const raw = await readFile(getCodeReviewRegistryFilePath(), 'utf8');
-    return parseRegistry(raw);
-  } catch {
-    return emptyRegistry();
+    return parseRegistry(await readFile(filePath, 'utf8'));
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') {
+      return emptyRegistry();
+    }
+    throw error;
   }
+}
+
+let mutationQueue: Promise<void> = Promise.resolve();
+
+function mutateRegistry(
+  update: (current: CodeReviewRegistryFile) => CodeReviewRegistryFile | null,
+): Promise<void> {
+  const filePath = getCodeReviewRegistryFilePath();
+  const operation = mutationQueue.then(async () => {
+    try {
+      const next = update(await readRegistry(filePath));
+      if (!next) return;
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFileAtomically(filePath, JSON.stringify(next, null, 2), {
+        encoding: 'utf8',
+        durable: true,
+      });
+    } finally {
+      // A failed post-install sync can leave the new file visible, not rolled back.
+      cachedRegistry = null;
+    }
+  });
+  mutationQueue = operation.catch(() => undefined);
+  return operation;
 }
 
 export async function registerCodeReviewTarget(
   scopeKey: string,
   ref: CodeReviewTargetRef,
 ): Promise<void> {
-  const filePath = getCodeReviewRegistryFilePath();
-  const current = await readRegistry();
-  const next: CodeReviewRegistryFile = {
-    version: 1,
-    targets: { ...current.targets, [scopeKey]: ref },
-  };
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(next, null, 2), 'utf8');
-  cachedRegistry = null;
+  return mutateRegistry((current) => {
+    // Define an own key even when downlevel compilation would invoke __proto__.
+    Object.defineProperty(current.targets, scopeKey, {
+      value: ref,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    return current;
+  });
+}
+
+function ownTarget(
+  file: CodeReviewRegistryFile,
+  scopeKey: string,
+): CodeReviewTargetRef | null {
+  return Object.prototype.hasOwnProperty.call(file.targets, scopeKey)
+    ? file.targets[scopeKey]
+    : null;
 }
 
 export async function getCodeReviewTarget(
   scopeKey: string,
 ): Promise<CodeReviewTargetRef | null> {
-  const file = await readRegistry();
-  return file.targets[scopeKey] ?? null;
+  try {
+    return ownTarget(
+      await readRegistry(getCodeReviewRegistryFilePath()),
+      scopeKey,
+    );
+  } catch {
+    // Lookup compatibility is permissive; mutation and cleanup reads are not.
+    return null;
+  }
 }
 
 /**
  * Synchronous registry read for `resolveWorktreeCwd`, which is synchronous.
  * Reads the tiny registry file via `readFileSync` and caches the parsed result
- * keyed by the file's mtime so repeated cwd resolutions avoid re-reading and
+ * keyed by path and mtime so repeated cwd resolutions avoid re-reading and
  * re-parsing unless the registry changed.
  */
 export function getCodeReviewTargetSync(
@@ -114,37 +160,36 @@ export function getCodeReviewTargetSync(
     return null;
   }
 
-  if (!cachedRegistry || cachedRegistry.mtimeMs !== mtimeMs) {
+  if (
+    !cachedRegistry ||
+    cachedRegistry.filePath !== filePath ||
+    cachedRegistry.mtimeMs !== mtimeMs
+  ) {
     try {
       const raw = readFileSync(filePath, 'utf8');
-      cachedRegistry = { mtimeMs, file: parseRegistry(raw) };
+      cachedRegistry = { filePath, mtimeMs, file: parseRegistry(raw) };
     } catch {
       cachedRegistry = null;
       return null;
     }
   }
 
-  return cachedRegistry.file.targets[scopeKey] ?? null;
+  return ownTarget(cachedRegistry.file, scopeKey);
 }
 
-/** Ownership is stored explicitly; never parse a composite legacy scope key. */
+/** Unknown ownership must reject cleanup, not masquerade as an empty sweep. */
 export async function listCodeReviewTargets(): Promise<
   Record<string, CodeReviewTargetRef>
 > {
-  return (await readRegistry()).targets;
+  return (await readRegistry(getCodeReviewRegistryFilePath())).targets;
 }
 
-let removalQueue: Promise<void> = Promise.resolve();
-export function removeCodeReviewTarget(scopeKey: string): Promise<void> {
-  const operation = removalQueue.then(async () => {
-    const current = await readRegistry();
-    if (!(scopeKey in current.targets)) return;
+export async function removeCodeReviewTarget(scopeKey: string): Promise<void> {
+  return mutateRegistry((current) => {
+    if (!Object.prototype.hasOwnProperty.call(current.targets, scopeKey)) {
+      return null;
+    }
     delete current.targets[scopeKey];
-    const filePath = getCodeReviewRegistryFilePath();
-    await mkdir(dirname(filePath), { recursive: true });
-    await writeFile(filePath, JSON.stringify(current, null, 2), 'utf8');
-    cachedRegistry = null;
+    return current;
   });
-  removalQueue = operation.catch(() => undefined);
-  return operation;
 }

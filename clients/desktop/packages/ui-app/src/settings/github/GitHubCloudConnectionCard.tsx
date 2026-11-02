@@ -2,7 +2,6 @@
 
 import { useRef, useState, type JSX, type RefObject } from 'react';
 import { Notice } from '@canopy/ui-shared/components';
-import { PluginsIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { SettingsConfirmDialog, useSettingsBrand } from '../host';
 import {
   SETTINGS_CARD_TITLE_CLASS,
@@ -262,7 +261,6 @@ export function GitHubCloudConnectionCard({
 
   return (
     <SettingsCard
-      icon={<PluginsIcon size={18} />}
       title={
         <h2
           ref={headingRef}

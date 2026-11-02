@@ -3,7 +3,9 @@ import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 jest.mock('@/hooks/useCurrentUiStateReporter', (): object => ({
   useCurrentUiStateReporter: jest.fn(),
 }));
-import { act } from 'react';
+import { act, type JSX } from 'react';
+import { McpServersSectionBody } from '@canopy/ui-app';
+import { useSelectedMcpSignIn } from '@/components/mcp/useSelectedMcpSignIn';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type {
@@ -16,7 +18,10 @@ import type { AccountMcpClientSetup } from '@canopy/protocol/mcp-servers';
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useOverlayEscape } from '@canopy/ui-shared/components';
-import { HomeMcpSignInStrip } from '../HomeMcpSignInStrip';
+import {
+  HomeMcpSignInStrip,
+  type HomeMcpSignInStripProps,
+} from '../HomeMcpSignInStrip';
 
 let mockFlagEnabled = true;
 jest.mock(
@@ -238,10 +243,12 @@ const listDetected = jest.fn(
       warnings: [],
     }),
 );
+const defaultListDetected = listDetected.getMockImplementation();
 const listAccountConnections = jest.fn();
 const startAccountConnection = jest.fn();
 const awaitAccountConnection = jest.fn();
 const startOAuthLogin = jest.fn();
+const cancelOAuthLogin = jest.fn(() => Promise.resolve());
 const authListeners = new Set<() => void>();
 function authChanged(): void {
   authListeners.forEach((listener): void => listener());
@@ -258,9 +265,14 @@ async function flush(): Promise<void> {
   });
 }
 
-async function render(selected: ChatTabPluginSelections | null): Promise<void> {
+async function render(
+  selected: ChatTabPluginSelections | null,
+  options: Omit<HomeMcpSignInStripProps, 'selections'> = {},
+): Promise<void> {
   act((): void =>
-    root.render(<HomeMcpSignInStrip selections={selected} reportUiState />),
+    root.render(
+      <HomeMcpSignInStrip selections={selected} reportUiState {...options} />,
+    ),
   );
   await flush();
 }
@@ -316,6 +328,7 @@ beforeEach((): void => {
   mockCatalog = { entries: [], loading: false, error: null };
   mockRefreshedEntries = [];
   jest.clearAllMocks();
+  if (defaultListDetected) listDetected.mockImplementation(defaultListDetected);
   const github = connection();
   const slack = connection({
     id: 'conn-slack',
@@ -355,6 +368,7 @@ beforeEach((): void => {
       startAccountConnection,
       awaitAccountConnection,
       startOAuthLogin,
+      cancelOAuthLogin,
       loadIndex: jest.fn(() =>
         Promise.resolve({
           version: 1,
@@ -395,15 +409,15 @@ afterEach((): void => {
 
 it('prompts sign-in for the draft’s account and device servers that need it', async (): Promise<void> => {
   await render(selections('github', 'slack', 'docs', 'notes', 'drive'));
-  expect(summary()).toBe('Account GitHub, Notes, and Slack need sign-in');
+  expect(summary()).toBe('Sign in to use Account GitHub, Notes, and Slack');
   expect(rows()).toHaveLength(3);
-  expect(badge('Account GitHub')).toBe('Not signed in');
-  expect(badge('Slack')).toBe('Needs reconnecting');
+  expect(badge('Account GitHub')).toBe('Sign-in needed');
+  expect(badge('Slack')).toBe('Sign-in expired');
   expect(
     row('Slack').querySelector('[data-testid="mcp-servers-card-connect"]')
       ?.textContent,
-  ).toBe('Reconnect');
-  expect(badge('Notes')).toBe('Not signed in');
+  ).toBe('Sign in');
+  expect(badge('Notes')).toBe('Sign-in needed');
   expect(lastReport()).toEqual({
     visible: true,
     setupOpen: false,
@@ -437,11 +451,11 @@ it('stays hidden while account connections are turned off', async (): Promise<vo
 
 it('follows the draft as the picker changes it', async (): Promise<void> => {
   await render(selections('github'));
-  expect(summary()).toBe('Account GitHub needs sign-in');
+  expect(summary()).toBe('Sign in to use Account GitHub');
   await render(selections('github', 'slack'));
-  expect(summary()).toBe('Account GitHub and Slack need sign-in');
+  expect(summary()).toBe('Sign in to use Account GitHub and Slack');
   await render(selections('slack'));
-  expect(summary()).toBe('Slack needs sign-in');
+  expect(summary()).toBe('Sign in to use Slack');
   expect(rows()).toHaveLength(1);
   await render(selections('docs'));
   expect(strip()).toBeNull();
@@ -473,8 +487,8 @@ it('signs an account server in from Connect and hides once all are connected', a
     row('Account GitHub').querySelector(
       '[data-testid="mcp-servers-card-connect"]',
     )?.textContent,
-  ).toBe('Connecting…');
-  expect(row('Account GitHub').textContent).toContain('Waiting for browser');
+  ).toBe('Waiting for sign-in');
+  expect(row('Account GitHub').textContent).toContain('Waiting for sign-in');
 
   const signedIn = connection({ status: 'CONNECTED' });
   connections = connections.map((entry) =>
@@ -483,8 +497,8 @@ it('signs an account server in from Connect and hides once all are connected', a
   inventory.set('github', accountRow(signedIn, 'connected'));
   act((): void => settle(signedIn));
   await flush();
-  expect(summary()).toBe('Slack needs sign-in');
-  expect(badge('Account GitHub')).toBe('Signed in');
+  expect(summary()).toBe('Sign in to use Slack');
+  expect(badge('Account GitHub')).toBe('Connected');
   expect(
     row('Account GitHub').querySelector(
       '[data-testid="mcp-servers-card-connect"]',
@@ -763,33 +777,64 @@ it('shows a failed start in the shared notice, with its code at hand', async ():
   expect(error?.getAttribute('title')).toBe('Error code: transient');
 });
 
-it('keeps a plugin account server with no catalog key and sends it to MCP settings', async (): Promise<void> => {
+it('opens exact plugin details and member settings without starting sign-in', async (): Promise<void> => {
   pluginInventory.set('acme/team-tools', [PLUGIN_ACCOUNT_ROW]);
   await render({
     collectionIds: [],
     skillRefs: [],
     pluginRefs: [{ marketplaceId: 'acme', pluginName: 'team-tools' }],
   });
-  expect(summary()).toBe('Tracker needs sign-in');
-  expect(badge('Tracker')).toBe('Not signed in');
-  expect(connectButton('Tracker')).toBeNull();
-  expect(lastReport()).toEqual({
-    visible: true,
-    setupOpen: false,
-    servers: [{ name: 'Tracker', status: 'not_signed_in', pending: false }],
-  });
-  const open = row('Tracker').querySelector<HTMLButtonElement>(
-    '[data-testid="mcp-sign-in-strip-open-settings"]',
+  expect(summary()).toBe('Sign in to use Tracker');
+  expect(badge('Tracker')).toBe('Sign-in needed');
+  act(() =>
+    row('Tracker')
+      .querySelector<HTMLButtonElement>('[data-testid="mcp-servers-card-name"]')
+      ?.click(),
   );
-  expect(open?.textContent).toBe('Open MCP settings');
-  expect(useNavigationStore.getState().settingsOpen).toBe(false);
-  act((): void => open?.click());
-  expect(useNavigationStore.getState()).toMatchObject({
-    settingsOpen: true,
-    settingsInitialSection: 'mcp',
+  expect(useNavigationStore.getState().pendingPluginsNavigation).toMatchObject({
+    kind: 'entry-detail',
+    entryId: 'mkt:acme/team-tools',
+  });
+  act(() =>
+    row('Tracker')
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="mcp-servers-card-settings"]',
+      )
+      ?.click(),
+  );
+  expect(useNavigationStore.getState().pendingPluginsNavigation).toMatchObject({
+    kind: 'entry-detail',
+    entryId: 'mkt:acme/team-tools',
+    mcpTarget: { serverName: PLUGIN_ACCOUNT_ROW.pluginServerName },
   });
   expect(startAccountConnection).not.toHaveBeenCalled();
+  expect(startOAuthLogin).not.toHaveBeenCalled();
 });
+
+it.each([
+  ['notes', 'Notes', 'mcp-local:notes'],
+  ['github', 'Account GitHub', 'mcp-local:github/default'],
+])(
+  'opens the canonical detail for %s from its name and settings',
+  async (id, name, entryId) => {
+    await render(selections(id));
+    for (const control of [
+      'mcp-servers-card-name',
+      'mcp-servers-card-settings',
+    ]) {
+      act(() =>
+        row(name)
+          .querySelector<HTMLButtonElement>(`[data-testid="${control}"]`)
+          ?.click(),
+      );
+      expect(
+        useNavigationStore.getState().pendingPluginsNavigation,
+      ).toMatchObject({ kind: 'entry-detail', entryId });
+    }
+    expect(startAccountConnection).not.toHaveBeenCalled();
+    expect(startOAuthLogin).not.toHaveBeenCalled();
+  },
+);
 
 it('signs a server with no connection in under the draft’s configuration', async (): Promise<void> => {
   mockCatalog = { entries: [catalogEntry()], loading: false, error: null };
@@ -855,6 +900,7 @@ it('holds Connect until the server’s connection loads, then reconnects it unde
   ).toBeNull();
 
   act((): void => release());
+  listAccountConnections.mockResolvedValue(connections);
   await flush();
   expect(connectButton('Linear')?.disabled).toBe(false);
   await clickConnect('Linear');
@@ -904,4 +950,481 @@ it('offers a retry instead of connecting when the connection list fails to load'
     configId: 'team',
     expectedAccountId: 'acct-1',
   });
+});
+
+function desktopRouteFixture(
+  siblings: DetectedMcpServerInfo[] = [],
+  connectedOnDevice = false,
+): {
+  selected: ChatTabPluginSelections;
+  writes: jest.Mock;
+  current: () => ChatTabPluginSelections;
+} {
+  const plugin = { ...PLUGIN_ACCOUNT_ROW, pluginProvider: 'codex' as const };
+  pluginInventory.set('acme/team-tools', [plugin, ...siblings]);
+  let selected: ChatTabPluginSelections = {
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [{ marketplaceId: 'acme', pluginName: 'team-tools' }],
+  };
+  const writes = jest.fn((next: ChatTabPluginSelections): boolean => {
+    selected = next;
+    return true;
+  });
+  listDetected.mockImplementation(async (request) => {
+    if (!defaultListDetected) throw new Error('Missing fixture');
+    const result = await defaultListDetected(request);
+    const usesDesktop = request.selections.mcpHttpAuthPreferences?.some(
+      (preference) => preference.handler === 'canopy',
+    );
+    return {
+      ...result,
+      servers: result.servers.map((server) =>
+        usesDesktop && server.source === 'plugin'
+          ? {
+              ...server,
+              scope: undefined,
+              authHandler: 'canopy',
+              httpAuthHandler: 'canopy',
+              authStatus: connectedOnDevice ? 'connected' : server.authStatus,
+              canConnect:
+                !connectedOnDevice &&
+                server.authStatus !== 'not_configured' &&
+                server.authStatus !== 'connected',
+            }
+          : server,
+      ),
+    };
+  });
+  return { selected, writes, current: () => selected };
+}
+
+function dialogButton(label: string): HTMLButtonElement {
+  const button = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+  ).find((entry) => entry.textContent === label);
+  if (!button) throw new Error(`Missing dialog action ${label}`);
+  return button;
+}
+
+it('confirms the member-wide route before writing and launches the exact provider only after acceptance', async (): Promise<void> => {
+  const fixture = desktopRouteFixture();
+  startOAuthLogin.mockImplementation(() => {
+    pluginInventory.set('acme/team-tools', [
+      {
+        ...PLUGIN_ACCOUNT_ROW,
+        pluginProvider: 'codex',
+        authStatus: 'connected',
+      },
+    ]);
+    return Promise.resolve({ status: 'completed' });
+  });
+  await render(fixture.selected, {
+    getSelections: fixture.current,
+    onSelectionsChange: fixture.writes,
+  });
+  await clickConnect('Tracker');
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    'web chats aren’t affected',
+  );
+  expect(fixture.writes).not.toHaveBeenCalled();
+  expect(startOAuthLogin).not.toHaveBeenCalled();
+  act(() => dialogButton('Cancel').click());
+  expect(fixture.writes).not.toHaveBeenCalled();
+  await clickConnect('Tracker');
+  act(() => dialogButton('Sign in').click());
+  await flush();
+  expect(fixture.writes).toHaveBeenCalledTimes(1);
+  expect(fixture.current().mcpHttpAuthPreferences).toEqual([
+    {
+      target: {
+        kind: 'plugin',
+        marketplaceId: 'acme',
+        pluginName: 'team-tools',
+        serverName: 'tracker',
+      },
+      handler: 'canopy',
+    },
+  ]);
+  expect(startOAuthLogin).toHaveBeenCalledWith({
+    plugin: {
+      marketplaceId: 'acme',
+      pluginName: 'team-tools',
+      serverName: 'tracker',
+      provider: 'codex',
+    },
+    force: false,
+  });
+});
+
+it('starts desktop OAuth when the accepted auth preferences have equivalent ordering', async () => {
+  const fixture = desktopRouteFixture();
+  fixture.selected.mcpHttpAuthPreferences = [
+    {
+      target: { kind: 'standalone', serverId: 'other', configId: 'default' },
+      handler: 'provider',
+    },
+  ];
+  const writeReordered = (next: ChatTabPluginSelections): boolean =>
+    fixture.writes({
+      ...next,
+      mcpHttpAuthPreferences: [
+        ...(next.mcpHttpAuthPreferences ?? []),
+      ].reverse(),
+    }) === true;
+  startOAuthLogin.mockImplementation(() => {
+    pluginInventory.set('acme/team-tools', [
+      {
+        ...PLUGIN_ACCOUNT_ROW,
+        pluginProvider: 'codex',
+        authStatus: 'connected',
+      },
+    ]);
+    return Promise.resolve({ status: 'completed' });
+  });
+  await render(fixture.selected, {
+    getSelections: fixture.current,
+    onSelectionsChange: writeReordered,
+  });
+  await clickConnect('Tracker');
+  act(() => dialogButton('Sign in').click());
+  await flush();
+  expect(fixture.writes).toHaveBeenCalledTimes(1);
+  expect(startOAuthLogin).toHaveBeenCalledTimes(1);
+  expect(container.textContent).not.toContain('plugins changed');
+});
+
+it('does not launch OAuth when the owning writer refuses the route', async (): Promise<void> => {
+  const fixture = desktopRouteFixture();
+  const reject = jest.fn(() => false);
+  await render(fixture.selected, {
+    getSelections: fixture.current,
+    onSelectionsChange: reject,
+  });
+  await clickConnect('Tracker');
+  act(() => dialogButton('Sign in').click());
+  await flush();
+  expect(reject).toHaveBeenCalledTimes(1);
+  expect(startOAuthLogin).not.toHaveBeenCalled();
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    'Couldn’t save',
+  );
+});
+
+it('rejects an incompatible provider sibling before confirmation or mutation', async (): Promise<void> => {
+  const fixture = desktopRouteFixture([
+    {
+      ...PLUGIN_ACCOUNT_ROW,
+      key: 'plugin:acme/team-tools/tracker:claude',
+      pluginProvider: 'claude',
+      authStatus: 'not_configured',
+    },
+  ]);
+  await render(fixture.selected, {
+    getSelections: fixture.current,
+    onSelectionsChange: fixture.writes,
+  });
+  await clickConnect('Tracker');
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.textContent).toContain('cannot share desktop sign-in');
+  expect(fixture.writes).not.toHaveBeenCalled();
+  expect(startOAuthLogin).not.toHaveBeenCalled();
+});
+
+it('rejects a vanished binding even when a catalog key exists', async (): Promise<void> => {
+  mockCatalog = { entries: [catalogEntry()], loading: false, error: null };
+  inventory.set('linear-device', {
+    ...catalogAccountRow('work'),
+    accountConnectionId: 'removed',
+  });
+  await render(selections('linear-device'));
+  expect(connectButton('Linear')).toBeNull();
+  expect(startAccountConnection).not.toHaveBeenCalled();
+  expect(startOAuthLogin).not.toHaveBeenCalled();
+});
+
+it('does not launch an old draft’s OAuth after a delayed writer accepts', async (): Promise<void> => {
+  const fixture = desktopRouteFixture();
+  let accept: (value: boolean) => void = (): void => undefined;
+  const writer = jest.fn(
+    () =>
+      new Promise<boolean>((resolve) => {
+        accept = resolve;
+      }),
+  );
+  await render(fixture.selected, {
+    ownerKey: 'draft-one',
+    getSelections: fixture.current,
+    onSelectionsChange: writer,
+  });
+  await clickConnect('Tracker');
+  act(() => dialogButton('Sign in').click());
+  await flush();
+  expect(writer).toHaveBeenCalledTimes(1);
+  await render(null, { ownerKey: 'draft-two' });
+  act(() => accept(true));
+  await flush();
+  expect(startOAuthLogin).not.toHaveBeenCalled();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(strip()).toBeNull();
+});
+
+it('keeps recovery visible when a selected pending server disappears from inventory', async (): Promise<void> => {
+  await render(selections('github'));
+  listDetected.mockResolvedValueOnce({ servers: [], warnings: [] });
+  act(() => authChanged());
+  await flush();
+  expect(strip()).not.toBeNull();
+  expect(rows()).toHaveLength(0);
+  expect(container.textContent).toContain(
+    'This MCP server is no longer available',
+  );
+  const retry = Array.from(
+    container.querySelectorAll<HTMLButtonElement>('button'),
+  ).find((button) => button.textContent === 'Try again');
+  expect(retry).toBeDefined();
+  act(() => retry?.click());
+  await flush();
+  expect(rows()).toHaveLength(1);
+  expect(container.textContent).not.toContain('no longer available');
+});
+
+it('reuses authoritative desktop credentials after accepting the task route', async (): Promise<void> => {
+  const fixture = desktopRouteFixture([], true);
+  const options = {
+    getSelections: fixture.current,
+    onSelectionsChange: fixture.writes,
+  };
+  await render(fixture.selected, options);
+  await clickConnect('Tracker');
+  act(() => dialogButton('Sign in').click());
+  await flush();
+  await render(fixture.current(), options);
+  expect(fixture.writes).toHaveBeenCalledTimes(1);
+  expect(startOAuthLogin).not.toHaveBeenCalled();
+  expect(strip()).toBeNull();
+});
+
+it('lets the user cancel local sign-in before its flow ID arrives', async (): Promise<void> => {
+  let finish: () => void = (): void => undefined;
+  startOAuthLogin.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = (): void => resolve({ status: 'started', flowId: 'late' });
+      }),
+  );
+  await render(selections('notes'));
+  await clickConnect('Notes');
+  const cancel = row('Notes').querySelector<HTMLButtonElement>(
+    '[data-testid="mcp-servers-card-sign-in-cancel"]',
+  );
+  expect(cancel?.getAttribute('aria-label')).toBe('Cancel Notes sign-in');
+  act(() => cancel?.click());
+  act(() => finish());
+  await flush();
+  expect(cancelOAuthLogin).toHaveBeenCalledWith('late');
+  expect(connectButton('Notes')?.textContent).toBe('Sign in');
+  expect(startOAuthLogin).toHaveBeenCalledTimes(1);
+});
+
+function FullInventory({
+  selected,
+}: {
+  selected: ChatTabPluginSelections;
+}): JSX.Element {
+  const model = useSelectedMcpSignIn({ selections: selected });
+  return (
+    <McpServersSectionBody
+      servers={model.servers}
+      warnings={model.warnings}
+      loading={model.loading}
+      error={model.error}
+      connectingKey={model.connectingKey}
+      brandAppName=""
+      proxyLogo={null}
+      onConnect={model.onConnect}
+    />
+  );
+}
+
+it('preserves the account no-auth Enable action in the full activity inventory', async () => {
+  const open = connection({ authMode: 'NONE' });
+  connections = [open];
+  inventory.set('github', accountRow(open, 'not_connected'));
+  await act(async () => {
+    root.render(<FullInventory selected={selections('github')} />);
+    await Promise.resolve();
+  });
+  await flush();
+  expect(connectButton('Account GitHub')?.textContent).toBe('Enable');
+  expect(badge('Account GitHub')).toBe('Not enabled');
+});
+
+it('uses authoritative expired authentication in the full activity inventory', async () => {
+  await act(async () => {
+    root.render(<FullInventory selected={selections('slack')} />);
+    await Promise.resolve();
+  });
+  await flush();
+  expect(badge('Slack')).toBe('Sign-in expired');
+  expect(connectButton('Slack')?.textContent).toBe('Sign in');
+});
+
+it('allows a fresh local attempt after Cancel before the old flow ID arrives', async () => {
+  let finish: () => void = (): void => undefined;
+  startOAuthLogin.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = (): void => resolve({ status: 'started', flowId: 'old' });
+      }),
+  );
+  startOAuthLogin.mockResolvedValue({
+    status: 'started',
+    flowId: 'new',
+    authorizationUrl: 'https://auth.example.test/new',
+  });
+  await render(selections('notes'));
+  await clickConnect('Notes');
+  act(() =>
+    row('Notes')
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="mcp-servers-card-sign-in-cancel"]',
+      )
+      ?.click(),
+  );
+  await clickConnect('Notes');
+  expect(startOAuthLogin).toHaveBeenCalledTimes(2);
+  act(() => finish());
+  await flush();
+  expect(cancelOAuthLogin).toHaveBeenCalledWith('old');
+  expect(row('Notes').querySelector('a')?.getAttribute('href')).toBe(
+    'https://auth.example.test/new',
+  );
+});
+
+it('does not dispatch account sign-in after its owner changes during the final account read', async () => {
+  const account = await window.api.loadCanopyCloudAccount();
+  let finish: () => void = (): void => undefined;
+  jest
+    .mocked(window.api.loadCanopyCloudAccount)
+    .mockResolvedValueOnce(account)
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = (): void => resolve(account);
+        }),
+    );
+  await render(selections('github'), { ownerKey: 'old' });
+  await clickConnect('Account GitHub');
+  await render(null, { ownerKey: 'new' });
+  act(() => finish());
+  await flush();
+  expect(startAccountConnection).not.toHaveBeenCalled();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
+it.each(['inventory', 'connections'] as const)(
+  'does not dispatch account sign-in after deselection during the %s read',
+  async (read) => {
+    await render(selections('github'));
+    let finish: () => void = (): void => undefined;
+    if (read === 'inventory') {
+      const result = {
+        servers: [accountRow(connection(), 'not_connected')],
+        warnings: [],
+      };
+      listDetected.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = (): void => resolve(result);
+          }),
+      );
+    } else {
+      listAccountConnections.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = (): void => resolve(connections);
+          }),
+      );
+    }
+    await clickConnect('Account GitHub');
+    await render(null);
+    act(() => finish());
+    await flush();
+    expect(startAccountConnection).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  },
+);
+
+it.each(['opening', 'open'] as const)(
+  'closes account setup after deselection while the dialog is %s',
+  async (phase) => {
+    mockCatalog = {
+      entries: [
+        catalogEntry({ requiredConfigFields: [{ kind: 'oauth-client-id' }] }),
+      ],
+      loading: false,
+      error: null,
+    };
+    inventory.set('linear-device', catalogAccountRow('work'));
+    await render(selections('linear-device'));
+    const account = await window.api.loadCanopyCloudAccount();
+    let finish: () => void = (): void => undefined;
+    jest
+      .mocked(window.api.loadCanopyCloudAccount)
+      .mockResolvedValueOnce(account)
+      .mockResolvedValueOnce(account)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = (): void => resolve(account);
+          }),
+      );
+    await clickConnect('Linear');
+    if (phase === 'open') {
+      act(() => finish());
+      await flush();
+      expect(
+        document.querySelector('[data-testid="mcp-account-setup"]'),
+      ).not.toBeNull();
+    }
+    await render(null);
+    act(() => finish());
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(startAccountConnection).not.toHaveBeenCalled();
+  },
+);
+
+it('stops observing an account attempt when the signed-in account changes', async () => {
+  const account = await window.api.loadCanopyCloudAccount();
+  const pending = connection({ status: 'PENDING' });
+  startAccountConnection.mockResolvedValue({
+    connection: pending,
+    authorizationUrl: 'https://auth.example.test/old',
+  });
+  let finish: () => void = (): void => undefined;
+  awaitAccountConnection.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = (): void => resolve({ ...pending, status: 'CONNECTED' });
+      }),
+  );
+  await render(selections('github'));
+  await clickConnect('Account GitHub');
+  expect(row('Account GitHub').textContent).toContain('Waiting for sign-in');
+  jest.mocked(window.api.loadCanopyCloudAccount).mockResolvedValue({
+    ...account,
+    account: account.account ? { ...account.account, id: 'acct-2' } : undefined,
+  });
+  act(() => authChanged());
+  await flush();
+  expect(
+    row('Account GitHub').querySelector(
+      '[data-testid="mcp-sign-in-strip-waiting"]',
+    ),
+  ).toBeNull();
+  act(() => finish());
+  await flush();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
 });

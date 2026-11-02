@@ -26,6 +26,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 :root {
+  /* Nested pane corners. A rounded control inside a rounded pane surface
+     takes the surface's radius less the gap between their edges, so the two
+     arcs stay concentric, and never less than the floor. Each inset is the
+     gap that the spacing rules below also use, so a spacing change and its
+     radius move together. */
+  --canopy-panel-corner-floor: 6px;
+  /* Tab row tiles and controls from the card's top and side. */
+  --canopy-panel-row-inset: 4px;
+  /* A tab's close button from its tile's end. */
+  --canopy-panel-close-inset: 2px;
+  /* Side rail controls from the rail's top and sides: (42px rail - 28px
+     control) / 2. */
+  --canopy-panel-rail-inset: 7px;
   --canopy-sash-size: 4px;
   /* The highlight is a hairline (the 4px `--canopy-sash-size` remains the hit
      target): hovering/dragging recolors the separator exactly like the
@@ -562,13 +575,21 @@
   > .canopy-panel-tab-strip {
   -webkit-mask-image: linear-gradient(
     to right,
-    transparent 0,
-    #000 var(--canopy-scroll-fade-width)
+    transparent var(--canopy-scroll-fade-clear-start, 0px),
+    #000
+      calc(
+        var(--canopy-scroll-fade-clear-start, 0px) +
+          var(--canopy-scroll-fade-width)
+      )
   );
   mask-image: linear-gradient(
     to right,
-    transparent 0,
-    #000 var(--canopy-scroll-fade-width)
+    transparent var(--canopy-scroll-fade-clear-start, 0px),
+    #000
+      calc(
+        var(--canopy-scroll-fade-clear-start, 0px) +
+          var(--canopy-scroll-fade-width)
+      )
   );
 }
 
@@ -576,13 +597,21 @@
   > .canopy-panel-tab-strip {
   -webkit-mask-image: linear-gradient(
     to left,
-    transparent 0,
-    #000 var(--canopy-scroll-fade-width)
+    transparent var(--canopy-scroll-fade-clear-end, 0px),
+    #000
+      calc(
+        var(--canopy-scroll-fade-clear-end, 0px) +
+          var(--canopy-scroll-fade-width)
+      )
   );
   mask-image: linear-gradient(
     to left,
-    transparent 0,
-    #000 var(--canopy-scroll-fade-width)
+    transparent var(--canopy-scroll-fade-clear-end, 0px),
+    #000
+      calc(
+        var(--canopy-scroll-fade-clear-end, 0px) +
+          var(--canopy-scroll-fade-width)
+      )
   );
 }
 
@@ -593,24 +622,40 @@
   -webkit-mask-image:
     linear-gradient(
       to right,
-      transparent 0,
-      #000 var(--canopy-scroll-fade-width)
+      transparent var(--canopy-scroll-fade-clear-start, 0px),
+      #000
+        calc(
+          var(--canopy-scroll-fade-clear-start, 0px) +
+            var(--canopy-scroll-fade-width)
+        )
     ),
     linear-gradient(
       to left,
-      transparent 0,
-      #000 var(--canopy-scroll-fade-width)
+      transparent var(--canopy-scroll-fade-clear-end, 0px),
+      #000
+        calc(
+          var(--canopy-scroll-fade-clear-end, 0px) +
+            var(--canopy-scroll-fade-width)
+        )
     );
   mask-image:
     linear-gradient(
       to right,
-      transparent 0,
-      #000 var(--canopy-scroll-fade-width)
+      transparent var(--canopy-scroll-fade-clear-start, 0px),
+      #000
+        calc(
+          var(--canopy-scroll-fade-clear-start, 0px) +
+            var(--canopy-scroll-fade-width)
+        )
     ),
     linear-gradient(
       to left,
-      transparent 0,
-      #000 var(--canopy-scroll-fade-width)
+      transparent var(--canopy-scroll-fade-clear-end, 0px),
+      #000
+        calc(
+          var(--canopy-scroll-fade-clear-end, 0px) +
+            var(--canopy-scroll-fade-width)
+        )
     );
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
@@ -671,6 +716,77 @@
 :root[data-scrollbar-behavior='never'] .canopy-scroll-thumb {
   opacity: 0;
   pointer-events: none;
+}
+
+/* Fill tab rows: the thumb is a 2px line centred on the row's bottom
+   hairline (on a 2x screen one device pixel above it, the hairline, one
+   below; a 1x screen cannot split the pixel, so it covers the hairline and
+   the pixel above). It sits in the row's 4px under the tiles, so it never
+   covers tab text. The track below takes the pointer: hovering it grows the
+   line to 6px around the same centre and holds it, and it drags like an
+   overlay scrollbar (useHorizontalOverflowScroll). */
+.canopy-scroll-thumb:where(
+  [data-tab-style='fill'] .canopy-panel-tab-strip-wrap-unpinned > *
+) {
+  bottom: -1px;
+  height: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+@media (min-resolution: 2dppx) {
+  .canopy-scroll-thumb:where(
+    [data-tab-style='fill'] .canopy-panel-tab-strip-wrap-unpinned > *
+  ) {
+    /* Layout snaps `bottom`; a transform does not. */
+    translate: 0 0.5px;
+  }
+}
+
+.canopy-scroll-thumb[data-overflow='true'][data-revealed='true']:where(
+    [data-tab-style='fill'] .canopy-panel-tab-strip-wrap-unpinned > *
+  ) {
+  pointer-events: none;
+}
+
+.canopy-scroll-thumb[data-overflow='true'][data-active='true']:where(
+    [data-tab-style='fill'] .canopy-panel-tab-strip-wrap-unpinned > *
+  ) {
+  bottom: -3px;
+  height: 6px;
+  border-radius: 3px;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-scroll-thumb:where(
+    [data-tab-style='fill'] .canopy-panel-tab-strip-wrap-unpinned > *
+  ) {
+    transition:
+      opacity 0.12s ease,
+      height 0.12s ease,
+      bottom 0.12s ease;
+  }
+}
+
+/* The line's 8px hit zone, centred on the hairline across the strip. */
+.canopy-scroll-track {
+  position: absolute;
+  z-index: 8; /* z-exception: above the strip's tiles and edge fades */
+  right: 0;
+  bottom: -4.5px;
+  left: 0;
+  display: none;
+  height: 8px;
+}
+
+.canopy-scroll-track[data-overflow='true'] {
+  display: block;
+}
+
+/* The line reaches below the strip onto the hairline. */
+.canopy-panel-tab-strip-wrap-unpinned:where([data-tab-style='fill'] *) {
+  overflow: visible;
 }
 
 /* Anchored wrapper for the add-tab button + app-supplied menu. */
@@ -940,9 +1056,9 @@
    Every tab has one default width while they all fit, whatever its title's
    length. Once they do not, they all shrink equally to share the row: the
    label truncates, then wraps away until only the icon shows, down to a
-   20px tile, and then every tile shrinks further, gaps first, until all of
-   them fit: the strip never scrolls and never hides a tab. Hosts also cap
-   how many tabs a user opens into a row (20). */
+   square tile as wide as it is tall. Past that the strip scrolls: the
+   selected tab is kept in view, a running tab out of view leaves a dot at
+   that edge, and the ⌄ after the strip lists every tab. */
 
 /* The strip's own 4px padding is the first tab's whole inset, matching the
    4px above and below it (see the title row's height below).
@@ -954,27 +1070,47 @@
   --canopy-panel-tab-width: 224px;
 }
 
+/* The row's controls nest in the card's corner: they sit the row inset (4px)
+   in from its edge, so their corners are the card's less that inset (6px in
+   a 10px card), never below the floor. Tabs, `+`, ⌄, the chrome actions and
+   the row's accessory controls (`TitlebarIconButton surface="panelChrome"`)
+   share it, so the row has one radius. */
+.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill']) {
+  --canopy-panel-tile-radius: max(
+    calc(var(--inset-card-radius, 10px) - var(--canopy-panel-row-inset)),
+    var(--canopy-panel-corner-floor)
+  );
+}
+
+.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill'])
+  :is(
+    .canopy-panel-add-tab,
+    .canopy-panel-chrome button,
+    .canopy-panel-chrome-button
+  ) {
+  border-radius: var(--canopy-panel-tile-radius);
+}
+
+/* A toolbar row in a pane's body (the Browser's address bar) keeps its
+   controls the same row inset from the card's sides, so they take the tab
+   row's radius: one corner for every control in the pane. */
+.canopy-panel-group:has(.canopy-panel-tab-bar[data-tab-style='fill'])
+  .canopy-panel-toolbar
+  :is(button, input) {
+  border-radius: max(
+    calc(var(--inset-card-radius, 10px) - var(--canopy-panel-row-inset)),
+    var(--canopy-panel-corner-floor)
+  );
+}
+
 /* Fill tabs: the 28px tiles sit 4px from the card's top, the same 4px as
    their left inset, so the title row is 4 + 28 + 4px plus its hairline. */
 .canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill']) {
   min-height: calc(36px + 0.5px);
 }
 
-/* The pinned strip drops the classic 30% cap: it never scrolls, and shrinks
-   no further than its tiles at their floor (square until the row is too
-   crowded, see the pinned tile), the gaps between them, and its end padding.
-   The tab bar sets the count and floor before the first paint; the fallbacks
-   only keep the expression valid. */
-.canopy-panel-tab-strip-wrap-pinned:where([data-tab-style='fill'] *) {
-  flex: 0 1 auto;
-  max-width: none;
-  min-width: calc(
-    var(--canopy-panel-pinned-count, 1) *
-      var(--canopy-panel-pinned-floor, 28px) +
-      (var(--canopy-panel-pinned-count, 1) - 1) *
-      var(--canopy-panel-tab-gap, 4px) + 8px
-  );
-}
+/* Pinned square tiles keep the classic strip's 30% cap and scroll inside
+   it, so many pins never squeeze the other tabs out. */
 
 /* Divider between the pinned strip and the unpinned strip. Tab-height rather
    than full-height so it sits between the tiles, drawn as the house hairline
@@ -989,18 +1125,20 @@
   background: var(--line-base);
 }
 
-/* The strip never scrolls: tabs shrink to fit however many are open, and
-   `overflow: clip` (not a scroll container) is only a guard. The gap is 4px,
-   narrower only when the tab bar needs it so every icon stays whole; the 4px
-   padding leaves room for the drop indicator beside an end tab. */
+/* Tabs shrink to their square floor, then the strip scrolls (hidden
+   scrollbar; the edges fade). The 4px padding leaves room for the drop
+   indicator beside an end tab. */
 .canopy-panel-tab-strip:where([data-tab-style='fill'] *) {
   display: flex;
   align-items: center;
-  gap: var(--canopy-panel-tab-gap, 4px);
+  gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
   padding: 0 4px;
-  overflow: clip;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
 }
 
 /* No padding: the strip's own 4px end padding is the gap before this `+`,
@@ -1010,11 +1148,15 @@
   padding: 0;
 }
 
-/* With no chrome cluster after it (a narrow group hides its actions), the `+`
-   ends the title row and takes the chrome's 4px trailing inset itself. */
+/* With no chrome cluster after it (a narrow group hides its actions), the
+   row's last control (`+`, or ⌄ once there are tabs) takes the chrome's 4px
+   trailing inset itself. */
 .canopy-panel-group-title
   > .canopy-panel-tab-bar:last-child
-  > .canopy-panel-add-tab-root:last-child:where([data-tab-style='fill'] *) {
+  > :is(
+    .canopy-panel-add-tab-root,
+    .canopy-panel-tab-list-root
+  ):last-child:where([data-tab-style='fill'] *) {
   padding-right: 4px;
 }
 
@@ -1039,10 +1181,10 @@
      their flex basis, so without it the row would hug the titles. */
   width: var(--canopy-panel-tab-width);
   max-width: var(--canopy-panel-tab-width);
-  /* The floor: 20px, a tile still big enough to show its whole 14px icon,
-     while every tab fits at it; else the width at which they all just fit
-     (set by the tab bar), so no tab is ever clipped off the row. */
-  min-width: var(--canopy-panel-tab-floor, 20px);
+  /* The floor: wide enough that a few letters of every title stay
+     readable (pinned tiles keep their own square floor). Past it the strip
+     scrolls rather than squeezing tabs down to bare numbers. */
+  min-width: 96px;
   height: 28px;
   /* The 7px side insets are the line's own padding (see `-main`). On a tile
      narrower than those insets the line overflows it evenly on both sides,
@@ -1050,7 +1192,7 @@
   justify-content: center;
   padding: 0;
   overflow: clip;
-  border-radius: var(--radius-md);
+  border-radius: var(--canopy-panel-tile-radius, 6px);
   background: transparent;
   font-size: 13px;
   line-height: 18px;
@@ -1061,12 +1203,11 @@
 }
 
 /* The selected tab stops shrinking at its own, wider floor so a few
-   characters of its title stay visible in a crowded row (the tab bar sets
-   it from the room the other tabs can spare). */
+   characters of its title stay visible in a crowded row. */
 .canopy-panel-tab[data-active='true']:not(.canopy-panel-tab-pinned):where(
     [data-tab-style='fill'] *
   ) {
-  min-width: var(--canopy-panel-tab-active-floor, 96px);
+  min-width: 96px;
 }
 
 .canopy-panel-tab:hover:where([data-tab-style='fill'] *) {
@@ -1139,24 +1280,41 @@
   min-width: 0;
 }
 
-/* Hovered (or with its close button focused), a tab whose close button shows
-   makes room for it: its state indicators step aside and the title gives up
-   the 14px the floating button needs (its box starts where the text ends; the
-   glyph's own inset is the gap), so it truncates a little more. The button
-   shows only on a label of 38px or more (see the close probe); the clamp() is
-   a step from 0 to 14px at that width, so a narrower label keeps its whole
-   width and its text. A percentage `max-width` rather than padding: it does
-   not count toward the tab's content width, so hovering never resizes the tab
-   or moves its neighbours. Busy tabs withhold the button. */
-.canopy-panel-tab:hover:has(.canopy-panel-tab-close-slot):not(
+/* Hovered, selected, or with its close button focused, a tab whose close
+   button shows lets its state indicators step aside for it. Busy tabs
+   withhold the button and keep their indicators. */
+.canopy-panel-tab:is(
+    :hover,
+    [data-active='true']:not(:has(.canopy-panel-tab-trailing:not(:empty)))
+  ):has(.canopy-panel-tab-close-slot):not(
     :has(.canopy-panel-tab-icon [data-panel-tab-busy])
   )
-  .canopy-panel-tab-label:not(:has(> .canopy-panel-tab-trailing:not(:empty)))
   .canopy-panel-tab-title:where([data-tab-style='fill'] *),
 .canopy-panel-tab:has(.canopy-panel-tab-close:focus-visible)
-  .canopy-panel-tab-label:not(:has(> .canopy-panel-tab-trailing:not(:empty)))
   .canopy-panel-tab-title:where([data-tab-style='fill'] *) {
-  max-width: calc(100% - clamp(0px, (100% - 37px) * 14, 14px));
+  /* The title never moves for the ×: its box just ends 2px before the
+   button's (which starts 14px before the title's full width), so text that fits
+   there shows whole, and only text that runs past fades, over its last
+   24px. Only on tabs that draw an ×. */
+  max-width: calc(100% - 16px);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - var(--canopy-panel-close-fade, 24px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - var(--canopy-panel-close-fade, 24px)),
+    transparent
+  );
+}
+
+/* A narrow tab (down to the 96px floor) fades over 12px, so a few letters
+   stay readable beside the ×. */
+@container (max-width: 140px) {
+  .canopy-panel-tab-title:where([data-tab-style='fill'] *) {
+    --canopy-panel-close-fade: 12px;
+  }
 }
 
 .canopy-panel-tab:hover:has(.canopy-panel-tab-close-slot):not(
@@ -1215,10 +1373,27 @@
 .canopy-panel-tab-title:where([data-tab-style='fill'] *) {
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  /* A title too long for its tab fades out over its last 8px instead of
+     ending in "…", so a narrow tab keeps more of its letters. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 8px),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 8px), transparent);
   /* Grows, so the indicators sit at the label's right end. */
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* With no indicator or close button beside it, the title runs on through
+   the label's 5px trailing margin to the tile's 7px padding, so the fade
+   ends right at the padding rather than 12px short of it. (The close probe
+   is positioned on its own, so this moves nothing else; while the close
+   button shows, the rule above takes its 14px back.) */
+.canopy-panel-tab-label:not(:has(> .canopy-panel-tab-trailing:not(:empty)))
+  > .canopy-panel-tab-title:where([data-tab-style='fill'] *) {
+  margin-right: -5px;
 }
 
 /* Pinned tiles: icon only and square, the icon 7px from every edge. They
@@ -1230,7 +1405,7 @@
   flex: 0 1 28px;
   /* Not the unpinned tabs' default width: the strip sizes itself from it. */
   width: 28px;
-  min-width: var(--canopy-panel-pinned-floor, 28px);
+  min-width: 28px;
   max-width: none;
   gap: 0;
   padding: 0;
@@ -1241,7 +1416,7 @@
    tile's sizing: square, shrinking only to the pinned tiles' floor. */
 .canopy-panel-tab-pinned-trigger:where([data-tab-style='fill'] *) {
   flex: 0 1 28px;
-  min-width: var(--canopy-panel-pinned-floor, 28px);
+  min-width: 28px;
 }
 
 /* The close button floats over the label's right end inside the close
@@ -1287,9 +1462,27 @@
   pointer-events: none;
 }
 
-/* The radius nests inside the tile's 8px corners at the 2px inset. */
+/* The radius nests inside the tile's corner at the close inset (2px), never
+   below the floor. */
+/* A named exception to the corner floor (#6679), for this button only: its
+   hover fill nests concentrically in the tab's corner at the 2px close
+   inset (6px - 2px = 4px), approved with the tab strip polish. */
 .canopy-panel-tab-close:where([data-tab-style='fill'] *) {
-  border-radius: 6px;
+  border-radius: calc(
+    var(--canopy-panel-tile-radius, 6px) - var(--canopy-panel-close-inset)
+  );
+}
+
+/* The selected fill tab shows its × at rest (not only on hover), so it is
+   never a target that appears under the pointer, unless the tab has marks
+   of its own (unsaved, lock, running, approval), which keep the slot until
+   hover as on any tab. */
+.canopy-panel-tab[data-active='true']:not(
+    :has(.canopy-panel-tab-trailing:not(:empty))
+  )
+  .canopy-panel-tab-close-slot:where([data-tab-style='fill'] *) {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* A busy tab (a chat streaming its turn) withholds its close button so a
@@ -1450,14 +1643,13 @@
   color: var(--fg-secondary);
 }
 
-/* Vertical strip (left/right): controls stack; keep even padding so the 22px
-   buttons sit centered in the ~36px strip. */
+/* Vertical strip (left/right): controls stack. The rail inset at both ends
+   matches the space beside the 28px controls in the 42px strip, so the first
+   control sits the same distance from the top as from the sides and its
+   corner nests in the strip's. */
 .canopy-panel-collapsed-bar-vertical {
   flex-direction: column;
-  /* Leading inset matches the chrome's own 9px trailing inset (and the
-     header's edge padding), so the strip's controls sit the same distance
-     from both ends. */
-  padding: 9px 0;
+  padding: var(--canopy-panel-rail-inset) 0;
 }
 
 /* Horizontal bar (top/bottom): mirror the expanded title bar. The chrome
@@ -1534,6 +1726,21 @@
   cursor: default;
 }
 
+/* Every control in a collapsed strip nests in the strip's corner, the rail
+   inset in from its edges, never below the floor. */
+.canopy-panel-collapsed-bar
+  :is(
+    .canopy-panel-collapsed-expand,
+    .canopy-panel-collapsed-tab,
+    .canopy-panel-add-tab,
+    .canopy-panel-chrome-button
+  ) {
+  border-radius: max(
+    calc(var(--inset-card-radius, 10px) - var(--canopy-panel-rail-inset)),
+    var(--canopy-panel-corner-floor)
+  );
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .canopy-panel-collapsed-expand,
   .canopy-panel-collapsed-tab {
@@ -1580,22 +1787,15 @@
   pointer-events: none;
 }
 
-/* The moving highlight rectangle (VS Code's overlay indicator analogue). */
+/* The moving highlight rectangle (VS Code's overlay indicator analogue).
+ * `PanelDropOverlay` moves it between zones with a compositor translate and
+ * scale from its top-left corner (`useFlipBox`), not by animating its box. */
 .canopy-panel-drop-overlay-box {
   position: absolute;
   border: 0.5px solid var(--line-focus);
   border-radius: 4px;
   background: color-mix(in srgb, var(--fg-accent) 18%, transparent);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .canopy-panel-drop-overlay-box {
-    transition:
-      top 0.1s ease-out,
-      left 0.1s ease-out,
-      width 0.1s ease-out,
-      height 0.1s ease-out;
-  }
+  transform-origin: top left;
 }
 
 /* Static per-edge hit zones (rendered only in `showZones` mode). Geometry
@@ -1728,5 +1928,320 @@
 @media (prefers-reduced-motion: no-preference) {
   .canopy-panel-root-drop-overlay {
     transition: opacity 0.1s ease-out;
+  }
+}
+
+/* `edge-count`: running tabs scrolled out of view, as a spinner and "N
+   running" on that edge of the strip. It is drawn as a sibling tile: the
+   fill tab's height, corner, 7px inset before the glyph, 8px gap and 12px
+   after the text, 13px text, and the same hover fill. The strip turns fully
+   transparent under it (the mask's clear zone, as wide as the hint measures,
+   see `PanelTabEdgeHints`), then fades back in, so no tab shows through.
+   Clicking it scrolls to the nearest of them. */
+.canopy-panel-tab-strip-wrap:has(
+  > .canopy-panel-tab-edge-count[data-side='start']
+) {
+  --canopy-scroll-fade-clear-start: var(
+    --canopy-panel-tab-edge-count-start-width,
+    96px
+  );
+}
+
+.canopy-panel-tab-strip-wrap:has(
+  > .canopy-panel-tab-edge-count[data-side='end']
+) {
+  --canopy-scroll-fade-clear-end: var(
+    --canopy-panel-tab-edge-count-end-width,
+    96px
+  );
+}
+
+.canopy-panel-tab-edge-count {
+  position: absolute;
+  top: 50%;
+  z-index: 7; /* z-exception: above the strip's own edge fade */
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 12px 0 7px;
+  border: 0;
+  border-radius: var(--canopy-panel-tile-radius, 6px);
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transform: translateY(-50%);
+  cursor: default;
+}
+
+/* The tab's glyph slot: 14px wide, the spinner centred in it and lifted as
+   on a tab, so the spinner and the text land where a tab draws them. */
+.canopy-panel-tab-edge-count-icon {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 14px;
+  transform: translateY(-0.4px);
+}
+
+.canopy-panel-tab-edge-count[data-side='start'] {
+  left: 2px;
+}
+
+.canopy-panel-tab-edge-count[data-side='end'] {
+  right: 2px;
+}
+
+.canopy-panel-tab-edge-count:hover {
+  background: var(--bg-subtle);
+  color: var(--fg-primary);
+}
+
+/* The ⌄ after `+`: the same shared 28px control (the `panelTabStrip`
+   surface), 4px after it like the gap between tabs. The chrome cluster after
+   it brings its own leading 4px. */
+.canopy-panel-tab-list-root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding-left: 4px;
+}
+
+/* Fill rows show ⌄ only once the tabs no longer fit (the bar measures). */
+.canopy-panel-tab-list-root[data-hidden] {
+  display: none;
+}
+
+/* An unread tab out of view: the tab's own unread dot (6px, accent) on ⌄'s
+   corner. Absolutely placed, so it never moves ⌄; it scales in with a
+   slight overshoot and out quickly (a plain fade with reduced motion). */
+.canopy-panel-tab-list-root::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--bg-accent);
+  pointer-events: none;
+  scale: 0;
+  transition: scale 120ms ease-in;
+}
+
+.canopy-panel-tab-list-root[data-unread]::after {
+  scale: 1;
+  transition: scale 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canopy-panel-tab-list-root::after {
+    scale: 1;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .canopy-panel-tab-list-root[data-unread]::after {
+    opacity: 1;
+  }
+}
+
+/* The search sits evenly between the list's top edge and its divider: the
+   surface's own 4px padding above, the header's 4px below. */
+.canopy-panel-tab-list .canopy-picker-menu-search {
+  padding-top: 0;
+}
+
+/* The ⌄ list: one shared menu row (PickerMenuOption) per tab, with the
+   strip's own glyph in its leading slot. Rows sit 4px inside the menu, so
+   their 8px corners nest in its 12px ones. */
+.canopy-panel-tab-list-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 4px;
+}
+
+/* The title fades out like the tab titles in the strip, inside the shared
+   label (as a block, so the label never adds its own ellipsis). */
+.canopy-panel-tab-list-title {
+  display: block;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 8px),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 8px), transparent);
+}
+
+/* One 24px slot at the row's end, 4px in from its edges (the row's reserved
+   trailing slot). At rest it shows the tab's state dot; while the row is
+   highlighted (pointer or keyboard) the close button takes the same place.
+   A tab still working keeps its dot and offers no close. */
+.canopy-panel-tab-list-end {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.canopy-panel-tab-list-trailing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* 4px in from the row's 8px corner, so its own corner is 4px. */
+.canopy-panel-tab-list-close {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  /* Nested in the row's corner at its 4px inset, never below the floor
+     (#6679). */
+  border-radius: max(
+    calc(var(--radius-md) - 4px),
+    var(--canopy-panel-corner-floor, 6px)
+  );
+  background: transparent;
+  color: var(--fg-tertiary);
+  visibility: hidden;
+  pointer-events: auto;
+}
+
+/* The row's status (✓, unread dot, running spinner) gives way to × under
+   the pointer, or on the keyboard's row once the arrow keys have moved it:
+   on opening, the selected row keeps its ✓. Running rows offer no ×. */
+:is(
+    .canopy-panel-tab-list-row:hover,
+    .canopy-panel-tab-list[data-keyboard-moved]
+      .canopy-panel-tab-list-row[data-highlighted='true']
+  ):not(:has([data-panel-tab-busy]))
+  .canopy-panel-tab-list-close {
+  visibility: visible;
+}
+
+:is(
+    .canopy-panel-tab-list-row:hover,
+    .canopy-panel-tab-list[data-keyboard-moved]
+      .canopy-panel-tab-list-row[data-highlighted='true']
+  ):not(:has([data-panel-tab-busy])):has(.canopy-panel-tab-list-close)
+  :is(.canopy-panel-tab-list-trailing, .canopy-panel-tab-list-check) {
+  visibility: hidden;
+}
+
+/* The current tab's ✓ sits in the status slot. A running row shows its
+   spinner there instead. */
+.canopy-panel-tab-list-check {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-primary);
+}
+
+.canopy-panel-tab-list-row:has([data-panel-tab-busy])
+  .canopy-panel-tab-list-check {
+  visibility: hidden;
+}
+
+/* One mark per slot: a row's own marks (unsaved, read-only, plan review,
+   approval, question, unread) win over the ✓ and the running spinner. */
+.canopy-panel-tab-list-row:has(.canopy-panel-tab-list-trailing:not(:empty))
+  :is(.canopy-panel-tab-list-check, .canopy-panel-tab-list-busy) {
+  visibility: hidden;
+}
+
+/* A running chat's spinner, handed over by its glyph (which keeps the row's
+   number on the left), centred in the row's status slot: the 24px slot sits
+   4px in from the row's right edge. */
+.canopy-panel-tab-list-busy {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+}
+
+/* The list's scrollbar takes no width, so rows keep one width whether or
+   not the list scrolls. */
+.canopy-panel-tab-list-rows {
+  scrollbar-width: none;
+}
+
+.canopy-panel-tab-list-rows::-webkit-scrollbar {
+  display: none;
+}
+
+.canopy-panel-tab-list-close:hover {
+  background: var(--bg-muted);
+  color: var(--fg-primary);
+}
+
+.canopy-panel-tab-list-close:active {
+  background: var(--bg-quaternary);
+}
+
+.canopy-panel-tab-list-empty {
+  padding: 6px 8px;
+  color: var(--fg-tertiary);
+  font-size: 13px;
+}
+
+/* Waiting input must stay reachable even when a fill label wraps away. The
+   host supplies one marker; it is outside the clipped label and stays on the
+   right of a wide tab. A compact tile gives its number's place to the marker. */
+.canopy-panel-tab:where([data-tab-style='fill'] *) {
+  container-type: inline-size;
+  container-name: panel-tab;
+}
+
+.canopy-panel-tab-attention {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  display: inline-flex;
+  transform: translateY(-50%);
+}
+
+.canopy-panel-tab-attention:empty {
+  display: none;
+}
+
+.canopy-panel-tab:has(> .canopy-panel-tab-attention:not(:empty))
+  .canopy-panel-tab-label {
+  margin-right: 23px;
+}
+
+@container panel-tab (max-width: 80px) {
+  .canopy-panel-tab-attention:not(:empty)
+    ~ .canopy-panel-tab-main
+    > .canopy-panel-tab-icon {
+    visibility: hidden;
+  }
+
+  .canopy-panel-tab-attention {
+    right: 50%;
+    transform: translate(50%, -50%);
   }
 }

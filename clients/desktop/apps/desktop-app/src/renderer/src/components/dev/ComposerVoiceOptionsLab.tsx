@@ -213,7 +213,7 @@ function RoundButton({
       type="button"
       aria-label={label}
       disabled={disabled}
-      className={`focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition enabled:active:scale-97 disabled:cursor-not-allowed ${toneClass}`}
+      className={`focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform enabled:active:scale-97 disabled:cursor-not-allowed ${toneClass}`}
     >
       {children}
     </button>

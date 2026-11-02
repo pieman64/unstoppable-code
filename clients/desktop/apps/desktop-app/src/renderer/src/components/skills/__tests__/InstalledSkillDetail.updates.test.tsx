@@ -20,6 +20,15 @@ interface ModalProps {
 
 let modalProps: ModalProps | null = null;
 const modalMounts = jest.fn();
+const readProvenance = jest.fn();
+jest.mock('../useInstalledShareProvenance', () => ({
+  useInstalledShareProvenance: (
+    skill: InstalledSkillInfo | undefined,
+  ): undefined => {
+    readProvenance(skill);
+    return undefined;
+  },
+}));
 jest.mock('../../pages/SkillsTab', () => {
   const { useEffect } = jest.requireActual<typeof ReactModule>('react');
   return {
@@ -78,8 +87,8 @@ function makeSkill(
     description: 'A skill',
     sourceId: 'github:owner:repo',
     source: 'owner/repo',
-    sourceType: 'github',
     installedAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
     updateAvailable: false,
     ...overrides,
   };
@@ -90,7 +99,10 @@ const updateSkill = jest.fn();
 let root: Root;
 let container: HTMLDivElement;
 
-function render(installedSkill: InstalledSkillInfo | undefined): void {
+function render(
+  installedSkill: InstalledSkillInfo | undefined,
+  editing = false,
+): void {
   const skill = installedSkill ?? makeSkill();
   act(() =>
     root.render(
@@ -98,6 +110,7 @@ function render(installedSkill: InstalledSkillInfo | undefined): void {
         skill={{ sourceId: skill.sourceId, name: skill.name }}
         installedSkill={installedSkill}
         presentation="page"
+        editing={editing}
         onClose={() => {}}
       />,
     ),
@@ -127,6 +140,7 @@ beforeEach(() => {
   notifySkillsChanged.mockClear();
   checkUpdates.mockReset();
   updateSkill.mockReset();
+  readProvenance.mockClear();
   Object.assign(window, {
     skills: {
       checkUpdates,
@@ -143,6 +157,19 @@ afterEach(() => {
 });
 
 describe('InstalledSkillDetail updates (CAN-4264)', () => {
+  it('suspends provenance while editing and reopens it when returning to the detail', () => {
+    const skill = makeSkill({
+      sourceId: 'custom:app',
+      custom: true,
+      installedFromShare: { remoteId: 'shared-1' },
+    });
+    render(skill);
+    expect(readProvenance).toHaveBeenLastCalledWith(skill);
+    render(skill, true);
+    expect(readProvenance).toHaveBeenLastCalledWith(undefined);
+    render(skill);
+    expect(readProvenance).toHaveBeenLastCalledWith(skill);
+  });
   it('hides the update control for missing, built-in, and custom records', () => {
     render(undefined);
     expect(action()).toBeUndefined();

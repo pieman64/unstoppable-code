@@ -1,19 +1,17 @@
-import type { JSX } from 'react';
-import { DialogModal } from '@canopy/ui-shared/components';
+import type { JSX, RefObject } from 'react';
+import { Button, DialogModal } from '@canopy/ui-shared/components';
+import {
+  removePublicLinkMessage,
+  type RemovePublicLinkRemainingAudience,
+} from '@canopy/ui-shared/lib/remove-public-link';
 
 /**
  * Confirmation before an owner unpublishes a public share. Removing the link
- * is destructive for everyone holding it, and the resource also leaves shared
- * lists (a share without a public link is hidden), so the consequence is
- * spelled out before anything happens.
+ * changes who can use it, so the consequence is spelled out before anything
+ * happens: who loses access, and who keeps it.
  */
 
 const TITLE = 'Remove public link?';
-const BODY_LEAVES_LISTS =
-  "Anyone with the link will lose access, and it won't show up in shared lists anymore. You can share it again later.";
-/** A team or organization share keeps its audience; only the link goes. */
-const BODY_KEEPS_AUDIENCE =
-  'Anyone with the link will lose access. People it is shared with keep access.';
 const CANCEL_LABEL = 'Cancel';
 const CONFIRM_LABEL = 'Remove link';
 const CONFIRM_BUSY_LABEL = 'Removing…';
@@ -28,10 +26,20 @@ interface RemovePublicLinkConfirmDialogProps {
   /** Document that owns the modal portal/focus trap. */
   ownerDocument?: Document;
   /**
-   * True when removing the link leaves the resource private-only, which also
-   * takes it out of shared lists. False for a team or organization share.
+   * The team or organization that keeps access once the link goes, named in
+   * the body. Absent when removing the link leaves the resource private-only,
+   * which also takes it out of shared lists.
    */
-  leavesSharedLists?: boolean;
+  remainingAudience?: RemovePublicLinkRemainingAudience;
+  /** A failed removal, shown in the body; the dialog stays open to retry. */
+  errorMessage?: string | null;
+  /**
+   * Traps focus while open and returns it on close. Off for callers whose
+   * own dialog already holds the focus trap.
+   */
+  trapFocus?: boolean;
+  /** Where focus returns on close when the trigger is gone. */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 export function RemovePublicLinkConfirmDialog({
@@ -40,7 +48,10 @@ export function RemovePublicLinkConfirmDialog({
   busy = false,
   testIdPrefix,
   ownerDocument,
-  leavesSharedLists = true,
+  remainingAudience,
+  errorMessage,
+  trapFocus = false,
+  restoreFocusRef,
 }: RemovePublicLinkConfirmDialogProps): JSX.Element {
   const p = testIdPrefix;
   return (
@@ -51,31 +62,44 @@ export function RemovePublicLinkConfirmDialog({
       closeOnBackdrop={!busy}
       dataTestId={`${p}-remove-public-link-confirm`}
       ownerDocument={ownerDocument}
+      trapFocus={trapFocus}
+      restoreFocusRef={restoreFocusRef}
     >
       <div className="px-5 py-4">
         <p className="text-s fg-secondary">
-          {leavesSharedLists ? BODY_LEAVES_LISTS : BODY_KEEPS_AUDIENCE}
+          {removePublicLinkMessage(remainingAudience)}
         </p>
+        {errorMessage && (
+          <p
+            role="alert"
+            data-testid={`${p}-remove-public-link-error`}
+            className="mt-3 text-s fg-destructive"
+          >
+            {errorMessage}
+          </p>
+        )}
       </div>
       <div className="flex justify-end gap-2 border-t px-5 py-3">
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="compact"
           onClick={onCancel}
           disabled={busy}
           data-testid={`${p}-remove-public-link-cancel`}
-          className="rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40"
         >
           {CANCEL_LABEL}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="destructive"
+          size="compact"
           onClick={onConfirm}
           disabled={busy}
           data-testid={`${p}-remove-public-link-confirm-action`}
-          className="rounded-lg bg-destructive px-4 py-1.5 text-s font-medium fg-emphasis transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? CONFIRM_BUSY_LABEL : CONFIRM_LABEL}
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );

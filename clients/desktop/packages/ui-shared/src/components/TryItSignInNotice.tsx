@@ -45,6 +45,12 @@ export interface TryItSignInNoticeProps {
   retry?: 'authentication' | 'continuation' | 'setup';
   /** Host-approved copy for a continuation or setup failure. */
   errorMessage?: string;
+  /**
+   * What finishing sign-in or setup does: `send` runs the saved prompt;
+   * `select` only selects the capability for the unsent draft already in the
+   * composer (CAN-5218), which the user sends. Defaults to `send`.
+   */
+  continuation?: 'send' | 'select';
   signIn?: TryItSignInAction;
   createAccount?: TryItSignInAction;
   /** Retries the signed-in continuation, never authentication. */
@@ -179,6 +185,7 @@ export function TryItSignInNotice({
   promptSaved = false,
   retry = 'authentication',
   errorMessage,
+  continuation = 'send',
   signIn,
   createAccount,
   onRetryContinuation,
@@ -188,6 +195,7 @@ export function TryItSignInNotice({
 }: TryItSignInNoticeProps): JSX.Element | null {
   if (state === 'hidden') return null;
   const common = { 'data-testid': testId, 'data-state': state };
+  const selectOnly = continuation === 'select';
 
   if (state === 'sign-in') {
     const actions =
@@ -221,7 +229,9 @@ export function TryItSignInNotice({
         title={`Sign in to use ${capabilityName}`}
         actions={actions}
       >
-        Your prompt is saved so you can continue after sign-in.
+        {selectOnly
+          ? 'Your prompt stays in the composer. Send it after you sign in.'
+          : 'Your prompt is saved so you can continue after sign-in.'}
       </Notice>
     ) : (
       <Notice {...common} actions={actions}>
@@ -235,7 +245,13 @@ export function TryItSignInNotice({
   }
 
   if (state === 'continuing') {
-    return <Notice {...common}>Continuing your prompt…</Notice>;
+    return (
+      <Notice {...common}>
+        {selectOnly
+          ? `Setting up ${capabilityName}…`
+          : 'Continuing your prompt…'}
+      </Notice>
+    );
   }
 
   if (state === 'authorizing') {
@@ -277,9 +293,13 @@ export function TryItSignInNotice({
           />
         }
       >
-        {setup.requiresSignIn
-          ? `Your prompt is saved and continues after you authorize ${capabilityName}.`
-          : `Your prompt is saved and continues after ${capabilityName} connects.`}
+        {selectOnly
+          ? setup.requiresSignIn
+            ? `Authorize ${capabilityName}, then send your prompt.`
+            : `Connect ${capabilityName}, then send your prompt.`
+          : setup.requiresSignIn
+            ? `Your prompt is saved and continues after you authorize ${capabilityName}.`
+            : `Your prompt is saved and continues after ${capabilityName} connects.`}
       </Notice>
     );
   }
@@ -335,7 +355,10 @@ export function TryItSignInNotice({
           ) : undefined
         }
       >
-        {errorMessage ?? "Your prompt couldn't continue."}
+        {errorMessage ??
+          (selectOnly
+            ? `Couldn't set up ${capabilityName}. Your prompt is still in the composer.`
+            : "Your prompt couldn't continue.")}
       </Notice>
     );
   }

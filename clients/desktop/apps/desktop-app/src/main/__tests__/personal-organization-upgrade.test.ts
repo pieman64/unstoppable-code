@@ -1,5 +1,7 @@
 import {
   createPersonalOrganizationUpgradeService,
+  isBoundPortalSessionCurrent,
+  type BoundPortalSessionState,
   type PersonalOrganizationUpgradeDeps,
   type UpgradeWorkspace,
 } from '../services/personal-organization-upgrade';
@@ -265,6 +267,89 @@ it('refuses changed selections and another desktop session for an existing opera
     'payload changed',
   );
 });
+describe('isBoundPortalSessionCurrent', () => {
+  const bound: BoundPortalSessionState = {
+    sessionId: 'session-a',
+    status: 'active',
+    connectionStatus: 'active',
+  };
+  it.each<[string, Partial<BoundPortalSessionState>]>([
+    ['connected', {}],
+    // The server reports a session stale until the next heartbeat lands,
+    // for example after the host sleeps or a heartbeat is late.
+    ['reconnecting per the server', { connectionStatus: 'reconnecting' }],
+    [
+      'reconnecting after a network failure',
+      { status: 'reconnecting', connectionStatus: 'reconnecting' },
+    ],
+  ])('keeps the original session bound while %s', (_label, patch) => {
+    expect(
+      isBoundPortalSessionCurrent({ ...bound, ...patch }, 'session-a'),
+    ).toBe(true);
+  });
+  it.each<[string, Partial<BoundPortalSessionState>]>([
+    ['replaced', { sessionId: 'session-b' }],
+    ['unpaired', { sessionId: null, status: 'disabled' }],
+    [
+      'awaiting pairing',
+      { status: 'pending_auth', connectionStatus: 'pending' },
+    ],
+    ['ended', { status: 'inactive', connectionStatus: 'ended' }],
+    ['lapsed on the server', { connectionStatus: 'inactive' }],
+    ['stopping', { status: 'stopping' }],
+    ['failed', { status: 'error' }],
+  ])('fails once the session is %s', (_label, patch) => {
+    expect(
+      isBoundPortalSessionCurrent({ ...bound, ...patch }, 'session-a'),
+    ).toBe(false);
+  });
+});
+it('a transient reconnect during a Portal conversion keeps the original session bound', async () => {
+  let portal: BoundPortalSessionState = {
+    sessionId: 'session-a',
+    status: 'active',
+    connectionStatus: 'active',
+  };
+  deps.sessionCurrent = (sessionId): boolean =>
+    isBoundPortalSessionCurrent(portal, sessionId);
+  const create = deps.createSingle;
+  deps.createSingle = jest.fn(async (...args: Parameters<typeof create>) => {
+    portal = { ...portal, connectionStatus: 'reconnecting' };
+    const result = await create(...args);
+    portal = { ...portal, connectionStatus: 'active' };
+    return result;
+  });
+  service = createPersonalOrganizationUpgradeService(deps);
+  const result = await service.convert(
+    { ...request, workspaceIds: ['single'], workspaceId: 'single' },
+    'session-a',
+  );
+  expect(result.projects[0]?.outcome).toBe('moved');
+  expect(deps.share).toHaveBeenCalledTimes(1);
+});
+it('a replaced Portal session stops a conversion before it mutates', async () => {
+  let portal: BoundPortalSessionState = {
+    sessionId: 'session-a',
+    status: 'active',
+    connectionStatus: 'active',
+  };
+  deps.sessionCurrent = (sessionId): boolean =>
+    isBoundPortalSessionCurrent(portal, sessionId);
+  deps.refreshAccount = (
+    identity,
+  ): ReturnType<PersonalOrganizationUpgradeDeps['refreshAccount']> => {
+    portal = { ...portal, sessionId: 'session-b' };
+    return Promise.resolve(identity);
+  };
+  service = createPersonalOrganizationUpgradeService(deps);
+  const result = await service.convert(
+    { ...request, workspaceIds: ['single'], workspaceId: 'single' },
+    'session-a',
+  );
+  expect(result.projects[0]?.outcome).toBe('account-changed');
+  expect(deps.createSingle).not.toHaveBeenCalled();
+  expect(deps.share).not.toHaveBeenCalled();
+});
 it('missing and stale non-Personal selections are explicit outcomes', async () => {
   const single = workspaces.find(
     (workspace) => workspace.workspaceId === 'single',
@@ -400,7 +485,7 @@ it.each(['queued', 'member-created', 'converted', 'shared', 'complete'])(
           transfers += 1;
         }
         return {
-          ok: true,
+          ok: true as const,
           organizationProjectId: projectId,
           localWorkspaceId: workspace.workspaceId,
         };
@@ -446,9 +531,12 @@ it.each(['queued', 'member-created', 'converted', 'shared', 'complete'])(
 
 it('records cap exhaustion and continues independent selected projects without automatically retrying refusals', async () => {
   const create = deps.createSingle;
-  deps.createSingle = jest.fn(async (...args) =>
+  deps.createSingle = jest.fn<
+    ReturnType<PersonalOrganizationUpgradeDeps['createSingle']>,
+    Parameters<PersonalOrganizationUpgradeDeps['createSingle']>
+  >(async (...args) =>
     args[0].workspaceId === 'single'
-      ? { ok: false, code: 'limit-reached' }
+      ? { ok: false as const, code: 'limit-reached' as const }
       : create(...args),
   );
   const result = await service.convert({
@@ -461,4 +549,48 @@ it('records cap exhaustion and continues independent selected projects without a
   ]);
   await service.resume();
   expect(deps.createSingle).toHaveBeenCalledTimes(2);
+});
+
+it('observes confirmed promotion before bookkeeping and isolates telemetry exceptions', async () => {
+  const observed = jest.fn(() => {
+    events.push('promotion-observed');
+    throw new Error('telemetry');
+  });
+  deps.onPromotion = observed;
+  deps.suppress = (): Promise<void> => {
+    events.push('suppress');
+    throw new Error('bookkeeping');
+  };
+  const outcome = await service.promote({
+    organizationId,
+    operationId,
+    name: 'Private team',
+  });
+  expect(outcome.promotion.organizationId).toBe(organizationId);
+  expect(observed).toHaveBeenCalledWith(
+    expect.objectContaining({ organizationId, alreadyUpgraded: false }),
+  );
+  expect(events.indexOf('promotion-observed')).toBeLessThan(
+    events.indexOf('suppress'),
+  );
+});
+
+it('observes confirmed invitations but never status reads or failed sends', async () => {
+  const observed = jest.fn(() => {
+    throw new Error('telemetry');
+  });
+  deps.onInvite = observed;
+  await expect(
+    service.invite(organizationId, { email: 'private@example.com' }),
+  ).resolves.toEqual({ status: 'sent', inviteId: projectId });
+  expect(observed).toHaveBeenCalledTimes(1);
+  await service.inviteStatus(organizationId, 'private@example.com');
+  expect(observed).toHaveBeenCalledTimes(1);
+  deps.invite = (): Promise<never> => {
+    throw new Error('send failed');
+  };
+  await expect(
+    service.invite(organizationId, { email: 'private@example.com' }),
+  ).rejects.toThrow('send failed');
+  expect(observed).toHaveBeenCalledTimes(1);
 });

@@ -13,7 +13,7 @@ import { writeJson } from './seeders/index.mjs';
 // project and task setup shows:
 //   - Work mode hides the New Task branch/worktree picker. Add project shows
 //     the same options in both modes (CAN-3909 removed Work mode's folded
-//     Clone option).
+//     Clone option), but Work mode leads with a folder and Cowork (CAN-5041).
 //   - Code mode keeps every repository control visible.
 //   - The role submitted through the Home onboarding role tiles seeds the
 //     mode (engineering → Code, anything else → Work) and it survives a
@@ -59,6 +59,23 @@ async function closeAddWorkspaceModal(window) {
   await expect(window.getByTestId('add-workspace-modal')).toBeHidden();
 }
 
+async function modeTiles(modal) {
+  return modal
+    .locator('[data-testid^="add-workspace-mode-"]')
+    .evaluateAll((tiles) =>
+      tiles.map((tile) => tile.getAttribute('data-testid')),
+    );
+}
+
+async function switchNavigationMode(app, window, mode) {
+  const section = await openNavigationModeSettings(app, window);
+  await section.getByTestId(`settings-navigation-mode-${mode}`).click();
+  await expect(
+    section.getByTestId(`settings-navigation-mode-${mode}`),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await app.closeSettings();
+}
+
 async function openNavigationModeSettings(app, window) {
   await app.openSettings();
   await app.openSettingsSection('canopy');
@@ -98,21 +115,20 @@ test.describe('CAN-1817 navigation mode', () => {
       await expect(homePage.getByTestId('home-branch-picker')).toBeVisible();
       await expect(seeMorePicker).toHaveCount(0);
 
-      // Work mode: Add project shows the same three options as Code mode and
-      // opens on Clone (CAN-3909). Only an organization's Create new default
-      // type differs.
+      // Work mode: Add project shows the same three options as Code mode
+      // (CAN-3909) and opens on the folder one (CAN-5041).
       let modal = await openAddWorkspaceModal(window, app);
       await expect(
-        modal.getByTestId('add-workspace-mode-existing'),
+        modal.getByTestId('add-workspace-mode-remote'),
       ).toBeVisible();
       await expect(
         modal.getByTestId('add-workspace-mode-create'),
       ).toBeVisible();
       await expect(
-        modal.getByTestId('add-workspace-mode-remote'),
+        modal.getByTestId('add-workspace-mode-existing'),
       ).toHaveAttribute('aria-pressed', 'true');
       await expect(
-        modal.getByTestId('add-workspace-remote-panel'),
+        modal.getByTestId('add-workspace-existing-panel'),
       ).toBeVisible();
       await expect(modal.getByTestId('add-workspace-see-more')).toHaveCount(0);
       await closeAddWorkspaceModal(window);
@@ -204,64 +220,106 @@ test.describe('CAN-1817 navigation mode', () => {
     }
   });
 
-  test('a non-engineering onboarding role seeds Work mode and survives a restart', async () => {
-    test.setTimeout(240_000);
+  // CAN-5041: Work mode's Add project leads with a folder and Cowork, Code
+  // mode keeps Clone and New repository, and each open applies the current
+  // mode rather than the last open's choice.
+  test('Add project defaults follow the navigation mode on every open', async () => {
+    test.setTimeout(180_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-electron-can5041-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: [DEMO_APP_ID] });
+    seedNavigationMode(userDataDir, 'work');
 
-    const first = await launchCanopy({ freshOnboarding: true });
-    const { userDataDir } = first;
-    let electronApp = first.electronApp;
+    const { electronApp } = await launchCanopy({ userDataDir });
     try {
-      let window = await electronApp.firstWindow();
-      let app = new CanopyAppDriver(window);
-      await app.acceptLegalConsent();
-      await app.waitForShell();
-      await app.skipFirstRunImport();
-      await expect(window.getByTestId('page-home')).toBeVisible({
-        timeout: 15_000,
-      });
-
-      // Fresh profile with no role recorded: Code is the default.
-      let section = await openNavigationModeSettings(app, window);
-      await expect(
-        section.getByTestId('settings-navigation-mode-code'),
-      ).toHaveAttribute('aria-pressed', 'true');
-      await app.closeSettings();
-
-      // The first non-engineering category picked on the Getting Started
-      // tools step flips the initial mode to Work. AI providers and repo
-      // setup come first, so skip them to reach the category row.
-      // Home is active, so step the queue with the Home card's arrows (the
-      // sidebar card is not mounted alongside it).
-      for (const entry of ['agent-connections', 'add-repo']) {
-        await expect(app.homeChecklistRow(entry)).toBeVisible({
-          timeout: 30_000,
-        });
-        await app.homeChecklistForward(entry).click();
-      }
-      const designer = window.getByTestId('home-onboarding-category-designer');
-      await expect(designer).toBeVisible({ timeout: 30_000 });
-      await designer.focus();
-      await window.keyboard.press('Enter');
-      await expect(designer).toHaveAttribute('aria-pressed', 'true');
-
-      section = await openNavigationModeSettings(app, window);
-      await expect(
-        section.getByTestId('settings-navigation-mode-work'),
-      ).toHaveAttribute('aria-pressed', 'true');
-      await app.closeSettings();
-
-      // Restart on the same data dir: the role-derived mode is persisted.
-      await closeCanopy(electronApp, userDataDir, { keepUserData: true });
-      electronApp = (await launchCanopy({ userDataDir, freshOnboarding: true }))
-        .electronApp;
-      window = await electronApp.firstWindow();
-      app = new CanopyAppDriver(window);
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
       await app.waitForShell({ timeout: 30_000 });
 
-      section = await openNavigationModeSettings(app, window);
+      let modal = await openAddWorkspaceModal(window, app);
+      expect(await modeTiles(modal)).toEqual([
+        'add-workspace-mode-existing',
+        'add-workspace-mode-create',
+        'add-workspace-mode-remote',
+      ]);
+      const folderTile = modal.getByTestId('add-workspace-mode-existing');
+      await expect(folderTile).toHaveAttribute('aria-pressed', 'true');
+      await expect(folderTile).toContainText('Use a folder');
+      await expect(folderTile).toContainText(
+        'Work with files already on this computer',
+      );
       await expect(
-        section.getByTestId('settings-navigation-mode-work'),
+        modal.getByTestId('add-workspace-existing-description'),
+      ).toHaveText('Your files stay where they are.');
+      await expect(
+        modal.getByTestId('add-workspace-remote-url-input'),
+      ).toHaveCount(0);
+      await expect(
+        modal.getByTestId('add-workspace-clone-destination'),
+      ).toHaveCount(0);
+
+      // Canceling the native chooser from the new default leaves the same
+      // panel usable and lets the user choose another way to add a project.
+      await electronApp.evaluate(({ dialog }) => {
+        dialog.showOpenDialog = async () => ({
+          canceled: true,
+          filePaths: [],
+        });
+      });
+      const chooseFolder = modal.getByTestId('add-workspace-choose-folder');
+      await chooseFolder.click();
+      await expect(chooseFolder).toBeEnabled();
+      await expect(chooseFolder).toHaveText('Choose folder');
+      await expect(folderTile).toHaveAttribute('aria-pressed', 'true');
+
+      await modal.getByTestId('add-workspace-mode-create').click();
+      await expect(
+        modal.getByTestId('add-workspace-type-cowork'),
       ).toHaveAttribute('aria-pressed', 'true');
+      await expect(
+        modal.getByTestId('add-workspace-name-input'),
+      ).toHaveAttribute('placeholder', 'Thursday design review');
+
+      // Clone stays one click away, and is not remembered for the next open.
+      await modal.getByTestId('add-workspace-mode-remote').click();
+      await expect(
+        modal.getByTestId('add-workspace-remote-panel'),
+      ).toBeVisible();
+      await closeAddWorkspaceModal(window);
+
+      await switchNavigationMode(app, window, 'code');
+      modal = await openAddWorkspaceModal(window, app);
+      expect(await modeTiles(modal)).toEqual([
+        'add-workspace-mode-remote',
+        'add-workspace-mode-existing',
+        'add-workspace-mode-create',
+      ]);
+      await expect(
+        modal.getByTestId('add-workspace-mode-remote'),
+      ).toHaveAttribute('aria-pressed', 'true');
+      await expect(
+        modal.getByTestId('add-workspace-mode-existing'),
+      ).toContainText('Existing folder');
+      await modal.getByTestId('add-workspace-mode-create').click();
+      await expect(
+        modal.getByTestId('add-workspace-type-single-repo'),
+      ).toHaveAttribute('aria-pressed', 'true');
+      await expect(
+        modal.getByTestId('add-workspace-name-input'),
+      ).toHaveAttribute('placeholder', 'my-project');
+      await closeAddWorkspaceModal(window);
+
+      await switchNavigationMode(app, window, 'work');
+      modal = await openAddWorkspaceModal(window, app);
+      await expect(
+        modal.getByTestId('add-workspace-mode-existing'),
+      ).toHaveAttribute('aria-pressed', 'true');
+      await modal.getByTestId('add-workspace-mode-create').click();
+      await expect(
+        modal.getByTestId('add-workspace-type-cowork'),
+      ).toHaveAttribute('aria-pressed', 'true');
+      await closeAddWorkspaceModal(window);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

@@ -45,6 +45,10 @@ it.each(['single-repo', 'multi-repo'] as const)(
     expect(command).toHaveBeenCalledWith(
       expect.objectContaining({ sidebarItemGroupId: 'grp-release' }),
     );
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    const createdProject = useProjectsStore.getState().projects[0];
+    if (!createdProject || createdProject.type === 'cowork') {
+      throw new Error('Expected a code workspace');
+    }
+    expect(createdProject.worktrees).toEqual([]);
   },
 );

@@ -28,7 +28,6 @@ export function NewTabPanel({
     <PanelSurfacePicker
       worktreeKey={worktreeKey}
       groupId={groupId}
-      replacesPanelId={panelId}
       testId="new-tab-picker"
       addTab={(kind, opts): void => {
         usePanelLayoutStore.getState().addTab(layoutKey, groupId, kind, {

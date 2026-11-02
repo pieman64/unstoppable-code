@@ -1,6 +1,7 @@
 import type { CanopyApi } from '@canopy/desktop-shared/types';
 import { buildLongChatMessages } from '@/__tests__/chat-performance-fixtures';
 import { measureDurationMs } from '@/lib/perf-test-utils';
+import { createEmptyTab } from '../chat/tab-utils';
 import type * as ActivityStoreModule from '../activityStore';
 import type * as ChatStoreModule from '../chatStore';
 
@@ -65,6 +66,7 @@ describe('chatStore transcript event handling', () => {
     const { chatStore } = loadStores();
     const { useChatStore } = chatStore;
     const tab = {
+      ...createEmptyTab({ providerTypeHint: 'claude' }),
       id: 'chat-1',
       title: 'No-op Chat',
       messages: [],

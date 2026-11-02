@@ -22,7 +22,7 @@ import type {
   LedgerViewEntry,
   LedgerViewReceipt,
   LedgerViewResult,
-  LedgerViewScope,
+  LedgerTaskViewScope,
   LedgerViewSearchRequest,
   LedgerViewUpdateRequest,
 } from '@canopy/protocol/ledger-view';
@@ -57,7 +57,10 @@ jest.mock('@canopy/ui-shared/components', () => {
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
-const SCOPE: LedgerViewScope = { projectId: 'project-1', worktreeId: 'wt-1' };
+const SCOPE: LedgerTaskViewScope = {
+  projectId: 'project-1',
+  worktreeId: 'wt-1',
+};
 const CHAT: LedgerActorRef = {
   actorId: '00000000-0000-4000-8000-0000000000a1',
   kind: 'chat',
@@ -530,7 +533,15 @@ describe('LedgerPanel list and search', () => {
     fake.holdSearch = waiting.promise;
     renderPanel(fake);
 
-    expect(container.textContent).toContain('Loading entries…');
+    // Rows shaped like the entries, inside the delayed placeholder, with the
+    // note for a slow read.
+    const skeleton = container.querySelector(
+      '[data-testid="delayed-loading-placeholder"] [data-testid="ledger-thread-list-skeleton"][data-density="panel"]',
+    );
+    expect(skeleton).toBeInstanceOf(HTMLElement);
+    expect(
+      container.querySelector('[data-testid="slow-load-note"]'),
+    ).toBeInstanceOf(HTMLElement);
     expect(container.querySelector('[data-testid="ledger-empty"]')).toBeNull();
     waiting.resolve();
     fake.holdSearch = null;
@@ -553,14 +564,20 @@ describe('LedgerPanel list and search', () => {
     await flush();
 
     const problem = byTestId('ledger-list-problem');
-    expect(problem.textContent).toContain("Couldn't load entries. Try again.");
+    expect(problem.textContent).toContain("Couldn't load entries.");
+    expect(problem.textContent).not.toContain('entries. Try again.');
     const retry = problem.querySelector('button');
     if (!(retry instanceof HTMLButtonElement)) {
       throw new Error('List problem has no retry button');
     }
+    expect(retry.textContent).toBe('Try again');
 
     fake.answer = page([item('Recovered list')]);
     act(() => retry.click());
+    // The failed state stays while the read runs, its capsule spinning.
+    expect(byTestId('ledger-list-problem')).toBe(problem);
+    expect(retry.textContent).toBe('Trying again…');
+    expect(retry.getAttribute('aria-busy')).toBe('true');
     await flush();
 
     expect(fake.searches).toHaveLength(2);
@@ -568,6 +585,41 @@ describe('LedgerPanel list and search', () => {
     expect(
       container.querySelector('[data-testid="ledger-list-problem"]'),
     ).toBeNull();
+  });
+
+  it('drops a kept failure as soon as a newer read succeeds, while Try again is still pending', async () => {
+    const fake = fakeLedger();
+    fake.answer = {
+      status: 'error',
+      reason: 'STORAGE_UNAVAILABLE',
+      message: 'Unavailable',
+    };
+    renderPanel(fake);
+    await flush();
+
+    const retry = byTestId('ledger-list-problem').querySelector('button');
+    if (!(retry instanceof HTMLButtonElement)) {
+      throw new Error('List problem has no retry button');
+    }
+    // The retried read hangs; a filter change then reads again and succeeds.
+    const hung = gate();
+    fake.holdSearch = hung.promise;
+    act(() => retry.click());
+    expect(retry.textContent).toBe('Trying again…');
+    fake.holdSearch = null;
+    fake.answer = page([item('Fresh list')]);
+    click('ledger-filter-trigger');
+    click('ledger-filter-status-blocked');
+    await flush();
+
+    expect(container.textContent).toContain('Fresh list');
+    expect(
+      container.querySelector('[data-testid="ledger-list-problem"]'),
+    ).toBeNull();
+
+    hung.resolve();
+    await flush();
+    expect(container.textContent).toContain('Fresh list');
   });
 
   it('shows an audience change waiting to sync and clears it after a sync refresh', async () => {
@@ -1706,7 +1758,7 @@ describe('LedgerPanel scroll and render isolation', () => {
   });
 });
 
-function inputValue(element: HTMLElement): string {
+function inputValue(element: HTMLElement | null): string {
   if (
     element instanceof HTMLTextAreaElement ||
     element instanceof HTMLInputElement

@@ -72,7 +72,8 @@ export function TurnFeedbackControl({
     ? CLEAN_FOOTER_ICON_BUTTON_CLASS
     : CLASSIC_FOOTER_ICON_BUTTON_CLASS;
   const selectedClass = clean
-    ? `${CLEAN_FOOTER_ICON_BUTTON_CLASS} fg-primary`
+    ? // A variant, so it outranks the quiet base ink.
+      `${CLEAN_FOOTER_ICON_BUTTON_CLASS} aria-pressed:fg-primary`
     : SELECTED_CLASS;
   const iconSize = clean ? '14' : '13';
   const upSelected = rating === 'up';

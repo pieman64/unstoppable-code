@@ -138,7 +138,7 @@ export const ForkedFromLink = memo(function ForkedFromLink({
         <button
           type="button"
           onClick={handleClick}
-          className="flex items-center gap-1.5 text-xs font-medium fg-accent transition hover:underline"
+          className="flex items-center gap-1.5 text-xs font-medium fg-accent transition-colors hover:underline"
         >
           <AppCatalogBranchIcon width="14" height="14" aria-hidden="true" />
           {forkedFrom.continuedFromProvider

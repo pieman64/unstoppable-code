@@ -127,6 +127,7 @@ import {
   rewriteMcpSelections,
   rewriteMcpServerRefList,
 } from '../mcp/server-ref-matching';
+import { captureMcpRefRewriteOutcome } from '../mcp/server-ref-rewrite-outcome';
 
 const device = { serverId: 'dev-1', configId: 'cfg-1' };
 const cloud = { serverId: 'custom:abc', configId: 'default' };
@@ -413,6 +414,94 @@ describe('rewriteMcpServerRefs', (): void => {
       rewriteMcpServerRefs({ from: [{ serverId: 'dev-1' }], to: cloud }),
     ).rejects.toThrow(MCP_SERVER_REF_REWRITE_INCOMPLETE);
     expect(mockUpdateCompatibilityTab).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats an absent workspace directory as empty without adding retirement', async () => {
+    await rm(mockRoot, { recursive: true, force: true });
+    expect(
+      await captureMcpRefRewriteOutcome(() =>
+        rewriteMcpServerRefs({ from: [device], to: cloud }),
+      ),
+    ).toEqual({
+      ok: true,
+      value: { globalDefaults: false, workspaces: 0, chats: 0 },
+    });
+  });
+
+  it.each([
+    new Error('scope failed'),
+    Object.assign(new Error('disk'), { code: 'EIO' }),
+  ])(
+    'keeps the first chat write when the second chat in the same scope fails: %p',
+    async (error) => {
+      mockConfigs.set('ws-a', { version: 1, type: 'multi-repo', repos: [] });
+      await seedScope('ws-a', 'wt-1', [
+        { id: 'chat-1', pluginSelections: selections([device]) },
+        { id: 'chat-2', pluginSelections: selections([device]) },
+      ]);
+      const update = mockUpdateCompatibilityTab.getMockImplementation();
+      if (!update) throw new Error('Missing update implementation');
+      mockUpdateCompatibilityTab
+        .mockImplementationOnce(update)
+        .mockRejectedValueOnce(error);
+      const outcome = await captureMcpRefRewriteOutcome(() =>
+        rewriteMcpServerRefs({ from: [device], to: cloud }),
+      );
+      expect(outcome).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'unavailable',
+          code: 'core.catalog.mcpServer.rewriteIncomplete',
+          details: {
+            phase: 'rewrite',
+            phases: ['chatRewrite'],
+            effects: 'unknown',
+          },
+        },
+      });
+      expect(outcome).not.toHaveProperty('value');
+      expect(
+        mockTabs.get('ws-a/wt-1/chat-1')?.pluginSelections?.mcpServerRefs,
+      ).toEqual([cloud]);
+      expect(
+        mockTabs.get('ws-a/wt-1/chat-2')?.pluginSelections?.mcpServerRefs,
+      ).toEqual([device]);
+    },
+  );
+
+  it('classifies a known dependency failure outside aggregation and retains unknown causes as internal', async () => {
+    mockPreferences = { globalPluginSelections: selections([device]) };
+    const error = Object.assign(new Error('private details'), { code: 'EIO' });
+    mockBroadcast.mockImplementationOnce(() => {
+      throw error;
+    });
+    expect(
+      await captureMcpRefRewriteOutcome(() =>
+        rewriteMcpServerRefs({ from: [device], to: cloud }),
+      ),
+    ).toMatchObject({
+      ok: false,
+      legacyError: error,
+      error: {
+        code: 'core.catalog.mcpServer.rewriteFailed',
+        details: { phase: 'globalDefaults', effects: 'unknown' },
+      },
+    });
+    expect(mockPreferences.globalPluginSelections?.mcpServerRefs).toEqual([
+      cloud,
+    ]);
+    mockPreferences = { globalPluginSelections: selections([device]) };
+    mockBroadcast.mockImplementationOnce(() => {
+      throw new Error('EIO is just arbitrary text');
+    });
+    expect(
+      await captureMcpRefRewriteOutcome(() =>
+        rewriteMcpServerRefs({ from: [device], to: cloud }),
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { kind: 'internal', message: 'MCP reference rewrite failed.' },
+    });
   });
 
   it('does nothing when the only source is the target itself', async (): Promise<void> => {

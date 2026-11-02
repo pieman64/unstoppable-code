@@ -160,7 +160,12 @@ describe('GitHub workflow-run references', () => {
     expect(resolveJob).not.toHaveBeenCalled();
   });
 
-  it.each([
+  const errorCases: Array<{
+    items: Parameters<typeof normalizeGitHubWorkflowRunTargets>[0]['items'];
+    repositoryCandidates?: string[];
+    code: string;
+    message: string;
+  }> = [
     {
       items: [Number.MAX_SAFE_INTEGER + 1],
       code: 'invalid_reference',
@@ -183,21 +188,26 @@ describe('GitHub workflow-run references', () => {
       code: 'reference_conflict',
       message: 'do not agree',
     },
-  ])('returns an actionable item error for $code', async (input) => {
-    const result = await normalizeGitHubWorkflowRunTargets({
-      items: input.items,
-      repositoryCandidates: input.repositoryCandidates,
-      resolveJob: jest.fn(),
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      code: input.code,
-      itemIndex: 0,
-    });
-    expect(result.ok || result.message).toEqual(
-      expect.stringContaining(input.message),
-    );
-  });
+  ];
+
+  it.each(errorCases)(
+    'returns an actionable item error for $code',
+    async (input) => {
+      const result = await normalizeGitHubWorkflowRunTargets({
+        items: input.items,
+        repositoryCandidates: input.repositoryCandidates,
+        resolveJob: jest.fn(),
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        code: input.code,
+        itemIndex: 0,
+      });
+      expect(result.ok || result.message).toEqual(
+        expect.stringContaining(input.message),
+      );
+    },
+  );
 
   it('rejects aliases that resolve to the same canonical target', async () => {
     await expect(

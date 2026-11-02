@@ -28,7 +28,9 @@ jest.mock(
   (): {
     registerIpcHandler: typeof mockRegisterIpcHandler;
   } => ({
-    registerIpcHandler: mockRegisterIpcHandler,
+    get registerIpcHandler(): typeof mockRegisterIpcHandler {
+      return mockRegisterIpcHandler;
+    },
   }),
 );
 
@@ -59,7 +61,9 @@ jest.mock(
     BrowserWindow: { getAllWindows: typeof mockGetAllWindows };
   } => ({
     BrowserWindow: {
-      getAllWindows: mockGetAllWindows,
+      get getAllWindows(): typeof mockGetAllWindows {
+        return mockGetAllWindows;
+      },
     },
   }),
 );

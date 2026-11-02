@@ -21,6 +21,7 @@ import {
   type RevealEditorRangeDetail,
 } from '@/lib/editorSelectionContext';
 import { normalizeMonacoSelectionEndLine } from './monaco-selection-range';
+import { resolveMonacoEditorOptions } from './monaco-editor-options';
 import {
   getEditorScrollPosition,
   saveEditorScrollPosition,
@@ -89,24 +90,6 @@ export interface FileEditorCommentSelection {
   quote: string;
   anchorRect: DOMRect;
 }
-
-const EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
-  automaticLayout: true,
-  fontSize: 12,
-  fontFamily:
-    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-  lineNumbers: 'on',
-  glyphMargin: true,
-  minimap: { enabled: false },
-  scrollBeyondLastLine: false,
-  renderWhitespace: 'selection',
-  detectIndentation: true,
-  tabSize: 2,
-  insertSpaces: true,
-  wordWrap: 'off',
-  contextmenu: true,
-  stickyScroll: { enabled: false },
-};
 
 // Monaco's stable MouseTargetType enum value for the glyph margin. Checking
 // target.element alone is unreliable because pseudo-elements and overlay
@@ -284,6 +267,10 @@ export function MonacoFileEditor({
       revealedRevisionRef.current === presentation.revision
     )
       return;
+    // A comparison changes the editor's available height in this commit.
+    // Refresh Monaco's geometry before revealing, rather than centering with
+    // the previous height until automaticLayout's ResizeObserver catches up.
+    editor.layout();
     const lineCount = model.getLineCount();
     const line = Math.min(lineCount, Math.max(1, presentation.line));
     const lineEnd = Math.min(
@@ -291,8 +278,13 @@ export function MonacoFileEditor({
       Math.max(line, presentation.lineEnd ?? line),
     );
     revealedRevisionRef.current = presentation.revision;
-    editor.revealLineInCenter(line);
-    editor.setPosition({ lineNumber: line, column: 1 });
+    if (editor.hasTextFocus()) {
+      // Someone is typing: show the range without moving their caret.
+      editor.revealLineInCenterIfOutsideViewport(line);
+    } else {
+      editor.revealLineInCenter(line);
+      editor.setPosition({ lineNumber: line, column: 1 });
+    }
     flashRange(
       {
         startLineNumber: line,
@@ -691,7 +683,7 @@ export function MonacoFileEditor({
             rootNode?.removeEventListener('mouseover', applyNativeTitle, true);
           });
         }}
-        options={EDITOR_OPTIONS}
+        options={resolveMonacoEditorOptions(language)}
       />
       {captureConfirmation !== null && (
         // The positioned span (not the tooltip wrapper, which is `relative`)

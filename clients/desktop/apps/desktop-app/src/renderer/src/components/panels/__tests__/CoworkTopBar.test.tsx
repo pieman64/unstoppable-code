@@ -1,7 +1,9 @@
 /**
  * @jest-environment jsdom
  *
- * The Cowork top bar names the project in its breadcrumb pill.
+ * The Cowork top bar names the project in its breadcrumb pill and, under the
+ * Subagents view, counts the active entry's running subagents like the
+ * worktree top bar does.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -21,6 +23,8 @@ jest.mock('@/components/panels/WorkspaceLayoutControls', () => ({
 jest.mock('@/components/standalone-chat/ChatProjectSettingsModal', () => ({
   ChatProjectSettingsModal: (): null => null,
 }));
+
+// The shared "N running" button, which reads the scope's running work.
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -63,5 +67,12 @@ describe('CoworkTopBar', () => {
       '[data-testid="cowork-top-workspace-name"]',
     );
     expect(name?.textContent).toBe('Acme secret project');
+  });
+
+  it('keeps the count out of the bar while the Subagents view is off', () => {
+    act(() => root.render(<CoworkTopBar workspaceId="cowork-1" />));
+    expect(
+      container.querySelector('[data-testid="running-subagents-button"]'),
+    ).toBeNull();
   });
 });

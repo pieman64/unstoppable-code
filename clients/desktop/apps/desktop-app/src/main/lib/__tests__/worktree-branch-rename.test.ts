@@ -70,6 +70,7 @@ import {
   renameWorktreeBranch,
   WorktreeBranchRenameRefusedError,
 } from '../worktree-branch-rename';
+import { inProcessBranchRenameGit } from '../../__tests__/helpers/in-process-branch-rename-git';
 
 const mockedValidateBranchName = jest.mocked(validateBranchName);
 const mockedIsBranchNameAvailable = jest.mocked(isBranchNameAvailable);
@@ -132,12 +133,15 @@ describe('renameWorktreeBranch (real fs)', () => {
       row('wt-2'),
     ]);
 
-    const outcome = await renameWorktreeBranch({
-      source: 'desktop',
-      workspaceId: WORKSPACE_ID,
-      worktreeId: 'wt-1',
-      newBranchName: 'feature/renamed',
-    });
+    const outcome = await renameWorktreeBranch(
+      {
+        source: 'desktop',
+        workspaceId: WORKSPACE_ID,
+        worktreeId: 'wt-1',
+        newBranchName: 'feature/renamed',
+      },
+      inProcessBranchRenameGit,
+    );
 
     const checkout = `/checkouts/${WORKSPACE_ID}/wt-1`;
     expect(mockedValidateBranchName).toHaveBeenCalledWith(
@@ -165,13 +169,16 @@ describe('renameWorktreeBranch (real fs)', () => {
   it('keeps the sidebar branch when a member repository is renamed', async () => {
     await writeList([row('wt-1', { lastKnownPrStatus: PR_STATUS })]);
 
-    await renameWorktreeBranch({
-      source: 'desktop',
-      workspaceId: WORKSPACE_ID,
-      worktreeId: 'wt-1',
-      repoId: 'repo-b',
-      newBranchName: 'feature/member',
-    });
+    await renameWorktreeBranch(
+      {
+        source: 'desktop',
+        workspaceId: WORKSPACE_ID,
+        worktreeId: 'wt-1',
+        repoId: 'repo-b',
+        newBranchName: 'feature/member',
+      },
+      inProcessBranchRenameGit,
+    );
 
     expect(mockedRenameBranch).toHaveBeenCalledWith(
       getWorkspaceWorktreeRepoDir(WORKSPACE_ID, 'wt-1', 'repo-b'),
@@ -185,13 +192,16 @@ describe('renameWorktreeBranch (real fs)', () => {
   it('renames the source-backed root through the worktree checkout', async () => {
     await writeList([row('wt-1')]);
 
-    await renameWorktreeBranch({
-      source: 'desktop',
-      workspaceId: WORKSPACE_ID,
-      worktreeId: 'wt-1',
-      repoId: WORKSPACE_ROOT_REPO_ID,
-      newBranchName: 'feature/root',
-    });
+    await renameWorktreeBranch(
+      {
+        source: 'desktop',
+        workspaceId: WORKSPACE_ID,
+        worktreeId: 'wt-1',
+        repoId: WORKSPACE_ROOT_REPO_ID,
+        newBranchName: 'feature/root',
+      },
+      inProcessBranchRenameGit,
+    );
 
     expect(mockedRenameBranch).toHaveBeenCalledWith(
       `/checkouts/${WORKSPACE_ID}/wt-1`,
@@ -225,12 +235,15 @@ describe('renameWorktreeBranch (real fs)', () => {
       const contents = await writeList([row('wt-1')]);
       arrange();
 
-      const renaming = renameWorktreeBranch({
-        source: 'desktop',
-        workspaceId: WORKSPACE_ID,
-        worktreeId: 'wt-1',
-        newBranchName: 'feature/renamed',
-      });
+      const renaming = renameWorktreeBranch(
+        {
+          source: 'desktop',
+          workspaceId: WORKSPACE_ID,
+          worktreeId: 'wt-1',
+          newBranchName: 'feature/renamed',
+        },
+        inProcessBranchRenameGit,
+      );
 
       await expect(renaming).rejects.toBeInstanceOf(
         WorktreeBranchRenameRefusedError,
@@ -247,12 +260,15 @@ describe('renameWorktreeBranch (real fs)', () => {
 
   it('refuses the read-only shared-container scope before any Git work', async () => {
     await expect(
-      renameWorktreeBranch({
-        source: 'desktop',
-        workspaceId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
-        worktreeId: 'wt-1',
-        newBranchName: 'feature/renamed',
-      }),
+      renameWorktreeBranch(
+        {
+          source: 'desktop',
+          workspaceId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+          worktreeId: 'wt-1',
+          newBranchName: 'feature/renamed',
+        },
+        inProcessBranchRenameGit,
+      ),
     ).rejects.toMatchObject({
       reason: 'read-only-scope',
       message: 'Shared-container recipient workspaces are read-only',
@@ -262,13 +278,16 @@ describe('renameWorktreeBranch (real fs)', () => {
 
   it('refuses an invalid repository id before any Git work', async () => {
     await expect(
-      renameWorktreeBranch({
-        source: 'desktop',
-        workspaceId: WORKSPACE_ID,
-        worktreeId: 'wt-1',
-        repoId: '../repo',
-        newBranchName: 'feature/renamed',
-      }),
+      renameWorktreeBranch(
+        {
+          source: 'desktop',
+          workspaceId: WORKSPACE_ID,
+          worktreeId: 'wt-1',
+          repoId: '../repo',
+          newBranchName: 'feature/renamed',
+        },
+        inProcessBranchRenameGit,
+      ),
     ).rejects.toThrow('Invalid repoId');
     expect(mockedValidateBranchName).not.toHaveBeenCalled();
   });
@@ -277,12 +296,15 @@ describe('renameWorktreeBranch (real fs)', () => {
     const contents = await writeList([row('wt-2')]);
 
     await expect(
-      renameWorktreeBranch({
-        source: 'desktop',
-        workspaceId: WORKSPACE_ID,
-        worktreeId: 'wt-1',
-        newBranchName: 'feature/renamed',
-      }),
+      renameWorktreeBranch(
+        {
+          source: 'desktop',
+          workspaceId: WORKSPACE_ID,
+          worktreeId: 'wt-1',
+          newBranchName: 'feature/renamed',
+        },
+        inProcessBranchRenameGit,
+      ),
     ).rejects.toMatchObject({
       reason: 'not-found',
       message: `Worktree metadata not found for ${WORKSPACE_ID}/wt-1`,
@@ -295,12 +317,15 @@ describe('renameWorktreeBranch (real fs)', () => {
     mockFailNextWrite = true;
 
     await expect(
-      renameWorktreeBranch({
-        source: 'desktop',
-        workspaceId: WORKSPACE_ID,
-        worktreeId: 'wt-1',
-        newBranchName: 'feature/renamed',
-      }),
+      renameWorktreeBranch(
+        {
+          source: 'desktop',
+          workspaceId: WORKSPACE_ID,
+          worktreeId: 'wt-1',
+          newBranchName: 'feature/renamed',
+        },
+        inProcessBranchRenameGit,
+      ),
     ).rejects.toThrow('disk full');
     expect(await readFile(listPath, 'utf8')).toBe(contents);
   });

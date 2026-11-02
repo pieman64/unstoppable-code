@@ -56,6 +56,7 @@ export function DesktopLabsSettingsSection(): JSX.Element {
         (entry) =>
           entry.id !== EARLY_ACCESS_EXPERIMENT_ID &&
           entry.id !== 'sidebar' &&
+          entry.id !== 'activity-card' &&
           entry.pages.length === 0,
       ).map((entry) => ({
         id: entry.id,
@@ -70,6 +71,7 @@ export function DesktopLabsSettingsSection(): JSX.Element {
       (entry) =>
         entry.id !== EARLY_ACCESS_EXPERIMENT_ID &&
         entry.id !== 'sidebar' &&
+        entry.id !== 'activity-card' &&
         entry.listed &&
         entry.pages.every(isPageFeatureFlagGateOpen),
     );
@@ -93,7 +95,9 @@ export function DesktopLabsSettingsSection(): JSX.Element {
   }, [snapshot, pending, featureFlags]);
 
   const error =
-    Object.entries(errors).find(([id]) => id !== 'sidebar')?.[1] ?? null;
+    Object.entries(errors).find(
+      ([id]) => id !== 'sidebar' && id !== 'activity-card',
+    )?.[1] ?? null;
 
   const port = useMemo(
     (): LabsSettingsPort => ({

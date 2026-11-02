@@ -1,5 +1,5 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { CanopyLogo } from '@/components/CanopyLogo';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { WorkflowIcon } from '@/components/activity/WorkflowIcon';
 import { ShareSessionControl } from '@/components/shared/ShareSessionControl';
 import { ChatWatcherButton } from '@/components/watchers/ChatWatcherButton';
@@ -9,8 +9,6 @@ import type { FilePathMentionIndex } from '@/lib/filePathMentionIndex';
 import type { InvocableMentionIndex } from '@/lib/invocableMentionIndex';
 import { canTransferChatSession } from '@/lib/session-transfer-eligibility';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
-import { useChatGroupToolCallsEnabled } from '@/stores/chatGroupToolCallsStore';
-import { useChatLiveStepWindowEnabled } from '@/stores/chatLiveStepWindowStore';
 import type { AppliedOrgMemoryTurn, PendingQuestion } from '@/stores/chatStore';
 import {
   useChatStore,
@@ -23,14 +21,24 @@ import {
   visualOnlyDisplayMessage,
 } from '@canopy/desktop-shared/lib/display-message-visual';
 import { collectTurnFiles } from '@canopy/desktop-shared/lib/turn-files';
+import { displayMessageHasSafetyDenial } from './safety-denial-placement';
 import {
+  computeTurnOutcomes,
   computeTurnSummary,
+  getTurnOutcomeStepDetails,
+  getTurnOutcomeSteps,
+  getTurnSafetyDeniedToolUseIds,
   splitFinalMessages,
 } from '@canopy/desktop-shared/lib/turn-utils';
 import type {
+  TurnOutcomeCounts,
+  TurnOutcomeStepDetail,
+} from '@canopy/protocol/portal';
+import { ringChatCallFocus } from './chat-call-focus';
+import { desktopTurnApprovalWait } from './tool-approval-matching';
+import type {
   AgentArtifactReceiptV1,
-  BackgroundProcess,
-  PipelineRunArtifactReceiptV1,
+  ApprovalRequestEvent,
 } from '@canopy/desktop-shared/types';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -41,13 +49,32 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   ChatCopyAction,
+  PlanCopyAction,
+  planCopyStateFromResolution,
+  resolvePlanTurn,
+  type PlanCopyState,
+  type PlanTurnToolCall,
+  CollapsedTurnSummaryChips,
+  CollapsedTurnSummaryContent,
   CollapsedTurnSummaryRow,
   describeStepCounts,
+  formatTurnSummaryAriaLabel,
+  hasTurnOutcomes,
+  resolveTurnCompletionStatus,
   TranscriptPagingControls,
+  TURN_OUTCOME_ORDER,
+  type TurnTerminalStatus,
   TurnFooterRow,
+  TurnOutcomeControl,
   TurnWorkHeader,
+  ToolApprovalWaitProvider,
+  NO_TOOL_APPROVAL_WAIT,
+  isStartingTurnOutput,
+  extractExitPlanModePlan,
+  useChatDetail,
   useCleanChatLook,
   useIsPhone,
+  type TurnSummaryChip,
 } from '@canopy/ui-shared/components';
 import {
   AgentIcon,
@@ -70,15 +97,18 @@ import {
   QuestionMarkIcon,
   SkillIcon,
   StopIcon,
-  StopwatchIcon,
+  ScheduleIcon,
   TaskIcon,
   TerminalBorderedIcon,
   TerminalIcon,
-  ThinkingIcon,
   TrashIcon,
   WrenchIcon,
 } from '@canopy/ui-shared/icons';
-import { DocumentPencilIcon, PickIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  DocumentPencilIcon,
+  LightbulbIcon,
+  PickIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import {
   memo,
   useCallback,
@@ -93,21 +123,23 @@ import {
   type RefObject,
 } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { ActiveAgentActivitySection } from './ActiveAgentActivitySection';
 import { AutoArchiveToggleButton } from './AutoArchiveToggleButton';
-import { ChatMessageItem } from './ChatMessageItem';
+import { ChatMessageItem, type SpawningCallTarget } from './ChatMessageItem';
+import { ForkChatButton } from './ForkChatButton';
 import { ResetToPointDialog } from './ResetToPointDialog';
 import { TurnMoreActions } from './TurnMoreActions';
 import { DesktopAgentActivitySection } from './DesktopAgentActivitySection';
 import { RunCommentsButton } from './RunCommentsButton';
 import { StickyTurnSummary } from './StickyTurnSummary';
-import { ToolStepGroup } from './ToolStepGroup';
+import { CleanToolStepGroup, ToolStepGroup } from './ToolStepGroup';
 import { TurnDiffSummary } from './TurnDiffSummary';
+import { continuationPromptId } from './continuation-transcript-turns';
 import { TurnFeedbackSlot } from './TurnFeedbackHosts';
 import { TurnTimer } from './TurnTimer';
 import { readStickyUserHeight } from './sticky-user-height';
 import {
   liveStepWindow,
+  segmentCleanSteps,
   segmentToolSteps,
   stepPieceOf,
   turnStepCounts,
@@ -115,9 +147,8 @@ import {
 import type { DisplayMessage, TurnGroup, TurnSummaryCounts } from './types';
 import { TASK_MGMT_TOOLS, toActiveComposerView } from './types';
 
-const EMPTY_TURN_BACKGROUND_PROCESSES: readonly BackgroundProcess[] = [];
 const PROGRESSIVE_TURN_MESSAGE_THRESHOLD = 100;
-const PROGRESSIVE_TURN_MESSAGE_BATCH = 8;
+const PROGRESSIVE_TURN_MESSAGE_BATCH = 16;
 
 // ---------------------------------------------------------------------------
 // Collapsed turn summary
@@ -129,6 +160,16 @@ const PROGRESSIVE_TURN_MESSAGE_BATCH = 8;
  * a cut, short enough not to hold up the reader.
  */
 const SECTION_SCROLL_DURATION_MS = 320;
+
+/**
+ * How long a landing keeps looking for its step's row after the turn's last
+ * lifecycle change (opened, loaded, more rows mounted), before leaving the
+ * reader at the section head.
+ */
+const LANDING_RETRY_MS = 2000;
+
+/** A turn no approval holds. */
+const NO_APPROVALS: readonly ApprovalRequestEvent[] = [];
 
 /**
  * Finds the rendered user bubble of the turn `userMessageId`: hoisted into
@@ -155,7 +196,7 @@ function findTurnUserBubble(
  * Elsewhere the bubble spans the column and the banner keeps `w-full`.
  */
 function useMatchUserBubbleWidth(
-  bannerRef: RefObject<HTMLButtonElement | null>,
+  bannerRef: RefObject<HTMLElement | null>,
   userMessageId: string | undefined,
   enabled: boolean,
 ): void {
@@ -190,18 +231,176 @@ interface TurnHeaderTimer {
   accumulatedPausedDurationMs?: number;
 }
 
-function CollapsedTurnSummary({
+/**
+ * The scroll travel running in each transcript scroller. Starting another
+ * (expanding a turn, then landing on its blocked step) replaces it instead
+ * of fighting it frame by frame.
+ */
+const activeScrollTravel = new WeakMap<HTMLElement, () => void>();
+
+/**
+ * Drives `scroller` to the offset `measure` returns, re-measured every frame
+ * so a destination that moves while expanded rows are measured is followed.
+ *
+ * Hand-animated rather than `scrollTo({behavior: 'smooth'})`, because a
+ * native smooth scroll is cancelled outright by the first competing
+ * `scrollTop` write — and there are two of those here:
+ *
+ *  - the transcript re-pins to the bottom whenever content grows while the
+ *    reader was near the bottom, which is exactly the case here;
+ *  - under virtualization the expanded rows are re-measured and every later
+ *    row is repositioned, so the destination itself moves.
+ *
+ * Driving the scroll frame by frame wins against both, and also keeps the
+ * transcript out of its near-bottom state so nothing pulls back once the
+ * travel finishes. Reduced motion gets the destination, not the journey:
+ * still applied over several frames, without easing. A wheel scroll of the
+ * reader's own outranks the travel. Returns a cancel function.
+ */
+function startScrollTravel(
+  scroller: HTMLElement,
+  measure: () => number,
+): () => void {
+  activeScrollTravel.get(scroller)?.();
+  let cancelled = false;
+  const cancel = (): void => {
+    cancelled = true;
+    scroller.removeEventListener('wheel', cancel);
+    document.removeEventListener('pointerdown', cancel, true);
+    document.removeEventListener('keydown', cancel, true);
+    if (activeScrollTravel.get(scroller) === cancel) {
+      activeScrollTravel.delete(scroller);
+    }
+  };
+  activeScrollTravel.set(scroller, cancel);
+  scroller.addEventListener('wheel', cancel, { passive: true, once: true });
+  document.addEventListener('pointerdown', cancel, true);
+  document.addEventListener('keydown', cancel, true);
+
+  if (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  ) {
+    let settleFrame = 0;
+    const settle = (): void => {
+      if (cancelled) return;
+      scroller.scrollTop = measure();
+      settleFrame += 1;
+      if (settleFrame < 4) requestAnimationFrame(settle);
+      else cancel();
+    };
+    requestAnimationFrame(settle);
+    return cancel;
+  }
+
+  const from = scroller.scrollTop;
+  const startedAt = performance.now();
+  const step = (now: number): void => {
+    if (cancelled) return;
+    const to = measure();
+    const progress = Math.min(
+      1,
+      (now - startedAt) / SECTION_SCROLL_DURATION_MS,
+    );
+    // easeOutCubic: leaves quickly, settles gently.
+    const eased = 1 - (1 - progress) ** 3;
+    scroller.scrollTop = from + (to - from) * eased;
+    if (progress < 1) {
+      requestAnimationFrame(step);
+      return;
+    }
+    cancel();
+  };
+  requestAnimationFrame(step);
+  return cancel;
+}
+
+/** `element`'s offset in `scroller`'s content, stable while it scrolls. */
+function contentOffsetTop(element: HTMLElement, scroller: HTMLElement): number {
+  return (
+    element.getBoundingClientRect().top -
+    scroller.getBoundingClientRect().top +
+    scroller.scrollTop
+  );
+}
+
+/**
+ * Brings a turn's tool row into view below the pinned prompt and summary
+ * (`origin`, the summary banner), and focuses its toggle without a second
+ * scroll. Leaves focus alone when the reader has moved it elsewhere than the
+ * banner or the `control` they used.
+ */
+function landOnToolRow(
+  row: HTMLElement,
+  origin: HTMLElement | null,
+  control: HTMLElement | null = null,
+): (() => void) | undefined {
+  const scroller = row.closest('[data-testid="chat-message-list-scroll"]');
+  const toggle =
+    row.querySelector<HTMLElement>('button[aria-expanded]') ??
+    row.querySelector<HTMLElement>('button');
+  let cancelTravel: (() => void) | undefined;
+  if (scroller instanceof HTMLElement) {
+    const section = row.closest('[data-chat-sticky-section]');
+    const scrollerInset =
+      Number.parseFloat(window.getComputedStyle(scroller).paddingTop) || 0;
+    const pinnedHead =
+      section instanceof HTMLElement ? readStickyUserHeight(section) : 0;
+    const pinnedSummary = origin?.isConnected
+      ? origin.getBoundingClientRect().height
+      : 0;
+    const overlayInset = scrollerInset + pinnedHead + pinnedSummary + 8;
+    cancelTravel = startScrollTravel(scroller, () => {
+      // A third of the way down, never under the pinned prompt and summary.
+      const room = scroller.clientHeight - row.getBoundingClientRect().height;
+      return contentOffsetTop(row, scroller) - Math.max(overlayInset, room / 3);
+    });
+  }
+  const active = document.activeElement;
+  const focusIsOurs =
+    active === null ||
+    active === document.body ||
+    active === origin ||
+    (control !== null && active === control);
+  if (toggle && focusIsOurs) toggle.focus({ preventScroll: true });
+  return cancelTravel;
+}
+
+/**
+ * A summary banner action's elements: `origin` is the banner (the pinned
+ * summary a landing scrolls below), `control` the element the reader used,
+ * for focus handoff on landing.
+ */
+type SummaryActionHandler = (
+  origin: HTMLElement,
+  control: HTMLElement | null,
+) => void;
+
+function DesktopCollapsedTurnSummary({
   counts,
+  outcomes,
+  outcomeSteps,
   isExpanded,
   onToggle,
+  onJumpToOutcome,
   isCodeReviewChat = false,
   userMessageId,
   timer,
   outcome,
 }: {
   counts: TurnSummaryCounts;
+  /** Blocked, errored and interrupted steps; omitted without metadata. */
+  outcomes?: TurnOutcomeCounts;
+  /** The steps behind `outcomes`, when the turn's rows are loaded. */
+  outcomeSteps?: readonly TurnOutcomeStepDetail[];
   isExpanded: boolean;
-  onToggle: () => void;
+  onToggle: SummaryActionHandler;
+  /** Lands on an outcome step: the given one, else the first. */
+  onJumpToOutcome?: (
+    origin: HTMLElement,
+    control: HTMLElement | null,
+    toolUseId?: string,
+  ) => void;
   /** True inside a Code Review sidecar chat — every call bucketed into
    * `counts.plan` there is `RespondToComment`/`GetReviewComments`, so the
    * whole chip swaps to the code-flavored icon instead of the Plan Explore
@@ -211,208 +410,83 @@ function CollapsedTurnSummary({
   userMessageId?: string;
   /** Clean chat look: the turn's time, for "Worked for 3m 24s". */
   timer?: TurnHeaderTimer;
-  /** Clean chat look: how the turn ended. */
-  outcome?: 'failed' | 'cancelled';
+  /** Clean chat look: how the turn ended, when not plainly complete. */
+  outcome?: TurnTerminalStatus;
 }): JSX.Element {
-  const bannerRef = useRef<HTMLButtonElement>(null);
+  // The classic row's wrapper takes the bubble's width; the clean header is
+  // its toggle button.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLButtonElement>(null);
+  const banner = (): HTMLElement | null => rowRef.current ?? headerRef.current;
+  useEffect(() => {
+    const scroller = (rowRef.current ?? headerRef.current)?.closest(
+      '[data-testid="chat-message-list-scroll"]',
+    );
+    return (): void => {
+      if (scroller instanceof HTMLElement) activeScrollTravel.get(scroller)?.();
+    };
+  }, [userMessageId]);
 
   const isPhone = useIsPhone();
   // Clean chat look: the turn's header, "Worked for 3m 24s", opens the
   // steps; what they did reads as words on hover.
   const clean = useCleanChatLook();
-  useMatchUserBubbleWidth(bannerRef, userMessageId, isPhone && !clean);
+  useMatchUserBubbleWidth(rowRef, userMessageId, isPhone && !clean);
   const stepCounts = clean ? turnStepCounts(counts) : [];
-  const items: Array<{
-    icon: JSX.Element;
-    count: number;
-    label: string;
-  }> = [];
 
-  if (counts.messages > 0) {
-    items.push({
-      icon: <MessageIcon />,
-      count: counts.messages,
-      label: 'messages',
-    });
-  }
-  if (counts.thinking > 0) {
-    items.push({
-      icon: <ThinkingIcon />,
-      count: counts.thinking,
-      label: 'thinking',
-    });
-  }
-  if (counts.bash > 0) {
-    items.push({ icon: <TerminalIcon />, count: counts.bash, label: 'bash' });
-  }
-  if (counts.read > 0) {
-    items.push({ icon: <DocumentIcon />, count: counts.read, label: 'read' });
-  }
-  if (counts.readLines > 0) {
-    items.push({
-      icon: <DocumentIcon />,
-      count: counts.readLines,
-      label: 'read lines',
-    });
-  }
-  if (counts.writeEdit > 0) {
-    items.push({
-      icon: <DocumentPencilIcon />,
-      count: counts.writeEdit,
-      label: 'write/edit',
-    });
-  }
-  if (counts.plan > 0) {
-    items.push({
-      icon: isCodeReviewChat ? <CodeBracketsIcon /> : <PlanModeIcon />,
-      count: counts.plan,
-      label: isCodeReviewChat ? 'review comments' : 'plan',
-    });
-  }
-  if (counts.fileEdit > 0) {
-    items.push({
-      icon: <DocumentPencilIcon />,
-      count: counts.fileEdit,
-      label: 'edit',
-    });
-  }
-  if (counts.fileAdd > 0) {
-    items.push({
-      icon: <DocumentPencilIcon />,
-      count: counts.fileAdd,
-      label: 'write',
-    });
-  }
-  if (counts.fileDelete > 0) {
-    items.push({
-      icon: <TrashIcon />,
-      count: counts.fileDelete,
-      label: 'delete',
-    });
-  }
-  if (counts.search > 0) {
-    items.push({
-      icon: <MagnifyingGlassIcon />,
-      count: counts.search,
-      label: 'search',
-    });
-  }
-  if (counts.grep > 0) {
-    items.push({
-      icon: <DocumentSearchIcon />,
-      count: counts.grep,
-      label: 'grep',
-    });
-  }
-  if (counts.web > 0) {
-    items.push({ icon: <GlobeIcon />, count: counts.web, label: 'web' });
-  }
-  if (counts.agent > 0) {
-    items.push({ icon: <AgentIcon />, count: counts.agent, label: 'agents' });
-  }
-  if (counts.workflow > 0) {
-    items.push({
-      icon: <WorkflowIcon />,
-      count: counts.workflow,
-      label: 'workflows',
-    });
-  }
-  if (counts.tasks > 0) {
-    items.push({ icon: <TaskIcon />, count: counts.tasks, label: 'tasks' });
-  }
-  if (counts.taskStop > 0) {
-    items.push({ icon: <StopIcon />, count: counts.taskStop, label: 'stop' });
-  }
-  if (counts.skills > 0) {
-    items.push({ icon: <SkillIcon />, count: counts.skills, label: 'skills' });
-  }
-  if (counts.monitor > 0) {
-    items.push({
-      icon: <MonitorIcon />,
-      count: counts.monitor,
-      label: 'monitor',
-    });
-  }
-  if (counts.claude > 0) {
-    items.push({
-      icon: <ClaudeLogo width={14} height={14} />,
-      count: counts.claude,
-      label: 'claude',
-    });
-  }
-  if (counts.scheduleWakeup > 0) {
-    items.push({
-      icon: <StopwatchIcon />,
-      count: counts.scheduleWakeup,
-      label: 'wakeups',
-    });
-  }
-  if (counts.askUser > 0) {
-    items.push({
-      icon: <QuestionMarkIcon />,
-      count: counts.askUser,
-      label: 'questions',
-    });
-  }
-  if (counts.scriptOutput > 0) {
-    items.push({
-      icon: <TerminalBorderedIcon />,
-      count: counts.scriptOutput,
-      label: 'script output',
-    });
-  }
-  if (counts.watcher > 0) {
-    items.push({
-      icon: <AppAdvisorWatcherIcon />,
-      count: counts.watcher,
-      label: 'watcher',
-    });
-  }
-  if (counts.canopy > 0) {
-    items.push({
-      icon: <CanopyLogo width={14} height={14} aria-hidden="true" />,
-      count: counts.canopy,
-      label: 'app',
-    });
-  }
-  if (counts.graph > 0) {
-    items.push({
-      icon: <GraphIcon />,
-      count: counts.graph,
-      label: 'code graph',
-    });
-  }
-  if (counts.appAdvisor > 0) {
-    items.push({
-      icon: <AppAdvisorIcon />,
-      count: counts.appAdvisor,
-      label: 'app advisor',
-    });
-  }
-  if (counts.pipelineEditor > 0) {
-    items.push({
-      icon: <PipelineIcon />,
-      count: counts.pipelineEditor,
-      label: 'pipeline',
-    });
-  }
-  if (counts.computerUse > 0) {
-    items.push({
-      icon: <PickIcon />,
-      count: counts.computerUse,
-      label: 'computer use',
-    });
-  }
-  if (counts.mcp > 0) {
-    items.push({ icon: <McpIcon />, count: counts.mcp, label: 'mcp' });
-  }
-  if (counts.other > 0) {
-    items.push({ icon: <WrenchIcon />, count: counts.other, label: 'other' });
-  }
+  // The desktop vocabulary: more families than the shared summary, and the
+  // host's own brand and workflow glyphs.
+  const chips: TurnSummaryChip[] = [];
+  const chip = (
+    key: keyof TurnSummaryCounts,
+    icon: JSX.Element,
+    label: string,
+  ): void => {
+    const count = counts[key];
+    if (count > 0) chips.push({ key, icon, label, count });
+  };
+  chip('messages', <MessageIcon />, 'messages');
+  chip('thinking', <LightbulbIcon />, 'thinking');
+  chip('bash', <TerminalIcon />, 'bash');
+  chip('read', <DocumentIcon />, 'read');
+  chip('readLines', <DocumentIcon />, 'read lines');
+  chip('writeEdit', <DocumentPencilIcon />, 'write/edit');
+  chip(
+    'plan',
+    isCodeReviewChat ? <CodeBracketsIcon /> : <PlanModeIcon />,
+    isCodeReviewChat ? 'review comments' : 'plan',
+  );
+  chip('fileEdit', <DocumentPencilIcon />, 'edit');
+  chip('fileAdd', <DocumentPencilIcon />, 'write');
+  chip('fileDelete', <TrashIcon />, 'delete');
+  chip('search', <MagnifyingGlassIcon />, 'search');
+  chip('grep', <DocumentSearchIcon />, 'grep');
+  chip('web', <GlobeIcon />, 'web');
+  chip('agent', <AgentIcon />, 'agents');
+  chip('workflow', <WorkflowIcon />, 'workflows');
+  chip('tasks', <TaskIcon />, 'tasks');
+  chip('taskStop', <StopIcon />, 'stop');
+  chip('skills', <SkillIcon />, 'skills');
+  chip('monitor', <MonitorIcon />, 'monitor');
+  chip('claude', <ClaudeLogo width={14} height={14} />, 'claude');
+  // Wakeups and Claude's scheduled prompts (CronCreate and friends).
+  chip('scheduleWakeup', <ScheduleIcon />, 'scheduled');
+  chip('askUser', <QuestionMarkIcon />, 'questions');
+  chip('scriptOutput', <TerminalBorderedIcon />, 'script output');
+  chip('watcher', <AppAdvisorWatcherIcon />, 'watcher');
+  chip(
+    'canopy',
+    <CanopyLogo width={14} height={14} aria-hidden="true" />,
+    'app',
+  );
+  chip('graph', <GraphIcon />, 'code graph');
+  chip('appAdvisor', <AppAdvisorIcon />, ORCHESTRATOR_LABEL.toLowerCase());
+  chip('pipelineEditor', <PipelineIcon />, 'workflow');
+  chip('computerUse', <PickIcon />, 'computer use');
+  chip('mcp', <McpIcon />, 'mcp');
+  chip('other', <WrenchIcon />, 'other');
 
-  const ariaLabel = items
-    .map((item) => `${item.count} ${item.label}`)
-    .join(', ');
+  const ariaLabel = formatTurnSummaryAriaLabel(chips, outcomes);
 
   const handleToggle = (event: MouseEvent<HTMLButtonElement>): void => {
     const wasExpanded = isExpanded;
@@ -421,7 +495,7 @@ function CollapsedTurnSummary({
     const scroller = event.currentTarget.closest(
       '[data-testid="chat-message-list-scroll"]',
     );
-    onToggle();
+    onToggle(banner() ?? event.currentTarget, event.currentTarget);
     if (wasExpanded) return;
     if (!(section instanceof HTMLElement)) return;
     if (!(scroller instanceof HTMLElement)) return;
@@ -429,22 +503,8 @@ function CollapsedTurnSummary({
     // Expanding inserts the turn's steps above whatever the reader was
     // looking at, so without this the prompt they just opened scrolls out
     // of view. Travel to its section head at the top of the scrollport
-    // (where it also becomes the pinned header).
-    //
-    // Hand-animated rather than `scrollTo({behavior: 'smooth'})`, because
-    // a native smooth scroll is cancelled outright by the first competing
-    // `scrollTop` write — and there are two of those here:
-    //
-    //  - the transcript re-pins to the bottom whenever content grows while
-    //    the reader was near the bottom, which is exactly the case here;
-    //  - under virtualization the expanded rows are re-measured and every
-    //    later row is repositioned, so the destination itself moves.
-    //
-    // Driving the scroll frame by frame wins against both: every frame
-    // re-measures the destination (so a moving target is followed rather
-    // than a stale offset chased) and writes the eased position, which
-    // also keeps the transcript out of its near-bottom state so nothing
-    // pulls back once the travel finishes.
+    // (where it also becomes the pinned header). When the turn has a
+    // blocked or failed step, landing on it takes over from here.
     //
     // The offset is computed explicitly rather than via `scrollIntoView` —
     // the section's head is `position: sticky`, so scrollIntoView targets
@@ -476,71 +536,38 @@ function CollapsedTurnSummary({
       target === section ? 0 : readStickyUserHeight(section);
     const pinnedHeadInset = pinnedHeadHeight > 0 ? pinnedHeadHeight + 8 : 0;
     const restingInset = scrollerInset + pinnedHeadInset;
-
-    // Reduced motion gets the destination, not the journey. Still applied
-    // over several frames rather than once, because the destination moves
-    // as the expanded rows are measured — it just does so without easing.
-    if (
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    ) {
-      let settleFrame = 0;
-      const settle = (): void => {
-        scroller.scrollTop =
-          target.getBoundingClientRect().top -
-          scroller.getBoundingClientRect().top +
-          scroller.scrollTop -
-          restingInset;
-        settleFrame += 1;
-        if (settleFrame < 4) requestAnimationFrame(settle);
-      };
-      requestAnimationFrame(settle);
-      return;
-    }
-
-    const from = scroller.scrollTop;
-    const startedAt = performance.now();
-    let cancelled = false;
-    // A deliberate scroll of their own outranks the travel; without this
-    // the animation would fight the wheel for its remaining frames.
-    const cancel = (): void => {
-      cancelled = true;
-    };
-    scroller.addEventListener('wheel', cancel, {
-      passive: true,
-      once: true,
-    });
-
-    const step = (now: number): void => {
-      if (cancelled) return;
-      // `getBoundingClientRect().top - scrollerTop + scrollTop` is the
-      // target's absolute offset in the content, so re-reading it mid
-      // animation is safe: it does not drift with our own scrolling.
-      const to =
-        target.getBoundingClientRect().top -
-        scroller.getBoundingClientRect().top +
-        scroller.scrollTop -
-        restingInset;
-      const progress = Math.min(
-        1,
-        (now - startedAt) / SECTION_SCROLL_DURATION_MS,
-      );
-      // easeOutCubic: leaves quickly, settles gently.
-      const eased = 1 - (1 - progress) ** 3;
-      scroller.scrollTop = from + (to - from) * eased;
-      if (progress < 1) {
-        requestAnimationFrame(step);
-        return;
-      }
-      scroller.removeEventListener('wheel', cancel);
-    };
-    requestAnimationFrame(step);
+    startScrollTravel(
+      scroller,
+      () => contentOffsetTop(target, scroller) - restingInset,
+    );
   };
+
+  const jumpToOutcome = onJumpToOutcome
+    ? (toolUseId?: string): void => {
+        const origin = banner();
+        if (!origin) return;
+        // Read before the tooltip closes: a tooltip entry then leaves
+        // focus on the document, the outcome button keeps it.
+        const active = document.activeElement;
+        onJumpToOutcome(
+          origin,
+          active instanceof HTMLElement ? active : null,
+          toolUseId,
+        );
+      }
+    : undefined;
+  const outcomeControl = hasTurnOutcomes(outcomes) ? (
+    <TurnOutcomeControl
+      outcomes={outcomes}
+      outcomeSteps={outcomeSteps}
+      onJumpToOutcome={jumpToOutcome}
+    />
+  ) : undefined;
 
   if (clean) {
     return (
       <TurnWorkHeader
-        ref={bannerRef}
+        ref={headerRef}
         startedAt={timer?.startedAt}
         finishedAt={timer?.completedAt ?? null}
         pausedAt={timer?.pausedAt}
@@ -551,8 +578,10 @@ function CollapsedTurnSummary({
         expandable
         isOpen={isExpanded}
         onToggle={handleToggle}
-        ariaLabel={`Agent steps: ${ariaLabel}`}
+        ariaLabel={ariaLabel}
         title={describeStepCounts(stepCounts) || undefined}
+        stepCount={chips.reduce((total, chip) => total + chip.count, 0)}
+        outcome={outcomeControl}
         dataTestId="turn-work-header"
       />
     );
@@ -560,10 +589,11 @@ function CollapsedTurnSummary({
 
   return (
     <CollapsedTurnSummaryRow
-      ref={bannerRef}
+      ref={rowRef}
       onClick={handleToggle}
       isExpanded={isExpanded}
-      ariaLabel={`Agent steps: ${ariaLabel}`}
+      ariaLabel={ariaLabel}
+      dataTestId="chat-turn-summary"
       phoneTouchTarget={false}
       // No surface of its own: the row sits on the transcript background.
       // While pinned, the sticky wrapper's opaque backing is what masks content
@@ -572,22 +602,15 @@ function CollapsedTurnSummary({
       // `relative` keeps the keyboard focus outline visible while pinned. The
       // sticky wrapper's `::before` gap-filler is absolutely positioned, so it
       // paints above in-flow siblings — including this button's outline, which
-      // reaches into exactly that 8px band. Positioning the button puts it in
+      // reaches into exactly that 8px band. Positioning the row puts it in
       // the same layer, after the pseudo-element, so the outline survives.
       className="relative ml-auto"
+      outcome={outcomeControl}
+      trailing={
+        chips.length > 0 ? <CollapsedTurnSummaryChips chips={chips} /> : null
+      }
     >
-      {items.map((item) => (
-        <span
-          key={item.label}
-          className="flex items-center gap-1"
-          title={item.label}
-        >
-          <span className="flex-shrink-0">{item.icon}</span>
-          {item.count > 0 && (
-            <span className="text-2xs font-medium">{item.count}</span>
-          )}
-        </span>
-      ))}
+      <CollapsedTurnSummaryContent chips={chips} />
     </CollapsedTurnSummaryRow>
   );
 }
@@ -620,6 +643,10 @@ function RevertedTurnWrapper({
 
 export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   transcriptTurn,
+  historyTurn,
+  hideTurnDiffSummary = false,
+  resetTurnId,
+  continuationActive = false,
   onLoadHistory,
   searchMessageId,
   historyLoading = false,
@@ -628,6 +655,8 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   chatId,
   group,
   pendingTimer = false,
+  starting = false,
+  waitingForApproval = false,
   chatPendingQuestions,
   turnDiff,
   appliedMemory,
@@ -641,16 +670,27 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   suppressActiveForkAction = false,
   invocableMentionIndex,
   filePathMentionIndex,
-  agentArtifacts = [],
-  backgroundProcesses = EMPTY_TURN_BACKGROUND_PROCESSES,
-  knownPipelineRuns,
+  completedAgentArtifacts = [],
   hideUserMessage = false,
   stickyTurnSummary = false,
   forceExpandedUserMessage = false,
   footerAlwaysVisible = false,
   onJumpToMessage,
+  onShowSpawningCall,
+  revealRequest,
 }: {
   transcriptTurn?: TranscriptTurnSummary;
+  /**
+   * The indexed turn whose span holds this group when it has none of its own
+   * (a tools-loaded continuation, in its prompt's span). Pages only.
+   */
+  historyTurn?: TranscriptTurnSummary;
+  /** The diff shows on a later group of the prompt (its continuation). */
+  hideTurnDiffSummary?: boolean;
+  /** The prompt a continuation's diff and Undo belong to. */
+  resetTurnId?: string;
+  /** This prompt's tools-loaded continuation still runs in its session. */
+  continuationActive?: boolean;
   /**
    * Loads the owning turn's missing history page. Receives the turn's user
    * message id so the list can hand every row the same stable callback
@@ -664,6 +704,18 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   chatId?: string;
   group: TurnGroup;
   pendingTimer?: boolean;
+  /**
+   * The turn is a just-submitted first send: until its first visible output
+   * or a finished timer it shows the shared "Starting…" status instead of the
+   * working header and timer.
+   */
+  starting?: boolean;
+  /**
+   * The owning chat has a pending tool approval. The list sets it only on
+   * the latest turn, so historical turns keep a stable prop; it pauses this
+   * turn's timer only while the turn is unfinished.
+   */
+  waitingForApproval?: boolean;
   chatPendingQuestions: PendingQuestion[];
   turnDiff?: TurnDiffData;
   appliedMemory?: AppliedOrgMemoryTurn;
@@ -690,14 +742,12 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   suppressActiveForkAction?: boolean;
   invocableMentionIndex?: InvocableMentionIndex | null;
   filePathMentionIndex?: FilePathMentionIndex | null;
-  agentArtifacts?: readonly AgentArtifactReceiptV1[];
   /**
-   * Background processes this turn launched. Supplied by the transcript list
-   * from its single activity-store subscription, never read per turn — see
-   * `useChatBackgroundProcessesByTurn`.
+   * What the completed turn's box lists: its capability tiles and the runs
+   * placed in it. Runs the composer's background drawer lists are placed in
+   * no turn, and each other run in one (`placeAgentActivity`, CAN-4690).
    */
-  backgroundProcesses?: readonly BackgroundProcess[];
-  knownPipelineRuns?: Readonly<Record<string, PipelineRunArtifactReceiptV1>>;
+  completedAgentArtifacts?: readonly AgentArtifactReceiptV1[];
   /**
    * True when the transcript list hoisted this turn's user message into a
    * sticky section header and renders it there itself. The group then skips
@@ -717,7 +767,27 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   forceExpandedUserMessage?: boolean;
   /** Transcript-supplied click-to-jump handler for this turn's user bubble. */
   onJumpToMessage?: (element: HTMLElement) => void;
+  /** Brings a wake's spawning tool call (or its prompt) into view. */
+  onShowSpawningCall?: (target: SpawningCallTarget) => void;
+  /**
+   * Opens this turn and the step row holding `messageId` so the host can
+   * bring that message into view. A new object for each request.
+   */
+  revealRequest?: { messageId: string };
 }): JSX.Element {
+  // Live runs are removed by placement. Their completed records can become
+  // available before the parent turn ends; capability tiles remain pinned.
+  const recordArtifacts = useMemo(
+    () =>
+      group.isComplete
+        ? completedAgentArtifacts
+        : completedAgentArtifacts.filter(
+            (receipt) =>
+              receipt.kind === 'pipeline_run' ||
+              receipt.kind === 'github_workflow_run',
+          ),
+    [completedAgentArtifacts, group.isComplete],
+  );
   const forkTab = useChatStore((s) => s.forkTab);
   const turnFiles = useMemo(
     () =>
@@ -762,6 +832,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     hasRoutingTarget && chatTarget !== null ? chatTarget : undefined;
   const {
     pending: pendingTurnFiles,
+    pendingPathAliases,
     located: locatedTurnFiles,
     settled: turnFilesSettled,
   } = useTurnFileLocations(routedChatTarget, turnFiles, group.isComplete);
@@ -779,6 +850,12 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     ({ tab }) =>
       tab?.turnEnds?.[group.userMessage.id]?.outcome ??
       tab?.unacceptedTurnEnds?.[group.userMessage.id],
+  );
+  // Main records each turn a restart cut off, keyed by its own prompt, so a
+  // turn that resumed or started afterwards never inherits it.
+  const turnInterrupted = useChatTabRenderState(
+    chatTarget,
+    ({ tab }) => tab?.interruptedTurns?.[group.userMessage.id] !== undefined,
   );
   const [showChoosingModel, setShowChoosingModel] = useState(false);
   const cleanChatLook = useCleanChatLook();
@@ -842,7 +919,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // drop every footer control that forks, branches, shares, rates, comments
   // on, watches or rewinds a turn.
   const readOnly = useWorkspaceIsReadOnly();
-  const subagentsView = useLabsExperimentEnabled('subagents-view');
   const canBranch =
     !readOnly &&
     !hideBranchActions &&
@@ -852,6 +928,9 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   const isCollapsed = searchMessageId ? false : collapsed;
   const [progressiveMessageTick, setProgressiveMessageTick] = useState(0);
   const userMessageId = group.userMessage.id;
+  // A tools-loaded continuation runs under its prompt; its receipts name it.
+  const receiptOwnerId =
+    continuationPromptId(group.userMessage) ?? userMessageId;
   const progressivelyMountedMessageIdsRef = useRef<Set<string>>(new Set());
   const progressiveTurnIdRef = useRef(userMessageId);
   if (progressiveTurnIdRef.current !== userMessageId) {
@@ -863,9 +942,12 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // callback identity; that must not re-request the same history page.
   const onLoadHistoryRef = useRef(onLoadHistory);
   onLoadHistoryRef.current = onLoadHistory;
+  // The turn this group pages through: its own, or the span that holds it.
+  const pagingTurn = transcriptTurn ?? historyTurn;
+  const pagingTurnId = pagingTurn?.id ?? userMessageId;
   const loadHistory = useCallback(
-    (): void | Promise<void> => onLoadHistoryRef.current?.(userMessageId),
-    [userMessageId],
+    (): void | Promise<void> => onLoadHistoryRef.current?.(pagingTurnId),
+    [pagingTurnId],
   );
   useEffect(() => {
     // A resumed, partially loaded turn can finish while this view is open.
@@ -885,16 +967,64 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     historyError,
     loadHistory,
   ]);
+  // Landing (CAN-4810, CAN-5056): an explicit expand of a turn with a
+  // blocked or errored step, or a click on its outcome or a tooltip entry,
+  // reveals that step's row, focuses its toggle and rings it. The request
+  // outlives the history load and the expanded rows' mount; collapsing,
+  // another request, the reader acting elsewhere, or its deadline ends it.
+  // Each request is a fresh object, so a repeated jump lands again.
+  const [landing, setLanding] = useState<{
+    origin: HTMLElement;
+    control: HTMLElement | null;
+    toolUseId?: string;
+  } | null>(null);
+  const expansionRequest = useRef(0);
+  const expansionPending = useRef(false);
+  const landingTravel = useRef<(() => void) | undefined>(undefined);
+  useEffect(
+    () => (): void => {
+      expansionRequest.current += 1;
+      expansionPending.current = false;
+      landingTravel.current?.();
+    },
+    [userMessageId],
+  );
+  useEffect(() => {
+    if (isCollapsed) landingTravel.current?.();
+  }, [isCollapsed]);
+  // The step a landing revealed; its folded step group stays open until the
+  // turn collapses, since a forced open would otherwise close again.
+  const [revealMessageId, setRevealMessageId] = useState<string | undefined>();
   const toggleCollapsed = (): void => {
+    const request = ++expansionRequest.current;
+    setLanding(null);
+    landingTravel.current?.();
+    if (expansionPending.current) {
+      expansionPending.current = false;
+      return;
+    }
+    if (!isCollapsed) setRevealMessageId(undefined);
     progressivelyMountedMessageIdsRef.current.clear();
-    if (isCollapsed && transcriptTurn?.before !== undefined && onLoadHistory) {
+    if (isCollapsed && pagingTurn?.before !== undefined && onLoadHistory) {
       // Install the initial lazy page while the turn is still collapsed. The
       // subsequent expansion then uses the existing section-head scroll; it
       // must not be mistaken for an infinite-scroll prepend above the viewport.
-      void Promise.resolve(loadHistory()).then(() => {
+      expansionPending.current = true;
+      const finish = (): void => {
+        if (expansionRequest.current !== request) return;
+        expansionPending.current = false;
         setProgressiveMessageTick((current) => current + 1);
         setIsCollapsed(false);
-      });
+      };
+      void Promise.resolve()
+        .then(loadHistory)
+        .then(finish, (): void => {
+          // The existing history error control owns retry. Open the section
+          // without landing rather than leaving an unhandled rejection.
+          if (expansionRequest.current !== request) return;
+          setLanding(null);
+          finish();
+        });
     } else if (isCollapsed) {
       setProgressiveMessageTick((current) => current + 1);
       setIsCollapsed(false);
@@ -918,11 +1048,18 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   }, [isReverted]);
 
   useEffect(() => {
-    if (!prevCompleteRef.current && group.isComplete) {
+    // Clean chat look: a turn that finishes on screen stays as it is, so
+    // nothing above the reply moves; it opens folded the next time.
+    if (!prevCompleteRef.current && group.isComplete && !cleanChatLook) {
       setIsCollapsed(true);
     }
     prevCompleteRef.current = group.isComplete;
-  }, [group.isComplete]);
+  }, [group.isComplete, cleanChatLook]);
+
+  // Opened as saved state, so the person can collapse the turn again.
+  useLayoutEffect(() => {
+    if (revealRequest) setIsCollapsed(false);
+  }, [revealRequest]);
 
   const { intermediateMessages, finalMessages, trailingToolMessages } =
     useMemo(() => {
@@ -955,8 +1092,195 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       ? transcriptTurn.summary
       : computedSummary;
 
-  const hasIntermediateContent =
+  // Outcomes count the same steps as the summary; receipts may sit on any
+  // message of the turn, including a system notice beside the final answer.
+  // A complete turn's own rows can be loaded while its delayed receipt is
+  // omitted elsewhere. Merge projected denial IDs with loaded receipts so
+  // newer live denials still apply. Without those IDs, retain the projection;
+  // a sparse page also needs its full-turn counts. Missing metadata is unknown.
+  const projectedDeniedToolUseIds = transcriptTurn?.deniedToolUseIds;
+  const cleanDeniedToolUseIds = useMemo(
+    () =>
+      new Set([
+        ...getTurnSafetyDeniedToolUseIds(
+          group.assistantMessages,
+          receiptOwnerId,
+        ),
+        ...(projectedDeniedToolUseIds ?? []),
+      ]),
+    [group.assistantMessages, receiptOwnerId, projectedDeniedToolUseIds],
+  );
+  // Settled only on an authoritative completion stamp; a turn that merely
+  // went quiet keeps its unresolved calls pending.
+  const turnSettled =
+    group.isComplete &&
+    group.timerMessage.blocks.some(
+      (block) =>
+        block.type === 'turn_timer' && typeof block.completedAt === 'number',
+    );
+  // The tooltip's steps, from fully loaded rows only: a paged turn's
+  // tooltip says its counts instead. A paged turn's missing results may be
+  // on another page, so they are no evidence of an interruption.
+  const pagedTurn = transcriptTurn?.before !== undefined;
+  const outcomeEvidence = useMemo(
+    () => ({ settled: turnSettled, resultsComplete: !pagedTurn }),
+    [turnSettled, pagedTurn],
+  );
+  const usesProjectedOutcomes =
     transcriptTurn?.before !== undefined ||
+    (transcriptTurn?.complete === true &&
+      projectedDeniedToolUseIds === undefined);
+  const computedOutcomes = useMemo(
+    () =>
+      computeTurnOutcomes(
+        [...intermediateMessages, ...trailingToolMessages],
+        group.assistantMessages,
+        receiptOwnerId,
+        projectedDeniedToolUseIds,
+        outcomeEvidence,
+      ),
+    [
+      intermediateMessages,
+      trailingToolMessages,
+      group.assistantMessages,
+      receiptOwnerId,
+      projectedDeniedToolUseIds,
+      outcomeEvidence,
+    ],
+  );
+  const outcomes = usesProjectedOutcomes
+    ? transcriptTurn?.outcomes
+    : computedOutcomes;
+  // Most turns have no outcome to list.
+  const hasOutcomes = hasTurnOutcomes(outcomes);
+  const outcomeSteps = useMemo(
+    () =>
+      pagedTurn || !hasOutcomes
+        ? undefined
+        : getTurnOutcomeStepDetails(
+            [...intermediateMessages, ...trailingToolMessages],
+            group.assistantMessages,
+            receiptOwnerId,
+            projectedDeniedToolUseIds,
+            outcomeEvidence,
+          ),
+    [
+      pagedTurn,
+      hasOutcomes,
+      intermediateMessages,
+      trailingToolMessages,
+      group.assistantMessages,
+      receiptOwnerId,
+      projectedDeniedToolUseIds,
+      outcomeEvidence,
+    ],
+  );
+  // The step a landing aims at: the requested one when it is loaded, else
+  // the first blocked one in transcript order, else the first errored one,
+  // else the first interrupted one, among the rows loaded so far.
+  const landingStep = useMemo(() => {
+    if (landing === null) return undefined;
+    const steps = getTurnOutcomeSteps(
+      [...intermediateMessages, ...trailingToolMessages],
+      group.assistantMessages,
+      receiptOwnerId,
+      projectedDeniedToolUseIds,
+      outcomeEvidence,
+    );
+    const requested =
+      landing.toolUseId === undefined
+        ? undefined
+        : steps.find((candidate) => candidate.toolUseId === landing.toolUseId);
+    if (requested === undefined && usesProjectedOutcomes) {
+      // A sparse tail cannot establish the first affected step unless all
+      // outcomes of the preferred kind are present. Keep section-head focus
+      // rather than landing on a later failure or a later blocked row.
+      const kind = outcomes?.blocked
+        ? 'blocked'
+        : outcomes?.failed
+          ? 'failed'
+          : 'interrupted';
+      if (
+        !outcomes ||
+        steps.filter((step) => step.outcome === kind).length !== outcomes[kind]
+      )
+        return undefined;
+    }
+    const step =
+      requested ??
+      TURN_OUTCOME_ORDER.map((kind) =>
+        steps.find((candidate) => candidate.outcome === kind),
+      ).find((candidate) => candidate !== undefined);
+    if (!step) return undefined;
+    const message = group.assistantMessages.find((candidate) =>
+      candidate.blocks.some(
+        (block) =>
+          (block.type === 'tool_use' ||
+            block.type === 'workflow' ||
+            block.type === 'agent') &&
+          block.toolUseId === step.toolUseId,
+      ),
+    );
+    return message
+      ? { toolUseId: step.toolUseId, messageId: message.id }
+      : undefined;
+  }, [
+    landing,
+    intermediateMessages,
+    trailingToolMessages,
+    group.assistantMessages,
+    transcriptTurn,
+    outcomes,
+    receiptOwnerId,
+    usesProjectedOutcomes,
+    projectedDeniedToolUseIds,
+    outcomeEvidence,
+  ]);
+  const landingMessageId = landingStep?.messageId;
+  useEffect(() => {
+    if (landingMessageId !== undefined) setRevealMessageId(landingMessageId);
+  }, [landingMessageId]);
+  useEffect(() => {
+    // A row reused for another turn starts without its predecessor's landing.
+    setLanding(null);
+    setRevealMessageId(undefined);
+  }, [userMessageId]);
+  useEffect(() => {
+    if (landing === null) return;
+    // The reader acting anywhere outranks a landing still waiting for its row.
+    const cancel = (): void => setLanding(null);
+    document.addEventListener('pointerdown', cancel, true);
+    document.addEventListener('keydown', cancel, true);
+    document.addEventListener('wheel', cancel, {
+      capture: true,
+      passive: true,
+    });
+    return (): void => {
+      document.removeEventListener('pointerdown', cancel, true);
+      document.removeEventListener('keydown', cancel, true);
+      document.removeEventListener('wheel', cancel, true);
+    };
+  }, [landing]);
+  const toggleSummary: SummaryActionHandler = (origin, control): void => {
+    const expanding = isCollapsed && !expansionPending.current;
+    toggleCollapsed();
+    if (expanding && hasTurnOutcomes(outcomes)) {
+      setLanding({ origin, control });
+    }
+  };
+  // Clicking the outcome or a tooltip entry: a collapsed turn expands (and
+  // loads) first; an open one keeps its state and lands again.
+  const jumpToOutcome = (
+    origin: HTMLElement,
+    control: HTMLElement | null,
+    toolUseId?: string,
+  ): void => {
+    if (isCollapsed && !expansionPending.current) toggleCollapsed();
+    setLanding({ origin, control, toolUseId });
+  };
+
+  const hasIntermediateContent =
+    pagingTurn?.before !== undefined ||
     intermediateMessages.length > 0 ||
     trailingToolMessages.length > 0;
 
@@ -1003,11 +1327,13 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         .filter((question) => question.dismissedAt === undefined)
         .map((question) => question.requestId),
     );
-    // Keep the narrow final-message path when there are neither questions nor
-    // visuals. The WeakMap predicate avoids rescanning hidden blocks on updates.
+    // Keep the narrow final-message path when there are neither questions,
+    // visuals, nor safety notices. The WeakMap predicate avoids rescanning
+    // hidden blocks on updates.
     if (
       retainedQuestionIds.size === 0 &&
-      !group.assistantMessages.some(displayMessageHasVisual)
+      !group.assistantMessages.some(displayMessageHasVisual) &&
+      !group.assistantMessages.some(displayMessageHasSafetyDenial)
     ) {
       return retainedFinalMessages;
     }
@@ -1017,13 +1343,27 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     return group.assistantMessages.flatMap((message) => {
       if (finalIds.has(message.id)) return [message];
       if (displayMessageHasVisual(message)) {
-        return [visualOnlyDisplayMessage(message)];
+        const visual = visualOnlyDisplayMessage(message);
+        if (!displayMessageHasSafetyDenial(message)) return [visual];
+        return [
+          {
+            ...message,
+            blocks: message.blocks.filter(
+              (block) =>
+                block.type === 'approval_safety_denied_info' ||
+                visual.blocks.includes(block),
+            ),
+          },
+        ];
       }
+      // A safety notice explains why the turn went the way it did, so it
+      // stays visible when its denied tool row collapses away.
       const blocks = message.blocks.filter(
         (block) =>
-          block.type === 'text' &&
-          block.asyncQuestion &&
-          retainedQuestionIds.has(block.asyncQuestion.requestId),
+          block.type === 'approval_safety_denied_info' ||
+          (block.type === 'text' &&
+            block.asyncQuestion &&
+            retainedQuestionIds.has(block.asyncQuestion.requestId)),
       );
       if (blocks.length === 0) return [];
       return [
@@ -1048,6 +1388,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     group.isComplete &&
     !isCollapsed &&
     searchMessageId === undefined &&
+    revealRequest === undefined &&
     group.assistantMessages.length >= PROGRESSIVE_TURN_MESSAGE_THRESHOLD;
 
   const renderedVisibleMessages = useMemo(() => {
@@ -1079,21 +1420,36 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     progressiveMountEligible,
     visibleMessages,
   ]);
-  // Settings → "Group tool calls": back-to-back tool calls fold into one row
-  // ("Ran 3 commands"). Off by default, so every tool call is its own row.
-  const groupToolCalls = useChatGroupToolCallsEnabled();
-  // Its own setting (CAN-4274): the run a turn is still adding to shows only
-  // its newest steps. It builds on the same rows, whether grouping is on or
-  // not.
-  const liveStepWindowEnabled = useChatLiveStepWindowEnabled();
+  // Chat detail: `compact` folds back-to-back tool calls into one row ("Ran
+  // 3 commands"); `recent` (CAN-4274) also keeps the newest steps of the run
+  // a turn is still adding to in view; `detailed` keeps every step its own
+  // row.
+  const chatDetail = useChatDetail();
+  const groupToolCalls = chatDetail === 'compact';
+  const liveStepWindowEnabled = chatDetail === 'recent';
+  // Clean chat look with grouping on: every step between two replies is one
+  // closed line, and the running turn's tail is a live line that shimmers
+  // what it does. "Show only recent steps" also keeps the work on one line.
+  const cleanGrouping =
+    cleanChatLook && (groupToolCalls || liveStepWindowEnabled);
   const toolStepSegments = useMemo(() => {
+    if (cleanGrouping) return null;
     if (liveStepWindowEnabled) {
       return segmentToolSteps(renderedVisibleMessages, {
         liveStepWindow: true,
       });
     }
     return groupToolCalls ? segmentToolSteps(renderedVisibleMessages) : null;
-  }, [groupToolCalls, liveStepWindowEnabled, renderedVisibleMessages]);
+  }, [
+    cleanGrouping,
+    groupToolCalls,
+    liveStepWindowEnabled,
+    renderedVisibleMessages,
+  ]);
+  const cleanSegments = useMemo(
+    () => (cleanGrouping ? segmentCleanSteps(renderedVisibleMessages) : null),
+    [cleanGrouping, renderedVisibleMessages],
+  );
   const liveStepSegment =
     liveStepWindowEnabled && !group.isComplete
       ? toolStepSegments?.[toolStepSegments.length - 1]
@@ -1120,6 +1476,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           !piece.endsSource ||
           piece.source !== visibleMessages[visibleMessages.length - 1]
         }
+        turnSettled={turnSettled}
         chatPendingQuestions={chatPendingQuestions}
         invocableMentionIndex={invocableMentionIndex}
         filePathMentionIndex={filePathMentionIndex}
@@ -1128,6 +1485,72 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       />
     );
   };
+  useEffect(() => {
+    // Wait for the existing lifecycle: the expansion committed, the turn's
+    // history page installed and the expanded rows mounted, progressively
+    // and in order for a large turn, so rows above the target are already in
+    // place when it appears. Each of those re-runs this effect; between them
+    // a bounded frame retry covers rows that mount a frame late, and a turn
+    // that stops making progress gives up. A failed load keeps the
+    // section-head landing.
+    if (landing === null || isCollapsed || historyLoading) return;
+    if (historyError) {
+      setLanding(null);
+      return;
+    }
+    if (landingStep === undefined && transcriptTurn?.before === undefined) {
+      setLanding(null);
+      return;
+    }
+    const deadline = performance.now() + LANDING_RETRY_MS;
+    let frame = 0;
+    const attempt = (): void => {
+      const turnSelector = `[data-chat-turn-group="${CSS.escape(userMessageId)}"]`;
+      const scroller = landing.origin.closest(
+        '[data-testid="chat-message-list-scroll"]',
+      );
+      const scope =
+        landing.origin.closest(turnSelector) ??
+        (scroller ?? document).querySelector(turnSelector);
+      const row =
+        landingStep && scope
+          ? scope.querySelector<HTMLElement>(
+              `[data-tool-use-id="${CSS.escape(landingStep.toolUseId)}"]`,
+            )
+          : null;
+      if (row) {
+        landingTravel.current?.();
+        const cancelTravel = landOnToolRow(
+          row,
+          landing.origin,
+          landing.control,
+        );
+        const cancelRing = ringChatCallFocus(row);
+        landingTravel.current = (): void => {
+          cancelTravel?.();
+          cancelRing();
+        };
+        setLanding(null);
+        return;
+      }
+      if (performance.now() >= deadline) {
+        setLanding(null);
+        return;
+      }
+      frame = requestAnimationFrame(attempt);
+    };
+    frame = requestAnimationFrame(attempt);
+    return (): void => cancelAnimationFrame(frame);
+  }, [
+    landing,
+    landingStep,
+    isCollapsed,
+    historyLoading,
+    historyError,
+    transcriptTurn,
+    renderedVisibleMessages,
+    userMessageId,
+  ]);
   useLayoutEffect(() => {
     if (isCollapsed) {
       progressivelyMountedMessageIdsRef.current.clear();
@@ -1184,8 +1607,46 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         .join('\n\n');
     return textOf(finalMessages) || textOf(group.assistantMessages);
   }, [finalMessages, group.assistantMessages]);
+  // A finished plan turn copies its plan, not its prose, through the same
+  // policy as the web transcript; only reading these blocks is desktop's
+  // (CAN-5354). Each call counts once, in the order the agent made it.
+  const planCopy = useMemo((): PlanCopyState | undefined => {
+    if (!group.isComplete) return undefined;
+    const calls: PlanTurnToolCall[] = [];
+    const seen = new Set<string>();
+    for (const message of group.assistantMessages) {
+      for (const block of message.blocks) {
+        if (
+          block.type !== 'tool_use' ||
+          (block.toolName !== 'ExitPlanMode' && block.toolName !== 'Write') ||
+          seen.has(block.toolUseId)
+        ) {
+          continue;
+        }
+        seen.add(block.toolUseId);
+        calls.push({
+          toolName: block.toolName,
+          input: block.input,
+          ...(block.result
+            ? { outcome: block.result.isError ? 'error' : 'success' }
+            : {}),
+        });
+      }
+    }
+    const resolution = resolvePlanTurn(calls);
+    return resolution.kind === 'none'
+      ? undefined
+      : planCopyStateFromResolution(resolution);
+  }, [group.isComplete, group.assistantMessages]);
   const fallbackCopyAction =
-    group.isComplete && replyCopyText.trim() !== '' ? (
+    planCopy !== undefined ? (
+      <PlanCopyAction
+        key={group.userMessage.id}
+        state={planCopy}
+        appearance="footer"
+        dataTestId="turn-copy-plan"
+      />
+    ) : group.isComplete && replyCopyText.trim() !== '' ? (
       <ChatCopyAction
         key={group.userMessage.id}
         text={replyCopyText}
@@ -1200,27 +1661,75 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   const isActiveTimer =
     timerBlock !== null &&
     (timerBlock.completedAt === null || timerBlock.completedAt === undefined);
+  // The dock's pending approval pauses only this chat's unfinished turn.
+  const waitingForUser = waitingForApproval && isActiveTimer;
+  // Which of this turn's unresolved calls those approvals hold. Only the
+  // waiting turn subscribes; every other turn keeps the empty signal.
+  const turnApprovals = useChatStore(
+    useShallow((s): readonly ApprovalRequestEvent[] =>
+      waitingForUser && !group.isComplete && chatTarget !== null
+        ? Object.values(s.pendingApprovals).filter(
+            (approval) =>
+              approval.projectId === chatTarget.projectId &&
+              approval.worktreeId === chatTarget.worktreeId &&
+              approval.chatId === chatTarget.chatId,
+          )
+        : NO_APPROVALS,
+    ),
+  );
+  const approvalWait = useMemo(
+    () =>
+      turnApprovals.length === 0
+        ? NO_TOOL_APPROVAL_WAIT
+        : desktopTurnApprovalWait(
+            turnApprovals,
+            group.assistantMessages,
+            turnFiles,
+            pendingPathAliases,
+          ),
+    [turnApprovals, group.assistantMessages, turnFiles, pendingPathAliases],
+  );
+  // One pending status from submission to the first visible reply or step.
+  // Auto routing names its own wait, so "Choosing a model…" replaces it.
+  const showStarting =
+    starting &&
+    isActiveTimer &&
+    !showChoosingModel &&
+    !group.assistantMessages.some(
+      (message) =>
+        message.role === 'assistant' &&
+        message.blocks.some((block) =>
+          block.type === 'tool_use' && block.toolName === 'ExitPlanMode'
+            ? extractExitPlanModePlan(block.input) !== null
+            : isStartingTurnOutput(block.type, block),
+        ),
+    );
+  // A wake's turn is headed by its boundary row, not a prompt: forking,
+  // sharing and feedback stay with the prompt's turn, which includes it.
+  const promptHead = group.userMessage.role === 'user';
+  // One resolved end for the summary, header and footer, so none of them
+  // says "Completed" for a turn the others call interrupted.
+  const completionStatus = resolveTurnCompletionStatus({
+    settled: turnSettled,
+    recorded:
+      turnOutcome === 'failed' || turnOutcome === 'cancelled'
+        ? turnOutcome
+        : turnInterrupted
+          ? 'interrupted'
+          : undefined,
+    outcomes,
+  });
   const headerOutcome =
-    turnOutcome === 'failed' || turnOutcome === 'cancelled'
-      ? turnOutcome
-      : undefined;
-  // Clean chat look: a step still on screen shimmers what the turn is doing
-  // (a running call or helper agent, thinking in progress), so the timer row
-  // stays quiet.
-  const lastShownBlocks =
-    renderedVisibleMessages[renderedVisibleMessages.length - 1]?.blocks ?? [];
-  const lastShownBlock = lastShownBlocks[lastShownBlocks.length - 1];
-  const liveStepShown =
-    cleanChatLook &&
-    !group.isComplete &&
-    lastShownBlock !== undefined &&
-    (((lastShownBlock.type === 'tool_use' || lastShownBlock.type === 'agent') &&
-      lastShownBlock.result === undefined) ||
-      lastShownBlock.type === 'thinking');
+    completionStatus === undefined || completionStatus === 'complete'
+      ? undefined
+      : completionStatus;
+  // A prompt whose tools-loaded continuation still runs forks its session.
+  const forksActiveTurn = isActiveTimer || continuationActive;
   const showForkAction =
     !readOnly &&
+    promptHead &&
     Boolean(chatId) &&
-    (isActiveTimer
+    (forksActiveTurn
       ? sourceSdkSessionId !== undefined && !suppressActiveForkAction
       : isLastForkableTurnGroup);
   // Note: in raw `source.messages` the turn timer is appended right after
@@ -1293,6 +1802,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // highest-signal thumbs-down there is.
   const feedbackControl =
     !readOnly &&
+    promptHead &&
     group.isComplete &&
     !isActiveTimer &&
     chatId !== undefined &&
@@ -1386,6 +1896,59 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       />
     ) : undefined;
 
+  const forkHandler =
+    showForkAction && chatId
+      ? (): void => {
+          if (forksActiveTurn) {
+            forkTab(chatId, forkTarget, {
+              includeActiveTurn: true,
+              ...(sourceSdkSessionId ? { sourceSdkSessionId } : {}),
+            });
+            return;
+          }
+          forkTab(chatId, forkTarget, { forkAfterUserMessageId });
+        }
+      : undefined;
+  // Clean chat look: while the turn runs, its watch, fork and auto-archive
+  // actions sit at the end of the "Working for" header, and the row under
+  // the reply holds the live line, so that row keeps one height from the
+  // first frame to the last.
+  const cleanLiveActions =
+    cleanChatLook &&
+    isActiveTimer &&
+    (watcherButton !== undefined ||
+      forkHandler !== undefined ||
+      archiveToggleButton !== undefined) ? (
+      <>
+        {watcherButton}
+        {forkHandler ? <ForkChatButton onClick={forkHandler} /> : null}
+        {archiveToggleButton}
+      </>
+    ) : undefined;
+  // Without grouping, the step still running on screen shimmers itself; the
+  // live line only says "Thinking" while none does.
+  const lastShownBlocks =
+    renderedVisibleMessages[renderedVisibleMessages.length - 1]?.blocks ?? [];
+  const lastShownBlock = lastShownBlocks[lastShownBlocks.length - 1];
+  const stepShimmersOnScreen =
+    lastShownBlock !== undefined &&
+    (((lastShownBlock.type === 'tool_use' || lastShownBlock.type === 'agent') &&
+      lastShownBlock.result === undefined) ||
+      lastShownBlock.type === 'thinking');
+  const cleanLiveLine =
+    cleanChatLook &&
+    !showStarting &&
+    !group.isComplete &&
+    (cleanSegments
+      ? cleanSegments[cleanSegments.length - 1]?.kind !== 'steps'
+      : !stepShimmersOnScreen) ? (
+      <CleanToolStepGroup
+        live
+        workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
+        isCodeReviewChat={isCodeReviewChat}
+      />
+    ) : null;
+
   // When this turn was rolled back by a later revert_info marker, wrap the
   // whole turn output in a faded + bordered container so the discarded
   // attempt reads as inactive without altering the data model. Plain
@@ -1410,6 +1973,20 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     return text.slice(0, 80).trimEnd() + '…';
   }, [group.userMessage.blocks]);
 
+  const liveHeader = (
+    <TurnWorkHeader
+      startedAt={timerBlock?.startedAt}
+      finishedAt={null}
+      pausedAt={timerBlock?.pausedAt}
+      resumedAt={timerBlock?.resumedAt}
+      accumulatedPausedDurationMs={timerBlock?.accumulatedPausedDurationMs}
+      waitingForUser={waitingForUser}
+      live
+      trailing={cleanLiveActions}
+      dataTestId="turn-work-header"
+    />
+  );
+
   if (isReverted && isRevertedCollapsed) {
     return wrapReverted(
       <button
@@ -1417,7 +1994,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         onClick={(): void => setIsRevertedCollapsed(false)}
         aria-expanded={false}
         aria-label="Expand reverted turn"
-        className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition hover:bg-fg-primary/[0.04]"
+        className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04]"
       >
         <span className="flex-shrink-0">
           <ChevronRightIcon />
@@ -1431,14 +2008,14 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   }
 
   return wrapReverted(
-    <>
+    <ToolApprovalWaitProvider value={approvalWait}>
       {isReverted && (
         <button
           type="button"
           onClick={(): void => setIsRevertedCollapsed(true)}
           aria-expanded={true}
           aria-label="Collapse reverted turn"
-          className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition hover:bg-fg-primary/[0.04]"
+          className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04]"
         >
           <span className="flex-shrink-0">
             <ChevronDownIcon />
@@ -1460,25 +2037,26 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           originChatTabId={chatId}
           forceExpandedUserMessage={forceExpandedUserMessage}
           onJumpToMessage={onJumpToMessage}
+          onShowSpawningCall={onShowSpawningCall}
         />
       )}
-      {/* Clean chat look: more room under the prompt than between steps. */}
-      {cleanChatLook && !hideUserMessage ? (
-        <div aria-hidden="true" className="h-2.5" />
-      ) : null}
-
       {/* Clean chat look: the running turn opens with "Working for 28s"; once
-          it is done the folded steps' header reads "Worked for 3m 24s". */}
-      {cleanChatLook && !group.isComplete ? (
-        <TurnWorkHeader
-          startedAt={timerBlock?.startedAt}
-          finishedAt={null}
-          pausedAt={timerBlock?.pausedAt}
-          resumedAt={timerBlock?.resumedAt}
-          accumulatedPausedDurationMs={timerBlock?.accumulatedPausedDurationMs}
-          live
-          dataTestId="turn-work-header"
-        />
+          it is done the folded steps' header reads "Worked for 3m 24s". Both
+          looks open a just-submitted first send with "Starting…" instead. */}
+      {showStarting ? (
+        <TurnWorkHeader starting dataTestId="turn-starting-status" />
+      ) : cleanChatLook && !group.isComplete ? (
+        stickyTurnSummary && !isReverted ? (
+          // Pinned like the finished turn's header, in the same wrapper, so
+          // finishing only changes its words.
+          <StickyTurnSummary>
+            <div className="relative bg-base before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-base">
+              {liveHeader}
+            </div>
+          </StickyTurnSummary>
+        ) : (
+          liveHeader
+        )
       ) : null}
 
       {hasIntermediateContent && group.isComplete ? (
@@ -1499,10 +2077,13 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
                   running past the last banner is what read as a black bar
                   sitting on the transcript. */}
               <div className="relative bg-base before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-base">
-                <CollapsedTurnSummary
+                <DesktopCollapsedTurnSummary
                   counts={summary}
+                  outcomes={outcomes}
+                  outcomeSteps={outcomeSteps}
                   isExpanded={!isCollapsed}
-                  onToggle={toggleCollapsed}
+                  onToggle={toggleSummary}
+                  onJumpToOutcome={jumpToOutcome}
                   isCodeReviewChat={isCodeReviewChat}
                   userMessageId={group.userMessage.id}
                   timer={timerBlock ?? undefined}
@@ -1511,10 +2092,13 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
               </div>
             </StickyTurnSummary>
           ) : (
-            <CollapsedTurnSummary
+            <DesktopCollapsedTurnSummary
               counts={summary}
+              outcomes={outcomes}
+              outcomeSteps={outcomeSteps}
               isExpanded={!isCollapsed}
-              onToggle={toggleCollapsed}
+              onToggle={toggleSummary}
+              onJumpToOutcome={jumpToOutcome}
               isCodeReviewChat={isCodeReviewChat}
               userMessageId={group.userMessage.id}
               timer={timerBlock ?? undefined}
@@ -1525,10 +2109,10 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       ) : null}
 
       {(historyLoading || !isCollapsed || !group.isComplete) &&
-        transcriptTurn?.before !== undefined &&
+        pagingTurn?.before !== undefined &&
         onLoadHistory && (
           <TranscriptPagingControls
-            key={transcriptTurn.before}
+            key={pagingTurn.before}
             loading={historyLoading}
             suspended={historySuspended}
             error={historyError}
@@ -1542,74 +2126,109 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           and expand/collapse, while preserving the original message order.
           Questions never fold into a tool-step group, so they stay keyed at
           this level. */}
-      {toolStepSegments
-        ? toolStepSegments.map((segment) =>
+      {cleanSegments ? (
+        <>
+          {cleanSegments.map((segment, index) =>
             segment.kind === 'message' ? (
               renderMessageItem(segment.message)
             ) : (
-              <ToolStepGroup
-                // Live step window: text ending a run, or the turn finishing,
-                // compresses the group, so it remounts closed at those points
-                // and stays mounted (and open) while its own run grows.
-                key={
-                  liveStepWindowEnabled
-                    ? `tool-steps-${segment.key}:${
-                        group.isComplete
-                          ? 'complete'
-                          : segment === liveStepSegment
-                            ? 'live'
-                            : 'closed'
-                      }`
-                    : `tool-steps-${segment.key}`
+              <CleanToolStepGroup
+                key={`clean-steps-${segment.key}`}
+                segment={segment}
+                live={!group.isComplete && index === cleanSegments.length - 1}
+                outcomeEvidence={outcomeEvidence}
+                deniedToolUseIds={cleanDeniedToolUseIds}
+                workingLabel={
+                  showChoosingModel ? 'Choosing a model…' : undefined
                 }
-                toolUses={segment.toolUses}
-                steps={segment.steps}
-                streaming={!group.isComplete}
-                forceExpanded={
-                  searchMessageId !== undefined &&
+                forceExpanded={segment.messages.some((message) => {
+                  const id = stepPieceOf(message).source.id;
+                  return (
+                    (searchMessageId !== undefined && id === searchMessageId) ||
+                    (revealMessageId !== undefined && id === revealMessageId)
+                  );
+                })}
+                openRequest={
+                  revealRequest !== undefined &&
                   segment.messages.some(
-                    (message) => message.id === searchMessageId,
+                    (message) => message.id === revealRequest.messageId,
                   )
+                    ? revealRequest
+                    : undefined
                 }
                 isCodeReviewChat={isCodeReviewChat}
                 liveSteps={
-                  segment === liveStepSegment
+                  liveStepWindowEnabled &&
+                  !group.isComplete &&
+                  index === cleanSegments.length - 1
                     ? liveStepWindow(segment.messages).map(renderMessageItem)
                     : undefined
                 }
               >
                 {segment.messages.map(renderMessageItem)}
-              </ToolStepGroup>
+              </CleanToolStepGroup>
             ),
-          )
-        : renderedVisibleMessages.map(renderMessageItem)}
+          )}
+        </>
+      ) : toolStepSegments ? (
+        toolStepSegments.map((segment) =>
+          segment.kind === 'message' ? (
+            renderMessageItem(segment.message)
+          ) : (
+            <ToolStepGroup
+              // Live step window: text ending a run, or the turn finishing,
+              // compresses the group, so it remounts closed at those points
+              // and stays mounted (and open) while its own run grows.
+              key={
+                liveStepWindowEnabled
+                  ? `tool-steps-${segment.key}:${
+                      group.isComplete
+                        ? 'complete'
+                        : segment === liveStepSegment
+                          ? 'live'
+                          : 'closed'
+                    }`
+                  : `tool-steps-${segment.key}`
+              }
+              toolUses={segment.toolUses}
+              steps={segment.steps}
+              streaming={!group.isComplete}
+              forceExpanded={segment.messages.some(
+                (message) =>
+                  (searchMessageId !== undefined &&
+                    message.id === searchMessageId) ||
+                  (revealMessageId !== undefined &&
+                    message.id === revealMessageId),
+              )}
+              openRequest={
+                revealRequest !== undefined &&
+                segment.messages.some(
+                  (message) => message.id === revealRequest.messageId,
+                )
+                  ? revealRequest
+                  : undefined
+              }
+              isCodeReviewChat={isCodeReviewChat}
+              liveSteps={
+                segment === liveStepSegment
+                  ? liveStepWindow(segment.messages).map(renderMessageItem)
+                  : undefined
+              }
+            >
+              {segment.messages.map(renderMessageItem)}
+            </ToolStepGroup>
+          ),
+        )
+      ) : (
+        renderedVisibleMessages.map(renderMessageItem)
+      )}
 
-      {/* A watcher can be created after this turn's prompt while its chat is
-          unmounted. Recover its carry when opening the completed latest turn,
-          just as the active section does while a foreground turn is running.
-          Under the Subagents view there is no pinned section, so the latest
-          turn lists its artifacts, background tasks and runs here while it
-          runs too; its subagents are counted in the top bar. */}
-      {(group.isComplete || subagentsView) &&
-      isLastTurnGroup &&
-      routedChatTarget ? (
-        <ActiveAgentActivitySection
-          key={group.userMessage.id}
-          projectedArtifacts={agentArtifacts}
-          backgroundProcesses={backgroundProcesses}
-          knownPipelineRuns={knownPipelineRuns}
-          variant="completed"
-          ownerUserMessageId={group.userMessage.id}
-          // Stable across renders: its effect records carry, and each new
-          // target object would re-record on every transcript update.
-          chatTarget={routedChatTarget}
-        />
-      ) : group.isComplete &&
-        (agentArtifacts.length > 0 || backgroundProcesses.length > 0) ? (
+      {/* Live runs stay in the drawer; finished runs remain discoverable
+          even when the parent turn is paused or still working. */}
+      {recordArtifacts.length > 0 ? (
         <DesktopAgentActivitySection
           key={group.userMessage.id}
-          artifacts={agentArtifacts}
-          backgroundProcesses={backgroundProcesses}
+          artifacts={recordArtifacts}
           variant="completed"
           defaultExpanded={isLastTurnGroup}
           ownerUserMessageId={group.userMessage.id}
@@ -1617,11 +2236,16 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         />
       ) : null}
 
-      {(group.isComplete && turnDiff && turnDiff.files.length > 0) ||
+      {(group.isComplete &&
+        !hideTurnDiffSummary &&
+        turnDiff &&
+        turnDiff.files.length > 0) ||
       locatedTurnFiles.length > 0 ||
       pendingTurnFiles.length > 0 ? (
         <TurnDiffSummary
-          turnDiff={group.isComplete ? turnDiff : undefined}
+          turnDiff={
+            group.isComplete && !hideTurnDiffSummary ? turnDiff : undefined
+          }
           files={locatedTurnFiles}
           pendingFiles={pendingTurnFiles}
           fileTarget={routedChatTarget}
@@ -1641,7 +2265,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       {undoConfirmOpen && userResetHandler ? (
         <ResetToPointDialog
           onConfirm={async (): Promise<void> => {
-            await userResetHandler(group.userMessage.id);
+            await userResetHandler(resetTurnId ?? group.userMessage.id);
             setUndoConfirmOpen(false);
           }}
           onCancel={(): void => {
@@ -1650,7 +2274,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         />
       ) : null}
 
-      {timerBlock ? (
+      {showStarting ? null : timerBlock ? (
         <TurnTimer
           key={`timer-${group.userMessage.id}`}
           pending={pendingTimer}
@@ -1658,40 +2282,32 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           pausedAt={timerBlock.pausedAt}
           resumedAt={timerBlock.resumedAt}
           accumulatedPausedDurationMs={timerBlock.accumulatedPausedDurationMs}
+          waitingForUser={waitingForUser}
           completedAt={timerBlock.completedAt ?? null}
           alwaysVisible={
             footerAlwaysVisible ||
             // Clean chat look: the newest reply keeps its row in view, as
             // ChatGPT does; older ones show it on hover or focus.
             (cleanChatLook && isLastTurnGroup) ||
-            turnOutcome === 'failed' ||
-            turnOutcome === 'cancelled'
+            headerOutcome !== undefined
           }
+          completionStatus={completionStatus}
           workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
-          liveStatusShown={liveStepShown}
+          liveLine={cleanLiveLine}
           autoRoutedModel={autoRoutedModel}
           watcherButton={watcherButton}
           archiveToggleButton={archiveToggleButton}
           shareButton={moreMenu ? undefined : shareButton}
           moreMenu={moreMenu}
           feedbackControl={moreMenu ? undefined : feedbackControl}
-          {...(group.isComplete ? { copyText: replyCopyText } : {})}
+          {...(planCopy !== undefined
+            ? { planCopy }
+            : group.isComplete
+              ? { copyText: replyCopyText }
+              : {})}
           commentsButton={moreMenu ? undefined : commentsButton}
           showForkAction={showForkAction}
-          onFork={
-            showForkAction && chatId
-              ? (): void => {
-                  if (isActiveTimer) {
-                    forkTab(chatId, forkTarget, {
-                      includeActiveTurn: true,
-                      ...(sourceSdkSessionId ? { sourceSdkSessionId } : {}),
-                    });
-                    return;
-                  }
-                  forkTab(chatId, forkTarget, { forkAfterUserMessageId });
-                }
-              : undefined
-          }
+          onFork={forkHandler}
           showBranchAction={
             !moreMenu && showForkAction && canBranch && !isActiveTimer
           }
@@ -1733,6 +2349,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           )}
         </>
       )}
-    </>,
+    </ToolApprovalWaitProvider>,
   );
 });

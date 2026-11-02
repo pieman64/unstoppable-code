@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PanelGroupModel } from '@canopy/ui-shared/panels';
 import {

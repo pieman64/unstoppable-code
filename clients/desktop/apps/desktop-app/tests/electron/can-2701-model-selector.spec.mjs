@@ -633,6 +633,7 @@ test('a delayed acknowledgement cannot undo the latest model picked in an empty 
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_BRANCH);
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const picker = window
       .locator('[data-testid="chat-model-picker"]:visible')
       .first();
@@ -709,6 +710,7 @@ test('updates an empty new chat through repeated Codex model selections without 
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_BRANCH);
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const picker = window
       .locator('[data-testid="chat-model-picker"]:visible')
       .first();
@@ -727,7 +729,8 @@ test('updates an empty new chat through repeated Codex model selections without 
       if (
         model === 'gpt-6-sol' ||
         model === 'gpt-5.6-sol' ||
-        model === 'gpt-5.6-luna'
+        model === 'gpt-5.6-luna' ||
+        model === 'gpt-5.6-terra'
       ) {
         await window.getByTestId('chat-model-more-openai').click();
       }
@@ -776,7 +779,9 @@ for (const model of ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna']) {
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_BRANCH);
       const thinking = window.getByTestId(CHAT_EFFORT_TRIGGER_TEST_ID);
-      const clamped = model === 'gpt-6-luna' ? 'off' : 'medium';
+      // CAN-4902 preserves the model's declared Low floor instead of aliasing
+      // it to Medium; Luna still supports the persisted Off value directly.
+      const clamped = model === 'gpt-6-luna' ? 'off' : 'low';
       await expect(thinking).toHaveAttribute('data-thinking-level', clamped);
       // The effort panel offers None only where the model supports it, and
       // moving off the clamped level commits the next one.
@@ -784,6 +789,12 @@ for (const model of ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna']) {
       const stops = await readEffortStops(slider);
       if (model === 'gpt-6-luna') expect(stops).toContain('None');
       else expect(stops).not.toContain('None');
+      // Traversing the stops commits each move. Wait for the final Home
+      // update before choosing which direction moves away from the floor.
+      await expect(slider).toHaveAttribute(
+        'aria-valuetext',
+        model === 'gpt-6-luna' ? 'None' : 'Low',
+      );
       await stepEffortAway(slider);
       await expect(thinking).not.toHaveAttribute(
         'data-thinking-level',

@@ -1,7 +1,7 @@
 import { type JSX, useCallback, useEffect, useState, useRef } from 'react';
 import { DoneCheckIcon, MagnifyingGlassIcon } from '@canopy/ui-shared/icons';
 import { UserPlus } from '@canopy/ui-shared/icons/AppIcons';
-import { EmptyState } from '@canopy/ui-shared/components';
+import { Button, EmptyState } from '@canopy/ui-shared/components';
 import { OrganizationInviteButton } from '@canopy/ui-app/sharing';
 import {
   InviteToOrganizationDialog,
@@ -142,18 +142,7 @@ export function OnlyMemberEmptyState({
         subtitle={`A teammate has to join ${organizationName} before you can share this with them.`}
         action={
           <div className="space-y-2">
-            {/*
-              `bg-accent` + `fg-emphasis` is the repo's primary-button pair,
-              and the only one that survives both color modes here. This
-              button used to be `bg-fg-primary` + `text-base`, which rendered
-              as a solid black slab with an invisible label: `text-base` is
-              Tailwind's 1rem font-size utility, not a color (CAN-1589 keeps
-              `base` out of the global `--color-*` namespace for exactly that
-              reason), so the label inherited `fg-primary` onto a
-              `fg-primary` background. `fg-emphasis` is white in both modes,
-              so pairing it with `bg-fg-primary` would only move the collision
-              to dark mode.
-            */}
+            {/* Invite or Manage members: whichever shows is the one primary. */}
             {canInvite ? (
               <OrganizationInviteButton
                 testId="shared-container-invite-modal-invite-teammate"
@@ -171,14 +160,14 @@ export function OnlyMemberEmptyState({
                 }}
               />
             ) : (
-              <button
-                type="button"
-                className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:opacity-90"
+              <Button
+                variant="primary"
+                size="compact"
                 data-testid="shared-container-invite-modal-manage-members"
                 onClick={handleOpenMembers}
               >
                 {`Manage members in ${organizationName}`}
-              </button>
+              </Button>
             )}
             {openFailed && (
               <p className="text-xs fg-destructive" role="alert">

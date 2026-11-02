@@ -63,6 +63,7 @@ const context: PortalAdapterContext = {
     getCommandReceipt: jest.fn(),
     searchTranscript: jest.fn(),
     readToolOutput: jest.fn(),
+    readVisual: jest.fn(),
     command: jest.fn(),
     subscribe: jest.fn(),
   },

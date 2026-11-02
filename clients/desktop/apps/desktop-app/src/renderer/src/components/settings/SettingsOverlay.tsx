@@ -11,7 +11,10 @@ import {
   isOllamaSupportedOnPlatform,
   isVoiceDictationPlatform,
 } from '@canopy/desktop-shared/platform-capabilities';
-import { useOverlayEscape } from '@canopy/ui-shared/components';
+import {
+  SettingsSaveBarSlotContext,
+  useOverlayEscape,
+} from '@canopy/ui-shared/components';
 import {
   type ComponentType,
   type JSX,
@@ -516,11 +519,13 @@ export function SettingsOverlay({
   // keeps its pages mounted) is left untouched.
   useOverlayEscape(open, onClose);
 
+  const [saveBarSlot, setSaveBarSlot] = useState<HTMLDivElement | null>(null);
   const content = (
     <div
       // `min-h-0`: in its column it fills the height left by the top row, and
       // scrolls inside instead of growing with the page.
       className={`relative flex min-h-0 flex-1 flex-col bg-base ${open ? '' : 'invisible'}`}
+      data-settings-card=""
       data-testid="settings-content"
     >
       {/* Reserve the scrollbar's width on every page, scrolling or not, so
@@ -542,17 +547,22 @@ export function SettingsOverlay({
             </Suspense>
           ) : (
             <SettingsSectionNavigationContext.Provider value={navigateLocal}>
-              <SettingsPageContent
-                section={activeSection}
-                scrollContainerRef={scrollContainerRef}
-                claudeSettingsAvailable={claudeSettingsAvailable}
-                codeGraphExperimentEnabled={codeGraphExperimentEnabled}
-                remoteAccessEnabled={remoteAccessEnabled}
-                onOpenPerformanceSettings={openPerformanceSettings}
-              />
+              <SettingsSaveBarSlotContext.Provider value={saveBarSlot}>
+                <SettingsPageContent
+                  section={activeSection}
+                  scrollContainerRef={scrollContainerRef}
+                  claudeSettingsAvailable={claudeSettingsAvailable}
+                  codeGraphExperimentEnabled={codeGraphExperimentEnabled}
+                  remoteAccessEnabled={remoteAccessEnabled}
+                  onOpenPerformanceSettings={openPerformanceSettings}
+                />
+              </SettingsSaveBarSlotContext.Provider>
             </SettingsSectionNavigationContext.Provider>
           ))}
       </div>
+      {/* A page's save bar renders here, under the scroll area: the card's
+          full width, flush with its bottom, never over the content. */}
+      <div ref={setSaveBarSlot} className="shrink-0" />
       {/* The window drag strip floats over the page's top edge instead of
           taking a row above it, so scrolled content is never cut off. */}
       {null}

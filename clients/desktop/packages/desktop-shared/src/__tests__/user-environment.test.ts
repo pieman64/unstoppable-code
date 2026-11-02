@@ -294,7 +294,7 @@ describe('createDefaultEnvironmentConfig', () => {
       'Overall',
       'Canopy',
       'Agents',
-      'Pipelines',
+      'Workflows',
     ]);
     expect(data.globalRuntimes).toEqual({
       canopy: 'default-canopy',
@@ -331,7 +331,7 @@ describe('compareEnvironmentDefinitions', () => {
       'Overall',
       'Canopy',
       'Agents',
-      'Pipelines',
+      'Workflows',
       'AAA Custom',
     ]);
     expect(defaults.map(getEnvironmentSortOrder)).toEqual([0, 1, 2, 3]);

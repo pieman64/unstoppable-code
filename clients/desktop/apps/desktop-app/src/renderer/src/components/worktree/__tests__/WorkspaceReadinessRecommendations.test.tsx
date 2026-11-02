@@ -73,7 +73,7 @@ describe('WorkspaceReadinessRecommendations', () => {
       root.render(
         <WorkspaceReadinessRecommendations
           workspaceId="app"
-          onViewConversation={() => undefined}
+          onViewConversation={() => Promise.resolve(true)}
         />,
       );
       await Promise.resolve();
@@ -176,7 +176,7 @@ describe('WorkspaceReadinessRecommendations', () => {
         resolveLaunch = resolve;
       }),
     );
-    const onViewConversation = jest.fn();
+    const onViewConversation = jest.fn(() => Promise.resolve(true));
 
     await act(async () => {
       root.render(
@@ -245,7 +245,7 @@ describe('WorkspaceReadinessRecommendations', () => {
 
   it('dismisses the host surface before opening a launched chat', async () => {
     getWorkspaceReadiness.mockResolvedValue({ issues: [issue] });
-    const onViewConversation = jest.fn();
+    const onViewConversation = jest.fn(() => Promise.resolve(true));
 
     await act(async () => {
       root.render(
@@ -284,6 +284,41 @@ describe('WorkspaceReadinessRecommendations', () => {
     );
   });
 
+  it('leaves the chat closed when the host surface stays open', async () => {
+    getWorkspaceReadiness.mockResolvedValue({ issues: [issue] });
+    const onViewConversation = jest.fn(() => Promise.resolve(false));
+
+    await act(async () => {
+      root.render(
+        <WorkspaceReadinessRecommendations
+          workspaceId="app"
+          worktreeId="audited-worktree"
+          onViewConversation={onViewConversation}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const fix = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Fix in new worktree',
+    );
+    await act(async () => {
+      fix?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const view = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'View conversation',
+    );
+    await act(async () => {
+      view?.click();
+      await Promise.resolve();
+    });
+
+    expect(onViewConversation).toHaveBeenCalledTimes(1);
+    expect(mockedNavigateToWorkspaceReadinessChat).not.toHaveBeenCalled();
+  });
+
   it('discards an in-flight launch when the inspected worktree changes', async () => {
     getWorkspaceReadiness.mockResolvedValue({ issues: [issue] });
     let resolveFirstLaunch:
@@ -300,7 +335,7 @@ describe('WorkspaceReadinessRecommendations', () => {
         <WorkspaceReadinessRecommendations
           workspaceId="app"
           worktreeId="worktree-a"
-          onViewConversation={() => undefined}
+          onViewConversation={() => Promise.resolve(true)}
         />,
       );
       await Promise.resolve();
@@ -316,7 +351,7 @@ describe('WorkspaceReadinessRecommendations', () => {
         <WorkspaceReadinessRecommendations
           workspaceId="app"
           worktreeId="worktree-b"
-          onViewConversation={() => undefined}
+          onViewConversation={() => Promise.resolve(true)}
         />,
       );
       await Promise.resolve();

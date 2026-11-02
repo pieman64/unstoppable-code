@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import * as base from '@canopy/desktop-shared/node/code-graph/base-graph';
+import * as base from '@canopy/code-graph/base-graph';
 import {
   CODE_GRAPH_SCHEMA_VERSION,
   CODE_GRAPH_EXTRACTOR_VERSION,
@@ -11,7 +11,7 @@ import {
 import type {
   CodeGraphDatabase,
   CodeGraphStatement,
-} from '@canopy/desktop-shared/node/code-graph/store/database';
+} from '@canopy/code-graph/store/database';
 import { readCodeGraphBaseIdentity } from '../code-graph/read-worker';
 describe('base identity metadata and bounded repository header', () => {
   let dir: string;

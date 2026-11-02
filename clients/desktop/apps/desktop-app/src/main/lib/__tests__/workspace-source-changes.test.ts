@@ -42,6 +42,8 @@ import type {
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import { createWorktree } from '../git';
+import * as projectSourceChangeApply from '../project-source-change-apply';
+import * as workspaceSourceChangeApply from '../workspace-source-change-apply';
 import {
   getWorkspaceConfigPath,
   getWorkspaceWorktreeRootRepoDir,
@@ -137,6 +139,7 @@ describe('source change application (real fs)', () => {
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     if (originalDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
     } else {
@@ -145,75 +148,107 @@ describe('source change application (real fs)', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  it('keeps the rows written while a project target worktree was checked out', async () => {
-    const project: SingleRepoSidebarItem = {
-      id: 'single',
-      name: 'Single',
-      type: 'single-repo',
-      color: '#0EA5E9',
-      collapsed: false,
-      order: 0,
-      repoPath: path.join(dataDir, 'src', 'single'),
-      worktrees: [{ ...EXISTING_ROW }],
-    };
-    await writeAllSidebarItems([project]);
+  it.each([false, true])(
+    'keeps the rows written while a project target worktree was checked out; callback=%s',
+    async (withCallback) => {
+      const getWindow = jest.fn(() => null);
+      const onApplied = withCallback ? jest.fn() : undefined;
+      const applyProject = jest.spyOn(
+        projectSourceChangeApply,
+        'applyProjectSourceChangesToWorktree',
+      );
+      const project: SingleRepoSidebarItem = {
+        id: 'single',
+        name: 'Single',
+        type: 'single-repo',
+        color: '#0EA5E9',
+        collapsed: false,
+        order: 0,
+        repoPath: path.join(dataDir, 'src', 'single'),
+        worktrees: [{ ...EXISTING_ROW }],
+      };
+      await writeAllSidebarItems([project]);
 
-    const response = await applySourceChanges({
-      kind: 'project',
-      source: 'project_settings',
-      request: {
-        projectId: 'single',
-        target: { mode: 'new', existingWorktreeIds: [] },
-        scripts: { dev: 'npm run dev' },
-      },
-      getWindow: () => null,
-    });
+      const response = await applySourceChanges({
+        kind: 'project',
+        source: 'project_settings',
+        request: {
+          projectId: 'single',
+          target: { mode: 'new', existingWorktreeIds: [] },
+          scripts: { dev: 'npm run dev' },
+        },
+        getWindow,
+        onApplied,
+      });
 
-    expect(response.createdWorktree).toBe(true);
-    const rows = await readWorkspaceWorktrees('single');
-    expect(rows.map((row) => row.id)).toEqual([
-      EXISTING_ROW.id,
-      CONCURRENT_ROW.id,
-      response.worktreeId,
-    ]);
-    // Another row's observed state is not rolled back to the earlier read.
-    expect(rows[0]).toMatchObject({ status: 'done' });
-  });
+      expect(response.createdWorktree).toBe(true);
+      expect(applyProject).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: 'single' }),
+        getWindow,
+        onApplied,
+      );
+      if (onApplied) expect(onApplied).toHaveBeenCalledTimes(1);
+      const rows = await readWorkspaceWorktrees('single');
+      expect(rows.map((row) => row.id)).toEqual([
+        EXISTING_ROW.id,
+        CONCURRENT_ROW.id,
+        response.worktreeId,
+      ]);
+      // Another row's observed state is not rolled back to the earlier read.
+      expect(rows[0]).toMatchObject({ status: 'done' });
+    },
+  );
 
-  it('keeps the rows written while a workspace target worktree was checked out', async () => {
-    const workspace: MultiRepoSidebarItem = {
-      id: 'multi',
-      name: 'Multi',
-      type: 'multi-repo',
-      color: '#0EA5E9',
-      collapsed: false,
-      order: 0,
-      sourceRepoPath: path.join(dataDir, 'src', 'multi'),
-      repos: [],
-      worktrees: [{ ...EXISTING_ROW }],
-    };
-    await writeAllSidebarItems([workspace]);
+  it.each([false, true])(
+    'keeps the rows written while a workspace target worktree was checked out; callback=%s',
+    async (withCallback) => {
+      const getWindow = jest.fn(() => null);
+      const onApplied = withCallback ? jest.fn() : undefined;
+      const applyWorkspace = jest.spyOn(
+        workspaceSourceChangeApply,
+        'applyWorkspaceSourceChangesToWorktree',
+      );
+      const workspace: MultiRepoSidebarItem = {
+        id: 'multi',
+        name: 'Multi',
+        type: 'multi-repo',
+        color: '#0EA5E9',
+        collapsed: false,
+        order: 0,
+        sourceRepoPath: path.join(dataDir, 'src', 'multi'),
+        repos: [],
+        worktrees: [{ ...EXISTING_ROW }],
+      };
+      await writeAllSidebarItems([workspace]);
 
-    const response = await applySourceChanges({
-      kind: 'workspace',
-      source: 'workspace_settings',
-      request: {
-        workspaceId: 'multi',
-        target: { mode: 'new', existingWorktreeIds: [] },
-        workspaceScripts: { dev: 'npm run dev' },
-      },
-      getWindow: () => null,
-    });
+      const response = await applySourceChanges({
+        kind: 'workspace',
+        source: 'workspace_settings',
+        request: {
+          workspaceId: 'multi',
+          target: { mode: 'new', existingWorktreeIds: [] },
+          workspaceScripts: { dev: 'npm run dev' },
+        },
+        getWindow,
+        onApplied,
+      });
 
-    expect(response.createdWorktree).toBe(true);
-    const rows = await readWorkspaceWorktrees('multi');
-    expect(rows.map((row) => row.id)).toEqual([
-      EXISTING_ROW.id,
-      CONCURRENT_ROW.id,
-      response.worktreeId,
-    ]);
-    expect(rows[0]).toMatchObject({ status: 'done' });
-  });
+      expect(response.createdWorktree).toBe(true);
+      expect(applyWorkspace).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'multi' }),
+        getWindow,
+        onApplied,
+      );
+      if (onApplied) expect(onApplied).toHaveBeenCalledTimes(1);
+      const rows = await readWorkspaceWorktrees('multi');
+      expect(rows.map((row) => row.id)).toEqual([
+        EXISTING_ROW.id,
+        CONCURRENT_ROW.id,
+        response.worktreeId,
+      ]);
+      expect(rows[0]).toMatchObject({ status: 'done' });
+    },
+  );
 
   it('binds repositories on the manifest read in its write queue', async () => {
     const workspace: MultiRepoSidebarItem = {

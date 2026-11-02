@@ -29,9 +29,8 @@ import {
   pinInheritingAgentModel,
   getChatHarnessOptions,
   modelConfigForProviderSupportsFastMode,
-  normalizeThinkingForUi,
 } from '@canopy/desktop-shared/types';
-import { advanceThinkingLevel } from '@canopy/protocol/thinking';
+import { advanceThinkingControlLevel } from '@canopy/ui-shared/lib';
 import {
   DEFAULT_CODEX_SPEED,
   codexSpeedFastMode,
@@ -86,6 +85,13 @@ export type HomeNewWorktreeBaseTarget = Extract<
 >;
 
 export type HomeComposerMode = 'chat' | 'pipeline';
+
+/**
+ * Why the composer landed on its workspace, when the landing needs an
+ * explanation (CAN-4674). Presentation provenance only: it never routes a
+ * send and is not persisted.
+ */
+export type HomeWorkspaceSelectionReason = 'most-recent-import';
 
 /**
  * The provider a Home draft's capabilities are keyed on. `cursor` has no
@@ -755,6 +761,17 @@ interface HomeComposerData {
   sendError: string | null;
   /** Whether the current send error can be retried without changing the draft. */
   sendErrorRetryable: boolean;
+  /**
+   * CAN-5021: the current send error is a model refusal recoverable by
+   * choosing another model. `failureId` is unique per refusal so a repeated
+   * identical failure still moves focus; `message` ties it to `sendError`.
+   * `focus` is false for a refusal that arrived while the user was elsewhere.
+   */
+  sendErrorChooseModel: {
+    failureId: string;
+    message: string;
+    focus: boolean;
+  } | null;
   branchTargets: HomeBranchTargetsResponse | null;
   branchTargetsLoading: boolean;
   discovery: WorktreeDiscovery | null;
@@ -827,6 +844,19 @@ interface HomeComposerData {
    */
   workspaceSelectionExplicit: boolean;
   /**
+   * Why an inherited selection landed on `workspaceId` (CAN-4674). Set only
+   * by a `selectWorkspace` call that passes a reason; any other selection,
+   * including of the same workspace, and `reset()` clear it.
+   */
+  workspaceSelectionReason: HomeWorkspaceSelectionReason | null;
+  /**
+   * Bumped by every selection, successful same-project rules Apply, and
+   * `reset()`. Lets an async flow that
+   * captured it reject a completion after a newer selection, even one that
+   * returned to the same workspace.
+   */
+  workspaceSelectionGeneration: number;
+  /**
    * Preview of the worktree destination a link in the draft proposes. Preview
    * only: it never changes `workspaceId`, `branchTarget`, or context. The
    * accepted send materializes it (see `homeLinkTarget.ts`).
@@ -870,6 +900,7 @@ function createInitialData(): HomeComposerData {
     isSending: false,
     sendError: null,
     sendErrorRetryable: false,
+    sendErrorChooseModel: null,
     branchTargets: null,
     branchTargetsLoading: false,
     discovery: null,
@@ -883,6 +914,8 @@ function createInitialData(): HomeComposerData {
     branchPickerRevealed: false,
     pendingTaskPlanPreset: null,
     workspaceSelectionExplicit: false,
+    workspaceSelectionReason: null,
+    workspaceSelectionGeneration: 0,
     linkTarget: IDLE_HOME_LINK_TARGET,
     dismissedLinkKeys: [],
     chosenLinkKey: null,
@@ -988,14 +1021,27 @@ export interface HomeComposerState extends HomeComposerData {
    * (see {@link HomeComposerData.manualPluginSelections}) — then kicks off a
    * branch-targets load for the newly selected workspace. Passing `null`
    * clears the selection (`pluginSelections` becomes `null`) without
-   * starting a load or touching `manualPluginSelections`.
+   * starting a load or touching `manualPluginSelections`. `reason` explains
+   * the landing (see {@link HomeComposerData.workspaceSelectionReason}); a
+   * selection without one clears the previous reason.
    */
   selectWorkspace: (
     workspaceId: string | null,
-    options?: { explicit?: boolean; preserveDraft?: boolean },
+    options?: {
+      explicit?: boolean;
+      preserveDraft?: boolean;
+      reason?: HomeWorkspaceSelectionReason;
+    },
   ) => void;
   /** Treat the current project as inherited so a link may propose another. */
   markWorkspaceSelectionInherited: () => void;
+  /**
+   * Drops an obsolete landing explanation without reselecting, so the draft,
+   * branch target, and attachments stay as they are. Advances selection
+   * identity even without a reason, so a successful same-project rules Apply
+   * supersedes older pending review completions.
+   */
+  clearWorkspaceSelectionReason: () => void;
   setLinkTarget: (linkTarget: HomeLinkTargetState) => void;
   /** Ignore these references until they leave the draft. */
   dismissLinkReferences: (keys: readonly string[]) => void;
@@ -1175,6 +1221,9 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     set({
       workspaceId,
       workspaceSelectionExplicit: options?.explicit === true,
+      workspaceSelectionReason:
+        workspaceId && options?.reason ? options.reason : null,
+      workspaceSelectionGeneration: get().workspaceSelectionGeneration + 1,
       executionHarness: undefined,
       branchTarget: NEW_WORKTREE_TARGET,
       newWorktreeBaseTarget: null,
@@ -1197,6 +1246,7 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       fileIndexLoading: false,
       sendError: null,
       sendErrorRetryable: false,
+      sendErrorChooseModel: null,
       pendingGitHubConnectResume: null,
       scheduledSendDraft: null,
       pendingAttachmentImportIds: [],
@@ -1216,6 +1266,13 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
 
   markWorkspaceSelectionInherited: (): void => {
     set({ workspaceSelectionExplicit: false });
+  },
+
+  clearWorkspaceSelectionReason: (): void => {
+    set((state) => ({
+      workspaceSelectionReason: null,
+      workspaceSelectionGeneration: state.workspaceSelectionGeneration + 1,
+    }));
   },
 
   setLinkTarget: (linkTarget): void => {
@@ -1311,8 +1368,11 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
   setModel: (model, billingFramework): void => {
     if (billingFramework)
       useChatStore.getState().rememberBillingFramework(billingFramework);
-    const { model: previousModel } = get();
+    const { model: previousModel, sendErrorChooseModel } = get();
     if (model !== previousModel) set({ executionHarness: undefined });
+    // An accepted replacement resolves a model refusal and its action.
+    if (sendErrorChooseModel && model !== previousModel)
+      set({ sendError: null, sendErrorChooseModel: null });
     // Picking a concrete model IS the exit from Auto, on Home exactly as in an
     // ongoing chat.
     set({ modelSelectionMode: undefined });
@@ -1352,9 +1412,10 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       state.executionHarness,
     );
     set({
-      thinkingLevel: advanceThinkingLevel(
-        normalizeThinkingForUi(effective.thinkingLevel),
+      thinkingLevel: advanceThinkingControlLevel(
+        effective.thinkingLevel,
         effective.supportedThinkingLevels,
+        effective.supportedThinkingLevels.includes('low'),
       ),
     });
   },
@@ -1541,7 +1602,11 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
   },
 
   setSendError: (error): void => {
-    set({ sendError: error, sendErrorRetryable: false });
+    set({
+      sendError: error,
+      sendErrorRetryable: false,
+      sendErrorChooseModel: null,
+    });
   },
 
   loadBranchTargets: async (): Promise<void> => {
@@ -1705,6 +1770,7 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     set((state) => ({
       ...createInitialData(),
       draftGeneration: state.draftGeneration + 1,
+      workspaceSelectionGeneration: state.workspaceSelectionGeneration + 1,
     }));
   },
 }));

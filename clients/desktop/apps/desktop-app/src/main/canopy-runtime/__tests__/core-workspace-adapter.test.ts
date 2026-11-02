@@ -2,6 +2,7 @@ import {
   CoreWorkspaceSchema,
   CoreWorktreeSchema,
   hasHostAbsolutePath,
+  type CanopyQueryParams,
 } from '@canopy/protocol/canopy-core';
 import type {
   SidebarItemsFile,
@@ -11,14 +12,23 @@ import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
 } from '../desktop-runtime';
+import {
+  createCoreWorkspaceAdapter,
+  createCoreWorkspaceReadSnapshots,
+  type CoreWorkspaceReadServices,
+} from '../core-workspace-adapter';
+import { DEFAULT_ACTIVITY_SECTION_ORDER } from '@canopy/desktop-shared/constants/activity';
+import { CORE_READ_SNAPSHOT_LIMITS } from '@canopy/core-runtime/node/workspace/core-workspace-read-snapshots';
 import { sanitizeRemoteUrl } from '../../lib/plan-share-repos';
+import type { W5ReadViewOutcome } from '../../lib/w5-read-view';
+import type { W5CaptureResult } from '../../w5-commit-log/commit-log-worker-contract';
 
 const caller = {
   principalId: 'test-user',
   clientInstanceId: 'test-client',
   authorityId: 'local-desktop',
   interfaceKind: 'test' as const,
-  grants: ['core.workspace.read', 'core.worktree.read'],
+  grants: ['core.workspace.read' as const, 'core.worktree.read' as const],
 };
 
 const worktree: WorktreeData = {
@@ -943,5 +953,796 @@ describe('core workspace read projections', () => {
     ).rejects.toMatchObject({ payload: { kind: 'internal' } });
     expect(reads.readEffectiveWorkspaceConfig).not.toHaveBeenCalled();
     await runtime.shutdown();
+  });
+});
+
+describe('typed workspace fields (CAN-5373)', () => {
+  type Kind = 'single-repo' | 'multi-repo' | 'cowork';
+  const indexFields = {
+    color: '#7C3AED',
+    collapsed: true,
+    pinned: true,
+    // The index read keeps repeated ids.
+    activitySectionOrder: ['cost', 'summary', 'cost', 'notes'],
+  };
+  const manifestFields = {
+    itemSortMode: 'last-updated',
+    alwaysShow: false,
+    startPage: { kind: 'file', repoId: 'repo-1', path: 'docs/README.md' },
+  };
+  const stored = {
+    color: '#7C3AED',
+    pinned: true,
+    collapsed: true,
+    activitySectionOrder: ['cost', 'summary', 'notes'],
+    itemSortMode: 'last-updated',
+    alwaysShow: false,
+    startPage: { kind: 'file', repoId: 'repo-1', path: 'docs/README.md' },
+  };
+  const MANIFEST_KEYS = ['itemSortMode', 'alwaysShow', 'startPage'];
+
+  function typedRuntime(
+    kind: Kind,
+    {
+      index = indexFields,
+      manifest = manifestFields,
+      manifestAuthority = 'ok',
+      reportsWorkspaceReads = true,
+    }: {
+      index?: Record<string, unknown>;
+      manifest?: Record<string, unknown>;
+      manifestAuthority?: 'ok' | 'absent' | 'unreadable';
+      reportsWorkspaceReads?: boolean;
+    } = {},
+  ): DesktopCanopyDispatcher {
+    const item = { ...fixture(kind).items[0], ...index, ...manifest };
+    const config = { version: 1, type: kind, repos: [], ...manifest };
+    return createDesktopRuntime({
+      workspaceServices: {
+        readAllSidebarItems: jest.fn(),
+        readWorkspaceWorktrees: jest.fn(),
+        readWorkspaceConfig: jest.fn(),
+        readEffectiveWorkspaceConfig: jest
+          .fn()
+          .mockResolvedValue({ repos: [] }),
+        readWorkspaceIndexEntry: jest.fn().mockResolvedValue({
+          id: 'ws-1',
+          name: 'Workspace',
+          type: kind,
+          order: 0,
+          ...index,
+        }),
+        readAllSidebarItemsSnapshot: jest.fn().mockResolvedValue({
+          file: { version: 1, items: [item] },
+          authority: manifestAuthority,
+          indexAuthority: 'ok',
+          indexedWorkspaceIds: ['ws-1'],
+          ...(reportsWorkspaceReads
+            ? {
+                workspaceReads: new Map([
+                  ['ws-1', { manifest: manifestAuthority, worktrees: 'ok' }],
+                ]),
+              }
+            : {}),
+        }),
+        readWorkspaceConfigDetailed: jest.fn().mockResolvedValue({
+          config,
+          authority: manifestAuthority,
+          ownerMalformed: false,
+        }),
+        readWorkspaceWorktreesDetailed: jest
+          .fn()
+          .mockResolvedValue({ worktrees: [], authority: 'ok' }),
+      },
+    });
+  }
+
+  async function bothReads(
+    runtime: DesktopCanopyDispatcher,
+  ): Promise<Record<string, unknown>[]> {
+    const listed = await runtime.query('core.workspace.list', {}, { caller });
+    const got = await runtime.query(
+      'core.workspace.get',
+      { workspaceId: 'ws-1' },
+      { caller },
+    );
+    await runtime.shutdown();
+    if (!listed.items[0]) throw new Error('workspace not listed');
+    return [listed.items[0], got];
+  }
+
+  test.each(['single-repo', 'multi-repo'] as const)(
+    '%s list and get carry the stored update patch fields',
+    async (kind) => {
+      for (const result of await bothReads(typedRuntime(kind))) {
+        expect(result).toMatchObject({ ...stored, settings: {} });
+        expect(CoreWorkspaceSchema.safeParse(result).success).toBe(true);
+      }
+    },
+  );
+
+  test.each([
+    ['no override', undefined, { kind: 'inherit' }],
+    ['a disabled start page', null, null],
+    [
+      'a URL',
+      { kind: 'url', url: 'https://example.com/start' },
+      { kind: 'url', url: 'https://example.com/start' },
+    ],
+    [
+      'a file without a repository',
+      { kind: 'file', path: 'README.md' },
+      { kind: 'file', path: 'README.md' },
+    ],
+  ])('projects %s as the start page edit', async (_label, startPage, read) => {
+    const manifest = { ...manifestFields, startPage };
+    for (const result of await bothReads(
+      typedRuntime('multi-repo', { manifest }),
+    ))
+      expect(result.startPage).toEqual(read);
+  });
+
+  test('Cowork omits the section order and start page it never keeps', async () => {
+    const results = await bothReads(
+      typedRuntime('cowork', { index: { ...indexFields, pinned: undefined } }),
+    );
+    for (const result of results) {
+      expect(result).toMatchObject({
+        kind: 'cowork',
+        color: '#7C3AED',
+        pinned: false,
+        collapsed: true,
+        itemSortMode: 'last-updated',
+        alwaysShow: false,
+      });
+      expect(result).not.toHaveProperty('activitySectionOrder');
+      expect(result).not.toHaveProperty('startPage');
+    }
+  });
+
+  test.each(['absent', 'unreadable'] as const)(
+    'an %s manifest withholds its fields instead of reporting defaults',
+    async (manifestAuthority) => {
+      for (const result of await bothReads(
+        typedRuntime('multi-repo', { manifestAuthority }),
+      )) {
+        for (const key of MANIFEST_KEYS) expect(result).not.toHaveProperty(key);
+        expect(result).toMatchObject({
+          color: '#7C3AED',
+          pinned: true,
+          collapsed: true,
+          activitySectionOrder: ['cost', 'summary', 'notes'],
+        });
+      }
+    },
+  );
+
+  test('a listing that reports no authority for a manifest withholds its fields', async () => {
+    const runtime = typedRuntime('multi-repo', {
+      reportsWorkspaceReads: false,
+    });
+    const listed = await runtime.query('core.workspace.list', {}, { caller });
+    await runtime.shutdown();
+    for (const key of MANIFEST_KEYS)
+      expect(listed.items[0]).not.toHaveProperty(key);
+    expect(listed.items[0]).toHaveProperty('pinned', true);
+  });
+
+  test('every activity section the desktop keeps reads back as stored', async () => {
+    const order = [...DEFAULT_ACTIVITY_SECTION_ORDER].reverse();
+    for (const result of await bothReads(
+      typedRuntime('single-repo', {
+        index: { ...indexFields, activitySectionOrder: order },
+      }),
+    ))
+      expect(result.activitySectionOrder).toEqual(order);
+  });
+
+  test('a git workspace without a saved order reads the empty default order', async () => {
+    for (const result of await bothReads(
+      typedRuntime('single-repo', {
+        index: { ...indexFields, activitySectionOrder: undefined },
+      }),
+    ))
+      expect(result.activitySectionOrder).toEqual([]);
+  });
+
+  test('an unset Always show stays unset', async () => {
+    const manifest = { ...manifestFields, alwaysShow: undefined };
+    for (const result of await bothReads(
+      typedRuntime('multi-repo', { manifest }),
+    ))
+      expect(result).not.toHaveProperty('alwaysShow');
+  });
+
+  test.each([
+    ['color', { color: 'blue' }, {}],
+    ['color', { color: '#7C3AE' }, {}],
+    ['collapsed', { collapsed: 'yes' }, {}],
+    ['itemSortMode', {}, { itemSortMode: 'alphabetical' }],
+    ['alwaysShow', {}, { alwaysShow: 'yes' }],
+    ['startPage', {}, { startPage: { kind: 'file', path: '/etc/passwd' } }],
+    ['startPage', {}, { startPage: { kind: 'file', path: '../outside' } }],
+    ['startPage', {}, { startPage: { kind: 'file', path: '   ' } }],
+    [
+      'startPage',
+      {},
+      { startPage: { kind: 'file', repoId: 'a/b', path: 'README.md' } },
+    ],
+    ['startPage', {}, { startPage: { kind: 'url', url: 'javascript:x' } }],
+    ['startPage', {}, { startPage: { kind: 'url', url: 'HTTPS://x.test' } }],
+    [
+      'startPage',
+      {},
+      { startPage: { kind: 'url', url: 'https://x.test/a b' } },
+    ],
+    [
+      'startPage',
+      {},
+      { startPage: { kind: 'url', url: 'https://x', extra: 1 } },
+    ],
+    // Valid for the desktop's path rule, but a host path spelling.
+    ['startPage', {}, { startPage: { kind: 'file', path: 'file:notes.md' } }],
+    // Valid for the desktop's URL rule; the schema would read it trimmed.
+    [
+      'startPage',
+      {},
+      { startPage: { kind: 'url', url: ' https://x.test/start\t' } },
+    ],
+  ])(
+    'omits a stored %s outside the patch schema without failing the read',
+    async (field, index, manifest) => {
+      const results = await bothReads(
+        typedRuntime('multi-repo', {
+          index: { ...indexFields, ...index },
+          manifest: { ...manifestFields, ...manifest },
+        }),
+      );
+      for (const result of results) {
+        expect(result).not.toHaveProperty(field);
+        expect(result).toHaveProperty('pinned', true);
+      }
+    },
+  );
+
+  test('plain reads project their manifest as read', async () => {
+    const { runtime } = makeRuntime(fixture('multi-repo'));
+    const [listed, got] = await bothReads(runtime);
+    // The fixture's index color `blue` is not a hex color.
+    for (const result of [listed, got]) {
+      expect(result).not.toHaveProperty('color');
+      expect(result).not.toHaveProperty('alwaysShow');
+      expect(result).toMatchObject({
+        pinned: false,
+        activitySectionOrder: [],
+        startPage: { kind: 'inherit' },
+      });
+    }
+  });
+});
+
+describe('core workspace reads over one W5 read view (CAN-5318)', () => {
+  const capture: W5CaptureResult = {
+    files: [],
+    discovery: 'complete',
+    log: {
+      commitId: 3,
+      retainedCommits: 3,
+      unresolvedCommits: 0,
+      schemaVersion: 2,
+      revisions: {},
+      files: [],
+      chains: [],
+      resourceRevisionEligibility: 'unproven',
+    },
+  };
+  const notCaptured = { status: 'unverified', reason: 'not-captured' };
+  const second: WorktreeData = { ...worktree, id: 'wt-2' };
+
+  function viewRuntime(
+    outcome: W5ReadViewOutcome = {
+      status: 'captured',
+      capture,
+      uncapturedReads: [],
+    },
+  ): DesktopCanopyDispatcher {
+    const sidebar = fixture('multi-repo');
+    const item = sidebar.items[0];
+    if (item?.type !== 'multi-repo') throw new Error('fixture');
+    item.worktrees = [worktree, second];
+    return createDesktopRuntime({
+      workspaceServices: {
+        readAllSidebarItems: jest.fn(),
+        readWorkspaceWorktrees: jest.fn(),
+        readWorkspaceConfig: jest.fn().mockResolvedValue({
+          version: 1,
+          type: 'multi-repo',
+          repos: [],
+          owner: { kind: 'organization', organizationId: 'org-1' },
+        }),
+        readEffectiveWorkspaceConfig: jest
+          .fn()
+          .mockResolvedValue({ repos: [] }),
+        readWorkspaceIndexEntry: jest.fn().mockResolvedValue({
+          id: 'ws-1',
+          name: 'Workspace',
+          type: 'multi-repo',
+        }),
+        // One project's list lowers the aggregate, not the index.
+        readAllSidebarItemsSnapshot: jest.fn().mockResolvedValue({
+          file: sidebar,
+          authority: 'partial',
+          indexAuthority: 'ok',
+          indexedWorkspaceIds: ['ws-1'],
+          workspaceReads: new Map([
+            ['ws-1', { manifest: 'ok', worktrees: 'partial' }],
+          ]),
+        }),
+        readWorkspaceConfigDetailed: jest.fn().mockResolvedValue({
+          config: {
+            version: 1,
+            type: 'multi-repo',
+            repos: [],
+            sourceRepoPath: '/secret/source',
+          },
+          authority: 'ok',
+          ownerMalformed: false,
+        }),
+        readWorkspaceWorktreesDetailed: jest.fn().mockResolvedValue({
+          worktrees: [worktree, second],
+          authority: 'ok',
+          recentlyRemovedWorktreeIds: ['wt-gone'],
+        }),
+        readView: (_request, work) => work(outcome),
+      },
+    });
+  }
+
+  test('keeps workspace and worktree-list completeness apart from the aggregate authority', async () => {
+    const runtime = viewRuntime();
+    const workspaces = await runtime.queryWorkspaceListForLegacyIpc(
+      {},
+      { caller },
+    );
+    expect(workspaces.legacyAuthority).toMatchObject({
+      authority: 'partial',
+      provenance: {
+        result: { completeness: 'complete', filters: [] },
+        resources: [
+          { resource: { kind: 'workspaces' }, completeness: 'complete' },
+          {
+            resource: { kind: 'workspace', workspaceId: 'ws-1' },
+            completeness: 'complete',
+            external: ['repositorySources'],
+          },
+        ],
+      },
+    });
+    const worktrees = await runtime.queryWorktreeListForLegacyIpc(
+      {},
+      { caller },
+    );
+    expect(worktrees.legacyAuthority?.provenance).toMatchObject({
+      result: { completeness: 'partial', filters: ['unreadable-entries'] },
+      resources: [
+        {
+          resource: { kind: 'worktrees', workspaceId: 'ws-1' },
+          completeness: 'partial',
+          filters: ['unreadable-entries'],
+        },
+        { resource: { worktreeId: 'wt-1' }, completeness: 'complete' },
+        { resource: { worktreeId: 'wt-2' }, completeness: 'complete' },
+      ],
+    });
+    const got = await runtime.queryWorkspaceGetForLegacyIpc(
+      { workspaceId: 'ws-1' },
+      { caller },
+    );
+    expect(got.legacyAuthority?.provenance?.resources).toEqual([
+      {
+        resource: { kind: 'workspace', workspaceId: 'ws-1' },
+        completeness: 'complete',
+        filters: [],
+        external: ['repositorySources'],
+        eligibility: notCaptured,
+      },
+    ]);
+    await runtime.shutdown();
+  });
+
+  test('records scope, organization, removal and page filtering explicitly', async () => {
+    const runtime = viewRuntime();
+    const listed = await runtime.queryWorktreeListForLegacyIpc(
+      { scope: { workspaceId: 'ws-1' }, pageSize: 1 },
+      { caller },
+    );
+    expect(listed.canonicalResult?.nextCursor).toMatch(/^[\w-]{32}$/);
+    // Removal filtering keeps the list's authority and is named instead.
+    expect(listed.legacyAuthority).toMatchObject({ authority: 'ok' });
+    // Paging a pinned listing filters the result, not the collection.
+    expect(listed.legacyAuthority?.provenance?.result.filters).toEqual([
+      'recently-removed',
+      'page',
+    ]);
+    expect(listed.legacyAuthority?.provenance?.resources[0]).toEqual({
+      resource: { kind: 'worktrees', workspaceId: 'ws-1' },
+      completeness: 'partial',
+      filters: ['recently-removed'],
+      external: [],
+      eligibility: notCaptured,
+    });
+    const filtered = await runtime.queryWorktreeListForLegacyIpc(
+      {
+        scope: {
+          workspaceId: 'ws-1',
+          worktreeId: 'wt-2',
+          organizationId: 'org-1',
+        },
+      },
+      { caller },
+    );
+    expect(
+      filtered.canonicalResult?.items.map((row) => row.worktreeId),
+    ).toEqual(['wt-2']);
+    expect(filtered.legacyAuthority?.provenance?.result.filters).toEqual([
+      'worktree-scope',
+      'organization',
+      'recently-removed',
+    ]);
+    const workspaces = await runtime.queryWorkspaceListForLegacyIpc(
+      { scope: { organizationId: 'org-2' } },
+      { caller },
+    );
+    expect(workspaces.legacyAuthority?.provenance?.resources).toEqual([
+      expect.objectContaining({
+        resource: { kind: 'workspaces' },
+        completeness: 'partial',
+        filters: ['organization'],
+      }),
+    ]);
+    await runtime.shutdown();
+  });
+
+  test('an uncaptured read labels nothing and says why', async () => {
+    const runtime = viewRuntime({
+      status: 'uncaptured',
+      reason: 'unsupported-platform',
+    });
+    const listed = await runtime.queryWorkspaceListForLegacyIpc({}, { caller });
+    expect(listed.legacyAuthority?.provenance).toMatchObject({
+      position: { status: 'uncaptured', reason: 'unsupported-platform' },
+      files: [],
+    });
+    expect(
+      listed.legacyAuthority?.provenance?.resources.map(
+        (resource) => resource.eligibility,
+      ),
+    ).toEqual([notCaptured, notCaptured]);
+    // A live fallback publishes no revision of any kind.
+    expect(listed.canonicalResult).not.toHaveProperty('collectionRevision');
+    expect(listed.canonicalResult?.items[0]).not.toHaveProperty('revision');
+    await runtime.shutdown();
+  });
+});
+
+describe('list continuation over pinned snapshots (CAN-5319)', () => {
+  const base = fixture('multi-repo').items[0];
+  function workspaceItem(
+    id: string,
+    name = id,
+    manifestUrl = `https://example.com/${id}.git`,
+  ): SidebarItemsFile['items'][number] {
+    if (base?.type !== 'multi-repo') throw new Error('fixture');
+    return {
+      ...base,
+      id,
+      name,
+      repos: [
+        { id: `${id}-repo`, name, repoPath: '/secret/repo', manifestUrl },
+      ],
+    };
+  }
+  const row = (id: string, branchName = id): WorktreeData => ({
+    ...worktree,
+    id,
+    branchName,
+  });
+  const refused = (kind: string): { payload: { kind: string } } => ({
+    payload: { kind },
+  });
+  let sidebar: SidebarItemsFile;
+  let rows: WorktreeData[];
+  const reads = {
+    readAllSidebarItemsSnapshot: jest.fn(),
+    readWorkspaceWorktreesDetailed: jest.fn(),
+  };
+  const services = (): CoreWorkspaceReadServices => ({
+    readAllSidebarItems: jest.fn(),
+    readWorkspaceWorktrees: jest.fn(),
+    readWorkspaceConfig: jest.fn(),
+    readEffectiveWorkspaceConfig: jest.fn().mockResolvedValue({ repos: [] }),
+    readWorkspaceIndexEntry: jest
+      .fn()
+      .mockResolvedValue({ id: 'ws-1', name: 'Workspace', type: 'multi-repo' }),
+    ...reads,
+  });
+  beforeEach(() => {
+    sidebar = {
+      version: 1,
+      items: ['ws-1', 'ws-2', 'ws-3'].map((id) => workspaceItem(id)),
+    };
+    rows = ['wt-1', 'wt-2', 'wt-3'].map((id) => row(id));
+    reads.readAllSidebarItemsSnapshot.mockReset().mockImplementation(() =>
+      Promise.resolve({
+        file: sidebar,
+        authority: 'ok',
+        indexAuthority: 'ok',
+      }),
+    );
+    reads.readWorkspaceWorktreesDetailed
+      .mockReset()
+      .mockImplementation(() =>
+        Promise.resolve({ worktrees: rows, authority: 'ok' }),
+      );
+  });
+  function cursorOf(result: { nextCursor: string | null } | null): string {
+    if (!result?.nextCursor) throw new Error('expected a continuation');
+    return result.nextCursor;
+  }
+
+  test('serves later pages from the first page whatever changes between them', async () => {
+    const runtime = createDesktopRuntime({ workspaceServices: services() });
+    const first = await runtime.query(
+      'core.workspace.list',
+      { pageSize: 1 },
+      { caller },
+    );
+    expect(first.items.map((item) => item.workspaceId)).toEqual(['ws-1']);
+    const second = cursorOf(first);
+    // Insert, remove, reorder, rename and a source-overlay change at once.
+    sidebar = {
+      version: 1,
+      items: [
+        workspaceItem('ws-0'),
+        workspaceItem('ws-2', 'Renamed', 'https://example.com/moved.git'),
+        workspaceItem('ws-1'),
+      ],
+    };
+    const page = await runtime.query(
+      'core.workspace.list',
+      { pageSize: 1, cursor: second },
+      { caller },
+    );
+    expect(page.items).toEqual([
+      expect.objectContaining({
+        workspaceId: 'ws-2',
+        name: 'ws-2',
+        repositorySources: [
+          { repoId: 'ws-2-repo', remoteUrl: 'https://example.com/ws-2.git' },
+        ],
+      }),
+    ]);
+    // A replay serves the same page and names the same next page.
+    await expect(
+      runtime.query(
+        'core.workspace.list',
+        { pageSize: 1, cursor: second },
+        { caller },
+      ),
+    ).resolves.toEqual(page);
+    const last = await runtime.query(
+      'core.workspace.list',
+      { pageSize: 1, cursor: cursorOf(page) },
+      { caller },
+    );
+    expect(last).toEqual({
+      items: [expect.objectContaining({ workspaceId: 'ws-3' })],
+      nextCursor: null,
+    });
+    expect(reads.readAllSidebarItemsSnapshot).toHaveBeenCalledTimes(1);
+    const fresh = await runtime.query(
+      'core.workspace.list',
+      { pageSize: 5 },
+      { caller },
+    );
+    expect(fresh.items.map((item) => item.name)).toEqual([
+      'ws-0',
+      'Renamed',
+      'ws-1',
+    ]);
+    await runtime.shutdown();
+  });
+
+  test('pins a scoped worktree list across row changes', async () => {
+    const runtime = createDesktopRuntime({ workspaceServices: services() });
+    const scope = { workspaceId: 'ws-1' };
+    const first = await runtime.query(
+      'core.worktree.list',
+      { scope, pageSize: 2 },
+      { caller },
+    );
+    rows = [row('wt-0'), row('wt-3', 'renamed'), row('wt-1')];
+    const page = await runtime.query(
+      'core.worktree.list',
+      { scope, pageSize: 2, cursor: cursorOf(first) },
+      { caller },
+    );
+    expect(page).toEqual({
+      items: [expect.objectContaining({ worktreeId: 'wt-3', branch: 'wt-3' })],
+      nextCursor: null,
+    });
+    expect(reads.readWorkspaceWorktreesDetailed).toHaveBeenCalledTimes(1);
+    await runtime.shutdown();
+  });
+
+  test('legacy wrappers republish the pinned legacy capture and its authority', async () => {
+    const runtime = createDesktopRuntime({ workspaceServices: services() });
+    const original = structuredClone(sidebar);
+    const first = await runtime.queryWorkspaceListForLegacyIpc(
+      { pageSize: 1 },
+      { caller },
+    );
+    sidebar = { version: 1, items: [workspaceItem('ws-9')] };
+    const next = await runtime.queryWorkspaceListForLegacyIpc(
+      { pageSize: 1, cursor: cursorOf(first.canonicalResult) },
+      { caller },
+    );
+    expect(next.legacyResult).toEqual(original);
+    expect(next.legacyResult).not.toBe(first.legacyResult);
+    expect(next.legacyAuthority).toEqual(first.legacyAuthority);
+    expect(next.canonicalResult?.items.map((item) => item.workspaceId)).toEqual(
+      ['ws-2'],
+    );
+
+    const scoped = await runtime.queryWorktreeListForLegacyIpc(
+      { scope: { workspaceId: 'ws-1' }, pageSize: 1 },
+      { caller },
+    );
+    const originalRows = structuredClone(rows);
+    rows = [];
+    const scopedNext = await runtime.queryWorktreeListForLegacyIpc(
+      {
+        scope: { workspaceId: 'ws-1' },
+        pageSize: 1,
+        cursor: cursorOf(scoped.canonicalResult),
+      },
+      { caller },
+    );
+    expect(scopedNext.legacyResult).toEqual(originalRows);
+    expect(scopedNext.legacyAuthority).toEqual(scoped.legacyAuthority);
+    await runtime.shutdown();
+  });
+
+  test('refused cursors reach legacy callers instead of a legacy fallback', async () => {
+    const runtime = createDesktopRuntime({ workspaceServices: services() });
+    const first = await runtime.query(
+      'core.workspace.list',
+      { pageSize: 1 },
+      { caller },
+    );
+    reads.readAllSidebarItemsSnapshot.mockClear();
+    const cursor = cursorOf(first);
+    const cases: [CanopyQueryParams<'core.workspace.list'>, string][] = [
+      // An old numeric offset is refused, never read as a fresh offset.
+      [{ pageSize: 1, cursor: '1' }, 'invalid_argument'],
+      [{ pageSize: 1, cursor: 'not-a-cursor' }, 'invalid_argument'],
+      [{ pageSize: 1, cursor: 'A'.repeat(32) }, 'failed_precondition'],
+      [{ pageSize: 2, cursor }, 'invalid_argument'],
+      [
+        { pageSize: 1, cursor, scope: { organizationId: 'org-1' } },
+        'invalid_argument',
+      ],
+    ];
+    for (const [params, kind] of cases) {
+      await expect(
+        runtime.query('core.workspace.list', params, { caller }),
+      ).rejects.toMatchObject(refused(kind));
+      await expect(
+        runtime.queryWorkspaceListForLegacyIpc(params, { caller }),
+      ).rejects.toMatchObject(refused(kind));
+    }
+    // Another operation's cursor is another listing.
+    await expect(
+      runtime.queryWorktreeListForLegacyIpc(
+        { pageSize: 1, cursor },
+        { caller },
+      ),
+    ).rejects.toMatchObject(refused('invalid_argument'));
+    expect(reads.readAllSidebarItemsSnapshot).not.toHaveBeenCalled();
+    await runtime.shutdown();
+  });
+
+  test('rechecks grants and the caller on every page', async () => {
+    const runtime = createDesktopRuntime({ workspaceServices: services() });
+    const cursor = cursorOf(
+      await runtime.query('core.workspace.list', { pageSize: 1 }, { caller }),
+    );
+    await expect(
+      runtime.query(
+        'core.workspace.list',
+        { pageSize: 1, cursor },
+        { caller: { ...caller, grants: [] } },
+      ),
+    ).rejects.toMatchObject(refused('permission_denied'));
+    await expect(
+      runtime.queryWorkspaceListForLegacyIpc(
+        { pageSize: 1, cursor },
+        { caller: { ...caller, clientInstanceId: 'another-client' } },
+      ),
+    ).rejects.toMatchObject(refused('failed_precondition'));
+    await expect(
+      runtime.query('core.workspace.list', { pageSize: 1, cursor }, { caller }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ workspaceId: 'ws-2' })],
+    });
+    await runtime.shutdown();
+  });
+
+  test('a cursor ends with the runtime that issued it', async () => {
+    const issuing = createDesktopRuntime({ workspaceServices: services() });
+    const cursor = cursorOf(
+      await issuing.query('core.workspace.list', { pageSize: 1 }, { caller }),
+    );
+    await issuing.shutdown();
+    const restarted = createDesktopRuntime({ workspaceServices: services() });
+    await expect(
+      restarted.query(
+        'core.workspace.list',
+        { pageSize: 1, cursor },
+        { caller },
+      ),
+    ).rejects.toMatchObject(refused('failed_precondition'));
+    await restarted.shutdown();
+  });
+
+  test('a listing too large to retain fails, but keeps the legacy read', async () => {
+    const runtime = createDesktopRuntime({
+      workspaceServices: services(),
+      workspaceReadSnapshotLimits: {
+        ...CORE_READ_SNAPSHOT_LIMITS,
+        maxBytes: 1,
+      },
+    });
+    await expect(
+      runtime.query('core.workspace.list', { pageSize: 1 }, { caller }),
+    ).rejects.toMatchObject(refused('resource_exhausted'));
+    const legacy = await runtime.queryWorkspaceListForLegacyIpc(
+      { pageSize: 1 },
+      { caller },
+    );
+    expect(legacy).toMatchObject({ canonicalResult: null });
+    expect(legacy.legacyResult).toBe(sidebar);
+    // A single page retains nothing, so it is never refused.
+    await expect(
+      runtime.query('core.workspace.list', { pageSize: 3 }, { caller }),
+    ).resolves.toMatchObject({ nextCursor: null });
+    await runtime.shutdown();
+  });
+
+  test('an evicted listing is refused, never rebuilt from live reads', async () => {
+    const adapter = createCoreWorkspaceAdapter(
+      services(),
+      undefined,
+      createCoreWorkspaceReadSnapshots({
+        ...CORE_READ_SNAPSHOT_LIMITS,
+        maxSnapshots: 1,
+      }),
+    );
+    const first = await adapter['core.workspace.list'](
+      { pageSize: 1 },
+      undefined,
+    );
+    await adapter['core.worktree.list'](
+      { scope: { workspaceId: 'ws-1' }, pageSize: 1 },
+      undefined,
+    );
+    reads.readAllSidebarItemsSnapshot.mockClear();
+    await expect(
+      adapter['core.workspace.list'](
+        { pageSize: 1, cursor: cursorOf(first) },
+        undefined,
+      ),
+    ).rejects.toMatchObject(refused('failed_precondition'));
+    expect(reads.readAllSidebarItemsSnapshot).not.toHaveBeenCalled();
   });
 });

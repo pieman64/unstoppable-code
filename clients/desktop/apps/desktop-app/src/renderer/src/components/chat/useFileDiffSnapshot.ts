@@ -11,7 +11,18 @@ export interface FileDiffSnapshot {
   identity: ReviewDiffIdentity;
 }
 
-/** Cancel stale responses and fingerprint the actual displayed bytes, not a mutable Git label. */
+/** A turn comparison reads only the turn's own trees. */
+export function isTurnDiffUnavailable(
+  context: FileDiffContext | undefined,
+): boolean {
+  return context?.source === 'turn' && (!context.startTree || !context.endTree);
+}
+
+/**
+ * Cancel stale responses and fingerprint the actual displayed bytes, not a
+ * mutable Git label. A turn without both trees reads nothing:
+ * {@link isTurnDiffUnavailable}.
+ */
 export function useFileDiffSnapshot(
   projectId: string,
   worktreeId: string,
@@ -30,25 +41,29 @@ export function useFileDiffSnapshot(
   const key = JSON.stringify([projectId, worktreeId, context]);
   useEffect(() => {
     if (!enabled || !context) return;
-    let cancelled = false;
-    setResult({ key, snapshot: null, error: null });
     const request = {
       projectId,
       worktreeId,
       filePath: context.path,
       repoId: context.repoId,
     };
+    const { startTree, endTree } = context;
     const promise =
-      context.source === 'turn' && context.startTree && context.endTree
-        ? window.api.activity.getTurnFileDiff({
+      context.source !== 'turn'
+        ? window.api.activity.getFileDiff({
             ...request,
-            startTree: context.startTree,
-            endTree: context.endTree,
+            source: context.source,
           })
-        : window.api.activity.getFileDiff({
-            ...request,
-            source: context.source === 'turn' ? 'combined' : context.source,
-          });
+        : startTree && endTree
+          ? window.api.activity.getTurnFileDiff({
+              ...request,
+              startTree,
+              endTree,
+            })
+          : null;
+    if (!promise) return;
+    let cancelled = false;
+    setResult({ key, snapshot: null, error: null });
     void promise
       .then(async (data) => {
         const digest = await crypto.subtle.digest(

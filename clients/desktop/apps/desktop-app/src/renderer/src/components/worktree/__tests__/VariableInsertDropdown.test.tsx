@@ -16,6 +16,7 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { resetInputModality } from '@canopy/ui-shared/lib';
 import { VariableInsertDropdown } from '../VariableInsertDropdown';
 
 // jsdom does not implement requestAnimationFrame; stub it so the dropdown's
@@ -52,6 +53,60 @@ afterEach(() => {
 });
 
 describe('VariableInsertDropdown', () => {
+  it('opens from a click with no row lit; the first arrow lights the first row, the next moves', async () => {
+    resetInputModality(document);
+    renderIntoBody(
+      <VariableInsertDropdown
+        variables={[
+          { name: 'FIRST', description: 'first' },
+          { name: 'SECOND', description: 'second' },
+        ]}
+        onInsert={jest.fn()}
+      />,
+    );
+    const trigger = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup="menu"]',
+    );
+    expect(trigger).toBeInstanceOf(HTMLButtonElement);
+    const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
+    act(() => {
+      trigger?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      if (trigger) fireClick(trigger);
+    });
+    // The menu focuses its row on the next frame.
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+    const [first, second] = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    );
+    expect(first).toBeInstanceOf(HTMLButtonElement);
+    expect(document.activeElement).toBe(first);
+    // Focused without the keyboard look, and no fill of its own at rest.
+    const openFocus = focusSpy.mock.calls.find(
+      (_call, index) => focusSpy.mock.contexts[index] === first,
+    );
+    expect(openFocus?.[0]).toEqual(
+      expect.objectContaining({ focusVisible: false }),
+    );
+    focusSpy.mockRestore();
+    expect(first?.className.split(' ')).not.toContain('bg-accent-subtle/40');
+
+    const press = (key: string): void => {
+      act(() => {
+        document.activeElement?.dispatchEvent(
+          new KeyboardEvent('keydown', { key, bubbles: true }),
+        );
+      });
+    };
+    press('ArrowDown');
+    expect(document.activeElement).toBe(first);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(second);
+  });
+
   it('does not call onInsert for a disabled variable and shows its tooltip', () => {
     const onInsert = jest.fn();
     renderIntoBody(

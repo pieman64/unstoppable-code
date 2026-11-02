@@ -11,6 +11,7 @@ Object.defineProperty(globalThis, 'CSS', {
 });
 
 import { act, type ReactNode } from 'react';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   PIPELINE_EDITOR_PROJECT_ID,
@@ -22,7 +23,7 @@ import { AuditTrailPage } from '../AuditTrailPage';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
 const initialize = jest.fn<Promise<void>, []>();
-const refreshHistory = jest.fn<Promise<void>, []>();
+const refreshHistory = jest.fn<Promise<void>, [request?: unknown]>();
 const loadMoreHistory = jest.fn<Promise<void>, []>();
 const loadTranscript = jest.fn();
 const selectWorktree = jest.fn();
@@ -30,9 +31,10 @@ const ensureSelectedWorktreeTabsLoaded = jest.fn();
 const switchTab = jest.fn();
 const loadTabsForTarget = jest.fn<Promise<void>, [string, string]>();
 const navigate = jest.fn();
-const openPipelineExecutionFromUi = jest.fn(() =>
-  Promise.resolve({ status: 'applied' }),
-);
+const openPipelineExecutionFromUi = jest.fn<
+  Promise<{ status: string }>,
+  [request: unknown]
+>(() => Promise.resolve({ status: 'applied' }));
 const savePreferences = jest.fn<Promise<void>, [Record<string, unknown>]>();
 const switchChatProject = jest.fn<Promise<boolean>, [string]>();
 const selectChat = jest.fn();
@@ -69,6 +71,37 @@ const mockEntry: AgentAuditEntry = {
   messageCount: 1,
   assistantMessageCount: 1,
   toolUseCount: 0,
+  toolCounts: {
+    thinking: 0,
+    bash: 0,
+    read: 0,
+    readLines: 0,
+    writeEdit: 0,
+    plan: 0,
+    fileEdit: 0,
+    fileAdd: 0,
+    fileDelete: 0,
+    search: 0,
+    grep: 0,
+    web: 0,
+    agent: 0,
+    workflow: 0,
+    tasks: 0,
+    taskStop: 0,
+    skills: 0,
+    monitor: 0,
+    claude: 0,
+    scheduleWakeup: 0,
+    askUser: 0,
+    scriptOutput: 0,
+    watcher: 0,
+    canopy: 0,
+    graph: 0,
+    appAdvisor: 0,
+    pipelineEditor: 0,
+    mcp: 0,
+    other: 0,
+  },
   subAgentCount: 0,
   hasTranscript: true,
   projectId: 'project-1',
@@ -157,6 +190,7 @@ function render(node: ReactNode): {
 beforeAll(() => {
   class MockIntersectionObserver {
     observe(): void {}
+    unobserve(): void {}
     disconnect(): void {}
   }
   Object.defineProperty(globalThis, 'IntersectionObserver', {
@@ -226,16 +260,21 @@ describe('AuditTrailPage', () => {
       await Promise.resolve();
     });
 
-    const filterSelect = Array.from(container.querySelectorAll('select')).find(
-      (select) =>
-        Array.from(select.options).some(
-          (option) => option.text === 'All events',
-        ),
+    // The Event filter is a quiet dropdown after the search; its menu
+    // lists every event type by its current label.
+    const eventFilter = container.querySelector<HTMLButtonElement>(
+      '[data-testid="audit-trail-event-type-filter"]',
     );
-    expect(filterSelect?.textContent).toContain('Code chat');
-    expect(filterSelect?.textContent).toContain('Cowork chat');
-    expect(filterSelect?.textContent).not.toContain('Code Cowork');
-    expect(filterSelect?.textContent).not.toContain('Standalone Cowork');
+    expect(eventFilter?.textContent).toBe('All events');
+    act(() => eventFilter?.click());
+    const eventMenu = document.querySelector(
+      '[data-testid="audit-trail-event-type-filter-menu"]',
+    );
+    expect(eventMenu?.textContent).toContain('Code chat');
+    expect(eventMenu?.textContent).toContain('Cowork chat');
+    expect(eventMenu?.textContent).not.toContain('Code Cowork');
+    expect(eventMenu?.textContent).not.toContain('Standalone Cowork');
+    act(() => eventFilter?.click());
 
     // Rows only: the filter options above carry the same labels.
     const entryList = container.querySelector(
@@ -248,6 +287,78 @@ describe('AuditTrailPage', () => {
     expect(container.textContent).not.toContain('Worktree chat');
     expect(container.textContent).not.toContain('Standalone chat');
     expect(container.textContent).not.toContain('Cowork Summary');
+  });
+
+  test('filters from the page search row: the search, then three quiet dropdowns', async () => {
+    const { container } = render(<AuditTrailPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const row = container.querySelector(
+      '[data-testid="audit-trail-search-row"]',
+    );
+    expect(row?.hasAttribute('data-page-search-row')).toBe(true);
+    // No native controls are left on the page.
+    expect(container.querySelector('select')).toBeNull();
+    const controls = row?.querySelector('[data-page-search-controls]');
+    expect(row?.lastElementChild).toBe(controls);
+    expect(
+      Array.from(controls?.children ?? [], (child) =>
+        child.getAttribute('data-testid'),
+      ),
+    ).toEqual([
+      'audit-trail-provider-filter',
+      'audit-trail-status-filter',
+      'audit-trail-event-type-filter',
+    ]);
+    const search = container.querySelector<HTMLInputElement>(
+      '[data-testid="audit-trail-search"]',
+    );
+    expect(search?.getAttribute('placeholder')).toBe('Search the audit trail');
+    expect(
+      search?.closest('[data-search-field]')?.getAttribute('data-search-field'),
+    ).toBe('md');
+
+    const provider = container.querySelector<HTMLButtonElement>(
+      '[data-testid="audit-trail-provider-filter"]',
+    );
+    expect(provider?.textContent).toBe('All providers');
+    act(() => provider?.click());
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="audit-trail-provider-filter-option-codex"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(provider?.textContent).toBe('Codex');
+    expect(refreshHistory).toHaveBeenLastCalledWith(
+      expect.objectContaining({ provider: 'codex' }),
+    );
+  });
+
+  test('renders Orchestrator entries recorded under the former name with the current label', async () => {
+    historyEntries = [
+      {
+        ...mockEntry,
+        id: 'orchestrator-entry',
+        eventType: 'app_advisor',
+        label: 'App Advisor',
+      },
+    ];
+
+    const { container } = render(<AuditTrailPage />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const entryList = container.querySelector(
+      '[data-testid="audit-entry-list"]',
+    );
+    expect(entryList?.textContent).toContain(ORCHESTRATOR_LABEL);
+    expect(entryList?.textContent).not.toContain('App Advisor');
   });
 
   test('renders a static computed duration for a finished entry', async () => {
@@ -594,6 +705,7 @@ describe('AuditTrailPage', () => {
         eventType: 'pipeline_editor',
         label: 'Pipeline Editor turn',
         linkTarget: {
+          page: 'pipelines',
           kind: 'pipeline-editor',
           chatId: 'pipeline-chat-1',
         },

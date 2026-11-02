@@ -18,7 +18,15 @@ import type {
   PullRequestSectionPrStatus,
 } from '../activity/PullRequestSectionBody';
 import { portalPrStatusToSectionModel } from '../activity/portal-pr-section-mapper';
-import type { BranchSyncAction } from './branch-actions';
+import {
+  repoRequiresCommitAndPush,
+  repoRequiresCommitOnly,
+  repoRequiresPull,
+  repoRequiresPullCommitAndPush,
+  repoRequiresPush,
+  type BranchSyncAction,
+  type PullRequestBranchFacts,
+} from './branch-actions';
 import type {
   PullRequestActionRequest,
   PullRequestProgressTarget,
@@ -40,9 +48,27 @@ import {
  * state (`PortalWorktreePrActionsState`) and reads the PR
  * (`PortalPrStatus`); these map both onto the shared facts and the user's
  * request back onto a `pr.action` payload.
+ *
+ * A host that acts on every repository of a multi-repo worktree, as desktop's
+ * header does (REG-3023), opts in with `repos`: every repository's row, the
+ * root first. Without it the facts and payloads are one repository's.
  */
 
 type PortalActionsRepo = PortalWorktreePrActionsState['repos'][number];
+
+/** The opt-in: every repository's row, the root first. */
+interface PortalRepositoriesOption {
+  readonly repos?: readonly PortalActionsRepo[];
+}
+
+/** The rows of a multi-repo worktree whose host opted in, else null. */
+function multiRepoRows(
+  options: PortalRepositoriesOption,
+): readonly PortalActionsRepo[] | null {
+  return options.repos !== undefined && options.repos.length > 1
+    ? options.repos
+    : null;
+}
 
 /** One worktree's PR action state as a Portal host holds it. */
 export interface PortalPullRequestActionsRow {
@@ -83,19 +109,24 @@ function tooltipOf(
   };
 }
 
-/** The repository's PR from a Portal status, or null without one. */
+/**
+ * The repository's PR from a Portal status, or null without one. One
+ * repository falls back to the status's first entry; a repository of a
+ * multi-repo worktree (`exact`) never reads another's PR.
+ */
 function portalPr(
   repo: PortalActionsRepo,
   prStatus: PortalPrStatus | undefined,
+  exact = false,
 ): PullRequestActionsPr | null {
   const raw =
     prStatus?.repos?.find((entry) => entry.repoId === repo.repoId)?.status ??
-    prStatus?.repos?.[0]?.status ??
+    (exact ? null : prStatus?.repos?.[0]?.status) ??
     null;
   const sections = portalPrStatusToSectionModel(prStatus).repos;
   const section =
     sections?.find((entry) => entry.repoId === repo.repoId)?.status ??
-    sections?.[0]?.status ??
+    (exact ? null : sections?.[0]?.status) ??
     null;
   if (raw === null || section === null) return null;
   const checkStatus = raw.checkStatus ?? 'none';
@@ -118,39 +149,115 @@ function portalPr(
   };
 }
 
-/** The shared facts for one Portal worktree row. */
-export function portalPullRequestActionsFacts(
-  repo: PortalActionsRepo,
-  prStatus: PortalPrStatus | undefined,
-  options: { readonly agentHelpers?: boolean } = {},
-): PullRequestActionsFacts {
+/** One Portal repository's git facts. */
+function portalBranchFacts(repo: PortalActionsRepo): PullRequestBranchFacts {
   const ahead = repo.ahead ?? 0;
   const commitsAhead = repo.commitsAhead === true;
   return {
-    isMultiRepo: false,
-    repos: [
-      {
-        repoId: repo.repoId,
-        repoName: repo.repoName,
-        pr: portalPr(repo, prStatus),
-      },
-    ],
+    repoId: repo.repoId,
+    commitsAhead,
+    hasUncommittedChanges: repo.dirty === true,
+    // An unpublished branch's own commits have not been pushed either.
+    hasUnpushedCommits: ahead > 0 || (repo.published === false && commitsAhead),
+    hasUnpulledCommits: (repo.behind ?? 0) > 0,
+    hasRemoteTrackingBranch: repo.published === true,
+    hasOriginRemote: true,
+  };
+}
+
+/**
+ * The shared facts for one Portal worktree row: its one repository, or every
+ * repository of a multi-repo worktree when the host opts in with `repos`.
+ */
+export function portalPullRequestActionsFacts(
+  repo: PortalActionsRepo,
+  prStatus: PortalPrStatus | undefined,
+  options: PortalRepositoriesOption & { readonly agentHelpers?: boolean } = {},
+): PullRequestActionsFacts {
+  const rows = multiRepoRows(options);
+  // Splitting needs the desktop's diff-size eligibility; a Portal host
+  // does not offer it.
+  const host = { splitPr: null, agentHelpers: options.agentHelpers === true };
+  if (rows === null) {
+    return {
+      isMultiRepo: false,
+      repos: [
+        {
+          repoId: repo.repoId,
+          repoName: repo.repoName,
+          pr: portalPr(repo, prStatus),
+        },
+      ],
+      worktree: portalBranchFacts(repo),
+      ...host,
+    };
+  }
+  const repoBranches = rows.map(portalBranchFacts);
+  const any = (fact: keyof PullRequestBranchFacts): boolean =>
+    repoBranches.some((branch) => branch[fact] === true);
+  return {
+    isMultiRepo: true,
+    repos: rows.map((row) => ({
+      repoId: row.repoId,
+      repoName: row.repoName,
+      pr: portalPr(row, prStatus, true),
+    })),
+    // The aggregate across repositories, as desktop's header reads it.
     worktree: {
       repoId: repo.repoId,
-      commitsAhead,
-      hasUncommittedChanges: repo.dirty === true,
-      // An unpublished branch's own commits have not been pushed either.
-      hasUnpushedCommits:
-        ahead > 0 || (repo.published === false && commitsAhead),
-      hasUnpulledCommits: (repo.behind ?? 0) > 0,
-      hasRemoteTrackingBranch: repo.published === true,
+      commitsAhead: any('commitsAhead'),
+      hasUncommittedChanges: any('hasUncommittedChanges'),
+      hasUnpushedCommits: any('hasUnpushedCommits'),
+      hasUnpulledCommits: any('hasUnpulledCommits'),
+      hasRemoteTrackingBranch: any('hasRemoteTrackingBranch'),
       hasOriginRemote: true,
     },
-    // Splitting needs the desktop's diff-size eligibility; a Portal host
-    // does not offer it.
-    splitPr: null,
-    agentHelpers: options.agentHelpers === true,
+    repoBranches,
+    ...host,
   };
+}
+
+/** The repositories a branch-sync action applies to, by their own state. */
+const BRANCH_SYNC_APPLIES: Readonly<
+  Record<BranchSyncAction, (branch: PullRequestBranchFacts) => boolean>
+> = {
+  commit: repoRequiresCommitOnly,
+  'commit-and-push': repoRequiresCommitAndPush,
+  'pull-commit-and-push': repoRequiresPullCommitAndPush,
+  push: repoRequiresPush,
+  pull: repoRequiresPull,
+};
+
+/** Whether a repository's PR is open and ready to merge (the plan's rule). */
+function readyToMerge(pr: PullRequestActionsPr | null): boolean {
+  return (
+    pr !== null &&
+    pr.readyToMerge &&
+    (pr.state === 'open' || pr.state === 'draft')
+  );
+}
+
+/**
+ * The repository whose PR Merge acts on: the row's own, or with the
+ * multi-repo opt-in the first ready PR whose review threads warn, else the
+ * first ready one. One click merges that one PR, the one the merge question
+ * names (desktop's single-PR path; its multi-PR selection dialog has no
+ * Portal equivalent). Null when no PR is ready.
+ */
+export function portalPullRequestMergeRepo(
+  repo: PortalActionsRepo,
+  prStatus: PortalPrStatus | undefined,
+  options: PortalRepositoriesOption = {},
+): PortalActionsRepo | null {
+  const rows = multiRepoRows(options);
+  if (rows === null) return repo;
+  const ready = rows
+    .map((row) => ({ row, pr: portalPr(row, prStatus, true) }))
+    .filter(({ pr }) => readyToMerge(pr));
+  return (
+    (ready.find(({ pr }) => pr?.reviewThreadsWarning === true) ?? ready[0])
+      ?.row ?? null
+  );
 }
 
 /** The branch-sync action a pending payload is, if any. */
@@ -238,10 +345,37 @@ export function portalPullRequestProgress(
   return { steps, badge: { label: 'In progress', tone: 'progress' } };
 }
 
+/** The `merge` payload for one repository's PR, or null without one. */
+function mergePayload(
+  base: Omit<PortalPrActionPayload, 'action'>,
+  repo: PortalActionsRepo,
+  pr: NonNullable<PortalPrStatus['repos']>[number]['status'] | null,
+): PortalPrActionPayload | null {
+  return typeof pr?.number === 'number' && pr.baseRefName !== undefined
+    ? {
+        ...base,
+        // GitHub's PR head the user saw, not the sandbox's head.
+        ...(typeof repo.prHeadSha === 'string'
+          ? { expectedHeadSha: repo.prHeadSha }
+          : {}),
+        action: 'merge',
+        expectedPrNumber: pr.number,
+        expectedBaseBranch: pr.baseRefName,
+        expectedHeadBranch: repo.headBranch,
+      }
+    : null;
+}
+
 /**
  * The `pr.action` payload for what the user asked, pinned to what they saw:
  * the head always, the branches to create from, and the PR to merge or
  * align with. Null for a request the Portal host does not run.
+ *
+ * With the multi-repo opt-in (`repos`), the payload names every repository it
+ * acts on in `repoIds`, as desktop's header does: Create PR the ones the plan
+ * chose, and a branch-sync action each repository whose state calls for it.
+ * Merge names the one PR `portalPullRequestMergeRepo` picks. Aligning the
+ * base stays the root's.
  */
 export function portalPullRequestActionPayload(
   request:
@@ -256,7 +390,9 @@ export function portalPullRequestActionPayload(
     readonly workspaceLocalId: string;
     readonly worktreeLocalId: string;
   },
+  options: PortalRepositoriesOption = {},
 ): PortalPrActionPayload | null {
+  const rows = multiRepoRows(options);
   const head =
     repo.headSha === undefined || repo.headSha === null
       ? {}
@@ -264,42 +400,50 @@ export function portalPullRequestActionPayload(
   const base = { ...target, ...head };
   const pr = prStatus?.repos?.[0]?.status ?? null;
   switch (request.kind) {
-    case 'branch-sync':
+    case 'branch-sync': {
+      const applies = BRANCH_SYNC_APPLIES[request.action];
+      const repoIds = rows
+        ?.filter((row) => applies(portalBranchFacts(row)))
+        .map((row) => row.repoId);
+      if (repoIds?.length === 0) return null;
+      const scoped = repoIds === undefined ? base : { ...base, repoIds };
       switch (request.action) {
         case 'push':
         case 'pull':
-          return { ...base, action: request.action };
+          return { ...scoped, action: request.action };
         case 'commit':
-          return { ...base, action: 'commit' };
+          return { ...scoped, action: 'commit' };
         case 'commit-and-push':
-          return { ...base, action: 'commit', push: true };
+          return { ...scoped, action: 'commit', push: true };
         case 'pull-commit-and-push':
-          return { ...base, action: 'commit', push: true, pullFirst: true };
+          return { ...scoped, action: 'commit', push: true, pullFirst: true };
       }
       return null;
+    }
     case 'create-pr':
       return repo.baseBranch === undefined
         ? null
         : {
             ...base,
+            ...(request.repoIds === undefined
+              ? {}
+              : { repoIds: [...request.repoIds] }),
             action: 'create_auto',
             expectedBaseBranch: repo.baseBranch,
             expectedHeadBranch: repo.headBranch,
           };
-    case 'merge':
-      return typeof pr?.number === 'number' && pr.baseRefName !== undefined
-        ? {
-            ...base,
-            // GitHub's PR head the user saw, not the sandbox's head.
-            ...(typeof repo.prHeadSha === 'string'
-              ? { expectedHeadSha: repo.prHeadSha }
-              : {}),
-            action: 'merge',
-            expectedPrNumber: pr.number,
-            expectedBaseBranch: pr.baseRefName,
-            expectedHeadBranch: repo.headBranch,
-          }
-        : null;
+    case 'merge': {
+      if (rows === null) return mergePayload(base, repo, pr);
+      const target = portalPullRequestMergeRepo(repo, prStatus, options);
+      return target === null
+        ? null
+        : mergePayload(
+            { ...base, repoIds: [target.repoId] },
+            target,
+            prStatus?.repos?.find((entry) => entry.repoId === target.repoId)
+              ?.status ?? null,
+          );
+    }
     case 'align-base':
       return pr?.baseRefName === undefined
         ? null

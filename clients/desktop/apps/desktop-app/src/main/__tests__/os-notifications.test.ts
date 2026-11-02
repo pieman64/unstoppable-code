@@ -60,19 +60,29 @@ const mockRequestRecompute = jest.fn<void, []>();
 const mockBroadcastSynced = jest.fn<void, [unknown]>();
 
 jest.mock('electron', () => ({
-  BrowserWindow: { fromWebContents: mockFromWebContents },
-  Notification: MockNotification,
+  BrowserWindow: {
+    get fromWebContents(): typeof mockFromWebContents {
+      return mockFromWebContents;
+    },
+  },
+  get Notification(): typeof MockNotification {
+    return MockNotification;
+  },
   shell: {
     openExternal: (url: string): Promise<void> => mockOpenExternal(url),
   },
 }));
 
 jest.mock('../lib/window-send', () => ({
-  sendToWindow: mockSendToWindow,
+  get sendToWindow(): typeof mockSendToWindow {
+    return mockSendToWindow;
+  },
 }));
 
 jest.mock('../ipc/register', () => ({
-  registerIpcHandler: mockRegisterIpcHandler,
+  get registerIpcHandler(): typeof mockRegisterIpcHandler {
+    return mockRegisterIpcHandler;
+  },
 }));
 
 jest.mock('../notifications/campaigns/scheduler', () => ({

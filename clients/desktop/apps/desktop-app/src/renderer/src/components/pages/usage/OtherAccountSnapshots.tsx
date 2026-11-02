@@ -12,7 +12,11 @@ import {
   computeAccountKey,
   snapshotHasFutureReset,
 } from '@canopy/desktop-shared/lib/account-usage-snapshots';
-import { LimitSubCardView } from '@canopy/ui-shared/components';
+import {
+  Button,
+  UsageRowList,
+  UsageWindowRow,
+} from '@canopy/ui-shared/components';
 import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';
 import { buildSubCards } from './usage-sub-cards';
 import { ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -157,15 +161,17 @@ export function OtherAccountSnapshotsPanel({
         </div>
       )}
 
-      <div className="space-y-3">
-        {cards.map((card) => (
-          <LimitSubCardView
-            key={`${selected.accountKey}-${card.key}`}
-            card={card}
-            nowMs={nowMs}
-          />
-        ))}
-        <p className="text-xs fg-secondary">Collected {capturedLabel}</p>
+      <div className="space-y-1.5">
+        <UsageRowList>
+          {cards.map((card) => (
+            <UsageWindowRow
+              key={`${selected.accountKey}-${card.key}`}
+              window={card}
+              nowMs={nowMs}
+            />
+          ))}
+        </UsageRowList>
+        <p className="px-0.5 text-xs fg-tertiary">Collected {capturedLabel}</p>
       </div>
     </div>
   );
@@ -197,32 +203,30 @@ export function OtherAccountSnapshots({
   }
 
   return (
-    <div className="mt-4 border-t pt-3">
-      <button
-        type="button"
+    <div className="mt-1.5">
+      <Button
+        variant="ghost"
+        size="compact"
         onClick={(): void => setExpanded((value) => !value)}
         data-testid={`other-account-snapshots-toggle-${provider}`}
         aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-2 text-s font-medium fg-primary"
       >
-        <span>Other account snapshots</span>
         <AppCatalogChevronRightMediumIcon
-          width="12"
-          height="12"
-          className={`fg-secondary transition-transform ${
+          size={14}
+          className={`shrink-0 transition-transform motion-reduce:transition-none ${
             expanded ? 'rotate-90' : ''
           }`}
-          role="img"
           aria-hidden="true"
         />
-      </button>
+        <span>Other account snapshots</span>
+      </Button>
 
       {expanded && (
         <OtherAccountSnapshotsPanel
           provider={provider}
           snapshots={relevant}
           nowMs={nowMs}
-          className="mt-3"
+          className="mt-1.5"
         />
       )}
     </div>

@@ -106,16 +106,17 @@ test('authors and installs a workspace template across the desktop seams', async
     await dialog.getByRole('tab', { name: 'Share', exact: true }).click();
     await dialog.getByTestId('workspace-template-share-open').click();
     const shareDialog = window.getByTestId('share-project-template-modal');
-    // The included files are collapsed behind the summary until expanded.
+    // The included files are named in the tooltip of the summary's help icon.
     await expect(
       shareDialog.getByTestId('share-project-template-dependencies-summary'),
     ).toBeVisible();
     await shareDialog
-      .getByTestId('share-project-template-dependencies-toggle')
-      .click();
+      .getByTestId('share-project-template-dependencies-help')
+      .hover();
     await expect(
-      shareDialog.getByTestId('share-project-template-dependencies-list'),
+      window.getByTestId('share-project-template-dependencies-help-details'),
     ).toContainText('/instructions-only');
+    await window.mouse.move(0, 0);
     await expect(
       shareDialog.getByTestId('share-project-template-consent'),
     ).toHaveCount(0);
@@ -123,6 +124,15 @@ test('authors and installs a workspace template across the desktop seams', async
       shareDialog.getByTestId('share-project-template-submit'),
     ).toBeEnabled();
     await shareDialog.getByTestId('share-project-template-submit').click();
+    // The share dialog stays open on its success notice until Done.
+    await expect(
+      shareDialog.getByTestId('share-project-template-success'),
+    ).toContainText('is now public');
+    await expect(
+      shareDialog.getByTestId('share-project-template-link'),
+    ).toContainText(`/portal/plugins/project-templates/${SHARE_ID}`);
+    await shareDialog.getByTestId('share-project-template-done').click();
+    await expect(shareDialog).toHaveCount(0);
     await expect(
       dialog.getByTestId('workspace-template-share-audience'),
     ).toHaveText('Public');
@@ -265,6 +275,12 @@ test('authors and installs a workspace template across the desktop seams', async
     await expect(
       dialog.getByTestId('workspace-template-share-audience'),
     ).not.toBeVisible();
+    // The share dialog stays open on the unshared state.
+    await expect(
+      revokeDialog.getByTestId('share-project-template-success'),
+    ).toHaveCount(0);
+    await revokeDialog.getByRole('button', { name: 'Close' }).click();
+    await expect(revokeDialog).toHaveCount(0);
     const revokedAuthorConfig = JSON.parse(
       readFileSync(
         path.join(userDataDir, 'workspaces', workspaceId, 'workspace.json'),
@@ -281,7 +297,7 @@ test('authors and installs a workspace template across the desktop seams', async
       `canopy://share/project-templates/${SHARE_ID}`,
     );
     await expect(landing.getByTestId('share-install-blocker')).toContainText(
-      'This share is no longer available.',
+      "This share isn't available.",
     );
   } finally {
     await closeCanopy(electronApp, userDataDir);
@@ -437,12 +453,6 @@ test('scrolls every part of the Share tab into view in a short window', async ()
     await expect(
       shareDialog.getByTestId('share-project-template-consent'),
     ).toHaveCount(0);
-    // The included files are collapsed by default; expand them so the list is
-    // part of the content the body must scroll to.
-    await shareDialog
-      .getByTestId('share-project-template-dependencies-toggle')
-      .click();
-
     const scrollBody = shareDialog.getByTestId('share-project-template-body');
     await expect
       .poll(() =>
@@ -452,7 +462,7 @@ test('scrolls every part of the Share tab into view in a short window', async ()
       )
       .toBe(true);
     const included = shareDialog.getByTestId(
-      'share-project-template-dependencies-list',
+      'share-project-template-dependencies-summary',
     );
     await expect(included).toBeVisible();
     await scrollBody.hover();
@@ -470,8 +480,7 @@ test('scrolls every part of the Share tab into view in a short window', async ()
       )
       .toBe(true);
     await expect(included).toBeInViewport({ ratio: 1 });
-    const includedBox = await included.boundingBox();
-    expect(includedBox?.height ?? 0).toBeGreaterThan(40);
+    await expect(included).toContainText('Included files');
     await expect(
       shareDialog.getByTestId('share-project-template-submit'),
     ).toBeInViewport({ ratio: 1 });

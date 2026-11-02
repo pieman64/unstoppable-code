@@ -15,6 +15,28 @@ function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
 }
 
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === 'boolean';
+}
+
+/** Mirrors `ApprovalFileChange`; a malformed change rejects the event. */
+function isOptionalApprovalFileChange(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !isOptionalBoolean(value.truncated)) return false;
+  switch (value.kind) {
+    case 'edit':
+      return (
+        typeof value.oldText === 'string' &&
+        typeof value.newText === 'string' &&
+        isOptionalBoolean(value.replaceAll)
+      );
+    case 'write':
+      return typeof value.content === 'string';
+    default:
+      return false;
+  }
+}
+
 function isApprovalRequestDetails(value: unknown): boolean {
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   switch (value.kind) {
@@ -27,6 +49,8 @@ function isApprovalRequestDetails(value: unknown): boolean {
     case 'file-write':
       return (
         isOptionalString(value.path) &&
+        isOptionalString(value.displayPath) &&
+        isOptionalApprovalFileChange(value.change) &&
         isOptionalString(value.reason) &&
         isOptionalString(value.itemId)
       );

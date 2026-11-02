@@ -9,14 +9,30 @@ export interface InsertChatTextDetail {
   text: string;
   targetTabId?: string;
   targetChatId?: string;
+  /** Draft-staging insertion: persist the live draft before acknowledging it. */
+  stagingId?: string;
   /** Synchronous acknowledgement used by callers that need a draft fallback. */
   markHandled?: () => void;
+  /** A live editor refused acceptance; callers must not retry from a stale saved draft. */
+  markFailed?: (error: unknown) => void;
 }
 
 export function isInsertChatTextDetail(
   value: unknown,
 ): value is InsertChatTextDetail {
   if (typeof value !== 'object' || value === null) return false;
+  if (
+    'markFailed' in value &&
+    value.markFailed !== undefined &&
+    typeof value.markFailed !== 'function'
+  )
+    return false;
+  if (
+    'stagingId' in value &&
+    value.stagingId !== undefined &&
+    typeof value.stagingId !== 'string'
+  )
+    return false;
   if (!('text' in value) || typeof value.text !== 'string') return false;
   if (
     'targetTabId' in value &&

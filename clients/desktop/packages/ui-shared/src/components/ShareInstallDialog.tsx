@@ -1,18 +1,23 @@
 'use client';
 
-import type { JSX, ReactNode } from 'react';
+import { useLayoutEffect, useRef, type JSX, type ReactNode } from 'react';
 import { DialogModal } from './DialogModal';
 import { LoadingButton } from './LoadingButton';
+import { focusableWithin } from '../lib/focusable';
 
 /**
  * The install review for a shared resource (CAN-3710): one small dialog with
- * the item's name and type, who shared it, a short plain-text description, any
- * input the install cannot proceed without, and exactly one primary action.
+ * the item's name and type, who shared it, a short plain-text description,
+ * what installing it does, any input the install cannot proceed without, and
+ * exactly one primary action.
  *
  * There is no Cancel: the close button, Escape and the backdrop dismiss it,
  * and all three are inert while `busy` so an install is never abandoned
  * halfway. Warnings, opt-ins and dependency lists deliberately have no slot;
  * setup a result still needs is shown where the install lands.
+ *
+ * Focus moves into the review on open (the close button first, never the
+ * primary), Tab stays inside it, and closing returns focus to the opener.
  */
 
 export interface ShareInstallDialogPrimary {
@@ -35,6 +40,8 @@ export interface ShareInstallDialogProps {
   readonly publisher?: ReactNode;
   /** Plain text, clamped to about three lines. */
   readonly description?: string;
+  /** One line on what installing does: where the copy lands and how it updates. */
+  readonly effect?: ReactNode;
   /** Required inputs only, with defaults preselected wherever possible. */
   readonly inputs?: ReactNode;
   /** One line for a genuine blocker or the install's progress. */
@@ -60,6 +67,7 @@ export function ShareInstallDialog({
   typeLabel,
   publisher,
   description,
+  effect,
   inputs,
   blocker,
   status,
@@ -72,6 +80,29 @@ export function ShareInstallDialog({
   dataTestId = 'share-install-dialog',
   titleId = 'share-install-dialog-title',
 }: ShareInstallDialogProps): JSX.Element {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const primaryDisabled = primary?.disabled === true || primary?.busy === true;
+  // Disabling or removing the focused primary can drop focus to the page.
+  // Prefer the remaining Tab stop (normally close); when every control is
+  // busy, the body holds focus and DialogModal prevents Tab from escaping.
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const doc = body.ownerDocument;
+    const active = doc.activeElement;
+    const card = body.closest('[role="dialog"]');
+    const stranded =
+      active === null ||
+      active === doc.body ||
+      (card !== null &&
+        card.contains(active) &&
+        active.hasAttribute('disabled'));
+    if (stranded) {
+      const target =
+        card instanceof HTMLElement ? focusableWithin(card)[0] : undefined;
+      (target ?? body).focus({ preventScroll: true });
+    }
+  }, [busy, primaryDisabled, primary === undefined, loading !== undefined]);
   const subtitle =
     typeLabel !== undefined || publisher !== undefined ? (
       <>
@@ -79,7 +110,11 @@ export function ShareInstallDialog({
           <span data-testid="share-install-type-label">{typeLabel}</span>
         )}
         {typeLabel !== undefined && publisher !== undefined && ' · '}
-        {publisher}
+        {publisher !== undefined && (
+          <span data-testid="share-install-publisher" className="break-words">
+            {publisher}
+          </span>
+        )}
       </>
     ) : undefined;
   return (
@@ -95,8 +130,13 @@ export function ShareInstallDialog({
       headerSpacing="tight"
       headerBorder={false}
       dataTestId={dataTestId}
+      trapFocus
     >
-      <div className="flex flex-col gap-3 px-5 pb-5 pt-2">
+      <div
+        ref={bodyRef}
+        tabIndex={-1}
+        className="flex flex-col gap-3 px-5 pb-5 pt-2 outline-none"
+      >
         {loading}
         {description !== undefined && description !== '' && (
           <p
@@ -104,6 +144,14 @@ export function ShareInstallDialog({
             className="line-clamp-3 text-s fg-secondary"
           >
             {description}
+          </p>
+        )}
+        {effect !== undefined && effect !== null && effect !== '' && (
+          <p
+            data-testid="share-install-effect"
+            className="break-words text-s fg-secondary"
+          >
+            {effect}
           </p>
         )}
         {inputs !== undefined && inputs !== null && (

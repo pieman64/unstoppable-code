@@ -194,6 +194,18 @@ describe('LedgerActorDirectory', () => {
     );
   });
 
+  it('names an unnamed pipeline agent a workflow agent', async () => {
+    const { directory, scope } = await createDirectory();
+
+    const record = await directory.ensureHostActor(scope, {
+      kind: 'pipeline_agent',
+      originKey: 'unnamed-session',
+      displayName: '   ',
+    });
+
+    expect(record.displayName).toBe('Workflow agent');
+  });
+
   it('keeps a pipeline session and a chat with the same host key apart', async () => {
     const { directory, scope } = await createDirectory();
 

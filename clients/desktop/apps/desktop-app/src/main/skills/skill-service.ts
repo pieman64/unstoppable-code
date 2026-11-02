@@ -21,6 +21,7 @@ import * as fsp from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
 import * as yaml from 'js-yaml';
 import { BRAND } from '@canopy/brand/current';
+import { isPipelinePackageDigest } from '@canopy/protocol/pipelines';
 import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
 import type {
   InstalledSkillInfo,
@@ -33,7 +34,17 @@ import type {
   SkillFilesResponse,
   SkillUpdateProgress,
   SourceMetadata,
+  WriteRawSkillRequest,
+  WriteRawSkillResult,
+  SkillWriteFailureCode,
+  SharedSkillDetail,
 } from '@canopy/desktop-shared/types/skills';
+import { runSkillMutation, skillMutationPending } from './skill-mutations';
+import {
+  SKILL_REPLACEMENT_JOURNAL,
+  hasPendingSkillReplacement,
+} from './skill-replacement-state';
+import { writeFileAtomically, syncDirectory } from '../lib/atomic-file';
 import { normalizeGitHubRepoRef } from '@canopy/desktop-shared/plugin-refs';
 import {
   getCustomSkillNameValidationError,
@@ -908,7 +919,43 @@ export async function installSkills(
   }
 }
 
+/** Production uninstall boundary shares the mutation lock with updates and edits. */
+export async function removeSkillForContext(
+  sourceId: string,
+  skillName: string,
+): Promise<IPCResult<void>> {
+  return runSkillMutation(async () => {
+    try {
+      const { prepareSkillUninstall } = await import('./skill-install-context');
+      const commitRemoval = await prepareSkillUninstall(
+        `${sourceId}/${skillName}`,
+      );
+      const result = removeSkillUnlocked(sourceId, skillName);
+      if (result.success) await commitRemoval();
+      return result;
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
 export function removeSkill(
+  sourceId: string,
+  skillName: string,
+): IPCResult<void> {
+  if (skillMutationPending())
+    return {
+      success: false,
+      error:
+        'Skill unavailable (local-conflict). Another skill change is in progress. Try again.',
+    };
+  return removeSkillUnlocked(sourceId, skillName);
+}
+
+function removeSkillUnlocked(
   sourceId: string,
   skillName: string,
 ): IPCResult<void> {
@@ -1171,6 +1218,13 @@ export async function saveCustomSkill(
   payload: SaveCustomSkillRequest,
   options: SaveCustomSkillOptions = {},
 ): Promise<IPCResult<{ name: string }>> {
+  return runSkillMutation(() => saveCustomSkillUnlocked(payload, options));
+}
+
+async function saveCustomSkillUnlocked(
+  payload: SaveCustomSkillRequest,
+  options: SaveCustomSkillOptions,
+): Promise<IPCResult<{ name: string }>> {
   let stagingDir: string | null = null;
   try {
     const skillName = payload.name || '';
@@ -1361,7 +1415,7 @@ export async function saveCustomSkill(
   }
 }
 
-function hashRawSkill(rawSkill: string): string {
+function hashRawSkill(rawSkill: string | Uint8Array): string {
   return createHash('sha256').update(rawSkill).digest('hex');
 }
 
@@ -1484,30 +1538,46 @@ export async function readRawSkill(skillId: string): Promise<string> {
   return fsp.readFile(skillMdPath, 'utf-8');
 }
 
-/** Main import boundary: re-fetch scoped sources and persist provenance before content. */
-export async function writeRawSkillForContext(input: {
-  skillName: string;
-  rawSkill: string;
-  sourceRemoteId?: string;
-  publicShare?: PublicShareSkillOrigin;
-  inCollection?: boolean;
-}): Promise<{ skillId: string; skillName: string }> {
+/** Main import boundary: authorize source bytes and persist scoped provenance. */
+export async function writeRawSkillForContext(
+  input: WriteRawSkillRequest,
+): Promise<WriteRawSkillResult> {
+  if (input.replaceInstalled !== undefined) {
+    if (
+      !skillResourceContextEnabled() ||
+      typeof input.sourceRemoteId !== 'string' ||
+      !input.sourceRemoteId.trim() ||
+      input.publicShare !== undefined
+    )
+      throw skillWriteError(
+        'replacement-unsupported',
+        'Open the scoped skill on an updated device and review it again.',
+      );
+    validateReplacement(input.replaceInstalled);
+  }
   if (!skillResourceContextEnabled()) return writeRawSkill(input);
-  if (input.sourceRemoteId) {
-    // A collection member rides on the collection's subscription.
-    return writeSharedSkillForContext(input.sourceRemoteId, {
-      subscribe: input.inCollection !== true,
-    });
-  }
-  if (input.publicShare !== undefined) {
-    // The origin arrives over IPC; its shape is checked before any field is
-    // used, so a malformed payload reads as an invalid id rather than a
-    // TypeError or a misleading "changed" rejection.
-    if (!isPublicShareSkillOrigin(input.publicShare))
-      throw new Error('Invalid share id.');
-    return writePublicShareSkillForContext(input.publicShare);
-  }
-  throw new Error('A shared skill source is required.');
+  // Capture before waiting for another mutation or doing any network reads.
+  const snapshot = await skillContextSnapshot();
+  return runSkillMutation(async () => {
+    await assertSkillContextSnapshot(snapshot);
+    if (input.sourceRemoteId) {
+      // A collection member rides on the collection's subscription.
+      return writeSharedSkillForContext(input.sourceRemoteId, {
+        subscribe: input.inCollection !== true,
+        replacement: input.replaceInstalled,
+        snapshot,
+      });
+    }
+    if (input.publicShare !== undefined) {
+      // The origin arrives over IPC; its shape is checked before any field is
+      // used, so a malformed payload reads as an invalid id rather than a
+      // TypeError or a misleading "changed" rejection.
+      if (!isPublicShareSkillOrigin(input.publicShare))
+        throw new Error('Invalid share id.');
+      return writePublicShareSkillForContext(input.publicShare);
+    }
+    throw new Error('A shared skill source is required.');
+  });
 }
 
 function isPublicShareSkillOrigin(
@@ -1526,21 +1596,352 @@ function isPublicShareSkillOrigin(
   );
 }
 
+function skillWriteError(code: SkillWriteFailureCode, message: string): Error {
+  return new Error(`Skill unavailable (${code}). ${message}`);
+}
+
+function validateReplacement(
+  value: unknown,
+): asserts value is NonNullable<WriteRawSkillRequest['replaceInstalled']> {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('skillName' in value) ||
+    typeof value.skillName !== 'string' ||
+    getCustomSkillNameValidationError(value.skillName) ||
+    !('expectedLocalContentHash' in value) ||
+    typeof value.expectedLocalContentHash !== 'string' ||
+    !/^[a-f0-9]{64}$/i.test(value.expectedLocalContentHash) ||
+    !('expectedSourceContentHash' in value) ||
+    typeof value.expectedSourceContentHash !== 'string' ||
+    !/^[a-f0-9]{64}$/i.test(value.expectedSourceContentHash) ||
+    ('expectedSourcePackageDigest' in value &&
+      value.expectedSourcePackageDigest !== undefined &&
+      !isPipelinePackageDigest(value.expectedSourcePackageDigest))
+  )
+    throw skillWriteError(
+      'invalid-replacement',
+      'Refresh and review the installed skill again.',
+    );
+}
+
+function assertReviewedSource(
+  detail: SharedSkillDetail,
+  replacement: NonNullable<WriteRawSkillRequest['replaceInstalled']>,
+): void {
+  if (
+    hashRawSkill(detail.rawSkill) !==
+      replacement.expectedSourceContentHash.toLowerCase() ||
+    detail.package?.digest !== replacement.expectedSourcePackageDigest
+  )
+    throw skillWriteError(
+      'source-conflict',
+      'The shared skill changed. Refresh and review it again.',
+    );
+}
+
+/** Refuse links at every level, including SKILL.md, immediately before a rename. */
+function replacementFile(skillName: string): string {
+  const target = validateSkillPath(CUSTOM_SOURCE_ID, skillName);
+  if (!target)
+    throw skillWriteError(
+      'invalid-replacement',
+      'The installed skill path is invalid.',
+    );
+  const file = path.join(target, 'SKILL.md');
+  const root = path.resolve(getSkillsRootDir());
+  try {
+    let current = root;
+    for (const segment of ['', ...path.relative(root, file).split(path.sep)]) {
+      if (segment) current = path.join(current, segment);
+      const stat = fs.lstatSync(current);
+      if (
+        stat.isSymbolicLink() ||
+        (current === file ? !stat.isFile() : !stat.isDirectory())
+      )
+        throw skillWriteError(
+          'invalid-replacement',
+          'The installed skill path is unsafe.',
+        );
+    }
+  } catch (error) {
+    if (hasFileSystemErrorCode(error, 'ENOENT'))
+      throw skillWriteError(
+        'missing-copy',
+        'The installed copy is missing. Restore it and review the skill again.',
+      );
+    throw error;
+  }
+  return file;
+}
+
+async function replaceSharedSkill(
+  detail: SharedSkillDetail,
+  aliases: ReadonlySet<string>,
+  replacement: NonNullable<WriteRawSkillRequest['replaceInstalled']>,
+  snapshot: string,
+  subscribe: boolean,
+): Promise<WriteRawSkillResult> {
+  const skillName = replacement.skillName;
+  const skillId = `${CUSTOM_SOURCE_ID}/${skillName}`;
+  if (!aliases.has(skillId))
+    throw skillWriteError(
+      'review-required',
+      'This copy does not belong to the shared skill. Refresh and review it again.',
+    );
+  assertReviewedSource(detail, replacement);
+  const file = replacementFile(skillName);
+  const directory = path.dirname(file);
+  const journal = path.join(directory, SKILL_REPLACEMENT_JOURNAL);
+  const stage = path.join(directory, '.canopy-shared-update-stage');
+  const oldBytes = await fsp.readFile(file);
+  const oldHash = hashRawSkill(oldBytes);
+  const nextHash = hashRawSkill(detail.rawSkill);
+  if (oldHash !== replacement.expectedLocalContentHash.toLowerCase())
+    throw skillWriteError(
+      'local-conflict',
+      'Your installed skill changed. Refresh and review your edits again.',
+    );
+
+  // An interrupted attempt is never replayed from stored source bytes or grants.
+  // A fresh explicit review reauthorizes the same alias and reconciles its receipt.
+  // Ordinary Install remains blocked by the receipt, even after an interruption.
+  if (fs.existsSync(journal)) {
+    const stat = await fsp.lstat(journal);
+    if (!stat.isFile() || stat.isSymbolicLink())
+      throw skillWriteError(
+        'recovery-required',
+        'The interrupted update could not be verified. Restore the installed copy and try again.',
+      );
+    let pending: unknown;
+    try {
+      pending = JSON.parse(await fsp.readFile(journal, 'utf8'));
+    } catch {
+      throw skillWriteError(
+        'recovery-required',
+        'The interrupted update could not be read. Restore the installed copy and try again.',
+      );
+    }
+    if (
+      typeof pending !== 'object' ||
+      pending === null ||
+      !('version' in pending) ||
+      pending.version !== 1 ||
+      !('remoteId' in pending) ||
+      pending.remoteId !== detail.id ||
+      !('previousHash' in pending) ||
+      typeof pending.previousHash !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(pending.previousHash) ||
+      !('nextHash' in pending) ||
+      typeof pending.nextHash !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(pending.nextHash)
+    )
+      throw skillWriteError(
+        'recovery-required',
+        'The interrupted update belongs to another source. Restore the installed copy and try again.',
+      );
+  }
+  // A crash before journal publication can leave only the reserved stage file.
+  // It carries no authority and can be discarded before a freshly reviewed write.
+  await fsp.rm(stage, { force: true });
+
+  let renamed = false;
+  let receiptRollback: (() => Promise<void>) | undefined;
+  try {
+    const mode = (await fsp.stat(file)).mode & 0o777;
+    await stageReplacementBytes(stage, detail.rawSkill, mode);
+    await writeFileAtomically(
+      journal,
+      JSON.stringify({
+        version: 1,
+        remoteId: detail.id,
+        previousHash: oldHash,
+        nextHash,
+      }),
+      { mode: 0o600, durable: true },
+    );
+    if (!(await getSharedSkillInstallIds(detail.id, true)).has(skillId))
+      throw skillWriteError(
+        'review-required',
+        'The installed copy changed owners. Refresh and review it again.',
+      );
+    await assertStoredSkillContext(skillId);
+    // Reauthorization can itself await a source read. Compare the reviewed
+    // revision after that read, not only before it.
+    const { getSharedSkill } = await import('./canopy-server-client');
+    const fresh = await getSharedSkill(detail.id);
+    if (fresh.id !== detail.id)
+      throw skillWriteError(
+        'source-conflict',
+        'The shared skill identity changed. Open its link again.',
+      );
+    assertReviewedSource(fresh, replacement);
+    await assertSkillContextSnapshot(snapshot);
+    if (!skillResourceContextEnabled())
+      throw skillWriteError(
+        'replacement-unsupported',
+        'Skill updates are unavailable. Review the skill again.',
+      );
+    // No await between this comparison and rename: managed writers hold the
+    // mutation lock. An external editor can still race the filesystem operation;
+    // atomic rename is not a filesystem compare-and-swap primitive.
+    replacementFile(skillName);
+    if (hashRawSkill(fs.readFileSync(file)) !== oldHash)
+      throw skillWriteError(
+        'local-conflict',
+        'Your installed skill changed. Refresh and review your edits again.',
+      );
+    fs.renameSync(stage, file);
+    renamed = true;
+    await syncDirectory(directory);
+    receiptRollback = await recordSharedSkillInstall(
+      fresh,
+      skillId,
+      undefined,
+      snapshot,
+    );
+    await assertSkillContextSnapshot(snapshot);
+  } catch (error) {
+    // Restore bytes only if they are still ours. Receipt compensation uses the
+    // existing snapshot-conditional rollback, never a blind previous-row write.
+    try {
+      if (renamed) {
+        replacementFile(skillName);
+        if (hashRawSkill(fs.readFileSync(file)) !== nextHash)
+          throw skillWriteError(
+            'recovery-required',
+            'The installed copy changed during recovery. Review it again.',
+          );
+        await stageReplacementBytes(
+          stage,
+          oldBytes,
+          fs.statSync(file).mode & 0o777,
+        );
+        replacementFile(skillName);
+        if (hashRawSkill(fs.readFileSync(file)) !== nextHash)
+          throw skillWriteError(
+            'recovery-required',
+            'The installed copy changed during recovery. Review it again.',
+          );
+        fs.renameSync(stage, file);
+        await syncDirectory(directory);
+      }
+      await receiptRollback?.();
+      await fsp.rm(journal, { force: true });
+    } catch {
+      throw skillWriteError(
+        'recovery-required',
+        'The update was interrupted. Refresh and review the installed copy to finish recovery.',
+      );
+    }
+    throw error;
+  } finally {
+    await fsp.rm(stage, { force: true });
+  }
+  const result: WriteRawSkillResult = { skillId, skillName };
+  // A durable replacement is successful even if later subscription bookkeeping
+  // fails. Retrying with a fresh review of these bytes is safe and repairs it.
+  let subscriptionComplete = true;
+  if (subscribe) {
+    try {
+      recordSharedItemInstall({
+        kind: 'skill',
+        remoteId: detail.id,
+        sourceKind: 'shared',
+        contentHash: nextHash,
+        localId: skillId,
+      });
+    } catch {
+      result.subscriptionWarning = 'subscription-update-failed';
+      subscriptionComplete = false;
+    }
+  }
+  if (subscriptionComplete)
+    await fsp.rm(journal, { force: true }).catch(() => undefined);
+  return result;
+}
+
+async function stageReplacementBytes(
+  stage: string,
+  bytes: string | Uint8Array,
+  mode: number,
+): Promise<void> {
+  const handle = await fsp.open(stage, 'wx', mode);
+  try {
+    await handle.writeFile(bytes, 'utf8');
+    await handle.chmod(mode);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The first readable receipted alias, in local-id order, already matching the source. */
+async function currentReceiptedCopy(
+  ids: ReadonlySet<string>,
+  rawSkill: string,
+): Promise<{ skillName: string; existingMatch: true } | undefined> {
+  const desired = hashRawSkill(rawSkill);
+  for (const id of Array.from(ids).sort()) {
+    if (!id.startsWith(`${CUSTOM_SOURCE_ID}/`)) continue;
+    const skillName = parseCustomSkillId(id);
+    if (!skillName) continue;
+    let file: string;
+    try {
+      file = replacementFile(skillName);
+    } catch {
+      continue;
+    }
+    // An interrupted replacement still needs a fresh review to reconcile.
+    if (await hasPendingSkillReplacement(skillName)) continue;
+    if (hashRawSkill(await fsp.readFile(file)) === desired)
+      return { skillName, existingMatch: true };
+  }
+  return undefined;
+}
+
 async function writeSharedSkillForContext(
   sourceRemoteId: string,
-  options: { subscribe: boolean },
-): Promise<{ skillId: string; skillName: string }> {
-  const snapshot = await skillContextSnapshot();
+  options: {
+    subscribe: boolean;
+    replacement?: WriteRawSkillRequest['replaceInstalled'];
+    snapshot: string;
+  },
+): Promise<WriteRawSkillResult> {
+  const snapshot = options.snapshot;
   const { getSharedSkill } = await import('./canopy-server-client');
   const detail = await getSharedSkill(sourceRemoteId);
-  const rawSkill = detail.rawSkill;
-  const reusableIds = await getSharedSkillInstallIds(detail.id);
-  for (let attempt = 1; ; attempt += 1) {
-    const resolved = resolveAvailableCustomSkillName(
-      detail.name,
-      rawSkill,
-      reusableIds,
+  if (options.replacement && detail.id !== sourceRemoteId)
+    throw skillWriteError(
+      'source-conflict',
+      'The shared skill identity changed. Open its link again.',
     );
+  const rawSkill = detail.rawSkill;
+  const reusableIds = await getSharedSkillInstallIds(detail.id, true);
+  if (options.replacement)
+    return replaceSharedSkill(
+      detail,
+      reusableIds,
+      options.replacement,
+      snapshot,
+      options.subscribe,
+    );
+  // An identical receipted copy is this install, so re-importing it (from a
+  // collection or App Advisor) stays idempotent. Any other receipted copy needs
+  // the reviewed replacement and never allocates another name.
+  const reused =
+    reusableIds.size > 0
+      ? await currentReceiptedCopy(reusableIds, rawSkill)
+      : undefined;
+  if (reusableIds.size > 0 && reused === undefined)
+    throw skillWriteError(
+      'review-required',
+      'This skill already has an installed copy. Refresh and review that copy before updating.',
+    );
+  for (let attempt = 1; ; attempt += 1) {
+    const resolved =
+      reused ??
+      resolveAvailableCustomSkillName(detail.name, rawSkill, reusableIds);
     const skillId = `${CUSTOM_SOURCE_ID}/${resolved.skillName}`;
     await assertStoredSkillContext(skillId);
     const rollback = await recordSharedSkillInstall(detail, skillId);
@@ -1742,6 +2143,11 @@ export function writeRawSkill(input: { skillName: string; rawSkill: string }): {
   skillId: string;
   skillName: string;
 } {
+  if (skillMutationPending())
+    throw skillWriteError(
+      'local-conflict',
+      'Another skill change is in progress. Try again.',
+    );
   ensureCustomSourceMetadata();
   const resolved = resolveAvailableCustomSkillName(
     input.skillName,

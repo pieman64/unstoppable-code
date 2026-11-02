@@ -18,7 +18,7 @@ export const ENVIRONMENT_RUNTIMES: readonly EnvironmentRuntime[] = [
 export const ENVIRONMENT_RUNTIME_LABEL: Record<EnvironmentRuntime, string> = {
   canopy: `${brandText.shortName} Runtime`,
   agent: 'Agent runtime',
-  pipeline: 'Pipeline runtime',
+  pipeline: 'Workflow runtime',
 };
 
 export const ENVIRONMENT_RUNTIME_INDICATOR_TITLE: Record<
@@ -27,7 +27,7 @@ export const ENVIRONMENT_RUNTIME_INDICATOR_TITLE: Record<
 > = {
   canopy: `${brandText.shortName} Runtime usages`,
   agent: 'Agent runtime usages',
-  pipeline: 'Pipeline runtime usages',
+  pipeline: 'Workflow runtime usages',
 };
 
 export function makeUntitledEnvironmentId(): string {

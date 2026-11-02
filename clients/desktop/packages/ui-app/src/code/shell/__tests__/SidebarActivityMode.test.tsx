@@ -14,9 +14,10 @@ import {
 } from '@canopy/app-state';
 import { SidebarSurface, type SidebarSurfaceProps } from '../SidebarSurface';
 import { SidebarActivityModeToggle } from '../SidebarActivityModeToggle';
-import type {
-  SidebarActivityHost,
-  SidebarActivityHostInventory,
+import {
+  withSidebarActivitySpaceMute,
+  type SidebarActivityHost,
+  type SidebarActivityHostInventory,
 } from '../sidebar-activity-host';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -61,6 +62,7 @@ function summary(
   role: 'user' | 'assistant' = 'assistant',
 ): PortalSessionShellState['chatSummaries'][number] {
   return {
+    localId: chatId,
     chatId,
     scope: 'worktree',
     workspaceLocalId: 'ws',
@@ -362,7 +364,7 @@ describe('Sidebar Activity mode', () => {
     expect(rowKeys('unread')).toEqual(before);
     const row = q('[data-testid="sidebar-activity-row-unread"]');
     expect(
-      row?.querySelector('[aria-label="Pipeline running"]'),
+      row?.querySelector('[aria-label="Workflow running"]'),
     ).not.toBeNull();
     expect(row?.textContent).toContain('feat/x');
     expect(row?.textContent).not.toContain('changed');
@@ -455,6 +457,134 @@ describe('Sidebar Activity mode', () => {
     expect(
       rowAfter?.querySelector('[data-testid="worktree-row-unread"]'),
     ).toBeNull();
+  });
+
+  describe('muted spaces (CAN-4378)', () => {
+    const muted = { status: 'ready', override: 'mute' } as const;
+    const loud = { status: 'ready', override: 'all' } as const;
+    const mutedInventory = (): SidebarActivityHostInventory => {
+      const loaded = makeInventory(1);
+      return {
+        ...loaded,
+        inventory: {
+          ...loaded.inventory,
+          standaloneChats: [
+            {
+              localId: 'cowork',
+              projectLocalId: 'cw',
+              workEntryId: 'entry',
+              title: 'Cowork chat',
+              hasUnread: true,
+              lastMessageRole: 'assistant',
+              lastMessageAt: new Date(Date.UTC(2026, 0, 1, 2)).toISOString(),
+            },
+          ],
+        },
+        unreadKeys: new Set([
+          key('unread'),
+          sidebarActivityStandaloneChatKey('cw', 'cowork'),
+        ]),
+      };
+    };
+    const liveUnread = new Set([
+      key('unread'),
+      sidebarActivityStandaloneChatKey('cw', 'cowork'),
+    ]);
+
+    it("keeps a muted space's chats out of Unread", async () => {
+      const lookup = jest.fn(() => muted);
+      render({
+        activity: host({
+          loadInventory: () => Promise.resolve(mutedInventory()),
+          unreadKeys: liveUnread,
+        }),
+        activityToggleInHeader: true,
+        getWorktreeNotificationSettings: lookup,
+      });
+      act(() => bells()[0]?.click());
+      await flush();
+      expect(q('[data-testid="sidebar-activity-section-unread"]')).toBeNull();
+      expect(rowKeys('unreplied')).toEqual(
+        expect.arrayContaining([
+          key('unread'),
+          sidebarActivityStandaloneChatKey('cw', 'cowork'),
+        ]),
+      );
+      expect(lookup).toHaveBeenCalledWith('ws', 'wt');
+      expect(lookup).toHaveBeenCalledWith('cw', 'entry');
+      expect(container.querySelector('[aria-label="Unread messages"]')).toBe(
+        null,
+      );
+      expect(q('[data-testid="worktree-row-unread"]')).toBeNull();
+    });
+
+    it('hides a live dot when its space is muted after the build, and restores it on unmute', async () => {
+      const activity = host({
+        loadInventory: () => Promise.resolve(mutedInventory()),
+        unreadKeys: liveUnread,
+      });
+      render({
+        activity,
+        activityToggleInHeader: true,
+        getWorktreeNotificationSettings: () => loud,
+      });
+      act(() => bells()[0]?.click());
+      await flush();
+      const unreadRow = (): HTMLElement | null =>
+        q('[data-testid="sidebar-activity-row-unread"]');
+      const coworkRow = (): HTMLElement | null =>
+        q('[data-testid="sidebar-activity-row-cowork"]');
+      expect(
+        unreadRow()?.querySelector('[data-testid="worktree-row-unread"]'),
+      ).not.toBeNull();
+      expect(
+        coworkRow()?.querySelector('[aria-label="Unread messages"]'),
+      ).not.toBeNull();
+      const before = rowKeys('unread');
+      render({
+        activity,
+        activityToggleInHeader: true,
+        getWorktreeNotificationSettings: () => muted,
+      });
+      // The list stays frozen; only the dots follow the choice.
+      expect(rowKeys('unread')).toEqual(before);
+      expect(
+        unreadRow()?.querySelector('[data-testid="worktree-row-unread"]'),
+      ).toBeNull();
+      expect(
+        coworkRow()?.querySelector('[aria-label="Unread messages"]'),
+      ).toBeNull();
+      render({
+        activity,
+        activityToggleInHeader: true,
+        getWorktreeNotificationSettings: () => loud,
+      });
+      expect(
+        unreadRow()?.querySelector('[data-testid="worktree-row-unread"]'),
+      ).not.toBeNull();
+    });
+
+    it('masks a build started from a bell outside the surface', async () => {
+      const activity = withSidebarActivitySpaceMute(
+        host({ loadInventory: () => Promise.resolve(mutedInventory()) }),
+        () => true,
+      );
+      render(
+        { activity },
+        <SidebarActivityModeToggle
+          host={activity}
+          capabilities={activityCapabilities}
+        />,
+      );
+      act(() => bells()[0]?.click());
+      await flush();
+      expect(q('[data-testid="sidebar-activity-section-unread"]')).toBeNull();
+      expect(withSidebarActivitySpaceMute(undefined, () => true)).toBe(
+        undefined,
+      );
+      const plain = host();
+      expect(withSidebarActivitySpaceMute(plain, undefined)).toBe(plain);
+    });
   });
 
   it('ends Activity when the capability is revoked or the session changes', async () => {

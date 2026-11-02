@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type { Descendant } from 'slate';
 import type { FileViewerProps } from '@canopy/ui-app';
 import type { FileViewerSession } from '@canopy/app-state';
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
@@ -70,7 +71,32 @@ let mockWorktreeChats: Record<string, unknown> = {};
 const mockRefreshFile = jest.fn<Promise<string>, [PortalFileReadPayload]>();
 const mockRegisterTab = jest.fn<string, [string, PortalFileReadPayload]>();
 let mockMonacoEditorLanguage: string | null = null;
+let mockMonacoPresentation:
+  | { revision: number; line?: number; lineEnd?: number }
+  | undefined;
 let mockDiffTarget: OpenFileDiffTarget | null = null;
+
+function makeFileViewerSession(
+  overrides: Partial<FileViewerSession> = {},
+): FileViewerSession {
+  return {
+    key: 'file-key',
+    request: {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      fileRootLocalId: 'repo-1',
+      relativePath: 'src/a.ts',
+    },
+    preview: null,
+    content: '',
+    dirty: false,
+    viewMode: 'raw',
+    status: 'idle',
+    error: null,
+    canEdit: true,
+    ...overrides,
+  };
+}
 
 /** Every value handed to the UI state reporter, by key. */
 const reportedUiState = new Map<string, Array<AppAdvisorJson | null>>();
@@ -160,18 +186,20 @@ jest.mock('@canopy/ui-app', () => ({
     path,
   }: {
     path: string;
-  }): 'image' | 'pdf' | 'docx' | 'xlsx' | 'code' =>
+  }): 'image' | 'pdf' | 'docx' | 'xlsx' | 'video' | 'code' =>
     /\.pdf$/i.test(path)
       ? 'pdf'
       : /\.docx$/i.test(path)
         ? 'docx'
         : /\.xlsx$/i.test(path)
           ? 'xlsx'
-          : /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(path)
-            ? 'image'
-            : 'code',
+          : /\.mp4$/i.test(path)
+            ? 'video'
+            : /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(path)
+              ? 'image'
+              : 'code',
   isRichDocumentRenderKind: (kind: string): boolean =>
-    kind === 'pdf' || kind === 'docx' || kind === 'xlsx',
+    kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'video',
   FileViewer: (props: FileViewerProps): JSX.Element => {
     mockViewerProps = props;
     return (
@@ -181,6 +209,9 @@ jest.mock('@canopy/ui-app', () => ({
         data-testid="shared-file-viewer"
       >
         {props.headerActions}
+        <span data-testid="mock-trailing-header-actions">
+          {props.trailingHeaderActions}
+        </span>
         <span data-testid="mock-rich-file-content">
           {mockSession?.preview?.content}
         </span>
@@ -202,6 +233,7 @@ jest.mock('@/stores/chatStore', () => ({
       selector: (state: {
         worktreeChats: Record<string, unknown>;
         openFileTab: typeof mockOpenFileTab;
+        createEmptyFileTab: typeof mockCreateEmptyFileTab;
         setFileTabViewMode: typeof mockSetFileTabViewMode;
         sendMessage: typeof mockSendMessage;
       }) => unknown,
@@ -217,6 +249,7 @@ jest.mock('@/stores/chatStore', () => ({
       getState: (): {
         worktreeChats: Record<string, unknown>;
         ensureWorktreeHasChatTab: () => Promise<void>;
+        createEmptyFileTab: typeof mockCreateEmptyFileTab;
         sendMessage: typeof mockSendMessage;
         switchTab: typeof mockSwitchTab;
         loadTabsForTarget: typeof mockLoadTabsForTarget;
@@ -225,6 +258,7 @@ jest.mock('@/stores/chatStore', () => ({
       } => ({
         worktreeChats: mockWorktreeChats,
         ensureWorktreeHasChatTab: mockEnsureWorktreeHasChatTab,
+        createEmptyFileTab: mockCreateEmptyFileTab,
         sendMessage: mockSendMessage,
         switchTab: mockSwitchTab,
         loadTabsForTarget: mockLoadTabsForTarget,
@@ -280,15 +314,19 @@ jest.mock('../useTabScrollPosition', () => ({
 jest.mock('../MonacoFileEditor', () => ({
   MonacoFileEditor: (props: {
     language: string;
+    presentation?: { revision: number; line?: number; lineEnd?: number };
     onSelectionComment?: typeof mockSelectionHandler;
   }): JSX.Element => {
     mockMonacoEditorLanguage = props.language;
+    mockMonacoPresentation = props.presentation;
     mockSelectionHandler = props.onSelectionComment;
     return <div data-testid="mock-monaco-editor" />;
   },
 }));
 
 import { DesktopSharedFileViewer } from '../DesktopSharedFileViewer';
+import { WorkspaceAccessContext } from '@/lib/workspace-access';
+import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { useSurfaceFindStore } from '@/stores/surfaceFindStore';
 import { PanelHostContext } from '@/lib/panels/panel-host-context';
 import { FILE_PREVIEW_SEARCH_EVENT } from '@/lib/filePreviewSearchEvents';
@@ -480,12 +518,12 @@ describe('DesktopSharedFileViewer', () => {
     filePath: string,
     roots: Array<{ repoId: string; absolutePath: string }>,
     active = true,
-    annotationDocument = {
+    annotationDocument: FileAnnotationDocument = {
       filePath,
       annotations: [],
       commentThreads: [],
     },
-    viewMode: 'raw' | 'preview' = 'raw',
+    viewMode: 'raw' | 'preview' | 'diff' = 'raw',
     target: { projectId: string; worktreeId: string } = {
       projectId: 'project-1',
       worktreeId: 'worktree-1',
@@ -568,6 +606,41 @@ describe('DesktopSharedFileViewer', () => {
     expect(mockViewerProps?.revealLine).toEqual({ line: 155, revision: 2 });
     act(() => useAgentFilePresentationStore.getState().present('tab-1', {}));
     expect(mockViewerProps?.revealLine).toBeUndefined();
+  });
+
+  it.each([
+    ['a Cowork project', 'cowork', 'edit'],
+    ['a Code project', 'single-repo', 'source'],
+  ] as const)(
+    'names the raw view from %s (CAN-5004)',
+    async (_name, type, expected) => {
+      useProjectsStore.setState({
+        projects: [
+          type === 'cowork'
+            ? {
+                id: 'project-1',
+                type: 'cowork',
+                name: 'Cowork',
+                color: '#654321',
+                collapsed: false,
+                order: 0,
+              }
+            : makeProject('git-ready'),
+        ],
+      });
+      await renderViewer('/repo/README.md', [
+        { repoId: 'repo-1', absolutePath: '/repo' },
+      ]);
+      expect(mockViewerProps?.rawViewLabel).toBe(expected);
+    },
+  );
+
+  it('keeps Source when the project is unknown (CAN-5004)', async () => {
+    useProjectsStore.setState({ projects: [] });
+    await renderViewer('/repo/README.md', [
+      { repoId: 'repo-1', absolutePath: '/repo' },
+    ]);
+    expect(mockViewerProps?.rawViewLabel).toBe('source');
   });
 
   it.each([
@@ -834,6 +907,29 @@ describe('DesktopSharedFileViewer', () => {
     expect(button?.classList.contains('h-7')).toBe(true);
   });
 
+  it('keeps only the status dot in the header action when both counts are zero', async () => {
+    mockDiffTarget = {
+      file: {
+        path: 'link',
+        status: 'added',
+        insertions: 0,
+        deletions: 0,
+      },
+      source: 'uncommitted',
+    };
+
+    await renderViewer('/repo/link', [
+      { repoId: 'repo-1', absolutePath: '/repo' },
+    ]);
+
+    const button = host.querySelector<HTMLButtonElement>(
+      '[data-testid="file-viewer-view-diff"]',
+    );
+    expect(button).not.toBeNull();
+    expect(button?.textContent).toBe('');
+    expect(button?.querySelector('[title="Added"]')).not.toBeNull();
+  });
+
   it('does not classify an unverified persisted diff thread as current on a fresh raw mount', async () => {
     mockDiffTarget = {
       file: {
@@ -891,6 +987,58 @@ describe('DesktopSharedFileViewer', () => {
     ).toBeNull();
   });
 
+  // CAN-4103: a turn comparison reads only the turn's own trees.
+  it('shows a turn without saved trees as unavailable and offers the branch changes', async () => {
+    const context = {
+      path: 'src/a.ts',
+      source: 'turn',
+      startTree: 'a'.repeat(40),
+    } as const;
+    mockWorktreeChats = {
+      'project-1/worktree-1': {
+        activeTabId: 'tab-1',
+        tabs: [{ id: 'tab-1', kind: 'file', fileDiffContext: context }],
+      },
+    };
+    await renderViewer(
+      '/repo/src/a.ts',
+      [{ repoId: 'repo-1', absolutePath: '/repo' }],
+      true,
+      undefined,
+      'diff',
+    );
+    await act(async () => Promise.resolve());
+
+    // The mocked shared viewer does not mount its alternate content.
+    const diffHost = document.createElement('div');
+    const diffRoot = createRoot(diffHost);
+    act(() => {
+      diffRoot.render(<>{mockViewerProps?.alternateContent}</>);
+    });
+    const state = diffHost.querySelector(
+      '[data-testid="diff-viewer-notice-turn-unavailable"]',
+    );
+    expect(state?.textContent).toContain(
+      "This turn's changes weren't saved, so they can't be shown.",
+    );
+    expect(diffHost.querySelector('[data-testid="loading"]')).toBeNull();
+    const button = Array.from(state?.querySelectorAll('button') ?? []).find(
+      (candidate) => candidate.textContent === 'Show all branch changes',
+    );
+    act(() => {
+      button?.click();
+    });
+    expect(mockSetFileTabViewMode).toHaveBeenCalledWith(
+      'tab-1',
+      'diff',
+      { projectId: 'project-1', worktreeId: 'worktree-1' },
+      { ...context, source: 'combined' },
+    );
+    act(() => {
+      diffRoot.unmount();
+    });
+  });
+
   it('keeps a restored file loading until the destination becomes git-ready', async () => {
     const getFileTreeRoots = jest.fn().mockResolvedValue({
       roots: [{ repoId: 'repo-1', absolutePath: '/repo' }],
@@ -944,21 +1092,16 @@ describe('DesktopSharedFileViewer', () => {
       undefined,
       true,
     );
-    mockSession = {
-      key: 'file-key',
+    mockSession = makeFileViewerSession({
       request: mockViewerProps?.request ?? {
         projectId: 'project-1',
         worktreeId: 'worktree-1',
         fileRootLocalId: 'repo-1',
         relativePath: 'src/a.ts',
       },
-      preview: null,
-      content: '',
-      dirty: false,
-      viewMode: 'raw',
       status: 'error',
       error: 'File not found: src/a.ts',
-    };
+    });
     await act(async () => {
       root.render(
         <DesktopSharedFileViewer
@@ -1022,11 +1165,12 @@ describe('DesktopSharedFileViewer', () => {
       await Promise.resolve();
     });
 
-    mockSession = {
+    if (!mockSession) throw new Error('Expected an existing file session.');
+    mockSession = makeFileViewerSession({
       ...mockSession,
       status: 'error',
       error: 'File not found: src/a.ts',
-    };
+    });
     await act(async () => {
       root.render(
         <DesktopSharedFileViewer
@@ -1066,21 +1210,16 @@ describe('DesktopSharedFileViewer', () => {
     await renderViewer('/repo/src/a.ts', [
       { repoId: 'repo-1', absolutePath: '/repo' },
     ]);
-    mockSession = {
-      key: 'file-key',
+    mockSession = makeFileViewerSession({
       request: mockViewerProps?.request ?? {
         projectId: 'project-1',
         worktreeId: 'worktree-1',
         fileRootLocalId: 'repo-1',
         relativePath: 'src/a.ts',
       },
-      preview: null,
-      content: '',
-      dirty: false,
-      viewMode: 'raw',
       status: 'error',
       error: 'File not found: src/a.ts',
-    };
+    });
     await act(async () => {
       root.render(
         <DesktopSharedFileViewer
@@ -1124,21 +1263,16 @@ describe('DesktopSharedFileViewer', () => {
         undefined,
         true,
       );
-      mockSession = {
-        key: 'file-key',
+      mockSession = makeFileViewerSession({
         request: mockViewerProps?.request ?? {
           projectId: 'project-1',
           worktreeId: 'worktree-1',
           fileRootLocalId: 'repo-1',
           relativePath: 'src/a.ts',
         },
-        preview: null,
-        content: '',
-        dirty: false,
-        viewMode: 'raw',
         status: 'error',
         error: 'File not found: src/a.ts',
-      };
+      });
       await act(async () => {
         root.render(
           <DesktopSharedFileViewer
@@ -1187,11 +1321,12 @@ describe('DesktopSharedFileViewer', () => {
         );
         await Promise.resolve();
       });
-      mockSession = {
+      if (!mockSession) throw new Error('Expected an existing file session.');
+      mockSession = makeFileViewerSession({
         ...mockSession,
         status: 'error',
         error: 'File not found: src/a.ts',
-      };
+      });
       await act(async () => {
         root.render(
           <DesktopSharedFileViewer
@@ -1233,21 +1368,16 @@ describe('DesktopSharedFileViewer', () => {
         undefined,
         true,
       );
-      mockSession = {
-        key: 'file-key',
+      mockSession = makeFileViewerSession({
         request: mockViewerProps?.request ?? {
           projectId: 'project-1',
           worktreeId: 'worktree-1',
           fileRootLocalId: 'repo-1',
           relativePath: 'src/a.ts',
         },
-        preview: null,
-        content: '',
-        dirty: false,
-        viewMode: 'raw',
         status: 'error',
         error: 'File not found: src/a.ts',
-      };
+      });
       await act(async () => {
         root.render(
           <DesktopSharedFileViewer
@@ -1377,6 +1507,7 @@ describe('DesktopSharedFileViewer', () => {
         'docx',
         'xlsx',
         'pptx',
+        'video',
       ]);
       expect(mockViewerProps?.documentRecoveryHint).toBe(
         'Open it in its native app to view the full document.',
@@ -1422,28 +1553,235 @@ describe('DesktopSharedFileViewer', () => {
     },
   );
 
-  it('offers the platform open action in the header for Office previews only', async () => {
-    await renderViewer('/repo/docs/brief.docx', [
-      { repoId: 'repo-1', absolutePath: '/repo' },
-    ]);
-    const button = host.querySelector(
-      '[data-testid="file-viewer-open-original"]',
+  describe('local file header actions', () => {
+    async function renderLocal(
+      filePath: string,
+      {
+        readOnly = false,
+        projectId = 'project-1',
+        showInFinder = jest.fn().mockResolvedValue(undefined),
+        openExternalFile = jest.fn().mockResolvedValue(undefined),
+      }: {
+        readOnly?: boolean;
+        projectId?: string;
+        showInFinder?: jest.Mock;
+        openExternalFile?: jest.Mock;
+      } = {},
+    ): Promise<{ showInFinder: jest.Mock; openExternalFile: jest.Mock }> {
+      installApi({
+        getFileTreeRoots: jest.fn().mockResolvedValue({
+          roots: [{ repoId: 'repo-1', absolutePath: '/repo' }],
+        }),
+        showInFinder,
+        openExternalFile,
+        fileAnnotations: {
+          get: jest.fn().mockResolvedValue({
+            filePath,
+            annotations: [],
+            commentThreads: [],
+          }),
+          save: mockSaveAnnotations,
+          onUpdated: jest.fn().mockReturnValue(() => undefined),
+        },
+      });
+      const viewer = (
+        <DesktopSharedFileViewer
+          tabId="tab-1"
+          projectId={projectId}
+          worktreeId="worktree-1"
+          filePath={filePath}
+          viewMode="raw"
+          active
+        />
+      );
+      await act(async () => {
+        root.render(
+          readOnly ? (
+            <WorkspaceAccessContext.Provider
+              value={{
+                mode: 'read-only',
+                reason: 'shared-container',
+                containerType: 'COWORK_WORK_ENTRY',
+                runAllowed: false,
+              }}
+            >
+              {viewer}
+            </WorkspaceAccessContext.Provider>
+          ) : (
+            viewer
+          ),
+        );
+        await Promise.resolve();
+      });
+      return { showInFinder, openExternalFile };
+    }
+
+    function headerButton(testId: string): HTMLButtonElement | null {
+      return host.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+    }
+
+    async function click(button: HTMLButtonElement | null): Promise<void> {
+      if (!button) throw new Error('Missing header action');
+      await act(async () => {
+        button.click();
+        await Promise.resolve();
+      });
+    }
+
+    it.each([
+      '/repo/Vendor Spend Q3/vendor-spend-cleaned.csv',
+      '/repo/Vendor Spend Q3/Résumé des écarts.md',
+      '/repo/brief.pdf',
+      '/repo/docs/brief.docx',
+      '/repo/src/index.ts',
+    ])(
+      'offers reveal then default-app opening for %s with the exact scope',
+      async (filePath) => {
+        const { showInFinder, openExternalFile } = await renderLocal(filePath);
+        const group = host.querySelector(
+          '[data-testid="file-viewer-local-actions"]',
+        );
+        if (!group) throw new Error('Missing local actions');
+        const buttons = Array.from(
+          group.querySelectorAll<HTMLButtonElement>('button'),
+        );
+        expect(
+          buttons.map((button) => button.getAttribute('aria-label')),
+        ).toEqual(['Open in Finder', 'Open in default app']);
+        // Quiet icon-only toolbar controls, matching the rest of the header:
+        // a name for assistive tech and the tooltip, no visible label.
+        for (const button of buttons) {
+          expect(button.dataset.headerActionButton).toBe('true');
+          expect(button.textContent).toBe('');
+          expect(
+            button.querySelector('svg[aria-hidden="true"]'),
+          ).not.toBeNull();
+        }
+        // Ways to open the file elsewhere follow the viewer's own controls.
+        expect(
+          host
+            .querySelector('[data-testid="mock-trailing-header-actions"]')
+            ?.contains(group),
+        ).toBe(true);
+        expect(buttons.map((button) => button.dataset.testid)).toEqual([
+          'file-viewer-open-original',
+          'file-viewer-open-external',
+        ]);
+        for (const button of buttons) {
+          expect(button.type).toBe('button');
+          expect(button.className).toContain('focus-ring');
+          button.focus();
+          expect(document.activeElement).toBe(button);
+        }
+        await click(headerButton('file-viewer-open-original'));
+        expect(showInFinder).toHaveBeenCalledWith({
+          absolutePath: filePath,
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+        });
+        await click(headerButton('file-viewer-open-external'));
+        expect(openExternalFile).toHaveBeenCalledWith({
+          absolutePath: filePath,
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+        });
+      },
     );
-    expect(button?.textContent).toBe('Open in Finder');
-    act(() => {
-      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    it.each([
+      ['win32', 'Open in File Explorer'],
+      ['linux', 'Open in Files'],
+    ])('uses the %s file manager label', async (platform, label) => {
+      Object.defineProperty(window, 'platform', {
+        configurable: true,
+        value: platform,
+      });
+      await renderLocal('/repo/report.md');
+      expect(
+        headerButton('file-viewer-open-original')?.getAttribute('aria-label'),
+      ).toBe(label);
     });
-    expect(window.api.showInFinder).toHaveBeenCalledWith({
-      absolutePath: '/repo/docs/brief.docx',
-      projectId: 'project-1',
-      worktreeId: 'worktree-1',
+
+    it('offers no local actions in a read-only scope', async () => {
+      await renderLocal('/repo/report.csv', { readOnly: true });
+      expect(headerButton('file-viewer-open-original')).toBeNull();
+      expect(headerButton('file-viewer-open-external')).toBeNull();
+      expect(mockViewerProps?.unsupportedFileAction).toBeUndefined();
     });
-    await renderViewer('/repo/brief.pdf', [
-      { repoId: 'repo-1', absolutePath: '/repo' },
-    ]);
-    expect(
-      host.querySelector('[data-testid="file-viewer-open-original"]'),
-    ).toBeNull();
+
+    it('offers no local actions for a shared-container replica scope', async () => {
+      await renderLocal('/repo/report.csv', {
+        projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+      });
+      expect(headerButton('file-viewer-open-original')).toBeNull();
+      expect(headerButton('file-viewer-open-external')).toBeNull();
+    });
+
+    it.each(['showInFinder', 'openExternalFile'] as const)(
+      'omits only the unavailable %s action',
+      async (unavailable) => {
+        await renderLocal('/repo/report.md');
+        Object.defineProperty(window.api, unavailable, {
+          configurable: true,
+          value: undefined,
+        });
+        await act(async () => {
+          root.render(
+            <DesktopSharedFileViewer
+              tabId="tab-1"
+              projectId="project-1"
+              worktreeId="worktree-1"
+              filePath="/repo/other.md"
+              viewMode="raw"
+              active
+            />,
+          );
+          await Promise.resolve();
+        });
+        expect(headerButton('file-viewer-open-original') === null).toBe(
+          unavailable === 'showInFinder',
+        );
+        expect(headerButton('file-viewer-open-external') === null).toBe(
+          unavailable === 'openExternalFile',
+        );
+        if (unavailable === 'showInFinder')
+          expect(mockViewerProps?.unsupportedFileAction).toBeUndefined();
+      },
+    );
+
+    it('reports a failed reveal accessibly, keeps the preview, and clears it on retry', async () => {
+      const showInFinder = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('ENOENT /repo/report.csv'))
+        .mockResolvedValue(undefined);
+      await renderLocal('/repo/report.csv', { showInFinder });
+      await click(headerButton('file-viewer-open-original'));
+      const alert = host.querySelector('[role="alert"]');
+      expect(alert?.textContent).toBe(
+        "Couldn't show this file. It may have been moved or deleted.",
+      );
+      expect(alert?.textContent).not.toContain('/repo');
+      expect(mockViewerProps?.request).not.toBeNull();
+      expect(headerButton('file-viewer-open-original')).not.toBeNull();
+      await click(headerButton('file-viewer-open-original'));
+      expect(showInFinder).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it('reports a failed default-app open and drops the error when the file changes', async () => {
+      const openExternalFile = jest
+        .fn()
+        .mockRejectedValue(new Error('No application'));
+      await renderLocal('/repo/report.md', { openExternalFile });
+      await click(headerButton('file-viewer-open-external'));
+      expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+        "Couldn't open this file in its default app. It may have been moved or deleted.",
+      );
+      await renderLocal('/repo/other.md', { openExternalFile });
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+      await renderLocal('/repo/report.md', { openExternalFile });
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+    });
   });
 
   it('signals a document retry when an XLSX tab is reactivated instead of refreshing a text session', async () => {
@@ -1459,6 +1797,22 @@ describe('DesktopSharedFileViewer', () => {
       true,
     );
     expect(mockViewerProps?.documentRetryGeneration).toBe(before + 1);
+    expect(mockRefreshFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps a reactivated video tab playing instead of re-reading it (CAN-3995)', async () => {
+    await renderViewer(
+      '/repo/out/reel.mp4',
+      [{ repoId: 'repo-1', absolutePath: '/repo' }],
+      false,
+    );
+    const before = mockViewerProps?.documentRetryGeneration ?? 0;
+    await renderViewer(
+      '/repo/out/reel.mp4',
+      [{ repoId: 'repo-1', absolutePath: '/repo' }],
+      true,
+    );
+    expect(mockViewerProps?.documentRetryGeneration).toBe(before);
     expect(mockRefreshFile).not.toHaveBeenCalled();
   });
 
@@ -1606,21 +1960,16 @@ describe('DesktopSharedFileViewer', () => {
       undefined,
       true,
     );
-    mockSession = {
-      key: 'file-key',
+    mockSession = makeFileViewerSession({
       request: mockViewerProps?.request ?? {
         projectId: 'project-1',
         worktreeId: 'worktree-1',
         fileRootLocalId: 'repo-1',
         relativePath: 'src/a.ts',
       },
-      preview: null,
-      content: '',
-      dirty: false,
-      viewMode: 'raw',
       status: 'error',
       error: 'File not found: src/a.ts',
-    };
+    });
     await act(async () => {
       root.render(
         <DesktopSharedFileViewer
@@ -1748,7 +2097,7 @@ describe('DesktopSharedFileViewer', () => {
   it('keeps rendered-view annotation markers off the scrollbar rail', async () => {
     const filePath = '/repo/README.md';
     const content = 'first\nmarked\nlast';
-    mockSession = {
+    mockSession = makeFileViewerSession({
       key: 'file-key',
       request: {
         projectId: 'project-1',
@@ -1772,7 +2121,7 @@ describe('DesktopSharedFileViewer', () => {
       viewMode: 'preview',
       status: 'idle',
       error: null,
-    };
+    });
     const annotationDocument: FileAnnotationDocument = {
       filePath,
       annotations: [],
@@ -1869,7 +2218,7 @@ describe('DesktopSharedFileViewer', () => {
 
   it('shows selection actions after a Markdown preview selection without stealing focus', async () => {
     const content = 'first\nselected\nlast';
-    mockSession = {
+    mockSession = makeFileViewerSession({
       key: 'file-key',
       request: {
         projectId: 'project-1',
@@ -1893,7 +2242,7 @@ describe('DesktopSharedFileViewer', () => {
       viewMode: 'preview',
       status: 'idle',
       error: null,
-    };
+    });
     await renderViewer(
       '/repo/README.md',
       [{ repoId: 'repo-1', absolutePath: '/repo' }],
@@ -2017,7 +2366,7 @@ describe('DesktopSharedFileViewer', () => {
           ],
         },
       };
-      mockSession = {
+      mockSession = makeFileViewerSession({
         key: 'file-key',
         request: {
           projectId,
@@ -2041,7 +2390,7 @@ describe('DesktopSharedFileViewer', () => {
         viewMode,
         status: 'idle',
         error: null,
-      };
+      });
       const received: InsertChatTextDetail[] = [];
       const handleInsert = (event: Event): void => {
         if (!(event instanceof CustomEvent)) return;
@@ -2075,7 +2424,10 @@ describe('DesktopSharedFileViewer', () => {
           const richContent = host.querySelector<HTMLElement>(
             '[data-testid="mock-rich-file-content"]',
           );
-          const textNode = richContent?.firstChild;
+          if (!richContent) {
+            throw new Error('Expected Markdown preview content element');
+          }
+          const textNode = richContent.firstChild;
           if (!(textNode instanceof Text)) {
             throw new Error('Expected Markdown preview text content');
           }
@@ -2122,6 +2474,79 @@ describe('DesktopSharedFileViewer', () => {
       }
     },
   );
+
+  it('omits overlap drafting when no editable chat can accept it', async () => {
+    mockWorktreeChats = {
+      'project-1/worktree-1': {
+        activeTabId: 'file-tab',
+        tabs: [{ id: 'file-tab', kind: 'file' }],
+      },
+    };
+    await renderViewer('/repo/src/a.ts', [
+      { repoId: 'repo-1', absolutePath: '/repo' },
+    ]);
+    expect(mockViewerProps?.onAskToKeepEdits).toBeUndefined();
+    expect(mockSaveTabDraft).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('appends an overlap follow-up draft to the target chat without sending (CAN-5362)', async () => {
+    mockWorktreeChats = {
+      'project-1/worktree-1': {
+        activeTabId: 'file-tab',
+        lastActiveEditableChatId: 'chat-current',
+        tabs: [
+          { id: 'file-tab', kind: 'file' },
+          { id: 'chat-current', kind: 'chat' },
+        ],
+      },
+    };
+    const existing: Descendant[] = [
+      { type: 'paragraph', children: [{ text: 'my draft' }] },
+    ];
+    mockGetTabDraft.mockReturnValue(existing);
+    await renderViewer('/repo/src/a.ts', [
+      { repoId: 'repo-1', absolutePath: '/repo' },
+    ]);
+    const ask = mockViewerProps?.onAskToKeepEdits;
+    expect(ask).toBeDefined();
+
+    // A mounted composer takes the text live and appends it to its draft.
+    const received: InsertChatTextDetail[] = [];
+    const handleInsert = (event: Event): void => {
+      if (!(event instanceof CustomEvent)) return;
+      const detail: unknown = event.detail;
+      if (!isInsertChatTextDetail(detail)) return;
+      received.push(detail);
+      detail.markHandled?.();
+    };
+    document.addEventListener(INSERT_CHAT_TEXT_EVENT, handleInsert);
+    try {
+      act(() => ask?.('Keep 1,200 → 1,350'));
+    } finally {
+      document.removeEventListener(INSERT_CHAT_TEXT_EVENT, handleInsert);
+    }
+    expect(received).toEqual([
+      expect.objectContaining({
+        text: 'Keep 1,200 → 1,350',
+        targetTabId: 'chat-current',
+      }),
+    ]);
+    expect(mockSaveTabDraft).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockSwitchTab).toHaveBeenCalledWith('chat-current', {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+    });
+
+    // An unmounted composer keeps its saved draft and gains the text.
+    act(() => ask?.('Keep 80% → 85%'));
+    expect(mockSaveTabDraft).toHaveBeenCalledWith('chat-current', [
+      ...existing,
+      { type: 'paragraph', children: [{ text: 'Keep 80% → 85%' }] },
+    ]);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
 
   it('anchors unique rich-view selections and leaves duplicate text unanchored', () => {
     expect(
@@ -2622,6 +3047,37 @@ describe('DesktopSharedFileViewer', () => {
     expect(mockMonacoEditorLanguage).toBe('lua');
   });
 
+  it("follows the shared slot's composed reveal rather than the host presentation", async () => {
+    useAgentFilePresentationStore
+      .getState()
+      .present('tab-1', { line: 150, lineEnd: 160 });
+    await renderViewer('/repo/src/a.ts', [
+      { repoId: 'repo-1', absolutePath: '/repo' },
+    ]);
+    const renderEditor = mockViewerProps?.renderEditor;
+    const slot = {
+      value: 'one\ntwo\nthree\n',
+      language: 'typescript',
+      filePath: 'src/a.ts',
+      dirty: true,
+      onChange: jest.fn(),
+      onSave: jest.fn(),
+    };
+    await act(async () => {
+      root.render(
+        <>{renderEditor?.({ ...slot, reveal: { line: 3, revision: 7 } })}</>,
+      );
+      await Promise.resolve();
+    });
+    expect(mockMonacoPresentation).toEqual({ line: 3, revision: 7 });
+
+    await act(async () => {
+      root.render(<>{renderEditor?.(slot)}</>);
+      await Promise.resolve();
+    });
+    expect(mockMonacoPresentation).toBeUndefined();
+  });
+
   it('selects the longest matching root for nested project repos', async () => {
     await renderViewer('/repo/packages/inner/src/a.ts', [
       { repoId: 'repo-outer', absolutePath: '/repo' },
@@ -2703,17 +3159,9 @@ describe('DesktopSharedFileViewer', () => {
     );
   });
 
-  it.each([
-    ['report.md', 'preview'],
-    ['report.MARKDOWN', 'preview'],
-    ['report.mdx', 'preview'],
-    ['page.html', 'preview'],
-    ['page.htm', 'preview'],
-    ['rows.csv', 'table'],
-    ['module.ts', undefined],
-  ])(
-    'opens a relative link to %s in its supported rendered mode',
-    async (filename, initialViewMode) => {
+  it.each(['report.md', 'rows.csv', 'module.ts'])(
+    'opens a relative link to %s and leaves its view to the store',
+    async (filename) => {
       const resolveFileReference = jest.fn().mockResolvedValue({
         absolutePath: `/repo/docs/${filename}`,
         filename,
@@ -2731,7 +3179,7 @@ describe('DesktopSharedFileViewer', () => {
         href: `docs/${filename}`,
       });
       expect(mockOpenFileTab).toHaveBeenCalledWith(
-        { absolutePath: `/repo/docs/${filename}`, filename, initialViewMode },
+        { absolutePath: `/repo/docs/${filename}`, filename },
         { projectId: 'project-1', worktreeId: 'worktree-1' },
       );
     },

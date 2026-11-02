@@ -78,10 +78,10 @@ describe('ApiKeysManager errors', () => {
     });
     await render(client);
 
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain(SERVER_SENTINEL);
 
-    await act(async () => buttonNamed('Retry').click());
+    await act(async () => buttonNamed('Try again').click());
 
     expect(reads).toBe(2);
     expect(container.textContent).not.toContain("Couldn't load this.");

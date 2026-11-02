@@ -10,6 +10,7 @@
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { TurnFeedbackControl } from '../TurnFeedbackControl';
+import { ChatLookProvider } from '../chat-look';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -47,7 +48,9 @@ describe('TurnFeedbackControl', () => {
 
   it('mounts both buttons with aria-pressed at rest, never hidden', () => {
     const { container } = render(
-      <TurnFeedbackControl onRate={(): void => undefined} />,
+      <ChatLookProvider value="classic">
+        <TurnFeedbackControl onRate={(): void => undefined} />
+      </ChatLookProvider>,
     );
     const { up, down } = buttons(container);
 
@@ -79,11 +82,13 @@ describe('TurnFeedbackControl', () => {
 
   it('shows the rating by tone and a filled icon, never a border', () => {
     const { container } = render(
-      <TurnFeedbackControl
-        rating="down"
-        syncState="pending"
-        onRate={(): void => undefined}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnFeedbackControl
+          rating="down"
+          syncState="pending"
+          onRate={(): void => undefined}
+        />
+      </ChatLookProvider>,
     );
     const { up, down } = buttons(container);
 
@@ -112,11 +117,13 @@ describe('TurnFeedbackControl', () => {
     // A rejected upload must never silently revert the user's click; the
     // outbox retries it on the next sign-in or startup flush.
     const { container } = render(
-      <TurnFeedbackControl
-        rating="up"
-        syncState="failed"
-        onRate={(): void => undefined}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnFeedbackControl
+          rating="up"
+          syncState="failed"
+          onRate={(): void => undefined}
+        />
+      </ChatLookProvider>,
     );
     const { up } = buttons(container);
 
@@ -131,11 +138,13 @@ describe('TurnFeedbackControl', () => {
   it('reports the picked rating, and clears when the selected one is clicked', () => {
     const rates: (string | null)[] = [];
     const { container, root } = render(
-      <TurnFeedbackControl
-        onRate={(next): void => {
-          rates.push(next);
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnFeedbackControl
+          onRate={(next): void => {
+            rates.push(next);
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     act(() => {
@@ -145,12 +154,14 @@ describe('TurnFeedbackControl', () => {
 
     act(() => {
       root.render(
-        <TurnFeedbackControl
-          rating="down"
-          onRate={(next): void => {
-            rates.push(next);
-          }}
-        />,
+        <ChatLookProvider value="classic">
+          <TurnFeedbackControl
+            rating="down"
+            onRate={(next): void => {
+              rates.push(next);
+            }}
+          />
+        </ChatLookProvider>,
       );
     });
     act(() => {

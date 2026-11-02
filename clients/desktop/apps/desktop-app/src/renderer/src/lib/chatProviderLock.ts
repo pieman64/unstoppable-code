@@ -11,11 +11,15 @@ import {
   isTerminalBackedInterfaceMode,
 } from '@canopy/desktop-shared/types';
 import { getProviderLabel } from '@/lib/providerLabels';
+import type { ChatTab } from '@/stores/chat/types';
 
 /**
  * Minimal slice of ChatTab needed to evaluate conversation state.
  */
-interface TabLike {
+interface TabLike extends Pick<
+  ChatTab,
+  'provisionalFirstSend' | 'pendingUserMessages'
+> {
   messages: { length: number };
   queuedMessages?: { length: number };
   sdkSessionId?: string;
@@ -32,6 +36,13 @@ interface TabLike {
  */
 function hasConversationState(tab?: TabLike): boolean {
   if (!tab) return false;
+  if (
+    (tab.provisionalFirstSend?.phase === 'preparing' ||
+      tab.provisionalFirstSend?.phase === 'failed') &&
+    tab.messages.length === tab.pendingUserMessages?.length &&
+    (tab.queuedMessages?.length ?? 0) === 0
+  )
+    return false;
   return tab.messages.length > 0 || (tab.queuedMessages?.length ?? 0) > 0;
 }
 

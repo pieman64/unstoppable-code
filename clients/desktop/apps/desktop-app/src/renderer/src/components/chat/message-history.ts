@@ -1,5 +1,6 @@
 import { Editor, Point, Range } from 'slate';
 import type { Descendant } from 'slate';
+import { isHumanAuthoredUserMessage } from '@canopy/agent-transcript/transcript-storage';
 import type { ChatMessage } from '@/stores/chatStore';
 import type { ChatEditor } from '@canopy/ui-rich/types';
 
@@ -18,7 +19,10 @@ export function extractUserMessageHistory(
   const history: string[] = [];
 
   for (const message of messages) {
-    if (message.role !== 'user' || message.hidden) {
+    // Watcher, agent, hook and automatic resume or restart inputs are
+    // user-role records the person did not type. Button-driven sends that
+    // carry human provenance are still caught by isGeneratedUserPrompt below.
+    if (message.hidden || !isHumanAuthoredUserMessage(message)) {
       continue;
     }
 

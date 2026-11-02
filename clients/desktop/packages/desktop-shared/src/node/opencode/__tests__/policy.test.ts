@@ -100,7 +100,7 @@ it('normalizes v2 native paths and shell commands for the existing approval serv
   ).toEqual([
     {
       tool: 'Write',
-      input: { file_path: '/workspace/a.txt', content: '' },
+      input: { file_path: '/workspace/a.txt' },
       mutates: true,
     },
   ]);
@@ -119,17 +119,17 @@ it('checks every patch source, destination and deleted file before permitting a 
   ).toEqual([
     {
       tool: 'Write',
-      input: { file_path: '/workspace/a.txt', content: '' },
+      input: { file_path: '/workspace/a.txt' },
       mutates: true,
     },
     {
       tool: 'Write',
-      input: { file_path: '/outside.txt', content: '' },
+      input: { file_path: '/outside.txt' },
       mutates: true,
     },
     {
       tool: 'Write',
-      input: { file_path: '/workspace/b.txt', content: '' },
+      input: { file_path: '/workspace/b.txt' },
       mutates: true,
     },
   ]);

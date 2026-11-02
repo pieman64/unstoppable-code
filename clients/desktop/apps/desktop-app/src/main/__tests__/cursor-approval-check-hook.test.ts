@@ -64,6 +64,10 @@ describe('Cursor check hook', () => {
     check,
     setMode: jest.fn(),
     invalidatePending,
+    reevaluatePendingApprovals: jest.fn<
+      ReturnType<ApprovalSessionHandle['reevaluatePendingApprovals']>,
+      Parameters<ApprovalSessionHandle['reevaluatePendingApprovals']>
+    >(() => Promise.resolve()),
     dispose,
   };
   let hook: CursorCheckHook;

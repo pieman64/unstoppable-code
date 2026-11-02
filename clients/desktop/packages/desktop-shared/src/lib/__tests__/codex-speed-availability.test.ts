@@ -274,7 +274,7 @@ describe('native tier parsing', () => {
     expect(parseCodexSpeedCatalogWireModel({ id: 'no-slug' })).toBeNull();
   });
 
-  it('parses the bundled 0.159 catalog shape without extra fields', () => {
+  it('parses the bundled 0.159 catalog shape, keeping only sanitized fields', () => {
     expect(
       parseCodexSpeedCatalogModel({
         id: 'gpt-6-astra',
@@ -290,6 +290,7 @@ describe('native tier parsing', () => {
       model: 'gpt-6-astra',
       tiers: ['priority'],
       source: 'serviceTiers',
+      displayName: 'GPT-6 Astra',
     });
     expect(parseCodexSpeedCatalogModel({ model: 'only-model' })).toEqual({
       id: 'only-model',
@@ -298,6 +299,59 @@ describe('native tier parsing', () => {
       source: 'unknown',
     });
     expect(parseCodexSpeedCatalogModel({ displayName: 'x' })).toBeNull();
+  });
+
+  it('reads account model metadata from strings and objects (CAN-4716)', () => {
+    expect(
+      parseCodexSpeedCatalogModel({
+        id: 'gpt-6-luna',
+        model: 'gpt-6-luna',
+        displayName: ' Luna 6.0 ',
+        hidden: false,
+        isDefault: true,
+        supportedReasoningEfforts: [
+          { reasoningEffort: 'low', description: 'Fast' },
+          'medium',
+          'medium',
+          { reasoningEffort: 7 },
+          null,
+          '',
+          'high',
+        ],
+      }),
+    ).toEqual({
+      id: 'gpt-6-luna',
+      model: 'gpt-6-luna',
+      tiers: null,
+      source: 'unknown',
+      displayName: 'Luna 6.0',
+      hidden: false,
+      isDefault: true,
+      reasoningEfforts: ['low', 'medium', 'high'],
+    });
+  });
+
+  it('ignores malformed account metadata without dropping the model', () => {
+    expect(
+      parseCodexSpeedCatalogModel({
+        id: 'gpt-6-luna',
+        displayName: '   ',
+        hidden: 'yes',
+        isDefault: 1,
+        supportedReasoningEfforts: 'high',
+      }),
+    ).toEqual({
+      id: 'gpt-6-luna',
+      model: 'gpt-6-luna',
+      tiers: null,
+      source: 'unknown',
+    });
+    expect(
+      parseCodexSpeedCatalogModel({
+        id: 'gpt-6-luna',
+        supportedReasoningEfforts: [{}, 5],
+      }),
+    ).not.toHaveProperty('reasoningEfforts');
   });
 
   it.each([null, 'malformed', 7, {}])(
@@ -631,6 +685,30 @@ describe('catalog transport helpers', () => {
     });
     expect(isCodexSpeedCatalog(valid)).toBe(true);
     expect(isCodexSpeedCatalog(createUnknownCodexSpeedCatalog())).toBe(true);
+    const withMetadata = catalog([
+      {
+        ...model('gpt-6-luna', null),
+        displayName: 'Luna 6.0',
+        hidden: false,
+        isDefault: true,
+        reasoningEfforts: ['low', 'high'],
+      },
+    ]);
+    expect(isCodexSpeedCatalog(withMetadata)).toBe(true);
+    for (const malformed of [
+      { displayName: '' },
+      { hidden: 'no' },
+      { isDefault: 1 },
+      { reasoningEfforts: 'high' },
+      { reasoningEfforts: [3] },
+    ]) {
+      expect(
+        isCodexSpeedCatalog({
+          ...withMetadata,
+          models: [{ ...model('gpt-6-luna', null), ...malformed }],
+        }),
+      ).toBe(false);
+    }
     expect(isCodexSpeedCatalog({ ...valid, generation: -1 })).toBe(false);
     expect(isCodexSpeedCatalog({ ...valid, status: 'maybe' })).toBe(false);
     expect(

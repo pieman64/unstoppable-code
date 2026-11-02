@@ -206,14 +206,12 @@ for (const placement of CATALOG_PLACEMENTS) {
 
 // The Personal catalog choice is a user-level setting. It lives only in
 // Settings (the hosted Public profile page, CAN-4421) as a standard switch
-// row, never as a card on Home or in an empty chat, even for a signed-in
-// account with the checklist showing.
+// row, never as a card on Home or in an empty chat, even for a signed-in account.
 test('CAN-2963: Personal catalog is a Settings choice, not a Home offer', async () => {
   test.setTimeout(90_000);
   const apiKey = 'csk_can2963_privacy_only';
   await registerScenario(DEFAULT_MOCK_BASE_URL, apiKey, {});
   const { electronApp, userDataDir } = await launchCanopy({
-    freshOnboardingChecklist: true,
     env: {
       CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify(ORG_PROJECTS_FLAGS),
     },
@@ -224,9 +222,9 @@ test('CAN-2963: Personal catalog is a Settings choice, not a Home offer', async 
     await app.waitForShell();
     await connectMockCloudAccount(window, apiKey);
     await expect(window.getByTestId('page-home')).toBeVisible();
-    await expect(window.getByTestId('home-onboarding-suggestions')).toBeVisible(
-      { timeout: 15_000 },
-    );
+    await expect(
+      window.getByTestId('home-composer-editor').locator('visible=true'),
+    ).toBeVisible();
 
     await app.openSettings();
     // Privacy no longer carries it.
@@ -241,7 +239,7 @@ test('CAN-2963: Personal catalog is a Settings choice, not a Home offer', async 
       .getByTestId('account-device-settings-profile')
       .getByTestId('personal-catalog-settings');
     await expect(
-      section.getByRole('heading', { name: 'Personal projects on the web' }),
+      section.getByRole('heading', { name: 'On this computer' }),
     ).toBeVisible();
     await expect(
       section.getByRole('switch', {
@@ -259,8 +257,11 @@ test('CAN-2963: Personal catalog is a Settings choice, not a Home offer', async 
     await app.closeSettings();
     await expect(window.getByTestId('page-home')).toBeVisible();
     await expect(
-      window.getByTestId('home-onboarding-suggestions'),
+      window.getByTestId('home-composer-editor').locator('visible=true'),
     ).toBeVisible();
+    await expect(window.getByTestId('home-onboarding-suggestions')).toHaveCount(
+      0,
+    );
     await expect(window.getByTestId('personal-catalog-offer')).toHaveCount(0);
     await expect(
       window.getByText('Show my Personal projects on the web'),

@@ -1,4 +1,12 @@
+export { summarizeSharedContainerCapabilityPackage } from './package-summary';
+export * from './capability-definitions';
+import { isSafeCapabilityRelativePath } from '../capability-files';
+import {
+  isCapabilityPackageDigest,
+  type CapabilityPackageRef,
+} from '../pipelines/package';
 // ---------------------------------------------------------------------------
+import type { WorkspaceContext } from '../workspace-context';
 import type { PortalChatMessage } from '../portal';
 import type { WirePlanCommentThread } from '../plans';
 import { isSafePortableRelativePath } from '../safe-relative-path';
@@ -422,6 +430,8 @@ export interface SharedContainerPublishedChat {
 export interface SharedContainerForkProvenance {
   sourceContainerId: string;
   sourceRevisionId: string;
+  /** Publication time from the guarded source revision; absent on legacy copies. */
+  sourceRevisionCreatedAt?: string;
   sourceOwnerDisplayName: string;
   /** Owning organization of the source; absent for a personal container. */
   organizationId?: string;
@@ -430,7 +440,11 @@ export interface SharedContainerForkProvenance {
 
 export type SharedContainerForkDestination =
   | { kind: 'existing-workspace'; workspaceId: string }
-  | { kind: 'new-workspace'; parentDirectory?: string };
+  | {
+      kind: 'new-workspace';
+      owner: WorkspaceContext;
+      parentDirectory?: string;
+    };
 
 export interface SharedContainerForkRequest {
   containerId: string;
@@ -439,6 +453,13 @@ export interface SharedContainerForkRequest {
   organizationId?: string;
   sourceOwnerDisplayName: string;
   destination: SharedContainerForkDestination;
+  /**
+   * Digest of the capability package the fork confirmation disclosed for
+   * `revisionId`. Making the copy is consent to install exactly this package:
+   * main installs only when the pinned revision still carries this digest,
+   * and never switches to a later revision. Absent when nothing was disclosed.
+   */
+  expectedPackageDigest?: string;
 }
 
 export interface SharedContainerForkResponse {
@@ -448,6 +469,35 @@ export interface SharedContainerForkResponse {
   warnings: string[];
   provenance: SharedContainerForkProvenance;
 }
+
+/** Stable expected refusals, returned as data across Electron and remote IPC. */
+export type SharedContainerForkErrorCode =
+  | 'invalid-destination'
+  | 'owner-mismatch'
+  | 'source-unavailable'
+  | 'destination-unavailable'
+  /** The member can't create projects in the owning organization now. */
+  | 'organization-creation-unavailable'
+  /** The member's private-project limit in the organization has been reached. */
+  | 'organization-project-limit'
+  /** The organization already has this share's project on this computer. */
+  | 'organization-already-bound'
+  /** The organization's project for the repository can't be used. */
+  | 'organization-repository-inaccessible'
+  /** A new organization copy isn't supported for this share's shape. */
+  | 'organization-shape-unsupported'
+  /** Creating or setting up the organization copy failed. */
+  | 'organization-creation-failed';
+
+export interface SharedContainerForkRefusal {
+  ok: false;
+  code: SharedContainerForkErrorCode;
+  message: string;
+}
+
+export type SharedContainerForkResult =
+  | SharedContainerForkResponse
+  | SharedContainerForkRefusal;
 
 /** Presentation-safe tracked-plan artifact published independently from local state. */
 export interface SharedContainerPublishedPlan {
@@ -501,6 +551,9 @@ export interface SharedContainerStageRevisionRequest {
   schemaVersion: number;
   parentRevisionId?: string;
   artifacts: SharedContainerStageArtifact[];
+  capabilityPackage?: CapabilityPackageRef;
+  committedPackageUploadId?: string;
+  carryParentPackage?: true;
 }
 
 export interface SharedContainerUploadTarget {
@@ -578,6 +631,10 @@ export const SHARED_CONTAINER_UPLOAD_TARGET_REFRESH_EXHAUSTED_ERROR_CODE =
   'shared-container-upload-target-refresh-exhausted' as const;
 export const SHARED_CONTAINER_CLEANUP_IN_PROGRESS_ERROR_CODE =
   'shared-container-cleanup-in-progress' as const;
+export const SHARED_CONTAINER_PACKAGE_UPLOAD_EXPIRED_ERROR_CODE =
+  'shared_container_package_upload_expired' as const;
+export const SHARED_CONTAINER_PARENT_PACKAGE_UNAVAILABLE_ERROR_CODE =
+  'shared_container_parent_package_unavailable' as const;
 export const SHARED_CONTAINER_ERROR_CODES = [
   SHARED_CONTAINER_INSUFFICIENT_ROLE_ERROR_CODE,
   SHARED_CONTAINER_BLOCKED_BY_ORG_BILLING_ERROR_CODE,
@@ -587,6 +644,8 @@ export const SHARED_CONTAINER_ERROR_CODES = [
   SHARED_CONTAINER_STAGE_ALREADY_COMMITTED_ERROR_CODE,
   SHARED_CONTAINER_UPLOAD_TARGET_REFRESH_EXHAUSTED_ERROR_CODE,
   SHARED_CONTAINER_CLEANUP_IN_PROGRESS_ERROR_CODE,
+  SHARED_CONTAINER_PACKAGE_UPLOAD_EXPIRED_ERROR_CODE,
+  SHARED_CONTAINER_PARENT_PACKAGE_UNAVAILABLE_ERROR_CODE,
   SHARED_CONTAINER_CLOUD_CHAT_OWNER_ORGANIZATION_MISMATCH_ERROR_CODE,
 ] as const;
 export type SharedContainerErrorCode =
@@ -646,7 +705,76 @@ export interface SharedContainerSummary extends SharedContainerRef {
   capabilities: SharedContainerCapability[];
 }
 
+export interface SharedContainerCapabilityPackageCounts {
+  skills: number;
+  pipelines: number;
+  agents: number;
+  automations: number;
+  hooks: number;
+}
+
+export interface SharedContainerRevisionPackage {
+  digest: string;
+  counts: SharedContainerCapabilityPackageCounts;
+  executableFiles: string[];
+}
+
+/**
+ * Executable disclosures are `resourceId/rootName/path`, so their bound is the
+ * two 255-character segments plus the manifest's 1,024-character entry path.
+ */
+function isRevisionPackageExecutableFile(value: unknown): value is string {
+  return isSafeCapabilityRelativePath(value, {
+    maxPathLength: 255 + 1 + 255 + 1 + 1_024,
+    maxSegmentLength: 255,
+  });
+}
+
+export function isSharedContainerRevisionPackage(
+  value: unknown,
+): value is SharedContainerRevisionPackage {
+  if (
+    !isRecord(value) ||
+    !isCapabilityPackageDigest(value.digest) ||
+    !isRecord(value.counts)
+  )
+    return false;
+  const counts = value.counts;
+  return (
+    ['skills', 'pipelines', 'agents', 'automations', 'hooks'].every(
+      (key) => Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0,
+    ) &&
+    Array.isArray(value.executableFiles) &&
+    value.executableFiles.every(isRevisionPackageExecutableFile)
+  );
+}
+
+/** Package modes are mutually exclusive; carry is meaningful only with a parent. */
+export function isSharedContainerPackageAttachment(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.carryParentPackage !== undefined)
+    return (
+      value.carryParentPackage === true &&
+      typeof value.parentRevisionId === 'string' &&
+      value.parentRevisionId.length > 0 &&
+      value.capabilityPackage === undefined &&
+      value.committedPackageUploadId === undefined
+    );
+  if (
+    value.capabilityPackage === undefined &&
+    value.committedPackageUploadId === undefined
+  )
+    return true;
+  return (
+    isRecord(value.capabilityPackage) &&
+    value.capabilityPackage.version === 1 &&
+    isCapabilityPackageDigest(value.capabilityPackage.digest) &&
+    typeof value.committedPackageUploadId === 'string'
+  );
+}
+
 export interface SharedContainerRevisionDetail {
+  package?: SharedContainerRevisionPackage;
   id: string;
   revision: number;
   schemaVersion: number;
@@ -824,6 +952,7 @@ export function isSharedContainerForkProvenance(
     hasOnlyKeys(value, [
       'sourceContainerId',
       'sourceRevisionId',
+      'sourceRevisionCreatedAt',
       'sourceOwnerDisplayName',
       'organizationId',
       'forkedAt',
@@ -832,6 +961,9 @@ export function isSharedContainerForkProvenance(
     value.sourceContainerId.length > 0 &&
     typeof value.sourceRevisionId === 'string' &&
     value.sourceRevisionId.length > 0 &&
+    (value.sourceRevisionCreatedAt === undefined ||
+      (typeof value.sourceRevisionCreatedAt === 'string' &&
+        Number.isFinite(Date.parse(value.sourceRevisionCreatedAt)))) &&
     typeof value.sourceOwnerDisplayName === 'string' &&
     value.sourceOwnerDisplayName.length > 0 &&
     (value.organizationId === undefined ||
@@ -1675,6 +1807,7 @@ export function isSharedContainerStageRevisionRequest(
 ): value is SharedContainerStageRevisionRequest {
   return (
     isRecord(value) &&
+    isSharedContainerPackageAttachment(value) &&
     (value.organizationId === undefined ||
       typeof value.organizationId === 'string') &&
     typeof value.title === 'string' &&
@@ -1831,6 +1964,8 @@ export function isSharedContainerDetail(
         typeof record.latestRevision.artifactSizeBytes === 'string' &&
         isUnsignedDecimal(record.latestRevision.artifactSizeBytes) &&
         typeof record.latestRevision.createdAt === 'string' &&
+        (record.latestRevision.package === undefined ||
+          isSharedContainerRevisionPackage(record.latestRevision.package)) &&
         (record.latestRevision.parentRevisionId === undefined ||
           typeof record.latestRevision.parentRevisionId === 'string') &&
         (record.latestRevision.actorUserId === undefined ||

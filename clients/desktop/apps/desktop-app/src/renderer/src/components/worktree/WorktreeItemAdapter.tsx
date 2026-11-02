@@ -46,6 +46,8 @@ export interface WorktreeItemCollectionProps {
   discoveryLoading: Set<string>;
   selectedWorktreeKey: string | null;
   streamingWorktreeKeys: Set<string>;
+  /** Live background tasks by row, for the background spinner (D15). */
+  backgroundTaskCounts?: ReadonlyMap<string, number>;
   activeSessionWorktreeKeys: Set<string>;
   awaitingApprovalKeys: Set<string>;
   /** Worktrees with an unanswered interactive agent question (ask-user). */
@@ -191,6 +193,7 @@ export function WorktreeItemAdapter({
   discoveryLoading,
   selectedWorktreeKey,
   streamingWorktreeKeys,
+  backgroundTaskCounts,
   activeSessionWorktreeKeys,
   awaitingApprovalKeys,
   pendingQuestionWorktreeKeys,
@@ -287,6 +290,7 @@ export function WorktreeItemAdapter({
       hasUnpushedCommits={hasUnpushedCommits[worktreeKey]}
       isSelected={selectedWorktreeKey === worktreeKey}
       isStreaming={streamingWorktreeKeys.has(worktreeKey)}
+      backgroundTasks={backgroundTaskCounts?.get(worktreeKey) ?? 0}
       hasActiveSession={activeSessionWorktreeKeys.has(worktreeKey)}
       awaitingApproval={awaitingApprovalKeys.has(worktreeKey)}
       hasPendingQuestion={pendingQuestionWorktreeKeys.has(worktreeKey)}

@@ -1,34 +1,62 @@
 import { memo, useEffect, useRef, useState, type JSX } from 'react';
 import type { ShowFilesWorkspaceTarget } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
-import { FileIcon } from '@canopy/ui-shared/icons';
+import {
+  restoreTurnFileFocus,
+  TurnFileChipView,
+} from '@canopy/ui-shared/components';
+import {
+  isLocalFileActionAvailable,
+  REVEAL_FILE_FAILED,
+  resolveLocalFileActionRequest,
+} from '@/lib/file-reveal';
+import { pt } from '@/lib/platform-text';
+import { uiText } from '@/lib/ui-text';
+import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
+import { useProjectsStore } from '@/stores/projectsStore';
 import { showFilesInRenderer } from '@/lib/show-files';
 import { onTurnFileViewerClosed } from '@/lib/turn-file-viewer';
 import { detectChatStoreSurface } from '@/stores/chat/surface';
+import { useChatStore } from '@/stores/chatStore';
 
 export interface TurnFileChipProps {
   /** Transcript path; the host resolves and authorizes it when opening. */
   path: string;
+  /**
+   * Normalized absolute path of a completed file, used to reveal it in the
+   * platform file manager. Absent for pending entries.
+   */
+  absolutePath?: string;
   /** Explicit workspace selected by an App Advisor ShowFiles call. */
   target?: ShowFilesWorkspaceTarget;
-  /** Creation still in flight: shown, not openable. */
+  /** Edit of an existing file; omitted for saved files. */
+  change?: 'updated';
+  presentation?: 'row' | 'summary';
+  /** Change still in flight: shown, not openable. */
   pending?: boolean;
+  /** The pending change waits for approval rather than running. */
+  waiting?: boolean;
   projectId: string;
   worktreeId: string;
   chatId: string;
 }
 
 const OPEN_FAILED = 'Unable to open this file. Try again.';
+const UNNAMED_LOCATION = 'project folder';
 
 /**
- * Compact chip for a file the turn created or presented. Sits beside the
+ * Compact chip for a file the turn created, updated or presented. Sits beside the
  * changed-file cards in the turn summary and opens the file in the existing
  * viewer beside the chat; an App Advisor chip opens it in the main window.
  */
 export const TurnFileChip = memo(function TurnFileChip({
   path,
+  absolutePath,
   target: explicitTarget,
+  change,
+  presentation = 'row',
   pending = false,
+  waiting = false,
   projectId,
   worktreeId,
   chatId,
@@ -41,6 +69,34 @@ export const TurnFileChip = memo(function TurnFileChip({
   const focusCleanup = useRef<(() => void) | undefined>(undefined);
   useEffect(() => (): void => focusCleanup.current?.(), []);
   const filename = path.split(/[\\/]/).pop() ?? path;
+  const chatReadOnly = useWorkspaceIsReadOnly();
+  // Each chip names its own owning project, so a chip that targets another
+  // workspace never borrows the current chat's project name.
+  const ownerProjectId = explicitTarget?.projectId ?? projectId;
+  const ownerProjectName = useProjectsStore(
+    (state) =>
+      state.projects.find((project) => project.id === ownerProjectId)?.name,
+  );
+  const location = `${change === 'updated' ? 'Updated' : 'Saved'} in ${
+    ownerProjectName ?? UNNAMED_LOCATION
+  }`;
+  const revealRequest =
+    pending || !isLocalFileActionAvailable('showInFinder')
+      ? undefined
+      : resolveLocalFileActionRequest({
+          absolutePath,
+          target: explicitTarget,
+          surfaceScope: { projectId, worktreeId },
+          surfaceReadOnly: chatReadOnly,
+        });
+
+  const reveal = (): void => {
+    if (!revealRequest) return;
+    setError(undefined);
+    window.api.showInFinder(revealRequest).catch(() => {
+      setError(REVEAL_FILE_FAILED);
+    });
+  };
 
   const open = async (): Promise<void> => {
     if (openingRef.current) return;
@@ -73,13 +129,37 @@ export const TurnFileChip = memo(function TurnFileChip({
             void window.api.appAdvisor
               .openWindow({ focus: true })
               .then(() => {
-                if (origin.isConnected) origin.focus({ preventScroll: true });
+                restoreTurnFileFocus(origin);
               })
               .catch(() => {
-                if (origin.isConnected) origin.focus({ preventScroll: true });
+                restoreTurnFileFocus(origin);
               });
           },
         );
+      }
+      if (!opensInMainWindow && absolutePath) {
+        const key = `${target.projectId}/${target.worktreeId}`;
+        const isClosing = (): boolean => {
+          const state = useChatStore.getState();
+          return (
+            state.worktreeChats[key]?.tabs.some(
+              (tab) =>
+                tab.kind === 'file' &&
+                tab.filePath === absolutePath &&
+                state.closingChatTabs[key]?.has(tab.id),
+            ) ?? false
+          );
+        };
+        // The panel disappears optimistically before its tab close commits.
+        // Opening that same tab during the gap would reuse a closing identity.
+        if (isClosing())
+          await new Promise<void>((resolve) => {
+            const unsubscribe = useChatStore.subscribe(() => {
+              if (isClosing()) return;
+              unsubscribe();
+              resolve();
+            });
+          });
       }
       const result = opensInMainWindow
         ? await window.api.appAdvisor.openTurnFile({
@@ -117,8 +197,7 @@ export const TurnFileChip = memo(function TurnFileChip({
       const restoreFocus = (): void => {
         focusCleanup.current?.();
         focusCleanup.current = undefined;
-        if (origin instanceof HTMLElement && origin.isConnected)
-          origin.focus({ preventScroll: true });
+        if (origin instanceof HTMLElement) restoreTurnFileFocus(origin);
       };
       focusCleanup.current = onTurnFileViewerClosed(
         target,
@@ -135,36 +214,31 @@ export const TurnFileChip = memo(function TurnFileChip({
     }
   };
 
-  const busy = opening || pending;
-  const status = error ?? (opening ? 'Opening…' : pending ? 'Creating…' : '');
+  // A pending chip says its own status ("Creating…", "Waiting for approval").
+  const status = error ?? (opening ? 'Opening…' : '');
   return (
-    <button
-      type="button"
-      data-testid="turn-file-chip"
-      onClick={
-        busy
-          ? undefined
-          : (): void => {
-              void open();
-            }
-      }
-      aria-label={pending ? `Creating ${filename}` : `Open ${filename}`}
-      aria-busy={busy}
-      aria-disabled={busy}
-      title={path}
-      className="focus-ring min-w-0 max-w-full cursor-pointer rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition hover:bg-fg-primary/[0.04] aria-disabled:cursor-default"
-    >
-      <span className="flex items-center gap-1.5">
-        <span className="flex h-3 w-3 shrink-0 items-center justify-center fg-secondary">
-          <FileIcon width={12} height={12} aria-hidden="true" />
-        </span>
-        <span className="min-w-0 flex-1 truncate fg-primary">{filename}</span>
-      </span>
-      {status && (
-        <span className="mt-1 block truncate text-3xs fg-secondary">
-          {status}
-        </span>
-      )}
-    </button>
+    <TurnFileChipView
+      filename={filename}
+      presentation={presentation}
+      {...(change ? { change } : {})}
+      pending={pending}
+      waiting={waiting}
+      opening={opening}
+      status={status}
+      location={location}
+      onOpen={(): void => {
+        void open();
+      }}
+      {...(revealRequest
+        ? {
+            reveal: {
+              label: pt(uiText.fileManager.showNamedItem)(filename),
+              tooltip: pt(uiText.fileManager.showItem),
+              actionLabel: pt(uiText.fileManager.openItem),
+              onReveal: reveal,
+            },
+          }
+        : {})}
+    />
   );
 });

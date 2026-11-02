@@ -11,7 +11,8 @@ import type {
   ChatSessionImportRepoSummary,
   SessionCloudExportSummary,
 } from '@canopy/desktop-shared/types';
-import { Notice, BusyLabel } from '@canopy/ui-shared/components';
+import { BusyLabel, Button, Notice } from '@canopy/ui-shared/components';
+import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { DialogModal } from '../shared';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -35,25 +36,6 @@ type ImportSessionPhase =
 
 const CLOUD_EXPORT_PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 300;
-
-function formatExportedAt(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function formatByteSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  return unitIndex === 0
-    ? `${Math.round(value)} ${units[unitIndex]}`
-    : `${value.toFixed(1)} ${units[unitIndex]}`;
-}
 
 function formatProvider(
   provider: ChatSessionImportInspectResponse['manifestSummary']['provider'],
@@ -380,7 +362,7 @@ export function ImportSessionModal({
                         {exportItem.title}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs fg-secondary">
-                        <span>{formatExportedAt(exportItem.createdAt)}</span>
+                        <span>{formatDateTime(exportItem.createdAt)}</span>
                         <span>{formatByteSize(exportItem.sizeBytes)}</span>
                         <span>{exportItem.workspaceName}</span>
                         <span>
@@ -391,37 +373,37 @@ export function ImportSessionModal({
                         </span>
                       </div>
                     </button>
-                    <button
-                      type="button"
+                    <Button
+                      variant={
+                        confirmingDeleteId === exportItem.id
+                          ? 'destructive'
+                          : 'ghost-destructive'
+                      }
+                      size="compact"
                       data-testid={`import-session-cloud-delete-${exportItem.id}`}
                       onClick={() => void handleDeleteExport(exportItem.id)}
                       disabled={deletingId === exportItem.id}
-                      className={`focus-ring shrink-0 rounded-md px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50 ${
-                        confirmingDeleteId === exportItem.id
-                          ? 'bg-destructive fg-emphasis'
-                          : 'fg-secondary hover:bg-destructive-subtle hover:fg-destructive'
-                      }`}
                     >
                       {deletingId === exportItem.id
                         ? 'Deleting…'
                         : confirmingDeleteId === exportItem.id
                           ? 'Confirm delete'
                           : 'Delete'}
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>
             )}
 
             {nextCursor && !isLoadingList && (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => void loadExports(nextCursor)}
                 disabled={isLoadingMore}
-                className="focus-ring w-full rounded-lg border px-3 py-2 text-xs font-medium fg-primary hover:bg-secondary/30 disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full"
               >
                 <BusyLabel busy={isLoadingMore}>Load more</BusyLabel>
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -452,7 +434,7 @@ export function ImportSessionModal({
                   </dd>
                   <dt>Exported</dt>
                   <dd className="fg-primary">
-                    {formatExportedAt(inspection.manifestSummary.exportedAt)}
+                    {formatDateTime(inspection.manifestSummary.exportedAt)}
                   </dd>
                   <dt>Project</dt>
                   <dd className="fg-primary">
@@ -619,32 +601,31 @@ export function ImportSessionModal({
 
         <div className="flex items-center justify-end gap-2 border-t pt-4">
           {inspection && phase === 'ready' && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
               onClick={() => void handleChooseAnother()}
-              className="focus-ring rounded-lg px-3 py-2 text-xs fg-secondary hover:fg-primary"
             >
               Choose another export
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={() => void handleClose()}
             disabled={isBusy}
-            className="focus-ring rounded-lg px-3 py-2 text-xs fg-secondary hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50"
           >
             {phase === 'complete' ? 'Done' : 'Cancel'}
-          </button>
+          </Button>
           {inspection && phase !== 'complete' && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               data-testid="import-session-confirm"
               onClick={() => void handleImport()}
               disabled={isBusy || isMismatch}
-              className="focus-ring rounded-lg bg-accent px-3 py-2 text-xs font-medium fg-emphasis disabled:cursor-not-allowed disabled:opacity-50"
             >
               {phase === 'importing' ? 'Importing…' : 'Import session'}
-            </button>
+            </Button>
           )}
         </div>
       </div>

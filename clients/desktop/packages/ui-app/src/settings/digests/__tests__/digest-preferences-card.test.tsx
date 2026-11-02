@@ -18,6 +18,10 @@ import {
   createTestSettingsHost,
   type FakeSettingsClient,
 } from '../../__tests__/helpers/test-settings-host';
+import {
+  chooseSettingsOption,
+  settingsSelectTrigger,
+} from '../../__tests__/helpers/settings-select';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -184,21 +188,17 @@ describe('DigestPreferencesCard', () => {
 
     await renderCard();
 
-    const weeklyAnchor = container.querySelector<HTMLSelectElement>(
+    const weeklyAnchor = settingsSelectTrigger(
+      container,
       '[data-testid="account-digest-anchor-weekly"]',
     );
-    if (!weeklyAnchor) throw new Error('weekly anchor select missing');
-    expect(weeklyAnchor.value).toBe('3');
+    expect(weeklyAnchor.dataset.value).toBe('3');
     // The description is derived from the anchor, not hardcoded to Monday.
     expect(container.textContent).toContain(
       'Every Wednesday, covering the previous week.',
     );
 
-    await act(async () => {
-      weeklyAnchor.value = '5';
-      weeklyAnchor.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
+    await chooseSettingsOption(weeklyAnchor, '5');
 
     expect(patchBodies).toStrictEqual([
       {
@@ -266,7 +266,7 @@ describe('DigestPreferencesCard', () => {
 
     await renderCard();
 
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     expect(toggle('daily').disabled).toBe(true);
     await act(async () => {
       toggle('daily').click();
@@ -293,8 +293,12 @@ describe('DigestPreferencesCard', () => {
     expect(container.textContent).toContain(
       "Couldn't save digest settings. Try again.",
     );
-    // A failed save is retried by saving again, not by a Retry action.
-    expect(container.textContent).not.toContain('Retry');
+    // A failed save is retried by saving again, not by a Try again action.
+    expect(
+      Array.from(container.querySelectorAll('button')).some(
+        (button) => button.textContent === 'Try again',
+      ),
+    ).toBe(false);
   });
 
   it('reads the preferences again from Retry after a failed load', async () => {
@@ -310,7 +314,7 @@ describe('DigestPreferencesCard', () => {
     await renderCard();
     expect(container.textContent).not.toContain('SENTINEL');
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     if (retry === undefined) throw new Error('No Retry button');
     await act(async () => {

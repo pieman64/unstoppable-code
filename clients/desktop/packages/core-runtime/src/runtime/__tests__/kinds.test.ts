@@ -206,6 +206,7 @@ it('rejects an idempotency key on an inherent instruction', async () => {
   const inherent = defineCanopyInstructionRegistry('core', {
     'core.example.write': defineCanopyInstruction({
       ...instructionDefinitions['core.example.write'],
+      placement: 'core-only',
       idempotency: 'inherent',
     }),
   });
@@ -233,6 +234,7 @@ it('never recommends replaying a non-idempotent instruction after its deadline',
   const nonIdempotent = defineCanopyInstructionRegistry('core', {
     'core.example.write': defineCanopyInstruction({
       ...instructionDefinitions['core.example.write'],
+      placement: 'core-only',
       idempotency: 'none',
     }),
   });
@@ -282,7 +284,7 @@ it('never recommends replaying a non-idempotent instruction after its deadline',
 });
 
 it('emits ordered items and one terminal frame, and passes a resume cursor', async () => {
-  const seen: Array<typeof params.cursor> = [];
+  const seen: Array<CanopyStreamCursor | null> = [];
   const emitted: CanopyStreamCursor[] = [];
   const dispatcher = runtime((cursor, sink) => {
     seen.push(cursor);

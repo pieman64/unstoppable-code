@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import type * as StorageModule from '@canopy/core-runtime/storage';
 import type { StorageOwnershipRow } from '@canopy/core-runtime/storage';
 import { writeFileAtomically } from '../atomic-file';
+import { registerW5Host } from '../../w5-host-cohort';
+import { getCanopyDataDir } from '../../../canopy-paths';
 import {
   detachedWorkCallback,
   settleAll,
@@ -68,6 +70,11 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 let root: string;
 const target = (): string => join(root, 'worktrees.json');
+
+beforeAll(async () => {
+  // Shared W5 writers run only in registered hosts (CAN-3797).
+  await registerW5Host({ dataRoot: getCanopyDataDir(), hostKind: 'cli' });
+});
 
 beforeEach(async () => {
   setDaemonOwned();

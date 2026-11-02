@@ -1,3 +1,4 @@
+import { isOrchestratorLabel, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { brandText } from '@/lib/brand';
 import type { BranchSyncAction } from '@/lib/githubBranchActions';
 import { probeGitHubConnected } from '@/lib/githubConnection';
@@ -5,6 +6,7 @@ import {
   isWorktreeKeyVisible,
   maybeFireOsNotification,
   shouldShowInAppNotification,
+  toastCategoryLabel,
 } from '@/lib/osNotifications';
 import type {
   CanopyApi,
@@ -19,6 +21,7 @@ import type {
   CommitAndPushSkippedRepo,
   CommitPushPhase,
   CommitPushProgressEvent,
+  CreatePrRequest,
   CreatePrResponse,
   DependentBaseBranchesUpdatedEvent,
   GenerateCommitMessagesFailedRepo,
@@ -52,6 +55,8 @@ import type {
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types/github';
 import type { SplitPlanIssue } from '@canopy/desktop-shared/types/pr-split-plan';
+import type { NoticeIntent } from '@canopy/ui-shared/components';
+import { toastStackLifetimeMs } from '@canopy/ui-shared/lib';
 import { create, type StoreApi } from 'zustand';
 import { requestLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
 import {
@@ -69,6 +74,9 @@ type AgentResolutionMessageRepo = {
   repoName: string;
   kind: 'rebase_conflict' | 'stash_pop_conflict';
 };
+
+/** Who started a commit, PR or merge. Analytics only; main defaults to manual. */
+export type GitShippingSource = NonNullable<CreatePrRequest['source']>;
 
 export type ToastCategory =
   | 'Chat'
@@ -117,7 +125,14 @@ export interface ToastLink {
  */
 export interface ToastAction {
   label: string;
-  onClick: () => void;
+  /**
+   * Runs the action. Return a promise for work that takes a while (`Try
+   * again` on a failed action): the button spins inside its capsule until it
+   * settles, then the toast closes.
+   */
+  onClick: () => unknown;
+  /** The label while a returned promise runs (`Trying again…`). */
+  busyLabel?: string;
 }
 
 export interface ToastMeta {
@@ -146,6 +161,8 @@ export interface ToastMeta {
   action?: ToastAction;
   /** Use an extended one-minute lifetime instead of the default 15 seconds. */
   persistent?: boolean;
+  /** Transactional offer: available until use, explicit dismissal or invalidation. */
+  keepUntilDismissed?: boolean;
   /**
    * Deliver this in-app even when the in-app notification master toggle is
    * disabled. Reserve for transactional outcomes that would otherwise have no
@@ -394,6 +411,7 @@ interface GitHubState {
     projectId: string,
     worktreeId: string,
     repoIds?: string[],
+    options?: { source?: GitShippingSource },
   ) => Promise<void>;
   planSplitPr: (
     projectId: string,
@@ -496,12 +514,13 @@ interface GitHubState {
   commitAndPush: (
     projectId: string,
     worktreeId: string,
-    options?: { pullFirst?: boolean },
+    options?: { pullFirst?: boolean; source?: GitShippingSource },
   ) => Promise<void>;
   commitOnly: (
     projectId: string,
     worktreeId: string,
     repoIds?: string[],
+    options?: { source?: GitShippingSource },
   ) => Promise<void>;
   mergeLocalBranches: (
     projectId: string,
@@ -515,6 +534,7 @@ interface GitHubState {
       repoIds?: string[];
       confirmUnresolvedComments?: boolean;
       dryRun?: boolean;
+      source?: GitShippingSource;
     },
   ) => Promise<MergePrResponse | null>;
   openPrMergeWarning: (warning: PrMergeWarningState) => void;
@@ -771,11 +791,28 @@ export const TOAST_LIFETIME_MS = 15_000;
 /** How long a `meta.persistent` toast stays on screen. */
 export const PERSISTENT_TOAST_LIFETIME_MS = 60_000;
 
-/** A toast's on-screen lifetime. */
-export function toastLifetimeMs(toast: Pick<Toast, 'meta'>): number {
-  return toast.meta?.persistent === true
-    ? PERSISTENT_TOAST_LIFETIME_MS
-    : TOAST_LIFETIME_MS;
+/** The shared notice intent that carries each toast type's glyph and ink. */
+export const TOAST_STACK_INTENT: Record<Toast['type'], NoticeIntent> = {
+  error: 'destructive',
+  warning: 'attention',
+  success: 'positive',
+  info: 'neutral',
+};
+
+/**
+ * A toast's on-screen lifetime: a failure stays until it is closed, a success
+ * leaves after 6 s, and a `meta.persistent` toast stays a minute.
+ */
+export function toastLifetimeMs(toast: Pick<Toast, 'meta' | 'type'>): number {
+  return toastStackLifetimeMs(
+    TOAST_STACK_INTENT[toast.type],
+    TOAST_LIFETIME_MS,
+    toast.meta?.keepUntilDismissed === true
+      ? 0
+      : toast.meta?.persistent === true
+        ? PERSISTENT_TOAST_LIFETIME_MS
+        : undefined,
+  );
 }
 type SkippedRepoReason =
   | CommitAndPushSkippedRepo['reason']
@@ -1126,6 +1163,7 @@ interface RunCommitFlowParams {
   repoIds?: string[];
   /** Rebase-pull before committing. Only meaningful for `commit-and-push`. */
   pullFirst?: boolean;
+  source?: GitShippingSource;
   continuation?: GitHubActionContinuation;
 }
 
@@ -1294,6 +1332,8 @@ function gitHubContinuationBranch(
  */
 function offerGitHubConnect(args: {
   kind: GitHubActionContinuation['kind'];
+  source?: GitShippingSource;
+  telemetryRepoCount?: number;
   projectId: string;
   worktreeId: string;
   failed: readonly RepoFailureResult[];
@@ -1339,6 +1379,10 @@ function offerGitHubConnect(args: {
   const result = useGitHubConnectOfferStore.getState().requestOffer({
     operationId: args.operationId ?? createGitActionOperationId(),
     kind: args.kind,
+    ...(args.source ? { source: args.source } : {}),
+    ...(args.telemetryRepoCount
+      ? { telemetryRepoCount: args.telemetryRepoCount }
+      : {}),
     projectId: args.projectId,
     worktreeId: args.worktreeId,
     ...(repoIds ? { repoIds } : {}),
@@ -1481,6 +1525,13 @@ async function runCommitFlow(
   params: RunCommitFlowParams,
 ): Promise<boolean> {
   const { projectId, worktreeId, mode, continuation } = params;
+  const source = params.source ?? continuation?.source;
+  const sourceField = {
+    ...(source ? { source } : {}),
+    ...(continuation?.telemetryRepoCount
+      ? { telemetryRepoCount: continuation.telemetryRepoCount }
+      : {}),
+  };
   const isCommitOnly = mode === 'commit';
   const pullFirst = !isCommitOnly && params.pullFirst === true;
   const repoIds = isCommitOnly || continuation ? params.repoIds : undefined;
@@ -1513,6 +1564,16 @@ async function runCommitFlow(
   }
   const operationId = createGitActionOperationId();
   const branches = gitHubRepositorySnapshot(projectId, worktreeId);
+  const telemetryRepoCount =
+    continuation?.telemetryRepoCount ??
+    Math.max(
+      1,
+      new Set(
+        branches
+          ?.filter((repo) => !repoIds?.length || repoIds.includes(repo.repoId))
+          .map((repo) => repo.repoId),
+      ).size,
+    );
   set((state) => {
     const nextCancellationRequested = new Set(
       state.gitActionCancellationRequested,
@@ -1553,6 +1614,8 @@ async function runCommitFlow(
           ...response,
           failedRepos: takeGitHubAuthFailures(response.failedRepos, {
             kind: 'push',
+            source,
+            telemetryRepoCount,
             projectId,
             worktreeId,
             establishUpstream: true,
@@ -1683,6 +1746,7 @@ async function runCommitFlow(
             messages: reviewResult.messages,
             requireReviewedMessages: true,
             operationId,
+            ...sourceField,
             ...(isCommitOnly ? { commitOnly: true, repoIds } : { pullFirst }),
             ...(continuation
               ? {
@@ -1721,6 +1785,7 @@ async function runCommitFlow(
             projectId,
             worktreeId,
             operationId,
+            ...sourceField,
             ...(isCommitOnly ? { commitOnly: true, repoIds } : { pullFirst }),
           }),
       );
@@ -1802,10 +1867,18 @@ async function runCreatePr(
     projectId: string;
     worktreeId: string;
     repoIds?: string[];
+    source?: GitShippingSource;
     continuation?: GitHubActionContinuation;
   },
 ): Promise<boolean> {
   const { projectId, worktreeId, repoIds, continuation } = params;
+  const source = params.source ?? continuation?.source;
+  const sourceField = {
+    ...(source ? { source } : {}),
+    ...(continuation?.telemetryRepoCount
+      ? { telemetryRepoCount: continuation.telemetryRepoCount }
+      : {}),
+  };
   const key = worktreeKey(projectId, worktreeId);
   if (gitHubActionBusy(get, key)) return false;
   if (
@@ -1816,6 +1889,16 @@ async function runCreatePr(
   }
   const operationId = createGitActionOperationId();
   const branches = gitHubRepositorySnapshot(projectId, worktreeId);
+  const telemetryRepoCount =
+    continuation?.telemetryRepoCount ??
+    Math.max(
+      1,
+      new Set(
+        branches
+          ?.filter((repo) => !repoIds?.length || repoIds.includes(repo.repoId))
+          .map((repo) => repo.repoId),
+      ).size,
+    );
   if (!continuation) {
     startingGitHubActions.add(key);
     try {
@@ -1833,6 +1916,8 @@ async function runCreatePr(
       ) {
         const offered = offerGitHubConnect({
           kind: 'pr',
+          source,
+          telemetryRepoCount,
           projectId,
           worktreeId,
           operationId,
@@ -2018,6 +2103,8 @@ async function runCreatePr(
               requireReviewedMessages: true,
               repoIds,
               operationId,
+              ...sourceField,
+              telemetryFlow: 'pull_request',
               ...(continuation
                 ? {
                     expectedHeadBranch:
@@ -2052,6 +2139,8 @@ async function runCreatePr(
           commitAuthFailures.length > 0 &&
           offerGitHubConnect({
             kind: 'pr',
+            source,
+            telemetryRepoCount,
             projectId,
             worktreeId,
             failed: commitAuthFailures,
@@ -2153,6 +2242,7 @@ async function runCreatePr(
           worktreeId,
           repoIds,
           operationId,
+          ...sourceField,
           ...(continuation
             ? {
                 skipCommit:
@@ -2189,6 +2279,8 @@ async function runCreatePr(
     if (
       offerGitHubConnect({
         kind: 'pr',
+        source,
+        telemetryRepoCount,
         projectId,
         worktreeId,
         failed: authFailuresWithCompletedStages,
@@ -2546,8 +2638,14 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     projectId: string,
     worktreeId: string,
     repoIds?: string[],
+    options?: { source?: GitShippingSource },
   ): Promise<void> => {
-    await runCreatePr(set, get, { projectId, worktreeId, repoIds });
+    await runCreatePr(set, get, {
+      projectId,
+      worktreeId,
+      repoIds,
+      source: options?.source,
+    });
   },
 
   planSplitPr: async (
@@ -3111,7 +3209,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
   commitAndPush: async (
     projectId: string,
     worktreeId: string,
-    options?: { pullFirst?: boolean },
+    options?: { pullFirst?: boolean; source?: GitShippingSource },
   ): Promise<void> => {
     const pullFirst = options?.pullFirst === true;
     await runCommitFlow(set, get, {
@@ -3119,6 +3217,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       worktreeId,
       mode: 'commit-and-push',
       pullFirst,
+      source: options?.source,
     });
   },
 
@@ -3126,12 +3225,14 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     projectId: string,
     worktreeId: string,
     repoIds?: string[],
+    options?: { source?: GitShippingSource },
   ): Promise<void> => {
     await runCommitFlow(set, get, {
       projectId,
       worktreeId,
       mode: 'commit',
       repoIds,
+      source: options?.source,
     });
   },
 
@@ -3265,6 +3366,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
       repoIds?: string[];
       confirmUnresolvedComments?: boolean;
       dryRun?: boolean;
+      source?: GitShippingSource;
     },
   ): Promise<MergePrResponse | null> => {
     const key = worktreeKey(projectId, worktreeId);
@@ -3325,6 +3427,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
             confirmUnresolvedComments: options?.confirmUnresolvedComments,
             dryRun,
             operationId,
+            ...(options?.source ? { source: options.source } : {}),
           }),
       );
 
@@ -3676,6 +3779,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
               worktreeId,
               repoIds: pending.repoIds,
               continuation: pending,
+              source: pending.source,
             })
           : pending.repoCommitPrepared?.[pending.repoIds?.[0] ?? ''] === false
             ? await runCommitFlow(set, get, {
@@ -3684,6 +3788,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
                 mode: 'commit-and-push',
                 repoIds: pending.repoIds,
                 pullFirst: pending.pullFirst,
+                source: pending.source,
                 continuation: pending,
               })
             : await runPushOnly(set, get, {
@@ -4278,9 +4383,17 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     if (entry.meta?.suppressOsNotification === true) return;
     maybeFireOsNotification({
       title:
-        category === 'Chat' && entry.meta?.workspaceName === 'App Advisor'
-          ? 'App Advisor'
-          : (entry.meta?.title ?? entry.meta?.category ?? brandText.appName),
+        // Orchestrator chat toasts carry no projectId (getChatToastAttribution);
+        // project chat toasts always do, so a project named "Orchestrator"
+        // keeps its chat title.
+        category === 'Chat' &&
+        entry.meta?.projectId === undefined &&
+        isOrchestratorLabel(entry.meta?.workspaceName)
+          ? ORCHESTRATOR_LABEL
+          : (entry.meta?.title ??
+            (entry.meta?.category === undefined
+              ? brandText.appName
+              : toastCategoryLabel(entry.meta.category))),
       body: entry.meta?.osNotificationBody ?? entry.message,
       category,
       toastId: entry.id,

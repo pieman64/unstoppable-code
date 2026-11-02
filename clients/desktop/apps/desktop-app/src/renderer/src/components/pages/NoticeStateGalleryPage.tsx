@@ -21,6 +21,7 @@ const INTENTS = ['neutral', 'attention', 'destructive', 'positive'] as const;
 function GalleryNotice({ entry }: { entry: NoticeGalleryEntry }): JSX.Element {
   const actions = entry.actions?.length ? (
     <>
+      {entry.aside}
       {entry.actions.map((action) => (
         <NoticeButton
           key={action.label}

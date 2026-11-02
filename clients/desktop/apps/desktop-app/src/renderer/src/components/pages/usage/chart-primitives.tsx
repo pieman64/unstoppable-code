@@ -1,4 +1,5 @@
 import { type JSX } from 'react';
+import { SegmentedControl } from '@canopy/ui-shared/components';
 
 export type RangePreset = '24h' | '7d' | 'max';
 export type GranularityChoice = 'auto' | 'hour' | 'day' | 'week';
@@ -21,6 +22,8 @@ export interface SegmentedPickerProps<T extends string> {
   value: T;
   options: ReadonlyArray<SegmentedPickerOption<T>>;
   testIdPrefix: string;
+  /** Accessible name for the group. */
+  label: string;
   onChange: (value: T) => void;
 }
 
@@ -28,26 +31,22 @@ export function SegmentedPicker<T extends string>({
   value,
   options,
   testIdPrefix,
+  label,
   onChange,
 }: SegmentedPickerProps<T>): JSX.Element {
   return (
-    <div className="inline-flex items-center rounded-md border bg-base p-0.5 text-xs">
-      {options.map((option) => (
-        <button
-          key={option.key}
-          type="button"
-          onClick={() => onChange(option.key)}
-          data-testid={`${testIdPrefix}-${option.key}`}
-          className={`px-2 py-1 rounded-sm transition-colors ${
-            value === option.key
-              ? 'bg-accent-subtle fg-accent'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
+    <SegmentedControl<T>
+      label={label}
+      value={value}
+      width="content"
+      shape="capsule"
+      options={options.map((option) => ({
+        value: option.key,
+        label: option.label,
+        dataTestId: `${testIdPrefix}-${option.key}`,
+      }))}
+      onChange={onChange}
+    />
   );
 }
 
@@ -174,6 +173,7 @@ export function RangePicker({
 }: RangePickerProps): JSX.Element {
   return (
     <SegmentedPicker
+      label="Time range"
       value={value}
       options={getRangeOptions(retentionDays)}
       testIdPrefix="overview-range"
@@ -193,6 +193,7 @@ export function GranularityPicker({
 }: GranularityPickerProps): JSX.Element {
   return (
     <SegmentedPicker
+      label="Granularity"
       value={value}
       options={GRANULARITY_OPTIONS}
       testIdPrefix="overview-granularity"

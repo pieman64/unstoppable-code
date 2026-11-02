@@ -6,6 +6,7 @@ jest.mock('../lib/plan-persistence');
 
 import { dialog } from 'electron';
 import { readFile } from 'node:fs/promises';
+import type { TrackedPlanData } from '@canopy/desktop-shared/types';
 import { createTrackedPlan } from '../lib/plan-persistence';
 import { importTrackedPlanFromFile } from '../ipc/plans';
 
@@ -14,6 +15,24 @@ const mockedShowOpenDialog = jest.mocked(dialog.showOpenDialog);
 /* eslint-enable @typescript-eslint/unbound-method */
 const mockedReadFile = jest.mocked(readFile);
 const mockedCreate = jest.mocked(createTrackedPlan);
+
+function makeTrackedPlan(id: string): TrackedPlanData {
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  return {
+    id,
+    projectId: 'p1',
+    worktreeId: 'w1',
+    source: 'imported',
+    title: 'Plan',
+    content: '# Plan\nbody',
+    reviewStatus: 'pending',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    latestRevisionNumber: 1,
+    revisions: [],
+    linkedExecutionIds: [],
+  };
+}
 
 describe('importTrackedPlanFromFile', () => {
   beforeEach(() => {
@@ -26,7 +45,7 @@ describe('importTrackedPlanFromFile', () => {
       filePaths: ['/abs/plan.md'],
     });
     mockedReadFile.mockResolvedValue('# Plan\nbody');
-    mockedCreate.mockResolvedValue({ id: 'new-id' });
+    mockedCreate.mockResolvedValue(makeTrackedPlan('new-id'));
 
     await importTrackedPlanFromFile({ projectId: 'p1', worktreeId: 'w1' });
 

@@ -12,7 +12,6 @@ import { InlineMention } from '@canopy/ui-shared';
 import { FileIcon } from '@canopy/ui-shared/icons';
 import { useChatStore } from '@/stores/chatStore';
 import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-sync';
-import { initialFileTabViewMode } from '@/lib/file-viewer/initial-view-mode';
 import type { FilePathMentionTarget } from '@/lib/filePathMentionIndex';
 import {
   isBrowserRenderedFile,
@@ -60,7 +59,6 @@ export const FilePathMention = memo(function FilePathMention({
       const fileTabId = openFileTab({
         absolutePath: target.absolutePath,
         filename: target.filename,
-        initialViewMode: initialFileTabViewMode(target.filename),
       });
       if (!fileTabId) return;
       useAgentFilePresentationStore

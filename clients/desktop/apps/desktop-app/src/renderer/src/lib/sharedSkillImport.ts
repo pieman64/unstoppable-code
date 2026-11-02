@@ -24,6 +24,8 @@ import type {
   InstallSkillCapabilityPackageResult,
   PublicShareSkillOrigin,
   SharedSkillDetail,
+  SkillWriteFailureCode,
+  WriteRawSkillRequest,
 } from '@canopy/desktop-shared/types/skills';
 
 /**
@@ -62,7 +64,19 @@ export type SharedSkillImportSource = Pick<
    * update-email subscription covers it.
    */
   inCollection?: boolean;
+  /**
+   * Replace this scoped share's reviewed installed copy in place (CAN-5307).
+   * Never downgraded to an ordinary install: an unsupported request fails.
+   */
+  replaceInstalled?: NonNullable<WriteRawSkillRequest['replaceInstalled']>;
 };
+
+/** Whether scoped skill installs are receipt-bound (context enforcement). */
+export function sharedSkillReceiptsEnforced(): boolean {
+  return useFeatureFlagsStore
+    .getState()
+    .isEnabled(CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key);
+}
 
 /**
  * The only source id shared-skill imports ever write to. Exported so callers
@@ -94,6 +108,11 @@ export interface LocalImportedSkill {
    * a partial-success signal, not an error result.
    */
   packageInstallError?: string;
+  /**
+   * The copy was written durably, but its update-email subscription was not
+   * recorded. Reviewing the share again repairs it without reinstalling.
+   */
+  subscriptionWarning?: 'subscription-update-failed';
 }
 
 const MAX_SUFFIX_ATTEMPTS = 100;
@@ -119,21 +138,35 @@ export async function importSharedSkill(
   //    bytes — this is the only reliable way to detect content-hash equality
   //    from the renderer.
   const sourceRemoteId = detail.sourceRemoteId ?? detail.id;
-  const contextEnabled = useFeatureFlagsStore
-    .getState()
-    .isEnabled(CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key);
+  const contextEnabled = sharedSkillReceiptsEnforced();
   if (sourceRemoteId && !detail.fromPublicShare && contextEnabled) {
     const written = await window.skills.writeRawSkill({
       skillName: detail.name,
       rawSkill: detail.rawSkill,
       sourceRemoteId,
       ...(detail.inCollection === true ? { inCollection: true } : {}),
+      ...(detail.replaceInstalled
+        ? { replaceInstalled: detail.replaceInstalled }
+        : {}),
     });
+    // Even when SKILL.md already matched, the package is reinstalled: a
+    // successful content write does not establish package currency.
     return {
-      ...written,
+      skillId: written.skillId,
+      skillName: written.skillName,
       reused: false,
+      ...(written.subscriptionWarning
+        ? { subscriptionWarning: written.subscriptionWarning }
+        : {}),
       ...(await installPackagedFiles(detail, written.skillName)),
     };
+  }
+  if (detail.replaceInstalled) {
+    // Only a scoped, receipt-bound import can replace a copy. Continuing as
+    // an ordinary install here could create a duplicate.
+    throw new Error(
+      'Skill unavailable (replacement-unsupported). Open the shared skill again to review it.',
+    );
   }
   // With enforcement on, only main can decide whether an identical copy has
   // an owned-source receipt and may be reused by a public import.
@@ -262,53 +295,160 @@ export async function findInstalledSkillByContentHash(
   return null;
 }
 
+/** What a recipient surface may offer for a team or organization share. */
+export type SharedSkillInstallLookup =
+  | { status: 'absent' }
+  | {
+      status: 'installed';
+      skillId: string;
+      sourceId: string;
+      skillName: string;
+      /** The copy's content or package differs from the share. */
+      updateAvailable: boolean;
+      /**
+       * The copy differs from what was installed, or its install-time hash is
+       * unknown. Replacing it needs the user's confirmation.
+       */
+      locallyEdited: boolean;
+      /** SHA-256 of the exact local bytes compared. */
+      localContentHash: string;
+      /** SHA-256 of the share bytes compared, for an in-place update. */
+      sourceContentHash: string;
+    }
+  /** A receipt names this share, but none of its copies is on disk. */
+  | { status: 'missing-copy' }
+  /** The installed state could not be verified; nothing may be offered. */
+  | { status: 'unverified' };
+
 /**
- * The local name of a team or organization share's installed copy, or `null`
- * when Add would still have something to do. This follows the reuse rule of
- * the import itself, so a recipient page never claims an install that Add
- * would not reuse:
+ * The installed copy of a team or organization share. Under context
+ * enforcement the install receipt establishes installation and hashes only
+ * establish currency (CAN-5307): a receipted copy whose bytes or package
+ * changed is still installed, with an update available, so the recipient
+ * reviews an update instead of installing a duplicate.
  *
- *   - with context enforcement on, only a copy whose install receipt names
- *     this share counts, and only while its bytes still match: main writes a
- *     new copy rather than adopting an unreceipted or edited one;
- *   - without enforcement, an identical copy counts, as the import reuses it;
- *   - a share with a supporting-file package counts only once that package
- *     installed, so a failed package install leaves Add to retry it.
+ *   - Of several receipted copies, a current one wins; otherwise the first
+ *     readable copy in local-id order. A missing copy never hides a sibling.
+ *   - Without enforcement, or for a share with no receipt support, an
+ *     identical copy counts, as the import reuses it; a packaged share then
+ *     cannot be confirmed and reads as absent.
+ *
+ * Read, inventory, and hashing failures are `unverified`, never `absent`:
+ * treating them as absence would offer an Install that creates a duplicate.
  */
-export async function findInstalledSharedSkill(
+export async function lookupInstalledSharedSkill(
   detail: Pick<
     SharedSkillDetail,
-    'id' | 'contentHash' | 'distributionMode' | 'package'
-  >,
-): Promise<string | null> {
-  const contextEnabled = useFeatureFlagsStore
-    .getState()
-    .isEnabled(CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key);
-  if (!contextEnabled) {
+    'id' | 'rawSkill' | 'contentHash' | 'distributionMode' | 'package'
+  > & { installedCopyIds?: readonly string[] },
+): Promise<SharedSkillInstallLookup> {
+  if (!sharedSkillReceiptsEnforced()) {
     // No receipt records a package install here, so it cannot be confirmed.
-    if (detail.distributionMode === 'package') return null;
+    if (detail.distributionMode === 'package') return { status: 'absent' };
     const found = await findInstalledSkillByContentHash(detail.contentHash);
-    return found?.skillName ?? null;
+    if (!found) return { status: 'absent' };
+    const hash = detail.contentHash.toLowerCase();
+    return {
+      status: 'installed',
+      ...found,
+      updateAvailable: false,
+      locallyEdited: false,
+      localContentHash: hash,
+      sourceContentHash: hash,
+    };
   }
-  const skillsResult = await window.skills.loadSkills();
-  if (!skillsResult.success || !skillsResult.data) return null;
-  // A share's receipt can name several local copies; main reuses any of them
-  // whose bytes still match, so each one is checked.
-  const receipted = skillsResult.data.filter(
-    (skill) =>
-      skill.sourceId === CUSTOM_SKILL_SOURCE_ID &&
-      skill.installedFromShare?.remoteId === detail.id &&
-      (detail.distributionMode !== 'package' ||
-        (detail.package !== undefined &&
-          skill.installedFromShare.packageDigest === detail.package.digest)),
-  );
-  for (const skill of receipted) {
-    const raw = await window.skills.readRawSkill(
-      `${skill.sourceId}/${skill.name}`,
+  try {
+    const copyIds =
+      detail.installedCopyIds ??
+      (await window.skills.getShared(detail.id)).installedCopyIds;
+    if (copyIds === undefined) return { status: 'unverified' };
+    const skillsResult = await window.skills.loadSkills();
+    if (!skillsResult.success || !skillsResult.data)
+      return { status: 'unverified' };
+    const receipted = skillsResult.data.filter(
+      (skill) =>
+        skill.sourceId === CUSTOM_SKILL_SOURCE_ID &&
+        skill.installedFromShare?.remoteId === detail.id &&
+        (copyIds === undefined ||
+          copyIds.includes(`${skill.sourceId}/${skill.name}`)),
     );
-    if (await contentHashMatches(raw, detail.contentHash)) return skill.name;
+    if (receipted.length === 0)
+      return copyIds !== undefined && copyIds.length > 0
+        ? { status: 'missing-copy' }
+        : { status: 'absent' };
+    const sourceContentHash = await sha256Hex(detail.rawSkill);
+    if (!sourceContentHash) return { status: 'unverified' };
+    let unreadable = false;
+    let selected: Extract<
+      SharedSkillInstallLookup,
+      { status: 'installed' }
+    > | null = null;
+    const ordered = [...receipted].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+    for (const skill of ordered) {
+      const skillId = `${skill.sourceId}/${skill.name}`;
+      let localContentHash: string;
+      try {
+        localContentHash = await sha256Hex(
+          await window.skills.readRawSkill(skillId),
+        );
+      } catch {
+        unreadable = true;
+        continue;
+      }
+      if (!localContentHash) return { status: 'unverified' };
+      const origin = skill.installedFromShare;
+      const packageCurrent =
+        detail.distributionMode !== 'package' ||
+        (detail.package !== undefined &&
+          origin?.packageDigest === detail.package.digest);
+      const current =
+        localContentHash === sourceContentHash &&
+        packageCurrent &&
+        origin?.replacementPending !== true;
+      const candidate = {
+        status: 'installed' as const,
+        skillId,
+        sourceId: skill.sourceId,
+        skillName: skill.name,
+        updateAvailable: !current,
+        locallyEdited:
+          origin?.contentHash === undefined ||
+          origin.contentHash.toLowerCase() !== localContentHash,
+        localContentHash,
+        sourceContentHash,
+      };
+      if (current) return candidate;
+      selected ??= candidate;
+    }
+    if (selected) return selected;
+    return unreadable ? { status: 'unverified' } : { status: 'missing-copy' };
+  } catch {
+    return { status: 'unverified' };
   }
-  return null;
+}
+
+/** The typed reason main put in a rejected skill write, when it has one. */
+export function sharedSkillWriteFailureCode(
+  error: unknown,
+): SkillWriteFailureCode | null {
+  const match =
+    /\((replacement-unsupported|invalid-replacement|review-required|missing-copy|local-conflict|source-conflict|recovery-required)\)/.exec(
+      extractIpcErrorMessage(error),
+    );
+  switch (match?.[1]) {
+    case 'replacement-unsupported':
+    case 'invalid-replacement':
+    case 'review-required':
+    case 'missing-copy':
+    case 'local-conflict':
+    case 'source-conflict':
+    case 'recovery-required':
+      return match[1];
+    default:
+      return null;
+  }
 }
 
 async function contentHashMatches(
@@ -331,7 +471,7 @@ async function sha256Hex(input: string): Promise<string> {
       : undefined;
   if (!subtle) {
     // No crypto available — skip the deduplication optimization rather than
-    // failing the import.
+    // failing the import. Receipt lookups read this as unverified.
     return '';
   }
   const data = new TextEncoder().encode(input);
@@ -341,7 +481,7 @@ async function sha256Hex(input: string): Promise<string> {
   for (let i = 0; i < bytes.length; i += 1) {
     hex += bytes[i].toString(16).padStart(2, '0');
   }
-  return hex;
+  return /^[a-f0-9]{64}$/.test(hex) ? hex : '';
 }
 
 /**
@@ -439,6 +579,8 @@ async function recordDefinitionOnlyOrigin(
 /** One wording for a failed supporting-file install, on every surface. */
 export const SKILL_FILES_NOT_INSTALLED_LABEL =
   'Skill added, but its supporting files could not be installed.';
+export const SKILL_FILES_NOT_UPDATED_LABEL =
+  'Skill updated, but its supporting files could not be installed.';
 
 /**
  * What a caller must tell the recipient beyond "imported", or `null` when the
@@ -456,12 +598,19 @@ export const SKILL_FILES_NOT_INSTALLED_LABEL =
  *   - packaged plugin skills, commands, or agents could not be added, because
  *     they belong to a plugin rather than to the skill library.
  */
-export function describeSharedSkillImportNotice(result: {
-  packageInstall?: InstallSkillCapabilityPackageResult;
-  packageInstallError?: string;
-}): string | null {
+export function describeSharedSkillImportNotice(
+  result: {
+    packageInstall?: InstallSkillCapabilityPackageResult;
+    packageInstallError?: string;
+  },
+  outcome: 'installed' | 'updated' = 'installed',
+): string | null {
   if (result.packageInstallError !== undefined) {
-    return `${SKILL_FILES_NOT_INSTALLED_LABEL} ${result.packageInstallError}`;
+    return `${
+      outcome === 'updated'
+        ? SKILL_FILES_NOT_UPDATED_LABEL
+        : SKILL_FILES_NOT_INSTALLED_LABEL
+    } ${result.packageInstallError}`;
   }
   const install = result.packageInstall;
   if (!install) return null;
@@ -486,7 +635,12 @@ export function describeSharedSkillImportNotice(result: {
       `It also uses ${joinLabels(plugin)}, which come from a plugin and were not added.`,
     );
   }
-  return details.length === 0 ? null : ['Skill added.', ...details].join(' ');
+  return details.length === 0
+    ? null
+    : [
+        outcome === 'updated' ? 'Skill updated.' : 'Skill added.',
+        ...details,
+      ].join(' ');
 }
 
 function joinLabels(labels: readonly string[]): string {

@@ -354,7 +354,14 @@ async function withSingleMarketplaceRefreshLock<T>(
       await unlink(lockPath).catch(() => undefined);
       throw error;
     }
-    await handle.close();
+    try {
+      await handle.close();
+    } catch (error) {
+      // Left in place, this live-PID lock is never reclaimed: every later
+      // refresh, in any app process, times out after LOCK_MAX_WAIT_MS.
+      await unlink(lockPath).catch(() => undefined);
+      throw error;
+    }
     await assertOwnedPath(lockPath, 'file');
     try {
       return await operation();

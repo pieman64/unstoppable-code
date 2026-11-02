@@ -15,7 +15,7 @@
  *    copy may not imply the commands are all that runs or that anything is
  *    sandboxed.
  */
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   SharedContainerRepositorySummary,

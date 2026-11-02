@@ -1,20 +1,23 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ForkChatButton } from '../ForkChatButton';
+import { ChatLookProvider } from '../chat-look';
 
 describe('ForkChatButton', () => {
   it('renders the shared accessible fork glyph and host classes', () => {
     const html = renderToStaticMarkup(
-      <ForkChatButton
-        ariaLabel="Fork chat"
-        aria-controls="fork-tooltip"
-        aria-describedby="fork-description"
-        aria-expanded="true"
-        className="shrink-0"
-        coarsePointerTarget
-        dataTestId="fork-action"
-        disabled
-        onClick={() => undefined}
-      />,
+      <ChatLookProvider value="classic">
+        <ForkChatButton
+          ariaLabel="Fork chat"
+          aria-controls="fork-tooltip"
+          aria-describedby="fork-description"
+          aria-expanded="true"
+          className="shrink-0"
+          coarsePointerTarget
+          dataTestId="fork-action"
+          disabled
+          onClick={() => undefined}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('aria-label="Fork chat"');
@@ -38,7 +41,9 @@ describe('ForkChatButton', () => {
 
   it('stays 24px on every pointer unless the host opts into the touch floor', () => {
     const html = renderToStaticMarkup(
-      <ForkChatButton ariaLabel="Fork chat" onClick={() => undefined} />,
+      <ChatLookProvider value="classic">
+        <ForkChatButton ariaLabel="Fork chat" onClick={() => undefined} />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('h-6 w-6');

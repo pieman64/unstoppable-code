@@ -1,0 +1,14 @@
+[
+  {
+    "chatId": "reader-chat",
+    "total": 2,
+    "live": 0,
+    "lastActivityAt": 240
+  },
+  {
+    "chatId": "sibling-chat",
+    "total": 1,
+    "live": 0,
+    "lastActivityAt": 180
+  }
+]

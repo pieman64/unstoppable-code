@@ -1,3 +1,4 @@
+import { projectLegacyDelegateOutput } from './output-page';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   parseAgentDelegationSpawnRequest,
@@ -9,10 +10,9 @@ import {
   type AgentDelegationWaitResult,
   type GetDelegateOutputRequest,
   type GetDelegateOutputValue,
-  type WatchDelegatesRequest,
-  type WatchDelegatesValue,
   type DelegateSettledStatus,
 } from '@canopy/protocol/delegation';
+import { InMemoryDelegationTranscriptPort } from './in-memory-transcript-port';
 import {
   createDelegationRunState,
   isDelegationTerminal,
@@ -29,6 +29,10 @@ import type {
   DelegationParentContext,
   ResolvedAgentRouteSnapshot,
 } from './types';
+import type {
+  DelegationTranscriptPort,
+  DelegationTranscriptTarget,
+} from './transcript-port';
 
 interface ProbeRecord {
   readonly parent: DelegationParentContext;
@@ -72,6 +76,7 @@ function unavailable(): AgentDelegationResult<never> {
 
 /** Phase 0 only: manually driven children, no provider or process launch path. */
 export class DevelopmentDelegationBroker {
+  readonly transcriptPort: DelegationTranscriptPort;
   private readonly records = new Map<string, ProbeRecord>();
   private readonly calls = new Map<
     string,
@@ -92,6 +97,7 @@ export class DevelopmentDelegationBroker {
         task: AgentDelegationSpawnRequest,
       ) => Promise<AgentDelegationResult<ResolvedAgentRouteSnapshot>>;
       readonly capacity?: number;
+      readonly transcriptPort?: DelegationTranscriptPort;
     },
   ) {
     if (options.mode !== 'development-probe')
@@ -103,6 +109,18 @@ export class DevelopmentDelegationBroker {
         options.capacity > 16)
     )
       throw new Error('Invalid probe capacity');
+    this.transcriptPort =
+      options.transcriptPort ??
+      new InMemoryDelegationTranscriptPort({
+        owns: (target: DelegationTranscriptTarget): boolean => {
+          const record = this.records.get(target.delegationId);
+          return (
+            record !== undefined &&
+            record.parent.chatId === target.chatId &&
+            record.state.runGeneration === target.runGeneration
+          );
+        },
+      });
   }
 
   spawn(
@@ -194,35 +212,14 @@ export class DevelopmentDelegationBroker {
     );
   }
 
-  watch(
+  getOutput(
     parent: DelegationParentContext,
-    request: WatchDelegatesRequest,
-  ): Promise<AgentDelegationResult<WatchDelegatesValue>> {
-    const targets = request.delegationIds.map((delegationId) => {
-      const snapshot = this.inspect(parent, delegationId);
-      return snapshot
-        ? {
-            delegationId,
-            runGeneration: snapshot.runGeneration ?? 1,
-          }
-        : undefined;
-    });
-    if (targets.some((target) => target === undefined))
-      return Promise.resolve(unavailable());
-    return Promise.resolve({
-      ok: true,
-      value: {
-        watcherId: randomUUID(),
-        mode: request.mode,
-        deadlineAt: Date.now() + request.timeoutMs,
-        targets: targets.filter(
-          (target): target is NonNullable<typeof target> => !!target,
-        ),
-      },
-    });
+    request: GetDelegateOutputRequest,
+  ): Promise<AgentDelegationResult<GetDelegateOutputValue>> {
+    return Promise.resolve(this.readOutput(parent, request));
   }
 
-  getOutput(
+  private readOutput(
     parent: DelegationParentContext,
     request: GetDelegateOutputRequest,
   ): AgentDelegationResult<GetDelegateOutputValue> {
@@ -238,7 +235,7 @@ export class DevelopmentDelegationBroker {
           retryable: false,
         },
       };
-    return {
+    const reply: AgentDelegationResult<GetDelegateOutputValue> = {
       ok: true,
       value: {
         delegationId: request.delegationId,
@@ -258,6 +255,19 @@ export class DevelopmentDelegationBroker {
           : null,
       },
     };
+    if (
+      reply.value.result &&
+      (request.offset !== undefined || request.limit !== undefined)
+    ) {
+      const page = projectLegacyDelegateOutput(
+        reply.value.result,
+        request.offset ?? 0,
+        request.limit ?? 65_536,
+      );
+      if (!page.ok) return page;
+      return { ok: true, value: { ...reply.value, result: page.value } };
+    }
+    return reply;
   }
 
   stop(

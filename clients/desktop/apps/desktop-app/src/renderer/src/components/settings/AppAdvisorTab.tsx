@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   type JSX,
   useCallback,
@@ -56,7 +57,7 @@ const PROJECT_AGENT_ACCESS_SAVE_ERROR =
  * time they start a session.
  */
 const PIPELINE_MONITOR_TOGGLE_ID = 'settings-pipeline-advisor-enabled';
-const PIPELINE_MONITOR_LABEL = 'Automatically monitor pipeline runs';
+const PIPELINE_MONITOR_LABEL = 'Automatically monitor workflow runs';
 
 export function AppAdvisorTab(): JSX.Element {
   const [prefs, setPrefs] = useState<PreferencesData | null>(null);
@@ -177,19 +178,22 @@ export function AppAdvisorTab(): JSX.Element {
 
   if (!prefs) {
     return (
-      <SettingsPage title="App Advisor">
+      <SettingsPage title={ORCHESTRATOR_LABEL}>
         <SettingsLoading />
       </SettingsPage>
     );
   }
 
   return (
-    <SettingsPage title="App Advisor" dataTestId="settings-tab-app-advisor">
+    <SettingsPage
+      title={ORCHESTRATOR_LABEL}
+      dataTestId="settings-tab-app-advisor"
+    >
       <SettingsSection title="Embedded assistant">
         <SettingsGroup>
           <ModelThinkingPreferenceRow
             title="Default model"
-            description="Model and thinking level used for new App Advisor chats."
+            description={`Model and thinking level used for new ${ORCHESTRATOR_LABEL} chats.`}
             model={prefs.appAdvisorModel}
             thinkingLevel={prefs.appAdvisorThinkingLevel}
             defaultThinkingLevel="high"
@@ -208,7 +212,7 @@ export function AppAdvisorTab(): JSX.Element {
 
           <SettingsPluginPicker
             label="Default plugins"
-            description="Loaded when App Advisor starts a new chat."
+            description={`Loaded when ${ORCHESTRATOR_LABEL} starts a new chat.`}
             selections={prefs.appAdvisorPluginSelections}
             onChange={(selections: ChatTabPluginSelections) =>
               savePreferences({ appAdvisorPluginSelections: selections })
@@ -230,12 +234,12 @@ export function AppAdvisorTab(): JSX.Element {
         </SettingsGroup>
       </SettingsSection>
 
-      <SettingsSection title="Pipeline monitoring">
+      <SettingsSection title="Workflow monitoring">
         <SettingsGroup>
           <SettingsRow
             label={PIPELINE_MONITOR_LABEL}
             htmlFor={PIPELINE_MONITOR_TOGGLE_ID}
-            description="Monitor each new pipeline run as it starts. Manual monitoring from pipeline details stays available."
+            description="Monitor each new workflow run as it starts. Manual monitoring from workflow details stays available."
             control={
               <ToggleSwitch
                 id={PIPELINE_MONITOR_TOGGLE_ID}
@@ -250,7 +254,7 @@ export function AppAdvisorTab(): JSX.Element {
           />
 
           <ModelThinkingPreferenceRow
-            title="Pipeline monitor model"
+            title="Workflow monitor model"
             description="Model and thinking level for health, inefficiency, ETA, and final recommendation updates."
             model={prefs.pipelineAdvisorModel}
             thinkingLevel={prefs.pipelineAdvisorThinkingLevel}

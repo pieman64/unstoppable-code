@@ -103,6 +103,7 @@ function connection(
       destructive: [],
       organizations: 1,
       desktops: null,
+      managed: null,
     },
     ...overrides,
   };
@@ -261,6 +262,12 @@ describe('ExternalAgentsPage', () => {
     );
 
     expect(await screen.findByTestId('external-agent-row')).toBeInTheDocument();
+    // The divider draws on a plain wrapper; the button fills the padded row.
+    const row = screen.getByTestId('external-agent-row');
+    expect(row.parentElement?.tagName).toBe('DIV');
+    expect(row.parentElement?.className ?? '').not.toMatch(/rounded/);
+    expect(row.className).toMatch(/-my-3/);
+    expect(row.className).toMatch(/\bpy-3\b/);
     expect(screen.queryByTestId('external-agents-loading')).toBeNull();
   });
 
@@ -293,7 +300,7 @@ describe('ExternalAgentsPage', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows only the connect section when there are no connections', async () => {
+  it('shows only the connect and setup sections when there are no connections', async () => {
     await renderPage(fakeExternalAgentsClient());
 
     const page = await screen.findByTestId('external-agents-page');
@@ -306,7 +313,12 @@ describe('ExternalAgentsPage', () => {
     expect(
       within(page).queryByTestId('external-agents-waiting'),
     ).not.toBeInTheDocument();
-    expect(page.querySelectorAll('section')).toHaveLength(1);
+    expect(
+      Array.from(
+        page.querySelectorAll<HTMLElement>('section'),
+        (section) => section.dataset.testid,
+      ),
+    ).toEqual(['external-agents-connect', 'external-agents-setup']);
   });
 
   it('shows waiting requests with timing and opens the confirmation page', async () => {
@@ -353,6 +365,7 @@ describe('ExternalAgentsPage', () => {
       within(tasks).getByRole('button', { name: 'Copy' }),
     ).toBeInTheDocument();
 
+    await fireEvent.click(screen.getByTestId('external-agents-cursor-toggle'));
     const snippet = screen.getByTestId('external-agents-cursor-snippet');
     expect(snippet.textContent).toContain(ACCOUNT_URL);
     expect(snippet.textContent).toContain(TASKS_URL);
@@ -360,6 +373,93 @@ describe('ExternalAgentsPage', () => {
     expect(
       screen.getByTestId('external-agents-cursor-copy'),
     ).toHaveAccessibleName('Copy entries');
+  });
+
+  it('gives each CLI agent a copyable command for every server', async () => {
+    await renderPage(fakeExternalAgentsClient());
+
+    await screen.findByTestId('external-agents-claude-code');
+    for (const [agent, name] of [
+      ['claude-code', 'Claude Code'],
+      ['codex', 'Codex'],
+      ['opencode', 'OpenCode'],
+      ['hermes', 'Hermes'],
+      ['openclaw', 'OpenClaw'],
+    ] as const) {
+      const section = screen.getByTestId(`external-agents-${agent}`);
+      expect(within(section).getByText(name)).toBeInTheDocument();
+      await fireEvent.click(
+        screen.getByTestId(`external-agents-${agent}-toggle`),
+      );
+      for (const [server, url] of [
+        ['account', ACCOUNT_URL],
+        ['tasks', TASKS_URL],
+      ] as const) {
+        const block = screen.getByTestId(`external-agents-${agent}-${server}`);
+        // OpenCode's per-server command signs in; its URLs are in the config.
+        if (agent !== 'opencode') expect(block.textContent).toContain(url);
+        expect(block.textContent).toContain(server);
+        expect(
+          screen.getByTestId(`external-agents-${agent}-${server}-copy`),
+        ).toBeInTheDocument();
+      }
+    }
+    // OpenClaw can't sign in yet, and its section says so.
+    expect(
+      screen.getByTestId('external-agents-openclaw').textContent,
+    ).toContain('OpenClaw can’t sign in here yet');
+    const config = screen.getByTestId('external-agents-opencode-config');
+    expect(config.textContent).toContain(ACCOUNT_URL);
+    expect(config.textContent).toContain(TASKS_URL);
+  });
+
+  it('collapses each agent setup to its name until the toggle opens it', async () => {
+    await renderPage(fakeExternalAgentsClient());
+
+    const setup = await screen.findByTestId('external-agents-setup');
+    expect(
+      within(setup).getByRole('heading', {
+        name: 'Set up your preferred agent',
+      }),
+    ).toBeInTheDocument();
+    expect(setup.textContent).toContain(
+      'Click to see your agent’s specific setup steps.',
+    );
+    const toggle = within(setup).getByTestId('external-agents-codex-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle.textContent).toBe('Codex');
+    expect(
+      document.querySelector('[data-testid="external-agents-codex-account"]'),
+    ).toBeNull();
+
+    await fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      screen.getByTestId('external-agents-codex-account'),
+    ).toBeInTheDocument();
+
+    await fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(
+      document.querySelector('[data-testid="external-agents-codex-account"]'),
+    ).toBeNull();
+  });
+
+  it('heads each agent-specific setup with its name and tells Muse users the client ID', async () => {
+    await renderPage(fakeExternalAgentsClient());
+
+    const cursor = await screen.findByTestId('external-agents-cursor');
+    expect(within(cursor).getByText('Cursor')).toBeInTheDocument();
+    expect(cursor.textContent).not.toContain('Using Cursor?');
+
+    const muse = screen.getByTestId('external-agents-muse');
+    expect(within(muse).getByText('Meta Muse')).toBeInTheDocument();
+    await fireEvent.click(screen.getByTestId('external-agents-muse-toggle'));
+    expect(muse.textContent).toContain('custom connector');
+    expect(muse.textContent).toContain('meta-muse');
+    expect(
+      screen.getByTestId('external-agents-muse-copy'),
+    ).toHaveAccessibleName('Copy client ID');
   });
 
   it('shows summaries and status pills and opens an encoded connection path when a row is clicked', async () => {
@@ -397,6 +497,29 @@ describe('ExternalAgentsPage', () => {
     expect(onOpenPath).toHaveBeenCalledWith(
       '/account/external-agents/id%20with%20%2F%20slash',
     );
+  });
+
+  it('shows the Tasks host summary with managed host and device count', async () => {
+    const tasksConnection = connection({
+      id: 'tasks-connection',
+      server: 'tasks',
+      access: {
+        read: [],
+        write: ['tasks'],
+        destructive: [],
+        organizations: null,
+        desktops: 2,
+        managed: true,
+      },
+    });
+    await renderPage(
+      fakeExternalAgentsClient(overview({ connections: [tasksConnection] })),
+    );
+
+    const row = await screen.findByTestId('external-agent-row');
+    expect(
+      within(row).getByText('Writes tasks on linux-managed and 2 devices.'),
+    ).toBeInTheDocument();
   });
 
   it('renders notice copy with a Review action that opens the connection', async () => {

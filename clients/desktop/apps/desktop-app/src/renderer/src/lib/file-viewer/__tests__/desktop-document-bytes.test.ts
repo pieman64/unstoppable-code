@@ -47,6 +47,26 @@ describe('resolveDesktopDocumentBytes', () => {
     expect(result).toEqual({ status: 'too-large', maxBytes: 25 * 1024 * 1024 });
   });
 
+  it('applies a caller-supplied budget', async () => {
+    const bytes = new Uint8Array(4);
+    expect(
+      await resolveDesktopDocumentBytes(
+        () => Promise.resolve(ready(bytes)),
+        new AbortController().signal,
+        3,
+      ),
+    ).toEqual({ status: 'too-large', maxBytes: 3 });
+    expect(
+      (
+        await resolveDesktopDocumentBytes(
+          () => Promise.resolve(ready(bytes)),
+          new AbortController().signal,
+          4,
+        )
+      ).status,
+    ).toBe('ready');
+  });
+
   it('maps missing documents and read failures to the shared failure card', async () => {
     expect(
       await resolveDesktopDocumentBytes(

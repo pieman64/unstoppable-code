@@ -138,7 +138,10 @@ export function ActionMenuRowStyle({
   );
 }
 
-/** A row's shortcut hint, trailing its label in the quieter menu ink. */
+/**
+ * A row's shortcut hint: plain trailing glyphs in the quietest menu ink, as
+ * native menus draw them (no key caps in a menu row).
+ */
 export function ActionMenuShortcut({
   shortcut,
 }: {
@@ -147,7 +150,7 @@ export function ActionMenuShortcut({
   if (shortcut === undefined) return null;
   return (
     <span
-      className="ml-auto shrink-0 pl-4 text-xs fg-tertiary"
+      className="ml-auto shrink-0 whitespace-nowrap pl-4 text-xs tabular-nums fg-quaternary"
       data-testid="worktree-menu-item-shortcut"
     >
       {shortcut}

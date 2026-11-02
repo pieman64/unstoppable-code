@@ -3,7 +3,7 @@ import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { ChatIcon, TrashIcon } from '@canopy/ui-shared/icons';
 import { useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserRecording } from '@/lib/browserChatStaging';
-import { Tooltip } from '@canopy/ui-shared';
+import { Button, Tooltip } from '@canopy/ui-shared';
 
 interface BrowserRecordingPanelProps {
   browserId: string;
@@ -58,26 +58,27 @@ export function BrowserRecordingPanel({
         )}
         <div className="flex-1" />
         {isRecording && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
             onClick={(): void => {
               void handleStop();
             }}
             disabled={busy}
-            className="rounded px-2 py-0.5 text-2xs fg-primary hover:bg-muted/40 disabled:opacity-50"
           >
             Stop recording
-          </button>
+          </Button>
         )}
         <Tooltip label="Delete recording">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={(): void => clearRecording(browserId)}
             aria-label="Delete recording"
-            className="inline-flex items-center rounded p-1 fg-secondary hover:bg-muted/40 hover:fg-primary"
           >
             <TrashIcon width={13} height={13} />
-          </button>
+          </Button>
         </Tooltip>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-2">
@@ -93,17 +94,18 @@ export function BrowserRecordingPanel({
                   <code>{script}</code>
                 </pre>
                 {!isRecording && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="compact"
+                    className="self-start"
                     onClick={(): void => {
                       void handleAttach();
                     }}
                     disabled={busy}
-                    className="inline-flex self-start items-center gap-1 rounded border bg-base/50 px-2 py-1 text-2xs hover:bg-base disabled:opacity-50"
                   >
                     <ChatIcon width={12} height={12} />
                     <span>{CHAT_UNIT_LABEL}</span>
-                  </button>
+                  </Button>
                 )}
               </>
             )}

@@ -134,11 +134,9 @@ describe('useHomeComposerAutofocus', () => {
     const modal = document.createElement('div');
     modal.setAttribute('aria-modal', 'true');
     const modalRect = modal.getBoundingClientRect();
-    const modalRects: DOMRectList = {
-      0: modalRect,
-      length: 1,
-      item: (index) => (index === 0 ? modalRect : null),
-    };
+    const modalRects: DOMRectList = Object.assign([modalRect], {
+      item: (index: number): DOMRect | null => (index === 0 ? modalRect : null),
+    });
     jest.spyOn(modal, 'getClientRects').mockReturnValue(modalRects);
     document.body.appendChild(modal);
     try {

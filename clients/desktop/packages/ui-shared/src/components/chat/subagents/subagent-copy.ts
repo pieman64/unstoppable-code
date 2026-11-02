@@ -190,8 +190,6 @@ export function subagentsFilterLabelWithCount(
 export const SUBAGENTS_VIEW_GROUP_LABEL = 'View';
 export const SUBAGENTS_VIEW_TREE_LABEL = 'Tree';
 export const SUBAGENTS_VIEW_LIST_LABEL = 'List';
-export const SUBAGENTS_VIEW_TREE_TOOLTIP = 'Tree view';
-export const SUBAGENTS_VIEW_LIST_TOOLTIP = 'List view';
 
 /** Visible caption of the Levels capsule. */
 export const SUBAGENTS_LEVELS_LABEL = 'Levels';

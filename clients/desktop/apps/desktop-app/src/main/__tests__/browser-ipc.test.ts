@@ -1,7 +1,10 @@
+import type { BrowserService } from '../browser/browser-service';
+
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
-const mockWithRuntimeTarget = jest.fn(
-  (_target: unknown, operation: () => unknown): unknown => operation(),
-);
+const mockWithRuntimeTarget = jest.fn<
+  ReturnType<BrowserService['withRuntimeTarget']>,
+  Parameters<BrowserService['withRuntimeTarget']>
+>((...args) => Promise.resolve(args[1]()));
 const listeners = new Map<string, (...args: unknown[]) => void>();
 const mockCreate = jest.fn();
 const mockProfileReady = jest.fn().mockResolvedValue(undefined);
@@ -59,10 +62,20 @@ const mockSetLinkBrowserTargetAvailable = jest.fn<void, [boolean]>();
 
 jest.mock('electron', () => ({
   BrowserWindow: {
-    fromWebContents: mockFromWebContents,
+    get fromWebContents(): typeof mockFromWebContents {
+      return mockFromWebContents;
+    },
   },
-  shell: { showItemInFolder: mockShowItemInFolder },
-  dialog: { showSaveDialog: mockShowSaveDialog },
+  shell: {
+    get showItemInFolder(): typeof mockShowItemInFolder {
+      return mockShowItemInFolder;
+    },
+  },
+  dialog: {
+    get showSaveDialog(): typeof mockShowSaveDialog {
+      return mockShowSaveDialog;
+    },
+  },
   app: { getPath: jest.fn(() => '/Users/me/Downloads') },
   ipcMain: {
     removeHandler: jest.fn((channel: string) => {
@@ -143,7 +156,9 @@ jest.mock('../browser/default-browser-registration', () => ({
 }));
 
 jest.mock('../lib/main-process-logging', () => ({
-  logMainProcessError: mockLogMainProcessError,
+  get logMainProcessError(): typeof mockLogMainProcessError {
+    return mockLogMainProcessError;
+  },
 }));
 
 jest.mock('../lib/link-context-menu', () => ({

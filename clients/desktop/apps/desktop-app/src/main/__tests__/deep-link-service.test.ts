@@ -129,6 +129,22 @@ describe('deep-link buffering and delivery', () => {
     ]);
   });
 
+  it('buffers an Organizations settings link until startup unlock (CAN-5111)', () => {
+    armSender();
+    handleDeepLinkUrl(`${SCHEME}://settings/organization`, SCHEMES);
+    expect(delivered).toEqual([]);
+    notifyDeepLinkStartupUnlocked();
+    expect(delivered).toEqual([
+      { destination: 'settings', section: 'organizations' },
+    ]);
+    // The link never carries an invite code; one that tries is dropped.
+    handleDeepLinkUrl(
+      `${ALIAS_SCHEME}://settings/organization?code=abc123`,
+      SCHEMES,
+    );
+    expect(delivered).toHaveLength(1);
+  });
+
   it('buffers a privacy opt-in intent until startup unlock and never treats malformed consent as bare settings', () => {
     armSender();
     const org = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

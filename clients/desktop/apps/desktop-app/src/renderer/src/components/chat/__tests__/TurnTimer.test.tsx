@@ -5,6 +5,7 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { TurnFeedbackControl } from '@canopy/ui-shared';
 import { TurnTimer } from '../TurnTimer';
+import { ChatLookProvider } from '@canopy/ui-shared/components/chat-look';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
@@ -19,7 +20,7 @@ function renderTimer(node: JSX.Element): {
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => {
-    root.render(node);
+    root.render(<ChatLookProvider value="classic">{node}</ChatLookProvider>);
   });
   return { container, root };
 }
@@ -62,6 +63,27 @@ describe('TurnTimer', () => {
       );
 
       expect(timerLabel(container)).toBe(expectedLabel);
+      act(() => root.unmount());
+    },
+  );
+
+  it.each(['failed', 'cancelled'] as const)(
+    'shows the %s completion outcome in the Clean footer',
+    (completionStatus) => {
+      const { container, root } = renderTimer(
+        <ChatLookProvider value="clean">
+          <TurnTimer
+            startedAt={0}
+            completedAt={60_000}
+            {...{ completionStatus }}
+          />
+        </ChatLookProvider>,
+      );
+      expect(timerLabel(container)).toBe(
+        completionStatus === 'failed'
+          ? 'Failed after 1:00'
+          : 'Cancelled after 1:00',
+      );
       act(() => root.unmount());
     },
   );

@@ -219,6 +219,8 @@ test('opening a run from a chat run card places it beside the chat, and a second
     ],
   });
 
+  // Finished runs keep their card in the dispatching turn; a live run is the
+  // composer drawer's alone (background drawer D3).
   seedPipelineExecution({
     userDataDir,
     workspaceId: WORKSPACE_ID,
@@ -227,7 +229,8 @@ test('opening a run from a chat run card places it beside the chat, and a second
       id: EXECUTION_A,
       pipelineId: receiptA.pipelineId,
       pipelineName: receiptA.pipelineName,
-      status: 'running',
+      status: 'success',
+      completedAt: new Date(T + 60_000).toISOString(),
     },
   });
   seedPipelineExecution({
@@ -238,7 +241,8 @@ test('opening a run from a chat run card places it beside the chat, and a second
       id: EXECUTION_B,
       pipelineId: receiptB.pipelineId,
       pipelineName: receiptB.pipelineName,
-      status: 'running',
+      status: 'success',
+      completedAt: new Date(T + 60_000).toISOString(),
     },
   });
 
@@ -596,7 +600,7 @@ test('the Add Panel menu never offers a pipeline row, before or after a run tab 
   if (seeded === null) throw new Error('pipeline execution was not seeded');
 
   const noPipelineRow = async () => {
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(window.getByTestId('panel-add-menu')).toBeVisible();
     await expect(
       window.locator('[data-testid^="panel-add-menu-item-pipeline-execution"]'),

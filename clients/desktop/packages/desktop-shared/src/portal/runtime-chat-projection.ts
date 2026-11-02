@@ -4,11 +4,18 @@ import {
   MAX_AGENT_ARTIFACT_METADATA_BYTES,
 } from '../lib/agent-artifacts';
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
+import {
+  readPortalToolOccurrence,
+  readPortalToolOutputLocator,
+} from '@canopy/protocol/portal';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
+import {
+  CANOPY_MODEL_ACCESS_FAILURE_FIELD,
+  readCodexAccountModelAccessFailure,
+} from '@canopy/protocol/auth-recovery';
 import type {
   PortalChatMessage,
   PortalChatPart,
-  PortalTurnTimerAutoRoutedModel,
   PortalTurnTimerEndReason,
 } from '@canopy/protocol/portal';
 import {
@@ -17,15 +24,19 @@ import {
   createEmptyTranscriptReducerState,
   delegationTranscriptMessages,
   codexMcpToolName,
-  flattenCodexDynamicToolContent,
-  flattenCodexMcpToolResult,
+  previewCodexDynamicToolContent,
+  previewCodexMcpToolResult,
+  isVisiblePersistedChatMessage,
   stripMemoryCitationTags,
 } from '@canopy/agent-transcript';
 import { applyAssistantPatches } from '@canopy/agent-transcript/lib/assistant-snapshot';
+import {
+  chatTurnTimerId,
+  type ChatTurnEffect,
+} from '@canopy/agent-transcript/turn';
 import type { PersistedChatMessage } from '../types';
 import { isProviderUsageLimitFrame } from './provider-usage-limit';
 import { getPortalChatToolFamily } from '../lib/portal-tool-family';
-import { isCanopyAskUserToolName } from '../lib/canopy-injected-tools';
 import {
   PORTAL_CHAT_PART_TEXT_MAX_CHARS,
   PORTAL_CHAT_TEXT_MAX_CHARS,
@@ -34,6 +45,7 @@ import {
   persistedMessageToPortalMessage,
   summarizeUnknown,
   truncateText,
+  turnTimerAutoRoutedModelData,
   truncateToolInput,
 } from './persisted-chat-projection';
 
@@ -189,7 +201,64 @@ function runtimeText(data: Record<string, unknown>): string {
   return truncateText(visible, PORTAL_CHAT_TEXT_MAX_CHARS);
 }
 
-function runtimeParts(data: Record<string, unknown>): PortalChatPart[] {
+/** Structural admission port: no desktop-main dependency in the projector. */
+export interface RuntimeToolAdmission {
+  readonly revision: number;
+  readonly tools: readonly {
+    readonly sourceToken: string;
+    readonly occurrenceId: string;
+    /** Retained mappings keep their own admission frontier. */
+    readonly revision?: number;
+    readonly result?: {
+      readonly rowId: string;
+      readonly blockOrdinal: number;
+      readonly needsRead: boolean;
+    };
+  }[];
+}
+
+function stampRuntimeToolPart(
+  part: PortalChatPart,
+  token: string,
+  admission: RuntimeToolAdmission | undefined,
+): PortalChatPart {
+  const mapping = admission?.tools.find((tool) => tool.sourceToken === token);
+  if (!mapping || !admission) return part;
+  const occurrence = readPortalToolOccurrence({
+    id: mapping.occurrenceId,
+    revision: mapping.revision ?? admission.revision,
+  });
+  if (!occurrence) return part;
+  const outputLocator =
+    mapping.result?.needsRead === true
+      ? readPortalToolOutputLocator({
+          messageId: mapping.result.rowId,
+          blockOrdinal: mapping.result.blockOrdinal,
+          field: 'output',
+        })
+      : undefined;
+  return {
+    ...part,
+    occurrence,
+    ...(outputLocator && part.kind === 'tool_result' ? { outputLocator } : {}),
+    ...(outputLocator &&
+    part.kind === 'tool_use' &&
+    isRecord(part.data) &&
+    isRecord(part.data.result)
+      ? {
+          data: {
+            ...part.data,
+            result: { ...part.data.result, outputLocator },
+          },
+        }
+      : {}),
+  };
+}
+
+function runtimeParts(
+  data: Record<string, unknown>,
+  admission?: RuntimeToolAdmission,
+): PortalChatPart[] {
   const receiptBudget = { remaining: MAX_AGENT_ARTIFACT_METADATA_BYTES };
   const message = isRecord(data.message) ? data.message : null;
   const content = Array.isArray(message?.content)
@@ -199,7 +268,8 @@ function runtimeParts(data: Record<string, unknown>): PortalChatPart[] {
       : [];
   const parts: PortalChatPart[] = [];
 
-  for (const block of content) {
+  for (let index = 0; index < content.length; index += 1) {
+    const block: unknown = content[index];
     if (!isRecord(block)) continue;
     if (block.type === 'thinking') {
       // Thinking is model output; tool inputs/results below pass through
@@ -230,34 +300,46 @@ function runtimeParts(data: Record<string, unknown>): PortalChatPart[] {
                 PORTAL_CHAT_PART_TEXT_MAX_CHARS,
               );
       const toolName = readString(block, 'name') ?? 'unknown';
-      parts.push({
-        kind: 'tool_use',
-        toolFamily: getPortalChatToolFamily(toolName),
-        data: {
-          toolUseId: readString(block, 'id') ?? '',
-          toolName,
-          input: truncateToolInput(input, PORTAL_CHAT_PART_TEXT_MAX_CHARS),
-        },
-      });
+      parts.push(
+        stampRuntimeToolPart(
+          {
+            kind: 'tool_use',
+            toolFamily: getPortalChatToolFamily(toolName),
+            data: {
+              toolUseId: readString(block, 'id') ?? '',
+              toolName,
+              input: truncateToolInput(input, PORTAL_CHAT_PART_TEXT_MAX_CHARS),
+            },
+          },
+          String(index),
+          admission,
+        ),
+      );
       continue;
     }
     if (block.type === 'tool_result') {
-      parts.push({
-        kind: 'tool_result',
-        data: {
-          toolUseId: readString(block, 'tool_use_id') ?? '',
-          ...runtimeReceiptMetadata(
-            toolResultText(block.content),
-            block.is_error === true,
-            receiptBudget,
-          ),
-          output: truncateText(
-            toolResultText(block.content),
-            PORTAL_CHAT_PART_TEXT_MAX_CHARS,
-          ),
-          isError: block.is_error === true,
-        },
-      });
+      parts.push(
+        stampRuntimeToolPart(
+          {
+            kind: 'tool_result',
+            data: {
+              toolUseId: readString(block, 'tool_use_id') ?? '',
+              ...runtimeReceiptMetadata(
+                toolResultText(block.content),
+                block.is_error === true,
+                receiptBudget,
+              ),
+              output: truncateText(
+                toolResultText(block.content),
+                PORTAL_CHAT_PART_TEXT_MAX_CHARS,
+              ),
+              isError: block.is_error === true,
+            },
+          },
+          String(index),
+          admission,
+        ),
+      );
     }
   }
 
@@ -323,13 +405,13 @@ function runtimeCodexMessage(input: {
     if (completed) {
       const result = dynamic
         ? {
-            output: flattenCodexDynamicToolContent({
+            output: previewCodexDynamicToolContent({
               contentItems: item.content_items,
               success: typeof item.success === 'boolean' ? item.success : null,
             }),
             isError: item.success === false || status === 'failed',
           }
-        : flattenCodexMcpToolResult({
+        : previewCodexMcpToolResult({
             status,
             result: item.result,
             error: item.error,
@@ -462,15 +544,21 @@ function runtimeCodexMessage(input: {
  * This browser-safe implementation is shared by Electron main and renderer so
  * the shared chat store never grows a second delta accumulator.
  */
-export function runtimeChatEventToPortalMessage(input: {
+export interface RuntimeChatProjectionInput {
   scope: 'worktree' | 'standalone' | 'app_advisor';
   workspaceLocalId?: string;
   worktreeLocalId?: string;
   chatId: string;
   data: unknown;
   fallbackMessageId?: string;
-}): PortalChatMessage | null {
+  admission?: RuntimeToolAdmission;
+}
+
+export function runtimeChatEventToPortalMessage(
+  input: RuntimeChatProjectionInput,
+): PortalChatMessage | null {
   if (!isRecord(input.data)) return null;
+  const admission = input.scope === 'worktree' ? input.admission : undefined;
   // Usage/rate-limit frames are banner state, not transcript messages: the
   // desktop never renders them as rows (transcript-parser routes them to the
   // composer usage-limit banner), and the portal mirrors that banner via
@@ -494,13 +582,34 @@ export function runtimeChatEventToPortalMessage(input: {
       ...input,
       message: messages[0],
       relatedMessages: messages,
+      outputLocators: false,
     });
   }
   if (type === CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE) {
     return runtimeAccountProxySwitchMessage({ ...input, data: input.data });
   }
   if (type === 'codex') {
-    return runtimeCodexMessage({ chatId: input.chatId, data: input.data });
+    const projected = runtimeCodexMessage({
+      chatId: input.chatId,
+      data: input.data,
+    });
+    if (!projected || !admission) return projected;
+    const event = isRecord(input.data.event) ? input.data.event : undefined;
+    const item = event && isRecord(event.item) ? event.item : undefined;
+    const itemId = item ? readString(item, 'id') : undefined;
+    if (!itemId) return projected;
+    return {
+      ...projected,
+      parts: projected.parts?.map((part) =>
+        part.kind === 'tool_use' || part.kind === 'tool_result'
+          ? stampRuntimeToolPart(
+              part,
+              `${itemId}:${part.kind === 'tool_use' ? 'call' : 'result'}`,
+              admission,
+            )
+          : part,
+      ),
+    };
   }
   // The desktop chat IPC channel also carries known host control records that
   // are not transcript messages. Filter those concrete controls without
@@ -508,7 +617,7 @@ export function runtimeChatEventToPortalMessage(input: {
   if (type && NON_MESSAGE_RUNTIME_CHAT_EVENT_TYPES.has(type)) {
     return null;
   }
-  const parts = runtimeParts(input.data);
+  const parts = runtimeParts(input.data, admission);
   const isToolResultEvent =
     type === 'user' &&
     parts.some(
@@ -529,21 +638,34 @@ export function runtimeChatEventToPortalMessage(input: {
   const messageId =
     runtimeMessageId(input.data, parts, input.fallbackMessageId) ??
     `${input.chatId}:${type ?? 'event'}`;
+  // A Codex turn refused for the account's model carries its recovery
+  // notice on the terminal result (CAN-4716); the raw text rides in the part.
+  const modelAccessFailure =
+    type === 'result'
+      ? readCodexAccountModelAccessFailure(
+          input.data[CANOPY_MODEL_ACCESS_FAILURE_FIELD],
+        )
+      : undefined;
   return {
     messageId,
     chatId: input.chatId,
     role: 'assistant',
     status,
-    text: isClaudeAiCreditsFallbackErrorCode(displayErrorCode) ? '' : text,
+    text:
+      isClaudeAiCreditsFallbackErrorCode(displayErrorCode) || modelAccessFailure
+        ? ''
+        : text,
     ...(isClaudeAiCreditsFallbackErrorCode(displayErrorCode)
       ? {
           parts: [
             { kind: 'text', data: { text, errorCode: displayErrorCode } },
           ],
         }
-      : parts.length > 0
-        ? { parts }
-        : {}),
+      : modelAccessFailure
+        ? { parts: [{ kind: 'text', data: { text, modelAccessFailure } }] }
+        : parts.length > 0
+          ? { parts }
+          : {}),
     createdAtMs: now,
     updatedAtMs: now,
   };
@@ -569,6 +691,7 @@ function runtimeAccountProxySwitchMessage(input: {
       now,
       createMessageId: (): string =>
         `${input.chatId}:account-proxy-switch:${now}`,
+      childToolLiveness: { kind: 'unknown' },
     },
   ).messages;
   if (message === undefined) return null;
@@ -644,6 +767,7 @@ export function createCursorAssistantPatchProjector(input: {
             : {}),
           chatId: input.chatId,
           message,
+          outputLocators: false,
         }),
         updatedAtMs,
       };
@@ -676,217 +800,84 @@ export function isTerminalRuntimeChatEvent(data: unknown): boolean {
 }
 
 /**
- * How a terminal runtime event says the turn ended, when it did not end
- * normally. Stamped on the completed timer row so a consumer can tell a
- * stopped or failed turn from a clean one (the row itself stays
- * `status: 'complete'`). Covers the shapes each provider really emits:
- *
- * - Claude: a `result` with an abort `terminal_reason`, or the graceful
- *   `{ result: 'Session aborted' }` (`is_error: false`).
- * - Codex: `{ type: 'codex', event: { type: 'turn.completed', status:
- *   'interrupted' } }`, then `{ type: 'result', result: 'Turn cancelled' }`;
- *   a failed turn is `turn.failed`.
- * - Cursor: a `result` with `subtype: 'cancelled'` / `result: 'Turn cancelled'`.
- *
- * NOTE: mirrors `getChatTurnAuditStatus` in the desktop app's
- * `main/lib/chat-turn-audit.ts` (which cannot be imported here), and adds the
- * Codex interrupted status and Cursor `subtype`, which that audit reads as
- * success. Keep the two in step.
+ * Project the canonical turn timers one acknowledged state commit touched, in
+ * effect order and once per timer. Rows come only from the committed timer
+ * messages and keep their persisted `chatTurnTimerId(T)` id, so live and
+ * snapshot rows share one id. A timer effect without a committed row for the
+ * same turn projects nothing; the host reports it. A turn Auto routed carries
+ * its model chip (turn-state phase 43f): `autoRoutedModels` is the tab's map
+ * of user message id to model, and the timer block names its user message.
  */
-export function turnTimerEndReason(
-  data: unknown,
-): PortalTurnTimerEndReason | undefined {
-  if (!isRecord(data)) return undefined;
-  const type = readString(data, 'type');
-  if (type === 'codex') {
-    const event = isRecord(data.event) ? data.event : null;
-    const eventType = event ? readString(event, 'type') : undefined;
-    if (eventType === 'turn.failed' || eventType === 'error') return 'failed';
-    if (eventType === 'turn.cancelled') return 'cancelled';
-    if (eventType === 'turn.completed' && event) {
-      return readString(event, 'status') === 'interrupted'
-        ? 'cancelled'
-        : undefined;
-    }
-    return undefined;
-  }
-  if (type === 'result') {
-    // Stop reads as an error on some paths, so check it before `is_error`.
-    const terminalReason = readString(data, 'terminal_reason');
-    if (
-      (terminalReason !== undefined &&
-        USER_ABORT_TERMINAL_REASONS.includes(terminalReason)) ||
-      readString(data, 'subtype') === 'cancelled'
-    ) {
-      return 'cancelled';
-    }
-  }
-  if (type === 'error' || data.is_error === true || type === 'turn.failed') {
-    return 'failed';
-  }
-  if (type === 'cancelled' || type === 'turn.cancelled') return 'cancelled';
-  if (type === 'result') {
-    const resultText = (readString(data, 'result') ?? '').trim().toLowerCase();
-    if (
-      resultText === 'turn cancelled' ||
-      resultText === 'session aborted' ||
-      resultText === 'session ended'
-    ) {
-      return 'cancelled';
-    }
-  }
-  return undefined;
-}
-
-export interface PortalTurnTimer {
-  startMessage: PortalChatMessage;
-  updateForEvent(data: unknown): PortalChatMessage | null;
-  updateForMessage(message: PortalChatMessage): PortalChatMessage | null;
-  completeForEvent(data: unknown): PortalChatMessage | null;
-  finalize(): PortalChatMessage | null;
-}
-
-function isAskUserToolName(toolName: string | undefined): boolean {
-  return isCanopyAskUserToolName(toolName) || toolName === 'request_user_input';
-}
-
-export function createPortalTurnTimer(input: {
+export function projectCanonicalPortalTurnTimers(input: {
+  scope: 'worktree' | 'standalone' | 'app_advisor';
   chatId: string;
-  userMessageId: string;
-  /** The model Auto picked for this turn, when Auto routed it. */
-  autoRoutedModel?: PortalTurnTimerAutoRoutedModel;
-}): PortalTurnTimer {
-  const startedAt = Date.now();
-  const messageId = `${input.userMessageId}:turn-timer`;
-  let completed = false;
-  let pausedAt: number | null = null;
-  let resumedAt: number | null = null;
-  let accumulatedPausedDurationMs = 0;
-  const pendingAskUserToolIds = new Set<string>();
-  const timerMessage = (
-    status: PortalChatMessage['status'],
-    completedAt: number | null,
-    updatedAtMs: number,
-    endReason?: PortalTurnTimerEndReason,
-  ): PortalChatMessage => ({
-    messageId,
-    chatId: input.chatId,
-    role: 'system',
-    status,
-    text: '',
-    parts: [
-      {
-        kind: 'turn_timer',
-        data: {
-          startedAt,
-          pausedAt,
-          resumedAt,
-          accumulatedPausedDurationMs,
-          completedAt,
-          ...(endReason === undefined ? {} : { endReason }),
-          ...input.autoRoutedModel,
-        },
-      },
-    ],
-    createdAtMs: updatedAtMs,
-    updatedAtMs,
-  });
-  const completedMessage = (
-    endReason?: PortalTurnTimerEndReason,
-  ): PortalChatMessage => {
-    completed = true;
-    const now = Date.now();
-    const completedAt =
-      pausedAt !== null && resumedAt === null ? pausedAt : now;
-    return timerMessage('complete', completedAt, now, endReason);
-  };
-  const pauseForTool = (toolUseId: string): PortalChatMessage | null => {
-    pendingAskUserToolIds.add(toolUseId);
-    if (pausedAt !== null && resumedAt === null) return null;
-    pausedAt = Date.now();
-    resumedAt = null;
-    return timerMessage('streaming', null, pausedAt);
-  };
-  const resumeForTool = (toolUseId: string): PortalChatMessage | null => {
-    if (!pendingAskUserToolIds.delete(toolUseId)) return null;
-    if (
-      pendingAskUserToolIds.size > 0 ||
-      pausedAt === null ||
-      resumedAt !== null
-    ) {
-      return null;
+  effects: readonly ChatTurnEffect[];
+  timerMessages: readonly PersistedChatMessage[];
+  autoRoutedModels?: Readonly<Record<string, string>>;
+}): PortalChatMessage[] {
+  const endReasons = new Map<string, PortalTurnTimerEndReason>();
+  for (const effect of input.effects) {
+    if (effect.type === 'turn.ended' && effect.outcome !== 'completed') {
+      endReasons.set(effect.turnId, effect.outcome);
     }
-    resumedAt = Date.now();
-    accumulatedPausedDurationMs += Math.max(0, resumedAt - pausedAt);
-    return timerMessage('streaming', null, resumedAt);
+  }
+  const seen = new Set<string>();
+  const rows: PortalChatMessage[] = [];
+  const project = (row: PersistedChatMessage, turnId: string): void => {
+    const isTimer = (block: PersistedChatMessage['blocks'][number]): boolean =>
+      block.type === 'turn_timer' && block.turnId === turnId;
+    if (!row.blocks.some(isTimer) || !isVisiblePersistedChatMessage(row))
+      return;
+    const timer = row.blocks.find(isTimer);
+    const message = persistedMessageToPortalMessage(
+      { scope: input.scope, chatId: input.chatId, message: row },
+      { includeInFlightTurnTimers: true },
+    );
+    const endReason = endReasons.get(turnId);
+    const routed = turnTimerAutoRoutedModelData(
+      input.autoRoutedModels,
+      timer?.type === 'turn_timer' ? timer.userMessageId : undefined,
+    );
+    rows.push(
+      endReason === undefined && routed === undefined
+        ? message
+        : {
+            ...message,
+            parts: message.parts?.map((part) =>
+              part.kind === 'turn_timer' && isRecord(part.data)
+                ? {
+                    ...part,
+                    data: {
+                      ...part.data,
+                      ...routed,
+                      ...(endReason === undefined ? {} : { endReason }),
+                    },
+                  }
+                : part,
+            ),
+          },
+    );
   };
-  return {
-    startMessage: timerMessage('streaming', null, startedAt),
-    updateForEvent(data: unknown): PortalChatMessage | null {
-      if (
-        completed ||
-        !isRecord(data) ||
-        readString(data, 'type') !== 'codex'
-      ) {
-        return null;
-      }
-      const event = isRecord(data.event) ? data.event : null;
-      const item = event && isRecord(event.item) ? event.item : null;
-      if (!event || !item || readString(item, 'type') !== 'dynamic_tool_call') {
-        return null;
-      }
-      const toolName = readString(item, 'tool');
-      const toolUseId = readString(item, 'id');
-      if (!isAskUserToolName(toolName) || !toolUseId) return null;
-      const eventType = readString(event, 'type');
-      if (eventType === 'item.started')
-        return pauseForTool(`codex-${toolUseId}`);
-      if (eventType === 'item.completed')
-        return resumeForTool(`codex-${toolUseId}`);
-      return null;
-    },
-    updateForMessage(message: PortalChatMessage): PortalChatMessage | null {
-      if (completed) return null;
-      const completedToolIds = new Set(
-        (message.parts ?? [])
-          .filter((part) => part.kind === 'tool_result')
-          .map((part) => readString(part.data, 'toolUseId')),
-      );
-      for (const part of message.parts ?? []) {
-        const data = isRecord(part.data) ? part.data : {};
-        if (part.kind === 'tool_use') {
-          const toolName = readString(data, 'toolName');
-          const toolUseId = readString(data, 'toolUseId');
-          if (
-            isAskUserToolName(toolName) &&
-            toolUseId &&
-            !completedToolIds.has(toolUseId)
-          ) {
-            return pauseForTool(toolUseId);
-          }
-        } else if (part.kind === 'tool_result') {
-          const toolUseId = readString(data, 'toolUseId');
-          if (toolUseId) {
-            const resumed = resumeForTool(toolUseId);
-            if (resumed) return resumed;
-          }
-        }
-      }
-      return null;
-    },
-    completeForEvent(data: unknown): PortalChatMessage | null {
-      if (!isTerminalRuntimeChatEvent(data)) return null;
-      // Deliberately NOT gated on `completed`: a loop wakeup continues the
-      // same turn (no new user row) and ends it again later, and the desktop
-      // renderer extends its timer to that later completion. Re-emitting the
-      // completed row with the newer `completedAt` keeps the portal's
-      // "Completed in M:SS" in step; the browser's timer merge replaces a
-      // completed frame with a later completed one (only a reopen is refused).
-      return completedMessage(turnTimerEndReason(data));
-    },
-    finalize(): PortalChatMessage | null {
-      if (completed) return null;
-      return completedMessage();
-    },
-  };
+  for (const effect of input.effects) {
+    if (!('timerId' in effect) || seen.has(effect.timerId)) continue;
+    seen.add(effect.timerId);
+    const row = input.timerMessages.find(
+      (message) => message.id === effect.timerId,
+    );
+    if (row) project(row, effect.turnId);
+  }
+  // A binding alone can rewrite a row's anchor or wake cause, with no effect.
+  for (const row of input.timerMessages) {
+    if (seen.has(row.id)) continue;
+    const timer = row.blocks.find((block) => block.type === 'turn_timer');
+    if (
+      timer?.type !== 'turn_timer' ||
+      timer.turnId === undefined ||
+      row.id !== chatTurnTimerId(timer.turnId)
+    )
+      continue;
+    seen.add(row.id);
+    project(row, timer.turnId);
+  }
+  return rows;
 }

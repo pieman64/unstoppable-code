@@ -1,4 +1,5 @@
 import { type JSX } from 'react';
+import { formatByteSize } from '@canopy/ui-shared/lib';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
@@ -6,20 +7,6 @@ import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
 import { shareSessionAction } from '@/lib/shareSessionAction';
 import { useShareSessionStatusStore } from '@/stores/shareSessionStatusStore';
-
-function formatByteSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  return unitIndex === 0
-    ? `${Math.round(value)} ${units[unitIndex]}`
-    : `${value.toFixed(1)} ${units[unitIndex]}`;
-}
 
 export function ShareSessionStatusModal(): JSX.Element | null {
   const target = useShareSessionStatusStore((state) => state.target);

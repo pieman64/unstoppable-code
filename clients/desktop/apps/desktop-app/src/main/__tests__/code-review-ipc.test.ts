@@ -245,6 +245,16 @@ describe('registerCodeReviewHandlers', () => {
     );
   });
 
+  it('codeReviewRegister propagates persistence rejection', async () => {
+    const handler = handlers.get(IPC_CHANNELS.codeReviewRegister);
+    expect(handler).toBeDefined();
+    const error = new Error('registry persistence failed');
+    mockedRegisterCodeReviewTarget.mockRejectedValueOnce(error);
+    await expect(
+      handler?.({}, { projectId: 'proj-1', worktreeId: 'wt-1' }),
+    ).rejects.toBe(error);
+  });
+
   it('codeReviewModalOpen calls setCodeReviewModalOpen', async () => {
     const handler = handlers.get(IPC_CHANNELS.codeReviewModalOpen);
     expect(handler).toBeDefined();

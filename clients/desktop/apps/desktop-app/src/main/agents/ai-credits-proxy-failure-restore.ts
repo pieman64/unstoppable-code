@@ -29,6 +29,7 @@ function buildRestoredProxyFailureBody(failure: CanopyProxyError): string {
     error: {
       canopy_proxy: AI_CREDITS_PROXY_ERROR_MARKER,
       code: failure.code,
+      ...(failure.reason ? { reason: failure.reason } : {}),
       ...(failure.correlationId
         ? { correlation_id: failure.correlationId }
         : {}),

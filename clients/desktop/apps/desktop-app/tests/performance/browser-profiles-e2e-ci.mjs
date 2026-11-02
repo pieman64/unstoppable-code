@@ -68,6 +68,8 @@ const SETTINGS = Object.freeze({
   CANOPY_RELEASE_FLAVOR: 'stable',
   CANOPY_DATADOG_ENABLED: 'false',
   CANOPY_DATADOG_SOURCEMAPS: 'false',
+  // Current builds never obfuscate; these keep the pinned historical baseline,
+  // which still reads them, building a comparable unobfuscated renderer.
   CANOPY_RENDERER_OBFUSCATION: 'false',
   CANOPY_RENDERER_OBFUSCATE_VENDOR: 'false',
   CANOPY_OLLAMA_ENABLED: 'true',
@@ -876,6 +878,15 @@ const REVIEWED_STUDY_OVERLAYS = Object.freeze({
     }),
   'apps/desktop-app/tests/electron/mock-server/routes/llm.mjs':
     'c754a74d2376a9c8f17cf3bb6eec41bfd2061762ff54777e895543a9219cdbdc',
+  // Turn-state phase 29 adds opt-in lifecycle controls; the study installed the
+  // original bytes in both stages.
+  'apps/desktop-app/tests/electron/mock-server/routes/responsesWs.mjs':
+    Object.freeze({
+      original:
+        '00ae19cf7a13c7d7a3f268455649cbbce5601d203a20762aaf86439c38eafc50',
+      installed:
+        '00ae19cf7a13c7d7a3f268455649cbbce5601d203a20762aaf86439c38eafc50',
+    }),
   'apps/desktop-app/tests/electron/seeders/registerScenario.mjs': Object.freeze(
     {
       original:
@@ -922,15 +933,20 @@ const REVIEWED_CURRENT_STUDY_OVERLAYS = Object.freeze({
   // /graphql can inspect a request and decline it.
   'apps/desktop-app/tests/electron/mock-server/routes/linear.mjs':
     '246ce4fcefec010d2e733b0cbc9447626cd365c7a512b5b681aa2a2ceb164b63',
+  // Turn-state phase 29 adds opt-in lifecycle controls (barriers, attempts,
+  // error modes, request observations); existing scenarios are unchanged.
   'apps/desktop-app/tests/electron/mock-server/control-plane.mjs':
-    '8acab84ea9371142075c38bd33e6a91fb7a29e9a6c3fc44c70796557201cb063',
+    'e81dc69afa01861ef9c256b013374cd6db720334aafab4b1e0a3ee1e37af5bfa',
+  'apps/desktop-app/tests/electron/mock-server/routes/responsesWs.mjs':
+    'a9edd302584f93e9799fbfca09d5c7bd9b7b76d8dffd58e68f9c4dafc145a71a',
   // CAN-3707 adds merge queue responses to the reviewed GitHub mock; CAN-3781
   // adds pull request watcher responses; CAN-3838 adds the merge queue timeline.
   // PR #4824 composes those responses with merge queue PR status fixtures;
   // CAN-3979 adds transcript reference preview responses; CAN-4529 adds
-  // pull request search responses.
+  // pull request search responses; CAN-4938 adds opt-in Copilot refresh
+  // rotation controls.
   'apps/desktop-app/tests/electron/mock-server/routes/github.mjs':
-    '231c36cd058ff5922ed0c9753eceec2da2a529ab7f76bd555713ddd1dc6626c8',
+    'c1775b3cb6846f406dee6f7d8bf3ab0a6a13b01c1951cbfcbf93ee7a220faa1a',
   // Project template checklist coverage (CAN-3032) seeds built-in marketplace
   // plugins in the plugins cache, and the additionalPlugins docs describe
   // `details` and `facets` rows for member previews.
@@ -939,8 +955,10 @@ const REVIEWED_CURRENT_STUDY_OVERLAYS = Object.freeze({
   // Start-page recipient coverage adds optional fixture metadata; the reload
   // check keeps the seeded Launch command alive until revocation stops it.
   // CAN-4187 can seed a web page into the publisher's preferred layout.
+  // CAN-4908 distinguishes revision-two note bytes for copy consistency coverage.
+  // A comment now names `.claude/skills` as the committed symlink example.
   'apps/desktop-app/tests/electron/seeders/seedSharedContainerRecipientReplicas.mjs':
-    '2c0c974c3a3dcbb9453f2bb6b1d084e03b22d7223ede0c1e6bd2b03a72d6b7b2',
+    'c832b719fbd30aa27c0b2cdacb9f81ac737ff711781add35895b49c4a5e88e8a',
   // Project template checklist coverage (CAN-3032) adds template stamping,
   // starter prompts, default plugin selections, and index merging to the
   // cowork seeder without changing the study's original bytes.
@@ -948,8 +966,9 @@ const REVIEWED_CURRENT_STUDY_OVERLAYS = Object.freeze({
     '70ecdc752d747535445d6ad545197b36a9e1029c89c45917a6cfb9dc2791993f',
   // CAN-4052 adds the recipient's recoverable share removal and restore routes.
   // CAN-4266 serves empty signed-in listings for accounts without seeded shares.
+  // CAN-4655 serves revision capability packages and their downloads.
   'apps/desktop-app/tests/electron/mock-server/routes/shared-containers.mjs':
-    '15ca8e02098cc3d4a34483acd6e957b37bdecfa25620eff6ce1399e338961e84',
+    'cdfdaa6b38cb3f21cde94622acd1215339905cd3f6111fe1693f4091b05e5494',
   // The shared server now catches rejected and throwing route handlers.
   'apps/desktop-app/tests/electron/mock-server/start.mjs':
     '5fd5993e8e6b15da85d95dbfcf089265a42926645d2f3ddbaf0bdee5734e31d6',
@@ -982,16 +1001,41 @@ const REVIEWED_COST_HARNESS_HELPERS = Object.freeze({
 // the organization Projects page; CAN-4553 adds organization membership
 // routes and an incoming-invitation fixture; CAN-4558 matches production's
 // organization lists and memory team header, fills settings route gaps and
-// serves the memory fact detail read; PR #6025 adds the account Labs route.
+// serves the memory fact detail read; PR #6025 adds the account Labs route;
+// CAN-4693 (PR #6134) serves the strict authenticated auth-link mint; PR
+// #6467 reports the organization's GitHub connection in its bootstrap; PR
+// #6634 serves the Appearance page's account data.
 const REVIEWED_HOSTED_SETTINGS_HELPERS = Object.freeze({
   'apps/desktop-app/tests/electron/seeders/hostedSettingsCloud.mjs':
     '7727df3daf3f476fa3a8d1659dd4e853c703c0a92e7cc49347a6bf48199d3288',
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings-fixtures.mjs':
-    '37b9d625ef77f7e8f33932c62decfd8a9fd12da1989fe257226dc8609c9cf832',
+    '76aa450ea4dd54fd07f20913ea18cd5f9ea5d4d882ae9e1e9cd97e8887f1a0a0',
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings.mjs':
-    'e7b18506d0bbe33f47da7b098c13a374cb19058b9d01cdce5bfcfd8b62d84461',
+    'd8d1c46708c7ace2ce376be7a05982bcaca8426f6a06406cf6013d6916f871b3',
+});
+// Sidebar reorder adds two helpers absent from the frozen study baseline.
+const REVIEWED_SIDEBAR_REORDER_HELPERS = Object.freeze({
+  'apps/desktop-app/tests/performance/sidebar-reorder-scenario.mjs':
+    '9200629d6acfc57a59e399877c65b1dcab4344c346cfeac961aa62945b922af7',
+  'apps/desktop-app/tests/electron/sidebarReorderFixture.mjs':
+    '4449473bf92cff60f9e5d9e6870001a7ecd01b0fdb4ae00273cd6a16b2494fbb',
+});
+// CAN-5022 extracts the existing catalog from the cloud route. Pin the helper
+// bytes separately while preserving the closed study's original route source.
+const REVIEWED_GATEWAY_CATALOG_HELPERS = Object.freeze({
+  'apps/desktop-app/tests/electron/mock-server/routes/ai-gateway-catalog.mjs':
+    '49fd5d6b3042b75d68e397d4893d86e10b5b14c28c151d36590761c671af6a12',
+});
+// CAN-4495 adds the opt-in Code Review registry workload, absent from the
+// frozen study baseline.
+const REVIEWED_CODE_REVIEW_REGISTRY_HELPERS = Object.freeze({
+  'apps/desktop-app/tests/performance/code-review-registry-scenario.mjs':
+    '43278aae640f28f4fd8b8dadc452444fb8427307138ab98650224e4820972255',
 });
 const REVIEWED_ADDED_HARNESS_HELPERS = Object.freeze([
+  ...Object.keys(REVIEWED_GATEWAY_CATALOG_HELPERS),
+  ...Object.keys(REVIEWED_SIDEBAR_REORDER_HELPERS),
+  ...Object.keys(REVIEWED_CODE_REVIEW_REGISTRY_HELPERS),
   // CAN-3753: matched local smoke policy; closed studies retain strict gating.
   'apps/desktop-app/tests/performance/host-measurement.mjs',
   'apps/desktop-app/tests/performance/smoke-acceptance.mjs',
@@ -1013,9 +1057,12 @@ const REVIEWED_ADDED_HARNESS_HELPERS = Object.freeze([
   'apps/desktop-app/tests/electron/seeders/seedOrgContextScoping.mjs',
   'apps/desktop-app/tests/electron/seeders/seedPinnedItemsFixture.mjs',
   'apps/desktop-app/tests/electron/seeders/seedPipelineShareUnresolvedInvocations.mjs',
+  // #5948: canonical turn lifecycle receipts for injected E2E turns.
+  'apps/desktop-app/tests/electron/seeders/publishTurnLifecycle.mjs',
   'apps/desktop-app/tests/electron/stress-transcript-driver.mjs',
   'apps/desktop-app/tests/electron/stress-transcript-fixture.mjs',
   'apps/desktop-app/tests/performance/disk-io.mjs',
+  'apps/desktop-app/tests/performance/quit-latency.mjs',
   'apps/desktop-app/tests/performance/scaling-ratios.mjs',
   'apps/desktop-app/tests/performance/scenario-failure-diagnostics.mjs',
   'apps/desktop-app/tests/performance/verdicts.mjs',
@@ -1084,6 +1131,18 @@ export function matchedHarnessSource(file, before, after) {
         REVIEWED_MEASUREMENT_HELPER_SHA256,
         'Unreviewed measurement helper bytes',
       );
+    if (Object.hasOwn(REVIEWED_SIDEBAR_REORDER_HELPERS, file))
+      assert.equal(
+        digest(after),
+        REVIEWED_SIDEBAR_REORDER_HELPERS[file],
+        'Unreviewed sidebar reorder helper bytes',
+      );
+    if (Object.hasOwn(REVIEWED_CODE_REVIEW_REGISTRY_HELPERS, file))
+      assert.equal(
+        digest(after),
+        REVIEWED_CODE_REVIEW_REGISTRY_HELPERS[file],
+        'Unreviewed Code Review registry helper bytes',
+      );
     if (Object.hasOwn(REVIEWED_COST_HARNESS_HELPERS, file))
       assert.equal(
         digest(after),
@@ -1095,6 +1154,12 @@ export function matchedHarnessSource(file, before, after) {
         digest(after),
         REVIEWED_HOSTED_SETTINGS_HELPERS[file],
         'Unreviewed hosted settings helper bytes',
+      );
+    if (Object.hasOwn(REVIEWED_GATEWAY_CATALOG_HELPERS, file))
+      assert.equal(
+        digest(after),
+        REVIEWED_GATEWAY_CATALOG_HELPERS[file],
+        'Unreviewed gateway catalog helper bytes',
       );
     return after;
   }
@@ -1569,7 +1634,7 @@ async function sourceManifest(root) {
 }
 function attestHost() {
   requireHostedMac();
-  assert.equal(process.version, 'v24.15.0');
+  assert.equal(process.version, 'v24.22.1');
   assert.equal(os.userInfo().username, 'runner');
   assert(process.env.GITHUB_WORKSPACE.startsWith('/Users/runner/work/'));
   assert(/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA ?? ''));

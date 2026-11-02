@@ -7,7 +7,6 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
-  type ChatSendMessageRequest,
   type PlanCommentThread,
   type SaveTrackedPlanCommentsRequest,
   type TrackedPlanData,
@@ -144,13 +143,8 @@ const originalChatActions = {
 };
 
 /** The dispatch callbacks `dispatchWorkspaceComments` hands `sendMessage`. */
-interface DispatchCallbacks {
-  readonly hiddenContext?: ChatSendMessageRequest['hiddenContext'];
-  readonly onDispatchAccepted?: () => void;
-  readonly onDispatchRejected?: () => void;
-  readonly onPreDispatchRejected?: () => void;
-  readonly onQueuedWithoutDispatch?: (queue: 'renderer' | 'host') => void;
-}
+type SendMessage = ReturnType<typeof useChatStore.getState>['sendMessage'];
+type DispatchCallbacks = NonNullable<Parameters<SendMessage>[4]>;
 
 /**
  * Parks `text` in the owning chat's renderer-local queue, as `sendMessage`
@@ -189,29 +183,21 @@ function parkInRendererQueue(text: string, options: DispatchCallbacks): void {
 /** A `sendMessage` that reports `outcome` through the dispatch callbacks. */
 function sendMessageReporting(
   outcome: 'accepted' | 'rejected' | 'launch-failed',
-): jest.Mock<
-  Promise<void>,
-  [string, undefined, unknown, undefined, DispatchCallbacks]
-> {
-  return jest.fn(
-    (
-      text: string,
-      _files: undefined,
-      _target: unknown,
-      _mode: undefined,
-      options: DispatchCallbacks,
-    ): Promise<void> => {
+): jest.Mock<ReturnType<SendMessage>, Parameters<SendMessage>> {
+  return jest.fn<ReturnType<SendMessage>, Parameters<SendMessage>>(
+    (...args: Parameters<SendMessage>): Promise<void> => {
+      const [text, , , , options] = args;
       if (outcome === 'accepted') {
-        options.onDispatchAccepted?.();
+        options?.onDispatchAccepted?.();
       } else if (outcome === 'launch-failed') {
         // The terminal launch is fire-and-forget: it fails after sendMessage
         // returns and leaves the prompt in the renderer queue for retry.
-        parkInRendererQueue(text, options);
+        if (options) parkInRendererQueue(text, options);
         void Promise.resolve().then(() => {
-          options.onQueuedWithoutDispatch?.('renderer');
+          options?.onQueuedWithoutDispatch?.('renderer');
         });
       } else {
-        options.onPreDispatchRejected?.();
+        options?.onPreDispatchRejected?.();
       }
       return Promise.resolve();
     },
@@ -355,7 +341,7 @@ function makeChatTab(): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',

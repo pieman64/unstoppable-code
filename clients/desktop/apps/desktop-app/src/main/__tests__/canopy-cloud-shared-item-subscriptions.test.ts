@@ -65,7 +65,9 @@ jest.mock('../portal/portal-state-store', () => ({
 }));
 
 jest.mock('../canopy-cloud/client', () => ({
-  CanopyCloudClientError: MockCanopyCloudClientError,
+  get CanopyCloudClientError(): typeof MockCanopyCloudClientError {
+    return MockCanopyCloudClientError;
+  },
   requestCanopyCloudJson: (...args: unknown[]): unknown =>
     mockRequestCanopyCloudJson(...args),
 }));

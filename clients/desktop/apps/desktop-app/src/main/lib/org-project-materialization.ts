@@ -1,4 +1,5 @@
 import type { CanopyCloudCredentialContext } from '../canopy-cloud/client';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { WorkspaceIdentityInUseError } from './workspace-service';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { createHash, randomUUID } from 'node:crypto';
@@ -15,6 +16,8 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ORG_PROJECT_LIMITS,
+  isOrgProjectCatalogSetupSupported,
+  hasCompleteOrgProjectRepositories,
   type ClaimOrgProjectInstanceRequest,
   type ClaimOrgProjectInstanceResponse,
   type CompleteOrgProjectInstanceRequest,
@@ -69,12 +72,22 @@ import {
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import type { WorkspaceOwnershipChange } from '../services/background-execution-rebinding';
 import { writeFileAtomically } from './atomic-file';
+import {
+  multiRepoSetupRepositories,
+  writeMultiRepoSetupManifest,
+  validateMultiRepoSetup,
+  ownsMultiRepoSetup,
+  validateMultiRepoSetupRepository,
+  createMultiRepoSetupChildParent,
+} from './org-project-multi-repo';
 import { buildOrgProjectCloneUrl } from './org-project-clone-url';
 import { classifyGitHubAuthFailure } from './github-push-auth-failure';
 import {
   normalizeSetupJournal,
   setupOwner,
   type SetupJournal,
+  type SetupJournalV2,
+  type MultiRepoSetupRepository,
   type SetupPhase,
 } from './org-project-setup-journal';
 
@@ -126,6 +139,10 @@ export interface OrgProjectMaterializationDeps {
     detach(
       instanceId: string,
       credentialContext?: CanopyCloudCredentialContext,
+      fence?: Pick<
+        CompleteOrgProjectInstanceRequest,
+        'operationId' | 'fencingGeneration'
+      >,
     ): Promise<unknown>;
     /**
      * Create, or on a retry for the same local project reuse, the member's
@@ -178,6 +195,11 @@ export interface OrgProjectMaterializationDeps {
     ledger: ActivityRepairLedger;
   };
   git: {
+    initializeRoot?(
+      path: string,
+      name: string,
+      repositories?: readonly MultiRepoSetupRepository[],
+    ): Promise<void>;
     clone(
       url: string,
       dest: string,
@@ -196,6 +218,13 @@ export interface OrgProjectMaterializationDeps {
       owner: WorkspaceOwnerBinding,
       preferredName?: string,
     ): Promise<void>;
+    createBoundMultiRepoWorkspace?(input: {
+      path: string;
+      localWorkspaceId: string;
+      owner: WorkspaceOwnerBinding;
+      name: string;
+      repositories: MultiRepoSetupRepository[];
+    }): Promise<void>;
     applyManagedPrivateMemory(input: {
       workspaceId: string;
       organizationId: string;
@@ -283,12 +312,18 @@ export interface OrgProjectMaterializationDeps {
     phase: SetupPhase,
   ): Promise<void>;
 }
+export interface OrgProjectSetupScope {
+  organizationId: string;
+  accountId: string;
+  deviceId: string;
+}
 export interface OrgProjectMaterialization {
   startSetup(
     projectId: string,
     destinationRoot: string,
+    scope?: OrgProjectSetupScope,
   ): Promise<OrgProjectSetupProgress>;
-  cancelSetup(projectId: string): Promise<void>;
+  cancelSetup(projectId: string, scope?: OrgProjectSetupScope): Promise<void>;
   adoptCheckout(
     input: {
       projectId: string;
@@ -343,6 +378,11 @@ export interface OrgProjectMaterialization {
    * lapsed claims (CAN-3129), and retire every other leftover journal.
    */
   sweepInterruptedSetups(): Promise<void>;
+  hasPendingSetup(workspaceId: string): Promise<boolean>;
+  getProgress(
+    projectId: string,
+    scope?: OrgProjectSetupScope,
+  ): OrgProjectSetupProgress | null;
   subscribe(listener: (progress: OrgProjectSetupProgress) => void): () => void;
 }
 export interface OrgProjectConversionOptions {
@@ -361,6 +401,20 @@ export interface OrgProjectConversionOptions {
   automatic?: boolean;
   /** The member's own fresh private definition may not have a repository yet. */
   memberCreated?: boolean;
+  /**
+   * Cowork conversion only: the server creation key, for a caller whose retry
+   * converts a different local workspace for the same intent (a shared-container
+   * fork, CAN-4781). It must cover the name and private memory the server
+   * compares on replay. Defaults to a key over this workspace's move.
+   */
+  creationKey?: string;
+  /**
+   * Cowork conversion only: the error the organization's project creation
+   * failed with, before it is reduced to a conversion code. A 403 and a 404
+   * both read as `project-unavailable`; a caller that walks creation keys
+   * stops on one and moves on from the other.
+   */
+  onCreateRefused?: (error: unknown) => void;
 }
 
 export class OrgProjectAdoptionError extends Error {
@@ -617,8 +671,8 @@ interface AttemptIdentity {
 
 /**
  * Per-project attempt identities, kept beside the journals they authorize and
- * versioned like every other persisted file. Anything unreadable, older or
- * newer falls back to an empty map, which costs at most one extra claim.
+ * versioned like every other persisted file. Unreadable, corrupt and unknown
+ * versions fail closed so an uncertain claim can never acquire a new key.
  *
  * The workspace id belongs here with the nonce: the key is an idempotency key
  * over a *request*, and a retry that recomputes the id from a sidebar which
@@ -645,7 +699,7 @@ async function readAttemptNonces(
     const text = await readFile(join(dir, NONCES), 'utf8');
     const raw: unknown = JSON.parse(text);
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
-      return {};
+      throw new Error('Corrupt setup identity store');
     const record: Record<string, unknown> = Object.fromEntries(
       Object.entries(raw),
     );
@@ -656,21 +710,18 @@ async function readAttemptNonces(
       nonces === null ||
       Array.isArray(nonces)
     )
-      return {};
+      throw new Error('Unknown setup identity store version');
     const entries: Array<[string, AttemptIdentity]> = [];
     for (const [projectId, value] of Object.entries(nonces)) {
       const identity = normalizeAttemptIdentity(value);
-      if (identity) entries.push([projectId, identity]);
+      if (!identity) throw new Error('Corrupt setup identity record');
+      entries.push([projectId, identity]);
     }
     return Object.fromEntries(entries);
   } catch (error) {
-    // Malformed content takes the empty default every persisted file here
-    // takes: its contents are unusable either way, and one corrupt bookkeeping
-    // file must not make a project impossible to set up. A read that *failed*
-    // is a different answer: the store may be perfectly good and merely
-    // unavailable, and calling that "empty" would let a retirement report
-    // success while the spent nonce is still on disk.
-    if (error instanceof SyntaxError) return {};
+    // Losing a nonce is not evidence that its claim never committed.
+    if (error instanceof SyntaxError)
+      throw new Error('Corrupt setup identity store');
     if (
       typeof error === 'object' &&
       error !== null &&
@@ -722,6 +773,12 @@ interface Attempt {
    */
   bindStarted?: boolean;
   ownsStaging: boolean;
+  sharedClaim?: Pick<
+    CompleteOrgProjectInstanceRequest,
+    'operationId' | 'fencingGeneration'
+  >;
+  scope?: OrgProjectSetupScope;
+  observationScope?: OrgProjectSetupScope;
   /** Converting an existing workspace in place: no staging, no setup progress. */
   conversion?: boolean;
   /** Binding a checkout that was not previously in the workspace index. */
@@ -737,6 +794,18 @@ export function createOrgProjectMaterialization(
   deps: OrgProjectMaterializationDeps,
 ): OrgProjectMaterialization {
   const attempts = new Map<string, Attempt>();
+  const latestProgress = new Map<string, OrgProjectSetupProgress>();
+  const progressScopes = new Map<string, OrgProjectSetupScope>();
+  function matchesScope(
+    actual: OrgProjectSetupScope | undefined,
+    expected: OrgProjectSetupScope,
+  ): boolean {
+    return (
+      actual?.accountId === expected.accountId &&
+      actual.deviceId === expected.deviceId &&
+      actual.organizationId === expected.organizationId
+    );
+  }
   const listeners = new Set<(progress: OrgProjectSetupProgress) => void>();
   const ownershipListeners = new Set<
     (event: OrgProjectOwnershipChangedEvent) => void
@@ -778,6 +847,7 @@ export function createOrgProjectMaterialization(
       updatedAt: deps.now(),
       ...(errorCode ? { errorCode } : {}),
     };
+    latestProgress.set(projectId, progress);
     if (attempts.get(projectId)?.quiet === true) return progress;
     for (const listener of Array.from(listeners)) {
       try {
@@ -935,12 +1005,106 @@ export function createOrgProjectMaterialization(
     }
     return canonical;
   }
+  async function validateCompleteCheckout(
+    path: string,
+    journal: SetupJournalV2,
+  ): Promise<boolean> {
+    if (!(await validateMultiRepoSetup(path, journal))) return false;
+    for (const entry of journal.repositories) {
+      const actual = await deps.workspace.readRemoteUrl(
+        join(path, entry.relativePath),
+      );
+      const expected = buildOrgProjectCloneUrl(
+        entry.repository,
+        'https',
+        deps.cloneBase,
+      );
+      if (!actual) return false;
+      const remote = normalizeRemoteUrl(actual, true);
+      const expectedRemote = normalizeRemoteUrl(expected, true);
+      if (
+        actual !== expected &&
+        (remote === null ||
+          expectedRemote === null ||
+          remote !== expectedRemote)
+      )
+        return false;
+    }
+    return true;
+  }
+  async function renewMultiRepoClaim(journal: SetupJournalV2): Promise<void> {
+    const current = await deps.cloud.claim(journal.projectId, {
+      deviceId: journal.deviceId,
+      installationGeneration: journal.installationGeneration,
+      localWorkspaceId: journal.localWorkspaceId,
+      idempotencyKey: journal.idempotencyKey,
+      materializationVersion: 1,
+      expectedDefinitionRevision: journal.definitionRevision,
+    });
+    if (
+      current.instanceId !== journal.instanceId ||
+      current.operationId !== journal.operationId ||
+      current.fencingGeneration !== journal.fencingGeneration ||
+      current.state !== 'CLAIMED'
+    )
+      fail('superseded');
+  }
+  async function cloneMultiRepo(
+    journal: SetupJournalV2,
+    attempt: Attempt,
+    protocol: 'https' | 'ssh',
+  ): Promise<void> {
+    if (!deps.git.initializeRoot) fail('unsupported-multi-repo');
+    const signal = attempt.controller.signal;
+    if (!(await exists(join(journal.stagingPath, '.git')))) {
+      await deps.git.initializeRoot(
+        journal.stagingPath,
+        journal.projectName,
+        journal.repositories,
+      );
+      await createMultiRepoSetupChildParent(journal.stagingPath);
+      await writeMultiRepoSetupManifest(journal.stagingPath, journal);
+    } else if (!(await ownsMultiRepoSetup(journal.stagingPath, journal)))
+      throw new Error('The staging directory ownership cannot be verified');
+    for (const entry of journal.repositories) {
+      if (signal.aborted) fail('cancelled');
+      await checkAccess(journal);
+      await renewMultiRepoClaim(journal);
+      const path = join(journal.stagingPath, entry.relativePath);
+      if (entry.validated) {
+        if (
+          !(await validateMultiRepoSetupRepository(journal.stagingPath, entry))
+        )
+          throw new Error('A validated clone checkpoint changed');
+      } else {
+        if (await exists(path))
+          throw new Error('An incomplete clone requires inspection');
+        await deps.git.clone(
+          buildOrgProjectCloneUrl(entry.repository, protocol, deps.cloneBase),
+          path,
+          { signal, onProgress: (): void => {} },
+        );
+        if (
+          !(await validateMultiRepoSetupRepository(journal.stagingPath, entry))
+        )
+          fail('unsupported-topology');
+        entry.validated = true;
+        await checkpoint(journal, 'cloning');
+      }
+    }
+    if (!(await validateCompleteCheckout(journal.stagingPath, journal)))
+      fail('unsupported-topology');
+  }
   async function checkAccess(journal: SetupJournal): Promise<WorkspaceContext> {
     const access = await deps.access();
     const deviceId = await deps.resolveDeviceId();
+    const recovery =
+      journal.version === 2 &&
+      ['promoted', 'bound', 'completing', 'reclaiming'].includes(journal.phase);
     if (
-      !access.enabled ||
-      !access.capabilities.includes('org-projects-v1') ||
+      (!recovery &&
+        (!access.enabled ||
+          !access.capabilities.includes('org-projects-v1'))) ||
       key(
         access.accountId,
         deviceId,
@@ -970,7 +1134,14 @@ export function createOrgProjectMaterialization(
           row.id === journal.projectId &&
           row.organizationId === journal.organizationId &&
           row.listed &&
-          row.capabilities.use,
+          row.capabilities.use &&
+          (journal.version !== 2 ||
+            (row.revision === journal.definitionRevision &&
+              isOrgProjectCatalogSetupSupported(row) &&
+              JSON.stringify(row.repositories) ===
+                JSON.stringify(
+                  journal.repositories.map((entry) => entry.repository),
+                ))),
       )
     )
       fail('access-removed');
@@ -1003,7 +1174,20 @@ export function createOrgProjectMaterialization(
         'This project is already a workspace',
       );
     const owner = setupOwner(journal);
-    if (preferredName === undefined) {
+    if (journal.version === 2) {
+      if (
+        !deps.workspace.createBoundMultiRepoWorkspace ||
+        !(await validateCompleteCheckout(path, journal))
+      )
+        fail('unsupported-multi-repo');
+      await deps.workspace.createBoundMultiRepoWorkspace({
+        path,
+        localWorkspaceId: journal.localWorkspaceId,
+        owner,
+        name: journal.projectName,
+        repositories: journal.repositories,
+      });
+    } else if (preferredName === undefined) {
       await deps.workspace.createBoundWorkspace(
         path,
         journal.localWorkspaceId,
@@ -1074,9 +1258,21 @@ export function createOrgProjectMaterialization(
     if (root !== journal.destinationRoot) return null;
     const staged = await exists(journal.stagingPath);
     const renamed = await exists(journal.finalPath);
-    if (staged && !renamed && (await repositoryAt(journal.stagingPath)))
+    if (
+      staged &&
+      !renamed &&
+      (journal.version === 2
+        ? await validateCompleteCheckout(journal.stagingPath, journal)
+        : await repositoryAt(journal.stagingPath))
+    )
       return 'staged';
-    if (renamed && !staged && (await repositoryAt(journal.finalPath)))
+    if (
+      renamed &&
+      !staged &&
+      (journal.version === 2
+        ? await validateCompleteCheckout(journal.finalPath, journal)
+        : await repositoryAt(journal.finalPath))
+    )
       return 'renamed';
     return null;
   }
@@ -1086,6 +1282,13 @@ export function createOrgProjectMaterialization(
    * the disk as it is.
    */
   async function canResume(journal: SetupJournal): Promise<boolean> {
+    if (journal.version === 2) {
+      if (journal.phase === 'promoted')
+        return (await promotedCheckout(journal)) !== null;
+      if (!(await validateCompleteCheckout(journal.finalPath, journal)))
+        return false;
+      return journal.phase === 'bound' || (await boundTo(journal));
+    }
     if (journal.phase === 'promoted')
       return (await promotedCheckout(journal)) !== null;
     if (journal.phase === 'bound')
@@ -1123,9 +1326,10 @@ export function createOrgProjectMaterialization(
     journal: SetupJournal,
   ): boolean {
     return (
-      access.enabled &&
+      (journal.version === 2 || access.enabled) &&
       access.accountId !== '' &&
-      access.capabilities.includes('org-projects-v1') &&
+      (journal.version === 2 ||
+        access.capabilities.includes('org-projects-v1')) &&
       (journal.phase !== 'reclaiming' ||
         access.capabilities.includes(RECLAIM_CAPABILITY)) &&
       key(
@@ -1186,6 +1390,12 @@ export function createOrgProjectMaterialization(
           journal.projectId,
           `${journal.attemptNonce}:reclaim:${journal.fencingGeneration}`,
         ),
+        ...(journal.version === 2
+          ? {
+              materializationVersion: 1 as const,
+              expectedDefinitionRevision: journal.definitionRevision,
+            }
+          : {}),
         reclaim: {
           instanceId: journal.instanceId,
           operationId: journal.operationId,
@@ -1226,6 +1436,10 @@ export function createOrgProjectMaterialization(
     journal: SetupJournal,
     attempt: Attempt,
   ): Promise<void> {
+    if (journal.version === 2) {
+      await checkAccess(journal);
+      if (!(await canResume(journal))) fail('unsupported-multi-repo');
+    }
     if (journal.phase === 'reclaiming') {
       await reclaimAndFinish(journal, attempt);
       return;
@@ -1235,8 +1449,9 @@ export function createOrgProjectMaterialization(
     const access = await deps.access();
     const deviceId = await deps.resolveDeviceId();
     if (
-      !access.enabled ||
-      !access.capabilities.includes('org-projects-v1') ||
+      (journal.version !== 2 &&
+        (!access.enabled ||
+          !access.capabilities.includes('org-projects-v1'))) ||
       key(
         access.accountId,
         deviceId,
@@ -1330,6 +1545,7 @@ export function createOrgProjectMaterialization(
     attempt: Attempt,
   ): Promise<void> {
     await attempt.beforeMutation?.();
+    if (journal.version === 2) await checkAccess(journal);
     await checkpoint(journal, 'completing');
     attempt.completionSent = true;
     try {
@@ -1339,6 +1555,9 @@ export function createOrgProjectMaterialization(
           operationId: journal.operationId,
           fencingGeneration: journal.fencingGeneration,
           outcome: 'ready',
+          ...(journal.version === 2
+            ? { expectedDefinitionRevision: journal.definitionRevision }
+            : {}),
         },
         ...(attempt.credentialContext ? [attempt.credentialContext] : []),
       );
@@ -1437,6 +1656,12 @@ export function createOrgProjectMaterialization(
       code = 'cancelled';
       message = COPY.cancelled;
     }
+    // A v2 promotion is irreversible from setup's perspective. Preserve its
+    // journal and binding even on access loss or a failed binding write.
+    if (journal?.version === 2 && attempt.promoted) {
+      emit(projectId, 'failed', message, journal, null, code);
+      return code;
+    }
     const definitive =
       cancelled ||
       code === 'superseded' ||
@@ -1498,43 +1723,77 @@ export function createOrgProjectMaterialization(
       // journal is only terminalized once the key really was spent. Anything
       // short of that stays readable as in-flight for the next launch to
       // finish.
-      const retired = await rotateAttemptNonce(projectId).then(
-        (): boolean => true,
-        (): boolean => false,
-      );
+      let retired =
+        journal.version === 2
+          ? false
+          : await rotateAttemptNonce(projectId).then(
+              (): boolean => true,
+              (): boolean => false,
+            );
       // Remove what this attempt put on disk. Provenance is not in question
       // here: the same run created the staging directory, renamed it, and is
       // now unwinding it, so there is nothing to infer from the filesystem.
       // A checkout the workspace index knows about is left alone: it is either
       // a workspace the user can see, or half-written metadata that a delete
       // here would strand.
-      if ((attempt.ownsStaging || attempt.renamed) && !attempt.bindStarted) {
+      const cleanup = async (): Promise<void> => {
+        if (!(attempt.ownsStaging || attempt.renamed) || attempt.bindStarted)
+          return;
         // A destination that cannot be resolved is a reason to leave the disk
         // alone, not a reason to skip handing the claim back.
         const root = await realpath(journal.destinationRoot).catch(
           (): null => null,
         );
-        if (root === journal.destinationRoot)
+        if (
+          root === journal.destinationRoot &&
+          (journal.version !== 2 ||
+            (await ownsMultiRepoSetup(journal.stagingPath, journal)))
+        )
           await rm(attempt.renamed ? journal.finalPath : journal.stagingPath, {
             recursive: true,
             force: true,
           }).catch((): void => {});
-      }
+      };
+      if (journal.version === 1) await cleanup();
       // Same rule as the sweep, read from the attempt instead of the journal:
       // once a completion has gone out, its answer may have been lost rather
       // than never given, so the instance is not ours to detach.
       // A superseded instance belongs to whichever claim replaced this one.
+      let released = true;
       if (
         code !== 'superseded' &&
         (!attempt.completionSent || restoredConversion === true)
       )
-        await deps.cloud
-          .detach(
-            journal.instanceId,
-            ...(attempt.credentialContext ? [attempt.credentialContext] : []),
-          )
-          .catch((): void => {});
-      if (retired)
+        released =
+          journal.version === 2
+            ? await deps.cloud
+                .detach(journal.instanceId, attempt.credentialContext, {
+                  operationId: journal.operationId,
+                  fencingGeneration: journal.fencingGeneration,
+                })
+                .then(
+                  () => true,
+                  () => false,
+                )
+            : await deps.cloud
+                .detach(
+                  journal.instanceId,
+                  ...(attempt.credentialContext
+                    ? [attempt.credentialContext]
+                    : []),
+                )
+                .then(
+                  () => true,
+                  () => false,
+                );
+      if (journal.version === 2 && released) {
+        await cleanup();
+        retired = await rotateAttemptNonce(projectId).then(
+          () => true,
+          () => false,
+        );
+      }
+      if (retired && (journal.version === 1 || released))
         await checkpoint(
           journal,
           cancelled ? 'cancelled' : 'failed',
@@ -1546,13 +1805,26 @@ export function createOrgProjectMaterialization(
       // between the response and the journal touch the filesystem and can
       // throw. The instance is known, so hand it back and spend the key rather
       // than leaving the server holding a claim this device cannot name.
-      await deps.cloud
-        .detach(
-          attempt.claimed,
-          ...(attempt.credentialContext ? [attempt.credentialContext] : []),
-        )
-        .catch((): void => {});
-      await rotateAttemptNonce(projectId);
+      let released = true;
+      if (attempt.sharedClaim) {
+        released = await deps.cloud
+          .detach(
+            attempt.claimed,
+            attempt.credentialContext,
+            attempt.sharedClaim,
+          )
+          .then(
+            () => true,
+            () => false,
+          );
+      } else
+        await deps.cloud
+          .detach(
+            attempt.claimed,
+            ...(attempt.credentialContext ? [attempt.credentialContext] : []),
+          )
+          .catch((): void => {});
+      if (released) await rotateAttemptNonce(projectId);
     } else if (!journal && (!attempt.claimSent || definitive))
       // A claim whose response was *lost* may well have committed, and
       // presenting the same key again is exactly what idempotency is for. A
@@ -1581,21 +1853,54 @@ export function createOrgProjectMaterialization(
       if (signal.aborted) fail('cancelled');
     };
     try {
-      const access = await deps.access();
+      const hostAccess = await deps.access();
       if (
-        access.context.kind !== 'organization' ||
-        !access.accountId ||
-        !access.enabled ||
-        !access.capabilities.includes('org-projects-v1')
+        attempt.scope &&
+        (hostAccess.accountId !== attempt.scope.accountId ||
+          (await deps.resolveDeviceId()) !== attempt.scope.deviceId)
       )
         fail('access-removed');
+      const access = attempt.scope
+        ? {
+            ...hostAccess,
+            context: {
+              kind: 'organization' as const,
+              organizationId: attempt.scope.organizationId,
+            },
+          }
+        : hostAccess;
+      if (access.context.kind !== 'organization' || !access.accountId)
+        fail('access-removed');
       const { organizationId } = access.context;
-      const { found: saved } = await journals();
+      attempt.observationScope = {
+        organizationId,
+        accountId: access.accountId,
+        deviceId: await deps.resolveDeviceId(),
+      };
+      progressScopes.set(projectId, attempt.observationScope);
+      const { found: saved, unreadable } = await journals();
+      if (unreadable.length > 0)
+        throw new Error('Setup recovery records are unreadable');
       const pending = saved.find(
         (journal) =>
           journal.projectId === projectId &&
           !['failed', 'cancelled'].includes(journal.phase),
       );
+      if (
+        pending?.version === 2 &&
+        (pending.accountId !== access.accountId ||
+          pending.deviceId !== (await deps.resolveDeviceId()))
+      ) {
+        emit(
+          projectId,
+          'failed',
+          COPY['access-removed'],
+          undefined,
+          null,
+          'access-removed',
+        );
+        return;
+      }
       // A setup that promoted its checkout before it stopped is finished
       // rather than replaced: Retry reclaims a lapsed claim (CAN-3129), and an
       // interrupted one resumes where it was (CAN-3130), never cloning again.
@@ -1607,7 +1912,48 @@ export function createOrgProjectMaterialization(
       // the app exited before it promoted anything. Retire it here: the user
       // asked for a setup now, and a fresh attempt is the thing they are
       // watching.
+      if (pending?.version === 2) {
+        if (resumable(pending))
+          throw new Error('Shared setup recovery requires inspection');
+        attempt.journal = pending;
+        const root = await realpath(pending.destinationRoot);
+        if (
+          root !== pending.destinationRoot ||
+          (await exists(pending.finalPath))
+        )
+          throw new Error('The setup destination changed');
+        await checkAccess(pending);
+        await renewMultiRepoClaim(pending);
+        if (!(await exists(pending.stagingPath))) {
+          await mkdir(pending.stagingPath);
+          attempt.ownsStaging = true;
+        } else if (!(await ownsMultiRepoSetup(pending.stagingPath, pending)))
+          throw new Error('The staging directory ownership cannot be verified');
+        await checkpoint(pending, 'cloning');
+        await cloneMultiRepo(
+          pending,
+          attempt,
+          (await deps.preferences()).orgProjectCloneProtocol ?? 'https',
+        );
+        await checkpoint(pending, 'validated');
+        await checkAccess(pending);
+        await renewMultiRepoClaim(pending);
+        if (signal.aborted) fail('cancelled');
+        if (await exists(pending.finalPath))
+          throw new Error('The setup destination changed');
+        attempt.promoted = true;
+        await checkpoint(pending, 'promoted');
+        await rename(pending.stagingPath, pending.finalPath);
+        attempt.renamed = true;
+        await checkpoint(pending, 'bound');
+        attempt.bindStarted = true;
+        await bindCheckout(pending, pending.finalPath);
+        await finish(pending, attempt);
+        return;
+      }
       if (pending) await retire(pending);
+      if (!access.enabled || !access.capabilities.includes('org-projects-v1'))
+        fail('access-removed');
       const snapshot = await deps.catalog.list(access.context);
       const project = snapshot.projects.find((row) => row.id === projectId);
       if (
@@ -1667,7 +2013,14 @@ export function createOrgProjectMaterialization(
       }
       // A member's converted multi-repo project (CAN-3532) exists only on the
       // device that converted it; its first repository alone is not it.
-      if (project.topology === 'multi-repo') fail('unsupported-multi-repo');
+      const multiRepo = project.topology === 'multi-repo';
+      if (
+        multiRepo &&
+        (!isOrgProjectCatalogSetupSupported(project) ||
+          !deps.git.initializeRoot ||
+          !deps.workspace.createBoundMultiRepoWorkspace)
+      )
+        fail('unsupported-multi-repo');
       // Only a local code project has a checkout to make here. Anything else is
       // rejected before a claim, not at a server boundary after a clone.
       if (
@@ -1738,7 +2091,9 @@ export function createOrgProjectMaterialization(
       const preferences = await deps.preferences();
       const root = await validateRoot(destinationRoot);
       abort();
-      const repoName = project.repository.name;
+      const repoName = multiRepo
+        ? `shared-project-${project.id.replace(/-/g, '').slice(0, 12)}`
+        : project.repository.name;
       const separate = await deps.hasPersonalRelationship(projectId);
       abort();
       const url = buildOrgProjectCloneUrl(
@@ -1758,8 +2113,10 @@ export function createOrgProjectMaterialization(
       const current = await deps.access();
       if (
         current.accountId !== access.accountId ||
-        current.context.kind !== 'organization' ||
-        current.context.organizationId !== access.context.organizationId ||
+        (!attempt.scope &&
+          (current.context.kind !== 'organization' ||
+            current.context.organizationId !==
+              access.context.organizationId)) ||
         !current.enabled ||
         !current.capabilities.includes('org-projects-v1')
       )
@@ -1797,8 +2154,19 @@ export function createOrgProjectMaterialization(
         installationGeneration,
         localWorkspaceId,
         idempotencyKey,
+        ...(multiRepo
+          ? {
+              materializationVersion: 1 as const,
+              expectedDefinitionRevision: project.revision,
+            }
+          : {}),
       });
       attempt.claimed = claim.instanceId;
+      if (multiRepo)
+        attempt.sharedClaim = {
+          operationId: claim.operationId,
+          fencingGeneration: claim.fencingGeneration,
+        };
       let finalPath = join(root, repoName);
       let destinationEscapes = false;
       if (separate || (await exists(finalPath))) {
@@ -1811,8 +2179,8 @@ export function createOrgProjectMaterialization(
         );
       }
       const journalId = randomUUID();
-      const journal: SetupJournal = {
-        version: 1,
+      const baseJournal = {
+        version: 1 as const,
         journalId,
         projectId,
         organizationId: access.context.organizationId,
@@ -1825,9 +2193,24 @@ export function createOrgProjectMaterialization(
         destinationRoot: root,
         finalPath,
         stagingPath: join(root, `.canopy-setup-${journalId}`),
-        phase: 'claimed',
+        phase: 'claimed' as const,
         updatedAt: deps.now(),
       };
+      const journal: SetupJournal =
+        multiRepo &&
+        hasCompleteOrgProjectRepositories(project) &&
+        project.repositories
+          ? {
+              ...baseJournal,
+              version: 2,
+              accountId: access.accountId,
+              deviceId,
+              installationGeneration,
+              definitionRevision: project.revision,
+              projectName: project.name,
+              repositories: multiRepoSetupRepositories(project.repositories),
+            }
+          : baseJournal;
       if (!normalizeSetupJournal(journal))
         throw new Error('Invalid setup claim');
       attempt.journal = journal;
@@ -1840,7 +2223,14 @@ export function createOrgProjectMaterialization(
           'invalid-destination',
           'Destination escapes the selected folder',
         );
-      if (process.platform === 'win32' && finalPath.length >= 240)
+      if (
+        hostPlatformOperatingSystem() === 'win32' &&
+        (finalPath.length >= 240 ||
+          (journal.version === 2 &&
+            journal.repositories.some(
+              (entry) => join(finalPath, entry.relativePath).length >= 240,
+            )))
+      )
         throw new SetupError(
           'invalid-destination',
           'Destination path is too long',
@@ -1863,19 +2253,26 @@ export function createOrgProjectMaterialization(
       emit(projectId, 'materializing', message, journal);
       abort();
       try {
-        await deps.git.clone(url, journal.stagingPath, {
-          signal,
-          onProgress: (percent): void => {
-            if (!signal.aborted)
-              emit(
-                projectId,
-                'materializing',
-                COPY.materializing,
-                journal,
-                Math.min(100, Math.max(0, percent)),
-              );
-          },
-        });
+        if (journal.version === 2) {
+          await cloneMultiRepo(
+            journal,
+            attempt,
+            preferences.orgProjectCloneProtocol ?? 'https',
+          );
+        } else
+          await deps.git.clone(url, journal.stagingPath, {
+            signal,
+            onProgress: (percent): void => {
+              if (!signal.aborted)
+                emit(
+                  projectId,
+                  'materializing',
+                  COPY.materializing,
+                  journal,
+                  Math.min(100, Math.max(0, percent)),
+                );
+            },
+          });
       } catch (error) {
         if (
           classifyGitHubAuthFailure(url, error) === 'github_not_authenticated'
@@ -1899,10 +2296,14 @@ export function createOrgProjectMaterialization(
       }
       abort();
       await rejectUnsafeManifest(journal.stagingPath);
-      if (hasManifestRepos(await readCanopyJson(journal.stagingPath)))
+      if (
+        journal.version === 1 &&
+        hasManifestRepos(await readCanopyJson(journal.stagingPath))
+      )
         fail('unsupported-topology');
       await checkpoint(journal, 'validated');
       await checkAccess(journal);
+      if (journal.version === 2) await renewMultiRepoClaim(journal);
       abort();
       if (
         (await realpath(root)) !== root ||
@@ -2473,17 +2874,19 @@ export function createOrgProjectMaterialization(
         // compares on replay (name, private memory), so a rename makes a new
         // definition instead of a permanent conflict; a move back to Personal
         // records a new transfer, so a later move creates a fresh one too.
-        creationKey: createHash('sha256')
-          .update(
-            JSON.stringify([
-              'cowork-move',
-              workspaceId,
-              read.ownershipTransfer?.convertedAt ?? '',
-              name,
-              options.privateMemory ?? false,
-            ]),
-          )
-          .digest('hex'),
+        creationKey:
+          options.creationKey ??
+          createHash('sha256')
+            .update(
+              JSON.stringify([
+                'cowork-move',
+                workspaceId,
+                read.ownershipTransfer?.convertedAt ?? '',
+                name,
+                options.privateMemory ?? false,
+              ]),
+            )
+            .digest('hex'),
         kind: 'COWORK',
         name,
         ...(options.privateMemory !== undefined
@@ -2491,6 +2894,7 @@ export function createOrgProjectMaterialization(
           : {}),
       });
     } catch (error) {
+      options.onCreateRefused?.(error);
       refuse(memberProjectRefusal(error));
     }
     const projectId = project.id;
@@ -2779,7 +3183,10 @@ export function createOrgProjectMaterialization(
       let text: string;
       try {
         const info = await lstat(path);
-        if (!info.isFile() || info.size > 65536) continue;
+        if (!info.isFile() || info.size > 131072) {
+          unreadable.push(file);
+          continue;
+        }
         text = await readFile(path, 'utf8');
       } catch {
         // Could not be read at all: it may still be authorizing a live claim.
@@ -2790,8 +3197,9 @@ export function createOrgProjectMaterialization(
         const journal = normalizeSetupJournal(JSON.parse(text));
         if (journal && file === `${journal.journalId}.json`)
           found.push(journal);
+        else if (file !== NONCES) unreadable.push(file);
       } catch {
-        /* Malformed content cannot authorize anything, and is not a journal. */
+        if (file !== NONCES) unreadable.push(file);
       }
     }
     return { found, unreadable };
@@ -2810,6 +3218,7 @@ export function createOrgProjectMaterialization(
    * cannot drift apart between them.
    */
   async function retire(journal: SetupJournal): Promise<void> {
+    if (journal.version === 2) return;
     // `checkpoint` overwrites `phase` in place, so read it first.
     const reached = journal.phase;
     // An unfinished conversion is rolled back to Personal before anything
@@ -3125,9 +3534,20 @@ export function createOrgProjectMaterialization(
     }
   }
   return {
-    startSetup(projectId, destinationRoot): Promise<OrgProjectSetupProgress> {
+    startSetup(
+      projectId,
+      destinationRoot,
+      scope,
+    ): Promise<OrgProjectSetupProgress> {
       const existing = attempts.get(projectId);
       if (existing) {
+        if (
+          scope &&
+          !matchesScope(existing.scope ?? existing.observationScope, scope)
+        )
+          return Promise.reject(
+            new Error('An attempt is active for another account or desktop'),
+          );
         // A renderer start joining the startup sweep's reclaim is someone to
         // report to: from here on that attempt reports like any other.
         if (existing.quiet === true) {
@@ -3141,8 +3561,11 @@ export function createOrgProjectMaterialization(
         }
         return Promise.resolve(existing.first);
       }
+      if (scope) progressScopes.set(projectId, scope);
+      else progressScopes.delete(projectId);
       const first = emit(projectId, 'claiming', COPY.claiming);
       const attempt: Attempt = {
+        scope,
         controller: new AbortController(),
         first,
         done: Promise.resolve(),
@@ -3267,9 +3690,14 @@ export function createOrgProjectMaterialization(
         ownershipListeners.delete(listener);
       };
     },
-    async cancelSetup(projectId): Promise<void> {
+    async cancelSetup(projectId, scope): Promise<void> {
       const attempt = attempts.get(projectId);
       if (!attempt) return;
+      if (
+        scope &&
+        !matchesScope(attempt.scope ?? attempt.observationScope, scope)
+      )
+        throw new Error('An attempt is active for another account or desktop');
       if (attempt.promoted)
         throw new Error('This project is already a workspace');
       attempt.controller.abort();
@@ -3280,6 +3708,22 @@ export function createOrgProjectMaterialization(
         sweeping = undefined;
       });
       return sweeping;
+    },
+    async hasPendingSetup(workspaceId): Promise<boolean> {
+      const records = await journals();
+      if (records.unreadable.length > 0)
+        throw new Error('Setup recovery records are unreadable');
+      return records.found.some(
+        (journal) =>
+          journal.version === 2 &&
+          journal.localWorkspaceId === workspaceId &&
+          !['done', 'failed', 'cancelled'].includes(journal.phase),
+      );
+    },
+    getProgress(projectId, scope): OrgProjectSetupProgress | null {
+      if (scope && !matchesScope(progressScopes.get(projectId), scope))
+        return null;
+      return latestProgress.get(projectId) ?? null;
     },
     subscribe(listener): () => void {
       listeners.add(listener);

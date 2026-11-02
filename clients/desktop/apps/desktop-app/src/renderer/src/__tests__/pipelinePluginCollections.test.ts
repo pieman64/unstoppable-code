@@ -275,7 +275,7 @@ describe('buildSyntheticPipelineRow', () => {
     );
     expect(row.toggleMode).toBe('normal');
     expect(row.viewDisabled).toBe(true);
-    expect(row.badges?.map((b) => b.label)).toEqual(['Pipeline', 'Missing']);
+    expect(row.badges?.map((b) => b.label)).toEqual(['Workflow', 'Missing']);
   });
 
   it('marks required defaults as locked with the Required badge', () => {
@@ -291,7 +291,7 @@ describe('buildSyntheticPipelineRow', () => {
 
     expect(row.toggleMode).toBe('locked');
     expect(row.badges?.map((b) => b.label)).toEqual([
-      'Pipeline',
+      'Workflow',
       'Required',
       'Missing',
     ]);
@@ -299,7 +299,7 @@ describe('buildSyntheticPipelineRow', () => {
 });
 
 describe('annotateRowsForCollection', () => {
-  it('badges matched rows with Pipeline and selects them by default', () => {
+  it('badges matched rows with Workflow and selects them by default', () => {
     const catalog: UnifiedTableRow[] = [
       makeCatalogSkillRow('sample-source/commit-messages', 'commit-messages'),
     ];
@@ -311,7 +311,7 @@ describe('annotateRowsForCollection', () => {
     );
 
     expect(result.rows).toHaveLength(1);
-    expect(result.rows[0].badges?.map((b) => b.label)).toEqual(['Pipeline']);
+    expect(result.rows[0].badges?.map((b) => b.label)).toEqual(['Workflow']);
     expect(result.selectedKeys.has('sample-source/commit-messages')).toBe(true);
     expect(
       result.defaultKeyToRowKey.get(
@@ -343,7 +343,7 @@ describe('annotateRowsForCollection', () => {
 
     expect(result.rows[0].toggleMode).toBe('locked');
     expect(result.rows[0].badges?.map((b) => b.label)).toEqual([
-      'Pipeline',
+      'Workflow',
       'Required',
     ]);
     expect(result.selectedKeys.has('sample-source/commit-messages')).toBe(true);

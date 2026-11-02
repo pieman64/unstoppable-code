@@ -14,6 +14,7 @@ jest.mock('../lib/workspace-registry', () => ({
 
 import { readFile, realpath } from 'node:fs/promises';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
+import type { TrackedPlanData } from '@canopy/desktop-shared/types';
 import { createTrackedPlanData } from '../services/plans-service';
 import {
   resolveWorktreeCwd,
@@ -35,10 +36,28 @@ const PROJECT_ID = 'proj-1';
 const WORKTREE_ID = 'wt-1';
 const CHILD_REPO_ID = 'child-repo-1';
 
+function makeTrackedPlan(id: string): TrackedPlanData {
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  return {
+    id,
+    projectId: PROJECT_ID,
+    worktreeId: WORKTREE_ID,
+    source: 'imported',
+    title: 'Plan',
+    content: '# Plan content',
+    reviewStatus: 'pending',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    latestRevisionNumber: 1,
+    revisions: [],
+    linkedExecutionIds: [],
+  };
+}
+
 describe('importTrackedPlanFromPath — repoId cwd resolution', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockedCreate.mockResolvedValue({ id: 'new-plan' });
+    mockedCreate.mockResolvedValue(makeTrackedPlan('new-plan'));
     mockedRealpath.mockImplementation((path) => Promise.resolve(String(path)));
     mockedResolveTrackedPlansFilePath.mockReturnValue(
       '/canopy/workspaces/proj-1/plans/wt-1.json',

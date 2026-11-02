@@ -441,7 +441,7 @@ export function NoticeView({
       actions={
         notice.kind === 'handoff' ? (
           <NoticeButton
-            variant="primary"
+            variant="secondary"
             data-testid="github-cloud-handoff-check-again"
             onClick={press(controller.reload)}
           >
@@ -479,7 +479,7 @@ export function ErrorView({
       actions={
         loadFailed ? (
           <NoticeButton
-            variant="primary"
+            variant="secondary"
             data-testid="github-cloud-retry"
             onClick={press(controller.reload)}
           >

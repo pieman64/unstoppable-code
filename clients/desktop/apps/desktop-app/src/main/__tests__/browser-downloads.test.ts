@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BrowserDataJobs } from '@canopy/desktop-shared/node/browser-profiles/data-jobs';
 import { EventEmitter } from 'node:events';
-import type { DownloadItem, Session, WebContents } from 'electron';
+import type { DownloadItem, Session } from 'electron';
 import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types/browser';
 import {
   BrowserDownloads,
@@ -53,7 +53,7 @@ function fixture(): {
     source,
     start: (): EventEmitter & { cancel: jest.Mock } => {
       const item = Object.assign(new Item(), { cancel: jest.fn() });
-      native.emit('will-download', {}, item, { id: 42 } as WebContents);
+      native.emit('will-download', {}, item, { id: 42 });
       return item;
     },
   };
@@ -396,7 +396,9 @@ describe('named task download integration', () => {
       );
       await downloads.drain();
       expect(item.state).toBe('interrupted');
-      expect(files.get(taskFilesScope, owner.downloadId)?.canResume).toBe(true);
+      expect(files.get(taskFilesScope, owner.downloadId)).toMatchObject({
+        canResume: true,
+      });
       item.cancel();
       await downloads.drain();
     }));
@@ -459,9 +461,9 @@ describe('named task download integration', () => {
       await downloads.drain();
       item.bytes = 55;
       item.emit('updated', {}, 'progressing');
-      expect(files.get(taskFilesScope, owner.downloadId)?.receivedBytes).toBe(
-        55,
-      );
+      expect(files.get(taskFilesScope, owner.downloadId)).toMatchObject({
+        receivedBytes: 55,
+      });
       await writeFile(item.savePath, 'x'.repeat(55));
       item.state = 'completed';
       item.emit('done', {}, 'completed');

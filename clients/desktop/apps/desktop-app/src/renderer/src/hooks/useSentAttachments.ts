@@ -4,10 +4,12 @@ import { PREVIEWABLE_IMAGE_FILENAME } from '@/lib/file-type';
 /**
  * Reads each image's preview (a data URL) once per path. A path whose read
  * fails or is not an image (too large, unreadable) maps to `null`; a path
- * still loading has no entry.
+ * still loading has no entry. With `videoFrame`, a video's preview is its
+ * first frame, where the OS can draw one.
  */
-function useImagePreviews(
+export function useImagePreviews(
   paths: readonly string[],
+  { videoFrame = false }: { readonly videoFrame?: boolean } = {},
 ): ReadonlyMap<string, string | null> {
   const key = paths.join('\n');
   const [previews, setPreviews] = useState<ReadonlyMap<string, string | null>>(
@@ -19,7 +21,9 @@ function useImagePreviews(
     void Promise.all(
       wanted.map((absolutePath) =>
         window.api
-          .readFilePreview({ absolutePath })
+          .readFilePreview(
+            videoFrame ? { absolutePath, videoFrame } : { absolutePath },
+          )
           .then((preview): [string, string | null] => [
             absolutePath,
             preview.kind === 'image' ? preview.content : null,
@@ -32,7 +36,7 @@ function useImagePreviews(
     return (): void => {
       cancelled = true;
     };
-  }, [key]);
+  }, [key, videoFrame]);
   return previews;
 }
 

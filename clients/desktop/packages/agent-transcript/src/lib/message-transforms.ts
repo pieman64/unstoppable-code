@@ -1,3 +1,8 @@
+import {
+  settledToolInterruption,
+  supersedeToolInterruptions,
+} from '../settlement';
+import { isUserTurnBoundary } from './turn-boundary';
 import { parseAgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
 import { normalizeCommandReadToolBlock } from './command-read-display';
 import type {
@@ -16,6 +21,7 @@ import {
   parseWorkflowReceipt,
   extractWorkflowNameFromScript,
 } from './workflow-receipt';
+import { claudeLaunchedAgentId, isPendingTaskOutput } from './claude-agent-id';
 
 function isEmptyThinkingBlock(block: ChatBlock | DisplayBlock): boolean {
   return block.type === 'thinking' && block.text.trim().length === 0;
@@ -42,7 +48,10 @@ function getObjectStringField(
   return typeof property === 'string' ? property : undefined;
 }
 
-function getJsonStringField(input: string, field: string): string | undefined {
+export function getJsonStringField(
+  input: string,
+  field: string,
+): string | undefined {
   const parsed = parseJsonObject(input);
   return parsed ? getObjectStringField(parsed, field) : undefined;
 }
@@ -61,7 +70,6 @@ function parseAgentBlock(
   result: ToolResult | undefined,
   subBlocks: DisplayBlock[],
   usage?: AgentUsage,
-  taskOutputResult?: ToolResult,
 ): DisplayBlock {
   const parsed = parseJsonObject(block.input);
   if (!parsed) {
@@ -76,7 +84,6 @@ function parseAgentBlock(
     runInBackground:
       toUnknown(Reflect.get(parsed, 'run_in_background')) === true,
     result,
-    ...(taskOutputResult ? { taskOutputResult } : {}),
     subBlocks,
     ...(usage ? { usage } : {}),
   };
@@ -258,15 +265,22 @@ function isTransientCodexSpawnStart(block: CodexAgentCallBlock): boolean {
   );
 }
 
+function isClaudeAgentTool(toolName: string): boolean {
+  return toolName === 'Task' || toolName === 'Agent';
+}
+
 function toDisplayToolResult(
-  messageId: string,
+  message: ChatMessage,
   block: Extract<ChatBlock, { type: 'tool_result' }>,
 ): ToolResult {
   const hasArtifactReference =
     block.fullOutputRef !== undefined || block.visualRef !== undefined;
+  const interruption = settledToolInterruption(message, block);
   return {
     output: block.output,
-    ...(hasArtifactReference ? { messageId, toolUseId: block.toolUseId } : {}),
+    ...(hasArtifactReference
+      ? { messageId: message.id, toolUseId: block.toolUseId }
+      : {}),
     ...(block.fullOutputRef
       ? {
           fullOutputRef: block.fullOutputRef,
@@ -275,9 +289,84 @@ function toDisplayToolResult(
       : {}),
     ...(block.visualRef ? { visualRef: block.visualRef } : {}),
     isError: block.isError,
+    ...(interruption ? { interruption } : {}),
     authFailure: block.authFailure,
     authFailures: block.authFailures,
   };
+}
+
+type AgentDisplayBlock = Extract<DisplayBlock, { type: 'agent' }>;
+
+/**
+ * Fold every TaskOutput row into the card of the background agent it reads,
+ * from any root turn and at any depth. The card keeps the newest finished
+ * read in transcript order; a read that returned before the agent finished
+ * carries no result. Cards nest, so the tree's traversal order is not
+ * transcript order, and a read can name a card the traversal reaches later:
+ * it resolves to the latest card for its task id before it, else the first.
+ */
+function foldTaskOutputReads(
+  merged: DisplayMessage[],
+  messages: readonly ChatMessage[],
+): void {
+  const order = new Map<string, number>();
+  for (const message of messages) {
+    for (const block of message.blocks) {
+      if (block.type === 'tool_use' && block.toolName === 'TaskOutput')
+        order.set(block.toolUseId, order.size);
+    }
+  }
+  const indexAgent = (
+    index: Map<string, AgentDisplayBlock>,
+    block: AgentDisplayBlock,
+    keepFirst: boolean,
+  ): void => {
+    const taskId = claudeLaunchedAgentId(block.result?.output ?? '');
+    for (const id of taskId ? [block.toolUseId, taskId] : [block.toolUseId]) {
+      if (!keepFirst || !index.has(id)) index.set(id, block);
+    }
+  };
+  const firstAgentByTaskId = new Map<string, AgentDisplayBlock>();
+  const indexAll = (blocks: readonly DisplayBlock[]): void => {
+    for (const block of blocks) {
+      if (block.type === 'agent') indexAgent(firstAgentByTaskId, block, true);
+      if ('subBlocks' in block) indexAll(block.subBlocks);
+    }
+  };
+  for (const message of merged) indexAll(message.blocks);
+  const agentsByTaskId = new Map<string, AgentDisplayBlock>();
+  const newestRead = new Map<
+    AgentDisplayBlock,
+    { readonly order: number; readonly result: ToolResult }
+  >();
+  const fold = (blocks: DisplayBlock[]): DisplayBlock[] =>
+    blocks.filter((block) => {
+      if (block.type === 'agent') {
+        indexAgent(agentsByTaskId, block, false);
+      } else if (block.type === 'tool_use' && block.toolName === 'TaskOutput') {
+        const taskId = getJsonStringField(block.input, 'task_id');
+        const agent = taskId
+          ? (agentsByTaskId.get(taskId) ?? firstAgentByTaskId.get(taskId))
+          : undefined;
+        if (agent) {
+          const result = block.result;
+          const readOrder = order.get(block.toolUseId) ?? -1;
+          if (
+            result &&
+            !isPendingTaskOutput(result.output) &&
+            readOrder >= (newestRead.get(agent)?.order ?? -1)
+          )
+            newestRead.set(agent, { order: readOrder, result });
+          return false;
+        }
+      }
+      if ('subBlocks' in block) block.subBlocks = fold(block.subBlocks);
+      return true;
+    });
+  for (const message of merged) message.blocks = fold(message.blocks);
+  newestRead.forEach((read, agent) => {
+    agent.taskOutputResult = read.result;
+  });
 }
 
 /**
@@ -295,8 +384,36 @@ export function mergeToolResults(
   agentUsage?: Record<string, AgentUsage>,
   previous?: DisplayMessage[],
 ): DisplayMessage[] {
-  const merged = mergeToolResultsFresh(messages, agentUsage);
-  return previous ? shareDisplayMessages(previous, merged) : merged;
+  // Root tool identities can be reused by a later turn. Background children
+  // still belong to their explicit parent after another root turn begins.
+  const turns: ChatMessage[][] = [];
+  const turnsByParent = new Map<string, ChatMessage[]>();
+  let current: ChatMessage[] = [];
+  for (const message of messages) {
+    const parent = message.parentBlockId ?? message.parentToolUseId;
+    if (!parent && isUserTurnBoundary(message) && current.length > 0) {
+      current = [];
+    }
+    const owningTurn = (parent && turnsByParent.get(parent)) || current;
+    if (owningTurn.length === 0) turns.push(owningTurn);
+    owningTurn.push(message);
+    for (const block of message.blocks) {
+      if (block.type === 'tool_use') {
+        turnsByParent.set(block.toolUseId, owningTurn);
+      } else if (
+        block.type === 'codex_agent_call' ||
+        block.type === 'delegated_agent_call'
+      ) {
+        turnsByParent.set(block.agentBlockId, owningTurn);
+      }
+    }
+  }
+  const merged = turns.flatMap((turn) =>
+    mergeToolResultsFresh(supersedeToolInterruptions(turn), agentUsage),
+  );
+  foldTaskOutputReads(merged, messages);
+  const visible = merged.filter((message) => message.blocks.length > 0);
+  return previous ? shareDisplayMessages(previous, visible) : visible;
 }
 
 function mergeToolResultsFresh(
@@ -331,16 +448,15 @@ function mergeToolResultsFresh(
   for (const msg of mainMessages) {
     for (const block of msg.blocks) {
       if (block.type === 'tool_result' && block.toolUseId) {
-        resultMap.set(block.toolUseId, toDisplayToolResult(msg.id, block));
+        resultMap.set(block.toolUseId, toDisplayToolResult(msg, block));
       }
     }
   }
 
-  // 2b. Build taskId → Agent toolUseId mapping for TaskOutput resolution, plus
-  // an agentId → friendly recipient-name mapping so a later `SendMessage`
-  // `to` id can be rendered as the agent/task it targets. The recipient name
-  // prefers the dispatch `description`, falling back to the `subagent_type`.
-  const taskIdToAgentToolUseId = new Map<string, string>();
+  // 2b. Build an agentId → friendly recipient-name mapping so a later
+  // `SendMessage` `to` id can be rendered as the agent/task it targets. The
+  // recipient name prefers the dispatch `description`, falling back to the
+  // `subagent_type`.
   const recipientByAgentId = new Map<string, string>();
   for (const msg of mainMessages) {
     for (const block of msg.blocks) {
@@ -348,7 +464,6 @@ function mergeToolResultsFresh(
         block.type === 'tool_use' &&
         (block.toolName === 'Task' || block.toolName === 'Agent')
       ) {
-        taskIdToAgentToolUseId.set(block.toolUseId, block.toolUseId);
         let recipientName = '';
         const parsed = parseJsonObject(block.input);
         if (parsed) {
@@ -360,33 +475,11 @@ function mergeToolResultsFresh(
           recipientByAgentId.set(block.toolUseId, recipientName);
         }
         const taskResult = resultMap.get(block.toolUseId);
-        if (taskResult) {
-          const match = /agentId:\s*([a-f0-9-]+)/i.exec(taskResult.output);
-          if (match) {
-            taskIdToAgentToolUseId.set(match[1], block.toolUseId);
-            if (recipientName) {
-              recipientByAgentId.set(match[1], recipientName);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // 2c. Collect TaskOutput results, keyed by parent Agent's toolUseId
-  const taskOutputResultByAgent = new Map<string, ToolResult>();
-  for (const msg of mainMessages) {
-    for (const block of msg.blocks) {
-      if (block.type === 'tool_use' && block.toolName === 'TaskOutput') {
-        const taskId = getJsonStringField(block.input, 'task_id') ?? '';
-        if (taskId) {
-          const parentId = taskIdToAgentToolUseId.get(taskId);
-          if (parentId) {
-            const outputResult = resultMap.get(block.toolUseId);
-            if (outputResult) {
-              taskOutputResultByAgent.set(parentId, outputResult);
-            }
-          }
+        const agentId = taskResult
+          ? claudeLaunchedAgentId(taskResult.output)
+          : undefined;
+        if (agentId && recipientName) {
+          recipientByAgentId.set(agentId, recipientName);
         }
       }
     }
@@ -413,7 +506,7 @@ function mergeToolResultsFresh(
     for (const msg of subMsgs) {
       for (const block of msg.blocks) {
         if (block.type === 'tool_result' && block.toolUseId) {
-          const result = toDisplayToolResult(msg.id, block);
+          const result = toDisplayToolResult(msg, block);
           subResultMap.set(block.toolUseId, result);
           if (msg.codexThreadId)
             threadResultMap.set(
@@ -427,14 +520,25 @@ function mergeToolResultsFresh(
       msg: ChatMessage,
       toolUseId: string,
     ): ToolResult | undefined =>
-      (msg.codexThreadId
+      msg.codexThreadId
         ? threadResultMap.get(threadResultKey(msg.codexThreadId, toolUseId))
-        : undefined) ?? subResultMap.get(toolUseId);
+        : subResultMap.get(toolUseId);
     const merged: DisplayBlock[] = [];
     for (const msg of subMsgs) {
       for (const block of msg.blocks) {
         if (block.type === 'tool_result') continue;
         if (isEmptyThinkingBlock(block)) continue;
+        if (block.type === 'tool_use' && isClaudeAgentTool(block.toolName)) {
+          merged.push(
+            parseAgentBlock(
+              block,
+              subResultFor(msg, block.toolUseId),
+              buildSubBlocks(block.toolUseId),
+              agentUsage?.[block.toolUseId],
+            ),
+          );
+          continue;
+        }
         if (block.type === 'delegated_agent_call') {
           merged.push({
             ...block,
@@ -528,13 +632,6 @@ function mergeToolResultsFresh(
         continue;
       }
       if (block.type === 'tool_use') {
-        if (block.toolName === 'TaskOutput') {
-          const taskId = getJsonStringField(block.input, 'task_id') ?? '';
-          if (taskId && taskIdToAgentToolUseId.has(taskId)) {
-            continue;
-          }
-        }
-
         if (block.toolName === 'Workflow') {
           displayBlocks.push(
             parseWorkflowBlock(block, resultMap.get(block.toolUseId)),
@@ -549,7 +646,6 @@ function mergeToolResultsFresh(
               resultMap.get(block.toolUseId),
               subBlocksByParent.get(block.toolUseId) ?? [],
               agentUsage?.[block.toolUseId],
-              taskOutputResultByAgent.get(block.toolUseId),
             ),
           );
         } else if (block.toolName === 'SendMessage') {
@@ -584,6 +680,7 @@ function mergeToolResultsFresh(
           ? { attachmentPaths: msg.attachmentPaths }
           : {}),
         ...(msg.inputMode ? { inputMode: msg.inputMode } : {}),
+        ...(msg.autoResume ? { autoResume: msg.autoResume } : {}),
         ...(msg.watcherFired ? { watcherFired: msg.watcherFired } : {}),
         ...(agentSent !== undefined ? { agentSent } : {}),
         ...(msg.userMessageSource

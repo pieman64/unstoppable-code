@@ -82,7 +82,12 @@ function pipelineDetail(): SharedAutomationDetail {
     actionType: 'worktree_pipeline',
     contentHash: 'a'.repeat(64),
     shareScope: 'private',
-    owner: { type: 'team', id: 'team-1', name: 'Platform' },
+    owner: {
+      type: 'team',
+      id: 'team-1',
+      name: 'Platform',
+      organization: { id: 'org-1', name: 'Acme' },
+    },
     createdAt: '2026-08-19T00:00:00.000Z',
     updatedAt: '2026-08-19T00:00:00.000Z',
     createdBy: { id: 'user-1', name: 'Alex', email: null },
@@ -177,6 +182,7 @@ beforeEach((): void => {
           'automations-crud-v1',
           'automations-target-requirements-v3',
           'automations-run-condition-v4',
+          'automations-pipeline-dependencies-v5',
         ],
       }),
       loadProjects: mockLoadProjects,
@@ -332,6 +338,8 @@ async function submit(): Promise<void> {
   while (Date.now() < completionDeadline) {
     if (
       mockPostShareToast.mock.calls.length > 0 ||
+      document.querySelector('[data-testid="share-automation-success"]') !==
+        null ||
       document.querySelector('[data-testid="share-automation-partial"]') !==
         null ||
       document.querySelector('[role="alert"]') !== null
@@ -705,6 +713,242 @@ it('packages local capabilities while preserving reference-only built-ins', asyn
     '"plugins":[{"type":"skill","source":{"type":"builtin","id":"app"},"skill_name":"portable"}]',
   );
   expect(createRequest).not.toContain('acme/tools');
+});
+
+const DEPENDENCY_PIPELINE_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+
+function arrangePackagedPipelineAnalysis(): void {
+  mockAnalyzePackage.mockResolvedValue({
+    analysisId: 'analysis-pipelines',
+    state: 'ready',
+    pipelineContentHash: 'a'.repeat(64),
+    blockers: [],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    manifest: {
+      version: 1,
+      pipelineContentHash: 'a'.repeat(64),
+      resources: [
+        {
+          id: `automation-pipeline-${DEPENDENCY_PIPELINE_ID}`,
+          kind: 'automation_pipeline',
+          displayName: 'Journey specialist',
+          sourceLabel: 'local pipeline',
+          sourceVisibility: 'local',
+          invocationKeys: [],
+          dependencyResourceIds: [],
+          trees: [],
+          pipelineKey: DEPENDENCY_PIPELINE_ID,
+          pipelineContentHash: 'c'.repeat(64),
+        },
+      ],
+      bindings: [
+        {
+          jobId: 'automation',
+          stepId: 'action',
+          resourceIds: [`automation-pipeline-${DEPENDENCY_PIPELINE_ID}`],
+        },
+      ],
+      environmentRequirements: [],
+      totalFiles: 1,
+      totalBytes: 10,
+    },
+    packagedPipelines: [
+      {
+        key: DEPENDENCY_PIPELINE_ID,
+        resourceId: `automation-pipeline-${DEPENDENCY_PIPELINE_ID}`,
+        name: 'Journey specialist',
+        pipelineContentHash: 'c'.repeat(64),
+        source: 'user',
+        isActionPipeline: false,
+        optional: false,
+        promptSpans: [{ textStart: 4, text: DEPENDENCY_PIPELINE_ID }],
+      },
+    ],
+  });
+}
+
+it('packages the pipelines a prompt runs and shares them as a v5 document', async (): Promise<void> => {
+  jest.mocked(window.api.loadCanopyCloudAccount).mockResolvedValue({
+    hasApiKey: true,
+    authMode: 'api_key',
+    credentialSource: 'manual',
+    storageAvailable: true,
+    account: {
+      id: 'user-1',
+      name: 'Alex',
+      email: 'alex@example.com',
+      role: 'ADMIN',
+    },
+    capabilities: [
+      'automations-crud-v1',
+      'automations-target-requirements-v3',
+      'automations-run-condition-v4',
+      'automations-pipeline-dependencies-v5',
+    ],
+  });
+  arrangePackagedPipelineAnalysis();
+  const dependencies = {
+    pipelines: [
+      { pipelineId: DEPENDENCY_PIPELINE_ID, source: 'user' as const },
+    ],
+  };
+  await renderModal(
+    false,
+    {
+      type: 'app_advisor_prompt',
+      prompt: `Run ${DEPENDENCY_PIPELINE_ID} every day.`,
+    },
+    { dependencies },
+  );
+  await act(async (): Promise<void> => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(mockAnalyzePackage).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      promptText: `Run ${DEPENDENCY_PIPELINE_ID} every day.`,
+      pipelineDependencies: dependencies.pipelines,
+      audience: 'public',
+    }),
+  );
+  expect(
+    detailsElement(
+      `share-automation-dependencies-pipeline-${DEPENDENCY_PIPELINE_ID}`,
+    ).dataset.included,
+  ).toBe('true');
+
+  await submit();
+  const created = mockCreate.mock.calls[0]?.[0] as
+    | { automation: { version: number; action: Record<string, unknown> } }
+    | undefined;
+  expect(created?.automation.version).toBe(5);
+  expect(created?.automation.action.pipelineDependencies).toEqual([
+    {
+      key: DEPENDENCY_PIPELINE_ID,
+      pipeline: {
+        source: 'packaged',
+        key: DEPENDENCY_PIPELINE_ID,
+        pipelineContentHash: 'c'.repeat(64),
+        name: 'Journey specialist',
+      },
+      promptSpans: [{ textStart: 4, text: DEPENDENCY_PIPELINE_ID }],
+    },
+  ]);
+});
+
+it('adds a pipeline from the share dialog: saves it with the automation and analyzes again', async (): Promise<void> => {
+  const workerId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+  mockListPipelines.mockResolvedValue({
+    success: true,
+    data: [
+      { id: workerId, name: 'Journey worker', source: 'user' },
+      { id: 'project-pipeline', name: 'Project review', source: 'project' },
+    ],
+  });
+  await renderModal(false, {
+    type: 'app_advisor_prompt',
+    prompt: 'Run the journey specialists.',
+  });
+  await waitFor(() => mockAnalyzePackage.mock.calls.length > 0);
+  const select = detailsElement('share-automation-dependencies-pipeline-add');
+  if (!(select instanceof HTMLSelectElement))
+    throw new Error('expected a select');
+  // Only the author's own pipelines are offered.
+  expect(Array.from(select.options).map((option) => option.value)).toEqual([
+    '',
+    workerId,
+  ]);
+
+  await act(async (): Promise<void> => {
+    select.value = workerId;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+  });
+  await waitFor(() =>
+    mockAnalyzePackage.mock.calls.some(
+      ([request]) =>
+        typeof request === 'object' &&
+        request !== null &&
+        'pipelineDependencies' in request,
+    ),
+  );
+
+  expect(mockLocalUpdate).toHaveBeenCalledWith({
+    id: 'activity-1',
+    dependencies: { pipelines: [{ pipelineId: workerId, source: 'user' }] },
+  });
+  expect(mockAnalyzePackage).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      pipelineDependencies: [{ pipelineId: workerId, source: 'user' }],
+    }),
+  );
+});
+
+it('shares without pipeline dependencies when the server cannot publish them', async (): Promise<void> => {
+  jest.mocked(window.api.loadCanopyCloudAccount).mockResolvedValue({
+    hasApiKey: true,
+    authMode: 'api_key',
+    credentialSource: 'manual',
+    storageAvailable: true,
+    account: {
+      id: 'user-1',
+      name: 'Alex',
+      email: 'alex@example.com',
+      role: 'ADMIN',
+    },
+    capabilities: [
+      'automations-crud-v1',
+      'automations-target-requirements-v3',
+      'automations-run-condition-v4',
+    ],
+  });
+  const plainAnalysis = await mockAnalyzePackage({});
+  arrangePackagedPipelineAnalysis();
+  const packagedAnalysis = await mockAnalyzePackage({});
+  mockAnalyzePackage.mockClear();
+  mockAnalyzePackage.mockImplementation((request) =>
+    Promise.resolve(
+      typeof request === 'object' &&
+        request !== null &&
+        'packagePipelines' in request &&
+        request.packagePipelines === false
+        ? plainAnalysis
+        : packagedAnalysis,
+    ),
+  );
+  await renderModal(false, {
+    type: 'app_advisor_prompt',
+    prompt: `Run ${DEPENDENCY_PIPELINE_ID} every day.`,
+  });
+  await waitFor(() =>
+    mockAnalyzePackage.mock.calls.some(
+      ([request]) =>
+        typeof request === 'object' &&
+        request !== null &&
+        'packagePipelines' in request,
+    ),
+  );
+  await act(async (): Promise<void> => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(mockAnalyzePackage).toHaveBeenLastCalledWith(
+    expect.objectContaining({ packagePipelines: false }),
+  );
+  expect(
+    document.querySelector(
+      '[data-testid="share-automation-dependencies-pipeline-add"]',
+    ),
+  ).toBeNull();
+
+  await submit();
+  const created = mockCreate.mock.calls[0]?.[0] as
+    | { automation: { version: number; action: Record<string, unknown> } }
+    | undefined;
+  expect(created?.automation.version).toBeLessThan(5);
+  expect(created?.automation.action).not.toHaveProperty('pipelineDependencies');
 });
 
 function blockedPromptAnalysis(
@@ -1167,9 +1411,15 @@ it('keeps collection-expanded MCP omissions visible when packaging is ready', as
   );
   // DOCUMENT_POSITION_FOLLOWING === 4.
   expect(review.compareDocumentPosition(previewElement()) & 4).toBe(4);
-  await click('share-automation-dependencies-toggle');
-  const dropped = byTestId('share-automation-dependencies-unpackageable');
-  expect(dropped.textContent).toContain('collection-server');
+  // The help icon after the summary names what stays private.
+  act(() => {
+    const help = byTestId('share-automation-dependencies-help');
+    for (const type of ['mouseover', 'mousemove']) {
+      help.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+  });
+  const dropped = byTestId('share-automation-dependencies-help-details');
+  expect(dropped.textContent).toContain('Kept private: collection-server');
   expect(dropped.textContent).toContain('Collection "missing" was not found.');
   expect(dropped.textContent).not.toContain('collection-1');
 });
@@ -1377,7 +1627,7 @@ it('bundles the referenced pipeline definition into the shared document', async 
     return (
       document.querySelector('[data-testid="share-automation-notices"]')
         ?.textContent ?? ''
-    ).includes('The pipeline definition travels with this automation');
+    ).includes('The workflow definition travels with this automation');
   });
 
   expect(mockResolvePin).toHaveBeenCalledWith({ remoteId: 'remote-1' });
@@ -1389,8 +1639,15 @@ it('bundles the referenced pipeline definition into the shared document', async 
   // A shared pipeline keeps its team-share provenance alongside the bytes.
   expect(preview).toContain('"origin"');
   expect(preview).toContain('bbbbbbbbbbbb');
-  expect(detailsElement('share-automation-notices').textContent).toContain(
-    'The pipeline definition travels with this automation',
+  // The bundled definition is included, so it is not listed as kept private.
+  expect(
+    detailsElement('share-automation-included-notices').textContent,
+  ).toContain('Included with this automation:');
+  expect(
+    detailsElement('share-automation-included-notices').textContent,
+  ).toContain('The workflow definition travels with this automation');
+  expect(detailsElement('share-automation-notices').textContent).not.toContain(
+    'The workflow definition travels with this automation',
   );
 });
 
@@ -1503,12 +1760,15 @@ it('sends a private share scope for a public share, then publishes', async (): P
     shareScope: 'private',
   });
   expect(mockPublish).toHaveBeenCalledWith(pipelineDetail().id);
-  expect(mockOnClose).toHaveBeenCalledTimes(1);
-  expect(mockPostShareToast).toHaveBeenCalledWith({
-    tone: 'success',
-    message: 'Automation is now public',
-    link: 'https://cloud.test/portal/plugins/automations/9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b',
-  });
+  // The dialog stays open on its success notice instead of toasting.
+  expect(mockOnClose).not.toHaveBeenCalled();
+  expect(mockPostShareToast).not.toHaveBeenCalled();
+  expect(byTestId('share-automation-success').textContent).toContain(
+    'Automation is now public',
+  );
+  expect(byTestId('share-automation-link').textContent).toBe(
+    'https://cloud.test/portal/plugins/automations/9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b',
+  );
 });
 
 function teamAccountWithPlatformTeam(): void {
@@ -1711,8 +1971,10 @@ it('removes the observed public link through the shared confirmation flow', asyn
   expect(byTestId('share-automation-copy-link')).toBeDefined();
   await click('share-automation-remove-public-link');
   // The fixture is team-owned, so removing the link keeps that audience.
-  expect(document.body.textContent).toContain(
-    'Anyone with the link will lose access. People it is shared with keep access.',
+  expect(
+    byTestId('share-automation-remove-public-link-confirm').textContent,
+  ).toContain(
+    'People outside Platform who have the link will lose access. Platform members keep access, including through links they already have.',
   );
   await click('share-automation-remove-public-link-confirm-action');
 
@@ -1746,26 +2008,30 @@ it('retains the public link when retry succeeds but completion fails', async ():
     'https://cloud.test/portal/plugins/automations/9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b',
   );
   await click('share-automation-done');
+  // Done retries completion and closes; the author already has the link, so
+  // there is no success notice or toast to stay for.
   expect(mockOnShared).toHaveBeenCalledTimes(2);
   expect(mockOnClose).toHaveBeenCalledTimes(1);
-  expect(mockPostShareToast).toHaveBeenCalledWith(
-    expect.objectContaining({
-      tone: 'success',
-      message: 'Automation is now public',
-    }),
-  );
+  expect(mockPostShareToast).not.toHaveBeenCalled();
 });
 
-it('offers a copyable link after a public share', async (): Promise<void> => {
+it('stays open with a copyable link after a public share until Done', async (): Promise<void> => {
+  const shareUrl =
+    'https://cloud.test/portal/plugins/automations/9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b';
   await renderModal(false);
   await submit();
 
+  expect(mockOnClose).not.toHaveBeenCalled();
+  expect(mockPostShareToast).not.toHaveBeenCalled();
+  expect(byTestId('share-automation-success').textContent).toContain(
+    'Automation is now public',
+  );
+  expect(byTestId('share-automation-link').textContent).toBe(shareUrl);
+  await click('share-automation-copy-link');
+  expect(mockCopy).toHaveBeenCalledWith(shareUrl);
+  await click('share-automation-done');
   expect(mockOnClose).toHaveBeenCalledTimes(1);
-  expect(mockPostShareToast).toHaveBeenCalledWith({
-    tone: 'success',
-    message: 'Automation is now public',
-    link: 'https://cloud.test/portal/plugins/automations/9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b',
-  });
+  expect(mockPostShareToast).not.toHaveBeenCalled();
 });
 
 it('preselects Public for a first share when it is the only usable scope', async (): Promise<void> => {
@@ -1775,8 +2041,10 @@ it('preselects Public for a first share when it is the only usable scope', async
   await renderModal(false, undefined, {}, false);
 
   expect(
-    document.querySelector('[data-testid="share-automation-scope-public"]'),
-  ).toBeNull();
+    document
+      .querySelector('[data-testid="share-automation-scope-public"]')
+      ?.getAttribute('aria-checked'),
+  ).toBe('true');
   expect(byTestId('share-automation-scope-description').textContent).toContain(
     'Anyone can view this automation',
   );
@@ -1894,6 +2162,122 @@ it('blocks v3 publication when the server does not advertise target requirements
     document.querySelector('[data-testid="share-automation-submit"]'),
   ).toBeNull();
   expect(mockCreate).not.toHaveBeenCalled();
+});
+
+const PROJECT_FOLDER_ACTION: ScheduledActivity['action'] = {
+  type: 'worktree_pipeline',
+  workspaceId: 'workspace-1',
+  target: { kind: 'project' },
+  pipelineId: 'code-review',
+  pipelineSource: 'bundled',
+  inputs: {},
+};
+
+it('offers no narrowing for a pipeline with no project and says where it runs', async () => {
+  Object.assign(window.api, {
+    loadCanopyCloudAccount: jest.fn().mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'user-1' },
+      capabilities: [
+        'automations-crud-v1',
+        'automations-target-requirements-v3',
+        'automations-pipeline-targets-v6',
+      ],
+    }),
+  });
+  mockGetPipeline.mockResolvedValue({
+    success: true,
+    data: {
+      info: { id: 'code-review', name: 'Code review', source: 'bundled' },
+      content: {
+        name: 'Code review',
+        on: 'dispatch',
+        scope: ['global', 'directory', 'worktree'],
+        jobs: {},
+      },
+    },
+  });
+  await renderModal(false, {
+    type: 'worktree_pipeline',
+    target: { kind: 'global' },
+    pipelineId: 'code-review',
+    pipelineSource: 'bundled',
+    inputs: {},
+  });
+  await waitFor(() => {
+    expandAdvanced();
+    return (
+      document.querySelector(
+        '[data-testid="automation-summary-destination"]',
+      ) !== null
+    );
+  });
+
+  expect(
+    document.querySelector('[data-testid="share-automation-target-narrowing"]'),
+  ).toBeNull();
+  expect(detailsElement('automation-summary-destination').textContent).toBe(
+    'Runs with no project.',
+  );
+});
+
+it('blocks v5 publication when the server advertises only target requirements', async () => {
+  await renderModal(false, PROJECT_FOLDER_ACTION);
+  await waitFor(
+    () =>
+      document.querySelector('[data-testid="share-automation-submit"]') ===
+      null,
+  );
+  expect(
+    document.querySelector('[data-testid="share-automation-submit"]'),
+  ).toBeNull();
+  expect(mockCreate).not.toHaveBeenCalled();
+});
+
+it('blocks v5 publication when the server advertises only run conditions', async () => {
+  Object.assign(window.api, {
+    loadCanopyCloudAccount: jest.fn().mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'user-1' },
+      capabilities: [
+        'automations-crud-v1',
+        'automations-target-requirements-v3',
+        'automations-run-condition-v4',
+      ],
+    }),
+  });
+  await renderModal(false, PROJECT_FOLDER_ACTION);
+  await waitFor(
+    () =>
+      document.querySelector('[data-testid="share-automation-submit"]') ===
+      null,
+  );
+  expect(
+    document.querySelector('[data-testid="share-automation-submit"]'),
+  ).toBeNull();
+  expect(mockCreate).not.toHaveBeenCalled();
+});
+
+it('publishes a pipeline destination as v6 when the server advertises it', async () => {
+  Object.assign(window.api, {
+    loadCanopyCloudAccount: jest.fn().mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'user-1' },
+      capabilities: [
+        'automations-crud-v1',
+        'automations-target-requirements-v3',
+        'automations-pipeline-targets-v6',
+      ],
+    }),
+  });
+  await renderModal(false, PROJECT_FOLDER_ACTION);
+  await submit();
+  expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({
+    automation: {
+      version: 6,
+      action: { type: 'worktree_pipeline', target: { kind: 'project' } },
+    },
+  });
 });
 
 it('honors an explicitly cleared local declaration when re-sharing an edited App Advisor prompt', async () => {

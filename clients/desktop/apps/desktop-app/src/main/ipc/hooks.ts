@@ -26,7 +26,6 @@ import {
 import { inspectHookChatPluginDependencies } from '../lib/hook-chat-plugin-dependencies';
 import {
   cancelHook,
-  getHookSourceInfo,
   loadWorktreeHookRuns,
   runHookCommand,
   saveProjectHooksFromService,
@@ -36,6 +35,9 @@ import {
 } from '../services/hooks-service';
 import type { RunHookOptions } from '../lib/hook-runner';
 import { sendToWebContents } from '../lib/web-contents-send';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import type { DesktopIpcCallerResolver } from './file-tree';
+import { getHookSourceInfoThroughCore } from '../canopy-runtime/hook-source-dispatch';
 
 function createManualHookRunCallbacks(
   event: IpcMainInvokeEvent,
@@ -75,6 +77,10 @@ function createManualHookRunCallbacks(
 
 export function registerHookHandlers(
   getWindow: () => BrowserWindow | null,
+  runtime: {
+    dispatcher: Pick<DesktopCanopyDispatcher, 'query'>;
+    resolveCaller: DesktopIpcCallerResolver;
+  },
 ): void {
   registerIpcHandler(
     IPC_CHANNELS.projectSaveHooks,
@@ -138,14 +144,18 @@ export function registerHookHandlers(
     },
   );
 
+  // core.initiatedWork.source.get
   registerIpcHandler(
     IPC_CHANNELS.hookSourceInfo,
     async (
-      _event,
+      event,
       request: HookSourceInfoRequest,
-    ): Promise<HookSourceInfoResponse> => {
-      return getHookSourceInfo(request);
-    },
+    ): Promise<HookSourceInfoResponse> =>
+      getHookSourceInfoThroughCore(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
 
   registerIpcHandler(

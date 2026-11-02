@@ -1,3 +1,4 @@
+import { parseLedgerGlobalOwner } from '@canopy/protocol/canopy-core';
 import { getModelSource } from '@canopy/desktop-shared/types';
 import type {
   AgentProviderType,
@@ -17,6 +18,7 @@ import type {
   PipelineLedgerAttemptOutcome,
   PipelineLedgerAttemptRequest,
   PipelineLedgerPort,
+  PipelineLedgerTarget,
 } from './types';
 
 /*
@@ -61,8 +63,11 @@ export interface PipelineLedgerStepFacts {
   readonly permissionPresetInput: string | undefined;
   /** Whether the runtime has a host Ledger port; the CLI has none. */
   readonly hostRoute: boolean;
-  /** Whether the execution is bound to a workspace worktree. */
-  readonly worktreeScoped: boolean;
+  /**
+   * The Ledger the execution records to; undefined when its persisted owner
+   * cannot be parsed (see {@link resolvePipelineLedgerTarget}).
+   */
+  readonly target: PipelineLedgerTarget | undefined;
 }
 
 /**
@@ -74,7 +79,8 @@ export interface PipelineLedgerStepFacts {
  * - `plan_permission`: a Claude step under `plan`, where Claude runs no tools.
  * - `invalid_preset`: a preset the step itself will reject.
  * - `no_host_route`: the runtime has no Ledger port (CLI-run pipelines).
- * - `no_worktree_scope`: the execution is not bound to a worktree.
+ * - `malformed_owner`: the execution has no worktree and its persisted owner
+ *   cannot be parsed, so no global Ledger can be chosen for it.
  */
 export type PipelineLedgerExclusionReason =
   | 'not_an_agent_step'
@@ -84,7 +90,7 @@ export type PipelineLedgerExclusionReason =
   | 'plan_permission'
   | 'invalid_preset'
   | 'no_host_route'
-  | 'no_worktree_scope';
+  | 'malformed_owner';
 
 /** Whether a step's agent gets the Ledger tools, and on which harness. */
 export type PipelineLedgerAgentResolution =
@@ -122,7 +128,7 @@ export function resolvePipelineLedgerAgent(
   )
     return excluded('not_an_agent_step');
   if (!facts.hostRoute) return excluded('no_host_route');
-  if (!facts.worktreeScoped) return excluded('no_worktree_scope');
+  if (facts.target === undefined) return excluded('malformed_owner');
   if (
     facts.provider === 'ollama' ||
     (facts.model !== undefined && getModelSource(facts.model) === 'ollama')
@@ -140,6 +146,36 @@ export function resolvePipelineLedgerAgent(
   if (harness !== 'claude') return excluded('cursor_harness');
   if (permissionPreset === 'plan') return excluded('plan_permission');
   return { kind: 'agent', harness, permissionPreset };
+}
+
+/** Where an execution runs and who owns it, as the step runner knows it. */
+export interface PipelineLedgerTargetInput {
+  readonly projectId: string | undefined;
+  readonly worktreeId: string | undefined;
+  /** The execution's persisted `execution_context`, absent for legacy runs. */
+  readonly executionContext: string | undefined;
+}
+
+/**
+ * The Ledger an execution's agents record to. An execution with a worktree
+ * records to that task; any other run (global or directory) records to its
+ * persisted owner's global Ledger, Personal when the run predates ownership.
+ * Undefined when that owner is malformed, which fails closed. Each execution,
+ * a targeted child included, resolves its own target, so a parent's never
+ * overrides it.
+ */
+export function resolvePipelineLedgerTarget(
+  input: PipelineLedgerTargetInput,
+): PipelineLedgerTarget | undefined {
+  if (input.projectId && input.worktreeId) {
+    return {
+      kind: 'task',
+      projectId: input.projectId,
+      worktreeId: input.worktreeId,
+    };
+  }
+  const owner = parseLedgerGlobalOwner(input.executionContext);
+  return owner.ok ? { kind: 'global', owner: owner.owner } : undefined;
 }
 
 /** The identity inputs the job runner hands a step. */

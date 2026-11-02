@@ -12,6 +12,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type {
   AgentProviderType,
   CanopyCloudAccountPublicState,
+  CanopyCloudAiCreditsState,
   NativeAiCreditsAvailability,
 } from '@canopy/desktop-shared/types';
 import { NoBillingSourceBanner } from '../NoBillingSourceBanner';
@@ -21,6 +22,30 @@ import {
   type ChatBannerTarget,
 } from '@/stores/aiCreditsBannerStore';
 import type { ProviderModelAvailability } from '@/hooks/useProviderAvailability';
+import {
+  beginAiCreditsArrivalHandoff,
+  resetAiCreditsArrivalForTests,
+  useAiCreditsArrivalStore,
+} from '@/lib/aiCreditsArrivalConfirmation';
+import type * as HostedSettingsAvailabilityModule from '@/components/settings/hosted/hosted-settings-availability';
+import type { SettingsRoute } from '@canopy/protocol/settings';
+import { useNavigationStore } from '@/stores/navigationStore';
+
+const mockHostedSettingsOpenable = jest.fn<boolean, []>();
+jest.mock('@/components/settings/hosted/hosted-settings-availability', () => ({
+  ...jest.requireActual<typeof HostedSettingsAvailabilityModule>(
+    '@/components/settings/hosted/hosted-settings-availability',
+  ),
+  hostedSettingsOpenable: (): boolean => mockHostedSettingsOpenable(),
+  useHostedSettingsAvailable: (): boolean => mockHostedSettingsOpenable(),
+}));
+
+const realOpenAccountOrganizationSettings =
+  useNavigationStore.getState().openAccountOrganizationSettings;
+const openAccountOrganizationSettings = jest.fn<
+  void,
+  [SettingsRoute, unknown?]
+>();
 
 // The login modal pulls the full settings auth stack; the banner only needs to
 // know it mounts, so stub it.
@@ -30,7 +55,21 @@ jest.mock('@/components/settings/AuthLoginModal', () => ({
   ),
 }));
 
+const mockTrackCreditsRecoveryView = jest.fn();
+const mockTrackCreditsRecoveryClick = jest.fn();
+jest.mock('@/lib/creditsRecoveryTelemetry', () => ({
+  trackCreditsRecoveryView: (...args: unknown[]): void => {
+    mockTrackCreditsRecoveryView(...args);
+  },
+  trackCreditsRecoveryClick: (...args: unknown[]): void => {
+    mockTrackCreditsRecoveryClick(...args);
+  },
+}));
+
 const PRICING_URL = 'https://cloud.example.com/pricing';
+// Get AI Credits always opens the signed-in web top-up (CAN-5159).
+const BANNER_TOP_UP_PATH =
+  '/account/billing?topUp=1&reason=credits&source=banner';
 
 function native(
   overrides: Partial<NativeAiCreditsAvailability> = {},
@@ -92,6 +131,10 @@ describe('NoBillingSourceBanner', () => {
     Promise<CanopyCloudAccountPublicState | null>,
     []
   >();
+  const loadCanopyCloudAiCredits = jest.fn<
+    Promise<CanopyCloudAiCreditsState>,
+    []
+  >();
   const openExternal = jest.fn<Promise<void>, [{ url: string }]>();
   const openAuthenticatedPortalPage = jest.fn<Promise<boolean>, [string]>();
 
@@ -104,10 +147,17 @@ describe('NoBillingSourceBanner', () => {
     // `GetAiCreditsCta`, whose mount effect seeds one, and a retained answer
     // would otherwise satisfy the next test's assertions for the wrong reason.
     invalidateSharedAiCreditsRead();
+    resetAiCreditsArrivalForTests();
     loadNativeAiCreditsAvailability.mockReset();
+    loadCanopyCloudAiCredits.mockReset();
     loadCanopyCloudAccount.mockReset();
+    mockTrackCreditsRecoveryView.mockReset();
+    mockTrackCreditsRecoveryClick.mockReset();
     openExternal.mockReset();
     openAuthenticatedPortalPage.mockReset();
+    mockHostedSettingsOpenable.mockReset().mockReturnValue(false);
+    openAccountOrganizationSettings.mockReset();
+    useNavigationStore.setState({ openAccountOrganizationSettings });
 
     loadNativeAiCreditsAvailability.mockResolvedValue(native());
     loadCanopyCloudAccount.mockResolvedValue(null);
@@ -119,6 +169,7 @@ describe('NoBillingSourceBanner', () => {
       value: {
         loadNativeAiCreditsAvailability,
         loadCanopyCloudAccount,
+        loadCanopyCloudAiCredits,
         openAuthenticatedPortalPage,
         browser: { openExternal },
       },
@@ -140,6 +191,10 @@ describe('NoBillingSourceBanner', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    resetAiCreditsArrivalForTests();
+    useNavigationStore.setState({
+      openAccountOrganizationSettings: realOpenAccountOrganizationSettings,
+    });
     if (originalApiDescriptor) {
       Object.defineProperty(window, 'api', originalApiDescriptor);
     } else {
@@ -153,6 +208,7 @@ describe('NoBillingSourceBanner', () => {
     orgLapseVisible = false,
     options: {
       target?: ChatBannerTarget | null;
+      queuedCreditHeld?: boolean;
       gatewayOnlyModel?: boolean;
       effectiveBillingFramework?: 'subscription' | 'ai-credits' | null;
       noDispatchableModel?: {
@@ -166,6 +222,9 @@ describe('NoBillingSourceBanner', () => {
         policyRestricted?: boolean;
         hasPolicyAllowedLane?: boolean;
       } | null;
+      turnActive?: boolean;
+      aiCreditsCardVisible?: boolean;
+      aiCreditsCardExpected?: boolean;
     } = {},
   ): Promise<void> {
     await act(async () => {
@@ -175,9 +234,13 @@ describe('NoBillingSourceBanner', () => {
           availability={availability(overrides)}
           orgLapseVisible={orgLapseVisible}
           target={options.target ?? null}
+          queuedCreditHeld={options.queuedCreditHeld}
           gatewayOnlyModel={options.gatewayOnlyModel ?? false}
           effectiveBillingFramework={options.effectiveBillingFramework ?? null}
           noDispatchableModel={options.noDispatchableModel ?? null}
+          turnActive={options.turnActive ?? false}
+          aiCreditsCardVisible={options.aiCreditsCardVisible ?? false}
+          aiCreditsCardExpected={options.aiCreditsCardExpected ?? false}
         />,
       );
       await flushAsyncEffects();
@@ -573,6 +636,32 @@ describe('NoBillingSourceBanner', () => {
       expect(getCreditsButton()).not.toBeNull();
     });
 
+    it('names the queued Retry action after a credit refusal', async () => {
+      flagRuntimeFailure('codex');
+      await render('codex', { nativeAuth: true }, false, {
+        target: TARGET,
+        queuedCreditHeld: true,
+      });
+      expect(banner()?.textContent).toContain('Add credits, then click Retry');
+    });
+
+    it('keeps an organization policy dead end ahead of queued credit copy', async () => {
+      flagRuntimeFailure('codex');
+      await render('codex', { nativeAuth: true }, false, {
+        target: TARGET,
+        queuedCreditHeld: true,
+        noDispatchableModel: {
+          missing: 'policy-allowance',
+          policyRestricted: true,
+          hasPolicyAllowedLane: false,
+        },
+      });
+      expect(banner()?.textContent).toContain('model policy');
+      expect(banner()?.textContent).not.toContain(
+        'Add credits, then click Retry',
+      );
+    });
+
     it('stays hidden with a native login when no runtime failure was recorded', async () => {
       await render('codex', { nativeAuth: true }, false, { target: TARGET });
       expect(banner()).toBeNull();
@@ -795,7 +884,7 @@ describe('NoBillingSourceBanner', () => {
       // branch exists so the banner is never actionless, which means the click
       // has to reach billing.
       loadNativeAiCreditsAvailability.mockRejectedValue(new Error('offline'));
-      loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth'));
+      loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth_desktop'));
       flagRuntimeFailure('codex');
 
       await render('codex', { nativeAuth: true }, false, {
@@ -809,7 +898,7 @@ describe('NoBillingSourceBanner', () => {
       });
 
       expect(openAuthenticatedPortalPage).toHaveBeenCalledWith(
-        '/account/billing',
+        BANNER_TOP_UP_PATH,
       );
     });
 
@@ -821,7 +910,7 @@ describe('NoBillingSourceBanner', () => {
       loadNativeAiCreditsAvailability.mockResolvedValue(
         native({ personalEligible: false }),
       );
-      loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth'));
+      loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth_desktop'));
       flagRuntimeFailure('codex');
 
       await render('codex', { nativeAuth: true }, false, {
@@ -884,8 +973,536 @@ describe('NoBillingSourceBanner', () => {
     });
   });
 
+  describe('browser hand-off (CAN-5162)', () => {
+    const WAITING_COPY =
+      'Finish checkout in your browser. Your credits show up here once the payment goes through.';
+    const UNCOVERED_COPY =
+      "No credits yet. If you've paid, they can take a minute to arrive.";
+    const FAILED_COPY = "Couldn't check your balance. Try again in a moment.";
+    const TARGET: ChatBannerTarget = {
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'c',
+    };
+
+    function flagRuntimeFailure(provider: AgentProviderType): void {
+      useAiCreditsBannerStore.getState().setNoBillingSource(TARGET, {
+        provider,
+        detectedAt: 1,
+      });
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers({ now: Date.now() });
+      loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth_desktop'));
+    });
+    afterEach(() => {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    });
+
+    function query(testId: string): HTMLElement | null {
+      return container.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+    }
+    function actionLabels(): Array<string | undefined> {
+      return Array.from(
+        banner()?.querySelectorAll<HTMLElement>(
+          '[data-notice-actions] button',
+        ) ?? [],
+      ).map((button) => button.textContent?.trim());
+    }
+    async function press(testId: string, holdMs = 0): Promise<void> {
+      const el = query(testId);
+      if (!el) throw new Error(`${testId} not found`);
+      await act(async () => {
+        el.click();
+        for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(holdMs);
+        for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      });
+    }
+
+    it('says the purchase is waiting in the browser, with every action a button', async () => {
+      await render('claude');
+      await press('chat-input-no-billing-source-get-credits');
+
+      // The step replaces the dead end the user already acted on.
+      expect(banner()?.textContent).toContain(WAITING_COPY);
+      expect(banner()?.textContent).not.toContain('Not signed in to Claude');
+      // Waiting on a purchase is not a warning.
+      expect(banner()?.getAttribute('data-notice-intent')).toBe('neutral');
+      // The buttons take their own row so the copy keeps the full width.
+      expect(
+        banner()?.querySelector('[data-notice-actions="below"]'),
+      ).not.toBeNull();
+      expect(actionLabels()).toEqual([
+        'Sign in to Claude instead',
+        'Reopen billing',
+        'Check again',
+      ]);
+    });
+
+    it('turns an uncovered check into the title, with Reopen billing', async () => {
+      await render('claude');
+      await press('chat-input-no-billing-source-get-credits');
+      await press('chat-input-no-billing-source-get-credits-check-again', 500);
+
+      expect(banner()?.textContent).toContain(UNCOVERED_COPY);
+      expect(
+        query('chat-input-no-billing-source-reopen-billing'),
+      ).not.toBeNull();
+      expect(signInButton()).not.toBeNull();
+    });
+
+    it('reopens billing and goes back to waiting', async () => {
+      await render('claude');
+      await press('chat-input-no-billing-source-get-credits');
+      await press('chat-input-no-billing-source-get-credits-check-again', 500);
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+
+      await press('chat-input-no-billing-source-reopen-billing');
+
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(2);
+      expect(banner()?.textContent).toContain(WAITING_COPY);
+    });
+
+    it('shows a failed check as a warning without Reopen billing', async () => {
+      loadNativeAiCreditsAvailability.mockRejectedValue(new Error('offline'));
+      flagRuntimeFailure('codex');
+      await render('codex', { nativeAuth: true }, false, {
+        target: TARGET,
+        gatewayOnlyModel: true,
+      });
+      await press('chat-input-no-billing-source-get-credits');
+      await press('chat-input-no-billing-source-get-credits-check-again', 500);
+
+      expect(banner()?.textContent).toContain(FAILED_COPY);
+      expect(banner()?.getAttribute('data-notice-intent')).toBe('attention');
+      expect(query('chat-input-no-billing-source-reopen-billing')).toBeNull();
+    });
+
+    it('does not restore an old hand-off when the banner is hidden and shown again', async () => {
+      await render('claude');
+      await press('chat-input-no-billing-source-get-credits');
+      await press('chat-input-no-billing-source-get-credits-check-again', 500);
+      expect(banner()?.textContent).toContain(UNCOVERED_COPY);
+      await render('claude', {}, true);
+      expect(banner()).toBeNull();
+      await render('claude');
+      expect(banner()?.textContent).toContain('Not signed in to Claude');
+      expect(banner()?.textContent).not.toContain(UNCOVERED_COPY);
+      expect(getCreditsButton()).not.toBeNull();
+    });
+
+    it('ends the hand-off once coverage returns', async () => {
+      await render('claude');
+      await press('chat-input-no-billing-source-get-credits');
+      await press('chat-input-no-billing-source-get-credits-check-again', 500);
+      expect(banner()?.textContent).toContain(UNCOVERED_COPY);
+
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+      await press('chat-input-no-billing-source-get-credits-check-again');
+
+      expect(banner()?.textContent).not.toContain(UNCOVERED_COPY);
+      expect(getCreditsButton()).toBeNull();
+      expect(banner()?.textContent).toContain('Credits available again');
+    });
+  });
+
+  describe('arrival confirmation (CAN-5160)', () => {
+    const TARGET: ChatBannerTarget = {
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'c',
+    };
+    const ARRIVAL = 'chat-input-no-billing-source-arrival';
+
+    function balance(credits: number): CanopyCloudAiCreditsState {
+      return {
+        connected: true,
+        email: 'test@example.com',
+        subscription: null,
+        balance: {
+          email: 'test@example.com',
+          credits,
+          eligible: credits > 0,
+          source: 'canopy',
+        },
+        noUdAccount: false,
+        error: null,
+      };
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers({ now: Date.now() });
+      loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth_desktop'));
+      loadCanopyCloudAiCredits.mockResolvedValue(balance(0));
+    });
+    afterEach(() => {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    });
+
+    function query(testId: string): HTMLElement | null {
+      return container.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+    }
+    async function settle(ms = 0): Promise<void> {
+      await act(async () => {
+        jest.advanceTimersByTime(ms);
+        for (let i = 0; i < 30; i += 1) await Promise.resolve();
+      });
+    }
+    async function press(testId: string, focus = false): Promise<void> {
+      const el = query(testId);
+      if (!el) throw new Error(`${testId} not found`);
+      if (focus) el.focus();
+      await act(async () => {
+        el.click();
+        for (let i = 0; i < 30; i += 1) await Promise.resolve();
+      });
+    }
+    async function renderTarget(
+      overrides: Partial<ProviderModelAvailability> = {},
+      options: {
+        orgLapseVisible?: boolean;
+        turnActive?: boolean;
+        effectiveBillingFramework?: 'subscription' | 'ai-credits' | null;
+        aiCreditsCardVisible?: boolean;
+        aiCreditsCardExpected?: boolean;
+      } = {},
+    ): Promise<void> {
+      await render('claude', overrides, options.orgLapseVisible ?? false, {
+        target: TARGET,
+        ...(options.turnActive !== undefined
+          ? { turnActive: options.turnActive }
+          : {}),
+        ...(options.aiCreditsCardVisible !== undefined
+          ? { aiCreditsCardVisible: options.aiCreditsCardVisible }
+          : {}),
+        ...(options.aiCreditsCardExpected !== undefined
+          ? { aiCreditsCardExpected: options.aiCreditsCardExpected }
+          : {}),
+        ...(options.effectiveBillingFramework !== undefined
+          ? { effectiveBillingFramework: options.effectiveBillingFramework }
+          : {}),
+      });
+    }
+
+    /**
+     * 0 credits at Get AI Credits, 16 once the user comes back covered. With
+     * no native login and no credits the composer resolves to a locked
+     * 'subscription', and still does when the record lands.
+     */
+    async function buyAndReturn({
+      via = 'check-again',
+      balanceFails = false,
+      focusCheckAgain = false,
+    }: {
+      via?: 'check-again' | 'focus';
+      balanceFails?: boolean;
+      focusCheckAgain?: boolean;
+    } = {}): Promise<void> {
+      await renderTarget({}, { effectiveBillingFramework: 'subscription' });
+      await settle();
+      await press('chat-input-no-billing-source-get-credits');
+      await settle();
+      expect(
+        query('chat-input-no-billing-source-get-credits-check-again'),
+      ).not.toBeNull();
+      if (balanceFails)
+        loadCanopyCloudAiCredits.mockRejectedValue(
+          new Error('balance unavailable'),
+        );
+      else loadCanopyCloudAiCredits.mockResolvedValue(balance(16));
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+      if (via === 'focus') {
+        // Past the shared re-probe throttle that the click's read started.
+        await settle(60_000);
+        await act(async () => {
+          window.dispatchEvent(new Event('focus'));
+          for (let i = 0; i < 30; i += 1) await Promise.resolve();
+        });
+      } else {
+        await press(
+          'chat-input-no-billing-source-get-credits-check-again',
+          focusCheckAgain,
+        );
+      }
+      await settle();
+    }
+
+    it('confirms the credits in one positive status that outlives the banner', async () => {
+      await buyAndReturn();
+
+      const notice = query(ARRIVAL);
+      expect(notice?.getAttribute('data-notice-intent')).toBe('positive');
+      expect(notice?.querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(notice?.textContent).toContain('16 AI Credits added.');
+      expect(notice?.textContent).toContain('You can send it now.');
+      expect(banner()).toBeNull();
+
+      // The announcement flips eligibility and the dead end is over.
+      await renderTarget({ creditsEligible: true });
+      await settle();
+      expect(query(ARRIVAL)?.textContent).toContain('16 AI Credits added.');
+      expect(banner()).toBeNull();
+    });
+
+    it('hands the record to the Using AI Credits card instead of stacking a second notice', async () => {
+      await buyAndReturn();
+      expect(query(ARRIVAL)).not.toBeNull();
+
+      // The card takes the slot once the chat bills to credits.
+      await renderTarget(
+        { creditsEligible: true },
+        { effectiveBillingFramework: 'ai-credits', aiCreditsCardVisible: true },
+      );
+      expect(query(ARRIVAL)).toBeNull();
+      expect(container.innerHTML).toBe('');
+      const state = useAiCreditsArrivalStore.getState();
+      expect(state.arrival?.origin).toBe('no-billing-source');
+      expect(state.routed).toBe(true);
+
+      // The card owns it from here: hiding the card does not revive the
+      // notice.
+      await renderTarget(
+        { creditsEligible: true },
+        { effectiveBillingFramework: 'ai-credits' },
+      );
+      expect(query(ARRIVAL)).toBeNull();
+    });
+
+    it('never shows the notice when the card is already up as the credits land', async () => {
+      await renderTarget(
+        {},
+        {
+          effectiveBillingFramework: 'subscription',
+          aiCreditsCardVisible: true,
+        },
+      );
+      await settle();
+      await press('chat-input-no-billing-source-get-credits');
+      await settle();
+      loadCanopyCloudAiCredits.mockResolvedValue(balance(16));
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+      await press('chat-input-no-billing-source-get-credits-check-again');
+      await settle();
+      expect(query(ARRIVAL)).toBeNull();
+      expect(useAiCreditsArrivalStore.getState().routed).toBe(true);
+    });
+
+    it('holds the record for an expected card instead of flashing the notice first', async () => {
+      // The composer's eligibility read lags the CTA's: the card has not
+      // taken the slot yet, but will once the chat can spend credits.
+      await renderTarget(
+        {},
+        {
+          effectiveBillingFramework: 'subscription',
+          aiCreditsCardExpected: true,
+        },
+      );
+      await settle();
+      await press('chat-input-no-billing-source-get-credits');
+      await settle();
+      loadCanopyCloudAiCredits.mockResolvedValue(balance(16));
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+      await press('chat-input-no-billing-source-get-credits-check-again');
+      await settle();
+      expect(query(ARRIVAL)).toBeNull();
+      // Nor the dead end the purchase just ended.
+      expect(banner()).toBeNull();
+      expect(useAiCreditsArrivalStore.getState().routed).toBe(false);
+
+      await renderTarget(
+        { creditsEligible: true },
+        {
+          effectiveBillingFramework: 'ai-credits',
+          aiCreditsCardVisible: true,
+          aiCreditsCardExpected: true,
+        },
+      );
+      expect(query(ARRIVAL)).toBeNull();
+      expect(useAiCreditsArrivalStore.getState().routed).toBe(true);
+    });
+
+    it('moves focus from the pressed Check again to the notice once', async () => {
+      await buyAndReturn({ focusCheckAgain: true });
+      expect(document.activeElement).toBe(query(ARRIVAL));
+
+      const composer = document.createElement('textarea');
+      document.body.appendChild(composer);
+      composer.focus();
+      await renderTarget({ creditsEligible: true });
+      await settle();
+      expect(query(ARRIVAL)).not.toBeNull();
+      expect(document.activeElement).toBe(composer);
+      composer.remove();
+    });
+
+    it('records nothing while Check again still finds no coverage', async () => {
+      await renderTarget();
+      await settle();
+      await press('chat-input-no-billing-source-get-credits');
+      await settle();
+      await press('chat-input-no-billing-source-get-credits-check-again');
+      await settle(500);
+      expect(query(ARRIVAL)).toBeNull();
+      expect(banner()).not.toBeNull();
+      expect(
+        query('chat-input-no-billing-source-get-credits-check-again'),
+      ).not.toBeNull();
+      expect(useAiCreditsArrivalStore.getState().arrival).toBeNull();
+    });
+
+    it('confirms a covered return through window focus', async () => {
+      await buyAndReturn({ via: 'focus' });
+      expect(query(ARRIVAL)?.textContent).toContain('You can send it now.');
+      expect(banner()).toBeNull();
+    });
+
+    it('falls back to the generic title when the balance cannot be read', async () => {
+      await buyAndReturn({ balanceFails: true });
+      await settle(5_000);
+      const notice = query(ARRIVAL);
+      expect(notice?.textContent).toContain(
+        'AI Credits are available for this chat.',
+      );
+      expect(notice?.textContent).not.toContain('16');
+      expect(notice?.textContent).toContain('You can send it now.');
+    });
+
+    it('clears the record on dismissal', async () => {
+      await buyAndReturn();
+      await press('chat-input-no-billing-source-arrival-dismiss');
+      expect(query(ARRIVAL)).toBeNull();
+      expect(useAiCreditsArrivalStore.getState().arrival).toBeNull();
+    });
+
+    it('clears when the next turn starts, not for a turn already running at mount', async () => {
+      await buyAndReturn();
+      expect(query(ARRIVAL)).not.toBeNull();
+      await renderTarget({ creditsEligible: true }, { turnActive: true });
+      expect(query(ARRIVAL)).toBeNull();
+      expect(useAiCreditsArrivalStore.getState().arrival).toBeNull();
+    });
+
+    it('waits for the next turn when it mounts during one', async () => {
+      await buyAndReturn();
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderTarget({ creditsEligible: true }, { turnActive: true });
+      await renderTarget({ creditsEligible: true }, { turnActive: true });
+      expect(query(ARRIVAL)).not.toBeNull();
+      expect(useAiCreditsArrivalStore.getState().arrival).not.toBeNull();
+    });
+
+    it('clears when the chat switches from credits to Subscription', async () => {
+      await buyAndReturn();
+      await renderTarget(
+        { creditsEligible: true },
+        { effectiveBillingFramework: 'ai-credits' },
+      );
+      expect(query(ARRIVAL)).not.toBeNull();
+      await renderTarget(
+        { creditsEligible: true },
+        { effectiveBillingFramework: 'subscription' },
+      );
+      expect(query(ARRIVAL)).toBeNull();
+      expect(useAiCreditsArrivalStore.getState().arrival).toBeNull();
+    });
+
+    it('does not read a chat switch as a switch to Subscription', async () => {
+      await buyAndReturn();
+      // The composer keeps this banner mounted across chats: another chat
+      // billed to credits, then back to this one, still on its own value.
+      await render('claude', { creditsEligible: true }, false, {
+        target: { ...TARGET, chatId: 'other' },
+        effectiveBillingFramework: 'ai-credits',
+      });
+      await renderTarget(
+        { creditsEligible: true },
+        { effectiveBillingFramework: 'subscription' },
+      );
+      expect(query(ARRIVAL)).not.toBeNull();
+      expect(useAiCreditsArrivalStore.getState().arrival).not.toBeNull();
+    });
+
+    it('never shows a usage-limit record for the same chat', async () => {
+      await act(async () => {
+        const handoff = beginAiCreditsArrivalHandoff(
+          { kind: 'work', projectId: 'p', worktreeId: 'w', chatId: 'c' },
+          'usage-limit',
+        );
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+        handoff?.markExternalOpen();
+        handoff?.retain();
+        expect(handoff?.recordCovered()).toBe(true);
+      });
+      await renderTarget({ creditsEligible: true });
+      expect(query(ARRIVAL)).toBeNull();
+      expect(container.innerHTML).toBe('');
+    });
+
+    it('confirms credits bought from the model picker, which has no notice of its own', async () => {
+      async function recordFromPicker(): Promise<void> {
+        await act(async () => {
+          const handoff = beginAiCreditsArrivalHandoff(
+            { kind: 'work', projectId: 'p', worktreeId: 'w', chatId: 'c' },
+            'model-picker',
+          );
+          for (let i = 0; i < 10; i += 1) await Promise.resolve();
+          handoff?.markExternalOpen();
+          handoff?.retain();
+          expect(handoff?.recordCovered()).toBe(true);
+        });
+      }
+      // No card for this chat (a credits-only model): the notice confirms it.
+      await recordFromPicker();
+      await renderTarget({ creditsEligible: true });
+      expect(query(ARRIVAL)?.textContent).toContain('You can send it now.');
+
+      // With the card up, the card confirms it instead.
+      resetAiCreditsArrivalForTests();
+      await recordFromPicker();
+      await renderTarget(
+        { creditsEligible: true },
+        { effectiveBillingFramework: 'ai-credits', aiCreditsCardVisible: true },
+      );
+      expect(query(ARRIVAL)).toBeNull();
+      expect(useAiCreditsArrivalStore.getState().routed).toBe(true);
+    });
+
+    it('defers to the org-lapse banner without dropping the record', async () => {
+      await buyAndReturn();
+      await renderTarget({}, { orgLapseVisible: true });
+      expect(container.innerHTML).toBe('');
+      expect(useAiCreditsArrivalStore.getState().arrival).not.toBeNull();
+      await renderTarget({ creditsEligible: true });
+      expect(query(ARRIVAL)).not.toBeNull();
+    });
+
+    it('records no recovery view while the arrival shows', async () => {
+      await buyAndReturn();
+      const views = mockTrackCreditsRecoveryView.mock.calls.length;
+      await renderTarget();
+      await settle();
+      expect(query(ARRIVAL)).not.toBeNull();
+      expect(mockTrackCreditsRecoveryView).toHaveBeenCalledTimes(views);
+    });
+  });
+
   it('opens billing immediately for a connected non-guest account', async () => {
-    loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth'));
+    loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth_desktop'));
 
     await render('claude');
     await act(async () => {
@@ -894,9 +1511,36 @@ describe('NoBillingSourceBanner', () => {
     });
 
     expect(openAuthenticatedPortalPage).toHaveBeenCalledWith(
-      '/account/billing',
+      BANNER_TOP_UP_PATH,
     );
     expect(useCloudConnectGateStore.getState().pending).toBeNull();
+  });
+
+  it('opens the browser top-up, not Settings, even when hosted settings are openable (CAN-5159)', async () => {
+    mockHostedSettingsOpenable.mockReturnValue(true);
+    loadCanopyCloudAccount.mockResolvedValue(cloudAccount('oauth_desktop'));
+
+    await render('claude');
+    await act(async () => {
+      getCreditsButton()?.click();
+      await flushAsyncEffects();
+    });
+
+    expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+    const [path] = openAuthenticatedPortalPage.mock.calls[0];
+    const opened = new URL(path, 'https://billing.invalid');
+    expect(opened.pathname).toBe('/account/billing');
+    expect(opened.searchParams.get('topUp')).toBe('1');
+    expect(opened.searchParams.get('reason')).toBe('credits');
+    expect(opened.searchParams.get('source')).toBe('banner');
+    expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+    // The purchase stays tracked in the chat instead of being lost in
+    // Settings.
+    expect(
+      container.querySelector(
+        '[data-testid="chat-input-no-billing-source-get-credits-check-again"]',
+      ),
+    ).not.toBeNull();
   });
 
   it('uses the shared credits CTA busy state while deciding the cloud handoff', async () => {
@@ -923,11 +1567,11 @@ describe('NoBillingSourceBanner', () => {
     ).not.toBeNull();
 
     await act(async () => {
-      resolveAccount?.(cloudAccount('oauth'));
+      resolveAccount?.(cloudAccount('oauth_desktop'));
       await flushAsyncEffects();
     });
     expect(openAuthenticatedPortalPage).toHaveBeenCalledWith(
-      '/account/billing',
+      BANNER_TOP_UP_PATH,
     );
   });
 
@@ -951,7 +1595,7 @@ describe('NoBillingSourceBanner', () => {
       await flushAsyncEffects();
     });
     expect(openAuthenticatedPortalPage).toHaveBeenCalledWith(
-      '/account/billing',
+      BANNER_TOP_UP_PATH,
     );
   });
 
@@ -1015,5 +1659,81 @@ describe('NoBillingSourceBanner', () => {
     expect(
       container.querySelector('[data-testid="auth-login-modal-stub"]'),
     ).not.toBeNull();
+  });
+  describe('credits recovery telemetry (CAN-4633)', () => {
+    const TARGET: ChatBannerTarget = {
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'c',
+    };
+
+    it('records a pre-flight view keyed to the chat', async () => {
+      await render('claude', {}, false, { target: TARGET });
+
+      expect(mockTrackCreditsRecoveryView).toHaveBeenCalledTimes(1);
+      expect(mockTrackCreditsRecoveryView).toHaveBeenCalledWith({
+        surface: 'chat_banner',
+        trigger: 'preflight',
+        dedupeKey: 'p/w/c',
+      });
+    });
+
+    it('records a failed-turn view from the runtime signal', async () => {
+      useAiCreditsBannerStore.getState().setNoBillingSource(TARGET, {
+        provider: 'codex',
+        detectedAt: 1,
+      });
+
+      await render('codex', { nativeAuth: true }, false, { target: TARGET });
+
+      expect(mockTrackCreditsRecoveryView).toHaveBeenCalledWith(
+        expect.objectContaining({ trigger: 'failed_turn' }),
+      );
+    });
+
+    it('records a no-dispatchable-model view', async () => {
+      await render('claude', { nativeAuth: true }, false, {
+        noDispatchableModel: { missing: 'billing-lane' },
+      });
+
+      expect(mockTrackCreditsRecoveryView).toHaveBeenCalledWith(
+        expect.objectContaining({ trigger: 'no_dispatchable_model' }),
+      );
+    });
+
+    it('records nothing for a pure org-policy dead end or a hidden banner', async () => {
+      await render(
+        'claude',
+        { nativeAuth: true, creditsEligible: false, loading: false },
+        false,
+        {
+          noDispatchableModel: {
+            missing: 'policy-allowance',
+            policyRestricted: true,
+          },
+        },
+      );
+      await render('claude', { loading: true });
+
+      expect(mockTrackCreditsRecoveryView).not.toHaveBeenCalled();
+    });
+
+    it('records the sign-in and Get AI Credits clicks', async () => {
+      await render('claude');
+
+      await act(async () => {
+        signInButton()?.click();
+        await flushAsyncEffects();
+      });
+      await act(async () => {
+        getCreditsButton()?.click();
+        await flushAsyncEffects();
+      });
+
+      expect(mockTrackCreditsRecoveryClick.mock.calls).toEqual([
+        [{ surface: 'chat_banner', action: 'provider_sign_in' }],
+        [{ surface: 'chat_banner', action: 'credits_purchase' }],
+      ]);
+    });
   });
 });

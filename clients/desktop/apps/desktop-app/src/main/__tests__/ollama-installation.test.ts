@@ -30,7 +30,7 @@ class MockDownloadResponse extends Readable {
   headers: Record<string, string> = { 'content-length': '4' };
   private sent = false;
 
-  _read(): void {
+  override _read(): void {
     if (this.sent) {
       return;
     }
@@ -44,7 +44,7 @@ class MockFailedDownloadResponse extends Readable {
   statusCode = 500;
   headers: Record<string, string> = {};
 
-  _read(): void {
+  override _read(): void {
     this.push(null);
   }
 }
@@ -53,7 +53,7 @@ class MockErroredDownloadResponse extends Readable {
   statusCode = 200;
   headers: Record<string, string> = { 'content-length': '4' };
 
-  _read(): void {
+  override _read(): void {
     this.destroy(new Error('response failed'));
   }
 }
@@ -536,13 +536,18 @@ describe('ollama native installer safeguards', () => {
   >;
 
   function mockExecFileBounded(signatureReport: string): ExecFileBoundedMock {
-    const execFileBoundedMock: ExecFileBoundedMock = jest.fn((file) =>
-      Promise.resolve({
+    const execFileBoundedMock: ExecFileBoundedMock = jest.fn<
+      Promise<{ stdout: string; stderr: string; exitCode: number | null }>,
+      [string, string[], { timeoutMs: number }]
+    >((file, args, options) => {
+      void args;
+      void options;
+      return Promise.resolve({
         stdout: file === 'powershell.exe' ? signatureReport : '',
         stderr: '',
         exitCode: 0,
-      }),
-    );
+      });
+    });
     jest.doMock('../ollama/installation', () => ({
       execFileBounded: execFileBoundedMock,
     }));
@@ -892,7 +897,7 @@ describe('ollama native installer safeguards', () => {
         .find(
           (
             progress,
-          ): progress is {
+          ): progress is OllamaInstallProgress & {
             phase: 'failure';
             error: string;
           } =>

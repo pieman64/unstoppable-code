@@ -149,4 +149,181 @@ describe('ShareInstallDialog', () => {
     );
     expect(byTestId('share-install-primary')).toBeNull();
   });
+
+  it('renders the effect line under the description, and nothing when empty', () => {
+    render(
+      <ShareInstallDialog
+        title="Release notes"
+        typeLabel="Skill"
+        publisher="Shared by ada"
+        description="Writes release notes."
+        effect="Adds a copy to this device."
+        primary={{ label: 'Install', onClick: jest.fn() }}
+        onClose={jest.fn()}
+      />,
+    );
+    expect(byTestId('share-install-publisher')?.textContent).toBe(
+      'Shared by ada',
+    );
+    const effect = byTestId('share-install-effect');
+    expect(effect?.textContent).toBe('Adds a copy to this device.');
+    const description = byTestId('share-install-description');
+    expect(
+      description !== null &&
+        effect !== null &&
+        description.compareDocumentPosition(effect) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it.each([undefined, ''])('renders no effect paragraph for %p', (effect) => {
+    render(
+      <ShareInstallDialog
+        title="Release notes"
+        {...(effect !== undefined ? { effect } : {})}
+        onClose={jest.fn()}
+      />,
+    );
+    expect(byTestId('share-install-effect')).toBeNull();
+    expect(byTestId('share-install-publisher')).toBeNull();
+  });
+});
+
+describe('ShareInstallDialog focus', () => {
+  function pressTab(shiftKey = false): void {
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true }),
+      );
+    });
+  }
+
+  function renderWithOpener(node: JSX.Element): {
+    opener: HTMLButtonElement;
+    root: Root;
+  } {
+    const opener = document.createElement('button');
+    opener.textContent = 'Open review';
+    document.body.appendChild(opener);
+    opener.focus();
+    return { opener, root: render(node) };
+  }
+
+  function review(
+    overrides: Partial<Parameters<typeof ShareInstallDialog>[0]> = {},
+  ): JSX.Element {
+    return (
+      <ShareInstallDialog
+        title="Release notes"
+        typeLabel="Skill"
+        publisher="Shared by ada"
+        primary={{ label: 'Install', onClick: jest.fn() }}
+        onClose={jest.fn()}
+        {...overrides}
+      />
+    );
+  }
+
+  it('starts on the close button, never the primary', () => {
+    renderWithOpener(review());
+    expect(document.activeElement).toBe(closeButton());
+  });
+
+  it('keeps Tab and Shift+Tab inside the review', () => {
+    renderWithOpener(review());
+    const primary = byTestId('share-install-primary');
+    pressTab(true);
+    expect(document.activeElement).toBe(primary);
+    pressTab();
+    expect(document.activeElement).toBe(closeButton());
+  });
+
+  it('returns focus to an opener that is still mounted', () => {
+    const { opener, root } = renderWithOpener(review());
+    expect(document.activeElement).not.toBe(opener);
+    act(() => {
+      root.unmount();
+    });
+    activeRoots.splice(activeRoots.indexOf(root), 1);
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('falls back to the page when the opener is gone', () => {
+    const { opener, root } = renderWithOpener(review());
+    opener.remove();
+    act(() => {
+      root.unmount();
+    });
+    activeRoots.splice(activeRoots.indexOf(root), 1);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('keeps focus inside the review when the focused primary turns busy', () => {
+    const onClick = jest.fn();
+    const root = renderWithOpener(
+      review({ primary: { label: 'Install', onClick } }),
+    ).root;
+    const primary = byTestId('share-install-primary');
+    primary?.focus();
+    expect(document.activeElement).toBe(primary);
+    act(() => {
+      root.render(
+        review({
+          busy: true,
+          primary: { label: 'Install', onClick, busy: true },
+        }),
+      );
+    });
+    const dialog = byTestId('share-install-dialog');
+    const active = document.activeElement;
+    expect(active !== null && dialog?.contains(active)).toBe(true);
+    expect(active?.hasAttribute('disabled')).toBe(false);
+    // A second activation while busy cannot start another install.
+    act(() => {
+      byTestId('share-install-primary')?.click();
+    });
+    expect(onClick).not.toHaveBeenCalled();
+    pressTab();
+    expect(dialog?.contains(document.activeElement)).toBe(true);
+  });
+
+  it('traps focus for a non-skill review too', () => {
+    renderWithOpener(review({ typeLabel: 'Automation', publisher: undefined }));
+    expect(document.activeElement).toBe(closeButton());
+    pressTab(true);
+    expect(document.activeElement).toBe(byTestId('share-install-primary'));
+  });
+
+  it.each(['disabled', 'loading'] as const)(
+    'keeps focus inside when a focused primary becomes %s',
+    (transition) => {
+      const root = renderWithOpener(review()).root;
+      byTestId('share-install-primary')?.focus();
+      act(() => {
+        root.render(
+          review(
+            transition === 'loading'
+              ? { primary: undefined, loading: <span>Loading…</span> }
+              : {
+                  primary: {
+                    label: 'Install',
+                    onClick: jest.fn(),
+                    disabled: true,
+                  },
+                },
+          ),
+        );
+      });
+      expect(
+        byTestId('share-install-dialog')?.contains(document.activeElement),
+      ).toBe(true);
+      // The fallback must be a Tab stop when one exists. A negative-tabindex
+      // body after the close button would let native forward Tab leave it.
+      expect(document.activeElement).toBe(closeButton());
+      pressTab(true);
+      expect(
+        byTestId('share-install-dialog')?.contains(document.activeElement),
+      ).toBe(true);
+    },
+  );
 });

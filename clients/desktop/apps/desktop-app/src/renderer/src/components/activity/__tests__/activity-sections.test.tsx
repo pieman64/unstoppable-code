@@ -279,6 +279,7 @@ describe('section render parameterization', () => {
     jest.clearAllMocks();
     jest.mocked(useDispatchPipelineModal).mockReturnValue({
       openDispatchPipelineModal: jest.fn(),
+      openWorkflowsRunModal: jest.fn<void, []>(() => undefined),
       dispatchPipelineModal: null,
     });
     container = document.createElement('div');
@@ -349,7 +350,7 @@ describe('section render parameterization', () => {
     expect(hooksProps.onOpenSettings).toBe(onOpenSettingsTab);
   });
 
-  it('mcp-servers detects the chat’s inherited defaults and toggles only its own choices', () => {
+  it('mcp-servers detects the chat’s inherited defaults and toggles only its own choices', async () => {
     const mcpSelections = (serverIds: string[]): ChatTabPluginSelections => ({
       collectionIds: [],
       skillRefs: [],
@@ -394,7 +395,12 @@ describe('section render parameterization', () => {
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
-        chat: { updatePlugins: jest.fn(() => Promise.resolve({})) },
+        chat: {
+          updatePlugins: jest.fn(
+            (request: { pluginSelections: ChatTabPluginSelections }) =>
+              Promise.resolve({ pluginSelections: request.pluginSelections }),
+          ),
+        },
         discoverWorktreeEnv: jest.fn(() => Promise.resolve()),
       },
     });
@@ -414,8 +420,8 @@ describe('section render parameterization', () => {
       serverId: 'project-mcp',
       configId: 'default',
     };
-    act(() => {
-      options?.onSelectionsChange?.(
+    await act(async () => {
+      await options?.onSelectionsChange?.(
         setMcpHttpAuthPreference(
           detected ?? mcpSelections([]),
           target,
@@ -436,6 +442,7 @@ describe('section render parameterization', () => {
     const openDispatchPipelineModal = jest.fn();
     jest.mocked(useDispatchPipelineModal).mockReturnValue({
       openDispatchPipelineModal,
+      openWorkflowsRunModal: jest.fn<void, []>(() => undefined),
       dispatchPipelineModal: <div data-testid="stub-dispatch-modal" />,
     });
     renderSection('pipeline-runs');

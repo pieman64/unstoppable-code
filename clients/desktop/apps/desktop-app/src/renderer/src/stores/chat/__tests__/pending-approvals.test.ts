@@ -2,6 +2,8 @@ import type {
   ApprovalRequestEvent,
   ChatTabsFile,
 } from '@canopy/desktop-shared/types';
+import { buildApprovalFileChangeRows } from '@canopy/ui-shared/components/chat/approval-file-change-rows';
+import { approvalCheckForClaudeTool } from '../../../../../main/agents/claude-approval-adapter';
 import {
   closeTimersForRemovedApprovals,
   hydratePendingApprovalsFromFile,
@@ -34,6 +36,8 @@ function makeTab(overrides?: Partial<ChatTab>): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     ...overrides,
   };
 }
@@ -103,6 +107,77 @@ describe('toPersistedPendingApprovals', () => {
 });
 
 describe('hydratePendingApprovalsFromFile', () => {
+  it.each([
+    [
+      'Edit',
+      {
+        old_string: 'x'.repeat(20_000) + 'old',
+        new_string: 'x'.repeat(20_000) + 'new',
+      },
+    ],
+    ['Write', { content: 'x'.repeat(20_001) }],
+    ['Write', {}],
+  ])(
+    'restores real %s adapter details through the pending serializer and hydration',
+    (tool, input) => {
+      const normalized = approvalCheckForClaudeTool(
+        tool,
+        {
+          file_path: '/repo/a.ts',
+          ...input,
+        },
+        '/repo',
+      );
+      const event = makeEvent({
+        details: normalized.details,
+        suggestedTarget: normalized.suggestedTarget,
+      });
+      const legacy = makeEvent({
+        requestId: 'legacy',
+        details: { kind: 'file-write', path: '/repo/old.ts' },
+      });
+      const state = makeState([makeTab()]);
+      const live = structuredClone({ [event.requestId]: event, legacy });
+      const file: ChatTabsFile = {
+        version: 1,
+        tabs: [],
+        activeTabId: 'chat-1',
+        pendingApprovals: toPersistedPendingApprovals(
+          'project-1',
+          'worktree-1',
+          state,
+          live,
+        ),
+      };
+      const restoredFile: unknown = JSON.parse(JSON.stringify(file));
+      if (
+        typeof restoredFile !== 'object' ||
+        restoredFile === null ||
+        !('pendingApprovals' in restoredFile)
+      )
+        throw new Error('Expected persisted approvals');
+      const restored = hydratePendingApprovalsFromFile(
+        restoredFile,
+        'project-1',
+        'worktree-1',
+        state,
+      );
+      expect(restored).toEqual(live);
+      const details = restored[event.requestId]?.details;
+      expect(details).toEqual(normalized.details);
+      if (details?.kind !== 'file-write')
+        throw new Error('Expected file-write details');
+      expect(details.displayPath).toBe('a.ts');
+      if (details.change) {
+        const rows = buildApprovalFileChangeRows(details.change);
+        expect(rows.sourceTruncated).toBe(true);
+        if (details.change.kind === 'edit')
+          expect(rows.state).toBe('indeterminate');
+        else expect(details.change.content).toHaveLength(20_000);
+      } else expect(input).toEqual({});
+    },
+  );
+
   it('skips pending approvals for chat ids that no longer exist', () => {
     const state = makeState([makeTab({ id: 'chat-1' })]);
     const file = {
@@ -149,13 +224,15 @@ describe('hydratePendingApprovalsFromFile', () => {
 
   it('ignores malformed persisted entries', () => {
     const state = makeState([makeTab({ id: 'chat-1' })]);
-    const file: ChatTabsFile = {
-      version: 1,
-      tabs: [],
-      activeTabId: 'chat-1',
-      // Malformed entry missing required fields.
-      pendingApprovals: [{ requestId: 'req-1' }],
-    };
+    const file = JSON.parse(
+      JSON.stringify({
+        version: 1,
+        tabs: [],
+        activeTabId: 'chat-1',
+        // Malformed entry missing required fields.
+        pendingApprovals: [{ requestId: 'req-1' }],
+      }),
+    ) as ChatTabsFile;
 
     expect(
       hydratePendingApprovalsFromFile(file, 'project-1', 'worktree-1', state),
@@ -242,6 +319,95 @@ describe('hydratePendingApprovalsFromFile', () => {
         state,
       ),
     ).toEqual({});
+  });
+
+  it('restores path-only and file-change write approvals and rejects a malformed change', () => {
+    const state = makeState([makeTab({ id: 'chat-1' })]);
+    const legacy = makeEvent({
+      title: 'Edit a.ts',
+      details: { kind: 'file-write', path: '/repo/a.ts' },
+    });
+    const edit = makeEvent({
+      requestId: 'req-2',
+      title: 'Edit a.ts',
+      details: {
+        kind: 'file-write',
+        path: '/repo/a.ts',
+        displayPath: 'a.ts',
+        change: {
+          kind: 'edit',
+          oldText: 'a',
+          newText: 'b',
+          replaceAll: true,
+          truncated: true,
+        },
+      },
+    });
+    const write = makeEvent({
+      requestId: 'req-3',
+      title: 'Write a.ts',
+      details: {
+        kind: 'file-write',
+        path: '/repo/a.ts',
+        change: { kind: 'write', content: '' },
+      },
+    });
+    const file = (events: unknown[]): ChatTabsFile =>
+      JSON.parse(
+        JSON.stringify({
+          version: 1,
+          tabs: [],
+          activeTabId: 'chat-1',
+          pendingApprovals: events.map((event, index) => ({
+            requestId: `req-${index + 1}`,
+            chatId: 'chat-1',
+            event,
+          })),
+        }),
+      ) as ChatTabsFile;
+
+    expect(
+      hydratePendingApprovalsFromFile(
+        file([legacy, edit, write]),
+        'project-1',
+        'worktree-1',
+        state,
+      ),
+    ).toEqual({ 'req-1': legacy, 'req-2': edit, 'req-3': write });
+
+    for (const details of [
+      { kind: 'file-write', path: '/repo/a.ts', displayPath: 1 },
+      { kind: 'file-write', path: '/repo/a.ts', change: { kind: 'write' } },
+      {
+        kind: 'file-write',
+        path: '/repo/a.ts',
+        change: { kind: 'edit', oldText: 'a' },
+      },
+      {
+        kind: 'file-write',
+        path: '/repo/a.ts',
+        change: { kind: 'edit', oldText: 'a', newText: 'b', replaceAll: 'y' },
+      },
+      {
+        kind: 'file-write',
+        path: '/repo/a.ts',
+        change: { kind: 'write', content: 'x', truncated: 1 },
+      },
+      {
+        kind: 'file-write',
+        path: '/repo/a.ts',
+        change: { kind: 'patch', content: 'x' },
+      },
+    ]) {
+      expect(
+        hydratePendingApprovalsFromFile(
+          file([{ ...legacy, details }]),
+          'project-1',
+          'worktree-1',
+          state,
+        ),
+      ).toEqual({});
+    }
   });
 
   it('ignores entries whose nested approval event is incomplete', () => {
@@ -440,10 +606,9 @@ describe('restoreStreamingTabs pending-approval preservation', () => {
         blocks: [
           {
             type: 'tool_use',
-            id: 'toolu_pending',
+            toolUseId: 'toolu_pending',
             toolName: 'Bash',
             input: '{"command":"rm -rf build"}',
-            timestamp: 1,
           },
         ],
       },

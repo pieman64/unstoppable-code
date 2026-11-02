@@ -24,7 +24,11 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
-import { injectChatEvent, seedWorktreeChat } from './seeders/index.mjs';
+import {
+  injectChatEvent,
+  publishTurnLifecycle,
+  seedWorktreeChat,
+} from './seeders/index.mjs';
 import {
   seedTranscriptStorage,
   seedTranscriptRecovery,
@@ -61,6 +65,7 @@ test('recovers the chat scope after a delta journal sync failure from adding a t
     );
     await electronAppInjectJournalFailure(launched.electronApp, directory);
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     await expect
       .poll(() =>
         launched.electronApp.evaluate(
@@ -198,6 +203,9 @@ test('recovers missing committed locators when reopening deferred tool output', 
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(transcriptScope.worktreeId);
     await window.getByTestId('panel-tab-panel-chat-long').click();
@@ -472,6 +480,7 @@ test('keeps a new composer and its draft selected when an older tab activation a
       nodes.map((node) => node.getAttribute('data-testid')),
     );
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     await expect(tabs).toHaveCount(before.length + 1);
     const id = (
       await tabs.evaluateAll((nodes) =>
@@ -517,6 +526,9 @@ test('keeps lean chats independent and pages a lossless continuous transcript th
     let window = await launched.electronApp.firstWindow();
     let app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(transcriptScope.worktreeId);
     await expect(
@@ -619,6 +631,9 @@ test('keeps lean chats independent and pages a lossless continuous transcript th
     window = await launched.electronApp.firstWindow();
     app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(transcriptScope.worktreeId);
     await expect(
@@ -1503,6 +1518,9 @@ test('recovers a force-quit tool-heavy turn through its last acknowledged event 
     const window = await launched.electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(transcriptScope.worktreeId);
     const panel = window.getByTestId('panel-content-chat');
@@ -1520,7 +1538,7 @@ test('recovers a force-quit tool-heavy turn through its last acknowledged event 
       chatId,
       data: {
         type: 'claude_terminal_transcript_sync',
-        importedEventCount: 2,
+        importedEventCount: 1,
         messages: [
           {
             id: turnId,
@@ -1528,21 +1546,15 @@ test('recovers a force-quit tool-heavy turn through its last acknowledged event 
             timestamp: startedAt,
             blocks: [{ type: 'text', text: 'Run thirty tools in a row.' }],
           },
-          {
-            id: `${turnId}-timer`,
-            role: 'system',
-            timestamp: startedAt + 1000,
-            blocks: [
-              {
-                type: 'turn_timer',
-                startedAt,
-                pausedAt: startedAt + 1000,
-                completedAt: null,
-              },
-            ],
-          },
         ],
       },
+    });
+    await publishTurnLifecycle(launched.electronApp, {
+      ...transcriptScope,
+      chatId,
+      turnUserMessageId: turnId,
+      phase: 'start',
+      atMs: startedAt,
     });
     await expect(panel.getByText('Run thirty tools in a row.')).toBeVisible({
       timeout: 30000,
@@ -1615,6 +1627,9 @@ test('recovers a force-quit tool-heavy turn through its last acknowledged event 
     const window = await launched.electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(transcriptScope.worktreeId);
     const panel = window.getByTestId('panel-content-chat');
@@ -1622,7 +1637,11 @@ test('recovers a force-quit tool-heavy turn through its last acknowledged event 
       timeout: 30000,
     });
     // The turn's tool calls render as one collapsed group of all thirty.
-    await expect(panel.getByText('30', { exact: true })).toBeVisible({
+    await expect(
+      panel
+        .getByTestId('turn-work-header')
+        .locator('[data-turn-step-count="30"]'),
+    ).toBeVisible({
       timeout: 30000,
     });
     expect(await toolResults(launched.electronApp)).toEqual(acknowledged);

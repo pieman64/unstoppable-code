@@ -1,3 +1,6 @@
+import type * as SessionManagerModule from '../agents/session-manager';
+import type { ActivityLiveBgTask } from '@canopy/desktop-shared/types/activity-panel';
+
 const mockGetCodeGraphContext = jest.fn();
 const mockBuildOrUpdateCodeGraph = jest.fn();
 const mockQueryCodeGraph = jest.fn();
@@ -8,21 +11,55 @@ const mockDetectChangedSymbols = jest.fn();
 const mockCompareChangeImpact = jest.fn();
 const mockGetReviewContext = jest.fn();
 const mockSetCurrentWorktreeBaseBranch = jest.fn();
+const mockGetLiveBackgroundTasksForChat = jest.fn<
+  ActivityLiveBgTask[] | undefined,
+  [string, string, string]
+>();
+
+jest.mock('../agents/session-manager', () => ({
+  ...jest.requireActual<typeof SessionManagerModule>(
+    '../agents/session-manager',
+  ),
+  getLiveBackgroundTasksForChat: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ): ActivityLiveBgTask[] | undefined =>
+    mockGetLiveBackgroundTasksForChat(projectId, worktreeId, chatId),
+}));
 
 // `core.ts` imports `code-graph-runtime.ts` statically (unlike the dynamic
 // `import('../app-advisor/watchers')` used elsewhere in that module), so this
 // mock must be registered — and its `mock*` fns declared — before the first
 // `import` of `../canopy-tools/core` below triggers that static require.
 jest.mock('../canopy-tools/code-graph-runtime', () => ({
-  getCodeGraphContext: mockGetCodeGraphContext,
-  buildOrUpdateCodeGraph: mockBuildOrUpdateCodeGraph,
-  queryCodeGraph: mockQueryCodeGraph,
-  searchCodeGraph: mockSearchCodeGraph,
-  explainCodeSymbol: mockExplainCodeSymbol,
-  getImpactRadius: mockGetImpactRadius,
-  detectChangedSymbols: mockDetectChangedSymbols,
-  compareChangeImpact: mockCompareChangeImpact,
-  getReviewContext: mockGetReviewContext,
+  get getCodeGraphContext(): typeof mockGetCodeGraphContext {
+    return mockGetCodeGraphContext;
+  },
+  get buildOrUpdateCodeGraph(): typeof mockBuildOrUpdateCodeGraph {
+    return mockBuildOrUpdateCodeGraph;
+  },
+  get queryCodeGraph(): typeof mockQueryCodeGraph {
+    return mockQueryCodeGraph;
+  },
+  get searchCodeGraph(): typeof mockSearchCodeGraph {
+    return mockSearchCodeGraph;
+  },
+  get explainCodeSymbol(): typeof mockExplainCodeSymbol {
+    return mockExplainCodeSymbol;
+  },
+  get getImpactRadius(): typeof mockGetImpactRadius {
+    return mockGetImpactRadius;
+  },
+  get detectChangedSymbols(): typeof mockDetectChangedSymbols {
+    return mockDetectChangedSymbols;
+  },
+  get compareChangeImpact(): typeof mockCompareChangeImpact {
+    return mockCompareChangeImpact;
+  },
+  get getReviewContext(): typeof mockGetReviewContext {
+    return mockGetReviewContext;
+  },
 }));
 
 const mockStartSplitAgent = jest.fn();
@@ -31,7 +68,9 @@ jest.mock('../canopy-tools/start-split-agent-runtime', () => ({
     mockStartSplitAgent(...args),
 }));
 jest.mock('../canopy-tools/set-base-branch-runtime', () => ({
-  setCurrentWorktreeBaseBranch: mockSetCurrentWorktreeBaseBranch,
+  get setCurrentWorktreeBaseBranch(): typeof mockSetCurrentWorktreeBaseBranch {
+    return mockSetCurrentWorktreeBaseBranch;
+  },
 }));
 
 const mockGetGitHubPullRequestStatus = jest.fn();
@@ -56,6 +95,12 @@ import {
   SEARCH_ACTIONS_DESCRIPTION,
 } from '../canopy-tools/definitions';
 import * as worktreeActions from '../canopy-tools/worktree-actions';
+import * as resourceActions from '../canopy-tools/resource-actions';
+import * as pipelineHandlers from '../pipelines/pipeline-handlers';
+import type {
+  ExecutionState,
+  PipelineData,
+} from '@canopy/desktop-shared/types/pipeline';
 import { getChatQueueService } from '../services/chat-queue-service';
 import {
   claimPendingAuthFailures,
@@ -157,7 +202,7 @@ const mockDecideSameOwnerAccess = jest.fn<
 jest.mock('../lib/app-advisor-project-agent-access', () => ({
   ADVISOR_ACCESS_DISABLED: 'advisor_access_disabled',
   ADVISOR_ACCESS_DISABLED_MESSAGE:
-    'App Advisor access is turned off for agents in this project. The user controls this in Settings > App Advisor.',
+    'Orchestrator access is turned off for agents in this project. The user controls this in Settings > Orchestrator.',
   decideAppAdvisorAccessForCaller: (caller: {
     projectId: string;
     worktreeId: string;
@@ -354,7 +399,147 @@ const automationCallerScopes = [
   },
 ];
 
+/**
+ * Starts pipeline.run in a scoped task from a stubbed definition and run
+ * start, so the action takes its real path through the pipelines port.
+ */
+function stubScopedPipelineRun(): () => void {
+  const pipeline: PipelineData = {
+    info: {
+      id: 'pipeline-1',
+      name: 'Pipeline 1',
+      description: '',
+      icon: 'pipeline',
+      createdAt: '2026-10-12T00:00:00.000Z',
+      updatedAt: '2026-10-12T00:00:00.000Z',
+      filename: 'pipeline-1.yaml',
+      source: 'user',
+      readonly: false,
+      scopes: ['worktree'],
+    },
+    content: { name: 'Pipeline 1', on: 'dispatch', jobs: {} },
+  };
+  const state: ExecutionState = {
+    version: 10,
+    id: 'execution-1',
+    pipeline_id: 'pipeline-1',
+    pipeline_snapshot: { name: 'Pipeline 1', scope: ['worktree'], jobs: {} },
+    status: 'running',
+    jobs: {},
+    job_definitions: {},
+    job_groups: {},
+    started_at: '2026-10-12T00:00:00.000Z',
+    cwd: '/repo',
+    env: {},
+    scope: 'worktree',
+    event_name: 'dispatch',
+    inputs: {},
+    pending_pauses: [],
+    status_reasons: [],
+  };
+  const load = jest
+    .spyOn(resourceActions, 'loadAgentPipelineById')
+    .mockResolvedValue(pipeline);
+  const start = jest
+    .spyOn(pipelineHandlers, 'startPipelineExecutionFromMain')
+    .mockResolvedValue({ success: true, data: state });
+  return () => {
+    load.mockRestore();
+    start.mockRestore();
+  };
+}
+
 describe('canopy injected tools core', () => {
+  it.each([
+    'setup_watchers',
+    'watch_github_items',
+    'watch_command',
+    'schedule_wakeup',
+    'dispatch_action',
+  ] as const)('passes the executor signal through %s', async (key) => {
+    mockSetupWatchers.mockResolvedValue({ ok: true, results: [] });
+    mockWatchGitHubItems.mockResolvedValue({
+      ok: true,
+      status: 'created',
+      watcherId: 'watch',
+    });
+    mockCreateLocalWatcher.mockResolvedValue({ id: 'watch' });
+    const dispatch = jest
+      .spyOn(worktreeActions, 'dispatchWorktreeAction')
+      .mockResolvedValue({ ok: true, requestId: 'dispatch-request' });
+    const signal = new AbortController().signal;
+    const runtime: CanopyInjectedToolRuntime = {
+      requestUserAnswers: jest.fn(),
+      loadScriptOutput: jest.fn(),
+      worktreeWatcherRuntime: {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'c',
+        cwd: '/repo',
+      },
+      worktreeActionRuntime: {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'c',
+        cwd: '/repo',
+        getWindow: () => null,
+      },
+    };
+    const input =
+      key === 'setup_watchers'
+        ? {
+            watchers: [
+              {
+                trigger: 'worktree_chat_completion',
+                target: { projectId: 'p', worktreeId: 'w', chatId: 'other' },
+              },
+            ],
+          }
+        : key === 'watch_github_items'
+          ? {
+              items: [
+                { kind: 'workflow_run', repository: 'acme/api', runId: '1' },
+              ],
+              notifyOn: { run: { conclusions: 'any' } },
+            }
+          : key === 'watch_command'
+            ? { command: 'true', intervalSeconds: 5, maxAttempts: 1 }
+            : key === 'schedule_wakeup'
+              ? { delaySeconds: 60 }
+              : { action: { type: 'worktree.list_scripts' } };
+    try {
+      await executeCanopyInjectedTool(key, input, runtime, {
+        toolUseId: 'signal-call',
+        signal,
+      });
+      if (key === 'dispatch_action')
+        expect(dispatch.mock.calls.at(-1)?.[1].signal).toBe(signal);
+      else if (key === 'setup_watchers')
+        expect(mockSetupWatchers).toHaveBeenLastCalledWith(
+          expect.any(Object),
+          expect.any(Object),
+          expect.objectContaining({ signal }),
+        );
+      else if (key === 'watch_github_items')
+        expect(mockWatchGitHubItems).toHaveBeenLastCalledWith(
+          expect.any(Object),
+          expect.any(Object),
+          expect.objectContaining({ signal }),
+        );
+      else
+        expect(mockCreateLocalWatcher).toHaveBeenLastCalledWith(
+          expect.any(Object),
+          expect.any(Object),
+          'signal-call',
+          undefined,
+          undefined,
+          { signal },
+        );
+    } finally {
+      dispatch.mockRestore();
+    }
+  });
+
   it.each([
     { type: 'browser.click', locator: '#ready' },
     { type: 'browser.fill', locator: '#ready', text: 'value' },
@@ -723,7 +908,10 @@ describe('canopy injected tools core', () => {
     const result = await executeCanopyInjectedTool(
       'dispatch_action',
       { action: { type: 'browser.inspect' } },
-      {},
+      {
+        requestUserAnswers: jest.fn(),
+        loadScriptOutput: jest.fn(),
+      },
     );
 
     expect(result.isError).toBe(true);
@@ -800,13 +988,7 @@ describe('canopy injected tools core', () => {
   });
 
   it('keeps a successful pipeline run successful when inline watcher setup throws', async () => {
-    const dispatch = jest
-      .spyOn(worktreeActions, 'dispatchWorktreeAction')
-      .mockResolvedValue({
-        requestId: '',
-        ok: true,
-        result: { execution: { id: 'execution-1' } },
-      });
+    const restoreRun = stubScopedPipelineRun();
     mockSetupWatchers.mockRejectedValue(new Error('watcher store unavailable'));
     const runtime: CanopyInjectedToolRuntime = {
       requestUserAnswers: jest.fn(),
@@ -841,24 +1023,19 @@ describe('canopy injected tools core', () => {
     expect(JSON.parse(result.text)).toMatchObject({
       ok: true,
       result: {
-        execution: { id: 'execution-1' },
+        status: 'started',
+        execution: { executionId: 'execution-1' },
         inlineWatcherSetup: {
           ok: false,
           error: 'watcher store unavailable',
         },
       },
     });
-    dispatch.mockRestore();
+    restoreRun();
   });
 
   it('reports a pipeline run inline watcher setup as its JSON projection', async () => {
-    const dispatch = jest
-      .spyOn(worktreeActions, 'dispatchWorktreeAction')
-      .mockResolvedValue({
-        requestId: '',
-        ok: true,
-        result: { execution: { id: 'execution-1' } },
-      });
+    const restoreRun = stubScopedPipelineRun();
     mockSetupWatchers.mockResolvedValue({
       ok: true,
       results: [
@@ -911,29 +1088,30 @@ describe('canopy injected tools core', () => {
     );
 
     expect(result.isError).toBe(false);
-    expect(JSON.parse(result.text)).toEqual({
-      requestId: '',
+    const response: unknown = JSON.parse(result.text);
+    expect(response).toMatchObject({
       ok: true,
       result: {
-        execution: { id: 'execution-1' },
-        inlineWatcherSetup: {
-          ok: true,
-          results: [
-            {
-              status: 'created',
-              watcher: {
-                id: 'watcher-1',
-                trigger: 'worktree_pipeline_completion',
-                status: 'active',
-                label: 'Pipeline done',
-                targetKind: 'worktree_pipeline',
-              },
-            },
-          ],
-        },
+        status: 'started',
+        execution: { executionId: 'execution-1' },
       },
     });
-    dispatch.mockRestore();
+    expect(response).toHaveProperty('result.inlineWatcherSetup', {
+      ok: true,
+      results: [
+        {
+          status: 'created',
+          watcher: {
+            id: 'watcher-1',
+            trigger: 'worktree_pipeline_completion',
+            status: 'active',
+            label: 'Pipeline done',
+            targetKind: 'worktree_pipeline',
+          },
+        },
+      ],
+    });
+    restoreRun();
   });
 
   it('formats ask-user answers and forwards the deterministic toolUseId', async () => {
@@ -1059,6 +1237,125 @@ describe('canopy injected tools core', () => {
     ).resolves.toEqual({
       text: 'Auto-archive is enabled for this chat when the current agent turn completes.',
     });
+  });
+
+  it.each([
+    { taskType: 'local_agent', name: 'a provider agent' },
+    { taskType: 'local_workflow', name: 'a provider workflow' },
+  ])('defers SetAutoArchive until $name finishes', async ({ taskType }) => {
+    const setAutoArchiveForCurrentChat = jest.fn();
+    const runtime: CanopyInjectedToolRuntime = {
+      requestUserAnswers: jest.fn(),
+      loadScriptOutput: jest.fn(),
+      setAutoArchiveForCurrentChat,
+      worktreeWatcherRuntime: {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      },
+    };
+    mockGetLiveBackgroundTasksForChat.mockReturnValue([
+      { taskId: 'provider-task', taskType, status: 'running' },
+    ]);
+    try {
+      await expect(
+        executeCanopyInjectedTool(
+          'set_auto_archive',
+          { enabled: true },
+          runtime,
+        ),
+      ).resolves.toEqual({
+        text: 'Auto-archive is on. This chat will be archived after its background agents and workflows finish.',
+      });
+      await expect(
+        executeCanopyInjectedTool(
+          'set_auto_archive',
+          { enabled: false },
+          runtime,
+        ),
+      ).resolves.toEqual({
+        text: 'Auto-archive is disabled for this chat; it will stay open when the current agent turn completes.',
+      });
+    } finally {
+      mockGetLiveBackgroundTasksForChat.mockReset();
+    }
+    expect(setAutoArchiveForCurrentChat.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('keeps delegate deferral copy when delegates and provider work are both live', async () => {
+    const runtime: CanopyInjectedToolRuntime = {
+      requestUserAnswers: jest.fn(),
+      loadScriptOutput: jest.fn(),
+      setAutoArchiveForCurrentChat: jest.fn(),
+      worktreeWatcherRuntime: {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      },
+    };
+    mockGetLiveBackgroundTasksForChat.mockReturnValue([
+      { taskId: 'provider-task', taskType: 'local_agent', status: 'running' },
+    ]);
+    setDelegationActivity(
+      'auto-archive-priority',
+      'project-1/worktree-1/chat-1',
+      1,
+    );
+    try {
+      await expect(
+        executeCanopyInjectedTool(
+          'set_auto_archive',
+          { enabled: true },
+          runtime,
+        ),
+      ).resolves.toEqual({
+        text: 'Auto-archive is on. This chat will be archived after its delegates finish.',
+      });
+    } finally {
+      setDelegationActivity(
+        'auto-archive-priority',
+        'project-1/worktree-1/chat-1',
+        0,
+      );
+      mockGetLiveBackgroundTasksForChat.mockReset();
+    }
+  });
+
+  it.each([
+    { taskType: 'local_bash', name: 'a shell' },
+    { taskType: 'mcp_task', name: 'an MCP task' },
+    { taskType: undefined, name: 'an untyped task' },
+  ])('does not defer SetAutoArchive for $name', async ({ taskType }) => {
+    const runtime: CanopyInjectedToolRuntime = {
+      requestUserAnswers: jest.fn(),
+      loadScriptOutput: jest.fn(),
+      setAutoArchiveForCurrentChat: jest.fn(),
+      worktreeWatcherRuntime: {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      },
+    };
+    mockGetLiveBackgroundTasksForChat.mockReturnValue([
+      {
+        taskId: 'provider-task',
+        ...(taskType !== undefined ? { taskType } : {}),
+        status: 'running',
+      },
+    ]);
+    try {
+      await expect(
+        executeCanopyInjectedTool(
+          'set_auto_archive',
+          { enabled: true },
+          runtime,
+        ),
+      ).resolves.toEqual({
+        text: 'Auto-archive is enabled for this chat when the current agent turn completes.',
+      });
+    } finally {
+      mockGetLiveBackgroundTasksForChat.mockReset();
+    }
   });
 
   it('rejects SetAutoArchive when no current-chat callback is available', async () => {
@@ -4175,6 +4472,7 @@ describe('canopy injected tools core', () => {
         summary: 'Detected 1 changed symbol(s) vs HEAD.',
         truncated: false,
         baseRef: 'HEAD',
+        lastBuildAt: null,
         changed: [
           {
             qualifiedName: 'src/foo.ts::Bar',
@@ -4239,6 +4537,7 @@ describe('canopy injected tools core', () => {
           'Change impact vs HEAD: +1 added, -0 removed, 0 signature change(s); 1 impacted symbol(s), risk low.',
         truncated: false,
         baseRef: 'HEAD',
+        lastBuildAt: null,
         delta: { addedCount: 1, removedCount: 0, signatureChangedCount: 0 },
         impacted: [
           {
@@ -4304,6 +4603,7 @@ describe('canopy injected tools core', () => {
           'Review context vs HEAD: 1 changed symbol(s), 0 test gap(s), risk low.',
         truncated: false,
         baseRef: 'HEAD',
+        lastBuildAt: null,
         changedSymbols: [
           {
             qualifiedName: 'src/foo.ts::Bar',

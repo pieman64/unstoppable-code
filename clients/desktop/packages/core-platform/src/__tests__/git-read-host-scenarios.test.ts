@@ -99,10 +99,6 @@ const DIVERGENT: Readonly<
       attempts: ['C:\\Program Files\\Git\\cmd\\git.exe'],
     },
   },
-  'Linux arm64 uses the environment override': {
-    divergence: 'other-linux-snapshot-path',
-    daemon: { resolved: '/env/git', attempts: [] },
-  },
   'macOS saved symlink retargeted to another Git › the saved symlink now points at another Git':
     {
       divergence: 'overlay-keying-and-ttl',
@@ -129,7 +125,7 @@ function desktopExpectation(
 }
 
 const linuxDiscovery = (scenario: Scenario): boolean =>
-  scenario.os !== 'linux' || (scenario.arch ?? 'x64') === 'x64';
+  scenario.os !== 'linux' || ['x64', 'arm64'].includes(scenario.arch ?? 'x64');
 
 /**
  * Desktop's first detection as a spawn resolution. Overlay keying stats an

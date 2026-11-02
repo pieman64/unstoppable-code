@@ -15,14 +15,18 @@ import {
 } from '../pipelines/pipeline-package-service';
 jest.mock('../pipelines/pipeline-package-service', () => ({
   copyPackageInstall: jest.fn(() => Promise.resolve()),
+  removePackageInstall: jest.fn(() => Promise.resolve()),
   SHARED_PACKAGE_REVIEW_REQUIRED_MESSAGE: 'Review package dependencies.',
   updateSharedPipelinePreservingPackage: jest.fn(),
 }));
-const mockGetSharedPipelineSaveImpact = jest.fn(() =>
-  Promise.resolve({ automations: [] }),
-);
+const mockGetSharedPipelineSaveImpact = jest.fn<
+  Promise<SharedPipelineSaveImpact>,
+  [string]
+>(() => Promise.resolve({ automations: [] }));
 jest.mock('../pipelines/shared-pipeline-save-impact', () => ({
-  getSharedPipelineSaveImpact: (remoteId: string): Promise<unknown> =>
+  getSharedPipelineSaveImpact: (
+    remoteId: string,
+  ): Promise<SharedPipelineSaveImpact> =>
     mockGetSharedPipelineSaveImpact(remoteId),
 }));
 import { assertPipelineContext } from '../pipelines/resource-lanes';
@@ -45,11 +49,15 @@ import {
   authorizeProjectPipelineRequest,
   assertStoredPipelineContext,
   copyPipelineInstallOrigin,
+  readStoredPipelineContext,
 } from '../pipelines/pipeline-install-context';
 jest.mock('../pipelines/pipeline-install-context', () => ({
   authorizeProjectPipelineRequest: jest.fn(),
   assertStoredPipelineContext: jest.fn(() => Promise.resolve()),
   copyPipelineInstallOrigin: jest.fn(() => Promise.resolve()),
+  readStoredPipelineContext: jest.fn(() =>
+    Promise.resolve({ owner: { type: 'user', id: 'me', name: null } }),
+  ),
 }));
 import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -79,6 +87,13 @@ jest.mock('../pipelines/curated-pipeline-catalog', () => ({
   getManagedCuratedPipeline: jest.fn(),
 }));
 
+jest.mock(
+  '../canopy-runtime/pipeline-definition-dispatch',
+  (): object =>
+    jest.requireActual<{ pipelineWriteDispatchFake: object }>(
+      './helpers/pipeline-write-dispatch-fake',
+    ).pipelineWriteDispatchFake,
+);
 jest.mock('../pipelines/pipeline-service', () => ({
   listPipelines: jest.fn(),
   getPipeline: jest.fn(),
@@ -90,6 +105,7 @@ jest.mock('../pipelines/pipeline-service', () => ({
 jest.mock('../pipelines/canopy-server-client', () => ({
   listSharedPipelines: jest.fn(),
   getSharedPipeline: jest.fn(),
+  getSharedPipelineForExecutionContext: jest.fn(),
   createSharedPipeline: jest.fn(),
   updateSharedPipeline: jest.fn(),
   deleteSharedPipeline: jest.fn(),
@@ -144,6 +160,37 @@ const automationService = {
 jest.mock('../automations/service', () => ({
   getAutomationsService: (): typeof automationService => automationService,
 }));
+// CAN-4551 7c: agent writes go through the conversion save; here it passes
+// straight to the service so the policy tests read the service calls.
+const mockCreateAutomationForAgent = jest.fn(
+  (
+    request: unknown,
+    trusted: unknown,
+    service: typeof automationService,
+  ): unknown => service.create(request, trusted),
+);
+const mockUpdateAutomationForAgent = jest.fn(
+  (
+    request: unknown,
+    writer: {
+      authorize?: unknown;
+      callerContext?: unknown;
+      agentAuthor: unknown;
+    },
+    service: typeof automationService,
+  ): unknown =>
+    service.update(request, writer.authorize, writer.callerContext, {
+      agentAuthor: writer.agentAuthor,
+    }),
+);
+jest.mock('../automations/chat-automation-save', () => ({
+  createAutomationForAgent: (
+    ...args: Parameters<typeof mockCreateAutomationForAgent>
+  ): unknown => mockCreateAutomationForAgent(...args),
+  updateAutomationForAgent: (
+    ...args: Parameters<typeof mockUpdateAutomationForAgent>
+  ): unknown => mockUpdateAutomationForAgent(...args),
+}));
 
 const mockScopeAutomations = jest.fn(
   (list: AutomationsListResponse): Promise<AutomationsListResponse> =>
@@ -159,24 +206,50 @@ jest.mock('../pipelines/pipeline-local-metadata-store', () => ({
     mockSetUserPipelineAgentAuthor(...args),
   deleteUserPipelineLocalMetadata: (...args: unknown[]): unknown =>
     mockDeleteUserPipelineLocalMetadata(...args),
+  // No pipeline here is an automation's own (CAN-4551).
+  readPipelineLocalMetadata: (): object => ({}),
 }));
-const mockAgentPipelineOwnerContext = jest.fn(
-  (): Promise<{ owner: string } | { refusal: string }> =>
-    Promise.resolve({ owner: 'personal' }),
-);
-const mockGetUserPipelineOwner = jest.fn(
-  (): Promise<string> => Promise.resolve('personal'),
-);
-const mockValidatePipelineOwnerTargetsOnSave = jest.fn(
-  (): Promise<string | null> => Promise.resolve(null),
-);
+// No activity here owns its pipeline (CAN-4551), so each is checked as stored.
+jest.mock('../automations/owned-chat-projection', () => ({
+  projectOwnedChatAutomation: <T>(activity: T): T => activity,
+}));
+const mockAgentPipelineOwnerContext = jest.fn<
+  ReturnType<typeof PipelineOwnerPolicyModule.agentPipelineOwnerContext>,
+  Parameters<typeof PipelineOwnerPolicyModule.agentPipelineOwnerContext>
+>(() => Promise.resolve({ owner: 'personal' }));
+const mockGetUserPipelineOwner = jest.fn<
+  ReturnType<typeof PipelineOwnerPolicyModule.getUserPipelineOwner>,
+  Parameters<typeof PipelineOwnerPolicyModule.getUserPipelineOwner>
+>(() => Promise.resolve('personal'));
+const mockValidatePipelineOwnerTargetsOnSave = jest.fn<
+  ReturnType<
+    typeof PipelineOwnerPolicyModule.validatePipelineOwnerTargetsOnSave
+  >,
+  Parameters<
+    typeof PipelineOwnerPolicyModule.validatePipelineOwnerTargetsOnSave
+  >
+>(() => Promise.resolve(null));
 jest.mock('../pipelines/pipeline-owner-policy', () => ({
-  agentPipelineOwnerContext: (...args: unknown[]): unknown =>
-    mockAgentPipelineOwnerContext(...args),
-  getUserPipelineOwner: (...args: unknown[]): unknown =>
-    mockGetUserPipelineOwner(...args),
-  validatePipelineOwnerTargetsOnSave: (...args: unknown[]): unknown =>
-    mockValidatePipelineOwnerTargetsOnSave(...args),
+  agentPipelineOwnerContext: (
+    target: Parameters<
+      typeof PipelineOwnerPolicyModule.agentPipelineOwnerContext
+    >[0],
+  ): ReturnType<typeof PipelineOwnerPolicyModule.agentPipelineOwnerContext> =>
+    mockAgentPipelineOwnerContext(target),
+  getUserPipelineOwner: (
+    pipelineId: string,
+  ): ReturnType<typeof PipelineOwnerPolicyModule.getUserPipelineOwner> =>
+    mockGetUserPipelineOwner(pipelineId),
+  validatePipelineOwnerTargetsOnSave: (
+    pipeline: Parameters<
+      typeof PipelineOwnerPolicyModule.validatePipelineOwnerTargetsOnSave
+    >[0],
+    ownerContext: Parameters<
+      typeof PipelineOwnerPolicyModule.validatePipelineOwnerTargetsOnSave
+    >[1],
+  ): ReturnType<
+    typeof PipelineOwnerPolicyModule.validatePipelineOwnerTargetsOnSave
+  > => mockValidatePipelineOwnerTargetsOnSave(pipeline, ownerContext),
 }));
 
 jest.mock('../services/background-execution-context', () => ({
@@ -247,19 +320,24 @@ jest.mock('../canopy-cloud/client', () => {
 
 const mockIsClaudeTuiChatsEnabled = jest.fn(() => true);
 jest.mock('../lib/claude-tui-chats', () => ({
-  isClaudeTuiChatsEnabled: mockIsClaudeTuiChatsEnabled,
+  get isClaudeTuiChatsEnabled(): typeof mockIsClaudeTuiChatsEnabled {
+    return mockIsClaudeTuiChatsEnabled;
+  },
 }));
 
 import type {
   AppAdvisorJson,
   AutomationsListResponse,
   ScheduledActivity,
+  ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type * as ProjectOwnerModule from '../lib/project-owner';
+import type * as PipelineOwnerPolicyModule from '../pipelines/pipeline-owner-policy';
 import type {
   PipelineData,
   SharedPipelineDetail,
+  SharedPipelineSaveImpact,
 } from '@canopy/desktop-shared/types/pipeline';
 import {
   assertCanopyCloudCapability,
@@ -279,6 +357,7 @@ import { withPipelineCrudTelemetry } from '../pipelines/instrumentation';
 import { deletePipelinePluginCollectionPreferences } from '../pipelines/plugin-collection-store';
 import {
   dispatchAgentResourceAction,
+  loadAgentGlobalPipelineById,
   loadAgentPipelineById,
   type AgentResourceActionRuntime,
 } from '../canopy-tools/resource-actions';
@@ -322,6 +401,7 @@ function sharedPipeline(): SharedPipelineDetail {
     owner: { type: 'user', id: 'me', name: 'Me' },
     createdAt: '2026-08-04T00:00:00.000Z',
     updatedAt: '2026-08-04T00:00:00.000Z',
+    contentHash: 'fixture-content-hash',
     canUpdate: true,
     canDelete: true,
     rawPipeline:
@@ -855,6 +935,8 @@ describe('agent resource actions', () => {
       {
         type: 'pipeline.share',
         pipelineId: 'pipeline-1',
+        shareScope: 'organization',
+        organizationId: 'org-selected',
         deleteLocal: true,
       },
       runtime,
@@ -925,6 +1007,71 @@ describe('agent resource actions', () => {
       { action: 'create', source: 'user' },
       expect.any(Function),
     );
+  });
+
+  describe('agent global pipeline loading', () => {
+    const ORG = 'org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+    it("authorizes a stored pipeline against the run's owner, not the selected context", async () => {
+      mockShareContextEnabled = true;
+      mockWorkspaceContext = { kind: 'personal' };
+      jest
+        .mocked(pipelineStore.getPipeline)
+        .mockReturnValue({ success: true, data: pipeline() });
+
+      await expect(
+        loadAgentGlobalPipelineById('pipeline-1', ORG),
+      ).resolves.toMatchObject({ info: { id: 'pipeline-1' } });
+      expect(readStoredPipelineContext).toHaveBeenCalledWith('pipeline-1', ORG);
+      expect(assertPipelineContext).toHaveBeenCalledWith(
+        { owner: { type: 'user', id: 'me', name: null } },
+        undefined,
+        ORG,
+      );
+      expect(assertStoredPipelineContext).not.toHaveBeenCalled();
+    });
+
+    it("loads a shared pipeline for the run's owner, not the selected context", async () => {
+      mockShareContextEnabled = true;
+      mockWorkspaceContext = { kind: 'personal' };
+      const owner = {
+        type: 'organization',
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        name: 'Organization',
+      } as const;
+      jest
+        .mocked(pipelineCloud.getSharedPipelineForExecutionContext)
+        .mockResolvedValue({ ...sharedPipeline(), owner });
+
+      await expect(
+        loadAgentGlobalPipelineById('shared:canopy-cloud:shared-pipeline', ORG),
+      ).resolves.toMatchObject({ info: { source: 'shared' } });
+      expect(
+        pipelineCloud.getSharedPipelineForExecutionContext,
+      ).toHaveBeenCalledWith('shared-pipeline');
+      expect(pipelineCloud.getSharedPipeline).not.toHaveBeenCalled();
+      expect(assertPipelineContext).toHaveBeenCalledWith(
+        { owner },
+        undefined,
+        ORG,
+      );
+    });
+
+    it("refuses a stored pipeline outside the run's owner", async () => {
+      mockShareContextEnabled = true;
+      jest
+        .mocked(pipelineStore.getPipeline)
+        .mockReturnValue({ success: true, data: pipeline() });
+      jest
+        .mocked(assertPipelineContext)
+        .mockRejectedValueOnce(
+          new Error('Pipeline unavailable (context-mismatch)'),
+        );
+
+      await expect(
+        loadAgentGlobalPipelineById('pipeline-1', ORG),
+      ).rejects.toThrow('context-mismatch');
+    });
   });
 
   describe('pipeline owner and agent marker', () => {
@@ -1000,6 +1147,37 @@ describe('agent resource actions', () => {
       expect(mockSetUserPipelineAgentAuthor).not.toHaveBeenCalled();
     });
 
+    it('refuses an agent send-agent-message step that changes an existing chat', async () => {
+      const yaml = (chatLine: string): string =>
+        `name: Build\nscope: global\non: dispatch\njobs:\n  build:\n    steps:\n      - uses: builtin/send-agent-message\n        with:\n          project_id: p\n          task_id: t\n${chatLine}          text: Report\n          model: opus\n`;
+      jest.mocked(pipelineStore.savePipeline).mockReturnValue({
+        success: true,
+        data: pipeline().info,
+      });
+
+      const refused = await dispatchAgentResourceAction(
+        { type: 'pipeline.create', rawYaml: yaml('          chat_id: c\n') },
+        runtime,
+      );
+      expect(refused).toMatchObject({
+        ok: false,
+        error: {
+          code: 'validation_failed',
+          message:
+            "Agent-authored pipelines cannot change an existing chat's model, plan mode, approval mode, or plugins.",
+        },
+      });
+      expect(pipelineStore.savePipeline).not.toHaveBeenCalled();
+
+      // Without a chat the model seeds a new chat, which the agent may choose.
+      const allowed = await dispatchAgentResourceAction(
+        { type: 'pipeline.create', rawYaml: yaml('') },
+        runtime,
+      );
+      expect(allowed).toMatchObject({ ok: true });
+      expect(pipelineStore.savePipeline).toHaveBeenCalledTimes(1);
+    });
+
     it("refuses a create when the project's owner can't be read", async () => {
       mockAgentPipelineOwnerContext.mockResolvedValue({
         refusal: 'Owner unknown',
@@ -1059,7 +1237,6 @@ describe('agent resource actions', () => {
         { type: 'pipeline.delete', pipelineId: 'pipeline-1' },
         runtime,
       );
-
       expect(response).toMatchObject({ ok: true });
       expect(mockDeleteUserPipelineLocalMetadata).toHaveBeenCalledWith(
         'pipeline-1',
@@ -1197,7 +1374,12 @@ describe('agent resource actions', () => {
       .mockResolvedValue(pipeline().content);
 
     const response = await dispatchAgentResourceAction(
-      { type: 'pipeline.share', pipelineId: projectPipeline.id },
+      {
+        type: 'pipeline.share',
+        pipelineId: projectPipeline.id,
+        shareScope: 'organization',
+        organizationId: 'org-selected',
+      },
       runtime,
     );
 
@@ -1359,6 +1541,8 @@ describe('agent resource actions', () => {
       {
         type: 'pipeline.share',
         pipelineId: 'shared:canopy-cloud:shared-pipeline',
+        shareScope: 'organization',
+        organizationId: 'org-selected',
       },
       runtime,
     );
@@ -1398,7 +1582,7 @@ describe('agent resource actions', () => {
       mockShareContextEnabled = true;
       jest.mocked(pipelineCloud.getSharedPipeline).mockResolvedValue({
         ...sharedPipeline(),
-        owner: { type: 'organization', id: 'org-a', name: null },
+        owner: { type: 'organization', id: 'org-a', name: 'Organization' },
       });
       const check =
         source === 'shared'
@@ -1408,7 +1592,7 @@ describe('agent resource actions', () => {
         (_resource, projectId): Promise<void> =>
           projectId === 'personal'
             ? Promise.reject(
-                new Error('Pipeline unavailable (context-mismatch)'),
+                new Error('Workflow unavailable (context-mismatch)'),
               )
             : Promise.resolve(),
       );
@@ -1420,7 +1604,7 @@ describe('agent resource actions', () => {
               : 'pipeline-1',
             { ...runtime, projectId: 'personal' },
           ),
-        ).rejects.toThrow('Pipeline unavailable (context-mismatch)');
+        ).rejects.toThrow('Workflow unavailable (context-mismatch)');
       } finally {
         check.mockResolvedValue();
       }
@@ -1587,6 +1771,56 @@ describe('agent resource actions', () => {
     },
   );
 
+  it('creates and updates agent automations through the conversion save (CAN-4551 7c)', async () => {
+    const created = activity({
+      type: 'standalone_prompt',
+      chatProjectId: runtime.projectId,
+      prompt: 'Organize notes',
+    });
+    // Agents can't edit an automation with an If Command gate.
+    delete created.ifCommand;
+    automationService.create.mockResolvedValue({ ok: true, activity: created });
+    automationService.update.mockResolvedValue({ ok: true, activity: created });
+    mockListAutomations.mockResolvedValue({
+      activities: [created],
+      recentRuns: [],
+    });
+    const input = {
+      name: created.name,
+      schedule: created.schedule,
+      action: created.action,
+    };
+    await dispatchAgentResourceAction(
+      { type: 'automation.create', input },
+      runtime,
+    );
+    await dispatchAgentResourceAction(
+      {
+        type: 'automation.update',
+        id: created.id,
+        patch: { name: 'Renamed' },
+      },
+      runtime,
+    );
+    const agentAuthor: unknown = expect.objectContaining({
+      chat: {
+        projectId: runtime.projectId,
+        worktreeId: runtime.worktreeId,
+        chatId: runtime.chatId,
+      },
+    });
+    expect(mockCreateAutomationForAgent).toHaveBeenCalledWith(
+      input,
+      expect.objectContaining({ agentAuthor }),
+      automationService,
+    );
+    expect(mockUpdateAutomationForAgent).toHaveBeenCalledWith(
+      { id: created.id, name: 'Renamed' },
+      expect.objectContaining({ agentAuthor }),
+      automationService,
+    );
+  });
+
   it('forwards headless declarations to the canonical writer and surfaces its refusal', async () => {
     const input = {
       name: 'Restricted pipeline',
@@ -1655,7 +1889,7 @@ describe('agent resource actions', () => {
         prompt: 'Review a project with an unknown owner',
       },
     };
-    const ownedRun = {
+    const ownedRun: ScheduledActivityRun = {
       id: 'run-owned',
       activityId: ownedActivity.id,
       activityName: ownedActivity.name,
@@ -1725,6 +1959,139 @@ describe('agent resource actions', () => {
     expect(blocked).toMatchObject({
       ok: false,
       error: { code: 'validation_failed' },
+    });
+    expect(automationService.create).not.toHaveBeenCalled();
+  });
+
+  it("owns an agent's global pipeline automation by the caller project's owner", async () => {
+    mockResolveProjectSavedOwner.mockResolvedValue({
+      kind: 'organization',
+      organizationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    mockAgentPipelineOwnerContext.mockResolvedValueOnce({
+      owner: 'org:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    automationService.create.mockResolvedValue({ ok: false, error: 'stop' });
+    const input = {
+      name: 'Digest',
+      schedule: {
+        kind: 'cron' as const,
+        expression: '0 9 * * 1',
+        timezone: 'local' as const,
+      },
+      action: {
+        type: 'worktree_pipeline' as const,
+        target: { kind: 'global' as const },
+        pipelineId: 'digest',
+        pipelineSource: 'user' as const,
+      },
+    };
+    await dispatchAgentResourceAction(
+      { type: 'automation.create', input },
+      runtime,
+    );
+    expect(mockAgentPipelineOwnerContext).toHaveBeenCalledWith(runtime);
+    expect(automationService.create).toHaveBeenCalledWith(
+      input,
+      expect.objectContaining({
+        owner: 'org:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      }),
+    );
+  });
+
+  it('refuses a global pipeline automation whose owner is not the caller project owner', async () => {
+    // The caller's owner changed after the pipeline owner was resolved.
+    mockAgentPipelineOwnerContext.mockResolvedValueOnce({
+      owner: 'org:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    const response = await dispatchAgentResourceAction(
+      {
+        type: 'automation.create',
+        input: {
+          name: 'Digest',
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * 1',
+            timezone: 'local',
+          },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId: 'digest',
+            pipelineSource: 'user',
+          },
+        },
+      },
+      runtime,
+    );
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    expect(automationService.create).not.toHaveBeenCalled();
+  });
+
+  it("shows a project agent only the global pipeline automations of its project's owner", async () => {
+    const globalAction: ScheduledActivity['action'] = {
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      pipelineId: 'digest',
+      pipelineSource: 'user',
+    };
+    const owned = {
+      ...activity(globalAction),
+      id: 'global-owned',
+      executionContext: 'personal',
+    };
+    const otherOwner = {
+      ...activity(globalAction),
+      id: 'global-other-owner',
+      executionContext: 'org:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    };
+    automationService.list.mockResolvedValue({
+      activities: [owned, otherOwner],
+      recentRuns: [],
+    });
+    const listed = await dispatchAgentResourceAction(
+      { type: 'automation.list', includeRuns: false },
+      runtime,
+    );
+    expect(resultObject(listed.result).activities).toEqual([owned]);
+    const hidden = await dispatchAgentResourceAction(
+      { type: 'automation.run_now', id: otherOwner.id },
+      runtime,
+    );
+    expect(hidden).toMatchObject({ ok: false, error: { code: 'not_found' } });
+    expect(automationService.runNow).not.toHaveBeenCalled();
+  });
+
+  it('refuses a global pipeline automation when the caller project owner is unknown', async () => {
+    mockAgentPipelineOwnerContext.mockResolvedValueOnce({
+      refusal: 'Owner unknown.',
+    });
+    const response = await dispatchAgentResourceAction(
+      {
+        type: 'automation.create',
+        input: {
+          name: 'Digest',
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * 1',
+            timezone: 'local',
+          },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId: 'digest',
+            pipelineSource: 'user',
+          },
+        },
+      },
+      runtime,
+    );
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: 'validation_failed', message: 'Owner unknown.' },
     });
     expect(automationService.create).not.toHaveBeenCalled();
   });
@@ -1882,7 +2249,7 @@ describe('agent resource actions', () => {
           type: 'worktree_pipeline',
           workspaceId: 'project-1',
           pipelineId: 'pipeline-1',
-        },
+        } satisfies ScheduledActivity['action'],
       };
       automationService.list.mockResolvedValue({
         activities: [saved],
@@ -1994,16 +2361,25 @@ describe('agent resource actions', () => {
   });
 
   it('blocks lifecycle updates that preserve an existing If Command', async () => {
-    const response = await dispatchAgentResourceAction(
-      {
-        type: 'automation.update',
-        id: 'activity-1',
-        patch: {
-          schedule: { kind: 'interval', every: 1, unit: 'hours' },
+    const updateAction: Parameters<typeof dispatchAgentResourceAction>[0] = {
+      type: 'automation.update',
+      id: 'activity-1',
+      patch: {
+        schedule: {
+          kind: 'cron',
+          expression: '0 * * * *',
+          timezone: 'local',
         },
       },
-      runtime,
-    );
+    };
+    // Keep this intentionally malformed runtime input: the current public
+    // action type no longer includes the legacy interval trigger.
+    Reflect.set(updateAction.patch, 'schedule', {
+      kind: 'interval',
+      every: 1,
+      unit: 'hours',
+    });
+    const response = await dispatchAgentResourceAction(updateAction, runtime);
 
     expect(response).toMatchObject({
       ok: false,
@@ -2259,7 +2635,7 @@ describe('agent resource actions', () => {
     const otherActivity = { ...activity(), id: 'activity-2', name: 'Other' };
     // `automation.get` now pages the durable per-automation run archive
     // (ECW-8684) instead of filtering the capped `recentRuns` hot window.
-    const archivedRuns = [
+    const archivedRuns: ScheduledActivityRun[] = [
       {
         id: 'run-1',
         activityId: 'activity-1',

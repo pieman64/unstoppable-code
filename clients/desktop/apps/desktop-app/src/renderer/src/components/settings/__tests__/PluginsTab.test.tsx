@@ -168,13 +168,16 @@ describe('PluginsTab Active items summary', () => {
     );
     if (!(manage instanceof HTMLButtonElement))
       throw new Error('Manage button not rendered');
-    expect(manage.textContent).toBe('Manage in Customize');
+    expect(manage.textContent).toBe('Open Customize');
     act(() => manage.click());
     expect(closeSettings).toHaveBeenCalledTimes(1);
     expect(openPluginsNavigation).toHaveBeenCalledWith({
-      kind: 'management',
-      section: 'installed',
-      statusFilter: 'active',
+      kind: 'marketplace-browse',
+      query: '',
+      tab: 'all',
+      focusSection: 'installed',
+      installedExpanded: true,
+      installedStatusFilter: 'active',
     });
     cleanup();
   });

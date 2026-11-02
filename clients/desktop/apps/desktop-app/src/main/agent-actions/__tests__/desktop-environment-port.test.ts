@@ -16,7 +16,10 @@ jest.mock('../../portal/model-catalog-projection', () => ({
 
 import type * as MessageCommandAdapter from '../../canopy-runtime/core-chat-message-command-adapter';
 
-const mockLegacyCommands: unknown[] = [];
+type LegacyMessageCommand = Parameters<
+  typeof MessageCommandAdapter.withLegacyChatMessageCommand
+>[0];
+const mockLegacyCommands: LegacyMessageCommand[] = [];
 
 jest.mock('../../canopy-runtime/core-chat-message-command-adapter', () => {
   const actual = jest.requireActual<typeof MessageCommandAdapter>(
@@ -59,6 +62,7 @@ import {
   beginApprovalModeTransition,
   clearLiveApprovalMode,
   endApprovalModeTransition,
+  setAppliedApprovalReader,
   setLiveApprovalMode,
 } from '../../approvals/live-approval-modes';
 import { createApprovalSession } from '../../approvals/approval-service';
@@ -122,6 +126,11 @@ const chatItem = (
   revision: 1,
   createdAt: '2026-01-01T00:00:00.000Z',
 });
+
+/** Dispatcher mocks receive unknown payloads; each test pins its known shape here. */
+function mockPayload<T>(value: unknown): T {
+  return value as T;
+}
 
 function queryResults(
   name: string,
@@ -337,13 +346,20 @@ beforeEach(() => {
   mockInstruction.mockReset();
   mockLegacyCommands.length = 0;
   mockQuery.mockImplementation(
-    (name: string, params: { scope?: { worktreeId?: string } }) =>
-      Promise.resolve(queryResults(name, params)),
+    (name: string, params: unknown): Promise<unknown> =>
+      Promise.resolve(
+        queryResults(
+          name,
+          mockPayload<{
+            scope?: { workspaceId?: string; worktreeId?: string };
+          }>(params),
+        ),
+      ),
   );
   mockInstruction.mockImplementation(
-    (_name: string, params: { commandId: string }) =>
+    (_name: string, params: unknown): Promise<unknown> =>
       Promise.resolve({
-        commandId: params.commandId,
+        commandId: mockPayload<{ commandId: string }>(params).commandId,
         revision: 2,
         outcome: 'applied',
       }),
@@ -432,10 +448,10 @@ describe('desktop environment port', () => {
       return Promise.resolve();
     });
     mockInstruction.mockImplementation(
-      (_name: string, params: { commandId: string }) => {
+      (_name: string, params: unknown): Promise<unknown> => {
         order.push('sent');
         return Promise.resolve({
-          commandId: params.commandId,
+          commandId: mockPayload<{ commandId: string }>(params).commandId,
           revision: 2,
           outcome: 'applied',
         });
@@ -835,10 +851,14 @@ describe('desktop environment port', () => {
   it('resumes a start whose first message was committed before its receipt was kept', async () => {
     const committed = new Set<string>();
     mockInstruction.mockImplementation(
-      (_name: string, params: { commandId: string; messageId: string }) => {
-        committed.add(params.messageId);
+      (_name: string, params: unknown): Promise<unknown> => {
+        const { commandId, messageId } = mockPayload<{
+          commandId: string;
+          messageId: string;
+        }>(params);
+        committed.add(messageId);
         return Promise.resolve({
-          commandId: params.commandId,
+          commandId,
           revision: 2,
           outcome: 'applied',
         });
@@ -874,23 +894,26 @@ describe('desktop environment port', () => {
     });
     const sent: { chatId: string; messageId: string }[] = [];
     mockInstruction
-      .mockImplementationOnce((_name: string, params: { commandId: string }) =>
-        Promise.resolve({
-          commandId: params.commandId,
-          revision: 2,
-          outcome: 'rejected',
-          reason: 'provider unavailable',
-        }),
+      .mockImplementationOnce(
+        (_name: string, params: unknown): Promise<unknown> =>
+          Promise.resolve({
+            commandId: mockPayload<{ commandId: string }>(params).commandId,
+            revision: 2,
+            outcome: 'rejected',
+            reason: 'provider unavailable',
+          }),
       )
       .mockImplementation(
-        (
-          _name: string,
-          params: { commandId: string; chatId: string; messageId: string },
-        ) => {
-          sent.push({ chatId: params.chatId, messageId: params.messageId });
-          tabs.set(params.chatId, (tabs.get(params.chatId) ?? 0) + 1);
+        (_name: string, params: unknown): Promise<unknown> => {
+          const { commandId, chatId, messageId } = mockPayload<{
+            commandId: string;
+            chatId: string;
+            messageId: string;
+          }>(params);
+          sent.push({ chatId, messageId });
+          tabs.set(chatId, (tabs.get(chatId) ?? 0) + 1);
           return Promise.resolve({
-            commandId: params.commandId,
+            commandId,
             revision: 2,
             outcome: 'applied',
           });
@@ -1097,6 +1120,61 @@ describe('desktop environment port', () => {
       ).rejects.toThrow('approvals unreadable');
       expect(reserveChat).not.toHaveBeenCalled();
       expect(rendererAction).not.toHaveBeenCalled();
+    });
+
+    describe('a calling chat whose session runs an Ask-admitted turn after the chat was raised to Full Access (CAN-4821)', () => {
+      beforeEach(() => {
+        // The chat's own mode, which the registry keeps for its later turns.
+        setLiveApprovalMode('ws-1', 'wt-1', 'chat-parent', 'full-access');
+        // What its live session applied, as the session manager reports it.
+        setAppliedApprovalReader((workspaceId, worktreeId, chatId) =>
+          workspaceId === 'ws-1' &&
+          worktreeId === 'wt-1' &&
+          chatId === 'chat-parent'
+            ? { mode: 'ask', rules: undefined }
+            : undefined,
+        );
+      });
+      afterEach(() => {
+        clearLiveApprovalMode('ws-1', 'wt-1', 'chat-parent');
+        setAppliedApprovalReader(() => undefined);
+      });
+
+      it('cannot message a Full Access chat', async () => {
+        const port = createDesktopEnvironmentPort(deps());
+
+        await expect(
+          port.postMessage(
+            {
+              scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+              chatId: 'chat-busy',
+              text: 'Ship it.',
+              idempotencyKey: 'admitted-post',
+            },
+            call,
+          ),
+        ).rejects.toMatchObject({ code: 'authorization_conflict' });
+        expect(mockInstruction).not.toHaveBeenCalled();
+      });
+
+      it.each(['current', 'new_worktree'] as const)(
+        'cannot start a %s chat at Full Access: it starts at Ask',
+        async (placement) => {
+          const reserveChat = jest.fn<Promise<void>, [ChatSendMessageRequest]>(
+            () => Promise.resolve(),
+          );
+          const port = createDesktopEnvironmentPort(deps({ reserveChat }));
+
+          await port.startChat(
+            startInput(placement, `admitted-start-${placement}`),
+            call,
+          );
+
+          expect(reserveChat).toHaveBeenCalled();
+          for (const [request] of reserveChat.mock.calls)
+            expect(request.approvalMode).toBe('ask');
+        },
+      );
     });
 
     describe('a calling chat that switches from Auto to Ask during a start', () => {
@@ -1340,10 +1418,12 @@ describe('desktop environment port', () => {
       function admitAfter(change: () => void, times = 1): void {
         let remaining = times;
         mockInstruction.mockImplementation(
-          async (
-            _name: string,
-            params: { commandId: string; chatId: string; messageId: string },
-          ) => {
+          async (_name: string, params: unknown): Promise<unknown> => {
+            const { commandId, chatId, messageId } = mockPayload<{
+              commandId: string;
+              chatId: string;
+              messageId: string;
+            }>(params);
             if (remaining > 0) {
               remaining -= 1;
               change();
@@ -1352,20 +1432,20 @@ describe('desktop environment port', () => {
             const refusal = chatSendAdmissionCheck({
               projectId: 'ws-1',
               worktreeId: 'wt-1',
-              chatId: params.chatId,
-              userMessageId: params.messageId,
+              chatId,
+              userMessageId: messageId,
             })?.(canonicalTab);
             if (refusal !== undefined) {
               return {
-                commandId: params.commandId,
+                commandId,
                 revision: 2,
                 outcome: 'rejected',
                 reason: refusal,
               };
             }
-            dispatched.push(params.messageId);
+            dispatched.push(messageId);
             return {
-              commandId: params.commandId,
+              commandId,
               revision: 2,
               outcome: 'applied',
             };
@@ -1531,8 +1611,9 @@ describe('desktop environment port', () => {
           }),
         );
         mockInstruction.mockImplementation(
-          (_name: string, params: { messageId: string }) => {
-            if (firstCommits) committed.add(params.messageId);
+          (_name: string, params: unknown): Promise<unknown> => {
+            const { messageId } = mockPayload<{ messageId: string }>(params);
+            if (firstCommits) committed.add(messageId);
             return Promise.reject(
               new CanopyOperationError({
                 kind: 'deadline_exceeded',
@@ -1580,8 +1661,8 @@ describe('desktop environment port', () => {
         }),
       );
       mockInstruction.mockImplementation(
-        (_name: string, params: { messageId: string }) => {
-          committed.add(params.messageId);
+        (_name: string, params: unknown): Promise<unknown> => {
+          committed.add(mockPayload<{ messageId: string }>(params).messageId);
           return Promise.reject(
             new CanopyOperationError({
               kind: 'deadline_exceeded',
@@ -1659,21 +1740,21 @@ describe('desktop environment port', () => {
         );
         let changeOnce: (() => void) | undefined = change;
         mockInstruction.mockImplementation(
-          async (
-            _name: string,
-            params: { commandId: string; chatId: string; messageId: string },
-          ) => {
+          async (_name: string, params: unknown): Promise<unknown> => {
+            const { commandId, chatId, messageId } = mockPayload<{
+              commandId: string;
+              chatId: string;
+              messageId: string;
+            }>(params);
             changeOnce?.();
             changeOnce = undefined;
             await Promise.resolve();
-            const tab = reserved.find(
-              (request) => request.chatId === params.chatId,
-            );
+            const tab = reserved.find((request) => request.chatId === chatId);
             const refusal = chatSendAdmissionCheck({
               projectId: 'ws-1',
               worktreeId: 'wt-new',
-              chatId: params.chatId,
-              userMessageId: params.messageId,
+              chatId,
+              userMessageId: messageId,
             })?.({
               ...(tab?.approvalMode ? { approvalMode: tab.approvalMode } : {}),
               ...(tab?.sessionApprovalRules
@@ -1682,15 +1763,15 @@ describe('desktop environment port', () => {
             });
             if (refusal !== undefined) {
               return {
-                commandId: params.commandId,
+                commandId,
                 revision: 2,
                 outcome: 'rejected',
                 reason: refusal,
               };
             }
-            dispatched.push(params.messageId);
+            dispatched.push(messageId);
             return {
-              commandId: params.commandId,
+              commandId,
               revision: 2,
               outcome: 'applied',
             };
@@ -1754,21 +1835,21 @@ describe('desktop environment port', () => {
         );
         let changeOnce: (() => void) | undefined = change;
         mockInstruction.mockImplementation(
-          async (
-            _name: string,
-            params: { commandId: string; chatId: string; messageId: string },
-          ) => {
+          async (_name: string, params: unknown): Promise<unknown> => {
+            const { commandId, chatId, messageId } = mockPayload<{
+              commandId: string;
+              chatId: string;
+              messageId: string;
+            }>(params);
             changeOnce?.();
             changeOnce = undefined;
             await Promise.resolve();
-            const tab = reserved.find(
-              (request) => request.chatId === params.chatId,
-            );
+            const tab = reserved.find((request) => request.chatId === chatId);
             const refusal = chatSendAdmissionCheck({
               projectId: 'ws-1',
               worktreeId: 'wt-new',
-              chatId: params.chatId,
-              userMessageId: params.messageId,
+              chatId,
+              userMessageId: messageId,
             })?.({
               ...(tab?.approvalMode ? { approvalMode: tab.approvalMode } : {}),
               ...(tab?.sessionApprovalRules
@@ -1777,15 +1858,15 @@ describe('desktop environment port', () => {
             });
             if (refusal !== undefined) {
               return {
-                commandId: params.commandId,
+                commandId,
                 revision: 2,
                 outcome: 'rejected',
                 reason: refusal,
               };
             }
-            dispatched.push(params.messageId);
+            dispatched.push(messageId);
             return {
-              commandId: params.commandId,
+              commandId,
               revision: 2,
               outcome: 'applied',
             };
@@ -1884,24 +1965,20 @@ describe('desktop environment port', () => {
           );
           const dispatched: string[] = [];
           mockInstruction.mockImplementation(
-            async (
-              _name: string,
-              params: {
+            async (_name: string, params: unknown): Promise<unknown> => {
+              const { commandId, chatId, messageId, scope } = mockPayload<{
                 commandId: string;
                 chatId: string;
                 messageId: string;
                 scope: { workspaceId: string; worktreeId: string };
-              },
-            ) => {
+              }>(params);
               await Promise.resolve();
-              const tab = reserved.find(
-                (request) => request.chatId === params.chatId,
-              );
+              const tab = reserved.find((request) => request.chatId === chatId);
               const refusal = chatSendAdmissionCheck({
-                projectId: params.scope.workspaceId,
-                worktreeId: params.scope.worktreeId,
-                chatId: params.chatId,
-                userMessageId: params.messageId,
+                projectId: scope.workspaceId,
+                worktreeId: scope.worktreeId,
+                chatId,
+                userMessageId: messageId,
               })?.({
                 ...(tab?.approvalMode
                   ? { approvalMode: tab.approvalMode }
@@ -1915,15 +1992,15 @@ describe('desktop environment port', () => {
               });
               if (refusal !== undefined) {
                 return {
-                  commandId: params.commandId,
+                  commandId,
                   revision: 2,
                   outcome: 'rejected',
                   reason: refusal,
                 };
               }
-              dispatched.push(params.messageId);
+              dispatched.push(messageId);
               return {
-                commandId: params.commandId,
+                commandId,
                 revision: 2,
                 outcome: 'applied',
               };
@@ -2138,7 +2215,9 @@ describe('desktop environment port', () => {
     it.each(['current', 'new_worktree'] as const)(
       'starts an Auto %s chat from an Auto chat: a new worktree is scope the start itself creates',
       async (placement) => {
-        const reserveChat = jest.fn(() => Promise.resolve());
+        const reserveChat = jest.fn<Promise<void>, [ChatSendMessageRequest]>(
+          () => Promise.resolve(),
+        );
         const port = createDesktopEnvironmentPort(
           deps({
             reserveChat,
@@ -2266,7 +2345,9 @@ describe('desktop environment port', () => {
         };
         await expect(sessionDecides(caller, original)).resolves.toBe('deny');
 
-        const reserveChat = jest.fn(() => Promise.resolve());
+        const reserveChat = jest.fn<Promise<void>, [ChatSendMessageRequest]>(
+          () => Promise.resolve(),
+        );
         const port = createDesktopEnvironmentPort(
           deps({
             reserveChat,
@@ -2275,9 +2356,7 @@ describe('desktop environment port', () => {
           }),
         );
         await port.startChat(startInput('new_worktree', 'deny-original'), call);
-        const reserved = reserveChat.mock.calls[0]?.[0] as
-          | ChatSendMessageRequest
-          | undefined;
+        const reserved = reserveChat.mock.calls[0]?.[0];
         expect(reserved?.worktreeId).toBe('wt-new');
         const child = {
           worktreeId: 'wt-new',
@@ -2455,6 +2534,84 @@ describe('desktop environment port', () => {
       expect(mockInstruction.mock.calls[0]?.[0]).toBe('core.chat.message.send');
     });
 
+    describe('a calling chat whose live session applies other rules than its tab (CAN-4821)', () => {
+      const GRANT = rule('allow', 'npm publish');
+      const DENY = rule('deny', 'rm -rf dist');
+      let appliedRules: readonly ApprovalRule[] | undefined;
+      beforeEach(() => {
+        setAppliedApprovalReader((workspaceId, worktreeId, chatId) =>
+          workspaceId === 'ws-1' &&
+          worktreeId === 'wt-1' &&
+          chatId === 'chat-parent'
+            ? { mode: undefined, rules: appliedRules }
+            : undefined,
+        );
+      });
+      afterEach(() => {
+        setAppliedApprovalReader(() => undefined);
+      });
+
+      it('cannot message a chat that holds a grant its admitted turn was not given', async () => {
+        // The chat holds the grant; its admitted turn's session does not.
+        appliedRules = [];
+        const port = createDesktopEnvironmentPort(
+          deps({ chatApprovalPolicy: () => policy('ask', [GRANT]) }),
+        );
+        await expect(post(port, 'applied-without-grant')).rejects.toMatchObject(
+          { code: 'authorization_conflict' },
+        );
+        expect(mockInstruction).not.toHaveBeenCalled();
+      });
+
+      it('messages the same chat while its session applies the grant', async () => {
+        appliedRules = [{ ...GRANT, id: 'same-effect' }];
+        const port = createDesktopEnvironmentPort(
+          deps({ chatApprovalPolicy: () => policy('ask', [GRANT]) }),
+        );
+        await post(port, 'applied-with-grant');
+        expect(mockInstruction.mock.calls[0]?.[0]).toBe(
+          'core.chat.message.send',
+        );
+      });
+
+      it('never gains a grant its session holds and its tab does not', async () => {
+        appliedRules = [GRANT];
+        const port = createDesktopEnvironmentPort(
+          deps({
+            chatApprovalPolicy: (chat) =>
+              policy('ask', chat.chatId === 'chat-parent' ? [] : [GRANT]),
+          }),
+        );
+        await expect(post(port, 'applied-grant-only')).rejects.toMatchObject({
+          code: 'authorization_conflict',
+        });
+      });
+
+      it.each(['current', 'new_worktree'] as const)(
+        'starts a %s chat that keeps a deny rule its session applies',
+        async (placement) => {
+          appliedRules = [DENY];
+          const reserveChat = jest.fn<Promise<void>, [ChatSendMessageRequest]>(
+            () => Promise.resolve(),
+          );
+          const port = createDesktopEnvironmentPort(
+            deps({
+              reserveChat,
+              chatApprovalPolicy: () => policy('ask', []),
+              newChatApprovalMode: () => Promise.resolve('ask'),
+            }),
+          );
+          await port.startChat(
+            startInput(placement, `applied-deny-${placement}`),
+            call,
+          );
+          expect(reserveChat).toHaveBeenCalled();
+          for (const [request] of reserveChat.mock.calls)
+            expect(request.sessionApprovalRules).toEqual([DENY]);
+        },
+      );
+    });
+
     it.each([
       ['auto', 'auto'],
       ['auto', 'ask'],
@@ -2497,13 +2654,14 @@ describe('desktop environment port', () => {
       };
       const port = createDesktopEnvironmentPort(deps({ lineage }));
       mockInstruction.mockImplementation(
-        async (
-          _name: string,
-          params: { commandId: string; chatId: string },
-        ) => {
-          await depthOf(params.chatId);
+        async (_name: string, params: unknown): Promise<unknown> => {
+          const { commandId, chatId } = mockPayload<{
+            commandId: string;
+            chatId: string;
+          }>(params);
+          await depthOf(chatId);
           return {
-            commandId: params.commandId,
+            commandId,
             revision: 2,
             outcome: 'applied',
           };

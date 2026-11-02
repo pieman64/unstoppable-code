@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import { TurnResumeNotice } from '@canopy/ui-shared/components';
 
 export interface StoppedTurnResumeNoticeProps {
   /** Continues the stopped turn in the same provider session. */
@@ -22,22 +22,13 @@ export function StoppedTurnResumeNotice({
   error,
 }: StoppedTurnResumeNoticeProps): JSX.Element {
   return (
-    <Notice
-      intent={error ? 'attention' : 'neutral'}
+    <TurnResumeNotice
       title="Turn stopped"
+      message="Resume to continue where the agent left off."
+      resumeLabel="Resume"
+      onResume={onResume}
       data-testid="stopped-turn-resume"
-      {...(error ? { detail: error } : {})}
-      actions={
-        <NoticeButton
-          variant="primary"
-          onClick={onResume}
-          data-testid="stopped-turn-resume-button"
-        >
-          Resume
-        </NoticeButton>
-      }
-    >
-      Resume to continue where the agent left off.
-    </Notice>
+      {...(error ? { error } : {})}
+    />
   );
 }

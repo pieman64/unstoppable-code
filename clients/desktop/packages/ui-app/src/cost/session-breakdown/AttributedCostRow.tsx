@@ -31,7 +31,7 @@ function includedCostLabel(
   if (item.usd === undefined || item.costStatus === 'not_priced') {
     return unpricedCostItemLabel(item);
   }
-  if (parentCost === undefined) return 'Included in pipeline step cost';
+  if (parentCost === undefined) return 'Included in workflow step cost';
   return `${formatCostShare(item.usd, parentCost)} of chat turns`;
 }
 

@@ -9,6 +9,7 @@ import type {
   LedgerEntriesSearchResult,
   LedgerEntry,
   LedgerEntryType,
+  LedgerGlobalOwner,
   LedgerOrigin,
   LedgerPublishSummaryParams,
   LedgerScopeRef,
@@ -39,6 +40,7 @@ export type LedgerScopeLifecycleState =
 /** Operations that run as one `BEGIN IMMEDIATE` command transaction. */
 export type LedgerStoreOperation =
   | 'bindScope'
+  | 'bindGlobalScope'
   | 'registerActor'
   | 'addEntry'
   | 'updateEntry'
@@ -115,6 +117,20 @@ export interface LedgerBindScopeResult {
 export interface LedgerFindScopeInput {
   readonly container: LedgerContainer;
   readonly containerCreatedAt: string;
+}
+
+/**
+ * Identifies one global Ledger: an owner's, for one account. The account is
+ * part of the identity, so two accounts never share a global Ledger.
+ */
+export interface LedgerFindGlobalScopeInput {
+  readonly owner: LedgerGlobalOwner;
+  /** The signed-in account; null for signed-out use, its own Ledger. */
+  readonly accountId: string | null;
+}
+
+export interface LedgerBindGlobalScopeInput extends LedgerFindGlobalScopeInput {
+  readonly authorityId: string;
 }
 
 export interface LedgerSetScopeLifecycleInput {
@@ -397,14 +413,20 @@ export interface LedgerSetScopeRepairInput {
   readonly reason: LedgerSyncRepairReason | null;
 }
 
-/** A server-confirmed merge of a guest account into another account. */
+/**
+ * A server-confirmed merge of a guest account into another account. Signed-out
+ * use has no account, so a merge never moves it (LD02).
+ */
 export interface LedgerRebindAccountInput {
   readonly fromAccountId: string;
   readonly toAccountId: string;
 }
 
 export interface LedgerRebindAccountResult {
-  /** Scopes that were bound to `fromAccountId`. */
+  /**
+   * Scopes that were bound to `fromAccountId`. Global Ledgers count once each,
+   * whether their binding moved or gave way to the destination's.
+   */
   readonly rebound: number;
 }
 

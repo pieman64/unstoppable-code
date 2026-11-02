@@ -35,7 +35,14 @@ function context(): ExpressionContext {
     steps: {},
     needs: {},
     job: { is_retry: false, retry_count: 0, max_retries: 0 },
-    canopy: { event_name: 'dispatch', event: {} },
+    canopy: {
+      event_name: 'dispatch',
+      event: {},
+      project_id: '',
+      task_id: '',
+      owner: 'personal',
+      initiator: { kind: 'user' },
+    },
   };
 }
 

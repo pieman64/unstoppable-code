@@ -124,20 +124,29 @@ jest.mock('@/stores/panelLayoutStore', () => ({
     }),
   },
 }));
-jest.mock('@/lib/file-viewer/initial-view-mode', () => ({
-  initialFileTabViewMode: (): string => 'preview',
+jest.mock('@/lib/openFileInBrowserPanel', () => ({
+  get openFileInBrowserPanel(): typeof openFileInBrowserPanel {
+    return openFileInBrowserPanel;
+  },
 }));
-jest.mock('@/lib/openFileInBrowserPanel', () => ({ openFileInBrowserPanel }));
-jest.mock('@/lib/browserPanelActivation', () => ({ requestBrowserPanel }));
+jest.mock('@/lib/browserPanelActivation', () => ({
+  get requestBrowserPanel(): typeof requestBrowserPanel {
+    return requestBrowserPanel;
+  },
+}));
 jest.mock('@/lib/browserUrl', () => ({
   normalizeInAppBrowserInput: (url: string): string => url,
 }));
 jest.mock('@/lib/start-page/project-start-page', () => ({
   isHtmlStartPagePath: (path: string): boolean => path.endsWith('.html'),
-  resolveStartPageAbsolutePath,
+  get resolveStartPageAbsolutePath(): typeof resolveStartPageAbsolutePath {
+    return resolveStartPageAbsolutePath;
+  },
 }));
 jest.mock('../hydration-generation', () => ({
-  isPanelHydrationGenerationCurrent: refreshGeneration,
+  get isPanelHydrationGenerationCurrent(): typeof refreshGeneration {
+    return refreshGeneration;
+  },
 }));
 
 import { markStartPageSuppressed, maybeOpenStartPage } from '../start-page';
@@ -251,12 +260,9 @@ describe('maybeOpenStartPage', () => {
 
   it('opens a Markdown file first and keeps New Chat beside it', async () => {
     await openStartPage('project-1/worktree-1', 0, true);
+    // The store resolves the view, so a remembered Source choice can win.
     expect(openFileTab).toHaveBeenCalledWith(
-      {
-        absolutePath: '/repo/README.md',
-        filename: 'README.md',
-        initialViewMode: 'preview',
-      },
+      { absolutePath: '/repo/README.md', filename: 'README.md' },
       { projectId: 'project-1', worktreeId: 'worktree-1' },
     );
     expect(reorderTab).toHaveBeenCalledWith(

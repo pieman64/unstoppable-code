@@ -41,8 +41,8 @@ export function WorkflowsRunsTab({
     >
       {feed.error !== null && (
         <Notice intent="destructive" data-testid="workflows-runs-error">
-          Pipeline runs could not be loaded. Automation runs and watchers are
-          still listed.
+          On-demand workflow runs could not be loaded. Scheduled workflow runs
+          and watchers are still listed.
         </Notice>
       )}
       <WorkflowRunsList

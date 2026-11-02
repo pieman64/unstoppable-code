@@ -9,7 +9,10 @@ import {
   PickerMenuOptionLabel,
   Button,
   PickerTriggerChevron,
+  SearchField,
+  TextInput,
 } from '@canopy/ui-shared';
+import { HAIRLINE_INSET_RING_CLASS } from '@canopy/ui-shared/lib';
 import { searchFiles, type FileSearchResult } from '@/lib/fuzzySearch';
 import {
   isHttpStartPageUrl,
@@ -26,6 +29,11 @@ interface StartPageSettingControlProps {
   onChange: (value: StartPageSettingValue) => void;
   onValidityChange?: (isValid: boolean) => void;
   allowUseTeamSetting?: boolean;
+  /**
+   * `card` frames the setting with its own title. `row` is a settings row,
+   * label leading and the picker trailing, for a page that groups rows.
+   */
+  layout?: 'card' | 'row';
 }
 
 type Choice = 'team' | 'chat' | 'file' | 'url';
@@ -54,6 +62,7 @@ export function StartPageSettingControl({
   onChange,
   onValidityChange,
   allowUseTeamSetting = false,
+  layout = 'card',
 }: StartPageSettingControlProps): JSX.Element {
   const [choice, setChoice] = useState<Choice>(() =>
     choiceFor(value, allowUseTeamSetting),
@@ -147,32 +156,45 @@ export function StartPageSettingControl({
     : ['chat', 'file', 'url'];
 
   return (
-    <div className="rounded-lg border p-4" data-testid="start-page-setting">
-      <div className="text-s font-medium fg-primary">Start page</div>
-      <div className="mt-1 text-xs fg-secondary">
-        Choose what opens first in each new work area.
+    <div
+      className={layout === 'row' ? 'flex flex-col' : 'rounded-lg border p-4'}
+      data-testid="start-page-setting"
+    >
+      {/* One settings row in both layouts: the label and its explanation
+          leading, the 144px dropdown trailing. The card frames that row for
+          a dialog of cards. */}
+      <div className="flex min-h-10 items-center justify-between gap-6">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <label
+            className="block text-s font-medium fg-primary"
+            htmlFor="start-page-choice"
+          >
+            {layout === 'row' ? 'Open on start' : 'Start page'}
+          </label>
+          <div className="text-xs text-pretty fg-secondary">
+            {layout === 'row'
+              ? 'The first tab in each new worktree.'
+              : 'Choose what opens first in each new work area.'}
+          </div>
+        </div>
+        <Button
+          ref={choiceTriggerRef}
+          id="start-page-choice"
+          variant="secondary"
+          size="compact"
+          className="w-36"
+          onClick={() => setChoiceOpen((open) => !open)}
+          aria-haspopup="listbox"
+          aria-expanded={choiceOpen}
+          aria-controls={choiceOpen ? choiceMenuId : undefined}
+          data-testid="start-page-choice-trigger"
+        >
+          <span className="min-w-0 flex-1 truncate text-left">
+            {CHOICE_LABELS[choice]}
+          </span>
+          <PickerTriggerChevron open={choiceOpen} variant="capsule" />
+        </Button>
       </div>
-      <label
-        className="mt-4 block text-xs font-medium fg-secondary"
-        htmlFor="start-page-choice"
-      >
-        Open on start
-      </label>
-      <Button
-        ref={choiceTriggerRef}
-        id="start-page-choice"
-        variant="secondary"
-        size="compact"
-        className="mt-1 w-full"
-        onClick={() => setChoiceOpen((open) => !open)}
-        aria-haspopup="listbox"
-        aria-expanded={choiceOpen}
-        aria-controls={choiceOpen ? choiceMenuId : undefined}
-        data-testid="start-page-choice-trigger"
-      >
-        <span className="min-w-0 flex-1 truncate">{CHOICE_LABELS[choice]}</span>
-        <PickerTriggerChevron open={choiceOpen} variant="capsule" />
-      </Button>
       <FloatingPickerMenu
         id={choiceMenuId}
         open={choiceOpen}
@@ -204,42 +226,47 @@ export function StartPageSettingControl({
       </FloatingPickerMenu>
 
       {choice === 'file' && (
-        <div className="mt-3">
-          <input
+        <div className="mt-3 space-y-1.5">
+          <SearchField
+            size="sm"
             aria-label="Find a start page file"
             value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              onValidityChange?.(
-                value?.kind === 'file' && event.target.value === value.path,
-              );
+            onValueChange={(next) => {
+              setQuery(next);
+              onValidityChange?.(value?.kind === 'file' && next === value.path);
             }}
             placeholder="Find a file"
-            className="w-full rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary outline-none"
           />
-          <div className="mt-1 max-h-44 overflow-y-auto rounded-lg border">
-            {files.map((file) => (
-              <button
-                key={`${file.repoId}:${file.relativePath}`}
-                type="button"
-                className="block w-full truncate px-3 py-2 text-left text-xs fg-primary hover:bg-secondary"
-                onClick={() => chooseFile(file)}
-              >
-                {projectType === 'multi-repo'
-                  ? `${file.repoName} / ${file.relativePath}`
-                  : file.relativePath}
-              </button>
-            ))}
-          </div>
+          {files.length > 0 && (
+            <div
+              className={`max-h-44 overflow-y-auto rounded-lg p-1 ${HAIRLINE_INSET_RING_CLASS} ring-line-base`}
+            >
+              {files.map((file) => (
+                <PickerMenuOption
+                  key={`${file.repoId}:${file.relativePath}`}
+                  onClick={() => chooseFile(file)}
+                >
+                  <PickerMenuOptionContent>
+                    <PickerMenuOptionLabel>
+                      {projectType === 'multi-repo'
+                        ? `${file.repoName} / ${file.relativePath}`
+                        : file.relativePath}
+                    </PickerMenuOptionLabel>
+                  </PickerMenuOptionContent>
+                </PickerMenuOption>
+              ))}
+            </div>
+          )}
           {(loadFailed || !selectedFileExists) && (
-            <p className="mt-2 text-xs text-warning">File not found</p>
+            <p className="text-xs fg-warning">File not found</p>
           )}
         </div>
       )}
 
       {choice === 'url' && (
-        <div className="mt-3 flex gap-2">
-          <input
+        <div className="mt-3 flex items-center gap-2">
+          <TextInput
+            density="settings"
             aria-label="Start page URL"
             value={url}
             onChange={(event) => {
@@ -251,16 +278,16 @@ export function StartPageSettingControl({
             }}
             onBlur={applyUrl}
             placeholder="https://example.com"
-            className="min-w-0 flex-1 rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary outline-none"
+            className="min-w-0 flex-1"
           />
-          <button
-            type="button"
+          <Button
+            size="compact"
+            variant="secondary"
             disabled={!isHttpStartPageUrl(url)}
             onClick={applyUrl}
-            className="rounded-lg border px-3 py-2 text-xs fg-primary disabled:opacity-50"
           >
             Use
-          </button>
+          </Button>
         </div>
       )}
 

@@ -25,13 +25,21 @@ const mockListPipelines = jest.fn();
 const mockDiscoverProjectPipelines = jest.fn();
 
 jest.mock('../pipelines/pipeline-service', () => ({
-  getPipelineText: mockGetPipelineText,
-  getPipelinePath: mockGetPipelinePath,
-  listPipelines: mockListPipelines,
+  get getPipelineText(): typeof mockGetPipelineText {
+    return mockGetPipelineText;
+  },
+  get getPipelinePath(): typeof mockGetPipelinePath {
+    return mockGetPipelinePath;
+  },
+  get listPipelines(): typeof mockListPipelines {
+    return mockListPipelines;
+  },
 }));
 
 jest.mock('../pipelines/project-pipeline-discovery', () => ({
-  discoverProjectPipelines: mockDiscoverProjectPipelines,
+  get discoverProjectPipelines(): typeof mockDiscoverProjectPipelines {
+    return mockDiscoverProjectPipelines;
+  },
 }));
 
 jest.mock('../lib/resolve-worktree', () => ({
@@ -72,7 +80,7 @@ describe('readWorktreePipelineYaml', () => {
     check.mockImplementation(
       (_id, projectId): Promise<void> =>
         projectId === 'personal'
-          ? Promise.reject(new Error('Pipeline unavailable (context-mismatch)'))
+          ? Promise.reject(new Error('Workflow unavailable (context-mismatch)'))
           : Promise.resolve(),
     );
     try {
@@ -105,7 +113,7 @@ describe('readWorktreePipelineYaml', () => {
         },
       ]);
       mockAuthorizeProject.mockRejectedValue(
-        new Error('Pipeline unavailable (context-mismatch)'),
+        new Error('Workflow unavailable (context-mismatch)'),
       );
       const result = await readWorktreePipelineYaml({
         projectId: 'project-1',

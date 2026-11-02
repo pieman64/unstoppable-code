@@ -11,8 +11,8 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   getCodeGraphBaseVariantDir,
   prepareCodeGraphBaseStaging,
-} from '@canopy/desktop-shared/node/code-graph/base-graph';
-import { fingerprintCustomLanguageInputs } from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+} from '@canopy/code-graph/base-graph';
+import { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import { executeCodeGraphBuild } from '../code-graph/build-worker';

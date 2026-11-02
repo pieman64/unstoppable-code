@@ -1,9 +1,11 @@
 import {
   ORGANIZATION_SETTINGS_NAV_TABS,
+  ORGANIZATION_SETTINGS_SUBTABS,
   settingsBootstrapHasOrganization,
   settingsRouteToPath,
   type OrganizationSettingsNavModel,
   type OrganizationSettingsNavTab,
+  type OrganizationSettingsSubtab,
   type SettingsBootstrap,
   type SettingsNavModel,
   type SettingsRoute,
@@ -103,6 +105,11 @@ export interface PersistedOrganizationSettingsNav {
   readonly visibleTabs: readonly OrganizationSettingsNavTab[];
   readonly disabledTabs: readonly OrganizationSettingsNavTab[];
   readonly billingNeedsAttention: boolean;
+  /**
+   * The Settings pages the viewer got, so the rail draws them as rows before
+   * the bootstrap confirms. Absent in entries written before they were rows.
+   */
+  readonly settingsSubtabs?: readonly OrganizationSettingsSubtab[];
 }
 
 /** The rail-relevant feature flags from the renderer's flag snapshot. */
@@ -128,6 +135,12 @@ function parseTabs(value: unknown): OrganizationSettingsNavTab[] | null {
   return value.filter(isOrganizationNavTab);
 }
 
+function isOrganizationSettingsSubtab(
+  value: unknown,
+): value is OrganizationSettingsSubtab {
+  return ORGANIZATION_SETTINGS_SUBTABS.some((subtab) => subtab === value);
+}
+
 function parsePersistedOrganization(
   value: unknown,
 ): PersistedOrganizationSettingsNav | null {
@@ -135,10 +148,14 @@ function parsePersistedOrganization(
   const visibleTabs = parseTabs(value.visibleTabs);
   const disabledTabs = parseTabs(value.disabledTabs);
   if (visibleTabs === null || disabledTabs === null) return null;
+  const settingsSubtabs = Array.isArray(value.settingsSubtabs)
+    ? value.settingsSubtabs.filter(isOrganizationSettingsSubtab)
+    : undefined;
   return {
     visibleTabs,
     disabledTabs,
     billingNeedsAttention: value.billingNeedsAttention === true,
+    ...(settingsSubtabs === undefined ? {} : { settingsSubtabs }),
   };
 }
 
@@ -208,6 +225,9 @@ export function persistedSettingsNavModelFrom(
       visibleTabs: requested.visibleTabs.filter(isOrganizationNavTab),
       disabledTabs: requested.disabledTabs.filter(isOrganizationNavTab),
       billingNeedsAttention: requested.billingNeedsAttention,
+      settingsSubtabs:
+        settingsNavModelFromBootstrap(bootstrap, requested.id).organization
+          ?.settingsSubtabs ?? [],
     };
   return {
     accountId,
@@ -262,6 +282,9 @@ export function hostedSettingsNavFallback({
           visibleTabs: [...remembered.visibleTabs],
           disabledTabs: [...remembered.disabledTabs],
           billingNeedsAttention: remembered.billingNeedsAttention,
+          ...(remembered.settingsSubtabs === undefined
+            ? {}
+            : { settingsSubtabs: [...remembered.settingsSubtabs] }),
         };
   return {
     account: {

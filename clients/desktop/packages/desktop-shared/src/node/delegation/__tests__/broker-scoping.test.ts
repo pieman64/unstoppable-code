@@ -1,7 +1,4 @@
-import {
-  DELEGATION_NOT_DESCENDANT_ERROR,
-  type WatchDelegatesValue,
-} from '@canopy/protocol/delegation';
+import { DELEGATION_NOT_DESCENDANT_ERROR } from '@canopy/protocol/delegation';
 import type { AgentDelegationBroker } from '../broker';
 import { createDelegationProjection } from '../projections';
 import type { DelegationParentContext } from '../types';
@@ -92,26 +89,6 @@ const otherChat: DelegationParentContext = {
   sessionKey: 'project/worktree/other-chat',
 };
 
-function watchHarness(): BrokerHarness & { registerWatch: jest.Mock } {
-  const registerWatch = jest.fn(
-    (
-      _parent: DelegationParentContext,
-      request: { mode: 'any' | 'all' },
-      targets: readonly { delegationId: string; runGeneration: number }[],
-    ): Promise<{ ok: true; value: WatchDelegatesValue }> =>
-      Promise.resolve({
-        ok: true,
-        value: {
-          watcherId: 'watcher-1',
-          mode: request.mode,
-          deadlineAt: 0,
-          targets,
-        },
-      }),
-  );
-  return { ...createBrokerHarness({ registerWatch }), registerWatch };
-}
-
 describe('delegation access is scoped to the caller’s descendants', () => {
   it('allows every descendant and denies sibling, parent, grandparent, self and other chats at each depth', async () => {
     const harness = createBrokerHarness();
@@ -161,14 +138,14 @@ describe('delegation access is scoped to the caller’s descendants', () => {
           ]);
           expect([
             name,
-            broker.getOutput(caller, { delegationId: id }),
+            await broker.getOutput(caller, { delegationId: id }),
           ]).toEqual([name, expect.objectContaining({ ok: true })]);
         }
         for (const id of denied) {
           expect([name, broker.inspect(caller, id)]).toEqual([name, undefined]);
           expect([
             name,
-            broker.getOutput(caller, { delegationId: id }),
+            await broker.getOutput(caller, { delegationId: id }),
           ]).toEqual([
             name,
             { ok: false, error: DELEGATION_NOT_DESCENDANT_ERROR },
@@ -184,7 +161,9 @@ describe('delegation access is scoped to the caller’s descendants', () => {
       // Another chat sees nothing, even from the root.
       expect(broker.inspect(otherChat, tree.a)).toBeUndefined();
       expect(broker.list(otherChat)).toEqual([]);
-      expect(broker.getOutput(otherChat, { delegationId: tree.a })).toEqual({
+      expect(
+        await broker.getOutput(otherChat, { delegationId: tree.a }),
+      ).toEqual({
         ok: false,
         error: DELEGATION_NOT_DESCENDANT_ERROR,
       });
@@ -231,7 +210,7 @@ describe('delegation access is scoped to the caller’s descendants', () => {
       });
       await flushBroker();
       expect(
-        broker.getOutput(tree.ctxC, { delegationId: tree.d }),
+        await broker.getOutput(tree.ctxC, { delegationId: tree.d }),
       ).toMatchObject({
         ok: true,
         value: { result: { status: 'completed', finalText: 'D finished.' } },
@@ -242,28 +221,13 @@ describe('delegation access is scoped to the caller’s descendants', () => {
   });
 });
 
-describe('Watch Delegates and Get Delegate Output reach every descendant', () => {
-  it('watches and reads grandchildren and deeper descendants', async () => {
-    const harness = watchHarness();
-    const { broker, runner, registerWatch } = harness;
+describe('Get Delegate Output reaches every descendant', () => {
+  it('reads grandchildren and deeper descendants', async () => {
+    const harness = createBrokerHarness();
+    const { broker, runner } = harness;
     await broker.initialize();
     try {
       const tree = await buildTree(harness);
-      await expect(
-        broker.watch(tree.ctxA, {
-          delegationIds: [tree.c, tree.d],
-          mode: 'all',
-          timeoutMs: 60_000,
-        }),
-      ).resolves.toMatchObject({ ok: true });
-      await expect(
-        broker.watch(rootParent, {
-          delegationIds: [tree.d],
-          mode: 'any',
-          timeoutMs: 60_000,
-        }),
-      ).resolves.toMatchObject({ ok: true });
-      expect(registerWatch).toHaveBeenCalledTimes(2);
       await emit(runner, tree.d, 100, {
         type: 'terminal',
         status: 'completed',
@@ -271,7 +235,7 @@ describe('Watch Delegates and Get Delegate Output reach every descendant', () =>
       });
       await flushBroker();
       expect(
-        broker.getOutput(tree.ctxA, { delegationId: tree.d }),
+        await broker.getOutput(tree.ctxA, { delegationId: tree.d }),
       ).toMatchObject({
         ok: true,
         value: { result: { finalText: 'Deep result.' } },
@@ -283,9 +247,9 @@ describe('Watch Delegates and Get Delegate Output reach every descendant', () =>
 });
 
 describe('one denial for a delegation outside the caller’s subtree', () => {
-  it('returns the same error from Inspect, Get Delegate Output, Stop, Message, Watch and List', async () => {
-    const harness = watchHarness();
-    const { broker, runner, registerWatch } = harness;
+  it('returns the same error from Inspect, Get Delegate Output, Stop, Message and List', async () => {
+    const harness = createBrokerHarness();
+    const { broker, runner } = harness;
     await broker.initialize();
     try {
       const tree = await buildTree(harness);
@@ -301,14 +265,6 @@ describe('one denial for a delegation outside the caller’s subtree', () => {
         [
           'test_message_delegate',
           { delegationId: tree.b2, operation: 'steer', message: 'Stop now.' },
-        ],
-        [
-          'test_watch_delegates',
-          { delegationIds: [tree.b2], mode: 'any', timeoutMs: 1_000 },
-        ],
-        [
-          'test_watch_delegates',
-          { delegationIds: [tree.c, tree.a], mode: 'all', timeoutMs: 1_000 },
         ],
         ['test_list_delegates', { underDelegationId: tree.b2 }],
         ['test_list_delegates', { underDelegationId: tree.a }],
@@ -330,7 +286,6 @@ describe('one denial for a delegation outside the caller’s subtree', () => {
         ]);
       }
       expect(runner.stopped).not.toContain(tree.b2);
-      expect(registerWatch).not.toHaveBeenCalled();
       expect(broker.inspect(rootParent, tree.b2)?.status).toBe('pending');
       // Unknown IDs are denied the same way by Inspect.
       await expect(

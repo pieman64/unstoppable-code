@@ -36,8 +36,9 @@ const LINK_CLICK_CHANNEL = 'e2e:link-context-menu-click';
 const GIT_SETTINGS_LINK =
   'https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches';
 const LINK_ITEMS = ['Copy link', 'Open in browser', 'Open in external browser'];
-// Without a selection the menu offers only the whole-message copies.
-const COPY_ITEMS = ['Copy message', 'Copy as Markdown'];
+// Copy selection follows the link section, disabled without a selection
+// (CAN-4870).
+const COPY_ITEMS = ['Copy selection'];
 
 async function linkMenuRecord(electronApp) {
   return electronApp.evaluate(
@@ -93,9 +94,12 @@ function browserTabs(window) {
 
 async function expectBrowserShowing(window, url) {
   await expect(browserTabs(window).first()).toBeVisible({ timeout: 20_000 });
-  await expect(
-    window.locator('[data-testid="browser-url-input"]:visible').first(),
-  ).toHaveValue(url, { timeout: 20_000 });
+  const address = window
+    .locator('[data-testid="browser-url-input"]:visible')
+    .first();
+  await address.focus();
+  await expect(address).toHaveValue(url, { timeout: 20_000 });
+  await address.blur();
 }
 
 async function launchLinkChat(slug, capture) {
@@ -150,6 +154,14 @@ test.describe('link context menu (CAN-2632)', () => {
         ...LINK_ITEMS,
         ...COPY_ITEMS,
       ]);
+      // One divider between the link section and Copy selection, which stays
+      // disabled while Copy link works without a selection.
+      await expect(
+        window.getByTestId('chat-message-context-menu').getByRole('separator'),
+      ).toHaveCount(1);
+      await expect(
+        window.getByTestId('chat-message-copy-selection'),
+      ).toBeDisabled();
       await clearClipboard(electronApp);
       await window.getByTestId('chat-message-copy-link').click();
       await expect.poll(() => readClipboardText(electronApp)).toBe(LINK_URL);

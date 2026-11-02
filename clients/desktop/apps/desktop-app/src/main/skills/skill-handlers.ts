@@ -2,6 +2,7 @@ import {
   annotateSharedSkillInstalls,
   assertStoredSkillContext,
   filterStoredSkillContexts,
+  getSharedSkillWithInstallState,
 } from './skill-install-context';
 import {
   toShareOperationResult,
@@ -46,7 +47,6 @@ import { listDesktopPublisherSkills } from './publisher-marketplace';
 import {
   createSharedSkill,
   deleteSharedSkill,
-  getSharedSkill,
   listSharedSkills,
   publishSkillPublicShare,
   revokeSkillPublicShare,
@@ -134,7 +134,7 @@ export function registerSkillHandlers(): void {
     async (_event, sourceId: string, skillName: string) => {
       await assertStoredSkillContext(`${sourceId}/${skillName}`);
       return refreshAfterSuccess('skills:remove', () =>
-        service.removeSkill(sourceId, skillName),
+        service.removeSkillForContext(sourceId, skillName),
       );
     },
   );
@@ -200,7 +200,7 @@ export function registerSkillHandlers(): void {
     SKILLS_CHANNELS.SHARED_GET,
     async (_event, skillId: string) => {
       await assertSkillsSupported();
-      return getSharedSkill(skillId);
+      return getSharedSkillWithInstallState(skillId);
     },
   );
   registerIpcHandler(

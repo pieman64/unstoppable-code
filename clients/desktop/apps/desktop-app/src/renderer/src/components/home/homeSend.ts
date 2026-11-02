@@ -1,3 +1,4 @@
+import { notifyAcceptedWorktreeTurn } from '../onboarding-tips/homeSendEvents';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { isCursorModel } from '@canopy/desktop-shared/lib/cursor-models';
@@ -5,8 +6,10 @@ import type {
   AttachmentMeta,
   BranchEntry,
   ChatAttachmentPromptContext,
+  ChatModel,
   ChatTabPluginSelections,
   FileReference,
+  ModelHarness,
   SidebarItem,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
@@ -29,6 +32,12 @@ import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { showAutomationCreatedToast } from '@/lib/automationToasts';
 import { ensureWorktreePanelLayout } from '@/lib/panels/persistence-bridge';
 import { useChatStore } from '@/stores/chatStore';
+import { useGitHubStore } from '@/stores/githubStore';
+import { nextMsgId } from '@/stores/chat/ids';
+import type { ChatTab } from '@/stores/chat/types';
+import { isTabAiCreditsRouted } from '@/stores/chat/tab-utils';
+import { provisionalFirstSendAttemptId } from '@/stores/chat/provisional-first-send';
+import { loadChatMessageListModule } from '@/components/chat/chatMessageListChunk';
 import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
 import {
   useProjectsStore,
@@ -72,8 +81,18 @@ import {
   type HomeLinkSendGate,
 } from './homeLinkTargetSync';
 import { homeLinkScopeKey } from './homeLinkTargetHost';
+import {
+  cachedHomeModelRefusal,
+  preflightHomeModel,
+  type HomeModelPreflightResult,
+} from './homeModelPreflight';
+import {
+  homeModelDisplayLabel,
+  homeModelFailureMessage,
+} from './homeModelFailureCopy';
 
 let linkSubmissionController: AbortController | null = null;
+let activeHomeSubmissionId: string | null = null;
 
 export function cancelHomeLinkSubmission(): void {
   const target = useHomeComposerStore.getState().linkTarget;
@@ -366,6 +385,29 @@ function findWorkspace(workspaceId: string): SidebarItem | undefined {
     .projects.find((candidate) => candidate.id === workspaceId);
 }
 
+function findLiveWorktree(
+  workspaceId: string,
+  worktreeId: string,
+): WorktreeData | undefined {
+  const workspace = findWorkspace(workspaceId);
+  if (!workspace || workspace.type === 'cowork') return undefined;
+  return workspace.worktrees.find((worktree) => worktree.id === worktreeId);
+}
+
+/**
+ * Whether a send to this worktree will wait in the setup queue. A concurrent
+ * refresh can briefly drop a just-reserved row, so its absence falls back to
+ * the phase the caller last observed rather than reading as ready.
+ */
+function isWorktreeSetupPending(
+  workspaceId: string,
+  worktreeId: string,
+  fallbackPhase?: WorktreeData['setupPhase'],
+): boolean {
+  const live = findLiveWorktree(workspaceId, worktreeId);
+  return (live ? live.setupPhase : fallbackPhase) === 'git-pending';
+}
+
 /**
  * Maps a Home draft's `branchTarget` (plus the selected workspace and the
  * loaded branch list) to the `task_ready` pipeline launcher's target shape
@@ -506,6 +548,12 @@ export async function dispatchHomeSend(): Promise<boolean> {
   ) {
     return false;
   }
+  const submissionIdentity = {
+    userMessageId: nextMsgId(),
+    submittedAt: Date.now(),
+  };
+
+  activeHomeSubmissionId = submissionIdentity.userMessageId;
 
   // CAN-3606: link-aware routing runs before any Cowork decision. A pending,
   // blocked, or failed link destination stops here with the draft intact; it
@@ -528,8 +576,19 @@ export async function dispatchHomeSend(): Promise<boolean> {
   } else {
     gate = quickGate;
   }
-  if (gate.kind === 'none')
-    return dispatchHomeSendTo(draft, null, submittedAccountEpoch);
+  if (gate.kind === 'none') {
+    const modelSettings = await prepareHomeModelSubmission(
+      draft,
+      draft.workspaceId,
+      submittedAccountEpoch,
+      submissionIdentity.userMessageId,
+    );
+    if (!modelSettings) return false;
+    return dispatchHomeSendTo(draft, null, submittedAccountEpoch, {
+      ...submissionIdentity,
+      modelSettings,
+    });
+  }
   if (gate.kind === 'stop') {
     useHomeComposerStore.setState({
       sendError: gate.message,
@@ -590,10 +649,22 @@ export async function dispatchHomeSend(): Promise<boolean> {
     });
   };
 
+  showProgress('Preparing worktree…');
+  const modelSettings = await prepareHomeModelSubmission(
+    draft,
+    plan.kind === 'create-project' ? draft.workspaceId : plan.workspaceId,
+    submittedAccountEpoch,
+    submissionIdentity.userMessageId,
+  );
+  if (!modelSettings) {
+    restorePreview();
+    return false;
+  }
   useHomeComposerStore.setState({
     isSending: true,
     sendError: null,
     sendErrorRetryable: false,
+    sendErrorChooseModel: null,
   });
   showProgress('Preparing worktree…');
   const controller = new AbortController();
@@ -688,12 +759,130 @@ export async function dispatchHomeSend(): Promise<boolean> {
         linearIssue: plan.linearIssue,
       },
       submittedAccountEpoch,
+      { ...submissionIdentity, modelSettings },
     );
     if (!sent) restorePreview();
     return sent;
   } finally {
     cleanup();
   }
+}
+
+interface HomeSendChatTarget {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}
+
+interface FirstSendModelSelection {
+  model: ChatModel;
+  executionHarness?: ModelHarness;
+  aiCreditsRouted?: boolean;
+}
+
+/** A Home first send whose model was refused after its chat opened. */
+interface FailedFirstSendRetry {
+  userMessageId: string;
+  failureId: string;
+  attempted: FirstSendModelSelection;
+  /** The chat's model when it failed; a change since is an accepted pick. */
+  tabModelAtFailure: ChatModel | undefined;
+  tabHarnessAtFailure: ModelHarness | undefined;
+  /** Resumes the submission's preparation in place under a new attempt. */
+  resume: (
+    attemptId: string,
+    selection: FirstSendModelSelection,
+  ) => Promise<boolean>;
+}
+
+// Session-local, like the provisional echo it recovers; never persisted.
+const failedFirstSends = new Map<string, FailedFirstSendRetry>();
+
+function chatTargetKey(target: HomeSendChatTarget): string {
+  return `${target.projectId}/${target.worktreeId}/${target.chatId}`;
+}
+
+function findChatTab(target: HomeSendChatTarget): ChatTab | undefined {
+  return useChatStore
+    .getState()
+    .worktreeChats[
+      `${target.projectId}/${target.worktreeId}`
+    ]?.tabs.find((tab) => tab.id === target.chatId);
+}
+
+/** Whether the user is looking at this chat right now. */
+function isChatTargetInView(target: HomeSendChatTarget): boolean {
+  if (useNavigationStore.getState().activePage !== 'main') return false;
+  const { selectedWorktree, worktreeChats } = useChatStore.getState();
+  return (
+    selectedWorktree?.projectId === target.projectId &&
+    selectedWorktree.worktreeId === target.worktreeId &&
+    worktreeChats[`${target.projectId}/${target.worktreeId}`]?.activeTabId ===
+      target.chatId
+  );
+}
+
+/**
+ * CAN-5021: sends a Home first send whose model was refused again, exactly
+ * once, to the chat that shows it. It keeps the message id, timestamp,
+ * attachments and mentions, and uses the model accepted in that chat's picker
+ * since the failure, or else the attempted one. It never creates another chat
+ * or worktree. Returns whether the send was handed to dispatch.
+ */
+export async function retryFailedFirstSend(
+  target: HomeSendChatTarget,
+): Promise<boolean> {
+  const key = chatTargetKey(target);
+  const retry = failedFirstSends.get(key);
+  const tab = findChatTab(target);
+  const record = tab?.provisionalFirstSend;
+  if (
+    !retry ||
+    !tab ||
+    useChatStore.getState().pendingModelChanges[key] !== undefined ||
+    record?.phase !== 'failed' ||
+    record.userMessageId !== retry.userMessageId ||
+    record.failure?.failureId !== retry.failureId
+  )
+    return false;
+  // Opening or cancelling the picker leaves the attempted model in place.
+  const selection: FirstSendModelSelection =
+    record.failure.recoveryModelSelectionAccepted ||
+    tab.model !== retry.tabModelAtFailure ||
+    tab.executionHarness !== retry.tabHarnessAtFailure
+      ? {
+          model: tab.model ?? retry.attempted.model,
+          ...(tab.executionHarness
+            ? { executionHarness: tab.executionHarness }
+            : {}),
+        }
+      : retry.attempted;
+  selection.aiCreditsRouted = isTabAiCreditsRouted(tab);
+  const attemptId = nextMsgId();
+  if (
+    !useChatStore.getState().retryProvisionalFirstSend(target, {
+      userMessageId: retry.userMessageId,
+      failureId: retry.failureId,
+      attemptId,
+    })
+  )
+    return false;
+  failedFirstSends.delete(key);
+  return retry.resume(attemptId, selection);
+}
+
+/** True when the submitted draft, its model, and its destination are unchanged. */
+function isSubmittedHomeSelectionCurrent(
+  draft: ReturnType<typeof useHomeComposerStore.getState>,
+): boolean {
+  const current = useHomeComposerStore.getState();
+  return (
+    isSubmittedHomeDraftCurrent(draft) &&
+    current.model === draft.model &&
+    current.executionHarness === draft.executionHarness &&
+    current.branchTarget === draft.branchTarget &&
+    current.newWorktreeBaseTarget === draft.newWorktreeBaseTarget
+  );
 }
 
 /** A link-materialized destination that overrides the draft's selection. */
@@ -705,19 +894,138 @@ interface HomeSendDestination {
   linearIssue?: HomeLinkIssueContext;
 }
 
+async function prepareHomeModelSubmission(
+  draft: ReturnType<typeof useHomeComposerStore.getState>,
+  workspaceId: string | null,
+  submittedAccountEpoch: number,
+  submissionId: string,
+): Promise<ReturnType<typeof resolveHomeEffectiveModelSettings> | null> {
+  const settings = resolveHomeEffectiveModelSettings(
+    draft.workspaceId,
+    draft.model,
+    draft.thinkingLevel,
+    draft.executionHarness,
+  );
+  const { model } = settings;
+  const revision = draft.draftGeneration;
+  const scopeKey = homeLinkScopeKey();
+  useHomeComposerStore.setState({
+    isSending: true,
+    sendError: null,
+    sendErrorRetryable: false,
+    sendErrorChooseModel: null,
+  });
+  const cursorRuntimeAvailable =
+    !isCursorModel(model) || (await isCursorRuntimeAvailable());
+  if (
+    !isHomeSendAccountCurrent(submittedAccountEpoch) ||
+    activeHomeSubmissionId !== submissionId
+  )
+    return null;
+  if (!cursorRuntimeAvailable) {
+    // A stale Cursor selection must fail before any worktree, chat, or prompt
+    // state exists; the draft stays intact for a retry or a model change.
+    useHomeComposerStore.setState({
+      isSending: false,
+      sendError: useFeatureFlagsStore
+        .getState()
+        .isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key)
+        ? 'Connect Cursor in Settings to send with Cursor, or choose another model.'
+        : 'This Cursor model is unavailable. Choose another Cursor model and try again.',
+    });
+    return null;
+  }
+  if (draft.scheduledSendDraft && isCursorModel(model)) {
+    useHomeComposerStore.setState({
+      isSending: false,
+      sendError:
+        'Cursor currently supports interactive chats only. Choose another model to schedule this message.',
+    });
+    return null;
+  }
+  const submittedModelSelection: FirstSendModelSelection = {
+    model,
+    ...(draft.executionHarness
+      ? { executionHarness: draft.executionHarness }
+      : {}),
+  };
+  // CAN-5021: a model already known to be refused stops here, before any
+  // worktree, chat, or echo exists, with the whole draft intact. Unknown
+  // facts pass; main still decides.
+  const preflight = await preflightHomeModel(
+    workspaceId,
+    submittedModelSelection,
+  );
+  if (
+    !isHomeSendAccountCurrent(submittedAccountEpoch) ||
+    activeHomeSubmissionId !== submissionId
+  )
+    return null;
+  if (
+    !isSubmittedHomeSelectionCurrent(draft) ||
+    homeLinkScopeKey() !== scopeKey ||
+    useHomeComposerStore.getState().draftGeneration !== revision ||
+    resolveHomeEffectiveModelSettings(
+      draft.workspaceId,
+      draft.model,
+      draft.thinkingLevel,
+      draft.executionHarness,
+    ).model !== model
+  ) {
+    useHomeComposerStore.setState({ isSending: false });
+    return null;
+  }
+  if (!preflight.ok) {
+    const message = homeModelFailureMessage(
+      preflight.reason,
+      preflight.modelLabel,
+    );
+    useHomeComposerStore.setState({
+      isSending: false,
+      sendError: message,
+      sendErrorRetryable: false,
+      sendErrorChooseModel: {
+        failureId: crypto.randomUUID(),
+        message,
+        focus: true,
+      },
+    });
+    return null;
+  }
+  return settings;
+}
+
 async function dispatchHomeSendTo(
   draft: ReturnType<typeof useHomeComposerStore.getState>,
   destination: HomeSendDestination | null,
   submittedAccountEpoch: number,
+  submissionIdentity: {
+    userMessageId: string;
+    submittedAt: number;
+    modelSettings: ReturnType<typeof resolveHomeEffectiveModelSettings>;
+  },
 ): Promise<boolean> {
+  let clearedSubmittedDraft: ReturnType<
+    typeof useHomeComposerStore.getState
+  > | null = null;
+  function ownsHomeSubmission(): boolean {
+    return activeHomeSubmissionId === submissionIdentity.userMessageId;
+  }
   function completeSubmittedDraft(): void {
-    if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return;
+    if (
+      !isHomeSendAccountCurrent(submittedAccountEpoch) ||
+      !ownsHomeSubmission()
+    )
+      return;
     const store = useHomeComposerStore.getState();
     if (isSubmittedHomeDraftCurrent(draft)) {
       store.reset();
+      clearedSubmittedDraft = useHomeComposerStore.getState();
       return;
     }
-    useHomeComposerStore.setState({ isSending: false });
+    // A retry from the failed chat never owns Home's sending state.
+    if (!resumedByRetry && ownsHomeSubmission())
+      useHomeComposerStore.setState({ isSending: false });
     const submittedContentNonEmpty =
       draft.text !== '' || draft.fileReferences.length > 0;
     if (
@@ -725,6 +1033,7 @@ async function dispatchHomeSendTo(
       composerDraftContentEquals(useHomeComposerStore.getState(), draft)
     ) {
       store.clearSubmittedDraft();
+      clearedSubmittedDraft = useHomeComposerStore.getState();
     }
   }
   const workspaceId = destination?.workspaceId ?? draft.workspaceId;
@@ -736,10 +1045,32 @@ async function dispatchHomeSendTo(
   const draftNewWorktreeBaseTarget =
     destination === null ? draft.newWorktreeBaseTarget : null;
 
+  const hasInitialMessage =
+    draft.text.trim().length > 0 || draft.attachments.length > 0;
+  // A blank submission creates a work area immediately. Its schedule is
+  // carried into the new composer as a draft, without creating an automation.
+  const scheduledSendDraft = hasInitialMessage
+    ? draft.scheduledSendDraft
+    : null;
+  // CAN-4742: an immediate send is echoed in its destination chat before
+  // navigation, under this identity; `sendMessage` adopts it at dispatch.
+  const firstSend =
+    hasInitialMessage && !scheduledSendDraft
+      ? {
+          ...submissionIdentity,
+          text: draft.text,
+          fileReferences: draft.fileReferences,
+          attachmentPaths: draft.attachments.map(
+            (attachment) => attachment.absolutePath,
+          ),
+        }
+      : null;
+
   useHomeComposerStore.setState({
     isSending: true,
     sendError: null,
     sendErrorRetryable: false,
+    sendErrorChooseModel: null,
   });
 
   // Prompt @-mentions expand into the outgoing text BEFORE any target
@@ -766,12 +1097,108 @@ async function dispatchHomeSendTo(
     expandedDraft.text,
     destination?.linearIssue,
   );
-  const hasInitialMessage = draft.text.trim().length > 0;
-  // A blank submission creates a work area immediately. Its schedule is
-  // carried into the new composer as a draft, without creating an automation.
-  const scheduledSendDraft = hasInitialMessage
-    ? draft.scheduledSendDraft
+  // The transcript list is code-split. Start loading it now so the opened
+  // chat can paint the question in its first frame, not a loading spinner.
+  const transcriptChunkReady = firstSend
+    ? loadChatMessageListModule().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
     : null;
+  // The chat currently presenting `firstSend`, until dispatch adopts it.
+  let firstSendRejected = false;
+  let starterWasProvisional = false;
+  const firstSendPresentation: { target: HomeSendChatTarget | null } = {
+    target: null,
+  };
+  // CAN-5021: the current preparation attempt of `firstSend`, and whether a
+  // retry from its failed chat (not this Home submission) is driving it.
+  let firstSendAttemptId = submissionIdentity.userMessageId;
+  let resumedByRetry = false;
+  // A send to a worktree that is still setting up will queue, so it is
+  // presented as that queue row rather than as a starting turn.
+  const presentFirstSend = (
+    target: HomeSendChatTarget,
+    queuedForSetup: boolean,
+  ): void => {
+    if (!firstSend) return;
+    if (
+      !useChatStore
+        .getState()
+        .presentProvisionalFirstSend(target, { ...firstSend, queuedForSetup })
+    ) {
+      throw new Error('Failed to prepare the first message in this chat.');
+    }
+    starterWasProvisional =
+      useChatStore
+        .getState()
+        .worktreeChats[
+          `${target.projectId}/${target.worktreeId}`
+        ]?.tabs.find((tab) => tab.id === target.chatId)
+        ?.pendingInitialCreation === true;
+    firstSendPresentation.target = target;
+  };
+  const withdrawFirstSend = (): void => {
+    const { target } = firstSendPresentation;
+    if (!firstSend || !target) return;
+    useChatStore
+      .getState()
+      .withdrawProvisionalFirstSend(target, firstSend.userMessageId);
+    firstSendPresentation.target = null;
+  };
+  // Dispatch options that adopt the presented echo, or retire it when the
+  // send is refused or handed to a queue.
+  const firstSendDispatchOptions = (): {
+    onDispatchAccepted?: () => void;
+    userMessageId?: string;
+    submittedAt?: number;
+    onPreDispatchRejected?: () => void;
+    onDispatchRejected?: () => void;
+    onQueuedWithoutDispatch?: () => void;
+  } => {
+    const { target } = firstSendPresentation;
+    const onDispatchAccepted = (): void => {
+      const workspace = useProjectsStore
+        .getState()
+        .projects.find((entry) => entry.id === workspaceId);
+      if (!resumedByRetry && workspace && workspace.type !== 'cowork')
+        notifyAcceptedWorktreeTurn();
+    };
+    if (!firstSend || !target) return { onDispatchAccepted };
+    const { userMessageId } = firstSend;
+    const rejected = (): void => {
+      firstSendRejected = true;
+      fail(
+        'Could not send the message. Your draft is available to retry.',
+        true,
+      );
+    };
+    const dispatchRejected = (): void => {
+      const tab = useChatStore
+        .getState()
+        .worktreeChats[
+          `${target.projectId}/${target.worktreeId}`
+        ]?.tabs.find((entry) => entry.id === target.chatId);
+      if (
+        tab?.provisionalFirstSend?.phase === 'dispatched' &&
+        tab.status !== 'error'
+      )
+        return;
+      rejected();
+    };
+    return {
+      onDispatchAccepted,
+      userMessageId,
+      submittedAt: firstSend.submittedAt,
+      onPreDispatchRejected: rejected,
+      onDispatchRejected: dispatchRejected,
+      onQueuedWithoutDispatch: (): void => {
+        useChatStore
+          .getState()
+          .handOffProvisionalFirstSend(target, userMessageId);
+      },
+    };
+  };
 
   const branchTarget = destination?.branchTarget ?? draft.branchTarget;
   const selectedRepoId = sameProject ? draft.selectedRepoId : undefined;
@@ -801,36 +1228,13 @@ async function dispatchHomeSendTo(
   // `undefined` draft value, so a send/schedule captures exactly what the
   // user saw at that moment (workspace-kind switches no longer silently
   // change what an already-scheduled send resolves to at fire time).
-  const { model, thinkingLevel } = resolveHomeEffectiveModelSettings(
-    draft.workspaceId,
-    draft.model,
-    draft.thinkingLevel,
-    draft.executionHarness,
-  );
-  const cursorRuntimeAvailable =
-    !isCursorModel(model) || (await isCursorRuntimeAvailable());
-  if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return false;
-  if (!cursorRuntimeAvailable) {
-    // A stale Cursor selection must fail before any worktree, chat, or prompt
-    // state exists; the draft stays intact for a retry or a model change.
-    useHomeComposerStore.setState({
-      isSending: false,
-      sendError: useFeatureFlagsStore
-        .getState()
-        .isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key)
-        ? 'Connect Cursor in Settings to send with Cursor, or choose another model.'
-        : 'This Cursor model is unavailable. Choose another Cursor model and try again.',
-    });
-    return false;
-  }
-  if (scheduledSendDraft && isCursorModel(model)) {
-    useHomeComposerStore.setState({
-      isSending: false,
-      sendError:
-        'Cursor currently supports interactive chats only. Choose another model to schedule this message.',
-    });
-    return false;
-  }
+  const { model, thinkingLevel } = submissionIdentity.modelSettings;
+  const submittedModelSelection: FirstSendModelSelection = {
+    model,
+    ...(draft.executionHarness
+      ? { executionHarness: draft.executionHarness }
+      : {}),
+  };
   // …but pinning the EFFECTIVE model is not the same as the user CHOOSING it.
   // Only a draft that actually carries a model came from the Home model picker;
   // everything else is the resolved default, which must stay ours to re-stamp.
@@ -866,19 +1270,228 @@ async function dispatchHomeSendTo(
     return false;
   }
 
-  function fail(message: string, retryable = false): void {
+  function fail(
+    message: string,
+    retryable = false,
+    modelFailure?: {
+      failureId: string;
+      /** The chat that keeps the failed prompt and offers recovery. */
+      inlineTarget: HomeSendChatTarget | null;
+    },
+  ): void {
+    const inlineTarget = modelFailure?.inlineTarget ?? null;
+    const failedTarget = firstSendPresentation.target ?? inlineTarget;
+    withdrawFirstSend();
     if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return;
-    if (!isSubmittedHomeDraftCurrent(draft)) {
-      useHomeComposerStore.setState({ isSending: false });
+    const currentDraft = useHomeComposerStore.getState();
+    if (
+      ownsHomeSubmission() &&
+      clearedSubmittedDraft &&
+      currentDraft.draftGeneration === clearedSubmittedDraft.draftGeneration &&
+      isSubmittedHomeDraftCurrent(clearedSubmittedDraft)
+    ) {
+      // A host-queue rejection can arrive after Home unmounted and reset.
+      // Recover only the cleared submission, never a newer draft or account.
+      useHomeComposerStore.setState({
+        workspaceId: draft.workspaceId,
+        branchTarget: draft.branchTarget,
+        newWorktreeBaseTarget: draft.newWorktreeBaseTarget,
+        selectedRepoId: draft.selectedRepoId,
+        mode: draft.mode,
+        text: draft.text,
+        fileReferences: draft.fileReferences,
+        attachments: draft.attachments,
+        model: draft.model,
+        modelSelectionMode: draft.modelSelectionMode,
+        executionHarness: draft.executionHarness,
+        thinkingLevel: draft.thinkingLevel,
+        speed: draft.speed,
+        fastMode: draft.fastMode,
+        planMode: draft.planMode,
+        approvalMode: draft.approvalMode,
+        pluginSelections: draft.pluginSelections,
+        manualPluginSelections: draft.manualPluginSelections,
+        pluginSelectionsEdited: draft.pluginSelectionsEdited,
+        scheduledSendDraft: draft.scheduledSendDraft,
+        draftGeneration: currentDraft.draftGeneration + 1,
+      });
+    }
+    // The failed chat explains itself inline; elsewhere a toast leads back.
+    if (
+      failedTarget &&
+      useNavigationStore.getState().activePage !== 'home' &&
+      !(inlineTarget && isChatTargetInView(inlineTarget))
+    ) {
+      useGitHubStore.getState().addToast(message, 'error', undefined, {
+        forceInApp: true,
+        suppressOsNotification: true,
+        action: {
+          label: 'Open draft',
+          onClick: (): void => useNavigationStore.getState().navigate('home'),
+        },
+      });
+    }
+    if (!ownsHomeSubmission() || !isSubmittedHomeDraftCurrent(draft)) {
+      if (!resumedByRetry && ownsHomeSubmission())
+        useHomeComposerStore.setState({ isSending: false });
       return;
     }
     useHomeComposerStore.setState({
-      isSending: false,
+      ...(resumedByRetry ? {} : { isSending: false }),
       sendError: message,
       sendErrorRetryable: retryable,
+      // Home shows the recovery too, but focus stays where the user is.
+      sendErrorChooseModel: modelFailure
+        ? { failureId: modelFailure.failureId, message, focus: false }
+        : null,
     });
   }
 
+  function isAttemptCurrent(target: HomeSendChatTarget): boolean {
+    if (!isHomeSendAccountCurrent(submittedAccountEpoch)) return false;
+    if (!firstSend) return true;
+    const record = findChatTab(target)?.provisionalFirstSend;
+    return (
+      record?.userMessageId === firstSend.userMessageId &&
+      record.phase === 'preparing' &&
+      provisionalFirstSendAttemptId(record) === firstSendAttemptId
+    );
+  }
+
+  async function applyFirstSendModel(
+    target: HomeSendChatTarget,
+    selection: FirstSendModelSelection,
+  ): Promise<'accepted' | 'refused' | 'stale'> {
+    if (!isAttemptCurrent(target)) return 'stale';
+    const before = findChatTab(target);
+    const application = useChatStore
+      .getState()
+      .setModelAndWait(
+        selection.model,
+        target,
+        ...(selection.executionHarness ? [selection.executionHarness] : []),
+      );
+    const requestId =
+      useChatStore.getState().pendingModelChanges[chatTargetKey(target)]
+        ?.requestId;
+    const accepted = await application.then(
+      (result: boolean) => result,
+      () => false,
+    );
+    if (!isAttemptCurrent(target)) return 'stale';
+    const pending =
+      useChatStore.getState().pendingModelChanges[chatTargetKey(target)];
+    const after = findChatTab(target);
+    if (
+      (pending && pending.requestId !== requestId) ||
+      (!accepted &&
+        (before?.model !== after?.model ||
+          before?.executionHarness !== after?.executionHarness))
+    )
+      return 'stale';
+    return accepted ? 'accepted' : 'refused';
+  }
+
+  /**
+   * CAN-5021: a model refused after the chat opened keeps
+   * the presented prompt and title there, failed, with recovery in place. A
+   * specific reason is named only when cached facts still establish it.
+   */
+  function failRefusedModel(
+    target: HomeSendChatTarget,
+    selection: FirstSendModelSelection,
+    resume: FailedFirstSendRetry['resume'],
+    refusal: HomeModelPreflightResult = cachedHomeModelRefusal(
+      draft.workspaceId,
+      selection,
+    ),
+  ): void {
+    if (!isAttemptCurrent(target)) return;
+    const message = refusal.ok
+      ? homeModelFailureMessage(
+          'model-rejected',
+          homeModelDisplayLabel(selection.model),
+        )
+      : homeModelFailureMessage(refusal.reason, refusal.modelLabel);
+    const failureId = crypto.randomUUID();
+    const presented = firstSendPresentation.target;
+    const tabModelAtFailure = findChatTab(target)?.model;
+    if (
+      firstSend &&
+      presented &&
+      chatTargetKey(presented) === chatTargetKey(target) &&
+      useChatStore.getState().failProvisionalFirstSend(target, {
+        userMessageId: firstSend.userMessageId,
+        attemptId: firstSendAttemptId,
+        failure: { failureId, model: selection.model, message },
+      })
+    ) {
+      // The failed prompt stays; nothing withdraws it from here on.
+      firstSendPresentation.target = null;
+      failedFirstSends.set(chatTargetKey(target), {
+        userMessageId: firstSend.userMessageId,
+        failureId,
+        attempted: selection,
+        tabModelAtFailure,
+        tabHarnessAtFailure: findChatTab(target)?.executionHarness,
+        resume,
+      });
+      fail(message, false, { failureId, inlineTarget: target });
+      return;
+    }
+    fail(message, false, { failureId, inlineTarget: null });
+  }
+
+  /**
+   * A retry from the failed chat resumes this submission's preparation under
+   * a new attempt, rechecking eligibility first. It never owns Home's
+   * sending state.
+   */
+  function resumeFirstSend(
+    target: HomeSendChatTarget,
+    continueFromModel: (selection: FirstSendModelSelection) => Promise<boolean>,
+  ): FailedFirstSendRetry['resume'] {
+    return async (attemptId, selection): Promise<boolean> => {
+      resumedByRetry = true;
+      firstSendAttemptId = attemptId;
+      firstSendRejected = false;
+      firstSendPresentation.target = target;
+      try {
+        if (!isAttemptCurrent(target)) return false;
+        const eligibility = await preflightHomeModel(
+          draft.workspaceId,
+          selection,
+        );
+        if (!isAttemptCurrent(target)) return false;
+        if (!eligibility.ok) {
+          failRefusedModel(
+            target,
+            selection,
+            resumeFirstSend(target, continueFromModel),
+            eligibility,
+          );
+          return false;
+        }
+        return await continueFromModel(selection);
+      } catch (err: unknown) {
+        if (!isAttemptCurrent(target)) return false;
+        fail(
+          extractIpcErrorMessage(err),
+          err instanceof OrgDefaultChatsUnavailableError,
+        );
+        return false;
+      }
+    };
+  }
+
+  // A retry resumes after Home's link submission has ended; its abort no
+  // longer applies to the already-registered worktree.
+  const creationAborted = (): boolean =>
+    !resumedByRetry && destination?.signal?.aborted === true;
+
+  destination?.signal?.addEventListener('abort', withdrawFirstSend, {
+    once: true,
+  });
   try {
     if (destination?.signal?.aborted) {
       fail('Worktree creation cancelled.', true);
@@ -1000,13 +1613,6 @@ async function dispatchHomeSendTo(
 
     if (branchTarget.kind === 'worktree') {
       const { worktreeId } = branchTarget;
-      // Select BEFORE navigating (both synchronous, no awaits in between) so
-      // the Code page's first frame already renders this worktree's chat —
-      // the same select-then-navigate invariant the new-worktree/branch
-      // route below enforces around its async `createWorktree` (Task G1 fix
-      // round 2).
-      useChatStore.getState().selectWorktree(workspaceId, worktreeId);
-      useNavigationStore.getState().navigate('main');
       useChatStore.getState().createTab({
         projectId: workspaceId,
         worktreeId,
@@ -1027,6 +1633,28 @@ async function dispatchHomeSendTo(
         fail('Failed to create chat tab.');
         return false;
       }
+      presentFirstSend(
+        { projectId: workspaceId, worktreeId, chatId },
+        isWorktreeSetupPending(workspaceId, worktreeId),
+      );
+      if (transcriptChunkReady) {
+        const chunk = await transcriptChunkReady;
+        if (!chunk.ok) throw chunk.error;
+      }
+      if (destination?.signal?.aborted) return false;
+      if (
+        firstSend &&
+        !useChatStore
+          .getState()
+          .worktreeChats[key]?.tabs.some((tab) => tab.id === chatId)
+      ) {
+        fail('The destination chat is no longer available.', true);
+        return false;
+      }
+      // Publish the new tab and its echo before revealing this worktree. The
+      // explicit target leaves any pre-existing conversation untouched.
+      useChatStore.getState().selectWorktree(workspaceId, worktreeId);
+      useNavigationStore.getState().navigate('main');
 
       // `createTab` paints optimistically while the revisioned command commits
       // in the background. Join that command before any settings/scheduling
@@ -1045,182 +1673,216 @@ async function dispatchHomeSendTo(
           chatPlugins,
         );
       }
-      if (draft.executionHarness) {
-        if (
-          !(await useChatStore
-            .getState()
-            .setModelAndWait(model, target, draft.executionHarness))
-        ) {
-          fail('The selected harness could not be applied to this chat.');
-          return false;
+      const continueFromModel = async (
+        selection: FirstSendModelSelection,
+      ): Promise<boolean> => {
+        if (!isAttemptCurrent(target)) return false;
+        // Draft settings belong to the submitted model. A replacement
+        // accepted in the failed chat keeps the settings its picker applied.
+        const submittedModel =
+          selection.model === model &&
+          selection.executionHarness === draft.executionHarness;
+        if (selection.executionHarness) {
+          const outcome = await applyFirstSendModel(target, selection);
+          if (outcome === 'stale') return false;
+          if (outcome === 'refused') {
+            failRefusedModel(
+              target,
+              selection,
+              resumeFirstSend(target, continueFromModel),
+            );
+            return false;
+          }
+          // Applying another harness can restore its provider defaults. Keep
+          // the thinking level shown in Home, as the new-worktree route does.
+          if (submittedModel) {
+            await useChatStore
+              .getState()
+              .setThinkingLevel(thinkingLevel, target);
+          }
         }
-        // Applying another harness can restore its provider defaults. Keep the
-        // thinking level shown in Home, just as the new-worktree route does.
-        await useChatStore.getState().setThinkingLevel(thinkingLevel, target);
-      }
-      // Auto rides on the TAB, not on the send options: main re-reads the
-      // canonical tab at dispatch and the queue keeps whatever the accepted
-      // message captured. Written after the model/harness writes above, which
-      // clear the selection mode for any change that is not main's own Auto
-      // transition.
-      if (draft.modelSelectionMode === 'auto') {
-        await useChatStore.getState().setModelSelectionMode('auto', target);
-      }
-      if (speed !== undefined) {
-        await useChatStore.getState().setSpeed(speed, target);
-      }
-      if (planMode) {
-        useChatStore.getState().togglePlanMode(target);
-      }
-      if (approvalMode) {
-        // Pin the composer's explicit approval-mode selection onto the
-        // freshly created tab. Untouched (`undefined`) drafts leave the tab
-        // unset so the normal resolution chain applies instead.
-        await useChatStore.getState().setTabApprovalMode(target, approvalMode);
-      }
-      if (selectedRepoId) {
-        // Pin the composer's working-directory selection onto the freshly
-        // created (still-empty) tab so the session cwd, tab discovery, and
-        // persisted tab state all match what the Home composer showed —
-        // same normalization/locking rules as the chat composer's picker.
-        useChatStore.getState().setSelectedRepoId(selectedRepoId);
-      }
-
-      // Pills survive branch-target switches, so a reference picked while
-      // the draft targeted `new-worktree`/`branch` (shadow-checkout
-      // absolutePath) — or a different worktree — can reach this route with
-      // a stale absolutePath. Re-root any such reference (and its inlined
-      // mention text) onto THIS worktree's cwd before dispatch (fix round 1).
-      const existingWorktreeRewrite = fileReferences
-        ? await rewriteDraftPromptForWorktree(
-            prompt,
-            fileReferences,
-            workspaceId,
-            worktreeId,
-            selectedRepoId,
-          )
-        : { prompt, fileReferences: [] };
-      const existingWorktreePrompt = existingWorktreeRewrite.prompt;
-      const existingWorktreeFileReferences = outboundFileReferences(
-        existingWorktreeRewrite.fileReferences,
-      );
-
-      // Staging can happen before the branch picker settles on this existing
-      // worktree (e.g. staged under `new-worktree`, then switched to an
-      // existing worktree in the picker) — those attachments still live
-      // under the `HOME_DRAFT_WORKTREE_ID` staging dir and fail the send
-      // path's `validateAttachmentPath` check against *this* worktree's
-      // attachment dir. Re-import the whole draft set through the same
-      // helper the new-worktree path uses whenever any attachment isn't
-      // already staged here; attachments staged directly against this
-      // worktree (the common case — see `HomeComposerControls`'s
-      // `draftWorktreeId`) skip this entirely.
-      let existingWorktreeAttachmentPaths = attachmentPaths;
-      let existingWorktreeAttachmentPromptContexts = attachmentPromptContexts;
-      let existingWorktreeAttachments = draft.attachments;
-      if (
-        draft.attachments.some(
-          (attachment) =>
-            !isAttachmentStagedForWorktree(attachment.absolutePath, worktreeId),
-        )
-      ) {
-        const restaged = await reimportDraftAttachmentsPreservingPromptKind(
-          { projectId: workspaceId, worktreeId },
-          draft.attachments,
-        );
-        existingWorktreeAttachments = restaged;
-        existingWorktreeAttachmentPaths = attachmentPathsFromMeta(restaged);
-        existingWorktreeAttachmentPromptContexts =
-          attachmentPromptContextsFromMeta(restaged);
-      }
-
-      if (!hasInitialMessage) {
-        useChatStore
-          .getState()
-          .addPendingAttachments(existingWorktreeAttachments, target);
-        if (draft.scheduledSendDraft) {
+        // Auto rides on the TAB, not on the send options: main re-reads the
+        // canonical tab at dispatch and the queue keeps whatever the accepted
+        // message captured. Written after the model/harness writes above, which
+        // clear the selection mode for any change that is not main's own Auto
+        // transition.
+        if (!isAttemptCurrent(target)) return false;
+        if (submittedModel && draft.modelSelectionMode === 'auto') {
+          await useChatStore.getState().setModelSelectionMode('auto', target);
+        }
+        if (!isAttemptCurrent(target)) return false;
+        if (submittedModel && speed !== undefined) {
+          await useChatStore.getState().setSpeed(speed, target);
+        }
+        if (!isAttemptCurrent(target)) return false;
+        if (planMode) {
+          useChatStore.getState().togglePlanMode(target);
+        }
+        if (approvalMode) {
+          // Pin the composer's explicit approval-mode selection onto the
+          // freshly created tab. Untouched (`undefined`) drafts leave the tab
+          // unset so the normal resolution chain applies instead.
           await useChatStore
             .getState()
-            .setScheduledSendDraft(draft.scheduledSendDraft, target);
+            .setTabApprovalMode(target, approvalMode);
         }
-        await useChatStore
-          .getState()
-          .flushWorktreeTabs(workspaceId, worktreeId);
-        completeSubmittedDraft();
-        return true;
-      }
-
-      if (scheduledSendDraft) {
-        const workspace = findWorkspace(workspaceId);
-        const worktreeName =
-          workspace && workspace.type !== 'cowork'
-            ? workspace.worktrees.find((wt) => wt.id === worktreeId)?.branchName
-            : undefined;
-
-        const response = await useAutomationsStore.getState().createActivity({
-          name: 'Scheduled message',
-          schedule: {
-            kind: 'one_time',
-            runAt: scheduledSendDraft.runAt,
-            timezone: 'local',
-          },
-          action: {
-            type: 'worktree_session_prompt',
-            workspaceId,
-            worktreeId,
-            chatId,
-            prompt: existingWorktreePrompt,
-            ...(existingWorktreeFileReferences
-              ? { fileReferences: existingWorktreeFileReferences }
-              : {}),
-            ...(existingWorktreeAttachmentPaths
-              ? { attachmentPaths: existingWorktreeAttachmentPaths }
-              : {}),
-            ...(existingWorktreeAttachmentPromptContexts
-              ? {
-                  attachmentPromptContexts:
-                    existingWorktreeAttachmentPromptContexts,
-                }
-              : {}),
-            purpose: 'scheduled_send',
-            ...(workspace
-              ? { workspaceName: getWorkspaceDisplayName(workspace) }
-              : {}),
-            ...(worktreeName ? { worktreeName } : {}),
-          },
-        });
-
-        if (!response.ok) {
-          fail('Could not schedule message.');
-          return false;
+        if (!isAttemptCurrent(target)) return false;
+        if (selectedRepoId) {
+          // Pin the composer's working-directory selection onto the freshly
+          // created (still-empty) tab so the session cwd, tab discovery, and
+          // persisted tab state all match what the Home composer showed —
+          // same normalization/locking rules as the chat composer's picker.
+          useChatStore.getState().setSelectedRepoId(selectedRepoId, target);
         }
 
-        await useChatStore
-          .getState()
-          .setScheduledSendDraft({ runAt: scheduledSendDraft.runAt }, target);
-        await useChatStore
-          .getState()
-          .flushWorktreeTabs(workspaceId, worktreeId);
-
-        completeSubmittedDraft();
-        return true;
-      }
-
-      await useChatStore
-        .getState()
-        .sendMessage(
-          existingWorktreePrompt,
-          existingWorktreeFileReferences,
-          target,
-          undefined,
-          {
-            attachmentPaths: existingWorktreeAttachmentPaths,
-            attachmentPromptContexts: existingWorktreeAttachmentPromptContexts,
-          },
+        // Pills survive branch-target switches, so a reference picked while
+        // the draft targeted `new-worktree`/`branch` (shadow-checkout
+        // absolutePath) — or a different worktree — can reach this route with
+        // a stale absolutePath. Re-root any such reference (and its inlined
+        // mention text) onto THIS worktree's cwd before dispatch (fix round 1).
+        const existingWorktreeRewrite = fileReferences
+          ? await rewriteDraftPromptForWorktree(
+              prompt,
+              fileReferences,
+              workspaceId,
+              worktreeId,
+              selectedRepoId,
+            )
+          : { prompt, fileReferences: [] };
+        const existingWorktreePrompt = existingWorktreeRewrite.prompt;
+        const existingWorktreeFileReferences = outboundFileReferences(
+          existingWorktreeRewrite.fileReferences,
         );
 
-      completeSubmittedDraft();
-      return true;
+        // Staging can happen before the branch picker settles on this existing
+        // worktree (e.g. staged under `new-worktree`, then switched to an
+        // existing worktree in the picker) — those attachments still live
+        // under the `HOME_DRAFT_WORKTREE_ID` staging dir and fail the send
+        // path's `validateAttachmentPath` check against *this* worktree's
+        // attachment dir. Re-import the whole draft set through the same
+        // helper the new-worktree path uses whenever any attachment isn't
+        // already staged here; attachments staged directly against this
+        // worktree (the common case — see `HomeComposerControls`'s
+        // `draftWorktreeId`) skip this entirely.
+        let existingWorktreeAttachmentPaths = attachmentPaths;
+        let existingWorktreeAttachmentPromptContexts = attachmentPromptContexts;
+        let existingWorktreeAttachments = draft.attachments;
+        if (!isAttemptCurrent(target)) return false;
+        if (
+          draft.attachments.some(
+            (attachment) =>
+              !isAttachmentStagedForWorktree(
+                attachment.absolutePath,
+                worktreeId,
+              ),
+          )
+        ) {
+          const restaged = await reimportDraftAttachmentsPreservingPromptKind(
+            { projectId: workspaceId, worktreeId },
+            draft.attachments,
+          );
+          existingWorktreeAttachments = restaged;
+          existingWorktreeAttachmentPaths = attachmentPathsFromMeta(restaged);
+          existingWorktreeAttachmentPromptContexts =
+            attachmentPromptContextsFromMeta(restaged);
+        }
+
+        if (!isAttemptCurrent(target)) return false;
+        if (!hasInitialMessage) {
+          useChatStore
+            .getState()
+            .addPendingAttachments(existingWorktreeAttachments, target);
+          if (draft.scheduledSendDraft) {
+            await useChatStore
+              .getState()
+              .setScheduledSendDraft(draft.scheduledSendDraft, target);
+          }
+          await useChatStore
+            .getState()
+            .flushWorktreeTabs(workspaceId, worktreeId);
+          completeSubmittedDraft();
+          return true;
+        }
+
+        if (!isAttemptCurrent(target)) return false;
+        if (scheduledSendDraft) {
+          const workspace = findWorkspace(workspaceId);
+          const worktreeName =
+            workspace && workspace.type !== 'cowork'
+              ? workspace.worktrees.find((wt) => wt.id === worktreeId)
+                  ?.branchName
+              : undefined;
+
+          const response = await useAutomationsStore.getState().createActivity({
+            name: 'Scheduled message',
+            schedule: {
+              kind: 'one_time',
+              runAt: scheduledSendDraft.runAt,
+              timezone: 'local',
+            },
+            action: {
+              type: 'worktree_session_prompt',
+              workspaceId,
+              worktreeId,
+              chatId,
+              prompt: existingWorktreePrompt,
+              ...(existingWorktreeFileReferences
+                ? { fileReferences: existingWorktreeFileReferences }
+                : {}),
+              ...(existingWorktreeAttachmentPaths
+                ? { attachmentPaths: existingWorktreeAttachmentPaths }
+                : {}),
+              ...(existingWorktreeAttachmentPromptContexts
+                ? {
+                    attachmentPromptContexts:
+                      existingWorktreeAttachmentPromptContexts,
+                  }
+                : {}),
+              purpose: 'scheduled_send',
+              ...(workspace
+                ? { workspaceName: getWorkspaceDisplayName(workspace) }
+                : {}),
+              ...(worktreeName ? { worktreeName } : {}),
+            },
+          });
+
+          if (!response.ok) {
+            fail('Could not schedule message.');
+            return false;
+          }
+
+          await useChatStore
+            .getState()
+            .setScheduledSendDraft({ runAt: scheduledSendDraft.runAt }, target);
+          await useChatStore
+            .getState()
+            .flushWorktreeTabs(workspaceId, worktreeId);
+
+          completeSubmittedDraft();
+          return true;
+        }
+
+        if (!isAttemptCurrent(target)) return false;
+        await useChatStore
+          .getState()
+          .sendMessage(
+            existingWorktreePrompt,
+            existingWorktreeFileReferences,
+            target,
+            undefined,
+            {
+              attachmentPaths: existingWorktreeAttachmentPaths,
+              attachmentPromptContexts:
+                existingWorktreeAttachmentPromptContexts,
+              ...firstSendDispatchOptions(),
+            },
+          );
+
+        if (firstSendRejected) return false;
+        completeSubmittedDraft();
+        return true;
+      };
+      return await continueFromModel(submittedModelSelection);
     }
 
     // `new-worktree` / `branch` / `pr` / `linear-issue` path. Resolve the
@@ -1336,6 +1998,7 @@ async function dispatchHomeSendTo(
       }
 
       showAutomationCreatedToast(response.activity, workspaceName);
+      if (firstSendRejected) return false;
       completeSubmittedDraft();
       return true;
     }
@@ -1360,6 +2023,7 @@ async function dispatchHomeSendTo(
     useChatStore.getState().deselectWorktree();
 
     let activatedWorktreeId: string | null = null;
+    let activationFailed = false;
     let registeredSetupPhase: WorktreeData['setupPhase'];
     let activationPromise: Promise<void> | null = null;
     const activateCreatedWorktree = async (
@@ -1384,12 +2048,45 @@ async function dispatchHomeSendTo(
         worktreeId,
       });
       if (destination?.signal?.aborted) return;
+      if (firstSend) {
+        // The destination's first frame must already show the question, so
+        // present it before selection and navigation. A missing starter takes
+        // the creation failure path instead of opening an empty chat.
+        const starterId =
+          useChatStore.getState().worktreeChats[`${workspaceId}/${worktreeId}`]
+            ?.activeTabId;
+        if (!starterId) {
+          activationFailed = true;
+          return;
+        }
+        presentFirstSend(
+          { projectId: workspaceId, worktreeId, chatId: starterId },
+          isWorktreeSetupPending(workspaceId, worktreeId, setupPhase),
+        );
+      }
       // The Code grid restores its persisted/default layout asynchronously for
       // both pending and already-ready registrations. Finish that work while
       // Home is still mounted so neither setup phase can reveal the
       // otherwise-empty grid shell under a busy renderer.
       await ensureWorktreePanelLayout(`${workspaceId}/${worktreeId}`);
+      // A failed chunk load takes the creation failure path before navigation.
+      if (transcriptChunkReady) {
+        const chunk = await transcriptChunkReady;
+        if (!chunk.ok) throw chunk.error;
+      }
       if (destination?.signal?.aborted) return;
+      if (
+        firstSend &&
+        firstSendPresentation.target &&
+        !useChatStore
+          .getState()
+          .worktreeChats[
+            `${workspaceId}/${worktreeId}`
+          ]?.tabs.some((tab) => tab.id === firstSendPresentation.target?.chatId)
+      ) {
+        activationFailed = true;
+        return;
+      }
       if (setupPhase === 'git-pending') {
         useChatStore.getState().selectWorktree(workspaceId, worktreeId, {
           deferTabLoad: true,
@@ -1458,6 +2155,10 @@ async function dispatchHomeSendTo(
       );
     }
     await activationPromise;
+    if (activationFailed) {
+      fail('Failed to create chat tab.');
+      return false;
+    }
     if (destination?.signal?.aborted) {
       fail(
         'Creation stopped after the worktree was registered. The worktree remains available.',
@@ -1474,12 +2175,42 @@ async function dispatchHomeSendTo(
       .loadAllWorktreeTabs([
         { projectId: workspaceId, worktreeId: created.id },
       ]);
+    // A deleted target is not permission to create another chat from this
+    // stale continuation. A nonempty replacement must pass presentation's
+    // ownership check below before any settings or send can target it.
+    if (
+      firstSend &&
+      !useChatStore.getState().worktreeChats[`${workspaceId}/${created.id}`]
+        ?.tabs.length
+    ) {
+      fail('The destination chat is no longer available.', true);
+      return false;
+    }
+    const refreshedTabs =
+      useChatStore.getState().worktreeChats[`${workspaceId}/${created.id}`]
+        ?.tabs;
+    if (
+      firstSend &&
+      firstSendPresentation.target &&
+      !refreshedTabs?.some(
+        (tab) => tab.id === firstSendPresentation.target?.chatId,
+      ) &&
+      (!starterWasProvisional ||
+        refreshedTabs.filter((tab) => tab.kind !== 'file').length !== 1)
+    ) {
+      fail('The destination chat is no longer available.', true);
+      return false;
+    }
     // Re-ensure the starter after the refresh before model/settings commands
     // target it. The canonical create is idempotent for an existing chat.
-    await useChatStore.getState().ensureWorktreeHasChatTab({
-      projectId: workspaceId,
-      worktreeId: created.id,
-    });
+    // The first send is already on screen, so a tab the user switched to
+    // since navigation keeps focus.
+    await useChatStore
+      .getState()
+      .ensureWorktreeHasChatTab(
+        { projectId: workspaceId, worktreeId: created.id },
+        firstSend ? { preserveActiveTab: true } : undefined,
+      );
 
     if (!createdIsGitPending) {
       const tabsLoaded = await useChatStore
@@ -1492,10 +2223,33 @@ async function dispatchHomeSendTo(
     }
 
     const key = `${workspaceId}/${created.id}`;
-    const chatId = useChatStore.getState().worktreeChats[key]?.activeTabId;
+    const scopeTabs = useChatStore.getState().worktreeChats[key];
+    // The presented chat stays the target even if the user switched tabs
+    // since. Only a starter the refresh replaced moves the submission, under
+    // the same identity, to the sole chat that replaced it (verified above),
+    // never to whichever tab happens to be active.
+    const presentedChatId = firstSendPresentation.target?.chatId ?? null;
+    const replacementChatTabs =
+      scopeTabs?.tabs.filter((tab) => tab.kind !== 'file') ?? [];
+    const chatId =
+      presentedChatId &&
+      scopeTabs?.tabs.some((tab) => tab.id === presentedChatId)
+        ? presentedChatId
+        : firstSend
+          ? replacementChatTabs.length === 1
+            ? replacementChatTabs[0]?.id
+            : undefined
+          : scopeTabs?.activeTabId;
     if (!chatId) {
       fail('Failed to create chat tab.');
       return false;
+    }
+    if (firstSend && chatId !== presentedChatId) {
+      firstSendPresentation.target = null;
+      presentFirstSend(
+        { projectId: workspaceId, worktreeId: created.id, chatId },
+        isWorktreeSetupPending(workspaceId, created.id, createdSetupPhase),
+      );
     }
 
     // Staged attachments live under the `HOME_DRAFT_WORKTREE_ID` sentinel
@@ -1535,148 +2289,165 @@ async function dispatchHomeSendTo(
     // `setModelAndWait` reports "did it land" as a boolean and swallows a
     // rejected IPC as `false`, so a refusal arrives resolved, not thrown.
     // Reading only the rejection arm would make this guard unreachable.
-    const modelUpdateOutcome = useChatStore
-      .getState()
-      .setModelAndWait(
-        model,
-        target,
-        ...(draft.executionHarness ? [draft.executionHarness] : []),
-      )
-      .then(
-        (accepted: boolean) => ({ ok: accepted, error: undefined }),
-        (error: unknown) => ({ ok: false, error }),
-      );
-    const finishModelUpdate = async (): Promise<void> => {
-      const outcome = await modelUpdateOutcome;
-      if (!outcome.ok) {
-        throw outcome.error instanceof Error
-          ? outcome.error
-          : new Error('The selected model could not be applied to this chat.');
+    const continueFromModel = async (
+      selection: FirstSendModelSelection,
+    ): Promise<boolean> => {
+      if (!isAttemptCurrent(target)) return false;
+      const outcome = await applyFirstSendModel(target, selection);
+      if (outcome === 'stale') return false;
+      if (outcome === 'refused') {
+        failRefusedModel(
+          target,
+          selection,
+          resumeFirstSend(target, continueFromModel),
+        );
+        return false;
       }
-    };
-    // A model acknowledgement can replace modelConfig and thinking defaults.
-    // Apply the draft overrides only after that transition has committed.
-    await finishModelUpdate();
-    // Re-applied after the model change: `commitCanonicalModelChange` clears
-    // the selection mode for any change that is not main's own Auto
-    // transition, so setting it earlier would be erased by the model write.
-    if (draft.modelSelectionMode === 'auto') {
-      await useChatStore.getState().setModelSelectionMode('auto', target);
-    }
-    await useChatStore.getState().setThinkingLevel(thinkingLevel, target);
-    if (chatPlugins !== null) {
-      await applyNewChatPluginSelections(
-        useChatStore.getState,
-        target,
-        chatPlugins,
-      );
-    }
-    if (planMode) {
-      useChatStore.getState().togglePlanMode(target);
-    }
-    if (approvalMode) {
-      // Same explicit-only pinning as the existing-worktree route: an
-      // untouched draft leaves the tab unset so the normal resolution chain
-      // applies instead.
-      await useChatStore.getState().setTabApprovalMode(target, approvalMode);
-    }
-    if (selectedRepoId) {
-      // Same working-directory pinning as the existing-worktree route: the
-      // tab is still empty at this point, so the picker selection binds the
-      // session cwd to the chosen child repo before the first message.
-      useChatStore.getState().setSelectedRepoId(selectedRepoId);
-    }
+      // Draft settings belong to the submitted model. A replacement accepted
+      // in the failed chat keeps the settings its own picker applied.
+      const submittedModel =
+        selection.model === model &&
+        selection.executionHarness === draft.executionHarness;
+      // Re-applied after the model change: `commitCanonicalModelChange` clears
+      // the selection mode for any change that is not main's own Auto
+      // transition, so setting it earlier would be erased by the model write.
+      if (submittedModel && draft.modelSelectionMode === 'auto') {
+        await useChatStore.getState().setModelSelectionMode('auto', target);
+      }
+      if (!isAttemptCurrent(target)) return false;
+      if (submittedModel) {
+        await useChatStore.getState().setThinkingLevel(thinkingLevel, target);
+      }
+      if (!isAttemptCurrent(target)) return false;
+      if (chatPlugins !== null) {
+        await applyNewChatPluginSelections(
+          useChatStore.getState,
+          target,
+          chatPlugins,
+        );
+      }
+      if (!isAttemptCurrent(target)) return false;
+      if (planMode) {
+        useChatStore.getState().togglePlanMode(target);
+      }
+      if (approvalMode) {
+        // Same explicit-only pinning as the existing-worktree route: an
+        // untouched draft leaves the tab unset so the normal resolution chain
+        // applies instead.
+        await useChatStore.getState().setTabApprovalMode(target, approvalMode);
+      }
+      if (!isAttemptCurrent(target)) return false;
+      if (selectedRepoId) {
+        // Same working-directory pinning as the existing-worktree route: the
+        // tab is still empty at this point, so the picker selection binds the
+        // session cwd to the chosen child repo before the first message.
+        useChatStore.getState().setSelectedRepoId(selectedRepoId, target);
+      }
 
-    if (!hasInitialMessage) {
-      if (speed !== undefined) {
-        await useChatStore.getState().setSpeed(speed, target);
-      }
-      useChatStore
-        .getState()
-        .addPendingAttachments(newWorktreeAttachments, target);
-      if (draft.scheduledSendDraft) {
+      if (!isAttemptCurrent(target)) return false;
+      if (!hasInitialMessage) {
+        if (!isAttemptCurrent(target)) return false;
+        if (submittedModel && speed !== undefined) {
+          await useChatStore.getState().setSpeed(speed, target);
+        }
+        useChatStore
+          .getState()
+          .addPendingAttachments(newWorktreeAttachments, target);
+        if (draft.scheduledSendDraft) {
+          await useChatStore
+            .getState()
+            .setScheduledSendDraft(draft.scheduledSendDraft, target);
+        }
         await useChatStore
           .getState()
-          .setScheduledSendDraft(draft.scheduledSendDraft, target);
+          .flushWorktreeTabs(workspaceId, created.id);
+        completeSubmittedDraft();
+        return true;
       }
-      await useChatStore.getState().flushWorktreeTabs(workspaceId, created.id);
+
+      // The `@` mention typeahead ran against the workspace's repo-shadow
+      // checkout(s) while this draft targeted `new-worktree`/`branch` (Task
+      // F3's `baseline` file-index target — nothing was checked out yet). Now
+      // that `created.id`'s real worktree exists, remap any picked file's
+      // `absolutePath` off the shadow (or any other stale root) and onto the
+      // new worktree's cwd — and reformat the prompt's inlined mention text
+      // against that cwd — before it reaches `sendMessage`. See
+      // `rewriteDraftPromptForWorktree`.
+      const newWorktreeRewrite = await rewriteDraftPromptForWorktree(
+        prompt,
+        expandedDraft.fileReferences,
+        workspaceId,
+        created.id,
+        selectedRepoId,
+      );
+
+      // Task H3 fix 3 (live queue decision): re-read the created worktree's
+      // CURRENT `setupPhase` immediately before dispatch rather than snapshotting
+      // it right after `createWorktree` resolved. On a fast (or already-buffered
+      // `git-ready`) reservation, git setup can complete during the awaits above
+      // (`loadAllWorktreeTabs`, attachment re-import, pill rewrite); a stale
+      // post-create snapshot would have missed that and either queued a message
+      // that no longer needed queueing or vice versa. If setup already completed,
+      // immediate processing is correct; if still pending, `queueForSetup` yields
+      // the queued bubble, which explains the setup wait, in the real chat.
+      // A concurrent sidebar/workspace refresh can briefly replace the project
+      // snapshot with one that does not yet contain this just-reserved row. Do
+      // not reinterpret that absence as git-ready: the creation response is the
+      // authoritative fallback until a live row explicitly reports its phase.
+      const queueForSetup = isWorktreeSetupPending(
+        workspaceId,
+        created.id,
+        createdSetupPhase,
+      );
+
+      if (submittedModel && speed !== undefined) {
+        await useChatStore.getState().setSpeed(speed, target);
+      }
+      if (!isAttemptCurrent(target)) return false;
+      if (creationAborted()) {
+        fail(
+          'Creation stopped after the worktree was registered. The worktree remains available.',
+          false,
+        );
+        return false;
+      }
+      if (
+        firstSend &&
+        !useChatStore
+          .getState()
+          .worktreeChats[key]?.tabs.some((tab) => tab.id === chatId)
+      ) {
+        fail('The destination chat is no longer available.', true);
+        return false;
+      }
+      if (!isAttemptCurrent(target)) return false;
+      await useChatStore
+        .getState()
+        .sendMessage(
+          newWorktreeRewrite.prompt,
+          outboundFileReferences(newWorktreeRewrite.fileReferences),
+          target,
+          undefined,
+          {
+            queueForSetup: queueForSetup || undefined,
+            attachmentPaths: newWorktreeAttachmentPaths,
+            attachmentPromptContexts: newWorktreeAttachmentPromptContexts,
+            ...firstSendDispatchOptions(),
+          },
+        );
+
+      if (firstSendRejected) return false;
       completeSubmittedDraft();
       return true;
-    }
-
-    // The `@` mention typeahead ran against the workspace's repo-shadow
-    // checkout(s) while this draft targeted `new-worktree`/`branch` (Task
-    // F3's `baseline` file-index target — nothing was checked out yet). Now
-    // that `created.id`'s real worktree exists, remap any picked file's
-    // `absolutePath` off the shadow (or any other stale root) and onto the
-    // new worktree's cwd — and reformat the prompt's inlined mention text
-    // against that cwd — before it reaches `sendMessage`. See
-    // `rewriteDraftPromptForWorktree`.
-    const newWorktreeRewrite = await rewriteDraftPromptForWorktree(
-      prompt,
-      expandedDraft.fileReferences,
-      workspaceId,
-      created.id,
-      selectedRepoId,
-    );
-
-    // Task H3 fix 3 (live queue decision): re-read the created worktree's
-    // CURRENT `setupPhase` immediately before dispatch rather than snapshotting
-    // it right after `createWorktree` resolved. On a fast (or already-buffered
-    // `git-ready`) reservation, git setup can complete during the awaits above
-    // (`loadAllWorktreeTabs`, attachment re-import, pill rewrite); a stale
-    // post-create snapshot would have missed that and either queued a message
-    // that no longer needed queueing or vice versa. If setup already completed,
-    // immediate processing is correct; if still pending, `queueForSetup` yields
-    // the queued bubble + `pending_setup_info` banner in the real chat.
-    const createdWorkspaceNow = useProjectsStore
-      .getState()
-      .projects.find((project) => project.id === workspaceId);
-    const createdWorktreeNow =
-      createdWorkspaceNow && createdWorkspaceNow.type !== 'cowork'
-        ? createdWorkspaceNow.worktrees.find(
-            (worktree) => worktree.id === created.id,
-          )
-        : undefined;
-    // A concurrent sidebar/workspace refresh can briefly replace the project
-    // snapshot with one that does not yet contain this just-reserved row. Do
-    // not reinterpret that absence as git-ready: the creation response is the
-    // authoritative fallback until a live row explicitly reports its phase.
-    const queueForSetup = createdWorktreeNow
-      ? createdWorktreeNow.setupPhase === 'git-pending'
-      : createdIsGitPending;
-
-    if (speed !== undefined) {
-      await useChatStore.getState().setSpeed(speed, target);
-    }
-    if (destination?.signal?.aborted) {
-      fail(
-        'Creation stopped after the worktree was registered. The worktree remains available.',
-        false,
-      );
-      return false;
-    }
-    await useChatStore
-      .getState()
-      .sendMessage(
-        newWorktreeRewrite.prompt,
-        outboundFileReferences(newWorktreeRewrite.fileReferences),
-        target,
-        undefined,
-        {
-          queueForSetup: queueForSetup || undefined,
-          attachmentPaths: newWorktreeAttachmentPaths,
-          attachmentPromptContexts: newWorktreeAttachmentPromptContexts,
-        },
-      );
-
-    completeSubmittedDraft();
-    return true;
+    };
+    return await continueFromModel(submittedModelSelection);
   } catch (err: unknown) {
     fail(
       extractIpcErrorMessage(err),
       err instanceof OrgDefaultChatsUnavailableError,
     );
     return false;
+  } finally {
+    destination?.signal?.removeEventListener('abort', withdrawFirstSend);
   }
 }

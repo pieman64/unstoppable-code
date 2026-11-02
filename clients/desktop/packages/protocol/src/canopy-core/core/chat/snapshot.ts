@@ -80,6 +80,7 @@ export const CoreChatSnapshotGetResultSchema = z.object({
   queue: z.array(CoreChatQueueSummarySchema),
   pendingApprovals: z.array(CanopyJsonValueSchema).optional(),
   todos: z.array(CanopyJsonValueSchema).optional(),
+  tasks: z.array(CanopyJsonValueSchema).optional(),
 });
 
 export const CoreChatSnapshotGetErrorSchema = CanopyErrorPayloadSchema.extend({

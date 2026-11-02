@@ -37,6 +37,12 @@ type ItemContent =
 export const DELEGATION_TRANSCRIPT_RECORDER_LIMITS =
   DELEGATION_TRANSCRIPT_LIMITS;
 
+export const DELEGATION_STREAM_PREVIEW_LIMITS = Object.freeze({
+  items: 2_048,
+  itemBytes: 65_536,
+  totalBytes: 1_048_576,
+});
+
 /**
  * Streamed command output kept per command until it completes: the first
  * and the latest characters, near a Claude Bash result's size, so verbose
@@ -55,6 +61,14 @@ interface CommandOutputBuffer {
 
 /** Bounded cumulative items, stable native ids and first-observed chronology. No raw session/config payload escapes. */
 export class DelegationTranscriptRecorder {
+  constructor(
+    private readonly limits: Readonly<{
+      items: number;
+      itemBytes: number;
+      totalBytes: number;
+    }> = DELEGATION_TRANSCRIPT_RECORDER_LIMITS,
+  ) {}
+
   private readonly items = new Map<string, AgentDelegationTranscriptItem>();
   private readonly itemBytes = new Map<string, number>();
   private readonly completed = new Set<string>();
@@ -92,10 +106,7 @@ export class DelegationTranscriptRecorder {
     )
       return;
     const prior = this.items.get(id);
-    if (
-      !prior &&
-      this.items.size >= DELEGATION_TRANSCRIPT_RECORDER_LIMITS.items
-    ) {
+    if (!prior && this.items.size >= this.limits.items) {
       this.markLimitExceeded();
       return;
     }
@@ -108,9 +119,8 @@ export class DelegationTranscriptRecorder {
     const bytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
     const priorBytes = this.itemBytes.get(id) ?? 0;
     if (
-      bytes > DELEGATION_TRANSCRIPT_RECORDER_LIMITS.itemBytes ||
-      this.totalBytes - priorBytes + bytes >
-        DELEGATION_TRANSCRIPT_RECORDER_LIMITS.totalBytes
+      bytes > this.limits.itemBytes ||
+      this.totalBytes - priorBytes + bytes > this.limits.totalBytes
     ) {
       this.markLimitExceeded();
       return;

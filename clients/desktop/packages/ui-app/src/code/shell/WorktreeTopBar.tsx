@@ -346,7 +346,7 @@ export function WorktreeTopBar({
                     onClick={onOpenWorktreeMenu}
                     aria-haspopup="menu"
                     aria-expanded={openMenuExpanded === true}
-                    className="electron-no-drag focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+                    className="electron-no-drag focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
                   >
                     Open
                     <ChevronDownIcon
@@ -381,7 +381,7 @@ export function WorktreeTopBar({
                     stopping
                   }
                   aria-label={stopping ? 'Stopping scripts' : 'Stop scripts'}
-                  className="electron-no-drag focus-ring flex h-6.5 items-center gap-1.5 rounded-md border border-line-destructive px-2.5 text-2xs font-medium fg-destructive transition hover:bg-destructive-subtle"
+                  className="electron-no-drag focus-ring flex h-6.5 items-center gap-1.5 rounded-md border border-line-destructive px-2.5 text-2xs font-medium fg-destructive transition-colors hover:bg-destructive-subtle"
                 >
                   <LoadingSpinner />
                   {stopping ? 'Stopping' : 'Stop'}

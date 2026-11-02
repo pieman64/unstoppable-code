@@ -7,22 +7,51 @@ import { createSecureFileServices } from '../secure-files';
 
 const darwinIt = process.platform === 'darwin' ? it : it.skip;
 
-it.each([null, 0, 1, 128, 1024])(
-  'preserves ACL evidence semantics for entries=%s',
-  async (entries) => {
-    const opened = await fs.stat(process.cwd(), { bigint: true });
-    const bytes = Buffer.alloc(24);
-    bytes.writeInt32LE(Number(BigInt.asIntN(32, opened.dev)), 0);
-    bytes.writeBigUInt64LE(opened.ino, 8);
-    const result = checkDarwinAcl(
-      JSON.stringify({ st: bytes.toString('base64'), entries }),
+/** Darwin's int32 st_dev as Node reports it there: sign-extended to 64 bits. */
+const darwinDevice = (dev: bigint): bigint =>
+  BigInt.asUintN(64, BigInt.asIntN(32, dev));
+
+describe.each([
+  ['the host device', undefined],
+  // Windows reports an unsigned volume serial, often at or above 2^31.
+  ['a device with the sign bit set', BigInt(0x8000_0000)],
+])('ACL receipts for %s', (_label, device) => {
+  it.each([null, 0, 1, 128, 1024])(
+    'preserves ACL evidence semantics for entries=%s',
+    async (entries) => {
+      const opened = await fs.stat(process.cwd(), { bigint: true });
+      // Identity on macOS; elsewhere the host device is not a Darwin dev_t.
+      opened.dev = darwinDevice(device ?? opened.dev);
+      const bytes = Buffer.alloc(24);
+      bytes.writeInt32LE(Number(BigInt.asIntN(32, opened.dev)), 0);
+      bytes.writeBigUInt64LE(opened.ino, 8);
+      const result = checkDarwinAcl(
+        JSON.stringify({ st: bytes.toString('base64'), entries }),
+        opened,
+      );
+      expect(result?.state ?? 'private').toBe(
+        entries !== null && entries > 0 ? 'insecure' : 'private',
+      );
+    },
+  );
+});
+
+it.each([
+  ['a zero-extended device', BigInt(0x8000_0000)],
+  ['another device', darwinDevice(BigInt(0x8000_0001))],
+])('returns unverifiable when the opened file has %s', async (_label, dev) => {
+  const opened = await fs.stat(process.cwd(), { bigint: true });
+  opened.dev = dev;
+  const bytes = Buffer.alloc(24);
+  bytes.writeInt32LE(-0x8000_0000, 0);
+  bytes.writeBigUInt64LE(opened.ino, 8);
+  expect(
+    checkDarwinAcl(
+      JSON.stringify({ st: bytes.toString('base64'), entries: null }),
       opened,
-    );
-    expect(result?.state ?? 'private').toBe(
-      entries !== null && entries > 0 ? 'insecure' : 'private',
-    );
-  },
-);
+    )?.state,
+  ).toBe('unverifiable');
+});
 let dir = '';
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(tmpdir(), 'darwin-acl-'));

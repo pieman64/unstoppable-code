@@ -47,6 +47,12 @@ export interface DetailActionSlots {
   /** Body declarations currently mounted, so the shell can show its row. */
   declared: number;
   register: () => () => void;
+  /**
+   * Body ⋯ More menus currently mounted, so a shell with rows of its own adds
+   * them to that menu instead of drawing a second one.
+   */
+  moreDeclared: number;
+  registerMore: () => () => void;
 }
 
 /**
@@ -93,6 +99,11 @@ export function useDetailActionSlots(): DetailActionSlots {
     setDeclared((count) => count + 1);
     return () => setDeclared((count) => count - 1);
   }, []);
+  const [moreDeclared, setMoreDeclared] = useState(0);
+  const registerMore = useCallback((): (() => void) => {
+    setMoreDeclared((count) => count + 1);
+    return () => setMoreDeclared((count) => count - 1);
+  }, []);
   return useMemo(
     () => ({
       more,
@@ -105,8 +116,19 @@ export function useDetailActionSlots(): DetailActionSlots {
       setPrimary,
       declared,
       register,
+      moreDeclared,
+      registerMore,
     }),
-    [more, secondary, share, primary, declared, register],
+    [
+      more,
+      secondary,
+      share,
+      primary,
+      declared,
+      register,
+      moreDeclared,
+      registerMore,
+    ],
   );
 }
 
@@ -148,10 +170,16 @@ export function DetailPageActions({
 }: DetailPageActionsProps): JSX.Element | null {
   const slots = useContext(DetailActionSlotsContext);
   const register = slots?.register;
+  const registerMore = slots?.registerMore;
   const hasActions = Boolean(more || secondary || share || primary);
+  const hasMore = Boolean(more);
   useLayoutEffect(
     () => (hasActions ? register?.() : undefined),
     [register, hasActions],
+  );
+  useLayoutEffect(
+    () => (hasMore ? registerMore?.() : undefined),
+    [registerMore, hasMore],
   );
   if (!slots) {
     return (

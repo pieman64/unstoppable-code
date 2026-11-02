@@ -1,7 +1,13 @@
 /**
  * @jest-environment jsdom
  */
-import { act, createRef, type MouseEvent, type ReactNode } from 'react';
+import {
+  act,
+  createRef,
+  type JSX,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type * as ReactModule from 'react';
 import type {
@@ -162,8 +168,8 @@ describe('PlanLogicDiffDiagram reveal (Bug 3)', () => {
       ref.current?.reveal('auth');
     });
 
-    expect(getButtonByText('Current').className).toContain(
-      'bg-fg-primary/[0.08]',
+    expect(getButtonByText('Current').getAttribute('aria-pressed')).toBe(
+      'true',
     );
   });
 
@@ -194,7 +200,7 @@ describe('PlanLogicDiffDiagram reveal (Bug 3)', () => {
     // presentation guaranteed to contain every node
     // (`buildUnifiedLogicFlow` unions current+planned by id) — before trying
     // to center.
-    expect(getButtonByText('Diff').className).toContain('bg-fg-primary/[0.08]');
+    expect(getButtonByText('Diff').getAttribute('aria-pressed')).toBe('true');
     expect(container.textContent).toContain('Rate Limit');
   });
 
@@ -236,9 +242,7 @@ describe('PlanLogicDiffDiagram reveal (Bug 3)', () => {
       act(() => {
         ref.current?.reveal('legacy-cache');
       });
-      expect(getButtonByText('Diff').className).toContain(
-        'bg-fg-primary/[0.08]',
-      );
+      expect(getButtonByText('Diff').getAttribute('aria-pressed')).toBe('true');
 
       const liveSetCenter = mockSetCenterFns[mockSetCenterFns.length - 1];
       if (!liveSetCenter) {

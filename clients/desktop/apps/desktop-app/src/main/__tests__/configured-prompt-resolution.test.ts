@@ -207,6 +207,13 @@ describe('configured prompt execution references', () => {
               pluginCount: 1,
               lastCheckedAt: '2026-09-23T00:00:00.000Z',
             },
+            codex: {
+              provider: 'codex',
+              state: 'invalid',
+              accepted: false,
+              pluginCount: 0,
+              lastCheckedAt: '2026-09-23T00:00:00.000Z',
+            },
           },
           plugins: [
             {
@@ -261,8 +268,7 @@ describe('configured prompt execution references', () => {
       {
         matchState: 'matched',
         ref: portableRef,
-        displayName: 'plugin',
-        displaySource: 'Built in',
+        catalogKey: 'app/plugin',
         selection: {
           kind: 'plugin',
           marketplaceId: 'app',
@@ -272,8 +278,7 @@ describe('configured prompt execution references', () => {
       {
         matchState: 'matched',
         ref: otherRef,
-        displayName: 'other',
-        displaySource: 'Built in',
+        catalogKey: 'app/other',
         selection: {
           kind: 'plugin',
           marketplaceId: 'app',
@@ -320,7 +325,7 @@ describe('configured prompt execution references', () => {
             roots: [{ absolutePath: root, rootKind: 'workspace-root' }],
           },
         }),
-      } as unknown as DesktopCanopyDispatcher);
+      });
       mockedCatalog.mockResolvedValue({
         marketplaces: [{ id: 'market', plugins: [{ name: 'alpha' }] }],
         skills: [],

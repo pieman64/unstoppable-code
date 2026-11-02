@@ -114,10 +114,12 @@ describe('CloudDailyCreditDripSettings', () => {
     loadCloudDailyCreditDrip.mockResolvedValue(state(false));
     await render();
 
-    expect(query('settings-daily-credit-drip')?.textContent).toContain(
-      'Get 10 free AI Credits every day.',
-    );
+    const section = query('settings-daily-credit-drip')?.textContent;
+    expect(section).toContain('Free daily AI Credits');
+    expect(section).not.toContain('Daily free AI Credits');
+    expect(section).toContain('Get 10 free AI Credits every day.');
     expect(toggle().getAttribute('aria-checked')).toBe('false');
+    expect(toggle().getAttribute('aria-label')).toBe('Free daily AI Credits');
   });
 
   it.each([

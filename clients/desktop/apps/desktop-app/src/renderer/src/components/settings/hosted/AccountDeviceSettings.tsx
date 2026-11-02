@@ -5,15 +5,6 @@ import {
   NoticeShapeProvider,
 } from '@canopy/ui-shared/components';
 import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
-import {
-  Bell2Icon,
-  BulletListIcon,
-  FolderIcon,
-  GitHubIcon,
-  LinearIcon,
-  MacbookIcon,
-  SparkleIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
 import { brandText } from '@/lib/brand';
 import { CanopyCloudAccountSection } from '../CanopyCloudAccountSection';
@@ -36,12 +27,11 @@ import { PersonalCatalogRows } from '../PersonalCatalogSettings';
  *
  * The sections read and write through `window.api` only, never the hosted
  * settings client or store, so they work signed out and while hosted data
- * loads or fails. Each renders as a shared `SettingsCard`, matching the
- * cards above it (a deliberate deviation from the local settings idiom on
- * these merged pages only).
+ * loads or fails. They render as shared `SettingsCard` sections, the same
+ * text-only heading and grouped rows as the hosted sections above them, so
+ * "On this computer" reads as one more section of the page rather than a
+ * second card style.
  */
-
-const CARD_ICON_SIZE = 18;
 
 function DeviceSettingsRegion({
   page,
@@ -50,22 +40,22 @@ function DeviceSettingsRegion({
   page: AccountSettingsPage;
   children: ReactNode;
 }): JSX.Element {
-  const headingId = `account-device-settings-${page}-heading`;
   return (
     <section
-      aria-labelledby={headingId}
-      className="flex flex-col gap-6"
+      aria-label="On this computer"
+      className="flex flex-col gap-10"
       data-testid={`account-device-settings-${page}`}
     >
-      <h2 id={headingId} className="text-s fg-secondary">
-        On this computer
-      </h2>
       {children}
     </section>
   );
 }
 
-/** A card body: the desktop rows, divided like a settings group. */
+/**
+ * A section body: the desktop rows, divided like a settings group. The rows
+ * bring their own 12px inset; `data-settings-card-rows` tells the shared box
+ * to drop its own vertical inset, as it does for shared rows.
+ */
 function DeviceCardRows({
   notice,
   children,
@@ -74,7 +64,7 @@ function DeviceCardRows({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3" data-settings-card-rows="">
       {notice}
       <div className="flex flex-col divide-y *:py-3">
         {/* A notice inside a row is part of that row, not a card. */}
@@ -88,8 +78,7 @@ function AccountPageDeviceSettings(): JSX.Element {
   return (
     <DeviceSettingsRegion page="account">
       <SettingsCard
-        icon={<MacbookIcon size={CARD_ICON_SIZE} />}
-        title="Signed in on this computer"
+        title="On this computer"
         testId="account-device-card-cloud-account"
       >
         <DeviceCardRows>
@@ -108,9 +97,8 @@ function ProfilePageDeviceSettings(): JSX.Element | null {
       renderFrame={({ notices, row }) => (
         <DeviceSettingsRegion page="profile">
           <SettingsCard
-            icon={<FolderIcon size={CARD_ICON_SIZE} />}
-            title="Personal projects on the web"
-            subtitle="Only you can see this list. Project names and repository details can be sensitive."
+            title="On this computer"
+            subtitle="Only you can see your personal projects on the web. Project names and repository details can be sensitive."
             testId="personal-catalog-settings"
           >
             <DeviceCardRows notice={notices}>{row}</DeviceCardRows>
@@ -128,26 +116,25 @@ function NotificationsPageDeviceSettings(): JSX.Element {
       {settings.loaded ? (
         <>
           <SettingsCard
-            icon={<Bell2Icon size={CARD_ICON_SIZE} />}
-            title="In-app notifications"
-            testId="account-device-card-in-app-notifications"
+            title="On this computer"
+            testId="account-device-card-notifications"
           >
-            <DeviceCardRows>
-              <InAppNotificationRows settings={settings} />
-            </DeviceCardRows>
-          </SettingsCard>
-          <SettingsCard
-            icon={<MacbookIcon size={CARD_ICON_SIZE} />}
-            title="OS notifications"
-            testId="account-device-card-os-notifications"
-          >
-            <DeviceCardRows>
-              <OsNotificationRows settings={settings} />
-            </DeviceCardRows>
+            <div data-testid="account-device-card-in-app-notifications">
+              <DeviceCardRows>
+                <InAppNotificationRows settings={settings} />
+              </DeviceCardRows>
+            </div>
+            <div
+              className="border-t"
+              data-testid="account-device-card-os-notifications"
+            >
+              <DeviceCardRows>
+                <OsNotificationRows settings={settings} />
+              </DeviceCardRows>
+            </div>
           </SettingsCard>
           {settings.activationJourneyEnabled ? (
             <SettingsCard
-              icon={<SparkleIcon size={CARD_ICON_SIZE} />}
               title="Promotional notifications"
               subtitle={`Tips and product news from ${brandText.appName}, sent as OS notifications. Agent, approval, and failure alerts are not affected.`}
               testId="notifications-promotional-section"
@@ -164,7 +151,6 @@ function NotificationsPageDeviceSettings(): JSX.Element {
             </SettingsCard>
           ) : null}
           <SettingsCard
-            icon={<BulletListIcon size={CARD_ICON_SIZE} />}
             title="Categories"
             subtitle={
               <>
@@ -196,23 +182,17 @@ function NotificationsPageDeviceSettings(): JSX.Element {
 function IntegrationsPageDeviceSettings(): JSX.Element {
   return (
     <DeviceSettingsRegion page="integrations">
-      <SettingsCard
-        icon={<GitHubIcon size={CARD_ICON_SIZE} />}
-        title="GitHub on this computer"
-        testId="account-device-card-github"
-      >
-        <DeviceCardRows>
-          <ProviderAuthPanel provider="github" layout="row" />
-        </DeviceCardRows>
-      </SettingsCard>
-      <SettingsCard
-        icon={<LinearIcon size={CARD_ICON_SIZE} />}
-        title="Linear"
-        testId="account-device-card-linear"
-      >
-        <DeviceCardRows>
-          <LinearKeyRow />
-        </DeviceCardRows>
+      <SettingsCard title="On this computer" testId="account-device-card-tools">
+        <div data-testid="account-device-card-github">
+          <DeviceCardRows>
+            <ProviderAuthPanel provider="github" layout="row" />
+          </DeviceCardRows>
+        </div>
+        <div className="border-t" data-testid="account-device-card-linear">
+          <DeviceCardRows>
+            <LinearKeyRow />
+          </DeviceCardRows>
+        </div>
       </SettingsCard>
     </DeviceSettingsRegion>
   );
@@ -244,6 +224,7 @@ export function AccountDeviceSettings({
     case 'security':
     case 'billing':
     case 'labs':
+    case 'appearance':
       return null;
   }
 }

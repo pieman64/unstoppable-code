@@ -1,4 +1,5 @@
 import type * as SidebarItemsModule from '../../../lib/sidebar-items';
+import type * as WorkspaceClaudeMdModule from '../../../lib/workspace-claude-md';
 import type { SidebarItemsFile } from '@canopy/desktop-shared/types';
 import {
   IPC_CHANNELS,
@@ -12,6 +13,7 @@ import {
   handlePortalWorkspaceClaudeMdSave,
   handlePortalWorkspaceCreate,
   handlePortalWorkspaceDelete,
+  handlePortalWorkspaceDeleteDiscardDescribe,
   handlePortalWorkspaceReorder,
   handlePortalWorkspaceScriptsGet,
   handlePortalWorkspaceScriptsSave,
@@ -19,6 +21,8 @@ import {
 } from '../workspace-adapter';
 import type { PortalAdapterContext } from '../types';
 import { deleteWorkspaceById } from '../../../lib/workspace-deletion';
+import { describeProjectDeletionDiscard } from '../../../lib/project-deletion-discard';
+import type { ProjectDeletionDiscardDescription } from '@canopy/protocol/portal/project-deletion-discard';
 import {
   LIVE_DELEGATES_REMOVAL_REFUSAL,
   LiveDelegationsError,
@@ -29,7 +33,7 @@ import {
   updateWorkspaceMetadata,
   WorkspaceMetadataRefusedError,
 } from '../../../lib/workspace-metadata';
-import { readWorkspaceScriptCommands } from '../../../lib/workspace-script-config';
+import { readPortalWorkspaceScriptCommands } from '../../portal-workspace-reads';
 import { updateWorkspaceScripts } from '../../../lib/workspace-script-hook-settings';
 import {
   loadWorkspaceClaudeMd,
@@ -51,15 +55,15 @@ jest.mock('../../../lib/window-send', () => ({
 jest.mock('../../../lib/workspace-deletion', () => ({
   deleteWorkspaceById: jest.fn(),
 }));
+jest.mock('../../../lib/project-deletion-discard', () => ({
+  describeProjectDeletionDiscard: jest.fn(),
+}));
 jest.mock('../../../lib/workspace-metadata', () => ({
   ...jest.requireActual<typeof WorkspaceMetadataModule>(
     '../../../lib/workspace-metadata',
   ),
   reorderWorkspaces: jest.fn(),
   updateWorkspaceMetadata: jest.fn(),
-}));
-jest.mock('../../../lib/workspace-script-config', () => ({
-  readWorkspaceScriptCommands: jest.fn(),
 }));
 jest.mock('../../../lib/workspace-script-hook-settings', () => ({
   updateWorkspaceScripts: jest.fn(),
@@ -91,6 +95,25 @@ jest.mock('../../portal-workspace-reads', () => ({
     jest
       .requireMock<typeof SidebarItemsModule>('../../../lib/sidebar-items')
       .readAllSidebarItems(),
+  // The Portal reaches these through core.workspace.instructions.*, whose
+  // desktop handlers call the shared load/save helpers mocked above.
+  readPortalWorkspaceInstructions: (workspaceId: string): Promise<string> =>
+    jest
+      .requireMock<
+        typeof WorkspaceClaudeMdModule
+      >('../../../lib/workspace-claude-md')
+      .loadWorkspaceClaudeMd(workspaceId),
+  writePortalWorkspaceInstructions: (
+    workspaceId: string,
+    content: string,
+  ): Promise<void> =>
+    jest
+      .requireMock<
+        typeof WorkspaceClaudeMdModule
+      >('../../../lib/workspace-claude-md')
+      .saveWorkspaceClaudeMd(workspaceId, content, 'portal'),
+  // The Portal reads scripts through core.script.definition.list (CAN-4153).
+  readPortalWorkspaceScriptCommands: jest.fn(),
 }));
 jest.mock('../../../lib/window-send', () => ({
   sendToWindow: jest.fn(),
@@ -111,9 +134,12 @@ jest.mock('../../portal-state-store', () => ({
 }));
 
 const mockedDelete = jest.mocked(deleteWorkspaceById);
+const mockedDescribeDeletionDiscard = jest.mocked(
+  describeProjectDeletionDiscard,
+);
 const mockedSendToWindow = jest.mocked(sendToWindow);
 const mockedUpdateMeta = jest.mocked(updateWorkspaceMetadata);
-const mockedReadScripts = jest.mocked(readWorkspaceScriptCommands);
+const mockedReadScripts = jest.mocked(readPortalWorkspaceScriptCommands);
 const mockedSaveScripts = jest.mocked(updateWorkspaceScripts);
 const mockedLoadClaudeMd = jest.mocked(loadWorkspaceClaudeMd);
 const mockedSaveClaudeMd = jest.mocked(saveWorkspaceClaudeMd);
@@ -189,7 +215,7 @@ describe('project portal adapter — delete', () => {
       adapterContext(events),
     );
 
-    expect(mockedDelete).toHaveBeenCalledWith('ws-1', 'portal');
+    expect(mockedDelete).toHaveBeenCalledWith('ws-1', 'portal', {});
     expect(mockedSendToWindow).toHaveBeenCalledWith(
       null,
       IPC_CHANNELS.workspaceWorktreesUpdated,
@@ -261,6 +287,184 @@ describe('project portal adapter — delete', () => {
     expect(mockedSendToWindow).not.toHaveBeenCalled();
     expect(events.map((event) => event.type)).toEqual([
       'portal.command.failed',
+    ]);
+  });
+});
+
+describe('project portal adapter — deletion discard (CAN-5337)', () => {
+  const agent = {
+    kind: 'external_agent' as const,
+    connectionId: '00000000-0000-4000-8000-000000000001',
+    clientName: 'Agent',
+    verified: true,
+    userId: '00000000-0000-4000-8000-000000000002',
+  };
+  const OPERATION_ID = '00000000-0000-4000-8000-0000000000aa';
+  const discardable: ProjectDeletionDiscardDescription = {
+    version: 1,
+    workspaceId: 'ws-1',
+    status: 'discardable',
+    items: [],
+    interruptedDeletion: { operationId: OPERATION_ID },
+  };
+  const sourceRefusal = Object.assign(
+    new Error(
+      "A source repository for this project's worktrees is unavailable. Retry after it is available.",
+    ),
+    { reason: 'source-unavailable' },
+  );
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  function failures(events: PortalEventEnvelope[]): unknown[] {
+    return events
+      .filter((event) => event.type === 'portal.command.failed')
+      .map((event) => event.payload);
+  }
+
+  it('points a refusal that only discardable items cause at the discard, keeping its code', async () => {
+    mockedDelete.mockRejectedValue(
+      Object.assign(sourceRefusal, { code: 'conflict' }),
+    );
+    mockedDescribeDeletionDiscard.mockResolvedValue(discardable);
+    const events: PortalEventEnvelope[] = [];
+
+    await handlePortalWorkspaceDelete(
+      command({ workspaceId: 'ws-1' }),
+      adapterContext(events),
+    );
+
+    expect(mockedDescribeDeletionDiscard).toHaveBeenCalledWith('ws-1');
+    expect(failures(events)).toEqual([
+      {
+        error: {
+          code: 'conflict',
+          message:
+            "A source repository for this project's worktrees is missing, or a worktree's removal can't finish. If a repository is on a disconnected drive or share, reconnect it and retry. Otherwise, delete the project in the desktop app or on the web to discard the affected worktrees.",
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ['is refused', { ...discardable, status: 'refused' as const }],
+    ['throws', null],
+  ])(
+    'keeps the refusal message when the description %s',
+    async (_label, description) => {
+      const refusal = new Error('Archive quarantine requires manual recovery.');
+      mockedDelete.mockRejectedValue(refusal);
+      if (description)
+        mockedDescribeDeletionDiscard.mockResolvedValue(description);
+      else
+        mockedDescribeDeletionDiscard.mockRejectedValue(
+          new Error('unreadable'),
+        );
+      const events: PortalEventEnvelope[] = [];
+
+      await handlePortalWorkspaceDelete(
+        command({ workspaceId: 'ws-1' }),
+        adapterContext(events),
+      );
+
+      expect(failures(events)).toEqual([
+        {
+          error: {
+            code: 'execution_failed',
+            message: 'Archive quarantine requires manual recovery.',
+          },
+        },
+      ]);
+    },
+  );
+
+  it("passes a person's supersede and drops an agent's", async () => {
+    mockedDelete.mockResolvedValue();
+
+    await handlePortalWorkspaceDelete(
+      command({
+        workspaceId: 'ws-1',
+        supersedeInterruptedDeletion: OPERATION_ID,
+      }),
+      adapterContext([]),
+    );
+    await handlePortalWorkspaceDelete(
+      command({
+        workspaceId: 'ws-1',
+        supersedeInterruptedDeletion: OPERATION_ID,
+      }),
+      { ...adapterContext([]), origin: agent },
+    );
+    await handlePortalWorkspaceDelete(
+      command({ workspaceId: 'ws-1', supersedeInterruptedDeletion: 7 }),
+      adapterContext([]),
+    );
+
+    expect(mockedDelete.mock.calls).toEqual([
+      ['ws-1', 'portal', { supersedeInterruptedDeletion: OPERATION_ID }],
+      ['ws-1', 'portal', {}],
+      ['ws-1', 'portal', {}],
+    ]);
+  });
+
+  it("refuses a person's malformed supersede before deleting", async () => {
+    const events: PortalEventEnvelope[] = [];
+
+    await handlePortalWorkspaceDelete(
+      command({
+        workspaceId: 'ws-1',
+        supersedeInterruptedDeletion: 'NOT/an-operation-id',
+      }),
+      adapterContext(events),
+    );
+
+    expect(mockedDelete).not.toHaveBeenCalled();
+    expect(failures(events)).toEqual([
+      {
+        error: {
+          code: 'invalid_payload',
+          message:
+            'Invalid project delete payload: supersedeInterruptedDeletion must be an operation id.',
+        },
+      },
+    ]);
+  });
+
+  it('describes for a person, refuses an agent and an invalid payload', async () => {
+    mockedDescribeDeletionDiscard.mockResolvedValue(discardable);
+    const events: PortalEventEnvelope[] = [];
+
+    await handlePortalWorkspaceDeleteDiscardDescribe(
+      command({ workspaceId: 'ws-1' }),
+      adapterContext(events),
+    );
+    await handlePortalWorkspaceDeleteDiscardDescribe(
+      command({ workspaceId: 'ws-1' }),
+      { ...adapterContext(events), origin: agent },
+    );
+    await handlePortalWorkspaceDeleteDiscardDescribe(
+      command({ workspaceId: 'Bad Id!' }),
+      adapterContext(events),
+    );
+
+    expect(mockedDescribeDeletionDiscard).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'portal.command.completed',
+        payload: { result: discardable },
+      }),
+      expect.objectContaining({
+        type: 'portal.command.failed',
+        payload: {
+          error: {
+            code: 'forbidden',
+            message: 'Only a person can discard a worktree.',
+          },
+        },
+      }),
+      expect.objectContaining({ type: 'portal.command.failed' }),
     ]);
   });
 });

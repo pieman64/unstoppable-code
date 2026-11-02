@@ -18,6 +18,7 @@ import { TextAreaField } from '../shared/TextAreaField';
 import { SelectField } from '../shared/SelectField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 const TRIGGER_LABELS: Record<PipelineTriggerType, string> = {
@@ -208,14 +209,16 @@ function InputDefEditor({
         </div>
         {!readonly && (
           <Tooltip label="Remove input">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={onRemove}
               aria-label="Remove input"
-              className="mt-6 p-1.5 fg-secondary hover:fg-destructive transition-colors rounded"
+              className="mt-6"
             >
               <AppCatalogCloseIcon width="14" height="14" />
-            </button>
+            </Button>
           </Tooltip>
         )}
       </div>
@@ -438,14 +441,9 @@ export function TriggerInputsEditor({
           {TRIGGER_LABELS[triggerType]}
         </h3>
         {!readonly && (
-          <button
-            type="button"
-            onClick={addInput}
-            className="text-xs font-medium fg-secondary hover:fg-primary
-              px-2 py-1 border rounded-md hover:bg-secondary transition-colors"
-          >
+          <Button size="compact" onClick={addInput}>
             Add input
-          </button>
+          </Button>
         )}
       </div>
       {entries.length === 0 ? (

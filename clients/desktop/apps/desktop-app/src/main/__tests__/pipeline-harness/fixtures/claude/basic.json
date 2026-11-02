@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "scenario": "handwritten-basic-claude",
+  "provider": "claude",
+  "tier": "fast",
+  "profile": "claude-chat",
+  "provenance": {
+    "binaryVersion": "handwritten-not-recorded"
+  },
+  "semantics": ["synthetic-bootstrap", "root-output-terminal"],
+  "steps": [
+    {
+      "kind": "control",
+      "action": "send",
+      "ids": {
+        "message": "m1"
+      }
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "sdk:system:init",
+      "ids": {
+        "session": "s1",
+        "message": "m2"
+      },
+      "template": "claude.sdk-message"
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "sdk:assistant",
+      "shape": ["text"],
+      "ids": {
+        "session": "s1",
+        "message": "m3"
+      },
+      "template": "claude.sdk-message",
+      "fields": {
+        "stopReason": null
+      }
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "sdk:result:success",
+      "ids": {
+        "session": "s1",
+        "message": "m4"
+      },
+      "fields": {
+        "resultSubtype": "success",
+        "isError": false,
+        "stopReason": "end_turn"
+      },
+      "template": "claude.sdk-message",
+      "consumed": ["m1"]
+    }
+  ]
+}

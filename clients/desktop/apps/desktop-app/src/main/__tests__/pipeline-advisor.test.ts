@@ -5,20 +5,27 @@ jest.mock('../lib/window-send', () => ({
   sendToWindow: jest.fn(),
 }));
 
-const mockReadPreferencesFile = jest.fn();
 jest.mock('../lib/preferences-store', () => {
   const actual = jest.requireActual<typeof PreferencesStoreModule>(
     '../lib/preferences-store',
   );
-  return {
-    ...actual,
-    readPreferencesFile: mockReadPreferencesFile,
-  };
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      readPreferencesFile: {
+        value: jest.fn(),
+        enumerable: true,
+      },
+    },
+  );
 });
 
 const mockLoadExecutionState = jest.fn();
 jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => ({
-  loadExecutionState: mockLoadExecutionState,
+  get loadExecutionState(): typeof mockLoadExecutionState {
+    return mockLoadExecutionState;
+  },
 }));
 
 const mockAdvisorSnapshots = new Map<string, PipelineAdvisorSnapshot>();
@@ -52,7 +59,10 @@ const mockRunPipelineAdvisorSdkTurn = jest.fn<
   Promise<PipelineAdvisorSdkTurnResult>,
   [PipelineAdvisorSdkTurnInput]
 >();
-const mockIsModelBlockedByStoredPolicy = jest.fn(() => Promise.resolve(false));
+const mockIsModelBlockedByStoredPolicy = jest.fn<
+  Promise<boolean>,
+  [model: string]
+>(() => Promise.resolve(false));
 const mockResolveHelperInvocation = jest.fn<
   ReturnType<typeof resolveHelperInvocation>,
   Parameters<typeof resolveHelperInvocation>
@@ -80,7 +90,9 @@ jest.mock('../ollama/helper-invocation', () => ({
 }));
 jest.mock('../pipelines/pipeline-advisor-sdk', () => ({
   PIPELINE_ADVISOR_SYSTEM_PROMPT: 'advisor system prompt',
-  runPipelineAdvisorSdkTurn: mockRunPipelineAdvisorSdkTurn,
+  get runPipelineAdvisorSdkTurn(): typeof mockRunPipelineAdvisorSdkTurn {
+    return mockRunPipelineAdvisorSdkTurn;
+  },
 }));
 
 const mockStartObservedTask = jest.fn();
@@ -91,12 +103,24 @@ const mockFinalizeObservedTask = jest.fn();
 const mockMarkObservedTaskAccountProxyRouted = jest.fn();
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    startObservedTask: mockStartObservedTask,
-    seedTranscript: mockSeedTranscript,
-    appendTranscriptRecord: mockAppendTranscriptRecord,
-    updateObservedTask: mockUpdateObservedTask,
-    finalizeObservedTask: mockFinalizeObservedTask,
-    markObservedTaskAccountProxyRouted: mockMarkObservedTaskAccountProxyRouted,
+    get startObservedTask(): typeof mockStartObservedTask {
+      return mockStartObservedTask;
+    },
+    get seedTranscript(): typeof mockSeedTranscript {
+      return mockSeedTranscript;
+    },
+    get appendTranscriptRecord(): typeof mockAppendTranscriptRecord {
+      return mockAppendTranscriptRecord;
+    },
+    get updateObservedTask(): typeof mockUpdateObservedTask {
+      return mockUpdateObservedTask;
+    },
+    get finalizeObservedTask(): typeof mockFinalizeObservedTask {
+      return mockFinalizeObservedTask;
+    },
+    get markObservedTaskAccountProxyRouted(): typeof mockMarkObservedTaskAccountProxyRouted {
+      return mockMarkObservedTaskAccountProxyRouted;
+    },
   })),
 }));
 
@@ -125,7 +149,12 @@ import {
   getPipelineAdvisorService,
   PIPELINE_ADVISOR_REPORT_SCHEMA,
 } from '../pipelines/pipeline-advisor';
-import { DEFAULT_PREFERENCES } from '../lib/preferences-store';
+import {
+  DEFAULT_PREFERENCES,
+  readPreferencesFile,
+} from '../lib/preferences-store';
+
+const mockReadPreferencesFile = jest.mocked(readPreferencesFile);
 
 initCodexModels([{ id: 'gpt-5.5', label: 'GPT 5.5' }]);
 initOllamaModels([
@@ -193,11 +222,12 @@ afterEach(async () => {
 });
 
 function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
+  // Version-4 persisted states predate the materialized job/group fields.
   return {
     version: 4,
     id: 'execution-1',
     pipeline_id: 'pipeline-1',
-    pipeline_snapshot: { name: 'Pipeline 1', jobs: {} },
+    pipeline_snapshot: { name: 'Pipeline 1', scope: ['directory'], jobs: {} },
     status: 'running',
     jobs: {},
     started_at: '2026-05-13T00:00:00.000Z',
@@ -206,7 +236,7 @@ function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
     inputs: {},
     project_id: 'project-1',
     ...overrides,
-  };
+  } as ExecutionState;
 }
 
 function createHandle(state: ExecutionState): {
@@ -247,7 +277,10 @@ function createRuntime(): ExecutionRuntime {
   };
 }
 
-function createSdkReport(): Record<string, unknown> {
+function createSdkReport(): Pick<
+  PipelineAdvisorReport,
+  'health' | 'eta' | 'inefficiencies' | 'summary' | 'recommendations'
+> {
   return {
     health: {
       status: 'healthy',
@@ -268,7 +301,10 @@ function createSdkReport(): Record<string, unknown> {
   };
 }
 
-function createFinalReport(): Record<string, unknown> {
+function createFinalReport(): Pick<
+  PipelineAdvisorReport,
+  'health' | 'eta' | 'inefficiencies' | 'summary' | 'recommendations'
+> {
   return {
     ...createSdkReport(),
     eta: {
@@ -484,6 +520,7 @@ it('resolves the persisted Ollama advisor model for loopback dispatch', async ()
       modelSource: 'ollama',
       executionHarness: 'codex',
       serviceTier: 'priority',
+      label: 'Workflow Advisor',
     }),
   );
 });
@@ -496,6 +533,7 @@ it('records AI Credits routing on the Advisor audit entry', async () => {
     sdkModel: 'gateway-gpt',
     codexConfig: { model_provider: 'canopy-gateway' },
     aiCreditsRouted: true,
+    dispose: () => undefined,
   });
   const { handle } = createHandle(createState());
 
@@ -556,6 +594,7 @@ it('passes the resolved invocation route facts for Codex speed admission', async
     sdkModel: 'gateway-gpt',
     codexConfig: { model_provider: 'canopy-gateway' },
     aiCreditsRouted: true,
+    dispose: () => undefined,
   });
   const { handle } = createHandle(
     createState({ model_config: { speed: 'ultrafast' } }),
@@ -693,7 +732,7 @@ it('preserves a restored advisor snapshot when its model becomes blocked', async
     latestReport: { reportId: 'preserved-report' },
     lastError: {
       message:
-        'Pipeline Advisor was skipped: this model is blocked by your organization policy.',
+        'Workflow Advisor was skipped: this model is blocked by your organization policy.',
     },
   });
 });
@@ -721,7 +760,7 @@ it('fails closed before dispatch when the configured advisor model is blocked by
     status: 'waiting',
     lastError: {
       message:
-        'Pipeline Advisor was skipped: this model is blocked by your organization policy.',
+        'Workflow Advisor was skipped: this model is blocked by your organization policy.',
     },
   });
 });
@@ -752,7 +791,7 @@ it('rechecks organization policy immediately before each advisor dispatch', asyn
     status: 'waiting',
     lastError: {
       message:
-        'Pipeline Advisor was skipped: this model is blocked by your organization policy.',
+        'Workflow Advisor was skipped: this model is blocked by your organization policy.',
     },
   });
 });
@@ -1028,6 +1067,7 @@ it('adds a heuristic ETA when the advisor returns unknown for a running pipeline
   const state = createState({
     pipeline_snapshot: {
       name: 'Pipeline 1',
+      scope: ['directory'],
       jobs: {
         completed_review: {
           name: 'Completed review',
@@ -1328,7 +1368,7 @@ it('removes empty string array entries from normalized reports before storage', 
 
 it('does not duplicate a final report for the same completed_at', async () => {
   const completedAt = '2026-05-13T00:02:00.000Z';
-  const finalReport = {
+  const finalReport: PipelineAdvisorReport = {
     ...createFinalReport(),
     version: 1,
     reportId: 'final-report',
@@ -1445,7 +1485,7 @@ it('does not mutate a finalized snapshot when its model later becomes blocked', 
 });
 
 it('reactivates retry snapshots and resumes the existing sdk session', async () => {
-  const finalReport = {
+  const finalReport: PipelineAdvisorReport = {
     ...createFinalReport(),
     version: 1,
     reportId: 'final-report',
@@ -1453,7 +1493,7 @@ it('reactivates retry snapshots and resumes the existing sdk session', async () 
     kind: 'final',
     generatedAt: '2026-05-13T00:02:00.000Z',
     pipelineStatus: 'failure',
-  } as PipelineAdvisorReport;
+  };
   mockAdvisorSnapshots.set('execution-1', {
     version: 1,
     executionId: 'execution-1',
@@ -1483,6 +1523,7 @@ it('reactivates retry snapshots and resumes the existing sdk session', async () 
 
   let snapshot = mockAdvisorSnapshots.get('execution-1') as
     | {
+        sdkSessionId?: string;
         status?: string;
         turnCount?: number;
         backoffIndex?: number;
@@ -1508,14 +1549,7 @@ it('reactivates retry snapshots and resumes the existing sdk session', async () 
   expect(mockRunPipelineAdvisorSdkTurn).toHaveBeenCalledWith(
     expect.objectContaining({ sdkSessionId: 'thread-retry' }),
   );
-  snapshot = mockAdvisorSnapshots.get('execution-1') as
-    | {
-        sdkSessionId?: string;
-        finalizedCompletedAt?: string;
-        lastError?: unknown;
-        reports?: { kind: string }[];
-      }
-    | undefined;
+  snapshot = mockAdvisorSnapshots.get('execution-1');
   expect(snapshot?.sdkSessionId).toBe('thread-retry');
   expect(snapshot?.finalizedCompletedAt).toBeUndefined();
   expect(snapshot?.lastError).toBeUndefined();
@@ -1582,7 +1616,7 @@ it('watches an immediate retry while the previous final advisor turn is still pe
   expect(mockFinalizeObservedTask).toHaveBeenCalledWith(
     expect.any(String),
     'interrupted',
-    'Pipeline Advisor interrupted by retry',
+    'Workflow Advisor interrupted by retry',
   );
 
   pendingFinal.resolve({
@@ -1601,6 +1635,7 @@ it('does not dispatch an advisor turn after interruption during invocation resol
     harness: 'codex';
     sdkModel: 'gpt-5.5';
     aiCreditsRouted: false;
+    dispose: () => void;
   }>();
   mockResolveHelperInvocation.mockReturnValueOnce(pendingInvocation.promise);
   const first = createHandle(
@@ -1642,7 +1677,7 @@ it('does not dispatch an advisor turn after interruption during invocation resol
   expect(mockFinalizeObservedTask).toHaveBeenCalledWith(
     expect.any(String),
     'interrupted',
-    'Pipeline Advisor interrupted by retry',
+    'Workflow Advisor interrupted by retry',
   );
 });
 

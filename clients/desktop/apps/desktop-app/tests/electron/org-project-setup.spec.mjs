@@ -3089,7 +3089,7 @@ for (const phase of ['promoted', 'bound', 'completing']) {
 // Real Combine IPC, git moves and durable binding, no restart. The join is
 // invoked through preload; the Add repository modal is covered by
 // add-workspace-existing-worktree.spec.mjs and split-workspace.spec.mjs.
-test('binds a temporary mixed combination after join and retains the binding through split, reuse and promotion', async () => {
+test('binds a legacy Personal combination and retains its binding through split, refused shared-source reuse and promotion', async () => {
   test.setTimeout(180_000);
   const apiKey = 'csk_mixed_combination_lifecycle';
   const userDataDir = realpathSync(
@@ -3100,6 +3100,17 @@ test('binds a temporary mixed combination after join and retains the binding thr
     organizationWorktreeIds: ['org-feature'],
     personalRemoteUrl: 'https://github.com/someone/notes.git',
   });
+  // CAN-3571: only a legacy Personal combination may be auto-converted.
+  // An already organization-owned shared source must use the new flow.
+  const sourceConfigPath = path.join(
+    userDataDir,
+    'workspaces',
+    'context-organization',
+    'workspace.json',
+  );
+  const sourceConfig = JSON.parse(readFileSync(sourceConfigPath, 'utf8'));
+  delete sourceConfig.owner;
+  writeFileSync(sourceConfigPath, JSON.stringify(sourceConfig));
   const orgRepoPath = path.join(userDataDir, 'repos', 'context-organization');
   execFileSync(
     'git',
@@ -3280,13 +3291,18 @@ test('binds a temporary mixed combination after join and retains the binding thr
     const [first, second] = split.results.filter(
       (result) => result.disposition === 'split',
     );
-    const reused = await combine(
-      first.destinationWorkspaceId,
-      first.destinationWorktreeId,
-      second.destinationWorkspaceId,
-      second.destinationWorktreeId,
+    // The split sources now include a shared organization project. CAN-3571
+    // requires a new shared project instead of consuming those worktrees.
+    await expect(
+      combine(
+        first.destinationWorkspaceId,
+        first.destinationWorktreeId,
+        second.destinationWorkspaceId,
+        second.destinationWorktreeId,
+      ),
+    ).rejects.toThrow(
+      'Create a new shared multi-repo project to combine organization projects',
     );
-    expect(reused.destinationWorkspaceId).toBe(combined.destinationWorkspaceId);
     expect(readConfig().owner).toEqual(bound);
     expect(
       (await getScenarioActivity(DEFAULT_MOCK_BASE_URL, apiKey)).activity
@@ -3294,7 +3310,7 @@ test('binds a temporary mixed combination after join and retains the binding thr
     ).toBe(beforeCount);
     await window.evaluate(
       (request) => window.api.promoteTemporaryWorkspace(request),
-      { workspaceId: reused.destinationWorkspaceId, name: 'Mixed platform' },
+      { workspaceId: combined.destinationWorkspaceId, name: 'Mixed platform' },
     );
     expect(readConfig().temporary).toBeUndefined();
     expect(readConfig().owner).toEqual(bound);

@@ -66,6 +66,7 @@ export {
 } from './chat/notifications';
 import type { ChatState } from './chat/state';
 import { registerChatStoreApi } from './chat/store-ref';
+import { reconcileInterruptedTurnResumeSessions } from './chat/interrupted-turn-resume';
 import {
   createFrameBatchedStoreView,
   type FrameBatchedStoreView,
@@ -158,6 +159,11 @@ export const useChatStore: UseBoundStore<StoreApi<ChatState>> = Object.assign(
 );
 
 registerChatStoreApi(useChatStore);
+useChatStore.subscribe((state, previous) => {
+  if (state.worktreeChats !== previous.worktreeChats) {
+    reconcileInterruptedTurnResumeSessions();
+  }
+});
 
 export type { ChatTabRenderEntry, ChatTabStripTab };
 

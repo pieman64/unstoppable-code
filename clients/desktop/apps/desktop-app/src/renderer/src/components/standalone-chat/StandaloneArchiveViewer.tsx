@@ -1,4 +1,4 @@
-import { TranscriptPagingControls } from '@canopy/ui-shared/components';
+import { Button, TranscriptPagingControls } from '@canopy/ui-shared/components';
 import { installTranscriptPage } from '@/stores/chat/transcript-pages';
 import type { ChatTranscriptPageRequest } from '@canopy/desktop-shared/types';
 import {
@@ -171,24 +171,25 @@ export function StandaloneArchiveViewer({
           </div>
           <div className="flex items-center gap-1">
             <Tooltip label="New chat">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 onClick={handleNewChat}
                 data-testid="standalone-archive-new-chat"
-                className="rounded p-1.5 text-xs fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary"
                 aria-label="New chat"
               >
                 <AppCatalogPlusIcon width="14" height="14" />
-              </button>
+              </Button>
             </Tooltip>
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={handleResume}
               disabled={!archiveChatId}
-              className="rounded-md bg-accent-subtle px-2.5 py-1 text-xs font-medium fg-accent hover:bg-accent-subtle/80"
             >
               Resume as new chat
-            </button>
+            </Button>
           </div>
         </div>
         {meta && (

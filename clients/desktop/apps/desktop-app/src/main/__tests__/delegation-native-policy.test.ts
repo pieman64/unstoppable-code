@@ -20,8 +20,19 @@ import {
 } from '../agents/delegation/native-policy';
 import { evaluateApproval } from '@canopy/desktop-shared/lib/approval-engine';
 import type { ApprovalCheck, ApprovalMode } from '@canopy/desktop-shared/types';
+import type {
+  ApprovalCheckDisplay,
+  ApprovalSessionHandle,
+} from '../approvals/approval-service';
 import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
 import type * as FsPromises from 'node:fs/promises';
+
+function noPendingApprovalReevaluation(): ApprovalSessionHandle['reevaluatePendingApprovals'] {
+  return jest.fn<
+    ReturnType<ApprovalSessionHandle['reevaluatePendingApprovals']>,
+    Parameters<ApprovalSessionHandle['reevaluatePendingApprovals']>
+  >(() => Promise.resolve());
+}
 
 const actualFsPromises =
   jest.requireActual<typeof FsPromises>('node:fs/promises');
@@ -30,9 +41,10 @@ let cwd: string;
 let mode: ApprovalMode;
 let generation: string;
 let controller: AbortController;
-const check = jest.fn<Promise<{ decision: 'allow' | 'deny' }>, [ApprovalCheck]>(
-  () => Promise.resolve({ decision: 'allow' }),
-);
+const check = jest.fn<
+  Promise<{ decision: 'allow' | 'deny' }>,
+  [ApprovalCheck, ApprovalCheckDisplay]
+>(() => Promise.resolve({ decision: 'allow' }));
 const emit = jest.fn<Promise<void>, [AgentDelegationEvent['event']]>(() =>
   Promise.resolve(),
 );
@@ -44,6 +56,7 @@ function policy(
   return new DelegationNativePolicy({
     cwd,
     writePaths,
+    mcpServerNames: ['selected_review'],
     mode: (): ApprovalMode => mode,
     signal: controller.signal,
     delegationId: 'child',
@@ -55,10 +68,28 @@ function policy(
       evaluate: () => Promise.resolve('allow'),
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
   });
+}
+
+type CodexApprovalWithRequestSignal = (
+  method: string,
+  request: Record<string, unknown>,
+  requestSignal?: AbortSignal,
+) => Promise<Record<string, unknown>>;
+
+function approveCodexWithRequestSignal(
+  tools: DelegationNativePolicy,
+  method: string,
+  request: Record<string, unknown>,
+  requestSignal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const approve: CodexApprovalWithRequestSignal =
+    tools.approveCodex.bind(tools);
+  return approve(method, request, requestSignal);
 }
 beforeEach(async () => {
   cwd = await realpath(
@@ -69,12 +100,414 @@ beforeEach(async () => {
   mode = 'auto';
   generation = '1';
   controller = new AbortController();
-  check.mockReset().mockResolvedValue({ decision: 'allow' });
+  check.mockReset().mockImplementation((_check, display) => {
+    display.onAwaitingUser?.();
+    return Promise.resolve({ decision: 'allow' });
+  });
   emit.mockClear();
 });
 afterEach(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
+describe('overlapping approval prompts', () => {
+  function invoke(
+    tools: DelegationNativePolicy,
+    site: 'claude' | 'mcp' | 'codex',
+    id: string,
+  ): Promise<unknown> {
+    if (site === 'claude')
+      return tools.authorize('Read', { file_path: 'src/file.ts' }, id);
+    if (site === 'mcp')
+      return tools.authorizeMcpToolUse(
+        'selected_review',
+        'review_evidence',
+        {},
+        id,
+      );
+    return tools.approveCodex('item/commandExecution/requestApproval', {
+      kind: 'command',
+      itemId: id,
+      cwd,
+      command: 'pwd',
+    });
+  }
+
+  it.each(['claude', 'mcp', 'codex'] as const)(
+    '%s keeps the card pending when the next queued prompt opens before the previous check settles',
+    async (site) => {
+      const tools = policy();
+      let firstSettled: () => void = () => undefined;
+      let secondOpened: () => void = () => undefined;
+      let secondSettled: () => void = () => undefined;
+      let reachedFirst: () => void = () => undefined;
+      let reachedSecond: () => void = () => undefined;
+      const firstReady = new Promise<void>((resolve) => {
+        reachedFirst = resolve;
+      });
+      const secondReady = new Promise<void>((resolve) => {
+        reachedSecond = resolve;
+      });
+      check.mockImplementationOnce(
+        (_check, display) =>
+          new Promise((resolve) => {
+            display.onAwaitingUser?.();
+            firstSettled = (): void => {
+              firstSettled = (): void => undefined;
+              resolve({ decision: 'allow' });
+              // The approval service can open its next prompt before the caller's finally.
+              secondOpened();
+            };
+            reachedFirst();
+          }),
+      );
+      check.mockImplementationOnce(
+        (_check, display) =>
+          new Promise((resolve) => {
+            secondOpened = (): void => display.onAwaitingUser?.();
+            secondSettled = (): void => resolve({ decision: 'allow' });
+            reachedSecond();
+          }),
+      );
+      const first = invoke(tools, site, 'queued-first');
+      await firstReady;
+      const second = invoke(tools, site, 'queued-second');
+      try {
+        await secondReady;
+        firstSettled();
+        await first;
+        expect(emit.mock.calls.map(([event]) => event)).toEqual([
+          { type: 'approval', pending: true },
+        ]);
+        secondSettled();
+        await second;
+        expect(emit.mock.calls.map(([event]) => event)).toEqual([
+          { type: 'approval', pending: true },
+          { type: 'approval', pending: false },
+        ]);
+      } finally {
+        firstSettled();
+        secondSettled();
+        await Promise.allSettled([first, second]);
+      }
+    },
+  );
+
+  it('orders a new pending publication after an in-flight clear', async () => {
+    const tools = policy();
+    let clearStarted: () => void = () => undefined;
+    let finishClear: () => void = () => undefined;
+    const clearing = new Promise<void>((resolve) => {
+      clearStarted = resolve;
+    });
+    emit.mockImplementationOnce(() => Promise.resolve());
+    emit.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishClear = resolve;
+          clearStarted();
+        }),
+    );
+    const first = invoke(tools, 'claude', 'ordered-first');
+    await clearing;
+    let secondOpened: () => void = () => undefined;
+    let secondSettled: () => void = () => undefined;
+    const opened = new Promise<void>((resolve) => {
+      secondOpened = resolve;
+    });
+    check.mockImplementationOnce(
+      (_check, display) =>
+        new Promise((resolve) => {
+          secondSettled = (): void => resolve({ decision: 'allow' });
+          display.onAwaitingUser?.();
+          secondOpened();
+        }),
+    );
+    const second = invoke(tools, 'mcp', 'ordered-second');
+    try {
+      await opened;
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'approval', pending: true },
+        { type: 'approval', pending: false },
+      ]);
+      finishClear();
+      await first;
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'approval', pending: true },
+        { type: 'approval', pending: false },
+        { type: 'approval', pending: true },
+      ]);
+      secondSettled();
+      await second;
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'approval', pending: true },
+        { type: 'approval', pending: false },
+        { type: 'approval', pending: true },
+        { type: 'approval', pending: false },
+      ]);
+    } finally {
+      finishClear();
+      secondSettled();
+      await Promise.allSettled([first, second]);
+      emit.mockReset().mockResolvedValue(undefined);
+    }
+  });
+
+  it('attributes publication failure only to the check triggering that transition', async () => {
+    const tools = policy();
+    const failure = new Error('opening publication failed');
+    emit.mockRejectedValueOnce(failure);
+    const settlers: Array<() => void> = [];
+    let reachedCheck: () => void = () => undefined;
+    check.mockImplementation(
+      (_check, display) =>
+        new Promise((resolve) => {
+          settlers.push((): void => resolve({ decision: 'allow' }));
+          display.onAwaitingUser?.();
+          reachedCheck();
+        }),
+    );
+    const observed: Array<Promise<unknown>> = [];
+    try {
+      for (const site of ['claude', 'codex'] as const) {
+        const ready = new Promise<void>((resolve) => {
+          reachedCheck = resolve;
+        });
+        observed.push(
+          invoke(tools, site, `failure-${site}`).catch(
+            (error: unknown) => error,
+          ),
+        );
+        await ready;
+      }
+      settlers[0]?.();
+      expect(await observed[0]).toBe(failure);
+      expect(emit).toHaveBeenCalledTimes(1);
+      settlers[1]?.();
+      expect(await observed[1]).toEqual({ decision: 'accept' });
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'approval', pending: true },
+        { type: 'approval', pending: false },
+      ]);
+    } finally {
+      for (const settle of settlers) settle();
+      await Promise.allSettled(observed);
+      emit.mockReset().mockResolvedValue(undefined);
+    }
+  });
+
+  it('shares the prompt count across interleaved Claude, MCP and Codex checks', async () => {
+    const tools = policy();
+    const settlers: Array<() => void> = [];
+    check.mockImplementation(
+      (_check, display) =>
+        new Promise((resolve) => {
+          settlers.push((): void => resolve({ decision: 'allow' }));
+          display.onAwaitingUser?.();
+          reachedCheck();
+        }),
+    );
+    const running: Array<Promise<unknown>> = [];
+    let reachedCheck: () => void = () => undefined;
+    try {
+      for (const site of ['claude', 'mcp', 'codex'] as const) {
+        const ready = new Promise<void>((resolve) => {
+          reachedCheck = resolve;
+        });
+        running.push(invoke(tools, site, `interleaved-${site}`));
+        await ready;
+      }
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'approval', pending: true },
+      ]);
+      settlers[1]?.();
+      await running[1];
+      settlers[0]?.();
+      await running[0];
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'approval', pending: true },
+      ]);
+      settlers[2]?.();
+      await running[2];
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'approval', pending: true },
+        { type: 'approval', pending: false },
+      ]);
+    } finally {
+      for (const settle of settlers) settle();
+      await Promise.allSettled(running);
+    }
+  });
+});
+
+describe.each(['claude', 'mcp', 'codex'] as const)(
+  '%s approval status publication',
+  (site) => {
+    function invoke(tools: DelegationNativePolicy): Promise<unknown> {
+      if (site === 'claude')
+        return tools.authorize(
+          'Read',
+          { file_path: 'src/file.ts' },
+          'prompt-status',
+        );
+      if (site === 'mcp')
+        return tools.authorizeMcpToolUse(
+          'selected_review',
+          'review_evidence',
+          {},
+          'prompt-status',
+        );
+      return tools.approveCodex('item/commandExecution/requestApproval', {
+        kind: 'command',
+        itemId: 'prompt-status',
+        cwd,
+        command: 'pwd',
+      });
+    }
+
+    it('emits no approval event when policy allows without prompting', async () => {
+      check.mockResolvedValue({ decision: 'allow' });
+      await invoke(policy());
+      expect(check).toHaveBeenCalledTimes(1);
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('handles a sink rejection while approval is pending without hiding the failure', async () => {
+      const failure = new Error('pending publication failed');
+      const unhandledRejection = jest.fn();
+      let settleCheck: () => void = () => undefined;
+      let promptOpened: () => void = () => undefined;
+      const opened = new Promise<void>((resolve) => {
+        promptOpened = resolve;
+      });
+      check.mockImplementation(
+        (_check, display) =>
+          new Promise((resolve) => {
+            settleCheck = (): void => resolve({ decision: 'allow' });
+            display.onAwaitingUser?.();
+            promptOpened();
+          }),
+      );
+      emit.mockRejectedValue(failure);
+      process.on('unhandledRejection', unhandledRejection);
+      const running = invoke(policy());
+      const observed = running.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      try {
+        await opened;
+        // Cross event-loop turns while the approval remains parked so Node has
+        // an opportunity to report an unhandled publication rejection.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(unhandledRejection).not.toHaveBeenCalled();
+        settleCheck();
+        expect(await observed).toBe(failure);
+      } finally {
+        settleCheck();
+        await observed;
+        process.removeListener('unhandledRejection', unhandledRejection);
+        emit.mockReset().mockResolvedValue(undefined);
+      }
+    });
+
+    it.each(['allow', 'deny', 'timeout', 'failure'] as const)(
+      'publishes only on prompt opening and clears in order after %s',
+      async (outcome) => {
+        let openPrompt: () => void = () => {
+          throw new Error('check not started');
+        };
+        let settleCheck: () => void = () => undefined;
+        let finishPublication: () => void = () => undefined;
+        let reachedCheck: () => void = () => undefined;
+        const checkStarted = new Promise<void>((resolve) => {
+          reachedCheck = resolve;
+        });
+        let emittedEarly: () => void = () => undefined;
+        const earlyPublication = new Promise<void>((resolve) => {
+          emittedEarly = resolve;
+        });
+        let checkReached = false;
+        const publicationFinished: string[] = [];
+        check.mockImplementation(
+          (_check, display) =>
+            new Promise((resolve, reject) => {
+              openPrompt = (): void => display.onAwaitingUser?.();
+              settleCheck = (): void => {
+                if (outcome === 'failure') reject(new Error('approval failed'));
+                else
+                  resolve({ decision: outcome === 'allow' ? 'allow' : 'deny' });
+              };
+              checkReached = true;
+              reachedCheck();
+            }),
+        );
+        emit.mockImplementation((event) => {
+          if (event.type === 'approval' && event.pending) {
+            emittedEarly();
+            return new Promise<void>((resolve) => {
+              finishPublication = (): void => {
+                publicationFinished.push('true');
+                resolve();
+              };
+            });
+          }
+          publicationFinished.push('false');
+          return Promise.resolve();
+        });
+        try {
+          const running = invoke(policy());
+          const observed = running.then(
+            (value) => ({ value }),
+            (error: unknown) => ({ error }),
+          );
+          await Promise.race([checkStarted, earlyPublication]);
+          expect(checkReached).toBe(true);
+          expect(emit).not.toHaveBeenCalled();
+          openPrompt();
+          await Promise.resolve();
+          expect(emit.mock.calls.map(([event]) => event)).toEqual([
+            { type: 'approval', pending: true },
+          ]);
+          settleCheck();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(emit).toHaveBeenCalledTimes(1);
+          finishPublication();
+          const result = await observed;
+          expect(publicationFinished).toEqual(['true', 'false']);
+          expect(emit.mock.calls.map(([event]) => event)).toEqual([
+            { type: 'approval', pending: true },
+            { type: 'approval', pending: false },
+          ]);
+          if (outcome === 'failure')
+            expect(result).toEqual({ error: new Error('approval failed') });
+          else
+            expect(result).toEqual({
+              value:
+                site === 'codex'
+                  ? { decision: outcome === 'allow' ? 'accept' : 'decline' }
+                  : outcome === 'allow',
+            });
+        } finally {
+          settleCheck();
+          finishPublication();
+          emit.mockReset().mockResolvedValue(undefined);
+        }
+      },
+    );
+
+    if (site !== 'codex') {
+      it('emits nothing when reusing a cached prompted approval', async () => {
+        const tools = policy();
+        await invoke(tools);
+        emit.mockClear();
+        await invoke(tools);
+        expect(check).toHaveBeenCalledTimes(1);
+        expect(emit).not.toHaveBeenCalled();
+      });
+    }
+  },
+);
 it.each(['ask', 'auto', 'full-access'] as const)(
   'routes Claude Bash through the parent %s policy, including commands outside file grants',
   async (approvalMode) => {
@@ -160,6 +593,7 @@ it('gates a selected MCP tool through the delegated parent approval and rejects 
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -268,6 +702,7 @@ it('revokes an in-flight selected MCP approval when the parent mode changes', as
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -297,6 +732,7 @@ it('dedupes concurrent hook and canUseTool calls for one MCP tool_use id into a 
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -343,6 +779,7 @@ it('asks again for each transport-gated MCP call, even when its JSON-RPC id repe
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -375,6 +812,7 @@ it('never reuses a decided MCP approval after the parent mode or rules change', 
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -427,6 +865,7 @@ it('reads a function instructions option live, reflecting a mid-run capability r
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -450,6 +889,7 @@ it('allows the selected Agent skill tool only through parent approval', async ()
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -487,6 +927,7 @@ it('requires parent command approval before a selected stdio MCP server starts',
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -527,6 +968,7 @@ it('includes the actual selected MCP working directory in startup approval', asy
       check,
       setMode: jest.fn(),
       policyContextKey: (): string => generation,
+      reevaluatePendingApprovals: noPendingApprovalReevaluation(),
       dispose: jest.fn(),
     },
     emit,
@@ -691,10 +1133,19 @@ it('revokes Claude Bash approval when parent rules change or the child is cancel
  * volume does not generate short names. */
 function windowsShortPath(file: string): string | undefined {
   // Verbatim arguments: Node's quoting would otherwise reach `for` as `\"`.
+  const options: {
+    encoding: 'utf8';
+    windowsHide: boolean;
+    windowsVerbatimArguments: boolean;
+  } = {
+    encoding: 'utf8',
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  };
   const short = execFileSync(
     process.env.ComSpec ?? 'cmd.exe',
     ['/d', '/s', '/c', `"for %I in ("${file}") do @echo %~sI"`],
-    { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true },
+    options,
   ).trim();
   return short && short.toLowerCase() !== file.toLowerCase()
     ? short
@@ -864,6 +1315,192 @@ it.each(['mode', 'rules', 'cancel'] as const)(
     expect(check).toHaveBeenCalledTimes(1);
   },
 );
+
+it.each(['command', 'fileChange', 'permissions'] as const)(
+  'declines an already-aborted Codex %s request before asking the parent',
+  async (kind) => {
+    const tools = policy();
+    const requestSignal = new AbortController();
+    requestSignal.abort();
+    const itemId = `already-aborted-${kind}`;
+    const file = path.join(cwd, 'src/file.ts');
+    if (kind === 'fileChange')
+      tools.observeCodex('item/started', {
+        item: {
+          type: 'fileChange',
+          id: itemId,
+          changes: [{ path: file, kind: { type: 'update' } }],
+        },
+      });
+    const method = `item/${kind}/requestApproval`;
+    const request =
+      kind === 'command'
+        ? { kind: 'command', itemId, cwd, command: 'pwd' }
+        : kind === 'permissions'
+          ? {
+              itemId,
+              permissions: { fileSystem: { read: [], write: [file] } },
+            }
+          : { itemId };
+
+    await expect(
+      approveCodexWithRequestSignal(
+        tools,
+        method,
+        request,
+        requestSignal.signal,
+      ),
+    ).resolves.toEqual(
+      kind === 'permissions'
+        ? { permissions: {}, scope: 'turn' }
+        : { decision: 'decline' },
+    );
+    expect(check).not.toHaveBeenCalled();
+  },
+);
+
+it('passes a request-scoped signal to a pending Codex command approval', async () => {
+  let approvalSignal: AbortSignal | undefined;
+  let resolveApproval:
+    | ((outcome: { decision: 'allow' | 'deny' }) => void)
+    | undefined;
+  let reachCheck: () => void = () => undefined;
+  const checkReached = new Promise<void>((resolve) => {
+    reachCheck = resolve;
+  });
+  check.mockImplementationOnce(
+    (_check, display) =>
+      new Promise((resolve) => {
+        approvalSignal = display.signal;
+        display.onAwaitingUser?.();
+        resolveApproval = resolve;
+        reachCheck();
+      }),
+  );
+  const requestSignal = new AbortController();
+  const pending = approveCodexWithRequestSignal(
+    policy(),
+    'item/commandExecution/requestApproval',
+    { kind: 'command', itemId: 'pending-request-signal', cwd, command: 'pwd' },
+    requestSignal.signal,
+  );
+
+  try {
+    await checkReached;
+    requestSignal.abort();
+    resolveApproval?.({ decision: 'allow' });
+    expect(approvalSignal?.aborted).toBe(true);
+    await expect(pending).resolves.toEqual({ decision: 'decline' });
+  } finally {
+    resolveApproval?.({ decision: 'allow' });
+    await pending.catch(() => undefined);
+  }
+});
+
+it.each(['fileChange', 'permissions'] as const)(
+  'does not reuse a cached Write approval for an already-aborted Codex %s request',
+  async (kind) => {
+    const tools = policy();
+    const itemId = `cached-request-signal-${kind}`;
+    const file = path.join(cwd, 'src/file.ts');
+    if (kind === 'fileChange')
+      tools.observeCodex('item/started', {
+        item: {
+          type: 'fileChange',
+          id: itemId,
+          changes: [{ path: file, kind: { type: 'update' } }],
+        },
+      });
+    const method = `item/${kind}/requestApproval`;
+    const request =
+      kind === 'permissions'
+        ? {
+            itemId,
+            permissions: { fileSystem: { read: [], write: [file] } },
+          }
+        : { itemId };
+    const allowed =
+      kind === 'permissions'
+        ? {
+            permissions: { fileSystem: { read: [], write: [file] } },
+            scope: 'turn',
+          }
+        : { decision: 'accept' };
+    const denied =
+      kind === 'permissions'
+        ? { permissions: {}, scope: 'turn' }
+        : { decision: 'decline' };
+
+    await expect(
+      approveCodexWithRequestSignal(tools, method, request),
+    ).resolves.toEqual(allowed);
+    const requestSignal = new AbortController();
+    requestSignal.abort();
+    await expect(
+      approveCodexWithRequestSignal(
+        tools,
+        method,
+        request,
+        requestSignal.signal,
+      ),
+    ).resolves.toEqual(denied);
+    expect(check).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('evicts a canceled shared MCP decision before a later hook retry', async () => {
+  const tools = policy([]);
+  let approvalSignal: AbortSignal | undefined;
+  let resolveApproval:
+    | ((outcome: { decision: 'allow' | 'deny' }) => void)
+    | undefined;
+  let reachCheck: () => void = () => undefined;
+  const checkReached = new Promise<void>((resolve) => {
+    reachCheck = resolve;
+  });
+  check.mockImplementationOnce(
+    (_check, display) =>
+      new Promise((resolve, reject) => {
+        approvalSignal = display.signal;
+        display.onAwaitingUser?.();
+        display.signal?.addEventListener(
+          'abort',
+          () => reject(new Error('approval_request_resolved')),
+          { once: true },
+        );
+        resolveApproval = resolve;
+        reachCheck();
+      }),
+  );
+  const requestSignal = new AbortController();
+  const first = tools.authorizeMcpToolUse(
+    'selected_review',
+    'review_evidence',
+    {},
+    'canceled-shared-decision',
+    requestSignal.signal,
+  );
+
+  try {
+    await checkReached;
+    requestSignal.abort();
+    if (!approvalSignal) resolveApproval?.({ decision: 'allow' });
+    await expect(first).resolves.toBe(false);
+    await expect(
+      tools.authorizeMcpToolUse(
+        'selected_review',
+        'review_evidence',
+        {},
+        'canceled-shared-decision',
+      ),
+    ).resolves.toBe(true);
+    expect(approvalSignal?.aborted).toBe(true);
+    expect(check).toHaveBeenCalledTimes(2);
+  } finally {
+    resolveApproval?.({ decision: 'allow' });
+    await first.catch(() => undefined);
+  }
+});
 
 it.each([
   ['/bin/zsh -lc "cat \'src/file.ts\'"', "cat 'src/file.ts'"],
@@ -1921,6 +2558,29 @@ describe('Codex sandbox write profile', () => {
       expect(check).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['inside the grant', 'src/preferences.backup-*.json', []],
+      ['only beside it', 'preferences.backup-*.json', ['src']],
+    ])(
+      'admits the grant by whether a protected file glob lies %s',
+      async (_where, pattern, admitted) => {
+        evaluate.mockImplementation((candidate) =>
+          Promise.resolve(
+            evaluateApproval(candidate, {
+              mode: 'auto',
+              workspaceRoot: cwd,
+              protectedFileWritePaths: [path.join(cwd, pattern)],
+              rules: { session: [], project: [], global: [] },
+            }).outcome,
+          ),
+        );
+        await expect(
+          denyingPolicy().prepareCodexSandboxWrites(),
+        ).resolves.toEqual(admitted.map((dir) => path.join(cwd, dir)));
+        expect(check).not.toHaveBeenCalled();
+      },
+    );
+
     it('revokes the sandbox grant when the parent policy changes to prompt, without prompting', async () => {
       const tools = denyingPolicy();
       evaluate.mockResolvedValueOnce('allow').mockResolvedValue('prompt');
@@ -1962,6 +2622,7 @@ describe('Codex sandbox write profile', () => {
             ),
           setMode,
           policyContextKey: (): string => generation,
+          reevaluatePendingApprovals: noPendingApprovalReevaluation(),
           dispose: jest.fn(),
         },
         emit,

@@ -95,24 +95,13 @@ async function launchWithArchivedChats() {
   return { ...launched, userDataDir };
 }
 
-async function setArchivedChatsCard(window, enabled) {
-  await window.evaluate(
-    (value) =>
-      window.api.experiments.setChoice({
-        experimentId: 'archived-chats-card',
-        enabled: value,
-      }),
-    enabled,
-  );
-}
-
 /** Leaves the archive control so its card closes. */
 async function leaveArchiveControl(window) {
   await window.mouse.move(2, 400);
   await expect(window.getByTestId('chat-tab-archive-popover')).toHaveCount(0);
 }
 
-test('Archived chats card: Labs swaps the header hover card for the shared menu card', async () => {
+test('Archived chats use the shared menu card without an opt-in', async () => {
   test.setTimeout(150_000);
   const { electronApp, userDataDir, window } = await launchWithArchivedChats();
   try {
@@ -122,17 +111,6 @@ test('Archived chats card: Labs swaps the header hover card for the shared menu 
     const popover = window.getByTestId('chat-tab-archive-popover');
     const card = popover.getByRole('group', { name: 'Archived chats' });
 
-    // Off (the default): the classic popover, with no shared card in it.
-    await archiveIcon.hover();
-    await expect(popover).toBeVisible();
-    await expect(
-      popover.getByTestId('chat-tab-archive-popover-row'),
-    ).toHaveCount(ARCHIVE_TAB_IDS.length);
-    await expect(card).toHaveCount(0);
-    await leaveArchiveControl(window);
-
-    // On: the shared card.
-    await setArchivedChatsCard(window, true);
     await archiveIcon.hover();
     await expect(card).toBeVisible({ timeout: 10_000 });
     await expect(card.getByText('Archived chats', { exact: true })).toHaveCSS(
@@ -184,12 +162,6 @@ test('Archived chats card: Labs swaps the header hover card for the shared menu 
     await expect(
       window.getByTestId('archived-chat-transcript-modal'),
     ).toHaveCount(0);
-
-    // Off again: back to the classic popover.
-    await setArchivedChatsCard(window, false);
-    await archiveIcon.hover();
-    await expect(popover).toBeVisible();
-    await expect(card).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

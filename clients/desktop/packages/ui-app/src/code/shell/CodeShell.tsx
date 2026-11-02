@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
 import type { SlashCommandTriggerCharacter } from '@canopy/ui-rich';
+import { Button } from '@canopy/ui-shared/components';
 import { ChatPanel } from '../ChatPanel';
 import type { FileEditorSlot } from '../file/FileViewer';
 import { FindableFileViewer } from '../../find/FindableFileViewer';
@@ -211,14 +212,14 @@ export function CodeShell({
         data-testid="code-shell-file"
       >
         <div className="flex items-center gap-2 border-b px-3 py-1.5">
-          <button
-            type="button"
-            className="rounded px-2 py-0.5 text-xs fg-secondary hover:fg-primary"
+          <Button
+            variant="ghost"
+            size="compact"
             onClick={(): void => setOpenFile(null)}
             data-testid="code-shell-file-back"
           >
             ← Back to chat
-          </button>
+          </Button>
         </div>
         <FindableFileViewer
           findScope={{ key: openFile.relativePath }}

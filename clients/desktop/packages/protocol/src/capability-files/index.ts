@@ -57,7 +57,10 @@ export function isSafeCapabilityRelativePath(
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    new Uint8Array(bytes),
+  );
   return Array.from(new Uint8Array(digest), (value) =>
     value.toString(16).padStart(2, '0'),
   ).join('');
@@ -80,9 +83,13 @@ export function base64UrlEncode(bytes: Uint8Array): string {
   return output.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
+// Every pattern must stay linear on adversarial input: untrusted shared
+// documents are scanned synchronously in the main process. A private-key
+// header alone is high-confidence, and a JWT match starts only at the first
+// `eyJ` of a token run, so neither rescans the remainder from every start.
 const SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/,
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+  /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY-----/,
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/,
   /\bgh[opusr]_[A-Za-z0-9]{20,}/,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}/,

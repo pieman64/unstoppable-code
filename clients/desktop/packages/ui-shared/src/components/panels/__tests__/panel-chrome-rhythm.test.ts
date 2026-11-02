@@ -132,3 +132,63 @@ describe('panel tab close slot geometry', () => {
     ).toMatch(/visibility:\s*hidden/);
   });
 });
+
+/**
+ * The fill style marks the active tab with its muted fill alone: no accent
+ * underline (CAN-4789 added one; it was taken back out), and no change to
+ * the tab's geometry or label weight.
+ */
+describe('fill tab active indicator', () => {
+  interface CssRule {
+    readonly selector: string;
+    readonly body: string;
+  }
+
+  /** Flat (non-nested) rules of the stylesheet, comments stripped. */
+  function cssRules(): CssRule[] {
+    const source = PANELS_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules: CssRule[] = [];
+    const pattern = /([^{}]+)\{([^{}]*)\}/g;
+    for (
+      let match = pattern.exec(source);
+      match !== null;
+      match = pattern.exec(source)
+    ) {
+      rules.push({ selector: match[1].trim(), body: match[2] });
+    }
+    return rules;
+  }
+
+  /** Rules that apply to the active tab of a fill-style bar. */
+  function activeFillTabRules(): CssRule[] {
+    return cssRules().filter(
+      ({ selector }) =>
+        selector.includes(".canopy-panel-tab[data-active='true']") &&
+        selector.includes(":where([data-tab-style='fill'] *)") &&
+        !selector.includes(':not(:where('),
+    );
+  }
+
+  it('paints no underline on the active fill tab', () => {
+    expect(
+      activeFillTabRules().filter(({ selector }) =>
+        /::(after|before)/.test(selector),
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps active fill tab geometry and label weight unchanged', () => {
+    for (const { selector, body } of activeFillTabRules()) {
+      if (/::(after|before)/.test(selector)) continue;
+      expect(body).not.toMatch(/(^|[\s;])(height|padding|border|font-weight):/);
+    }
+  });
+
+  it('keeps the muted fill on the active fill tab', () => {
+    expect(
+      activeFillTabRules().some(({ body }) =>
+        /background:\s*var\(--bg-muted\)/.test(body),
+      ),
+    ).toBe(true);
+  });
+});

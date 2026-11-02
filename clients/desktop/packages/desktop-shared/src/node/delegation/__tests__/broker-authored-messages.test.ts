@@ -90,6 +90,7 @@ describe('broker-authored delegation messages', () => {
 
       const current = await storage.loadOne(id);
       expect(current).toBeDefined();
+      if (current?.version === 3) throw new Error();
       expect(current?.parent).not.toHaveProperty('controlAuthor');
       expect(current?.control).toMatchObject({
         operationId,
@@ -141,16 +142,19 @@ describe('broker-authored delegation messages', () => {
       const reloaded = await new FileDelegationStorage(
         path.join(temporaryDirectory, 'runs'),
       ).loadOne(id);
+      if (!reloaded || reloaded.version === 3) {
+        throw new Error('Expected a legacy delegation record');
+      }
       expect(reloaded?.control?.sender).toEqual({ kind: 'user' });
       expect(reloaded?.parent).not.toHaveProperty('controlAuthor');
-      expect(reloaded?.state.transcript).toContainEqual(
+      expect(reloaded.state.transcript).toContainEqual(
         expect.objectContaining({
           id: operationId,
           author: { kind: 'user' },
           delivery: 'follow_up',
         }),
       );
-      expect(reloaded?.state.transcript).toContainEqual(
+      expect(reloaded.state.transcript).toContainEqual(
         expect.objectContaining({ id: 'provider-cumulative-text' }),
       );
     } finally {

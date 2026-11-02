@@ -85,7 +85,7 @@ describe('execution-context', () => {
         },
         { model: '$fast' },
       ),
-    ).toThrow(/Pipeline input "model" must be one of: sonnet, opus/);
+    ).toThrow(/Workflow input "model" must be one of: sonnet, opus/);
   });
 
   it('resolves model aliases in choice-typed resume-time model overrides', () => {
@@ -207,16 +207,16 @@ describe('execution-context', () => {
       );
       throw new Error('expected pipeline input validation to fail');
     } catch (error) {
-      expect(String(error)).toContain('Pipeline input validation failed');
-      expect(String(error)).toContain('Pipeline input "extra" is not declared');
+      expect(String(error)).toContain('Workflow input validation failed');
+      expect(String(error)).toContain('Workflow input "extra" is not declared');
       expect(String(error)).toContain(
-        'Pipeline input "enabled" must be "true" or "false"',
+        'Workflow input "enabled" must be "true" or "false"',
       );
       expect(String(error)).toContain(
-        'Pipeline input "required_name" is required',
+        'Workflow input "required_name" is required',
       );
       expect(String(error)).toContain(
-        'Pipeline input "retries" must be less than or equal to 3',
+        'Workflow input "retries" must be less than or equal to 3',
       );
     }
   });
@@ -260,7 +260,7 @@ describe('execution-context', () => {
           extra: '1',
         },
       ),
-    ).toThrow(/Pipeline input validation failed/);
+    ).toThrow(/Workflow input validation failed/);
     expect(() =>
       mergePipelineInputs(
         {
@@ -269,7 +269,7 @@ describe('execution-context', () => {
         {},
         {},
       ),
-    ).toThrow(/Pipeline input "greeting" is required/);
+    ).toThrow(/Workflow input "greeting" is required/);
   });
 
   it('preserves stored inputs when resuming without declarations', () => {
@@ -299,7 +299,7 @@ describe('execution-context', () => {
           reviewer: 'sonnet',
         },
       ),
-    ).toThrow(/Pipeline input "reviewer" is not declared/);
+    ).toThrow(/Workflow input "reviewer" is not declared/);
   });
 
   it('parses simple key=value output files', () => {

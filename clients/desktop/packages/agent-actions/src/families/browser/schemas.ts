@@ -1316,7 +1316,7 @@ export function addAdvisorBrowserActionIssues(
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message:
-        'Advisor browser actions require projectId and worktreeId together.',
+        'Orchestrator browser actions require projectId and worktreeId together.',
     });
   }
   addAdvisorBrowserGenerationIssue(action, context);

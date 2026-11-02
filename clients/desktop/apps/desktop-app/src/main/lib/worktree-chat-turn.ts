@@ -1,3 +1,4 @@
+import { detectAiCreditsNoBillingSource } from '../agents/ai-credits-quota-state';
 import {
   recordPresentationTurn,
   capturePresentationTurn,
@@ -6,17 +7,27 @@ import {
 } from '../canopy-tools/presentation-state';
 import { browserHandoffs } from '../browser/browser-handoffs';
 import { chatVisualsPromptEligible } from './chat-visuals-feature-flag';
-import { assertOpenCodeModelAvailable } from '../opencode/connection';
+import { assertOpenCodeSelectionAvailable } from '../opencode/selection';
 import { assertCopilotModelAvailable } from '../copilot/connection';
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
 import { beginChatTurnPreparation } from './chat-turn-cancel';
 import {
+  activatePendingTurnRoute,
+  getLiveRoutedSession,
   getOrCreateRoutedSession,
+  parkBehindWake,
+  getTurnRootAcceptance,
   sessionEventRouterTestExports,
 } from '../agents/session-event-router';
 import {
+  classifyProviderRunEvent,
+  copyProviderRunProvenance,
+  getProviderRunDescriptor,
+} from './provider-run-reconciliation';
+import {
   claimDelegationDelivery,
   releaseDelegationDelivery,
+  retireDelegationDelivery,
 } from '../agents/delegation/lifecycle';
 import { resolveManagedDelegationMode } from '../agents/delegation/gate';
 import { logMainProcessError } from './main-process-logging';
@@ -73,12 +84,22 @@ import {
   appendUserOverallPreferencesBlock,
   buildUserOverallPreferencesBlock,
 } from '@canopy/desktop-shared/lib/global-instructions';
-import type { ObservabilityService } from '../observability/service';
+import type {
+  ObservabilityService,
+  SessionDiagnosticRecord,
+} from '../observability/service';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
 import type {
   ChatQueueService,
   ChatQueueTerminalStatus,
 } from '../services/chat-queue-service';
+import {
+  consumeDispatchAuthorization,
+  wakeParkingOutcome,
+  type AuthorizedChatDispatch,
+} from '../services/chat-dispatch-authorization';
+import { reservePromptBindingSlot } from '../services/chat-turn-binding-slots';
+import type { ProviderEventIngestOutcome } from '../services/chat-state-service';
 import type { PersistedChatDispatchMetadata } from './chat-tabs-reader';
 import {
   beginSessionTurnPreparation,
@@ -93,8 +114,17 @@ import {
   isSessionAiCreditsRouted,
   getSessionCodeGraphToolsAdvertised,
   getSessionGlobalInstructionsSnapshot,
+  getSessionRecreateReasons,
+  chatHasNativeBackgroundWork,
+  setSessionTurnSettings,
   getSessionProviderType,
+  type SessionTurnSettings,
+  restrictSessionApprovalRules,
 } from '../agents/session-manager';
+import {
+  isRecreateDeferrable,
+  liveSessionSettingsOverlay,
+} from './turn-session-reuse';
 import {
   captureSessionWorkOwner,
   resolveSessionWorkOwner,
@@ -108,13 +138,15 @@ import { stopTurnForAuthFailure } from './auth-failure-turn-stop';
 import {
   getDiagnosticEventMetadata,
   getChatTurnAuditStatus,
-  isAgentContinuationEvent,
+  isClaudeChildFrame,
   isCodexSubagentFollowupEvent,
+  isRootAgentContinuationEvent,
   isRecord,
   isRootTerminalChatEventData,
   isTerminalChatEventData,
   readCodexRootThreadId,
 } from './chat-turn-audit';
+import { recordChatEventDropped } from './chat-event-drop-diagnostics';
 import {
   SessionEventCommitPipeline,
   isOverlappableProviderEvent,
@@ -140,7 +172,12 @@ import {
   noteCodeReviewTurnStart,
   noteWorktreeActivityForCodeReview,
 } from './code-review-scheduler';
-import { captureTurnEndAndDiff, captureTurnStart } from './turn-diff-capture';
+import {
+  captureTurnEndAndDiffs,
+  captureTurnStart,
+  discardTurnStart,
+} from './turn-diff-capture';
+import { wakeTurnKey } from '@canopy/agent-transcript/turn';
 import { scheduleCodeGraphBuild } from './code-graph-scheduler';
 import {
   buildSubmittedMessageText,
@@ -154,6 +191,7 @@ import {
   readPersistedChatDispatchMetadata,
   readPersistedChatExecutionContext,
 } from './chat-tabs-reader';
+import { resolveChatTurnApprovalAuthority } from './chat-turn-approval-authority';
 import { recordBackgroundProcessChatEvent } from '../portal/background-process-tracker';
 import { getWorktreeAttachmentsDir } from './paths';
 import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
@@ -184,6 +222,7 @@ import {
 } from '../services/active-chat-input';
 import { readWorkspaceConfig } from './workspace-persistence';
 import { generateChatSummaryForProject } from '../ipc/standalone-chat';
+import { armTurnLifecycleContinuation } from '../agents/provider-turn-lifecycle';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import {
   BACKGROUND_HELPER_PRIORITIES,
@@ -200,8 +239,11 @@ import { resolveOrgMemoryOwner } from '../memory/memory-owner';
 import { isOrganizationTeamsLapsed } from './org-billing-state';
 import { persistOrgMemoryUsedForChat } from './chat-tab-dispatch-utils';
 import { assertChatScopeAcceptsTurns } from './retired-chat-scope-guard';
-import { clampToLiveApprovalMode } from '../approvals/live-approval-modes';
 import { getChatStateService } from '../services/chat-state-service';
+import {
+  normalizeProviderEventIngestResult,
+  type ProviderEventIngestResult,
+} from '../services/provider-event-admission';
 import { getStoppedTurnResumeService } from '../services/stopped-turn-resume-service';
 import {
   MEMORY_QUERY_MAX_CHARS,
@@ -218,6 +260,10 @@ import {
 import { collectMemoryQueryContext } from '../memory/query-context';
 import { prepareLocalMemoryContext } from '../memory/local/prepare';
 import { resolveLocalMemoryPolicy } from '../memory/local/policy';
+import {
+  TurnDispatchTiming,
+  type TurnDispatchSlowDiagnostic,
+} from './turn-dispatch-timing';
 
 const activeTurnUserMessageIds = new Map<string, string>();
 
@@ -258,12 +304,42 @@ export function clearActiveTurnUserMessageId(
 }
 type ObservabilityServiceType = ObservabilityService;
 
+/** The canonical turn id a wake's root result carries (turn-state phase 40f). */
+function getEventWakeTurnId(data: unknown): string | undefined {
+  return typeof data === 'object' &&
+    data !== null &&
+    'canopy_wake_turn_id' in data &&
+    typeof data.canopy_wake_turn_id === 'string'
+    ? data.canopy_wake_turn_id
+    : undefined;
+}
+
 function getEventTurnUserMessageId(
   data: Record<string, unknown>,
 ): string | null {
   return typeof data.canopy_turn_user_message_id === 'string'
     ? data.canopy_turn_user_message_id
     : null;
+}
+
+function getStartingPickupRootId(data: unknown): string | undefined {
+  if (
+    !isRecord(data) ||
+    data.type !== 'canopy_input_delivery' ||
+    data.phase !== 'picked-up' ||
+    data.startsTurn !== true ||
+    typeof data.userMessageId !== 'string'
+  ) {
+    return undefined;
+  }
+  return data.userMessageId;
+}
+
+function getProviderEventIngestOutcome(
+  result: ProviderEventIngestResult | boolean | void,
+): ProviderEventIngestOutcome {
+  if (typeof result === 'object' && result !== null) return result.outcome;
+  return result === false ? 'not-applied' : 'applied';
 }
 
 function resolveCodexPreferenceModelConfig(
@@ -915,11 +991,22 @@ export function scheduleBranchNaming(
   });
 }
 
-export interface DispatchWorktreeChatTurnOptions {
+export interface DispatchWorktreeChatTurnOptions<
+  TBeforeResult extends boolean | void | ProviderEventIngestResult =
+    | boolean
+    | void
+    | ProviderEventIngestResult,
+> {
+  /** Host-only queue admission capability, consumed before any start effect. */
+  authorization?: AuthorizedChatDispatch;
+  turnDispatchTiming?: TurnDispatchTiming;
+  /** Run with the live session's settings (Run now, generated deliveries). */
+  useLiveSessionSettings?: true;
   /** Trusted quota continuation: refuse any other billing connection. */
   requiredAccountProxyConnectionId?: string;
   countsTowardSkillUsage?: boolean;
   managedDelegationDeliveryId?: string;
+  internalRow?: ChatSendMessageRequest['internalRow'];
   projectId: string;
   worktreeId: string;
   chatId: string;
@@ -928,9 +1015,11 @@ export interface DispatchWorktreeChatTurnOptions {
   planMode: boolean;
   approvalMode?: ApprovalMode;
   sessionApprovalRules?: ApprovalRule[];
+  admittedApproval?: ChatSendMessageRequest['admittedApproval'];
   modelConfig?: AgentModelConfig;
   thinkingLevel?: ThinkingLevel;
   model?: ChatModel;
+  modelSelectionMode?: ChatSendMessageRequest['modelSelectionMode'];
   providerType?: AgentProviderType;
   executionHarness?: ChatSendMessageRequest['executionHarness'];
   modelRouting?: ChatSendMessageRequest['modelRouting'];
@@ -972,6 +1061,11 @@ export interface DispatchWorktreeChatTurnOptions {
   selectedRepoId?: string;
   initiationSource?: UsageInitiationSource;
   /**
+   * Who started the turn for chat turn analytics, when that differs from
+   * `initiationSource`, which also drives dispatch behavior.
+   */
+  turnTrigger?: UsageInitiationSource;
+  /**
    * Trusted background-run binding or the tab's persisted context, never a
    * renderer request. Org memory uses it for linked Personal projects;
    * absent means the live sidebar context, read once.
@@ -998,10 +1092,16 @@ export interface DispatchWorktreeChatTurnOptions {
     data: unknown;
     /** Root-aware terminal classification for downstream lifecycle consumers. */
     isTerminalEvent: boolean;
+    /** The exact completion returned by this event's durable before-hook. */
+    beforeChatEventResult?: TBeforeResult;
+    /** Compatibility-normalized delivery decision for this completion. */
+    ingestResult?: ProviderEventIngestResult;
   }) => void;
   /**
    * Persist a provider event before it becomes observable outside main.
-   * Resolve false only for a duplicate or stale event that must stay hidden.
+   * Structured results carry canonical pickup acceptance independently from
+   * whether the event itself was applied. Legacy booleans/void remain for
+   * non-pickup callers; they never authorize a starting pickup root.
    */
   onBeforeChatEvent: (event: {
     projectId: string;
@@ -1020,14 +1120,14 @@ export interface DispatchWorktreeChatTurnOptions {
      */
     providerType?: AgentProviderType;
     /**
-     * Present while chat storage group-commits, for a streamed event whose
-     * commit may overlap the next one. Call it once the commit holds its
-     * place in the scope's commit order (the repository's `onQueued`); the
-     * next event's commit then starts without waiting for this one to be
-     * durable. A hook that never calls it keeps one commit at a time.
+     * Present for a streamed event whose commit may overlap the next one.
+     * Call it once the commit holds its place in the scope's commit order
+     * (the repository's `onQueued`); the next event's commit then starts
+     * without waiting for this one to be durable. A hook that never calls it
+     * keeps one commit at a time.
      */
     onCommitQueued?: () => void;
-  }) => Promise<boolean | void>;
+  }) => Promise<TBeforeResult>;
   /** Runs synchronously after the provider session accepts the user message. */
   onTurnAccepted?: () => void;
   /** Trusted host cancellation checked immediately before provider acceptance. */
@@ -1178,6 +1278,7 @@ export async function prepareOrgMemory(options: {
   executionContext?: string;
   hiddenContextKind?: string;
   initiationSource?: UsageInitiationSource;
+  signal?: AbortSignal;
 }): Promise<PreparedOrgMemory | null> {
   const preferences = await readPreferencesFile().catch(() => null);
   // Cheap pre-gate on preferences + input triviality avoids any I/O (credential
@@ -1268,6 +1369,7 @@ export async function prepareOrgMemory(options: {
       worktreeId: options.worktreeId,
       chatId: options.chatId,
       currentUserMessageId: options.userMessageId,
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
     }).catch(
       (): MemoryQueryContext => ({
         recentUserMessages: [],
@@ -1305,9 +1407,537 @@ export async function prepareOrgMemory(options: {
   };
 }
 
-export async function dispatchWorktreeChatTurn(
-  options: DispatchWorktreeChatTurnOptions,
+export interface PreparedWorktreeTurnSessionConfiguration {
+  codeGraphToolsAdvertised: boolean;
+  systemPromptAppend: string;
+  sessionSystemPromptAppend: string;
+  globalInstructionsBlock: string;
+  runtime: Awaited<ReturnType<typeof resolveAgentModelRuntime>> | undefined;
+  runtimeProviderType: AgentProviderType;
+  runtimeModel: ChatModel | undefined;
+  effectiveModelConfig: ReturnType<typeof resolveProviderModelConfig>;
+  managedDelegationMode: PreferencesData['managedDelegationMode'];
+  managedDelegationMaxConcurrent: PreferencesData['managedDelegationMaxConcurrent'];
+  managedDelegationMaxDepth: PreferencesData['managedDelegationMaxDepth'];
+  managedDelegationLifetimeLimit: PreferencesData['managedDelegationLifetimeLimit'];
+  codexPreferences: PreferencesData | null;
+  rtkEnabled: boolean;
+}
+
+export interface PreparedWorktreeTurnSession {
+  cwd: string;
+  sessionKey: string;
+  existingCodeGraphToolsAdvertised: boolean | undefined;
+  currentCodeGraphToolsAvailable: boolean;
+  persistedDispatchMetadata: PersistedChatDispatchMetadata;
+  selectedModel: ChatModel | undefined;
+  effectiveProviderType: AgentProviderType;
+  effectiveExecutionHarness: NonNullable<
+    ChatSendMessageRequest['executionHarness']
+  >;
+  deferredToolsAllowed: boolean;
+  resolveSessionConfiguration(
+    this: void,
+    advertised: boolean,
+  ): Promise<PreparedWorktreeTurnSessionConfiguration>;
+  get sessionConfiguration(): PreparedWorktreeTurnSessionConfiguration;
+  set sessionConfiguration(
+    configuration: PreparedWorktreeTurnSessionConfiguration,
+  );
+  buildSessionOptions(
+    this: void,
+  ): Parameters<typeof getOrCreateRoutedSession>[0];
+}
+
+/**
+ * Resolves provider-session inputs without running the dispatch-owned memory,
+ * attachment, branch-naming, or chat-summary work.
+ */
+export async function prepareWorktreeTurnSession<
+  TBeforeResult extends boolean | void | ProviderEventIngestResult =
+    | boolean
+    | void
+    | ProviderEventIngestResult,
+>(
+  options: DispatchWorktreeChatTurnOptions<TBeforeResult>,
+  timing?: TurnDispatchTiming,
+  preparationOptions: {
+    checkModelAvailability?: boolean;
+    beforeSessionConfiguration?: () => Promise<void>;
+  } = {},
+): Promise<PreparedWorktreeTurnSession> {
+  const turnDispatchTiming =
+    timing ?? options.turnDispatchTiming ?? new TurnDispatchTiming();
+  const isCoworkChat = isCoworkWorkspace(options.projectId);
+  const isLegacyStandalone = options.projectId === STANDALONE_CHAT_PROJECT_ID;
+  const isPlanExplore = options.projectId === PLAN_EXPLORE_CHAT_PROJECT_ID;
+  const isCodeReview = options.projectId === CODE_REVIEW_CHAT_PROJECT_ID;
+  const cwd = resolveWorktreeCwd(
+    options.projectId,
+    options.worktreeId,
+    options.selectedRepoId,
+  );
+  const sessionKey = buildSessionKey(
+    options.projectId,
+    options.worktreeId,
+    options.chatId,
+  );
+  const existingCodeGraphToolsAdvertised = getSessionCodeGraphToolsAdvertised(
+    options.projectId,
+    options.worktreeId,
+    options.chatId,
+  );
+  const currentCodeGraphToolsAvailable =
+    !isCoworkChat &&
+    !isPlanExplore &&
+    !isCodeReview &&
+    isCodeGraphAvailableForWorkspace(options.projectId);
+  const persistedDispatchMetadata = await turnDispatchTiming.measure(
+    'dispatch_metadata',
+    () =>
+      readPersistedChatDispatchMetadata(
+        options.projectId,
+        options.worktreeId,
+        options.chatId,
+      ).catch(
+        (): PersistedChatDispatchMetadata =>
+          ({}) satisfies PersistedChatDispatchMetadata,
+      ),
+  );
+  const preferences = await readPreferencesFile().catch(() => null);
+  const laneDefault =
+    options.model === undefined && preferences
+      ? await requireLaneAwareDefaultSelection(
+          preferences,
+          isCoworkChat ? 'chat' : 'worktree',
+          // Same workspace the session spawn resolves its environment for
+          // (`claude-session.ts` / `codex-session.ts` pass `opts.projectId`),
+          // so a Canopy Environments credential is judged against the SAME
+          // effective environment the turn will actually run in.
+          { workspaceId: options.projectId },
+          options.providerType,
+          // Forced to this turn's provider, so it answers "what should THIS
+          // turn run?" rather than "what is the user's default model?" and
+          // must not stamp the Portal catalog projection.
+          false,
+        )
+      : undefined;
+  const selectedModel = options.model ?? laneDefault?.model;
+  // See `resolveLaneSubstitutedProviderType`: lane resolution can hand back a
+  // native model from a DIFFERENT lane than the forced `providerType`, and
+  // pinning that provider over it trips the harness guard below.
+  const laneSubstitutedProviderType = resolveLaneSubstitutedProviderType({
+    explicitModel: options.model,
+    requestedProviderType: options.providerType,
+    selectedModel,
+  });
+  // An explicitly supplied `providerType` is otherwise AUTHORITATIVE on both
+  // branches. It carries the chat's persisted provider lock for a resumed
+  // session, and deriving the provider from the lane-resolved model instead
+  // let a caller that asked for `'codex'` silently land on `'claude'` when
+  // the Codex lane was not the one that resolved.
+  const effectiveProviderType =
+    laneSubstitutedProviderType ??
+    options.providerType ??
+    (options.model !== undefined
+      ? requireProviderForModel(options.model)
+      : selectedModel
+        ? requireProviderForModel(selectedModel)
+        : 'claude');
+  const deferredToolsAllowed =
+    options.deferredToolsAllowed ??
+    persistedDispatchMetadata.deferredToolsAllowed ??
+    true;
+  const effectiveExecutionHarness =
+    // A cross-lane substitution invalidates the persisted harness lock: the
+    // model that will actually run is the substituted one, so the harness
+    // must follow it rather than the lane the chat used to be on.
+    (laneSubstitutedProviderType && selectedModel
+      ? getExecutionHarnessForModel(selectedModel)
+      : undefined) ??
+    persistedDispatchMetadata.executionHarness ??
+    (persistedDispatchMetadata.model
+      ? getExecutionHarnessForModel(persistedDispatchMetadata.model)
+      : undefined) ??
+    (selectedModel ? getExecutionHarnessForModel(selectedModel) : undefined) ??
+    (effectiveProviderType === 'codex' ? 'codex' : 'claude');
+  if (
+    options.executionHarness !== undefined &&
+    options.executionHarness !== effectiveExecutionHarness &&
+    // A cross-lane substitution invalidates the CALLER's harness too, not
+    // just the persisted one. The renderer forwards the tab's persisted
+    // harness verbatim (`stores/chat/slices/messaging.ts`,
+    // `executionHarness: currentTab?.executionHarness`), and that field is
+    // only persisted once a tab has real conversation content
+    // (`chatTabHasConversationContent`, `persisted-tabs.ts`) — which is what
+    // keeps this substitution path narrow. So a Codex-locked chat whose Codex
+    // lane is down arrives here with `executionHarness: 'codex'` while
+    // routing has already moved it to Claude, and throwing there is exactly
+    // the dead end the substitution exists to remove, relocated one line down.
+    laneSubstitutedProviderType === undefined
+  ) {
+    throw new Error('Chat execution harness does not match host-owned routing');
+  }
+  if (
+    preparationOptions.checkModelAvailability !== false &&
+    effectiveExecutionHarness === 'opencode'
+  ) {
+    await assertOpenCodeSelectionAvailable({
+      model: selectedModel ?? persistedDispatchMetadata.model,
+      session: {
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+        ...(options.executionContext === undefined
+          ? {}
+          : { executionContext: options.executionContext }),
+      },
+    });
+  }
+  if (
+    preparationOptions.checkModelAvailability !== false &&
+    effectiveExecutionHarness === 'copilot'
+  ) {
+    await assertCopilotModelAvailable(
+      selectedModel ?? persistedDispatchMetadata.model,
+    );
+  }
+  await preparationOptions.beforeSessionConfiguration?.();
+  const normalizedModelConfig = normalizeAgentModelConfig(options.modelConfig);
+  let repoRulesBlockPromise: Promise<string> | undefined;
+  const resolveSessionConfiguration = async (
+    advertised: boolean,
+  ): Promise<PreparedWorktreeTurnSessionConfiguration> => {
+    const providerPromptKind = effectiveExecutionHarness;
+    const codeGraphToolsAdvertised =
+      effectiveExecutionHarness !== 'cursor' && advertised;
+    const coworkMemoryPolicy = isCoworkChat
+      ? await resolveLocalMemoryPolicy(options)
+      : null;
+    const systemPromptAppend = isCoworkChat
+      ? buildCoworkDispatchSystemPromptAppend(
+          providerPromptKind,
+          preferences?.localMemoryEnabled === true,
+          coworkMemoryPolicy?.kind === 'scoped' &&
+            coworkMemoryPolicy.privateMemory,
+          chatVisualsPromptEligible(effectiveProviderType, 'cowork'),
+        )
+      : isCodeReview
+        ? `${buildCodeReviewPrompt()}\n\n${buildWorktreeInjectedToolPrompt(
+            providerPromptKind,
+            false,
+            true,
+            chatVisualsPromptEligible(effectiveProviderType, 'worktree'),
+          )}`
+        : await buildWorktreeSystemPromptAppend({
+            projectId: options.projectId,
+            worktreeId: options.worktreeId,
+            selectedRepoId: options.selectedRepoId,
+            providerPromptKind,
+            planMode: options.planMode,
+            codeGraphToolsAdvertised,
+            localMemoryEnabled: preferences?.localMemoryEnabled === true,
+            includeChatVisuals: chatVisualsPromptEligible(
+              effectiveProviderType,
+              'worktree',
+            ),
+          });
+    const runtime = selectedModel
+      ? await resolveAgentModelRuntime({
+          projectId: options.projectId,
+          model: selectedModel,
+          systemPromptAppend,
+          pluginSelections: options.pluginSelections,
+          providerType: effectiveProviderType,
+        })
+      : undefined;
+    const runtimeProviderType = runtime?.providerType ?? effectiveProviderType;
+    const runtimeModel = runtime?.runtimeModel ?? selectedModel;
+    // Global Instructions (Instructions settings) resolve into a "User Overall
+    // Preferences" block per session context. Composed here so it reaches
+    // provider sessions only when a session is (re)created — live sessions
+    // are unaffected until their next creation.
+    const chatGlobalInstructions = preferences?.globalInstructions?.chats;
+    const currentGlobalInstructionsBlock = chatGlobalInstructions
+      ? buildUserOverallPreferencesBlock(chatGlobalInstructions, {
+          harness: runtimeProviderType,
+          model: resolveModelAlias(runtimeModel ?? ''),
+          workspaceType: isCoworkChat ? 'cowork' : 'code',
+        })
+      : '';
+    const resumingProviderSession =
+      options.sdkSessionId !== undefined &&
+      laneSubstitutedProviderType === undefined;
+    const globalInstructionsBlock = await selectSessionInstructions({
+      provider: runtimeProviderType,
+      isInteractiveCode:
+        !isCoworkChat &&
+        !isLegacyStandalone &&
+        !isPlanExplore &&
+        !isCodeReview &&
+        options.projectId !== APP_ADVISOR_PROJECT_ID &&
+        !options.hiddenDeferredContinuation &&
+        (options.initiationSource === undefined ||
+          options.initiationSource === 'user'),
+      resumed: resumingProviderSession,
+      saved: options.globalInstructionsSnapshot,
+      active:
+        laneSubstitutedProviderType === undefined
+          ? getSessionGlobalInstructionsSnapshot(
+              options.projectId,
+              options.worktreeId,
+              options.chatId,
+            )
+          : undefined,
+      activeProvider: getSessionProviderType(
+        options.projectId,
+        options.worktreeId,
+        options.chatId,
+      ),
+      currentGlobal: currentGlobalInstructionsBlock,
+      compose: () => {
+        repoRulesBlockPromise ??= composeWorktreeRepoRules(
+          options.projectId,
+          options.worktreeId,
+          cwd,
+        );
+        return repoRulesBlockPromise;
+      },
+    });
+    const composedSystemPromptAppend =
+      appendUserOverallPreferencesBlock(
+        runtime?.systemPromptAppend ?? systemPromptAppend,
+        globalInstructionsBlock,
+      ) ?? systemPromptAppend;
+    const effectiveModelConfig = resolveProviderModelConfig(
+      effectiveExecutionHarness,
+      {
+        thinkingLevel: options.thinkingLevel ?? laneDefault?.thinkingLevel,
+        modelConfig: {
+          ...(normalizedModelConfig ?? {}),
+          ...(normalizedModelConfig?.fastMode === undefined &&
+          typeof options.codexFastModeEnabled === 'boolean'
+            ? { fastMode: options.codexFastModeEnabled }
+            : {}),
+        },
+      },
+      preferences?.providerModelConfigDefaults,
+    );
+    return {
+      codeGraphToolsAdvertised,
+      systemPromptAppend: composedSystemPromptAppend,
+      sessionSystemPromptAppend:
+        runtime?.systemPromptAppend ?? systemPromptAppend,
+      globalInstructionsBlock,
+      runtime,
+      runtimeProviderType,
+      runtimeModel,
+      effectiveModelConfig,
+      managedDelegationMode: preferences?.managedDelegationMode,
+      managedDelegationMaxConcurrent:
+        preferences?.managedDelegationMaxConcurrent,
+      managedDelegationMaxDepth: preferences?.managedDelegationMaxDepth,
+      managedDelegationLifetimeLimit:
+        preferences?.managedDelegationLifetimeLimit,
+      codexPreferences:
+        effectiveExecutionHarness === 'codex' ? preferences : null,
+      // Claude and Cursor both rewrite shell commands through the bundled
+      // RTK hook; Codex has no rewrite seam.
+      rtkEnabled:
+        effectiveExecutionHarness === 'claude' ||
+        effectiveExecutionHarness === 'copilot' ||
+        effectiveExecutionHarness === 'opencode' ||
+        effectiveExecutionHarness === 'cursor'
+          ? preferences?.rtkEnabled !== false
+          : false,
+    };
+  };
+
+  let sessionConfiguration = await turnDispatchTiming.measure(
+    'session_config',
+    () =>
+      resolveSessionConfiguration(
+        existingCodeGraphToolsAdvertised ?? currentCodeGraphToolsAvailable,
+      ),
+  );
+
+  // Without approval authority, which is read just before the session is
+  // created; reuse checks do not compare it.
+  const buildSessionOptions = (): Parameters<
+    typeof getOrCreateRoutedSession
+  >[0] => ({
+    cwd,
+    projectId: options.projectId,
+    worktreeId: options.worktreeId,
+    chatId: options.chatId,
+    ...(options.executionContext === undefined
+      ? {}
+      : { executionContext: options.executionContext }),
+    planMode: options.planMode,
+    codexProposalMode: options.codexProposalMode,
+    thinkingLevel: sessionConfiguration.effectiveModelConfig.thinkingLevel,
+    modelConfig: sessionConfiguration.effectiveModelConfig,
+    requiredAccountProxyConnectionId: options.requiredAccountProxyConnectionId,
+    model: sessionConfiguration.runtimeModel,
+    selectedModel,
+    // A cross-lane substitution changes WHICH PROVIDER runs, and a provider's
+    // session id is meaningless to the other one. `getOrCreateSession` has no
+    // provider-change guard, so forwarding it verbatim handed a persisted
+    // Codex thread id straight to a Claude session. Dropping it starts a
+    // fresh session on the substituted provider instead.
+    // `codexReconstructionSeedId` is likewise a Codex-only resume identifier.
+    //
+    // KNOWN LIMITATION (CAN-1929): the new provider session starts with NO
+    // replay of the persisted conversation — `AgentSessionOptions` carries no
+    // cross-provider reconstruction path — so on the one reachable
+    // established-chat case the UI keeps showing history the agent cannot see.
+    // That case is narrow: substitution requires `explicitModel === undefined`
+    // (see `resolveLaneSubstitutedProviderType`), and a tab only becomes
+    // model-less-with-a-session-id when its persisted model stops resolving
+    // against the registry (`resolveKnownModel` → `undefined` during
+    // hydration), e.g. a model retired between releases.
+    //
+    // Deliberately NOT resolved by refusing substitution for established
+    // conversations: that reinstates the hard dead end this exists to remove,
+    // and round-3 coverage
+    // ("reconciles a substitution against the CALLER persisted harness")
+    // pins the drop-the-session-id behavior. Proper cross-provider
+    // reconstruction (replay + an atomic tab metadata swap) is the real fix
+    // and is larger than this change.
+    ...(laneSubstitutedProviderType
+      ? {}
+      : {
+          sdkSessionId: options.sdkSessionId,
+          codexReconstructionSeedId: options.codexReconstructionSeedId,
+        }),
+    ...(options.claudeForkSession ? { claudeForkSession: true } : {}),
+    ...(options.claudeForkSession && options.claudeForkResumeAt
+      ? { claudeForkResumeAt: options.claudeForkResumeAt }
+      : {}),
+    ...(options.claudeForkSession &&
+    options.claudeForkResumeAt &&
+    options.claudeForkToolResults?.length
+      ? { claudeForkToolResults: options.claudeForkToolResults }
+      : {}),
+    ...(options.claudeForkStartsFresh ? { claudeForkStartsFresh: true } : {}),
+    pluginSelections:
+      sessionConfiguration.runtime?.pluginSelections ??
+      options.pluginSelections,
+    ...(options.packageOverlay
+      ? { packageOverlay: options.packageOverlay }
+      : {}),
+    applyGlobalPluginDefaults: chatSurfaceUsesGlobalPluginDefaults(
+      options.projectId,
+    ),
+    deferredToolsAllowed,
+    // Already composed in resolveSessionConfiguration: runtime (Agent)
+    // append plus the Global Instructions block.
+    systemPromptAppend: sessionConfiguration.sessionSystemPromptAppend,
+    globalInstructionsBlock: sessionConfiguration.globalInstructionsBlock,
+    globalInstructionsSnapshot:
+      options.sdkSessionId !== undefined &&
+      laneSubstitutedProviderType === undefined
+        ? sessionConfiguration.globalInstructionsBlock
+        : undefined,
+    managedDelegationSurface:
+      !isCoworkChat && !isPlanExplore && !isCodeReview
+        ? 'worktree-chat'
+        : undefined,
+    managedDelegationMaxConcurrent:
+      sessionConfiguration.managedDelegationMaxConcurrent,
+    managedDelegationMaxDepth: sessionConfiguration.managedDelegationMaxDepth,
+    managedDelegationLifetimeLimit:
+      sessionConfiguration.managedDelegationLifetimeLimit,
+    managedDelegationMode:
+      !isCoworkChat && !isPlanExplore && !isCodeReview
+        ? resolveManagedDelegationMode(
+            sessionConfiguration.managedDelegationMode,
+          )
+        : undefined,
+    providerType: sessionConfiguration.runtimeProviderType,
+    executionHarness: effectiveExecutionHarness,
+    codeGraphToolsAdvertised: sessionConfiguration.codeGraphToolsAdvertised,
+    codexAppServerIdleTimeoutMinutes:
+      sessionConfiguration.codexPreferences?.codexAppServerIdleTimeoutMinutes,
+    codexMaxConcurrentSubagents:
+      sessionConfiguration.codexPreferences?.codexMaxConcurrentSubagents,
+    codexMultiAgentEnabled: isCoworkChat
+      ? sessionConfiguration.codexPreferences
+          ?.codexMultiAgentStandaloneChatsEnabled
+      : sessionConfiguration.codexPreferences
+          ?.codexMultiAgentWorktreeChatsEnabled,
+    rtkEnabled: sessionConfiguration.rtkEnabled,
+    ...(options.aiCreditsRouting
+      ? { aiCreditsRouting: options.aiCreditsRouting }
+      : {}),
+    ...(options.subscriptionBillingOverride
+      ? { subscriptionBillingOverride: true }
+      : {}),
+  });
+
+  return {
+    cwd,
+    sessionKey,
+    existingCodeGraphToolsAdvertised,
+    currentCodeGraphToolsAvailable,
+    persistedDispatchMetadata,
+    selectedModel,
+    effectiveProviderType,
+    effectiveExecutionHarness,
+    deferredToolsAllowed,
+    resolveSessionConfiguration,
+    get sessionConfiguration(): PreparedWorktreeTurnSessionConfiguration {
+      return sessionConfiguration;
+    },
+    set sessionConfiguration(
+      configuration: PreparedWorktreeTurnSessionConfiguration,
+    ) {
+      sessionConfiguration = configuration;
+    },
+    buildSessionOptions,
+  };
+}
+
+export async function dispatchWorktreeChatTurn<
+  TBeforeResult extends boolean | void | ProviderEventIngestResult =
+    | boolean
+    | void
+    | ProviderEventIngestResult,
+>(
+  requestedOptions: DispatchWorktreeChatTurnOptions<TBeforeResult>,
 ): Promise<void> {
+  // Until the provider session owns the turn, nothing else proves this process
+  // is running it: a snapshot read meanwhile (a watcher reading the chat, a
+  // renderer refresh) would settle the starting runtime as interrupted by an
+  // app restart and drop the reply. Send commands hold this already; hook,
+  // rebase and builtin chats dispatch here directly.
+  const releaseRuntimeHost =
+    getChatStateService().holdRuntimeHost(requestedOptions);
+  try {
+    await dispatchHeldWorktreeChatTurn(requestedOptions);
+  } finally {
+    releaseRuntimeHost();
+  }
+}
+
+async function dispatchHeldWorktreeChatTurn<
+  TBeforeResult extends boolean | void | ProviderEventIngestResult =
+    | boolean
+    | void
+    | ProviderEventIngestResult,
+>(
+  requestedOptions: DispatchWorktreeChatTurnOptions<TBeforeResult>,
+): Promise<void> {
+  // A live-settings turn runs on what the session already uses; the saved
+  // tab settings (the user's pending choice) wait for a later turn.
+  const liveSettings = requestedOptions.useLiveSessionSettings
+    ? liveSessionSettingsOverlay(requestedOptions)
+    : undefined;
+  const options: DispatchWorktreeChatTurnOptions<TBeforeResult> = liveSettings
+    ? { ...requestedOptions, ...liveSettings }
+    : requestedOptions;
+  const turnDispatchTiming =
+    options.turnDispatchTiming ?? new TurnDispatchTiming();
   if (!options.onBeforeChatEvent) {
     throw new Error(
       'A durable chat-event commit hook is required before dispatching a worktree chat turn.',
@@ -1317,6 +1947,13 @@ export async function dispatchWorktreeChatTurn(
   // it here, the funnel every dispatch path (including deferred-tools
   // continuations and direct callers) shares, before any turn state exists.
   assertChatScopeAcceptsTurns(options.projectId);
+  // A Stop or newer dispatch since admission makes this attempt stale.
+  consumeDispatchAuthorization(options.authorization, {
+    projectId: options.projectId,
+    worktreeId: options.worktreeId,
+    chatId: options.chatId,
+    userMessageId: options.userMessageId,
+  });
   const watcherAcceptedAt = new Date().toISOString();
   const watcherContext = captureCanonicalChatProducerContext(options);
   const presentationOrigin = {
@@ -1354,6 +1991,7 @@ export async function dispatchWorktreeChatTurn(
     );
   }
   const dispatchStartedAt = Date.now();
+  const memoryAbortController = new AbortController();
   const memoryPromise: Promise<PreparedOrgMemory | null> =
     options.hiddenDeferredContinuation
       ? Promise.resolve(null)
@@ -1373,6 +2011,7 @@ export async function dispatchWorktreeChatTurn(
           ...(options.initiationSource !== undefined
             ? { initiationSource: options.initiationSource }
             : {}),
+          signal: memoryAbortController.signal,
         });
   // Created where the fetch starts so no dispatch exit — success, thrown
   // error, or early return — can leave a gate-passed search unattributed:
@@ -1402,8 +2041,13 @@ export async function dispatchWorktreeChatTurn(
         }).catch((): null => null);
 
   try {
-    resourceGuard = await getResourceMonitorService().reserveChatTurnStart();
-    const observabilityServicePromise = loadObservabilityService();
+    resourceGuard = await turnDispatchTiming.measure('scope_lease', () =>
+      getResourceMonitorService().reserveChatTurnStart(),
+    );
+    const observabilityServicePromise = turnDispatchTiming.measure(
+      'observability',
+      loadObservabilityService,
+    );
     const isCoworkChat = isCoworkWorkspace(options.projectId);
     const isLegacyStandalone = options.projectId === STANDALONE_CHAT_PROJECT_ID;
     const standaloneProjectId = isLegacyStandalone
@@ -1452,18 +2096,13 @@ export async function dispatchWorktreeChatTurn(
       planTurnLease = null;
       lease?.end();
     };
-    const cwd = resolveWorktreeCwd(
+    const attachmentCwd = resolveWorktreeCwd(
       options.projectId,
       options.worktreeId,
       options.selectedRepoId,
     );
-    const sessionKey = buildSessionKey(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-    );
     const attachmentBaseDir = isCoworkChat
-      ? getCoworkManagedSubdir(cwd, 'attachments')
+      ? getCoworkManagedSubdir(attachmentCwd, 'attachments')
       : getWorktreeAttachmentsDir(options.projectId, options.worktreeId);
     // Built early so attachment validation fails before any session work.
     // Pending system instructions are prepended at compose time, once the
@@ -1480,410 +2119,44 @@ export async function dispatchWorktreeChatTurn(
           // `resolveWorktreeCwd`), so it is the correct attachment base for
           // either keying.
           attachmentBaseDir,
-          cwd,
+          cwd: attachmentCwd,
           inputMode: options.inputMode,
           agentSent: options.agentSent,
         });
-    const existingCodeGraphToolsAdvertised = getSessionCodeGraphToolsAdvertised(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-    );
-    const currentCodeGraphToolsAvailable =
-      !isCoworkChat &&
-      !isPlanExplore &&
-      !isCodeReview &&
-      isCodeGraphAvailableForWorkspace(options.projectId);
-    const persistedDispatchMetadata = await readPersistedChatDispatchMetadata(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-    ).catch(
-      (): PersistedChatDispatchMetadata =>
-        ({}) satisfies PersistedChatDispatchMetadata,
-    );
-    const preferences = await readPreferencesFile().catch(() => null);
-    const laneDefault =
-      options.model === undefined && preferences
-        ? await requireLaneAwareDefaultSelection(
-            preferences,
-            isCoworkChat ? 'chat' : 'worktree',
-            // Same workspace the session spawn resolves its environment for
-            // (`claude-session.ts` / `codex-session.ts` pass `opts.projectId`),
-            // so a Canopy Environments credential is judged against the SAME
-            // effective environment the turn will actually run in.
-            { workspaceId: options.projectId },
-            options.providerType,
-            // Forced to this turn's provider, so it answers "what should THIS
-            // turn run?" rather than "what is the user's default model?" and
-            // must not stamp the Portal catalog projection.
-            false,
-          )
-        : undefined;
-    const selectedModel = options.model ?? laneDefault?.model;
-    // See `resolveLaneSubstitutedProviderType`: lane resolution can hand back a
-    // native model from a DIFFERENT lane than the forced `providerType`, and
-    // pinning that provider over it trips the harness guard below.
-    const laneSubstitutedProviderType = resolveLaneSubstitutedProviderType({
-      explicitModel: options.model,
-      requestedProviderType: options.providerType,
-      selectedModel,
-    });
-    // An explicitly supplied `providerType` is otherwise AUTHORITATIVE on both
-    // branches. It carries the chat's persisted provider lock for a resumed
-    // session, and deriving the provider from the lane-resolved model instead
-    // let a caller that asked for `'codex'` silently land on `'claude'` when
-    // the Codex lane was not the one that resolved.
-    const effectiveProviderType =
-      laneSubstitutedProviderType ??
-      options.providerType ??
-      (options.model !== undefined
-        ? requireProviderForModel(options.model)
-        : selectedModel
-          ? requireProviderForModel(selectedModel)
-          : 'claude');
-    const deferredToolsAllowed =
-      options.deferredToolsAllowed ??
-      persistedDispatchMetadata.deferredToolsAllowed ??
-      true;
-    const effectiveExecutionHarness =
-      // A cross-lane substitution invalidates the persisted harness lock: the
-      // model that will actually run is the substituted one, so the harness
-      // must follow it rather than the lane the chat used to be on.
-      (laneSubstitutedProviderType && selectedModel
-        ? getExecutionHarnessForModel(selectedModel)
-        : undefined) ??
-      persistedDispatchMetadata.executionHarness ??
-      (persistedDispatchMetadata.model
-        ? getExecutionHarnessForModel(persistedDispatchMetadata.model)
-        : undefined) ??
-      (selectedModel
-        ? getExecutionHarnessForModel(selectedModel)
-        : undefined) ??
-      (effectiveProviderType === 'codex' ? 'codex' : 'claude');
-    if (
-      options.executionHarness !== undefined &&
-      options.executionHarness !== effectiveExecutionHarness &&
-      // A cross-lane substitution invalidates the CALLER's harness too, not
-      // just the persisted one. The renderer forwards the tab's persisted
-      // harness verbatim (`stores/chat/slices/messaging.ts`,
-      // `executionHarness: currentTab?.executionHarness`), and that field is
-      // only persisted once a tab has real conversation content
-      // (`chatTabHasConversationContent`, `persisted-tabs.ts`) — which is what
-      // keeps this substitution path narrow. So a Codex-locked chat whose Codex
-      // lane is down arrives here with `executionHarness: 'codex'` while
-      // routing has already moved it to Claude, and throwing there is exactly
-      // the dead end the substitution exists to remove, relocated one line down.
-      laneSubstitutedProviderType === undefined
-    ) {
-      throw new Error(
-        'Chat execution harness does not match host-owned routing',
-      );
-    }
-    if (effectiveExecutionHarness === 'opencode')
-      await assertOpenCodeModelAvailable(
-        selectedModel ?? persistedDispatchMetadata.model,
-      );
-    if (effectiveExecutionHarness === 'copilot')
-      await assertCopilotModelAvailable(
-        selectedModel ?? persistedDispatchMetadata.model,
-      );
-    // `standaloneProjectId` already carries the real cowork workspace id for
-    // both cowork keyings; sentinel-keyed plan-explore / code-review sessions
-    // resolve to their real workspace inside `prepareLocalMemoryContext`.
-    // Cursor gets this context too, even on a turn whose CLI ends up without
-    // the app's MCP servers (and so without the memory tools): the context is
-    // reference material the agent can read, and the session adds the memory
-    // nudge only when the tools actually reached the CLI.
-    const localMemory = options.hiddenDeferredContinuation
-      ? null
-      : await prepareLocalMemory({
-          userText: options.text,
-          projectId: standaloneProjectId ?? options.projectId,
-          worktreeId: options.worktreeId,
-        });
-    const normalizedModelConfig = normalizeAgentModelConfig(
-      options.modelConfig,
-    );
-    let repoRulesBlockPromise: Promise<string> | undefined;
-    const resolveSessionConfiguration = async (
-      advertised: boolean,
-    ): Promise<{
-      codeGraphToolsAdvertised: boolean;
-      systemPromptAppend: string;
-      sessionSystemPromptAppend: string;
-      globalInstructionsBlock: string;
-      runtime: Awaited<ReturnType<typeof resolveAgentModelRuntime>> | undefined;
-      runtimeProviderType: AgentProviderType;
-      runtimeModel: ChatModel | undefined;
-      effectiveModelConfig: ReturnType<typeof resolveProviderModelConfig>;
-      managedDelegationMode: PreferencesData['managedDelegationMode'];
-      managedDelegationMaxConcurrent: PreferencesData['managedDelegationMaxConcurrent'];
-      managedDelegationMaxDepth: PreferencesData['managedDelegationMaxDepth'];
-      codexPreferences: PreferencesData | null;
-      rtkEnabled: boolean;
-    }> => {
-      const providerPromptKind = effectiveExecutionHarness;
-      const codeGraphToolsAdvertised =
-        effectiveExecutionHarness !== 'cursor' && advertised;
-      const coworkMemoryPolicy = isCoworkChat
-        ? await resolveLocalMemoryPolicy(options)
-        : null;
-      const systemPromptAppend = isCoworkChat
-        ? buildCoworkDispatchSystemPromptAppend(
-            providerPromptKind,
-            preferences?.localMemoryEnabled === true,
-            coworkMemoryPolicy?.kind === 'scoped' &&
-              coworkMemoryPolicy.privateMemory,
-            chatVisualsPromptEligible(effectiveProviderType, 'cowork'),
-          )
-        : isCodeReview
-          ? `${buildCodeReviewPrompt()}\n\n${buildWorktreeInjectedToolPrompt(
-              providerPromptKind,
-              false,
-              true,
-              chatVisualsPromptEligible(effectiveProviderType, 'worktree'),
-            )}`
-          : await buildWorktreeSystemPromptAppend({
-              projectId: options.projectId,
-              worktreeId: options.worktreeId,
-              selectedRepoId: options.selectedRepoId,
-              providerPromptKind,
-              planMode: options.planMode,
-              codeGraphToolsAdvertised,
-              localMemoryEnabled: preferences?.localMemoryEnabled === true,
-              includeChatVisuals: chatVisualsPromptEligible(
-                effectiveProviderType,
-                'worktree',
-              ),
-            });
-      const runtime = selectedModel
-        ? await resolveAgentModelRuntime({
-            projectId: options.projectId,
-            model: selectedModel,
-            systemPromptAppend,
-            pluginSelections: options.pluginSelections,
-            providerType: effectiveProviderType,
-          })
-        : undefined;
-      const runtimeProviderType =
-        runtime?.providerType ?? effectiveProviderType;
-      const runtimeModel = runtime?.runtimeModel ?? selectedModel;
-      // Global Instructions (Instructions settings) resolve into a "User Overall
-      // Preferences" block per session context. Composed here so it reaches
-      // provider sessions only when a session is (re)created — live sessions
-      // are unaffected until their next creation.
-      const chatGlobalInstructions = preferences?.globalInstructions?.chats;
-      const currentGlobalInstructionsBlock = chatGlobalInstructions
-        ? buildUserOverallPreferencesBlock(chatGlobalInstructions, {
-            harness: runtimeProviderType,
-            model: resolveModelAlias(runtimeModel ?? ''),
-            workspaceType: isCoworkChat ? 'cowork' : 'code',
-          })
-        : '';
-      const resumingProviderSession =
-        options.sdkSessionId !== undefined &&
-        laneSubstitutedProviderType === undefined;
-      const globalInstructionsBlock = await selectSessionInstructions({
-        provider: runtimeProviderType,
-        isInteractiveCode:
-          !isCoworkChat &&
-          !isLegacyStandalone &&
-          !isPlanExplore &&
-          !isCodeReview &&
-          options.projectId !== APP_ADVISOR_PROJECT_ID &&
-          !options.hiddenDeferredContinuation &&
-          (options.initiationSource === undefined ||
-            options.initiationSource === 'user'),
-        resumed: resumingProviderSession,
-        saved: options.globalInstructionsSnapshot,
-        active:
-          laneSubstitutedProviderType === undefined
-            ? getSessionGlobalInstructionsSnapshot(
-                options.projectId,
-                options.worktreeId,
-                options.chatId,
-              )
-            : undefined,
-        activeProvider: getSessionProviderType(
-          options.projectId,
-          options.worktreeId,
-          options.chatId,
-        ),
-        currentGlobal: currentGlobalInstructionsBlock,
-        compose: () => {
-          repoRulesBlockPromise ??= composeWorktreeRepoRules(
-            options.projectId,
-            options.worktreeId,
-            cwd,
+    // Context memory preparation is a dispatch side effect and remains outside
+    // the reusable session-preparation API. The callback keeps it before
+    // normalized model configuration/session_config, as in the original path.
+    const localMemory: {
+      value: Awaited<ReturnType<typeof prepareLocalMemory>>;
+    } = { value: null };
+    const preparedSession = await prepareWorktreeTurnSession(
+      options,
+      turnDispatchTiming,
+      {
+        beforeSessionConfiguration: async () => {
+          if (options.hiddenDeferredContinuation) return;
+          localMemory.value = await turnDispatchTiming.measure(
+            'local_memory',
+            () =>
+              prepareLocalMemory({
+                userText: options.text,
+                projectId: standaloneProjectId ?? options.projectId,
+                worktreeId: options.worktreeId,
+              }),
           );
-          return repoRulesBlockPromise;
         },
-      });
-      const composedSystemPromptAppend =
-        appendUserOverallPreferencesBlock(
-          runtime?.systemPromptAppend ?? systemPromptAppend,
-          globalInstructionsBlock,
-        ) ?? systemPromptAppend;
-      const effectiveModelConfig = resolveProviderModelConfig(
-        effectiveExecutionHarness,
-        {
-          thinkingLevel: options.thinkingLevel ?? laneDefault?.thinkingLevel,
-          modelConfig: {
-            ...(normalizedModelConfig ?? {}),
-            ...(normalizedModelConfig?.fastMode === undefined &&
-            typeof options.codexFastModeEnabled === 'boolean'
-              ? { fastMode: options.codexFastModeEnabled }
-              : {}),
-          },
-        },
-        preferences?.providerModelConfigDefaults,
-      );
-      return {
-        codeGraphToolsAdvertised,
-        systemPromptAppend: composedSystemPromptAppend,
-        sessionSystemPromptAppend:
-          runtime?.systemPromptAppend ?? systemPromptAppend,
-        globalInstructionsBlock,
-        runtime,
-        runtimeProviderType,
-        runtimeModel,
-        effectiveModelConfig,
-        managedDelegationMode: preferences?.managedDelegationMode,
-        managedDelegationMaxConcurrent:
-          preferences?.managedDelegationMaxConcurrent,
-        managedDelegationMaxDepth: preferences?.managedDelegationMaxDepth,
-        codexPreferences:
-          effectiveExecutionHarness === 'codex' ? preferences : null,
-        // Claude and Cursor both rewrite shell commands through the bundled
-        // RTK hook; Codex has no rewrite seam.
-        rtkEnabled:
-          effectiveExecutionHarness === 'claude' ||
-          effectiveExecutionHarness === 'copilot' ||
-          effectiveExecutionHarness === 'opencode' ||
-          effectiveExecutionHarness === 'cursor'
-            ? preferences?.rtkEnabled !== false
-            : false,
-      };
-    };
-
-    let sessionConfiguration = await resolveSessionConfiguration(
-      existingCodeGraphToolsAdvertised ?? currentCodeGraphToolsAvailable,
+      },
     );
-
-    const buildSessionOptions = (): Parameters<
-      typeof getOrCreateRoutedSession
-    >[0] => ({
+    const {
       cwd,
-      projectId: options.projectId,
-      worktreeId: options.worktreeId,
-      chatId: options.chatId,
-      ...(options.executionContext === undefined
-        ? {}
-        : { executionContext: options.executionContext }),
-      planMode: options.planMode,
-      approvalMode:
-        persistedDispatchMetadata?.approvalMode ?? options.approvalMode,
-      sessionApprovalRules: options.sessionApprovalRules,
-      codexProposalMode: options.codexProposalMode,
-      thinkingLevel: sessionConfiguration.effectiveModelConfig.thinkingLevel,
-      modelConfig: sessionConfiguration.effectiveModelConfig,
-      requiredAccountProxyConnectionId:
-        options.requiredAccountProxyConnectionId,
-      model: sessionConfiguration.runtimeModel,
-      selectedModel,
-      // A cross-lane substitution changes WHICH PROVIDER runs, and a provider's
-      // session id is meaningless to the other one. `getOrCreateSession` has no
-      // provider-change guard, so forwarding it verbatim handed a persisted
-      // Codex thread id straight to a Claude session. Dropping it starts a
-      // fresh session on the substituted provider instead.
-      // `codexReconstructionSeedId` is likewise a Codex-only resume identifier.
-      //
-      // KNOWN LIMITATION (CAN-1929): the new provider session starts with NO
-      // replay of the persisted conversation — `AgentSessionOptions` carries no
-      // cross-provider reconstruction path — so on the one reachable
-      // established-chat case the UI keeps showing history the agent cannot see.
-      // That case is narrow: substitution requires `explicitModel === undefined`
-      // (see `resolveLaneSubstitutedProviderType`), and a tab only becomes
-      // model-less-with-a-session-id when its persisted model stops resolving
-      // against the registry (`resolveKnownModel` → `undefined` during
-      // hydration), e.g. a model retired between releases.
-      //
-      // Deliberately NOT resolved by refusing substitution for established
-      // conversations: that reinstates the hard dead end this exists to remove,
-      // and round-3 coverage
-      // ("reconciles a substitution against the CALLER persisted harness")
-      // pins the drop-the-session-id behavior. Proper cross-provider
-      // reconstruction (replay + an atomic tab metadata swap) is the real fix
-      // and is larger than this change.
-      ...(laneSubstitutedProviderType
-        ? {}
-        : {
-            sdkSessionId: options.sdkSessionId,
-            codexReconstructionSeedId: options.codexReconstructionSeedId,
-          }),
-      ...(options.claudeForkSession ? { claudeForkSession: true } : {}),
-      ...(options.claudeForkSession && options.claudeForkResumeAt
-        ? { claudeForkResumeAt: options.claudeForkResumeAt }
-        : {}),
-      ...(options.claudeForkSession &&
-      options.claudeForkResumeAt &&
-      options.claudeForkToolResults?.length
-        ? { claudeForkToolResults: options.claudeForkToolResults }
-        : {}),
-      ...(options.claudeForkStartsFresh ? { claudeForkStartsFresh: true } : {}),
-      pluginSelections:
-        sessionConfiguration.runtime?.pluginSelections ??
-        options.pluginSelections,
-      ...(options.packageOverlay
-        ? { packageOverlay: options.packageOverlay }
-        : {}),
-      applyGlobalPluginDefaults: chatSurfaceUsesGlobalPluginDefaults(
-        options.projectId,
-      ),
-      deferredToolsAllowed,
-      // Already composed in resolveSessionConfiguration: runtime (Agent)
-      // append plus the Global Instructions block.
-      systemPromptAppend: sessionConfiguration.sessionSystemPromptAppend,
-      globalInstructionsBlock: sessionConfiguration.globalInstructionsBlock,
-      globalInstructionsSnapshot:
-        options.sdkSessionId !== undefined &&
-        laneSubstitutedProviderType === undefined
-          ? sessionConfiguration.globalInstructionsBlock
-          : undefined,
-      managedDelegationSurface:
-        !isCoworkChat && !isPlanExplore && !isCodeReview
-          ? 'worktree-chat'
-          : undefined,
-      managedDelegationMaxConcurrent:
-        sessionConfiguration.managedDelegationMaxConcurrent,
-      managedDelegationMaxDepth: sessionConfiguration.managedDelegationMaxDepth,
-      managedDelegationMode:
-        !isCoworkChat && !isPlanExplore && !isCodeReview
-          ? resolveManagedDelegationMode(
-              sessionConfiguration.managedDelegationMode,
-            )
-          : undefined,
-      providerType: sessionConfiguration.runtimeProviderType,
-      executionHarness: effectiveExecutionHarness,
-      codeGraphToolsAdvertised: sessionConfiguration.codeGraphToolsAdvertised,
-      codexAppServerIdleTimeoutMinutes:
-        sessionConfiguration.codexPreferences?.codexAppServerIdleTimeoutMinutes,
-      codexMaxConcurrentSubagents:
-        sessionConfiguration.codexPreferences?.codexMaxConcurrentSubagents,
-      codexMultiAgentEnabled: isCoworkChat
-        ? sessionConfiguration.codexPreferences
-            ?.codexMultiAgentStandaloneChatsEnabled
-        : sessionConfiguration.codexPreferences
-            ?.codexMultiAgentWorktreeChatsEnabled,
-      rtkEnabled: sessionConfiguration.rtkEnabled,
-      ...(options.aiCreditsRouting
-        ? { aiCreditsRouting: options.aiCreditsRouting }
-        : {}),
-      ...(options.subscriptionBillingOverride
-        ? { subscriptionBillingOverride: true }
-        : {}),
-    });
+      sessionKey,
+      existingCodeGraphToolsAdvertised,
+      currentCodeGraphToolsAvailable,
+      resolveSessionConfiguration,
+      buildSessionOptions,
+      effectiveExecutionHarness,
+    } = preparedSession;
+    let sessionConfiguration = preparedSession.sessionConfiguration;
 
     if (
       !options.hiddenDeferredContinuation &&
@@ -1913,34 +2186,80 @@ export async function dispatchWorktreeChatTurn(
       });
     }
 
-    const recreateOnNextTurn = shouldRecreateSessionOnNextTurn(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-    );
-    if (existingCodeGraphToolsAdvertised !== undefined) {
-      const requestedSessionOptions = buildSessionOptions();
-      const canReuseRequestedSession =
-        !recreateOnNextTurn && (await canReuseSession(requestedSessionOptions));
-      if (
-        !canReuseRequestedSession &&
-        !(await canPreserveSessionCapabilitySnapshot(requestedSessionOptions))
-      ) {
-        sessionConfiguration = await resolveSessionConfiguration(
-          currentCodeGraphToolsAvailable,
-        );
-      }
-    }
-
-    if (recreateOnNextTurn) {
-      // A recycle: the chat's managed delegations keep running.
-      await destroySession(
+    await turnDispatchTiming.measure('session_reuse', async () => {
+      const recreate = shouldRecreateSessionOnNextTurn(
         options.projectId,
         options.worktreeId,
         options.chatId,
-        { retainDelegations: true },
       );
-    }
+      const recreateReasons = recreate
+        ? getSessionRecreateReasons(
+            options.projectId,
+            options.worktreeId,
+            options.chatId,
+          )
+        : [];
+      const deferApprovalRecreation =
+        recreate &&
+        recreateReasons.length > 0 &&
+        recreateReasons.every((reason) =>
+          isRecreateDeferrable(reason, liveSettings !== undefined),
+        ) &&
+        chatHasNativeBackgroundWork(
+          options.projectId,
+          options.worktreeId,
+          options.chatId,
+        );
+      if (deferApprovalRecreation) {
+        // Record only field and recreation-reason names; request values stay
+        // out of session diagnostics.
+        void observabilityServicePromise
+          .then((observabilityService) =>
+            observabilityService.recordSessionDiagnostic({
+              version: 1,
+              timestamp: new Date().toISOString(),
+              kind: 'session_recreate_deferred',
+              sessionKey,
+              projectId: options.projectId,
+              worktreeId: options.worktreeId,
+              chatId: options.chatId,
+              providerType: sessionConfiguration.runtimeProviderType,
+              recreateReasons: [...recreateReasons],
+              ...(recreateReasons.every((reason) => reason === 'approval')
+                ? { changedOptions: ['approvalMode', 'sessionApprovalRules'] }
+                : {}),
+            }),
+          )
+          .catch(() => undefined);
+      }
+      if (existingCodeGraphToolsAdvertised !== undefined) {
+        const requestedSessionOptions = buildSessionOptions();
+        const canReuseRequestedSession =
+          (!recreate || deferApprovalRecreation) &&
+          (await canReuseSession(requestedSessionOptions));
+        if (
+          !canReuseRequestedSession &&
+          !(await canPreserveSessionCapabilitySnapshot(requestedSessionOptions))
+        ) {
+          sessionConfiguration = await turnDispatchTiming.measure(
+            'session_config',
+            () => resolveSessionConfiguration(currentCodeGraphToolsAvailable),
+          );
+          preparedSession.sessionConfiguration = sessionConfiguration;
+        }
+      }
+
+      if (recreate && !deferApprovalRecreation) {
+        // A recycle: the chat's managed delegations keep running.
+        await destroySession(
+          options.projectId,
+          options.worktreeId,
+          options.chatId,
+          { retainDelegations: true },
+        );
+      }
+      return recreate;
+    });
 
     const {
       runtime,
@@ -1951,6 +2270,25 @@ export async function dispatchWorktreeChatTurn(
       rtkEnabled,
       systemPromptAppend,
     } = sessionConfiguration;
+    const recordSlowDispatchDiagnostic = (
+      diagnostic: TurnDispatchSlowDiagnostic,
+    ): void => {
+      const record: SessionDiagnosticRecord = {
+        ...diagnostic,
+        version: 1,
+        timestamp: new Date().toISOString(),
+        sessionKey,
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+        providerType: runtimeProviderType,
+      };
+      void observabilityServicePromise
+        .then((observabilityService) =>
+          observabilityService.recordSessionDiagnostic(record),
+        )
+        .catch(() => undefined);
+    };
     const observedSystemPromptAppend = systemPromptAppend;
     const resumesStoppedTurn =
       options.hiddenContinuationKind === 'stopped_turn_resume';
@@ -1993,18 +2331,61 @@ export async function dispatchWorktreeChatTurn(
     };
     let codexRootThreadId: string | undefined = options.sdkSessionId;
     let sessionEventCommitTail = Promise.resolve();
+    let terminalQueueReleaseTail = Promise.resolve();
     // Deliveries of events whose commits overlapped (group commit only).
     const commitPipeline = new SessionEventCommitPipeline();
     let turnDiffCaptureTail = Promise.resolve();
+    let turnDiffEventCommit = Promise.resolve();
+    let derivedEventCommits = Promise.resolve();
+    const recordWorktreeTurnDrop = (
+      data: unknown,
+      reason: string,
+      turnUserMessageId: string | undefined,
+      includeTurnUserMessageId = false,
+    ): void => {
+      const eventData = isRecord(data) ? data : null;
+      const eventTurnUserMessageId = eventData
+        ? getEventTurnUserMessageId(eventData)
+        : null;
+      const codexEvent =
+        eventData?.type === 'codex' && isRecord(eventData.event)
+          ? eventData.event
+          : null;
+      const providerThreadId =
+        codexEvent && typeof codexEvent.thread_id === 'string'
+          ? (codexRootThreadId ?? codexEvent.thread_id)
+          : undefined;
+      recordChatEventDropped({
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+        providerType: runtimeProviderType,
+        gate: 'worktree_turn_ineligible',
+        reason,
+        data,
+        ...(turnUserMessageId !== undefined &&
+        (includeTurnUserMessageId ||
+          eventTurnUserMessageId !== turnUserMessageId)
+          ? { turnUserMessageId }
+          : {}),
+        ...(providerThreadId ? { providerThreadId } : {}),
+      });
+    };
     const evaluateSessionEvent = (
       data: unknown,
     ): {
       eventData: Record<string, unknown> | null;
       isTerminalEvent: boolean;
       activeTurnUserMessageId: string | undefined;
+      turnOwnerUserMessageId: string;
       eventTurnUserMessageId: string | null;
       revivesSettledTurn: boolean;
       ineligibleEvent: boolean;
+      ineligibleReason:
+        | 'internal_reload_terminal'
+        | 'earlier_turn'
+        | 'settled_turn_unrelated_event'
+        | undefined;
     } => {
       codexRootThreadId = readCodexRootThreadId(data) ?? codexRootThreadId;
       const eventData = isRecord(data) ? data : null;
@@ -2041,9 +2422,10 @@ export async function dispatchWorktreeChatTurn(
         turnSettled &&
         eventTurnUserMessageId === expectedTurnUserMessageId &&
         eventData?.canopy_turn_revival !== true &&
-        isAgentContinuationEvent(data);
+        isRootAgentContinuationEvent(data);
       const canFollowSettledTurn =
         ownedDelegation ||
+        isClaudeChildFrame(eventData) ||
         eventData?.type === 'canopy_input_delivery' ||
         eventData?.type === 'turn_diff' ||
         eventData?.type === 'claude_terminal_transcript_sync' ||
@@ -2072,25 +2454,33 @@ export async function dispatchWorktreeChatTurn(
         ((eventTurnUserMessageId === null && canReviveWithoutTurnTag) ||
           (eventTurnUserMessageId === expectedTurnUserMessageId &&
             eventData?.canopy_turn_revival === true)) &&
-        (isAgentContinuationEvent(data) ||
+        (isRootAgentContinuationEvent(data) ||
           (resumesStoppedTurn &&
             eventData?.canopy_turn_revival === true &&
             isTerminalEvent));
+      const ineligibleReason = isInternalReloadTerminalEvent
+        ? 'internal_reload_terminal'
+        : belongsToEarlierTurn
+          ? 'earlier_turn'
+          : turnSettled && !canFollowSettledTurn && !revivesSettledTurn
+            ? 'settled_turn_unrelated_event'
+            : undefined;
       return {
         eventData,
         isTerminalEvent,
         activeTurnUserMessageId,
+        turnOwnerUserMessageId: expectedTurnUserMessageId,
         eventTurnUserMessageId,
         revivesSettledTurn,
-        ineligibleEvent:
-          isInternalReloadTerminalEvent ||
-          belongsToEarlierTurn ||
-          (turnSettled && !canFollowSettledTurn && !revivesSettledTurn),
+        ineligibleEvent: ineligibleReason !== undefined,
+        ineligibleReason,
       };
     };
     const deliverSessionEvent = (
       data: unknown,
       evaluation: ReturnType<typeof evaluateSessionEvent>,
+      beforeChatEventResult: TBeforeResult,
+      ingestResult: ProviderEventIngestResult,
       occurredAt: string,
     ): void => {
       void observabilityServicePromise.then((observabilityService) => {
@@ -2126,6 +2516,8 @@ export async function dispatchWorktreeChatTurn(
         chatId: options.chatId,
         data,
         isTerminalEvent,
+        beforeChatEventResult,
+        ingestResult,
       });
 
       if (eventData && isTerminalEvent) {
@@ -2182,17 +2574,28 @@ export async function dispatchWorktreeChatTurn(
             : status === 'failure'
               ? 'error'
               : 'cancelled';
-        void getChatQueueServiceForTurnLifecycle().then((queue) => {
-          queue.onTurnTerminal(
-            {
-              projectId: options.projectId,
-              worktreeId: options.worktreeId,
-              chatId: options.chatId,
-            },
-            queueStatus,
-            eventTurnUserMessageId ?? activeTurnUserMessageId,
-          );
-        });
+        terminalQueueReleaseTail = terminalQueueReleaseTail
+          .then(async () => {
+            const queue = await getChatQueueServiceForTurnLifecycle();
+            queue.onTurnTerminal(
+              {
+                projectId: options.projectId,
+                worktreeId: options.worktreeId,
+                chatId: options.chatId,
+              },
+              queueStatus,
+              eventTurnUserMessageId ?? activeTurnUserMessageId,
+              ...(detectAiCreditsNoBillingSource(eventData)
+                ? ['insufficient_credits' as const]
+                : []),
+            );
+          })
+          .catch((error: unknown) => {
+            logMainProcessError(
+              `Failed to release the chat queue after a terminal event for ${options.projectId}/${options.worktreeId}/${options.chatId}`,
+              error,
+            );
+          });
         if (isCoworkChat) {
           // Cowork workspaces get the same Summary card as Code worktrees;
           // the scheduler's cowork branch summarizes folder activity
@@ -2230,13 +2633,30 @@ export async function dispatchWorktreeChatTurn(
           }
           activeTurnUserMessageIds.delete(sessionKey);
           if (activeTurnUserMessageId) {
-            turnDiffCaptureTail = captureTurnEndAndDiff(sessionKey)
-              .then((turnDiff) => {
+            let completeTurnDiffEventCommit = (): void => undefined;
+            const thisTurnDiffEventCommit = new Promise<void>((resolve) => {
+              completeTurnDiffEventCommit = resolve;
+            });
+            // Keep a stable aggregate so a drain can snapshot all derived
+            // commits started by its event prefix before later terminals
+            // append their own work.
+            turnDiffEventCommit = Promise.all([
+              turnDiffEventCommit,
+              thisTurnDiffEventCommit,
+            ]).then(() => undefined);
+            const wakeTurnId = getEventWakeTurnId(eventData);
+            turnDiffCaptureTail = captureTurnEndAndDiffs(sessionKey, {
+              userMessageId: activeTurnUserMessageId,
+              ...(wakeTurnId === undefined ? {} : { wakeTurnId }),
+            })
+              .then((diffs) => {
+                const turnDiff = diffs?.turn;
                 // Emit the event regardless of whether files changed: the
                 // captured `treeRefs` are needed for "Reset to this point" even
                 // on read-only turns. The renderer hides the diff summary when
                 // `files` is empty, so this doesn't add visual noise.
                 if (!turnDiff) {
+                  completeTurnDiffEventCommit();
                   return;
                 }
                 if (turnDiff.files.length > 0) {
@@ -2256,13 +2676,30 @@ export async function dispatchWorktreeChatTurn(
                 // The capture barrier must not await this queued commit: a
                 // late pickup can await capture from inside the same queue.
                 // drainSessionEvents joins the derived commit separately.
-                void handleSessionEvent({
+                const eventCommit = handleSessionEvent({
                   type: 'turn_diff',
                   userMessageId: activeTurnUserMessageId,
                   ...turnDiff,
-                });
+                }).catch(() => undefined);
+                // A wake's own edits also land under its own turn; the prompt's
+                // diff above stays cumulative for "Reset to this point".
+                const wakeDiff =
+                  wakeTurnId === undefined ? undefined : diffs?.sinceLastEnd;
+                const wakeCommit =
+                  wakeTurnId === undefined || wakeDiff === undefined
+                    ? Promise.resolve(undefined)
+                    : handleSessionEvent({
+                        type: 'turn_diff',
+                        userMessageId: wakeTurnKey(wakeTurnId),
+                        ...wakeDiff,
+                      }).catch(() => undefined);
+                void Promise.all([eventCommit, wakeCommit]).then(
+                  completeTurnDiffEventCommit,
+                );
               })
-              .catch(() => undefined);
+              .catch(() => {
+                completeTurnDiffEventCommit();
+              });
           }
         }
       }
@@ -2282,20 +2719,47 @@ export async function dispatchWorktreeChatTurn(
       data: unknown,
       markPersistenceSettled?: () => void,
     ): Promise<void> => {
+      const receiptClassification = classifyProviderRunEvent(data, {
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+      });
+      if (receiptClassification.kind === 'reject') {
+        const descriptor = getProviderRunDescriptor(data);
+        recordWorktreeTurnDrop(
+          data,
+          receiptClassification.reason,
+          descriptor?.executionUserMessageId ?? executionUserMessageId,
+          true,
+        );
+        markPersistenceSettled?.();
+        return Promise.resolve();
+      }
+      const isTranscriptOnly = receiptClassification.kind === 'transcript_only';
+      if (!isTranscriptOnly) {
+        const firstEventDiagnostic =
+          turnDispatchTiming.markFirstProviderEvent();
+        if (firstEventDiagnostic)
+          recordSlowDispatchDiagnostic(firstEventDiagnostic);
+      }
       const attributedData =
         isRecord(data) &&
-        (resumesStoppedTurn ||
+        ((resumesStoppedTurn && !isTranscriptOnly) ||
           (data.type === 'canopy_user_prompt' &&
             options.initiationSource === 'hook'))
-          ? {
+          ? copyProviderRunProvenance(data, {
               ...data,
-              ...(resumesStoppedTurn ? { canopy_turn_revival: true } : {}),
+              ...(resumesStoppedTurn && !isTranscriptOnly
+                ? { canopy_turn_revival: true }
+                : {}),
               ...(data.type === 'canopy_user_prompt' &&
               options.initiationSource === 'hook'
                 ? { canopy_user_message_source: 'hook' }
                 : {}),
-            }
+            })
           : data;
+      const pickupRootUserMessageId = getStartingPickupRootId(attributedData);
+      const routedPickupAcceptance = getTurnRootAcceptance(data);
       const occurredAt = new Date().toISOString();
       const sequence = sessionEventSequence;
       sessionEventSequence += 1;
@@ -2305,24 +2769,75 @@ export async function dispatchWorktreeChatTurn(
       let overlappedCompletion: Promise<void> | undefined;
       sessionEventCommitTail = sessionEventCommitTail
         .then(async () => {
-          // While chat storage group-commits, a streamed event of the active
-          // turn may start its commit before the events ahead of it are
-          // durable (`session-event-commit-pipeline.ts`). Any other event
-          // runs alone, after every overlapped event has completed.
+          const providerRunClassification = classifyProviderRunEvent(
+            attributedData,
+            {
+              projectId: options.projectId,
+              worktreeId: options.worktreeId,
+              chatId: options.chatId,
+            },
+          );
+          if (providerRunClassification.kind === 'reject') {
+            const descriptor = getProviderRunDescriptor(attributedData);
+            recordWorktreeTurnDrop(
+              attributedData,
+              providerRunClassification.reason,
+              descriptor?.executionUserMessageId ?? executionUserMessageId,
+              true,
+            );
+            markPersistenceSettled?.();
+            return;
+          }
+          if (providerRunClassification.kind === 'transcript_only') {
+            // Drain commits already in flight, then use only the originating
+            // run's anchor. This branch deliberately bypasses resume ownership,
+            // host eligibility, queue revival, terminal delivery and timers.
+            if (commitPipeline.pending) await commitPipeline.drained();
+            try {
+              await beforeChatEvent({
+                projectId: options.projectId,
+                worktreeId: options.worktreeId,
+                chatId: options.chatId,
+                data: attributedData,
+                sequenceNamespace,
+                sequence,
+                turnUserMessageId:
+                  providerRunClassification.run.executionUserMessageId,
+              });
+            } finally {
+              markPersistenceSettled?.();
+            }
+            return;
+          }
+          // A streamed event of the active turn may start its commit before
+          // events ahead of it are durable (`session-event-commit-pipeline.ts`).
+          // Any other event runs alone, after every overlapped event has
+          // completed.
           const mayOverlap =
             !resumesStoppedTurn &&
             !turnSettled &&
+            pickupRootUserMessageId === undefined &&
             isOverlappableProviderEvent(attributedData);
           if (!mayOverlap && commitPipeline.pending)
             await commitPipeline.drained();
           // Once an explicit resume owns this same turn anchor, the stopped
           // transport is no longer an event source for the logical turn.
           if (resumeOwnsTerminalSettlement()) {
+            recordWorktreeTurnDrop(
+              attributedData,
+              'resume_owns_terminal_settlement',
+              executionUserMessageId,
+            );
             markPersistenceSettled?.();
             return;
           }
           const evaluation = evaluateSessionEvent(attributedData);
           if (evaluation.ineligibleEvent) {
+            recordWorktreeTurnDrop(
+              attributedData,
+              evaluation.ineligibleReason ?? 'event_ineligible',
+              evaluation.turnOwnerUserMessageId,
+            );
             if (
               evaluation.eventData &&
               evaluation.isTerminalEvent &&
@@ -2359,6 +2874,16 @@ export async function dispatchWorktreeChatTurn(
               executionUserMessageId,
             );
             if (!queueRearmed) {
+              recordChatEventDropped({
+                projectId: options.projectId,
+                worktreeId: options.worktreeId,
+                chatId: options.chatId,
+                providerType: runtimeProviderType,
+                gate: 'turn_revival_refused',
+                reason: 'queue_turn_revival_not_accepted',
+                data: attributedData,
+                turnUserMessageId: executionUserMessageId,
+              });
               markPersistenceSettled?.();
               return;
             }
@@ -2403,7 +2928,18 @@ export async function dispatchWorktreeChatTurn(
                 data,
                 sessionKey,
               )) {
-                void handleSessionEvent(pairing.event);
+                const authFailureEventCommit = handleSessionEvent(
+                  pairing.event,
+                ).catch(() => undefined);
+                // Like turn-diff commits, paired auth-failure commits are
+                // derived work that may be appended after a drain snapshots
+                // the provider-event tail. Keep a stable aggregate so that
+                // drain can join the prefix's derived commits without
+                // re-reading the live event tail.
+                derivedEventCommits = Promise.all([
+                  derivedEventCommits,
+                  authFailureEventCommit,
+                ]).then(() => undefined);
                 // Stop the turn only AFTER the card's own event is durably
                 // committed and delivered. `handleSessionEvent` appends to
                 // `sessionEventCommitTail` synchronously, so reading the tail
@@ -2457,7 +2993,7 @@ export async function dispatchWorktreeChatTurn(
           };
           const commitEvent = (
             onCommitQueued?: () => void,
-          ): Promise<boolean | void> => {
+          ): Promise<TBeforeResult> => {
             const providerType = eventProviderType();
             return beforeChatEvent({
               projectId: options.projectId,
@@ -2473,6 +3009,32 @@ export async function dispatchWorktreeChatTurn(
               ...(onCommitQueued ? { onCommitQueued } : {}),
             });
           };
+          const rollbackPickupLease = async (): Promise<void> => {
+            const lease = routedPickupAcceptance?.lease;
+            // The running root is already the queue's live owner, even when a
+            // later duplicate pickup is rejected by canonical state (or the
+            // initial dispatched root is presented as a pickup). Rolling its
+            // lease back would release the foreground gate under live output.
+            if (
+              !lease ||
+              pickupRootUserMessageId === undefined ||
+              pickupRootUserMessageId === executionUserMessageId
+            ) {
+              return;
+            }
+            const queue = await getChatQueueServiceForTurnLifecycle();
+            const released = queue.rollbackTurnRevival(
+              {
+                projectId: options.projectId,
+                worktreeId: options.worktreeId,
+                chatId: options.chatId,
+              },
+              lease,
+            );
+            // The gate is already free, so no backstop release is owed.
+            if (released && unownedTurnRootUserMessageId === lease.rootId)
+              unownedTurnRootUserMessageId = undefined;
+          };
           if (overlaps) {
             // This link ends once the commit holds its place in the scope's
             // commit order, so the next event's commit can join its journal
@@ -2485,9 +3047,26 @@ export async function dispatchWorktreeChatTurn(
                 ),
               (outcome): void => {
                 if (outcome.status === 'rejected') throw outcome.reason;
-                if (outcome.value === false) return;
-                if (resumeOwnsTerminalSettlement()) return;
-                deliverSessionEvent(attributedData, evaluation, occurredAt);
+                // Canonical admission records its own rejects.
+                if (
+                  getProviderEventIngestOutcome(outcome.value) === 'not-applied'
+                )
+                  return;
+                if (resumeOwnsTerminalSettlement()) {
+                  recordWorktreeTurnDrop(
+                    attributedData,
+                    'resume_owns_terminal_settlement_after_commit',
+                    evaluation.turnOwnerUserMessageId,
+                  );
+                  return;
+                }
+                deliverSessionEvent(
+                  attributedData,
+                  evaluation,
+                  outcome.value,
+                  normalizeProviderEventIngestResult(outcome.value),
+                  occurredAt,
+                );
                 emitPairedAuthFailures();
               },
             );
@@ -2500,10 +3079,11 @@ export async function dispatchWorktreeChatTurn(
             await queued;
             return;
           }
-          let committed: boolean | void;
+          let committed: TBeforeResult;
           try {
             committed = await commitEvent();
           } catch (error) {
+            await rollbackPickupLease();
             rollbackRevival();
             markPersistenceSettled?.();
             throw error;
@@ -2511,46 +3091,74 @@ export async function dispatchWorktreeChatTurn(
           // The canonical commit has settled. Keep the later presentation,
           // watcher, and recursively derived event work on its existing tail.
           markPersistenceSettled?.();
-          if (committed === false) {
-            rollbackRevival();
-            return;
-          }
           // Ownership can change while canonical persistence is in flight.
           // Once Resume has claimed this same anchor, retain the durable old
           // event but do not let its transport deliver or settle the new run.
-          if (resumeOwnsTerminalSettlement()) return;
-          if (
-            isRecord(attributedData) &&
-            attributedData.type === 'canopy_input_delivery' &&
-            attributedData.phase === 'picked-up' &&
-            attributedData.startsTurn === true &&
-            typeof attributedData.userMessageId === 'string'
-          ) {
+          if (resumeOwnsTerminalSettlement()) {
+            recordWorktreeTurnDrop(
+              attributedData,
+              'resume_owns_terminal_settlement_after_commit',
+              evaluation.turnOwnerUserMessageId,
+            );
+            await rollbackPickupLease();
+            return;
+          }
+          let pickupAccepted = false;
+          if (pickupRootUserMessageId !== undefined) {
             const queue = await getChatQueueServiceForTurnLifecycle();
             const target = {
               projectId: options.projectId,
               worktreeId: options.worktreeId,
               chatId: options.chatId,
             };
-            let pickupAccepted: boolean;
-            if (attributedData.turnRootAccepted === false) {
-              pickupAccepted = false;
-            } else if (attributedData.turnRootAccepted === true) {
-              queue.confirmTurnRevived(target, attributedData.userMessageId);
-              pickupAccepted = true;
-            } else {
-              pickupAccepted = queue.onTurnRevived(
+            const pickupVerdict =
+              typeof committed === 'object' && committed !== null
+                ? committed.pickup
+                : undefined;
+            const canonicalAccepted =
+              pickupVerdict === 'accepted' ||
+              pickupVerdict === 'already-accepted';
+            if (!canonicalAccepted) {
+              await rollbackPickupLease();
+            } else if (
+              routedPickupAcceptance?.accepted === false ||
+              (isRecord(attributedData) &&
+                attributedData.turnRootAccepted === false)
+            ) {
+              // The router's explicit refusal carries no lease. Preserve its
+              // existing behavior: do not re-arbitrate a refused root.
+            } else if (routedPickupAcceptance?.lease) {
+              pickupAccepted = queue.confirmTurnRevival(
                 target,
-                attributedData.userMessageId,
+                routedPickupAcceptance.lease,
               );
+              if (!pickupAccepted) await rollbackPickupLease();
+            } else if (routedPickupAcceptance === undefined) {
+              // Direct/legacy pickup events have no router arbitration. Keep
+              // their queue revival only after canonical pickup acceptance
+              // has been explicitly reported, and retain the lease guard.
+              const acceptance = queue.acceptTurnRevival(
+                target,
+                pickupRootUserMessageId,
+              );
+              pickupAccepted =
+                acceptance.accepted &&
+                queue.confirmTurnRevival(target, acceptance.lease);
+              if (
+                acceptance.accepted &&
+                !pickupAccepted &&
+                pickupRootUserMessageId !== executionUserMessageId
+              ) {
+                queue.rollbackTurnRevival(target, acceptance.lease);
+              }
             }
             // The pickup event is still durable evidence when the queue has
             // already advanced, but it must not steal event attribution from
             // the newer active turn.
             if (pickupAccepted) {
-              if (unownedTurnRootUserMessageId === attributedData.userMessageId)
+              if (unownedTurnRootUserMessageId === pickupRootUserMessageId)
                 unownedTurnRootUserMessageId = undefined;
-              executionUserMessageId = attributedData.userMessageId;
+              executionUserMessageId = pickupRootUserMessageId;
               turnSettled = false;
               // The picked-up input starts a turn this closure now owns.
               openPlanTurn();
@@ -2568,7 +3176,20 @@ export async function dispatchWorktreeChatTurn(
               }
             }
           }
-          deliverSessionEvent(attributedData, evaluation, occurredAt);
+          if (
+            getProviderEventIngestOutcome(committed) === 'not-applied' &&
+            !pickupAccepted
+          ) {
+            rollbackRevival();
+            return;
+          }
+          deliverSessionEvent(
+            attributedData,
+            evaluation,
+            committed,
+            normalizeProviderEventIngestResult(committed),
+            occurredAt,
+          );
           emitPairedAuthFailures();
         })
         .catch((error: unknown) => {
@@ -2583,112 +3204,193 @@ export async function dispatchWorktreeChatTurn(
       return sessionEventCommitTail.then(() => overlappedCompletion);
     };
     const drainSessionEvents = async (): Promise<void> => {
+      const tail = sessionEventCommitTail;
       // First drain provider events so a terminal event has a chance to start
       // its asynchronous turn-diff capture. Then await that derived work and
       // the durable event commit it appends.
-      await sessionEventCommitTail;
-      if (commitPipeline.pending) await commitPipeline.drained();
-      await turnDiffCaptureTail;
-      await sessionEventCommitTail;
-      if (commitPipeline.pending) await commitPipeline.drained();
+      // The snapshot is important: this await reaction is registered before
+      // any later provider event can link another commit to the shared tail.
+      await tail;
+      const overlappedCommits = commitPipeline.pending
+        ? commitPipeline.drained()
+        : undefined;
+      // Capture both barriers before awaiting the group-commit pipeline: a
+      // later terminal must not replace either promise and extend this drain.
+      const captureTail = turnDiffCaptureTail;
+      const eventCommit = turnDiffEventCommit;
+      if (overlappedCommits) await overlappedCommits;
+      // The group-commit completion callback can emit paired auth failures.
+      // Snapshot their aggregate only after it finishes so commits derived
+      // from the drained prefix are included, but later provider events still
+      // cannot extend this barrier.
+      const derivedCommits = derivedEventCommits;
+      await captureTail;
+      // The capture appends its derived event to the same ordered commit tail.
+      // Await its separate aggregate rather than re-reading the live tail:
+      // later provider events must not extend this call-time drain. Each
+      // derived commit still follows events already appended before its
+      // capture completed, as required by the shared commit ordering.
+      await eventCommit;
+      await derivedCommits;
     };
+    // The last read before the session exists: what the chat holds now, not
+    // what the send carried when it was committed or queued (CAN-4469).
+    const turnApprovalAuthority =
+      await resolveChatTurnApprovalAuthority(options);
     if (preparation.cancelled) return;
     // Until the provider accepts the prompt, the session reads as idle. Hold
     // it from before creation so a passive auth transition observed meanwhile
     // (startChatTurn warms the account cache) recycles it after this turn
     // instead of dropping the prompt.
-    releaseSessionTurnPreparation = beginSessionTurnPreparation(sessionKey);
-    const session = await getOrCreateRoutedSession(
-      buildSessionOptions(),
-      handleSessionEvent,
-      options.getWindow,
-      {
-        turnUserMessageId: executionUserMessageId,
-        acceptTurnRoot: async (turnUserMessageId): Promise<boolean> => {
-          // Arbitrate in provider-event order. A preceding terminal event may
-          // still be waiting for its durable commit; deciding before it lands
-          // would reject an ordinary pickup against the turn it just ended.
-          await sessionEventCommitTail;
-          if (commitPipeline.pending) await commitPipeline.drained();
-          const accepted = (
-            await getChatQueueServiceForTurnLifecycle()
-          ).onTurnRevived(
-            {
-              projectId: options.projectId,
-              worktreeId: options.worktreeId,
-              chatId: options.chatId,
-            },
-            turnUserMessageId,
-          );
-          // The queue gate now waits on this root; the pickup's commit decides
-          // whether this closure comes to own its turn.
-          if (accepted) unownedTurnRootUserMessageId = turnUserMessageId;
-          return accepted;
-        },
-        drainEventsBeforeRemoval: drainSessionEvents,
-        onRemoved: (): void => {
-          void drainSessionEvents().then(() => {
-            // The session is gone, so an unowned root's terminal never arrives.
-            releaseUnownedTurnRoot('cancelled');
-            if (
-              (turnSettled &&
-                (!resumesStoppedTurn || resumedTransportSettled)) ||
-              isCoworkChat
-            ) {
-              return;
-            }
-            if (deferredToolsReloadCoordinator.hasActiveReload(options)) {
-              // A tool reload keeps the logical turn alive, so its plan-file
-              // lease is held until the reload settles. After a hand-off the
-              // continuation's lease has already superseded this one and the
-              // release is a no-op; a reload that fails, is cancelled or
-              // rejected, or times out starts no continuation, and this
-              // release is the only thing that ends the lease.
-              deferredToolsReloadCoordinator.whenActiveReloadSettles(
-                options,
-                closePlanTurn,
-              );
-              return;
-            }
-            // If no queued provider event settled this turn, release its queue
-            // gate even when account teardown had no terminal event to deliver.
-            turnSettled = true;
-            closePlanTurn();
-            if (resumesStoppedTurn) {
-              getStoppedTurnResumeService().settleTerminalOwnership(
-                {
-                  projectId: options.projectId,
-                  worktreeId: options.worktreeId,
-                  chatId: options.chatId,
-                },
-                executionUserMessageId,
-              );
-            }
-            if (
-              activeTurnUserMessageIds.get(sessionKey) ===
-              executionUserMessageId
-            ) {
-              activeTurnUserMessageIds.delete(sessionKey);
-            }
-            void getChatQueueServiceForTurnLifecycle().then((queue) => {
-              // Session teardown can finish after the resumed dispatch has
-              // reserved this same user-message anchor. The resume coordinator
-              // distinguishes that ownership even though the queue id cannot.
-              if (resumeOwnsTerminalSettlement()) return;
-              queue.onTurnTerminal(
-                {
-                  projectId: options.projectId,
-                  worktreeId: options.worktreeId,
-                  chatId: options.chatId,
-                },
-                'cancelled',
-                executionUserMessageId,
-              );
-            });
-          });
-        },
-      },
+    releaseSessionTurnPreparation = turnDispatchTiming.measureSync(
+      'scope_lease',
+      () => beginSessionTurnPreparation(sessionKey),
     );
+    const pendingRouteOwner = options.authorization;
+    const sessionBeforeDispatch = getLiveRoutedSession(options);
+    const session = await turnDispatchTiming.measure('session_create', () =>
+      getOrCreateRoutedSession(
+        {
+          ...buildSessionOptions(),
+          approvalMode: turnApprovalAuthority.approvalMode,
+          sessionApprovalRules: turnApprovalAuthority.sessionApprovalRules,
+        },
+        handleSessionEvent,
+        options.getWindow,
+        {
+          turnUserMessageId: executionUserMessageId,
+          // An admitted dispatch is a pending destination, so a wake already
+          // running keeps its output. Codex activates it on its own start;
+          // other providers at the send.
+          ...(pendingRouteOwner
+            ? {
+                dispatchOwner: pendingRouteOwner.dispatchOwner,
+                operationEpoch: pendingRouteOwner.operationEpoch,
+              }
+            : {}),
+          acceptTurnRoot: async (turnUserMessageId) => {
+            // Arbitrate in provider-event order. A preceding terminal event may
+            // still be waiting for its durable commit; deciding before it lands
+            // would reject an ordinary pickup against the turn it just ended.
+            await sessionEventCommitTail;
+            if (commitPipeline.pending) await commitPipeline.drained();
+            await terminalQueueReleaseTail;
+            const acceptance = (
+              await getChatQueueServiceForTurnLifecycle()
+            ).acceptTurnRevival(
+              {
+                projectId: options.projectId,
+                worktreeId: options.worktreeId,
+                chatId: options.chatId,
+              },
+              turnUserMessageId,
+            );
+            // The queue gate now waits on this root; the pickup's commit
+            // decides whether this closure comes to own its turn.
+            if (acceptance.accepted)
+              unownedTurnRootUserMessageId = turnUserMessageId;
+            return acceptance;
+          },
+          drainEventsBeforeRemoval: drainSessionEvents,
+          onRemoved: (): void => {
+            void drainSessionEvents().then(() => {
+              // The session is gone, so an unowned root's terminal never arrives.
+              releaseUnownedTurnRoot('cancelled');
+              if (
+                (turnSettled &&
+                  (!resumesStoppedTurn || resumedTransportSettled)) ||
+                isCoworkChat
+              ) {
+                return;
+              }
+              if (deferredToolsReloadCoordinator.hasActiveReload(options)) {
+                // A tool reload keeps the logical turn alive, so its plan-file
+                // lease is held until the reload settles. After a hand-off the
+                // continuation's lease has already superseded this one and the
+                // release is a no-op; a reload that fails, is cancelled or
+                // rejected, or times out starts no continuation, and this
+                // release is the only thing that ends the lease.
+                deferredToolsReloadCoordinator.whenActiveReloadSettles(
+                  options,
+                  closePlanTurn,
+                );
+                return;
+              }
+              // If no queued provider event settled this turn, release its queue
+              // gate even when account teardown had no terminal event to deliver.
+              turnSettled = true;
+              closePlanTurn();
+              if (resumesStoppedTurn) {
+                getStoppedTurnResumeService().settleTerminalOwnership(
+                  {
+                    projectId: options.projectId,
+                    worktreeId: options.worktreeId,
+                    chatId: options.chatId,
+                  },
+                  executionUserMessageId,
+                );
+              }
+              if (
+                activeTurnUserMessageIds.get(sessionKey) ===
+                executionUserMessageId
+              ) {
+                activeTurnUserMessageIds.delete(sessionKey);
+              }
+              void getChatQueueServiceForTurnLifecycle().then((queue) => {
+                // Session teardown can finish after the resumed dispatch has
+                // reserved this same user-message anchor. The resume coordinator
+                // distinguishes that ownership even though the queue id cannot.
+                if (resumeOwnsTerminalSettlement()) return;
+                queue.onTurnTerminal(
+                  {
+                    projectId: options.projectId,
+                    worktreeId: options.worktreeId,
+                    chatId: options.chatId,
+                  },
+                  'cancelled',
+                  executionUserMessageId,
+                );
+              });
+            });
+          },
+        },
+      ),
+    );
+    // A wake needs an earlier turn on this session. A Claude session this
+    // dispatch created can open a turn at its startup init, before any input,
+    // and parking behind that would wait on the prompt itself.
+    const parkingOwner =
+      runtimeProviderType === 'codex' || session === sessionBeforeDispatch
+        ? pendingRouteOwner
+        : undefined;
+    if (!options.hiddenDeferredContinuation) {
+      const sessionTurnSettings: SessionTurnSettings = {
+        // Keep the selected Agent identity, not its expanded base model, so
+        // overlaying a later request resolves the same Agent configuration.
+        model: preparedSession.selectedModel,
+        modelSelectionMode: options.modelSelectionMode,
+        providerType: sessionConfiguration.runtimeProviderType,
+        executionHarness: effectiveExecutionHarness,
+        pluginSelections: options.pluginSelections,
+        planMode: options.planMode,
+        modelConfig: sessionConfiguration.effectiveModelConfig,
+        thinkingLevel: sessionConfiguration.effectiveModelConfig.thinkingLevel,
+        approvalMode:
+          preparedSession.persistedDispatchMetadata.approvalMode ??
+          options.approvalMode,
+        sessionApprovalRules: options.sessionApprovalRules,
+        codexProposalMode: options.codexProposalMode,
+        codexFastModeEnabled: options.codexFastModeEnabled,
+        deferredToolsAllowed: preparedSession.deferredToolsAllowed,
+        selectedRepoId: options.selectedRepoId,
+      };
+      setSessionTurnSettings(
+        options.projectId,
+        options.worktreeId,
+        options.chatId,
+        sessionTurnSettings,
+      );
+    }
     if (preparation.cancelled) return;
     const authoritativeGlobalInstructionsSnapshot =
       getSessionGlobalInstructionsSnapshot(
@@ -2720,38 +3422,67 @@ export async function dispatchWorktreeChatTurn(
       },
       async (request) => {
         request.signal.throwIfAborted();
-        await getChatStateService().runWithScopeActivity(
+        // This turn consumed its capability. The continuation is admitted
+        // through the hold the reload took at its interruption, once its
+        // predecessor's end commits.
+        const admission = await (
+          await getChatQueueServiceForTurnLifecycle()
+        ).admitDirectDispatchWhenAllowed(
           {
             projectId: options.projectId,
             worktreeId: options.worktreeId,
+            chatId: options.chatId,
           },
-          () =>
-            dispatchWorktreeChatTurn({
-              ...options,
-              userMessageId: request.userMessageId,
-              text: request.continuationText,
-              ...claudeContinuationSession(options, {
-                requestedSessionId: request.sdkSessionId,
-                providerSessionId: session.getProviderSessionId?.(),
-              }),
-              providerType: request.providerType ?? runtimeProviderType,
-              pluginSelections:
-                request.pluginSelections ??
-                runtime?.pluginSelections ??
-                options.pluginSelections,
-              hiddenContext: undefined,
-              fileReferences: undefined,
-              attachmentPaths: undefined,
-              attachmentPromptContexts: undefined,
-              pendingSystemInstructions: undefined,
-              activePlan: undefined,
-              startsNewTrackedChat: false,
-              skipBranchNaming: true,
-              hiddenDeferredContinuation: true,
-              deferredToolsReloadEnabledResources: request.enabledResources,
-              providerEventSequenceNamespace: request.requestId,
-            }),
+          request.userMessageId,
+          request.signal,
+          request.requestId,
         );
+        request.signal.throwIfAborted();
+        if (!admission)
+          throw new Error('The reload could not continue this chat.');
+        const { authorization: _consumedAuthorization, ...continuation } =
+          options;
+        void _consumedAuthorization;
+        try {
+          await getChatStateService().runWithScopeActivity(
+            {
+              projectId: options.projectId,
+              worktreeId: options.worktreeId,
+            },
+            () =>
+              dispatchWorktreeChatTurn({
+                ...continuation,
+                ...(admission.authorization
+                  ? { authorization: admission.authorization }
+                  : {}),
+                userMessageId: request.userMessageId,
+                text: request.continuationText,
+                ...claudeContinuationSession(options, {
+                  requestedSessionId: request.sdkSessionId,
+                  providerSessionId: session.getProviderSessionId?.(),
+                }),
+                providerType: request.providerType ?? runtimeProviderType,
+                pluginSelections:
+                  request.pluginSelections ??
+                  runtime?.pluginSelections ??
+                  options.pluginSelections,
+                hiddenContext: undefined,
+                fileReferences: undefined,
+                attachmentPaths: undefined,
+                attachmentPromptContexts: undefined,
+                pendingSystemInstructions: undefined,
+                activePlan: undefined,
+                startsNewTrackedChat: false,
+                skipBranchNaming: true,
+                hiddenDeferredContinuation: true,
+                deferredToolsReloadEnabledResources: request.enabledResources,
+                providerEventSequenceNamespace: request.requestId,
+              }),
+          );
+        } catch (error) {
+          admission.release();
+          throw error;
+        }
         if (request.signal.aborted) {
           await destroySession(
             options.projectId,
@@ -2779,9 +3510,11 @@ export async function dispatchWorktreeChatTurn(
     // anchored at dispatch start, so that overlap is subtracted from the wait
     // rather than added to the turn: a fetch that finished during setup costs
     // nothing, and the total added delay can never exceed the budget.
-    const preparedMemory = await raceWithTimeout(
-      memoryPromise,
-      remainingMemoryBudgetMs(dispatchStartedAt),
+    const preparedMemory = await turnDispatchTiming.measure('org_memory', () =>
+      raceWithTimeout(
+        memoryPromise,
+        remainingMemoryBudgetMs(dispatchStartedAt),
+      ),
     );
     const memory = preparedMemory?.attempt.result ?? null;
     if (preparedMemory === null) {
@@ -2792,8 +3525,12 @@ export async function dispatchWorktreeChatTurn(
       // null forever. Attached before the dispatch-exit continuation, so a
       // race loss on a turn that later aborts stays a race_timeout.
       memoryDeliveryTracker.noteRaceLoss();
+      memoryAbortController.abort();
     }
-    const activePlanInstruction = await activePlanInstructionPromise;
+    const activePlanInstruction = await turnDispatchTiming.measure(
+      'active_plan',
+      () => activePlanInstructionPromise,
+    );
     if (preparation.cancelled) return;
     // A hidden continuation never carries one-shot instructions; they belonged
     // to the turn it continues.
@@ -2809,110 +3546,138 @@ export async function dispatchWorktreeChatTurn(
     const submittedText = composeSubmittedText(
       instructedSubmittedText,
       options.hiddenContext?.text,
-      joinHiddenBlocks(memory?.renderedBlock, localMemory?.renderedBlock),
+      joinHiddenBlocks(memory?.renderedBlock, localMemory.value?.renderedBlock),
     );
-    if (
-      options.hiddenDeferredContinuation &&
-      options.hiddenContinuationKind !== 'stopped_turn_resume'
-    ) {
-      observabilityService.recordInjectedPromptForOpenChatTurn(
+    // The pre-send verdict under this dispatch's owner (contracts §3): a wake
+    // that started while the prompt was prepared keeps the foreground, and the
+    // prompt parks behind it in FIFO. Most wakes start during the preparation
+    // above, so check before this attempt opens an audit turn or replaces the
+    // turn-diff baseline.
+    const parkedEarly = parkingOwner && wakeParkingOutcome(parkingOwner);
+    if (parkedEarly) await parkBehindWake(options, parkedEarly);
+    turnDispatchTiming.measureSync('observability', () => {
+      if (
+        options.hiddenDeferredContinuation &&
+        options.hiddenContinuationKind !== 'stopped_turn_resume'
+      ) {
+        observabilityService.recordInjectedPromptForOpenChatTurn(
+          options.projectId,
+          options.worktreeId,
+          options.chatId,
+          {
+            kind: 'system_prompt_append',
+            provider: runtimeProviderType,
+            applicationCondition: 'deferred_tools_reload_continuation',
+            text: options.text,
+            deferredToolsReload: {
+              enabledResources:
+                options.deferredToolsReloadEnabledResources ?? [],
+            },
+          },
+        );
+      } else {
+        observabilityService.startChatTurn({
+          projectId: options.projectId,
+          worktreeId: options.worktreeId,
+          chatId: options.chatId,
+          provider: runtimeProviderType,
+          model: runtimeModel,
+          modelSource: runtimeModel ? getModelSource(runtimeModel) : undefined,
+          executionHarness: effectiveExecutionHarness,
+          serviceTier:
+            effectiveExecutionHarness === 'codex'
+              ? codexServiceTierForModelConfig(effectiveModelConfig)
+              : undefined,
+          aiCreditsRouted: isSessionAiCreditsRouted(
+            options.projectId,
+            options.worktreeId,
+            options.chatId,
+          ),
+          accountProxyRouted: isSessionAccountProxyRouted(
+            options.projectId,
+            options.worktreeId,
+            options.chatId,
+          ),
+          ...(options.modelRouting
+            ? { modelRouting: options.modelRouting }
+            : {}),
+          sdkSessionId: options.sdkSessionId,
+          originalUserText: options.text,
+          submittedText,
+          fileReferences: options.fileReferences,
+          planMode: options.planMode,
+          systemPromptAppend: observedSystemPromptAppend,
+          orgMemoryBlock: memory?.renderedBlock,
+          userMessageId: options.userMessageId,
+          ...(options.internalRow !== undefined
+            ? { internalRow: options.internalRow }
+            : {}),
+          ...(options.managedDelegationDeliveryId !== undefined
+            ? {
+                managedDelegationDeliveryId:
+                  options.managedDelegationDeliveryId,
+              }
+            : {}),
+          isStandalone: isCoworkChat,
+          standaloneProjectId,
+          initiationSource: options.initiationSource ?? 'user',
+          ...(options.turnTrigger ? { turnTrigger: options.turnTrigger } : {}),
+          selectedRepoId: options.selectedRepoId,
+          ...usageScope,
+          // Same explicit-user eligibility as skill usage, minus hidden context.
+          skillSuggestionEligible:
+            options.countsTowardSkillUsage === true &&
+            !options.hiddenDeferredContinuation &&
+            !options.hiddenContext,
+        });
+      }
+    });
+
+    await turnDispatchTiming.measure('live_setters', async () => {
+      await session.setPlanMode(options.planMode);
+      if (effectiveModelConfig.thinkingLevel !== undefined) {
+        await session.setThinkingLevel(effectiveModelConfig.thinkingLevel);
+      }
+    });
+    // Authority narrowed while the session was created, or held by a reused
+    // session, still applies.
+    const liveApprovalAuthority = await turnDispatchTiming.measure(
+      'dispatch_metadata',
+      () =>
+        resolveChatTurnApprovalAuthority(options, { checkAdmission: false }),
+    );
+    await turnDispatchTiming.measure('live_setters', async () => {
+      restrictSessionApprovalRules(
         options.projectId,
         options.worktreeId,
         options.chatId,
-        {
-          kind: 'system_prompt_append',
-          provider: runtimeProviderType,
-          applicationCondition: 'deferred_tools_reload_continuation',
-          text: options.text,
-          deferredToolsReload: {
-            enabledResources: options.deferredToolsReloadEnabledResources ?? [],
-          },
-        },
+        liveApprovalAuthority.sessionApprovalRules,
       );
-    } else {
-      observabilityService.startChatTurn({
-        projectId: options.projectId,
-        worktreeId: options.worktreeId,
-        chatId: options.chatId,
-        provider: runtimeProviderType,
-        model: runtimeModel,
-        modelSource: runtimeModel ? getModelSource(runtimeModel) : undefined,
-        executionHarness: effectiveExecutionHarness,
-        serviceTier:
-          effectiveExecutionHarness === 'codex'
-            ? codexServiceTierForModelConfig(effectiveModelConfig)
-            : undefined,
-        aiCreditsRouted: isSessionAiCreditsRouted(
-          options.projectId,
-          options.worktreeId,
-          options.chatId,
-        ),
-        accountProxyRouted: isSessionAccountProxyRouted(
-          options.projectId,
-          options.worktreeId,
-          options.chatId,
-        ),
-        ...(options.modelRouting ? { modelRouting: options.modelRouting } : {}),
-        sdkSessionId: options.sdkSessionId,
-        originalUserText: options.text,
-        submittedText,
-        fileReferences: options.fileReferences,
-        planMode: options.planMode,
-        systemPromptAppend: observedSystemPromptAppend,
-        orgMemoryBlock: memory?.renderedBlock,
-        userMessageId: options.userMessageId,
-        isStandalone: isCoworkChat,
-        standaloneProjectId,
-        initiationSource: options.initiationSource ?? 'user',
-        selectedRepoId: options.selectedRepoId,
-        ...usageScope,
-        // Same explicit-user eligibility as skill usage, minus hidden context.
-        skillSuggestionEligible:
-          options.countsTowardSkillUsage === true &&
-          !options.hiddenDeferredContinuation &&
-          !options.hiddenContext,
-      });
-    }
-
-    await session.setPlanMode(options.planMode);
-    const liveDispatchMetadata = await readPersistedChatDispatchMetadata(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-    ).catch(
-      (): PersistedChatDispatchMetadata =>
-        ({}) satisfies PersistedChatDispatchMetadata,
-    );
-    const liveApprovalMode = clampToLiveApprovalMode(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-      liveDispatchMetadata.approvalMode ?? options.approvalMode,
-    );
-    if (liveApprovalMode) {
-      await session.setApprovalMode(liveApprovalMode);
-    }
-    if (
-      (runtimeProviderType === 'claude' ||
-        runtimeProviderType === 'cursor' ||
-        runtimeProviderType === 'copilot' ||
-        runtimeProviderType === 'opencode') &&
-      session.setRtkEnabled
-    ) {
-      await session.setRtkEnabled(rtkEnabled);
-    }
-    if (options.codexProposalMode && session.setCodexProposalMode) {
-      await session.setCodexProposalMode(options.codexProposalMode);
-    }
-    if (codexPreferences && session.setCodexAppServerIdleTimeoutMinutes) {
-      await session.setCodexAppServerIdleTimeoutMinutes(
-        codexPreferences.codexAppServerIdleTimeoutMinutes,
-      );
-    }
-    await applyAgentSessionCodexSpeed(session, effectiveModelConfig.speed);
+      await session.setApprovalMode(liveApprovalAuthority.approvalMode);
+      if (
+        (runtimeProviderType === 'claude' ||
+          runtimeProviderType === 'cursor' ||
+          runtimeProviderType === 'copilot' ||
+          runtimeProviderType === 'opencode') &&
+        session.setRtkEnabled
+      ) {
+        await session.setRtkEnabled(rtkEnabled);
+      }
+      if (options.codexProposalMode && session.setCodexProposalMode) {
+        await session.setCodexProposalMode(options.codexProposalMode);
+      }
+      if (codexPreferences && session.setCodexAppServerIdleTimeoutMinutes) {
+        await session.setCodexAppServerIdleTimeoutMinutes(
+          codexPreferences.codexAppServerIdleTimeoutMinutes,
+        );
+      }
+      await applyAgentSessionCodexSpeed(session, effectiveModelConfig.speed);
+    });
 
     if (!isCoworkChat && !options.hiddenDeferredContinuation) {
-      await captureTurnStart(sessionKey, options.projectId, options.worktreeId);
+      await turnDispatchTiming.measure('turn_capture', () =>
+        captureTurnStart(sessionKey, options.projectId, options.worktreeId),
+      );
     }
     if (preparation.cancelled) {
       if (!options.hiddenDeferredContinuation) {
@@ -2925,6 +3690,24 @@ export async function dispatchWorktreeChatTurn(
       }
       return;
     }
+    // The last pre-send verdict, with no await between it and the send below.
+    const parked = parkingOwner && wakeParkingOutcome(parkingOwner);
+    if (parked) {
+      // The wake started after the early check: undo this attempt's audit
+      // turn and diff baseline, as a cancelled preparation does.
+      observabilityService.completeChatTurn(
+        options.projectId,
+        options.worktreeId,
+        options.chatId,
+        'interrupted',
+      );
+      discardTurnStart(sessionKey);
+      await parkBehindWake(options, parked);
+    }
+    // A prompt's send disarms a reload continuation that never started, so
+    // its cause can't head this turn.
+    if (!options.hiddenDeferredContinuation)
+      armTurnLifecycleContinuation(options, null);
     if (!isCoworkChat && !options.hiddenDeferredContinuation) {
       // Serialization is owned by the chat queue service (a second dispatch
       // cannot start while it holds turnActive). A leftover marker here means
@@ -2957,7 +3740,7 @@ export async function dispatchWorktreeChatTurn(
     // cancelled preparation never takes one. Every exit below ends it: the
     // root terminal event, a rejected send, a session disposed at send, or
     // session removal without a terminal event.
-    openPlanTurn();
+    turnDispatchTiming.measureSync('scope_lease', openPlanTurn);
     let delegationDeliveryClaimed = false;
     try {
       // Recheck after every asynchronous preparation step. A closed generation
@@ -2975,23 +3758,42 @@ export async function dispatchWorktreeChatTurn(
       // No await between this fence and queue acceptance. Parent Stop after
       // acceptance must not cancel an independent child's lifetime.
       options.admissionSignal?.throwIfAborted();
-      session.sendMessage(submittedText, {
-        userMessageId: options.userMessageId,
-        ...(effectiveExecutionHarness === 'opencode' &&
-        !options.hiddenDeferredContinuation &&
-        options.attachmentPaths?.length
-          ? {
-              attachments: {
-                baseDir: attachmentBaseDir,
-                paths: [...options.attachmentPaths],
-              },
-            }
-          : {}),
-        ...(options.countsTowardSkillUsage === true &&
-        !options.hiddenDeferredContinuation
-          ? { countsTowardSkillUsage: true }
-          : {}),
-      });
+      // A Claude start carries no binding receipt (its prompt binds at its
+      // result), so its destination activates here, after the last check.
+      if (pendingRouteOwner && runtimeProviderType !== 'codex')
+        activatePendingTurnRoute(
+          options,
+          pendingRouteOwner.dispatchOwner,
+          pendingRouteOwner.operationEpoch,
+        );
+      reservePromptBindingSlot(options, options.userMessageId);
+      turnDispatchTiming.measureSync('enqueue', () =>
+        session.sendMessage(submittedText, {
+          userMessageId: options.userMessageId,
+          ...(effectiveExecutionHarness === 'opencode' &&
+          !options.hiddenDeferredContinuation &&
+          options.attachmentPaths?.length
+            ? {
+                attachments: {
+                  baseDir: attachmentBaseDir,
+                  paths: [...options.attachmentPaths],
+                },
+              }
+            : {}),
+          ...(options.countsTowardSkillUsage === true &&
+          !options.hiddenDeferredContinuation
+            ? { countsTowardSkillUsage: true }
+            : {}),
+        }),
+      );
+      const enqueuedSlowDiagnostic = turnDispatchTiming.markEnqueued();
+      if (enqueuedSlowDiagnostic)
+        recordSlowDispatchDiagnostic(enqueuedSlowDiagnostic);
+      // The provider took the request as its own turn, so its delivery id
+      // leaves the root's admitted set: nothing can replay it, and the set
+      // stays bounded.
+      if (delegationDeliveryClaimed && options.managedDelegationDeliveryId)
+        retireDelegationDelivery(options, options.managedDelegationDeliveryId);
       // A waiting provider loop dequeues the prompt at once but may still
       // await work before marking the turn active; hold until it does.
       releaseSessionTurnPreparationOnActivation(

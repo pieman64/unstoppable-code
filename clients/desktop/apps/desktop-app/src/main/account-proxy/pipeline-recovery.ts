@@ -14,7 +14,7 @@ import {
 /** Includes matrix and nested reasons projected onto their owning root run. */
 export function projectAccountProxyPipelineInterruptions(
   state: ExecutionState,
-  workspaceName = 'Local pipelines',
+  workspaceName = 'Local workflows',
 ): AccountProxyPipelineInterruption[] {
   if (
     state.hidden ||

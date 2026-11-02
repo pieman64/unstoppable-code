@@ -200,6 +200,8 @@ export function SubagentChatPanel({
     <div
       ref={panelRef}
       data-testid="subagent-chat-panel"
+      // Chat keeps plain line breaks (see canopy-tokens-core.css).
+      data-chat-window
       data-panel-width={panelWidth}
       className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
@@ -246,7 +248,7 @@ export function SubagentChatPanel({
         {hasOlder && onLoadOlder ? (
           <div className="mx-auto flex max-w-3xl justify-center px-4 pt-3">
             <Button
-              size="control"
+              size="compact"
               variant="ghost"
               disabled={loadingOlder}
               onClick={onLoadOlder}

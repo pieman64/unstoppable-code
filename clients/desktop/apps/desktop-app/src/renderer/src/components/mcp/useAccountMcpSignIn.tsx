@@ -113,6 +113,7 @@ export interface AccountMcpSignIn {
   ) => void;
   /** Cancels the flow for `serverKey`, closing its setup dialog if open. */
   readonly cancel: (serverKey: string) => void;
+  readonly stopObserving: () => void;
   /** The setup and credential dialogs; render once. */
   readonly dialogs: JSX.Element;
 }
@@ -511,6 +512,11 @@ export function useAccountMcpSignIn(
   );
 
   return {
+    stopObserving: (): void => {
+      actions.stopObserving();
+      closeSetup();
+      setSetupError(null);
+    },
     pending: actions.pending,
     error: setupError ?? actions.error,
     errorCode: setupError === null ? actions.errorCode : null,

@@ -10,6 +10,9 @@ import * as pipelineInstallContext from '../pipelines/pipeline-install-context';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
+import { assertPipelineHostTargetOwner } from '../pipelines/pipeline-owner-policy';
+import type * as PipelineOwnerPolicyModule from '../pipelines/pipeline-owner-policy';
+import type * as UserEnvironmentRuntimeModule from '../lib/user-environment-runtime';
 import { getAgentModel } from '../agents/agent-model-store';
 import { resolveAgentDestinationDefaultModel } from '../agents/agent-default-model';
 import {
@@ -73,13 +76,31 @@ const mockRunCodexTurn = jest.fn<
   Promise<CodexTurnOutcome>,
   [CodexRunTurnRequest]
 >();
-const mockUnsubscribeCodexThread = jest.fn();
-const mockStartCodexThread = jest.fn<unknown, [CodexStartThreadRequest]>();
-const mockResumeCodexThread = jest.fn<unknown, [CodexResumeThreadRequest]>();
+const mockUnsubscribeCodexThread = jest.fn<Promise<void>, []>();
+type MockCodexRuntimeThread = {
+  threadId: string;
+  runTurn: typeof mockRunCodexTurn;
+  unsubscribe: typeof mockUnsubscribeCodexThread;
+};
+const mockStartCodexThread = jest.fn<
+  Promise<MockCodexRuntimeThread>,
+  [CodexStartThreadRequest]
+>();
+const mockResumeCodexThread = jest.fn<
+  Promise<MockCodexRuntimeThread>,
+  [CodexResumeThreadRequest]
+>();
 const mockUnregisterHttpMcpRoutes = jest.fn();
 const mockUnregisterGatewayRoutes = jest.fn();
 const mockRevokeStdioMcpRoutes = jest.fn();
-const mockResolveCodexRuntimeEnvironmentProfile = jest.fn(() => ({
+const mockResolveCodexRuntimeEnvironmentProfile = jest.fn<
+  ReturnType<
+    typeof UserEnvironmentRuntimeModule.resolveCodexRuntimeEnvironmentProfile
+  >,
+  Parameters<
+    typeof UserEnvironmentRuntimeModule.resolveCodexRuntimeEnvironmentProfile
+  >
+>(() => ({
   environment: { PIPELINE_ENV_FROM_SETTINGS: 'settings-value' },
   logicalWorkspaceEnvironmentId: 'pipeline:workspace-pipeline',
   secretVersionFingerprint: 'pipeline-secret-v1',
@@ -170,8 +191,13 @@ jest.mock('../codex/runtime-service', () => ({
 }));
 
 jest.mock('../lib/user-environment-runtime', () => ({
-  resolveCodexRuntimeEnvironmentProfile: (...args: unknown[]): unknown =>
-    mockResolveCodexRuntimeEnvironmentProfile(...args) as unknown,
+  resolveCodexRuntimeEnvironmentProfile: (
+    ...args: Parameters<
+      typeof UserEnvironmentRuntimeModule.resolveCodexRuntimeEnvironmentProfile
+    >
+  ): ReturnType<
+    typeof UserEnvironmentRuntimeModule.resolveCodexRuntimeEnvironmentProfile
+  > => mockResolveCodexRuntimeEnvironmentProfile(...args),
 }));
 
 jest.mock('../integration/claude-worker-session-service', () => ({
@@ -202,17 +228,30 @@ jest.mock('../pipelines/pipeline-ledger', () => ({
 }));
 
 const mockPipelineHostActions = { run: jest.fn() };
+const mockCreateDesktopPipelineHostActions = jest.fn<unknown, [unknown]>(
+  () => mockPipelineHostActions,
+);
 jest.mock('../pipelines/host-actions', () => ({
-  createDesktopPipelineHostActions: (): unknown => mockPipelineHostActions,
+  createDesktopPipelineHostActions: (deps: unknown): unknown =>
+    mockCreateDesktopPipelineHostActions(deps),
 }));
 
 // Owner checks have their own suite; these fixtures have no workspace configs.
-const mockAuthorizePipelineTarget = jest.fn(
-  (): Promise<void> => Promise.resolve(),
-);
+type PipelineTargetAuthorizer = ReturnType<
+  typeof PipelineOwnerPolicyModule.createDesktopPipelineOwnershipPort
+>['authorizeTarget'];
+const mockAuthorizePipelineTarget = jest.fn<
+  ReturnType<PipelineTargetAuthorizer>,
+  Parameters<PipelineTargetAuthorizer>
+>(() => Promise.resolve());
 jest.mock('../pipelines/pipeline-owner-policy', () => ({
-  createDesktopPipelineOwnershipPort: (): unknown => ({
-    authorizeTarget: (...args: unknown[]): unknown =>
+  assertPipelineHostTargetOwner: jest.fn(),
+  createDesktopPipelineOwnershipPort: (): ReturnType<
+    typeof PipelineOwnerPolicyModule.createDesktopPipelineOwnershipPort
+  > => ({
+    authorizeTarget: (
+      ...args: Parameters<PipelineTargetAuthorizer>
+    ): ReturnType<PipelineTargetAuthorizer> =>
       mockAuthorizePipelineTarget(...args),
     readAgentAuthor: (): undefined => undefined,
   }),
@@ -256,6 +295,18 @@ describe('createElectronExecutionRuntime', () => {
     expect(createElectronExecutionRuntime().pipelineHostActions).toBe(
       mockPipelineHostActions,
     );
+  });
+
+  it('wires the execution-owner check and the window into host actions', () => {
+    const getWindow = (): null => null;
+    mockCreateDesktopPipelineHostActions.mockClear();
+
+    createElectronExecutionRuntime(getWindow);
+
+    expect(mockCreateDesktopPipelineHostActions).toHaveBeenCalledWith({
+      assertTargetOwner: assertPipelineHostTargetOwner,
+      getWindow,
+    });
   });
 
   it('resolves an inheriting Agent alias to the step workspace default model', async () => {
@@ -413,8 +464,12 @@ describe('createElectronExecutionRuntime', () => {
     resolveAiCreditsRoutingOverrideMock.mockResolvedValue(null);
     initCodexModels([{ id: 'gpt-5.5', label: 'GPT-5.5' }]);
     const runtime = createElectronExecutionRuntime();
+    const resolveModelHarnessInvocation = runtime.resolveModelHarnessInvocation;
+    if (!resolveModelHarnessInvocation) {
+      throw new Error('Missing model harness resolver');
+    }
 
-    await runtime.resolveModelHarnessInvocation('gpt-5.5', {
+    await resolveModelHarnessInvocation('gpt-5.5', {
       routeSessionId: 'pipeline:exec:job:step:1',
       workspaceId: 'workspace-guarded',
       allowNoNativeAuthFallback: false,
@@ -1019,7 +1074,7 @@ describe('createElectronExecutionRuntime', () => {
 
     expect(result).toMatchObject({
       status: 'cancelled',
-      failure: { message: 'Codex pipeline turn was cancelled.' },
+      failure: { message: 'Codex workflow turn was cancelled.' },
     });
   });
 
@@ -1960,7 +2015,7 @@ describe('nested pipeline ownership', () => {
         (_resource, projectId): Promise<void> =>
           projectId && projectId !== 'org-a'
             ? Promise.reject(
-                new Error('Pipeline unavailable (context-mismatch)'),
+                new Error('Workflow unavailable (context-mismatch)'),
               )
             : Promise.resolve(),
       );
@@ -1987,7 +2042,7 @@ describe('nested pipeline ownership', () => {
         );
         if (target === 'personal' || target === 'org-b')
           await expect(result).rejects.toThrow(
-            'Pipeline unavailable (context-mismatch)',
+            'Workflow unavailable (context-mismatch)',
           );
         else if (target === 'flag-off')
           await expect(result).resolves.toBeUndefined();
@@ -2031,7 +2086,7 @@ describe('nested pipeline ownership', () => {
       });
       if (kind === 'organization' || kind === 'receipt')
         await expect(result).rejects.toThrow(
-          'Pipeline unavailable (unsupported-target)',
+          'Workflow unavailable (unsupported-target)',
         );
       else await expect(result).resolves.toBeUndefined();
     },
@@ -2075,7 +2130,7 @@ jobs:
         > => {
           if (request.cwd !== root || path.dirname(request.filePath) !== root)
             return Promise.reject(
-              new Error('Pipeline unavailable (unsupported-target)'),
+              new Error('Workflow unavailable (unsupported-target)'),
             );
           return Promise.resolve({
             projectId: 'source-project',
@@ -2097,6 +2152,10 @@ jobs:
         step: {
           id: 'child',
           uses: 'builtin/run-pipeline',
+          shell: 'bash',
+          continue_on_error: false,
+          timeout_minutes: 0,
+          skip_on_missing_action: false,
           with: { pipeline: 'child.yaml' },
           target: {
             scope: 'worktree',
@@ -2162,7 +2221,7 @@ jobs:
     authorize.mockImplementation(
       (_resource, projectId): Promise<void> =>
         projectId === 'personal'
-          ? Promise.reject(new Error('Pipeline unavailable (context-mismatch)'))
+          ? Promise.reject(new Error('Workflow unavailable (context-mismatch)'))
           : Promise.resolve(),
     );
     const root = await mkdtemp(path.join(tmpdir(), 'nested-target-'));
@@ -2178,6 +2237,10 @@ jobs:
         step: {
           id: 'nested',
           uses: 'builtin/run-pipeline',
+          shell: 'bash',
+          continue_on_error: false,
+          timeout_minutes: 0,
+          skip_on_missing_action: false,
           with: { pipeline: 'shared:canopy-cloud:child' },
           target: {
             scope: 'worktree',
@@ -2210,7 +2273,7 @@ jobs:
         signal: new AbortController().signal,
       });
       expect(result.status).toBe('failure');
-      expect(result.error).toContain('Pipeline unavailable (context-mismatch)');
+      expect(result.error).toContain('Workflow unavailable (context-mismatch)');
     } finally {
       authorize.mockImplementation(async (): Promise<void> => {});
       await rm(root, { recursive: true, force: true });
@@ -2230,7 +2293,7 @@ jobs:
         (_resource, projectId): Promise<void> =>
           projectId === 'personal'
             ? Promise.reject(
-                new Error('Pipeline unavailable (context-mismatch)'),
+                new Error('Workflow unavailable (context-mismatch)'),
               )
             : Promise.resolve(),
       );
@@ -2247,6 +2310,10 @@ jobs:
           step: {
             id: 'nested',
             uses: 'builtin/run-pipeline',
+            shell: 'bash',
+            continue_on_error: false,
+            timeout_minutes: 0,
+            skip_on_missing_action: false,
             with: {
               pipeline_yaml:
                 'name: Inline\nscope: worktree\non: dispatch\njobs: {}',
@@ -2284,7 +2351,7 @@ jobs:
         if (target === 'personal') {
           expect(result.status).toBe('failure');
           expect(result.error).toContain(
-            'Pipeline unavailable (context-mismatch)',
+            'Workflow unavailable (context-mismatch)',
           );
         } else expect(result.status).toBe('success');
       } finally {
@@ -2299,7 +2366,7 @@ jobs:
     const authorize = jest
       .spyOn(pipelineInstallContext, 'authorizeProjectPipelineRequest')
       .mockRejectedValue(
-        new Error('Pipeline unavailable (unsupported-target)'),
+        new Error('Workflow unavailable (unsupported-target)'),
       );
     const resolve =
       createElectronExecutionRuntime().resolvePipelineContextResource;
@@ -2325,11 +2392,18 @@ jobs:
       .mockResolvedValue({
         authority: 'ok',
         ownerMalformed: false,
+        memoryMalformed: false,
         config: {
           version: 1,
           type: 'single-repo',
           repos: [],
-          owner: { type: 'organization', organizationId: 'org-a' },
+          owner: {
+            type: 'organization',
+            organizationId: 'org-a',
+            projectId: 'project-a',
+            instanceId: 'instance-a',
+            bindingGeneration: 1,
+          },
         },
       });
     mockPipelineContextEnabled = true;
@@ -2414,7 +2488,7 @@ jobs:
     const authorize = jest
       .spyOn(pipelineInstallContext, 'authorizeProjectPipelineRequest')
       .mockRejectedValue(
-        new Error('Pipeline unavailable (unsupported-target)'),
+        new Error('Workflow unavailable (unsupported-target)'),
       );
     const resolve = createElectronExecutionRuntime().resolvePipelineResource;
     if (!resolve) throw new Error('Missing pipeline resolver');
@@ -2435,7 +2509,7 @@ jobs:
           { owner: { type: 'organization', id: 'org-a', name: null } },
           { cwd: '/repo', filePath: '/bundled/pipelines/code-review.yaml' },
         ),
-      ).rejects.toThrow('Pipeline unavailable (missing-dependency)');
+      ).rejects.toThrow('Workflow unavailable (missing-dependency)');
       expect(authorize).not.toHaveBeenCalled();
       await expect(
         resolve(
@@ -2443,7 +2517,7 @@ jobs:
           { owner: { type: 'organization', id: 'org-a', name: null } },
           { cwd: '/repo', filePath: '/bundled/escape.yaml' },
         ),
-      ).rejects.toThrow('Pipeline unavailable (unsupported-target)');
+      ).rejects.toThrow('Workflow unavailable (unsupported-target)');
     } finally {
       authorize.mockRestore();
     }
@@ -2484,7 +2558,7 @@ jobs:
       if (organization) await expect(invocation).resolves.toBeUndefined();
       else
         await expect(invocation).rejects.toThrow(
-          'Pipeline unavailable (missing-dependency)',
+          'Workflow unavailable (missing-dependency)',
         );
       stored.mockRestore();
     },
@@ -2537,7 +2611,7 @@ jobs:
       const invocation = resolve('shared:canopy-cloud:child', parent);
       if (denied)
         await expect(invocation).rejects.toThrow(
-          'Pipeline unavailable (missing-dependency)',
+          'Workflow unavailable (missing-dependency)',
         );
       else if (enabled)
         await expect(invocation).resolves.toMatchObject({

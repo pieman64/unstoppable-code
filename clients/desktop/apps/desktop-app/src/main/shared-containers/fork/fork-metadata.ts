@@ -2,7 +2,18 @@ import {
   isProjectStartPage,
   type ProjectStartPage,
 } from '@canopy/protocol/start-page';
-import { removeWorkspaceIndexEntry } from '../../lib/sidebar-items';
+import {
+  applyWorkspaceManifestDecision,
+  applyWorkspaceIndexRemoval,
+} from '../../lib/workspace-record-decision-port';
+import {
+  SharedContainerForkMetadataRefusedError,
+  type SharedContainerForkMetadataRefusal,
+} from '../../lib/worktree-record-decision-apply';
+export {
+  SharedContainerForkMetadataRefusedError,
+  type SharedContainerForkMetadataRefusal,
+} from '../../lib/worktree-record-decision-apply';
 import type { W5CommitOptions } from '../../lib/w5-commit-scope';
 import {
   commitW5BoundaryStep,
@@ -10,10 +21,7 @@ import {
 } from '../../lib/w5-composition-operation';
 import { IdentifierValidationError, validateId } from '../../lib/validation';
 import { WorkspaceIndexUnreadableError } from '../../lib/workspace-index-repository';
-import {
-  updateWorkspaceConfig,
-  WorkspaceConfigUnreadableError,
-} from '../../lib/workspace-persistence';
+import { WorkspaceConfigUnreadableError } from '../../lib/workspace-persistence';
 
 /**
  * The workspace metadata writes of `core.sharedContainer.fork` (CAN-3824):
@@ -36,26 +44,6 @@ export type SharedContainerForkMetadataSource = 'code_fork' | 'cowork_fork';
 const SOURCES: ReadonlySet<string> = new Set<SharedContainerForkMetadataSource>(
   ['code_fork', 'cowork_fork'],
 );
-
-export type SharedContainerForkMetadataRefusal =
-  | 'invalid-request'
-  /** The destination project has no manifest. */
-  | 'not-found'
-  /** The destination manifest could not be read; it was left as it is. */
-  | 'configuration-unavailable'
-  /** The workspace index could not be read; it was left as it is. */
-  | 'index-unavailable';
-
-/** A fork metadata write was refused; nothing was written. */
-export class SharedContainerForkMetadataRefusedError extends Error {
-  constructor(
-    readonly reason: SharedContainerForkMetadataRefusal,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'SharedContainerForkMetadataRefusedError';
-  }
-}
 
 function refuse(
   reason: SharedContainerForkMetadataRefusal,
@@ -110,14 +98,9 @@ async function stageSharedContainerForkStartPage(
     throw refuse('invalid-request', 'Invalid shared-container fork start page');
   }
   try {
-    await updateWorkspaceConfig(workspaceId, (config, read) => {
-      if (read.authority === 'absent') {
-        throw refuse(
-          'not-found',
-          `Fork destination project ${workspaceId} no longer exists`,
-        );
-      }
-      config.startPage = startPage;
+    await applyWorkspaceManifestDecision(workspaceId, {
+      kind: 'sharedContainer.fork.start-page',
+      startPage,
     });
   } catch (error) {
     if (error instanceof WorkspaceConfigUnreadableError) {
@@ -157,7 +140,9 @@ export async function hideSharedContainerForkWorkspace(
 ): Promise<{ status: 'hidden' | 'not-found' }> {
   admit(request.source, SOURCES, request.workspaceId);
   try {
-    const removed = await removeWorkspaceIndexEntry(request.workspaceId);
+    const removed = await applyWorkspaceIndexRemoval(request.workspaceId, {
+      kind: 'sharedContainer.fork.hide',
+    });
     return { status: removed ? 'hidden' : 'not-found' };
   } catch (error) {
     if (error instanceof WorkspaceIndexUnreadableError) {

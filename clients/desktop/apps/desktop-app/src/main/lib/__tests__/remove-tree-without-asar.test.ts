@@ -38,9 +38,9 @@ const originalNoAsar = process.noAsar;
 function setElectronVersion(electron: string | undefined): void {
   const versions: NodeJS.ProcessVersions = { ...originalVersions };
   if (electron === undefined) {
-    delete versions.electron;
+    Reflect.deleteProperty(versions, 'electron');
   } else {
-    versions.electron = electron;
+    Reflect.set(versions, 'electron', electron);
   }
   Object.defineProperty(process, 'versions', {
     value: versions,

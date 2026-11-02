@@ -714,10 +714,14 @@ describe('retained Agent materialization', () => {
         mcpHttpAuthPreferences: [explicit, synthesized],
       },
     });
-    expect(
-      (await new AgentArtifactStore(directory).load(snapshot)).capabilities
-        .mcpHttpAuthPreferences,
-    ).toEqual([{ ...explicit, source: 'override' }, synthesized]);
+    const loaded = await new AgentArtifactStore(directory).load(snapshot);
+    if (!loaded.capabilities) {
+      throw new Error('Expected retained v2 capabilities');
+    }
+    expect(loaded.capabilities.mcpHttpAuthPreferences).toEqual([
+      { ...explicit, source: 'override' },
+      synthesized,
+    ]);
   });
 
   it('retains an account auth preference in a v3 overlay', async () => {

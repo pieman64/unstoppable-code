@@ -1,11 +1,9 @@
 import type * as LedgerModule from '../claude-session-cost-ledger';
 import type { ClaudeSessionCostLedger } from '../claude-session-cost-ledger';
-const mockReadFile = jest.fn<Promise<string>, [string, string?]>();
 const mockReaddir = jest.fn<Promise<string[]>, [string]>();
+const mockReadFile = jest.fn<Promise<string>, [string, string?]>();
 const mockAppendFile = jest.fn<Promise<void>, [string, string]>();
 const mockMkdir = jest.fn<Promise<void>, [string, { recursive?: boolean }?]>();
-const mockRename = jest.fn<Promise<void>, [string, string]>();
-const mockRm = jest.fn<Promise<void>, [string, { recursive?: boolean }?]>();
 const mockStat = jest.fn<Promise<{ size: number }>, [string]>();
 const mockWriteFile = jest.fn<Promise<void>, [string, string]>();
 const mockReadPreferencesFile = jest.fn();
@@ -17,15 +15,29 @@ const mockPeekProviderBillingAccountKind = jest.fn(() => 'api_key');
 const mockCheckClaudeAuthStatusObserved = jest.fn();
 const mockWarmProviderAccountIdentity = jest.fn();
 
+function mockReaddirStub(path: string): Promise<string[]> {
+  return mockReaddir(path);
+}
+
 jest.mock('node:fs/promises', () => ({
-  appendFile: mockAppendFile,
-  mkdir: mockMkdir,
-  readFile: mockReadFile,
-  readdir: mockReaddir,
-  rename: mockRename,
-  rm: mockRm,
-  stat: mockStat,
-  writeFile: mockWriteFile,
+  get appendFile(): typeof mockAppendFile {
+    return mockAppendFile;
+  },
+  get mkdir(): typeof mockMkdir {
+    return mockMkdir;
+  },
+  get readFile(): typeof mockReadFile {
+    return mockReadFile;
+  },
+  readdir: mockReaddirStub,
+  rename: jest.fn(),
+  rm: jest.fn(),
+  get stat(): typeof mockStat {
+    return mockStat;
+  },
+  get writeFile(): typeof mockWriteFile {
+    return mockWriteFile;
+  },
 }));
 
 // An in-memory Claude cost ledger: the real one persists through the mocked fs.
@@ -75,14 +87,24 @@ jest.mock('../../lib/paths', () => ({
 }));
 
 jest.mock('../../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
 jest.mock('../../auth/provider-auth-state', () => ({
-  checkClaudeAuthStatusObserved: mockCheckClaudeAuthStatusObserved,
-  peekProviderAccountIdentity: mockPeekProviderAccountIdentity,
-  peekProviderBillingAccountKind: mockPeekProviderBillingAccountKind,
-  warmProviderAccountIdentity: mockWarmProviderAccountIdentity,
+  get checkClaudeAuthStatusObserved(): typeof mockCheckClaudeAuthStatusObserved {
+    return mockCheckClaudeAuthStatusObserved;
+  },
+  get peekProviderAccountIdentity(): typeof mockPeekProviderAccountIdentity {
+    return mockPeekProviderAccountIdentity;
+  },
+  get peekProviderBillingAccountKind(): typeof mockPeekProviderBillingAccountKind {
+    return mockPeekProviderBillingAccountKind;
+  },
+  get warmProviderAccountIdentity(): typeof mockWarmProviderAccountIdentity {
+    return mockWarmProviderAccountIdentity;
+  },
 }));
 
 jest.mock('../../feature-flags', () => ({
@@ -120,6 +142,10 @@ jest.mock('../../openai-pricing/pricing-client', () => ({
 }));
 
 import type { AgentDelegationTranscript } from '@canopy/protocol/delegation';
+import {
+  rename as renameModuleMock,
+  rm as rmModuleMock,
+} from 'node:fs/promises';
 import type {
   AgentAuditEntry,
   PlanUsageEvent,
@@ -140,7 +166,41 @@ import {
   resetAccountProxyAttributionForTests,
 } from '../../account-proxy/attribution';
 
+const mockRename = jest.mocked(renameModuleMock);
+const mockRm = jest.mocked(rmModuleMock);
+
 const NOW = Date.parse('2026-10-08T12:00:00.000Z');
+const ZERO_TOOL_COUNTS: AgentAuditEntry['toolCounts'] = {
+  thinking: 0,
+  bash: 0,
+  read: 0,
+  readLines: 0,
+  writeEdit: 0,
+  plan: 0,
+  fileEdit: 0,
+  fileAdd: 0,
+  fileDelete: 0,
+  search: 0,
+  grep: 0,
+  web: 0,
+  agent: 0,
+  workflow: 0,
+  tasks: 0,
+  taskStop: 0,
+  skills: 0,
+  monitor: 0,
+  claude: 0,
+  scheduleWakeup: 0,
+  askUser: 0,
+  scriptOutput: 0,
+  watcher: 0,
+  canopy: 0,
+  graph: 0,
+  appAdvisor: 0,
+  pipelineEditor: 0,
+  mcp: 0,
+  other: 0,
+};
 
 function startChat(
   service: ObservabilityService,
@@ -202,6 +262,7 @@ function delegationTranscript(): AgentDelegationTranscript {
         providerType: 'codex',
         assignmentRevision: 'revision-1',
         billingAuthority: 'native',
+        aiCreditsRouted: false,
         capabilities: [],
         supportedThinkingLevels: ['low', 'medium', 'high'],
         capabilitySnapshotHash: 'hash-1',
@@ -284,7 +345,7 @@ describe('audit capture gaps', () => {
       toolUseCount: 0,
       subAgentCount: 0,
       hasTranscript: false,
-      toolCounts: {},
+      toolCounts: ZERO_TOOL_COUNTS,
     };
     mockPeekProviderBillingAccountKind.mockReturnValue('bedrock');
     service.startObservedTask('helper:test', helper);
@@ -843,7 +904,7 @@ describe('audit capture gaps', () => {
       toolUseCount: 0,
       subAgentCount: 0,
       hasTranscript: false,
-      toolCounts: {},
+      toolCounts: ZERO_TOOL_COUNTS,
     });
     mockPeekProviderBillingAccountKind.mockReturnValue('unknown');
     service.startObservedTask(
@@ -922,7 +983,7 @@ describe('audit capture gaps', () => {
           toolUseCount: 0,
           subAgentCount: 0,
           hasTranscript: false,
-          toolCounts: {},
+          toolCounts: ZERO_TOOL_COUNTS,
         });
         mockPeekProviderBillingAccountKind.mockReturnValue('subscription');
         service.finalizeObservedTask(id, 'success');
@@ -962,10 +1023,10 @@ describe('audit capture gaps', () => {
           retry_history: [
             {
               attempt: 0,
-              status: 'failed',
+              status: 'failure',
               steps: {
                 step: {
-                  status: 'failed',
+                  status: 'failure',
                   outputs: {},
                   dynamic_env: {},
                   log_format_hint: 'agent',
@@ -979,6 +1040,13 @@ describe('audit capture gaps', () => {
         },
       },
     };
+    // Keep this historical malformed status at the service boundary.
+    const retry = state.jobs.job.retry_history?.[0];
+    if (!retry) throw new Error('Expected a retry fixture');
+    const retryStep = retry.steps.step;
+    if (!retryStep) throw new Error('Expected a retry step fixture');
+    Reflect.set(retry, 'status', 'failed');
+    Reflect.set(retryStep, 'status', 'failed');
     service.syncPipelineExecutionState(state);
     expect(
       service
@@ -1454,7 +1522,7 @@ describe('audit capture gaps', () => {
       toolUseCount: 0,
       subAgentCount: 0,
       hasTranscript: false,
-      toolCounts: {},
+      toolCounts: ZERO_TOOL_COUNTS,
     };
     service.startObservedTask('helper:plan-test', helper);
     service.recordUsageMetricEvent({
@@ -1620,7 +1688,7 @@ describe('audit capture gaps', () => {
       toolUseCount: 0,
       subAgentCount: 0,
       hasTranscript: false,
-      toolCounts: {},
+      toolCounts: ZERO_TOOL_COUNTS,
     };
     service.startObservedTask('advisor:one', advisor);
     service.finalizeObservedTask('advisor:one', 'success');
@@ -1682,7 +1750,7 @@ describe('audit capture gaps', () => {
       toolUseCount: 0,
       subAgentCount: 0,
       hasTranscript: false,
-      toolCounts: {},
+      toolCounts: ZERO_TOOL_COUNTS,
       delegation: { delegationId: id, runGeneration: 1 },
     });
     const persistedMatchesLive = persistedEntry(

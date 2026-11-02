@@ -24,9 +24,11 @@ export const PIPELINE_PACKAGE_VERSION = 1 as const;
  * 2 — publisher notes.
  * 3 — whole-share (subject) bindings.
  * 4 — packaged project actions and child pipelines.
- * 5 — original installed-item refs for enforcing Disabled on pinned resources.
+ * 5 — portable pipeline, automation, Agent and hook definition resources;
+ *     original installed-item refs for enforcing Disabled on pinned resources.
+ * 6 — automation pipelines and pipeline file assets.
  */
-export const PIPELINE_PACKAGE_CLIENT_VERSION = 5 as const;
+export const PIPELINE_PACKAGE_CLIENT_VERSION = 6 as const;
 export const PIPELINE_PACKAGE_VERSION_HEADER = 'X-Pipeline-Package-Version';
 
 export const PIPELINE_PACKAGE_MAX_FILES = 1_024;
@@ -51,10 +53,27 @@ export interface PipelinePackageFileEntry {
 
 export interface PipelinePackageTree {
   provider: 'claude' | 'codex';
-  runtimeKind: 'plugin_fragment' | 'standalone_skill';
+  /**
+   * `automation_pipeline` trees carry one `pipeline.yaml` entry and belong only
+   * to `automation_pipeline` resources; `pipeline_asset` trees belong only to
+   * `file_asset` resources.
+   */
+  runtimeKind:
+    | 'plugin_fragment'
+    | 'standalone_skill'
+    | 'automation_pipeline'
+    | 'pipeline_asset';
   rootName: string;
   entries: PipelinePackageFileEntry[];
 }
+
+/** Definition documents are provider-neutral payloads in one existing read tree. */
+export const CAPABILITY_PACKAGE_DEFINITION_KINDS = [
+  'pipeline_definition',
+  'automation_definition',
+  'agent_definition',
+  'hook_definition',
+] as const;
 
 export interface PipelinePackageResource {
   /** Original selection identity, retained so pinning cannot bypass Disabled. */
@@ -66,14 +85,36 @@ export interface PipelinePackageResource {
     | 'plugin_command'
     | 'plugin_agent'
     | 'pipeline_action'
-    | 'child_pipeline';
+    | 'child_pipeline'
+    | 'automation_pipeline'
+    | 'file_asset'
+    | 'pipeline_definition'
+    | 'automation_definition'
+    | 'agent_definition'
+    | 'hook_definition';
   displayName: string;
   sourceLabel: string;
   sourceVisibility: 'builtin' | 'public' | 'private' | 'local';
   invocationKeys: string[];
   dependencyResourceIds: string[];
   trees: PipelinePackageTree[];
+  /**
+   * Portable key of the pipeline this resource is or belongs to. Required on
+   * `automation_pipeline` (unique per manifest) and `file_asset` (names an
+   * `automation_pipeline` resource in the same manifest); absent otherwise.
+   */
+  pipelineKey?: string;
+  /** Hash of the packaged pipeline YAML. Required on `automation_pipeline`. */
+  pipelineContentHash?: string;
+  /** Asset id declared by the pipeline. Required on `file_asset`. */
+  assetId?: string;
+  /** How install writes the asset. Required on `file_asset`. */
+  installMode?: PipelineAssetInstallMode;
+  /** Whether the pipeline needs the asset to run. Required on `file_asset`. */
+  required?: boolean;
 }
+
+export type PipelineAssetInstallMode = 'seed' | 'replace';
 
 export interface PipelinePackageStepBinding {
   jobId: string;
@@ -331,6 +372,22 @@ export type PipelinePackageValidationResult =
 
 const PACKAGE_DIGEST_PATTERN = /^pp:v1:[A-Za-z0-9_-]{43}$/;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+/** Pipeline YAML `assets[].id`: lower-case, starts with a letter, 32 max. */
+const PIPELINE_ASSET_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+/** The single entry of an `automation_pipeline` tree. */
+export const AUTOMATION_PIPELINE_TREE_ENTRY_PATH = 'pipeline.yaml';
+
+/**
+ * Portable key shape shared by package resource ids, `automation_pipeline`
+ * pipeline keys and shared automation `pipelineDependencies[].key`.
+ */
+export function isPipelinePackageIdentifier(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    IDENTIFIER_PATTERN.test(value) &&
+    isPortablePipelinePackageSegment(value)
+  );
+}
 
 export function isPipelineContentHash(value: unknown): value is string {
   return (
@@ -404,6 +461,27 @@ function compareStrings(left: string, right: string): number {
  */
 const bindingSortKey = pipelinePackageBindingKey;
 
+/**
+ * The server re-hashes a stored manifest after a Postgres `jsonb` round trip,
+ * which reorders object keys (shortest first), so the ref is rebuilt in the
+ * order clients have always produced rather than copied as received. This only
+ * orders keys; unlike `canonicalInstalledItemRef` in `installed-items` it must
+ * not normalize values. A field added to an `InstalledItemRefSchema` variant
+ * has to be added here too, and reordering these keys moves the digest of
+ * every published package.
+ */
+function installedItemRefInDigestOrder(
+  ref: NonNullable<PipelinePackageResource['installedItemRef']>,
+): NonNullable<PipelinePackageResource['installedItemRef']> {
+  return ref.kind === 'plugin'
+    ? {
+        kind: ref.kind,
+        marketplaceId: ref.marketplaceId,
+        pluginName: ref.pluginName,
+      }
+    : { kind: ref.kind, sourceId: ref.sourceId, skillName: ref.skillName };
+}
+
 function canonicalManifestObject(
   manifest: PipelinePackageManifestV1,
 ): PipelinePackageManifestV1 {
@@ -414,7 +492,11 @@ function canonicalManifestObject(
       .map((resource) => ({
         id: resource.id,
         ...(resource.installedItemRef
-          ? { installedItemRef: resource.installedItemRef }
+          ? {
+              installedItemRef: installedItemRefInDigestOrder(
+                resource.installedItemRef,
+              ),
+            }
           : {}),
         kind: resource.kind,
         displayName: resource.displayName,
@@ -444,6 +526,23 @@ function canonicalManifestObject(
               `${right.provider}\0${right.rootName}\0${right.runtimeKind}`,
             ),
           ),
+        // Version 6 fields, emitted only when present so every earlier
+        // manifest keeps its canonical form and digest.
+        ...(resource.pipelineKey !== undefined
+          ? { pipelineKey: resource.pipelineKey }
+          : {}),
+        ...(resource.pipelineContentHash !== undefined
+          ? { pipelineContentHash: resource.pipelineContentHash }
+          : {}),
+        ...(resource.assetId !== undefined
+          ? { assetId: resource.assetId }
+          : {}),
+        ...(resource.installMode !== undefined
+          ? { installMode: resource.installMode }
+          : {}),
+        ...(resource.required !== undefined
+          ? { required: resource.required }
+          : {}),
       }))
       .sort((left, right) => compareStrings(left.id, right.id)),
     bindings: manifest.bindings
@@ -578,6 +677,9 @@ export function validatePipelinePackageManifest(
 
   const manifest = value as unknown as PipelinePackageManifestV1;
   const resourceIds = new Set<string>();
+  const automationPipelineKeys = new Set<string>();
+  const fileAssetPipelineKeys: Array<{ label: string; pipelineKey: string }> =
+    [];
   let actualFiles = 0;
   let actualBytes = 0;
 
@@ -603,6 +705,11 @@ export function validatePipelinePackageManifest(
         'invocationKeys',
         'dependencyResourceIds',
         'trees',
+        'pipelineKey',
+        'pipelineContentHash',
+        'assetId',
+        'installMode',
+        'required',
       ])
     )
       errors.push(`${label} contains unknown fields`);
@@ -631,9 +738,56 @@ export function validatePipelinePackageManifest(
         'plugin_agent',
         'pipeline_action',
         'child_pipeline',
+        'automation_pipeline',
+        'file_asset',
+        ...CAPABILITY_PACKAGE_DEFINITION_KINDS,
       ].includes(String(resource.kind))
     )
       errors.push(`${label}.kind is invalid`);
+    const isAutomationPipeline = resource.kind === 'automation_pipeline';
+    const isFileAsset = resource.kind === 'file_asset';
+    if (isAutomationPipeline || isFileAsset) {
+      if (!isPipelinePackageIdentifier(resource.pipelineKey))
+        errors.push(`${label}.pipelineKey is invalid`);
+    } else if (resource.pipelineKey !== undefined)
+      errors.push(`${label}.pipelineKey is only allowed on pipeline resources`);
+    if (isAutomationPipeline) {
+      if (!isPipelineContentHash(resource.pipelineContentHash))
+        errors.push(`${label}.pipelineContentHash is invalid`);
+      else if (
+        typeof resource.pipelineKey === 'string' &&
+        automationPipelineKeys.has(resource.pipelineKey)
+      )
+        errors.push(`Duplicate pipeline key: ${resource.pipelineKey}`);
+      if (typeof resource.pipelineKey === 'string')
+        automationPipelineKeys.add(resource.pipelineKey);
+    } else if (resource.pipelineContentHash !== undefined)
+      errors.push(
+        `${label}.pipelineContentHash is only allowed on automation pipelines`,
+      );
+    if (isFileAsset) {
+      if (
+        typeof resource.assetId !== 'string' ||
+        !PIPELINE_ASSET_ID_PATTERN.test(resource.assetId)
+      )
+        errors.push(`${label}.assetId is invalid`);
+      if (resource.installMode !== 'seed' && resource.installMode !== 'replace')
+        errors.push(`${label}.installMode is invalid`);
+      if (typeof resource.required !== 'boolean')
+        errors.push(`${label}.required is invalid`);
+      if (typeof resource.pipelineKey === 'string')
+        fileAssetPipelineKeys.push({
+          label,
+          pipelineKey: resource.pipelineKey,
+        });
+    } else {
+      if (resource.assetId !== undefined)
+        errors.push(`${label}.assetId is only allowed on file assets`);
+      if (resource.installMode !== undefined)
+        errors.push(`${label}.installMode is only allowed on file assets`);
+      if (resource.required !== undefined)
+        errors.push(`${label}.required is only allowed on file assets`);
+    }
     if (!isNonEmptyString(resource.displayName))
       errors.push(`${label}.displayName is required`);
     if (!isNonEmptyString(resource.sourceLabel))
@@ -659,6 +813,25 @@ export function validatePipelinePackageManifest(
       continue;
     }
 
+    if (isAutomationPipeline && resource.trees.length !== 1)
+      errors.push(`${label} must carry exactly one pipeline tree`);
+    if (isFileAsset && resource.trees.length > 1)
+      errors.push(`${label} must carry at most one asset tree`);
+    const definitionTree = resource.trees[0];
+    if (
+      CAPABILITY_PACKAGE_DEFINITION_KINDS.some(
+        (kind) => kind === resource.kind,
+      ) &&
+      (resource.trees.length !== 1 ||
+        !isRecord(definitionTree) ||
+        !Array.isArray(definitionTree.entries) ||
+        definitionTree.entries.length !== 1 ||
+        !isRecord(definitionTree.entries[0]) ||
+        definitionTree.entries[0].mode !== 'read')
+    ) {
+      errors.push(`${label} must contain one read-only definition document`);
+    }
+
     const treeKeys = new Set<string>();
     for (let treeIndex = 0; treeIndex < resource.trees.length; treeIndex += 1) {
       const tree = resource.trees[treeIndex];
@@ -674,11 +847,43 @@ export function validatePipelinePackageManifest(
       if (!['claude', 'codex'].includes(String(tree.provider)))
         errors.push(`${treeLabel}.provider is invalid`);
       if (
-        !['plugin_fragment', 'standalone_skill'].includes(
-          String(tree.runtimeKind),
-        )
+        ![
+          'plugin_fragment',
+          'standalone_skill',
+          'automation_pipeline',
+          'pipeline_asset',
+        ].includes(String(tree.runtimeKind))
       )
         errors.push(`${treeLabel}.runtimeKind is invalid`);
+      // Pipeline YAML and asset trees belong only to their own resource kind,
+      // and those kinds carry nothing else.
+      if (
+        isAutomationPipeline !== (tree.runtimeKind === 'automation_pipeline') ||
+        isFileAsset !== (tree.runtimeKind === 'pipeline_asset')
+      )
+        errors.push(`${treeLabel}.runtimeKind does not match ${label}.kind`);
+      if (
+        isAutomationPipeline &&
+        typeof resource.pipelineKey === 'string' &&
+        tree.rootName !== resource.pipelineKey
+      )
+        errors.push(`${treeLabel}.rootName must equal ${label}.pipelineKey`);
+      if (
+        isFileAsset &&
+        typeof resource.assetId === 'string' &&
+        tree.rootName !== resource.assetId
+      )
+        errors.push(`${treeLabel}.rootName must equal ${label}.assetId`);
+      if (
+        isAutomationPipeline &&
+        (!Array.isArray(tree.entries) ||
+          tree.entries.length !== 1 ||
+          !isRecord(tree.entries[0]) ||
+          tree.entries[0].path !== AUTOMATION_PIPELINE_TREE_ENTRY_PATH)
+      )
+        errors.push(
+          `${treeLabel} must carry exactly one ${AUTOMATION_PIPELINE_TREE_ENTRY_PATH} entry`,
+        );
       if (
         !isNonEmptyString(tree.rootName) ||
         !IDENTIFIER_PATTERN.test(tree.rootName) ||
@@ -733,6 +938,13 @@ export function validatePipelinePackageManifest(
           errors.push(`${entryLabel}.mode is invalid`);
       }
     }
+  }
+
+  for (const { label, pipelineKey } of fileAssetPipelineKeys) {
+    if (!automationPipelineKeys.has(pipelineKey))
+      errors.push(
+        `${label}.pipelineKey names no automation pipeline: ${pipelineKey}`,
+      );
   }
 
   for (const resource of manifest.resources) {
@@ -921,9 +1133,19 @@ export function validatePipelinePackageManifest(
  */
 export function requiredPipelinePackageClientVersion(
   value: unknown,
-): 1 | 2 | 3 | 4 | typeof PIPELINE_PACKAGE_CLIENT_VERSION {
+): 1 | 2 | 3 | 4 | 5 | typeof PIPELINE_PACKAGE_CLIENT_VERSION {
   if (!isRecord(value)) return 1;
   const resources = value.resources;
+  if (
+    Array.isArray(resources) &&
+    resources.some(
+      (resource) =>
+        isRecord(resource) &&
+        (resource.kind === 'automation_pipeline' ||
+          resource.kind === 'file_asset'),
+    )
+  )
+    return 6;
   if (
     Array.isArray(resources) &&
     resources.some(
@@ -932,6 +1154,18 @@ export function requiredPipelinePackageClientVersion(
     )
   )
     return 5;
+  if (
+    Array.isArray(resources) &&
+    resources.some(
+      (resource) =>
+        isRecord(resource) &&
+        CAPABILITY_PACKAGE_DEFINITION_KINDS.some(
+          (kind) => kind === resource.kind,
+        ),
+    )
+  ) {
+    return 5;
+  }
   if (
     Array.isArray(resources) &&
     resources.some(
@@ -994,6 +1228,12 @@ export type CapabilityPackageRef = PipelinePackageRef;
 export type CapabilityPackageSummary = PipelinePackageSummary;
 export type CapabilityPackageValidationResult = PipelinePackageValidationResult;
 
+export function isCapabilityPackageManifest(
+  value: unknown,
+): value is CapabilityPackageManifestV1 {
+  return validateCapabilityPackageManifest(value).ok;
+}
+
 export const isCapabilityPackageSubjectBinding =
   isPipelinePackageSubjectBinding;
 export const CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY =
@@ -1040,7 +1280,27 @@ export type PipelinePackageBlockerCode =
   | 'UNRESOLVED_INVOCATION'
   | 'AMBIGUOUS_INVOCATION'
   | 'PACKAGE_LIMIT_EXCEEDED'
-  | 'INVALID_PACKAGE';
+  | 'INVALID_PACKAGE'
+  /** A child `with.pipeline` ref depends on inputs, steps or runtime env. Dismissable. */
+  | 'UNRESOLVED_CHILD_PIPELINE_REF'
+  /** A prompt names more than one pipeline. Dismissable. */
+  | 'AMBIGUOUS_PIPELINE_REFERENCE'
+  /** A dependency pipeline has its own installed package (its children are not on disk). */
+  | 'DEPENDENCY_HAS_INSTALLED_PACKAGE'
+  /** Two packaged pipelines produce the same portable key. */
+  | 'DUPLICATE_PIPELINE_KEY'
+  /** A plain pipeline share whose pipeline declares `assets`. */
+  | 'ASSETS_REQUIRE_AUTOMATION_SHARE'
+  /** A packaged child pipeline declares its own `assets`. */
+  | 'ASSETS_ON_PACKAGED_CHILD'
+  /** File assets cannot go to a Public audience. */
+  | 'ASSETS_NOT_ALLOWED_FOR_PUBLIC'
+  /** An asset path and a `local_state` entry overlap. */
+  | 'ASSET_OVERLAPS_LOCAL_STATE'
+  /** An asset path resolves outside the home directory. */
+  | 'ASSET_PATH_OUTSIDE_HOME'
+  /** A `required` asset path does not exist. */
+  | 'MISSING_REQUIRED_ASSET';
 
 /**
  * Which package cap a `PACKAGE_LIMIT_EXCEEDED` blocker hit. The blocker's
@@ -1052,6 +1312,52 @@ export type PipelinePackageLimit = 'file_size' | 'file_count' | 'total_size';
 export interface PipelinePackageInvocationDismissal {
   provider: 'claude' | 'codex';
   token: string;
+}
+
+/**
+ * Dismissal of a non-invocation reference blocker. `pipeline_reference`
+ * tokens are the pipeline name a prompt matched; `child_pipeline_ref` tokens
+ * are the raw `with.pipeline` string.
+ */
+export interface PipelinePackageReferenceDismissal {
+  kind: 'pipeline_reference' | 'child_pipeline_ref';
+  token: string;
+}
+
+/** Why a file under a declared asset was left out of the package. */
+export type PipelinePackageWithheldReason =
+  | 'denied_name'
+  | 'git_directory'
+  | 'symlink'
+  | 'suspected_secret'
+  | 'missing_optional_asset';
+
+export interface PipelinePackageWithheldFile {
+  pipelineKey: string;
+  assetId: string;
+  /** Relative to the asset root; empty for a missing optional asset. */
+  relativePath: string;
+  reason: PipelinePackageWithheldReason;
+}
+
+/** UTF-16 code-unit span of a pipeline UUID in the canonical prompt. */
+export interface PipelinePackagePromptSpan {
+  textStart: number;
+  text: string;
+}
+
+/** A pipeline the automation analysis packaged as `automation_pipeline`. */
+export interface PipelinePackagePackagedPipeline {
+  key: string;
+  resourceId: string;
+  name: string;
+  pipelineContentHash: string;
+  source: 'user' | 'project';
+  /** True for the `worktree_pipeline` action's own pipeline (key `action`). */
+  isActionPipeline: boolean;
+  /** Optional (name-matched) pipelines ship only when selected. */
+  optional: boolean;
+  promptSpans: PipelinePackagePromptSpan[];
 }
 
 export interface PipelinePackageAnalysisBlocker {
@@ -1066,6 +1372,7 @@ export interface PipelinePackageAnalysisBlocker {
   stepId?: string;
   occurrences: Array<{ jobId: string; stepId: string }>;
   dismissal?: PipelinePackageInvocationDismissal;
+  referenceDismissal?: PipelinePackageReferenceDismissal;
 }
 
 export interface PipelinePackageAnalysisSummary {
@@ -1076,6 +1383,11 @@ export interface PipelinePackageAnalysisSummary {
   package?: Omit<PipelinePackageSummary, 'digest'>;
   blockers: PipelinePackageAnalysisBlocker[];
   dismissedInvocations?: PipelinePackageInvocationDismissal[];
+  dismissedReferences?: PipelinePackageReferenceDismissal[];
+  /** Pipelines packaged for an automation share, in key order. */
+  packagedPipelines?: PipelinePackagePackagedPipeline[];
+  /** Asset files left out of the package, with reasons. */
+  withheldFiles?: PipelinePackageWithheldFile[];
   /** Selected capabilities that analysis cannot include in the package. */
   unpackageableSelectionLabels?: string[];
   repoLocalScope?: { entryCount: number; scannedDirectoryCount: number };

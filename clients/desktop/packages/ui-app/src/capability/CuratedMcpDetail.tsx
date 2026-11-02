@@ -7,6 +7,8 @@ import {
   type CuratedMcpServerEntry,
 } from '@canopy/protocol/mcp-catalog';
 import {
+  Badge,
+  Button,
   ExternalTextLink,
   LoadingPlaceholder,
   McpServerLogo,
@@ -171,14 +173,15 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
           (providerOnly ? null : installedServerId !== null && onConfigure ? (
             <PluginConfigurationButton onConfigure={onConfigure} />
           ) : onAdd ? (
-            <button
+            <Button
               type="button"
+              variant="primary"
+              size="compact"
               onClick={() => onAdd(entry)}
               data-testid="mcp-browse-detail-add"
-              className="focus-ring shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition-colors hover:bg-accent/90"
             >
               Add
-            </button>
+            </Button>
           ) : null)}
       </div>
 
@@ -195,12 +198,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
       {Boolean(entry.categories?.length) && (
         <div className="flex flex-wrap gap-1.5">
           {entry.categories?.map((category) => (
-            <span
-              key={category}
-              className="rounded-full bg-secondary px-2 py-0.5 text-3xs font-medium fg-secondary"
-            >
-              {category}
-            </span>
+            <Badge key={category}>{category}</Badge>
           ))}
         </div>
       )}

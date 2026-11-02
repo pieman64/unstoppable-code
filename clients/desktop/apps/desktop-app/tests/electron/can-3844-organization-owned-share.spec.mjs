@@ -61,7 +61,12 @@ test('CAN-3844: organization automation disables Public and updates between Orga
       );
       await expect(dialog.getByTestId('share-automation-submit')).toBeEnabled();
       await dialog.getByTestId('share-automation-submit').click();
-      await expect(dialog).toHaveCount(0, { timeout: 30_000 });
+      // A landed share keeps the dialog open on its success notice.
+      await expect(dialog.getByTestId('share-automation-success')).toBeVisible({
+        timeout: 30_000,
+      });
+      await dialog.getByTestId('share-automation-done').click();
+      await expect(dialog).toHaveCount(0);
     };
     const assertLocked = async (owner) => {
       const publicOption = dialog.getByTestId('share-automation-scope-public');

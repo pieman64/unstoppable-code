@@ -188,6 +188,8 @@ const LEDGER_STORAGE_METHODS = {
   getAuthorityId: [],
   bindScope: ['input'],
   findScope: ['input'],
+  bindGlobalScope: ['input'],
+  findGlobalScope: ['input'],
   getScope: ['id'],
   registerActor: ['input'],
   listActors: ['id'],

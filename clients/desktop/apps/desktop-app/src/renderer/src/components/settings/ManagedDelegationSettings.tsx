@@ -4,6 +4,8 @@ import {
   normalizeManagedDelegationMode,
   normalizeManagedDelegationMaxConcurrent,
   normalizeManagedDelegationMaxDepth,
+  normalizeManagedDelegationLifetimeLimit,
+  managedDelegationLifetimeLimitChoices,
   MAX_MANAGED_DELEGATION_DEPTH,
   MAX_MANAGED_DELEGATION_CONCURRENCY,
   type ManagedDelegationMode,
@@ -12,26 +14,43 @@ import {
   ErrorBanner,
   Notice,
   NoticeButton,
+  SettingsSelect,
+  type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
   emitManagedDelegationPreferenceUpdated,
   subscribeManagedDelegationPreferenceUpdated,
 } from '@/lib/managedDelegationPreferenceEvents';
-import {
-  SettingsGroup,
-  SettingsRow,
-  SettingsSection,
-  SettingsSelect,
-} from './SettingsLayout';
+import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 
 const SAVE_ERROR_MESSAGE = 'Could not save consultation settings. Try again.';
+
+const MODE_OPTIONS: readonly SettingsSelectOption<ManagedDelegationMode>[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'explicit-only', label: 'Only when requested' },
+  { value: 'proactive', label: 'When useful' },
+];
+
+const CONCURRENCY_OPTIONS: readonly SettingsSelectOption[] = Array.from(
+  { length: MAX_MANAGED_DELEGATION_CONCURRENCY },
+  (_, i) => ({ value: String(i + 1), label: String(i + 1) }),
+);
+
+const DEPTH_OPTIONS: readonly SettingsSelectOption[] = Array.from(
+  { length: MAX_MANAGED_DELEGATION_DEPTH },
+  (_, i) => ({
+    value: String(i + 1),
+    label: i === 0 ? '1 (no nesting)' : String(i + 1),
+  }),
+);
 
 interface ManagedDelegationSettingsProps {
   initialMode: ManagedDelegationMode;
   initialRevocationIncomplete?: boolean;
   initialMaxConcurrent?: number;
   initialMaxDepth?: number;
+  initialLifetimeLimit?: number;
 }
 
 /** Host-neutral policy choices; model/runtime discovery belongs to the parent tool. */
@@ -39,6 +58,7 @@ export function ManagedDelegationSettings({
   initialMode,
   initialMaxConcurrent,
   initialMaxDepth,
+  initialLifetimeLimit,
   initialRevocationIncomplete = false,
 }: ManagedDelegationSettingsProps): JSX.Element {
   const [mode, setMode] = useState(initialMode);
@@ -50,11 +70,16 @@ export function ManagedDelegationSettings({
     normalizeManagedDelegationMaxDepth(initialMaxDepth),
   );
   const [error, setError] = useState(false);
+  const [lifetimeLimit, setLifetimeLimit] = useState(
+    normalizeManagedDelegationLifetimeLimit(initialLifetimeLimit),
+  );
+  const lifetimeLimitChoices = managedDelegationLifetimeLimitChoices();
   const [revocationIncomplete, setRevocationIncomplete] = useState(
     initialRevocationIncomplete,
   );
   const windows = window.platform === 'win32';
-  const supported = window.platform === 'darwin' || windows;
+  const supported =
+    window.platform === 'darwin' || window.platform === 'linux' || windows;
 
   useEffect(() => {
     const unsubscribePreferenceUpdate =
@@ -63,11 +88,19 @@ export function ManagedDelegationSettings({
         if (update.maxDepth !== undefined) setMaxDepth(update.maxDepth);
         if (update.maxConcurrent !== undefined)
           setMaxConcurrent(update.maxConcurrent);
+        if (update.lifetimeLimit !== undefined)
+          setLifetimeLimit(update.lifetimeLimit);
         setRevocationIncomplete(update.revocationIncomplete);
       });
     const unsubscribePreferencesSync =
       typeof window.api.onPreferencesSynced === 'function'
         ? window.api.onPreferencesSynced((preferences) => {
+            if (preferences.managedDelegationLifetimeLimit !== undefined)
+              setLifetimeLimit(
+                normalizeManagedDelegationLifetimeLimit(
+                  preferences.managedDelegationLifetimeLimit,
+                ),
+              );
             if (preferences.managedDelegationMaxDepth !== undefined)
               setMaxDepth(
                 normalizeManagedDelegationMaxDepth(
@@ -102,6 +135,7 @@ export function ManagedDelegationSettings({
     loaded: true,
     mode,
     maxDepth,
+    lifetimeLimit,
     revocationIncomplete,
   });
 
@@ -112,6 +146,7 @@ export function ManagedDelegationSettings({
         | 'managedDelegationMode'
         | 'managedDelegationMaxConcurrent'
         | 'managedDelegationMaxDepth'
+        | 'managedDelegationLifetimeLimit'
       >
     >,
   ): Promise<void> {
@@ -119,6 +154,10 @@ export function ManagedDelegationSettings({
     setError(false);
     try {
       const saved = await window.api.savePreferences(patch);
+      const nextLifetimeLimit = normalizeManagedDelegationLifetimeLimit(
+        saved.managedDelegationLifetimeLimit,
+      );
+      setLifetimeLimit(nextLifetimeLimit);
       const nextMaxDepth = normalizeManagedDelegationMaxDepth(
         saved.managedDelegationMaxDepth,
       );
@@ -135,6 +174,7 @@ export function ManagedDelegationSettings({
         mode: saved.managedDelegationMode ?? 'off',
         maxConcurrent: nextMaxConcurrent,
         maxDepth: nextMaxDepth,
+        lifetimeLimit: nextLifetimeLimit,
         revocationIncomplete:
           saved.__managedDelegationRevocationIncomplete === true,
       });
@@ -147,7 +187,24 @@ export function ManagedDelegationSettings({
   return (
     <SettingsSection
       title="Managed delegation"
-      description="Let worktree chats delegate tasks to another model. Tasks may use additional tokens."
+      description={
+        <>
+          Let Code worktree chats delegate tasks to another model. Tasks may use
+          additional tokens. Children can read and search, and edit with
+          explicit file permissions from the parent. Your approval settings
+          still apply. Tasks share the current worktree unless isolation is
+          requested.
+          {windows && (
+            <>
+              {' '}
+              <span data-testid="settings-managed-delegation-windows-codex">
+                On Windows, Codex tasks run without the Codex sandbox and follow
+                this chat&apos;s approval settings.
+              </span>
+            </>
+          )}
+        </>
+      }
       dataTestId="managed-delegation-settings"
     >
       <ErrorBanner className="" error={error ? SAVE_ERROR_MESSAGE : null} />
@@ -173,44 +230,24 @@ export function ManagedDelegationSettings({
           htmlFor="managed-delegation-mode"
           description={
             supported
-              ? 'Applies to new turns in worktree chats. Enabling replaces native subagent tools. Turning off cancels managed children; the parent chat continues.'
-              : 'Managed delegation is currently available on macOS and Windows.'
+              ? 'Applies to new turns in Code worktree chats. Enabling replaces native subagent tools. Turning off cancels managed children; the parent chat continues.'
+              : 'Managed delegation is currently available on macOS, Windows, and Linux.'
           }
           control={
             <SettingsSelect
               id="managed-delegation-mode"
               data-testid="settings-managed-delegation-mode"
+              options={MODE_OPTIONS}
               value={mode}
               disabled={!supported || saving}
-              onChange={(event) => {
+              onValueChange={(next) => {
                 void save({
-                  managedDelegationMode: normalizeManagedDelegationMode(
-                    event.target.value,
-                  ),
+                  managedDelegationMode: normalizeManagedDelegationMode(next),
                 });
               }}
-            >
-              <option value="off">Off</option>
-              <option value="explicit-only">Only when requested</option>
-              <option value="proactive">When useful</option>
-            </SettingsSelect>
+            />
           }
-        >
-          <p className="text-xs text-pretty fg-secondary">
-            Children can read and search, and edit with explicit file
-            permissions from the parent. Your approval settings still apply.
-            Tasks share the current worktree unless isolation is requested.
-          </p>
-          {windows && (
-            <p
-              className="text-xs text-pretty fg-secondary"
-              data-testid="settings-managed-delegation-windows-codex"
-            >
-              On Windows, Codex tasks run without the Codex sandbox and follow
-              this chat&apos;s approval settings.
-            </p>
-          )}
-        </SettingsRow>
+        />
         <SettingsRow
           label="Maximum concurrent subagents"
           htmlFor="managed-delegation-concurrency"
@@ -223,23 +260,15 @@ export function ManagedDelegationSettings({
             <SettingsSelect
               id="managed-delegation-concurrency"
               data-testid="settings-managed-delegation-concurrency"
-              value={maxConcurrent}
+              options={CONCURRENCY_OPTIONS}
+              value={String(maxConcurrent)}
               disabled={!supported || saving}
-              onChange={(event) => {
+              onValueChange={(next) => {
                 void save({
-                  managedDelegationMaxConcurrent: Number(event.target.value),
+                  managedDelegationMaxConcurrent: Number(next),
                 });
               }}
-            >
-              {Array.from(
-                { length: MAX_MANAGED_DELEGATION_CONCURRENCY },
-                (_, i) => i + 1,
-              ).map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </SettingsSelect>
+            />
           }
         />
         <SettingsRow
@@ -250,23 +279,47 @@ export function ManagedDelegationSettings({
             <SettingsSelect
               id="managed-delegation-depth"
               data-testid="settings-managed-delegation-depth"
-              value={maxDepth}
+              options={DEPTH_OPTIONS}
+              value={String(maxDepth)}
               disabled={!supported || saving}
-              onChange={(event) => {
+              onValueChange={(next) => {
                 void save({
-                  managedDelegationMaxDepth: Number(event.target.value),
+                  managedDelegationMaxDepth: Number(next),
                 });
               }}
-            >
-              {Array.from(
-                { length: MAX_MANAGED_DELEGATION_DEPTH },
-                (_, i) => i + 1,
-              ).map((value) => (
-                <option key={value} value={value}>
-                  {value === 1 ? '1 (no nesting)' : value}
-                </option>
-              ))}
-            </SettingsSelect>
+            />
+          }
+        />
+        <SettingsRow
+          label="Lifetime limit"
+          htmlFor="managed-delegation-lifetime-limit"
+          description={
+            <span data-testid="settings-managed-delegation-lifetime-limit-help">
+              Managed delegates a worktree can start over its lifetime, separate
+              from how many run at once.
+              {lifetimeLimitChoices.length === 1 &&
+                ` This build allows only ${lifetimeLimitChoices[0]}.`}
+            </span>
+          }
+          control={
+            <SettingsSelect
+              id="managed-delegation-lifetime-limit"
+              data-testid="settings-managed-delegation-lifetime-limit"
+              options={lifetimeLimitChoices.map((choice) => ({
+                value: String(choice),
+                label: String(choice),
+              }))}
+              value={String(lifetimeLimit)}
+              disabled={
+                !supported || saving || lifetimeLimitChoices.length === 1
+              }
+              onValueChange={(next) => {
+                void save({
+                  managedDelegationLifetimeLimit:
+                    normalizeManagedDelegationLifetimeLimit(Number(next)),
+                });
+              }}
+            />
           }
         />
       </SettingsGroup>

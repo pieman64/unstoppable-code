@@ -453,7 +453,7 @@ function expectSharedColumn(): void {
   const column = byTestId('settings-page-column');
   expect(column).not.toBeNull();
   expect(container.firstElementChild).toBe(column);
-  expect(column?.className).toContain('max-w-5xl');
+  expect(column?.className).toContain('max-w-176');
   expect(column?.firstElementChild?.className).toContain('max-w-3xl');
 }
 

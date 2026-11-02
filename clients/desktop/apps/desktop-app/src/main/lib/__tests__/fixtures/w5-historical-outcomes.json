@@ -1,0 +1,1969 @@
+{
+  "about": "Saved W5 keyed outcomes in the shape earlier builds stored them in w5_commits.outcome_json, hand-written for CAN-5201; never regenerate them from current output. No saved W5 outcome carries a version field: every receipt here is untagged and reads as version 1. `saved` is stored as JSON.stringify(saved). Each case names one result: `replay` is what the desktop entry point returns, `replayVoid` means it returns undefined, and `refused` names the error a replay throws. Entries an operation's W5a3 stored-outcome projector covers name it in `projector` (with the request's workspace in `projectorWorkspaceId`), and each of their cases names the projected result in `projected`, or `projectedRefused`. Journal cases are destructive lifecycle journals; `neverReplayed` marks an unfinished journal that must not be read as an outcome. Matrix: docs/planning/2026-07-31-desktop-core-daemon/artifacts/w5-historical-outcome-replay.md.",
+  "entries": {
+    "workspace.create": {
+      "operation": "core.workspace.create",
+      "caller": "desktop-host:new_multi_repo",
+      "projector": "workspace-creation",
+      "cases": [
+        {
+          "id": "create-multi-repo-host-fields",
+          "shape": "Multi-repo create, plus sidebar repos and a host path that no saved receipt carries (it is saved already projected): dropped.",
+          "saved": {
+            "workspace": {
+              "id": "historical",
+              "name": "Historical",
+              "type": "multi-repo",
+              "color": "#7C3AED",
+              "order": 3,
+              "collapsed": false,
+              "repos": [
+                { "id": "r1", "name": "R1", "repoPath": "/Users/old/r1" }
+              ],
+              "sourceRepoPath": "/Users/old/source"
+            },
+            "clonedRepoIds": [],
+            "scriptActionsOperationId": "11111111-1111-4111-8111-111111111111"
+          },
+          "replay": {
+            "workspace": {
+              "id": "historical",
+              "name": "Historical",
+              "type": "multi-repo",
+              "color": "#7C3AED",
+              "order": 3,
+              "collapsed": false
+            },
+            "clonedRepoIds": [],
+            "scriptActionsOperationId": "11111111-1111-4111-8111-111111111111"
+          },
+          "projected": {
+            "workspace": {
+              "workspaceId": "historical",
+              "name": "Historical",
+              "kind": "git",
+              "repositorySources": [],
+              "settings": {},
+              "color": "#7C3AED",
+              "collapsed": false
+            },
+            "clonedRepoIds": [],
+            "scriptActionsOperationId": "11111111-1111-4111-8111-111111111111"
+          }
+        },
+        {
+          "id": "create-before-script-actions",
+          "shape": "A multi-repo create saved before script detection (958b09c5f8): no scriptActionsOperationId.",
+          "saved": {
+            "workspace": {
+              "id": "early",
+              "name": "Early",
+              "type": "multi-repo",
+              "color": "#7C3AED",
+              "order": 2,
+              "collapsed": false
+            },
+            "clonedRepoIds": []
+          },
+          "replay": {
+            "workspace": {
+              "id": "early",
+              "name": "Early",
+              "type": "multi-repo",
+              "color": "#7C3AED",
+              "order": 2,
+              "collapsed": false
+            },
+            "clonedRepoIds": []
+          },
+          "projected": {
+            "workspace": {
+              "workspaceId": "early",
+              "name": "Early",
+              "kind": "git",
+              "repositorySources": [],
+              "settings": {},
+              "color": "#7C3AED",
+              "collapsed": false
+            },
+            "clonedRepoIds": []
+          }
+        },
+        {
+          "id": "create-cowork-without-script-actions",
+          "shape": "A Cowork create: no collapsed flag and no script-actions operation.",
+          "saved": {
+            "workspace": {
+              "id": "notes",
+              "name": "Notes",
+              "type": "cowork",
+              "color": "#0EA5E9",
+              "order": 0
+            },
+            "clonedRepoIds": []
+          },
+          "replay": {
+            "workspace": {
+              "id": "notes",
+              "name": "Notes",
+              "type": "cowork",
+              "color": "#0EA5E9",
+              "order": 0
+            },
+            "clonedRepoIds": []
+          },
+          "projected": {
+            "workspace": {
+              "workspaceId": "notes",
+              "name": "Notes",
+              "kind": "cowork",
+              "repositorySources": [],
+              "settings": {},
+              "color": "#0EA5E9"
+            },
+            "clonedRepoIds": []
+          }
+        },
+        {
+          "id": "create-malformed-type",
+          "shape": "Unsupported workspace type.",
+          "saved": {
+            "workspace": {
+              "id": "x",
+              "name": "X",
+              "type": "temporary",
+              "color": "#7C3AED",
+              "order": 0
+            },
+            "clonedRepoIds": []
+          },
+          "refused": { "name": "ZodError" },
+          "projectedRefused": true
+        }
+      ]
+    },
+    "workspace.import": {
+      "operation": "core.workspace.import",
+      "caller": "desktop-host:import_from_repo",
+      "projector": "workspace-creation",
+      "cases": [
+        {
+          "id": "import-manifest-clone",
+          "shape": "Manifest import that cloned repositories, plus an unknown field: dropped.",
+          "saved": {
+            "workspace": {
+              "id": "imported",
+              "name": "Imported",
+              "type": "multi-repo",
+              "color": "#22C55E",
+              "order": 1
+            },
+            "clonedRepoIds": ["r1", "r2"],
+            "scriptActionsOperationId": "22222222-2222-4222-8222-222222222222",
+            "importedFrom": "/Users/old/import"
+          },
+          "replay": {
+            "workspace": {
+              "id": "imported",
+              "name": "Imported",
+              "type": "multi-repo",
+              "color": "#22C55E",
+              "order": 1
+            },
+            "clonedRepoIds": ["r1", "r2"],
+            "scriptActionsOperationId": "22222222-2222-4222-8222-222222222222"
+          },
+          "projected": {
+            "workspace": {
+              "workspaceId": "imported",
+              "name": "Imported",
+              "kind": "git",
+              "repositorySources": [],
+              "settings": {},
+              "color": "#22C55E"
+            },
+            "clonedRepoIds": ["r1", "r2"],
+            "scriptActionsOperationId": "22222222-2222-4222-8222-222222222222"
+          }
+        },
+        {
+          "id": "import-malformed-missing-clones",
+          "shape": "No clonedRepoIds.",
+          "saved": {
+            "workspace": {
+              "id": "imported",
+              "name": "Imported",
+              "type": "single-repo",
+              "color": "#22C55E",
+              "order": 1
+            }
+          },
+          "refused": { "name": "ZodError" },
+          "projectedRefused": true
+        }
+      ]
+    },
+    "worktree.create.single-repo": {
+      "operation": "core.worktree.create",
+      "caller": "desktop-host:worktree-selection",
+      "projector": "worktree-creation",
+      "projectorWorkspaceId": "a",
+      "cases": [
+        {
+          "id": "worktree-created-first-receipt",
+          "shape": "A created single-repo worktree as the first keyed build (88247553de) saved it: the nested response always carried setupPhase and no optional base fields.",
+          "saved": {
+            "status": "created",
+            "workspaceKind": "single-repo",
+            "record": {
+              "worktreeId": "wt-8",
+              "branchName": "first",
+              "createdAt": "2026-04-20T00:00:00.000Z",
+              "setupPhase": "git-ready",
+              "trackedBaseBranch": "main",
+              "trackedRepoBaseBranches": {},
+              "includedRepoIds": null
+            },
+            "response": {
+              "id": "wt-8",
+              "branchName": "first",
+              "createdAt": "2026-04-20T00:00:00.000Z",
+              "setupPhase": "git-ready"
+            }
+          },
+          "replay": {
+            "status": "created",
+            "workspaceKind": "single-repo",
+            "record": {
+              "worktreeId": "wt-8",
+              "branchName": "first",
+              "createdAt": "2026-04-20T00:00:00.000Z",
+              "setupPhase": "git-ready",
+              "trackedBaseBranch": "main",
+              "trackedRepoBaseBranches": {},
+              "includedRepoIds": null
+            },
+            "response": {
+              "id": "wt-8",
+              "branchName": "first",
+              "createdAt": "2026-04-20T00:00:00.000Z",
+              "setupPhase": "git-ready"
+            }
+          },
+          "projected": {
+            "status": "created",
+            "worktree": {
+              "worktreeId": "wt-8",
+              "workspaceId": "a",
+              "name": "first",
+              "state": "ready",
+              "baseBranch": "main",
+              "branch": "first",
+              "createdAt": "2026-04-20T00:00:00.000Z"
+            }
+          }
+        },
+        {
+          "id": "worktree-created-minimal-response",
+          "shape": "Created single-repo worktree whose nested response has no optional fields, plus an unknown host path: dropped.",
+          "saved": {
+            "status": "created",
+            "workspaceKind": "single-repo",
+            "record": {
+              "worktreeId": "wt-9",
+              "branchName": "feature",
+              "createdAt": "2026-05-01T00:00:00.000Z",
+              "setupPhase": "git-ready",
+              "trackedBaseBranch": null,
+              "trackedRepoBaseBranches": {},
+              "includedRepoIds": null
+            },
+            "response": {
+              "id": "wt-9",
+              "branchName": "feature",
+              "createdAt": "2026-05-01T00:00:00.000Z",
+              "path": "/Users/old/worktrees/wt-9"
+            }
+          },
+          "replay": {
+            "status": "created",
+            "workspaceKind": "single-repo",
+            "record": {
+              "worktreeId": "wt-9",
+              "branchName": "feature",
+              "createdAt": "2026-05-01T00:00:00.000Z",
+              "setupPhase": "git-ready",
+              "trackedBaseBranch": null,
+              "trackedRepoBaseBranches": {},
+              "includedRepoIds": null
+            },
+            "response": {
+              "id": "wt-9",
+              "branchName": "feature",
+              "createdAt": "2026-05-01T00:00:00.000Z"
+            }
+          },
+          "projected": {
+            "status": "created",
+            "worktree": {
+              "worktreeId": "wt-9",
+              "workspaceId": "a",
+              "name": "feature",
+              "state": "ready",
+              "baseBranch": null,
+              "branch": "feature",
+              "createdAt": "2026-05-01T00:00:00.000Z"
+            }
+          }
+        },
+        {
+          "id": "worktree-created-malformed-phase",
+          "shape": "Unknown setup phase.",
+          "saved": {
+            "status": "created",
+            "workspaceKind": "single-repo",
+            "record": {
+              "worktreeId": "wt-9",
+              "branchName": "feature",
+              "createdAt": "2026-05-01T00:00:00.000Z",
+              "setupPhase": "post-create",
+              "trackedBaseBranch": null,
+              "trackedRepoBaseBranches": {},
+              "includedRepoIds": null
+            },
+            "response": {
+              "id": "wt-9",
+              "branchName": "feature",
+              "createdAt": "2026-05-01T00:00:00.000Z"
+            }
+          },
+          "refused": { "name": "ZodError" },
+          "projectedRefused": true
+        }
+      ]
+    },
+    "worktree.create.multi-repo": {
+      "operation": "core.worktree.create",
+      "caller": "desktop-host:worktree-selection",
+      "projector": "worktree-creation",
+      "projectorWorkspaceId": "m",
+      "cases": [
+        {
+          "id": "worktree-created-deferred-full-response",
+          "shape": "Deferred multi-repo create: git-pending, tracked bases and included repositories.",
+          "saved": {
+            "status": "created",
+            "workspaceKind": "multi-repo",
+            "record": {
+              "worktreeId": "wt-m",
+              "branchName": "topic",
+              "createdAt": "2026-05-02T00:00:00.000Z",
+              "setupPhase": "git-pending",
+              "trackedBaseBranch": "main",
+              "trackedRepoBaseBranches": { "r1": "main", "r2": "develop" },
+              "includedRepoIds": ["r1", "r2"]
+            },
+            "response": {
+              "id": "wt-m",
+              "branchName": "topic",
+              "createdAt": "2026-05-02T00:00:00.000Z",
+              "setupPhase": "git-pending",
+              "trackedBaseBranch": "main",
+              "trackedRepoBaseBranches": { "r1": "main", "r2": "develop" }
+            }
+          },
+          "replay": {
+            "status": "created",
+            "workspaceKind": "multi-repo",
+            "record": {
+              "worktreeId": "wt-m",
+              "branchName": "topic",
+              "createdAt": "2026-05-02T00:00:00.000Z",
+              "setupPhase": "git-pending",
+              "trackedBaseBranch": "main",
+              "trackedRepoBaseBranches": { "r1": "main", "r2": "develop" },
+              "includedRepoIds": ["r1", "r2"]
+            },
+            "response": {
+              "id": "wt-m",
+              "branchName": "topic",
+              "createdAt": "2026-05-02T00:00:00.000Z",
+              "setupPhase": "git-pending",
+              "trackedBaseBranch": "main",
+              "trackedRepoBaseBranches": { "r1": "main", "r2": "develop" }
+            }
+          },
+          "projected": {
+            "status": "created",
+            "worktree": {
+              "worktreeId": "wt-m",
+              "workspaceId": "m",
+              "name": "topic",
+              "state": "creating",
+              "baseBranch": "main",
+              "branch": "topic",
+              "createdAt": "2026-05-02T00:00:00.000Z"
+            }
+          }
+        },
+        {
+          "id": "worktree-needs-repair",
+          "shape": "Needs-repair alternative: a different nested response, with an existing branch.",
+          "saved": {
+            "status": "needs-repair",
+            "workspaceKind": "multi-repo",
+            "worktreeId": "wt-r",
+            "branchName": "repair",
+            "repairIssues": [
+              {
+                "code": "missing-canopy-json",
+                "message": "canopy.json is missing",
+                "blocking": true
+              }
+            ],
+            "response": {
+              "id": "wt-r",
+              "branchName": "repair",
+              "existingBranch": "repair",
+              "needsRepair": true,
+              "repairIssues": [
+                {
+                  "code": "missing-canopy-json",
+                  "message": "canopy.json is missing",
+                  "blocking": true
+                }
+              ]
+            }
+          },
+          "replay": {
+            "status": "needs-repair",
+            "workspaceKind": "multi-repo",
+            "worktreeId": "wt-r",
+            "branchName": "repair",
+            "repairIssues": [
+              {
+                "code": "missing-canopy-json",
+                "message": "canopy.json is missing",
+                "blocking": true
+              }
+            ],
+            "response": {
+              "id": "wt-r",
+              "branchName": "repair",
+              "existingBranch": "repair",
+              "needsRepair": true,
+              "repairIssues": [
+                {
+                  "code": "missing-canopy-json",
+                  "message": "canopy.json is missing",
+                  "blocking": true
+                }
+              ]
+            }
+          },
+          "projected": {
+            "status": "needs-repair",
+            "worktreeId": "wt-r",
+            "branchName": "repair",
+            "repairIssues": [
+              { "code": "missing-canopy-json", "blocking": true }
+            ]
+          }
+        },
+        {
+          "id": "worktree-needs-repair-malformed-kind",
+          "shape": "Needs-repair recorded for a single-repo project, which never needs repair.",
+          "saved": {
+            "status": "needs-repair",
+            "workspaceKind": "single-repo",
+            "worktreeId": "wt-r",
+            "branchName": "repair",
+            "repairIssues": [],
+            "response": {
+              "id": "wt-r",
+              "branchName": "repair",
+              "needsRepair": true,
+              "repairIssues": []
+            }
+          },
+          "refused": { "name": "ZodError" },
+          "projectedRefused": true
+        }
+      ]
+    },
+    "workspace.delete": {
+      "operation": "core.workspace.delete",
+      "caller": "desktop-host:multi_repo_workspace_delete",
+      "cases": [
+        {
+          "id": "delete-before-skill-suggestions",
+          "shape": "Saved between CAN-3805 (f58a2b8ad9) and the skill suggestion purge (5f5b3304b7): no skillSuggestions step; reads as skipped.",
+          "saved": {
+            "workspaceId": "a",
+            "removed": "code",
+            "cleanup": {
+              "archivedGitRefs": { "status": "done" },
+              "chatSearchRows": { "status": "done" },
+              "managedRepository": { "status": "skipped" }
+            }
+          },
+          "replay": {
+            "workspaceId": "a",
+            "removed": "code",
+            "cleanup": {
+              "archivedGitRefs": { "status": "done" },
+              "chatSearchRows": { "status": "done" },
+              "managedRepository": { "status": "skipped" },
+              "skillSuggestions": { "status": "skipped" }
+            }
+          }
+        },
+        {
+          "id": "delete-failed-cleanup-errors",
+          "shape": "Failed cleanup steps whose saved error is an object, a string, absent, or a code-only object.",
+          "saved": {
+            "workspaceId": "a",
+            "removed": "unindexed",
+            "cleanup": {
+              "archivedGitRefs": {
+                "status": "failed",
+                "error": {
+                  "name": "EIO",
+                  "message": "i/o error at /Users/old/a",
+                  "stack": "Error: EIO"
+                }
+              },
+              "chatSearchRows": { "status": "failed", "error": "index busy" },
+              "managedRepository": { "status": "failed" },
+              "skillSuggestions": {
+                "status": "failed",
+                "error": { "code": "EACCES" }
+              }
+            }
+          },
+          "replay": {
+            "workspaceId": "a",
+            "removed": "unindexed",
+            "cleanup": {
+              "archivedGitRefs": {
+                "status": "failed",
+                "error": { "name": "Error" }
+              },
+              "chatSearchRows": {
+                "status": "failed",
+                "error": { "name": "Error" }
+              },
+              "managedRepository": {
+                "status": "failed",
+                "error": { "name": "Error" }
+              },
+              "skillSuggestions": {
+                "status": "failed",
+                "error": { "name": "Error" }
+              }
+            }
+          }
+        },
+        {
+          "id": "delete-cowork-retired-field",
+          "shape": "Cowork removal, plus an unknown top-level field: dropped.",
+          "saved": {
+            "workspaceId": "a",
+            "removed": "cowork",
+            "durationMs": 42,
+            "cleanup": {
+              "archivedGitRefs": { "status": "skipped" },
+              "chatSearchRows": { "status": "done" },
+              "managedRepository": { "status": "skipped" },
+              "skillSuggestions": { "status": "done" }
+            }
+          },
+          "replay": {
+            "workspaceId": "a",
+            "removed": "cowork",
+            "cleanup": {
+              "archivedGitRefs": { "status": "skipped" },
+              "chatSearchRows": { "status": "done" },
+              "managedRepository": { "status": "skipped" },
+              "skillSuggestions": { "status": "done" }
+            }
+          }
+        },
+        {
+          "id": "delete-malformed-removed",
+          "shape": "Unsupported removal kind.",
+          "saved": {
+            "workspaceId": "a",
+            "removed": "archived",
+            "cleanup": {
+              "archivedGitRefs": { "status": "done" },
+              "chatSearchRows": { "status": "done" },
+              "managedRepository": { "status": "done" }
+            }
+          },
+          "refused": { "name": "ZodError" }
+        },
+        {
+          "id": "delete-malformed-step",
+          "shape": "Unsupported cleanup status.",
+          "saved": {
+            "workspaceId": "a",
+            "removed": "code",
+            "cleanup": {
+              "archivedGitRefs": { "status": "pending" },
+              "chatSearchRows": { "status": "done" },
+              "managedRepository": { "status": "done" }
+            }
+          },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "worktree.delete": {
+      "operation": "core.worktree.delete",
+      "caller": "desktop-host:single_repo",
+      "cases": [
+        {
+          "id": "worktree-delete-archived",
+          "shape": "Archived on this attempt.",
+          "saved": { "success": true, "warnings": [], "status": "archived" },
+          "replay": { "success": true, "warnings": [], "status": "archived" }
+        },
+        {
+          "id": "worktree-delete-already-archived",
+          "shape": "Already archived, removing a temporary project, plus an unknown field: dropped.",
+          "saved": {
+            "success": true,
+            "warnings": ["Branch was kept"],
+            "removedTemporaryWorkspaceId": "temp",
+            "removedTemporaryWorkspaceName": "Temp",
+            "archivedContainerId": "container-1",
+            "status": "already-archived"
+          },
+          "replay": {
+            "success": true,
+            "warnings": ["Branch was kept"],
+            "removedTemporaryWorkspaceId": "temp",
+            "removedTemporaryWorkspaceName": "Temp",
+            "status": "already-archived"
+          }
+        },
+        {
+          "id": "worktree-delete-malformed-status",
+          "shape": "Unsupported status.",
+          "saved": { "success": true, "warnings": [], "status": "deleted" },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.update": {
+      "operation": "core.workspace.update",
+      "caller": "desktop-host:workspace-metadata",
+      "cases": [
+        {
+          "id": "workspace-update-index-only",
+          "shape": "Index-only write.",
+          "saved": {
+            "workspaceId": "a",
+            "indexWritten": true,
+            "manifestWritten": false
+          },
+          "replay": {
+            "workspaceId": "a",
+            "indexWritten": true,
+            "manifestWritten": false
+          }
+        },
+        {
+          "id": "workspace-update-malformed-flag",
+          "shape": "Non-boolean write flag.",
+          "saved": {
+            "workspaceId": "a",
+            "indexWritten": "yes",
+            "manifestWritten": false
+          },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.reorder": {
+      "operation": "core.workspace.reorder",
+      "caller": "desktop-host:workspace-reorder",
+      "projector": "workspace-reorder",
+      "cases": [
+        {
+          "id": "workspace-reorder-order",
+          "shape": "The index order after the move.",
+          "saved": { "workspaceIds": ["b", "a"] },
+          "replay": { "workspaceIds": ["b", "a"] },
+          "projected": { "acknowledged": true }
+        },
+        {
+          "id": "workspace-reorder-malformed-null",
+          "shape": "A null outcome, which only worktree moves save.",
+          "saved": null,
+          "refused": { "name": "ZodError" },
+          "projectedRefused": true
+        }
+      ]
+    },
+    "worktree.update": {
+      "operation": "core.worktree.update",
+      "caller": "desktop-host:worktree-metadata",
+      "projector": "worktree-update",
+      "projectorWorkspaceId": "a",
+      "cases": [
+        {
+          "id": "worktree-update-full-row",
+          "shape": "Every optional row field, plus host-only row fields: dropped.",
+          "saved": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z",
+              "label": "Renamed",
+              "hidden": false,
+              "pinned": true,
+              "branchGroupingOverride": "ungroup",
+              "branchGroupingParentWorktreeId": "wt-0",
+              "trackedBaseBranch": null,
+              "trackedRepoBaseBranches": { "r1": "main" },
+              "includedRepoIds": ["r1"],
+              "setupPhase": "git-ready",
+              "path": "/Users/old/worktrees/wt-1",
+              "prStatus": { "number": 7 }
+            },
+            "changed": true
+          },
+          "replay": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z",
+              "label": "Renamed",
+              "hidden": false,
+              "pinned": true,
+              "branchGroupingOverride": "ungroup",
+              "branchGroupingParentWorktreeId": "wt-0",
+              "trackedBaseBranch": null,
+              "trackedRepoBaseBranches": { "r1": "main" },
+              "includedRepoIds": ["r1"],
+              "setupPhase": "git-ready"
+            },
+            "changed": true
+          },
+          "projected": {
+            "worktree": {
+              "worktreeId": "wt-1",
+              "workspaceId": "a",
+              "name": "Renamed",
+              "state": "ready",
+              "baseBranch": null,
+              "branch": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            },
+            "changed": true
+          }
+        },
+        {
+          "id": "worktree-update-minimal-row",
+          "shape": "Required row fields only, unchanged.",
+          "saved": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            },
+            "changed": false
+          },
+          "replay": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            },
+            "changed": false
+          },
+          "projected": {
+            "worktree": {
+              "worktreeId": "wt-1",
+              "workspaceId": "a",
+              "name": "main",
+              "state": "ready",
+              "baseBranch": null,
+              "branch": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            },
+            "changed": false
+          }
+        },
+        {
+          "id": "worktree-update-malformed-grouping",
+          "shape": "Unsupported grouping override.",
+          "saved": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z",
+              "branchGroupingOverride": "flat"
+            },
+            "changed": true
+          },
+          "refused": {
+            "name": "W5OutcomeDecodeError",
+            "message": "Invalid operation outcome at worktree.branchGroupingOverride."
+          },
+          "projectedRefused": true
+        }
+      ]
+    },
+    "worktree.reorder": {
+      "operation": "core.worktree.reorder",
+      "caller": "desktop-host:worktree-metadata",
+      "projector": "worktree-reorder",
+      "cases": [
+        {
+          "id": "worktree-reorder-null",
+          "shape": "The saved null outcome; replays as void.",
+          "saved": null,
+          "replayVoid": true,
+          "projected": { "acknowledged": true }
+        },
+        {
+          "id": "worktree-reorder-ignores-saved-value",
+          "shape": "The decoder reads nothing: any saved value replays as void.",
+          "saved": { "worktreeIds": ["wt-2", "wt-1"] },
+          "replayVoid": true,
+          "projectedRefused": true
+        }
+      ]
+    },
+    "worktree.branch.rename": {
+      "operation": "core.worktree.branch.rename",
+      "caller": "desktop-host:desktop",
+      "projector": "worktree-branch-rename",
+      "projectorWorkspaceId": "a",
+      "cases": [
+        {
+          "id": "rename-missing-row",
+          "shape": "Renamed with no row left (a null row).",
+          "saved": { "branchName": "renamed", "worktree": null },
+          "replay": { "branchName": "renamed", "worktree": null },
+          "projected": { "branchName": "renamed", "worktree": null }
+        },
+        {
+          "id": "rename-row",
+          "shape": "Renamed root row with a pending setup phase, plus an unknown host path: dropped.",
+          "saved": {
+            "branchName": "renamed",
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "renamed",
+              "createdAt": "2026-04-01T00:00:00.000Z",
+              "setupPhase": "git-pending",
+              "path": "/Users/old/worktrees/wt-1"
+            }
+          },
+          "replay": {
+            "branchName": "renamed",
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "renamed",
+              "createdAt": "2026-04-01T00:00:00.000Z",
+              "setupPhase": "git-pending"
+            }
+          },
+          "projected": {
+            "branchName": "renamed",
+            "worktree": {
+              "worktreeId": "wt-1",
+              "workspaceId": "a",
+              "name": "renamed",
+              "state": "creating",
+              "baseBranch": null,
+              "branch": "renamed",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            }
+          }
+        },
+        {
+          "id": "rename-malformed-row",
+          "shape": "A row that is not an object.",
+          "saved": { "branchName": "renamed", "worktree": "wt-1" },
+          "refused": {
+            "name": "W5OutcomeDecodeError",
+            "message": "Invalid operation outcome at worktree."
+          },
+          "projectedRefused": true
+        }
+      ]
+    },
+    "workspace.type.convert": {
+      "operation": "core.workspace.type.convert",
+      "caller": "desktop-host:workspace-type-conversion",
+      "cases": [
+        {
+          "id": "convert-null",
+          "shape": "The saved null outcome; replays as void.",
+          "saved": null,
+          "replayVoid": true
+        },
+        {
+          "id": "convert-malformed-object",
+          "shape": "Any non-null outcome is refused.",
+          "saved": {},
+          "refused": {
+            "name": "Error",
+            "message": "Invalid saved conversion outcome"
+          }
+        }
+      ]
+    },
+    "workspace.repository.add": {
+      "operation": "core.workspace.repository.add",
+      "caller": "desktop-host:workspace-repository",
+      "cases": [
+        {
+          "id": "repository-add-passthrough",
+          "shape": "Added repository: repoPath and unknown fields pass through.",
+          "saved": {
+            "id": "r1",
+            "name": "R1",
+            "repoPath": "/Users/old/r1",
+            "source": "local",
+            "scriptActionsOperationId": "33333333-3333-4333-8333-333333333333",
+            "defaultBranch": "main"
+          },
+          "replay": {
+            "id": "r1",
+            "name": "R1",
+            "repoPath": "/Users/old/r1",
+            "source": "local",
+            "scriptActionsOperationId": "33333333-3333-4333-8333-333333333333",
+            "defaultBranch": "main"
+          }
+        },
+        {
+          "id": "repository-add-manifest-without-script-actions",
+          "shape": "A manifest repository saved before script detection (0f01ee98c6 to 958b09c5f8): no scriptActionsOperationId.",
+          "saved": {
+            "id": "r2",
+            "name": "R2",
+            "repoPath": "/Users/old/r2",
+            "source": "manifest",
+            "manifestUrl": "https://example.com/r2.git"
+          },
+          "replay": {
+            "id": "r2",
+            "name": "R2",
+            "repoPath": "/Users/old/r2",
+            "source": "manifest",
+            "manifestUrl": "https://example.com/r2.git"
+          }
+        },
+        {
+          "id": "repository-add-malformed-path",
+          "shape": "No repoPath.",
+          "saved": { "id": "r1", "name": "R1" },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.repository.remove": {
+      "operation": "core.workspace.repository.remove",
+      "caller": "desktop-host:workspace-repository",
+      "cases": [
+        {
+          "id": "repository-remove-missing",
+          "shape": "The workspace did not have the repository.",
+          "saved": { "removed": null },
+          "replay": { "removed": null }
+        },
+        {
+          "id": "repository-remove-passthrough",
+          "shape": "The removed repository, passthrough fields kept.",
+          "saved": {
+            "removed": {
+              "id": "r1",
+              "name": "R1",
+              "repoPath": "/Users/old/r1",
+              "remoteUrl": "https://example.com/r1.git"
+            }
+          },
+          "replay": {
+            "removed": {
+              "id": "r1",
+              "name": "R1",
+              "repoPath": "/Users/old/r1",
+              "remoteUrl": "https://example.com/r1.git"
+            }
+          }
+        },
+        {
+          "id": "repository-remove-malformed-missing",
+          "shape": "No removed field; null is required for a missing repository.",
+          "saved": {},
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.sourceRepo.initialize": {
+      "operation": "core.workspace.sourceRepo.initialize",
+      "caller": "desktop-host:workspace-source-initialization",
+      "cases": [
+        {
+          "id": "source-init-manifest-warnings",
+          "shape": "Source repository path, a manifest with scripts and a preserved key, and a warning.",
+          "saved": {
+            "sourceRepoPath": "/Users/old/source",
+            "manifest": {
+              "version": 1,
+              "scripts": { "setup": "pnpm install" },
+              "customKey": "kept"
+            },
+            "warnings": [
+              {
+                "code": "missing-remote",
+                "message": "R1 has no remote",
+                "repoId": "r1",
+                "repoName": "R1",
+                "path": "/Users/old/r1"
+              }
+            ]
+          },
+          "replay": {
+            "sourceRepoPath": "/Users/old/source",
+            "manifest": {
+              "customKey": "kept",
+              "version": 1,
+              "scripts": { "setup": "pnpm install" }
+            },
+            "warnings": [
+              {
+                "code": "missing-remote",
+                "message": "R1 has no remote",
+                "repoId": "r1",
+                "repoName": "R1"
+              }
+            ]
+          }
+        },
+        {
+          "id": "source-init-malformed-manifest",
+          "shape": "A manifest version the transform refuses.",
+          "saved": {
+            "sourceRepoPath": "/Users/old/source",
+            "manifest": { "version": 2 },
+            "warnings": []
+          },
+          "refused": {
+            "name": "Error",
+            "message": "Saved source repository outcome"
+          }
+        },
+        {
+          "id": "source-init-malformed-warning",
+          "shape": "Unknown warning code.",
+          "saved": {
+            "sourceRepoPath": "/Users/old/source",
+            "manifest": { "version": 1 },
+            "warnings": [{ "code": "stale-remote", "message": "x" }]
+          },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.sourceChanges.apply.workspace": {
+      "operation": "core.workspace.sourceChanges.apply",
+      "caller": "desktop-host:workspace-source-changes",
+      "cases": [
+        {
+          "id": "source-changes-workspace",
+          "shape": "Workspace apply with the workspace-only binding flag and a reference repository path.",
+          "saved": {
+            "worktreeId": "wt-1",
+            "branchName": "main",
+            "createdWorktree": false,
+            "referenceRepoPath": "/Users/old/reference",
+            "localRepoBindingsUpdated": true
+          },
+          "replay": {
+            "worktreeId": "wt-1",
+            "branchName": "main",
+            "createdWorktree": false,
+            "referenceRepoPath": "/Users/old/reference",
+            "localRepoBindingsUpdated": true
+          }
+        },
+        {
+          "id": "source-changes-workspace-malformed-flag",
+          "shape": "No binding flag; a workspace outcome requires it.",
+          "saved": {
+            "worktreeId": "wt-1",
+            "branchName": "main",
+            "createdWorktree": false
+          },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.sourceChanges.apply.project": {
+      "operation": "core.workspace.sourceChanges.apply",
+      "caller": "desktop-host:workspace-source-changes",
+      "cases": [
+        {
+          "id": "source-changes-project",
+          "shape": "Project apply that created a worktree; a binding flag is workspace-only and dropped.",
+          "saved": {
+            "worktreeId": "wt-new",
+            "branchName": "canopy-settings",
+            "createdWorktree": true,
+            "localRepoBindingsUpdated": true
+          },
+          "replay": {
+            "worktreeId": "wt-new",
+            "branchName": "canopy-settings",
+            "createdWorktree": true
+          }
+        }
+      ]
+    },
+    "composition.combine.workspace": {
+      "operation": "core.workspace.composition.combine",
+      "caller": "desktop-host:composition-combine",
+      "cases": [
+        {
+          "id": "combine-workspace-temporary",
+          "shape": "Combine into a new temporary workspace, plus host paths in nested rows: dropped.",
+          "saved": {
+            "repoMappings": [
+              {
+                "sourceRepoId": "a",
+                "destinationRepoId": "r1",
+                "repoName": "A"
+              },
+              { "destinationRepoId": "r2", "repoName": "B" }
+            ],
+            "selectedRepoIdRewrites": { "a": "r1" },
+            "sourceRootRepoIdRewrite": "r1",
+            "sourceWorkspaceId": "a",
+            "sourceWorktreeId": "wt-1",
+            "destinationWorkspaceId": "temp",
+            "destinationWorktreeId": "wt-t",
+            "destinationWorkspace": {
+              "id": "temp",
+              "type": "multi-repo",
+              "name": "Temp",
+              "color": "#7C3AED",
+              "order": 4,
+              "temporary": true,
+              "repos": [
+                { "id": "r1", "name": "A", "repoPath": "/Users/old/r1" },
+                { "id": "r2", "name": "B", "repoPath": "/Users/old/r2" }
+              ],
+              "worktrees": [
+                {
+                  "id": "wt-t",
+                  "branchName": "topic",
+                  "createdAt": "2026-03-01T00:00:00.000Z",
+                  "path": "/Users/old/temp/wt-t"
+                }
+              ]
+            },
+            "destinationWorktree": {
+              "id": "wt-t",
+              "branchName": "topic",
+              "createdAt": "2026-03-01T00:00:00.000Z",
+              "includedRepoIds": ["r1", "r2"]
+            },
+            "createdTemporaryWorkspace": true,
+            "reusedWorkspace": false,
+            "removedSourceWorktree": true
+          },
+          "replay": {
+            "repoMappings": [
+              {
+                "sourceRepoId": "a",
+                "destinationRepoId": "r1",
+                "repoName": "A"
+              },
+              { "destinationRepoId": "r2", "repoName": "B" }
+            ],
+            "selectedRepoIdRewrites": { "a": "r1" },
+            "sourceRootRepoIdRewrite": "r1",
+            "sourceWorkspaceId": "a",
+            "sourceWorktreeId": "wt-1",
+            "destinationWorkspaceId": "temp",
+            "destinationWorktreeId": "wt-t",
+            "destinationWorkspace": {
+              "id": "temp",
+              "type": "multi-repo",
+              "name": "Temp",
+              "color": "#7C3AED",
+              "order": 4,
+              "temporary": true,
+              "repos": [
+                { "id": "r1", "name": "A" },
+                { "id": "r2", "name": "B" }
+              ],
+              "worktrees": [
+                {
+                  "id": "wt-t",
+                  "branchName": "topic",
+                  "createdAt": "2026-03-01T00:00:00.000Z"
+                }
+              ]
+            },
+            "destinationWorktree": {
+              "id": "wt-t",
+              "branchName": "topic",
+              "createdAt": "2026-03-01T00:00:00.000Z",
+              "includedRepoIds": ["r1", "r2"]
+            },
+            "createdTemporaryWorkspace": true,
+            "reusedWorkspace": false,
+            "removedSourceWorktree": true
+          }
+        },
+        {
+          "id": "combine-workspace-malformed-type",
+          "shape": "A single-repo destination.",
+          "saved": {
+            "repoMappings": [],
+            "selectedRepoIdRewrites": {},
+            "sourceWorkspaceId": "a",
+            "sourceWorktreeId": "wt-1",
+            "destinationWorkspaceId": "temp",
+            "destinationWorktreeId": "wt-t",
+            "destinationWorkspace": {
+              "id": "temp",
+              "type": "single-repo",
+              "name": "Temp",
+              "color": "#7C3AED",
+              "order": 4,
+              "repos": [],
+              "worktrees": []
+            },
+            "destinationWorktree": {
+              "id": "wt-t",
+              "branchName": "topic",
+              "createdAt": "2026-03-01T00:00:00.000Z"
+            },
+            "createdTemporaryWorkspace": true,
+            "reusedWorkspace": false,
+            "removedSourceWorktree": false
+          },
+          "refused": {
+            "name": "W5OutcomeDecodeError",
+            "message": "Invalid operation outcome at destinationWorkspace.type."
+          }
+        }
+      ]
+    },
+    "composition.combine.existing-worktree": {
+      "operation": "core.workspace.composition.combine",
+      "caller": "desktop-host:composition-combine",
+      "cases": [
+        {
+          "id": "combine-existing-worktree",
+          "shape": "Join into an existing worktree: the workspace variant plus the joined worktree's migration.",
+          "saved": {
+            "repoMappings": [
+              {
+                "sourceRepoId": "a",
+                "destinationRepoId": "r1",
+                "repoName": "A"
+              }
+            ],
+            "selectedRepoIdRewrites": {},
+            "removedTemporaryWorkspaceId": "old-temp",
+            "sourceWorkspaceId": "a",
+            "sourceWorktreeId": "wt-1",
+            "destinationWorkspaceId": "m",
+            "destinationWorktreeId": "wt-m",
+            "destinationWorkspace": {
+              "id": "m",
+              "type": "multi-repo",
+              "name": "M",
+              "color": "#22C55E",
+              "order": 1,
+              "collapsed": true,
+              "repos": [{ "id": "r1", "name": "A" }],
+              "worktrees": []
+            },
+            "destinationWorktree": {
+              "id": "wt-m",
+              "branchName": "topic",
+              "createdAt": "2026-03-02T00:00:00.000Z"
+            },
+            "createdTemporaryWorkspace": false,
+            "reusedWorkspace": true,
+            "removedSourceWorktree": true,
+            "joinedWorktree": {
+              "repoMappings": [{ "destinationRepoId": "r9", "repoName": "J" }],
+              "selectedRepoIdRewrites": { "j": "r9" },
+              "workspaceId": "j",
+              "worktreeId": "wt-j",
+              "path": "/Users/old/j"
+            }
+          },
+          "replay": {
+            "repoMappings": [
+              {
+                "sourceRepoId": "a",
+                "destinationRepoId": "r1",
+                "repoName": "A"
+              }
+            ],
+            "selectedRepoIdRewrites": {},
+            "removedTemporaryWorkspaceId": "old-temp",
+            "sourceWorkspaceId": "a",
+            "sourceWorktreeId": "wt-1",
+            "destinationWorkspaceId": "m",
+            "destinationWorktreeId": "wt-m",
+            "destinationWorkspace": {
+              "id": "m",
+              "type": "multi-repo",
+              "name": "M",
+              "color": "#22C55E",
+              "order": 1,
+              "collapsed": true,
+              "repos": [{ "id": "r1", "name": "A" }],
+              "worktrees": []
+            },
+            "destinationWorktree": {
+              "id": "wt-m",
+              "branchName": "topic",
+              "createdAt": "2026-03-02T00:00:00.000Z"
+            },
+            "createdTemporaryWorkspace": false,
+            "reusedWorkspace": true,
+            "removedSourceWorktree": true,
+            "joinedWorktree": {
+              "repoMappings": [{ "destinationRepoId": "r9", "repoName": "J" }],
+              "selectedRepoIdRewrites": { "j": "r9" },
+              "workspaceId": "j",
+              "worktreeId": "wt-j"
+            }
+          }
+        },
+        {
+          "id": "combine-existing-malformed-joined",
+          "shape": "No joined worktree.",
+          "saved": {
+            "repoMappings": [],
+            "selectedRepoIdRewrites": {},
+            "sourceWorkspaceId": "a",
+            "sourceWorktreeId": "wt-1",
+            "destinationWorkspaceId": "m",
+            "destinationWorktreeId": "wt-m",
+            "destinationWorkspace": {
+              "id": "m",
+              "type": "multi-repo",
+              "name": "M",
+              "color": "#22C55E",
+              "order": 1,
+              "repos": [],
+              "worktrees": []
+            },
+            "destinationWorktree": {
+              "id": "wt-m",
+              "branchName": "topic",
+              "createdAt": "2026-03-02T00:00:00.000Z"
+            },
+            "createdTemporaryWorkspace": false,
+            "reusedWorkspace": true,
+            "removedSourceWorktree": true
+          },
+          "refused": {
+            "name": "W5OutcomeDecodeError",
+            "message": "Invalid operation outcome at joinedWorktree."
+          }
+        }
+      ]
+    },
+    "composition.promote": {
+      "operation": "core.workspace.composition.promote",
+      "caller": "desktop-host:composition-promote",
+      "cases": [
+        {
+          "id": "promote-sidebar-item",
+          "shape": "The promoted sidebar item, plus host paths, a source path and unknown temporary fields: dropped.",
+          "saved": {
+            "id": "temp",
+            "type": "multi-repo",
+            "name": "Promoted",
+            "color": "#7C3AED",
+            "order": 2,
+            "temporary": false,
+            "repos": [{ "id": "r1", "name": "A", "repoPath": "/Users/old/r1" }],
+            "worktrees": [
+              {
+                "id": "wt-t",
+                "branchName": "topic",
+                "createdAt": "2026-03-01T00:00:00.000Z",
+                "label": "Topic",
+                "path": "/Users/old/temp/wt-t"
+              }
+            ],
+            "sourceRepoPath": "/Users/old/source",
+            "temporarySourceWorkspaceIds": ["a"]
+          },
+          "replay": {
+            "id": "temp",
+            "type": "multi-repo",
+            "name": "Promoted",
+            "color": "#7C3AED",
+            "order": 2,
+            "temporary": false,
+            "repos": [{ "id": "r1", "name": "A" }],
+            "worktrees": [
+              {
+                "id": "wt-t",
+                "branchName": "topic",
+                "createdAt": "2026-03-01T00:00:00.000Z",
+                "label": "Topic"
+              }
+            ]
+          }
+        },
+        {
+          "id": "promote-malformed-order",
+          "shape": "A non-numeric order.",
+          "saved": {
+            "id": "temp",
+            "type": "multi-repo",
+            "name": "Promoted",
+            "color": "#7C3AED",
+            "order": "2",
+            "repos": [],
+            "worktrees": []
+          },
+          "refused": {
+            "name": "W5OutcomeDecodeError",
+            "message": "Invalid operation outcome at order."
+          }
+        }
+      ]
+    },
+    "composition.split": {
+      "operation": "core.workspace.composition.split",
+      "caller": "desktop-host:composition-split",
+      "cases": [
+        {
+          "id": "split-to-worktree",
+          "shape": "Every disposition; navigation to a worktree.",
+          "saved": {
+            "success": true,
+            "results": [
+              {
+                "repoId": "r1",
+                "repoName": "A",
+                "disposition": "split",
+                "destinationWorkspaceId": "a",
+                "destinationWorktreeId": "wt-s"
+              },
+              { "repoId": "r2", "repoName": "B", "disposition": "archived" },
+              { "repoId": "r3", "repoName": "C", "disposition": "deleted" }
+            ],
+            "warnings": ["C was deleted"],
+            "navigationTarget": {
+              "kind": "worktree",
+              "workspaceId": "a",
+              "worktreeId": "wt-s"
+            }
+          },
+          "replay": {
+            "success": true,
+            "results": [
+              {
+                "repoId": "r1",
+                "repoName": "A",
+                "disposition": "split",
+                "destinationWorkspaceId": "a",
+                "destinationWorktreeId": "wt-s"
+              },
+              { "repoId": "r2", "repoName": "B", "disposition": "archived" },
+              { "repoId": "r3", "repoName": "C", "disposition": "deleted" }
+            ],
+            "warnings": ["C was deleted"],
+            "navigationTarget": {
+              "kind": "worktree",
+              "workspaceId": "a",
+              "worktreeId": "wt-s"
+            }
+          }
+        },
+        {
+          "id": "split-to-workspace",
+          "shape": "Navigation to a workspace, plus an unknown field and a worktree id the workspace target does not keep: dropped.",
+          "saved": {
+            "success": true,
+            "results": [],
+            "warnings": [],
+            "navigationTarget": {
+              "kind": "workspace",
+              "workspaceId": "a",
+              "worktreeId": "ignored"
+            },
+            "backgroundPhase": "done"
+          },
+          "replay": {
+            "success": true,
+            "results": [],
+            "warnings": [],
+            "navigationTarget": { "kind": "workspace", "workspaceId": "a" }
+          }
+        },
+        {
+          "id": "split-to-home",
+          "shape": "Navigation home after a failed split.",
+          "saved": {
+            "success": false,
+            "results": [],
+            "warnings": ["Nothing was split"],
+            "navigationTarget": { "kind": "home" }
+          },
+          "replay": {
+            "success": false,
+            "results": [],
+            "warnings": ["Nothing was split"],
+            "navigationTarget": { "kind": "home" }
+          }
+        },
+        {
+          "id": "split-malformed-navigation",
+          "shape": "Unsupported navigation target.",
+          "saved": {
+            "success": true,
+            "results": [],
+            "warnings": [],
+            "navigationTarget": { "kind": "chat", "chatId": "c" }
+          },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "archive.container.restore": {
+      "operation": "core.archive.container.restore",
+      "caller": "desktop-host:archive-container-restore",
+      "cases": [
+        {
+          "id": "restore-worktree-with-branch",
+          "shape": "Restored worktree with its branch.",
+          "saved": {
+            "kind": "worktree",
+            "restoredWorktreeId": "wt-r",
+            "branchName": "restored",
+            "warnings": []
+          },
+          "replay": {
+            "kind": "worktree",
+            "restoredWorktreeId": "wt-r",
+            "branchName": "restored",
+            "warnings": []
+          }
+        },
+        {
+          "id": "restore-worktree-without-branch",
+          "shape": "Restored worktree without a branch name, plus an unknown host path: dropped.",
+          "saved": {
+            "kind": "worktree",
+            "restoredWorktreeId": "wt-r",
+            "warnings": ["Branch was gone"],
+            "path": "/Users/old/wt-r"
+          },
+          "replay": {
+            "kind": "worktree",
+            "restoredWorktreeId": "wt-r",
+            "warnings": ["Branch was gone"]
+          }
+        },
+        {
+          "id": "restore-work-entry",
+          "shape": "Restored Cowork work entry.",
+          "saved": {
+            "kind": "work-entry",
+            "restoredEntryId": "entry-1",
+            "warnings": []
+          },
+          "replay": {
+            "kind": "work-entry",
+            "restoredEntryId": "entry-1",
+            "warnings": []
+          }
+        },
+        {
+          "id": "restore-malformed-kind",
+          "shape": "Unsupported restored kind.",
+          "saved": { "kind": "workspace", "warnings": [] },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "sharedContainer.fork": {
+      "operation": "core.sharedContainer.fork",
+      "caller": "desktop-host:shared-container-fork",
+      "cases": [
+        {
+          "id": "fork-legacy-provenance",
+          "shape": "A code fork saved before revision timestamps (da9d0b7624 to 3dab594a68): provenance without sourceRevisionCreatedAt or organization.",
+          "saved": {
+            "containerType": "CODE_WORKTREE",
+            "projectId": "fork",
+            "worktreeId": "wt-f",
+            "warnings": [],
+            "provenance": {
+              "sourceContainerId": "container",
+              "sourceRevisionId": "revision",
+              "sourceOwnerDisplayName": "Ada",
+              "forkedAt": "2026-02-01T00:00:00.000Z"
+            }
+          },
+          "replay": {
+            "containerType": "CODE_WORKTREE",
+            "projectId": "fork",
+            "worktreeId": "wt-f",
+            "warnings": [],
+            "provenance": {
+              "sourceContainerId": "container",
+              "sourceRevisionId": "revision",
+              "sourceOwnerDisplayName": "Ada",
+              "forkedAt": "2026-02-01T00:00:00.000Z"
+            }
+          }
+        },
+        {
+          "id": "fork-cowork-provenance",
+          "shape": "A Cowork work-entry fork with full provenance, plus an unknown top-level field: dropped.",
+          "saved": {
+            "containerType": "COWORK_WORK_ENTRY",
+            "projectId": "fork",
+            "worktreeId": "entry-f",
+            "warnings": ["Hooks were not copied"],
+            "provenance": {
+              "sourceContainerId": "container",
+              "sourceRevisionId": "revision",
+              "sourceRevisionCreatedAt": "2026-01-31T00:00:00.000Z",
+              "sourceOwnerDisplayName": "Ada",
+              "organizationId": "11111111-1111-4111-8111-111111111111",
+              "forkedAt": "2026-02-01T00:00:00.000Z"
+            },
+            "destinationPath": "/Users/old/fork"
+          },
+          "replay": {
+            "containerType": "COWORK_WORK_ENTRY",
+            "projectId": "fork",
+            "worktreeId": "entry-f",
+            "warnings": ["Hooks were not copied"],
+            "provenance": {
+              "sourceContainerId": "container",
+              "sourceRevisionId": "revision",
+              "sourceRevisionCreatedAt": "2026-01-31T00:00:00.000Z",
+              "sourceOwnerDisplayName": "Ada",
+              "organizationId": "11111111-1111-4111-8111-111111111111",
+              "forkedAt": "2026-02-01T00:00:00.000Z"
+            }
+          }
+        },
+        {
+          "id": "fork-malformed-provenance",
+          "shape": "Provenance with an unknown key; the provenance validator refuses unknown keys.",
+          "saved": {
+            "containerType": "CODE_WORKTREE",
+            "projectId": "fork",
+            "worktreeId": "wt-f",
+            "warnings": [],
+            "provenance": {
+              "sourceContainerId": "container",
+              "sourceRevisionId": "revision",
+              "sourceOwnerDisplayName": "Ada",
+              "forkedAt": "2026-02-01T00:00:00.000Z",
+              "sourcePath": "/Users/old/share"
+            }
+          },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.scripts.update": {
+      "operation": "core.workspace.scripts.update",
+      "caller": "desktop-host:desktop",
+      "cases": [
+        {
+          "id": "scripts-null",
+          "shape": "The saved null outcome; replays as void.",
+          "saved": null,
+          "replayVoid": true
+        }
+      ]
+    },
+    "workspace.hooks.update": {
+      "operation": "core.workspace.hooks.update",
+      "caller": "desktop-host:desktop",
+      "cases": [
+        {
+          "id": "hooks-null",
+          "shape": "The saved null outcome; replays as void.",
+          "saved": null,
+          "replayVoid": true
+        }
+      ]
+    },
+    "workspace.planDetection.update": {
+      "operation": "core.workspace.planDetection.update",
+      "caller": "desktop-host:desktop",
+      "cases": [
+        {
+          "id": "plan-detection-null",
+          "shape": "The saved null outcome; replays as void.",
+          "saved": null,
+          "replayVoid": true
+        }
+      ]
+    },
+    "worktree.hooks.setPaused": {
+      "operation": "core.worktree.hooks.setPaused",
+      "caller": "desktop-host:desktop",
+      "cases": [
+        {
+          "id": "paused-hooks-row",
+          "shape": "The row with its paused keys, plus an unknown host path: dropped.",
+          "saved": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z",
+              "pausedHookKeys": ["onCreate"],
+              "path": "/Users/old/worktrees/wt-1"
+            },
+            "pausedHookKeys": ["onCreate"],
+            "changed": true
+          },
+          "replay": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z",
+              "pausedHookKeys": ["onCreate"]
+            },
+            "pausedHookKeys": ["onCreate"],
+            "changed": true
+          }
+        },
+        {
+          "id": "resumed-hooks-row",
+          "shape": "A resumed row with no paused keys left.",
+          "saved": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            },
+            "pausedHookKeys": [],
+            "changed": false
+          },
+          "replay": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            },
+            "pausedHookKeys": [],
+            "changed": false
+          }
+        },
+        {
+          "id": "paused-hooks-malformed-keys",
+          "shape": "No top-level paused keys.",
+          "saved": {
+            "worktree": {
+              "id": "wt-1",
+              "branchName": "main",
+              "createdAt": "2026-04-01T00:00:00.000Z"
+            },
+            "changed": false
+          },
+          "refused": {
+            "name": "W5OutcomeDecodeError",
+            "message": "Invalid operation outcome at pausedHookKeys."
+          }
+        }
+      ]
+    },
+    "workspace.retention.update": {
+      "operation": "core.workspace.retention.update",
+      "caller": "desktop-host:workspace_settings",
+      "cases": [
+        {
+          "id": "retention-baseline",
+          "shape": "Auto Delete turned on, recording the activity baseline.",
+          "saved": { "workspaceId": "a", "activityBaselineRecorded": true },
+          "replay": { "workspaceId": "a", "activityBaselineRecorded": true }
+        },
+        {
+          "id": "retention-malformed-missing",
+          "shape": "No baseline flag.",
+          "saved": { "workspaceId": "a" },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.privateMemory.update": {
+      "operation": "core.workspace.privateMemory.update",
+      "caller": "desktop-host:workspace_settings",
+      "cases": [
+        {
+          "id": "private-memory-on",
+          "shape": "Private memory turned on.",
+          "saved": { "workspaceId": "a", "privateMemory": true },
+          "replay": { "workspaceId": "a", "privateMemory": true }
+        },
+        {
+          "id": "private-memory-malformed-flag",
+          "shape": "A string flag.",
+          "saved": { "workspaceId": "a", "privateMemory": "true" },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.plugins.update.defaults": {
+      "operation": "core.workspace.plugins.update",
+      "caller": "desktop-host:workspace_settings",
+      "cases": [
+        {
+          "id": "plugins-legacy-bundle-ids",
+          "shape": "Default selections holding legacy bundleIds: folded into collectionIds in the full selection shape.",
+          "saved": {
+            "workspaceId": "a",
+            "written": true,
+            "defaultPluginSelections": {
+              "collectionIds": ["collection-1"],
+              "bundleIds": ["legacy-bundle"]
+            },
+            "recommendedPluginOptOutKeys": ["skill:old"]
+          },
+          "replay": {
+            "workspaceId": "a",
+            "written": true,
+            "defaultPluginSelections": {
+              "collectionIds": ["collection-1", "legacy-bundle"],
+              "skillRefs": [],
+              "pluginRefs": []
+            },
+            "recommendedPluginOptOutKeys": ["skill:old"]
+          }
+        },
+        {
+          "id": "plugins-unwritten-without-selections",
+          "shape": "Nothing written; no selections or opt-outs saved.",
+          "saved": { "workspaceId": "a", "written": false },
+          "replay": { "workspaceId": "a", "written": false }
+        },
+        {
+          "id": "plugins-malformed-written",
+          "shape": "No written flag.",
+          "saved": { "workspaceId": "a" },
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    },
+    "workspace.plugins.update.prune": {
+      "operation": "core.workspace.plugins.update",
+      "caller": "desktop-host:marketplace_removal",
+      "cases": [
+        {
+          "id": "plugins-prune",
+          "shape": "A keyed marketplace prune: no selections.",
+          "saved": { "workspaceId": "a", "written": true },
+          "replay": { "workspaceId": "a", "written": true }
+        }
+      ]
+    },
+    "workspace.cowork.update": {
+      "operation": "core.workspace.cowork.update",
+      "caller": "desktop-host:chat_project_update",
+      "cases": [
+        {
+          "id": "cowork-settings",
+          "shape": "The workspace id, plus an unknown field: dropped.",
+          "saved": { "workspaceId": "a", "presetsWritten": true },
+          "replay": { "workspaceId": "a" }
+        },
+        {
+          "id": "cowork-malformed-empty",
+          "shape": "No workspace id.",
+          "saved": {},
+          "refused": { "name": "ZodError" }
+        }
+      ]
+    }
+  },
+  "destructiveJournals": [
+    {
+      "id": "archive-journal-before-resumable",
+      "shape": "A completed worktree-archive journal saved before CAN-5011 (no resumable step marker), with no owned paths or cleanup flag. Its raw outcome replays through destructiveArchiveOutcomeSchema.",
+      "worktreeId": "wt-j",
+      "createdAt": "2026-04-03T00:00:00.000Z",
+      "saved": {
+        "version": 1,
+        "operationId": "44444444-4444-4444-8444-444444444444",
+        "operation": "worktree-archive",
+        "workspaceId": "a",
+        "worktreeId": "wt-j",
+        "createdAt": "2026-04-03T00:00:00.000Z",
+        "directoryIdentity": null,
+        "state": "completed",
+        "steps": [
+          { "phase": "retained-git-cleanup", "state": "done" },
+          { "phase": "remove-checkout", "state": "done" }
+        ],
+        "outcome": {
+          "success": true,
+          "warnings": ["Branch was kept"],
+          "removedTemporaryWorkspaceId": "temp",
+          "archivedContainerId": "container-1"
+        }
+      },
+      "replay": {
+        "success": true,
+        "warnings": ["Branch was kept"],
+        "removedTemporaryWorkspaceId": "temp",
+        "status": "already-archived"
+      }
+    },
+    {
+      "id": "archive-journal-recovery-required",
+      "shape": "An interrupted journal: never read as a completed outcome. A repeated archive resumes its cleanup instead (covered by w5-destructive-recovery.test.ts).",
+      "worktreeId": "wt-k",
+      "createdAt": "2026-04-03T00:00:00.000Z",
+      "saved": {
+        "version": 1,
+        "operationId": "55555555-5555-4555-8555-555555555555",
+        "operation": "worktree-archive",
+        "workspaceId": "a",
+        "worktreeId": "wt-k",
+        "createdAt": "2026-04-03T00:00:00.000Z",
+        "directoryIdentity": null,
+        "state": "recovery-required",
+        "steps": [{ "phase": "remove-checkout", "state": "failed" }]
+      },
+      "neverReplayed": true
+    },
+    {
+      "id": "archive-journal-malformed",
+      "shape": "A journal no decoder reads (no version): unreadable evidence is recovery-required.",
+      "worktreeId": "wt-l",
+      "createdAt": "2026-04-03T00:00:00.000Z",
+      "saved": {
+        "operationId": "66666666-6666-4666-8666-666666666666",
+        "operation": "worktree-archive",
+        "workspaceId": "a",
+        "worktreeId": "wt-l",
+        "state": "completed",
+        "steps": []
+      },
+      "refused": { "reason": "recovery-required" }
+    }
+  ]
+}

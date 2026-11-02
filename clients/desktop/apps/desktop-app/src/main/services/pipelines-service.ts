@@ -41,7 +41,7 @@ import type {
   PortalPipelineSharePayload,
   PortalShareResult,
 } from '@canopy/desktop-shared/types';
-import { access, open, readFile } from 'node:fs/promises';
+import { access, open, readFile, stat } from 'node:fs/promises';
 import {
   exceedsSerializedBudget,
   measureSerializedBytes,
@@ -130,7 +130,16 @@ import {
   projectPortalPipelineMetadata,
   worktreeScopedParentLocalId,
   type PortalPipelineChatFollowUpPreparePayload,
+  type PortalPipelineContentReadPayload,
+  type PortalPipelineContentReadResult,
 } from '@canopy/protocol/portal';
+import {
+  agentTranscriptDocument,
+  pipelineContentPage,
+  plainLogDocument,
+  reportDocument,
+  type PipelineContentDocument,
+} from './pipeline-content';
 import { createFeatureUpsertEvent } from '../portal/portal-feature-events';
 import {
   enqueuePortalEvent,
@@ -407,7 +416,7 @@ function normalizePortalModelConfig(
   if (speed === 'ultrafast') {
     throw new PortalServiceError(
       'invalid_payload',
-      'Pipelines do not support Ultra fast. Choose Regular or Fast.',
+      'Workflows do not support Ultra fast. Choose Regular or Fast.',
     );
   }
   const modelConfig: AgentModelConfig = {};
@@ -533,13 +542,13 @@ function assertExecutionMatchesScope(
   scope: PipelineExecutionScope,
 ): asserts state is ExecutionState {
   if (!state) {
-    throw new PortalServiceError('not_found', 'Pipeline execution not found.');
+    throw new PortalServiceError('not_found', 'Workflow execution not found.');
   }
   if (
     (scope.projectId && state.project_id !== scope.projectId) ||
     (scope.worktreeId && state.worktree_id !== scope.worktreeId)
   ) {
-    throw new PortalServiceError('not_found', 'Pipeline execution not found.');
+    throw new PortalServiceError('not_found', 'Workflow execution not found.');
   }
 }
 
@@ -588,7 +597,7 @@ async function resolvePortalShareablePipeline(request: {
     request.worktreeId,
   );
   if (!target) {
-    throw new PortalServiceError('not_found', 'Pipeline not found.');
+    throw new PortalServiceError('not_found', 'Workflow not found.');
   }
   const cwd = await resolvePipelineCwd(request.projectId, target.worktreeId);
   const pipelineInfo = (await discoverProjectPipelines(cwd)).find(
@@ -602,7 +611,7 @@ async function resolvePortalShareablePipeline(request: {
     source === 'shared' ||
     source === undefined
   ) {
-    throw new PortalServiceError('not_found', 'Pipeline not found.');
+    throw new PortalServiceError('not_found', 'Workflow not found.');
   }
   return {
     target,
@@ -1230,6 +1239,20 @@ function canSharePortalPipeline(pipeline: PipelineInfo): boolean {
   return pipeline.source !== 'shared' && Boolean(pipeline.filePath);
 }
 
+/**
+ * The user pipelines live automations own (CAN-4551), which the Portal folds
+ * into their automations. A failed read folds nothing; the list still loads.
+ */
+async function ownedByAutomations(): Promise<ReadonlySet<string>> {
+  try {
+    const { automationOwnedPipelineIds } =
+      await import('../automations/owned-pipeline');
+    return await automationOwnedPipelineIds();
+  } catch {
+    return new Set();
+  }
+}
+
 async function summarizePipelines(
   { workspaceLocalId, worktreeLocalId }: PipelineListTarget,
   pipelines: PipelineInfo[],
@@ -1243,11 +1266,13 @@ async function summarizePipelines(
     definitionBudget?: { remainingBytes: number };
   } = {},
 ): Promise<(PortalPipelineSummary | null)[]> {
+  const owned = await ownedByAutomations();
   return Promise.all(
     pipelines.map(async (pipeline) => {
       const definition =
         pipeline.filePath &&
-        (pipeline.triggerTypes?.includes('task_ready') ||
+        (pipeline.triggerTypes?.includes('dispatch') ||
+          pipeline.triggerTypes?.includes('task_ready') ||
           pipeline.triggerTypes?.includes('plan_ready'))
           ? await loadProjectPipelineFromDisk(pipeline.filePath).catch(
               () => null,
@@ -1276,6 +1301,16 @@ async function summarizePipelines(
         worktreeLocalId,
         pipelineId: pipeline.id,
         name: pipeline.name,
+        ...(definition
+          ? {
+              hasRequiredInputs: Object.values(
+                getTriggerInputDefs(definition.on, 'dispatch') ?? {},
+              ).some(
+                (input) =>
+                  input.required === true && input.default === undefined,
+              ),
+            }
+          : {}),
         description: pipeline.description,
         // Long-standing shape: `source` is the FILENAME. The origin the UI
         // labels and filters by rides `origin` (CAN-3019); `shared` is not
@@ -1286,8 +1321,14 @@ async function summarizePipelines(
             ? pipeline.source
             : 'project',
         triggerTypes: pipeline.triggerTypes,
+        ...(pipeline.stepCount !== undefined
+          ? { stepCount: pipeline.stepCount }
+          : {}),
         scopes: pipeline.scopes ?? ['directory'],
         ...(canSharePortalPipeline(pipeline) ? { shareable: true } : {}),
+        ...(pipeline.source === 'user' && owned.has(pipeline.id)
+          ? { ownedByAutomation: true }
+          : {}),
         // `PipelineInputDef.default` is wider than the browser-safe portal
         // projection (`PortalPipelineInputDefinition` stays scalar and keeps
         // its four input types). Narrow through the protocol's own projector
@@ -1341,7 +1382,7 @@ async function resolveLocalPipeline(
   await assertStoredPipelineContext(pipelineId);
   const stored = getStoredPipeline(pipelineId);
   if (!stored.success || !stored.data?.content) {
-    throw new PortalServiceError('not_found', 'Pipeline not found.');
+    throw new PortalServiceError('not_found', 'Workflow not found.');
   }
   return { pipeline: stored.data.content, pipelineInfo };
 }
@@ -1371,7 +1412,7 @@ export async function getPipeline(
       () => null,
     );
     if (!detail) {
-      throw new PortalServiceError('not_found', 'Pipeline not found.');
+      throw new PortalServiceError('not_found', 'Workflow not found.');
     }
     const pipeline = parsePipelineText(detail.rawPipeline);
     // Same `plan_ready` scoping `runPipeline` enforces. This path exists only
@@ -1380,7 +1421,7 @@ export async function getPipeline(
     // full definition of ANY cloud pipeline the desktop's account can see,
     // including ones no surface ever offered.
     if (!getTriggerTypes(pipeline.on).includes('plan_ready')) {
-      throw new PortalServiceError('not_found', 'Pipeline not found.');
+      throw new PortalServiceError('not_found', 'Workflow not found.');
     }
     const planReadyInputs = getTriggerInputDefs(pipeline.on, 'plan_ready');
     return {
@@ -1398,7 +1439,7 @@ export async function getPipeline(
     request.worktreeId,
   );
   if (!target) {
-    throw new PortalServiceError('not_found', 'Pipeline not found.');
+    throw new PortalServiceError('not_found', 'Workflow not found.');
   }
   const cwd = await resolvePipelineCwd(request.projectId, target.worktreeId);
   const { pipeline } = await resolveLocalPipeline(cwd, request.pipelineId);
@@ -1516,7 +1557,7 @@ export async function runPipeline(
   assertNotSplitLocked(
     request.projectId,
     request.worktreeId,
-    'running a pipeline',
+    'running a workflow',
   );
   const cwd = await resolvePipelineCwd(
     request.projectId,
@@ -1537,7 +1578,7 @@ export async function runPipeline(
       () => null,
     );
     if (!detail) {
-      throw new PortalServiceError('not_found', 'Pipeline not found.');
+      throw new PortalServiceError('not_found', 'Workflow not found.');
     }
     // Readiness is gated here rather than projected onto every list row: a
     // package-backed shared pipeline whose requirements are not installed
@@ -1584,7 +1625,7 @@ export async function runPipeline(
     ));
   }
   if (!pipeline) {
-    throw new PortalServiceError('not_found', 'Pipeline not found.');
+    throw new PortalServiceError('not_found', 'Workflow not found.');
   }
   if (
     portalEvent.eventName !== undefined &&
@@ -1592,7 +1633,7 @@ export async function runPipeline(
   ) {
     throw new PortalServiceError(
       'invalid_payload',
-      `The selected pipeline does not support ${portalEvent.eventName}.`,
+      `The selected workflow does not support ${portalEvent.eventName}.`,
     );
   }
   // A shared pipeline must additionally declare `plan_ready`, whether or not
@@ -1605,7 +1646,7 @@ export async function runPipeline(
   if (sharedRef && !getTriggerTypes(pipeline.on).includes('plan_ready')) {
     throw new PortalServiceError(
       'invalid_payload',
-      'The selected pipeline does not support plan_ready.',
+      'The selected workflow does not support plan_ready.',
     );
   }
   const portalForwarder = createPortalPipelineForwarder(options);
@@ -2000,7 +2041,7 @@ function throwForPipelineActionFailure(response: {
       : 'execution_failed';
   throw new PortalServiceError(
     code,
-    response.error?.message ?? 'Pipeline execution action failed.',
+    response.error?.message ?? 'Workflow execution action failed.',
   );
 }
 
@@ -2041,7 +2082,7 @@ async function updatedPortalRun(
     options,
   );
   if (!run) {
-    throw new PortalServiceError('not_found', 'Pipeline execution not found.');
+    throw new PortalServiceError('not_found', 'Workflow execution not found.');
   }
   return run;
 }
@@ -2088,7 +2129,7 @@ async function resumePipelineUnlocked(
   if (!canResumeExecution(state)) {
     throw new PortalServiceError(
       'execution_failed',
-      'Only paused root pipeline executions can be resumed.',
+      'Only paused root workflow executions can be resumed.',
     );
   }
   const response = await resumeExecution(
@@ -2128,7 +2169,7 @@ async function retryPipelineUnlocked(
   if (!canRetryExecution(state)) {
     throw new PortalServiceError(
       'execution_failed',
-      'Only failed or cancelled root pipeline executions can be retried.',
+      'Only failed or cancelled root workflow executions can be retried.',
     );
   }
   const response = await retryExecution(
@@ -2194,7 +2235,7 @@ async function rerunPipelineUnlocked(
   if (!canRerunExecution(state) || !hasRerunReplayData(state)) {
     throw new PortalServiceError(
       'execution_failed',
-      'This pipeline execution cannot be rerun from its saved inputs.',
+      'This workflow execution cannot be rerun from its saved inputs.',
     );
   }
   const response = await rerunExecution(
@@ -2358,7 +2399,7 @@ async function getPipelineLogUnlocked(
   const stepOwner = job;
   const step = stepOwner?.steps[request.stepId];
   if (!state || !job || !stepOwner || !step) {
-    throw new PortalServiceError('not_found', 'Pipeline step not found.');
+    throw new PortalServiceError('not_found', 'Workflow step not found.');
   }
 
   const logPath =
@@ -2444,8 +2485,8 @@ export async function preparePipelineChatFollowUp(
     throw new PortalServiceError(
       'not_found',
       request.output === 'plan'
-        ? 'This pipeline run does not have a saved plan file.'
-        : 'This pipeline run does not have a saved report file.',
+        ? 'This workflow run does not have a saved plan file.'
+        : 'This workflow run does not have a saved report file.',
     );
   }
   return {
@@ -2454,6 +2495,141 @@ export async function preparePipelineChatFollowUp(
         ? `Review this plan: ${reference}`
         : `Review this report: ${reference}`,
   };
+}
+
+/**
+ * The last built content document, so the later pages of one read do not
+ * read and parse the files again. Keyed by the source and its files' sizes
+ * and change times, which are also the revision a later page must match.
+ */
+let lastPipelineContent:
+  | { key: string; document: PipelineContentDocument }
+  | undefined;
+
+/**
+ * One page of a step's complete readable output or of the run's saved report
+ * (`portal.pipeline.content.read`, CAN-3717), as the desktop shows them. Read
+ * on demand; the streamed run projection keeps its bounded step tails. Every
+ * file comes from the scoped execution state and stays inside the executions
+ * directory.
+ */
+export async function readPipelineContent(
+  request: PortalPipelineContentReadPayload,
+): Promise<PortalPipelineContentReadResult> {
+  const state = await loadScopedPipelineExecution(request);
+  const source = request.source;
+  const executionsDir = getPipelineExecutionsDir();
+  const confined = (path: string): string => {
+    const resolved = resolve(path);
+    if (!isPathInside(executionsDir, resolved)) {
+      throw new PortalServiceError('not_found', 'This content is unavailable.');
+    }
+    return resolved;
+  };
+  // Each file read for the document; a missing optional file reads as empty.
+  let files: Array<{ path: string; required: boolean }>;
+  let build: (contents: string[]) => PipelineContentDocument;
+  if (source.kind === 'step_output') {
+    validatePipelineRuntimeIdentifier(source.jobId, 'jobId');
+    validatePipelineRuntimeIdentifier(source.stepId, 'stepId');
+    const job = state.jobs[source.jobId];
+    const step = job?.steps[source.stepId];
+    if (!job || !step) {
+      throw new PortalServiceError('not_found', 'Workflow step not found.');
+    }
+    const definition =
+      state.job_definitions?.[source.jobId] ??
+      state.pipeline_snapshot.jobs[source.jobId];
+    const log = confined(
+      step.log_file ??
+        getStepLogFilePath(
+          createElectronExecutionRuntime(),
+          request.executionId,
+          definition?.artifact_locator?.job_id ?? source.jobId,
+          source.stepId,
+          currentAttempt(job),
+          currentIteration(job),
+          currentRecovery(step),
+          definition?.artifact_locator?.matrix_child_id,
+        ),
+    );
+    // The desktop's rich step view reads an agent step's transcript, and
+    // its plain view the log.
+    const agent = step.log_format_hint === 'agent';
+    const transcriptFile = step.outputs.transcript_file;
+    files = [{ path: log, required: false }];
+    if (agent && transcriptFile) {
+      files.push({ path: confined(transcriptFile), required: false });
+    }
+    build = ([logText = '', transcript = logText]): PipelineContentDocument =>
+      (agent
+        ? agentTranscriptDocument(transcript, step.agent_provider)
+        : null) ?? plainLogDocument(logText);
+  } else if (source.kind === 'report') {
+    const textFile = state.report_outputs?.report_file;
+    const jsonFile = state.report_outputs?.report_json_file;
+    files = [textFile, jsonFile].flatMap((path) =>
+      path ? [{ path: confined(path), required: true }] : [],
+    );
+    build = (contents): PipelineContentDocument => {
+      const queue = [...contents];
+      const text = textFile ? queue.shift() : undefined;
+      const json = jsonFile ? queue.shift() : undefined;
+      return reportDocument({
+        ...(text === undefined
+          ? {}
+          : {
+              text: {
+                content: text,
+                markdown: /\.(md|markdown)$/i.test(textFile?.trim() ?? ''),
+              },
+            }),
+        ...(json === undefined ? {} : { json }),
+      });
+    };
+  } else {
+    throw new PortalServiceError('invalid_payload', 'Invalid content source.');
+  }
+
+  const unavailable = (): PortalServiceError =>
+    new PortalServiceError(
+      'not_found',
+      "This run's report is no longer available.",
+    );
+  const identities = await Promise.all(
+    files.map(async ({ path, required }) => {
+      const info = await stat(path).catch(() => undefined);
+      if (!info && required) throw unavailable();
+      return info ? `${String(info.size)}:${String(info.mtimeMs)}` : '-';
+    }),
+  );
+  const revision = identities.join('/');
+  if (request.revision !== undefined && request.revision !== revision) {
+    throw new PortalServiceError(
+      'execution_failed',
+      'The content changed while it was loading. Try again.',
+    );
+  }
+  const key = JSON.stringify([request.executionId, source, revision]);
+  let document =
+    lastPipelineContent?.key === key ? lastPipelineContent.document : undefined;
+  if (!document) {
+    const contents = await Promise.all(
+      files.map(({ path, required }) =>
+        readFile(path, 'utf8').catch(() => {
+          if (required) throw unavailable();
+          return '';
+        }),
+      ),
+    );
+    document = build(contents);
+    lastPipelineContent = { key, document };
+  }
+  const page = pipelineContentPage(document, request.offset ?? 0, revision);
+  if (!page) {
+    throw new PortalServiceError('invalid_payload', 'Invalid content offset.');
+  }
+  return page;
 }
 
 export async function getPipelineFailureDebugContext(
@@ -2467,7 +2643,7 @@ export async function getPipelineFailureDebugContext(
   const runtime = createElectronExecutionRuntime();
   const state = await loadExecutionState(executionId, runtime.executionsDir);
   if (!state) {
-    throw new PortalServiceError('not_found', 'Pipeline execution not found.');
+    throw new PortalServiceError('not_found', 'Workflow execution not found.');
   }
 
   return buildPipelineFailureDebugPrompt(state, {
@@ -3081,7 +3257,7 @@ export async function sharePortalPipeline(
         : writePipelineRemoteMetadata(sourcePipeline.id, remote);
     if (!linked.success) {
       if (created) await deleteSharedPipeline(detail.id);
-      throw new Error(linked.error ?? 'Failed to store pipeline share link.');
+      throw new Error(linked.error ?? 'Failed to store workflow share link.');
     }
   }
 
@@ -3093,7 +3269,7 @@ export async function sharePortalPipeline(
         ...(hasAffectedAutomations
           ? {
               message:
-                'People using this pipeline in their automations will need to approve your changes before they run again.',
+                'People using this workflow in their automations will need to approve your changes before they run again.',
             }
           : {}),
       };
@@ -3102,8 +3278,8 @@ export async function sharePortalPipeline(
       // publishing something the user did not ask for.
       return {
         message: hasAffectedAutomations
-          ? 'Pipeline shared privately, but the public link could not be created, and people using this pipeline in their automations will need to approve your changes before they run again.'
-          : 'Pipeline shared privately, but the public link could not be created.',
+          ? 'Workflow shared privately, but the public link could not be created, and people using this workflow in their automations will need to approve your changes before they run again.'
+          : 'Workflow shared privately, but the public link could not be created.',
       };
     }
   }
@@ -3113,7 +3289,7 @@ export async function sharePortalPipeline(
       ...(hasAffectedAutomations
         ? {
             message:
-              'People using this pipeline in their automations will need to approve your changes before they run again.',
+              'People using this workflow in their automations will need to approve your changes before they run again.',
           }
         : {}),
     };
@@ -3121,7 +3297,7 @@ export async function sharePortalPipeline(
   return hasAffectedAutomations
     ? {
         message:
-          'People using this pipeline in their automations will need to approve your changes before they run again.',
+          'People using this workflow in their automations will need to approve your changes before they run again.',
       }
     : {};
 }

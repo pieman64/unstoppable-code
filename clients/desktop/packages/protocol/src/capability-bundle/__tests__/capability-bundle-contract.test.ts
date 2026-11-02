@@ -1581,7 +1581,12 @@ describe('unavailable capabilities (REG-3042)', () => {
         withRecords([
           {
             ...records[2],
-            ref: { ...records[2].ref, kind: 'skill', skillName: 'other' },
+            ref: {
+              ...records[2].ref,
+              kind: 'skill',
+              sourceId: 'source-1',
+              skillName: 'other',
+            },
           },
         ]),
       ),

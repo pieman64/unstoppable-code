@@ -1,6 +1,8 @@
 /**
  * Reopens an activity rail that Canopy — not the user — collapsed by default
- * (CAN-2836), the first time the worktree produces work worth showing.
+ * (CAN-2836), the first time a code worktree produces work worth showing.
+ * Cowork rails never reopen themselves (CAN-4793): a finished reply must not
+ * narrow the chat, so the user opens the rail from its collapsed edge bar.
  *
  * The decision lives on the persisted `collapsed` descriptor itself
  * (`PanelCollapsedState.auto`), so it needs no side-channel marker and no
@@ -73,7 +75,9 @@ export function hasWorkActivityContent(
 
 /**
  * Expands this panel's group once it gains work content, if — and only if —
- * the group is currently carrying Canopy's own default collapse.
+ * the group is currently carrying Canopy's own default collapse and the
+ * surface is a code worktree. On the Cowork surface it never asks, and leaves
+ * the `auto` flag for the user's own expand to spend.
  *
  * Every layout precondition (hydration, maximize, the `auto` flag itself) and
  * the persistence ordering belong to `expandActivityRailFromContent`; this
@@ -95,8 +99,9 @@ export function useAutoExpandActivityRail({
   const hasWorkContent = hasWorkActivityContent(sectionHasContent, surface);
 
   useEffect(() => {
+    if (surface === 'cowork') return;
     if (!hasWorkContent) return;
     if (layoutKey === null || groupId === null || revision === null) return;
     expandActivityRailFromContent(layoutKey, groupId);
-  }, [hasWorkContent, layoutKey, groupId, revision]);
+  }, [surface, hasWorkContent, layoutKey, groupId, revision]);
 }

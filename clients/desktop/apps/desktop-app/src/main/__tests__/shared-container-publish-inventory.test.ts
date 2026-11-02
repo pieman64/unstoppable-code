@@ -54,6 +54,49 @@ jest.mock('../observability', () => ({
 }));
 
 describe('Cowork shared-container publish inventory', () => {
+  it('publishes stream children from old pages with exact full bodies', async () => {
+    const { portableFixture, OLD_TEXT, BODY_TEXT } =
+      await import('./helpers/stream-portable-fixture');
+    const root = await mkdtemp(join(tmpdir(), 'stream-publish-'));
+    const service = getChatStateService();
+    const { backend } = await portableFixture(root);
+    const metadata = jest
+      .spyOn(service, 'getCompatibilityTabs')
+      .mockResolvedValue({
+        version: 1,
+        activeTabId: 'chat',
+        tabs: [
+          {
+            id: 'chat',
+            title: 'Stream chat',
+            createdAt: 'now',
+            messages: [],
+            transcript: {
+              format: 'complete-message-jsonl-v1',
+              committedMessageCount: 1,
+              committedByteLength: 1,
+              transcriptRevision: 1,
+              hasActiveSidecar: false,
+            },
+          },
+        ],
+      });
+    const consume = jest
+      .spyOn(service, 'consumeTranscript')
+      .mockImplementation((_scope, _chat, full, callback, options) =>
+        backend.consumeTranscript('chat', full, callback, options),
+      );
+    try {
+      const text = JSON.stringify(await readChatTabs('workspace', 'worktree'));
+      expect(text).toContain(JSON.stringify(OLD_TEXT).slice(1, -1));
+      expect(text).toContain(JSON.stringify(BODY_TEXT).slice(1, -1));
+      expect(text).not.toContain('transcriptStore');
+    } finally {
+      metadata.mockRestore();
+      consume.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   afterAll(() => {
     // These fixtures delete their data directories. A real diagnostic writer
     // can flush later and recreate files while cleanup is removing them.
@@ -76,29 +119,32 @@ describe('Cowork shared-container publish inventory', () => {
   });
 
   it('does not inventory attachments referenced only by hidden messages', () => {
+    const visibleMessage: PersistedChatMessage = {
+      id: 'visible',
+      role: 'user',
+      timestamp: 1,
+      blocks: [],
+      attachmentPaths: ['/attachments/visible.txt'],
+    };
+    const hiddenMessage: PersistedChatMessage = {
+      id: 'hidden',
+      role: 'user',
+      timestamp: 1,
+      blocks: [],
+      hidden: true,
+      attachmentPaths: ['/attachments/hidden.txt'],
+    };
+    // Preserve these legacy malformed timestamp values while keeping the
+    // fixture statically typed.
+    Reflect.set(visibleMessage, 'timestamp', 'now');
+    Reflect.set(hiddenMessage, 'timestamp', 'now');
     expect(
       collectCoworkChatAttachmentSourcePaths([
         {
           id: 'chat-1',
           title: 'Chat',
           createdAt: 'now',
-          messages: [
-            {
-              id: 'visible',
-              role: 'user',
-              timestamp: 'now',
-              blocks: [],
-              attachmentPaths: ['/attachments/visible.txt'],
-            },
-            {
-              id: 'hidden',
-              role: 'user',
-              timestamp: 'now',
-              blocks: [],
-              hidden: true,
-              attachmentPaths: ['/attachments/hidden.txt'],
-            },
-          ],
+          messages: [visibleMessage, hiddenMessage],
         },
       ]),
     ).toEqual(['/attachments/visible.txt']);
@@ -114,7 +160,7 @@ describe('Cowork shared-container publish inventory', () => {
       encoding: 'utf-16le' as const,
       mediaType: 'text/plain' as const,
     };
-    const persisted = {
+    const persisted: PersistedChatMessage = {
       id: 'message-1',
       role: 'assistant' as const,
       timestamp: 1,
@@ -155,7 +201,11 @@ describe('Cowork shared-container publish inventory', () => {
       .spyOn(service, 'consumeTranscript')
       .mockImplementation(async (_scope, _chatId, _fullOutputs, consume) =>
         consume(
-          (async function* (): AsyncGenerator<typeof persisted> {
+          (async function* (): AsyncGenerator<
+            PersistedChatMessage,
+            void,
+            unknown
+          > {
             yield await Promise.resolve(persisted);
           })(),
         ),
@@ -309,19 +359,36 @@ describe('Cowork shared-container publish inventory', () => {
           ]),
         listNotes: () =>
           Promise.resolve([
-            { id: 'note-1', title: 'One' },
-            { id: 'note-2', title: 'Two' },
+            {
+              id: 'note-1',
+              title: 'One',
+              createdAt: 'now',
+              updatedAt: 'now',
+            },
+            {
+              id: 'note-2',
+              title: 'Two',
+              createdAt: 'now',
+              updatedAt: 'now',
+            },
           ]),
         readNote: (_projectId, id) =>
           Promise.resolve({
-            meta: { id, title: id },
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
             content: `note:${id}`,
           }),
         listPrompts: () =>
-          Promise.resolve([{ id: 'prompt-1', title: 'Prompt' }]),
+          Promise.resolve([
+            {
+              id: 'prompt-1',
+              title: 'Prompt',
+              createdAt: 'now',
+              updatedAt: 'now',
+            },
+          ]),
         readPrompt: (_projectId, id) =>
           Promise.resolve({
-            meta: { id, title: id },
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
             content: `prompt:${id}`,
           }),
         readWorkspaceFile: (_projectId, path) =>
@@ -375,10 +442,16 @@ describe('Cowork shared-container publish inventory', () => {
         listAttachments: () => Promise.resolve([]),
         listNotes: () => Promise.resolve([]),
         readNote: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listPrompts: () => Promise.resolve([]),
         readPrompt: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listCoworkCandidateFiles: () =>
           Promise.resolve({
             paths: ['first.txt', 'past-budget.txt'],
@@ -415,10 +488,16 @@ describe('Cowork shared-container publish inventory', () => {
         listAttachments: () => Promise.resolve([]),
         listNotes: () => Promise.resolve([]),
         readNote: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listPrompts: () => Promise.resolve([]),
         readPrompt: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listCoworkCandidateFiles: () =>
           Promise.resolve({
             paths: ['first.txt', 'over-budget.txt'],
@@ -444,14 +523,20 @@ describe('Cowork shared-container publish inventory', () => {
       },
       {
         readChatTabs: () =>
-          Promise.resolve({ version: 1, activeTabId: null, tabs: [] }),
+          Promise.resolve({ version: 1, activeTabId: '', tabs: [] }),
         listAttachments: () => Promise.resolve([]),
         listNotes: () => Promise.resolve([]),
         readNote: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listPrompts: () => Promise.resolve([]),
         readPrompt: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listCoworkCandidateFiles: (_projectId, _worktreeId, requiredPaths) =>
           Promise.resolve({
             paths: ['ranked-in.txt', ...(requiredPaths ?? [])],
@@ -477,14 +562,20 @@ describe('Cowork shared-container publish inventory', () => {
       },
       {
         readChatTabs: () =>
-          Promise.resolve({ version: 1, activeTabId: null, tabs: [] }),
+          Promise.resolve({ version: 1, activeTabId: '', tabs: [] }),
         listAttachments: () => Promise.resolve([]),
         listNotes: () => Promise.resolve([]),
         readNote: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listPrompts: () => Promise.resolve([]),
         readPrompt: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listCoworkCandidateFiles: () =>
           Promise.resolve({
             paths,
@@ -532,10 +623,16 @@ describe('Cowork shared-container publish inventory', () => {
         listAttachments: () => Promise.resolve([]),
         listNotes: () => Promise.resolve([]),
         readNote: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listPrompts: () => Promise.resolve([]),
         readPrompt: (_projectId, id) =>
-          Promise.resolve({ meta: { id, title: id }, content: '' }),
+          Promise.resolve({
+            meta: { id, title: id, createdAt: 'now', updatedAt: 'now' },
+            content: '',
+          }),
         listCoworkCandidateFiles: () =>
           Promise.resolve({
             paths: ['evidence.txt'],
@@ -706,6 +803,7 @@ describe('Cowork shared-container publish inventory', () => {
           readNote: () => Promise.reject(new Error('no notes')),
           listPrompts: () => Promise.resolve([]),
           readPrompt: () => Promise.reject(new Error('no prompts')),
+          readWorkspaceFile: () => Promise.resolve(null),
         },
       );
     try {
@@ -740,6 +838,10 @@ describe('Cowork shared-container publish inventory', () => {
       });
       expect(await build()).not.toHaveProperty('layout');
     } finally {
+      // The second save is still in its 100 ms debounce window. Cancel it so
+      // its timer cannot recreate panel-layout.json in the middle of the
+      // removal below.
+      panelLayoutPersistenceStore.cancelPendingWrite(projectId, worktreeId);
       registerWorkspaceTypes(new Map());
       if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
       else process.env.CANOPY_DATA_DIR = originalDataDir;

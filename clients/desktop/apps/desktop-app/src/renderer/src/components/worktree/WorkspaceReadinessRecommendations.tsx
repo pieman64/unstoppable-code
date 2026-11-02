@@ -22,9 +22,15 @@ interface WorkspaceReadinessRecommendationsProps {
   /**
    * Dismiss the host surface. Called when the user opens a launched chat, not
    * when one is started: launching keeps this surface open so several
-   * recommendations can be fixed in one visit.
+   * recommendations can be fixed in one visit. Resolves whether the surface
+   * closed; the chat opens only once it has.
    */
-  onViewConversation: () => void;
+  onViewConversation: () => Promise<boolean>;
+  /**
+   * `card` frames the recommendations on their own. `row` is one settings
+   * row whose fixes sit under it, for a page that groups rows in one box.
+   */
+  surface?: 'card' | 'row';
 }
 
 type LoadState = 'loading' | 'ready' | 'error';
@@ -38,6 +44,7 @@ export function WorkspaceReadinessRecommendations({
   workspaceId,
   worktreeId,
   onViewConversation,
+  surface = 'card',
 }: WorkspaceReadinessRecommendationsProps): JSX.Element {
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [issues, setIssues] = useState<WorkspaceReadinessIssue[]>([]);
@@ -121,7 +128,7 @@ export function WorkspaceReadinessRecommendations({
 
   const handleView = async (launched: LaunchedReadinessChat): Promise<void> => {
     // Dismiss first so the chat is not opened behind this surface.
-    onViewConversation();
+    if (!(await onViewConversation())) return;
     await navigateToWorkspaceReadinessChat(
       workspaceId,
       launched.worktreeId,
@@ -143,6 +150,94 @@ export function WorkspaceReadinessRecommendations({
     launchedChatCount,
     errorVisible: loadState === 'error' || launchError !== null,
   });
+  const issueKey = (issue: WorkspaceReadinessIssue): string =>
+    `${targetKey}:${issue.code === 'recovery-required' ? workspaceReadinessIssueKey(issue) : `${issue.repoId ?? 'project'}:${issue.code}`}`;
+
+  if (surface === 'row') {
+    return (
+      <div
+        className="flex flex-col gap-3"
+        data-testid="workspace-readiness-recommendations"
+      >
+        <div className="flex min-h-10 items-center justify-between gap-6">
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="text-s font-medium fg-primary">
+              Repository readiness
+            </div>
+            <div className="text-xs text-pretty fg-secondary">
+              {loadState === 'loading'
+                ? 'Checking repository readiness…'
+                : loadState === 'error'
+                  ? 'Couldn’t check repository readiness.'
+                  : ready
+                    ? 'Setup and launch scripts, hooks and shared agent instructions are in place.'
+                    : 'Agents work better with these in place.'}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5 text-s fg-secondary">
+            {loadState === 'loading' ? (
+              <LoadingSpinner tone="secondary" />
+            ) : loadState === 'error' ? (
+              <Button size="compact" onClick={() => void load()}>
+                Retry
+              </Button>
+            ) : ready ? (
+              <>
+                <CheckIcon
+                  width={14}
+                  height={14}
+                  aria-hidden={true}
+                  className="fg-success"
+                />
+                Ready
+              </>
+            ) : (
+              `${issues.length} to fix`
+            )}
+          </div>
+        </div>
+        {loadState === 'ready' &&
+          issues.map((issue) => {
+            const key = issueKey(issue);
+            const isLaunching = launchingKey === key;
+            const launched = launchedChats[key];
+            return (
+              <div
+                key={key}
+                className="flex min-h-10 items-center justify-between gap-6"
+              >
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="text-s fg-primary">{issue.title}</div>
+                  <div className="text-xs text-pretty fg-secondary">
+                    {issue.message}
+                  </div>
+                </div>
+                {issue.fixPrompt === null ? null : launched ? (
+                  <Button
+                    size="compact"
+                    variant="ghost"
+                    onClick={() => void handleView(launched)}
+                  >
+                    View conversation
+                  </Button>
+                ) : (
+                  <Button
+                    size="compact"
+                    disabled={launchingKey !== null}
+                    onClick={() => void handleFix(issue)}
+                  >
+                    {isLaunching && <LoadingSpinner decorative />}
+                    {isLaunching ? 'Starting…' : 'Fix in new worktree'}
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        {launchError && <p className="text-xs fg-destructive">{launchError}</p>}
+      </div>
+    );
+  }
+
   return (
     <section
       className="rounded-lg border bg-secondary/10 p-4"

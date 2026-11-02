@@ -5,7 +5,12 @@ import { logMainProcessWarn } from '../lib/main-process-logging';
  * Why the transcript planner rewrote an existing chat's committed history.
  * Intentional replacements (import, reset, migration, fork) never report.
  */
-export type ChatTranscriptRewriteReason = 'patch' | 'removal' | 'mixed_active';
+export type ChatTranscriptRewriteReason =
+  | 'patch'
+  | 'removal'
+  | 'mixed_active'
+  | 'prompt_relocation'
+  | 'replacement';
 
 /**
  * Content-free record of one full committed transcript rewrite. Shaped as
@@ -22,6 +27,10 @@ export interface ChatTranscriptFullRewriteDiagnostic {
   chatTranscriptRewriteChatKey: string;
   chatTranscriptRewriteCommittedRows: number;
   chatTranscriptRewriteCommittedBytes: number;
+  /** JSONL bytes serialized by this replacement; cloned prefix excluded. */
+  chatTranscriptRewriteBytesWritten?: number;
+  /** Serialized replacement through publication/index work; excludes queue wait. */
+  chatTranscriptRewriteDurationMs?: number;
   chatTranscriptRewritePatchedRows: number;
   chatTranscriptRewriteRemovedRows: number;
   /** Distinct block types of the patched rows, sorted, at most 8. */
@@ -37,6 +46,7 @@ export interface ChatTranscriptFullRewrite {
   reason: ChatTranscriptRewriteReason;
   committedRows: number;
   committedBytes: number;
+  measurement?: { bytesWritten: number; durationMs: number };
   patchedRows: number;
   removedRows: number;
   patchedBlockTypes: Iterable<string>;
@@ -115,6 +125,12 @@ export function reportChatTranscriptFullRewrite(
       chatTranscriptRewriteChatKey: key,
       chatTranscriptRewriteCommittedRows: rewrite.committedRows,
       chatTranscriptRewriteCommittedBytes: rewrite.committedBytes,
+      ...(rewrite.measurement === undefined
+        ? {}
+        : {
+            chatTranscriptRewriteBytesWritten: rewrite.measurement.bytesWritten,
+            chatTranscriptRewriteDurationMs: rewrite.measurement.durationMs,
+          }),
       chatTranscriptRewritePatchedRows: rewrite.patchedRows,
       chatTranscriptRewriteRemovedRows: rewrite.removedRows,
       chatTranscriptRewritePatchedBlockTypes: boundedBlockTypes(

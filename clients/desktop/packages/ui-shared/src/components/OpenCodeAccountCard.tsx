@@ -1,13 +1,12 @@
 'use client';
 
-import { useState, type JSX } from 'react';
+import type { JSX } from 'react';
 import type {
   OpenCodeAccountMethod,
   OpenCodeAccountSnapshot,
 } from '@canopy/protocol/portal';
-import { ModelProviderIcon } from './ModelProviderIcon';
-import { UsageCardHeader } from './UsageCardHeader';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { UsageGroup, UsageRow, UsageRowList } from './UsageGroup';
 
 const METHOD_LABELS: Record<OpenCodeAccountMethod, string> = {
   key: 'API key',
@@ -16,102 +15,71 @@ const METHOD_LABELS: Record<OpenCodeAccountMethod, string> = {
   env: 'Environment variable',
 };
 
-/** Shared presentation; hosts supply transport and connection availability. */
+/**
+ * OpenCode's provider accounts as a usage group: a row per reported account,
+ * named with its provider and sign-in method. The host's usage refresh reads
+ * them again; the group has no refresh of its own.
+ */
 export function OpenCodeAccountCard({
   snapshot,
-  onRefresh,
-  disabled = false,
 }: {
   snapshot: OpenCodeAccountSnapshot;
-  onRefresh: () => Promise<void>;
-  disabled?: boolean;
 }): JSX.Element {
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshFailed, setRefreshFailed] = useState(false);
-  const refresh = async (): Promise<void> => {
-    if (disabled || refreshing) return;
-    setRefreshing(true);
-    setRefreshFailed(false);
-    try {
-      await onRefresh();
-    } catch {
-      setRefreshFailed(true);
-    } finally {
-      setRefreshing(false);
-    }
-  };
+  const rows = snapshot.providers.flatMap((provider) =>
+    provider.accounts.length === 0
+      ? [
+          <UsageRow
+            key={provider.id}
+            testId="opencode-account-row"
+            title={<span className={REPLAY_BLOCK_CLASS}>{provider.name}</span>}
+            detail="No account information reported."
+          />,
+        ]
+      : provider.accounts.map((account, index) => (
+          <UsageRow
+            key={`${provider.id}:${account.method}:${account.label}:${index}`}
+            testId="opencode-account-row"
+            title={
+              <span className={REPLAY_BLOCK_CLASS}>
+                {account.label || 'Account name unavailable'}
+              </span>
+            }
+            detail={
+              <>
+                <span className={REPLAY_BLOCK_CLASS}>{provider.name}</span>
+                {[
+                  METHOD_LABELS[account.method],
+                  ...(account.selected ? ['Selected in OpenCode'] : []),
+                  ...(account.needsSignIn ? ['Sign in again'] : []),
+                ].map((part) => (
+                  <span key={part}> · {part}</span>
+                ))}
+              </>
+            }
+          />
+        )),
+  );
   return (
-    <article className="min-w-0 space-y-3" data-testid="opencode-account-card">
-      <UsageCardHeader
-        icon={<ModelProviderIcon provider="opencode" width={18} height={18} />}
-        title="OpenCode"
-        authState="unknown"
-        authLabel="Provider accounts"
-        planActive={false}
-        lastUpdatedAt={snapshot.updatedAt}
-        refreshing={refreshing}
-        refreshDisabled={disabled}
-        onRefresh={() => {
-          void refresh();
-        }}
-        refreshLabel="Refresh OpenCode accounts"
-        compact
-        frameless
-      />
+    <UsageGroup
+      title="OpenCode"
+      provider="opencode"
+      plan="Provider accounts"
+      testId="opencode-account-card"
+    >
       {snapshot.status === 'unavailable' ? (
-        <p role="status" className="text-s fg-secondary">
+        <p role="status" className="px-0.5 text-s fg-secondary">
           Account information is unavailable. Try refreshing.
         </p>
       ) : snapshot.providers.length === 0 ? (
-        <p className="text-s fg-secondary">
+        <p className="px-0.5 text-s fg-secondary">
           No providers reported by OpenCode.
         </p>
       ) : (
-        <div className="space-y-3">
-          {snapshot.providers.map((provider) => (
-            <section key={provider.id} className="space-y-1">
-              <h3
-                className={`text-s font-medium fg-primary truncate ${REPLAY_BLOCK_CLASS}`}
-              >
-                {provider.name}
-              </h3>
-              {provider.accounts.length === 0 ? (
-                <p className="text-s fg-secondary">
-                  No account information reported.
-                </p>
-              ) : (
-                <ul className="space-y-2">
-                  {provider.accounts.map((account, index) => (
-                    <li
-                      key={`${account.method}:${account.label}:${index}`}
-                      className="min-w-0 text-s"
-                    >
-                      <div
-                        className={`truncate fg-primary ${REPLAY_BLOCK_CLASS}`}
-                      >
-                        {account.label || 'Account name unavailable'}
-                      </div>
-                      <div className="flex flex-wrap gap-x-2 text-xs fg-secondary">
-                        <span>{METHOD_LABELS[account.method]}</span>
-                        {account.selected && <span>Selected in OpenCode</span>}
-                        {account.needsSignIn && <span>Sign in again</span>}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          ))}
-        </div>
+        <UsageRowList>{rows}</UsageRowList>
       )}
-      <p className="text-s fg-secondary">
+      <p className="mt-1.5 px-0.5 text-xs fg-tertiary">
         Plan and usage limits are unavailable from OpenCode.
       </p>
-      {refreshFailed && (
-        <p role="status" className="text-s fg-secondary">
-          Could not refresh accounts. Try again.
-        </p>
-      )}
-    </article>
+    </UsageGroup>
   );
 }

@@ -53,23 +53,28 @@ function makeQuery(
       total_cost_usd: 0,
       stop_reason: null,
       usage: {
-        cache_creation: null,
+        cache_creation: {
+          ephemeral_1h_input_tokens: 0,
+          ephemeral_5m_input_tokens: 0,
+        },
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0,
-        fallback_credit: null,
-        inference_geo: null,
+        fallback_credit: {
+          status: { type: 'not_applied', reason: 'not_enabled' },
+        },
+        inference_geo: 'global',
         input_tokens: 0,
-        iterations: null,
+        iterations: [],
         output_tokens: 0,
-        output_tokens_details: null,
-        server_tool_use: null,
-        service_tier: null,
-        speed: null,
+        output_tokens_details: { thinking_tokens: 0 },
+        server_tool_use: { web_fetch_requests: 0, web_search_requests: 0 },
+        service_tier: 'standard',
+        speed: 'standard',
       },
       modelUsage: {},
       permission_denials: [],
       session_id: 'session',
-      uuid: 'result',
+      uuid: '00000000-0000-4000-8000-000000000000',
     };
     yield result;
   })();

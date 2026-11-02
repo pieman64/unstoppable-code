@@ -1,8 +1,10 @@
 import type { ChatTab, WorktreeChatState } from '@/stores/chatStore';
 import {
+  selectOverviewExecutionIdsMissingRowState,
   selectInProgressChatCards,
   selectUnreadChatCards,
 } from '../overviewSelectors';
+import type { PipelineRunRowState } from '../pipelineRunRowState';
 import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   type SidebarItem,
@@ -20,6 +22,12 @@ function makeTab(overrides: Partial<ChatTab>): ChatTab {
     queuedMessages: overrides.queuedMessages ?? [],
     planMode: overrides.planMode ?? false,
     thinkingLevel: overrides.thinkingLevel ?? 'high',
+    modelConfig: overrides.modelConfig ?? {
+      thinkingLevel: overrides.thinkingLevel ?? 'high',
+      speed: 'standard',
+      fastMode: false,
+    },
+    fastModeExplicit: overrides.fastModeExplicit ?? false,
     pendingPlanExit: overrides.pendingPlanExit,
     trackedPlanId: overrides.trackedPlanId,
     trackedPlanSource: overrides.trackedPlanSource,
@@ -51,6 +59,23 @@ const projects: SidebarItem[] = [
 ];
 
 describe('overviewSelectors', () => {
+  it('selects displayed pipeline cards whose row state still needs hydration', () => {
+    const row: PipelineRunRowState = {
+      id: 'run-present',
+      status: 'paused',
+      pipeline_snapshot: { jobs: {} },
+      jobs: {},
+      job_groups: {},
+    };
+
+    expect(
+      selectOverviewExecutionIdsMissingRowState(
+        ['run-present', 'run-running', 'run-unread-paused'],
+        { 'run-present': row },
+      ),
+    ).toEqual(['run-running', 'run-unread-paused']);
+  });
+
   it('shows unread chat cards for pending plan exits without tab unread', () => {
     const chatState: WorktreeChatState = {
       activeTabId: 'tab-1',

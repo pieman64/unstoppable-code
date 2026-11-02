@@ -11,7 +11,9 @@ const spawnMock = jest.fn<
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: spawnMock,
+  get spawn(): typeof spawnMock {
+    return spawnMock;
+  },
 }));
 
 // Fake PIDs must never reach the host's process-group signal path.
@@ -87,6 +89,7 @@ function ownerStub(): CodexAppServerConnectionOwner {
     handleConnectionNotification: jest.fn(),
     handleRequestUserInput: jest.fn(() => Promise.resolve()),
     handleDynamicToolCall: jest.fn(() => Promise.resolve()),
+    handleApprovalRequest: jest.fn(() => Promise.resolve()),
     handleMcpElicitation: jest.fn(() => Promise.resolve()),
   };
 }
@@ -104,7 +107,7 @@ function parseClientMessage(line: string): Record<string, unknown> {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('Expected a Codex client protocol message object');
   }
-  return parsed;
+  return Object.fromEntries(Object.entries(parsed));
 }
 
 function collectClientMessages(
@@ -195,6 +198,61 @@ describe('CodexAppServerConnection release safety', () => {
     await expect(auth.close()).resolves.toBeUndefined();
     expect(close).toHaveBeenCalledTimes(2);
     expect(onClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the user agent the process reported to initialize (turn-state phase 43b)', async () => {
+    const proc = new MockChildProcess();
+    spawnMock.mockReturnValue(proc);
+    const pool = new CodexAppServerPool();
+    const connection = pool.acquire({
+      profileKey: 'user-agent',
+      owner: ownerStub(),
+      processCallbacks: {},
+    });
+    expect(connection.harnessUserAgent()).toBeUndefined();
+    const initialized = connection.ensureInitialized();
+    await flush();
+    emitServerMessage(proc, {
+      id: 1,
+      result: { userAgent: 'canopy/0.50.0 (Mac OS)', codexHome: '/tmp/.codex' },
+    });
+    await initialized;
+    expect(connection.harnessUserAgent()).toBe('canopy/0.50.0 (Mac OS)');
+    await pool.shutdown();
+  });
+
+  it('gives every pooled owner an unknown notification no owner claims (turn-state phase 43b)', async () => {
+    const proc = new MockChildProcess();
+    spawnMock.mockReturnValue(proc);
+    const pool = new CodexAppServerPool();
+    const owners = [ownerStub(), ownerStub()].map((owner) => ({
+      ...owner,
+      handleUnroutedUnknownNotification: jest.fn<void, [string]>(),
+    }));
+    const [first, second] = owners.map((owner) =>
+      pool.acquire({ profileKey: 'pooled', owner, processCallbacks: {} }),
+    );
+    expect(second).toBe(first);
+    const initialized = first?.ensureInitialized();
+    await flush();
+    emitServerMessage(proc, {
+      id: 1,
+      result: { userAgent: 'canopy/0.50.0', codexHome: '/tmp/.codex' },
+    });
+    await initialized;
+
+    emitServerMessage(proc, { method: 'thread/brandNew', params: {} });
+    emitServerMessage(proc, { method: 'future/withoutParams' });
+    // A known method no owner claims is not drift.
+    emitServerMessage(proc, { method: 'thread/name/updated', params: {} });
+    await flush();
+
+    for (const owner of owners)
+      expect(owner.handleUnroutedUnknownNotification.mock.calls).toEqual([
+        ['thread/brandNew'],
+        ['future/withoutParams'],
+      ]);
+    await pool.shutdown();
   });
 
   it('holds admission after old workers exit until the managed sign-in lease closes', async () => {
@@ -401,13 +459,20 @@ describe('CodexAppServerConnection release safety', () => {
           })}\n`,
         );
         expect(producedBytes).toBe(firstHeldBytes);
-        expect(producedBytes).toBeLessThanOrEqual(pressureBoundBytes);
-        // Each owner received its own first frame. Later frames wait behind
-        // that owner's held admission, and the second owner's control
-        // response waits in its lane in pipe order.
+        // Soft per-owner watermarks do not stop the shared producer.
+        // This bounded fixture is below either owner's 64 MiB hard cap.
+        expect(producedBytes).toBe(
+          frames.reduce(
+            (bytes, frame) =>
+              bytes + Buffer.byteLength(`${JSON.stringify(frame)}\n`),
+            0,
+          ),
+        );
+        // Each owner receives its first transcript frame, retaining the rest
+        // in order. The control response bypasses either held admission.
         expect(received).toEqual([0, 1]);
-        expect(responseObservedWhileHeld).toBe(false);
-        expect(producerFinished).toBe(false);
+        expect(responseObservedWhileHeld).toBe(true);
+        expect(producerFinished).toBe(true);
       } finally {
         releaseSink();
         await producer;
@@ -633,7 +698,7 @@ describe('CodexAppServerConnection release safety', () => {
           params: { threadId: 'fanout-peer', sequence: 2 },
         });
         await flush();
-        expect(peerReceived).toBe(holdPeer ? 0 : 1);
+        expect(peerReceived).toBe(1);
         releasePeer();
         await flush();
         expect(peerReceived).toBe(1);

@@ -14,14 +14,72 @@ import {
   type ChatMigrationSource,
   type ChatMigrationCheckpoint,
 } from '../lib/chat-storage-v2';
+import { delegationTranscriptMessages } from '@canopy/agent-transcript';
 import { ChatTranscriptLog } from '../lib/chat-transcript-log';
 import { ChatTranscriptArtifacts } from '../lib/chat-transcript-artifacts';
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
+import type { ActiveRowAnchor } from '../lib/chat-transcript-live-positions';
 import * as directorySync from '../lib/fsync-directory';
 import { enforceWindowsFileSync } from './helpers/windows-file-sync';
 
 async function* values<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) yield await Promise.resolve(item);
+}
+
+function delegatedRows(): [PersistedChatMessage, PersistedChatMessage] {
+  const rows = delegationTranscriptMessages({
+    delegationId: 'active-run',
+    runGeneration: 1,
+    sequence: 1,
+    parentHarnessId: 'claude',
+    parentTurnId: 'active-turn',
+    parentToolCallId: 'active-call',
+    createdAt: 1,
+    task: {
+      description: 'Read the requested file',
+      prompt: 'Return the file contents.',
+      executionMode: 'background',
+    },
+    snapshot: {
+      delegationId: 'active-run',
+      runGeneration: 1,
+      requestedModelId: 'test-model',
+      status: 'running',
+      outputTruncated: false,
+      routeSnapshot: {
+        selectedModelId: 'test-model',
+        runtimeModelId: 'test-runtime-model',
+        harnessId: 'claude',
+        runtimeKind: 'local',
+        runnerRegistrationId: 'claude-local',
+        runtimeVersion: '1',
+        adapterVersion: '1',
+        modelSource: 'catalog',
+        providerType: 'claude',
+        assignmentRevision: 'test-assignment',
+        billingAuthority: 'local',
+        aiCreditsRouted: false,
+        capabilities: [],
+        supportedThinkingLevels: [],
+        capabilitySnapshotHash: 'test-capabilities',
+        capabilityGeneration: 1,
+        policyRevision: 'test-policy',
+      },
+    },
+    transcript: [
+      {
+        id: 'child-result',
+        sequence: 1,
+        occurredAt: 2,
+        type: 'text',
+        text: 'ok',
+      },
+    ],
+  });
+  const card = rows[0];
+  const child = rows[1];
+  if (!card || !child) throw new Error('Missing delegated-agent rows');
+  return [card, child];
 }
 
 // These tests do real filesystem and git work. Under a loaded multi-worker
@@ -230,6 +288,31 @@ describe('v2 migration authority', () => {
     },
   );
 
+  it('refuses to promote a migration or capture over a file, keeping it and the sources', async () => {
+    await mkdir(join(store.directory, '..'), { recursive: true });
+    await writeFile(store.directory, 'not a directory');
+    await expect(store.migrate(source)).rejects.toThrow(
+      'Refusing to promote chat storage over a file',
+    );
+    expect(await readFile(store.directory, 'utf8')).toBe('not a directory');
+    expect(await readFile(join(root, 'chats', 'scope-1.json'), 'utf8')).toBe(
+      'legacy source sentinel',
+    );
+
+    await rm(store.directory);
+    await store.migrate(source);
+    const destination = new ChatStorageV2(join(root, 'capture'), 'scope-1');
+    await mkdir(join(destination.directory, '..'), { recursive: true });
+    await writeFile(destination.directory, 'not a directory');
+    await expect(store.copyTo(destination)).rejects.toThrow(
+      'Refusing to promote chat storage over a file',
+    );
+    expect(await readFile(destination.directory, 'utf8')).toBe(
+      'not a directory',
+    );
+    expect(await store.authority()).toBe('v2');
+  });
+
   it('defers migration until active turns settle and preserves source files', async () => {
     await expect(
       store.migrate(async () => {
@@ -275,7 +358,7 @@ describe('v2 migration authority', () => {
   it('captures current live and archived logs byte-for-byte with their artifact closure', async () => {
     await store.migrate(source);
     const log = new ChatTranscriptLog(join(store.directory, 'transcripts'));
-    await log.append('live-chat', [{ ...human, id: 'later', timestamp: 3 }], 6);
+    await log.append('live-chat', [{ ...human, id: 'later', timestamp: 3 }]);
     const indexes = await store.indexes();
     indexes.live.tabs[0].transcript = await log.descriptor('live-chat');
     indexes.live.revision = indexes.archive.revision = 6;
@@ -311,6 +394,161 @@ describe('v2 migration authority', () => {
       throw new Error('Missing reference');
     await captured.artifacts.verify('archive-chat', block.fullOutputRef);
     expect((await destination.indexes()).live.revision).toBe(6);
+  });
+
+  it('captures anchored active sidecar rows byte-for-byte with their artifact closure', async () => {
+    await store.migrate(source);
+    const log = new ChatTranscriptLog(join(store.directory, 'transcripts'));
+    const [card, child] = delegatedRows();
+    const output = 'anchored active output 🌲\n'.repeat(9000);
+    const childWithOutput: PersistedChatMessage = {
+      ...child,
+      blocks: [
+        {
+          type: 'tool_result',
+          toolUseId: 'active-output-call',
+          toolName: 'Read',
+          output,
+          isError: false,
+        },
+      ],
+    };
+    const anchor: ActiveRowAnchor = {
+      version: 1,
+      runId: card.id,
+      after: card.id,
+      tie: 0,
+    };
+    const cardAnchor: ActiveRowAnchor = {
+      version: 1,
+      runId: card.id,
+      after: human.id,
+      tie: 0,
+    };
+    await log.writeActive(
+      'live-chat',
+      [card, childWithOutput],
+      new Map([
+        [card.id, cardAnchor],
+        [child.id, anchor],
+      ]),
+    );
+    const sourceSidecarPath = join(
+      store.directory,
+      'transcripts',
+      'live-chat.active.json',
+    );
+    const sourceSidecarBytes = await readFile(sourceSidecarPath);
+    const indexes = await store.indexes();
+    indexes.live.tabs[0].transcript = await log.descriptor('live-chat');
+    expect(indexes.live.tabs[0].transcript).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: false,
+    });
+    indexes.live.revision = indexes.archive.revision = 6;
+    await writeFile(
+      join(store.directory, 'live-index.json'),
+      JSON.stringify(indexes.live),
+    );
+    await writeFile(
+      join(store.directory, 'archive-index.json'),
+      JSON.stringify(indexes.archive),
+    );
+
+    const destination = new ChatStorageV2(
+      join(root, 'anchored-capture'),
+      'scope-2',
+    );
+    // copyTo validates both source and captured transcript/artifact closures before publishing.
+    await store.copyTo(destination);
+
+    const capturedSidecarPath = join(
+      destination.directory,
+      'transcripts',
+      'live-chat.active.json',
+    );
+    expect(await readFile(capturedSidecarPath)).toEqual(sourceSidecarBytes);
+    const captured = new ChatTranscriptLog(
+      join(destination.directory, 'transcripts'),
+    );
+    expect(await captured.activeRowAnchors('live-chat')).toEqual(
+      new Map([
+        [card.id, cardAnchor],
+        [child.id, anchor],
+      ]),
+    );
+    expect(await captured.descriptor('live-chat')).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: false,
+    });
+    const capturedChild = (await captured.activeMessages('live-chat')).find(
+      (message) => message.id === child.id,
+    );
+    const block = capturedChild?.blocks.find(
+      (candidate) => candidate.type === 'tool_result',
+    );
+    if (block?.type !== 'tool_result' || !block.fullOutputRef)
+      throw new Error('Missing anchored active tool-output reference');
+    await captured.artifacts.verify('live-chat', block.fullOutputRef);
+    expect(
+      await readFile(
+        join(
+          destination.directory,
+          'transcripts',
+          'tool-output',
+          'live-chat',
+          `${block.fullOutputRef.artifactId}.txt`,
+        ),
+        'utf8',
+      ),
+    ).toBe(output);
+    expect(await destination.authority()).toBe('v2');
+  });
+
+  it('does not publish a capture with a present but invalid active-row anchor', async () => {
+    await store.migrate(source);
+    const log = new ChatTranscriptLog(join(store.directory, 'transcripts'));
+    const activeMessage: PersistedChatMessage = {
+      id: 'invalid-anchor-row',
+      role: 'assistant',
+      timestamp: 10,
+      blocks: [{ type: 'text', text: 'Active row' }],
+    };
+    await log.writeActive('live-chat', [activeMessage]);
+    const sidecarPath = join(
+      store.directory,
+      'transcripts',
+      'live-chat.active.json',
+    );
+    const [headerLine] = (await readFile(sidecarPath, 'utf8')).split('\n');
+    if (!headerLine) throw new Error('Missing active sidecar header');
+    const indexes = await store.indexes();
+    indexes.live.tabs[0].transcript = await log.descriptor('live-chat');
+    await writeFile(
+      join(store.directory, 'live-index.json'),
+      JSON.stringify(indexes.live),
+    );
+    await writeFile(
+      sidecarPath,
+      `${headerLine}\n${JSON.stringify({
+        version: 2,
+        kind: 'message',
+        message: activeMessage,
+        anchor: {
+          version: 1,
+          runId: 'delegated-agent-active-run',
+          after: null,
+          tie: 1.5,
+        },
+      })}\n`,
+    );
+
+    const destination = new ChatStorageV2(
+      join(root, 'invalid-anchor'),
+      'scope-2',
+    );
+    await expect(store.copyTo(destination)).rejects.toThrow();
+    expect(await destination.authority()).toBe('v1');
   });
 
   it('migrates recovery evidence with Windows-compatible flushing and preserves its bytes', async () => {

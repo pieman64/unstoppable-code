@@ -15,6 +15,11 @@ import { normalizePipelineRunTarget } from '@canopy/desktop-shared/pipelines/tar
 import { normalizeMatrixStrategy } from '@canopy/desktop-shared/pipelines/matrix';
 import { resolveKnownModel } from '@canopy/desktop-shared/types';
 import { AGENT_MODEL_PREFIX } from '@canopy/desktop-shared/types/agent-models';
+import {
+  declaredPipelineAssetIds,
+  findPipelineAssetReferences,
+  validatePipelineAssetDeclarations,
+} from '@canopy/pipeline-interop/assets';
 
 const IDENTIFIER_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -168,6 +173,37 @@ export function isPipelineSelectionValid(
 }
 
 /**
+ * `assets` / `local_state` shape errors, plus `${{ assets.<id> }}` reads of
+ * ids the pipeline does not declare. A pipeline that declares no assets may
+ * still read its parent's (child runs inherit the root run's `assets`), so
+ * there an unknown id is a warning rather than an error.
+ */
+function getAssetValidation(pipeline: Pipeline): ValidationIssue[] {
+  const issues: ValidationIssue[] = validatePipelineAssetDeclarations(
+    pipeline,
+  ).map((issue) => ({ type: 'error', ...issue }));
+  const declared = declaredPipelineAssetIds(pipeline.assets);
+  const declaresAssets = pipeline.assets !== undefined;
+  for (const id of findPipelineAssetReferences(pipeline)) {
+    if (declared.has(id)) continue;
+    issues.push(
+      declaresAssets
+        ? {
+            type: 'error',
+            path: 'assets',
+            message: `Expression reads asset "${id}", which this pipeline does not declare`,
+          }
+        : {
+            type: 'warning',
+            path: 'assets',
+            message: `Expression reads asset "${id}", which resolves only when a parent pipeline that declares it runs this one`,
+          },
+    );
+  }
+  return issues;
+}
+
+/**
  * Return structured validation issues for a draft pipeline.
  */
 export function getDraftValidation(pipeline: Pipeline): ValidationIssue[] {
@@ -178,13 +214,13 @@ export function getDraftValidation(pipeline: Pipeline): ValidationIssue[] {
   // errors the backend would raise at run time. A missing scope is valid
   // (defaults to `directory`), so this only flags explicitly-invalid values.
   try {
-    normalizePipelineScopes(pipeline.scope, 'Pipeline');
+    normalizePipelineScopes(pipeline.scope, 'Workflow');
   } catch (err: unknown) {
     issues.push({
       type: 'error',
       path: 'scope',
       message:
-        err instanceof Error ? err.message : 'Invalid pipeline execution scope',
+        err instanceof Error ? err.message : 'Invalid workflow execution scope',
     });
   }
 
@@ -243,6 +279,8 @@ export function getDraftValidation(pipeline: Pipeline): ValidationIssue[] {
       }
     }
   }
+
+  issues.push(...getAssetValidation(pipeline));
 
   if (!pipeline.jobs) return issues;
   const jobIds: string[] = Object.keys(pipeline.jobs);

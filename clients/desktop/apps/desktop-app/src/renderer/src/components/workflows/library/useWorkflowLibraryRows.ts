@@ -153,6 +153,13 @@ export function useWorkflowLibraryRows(
       ),
       recentRuns,
       pipelines: listedPipelines,
+      // Every context's automations: an owned pipeline folds even when its
+      // automation is listed elsewhere (CAN-4551).
+      ownedPipelineIds: new Set(
+        allActivities.flatMap((activity) =>
+          activity.ownedPipeline ? [activity.ownedPipeline.pipelineId] : [],
+        ),
+      ),
       disabledPipelineIds: pipelines.disabledPipelineIds,
       executions,
       sharedAutomations: shares.map(

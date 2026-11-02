@@ -1,5 +1,6 @@
 import { prepareOpenCodeVisibleFork } from '@canopy/desktop-shared/lib/opencode-fork-context';
 import { chatStoreApi } from '../store-ref';
+import { announceFilePanelOpen } from '@/lib/panels/file-panel-open-intent';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   agentArtifactCarryIdentity,
@@ -7,6 +8,7 @@ import {
   normalizeAgentArtifactCarryByTurn,
 } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
+import { refreshCarriedGitHubWorkflowRun } from '@/components/chat/agent-artifact-projection';
 import { useProjectsStore } from '../../projectsStore';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -126,6 +128,7 @@ import {
   toPersistedTab,
 } from '../persisted-tabs';
 import {
+  attachHostQueueSummariesFromQueueSnapshots,
   attachHostQueueMirror,
   hostQueueViewsToQueuedMessages,
 } from '../queue-mirror';
@@ -142,10 +145,27 @@ import {
   removePendingApprovalsForChats,
 } from '../pending-approvals';
 import { pendingApprovalModeTransitions } from './approvals';
+import {
+  NO_ATTENTION_LANDING,
+  resolveAttentionLanding,
+  type AttentionLanding,
+} from '../attention-landing';
+import {
+  beginWorktreeEntry,
+  cancelWorktreeEntry,
+  getWorktreeEntry,
+  isCurrentWorktreeEntry,
+  hasPendingAttentionLanding,
+  recordExplicitEntryTab,
+  settleWorktreeEntry,
+  preservesLandedAttention,
+  type WorktreeEntryIntent,
+} from '../attention-landing-intent';
 import { restoreStreamingTabs } from '../session-restore';
 import {
   getChatTabCloseBlocker,
-  notifyDelegatesBlockClose,
+  notifyCloseBlocked,
+  type ChatCloseBlocker,
 } from '../close-guard';
 import { useActivityStore } from '../../activityStore';
 import { markWorktreeDiffStatsActivity } from '../../projectsStore.diffStatsRuntime';
@@ -203,9 +223,17 @@ import {
 } from '../constants';
 import { prepareBranchFromWorktree } from '@/lib/prepareBranchFromWorktree';
 import { desktopFileSessionController } from '@/lib/file-viewer/desktop-file-session-controller';
+import {
+  nextFileViewModeSequence,
+  rememberClosedFileViewMode,
+  rememberFileViewModeChoice,
+  rememberFileViewModeBeforeDiff,
+  resolveNewFileTabViewMode,
+} from '@/lib/file-viewer/last-view-mode';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { useFileTabUiStore } from '../../fileTabUiStore';
 import { useClaudeTerminalStore } from '@/stores/claudeTerminalStore';
+import { useIngestionLagStore } from '@/stores/ingestionLagStore';
 import { useFileListStore } from '../../fileListStore';
 import type { StateCreator } from 'zustand';
 import type {
@@ -342,6 +370,27 @@ async function createPersistedReplacementTab(
 }
 
 /**
+ * Remembers the last non-diff view mode of file tabs whose close succeeded.
+ * Covers tabs that were initialized or restored without a toggle; `sequence`
+ * is stamped when the close began so it never overwrites a newer choice.
+ */
+function rememberClosedFileTabViewModes(
+  projectId: string,
+  worktreeId: string,
+  closedTabs: readonly ChatTab[],
+  sequence: number,
+): void {
+  for (const closed of closedTabs) {
+    if (closed.kind !== 'file') continue;
+    rememberClosedFileViewMode(
+      { projectId, worktreeId, absolutePath: closed.filePath },
+      closed.fileViewMode,
+      { sequence, tabId: closed.id },
+    );
+  }
+}
+
+/**
  * Commits a new file tab that the caller has already made the optimistic
  * active tab under `activationToken`. Creation is a newer selection too, so
  * older activation commits still crossing from main (such as the click on the
@@ -436,6 +485,175 @@ function recoverRevisionedPendingApprovals(
     // then retain any newer listener event received while it was in flight.
     pendingApprovals: { ...live, ...state.pendingApprovals },
   };
+}
+
+/**
+ * The activation-only part of selecting a tab: the active id plus the
+ * last-editable-chat and last-provider metadata. Read and attention state are
+ * left alone, so an automatic landing never acknowledges anything itself.
+ */
+function activateTabInChatState(
+  wc: WorktreeChatState,
+  tabId: string,
+): WorktreeChatState {
+  const targetTab = wc.tabs.find((t) => t.id === tabId);
+  const currentActiveTab = wc.tabs.find((t) => t.id === wc.activeTabId);
+  const lastActiveEditableChatId =
+    targetTab && targetTab.kind !== 'file' && !targetTab.readOnly
+      ? targetTab.id
+      : currentActiveTab &&
+          currentActiveTab.kind !== 'file' &&
+          !currentActiveTab.readOnly
+        ? currentActiveTab.id
+        : wc.lastActiveEditableChatId;
+  const lastActiveChatProvider =
+    resolveTabProviderType(targetTab) ??
+    resolveTabProviderType(currentActiveTab) ??
+    wc.lastActiveChatProvider;
+  return {
+    ...wc,
+    activeTabId: tabId,
+    ...(lastActiveEditableChatId ? { lastActiveEditableChatId } : {}),
+    ...(lastActiveChatProvider ? { lastActiveChatProvider } : {}),
+  };
+}
+
+/**
+ * Submits a tab activation to main for a revisioned scope, behind the
+ * optimistic-selection token, so a late result or rollback never overwrites a
+ * newer selection.
+ */
+function dispatchRevisionedTabActivation(
+  get: () => ChatState,
+  sel: WorktreeSelection,
+  tabId: string,
+): Promise<void> {
+  const activationToken = beginOptimisticActiveTabSelection(
+    sel.projectId,
+    sel.worktreeId,
+    tabId,
+  );
+  return get()
+    .dispatchChatCommand(
+      sel,
+      {
+        type: 'chat.activate_tab',
+        tabId,
+      },
+      {
+        rollback: (): void =>
+          rollbackOptimisticActiveTabSelection(
+            sel.projectId,
+            sel.worktreeId,
+            activationToken,
+          ),
+        reconcile: (result): void =>
+          confirmOptimisticActiveTabSelection(
+            sel.projectId,
+            sel.worktreeId,
+            activationToken,
+            result.revision,
+          ),
+      },
+    )
+    .then((disposition) => {
+      if (disposition !== 'accepted') {
+        rollbackOptimisticActiveTabSelection(
+          sel.projectId,
+          sel.worktreeId,
+          activationToken,
+        );
+      }
+    });
+}
+
+/** Where an implicit entry should land in `wc`; see {@link AttentionLanding}. */
+function attentionLandingTarget(
+  state: ChatState,
+  projectId: string,
+  worktreeId: string,
+  wc: WorktreeChatState,
+  pending: Pick<ChatState, 'pendingQuestions' | 'pendingApprovals'> = state,
+): AttentionLanding {
+  return resolveAttentionLanding({
+    projectId,
+    worktreeId,
+    tabs: wc.tabs,
+    activeTabId: wc.activeTabId,
+    hiddenChatTabIds: state.hiddenChatTabIds,
+    pendingQuestions: pending.pendingQuestions,
+    pendingApprovals: pending.pendingApprovals,
+    pendingPlanExits: state.pendingPlanExits,
+  });
+}
+
+/**
+ * Whether the pending landing belongs to `key` and still applies: the user
+ * is on that worktree and has not chosen a tab since entering it.
+ */
+function takesPendingAttentionLanding(
+  state: ChatState,
+  key: string,
+  intent: WorktreeEntryIntent | null,
+): intent is WorktreeEntryIntent {
+  return (
+    isCurrentWorktreeEntry(intent) &&
+    intent.key === key &&
+    state.selectedWorktree !== null &&
+    worktreeKey(state.selectedWorktree) === key
+  );
+}
+
+/**
+ * Applies a pending landing once a loader has the scope's tabs and pending
+ * attention: activation only, then the existing visible acknowledgement,
+ * which now targets the landed tab.
+ */
+function applyPendingAttentionLanding(
+  get: () => ChatState,
+  set: (update: (state: ChatState) => Partial<ChatState>) => void,
+  projectId: string,
+  worktreeId: string,
+  intent: WorktreeEntryIntent | null,
+): void {
+  const key = worktreeKey({ projectId, worktreeId });
+  if (!takesPendingAttentionLanding(get(), key, intent)) return;
+  let landedTabId: string | null = null;
+  set((state) => {
+    const wc = state.worktreeChats[key];
+    if (!wc) return {};
+    const landing: AttentionLanding =
+      intent.explicitTabId !== undefined
+        ? {
+            tabId: wc.tabs.some((tab) => tab.id === intent.explicitTabId)
+              ? intent.explicitTabId
+              : null,
+            attended: false,
+          }
+        : intent.attentionLanding
+          ? attentionLandingTarget(state, projectId, worktreeId, wc)
+          : NO_ATTENTION_LANDING;
+    landedTabId = landing.tabId;
+    settleWorktreeEntry(intent, wc.activeTabId, landing);
+    return {
+      worktreeChats: {
+        ...state.worktreeChats,
+        [key]:
+          landedTabId === null ? wc : activateTabInChatState(wc, landedTabId),
+      },
+    };
+  });
+  if (
+    landedTabId !== null &&
+    isScopeRevisionedLive(get(), projectId, worktreeId)
+  ) {
+    void dispatchRevisionedTabActivation(
+      get,
+      { projectId, worktreeId },
+      landedTabId,
+    );
+  }
+  get().acknowledgeSelectedWorktreeAttention();
 }
 
 /** A loader's one-time setup after a revisioned install: display enrichment,
@@ -581,10 +799,21 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
           }
           byIdentity.set(identity, receipt);
         }
-        const mergedCarry = {
-          ...(tab.agentArtifactCarryByTurn ?? {}),
-          [userMessageId]: Array.from(byIdentity.values()),
-        };
+        // Other turns carrying the same GitHub run follow it to the newest
+        // snapshot, so each turn's persisted card reaches the final state.
+        const mergedCarry = Object.fromEntries(
+          Object.entries({
+            ...(tab.agentArtifactCarryByTurn ?? {}),
+            [userMessageId]: Array.from(byIdentity.values()),
+          }).map(([turnId, turnReceipts]) => [
+            turnId,
+            turnId === userMessageId
+              ? turnReceipts
+              : turnReceipts.map((carried) =>
+                  refreshCarriedGitHubWorkflowRun(carried, receipts),
+                ),
+          ]),
+        );
         const owningUserMessageIds = new Set(
           tab.messages
             .filter((message) => message.role === 'user')
@@ -673,22 +902,53 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         : get().selectedWorktreeBeforeStandaloneChat
       : null;
 
+    if (isNewSelection) {
+      beginWorktreeEntry(
+        key,
+        options?.attentionLanding === true &&
+          options.newlyCreated !== true &&
+          !isAppAdvisorChatTarget(projectId, worktreeId) &&
+          !isPipelineEditorChatTarget(projectId, worktreeId),
+      );
+    }
+    const entryIntent = getWorktreeEntry(key);
+    const landsNow =
+      isCurrentWorktreeEntry(entryIntent) &&
+      get().worktreeChats[key] !== undefined &&
+      hydratedKeys.has(key) &&
+      !loadingKeys.has(key) &&
+      !revisionedSetupPendingKeys.has(key);
+
     let acknowledgedChatId: string | undefined;
+    let landedTabId: string | null = null;
     set((state) => {
       const beforeUpdate =
         nextBefore !== state.selectedWorktreeBeforeStandaloneChat
           ? { selectedWorktreeBeforeStandaloneChat: nextBefore }
           : {};
 
-      const wc = state.worktreeChats[key];
-      if (!wc) {
+      const selectedWc = state.worktreeChats[key];
+      if (!selectedWc) {
         return {
           selectedWorktree: { projectId, worktreeId },
           ...beforeUpdate,
         };
       }
+      const landing =
+        landsNow && entryIntent?.attentionLanding === true
+          ? attentionLandingTarget(state, projectId, worktreeId, selectedWc)
+          : NO_ATTENTION_LANDING;
+      landedTabId = landing.tabId;
+      if (landsNow && entryIntent !== null) {
+        settleWorktreeEntry(entryIntent, selectedWc.activeTabId, landing);
+      }
+      const wc =
+        landedTabId === null
+          ? selectedWc
+          : activateTabInChatState(selectedWc, landedTabId);
 
       const canMarkRead =
+        !hasPendingAttentionLanding(key) &&
         useNavigationStore.getState().activePage === 'main' &&
         getCurrentChatPanelVisible() &&
         !isCoworkChatTarget(projectId);
@@ -710,7 +970,13 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
       const tabs = needsTabClear
         ? wc.tabs.map((t) =>
             t.id === wc.activeTabId
-              ? { ...t, unread: false, attentionDismissedAt: dismissedAt }
+              ? {
+                  ...t,
+                  unread: false,
+                  ...(preservesLandedAttention(key, t.id)
+                    ? {}
+                    : { attentionDismissedAt: dismissedAt }),
+                }
               : t,
           )
         : wc.tabs;
@@ -728,7 +994,11 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
             )
           : state.unreadWorktreeKeys;
 
-      if (!needsTabClear && nextUnread === state.unreadWorktreeKeys) {
+      if (
+        !needsTabClear &&
+        landedTabId === null &&
+        nextUnread === state.unreadWorktreeKeys
+      ) {
         return {
           selectedWorktree: { projectId, worktreeId },
           ...beforeUpdate,
@@ -737,13 +1007,27 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
 
       return {
         selectedWorktree: { projectId, worktreeId },
-        ...(needsTabClear
+        ...(needsTabClear || landedTabId !== null
           ? { worktreeChats: { ...state.worktreeChats, [key]: updated } }
           : {}),
         unreadWorktreeKeys: nextUnread,
         ...beforeUpdate,
       };
     });
+
+    // Landing only activates; it never dismisses attention. Read and
+    // attention patches for the landed tab come from the visible
+    // acknowledgement below, as for any restored tab.
+    if (
+      landedTabId !== null &&
+      isScopeRevisionedLive(get(), projectId, worktreeId)
+    ) {
+      void dispatchRevisionedTabActivation(
+        get,
+        { projectId, worktreeId },
+        landedTabId,
+      );
+    }
 
     if (
       acknowledgedChatId &&
@@ -754,10 +1038,14 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
           { projectId, worktreeId },
           { type: 'chat.mark_read', chatId: acknowledgedChatId },
         ),
-        get().dispatchChatCommand(
-          { projectId, worktreeId },
-          { type: 'chat.dismiss_attention', chatId: acknowledgedChatId },
-        ),
+        ...(preservesLandedAttention(key, acknowledgedChatId)
+          ? []
+          : [
+              get().dispatchChatCommand(
+                { projectId, worktreeId },
+                { type: 'chat.dismiss_attention', chatId: acknowledgedChatId },
+              ),
+            ]),
       ]);
     }
 
@@ -832,6 +1120,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
   },
 
   deselectWorktree: (): void => {
+    cancelWorktreeEntry();
     set({ selectedWorktree: null });
     scheduleIdleChatUnload();
     void window.api.github.setForegroundWorktree({
@@ -845,6 +1134,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     if (!sel) return;
 
     const key = worktreeKey(sel);
+    const entryIntent = getWorktreeEntry(key);
 
     // A background canonical hydration may have installed an intentionally
     // empty scope before the user selected it. The normal hydrated-key fast
@@ -856,6 +1146,15 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
       // the complete load, including starter creation, even when a large
       // migration takes longer than the best-effort background wait budget.
       await waitForWorktreeHydration(key, Number.POSITIVE_INFINITY);
+      // A background load installed the scope, so an entry that arrived
+      // while it ran lands here.
+      applyPendingAttentionLanding(
+        get,
+        set,
+        sel.projectId,
+        sel.worktreeId,
+        entryIntent,
+      );
       return;
     }
     if (hydratedKeys.has(key)) {
@@ -872,6 +1171,13 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
               sel.projectId,
               sel.worktreeId,
               loadActiveApprovalRequests(),
+            );
+            applyPendingAttentionLanding(
+              get,
+              set,
+              sel.projectId,
+              sel.worktreeId,
+              entryIntent,
             );
           } else {
             // `ensureWorktreeHasChatTab` is idempotent for an already-canonical
@@ -908,6 +1214,13 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
               sel.projectId,
               sel.worktreeId,
               activeApprovalRequestsPromise,
+            );
+            applyPendingAttentionLanding(
+              get,
+              set,
+              sel.projectId,
+              sel.worktreeId,
+              entryIntent,
             );
           }
           // 'failed' keeps the load-error treatment visible; never fall back
@@ -1049,9 +1362,16 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         mergedChatState.chatState.tabs,
         queuedByChatId,
       );
+      mergedChatState.chatState.tabs =
+        attachHostQueueSummariesFromQueueSnapshots(
+          mergedChatState.chatState.tabs,
+          queueSnapshots,
+        );
       hydratedKeys.add(key);
       recordWorktreeChatTouch(key);
 
+      let landedTabId: string | null = null;
+      let settledEntry = false;
       set((state) => {
         const nextPendingQuestions = {
           ...state.pendingQuestions,
@@ -1061,18 +1381,53 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
           ...state.pendingApprovals,
           ...hydratedPendingApprovals,
         };
+        // Land before the visible tab is derived, so the landed tab is the
+        // one treated as seen, never the stale persisted one.
+        if (takesPendingAttentionLanding(state, key, entryIntent)) {
+          settledEntry = true;
+          const landing: AttentionLanding =
+            entryIntent.explicitTabId !== undefined
+              ? {
+                  tabId: mergedChatState.chatState.tabs.some(
+                    (tab) => tab.id === entryIntent.explicitTabId,
+                  )
+                    ? entryIntent.explicitTabId
+                    : null,
+                  attended: false,
+                }
+              : entryIntent.attentionLanding
+                ? attentionLandingTarget(
+                    state,
+                    sel.projectId,
+                    sel.worktreeId,
+                    mergedChatState.chatState,
+                    {
+                      pendingQuestions: nextPendingQuestions,
+                      pendingApprovals: nextPendingApprovals,
+                    },
+                  )
+                : NO_ATTENTION_LANDING;
+          landedTabId = landing.tabId;
+          settleWorktreeEntry(
+            entryIntent,
+            mergedChatState.chatState.activeTabId,
+            landing,
+          );
+        }
+        const installedChatState =
+          landedTabId === null
+            ? mergedChatState.chatState
+            : activateTabInChatState(mergedChatState.chatState, landedTabId);
         const visibleKey = getVisibleWorktreeKey(state.selectedWorktree);
         const {
           chatState: chatStateWithQuestionAttention,
           hasUnreadPendingQuestion,
         } = derivePendingQuestionUnreadState(
-          mergedChatState.chatState,
+          installedChatState,
           nextPendingQuestions,
           sel.projectId,
           sel.worktreeId,
-          key === visibleKey
-            ? mergedChatState.chatState.activeTabId
-            : undefined,
+          key === visibleKey ? installedChatState.activeTabId : undefined,
         );
         const nextUnread =
           hasUnreadPendingQuestion && !state.unreadWorktreeKeys.has(key)
@@ -1098,6 +1453,9 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
           persistedWorktreeBadges: nextPersistedBadges,
         };
       });
+      if (settledEntry) {
+        get().acknowledgeSelectedWorktreeAttention();
+      }
       if (
         file.tabs.length === 0 &&
         mergedChatState.chatState.tabs.length === 1
@@ -1387,6 +1745,11 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         mergedChatState.chatState.tabs,
         queuedByChatId,
       );
+      mergedChatState.chatState.tabs =
+        attachHostQueueSummariesFromQueueSnapshots(
+          mergedChatState.chatState.tabs,
+          queueSnapshots,
+        );
       hydratedKeys.add(key);
       recordWorktreeChatTouch(key);
 
@@ -1584,6 +1947,10 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         string,
         Map<string, ReturnType<typeof hostQueueViewsToQueuedMessages>>
       >();
+      const waitingSnapshotsByWorktreeKey = new Map<
+        string,
+        ChatQueueUpdatedEvent[]
+      >();
       const rawResults: Array<HydratedWorktreeTabsResult | null> =
         await mapWithConcurrency(
           toLoad,
@@ -1648,6 +2015,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
                 ]),
               );
               queuedByWorktreeKey.set(key, queuedByChatId);
+              waitingSnapshotsByWorktreeKey.set(key, queueSnapshots);
               const {
                 model: wtDefaultModel,
                 providerType: wtConfiguredDefaultProviderType,
@@ -1771,6 +2139,13 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
           merged.chatState.tabs = attachHostQueueMirror(
             merged.chatState.tabs,
             queuedByChatId,
+          );
+        }
+        const waitingSnapshots = waitingSnapshotsByWorktreeKey.get(result.key);
+        if (waitingSnapshots) {
+          merged.chatState.tabs = attachHostQueueSummariesFromQueueSnapshots(
+            merged.chatState.tabs,
+            waitingSnapshots,
           );
         }
         hydratedKeys.add(result.key);
@@ -3952,13 +4327,32 @@ ${summary}
     const existing = wc?.tabs.find(
       (t) => t.kind === 'file' && t.filePath === absolutePath,
     );
+    const previousChat = wc?.tabs.find(
+      (candidate) =>
+        candidate.id === wc.activeTabId && candidate.kind !== 'file',
+    );
     if (existing) {
-      if (options?.activate !== false) get().switchTab(existing.id, sel);
+      // An explicit open must show current content. Start the check before
+      // activation so the viewer's inactive-to-active read coalesces with it.
+      desktopFileSessionController.refreshTab(existing.id);
+      if (options?.activate !== false) {
+        announceFilePanelOpen({
+          worktreeKey: key,
+          fileTabId: existing.id,
+          previousChatTabId: previousChat?.id ?? null,
+        });
+        get().switchTab(existing.id, sel);
+      }
       return existing.id;
     }
     // Nothing is selected to preserve, so a background open behaves normally.
     const preservedTabId =
       options?.activate === false && wc?.activeTabId ? wc.activeTabId : null;
+    // Resolved once so local state and the canonical command start identical.
+    const viewMode = resolveNewFileTabViewMode(
+      { projectId: sel.projectId, worktreeId: sel.worktreeId, absolutePath },
+      initialViewMode,
+    );
 
     const tab: ChatTab = {
       id: nextTabId(),
@@ -3966,7 +4360,7 @@ ${summary}
       kind: 'file',
       filePath: absolutePath,
       description: absolutePath,
-      ...(initialViewMode ? { fileViewMode: initialViewMode } : {}),
+      ...(viewMode ? { fileViewMode: viewMode } : {}),
       messages: [],
       status: 'idle',
       error: null,
@@ -3983,6 +4377,13 @@ ${summary}
       fastModeExplicit: false,
     };
 
+    if (preservedTabId === null) {
+      announceFilePanelOpen({
+        worktreeKey: key,
+        fileTabId: tab.id,
+        previousChatTabId: previousChat?.id ?? null,
+      });
+    }
     const revisionedLive = isScopeRevisionedLive(
       get(),
       sel.projectId,
@@ -4015,7 +4416,7 @@ ${summary}
         tabId: tab.id,
         filePath: absolutePath,
         title: filename,
-        ...(initialViewMode ? { viewMode: initialViewMode } : {}),
+        ...(viewMode ? { viewMode } : {}),
         ...(options?.activate === false ? { activate: false } : {}),
       };
       const creation =
@@ -4124,23 +4525,34 @@ ${summary}
       (t) => t.kind === 'file' && t.id !== tabId && t.filePath === absolutePath,
     );
     if (existing) {
+      desktopFileSessionController.refreshTab(existing.id);
       get().switchTab(existing.id, sel);
       return existing.id;
     }
 
+    // The newly assigned file never inherits the tab's previous view mode.
+    const viewMode = resolveNewFileTabViewMode({
+      projectId: sel.projectId,
+      worktreeId: sel.worktreeId,
+      absolutePath,
+    });
     set((state) => {
       const currentWc = state.worktreeChats[key];
       if (!currentWc) return state;
-      const tabs = currentWc.tabs.map((candidate) =>
-        candidate.id === tabId && candidate.kind === 'file'
-          ? {
-              ...candidate,
-              title: filename,
-              filePath: absolutePath,
-              description: absolutePath,
-            }
-          : candidate,
-      );
+      const tabs = currentWc.tabs.map((candidate) => {
+        if (candidate.id !== tabId || candidate.kind !== 'file') {
+          return candidate;
+        }
+        const assigned: ChatTab = {
+          ...candidate,
+          title: filename,
+          filePath: absolutePath,
+          description: absolutePath,
+        };
+        if (viewMode) assigned.fileViewMode = viewMode;
+        else delete assigned.fileViewMode;
+        return assigned;
+      });
       const updated: WorktreeChatState = {
         ...currentWc,
         tabs: relabelFileTabs(tabs),
@@ -4156,7 +4568,11 @@ ${summary}
         {
           type: 'chat.patch_tab_settings',
           tabId,
-          patch: { filePath: absolutePath, title: filename },
+          patch: {
+            filePath: absolutePath,
+            title: filename,
+            fileViewMode: viewMode ?? null,
+          },
         },
       );
     }
@@ -4166,6 +4582,29 @@ ${summary}
   setFileTabViewMode: (tabId, mode, target, diffContext): void => {
     const sel = target ?? get().selectedWorktree;
     if (!sel) return;
+    // Stamped at the click so a slower close of this tab cannot overwrite it.
+    const sequence = nextFileViewModeSequence();
+    const tab = get().worktreeChats[worktreeKey(sel)]?.tabs.find(
+      (candidate) => candidate.id === tabId && candidate.kind === 'file',
+    );
+    if (!tab) return;
+    // The committed delta (including a subsequent close or reassignment) may
+    // arrive before this command's reply. Keep the choice's original identity.
+    const identity = {
+      projectId: sel.projectId,
+      worktreeId: sel.worktreeId,
+      absolutePath: tab.filePath,
+    };
+    const rememberAppliedMode = (): void => {
+      if (mode === 'diff') {
+        rememberFileViewModeBeforeDiff(identity, tab.fileViewMode, {
+          sequence,
+          tabId,
+        });
+        return;
+      }
+      rememberFileViewModeChoice(identity, mode, { sequence, tabId });
+    };
 
     // Canonical scopes publish the accepted mode atomically with its comparison.
     // Showing an optimistic mode here lets an earlier command's delta overwrite
@@ -4188,12 +4627,14 @@ ${summary}
           disposition = await get().dispatchChatCommand(sel, command);
         }
         if (disposition === 'accepted') {
+          rememberAppliedMode();
           get().dismissChatStateNotice(sel.projectId, sel.worktreeId);
         }
       })();
       return;
     }
 
+    rememberAppliedMode();
     const key = worktreeKey(sel);
     let changed = false;
     set((state) => {
@@ -4267,6 +4708,7 @@ ${summary}
     const createdFallbackTabRef: { current: ChatTab | null } = {
       current: null,
     };
+    const closeSequence = nextFileViewModeSequence();
 
     // Dirty-file-tab guard. If the tab is a file tab with unsaved edits
     // and the caller did not pass `force: true`, route to either an auto
@@ -4329,13 +4771,12 @@ ${summary}
     // the active-chat path nor archive a half-written transcript. A queued hook
     // placeholder with only the hook prompt is the one exception: closing it
     // cancels the main-process queue entry, then removes the transient tab.
-    // A chat whose managed delegates are still queued or running also stays
-    // open (even with its own turn finished); that refusal says why.
+    // A chat whose managed delegates or provider background agents and
+    // workflows are still running also stays open (even with its own turn
+    // finished); that refusal says why.
     const closeBlocker = getChatTabCloseBlocker(tab, projectId, worktreeId);
     if (closeBlocker !== null) {
-      if (closeBlocker === 'delegates') {
-        notifyDelegatesBlockClose();
-      }
+      notifyCloseBlocked([closeBlocker]);
       return;
     }
 
@@ -4381,6 +4822,21 @@ ${summary}
     };
 
     const finalizeClose = (resolvedReplacementTab?: ChatTab): void => {
+      const currentTab = get().worktreeChats[key]?.tabs.find(
+        (t) => t.id === tabId,
+      );
+      const closedTab =
+        currentTab !== undefined &&
+        currentTab.kind === tab.kind &&
+        currentTab.filePath === tab.filePath
+          ? currentTab
+          : tab;
+      rememberClosedFileTabViewModes(
+        projectId,
+        worktreeId,
+        [closedTab],
+        closeSequence,
+      );
       if (tab.kind !== 'file') {
         void useClaudeTerminalStore
           .getState()
@@ -4491,6 +4947,11 @@ ${summary}
       get().clearTabDraft(tabId);
       get().clearPendingEditorSelections(tabId);
       clearChatScrollPosition(tabId);
+      useIngestionLagStore.getState().clearForChat({
+        projectId,
+        worktreeId,
+        chatId: tabId,
+      });
       // Release the shared file session for the closed tab (no-op for chat
       // tabs). Releasing the last tab reference drops `files[key]` so a reopen
       // reads disk; scroll positions are UI-local and cleared here.
@@ -4661,7 +5122,7 @@ ${summary}
 
     const targetIdSet = new Set(targetIds);
 
-    let skippedForDelegates = false;
+    const skippedBlockers: ChatCloseBlocker[] = [];
     const idsToClose = wc.tabs
       .filter((t) => {
         if (!targetIdSet.has(t.id)) return false;
@@ -4669,27 +5130,27 @@ ${summary}
           // Batch close skips shared-dirty file tabs entirely.
           return !desktopFileSessionController.isDirty(t.id);
         }
-        // Same guard as `closeTab`: busy chats (active turn or live
-        // delegates) are left open.
+        // Same guard as `closeTab`: busy chats (active turn, live delegates
+        // or provider background work) are left open.
         const blocker = getChatTabCloseBlocker(
           t,
           sel.projectId,
           sel.worktreeId,
         );
-        if (blocker === 'delegates') skippedForDelegates = true;
+        if (blocker !== null) skippedBlockers.push(blocker);
         return blocker === null;
       })
       .map((t) => t.id);
 
-    if (skippedForDelegates) {
-      notifyDelegatesBlockClose();
-    }
+    // One notice for the whole gesture.
+    notifyCloseBlocked(skippedBlockers);
     if (idsToClose.length === 0) return;
 
     const idsToCloseSet = new Set(idsToClose);
     const createdFallbackTabRef: { current: ChatTab | null } = {
       current: null,
     };
+    const closeSequence = nextFileViewModeSequence();
     const fileTabIdsToClose = wc.tabs
       .filter((t) => idsToCloseSet.has(t.id) && t.kind === 'file')
       .map((t) => t.id);
@@ -4778,6 +5239,24 @@ ${summary}
       resolvedReplacementTab?: ChatTab,
     ): void => {
       const closeIdSet = new Set(closeIds);
+      const currentTabs = get().worktreeChats[key]?.tabs ?? [];
+      rememberClosedFileTabViewModes(
+        sel.projectId,
+        sel.worktreeId,
+        closeIds.flatMap((id) => {
+          const original = wc.tabs.find((t) => t.id === id);
+          if (!original) return [];
+          const current = currentTabs.find((t) => t.id === id);
+          const closed =
+            current !== undefined &&
+            current.kind === original.kind &&
+            current.filePath === original.filePath
+              ? current
+              : original;
+          return [closed];
+        }),
+        closeSequence,
+      );
       set((state) => {
         const current = state.worktreeChats[key];
         if (!current) return state;
@@ -4892,6 +5371,11 @@ ${summary}
         get().clearTabDraft(id);
         get().clearPendingEditorSelections(id);
         clearChatScrollPosition(id);
+        useIngestionLagStore.getState().clearForChat({
+          projectId: sel.projectId,
+          worktreeId: sel.worktreeId,
+          chatId: id,
+        });
       }
       for (const id of fileTabIdsToClose.filter((fileTabId) =>
         closeIdSet.has(fileTabId),
@@ -5099,6 +5583,8 @@ ${summary}
     const key = worktreeKey(sel);
     const currentChatState = get().worktreeChats[key];
     const targetTab = currentChatState?.tabs.find((t) => t.id === tabId);
+    // An explicit tab choice wins over a landing still waiting on the load.
+    recordExplicitEntryTab(key, tabId);
 
     set((state) => {
       const wc = state.worktreeChats[key];
@@ -5112,26 +5598,7 @@ ${summary}
           ? { ...t, unread: false, attentionDismissedAt: dismissedAt }
           : t,
       );
-      const currentActiveTab = wc.tabs.find((t) => t.id === wc.activeTabId);
-      const lastActiveEditableChatId =
-        targetTab && targetTab.kind !== 'file' && !targetTab.readOnly
-          ? targetTab.id
-          : currentActiveTab &&
-              currentActiveTab.kind !== 'file' &&
-              !currentActiveTab.readOnly
-            ? currentActiveTab.id
-            : wc.lastActiveEditableChatId;
-      const lastActiveChatProvider =
-        resolveTabProviderType(targetTab) ??
-        resolveTabProviderType(currentActiveTab) ??
-        wc.lastActiveChatProvider;
-      const updated = {
-        ...wc,
-        activeTabId: tabId,
-        tabs,
-        ...(lastActiveEditableChatId ? { lastActiveEditableChatId } : {}),
-        ...(lastActiveChatProvider ? { lastActiveChatProvider } : {}),
-      };
+      const updated = { ...activateTabInChatState(wc, tabId), tabs };
       const nextUnread = pruneUnreadWorktreeKey(
         state.unreadWorktreeKeys,
         key,
@@ -5160,43 +5627,8 @@ ${summary}
       // durable active/read/attention fields remain main-owned. Submit all
       // three immediately: they are independent idempotent patches, and the
       // main repository serializes their arrival for the scope.
-      const activationToken = beginOptimisticActiveTabSelection(
-        sel.projectId,
-        sel.worktreeId,
-        tabId,
-      );
-      const activation = get().dispatchChatCommand(
-        sel,
-        {
-          type: 'chat.activate_tab',
-          tabId,
-        },
-        {
-          rollback: (): void =>
-            rollbackOptimisticActiveTabSelection(
-              sel.projectId,
-              sel.worktreeId,
-              activationToken,
-            ),
-          reconcile: (result): void =>
-            confirmOptimisticActiveTabSelection(
-              sel.projectId,
-              sel.worktreeId,
-              activationToken,
-              result.revision,
-            ),
-        },
-      );
       void Promise.all([
-        activation.then((disposition) => {
-          if (disposition !== 'accepted') {
-            rollbackOptimisticActiveTabSelection(
-              sel.projectId,
-              sel.worktreeId,
-              activationToken,
-            );
-          }
-        }),
+        dispatchRevisionedTabActivation(get, sel, tabId),
         get().dispatchChatCommand(sel, {
           type: 'chat.mark_read',
           chatId: tabId,

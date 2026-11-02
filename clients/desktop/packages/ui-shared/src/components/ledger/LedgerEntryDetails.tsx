@@ -143,7 +143,7 @@ export function LedgerHistoryMore({
     <Button
       type="button"
       variant="ghost"
-      size="control"
+      size="compact"
       data-testid="ledger-entry-history-more"
       disabled={loading}
       onClick={onLoadMore}
@@ -325,7 +325,7 @@ export function LedgerEntryDetails({
           <Button
             type="button"
             variant="ghost"
-            size="control"
+            size="compact"
             data-testid="ledger-entry-supersedes"
             onClick={onShowCorrectedEntry}
           >

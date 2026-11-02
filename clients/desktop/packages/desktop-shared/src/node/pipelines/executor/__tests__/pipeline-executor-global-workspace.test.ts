@@ -191,7 +191,7 @@ describe('global run working folder', () => {
         runtime,
         executionId: 'rerun-id',
       }),
-    ).rejects.toThrow('shared pipeline snapshot is unavailable');
+    ).rejects.toThrow('shared workflow snapshot is unavailable');
     expect(fs.existsSync(path.join(runtime.executionsDir, 'rerun-id'))).toBe(
       false,
     );

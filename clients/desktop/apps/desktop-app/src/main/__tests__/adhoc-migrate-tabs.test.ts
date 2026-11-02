@@ -42,10 +42,18 @@ function fileTab(id: string, filePath: string): PersistedChatTab {
     kind: 'file',
     filePath,
     description: filePath,
-    fileViewMode: 'rich',
+    fileViewMode: 'preview',
     messages: [],
     createdAt: '2026-08-01T00:00:00.000Z',
   };
+}
+
+function withLegacyPluginSelections(tab: PersistedChatTab): PersistedChatTab {
+  // Preserve the pre-canonical `skills` field as persisted migration input.
+  if (!Reflect.set(tab, 'pluginSelections', { skills: ['skill-a'] })) {
+    throw new Error('Unable to attach legacy plugin selections');
+  }
+  return tab;
 }
 
 function request(
@@ -87,9 +95,10 @@ function harness(
   destination: ChatTabsFile = { version: 1, tabs: [], activeTabId: '' },
 ): Harness {
   let nextId = 0;
-  const forkCodexThread: Harness['forkCodexThread'] = jest.fn(() =>
-    Promise.resolve('forked-codex-thread'),
-  );
+  const forkCodexThread: Harness['forkCodexThread'] = jest.fn<
+    Promise<string>,
+    [Parameters<ForkCodexThread>[0]]
+  >(() => Promise.resolve('forked-codex-thread'));
   const state: Harness = {
     written: undefined,
     copyTabs: jest.fn<Promise<void>, Parameters<Harness['copyTabs']>>(
@@ -213,45 +222,46 @@ describe('adhocMigrateWorktreeTabs', () => {
     const source: ChatTabsFile = {
       version: 1,
       tabs: [
-        chatTab('claude-chat', 'claude', {
-          sdkSessionId: 'claude-session',
-          selectedRepoId: 'old-repo',
-          planMode: true,
-          pendingPlanExit: { plan: 'Claude proposal' },
-          trackedPlanId: 'claude-plan',
-          trackedPlanSource: 'claude',
-          trackedPlanReviewStatus: 'pending',
-          hasOutstandingProposal: true,
-          latestRevisionNumber: 2,
-          thinkingLevel: 'high',
-          pluginSelections: { skills: ['skill-a'] },
-          agentArtifactCarryByTurn: {
-            'claude-chat-user': [
-              {
-                version: 1,
-                kind: 'pipeline_run',
-                operation: 'pipeline.run',
-                dedupeKey: 'canopy:pipeline_run:worktree:execution-1',
-                createdAt: '2026-08-04T20:00:00.000Z',
-                executionId: 'execution-1',
-                pipelineId: 'pipeline-1',
-                pipelineName: 'Build',
-                initialStatus: 'pending',
-                queuedAt: '2026-08-04T20:00:00.000Z',
-                projectId: 'source-ws',
-                worktreeId: 'source-wt',
-                navigationTarget: {
-                  kind: 'pipeline_execution',
+        withLegacyPluginSelections(
+          chatTab('claude-chat', 'claude', {
+            sdkSessionId: 'claude-session',
+            selectedRepoId: 'old-repo',
+            planMode: true,
+            pendingPlanExit: { plan: 'Claude proposal' },
+            trackedPlanId: 'claude-plan',
+            trackedPlanSource: 'claude',
+            trackedPlanReviewStatus: 'pending',
+            hasOutstandingProposal: true,
+            latestRevisionNumber: 2,
+            thinkingLevel: 'high',
+            agentArtifactCarryByTurn: {
+              'claude-chat-user': [
+                {
+                  version: 1,
+                  kind: 'pipeline_run',
+                  operation: 'pipeline.run',
+                  dedupeKey: 'canopy:pipeline_run:worktree:execution-1',
+                  createdAt: '2026-08-04T20:00:00.000Z',
                   executionId: 'execution-1',
+                  pipelineId: 'pipeline-1',
+                  pipelineName: 'Build',
+                  initialStatus: 'pending',
+                  queuedAt: '2026-08-04T20:00:00.000Z',
                   projectId: 'source-ws',
                   worktreeId: 'source-wt',
+                  navigationTarget: {
+                    kind: 'pipeline_execution',
+                    executionId: 'execution-1',
+                    projectId: 'source-ws',
+                    worktreeId: 'source-wt',
+                  },
                 },
-              },
-            ],
-          },
-          unread: true,
-          scheduledSendDraft: { runAt: '2026-08-03T00:00:00.000Z' },
-        }),
+              ],
+            },
+            unread: true,
+            scheduledSendDraft: { runAt: '2026-08-03T00:00:00.000Z' },
+          }),
+        ),
       ],
       activeTabId: 'claude-chat',
     };

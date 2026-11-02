@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { Button } from './Button';
 
 const FOCUSABLE_SELECTOR =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -168,21 +169,18 @@ export function WorktreeInfoDialog({
           </label>
         )}
         <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="focus-ring rounded-md px-3 py-1.5 text-s fg-secondary hover:bg-fg-primary/[0.06]"
-          >
+          <Button size="compact" onClick={onClose}>
             Close
-          </button>
+          </Button>
           {mode === 'label' && onSaveLabel && (
-            <button
+            <Button
               type="submit"
+              variant="primary"
+              size="compact"
               data-testid={testIds?.save}
-              className="focus-ring rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis"
             >
               Save
-            </button>
+            </Button>
           )}
         </div>
       </form>
@@ -233,13 +231,13 @@ export function PipelinePickerDialog({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Dispatch pipeline"
+        aria-label="Dispatch workflow"
         tabIndex={-1}
         data-testid={testIds?.dialog}
         className="max-h-[85dvh] w-full max-w-md overflow-y-auto overscroll-contain rounded-xl bg-popover p-4 shadow-xl"
         onKeyDown={onKeyDown}
       >
-        <h2 className="text-m font-semibold fg-primary">Dispatch pipeline</h2>
+        <h2 className="text-m font-semibold fg-primary">Dispatch workflow</h2>
         <div className="mt-3 space-y-1">
           {entries.map((entry) => (
             <button
@@ -265,13 +263,9 @@ export function PipelinePickerDialog({
           ))}
         </div>
         <div className="mt-4 flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="focus-ring rounded-md px-3 py-1.5 text-s fg-secondary hover:bg-fg-primary/[0.06]"
-          >
+          <Button size="compact" onClick={onClose}>
             Cancel
-          </button>
+          </Button>
         </div>
       </div>
     </div>,

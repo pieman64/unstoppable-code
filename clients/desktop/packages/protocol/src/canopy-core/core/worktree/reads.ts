@@ -46,6 +46,10 @@ export const CoreWorktreeListResultSchema = z
   .object({
     items: z.array(CoreWorktreeSchema).max(500),
     nextCursor: z.string().max(2048).nullable(),
+    // One workspace's worktree collection: membership and order, not its
+    // items' contents. Only on a complete, verified workspace-scoped listing;
+    // no revision spans workspaces (CAN-5319).
+    collectionRevision: z.number().int().nonnegative().optional(),
   })
   .catchall(CanopyJsonValueSchema);
 export const CoreWorktreeGetResultSchema = CoreWorktreeSchema;

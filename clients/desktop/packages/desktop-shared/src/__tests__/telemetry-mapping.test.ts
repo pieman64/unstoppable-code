@@ -116,6 +116,15 @@ function makeEntry(overrides: Partial<AgentAuditEntry> = {}): AgentAuditEntry {
   };
 }
 
+function expectTelemetryTurnPayload(
+  payload: TelemetryTurnPayload | null,
+): TelemetryTurnPayload {
+  if (payload === null) {
+    throw new Error('Expected a hosted telemetry turn payload');
+  }
+  return payload;
+}
+
 describe('mapVisibilityToShareScope', () => {
   it('maps off to null and others through 1:1', () => {
     expect(mapVisibilityToShareScope('off')).toBeNull();
@@ -223,9 +232,11 @@ describe('clampId', () => {
 
 describe('mapAuditEntryToTurnPayload', () => {
   it('renames tokens/fields, drops locals, and sparsifies tool counts', () => {
-    const payload = mapAuditEntryToTurnPayload(makeEntry(), {
-      transcriptBody: 'plain transcript',
-    });
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(makeEntry(), {
+        transcriptBody: 'plain transcript',
+      }),
+    );
     expect(payload.clientTurnId).toBe('turn-1');
     expect(payload.tokens).toEqual({
       input: 100,
@@ -251,15 +262,19 @@ describe('mapAuditEntryToTurnPayload', () => {
   });
 
   it('redacts secrets in the transcript body', () => {
-    const payload = mapAuditEntryToTurnPayload(makeEntry(), {
-      transcriptBody: 'export TOKEN=ghp_' + 'Z'.repeat(36),
-    });
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(makeEntry(), {
+        transcriptBody: 'export TOKEN=ghp_' + 'Z'.repeat(36),
+      }),
+    );
     expect(payload.body).toContain('<redacted');
     expect(payload.body).not.toContain('ghp_ZZZ');
   });
 
   it('omits body when no transcript text is provided', () => {
-    const payload = mapAuditEntryToTurnPayload(makeEntry(), {});
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(makeEntry(), {}),
+    );
     expect(payload.body).toBeUndefined();
   });
 
@@ -274,20 +289,24 @@ describe('mapAuditEntryToTurnPayload', () => {
       routingCostUsd: 0.001,
       savings: { status: 'incomplete_usage' as const },
     };
-    const payload = mapAuditEntryToTurnPayload(makeEntry({ modelRouting }), {});
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(makeEntry({ modelRouting }), {}),
+    );
 
     expect(payload.modelRouting).toEqual(modelRouting);
     expect(JSON.stringify(payload.modelRouting)).not.toContain('prompt');
   });
 
   it('copies subscription attribution for non-routed turns', () => {
-    const payload = mapAuditEntryToTurnPayload(
-      makeEntry({
-        providerAccountKey: 'claude:dev@example.com',
-        providerAccountEmail: 'dev@example.com',
-        providerPlanType: 'max',
-      }),
-      {},
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(
+        makeEntry({
+          providerAccountKey: 'claude:dev@example.com',
+          providerAccountEmail: 'dev@example.com',
+          providerPlanType: 'max',
+        }),
+        {},
+      ),
     );
     expect(payload.providerAccountKey).toBe('claude:dev@example.com');
     expect(payload.providerAccountEmail).toBe('dev@example.com');
@@ -296,14 +315,16 @@ describe('mapAuditEntryToTurnPayload', () => {
   });
 
   it('emits aiCreditsRouted and omits account fields for routed turns', () => {
-    const payload = mapAuditEntryToTurnPayload(
-      makeEntry({
-        aiCreditsRouted: true,
-        providerAccountKey: 'claude:dev@example.com',
-        providerAccountEmail: 'dev@example.com',
-        providerPlanType: 'max',
-      }),
-      {},
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(
+        makeEntry({
+          aiCreditsRouted: true,
+          providerAccountKey: 'claude:dev@example.com',
+          providerAccountEmail: 'dev@example.com',
+          providerPlanType: 'max',
+        }),
+        {},
+      ),
     );
     expect(payload.aiCreditsRouted).toBe(true);
     expect(payload.providerAccountKey).toBeUndefined();
@@ -312,9 +333,8 @@ describe('mapAuditEntryToTurnPayload', () => {
   });
 
   it('omits aiCreditsRouted when the turn was not routed', () => {
-    const payload = mapAuditEntryToTurnPayload(
-      makeEntry({ aiCreditsRouted: false }),
-      {},
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(makeEntry({ aiCreditsRouted: false }), {}),
     );
     expect(payload.aiCreditsRouted).toBeUndefined();
   });
@@ -323,9 +343,8 @@ describe('mapAuditEntryToTurnPayload', () => {
   // `transcript_turns.duration_ms` column, so every batch carrying it failed
   // permanently and the outbox replayed it ~60x/hour forever.
   it('omits an implausible duration rather than shipping an unpersistable value', () => {
-    const payload = mapAuditEntryToTurnPayload(
-      makeEntry({ durationMs: 4_904_774_992 }),
-      {},
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(makeEntry({ durationMs: 4_904_774_992 }), {}),
     );
     expect(payload.durationMs).toBeUndefined();
     // The rest of the turn still ships — dropping the batch would lose
@@ -335,38 +354,46 @@ describe('mapAuditEntryToTurnPayload', () => {
   });
 
   it('keeps a duration exactly at the plausibility ceiling', () => {
-    const payload = mapAuditEntryToTurnPayload(
-      makeEntry({ durationMs: MAX_TELEMETRY_TURN_DURATION_MS }),
-      {},
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(
+        makeEntry({ durationMs: MAX_TELEMETRY_TURN_DURATION_MS }),
+        {},
+      ),
     );
     expect(payload.durationMs).toBe(MAX_TELEMETRY_TURN_DURATION_MS);
   });
 
   it('omits negative, fractional, and non-finite durations', () => {
     expect(
-      mapAuditEntryToTurnPayload(makeEntry({ durationMs: -1 }), {}).durationMs,
+      expectTelemetryTurnPayload(
+        mapAuditEntryToTurnPayload(makeEntry({ durationMs: -1 }), {}),
+      ).durationMs,
     ).toBeUndefined();
     expect(
-      mapAuditEntryToTurnPayload(makeEntry({ durationMs: 12.5 }), {})
-        .durationMs,
+      expectTelemetryTurnPayload(
+        mapAuditEntryToTurnPayload(makeEntry({ durationMs: 12.5 }), {}),
+      ).durationMs,
     ).toBeUndefined();
     expect(
-      mapAuditEntryToTurnPayload(makeEntry({ durationMs: Number.NaN }), {})
-        .durationMs,
+      expectTelemetryTurnPayload(
+        mapAuditEntryToTurnPayload(makeEntry({ durationMs: Number.NaN }), {}),
+      ).durationMs,
     ).toBeUndefined();
   });
 
   it('clamps over-length id, correlation, and text fields', () => {
-    const payload = mapAuditEntryToTurnPayload(
-      makeEntry({
-        id: 'turn-' + 'x'.repeat(200),
-        label: 'L'.repeat(800),
-        model: 'm'.repeat(400),
-        chatId: 'chat-' + 'y'.repeat(200),
-        repoId: 'repo-' + 'z'.repeat(200),
-        pipelineId: 'pipe-' + 'p'.repeat(200),
-        pipelineExecutionId: 'exec-' + 'e'.repeat(200),
-      }),
+    const payload = expectTelemetryTurnPayload(
+      mapAuditEntryToTurnPayload(
+        makeEntry({
+          id: 'turn-' + 'x'.repeat(200),
+          label: 'L'.repeat(800),
+          model: 'm'.repeat(400),
+          chatId: 'chat-' + 'y'.repeat(200),
+          repoId: 'repo-' + 'z'.repeat(200),
+          pipelineId: 'pipe-' + 'p'.repeat(200),
+          pipelineExecutionId: 'exec-' + 'e'.repeat(200),
+        }),
+      ),
     );
     expect(payload.clientTurnId.length).toBeLessThanOrEqual(
       MAX_TELEMETRY_CLIENT_ID_LENGTH,
@@ -600,7 +627,12 @@ describe('mapPipelineRunUsageEventToPayload', () => {
       worktreeId: 'wt-1',
       provider: 'pipeline',
       pipelineExecutionId: 'exec-9',
-      pipeline: { key: 'stored:user:p1', id: 'p1', name: 'My pipeline' },
+      pipeline: {
+        key: 'stored:user:p1',
+        id: 'p1',
+        name: 'My pipeline',
+        source: 'user',
+      },
       pipelineId: 'p1',
       pipelineName: 'My pipeline',
       pipelineIdentityKey: 'stored:user:p1',

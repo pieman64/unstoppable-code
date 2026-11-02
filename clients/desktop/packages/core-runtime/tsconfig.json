@@ -10,7 +10,11 @@
     "rootDir": "src",
     "types": ["node"]
   },
-  "references": [{ "path": "../core-transport" }, { "path": "../protocol" }],
+  "references": [
+    { "path": "../core-transport" },
+    { "path": "../pipeline-interop" },
+    { "path": "../protocol" }
+  ],
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts", "src/**/__tests__/**"]
 }

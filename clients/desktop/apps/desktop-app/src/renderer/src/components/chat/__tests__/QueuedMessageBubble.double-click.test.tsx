@@ -86,6 +86,25 @@ describe('QueuedMessageBubble double-click to edit', () => {
     expect(onEdit).toHaveBeenCalledWith(2, message);
   });
 
+  it('opens the editor from inside the setup quote', () => {
+    const onEdit = jest.fn();
+    const message: QueuedChatMessage = { text: 'queued text' };
+    render({
+      message,
+      onEdit,
+      setupWait: { projectName: 'canopy', startedAtMs: 0 },
+      clockNowMs: 1_000,
+    });
+    const quote = container.querySelector(
+      '[data-testid="queued-message-setup-quote"]',
+    );
+    expect(quote?.contains(container.querySelector('p'))).toBe(true);
+
+    doubleClickText();
+
+    expect(onEdit).toHaveBeenCalledWith(2, message);
+  });
+
   it.each([
     ['is still sending', { pendingSend: true }, false],
     ['belongs to a hook queue', { queuedHookQueueId: 'hook-1' }, false],

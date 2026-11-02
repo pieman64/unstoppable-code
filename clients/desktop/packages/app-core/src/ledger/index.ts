@@ -3,6 +3,7 @@ import type {
   LedgerFeedEntryRequest,
   LedgerFeedPage,
   LedgerFeedRequest,
+  LedgerTaskViewScope,
   LedgerViewAddRequest,
   LedgerViewChangedEvent,
   LedgerViewEntry,
@@ -63,20 +64,24 @@ export interface LedgerNavigator {
     scope: LedgerViewScope,
     target: LedgerViewSourceTarget,
   ): Promise<LedgerViewOpenResult>;
-  /** Opens a reference file of the scope in the file panel, at its line. */
+  /**
+   * Opens a reference file of the task in the file panel, at its line. A
+   * global (workflow) scope has no files.
+   */
   openFile(
-    scope: LedgerViewScope,
+    scope: LedgerTaskViewScope,
     file: LedgerFileRef,
   ): Promise<LedgerViewOpenResult>;
 }
 
 /**
  * Host file search for an entry's references: files under the scope's logical
- * roots, as root IDs and relative paths. Choosing one never uploads it.
+ * roots, as root IDs and relative paths. Choosing one never uploads it. Only a
+ * task has files; a global (workflow) scope is never searched.
  */
 export interface LedgerFilePicker {
   searchFiles(
-    scope: LedgerViewScope,
+    scope: LedgerTaskViewScope,
     query: string,
     limit: number,
   ): Promise<readonly LedgerViewFileCandidate[]>;

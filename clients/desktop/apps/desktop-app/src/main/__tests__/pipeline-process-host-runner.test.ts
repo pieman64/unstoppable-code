@@ -26,7 +26,7 @@ jest.mock('@canopy/desktop-shared/node/lib/process-kill', () => ({
 
 import {
   resetPipelineProcessHostForTests,
-  runPipelineProcessInUtilityProcess,
+  runPipelineProcessInExecutionHost,
   shutdownPipelineProcessHost,
 } from '../pipelines/process-host-runner';
 import type { SpawnedProcessResult } from '@canopy/desktop-shared/node/pipelines/executor/types';
@@ -44,7 +44,7 @@ const SUCCESS: SpawnedProcessResult = {
 function run(
   controller = new AbortController(),
 ): Promise<SpawnedProcessResult> {
-  return runPipelineProcessInUtilityProcess(
+  return runPipelineProcessInExecutionHost(
     { command: 'node', args: ['step.js'] },
     {
       cwd: '/repo',
@@ -87,7 +87,7 @@ describe('pipeline process host runner', () => {
 
   it('reuses one utility process and forwards bounded output messages', async () => {
     const output = jest.fn();
-    const first = runPipelineProcessInUtilityProcess(
+    const first = runPipelineProcessInExecutionHost(
       { command: 'node', args: ['one.js'] },
       {
         cwd: '/repo',
@@ -276,7 +276,7 @@ describe('pipeline process host runner', () => {
       unregister,
     }));
     const controller = new AbortController();
-    const result = runPipelineProcessInUtilityProcess(
+    const result = runPipelineProcessInExecutionHost(
       { command: 'node', args: ['step.js'] },
       {
         cwd: '/repo',

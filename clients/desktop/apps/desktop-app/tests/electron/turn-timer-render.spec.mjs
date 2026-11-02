@@ -25,11 +25,9 @@ import { writeJson } from './seeders/fsHelpers.mjs';
 // `TurnTimer` per group from it. So each seeded timer state is its own turn
 // group (user + assistant + system-turn_timer triple).
 //
-// Label format comes from `formatElapsed` in TurnTimer.tsx:
-//   < 1h  → `${minutes}:${ss}`            e.g. 95s → "1:35", 90s → "1:30"
-//   ≥ 1h  → `${hours}:${mm}:${ss}`        e.g. 3661s → "1:01:01"
-// elapsed seconds = floor((finishedAt|pausedAt − startedAt − pauseMs) / 1000).
-// Wrapper labels: paused → `Paused at <fmt>`, completed → `Completed in <fmt>`.
+// Clean chat's work header owns elapsed time in words. The footer retains
+// completion timestamps and failed/cancelled outcomes; paused footers are empty.
+// Elapsed time deducts completed pause windows, including accumulated pauses.
 //
 // IMPORTANT — open-timer auto-completion: on load,
 // `completePersistedTurnTimers` (chat-tabs.ts) force-completes any turn_timer
@@ -55,7 +53,7 @@ const TIMER_CASES = [
       completedAt: null,
     },
     expectedState: 'paused',
-    expectedLabel: 'Paused at 1:35',
+    expectedLabel: 'Waiting for you · 1:35',
   },
   {
     order: 2,
@@ -63,7 +61,7 @@ const TIMER_CASES = [
     // PR 813 — completed (not live) label.
     block: { type: 'turn_timer', startedAt: T, completedAt: T + 90_000 },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 1:30',
+    expectedLabel: 'Worked for 1m 30s',
   },
   {
     order: 3,
@@ -71,7 +69,7 @@ const TIMER_CASES = [
     // PR 817 — H:MM:SS formatting at ≥ 1h.
     block: { type: 'turn_timer', startedAt: T, completedAt: T + 3_661_000 },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 1:01:01',
+    expectedLabel: 'Worked for 1h 1m',
   },
   {
     order: 4,
@@ -79,7 +77,7 @@ const TIMER_CASES = [
     // PR 817 — exact 1h boundary → H:MM:SS.
     block: { type: 'turn_timer', startedAt: T, completedAt: T + 3_600_000 },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 1:00:00',
+    expectedLabel: 'Worked for 1h',
   },
   {
     order: 5,
@@ -87,7 +85,7 @@ const TIMER_CASES = [
     // PR 817 — just under 1h → M:SS (no hours segment).
     block: { type: 'turn_timer', startedAt: T, completedAt: T + 3_599_000 },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 59:59',
+    expectedLabel: 'Worked for 59m 59s',
   },
   {
     order: 6,
@@ -101,7 +99,7 @@ const TIMER_CASES = [
       completedAt: T + 150_000,
     },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 1:30',
+    expectedLabel: 'Worked for 1m 30s',
   },
   {
     order: 7,
@@ -109,7 +107,7 @@ const TIMER_CASES = [
     outcome: 'failed',
     block: { type: 'turn_timer', startedAt: T, completedAt: T + 90_000 },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 1:30',
+    expectedLabel: 'Failed after 1m 30s',
   },
   {
     order: 8,
@@ -117,7 +115,7 @@ const TIMER_CASES = [
     outcome: 'cancelled',
     block: { type: 'turn_timer', startedAt: T, completedAt: T + 90_000 },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 1:30',
+    expectedLabel: 'Stopped after 1m 30s',
   },
   {
     order: 9,
@@ -132,7 +130,7 @@ const TIMER_CASES = [
       completedAt: T + 210_000,
     },
     expectedState: 'completed',
-    expectedLabel: 'Completed in 2:15',
+    expectedLabel: 'Worked for 2m 15s',
   },
 ];
 
@@ -158,6 +156,12 @@ function buildTurnGroupMessages(turnCase) {
         },
       ],
       timestamp: base,
+    },
+    {
+      id: `turn-${turnCase.order}-thinking`,
+      role: 'assistant',
+      blocks: [{ type: 'thinking', text: 'Considering the request.' }],
+      timestamp: base + 1_000,
     },
     {
       id: `turn-${turnCase.order}-assistant`,
@@ -271,12 +275,22 @@ test('renders seeded turn-timer blocks with the right label and data-state', asy
         timer,
         `timer #${i} (${expectedCase.label}) data-state`,
       ).toHaveAttribute('data-state', expectedCase.expectedState);
-      // The elapsed label lives in its own sub-element since CAN-2301 added
-      // the relative completion timestamp alongside it.
-      await expect(
-        timer.locator('[data-testid="turn-timer-label"]'),
-        `timer #${i} (${expectedCase.label}) label`,
-      ).toHaveText(expectedCase.expectedLabel);
+      const header = window
+        .locator(`[data-chat-turn-group="turn-${expectedCase.order}-user"]`)
+        .getByTestId('turn-work-header');
+      await expect(header.locator('[data-step-row-words]')).toHaveText(
+        expectedCase.expectedLabel,
+      );
+      const footerLabel = timer.getByTestId('turn-timer-label');
+      if (expectedCase.outcome) {
+        await expect(footerLabel).toHaveText(
+          expectedCase.outcome === 'failed'
+            ? 'Failed after 1:30'
+            : 'Cancelled after 1:30',
+        );
+      } else {
+        await expect(footerLabel).toHaveCount(0);
+      }
 
       // CAN-2301 — completed timers carry a completion stamp ("just now" /
       // "5m ago" while recent, then locale clock time such as "10:11 AM" or
@@ -297,37 +311,17 @@ test('renders seeded turn-timer blocks with the right label and data-state', asy
       }
     }
 
-    // CAN-4278 — on every completed row, the LAST turn's included, the
-    // timestamp stays visible while the "Completed in" label and actions are
-    // transparent at rest and revealed only while their own turn is hovered.
-    // `toBeVisible()` passes for `opacity: 0`, so assert computed opacity.
-    const partOpacity = (index, testId) =>
-      timers
-        .nth(index)
-        .locator(`[data-testid="${testId}"]`)
-        .evaluate((el) => getComputedStyle(el).opacity);
-    const rowOpacity = (index) => partOpacity(index, 'turn-timer-label');
+    // Clean chat keeps finished actions and timestamps visible at rest.
     const lastIndex = TIMER_CASES.length - 1;
     const earlierCompletedIndex = TIMER_CASES.findIndex(
       (c) => c.expectedState === 'completed',
     );
-    const pausedRowIndex = TIMER_CASES.findIndex(
-      (c) => c.expectedState === 'paused',
-    );
-    expect(TIMER_CASES[lastIndex].expectedState).toBe('completed');
-    expect(earlierCompletedIndex).toBeLessThan(lastIndex);
+    const partOpacity = (index, testId) =>
+      timers
+        .nth(index)
+        .getByTestId(testId)
+        .evaluate((el) => getComputedStyle(el).opacity);
     await window.mouse.move(5, 5);
-    await expect.poll(() => rowOpacity(lastIndex)).toBe('0');
-    await expect.poll(() => rowOpacity(earlierCompletedIndex)).toBe('0');
-    await expect.poll(() => rowOpacity(pausedRowIndex)).toBe('1');
-    for (let index = 0; index < TIMER_CASES.length; index += 1) {
-      if (TIMER_CASES[index].outcome) {
-        await expect.poll(() => rowOpacity(index)).toBe('1');
-      }
-    }
-    await expect(
-      timers.nth(lastIndex).locator('[data-testid="turn-timer-relative"]'),
-    ).not.toHaveClass(/opacity-0/);
 
     // CAN-4278 — a 20px gap separates the footer from the next user bubble,
     // the same gap the shared web transcript asserts. Measured against the
@@ -371,27 +365,14 @@ test('renders seeded turn-timer blocks with the right label and data-state', asy
 
     const lastBoxAtRest = await timers.nth(lastIndex).boundingBox();
     await timers.nth(lastIndex).hover();
-    await expect.poll(() => rowOpacity(lastIndex)).toBe('1');
-    // Hovering one turn never reveals another turn's footer, and revealing
-    // the row does not move it.
-    await expect.poll(() => rowOpacity(earlierCompletedIndex)).toBe('0');
     expect(await timers.nth(lastIndex).boundingBox()).toEqual(lastBoxAtRest);
     await window.mouse.move(5, 5);
-    await expect.poll(() => rowOpacity(lastIndex)).toBe('0');
 
-    // CAN-2301 — the completion stamp carries the full timestamp as a native
-    // title (browser-rendered hover), with no custom tooltip element.
-    const firstCompletedIndex = TIMER_CASES.findIndex(
-      (c) => c.expectedState === 'completed',
-    );
+    // These historical timestamps already show their date and time, so they
+    // do not need a native title repeating the same information.
     await expect(
-      timers
-        .nth(firstCompletedIndex)
-        .locator('[data-testid="turn-timer-relative"]'),
-    ).toHaveAttribute('title', /^Completed at .+/);
-    await expect(
-      window.locator('[data-testid="turn-timer-completed-at-tooltip"]'),
-    ).toHaveCount(0);
+      timers.nth(earlierCompletedIndex).getByTestId('turn-timer-relative'),
+    ).not.toHaveAttribute('title');
 
     // PR 763/764 — the paused timer must not contain a spinner and must not
     // tick. The shared component only renders the spinner while `live`, and a
@@ -402,16 +383,20 @@ test('renders seeded turn-timer blocks with the right label and data-state', asy
     const pausedTimer = timers.nth(pausedIndex);
     // A spinner (ThinkingSpinner) renders an animated SVG; assert none present.
     await expect(pausedTimer.locator('svg')).toHaveCount(0);
-    const beforeText = await pausedTimer.textContent();
+    const pausedHeader = window
+      .locator(`[data-chat-turn-group="turn-${pausedCase.order}-user"]`)
+      .getByTestId('turn-work-header')
+      .locator('[data-step-row-words]');
+    const beforeText = await pausedHeader.textContent();
     await window.waitForTimeout(2_000);
-    const afterText = await pausedTimer.textContent();
+    const afterText = await pausedHeader.textContent();
     expect(afterText).toBe(beforeText);
     expect(afterText).toBe(pausedCase.expectedLabel);
 
     // In a narrow side panel at the maximum shipped UI scale, neither
     // half of the completion metadata may wrap inside its own phrase. The
     // elapsed label and absolute completion stamp remain one line each even
-    // while the always-mounted feedback controls stay beside the stamp.
+    // with the action menu beside the stamp.
     await window.setViewportSize({ width: 646, height: 720 });
     await setUiScale(window, 150);
     const narrowCompletedTimer = timers.nth(TIMER_CASES.length - 1);
@@ -425,7 +410,11 @@ test('renders seeded turn-timer blocks with the right label and data-state', asy
       };
       return {
         elapsed: lineCount(
-          timer.querySelector('[data-testid="turn-timer-label"]'),
+          timer
+            .closest('[data-chat-turn-group]')
+            .querySelector(
+              '[data-testid="turn-work-header"] [data-step-row-words]',
+            ),
         ),
         completedAt: lineCount(
           timer.querySelector('[data-testid="turn-timer-relative"]'),
@@ -448,9 +437,17 @@ test('renders seeded turn-timer blocks with the right label and data-state', asy
 test('foreground continuation restarts the timer but late child traffic does not', async () => {
   const { launchAuthRecoveryFixture, AUTH_RECOVERY_SCOPE } =
     await import('./authRecoveryFixture.mjs');
-  const { injectChatEvent } = await import('./seeders/index.mjs');
+  const { injectChatEvent, publishTurnLifecycle } =
+    await import('./seeders/index.mjs');
   const fixture = await launchAuthRecoveryFixture({ worked: true });
-  const timer = fixture.panel.getByTestId('turn-timer');
+  const timers = fixture.panel.getByTestId('turn-timer');
+  const timersIn = (state) =>
+    fixture.panel.locator(`[data-testid="turn-timer"][data-state="${state}"]`);
+  // Every timer is settled and no event added one.
+  const expectSettled = async (count) => {
+    await expect(timers).toHaveCount(count);
+    await expect(timersIn('completed')).toHaveCount(count);
+  };
   const ingest = (data) =>
     injectChatEvent(fixture.electronApp, {
       ...AUTH_RECOVERY_SCOPE,
@@ -458,15 +455,27 @@ test('foreground continuation restarts the timer but late child traffic does not
       turnUserMessageId: 'original-user',
       data,
     });
+  // Content alone never starts or ends a canonical root turn (turn-state
+  // phase 35c5d): the session publishes the continuation's start and end,
+  // and the continuation runs under its own timer beside the settled one
+  // (phase 40b).
+  const continuation = {
+    ...AUTH_RECOVERY_SCOPE,
+    turnUserMessageId: 'original-user',
+  };
   try {
-    await expect(timer).toHaveAttribute('data-state', 'completed');
+    await expectSettled(1);
     await ingest({
       type: 'assistant',
       parent_tool_use_id: 'background-child',
       uuid: 'child-update',
       message: { content: [{ type: 'text', text: 'Background update' }] },
     });
-    await expect(timer).toHaveAttribute('data-state', 'completed');
+    await expectSettled(1);
+    await publishTurnLifecycle(fixture.electronApp, {
+      ...continuation,
+      phase: 'start',
+    });
     await ingest({
       type: 'assistant',
       uuid: 'foreground-update',
@@ -474,9 +483,13 @@ test('foreground continuation restarts the timer but late child traffic does not
         content: [{ type: 'text', text: 'Continuing the investigation' }],
       },
     });
-    await expect(timer).toHaveAttribute('data-state', 'live');
+    await expect(timersIn('live')).toHaveCount(1);
+    await publishTurnLifecycle(fixture.electronApp, {
+      ...continuation,
+      phase: 'end',
+    });
     await ingest({ type: 'result', subtype: 'success', result: 'Finished' });
-    await expect(timer).toHaveAttribute('data-state', 'completed');
+    await expectSettled(2);
     await ingest({
       type: 'assistant',
       uuid: 'foreground-update',
@@ -484,19 +497,19 @@ test('foreground continuation restarts the timer but late child traffic does not
         content: [{ type: 'text', text: 'Continuing the investigation' }],
       },
     });
-    await expect(timer).toHaveAttribute('data-state', 'completed');
+    await expectSettled(2);
     await ingest({
       type: 'assistant',
       uuid: 'late-auth-error',
       error: 'authentication_failed',
       message: { content: [{ type: 'text', text: 'Connection expired' }] },
     });
-    await expect(timer).toHaveAttribute('data-state', 'completed');
+    await expectSettled(2);
     await ingest({ type: 'system', subtype: 'status' });
-    await expect(timer).toHaveAttribute('data-state', 'completed');
+    await expectSettled(2);
     await fixture.app.openChatPage();
     await fixture.app.openMainPage();
-    await expect(timer).toHaveAttribute('data-state', 'completed');
+    await expectSettled(2);
   } finally {
     await closeCanopy(fixture.electronApp, fixture.userDataDir);
   }

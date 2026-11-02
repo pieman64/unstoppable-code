@@ -3,6 +3,7 @@
 import { useState, type JSX } from 'react';
 import { WORKSPACE_LABEL, WORKSPACE_LABEL_PLURAL } from '@canopy/protocol';
 import { Button } from '@canopy/ui-shared';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   MCP_WORKSPACE_DEFAULTS_HINT,
   mcpWorkspaceDefaultsStatus,
@@ -90,7 +91,8 @@ export function McpWorkspaceDefaultsSection({
             <span className="fg-tertiary">{MCP_WORKSPACE_DEFAULTS_HINT}</span>
           </>
         ) : enabledNames.length > 0 ? (
-          <span className="font-medium fg-primary">
+          // Names user-authored projects, so session replay masks it.
+          <span className={`${REPLAY_MASK_CLASS} font-medium fg-primary`}>
             {mcpWorkspaceDefaultsStatus(enabledNames)}
           </span>
         ) : null}
@@ -109,7 +111,11 @@ export function McpWorkspaceDefaultsSection({
             data-testid={`${testId}-select`}
           >
             {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
+              <option
+                key={workspace.id}
+                value={workspace.id}
+                className={REPLAY_MASK_CLASS}
+              >
                 {workspace.name}
               </option>
             ))}
@@ -134,9 +140,16 @@ export function McpWorkspaceDefaultsSection({
             onClick={(): void => void run('add')}
             data-testid={`${testId}-add`}
           >
-            {pending === 'add'
-              ? 'Adding…'
-              : workspaceDefaultMcpLabel(target.name)}
+            {pending === 'add' ? (
+              'Adding…'
+            ) : target.name.trim() ? (
+              <>
+                Add to{' '}
+                <span className={REPLAY_MASK_CLASS}>{target.name.trim()}</span>
+              </>
+            ) : (
+              workspaceDefaultMcpLabel()
+            )}
           </Button>
         )}
       </div>

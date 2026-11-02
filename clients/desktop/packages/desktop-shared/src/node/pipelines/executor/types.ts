@@ -1,3 +1,5 @@
+import type { RepositoryPolicyScope } from '../../lib/repository-policy';
+import type { LedgerGlobalOwner } from '@canopy/protocol/canopy-core';
 import type { ResourceContextInput } from '../../../lib/resource-context-policy';
 import type { PipelineResourceParent } from './child-pipeline-resolver';
 import type { ChildPipelineAuthorization } from './child-pipeline-resolver';
@@ -7,6 +9,7 @@ import type {
   ExecutionState,
   PipelineAgentAuthor,
   PipelineAgentChatAddress,
+  PipelineChatSendRecord,
   PipelineExecutionInitiator,
   PipelineRunTarget,
   PipelineExecutionScope,
@@ -54,6 +57,13 @@ import type {
   MoveToGroupInputs,
   PipelineHostFailureReason,
 } from '@canopy/desktop-shared/pipelines/host-actions';
+import type { CreateWorktreeInputs } from '@canopy/desktop-shared/pipelines/host-create-worktree';
+import type {
+  CreateBotEntryInputs,
+  CreateProjectEntryInputs,
+} from '@canopy/desktop-shared/pipelines/host-create-entry';
+import type { ResolvedSendAgentMessageInputs } from '@canopy/desktop-shared/pipelines/host-send-agent-message';
+import type { WaitForAgentReplyInputs } from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
 import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
 import type { AgentActionFailureMetadata } from '@canopy/desktop-shared/agent-failures';
 import type { HelperUsage } from '@canopy/desktop-shared/lib/helper-usage';
@@ -379,7 +389,8 @@ export interface ExecutionRuntime {
   pipelineLedger?: PipelineLedgerPort;
   /**
    * Host steps (`runs.using: host`). Only the desktop host supplies it;
-   * without it (the CLI, tests) host steps fail with `needs_desktop`.
+   * without it (the CLI, tests) a host step runs its declared Node
+   * `runs.fallback`, or fails with `needs_desktop` when it has none.
    */
   pipelineHostActions?: PipelineHostActions;
   /**
@@ -409,14 +420,31 @@ export interface PipelineOwnershipPort {
   ): PipelineAgentAuthor | undefined;
 }
 
+/**
+ * The Ledger an agent attempt records to: the task its execution runs in, or,
+ * for a global or directory run, its owner's global (workflow) Ledger. The
+ * owner is the execution's persisted one, never the project's organization or
+ * the selected sidebar context.
+ */
+export type PipelineLedgerTarget =
+  | { kind: 'task'; projectId: string; worktreeId: string }
+  | { kind: 'global'; owner: LedgerGlobalOwner };
+
 /** The agent attempt a step's Ledger tools speak for. */
 export interface PipelineLedgerAttemptRequest {
   executionId: string;
   pipelineId?: string;
   pipelineName?: string;
-  /** The workspace and worktree the execution runs in: its Ledger scope. */
-  projectId: string;
-  worktreeId: string;
+  /** The Ledger the attempt's entries go to. */
+  target: PipelineLedgerTarget;
+  /**
+   * The workspace the execution runs in, when it has one, for its approval
+   * policy and run navigation. A directory run has a workspace but no task,
+   * so it records globally and keeps its project's deny rules.
+   */
+  projectId?: string;
+  /** The worktree the execution runs in, when it has one. */
+  worktreeId?: string;
   /** The job as it ran; each matrix variant is its own physical job. */
   physicalJobId: string;
   /** The job as the pipeline declares it. */
@@ -520,27 +548,56 @@ export interface PipelineHostActionCaller {
   iteration: number;
   childId?: string;
   idempotencyKey: string;
-  /**
-   * Today's usage-attribution context (`RunStepOptions.executionContext`).
-   * CAN-4541 adds the execution owner and initiator here.
-   */
+  /** The execution's usage-attribution and owner context (`RunStepOptions.executionContext`). */
   executionContext?: string;
   initiationSource?: UsageInitiationSource;
+  /** The execution's `agent_origin`: the agent whose rules apply to an agent-originated run. */
+  agentOrigin?: PipelineAgentChatAddress;
+  /** The execution's trusted initiator; a sent message's title names an automation from it. */
+  initiator?: PipelineExecutionInitiator;
 }
 
-export type PipelineHostActionRequest = {
-  action: 'move-to-group';
-  inputs: MoveToGroupInputs;
-};
+export type PipelineHostActionRequest =
+  | { action: 'move-to-group'; inputs: MoveToGroupInputs }
+  | { action: 'create-worktree'; inputs: CreateWorktreeInputs }
+  | { action: 'create-project-entry'; inputs: CreateProjectEntryInputs }
+  | { action: 'create-bot-entry'; inputs: CreateBotEntryInputs }
+  | { action: 'send-agent-message'; inputs: ResolvedSendAgentMessageInputs }
+  | { action: 'wait-for-agent-reply'; inputs: WaitForAgentReplyInputs };
 
+/**
+ * `chatSend` is the message a step sent. A failure carries it too when the
+ * message was accepted before the step failed (a refused steer), so a
+ * delivered message is never hidden.
+ */
 export type PipelineHostActionResult =
-  | { status: 'success'; outputs: Record<string, string> }
+  | {
+      status: 'success';
+      outputs: Record<string, string>;
+      chatSend?: PipelineChatSendRecord;
+    }
   | {
       status: 'failure';
       failureReason: PipelineHostFailureReason;
       error: string;
       outputs: Record<string, string>;
+      chatSend?: PipelineChatSendRecord;
     };
+
+/** In-process execution controls; not a portable DTO or IPC contract. */
+export interface PipelineHostActionControls {
+  /** Epoch ms when the executor withdraws the call. */
+  deadlineAt: number;
+  /** `<executionsDir>/<executionId>/host/<sha256(idempotencyKey)>`; the host may create it. */
+  artifactsDir: string;
+  /**
+   * Registered before the first async effect; on timeout the executor
+   * returns the finalizer's result instead of a generic timeout.
+   */
+  registerTimeoutFinalizer(
+    finalize: () => Promise<PipelineHostActionResult>,
+  ): void;
+}
 
 /** Worker-to-core request: the executor raises it, the host applies policy. */
 export interface PipelineHostActions {
@@ -552,6 +609,7 @@ export interface PipelineHostActions {
     request: PipelineHostActionRequest,
     caller: PipelineHostActionCaller,
     signal: AbortSignal,
+    controls?: PipelineHostActionControls,
   ): Promise<PipelineHostActionResult>;
 }
 
@@ -739,6 +797,10 @@ export interface CodexPromptRunner {
 
 export interface CursorPromptRunnerRequest {
   cwd: string;
+  /** Host-selected execution checkout, separate from the effective step cwd.
+   * Optional for unmigrated native adapters; required by host-text delivery.
+   */
+  repositoryPolicyScope?: RepositoryPolicyScope;
   prompt: string;
   /** Effective pipeline environment captured for this execution. */
   environment: Record<string, string>;
@@ -805,6 +867,9 @@ export interface CopilotPromptRunner {
 
 export interface OpenCodePromptRunnerRequest extends CursorPromptRunnerRequest {
   thinkingLevel?: ThinkingLevel;
+  /** Captured pipeline scope, never the current navigation selection. */
+  worktreeId?: string;
+  executionContext?: string;
 }
 export type OpenCodePromptRunnerResult = CodexPromptRunnerResult;
 export interface OpenCodePromptRunner {
@@ -852,6 +917,8 @@ export interface ExecutionOptions {
    * target.
    */
   target?: ResolvedPipelineExecutionTarget;
+  /** Host-selected checkout boundary; null means unavailable on retained execution. */
+  executionCheckoutRoot?: string | null;
   env?: Record<string, string>;
   /** Sensitive env vars merged at child-process spawn time only — never persisted to ExecutionState. */
   secretEnv?: Record<string, string>;
@@ -860,6 +927,16 @@ export interface ExecutionOptions {
   pauseResponses?: PipelinePauseResponse[];
   statusReasonIds?: string[];
   pipelineFileDir?: string;
+  /**
+   * Resolved directory per declared asset id, read as
+   * `${{ assets.<id>.path }}`. Main resolves these before the run starts;
+   * child runs inherit the root run's values.
+   */
+  assetPaths?: Record<string, string>;
+  /** Per-pipeline state dir, read as `${{ canopy.pipeline_data_dir }}`. */
+  pipelineDataDir?: string;
+  /** Installed asset root (`<data>/pipeline-data/<key>/assets`). */
+  assetsDir?: string;
   /** In-memory file source locator, independent of the execution target. */
   pipelineSource?: { cwd: string; filePath: string };
   /** In-memory inherited provenance for inline children; never sourced from YAML. */
@@ -983,7 +1060,6 @@ export interface ExecutionOptions {
 
 export type ExecutePipelineRequestOptions = Pick<
   ExecutionOptions,
-  | 'cwd'
   | 'pipelineId'
   | 'scope'
   | 'target'
@@ -1010,6 +1086,17 @@ export type ExecutePipelineRequestOptions = Pick<
   | 'agentTerminalMode'
   | 'appAdvisorPipelineWatchers'
 > & {
+  /**
+   * Working directory of a project or directory run. Must be absent on a
+   * top-level global run; main supplies its scratch folder.
+   */
+  cwd?: string;
+  /**
+   * Owner a person chose for a global run of an unowned definition:
+   * `personal` or `org:<uuid>`. Valid only with `scope: 'global'`; main
+   * validates it and never trusts it over a saved owner.
+   */
+  requestedOwner?: string;
   pipelineFilePath?: string;
 };
 

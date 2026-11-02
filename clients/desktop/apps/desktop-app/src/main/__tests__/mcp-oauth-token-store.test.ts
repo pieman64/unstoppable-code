@@ -88,6 +88,7 @@ const migrationConfig = {
   enabled: true,
   envVars: {},
   extraArgs: [],
+  extraHeaders: {},
   createdAt: '',
   updatedAt: '',
 };

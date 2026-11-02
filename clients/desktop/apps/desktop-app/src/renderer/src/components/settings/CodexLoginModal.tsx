@@ -5,14 +5,12 @@ import {
 } from '@/components/pages/usage/OtherAccountSnapshots';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { CodexLoginState } from '@canopy/desktop-shared/types';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Checkbox, DialogModal } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { DialogModal } from '@/components/shared/DialogModal';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
 import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 interface CodexLoginModalProps {
   onClose: () => void;
@@ -23,7 +21,6 @@ export function CodexLoginModal({
   onClose,
   ownerDocument,
 }: CodexLoginModalProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [state, setState] = useState<CodexLoginState>({
     attemptId: null,
     phase: 'ready',
@@ -179,10 +176,77 @@ export function CodexLoginModal({
       maxWidth="md"
       onClose={cancel}
       ownerDocument={ownerDocument}
+      dataTestId="auth-login-modal"
+      // One action row in one order, in the dialog's footer: Cancel, then
+      // any alternative, then the step that moves sign-in forward.
+      footer={
+        <>
+          <Button
+            size="compact"
+            variant="secondary"
+            data-testid="auth-login-cancel"
+            onClick={cancel}
+          >
+            Cancel
+          </Button>
+          {state.phase === 'confirm' && (
+            <Button
+              size="compact"
+              variant="primary"
+              data-testid="auth-login-submit"
+              onClick={() => start()}
+            >
+              Pause work and sign in
+            </Button>
+          )}
+          {state.phase === 'waiting' && (
+            <>
+              {state.method !== 'chatgptDeviceCode' && (
+                <Button
+                  size="compact"
+                  variant="secondary"
+                  onClick={() => start('chatgptDeviceCode')}
+                >
+                  Use a device code
+                </Button>
+              )}
+              <Button
+                size="compact"
+                variant="primary"
+                onClick={(): void => {
+                  void window.api.codexLogin
+                    .openBrowser()
+                    .catch(() =>
+                      setError("Couldn't open your browser. Try again."),
+                    );
+                }}
+              >
+                Open browser
+              </Button>
+            </>
+          )}
+          {state.phase === 'complete' && state.outcome === 'failed' && (
+            <Button size="compact" variant="primary" onClick={() => start()}>
+              Sign in
+            </Button>
+          )}
+          {state.phase === 'verification-failed' && (
+            <Button
+              size="compact"
+              variant="primary"
+              onClick={(): void => {
+                void window.api.codexLogin.retryVerification().then(receive);
+              }}
+            >
+              Try again
+            </Button>
+          )}
+        </>
+      }
     >
-      <div data-testid="auth-login-modal" className="flex flex-col">
+      <div className="flex flex-col">
         <div
-          className="space-y-4 px-5 py-5 text-s fg-primary"
+          className="space-y-4 px-5 pt-5 pb-4.5 text-s fg-primary"
           aria-live="polite"
         >
           {state.phase === 'confirm' ? (
@@ -190,11 +254,10 @@ export function CodexLoginModal({
               <p>Your active Codex work will pause during sign-in.</p>
               <p className="fg-secondary">
                 After signing in or cancelling, you can choose which chats and
-                pipelines to resume.
+                workflows to resume.
               </p>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
+              <label className="flex w-fit cursor-pointer items-center gap-2">
+                <Checkbox
                   checked={method === 'chatgptDeviceCode'}
                   onChange={(event) =>
                     setMethod(
@@ -219,8 +282,8 @@ export function CodexLoginModal({
                       {state.userCode}
                     </code>
                     <Button
-                      size={settingsButtonSize}
-                      variant="ghost"
+                      size="compact"
+                      variant="secondary"
                       onClick={(): void => {
                         void copyTextToClipboard(state.userCode ?? '').then(
                           () => setCopied(true),
@@ -237,53 +300,11 @@ export function CodexLoginModal({
                   work will stay stopped until you resume it.
                 </p>
               )}
-              <Button
-                size={settingsButtonSize}
-                variant="primary"
-                onClick={(): void => {
-                  void window.api.codexLogin
-                    .openBrowser()
-                    .catch(() =>
-                      setError("Couldn't open your browser. Try again."),
-                    );
-                }}
-              >
-                Open browser
-              </Button>
-              {state.method !== 'chatgptDeviceCode' && (
-                <Button
-                  size={settingsButtonSize}
-                  variant="ghost"
-                  onClick={() => start('chatgptDeviceCode')}
-                >
-                  Use a device code
-                </Button>
-              )}
             </>
           ) : state.phase === 'complete' && state.outcome === 'failed' ? (
-            <>
-              <p>Sign-in did not complete. Try again.</p>
-              <Button
-                size={settingsButtonSize}
-                variant="primary"
-                onClick={() => start()}
-              >
-                Sign in
-              </Button>
-            </>
+            <p>Sign-in did not complete. Try again.</p>
           ) : state.phase === 'verification-failed' ? (
-            <>
-              <p>{state.error}</p>
-              <Button
-                size={settingsButtonSize}
-                variant="primary"
-                onClick={(): void => {
-                  void window.api.codexLogin.retryVerification().then(receive);
-                }}
-              >
-                Retry verification
-              </Button>
-            </>
+            <p>{state.error}</p>
           ) : (
             <p>
               {state.phase === 'verifying'
@@ -296,8 +317,8 @@ export function CodexLoginModal({
           {snapshots.length > 0 && (
             <>
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 data-testid="auth-login-snapshots-toggle"
                 aria-expanded={snapshotsOpen}
                 onClick={() => setSnapshotsOpen(!snapshotsOpen)}
@@ -322,26 +343,6 @@ export function CodexLoginModal({
             <p role="alert" className="fg-destructive">
               {error}
             </p>
-          )}
-        </div>
-        <div className="flex justify-end gap-2 border-t px-5 py-3">
-          <Button
-            size={settingsButtonSize}
-            variant="ghost"
-            data-testid="auth-login-cancel"
-            onClick={cancel}
-          >
-            Cancel
-          </Button>
-          {state.phase === 'confirm' && (
-            <Button
-              size={settingsButtonSize}
-              variant="primary"
-              data-testid="auth-login-submit"
-              onClick={() => start()}
-            >
-              Pause work and sign in
-            </Button>
           )}
         </div>
       </div>

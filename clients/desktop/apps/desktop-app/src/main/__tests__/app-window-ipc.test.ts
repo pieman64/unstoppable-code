@@ -5,8 +5,12 @@ const mockIs = { dev: false };
 
 jest.mock('electron', () => ({
   app: {
-    relaunch: mockRelaunch,
-    quit: mockQuit,
+    get relaunch(): typeof mockRelaunch {
+      return mockRelaunch;
+    },
+    get quit(): typeof mockQuit {
+      return mockQuit;
+    },
   },
   ipcMain: {
     removeHandler: jest.fn((channel: string) => {
@@ -21,7 +25,9 @@ jest.mock('electron', () => ({
 }));
 
 jest.mock('@electron-toolkit/utils', () => ({
-  is: mockIs,
+  get is(): typeof mockIs {
+    return mockIs;
+  },
 }));
 
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';

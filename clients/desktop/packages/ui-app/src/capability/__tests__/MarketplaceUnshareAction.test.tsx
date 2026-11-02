@@ -65,6 +65,43 @@ async function flush(): Promise<void> {
 }
 
 describe('MarketplaceUnshareAction (CAN-4263)', () => {
+  it('offers an accessible icon-only row trigger with the Unshare tooltip and confirmation', () => {
+    const onUnshare = jest.fn(() => Promise.resolve());
+    act(() =>
+      root.render(
+        <MarketplaceUnshareAction
+          iconOnly
+          kind="skill"
+          name="Review helper"
+          onUnshare={onUnshare}
+          onUnshared={() => undefined}
+        />,
+      ),
+    );
+    const trigger = byTestId('marketplace-unshare');
+    expect(trigger?.textContent).toBe('');
+    expect(trigger?.getAttribute('aria-label')).toBe('Unshare');
+    expect(trigger?.querySelector('svg')?.getAttribute('data-glyph')).toBe(
+      'link-2-off',
+    );
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+      );
+      trigger?.focus();
+    });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+      'Unshare',
+    );
+    click('marketplace-unshare');
+    expect(byTestId('marketplace-unshare-dialog')?.textContent).toContain(
+      'Unshare “Review helper”?',
+    );
+    expect(onUnshare).not.toHaveBeenCalled();
+    click('marketplace-unshare-cancel');
+    expect(byTestId('marketplace-unshare-dialog')).toBeNull();
+  });
+
   it('cancel sends no request and closes the dialog', () => {
     const onUnshare = jest.fn(() => Promise.resolve());
     const onUnshared = jest.fn();
@@ -137,6 +174,7 @@ describe('MarketplaceUnshareAction (CAN-4263)', () => {
     act(() =>
       root.render(
         <MarketplaceUnshareAction
+          iconOnly
           kind="plugin"
           name="Docs"
           onUnshare={onUnshare}
@@ -181,6 +219,7 @@ describe('MarketplaceUnshareAction (CAN-4263)', () => {
     act(() =>
       root.render(
         <MarketplaceUnshareAction
+          iconOnly
           kind="skill"
           name="Review helper"
           onUnshare={onUnshare}

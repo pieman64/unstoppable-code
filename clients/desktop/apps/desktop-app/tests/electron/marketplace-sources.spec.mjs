@@ -86,7 +86,9 @@ test('Marketplaces list, invalid recovery, source filters and legacy entry point
     await page.getByTestId('plugins-type-tab-all').click();
     await app.openPluginsTab('marketplace');
     await expect(
-      page.getByTestId(`marketplace-row-${source.id}`),
+      page.locator(
+        `[data-testid="marketplace-source-row"][data-source-id="${source.id}"]`,
+      ),
     ).toBeVisible();
   } finally {
     await closeCanopy(launch.electronApp, launch.userDataDir);

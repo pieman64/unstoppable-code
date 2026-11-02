@@ -33,6 +33,14 @@ import {
   type LinearPreviewStoreState,
 } from '../linear-preview-store';
 
+function disposePreviewStore<State>(store: ClientStore<State>): void {
+  const disposer = store[CLIENT_STORE_DISPOSE];
+  if (typeof disposer !== 'function') {
+    throw new Error('Expected reference preview store to provide a disposer.');
+  }
+  disposer.call(store);
+}
+
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
   get length(): number {
@@ -326,7 +334,7 @@ describe('inconclusive GitHub scope reads', () => {
         },
       );
       expect(t.githubReads).toHaveLength(1);
-      t.store[CLIENT_STORE_DISPOSE]();
+      disposePreviewStore(t.store);
     },
   );
 
@@ -335,7 +343,7 @@ describe('inconclusive GitHub scope reads', () => {
     await t.store.getState().loadGitHub(item(1));
     await jest.advanceTimersByTimeAsync(300);
     expect(persistedKeys(t)).toContain(githubPreviewKey(item(1)));
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
     t.respondGitHubScopeWith(() => Promise.reject(new Error('decrypt failed')));
     const remounted = t.make();
     remounted.getState().ensureGitHubConnection();
@@ -346,7 +354,7 @@ describe('inconclusive GitHub scope reads', () => {
       remounted.getState().githubViews[githubPreviewKey(item(1))]?.status,
     ).toBe('ready');
     expect(t.githubReads).toHaveLength(1);
-    remounted[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(remounted);
   });
 
   it('never revives cached data after identity invalidation during a scope failure', async () => {
@@ -368,7 +376,7 @@ describe('inconclusive GitHub scope reads', () => {
       t.store.getState().githubViews[githubPreviewKey(item(1))]?.status,
     ).not.toBe('ready');
     expect(t.githubReads).toHaveLength(1);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('does not display expired data or fetch on an inconclusive scope', async () => {
@@ -383,7 +391,7 @@ describe('inconclusive GitHub scope reads', () => {
       t.store.getState().githubViews[githubPreviewKey(item(1))]?.status,
     ).toBe('unavailable');
     expect(t.githubReads).toHaveLength(1);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('still removes cached titles on a confirmed disconnected scope', async () => {
@@ -395,7 +403,7 @@ describe('inconclusive GitHub scope reads', () => {
       status: 'unavailable',
       reason: 'disconnected',
     });
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 });
 
@@ -421,7 +429,7 @@ describe('GitHub enrichment modes', () => {
     await jest.advanceTimersByTimeAsync(29_900);
     expect(t.scopeReads.github).toBe(reads + 1);
     expect(t.store.getState().githubConnected).toBe(true);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
     setReferenceEnrichmentModes({ linear: 'replace', github: 'replace' });
   });
 
@@ -445,7 +453,7 @@ describe('GitHub enrichment modes', () => {
       linearPreview('CAN-1'),
     );
     release();
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('keeps true provider invalidation active while Off', async () => {
@@ -459,7 +467,7 @@ describe('GitHub enrichment modes', () => {
       t.store.getState().views[linearPreviewKey({ identifier: 'CAN-1' })]
         ?.status,
     ).toBe('ready');
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('fences a pending origin and permits a new read after Off', async () => {
@@ -482,7 +490,7 @@ describe('GitHub enrichment modes', () => {
     expect(t.originReads).toHaveLength(2);
     await Promise.resolve();
     await Promise.resolve();
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 });
 
@@ -936,7 +944,7 @@ describe('persisted GitHub entries', () => {
     t.store.getState().ensureGitHubOrigin(origin);
     await flush();
     jest.advanceTimersByTime(250);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
     t.advance(LIMITS.retentionMs - 1);
     const restarted = t.make();
     t.respondOriginWith(() => Promise.reject(new Error('host unavailable')));
@@ -959,7 +967,7 @@ describe('persisted GitHub entries', () => {
       owner: 'new',
       repository: 'remote',
     });
-    restarted[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(restarted);
   });
 
   it('drops an origin while its host read is held and does not resurrect it on a late rejection', async () => {
@@ -972,7 +980,7 @@ describe('persisted GitHub entries', () => {
     t.store.getState().ensureGitHubOrigin(origin);
     await flush();
     jest.advanceTimersByTime(250);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
     t.advance(LIMITS.retentionMs - 1);
     const held = deferred<OriginResult>();
     t.respondOriginWith(() => held.promise);
@@ -986,7 +994,7 @@ describe('persisted GitHub entries', () => {
     held.reject(new Error('host still unavailable'));
     await flush();
     expect(restarted.getState().githubOrigins['p\0a']).toBeNull();
-    restarted[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(restarted);
   });
 
   it('does not retain an expired origin when a delayed rejection beats its timer', async () => {
@@ -999,7 +1007,7 @@ describe('persisted GitHub entries', () => {
     t.store.getState().ensureGitHubOrigin(origin);
     await flush();
     jest.advanceTimersByTime(250);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
     t.advance(LIMITS.retentionMs - 1);
     const held = deferred<OriginResult>();
     t.respondOriginWith(() => held.promise);
@@ -1009,7 +1017,7 @@ describe('persisted GitHub entries', () => {
     held.reject(new Error('host unavailable after retention'));
     await flush();
     expect(restarted.getState().githubOrigins['p\0a']).toBeNull();
-    restarted[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(restarted);
   });
 
   it('does not leave a published origin behind when its retention metadata is evicted', async () => {
@@ -1037,7 +1045,7 @@ describe('persisted GitHub entries', () => {
       projectId: 'p',
       worktreeId: 'a',
     });
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
     held.resolve({ repository: { owner: 'acme', repository: 'canopy' } });
     await flush();
     expect(t.store.getState().githubOrigins['p\0a']).toBeUndefined();
@@ -1054,7 +1062,7 @@ describe('persisted GitHub entries', () => {
     t.store.getState().ensureGitHubOrigin(origin);
     await flush();
     jest.advanceTimersByTime(250);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
     t.advance(LIMITS.retentionMs - 1);
     const restarted = t.make();
     t.respondOriginWith(() =>
@@ -1068,7 +1076,7 @@ describe('persisted GitHub entries', () => {
       owner: 'new',
       repository: 'remote',
     });
-    restarted[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(restarted);
   });
 
   it.each([

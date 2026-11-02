@@ -594,6 +594,7 @@ describe('automations', () => {
           remote: {
             remoteId: 'share-mine',
             contentHash: 'a'.repeat(64),
+            shareScope: 'private',
             sharedAt: '2026-08-19T00:00:00.000Z',
           },
         }),
@@ -614,8 +615,18 @@ describe('automations', () => {
       {
         id: 'in-context',
         name: 'in-context',
-        description: 'Scheduled · App Advisor prompt: Summarize the day',
+        description: 'Scheduled · Orchestrator prompt: Summarize the day',
         sharedRemoteId: 'share-mine',
+        // The Customize Workflows row facets (CAN-4845).
+        workflow: {
+          schedule: {
+            label: 'Daily · 09:00',
+            tooltip: 'Every day at 09:00',
+          },
+          summary: 'Orchestrator prompt: Summarize the day',
+          enabled: true,
+          lastRun: null,
+        },
       },
     ]);
     expect(inventory.automationActivities.map((item) => item.id)).toEqual([
@@ -813,6 +824,7 @@ describe('automations', () => {
             remote: {
               remoteId: 'mine-public-link',
               contentHash: 'a'.repeat(64),
+              shareScope: 'private',
               sharedAt: '2026-08-19T00:00:00.000Z',
             },
           }),
@@ -961,6 +973,62 @@ describe('shared plugins', () => {
     expect(inventory.sharedPlugins.map((row) => row.externalId)).toEqual([
       'team-plugin',
       'org-plugin',
+    ]);
+  });
+
+  // CAN-4842: Shared by you also lists a plugin shared only by public link,
+  // which is a private-scoped share the Marketplace lists leave out.
+  it('keeps the viewer’s own shares, including link-only ones, for Shared by you', async () => {
+    mockAccount.capabilities = ['plugins-crud-v1'];
+    sharedPluginsEnabled = true;
+    const link = {
+      externalId: 'link-1',
+      upToDate: true,
+      createdAt: '2026-10-01T00:00:00.000Z',
+    };
+    mockListSharedPlugins.mockResolvedValue({
+      success: true,
+      data: {
+        serverId: 'cloud',
+        data: [
+          {
+            externalId: 'own-team',
+            shareScope: 'team',
+            owner: TEAM_OWNER,
+            canDelete: true,
+          },
+          {
+            externalId: 'own-link',
+            shareScope: 'private',
+            owner: { type: 'user', id: 'me', name: 'Me' },
+            canDelete: true,
+            publicShare: link,
+          },
+          {
+            externalId: 'own-personal',
+            shareScope: 'private',
+            owner: { type: 'user', id: 'me', name: 'Me' },
+            canDelete: true,
+          },
+          {
+            externalId: 'their-team',
+            shareScope: 'team',
+            owner: TEAM_OWNER,
+            canDelete: false,
+          },
+        ],
+      },
+    });
+
+    await render();
+
+    expect(inventory.ownSharedPlugins.map((row) => row.externalId)).toEqual([
+      'own-team',
+      'own-link',
+    ]);
+    expect(inventory.sharedPlugins.map((row) => row.externalId)).toEqual([
+      'own-team',
+      'their-team',
     ]);
   });
 

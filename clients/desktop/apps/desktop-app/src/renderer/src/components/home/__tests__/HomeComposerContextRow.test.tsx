@@ -81,11 +81,10 @@ describe('HomeComposerContextRow', () => {
   it('contributes no layout element when no context picker is visible', () => {
     act(() =>
       root.render(
-        createElement(
-          HomeComposerContextRow,
-          { visible: false },
-          createElement('button', null, 'Workspace'),
-        ),
+        createElement(HomeComposerContextRow, {
+          visible: false,
+          children: createElement('button', null, 'Workspace'),
+        }),
       ),
     );
 
@@ -95,13 +94,18 @@ describe('HomeComposerContextRow', () => {
   function renderPickers(): HTMLElement {
     act(() =>
       root.render(
-        createElement(
-          HomeComposerContextRow,
-          { visible: true },
-          createElement('div', { 'data-testid': 'home-workspace-picker' }),
-          createElement('div', { 'data-testid': 'home-branch-picker' }),
-          createElement('div', { 'data-testid': 'home-base-branch-picker' }),
-        ),
+        createElement(HomeComposerContextRow, {
+          visible: true,
+          children: [
+            createElement('div', {
+              'data-testid': 'home-workspace-picker',
+            }),
+            createElement('div', { 'data-testid': 'home-branch-picker' }),
+            createElement('div', {
+              'data-testid': 'home-base-branch-picker',
+            }),
+          ],
+        }),
       ),
     );
     const row = container.querySelector<HTMLElement>(

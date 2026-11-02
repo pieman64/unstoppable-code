@@ -305,13 +305,13 @@ describe('@canopy/plugin-interop', () => {
   });
 
   it('projects files deterministically and flattens generated names', (): void => {
-    const manifest: ClaudePluginManifest = {
+    const manifest = {
       name: 'demo',
       version: '1.0.0',
       description: 'Demo plugin',
       commands: 'commands',
       agents: 'agents',
-    };
+    } satisfies ClaudePluginManifest;
     const input: ProjectClaudePluginForCodexInput = {
       pluginName: 'demo',
       category: 'development',

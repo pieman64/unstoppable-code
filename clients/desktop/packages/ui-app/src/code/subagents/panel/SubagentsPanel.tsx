@@ -11,6 +11,7 @@ import {
   useState,
   type ComponentType,
   type JSX,
+  type ReactNode,
 } from 'react';
 import {
   countSubagentsByFilter,
@@ -32,14 +33,9 @@ import type {
   DiagramCanvasProps,
   DiagramCanvasViewportSize,
 } from '@canopy/ui-rich/diagram';
-import {
-  ChatIcon,
-  DetailsIcon,
-  GraphIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
+import { ChatIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
-  AGENT_ACTIVITY_STOP_ALL_CONFIRM_LABEL,
   Button,
   FloatingPickerMenu,
   PickerTrigger,
@@ -57,11 +53,8 @@ import {
   SUBAGENTS_TREE_LABEL,
   SUBAGENTS_VIEW_GROUP_LABEL,
   SUBAGENTS_VIEW_LIST_LABEL,
-  SUBAGENTS_VIEW_LIST_TOOLTIP,
-  SUBAGENTS_VIEW_TREE_TOOLTIP,
   SUBAGENTS_VIEW_TREE_LABEL,
   SubagentFoldedParentsCard,
-  useSubagentsView,
   SubagentMoreBelowCard,
   SubagentNodeCard,
   SubagentRootCard,
@@ -73,7 +66,6 @@ import {
   SubagentsInspector,
   SubagentsLevelsMenu,
   SubagentsRootPickerMenu,
-  subagentsFilterLabel,
   subagentsFilterLabelWithCount,
   subagentsLevelsValueLabel,
   subagentsMoreBelowAccessibleLabel,
@@ -106,7 +98,6 @@ import type {
   SubagentViewerCapabilities,
 } from '../types';
 import { subagentHasIsolatedChanges } from '../types';
-import { StopAllDelegatesControl } from '../../agent-activity/StopAllDelegatesControl';
 
 const LazyDiagramCanvas = lazy(() => import('@canopy/ui-rich/diagram'));
 const WIDE_PANEL_MINIMUM = 760;
@@ -114,26 +105,14 @@ const WIDE_PANEL_MINIMUM = 760;
 const MINIMAL_LIST_MAXIMUM = 480;
 const INSPECTOR_WIDTH = 320;
 const DEFAULT_MAX_DEPTH = 10;
-/**
- * Hides the Levels caption once the Subagents view's second toolbar row is
- * too narrow to hold it beside the filters and the view; it keeps its value
- * and accessible name.
- */
-const TOOLBAR_NARROW_HIDDEN_CLASS = '@max-[40rem]/subagents-toolbar:sr-only';
-/** Managed task states that hold or wait for a slot. */
-const LIVE_MANAGED_STATUSES: ReadonlySet<SubagentNode['status']> = new Set([
-  'queued',
-  'starting',
-  'running',
-  'approval',
-]);
-
 /** Props for the host-neutral Subagents panel. */
 export interface SubagentsPanelProps {
   /** Stable view-state scope for one worktree, Work Entry, or App Advisor. */
   readonly scopeKey: string;
   /** Open, non-archived chats with subagents, already filtered by the host. */
   readonly rootChats: readonly SubagentRootChatSummary[];
+  /** Optional host-owned notice, independent of root/tree availability. */
+  readonly lifetimeNotice?: ReactNode;
   /** Root chat selected by the host; null requests panel auto-selection. */
   readonly selectedRootId: string | null;
   /** Tree data for the selected root chat, or null while it is unavailable. */
@@ -166,12 +145,6 @@ export interface SubagentsPanelProps {
   readonly onStop: (node: SubagentNode) => Promise<SubagentCommandResult>;
   /** Opens the host's changes view for a selected subagent. */
   readonly onShowChanges?: (node: SubagentNode) => void;
-  /**
-   * Stops every live managed task of the selected root chat (and what they
-   * started). Resolves `true` once the host accepted the stop. While any is
-   * live (and `capabilities.stop`), the header offers Stop all delegates.
-   */
-  readonly onStopAllDelegations?: () => Promise<boolean>;
   /** Reports the inspector's selected node, or null when it is cleared. */
   readonly onSelectedNodeChange?: (node: SubagentNode | null) => void;
   /** Optional lightweight canvas substitute for tests. */
@@ -353,6 +326,7 @@ function canvasContent(
 export function SubagentsPanel({
   scopeKey,
   rootChats,
+  lifetimeNotice,
   selectedRootId,
   tree,
   treeState = { status: 'ready' },
@@ -368,13 +342,9 @@ export function SubagentsPanel({
   onStopWorkflow,
   onStop,
   onShowChanges,
-  onStopAllDelegations,
   onSelectedNodeChange,
   CanvasComponent,
 }: SubagentsPanelProps): JSX.Element {
-  // The Subagents view experiment: one toolbar row with Stop all and icon
-  // Tree/List. Off keeps the classic wrapping toolbar.
-  const subagentsView = useSubagentsView();
   const panelRef = useRef<HTMLElement>(null);
   const rootTriggerRef = useRef<HTMLButtonElement>(null);
   const levelsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -904,19 +874,7 @@ export function SubagentsPanel({
 
   const rootPicker =
     orderedRootChats.length > 0 ? (
-      // In the Subagents view it is sized from zero up to its title, so a
-      // long title truncates rather than pushing Stop all off the row.
-      <div
-        className={
-          subagentsView
-            ? // Pulled out by the trigger's 10px side, then the glyph's own
-              // half-pixel inset as a transform (layout snaps margins to
-              // whole pixels), so the drawn icon starts on the filter pill's
-              // outer edge below (measured at 2x).
-              'relative -ml-2.5 flex min-w-13 max-w-fit grow basis-0 -translate-x-[calc(var(--spacing)/8)]'
-            : 'relative shrink-0'
-        }
-      >
+      <div className="relative shrink-0">
         <PickerTrigger
           ref={rootTriggerRef}
           data-testid="subagents-root-picker"
@@ -927,17 +885,12 @@ export function SubagentsPanel({
           className="max-w-72"
         >
           <ChatIcon size={14} aria-hidden />
-          {/* The Subagents view adds 2px between the chat icon and its name. */}
           {currentRoot ? (
-            <span
-              className={`${REPLAY_MASK_CLASS} min-w-0 truncate ${subagentsView ? 'ml-0.5' : ''}`}
-            >
+            <span className={`${REPLAY_MASK_CLASS} min-w-0 truncate`}>
               {currentRoot.title}
             </span>
           ) : (
-            <span
-              className={`min-w-0 truncate ${subagentsView ? 'ml-0.5' : ''}`}
-            >
+            <span className="min-w-0 truncate">
               {SUBAGENTS_ROOT_PICKER_LABEL}
             </span>
           )}
@@ -965,17 +918,15 @@ export function SubagentsPanel({
       <div className="relative shrink-0">
         <PickerTrigger
           ref={levelsTriggerRef}
+          // 28px, level with the filter and view controls beside it.
+          size="compact"
           data-testid="subagents-levels"
           aria-label={SUBAGENTS_LEVELS_MENU_LABEL}
           aria-expanded={levelsMenuOpen}
           aria-haspopup="menu"
           onClick={(): void => setLevelsMenuOpen((open) => !open)}
         >
-          <span
-            className={subagentsView ? TOOLBAR_NARROW_HIDDEN_CLASS : undefined}
-          >
-            {SUBAGENTS_LEVELS_LABEL}
-          </span>
+          <span>{SUBAGENTS_LEVELS_LABEL}</span>
           <span className="fg-tertiary">
             {subagentsLevelsValueLabel(levelSetting, autoLevels)}
           </span>
@@ -1003,39 +954,20 @@ export function SubagentsPanel({
       </div>
     ) : null;
 
-  // A filter segment: `Active 3`. Under the Subagents view the count reads
-  // in tertiary ink after the label (its leading space keeps the accessible
-  // name `Active 3`); the classic toolbar keeps one plain label.
   const filterOption = (
     value: SubagentStatusFilter,
     count: number | null,
-  ): SegmentedControlOption<SubagentStatusFilter> =>
-    subagentsView
-      ? {
-          value,
-          label: subagentsFilterLabel(value),
-          ...(count === null
-            ? {}
-            : {
-                trailing: (
-                  <span className="tabular-nums fg-tertiary">{` ${count}`}</span>
-                ),
-              }),
-          dataTestId: `subagents-filter-${value}`,
-        }
-      : {
-          value,
-          label: subagentsFilterLabelWithCount(value, count),
-          dataTestId: `subagents-filter-${value}`,
-        };
+  ): SegmentedControlOption<SubagentStatusFilter> => ({
+    value,
+    label: subagentsFilterLabelWithCount(value, count),
+    dataTestId: `subagents-filter-${value}`,
+  });
 
-  // Under the Subagents view the filters and the view sit side by side on
-  // the toolbar's second row, sized to their labels.
   const filterControl = showControls ? (
     <SegmentedControl<SubagentStatusFilter>
       label={SUBAGENTS_FILTER_GROUP_LABEL}
       value={filter}
-      width={subagentsView ? 'content' : 'control'}
+      width="control"
       dataTestId="subagents-filter"
       options={[
         filterOption('all', counts?.all ?? null),
@@ -1050,65 +982,23 @@ export function SubagentsPanel({
     <SegmentedControl<'tree' | 'list'>
       label={SUBAGENTS_VIEW_GROUP_LABEL}
       value={view}
-      width={subagentsView ? 'content' : 'control'}
+      width="control"
       dataTestId="subagents-view"
       options={[
         {
           value: 'tree',
           label: SUBAGENTS_VIEW_TREE_LABEL,
-          ...(subagentsView
-            ? {
-                icon: <GraphIcon size={12} exactSize aria-hidden />,
-                tooltip: SUBAGENTS_VIEW_TREE_TOOLTIP,
-              }
-            : {}),
           dataTestId: 'subagents-view-tree',
         },
         {
           value: 'list',
           label: SUBAGENTS_VIEW_LIST_LABEL,
-          ...(subagentsView
-            ? {
-                icon: <DetailsIcon size={12} exactSize aria-hidden />,
-                tooltip: SUBAGENTS_VIEW_LIST_TOOLTIP,
-              }
-            : {}),
           dataTestId: 'subagents-view-list',
         },
       ]}
       onChange={(nextView): void => setView(scopeKey, nextView)}
     />
   ) : null;
-
-  // The selected root's live managed tasks, at any depth: what Stop all
-  // delegates ends. Native subagents and workflow runs are never affected.
-  const liveDelegationIds = useMemo(
-    (): readonly string[] =>
-      tree
-        ? Array.from(tree.nodes.values())
-            .filter(
-              (node) =>
-                node.kind === 'managed' &&
-                LIVE_MANAGED_STATUSES.has(node.status),
-            )
-            .map((node) => node.id)
-        : [],
-    [tree],
-  );
-  // Classic hosts keep Stop all in the chat's Agent activity section.
-  const stopAllControl =
-    subagentsView && capabilities.stop && onStopAllDelegations ? (
-      <div className="flex shrink-0 items-center">
-        <StopAllDelegatesControl
-          // A confirmation belongs to the chat it was opened for; choosing
-          // another chat asks again instead of stopping that chat's tasks.
-          key={`${scopeKey}:${selectedRootId ?? ''}`}
-          liveDelegationIds={liveDelegationIds}
-          onStopAll={onStopAllDelegations}
-          label={AGENT_ACTIVITY_STOP_ALL_CONFIRM_LABEL}
-        />
-      </div>
-    ) : null;
 
   let content: JSX.Element;
   if (orderedRootChats.length === 0) {
@@ -1138,7 +1028,7 @@ export function SubagentsPanel({
         {treeState.onRetry ? (
           <Button
             variant="secondary"
-            size="control"
+            size="compact"
             onClick={treeState.onRetry}
           >
             {SUBAGENTS_RETRY_LABEL}
@@ -1161,7 +1051,6 @@ export function SubagentsPanel({
         projection={projection}
         selectedId={selectedNodeId}
         columns={listColumns}
-        showStatus={filter !== 'active'}
         collapsedIds={collapsedIds}
         onToggleCollapsed={toggleCollapsed}
         showWorkspaceDetails={showWorkspaceDetails}
@@ -1271,36 +1160,10 @@ export function SubagentsPanel({
       data-testid="subagents-panel"
       className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-base"
     >
+      {lifetimeNotice}
       {orderedRootChats.length > 0 ? (
         <>
-          {subagentsView ? (
-            <header
-              data-testid="subagents-toolbar"
-              className="@container/subagents-toolbar flex shrink-0 flex-col gap-2 border-b px-3 py-2"
-            >
-              <div className="flex min-h-7 items-center gap-x-3">
-                {rootPicker}
-                {/* Pulled out by Stop all's 10px side, then half a pixel as a
-                    transform, so its drawn text ends on the Tree/List pill's
-                    outer right edge below (measured at 2x). */}
-                <div className="-mr-2.5 ml-auto flex shrink-0 translate-x-[calc(var(--spacing)/8)] items-center">
-                  {stopAllControl}
-                </div>
-              </div>
-              <div
-                data-testid="subagents-toolbar-views"
-                className="flex items-center justify-between gap-1.5"
-              >
-                {filterControl}
-                {/* Levels (Tree only) sits just before the view, so the view
-                    keeps the row's right edge under Stop all. */}
-                <div className="flex shrink-0 items-center gap-1.5">
-                  {levelsControl}
-                  {viewControl}
-                </div>
-              </div>
-            </header>
-          ) : (
+          {
             <header
               data-testid="subagents-toolbar"
               className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2"
@@ -1310,7 +1173,7 @@ export function SubagentsPanel({
               {levelsControl}
               {viewControl}
             </header>
-          )}
+          }
           {tree?.complete === false ? (
             <p
               role="status"

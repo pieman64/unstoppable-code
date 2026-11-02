@@ -82,4 +82,68 @@ describe('extractUserMessageHistory', () => {
 
     expect(extractUserMessageHistory(messages)).toEqual(['real prompt']);
   });
+
+  it('omits watcher, agent, hook, auto-resume and hidden inputs', () => {
+    const messages: ChatMessage[] = [
+      {
+        ...makeMessage('user', [{ type: 'text', text: 'first real prompt' }]),
+        userMessageSource: 'human',
+      },
+      {
+        ...makeMessage('user', [
+          {
+            type: 'text',
+            text: 'Unstoppable Code watcher fired.\nReview loop run 2',
+          },
+        ]),
+        watcherFired: { kind: 'Pipeline completion' },
+        userMessageSource: 'watcher',
+      },
+      {
+        ...makeMessage('user', [
+          { type: 'text', text: 'Canopy watcher fired.\nLegacy record' },
+        ]),
+        watcherFired: { kind: 'Pipeline completion' },
+      },
+      {
+        ...makeMessage('user', [
+          { type: 'text', text: 'Agent relayed request' },
+        ]),
+        userMessageSource: 'agent',
+        agentSent: {
+          sender: {
+            kind: 'project',
+            projectType: 'code',
+            projectId: 'p1',
+            taskId: 't1',
+            chatId: 'c1',
+          },
+          chatTitle: 'Planner',
+          projectLabel: 'Demo',
+        },
+      },
+      {
+        ...makeMessage('user', [{ type: 'text', text: 'Hook input' }]),
+        userMessageSource: 'hook',
+      },
+      {
+        ...makeMessage('user', [{ type: 'text', text: 'Resume after limit' }]),
+        userMessageSource: 'auto_resume',
+      },
+      {
+        ...makeMessage('user', [{ type: 'text', text: 'Restart turn' }]),
+        userMessageSource: 'immediate_turn_restart',
+      },
+      {
+        ...makeMessage('user', [{ type: 'text', text: 'hidden human prompt' }]),
+        hidden: true,
+      },
+      makeMessage('user', [{ type: 'text', text: 'second real prompt' }]),
+    ];
+
+    expect(extractUserMessageHistory(messages)).toEqual([
+      'first real prompt',
+      'second real prompt',
+    ]);
+  });
 });

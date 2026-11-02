@@ -7,7 +7,11 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import type { LinearTicketSearchResult } from '@canopy/desktop-shared/types';
-import { WordBoundaryTruncatedText } from '@canopy/ui-shared/components';
+import {
+  KeyHintFooter,
+  WordBoundaryTruncatedText,
+} from '@canopy/ui-shared/components';
+import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
 import { LoadingSpinner } from '@/components/shared/loading';
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -250,11 +254,7 @@ export function LinearTicketPickerModal({
             </ul>
           )}
         </div>
-        <div className="flex items-center justify-between border-t px-4 py-3 text-xs fg-secondary">
-          <span>Enter to attach</span>
-          <span>Esc to close</span>
-          <span>↑↓ to navigate</span>
-        </div>
+        <KeyHintFooter hints={pickerKeyHints('attach')} />
       </div>
     </div>,
     (ownerDocument ?? document).body,

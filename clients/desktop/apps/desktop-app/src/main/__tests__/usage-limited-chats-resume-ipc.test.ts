@@ -70,3 +70,38 @@ describe('resumeUsageLimitedChatsWith', () => {
     expect(res).toEqual({ resumedCount: 1, failedTargets: [] });
   });
 });
+
+it('serializes simultaneous resume triggers and allows retry after a failed dispatch', async () => {
+  const target = {
+    projectId: 'project',
+    worktreeId: 'worktree',
+    chatId: 'concurrent',
+  };
+  let release: () => void = () => undefined;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const dispatchContinue = jest.fn(async () => {
+    await blocked;
+  });
+  const deps = {
+    dispatchContinue,
+    clearRegistryAndBanner: jest.fn(() => Promise.resolve(undefined)),
+  };
+  const first = resumeUsageLimitedChatsWith({ targets: [target] }, deps);
+  expect(
+    await resumeUsageLimitedChatsWith({ targets: [target] }, deps),
+  ).toMatchObject({ resumedCount: 0, failedTargets: [target] });
+  release();
+  expect(await first).toMatchObject({ resumedCount: 1 });
+  const failing = {
+    ...deps,
+    dispatchContinue: jest.fn(() => Promise.reject(new Error('offline'))),
+  };
+  expect(
+    await resumeUsageLimitedChatsWith({ targets: [target] }, failing),
+  ).toMatchObject({ resumedCount: 0 });
+  expect(
+    await resumeUsageLimitedChatsWith({ targets: [target] }, deps),
+  ).toMatchObject({ resumedCount: 1 });
+});

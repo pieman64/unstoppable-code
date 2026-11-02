@@ -59,6 +59,8 @@ export function TranscriptViewer({
   return (
     <ChatMessageContextMenuScope enabled={false}>
       <div
+        // Chat keeps plain line breaks (see canopy-tokens-core.css).
+        data-chat-window
         className={
           className
             ? `${POSTHOG_REPLAY_BLOCK_CLASS} ${className}`

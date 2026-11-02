@@ -104,6 +104,9 @@ describe('resolveHelperInvocation', () => {
     sourceMock.mockReturnValue('ollama');
     harnessMock.mockReturnValue('codex');
     codexCompatibleMock.mockResolvedValue({
+      source: 'ollama',
+      harness: 'codex',
+      aiCreditsRouted: false,
       runtimeModel: 'local',
       codexConfig: {},
     });

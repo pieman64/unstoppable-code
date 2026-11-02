@@ -1,4 +1,13 @@
+import {
+  Button,
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
 import { resolveHookComposerContext } from '@/lib/configurationComposerTargets';
+import {
+  offerLifecycleJournalQuarantine,
+  offerProjectDeletionDiscard,
+} from '@canopy/app-state';
 import {
   Notice,
   NoticeButton,
@@ -71,6 +80,13 @@ import {
 import { useProjectsStore, TeardownFailedError } from '@/stores/projectsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useChatSidebarStore } from '@/stores/chatSidebarStore';
+import {
+  getWorkspaceRemovalBlocker,
+  removalBlockedReason,
+  recheckWorkspaceRemovalBlockedReason,
+} from '@/stores/chat/close-guard';
+import { useDelegationActivityStore } from '@/stores/delegationActivityStore';
+import { useLiveBackgroundTaskStore } from '@/stores/liveBackgroundTaskStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { HookActionEditor } from './HookActionEditor';
 import { ScriptConfigEditor } from './ScriptConfigEditor';
@@ -140,6 +156,11 @@ import type { StartPageSettingsIntent } from '@/stores/navigationStore';
 type AddRepoStep = 'list' | 'add-repo';
 type AddRepoMode = 'existing' | 'browse' | 'remote';
 type RemoteSource = 'github' | 'url';
+
+const REMOTE_SOURCE_OPTIONS: readonly SegmentedControlOption<RemoteSource>[] = [
+  { value: 'github', label: 'GitHub' },
+  { value: 'url', label: 'URL' },
+];
 type RepoFetchState = 'idle' | 'loading' | 'loaded' | 'error';
 type ClaudeMdLoadState = 'loading' | 'ready' | 'failed';
 type WorkspaceTab =
@@ -182,6 +203,7 @@ const tabs: {
 ];
 
 interface WorkspaceSettingsModalProps {
+  onOpenSharedDestination?: (workspaceId: string) => void;
   isOpen: boolean;
   onClose: () => void;
   workspace: MultiRepoSidebarItem;
@@ -290,6 +312,17 @@ export function WorkspaceSettingsModal({
       return wc?.tabs.some((tab) => tab.status === 'streaming') ?? false;
     }),
   );
+  const delegationByChat = useDelegationActivityStore((state) => state.byChat);
+  const providerTasksByChat = useLiveBackgroundTaskStore(
+    (state) => state.byChat,
+  );
+  const removalDisabledReason = removalBlockedReason(
+    getWorkspaceRemovalBlocker(
+      workspace.id,
+      { byChat: delegationByChat },
+      { byChat: providerTasksByChat },
+    ),
+  );
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(() =>
     getInitialWorkspaceTab(initialTab),
@@ -394,6 +427,14 @@ export function WorkspaceSettingsModal({
   const [isSaving, setIsSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  // A discard confirmation outlives this modal; its retry runs only here.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return (): void => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [pendingAdds, setPendingAdds] = useState<PendingWorkspaceAdd[]>([]);
   const [pendingRemoveIds, setPendingRemoveIds] = useState<string[]>([]);
   const [workspaceScripts, setWorkspaceScripts] = useState<EditableScripts>({});
@@ -1896,6 +1937,31 @@ export function WorkspaceSettingsModal({
     sourceInspectWorktreeId,
   ]);
 
+  /**
+   * CAN-5337: a refused deletion offers its discards. The confirmation opens
+   * only when discardable items are all that block it, and then replaces the
+   * refusal shown here; it re-runs this deletion once they are discarded.
+   * A refusal that settles after this modal closed offers nothing: its retry
+   * could not run.
+   */
+  const offerDeletionDiscard = (message: string): void => {
+    if (!mountedRef.current) return;
+    offerProjectDeletionDiscard({
+      workspaceId: workspace.id,
+      projectName: workspace.name,
+      message,
+      retry: () => {
+        if (mountedRef.current) void handleDeleteWorkspace();
+      },
+      onOpen: () => setError(''),
+      onDeleted: () => {
+        void removeProject(workspace.id);
+        onClose();
+        onDelete?.(workspace.id);
+      },
+    });
+  };
+
   const handleDeleteWorkspace = async (): Promise<void> => {
     setError('');
     setIsDeleting(true);
@@ -1909,6 +1975,16 @@ export function WorkspaceSettingsModal({
             p.id === workspace.id && p.type === 'multi-repo',
         );
       const worktrees = liveWorkspace?.worktrees ?? [];
+      const removalReason = await recheckWorkspaceRemovalBlockedReason(
+        workspace.id,
+        worktrees.map((worktree) => worktree.id),
+        'multi-repo',
+      );
+      if (removalReason !== undefined) {
+        setError(removalReason);
+        offerDeletionDiscard(removalReason);
+        return;
+      }
 
       for (const wt of worktrees) {
         try {
@@ -1931,9 +2007,13 @@ export function WorkspaceSettingsModal({
       onClose();
       onDelete?.(workspace.id);
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : 'Failed to delete project',
-      );
+      offerLifecycleJournalQuarantine(cause);
+      const message =
+        cause instanceof Error ? cause.message : 'Failed to delete project';
+      setError(message);
+      // Any failure, the archive loop's included: CAN-5035 arrives as a plain
+      // error. The description decides whether there is anything to discard.
+      offerDeletionDiscard(message);
     } finally {
       setIsDeleting(false);
       setConfirmingDelete(false);
@@ -2017,7 +2097,10 @@ export function WorkspaceSettingsModal({
                 healthData?.driftWorktreeId,
                 sourceInspectWorktreeId,
               )}
-              onViewConversation={onClose}
+              onViewConversation={(): Promise<boolean> => {
+                onClose();
+                return Promise.resolve(true);
+              }}
             />
 
             {healthData?.referenceRepoStatus &&
@@ -2086,8 +2169,8 @@ export function WorkspaceSettingsModal({
                             className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
                           />
                         </label>
-                        <button
-                          type="button"
+                        <Button
+                          size="compact"
                           onClick={() => {
                             setError('');
                             setSourceActionPending(true);
@@ -2111,10 +2194,10 @@ export function WorkspaceSettingsModal({
                           disabled={
                             sourceActionPending || !attachRemoteUrl.trim()
                           }
-                          className="focus-ring mt-3 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
+                          className="mt-3"
                         >
                           {sourceActionPending ? 'Attaching…' : 'Attach origin'}
-                        </button>
+                        </Button>
                       </>
                     )}
                   </div>
@@ -2221,59 +2304,38 @@ export function WorkspaceSettingsModal({
             <div className="flex items-center justify-between">
               <h3 className="text-s font-medium fg-primary">Repositories</h3>
               {addStep === 'list' && (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="compact"
                   onClick={() => {
                     setAddMode(
                       existingRepos.length > 0 ? 'existing' : 'browse',
                     );
                     setAddStep('add-repo');
                   }}
-                  className="focus-ring rounded-md px-2 py-1 text-xs fg-secondary hover:bg-secondary hover:fg-primary"
                 >
                   + Add repo
-                </button>
+                </Button>
               )}
             </div>
 
             {addStep === 'add-repo' && (
               <div className="mt-3 rounded-lg border p-3">
-                <div className="mb-2 inline-flex rounded-lg border bg-secondary p-0.5">
-                  {existingRepos.length > 0 && (
-                    <button
-                      type="button"
-                      className={`focus-ring rounded-md px-2 py-1 text-xs ${
-                        addMode === 'existing'
-                          ? 'bg-card fg-primary'
-                          : 'fg-secondary'
-                      }`}
-                      onClick={() => setAddMode('existing')}
-                    >
-                      Existing
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className={`focus-ring rounded-md px-2 py-1 text-xs ${
-                      addMode === 'browse'
-                        ? 'bg-card fg-primary'
-                        : 'fg-secondary'
-                    }`}
-                    onClick={() => setAddMode('browse')}
-                  >
-                    Local folder
-                  </button>
-                  <button
-                    type="button"
-                    className={`focus-ring rounded-md px-2 py-1 text-xs ${
-                      addMode === 'remote'
-                        ? 'bg-card fg-primary'
-                        : 'fg-secondary'
-                    }`}
-                    onClick={() => setAddMode('remote')}
-                  >
-                    Remote
-                  </button>
+                <div className="mb-2">
+                  <SegmentedControl<AddRepoMode>
+                    label="Repository source"
+                    value={addMode}
+                    width="content"
+                    shape="capsule"
+                    options={[
+                      ...(existingRepos.length > 0
+                        ? [{ value: 'existing' as const, label: 'Existing' }]
+                        : []),
+                      { value: 'browse', label: 'Local folder' },
+                      { value: 'remote', label: 'Remote' },
+                    ]}
+                    onChange={setAddMode}
+                  />
                 </div>
 
                 {addMode === 'existing' && (
@@ -2289,33 +2351,28 @@ export function WorkspaceSettingsModal({
                         }
                       />
                     ))}
-                    <button
-                      type="button"
+                    <Button
+                      size="compact"
                       onClick={() => setAddStep('list')}
-                      className="focus-ring mt-1 rounded-lg px-2 py-1 text-xs fg-secondary hover:fg-primary"
+                      className="mt-1"
                     >
                       Cancel
-                    </button>
+                    </Button>
                   </div>
                 )}
 
                 {addMode === 'browse' && (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
-                      <button
-                        type="button"
+                      <Button
+                        size="compact"
                         onClick={() => void handleBrowseAndAddRepo()}
-                        className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis"
                       >
                         Browse for repo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAddStep('list')}
-                        className="focus-ring rounded-lg px-3 py-1.5 text-xs fg-secondary hover:fg-primary"
-                      >
+                      </Button>
+                      <Button size="compact" onClick={() => setAddStep('list')}>
                         Cancel
-                      </button>
+                      </Button>
                     </div>
                     {addRepoRefusal && (
                       <p
@@ -2336,32 +2393,14 @@ export function WorkspaceSettingsModal({
                         <span className="mb-1 block text-xs fg-secondary">
                           Source
                         </span>
-                        <div className="inline-flex items-center gap-1 rounded-lg border p-0.5">
-                          <button
-                            type="button"
-                            aria-pressed={remoteSource === 'github'}
-                            onClick={() => handleRemoteSourceSelect('github')}
-                            className={`focus-ring rounded-md px-2 py-1 text-xs transition ${
-                              remoteSource === 'github'
-                                ? 'bg-card fg-primary'
-                                : 'fg-secondary hover:fg-primary'
-                            }`}
-                          >
-                            GitHub
-                          </button>
-                          <button
-                            type="button"
-                            aria-pressed={remoteSource === 'url'}
-                            onClick={() => handleRemoteSourceSelect('url')}
-                            className={`focus-ring rounded-md px-2 py-1 text-xs transition ${
-                              remoteSource === 'url'
-                                ? 'bg-card fg-primary'
-                                : 'fg-secondary hover:fg-primary'
-                            }`}
-                          >
-                            URL
-                          </button>
-                        </div>
+                        <SegmentedControl<RemoteSource>
+                          label="Remote source"
+                          value={remoteSource}
+                          width="content"
+                          shape="capsule"
+                          options={REMOTE_SOURCE_OPTIONS}
+                          onChange={handleRemoteSourceSelect}
+                        />
                       </div>
                     )}
 
@@ -2414,13 +2453,12 @@ export function WorkspaceSettingsModal({
                           readOnly
                           className="focus-ring min-w-0 flex-1 rounded-lg border bg-base px-3 py-1.5 text-xs"
                         />
-                        <button
-                          type="button"
+                        <Button
+                          size="compact"
                           onClick={() => void handleBrowseCloneDir()}
-                          className="focus-ring rounded-lg border px-2 py-1.5 text-xs hover:bg-secondary"
                         >
                           Browse
-                        </button>
+                        </Button>
                       </div>
                     </div>
 
@@ -2437,53 +2475,48 @@ export function WorkspaceSettingsModal({
                           a separate copy alongside it?
                         </p>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
+                          <Button
+                            size="compact"
                             onClick={() => void handleReuseExistingClone()}
                             disabled={isSubmitting}
-                            className="focus-ring rounded-md bg-accent px-2.5 py-1 text-2xs font-medium fg-emphasis disabled:opacity-60"
                           >
                             {isSubmitting ? 'Working…' : 'Reuse existing'}
-                          </button>
-                          <button
-                            type="button"
+                          </Button>
+                          <Button
+                            size="compact"
                             onClick={() => void handleCloneNewCopy()}
                             disabled={isSubmitting}
-                            className="focus-ring rounded-md border px-2.5 py-1 text-2xs font-medium fg-primary hover:bg-secondary disabled:opacity-60"
                           >
                             {isSubmitting ? 'Cloning…' : 'Clone new copy'}
-                          </button>
-                          <button
-                            type="button"
+                          </Button>
+                          <Button
+                            size="compact"
                             onClick={() => setReuseClonePrompt(null)}
                             disabled={isSubmitting}
-                            className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary disabled:opacity-60"
                           >
                             Cancel
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <button
-                          type="button"
+                        <Button
+                          size="compact"
                           onClick={() => void handleCloneAndAddRepo()}
                           disabled={
                             isSubmitting ||
                             (remoteSource === 'github' &&
                               !selectedGithubRepoFullName)
                           }
-                          className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
                         >
                           {isSubmitting ? 'Cloning…' : 'Clone and add'}
-                        </button>
-                        <button
-                          type="button"
+                        </Button>
+                        <Button
+                          size="compact"
                           onClick={() => setAddStep('list')}
-                          className="focus-ring rounded-lg px-3 py-1.5 text-xs fg-secondary hover:fg-primary"
                         >
                           Cancel
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </div>
@@ -2545,18 +2578,18 @@ export function WorkspaceSettingsModal({
                         !isTemporaryWorkspace &&
                         !manifestRepoIds.has(repo.id) &&
                         existingSourceControlState?.canAddToSourceControl && (
-                          <button
-                            type="button"
+                          <Button
+                            variant="ghost"
+                            size="compact"
                             onClick={() =>
                               handleToggleExistingRepoSourceControl(repo.id)
                             }
                             disabled={markedForRemoval}
-                            className="focus-ring rounded px-1.5 py-0.5 text-xs fg-secondary hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {pendingSourceControlAdd
                               ? 'Keep local only'
                               : 'Add to source control'}
-                          </button>
+                          </Button>
                         )}
                       {workspace.sourceRepoPath &&
                         !isTemporaryWorkspace &&
@@ -2617,17 +2650,17 @@ export function WorkspaceSettingsModal({
                     {workspace.sourceRepoPath &&
                       !isTemporaryWorkspace &&
                       add.canAddToSourceControl && (
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
+                          size="compact"
                           onClick={() =>
                             handleTogglePendingAddSourceControl(add.repoPath)
                           }
-                          className="focus-ring rounded px-1.5 py-0.5 text-xs fg-secondary hover:fg-primary"
                         >
                           {add.addToSourceControl
                             ? 'Keep local only'
                             : 'Include in worktree'}
-                        </button>
+                        </Button>
                       )}
                     {workspace.sourceRepoPath &&
                       !isTemporaryWorkspace &&
@@ -2680,13 +2713,12 @@ export function WorkspaceSettingsModal({
                   {workspaceSettingsLoadError}
                 </p>
                 <div className="mt-3">
-                  <button
-                    type="button"
-                    className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-s font-medium fg-primary"
+                  <Button
+                    size="compact"
                     onClick={() => setScriptEditMode('local')}
                   >
                     Use local override
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
@@ -3129,17 +3161,17 @@ export function WorkspaceSettingsModal({
                             <span className="text-xs font-medium fg-primary">
                               {script.name}
                             </span>
-                            <button
-                              type="button"
+                            <Button
+                              variant="ghost-destructive"
+                              size="compact"
                               onClick={() =>
                                 setActiveWorkspaceScriptsForTab((prev) =>
                                   removeEditableScript(prev, script.name),
                                 )
                               }
-                              className="focus-ring rounded-md px-2 py-1 text-2xs fg-destructive hover:bg-destructive-subtle"
                             >
                               Remove
-                            </button>
+                            </Button>
                           </div>
                           <ScriptConfigEditor
                             label="Command"
@@ -3226,8 +3258,8 @@ export function WorkspaceSettingsModal({
                           />
                         </label>
                         <div className="flex items-end">
-                          <button
-                            type="button"
+                          <Button
+                            size="compact"
                             onClick={() => {
                               const scriptName = normalizeScriptName(
                                 newWorkspaceScript.name,
@@ -3285,10 +3317,9 @@ export function WorkspaceSettingsModal({
                               !newWorkspaceScript.command.trim() ||
                               hasInvalidDevServerPatterns
                             }
-                            className="focus-ring rounded-md bg-accent px-3 py-2 text-xs font-medium fg-emphasis disabled:opacity-60"
                           >
                             Add script
-                          </button>
+                          </Button>
                         </div>
                       </div>
                       <div className="mt-3">
@@ -3627,8 +3658,9 @@ export function WorkspaceSettingsModal({
                                   <span className="text-xs font-medium fg-primary">
                                     {script.name}
                                   </span>
-                                  <button
-                                    type="button"
+                                  <Button
+                                    variant="ghost-destructive"
+                                    size="compact"
                                     onClick={() =>
                                       setActiveRepoScriptsForTab((prev) => ({
                                         ...prev,
@@ -3638,10 +3670,9 @@ export function WorkspaceSettingsModal({
                                         ),
                                       }))
                                     }
-                                    className="focus-ring rounded-md px-2 py-1 text-2xs fg-destructive hover:bg-destructive-subtle"
                                   >
                                     Remove
-                                  </button>
+                                  </Button>
                                 </div>
                                 <ScriptConfigEditor
                                   label="Command"
@@ -3736,8 +3767,8 @@ export function WorkspaceSettingsModal({
                                   />
                                 </label>
                                 <div className="flex items-end">
-                                  <button
-                                    type="button"
+                                  <Button
+                                    size="compact"
                                     onClick={() => {
                                       const scriptName = normalizeScriptName(
                                         draft.name,
@@ -3802,10 +3833,9 @@ export function WorkspaceSettingsModal({
                                       !draft.command.trim() ||
                                       hasInvalidDevServerPatterns
                                     }
-                                    className="focus-ring rounded-md bg-accent px-3 py-2 text-xs font-medium fg-emphasis disabled:opacity-60"
                                   >
                                     Add script
-                                  </button>
+                                  </Button>
                                 </div>
                               </div>
                               <div className="mt-3">
@@ -3918,13 +3948,12 @@ export function WorkspaceSettingsModal({
                   {workspaceSettingsLoadError}
                 </p>
                 <div className="mt-3">
-                  <button
-                    type="button"
-                    className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-s font-medium fg-primary"
+                  <Button
+                    size="compact"
                     onClick={() => setHookEditMode('local')}
                   >
                     Use local override
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
@@ -4013,15 +4042,14 @@ export function WorkspaceSettingsModal({
             <div className="flex items-center justify-between">
               <h3 className="text-s font-medium fg-primary">Instructions</h3>
               {!claudeMd.trim() && !claudeMdUnavailable && (
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={() => {
                     setClaudeMd(getDefaultWorkspaceClaudeMd(workspace.name));
                   }}
-                  className="focus-ring rounded-md border px-2 py-1 text-xs fg-secondary hover:bg-secondary hover:fg-primary"
                 >
                   Initialize
-                </button>
+                </Button>
               )}
             </div>
             <p className="mt-1 text-xs fg-secondary">
@@ -4094,13 +4122,12 @@ export function WorkspaceSettingsModal({
                     {workspaceSettingsLoadError}
                   </p>
                   <div className="mt-3">
-                    <button
-                      type="button"
-                      className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-s font-medium fg-primary"
+                    <Button
+                      size="compact"
                       onClick={() => setPluginEditMode('local')}
                     >
                       Use local override
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
@@ -4228,13 +4255,19 @@ export function WorkspaceSettingsModal({
               title="Delete project"
               description="This will remove the project and all its worktrees. Repository source code is not affected."
               warning={
-                hasActiveWorktrees ? (
+                removalDisabledReason ? (
+                  <p className="mt-1 text-xs fg-destructive/80">
+                    {removalDisabledReason}
+                  </p>
+                ) : hasActiveWorktrees ? (
                   <p className="mt-1 text-xs fg-destructive/80">
                     Cannot delete while worktrees have active sessions.
                   </p>
                 ) : undefined
               }
-              triggerDisabled={hasActiveWorktrees}
+              triggerDisabled={
+                hasActiveWorktrees || removalDisabledReason !== undefined
+              }
               triggerLabel="Delete project…"
               confirming={confirmingDelete}
               onConfirmStart={() => setConfirmingDelete(true)}
@@ -4313,6 +4346,7 @@ export function WorkspaceSettingsModal({
         onRetryDelete={handleDeleteWorkspace}
         onRetryingChange={setIsTeardownRetrying}
         onErrorChange={setTeardownError}
+        onFailure={setError}
       />
     </DialogModal>
   );
@@ -4390,15 +4424,14 @@ function TemporaryWorkspacePromotionCard({
         />
       </label>
       <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={() => void handlePromote()}
           disabled={disabled}
-          className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
           data-testid="temporary-workspace-promotion-submit"
         >
           {isSaving ? 'Saving…' : 'Make permanent'}
-        </button>
+        </Button>
       </div>
       {errorMessage && (
         <p

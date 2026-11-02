@@ -80,28 +80,45 @@ function groupIds(model: ReturnType<typeof hostedSettingsNavModel>): string[] {
 }
 
 describe('hostedSettingsNavModel', () => {
-  it('shows Account and Organizations before a bootstrap is known', () => {
+  it('shows the account rows before a bootstrap is known', () => {
     const model = hostedSettingsNavModel(null, OWNER_ORG);
     expect(model).toBe(SIGNED_OUT_SETTINGS_NAV_MODEL);
-    expect(groupIds(model)).toEqual(['account', 'organizations']);
+    expect(groupIds(model)).toEqual(['account']);
   });
 
-  it('shows the organization group only for the browsed organization', () => {
+  it('shows the organization scope only for the browsed organization', () => {
     const data = bootstrap(organizationBootstrap());
     expect(groupIds(hostedSettingsNavModel(data, OWNER_ORG))).toEqual([
-      'account',
-      'organizations',
       'organization',
+      'organization-activity',
     ]);
-    // Not browsing (account pages, the list, a fresh Settings open): no group,
-    // even though the bootstrap was loaded for the organization.
-    expect(groupIds(hostedSettingsNavModel(data, null))).toEqual([
-      'account',
-      'organizations',
-    ]);
+    // Not browsing (account pages, the list, a fresh Settings open): the
+    // account scope, even though the bootstrap was loaded for the
+    // organization.
+    expect(groupIds(hostedSettingsNavModel(data, null))).toEqual(['account']);
     expect(groupIds(hostedSettingsNavModel(data, OTHER_ORG))).toEqual([
       'account',
-      'organizations',
+    ]);
+  });
+
+  it('carries the memberships, the viewer and the Settings pages for the scope picker', () => {
+    const model = hostedSettingsNavModel(
+      bootstrap(organizationBootstrap()),
+      OWNER_ORG,
+    );
+    expect(model.organizations?.map((organization) => organization.id)).toEqual(
+      [OWNER_ORG, OTHER_ORG],
+    );
+    expect(model.viewer?.email).toBe('viewer@example.test');
+    expect(model.organization?.viewerRole).toBe('OWNER');
+    // The bootstrap does not say whether GitHub is connected; a healthy
+    // owner still gets Integrations.
+    expect(model.organization?.settingsSubtabs).toEqual([
+      'general',
+      'policies',
+      'integrations',
+      'usage',
+      'billing',
     ]);
   });
 
@@ -146,16 +163,28 @@ describe('selectHostedSettingsRow', () => {
   );
 
   it('selects one row for a route, including detail routes', () => {
+    const accountGroups = buildSettingsNavGroups(
+      hostedSettingsNavModel(bootstrap(), null),
+    );
+    expect(
+      selectHostedSettingsRow(
+        accountGroups,
+        { scope: 'account', page: 'billing', invoiceId: 'in_1' },
+        null,
+      ),
+    ).toBe('account-billing');
+    // Account rows are not on the rail while an organization is browsed.
     expect(
       selectHostedSettingsRow(
         groups,
-        { scope: 'account', page: 'billing', invoiceId: 'in_1' },
+        { scope: 'account', page: 'billing' },
         OWNER_ORG,
       ),
-    ).toBe('account-billing');
+    ).toBeNull();
+    // The list is reached from the scope picker, not a rail row.
     expect(
       selectHostedSettingsRow(groups, { scope: 'organizations' }, OWNER_ORG),
-    ).toBe('organizations-list');
+    ).toBeNull();
     expect(
       selectHostedSettingsRow(
         groups,
@@ -180,7 +209,7 @@ describe('selectHostedSettingsRow', () => {
         },
         OWNER_ORG,
       ),
-    ).toBe('organization-settings');
+    ).toBe('organization-settings-billing');
   });
 
   it('selects nothing for a local destination or another organization', () => {
@@ -442,6 +471,13 @@ describe('persisted rail entry', () => {
           visibleTabs: ['feed', 'settings'],
           disabledTabs: ['feed'],
           billingNeedsAttention: true,
+          settingsSubtabs: [
+            'general',
+            'policies',
+            'integrations',
+            'usage',
+            'billing',
+          ],
         },
       },
     });

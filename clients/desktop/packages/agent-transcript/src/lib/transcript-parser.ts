@@ -1,10 +1,23 @@
+import {
+  CHILD_TOOLS_ENDED_EVENT_TYPE,
+  indexCodexAgentCallBlocks,
+  readChildToolLivenessStamp,
+  shouldCloseToolUseMessage,
+  type ChildToolCloseContext,
+  type ChildToolLiveness,
+} from './child-tool-liveness';
 import { parseOpenCodeReportedUsage } from '@canopy/protocol/portal';
 import { applyDelegationTranscriptEvent } from './delegation-transcript';
+import {
+  parseClaudeAssistantBlocks,
+  parseClaudeToolResults,
+} from './claude-content-normalizers';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
 import { CANOPY_DELEGATION_EVENT_TYPE } from '@canopy/protocol/delegation';
 import { parseCursorReportedUsage } from './cursor-usage';
 import { LAYOUT_BLOCK_TYPES } from './transcript-fingerprint';
 import { applyAssistantPatches } from './assistant-snapshot';
+import { normalizeCodexNeutralItem } from './codex-neutral-item';
 import { isUserTurnBoundary } from './turn-boundary';
 import { normalizeEpochMs } from './epoch-ms';
 import { CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE } from '../types';
@@ -28,6 +41,7 @@ import type {
   CompactionInfoBlock,
   PersistedChatBlock,
   PersistedChatMessage,
+  PersistedToolOutputReference,
   TodoItem,
 } from '../types';
 import {
@@ -36,7 +50,10 @@ import {
 } from '@canopy/protocol/llm-gateway';
 import {
   CANOPY_AUTH_FAILURE_EVENT_TYPE,
+  CANOPY_MODEL_ACCESS_FAILURE_FIELD,
   isCanopyAuthFailureEventData,
+  readCodexAccountModelAccessFailure,
+  type CodexAccountModelAccessFailure,
 } from '@canopy/protocol/auth-recovery';
 import { attachAuthFailureToMessages } from './auth-failure-attach';
 import {
@@ -47,19 +64,20 @@ import {
   resolveRuntimeModel,
 } from './model-resolver';
 import {
-  boundCodexDynamicToolOutput,
-  flattenCodexDynamicToolContent,
+  codexDynamicToolOutput,
+  codexDynamicToolOutputChunks,
+  codexDynamicToolOutputSource,
 } from './codex-dynamic-tool-results';
 import {
-  codexToolImageBlocks,
-  codexAsyncQuestionText,
-  readCodexAsyncQuestions,
   withCodexImagePreviewNotices,
   withoutPreviewVisualImages,
 } from './codex-tool-images';
 import {
-  codexMcpToolName,
-  flattenCodexMcpToolResult,
+  codexMcpToolResult,
+  codexMcpToolResultChunks,
+  codexOutputChunks,
+  codexOutputSequence,
+  codexOutputText,
 } from './codex-mcp-tool-results';
 import {
   claudeResultErrorMessage,
@@ -105,12 +123,67 @@ export interface TranscriptReducerState {
 }
 
 export interface TranscriptReducerOptions {
+  /** Host's bounded capture budget, including one overflow sentinel. */
+  toolBlockCaptureLimit?: number;
+  /** Event-local source slot, after canonical row identity is resolved. */
+  onToolBlock?: (
+    sourceToken: string,
+    row: PersistedChatMessage,
+    blockOrdinal: number,
+    previousMessages: readonly PersistedChatMessage[],
+  ) => void;
+  childToolLiveness: ChildToolLiveness;
   now: number;
   createMessageId: () => string;
   turnStartedAt?: number;
   turnCompletedAt?: number | null;
   useNowAsTurnTimestamp?: boolean;
   aiCreditsRouted?: boolean;
+  /** Display-only reducers keep bounded Codex tool-result previews; stored chats keep full output. */
+  codexToolResults?: 'canonical' | 'preview';
+  /**
+   * Storage format the reduced rows are written to. Absent, 2 and 3 keep the
+   * legacy rows. Format 4 keeps `function_call_output` lossless, for storage
+   * to move its body into an artifact.
+   */
+  transcriptStorageFormat?: 2 | 3 | 4;
+  /**
+   * Trusted host preparation of one final Codex item's output body. Used only
+   * with format 4, for `item.completed` of the matching item ID. Provider
+   * events can never supply it.
+   */
+  preparedCodexItem?: PreparedCodexItem;
+  /**
+   * `canonical-content-only`: canonical turn effects own root timers and root
+   * status, so a live commit folds content only and leaves every timer row and
+   * the root status as it found them. Absent or `historical` keeps the
+   * result-based fallback for offline parsing.
+   */
+  rootTurnMode?: 'historical' | 'canonical-content-only';
+}
+
+/** The prepared output body of a final Codex item; see {@link codexItemOutputBody}. */
+export type PreparedCodexItemOutput =
+  /** `function_call_output`: the complete text block, header included. */
+  | {
+      field: 'text';
+      text: string;
+      textRef?: PersistedToolOutputReference;
+      needsRead?: boolean;
+    }
+  /** `mcp_tool_call` and `dynamic_tool_call`: the tool result output. */
+  | {
+      field: 'output';
+      output: string;
+      fullOutputRef?: PersistedToolOutputReference;
+      needsRead?: boolean;
+    };
+
+export interface PreparedCodexItem {
+  /** The provider item ID (`item.id`), not the `codex-` message ID. */
+  itemId: string;
+  /** A preview plus its reference, or the whole body when it was small. */
+  output: PreparedCodexItemOutput;
 }
 
 export interface TranscriptParseOptions {
@@ -118,6 +191,8 @@ export interface TranscriptParseOptions {
   turnCompletedAt?: number | null;
   closeOpenTurnAtEnd?: boolean;
   aiCreditsRouted?: boolean;
+  /** See {@link TranscriptReducerOptions.transcriptStorageFormat}. */
+  transcriptStorageFormat?: 2 | 3 | 4;
 }
 
 export interface ParsedTranscript {
@@ -901,6 +976,8 @@ export function pauseOpenTurnTimer(
       (block): block is PersistedChatBlock & { type: 'turn_timer' } =>
         block.type === 'turn_timer',
     );
+    // A canonical timer changes only through its committed turn effects.
+    if (timerBlock?.turnId !== undefined) return messages;
     const isRunning =
       timerBlock &&
       timerBlock.completedAt === null &&
@@ -989,6 +1066,8 @@ export function resumePausedTurnTimer(
       (block): block is PersistedChatBlock & { type: 'turn_timer' } =>
         block.type === 'turn_timer',
     );
+    // A canonical timer changes only through its committed turn effects.
+    if (timerBlock?.turnId !== undefined) return messages;
     const ownerIds = timerBlock?.pauseOwnerIds ?? [];
     if (
       timerBlock &&
@@ -1137,6 +1216,8 @@ function closeOpenToolUseBlocks(
   messages: ChatMessage[],
   createMessageId: () => string,
   now: number,
+  context: ChildToolCloseContext,
+  endedParentToolUseIds?: ReadonlySet<string>,
 ): ChatMessage[] {
   const toolResultIds = new Set<string>();
   for (const message of messages) {
@@ -1152,10 +1233,16 @@ function closeOpenToolUseBlocks(
     {
       parentToolUseId?: string;
       parentBlockId?: string;
+      codexThreadId?: string;
       blocks: ChatBlock[];
     }
   >();
   for (const message of messages) {
+    const shouldClose = endedParentToolUseIds
+      ? message.parentToolUseId !== undefined &&
+        endedParentToolUseIds.has(message.parentToolUseId)
+      : shouldCloseToolUseMessage(message, context);
+    if (!shouldClose) continue;
     for (const block of message.blocks) {
       // `codex_agent_call` blocks are Codex-native and intentionally pass
       // through this cancel-out path unchanged — the renderer's reducer
@@ -1171,14 +1258,17 @@ function closeOpenToolUseBlocks(
 
       const parentKey =
         message.parentBlockId !== undefined
-          ? `block:${message.parentBlockId}|tool:${message.parentToolUseId ?? ''}`
-          : `tool:${message.parentToolUseId ?? ''}`;
+          ? `block:${message.parentBlockId}|tool:${message.parentToolUseId ?? ''}|thread:${message.codexThreadId ?? ''}`
+          : `tool:${message.parentToolUseId ?? ''}|thread:${message.codexThreadId ?? ''}`;
       const unmatched = unmatchedByParent.get(parentKey) ?? {
         ...(message.parentToolUseId
           ? { parentToolUseId: message.parentToolUseId }
           : {}),
         ...(message.parentBlockId
           ? { parentBlockId: message.parentBlockId }
+          : {}),
+        ...(message.codexThreadId
+          ? { codexThreadId: message.codexThreadId }
           : {}),
         blocks: [],
       };
@@ -1208,94 +1298,70 @@ function closeOpenToolUseBlocks(
         ? { parentToolUseId: entry.parentToolUseId }
         : {}),
       ...(entry.parentBlockId ? { parentBlockId: entry.parentBlockId } : {}),
+      ...(entry.codexThreadId ? { codexThreadId: entry.codexThreadId } : {}),
     });
   });
   return updatedMessages;
 }
 
-function parseAssistantBlocks(content: unknown[]): ChatBlock[] {
-  const blocks: ChatBlock[] = [];
-
-  for (const block of content) {
-    if (!isRecord(block)) {
-      continue;
-    }
-
-    switch (block.type) {
-      case 'text': {
-        const text = stripMemoryCitationTags(asString(block.text));
-        if (text.length > 0) {
-          blocks.push({ type: 'text', text });
-        }
-        break;
-      }
-      case 'thinking': {
-        const text = stripMemoryCitationTags(asString(block.thinking));
-        if (text.length > 0) {
-          blocks.push({ type: 'thinking', text });
-        }
-        break;
-      }
-      case 'tool_use':
-        blocks.push({
-          type: 'tool_use',
-          toolUseId: asString(block.id),
-          toolName: asString(block.name, 'unknown'),
-          input:
-            typeof block.input === 'string'
-              ? block.input
-              : JSON.stringify(block.input ?? {}),
-        });
-        break;
-    }
-  }
-
-  return blocks;
+function childToolCloseContext(
+  state: TranscriptReducerState,
+  data: Record<string, unknown>,
+  options: TranscriptReducerOptions,
+): ChildToolCloseContext {
+  return {
+    liveness: readChildToolLivenessStamp(data) ?? options.childToolLiveness,
+    codexRootThreadId: state.sdkSessionId,
+    agentCallBlocksById: indexCodexAgentCallBlocks(state.messages),
+  };
 }
 
-function parseToolResults(
-  content: unknown[],
-  previewToolIds: () => ReadonlySet<string>,
-): ChatBlock[] {
-  const blocks: ChatBlock[] = [];
+function applyChildToolsEndedEvent(
+  state: TranscriptReducerState,
+  event: Record<string, unknown>,
+  options: TranscriptReducerOptions,
+): TranscriptReducerState {
+  if (
+    !Array.isArray(event.parent_tool_use_ids) ||
+    !event.parent_tool_use_ids.every((id: unknown) => typeof id === 'string')
+  )
+    return state;
+  const messages = closeOpenToolUseBlocks(
+    state.messages,
+    options.createMessageId,
+    options.now,
+    childToolCloseContext(state, event, options),
+    new Set(event.parent_tool_use_ids),
+  );
+  return messages === state.messages
+    ? state
+    : { ...state, messages, lastEventAt: options.now };
+}
 
-  for (const block of content) {
-    if (!isRecord(block) || block.type !== 'tool_result') {
-      continue;
-    }
-
-    let output = '';
-    if (typeof block.content === 'string') {
-      output = block.content;
-    } else if (Array.isArray(block.content)) {
-      // Only a result that carries an image needs the tool-identity lookup.
-      const hasImage = block.content.some(
-        (entry: unknown): boolean => isRecord(entry) && entry.type === 'image',
-      );
-      const safeContent =
-        hasImage && previewToolIds().has(asString(block.tool_use_id))
-          ? withoutPreviewVisualImages(block.content)
-          : block.content;
-      output = (Array.isArray(safeContent) ? safeContent : [])
-        .map((entry) => {
-          if (isRecord(entry) && typeof entry.text === 'string') {
-            return entry.text;
-          }
-          return JSON.stringify(entry, null, 2);
-        })
-        .join('\n');
-    }
-
-    blocks.push({
-      type: 'tool_result',
-      toolUseId: asString(block.tool_use_id),
-      toolName: '',
-      output,
-      isError: block.is_error === true,
-    });
-  }
-
-  return blocks;
+// Real results supersede synthetic cancellations by tool id, including a
+// grouped cancellation row containing results for several siblings.
+function withoutPriorToolResults(
+  messages: ChatMessage[],
+  incoming: ChatBlock[],
+  exceptMessageId?: string,
+): ChatMessage[] {
+  const ids = new Set(
+    incoming.flatMap((block) =>
+      block.type === 'tool_result' ? [block.toolUseId] : [],
+    ),
+  );
+  if (ids.size === 0) return messages;
+  let changed = false;
+  const updated = messages.flatMap((message) => {
+    if (message.id === exceptMessageId) return [message];
+    const blocks = message.blocks.filter(
+      (block) => block.type !== 'tool_result' || !ids.has(block.toolUseId),
+    );
+    if (blocks.length === message.blocks.length) return [message];
+    changed = true;
+    return blocks.length === 0 ? [] : [{ ...message, blocks }];
+  });
+  return changed ? updated : messages;
 }
 
 function buildSyntheticUserPromptMessage(
@@ -1341,45 +1407,51 @@ function buildSyntheticUserPromptMessage(
   };
 }
 
-/** Hidden delegation deliveries continue the last visible turn, including on replay. */
+/** Hidden deliveries continue the visible turn without editing its settled timer. */
 function resumeHiddenPromptTimer(
   state: TranscriptReducerState,
   prompt: ChatMessage,
   options: TranscriptReducerOptions,
 ): ChatMessage[] | undefined {
   if (!prompt.hidden) return undefined;
-  let messages = state.messages;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index];
     if (message.hidden) continue;
     const timer = message.blocks.find((block) => block.type === 'turn_timer');
     if (timer?.type === 'turn_timer') {
-      const completedAt = timer.completedAt;
-      if (completedAt !== null) {
-        messages = [...messages];
-        messages[index] = {
-          ...message,
-          blocks: message.blocks.map((block) =>
-            block === timer
-              ? {
-                  ...timer,
-                  completedAt: null,
-                  ...(options.useNowAsTurnTimestamp === false
-                    ? {}
-                    : {
-                        resumedAt: options.now,
-                        accumulatedPausedDurationMs:
-                          Math.max(0, timer.accumulatedPausedDurationMs ?? 0) +
-                          Math.max(0, options.now - completedAt),
-                      }),
-                }
-              : block,
-          ),
-        };
-      }
-      return messages.some((candidate) => candidate.id === prompt.id)
-        ? messages
-        : [...messages, prompt];
+      const messages = state.messages.some(
+        (candidate) => candidate.id === prompt.id,
+      )
+        ? state.messages
+        : [...state.messages, prompt];
+      // An open continuation (including one paused by an independent owner)
+      // already owns this delivery. Never release its pauses or duplicate it.
+      if (timer.completedAt === null) return messages;
+      return [
+        ...messages,
+        {
+          id: createUnusedMessageId(messages, options),
+          role: 'system',
+          timestamp: options.now,
+          blocks: [
+            {
+              ...timer,
+              completedAt: null,
+              // Static replay's clock is a line number, not wall time. Keep
+              // recorded accounting without inventing an idle gap from it.
+              ...(options.useNowAsTurnTimestamp === false
+                ? {}
+                : {
+                    pausedAt: timer.completedAt,
+                    resumedAt: options.now,
+                    accumulatedPausedDurationMs:
+                      Math.max(0, timer.accumulatedPausedDurationMs ?? 0) +
+                      Math.max(0, options.now - timer.completedAt),
+                  }),
+            },
+          ],
+        },
+      ];
     }
     if (isUserPromptBoundaryMessage(message)) break;
   }
@@ -1681,11 +1753,63 @@ function patchedBlockIndices(patches: unknown): ReadonlySet<number> {
   return indices;
 }
 
+function isTurnTimerRow(message: ChatMessage): boolean {
+  return message.blocks.some((block) => block.type === 'turn_timer');
+}
+
+/** Keeps root timer rows and root status from `before`; content stays from `after`. */
+function keepCanonicalRootTurn(
+  before: TranscriptReducerState,
+  after: TranscriptReducerState,
+): TranscriptReducerState {
+  if (after === before) return after;
+  const priorTimerRows = new Map<string, ChatMessage>();
+  for (const message of before.messages)
+    if (isTurnTimerRow(message)) priorTimerRows.set(message.id, message);
+  let changed = false;
+  const messages: ChatMessage[] = [];
+  for (const message of after.messages) {
+    if (!isTurnTimerRow(message) && !priorTimerRows.has(message.id)) {
+      messages.push(message);
+      continue;
+    }
+    const prior = priorTimerRows.get(message.id);
+    if (prior !== message) changed = true;
+    // Rows the parser synthesized have no prior version and are dropped.
+    if (prior) messages.push(prior);
+  }
+  if (
+    !changed &&
+    after.status === before.status &&
+    after.error === before.error
+  )
+    return after;
+  return {
+    ...after,
+    messages: changed ? messages : after.messages,
+    status: before.status,
+    error: before.error,
+  };
+}
+
 export function applyClaudeTranscriptEvent(
   state: TranscriptReducerState,
   data: Record<string, unknown>,
   options: TranscriptReducerOptions,
 ): TranscriptReducerState {
+  const next = reduceClaudeTranscriptEvent(state, data, options);
+  return options.rootTurnMode === 'canonical-content-only'
+    ? keepCanonicalRootTurn(state, next)
+    : next;
+}
+
+function reduceClaudeTranscriptEvent(
+  state: TranscriptReducerState,
+  data: Record<string, unknown>,
+  options: TranscriptReducerOptions,
+): TranscriptReducerState {
+  if (data.type === CHILD_TOOLS_ENDED_EVENT_TYPE)
+    return applyChildToolsEndedEvent(state, data, options);
   if (data.type === CANOPY_DELEGATION_EVENT_TYPE)
     return applyDelegationTranscriptEvent(state, data);
   if (data.type === 'canopy_opencode_usage' && data.provider === 'opencode') {
@@ -2456,13 +2580,21 @@ function handleClaudeAssistantEvent(
 ): TranscriptReducerState {
   const message = isRecord(data.message) ? data.message : undefined;
   const content = Array.isArray(message?.content) ? message.content : [];
+  const sourceSlots: Array<{ sourceIndex: number; blockOrdinal: number }> = [];
   const displayErrorCode = data.canopy_display_error_code;
-  const blocks = parseAssistantBlocks(content).map(
-    (block): ChatMessage['blocks'][number] =>
-      block.type === 'text' &&
-      isClaudeAiCreditsFallbackErrorCode(displayErrorCode)
-        ? { ...block, errorCode: displayErrorCode }
-        : block,
+  const blocks = parseClaudeAssistantBlocks(
+    content,
+    options.onToolBlock
+      ? (sourceIndex, blockOrdinal): void => {
+          if (sourceSlots.length < (options.toolBlockCaptureLimit ?? 65))
+            sourceSlots.push({ sourceIndex, blockOrdinal });
+        }
+      : undefined,
+  ).map((block): ChatMessage['blocks'][number] =>
+    block.type === 'text' &&
+    isClaudeAiCreditsFallbackErrorCode(displayErrorCode)
+      ? { ...block, errorCode: displayErrorCode }
+      : block,
   );
 
   const proxyFailureText = readStampedClaudeProxyFailureText(
@@ -2555,6 +2687,14 @@ function handleClaudeAssistantEvent(
     ...(chainUuid ? { claudeUuid: chainUuid } : {}),
   };
   const updatedMessages: ChatMessage[] = [...baseMessages, assistantMessage];
+  for (const slot of sourceSlots) {
+    options.onToolBlock?.(
+      String(slot.sourceIndex),
+      assistantMessage,
+      slot.blockOrdinal,
+      baseMessages,
+    );
+  }
 
   const entersPlanMode = blocks.some(
     (block) => block.type === 'tool_use' && block.toolName === 'EnterPlanMode',
@@ -2718,7 +2858,30 @@ function handleClaudeUserEvent(
     }
     return previewToolIds;
   };
-  const blocks = parseToolResults(content, lookupPreviewToolIds);
+  const replayContent = content.map((block: unknown): unknown => {
+    if (
+      isRecord(block) &&
+      block.type === 'tool_result' &&
+      Array.isArray(block.content) &&
+      block.content.some(
+        (entry: unknown): boolean => isRecord(entry) && entry.type === 'image',
+      ) &&
+      lookupPreviewToolIds().has(asString(block.tool_use_id))
+    ) {
+      return { ...block, content: withoutPreviewVisualImages(block.content) };
+    }
+    return block;
+  });
+  const sourceSlots: Array<{ sourceIndex: number; blockOrdinal: number }> = [];
+  const blocks = parseClaudeToolResults(
+    replayContent,
+    options.onToolBlock
+      ? (sourceIndex, blockOrdinal): void => {
+          if (sourceSlots.length < (options.toolBlockCaptureLimit ?? 65))
+            sourceSlots.push({ sourceIndex, blockOrdinal });
+        }
+      : undefined,
+  );
   if (blocks.length === 0) {
     return state;
   }
@@ -2729,7 +2892,7 @@ function handleClaudeUserEvent(
       : undefined;
   // A delayed tool result is not evidence that the foreground agent resumed.
   // The next assistant work frame owns reopening a completed timer.
-  const baseMessages = state.messages;
+  const baseMessages = withoutPriorToolResults(state.messages, blocks);
   // Mirror the wire projector: a tool_result user event keys by its FIRST
   // tool_result's tool_use_id (`tool:<id>`); an empty id falls through to the
   // event-level id derivation, exactly like `runtimeMessageId` on the wire.
@@ -2751,6 +2914,14 @@ function handleClaudeUserEvent(
     ...(parentToolUseId ? { parentToolUseId } : {}),
     ...(chainUuid ? { claudeUuid: chainUuid } : {}),
   };
+  for (const slot of sourceSlots) {
+    options.onToolBlock?.(
+      String(slot.sourceIndex),
+      toolResultMessage,
+      slot.blockOrdinal,
+      baseMessages,
+    );
+  }
   return {
     ...state,
     status: state.status,
@@ -2823,6 +2994,7 @@ function handleClaudeResultEvent(
         ),
         options.createMessageId,
         options.now,
+        childToolCloseContext(state, data, options),
       );
   const messages =
     selectedModelChanged && state.model && detectedModel
@@ -3029,6 +3201,7 @@ function handleClaudeErrorEvent(
     completeTurnTimer(state.messages, resolveTurnCompletedAt(data, options)),
     options.createMessageId,
     options.now,
+    childToolCloseContext(state, data, options),
   );
   return {
     ...state,
@@ -3058,6 +3231,7 @@ const CLAUDE_EVENT_HANDLERS: Record<string, ClaudeEventHandler> = {
 };
 
 interface CodexItemContext {
+  onToolBlock?: TranscriptReducerOptions['onToolBlock'];
   /** Codex `threadId` of the routable wire event that produced this item. */
   threadId?: string;
   /** Codex `turnId` of the routable wire event that produced this item. */
@@ -3068,6 +3242,146 @@ interface CodexItemContext {
    * root or to a subagent without re-walking the full reducer state.
    */
   rootThreadId?: string;
+  previewToolResults?: boolean;
+  /** Format 4: `function_call_output` stays lossless for storage. */
+  losslessFunctionOutput?: boolean;
+  /** Trusted prepared body for this event's item; see {@link preparedOutputFor}. */
+  preparedOutput?: PreparedCodexItemOutput;
+}
+
+/** Prepared output applies only to format 4 and `item.completed` of its item. */
+function preparedOutputFor(
+  options: TranscriptReducerOptions,
+  eventType: unknown,
+  item: Record<string, unknown> | undefined,
+): PreparedCodexItemOutput | undefined {
+  const prepared = options.preparedCodexItem;
+  return options.transcriptStorageFormat === 4 &&
+    prepared !== undefined &&
+    eventType === 'item.completed' &&
+    item !== undefined &&
+    asString(item.id).length > 0 &&
+    prepared.itemId === item.id
+    ? prepared.output
+    : undefined;
+}
+
+/** The final output body of a Codex item, as chunks; see {@link codexItemOutputBody}. */
+export interface CodexItemOutputBody {
+  itemId: string;
+  field: PreparedCodexItemOutput['field'];
+  /** Bounded chunks that join to {@link CodexItemOutputBody.whole}. */
+  chunks: Iterable<string>;
+  /**
+   * The whole body from the synchronous normalizers. For tests and for the
+   * fallback when iterating `chunks` throws on an unreadable value.
+   */
+  whole(): string;
+}
+
+function functionCallOutputName(item: Record<string, unknown>): string {
+  return [asString(item.namespace), asString(item.name, 'unknown')]
+    .filter(Boolean)
+    .join('.');
+}
+
+function mcpToolResultOptions(item: Record<string, unknown>): {
+  status: string;
+  result: unknown;
+  error: unknown;
+} {
+  return {
+    status: asString(item.status),
+    result: isRecord(item.result)
+      ? {
+          ...item.result,
+          content: withCodexImagePreviewNotices(item.result.content),
+        }
+      : item.result,
+    error: item.error,
+  };
+}
+
+function dynamicToolOutputOptions(item: Record<string, unknown>): {
+  contentItems: unknown;
+  success: boolean | null;
+} {
+  const contentItems = /^.+_preview_visual$/.test(asString(item.tool))
+    ? withoutPreviewVisualImages(item.content_items)
+    : item.content_items;
+  return {
+    contentItems: withCodexImagePreviewNotices(contentItems),
+    success: typeof item.success === 'boolean' ? item.success : null,
+  };
+}
+
+/**
+ * The canonical final body that a format 4 reducer stores for this Codex
+ * event, for a trusted host to publish before reducing. Covers
+ * `item.completed` of `function_call_output` (the whole text block, header
+ * included), `mcp_tool_call` and `dynamic_tool_call` (the tool result
+ * output). Returns undefined for every other event. Reads nothing until
+ * `chunks` is iterated.
+ */
+export function codexItemOutputBody(
+  event: Record<string, unknown>,
+): CodexItemOutputBody | undefined {
+  if (event.type !== 'item.completed' || !isRecord(event.item))
+    return undefined;
+  const item = event.item;
+  const itemId = asString(item.id);
+  if (itemId.length === 0) return undefined;
+  switch (item.type) {
+    case 'function_call_output': {
+      const header = `Tool output (${functionCallOutputName(item)})\n\n`;
+      const output = item.output;
+      return {
+        itemId,
+        field: 'text',
+        chunks: codexOutputChunks(() =>
+          codexOutputSequence([
+            header,
+            typeof output === 'string'
+              ? codexOutputText(output)
+              : codexDynamicToolOutputSource({
+                  contentItems: withCodexImagePreviewNotices(output),
+                  success: null,
+                }),
+          ]),
+        ),
+        whole: () =>
+          `${header}${
+            typeof output === 'string'
+              ? output
+              : codexDynamicToolOutput({
+                  contentItems: withCodexImagePreviewNotices(output),
+                  success: null,
+                })
+          }`,
+      };
+    }
+    case 'mcp_tool_call':
+      return {
+        itemId,
+        field: 'output',
+        chunks: {
+          [Symbol.iterator]: () =>
+            codexMcpToolResultChunks(mcpToolResultOptions(item)).chunks[
+              Symbol.iterator
+            ](),
+        },
+        whole: () => codexMcpToolResult(mcpToolResultOptions(item)).output,
+      };
+    case 'dynamic_tool_call':
+      return {
+        itemId,
+        field: 'output',
+        chunks: codexDynamicToolOutputChunks(dynamicToolOutputOptions(item)),
+        whole: () => codexDynamicToolOutput(dynamicToolOutputOptions(item)),
+      };
+    default:
+      return undefined;
+  }
 }
 
 function codexAsyncQuestionRequestId(
@@ -3696,7 +4010,7 @@ function updateCodexAgentTurn(
   state: TranscriptReducerState,
   event: Record<string, unknown>,
   status: 'running' | 'completed' | 'cancelled',
-  now: number,
+  options: TranscriptReducerOptions,
 ): ChatMessage[] {
   const threadId = asString(event.thread_id);
   if (!threadId || threadId === state.sdkSessionId) return state.messages;
@@ -3708,18 +4022,92 @@ function updateCodexAgentTurn(
     (previous?.status === 'errored' || previous?.status === 'cancelled')
       ? previous
       : { status };
-  return applyCodexCollabAgentItem(
-    state.messages,
-    {
-      id: block.callId,
-      tool: 'wait',
-      status: status === 'running' ? 'inProgress' : 'completed',
-      receiver_thread_ids: [threadId],
-      agents_states: { [threadId]: agentState },
-    },
-    { rootThreadId: state.sdkSessionId },
-    now,
+  return recordCodexReceiverTime(
+    applyCodexCollabAgentItem(
+      state.messages,
+      {
+        id: block.callId,
+        tool: 'wait',
+        status: status === 'running' ? 'inProgress' : 'completed',
+        receiver_thread_ids: [threadId],
+        agents_states: { [threadId]: agentState },
+      },
+      { rootThreadId: state.sdkSessionId },
+      options.now,
+    ),
+    threadId,
+    status === 'running' ? 'start' : 'settle',
+    codexReceiverTimeAt(
+      event,
+      status === 'running' ? 'start' : 'settle',
+      options,
+    ),
   );
+}
+
+function codexReceiverTimeAt(
+  event: Record<string, unknown>,
+  edge: 'start' | 'settle',
+  options: TranscriptReducerOptions,
+): number | undefined {
+  return (
+    readEventEpochMs(
+      event,
+      edge === 'start'
+        ? ['started_at', 'startedAt', 'timestamp']
+        : ['completed_at', 'completedAt', 'timestamp'],
+    ) ?? (options.useNowAsTurnTimestamp === false ? undefined : options.now)
+  );
+}
+
+/**
+ * Record when a child thread's turn started or ended on every card that
+ * names it. A start keeps the first start and clears the settle time; a
+ * settle keeps the first end its turn reported.
+ */
+function recordCodexReceiverTime(
+  messages: ChatMessage[],
+  threadId: string | undefined,
+  edge: 'start' | 'settle',
+  at: number | undefined,
+): ChatMessage[] {
+  if (!threadId || at === undefined) return messages;
+  let changed = false;
+  const result = messages.map((message) => {
+    let blocksChanged = false;
+    const blocks = message.blocks.map((block) => {
+      if (
+        block.type !== 'codex_agent_call' ||
+        !block.receiverThreadIds.includes(threadId)
+      )
+        return block;
+      const previous = block.receiverTimes?.[threadId];
+      const startedAt =
+        previous?.startedAt ?? (edge === 'start' ? at : undefined);
+      const settledAt =
+        edge === 'start' ? undefined : (previous?.settledAt ?? at);
+      if (
+        previous?.startedAt === startedAt &&
+        previous?.settledAt === settledAt
+      )
+        return block;
+      blocksChanged = true;
+      return {
+        ...block,
+        receiverTimes: {
+          ...block.receiverTimes,
+          [threadId]: {
+            ...(startedAt === undefined ? {} : { startedAt }),
+            ...(settledAt === undefined ? {} : { settledAt }),
+          },
+        },
+      };
+    });
+    if (!blocksChanged) return message;
+    changed = true;
+    return { ...message, blocks };
+  });
+  return changed ? result : messages;
 }
 
 function textFromSimpleAssistantMessage(message: ChatMessage): string | null {
@@ -3845,352 +4233,32 @@ function upsertCodexItem(
     }
   }
 
-  let blocks: ChatBlock[];
-  let role: 'assistant' | 'system' = 'assistant';
+  // Provider-native replay may still carry PreviewVisual image bytes. Strip
+  // those before the shared normalizer while retaining prepared field bodies.
+  const replayItem =
+    itemType === 'dynamic_tool_call' &&
+    /^.+_preview_visual$/.test(asString(item.tool))
+      ? {
+          ...item,
+          content_items: withoutPreviewVisualImages(item.content_items),
+        }
+      : item;
+  const normalized = normalizeCodexNeutralItem(replayItem, eventType, {
+    previewToolResults: context.previewToolResults,
+    losslessFunctionOutput: context.losslessFunctionOutput,
+    preparedOutput: context.preparedOutput,
+    asyncQuestionRequestId: codexAsyncQuestionRequestId(context, itemId),
+  });
+  if (!normalized) return messages;
+  const { blocks, role } = normalized;
 
-  switch (itemType) {
-    case 'agent_message':
-    case 'plan': {
-      const text = stripMemoryCitationTags(
-        asString(item.text) || codexAsyncQuestionText(item.questions),
-      );
-      if (text.trim().length === 0) {
-        return messages;
-      }
-      const questions =
-        item.delivery === 'async'
-          ? readCodexAsyncQuestions(item.questions)
-          : undefined;
-      blocks = [
-        {
-          type: 'text',
-          text,
-          ...(questions
-            ? {
-                asyncQuestion: {
-                  requestId: codexAsyncQuestionRequestId(context, itemId),
-                  questions,
-                },
-              }
-            : {}),
-        },
-      ];
-      role = 'assistant';
-      break;
-    }
-    case 'reasoning': {
-      const text = stripMemoryCitationTags(asString(item.text));
-      if (text.trim().length === 0) {
-        return messages;
-      }
-      blocks = [{ type: 'thinking', text }];
-      role = 'assistant';
-      break;
-    }
-    case 'command_execution': {
-      // `status` follows the generated `CommandExecutionStatus` union:
-      // 'inProgress' | 'completed' | 'failed' | 'declined'. Only the three
-      // terminal statuses may attach a `tool_result` — an 'inProgress' item
-      // must render as a bare `tool_use` so ChatBlockRenderer's
-      // `!block.result` gate can still surface the ToolApprovalCard while the
-      // approval prompt is pending.
-      const status = asString(item.status);
-      const exitCode =
-        typeof item.exit_code === 'number' ? item.exit_code : undefined;
-      const isError =
-        status === 'failed' ||
-        status === 'declined' ||
-        (exitCode !== undefined && exitCode !== 0);
-      const isTerminal =
-        eventType === 'item.completed' ||
-        status === 'completed' ||
-        status === 'failed' ||
-        status === 'declined';
-      blocks = [
-        {
-          type: 'tool_use',
-          toolUseId: codexToolId,
-          toolName: 'command',
-          input: asString(item.command),
-        },
-      ];
-      if (isTerminal) {
-        blocks.push({
-          type: 'tool_result',
-          toolUseId: codexToolId,
-          toolName: 'command',
-          output:
-            asString(item.aggregated_output).length > 0
-              ? asString(item.aggregated_output)
-              : status === 'completed'
-                ? 'Done'
-                : status,
-          isError,
-        });
-      }
-      role = 'system';
-      break;
-    }
-    case 'file_change': {
-      const changes = Array.isArray(item.changes) ? item.changes : [];
-      const summary = changes
-        .map((change) => {
-          if (!isRecord(change)) {
-            return '';
-          }
-          return `${asString(change.kind)}: ${asString(change.path)}`;
-        })
-        .filter((value) => value.length > 0)
-        .join('\n');
-      // Same terminal gating as `command_execution` above — `status` follows
-      // the generated `PatchApplyStatus` union.
-      const status = asString(item.status);
-      const isTerminal =
-        eventType === 'item.completed' ||
-        status === 'completed' ||
-        status === 'failed' ||
-        status === 'declined';
-      blocks = [
-        {
-          type: 'tool_use',
-          toolUseId: codexToolId,
-          toolName: 'file_change',
-          input: summary,
-        },
-      ];
-      if (isTerminal) {
-        blocks.push({
-          type: 'tool_result',
-          toolUseId: codexToolId,
-          toolName: 'file_change',
-          output: status,
-          isError: status === 'failed' || status === 'declined',
-        });
-      }
-      role = 'system';
-      break;
-    }
-    case 'web_search': {
-      const action = isRecord(item.action) ? item.action : null;
-      const actionText =
-        action?.type === 'open_page' || action?.type === 'openPage'
-          ? `Open ${asString(action.url)}`
-          : action?.type === 'find_in_page' || action?.type === 'findInPage'
-            ? `Find ${asString(action.pattern)} in ${asString(action.url)}`
-            : action?.type === 'search'
-              ? asString(action.query) ||
-                (Array.isArray(action.queries)
-                  ? action.queries
-                      .filter((value) => typeof value === 'string')
-                      .join('\n')
-                  : '')
-              : '';
-      blocks = [
-        {
-          type: 'tool_use',
-          toolUseId: codexToolId,
-          toolName: 'web_search',
-          input: actionText || asString(item.query),
-        },
-      ];
-      if (eventType === 'item.completed' || item.status === 'completed') {
-        blocks.push({
-          type: 'tool_result',
-          toolUseId: codexToolId,
-          toolName: 'web_search',
-          output: 'Done',
-          isError: false,
-        });
-      }
-      role = 'system';
-      break;
-    }
-    case 'image_generation': {
-      const path = asString(item.saved_path);
-      if (
-        item.status === 'failed' ||
-        (eventType === 'item.completed' && item.status === 'completed' && !path)
-      ) {
-        blocks = [
-          {
-            type: 'text',
-            text:
-              item.status === 'failed'
-                ? 'Image generation failed.'
-                : 'Generated image unavailable.',
-          },
-        ];
-        role = 'system';
-        break;
-      }
-      if (path.length === 0 || item.status !== 'completed') {
-        return messages;
-      }
-      blocks = [
-        {
-          type: 'image',
-          path,
-          alt: asString(item.revised_prompt, 'Generated image'),
-        },
-      ];
-      role = 'assistant';
-      break;
-    }
-    case 'function_call_output': {
-      const name = [asString(item.namespace), asString(item.name, 'unknown')]
-        .filter(Boolean)
-        .join('.');
-      const output =
-        typeof item.output === 'string'
-          ? boundCodexDynamicToolOutput(item.output)
-          : flattenCodexDynamicToolContent({
-              contentItems: withCodexImagePreviewNotices(item.output),
-              success: null,
-            });
-      blocks = [
-        {
-          type: 'text',
-          text: `Tool output (${name})\n\n${output}`,
-          verbatim: true,
-        },
-        ...codexToolImageBlocks(item.output),
-      ];
-      role = 'system';
-      break;
-    }
-    case 'entered_review_mode':
-    case 'exited_review_mode': {
-      blocks = [
-        {
-          type: 'text',
-          text: `${itemType === 'entered_review_mode' ? 'Review started' : 'Review completed'}: ${asString(item.review)}`,
-        },
-      ];
-      role = 'system';
-      break;
-    }
-    case 'dynamic_tool_call': {
-      // Normalised Canopy dynamic tool item (Transport plan §6) plus the
-      // synthetic items emitted for the Codex built-in `request_user_input`
-      // (Transport plan §7). The raw provider-accurate tool name is kept in
-      // `item.tool` so the renderer's alias helpers can fold the row into
-      // the right UX without losing transcript fidelity.
-      const rawToolName = asString(item.tool, 'unknown');
-      const replayContent = /^.+_preview_visual$/.test(rawToolName)
-        ? withoutPreviewVisualImages(item.content_items)
-        : item.content_items;
-      const inputSerialized = JSON.stringify(
-        item.arguments === undefined ? {} : (item.arguments ?? {}),
-      );
-      const itemStatus = asString(item.status);
-      const itemSuccess =
-        typeof item.success === 'boolean' ? item.success : null;
-      const isCompleted =
-        eventType === 'item.completed' ||
-        itemStatus === 'completed' ||
-        itemStatus === 'failed';
-
-      blocks = [
-        {
-          type: 'tool_use',
-          toolUseId: codexToolId,
-          toolName: rawToolName,
-          input: inputSerialized,
-        },
-      ];
-
-      if (isCompleted) {
-        const output = flattenCodexDynamicToolContent({
-          contentItems: withCodexImagePreviewNotices(replayContent),
-          success: itemSuccess,
-        });
-        blocks.push({
-          type: 'tool_result',
-          toolUseId: codexToolId,
-          toolName: rawToolName,
-          output,
-          isError: itemSuccess === false || itemStatus === 'failed',
-        });
-        blocks.push(...codexToolImageBlocks(replayContent));
-      }
-
-      role = 'system';
-      break;
-    }
-    case 'mcp_tool_call': {
-      const status = asString(item.status);
-      const toolName = codexMcpToolName(
-        asString(item.server),
-        asString(item.tool),
-      );
-      const terminal = eventType === 'item.completed';
-
-      blocks = [
-        {
-          type: 'tool_use',
-          toolUseId: codexToolId,
-          toolName,
-          input: JSON.stringify(item.arguments ?? {}),
-        },
-      ];
-
-      if (terminal) {
-        const flattened = flattenCodexMcpToolResult({
-          status,
-          result: isRecord(item.result)
-            ? {
-                ...item.result,
-                content: withCodexImagePreviewNotices(item.result.content),
-              }
-            : item.result,
-          error: item.error,
-        });
-        blocks.push({
-          type: 'tool_result',
-          toolUseId: codexToolId,
-          toolName,
-          output: flattened.output,
-          isError: flattened.isError,
-        });
-        blocks.push(
-          ...codexToolImageBlocks(
-            isRecord(item.result) ? item.result.content : null,
-          ),
-        );
-      }
-
-      role = 'system';
-      break;
-    }
-    case 'todo_list': {
-      const items = Array.isArray(item.items) ? item.items : [];
-      const text = items
-        .map((todo) => {
-          if (!isRecord(todo)) {
-            return '';
-          }
-          return `${todo.completed === true ? '[x]' : '[ ]'} ${asString(todo.text)}`;
-        })
-        .filter((value) => value.length > 0)
-        .join('\n');
-      blocks = [{ type: 'text', text: `Todo:\n${text}` }];
-      role = 'system';
-      break;
-    }
-    case 'error':
-      blocks = [
-        {
-          type: 'text',
-          text: `Error: ${asString(item.message, 'Unknown error')}`,
-        },
-      ];
-      role = 'system';
-      break;
-    default:
-      return messages;
-  }
-
-  const nextMessages = [...messages];
+  const existingMessage = messages[existingIndex];
+  const reconciledMessages = withoutPriorToolResults(
+    messages,
+    blocks,
+    codexToolId,
+  );
+  const nextMessages = [...reconciledMessages];
   // Resolve the parent codex_agent_call block once for new messages so a
   // subagent item arriving after its spawning collab call still groups under
   // the right block. Root-thread items skip the lookup so root assistant text
@@ -4210,11 +4278,14 @@ function upsertCodexItem(
     ...(parentBlockId ? { parentBlockId } : {}),
   };
 
-  if (existingIndex >= 0) {
+  const resultIndex = existingMessage
+    ? nextMessages.indexOf(existingMessage)
+    : -1;
+  if (resultIndex >= 0) {
     // Preserve previously-captured routing metadata so an `item.updated`
     // event that arrives without thread/turn context (e.g. a late delta on a
     // resumed turn) doesn't strip data we recorded on `item.started`.
-    const existing = nextMessages[existingIndex];
+    const existing = nextMessages[resultIndex];
     if (
       itemType === 'mcp_tool_call' &&
       existing.blocks.some(
@@ -4228,7 +4299,7 @@ function upsertCodexItem(
     ) {
       return messages;
     }
-    nextMessages[existingIndex] = {
+    nextMessages[resultIndex] = {
       ...message,
       ...(message.codexThreadId
         ? { codexThreadId: message.codexThreadId }
@@ -4260,6 +4331,27 @@ function upsertCodexItem(
     nextMessages.push(message);
   }
 
+  // An already-paged update has no authoritative logical source-slot map.
+  // Never reinterpret the preview's positions as absolute ordinals.
+  if (
+    context.onToolBlock !== undefined &&
+    !messages.some(
+      (existing) =>
+        existing.id === message.id && existing.blocksRef !== undefined,
+    )
+  ) {
+    const canonical = existingIndex < 0 ? message : nextMessages[existingIndex];
+    canonical.blocks.forEach((block, blockOrdinal): void => {
+      if (block.type === 'tool_use' || block.type === 'tool_result') {
+        context.onToolBlock?.(
+          `${itemId}:${block.type === 'tool_use' ? 'call' : 'result'}`,
+          canonical,
+          blockOrdinal,
+          messages,
+        );
+      }
+    });
+  }
   return nextMessages;
 }
 
@@ -4378,7 +4470,7 @@ function handleCodexTurnStarted(
   if (isCodexChildEvent(state, event)) {
     return {
       ...state,
-      messages: updateCodexAgentTurn(state, event, 'running', options.now),
+      messages: updateCodexAgentTurn(state, event, 'running', options),
       lastEventAt: options.now,
     };
   }
@@ -4388,7 +4480,7 @@ function handleCodexTurnStarted(
     messages: ensureOpenTurnTimerForContinuation(
       {
         ...state,
-        messages: updateCodexAgentTurn(state, event, 'running', options.now),
+        messages: updateCodexAgentTurn(state, event, 'running', options),
       },
       options,
     ),
@@ -4418,10 +4510,17 @@ function handleCodexItem(
   const eventType = event.type;
   const item = isRecord(event.item) ? event.item : undefined;
   const context: CodexItemContext = {
+    onToolBlock: options.onToolBlock,
     threadId: typeof event.thread_id === 'string' ? event.thread_id : undefined,
     turnId: typeof event.turn_id === 'string' ? event.turn_id : undefined,
     rootThreadId: state.sdkSessionId,
+    previewToolResults: options.codexToolResults === 'preview',
+    ...(options.transcriptStorageFormat === 4
+      ? { losslessFunctionOutput: true }
+      : {}),
   };
+  const preparedOutput = preparedOutputFor(options, eventType, item);
+  if (preparedOutput) context.preparedOutput = preparedOutput;
   if (eventType === 'item.completed' && item?.type === 'context_compaction') {
     const itemId = asString(item.id);
     if (itemId.length === 0) {
@@ -4675,7 +4774,7 @@ function handleCodexTurnCompleted(
             state,
             event,
             event.status === 'interrupted' ? 'cancelled' : 'completed',
-            options.now,
+            options,
           ),
         }),
     usage: accumulateCodexTurnUsage(previous, usage),
@@ -4714,10 +4813,17 @@ function applyCodexFailure(
     displayError,
     options,
   );
-  const messagesWithFailureState = markCodexAgentThreadErrored(
-    failedState.messages,
-    typeof event.thread_id === 'string' ? event.thread_id : undefined,
-    displayError,
+  const failedThreadId =
+    typeof event.thread_id === 'string' ? event.thread_id : undefined;
+  const messagesWithFailureState = recordCodexReceiverTime(
+    markCodexAgentThreadErrored(
+      failedState.messages,
+      failedThreadId,
+      displayError,
+    ),
+    failedThreadId,
+    'settle',
+    codexReceiverTimeAt(event, 'settle', options),
   );
   const messages = isUsageLimit
     ? messagesWithFailureState
@@ -4885,6 +4991,7 @@ function handleCodexStartupResult(
     state.messages,
     options.createMessageId,
     options.now,
+    childToolCloseContext(state, event, options),
   );
   // A native turn.failed/error normally precedes the synthetic result and has
   // already settled the turn. For a usage limit it left no row to match, only
@@ -4901,6 +5008,9 @@ function handleCodexStartupResult(
       ? state
       : { ...state, messages: closedMessages };
   }
+  const modelAccessFailure = readCodexAccountModelAccessFailure(
+    event[CANOPY_MODEL_ACCESS_FAILURE_FIELD],
+  );
   // Other failures keep their row; never print the same failure twice.
   if (
     state.status === 'error' &&
@@ -4909,14 +5019,52 @@ function handleCodexStartupResult(
       (block) => block.type === 'text' && block.text === `Error: ${message}`,
     )
   ) {
-    return closedMessages === state.messages
-      ? state
-      : { ...state, messages: closedMessages };
+    const stamped = stampCodexModelAccessFailure(
+      closedMessages,
+      message,
+      modelAccessFailure,
+    );
+    return stamped === state.messages ? state : { ...state, messages: stamped };
   }
-  return handleCodexError(
+  const next = handleCodexError(
     { ...state, messages: closedMessages },
     { ...event, message },
     options,
+  );
+  const stamped = stampCodexModelAccessFailure(
+    next.messages,
+    message,
+    modelAccessFailure,
+  );
+  return stamped === next.messages ? next : { ...next, messages: stamped };
+}
+
+/**
+ * Copy the trusted model-access carrier from a failed turn's terminal result
+ * onto that turn's `Error:` row (CAN-4716), the way `canopy_display_error_code`
+ * reaches its row. The native failure event usually wrote the row first, so
+ * this finds it rather than adding one. Only the trailing system row is
+ * considered, so an earlier turn's row never changes.
+ */
+function stampCodexModelAccessFailure(
+  messages: ChatMessage[],
+  errorMessage: string,
+  failure: CodexAccountModelAccessFailure | undefined,
+): ChatMessage[] {
+  if (!failure) return messages;
+  const index = messages.length - 1;
+  const last = messages[index];
+  if (last?.role !== 'system') return messages;
+  const text = `Error: ${errorMessage}`;
+  let changed = false;
+  const blocks = last.blocks.map((block) => {
+    if (block.type !== 'text' || block.text !== text) return block;
+    changed = true;
+    return { ...block, modelAccessFailure: failure };
+  });
+  if (!changed) return messages;
+  return messages.map((message, position) =>
+    position === index ? { ...last, blocks } : message,
   );
 }
 
@@ -4940,6 +5088,19 @@ export function applyCodexTranscriptEvent(
   event: Record<string, unknown>,
   options: TranscriptReducerOptions,
 ): TranscriptReducerState {
+  const next = reduceCodexTranscriptEvent(state, event, options);
+  return options.rootTurnMode === 'canonical-content-only'
+    ? keepCanonicalRootTurn(state, next)
+    : next;
+}
+
+function reduceCodexTranscriptEvent(
+  state: TranscriptReducerState,
+  event: Record<string, unknown>,
+  options: TranscriptReducerOptions,
+): TranscriptReducerState {
+  if (event.type === CHILD_TOOLS_ENDED_EVENT_TYPE)
+    return applyChildToolsEndedEvent(state, event, options);
   if (event.type === CANOPY_DELEGATION_EVENT_TYPE)
     return applyDelegationTranscriptEvent(state, event);
   if (event.type === 'canopy_user_prompt') {
@@ -5148,6 +5309,7 @@ export function parseAgentTranscriptLines(
     const options: TranscriptReducerOptions = {
       now,
       createMessageId,
+      childToolLiveness: { kind: 'unknown' },
       ...(parseOptions.turnStartedAt != null
         ? { turnStartedAt: parseOptions.turnStartedAt }
         : {}),
@@ -5156,6 +5318,9 @@ export function parseAgentTranscriptLines(
         : {}),
       useNowAsTurnTimestamp: false,
       aiCreditsRouted: parseOptions.aiCreditsRouted,
+      ...(parseOptions.transcriptStorageFormat !== undefined
+        ? { transcriptStorageFormat: parseOptions.transcriptStorageFormat }
+        : {}),
     };
 
     if (
@@ -5178,6 +5343,7 @@ export function parseAgentTranscriptLines(
     }
 
     if (
+      parsed.type === CHILD_TOOLS_ENDED_EVENT_TYPE ||
       parsed.type === CANOPY_DELEGATION_EVENT_TYPE ||
       parsed.type === 'canopy_user_prompt' ||
       parsed.type === 'canopy_injected_prompt' ||
@@ -5320,7 +5486,16 @@ export function parseAgentTranscriptLines(
       parseOptions.turnCompletedAt ?? state.lastEventAt ?? lines.length;
     state = {
       ...state,
-      messages: completeAllOpenTurnTimers(state.messages, completedAt),
+      messages: closeOpenToolUseBlocks(
+        completeAllOpenTurnTimers(state.messages, completedAt),
+        createMessageId,
+        completedAt,
+        {
+          liveness: { kind: 'no-live-session' },
+          codexRootThreadId: state.sdkSessionId,
+          agentCallBlocksById: indexCodexAgentCallBlocks(state.messages),
+        },
+      ),
     };
   }
 

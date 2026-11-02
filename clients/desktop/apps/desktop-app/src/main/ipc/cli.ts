@@ -25,9 +25,38 @@ const CLI_LINK_PATH = path.join(CLI_LINK_DIR, BRAND.cliName);
 const WINDOWS_ENV_KEY = 'HKCU\\Environment';
 const WINDOWS_PATH_VALUE = 'Path';
 
+// Only the E2E bundle may substitute a tiny packaged distribution and an
+// isolated home. Status, actions and persistence still use the real installer.
+function getE2eLinuxCliRoot(): string | null {
+  return typeof __CANOPY_E2E__ !== 'undefined' && __CANOPY_E2E__
+    ? process.env.CANOPY_E2E_LINUX_CLI_ROOT || null
+    : null;
+}
+
+function getLinuxInstaller(): ReturnType<typeof createLinuxCliInstaller> {
+  const root = getE2eLinuxCliRoot();
+  return createLinuxCliInstaller(
+    root
+      ? {
+          bundledCliPath: path.join(
+            root,
+            'package/resources/cli',
+            BRAND.cliName,
+          ),
+          homeDir: path.join(root, 'home'),
+          env: {
+            XDG_DATA_HOME: path.join(root, 'data'),
+            XDG_BIN_HOME: path.join(root, 'bin'),
+          },
+        }
+      : { bundledCliPath: getBundledCanopyCliPath() },
+  );
+}
+
 function getCliOperatingSystem(): ReturnType<
   typeof hostPlatformOperatingSystem
 > | null {
+  if (getE2eLinuxCliRoot()) return 'linux';
   try {
     return hostPlatformOperatingSystem();
   } catch (error) {
@@ -42,7 +71,7 @@ function getCliOperatingSystem(): ReturnType<
 }
 
 function getUnsupportedReason(): CliPathUnsupportedReason | null {
-  if (getCanopyRuntimeMode() === 'dev') {
+  if (getCanopyRuntimeMode() === 'dev' && !getE2eLinuxCliRoot()) {
     return 'dev';
   }
 
@@ -390,9 +419,7 @@ export async function getCliPathStatus(): Promise<CliPathStatus> {
   }
 
   if (getCliOperatingSystem() === 'linux') {
-    return createLinuxCliInstaller({
-      bundledCliPath: getBundledCanopyCliPath(),
-    }).getStatus();
+    return getLinuxInstaller().getStatus();
   }
 
   const bundledCliPath = getBundledCanopyCliPath();
@@ -442,9 +469,7 @@ export async function installCliToPath(): Promise<CliInstallResult> {
   }
 
   if (getCliOperatingSystem() === 'linux') {
-    return createLinuxCliInstaller({
-      bundledCliPath: getBundledCanopyCliPath(),
-    }).install();
+    return getLinuxInstaller().install();
   }
 
   const status = await getCliPathStatus();
@@ -525,9 +550,7 @@ export async function uninstallCliFromPath(): Promise<CliInstallResult> {
   }
 
   if (getCliOperatingSystem() === 'linux') {
-    return createLinuxCliInstaller({
-      bundledCliPath: getBundledCanopyCliPath(),
-    }).uninstall();
+    return getLinuxInstaller().uninstall();
   }
 
   const status = await getCliPathStatus();

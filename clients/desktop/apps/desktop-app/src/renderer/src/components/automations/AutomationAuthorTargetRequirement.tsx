@@ -6,7 +6,11 @@ import type {
 } from '@canopy/protocol/automations';
 import type { AutomationAction } from '@canopy/desktop-shared/types';
 import { resolveLocalAutomationTargetRequirement } from '@canopy/desktop-shared/lib/automation-target';
-import type { AutomationPipelineResolution } from '@canopy/pipeline-interop/automation-target';
+import type {
+  AutomationPipelineResolution,
+  AutomationTargetResolution,
+} from '@canopy/pipeline-interop/automation-target';
+import { isGlobalPipelineAutomationAction } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 import { Button, Notice } from '@canopy/ui-shared';
 import { AutomationTargetContextsLine } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
 import { ShareCheckbox } from '@canopy/ui-app/sharing';
@@ -20,11 +24,19 @@ export function AutomationAuthorTargetRequirement({
   requirement,
   installed,
   onChange,
+  onStatusChange,
 }: {
   action?: AutomationAction;
   requirement?: SharedAutomationTargetRequirement;
   installed: boolean;
   onChange: (contexts: TargetContext[] | undefined) => void;
+  /**
+   * The verdict for the current action: `null` with no action to check, and
+   * `pending` until the host facts for this exact action have loaded.
+   */
+  onStatusChange?: (
+    status: AutomationTargetResolution['status'] | null,
+  ) => void;
 }): JSX.Element | null {
   const key = JSON.stringify(action);
   const [facts, setFacts] = useState<{
@@ -53,8 +65,25 @@ export function AutomationAuthorTargetRequirement({
     // The complete serialized action invalidates host facts without rereading on each form render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
-  if (!action || action.type === 'pipeline_execution_resume') return null;
   const current = facts?.key === key ? facts : undefined;
+  const checked =
+    action && action.type !== 'pipeline_execution_resume' ? action : undefined;
+  const reportedStatus = !checked
+    ? null
+    : (checked.type === 'worktree_session_prompt' ||
+          checked.type === 'worktree_pipeline') &&
+        !current
+      ? 'pending'
+      : resolveLocalAutomationTargetRequirement(
+          checked,
+          current?.kind,
+          requirement,
+          current?.pipeline,
+        ).status;
+  useEffect(() => {
+    onStatusChange?.(reportedStatus);
+  }, [onStatusChange, reportedStatus]);
+  if (!action || action.type === 'pipeline_execution_resume') return null;
   if (action.type === 'worktree_session_prompt' && !current)
     return (
       <p className="text-s fg-secondary">Checking where this chat runs…</p>
@@ -71,6 +100,17 @@ export function AutomationAuthorTargetRequirement({
     undefined,
     current?.pipeline,
   );
+  // A pipeline with no project runs in no project context, so only a
+  // refusal is worth showing.
+  if (isGlobalPipelineAutomationAction(action))
+    return resolved.status === 'error' ? (
+      <div
+        className="space-y-2"
+        data-testid="automations-form-target-requirement"
+      >
+        <Notice intent="attention">{resolved.error}</Notice>
+      </div>
+    ) : null;
   return (
     <div
       className="space-y-2"

@@ -2,6 +2,10 @@ import { useNavigationStore } from '../../navigationStore';
 import { getCurrentChatPanelVisible } from '@/lib/worktree-layout-prefs';
 import { worktreeKey } from '../utils';
 import {
+  hasPendingAttentionLanding,
+  preservesLandedAttention,
+} from '../attention-landing-intent';
+import {
   tabNeedsVisibleAcknowledgement,
   tabsStillNeedAttention,
 } from '../notifications';
@@ -9,7 +13,11 @@ import { clearRecordedUnreadChatAgentResponsePreview } from '../unread-previews'
 import { scheduleIdleChatUnload } from '../hydration';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatAttentionSlice } from '../state';
-import { isScopeRevisionedLive } from './revisioned';
+import {
+  dropPendingUnread,
+  isScopeRevisionedLive,
+  persistUnreadWhenScopeLive,
+} from './revisioned';
 
 export const createAttentionSlice: StateCreator<
   ChatState,
@@ -62,6 +70,7 @@ export const createAttentionSlice: StateCreator<
     }
 
     const key = worktreeKey(selected);
+    if (hasPendingAttentionLanding(key)) return;
     let acknowledgedChatId: string | undefined;
 
     set((state) => {
@@ -79,7 +88,13 @@ export const createAttentionSlice: StateCreator<
       const tabs = needsTabClear
         ? wc.tabs.map((tab) =>
             tab.id === wc.activeTabId
-              ? { ...tab, unread: false, attentionDismissedAt: dismissedAt }
+              ? {
+                  ...tab,
+                  unread: false,
+                  ...(preservesLandedAttention(key, tab.id)
+                    ? {}
+                    : { attentionDismissedAt: dismissedAt }),
+                }
               : tab,
           )
         : wc.tabs;
@@ -122,10 +137,14 @@ export const createAttentionSlice: StateCreator<
           type: 'chat.mark_read',
           chatId: acknowledgedChatId,
         }),
-        get().dispatchChatCommand(selected, {
-          type: 'chat.dismiss_attention',
-          chatId: acknowledgedChatId,
-        }),
+        ...(preservesLandedAttention(key, acknowledgedChatId)
+          ? []
+          : [
+              get().dispatchChatCommand(selected, {
+                type: 'chat.dismiss_attention',
+                chatId: acknowledgedChatId,
+              }),
+            ]),
       ]);
     }
   },
@@ -209,7 +228,12 @@ export const createAttentionSlice: StateCreator<
           t.unread !== true && t.attentionDismissedAt !== undefined;
         if (alreadyCleared) return t;
         tabsChanged = true;
-        return { ...t, unread: false, attentionDismissedAt: now };
+        return {
+          ...t,
+          unread: false,
+          unreadMarkedManually: undefined,
+          attentionDismissedAt: now,
+        };
       });
 
       const stillNeedsAttention = tabsStillNeedAttention(tabs);
@@ -249,6 +273,50 @@ export const createAttentionSlice: StateCreator<
           }),
         ]),
       );
+    }
+  },
+
+  setChatUnread: (projectId, worktreeId, chatId, unread): void => {
+    const key = worktreeKey({ projectId, worktreeId });
+    const tab = get().worktreeChats[key]?.tabs.find((t) => t.id === chatId);
+    if (!tab || (tab.unread === true) === unread) return;
+    if (!unread) {
+      // A mark queued during a refresh must not re-unread the chat later.
+      dropPendingUnread(projectId, worktreeId, chatId);
+      get().markTargetRead(projectId, worktreeId, { tabId: chatId });
+      return;
+    }
+    // The viewed chat stays unread: no read path runs on this action, so
+    // only a later re-acknowledgement (leaving and returning) clears it.
+    set((state) => {
+      const wc = state.worktreeChats[key];
+      if (!wc) return state;
+      const tabs = wc.tabs.map((t) =>
+        t.id === chatId
+          ? {
+              ...t,
+              unread: true,
+              unreadMarkedManually: true,
+              // The user's mark, not a question, now owns the unread, so
+              // answering an earlier question must not clear it.
+              unreadRaisedByQuestion: undefined,
+              attentionDismissedAt: undefined,
+            }
+          : t,
+      );
+      return {
+        worktreeChats: { ...state.worktreeChats, [key]: { ...wc, tabs } },
+        ...(state.unreadWorktreeKeys.has(key)
+          ? {}
+          : {
+              unreadWorktreeKeys: new Set(state.unreadWorktreeKeys).add(key),
+            }),
+      };
+    });
+    if (isScopeRevisionedLive(get(), projectId, worktreeId)) {
+      void persistUnreadWhenScopeLive(projectId, worktreeId, chatId, {
+        manual: true,
+      });
     }
   },
 });

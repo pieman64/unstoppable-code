@@ -1,3 +1,7 @@
+import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
+import { openOpenCodeExecutionRuntime } from '../opencode/execution-runtime';
+import { resolveSessionAiCreditsAttribution } from './ai-credits-routing';
+import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import {
   buildCodexPlanModeDeveloperInstructions,
   DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
@@ -57,11 +61,7 @@ import {
   createApprovalSession,
   type ApprovalSessionHandle,
 } from '../approvals/approval-service';
-import {
-  openManagedOpenCodeRuntime,
-  assertOpenCodeModelAvailable,
-  assertOpenCodeConnectionGeneration,
-} from '../opencode/connection';
+import { assertOpenCodeConnectionGeneration } from '../opencode/connection';
 import { authorizeOpenCodeNativeTool } from '../opencode/tool-approval';
 import { buildOpenCodeMcpServers } from '../opencode/mcp-servers';
 import { authorizeCursorMcpTool } from '../cursor/tool-approval';
@@ -83,13 +83,16 @@ import { CursorEventBuffer } from './cursor-event-buffer';
 import {
   buildSessionKey,
   drainChatSessionEvents,
-  markTurnActive,
-  markTurnAwaitingUser,
-  markTurnIdle,
-  recordSessionEvent,
   registerSession,
 } from './session-manager';
+import { createOwnedTurnState } from './owned-turn-state';
 import type { AgentProvider, AgentSession, AgentSessionOptions } from './types';
+import type { TurnBinding } from '@canopy/protocol/canopy-core';
+import {
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+} from './provider-turn-lifecycle';
+import { observeRoutedTurnBinding } from './session-event-router';
 
 function hasToolKey<T extends object>(
   registry: T,
@@ -99,6 +102,20 @@ function hasToolKey<T extends object>(
 }
 
 /** ACP-backed desktop provider; canonical transcript ownership remains in chat state. */
+function openCodeFailureStatus(error: unknown): { api_error_status?: number } {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'api_error_status' in error &&
+    typeof error.api_error_status === 'number' &&
+    Number.isInteger(error.api_error_status) &&
+    error.api_error_status >= 400 &&
+    error.api_error_status <= 599
+  )
+    return { api_error_status: error.api_error_status };
+  return {};
+}
+
 export class OpenCodeProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
@@ -106,6 +123,20 @@ export class OpenCodeProvider implements AgentProvider {
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
+    const lifecycleScope = {
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+    };
+    // Canonical turn state starts and ends root turns only from lifecycle
+    // receipts, so OpenCode publishes them as the other ACP harnesses do.
+    const lifecycleProducer = getTurnLifecycleProducer(
+      'opencode',
+      lifecycleScope,
+    );
+    let lifecycleTurnId: string | undefined;
+    let awaitingUser = false;
+    const turnState = createOwnedTurnState(key, () => session);
     const codeGraphToolsAdvertised =
       !isCoworkWorkspace(opts.projectId) &&
       (!opts.assistantMode || opts.assistantMode === 'default') &&
@@ -133,6 +164,20 @@ export class OpenCodeProvider implements AgentProvider {
       data: Record<string, unknown>,
       userMessageId?: string,
     ): void | Promise<void> => {
+      if (
+        awaitingUser &&
+        data.type !== 'result' &&
+        data.type !== 'error' &&
+        lifecycleTurnId
+      ) {
+        awaitingUser = false;
+        lifecycleProducer.sessionState({
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          state: 'running',
+          source: 'provider',
+          observedDuringTurnId: lifecycleTurnId,
+        });
+      }
       const event = {
         ...data,
         provider: 'opencode',
@@ -141,7 +186,7 @@ export class OpenCodeProvider implements AgentProvider {
           : {}),
       };
       managedDelegation?.observe(event, userMessageId);
-      recordSessionEvent(key, event);
+      turnState.recordSessionEvent(event);
       return output && data.type !== 'result' && data.type !== 'error'
         ? output.push(event)
         : onEvent(event);
@@ -203,8 +248,10 @@ export class OpenCodeProvider implements AgentProvider {
         else managedDelegation = created;
       }
       const turnModel = model;
-      const rawModel = getRawOpenCodeModelId(turnModel ?? '');
-      if (!rawModel || opts.aiCreditsRouting?.active)
+      if (
+        !turnModel ||
+        (getRawOpenCodeModelId(turnModel) && opts.aiCreditsRouting?.active)
+      )
         throw new Error('Choose an OpenCode model to use this harness.');
       const serverMode =
         opts.assistantMode === 'app-advisor' && opts.appAdvisorRuntime
@@ -218,27 +265,61 @@ export class OpenCodeProvider implements AgentProvider {
         throw new Error(
           'OpenCode is not available for this assistant surface.',
         );
-      const runtime = await openManagedOpenCodeRuntime({
+      const proxy = getMcpHttpProxyService();
+      const runtime = await openOpenCodeExecutionRuntime({
+        model: turnModel,
+        sessionId: key,
+        cwd: opts.cwd,
         signal: abort.signal,
         workspaceId: opts.projectId,
+        attribution: () => resolveSessionAiCreditsAttribution(opts),
       });
-      const proxy = getMcpHttpProxyService();
       const turnEmit = (event: Record<string, unknown>): void | Promise<void> =>
         emit(event, userMessageId);
+      const closeTurn = async (): Promise<void> => {
+        let failure: Error | undefined;
+        const recordFailure = (error: unknown): void => {
+          failure ??=
+            error instanceof Error
+              ? error
+              : new Error('OpenCode cleanup failed.');
+        };
+        for (const cleanup of [
+          (): void => approval?.invalidatePending?.(),
+          (): void => approval?.dispose(),
+          (): void => {
+            if (turnState.ownsKeyResources())
+              proxy.unregisterRoutesForSession(key);
+          },
+          (): void => {
+            if (turnState.ownsKeyResources())
+              proxy.unregisterCanopyWorktreeSessionRoute(key);
+          },
+        ]) {
+          try {
+            cleanup();
+          } catch (error) {
+            recordFailure(error);
+          }
+        }
+        approval = undefined;
+        try {
+          await runtime.close();
+        } catch (error) {
+          recordFailure(error);
+        }
+        if (failure)
+          throw runtime.failureError ? runtime.failureError(failure) : failure;
+      };
       try {
-        const availableModel = await assertOpenCodeModelAvailable(
-          turnModel,
-          abort.signal,
-        );
         assertOpenCodeConnectionGeneration(runtime.generation);
         const profile = getOpenCodeSessionProfile(opts);
         await mkdir(profile, { recursive: true, mode: 0o700 });
         const turnThinking =
-          thinking !== undefined &&
-          availableModel.supportedThinkingLevels?.length
+          thinking !== undefined && runtime.supportedThinkingLevels?.length
             ? clampThinkingLevelToDeclared(
                 thinking,
-                availableModel.supportedThinkingLevels,
+                runtime.supportedThinkingLevels,
               )
             : undefined;
         let contextReset = contextResetPending;
@@ -263,7 +344,7 @@ export class OpenCodeProvider implements AgentProvider {
               mode: 0o600,
               flag: 'wx',
             });
-            abort.signal.throwIfAborted();
+            runtime.signal.throwIfAborted();
             assertOpenCodeConnectionGeneration(runtime.generation);
             await rename(temporary, bindingFile);
           } finally {
@@ -317,6 +398,7 @@ export class OpenCodeProvider implements AgentProvider {
         }
         const currentApproval = createApprovalSession({
           sessionKey: key,
+          getTurnUserMessageId: () => userMessageId,
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
@@ -417,12 +499,12 @@ export class OpenCodeProvider implements AgentProvider {
               args,
               {
                 validate: validateOpenCodeMcpSchema,
-                signal: abort.signal,
+                signal: runtime.signal,
               },
             ))
           )
             return false;
-          abort.signal.throwIfAborted();
+          runtime.signal.throwIfAborted();
           assertOpenCodeConnectionGeneration(runtime.generation);
           const outcome = await authorizeCursorMcpTool(
             { server, tool, args },
@@ -433,7 +515,7 @@ export class OpenCodeProvider implements AgentProvider {
               planMode,
               mode: serverMode,
               toolSurface,
-              signal: abort.signal,
+              signal: runtime.signal,
               providerLabel: 'OpenCode',
               managedToolNames: managedDelegation?.tools.map(
                 (tool) => tool.name,
@@ -441,7 +523,7 @@ export class OpenCodeProvider implements AgentProvider {
             },
           );
           if (outcome.stopTurn) abort.abort();
-          return !abort.signal.aborted && outcome.decision === 'allow';
+          return !runtime.signal.aborted && outcome.decision === 'allow';
         };
         const gate = async (
           server: string,
@@ -450,7 +532,12 @@ export class OpenCodeProvider implements AgentProvider {
           callId: string,
         ): Promise<boolean> => {
           assertOpenCodeConnectionGeneration(runtime.generation);
-          if (abort.signal.aborted) return false;
+          if (runtime.signal.aborted) return false;
+          if (
+            server === names.main &&
+            isWatchDelegatesCompatibilityName(tool, 'opencode')
+          )
+            return true;
           const identity = copilotMcpCallIdentity(server, tool, args);
           const count = approved.get(identity) ?? 0;
           if (count) {
@@ -493,7 +580,7 @@ export class OpenCodeProvider implements AgentProvider {
                     if (
                       !transport?.requestId ||
                       currentTurn !== turnId ||
-                      abort.signal.aborted ||
+                      runtime.signal.aborted ||
                       !managedDelegation ||
                       !(await gate(
                         names.main,
@@ -520,7 +607,17 @@ export class OpenCodeProvider implements AgentProvider {
               }
             : {}),
           codeGraphToolsAdvertised,
-          onAwaitingUser: () => markTurnAwaitingUser(key),
+          onAwaitingUser: () => {
+            turnState.markTurnAwaitingUser();
+            awaitingUser = true;
+            if (lifecycleTurnId)
+              lifecycleProducer.sessionState({
+                ...(sessionId ? { providerSessionId: sessionId } : {}),
+                state: 'requires_action',
+                source: 'provider',
+                observedDuringTurnId: lifecycleTurnId,
+              });
+          },
           onSetAutoArchive: (enabled) =>
             turnEmit({ type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE, enabled }),
           authorizeToolCall: (toolKey, args, call) => {
@@ -593,7 +690,7 @@ export class OpenCodeProvider implements AgentProvider {
             ...runtime,
             cwd: opts.cwd,
             profileDir: profile,
-            rawModelId: rawModel,
+            rawModelId: runtime.rawModelId,
             model: turnModel,
             sessionId,
             thinkingLevel: turnThinking,
@@ -610,10 +707,9 @@ export class OpenCodeProvider implements AgentProvider {
               systemPrompt: opts.systemPromptAppend,
               planMode,
               approvalMode,
-              providerSettingsSources: [
-                'managed-provider-config',
-                'native-opencode-auth',
-              ],
+              providerSettingsSources: runtime.inferenceRoute
+                ? ['host-inference']
+                : ['managed-provider-config', 'native-opencode-auth'],
             },
             mcpSnapshot,
             signal: runtime.signal,
@@ -643,7 +739,7 @@ export class OpenCodeProvider implements AgentProvider {
                     `Selected skill ${skill.label}: ${skill.description}\nRead ${JSON.stringify(join(capabilityRoot, 'skills', skill.id, 'SKILL.md'))} for its instructions.`,
                 ),
               serverMode === 'app-advisor'
-                ? 'Use the supplied App Advisor tools to help with the app.'
+                ? 'Use the supplied Orchestrator tools to help with the app.'
                 : cowork
                   ? buildCoworkInjectedToolPrompt(
                       'opencode',
@@ -747,7 +843,7 @@ export class OpenCodeProvider implements AgentProvider {
                 cwd: opts.cwd,
                 approval: currentApproval,
                 planMode,
-                signal: abort.signal,
+                signal: runtime.signal,
                 toolUseId: `${turnId}:${input.toolCallId}`,
               });
               if (outcome.stopTurn) abort.abort();
@@ -773,7 +869,7 @@ export class OpenCodeProvider implements AgentProvider {
                       ...getRtkManagedEnv(),
                     },
                   },
-                  abort.signal,
+                  runtime.signal,
                 );
                 if (command)
                   return {
@@ -812,20 +908,24 @@ export class OpenCodeProvider implements AgentProvider {
             opencodeRuntimeVersion: runtime.runtimeIdentity?.version,
             opencodeUpdates: result.diagnostics,
           });
+        const failure =
+          result.isError || (result.cancelled && !abort.signal.aborted)
+            ? runtime.failureError?.(result.message, result.requestRejected)
+            : undefined;
         return {
           type: 'result',
-          is_error: result.isError,
-          result: result.message || result.responseText,
-          ...(result.cancelled ? { subtype: 'cancelled' } : {}),
+          is_error: result.isError || Boolean(failure),
+          result: failure?.message || result.message || result.responseText,
+          ...openCodeFailureStatus(failure),
+          ...(result.cancelled && !failure ? { subtype: 'cancelled' } : {}),
           usage: result.usage,
         };
+      } catch (error) {
+        throw !abort.signal.aborted && runtime.failureError
+          ? runtime.failureError(error)
+          : error;
       } finally {
-        approval?.invalidatePending?.();
-        approval?.dispose();
-        approval = undefined;
-        proxy.unregisterRoutesForSession(key);
-        proxy.unregisterCanopyWorktreeSessionRoute(key);
-        await runtime.close();
+        await closeTurn();
       }
     };
 
@@ -840,6 +940,39 @@ export class OpenCodeProvider implements AgentProvider {
         const abort = new AbortController();
         const turnId = sendOptions?.userMessageId ?? randomUUID();
         currentTurn = turnId;
+        const lifecycleTurn = sendOptions?.lifecycleExecutionId ?? turnId;
+        lifecycleTurnId = lifecycleTurn;
+        const lifecycleBinding: TurnBinding = {
+          turnId: lifecycleTurn,
+          origin: 'user',
+          binding: sendOptions?.userMessageId ? 'bound' : 'unbound',
+          submissionIds: [],
+          userMessageIds: sendOptions?.userMessageId
+            ? [sendOptions.userMessageId]
+            : [],
+          providerUserMessageUuids: [],
+        };
+        awaitingUser = false;
+        lifecycleProducer.turnStarted({
+          ...lifecycleBinding,
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          phase: 'start',
+          startedAtMs: Date.now(),
+        });
+        if (sendOptions?.userMessageId !== undefined)
+          observeRoutedTurnBinding(
+            lifecycleScope,
+            session,
+            [sendOptions.userMessageId],
+            undefined,
+            lifecycleTurn,
+          );
+        lifecycleProducer.sessionState({
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          state: 'running',
+          source: 'provider',
+          observedDuringTurnId: lifecycleTurn,
+        });
         const deferredLoadIds = new Set<string>();
         const buffer = new CursorEventBuffer(async (event) => {
           await onEvent(event);
@@ -871,7 +1004,7 @@ export class OpenCodeProvider implements AgentProvider {
           }
         });
         output = buffer;
-        markTurnActive(key, sendOptions?.userMessageId);
+        turnState.markTurnActive(sendOptions?.userMessageId);
         const attachments = sendOptions?.attachments
           ? {
               ...sendOptions.attachments,
@@ -887,6 +1020,7 @@ export class OpenCodeProvider implements AgentProvider {
         )
           .catch((error: unknown) => ({
             type: 'result',
+            ...openCodeFailureStatus(error),
             is_error: !abort.signal.aborted,
             result: abort.signal.aborted
               ? 'Turn cancelled'
@@ -930,19 +1064,48 @@ export class OpenCodeProvider implements AgentProvider {
           })
           .catch((error: unknown) => ({
             type: 'result',
+            ...openCodeFailureStatus(error),
             is_error: true,
             result:
               error instanceof Error
                 ? error.message
                 : 'OpenCode output could not be saved.',
           }))
-          .then(async (result) => {
+          .then(async (result: Record<string, unknown>) => {
             active = undefined;
             output = undefined;
-            markTurnIdle(key);
+            turnState.markTurnIdle();
+            awaitingUser = false;
+            const outcome =
+              abort.signal.aborted || result.subtype === 'cancelled'
+                ? 'cancelled'
+                : result.is_error === true
+                  ? 'failed'
+                  : 'completed';
+            lifecycleProducer.turnEnded({
+              ...lifecycleBinding,
+              ...(sessionId ? { providerSessionId: sessionId } : {}),
+              endedAtMs: Date.now(),
+              outcome,
+              // A completed turn's result is its reply, not a reason.
+              ...(outcome !== 'completed' && typeof result.result === 'string'
+                ? { terminalReason: result.result }
+                : {}),
+              source: 'result',
+            });
+            lifecycleProducer.sessionState({
+              ...(sessionId ? { providerSessionId: sessionId } : {}),
+              state: 'idle',
+              source: 'result-fallback',
+              observedDuringTurnId: lifecycleTurn,
+            });
             await emit(
               result.is_error
-                ? { type: 'error', error: result.result }
+                ? {
+                    type: 'error',
+                    error: result.result,
+                    ...openCodeFailureStatus(result),
+                  }
                 : result,
               sendOptions?.userMessageId,
             );
@@ -960,8 +1123,12 @@ export class OpenCodeProvider implements AgentProvider {
       },
       destroy: async () => {
         lifetime.abort();
-        await session.cancel();
-        managedDelegation?.detach();
+        try {
+          await session.cancel();
+          managedDelegation?.detach();
+        } finally {
+          releaseTurnLifecycleProducer('opencode', lifecycleScope);
+        }
       },
       setManagedDelegationMode: (mode): Promise<void> => {
         opts.managedDelegationMode = mode;
@@ -990,7 +1157,7 @@ export class OpenCodeProvider implements AgentProvider {
         return Promise.resolve();
       },
       setModel: (next): Promise<void> => {
-        if (!isOpenCodeModel(next))
+        if (!isOpenCodeModel(next) && !resolveGatewayModelEntry(next))
           return Promise.reject(new Error('Choose an OpenCode model.'));
         model = next;
         return Promise.resolve();

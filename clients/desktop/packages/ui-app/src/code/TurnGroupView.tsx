@@ -9,30 +9,92 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import {
+  computePortalTurnOutcomes,
+  getPortalTurnOutcomeSteps,
+} from '@canopy/app-state';
+import type { AgentArtifactReceiptV1 } from '@canopy/protocol/agent-artifacts';
 import type {
   PortalChatMessage,
   PortalChatTurnGroup,
 } from '@canopy/protocol/portal';
 import {
   ChatCopyAction,
+  ChatToolStepGroup,
+  PlanCopyAction,
   CollapsedTurnSummary,
   getElapsedSecond,
   getToolDisplayFamily,
   isAskUserQuestionToolName,
-  matchAskUserQuestionState,
+  portalAskUserQuestionRecordState,
   parseAskUserQuestionTexts,
   TurnFooterReveal,
   TurnFooterRow,
+  WakeTurnBoundary,
   TurnWorkHeader,
+  ToolApprovalWaitProvider,
+  isStartingTurnOutput,
+  orderTurnOutcomeSteps,
+  resolveTurnCompletionStatus,
+  STEP_GROUP_BODY_CLASS,
+  useChatDetail,
   useCleanChatLook,
+  useGroupToolCalls,
   type TurnSummary,
 } from '@canopy/ui-shared/components';
 import { ChatMessageView, normalizeChatMessageParts } from './ChatMessageView';
-import { useAskUserQuestionInteraction } from './ChatPartView';
+import {
+  ToolTurnSettledContext,
+  useAskUserQuestionInteraction,
+  useTurnWorkingStatus,
+} from './ChatPartView';
+import {
+  cleanLiveActivity,
+  describeCleanTurnSteps,
+  recentStepWindow,
+  segmentCleanTurn,
+} from './clean-turn-steps';
 import { ChatVisualBlock } from './ChatVisualBlock';
 import { readChatToolResultVisual } from './ChatToolResultPart';
 import { useChatVisualHost } from './chat-visual-host';
 import { TurnAgentArtifacts } from './agent-activity/TurnAgentArtifacts';
+import { TurnFiles } from './TurnFiles';
+import { portalTurnApprovalWait } from './turn-approval-wait';
+import { usePortalTurnPlanCopy } from './plan-turn-tool-calls';
+
+export function isTurnAwaitingFirstOutput(
+  turnGroup: PortalChatTurnGroup,
+  messagesById: Readonly<Record<string, PortalChatMessage>>,
+  awaitingTimer = false,
+): boolean {
+  return (
+    (turnGroup.complete !== true ||
+      // A complete user row alone is not a terminal turn acknowledgement.
+      (awaitingTimer &&
+        turnGroup.intermediateMessageIds.length === 0 &&
+        turnGroup.finalMessageIds.length === 0)) &&
+    messagesById[turnGroup.userMessageId] !== undefined &&
+    !lookup(
+      [...turnGroup.intermediateMessageIds, ...turnGroup.finalMessageIds],
+      messagesById,
+    ).some(
+      (message) =>
+        message.status === 'failed' ||
+        message.status === 'cancelled' ||
+        (message.role === 'assistant' &&
+          (message.text.trim().length > 0 ||
+            message.parts?.some((part) =>
+              isStartingTurnOutput(part.kind, part.data),
+            ))) ||
+        message.parts?.some(
+          (part) =>
+            part.kind === 'turn_timer' &&
+            isRecord(part.data) &&
+            typeof part.data.completedAt === 'number',
+        ),
+    )
+  );
+}
 
 /**
  * Renders one {@link PortalChatTurnGroup}: the user prompt, the collapsed
@@ -44,6 +106,12 @@ import { TurnAgentArtifacts } from './agent-activity/TurnAgentArtifacts';
  * flat message map); ids that are not present are skipped.
  */
 export interface TurnGroupViewProps {
+  /** First send is accepted locally and is waiting for its first visible output. */
+  readonly starting?: boolean;
+  /** A transcript can own the stable live region outside this turn. */
+  readonly startingStatusSlot?: ReactNode;
+  /** The host confirms no results were omitted from this transcript snapshot. */
+  readonly resultsComplete?: boolean;
   readonly turnGroup: PortalChatTurnGroup;
   readonly messagesById: Readonly<Record<string, PortalChatMessage>>;
   readonly appIcon?: ReactNode;
@@ -63,11 +131,26 @@ export interface TurnGroupViewProps {
    * when the real timer frame arrives and takes over.
    */
   readonly workingSlot?: ReactNode;
+  /** Brings a wake's spawning tool call (or its prompt) into view. */
+  readonly onShowSpawningCall?: (target: {
+    readonly toolUseId?: string;
+    readonly userMessageId?: string;
+  }) => void;
+  /**
+   * Opens this turn so the host can bring the call into view. A new object
+   * for each request.
+   */
+  readonly revealRequest?: { readonly toolUseId: string };
   /**
    * Whether this is the newest turn. Under the clean chat look its reply row
    * stays in view, as ChatGPT does; older rows show on hover or focus.
    */
   readonly latest?: boolean;
+  /**
+   * The turn's Agent activity receipts after the transcript placed each run
+   * once across the chat (CAN-4690). Omitted, the turn collects its own.
+   */
+  readonly agentArtifacts?: readonly AgentArtifactReceiptV1[];
 }
 
 /**
@@ -137,6 +220,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function readAskUserMatch(message: PortalChatMessage): {
+  toolName: string;
   toolUseId?: string;
   questionTexts?: string[];
 } | null {
@@ -165,6 +249,7 @@ function readAskUserMatch(message: PortalChatMessage): {
           : undefined;
     const questionTexts = input ? parseAskUserQuestionTexts(input) : undefined;
     return {
+      toolName,
       ...(toolUseId ? { toolUseId } : {}),
       ...(questionTexts ? { questionTexts } : {}),
     };
@@ -213,15 +298,32 @@ function TurnGroupViewImpl({
   feedbackSlot,
   actionSlot,
   workingSlot,
+  onShowSpawningCall,
+  revealRequest,
   latest = false,
+  starting = false,
+  startingStatusSlot,
+  agentArtifacts,
+  resultsComplete: hostResultsComplete = false,
 }: TurnGroupViewProps): JSX.Element {
   const complete = turnGroup.complete === true;
   const [collapsed, setCollapsed] = useState(complete);
   const wasComplete = useRef(complete);
   const askUserInteraction = useAskUserQuestionInteraction();
   const visualHost = useChatVisualHost();
+  // Clean chat look: the turn opens with "Working for 28s" and, once done,
+  // its folded steps' header reads "Worked for 3m 24s". Every step between
+  // two replies is one line; the running turn's tail shimmers what it does.
+  const clean = useCleanChatLook();
+  const groupToolCalls = useGroupToolCalls();
+  // Chat detail `recent`: the run the turn is still adding to keeps its
+  // newest steps in view under its line.
+  const recentSteps = useChatDetail() === 'recent';
+  const workingStatus = useTurnWorkingStatus();
 
   const user = messagesById[turnGroup.userMessageId];
+  const spawningUserMessageId = turnGroup.wake?.spawningUserMessageId;
+  const spawningToolUseId = turnGroup.wake?.spawningToolUseId;
   const intermediates = lookup(turnGroup.intermediateMessageIds, messagesById);
   const finals = lookup(turnGroup.finalMessageIds, messagesById);
   const expandedMessages = lookup(
@@ -241,6 +343,8 @@ function TurnGroupViewImpl({
       ),
     [turnGroup.intermediateMessageIds, turnGroup.finalMessageIds, messagesById],
   );
+  const showStarting =
+    starting && isTurnAwaitingFirstOutput(turnGroup, messagesById);
   // The completion stamp closes the turn, so the capability tiles sit above
   // it, as they do on desktop.
   const lastFinal = finals[finals.length - 1];
@@ -249,13 +353,126 @@ function TurnGroupViewImpl({
   const summary: TurnSummary = turnGroup.summary
     ? toTurnSummary(turnGroup.summary, intermediates)
     : {};
+  const timerMessages = [...intermediates, ...finals].filter((message) =>
+    message.parts?.some((part) => part.kind === 'turn_timer'),
+  );
+  const timerMessage =
+    timerMessages[timerMessages.length - 1] ?? finals[finals.length - 1];
+  const timerData = timerMessage?.parts?.find(
+    (part) => part.kind === 'turn_timer',
+  )?.data;
+  // Only a completion stamp settles the turn; its unresolved calls then
+  // render interrupted rather than pending.
+  const turnSettled =
+    isRecord(timerData) && typeof timerData.completedAt === 'number';
+  // A missing result is evidence of an interruption only when the turn has
+  // settled and the host confirms all results are available. Loading every
+  // known id in a bounded snapshot does not prove result completeness.
+  const resultsComplete =
+    hostResultsComplete &&
+    assistantMessages.length ===
+      turnGroup.intermediateMessageIds.length +
+        turnGroup.finalMessageIds.length;
+  const outcomeEvidence = useMemo(
+    () => ({ settled: complete && turnSettled, resultsComplete }),
+    [complete, turnSettled, resultsComplete],
+  );
+  // Scoped to this turn: its timer's pause holds its unresolved calls.
+  const approvalWait = useMemo(
+    () =>
+      portalTurnApprovalWait({
+        complete: complete || turnSettled,
+        timer: timerData,
+        messages: assistantMessages,
+      }),
+    [complete, turnSettled, timerData, assistantMessages],
+  );
+  // Outcomes among the folded steps, matched with results anywhere in the
+  // turn. The Portal carries no safety receipt, so `blocked` is always 0.
+  const outcomes = useMemo(
+    () =>
+      computePortalTurnOutcomes(
+        lookup(turnGroup.intermediateMessageIds, messagesById),
+        assistantMessages,
+        outcomeEvidence,
+      ),
+    [
+      turnGroup.intermediateMessageIds,
+      messagesById,
+      assistantMessages,
+      outcomeEvidence,
+    ],
+  );
+  // The errored and interrupted steps behind `outcomes`, for the outcome
+  // tooltip; most turns have none, so nothing is collected for them.
+  const outcomeSteps = useMemo(
+    () =>
+      outcomes.failed === 0 && outcomes.interrupted === 0
+        ? []
+        : orderTurnOutcomeSteps(
+            getPortalTurnOutcomeSteps(
+              lookup(turnGroup.intermediateMessageIds, messagesById),
+              assistantMessages,
+              outcomeEvidence,
+            ),
+          ),
+    [
+      outcomes.failed,
+      outcomes.interrupted,
+      turnGroup.intermediateMessageIds,
+      messagesById,
+      assistantMessages,
+      outcomeEvidence,
+    ],
+  );
+  const endReason = isRecord(timerData) ? timerData.endReason : undefined;
+  // One resolved end for the summary, header and footer: a recorded failure
+  // or cancellation, then the projected restart evidence, then any
+  // interrupted step. Nothing terminal while the turn runs.
+  const recordedEnd =
+    timerMessage?.status === 'failed' || timerMessage?.status === 'cancelled'
+      ? timerMessage.status
+      : endReason === 'failed' ||
+          endReason === 'cancelled' ||
+          endReason === 'interrupted'
+        ? endReason
+        : undefined;
+  const completionStatus = resolveTurnCompletionStatus({
+    // A failed or cancelled row has ended even before its group says so.
+    settled:
+      complete ||
+      turnSettled ||
+      recordedEnd === 'failed' ||
+      recordedEnd === 'cancelled',
+    recorded: recordedEnd,
+    outcomes,
+  });
+  const outcome =
+    completionStatus === 'complete' ? undefined : completionStatus;
+  // Clicking the outcome, or a tooltip entry, reveals that call the way a
+  // wake's spawning call is revealed: the turn and its step group open, and
+  // the row scrolls into view with the call-focus ring.
+  const firstOutcomeStep = outcomeSteps[0];
+  const onJumpToOutcome =
+    onShowSpawningCall && firstOutcomeStep
+      ? (toolUseId?: string): void =>
+          onShowSpawningCall({
+            toolUseId: toolUseId ?? firstOutcomeStep.toolUseId,
+          })
+      : undefined;
   const foldable = complete && intermediates.some(hasFoldableContent);
   useEffect(() => {
-    if (!wasComplete.current && complete) {
+    // Clean chat look: a turn that finishes on screen stays as it is, so
+    // nothing above the reply moves; it opens folded the next time.
+    if (!wasComplete.current && complete && !clean) {
       setCollapsed(true);
     }
     wasComplete.current = complete;
-  }, [complete]);
+  }, [complete, clean]);
+  // Opened as saved state, so the person can collapse the turn again.
+  useEffect(() => {
+    if (revealRequest) setCollapsed(false);
+  }, [revealRequest]);
   // A pending projected question must remain visible without asking the user
   // to discover it inside the collapsed agent-steps row. Match the
   // intermediate transcript block using the same Claude/Codex rules as the
@@ -271,9 +488,8 @@ function TurnGroupViewImpl({
       const match = readAskUserMatch(message);
       return (
         match !== null &&
-        matchAskUserQuestionState(askUserInteraction.states, match, {
-          answered: false,
-        }) !== undefined
+        portalAskUserQuestionRecordState(askUserInteraction.states, match)
+          .kind === 'unanswered'
       );
     });
   const isExpanded = !collapsed || hasProjectedAskUser;
@@ -288,26 +504,6 @@ function TurnGroupViewImpl({
   const feedback = feedbackSlot ? (
     <span data-testid="chat-turn-feedback">{feedbackSlot}</span>
   ) : undefined;
-  const timerMessages = [...intermediates, ...finals].filter((message) =>
-    message.parts?.some((part) => part.kind === 'turn_timer'),
-  );
-  const timerMessage =
-    timerMessages[timerMessages.length - 1] ?? finals[finals.length - 1];
-  const timerData = timerMessage?.parts?.find(
-    (part) => part.kind === 'turn_timer',
-  )?.data;
-  const endReason = isRecord(timerData) ? timerData.endReason : undefined;
-  const outcome =
-    endReason === 'failed' || endReason === 'cancelled'
-      ? endReason
-      : timerMessage?.status === 'failed' ||
-          timerMessage?.status === 'cancelled'
-        ? timerMessage.status
-        : undefined;
-  // Clean chat look: the turn opens with "Working for 28s" and, once done,
-  // its folded steps' header reads "Worked for 3m 24s"; while a step on
-  // screen shimmers, the timer row stays quiet.
-  const clean = useCleanChatLook();
   const timer = readTurnHeaderTimer(timerData);
   // The reply's Copy button copies the answer, or every reply text when the
   // turn has no final message, under either chat look (CAN-4704).
@@ -317,19 +513,77 @@ function TurnGroupViewImpl({
       .filter((text) => text.trim() !== '')
       .join('\n\n');
   const replyCopyText = textOf(finals) || textOf(intermediates);
+  // A finished plan turn copies its plan instead of its prose, and keeps the
+  // action while the plan's Markdown is unavailable (CAN-5354).
+  const planCopy = usePortalTurnPlanCopy(assistantMessages, complete);
+  const collapsedVisuals = intermediates.flatMap((message) =>
+    (message.parts ?? []).flatMap((part, index) => {
+      const owner =
+        part.kind === 'tool_result'
+          ? readChatToolResultVisual(part.data, message.messageId)
+          : undefined;
+      return owner
+        ? [
+            <ChatVisualBlock
+              key={`${message.messageId}-${index}`}
+              owner={owner}
+              variant="visual-only"
+            />,
+          ]
+        : [];
+    }),
+  );
+  // Grouping follows "Group tool calls" (off by default); without it every
+  // tool call keeps its own row.
+  const cleanSegments =
+    clean && groupToolCalls
+      ? segmentCleanTurn(
+          (foldable && !isExpanded
+            ? finals
+            : foldable
+              ? expandedMessages
+              : [...intermediates, ...finals]
+          ).filter((message) => message !== trailingTimer),
+        )
+      : null;
+  const lastCleanSegment = cleanSegments?.[cleanSegments.length - 1];
+  const liveRun =
+    clean && !complete && lastCleanSegment?.kind === 'steps'
+      ? lastCleanSegment
+      : undefined;
+  // Without grouping, the step still running on screen shimmers itself.
   const shownMessages = [...intermediates, ...finals].filter(
     (message) => message !== trailingTimer,
   );
   const lastParts = shownMessages[shownMessages.length - 1]?.parts ?? [];
   const lastPart = lastParts[lastParts.length - 1];
-  const liveStepShown =
+  const stepShimmersOnScreen =
+    lastPart !== undefined &&
+    ((lastPart.kind === 'tool_use' &&
+      !(isRecord(lastPart.data) && lastPart.data.result != null)) ||
+      lastPart.kind === 'thinking');
+  // The timer row is the live line's slot while the turn runs; empty while
+  // a step line above already says what the turn does.
+  const liveLine =
     clean &&
     !complete &&
-    lastPart !== undefined &&
-    ((lastPart.kind === 'tool_use' && !hasToolResult(lastPart.data)) ||
-      lastPart.kind === 'thinking');
+    (cleanSegments ? liveRun === undefined : !stepShimmersOnScreen) ? (
+      // The timer row sits inside its message's text inset already.
+      <ChatToolStepGroup
+        summary=""
+        inset={false}
+        live={cleanLiveActivity(undefined, workingStatus)}
+      />
+    ) : null;
   const fallbackCopy =
-    complete && replyCopyText.trim() !== '' ? (
+    planCopy !== undefined ? (
+      <PlanCopyAction
+        key={turnGroup.userMessageId}
+        state={planCopy}
+        appearance="footer"
+        dataTestId="turn-copy-plan"
+      />
+    ) : complete && replyCopyText.trim() !== '' ? (
       <ChatCopyAction
         key={turnGroup.userMessageId}
         text={replyCopyText}
@@ -340,8 +594,8 @@ function TurnGroupViewImpl({
     <TurnFooterReveal
       completed={complete}
       completionStatus={outcome}
-      // Clean chat look: the newest reply's whole row stays in view.
-      alwaysVisible={clean && latest}
+      // Clean chat look: the reply row is always in view.
+      alwaysVisible={clean}
       data-testid="chat-turn-action-slot"
     >
       {actionSlot}
@@ -354,42 +608,186 @@ function TurnGroupViewImpl({
     // per-turn wrapper.
     // Clean chat look: the desktop turn's 8px rhythm, with more room under
     // the prompt than between steps.
-    <div
-      className={`group/turn ${clean ? 'space-y-2' : 'space-y-1'}`}
-      data-testid="chat-turn-group"
+    <ToolTurnSettledContext.Provider
+      value={outcomeEvidence.settled && outcomeEvidence.resultsComplete}
     >
-      {user && <ChatMessageView message={user} appIcon={appIcon} />}
-      {clean && user ? <div aria-hidden="true" className="h-2.5" /> : null}
-
-      {clean && !complete && (
-        <TurnWorkHeader
-          startedAt={timer.startedAt}
-          finishedAt={null}
-          pausedAt={timer.pausedAt}
-          resumedAt={timer.resumedAt}
-          accumulatedPausedDurationMs={timer.accumulatedPausedDurationMs}
-          live
-          dataTestId="turn-work-header"
-        />
-      )}
-
-      {intermediates.length > 0 &&
-        (foldable ? (
-          <>
-            <CollapsedTurnSummary
-              summary={summary}
-              isExpanded={isExpanded}
-              onToggle={() => setCollapsed((value) => !value)}
-              appIcon={appIcon}
-              hideLeadingLabel
-              completionStatus={outcome}
-              dataTestId="chat-turn-summary"
-              {...(timer.elapsedMs === undefined
-                ? {}
-                : { elapsedMs: timer.elapsedMs })}
+      <ToolApprovalWaitProvider value={approvalWait}>
+        <div
+          className={`group/turn ${clean ? 'space-y-2' : 'space-y-1'}`}
+          data-testid="chat-turn-group"
+        >
+          {turnGroup.wake ? (
+            <WakeTurnBoundary
+              taskLabel={turnGroup.wake.taskLabel}
+              event={turnGroup.wake.event === true}
+              scheduled={turnGroup.wake.scheduled === true}
+              toolsLoaded={turnGroup.wake.toolsLoaded === true}
+              onShowSpawningTurn={
+                (spawningToolUseId !== undefined ||
+                  spawningUserMessageId !== undefined) &&
+                onShowSpawningCall
+                  ? (): void =>
+                      onShowSpawningCall({
+                        toolUseId: spawningToolUseId,
+                        userMessageId: spawningUserMessageId,
+                      })
+                  : undefined
+              }
             />
-            {isExpanded &&
-              expandedMessages
+          ) : (
+            user && <ChatMessageView message={user} appIcon={appIcon} />
+          )}
+
+          {showStarting ? (
+            startingStatusSlot === undefined ? (
+              <TurnWorkHeader starting dataTestId="turn-starting-status" />
+            ) : (
+              startingStatusSlot
+            )
+          ) : (
+            clean &&
+            !complete && (
+              <TurnWorkHeader
+                startedAt={timer.startedAt}
+                finishedAt={null}
+                pausedAt={timer.pausedAt}
+                resumedAt={timer.resumedAt}
+                accumulatedPausedDurationMs={timer.accumulatedPausedDurationMs}
+                live
+                trailing={actionSlot}
+                dataTestId="turn-work-header"
+              />
+            )
+          )}
+
+          {cleanSegments ? (
+            <>
+              {foldable && (
+                <CollapsedTurnSummary
+                  summary={summary}
+                  isExpanded={isExpanded}
+                  onToggle={() => setCollapsed((value) => !value)}
+                  appIcon={appIcon}
+                  hideLeadingLabel
+                  completionStatus={outcome}
+                  outcomes={outcomes}
+                  outcomeSteps={outcomeSteps}
+                  onJumpToOutcome={onJumpToOutcome}
+                  dataTestId="chat-turn-summary"
+                  {...(timer.elapsedMs === undefined
+                    ? {}
+                    : { elapsedMs: timer.elapsedMs })}
+                />
+              )}
+              {cleanSegments.map((segment) => {
+                if (segment.kind === 'message') {
+                  return (
+                    <ChatMessageView
+                      key={segment.key}
+                      message={segment.message}
+                      appIcon={appIcon}
+                    />
+                  );
+                }
+                const recent =
+                  recentSteps && segment === liveRun
+                    ? recentStepWindow(segment)
+                    : undefined;
+                const renderSteps = (
+                  messages: typeof segment.messages,
+                ): JSX.Element[] =>
+                  messages.map(({ key, message }) => (
+                    <ChatMessageView
+                      key={key}
+                      message={message}
+                      appIcon={appIcon}
+                    />
+                  ));
+                if (recent !== undefined && recent.hidden === undefined) {
+                  // Every step of the run is in view; there is nothing to count.
+                  return (
+                    <div
+                      key={`clean-steps-${segment.key}`}
+                      className={STEP_GROUP_BODY_CLASS}
+                      data-testid="chat-tool-step-live"
+                    >
+                      {renderSteps(recent.shown)}
+                    </div>
+                  );
+                }
+                // The line counts only the steps the window hides, so the
+                // running step is said once, in its own row.
+                const done = describeCleanTurnSteps(
+                  recent?.hidden ?? segment,
+                  outcomeEvidence,
+                );
+                // A call reveal opens the folded line that holds the call.
+                const holdsRevealedCall =
+                  revealRequest !== undefined &&
+                  segment.messages.some(({ message }) =>
+                    (message.parts ?? []).some(
+                      (part) =>
+                        (part.kind === 'tool_use' || part.kind === 'agent') &&
+                        isRecord(part.data) &&
+                        part.data.toolUseId === revealRequest.toolUseId,
+                    ),
+                  );
+                return (
+                  <ChatToolStepGroup
+                    key={`clean-steps-${segment.key}`}
+                    summary={done.label}
+                    failedCount={done.failed}
+                    blockedCount={done.blocked}
+                    interruptedCount={done.interrupted}
+                    icon={done.icon}
+                    openRequest={holdsRevealedCall ? revealRequest : undefined}
+                    {...(recent !== undefined
+                      ? { liveSteps: renderSteps(recent.shown) }
+                      : segment === liveRun
+                        ? {
+                            live: cleanLiveActivity(
+                              segment,
+                              workingStatus,
+                              approvalWait,
+                            ),
+                          }
+                        : {})}
+                  >
+                    {renderSteps(segment.messages)}
+                  </ChatToolStepGroup>
+                );
+              })}
+              {foldable && !isExpanded && visualHost && collapsedVisuals}
+            </>
+          ) : (
+            <>
+              {foldable && (
+                <CollapsedTurnSummary
+                  summary={summary}
+                  isExpanded={isExpanded}
+                  onToggle={() => setCollapsed((value) => !value)}
+                  appIcon={appIcon}
+                  hideLeadingLabel
+                  completionStatus={outcome}
+                  outcomes={outcomes}
+                  outcomeSteps={outcomeSteps}
+                  onJumpToOutcome={onJumpToOutcome}
+                  dataTestId="chat-turn-summary"
+                  {...(timer.elapsedMs === undefined
+                    ? {}
+                    : { elapsedMs: timer.elapsedMs })}
+                />
+              )}
+              {foldable && !isExpanded && visualHost && collapsedVisuals}
+              {/* One keyed list whether the turn runs, folds or opens, so a
+              message keeps its place in the tree and a tool card someone
+              opened stays open when the turn finishes. */}
+              {(foldable
+                ? isExpanded
+                  ? expandedMessages
+                  : finals
+                : [...intermediates, ...finals]
+              )
                 .filter((message) => message !== trailingTimer)
                 .map((message) => (
                   <ChatMessageView
@@ -398,103 +796,90 @@ function TurnGroupViewImpl({
                     appIcon={appIcon}
                   />
                 ))}
-            {!isExpanded &&
-              visualHost &&
-              intermediates.flatMap((message) =>
-                (message.parts ?? []).flatMap((part, index) => {
-                  const owner =
-                    part.kind === 'tool_result'
-                      ? readChatToolResultVisual(part.data, message.messageId)
-                      : undefined;
-                  return owner
-                    ? [
-                        <ChatVisualBlock
-                          key={`${message.messageId}-${index}`}
-                          owner={owner}
-                          variant="visual-only"
-                        />,
-                      ]
-                    : [];
-                }),
-              )}
-          </>
-        ) : (
-          intermediates.map((message) => (
-            <ChatMessageView
-              key={message.messageId}
-              message={message}
-              appIcon={appIcon}
-            />
-          ))
-        ))}
-
-      {(!foldable || !isExpanded) &&
-        finals
-          .filter((message) => message !== trailingTimer)
-          .map((message) => (
-            <ChatMessageView
-              key={message.messageId}
-              message={message}
-              appIcon={appIcon}
-            />
-          ))}
-
-      <TurnAgentArtifacts messages={assistantMessages} />
-
-      {showTrailingTimer && (
-        <ChatMessageView
-          key={trailingTimer.messageId}
-          message={trailingTimer}
-          appIcon={appIcon}
-          {...(inTimerRow
-            ? {
-                turnTimerStampAccessory: feedback,
-                // Like desktop, the turn actions follow the elapsed label.
-                turnTimerTrailing: actions,
-              }
-            : {})}
-          // ChatTranscript separates turns with an 8px column gap. Only the
-          // turn's last row borders that gap; a row below keeps the full margin.
-          turnTimerHostTurnGap={workingSlot == null}
-          turnTimerLiveStatusShown={liveStepShown}
-          // Copy rides in the timer row only when it renders; otherwise the
-          // actions row below carries it, so a reply never shows two.
-          {...(inTimerRow && complete
-            ? { turnTimerCopyText: replyCopyText }
-            : {})}
-          {...(clean && latest ? { turnTimerAlwaysVisible: true } : {})}
-        />
-      )}
-
-      {workingSlot}
-
-      {/* Without a timer row, Copy, the actions and thumbs get a row of
-          their own. */}
-      {!inTimerRow && (actions || feedback || fallbackCopy) && (
-        <TurnFooterRow variant="actions" data-testid="chat-turn-actions">
-          {clean ? (
-            // Copy stays visible; the remaining clean actions reveal together.
-            <>
-              {fallbackCopy}
-              <TurnFooterReveal completed={complete} completionStatus={outcome}>
-                <span className="flex items-center gap-0.5">
-                  {feedback}
-                  {actions}
-                </span>
-              </TurnFooterReveal>
-            </>
-          ) : (
-            <>
-              {actions}
-              {/* Copy and the thumbs stay visible at rest, like the
-                  completion stamp. */}
-              {fallbackCopy}
-              {feedback}
             </>
           )}
-        </TurnFooterRow>
-      )}
-    </div>
+
+          <TurnAgentArtifacts
+            messages={assistantMessages}
+            receipts={agentArtifacts}
+          />
+
+          <TurnFiles
+            messages={assistantMessages}
+            retained={turnGroup.files}
+            complete={complete}
+            latest={latest}
+            turnId={turnGroup.userMessageId}
+          />
+
+          {!showStarting && showTrailingTimer && (
+            <ChatMessageView
+              key={trailingTimer.messageId}
+              message={trailingTimer}
+              appIcon={appIcon}
+              {...(inTimerRow
+                ? {
+                    turnTimerStampAccessory: feedback,
+                    // Like desktop, the turn actions follow the elapsed label.
+                    turnTimerTrailing: actions,
+                  }
+                : {})}
+              // ChatTranscript separates turns with an 8px column gap. Only the
+              // turn's last row borders that gap; a row below keeps the full margin.
+              turnTimerHostTurnGap={workingSlot == null}
+              turnTimerLiveLine={liveLine}
+              // Copy rides in the timer row only when it renders; otherwise the
+              // actions row below carries it, so a reply never shows two.
+              {...(inTimerRow && complete
+                ? planCopy !== undefined
+                  ? { turnTimerPlanCopy: planCopy }
+                  : { turnTimerCopyText: replyCopyText }
+                : {})}
+              {...(clean && latest ? { turnTimerAlwaysVisible: true } : {})}
+              {...(outcome === undefined
+                ? {}
+                : { turnTimerCompletionStatus: outcome })}
+            />
+          )}
+
+          {!showStarting && workingSlot}
+
+          {/* Without a timer row, Copy, the actions and thumbs get a row of
+          their own. */}
+          {!inTimerRow &&
+            (actions || feedback || fallbackCopy) &&
+            !(clean && !complete) && (
+              <TurnFooterRow variant="actions" data-testid="chat-turn-actions">
+                {clean ? (
+                  // Clean chat look: Copy, thumbs, then the rest, in one row
+                  // that is always in view, like the timer row's.
+                  <>
+                    {fallbackCopy}
+                    <TurnFooterReveal
+                      completed={complete}
+                      completionStatus={outcome}
+                      alwaysVisible
+                    >
+                      <span className="flex items-center gap-0.5">
+                        {feedback}
+                        {actions}
+                      </span>
+                    </TurnFooterReveal>
+                  </>
+                ) : (
+                  <>
+                    {actions}
+                    {/* Copy and the thumbs stay visible at rest, like the
+                  completion stamp. */}
+                    {fallbackCopy}
+                    {feedback}
+                  </>
+                )}
+              </TurnFooterRow>
+            )}
+        </div>
+      </ToolApprovalWaitProvider>
+    </ToolTurnSettledContext.Provider>
   );
 }
 
@@ -547,11 +932,6 @@ function readTurnHeaderTimer(data: unknown): {
     accumulatedPausedDurationMs: pausedMs,
     elapsedMs: elapsedSecond === null ? undefined : elapsedSecond * 1000,
   };
-}
-
-/** Whether a tool call part already carries its result. */
-function hasToolResult(data: unknown): boolean {
-  return isRecord(data) && data.result !== undefined && data.result !== null;
 }
 
 /** Memoized so settled turn groups skip re-render during streaming (CLAUDE.md). */

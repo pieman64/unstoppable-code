@@ -26,6 +26,7 @@ import { buildModelCatalogOption } from '@canopy/desktop-shared/lib/model-catalo
 import {
   AGENT_MODELS,
   CLAUDE_MODELS,
+  CODEX_ACCOUNT_MODELS,
   CODEX_MODELS,
   CURSOR_MODELS,
   COPILOT_MODELS,
@@ -70,12 +71,33 @@ export function buildProjectedModelCatalog(
 ): ModelCatalog {
   defaultModel ??= getLastProjectedDefaultModel();
   const catalog: ModelCatalogOption[] = [];
+  const openCodeEnabled =
+    options.opencode === true && isOpenCodeHarnessEnabled();
+  const projectChoice = (option: ModelCatalogOption): void => {
+    if (openCodeEnabled) {
+      catalog.push(option);
+      return;
+    }
+    if (
+      option.provider === 'opencode' ||
+      option.harness === 'opencode' ||
+      option.source === 'opencode'
+    )
+      return;
+    const { harnessChoices, ...legacy } = option;
+    const choices = harnessChoices?.filter(
+      (choice) => choice.harness !== 'opencode',
+    );
+    catalog.push(
+      choices?.length ? { ...legacy, harnessChoices: choices } : legacy,
+    );
+  };
   const push = (
     id: string,
     provider: 'claude' | 'codex' | 'ollama' | 'cursor' | 'copilot' | 'opencode',
   ): void => {
     const option = buildModelCatalogOption(id, { provider, defaultModel });
-    if (option) catalog.push(option);
+    if (option) projectChoice(option);
   };
   const excluded = (id: string): boolean =>
     isModelExcludedByCurrentGatewayRequirement(id, options.owner) ||
@@ -84,6 +106,11 @@ export function buildProjectedModelCatalog(
     if (!excluded(id)) push(id, 'claude');
   }
   for (const id of CODEX_MODELS) {
+    if (!excluded(id)) push(id, 'codex');
+  }
+  // The signed-in ChatGPT account's own Codex models the catalog does not
+  // list (CAN-4716), so a Portal "Use <model>" switch can name one.
+  for (const id of CODEX_ACCOUNT_MODELS) {
     if (!excluded(id)) push(id, 'codex');
   }
   for (const id of OLLAMA_MODELS) {
@@ -124,7 +151,7 @@ export function buildProjectedModelCatalog(
       agentDefaultModel: options.agentDefaultModel,
     });
     if (option) {
-      catalog.push(option);
+      projectChoice(option);
     }
   }
   return catalog;

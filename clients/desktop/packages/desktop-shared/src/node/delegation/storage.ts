@@ -1,9 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { THINKING_LEVELS } from '@canopy/protocol/thinking';
+import {
+  DELEGATION_STORAGE_ENTRY_LIMIT,
+  DELEGATION_STORAGE_RECORD_LIMIT,
+} from '@canopy/protocol/delegation/discovery';
 import {
   type AgentDelegationTranscriptItem,
   type AgentDelegationTranscript,
@@ -19,21 +23,37 @@ import {
   parseAgentDelegationSpawnRequest,
 } from '@canopy/protocol/delegation';
 import {
-  DELEGATION_APPLY_FILE_BOUND,
   delegationContentVersion,
   type DelegationStorage,
   type StoredDelegation,
 } from './broker';
+import { DELEGATION_APPLY_FILE_BOUND } from './apply-limits';
 import {
   DELEGATION_CAPABILITY_GRANT_LIMITS,
   isDelegationCapabilityId,
   type DelegationCapabilityGrant,
 } from './capability-grant';
+import {
+  decodeManagedMessageReceiptV2,
+  encodeManagedMessageReceiptV2,
+  isVersionedManagedMessageReceipt,
+  type ManagedMessageReceiptV2,
+} from './managed-message-receipt-v2';
 import { assertPrivateDirectoryAcl, renameWithRetry } from './private-storage';
+import {
+  decodeStoredDelegationV3,
+  encodeStoredDelegationV3,
+} from './record-v3';
+import { DelegationReadMetadataError } from './record-read-metadata';
 
 export const DELEGATION_STORAGE_RECORD_MAX_BYTES = 32 * 1024 * 1024;
 const DELEGATION_STORAGE_TEXT_MAX_CHARACTERS = 16 * 1024 * 1024;
 const DELEGATION_STORAGE_TRANSCRIPT_MAX_ITEMS = 65_536;
+
+export type PrivateDelegationCommitOutcome =
+  | { readonly outcome: 'written' }
+  | { readonly outcome: 'not_written'; readonly error: unknown }
+  | { readonly outcome: 'uncertain'; readonly error: unknown };
 
 const label = z
   .string()
@@ -85,7 +105,7 @@ const stoppedBy = z.discriminatedUnion('kind', [
     description: z.string().min(1).max(200).optional(),
   }),
 ]);
-const messageAuthor = z.discriminatedUnion('kind', [
+export const delegationMessageAuthorSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('user') }),
   z.strictObject({
     kind: z.literal('agent'),
@@ -136,7 +156,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isStoredSnapshot(value: unknown): value is AgentDelegationSnapshot {
+export function isStoredSnapshot(
+  value: unknown,
+): value is AgentDelegationSnapshot {
   if (!isRecord(value) || !isJsonData(value)) return false;
   const snapshot = value;
   if (
@@ -234,7 +256,7 @@ const applyFailure = z.strictObject({
   omittedIssues: counter.optional(),
   guidance: z.string().max(DELEGATION_APPLY_FAILURE_LIMITS.guidanceCharacters),
 });
-const control = z.strictObject({
+export const delegationControlSchema = z.strictObject({
   operationId: z.uuid(),
   key: hash,
   requestHash: hash,
@@ -252,7 +274,7 @@ const control = z.strictObject({
     .strictObject({ writePaths: z.array(z.string().min(1).max(4095)).max(64) })
     .optional(),
   status: z.enum(['accepted', 'completed', 'failed']),
-  sender: messageAuthor.optional(),
+  sender: delegationMessageAuthorSchema.optional(),
   firstOutcome: z.custom<AgentDelegationSnapshot>(isStoredSnapshot).optional(),
   firstError: error.optional(),
   steeringDelivery: z
@@ -273,6 +295,51 @@ const control = z.strictObject({
   error: z.string().max(512).optional(),
   applyFailure: applyFailure.optional(),
 });
+export const delegationHistorySchema = z
+  .array(z.custom<AgentDelegationTranscript>(isAgentDelegationTranscript))
+  .max(16);
+export const delegationResultsSchema = z
+  .array(
+    z.strictObject({
+      resultIndex: counter.positive(),
+      runGeneration: counter.positive(),
+      status: settled,
+      settledAt: counter,
+      finalText: z
+        .string()
+        .max(DELEGATION_STORAGE_TEXT_MAX_CHARACTERS)
+        .optional(),
+      partialText: z
+        .string()
+        .max(DELEGATION_STORAGE_TEXT_MAX_CHARACTERS)
+        .optional(),
+      outputTruncated: z.boolean(),
+      error: error.optional(),
+      usage: z
+        .strictObject({
+          inputTokens: counter.optional(),
+          outputTokens: counter.optional(),
+          cachedInputTokens: counter.optional(),
+          cacheCreationInputTokens: counter.optional(),
+          costUsd: z.number().nonnegative().finite().optional(),
+        })
+        .optional(),
+      stopReason: stopReason.optional(),
+    }),
+  )
+  .max(17)
+  .refine(
+    (results) =>
+      results.every((result, index) => {
+        const previous = results[index - 1];
+        return (
+          result.resultIndex === index + 1 &&
+          (previous === undefined ||
+            result.runGeneration > previous.runGeneration)
+        );
+      }),
+    'Delegation results must have stable ordered indices',
+  );
 const stopRequest = z.strictObject({
   operationId: z.uuid(),
   key: hash.optional(),
@@ -314,55 +381,10 @@ const storedRecord = z
     notificationOnly: z.boolean().optional(),
     deliveryId: z.uuid().optional(),
     resumeSessionId: label.optional(),
-    history: z
-      .array(z.custom<AgentDelegationTranscript>(isAgentDelegationTranscript))
-      .max(16)
-      .optional(),
-    results: z
-      .array(
-        z.strictObject({
-          resultIndex: counter.positive(),
-          runGeneration: counter.positive(),
-          status: settled,
-          settledAt: counter,
-          finalText: z
-            .string()
-            .max(DELEGATION_STORAGE_TEXT_MAX_CHARACTERS)
-            .optional(),
-          partialText: z
-            .string()
-            .max(DELEGATION_STORAGE_TEXT_MAX_CHARACTERS)
-            .optional(),
-          outputTruncated: z.boolean(),
-          error: error.optional(),
-          usage: z
-            .strictObject({
-              inputTokens: counter.optional(),
-              outputTokens: counter.optional(),
-              cachedInputTokens: counter.optional(),
-              cacheCreationInputTokens: counter.optional(),
-              costUsd: z.number().nonnegative().finite().optional(),
-            })
-            .optional(),
-          stopReason: stopReason.optional(),
-        }),
-      )
-      .max(17)
-      .refine(
-        (results) =>
-          results.every((result, index) => {
-            const previous = results[index - 1];
-            return (
-              result.resultIndex === index + 1 &&
-              (previous === undefined ||
-                result.runGeneration > previous.runGeneration)
-            );
-          }),
-        'Delegation results must have stable ordered indices',
-      )
-      .optional(),
-    control: control.optional(),
-    controls: z.array(control).max(64).optional(),
+    history: delegationHistorySchema.optional(),
+    results: delegationResultsSchema.optional(),
+    control: delegationControlSchema.optional(),
+    controls: z.array(delegationControlSchema).max(64).optional(),
     userMessageReceipts: z.array(userMessageReceipt).optional(),
     spawnIdentity: z.strictObject({ key: hash, hash }).optional(),
     workspaceDiscarded: z.boolean().optional(),
@@ -622,12 +644,16 @@ export type StoredManagedDelegationMessageResult =
       readonly error: string;
     };
 
-export interface StoredManagedDelegationMessageReceipt {
+export interface StoredManagedDelegationMessageReceiptV1 {
   readonly operationId: string;
   readonly requestHash: string;
   readonly status: 'pending' | 'complete';
   readonly result?: StoredManagedDelegationMessageResult;
 }
+
+export type StoredManagedDelegationMessageReceipt =
+  | StoredManagedDelegationMessageReceiptV1
+  | ManagedMessageReceiptV2;
 
 const managedMessageResult = z.discriminatedUnion('ok', [
   z.strictObject({
@@ -647,7 +673,7 @@ const managedMessageResult = z.discriminatedUnion('ok', [
     error: z.string().max(4096),
   }),
 ]);
-const managedMessageReceipt = z.discriminatedUnion('status', [
+const managedMessageReceiptV1 = z.discriminatedUnion('status', [
   z.strictObject({
     operationId: z.uuid(),
     requestHash: hash,
@@ -689,6 +715,20 @@ const storedDelegationRecord = (
   } catch {
     return undefined;
   }
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    Reflect.get(value, 'version') === 3
+  ) {
+    let record: StoredDelegation;
+    try {
+      record = decodeStoredDelegationV3(value);
+    } catch (error) {
+      if (error instanceof DelegationReadMetadataError) return undefined;
+      throw error;
+    }
+    return name === `${record.state.delegationId}.json` ? record : undefined;
+  }
   const parsed = stored.safeParse(value);
   if (!parsed.success) return undefined;
   const record = parsed.data;
@@ -698,6 +738,16 @@ const storedDelegationRecord = (
 function storedDelegationFile(
   record: StoredDelegation,
 ): PrivateDelegationRecordFile {
+  if (record.version === 3)
+    return new PrivateDelegationRecordFile(
+      `${record.state.delegationId}.json`,
+      Buffer.from(
+        encodeStoredDelegationV3(
+          decodeStoredDelegationV3(JSON.parse(JSON.stringify(record))),
+        ),
+        'utf8',
+      ),
+    );
   // Validate the exact JSON representation persisted on disk. Some trusted
   // host projections contain frozen objects from another JS realm; they are
   // plain data once serialized, and records are always reloaded as JSON.
@@ -721,23 +771,59 @@ export class FileDelegationStorage implements DelegationStorage {
       throw new Error('Delegation storage must be absolute');
   }
 
+  /** Observation only: never creates directories, repairs or skips corrupt identities. */
+  async loadReadOnly(): Promise<{
+    readonly records: readonly StoredDelegation[];
+    readonly missing: boolean;
+  }> {
+    if (!(await this.validateDirectoryReadOnly()))
+      return { records: [], missing: true };
+    const records: StoredDelegation[] = [];
+    const directory = await fs.opendir(this.directory);
+    let entries = 0;
+    for await (const entry of directory) {
+      if (++entries > DELEGATION_STORAGE_ENTRY_LIMIT)
+        throw new Error('Delegation storage exceeds its entry bound');
+      if (!entry.name.endsWith('.json')) continue;
+      if (!entry.isFile()) throw new Error('Invalid delegation storage entry');
+      const record = await this.read(entry.name, storedDelegationRecord);
+      if (!record) throw new Error('Invalid retained delegation record');
+      records.push(record);
+      if (records.length > DELEGATION_STORAGE_RECORD_LIMIT)
+        throw new Error('Delegation storage exceeds its record bound');
+    }
+    return { records, missing: false };
+  }
+
+  /** Same private-directory checks as preparation, without its mkdir. */
+  validateDirectoryReadOnly(): Promise<boolean> {
+    return this.prepareDirectory({ create: false });
+  }
+
   async load(): Promise<readonly StoredDelegation[]> {
     await this.prepareDirectory();
     const records: StoredDelegation[] = [];
     const directory = await fs.opendir(this.directory);
     let entries = 0;
     for await (const entry of directory) {
-      if (++entries > 1024)
+      if (++entries > DELEGATION_STORAGE_ENTRY_LIMIT)
         throw new Error('Delegation storage exceeds its entry bound');
       if (!entry.name.endsWith('.json')) continue;
       if (!entry.isFile()) throw new Error('Invalid delegation storage entry');
       const record = await this.read(entry.name, storedDelegationRecord);
       if (!record) continue;
       records.push(record);
-      if (records.length > 512)
+      if (records.length > DELEGATION_STORAGE_RECORD_LIMIT)
         throw new Error('Delegation storage exceeds its record bound');
     }
-    return records;
+    // Directory order differs by filesystem; recovery and readers need one order.
+    return records.sort((left, right) =>
+      left.state.delegationId < right.state.delegationId
+        ? -1
+        : left.state.delegationId > right.state.delegationId
+          ? 1
+          : 0,
+    );
   }
 
   /** One delegation's record, without loading the others. */
@@ -766,32 +852,40 @@ export class FileDelegationStorage implements DelegationStorage {
     name: string,
     parse: (text: string, name: string) => T | undefined,
   ): Promise<T | undefined> {
-    const handle = await fs.open(
-      path.join(this.directory, name),
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
-    try {
-      const stat = await handle.stat();
-      if (
-        !stat.isFile() ||
-        stat.nlink !== 1 ||
-        stat.size > DELEGATION_STORAGE_RECORD_MAX_BYTES ||
-        (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)
-      )
-        throw new Error('Invalid private delegation record');
-      const bytes = Buffer.alloc(stat.size + 1);
-      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
-      if (bytesRead !== stat.size)
-        throw new Error('Delegation record changed while reading');
-      return parse(bytes.subarray(0, bytesRead).toString('utf8'), name);
-    } finally {
-      await handle.close();
+    for (let attempt = 1; ; attempt += 1) {
+      const handle = await fs.open(
+        path.join(this.directory, name),
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        const stat = await handle.stat();
+        // A commit renamed a new file over the one just opened: reopen it.
+        if (stat.nlink === 0) {
+          if (attempt < 3) continue;
+          throw new Error('Delegation record changed while reading');
+        }
+        if (
+          !stat.isFile() ||
+          stat.nlink !== 1 ||
+          stat.size > DELEGATION_STORAGE_RECORD_MAX_BYTES ||
+          (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)
+        )
+          throw new Error('Invalid private delegation record');
+        const bytes = Buffer.alloc(stat.size + 1);
+        const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+        if (bytesRead !== stat.size)
+          throw new Error('Delegation record changed while reading');
+        return parse(bytes.subarray(0, bytesRead).toString('utf8'), name);
+      } finally {
+        await handle.close();
+      }
     }
   }
 
   /** Writes a delegation record, or another private record file, atomically. */
   async commit(
     record: StoredDelegation | PrivateDelegationRecordFile,
+    progress?: { replaced: boolean },
   ): Promise<void> {
     const { name, bytes } =
       record instanceof PrivateDelegationRecordFile
@@ -810,6 +904,7 @@ export class FileDelegationStorage implements DelegationStorage {
         await file.close();
       }
       await renameWithRetry(temporary, path.join(this.directory, name));
+      if (progress) progress.replaced = true;
       if (process.platform !== 'win32') {
         const directory = await fs.open(this.directory, 'r');
         try {
@@ -823,9 +918,41 @@ export class FileDelegationStorage implements DelegationStorage {
     }
   }
 
-  async prepareDirectory(): Promise<void> {
-    await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const stat = await fs.lstat(this.directory);
+  /** Writes one private file and reports whether replacement is confirmed. */
+  async commitWithOutcome(
+    record: StoredDelegation | PrivateDelegationRecordFile,
+  ): Promise<PrivateDelegationCommitOutcome> {
+    // A failure after the rename (directory sync, close or cleanup) may have
+    // replaced the file; one before it leaves the old file in place.
+    const progress = { replaced: false };
+    try {
+      await this.commit(record, progress);
+      return { outcome: 'written' };
+    } catch (error) {
+      return progress.replaced
+        ? { outcome: 'uncertain', error }
+        : { outcome: 'not_written', error };
+    }
+  }
+
+  /** Resolves false only when `create` is off and the directory is missing. */
+  async prepareDirectory({ create = true } = {}): Promise<boolean> {
+    if (create)
+      await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
+    let stat: Stats;
+    try {
+      stat = await fs.lstat(this.directory);
+    } catch (error) {
+      if (
+        !create &&
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      )
+        return false;
+      throw error;
+    }
     if (
       !stat.isDirectory() ||
       stat.isSymbolicLink() ||
@@ -833,6 +960,7 @@ export class FileDelegationStorage implements DelegationStorage {
     )
       throw new Error('Delegation storage directory is not private');
     await assertPrivateDirectoryAcl(this.directory);
+    return true;
   }
 }
 
@@ -861,7 +989,9 @@ export class FileManagedDelegationMessageStorage {
           } catch {
             throw new Error('Invalid private delegation message receipt');
           }
-          const receipt = managedMessageReceipt.parse(value);
+          const receipt = isVersionedManagedMessageReceipt(value)
+            ? decodeManagedMessageReceiptV2(value)
+            : managedMessageReceiptV1.parse(value);
           if (
             name !== managedMessageReceiptName(receipt.operationId) ||
             receipt.operationId !== operationId
@@ -883,11 +1013,14 @@ export class FileManagedDelegationMessageStorage {
   }
 
   async commit(receipt: StoredManagedDelegationMessageReceipt): Promise<void> {
-    const checked = managedMessageReceipt.parse(receipt);
+    const encoded =
+      'version' in receipt
+        ? encodeManagedMessageReceiptV2(receipt)
+        : JSON.stringify(managedMessageReceiptV1.parse(receipt));
     await this.files.commit(
       new PrivateDelegationRecordFile(
-        managedMessageReceiptName(checked.operationId),
-        Buffer.from(JSON.stringify(checked), 'utf8'),
+        managedMessageReceiptName(receipt.operationId),
+        Buffer.from(encoded, 'utf8'),
       ),
     );
   }

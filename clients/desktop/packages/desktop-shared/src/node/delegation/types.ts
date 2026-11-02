@@ -8,6 +8,7 @@ import type {
 } from '@canopy/protocol/delegation';
 import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
 import type { DelegationCapabilityGrant } from './capability-grant';
+import type { DelegationTranscriptTarget } from './transcript-port';
 
 export type { DelegationStopReason } from '@canopy/protocol/delegation';
 
@@ -121,6 +122,12 @@ export interface AgentRunRequest {
   readonly cwd: string;
   readonly effectivePermission: 'read-only';
   readonly signal: AbortSignal;
+  /**
+   * Set only for a stream-backed generation, which production does not
+   * create before promotion: the child stream its runner admits canonical
+   * rows to through the transcript port.
+   */
+  readonly transcriptStream?: { readonly target: DelegationTranscriptTarget };
 }
 
 export type DelegatedEventSink = (event: AgentDelegationEvent) => Promise<void>;

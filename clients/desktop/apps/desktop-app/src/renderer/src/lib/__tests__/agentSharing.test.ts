@@ -28,7 +28,10 @@ describe('deriveShareablePluginsLenient', () => {
     description: '',
     source: 'source-a',
     sourceSubtitle: '',
-    sourceIcon: 'folder',
+    sourceIcon: 'repo',
+    rowOrigin: 'pipeline-derived',
+    viewDisabled: true,
+    lastUpdated: '2026-01-01T00:00:00.000Z',
     shareableRef: {
       type: 'skill',
       source: { type: 'builtin', id: 'app' },
@@ -43,7 +46,10 @@ describe('deriveShareablePluginsLenient', () => {
     description: '',
     source: '',
     sourceSubtitle: '',
-    sourceIcon: 'folder',
+    sourceIcon: 'none',
+    rowOrigin: 'unavailable',
+    viewDisabled: true,
+    lastUpdated: '2026-01-01T00:00:00.000Z',
   };
 
   it('partitions portable refs from local-only entries instead of failing', () => {

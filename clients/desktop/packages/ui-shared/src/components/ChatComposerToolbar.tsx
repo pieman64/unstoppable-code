@@ -105,6 +105,8 @@ export interface ChatComposerToolbarChipConfig {
 }
 
 export interface ChatComposerToolbarProps {
+  /** Exposes fixed controls for hosts measuring a staged editor at inline width. */
+  measureInline?: boolean;
   /**
    * Uses the roomier capsule-composer spacing: a padded row, a zero-gap
    * clipped left rail with 4px between effort and context usage, and an 8px
@@ -218,6 +220,7 @@ export interface ChatComposerToolbarProps {
  * of stores, `window.*`, Electron, and Next imports.
  */
 export function ChatComposerToolbar({
+  measureInline = false,
   capsuleLayout = false,
   compact = false,
   inline = false,
@@ -308,6 +311,7 @@ export function ChatComposerToolbar({
         <div
           ref={leftRailRef}
           data-composer-toolbar-rail
+          data-composer-inline-rail={measureInline || undefined}
           className={innerRailClassName}
         >
           {railContents}
@@ -315,7 +319,11 @@ export function ChatComposerToolbar({
         {overflowRightSlot}
       </div>
     ) : (
-      <div data-composer-toolbar-rail className={innerRailClassName}>
+      <div
+        data-composer-toolbar-rail
+        data-composer-inline-rail={measureInline || undefined}
+        className={innerRailClassName}
+      >
         {railContents}
       </div>
     );
@@ -352,7 +360,10 @@ export function ChatComposerToolbar({
           menu paints over the transcript. Desktop never sets `overflowMenu`, so
           this renders nothing and the desktop DOM is unchanged. */}
       {overflowMenu ? <ChatComposerOverflowMenu {...overflowMenu} /> : null}
-      <div className={rightClusterClassName}>
+      <div
+        data-composer-inline-fixed={measureInline || undefined}
+        className={rightClusterClassName}
+      >
         {terminalLabelSlot}
         {attachSlot}
         {voiceSlot}
@@ -460,7 +471,7 @@ export function ChatComposerToolbarChip({
       aria-describedby={ariaDescribedBy}
       data-testid={dataTestId}
       style={active ? activeStyle : undefined}
-      className={`flex shrink-0 items-center transition disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${shapeClassName} ${
+      className={`flex shrink-0 items-center transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${shapeClassName} ${
         active
           ? ACTIVE_TONE_CLASS_NAMES[activeTone]
           : 'fg-secondary hover:bg-subtle hover:fg-primary'

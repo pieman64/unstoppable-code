@@ -68,10 +68,10 @@ const DATA: OrganizationTeamPageData = {
   ],
   viewerEmail: 'owner@example.com',
   billingEnabled: true,
+  billingNeedsAttention: false,
   memoryEnabled: true,
   digestsEnabled: true,
   projectsEnabled: true,
-  billingNeedsAttention: true,
   freeAccess: true,
   lapsed: {
     trialEndedAt: '2026-05-01T00:00:00.000Z',
@@ -106,12 +106,10 @@ describe('teamPagePropsFromData', () => {
   it('maps every page-data field TeamPage takes', () => {
     expect(teamPagePropsFromData(DATA)).toEqual({
       initialDetail: DATA.detail,
-      organizations: DATA.organizations,
       viewerEmail: 'owner@example.com',
       billingEnabled: true,
       memoryEnabled: true,
       projectsEnabled: true,
-      billingNeedsAttention: true,
       freeAccess: true,
       lapsed: DATA.lapsed,
       mobileBrowser: true,

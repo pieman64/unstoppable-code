@@ -13,7 +13,7 @@ import {
   type ModelPickerMenuProps,
 } from '../ModelPickerMenu';
 import { RichHoverTooltip } from '../RichHoverTooltip';
-import { TooltipStackingProvider } from '../tooltip-exclusivity';
+import { TooltipProvider } from '../tooltip-handoff';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -55,6 +55,30 @@ function mountPicker(): { container: HTMLDivElement; root: Root } {
 
 function queryByTestId(testId: string): HTMLElement | null {
   return document.querySelector(`[data-testid="${testId}"]`);
+}
+
+/**
+ * CAN-5213 — a row's state icon (lock or check) follows its label and is the
+ * row's last marker, so the icons line up in one column at the row's end.
+ */
+function expectStateIconLast(
+  optionId: string,
+  icon: Element | null,
+  label: Element | null,
+): void {
+  const row = document.querySelector(
+    `[data-testid="model-option-${optionId}"]`,
+  );
+  expect(icon).not.toBeNull();
+  expect(label).not.toBeNull();
+  if (row === null || icon === null || label === null) return;
+  expect(
+    label.compareDocumentPosition(icon) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  const markers = Array.from(
+    row.querySelectorAll('[data-testid*="-extra-charge"], svg'),
+  ).filter((node) => node.closest('[role="img"]') === null);
+  expect(markers[markers.length - 1]).toBe(icon);
 }
 
 describe('pickerChromeMenuHeightPx', () => {
@@ -2450,8 +2474,10 @@ describe('ModelPickerMenu harness browser', () => {
       const creditsLabel = row?.querySelector(
         '[data-testid="model-row-credits-hosted-deepseek"]',
       );
-      expect(creditsLabel?.textContent).toBe('AI credits');
-      expect(creditsLabel?.classList.contains('fg-tertiary')).toBe(true);
+      expect(creditsLabel?.textContent).toBe('AI Credits');
+      // fg-tertiary fails AA on a hovered dark row (CAN-5022).
+      expect(creditsLabel?.classList.contains('fg-secondary')).toBe(true);
+      expect(creditsLabel?.classList.contains('fg-tertiary')).toBe(false);
       expect(
         queryByTestId('model-option-claude-opus')?.querySelector(
           '[data-testid^="model-row-credits-"]',
@@ -2472,6 +2498,40 @@ describe('ModelPickerMenu harness browser', () => {
 
       act(() => queryByTestId('model-harness-tab-claude')?.click());
       expect(queryByTestId('model-credits-legend')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('renders the Org gateway tag in AA-contrast secondary text', () => {
+    const root = mountHarnessPicker({
+      catalog: [
+        {
+          id: 'org-sonnet',
+          label: 'Org Sonnet',
+          provider: 'claude',
+          source: 'ai-gateway',
+          vendor: 'anthropic',
+          kind: 'model',
+          available: true,
+          funding: 'org-gateway',
+        },
+        ...harnessCatalog,
+      ],
+      harnessTabs: {
+        brandIcon: null,
+        brandLabel: 'Test brand',
+        favoritesStorageKey: 'test:model-favorites-org-gateway',
+        gatewayLayout: 'harnesses',
+        allModelsTab: true,
+      },
+    });
+    try {
+      const tag = queryByTestId('model-row-org-gateway-org-sonnet');
+      expect(tag?.textContent).toBe('Org gateway');
+      // fg-tertiary fails AA on a hovered dark row (CAN-5022).
+      expect(tag?.classList.contains('fg-secondary')).toBe(true);
+      expect(tag?.classList.contains('fg-tertiary')).toBe(false);
     } finally {
       act(() => root.unmount());
     }
@@ -3912,7 +3972,7 @@ function mockRect(
     y: top,
     toJSON: (): Record<string, never> => ({}),
   };
-  element.getBoundingClientRect = (): DOMRect => rect as DOMRect;
+  element.getBoundingClientRect = (): DOMRect => rect;
   return rect;
 }
 
@@ -5106,9 +5166,11 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
     {
       picker = false,
       onSelect = jest.fn(),
+      libraryAccess,
     }: {
       readonly picker?: boolean;
       readonly onSelect?: (modelId: string) => void;
+      readonly libraryAccess?: ModelPickerMenuProps['libraryAccess'];
     } = {},
   ): void {
     act(() =>
@@ -5118,6 +5180,7 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
           onSelect={onSelect}
           getOptionState={stateFor(lock)}
           harnessTabs={picker ? PICKER_TABS : undefined}
+          libraryAccess={libraryAccess}
         />,
       ),
     );
@@ -5159,7 +5222,7 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
       expect(queryByTestId('model-credits-area-gated')).toBeNull();
       // Allowed rows keep their tag and get no lock.
       expect(queryByTestId('model-row-credits-allowed')?.textContent).toBe(
-        'AI credits',
+        'AI Credits',
       );
       expect(queryByTestId('model-option-unlock-allowed')).toBeNull();
       expect(queryByTestId('model-option-lock-label-allowed')).toBeNull();
@@ -5209,7 +5272,7 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
       expect(queryByTestId('model-option-unlock-gated')).not.toBeNull();
       expect(queryByTestId('model-option-lock-label-gated')).toBeNull();
       expect(queryByTestId('model-row-credits-gated')?.textContent).toBe(
-        'AI credits',
+        'AI Credits',
       );
     } finally {
       act(() => root.unmount());
@@ -5259,6 +5322,13 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
       expect(
         queryByTestId('model-option-extra-charge-gated')?.textContent,
       ).toBe('$');
+      // CAN-5213: the lock trails its label and every other marker, so state
+      // icons form one column beside the harness icon.
+      expectStateIconLast(
+        'gated',
+        queryByTestId('model-option-unlock-gated'),
+        queryByTestId('model-option-lock-label-gated'),
+      );
       expect(queryByTestId('model-row-credits-gated')).toBeNull();
       expect(
         queryByTestId('model-option-gated')?.querySelectorAll(
@@ -5272,6 +5342,115 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
     } finally {
       act(() => root.unmount());
     }
+  });
+
+  describe('CAN-5028 free credits tag', () => {
+    it('tags only available credit rows Free AI Credits before purchase', () => {
+      const root = mountMenu(
+        { hint: PURCHASE_HINT, onUnlock: jest.fn() },
+        { picker: true, libraryAccess: 'needs_purchase' },
+      );
+      try {
+        expect(queryByTestId('model-row-credits-allowed')?.textContent).toBe(
+          'Free AI Credits',
+        );
+        // CAN-5213: the free tag says the row runs now, so its check trails
+        // it like every other state icon.
+        expectStateIconLast(
+          'allowed',
+          queryByTestId('model-row-credits-check-allowed'),
+          queryByTestId('model-row-credits-allowed'),
+        );
+        // A purchase-locked row keeps its plain tag and its lock.
+        expect(queryByTestId('model-row-credits-gated')?.textContent).toBe(
+          'AI Credits',
+        );
+        expect(queryByTestId('model-row-credits-check-gated')).toBeNull();
+        expect(queryByTestId('model-option-unlock-gated')).not.toBeNull();
+      } finally {
+        act(() => root.unmount());
+      }
+    });
+
+    it('lets a replacement lock label win over the free tag', () => {
+      const root = mountMenu(
+        { hint: SIGN_IN_HINT, label: 'Sign in', onUnlock: jest.fn() },
+        { picker: true, libraryAccess: 'needs_sign_in_then_purchase' },
+      );
+      try {
+        expect(
+          queryByTestId('model-option-lock-label-gated')?.textContent,
+        ).toBe('Sign in');
+        expect(queryByTestId('model-row-credits-gated')).toBeNull();
+        expect(queryByTestId('model-row-credits-allowed')?.textContent).toBe(
+          'Free AI Credits',
+        );
+      } finally {
+        act(() => root.unmount());
+      }
+    });
+
+    it.each(['unlocked', 'needs_sign_in', undefined] as const)(
+      'keeps the plain tag for %s access',
+      (libraryAccess) => {
+        const root = mountMenu(undefined, { picker: true, libraryAccess });
+        try {
+          expect(queryByTestId('model-row-credits-allowed')?.textContent).toBe(
+            'AI Credits',
+          );
+          expect(queryByTestId('model-row-credits-gated')?.textContent).toBe(
+            'AI Credits',
+          );
+          expect(
+            document.body.querySelector(
+              '[data-testid^="model-row-credits-check-"]',
+            ),
+          ).toBeNull();
+        } finally {
+          act(() => root.unmount());
+        }
+      },
+    );
+
+    it('adds no tag to the flat list', () => {
+      const root = mountMenu(undefined, { libraryAccess: 'needs_purchase' });
+      try {
+        expect(
+          document.body.querySelector('[data-testid^="model-row-credits-"]'),
+        ).toBeNull();
+      } finally {
+        act(() => root.unmount());
+      }
+    });
+
+    it('follows a purchase without a remount', () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      const lock = { hint: PURCHASE_HINT, onUnlock: jest.fn() };
+      renderMenu(root, lock, { picker: true, libraryAccess: 'needs_purchase' });
+      act(() => queryByTestId('model-picker')?.click());
+      openGatewayTab();
+      try {
+        expect(queryByTestId('model-row-credits-allowed')?.textContent).toBe(
+          'Free AI Credits',
+        );
+        expect(queryByTestId('model-option-unlock-gated')).not.toBeNull();
+        renderMenu(root, undefined, {
+          picker: true,
+          libraryAccess: 'unlocked',
+        });
+        expect(queryByTestId('model-option-unlock-gated')).toBeNull();
+        expect(queryByTestId('model-row-credits-allowed')?.textContent).toBe(
+          'AI Credits',
+        );
+        expect(queryByTestId('model-row-credits-gated')?.textContent).toBe(
+          'AI Credits',
+        );
+      } finally {
+        act(() => root.unmount());
+      }
+    });
   });
 
   it('drops a stale label when access changes without a remount', () => {
@@ -5350,6 +5529,87 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
         document.querySelector('[data-testid="model-option-detail"]')
           ?.textContent ?? '',
       ).not.toContain(SIGN_IN_HINT);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  function pointerMove(target: Element | null, movement: number): void {
+    const event = new MouseEvent('pointermove', { bubbles: true });
+    Object.defineProperty(event, 'movementX', { value: movement });
+    Object.defineProperty(event, 'movementY', { value: 0 });
+    target?.dispatchEvent(event);
+  }
+
+  function scrollList(row: Element | null, scrollTop: number): void {
+    const list = row?.closest('[role="presentation"].overflow-x-hidden');
+    if (!list) throw new Error('model list missing');
+    Object.defineProperty(list, 'scrollTop', {
+      configurable: true,
+      value: scrollTop,
+    });
+    list.dispatchEvent(new Event('scroll'));
+  }
+
+  function highlightFirstRowByKeyboard(): string {
+    const search = queryByTestId('model-search');
+    act((): void => {
+      search?.focus();
+      search?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+      );
+    });
+    const focusedId =
+      document.activeElement?.getAttribute('data-model-id') ?? '';
+    expect(['gated', 'allowed']).toContain(focusedId);
+    expect(queryByTestId(`model-option-detail-${focusedId}`)).not.toBeNull();
+    return focusedId;
+  }
+
+  it('opens a hovered row card after a keyboard highlight and a late scroll event', () => {
+    const root = mountMenu(undefined, { picker: true });
+    try {
+      const focusedId = highlightFirstRowByKeyboard();
+      const target = focusedId === 'gated' ? 'allowed' : 'gated';
+      const row = queryByTestId(`model-option-${target}`);
+      // Scrolling a row into view and then pointing at it: Chromium reports
+      // the scroll a frame later, after the pointer already entered the row.
+      act((): void => {
+        Object.defineProperty(
+          row?.closest('[role="presentation"].overflow-x-hidden') ?? {},
+          'scrollTop',
+          { configurable: true, value: 104 },
+        );
+        row?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        pointerMove(row, 12);
+        row?.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
+      });
+      act(() => scrollList(row, 104));
+      act(() => jest.advanceTimersByTime(200));
+      expect(queryByTestId(`model-option-detail-${target}`)).not.toBeNull();
+      expect(queryByTestId(`model-option-detail-${focusedId}`)).toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('still holds hover cards while the list scrolls under a resting pointer', () => {
+    const root = mountMenu(undefined, { picker: true });
+    try {
+      const row = queryByTestId('model-option-allowed');
+      act((): void => {
+        row?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        pointerMove(row, 12);
+      });
+      act(() => scrollList(row, 40));
+      act(() => jest.advanceTimersByTime(200));
+      expect(queryByTestId('model-option-detail-allowed')).toBeNull();
+      act(() => pointerMove(row, 3));
+      act((): void => {
+        row?.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
+      });
+      act(() => jest.advanceTimersByTime(200));
+      expect(queryByTestId('model-option-detail-allowed')).not.toBeNull();
     } finally {
       act(() => root.unmount());
     }
@@ -5483,7 +5743,7 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
     const root = createRoot(container);
     act(() =>
       root.render(
-        <TooltipStackingProvider value="single">
+        <TooltipProvider stacking="single">
           <ModelPickerMenu
             catalog={GATED_CATALOG}
             onSelect={jest.fn()}
@@ -5502,7 +5762,7 @@ describe('sign-in labels on library-locked rows (CAN-4705)', () => {
               Another control
             </button>
           </RichHoverTooltip>
-        </TooltipStackingProvider>,
+        </TooltipProvider>,
       ),
     );
     const press = (key: string): void => {
@@ -5812,4 +6072,332 @@ describe('ModelPickerMenu orphaned account favorites', () => {
       }
     },
   );
+});
+
+describe('availability cues (CAN-5213)', () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    document.body.innerHTML = '';
+  });
+
+  const DAILY_HINT = 'Turn on free daily credits to use this model.';
+  const CUE_CATALOG: ModelCatalog = [
+    {
+      id: 'a-daily',
+      label: 'A Daily',
+      provider: 'codex',
+      source: 'ai-gateway',
+      vendor: 'deepseek',
+      kind: 'model',
+      available: true,
+      sortOrder: 1,
+    },
+    {
+      id: 'b-ready',
+      label: 'B Ready',
+      provider: 'codex',
+      source: 'ai-gateway',
+      vendor: 'deepseek',
+      kind: 'model',
+      available: true,
+      sortOrder: 2,
+    },
+    {
+      id: 'c-plain',
+      label: 'C Plain',
+      provider: 'codex',
+      source: 'ai-gateway',
+      vendor: 'deepseek',
+      kind: 'model',
+      available: true,
+      sortOrder: 3,
+    },
+  ];
+  const PICKER_TABS: ModelPickerMenuProps['harnessTabs'] = {
+    brandIcon: <span>U</span>,
+    brandLabel: 'Test brand',
+    gatewayLayout: 'harnesses',
+    chrome: 'picker',
+    allModelsTab: true,
+    favoritesStorageKey: 'test:can-5213',
+  };
+
+  function mountCues({
+    onRecover = jest.fn(),
+    onSelect = jest.fn(),
+    picker = false,
+    currentModel,
+    catalog = CUE_CATALOG,
+    tabs,
+  }: {
+    readonly onRecover?: () => void;
+    readonly onSelect?: (modelId: string) => void;
+    readonly picker?: boolean;
+    readonly currentModel?: string;
+    readonly catalog?: ModelCatalog;
+    readonly tabs?: ModelPickerMenuProps['harnessTabs'];
+  } = {}): Root {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const getOptionState = (
+      option: ModelCatalogOption,
+    ): ModelPickerOptionState => {
+      if (option.id === 'a-daily')
+        return {
+          disabled: false,
+          locked: {
+            hint: DAILY_HINT,
+            label: 'Needs free daily credits',
+            onUnlock: onRecover,
+            keepsOrder: true,
+          },
+        };
+      if (option.id === 'b-ready') return { disabled: false, available: true };
+      return { disabled: false };
+    };
+    act(() =>
+      root.render(
+        <ModelPickerMenu
+          catalog={catalog}
+          currentModel={currentModel}
+          onSelect={onSelect}
+          getOptionState={getOptionState}
+          harnessTabs={tabs ?? (picker ? PICKER_TABS : undefined)}
+        />,
+      ),
+    );
+    act(() => queryByTestId('model-picker')?.click());
+    if (picker) act(() => queryByTestId('model-harness-tab-all')?.click());
+    return root;
+  }
+
+  function descriptions(row: HTMLElement | null): (string | null)[] {
+    return (row?.getAttribute('aria-describedby') ?? '')
+      .split(' ')
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent ?? null);
+  }
+
+  it('marks a usable row Available and keeps it a selectable radio', () => {
+    const onSelect = jest.fn();
+    const root = mountCues({ onSelect, currentModel: 'b-ready' });
+    try {
+      const row = queryByTestId('model-option-b-ready');
+      expect(row?.getAttribute('role')).toBe('menuitemradio');
+      expect(row?.getAttribute('aria-checked')).toBe('true');
+      expect(row?.getAttribute('data-available')).toBe('true');
+      expect(descriptions(row)).toContain('Available');
+      const label = queryByTestId('model-option-available-b-ready');
+      expect(label?.textContent).toBe('Available');
+      expect(label?.parentElement?.getAttribute('aria-hidden')).toBe('true');
+      expect(
+        queryByTestId('model-option-c-plain')?.hasAttribute('data-available'),
+      ).toBe(false);
+
+      act(() => row?.click());
+      expect(onSelect).toHaveBeenCalledWith('b-ready');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('recovers a daily-credit lock once without selecting the model', () => {
+    const onRecover = jest.fn();
+    const onSelect = jest.fn();
+    const root = mountCues({ onRecover, onSelect });
+    try {
+      const row = queryByTestId('model-option-a-daily');
+      expect(row?.getAttribute('role')).toBe('menuitem');
+      expect(row?.hasAttribute('data-available')).toBe(false);
+      expect(descriptions(row)).toContain(DAILY_HINT);
+      expect(
+        queryByTestId('model-option-lock-label-a-daily')?.textContent,
+      ).toBe('Needs free daily credits');
+
+      act(() => row?.click());
+      expect(onRecover).toHaveBeenCalledTimes(1);
+      expect(onSelect).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('recovers from the keyboard too', () => {
+    const onRecover = jest.fn();
+    const onSelect = jest.fn();
+    const root = mountCues({ onRecover, onSelect });
+    try {
+      const row = queryByTestId('model-option-a-daily');
+      act(() => row?.focus());
+      act(() => {
+        row?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+        );
+      });
+      expect(onRecover).toHaveBeenCalledTimes(1);
+      expect(onSelect).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('selects an Available row with the keyboard', () => {
+    const onSelect = jest.fn();
+    const root = mountCues({ onSelect });
+    try {
+      const row = queryByTestId('model-option-b-ready');
+      act(() => row?.focus());
+      act(() => {
+        row?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+        );
+      });
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith('b-ready');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('gives duplicate harness rows distinct accessible description IDs', () => {
+    const root = mountCues({
+      picker: true,
+      catalog: CUE_CATALOG.map((option) =>
+        option.id === 'b-ready'
+          ? {
+              ...option,
+              source: 'claude',
+              provider: 'claude',
+              harness: 'claude',
+            }
+          : option,
+      ),
+      tabs: { ...PICKER_TABS, supportedModelIds: { codex: ['b-ready'] } },
+    });
+    try {
+      act(() => queryByTestId('model-harness-tab-claude')?.click());
+      const rows = Array.from(
+        document.querySelectorAll('[data-model-id="b-ready"]'),
+      );
+      expect(rows.length).toBeGreaterThan(1);
+      const ids = rows.map((row) => row.getAttribute('aria-describedby'));
+      expect(new Set(ids).size).toBe(rows.length);
+      for (const id of ids)
+        expect(document.getElementById(id ?? '')?.textContent).toBe(
+          'Available',
+        );
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('keeps an extra-charge warning alongside Available', () => {
+    const root = mountCues({
+      catalog: CUE_CATALOG.map((option) =>
+        option.id === 'b-ready' ? { ...option, extraChargeOnly: true } : option,
+      ),
+    });
+    try {
+      const row = queryByTestId('model-option-b-ready');
+      expect(row?.getAttribute('data-available')).toBe('true');
+      expect(
+        queryByTestId('model-option-extra-charge-b-ready')?.textContent,
+      ).toBe('$');
+      const label = queryByTestId('model-option-available-b-ready');
+      expectStateIconLast(
+        'b-ready',
+        label?.parentElement?.querySelector('svg') ?? null,
+        label,
+      );
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('names credits billing in the detail when Available replaces the tag', () => {
+    const root = mountCues({ picker: true });
+    try {
+      hoverOption('b-ready');
+      act(() => jest.advanceTimersByTime(200));
+      const detail = queryByTestId('model-option-detail-b-ready');
+      expect(detail?.textContent).toContain('BillingAI Credits');
+      expect(detail?.textContent?.match(/AI Credits/g)).toHaveLength(1);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('does not add a second billing line for organization funding', () => {
+    const root = mountCues({
+      picker: true,
+      catalog: CUE_CATALOG.map((option) =>
+        option.id === 'b-ready'
+          ? { ...option, funding: 'org-gateway' }
+          : option,
+      ),
+    });
+    try {
+      hoverOption('b-ready');
+      act(() => jest.advanceTimersByTime(200));
+      const detail = queryByTestId('model-option-detail-b-ready');
+      expect(detail?.textContent).toContain('BillingOrganization gateway');
+      expect(detail?.textContent).not.toContain('AI Credits');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('keeps the section order when a recovery lock keeps its place', () => {
+    const root = mountCues();
+    try {
+      const ids = Array.from(document.querySelectorAll('[data-model-id]')).map(
+        (row) => row.getAttribute('data-model-id'),
+      );
+      expect(ids).toEqual(['a-daily', 'b-ready', 'c-plain']);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it.each(['codex', 'favorites'] as const)(
+    'keeps recovery rows in their prior order under %s',
+    (tab) => {
+      localStorage.setItem(
+        'test:can-5213',
+        JSON.stringify(['codex::a-daily', 'codex::b-ready', 'codex::c-plain']),
+      );
+      const root = mountCues({
+        picker: true,
+        catalog: CUE_CATALOG.map((option) => ({
+          ...option,
+          source: 'codex',
+          harness: 'codex',
+        })),
+      });
+      try {
+        act(() => queryByTestId(`model-harness-tab-${tab}`)?.click());
+        const ids = Array.from(document.querySelectorAll('[data-model-id]'))
+          .filter((row) => row.closest('[hidden]') === null)
+          .map((row) => row.getAttribute('data-model-id'));
+        expect(ids).toEqual(['a-daily', 'b-ready', 'c-plain']);
+      } finally {
+        act(() => root.unmount());
+      }
+    },
+  );
+
+  it('replaces the credits tag with the cue in the harness layout', () => {
+    const root = mountCues({ picker: true });
+    try {
+      expect(queryByTestId('model-row-credits-b-ready')).toBeNull();
+      expect(queryByTestId('model-row-credits-a-daily')).toBeNull();
+      expect(queryByTestId('model-row-credits-c-plain')?.textContent).toBe(
+        'AI Credits',
+      );
+      expect(queryByTestId('model-option-available-b-ready')).not.toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
 });

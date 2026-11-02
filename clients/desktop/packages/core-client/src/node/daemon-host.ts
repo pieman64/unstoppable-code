@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { constants, lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { CanopyClientError } from '../errors';
@@ -41,6 +41,14 @@ export interface CanopyOwnedDaemonChildren {
   }): Promise<CanopyOwnedDaemonChild>;
 }
 
+export interface CanopyDaemonMigrationLaunch {
+  spawn(
+    request: Parameters<CanopyOwnedDaemonChildren['spawn']>[0],
+    auth: { readonly secret: string; readonly dataRootHash: string },
+    signal: AbortSignal,
+  ): Promise<CanopyOwnedDaemonChild>;
+}
+
 /** Trusted host inputs only; never renderer- or operation-supplied. */
 export interface CanopyDaemonHostLaunchOptions {
   /** Absolute canonical data root. */
@@ -51,6 +59,8 @@ export interface CanopyDaemonHostLaunchOptions {
   readonly platform: 'darwin' | 'win32' | 'linux';
   readonly supervision: CanopyDaemonHostSupervision;
   readonly ownedChildren?: CanopyOwnedDaemonChildren;
+  /** Electron main's private launcher adapter; absent for CLI and every generic host. */
+  readonly migration?: CanopyDaemonMigrationLaunch;
   /** Filtered through `supervision.childEnvironment`'s allowlist. */
   readonly environmentSource: Environment;
   readonly claim?: CanopyStartupClaimPort;
@@ -230,12 +240,26 @@ export function createCanopyDaemonHostLaunch(
       if (command.executable !== executable)
         throw failure('Core executable is not the trusted host executable.');
       const { claimHandle } = command;
-      const handoff = claimHandle && JSON.stringify(claimHandle);
+      const migrationAuth = options.migration
+        ? {
+            secret: randomBytes(32).toString('hex'),
+            dataRootHash: createHash('sha256').update(dataRoot).digest('hex'),
+          }
+        : undefined;
+      const handoff = migrationAuth
+        ? JSON.stringify({ claim: claimHandle ?? null, auth: migrationAuth })
+        : claimHandle && JSON.stringify(claimHandle);
       if (handoff && Buffer.byteLength(handoff) > MAX_HANDOFF_BYTES)
         throw failure('Core startup claim handoff is too large.');
       const env = {
         ...supervision.childEnvironment({ source: options.environmentSource }),
-        ...(handoff ? { [CANOPY_DAEMON_CLAIM_HANDOFF_ENV]: 'stdin-v1' } : {}),
+        ...(handoff
+          ? {
+              [CANOPY_DAEMON_CLAIM_HANDOFF_ENV]: migrationAuth
+                ? 'stdin-migration-v1'
+                : 'stdin-v1',
+            }
+          : {}),
       };
       const children = options.ownedChildren;
       if (!children)
@@ -243,28 +267,31 @@ export function createCanopyDaemonHostLaunch(
           'capability_unavailable',
           'Core child ownership is unavailable.',
         );
-      const child = await children
-        .spawn({
-          executable,
-          args: command.args,
-          environment: env,
-          ...(handoff ? { stdin: handoff } : {}),
-        })
-        .catch((error: unknown) => {
-          if (field(error, 'code') === 'unavailable')
-            throw Object.assign(
-              canopyConnectError('unavailable', 'Core cleanup failed.'),
-              {
-                cleanupUnconfirmed: true,
-              },
-            );
-          throw field(error, 'code') === 'capability_unavailable'
-            ? canopyConnectError(
-                'capability_unavailable',
-                'Core child ownership is unavailable.',
-              )
-            : failure('Core executable could not be started.');
-        });
+      const spawnRequest = {
+        executable,
+        args: command.args,
+        environment: env,
+        ...(handoff ? { stdin: handoff } : {}),
+      };
+      const child = await (
+        options.migration && migrationAuth
+          ? options.migration.spawn(spawnRequest, migrationAuth, command.signal)
+          : children.spawn(spawnRequest)
+      ).catch((error: unknown) => {
+        if (field(error, 'code') === 'unavailable')
+          throw Object.assign(
+            canopyConnectError('unavailable', 'Core cleanup failed.'),
+            {
+              cleanupUnconfirmed: true,
+            },
+          );
+        throw field(error, 'code') === 'capability_unavailable'
+          ? canopyConnectError(
+              'capability_unavailable',
+              'Core child ownership is unavailable.',
+            )
+          : failure('Core executable could not be started.');
+      });
       const daemon: CanopySpawnedDaemon = {
         pid: child.pid,
         exited: child.exited,
@@ -310,7 +337,10 @@ export function createCanopyDaemonHostLaunch(
     dataRoot,
     dataRootHash: createHash('sha256').update(dataRoot).digest('hex'),
     runtimeMode: options.runtimeMode,
-    daemon: { executable },
+    daemon: {
+      executable,
+      ...(options.migration && { migrationChannel: true }),
+    },
     ports: {
       descriptor,
       supervisor,

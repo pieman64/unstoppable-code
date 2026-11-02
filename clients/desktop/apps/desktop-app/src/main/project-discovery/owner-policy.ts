@@ -1,9 +1,11 @@
+import { isAbsolute } from 'node:path';
 import type {
   ProjectOwnerContext,
   SidebarItem,
   WorkspaceConfigFile,
   WorkspaceOwnerBinding,
   CoworkSidebarItem,
+  WorkspaceIndexEntry,
 } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
@@ -31,6 +33,7 @@ import {
 } from './readiness';
 import {
   readProjectConfigSnapshot,
+  readProjectIndexSnapshot,
   readProjectInventory,
   type LegacyReadAuthority,
   type ProjectConfigSnapshot,
@@ -59,6 +62,17 @@ export interface AuthorizedProject {
   configAuthority?: LegacyReadAuthority;
 }
 
+export type AuthorizedProjectIdentity = Pick<
+  AuthorizedProject,
+  | 'projectId'
+  | 'type'
+  | 'owner'
+  | 'incarnation'
+  | 'readiness'
+  | 'synthetic'
+  | 'inventoryAuthority'
+>;
+
 export interface AuthorizedProjectInventory {
   projects: AuthorizedProject[];
   /** Authority of the index, not of unrelated project manifests. */
@@ -82,6 +96,8 @@ export async function getCallerOwner(
   caller: ProjectDiscoveryCaller,
 ): Promise<ProjectOwnerContext | null> {
   if (caller.kind === 'app_advisor') return null;
+  // A pipeline run reads as its own recorded owner, even when an agent started it.
+  if (caller.kind === 'pipeline') return caller.owner;
   const resolved = await resolveProjectSavedOwner({
     projectId: caller.projectId,
     worktreeId: caller.worktreeId,
@@ -103,7 +119,17 @@ function ownerMatches(
   );
 }
 
-function ownerBinding(item: SidebarItem): WorkspaceOwnerBinding | undefined {
+interface ProjectIdentityItem {
+  id: string;
+  name: string;
+  type: WorkspaceIndexEntry['type'];
+  owner?: WorkspaceOwnerBinding;
+  createdAt?: string;
+}
+
+function ownerBinding(
+  item: ProjectIdentityItem,
+): WorkspaceOwnerBinding | undefined {
   return item.owner;
 }
 
@@ -121,6 +147,42 @@ function syntheticChatsItem(projectId: string): CoworkSidebarItem {
 function projectCreatedAt(item: SidebarItem): string | undefined {
   if (item.type === 'cowork') return item.cowork?.createdAt;
   return undefined;
+}
+
+function makeAuthorizedIdentity(
+  item: ProjectIdentityItem,
+  owner: ProjectOwnerContext,
+  readiness: ProjectReadiness,
+  inventoryAuthority: LegacyReadAuthority,
+  synthetic = false,
+): AuthorizedProjectIdentity {
+  const binding = ownerBinding(item);
+  return {
+    projectId: item.id,
+    type: item.type === 'cowork' ? 'cowork' : 'code',
+    owner,
+    readiness,
+    synthetic,
+    inventoryAuthority,
+    incarnation: JSON.stringify({
+      projectId: item.id,
+      owner,
+      readiness,
+      name: item.name,
+      type: item.type,
+      ...(binding
+        ? {
+            binding: {
+              organizationId: binding.organizationId,
+              projectId: binding.projectId,
+              instanceId: binding.instanceId,
+              bindingGeneration: binding.bindingGeneration,
+            },
+          }
+        : {}),
+      ...(item.createdAt ? { createdAt: item.createdAt } : {}),
+    }),
+  };
 }
 
 function latestWorktreeActivity(item: SidebarItem): string | undefined {
@@ -145,30 +207,16 @@ function makeAuthorizedProject(
     (item.id === DEFAULT_COWORK_WORKSPACE_ID ||
       isOrgDefaultCoworkWorkspaceId(item.id));
   const createdAt = projectCreatedAt(item);
-  const binding = ownerBinding(item);
   const purpose = isDefault ? 'chats' : 'project';
-  const incarnation = JSON.stringify({
-    projectId: item.id,
-    owner,
-    readiness,
-    name: item.name,
-    type: item.type,
-    ...(binding
-      ? {
-          binding: {
-            organizationId: binding.organizationId,
-            projectId: binding.projectId,
-            instanceId: binding.instanceId,
-            bindingGeneration: binding.bindingGeneration,
-          },
-        }
-      : {}),
-    ...(createdAt ? { createdAt } : {}),
-  });
   return {
     item,
-    projectId: item.id,
-    type: item.type === 'cowork' ? 'cowork' : 'code',
+    ...makeAuthorizedIdentity(
+      { ...item, ...(createdAt ? { createdAt } : {}) },
+      owner,
+      readiness,
+      inventory.indexAuthority,
+      synthetic,
+    ),
     purpose,
     name: isDefault ? 'Chats' : item.name,
     displayName: isDefault ? 'Chats' : item.name,
@@ -179,12 +227,7 @@ function makeAuthorizedProject(
     ...(latestWorktreeActivity(item)
       ? { lastActivityAt: latestWorktreeActivity(item) }
       : {}),
-    incarnation,
     isDefault,
-    owner,
-    readiness,
-    synthetic,
-    inventoryAuthority: inventory.indexAuthority,
     inventoryOwnerMalformed: inventory.ownerMalformed,
     ...(configSnapshot ? { config: configSnapshot.config } : {}),
     ...(configSnapshot ? { configAuthority: configSnapshot.authority } : {}),
@@ -217,11 +260,15 @@ async function readConfigForReadiness(
 }
 
 async function readinessForItem(
-  item: SidebarItem,
+  item: ProjectIdentityItem,
   owner: ProjectOwnerContext,
-  inventory: ProjectInventorySnapshot,
+  inventory: Pick<
+    ProjectInventorySnapshot,
+    'indexAuthority' | 'ownerMalformed'
+  >,
   memberships: ReadonlyMap<string, { id: string; name?: string }>,
   organizationDependencies: OrganizationReadinessDependencies,
+  configSnapshot: ProjectConfigSnapshot | undefined,
 ): Promise<{
   readiness: ProjectReadiness;
   configSnapshot?: ProjectConfigSnapshot;
@@ -230,7 +277,6 @@ async function readinessForItem(
     item.type === 'cowork' &&
     (item.id === DEFAULT_COWORK_WORKSPACE_ID ||
       isOrgDefaultCoworkWorkspaceId(item.id));
-  const configSnapshot = await readConfigForReadiness(item.id);
   if (owner.kind === 'personal') {
     if (!isChats) {
       if (
@@ -324,6 +370,39 @@ async function authorizeOwner(
   return decision.kind === 'allowed';
 }
 
+async function resolveEligibleOwner(
+  item: ProjectIdentityItem,
+  callerOwner: ProjectOwnerContext | null,
+  memberships: ReadonlyMap<string, { id: string; name?: string }>,
+): Promise<ProjectOwnerContext | null> {
+  if (item.id === APP_ADVISOR_PROJECT_ID) return null;
+  if (
+    item.type === 'cowork' &&
+    isOrgDefaultCoworkWorkspaceId(item.id) &&
+    !memberships.has(organizationIdFromChatsId(item.id))
+  )
+    return null;
+  const resolved = await resolveProjectSavedOwner({ projectId: item.id });
+  if (resolved.kind === 'unknown' || resolved.kind === 'none') return null;
+  if (
+    item.type === 'cowork' &&
+    isOrgDefaultCoworkWorkspaceId(item.id) &&
+    (resolved.kind !== 'organization' ||
+      resolved.organizationId.trim().toLowerCase() !==
+        organizationIdFromChatsId(item.id))
+  )
+    return null;
+  if (!allowedByCallerOwner(callerOwner, resolved)) return null;
+  if (
+    resolved.kind === 'organization' &&
+    !memberships.has(resolved.organizationId.toLowerCase())
+  )
+    return null;
+  return (await authorizeOwner(callerOwner, resolved, item.id))
+    ? resolved
+    : null;
+}
+
 export async function listAuthorizedProjectInventory(
   caller: ProjectDiscoveryCaller,
 ): Promise<AuthorizedProjectInventory> {
@@ -346,40 +425,17 @@ export async function listAuthorizedProjectInventory(
   const indexedIds = new Set(inventory.items.map((item) => item.id));
 
   for (const item of inventory.items) {
-    if (item.id === APP_ADVISOR_PROJECT_ID) continue;
-    let owner: ProjectOwnerContext | null = null;
-    const canonicalOrgChats =
-      item.type === 'cowork' && isOrgDefaultCoworkWorkspaceId(item.id);
-    if (canonicalOrgChats) {
-      const organizationId = organizationIdFromChatsId(item.id);
-      if (!memberships.has(organizationId)) continue;
-      const resolved = await resolveProjectSavedOwner({ projectId: item.id });
-      if (
-        resolved.kind !== 'organization' ||
-        resolved.organizationId.trim().toLowerCase() !== organizationId
-      ) {
-        continue;
-      }
-      owner = resolved;
-    } else {
-      const resolved = await resolveProjectSavedOwner({ projectId: item.id });
-      if (resolved.kind === 'unknown' || resolved.kind === 'none') continue;
-      owner = resolved;
-    }
-    if (!owner || !allowedByCallerOwner(callerOwner, owner)) continue;
-    if (
-      owner.kind === 'organization' &&
-      !memberships.has(owner.organizationId.toLowerCase())
-    )
-      continue;
-    if (!(await authorizeOwner(callerOwner, owner, item.id))) continue;
+    const owner = await resolveEligibleOwner(item, callerOwner, memberships);
+    if (!owner) continue;
 
+    const configSnapshot = await readConfigForReadiness(item.id);
     const facts = await readinessForItem(
       item,
       owner,
       inventory,
       memberships,
       organizationDependencies,
+      configSnapshot,
     );
     projects.push(
       makeAuthorizedProject(
@@ -446,6 +502,77 @@ export async function listAuthorizedProjectInventory(
   }
 
   return { projects, authority: inventory.indexAuthority };
+}
+
+/** Authorize one indexed project without sidebar, script or hook projection. */
+export async function requireAuthorizedProjectIdentity(
+  projectId: string,
+  caller: ProjectDiscoveryCaller,
+): Promise<AuthorizedProjectIdentity> {
+  const callerOwner = await getCallerOwner(caller);
+  const index = await readProjectIndexSnapshot(projectId);
+  const entry = index.entry;
+  if (!entry) throw new DiscoveryError('not_found', 'Project was not found.');
+
+  const organizations = await getOrganizationMemberships();
+  const memberships = membershipsById(organizations);
+  const organizationDependencies: OrganizationReadinessDependencies = {
+    getOrganizations: () => Promise.resolve(organizations),
+    isEligible: isOrgCoworkOperationEligible,
+    isMemberCodeEligible: isOrgMemberCodeOperationEligible,
+  };
+  const configSnapshot = await readConfigForReadiness(entry.id);
+  if (
+    !configSnapshot ||
+    configSnapshot.authority !== 'ok' ||
+    configSnapshot.config.type !== entry.type ||
+    (entry.type === 'single-repo' &&
+      (!configSnapshot.config.repoPath ||
+        !isAbsolute(configSnapshot.config.repoPath)))
+  )
+    throw new DiscoveryError('not_found', 'Project was not found.');
+  const item: ProjectIdentityItem = {
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    ...(configSnapshot.config.owner
+      ? { owner: configSnapshot.config.owner }
+      : {}),
+    ...(entry.type === 'cowork' && configSnapshot.config.cowork?.createdAt
+      ? { createdAt: configSnapshot.config.cowork.createdAt }
+      : {}),
+  };
+  const owner = await resolveEligibleOwner(item, callerOwner, memberships);
+  if (!owner) throw new DiscoveryError('not_found', 'Project was not found.');
+  const facts = await readinessForItem(
+    item,
+    owner,
+    { indexAuthority: index.authority, ownerMalformed: false },
+    memberships,
+    organizationDependencies,
+    configSnapshot,
+  );
+  const identity = makeAuthorizedIdentity(
+    item,
+    owner,
+    facts.readiness,
+    index.authority,
+  );
+  const latestCallerOwner = await getCallerOwner(caller);
+  const latestTargetOwner = await resolveProjectSavedOwner({
+    projectId: entry.id,
+    ...(caller.kind === 'project_agent' && caller.projectId === entry.id
+      ? { worktreeId: caller.worktreeId }
+      : {}),
+  });
+  if (
+    latestTargetOwner.kind === 'unknown' ||
+    latestTargetOwner.kind === 'none' ||
+    !ownerMatches(latestTargetOwner, identity.owner) ||
+    !(await authorizeOwner(latestCallerOwner, latestTargetOwner, entry.id))
+  )
+    throw new DiscoveryError('not_found', 'Project was not found.');
+  return identity;
 }
 
 export async function listAuthorizedProjects(

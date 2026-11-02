@@ -168,7 +168,7 @@ test('CPU profile summaries attribute native SQLite self time to the issuing gra
           id: 2,
           callFrame: {
             functionName: 'resolveCallEdges',
-            url: '/repo/packages/desktop-shared/src/node/code-graph/resolve/call-resolver.ts',
+            url: '/repo/packages/code-graph/src/resolve/call-resolver.ts',
             lineNumber: 53,
             columnNumber: 2,
           },
@@ -178,7 +178,7 @@ test('CPU profile summaries attribute native SQLite self time to the issuing gra
           id: 3,
           callFrame: {
             functionName: 'listSymbolsForFile',
-            url: '/repo/packages/desktop-shared/src/node/code-graph/store/graph-store.ts',
+            url: '/repo/packages/code-graph/src/store/graph-store.ts',
             lineNumber: 644,
             columnNumber: 2,
           },

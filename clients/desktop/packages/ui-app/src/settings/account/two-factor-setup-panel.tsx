@@ -2,9 +2,11 @@
 
 import { useState, type FormEvent, type JSX } from 'react';
 import { toDataURL } from 'qrcode';
-import { ShieldCheck } from '@canopy/ui-shared/icons/AppIcons';
-import { ErrorBanner } from '@canopy/ui-shared/components';
-import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
+import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  SETTINGS_CARD_ROW_CLASS,
+  SettingsCard,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 import { isOkResponse } from '@canopy/protocol/settings/account';
 import { SettingsImage, useSettingsClient, useSettingsPrivacy } from '../host';
 import { withPrivacyClass } from './privacy-class';
@@ -14,6 +16,9 @@ const ENABLE_FAILED_ERROR = 'Unable to enable two-factor authentication.';
 const DISABLE_FAILED_ERROR = 'Unable to disable two-factor authentication.';
 const REGENERATE_FAILED_ERROR = 'Unable to regenerate backup codes.';
 const COPY_FAILED_ERROR = 'Unable to copy backup codes.';
+
+/** A step of the flow: a full-width row under the status row that starts it. */
+const STEP_ROW_CLASS = `${SETTINGS_CARD_ROW_CLASS} flex-col items-stretch gap-3`;
 
 /**
  * One of the discrete steps the panel can be in. The `view` is local UI state,
@@ -242,60 +247,53 @@ export function TwoFactorSetupPanel({
   // `h3` → `h2` (via `SettingsCard`) is correct now: this is a first-level
   // sibling of the Sign-in methods and API keys cards, not a subsection. The
   // inner subheadings moved `h4` → `h3` to match, so the panel does not skip a
-  // level (axe `heading-order`). `SettingsCard` also supplies the `mt-4` body
-  // gutter, so the views below must not re-add their own.
+  // level (axe `heading-order`). The status row carries the idle actions; each
+  // step of a flow is a full-width row under it.
   return (
-    <SettingsCard
-      icon={<ShieldCheck size={18} />}
-      title="Two-factor authentication"
-      subtitle={
-        twoFactorEnabled
-          ? 'Two-factor authentication is enabled for this account.'
-          : 'Add an authenticator app to require a code when signing in.'
-      }
-    >
+    <SettingsCard title="Two-factor authentication">
       <>
-        <ErrorBanner error={error} />
-
-        {view === 'idle' && (
-          <div className="flex flex-wrap items-center gap-2">
-            {twoFactorEnabled ? (
-              <>
-                <button
-                  type="button"
+        <div className={SETTINGS_CARD_ROW_CLASS}>
+          <div className="min-w-0">
+            <div className="text-s font-medium fg-primary">
+              Authenticator app
+            </div>
+            <p className="text-xs text-pretty fg-secondary">
+              {twoFactorEnabled
+                ? 'Two-factor authentication is enabled for this account.'
+                : 'Add an authenticator app to require a code when signing in.'}
+            </p>
+          </div>
+          {view === 'idle' &&
+            (twoFactorEnabled ? (
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                <Button
+                  size="compact"
                   onClick={() => {
                     resetTransient();
                     setView('disableConfirm');
                   }}
-                  className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
                 >
                   Disable 2FA
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRegenerateClick}
-                  className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-                >
+                </Button>
+                <Button size="compact" onClick={handleRegenerateClick}>
                   Regenerate backup codes
-                </button>
-              </>
+                </Button>
+              </div>
             ) : (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={handleEnableClick}
                 disabled={submitting}
-                className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? 'Enabling…' : 'Enable 2FA'}
-              </button>
-            )}
-          </div>
-        )}
+              </Button>
+            ))}
+        </div>
 
         {view === 'enablePassword' && (
           <form
             onSubmit={handleEnablePasswordSubmit}
-            className="flex flex-col gap-3"
+            className={STEP_ROW_CLASS}
           >
             <label className="flex flex-col gap-1 text-s fg-secondary">
               <span className="font-medium fg-primary">Password</span>
@@ -310,27 +308,24 @@ export function TwoFactorSetupPanel({
               />
             </label>
             <div className="flex items-center gap-2">
-              <button
-                type="submit"
-                disabled={submitting}
-                className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
+              <Button type="submit" size="compact" disabled={submitting}>
                 {submitting ? 'Enabling…' : 'Enable 2FA'}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="compact"
                 onClick={returnToIdle}
                 disabled={submitting}
-                className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </form>
         )}
 
         {view === 'verify' && qrDataUrl && (
-          <div className="flex flex-col gap-4">
+          <div
+            className={`${SETTINGS_CARD_ROW_CLASS} flex-col items-stretch gap-4`}
+          >
             {/* The QR and its setup key encode the TOTP secret: the whole
                 block is hidden from session replay. */}
             <div
@@ -387,28 +382,27 @@ export function TwoFactorSetupPanel({
                 />
               </label>
               <div className="flex items-center gap-2">
-                <button
+                <Button
                   type="submit"
+                  size="compact"
                   disabled={submitting || code.trim().length === 0}
-                  className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {submitting ? 'Verifying…' : 'Verify and finish'}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  size="compact"
                   onClick={returnToIdle}
                   disabled={submitting}
-                  className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             </form>
           </div>
         )}
 
         {view === 'backupCodes' && backupCodes && (
-          <div className="flex flex-col gap-3">
+          <div className={STEP_ROW_CLASS}>
             <h3 className="text-s font-semibold fg-primary">
               Save your backup codes
             </h3>
@@ -428,26 +422,21 @@ export function TwoFactorSetupPanel({
               ))}
             </ul>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => void handleCopyBackupCodes()}
-                className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
               >
                 {backupCodesCopied ? 'Copied' : 'Copy'}
-              </button>
-              <button
-                type="button"
-                onClick={returnToIdle}
-                className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90"
-              >
+              </Button>
+              <Button size="compact" onClick={returnToIdle}>
                 Done
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         {view === 'disableConfirm' && (
-          <form onSubmit={handleDisableConfirm} className="flex flex-col gap-3">
+          <form onSubmit={handleDisableConfirm} className={STEP_ROW_CLASS}>
             <p className="text-s fg-primary">
               Disable two-factor authentication?
             </p>
@@ -466,21 +455,21 @@ export function TwoFactorSetupPanel({
               </label>
             )}
             <div className="flex items-center gap-2">
-              <button
+              <Button
                 type="submit"
+                size="compact"
+                variant="destructive"
                 disabled={submitting}
-                className="rounded-md bg-destructive px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? 'Disabling…' : 'Disable 2FA'}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="compact"
                 onClick={returnToIdle}
                 disabled={submitting}
-                className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </form>
         )}
@@ -488,7 +477,7 @@ export function TwoFactorSetupPanel({
         {view === 'regeneratePassword' && (
           <form
             onSubmit={handleRegeneratePasswordSubmit}
-            className="flex flex-col gap-3"
+            className={STEP_ROW_CLASS}
           >
             <label className="flex flex-col gap-1 text-s fg-secondary">
               <span className="font-medium fg-primary">Password</span>
@@ -503,24 +492,21 @@ export function TwoFactorSetupPanel({
               />
             </label>
             <div className="flex items-center gap-2">
-              <button
-                type="submit"
-                disabled={submitting}
-                className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
+              <Button type="submit" size="compact" disabled={submitting}>
                 {submitting ? 'Generating…' : 'Regenerate backup codes'}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="compact"
                 onClick={returnToIdle}
                 disabled={submitting}
-                className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </form>
         )}
+
+        <ErrorBanner className="mb-3" error={error} />
       </>
     </SettingsCard>
   );

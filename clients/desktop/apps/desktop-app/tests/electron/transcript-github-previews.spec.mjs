@@ -59,7 +59,9 @@ const PR_CANONICAL = 'https://github.com/acme/app/pull/7';
 const ISSUE_URL = 'https://github.com/acme/app/issues/55';
 const REPO_URL = 'https://github.com/acme/app';
 const LINK_ITEMS = ['Copy link', 'Open in browser', 'Open in external browser'];
-const COPY_ITEMS = ['Copy message', 'Copy as Markdown'];
+// Copy selection follows the link section, disabled without a selection
+// (CAN-4870).
+const COPY_ITEMS = ['Copy selection'];
 
 const TITLE_1234 = 'Show pull request titles in every chat transcript today';
 const FIVE_WORDS_1234 = 'Show pull request titles in';
@@ -438,24 +440,32 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     ).toBe(`acme/app#1234: ${TITLE_1234}`);
     await window.evaluate(() => getSelection()?.removeAllRanges());
 
-    // Hover: full title, state and description.
+    // Hover: full title, state, repository and author.
     const card = window.getByTestId('github-reference-preview-card');
     await references.nth(1).hover();
-    await expect(card).toContainText('acme/app#1234');
+    await expect(
+      card.getByTestId('github-reference-preview-repository'),
+    ).toHaveText('app');
+    await expect(card).toContainText('#1234');
     await expect(card).toContainText(TITLE_1234);
-    await expect(card).toContainText('Issue · Open · by octocat');
-    await expect(card).toContainText(
-      `Context The ${TITLE_1234} work, tracked in the plan.`,
-    );
+    await expect(
+      card.getByTestId('github-reference-preview-status'),
+    ).toHaveText('Open');
+    await expect(card).toContainText('octocat');
+    await expect(card).toHaveAttribute('data-layout', 'status');
     await window.mouse.move(0, 0);
     await expect(card).toHaveCount(0);
     await references.nth(2).hover();
     await expect(card).toContainText(TITLE_OTHER_1234);
-    await expect(card).toContainText('Issue · Closed');
+    await expect(
+      card.getByTestId('github-reference-preview-status'),
+    ).toHaveText('Closed');
     await window.mouse.move(0, 0);
     await references.nth(3).hover();
     await expect(card).toContainText(TITLE_7);
-    await expect(card).toContainText('Pull request · Merged');
+    await expect(
+      card.getByTestId('github-reference-preview-status'),
+    ).toHaveText('Merged');
     await window.mouse.move(0, 0);
     await references.nth(4).hover();
     await expect(card).toContainText('#7');
@@ -476,7 +486,9 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     await window.keyboard.press('Shift');
     await references.nth(6).focus();
     await expect(card).toContainText(TITLE_90);
-    await expect(card).toContainText('Pull request · Draft');
+    await expect(
+      card.getByTestId('github-reference-preview-status'),
+    ).toHaveText('Draft');
     await window.keyboard.press('Escape');
     await expect(card).toHaveCount(0);
     await expect(references.nth(6)).toBeFocused();

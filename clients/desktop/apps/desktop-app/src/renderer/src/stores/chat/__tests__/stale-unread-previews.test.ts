@@ -14,6 +14,7 @@ import {
   getRecordedUnreadChatAgentResponsePreview,
   recordUnreadChatAgentResponsePreview,
 } from '../unread-previews';
+import { createEmptyTab } from '../tab-utils';
 
 let showInApp = true;
 const osNotification = jest.fn<
@@ -49,6 +50,7 @@ const OLD_ANSWER = 'The old cached answer.';
 
 function tab(providerType: AgentProviderType, cached = true): ChatTab {
   return {
+    ...createEmptyTab(),
     id: 'preview-chat',
     title: 'Background chat',
     createdAt: '2026-10-15T00:00:00.000Z',

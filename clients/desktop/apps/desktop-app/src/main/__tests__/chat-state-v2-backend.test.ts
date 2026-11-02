@@ -1,3 +1,9 @@
+import { reopenFormat4Scope } from './helpers/chat-format4-scope';
+import {
+  delegationTranscriptPaths,
+  delegationStreamKey,
+} from '../lib/transcript-stream-paths';
+import { ChatDeltaJournalWriter } from '../lib/chat-delta-journal/writer';
 import { searchTranscriptMessages } from '../lib/chat-transcript-search';
 import type { ChatCoreMutation } from '@canopy/desktop-shared/types';
 import type { ChatMigrationEntry } from '../lib/chat-storage-v2';
@@ -15,8 +21,22 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
+import type { CardStateV1 } from '@canopy/protocol/canopy-core';
 import type { PersistedVisualReference } from '@canopy/agent-transcript/types';
+import {
+  hydrateChatTurnState,
+  initialChatTurnState,
+  serializeChatTurnState,
+} from '@canopy/agent-transcript/turn';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
+import { ChatTranscriptArtifacts } from '../lib/chat-transcript-artifacts';
+import {
+  delegationBlockId,
+  delegationTranscriptMessages,
+  type DelegationChildRow,
+} from '@canopy/agent-transcript';
+import type { PersistedToolOutputReference } from '@canopy/agent-transcript/types';
+import type { ActiveRowAnchor } from '../lib/chat-transcript-live-positions';
 import {
   ChatArtifactMaintenance,
   ArtifactMaintenanceCapacityError,
@@ -30,7 +50,15 @@ import {
 import {
   ChatStateV2Backend,
   ChatTranscriptNotLoadedError,
+  type V2Commit,
 } from '../services/chat-state-v2-backend';
+import {
+  DELEGATION_COMPATIBILITY_NOTICES,
+  type ChildStreamCompatibilityPageRequest,
+} from '../agents/delegation/record-reader-contract';
+import { TranscriptStreamStore } from '../lib/chat-transcript-log';
+import { format4Scope } from './helpers/chat-format4-scope';
+import { scopeSource } from './helpers/chat-delta-journal-harness';
 import type {
   ProviderVisualAdmission,
   StagedVisual,
@@ -147,6 +175,62 @@ function visualReferenceFrom(
   return block?.type === 'tool_result' ? block.visualRef : undefined;
 }
 
+function delegatedRows(): [PersistedChatMessage, PersistedChatMessage] {
+  const rows = delegationTranscriptMessages({
+    delegationId: 'active-run',
+    runGeneration: 1,
+    sequence: 1,
+    parentHarnessId: 'claude',
+    parentTurnId: 'active-turn',
+    parentToolCallId: 'active-call',
+    createdAt: 1,
+    task: {
+      description: 'Read the requested file',
+      prompt: 'Return the file contents.',
+      executionMode: 'background',
+    },
+    snapshot: {
+      delegationId: 'active-run',
+      runGeneration: 1,
+      requestedModelId: 'test-model',
+      status: 'running',
+      outputTruncated: false,
+      routeSnapshot: {
+        selectedModelId: 'test-model',
+        runtimeModelId: 'test-runtime-model',
+        harnessId: 'claude',
+        runtimeKind: 'local',
+        runnerRegistrationId: 'claude-local',
+        runtimeVersion: '1',
+        adapterVersion: '1',
+        modelSource: 'catalog',
+        providerType: 'claude',
+        assignmentRevision: 'test-assignment',
+        billingAuthority: 'local',
+        aiCreditsRouted: false,
+        capabilities: [],
+        supportedThinkingLevels: [],
+        capabilitySnapshotHash: 'test-capabilities',
+        capabilityGeneration: 1,
+        policyRevision: 'test-policy',
+      },
+    },
+    transcript: [
+      {
+        id: 'child-result',
+        sequence: 1,
+        occurredAt: 2,
+        type: 'text',
+        text: 'ok',
+      },
+    ],
+  });
+  const card = rows[0];
+  const child = rows[1];
+  if (!card || !child) throw new Error('Missing delegated-agent rows');
+  return [card, child];
+}
+
 function asAsync<T>(source: Iterable<T>): AsyncIterable<T> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
@@ -159,6 +243,25 @@ function asAsync<T>(source: Iterable<T>): AsyncIterable<T> {
     },
   };
 }
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function persistedOpenTurn(
+  id: string,
+): ReturnType<typeof serializeChatTurnState> {
+  const turn = hydrateChatTurnState({
+    phase: 'foreground',
+    decisionPending: false,
+    catchingUp: false,
+    current: { id, origin: 'user', startedAtMs: 100, pauses: [] },
+    endedTurnIds: [],
+    background: { native: [], managed: { live: 0, queued: 0 } },
+  });
+  if (!turn) throw new Error('Invalid open turn fixture');
+  return serializeChatTurnState(turn);
+}
+
 // These tests do real filesystem and git work. Under a loaded multi-worker
 // Jest run they have exceeded Jest's default 5 s, so leave headroom here.
 jest.setTimeout(60_000);
@@ -378,6 +481,123 @@ describe('index-owned chat state', () => {
     jest.restoreAllMocks();
     await backend.disposeArtifactMaintenance();
     await rm(root, { recursive: true, force: true });
+  });
+
+  it('strips both store markers while inlining a log card and a stream card in the same row', async () => {
+    const cardRow = delegationTranscriptMessages({
+      delegationId: 'logged',
+      runGeneration: 1,
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: 'prompt',
+      parentToolCallId: 'spawn',
+      createdAt: 1,
+      task: {
+        description: 'Review',
+        prompt: 'Review it',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: 'logged',
+        status: 'completed',
+        outputTruncated: false,
+        routeSnapshot: {
+          selectedModelId: 'model',
+          runtimeModelId: 'model',
+          harnessId: 'claude',
+          runtimeKind: 'local',
+          runnerRegistrationId: 'claude-local',
+          runtimeVersion: '1',
+          adapterVersion: '1',
+          modelSource: 'catalog',
+          providerType: 'claude',
+          assignmentRevision: 'test-assignment',
+          billingAuthority: 'local',
+          aiCreditsRouted: false,
+          capabilities: [],
+          supportedThinkingLevels: [],
+          capabilitySnapshotHash: 'test-capabilities',
+          capabilityGeneration: 1,
+          policyRevision: 'test-policy',
+        },
+      },
+      transcript: [],
+      transcriptStore: 'chat-log-v1',
+    })[0];
+    const logCard = cardRow?.blocks[0];
+    if (!cardRow || !logCard || logCard.type !== 'delegated_agent_call')
+      throw new Error('Missing delegation card');
+    const streamCard = {
+      ...logCard,
+      delegationId: 'stream',
+      agentBlockId: 'delegated-agent-stream',
+      transcriptStore: 'chat-stream-v2' as const,
+      opaqueCard: { reference: ['keep'] },
+    };
+    const original = {
+      ...cardRow,
+      id: 'mixed',
+      opaqueRow: { reference: ['keep'] },
+      blocks: [
+        logCard,
+        streamCard,
+        {
+          type: 'text' as const,
+          text: 'ordinary',
+          opaqueBlock: { reference: ['keep'] },
+        },
+      ],
+    };
+    await backend.transact(
+      () => [
+        {
+          type: 'message.upserted',
+          chatId: 'chat',
+          message: original,
+        },
+      ],
+      { source: 'automation' },
+    );
+    const row = await backend.consumeTranscript(
+      'chat',
+      false,
+      async (messages) => {
+        for await (const message of messages)
+          if (message.id === 'mixed') return message;
+        return undefined;
+      },
+      { inlineDelegationChildren: true },
+    );
+    expect(row?.blocks[0]).not.toHaveProperty('transcriptStore');
+    // Portable rows never name a store (D8); an unknown stream inlines no children.
+    expect(row?.blocks[1]).not.toHaveProperty('transcriptStore');
+    expect(row).toMatchObject({ opaqueRow: { reference: ['keep'] } });
+    expect(row?.blocks[1]).toMatchObject({
+      opaqueCard: { reference: ['keep'] },
+    });
+    expect(row?.blocks[2]).toMatchObject({
+      opaqueBlock: { reference: ['keep'] },
+    });
+
+    const cold = new ChatStateV2Backend(new ChatStorageV2(root, 'scope'));
+    await cold.load();
+    const persisted = await cold.storage.transcripts.page('chat');
+    const kept = persisted.messages.find((message) => message.id === 'mixed');
+    expect(kept).toEqual(original);
+    if (!kept) throw new Error('Missing persisted row');
+    await cold.transact(
+      () => [
+        {
+          type: 'messages.replaced',
+          chatId: 'chat',
+          messages: [kept],
+          removedMessageIds: [],
+        },
+      ],
+      { source: 'automation', fullTranscript: true },
+    );
+    const replaced = await cold.storage.transcripts.page('chat');
+    expect(replaced.messages).toEqual([kept]);
   });
 
   it('counts the mutations each commit carries and the index clones around it', async () => {
@@ -1688,6 +1908,67 @@ describe('index-owned chat state', () => {
     expect(await readdir(directory)).toEqual([artifactName(finalOutput)]);
   }, 30_000);
 
+  it('retains anchored active-row tool output during bounded maintenance', async () => {
+    const output = 'anchored active output\n'.repeat(9000);
+    await backend.load();
+    const transcript = backend.storage.transcripts;
+    const [card, child] = delegatedRows();
+    const childWithOutput: PersistedChatMessage = {
+      ...child,
+      blocks: [
+        {
+          type: 'tool_result',
+          toolUseId: 'active-output-call',
+          toolName: 'Read',
+          output,
+          isError: false,
+        },
+      ],
+    };
+    const anchor: ActiveRowAnchor = {
+      version: 1,
+      runId: card.id,
+      after: card.id,
+      tie: 0,
+    };
+    const anchors = new Map([[child.id, anchor]]);
+    await transcript.writeActive('chat', [card, childWithOutput], anchors);
+    expect(await transcript.activeRowAnchors('chat')).toEqual(anchors);
+
+    const activeChild = (await transcript.activeMessages('chat')).find(
+      (row) => row.id === child.id,
+    );
+    const block = activeChild?.blocks.find(
+      (candidate) => candidate.type === 'tool_result',
+    );
+    if (block?.type !== 'tool_result' || !block.fullOutputRef)
+      throw new Error('Missing anchored active tool-output reference');
+    const artifactId = block.fullOutputRef.artifactId;
+    const artifactName = `${artifactId}.txt`;
+    const directory = join(
+      store.directory,
+      'transcripts',
+      'tool-output',
+      'chat',
+    );
+    expect(await readdir(directory)).toEqual([artifactName]);
+
+    let progress = { complete: false, scannedBytes: 0, removed: 0 };
+    for (let slice = 0; slice < 16 && !progress.complete; slice++)
+      progress = await backend.maintainArtifacts('chat', 64 * 1024);
+    expect(progress.complete).toBe(true);
+    expect(await readdir(directory)).toEqual([artifactName]);
+    await transcript.artifacts.verify('chat', block.fullOutputRef);
+
+    await transcript.replaceActive('chat', [card]);
+    progress = { complete: false, scannedBytes: 0, removed: 0 };
+    for (let slice = 0; slice < 16 && !progress.complete; slice++)
+      progress = await backend.maintainArtifacts('chat', 64 * 1024);
+    expect(progress.complete).toBe(true);
+    expect(progress.removed).toBeGreaterThan(0);
+    expect(await readdir(directory)).toEqual([]);
+  });
+
   it('caps cross-scope maintenance hints and defers a ninth pinned scan', async () => {
     let releaseIdentity: (() => void) | undefined;
     const identityGate = new Promise<void>((resolve) => {
@@ -2702,6 +2983,220 @@ describe('index-owned chat state', () => {
     expect((await store.indexes()).live.tabs[0]).not.toHaveProperty('messages');
   });
 
+  it('keeps committed history out of active storage during replacement', async () => {
+    const largeText = 'x'.repeat(390_000);
+    const committedRows = Array.from({ length: 55 }, (_, index) =>
+      message(`large-${index}`, largeText),
+    );
+    await backend.transact(
+      () => [
+        {
+          type: 'messages.replaced',
+          chatId: 'chat',
+          messages: committedRows,
+          removedMessageIds: [],
+        },
+      ],
+      {
+        source: 'automation',
+        chatIds: ['chat'],
+        fullTranscript: true,
+      },
+    );
+    const before = await backend.storage.transcripts.descriptor('chat');
+    expect(before.committedMessageCount).toBe(55);
+    expect(before.committedByteLength).toBeGreaterThan(20 * 1024 * 1024);
+
+    await backend.transact(
+      () => [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat',
+          runtime: { status: 'streaming', queuedMessageIds: [] },
+        },
+      ],
+      { source: 'automation', chatIds: ['chat'] },
+    );
+
+    const appendedTail = message('active-tail', 'first tail');
+    const replace = (messages: PersistedChatMessage[]): Promise<V2Commit> =>
+      backend.transact(
+        () => [
+          {
+            type: 'messages.replaced',
+            chatId: 'chat',
+            messages,
+            removedMessageIds: [],
+          },
+        ],
+        {
+          source: 'automation',
+          chatIds: ['chat'],
+          fullTranscript: true,
+        },
+      );
+
+    await replace([...committedRows, appendedTail]);
+    expect(
+      (await backend.storage.transcripts.activeMessages('chat')).length,
+    ).toBe(1);
+    expect(await backend.storage.transcripts.activeMessages('chat')).toEqual([
+      appendedTail,
+    ]);
+    let descriptor = await backend.storage.transcripts.descriptor('chat');
+    expect(descriptor.committedMessageCount).toBe(55);
+    expect(descriptor.committedByteLength).toBe(before.committedByteLength);
+
+    const replacedTail = message('active-tail', 'updated tail');
+    await replace([...committedRows, replacedTail]);
+    expect(
+      (await backend.storage.transcripts.activeMessages('chat')).length,
+    ).toBe(1);
+    expect(await backend.storage.transcripts.activeMessages('chat')).toEqual([
+      replacedTail,
+    ]);
+    descriptor = await backend.storage.transcripts.descriptor('chat');
+    expect(descriptor.committedMessageCount).toBe(55);
+    expect(descriptor.committedByteLength).toBe(before.committedByteLength);
+
+    const first = committedRows[0];
+    const second = committedRows[1];
+    if (!first || !second)
+      throw new Error('Missing committed replacement rows');
+    const reorderedCommitted = [second, first, ...committedRows.slice(2)];
+    await replace([...reorderedCommitted, replacedTail]);
+    const storedCommitted: PersistedChatMessage[] = [];
+    for await (const row of backend.storage.transcripts.iterate('chat'))
+      storedCommitted.push(row);
+    expect(storedCommitted.map((row) => row.id)).toEqual(
+      reorderedCommitted.map((row) => row.id),
+    );
+    expect(
+      (await backend.storage.transcripts.activeMessages('chat')).length,
+    ).toBe(1);
+    expect(await backend.storage.transcripts.activeMessages('chat')).toEqual([
+      replacedTail,
+    ]);
+    descriptor = await backend.storage.transcripts.descriptor('chat');
+    expect(descriptor.committedMessageCount).toBe(55);
+    expect(descriptor.committedByteLength).toBe(before.committedByteLength);
+  }, 30_000);
+
+  describe('V2 backend turn restore', () => {
+    const targetBackends: ChatStateV2Backend[] = [];
+
+    afterEach(async () => {
+      for (const targetBackend of targetBackends)
+        await targetBackend.disposeArtifactMaintenance();
+      targetBackends.length = 0;
+    });
+
+    async function createTarget(
+      name: string,
+    ): Promise<{ store: ChatStorageV2; backend: ChatStateV2Backend }> {
+      const targetStore = new ChatStorageV2(join(root, `target-${name}`), name);
+      await targetStore.migrate(() =>
+        Promise.resolve({
+          revision: 0,
+          index: { activeTabId: 'target', runtimeByChatId: {} },
+          recovery: {
+            receipts: [],
+            mutationIds: [],
+            removedTabIds: [],
+            removedArchiveEntryIds: [],
+            removedMessageIds: [],
+          },
+          chats: asAsync<ChatMigrationEntry>([]),
+        }),
+      );
+      const targetBackend = new ChatStateV2Backend(targetStore);
+      targetBackends.push(targetBackend);
+      return { store: targetStore, backend: targetBackend };
+    }
+
+    it('initializes live turns on full and fork restore while merge keeps unaffected turns', async () => {
+      const initialTurn = serializeChatTurnState(initialChatTurnState());
+      const fullTarget = await createTarget('full-turn-restore');
+      await fullTarget.backend.importScope(store, await backend.state());
+      const fullState = await fullTarget.backend.state();
+      expect(fullState.runtimeByChatId.chat?.turn).toEqual(initialTurn);
+      expect(fullState.runtimeByChatId.sibling?.turn).toEqual(initialTurn);
+
+      const preservedTurn = persistedOpenTurn('destination-open-turn');
+      await backend.transact(
+        () => [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat',
+            runtime: {
+              status: 'idle',
+              queuedMessageIds: [],
+              turn: preservedTurn,
+            },
+          },
+        ],
+        { source: 'automation', chatIds: ['chat'] },
+      );
+      const incomingStore = new ChatStorageV2(
+        join(root, 'incoming-turn-source'),
+        'incoming-turn-source',
+      );
+      await incomingStore.migrate(() =>
+        Promise.resolve({
+          revision: 0,
+          index: { activeTabId: 'incoming', runtimeByChatId: {} },
+          recovery: {
+            receipts: [],
+            mutationIds: [],
+            removedTabIds: [],
+            removedArchiveEntryIds: [],
+            removedMessageIds: [],
+          },
+          chats: asAsync<ChatMigrationEntry>([
+            {
+              metadata: {
+                id: 'incoming',
+                title: 'Incoming',
+                createdAt: '2026-09-05',
+              },
+              messages: asAsync<PersistedChatMessage>([]),
+            },
+          ]),
+        }),
+      );
+      const incomingBackend = new ChatStateV2Backend(incomingStore);
+      targetBackends.push(incomingBackend);
+      await backend.importScope(incomingStore, await incomingBackend.state(), {
+        merge: true,
+      });
+      const mergedState = await backend.state();
+      expect(mergedState.runtimeByChatId.chat?.turn).toEqual(preservedTurn);
+      expect(mergedState.runtimeByChatId.incoming?.turn).toEqual(initialTurn);
+
+      await backend.transact(
+        () => [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat',
+            runtime: {
+              status: 'streaming',
+              queuedMessageIds: [],
+              turn: persistedOpenTurn('source-fork-turn'),
+            },
+          },
+        ],
+        { source: 'automation', chatIds: ['chat'] },
+      );
+      const forkTarget = await createTarget('fork-turn-restore');
+      await forkTarget.backend.importScope(store, await backend.state(), {
+        settleFork: true,
+      });
+      const forkState = await forkTarget.backend.state();
+      expect(forkState.runtimeByChatId.chat?.status).toBe('idle');
+      expect(forkState.runtimeByChatId.chat?.turn).toEqual(initialTurn);
+    });
+  });
+
   it('commits an accepted user message while the chat is starting', async () => {
     const accepted: PersistedChatMessage = {
       id: 'accepted-user-message',
@@ -3282,5 +3777,1028 @@ describe('index-owned chat state', () => {
       await readFile(join(store.directory, 'recovery-index.json'), 'utf8'),
     );
     expect(recovery).toMatchObject({ receipts: [expect.anything()] });
+  });
+});
+
+describe('stored child compatibility page causal reds', () => {
+  const target: ChildStreamCompatibilityPageRequest['target'] = {
+    kind: 'delegation',
+    chatId: 'chat',
+    delegationId: 'compat',
+    runGeneration: 1,
+  };
+  const blockId = delegationBlockId(target.delegationId, target.runGeneration);
+  let root: string;
+  let backend: ChatStateV2Backend | undefined;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'chat-compat-page-red-'));
+    const fixture = await format4Scope(
+      root,
+      'compat-scope',
+      scopeSource([{ id: 'chat', messages: [message('parent')] }]),
+    );
+    backend = fixture.backend;
+    await backend.registerTranscriptStream(target);
+  });
+
+  afterEach(async () => {
+    if (backend) {
+      await backend.disposeArtifactMaintenance();
+      await backend.flush();
+      backend.releaseJournal();
+    }
+    await rm(root, { recursive: true, force: true });
+    backend = undefined;
+  });
+
+  function row(
+    suffix: string,
+    sequence: number,
+    blocks: PersistedChatMessage['blocks'],
+  ): DelegationChildRow {
+    return {
+      id: `${blockId}:${suffix}`,
+      role: 'assistant',
+      timestamp: sequence,
+      parentBlockId: blockId,
+      delegationSequence: sequence,
+      itemRevision: 0,
+      final: true,
+      blocks,
+    };
+  }
+
+  async function invokePage(
+    value: ChatStateV2Backend,
+    request: ChildStreamCompatibilityPageRequest,
+  ): Promise<unknown> {
+    const method: unknown = Reflect.get(value, 'childStreamCompatibilityPage');
+    if (typeof method !== 'function')
+      throw new Error('Missing compatibility page backend method');
+    return await Reflect.apply(method, value, [request]);
+  }
+
+  async function currentRevision(value: ChatStateV2Backend): Promise<number> {
+    const descriptor = await value.childStreamDescriptor(target);
+    if (!descriptor) throw new Error('Missing child stream descriptor');
+    return descriptor.streamRevision;
+  }
+
+  it('uses beforeSequence as an exclusive sequence boundary across gaps', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    const rows = [
+      row('old', 2, [{ type: 'text', text: 'old' }]),
+      row('middle', 7, [{ type: 'text', text: 'middle' }]),
+      row('newest', 11, [{ type: 'text', text: 'newest' }]),
+    ];
+    await value.commitChildStream(target, 'gapped-sequences', rows);
+    const revision = await currentRevision(value);
+
+    const reply = await invokePage(value, {
+      target,
+      streamRevision: revision,
+      beforeSequence: 12,
+      limit: 1,
+      encodedBudget: 4 * 1024 * 1024,
+    });
+
+    expect(reply).toMatchObject({
+      ok: true,
+      hasMore: true,
+      items: [{ id: 'newest', sequence: 11, text: 'newest' }],
+    });
+  });
+
+  it('projects image rows with the compatibility omission notice', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    await value.commitChildStream(target, 'image-row', [
+      row('image', 4, [
+        { type: 'image', path: '/private/image.png', alt: 'private image' },
+      ]),
+    ]);
+    const revision = await currentRevision(value);
+
+    const reply = await invokePage(value, {
+      target,
+      streamRevision: revision,
+      limit: 10,
+      encodedBudget: 4 * 1024 * 1024,
+    });
+
+    expect(reply).toMatchObject({
+      ok: true,
+      items: [
+        {
+          id: 'image',
+          sequence: 4,
+          type: 'text',
+          text: DELEGATION_COMPATIBILITY_NOTICES.image,
+          truncated: true,
+        },
+      ],
+    });
+    expect(JSON.stringify(reply)).not.toContain('/private/image.png');
+  });
+
+  it('adds notices for supported text/image and paired-tool/image rows', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    await value.commitChildStream(target, 'image-row-families', [
+      row('text-image', 4, [
+        { type: 'text', text: 'visible text' },
+        { type: 'image', path: '/private/text.png', alt: 'text image' },
+      ]),
+      row('tool-image', 5, [
+        {
+          type: 'tool_use',
+          toolUseId: 'tool-call',
+          toolName: 'Read',
+          input: '{}',
+        },
+        {
+          type: 'tool_result',
+          toolUseId: 'tool-call',
+          toolName: 'Read',
+          output: 'visible output',
+          isError: false,
+        },
+        { type: 'image', path: '/private/tool.png', alt: 'tool image' },
+      ]),
+    ]);
+    const revision = await currentRevision(value);
+
+    const reply = await invokePage(value, {
+      target,
+      streamRevision: revision,
+      limit: 10,
+      encodedBudget: 4 * 1024 * 1024,
+    });
+
+    expect(reply).toMatchObject({
+      ok: true,
+      items: [
+        {
+          id: 'text-image',
+          type: 'text',
+          text: `visible text${DELEGATION_COMPATIBILITY_NOTICES.images}`,
+          truncated: true,
+        },
+        {
+          id: 'tool-image',
+          type: 'tool',
+          toolName: 'Read',
+          input: '{}',
+          output: `visible output${DELEGATION_COMPATIBILITY_NOTICES.images}`,
+          truncated: true,
+        },
+      ],
+    });
+    expect(JSON.stringify(reply)).not.toContain('/private/');
+  });
+
+  it('fails a row id that does not have the exact target card prefix', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    await value.commitChildStream(target, 'foreign-id', [
+      {
+        ...row('foreign', 4, [{ type: 'text', text: 'not mine' }]),
+        id: 'other-card:foreign',
+      },
+    ]);
+    const revision = await currentRevision(value);
+
+    const reply = await invokePage(value, {
+      target,
+      streamRevision: revision,
+      limit: 10,
+      encodedBudget: 4 * 1024 * 1024,
+    });
+
+    expect(reply).toMatchObject({ ok: false, code: 'failed' });
+    expect(reply).toHaveProperty('reason', expect.stringContaining('prefix'));
+  });
+
+  it('fails duplicate sequences across committed and journal-pending rows', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    await value.commitChildStream(target, 'committed-sequence', [
+      row('committed', 5, [{ type: 'text', text: 'committed' }]),
+    ]);
+    await value.checkpointPendingJournal();
+    await value.commitChildStream(target, 'pending-sequence', [
+      row('pending', 5, [{ type: 'text', text: 'pending' }]),
+    ]);
+    const revision = await currentRevision(value);
+
+    const reply = await invokePage(value, {
+      target,
+      streamRevision: revision,
+      limit: 10,
+      encodedBudget: 4 * 1024 * 1024,
+    });
+
+    expect(reply).toMatchObject({ ok: false, code: 'failed' });
+    expect(reply).toHaveProperty(
+      'reason',
+      expect.stringMatching(/duplicate sequence/i),
+    );
+  });
+
+  it('retries a stale input revision against the current stream revision', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    await value.commitChildStream(target, 'stale-input-revision', [
+      row('current', 4, [{ type: 'text', text: 'current' }]),
+    ]);
+    const revision = await currentRevision(value);
+
+    const reply = await invokePage(value, {
+      target,
+      streamRevision: revision - 1,
+      limit: 10,
+      encodedBudget: 4 * 1024 * 1024,
+    });
+
+    expect(reply).toMatchObject({
+      ok: true,
+      streamRevision: revision,
+      readRevision: revision,
+      items: [{ id: 'current', sequence: 4, text: 'current' }],
+    });
+  });
+
+  it('retries when the stream changes between the page read and revision check', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    await value.commitChildStream(target, 'mid-read-revision', [
+      row('current', 4, [{ type: 'text', text: 'current' }]),
+    ]);
+    const revision = await currentRevision(value);
+    const originalChildReader: unknown = Reflect.get(value, 'childReader');
+    if (typeof originalChildReader !== 'function')
+      throw new Error('Missing child reader method');
+    let childReaderCalls = 0;
+    const wrappedChildReader = async (...args: unknown[]): Promise<unknown> => {
+      const result: unknown = await Reflect.apply(
+        originalChildReader,
+        value,
+        args,
+      );
+      if (!isUnknownRecord(result))
+        throw new Error('Invalid child reader result');
+      const descriptor = result.descriptor;
+      if (!isUnknownRecord(descriptor))
+        throw new Error('Missing child stream descriptor');
+      childReaderCalls += 1;
+      const visibleRevision = childReaderCalls === 1 ? revision : revision + 1;
+      return new Proxy(result, {
+        get: (targetValue, property, receiver): unknown => {
+          const stored: unknown = Reflect.get(targetValue, property, receiver);
+          return property === 'descriptor'
+            ? { ...descriptor, streamRevision: visibleRevision }
+            : stored;
+        },
+      });
+    };
+    if (!Reflect.set(value, 'childReader', wrappedChildReader))
+      throw new Error('Could not install child reader test wrapper');
+    try {
+      const reply = await invokePage(value, {
+        target,
+        streamRevision: revision,
+        limit: 10,
+        encodedBudget: 4 * 1024 * 1024,
+      });
+
+      expect(reply).toMatchObject({
+        ok: true,
+        streamRevision: revision + 1,
+        readRevision: revision + 1,
+        items: [{ id: 'current', sequence: 4, text: 'current' }],
+      });
+      expect(childReaderCalls).toBe(4);
+    } finally {
+      Reflect.deleteProperty(value, 'childReader');
+    }
+  });
+
+  it('fails after at most two retries when every compatibility pin becomes stale', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    const original: unknown = Reflect.get(value, 'childReader');
+    if (typeof original !== 'function') throw new Error('Missing reader');
+    const revision = await currentRevision(value);
+    let calls = 0;
+    const racing = async (...args: unknown[]): Promise<unknown> => {
+      const result: unknown = await Reflect.apply(original, value, args);
+      if (!isUnknownRecord(result) || !isUnknownRecord(result.descriptor))
+        throw new Error('Invalid reader');
+      calls += 1;
+      return {
+        ...result,
+        descriptor: { ...result.descriptor, streamRevision: revision + calls },
+      };
+    };
+    Reflect.set(value, 'childReader', racing);
+    try {
+      await expect(
+        value.childStreamCompatibilityPage({
+          target,
+          streamRevision: revision,
+          limit: 5,
+          encodedBudget: 1024,
+        }),
+      ).resolves.toMatchObject({ ok: false, code: 'failed' });
+      expect(calls).toBe(3);
+    } finally {
+      Reflect.deleteProperty(value, 'childReader');
+    }
+  });
+
+  it('counts newly journal-pending open rows as pending, not active-sidecar payload', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    await value.commitChildStream(target, 'pending-open', [
+      { ...row('open', 4, [{ type: 'text', text: 'open' }]), final: false },
+    ]);
+    const snapshot = jest.spyOn(
+      ChatDeltaJournalWriter.prototype,
+      'childCompatibilitySnapshot',
+    );
+    try {
+      await value.childStreamCompatibilityPage({
+        target,
+        streamRevision: await currentRevision(value),
+        limit: 5,
+        encodedBudget: 1024,
+      });
+      const result = snapshot.mock.results[0];
+      if (result?.type !== 'return') throw new Error('Missing snapshot');
+      const source = await result.value;
+      expect(source.activeRows).toHaveLength(0);
+      expect(source.pendingRows.map((entry) => entry.id)).toEqual([
+        `${blockId}:open`,
+      ]);
+    } finally {
+      snapshot.mockRestore();
+    }
+  });
+
+  it('preserves raw stream-card references while overlay drops them beside a preview', async () => {
+    const value = backend;
+    if (!value) throw new Error('Missing fixture backend');
+    const reference: PersistedToolOutputReference =
+      await value.storage.transcripts.artifacts.put(
+        'chat',
+        'stored final body '.repeat(5000),
+      );
+    const parent = delegationTranscriptMessages({
+      delegationId: target.delegationId,
+      runGeneration: target.runGeneration,
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: 'turn',
+      parentToolCallId: 'spawn',
+      createdAt: 1,
+      task: {
+        description: 'Stored task',
+        prompt: 'Stored prompt',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: target.delegationId,
+        status: 'running',
+        finalText: 'stored preview',
+        outputTruncated: true,
+        routeSnapshot: {
+          selectedModelId: 'model',
+          runtimeModelId: 'model',
+          harnessId: 'claude',
+          runtimeKind: 'local',
+          runnerRegistrationId: 'claude-local',
+          runtimeVersion: '1',
+          adapterVersion: '1',
+          modelSource: 'catalog',
+          providerType: 'claude',
+          assignmentRevision: 'test-assignment',
+          billingAuthority: 'local',
+          aiCreditsRouted: false,
+          capabilities: [],
+          supportedThinkingLevels: [],
+          capabilitySnapshotHash: 'test-capabilities',
+          capabilityGeneration: 1,
+          policyRevision: 'test-policy',
+        },
+      },
+      transcript: [],
+      transcriptStore: 'chat-stream-v2',
+    })[0];
+    const block = parent?.blocks[0];
+    if (!parent || block?.type !== 'delegated_agent_call')
+      throw new Error('Missing fixture stream card');
+    const storedCard: PersistedChatMessage = {
+      ...parent,
+      blocks: [{ ...block, finalTextRef: reference }],
+    };
+    await value.transact(
+      () => [{ type: 'message.upserted', chatId: 'chat', message: storedCard }],
+      { source: 'provider' },
+    );
+    const descriptor = await value.childStreamDescriptor(target);
+    if (!descriptor) throw new Error('Missing fixture stream descriptor');
+    const cardState: CardStateV1 = {
+      version: 1,
+      status: 'running',
+      resultIndex: null,
+      error: null,
+      usage: null,
+      workspaceRevision: null,
+      workspaceDiscarded: false,
+      stopOutcome: null,
+      controlOutcome: null,
+      attribution: null,
+      capabilitySummary: null,
+      nestedChildSummary: null,
+      partialPreview: null,
+      finalPreview: 'descriptor preview',
+    };
+    await value.updateChildStreamCardState(
+      target,
+      descriptor.streamRevision,
+      cardState,
+    );
+
+    const raw = await value.state({
+      chatIds: ['chat'],
+      fullTranscript: true,
+      rawStreamCards: true,
+    });
+    const rawBlock = raw.tabsFile.tabs[0]?.messages.find(
+      (message) => message.id === storedCard.id,
+    )?.blocks[0];
+    expect(rawBlock).toMatchObject({
+      type: 'delegated_agent_call',
+      finalText: 'stored preview',
+      finalTextRef: reference,
+    });
+    const overlaid = await value.state({
+      chatIds: ['chat'],
+      fullTranscript: true,
+    });
+    const overlaidBlock = overlaid.tabsFile.tabs[0]?.messages.find(
+      (message) => message.id === storedCard.id,
+    )?.blocks[0];
+    expect(overlaidBlock).toMatchObject({
+      type: 'delegated_agent_call',
+      finalText: 'descriptor preview',
+    });
+    expect(overlaidBlock).not.toHaveProperty('finalTextRef');
+  });
+});
+
+/** Actual read bytes: G12 validation and explicit rebuilds are separate from the bounded page. */
+describe('compatibility N/2N cost matrix: payload scans scale only for G12 validation and explicit rebuild/failure', () => {
+  it.each(['cold', 'warm', 'changed-version', 'missing-index', 'corrupt-log'])(
+    '%s separates validation/index/pending/page bytes at N and 2N',
+    async (mode) => {
+      const samples: Array<{
+        validation: number;
+        index: number;
+        rebuild: number;
+        page: number;
+        pending: number;
+        pageCalls: number;
+      }> = [];
+      for (const count of [20, 40]) {
+        const root = await mkdtemp(join(tmpdir(), 'compat-cost-matrix-'));
+        const { store, backend } = await format4Scope(
+          root,
+          'scope',
+          scopeSource([{ id: 'chat', messages: [message('parent')] }]),
+        );
+        const target: ChildStreamCompatibilityPageRequest['target'] = {
+          kind: 'delegation',
+          chatId: 'chat',
+          delegationId: 'cost',
+          runGeneration: 1,
+        };
+        const prefix = delegationBlockId('cost', 1);
+        const makeRow = (
+          sequence: number,
+          final = true,
+        ): DelegationChildRow => ({
+          id: `${prefix}:${String(sequence).padStart(3, '0')}`,
+          role: 'assistant',
+          timestamp: 100,
+          parentBlockId: prefix,
+          delegationSequence: sequence,
+          itemRevision: 0,
+          final,
+          blocks: [{ type: 'text', text: 'payload'.repeat(20) }],
+        });
+        let reader: ChatStateV2Backend | undefined;
+        try {
+          await backend.registerTranscriptStream(target);
+          await backend.commitChildStream(
+            target,
+            'seed',
+            Array.from({ length: count }, (_, i) => makeRow(i + 1)),
+          );
+          await backend.demoteFromDeltaJournal();
+          backend.releaseJournal();
+          const paths = delegationTranscriptPaths(
+            join(store.directory, 'transcripts'),
+            target,
+          );
+          const key = delegationStreamKey(target);
+          const logPath = paths.file(key, 'jsonl');
+          const indexPath = paths.file(key, 'sequence-index.json');
+          const logBytes = (await readFile(logPath)).length;
+          reader = new ChatStateV2Backend(store, { enableFormat4: true });
+          await reader.load();
+          const request: ChildStreamCompatibilityPageRequest = {
+            target,
+            streamRevision: count,
+            limit: 3,
+            encodedBudget: 4 * 1024 * 1024,
+          };
+          // The real descriptor supplies the pin; do not pre-read it on the cold path.
+          if (mode !== 'cold')
+            await reader.childStreamCompatibilityPage(request);
+          if (mode === 'changed-version')
+            await fsPromises.utimes(
+              logPath,
+              new Date(),
+              new Date(Date.now() + 2000),
+            );
+          if (mode === 'missing-index') await rm(indexPath);
+          if (mode === 'corrupt-log') {
+            const bytes = await readFile(logPath, 'utf8');
+            await writeFile(logPath, bytes.replace('payload', 'damaged'));
+          }
+          const counters = {
+            validation: 0,
+            index: 0,
+            rebuild: 0,
+            page: 0,
+            pending: 0,
+            pageCalls: 0,
+          };
+          const reads: Array<{
+            validation: boolean;
+            results: readonly jest.MockResult<Promise<{ bytesRead: number }>>[];
+          }> = [];
+          const originalOpen = fsPromises.open;
+          const openSpy = jest
+            .spyOn(fsPromises, 'open')
+            .mockImplementation(async (path, flags, permissions) => {
+              const validation =
+                new Error().stack?.includes('streamLogIdentity') === true;
+              const handle = await originalOpen(path, flags, permissions);
+              if (String(path) === logPath)
+                reads.push({
+                  validation,
+                  results: jest.spyOn(handle, 'read').mock.results,
+                });
+              return handle;
+            });
+          const fileSpy = jest.spyOn(fsPromises, 'readFile');
+          const originalStream = fs.createReadStream;
+          const streamSpy = jest
+            .spyOn(fs, 'createReadStream')
+            .mockImplementation((path, options) => {
+              const stream = originalStream(path, options);
+              if (String(path) === logPath)
+                stream.on('data', (chunk: unknown) => {
+                  if (Buffer.isBuffer(chunk)) counters.rebuild += chunk.length;
+                  else if (typeof chunk === 'string')
+                    counters.rebuild += Buffer.byteLength(chunk);
+                });
+              return stream;
+            });
+          const pageSpy = jest.spyOn(
+            TranscriptStreamStore.prototype,
+            'readChildStreamSequenceEntry',
+          );
+          try {
+            const reply = await reader.childStreamCompatibilityPage(request);
+            expect(reply.ok).toBe(mode !== 'corrupt-log');
+            for (const entry of reads)
+              for (const result of entry.results)
+                if (result.type === 'return') {
+                  const bytes = (await result.value).bytesRead;
+                  if (entry.validation) counters.validation += bytes;
+                  else counters.page += bytes;
+                }
+            const calls: readonly (readonly unknown[])[] = fileSpy.mock.calls;
+            for (let i = 0; i < calls.length; i += 1) {
+              const call = calls[i];
+              if (String(call?.[0]) === indexPath) {
+                const result = fileSpy.mock.results[i];
+                if (result?.type === 'return') {
+                  try {
+                    const bytes = await result.value;
+                    counters.index +=
+                      typeof bytes === 'string'
+                        ? Buffer.byteLength(bytes)
+                        : bytes.length;
+                  } catch {
+                    /* Missing index is counted by rebuild bytes, not invented metadata bytes. */
+                  }
+                }
+              }
+            }
+            counters.pageCalls = pageSpy.mock.calls.length;
+          } finally {
+            openSpy.mockRestore();
+            fileSpy.mockRestore();
+            streamSpy.mockRestore();
+            pageSpy.mockRestore();
+          }
+          expect(counters.validation).toBe(
+            ['cold', 'changed-version', 'corrupt-log'].includes(mode)
+              ? logBytes
+              : 0,
+          );
+          expect(counters.rebuild).toBe(
+            mode === 'missing-index' ? logBytes : 0,
+          );
+          expect(counters.pageCalls).toBe(mode === 'corrupt-log' ? 0 : 3);
+          expect(counters.page).toBeLessThan(8 * 1024 * 1024);
+          if (mode === 'corrupt-log' || mode === 'missing-index')
+            expect(counters.index).toBe(0);
+          else expect(counters.index).toBeGreaterThan(0);
+          // Separate real journal-pending payload probe: one fixed row, not the committed N rows.
+          if (mode !== 'corrupt-log') {
+            reader.releaseJournal();
+            const journal = new ChatStateV2Backend(store, {
+              enableFormat4: true,
+              deltaJournal: {},
+            });
+            try {
+              await journal.load();
+              await journal.commitChildStream(target, 'pending', [makeRow(99)]);
+              const snapshotSpy = jest.spyOn(
+                ChatDeltaJournalWriter.prototype,
+                'childCompatibilitySnapshot',
+              );
+              try {
+                const descriptor = await journal.childStreamDescriptor(target);
+                if (!descriptor) throw new Error('Missing pending descriptor');
+                const reply = await journal.childStreamCompatibilityPage({
+                  ...request,
+                  streamRevision: descriptor.streamRevision,
+                });
+                expect(reply.ok).toBe(true);
+                for (const result of snapshotSpy.mock.results)
+                  if (result.type === 'return') {
+                    const source = await result.value;
+                    counters.pending += source.pendingRows.reduce(
+                      (sum, row) =>
+                        sum + Buffer.byteLength(JSON.stringify(row)),
+                      0,
+                    );
+                  }
+              } finally {
+                snapshotSpy.mockRestore();
+              }
+              expect(counters.pending).toBe(
+                Buffer.byteLength(JSON.stringify(makeRow(99))),
+              );
+            } finally {
+              journal.releaseJournal();
+              await journal.disposeArtifactMaintenance();
+            }
+          }
+          samples.push(counters);
+        } finally {
+          reader?.releaseJournal();
+          await reader?.disposeArtifactMaintenance();
+          backend.releaseJournal();
+          await backend.disposeArtifactMaintenance();
+          await rm(root, { recursive: true, force: true });
+        }
+      }
+      expect(samples[1]?.page).toBe(samples[0]?.page);
+      expect(samples[1]?.pending).toBe(samples[0]?.pending);
+      expect(samples[1]?.pageCalls).toBe(samples[0]?.pageCalls);
+      if (mode === 'missing-index')
+        expect(samples[1]?.rebuild).toBeGreaterThan(samples[0]?.rebuild ?? 0);
+      if (['cold', 'changed-version', 'corrupt-log'].includes(mode))
+        expect(samples[1]?.validation).toBeGreaterThan(
+          samples[0]?.validation ?? 0,
+        );
+    },
+    60_000,
+  );
+});
+
+describe('format-4 visual integration', () => {
+  it('copies visuals held in block pages and preserves them on an inline re-report', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'format4-paged-visual-copy-'));
+    const { backend, store } = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [] }]),
+    );
+    try {
+      const [call, result] = visualToolMessages('paged-visual', 'visual-tool');
+      await backend.transact(
+        () => [
+          { type: 'message.upserted', chatId: 'chat', message: call },
+          { type: 'message.upserted', chatId: 'chat', message: result },
+        ],
+        { source: 'provider', chatIds: ['chat'] },
+        visualAdmission(stagedVisualFixture()),
+      );
+      const saved = (await backend.page('chat')).messages.find(
+        (row) => row.id === result.id,
+      );
+      if (!saved) throw new Error('Missing saved visual row');
+      const reference = visualReferenceFrom(saved);
+      if (!reference) throw new Error('Missing saved visual reference');
+      const artifacts = new ChatTranscriptArtifacts(
+        join(store.directory, 'transcripts'),
+        false,
+        { rowTargetBytes: 512 },
+      );
+      const paged = await artifacts.externalize(
+        'chat',
+        {
+          ...saved,
+          blocks: [
+            ...saved.blocks,
+            ...Array.from({ length: 4 }, () => ({
+              type: 'text' as const,
+              text: 'page content '.repeat(40),
+            })),
+          ],
+        },
+        undefined,
+        { kind: 'format4', final: true },
+      );
+      expect(paged.blocksRef).toBeDefined();
+      await backend.transact(
+        () => [{ type: 'message.upserted', chatId: 'chat', message: paged }],
+        { source: 'automation', chatIds: ['chat'] },
+      );
+      await backend.transact(
+        (current) => [
+          {
+            type: 'tab.created',
+            transcriptSourceChatId: 'chat',
+            tab: { ...current.tabsFile.tabs[0], id: 'fork', title: 'Fork' },
+          },
+        ],
+        { source: 'automation', chatIds: ['chat'], fullTranscript: true },
+      );
+      await backend.transact(() => [{ type: 'tab.removed', tabId: 'chat' }], {
+        source: 'automation',
+      });
+      await expect(
+        backend.visual('fork', result.id, 'visual-tool', reference, 0, 1024),
+      ).resolves.toMatchObject({ byteLength: Buffer.byteLength(VISUAL_HTML) });
+      await backend.transact(
+        () => [{ type: 'message.upserted', chatId: 'fork', message: result }],
+        { source: 'provider', chatIds: ['fork'] },
+      );
+      const rereported = (await backend.page('fork')).messages.find(
+        (row) => row.id === result.id,
+      );
+      expect(visualReferenceFrom(rereported)).toEqual(reference);
+    } finally {
+      backend.releaseJournal();
+      await backend.disposeArtifactMaintenance();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('commits a visual owner fence before publishing the final-field projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'format4-visual-fence-'));
+    const { backend } = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [] }]),
+    );
+    try {
+      const [call, result] = visualToolMessages('visual-final', 'visual-tool');
+      const withFinalField: PersistedChatMessage = {
+        ...result,
+        blocks: [
+          ...result.blocks,
+          { type: 'text', text: 'final answer '.repeat(8000) },
+        ],
+      };
+      const commit = await backend.transact(
+        () => [
+          { type: 'message.upserted', chatId: 'chat', message: call },
+          {
+            type: 'message.upserted',
+            chatId: 'chat',
+            message: withFinalField,
+          },
+        ],
+        { source: 'provider', chatIds: ['chat'] },
+        visualAdmission(stagedVisualFixture()),
+      );
+      const stored = commit.record.mutations.find(
+        (mutation) =>
+          mutation.type === 'message.upserted' &&
+          mutation.message.id === result.id,
+      );
+      if (stored?.type !== 'message.upserted')
+        throw new Error('Missing final row projection');
+      expect(stored.message.blocks[1]).toMatchObject({
+        type: 'text',
+        textRef: { version: 1 },
+      });
+      expect(commit.promotedVisuals).toHaveLength(1);
+      expect(
+        (await backend.load()).recovery.visualOwnersByChatId?.chat?.[VISUAL_ID],
+      ).toMatchObject({ messageId: result.id, toolUseId: 'visual-tool' });
+      const reference = visualReferenceFrom(stored.message);
+      if (!reference) throw new Error('Missing final visual reference');
+      await expect(
+        backend.visual('chat', result.id, 'visual-tool', reference, 0, 1024),
+      ).resolves.toMatchObject({ byteLength: Buffer.byteLength(VISUAL_HTML) });
+    } finally {
+      backend.releaseJournal();
+      await backend.disposeArtifactMaintenance();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims build-time field artifacts when previous-result loading fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'format4-visual-rollback-'));
+    const { backend, store } = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [] }]),
+    );
+    const committedMessage = jest
+      .spyOn(backend.storage.transcripts, 'committedMessage')
+      .mockRejectedValue(new Error('previous visual result read failed'));
+    try {
+      await expect(
+        backend.transact(
+          async (_current, _revision, context) => {
+            if (!context.transcriptFields)
+              throw new Error('Missing format-4 field preparation');
+            await context.transcriptFields.publish('chat', [
+              'prepared field '.repeat(8000),
+            ]);
+            return [
+              {
+                type: 'message.upserted',
+                chatId: 'chat',
+                message: visualToolMessages('re-reported', 'visual-tool')[1],
+              },
+            ];
+          },
+          { source: 'provider', chatIds: [] },
+        ),
+      ).rejects.toThrow('previous visual result read failed');
+      expect(
+        await readdir(
+          join(store.directory, 'transcripts', 'tool-output', 'chat'),
+        ),
+      ).toEqual([]);
+      expect((await backend.load()).live.revision).toBe(0);
+    } finally {
+      committedMessage.mockRestore();
+      backend.releaseJournal();
+      await backend.disposeArtifactMaintenance();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('format-4 registry receipt and repair backend facades', () => {
+  it('keeps checkpoint receipt replay and conflict read-only and rejects a removed chat', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'backend-receipt-facade-'));
+    const { backend, store } = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [] }]),
+    );
+    const receipt: Parameters<
+      ChatStateV2Backend['appendDelegationReceipt']
+    >[0] = {
+      version: 1,
+      kind: 'receipt',
+      chatId: 'chat',
+      receiptKind: 'stop',
+      key: 'a'.repeat(64),
+      delegationId: 'child',
+      runGeneration: 1,
+      operationId: 'abcdef12-3456-7890-abcd-1234567890ab',
+      requestHash: 'b'.repeat(64),
+      operation: 'stop',
+      admittedAt: 1,
+      reply: { kind: 'stop', ackStatus: 'completed', runGeneration: 1 },
+    };
+    let reopened: ChatStateV2Backend | undefined;
+    try {
+      expect(await backend.appendDelegationReceipt(receipt)).toEqual({
+        entry: receipt,
+        replayed: false,
+      });
+      await backend.demoteFromDeltaJournal();
+      backend.releaseJournal();
+      reopened = reopenFormat4Scope(root, 'scope').backend;
+      expect(await reopened.receipt(receipt)).toEqual(receipt);
+      expect(await reopened.appendDelegationReceipt(receipt)).toEqual({
+        entry: receipt,
+        replayed: true,
+      });
+      await expect(
+        reopened.appendDelegationReceipt({ ...receipt, admittedAt: 2 }),
+      ).rejects.toMatchObject({ failure: { code: 'conflict' } });
+      expect(await store.journalFile()).toBeUndefined();
+      await reopened.transact(() => [{ type: 'tab.removed', tabId: 'chat' }], {
+        source: 'automation',
+        fullTranscript: true,
+      });
+      await expect(reopened.receipt(receipt)).rejects.toMatchObject({
+        failure: { code: 'not_found' },
+      });
+      await expect(
+        reopened.appendDelegationReceipt(receipt),
+      ).rejects.toMatchObject({ failure: { code: 'not_found' } });
+    } finally {
+      for (const instance of [backend, reopened]) {
+        instance?.releaseJournal();
+        await instance?.disposeArtifactMaintenance();
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards lost-answer identity and finalize policy without inventing row content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'backend-repair-facade-'));
+    const { backend } = await format4Scope(
+      root,
+      'scope',
+      scopeSource([{ id: 'chat', messages: [] }]),
+    );
+    const target = {
+      kind: 'delegation',
+      chatId: 'chat',
+      delegationId: 'child',
+      runGeneration: 1,
+    } as const;
+    const row: DelegationChildRow = {
+      id: 'open',
+      role: 'assistant',
+      timestamp: 2,
+      parentBlockId: 'agent',
+      delegationSequence: 0,
+      delegationSegment: 'native',
+      itemRevision: 0,
+      final: false,
+      blocks: [{ type: 'text', text: 'unchanged' }],
+    };
+    const request: Parameters<ChatStateV2Backend['settleDelegationResult']>[0] =
+      {
+        target,
+        settlementKey: 'repair',
+        resultIndex: 1,
+        outcome: { status: 'interrupted', finishedAt: 3 },
+        finalChanges: [],
+        openRows: 'finalize',
+        answer: {
+          role: 'partial',
+          lost: { sha256: 'c'.repeat(64), length: 7 },
+        },
+      };
+    try {
+      await backend.registerTranscriptStream(target);
+      await backend.commitChildStream(target, 'open', [row]);
+      const settled = await backend.settleDelegationResult(request);
+      expect(settled.result.answer).toEqual({
+        kind: 'lost',
+        role: 'partial',
+        sha256: 'c'.repeat(64),
+        length: 7,
+      });
+      expect(
+        await backend.childStreamMessage(
+          target,
+          'open',
+          settled.settlement.contentRevision,
+        ),
+      ).toEqual({ ...row, itemRevision: 1, final: true });
+      expect(await backend.settleDelegationResult(request)).toEqual({
+        ...settled,
+        settlement: { ...settled.settlement, replayed: true },
+      });
+    } finally {
+      backend.releaseJournal();
+      await backend.disposeArtifactMaintenance();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

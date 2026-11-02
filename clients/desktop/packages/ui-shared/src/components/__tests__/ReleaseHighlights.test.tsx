@@ -50,23 +50,29 @@ afterEach(() => {
 });
 
 describe('ReleaseHighlightsList', () => {
-  it('renders list semantics with optional descriptions', () => {
-    render(
-      <ReleaseHighlightsList
-        highlights={ENTRY.highlights}
-        className="mt-4"
-        dataTestId="list"
-      />,
-    );
-    const list = requireTestId('list');
-    expect(list.tagName).toBe('UL');
-    expect(list.className).toContain('mt-4');
-    const items = list.querySelectorAll(':scope > li');
-    expect(items).toHaveLength(3);
-    expect(items[0].textContent).toBe('Start a task from a linkPaste a link.');
-    // No empty secondary line when the description is absent.
-    expect(items[1].querySelectorAll('span')).toHaveLength(1);
-  });
+  it.each([undefined, 'compact', 'reading'] as const)(
+    'preserves list semantics and optional descriptions at size %s',
+    (size) => {
+      render(
+        <ReleaseHighlightsList
+          highlights={ENTRY.highlights}
+          className="mt-4"
+          dataTestId="list"
+          size={size}
+        />,
+      );
+      const list = requireTestId('list');
+      expect(list.tagName).toBe('UL');
+      expect(list.className).toContain('mt-4');
+      const items = list.querySelectorAll(':scope > li');
+      expect(items).toHaveLength(3);
+      expect(items[0].textContent).toBe(
+        'Start a task from a linkPaste a link.',
+      );
+      // No empty secondary line when the description is absent.
+      expect(items[1].querySelectorAll('span')).toHaveLength(1);
+    },
+  );
 });
 
 describe('ReleaseHighlightsDialog', () => {

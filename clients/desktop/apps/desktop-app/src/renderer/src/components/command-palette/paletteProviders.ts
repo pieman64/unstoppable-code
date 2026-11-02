@@ -29,6 +29,7 @@ import { useChatStore, navigateToWorktreeChat } from '@/stores/chatStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { openArchivedContainerSurface } from '@/lib/archivedContainerNavigation';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
+import { navigateToLiveChat } from '@/lib/navigation/live-chat-navigation';
 import type { PaletteItem } from './paletteItems';
 import type { CommandExecutionResult, PaletteCommand } from './paletteCommands';
 
@@ -50,30 +51,9 @@ export type WorktreeLabelResolver = (
 const resolveStoredWorktreeLabel: WorktreeLabelResolver = (worktree) =>
   worktree.label?.trim() || worktree.branchName;
 
-// These CustomEvent channels are module-private in their owning pages
-// (AutomationsPage / PluginsPage / SkillsTab) and duplicated in the App Advisor
-// action dispatcher. We mirror the literals here — the same way dispatcher.ts
-// does — to drive tab/viewer navigation without importing page internals.
-const PLUGINS_OPEN_TAB_EVENT = 'canopy:plugins-open-tab';
-const PLUGIN_OPEN_DETAIL_EVENT = 'canopy:plugin-open-detail';
-
 function firstLine(text: string, max = 80): string {
   const line = text.split('\n', 1)[0]?.trim() ?? '';
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
-
-/** Run once a lazily rendered destination page has mounted its event listeners. */
-function afterPageMount(testId: string, callback: () => void): void {
-  let attemptsRemaining = 250;
-  const check = (): void => {
-    if (document.querySelector(`[data-testid="${testId}"]`)) {
-      window.setTimeout(callback, 0);
-      return;
-    }
-    attemptsRemaining -= 1;
-    if (attemptsRemaining > 0) window.setTimeout(check, 16);
-  };
-  window.setTimeout(check, 0);
 }
 
 // --- Worktree / workspace label resolution -------------------------------
@@ -368,17 +348,8 @@ export async function navigateToChatCatalogEntry(
     useNavigationStore.getState().navigate('chat');
     return;
   }
-  if (entry.source === 'live' && isCoworkChatTarget(entry.projectId)) {
-    // Live cowork chats are scoped to a Work Entry, which occupies the
-    // catalog's worktreeId slot.
-    await useStandaloneChatStore
-      .getState()
-      .openWorkEntryFromSidebar(entry.projectId, entry.worktreeId);
-    useChatStore.getState().switchTab(entry.chatId, {
-      projectId: entry.projectId,
-      worktreeId: entry.worktreeId,
-    });
-    useNavigationStore.getState().navigate('chat');
+  if (entry.source === 'live') {
+    await navigateToLiveChat(entry);
     return;
   }
   await navigateToWorktreeChat({
@@ -703,23 +674,11 @@ export function buildPluginItems(
       plugin.marketplaceId,
     ],
     execute: (): CommandExecutionResult => {
-      useNavigationStore.getState().navigate('plugins');
-      afterPageMount('page-plugins', () => {
-        window.dispatchEvent(
-          new CustomEvent(PLUGINS_OPEN_TAB_EVENT, {
-            detail: { tab: 'marketplace' },
-          }),
-        );
-        window.setTimeout(() => {
-          window.dispatchEvent(
-            new CustomEvent(PLUGIN_OPEN_DETAIL_EVENT, {
-              detail: {
-                marketplaceId: plugin.marketplaceId,
-                pluginName: plugin.name,
-              },
-            }),
-          );
-        }, 0);
+      useNavigationStore.getState().openPluginsNavigation({
+        kind: 'marketplace-source',
+        target: 'detail',
+        sourceId: plugin.marketplaceId,
+        pluginKey: plugin.name,
       });
       return CLOSE;
     },

@@ -193,10 +193,10 @@ describe('AccountProxyAccountList', () => {
     );
 
     expect(claude?.textContent).toContain('7-day Opus');
-    expect(claude?.textContent).toContain('Usage: 52.0%');
-    expect(claude?.textContent).toContain('Resets: ');
-    expect(claude?.textContent).toContain('Spent: $1.25');
-    expect(claude?.textContent).toContain('Remaining credits: $8.75');
+    expect(claude?.textContent).toContain('52%');
+    expect(claude?.textContent).toMatch(/Resets |Reset time has passed/);
+    expect(claude?.textContent).toContain('$1.25 spent');
+    expect(claude?.textContent).toContain('$8.75 left');
     expect(claude?.textContent).toContain('Updated ');
     expect(claude?.textContent).not.toContain('Weekly limit');
     expect(descriptionText(claude)).toBe('Claude');
@@ -205,11 +205,11 @@ describe('AccountProxyAccountList', () => {
     expect(claude?.querySelector('summary')?.textContent).toBe('Usage');
 
     expect(codex?.textContent).toContain('5-hour window');
-    expect(codex?.textContent).toContain('Usage: 22.0%');
+    expect(codex?.textContent).toContain('22%');
     expect(codex?.textContent).toContain(
       'Check your connection, then try reaching Codex again.',
     );
-    expect(codex?.textContent).toContain('Remaining credits: 12,500');
+    expect(codex?.textContent).toContain('12,500 credits left');
     expect(codex?.textContent).not.toContain('Bearer private-value');
     expect(codex?.textContent).not.toContain('five-hour limit');
     expect(descriptionText(codex)).toBe('Codex');

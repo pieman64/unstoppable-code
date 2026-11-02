@@ -12,6 +12,7 @@ import type {
   PipelineAdvisorReport,
   PipelineAdvisorSnapshot,
   PipelineData,
+  PipelineExecutionStartResult,
   PipelineInfo,
   PipelineLookupRequest,
   PipelinePackageAnalysisSummary,
@@ -100,7 +101,7 @@ export interface PipelinesAPI {
   execute(
     pipeline: PipelineData['content'],
     options: ExecutePipelineRequestOptions,
-  ): Promise<IPCResult<ExecutionState>>;
+  ): Promise<PipelineExecutionStartResult>;
   resume(
     executionId: string,
     options: ResumePipelineOptions,

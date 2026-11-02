@@ -8,7 +8,7 @@ import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeat
 describe('earlyAccessTitle', () => {
   it('uses sentence case without an experiment choice', () => {
     expect(earlyAccessTitle('Changed Files')).toBe('Changed files');
-    expect(earlyAccessTitle('Dispatch Pipeline')).toBe('Dispatch pipeline');
+    expect(earlyAccessTitle('Dispatch Pipeline')).toBe('Dispatch workflow');
   });
 
   it.each([
@@ -19,8 +19,10 @@ describe('earlyAccessTitle', () => {
     ['Agent Background Processes', 'Agent background processes'],
     ['MCP Servers', 'MCP servers'],
     ['Agent Tasks', 'Agent tasks'],
-    ['Pipeline Runs', 'Pipeline runs'],
-    ['Dispatch Pipeline', 'Dispatch pipeline'],
+    ['Pipeline Runs', 'Workflow runs'],
+    ['Dispatch Pipeline', 'Dispatch workflow'],
+    ['Pipeline runs', 'Workflow runs'],
+    ['Pipeline run', 'Workflow run'],
     ['Browse MCP Servers', 'Browse MCP servers'],
   ])('shows %s as %s with early access on', (title, sentence) => {
     expect(earlyAccessTitle(title)).toBe(sentence);

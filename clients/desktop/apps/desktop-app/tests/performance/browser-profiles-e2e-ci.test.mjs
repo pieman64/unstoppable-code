@@ -363,7 +363,7 @@ test('workflow/template remain byte-identical and constrained to one hosted job'
   );
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /if: always\(\)/);
-  assert.match(workflow, /node-version: 24\.15\.0/);
+  assert.match(workflow, /node-version: 24\.22\.1/);
   assert.match(workflow, /contents: read/);
   assert.equal(workflow.match(/runs-on:/g).length, 1);
 });
@@ -2121,6 +2121,40 @@ Object.assign(
     ).toString('utf8'),
   ),
 );
+// Turn-state phase 29 adds opt-in lifecycle controls to the Responses
+// WebSocket route. The study's original bytes stay here so its identity is
+// still provable.
+Object.assign(FROZEN_CHANGED_HARNESS_BASELINES, {
+  'apps/desktop-app/tests/electron/mock-server/routes/responsesWs.mjs':
+    gunzipSync(
+      Buffer.from(
+        [
+          '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',
+          'w5tVDQAA',
+        ].join(''),
+        'base64',
+      ),
+    ).toString('utf8'),
+});
 // REG-3033 lets the curated plugin seeder take plugin definitions, so a spec
 // can seed a plugin that folds into an integration card. The study's original
 // seeder bytes stay here so the closed study identity is still provable.
@@ -2834,6 +2868,9 @@ const ACTUAL_HARNESS_IDENTITIES = Object.freeze({
   ],
 });
 const MERGED_BASE_HARNESS_IDENTITIES = Object.freeze({
+  // Existing fixture: identical bytes in frozen baseline 50ad63d6 and current source.
+  'apps/desktop-app/tests/electron/coworkWorkEntryDoneFixture.mjs':
+    '3057e4e38327aaf4284b2b10c2e2a8217b19be3353ad4b57c97b8ccbd7532ba2',
   // The PR merge ref includes the base branch's PostHog E2E flag defaults.
   // The base branch also extends the cloud mock route for shared pipelines,
   // organization model policies, and curated automations.
@@ -2845,20 +2882,21 @@ const MERGED_BASE_HARNESS_IDENTITIES = Object.freeze({
     '0416da57f6a35d8d2fe62f37a468c0e61042e73e39f45eede9b323b7a1415677',
   // #4154 updated this helper for the model picker's harness tabs; #4429 adds
   // `selectModelOnHarness` for picking a model under a harness tab.
+  // Labs graduation selects New chat from the Add menu in this later fixture.
   'apps/desktop-app/tests/electron/model-selection-fixture.mjs':
-    '2b5a9b5b48af48b6c8cec94e033614646a45159db3eea51047377ff2c003cb7e',
-  // The shared delete modal preserves a worktree's branch with one
-  // "Preserve local" action instead of a branch-choice menu.
+    'a864f062567bd613339246ce96a785280efbae297a0d3918daacd939ad3349fa',
+  // The shared delete modal keeps a worktree's branch by default and names
+  // the worktree in its title, so the dialog is found by its title prefix.
   'apps/desktop-app/tests/electron/seeders/archiveActivityFixture.mjs':
-    '888967604e1eaf564ac6cbf1d4cf8c6e9bacd546428304e4a194f488930f4586',
+    '60383a6eedd6c123112d809a891ce80aaadf75a9bd97138ce8b30a3b7da6b6d1',
   'apps/desktop-app/tests/electron/seeders/index.mjs':
     '9e70d5f1e698eb7c3f67af325031c911fd439c55f3605d1319615647cdb43cc1',
   'apps/desktop-app/tests/electron/seeders/injectApprovalAutoResolvedEvent.mjs':
     'bbc0d9b53133bec94e1cf053d14f60fbc98df51c1d8c13b2e0e9f0b70356c799',
-  // The shared delete modal shows "Preserve local" directly, without the
-  // branch-choice button.
+  // The shared delete modal keeps the branch by default and names the
+  // worktree in its title, so the dialog is found by its title prefix.
   'apps/desktop-app/tests/electron/seeders/largeArchiveFixture.mjs':
-    '035df97dcd38183c631c8e3c53b7de566e24a287b5968edfeeb6e27a9e3ccf1d',
+    '4019de6e77eda7dba7ca58d6fb12d1ca651ae418c430a2b813952cad559ad642',
   // CAN-3463 adds the organization-owned workspace seeder to the harness.
   'apps/desktop-app/tests/electron/seeders/markWorkspaceOrganizationOwned.mjs':
     '337f1046d46b003d70dfb514109e52f87234f4bc88fb904c9cf7dbaa87315862',
@@ -2929,6 +2967,19 @@ const MERGED_BASE_HARNESS_IDENTITIES = Object.freeze({
 // PR #4621 adds a pinned-items seeder through the shared seeder index. It is
 // part of the current harness closure but was absent from the original study.
 const ADDED_PR_HARNESS_IDENTITIES = Object.freeze({
+  // CAN-5022 extracts the gateway catalog without changing the served models.
+  'apps/desktop-app/tests/electron/mock-server/routes/ai-gateway-catalog.mjs':
+    '49fd5d6b3042b75d68e397d4893d86e10b5b14c28c151d36590761c671af6a12',
+  // Sidebar reorder helpers are absent from the frozen study baseline.
+  'apps/desktop-app/tests/performance/sidebar-reorder-scenario.mjs':
+    '9200629d6acfc57a59e399877c65b1dcab4344c346cfeac961aa62945b922af7',
+  'apps/desktop-app/tests/electron/sidebarReorderFixture.mjs':
+    '4449473bf92cff60f9e5d9e6870001a7ecd01b0fdb4ae00273cd6a16b2494fbb',
+  // CAN-4495's opt-in Code Review registry workload is absent from the
+  // frozen study baseline.
+  'apps/desktop-app/tests/performance/code-review-registry-scenario.mjs':
+    '43278aae640f28f4fd8b8dadc452444fb8427307138ab98650224e4820972255',
+
   // CAN-3753 extends the transitive harness with host evidence and local smoke acceptance.
   'apps/desktop-app/tests/performance/host-measurement.mjs':
     '22a2d849f2c7f915a6648619eab29cb80c8ce06f692ec15d1a1d01426f132187',
@@ -2936,13 +2987,19 @@ const ADDED_PR_HARNESS_IDENTITIES = Object.freeze({
     '6cac5b77bc724aae3af55e6082bf417e3b7e6c9cfdc8589f1e57e6a5322819ea',
   'apps/desktop-app/tests/electron/seeders/hostedSettingsCloud.mjs':
     '7727df3daf3f476fa3a8d1659dd4e853c703c0a92e7cc49347a6bf48199d3288',
+  // #5948 publishes canonical turn lifecycle receipts for injected turns.
+  'apps/desktop-app/tests/electron/seeders/publishTurnLifecycle.mjs':
+    'baa4940c640ce1bb7c011955b077c80ac3b6cb3cb8a8af5f677d5f6f342f70b7',
   // CAN-4532 extends the hosted settings fixtures for the Projects page;
   // CAN-4553 adds organization membership routes and an invitation fixture;
   // CAN-4558 matches production's organization lists and memory header.
+  // CAN-4693 serves a strict authenticated auth-link mint for hosted settings links.
+  // #6467 reports the organization's GitHub connection in its bootstrap.
+  // #6634 serves the Appearance page's account data.
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings-fixtures.mjs':
-    '37b9d625ef77f7e8f33932c62decfd8a9fd12da1989fe257226dc8609c9cf832',
+    '76aa450ea4dd54fd07f20913ea18cd5f9ea5d4d882ae9e1e9cd97e8887f1a0a0',
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings.mjs':
-    'e7b18506d0bbe33f47da7b098c13a374cb19058b9d01cdce5bfcfd8b62d84461',
+    'd8d1c46708c7ace2ce376be7a05982bcaca8426f6a06406cf6013d6916f871b3',
   // Cost's fixtures and their transitive seeders join the current closure.
   // Keep the closed study's original identities unchanged.
   'apps/desktop-app/tests/electron/seeders/seedCostInsights.mjs':
@@ -2960,6 +3017,10 @@ const ADDED_PR_HARNESS_IDENTITIES = Object.freeze({
   // CAN-3804 holds the worktree scenario's checkout at a Git smudge filter.
   'apps/desktop-app/tests/performance/worktree-git-gate.mjs':
     'e6df795505869a09eba919a089330356dcc5aad77db5a1c78a9b50b3c4a3af49',
+  // CAN-4899 times startup-settle's app quit after its measured window; a
+  // quit that does not exit fails the scenario.
+  'apps/desktop-app/tests/performance/quit-latency.mjs':
+    '051af45447d0325ec326df13d388e2d8882780162160c05a836e9d4beda6c45c',
 });
 // Later fixture changes extend the shared harness. Pin their reviewed current
 // compositions while keeping the study's original/installed identities intact.
@@ -3001,17 +3062,18 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
   'apps/desktop-app/tests/electron/mock-server/routes/authUsage.mjs':
     Object.freeze({
       '4c8c7811d599950a3db18e2456bd3b5c19f976dedbb3052979ec1f524de76fec':
-        // PR #5286 adds an opt-in Retry-After response header to usage fixtures.
-        'cf3fd4c3b62f8bc037365a83555ac94202eafa28b3c8cab2cd9d76b9fe30f68e',
+        // PR #5286 adds Retry-After; CAN-4272 preserves modern scoped limits.
+        'c8ffa0277867e97ca9295eb672c8d56c9dfd33db3cfbcfeacc3516ece2774a64',
     }),
   // Start-page recipient coverage extends the shared-container seeder while
   // preserving the source identity used by the closed performance study. The
   // reload check keeps the seeded Launch command alive until revocation.
   // CAN-4187 can seed a web page into the publisher's preferred layout.
+  // CAN-4908 distinguishes revision-two note bytes for copy consistency coverage.
   'apps/desktop-app/tests/electron/seeders/seedSharedContainerRecipientReplicas.mjs':
     Object.freeze({
       '8c6ccc783e0351d804ad8cebdf5d3329fd81ef638e034cd7071e7f51a124881c':
-        '2c0c974c3a3dcbb9453f2bb6b1d084e03b22d7223ede0c1e6bd2b03a72d6b7b2',
+        '82ac960a6efdc5f3ee2694342bf40915e9046edad5a96c22e0a2e2de1bfba8a8',
     }),
   // CAN-3486 lets the curated pipeline fixture hold list responses while a
   // refresh is in flight; keep the study's original identity intact.
@@ -3035,14 +3097,15 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
         '70ecdc752d747535445d6ad545197b36a9e1029c89c45917a6cfb9dc2791993f',
     }),
   // Chat history import coverage adds a canned memory profile helper response,
-  // tool observers read Codex 0.159's `additional_tools` input item, demo
+  // tool observers fold Codex 0.164's incremental `additional_tools` items
+  // and removal notices, demo
   // videos key marker-less prompts as `prompt:<line>` scenarios, phase 05
   // lets a scripted tool call carry its own tool-use id, and plan-mode
   // coverage lets a scripted Write take the plan file's path from the request.
   // CAN-3637 (PR #5135) lets Codex reach the real credits broker in mock runs.
   'apps/desktop-app/tests/electron/mock-server/routes/llm.mjs': Object.freeze({
     ec36d6173928a2287919f890193adc0304cb1854d711c2634929263853a300dd:
-      'f2a17499ff701c4722f4964d4c58e195a0b6e9b211eead7e31c7d3a395efa59e',
+      'b025ab18b10d17f445c1357454eb04d580e200dc8a04acb5520313f516819a28',
   }),
   'apps/desktop-app/tests/electron/mock-server/routes/cloud.mjs': Object.freeze(
     {
@@ -3092,11 +3155,12 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
   // Share-dialog and link-sharing coverage extend the shared-container routes;
   // seeded owners take their name from the scenario roster. CAN-4052 adds the
   // recipient's recoverable share removal and restore routes. CAN-4266 serves
-  // empty signed-in listings for accounts without seeded shares.
+  // empty signed-in listings for accounts without seeded shares. CAN-4655
+  // serves revision capability packages and their downloads.
   'apps/desktop-app/tests/electron/mock-server/routes/shared-containers.mjs':
     Object.freeze({
       '5cc71d2e9400c2548e75d18bde4455605720aaff7e1014b45bc8abd80d55f629':
-        '15ca8e02098cc3d4a34483acd6e957b37bdecfa25620eff6ce1399e338961e84',
+        'cdfdaa6b38cb3f21cde94622acd1215339905cd3f6111fe1693f4091b05e5494',
     }),
   // The shared mock server now catches failing route handlers.
   // CAN-3522 serves offline organization logos for the scope switcher.
@@ -3207,7 +3271,9 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
       // Compose CAN-385 backfill with foreground-first streaming drivers and
       // CAN-3753 scenario cleanup that preserves failures during app close,
       // plus the CAN-1570 browser-actions and browser-agent-actions scenarios.
-      '03f478d72bd0159939e8d711fd32cdb39a56f71de88734e42285a25598187f54',
+      // PR #6849 uses a current catalog ID for Codex load delegates while
+      // retaining all twelve delegates. The closed study bytes stay pinned.
+      'bd3fa1b121af4cbe3e7f9dfaecba0c2e647b56de3ec231f4f1858e4d4818561e',
   }),
   // Regression follow-up: a timed run records no IPC bytes, so the Codex output
   // ratio is unavailable rather than a flat 1.
@@ -3267,7 +3333,22 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
       // PR #5730 pins the external-agents menu on in shared E2E defaults.
       // CAN-4455 isolates the test renderer from an inherited Crashpad pipe.
       // CAN-4266 drops the retired Labs Agents page flag from the E2E defaults.
-      'a4ee92c012e743bd7aa8e0a748ff1c22d9e81848a5ffcba65f7d31c8cd75bc98',
+      // CAN-4863 waits for the Windows launcher to close before its terminal
+      // check, retries a late Windows supervised PID file, passes only a
+      // launch's own offscreen-window request, and reports Windows close steps
+      // and launcher output with a nonzero terminal result. An expired
+      // launcher wait keeps and names the fixture data roots and fails teardown.
+      // CAN-4603 pins Files reads to offered so ordinary E2E stays direct.
+      // CAN-4904 seeds every onboarding tip as dismissed unless a spec opts
+      // out with freshOnboardingTips.
+      // CAN-4010 removes retired checklist seeding and its launch env seam.
+      // CAN-4633 permits an explicit LaunchDarkly startup fixture client only
+      // with an HTTP loopback endpoint; inherited live clients stay unset.
+      // PR #6905 relays main's best-effort render-process-gone reason to the
+      // test's stderr; launch behavior is unchanged.
+      // CAN-4551 pins the chat automation pipelines experiment to offered so
+      // ordinary E2E saves chat automations natively.
+      '7e309a3641f379a8eb6395d45fdafee72f43b445eddb4f6c33d5b7bc62ff7663',
   }),
   // CAN-3972 adds Home Getting Started checklist helpers to the app driver
   // while the sidebar card is hidden on Home. CAN-3980 adds Workflows tab and
@@ -3284,9 +3365,22 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
   // CAN-4260 renames the plugins page heading from Marketplace to Customize.
   // CAN-4266 opens local agents from the Marketplace Agents tab.
   // CAN-4261 merges the shared Installed rows and breadcrumb navigation.
+  // CAN-4267 preserves Customize navigation alongside the root-return helper.
+  // Labs graduation opens Advisor in its native view before expanding it,
+  // preserving a collapsed navigation pane in the full layout.
+  // PR #6140 lands an agent created from Add custom on its own detail.
+  // PR #6126 expects the Customize row to return to the root, so the
+  // Marketplace Agents helper no longer closes an open detail itself.
+  // The UI Automation triage of #6116 lands any item created from Add custom
+  // on its own detail.
+  // PR #6419 (search fields) adds the Library Filter helper: facets open from
+  // the Filter button nested in the search field.
+  // PR #6728 (page search rows) opens each Library filter from its row in the
+  // Filter dropdown and adds the Audit trail filter helper.
   'apps/desktop-app/tests/electron/canopyApp.mjs': Object.freeze({
     '2ce655e6a2782cb311f928f95ba62f854d17f4d4d1318e896ccf9eddac20dc8d':
-      'e777bcd14b37cddd0ebc7c06abf80614a32fa059892eff8681aa3005e868439d',
+      // CAN-4010 removes only the retired Home checklist driver helpers.
+      'cbac6b8d5a605d3c932d129d6eba0c222e2606b911e5c866edc7e5d9a20416f9',
   }),
 });
 // CAN-3534 extends member project creation to Code projects. The PR merge ref
@@ -3294,6 +3388,12 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
 // includes CAN-3533's curated automation routes and model policy fixture.
 // Pin the reviewed compositions without changing the closed study identities.
 const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
+  // CAN-4635 fixes normalized keychain argv and adds native timing diagnostics.
+  // Keep the closed study original/installed identities unchanged.
+  'apps/desktop-app/tests/performance/browser-profiles-production-headless-bootstrap.cjs':
+    Object.freeze([
+      '2eda7963b7b4f7c7e3fc10dad3b99ecf50dab74cfed54707685068fdd02b2206',
+    ]),
   // CAN-4605 rejects incomplete disk snapshots and missed sample intervals.
   // Preserve the closed study's absent baseline and installed helper identity.
   'apps/desktop-app/tests/performance/disk-io.mjs': Object.freeze([
@@ -3309,11 +3409,34 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     'e2f29bf58385652d6d5e8ed97a686ee321c7c2f2d7ef8979fa56b9f1cd6ba02b',
     // CAN-3753 local smoke acceptance composed with foreground-first switches.
     '277c1cc38d77a08f8a97e5d20027353878a2adb66ac4f812385c5fb317638bcf',
+    // CAN-4607 refuses to combine samples of different treatments.
+    '900731658c6ee466927d85a8e10fed85e9e34958da3bb96ee231f73ccf04f09e',
   ]),
   // CAN-2053 rejects scripted responses when forbidden repository instructions
   // reach the provider. Preserve the closed study's historical fixture hashes.
+  // The injected-turn seam can publish a Codex session's receipts.
+  'apps/desktop-app/tests/electron/seeders/publishTurnLifecycle.mjs':
+    Object.freeze([
+      '62fdbce156061841f061c74d531a000d5bbc0bb89a71db2c94f4c8f4677f2adc',
+    ]),
   'apps/desktop-app/tests/electron/mock-server/routes/llm.mjs': Object.freeze([
+    // Export the existing incremental-tool parser for delegation inference;
+    // its implementation and the frozen study's original bytes stay unchanged.
+    'b14c8a342d964eb7eb7336514234f67452ff6c6f6fe9bd16bdf3566e6eb9dee0',
     'ad3e01dbc7656f11a6fc84550b3b8d6b76a5cdc403009a6e68676ab2f28c2ba9',
+    // Turn-state phase 29 adds opt-in lifecycle controls to the shared mock:
+    // step barriers, attempts, delays, error modes, strict scenarios and
+    // content-free request observations. Existing scenarios behave as before.
+    'efe6a585bd564f062611ac210dfc5b096947de99ac6bec0eb61963634eb4c8cd',
+    // The turn-state integration composes both with develop.
+    '32be8d59076991860628dffa458a030df32326df0ddf52eb05904e67ce7ecc8b',
+    // CAN-3987 scripts session-title helper requests and counts helper traffic.
+    '59a7b69e26361f590afed55a64e75e402806359e67173e73fcf4ffbfa809d0f6',
+    // The turn-state integration composes CAN-3987 with develop.
+    '6ac32615408a3abc5abcfa8d2304caadc4792a87b941fe40fc89d5234d73193a',
+    // Default tool_use ids count the history's tool uses, so a later step never
+    // reuses toolu_mock_N; the first step's ids are unchanged.
+    '7f11af7f0660f2f6d332bde6ea1db953bccae1159f21b461f4fa689141376f87',
   ]),
   // CAN-3662 replaces the retired preference with durable Labs choices.
   // PR #5422 seeds cache tokens for the cost token label assertions.
@@ -3323,14 +3446,21 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
       'ccaa70de629282d3d650439438d8e7b2d9bb6036be7a620dd016dc682c53fbd9',
     ],
   ),
+  // A comment now names `.claude/skills` as the committed symlink example.
+  'apps/desktop-app/tests/electron/seeders/seedSharedContainerRecipientReplicas.mjs':
+    Object.freeze([
+      'c832b719fbd30aa27c0b2cdacb9f81ac737ff711781add35895b49c4a5e88e8a',
+    ]),
   'apps/desktop-app/tests/electron/seeders/seedEarlyAccess.mjs': Object.freeze([
     '416e1fb3cba46281cdd2951ea4a8d90a4808ba04da83e0ce5d96e4e8ae04b5cd',
   ]),
   // CAN-2798 normalizes ps creation-time rendering across caller environments.
   // Preserve the closed study's original and installed supervisor identities.
+  // CAN-4863 reports why the Windows supervisor selected a nonzero exit.
   'apps/desktop-app/tests/performance/process-tree-supervisor.mjs':
     Object.freeze([
       '22623fb692fe4a827b0134bb91a3133e91d74ddacb302362b1f504ab56c9cdee',
+      '7eecae599bc42a3fdbe4a8aa58f5b00ea21c61f5b24db7bf0f58123e43b54087',
     ]),
   // PR #4824 composes merge queue and watcher GraphQL responses in the shared
   // GitHub mock. Keep the closed study's original and prior reviewed hashes.
@@ -3341,12 +3471,18 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
       '549fcb341c8fdbaac5f5b49a09b5cb842648cb878839ade71abf78ec5baa2f4b',
       // CAN-4529 adds pull request search responses.
       '231c36cd058ff5922ed0c9753eceec2da2a529ab7f76bd555713ddd1dc6626c8',
+      // CAN-4938 adds opt-in Copilot refresh rotation controls.
+      'c1775b3cb6846f406dee6f7d8bf3ab0a6a13b01c1951cbfcbf93ee7a220faa1a',
     ]),
   // CAN-4529 caches parsed JSON bodies so routes sharing /graphql can inspect
   // a request and decline it; the Linear mock reuses that reader.
   'apps/desktop-app/tests/electron/mock-server/control-plane.mjs':
     Object.freeze([
       '8acab84ea9371142075c38bd33e6a91fb7a29e9a6c3fc44c70796557201cb063',
+      // Turn-state phase 29's lifecycle controls.
+      '5ed3a5c9f4b6987ff2caad153203b09d36577219a5a33d38bf54f1f7b480e930',
+      // The turn-state integration composes both.
+      'e81dc69afa01861ef9c256b013374cd6db720334aafab4b1e0a3ee1e37af5bfa',
     ]),
   'apps/desktop-app/tests/electron/mock-server/routes/linear.mjs':
     Object.freeze([
@@ -3361,11 +3497,38 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     '382f4a6c3bd2bd75d92f8094b68a272768b5269005b8b5b792679b5671eb1211',
     // PR #4621's pinned-items export composed with develop's journal seeder.
     'bd62053fad1e5b4757a255c59462e107407a5e065120d9451047160bdd20f5c8',
+    // #5948 exports the turn lifecycle receipt helpers for injected turns.
+    '1ebf898ca1e3187cd4a7f0c43e035b81099e7f866e57603c290dcc3165c2c070',
   ]),
+  // CAN-4646 scopes stress-history observation, uses fixed input/poll cadence,
+  // and waits for the same final-row and markdown completion milestones.
+  'apps/desktop-app/tests/electron/stress-transcript-driver.mjs': Object.freeze(
+    ['a764bd8ab1f079793db7a3a3abb29d950f0ff3b06ae85b20f4aa6337160a0bdf'],
+  ),
   // Sidebar groundwork isolates the native production profile and skips the
   // E2E-only activity hydration shim for the already-expanded loaded fixture.
   // Pin these exact bytes; retain all historical study identities above.
   'apps/desktop-app/tests/performance/scenarios.mjs': Object.freeze([
+    // Labs graduation routes the remaining chat, browser, and Ledger additions through Add.
+    '873d646111e14e6fa50e5602652a1c89de116fa0a0ae276d665b0e6a0de66107',
+    // CAN-4863 renders hidden Windows performance windows offscreen, composed
+    // with PR #6253's Add-menu and toast handling.
+    '618dad0ea051180c62cd5640483ee75c819eace5021eb1aa8b2957b83ef884f0',
+    // PR #6253's Add-menu and toast handling composed with develop's opt-in
+    // Claude graph-orientation workload; preserve the frozen study identities.
+    'b4627dffd1da920942eb5a847adad9139266097f6fe1e4bb384710066749a6c1',
+    // PR #6131's Add-menu and toast handling composed with develop's opt-in
+    // browser-actions and browser-agent-actions workloads.
+    '5cfabcfc2e9d0bd5bf56236f92cb0b0d8997577314ac1c8817721c51f02cded1',
+    // CAN-4646 uses current Add menus and tolerates auto-dismissed completion
+    // toasts; historical study identities and workload budgets stay pinned.
+    '8d92ac98f59084997d63d3070a49d3f92709ec3c3de74b13b027f88f2e355e51',
+    // Reviewed composition of the current Add-menu callers and merged workloads.
+    'db3e552da48ea55094f52754df4f5ead1ede784819e822c507e28c9bf6f734ec',
+    // CAN-4899 times startup-settle's app quit after its measured window and
+    // fails the scenario when it does not exit; the hidden browser-profile
+    // study does not measure it. Composed with CAN-3804's worktree drain.
+    '7b4817fb48547c49e6ba6a32040aa85a043d8c698d7f07bd7a769e520771de40',
     // CAN-1570's browser scenarios composed with the reviewed shared Add-menu fix.
     '1f028e0299e7bc5fab11b4fe1a714c10654b4cd13047dd0885f880cbd20f2729',
     // PR #5966 matches the plugin picker's `Search by name…` placeholder.
@@ -3439,6 +3602,34 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     // Compose the plugin picker placeholder with graduated Add menu controls.
     // Task assertions, workload sizes, deadlines, and budgets are unchanged.
     '9176fbbeb078ed186588ca7ee8a7ccda6c20dd39c5fef14833a29bd558d9a3a2',
+    // CAN-3987 adds the opt-in claude-graph-orientation scenario.
+    '5106a88c20fba6fb2e07824c9d74d77b3d86b92f9de3b710f217e13d95f2f791',
+    // Compose CAN-3987 with the remaining graduated Add-menu fixture updates.
+    '40768776afeeee8838010233a7ea928d441fe66c40ed138cf6a4f6f904bd569c',
+    // CAN-3804 drains earlier worktree setups before each timed Git release,
+    // times creation from the gate's resume to the renderer's Git ready, and
+    // records gate, filter and app timings; other workloads and assertions
+    // are unchanged.
+    '84c231288a7e8ff85abf786ab718e48a69d1b292b5f02da71f7c98e074b2ec0b',
+    // Opt-in sidebar reorder; existing workload defaults and frozen identities are unchanged.
+    '1c2579525c8044c530e5cac82791fdcfe24d1a689333305deacb291833d68a58',
+    // The mixed-provider agent-card check switches to the Detailed chat level
+    // and waits for the agent block; workloads and budgets are unchanged.
+    '5f8840de0c1e7c9e9a2f9102b063a36b9e88eb7299a51ac07986dfcd7ebbf5ce',
+    // CAN-4495 adds the opt-in Code Review registry scenarios on top of
+    // PR #6849's Codex delegate model; existing workloads, budgets and frozen
+    // identities are unchanged.
+    'eeaeff19281082ca6077a53368f0873a3c84b35155312d5358ea7d34ee2d8296',
+    // The plan-open scenario selects the plan visualizer's Current/Planned/Diff
+    // diagram type by its tab role now that the row is a SegmentedControl with
+    // tab semantics; workloads, budgets and frozen identities are unchanged.
+    '28e859c54878809a3a509021fe8dbdd56e8c300ef04d21809d2425a00ba7bd5a',
+  ]),
+  // CAN-3804 adds the checkout tail, resume and pass-through stamps, the
+  // filter warm-up, the gate order check and pending-checkout diagnostics;
+  // the hold itself is unchanged.
+  'apps/desktop-app/tests/performance/worktree-git-gate.mjs': Object.freeze([
+    '3a67ff438fccbe756639613c88bf43ab833e368b1b9f42e250f9d37352997e01',
   ]),
   // The opt-in managed-delegation-concurrency scenario and its scoped sizing.
   'apps/desktop-app/tests/performance/profiles.mjs': Object.freeze([
@@ -3464,11 +3655,20 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     'a725fcfaa636513318d1ac7417076255328413bafd1f96fb5a1dd3f5f8c25745',
     // Foreground-first delivery graduates: --foreground-first-delivery is gone.
     '8505542582d823d84ef7483af94111e9f6328c6ea88541259bb77feb7735da51',
+    // CAN-3987 adds the opt-in claude-graph-orientation scenario's sizing keys.
+    'b2f62d837321533559c7782be1155c4f17e7ffeb30e6870beebc339fa4d0eeef',
+    // Opt-in sidebar reorder; existing workload defaults and frozen identities are unchanged.
+    'd81091404b4b0e28dd60f89d89af97b824a607593c81d781f84fd80d91d15ead',
+    // CAN-4495 adds the opt-in Code Review registry scenarios' sizing keys;
+    // existing defaults are unchanged.
+    '6c025906738df9b1e3e83afe25098a3077b6110e74f03d3eea511fe5e38b3778',
   ]),
   // managed-delegation-concurrency needs both provider binaries.
   'apps/desktop-app/tests/performance/run.mjs': Object.freeze([
     // CAN-3753 local smoke policy composed with current develop workloads.
     '4270fa3776d53b7a77666b76a84cb448bc49bd2bd235eaf0c2168ffd8801dfd7',
+    // CAN-4899 prints startup-settle's quit latency.
+    '9ec93f412a0b6af5328ac1539968ca0059dbc5721b936e619a6672a13733bb78',
     // CAN-3753 separates local smoke acceptance; strict study verdicts are unchanged.
     'ff158c7128f1f64deb031ceb9ba744e5bc28ed04abd9e5fbb6a49d91ede88d54',
     // Forced journal cutover removes the retired experiment switch and seeder.
@@ -3541,8 +3741,19 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
   ]),
   'apps/desktop-app/tests/electron/mock-server/routes/cloud.mjs': Object.freeze(
     [
+      // CAN-5022 extracts the default gateway catalog into a shared fixture.
+      '84e39d46a837a244017f3fecf4ed2b94bd5ca1fd8d23880a46c45aa5778bd3a3',
       // Labs v2 migrates extracted choices and retains the v1 projection.
       '63bae839cc465acf55d5841f4d3b652216cdd3160aa74b259ceca3f3728c0846',
+      // CAN-4915 advertises automation pipeline dependencies and requests
+      // uploaded pipeline/file-asset blobs in the sharing fixtures.
+      'f3a786fdeb4b9eca41a5370d4ff4152677f5df12fae17b94e2bb5ba14fba7cc2',
+      // CAN-4915 composed with develop's CAN-4261 curated pipeline catalog.
+      'e26bb28387440c77b123be672ee3baa02db3614fbd0f0f1fae9ac5ac51ec63f5',
+      // CAN-4915 composed with develop's current cloud routes and capabilities.
+      '5a629d64b8238c5f17091026c57d02f00dbd73d002165d896143d3ad78509edf',
+      // Develop UI Automation repairs settle worktree entries on their landing.
+      '01565ba6d5c260d5faf70c0b45bebaec83c3bf3abe623bc583021fccb6f5a03e',
       // CAN-4396 serves the public curated MCP catalog to signed-out guests.
       '40b58dd1694c96bfab2567785f433911196b3da876a1251c7b7bc404ec71fdee',
       // CAN-2334 account preferences combined with CAN-4386 hosted settings.
@@ -3603,6 +3814,10 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
       '146384c3460f9454e748baeca5fe1e407808aa055dc4be4a068f52ec3c6a09b3',
       // Develop after the #4426 squash merge over CAN-3546.
       '3914e3bc31665221b9dfad05d9026ce1e153ea346dea06feb5f424d750307b0a',
+      // CAN-4921 adds an opt-in save delay for first-run pending/layout coverage.
+      '3c726db3cec487cf81cc1e5f2bb31a28a746165a914da0e523b129672c0685fe',
+      // CAN-4921's merge ref also includes develop's opt-in shared-skill search.
+      '095a72bf6c1b870c63318ca325396d7717690abfdc8ce59d46cccc678aa19b5b',
       // CAN-3710 uses a UUID collection fixture for install-review resolution.
       'f878db810d2298bfe51b467f2b2482d84670709e920addc2817e823060b88e10',
       // CAN-3129 models lapsed leases, supersedes and the verified reclaim.
@@ -3678,15 +3893,45 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
       // CAN-3959 advertises the run-condition automation capability, composed
       // with CAN-4266's shared agents paging.
       'f6dba8bada89ff87344b7c081c29ca807fb322618ff79c0759974d8b23051af3',
+      // CAN-4261 lists an empty curated pipeline catalog instead of a 404.
+      '1970e2e05e04253396cc75100d2474afe57ee05b67b866079477ff568eafce14',
+      // CAN-4267 adds an opt-in search filter to the shared skills list.
+      'a85d440208108b639df22981d3dc668fe83a158ef526f5b56032fadb7bceb65d',
+      // CAN-4703 lets a spec register a per-device guest token so its guest
+      // scenario never rewrites the shared `csk_guest_e2e` one.
+      'e994aa38a6156f054969adffb4efea5636e94bea636ac79fcb7c7dbffcb1f5f6',
+      // CAN-4703's per-device guest token composed with develop's
+      // worktree-landing and resume fixtures.
+      'e0bf0fbbfe8b06757a8cdcb61d772f802f55ad2c8944d44a0c332ca4c3bec3e1',
+      // CAN-4550 advertises the pipeline-target automation capability.
+      '107d189c8909a992b8a5acaa618e08d73c77c8b06435c0434baae58e64859c1b',
+      // CAN-5026 adds an opt-in barrier that holds AI Credits balance reads.
+      'b1fdd0db5cf3d08645e236f64ebf7b5bceb303d80e6f5999fc6ad043c9c855e9',
+      // CAN-5022's shared gateway catalog composed with CAN-5026's balance
+      // read barrier.
+      'c880790d94fa634c27b73fb8b38193d9fc0f3cc9456dc394e920d0bb4aad1ee0',
+      // CAN-4550's pipeline-target capability composed with CAN-5022's shared
+      // gateway catalog and CAN-5026's balance read barrier.
+      'a447a9d21ae72760397e1186d6742af8e63c60b8dd1c180cd687faafdd6773fc',
     ],
   ),
+  // Turn-state phase 29 lets Responses WS requests use the same lifecycle
+  // controls.
+  'apps/desktop-app/tests/electron/mock-server/routes/responsesWs.mjs':
+    Object.freeze([
+      'a9edd302584f93e9799fbfca09d5c7bd9b7b76d8dffd58e68f9c4dafc145a71a',
+    ]),
   // CAN-3753 local smoke acceptance.
   'apps/desktop-app/tests/performance/comparison.mjs': Object.freeze([
     '5ce7f3372b875bde241a04b8d3a3e5ccd8097b324ea355c8c43155b703f5cb3d',
+    // CAN-4607 compares daemon treatment arms outside workload `config`.
+    '9a1244c24490a6a9b4586c5817ffe84a3eb14b996168645c05d83ff6f42d5ac0',
   ]),
   // CAN-3753 local smoke acceptance.
   'apps/desktop-app/tests/performance/results.mjs': Object.freeze([
     '8ecee0dbc867d0be65bb0f00d583284c879cf4ed7d591319dd90ea12deeade71',
+    // CAN-4899 adds the startup-settle quit timing metric.
+    '10b4c5710e941777f72e9649ebf5d684edd42694099ed86d2a4f4abf6c2204c6',
   ]),
 });
 // CAN-3533 adds curated automation routes to the cloud fixture. Keep the
@@ -4011,8 +4256,9 @@ assert.equal(
     .update(JSON.stringify(FROZEN_CHANGED_HARNESS_BASELINES))
     .digest('hex'),
   // Pause-checkpoint coverage adds the pipeline execution seeder's original
-  // bytes to the frozen baselines, so the map's digest moves with it.
-  'd8a700522206a6c24866995adaa23030bdc866a541ec827287786bbdadb47635',
+  // bytes to the frozen baselines, and turn-state phase 29 adds the Responses
+  // WebSocket route's, so the map's digest moves with them.
+  'cf984434c9bf8fc03e770aa6c7494a721328823c1e7b32faaa34bdaaf1726c54',
 );
 
 /**
@@ -4161,6 +4407,66 @@ function matchedPinnedHarnessSource(file, after) {
   );
   return { before, installed: matchedHarnessSource(file, before, after) };
 }
+
+test('gateway catalog fixture admission pins absence and rejects changed bytes', async () => {
+  const file =
+    'apps/desktop-app/tests/electron/mock-server/routes/ai-gateway-catalog.mjs';
+  const source = await readFile(file, 'utf8');
+  assert.equal(matchedHarnessSource(file, null, source), source);
+  assert.throws(
+    () => matchedHarnessSource(file, 'invented baseline', source),
+    /unexpectedly exists in baseline/,
+  );
+  assert.throws(
+    () => matchedHarnessSource(file, null, `${source}\n`),
+    /Unreviewed gateway catalog helper bytes/,
+  );
+});
+
+test('Code Review registry workload admission pins absence and rejects changed bytes', async () => {
+  const root = new URL('../../../../', import.meta.url).pathname;
+  const file =
+    'apps/desktop-app/tests/performance/code-review-registry-scenario.mjs';
+  const source = await readFile(path.join(root, file), 'utf8');
+  assert.equal(matchedHarnessSource(file, null, source), source);
+  assert.throws(
+    () => matchedHarnessSource(file, 'invented baseline', source),
+    /unexpectedly exists in baseline/,
+  );
+  assert.throws(
+    () => matchedHarnessSource(file, null, `${source}\n`),
+    /Unreviewed Code Review registry helper bytes/,
+  );
+});
+
+test('sidebar reorder fixture admission pins absence and rejects changed bytes', async () => {
+  const root = new URL('../../../../', import.meta.url).pathname;
+  for (const file of [
+    'apps/desktop-app/tests/performance/sidebar-reorder-scenario.mjs',
+    'apps/desktop-app/tests/electron/sidebarReorderFixture.mjs',
+  ]) {
+    const source = await readFile(path.join(root, file), 'utf8');
+    assert.equal(matchedHarnessSource(file, null, source), source, file);
+    assert.throws(
+      () => matchedHarnessSource(file, 'invented baseline', source),
+      /unexpectedly exists in baseline/,
+      file,
+    );
+    assert.throws(
+      () => matchedHarnessSource(file, null, `${source}\n`),
+      /Unreviewed sidebar reorder helper bytes/,
+      file,
+    );
+  }
+  const existing =
+    'apps/desktop-app/tests/electron/coworkWorkEntryDoneFixture.mjs';
+  const source = await readFile(path.join(root, existing), 'utf8');
+  assert.equal(matchedHarnessSource(existing, source, source), source);
+  assert.throws(
+    () => matchedHarnessSource(existing, null, source),
+    /Unreviewed harness delta/,
+  );
+});
 
 test('hosted settings fixture admission rejects mutated bytes and invented original sources', async () => {
   for (const file of [
@@ -5123,9 +5429,9 @@ test('local parser preserves the closed full population and rejects execution mo
 });
 
 test('local E2E reuses exact physical host and stage identity admission', () => {
-  requireLocalPhysicalMac({}, 'darwin', 'v24.21.0');
+  requireLocalPhysicalMac({}, 'darwin', 'v24.22.1');
   assert.throws(
-    () => requireLocalPhysicalMac({}, 'linux', 'v24.21.0'),
+    () => requireLocalPhysicalMac({}, 'linux', 'v24.22.1'),
     /Darwin/,
   );
   assert.throws(
@@ -5146,7 +5452,7 @@ test('local E2E reuses exact physical host and stage identity admission', () => 
   ])
     for (const value of ['', 'false', '1'])
       assert.throws(
-        () => requireLocalPhysicalMac({ [key]: value }, 'darwin', 'v24.21.0'),
+        () => requireLocalPhysicalMac({ [key]: value }, 'darwin', 'v24.22.1'),
         /rejects/,
       );
   const tree = '7e063f1552bea71e55690d57538ccbbb71bf730a';

@@ -27,11 +27,15 @@ const WINDOWS_UPDATE_MESSAGES = {
 type WindowsUpdateErrorCode = keyof typeof WINDOWS_UPDATE_MESSAGES;
 
 class WindowsUpdateError extends Error {
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
+
   constructor(
     readonly code: WindowsUpdateErrorCode,
-    readonly cause?: unknown,
+    cause?: unknown,
   ) {
     super(WINDOWS_UPDATE_MESSAGES[code]);
+    this.cause = cause;
     this.name = 'WindowsUpdateError';
   }
 }

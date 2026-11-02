@@ -31,6 +31,7 @@ import {
   isTerminalBackedInterfaceMode,
   type ChatActiveSessions,
   type ChatTabsFile,
+  type PersistedChatMessage,
   type ResumeQueueEntry,
   type ResumeQueueItem,
   type ResumeQueueControl,
@@ -50,7 +51,12 @@ import {
   type UsageLimitedSessionGroup,
   type UsageLimitedPipelineSessionItem,
 } from '@canopy/desktop-shared/types';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import {
+  buildTrustedAutoResume,
+  claimTrustedChatResume,
+} from '../lib/trusted-auto-resume';
+import { describeUsageLimitResumePromptKind } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import { describeLastAgentStep } from '@canopy/desktop-shared/lib/interrupted-chat-step';
 import {
   buildUsageLimitedChatGroups,
   claimCodexAuthenticationResume,
@@ -69,6 +75,7 @@ import {
 import { getAllActiveSessionInfos } from '../agents/session-manager';
 import { readWorkspaceIndexEntry } from '../lib/sidebar-items';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
+import { getWorkspaceWorktreeDir } from '../lib/paths';
 import { readWorkEntriesFile } from '../lib/cowork-work-entries-file';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import {
@@ -98,6 +105,7 @@ function validateUsageLimitedChatTarget(target: UsageLimitedChatTarget): void {
 interface ResumeWorkspace {
   entry: WorkspaceIndexEntry;
   worktreeNames: Map<string, string>;
+  worktreePaths: Map<string, string>;
 }
 
 /** Keep the registry/queue identity while locating the chat's current storage. */
@@ -141,6 +149,7 @@ type ResumeWorkspaceLookup = (
 ) => Promise<{
   entry: WorkspaceIndexEntry;
   worktreeName?: string;
+  worktreePath?: string;
   chatTarget?: UsageLimitedChatTarget;
 } | null>;
 
@@ -153,6 +162,7 @@ function createResumeWorkspaceLookup(): ResumeWorkspaceLookup {
     const entry = await readWorkspaceIndexEntry(workspaceId);
     if (!entry) return null;
     const worktreeNames = new Map<string, string>();
+    const worktreePaths = new Map<string, string>();
     if (entry.type === 'cowork') {
       // The legacy home slot remains a readable chat scope after Work Entries
       // replace it; it is never listed in the Work Entry registry.
@@ -161,13 +171,17 @@ function createResumeWorkspaceLookup(): ResumeWorkspaceLookup {
       for (const workEntry of file.entries) worktreeNames.set(workEntry.id, '');
     } else {
       for (const worktree of await readWorkspaceWorktrees(workspaceId)) {
+        worktreePaths.set(
+          worktree.id,
+          getWorkspaceWorktreeDir(workspaceId, worktree.id),
+        );
         worktreeNames.set(
           worktree.id,
           worktree.label ?? worktree.branchName ?? worktree.id,
         );
       }
     }
-    return { entry, worktreeNames };
+    return { entry, worktreeNames, worktreePaths };
   }
   return async (projectId, worktreeId, chatId) => {
     const standaloneTarget =
@@ -204,6 +218,9 @@ function createResumeWorkspaceLookup(): ResumeWorkspaceLookup {
       worktreeName: worktreeId
         ? workspace.worktreeNames.get(worktreeId)
         : undefined,
+      worktreePath: worktreeId
+        ? workspace.worktreePaths.get(worktreeId)
+        : undefined,
     };
   };
 }
@@ -221,6 +238,7 @@ function createResumeWorkspaceLookup(): ResumeWorkspaceLookup {
 export async function handleListUsageLimitedIdleChats(
   req: ListUsageLimitedIdleChatsRequest,
 ): Promise<ListUsageLimitedIdleChatsResponse> {
+  validateIncludeResumePreview(req.includeResumePreview);
   const groups = await listUsageLimitedIdleChats(
     req,
     createResumeWorkspaceLookup(),
@@ -235,6 +253,11 @@ export async function handleListUsageLimitedIdleChats(
     .filter((group) => group.chats.length > 0);
 }
 
+function validateIncludeResumePreview(value: unknown): void {
+  if (value !== undefined && typeof value !== 'boolean')
+    throw new Error('includeResumePreview must be a boolean');
+}
+
 /**
  * Registry and chat-scope reads shared by every provider pass of one listing,
  * so an all-provider request reads each once. Like the workspace lookup, they
@@ -243,17 +266,44 @@ export async function handleListUsageLimitedIdleChats(
 interface UsageLimitedListingReads {
   entries: () => ReturnType<typeof readUsageLimitedChats>;
   tabs: (projectId: string, worktreeId: string) => Promise<ChatTabsFile>;
+  transcript: (
+    target: UsageLimitedChatTarget,
+  ) => Promise<PersistedChatMessage[] | undefined>;
 }
 
 function createUsageLimitedListingReads(): UsageLimitedListingReads {
   let entries: ReturnType<typeof readUsageLimitedChats> | undefined;
   const tabs = new Map<string, Promise<ChatTabsFile>>();
+  const transcripts = new Map<
+    string,
+    Promise<PersistedChatMessage[] | undefined>
+  >();
   return {
     entries: () => (entries ??= readUsageLimitedChats()),
     tabs: (projectId, worktreeId): Promise<ChatTabsFile> => {
       const key = `${projectId}\0${worktreeId}`;
       const pending = tabs.get(key) ?? readChatTabsFile(projectId, worktreeId);
       tabs.set(key, pending);
+      return pending;
+    },
+    transcript: (target): Promise<PersistedChatMessage[] | undefined> => {
+      const key = `${target.projectId}\0${target.worktreeId}\0${target.chatId}`;
+      let pending = transcripts.get(key);
+      if (!pending) {
+        // The ordinary tabs projection is metadata-only. A latest page may
+        // omit the current turn's earlier activity, so read the selected chat
+        // in full through the same canonical reader used at dispatch.
+        pending = readChatTabsFile(target.projectId, target.worktreeId, {
+          chatIds: [target.chatId],
+          fullTranscript: true,
+        })
+          .then(
+            (file) =>
+              file.tabs.find((tab) => tab.id === target.chatId)?.messages,
+          )
+          .catch(() => undefined);
+        transcripts.set(key, pending);
+      }
       return pending;
     },
   };
@@ -315,6 +365,17 @@ async function listUsageLimitedIdleChats(
         void clearUsageLimitedChat(chat);
         continue;
       }
+      // Home polls this listing for counts and dispatch re-reads it to
+      // resolve targets; only the open resume dialog pays for full histories.
+      const messages = req.includeResumePreview
+        ? await reads.transcript(readTarget)
+        : undefined;
+      const resumePromptKind = messages
+        ? describeUsageLimitResumePromptKind(messages)
+        : undefined;
+      const lastStep = messages
+        ? describeLastAgentStep(messages, context.worktreePath)
+        : undefined;
       const { entry, worktreeName } = context;
       let refreshed = refreshedGroups.get(entry.id);
       if (!refreshed) {
@@ -331,6 +392,8 @@ async function listUsageLimitedIdleChats(
         ...chat,
         chatTitle: tab.title,
         worktreeName: worktreeName ?? chat.worktreeId,
+        ...(resumePromptKind ? { resumePromptKind } : {}),
+        ...(lastStep ? { lastStep } : {}),
       });
     }
   }
@@ -364,6 +427,7 @@ async function listUsageLimitedIdleSessionsWithProviders(
   ) {
     throw new Error('Provider must be claude, codex, ollama, or cursor');
   }
+  validateIncludeResumePreview(req.includeResumePreview);
   const lookupWorkspace = createResumeWorkspaceLookup();
   const reads = createUsageLimitedListingReads();
   const chatGroups = (
@@ -372,7 +436,14 @@ async function listUsageLimitedIdleSessionsWithProviders(
         ? [req.provider]
         : (['claude', 'codex', 'ollama', 'cursor'] as const)
       ).map((provider) =>
-        listUsageLimitedIdleChats({ provider }, lookupWorkspace, reads),
+        listUsageLimitedIdleChats(
+          {
+            provider,
+            ...(req.includeResumePreview ? { includeResumePreview: true } : {}),
+          },
+          lookupWorkspace,
+          reads,
+        ),
       ),
     )
   ).flat();
@@ -519,7 +590,7 @@ async function listUsageLimitedIdleSessionsWithProviders(
       const group = groups.get(localId) ?? {
         groupId: localId,
         groupKind: 'local' as const,
-        workspaceName: 'Local pipelines',
+        workspaceName: 'Local workflows',
         sessions: [],
       };
       group.sessions.push(item);
@@ -562,6 +633,11 @@ export async function resumeUsageLimitedChatsWith(
   const failedTargets: UsageLimitedChatTarget[] = [];
   let resumedCount = 0;
   for (const target of req.targets) {
+    const release = claimTrustedChatResume(target);
+    if (!release) {
+      failedTargets.push(target);
+      continue;
+    }
     try {
       // Captured before the dispatch: every usage-limit record the resumed
       // turn writes is necessarily at or after this instant, which is what
@@ -572,6 +648,8 @@ export async function resumeUsageLimitedChatsWith(
       resumedCount += 1;
     } catch {
       failedTargets.push(target);
+    } finally {
+      release();
     }
   }
   return { resumedCount, failedTargets };
@@ -635,6 +713,12 @@ export async function handleResumeUsageLimitedChats(
           entry.worktreeId === target.worktreeId &&
           entry.chatId === target.chatId,
       );
+      const legacyBanner = tab?.llmProviderUsageLimitBanner;
+      const awaitingRestart = Object.values(tab?.interruptedTurns ?? {}).some(
+        (turn) => !turn.resumedBy && !turn.abandoned,
+      );
+      if (!interrupted && !legacyBanner && !awaitingRestart)
+        throw new Error('This chat no longer has an eligible interruption.');
       if (interrupted?.resumeReason === 'provider_sign_in' && !authentication)
         throw new Error(
           'Codex sign-in recovery requires an attempt-scoped resume request.',
@@ -653,9 +737,41 @@ export async function handleResumeUsageLimitedChats(
           dispatchTarget,
           pauseAttemptId,
         );
-      const resumePrompt = computeUsageLimitResumePrompt(tab?.messages ?? []);
+      if (!tab) throw new Error('The chat no longer exists.');
+      // A previous dispatch may have succeeded before registry/banner cleanup
+      // failed. Reconcile its exact accepted prompt instead of sending again.
+      if (
+        interrupted?.interruptedUserMessageId &&
+        tab.messages.some(
+          (message) =>
+            message.id === tab.lastAcceptedUserMessageId &&
+            message.userMessageSource === 'auto_resume' &&
+            message.autoResume?.resumesUserMessageId ===
+              interrupted.interruptedUserMessageId &&
+            message.timestamp >= interrupted.detectedAt,
+        )
+      )
+        return;
+      const resumePrompt = buildTrustedAutoResume(
+        { ...tab, providerType: interrupted?.provider ?? tab.providerType },
+        interrupted?.resumeReason ??
+          (legacyBanner ? 'usage_limit' : 'app_shutdown'),
+        interrupted?.detectedAt ?? legacyBanner?.detectedAt,
+        interrupted?.interruptedUserMessageId,
+      );
       const durableResumeMessageId =
-        authentication?.userMessageId ?? userMessageId;
+        authentication?.userMessageId ??
+        userMessageId ??
+        (interrupted
+          ? deterministicResumeMessageId(
+              JSON.stringify([
+                'resume',
+                target,
+                interrupted.detectedAt,
+                resumePrompt.autoResume.resumesUserMessageId,
+              ]),
+            )
+          : undefined);
       try {
         await sendWorktreeChatMessage(
           {
@@ -677,8 +793,11 @@ export async function handleResumeUsageLimitedChats(
               : {}),
             userMessageId: durableResumeMessageId ?? randomUUID(),
             resumesInterruptedTurn: true,
+            autoResume: resumePrompt.autoResume,
             initiationSource: 'automation',
-            inputMode: resumePrompt.inputMode ?? 'typed',
+            ...(resumePrompt.resendsUserMessage && resumePrompt.inputMode
+              ? { inputMode: resumePrompt.inputMode }
+              : {}),
             ...tabOptions,
           },
           {

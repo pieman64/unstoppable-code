@@ -1,4 +1,18 @@
 import type { JSX } from 'react';
+import { Badge } from './Badge';
+
+/** Selecting this row explicitly enables it before insertion. */
+export function SlashCommandAvailabilityTag(): JSX.Element {
+  return (
+    <Badge
+      muted
+      className="shrink-0"
+      data-testid="slash-command-availability-tag"
+    >
+      Available · enable
+    </Badge>
+  );
+}
 
 /**
  * Default busy spinner for slash-command surfaces. Shared so host menus that
@@ -28,12 +42,37 @@ export function SlashCommandAvailableDivider({
   testId = 'slash-command-available-divider',
 }: SlashCommandAvailableDividerProps): JSX.Element {
   return (
+    <SlashCommandGroupHeading
+      label="Available to enable"
+      divider
+      testId={testId}
+    />
+  );
+}
+
+/** Shared heading for collected groups and contiguous ranked runs. */
+export function SlashCommandGroupHeading({
+  label,
+  compact = false,
+  divider = false,
+  testId,
+}: {
+  label: string;
+  compact?: boolean;
+  divider?: boolean;
+  testId?: string;
+}): JSX.Element {
+  return (
     <div
       data-testid={testId}
       role="presentation"
-      className="mt-1 border-t px-3 pb-1 pt-2 text-xs font-medium fg-secondary"
+      className={
+        compact
+          ? 'px-2 pb-0.5 pt-2 text-xs fg-tertiary'
+          : `${divider ? 'mt-1 border-t ' : ''}px-3 pb-1 pt-2 text-xs font-medium fg-secondary`
+      }
     >
-      Available to enable
+      {label}
     </div>
   );
 }

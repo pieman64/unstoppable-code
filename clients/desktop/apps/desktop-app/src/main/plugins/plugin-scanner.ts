@@ -484,10 +484,10 @@ export function scanPluginDetails(
   const manifest = normalizeManifestForScanning(
     isScanOptions(manifestOrOptions)
       ? safeReadJson<PluginManifestLike>(manifestPathForKind(pluginDir, kind))
-      : ((manifestOrOptions ??
+      : (manifestOrOptions ??
           safeReadJson<PluginManifestLike>(
             manifestPathForKind(pluginDir, kind),
-          )) as PluginManifestLike | null),
+          )),
   );
   const details: PluginDetails = {
     skills: [],

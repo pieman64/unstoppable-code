@@ -33,7 +33,7 @@ export async function runCursorPipelinePrompt(
       provider: 'cursor',
       agent_harness: 'cursor',
       had_agent_activity: false,
-      message: 'Cursor pipeline turn was cancelled.',
+      message: 'Cursor workflow turn was cancelled.',
     },
   });
   const failure = (message: string): CursorPromptRunnerResult => ({

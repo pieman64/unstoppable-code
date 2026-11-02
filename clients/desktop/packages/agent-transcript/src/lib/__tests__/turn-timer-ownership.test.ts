@@ -90,7 +90,11 @@ it('repairs a completed timer when fresh foreground work arrives while runtime a
         content: [{ type: 'thinking', thinking: 'Following up' }],
       },
     },
-    { now: 4000, createMessageId: () => 'new' },
+    {
+      childToolLiveness: { kind: 'unknown' },
+      now: 4000,
+      createMessageId: () => 'new',
+    },
   );
   expect(next.messages[1].blocks[0]).toMatchObject({
     completedAt: null,
@@ -131,7 +135,11 @@ it('keeps one timer when foreground work arrives while the turn timer is paused 
         content: [{ type: 'tool_use', id: 'watch', name: 'WatchDelegates' }],
       },
     },
-    { now: 4000, createMessageId: () => 'new-timer' },
+    {
+      childToolLiveness: { kind: 'unknown' },
+      now: 4000,
+      createMessageId: () => 'new-timer',
+    },
   );
   const timers = next.messages.flatMap((message) =>
     message.blocks.filter((block) => block.type === 'turn_timer'),
@@ -174,7 +182,11 @@ it('still repairs the current turn timer when an earlier turn left a timer pause
         content: [{ type: 'thinking', thinking: 'Following up' }],
       },
     },
-    { now: 4000, createMessageId: () => 'new-timer' },
+    {
+      childToolLiveness: { kind: 'unknown' },
+      now: 4000,
+      createMessageId: () => 'new-timer',
+    },
   );
   expect(next.messages[3].blocks[0]).toMatchObject({
     startedAt: 1000,
@@ -226,6 +238,7 @@ it.each([
   'does not reopen a completed timer for late non-foreground work: %j',
   (event) => {
     const next = applyClaudeTranscriptEvent(completedState('idle'), event, {
+      childToolLiveness: { kind: 'unknown' },
       now: 4000,
       createMessageId: () => 'late',
     });

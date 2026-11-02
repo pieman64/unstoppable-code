@@ -182,3 +182,11 @@ export function buildCoworkRootCatalog(input: {
     input.attachments,
   );
 }
+
+/** Display metadata only; the host supplies a basename or its nonempty platform root path. */
+export function resolveCoworkWorkspaceRootName(
+  indexName: string | undefined,
+  folderBasename: string,
+): string {
+  return indexName?.trim() || folderBasename;
+}

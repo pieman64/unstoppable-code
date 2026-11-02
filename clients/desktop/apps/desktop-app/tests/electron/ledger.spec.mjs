@@ -154,7 +154,7 @@ function resumePipelineExecution(electronApp, executionId) {
 
 /** Adds the Ledger panel to a group through the add-panel menu. */
 async function addLedgerPanel(page, groupId) {
-  await page.getByTestId(`panel-add-panel-${groupId}`).click();
+  await page.getByTestId(`panel-add-tab-${groupId}`).click();
   await expect(page.getByTestId('panel-add-menu')).toBeVisible();
   await page.getByTestId('panel-add-menu-item-ledger').click();
   const panel = page.getByTestId('ledger-panel');
@@ -1121,7 +1121,7 @@ test("Code worktree Ledger: a pipeline agent's entry opens its run at the agent'
     await expect(row).toContainText('Release review');
     await rootDetailsToggle(row).click();
     await expect(row.getByTestId('ledger-entry-details')).toContainText(
-      'Recorded by a pipeline agent.',
+      'Recorded by a workflow agent.',
     );
     const openSource = row.getByTestId('ledger-entry-source-open').first();
     await expect(openSource).toHaveText('Open run');
@@ -2195,6 +2195,90 @@ test('Code worktree Ledger: a long list windows its rows and keeps the reading p
   } catch (error) {
     await window
       .screenshot({ path: testInfo.outputPath('ledger-long-list-failure.png') })
+      .catch(() => undefined);
+    throw error;
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Code worktree Ledger: a slow first read shows entry rows in skeleton, then the entries in place', async ({}, testInfo) => {
+  test.setTimeout(180_000);
+
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-ledger-'));
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const { electronApp, window } = await launchCodeWorktree(userDataDir);
+
+  try {
+    const scope = { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID };
+    await addLedgerEntry(electronApp, {
+      scope,
+      author: USER,
+      params: {
+        type: 'TASK',
+        title: 'Write the release notes',
+        content: 'Cover the loading pattern.',
+      },
+    });
+    // Hold the panel's first list read until the test lets it go.
+    await electronApp.evaluate(({ ipcMain }) => {
+      const channel = 'ledger:search-entries';
+      const original = ipcMain._invokeHandlers.get(channel);
+      ipcMain.removeHandler(channel);
+      const held = new Promise((resolve) => {
+        globalThis.releaseLedgerSearch = resolve;
+      });
+      ipcMain.handle(channel, async (event, request) => {
+        await held;
+        return original(event, request);
+      });
+    });
+
+    const panel = await addLedgerPanel(window, DEFAULT_GROUP_IDS.chat);
+    // No "Loading Feed…" or "Loading entries…" copy: rows in skeleton, in
+    // the shared delayed placeholder, shown once the delay passes.
+    const placeholder = panel.getByTestId('delayed-loading-placeholder');
+    await expect(placeholder).toHaveAttribute('data-visible', 'true');
+    const skeleton = placeholder.getByTestId('ledger-thread-list-skeleton');
+    await expect(skeleton).toBeVisible();
+    await expect(skeleton).toHaveAttribute('data-density', 'panel');
+    await expect(panel).not.toContainText('Loading entries…');
+    await expect(panel).not.toContainText('Loading Feed…');
+    await expect(panel.getByTestId('ledger-entry-row')).toHaveCount(0);
+    // The note waits for a slow read.
+    await expect(placeholder.getByTestId('slow-load-note')).toHaveText('');
+    const skeletonRowHeight = await skeleton
+      .getByTestId('ledger-thread-list-skeleton-row')
+      .first()
+      .evaluate((row) => row.getBoundingClientRect().height);
+    // The placeholder fills only the room under the composer, so the pane
+    // never scrolls and the composer keeps its width when the entries land.
+    const listPane = panel.getByTestId('ledger-list-pane');
+    const paneOverflow = () =>
+      listPane.evaluate((pane) => pane.scrollHeight - pane.clientHeight);
+    expect(await paneOverflow()).toBeLessThanOrEqual(0);
+    const composerWidth = () =>
+      panel
+        .getByTestId('ledger-add-entry')
+        .evaluate((pill) => pill.getBoundingClientRect().width);
+    const loadingComposerWidth = await composerWidth();
+
+    await electronApp.evaluate(() => globalThis.releaseLedgerSearch());
+    await expect(rowTitled(panel, 'Write the release notes')).toBeVisible();
+    expect(await composerWidth()).toBe(loadingComposerWidth);
+    // A skeleton row stands at a one-line entry's height.
+    const rowHeight = await rowTitled(
+      panel,
+      'Write the release notes',
+    ).evaluate((row) => row.getBoundingClientRect().height);
+    expect(Math.abs(rowHeight - skeletonRowHeight)).toBeLessThanOrEqual(2);
+    await expect(panel.getByTestId('ledger-thread-list-skeleton')).toHaveCount(
+      0,
+    );
+    await expect(panel.getByTestId('slow-load-note')).toHaveCount(0);
+  } catch (error) {
+    await window
+      .screenshot({ path: testInfo.outputPath('ledger-loading-failure.png') })
       .catch(() => undefined);
     throw error;
   } finally {

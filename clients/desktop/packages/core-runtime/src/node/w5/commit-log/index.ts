@@ -37,7 +37,19 @@ export {
   type W5CommitLogErrorCode,
   type W5CommitRefusal,
 } from './errors';
-export { ensureW5DataRoot } from './data-root';
+export {
+  anchorW5CaptureRoot,
+  ensureW5DataRoot,
+  w5CommitLogLocation,
+  type W5DataRootOptions,
+} from './data-root';
+export type {
+  W5ConfinedFileRead,
+  W5ConfinedFileReader,
+  W5ConfinedFileReaderSource,
+} from './capture-contract';
+export { createNodeW5Durability } from './node-durability';
+export { runW5CommitLogWorker, type W5CommitLogWorkerHost } from './worker';
 export {
   isW5BackupPosition,
   isW5CommitLogMethod,
@@ -48,6 +60,7 @@ export {
   isW5CommitOutcome,
   isW5ReceiptLookup,
   isW5RecoveryReport,
+  isW5RecoveryRetryOutcome,
   isW5Revision,
   readW5CommitLogRequestId,
   type W5CommitLogMethod,
@@ -58,6 +71,7 @@ export {
   type W5CommitLogWorkerError,
   type W5CommitOutcome,
   type W5HostRecoveryReport,
+  type W5RecoveryRetryOutcome,
 } from './worker-contract';
 export {
   MALFORMED_REQUEST_MESSAGE,

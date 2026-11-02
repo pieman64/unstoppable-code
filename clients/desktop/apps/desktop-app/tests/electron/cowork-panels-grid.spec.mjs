@@ -645,14 +645,25 @@ test('cowork page mounts the panel grid with surface-filtered panels', async ({}
     });
 
     // The default layout mounts with the stable shared group ids and one
-    // instance-bound chat panel.
+    // instance-bound chat panel. The new Work Entry installs the test API
+    // before it ensures its layout, so that gap reads as "not yet".
     await expect
       .poll(async () =>
-        window.evaluate(() =>
-          window.__canopyPanelTestApi
-            ? window.__canopyPanelTestApi.getSerializedLayout().root.type
-            : null,
-        ),
+        window.evaluate(() => {
+          const api = window.__canopyPanelTestApi;
+          if (!api) return null;
+          try {
+            return api.getSerializedLayout().root.type;
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message.includes('No panel layout for worktree')
+            ) {
+              return null;
+            }
+            throw error;
+          }
+        }),
       )
       .not.toBeNull();
     const layout = await window.evaluate(() =>
@@ -696,6 +707,7 @@ test('cowork page mounts the panel grid with surface-filtered panels', async ({}
     // New Chat reuses the existing empty chat: still exactly one chat panel.
     // (The affordance moved from the top bar to the tab strip's `+`.)
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     await window.waitForTimeout(500);
     const layoutAfterNewChat = await window.evaluate(() =>
       window.__canopyPanelTestApi.getSerializedLayout(),
@@ -707,7 +719,7 @@ test('cowork page mounts the panel grid with surface-filtered panels', async ({}
 
     // Surface-filtered add-panel menu: workspace-item cards present,
     // git-bound sections absent.
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     const addMenu = window.getByTestId('panel-add-menu');
     await expect(addMenu).toBeVisible();
     for (const present of [
@@ -779,18 +791,25 @@ test('cowork page mounts the panel grid with surface-filtered panels', async ({}
       timeout: 15_000,
     });
 
-    // Opening the file explorer shows the cowork folder as the primary
-    // "Workspace" root (formerly mislabeled "artifacts" before the artifacts
-    // feature was removed), alongside the notes/prompts roots.
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    // Opening the file explorer shows the cowork folder as the primary root,
+    // named for the project and expanded on first open (formerly mislabeled
+    // "artifacts", then "Workspace"). The notes/prompts roots sit under the
+    // collapsed brand group. Assert by root identity, not by a fixed label.
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(addMenu).toBeVisible();
     await addMenu.getByTestId('panel-add-menu-item-file-explorer').click();
     await expect(addMenu).toBeHidden();
     const filesTree = window.getByTestId('files-tree-tab');
     await expect(filesTree).toBeVisible({ timeout: 15_000 });
+    const coworkRoot = filesTree.locator(
+      '[data-testid="files-tree-folder"][data-path=""][data-file-tree-id="workspace:"]',
+    );
+    await expect(coworkRoot).toBeVisible({ timeout: 15_000 });
+    await expect(coworkRoot).toHaveAttribute('aria-expanded', 'true');
+    await expect(coworkRoot).not.toHaveText(/^\W*Workspace$/);
     await expect(
-      filesTree.getByText('Workspace', { exact: true }).first(),
-    ).toBeVisible({ timeout: 15_000 });
+      filesTree.getByTestId('files-tree-root-group'),
+    ).toHaveAttribute('aria-expanded', 'false');
     await expect(filesTree.getByText('artifacts', { exact: true })).toHaveCount(
       0,
     );

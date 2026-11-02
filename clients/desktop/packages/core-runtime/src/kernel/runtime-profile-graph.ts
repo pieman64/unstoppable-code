@@ -28,8 +28,11 @@ import {
 import { runtimeProfileInstalls } from './runtime-profile-manifest';
 import {
   createInProcessWorkerBinding,
+  localWorkerTransportOf,
   type WorkerBindingPair,
 } from '../runtime/in-process-worker-binding';
+import type { LocalWorkerTransport } from '../runtime/local-worker-transport';
+import { createWorkerExecutorReceipts } from '../runtime/worker-executor-receipts';
 import {
   createServiceContainer,
   type RuntimeService,
@@ -96,6 +99,8 @@ export function defineRuntimeModule<
 export interface CreateRuntimeProfileGraphOptions {
   profile: CanopyRuntimeProfile;
   identity: CanopyRuntimeIdentity;
+  /** Shared with a host journal's cursors; see `CreateCanopyRuntimeOptions`. */
+  daemonEpoch?: string;
   modules: readonly RuntimeModule[];
   /** Per shutdown phase; phase 3 must outlast `shutdownTimeoutMs`. */
   phaseDeadlineMs: number;
@@ -126,6 +131,26 @@ const OPERATION_KINDS = {
   streams: 'stream',
 } as const;
 
+/** Each definition must sit in its own kind's map and be installed by the profile. */
+function admitDefinitions(
+  profile: CanopyRuntimeProfile,
+  module: string,
+  kind: (typeof KINDS)[number],
+  declared: Readonly<Record<string, { kind: string }>>,
+): string[] {
+  for (const [operation, definition] of Object.entries(declared)) {
+    if (definition.kind !== OPERATION_KINDS[kind])
+      throw new Error(
+        `Module ${module} declares ${operation} as a ${definition.kind} in its ${kind}`,
+      );
+    if (!runtimeProfileInstalls(profile, operation, OPERATION_KINDS[kind]))
+      throw new Error(
+        `Runtime profile ${profile} does not install ${operation}`,
+      );
+  }
+  return Object.keys(declared);
+}
+
 /** Operation ownership and planes are checked by the operation registry. */
 function composeModules(
   profile: CanopyRuntimeProfile,
@@ -151,12 +176,12 @@ function composeModules(
         );
     const operations: string[] = [];
     for (const kind of KINDS) {
-      const names = Object.keys(maps.definitions[kind]);
-      for (const operation of names)
-        if (!runtimeProfileInstalls(profile, operation, OPERATION_KINDS[kind]))
-          throw new Error(
-            `Runtime profile ${profile} does not install ${operation}`,
-          );
+      const names = admitDefinitions(
+        profile,
+        name,
+        kind,
+        maps.definitions[kind],
+      );
       const handled = Object.keys(maps.handlers[kind]);
       if (
         handled.length !== names.length ||
@@ -227,53 +252,76 @@ function createWorkerRuntime(
   };
 }
 
-/** Bundled worker modules run on a worker dispatcher behind the binding. */
+/**
+ * Bundled worker modules run on a worker dispatcher behind the binding; the
+ * core dispatcher holds only the binding's forwarders for their operations.
+ */
 function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
-  queries: Record<string, ModuleHandler>;
+  handlers: RuntimeModuleHandlers;
   worker: CanopyDispatcher | null;
+  transport: LocalWorkerTransport | null;
   close: () => void;
 } {
   const modules = options.modules.filter(({ plane }) => plane === 'worker');
   const { definitions, handlers } = composeModules('core+worker', modules);
-  for (const name of [
-    ...Object.keys(definitions.instructions),
-    ...Object.keys(definitions.streams),
-  ])
-    throw new Error(`The in-process worker binding cannot carry ${name}`);
-  const queries: Record<string, ModuleHandler> = {};
   if (modules.length === 0)
-    return { queries, worker: null, close: () => undefined };
+    return {
+      handlers: { queries: {}, instructions: {}, streams: {} },
+      worker: null,
+      transport: null,
+      close: () => undefined,
+    };
   if (options.workerCaller === undefined)
     throw new Error('Bundled worker modules require a workerCaller');
   if (options.workerBinding === undefined)
     throw new Error('Bundled worker modules require a workerBinding');
+  // The executor half of shared idempotency (CAN-4132).
+  const receipts = createWorkerExecutorReceipts(definitions.instructions);
   const worker = createCanopyDispatcher({
     profile: 'worker',
     definitions,
-    handlers,
+    handlers: {
+      ...handlers,
+      instructions: receipts.wrap(handlers.instructions),
+    },
     shutdownTimeoutMs: options.shutdownTimeoutMs,
   });
-  const client = createInProcessWorkerBinding(
+  const binding = createInProcessWorkerBinding({
+    dispatcher: worker,
+    definitions,
+    caller: options.workerCaller,
+    pair: options.workerBinding,
+    receipts,
+  });
+  return {
+    handlers: binding.forwarders,
     worker,
-    options.workerCaller,
-    options.workerBinding,
-  );
-  for (const name of Object.keys(definitions.queries))
-    queries[name] = (params, { metadata, signal }): Promise<unknown> =>
-      client.query(name, params, { metadata, signal });
-  return { queries, worker, close: () => client.close() };
+    transport: localWorkerTransportOf(binding, definitions.instructions),
+    close: () => binding.close(),
+  };
+}
+
+export interface RuntimeProfileGraph extends CanopyRuntime<CanopyDispatcher> {
+  /**
+   * The core's transport to the bundled local worker, for dispatch records
+   * (CAN-4132); null when the graph bundles no worker module.
+   */
+  readonly localWorker: LocalWorkerTransport | null;
 }
 
 /** Builds a `core`, `worker`, or bundled `core+worker` runtime from modules. */
 export function createRuntimeProfileGraph(
   options: CreateRuntimeProfileGraphOptions,
-): CanopyRuntime<CanopyDispatcher> {
+): RuntimeProfileGraph {
   const { profile, shutdownTimeoutMs } = options;
   const composed = composeModules(profile, options.modules);
-  if (profile === 'worker') return createWorkerRuntime(options, composed);
-  return createCanopyRuntime({
+  if (profile === 'worker')
+    return { ...createWorkerRuntime(options, composed), localWorker: null };
+  let localWorker: LocalWorkerTransport | null = null;
+  const graph = createCanopyRuntime({
     profile,
     identity: options.identity,
+    daemonEpoch: options.daemonEpoch,
     definitions: composed.definitions,
     owners: composed.owners,
     services: composed.services,
@@ -287,21 +335,25 @@ export function createRuntimeProfileGraph(
         instructions: {},
       };
       const {
-        queries,
+        handlers: bound,
         worker,
+        transport,
         close: closeBinding,
       } = bindBundledWorker(options);
+      localWorker = transport;
+      // Worker handlers never join this map, so a missing forwarder fails
+      // dispatcher validation instead of reaching a worker handler directly.
+      const core = composeModules(
+        profile,
+        options.modules.filter(({ plane }) => plane === 'core'),
+      ).handlers;
       const bundle = createCanopyDispatcher({
         profile: input.profile,
         definitions,
         handlers: {
-          queries: {
-            ...composed.handlers.queries,
-            ...queries,
-            ...runtime.queries,
-          },
-          instructions: composed.handlers.instructions,
-          streams: { ...composed.handlers.streams, ...runtime.streams },
+          queries: { ...core.queries, ...bound.queries, ...runtime.queries },
+          instructions: { ...core.instructions, ...bound.instructions },
+          streams: { ...core.streams, ...bound.streams, ...runtime.streams },
         },
         shutdownTimeoutMs,
       });
@@ -324,4 +376,5 @@ export function createRuntimeProfileGraph(
       });
     },
   });
+  return Object.assign(graph, { localWorker });
 }

@@ -25,7 +25,13 @@ export const AGENT_TASK_HARNESSES = [
 ] as const;
 export type AgentTaskHarness = (typeof AGENT_TASK_HARNESSES)[number];
 
-export const AGENT_TASK_STOP_REASONS = ['user', 'parent'] as const;
+export const AGENT_TASK_STOP_REASONS = [
+  'user',
+  'parent',
+  'inactivity',
+  'budget',
+  'session_ended',
+] as const;
 export type AgentTaskStopReason = (typeof AGENT_TASK_STOP_REASONS)[number];
 
 export const AGENT_TASK_PROMPT_MAX_CHARS = 4000;
@@ -50,6 +56,11 @@ export interface AgentTaskNativeIds {
    * identity, not a filesystem path; metadata only, like `rootThreadId`.
    */
   readonly agentPath?: string;
+  /**
+   * The harness tool that started a background task, such as `Bash` or
+   * `Monitor` (REG-3081). Absent on rows from an older Core.
+   */
+  readonly toolName?: string;
 }
 
 export const AGENT_TASK_TERMINAL_STATUSES = [

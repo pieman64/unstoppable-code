@@ -39,9 +39,11 @@ const CUSTOM_COPY_IDS = [
 ];
 const DEVICE_GITHUB_ID = 'c0ffee00-0000-4000-8000-000000004261';
 
+// The table's only remaining mount: CAN-4267 deleted the Plugins → Your
+// plugins → MCP mount with the legacy management view; Customize lists MCP
+// servers as Installed rows with per-server detail pages instead.
 export const MCP_TABLE_MOUNTS = [
   { name: 'settings', panelTestId: 'settings-mcp-account-connections' },
-  { name: 'plugins', panelTestId: 'plugins-management-section-mcp' },
 ];
 
 function connectionFixture(overrides) {
@@ -211,13 +213,8 @@ export async function launchMcpServersLayout(
     expect(signIn.status.authenticated, JSON.stringify(signIn.status)).toBe(
       true,
     );
-    if (mount.name === 'settings') {
-      await app.openSettings();
-      await app.openSettingsSection('mcp');
-    } else {
-      await app.openPluginsPage();
-      await app.openPluginsTab('mcp');
-    }
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
     const panel = window.getByTestId(mount.panelTestId);
     await expect(panel).toBeVisible();
     for (const rowTestId of [CUSTOM_ROW_TEST_ID, DEVICE_ROW_TEST_ID])

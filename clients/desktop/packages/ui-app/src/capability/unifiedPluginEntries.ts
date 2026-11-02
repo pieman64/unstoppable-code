@@ -1,3 +1,4 @@
+import { withoutAutomationOwnedPipelines } from '../workflows/workflow-library-model';
 import type { ResourceOwner } from '@canopy/protocol/resource-owner';
 /**
  * Unified capability marketplace projection (CAN-1080 / API-2153 / CAN-1565).
@@ -16,7 +17,6 @@ import {
 import type {
   McpServerIndexEntry,
   McpServerStatusEntry,
-  ProviderConnectorListResult,
 } from '@canopy/protocol/mcp-servers';
 import { resolveMcpConnectionBadge } from '@canopy/ui-shared/lib/mcp-card-display';
 import type { CuratedPluginEntry } from '@canopy/protocol/plugin-catalog';
@@ -26,6 +26,7 @@ import {
   type MarketplaceInfo,
   type PluginDetails,
   type PluginInfo,
+  type PluginSkillInfo,
   type SharedPluginSummary,
 } from '@canopy/protocol/plugins';
 import type { SharedAgentSummary } from '@canopy/protocol/agents';
@@ -35,11 +36,13 @@ import {
 } from '@canopy/protocol/workspace-templates';
 import type {
   InstalledSkillInfo,
+  SharedSkillInstallOrigin,
   SharedSkillSummary,
 } from '@canopy/protocol/skills';
 import type { PipelineInfo } from '@canopy/protocol/pipelines';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
 import type { CuratedAutomationSummary } from '@canopy/protocol/automation-catalog';
+import type { CuratedPipelineSummary } from '@canopy/protocol/pipeline-catalog';
 import type {
   CollectionIndexEntry,
   SharedCollectionSummary,
@@ -51,6 +54,8 @@ import {
   type UnifiedLocalAgentInput,
 } from '@canopy/protocol/unified-entry';
 import {
+  isBundledSkill,
+  marketplaceBrowseNameKey,
   marketplaceTitleCase,
   officialProductLogoKey,
   pluginDisplayAuthor,
@@ -59,12 +64,27 @@ import {
   type UnifiedEntryConnectionStatus,
   type UnifiedEntryFoldedConnector,
   type UnifiedEntryFoldedPlugin,
+  type UnifiedEntryAlternative,
+  type UnifiedEntryBundledServerRow,
+  type UnifiedEntryInstalledFrom,
+  type UnifiedEntryPluginLink,
+  type UnifiedEntryPublicShare,
   type UnifiedEntryRequirement,
   type UnifiedPluginEntry,
+  type UnifiedWorkflowFacets,
+  type WorkflowLastRun,
 } from '@canopy/ui-shared';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 export { marketplaceTitleCase } from '@canopy/ui-shared';
 import { MCP_BRAND_LOGOS } from '@canopy/ui-shared/lib/mcp-brand-logos';
+import {
+  describeRunUnavailable,
+  pipelineTriggerKinds,
+} from '../workflows/workflow-library-model';
+import {
+  WORKFLOW_ITEM_LABEL,
+  workflowSearchAlias,
+} from '@canopy/ui-shared/lib/workflow-labels';
 
 // ---------------------------------------------------------------------------
 // Public types — verbatim per the task brief; later tasks depend on these
@@ -72,7 +92,18 @@ import { MCP_BRAND_LOGOS } from '@canopy/ui-shared/lib/mcp-brand-logos';
 // ---------------------------------------------------------------------------
 
 // Shared with the connector rows so "what do we advertise" has one answer.
-import { buildProviderConnectorRows } from './providerConnectorRows';
+import {
+  buildProviderConnectorRows,
+  type ProviderConnectorInput,
+} from './providerConnectorRows';
+import {
+  bundledMcpServersOf,
+  githubOwner,
+  mcpEndpointKey,
+  pluginPackageKey,
+  pluginSourceLabel,
+} from './pluginProvenance';
+import { normalizeShareContentHash } from './share-content-hash';
 
 export type {
   UnifiedEntryKind,
@@ -108,12 +139,29 @@ export interface UnifiedMarketplacePluginInput extends Pick<
   > | null;
   /** Browser summaries collapse provider-specific install state to one bit. */
   installed?: boolean;
+  /**
+   * The plugin package's own source URL, for hosts whose rows carry no
+   * `externalSource` (the Portal's sanitized projection). Distinct from the
+   * marketplace's repository URL.
+   */
+  externalSourceUrl?: string;
+  /** Bundled MCP servers, for hosts whose rows carry no `details`. */
+  bundledMcpServers?: readonly UnifiedBundledMcpServerInput[];
+  /** Bundled skills, for hosts whose rows carry no `details` (CAN-4844). */
+  bundledSkills?: readonly Pick<PluginSkillInfo, 'name' | 'description'>[];
 }
 
-export interface UnifiedMarketplaceInput extends Pick<
-  MarketplaceInfo,
-  'id' | 'name' | 'curated'
-> {
+/** An MCP server a plugin bundles, without command, args, or env. */
+export interface UnifiedBundledMcpServerInput {
+  name: string;
+  type: 'command' | 'http';
+  url?: string;
+}
+
+export interface UnifiedMarketplaceInput
+  extends
+    Pick<MarketplaceInfo, 'id' | 'name' | 'curated'>,
+    Partial<Pick<MarketplaceInfo, 'sourceType' | 'sourceUrl'>> {
   plugins: UnifiedMarketplacePluginInput[];
 }
 
@@ -121,7 +169,19 @@ export type UnifiedInstalledSkillInput = Pick<
   InstalledSkillInfo,
   'name' | 'sourceId' | 'description' | 'builtIn'
 > &
-  Partial<Pick<InstalledSkillInfo, 'updateAvailable' | 'custom'>>;
+  Partial<
+    Pick<
+      InstalledSkillInfo,
+      | 'updateAvailable'
+      | 'custom'
+      | 'updatedAt'
+      | 'remote'
+      | 'installedFromShare'
+    >
+  > & {
+    /** Existing browser-safe author-side identity supplied by the Portal. */
+    shareRemoteId?: string;
+  };
 
 /**
  * Structural local automation row. `@canopy/ui-app` cannot import the desktop
@@ -145,6 +205,11 @@ export interface UnifiedLocalAutomationInput {
   };
   /** Current source hash resolved independently of the paginated browse list. */
   sourceContentHash?: string;
+  /** Trigger, action, last run and on/off for the Customize Workflows row. */
+  readonly workflow?: Pick<
+    UnifiedWorkflowFacets,
+    'triggerText' | 'summary' | 'lastRun' | 'enabled'
+  >;
 }
 
 /**
@@ -172,14 +237,28 @@ export interface UnifiedEntryInputs {
   mcpStatuses: UnifiedMcpStatusInput[];
   curatedMcpServers: CuratedMcpServerEntry[];
   /** Per-provider connector reads; empty until they resolve. */
-  providerConnectors: ProviderConnectorListResult[];
+  providerConnectors: ProviderConnectorInput[];
   pipelines?: PipelineInfo[];
+  /**
+   * User pipelines a live automation owns (CAN-4551); each is listed under
+   * its automation instead of as a pipeline.
+   */
+  ownedPipelineIds?: ReadonlySet<string>;
+  /**
+   * Newest run per pipeline id; a listed id with no run maps to null.
+   * Omitted when the host has no run data (or has not loaded it yet).
+   */
+  pipelineLastRuns?: ReadonlyMap<string, WorkflowLastRun | null>;
+  /** Host-specific reason a manually runnable pipeline entry cannot run. */
+  pipelineRunUnavailable?: ReadonlyMap<string, string>;
   localCollections?: CollectionIndexEntry[];
   sharedSkills?: SharedSkillSummary[];
   sharedCollections?: SharedCollectionSummary[];
   localAutomations?: UnifiedLocalAutomationInput[];
   sharedAutomations?: SharedAutomationSummary[];
   curatedAutomations?: CuratedAutomationSummary[];
+  /** Pipeline templates from the cloud's curated catalog. */
+  curatedPipelines?: CuratedPipelineSummary[];
   /**
    * List every shared automation even when a local copy or source exists.
    * Only the Automations tab's "Shared by me" facet sets it, so the user's
@@ -566,20 +645,41 @@ function mcpStateFromStatus(
     : 'installed';
 }
 
+type McpConfigAuthStatus =
+  McpServerStatusEntry['configs'][number]['authStatus'];
+
+/**
+ * The state an account row's cloud connection lifecycle decides, or
+ * `undefined` when the status decides (a connected or non-account row). A
+ * pending or disconnected connection is not installed, whatever its status
+ * entry says; configuration auth only refines a connected row. A Portal
+ * account row can arrive without its connection, and there the desktop's
+ * `not_connected` stands for that same pending or disconnected lifecycle.
+ */
+function accountLifecycleState(
+  server: McpServerIndexEntry,
+  ownAuthStatus: McpConfigAuthStatus | undefined,
+): UnifiedEntryState | undefined {
+  switch (server.accountConnection?.status) {
+    case 'PENDING':
+    case 'DISCONNECTED':
+      return 'available';
+    case 'REAUTH_REQUIRED':
+      return 'needs-auth';
+    case 'CONNECTED':
+      return undefined;
+    case undefined:
+      return server.scope === 'account' && ownAuthStatus === 'not_connected'
+        ? 'available'
+        : undefined;
+  }
+}
+
 function mcpServerState(
   server: McpServerIndexEntry,
   status: UnifiedMcpStatusInput | undefined,
 ): UnifiedEntryState {
-  if (status) return mcpStateFromStatus(status);
-  switch (server.accountConnection?.status) {
-    case 'REAUTH_REQUIRED':
-      return 'needs-auth';
-    case 'DISCONNECTED':
-    case 'PENDING':
-      return 'available';
-    default:
-      return 'installed';
-  }
+  return accountLifecycleState(server, undefined) ?? mcpStateFromStatus(status);
 }
 
 /**
@@ -645,8 +745,8 @@ function connectionName(server: McpServerIndexEntry): string {
  * The state of one connection on a card. Account rows for one key share the
  * provider server id, so a status matched on the id alone handed every
  * connection the first match's state; an account row reads the status entry's
- * own configuration, and falls back to the connection's cloud status when the
- * entry does not list it.
+ * own configuration. The connection's lifecycle decides first; the
+ * configuration only refines a connected row.
  */
 function connectionState(
   server: McpServerIndexEntry,
@@ -654,19 +754,19 @@ function connectionState(
 ): UnifiedEntryState {
   const configId = accountConfigId(server);
   if (status && configId !== undefined && status.configs.length > 0) {
+    // Undefined when the entry describes other configurations, not this one.
     const config = status.configs.find(
       (candidate) => candidate.configId === configId,
     );
-    if (config) return authStatusState(config.authStatus);
-    // The entry describes other configurations, not this one.
-    return mcpServerState(server, undefined);
+    return (
+      accountLifecycleState(server, config?.authStatus) ??
+      (config ? authStatusState(config.authStatus) : 'installed')
+    );
   }
   return mcpServerState(server, status);
 }
 
-function authStatusState(
-  authStatus: McpServerStatusEntry['configs'][number]['authStatus'],
-): UnifiedEntryState {
+function authStatusState(authStatus: McpConfigAuthStatus): UnifiedEntryState {
   switch (authStatus) {
     case 'not_connected':
     case 'expired':
@@ -677,12 +777,78 @@ function authStatusState(
   }
 }
 
+/**
+ * Whether a configuration waits for the user to sign in: never connected, or
+ * its sign-in expired. An auth error is a failure to fix, not a pending
+ * sign-in, so it keeps `Needs attention` (CAN-4840).
+ */
+function authStatusAwaitsSignIn(authStatus: McpConfigAuthStatus): boolean {
+  switch (authStatus) {
+    case 'not_connected':
+    case 'expired':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** The sign-in half of `mcpServerState`. */
+function serverAwaitsSignIn(
+  server: McpServerIndexEntry,
+  status: UnifiedMcpStatusInput | undefined,
+): boolean {
+  const lifecycle = accountLifecycleState(server, undefined);
+  if (lifecycle !== undefined) return lifecycle === 'needs-auth';
+  return status?.connectionStatus === 'auth_required';
+}
+
+/** The sign-in half of `connectionState`, read from the same sources. */
+function connectionAwaitsSignIn(
+  server: McpServerIndexEntry,
+  status: UnifiedMcpStatusInput | undefined,
+): boolean {
+  const configId = accountConfigId(server);
+  if (status && configId !== undefined && status.configs.length > 0) {
+    const config = status.configs.find(
+      (candidate) => candidate.configId === configId,
+    );
+    const lifecycle = accountLifecycleState(server, config?.authStatus);
+    if (lifecycle !== undefined) return lifecycle === 'needs-auth';
+    return config ? authStatusAwaitsSignIn(config.authStatus) : false;
+  }
+  return serverAwaitsSignIn(server, status);
+}
+
+/**
+ * How many sign-ins one installed row is waiting on; the row's chip shows
+ * exactly this count. A device row with configurations counts each one that
+ * waits for sign-in; any other row counts its own connection.
+ */
+function mcpPendingSignIns(
+  server: McpServerIndexEntry,
+  status: UnifiedMcpStatusInput | undefined,
+): number {
+  if (
+    status &&
+    accountConfigId(server) === undefined &&
+    status.configs.length > 0
+  ) {
+    return status.configs.filter((config) =>
+      authStatusAwaitsSignIn(config.authStatus),
+    ).length;
+  }
+  return connectionAwaitsSignIn(server, status) ? 1 : 0;
+}
+
+function isAccountServer(server: McpServerIndexEntry): boolean {
+  return server.scope === 'account' || server.accountConnection !== undefined;
+}
+
 function serverConnection(
   server: McpServerIndexEntry,
   state: UnifiedEntryState,
 ): UnifiedEntryConnection {
-  const account =
-    server.scope === 'account' || server.accountConnection !== undefined;
+  const account = isAccountServer(server);
   const configId =
     server.accountConnection?.configId ??
     server.configs.find((config) => config.enabled)?.id ??
@@ -753,6 +919,19 @@ function buildCuratedMcpEntry(
   const accountBound = connections.some(
     (connection) => connection.binding === 'account',
   );
+  // The sum of what each server's own row would count; provider account
+  // connections never wait for sign-in here.
+  const pendingSignIns = servers
+    .filter((server) => !desktopOnly || !isAccountServer(server))
+    .reduce(
+      (count, server) =>
+        count +
+        mcpPendingSignIns(
+          server,
+          findMcpStatus(server.id, mcpStatuses, accountConfigId(server)),
+        ),
+      0,
+    );
   const surface = desktopOnly ? 'desktop' : accountBound ? 'cloud' : undefined;
   const logoUrl =
     entry.logoUrl ?? servers.find((server) => server.logoUrl)?.logoUrl;
@@ -788,6 +967,7 @@ function buildCuratedMcpEntry(
     state,
     ...(surface ? { surface } : {}),
     ...(connection ? { connection } : {}),
+    ...(pendingSignIns > 0 ? { pendingSignIns } : {}),
     recommended: false,
     catalogSortOrder: entry.sortOrder,
     integration: {
@@ -811,6 +991,7 @@ function buildLocalMcpEntry(
   server: McpServerIndexEntry,
   state: UnifiedEntryState,
   connection: UnifiedEntryConnectionStatus,
+  pendingSignIns: number,
 ): UnifiedPluginEntry {
   // Account rows for one key share the server id, so the configuration is
   // part of the identity; a device row's id is already its own.
@@ -838,6 +1019,7 @@ function buildLocalMcpEntry(
         ? 'cloud'
         : 'desktop',
     connection,
+    ...(pendingSignIns > 0 ? { pendingSignIns } : {}),
     recommended: false,
     ref: {
       type: 'local-mcp',
@@ -924,10 +1106,12 @@ function buildMcpAppEntries(
       mcpStatuses,
       accountConfigId(server),
     );
+    const state = connectionState(server, status);
     return buildLocalMcpEntry(
       server,
-      connectionState(server, status),
+      state,
       mcpEntryConnection(server, status),
+      mcpPendingSignIns(server, status),
     );
   });
 
@@ -971,14 +1155,6 @@ function marketplacePluginState(
 const GITHUB_AVATAR_SIZE_PX = 128;
 
 /**
- * A GitHub handle: alphanumeric, single interior hyphens, no leading/trailing
- * hyphen. Owners are interpolated into a URL below, so anything that could
- * carry a path, query, or scheme out of that position is refused outright
- * rather than escaped.
- */
-const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
-
-/**
  * GitHub owner avatar for a repository URL, or nothing if it is not one.
  *
  * Fetching is not done here: the returned URL is handed to the existing
@@ -989,31 +1165,10 @@ const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 export function githubOwnerAvatarUrl(
   repoUrl: string | undefined,
 ): string | undefined {
-  if (repoUrl === undefined || repoUrl === '') {
-    return undefined;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(repoUrl);
-  } catch {
-    return undefined;
-  }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    return undefined;
-  }
-  // Compared exactly, never by prefix/suffix: `github.com.evil.example` and
-  // `notgithub.com` must not match.
-  const host = parsed.hostname.toLowerCase();
-  if (host !== 'github.com' && host !== 'www.github.com') {
-    return undefined;
-  }
-  // Indexed rather than filtered for empties: on `github.com//repo` the owner
-  // slot is genuinely empty, and skipping it would promote the NEXT segment
-  // into the owner position and resolve a plausible-looking wrong avatar.
-  const owner = parsed.pathname.split('/')[1];
-  if (owner === undefined || !GITHUB_OWNER_PATTERN.test(owner)) {
-    return undefined;
-  }
+  // The owner is validated against a strict handle pattern before it is
+  // interpolated, so nothing can carry a path or query out of that position.
+  const owner = githubOwner(repoUrl);
+  if (owner === undefined) return undefined;
   return `https://github.com/${owner}.png?size=${String(GITHUB_AVATAR_SIZE_PX)}`;
 }
 
@@ -1140,7 +1295,13 @@ function installedPluginFacts(
   plugin: UnifiedMarketplacePluginInput | undefined,
 ): Pick<UnifiedPluginEntry, 'version' | 'installedHarnesses'> {
   const status = plugin?.globalInstallStatus;
-  if (!status) return {};
+  if (!status) {
+    // Without provider status the manifest version is the installed cache's.
+    const version = plugin?.version?.trim();
+    return plugin && version && marketplacePluginState(plugin) === 'installed'
+      ? { version }
+      : {};
+  }
   const installed = [status.claude, status.codex].filter(
     (provider) => provider?.installed === true,
   );
@@ -1157,7 +1318,7 @@ function installedPluginFacts(
 }
 
 function buildMarketplacePluginEntries(
-  marketplaces: UnifiedMarketplaceInput[],
+  marketplaces: readonly UnifiedMarketplaceInput[],
 ): UnifiedPluginEntry[] {
   const entries: UnifiedPluginEntry[] = [];
   for (const marketplace of marketplaces) {
@@ -1178,7 +1339,7 @@ function buildMarketplacePluginEntries(
         categories: plugin.category ? [plugin.category] : [],
         authorName: author,
         typeLabel: 'Plugin',
-        sourceLabel: marketplace.name,
+        sourceLabel: pluginSourceLabel(marketplace, plugin),
         ownershipLabel: author,
         availabilityLabel: availabilityLabel(marketplacePluginState(plugin)),
         components: pluginDetailsComponents(plugin.details),
@@ -1192,6 +1353,87 @@ function buildMarketplacePluginEntries(
           pluginName: plugin.name,
         },
       });
+    }
+  }
+  return entries;
+}
+
+/** A plugin's bundled skills, first of each name only. */
+function bundledSkillsOf(
+  plugin: UnifiedMarketplacePluginInput,
+): readonly Pick<PluginSkillInfo, 'name' | 'description'>[] {
+  const skills = plugin.bundledSkills ?? plugin.details?.skills ?? [];
+  const byName = new Map<
+    string,
+    Pick<PluginSkillInfo, 'name' | 'description'>
+  >();
+  for (const skill of skills) {
+    if (!byName.has(skill.name)) byName.set(skill.name, skill);
+  }
+  return [...byName.values()];
+}
+
+/**
+ * The skills each installed marketplace plugin bundles, as Installed rows
+ * that follow the plugin's status (CAN-4844). They have no status, update or
+ * removal of their own; `bundledBy` links them to the canonical plugin row,
+ * including curated plugins whose ids come from the catalog projection.
+ */
+export function buildPluginSkillEntries(
+  marketplaces: readonly UnifiedMarketplaceInput[],
+  curatedEntries: readonly UnifiedPluginEntry[] = [],
+): UnifiedPluginEntry[] {
+  const curatedByKey = new Map<string, UnifiedPluginEntry>();
+  for (const entry of curatedEntries) {
+    if (entry.ref.type === 'curated-plugin') {
+      curatedByKey.set(entry.ref.key, entry);
+    }
+  }
+  const entries: UnifiedPluginEntry[] = [];
+  const seen = new Set<string>();
+  for (const marketplace of marketplaces) {
+    for (const plugin of marketplace.plugins) {
+      const curated = isCuratedMarketplace(marketplace);
+      const parent = curated ? curatedByKey.get(plugin.name) : undefined;
+      if (curated && !parent) continue;
+      const state = parent?.state ?? marketplacePluginState(plugin);
+      if (state !== 'installed') continue;
+      const logo = marketplacePluginLogo(marketplace.id, plugin);
+      const bundledBy: UnifiedEntryPluginLink = {
+        entryId: parent?.id ?? `mkt:${marketplace.id}/${plugin.name}`,
+        name: parent?.name ?? pluginDisplayName(plugin),
+      };
+      for (const skill of bundledSkillsOf(plugin)) {
+        const id = `plugin-skill:${marketplace.id}/${plugin.name}:${skill.name}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        entries.push({
+          id,
+          kind: 'skill',
+          origin: 'marketplace',
+          name: skill.name,
+          description: skill.description,
+          logoUrl: logo.logoUrl,
+          bundledLogo: logo.bundledLogo,
+          brandMark: logo.brandMark,
+          categories: [],
+          authorName: undefined,
+          typeLabel: 'Skill',
+          sourceLabel: pluginSourceLabel(marketplace, plugin),
+          availabilityLabel: 'Installed',
+          components: { ...emptyComponents(), skills: 1 },
+          providerSupport: pluginProviderSupport(plugin),
+          state: 'installed',
+          bundledBy,
+          recommended: false,
+          ref: {
+            type: 'plugin-skill',
+            marketplaceId: marketplace.id,
+            pluginName: plugin.name,
+            skillName: skill.name,
+          },
+        });
+      }
     }
   }
   return entries;
@@ -1220,11 +1462,48 @@ export function skillOwnerAvatarUrl(
   return githubOwnerAvatarUrl(`https://github.com/${owner}/${repo}`);
 }
 
+/** The unified entry id of a locally installed skill. */
+function installedSkillEntryId(skill: UnifiedInstalledSkillInput): string {
+  return `skill:${skill.sourceId}:${skill.name}`;
+}
+
+/**
+ * The install receipt of a skill copied from a share, when it may stand in
+ * for that share: only an app-authored copy, never a built-in one.
+ */
+function sharedInstallReceipt(
+  skill: UnifiedInstalledSkillInput,
+): SharedSkillInstallOrigin | undefined {
+  return skill.sourceId === 'custom:app' && skill.builtIn !== true
+    ? skill.installedFromShare
+    : undefined;
+}
+
+function trimmedName(value: string | undefined): string | undefined {
+  const text = value?.trim();
+  return text ? text : undefined;
+}
+
+/** The receipt's names for the installed row; empty when it names nobody. */
+function receiptAttribution(
+  receipt: SharedSkillInstallOrigin,
+): UnifiedEntryInstalledFrom {
+  const sharedByName = trimmedName(receipt.sharedByName);
+  const ownerName = trimmedName(receipt.ownerName);
+  const teamName = trimmedName(receipt.teamName);
+  return {
+    ...(sharedByName ? { sharedByName } : {}),
+    ...(ownerName ? { ownerName } : {}),
+    ...(teamName ? { teamName } : {}),
+  };
+}
+
 function projectInstalledSkill(
   skill: UnifiedInstalledSkillInput,
 ): UnifiedPluginEntry {
+  const receipt = sharedInstallReceipt(skill);
   return {
-    id: `skill:${skill.sourceId}:${skill.name}`,
+    id: installedSkillEntryId(skill),
     kind: 'skill',
     origin: 'installed-standalone',
     name: skill.name,
@@ -1251,6 +1530,11 @@ function projectInstalledSkill(
     updateAvailable: skill.updateAvailable,
     builtIn: skill.builtIn,
     custom: skill.custom,
+    ...(receipt ? { installedFrom: receiptAttribution(receipt) } : {}),
+    // Built-in skills carry an empty `updatedAt`; only the viewer's own skills
+    // say when they were edited (CAN-4844).
+    editedAt:
+      skill.custom === true && skill.updatedAt ? skill.updatedAt : undefined,
     recommended: false,
     ref: { type: 'skill', sourceId: skill.sourceId, skillName: skill.name },
   };
@@ -1308,7 +1592,70 @@ function pipelineOrigin(source: PipelineInfo['source']): UnifiedEntryOrigin {
   }
 }
 
-function buildPipelineEntries(pipelines: PipelineInfo[]): UnifiedPluginEntry[] {
+function pipelineWorkflowFacets(
+  pipeline: PipelineInfo,
+  lastRuns: ReadonlyMap<string, WorkflowLastRun | null> | undefined,
+  runUnavailable: ReadonlyMap<string, string> | undefined,
+): UnifiedWorkflowFacets {
+  const kinds = pipelineTriggerKinds(pipeline.triggerTypes ?? []);
+  const hostUnavailable = runUnavailable?.get(
+    `pipeline:${pipeline.source}:${pipeline.id}`,
+  );
+  const runnable = kinds.includes('manual') && hostUnavailable === undefined;
+  return {
+    triggers: kinds.map((kind) => {
+      switch (kind) {
+        case 'schedule':
+          return {
+            kind,
+            label: 'Schedule',
+            explainer: 'Runs on its schedule',
+          };
+        case 'once':
+          return {
+            kind,
+            label: 'One time',
+            explainer: 'Runs once at the scheduled time',
+          };
+        case 'manual':
+          return {
+            kind,
+            label: 'Manual',
+            explainer: 'Runs when you start it',
+          };
+        case 'plan-approved':
+          return {
+            kind,
+            label: 'Plan approval',
+            explainer: 'Runs automatically when a plan is approved',
+          };
+        case 'task-ready':
+          return {
+            kind,
+            label: 'Task ready',
+            explainer: 'Runs when a task is marked ready',
+          };
+      }
+    }),
+    ...(pipeline.stepCount === undefined
+      ? {}
+      : { stepCount: pipeline.stepCount }),
+    runnable,
+    ...(pipeline.readonly ? { readonly: true } : {}),
+    ...(runnable
+      ? {}
+      : {
+          runUnavailableLabel: hostUnavailable ?? describeRunUnavailable(kinds),
+        }),
+    ...(lastRuns ? { lastRun: lastRuns.get(pipeline.id) ?? null } : {}),
+  };
+}
+
+function buildPipelineEntries(
+  pipelines: PipelineInfo[],
+  lastRuns?: ReadonlyMap<string, WorkflowLastRun | null>,
+  runUnavailable?: ReadonlyMap<string, string>,
+): UnifiedPluginEntry[] {
   return pipelines
     .filter(
       (
@@ -1328,7 +1675,7 @@ function buildPipelineEntries(pipelines: PipelineInfo[]): UnifiedPluginEntry[] {
         description: pipeline.description,
         categories: [],
         authorName: pipeline.owner?.name ?? undefined,
-        typeLabel: 'Pipeline',
+        typeLabel: WORKFLOW_ITEM_LABEL,
         sourceLabel: pipelineSourceLabel(pipeline.source),
         ownershipLabel: sharedOwnershipLabel(
           pipeline.owner,
@@ -1347,6 +1694,7 @@ function buildPipelineEntries(pipelines: PipelineInfo[]): UnifiedPluginEntry[] {
           scopes: pipeline.scopes ?? ['directory'],
           triggerTypes: pipeline.triggerTypes ?? [],
         },
+        workflow: pipelineWorkflowFacets(pipeline, lastRuns, runUnavailable),
         ref: {
           type: 'pipeline',
           pipelineId: pipeline.id,
@@ -1358,11 +1706,67 @@ function buildPipelineEntries(pipelines: PipelineInfo[]): UnifiedPluginEntry[] {
     });
 }
 
+/**
+ * The local copy each share was installed as, by install receipt (CAN-5223).
+ * The receipt's share id wins anywhere in the inventory; otherwise a copy
+ * whose recorded source hash equals the share's, which recognizes a source
+ * shared again under a new id. The receipt hash describes the installed
+ * source, not the current file, so it never proves byte equality. Within each
+ * rule the first copy wins. Copies without a receipt (resource context
+ * enforcement off) never match here; the detail page still finds them by
+ * reading their bytes.
+ */
+function sharedSkillInstalls(
+  installedSkills: UnifiedInstalledSkillInput[],
+): (skill: SharedSkillSummary) => string | undefined {
+  const byShareId = new Map<string, string>();
+  const byHash = new Map<string, string>();
+  for (const installed of installedSkills) {
+    const receipt = sharedInstallReceipt(installed);
+    if (!receipt) continue;
+    const entryId = installedSkillEntryId(installed);
+    if (!byShareId.has(receipt.remoteId))
+      byShareId.set(receipt.remoteId, entryId);
+    const hash = normalizeShareContentHash(receipt.contentHash);
+    if (hash && !byHash.has(hash)) byHash.set(hash, entryId);
+  }
+  return (skill) => {
+    const byId = byShareId.get(skill.id);
+    if (byId) return byId;
+    const hash = normalizeShareContentHash(skill.contentHash);
+    return hash ? byHash.get(hash) : undefined;
+  };
+}
+
+/**
+ * Shared skills, each folded into its local copy when one is installed. The
+ * alias stays in the projection, so shared-detail routes and Shared by me
+ * still find it; Customize lists the local copy and leaves it out of Browse.
+ */
 function buildSharedSkillEntries(
   skills: SharedSkillSummary[],
+  installedSkills: UnifiedInstalledSkillInput[],
+  viewerId: string | null | undefined,
 ): UnifiedPluginEntry[] {
-  return skills.map(
-    (skill): UnifiedPluginEntry => ({
+  const installedEntryIdFor = sharedSkillInstalls(installedSkills);
+  function authorInstalledEntryId(
+    share: SharedSkillSummary,
+  ): string | undefined {
+    const matches = installedSkills.filter(
+      (skill) =>
+        viewerId &&
+        share.createdBy.id === viewerId &&
+        (!skill.remote?.accountId || skill.remote.accountId === viewerId) &&
+        (skill.remote?.remoteId ?? skill.shareRemoteId) === share.id,
+    );
+    // An ambiguous author identity proves no single status to follow.
+    const match = matches.length === 1 ? matches[0] : undefined;
+    return match ? installedSkillEntryId(match) : undefined;
+  }
+  return skills.map((skill): UnifiedPluginEntry => {
+    const installedEntryId =
+      installedEntryIdFor(skill) ?? authorInstalledEntryId(skill);
+    return {
       id: `skill:shared:${skill.id}`,
       kind: 'skill',
       origin: 'shared',
@@ -1377,14 +1781,16 @@ function buildSharedSkillEntries(
       sourceLabel: 'Shared',
       ownershipLabel: sharedOwnershipLabel(skill.owner, skill.shareScope),
       ...sharedWithFromOwner(skill.owner),
-      availabilityLabel: 'Available',
+      sharedSince: skill.createdAt,
+      availabilityLabel: installedEntryId ? 'Installed' : 'Available',
       components: { ...emptyComponents(), skills: 1 },
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
-      state: 'available',
+      state: installedEntryId ? 'installed' : 'available',
+      ...(installedEntryId ? { installedEntryId } : {}),
       recommended: false,
       ref: { type: 'shared-skill', skillId: skill.id },
-    }),
-  );
+    };
+  });
 }
 
 function buildLocalCollectionEntries(
@@ -1442,6 +1848,7 @@ function buildSharedCollectionEntries(
         collection.shareScope,
       ),
       ...sharedWithFromOwner(collection.owner),
+      sharedSince: collection.createdAt,
       availabilityLabel: 'Available',
       components: {
         skills:
@@ -1567,6 +1974,7 @@ function buildSharedAgentEntries(
       sourceLabel: 'Shared',
       ownershipLabel: sharedOwnershipLabel(agent.owner, agent.shareScope),
       ...sharedWithFromOwner(agent.owner),
+      sharedSince: agent.createdAt,
       availabilityLabel: 'Available',
       components: { ...emptyComponents(), agents: 1 },
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
@@ -1593,12 +2001,43 @@ function buildSharedPluginEntries(
       sourceLabel: 'Shared',
       ownershipLabel: sharedOwnershipLabel(plugin.owner, plugin.shareScope),
       ...sharedWithFromOwner(plugin.owner),
+      sharedSince: plugin.createdAt,
       availabilityLabel: 'Available',
       components: emptyComponents(),
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
       state: 'available',
       recommended: false,
       ref: { type: 'shared-plugin', pluginId: plugin.externalId },
+    }),
+  );
+}
+
+function buildCuratedPipelineEntries(
+  pipelines: readonly CuratedPipelineSummary[],
+): UnifiedPluginEntry[] {
+  return pipelines.map(
+    (pipeline): UnifiedPluginEntry => ({
+      id: `pipeline:curated:${pipeline.key}`,
+      kind: 'pipeline',
+      origin: 'curated',
+      name: pipeline.name,
+      description: pipeline.shortDescription,
+      categories: pipeline.categories,
+      authorName: pipeline.authorName ?? undefined,
+      typeLabel: WORKFLOW_ITEM_LABEL,
+      sourceLabel: 'Curated',
+      availabilityLabel: 'Available',
+      components: emptyComponents(),
+      providerSupport: { claude: false, codex: false },
+      state: 'available',
+      recommended: pipeline.popular,
+      catalogSortOrder: pipeline.sortOrder,
+      pipeline: {
+        source: 'curated',
+        scopes: pipeline.scopes,
+        triggerTypes: pipeline.triggerTypes,
+      },
+      ref: { type: 'curated-pipeline', key: pipeline.key },
     }),
   );
 }
@@ -1625,6 +2064,7 @@ function buildSharedBlueprintEntries(
           : blueprint.audience.toLowerCase(),
       ),
       ...sharedWithFromOwner(blueprint.owner),
+      sharedSince: blueprint.createdAt,
       availabilityLabel: 'Available',
       components: emptyComponents(),
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
@@ -1685,6 +2125,7 @@ function sharedAutomationEntry(
     sourceLabel: 'Shared',
     ownershipLabel: sharedOwnershipLabel(summary.owner, summary.shareScope),
     ...sharedWithFromOwner(summary.owner),
+    sharedSince: summary.createdAt,
     availabilityLabel: 'Available',
     components: emptyComponents(),
     providerSupport: NEUTRAL_PROVIDER_SUPPORT,
@@ -1742,8 +2183,16 @@ function buildAutomationEntries(
   viewerId?: string | null,
 ): UnifiedPluginEntry[] {
   const sharedHashes = new Map<string, string>();
+  const sharedOwners = new Map<string, { name: string; isPerson: boolean }>();
   for (const summary of sharedAutomations) {
     sharedHashes.set(summary.id, summary.contentHash);
+    const { owner } = summary;
+    if (owner.type !== 'system' && owner.name) {
+      sharedOwners.set(summary.id, {
+        name: owner.name,
+        isPerson: owner.type === 'user',
+      });
+    }
   }
   const curatedHashes = new Map<string, string>();
   for (const summary of curatedAutomations) {
@@ -1785,6 +2234,10 @@ function buildAutomationEntries(
       installedFrom !== undefined &&
       sourceHash !== undefined &&
       sourceHash !== installedFrom.contentHash;
+    const sharedOwner =
+      installedFrom && sourceKind === 'shared'
+        ? sharedOwners.get(installedFrom.remoteId)
+        : undefined;
     entries.push({
       id: `automation:local:${automation.id}`,
       kind: 'automation',
@@ -1800,6 +2253,19 @@ function buildAutomationEntries(
       state: 'installed',
       ...(updateAvailable ? { updateAvailable: true } : {}),
       recommended: false,
+      ...(automation.workflow
+        ? {
+            workflow: {
+              ...automation.workflow,
+              ...(sharedOwner
+                ? {
+                    sourceText: `Shared by ${sharedOwner.name}`,
+                    ...(sharedOwner.isPerson ? { sourceIsPerson: true } : {}),
+                  }
+                : {}),
+            },
+          }
+        : {}),
       ref: { type: 'automation', activityId: automation.id },
     });
   }
@@ -1864,12 +2330,14 @@ function buildAutomationEntries(
  * once.
  *
  * Deliberately a fixed set rather than a global name match. Codex subscribes to
- * Anthropic's marketplace as well as OpenAI's, so `slack` shows up from
- * `claude-plugins-official` through both providers plus OpenAI's own wrapper —
- * three rows, identical name, identical subtitle, no way to tell them apart.
- * Collapsing on name across *every* marketplace would also silently merge two
- * genuinely different plugins that a user or org happened to name the same,
- * and the card renders no source, so they would have no signal it happened.
+ * Anthropic's marketplace as well as OpenAI's, so the same `slack` package
+ * shows up from `claude-plugins-official` through both providers — rows that
+ * differ only by the catalog that relisted them. Collapsing on name across
+ * *every* marketplace would silently merge two genuinely different plugins
+ * that a user or org happened to name the same. Even inside this set, copies
+ * collapse only when they are the same package (CAN-3653); two different
+ * packages for one app both stay, each with its source label, and link to
+ * each other from their plugin pages.
  */
 export const OVERLAPPING_MARKETPLACE_IDS: ReadonlySet<string> = new Set([
   'openai-curated-remote',
@@ -2018,7 +2486,13 @@ export function collapseByCoverage<T>(
 }
 
 /**
- * Collapse the same capability published by overlapping marketplaces.
+ * Collapse the same package published by overlapping marketplaces.
+ *
+ * Copies group by name AND package (`pluginPackageKey`): two copies with the
+ * same external source collapse, as do two copies that publish none (the name
+ * is all there is to go on). A copy with a source never collapses with one
+ * without, nor with a different source: those are different packages for one
+ * app, which `linkSameAppPlugins` links instead (CAN-3653).
  *
  * Never collapses two copies the user has installed: those are two things they
  * can uninstall, and hiding one leaves no way to reach it from this list —
@@ -2037,18 +2511,350 @@ export function collapseByCoverage<T>(
  */
 function collapseDuplicateCapabilities(
   entries: UnifiedPluginEntry[],
+  packageKeys: ReadonlyMap<string, string | undefined>,
 ): UnifiedPluginEntry[] {
   return collapseByCoverage(entries, {
     groupKey: (entry) =>
       entry.ref.type === 'marketplace-plugin' &&
       OVERLAPPING_MARKETPLACE_IDS.has(entry.ref.marketplaceId)
-        ? entry.name.toLowerCase()
+        ? `${entry.name.toLowerCase()}|${packageKeys.get(entry.id) ?? ''}`
         : null,
     reach: (entry) => entry.providerSupport,
     // Two installs are two things the user can uninstall; hiding either leaves
     // no way to reach it from this list.
     pinned: (entry) => entry.state !== 'available',
   });
+}
+
+/** Entry id → bundled MCP servers for every marketplace plugin. */
+function marketplaceBundledServers(
+  marketplaces: readonly UnifiedMarketplaceInput[],
+): Map<string, readonly UnifiedBundledMcpServerInput[]> {
+  const servers = new Map<string, readonly UnifiedBundledMcpServerInput[]>();
+  for (const marketplace of marketplaces) {
+    for (const plugin of marketplace.plugins) {
+      servers.set(
+        `mkt:${marketplace.id}/${plugin.name}`,
+        bundledMcpServersOf(plugin),
+      );
+    }
+  }
+  return servers;
+}
+
+/** Entry id → package key for every marketplace plugin. */
+function marketplacePackageKeys(
+  marketplaces: readonly UnifiedMarketplaceInput[],
+): Map<string, string | undefined> {
+  const keys = new Map<string, string | undefined>();
+  for (const marketplace of marketplaces) {
+    for (const plugin of marketplace.plugins) {
+      keys.set(
+        `mkt:${marketplace.id}/${plugin.name}`,
+        pluginPackageKey(plugin),
+      );
+    }
+  }
+  return keys;
+}
+
+/**
+ * How a linked plugin's source reads after "Also available from". The
+ * curated catalog's rows carry the bare label `Curated`, which does not.
+ */
+function alternativeLabel(entry: UnifiedPluginEntry): string {
+  if (entry.origin === 'curated') return 'the curated catalog';
+  return entry.sourceLabel ?? entry.name;
+}
+
+/**
+ * Link each catalog plugin to the same app's plugins from other catalogs, so
+ * a plugin page can say where else the app is published. Runs after the
+ * collapse, so a copy collapsed away is never offered.
+ */
+function linkSameAppPlugins(
+  entries: readonly UnifiedPluginEntry[],
+): UnifiedPluginEntry[] {
+  const linkable = (entry: UnifiedPluginEntry): boolean =>
+    entry.kind === 'plugin' &&
+    (entry.origin === 'marketplace' || entry.origin === 'curated');
+  const byName = new Map<string, UnifiedPluginEntry[]>();
+  for (const entry of entries) {
+    if (!linkable(entry)) continue;
+    const key = marketplaceBrowseNameKey(entry.name);
+    const group = byName.get(key);
+    if (group) group.push(entry);
+    else byName.set(key, [entry]);
+  }
+  return entries.map((entry) => {
+    if (!linkable(entry)) return entry;
+    const others = (byName.get(marketplaceBrowseNameKey(entry.name)) ?? [])
+      .filter((other) => other.id !== entry.id)
+      .map(
+        (other): UnifiedEntryAlternative => ({
+          entryId: other.id,
+          label: alternativeLabel(other),
+          ref: other.ref,
+        }),
+      );
+    return others.length > 0 ? { ...entry, alsoAvailableFrom: others } : entry;
+  });
+}
+
+/** What the provenance pass needs that the entries themselves do not carry. */
+interface ProvenanceFacts {
+  /** Marketplace plugin entry id → the MCP servers it bundles. */
+  bundledServers: ReadonlyMap<string, readonly UnifiedBundledMcpServerInput[]>;
+  curatedPlugins: ReadonlyMap<string, CuratedPluginEntry>;
+  curatedMcp: ReadonlyMap<string, CuratedMcpServerEntry>;
+  mcpServers: ReadonlyMap<string, McpServerIndexEntry>;
+}
+
+function endpointClaimKey(endpoint: string, name: string): string {
+  return `${endpoint}|${marketplaceBrowseNameKey(name)}`;
+}
+
+/**
+ * Whether a server a plugin bundled is listed as that plugin rather than on
+ * its own row: not when it needs attention, since hiding it would also hide
+ * the only place to connect it or see its failure (CAN-3653).
+ */
+export function bundledServerStandsBehindPlugin(
+  entry: UnifiedPluginEntry,
+): boolean {
+  return (
+    entry.state !== 'needs-auth' && entry.connection?.status !== 'unreachable'
+  );
+}
+
+/**
+ * Attribute MCP rows and catalog cards to the installed plugin that bundles
+ * their endpoint (CAN-3653). An installed server row the plugin brought gets
+ * `bundledBy`, so sections hide it behind its plugin; an uninstalled catalog
+ * card for that endpoint gets `installedVia` instead of offering Add again.
+ *
+ * Installed plugins claim endpoints in list order and the first claim wins, so
+ * two installed plugins bundling one endpoint attribute deterministically.
+ * An endpoint is its `mcpEndpointKey` plus the server's name: index rows know
+ * only their host, so the name keeps two servers on one host apart.
+ *
+ * Never tagged: account connections, rows installed from the catalog
+ * (`curatedKey`), cards already holding a connection, a folded plugin, or a
+ * provider connector — those are the user's own connections or connect
+ * flows, not something a plugin brought along. Command server rows are never
+ * tagged either: the index carries no executable, so a name match cannot show
+ * the plugin installed the row, and hiding a user's own server would drop its
+ * only management entry. For the same reason, when several installed rows
+ * match one bundled server, none of them is tagged.
+ */
+function attachPluginProvenance(
+  entries: readonly UnifiedPluginEntry[],
+  facts: ProvenanceFacts,
+): UnifiedPluginEntry[] {
+  const claims = new Map<string, UnifiedEntryPluginLink>();
+  // Claim key → the bundled server's manifest name and endpoint, for the
+  // plugin page.
+  const claimedServers = new Map<string, { name: string; endpoint: string }>();
+  const claim = (
+    key: string,
+    link: UnifiedEntryPluginLink,
+    server?: { name: string; endpoint: string },
+  ): void => {
+    if (claims.has(key)) return;
+    claims.set(key, link);
+    if (server !== undefined) claimedServers.set(key, server);
+  };
+  for (const entry of entries) {
+    if (entry.kind !== 'plugin' || entry.state === 'available') continue;
+    const link: UnifiedEntryPluginLink = {
+      entryId: entry.id,
+      name: entry.name,
+    };
+    if (entry.ref.type === 'marketplace-plugin') {
+      for (const server of facts.bundledServers.get(entry.id) ?? []) {
+        const endpoint = mcpEndpointKey(server);
+        if (endpoint !== null) {
+          claim(endpointClaimKey(endpoint, server.name), link, {
+            name: server.name,
+            endpoint,
+          });
+        }
+      }
+    } else if (entry.ref.type === 'curated-plugin') {
+      for (const key of facts.curatedPlugins.get(entry.ref.key)?.mcpServers ??
+        []) {
+        claim(`curated:${key}`, link);
+      }
+    }
+  }
+  if (claims.size === 0) return [...entries];
+
+  const claimOf = (
+    key: string,
+  ): { key: string; owner: UnifiedEntryPluginLink } | null => {
+    const owner = claims.get(key);
+    return owner === undefined ? null : { key, owner };
+  };
+  const ownerOf = (
+    entry: UnifiedPluginEntry,
+  ): { key: string; owner: UnifiedEntryPluginLink } | null => {
+    if (entry.kind !== 'app') return null;
+    if (entry.ref.type === 'local-mcp') {
+      if (entry.ref.curatedKey !== undefined) return null;
+      const server = facts.mcpServers.get(entry.ref.serverId);
+      if (
+        !server ||
+        server.type === 'command' ||
+        server.scope === 'account' ||
+        server.accountConnection !== undefined
+      ) {
+        return null;
+      }
+      const endpoint = mcpEndpointKey(server);
+      return endpoint === null
+        ? null
+        : claimOf(endpointClaimKey(endpoint, server.name));
+    }
+    if (entry.ref.type === 'curated-mcp') {
+      const catalog = facts.curatedMcp.get(entry.ref.key);
+      if (
+        !catalog ||
+        entry.state !== 'available' ||
+        entry.integration?.plugin !== undefined ||
+        entry.integration?.connector !== undefined ||
+        catalog.providerConnector !== undefined
+      ) {
+        return null;
+      }
+      const viaKey = claimOf(`curated:${catalog.key}`);
+      if (viaKey) return viaKey;
+      const endpoint = mcpEndpointKey({ type: 'http', url: catalog.url });
+      return endpoint === null
+        ? null
+        : claimOf(endpointClaimKey(endpoint, catalog.name));
+    }
+    return null;
+  };
+
+  const claimedEntries = entries.map((entry) => ({
+    entry,
+    claimed: ownerOf(entry),
+  }));
+  // Several installed rows matching one bundled server leave which one the
+  // plugin brought unknown, so none of them is hidden behind it.
+  const localRowsPerClaim = new Map<string, number>();
+  for (const { entry, claimed } of claimedEntries) {
+    if (claimed === null || entry.ref.type !== 'local-mcp') continue;
+    localRowsPerClaim.set(
+      claimed.key,
+      (localRowsPerClaim.get(claimed.key) ?? 0) + 1,
+    );
+  }
+  // Plugin entry id → the installed rows hidden behind it, so its page can
+  // still open each row's own settings.
+  const hiddenRows = new Map<string, UnifiedEntryBundledServerRow[]>();
+  // Plugin entry id → sign-ins its hidden rows are waiting on.
+  const pendingSignIns = new Map<string, number>();
+  const tagged = claimedEntries.map(({ entry, claimed }) => {
+    if (claimed === null) return entry;
+    if (entry.ref.type !== 'local-mcp') {
+      return { ...entry, installedVia: claimed.owner };
+    }
+    if ((localRowsPerClaim.get(claimed.key) ?? 0) > 1) return entry;
+    const server = claimedServers.get(claimed.key);
+    if (server === undefined) return entry;
+    const rows = hiddenRows.get(claimed.owner.entryId) ?? [];
+    rows.push({
+      serverName: server.name,
+      endpoint: server.endpoint,
+      entryId: entry.id,
+      serverId: entry.ref.serverId,
+    });
+    hiddenRows.set(claimed.owner.entryId, rows);
+    // The plugin row shows the sign-ins of the servers it stands in for
+    // (CAN-4840); a server that stays listed shows its own.
+    const waiting = bundledServerStandsBehindPlugin(entry)
+      ? (entry.pendingSignIns ?? 0)
+      : 0;
+    if (waiting > 0) {
+      pendingSignIns.set(
+        claimed.owner.entryId,
+        (pendingSignIns.get(claimed.owner.entryId) ?? 0) + waiting,
+      );
+    }
+    return { ...entry, bundledBy: claimed.owner };
+  });
+  if (hiddenRows.size === 0) return tagged;
+  return tagged.map((entry) => {
+    const rows = hiddenRows.get(entry.id);
+    if (!rows) return entry;
+    const pending = pendingSignIns.get(entry.id) ?? 0;
+    return {
+      ...entry,
+      bundledServerRows: rows,
+      ...(pending > 0 ? { pendingSignIns: pending } : {}),
+    };
+  });
+}
+
+/**
+ * The installed MCP rows hidden behind one marketplace plugin, for a plugin
+ * page that loaded that plugin on its own (the web Portal's detail route).
+ * Runs the projection's provenance pass over marketplace plugins and the
+ * installed MCP index only.
+ */
+export function marketplacePluginBundledServerRows(
+  marketplaces: readonly UnifiedMarketplaceInput[],
+  mcpServers: McpServerIndexEntry[],
+  ref: { marketplaceId: string; pluginName: string },
+): UnifiedEntryBundledServerRow[] {
+  const entries = attachPluginProvenance(
+    [
+      ...collapseDuplicateCapabilities(
+        buildMarketplacePluginEntries(marketplaces),
+        marketplacePackageKeys(marketplaces),
+      ),
+      ...buildMcpAppEntries(
+        mcpServers,
+        [],
+        [],
+        new Map(),
+        new Map(),
+        new Map(),
+      ),
+    ],
+    {
+      bundledServers: marketplaceBundledServers(marketplaces),
+      curatedPlugins: new Map(),
+      curatedMcp: new Map(),
+      mcpServers: new Map(mcpServers.map((server) => [server.id, server])),
+    },
+  );
+  const id = `mkt:${ref.marketplaceId}/${ref.pluginName}`;
+  return [
+    ...(entries.find((entry) => entry.id === id)?.bundledServerRows ?? []),
+  ];
+}
+
+/**
+ * The same app's plugins from other catalogs, for a plugin page that loaded
+ * one marketplace plugin on its own (the web Portal's detail route). Runs the
+ * projection's collapse and linking over marketplace plugins only.
+ */
+export function marketplacePluginAlternatives(
+  marketplaces: readonly UnifiedMarketplaceInput[],
+  ref: { marketplaceId: string; pluginName: string },
+): UnifiedEntryAlternative[] {
+  const linked = linkSameAppPlugins(
+    collapseDuplicateCapabilities(
+      buildMarketplacePluginEntries(marketplaces),
+      marketplacePackageKeys(marketplaces),
+    ),
+  );
+  const id = `mkt:${ref.marketplaceId}/${ref.pluginName}`;
+  return [
+    ...(linked.find((entry) => entry.id === id)?.alsoAvailableFrom ?? []),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -2107,9 +2913,9 @@ export function buildUnifiedPluginEntries(
   // vanishing from the grid and the Installed list, replaced by a row reading
   // "not set up", triggerable remotely by a hub checkbox.
   //
-  // `mcpServerState` returns `available` only for a disconnected or pending
-  // account connection, so "not available" is exactly "the user has this
-  // already".
+  // An MCP row is `available` only for a disconnected or pending account
+  // connection (`accountLifecycleState`), so "not available" is exactly "the
+  // user has this already".
   const ownership: ConnectorOwnership = {
     names: ownedNames,
     // Every keyed connector folds into its card, so no key is owned by a
@@ -2140,7 +2946,7 @@ export function buildUnifiedPluginEntries(
     curatedMcpByKey,
     inputs.foldSingleKeyPlugins === true,
   );
-  const entries = [
+  const assembled = [
     ...providerEntries,
     ...curatedPlugins.entries.filter(notOwned),
     ...buildMcpAppEntries(
@@ -2152,8 +2958,19 @@ export function buildUnifiedPluginEntries(
       connectors.folded,
     ).filter(notOwned),
     ...buildSkillEntries(inputs.installedSkills),
-    ...buildSharedSkillEntries(inputs.sharedSkills ?? []),
-    ...buildPipelineEntries(inputs.pipelines ?? []),
+    ...buildSharedSkillEntries(
+      inputs.sharedSkills ?? [],
+      inputs.installedSkills,
+      inputs.viewerId,
+    ),
+    ...buildPipelineEntries(
+      withoutAutomationOwnedPipelines(
+        inputs.pipelines ?? [],
+        inputs.ownedPipelineIds ?? new Set(),
+      ),
+      inputs.pipelineLastRuns,
+      inputs.pipelineRunUnavailable,
+    ),
     ...buildAutomationEntries(
       inputs.localAutomations ?? [],
       [
@@ -2181,17 +2998,32 @@ export function buildUnifiedPluginEntries(
     ...buildSharedBlueprintEntries(inputs.sharedBlueprints ?? []),
     ...collapseDuplicateCapabilities(
       buildMarketplacePluginEntries(inputs.marketplaces).filter(notOwned),
+      marketplacePackageKeys(inputs.marketplaces),
     ),
+    ...buildPluginSkillEntries(inputs.marketplaces, curatedPlugins.entries),
     ...buildSharedPluginEntries(inputs.sharedPlugins ?? []),
+    ...buildCuratedPipelineEntries(inputs.curatedPipelines ?? []),
   ];
+  const entries = attachPluginProvenance(linkSameAppPlugins(assembled), {
+    bundledServers: marketplaceBundledServers(inputs.marketplaces),
+    curatedPlugins: new Map(
+      inputs.curatedPlugins.map((plugin) => [plugin.key, plugin]),
+    ),
+    curatedMcp: curatedMcpByKey,
+    mcpServers: new Map(inputs.mcpServers.map((server) => [server.id, server])),
+  });
   const creators = new Map<string, string>();
   const publications = new Map<string, boolean>();
+  // Rebuilt from the current summaries on every projection, so a removed
+  // link never outlives its summary. `null` and absent both mean no link.
+  const publicShares = new Map<string, UnifiedEntryPublicShare>();
+  const publicOnlyShares = new Set<string>();
   function recordShare(
     id: string,
     share: {
       createdBy: { id: string };
       shareScope: string;
-      publicShare?: unknown;
+      publicShare?: { createdAt?: string; upToDate?: boolean } | null;
     },
   ): void {
     creators.set(id, share.createdBy?.id);
@@ -2201,6 +3033,15 @@ export function buildUnifiedPluginEntries(
         share.shareScope === 'organization' ||
         !!share.publicShare,
     );
+    if (share.publicShare) {
+      if (share.shareScope !== 'team' && share.shareScope !== 'organization')
+        publicOnlyShares.add(id);
+      const { createdAt, upToDate } = share.publicShare;
+      publicShares.set(id, {
+        ...(createdAt !== undefined ? { since: createdAt } : {}),
+        ...(upToDate !== undefined ? { upToDate } : {}),
+      });
+    }
   }
   for (const share of inputs.sharedSkills ?? [])
     recordShare(`skill:shared:${share.id}`, share);
@@ -2221,6 +3062,9 @@ export function buildUnifiedPluginEntries(
     ...(publications.has(entry.id)
       ? { isShared: publications.get(entry.id) }
       : {}),
+    ...(entry.origin === 'shared' && publicShares.has(entry.id)
+      ? { publicShare: publicShares.get(entry.id) }
+      : {}),
     ...(inputs.viewerId && entry.origin === 'shared'
       ? {
           ownedByViewer: creators.get(entry.id) === inputs.viewerId,
@@ -2233,12 +3077,20 @@ export function buildUnifiedPluginEntries(
           sharedWith: { ...entry.sharedWith, personal: true, name: 'Personal' },
         }
       : {}),
-    // Plugins, agents and project templates carry an authored display name;
-    // every other kind is named by a slug that reads better title-cased.
+    // An owner is not necessarily an audience: private shares can have just
+    // a public link. Match the detail card instead of naming their owner or
+    // treating the record's creation date as an account-share date.
+    ...(entry.origin === 'shared' && publicOnlyShares.has(entry.id)
+      ? { sharedWith: undefined, sharedSince: undefined }
+      : {}),
+    // Plugins, agents, project templates and curated pipeline templates carry
+    // an authored display name; every other kind is named by a slug that
+    // reads better title-cased.
     name:
       entry.kind === 'plugin' ||
       entry.kind === 'agent' ||
-      entry.kind === 'blueprint'
+      entry.kind === 'blueprint' ||
+      entry.ref.type === 'curated-pipeline'
         ? entry.name
         : marketplaceTitleCase(entry.name),
   }));
@@ -2262,7 +3114,7 @@ interface ProviderConnectorProjection {
  * exactly as it already hides every other curated entry.
  */
 function buildProviderConnectorEntries(
-  results: ProviderConnectorListResult[],
+  results: ProviderConnectorInput[],
   curated: CuratedMcpServerEntry[],
   curatedByKey: ReadonlyMap<string, CuratedMcpServerEntry>,
   appName: string | undefined,
@@ -2349,11 +3201,18 @@ function matchScore(
   if (
     [
       entry.typeLabel,
+      workflowSearchAlias(entry.kind),
       entry.sourceLabel,
       entry.ownershipLabel,
       entry.sharedWith?.name,
       entry.availabilityLabel,
       entry.authorName,
+      // A bundled skill is found by its plugin's name (CAN-4844).
+      isBundledSkill(entry) ? entry.bundledBy.name : undefined,
+      // The source label names provider and owner, not the catalog (CAN-3653).
+      entry.ref.type === 'marketplace-plugin'
+        ? entry.ref.marketplaceId
+        : undefined,
     ].some((value) => value?.toLowerCase().includes(normalizedQuery))
   ) {
     score += 1;

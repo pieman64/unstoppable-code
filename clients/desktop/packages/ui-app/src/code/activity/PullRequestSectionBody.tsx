@@ -400,7 +400,7 @@ export function PullRequestRepoDetail({
             href={s.prUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs fg-secondary transition hover:fg-primary"
+            className="text-xs fg-secondary transition-colors hover:fg-primary"
           >
             GitHub &rarr;
           </a>
@@ -442,7 +442,7 @@ export function PullRequestRepoDetail({
                     href={check.detailsUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="shrink-0 fg-secondary transition hover:fg-primary"
+                    className="shrink-0 fg-secondary transition-colors hover:fg-primary"
                   >
                     view &rarr;
                   </a>
@@ -607,7 +607,7 @@ export function PullRequestSectionBody({
                   <button
                     type="button"
                     onClick={() => toggleRepo(repo.repoId)}
-                    className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition hover:fg-primary"
+                    className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition-colors hover:fg-primary"
                   >
                     <AppCatalogChevronRightMediumIcon
                       width="12"
@@ -622,7 +622,7 @@ export function PullRequestSectionBody({
                       href={repo.status.prUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex-shrink-0 text-xs fg-secondary transition hover:fg-primary"
+                      className="flex-shrink-0 text-xs fg-secondary transition-colors hover:fg-primary"
                       onClick={(e) => e.stopPropagation()}
                     >
                       GitHub &rarr;
@@ -668,7 +668,7 @@ export function PullRequestSectionBody({
                 <button
                   type="button"
                   onClick={() => toggleRepo(repo.repoId)}
-                  className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition hover:fg-primary"
+                  className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition-colors hover:fg-primary"
                 >
                   <AppCatalogChevronRightMediumIcon
                     width="12"
@@ -683,7 +683,7 @@ export function PullRequestSectionBody({
                     href={repo.status.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex-shrink-0 text-xs fg-secondary transition hover:fg-primary"
+                    className="flex-shrink-0 text-xs fg-secondary transition-colors hover:fg-primary"
                     onClick={(e) => e.stopPropagation()}
                   >
                     GitHub &rarr;

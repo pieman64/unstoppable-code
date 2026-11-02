@@ -241,22 +241,24 @@ async function stubOpenDialog(
   }, filePaths);
 }
 
-/** Runs JS in the newest tab whose URL contains `url`. */
+/** Runs JS in the newest tab whose URL contains `url`, and counts those tabs. */
 async function readPage(
   electronApp: ElectronApplication,
   url: string,
   js: string,
-): Promise<{ found: boolean; value?: unknown }> {
+): Promise<{ found: boolean; value?: unknown; tabs: number }> {
   return electronApp.evaluate(
     async ({ webContents }, input) => {
-      const target = webContents
+      const matches = webContents
         .getAllWebContents()
         .filter(
           (contents) =>
             !contents.isDestroyed() && contents.getURL().includes(input.url),
         )
-        .sort((left, right) => right.id - left.id)[0];
-      if (!target) return { found: false };
+        .sort((left, right) => right.id - left.id);
+      const tabs = matches.length;
+      const target = matches[0];
+      if (!target) return { found: false, tabs };
       try {
         // A JavaScript dialog left open stops page scripts; never wait on it.
         const value: unknown = await Promise.race([
@@ -269,9 +271,9 @@ async function readPage(
             }, 10_000);
           }),
         ]);
-        return { found: true, value };
+        return { found: true, value, tabs };
       } catch (error) {
-        return { found: true, value: `error: ${String(error)}` };
+        return { found: true, value: `error: ${String(error)}`, tabs };
       }
     },
     { url, js },
@@ -465,7 +467,7 @@ async function runScenario(
         ),
       );
     let turnError: unknown;
-    const prompt = `${scenario.prompt.replaceAll('{outside}', outsideDir)} ${PROMPT_SUFFIX}`;
+    const prompt = `${scenario.prompt.replaceAll('{outside}', outsideDir).replaceAll('{worktree}', worktreePath)} ${PROMPT_SUFFIX}`;
     turnStarted = Date.now();
     const turn = await runTurn(window, scenario, prompt, userDataDir).catch(
       (error: unknown) => {

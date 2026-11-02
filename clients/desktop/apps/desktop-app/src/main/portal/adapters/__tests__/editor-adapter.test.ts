@@ -16,7 +16,10 @@ import {
   listFileTreeDirectory,
 } from '../../../services/files-service';
 import { portalFileReferences } from '../../portal-file-references';
-import { handlePortalEditorListFileMentions } from '../editor-adapter';
+import {
+  handlePortalEditorListFileMentions,
+  handlePortalEditorListSlashCommands,
+} from '../editor-adapter';
 import type { PortalAdapterContext } from '../types';
 import { isRecord } from '../validation';
 import { createDesktopRuntime } from '../../../canopy-runtime/desktop-runtime';
@@ -479,5 +482,63 @@ describe('Portal editor opaque-reference integration', () => {
       failures.every((failure) => failure.code === 'invalid_payload'),
     ).toBe(true);
     expect(buildFileIndexes).not.toHaveBeenCalled();
+  });
+});
+
+describe('portal.editor.list_slash_commands', () => {
+  it('lists the catalog of the worktree row that core.worktree.get reads', async () => {
+    const runtime = createDesktopRuntime({
+      workspaceServices: {
+        readAllSidebarItems: jest.fn(),
+        readWorkspaceIndexEntry: jest.fn().mockResolvedValue({
+          id: 'workspace',
+          name: 'Workspace',
+          type: 'single-repo',
+        }),
+        readWorkspaceConfig: jest.fn(),
+        readWorkspaceWorktrees: jest.fn().mockResolvedValue([
+          {
+            id: 'source',
+            branchName: 'feature/source',
+            createdAt: '2026-10-03T00:00:00.000Z',
+            discovery: {
+              slashCommands: [{ name: 'review', description: 'Review' }],
+              mcpServers: [],
+              discoveredAt: '2026-10-03T00:00:00.000Z',
+            },
+          },
+        ]),
+        readEffectiveWorkspaceConfig: jest.fn(),
+      },
+    });
+    setDesktopCanopyRuntime(runtime);
+    const completions: unknown[] = [];
+    try {
+      await handlePortalEditorListSlashCommands(
+        {
+          id: 'command',
+          sequence: 1,
+          type: 'portal.editor.list_slash_commands',
+          createdAt: '2026-10-03T00:00:00.000Z',
+          expiresAt: null,
+          payload: { projectId: 'workspace', worktreeId: 'source' },
+        },
+        {
+          sessionId: 'session',
+          getWindow: () => null,
+          enqueueEvent: () => undefined,
+          complete: (_command, result) => {
+            completions.push(result);
+          },
+          fail: () => undefined,
+        },
+      );
+    } finally {
+      setDesktopCanopyRuntime(null);
+      await runtime.shutdown();
+    }
+    expect(completions).toEqual([
+      { commands: [{ name: 'review', description: 'Review' }] },
+    ]);
   });
 });

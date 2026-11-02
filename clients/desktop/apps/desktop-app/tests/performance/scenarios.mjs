@@ -1,3 +1,11 @@
+import {
+  prepareSidebarReorder,
+  runSidebarReorder,
+} from './sidebar-reorder-scenario.mjs';
+import {
+  prepareCodeReviewRegistry,
+  runCodeReviewRegistryCleanup,
+} from './code-review-registry-scenario.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   existsSync,
@@ -84,7 +92,11 @@ import {
 } from './monitor.mjs';
 import { WORK_RATCHET_PROFILE } from './profiles.mjs';
 import { toolActiveTurnTaskKind } from './scaling-ratios.mjs';
-import { installWorktreeGitGate } from './worktree-git-gate.mjs';
+import {
+  checkoutWritesTailLast,
+  installWorktreeGitGate,
+  readCheckoutGitConfig,
+} from './worktree-git-gate.mjs';
 import {
   createDiskIoReader,
   mergeDiskIoWork,
@@ -111,6 +123,7 @@ import {
   seedLedgerFixture,
 } from './ledger-fixture.mjs';
 import { seedCostIndexAudit } from './cost-index-fixture.mjs';
+import { measureAppQuit, scenarioWithQuit } from './quit-latency.mjs';
 import { performanceScenarioStatus } from './scenario-status.mjs';
 import { settlePerformanceScenario } from './smoke-acceptance.mjs';
 import { percentile } from './statistics.mjs';
@@ -256,8 +269,14 @@ export async function drainTransientItems({
   while (now() - startedAt <= timeoutMs) {
     if ((await count()) > 0) {
       emptySince = null;
-      await dismissFirst();
-      dismissedCount += 1;
+      try {
+        await dismissFirst();
+        dismissedCount += 1;
+      } catch (error) {
+        // Auto-dismiss can remove a toast while its button is becoming stable.
+        // Recount under the existing deadline; a persistent obstruction fails.
+        if (error?.name !== 'TimeoutError') throw error;
+      }
     } else {
       emptySince ??= now();
       if (now() - emptySince >= stableEmptyMs) return dismissedCount;
@@ -665,9 +684,10 @@ async function visibleChatTabIds(page) {
     );
 }
 
-async function createFreshChatTab(page) {
+export async function createFreshChatTab(page) {
   const before = new Set(await visibleChatTabIds(page));
-  await page.getByTestId('panel-add-tab-group-chat').click();
+  await openPanelAddMenu(page, 'group-chat');
+  await page.getByTestId('panel-add-menu-item-new-chat').click();
   let createdChatId = null;
   await expect
     .poll(async () => {
@@ -1228,7 +1248,7 @@ async function runFileExplorer({ page, app, config, tasks, fixture }) {
   await recordTask(tasks, 'open_file_explorer', async () => {
     await openMainPage(page);
     await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
-    await openPerformanceAddMenu(page, 'group-chat');
+    await openPanelAddMenu(page, 'group-chat');
     await page.getByTestId('panel-add-menu-item-file-explorer').click();
     await expect(page.getByTestId('files-tree-tab')).toBeVisible({
       timeout: 30_000,
@@ -6817,18 +6837,15 @@ async function verifyMixedProviderAgentCards(page, descriptors, tasks) {
         const tab = page.getByTestId(`panel-tab-panel-chat-${descriptor.id}`);
         await tab.click();
         await expect(tab).toHaveAttribute('aria-selected', 'true');
+        // Every step on its own row, so the helper agent is not folded into
+        // a "Ran …" line. The clean step row has no background badge.
+        await page.evaluate(() =>
+          window.api.savePreferences({ chatDetail: 'detailed' }),
+        );
         const panel = visibleChatPanel(page);
-        await expect(
-          panel
-            .locator('button[aria-expanded]')
-            .filter({ hasText: 'Agent' })
-            .first(),
-        ).toBeVisible({ timeout: 60_000 });
-        if (providerType === 'claude') {
-          await expect(
-            panel.getByTestId('agent-block-background-badge').first(),
-          ).toBeVisible({ timeout: 60_000 });
-        }
+        await expect(panel.getByTestId('agent-block').first()).toBeVisible({
+          timeout: 60_000,
+        });
       },
       { providerType, chatId: descriptor.id },
     );
@@ -7171,7 +7188,7 @@ export function managedDelegationDescriptors() {
           return {
             marker: `Canopy-CMDPERF${ordinal}D${delegateIndex + 1}`,
             harness,
-            model: harness === 'claude' ? 'sonnet' : 'gpt-5.5',
+            model: harness === 'claude' ? 'sonnet' : 'gpt-6.1-sol',
             // Codex's `spawn_delegate` takes a task name, which its card
             // shows in place of a description.
             description:
@@ -9348,8 +9365,7 @@ async function startConcurrentChats({ page, config, tasks }) {
         tasks,
         'create_chat_tab',
         async () => {
-          await openPerformanceAddMenu(page, 'group-chat');
-          await page.getByTestId('panel-add-menu-item-new-chat').click();
+          await createFreshChatTab(page);
           await expect(chatTabs).toHaveCount(previousTabCount + 1);
           nextTabId = await waitUntil(
             async () => {
@@ -9443,7 +9459,7 @@ async function activateLaterForegroundTurn({
         .getByRole('button', { name: 'Dismiss' });
       const dismissedToastCount = await drainTransientItems({
         count: () => dismissButtons.count(),
-        dismissFirst: () => dismissButtons.first().click(),
+        dismissFirst: () => dismissButtons.first().click({ timeout: 500 }),
         pause: (delayMs) => page.waitForTimeout(delayMs),
       });
       return {
@@ -9574,8 +9590,7 @@ async function createResponsivenessChat(page, tasks) {
     ),
   );
   return recordTask(tasks, 'create_responsiveness_chat', async () => {
-    await openPerformanceAddMenu(page, 'group-chat');
-    await page.getByTestId('panel-add-menu-item-new-chat').click();
+    await createFreshChatTab(page);
     await expect(chatTabs).toHaveCount(previousTabIds.size + 1);
     const currentIds = await chatTabs.evaluateAll((tabs) =>
       tabs.map((tab) => tab.getAttribute('data-testid')),
@@ -11211,8 +11226,21 @@ async function runCodeGraphBackgroundConcurrency(context) {
 
 // ── Code-graph journeys: J7 and small edits ────────────────────────────────
 
+// Test-tooling exception to the centralized binary lookup: fixture Git runs
+// the host's PATH `git`, the same Git the seeders create fixture repositories
+// with. The app's lookup (src/main/lib/git-executable.ts) reads app
+// preferences in the main process and cannot load in this standalone harness;
+// the app under test still resolves its own Git.
 function gitQuiet(args, cwd) {
   execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+}
+
+function gitOutput(args, cwd) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
 }
 
 function commitGraphFixtureAt(worktreePath, fileCount, message) {
@@ -12288,10 +12316,12 @@ function prepareWorktrees(userDataDir, config) {
   inflatePerformanceGitCheckout(seed, config);
   // Hold each created worktree's checkout until its Git-pending probes ran,
   // so the measurement no longer depends on how fast the disk is (CAN-3804).
-  const gitGate = installWorktreeGitGate(seed.workspaces[0].repoPath, {
+  const repoPath = seed.workspaces[0].repoPath;
+  const gitGate = installWorktreeGitGate(repoPath, {
     gateDir: path.join(userDataDir, 'performance-git-gate'),
     maxHoldMs: config.gitGateMaxHoldMs,
   });
+  const gitCheckoutConfig = readCheckoutGitConfig(repoPath);
   updateWorkspaceScripts(userDataDir, {
     setup: buildPerformanceScriptCommand(config),
   });
@@ -12302,7 +12332,7 @@ function prepareWorktrees(userDataDir, config) {
     providerType: 'claude',
     tabs: [{ id: 'worktree-responsiveness-chat', title: 'Responsiveness' }],
   });
-  return { gitGate };
+  return { gitGate, gitCheckoutConfig };
 }
 
 function prepareBrowserPanels(userDataDir, config) {
@@ -12499,7 +12529,7 @@ async function revealPlanDiagram(page, fixture, surface) {
   }
   await page
     .getByTestId('plan-explore-visualizer-panel')
-    .getByRole('button', { name: 'Current/Planned/Diff', exact: true })
+    .getByRole('tab', { name: 'Current/Planned/Diff', exact: true })
     .first()
     .click();
   await expect(
@@ -12669,7 +12699,7 @@ async function browserPanelBindings(page) {
   );
 }
 
-async function openPerformanceAddMenu(page, groupId) {
+async function openPanelAddMenu(page, groupId) {
   // Classic rows have a separate Add panel control; standard filled rows
   // open the same menu from their tab-strip + control.
   const classic = page.getByTestId(`panel-add-panel-${groupId}`);
@@ -12678,7 +12708,7 @@ async function openPerformanceAddMenu(page, groupId) {
 }
 
 async function addBrowserPanel(page, expectedCount) {
-  await openPerformanceAddMenu(page, 'group-chat');
+  await openPanelAddMenu(page, 'group-chat');
   await expect(page.getByTestId('panel-add-menu')).toBeVisible();
   await page.getByTestId('panel-add-menu-item-browser').click();
   // A binding is inserted before async activation finishes. Match the durable
@@ -12831,7 +12861,7 @@ async function runBrowserPanels({
   });
 
   await recordTask(tasks, 'browser_open_close_overlay', async () => {
-    await openPerformanceAddMenu(page, first.groupId);
+    await openPanelAddMenu(page, first.groupId);
     await expect(page.getByTestId('panel-add-menu')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('panel-add-menu')).toBeHidden();
@@ -12991,7 +13021,7 @@ async function setupBrowserActions({ page, app, config, fixture }) {
   await expect(visibleChatPanel(page)).toBeVisible({ timeout: 30_000 });
   // Read the rendered tab/pane rather than the E2E-only panel test API:
   // production bundles intentionally do not install that automation seam.
-  await page.getByTestId('panel-add-panel-group-chat').click();
+  await openPanelAddMenu(page, 'group-chat');
   await expect(page.getByTestId('panel-add-menu')).toBeVisible();
   await page.getByTestId('panel-add-menu-item-browser').click();
   await expect(page.getByTestId('panel-add-menu')).toBeHidden();
@@ -13313,7 +13343,7 @@ async function setupBrowserAgentActions({ page, app, electronApp, fixture }) {
   await expect(visibleChatPanel(page)).toBeVisible({ timeout: 30_000 });
   // Bind through the rendered live Browser tab, as the existing browser-actions
   // scenario does, rather than relying on a test-only panel API.
-  await page.getByTestId('panel-add-panel-group-chat').click();
+  await openPanelAddMenu(page, 'group-chat');
   await expect(page.getByTestId('panel-add-menu')).toBeVisible();
   await page.getByTestId('panel-add-menu-item-browser').click();
   await expect(page.getByTestId('panel-add-menu')).toBeHidden();
@@ -14122,6 +14152,7 @@ async function readWorktreeSetupLoadState(page) {
       outputLines: { ...state.outputLines },
       outputSamples: { ...state.outputSamples },
       gitReadyIds: Object.keys(state.gitReady),
+      gitReadyAt: { ...state.gitReady },
       gitFailed: { ...state.gitFailed },
     };
   });
@@ -14235,11 +14266,177 @@ export function worktreeGitPendingError(state, worktreeId, stage) {
     return `Worktree ${worktreeId} Git setup failed: ${failure.error}`;
   }
   if (state?.gitReadyIds.includes(worktreeId)) {
+    if (stage === 'held') {
+      return `Worktree ${worktreeId} Git setup completed while the performance gate held it`;
+    }
     return stage === 'before'
       ? `Worktree ${worktreeId} Git setup completed before its composer typing probe began`
       : `Worktree ${worktreeId} Git setup completed before its composer typing probe finished`;
   }
   return null;
+}
+
+/**
+ * Whether the setup scripts of earlier worktrees still load the host. A
+ * creation is timed only once every one of them finished and no automatic
+ * setup is active, so each measurement runs under the same load.
+ */
+export function priorSetupDrainStatus(state, priorWorktreeIds) {
+  const results = state?.completionResults ?? {};
+  return {
+    pending: priorWorktreeIds.filter((id) => results[id] === undefined),
+    failed: priorWorktreeIds.filter((id) => results[id]?.success === false),
+    activeIds: state?.activeIds ?? [],
+  };
+}
+
+/** Whether a drain status allows the timed release to start. */
+export function priorSetupsDrained(status) {
+  return status.pending.length === 0 && status.activeIds.length === 0;
+}
+
+/**
+ * Splits a released hold. `gateResumedAfterReleaseMs` is the gate's release
+ * poll, harness latency outside the timed task. `gitReadyAfterResumeMs`, the
+ * timed creation, splits into Git's file writes
+ * (`checkoutWrittenAfterResumeMs`) and the app's share until the renderer
+ * received Git ready (`gitReadyAfterCheckoutWrittenMs`, where a W5 writer
+ * change would show). The Git and app split is absent when parallel checkout
+ * writes the tail early. `gatePassThroughMs` and `tailPassThroughMs` are the
+ * filters' harness work inside the Git and app shares.
+ */
+export function gateHoldTimings(
+  gitGate,
+  worktreeId,
+  { tailWrittenLast, gitReadyAtMs },
+) {
+  const resumedAtMs = gitGate.resumedAtMs(worktreeId);
+  const writtenAtMs = tailWrittenLast
+    ? gitGate.writtenAtMs(worktreeId)
+    : undefined;
+  return {
+    heldMs: gitGate.heldMs(worktreeId),
+    gateResumedAfterReleaseMs: gitGate.resumedAfterReleaseMs(worktreeId),
+    gitReadyAfterResumeMs:
+      resumedAtMs === undefined || gitReadyAtMs === undefined
+        ? undefined
+        : gitReadyAtMs - resumedAtMs,
+    checkoutWrittenAfterResumeMs: tailWrittenLast
+      ? gitGate.checkoutWrittenAfterResumeMs(worktreeId)
+      : undefined,
+    gitReadyAfterCheckoutWrittenMs:
+      writtenAtMs === undefined || gitReadyAtMs === undefined
+        ? undefined
+        : gitReadyAtMs - writtenAtMs,
+    gatePassThroughMs: gitGate.gatePassThroughMs(worktreeId),
+    tailPassThroughMs: gitGate.tailPassThroughMs(worktreeId),
+  };
+}
+
+/**
+ * The timed creation of a released hold: from the gate letting Git continue
+ * to the renderer receiving Git ready. Both ends are host wall-clock stamps
+ * (the resume marker's mtime and the tracker's `Date.now()`), so neither the
+ * gate's release poll nor the harness's ready detection is timed. Throws
+ * instead of returning a value that is not that interval.
+ */
+export function gitReadyAfterResumeMs(gitGate, worktreeId, gitReadyAtMs) {
+  if (gitGate.holdExpired(worktreeId)) {
+    throw new Error(
+      `The performance Git gate expired before worktree ${worktreeId} was released, so Git resumed without the harness`,
+    );
+  }
+  const resumedAtMs = gitGate.resumedAtMs(worktreeId);
+  if (resumedAtMs === undefined) {
+    throw new Error(
+      `Worktree ${worktreeId} reported Git ready without the performance gate resuming its checkout`,
+    );
+  }
+  if (gitReadyAtMs === undefined) {
+    throw new Error(
+      `Worktree ${worktreeId} Git ready has no renderer timestamp`,
+    );
+  }
+  const elapsedMs = gitReadyAtMs - resumedAtMs;
+  if (elapsedMs < 0) {
+    throw new Error(
+      `Worktree ${worktreeId} reported Git ready ${-elapsedMs}ms before the performance gate resumed its checkout`,
+    );
+  }
+  return elapsedMs;
+}
+
+/**
+ * Records `worktree_git_ready_after_release` for a held worktree. `release`
+ * runs inside the task, so its work and renderer brackets cover the whole
+ * checkout, but `durationMs` is `gitReadyAfterResumeMs` because the gate's
+ * release poll varied 40-229 ms on the baseline Mac. `harnessWallMs` keeps the
+ * harness-timed release-to-observed window, and `harnessTiming` receives the
+ * harness's ready detection. A failure records an error task and rethrows.
+ */
+export async function recordGitReadyAfterRelease(
+  tasks,
+  { gitGate, worktreeId, release, waitForGitReadyAt, harnessTiming, metadata },
+) {
+  let harnessWallMs;
+  const durationMs = await recordTask(
+    tasks,
+    'worktree_git_ready_after_release',
+    async () => {
+      const releasedAt = performance.now();
+      release();
+      const gitReadyAtMs = await waitForGitReadyAt();
+      harnessWallMs = performance.now() - releasedAt;
+      harnessTiming.gitReadyObservedAfterReadyMs = Date.now() - gitReadyAtMs;
+      return gitReadyAfterResumeMs(gitGate, worktreeId, gitReadyAtMs);
+    },
+    metadata,
+  );
+  const task = tasks.at(-1);
+  task.harnessWallMs = harnessWallMs;
+  task.durationMs = durationMs;
+  return durationMs;
+}
+
+/**
+ * Waits, untimed and while `worktreeId` stays held at the gate, for the
+ * setup scripts of `priorIds` to finish. Returns the time spent and the
+ * tracker state the release starts from.
+ */
+export async function waitForPriorSetupsToFinish(
+  page,
+  { worktreeId, priorIds, timeoutMs },
+) {
+  const startedAt = performance.now();
+  try {
+    const state = await waitUntil(
+      async () => {
+        const state = await readWorktreeSetupLoadState(page);
+        if (!state) return null;
+        const heldError = worktreeGitPendingError(state, worktreeId, 'held');
+        if (heldError) throw new FatalWaitError(heldError);
+        const status = priorSetupDrainStatus(state, priorIds);
+        if (status.failed.length > 0) {
+          throw new FatalWaitError(
+            `Setup failed for ${status.failed.join(', ')} before worktree ${worktreeId} was released: ${JSON.stringify(status.failed.map((id) => state.completionResults[id]))}`,
+          );
+        }
+        return priorSetupsDrained(status) ? state : null;
+      },
+      {
+        timeoutMs,
+        label: `earlier setup scripts [${priorIds.join(', ')}] to finish before releasing worktree ${worktreeId}`,
+        intervalMs: 25,
+      },
+    );
+    return { state, drainMs: performance.now() - startedAt };
+  } catch (error) {
+    if (error instanceof FatalWaitError) throw error;
+    const state = await readWorktreeSetupLoadState(page).catch(() => null);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; tracker=${JSON.stringify(state)}`,
+    );
+  }
 }
 
 async function assertWorktreeGitPending(page, worktreeId, stage) {
@@ -14354,22 +14551,32 @@ async function typeAtCadenceUntilWorktreeSetupCompletes({
 }
 
 async function waitForGitAndScriptOverlap(page, worktreeId) {
-  return waitUntil(
-    async () => {
-      const state = await readWorktreeSetupLoadState(page);
-      if (state?.gitReadyIds.includes(worktreeId)) {
-        throw new FatalWaitError(
-          `Worktree ${worktreeId} Git setup completed before overlapping script load was observed`,
-        );
-      }
-      return state && state.activeIds.length > 0 ? state : null;
-    },
-    {
-      timeoutMs: 30_000,
-      label: `Git setup for ${worktreeId} to overlap an active setup script`,
-      intervalMs: 10,
-    },
-  );
+  try {
+    return await waitUntil(
+      async () => {
+        const state = await readWorktreeSetupLoadState(page);
+        if (state?.gitReadyIds.includes(worktreeId)) {
+          throw new FatalWaitError(
+            `Worktree ${worktreeId} Git setup completed before overlapping script load was observed`,
+          );
+        }
+        return state && state.activeIds.length > 0 ? state : null;
+      },
+      {
+        timeoutMs: 30_000,
+        label: `Git setup for ${worktreeId} to overlap an active setup script`,
+        intervalMs: 10,
+      },
+    );
+  } catch (error) {
+    if (error instanceof FatalWaitError) throw error;
+    // The tracker's start and completion times show whether the earlier
+    // setup ended before this checkout reached the gate.
+    const state = await readWorktreeSetupLoadState(page).catch(() => null);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; at=${Date.now()} tracker=${JSON.stringify(state)}`,
+    );
+  }
 }
 
 async function recordWorktreeSetupInteraction({
@@ -14444,16 +14651,28 @@ export async function readWorktreeSetupStatus(row) {
 }
 
 async function runWorktrees({ page, config, tasks, fixture }) {
-  const { gitGate } = fixture;
+  const { gitGate, gitCheckoutConfig } = fixture;
   try {
-    return await runGatedWorktrees({ page, config, tasks, gitGate });
+    return await runGatedWorktrees({
+      page,
+      config,
+      tasks,
+      gitGate,
+      gitCheckoutConfig,
+    });
   } finally {
     // Never leave a checkout held, even when the scenario failed.
     gitGate.releaseAll();
   }
 }
 
-async function runGatedWorktrees({ page, config, tasks, gitGate }) {
+async function runGatedWorktrees({
+  page,
+  config,
+  tasks,
+  gitGate,
+  gitCheckoutConfig,
+}) {
   await openMainPage(page);
   await installWorktreeSetupLoadTracker(page);
   // Expand the project first: its worktree rows render only when expanded.
@@ -14466,6 +14685,20 @@ async function runGatedWorktrees({ page, config, tasks, gitGate }) {
   let gitTypingProbesOverlappingSetupScripts = 0;
   let sustainedTyping = null;
 
+  // Harness-side cost of each created worktree, kept out of every task.
+  const harnessTimings = new Map();
+  const tailWrittenLast = checkoutWritesTailLast(gitCheckoutConfig);
+  // Read right after Git ready, before any later checkout can rewrite a marker.
+  const recordGateHoldTimings = async (worktreeId) => {
+    const state = await readWorktreeSetupLoadState(page);
+    Object.assign(
+      harnessTimings.get(worktreeId),
+      gateHoldTimings(gitGate, worktreeId, {
+        tailWrittenLast,
+        gitReadyAtMs: state?.gitReadyAt[worktreeId],
+      }),
+    );
+  };
   const gitGateHolds = [];
   const releaseGitGate = (worktreeId) => {
     if (gitGateHolds.some((hold) => hold.worktreeId === worktreeId)) return;
@@ -14478,6 +14711,7 @@ async function runGatedWorktrees({ page, config, tasks, gitGate }) {
     // Locating and hovering the hover-only control is harness work; time only
     // the reservation from the click to the new row.
     const create = await workspaceCreateButton(page);
+    const reserveLoad = await readWorktreeSetupLoadState(page);
     const id = await recordTask(
       tasks,
       'reserve_worktree',
@@ -14498,12 +14732,25 @@ async function runGatedWorktrees({ page, config, tasks, gitGate }) {
           },
         );
       },
-      { worktree: index + 1 },
+      {
+        worktree: index + 1,
+        // The previous worktree's setup, for every worktree but the first.
+        activeSetupScripts: reserveLoad?.activeIds.length ?? 0,
+      },
     );
+    const reservedRowAtMs = Date.now();
     createdIds.push(id);
     // Git setup for this worktree is now held at the gate until its
     // Git-pending probes ran. A checkout that never arrives fails explicitly.
     await gitGate.waitForEntered(id, { timeoutMs: 60_000 });
+    harnessTimings.set(id, {
+      // Negative when Git reached the gate before the row was observed.
+      gateEnteredAfterReservedRowMs: gitGate.enteredAtMs(id) - reservedRowAtMs,
+      priorSetupDrainMs: null,
+      // Harness detection after the renderer's Git ready; null for the
+      // sustained-typing worktree, whose typing loop observes it.
+      gitReadyObservedAfterReadyMs: null,
+    });
 
     const row = sidebarWorktreeRow(page, id);
     await row.click();
@@ -14570,21 +14817,31 @@ async function runGatedWorktrees({ page, config, tasks, gitGate }) {
         },
       );
       Object.assign(tasks.at(-1), sustainedTyping);
+      await recordGateHoldTimings(id);
       typedWorktreeIds.add(id);
     } else {
-      await recordTask(
-        tasks,
-        'worktree_git_ready_after_release',
-        () => {
-          // Release inside the timed operation, so the checkout that follows
-          // is never excluded from the measurement.
-          releaseGitGate(id);
-          return waitUntil(
+      // Earlier worktrees' setup scripts share the checkout's utility QoS
+      // band on macOS, so how many still ran at release decided this time
+      // (1.8 s with none, 11-31 s with three). Release only once they all
+      // finished; the wait is harness cost, recorded beside the hold.
+      const drained = await waitForPriorSetupsToFinish(page, {
+        worktreeId: id,
+        priorIds: createdIds.slice(0, -1),
+        // Every pending setup started within the last scriptHoldMs.
+        timeoutMs: worktreeSetupSelectionTimeoutMs(config),
+      });
+      harnessTimings.get(id).priorSetupDrainMs = drained.drainMs;
+      await recordGitReadyAfterRelease(tasks, {
+        gitGate,
+        worktreeId: id,
+        release: () => releaseGitGate(id),
+        waitForGitReadyAt: async () => {
+          const state = await waitUntil(
             async () => {
               const state = await readWorktreeSetupLoadState(page);
               const message = worktreeGitPendingError(state, id, 'after');
               if (state?.gitFailed[id]) throw new FatalWaitError(message);
-              return Boolean(message);
+              return message ? state : null;
             },
             {
               timeoutMs: 120_000,
@@ -14592,9 +14849,16 @@ async function runGatedWorktrees({ page, config, tasks, gitGate }) {
               intervalMs: 10,
             },
           );
+          return state.gitReadyAt[id];
         },
-        { worktree: index + 1, targetWorktreeId: id },
-      );
+        harnessTiming: harnessTimings.get(id),
+        metadata: {
+          worktree: index + 1,
+          targetWorktreeId: id,
+          concurrentSetupScripts: drained.state.activeIds.length,
+        },
+      });
+      await recordGateHoldTimings(id);
     }
     if (
       index !== config.worktreesToCreate - 1 &&
@@ -14729,8 +14993,9 @@ async function runGatedWorktrees({ page, config, tasks, gitGate }) {
     createdWorktrees: createdIds.length,
     gitGateHolds: gitGateHolds.map(({ worktreeId }) => ({
       worktreeId,
-      heldMs: gitGate.heldMs(worktreeId),
+      ...harnessTimings.get(worktreeId),
     })),
+    gitCheckoutConfig,
     finalWorktrees: (await worktreeIds(page)).length,
     interactionsDuringSetup: config.interactionIterations,
     worktreesTypedDuringOwnSetup: typedWorktreeIds.size,
@@ -14960,9 +15225,7 @@ async function runLedgerPanel({
     tasks,
     'open_ledger_panel',
     async () => {
-      await page
-        .getByTestId(`panel-add-panel-${LEDGER_PANEL_GROUP_ID}`)
-        .click();
+      await openPanelAddMenu(page, LEDGER_PANEL_GROUP_ID);
       await page.getByTestId('panel-add-menu-item-ledger').click();
       panel = page.getByTestId('ledger-panel');
       await expect(panel.getByTestId('ledger-entry-row').first()).toBeVisible({
@@ -15955,12 +16218,665 @@ export function scenarioWorkCollection(_name, options = {}) {
   };
 }
 
+const CLAUDE_GRAPH_ORIENTATION_MARKER = 'Canopy-CCLAUDEGRAPHORIENT';
+const CLAUDE_GRAPH_ORIENTATION_CHAT_ID = 'claude-graph-orientation-chat';
+const CLAUDE_GRAPH_STEERING_DENIAL = 'A code graph exists for this worktree';
+const CLAUDE_GRAPH_ARTIFACT_PATH = 'test-results/claude-graph-run.log';
+// Outside an artifact directory, so steering stats the literal `.log` target.
+const CLAUDE_GRAPH_ARTIFACT_FILE_PATH = 'claude-graph-notes.log';
+// A dot-less directory searched through a `.log` selector, so steering stats
+// it to confirm the selector filters what the search reads.
+const CLAUDE_GRAPH_ARTIFACT_SELECTOR_DIR = 'claude-graph-logs';
+
+function claudeGraphTurnText(tag) {
+  return `Turn ${tag} finished.`;
+}
+
+/**
+ * The scripted turns, in order. Each source-search step issues the profile's
+ * shell searches in one assistant message, so every call crosses the Claude
+ * PreToolUse hook; graph calls cross PostToolUse. The bundled Claude CLI has
+ * no Grep tool, so searches run through Bash as agents run them.
+ */
+export function claudeGraphOrientationTurns(config) {
+  const sourceSearches = {
+    toolCalls: Array.from(
+      { length: config.claudeGraphOrientationSearchesPerTurn },
+      (_, index) => ({
+        name: 'Bash',
+        input: {
+          command: `grep -rl fn${index}_0 graph-fixture`,
+          description: `Search the fixture for fn${index}_0`,
+        },
+      }),
+    ),
+    stopReason: 'tool_use',
+  };
+  const artifactSearch = {
+    toolCalls: [
+      {
+        name: 'Bash',
+        input: {
+          command: `grep fn0_0 ${CLAUDE_GRAPH_ARTIFACT_PATH}`,
+          description: 'Search the run log',
+        },
+      },
+    ],
+    stopReason: 'tool_use',
+  };
+  const artifactFileSearch = {
+    toolCalls: [
+      {
+        name: 'Bash',
+        input: {
+          command: `grep fn0_0 ${CLAUDE_GRAPH_ARTIFACT_FILE_PATH}`,
+          description: 'Search the notes log',
+        },
+      },
+    ],
+    stopReason: 'tool_use',
+  };
+  const artifactSelectorSearch = {
+    toolCalls: [
+      {
+        name: 'Bash',
+        input: {
+          command: `grep -r --include='*.log' fn0_0 ${CLAUDE_GRAPH_ARTIFACT_SELECTOR_DIR}`,
+          description: 'Search the log directory',
+        },
+      },
+    ],
+    stopReason: 'tool_use',
+  };
+  const graphContext = {
+    toolCalls: [{ name: 'mcp__canopy__GetCodeGraphContext', input: {} }],
+    stopReason: 'tool_use',
+  };
+  const turn = (tag, task, steps, before) => ({
+    tag,
+    task,
+    before,
+    steps: [
+      ...steps,
+      { text: claudeGraphTurnText(tag), stopReason: 'end_turn' },
+    ],
+  });
+  return [
+    // Unmeasured: a new worktree's first message triggers the automatic
+    // branch rename, which moves HEAD's ref and would end the orientation.
+    turn('settle', 'settle_branch_turn', []),
+    turn('fresh', 'fresh_source_search_turn', [sourceSearches]),
+    turn('artifact', 'artifact_search_turn', [artifactSearch]),
+    turn('artifact-file', 'artifact_file_search_turn', [artifactFileSearch]),
+    turn('artifact-selector', 'artifact_selector_search_turn', [
+      artifactSelectorSearch,
+    ]),
+    turn('orient', 'orient_turn', [graphContext, sourceSearches]),
+    ...Array.from(
+      { length: config.claudeGraphOrientationLaterTurns },
+      (_, index) =>
+        turn(`later-${index + 1}`, 'later_turn_source_searches', [
+          sourceSearches,
+        ]),
+    ),
+    turn(
+      'non-build-write',
+      'changed_graph_same_build_turn',
+      [sourceSearches],
+      'non-build-write',
+    ),
+    turn('rebuilt', 'rebuilt_graph_search_turn', [sourceSearches], 'rebuild'),
+    turn('reorient', 'reorient_turn', [graphContext, sourceSearches]),
+    turn('after-reorient', 'after_reorient_turn', [sourceSearches]),
+  ];
+}
+
+async function prepareClaudeGraphOrientation(userDataDir, config, options) {
+  const seed = seedWorkspace(userDataDir);
+  const worktreePath = seed.workspaces[0]?.worktreePath;
+  if (!worktreePath) {
+    throw new Error('Claude graph orientation fixture has no default worktree');
+  }
+  commitGraphFixtureAt(
+    worktreePath,
+    config.claudeGraphOrientationFixtureFiles,
+    'Add the Claude graph orientation fixture',
+  );
+  const artifactPath = path.join(worktreePath, CLAUDE_GRAPH_ARTIFACT_PATH);
+  mkdirSync(path.dirname(artifactPath), { recursive: true });
+  writeFileSync(artifactPath, 'perf run log fn0_0\n', 'utf8');
+  writeFileSync(
+    path.join(worktreePath, CLAUDE_GRAPH_ARTIFACT_FILE_PATH),
+    'perf notes log fn0_0\n',
+    'utf8',
+  );
+  const selectorDir = path.join(
+    worktreePath,
+    CLAUDE_GRAPH_ARTIFACT_SELECTOR_DIR,
+  );
+  mkdirSync(selectorDir, { recursive: true });
+  writeFileSync(
+    path.join(selectorDir, 'selector-run.log'),
+    'perf selector log fn0_0\n',
+    'utf8',
+  );
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      {
+        id: CLAUDE_GRAPH_ORIENTATION_CHAT_ID,
+        title: 'Claude Graph Orientation',
+        // Steering denies by policy; it must not wait on an approval prompt.
+        approvalMode: 'full-access',
+        // A production bundle resolves an unpinned tab through its default
+        // model lanes (an AI Credits Codex model here); pin native Claude so
+        // the run measures the Claude hooks.
+        ...(options?.releaseLike === true
+          ? {
+              model: 'opus[1m]',
+              modelExplicitlyChosen: true,
+              billingExplicitlyChosen: true,
+              subscriptionBillingOverride: true,
+            }
+          : {}),
+      },
+    ],
+  });
+  const turns = claudeGraphOrientationTurns(config);
+  await registerScenario(
+    PERFORMANCE_MOCK_BASE_URL,
+    CLAUDE_GRAPH_ORIENTATION_MARKER,
+    {
+      llm: {
+        steps: [{ text: 'Unscripted turn finished.', stopReason: 'end_turn' }],
+        stepsByRequestTag: Object.fromEntries(
+          turns.map((entry) => [entry.tag, entry.steps]),
+        ),
+      },
+    },
+  );
+  const workspaceDir = path.join(userDataDir, 'workspaces', WORKSPACE_ID);
+  return {
+    releaseLike: options?.releaseLike === true,
+    userDataDir,
+    worktreePath,
+    initialHeadRef: readWorktreeHeadRef(worktreePath),
+    dbPath: codeGraphDbPath(workspaceDir, WORKTREE_ID),
+    turns,
+  };
+}
+
+function claudeGraphFileIdentity(dbPath) {
+  const describe = (filePath) => {
+    if (!existsSync(filePath)) return 'absent';
+    const stats = statSync(filePath, { bigint: true });
+    return `${stats.dev}:${stats.ino}:${stats.mtimeNs}:${stats.size}`;
+  };
+  return `${describe(dbPath)}/${describe(`${dbPath}-wal`)}`;
+}
+
+/**
+ * The non-build write is a valid fixture only when it changed graph.db or its
+ * WAL, which triggers the changed-graph probe, and left `last_build_at` equal.
+ */
+export function assertNonBuildGraphWrite({ before, after, rowsChanged }) {
+  if (rowsChanged < 1) {
+    throw new Error('The non-build graph write changed no metadata row');
+  }
+  if (before.identity === after.identity) {
+    throw new Error(
+      'The non-build graph write left graph.db and its WAL unchanged',
+    );
+  }
+  if (
+    !Number.isFinite(before.lastBuildAt) ||
+    before.lastBuildAt !== after.lastBuildAt
+  ) {
+    throw new Error(
+      `The non-build graph write changed last_build_at (${before.lastBuildAt} -> ${after.lastBuildAt})`,
+    );
+  }
+}
+
+/**
+ * A write that changes graph.db and its WAL without a build, as deferred
+ * derived analysis or a checkpoint does; `last_build_at` is unchanged.
+ */
+export function writeClaudeGraphNonBuildChange(dbPath) {
+  const observe = () => ({
+    identity: claudeGraphFileIdentity(dbPath),
+    lastBuildAt: readCodeGraphBuildMetadata(dbPath).lastBuildAt,
+  });
+  const before = observe();
+  const database = new DatabaseSync(dbPath);
+  let rowsChanged = 0;
+  try {
+    database.exec('PRAGMA busy_timeout = 10000');
+    // SQLite skips rewriting identical cell content, so the value must change.
+    rowsChanged = Number(
+      database
+        .prepare(
+          "INSERT OR REPLACE INTO graph_metadata (key, value) VALUES ('perf_non_build_write', ?)",
+        )
+        .run(`${Date.now()}:${process.hrtime.bigint()}`).changes,
+    );
+    database.exec('PRAGMA wal_checkpoint(PASSIVE)');
+  } finally {
+    database.close();
+  }
+  const write = { before, after: observe(), rowsChanged };
+  assertNonBuildGraphWrite(write);
+  return write;
+}
+
+function scriptedSearchCount(entry) {
+  return entry.steps.reduce(
+    (count, step) =>
+      count +
+      (step.toolCalls ?? []).filter((call) => call.name === 'Bash').length,
+    0,
+  );
+}
+
+/**
+ * Every scripted turn must record exactly its scripted searches: a missing,
+ * partial or duplicated result makes the sample invalid, whatever the
+ * allow/deny outcome.
+ */
+export function claudeGraphSearchResultCountErrors(turns, outcomes) {
+  const errors = [];
+  const scripted = new Set(turns.map((entry) => entry.tag));
+  for (const entry of turns) {
+    const outcome = outcomes[entry.tag];
+    const observed =
+      (outcome?.allowed ?? 0) + (outcome?.denied ?? 0) + (outcome?.failed ?? 0);
+    const expected = scriptedSearchCount(entry);
+    if (observed !== expected) {
+      errors.push(`${entry.tag}: ${observed} of ${expected}`);
+    }
+  }
+  for (const tag of Object.keys(outcomes)) {
+    if (!scripted.has(tag)) errors.push(`${tag}: unscripted turn`);
+  }
+  return errors;
+}
+
+/**
+ * Expected Grep outcomes for a build with chat-scoped orientation. Kept out
+ * of the run itself: a baseline without it denies later turns by design.
+ */
+export function claudeGraphOrientationViolations(turns, outcomes) {
+  const expectedKind = (tag) =>
+    tag === 'fresh' || tag === 'rebuilt' ? 'denied' : 'allowed';
+  const violations = [];
+  for (const entry of turns) {
+    const searches = scriptedSearchCount(entry);
+    const outcome = outcomes[entry.tag] ?? { allowed: 0, denied: 0, failed: 0 };
+    const kind = expectedKind(entry.tag);
+    if (outcome[kind] !== searches || outcome.failed !== 0) {
+      violations.push(
+        `${entry.tag}: expected ${searches} ${kind}, got ${JSON.stringify(outcome)}`,
+      );
+    }
+  }
+  return violations;
+}
+
+/**
+ * Production rejects the E2E-only performance scheduler IPC, so release-like
+ * runs build through the manual Code Graph build IPC the UI uses.
+ */
+async function buildClaudeGraphThroughManualIpc(page, fixture) {
+  const result = await page.evaluate(
+    ({ workspaceId, worktreeId }) =>
+      window.api.codeGraphBuildWorktree({ workspaceId, worktreeId }),
+    { workspaceId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+  );
+  if (result?.ok === false || result?.error) {
+    throw new Error(
+      `Manual Code Graph build failed: ${JSON.stringify(result)}`,
+    );
+  }
+  const lastBuildAt = readCodeGraphBuildMetadata(fixture.dbPath).lastBuildAt;
+  if (!Number.isFinite(lastBuildAt)) {
+    throw new Error(
+      `Manual Code Graph build left no build stamp: ${JSON.stringify(result)}`,
+    );
+  }
+  return { lastBuildAt };
+}
+
+async function rebuildClaudeGraphFixture(page, fixture) {
+  const before = readCodeGraphBuildMetadata(fixture.dbPath).lastBuildAt;
+  applyCodeGraphFixtureEdit(fixture.worktreePath, 1, 1);
+  if (fixture.releaseLike) {
+    await buildClaudeGraphThroughManualIpc(page, fixture);
+    const after = readCodeGraphBuildMetadata(fixture.dbPath).lastBuildAt;
+    if (!Number.isFinite(after) || after === before) {
+      throw new Error(
+        `The manual rebuild did not change last_build_at (${before} -> ${after})`,
+      );
+    }
+    return { lastBuildAtBefore: before, lastBuildAtAfter: after };
+  }
+  await startScheduledCodeGraphBuilds(
+    page,
+    [WORKTREE_ID],
+    '__CANOPY_PERF_CLAUDE_GRAPH_REBUILD__',
+  );
+  const after = await waitUntil(
+    async () => {
+      const builds = await readScheduledCodeGraphBuilds(
+        page,
+        '__CANOPY_PERF_CLAUDE_GRAPH_REBUILD__',
+      );
+      const after = readCodeGraphBuildMetadata(fixture.dbPath).lastBuildAt;
+      return builds?.completed === 1 &&
+        Number.isFinite(after) &&
+        after !== before
+        ? after
+        : false;
+    },
+    {
+      timeoutMs: 10 * 60_000,
+      label: 'the Claude graph orientation rebuild',
+      intervalMs: 100,
+    },
+  );
+  return { lastBuildAtBefore: before, lastBuildAtAfter: after };
+}
+
+async function readClaudeGraphTranscript(page) {
+  const data = await page.evaluate(
+    async ({ projectId, worktreeId }) =>
+      window.api.chat.loadTabs({ projectId, worktreeId }),
+    { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+  );
+  const messages =
+    data.tabs.find((tab) => tab.id === CLAUDE_GRAPH_ORIENTATION_CHAT_ID)
+      ?.messages ?? [];
+  // Raw evidence: every block's kind and tool, with a short excerpt.
+  const transcript = messages.map((message) => ({
+    role: message.role,
+    blocks: (message.blocks ?? []).map((block) => ({
+      type: block.type,
+      ...(block.toolName ? { toolName: block.toolName } : {}),
+      ...(block.isError !== undefined ? { isError: block.isError } : {}),
+      excerpt: String(block.text ?? block.output ?? block.input ?? '').slice(
+        0,
+        120,
+      ),
+    })),
+  }));
+  return { messages, transcript };
+}
+
+async function describeClaudeGraphTurnFailure(page) {
+  const [{ transcript }, activity, activeTurns] = await Promise.all([
+    readClaudeGraphTranscript(page).catch((error) => ({
+      transcript: String(error),
+    })),
+    getScenarioActivity(
+      PERFORMANCE_MOCK_BASE_URL,
+      CLAUDE_GRAPH_ORIENTATION_MARKER,
+    ).catch((error) => String(error)),
+    activeTurnCount(page).catch((error) => String(error)),
+  ]);
+  return JSON.stringify({ activeTurns, activity, transcript }).slice(0, 8_000);
+}
+
+function readWorktreeHeadRef(worktreePath) {
+  return gitOutput(['symbolic-ref', '-q', 'HEAD'], worktreePath);
+}
+
+/**
+ * Waits for the automatic first-message branch rename so it lands before the
+ * measured turns; a build without the rename continues after the timeout.
+ */
+async function waitForClaudeGraphBranchRename(fixture) {
+  const before = fixture.initialHeadRef;
+  const after = await waitUntil(
+    () => {
+      const current = readWorktreeHeadRef(fixture.worktreePath);
+      return current !== before ? current : false;
+    },
+    {
+      timeoutMs: 20_000,
+      label: 'the first-message branch rename',
+      intervalMs: 100,
+    },
+  ).catch(() => readWorktreeHeadRef(fixture.worktreePath));
+  return { before, after };
+}
+
+async function runClaudeGraphOrientationTurn(page, panel, entry) {
+  const userMessage = `[${CLAUDE_GRAPH_ORIENTATION_MARKER}] [Canopy-Mock-Request:${entry.tag}] Run Claude graph orientation turn ${entry.tag}.`;
+  const composer = panel
+    .locator('[data-chat-composer-root]')
+    .getByRole('textbox')
+    .first();
+  await composer.fill(userMessage);
+  await panel.getByRole('button', { name: 'Send message' }).click();
+  await expect(panel.getByText(userMessage).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  try {
+    await waitUntil(
+      async () =>
+        (await persistedAssistantReplyCount(
+          page,
+          claudeGraphTurnText(entry.tag),
+        )) > 0 && (await activeTurnCount(page)) === 0,
+      {
+        timeoutMs: 180_000,
+        label: `Claude graph orientation turn ${entry.tag}`,
+        intervalMs: 25,
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      `${String(error)}; state: ${await describeClaudeGraphTurnFailure(page)}`,
+    );
+  }
+}
+
+/**
+ * Search outcomes per scripted turn from the persisted transcript: allowed,
+ * denied by graph-first steering, or failed for another reason. Results are
+ * paired with their Bash calls by tool-use id.
+ */
+export function classifyClaudeGraphSearchOutcomes(messages) {
+  // Mock tool-use ids repeat across turns, so pair in transcript order. A
+  // repeated result for the same call is counted, so duplicates surface.
+  const toolNameById = new Map();
+  const outcomes = {};
+  let tag = null;
+  for (const message of messages) {
+    const requested = /\[Canopy-Mock-Request:([^\]\\]+)\]/.exec(
+      JSON.stringify(message),
+    );
+    if (message.role === 'user' && requested) tag = requested[1];
+    for (const block of message.blocks ?? []) {
+      if (block.type === 'tool_use') {
+        toolNameById.set(block.toolUseId, block.toolName);
+        continue;
+      }
+      if (
+        tag === null ||
+        block.type !== 'tool_result' ||
+        toolNameById.get(block.toolUseId) !== 'Bash'
+      ) {
+        continue;
+      }
+      const outcome = (outcomes[tag] ??= { allowed: 0, denied: 0, failed: 0 });
+      if (!block.isError) outcome.allowed += 1;
+      else if (
+        String(block.output ?? '').includes(CLAUDE_GRAPH_STEERING_DENIAL)
+      )
+        outcome.denied += 1;
+      else outcome.failed += 1;
+    }
+  }
+  return outcomes;
+}
+
+/**
+ * Mock requests attributed to the measured chat, per turn, and helper
+ * requests that carried the chat's marker, counted apart.
+ */
+async function claudeGraphMockActivity() {
+  const { activity = {} } = await getScenarioActivity(
+    PERFORMANCE_MOCK_BASE_URL,
+    CLAUDE_GRAPH_ORIENTATION_MARKER,
+  );
+  const chatRequestsByTurn = {};
+  const helperRequests = {};
+  for (const [field, count] of Object.entries(activity)) {
+    const turn = /^llmRequests:(.+)$/.exec(field)?.[1];
+    if (turn) chatRequestsByTurn[turn] = count;
+    const helper = /^helperRequests:(.+)$/.exec(field)?.[1];
+    if (helper) helperRequests[helper] = count;
+  }
+  return { chatRequestsByTurn, helperRequests };
+}
+
+/**
+ * Every scripted step is one chat request; a missing or extra request means
+ * the measured chat did not run the script alone.
+ */
+export function claudeGraphChatRequestErrors(turns, chatRequestsByTurn) {
+  const errors = [];
+  const scripted = new Set(turns.map((entry) => entry.tag));
+  for (const entry of turns) {
+    const observed = chatRequestsByTurn[entry.tag] ?? 0;
+    if (observed !== entry.steps.length) {
+      errors.push(`${entry.tag}: ${observed} of ${entry.steps.length}`);
+    }
+  }
+  for (const tag of Object.keys(chatRequestsByTurn)) {
+    if (!scripted.has(tag)) errors.push(`${tag}: unscripted turn`);
+  }
+  return errors;
+}
+
+/** A release-like sample must name exactly one loaded main entry. */
+export function assertClaudeGraphMainEntry(mainEntryModules) {
+  const entries = Array.isArray(mainEntryModules) ? mainEntryModules : [];
+  if (
+    entries.length !== 1 ||
+    (entries[0] !== 'index.jsc' && entries[0] !== '_index.js')
+  ) {
+    throw new Error(
+      `Release-like run could not identify the loaded main entry: ${JSON.stringify(mainEntryModules)}`,
+    );
+  }
+}
+
+async function runClaudeGraphOrientation({
+  page,
+  app,
+  electronApp,
+  tasks,
+  fixture,
+}) {
+  // Release-like runs record whether Electron loaded the bytecode main entry
+  // or fell back to `_index.js`.
+  const mainEntryModules = fixture.releaseLike
+    ? await electronApp
+        .evaluate(() =>
+          Object.keys(process.mainModule?.constructor?._cache ?? {})
+            .filter((file) =>
+              /[\\/]out[\\/]main[\\/](index\.jsc|_index\.js)$/.test(file),
+            )
+            .map((file) => file.split(/[\\/]out[\\/]main[\\/]/).at(-1)),
+        )
+        .catch((error) => [`unavailable: ${String(error)}`])
+    : null;
+  if (fixture.releaseLike) assertClaudeGraphMainEntry(mainEntryModules);
+  await openMainPage(page);
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  await recordTask(tasks, 'build_initial_code_graph', () =>
+    fixture.releaseLike
+      ? buildClaudeGraphThroughManualIpc(page, fixture)
+      : ensureCodeGraphsReady(page, [WORKTREE_ID], 10 * 60_000),
+  );
+  const panel = visibleChatPanel(page);
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  let nonBuildWrite = null;
+  let rebuild = null;
+  let branchRename = null;
+  for (const entry of fixture.turns) {
+    if (entry.tag === 'fresh') {
+      branchRename = await waitForClaudeGraphBranchRename(fixture);
+    }
+    if (entry.before === 'non-build-write') {
+      nonBuildWrite = writeClaudeGraphNonBuildChange(fixture.dbPath);
+    } else if (entry.before === 'rebuild') {
+      rebuild = await recordTask(tasks, 'rebuild_graph_between_turns', () =>
+        rebuildClaudeGraphFixture(page, fixture),
+      );
+    }
+    await recordTask(
+      tasks,
+      entry.task,
+      () => runClaudeGraphOrientationTurn(page, panel, entry),
+      { turn: entry.tag },
+    );
+  }
+  const { messages, transcript } = await readClaudeGraphTranscript(page);
+  const outcomes = classifyClaudeGraphSearchOutcomes(messages);
+  const countErrors = claudeGraphSearchResultCountErrors(
+    fixture.turns,
+    outcomes,
+  );
+  if (countErrors.length > 0) {
+    throw new Error(
+      `Claude graph orientation recorded unexpected search result counts (${countErrors.join('; ')}); transcript: ${JSON.stringify(transcript).slice(0, 6_000)}`,
+    );
+  }
+  const mockActivity = await claudeGraphMockActivity();
+  const requestErrors = claudeGraphChatRequestErrors(
+    fixture.turns,
+    mockActivity.chatRequestsByTurn,
+  );
+  if (requestErrors.length > 0) {
+    throw new Error(
+      `Claude graph orientation chat requests did not match the script (${requestErrors.join('; ')}); activity: ${JSON.stringify(mockActivity)}`,
+    );
+  }
+  // Allow/deny outcomes are evidence, not assertions: the develop baseline
+  // gates every later turn by design.
+  tasks.extraWork.claudeGraphOrientation = Object.fromEntries(
+    Object.entries(outcomes).flatMap(([tag, outcome]) =>
+      Object.entries(outcome).map(([kind, count]) => [`${tag}.${kind}`, count]),
+    ),
+  );
+  return {
+    mainEntryModules,
+    mockActivity,
+    outcomes,
+    transcript,
+    orientationViolations: claudeGraphOrientationViolations(
+      fixture.turns,
+      outcomes,
+    ),
+    branchRename,
+    nonBuildWrite,
+    rebuild,
+  };
+}
+
 const SCENARIOS = {
+  'sidebar-reorder': { prepare: prepareSidebarReorder, run: runSidebarReorder },
   'startup-settle': {
     prepare: prepareStartupSettle,
     run: runStartupSettle,
     monitorFromDomContentLoaded: true,
     startupJourney: true,
+    measureQuit: true,
   },
   'startup-realistic': {
     prepare: prepareRealisticStartup,
@@ -16161,9 +17077,31 @@ const SCENARIOS = {
     prepare: prepareCostIndexFirstBuild,
     run: runCostIndexFirstBuild,
   },
+  'claude-graph-orientation': {
+    prepare: prepareClaudeGraphOrientation,
+    run: runClaudeGraphOrientation,
+    launchEnv: (fixture) => ({
+      CANOPY_PERFORMANCE_CODE_GRAPH_SCHEDULER: '1',
+      ...(fixture.releaseLike
+        ? {
+            ANTHROPIC_BASE_URL: PERFORMANCE_MOCK_BASE_URL,
+            ANTHROPIC_API_KEY: 'mock',
+            CLAUDE_CONFIG_DIR: path.join(fixture.userDataDir, 'claude-config'),
+          }
+        : {}),
+    }),
+  },
   'skill-suggestions-backfill': {
     prepare: prepareSkillSuggestionsBackfill,
     run: runSkillSuggestionsBackfill,
+  },
+  'code-review-registry-cleanup': {
+    prepare: prepareCodeReviewRegistry,
+    run: (context) => runCodeReviewRegistryCleanup(context, { trace: false }),
+  },
+  'code-review-registry-cleanup-trace': {
+    prepare: prepareCodeReviewRegistry,
+    run: (context) => runCodeReviewRegistryCleanup(context, { trace: true }),
   },
 };
 
@@ -16220,6 +17158,21 @@ export function assertReleaseLikeScenarioSupported(name, releaseLike) {
   }
 }
 
+/**
+ * A hidden native window on Windows draws about once a second, which pins
+ * frame and key-to-paint timings near 1 s and 2 s. Hidden Windows runs render
+ * offscreen, as hidden Linux automation always does. Headed runs and the
+ * native-window studies keep their native window.
+ */
+export function performanceWindowEnv(options, platform = process.platform) {
+  return platform === 'win32' &&
+    options.showWindow === false &&
+    !options.studyWindowMode &&
+    !options.studyViewportPreset
+    ? { CANOPY_E2E_OFFSCREEN_WINDOW: '1' }
+    : {};
+}
+
 export function performanceElectronArgs(
   releaseLike,
   userDataDir,
@@ -16270,6 +17223,11 @@ export function performanceDataRootParent(env = process.env) {
       'CANOPY_PERFORMANCE_DATA_ROOT_PARENT must be an absolute directory',
     );
   return parent;
+}
+
+/** Whether a scenario times the app's quit after its measured window. */
+export function scenarioMeasuresQuit(name) {
+  return SCENARIOS[name]?.measureQuit === true;
 }
 
 export function runPerformanceScenario(name, config, options = {}) {
@@ -16339,6 +17297,7 @@ async function runPerformanceScenarioAttempt(
       CANOPY_GITHUB_API_BASE_URL: PERFORMANCE_MOCK_BASE_URL,
       CANOPY_LINEAR_API_BASE_URL: `${PERFORMANCE_MOCK_BASE_URL}/graphql`,
       CANOPY_E2E_CLOUD_BASE_URL: PERFORMANCE_MOCK_BASE_URL,
+      ...performanceWindowEnv(options),
       ...(diagnosticLaunch
         ? {
             CANOPY_PERFORMANCE_PROFILE_PLAIN_JS: '1',
@@ -16655,7 +17614,7 @@ async function runPerformanceScenarioAttempt(
           durationMs: performance.now() - journeyStartedAt,
         };
       }
-      return {
+      const record = {
         name,
         status: performanceScenarioStatus(counters, responsiveness),
         durationMs,
@@ -16704,6 +17663,11 @@ async function runPerformanceScenarioAttempt(
         ...(diagnostics ? { diagnostics } : {}),
         ...(options.keepData ? { userDataDir } : {}),
       };
+      // After every app read: the app is gone afterwards, and the closing
+      // harness below finds it already exited.
+      return definition.measureQuit
+        ? scenarioWithQuit(record, await measureAppQuit(electronApp))
+        : record;
     } catch (error) {
       await diskIo?.stop();
       monitoring = await monitor?.stop().catch(() => undefined);

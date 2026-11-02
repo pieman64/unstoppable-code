@@ -121,7 +121,9 @@ describe('setWorktreeBaseBranch', () => {
       value: {
         listBranches,
         github: { updatePrBaseBranch },
-      } satisfies Partial<CanopyApi>,
+      } satisfies Pick<CanopyApi, 'listBranches'> & {
+        github: Pick<CanopyApi['github'], 'updatePrBaseBranch'>;
+      },
     });
   });
 
@@ -186,7 +188,7 @@ describe('setWorktreeBaseBranch', () => {
           worktreeId: WORKTREE_ID,
           baseBranch,
         }),
-      ).rejects.toMatchObject<BaseBranchChangeError>({
+      ).rejects.toMatchObject<Partial<BaseBranchChangeError>>({
         code: 'validation_failed',
       });
       expect(setTrackedBaseBranch).not.toHaveBeenCalled();
@@ -202,7 +204,7 @@ describe('setWorktreeBaseBranch', () => {
         worktreeId: WORKTREE_ID,
         baseBranch: 'missing',
       }),
-    ).rejects.toMatchObject<BaseBranchChangeError>({
+    ).rejects.toMatchObject<Partial<BaseBranchChangeError>>({
       code: 'validation_failed',
       retryable: true,
     });

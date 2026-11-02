@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { badgeClassName, type BadgeTone } from '../lib/badge';
 
 /**
  * Structural stand-in for the desktop `SkillRiskLevel` union. The known
@@ -24,38 +25,40 @@ export interface RiskBadgeProps {
   variant?: 'stacked' | 'inline';
 }
 
+/** Low and safe are success, medium warning, high and critical danger. */
+export function riskBadgeTone(level: RiskBadgeLevel): BadgeTone {
+  switch (level) {
+    case 'safe':
+    case 'low':
+      return 'success';
+    case 'medium':
+      return 'warning';
+    case 'high':
+    case 'critical':
+      return 'danger';
+    default:
+      return 'neutral';
+  }
+}
+
+/** Sentence-case label for a raw risk level (`low` → `Low`). */
+function formatRiskLevel(level: string): string {
+  return level.length > 0
+    ? `${level[0].toUpperCase()}${level.slice(1)}`
+    : level;
+}
+
 /**
  * "Risk Level" badge for skill rows/detail views. Ported from the desktop
- * `SkillsTab` internal — class names and copy match it exactly so
- * tests/selectors and visual diffs are unchanged.
+ * `SkillsTab` internal; drawn on the shared Badge.
  */
 export function RiskBadge({
   level,
   variant = 'stacked',
 }: RiskBadgeProps): JSX.Element {
-  let className: string;
-  switch (level) {
-    case 'safe':
-    case 'low':
-      className = 'bg-success-subtle fg-success border-line-positive';
-      break;
-    case 'medium':
-      className = 'bg-warning-subtle fg-warning border-line-attention';
-      break;
-    case 'high':
-    case 'critical':
-      className =
-        'bg-destructive-subtle fg-destructive border-line-destructive';
-      break;
-    default:
-      className = 'bg-secondary fg-secondary';
-  }
-
   const badge = (
-    <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-3xs font-medium border ${className}`}
-    >
-      {level}
+    <span className={badgeClassName(riskBadgeTone(level))}>
+      {formatRiskLevel(level)}
     </span>
   );
   if (variant === 'inline') return badge;

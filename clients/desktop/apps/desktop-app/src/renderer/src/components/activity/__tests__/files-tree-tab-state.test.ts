@@ -4,9 +4,11 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { CachedRootsEntry } from '@/stores/fileListStore';
 import {
+  APP_MANAGED_ROOTS_TREE_PATH,
   buildFilteredFileTree,
   getAutoExpandRepoPath,
   getRepoTreePath,
+  isVisibleExpandedTreePath,
   matchesFileTreeSearchQuery,
   shouldFetchFilesTreeIndex,
   shouldFetchFilesTreeRoots,
@@ -92,6 +94,67 @@ describe('getAutoExpandRepoPath', () => {
         false,
       ),
     ).toBeNull();
+  });
+
+  it('expands only the Cowork working folder among its catalog roots', () => {
+    const cowork = [
+      createRoot({ repoId: 'workspace', rootKind: 'standalone' }),
+      createRoot({ repoId: 'notes', rootKind: 'standalone' }),
+      createRoot({ repoId: 'prompts', rootKind: 'standalone' }),
+      createRoot({ repoId: 'attachments', rootKind: 'attachments' }),
+    ];
+    expect(getAutoExpandRepoPath(cowork, false)).toBe('repo:workspace');
+    expect(getAutoExpandRepoPath(cowork, true)).toBeNull();
+  });
+
+  it('does not treat a git repository with the workspace id as Cowork', () => {
+    expect(
+      getAutoExpandRepoPath(
+        [
+          createRoot({ repoId: 'workspace', rootKind: 'git-repo' }),
+          createRoot({ repoId: 'notes', rootKind: 'standalone' }),
+        ],
+        false,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('isVisibleExpandedTreePath', () => {
+  const grouped = new Set(['repo:notes']);
+
+  it('requires the group to be expanded for roots inside it', () => {
+    const expanded = new Set(['repo:notes', 'repo:notes/daily']);
+    expect(isVisibleExpandedTreePath('repo:notes', expanded, grouped)).toBe(
+      false,
+    );
+    expect(
+      isVisibleExpandedTreePath('repo:notes/daily', expanded, grouped),
+    ).toBe(false);
+    expanded.add(APP_MANAGED_ROOTS_TREE_PATH);
+    expect(
+      isVisibleExpandedTreePath('repo:notes/daily', expanded, grouped),
+    ).toBe(true);
+  });
+
+  it('never treats the group key as a refreshable directory', () => {
+    expect(
+      isVisibleExpandedTreePath(
+        APP_MANAGED_ROOTS_TREE_PATH,
+        new Set([APP_MANAGED_ROOTS_TREE_PATH]),
+        grouped,
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps ungrouped roots independent of the group state', () => {
+    expect(
+      isVisibleExpandedTreePath(
+        'repo:workspace/src',
+        new Set(['repo:workspace', 'repo:workspace/src']),
+        grouped,
+      ),
+    ).toBe(true);
   });
 });
 

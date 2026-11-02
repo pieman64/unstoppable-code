@@ -2,6 +2,7 @@ import {
   APP_ADVISOR_PROJECT_ID,
   IPC_CHANNELS,
   type ArchivedContainerManifestV1,
+  type ArchivedContainerManifestV2,
   type ArchivedContainerListChangesRequest,
   type ArchivedContainerListChangesResponse,
   type ArchivedContainerReadChangeDiffRequest,
@@ -10,6 +11,35 @@ import {
 
 type Handler = (_event: unknown, request: unknown) => unknown;
 const handlers = new Map<string, Handler>();
+
+function gitRefreshManifestFixture(value: {
+  version: 2;
+  kind: 'worktree';
+  id: string;
+  projectId: string;
+  workspaceType: 'multi-repo';
+  gitState: {
+    repositories: Array<{
+      repoId: string;
+      repoName: string;
+      referenceRepoPath: string;
+      branchName?: string;
+    }>;
+  };
+}): ArchivedContainerManifestV2 {
+  // This handler test intentionally uses only the Git identity it consumes.
+  return value as unknown as ArchivedContainerManifestV2;
+}
+
+function legacyManifestFixture(value: {
+  version: 1;
+  kind: 'worktree';
+  id: string;
+  projectId: string;
+}): ArchivedContainerManifestV1 {
+  // Keep the intentionally minimal legacy identity fixture unchanged at runtime.
+  return value as unknown as ArchivedContainerManifestV1;
+}
 
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (channel: string, handler: Handler): void => {
@@ -782,7 +812,7 @@ describe('archived container IPC handlers', () => {
   });
 
   describe('refresh pull requests', () => {
-    const manifest = {
+    const manifest = gitRefreshManifestFixture({
       version: 2,
       kind: 'worktree',
       id: 'archive-1',
@@ -804,7 +834,7 @@ describe('archived container IPC handlers', () => {
           },
         ],
       },
-    };
+    });
 
     it('returns one live status per repository and never leaks backend paths', async () => {
       readArchivedContainerManifestMock.mockResolvedValue(manifest);
@@ -883,12 +913,14 @@ describe('archived container IPC handlers', () => {
     });
 
     it('returns an empty result for legacy archives without recorded Git state', async () => {
-      readArchivedContainerManifestMock.mockResolvedValue({
-        version: 1,
-        kind: 'worktree',
-        id: 'archive-1',
-        projectId: 'workspace-1',
-      });
+      readArchivedContainerManifestMock.mockResolvedValue(
+        legacyManifestFixture({
+          version: 1,
+          kind: 'worktree',
+          id: 'archive-1',
+          projectId: 'workspace-1',
+        }),
+      );
 
       await expect(
         handlerFor(IPC_CHANNELS.archivedContainersRefreshPullRequests)(

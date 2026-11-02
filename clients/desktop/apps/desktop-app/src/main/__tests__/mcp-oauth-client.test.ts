@@ -1,3 +1,4 @@
+import type { LookupAddress } from 'node:dns';
 import { createServer } from 'node:net';
 import { get as httpGet } from 'node:http';
 
@@ -8,7 +9,13 @@ const openExternalMock = jest.fn<Promise<void>, [string]>(() =>
 // gets a different module ID, and Jest's worker-shared resolver caches that ID
 // for shared importers such as `lib/open-external`. Later suites in the same
 // worker then get the shared stub instead of their own `electron` mock.
-jest.mock('electron', () => ({ shell: { openExternal: openExternalMock } }));
+jest.mock('electron', () => ({
+  shell: {
+    get openExternal(): typeof openExternalMock {
+      return openExternalMock;
+    },
+  },
+}));
 
 const getMcpOAuthTokenMock = jest.fn();
 const clearMcpOAuthTokenMock = jest.fn<Promise<void>, [string, string]>(() =>
@@ -36,14 +43,33 @@ const saveMcpOAuthTokenIfCurrentMock = jest.fn<
   await saveMcpOAuthTokenMock(record);
   return true;
 });
+type LookupAllOptions = { all: true; verbatim: true };
+const dnsLookupMock = jest.fn<
+  Promise<LookupAddress[]>,
+  [hostname: string, options: LookupAllOptions]
+>(() => Promise.resolve([]));
 jest.mock('../mcp/oauth-token-store', () => ({
-  clearMcpOAuthToken: clearMcpOAuthTokenMock,
-  getMcpOAuthToken: getMcpOAuthTokenMock,
-  recordMcpOAuthTokenError: recordMcpOAuthTokenErrorMock,
-  saveMcpOAuthToken: saveMcpOAuthTokenMock,
-  saveMcpOAuthTokenIfCurrent: saveMcpOAuthTokenIfCurrentMock,
+  get clearMcpOAuthToken(): typeof clearMcpOAuthTokenMock {
+    return clearMcpOAuthTokenMock;
+  },
+  get getMcpOAuthToken(): typeof getMcpOAuthTokenMock {
+    return getMcpOAuthTokenMock;
+  },
+  get recordMcpOAuthTokenError(): typeof recordMcpOAuthTokenErrorMock {
+    return recordMcpOAuthTokenErrorMock;
+  },
+  get saveMcpOAuthToken(): typeof saveMcpOAuthTokenMock {
+    return saveMcpOAuthTokenMock;
+  },
+  get saveMcpOAuthTokenIfCurrent(): typeof saveMcpOAuthTokenIfCurrentMock {
+    return saveMcpOAuthTokenIfCurrentMock;
+  },
 }));
-jest.mock('node:dns/promises', () => ({ lookup: jest.fn() }));
+jest.mock('node:dns/promises', () => ({
+  get lookup(): typeof dnsLookupMock {
+    return dnsLookupMock;
+  },
+}));
 jest.mock('../mcp/pinned-http-fetch', () => ({
   fetchPinnedHttpGetResponse: jest.fn(),
   fetchPinnedHttpResponse: jest.fn(),
@@ -53,7 +79,6 @@ jest.mock('../canopy-cloud/config', () => ({
   getCanopyCloudBaseUrl: (): string => getCanopyCloudBaseUrlMock(),
 }));
 
-import { lookup } from 'node:dns/promises';
 import { DEFAULT_MCP_PROXY_PORT } from '@canopy/desktop-shared/types';
 import { MCP_DESKTOP_OAUTH_REDIRECT_URIS } from '@canopy/protocol/mcp-servers';
 import type {
@@ -83,7 +108,6 @@ const fetchMock = jest.fn<
   Promise<Response>,
   [RequestInfo | URL, RequestInit?]
 >();
-const dnsLookupMock = jest.mocked(lookup);
 const fetchPinnedHttpGetResponseMock = jest.mocked(fetchPinnedHttpGetResponse);
 const fetchPinnedHttpResponseMock = jest.mocked(fetchPinnedHttpResponse);
 

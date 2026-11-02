@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type JSX } from 'react';
 import { createPortal } from 'react-dom';
+import { Button, useOverlayEscape } from '@canopy/ui-shared/components';
 
 interface ScheduleMessageModalProps {
   /** When editing an existing schedule, the current ISO runAt to seed fields. */
@@ -69,6 +70,10 @@ export function ScheduleMessageModal({
     onSave(candidate.toISOString());
   }, [date, time, onSave]);
 
+  // The modal is mounted only while open. Registering as an overlay lets it
+  // take Escape ahead of the composer's cancel-turn shortcut.
+  useOverlayEscape(true, onCancel, ownerDocument);
+
   return createPortal(
     <div
       role="dialog"
@@ -84,14 +89,15 @@ export function ScheduleMessageModal({
       >
         <header className="flex items-center justify-between border-b px-4 py-3">
           <h2 className="text-s font-semibold fg-primary">Schedule message</h2>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={onCancel}
             aria-label="Close"
-            className="focus-ring rounded-md p-1 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
           >
             ×
-          </button>
+          </Button>
         </header>
         <div className="flex flex-col gap-3 px-4 py-3 text-s">
           <label className="flex flex-col gap-1">
@@ -127,22 +133,21 @@ export function ScheduleMessageModal({
           )}
         </div>
         <footer className="flex items-center justify-end gap-2 border-t px-4 py-3">
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onCancel}
             data-testid="schedule-message-cancel"
-            className="focus-ring rounded-md border bg-popover px-3 py-1.5 text-xs fg-secondary hover:bg-fg-primary/[0.08]"
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={handleSave}
             data-testid="schedule-message-save"
-            className="focus-ring rounded-md border border-fg-info/30 bg-info-subtle px-3 py-1.5 text-xs font-medium fg-info transition hover:bg-info-subtle/80"
           >
             Set schedule
-          </button>
+          </Button>
         </footer>
       </section>
     </div>,

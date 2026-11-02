@@ -79,26 +79,19 @@ test.describe('Usage page AI Credits tile', () => {
       const creditsTile = win.getByTestId('usage-card-ai-credits');
       await expect(creditsTile).toBeVisible({ timeout: 30_000 });
 
-      // Standardized card header: brand logo + brand app name as the title,
-      // with `authenticated` as plain text next to the plan pill. The title is
+      // Group heading: the brand app name and its plan, as a provider group
+      // names the provider and its plan (`<brand> · Pro`). The title is
       // checked against the built brand's display name (see helpers/brand-app-name.mjs),
       // which stays brand-agnostic without degrading to a non-empty check.
       const brandAppName = readBrandAppName();
       const creditsHeading = creditsTile.locator('h2').first();
-      await expect(creditsHeading.locator('svg').first()).toBeAttached();
-      await expect(creditsHeading).toHaveText(brandAppName);
-      // The logo is aria-hidden, so the heading names the card explicitly.
-      await expect(creditsHeading).toHaveAttribute(
-        'aria-label',
-        `${brandAppName} AI Credits`,
-      );
-      await expect(creditsTile).toContainText('authenticated');
 
-      // Plan pill: the native entitlements grant maps to the `Pro` plan (from
+      // Plan: the native entitlements grant maps to the `Pro` plan (from
       // `/api/v1/entitlements` via `useSubscriptionStatus`).
       await expect(
         win.getByTestId('usage-card-ai-credits-plan-chip'),
       ).toHaveText('Pro');
+      await expect(creditsHeading).toHaveText(`${brandAppName} · Pro`);
 
       // Remaining balance figure (1,234 credits from the cloud mock).
       await expect(win.getByTestId('usage-card-ai-credits-balance')).toHaveText(
@@ -124,9 +117,9 @@ test.describe('Usage page AI Credits tile', () => {
       await registerScenario(DEFAULT_MOCK_BASE_URL, TEST_CLOUD_API_KEY, {
         cloud: { aiCreditsBalanceHttpStatus: 503 },
       });
-      await creditsTile
-        .getByRole('button', { name: 'Refresh AI Credits usage' })
-        .click();
+      // The Usage page's one refresh control (in its heading) reads AI
+      // Credits again along with every provider.
+      await usagePage.getByTestId('usage-refresh').click();
       await expect(win.getByTestId('usage-card-ai-credits-error')).toBeVisible({
         timeout: 30_000,
       });
@@ -136,8 +129,8 @@ test.describe('Usage page AI Credits tile', () => {
       // The UD billing copy was replaced with native brand copy (CAN-1557).
       await expect(creditsTile).not.toContainText('Unstoppable Domains');
 
-      // The tile is the LAST card in the vertical stack.
-      const cards = usagePage.locator('article');
+      // The tile is the LAST usage group in the vertical stack.
+      const cards = usagePage.locator('section[aria-labelledby]');
       await expect(cards.last()).toHaveAttribute(
         'data-testid',
         'usage-card-ai-credits',
@@ -208,9 +201,7 @@ test.describe('Usage page AI Credits tile', () => {
           aiCreditsBalanceHttpStatus: 503,
         },
       });
-      await creditsTile
-        .getByRole('button', { name: 'Refresh AI Credits usage' })
-        .click();
+      await win.getByTestId('page-usage').getByTestId('usage-refresh').click();
       await expect(win.getByTestId('usage-card-ai-credits-error')).toBeVisible({
         timeout: 30_000,
       });

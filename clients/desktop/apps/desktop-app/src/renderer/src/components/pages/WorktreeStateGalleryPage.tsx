@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import {
   Fragment,
   useCallback,
@@ -376,22 +377,22 @@ function LeadingPriorityCard(): JSX.Element {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
             onClick={handleReset}
             data-testid="priority-reset"
-            className="focus-ring rounded-md px-2.5 py-1.5 text-xs fg-secondary hover:bg-secondary hover:fg-primary"
           >
             Reset to implemented
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={handleCopy}
             data-testid="priority-copy"
-            className="focus-ring rounded-md bg-accent px-2.5 py-1.5 text-xs font-normal fg-emphasis hover:bg-accent/90"
           >
             {copied ? 'Copied' : 'Copy order'}
-          </button>
+          </Button>
         </div>
       </div>
       <div className="mt-3 max-w-xl">

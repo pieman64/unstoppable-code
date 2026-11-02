@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   buildElectronEnv,
   buildE2eLaunchMarkerEnv,
+  cleanupFailedLaunch,
   closeCanopy,
   createAbruptTreeKiller,
   ElectronTerminalResultError,
@@ -16,6 +18,7 @@ import {
   observeElectronTerminalResult,
   parseSupervisedTreePid,
   prepareIsolatedProviderState,
+  readSupervisedTreePid,
   reapSupervisedProcessTree,
   registerElectronTerminalObservation,
   registerSupervisedProcessTree,
@@ -27,6 +30,7 @@ import {
   packagedMainWindowRendererUrl,
   rendererCodeCacheSchemeElectronArgs,
   RENDERER_CODE_CACHE_SCHEME_ENV,
+  waitForElectronTerminalResult,
 } from '../electron/launchCanopy.mjs';
 import {
   existsSync,
@@ -605,6 +609,7 @@ const promiseRealms = {
 };
 const operations = [];
 let nextWindowCount = 1;
+let launcherMode = 'default';
 function nativeWindow(url) {
   return {
     isDestroyed: () => false,
@@ -676,6 +681,26 @@ function createElectronApp() {
     child.pid = 8181;
     return child;
   };
+  if (launcherMode === 'closes-after-app-close') {
+    const child = new EventEmitter();
+    child.pid = 8181;
+    app.process = () => child;
+    app.close = () => {
+      operations.push({ operation: 'app-close' });
+      setTimeout(() => {
+        operations.push({ operation: 'launcher-close' });
+        child.emit('exit', 0, null);
+        child.emit('close', 0, null);
+      }, 25);
+      return realmPromise(undefined);
+    };
+  } else if (launcherMode === 'unobservable') {
+    app.process = () => null;
+    app.close = () => {
+      operations.push({ operation: 'app-close' });
+      return realmPromise(undefined);
+    };
+  }
   return app;
 }
 const electron = {
@@ -701,7 +726,10 @@ const fakeFs = {
     String(file).endsWith('.e2e-supervised-electron.pid') ? '4242' : '{}',
   readdirSync: () => [],
   realpathSync: (file) => file,
-  rmSync() {},
+  rmSync(file) {
+    if (launcherMode !== 'default')
+      operations.push({ operation: 'remove', path: String(file) });
+  },
   statSync: () => {
     throw Object.assign(new Error('Fixture path does not exist'), {
       code: 'ENOENT',
@@ -851,6 +879,45 @@ async function run({
       : undefined,
   };
 }
+// A viewport failure after launch, with a generated data root, so the real
+// catch block closes Electron and decides whether to remove that root.
+async function launchFailure({ platform, mode }) {
+  currentPlatform = platform;
+  nextWindowCount = 1;
+  activePromiseRealm = 'helper';
+  activeFailureAt = 'viewport-set';
+  activeFailure = new Error(platform + ' ' + mode + ' viewport-set rejection');
+  launcherMode = mode;
+  const operationStart = operations.length;
+  let rejection;
+  try {
+    await sourceModule.namespace.launchCanopy({
+      rootPath: '/workspace',
+      freshOnboarding: true,
+      freshOnboardingChecklist: true,
+      preserveProviderState: true,
+    });
+  } catch (error) {
+    rejection = error;
+  }
+  // Let a launcher close scheduled by app.close() land in the record.
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  launcherMode = 'default';
+  activeFailureAt = undefined;
+  return {
+    operations: operations
+      .slice(operationStart)
+      .filter(({ operation }) =>
+        ['app-close', 'launcher-close', 'remove'].includes(operation),
+      )
+      .map(({ operation, path }) => (path ? [operation, path] : operation)),
+    rejectionName: rejection?.name,
+    rejectionIsLaunchFailure: rejection === activeFailure,
+    firstErrorIsLaunchFailure: rejection?.errors?.[0] === activeFailure,
+    retainedName: rejection?.errors?.[1]?.name,
+    rejectionMessage: rejection?.message,
+  };
+}
 const disabled = await run({ observed: false, windows: 1 });
 const enabled = await run({ observed: true, windows: 1 });
 const noViewport = await run({ observed: true, windows: 1, viewport: false });
@@ -899,12 +966,26 @@ for (const promiseRealm of ['helper', 'foreign']) {
     }),
   };
 }
+const launchFailures = {
+  windowsLauncherCloses: await launchFailure({
+    platform: 'win32',
+    mode: 'closes-after-app-close',
+  }),
+  windowsLauncherUnobservable: await launchFailure({
+    platform: 'win32',
+    mode: 'unobservable',
+  }),
+  darwinLauncherCloses: await launchFailure({
+    platform: 'darwin',
+    mode: 'closes-after-app-close',
+  }),
+};
 process.stdout.write(
-  JSON.stringify({ disabled, enabled, noViewport, posixTerminal, windowsTerminal, sidecarTerminal, bounded, promiseRealms, matched }),
+  JSON.stringify({ disabled, enabled, noViewport, posixTerminal, windowsTerminal, sidecarTerminal, bounded, promiseRealms, matched, launchFailures }),
 );
 `;
 
-test('actual launchCanopy route observes cross-realm launch, viewport, resize, and bounded selection activity', () => {
+function runLaunchObservation() {
   const run = spawnSync(
     process.execPath,
     [
@@ -925,6 +1006,10 @@ test('actual launchCanopy route observes cross-realm launch, viewport, resize, a
   );
   assert.ifError(run.error);
   assert.equal(run.status, 0, run.stderr || run.stdout);
+  return JSON.parse(run.stdout);
+}
+
+test('actual launchCanopy route observes cross-realm launch, viewport, resize, and bounded selection activity', () => {
   const {
     disabled,
     enabled,
@@ -935,7 +1020,7 @@ test('actual launchCanopy route observes cross-realm launch, viewport, resize, a
     bounded,
     promiseRealms,
     matched,
-  } = JSON.parse(run.stdout);
+  } = runLaunchObservation();
   assert.deepEqual(promiseRealms, {
     constructorsDiffer: true,
     helperSampleIsHelper: true,
@@ -1148,6 +1233,43 @@ test('actual launchCanopy route observes cross-realm launch, viewport, resize, a
   }
 });
 
+test('actual launchCanopy route removes a failed Windows launch data root only after its launcher closes', () => {
+  const {
+    windowsLauncherCloses,
+    windowsLauncherUnobservable,
+    darwinLauncherCloses,
+  } = runLaunchObservation().launchFailures;
+  const removals = [
+    ['remove', '/owned-generated'],
+    ['remove', '/owned-generated-secure'],
+  ];
+  assert.deepEqual(windowsLauncherCloses.operations, [
+    'app-close',
+    'launcher-close',
+    ...removals,
+  ]);
+  assert.equal(windowsLauncherCloses.rejectionIsLaunchFailure, true);
+  // Without an observable close, both roots stay and the failure names them.
+  assert.deepEqual(windowsLauncherUnobservable.operations, ['app-close']);
+  assert.equal(windowsLauncherUnobservable.rejectionName, 'AggregateError');
+  assert.equal(windowsLauncherUnobservable.firstErrorIsLaunchFailure, true);
+  assert.equal(
+    windowsLauncherUnobservable.retainedName,
+    'ElectronTerminalResultError',
+  );
+  assert.match(
+    windowsLauncherUnobservable.rejectionMessage,
+    /user-data-retained@\d+ms\(reason=launcher-open,userDataDir=\/owned-generated\)/,
+  );
+  // macOS and Linux keep removing the roots right after app.close().
+  assert.deepEqual(darwinLauncherCloses.operations, [
+    'app-close',
+    ...removals,
+    'launcher-close',
+  ]);
+  assert.equal(darwinLauncherCloses.rejectionIsLaunchFailure, true);
+});
+
 test('main-window selection observes navigation commit without waiting for DOM or Advisor readiness', async () => {
   const fixture = selectionFixture();
   const main = fixture.addPage(applicationWindow({ url: 'about:blank' }));
@@ -1352,6 +1474,25 @@ test('ordinary E2E launches ignore an inherited headed-window request', () => {
   }
 });
 
+test('E2E launches render offscreen only when the launch asks for it', () => {
+  const previous = process.env.CANOPY_E2E_OFFSCREEN_WINDOW;
+  process.env.CANOPY_E2E_OFFSCREEN_WINDOW = '1';
+  try {
+    const inherited = buildElectronEnv('/tmp/canopy-offscreen-default');
+    assert.equal(
+      Object.hasOwn(inherited, 'CANOPY_E2E_OFFSCREEN_WINDOW'),
+      false,
+    );
+    const requested = buildElectronEnv('/tmp/canopy-offscreen-opt-in', {
+      CANOPY_E2E_OFFSCREEN_WINDOW: '1',
+    });
+    assert.equal(requested.CANOPY_E2E_OFFSCREEN_WINDOW, '1');
+  } finally {
+    if (previous === undefined) delete process.env.CANOPY_E2E_OFFSCREEN_WINDOW;
+    else process.env.CANOPY_E2E_OFFSCREEN_WINDOW = previous;
+  }
+});
+
 test('E2E launches isolate Claude and Codex state inside launch data', () => {
   const userDataDir = path.join(tmpdir(), 'canopy-e2e-provider-state');
   const env = buildElectronEnv(userDataDir, {
@@ -1508,10 +1649,13 @@ test('Electron terminal observer retains bounded child errors and rejects unavai
   });
   assert.equal(observed.exit, undefined);
   assert.equal(observed.close, undefined);
+  assert.equal(observed.closeUnobservable, undefined);
 
   const unavailable = observeElectronTerminalResult({ process: () => null });
   assert.equal(unavailable.pid, undefined);
   assert.match(unavailable.error?.message ?? '', /observable child process/);
+  assert.equal(unavailable.closeUnobservable, true);
+  assert.equal(Object.keys(unavailable).includes('closeUnobservable'), false);
 
   const thrown = observeElectronTerminalResult({
     process: () => {
@@ -1522,6 +1666,7 @@ test('Electron terminal observer retains bounded child errors and rejects unavai
     name: 'Error',
     message: 'process unavailable',
   });
+  assert.equal(thrown.closeUnobservable, true);
 });
 
 test('Electron terminal observer keeps each launch result isolated and uses the installed target-closed constructor', () => {
@@ -1578,6 +1723,890 @@ test('Windows ordinary close rejects a complete nonzero terminal tuple after man
       error?.result?.close?.code === 125,
   );
   assert.deepEqual(events, ['close', 'reap']);
+});
+
+/**
+ * The Windows close seen on the desktop runner: app.quit() ends Electron and
+ * its wrapper, so Playwright's close resolves on the CDP disconnect while the
+ * cmd.exe launcher is still running the supervisor's cleanup.
+ */
+function windowsLauncherApp({ launcherClosesAtMs, exitCode = 0 }) {
+  const child = new EventEmitter();
+  child.pid = 7531;
+  const events = [];
+  let clock = 0;
+  const app = {
+    process: () => child,
+    evaluate: async () => {
+      events.push('quit');
+    },
+    close: async () => {
+      events.push('playwright-close');
+    },
+  };
+  registerSupervisedProcessTree(app, 2468);
+  registerElectronTerminalObservation(app);
+  return {
+    app,
+    events,
+    elapsedMs: () => clock,
+    options: {
+      platform: 'win32',
+      treeExists: () => false,
+      now: () => clock,
+      wait: async (ms) => {
+        clock += ms;
+        if (
+          launcherClosesAtMs !== undefined &&
+          clock >= launcherClosesAtMs &&
+          child.listenerCount('close') > 0
+        ) {
+          events.push('launcher-closed');
+          child.emit('exit', exitCode, null);
+          child.emit('close', exitCode, null);
+        }
+      },
+      reapTree: async (pid) => {
+        events.push(['reap', pid]);
+      },
+      removeDataDir: async (dir) => {
+        events.push(['remove', dir]);
+      },
+    },
+  };
+}
+
+test('Windows close waits for the launcher to finish supervisor cleanup before its terminal check', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: 20_000 });
+  await closeCanopy(launch.app, '/data', launch.options);
+  // A retired Windows PID may already be reused, so it is never reaped; the
+  // data roots go only after the supervisor has finished with them.
+  assert.deepEqual(launch.events, [
+    'quit',
+    'playwright-close',
+    'launcher-closed',
+    ['remove', '/data'],
+    ['remove', '/data-secure'],
+  ]);
+  assert.equal(launch.elapsedMs(), 20_000);
+});
+
+test('Windows close reports a nonzero launcher result once the launcher closes', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: 50, exitCode: 125 });
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      keepUserData: true,
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.exit?.code === 125 &&
+      error.result.close?.code === 125,
+  );
+});
+
+test('Windows close bounds the launcher wait, keeps the data roots, and reports the missing result', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: 1_234,
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.pid === 7531 &&
+      error.result.exit === undefined &&
+      error.result.close === undefined &&
+      error.diagnostics.closeSteps.some(
+        (step) =>
+          step.startsWith('user-data-retained@') &&
+          step.endsWith('(reason=launcher-open,userDataDir=/data)'),
+      ) &&
+      error.message.includes('userDataDir=/data'),
+  );
+  assert.equal(launch.elapsedMs(), 1_234);
+  // The still-open launcher's supervisor may be using the roots, so neither
+  // is removed and the old numeric PID is still not reaped.
+  assert.deepEqual(launch.events, ['quit', 'playwright-close']);
+});
+
+test('Windows close still fails and keeps the data roots when the launcher closes just after its wait expires', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const child = launch.app.process();
+  const timeoutMs = 1_234;
+  let lateReads = 0;
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: timeoutMs,
+      now: () => {
+        const clock = launch.options.now();
+        // The first read at the deadline ends the wait; the launcher closes
+        // on the next, before the data-root decision and validation run.
+        if (clock >= timeoutMs && ++lateReads === 2) {
+          child.emit('exit', 0, null);
+          child.emit('close', 0, null);
+        }
+        return clock;
+      },
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.close === undefined &&
+      error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  assert.equal(launch.app.process().listenerCount('close'), 0);
+  assert.equal(lateReads >= 2, true);
+  assert.deepEqual(launch.events, ['quit', 'playwright-close']);
+});
+
+test('Windows close with kept user data reports an expired launcher wait without a retention step', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      keepUserData: true,
+      windowsLauncherCloseTimeoutMs: 1_234,
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.close === undefined &&
+      !error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  assert.deepEqual(launch.events, ['quit', 'playwright-close']);
+});
+
+test('Windows close keeps the data roots when the launcher reports a child error without closing', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const child = launch.app.process();
+  const timeoutMs = 1_234;
+  let errored = false;
+  const wait = launch.options.wait;
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: timeoutMs,
+      wait: async (ms) => {
+        await wait(ms);
+        // An undeliverable signal surfaces as `error` while the launcher, and
+        // its supervisor's cleanup, keep running.
+        if (!errored && launch.elapsedMs() >= 50) {
+          errored = true;
+          child.emit('error', new Error('kill EPERM'));
+        }
+      },
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.error?.message === 'kill EPERM' &&
+      error.result.close === undefined &&
+      error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('launcher-close-wait-complete@'),
+      ) &&
+      error.diagnostics.closeSteps.some(
+        (step) =>
+          step.startsWith('user-data-retained@') &&
+          step.endsWith('(reason=launcher-open,userDataDir=/data)'),
+      ),
+  );
+  assert.equal(errored, true);
+  assert.equal(launch.elapsedMs(), timeoutMs);
+  assert.deepEqual(launch.events, ['quit', 'playwright-close']);
+});
+
+test('Windows close keeps the data roots when a child error was recorded before close began', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  launch.app.process().emit('error', new Error('kill EPERM'));
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: 1_234,
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.error?.message === 'kill EPERM' &&
+      error.result.close === undefined &&
+      error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  assert.equal(launch.elapsedMs(), 1_234);
+  assert.deepEqual(launch.events, ['quit', 'playwright-close']);
+});
+
+test('Windows close keeps the data roots without waiting when the launcher could not be observed', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const app = { ...launch.app, process: () => null };
+  registerSupervisedProcessTree(app, 2468);
+  registerElectronTerminalObservation(
+    app,
+    observeElectronTerminalResult(app, { platform: 'win32' }),
+  );
+  await assert.rejects(
+    closeCanopy(app, '/data', launch.options),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      /observable child process/.test(error.result.error?.message ?? '') &&
+      error.diagnostics.closeSteps.includes(
+        'launcher-close-wait-complete@0ms(launcherClosed=false,waitedMs=0)',
+      ) &&
+      error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  assert.equal(launch.elapsedMs(), 0);
+  assert.deepEqual(launch.events, ['quit', 'playwright-close']);
+});
+
+test('Windows close removes the data roots only after a child error is followed by the launcher close', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: 500, exitCode: 1 });
+  const child = launch.app.process();
+  let errored = false;
+  const wait = launch.options.wait;
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      wait: async (ms) => {
+        if (!errored && launch.elapsedMs() + ms >= 50) {
+          errored = true;
+          launch.events.push('launcher-error');
+          child.emit('error', new Error('kill EPERM'));
+        }
+        await wait(ms);
+      },
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.error?.message === 'kill EPERM' &&
+      error.result.close?.code === 1 &&
+      !error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  assert.equal(launch.elapsedMs(), 500);
+  assert.deepEqual(launch.events, [
+    'quit',
+    'playwright-close',
+    'launcher-error',
+    'launcher-closed',
+    ['remove', '/data'],
+    ['remove', '/data-secure'],
+  ]);
+});
+
+test('Windows close keeps the data roots and reports both failures when Playwright close fails and the launcher wait expires', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const closeFailure = new Error('playwright close failed');
+  launch.app.close = async () => {
+    launch.events.push('playwright-close');
+    throw closeFailure;
+  };
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: 1_234,
+    }),
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors.length === 2 &&
+      error.errors[0] === closeFailure &&
+      error.errors[1]?.name === 'ElectronTerminalResultError' &&
+      error.errors[1].result.close === undefined &&
+      error.errors[1].diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  // Without a completed Playwright close the supervised tree is reaped, but
+  // the roots stay while the launcher is open.
+  assert.deepEqual(launch.events, ['quit', 'playwright-close', ['reap', 2468]]);
+});
+
+test('Windows close keeps the data roots when Playwright close times out and the launcher wait expires', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  launch.app.close = () => {
+    launch.events.push('playwright-close');
+    return new Promise(() => {});
+  };
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: 1_234,
+      scheduleTimeout: (resolve) => {
+        queueMicrotask(resolve);
+        return 1;
+      },
+      cancelTimeout: () => {},
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.result.close === undefined &&
+      error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('playwright-close-complete@0ms(status=timed-out)'),
+      ) &&
+      error.diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  assert.deepEqual(launch.events, ['quit', 'playwright-close', ['reap', 2468]]);
+});
+
+test('Windows launch failure keeps the data roots and names them when the launcher wait expires', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const playwrightClose = launch.app.close;
+  launch.app.close = async () => {
+    await launch.options.wait(300);
+    return playwrightClose();
+  };
+  const launchError = new Error('E2E supervisor PID file missing');
+  await assert.rejects(
+    cleanupFailedLaunch(launch.app, '/data', launchError, {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: 1_234,
+    }),
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors.length === 2 &&
+      error.errors[0] === launchError &&
+      error.errors[1]?.name === 'ElectronTerminalResultError' &&
+      error.errors[1].result.pid === 7531 &&
+      error.errors[1].result.close === undefined &&
+      error.errors[1].diagnostics.closeSteps.includes(
+        'launcher-close-wait-complete@1534ms(launcherClosed=false,waitedMs=1234)',
+      ) &&
+      error.errors[1].diagnostics.closeSteps.includes(
+        'user-data-retained@1534ms(reason=launcher-open,userDataDir=/data)',
+      ) &&
+      error.message.includes(launchError.message) &&
+      error.message.includes('userDataDir=/data'),
+  );
+  assert.equal(launch.elapsedMs(), 1_534);
+  // Neither root is removed, and the possibly reused PID is never reaped.
+  assert.deepEqual(launch.events, ['playwright-close']);
+});
+
+test('Windows launch failure keeps the data roots when the launcher closes just after its wait expires', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const child = launch.app.process();
+  const launchError = new Error('launch failed');
+  let lateReads = 0;
+  await assert.rejects(
+    cleanupFailedLaunch(launch.app, '/data', launchError, {
+      ...launch.options,
+      windowsLauncherCloseTimeoutMs: 1_234,
+      now: () => {
+        const clock = launch.options.now();
+        if (clock >= 1_234 && ++lateReads === 2) {
+          child.emit('exit', 0, null);
+          child.emit('close', 0, null);
+        }
+        return clock;
+      },
+    }),
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors[0] === launchError &&
+      error.errors[1]?.result.close === undefined &&
+      error.errors[1].diagnostics.closeSteps.some((step) =>
+        step.startsWith('user-data-retained@'),
+      ),
+  );
+  assert.equal(lateReads >= 2, true);
+  assert.deepEqual(launch.events, ['playwright-close']);
+});
+
+test('Windows launch failure removes the data roots only after the launcher closes', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: 700 });
+  const launchError = new Error('launch failed');
+  await assert.rejects(
+    cleanupFailedLaunch(launch.app, '/data', launchError, launch.options),
+    (error) => error === launchError,
+  );
+  assert.equal(launch.elapsedMs(), 700);
+  assert.deepEqual(launch.events, [
+    'playwright-close',
+    'launcher-closed',
+    ['remove', '/data'],
+    ['remove', '/data-secure'],
+  ]);
+});
+
+test('Windows launch failure keeps the data roots without waiting when the launcher could not be observed', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const app = { ...launch.app, process: () => null };
+  registerElectronTerminalObservation(
+    app,
+    observeElectronTerminalResult(app, { platform: 'win32' }),
+  );
+  const launchError = new Error('launch failed');
+  await assert.rejects(
+    cleanupFailedLaunch(app, '/data', launchError, launch.options),
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors[0] === launchError &&
+      /observable child process/.test(
+        error.errors[1]?.result.error?.message ?? '',
+      ) &&
+      error.errors[1].diagnostics.closeSteps.includes(
+        'user-data-retained@0ms(reason=launcher-open,userDataDir=/data)',
+      ),
+  );
+  assert.equal(launch.elapsedMs(), 0);
+  assert.deepEqual(launch.events, ['playwright-close']);
+});
+
+test('Windows launch failure with a caller-owned data root neither waits nor removes it', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const launchError = new Error('launch failed');
+  await assert.rejects(
+    cleanupFailedLaunch(launch.app, '/data', launchError, {
+      ...launch.options,
+      reuseDir: true,
+    }),
+    (error) => error === launchError,
+  );
+  assert.equal(launch.elapsedMs(), 0);
+  assert.deepEqual(launch.events, ['playwright-close']);
+});
+
+test('launch failure before Electron starts removes the data roots without waiting', async () => {
+  const events = [];
+  const launchError = new Error('electron.launch rejected');
+  await assert.rejects(
+    cleanupFailedLaunch(undefined, '/data', launchError, {
+      platform: 'win32',
+      wait: async () => {
+        events.push('wait');
+      },
+      removeDataDir: async (dir) => {
+        events.push(['remove', dir]);
+      },
+    }),
+    (error) => error === launchError,
+  );
+  assert.deepEqual(events, [
+    ['remove', '/data'],
+    ['remove', '/data-secure'],
+  ]);
+});
+
+test('non-Windows launch failure removes the data roots at once, even with an open launcher observation', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  const launchError = new Error('launch failed');
+  for (const platform of ['darwin', 'linux']) {
+    launch.events.length = 0;
+    await assert.rejects(
+      cleanupFailedLaunch(launch.app, '/data', launchError, {
+        ...launch.options,
+        platform,
+      }),
+      (error) => error === launchError,
+    );
+    assert.deepEqual(launch.events, [
+      'playwright-close',
+      ['remove', '/data'],
+      ['remove', '/data-secure'],
+    ]);
+  }
+  assert.equal(launch.elapsedMs(), 0);
+});
+
+function launcherChild(pid) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  return child;
+}
+
+test('Windows terminal observation keeps bounded launcher output without changing its result shape', async () => {
+  const child = launcherChild(4321);
+  const observed = observeElectronTerminalResult(
+    { process: () => child },
+    { platform: 'win32' },
+  );
+  assert.deepEqual(observed, {
+    pid: 4321,
+    exit: undefined,
+    close: undefined,
+    error: undefined,
+  });
+  assert.equal(Object.keys(observed).includes('launcherOutput'), false);
+
+  for (let line = 0; line < 40; line += 1)
+    child.stdout.write(`[shutdown] stage ${line}\n`);
+  // A line split across chunks, CRLF endings, and a UTF-8 character split
+  // between chunks are each kept whole.
+  const accented = Buffer.from('é');
+  child.stderr.write(
+    Buffer.concat([
+      Buffer.from('[e2e-supervisor] Exi'),
+      accented.subarray(0, 1),
+    ]),
+  );
+  child.stderr.write(
+    Buffer.concat([accented.subarray(1), Buffer.from('ting with code 1\r\n')]),
+  );
+  child.stderr.write(
+    `Fatal uncaught exception in main process: ${'x'.repeat(600)}\n`,
+  );
+  child.stderr.end('[e2e-supervisor] trailing line without newline');
+  child.stdout.end();
+  // Flowing streams deliver their data and end on later ticks.
+  for (let tick = 0; tick < 3; tick += 1)
+    await new Promise((resolve) => setImmediate(resolve));
+
+  const output = observed.launcherOutput;
+  assert.deepEqual(output.pinned.slice(0, 1), [
+    'err: [e2e-supervisor] Exiéting with code 1',
+  ]);
+  assert.equal(output.pinned.length, 3);
+  assert.equal(output.pinned[1].length, 'err: '.length + 400);
+  assert.ok(output.pinned[1].endsWith('…'));
+  assert.equal(
+    output.pinned[2],
+    'err: [e2e-supervisor] trailing line without newline',
+  );
+  assert.equal(output.tail.length, 30);
+  assert.equal(output.tail[0], 'out: [shutdown] stage 13');
+  assert.equal(output.tail.at(-1), output.pinned[2]);
+});
+
+test('POSIX terminal observation does not read the launcher streams', () => {
+  const child = launcherChild(4322);
+  const observed = observeElectronTerminalResult(
+    { process: () => child },
+    { platform: 'darwin' },
+  );
+  assert.equal(child.stdout.listenerCount('data'), 0);
+  assert.equal(child.stderr.listenerCount('data'), 0);
+  assert.equal(observed.launcherOutput, undefined);
+});
+
+test('Windows close reports its steps and the launcher output with a nonzero launcher result', async () => {
+  const child = launcherChild(7532);
+  let clock = 0;
+  const app = {
+    process: () => child,
+    evaluate: async () => undefined,
+    close: async () => undefined,
+  };
+  registerSupervisedProcessTree(app, 2468);
+  registerElectronTerminalObservation(
+    app,
+    observeElectronTerminalResult(app, { platform: 'win32' }),
+  );
+  let alive = true;
+  await assert.rejects(
+    closeCanopy(app, '/data', {
+      keepUserData: true,
+      platform: 'win32',
+      gracefulCloseTimeoutMs: 100,
+      forcedCloseTimeoutMs: 50,
+      treeExists: () => alive,
+      now: () => clock,
+      wait: async (ms) => {
+        clock += ms;
+        if (clock >= 400 && alive) {
+          alive = false;
+          child.stderr.end(
+            '[e2e-supervisor] Exiting with code 1: wrapper closed (code=1, signal=null); target exit not reported\n',
+          );
+          await new Promise((resolve) => setImmediate(resolve));
+          child.emit('exit', 1, null);
+          child.emit('close', 1, null);
+        }
+      },
+      reapTree: async () => undefined,
+    }),
+    (error) => {
+      assert.equal(error?.name, 'ElectronTerminalResultError');
+      assert.equal(error.result.exit.code, 1);
+      assert.deepEqual(error.diagnostics.closeSteps, [
+        'start@0ms(platform=win32,supervisedTreePid=2468,controllerPid=' +
+          `${process.pid})`,
+        'quit-requested@0ms',
+        'quit-wait-complete@100ms(gracefullyExited=false)',
+        'exit-requested@100ms',
+        'exit-wait-complete@150ms(forciblyExited=false)',
+        'playwright-close-start@150ms',
+        'playwright-close-complete@150ms(status=closed)',
+        'reap-skipped-retired-windows-pid@150ms',
+        'launcher-close-wait-complete@400ms(launcherClosed=true,waitedMs=250)',
+        'complete@400ms',
+      ]);
+      assert.match(
+        error.message,
+        /\[terminal\.close-steps=start@0ms\(.*\) > quit-requested@0ms > .* > complete@400ms\]/,
+      );
+      assert.match(
+        error.message,
+        /\[terminal\.launcher-output\.pinned=err: \[e2e-supervisor\] Exiting with code 1: wrapper closed \(code=1, signal=null\); target exit not reported\]/,
+      );
+      return true;
+    },
+  );
+});
+
+test('terminal result errors add no diagnostics without close steps or launcher output', () => {
+  const plain = new ElectronTerminalResultError(
+    {
+      pid: 5,
+      exit: { code: 1, signal: null },
+      close: { code: 1, signal: null },
+    },
+    { closeSteps: [] },
+  );
+  assert.equal(plain.diagnostics, undefined);
+  assert.equal(plain.message.includes('terminal.close-steps'), false);
+  assert.equal(plain.message.includes('terminal.launcher-output'), false);
+
+  const observation = {
+    pid: 6,
+    exit: { code: 1, signal: null },
+    close: { code: 1, signal: null },
+  };
+  Object.defineProperty(observation, 'launcherOutput', {
+    value: {
+      pinned: [],
+      tail: Array.from({ length: 30 }, () => 'y'.repeat(400)),
+    },
+  });
+  const bounded = new ElectronTerminalResultError(observation, {
+    closeSteps: ['complete@1ms', 7, null],
+  });
+  assert.deepEqual(bounded.diagnostics.closeSteps, ['complete@1ms']);
+  assert.equal(bounded.diagnostics.launcherOutput.pinned.length, 0);
+  const suffix = bounded.message.slice(
+    bounded.message.indexOf(' [terminal.close-steps='),
+  );
+  assert.equal(suffix.length, 6144);
+  assert.ok(suffix.endsWith('…[truncated]'));
+  assert.match(
+    suffix,
+    /^ \[terminal\.close-steps=complete@1ms\] \[terminal\.launcher-output\.pinned=none\] \[terminal\.launcher-output\.tail=y+/,
+  );
+});
+
+test('POSIX close keeps its terminal error free of close steps', async () => {
+  const child = new EventEmitter();
+  child.pid = 1358;
+  const app = { process: () => child, close: async () => undefined };
+  registerSupervisedProcessTree(app, 1358);
+  registerElectronTerminalObservation(app);
+  await assert.rejects(
+    closeCanopy(app, '/unused', {
+      keepUserData: true,
+      platform: 'darwin',
+      treeExists: () => false,
+      reapTree: async () => undefined,
+    }),
+    (error) =>
+      error?.name === 'ElectronTerminalResultError' &&
+      error.diagnostics === undefined &&
+      !error.message.includes('terminal.close-steps'),
+  );
+});
+
+test('Windows close waits 60 s for the launcher by default', async () => {
+  const launch = windowsLauncherApp({ launcherClosesAtMs: undefined });
+  await assert.rejects(
+    closeCanopy(launch.app, '/data', { ...launch.options, keepUserData: true }),
+    { name: 'ElectronTerminalResultError' },
+  );
+  assert.equal(launch.elapsedMs(), 60_000);
+});
+
+for (const [label, platform, observe] of [
+  ['POSIX', 'darwin', true],
+  ['Windows without a terminal observation', 'win32', false],
+]) {
+  test(`${label} close does not wait for a launcher`, async () => {
+    const events = [];
+    const child = new EventEmitter();
+    child.pid = 1357;
+    const app = {
+      process: () => child,
+      evaluate: async () => {},
+      close: async () => {
+        events.push('playwright-close');
+      },
+    };
+    registerSupervisedProcessTree(app, 1357);
+    if (observe) registerElectronTerminalObservation(app);
+    const closing = closeCanopy(app, '/unused', {
+      keepUserData: true,
+      platform,
+      treeExists: () => false,
+      wait: async () => assert.fail('must not wait for a launcher'),
+      reapTree: async (pid) => {
+        events.push(['reap', pid]);
+      },
+    });
+    if (observe)
+      await assert.rejects(closing, { name: 'ElectronTerminalResultError' });
+    else await closing;
+    assert.deepEqual(
+      events,
+      platform === 'win32'
+        ? ['playwright-close']
+        : ['playwright-close', ['reap', 1357]],
+    );
+  });
+}
+
+test('launcher wait settles only on close and is bounded', async () => {
+  let clock = 0;
+  const timing = {
+    now: () => clock,
+    wait: async (ms) => {
+      clock += ms;
+    },
+  };
+  assert.equal(
+    await waitForElectronTerminalResult(
+      { close: { code: 0, signal: null } },
+      { ...timing, wait: async () => assert.fail('already closed') },
+    ),
+    true,
+  );
+  // A child error, such as an undeliverable signal, does not prove the
+  // launcher exited.
+  assert.equal(
+    await waitForElectronTerminalResult(
+      { error: { name: 'Error', message: 'kill EPERM' } },
+      { ...timing, timeoutMs: 80 },
+    ),
+    false,
+  );
+  assert.equal(clock, 80);
+  // An exit alone is not settled: the launcher's stdio may still be open.
+  assert.equal(
+    await waitForElectronTerminalResult(
+      { exit: { code: 0, signal: null } },
+      { ...timing, timeoutMs: 120 },
+    ),
+    false,
+  );
+  assert.equal(clock, 200);
+  // Without a close listener the launcher's close can never be seen.
+  assert.equal(
+    await waitForElectronTerminalResult(
+      Object.defineProperty(
+        { error: { name: 'Error', message: 'no child' } },
+        'closeUnobservable',
+        { value: true },
+      ),
+      { ...timing, wait: async () => assert.fail('close is unobservable') },
+    ),
+    false,
+  );
+  assert.equal(
+    await waitForElectronTerminalResult(
+      {
+        error: { name: 'Error', message: 'kill EPERM' },
+        close: { code: 1, signal: null },
+      },
+      { ...timing, wait: async () => assert.fail('already closed') },
+    ),
+    true,
+  );
+});
+
+test('supervised PID file reads once off Windows and keeps the original read error', async () => {
+  const missing = Object.assign(new Error('missing pid'), { code: 'ENOENT' });
+  let reads = 0;
+  await assert.rejects(
+    readSupervisedTreePid('/data/.e2e-supervised-electron.pid', {
+      platform: 'darwin',
+      readFile: () => {
+        reads += 1;
+        throw missing;
+      },
+      wait: async () => assert.fail('POSIX reads must not wait'),
+    }),
+    (error) => error === missing,
+  );
+  assert.equal(reads, 1);
+  assert.equal(
+    await readSupervisedTreePid('/data/pid', {
+      platform: 'linux',
+      readFile: () => '2468\n',
+    }),
+    2468,
+  );
+});
+
+test('supervised PID file on Windows waits for a missing or empty file to be written', async () => {
+  let clock = 0;
+  const contents = [undefined, '', '  \n', '9753\r\n'];
+  const waits = [];
+  const pid = await readSupervisedTreePid('C:\\data\\pid', {
+    platform: 'win32',
+    now: () => clock,
+    wait: async (ms) => {
+      waits.push(ms);
+      clock += ms;
+    },
+    readFile: (file, encoding) => {
+      assert.equal(file, 'C:\\data\\pid');
+      assert.equal(encoding, 'utf8');
+      const value = contents.shift();
+      if (value === undefined)
+        throw Object.assign(new Error('missing pid'), { code: 'ENOENT' });
+      return value;
+    },
+  });
+  assert.equal(pid, 9753);
+  assert.deepEqual(waits, [50, 50, 50]);
+});
+
+test('supervised PID file on Windows reports the original error at its deadline', async () => {
+  let clock = 0;
+  let reads = 0;
+  const missing = Object.assign(new Error('missing pid'), { code: 'ENOENT' });
+  await assert.rejects(
+    readSupervisedTreePid('C:\\data\\pid', {
+      platform: 'win32',
+      timeoutMs: 120,
+      now: () => clock,
+      wait: async (ms) => {
+        clock += ms;
+      },
+      readFile: () => {
+        reads += 1;
+        throw missing;
+      },
+    }),
+    (error) => error === missing,
+  );
+  // Three polls inside the 120 ms window, then the final reported read.
+  assert.equal(reads, 4);
+});
+
+test('supervised PID file on Windows does not retry malformed or unreadable files', async () => {
+  const denied = Object.assign(new Error('denied'), { code: 'EPERM' });
+  for (const [readFile, expected] of [
+    [() => 'not-a-pid', /valid process-tree PID/],
+    [
+      () => {
+        throw denied;
+      },
+      (error) => error === denied,
+    ],
+  ]) {
+    await assert.rejects(
+      readSupervisedTreePid('C:\\data\\pid', {
+        platform: 'win32',
+        readFile,
+        wait: async () => assert.fail('must not wait'),
+      }),
+      expected,
+    );
+  }
 });
 
 test('Electron terminal registration observes once and never replaces the first exact-app result', () => {

@@ -9,8 +9,8 @@ import {
   readNoteForProject,
   listPromptsForProject,
   readPromptForProject,
-  listAttachmentsForProject,
 } from '../../../services/workspace-items-service';
+import { listPortalWorkspaceAttachments } from '../../portal-workspace-reads';
 import {
   handlePortalWorkspaceItemsListNotes,
   handlePortalWorkspaceItemsReadNote,
@@ -26,13 +26,26 @@ jest.mock('../../../services/workspace-items-service', () => ({
   readNoteForProject: jest.fn(),
   listPromptsForProject: jest.fn(),
   readPromptForProject: jest.fn(),
-  listAttachmentsForProject: jest.fn(),
+}));
+// CAN-4105: the list reaches core.workspace.item.list through this read.
+jest.mock('../../portal-workspace-reads', () => ({
+  listPortalWorkspaceAttachments: jest.fn(),
 }));
 
 function expectNoAbsolutePath(value: unknown): void {
   if (typeof value !== 'object' || value === null) return;
   expect(Object.keys(value)).not.toContain('absolutePath');
   for (const child of Object.values(value)) expectNoAbsolutePath(child);
+}
+
+function legacyFilesystemServiceError(
+  code: 'EACCES' | 'ENOENT',
+  message: string,
+): PortalServiceError {
+  const error = new PortalServiceError('execution_failed', message);
+  // These cases preserve legacy filesystem codes at the service boundary.
+  Reflect.set(error, 'code', code);
+  return error;
 }
 
 const origin = {
@@ -152,7 +165,7 @@ describe('project items portal adapter', (): void => {
       jest
         .mocked(listNotesForProject)
         .mockRejectedValue(
-          new PortalServiceError(
+          legacyFilesystemServiceError(
             'EACCES',
             "EACCES: permission denied, scandir '/Users/someone/.canopy/workspaces/ws/notes'",
           ),
@@ -272,7 +285,7 @@ describe('project items portal adapter', (): void => {
       jest
         .mocked(readNoteForProject)
         .mockRejectedValue(
-          new PortalServiceError(
+          legacyFilesystemServiceError(
             'ENOENT',
             "ENOENT: no such file or directory, open '/Users/someone/.canopy/workspaces/ws/notes/x.md'",
           ),
@@ -371,7 +384,7 @@ describe('project items portal adapter', (): void => {
       jest
         .mocked(listPromptsForProject)
         .mockRejectedValue(
-          new PortalServiceError(
+          legacyFilesystemServiceError(
             'EACCES',
             "EACCES: permission denied, scandir '/Users/someone/.canopy/workspaces/ws/notes'",
           ),
@@ -474,7 +487,7 @@ describe('project items portal adapter', (): void => {
       jest
         .mocked(readPromptForProject)
         .mockRejectedValue(
-          new PortalServiceError(
+          legacyFilesystemServiceError(
             'ENOENT',
             "ENOENT: no such file or directory, open '/Users/someone/.canopy/workspaces/ws/notes/x.md'",
           ),
@@ -507,10 +520,10 @@ describe('project items portal adapter', (): void => {
     } satisfies PortalCommandEnvelope;
     it('completes with the mapped result without absolutePath anywhere', async (): Promise<void> => {
       jest
-        .mocked(listAttachmentsForProject)
+        .mocked(listPortalWorkspaceAttachments)
         .mockResolvedValue([desktopAttachment]);
       await handlePortalWorkspaceItemsListAttachments(command, context);
-      expect(listAttachmentsForProject).toHaveBeenCalledWith(
+      expect(listPortalWorkspaceAttachments).toHaveBeenCalledWith(
         'project-1',
         'wt-1',
       );
@@ -528,7 +541,7 @@ describe('project items portal adapter', (): void => {
         filename: `${index}-${'界'.repeat(400)}`,
       }));
       jest
-        .mocked(listAttachmentsForProject)
+        .mocked(listPortalWorkspaceAttachments)
         .mockResolvedValue(
           rows.map((row) => ({ ...desktopAttachment, ...row })),
         );
@@ -572,15 +585,15 @@ describe('project items portal adapter', (): void => {
           'invalid_payload',
           expect.any(String),
         );
-        expect(listAttachmentsForProject).not.toHaveBeenCalled();
+        expect(listPortalWorkspaceAttachments).not.toHaveBeenCalled();
         expect(complete).not.toHaveBeenCalled();
       },
     );
     it('keeps the error code but never echoes the local path', async (): Promise<void> => {
       jest
-        .mocked(listAttachmentsForProject)
+        .mocked(listPortalWorkspaceAttachments)
         .mockRejectedValue(
-          new PortalServiceError(
+          legacyFilesystemServiceError(
             'EACCES',
             "EACCES: permission denied, scandir '/Users/someone/.canopy/workspaces/ws/notes'",
           ),

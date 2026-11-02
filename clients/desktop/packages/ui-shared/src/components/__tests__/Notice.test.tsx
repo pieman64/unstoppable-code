@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
@@ -187,6 +187,25 @@ describe('Notice', () => {
     expect(below).not.toContain('data-notice-actions="trailing"');
     // Aligned with the copy: indented past the glyph column.
     expect(below).toMatch(/data-notice-actions="below" class="[^"]*pl-6/);
+  });
+
+  it('keeps the actions mounted when their placement changes', () => {
+    // A stateful action (the credits CTA mid-purchase) must survive a host
+    // moving its buttons under the copy.
+    const notice = (placement: 'trailing' | 'below'): JSX.Element => (
+      <Notice
+        actionsPlacement={placement}
+        actions={<NoticeButton variant="secondary">Go</NoticeButton>}
+      >
+        Message
+      </Notice>
+    );
+    act(() => root.render(notice('trailing')));
+    const button = query<HTMLButtonElement>('button');
+    act(() => root.render(notice('below')));
+
+    expect(query('[data-notice-actions="below"]')).not.toBeNull();
+    expect(query<HTMLButtonElement>('button')).toBe(button);
   });
 
   it('spreads data attributes and placement classes onto the root', () => {

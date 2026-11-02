@@ -2,6 +2,7 @@ import type * as WindowSendModule from '../lib/window-send';
 import type * as PlanPersistenceModule from '../lib/plan-persistence';
 import type * as PlanFileSyncModule from '../lib/plan-file-sync';
 import type * as SharedPlanSyncModule from '../lib/shared-plan-sync';
+import type * as CodeReviewDiffModule from '../lib/code-review-diff';
 import type {
   AppendPlanCommentReplyResult,
   PlanCommentThreadOwner,
@@ -23,13 +24,24 @@ import type * as WorkspacePersistence from '../lib/workspace-persistence';
 
 const mockReadPreferencesFile = jest.fn();
 const mockReadWorkspaceConfigDetailed = jest.fn();
-jest.mock('../lib/workspace-persistence', () => ({
-  ...jest.requireActual<typeof WorkspacePersistence>(
+jest.mock('../lib/workspace-persistence', () => {
+  const actual = jest.requireActual<typeof WorkspacePersistence>(
     '../lib/workspace-persistence',
-  ),
-  readWorkspaceConfigDetailed: (...args: unknown[]): unknown =>
-    mockReadWorkspaceConfigDetailed(...args),
-}));
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      readWorkspaceConfigDetailed: {
+        configurable: true,
+        enumerable: true,
+        value: (...args: unknown[]): unknown =>
+          mockReadWorkspaceConfigDetailed(...args),
+        writable: true,
+      },
+    },
+  );
+});
 const mockCheckGitHubCliStatus = jest.fn();
 const mockGetCodeReviewTarget = jest.fn();
 const mockGetPlanExploreTarget = jest.fn();
@@ -46,10 +58,14 @@ const mockGetUserMemoryDir = jest.fn(() => '/memory/user');
 const mockGetWorkspaceMemoryDir = jest.fn(
   (workspaceId: string) => `/memory/workspaces/${workspaceId}`,
 );
-const mockListReviewRepos = jest.fn(() =>
-  Promise.resolve([{ repoId: 'default', repoPath: '/repo' }]),
-);
-const mockComputeReviewFingerprint = jest.fn(() => Promise.resolve('fp-1'));
+const mockListReviewRepos = jest.fn<
+  Promise<unknown>,
+  Parameters<typeof CodeReviewDiffModule.listReviewRepos>
+>(() => Promise.resolve([{ repoId: 'default', repoPath: '/repo' }]));
+const mockComputeReviewFingerprint = jest.fn<
+  Promise<string>,
+  Parameters<typeof CodeReviewDiffModule.computeReviewFingerprint>
+>(() => Promise.resolve('fp-1'));
 type AppendPlanCommentReply =
   typeof PlanPersistenceModule.appendPlanCommentReply;
 type ReadScopedPlanCommentThreads =
@@ -89,45 +105,76 @@ jest.mock('../lib/window-send', () => ({
 }));
 
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
-jest.mock('../ipc/settings', () => ({
-  checkGitHubCliStatus: mockCheckGitHubCliStatus,
+jest.mock('../lib/github-auth', () => ({
+  ...jest.requireActual<object>('../lib/github-auth'),
+  get checkGitHubCliStatus(): typeof mockCheckGitHubCliStatus {
+    return mockCheckGitHubCliStatus;
+  },
 }));
 
 jest.mock('../lib/code-review-registry', () => ({
-  getCodeReviewTarget: mockGetCodeReviewTarget,
+  get getCodeReviewTarget(): typeof mockGetCodeReviewTarget {
+    return mockGetCodeReviewTarget;
+  },
 }));
 
 jest.mock('../lib/plan-explore-registry', () => ({
-  getPlanExploreTarget: mockGetPlanExploreTarget,
+  get getPlanExploreTarget(): typeof mockGetPlanExploreTarget {
+    return mockGetPlanExploreTarget;
+  },
 }));
 
 jest.mock('../lib/code-review-persistence', () => ({
-  readReviewCommentThread: mockReadReviewCommentThread,
-  appendReviewCommentReply: mockAppendReviewCommentReply,
+  get readReviewCommentThread(): typeof mockReadReviewCommentThread {
+    return mockReadReviewCommentThread;
+  },
+  get appendReviewCommentReply(): typeof mockAppendReviewCommentReply {
+    return mockAppendReviewCommentReply;
+  },
 }));
 
 jest.mock('../lib/plan-persistence', () => {
   const actual = jest.requireActual<typeof PlanPersistenceModule>(
     '../lib/plan-persistence',
   );
-  const mocked = {
-    ...actual,
-    appendPlanCommentReply: (
-      ...args: Parameters<AppendPlanCommentReply>
-    ): ReturnType<AppendPlanCommentReply> =>
-      mockAppendPlanCommentReply(...args),
-    readScopedPlanCommentThreads: (
-      ...args: Parameters<ReadScopedPlanCommentThreads>
-    ): ReturnType<ReadScopedPlanCommentThreads> =>
-      mockReadScopedPlanCommentThreads(...args),
-    waitForSubmittedPlanCommentThread: (
-      ...args: Parameters<WaitForSubmittedPlanCommentThread>
-    ): ReturnType<WaitForSubmittedPlanCommentThread> =>
-      mockWaitForSubmittedPlanCommentThread(...args),
-  };
+  const mocked = Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      appendPlanCommentReply: {
+        configurable: true,
+        enumerable: true,
+        value: (
+          ...args: Parameters<AppendPlanCommentReply>
+        ): ReturnType<AppendPlanCommentReply> =>
+          mockAppendPlanCommentReply(...args),
+        writable: true,
+      },
+      readScopedPlanCommentThreads: {
+        configurable: true,
+        enumerable: true,
+        value: (
+          ...args: Parameters<ReadScopedPlanCommentThreads>
+        ): ReturnType<ReadScopedPlanCommentThreads> =>
+          mockReadScopedPlanCommentThreads(...args),
+        writable: true,
+      },
+      waitForSubmittedPlanCommentThread: {
+        configurable: true,
+        enumerable: true,
+        value: (
+          ...args: Parameters<WaitForSubmittedPlanCommentThread>
+        ): ReturnType<WaitForSubmittedPlanCommentThread> =>
+          mockWaitForSubmittedPlanCommentThread(...args),
+        writable: true,
+      },
+    },
+  );
   // The main-process import graph re-enters this factory while the actual
   // module is still loading (plan-persistence -> ... -> archived-containers ->
   // plan-persistence), and modules loaded inside that cycle keep the partial
@@ -155,32 +202,52 @@ jest.mock('../lib/plan-file-sync', () => ({
   }),
 }));
 
-jest.mock('../lib/file-annotations-persistence', () => ({
-  readFileCommentThreads: mockReadFileCommentThreads,
-  respondToFileComment: mockRespondToFileComment,
+jest.mock('../canopy-tools/file-comment-core-client', () => ({
+  get readFileCommentThreads(): typeof mockReadFileCommentThreads {
+    return mockReadFileCommentThreads;
+  },
+  get respondToFileComment(): typeof mockRespondToFileComment {
+    return mockRespondToFileComment;
+  },
 }));
 
 jest.mock('../lib/code-review-diff', () => ({
-  listReviewRepos: (...args: unknown[]): Promise<unknown> =>
-    mockListReviewRepos(...args),
-  computeReviewFingerprint: (...args: unknown[]): Promise<string> =>
-    mockComputeReviewFingerprint(...args),
+  listReviewRepos: (
+    ...args: Parameters<typeof CodeReviewDiffModule.listReviewRepos>
+  ): Promise<unknown> => mockListReviewRepos(...args),
+  computeReviewFingerprint: (
+    ...args: Parameters<typeof CodeReviewDiffModule.computeReviewFingerprint>
+  ): Promise<string> => mockComputeReviewFingerprint(...args),
 }));
 
 jest.mock('../memory/local/store', () => ({
-  appendInboxNote: mockAppendInboxNote,
-  searchMemory: mockSearchMemory,
-  readMemoryFile: mockReadMemoryFile,
+  get appendInboxNote(): typeof mockAppendInboxNote {
+    return mockAppendInboxNote;
+  },
+  get searchMemory(): typeof mockSearchMemory {
+    return mockSearchMemory;
+  },
+  get readMemoryFile(): typeof mockReadMemoryFile {
+    return mockReadMemoryFile;
+  },
 }));
 
 jest.mock('../memory/local/usage', () => ({
-  recordUsage: mockRecordUsage,
-  seedEntry: mockSeedEntry,
+  get recordUsage(): typeof mockRecordUsage {
+    return mockRecordUsage;
+  },
+  get seedEntry(): typeof mockSeedEntry {
+    return mockSeedEntry;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({
-  getUserMemoryDir: mockGetUserMemoryDir,
-  getWorkspaceMemoryDir: mockGetWorkspaceMemoryDir,
+  get getUserMemoryDir(): typeof mockGetUserMemoryDir {
+    return mockGetUserMemoryDir;
+  },
+  get getWorkspaceMemoryDir(): typeof mockGetWorkspaceMemoryDir {
+    return mockGetWorkspaceMemoryDir;
+  },
 }));
 
 import { PLAN_COMMENT_HANDOFF_GRACE_MS } from '../lib/plan-persistence';
@@ -198,7 +265,8 @@ import {
 function gitPreferenceDefaults(
   overrides: Partial<PreferencesData>,
 ): PreferencesData {
-  const preferences: PreferencesData = {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  const preferences: Partial<PreferencesData> = {
     branchNamePrefixMode: 'none',
     branchNameCustomPrefix: '',
     branchNamingInstructions: '',
@@ -208,7 +276,7 @@ function gitPreferenceDefaults(
     commitInstructionMode: 'append',
     ...overrides,
   };
-  return preferences;
+  return preferences as PreferencesData;
 }
 
 function trackedPlanFixture(
@@ -1240,7 +1308,9 @@ describe('canopy tool session runtime Git preferences', () => {
     );
   });
 
-  it('posts a file comment reply and emits the updated document', async () => {
+  // CAN-4104: the core.annotation adapter publishes the committed reply (see
+  // file-annotations-publication.test.ts); the tool must not publish again.
+  it('posts a file comment reply and leaves its update to the core adapter', async () => {
     const send = jest.fn();
     const document = {
       filePath: '/workspace/src/file.ts',
@@ -1275,11 +1345,11 @@ describe('canopy tool session runtime Git preferences', () => {
     });
 
     expect(result).toEqual({ ok: true, resolved: true, store: 'file' });
-    expect(mockBroadcast).toHaveBeenCalledWith('file-annotations:updated', {
-      projectId: 'project',
-      worktreeId: 'worktree',
-      document,
-    });
+    expect(mockBroadcast).not.toHaveBeenCalledWith(
+      'file-annotations:updated',
+      expect.anything(),
+    );
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('includes branch naming instructions and an explicit custom prefix with trailing slash', async () => {

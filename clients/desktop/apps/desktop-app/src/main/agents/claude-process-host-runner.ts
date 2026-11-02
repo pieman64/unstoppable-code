@@ -12,12 +12,55 @@ import type {
   ClaudeProcessHostRequest,
   ClaudeProcessHostResponse,
 } from './claude-process-host-protocol';
+import {
+  registerHostedClaudeProcess,
+  unregisterHostedClaudeProcess,
+} from './claude-process-registry';
 
 const WORKER_ENTRY_FILENAME = 'claude-process-host-worker.js';
 const WORKER_SERVICE_NAME = 'claude-process-host';
 const SHUTDOWN_WAIT_MS = 6_000;
 const FORCED_EXIT_CLEANUP_WAIT_MS = 6_000;
 const DEFAULT_CLI_MAX_OUTPUT_BYTES = 1024 * 1024;
+/**
+ * Owner consistency check cadence. A CLI is killed on the second check that
+ * finds its owner unregistered, so loop-exit teardown (a 5 second grace) and
+ * the host's SIGTERM escalation always run first.
+ */
+const OWNER_CHECK_INTERVAL_MS = 60_000;
+
+/** Lifecycle diagnostics for a CLI a chat or delegated run spawned. */
+export type HostedClaudeProcessDiagnostic =
+  | { kind: 'claude_process_started'; pid: number }
+  | {
+      kind: 'claude_process_exited';
+      pid: number;
+      exitCode: number | null;
+      signal: NodeJS.Signals | null;
+      uptimeMs: number;
+    }
+  | {
+      kind: 'claude_process_untracked';
+      /** Absent when the host had not reported the PID yet. */
+      pid?: number;
+      uptimeMs?: number;
+    };
+
+/**
+ * The chat a hosted CLI belongs to: a chat session instance's own CLI, or a
+ * delegated run's CLI under its parent chat's `sessionKey`.
+ */
+export interface HostedClaudeProcessOwner {
+  sessionKey: string;
+  sessionInstanceId?: string;
+  delegationId?: string;
+  /**
+   * Whether the owning session instance is still registered under its key.
+   * Absent for delegated runs, which outlive their parent's session by design.
+   */
+  isRegistered?: () => boolean;
+  recordDiagnostic(diagnostic: HostedClaudeProcessDiagnostic): void;
+}
 
 interface WorkerExitState {
   child: UtilityProcess;
@@ -39,6 +82,7 @@ let workerExitState: WorkerExitState | null = null;
 let shuttingDown = false;
 const active = new Map<string, ClaudeProcessProxy>();
 const cleanupProcesses = new Map<string, TrackedClaudeProcess>();
+let ownerCheckTimer: NodeJS.Timeout | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -68,7 +112,14 @@ class ClaudeProcessProxy extends EventEmitter implements SpawnedProcess {
   killed = false;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  /** Set once the host reports the spawned CLI's PID. */
+  pid: number | null = null;
+  private startedAtMs = 0;
+  /** When the owner consistency check first found the owner unregistered. */
+  ownerMissingSinceMs: number | null = null;
+  ownerCheckKilled = false;
   private finished = false;
+  private errorEmitted = false;
   private stdoutPaused = false;
   private pendingStdoutAckBytes = 0;
   private readonly stdoutCreditHolds = new Set<StdoutCreditHold>();
@@ -112,6 +163,8 @@ class ClaudeProcessProxy extends EventEmitter implements SpawnedProcess {
   constructor(
     readonly requestId: string,
     readonly child: UtilityProcess,
+    private readonly executable: string,
+    readonly owner: HostedClaudeProcessOwner | null = null,
   ) {
     super();
     this.stdin = new Writable({
@@ -201,6 +254,47 @@ class ClaudeProcessProxy extends EventEmitter implements SpawnedProcess {
     }
   }
 
+  markStarted(pid: number, startedAtMs: number): void {
+    // The host reports pid 0 for a spawn that failed before it had one.
+    if (
+      this.finished ||
+      this.pid !== null ||
+      !Number.isInteger(pid) ||
+      pid <= 0
+    ) {
+      return;
+    }
+    this.pid = pid;
+    this.startedAtMs = startedAtMs;
+    registerHostedClaudeProcess({
+      pid,
+      startedAtMs,
+      executable: this.executable,
+      ...(this.owner ? { sessionKey: this.owner.sessionKey } : {}),
+      ...(this.owner?.sessionInstanceId !== undefined
+        ? { sessionInstanceId: this.owner.sessionInstanceId }
+        : {}),
+      ...(this.owner?.delegationId !== undefined
+        ? { delegationId: this.owner.delegationId }
+        : {}),
+    });
+    this.recordDiagnostic({ kind: 'claude_process_started', pid });
+  }
+
+  uptimeMs(): number | undefined {
+    return this.pid === null
+      ? undefined
+      : Math.max(0, Date.now() - this.startedAtMs);
+  }
+
+  recordDiagnostic(diagnostic: HostedClaudeProcessDiagnostic): void {
+    try {
+      this.owner?.recordDiagnostic(diagnostic);
+    } catch {
+      // Diagnostics never affect process lifecycle.
+    }
+  }
+
   receiveStdout(dataBase64: string): void {
     if (this.finished) return;
     const chunk = Buffer.from(dataBase64, 'base64');
@@ -221,7 +315,10 @@ class ClaudeProcessProxy extends EventEmitter implements SpawnedProcess {
   }
 
   receiveError(error: Error): void {
-    if (this.finished) return;
+    // One error per process: after an `exitPending` error the proxy stays
+    // live, and a host crash must not emit a second into a `once` listener.
+    if (this.finished || this.errorEmitted) return;
+    this.errorEmitted = true;
     this.emit('error', error);
   }
 
@@ -236,6 +333,16 @@ class ClaudeProcessProxy extends EventEmitter implements SpawnedProcess {
     this.stdoutCreditHolds.clear();
     this.exitCode = code;
     this.signalCode = signal;
+    if (this.pid !== null) {
+      unregisterHostedClaudeProcess(this.pid);
+      this.recordDiagnostic({
+        kind: 'claude_process_exited',
+        pid: this.pid,
+        exitCode: code,
+        signal,
+        uptimeMs: this.uptimeMs() ?? 0,
+      });
+    }
     this.stdin.destroy();
     this.stdout.end();
     this.stderr.end();
@@ -262,12 +369,22 @@ function handleMessage(source: UtilityProcess, message: unknown): void {
       child: source,
       pid: payload.pid,
     });
+    proxy.markStarted(
+      payload.pid,
+      typeof payload.startedAtMs === 'number' &&
+        Number.isFinite(payload.startedAtMs)
+        ? payload.startedAtMs
+        : Date.now(),
+    );
   } else if (payload.type === 'stdout') {
     proxy.receiveStdout(payload.dataBase64);
   } else if (payload.type === 'stderr') {
     proxy.receiveStderr(payload.dataBase64);
   } else if (payload.type === 'error') {
     proxy.receiveError(new Error(payload.message));
+    // The host still tracks a spawned child; its `exit` finishes the proxy,
+    // which stays killable and in crash cleanup until then.
+    if (payload.exitPending === true) return;
     active.delete(payload.requestId);
     cleanupProcesses.delete(payload.requestId);
     proxy.finish(null, null);
@@ -339,14 +456,74 @@ function ensureWorker(): UtilityProcess {
   return child;
 }
 
+/**
+ * Kill hosted CLIs whose owning session instance is no longer registered:
+ * nothing reads them, and every teardown path should already have ended them.
+ */
+function checkHostedProcessOwners(): void {
+  const now = Date.now();
+  let owned = 0;
+  for (const proxy of Array.from(active.values())) {
+    const isRegistered = proxy.owner?.isRegistered;
+    if (!isRegistered) continue;
+    owned += 1;
+    if (proxy.ownerCheckKilled) continue;
+    let registered: boolean;
+    try {
+      registered = isRegistered();
+    } catch {
+      registered = true;
+    }
+    if (registered) {
+      proxy.ownerMissingSinceMs = null;
+      continue;
+    }
+    if (proxy.ownerMissingSinceMs === null) {
+      proxy.ownerMissingSinceMs = now;
+      continue;
+    }
+    proxy.ownerCheckKilled = true;
+    const uptimeMs = proxy.uptimeMs();
+    proxy.recordDiagnostic({
+      kind: 'claude_process_untracked',
+      ...(proxy.pid !== null ? { pid: proxy.pid } : {}),
+      ...(uptimeMs !== undefined ? { uptimeMs } : {}),
+    });
+    proxy.kill('SIGKILL');
+  }
+  if (owned === 0) stopOwnerCheck();
+}
+
+function ensureOwnerCheck(): void {
+  if (ownerCheckTimer) return;
+  ownerCheckTimer = setInterval(
+    checkHostedProcessOwners,
+    OWNER_CHECK_INTERVAL_MS,
+  );
+  ownerCheckTimer.unref?.();
+}
+
+function stopOwnerCheck(): void {
+  if (!ownerCheckTimer) return;
+  clearInterval(ownerCheckTimer);
+  ownerCheckTimer = null;
+}
+
 function spawnHostedClaudeProcess(
   options: SpawnOptions,
   captureStderr = false,
+  owner: HostedClaudeProcessOwner | null = null,
 ): ClaudeProcessProxy {
   const child = ensureWorker();
   const requestId = randomUUID();
-  const proxy = new ClaudeProcessProxy(requestId, child);
+  const proxy = new ClaudeProcessProxy(
+    requestId,
+    child,
+    options.command,
+    owner,
+  );
   active.set(requestId, proxy);
+  if (owner?.isRegistered) ensureOwnerCheck();
   proxy.once('exit', () => proxy.detachAbortSignal(options.signal));
   try {
     post(child, {
@@ -371,10 +548,16 @@ function spawnHostedClaudeProcess(
   return proxy;
 }
 
+/**
+ * With `owner`, the CLI's lifecycle is reported to the owner's diagnostics,
+ * and a chat's CLI is killed once its session instance is no longer
+ * registered (see `checkHostedProcessOwners`).
+ */
 export function spawnClaudeCodeProcessOffMain(
   options: SpawnOptions,
+  owner?: HostedClaudeProcessOwner,
 ): SpawnedProcess {
-  return spawnHostedClaudeProcess(options);
+  return spawnHostedClaudeProcess(options, false, owner ?? null);
 }
 
 /**
@@ -522,6 +705,7 @@ export function runClaudeCliProcessOffMain(
 
 export async function shutdownClaudeProcessHost(): Promise<void> {
   shuttingDown = true;
+  stopOwnerCheck();
   const child = worker;
   const exitState = workerExitState;
   if (!child) {
@@ -575,4 +759,10 @@ export function resetClaudeProcessHostForTests(): void {
   shuttingDown = false;
   active.clear();
   cleanupProcesses.clear();
+  stopOwnerCheck();
+}
+
+/** Test-only: run one owner consistency check now. */
+export function checkHostedClaudeProcessOwnersForTests(): void {
+  checkHostedProcessOwners();
 }

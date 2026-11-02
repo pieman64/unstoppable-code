@@ -236,6 +236,7 @@ describe('createCanopyRuntime', () => {
       kind: 'stream',
       plane: 'core',
       owner: 'core.runtime',
+      declaresMeta: false,
     });
     const starting = runtime.start();
     expect(runtime.start()).toBe(starting);

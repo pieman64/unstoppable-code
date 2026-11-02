@@ -4,6 +4,7 @@ import type {
   PlatformRenameRequest as Request,
   PlatformRenameResult as Result,
 } from '@canopy/core-runtime';
+import { flushDirectory, openDirectoryForFlush } from '../directory-flush';
 import { errorCode, sameNode, secureFileError } from './shared';
 
 export interface SecureFileOperations {
@@ -21,6 +22,12 @@ export const NODE_OPERATIONS: SecureFileOperations = {
   unlink,
   openDirectory: (target) =>
     open(target, constants.O_RDONLY | constants.O_DIRECTORY),
+};
+
+/** Windows opens directories as the shared D1 flush does. */
+export const WINDOWS_OPERATIONS: SecureFileOperations = {
+  ...NODE_OPERATIONS,
+  openDirectory: (target) => openDirectoryForFlush(target, 'win32'),
 };
 
 /** `attempts` counts total tries; 1 disables retry. */
@@ -164,17 +171,9 @@ export async function renameRegularFile(
   }
 }
 
-export async function syncDirectory(
+export function syncDirectory(
   target: string,
   operations: SecureFileOperations,
 ): Promise<'flushed'> {
-  const handle = await operations.openDirectory(target);
-  try {
-    await handle.sync();
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    throw error;
-  }
-  await handle.close();
-  return 'flushed';
+  return flushDirectory(target, { openDirectory: operations.openDirectory });
 }

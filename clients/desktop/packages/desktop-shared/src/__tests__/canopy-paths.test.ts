@@ -6,10 +6,6 @@ import type * as OsModule from 'node:os';
 import type * as CanopyPathsModule from '../canopy-paths';
 import { DEFAULT_COWORK_WORKSPACE_ID } from '../types';
 
-declare global {
-  var __CANOPY_RELEASE_FLAVOR__: string | undefined;
-}
-
 const testTheme = {
   default: {
     id: 'default',
@@ -36,7 +32,7 @@ describe('canopy-paths', () => {
   );
 
   afterEach(() => {
-    delete globalThis.__CANOPY_RELEASE_FLAVOR__;
+    Reflect.deleteProperty(globalThis, '__CANOPY_RELEASE_FLAVOR__');
 
     if (originalCanopyEnv === undefined) {
       delete process.env.CANOPY_ENV;
@@ -238,7 +234,7 @@ describe('canopy-paths', () => {
   it('uses rc mode when the packaged release flavor is rc', () => {
     const homeDir = makeTempHome();
     mockBrandAndHome(homeDir);
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'rc';
+    Object.assign(globalThis, { __CANOPY_RELEASE_FLAVOR__: 'rc' });
     process.env.CANOPY_ENV = 'production';
     delete process.env.CANOPY_DATA_DIR;
     delete process.env.CANOPY_SECURE_DATA_DIR;
@@ -258,7 +254,7 @@ describe('canopy-paths', () => {
   it('keeps internal ordinary data in prod while isolating secure storage', () => {
     const homeDir = makeTempHome();
     mockBrandAndHome(homeDir);
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
+    Object.assign(globalThis, { __CANOPY_RELEASE_FLAVOR__: 'internal' });
     process.env.CANOPY_ENV = 'production';
     delete process.env.CANOPY_DATA_DIR;
     delete process.env.CANOPY_SECURE_DATA_DIR;
@@ -282,7 +278,7 @@ describe('canopy-paths', () => {
   it('does not expose an implicit internal migration source under overrides', () => {
     const homeDir = makeTempHome();
     mockBrandAndHome(homeDir);
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
+    Object.assign(globalThis, { __CANOPY_RELEASE_FLAVOR__: 'internal' });
     process.env.CANOPY_ENV = 'production';
     process.env.CANOPY_DATA_DIR = path.join(homeDir, 'override');
     delete process.env.CANOPY_SECURE_DATA_DIR;
@@ -297,7 +293,7 @@ describe('canopy-paths', () => {
   it('does not expose an implicit internal migration source under a secure-only override', () => {
     const homeDir = makeTempHome();
     mockBrandAndHome(homeDir);
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
+    Object.assign(globalThis, { __CANOPY_RELEASE_FLAVOR__: 'internal' });
     process.env.CANOPY_ENV = 'production';
     delete process.env.CANOPY_DATA_DIR;
     process.env.CANOPY_SECURE_DATA_DIR = path.join(homeDir, 'secure-override');
@@ -316,7 +312,7 @@ describe('canopy-paths', () => {
     const homeDir = makeTempHome();
     fs.mkdirSync(path.join(homeDir, '.testbrand'));
     mockBrandAndHome(homeDir);
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'rc';
+    Object.assign(globalThis, { __CANOPY_RELEASE_FLAVOR__: 'rc' });
     process.env.CANOPY_ENV = 'production';
     delete process.env.CANOPY_DATA_DIR;
     delete process.env.CANOPY_SECURE_DATA_DIR;
@@ -355,7 +351,7 @@ describe('canopy-paths', () => {
     fs.mkdirSync(path.join(homeDir, '.canopy-rc'));
     fs.mkdirSync(path.join(homeDir, '.testbrand'));
     mockBrandAndHome(homeDir);
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'rc';
+    Object.assign(globalThis, { __CANOPY_RELEASE_FLAVOR__: 'rc' });
     process.env.CANOPY_ENV = 'production';
     delete process.env.CANOPY_DATA_DIR;
     delete process.env.CANOPY_SECURE_DATA_DIR;
@@ -773,6 +769,26 @@ describe('canopy-paths', () => {
     expect(resolved.source).toBe('fallback');
     expect(resolved.path).toBe(path.join(homeDir, '.canopy'));
   });
+
+  const testWithPosixPermissions = process.platform === 'win32' ? it.skip : it;
+  testWithPosixPermissions(
+    'keeps data-dir selection permissive when an install-data read fails',
+    () => {
+      const dataDir = makeTempHome();
+      fs.mkdirSync(path.join(dataDir, 'app-workspaces'));
+      fs.mkdirSync(path.join(dataDir, 'workspaces'));
+      fs.writeFileSync(
+        path.join(dataDir, 'workspaces', 'index.json'),
+        JSON.stringify({ workspaces: [{ id: 'user-workspace' }] }),
+      );
+      fs.chmodSync(path.join(dataDir, 'app-workspaces'), 0o000);
+      try {
+        expect(loadCanopyPaths().hasCanopyInstallData(dataDir)).toBe(true);
+      } finally {
+        fs.chmodSync(path.join(dataDir, 'app-workspaces'), 0o700);
+      }
+    },
+  );
 
   it('treats an explicit adoption marker as install data', () => {
     const homeDir = makeTempHome();

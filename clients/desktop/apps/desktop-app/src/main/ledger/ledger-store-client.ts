@@ -2,8 +2,10 @@ import type {
   LedgerAcknowledgeOutboxInput,
   LedgerActorRecord,
   LedgerAddEntryInput,
+  LedgerBindGlobalScopeInput,
   LedgerBindScopeInput,
   LedgerBindScopeResult,
+  LedgerFindGlobalScopeInput,
   LedgerFindScopeInput,
   LedgerGetEntryInput,
   LedgerListChangesInput,
@@ -85,6 +87,18 @@ export interface LedgerStoreClient {
   getAuthorityId(): Promise<string>;
   bindScope(input: LedgerBindScopeInput): Promise<LedgerBindScopeResult>;
   findScope(input: LedgerFindScopeInput): Promise<LedgerScopeRecord | null>;
+  /**
+   * The global Ledger of one owner for one account (null: signed out),
+   * minted on first use. Two accounts never share one. `bindScope` refuses
+   * global containers, so this is the only way to mint one.
+   */
+  bindGlobalScope(
+    input: LedgerBindGlobalScopeInput,
+  ): Promise<LedgerBindScopeResult>;
+  /** The global Ledger of one owner for one account, never minting one. */
+  findGlobalScope(
+    input: LedgerFindGlobalScopeInput,
+  ): Promise<LedgerScopeRecord | null>;
   getScope(ledgerId: string): Promise<LedgerScopeRecord | null>;
   registerActor(
     input: LedgerRegisterActorInput,
@@ -116,7 +130,11 @@ export interface LedgerStoreClient {
   ): Promise<LedgerSearchEntriesResult>;
   listChanges(input: LedgerListChangesInput): Promise<LedgerChangesListResult>;
   getStorageCounts(): Promise<LedgerStorageCounts>;
-  /** Every scope, oldest first, for lifecycle reconciliation. */
+  /**
+   * Every scope, oldest first, for lifecycle reconciliation. Global scopes
+   * are included; they have no container lifecycle and every lifecycle
+   * command refuses them (`hasLedgerContainerLifecycle`).
+   */
   listScopes(): Promise<LedgerScopeRecord[]>;
   /** The scopes of every incarnation of one container, oldest first. */
   findContainerScopes(container: LedgerContainer): Promise<LedgerScopeRecord[]>;
@@ -158,7 +176,10 @@ export interface LedgerSyncStoreClient {
   setScopeRepair(
     input: LedgerSetScopeRepairInput,
   ): Promise<LedgerScopeSyncRecord>;
-  /** Moves a merged guest account's scopes to the account it became. */
+  /**
+   * Moves a merged guest account's scopes and global bindings to the account
+   * it became; a global binding the destination already has wins.
+   */
   rebindAccount(
     input: LedgerRebindAccountInput,
   ): Promise<LedgerRebindAccountResult>;

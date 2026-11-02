@@ -1,7 +1,6 @@
 import type {
   Pipeline,
   ExecutionState,
-  ForeachChildResult,
   JobResult,
 } from '@canopy/desktop-shared/types/pipeline';
 import {
@@ -102,26 +101,33 @@ describe('buildDefinitionFlow', () => {
 });
 
 function execState(): ExecutionState {
+  const pipelineSnapshot = normalizePipeline({
+    name: 'demo',
+    on: 'dispatch',
+    jobs: {
+      build: { steps: [{ id: 's0', run: 'npm ci' }] },
+      test: { needs: 'build', steps: [{ id: 's0', run: 'npm test' }] },
+    },
+  });
   return {
+    version: 10,
     id: 'e1',
     pipeline_id: 'p1',
-    pipeline_snapshot: {
-      name: 'demo',
-      jobs: {
-        build: { steps: [{ id: 's0', run: 'npm ci' }] },
-        test: { needs: 'build', steps: [{ id: 's0', run: 'npm test' }] },
-      },
-    },
+    pipeline_snapshot: pipelineSnapshot,
     status: 'running',
     jobs: {
-      build: { status: 'success', steps: {} },
-      test: { status: 'running', steps: {} },
+      build: { status: 'success', steps: {}, outputs: {} },
+      test: { status: 'running', steps: {}, outputs: {} },
     },
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
     started_at: '2026-06-16T00:00:00Z',
     cwd: '/tmp',
     inputs: {},
     env: {},
-  } as ExecutionState;
+  };
 }
 
 describe('buildExecutionFlow', () => {
@@ -201,11 +207,32 @@ describe('layout direction', () => {
  * one node per YAML job, with children summarized *inside* the parent node and
  * never emitted as nodes or edges of their own.
  */
+interface LegacyForeachChildResult {
+  id: string;
+  index: number;
+  item: string;
+  name: string;
+  status: JobResult['status'];
+  outcome?: JobResult['outcome'];
+  conclusion?: JobResult['conclusion'];
+  steps: JobResult['steps'];
+  outputs: JobResult['outputs'];
+}
+
+type LegacyForeachJobResult = JobResult & {
+  resolved_max_parallel?: number;
+  children?: LegacyForeachChildResult[];
+};
+
+type LegacyForeachJob = NonNullable<Pipeline['jobs'][string]> & {
+  foreach?: string[];
+};
+
 function foreachChild(
   index: number,
   status: JobResult['status'],
   outcome?: JobResult['outcome'],
-): ForeachChildResult {
+): LegacyForeachChildResult {
   return {
     id: `child-${index.toString(36).padStart(6, '0')}`,
     index,
@@ -219,22 +246,24 @@ function foreachChild(
 }
 
 function foreachExecState(
-  jobResult: JobResult,
+  jobResult: LegacyForeachJobResult,
   jobName?: string,
 ): ExecutionState {
-  const pipelineSnapshot = normalizePipeline({
-    name: 'demo',
-    on: 'dispatch',
-    jobs: {
-      prepare: { steps: [{ id: 's0', run: 'echo prepare' }] },
-      fanout: {
-        needs: 'prepare',
-        ...(jobName !== undefined ? { name: jobName } : {}),
-        foreach: ['a', 'b', 'c', 'd', 'e'],
-        steps: [{ id: 'work', run: 'echo work' }],
+  const legacyPipeline: Pipeline & { jobs: Record<string, LegacyForeachJob> } =
+    {
+      name: 'demo',
+      on: 'dispatch',
+      jobs: {
+        prepare: { steps: [{ id: 's0', run: 'echo prepare' }] },
+        fanout: {
+          needs: 'prepare',
+          ...(jobName !== undefined ? { name: jobName } : {}),
+          foreach: ['a', 'b', 'c', 'd', 'e'],
+          steps: [{ id: 'work', run: 'echo work' }],
+        },
       },
-    },
-  });
+    };
+  const pipelineSnapshot = normalizePipeline(legacyPipeline);
   return {
     version: 7,
     id: 'e-foreach',
@@ -245,6 +274,9 @@ function foreachExecState(
       prepare: { status: 'success', steps: {}, outputs: {} },
       fanout: jobResult,
     },
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
     started_at: '2026-06-16T00:00:00Z',
     cwd: '/tmp',
     inputs: {},

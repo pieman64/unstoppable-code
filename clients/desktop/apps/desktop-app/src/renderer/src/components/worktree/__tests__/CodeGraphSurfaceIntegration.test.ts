@@ -37,10 +37,30 @@ describe('Code Graph surface integration contracts', () => {
     );
   });
 
-  it.each([
-    ['single-repo', projectSettingsSource],
-    ['multi-repo', workspaceSettingsSource],
-  ])(
+  it('wires the single-repo settings page, deep link, summary rows and actions', () => {
+    expect(projectSettingsSource).toContain("'code-graph',");
+    expect(projectSettingsSource).toContain(
+      "(page !== 'code-graph' || codeGraphExperimentEnabled)",
+    );
+    expect(projectSettingsSource).toContain('projectSettingsPageForTab');
+    expect(projectSettingsSource).toContain('layout="rows"');
+    expect(projectSettingsSource).toContain(
+      'window.api.codeGraphGetWorkspaceSummary({',
+    );
+    expect(projectSettingsSource).toContain(
+      'window.api.codeGraphBuildWorkspace({',
+    );
+    expect(projectSettingsSource).toContain(
+      "closeThenOpenSettings('code-graph'",
+    );
+    expect(projectSettingsSource).toContain('<GraphIcon');
+    expect(projectSettingsSource).not.toContain('ExperimentIcon');
+    expect(projectSettingsSource).toContain(
+      "'code-graph': () =>\n      codeGraphExperimentEnabled ? (",
+    );
+  });
+
+  it.each([['multi-repo', workspaceSettingsSource]])(
     'wires the %s Settings modal tab, deep link, summary, actions, and 5xl width',
     (_variant, source) => {
       expect(source).toContain("| 'code-graph'");
@@ -61,9 +81,11 @@ describe('Code Graph surface integration contracts', () => {
     },
   );
 
-  it('allows the single-repo modal to receive a Code Graph initial tab', () => {
-    expect(projectSettingsSource).toMatch(/initialTab\?: ProjectTab;/);
-    expect(projectSettingsSource).toContain("(initialTab ?? 'details')");
+  it('allows the single-repo page to open on Code Graph', () => {
+    expect(projectSettingsSource).toMatch(/initialTab\?: ProjectSettingsTab;/);
+    expect(projectSettingsSource).toContain(
+      'projectSettingsPageForTab(initialTab)',
+    );
   });
 });
 

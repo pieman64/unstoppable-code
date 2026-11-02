@@ -394,7 +394,7 @@ describe('selectBlueprintOnboardingPlugins (CAN-3032)', () => {
       },
       {
         type: 'codex_plugin',
-        marketplace: { type: 'codex_builtin', id: 'openai-curated' },
+        marketplace: { type: 'codex-builtin', id: 'openai-curated' },
         plugin_name: 'notion',
       },
       {

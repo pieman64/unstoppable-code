@@ -20,6 +20,7 @@ import {
   parseFileLinkLineSuffix,
   type FileLinkLineLocation,
 } from '@canopy/ui-shared/lib/file-link-line-suffix';
+import type { TranscriptTurnFilesInteraction } from './TurnFiles';
 
 export type { FileLinkLineLocation };
 
@@ -33,6 +34,7 @@ export type { FileLinkLineLocation };
  * links render as inert, readable text (CAN-2440).
  */
 export interface TranscriptFileLinkInteraction {
+  readonly turnFiles?: TranscriptTurnFilesInteraction;
   /**
    * Open `href` in the host's file viewer. Resolves `false` when the target is
    * not an existing file inside the workspace (outside the working directory,
@@ -53,6 +55,10 @@ export interface TranscriptFileLinkInteraction {
 
 const TranscriptFileLinkInteractionContext =
   createContext<TranscriptFileLinkInteraction | null>(null);
+
+export function useTranscriptFileLinkInteraction(): TranscriptFileLinkInteraction | null {
+  return useContext(TranscriptFileLinkInteractionContext);
+}
 
 /**
  * Opt a transcript subtree into the agent-transcript link policy. Absent (or
@@ -83,7 +89,7 @@ function lineAttribute(location: FileLinkLineLocation): string {
 }
 
 const FILE_LINK_CLASSES =
-  'focus-ring inline cursor-pointer break-all rounded-sm fg-accent underline underline-offset-2 transition-colors hover:fg-accent/80 disabled:cursor-progress';
+  'focus-ring inline cursor-pointer break-all rounded-sm fg-accent underline underline-offset-2 transition-colors hover:fg-accent/80 focus-visible:underline disabled:cursor-progress';
 
 function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
   const { href, children } = props;

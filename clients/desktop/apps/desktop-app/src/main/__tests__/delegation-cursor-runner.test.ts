@@ -2,8 +2,15 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
-import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
-import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
+import type {
+  AgentRunRequest,
+  NativeRunHandle,
+} from '@canopy/desktop-shared/node/delegation';
+import { InMemoryDelegationTranscriptPort } from '@canopy/desktop-shared/node/delegation/in-memory-transcript-port';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptTarget,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
 import type { DelegationParent } from '@canopy/desktop-shared/node/delegation/parent';
 import type {
   CursorTurnHost,
@@ -15,6 +22,11 @@ import {
   authorizeDelegatedCursorTool,
   createCursorDelegationRunner,
 } from '../agents/delegation/cursor-runner';
+import { DELEGATION_TRANSCRIPT_RECORDER_LIMITS } from '../agents/delegation/transcript-recorder';
+import {
+  request as cursorRequest,
+  success,
+} from './helpers/delegation-runner-fixtures/cursor';
 
 const mockTurn = jest.fn<
   Promise<CursorTurnResult>,
@@ -85,7 +97,12 @@ beforeEach(async () => {
     delegationId: 'child',
     mode: (): 'full-access' => 'full-access',
     allowed: (): Promise<boolean> => Promise.resolve(allowed),
-    approval: { check, setMode: jest.fn(), dispose: jest.fn() },
+    approval: {
+      check,
+      setMode: jest.fn(),
+      reevaluatePendingApprovals: (): Promise<void> => Promise.resolve(),
+      dispose: jest.fn(),
+    },
     emit: (): Promise<void> => Promise.resolve(),
   });
   await writeFile(path.join(cwd, 'evidence.txt'), 'evidence');
@@ -205,38 +222,7 @@ it('keeps direct Cursor file operations under child grants', async () => {
 });
 
 function request(resumeSessionId?: string): AgentRunRequest {
-  return {
-    delegationId: 'child',
-    runGeneration: 1,
-    launchKey: 'launch',
-    resumeSessionId,
-    parent: {
-      harnessId: 'claude',
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'chat',
-      sessionKey: 'parent',
-      runtimeGeneration: 1,
-      depth: 0,
-      turnId: 'turn',
-      toolCallId: 'spawn',
-    },
-    task: {
-      modelId: 'cursor-default',
-      description: 'Read evidence',
-      prompt: 'Read evidence',
-      deliveryMode: 'background',
-    },
-    route: routeFixture({
-      harnessId: 'cursor',
-      runtimeKind: 'cursor-acp',
-      runtimeModelId: 'cursor-default',
-      effectiveThinkingLevel: 'high',
-    }),
-    cwd,
-    effectivePermission: 'read-only',
-    signal: abort.signal,
-  };
+  return cursorRequest({ cwd, signal: abort.signal, resumeSessionId });
 }
 async function run(
   resumeSessionId?: string,
@@ -272,15 +258,89 @@ async function run(
   });
   return { runner, events, terminal };
 }
-const success: CursorTurnResult = {
-  sessionId: 'native-child',
-  isError: false,
-  cancelled: false,
-  message: '',
-  contextLost: false,
-  inheritedContextDelivered: false,
-  responseText: 'Verified evidence',
-};
+
+function transcriptHarness(): {
+  port: InMemoryDelegationTranscriptPort;
+  admitted: DelegationTranscriptChange[];
+  firstAdmission: Promise<void>;
+} {
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  const admitted: DelegationTranscriptChange[] = [];
+  let admit: () => void = () => undefined;
+  const firstAdmission = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  const append = port.appendChanges.bind(port);
+  jest
+    .spyOn(port, 'appendChanges')
+    .mockImplementation(async (input, signal) => {
+      const result = await append(input, signal);
+      if (result.ok) {
+        admitted.push(...input.changes);
+        admit();
+      }
+      return result;
+    });
+  return { port, admitted, firstAdmission };
+}
+
+function transcriptRequest(original: AgentRunRequest): AgentRunRequest {
+  const target: DelegationTranscriptTarget = {
+    kind: 'delegation',
+    chatId: original.parent.chatId,
+    delegationId: original.delegationId,
+    runGeneration: original.runGeneration,
+  };
+  return { ...original, transcriptStream: { target } };
+}
+
+function retainedText(
+  changes: readonly DelegationTranscriptChange[],
+  text: string,
+): boolean {
+  return changes.some(
+    ({ row }) =>
+      row.final &&
+      row.blocks.some((block) => block.type === 'text' && block.text === text),
+  );
+}
+
+async function startStream(
+  transcriptPort: InMemoryDelegationTranscriptPort,
+): Promise<{
+  runner: ReturnType<typeof createCursorDelegationRunner>;
+  handle: NativeRunHandle;
+  terminal: Promise<AgentDelegationEvent['event']>;
+}> {
+  const runner = createCursorDelegationRunner({
+    available: () => Promise.resolve({ available: true }),
+    prepare: () =>
+      Promise.resolve({
+        model: 'default',
+        profileDir,
+        tools,
+        plugins: [],
+        mcpServers: {},
+        bindMcpGates: (): void => undefined,
+      }),
+    reportError: jest.fn(),
+    transcriptPort,
+  });
+  let finish: (event: AgentDelegationEvent['event']) => void = () => undefined;
+  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
+    finish = resolve;
+  });
+  const handle = await runner.start(
+    transcriptRequest(request()),
+    ({ event }) => {
+      if (event.type === 'terminal') finish(event);
+      return Promise.resolve();
+    },
+  );
+  return { runner, handle, terminal };
+}
 it('guides Cursor children toward only available native tools', async () => {
   let instructions = '';
   mockTurn.mockImplementation(async (_turn, host) => {
@@ -418,4 +478,99 @@ it('admits selected MCP at ACP without duplicating the execution-time approval',
   });
   const running = await run();
   expect(await running.terminal).toMatchObject({ status: 'completed' });
+});
+
+it('keeps stream-backed Cursor rows when the legacy transcript preview budget is exceeded', async () => {
+  const text = 'x'.repeat(DELEGATION_TRANSCRIPT_RECORDER_LIMITS.itemBytes + 1);
+  const secondText = 'second canonical row';
+  mockTurn.mockImplementation(async (_turn, host) => {
+    await host.emit({
+      type: 'canopy_assistant_patch',
+      role: 'assistant',
+      messageId: 'large-answer',
+      timestamp: 0,
+      patches: [
+        { index: 0, block: { type: 'text', text } },
+        { index: 1, block: { type: 'text', text: secondText } },
+      ],
+    });
+    return success;
+  });
+  const { port, admitted } = transcriptHarness();
+  const appendChanges = jest.spyOn(port, 'appendChanges');
+  const result = await startStream(port);
+
+  await expect(result.terminal).resolves.toMatchObject({ status: 'completed' });
+  expect(appendChanges).toHaveBeenCalled();
+  expect(retainedText(admitted, text)).toBe(true);
+  expect(retainedText(admitted, secondText)).toBe(true);
+});
+
+it('attributes rejected Cursor row admission to fatal transcript storage failure', async () => {
+  mockTurn.mockImplementation(async (_turn, host) => {
+    await host.emit({
+      type: 'canopy_assistant_patch',
+      role: 'assistant',
+      messageId: 'storage-answer',
+      timestamp: 0,
+      patches: [{ index: 0, block: { type: 'text', text: 'pending' } }],
+    });
+    return success;
+  });
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  const appendChanges = jest.spyOn(port, 'appendChanges');
+  appendChanges.mockResolvedValue({
+    ok: false,
+    error: {
+      code: 'storage_failure',
+      message: 'fixture storage failure',
+      retryable: false,
+    },
+  });
+  const result = await startStream(port);
+
+  await expect(result.terminal).resolves.toMatchObject({
+    status: 'failed',
+    error: {
+      code: 'runtime_error',
+      message:
+        'The delegated transcript could not be saved. Retained partial output is available.',
+      retryable: false,
+    },
+  });
+  expect(mockTurn).toHaveBeenCalledTimes(1);
+  expect(appendChanges).toHaveBeenCalled();
+});
+
+it('finalizes Cursor rows before a requested stop is acknowledged as cancellation', async () => {
+  const text = 'cancelled Cursor partial';
+  let emitted: () => void = () => undefined;
+  const patchEmitted = new Promise<void>((resolve) => {
+    emitted = resolve;
+  });
+  mockTurn.mockImplementation(async (turn, host) => {
+    await host.emit({
+      type: 'canopy_assistant_patch',
+      role: 'assistant',
+      messageId: 'cancelled-answer',
+      timestamp: 0,
+      patches: [{ index: 0, block: { type: 'text', text } }],
+    });
+    emitted();
+    await new Promise<void>((resolve) =>
+      turn.signal.addEventListener('abort', () => resolve(), { once: true }),
+    );
+    return { ...success, cancelled: true };
+  });
+  const { port, admitted } = transcriptHarness();
+  const result = await startStream(port);
+  await patchEmitted;
+  await expect(
+    result.runner.stop(result.handle, 'user_cancelled'),
+  ).resolves.toEqual({ stopped: true });
+
+  await expect(result.terminal).resolves.toMatchObject({ status: 'cancelled' });
+  expect(retainedText(admitted, text)).toBe(true);
 });

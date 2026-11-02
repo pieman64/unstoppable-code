@@ -38,6 +38,7 @@ import type {
   ExecutionSummary,
   NormalizedJob,
 } from '@canopy/desktop-shared/types/pipeline';
+import { toPipelineRunRowState } from '@/lib/pipelineRunRowState';
 import { resetPipelineDetailLeasesForTests } from '@/lib/pipelineDetailLeases';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
 import { useChatStore } from '@/stores/chatStore';
@@ -86,10 +87,11 @@ const summary: ExecutionSummary = {
   pipeline_id: 'pipeline-1',
   pipeline_name: 'Build pipeline',
   status: 'success',
+  status_reasons: [],
   started_at: '2026-05-19T00:00:00.000Z',
   completed_at: '2026-05-19T00:01:00.000Z',
   cwd: '/repo',
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };
@@ -100,6 +102,7 @@ const state: ExecutionState = {
   pipeline_id: 'pipeline-1',
   pipeline_snapshot: {
     name: 'Build pipeline',
+    scope: ['directory'],
     jobs: { build: job('Build'), deploy: job('Deploy') },
   },
   status: 'success',
@@ -116,7 +119,7 @@ const state: ExecutionState = {
   cwd: '/repo',
   env: {},
   inputs: {},
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };
@@ -216,6 +219,27 @@ describe('PipelineRunsSection detail links', () => {
     expect(
       document.body.querySelector('[data-testid="pipeline-details-nav"]'),
     ).toBeNull();
+  });
+
+  it('loads visible rows without retaining full execution details', async () => {
+    const loadExecutionRowState = jest.fn(() => Promise.resolve(null));
+    const loadExecutionDetails = jest.fn(() => Promise.resolve(state));
+    usePipelineRunsStore.setState({
+      statesById: {},
+      rowStatesById: { 'execution-1': toPipelineRunRowState(state) },
+      loadExecutionRowState,
+      loadExecutionDetails,
+    });
+
+    await renderSection();
+
+    expect(loadExecutionRowState).toHaveBeenCalledWith('execution-2');
+    expect(loadExecutionDetails).not.toHaveBeenCalled();
+    expect(
+      container.querySelector(
+        '[data-testid="pipeline-run-card-execution-1"] [data-job-id="build"]',
+      ),
+    ).toBeTruthy();
   });
 
   it('opens a job link at that job', async () => {

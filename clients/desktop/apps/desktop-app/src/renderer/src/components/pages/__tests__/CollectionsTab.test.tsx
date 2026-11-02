@@ -13,33 +13,15 @@ import type {
   SharedCollectionDetail,
   UpdateSharedCollectionRequest,
 } from '@canopy/desktop-shared/types/collections';
-import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
-import { useNavigationStore } from '@/stores/navigationStore';
+import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
+import type { UseUnifiedTableDataReturn } from '../../../hooks/useUnifiedTableData';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import {
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
-import { CollectionsTab, SharedCollectionDetailModal } from '../CollectionsTab';
-
-const refreshCollections = jest.fn(() => Promise.resolve());
-const refreshShared = jest.fn(() => Promise.resolve());
-const loadMoreShared = jest.fn(() => Promise.resolve());
-const setSharedFilters = jest.fn();
-const removeSharedRow = jest.fn();
-let localCollections = [
-  {
-    id: 'local-collection',
-    name: 'Local Collection',
-    description: '',
-    updatedAt: '2026-05-22T00:00:00.000Z',
-    skillCount: 1,
-    pluginCount: 0,
-    mcpServerCount: 0,
-    hasExistingShare: false,
-  },
-];
+import { SharedCollectionDetailModal } from '../CollectionsTab';
 
 jest.mock('../../shared', () => ({
   DialogModal: ({
@@ -54,46 +36,10 @@ jest.mock('../../shared', () => ({
       {children}
     </div>
   ),
-  EmptyState: ({
-    title,
-    subtitle,
-  }: {
-    title: string;
-    subtitle: string;
-  }): ReactElement => (
-    <div>
-      <p>{title}</p>
-      <p>{subtitle}</p>
-    </div>
-  ),
   ErrorBanner: ({ error }: { error?: string | null }): ReactElement | null =>
     error ? <div role="alert">{error}</div> : null,
   LoadingPlaceholder: ({ label }: { label: string }): ReactElement => (
     <p>{label}</p>
-  ),
-  DeleteConfirmModal: ({
-    title,
-    message,
-    confirmLabel = 'Delete',
-    onConfirm,
-    onCancel,
-  }: {
-    title: string;
-    message: ReactNode;
-    confirmLabel?: string;
-    onConfirm: () => void;
-    onCancel: () => void;
-  }): ReactElement => (
-    <div role="dialog" data-testid="delete-confirm-modal">
-      <h2>{title}</h2>
-      <div>{message}</div>
-      <button type="button" onClick={onCancel}>
-        Cancel
-      </button>
-      <button type="button" onClick={onConfirm}>
-        {confirmLabel}
-      </button>
-    </div>
   ),
 }));
 
@@ -101,67 +47,13 @@ jest.mock('../UnifiedTableDetailOverlays', () => ({
   UnifiedTableDetailOverlays: (): null => null,
 }));
 
-jest.mock('../../../hooks/useCollectionList', (): unknown => ({
-  useCollectionList: (): unknown => ({
-    collections: localCollections,
+const useUnifiedTableDataMock = jest.fn(
+  (): UseUnifiedTableDataReturn => ({
+    rows: [],
+    sourceOptions: [],
     loading: false,
-    error: null,
-    refresh: refreshCollections,
   }),
-}));
-
-let mockSharedCollectionScope: 'private' | 'team' = 'team';
-jest.mock('../../../hooks/useSharedCollectionList', (): unknown => ({
-  useSharedCollectionList: (): unknown => ({
-    cloudAccount: {
-      hasApiKey: true,
-      capabilities: ['collections-crud-v1'],
-      storageAvailable: true,
-      account: {
-        id: 'acct-1',
-        name: 'Alice',
-        email: 'alice@example.com',
-        role: 'ADMIN',
-      },
-    },
-    cloudLoading: false,
-    collections: [
-      {
-        id: 'shared-collection',
-        name: 'Shared Collection',
-        description: 'Remote',
-        contentHash: 'hash-shared-collection',
-        itemCounts: { skills: 1, plugins: 0, customSkills: 0 },
-        shareScope: mockSharedCollectionScope,
-        owner: { type: 'user', id: 'user-1', name: 'Owner' },
-        createdBy: {
-          id: 'user-1',
-          name: 'Owner',
-          email: 'owner@example.test',
-        },
-        createdAt: '2026-05-21T00:00:00.000Z',
-        updatedAt: '2026-05-22T00:00:00.000Z',
-        canUpdate: true,
-        canDelete: true,
-      },
-    ],
-    loading: false,
-    loadingMore: false,
-    nextCursor: null,
-    error: null,
-    loaded: true,
-    refreshShared,
-    loadMoreShared,
-    setFilters: setSharedFilters,
-    removeSharedRow,
-  }),
-}));
-
-const useUnifiedTableDataMock = jest.fn(() => ({
-  rows: [],
-  sourceOptions: [],
-  loading: false,
-}));
+);
 
 jest.mock('../../../hooks/useUnifiedTableData', (): unknown => ({
   useUnifiedTableData: (): unknown => useUnifiedTableDataMock(),
@@ -175,14 +67,6 @@ function findButton(container: HTMLElement, text: string): HTMLButtonElement {
   );
   if (!button) throw new Error(`Button "${text}" not found.`);
   return button;
-}
-
-function activateSharedView(container: HTMLElement): void {
-  const tab = container.querySelector<HTMLButtonElement>(
-    '[data-testid="collections-view-tab-shared"]',
-  );
-  if (!tab) throw new Error('Shared view tab not found.');
-  tab.click();
 }
 
 async function flushPromises(): Promise<void> {
@@ -219,7 +103,7 @@ function makeSharedCollectionDetail(
   };
 }
 
-describe('CollectionsTab shared Collections UX', () => {
+describe('SharedCollectionDetailModal', () => {
   let container: HTMLElement;
   let root: Root;
   const getShared = jest.fn<Promise<SharedCollectionDetail>, [string]>();
@@ -241,15 +125,26 @@ describe('CollectionsTab shared Collections UX', () => {
   const installPlugin = jest.fn();
   const confirmSpy = jest.fn(() => true);
 
+  const onUpdated = jest.fn();
+
+  async function renderEditor(): Promise<void> {
+    await act(async () => {
+      root.render(
+        <SharedCollectionDetailModal
+          mode="edit"
+          summary={makeSharedCollectionDetail()}
+          onClose={jest.fn()}
+          onUpdated={onUpdated}
+        />,
+      );
+      await flushPromises();
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+  }
+
   beforeEach(() => {
-    mockSharedCollectionScope = 'team';
-    useNavigationStore.setState({ pendingShareInstall: undefined });
-    useCurrentUiStateStore.setState({ revision: 0, slices: {} });
-    localCollections = localCollections.map((collection) => ({
-      ...collection,
-      hasExistingShare: false,
-      mcpServerCount: 0,
-    }));
     const snapshot = getDefaultFeatureFlagSnapshot();
     useFeatureFlagsStore.setState({
       snapshot: {
@@ -346,104 +241,12 @@ describe('CollectionsTab shared Collections UX', () => {
     });
   });
 
-  it('offers sharing for new and existing Personal collections', async () => {
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    expect(
-      Array.from(container.querySelectorAll('button')).some(
-        (button) => button.getAttribute('aria-label') === 'Share collection',
-      ),
-    ).toBe(true);
-
-    localCollections = localCollections.map((collection) => ({
-      ...collection,
-      hasExistingShare: true,
-    }));
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    expect(findButton(container, 'Share collection')).toBeTruthy();
-  });
-
-  it('shows a disabled Share action for an MCP collection in Personal', async () => {
-    localCollections = localCollections.map((collection) => ({
-      ...collection,
-      mcpServerCount: 1,
-    }));
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    expect(findButton(container, 'Share collection').disabled).toBe(true);
-  });
-
   afterEach(() => {
     act(() => {
       root.unmount();
     });
     container.remove();
     jest.clearAllMocks();
-  });
-
-  it('renders shared Collection View/Edit/Import/Delete actions and updates through updateShared', async () => {
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-
-    expect(container.textContent).toContain('Shared Collection');
-    // Name cell button replaces the View action.
-    expect(
-      Array.from(container.querySelectorAll('button')).find((button) =>
-        button.textContent?.includes('Shared Collection'),
-      ),
-    ).toBeTruthy();
-    expect(findButton(container, 'Edit shared collection')).toBeTruthy();
-    expect(findButton(container, 'Import collection')).toBeTruthy();
-    expect(findButton(container, 'Delete shared collection')).toBeTruthy();
-    // CAN-2799: icon actions explain themselves with a rich tooltip that
-    // opens on hover, not a native `title`.
-    const importButton = findButton(container, 'Import collection');
-    expect(importButton.hasAttribute('title')).toBe(false);
-    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
-    act(() => {
-      importButton.dispatchEvent(
-        new MouseEvent('mouseover', { bubbles: true }),
-      );
-    });
-    expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe(
-      'Import collection',
-    );
-    act(() => {
-      importButton.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
-    });
-
-    await act(async () => {
-      findButton(container, 'Edit shared collection').click();
-      await flushPromises();
-    });
-
-    expect(container.querySelector('textarea')).not.toBeNull();
-
-    await act(async () => {
-      findButton(container, 'Save changes').click();
-      await flushPromises();
-    });
-
-    expect(updateShared).toHaveBeenCalledWith({
-      collectionId: 'shared-collection',
-      rawCollection:
-        '{"version":1,"name":"Shared Collection","description":"Remote","items":[]}',
-      expectedContentHash: 'hash-shared-collection',
-    });
-    expect(container.textContent).toContain('Shared collection updated.');
   });
 
   it('uses loaded collection permission over a stale editable summary in Marketplace', async () => {
@@ -474,47 +277,69 @@ describe('CollectionsTab shared Collections UX', () => {
     expect(container.textContent).toContain('Unshare');
   });
 
-  it('reports selected Collection row metadata for App Advisor current UI state', async () => {
+  it('renders Shared by you for the loaded detail, with a re-read (CAN-4842)', async () => {
+    getShared.mockResolvedValue(makeSharedCollectionDetail());
+    let refresh: (() => Promise<void>) | undefined;
+    const onDetailUpdated = jest.fn();
     await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-
-    await act(async () => {
-      const nameButton = Array.from(container.querySelectorAll('button')).find(
-        (candidate) => candidate.textContent?.includes('Local Collection'),
+      root.render(
+        <SharedCollectionDetailModal
+          mode="view"
+          summary={makeSharedCollectionDetail()}
+          presentation="page"
+          onClose={jest.fn()}
+          onUpdated={onDetailUpdated}
+          renderSharedByYou={(detail, reread) => {
+            refresh = reread;
+            return <section data-testid="t-shared-by-you">{detail.id}</section>;
+          }}
+        />,
       );
-      if (!nameButton) {
-        throw new Error('Local Collection name button not found.');
-      }
-      nameButton.click();
+      await flushPromises();
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(
+      container.querySelector('[data-testid="t-shared-by-you"]')?.textContent,
+    ).toBe('shared-collection');
+    await act(async () => {
+      await refresh?.();
+    });
+    expect(getShared).toHaveBeenCalledTimes(2);
+    expect(onDetailUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'shared-collection' }),
+    );
+  });
+
+  it('saves edits through updateShared and reports the updated detail', async () => {
+    await renderEditor();
+
+    expect(container.querySelector('textarea')).not.toBeNull();
+
+    await act(async () => {
+      findButton(container, 'Save changes').click();
       await flushPromises();
     });
 
-    expect(
-      useCurrentUiStateStore.getState().slices['plugins.selectedRow'],
-    ).toEqual({
-      kind: 'collection',
-      id: 'local-collection',
-      name: 'Local Collection',
+    expect(updateShared).toHaveBeenCalledWith({
+      collectionId: 'shared-collection',
+      rawCollection:
+        '{"version":1,"name":"Shared Collection","description":"Remote","items":[]}',
+      expectedContentHash: 'hash-shared-collection',
     });
+    expect(onUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'shared-collection',
+        name: 'Shared Collection Updated',
+      }),
+    );
   });
 
   it('uses the required shared Collection update failure copy', async () => {
     updateShared.mockRejectedValue(new Error('update failed'));
 
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-    await act(async () => {
-      findButton(container, 'Edit shared collection').click();
-      await flushPromises();
-    });
+    await renderEditor();
     await act(async () => {
       findButton(container, 'Save changes').click();
       await flushPromises();
@@ -546,7 +371,7 @@ describe('CollectionsTab shared Collections UX', () => {
       updateAvailable: false,
       custom: true,
     };
-    const externalPluginInfo = {
+    const externalPluginInfo: PluginInfo = {
       name: 'External Plugin',
       description: '',
       version: '',
@@ -554,9 +379,8 @@ describe('CollectionsTab shared Collections UX', () => {
       sourcePath: '',
       marketplaceId: 'market-1',
       details: null,
-      externalSource: null,
-      cachePath: null,
-      cachedAt: null,
+      providerSupport: { claude: 'native', codex: 'none' },
+      facets: {},
     };
 
     loadSkills.mockResolvedValue({
@@ -606,7 +430,7 @@ describe('CollectionsTab shared Collections UX', () => {
           description: '',
           source: 'Canopy (custom)',
           sourceSubtitle: '',
-          sourceIcon: 'canopy',
+          sourceIcon: 'app',
           lastUpdated: '',
           original: customSkillInfo,
         },
@@ -627,18 +451,7 @@ describe('CollectionsTab shared Collections UX', () => {
       loading: false,
     });
 
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-    await act(async () => {
-      findButton(container, 'Edit shared collection').click();
-      await flushPromises();
-    });
+    await renderEditor();
     await act(async () => {
       const skillCheckbox = container.querySelector(
         'input[aria-label="Select External Skill"]',
@@ -710,18 +523,7 @@ describe('CollectionsTab shared Collections UX', () => {
         },
       }),
     );
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-    await act(async () => {
-      findButton(container, 'Edit shared collection').click();
-      await flushPromises();
-    });
+    await renderEditor();
     await act(async () => {
       // The linked custom skill renders as a synthetic UnifiedTable row whose
       // checkbox is initially selected. Unchecking it removes the item.
@@ -757,18 +559,7 @@ describe('CollectionsTab shared Collections UX', () => {
         },
       }),
     );
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-    await act(async () => {
-      findButton(container, 'Edit shared collection').click();
-      await flushPromises();
-    });
+    await renderEditor();
 
     expect(container.textContent).toContain('unknown type "mystery"');
     expect(findButton(container, 'Save changes').disabled).toBe(true);
@@ -777,93 +568,5 @@ describe('CollectionsTab shared Collections UX', () => {
       await flushPromises();
     });
     expect(updateShared).not.toHaveBeenCalled();
-  });
-
-  it('opens the shared install review from Import without writing anything', async () => {
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-    await act(async () => {
-      findButton(container, 'Import collection').click();
-      await flushPromises();
-    });
-
-    // The review (CAN-3710) owns the install; Import only opens it.
-    expect(useNavigationStore.getState().pendingShareInstall).toEqual({
-      link: {
-        entity: 'collection',
-        externalId: 'shared-collection',
-        intent: 'install',
-        audience: 'TEAM',
-      },
-      origin: 'in-app',
-    });
-    expect(getShared).not.toHaveBeenCalled();
-    expect(saveCollection).not.toHaveBeenCalled();
-    expect(
-      document.querySelector('[data-testid="shared-collection-import-review"]'),
-    ).toBeNull();
-  });
-
-  it('offers no Import on a private shared Collection, which resolves for nobody else', async () => {
-    mockSharedCollectionScope = 'private';
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-
-    expect(container.textContent).toContain('Shared Collection');
-    expect(
-      container.querySelector('button[aria-label="Import collection"]'),
-    ).toBeNull();
-  });
-
-  it('opens a confirmation modal before deleting a shared Collection', async () => {
-    await act(async () => {
-      root.render(<CollectionsTab />);
-      await flushPromises();
-    });
-    await act(async () => {
-      activateSharedView(container);
-      await flushPromises();
-    });
-
-    // First click only opens the modal — deleteShared must not run yet.
-    await act(async () => {
-      findButton(container, 'Delete shared collection').click();
-      await flushPromises();
-    });
-    expect(deleteShared).not.toHaveBeenCalled();
-    expect(container.textContent).toContain(
-      'Linked custom skills will remain available as shared skills.',
-    );
-
-    // Confirming the modal triggers the actual delete.
-    const dialog = container.querySelector(
-      '[data-testid="delete-confirm-modal"]',
-    );
-    if (!dialog) throw new Error('Delete confirmation modal not rendered.');
-    const confirmBtn = Array.from(dialog.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Delete',
-    );
-    if (!confirmBtn) throw new Error('Confirm button not found.');
-    await act(async () => {
-      confirmBtn.click();
-      await flushPromises();
-    });
-
-    expect(deleteShared).toHaveBeenCalledWith({
-      collectionId: 'shared-collection',
-    });
-    expect(container.textContent).toContain('Shared collection deleted.');
   });
 });

@@ -46,14 +46,16 @@ const mockGetProxyUrl = jest.fn((id: string) => `http://localhost/${id}`);
 const mockUnregisterRoute = jest.fn();
 const mockEnsureStarted = jest.fn();
 jest.mock('../mcp/http-proxy-service', () => ({
-  getMcpHttpProxyService: (): {
-    setSessionToolCallGate: typeof mockSetGate;
-    unregisterRoutesForSession: typeof mockUnregister;
-    registerRoute: typeof mockRegisterRoute;
-    getProxyUrl: typeof mockGetProxyUrl;
-    unregisterRoute: typeof mockUnregisterRoute;
-    ensureStarted: typeof mockEnsureStarted;
-  } =>
+  getMcpHttpProxyService: ():
+    | McpHttpProxyService
+    | {
+        setSessionToolCallGate: typeof mockSetGate;
+        unregisterRoutesForSession: typeof mockUnregister;
+        registerRoute: typeof mockRegisterRoute;
+        getProxyUrl: typeof mockGetProxyUrl;
+        unregisterRoute: typeof mockUnregisterRoute;
+        ensureStarted: typeof mockEnsureStarted;
+      } =>
     mockLiveProxy ?? {
       setSessionToolCallGate: mockSetGate,
       unregisterRoutesForSession: mockUnregister,
@@ -71,6 +73,10 @@ const check = jest.fn<
 const approval: ApprovalSessionHandle = {
   check,
   dispose: jest.fn(),
+  reevaluatePendingApprovals: jest.fn<
+    ReturnType<ApprovalSessionHandle['reevaluatePendingApprovals']>,
+    Parameters<ApprovalSessionHandle['reevaluatePendingApprovals']>
+  >(() => Promise.resolve()),
   setMode: jest.fn(),
 };
 const request: OpenCodePromptRunnerRequest = {
@@ -272,9 +278,12 @@ beforeEach(() => {
   mockGetProxyUrl.mockImplementation((id) => `http://localhost/${id}`);
   check.mockResolvedValue({ decision: 'allow' });
   jest.mocked(resolvePlugins).mockResolvedValue(resolution());
-  jest
-    .mocked(materializeSelectedCapabilityRoot)
-    .mockResolvedValue({ skillIds: [], commandIds: [], warnings: [] });
+  jest.mocked(materializeSelectedCapabilityRoot).mockResolvedValue({
+    fingerprint: 'fixture-fingerprint',
+    skillIds: [],
+    commandIds: [],
+    warnings: [],
+  });
   jest.mocked(snapshotOpenCodeMcpTools).mockResolvedValue([
     {
       name: 'selected',
@@ -436,9 +445,11 @@ function resolvePluginRoute(
           headers,
           oauthEnabled: false,
         });
+        const mcpServerBindings: Record<string, ResolvedMcpServerBinding> = {};
+        if (binding) mcpServerBindings.selected = binding;
         return {
           ...resolution(),
-          mcpServerBindings: binding ? { selected: binding } : {},
+          mcpServerBindings,
           mcpServers: {
             selected: { type: 'http', url: proxy.getProxyUrl(id) },
           },

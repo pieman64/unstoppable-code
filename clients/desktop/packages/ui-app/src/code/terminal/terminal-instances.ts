@@ -15,12 +15,14 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search';
 import { Terminal, type IDisposable } from '@xterm/xterm';
 import { isShortcutEvent } from '../../find/shortcut-target';
+import { findEditableSafePanelShortcut } from '../panels/panel-commands';
 import {
   createTerminalHostContainer,
   TERMINAL_GEOMETRY_OPTIONS,
 } from './terminal-geometry';
 
-export const TERMINAL_BG_COLOR = '#0b0c10';
+import { TERMINAL_THEME } from './terminal-theme';
+export { TERMINAL_BG_COLOR, TERMINAL_THEME } from './terminal-theme';
 /**
  * Find-bar match highlights, in the other find modes' warning amber: the
  * dark-theme `--fg-warning` (`#E28530`) at 35% (matches) and 65% (active)
@@ -95,12 +97,7 @@ export function getOrCreateInstance(terminalId: string): TerminalInstanceEntry {
     ...TERMINAL_GEOMETRY_OPTIONS,
     cursorBlink: true,
     allowProposedApi: true,
-    theme: {
-      background: TERMINAL_BG_COLOR,
-      foreground: '#e6e6e6',
-      cursor: '#e6e6e6',
-      selectionBackground: 'rgba(120, 168, 120, 0.22)',
-    },
+    theme: { ...TERMINAL_THEME },
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -130,9 +127,17 @@ export function getOrCreateInstance(terminalId: string): TerminalInstanceEntry {
   // propagation, so a window-level find shortcut never sees it. While a find
   // controller claims this terminal, decline the platform find chord on
   // every event type: xterm then skips it and it bubbles to the window.
-  // xterm supports one custom key handler, so both rules live here.
+  //
+  // The panel tab-cycle chords (CAN-4616) are declined the same way. xterm
+  // would send Ctrl+Tab and Ctrl+PageDown/PageUp to the shell and stop them,
+  // so cycling could never leave a terminal tab it landed on.
+  //
+  // xterm supports one custom key handler, so every rule lives here.
   term.attachCustomKeyEventHandler((event: KeyboardEvent): boolean => {
     if (entry.findShortcutClaimed && isShortcutEvent(event, 'f')) {
+      return false;
+    }
+    if (findEditableSafePanelShortcut(event) !== undefined) {
       return false;
     }
     const isShiftEnter =

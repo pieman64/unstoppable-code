@@ -111,7 +111,9 @@ export async function importChatAttachments(
   target: AttachmentImportTarget,
   filePaths: string[],
   clipboardItems?: ClipboardAttachmentData[],
+  isCurrent?: () => boolean,
 ): Promise<AttachmentMeta[]> {
+  if (isCurrent?.() === false) return [];
   // Cowork chats key as (workspaceId, 'home'); route their attachments through
   // the workspace-items attachment IPC, which stores them under the
   // workspace's managed `.{brand}/attachments` dir. `target.projectId` is the
@@ -124,9 +126,11 @@ export async function importChatAttachments(
       filePaths,
       clipboardItems,
     });
+    if (isCurrent?.() === false) return [];
     await useWorkspaceItemsStore
       .getState()
-      .loadAttachments(target.projectId, target.worktreeId);
+      .loadAttachments(target.projectId, target.worktreeId, isCurrent);
+    if (isCurrent?.() === false) return [];
     return result.attachments.map(mapStandaloneAttachment);
   }
 
@@ -136,13 +140,15 @@ export async function importChatAttachments(
     filePaths,
     clipboardItems,
   });
+  if (isCurrent?.() === false) return [];
   // The Attachments activity card is backed by its own workspace-items
   // snapshot, separate from the file index refreshed when the attachment is
   // staged on the composer. Keep that snapshot current for paste, browse,
   // drag/drop, and other chat attachment import flows.
   await useWorkspaceItemsStore
     .getState()
-    .loadAttachments(target.projectId, target.worktreeId);
+    .loadAttachments(target.projectId, target.worktreeId, isCurrent);
+  if (isCurrent?.() === false) return [];
   return result.attachments;
 }
 

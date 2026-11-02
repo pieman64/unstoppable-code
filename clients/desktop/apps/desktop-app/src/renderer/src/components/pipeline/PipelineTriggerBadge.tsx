@@ -1,4 +1,5 @@
-import { type JSX, useId } from 'react';
+import { type JSX } from 'react';
+import { ActionTooltip } from '@canopy/ui-shared';
 import type { PipelineTriggerType } from '@canopy/desktop-shared/types/pipeline';
 import { TriggerIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { PlanModeIcon, TaskIcon } from '@canopy/ui-shared/icons';
@@ -28,36 +29,20 @@ export function PipelineTriggerTypeIcon({
 
 export function TriggerBadge({ type }: TriggerBadgeProps): JSX.Element {
   const meta = getTriggerMeta(type);
-  const tooltipId = useId();
 
   if (!meta) {
     return <></>;
   }
 
   return (
-    <span className="relative inline-flex group/trigger">
+    <ActionTooltip title={meta.label} description={meta.description}>
       <button
         type="button"
-        aria-describedby={tooltipId}
         aria-label={`${meta.label}: ${meta.description}`}
         className={`focus-ring shrink-0 inline-flex items-center justify-center w-5 h-5 rounded ${meta.badgeClass}`}
       >
         <PipelineTriggerTypeIcon type={type} />
       </button>
-      <span
-        id={tooltipId}
-        role="tooltip"
-        className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5
-          hidden group-hover/trigger:flex group-focus-within/trigger:flex flex-col items-center
-          w-max max-w-48 px-2.5 py-1.5 rounded-md
-          bg-popover shadow-tooltip fg-primary
-          z-dropdown"
-      >
-        <span className="text-2xs font-medium leading-tight">{meta.label}</span>
-        <span className="text-3xs fg-secondary leading-snug mt-0.5">
-          {meta.description}
-        </span>
-      </span>
-    </span>
+    </ActionTooltip>
   );
 }

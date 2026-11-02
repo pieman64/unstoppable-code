@@ -17,8 +17,12 @@ const mockRegisterUserEnvironmentInjector = jest.fn<
 const mockReadEnvironmentConfig = jest.fn();
 
 jest.mock('node:fs', () => ({
-  readFileSync: mockReadFileSync,
-  statSync: mockStatSync,
+  get readFileSync(): typeof mockReadFileSync {
+    return mockReadFileSync;
+  },
+  get statSync(): typeof mockStatSync {
+    return mockStatSync;
+  },
 }));
 
 jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
@@ -33,7 +37,9 @@ jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
 }));
 
 jest.mock('../pipelines/config-paths', () => ({
-  registerUserEnvironmentInjector: mockRegisterUserEnvironmentInjector,
+  get registerUserEnvironmentInjector(): typeof mockRegisterUserEnvironmentInjector {
+    return mockRegisterUserEnvironmentInjector;
+  },
 }));
 
 let mockBackend = 'gnome_libsecret';
@@ -45,15 +51,21 @@ jest.mock('@canopy/core-platform/host-platform', () => ({
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
   safeStorage: {
-    isEncryptionAvailable: mockAvailable,
-    decryptString: mockDecrypt,
+    get isEncryptionAvailable(): typeof mockAvailable {
+      return mockAvailable;
+    },
+    get decryptString(): typeof mockDecrypt {
+      return mockDecrypt;
+    },
     encryptString: jest.fn(),
     getSelectedStorageBackend: (): string => mockBackend,
   },
 }));
 
 jest.mock('../lib/user-environment-store', () => ({
-  readEnvironmentConfig: mockReadEnvironmentConfig,
+  get readEnvironmentConfig(): typeof mockReadEnvironmentConfig {
+    return mockReadEnvironmentConfig;
+  },
 }));
 
 import { getInternalLegacySharedEnvironmentConfigFilePath } from '@canopy/desktop-shared/canopy-paths';

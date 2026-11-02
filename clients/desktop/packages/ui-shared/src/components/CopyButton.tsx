@@ -3,7 +3,7 @@ import { CheckIcon } from '../icons/CheckIcon';
 import { CopyIcon } from '../icons/CopyIcon';
 import { Button, type ButtonSize, type ButtonVariant } from './Button';
 import { Tooltip } from './Tooltip';
-import { useCopyToClipboard } from './copy-to-clipboard';
+import { CopyStatusRegion, useAnnouncedCopy } from './copy-feedback';
 
 export { copyTextToClipboard } from './copy-to-clipboard';
 
@@ -48,7 +48,11 @@ export interface CopyButtonProps {
  * and size like any other action; the copy behavior and the timed copied
  * confirmation come from {@link useCopyToClipboard}.
  */
-export function CopyButton({
+export function CopyButton(props: CopyButtonProps): JSX.Element {
+  return <CopyButtonControl key={props.value} {...props} />;
+}
+
+function CopyButtonControl({
   value,
   ariaLabel = 'Copy to clipboard',
   title = 'Copy to clipboard',
@@ -62,7 +66,8 @@ export function CopyButton({
   copiedDurationMs,
   write,
 }: CopyButtonProps): JSX.Element {
-  const { copied, copy } = useCopyToClipboard({
+  const { copied, failed, announcement, copy } = useAnnouncedCopy({
+    failureAnnouncement: "Couldn't copy to the clipboard",
     copiedDurationMs,
     onCopy,
     ...(write !== undefined ? { write } : {}),
@@ -112,6 +117,7 @@ export function CopyButton({
           <span>{copied ? copiedLabel : label}</span>
         </Button>
       )}
+      {(copied || failed) && <CopyStatusRegion announcement={announcement} />}
     </Tooltip>
   );
 }

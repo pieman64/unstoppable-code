@@ -9,6 +9,8 @@
  * snapshots alternate whole transcripts with patches of changed items
  * (`transcriptMode: 'patch'`), merged here by item id; a patch for a run whose
  * earlier items this window never saw reads the delegate log to fill them in.
+ * Active cards in the current chat also read their existing snapshot endpoint
+ * once after reconnect; a delegate log contains items, not live card progress.
  *
  * Bounded: the least recently used runs no mounted card holds are forgotten
  * beyond {@link DELEGATION_TRANSCRIPT_RUN_LIMIT}; a card mounted again reads
@@ -17,6 +19,7 @@
 import { create } from 'zustand';
 import {
   DELEGATION_TRANSCRIPT_CHAT_LOG,
+  type AgentDelegationSnapshot,
   type AgentDelegationTranscript,
   type AgentDelegationTranscriptItem,
 } from '@canopy/protocol/delegation';
@@ -35,6 +38,12 @@ export interface DelegationTranscriptSource {
 export interface DelegationRunEntry {
   /** The newest live snapshot this session (card fields and items). */
   readonly live?: AgentDelegationTranscript;
+  /** Current card fields read once after reconnect, never child-log items. */
+  readonly hydrated?: {
+    readonly snapshot: AgentDelegationSnapshot;
+    readonly revision: number;
+  };
+  readonly snapshotRequested?: boolean;
   /** `live` holds only patched items until the delegate log is read. */
   readonly partial?: boolean;
   /** Items read from the delegate log. */
@@ -56,6 +65,11 @@ interface DelegationTranscriptState {
   ) => void;
   /** Reads the run's delegate log unless it is known or being read. */
   load: (
+    source: DelegationTranscriptSource,
+    run: { delegationId: string; runGeneration: number },
+  ) => void;
+  /** Bootstraps current card progress without touching archived/history copies. */
+  hydrateCurrent: (
     source: DelegationTranscriptSource,
     run: { delegationId: string; runGeneration: number },
   ) => void;
@@ -171,6 +185,57 @@ export const useDelegationTranscriptStore = create<DelegationTranscriptState>(
       });
       if (readLog) get().load(target, transcript);
     },
+    hydrateCurrent: (source, run): void => {
+      if (source.archivedContainerId || source.standaloneHistory) return;
+      const key = delegationRunKey(source, run);
+      const entry = get().runs[key];
+      if (entry?.snapshotRequested || entry?.live) return;
+      set((state) =>
+        touch(state, key, { ...state.runs[key], snapshotRequested: true }),
+      );
+      void Promise.resolve()
+        .then(() =>
+          window.api.managedDelegation.transcriptPage({
+            projectId: source.projectId,
+            worktreeId: source.worktreeId,
+            chatId: source.chatId,
+            delegationId: run.delegationId,
+            runGeneration: run.runGeneration,
+          }),
+        )
+        .then(
+          (result) => {
+            if (
+              !result.ok ||
+              result.runGeneration !== run.runGeneration ||
+              result.snapshot.delegationId !== run.delegationId ||
+              (result.snapshot.runGeneration !== undefined &&
+                result.snapshot.runGeneration !== run.runGeneration)
+            )
+              return;
+            set((state) => {
+              const current = state.runs[key];
+              // Live delivery wins over a read started before it, including
+              // equal revisions whose queue details may have changed.
+              if (
+                !current ||
+                current.live ||
+                (current.hydrated &&
+                  current.hydrated.revision >= result.revision)
+              )
+                return state;
+              return touch(state, key, {
+                ...current,
+                hydrated: {
+                  snapshot: result.snapshot,
+                  revision: result.revision,
+                },
+              });
+            });
+          },
+          () => undefined,
+        );
+    },
     load: (source, run): void => {
       const key = delegationRunKey(source, run);
       const entry = get().runs[key];
@@ -199,7 +264,7 @@ export const useDelegationTranscriptStore = create<DelegationTranscriptState>(
               },
             });
           }
-          return touch(state, key, next);
+          return touch(state, key, { ...current, ...next, loading: false });
         });
       };
       void window.api.managedDelegation

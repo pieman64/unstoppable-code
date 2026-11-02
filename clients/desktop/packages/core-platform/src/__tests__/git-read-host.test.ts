@@ -4,6 +4,7 @@ import { GitReadError, type GitReadCommand } from '../git-read/commands';
 import {
   createGitReadHost,
   createGitReadHostWith,
+  GIT_READ_SELECTION_LIMITS,
   type GitReadHostCleanupReport,
   type GitReadHostOptions,
 } from '../git-read/host';
@@ -76,6 +77,7 @@ function scriptedRunner(
         run: () => Promise.reject(new Error('unused')),
         checkIgnoredPathsWith: () => Promise.reject(new Error('unused')),
         checkIgnoredPathsSelected: () => outcome(),
+        listIgnoredPathsSelected: () => Promise.reject(new Error('unused')),
         whenIdle: () => Promise.resolve(idle),
       };
     },
@@ -518,6 +520,41 @@ describe('createGitReadHost requests', () => {
     },
   );
 
+  // The Win32 fsmonitor discharge is planned from this version.
+  it('gives each chunk the version validation parsed, only while the file is unchanged', async () => {
+    const saved = 'C:\\Git\\cmd\\git.exe';
+    const discovered = 'C:\\Found\\cmd\\git.exe';
+    const world = createWorld('win32', {
+      filesystem: {
+        [saved]: version('2.35.1.windows.1'),
+        [discovered]: version('2.47.1.windows.2'),
+      },
+      whereExe: { git: `${discovered}\r\n` },
+    });
+    const { resolve } = fakeHost(world);
+    await resolve(saved);
+    await resolve('');
+    await resolve('');
+    // Replaced in place: the fast path keeps the path, as desktop, but no
+    // longer knows its version.
+    world.filesystem[discovered] = version('2.57.0.windows.1');
+    await resolve('');
+    // A saved value's identity is part of its key, so it is validated again.
+    world.filesystem[saved] = version('2.47.1.windows.2');
+    await resolve(saved);
+    expect(
+      world.checks.map((check) => [check.executable, check.version]),
+    ).toEqual([
+      // prettier-ignore
+      [saved, 'git version 2.35.1.windows.1'],
+      [discovered, 'git version 2.47.1.windows.2'],
+      [discovered, 'git version 2.47.1.windows.2'],
+      [discovered, undefined],
+      [saved, 'git version 2.47.1.windows.2'],
+    ]);
+    expect(ranCount(world, discovered)).toBe(1);
+  });
+
   it('keeps an override-selected Linux Git on its fast path and surfaces EACCES there', async () => {
     const world = createWorld('linux', { filesystem: { '/env/git': version('2.44.0') } }); // prettier-ignore
     const { resolve } = fakeHost(world, {
@@ -544,6 +581,189 @@ describe('createGitReadHost requests', () => {
           roots.push(command.temporaryRoot);
     }
     expect(roots).toEqual(['/var/tmp/daemon', '/tmp', '/tmp']);
+  });
+});
+
+describe('createGitReadHost selections (Git receipt)', () => {
+  const NONE = { selections: [], overflow: false };
+  const pairs = (host: FakeHost['host']): [string, string | null][] =>
+    host.selections().selections.map(({ executable, version }) => [executable, version]); // prettier-ignore
+
+  it('reports each distinct Git handed to check-ignore, in first-use order, as each chunk ran it', async () => {
+    const saved = 'C:\\Git\\cmd\\git.exe';
+    const discovered = 'C:\\Found\\cmd\\git.exe';
+    const world = createWorld('win32', {
+      filesystem: {
+        [saved]: version('2.35.1.windows.1'),
+        [discovered]: version('2.47.1.windows.2'),
+      },
+      whereExe: { git: `${discovered}\r\n` },
+    });
+    const { host, resolve } = fakeHost(world);
+    expect(host.selections()).toEqual(NONE);
+    await resolve(saved);
+    await resolve('');
+    await resolve('');
+    // Replaced in place: the chunk ran it without a validated version.
+    world.filesystem[discovered] = version('2.57.0.windows.1');
+    await resolve('');
+    expect(pairs(host)).toEqual([
+      [saved, 'git version 2.35.1.windows.1'],
+      [discovered, 'git version 2.47.1.windows.2'],
+      [discovered, null],
+    ]);
+    expect(
+      world.checks.map(({ executable, version: v }) => [executable, v ?? null]),
+    ).toEqual(
+      // prettier-ignore
+      [
+        [saved, 'git version 2.35.1.windows.1'],
+        [discovered, 'git version 2.47.1.windows.2'],
+        [discovered, 'git version 2.47.1.windows.2'],
+        [discovered, null],
+      ],
+    );
+    expect(host.selections().overflow).toBe(false);
+  });
+
+  it('reports a silent fallback from a saved Git production refuses (macOS shim)', async () => {
+    const world = createWorld('darwin', {
+      loginPath: '/opt/homebrew/bin:/usr/bin',
+      filesystem: {
+        '/usr/bin/git': SHIM,
+        '/opt/homebrew/bin/git': version('2.51.0'),
+      },
+    });
+    const { host, resolve } = fakeHost(world);
+    await expect(resolve('/usr/bin/git')).resolves.toEqual({ resolved: '/opt/homebrew/bin/git' }); // prettier-ignore
+    expect(pairs(host)).toEqual([['/opt/homebrew/bin/git', 'git version 2.51.0']]); // prettier-ignore
+  });
+
+  it('reports the unvalidated Linux snapshot Git on unsupported architectures with no version', async () => {
+    const { host, resolve } = fakeHost(createWorld('linux'), {}, { arch: 's390x' }); // prettier-ignore
+    await expect(resolve('/saved/git')).resolves.toEqual({ resolved: 'git' });
+    expect(pairs(host)).toEqual([['git', null]]);
+  });
+
+  it('records nothing for a failed selection, an empty request or a host that never got ready', async () => {
+    const world = createWorld('linux');
+    const { host, resolve } = fakeHost(world);
+    await expect(resolve('/missing/git')).resolves.toEqual({
+      resolved: null,
+      failure: 'git_unavailable',
+    });
+    await host.port.checkIgnoredPaths(request('/missing/git', { relativePaths: [] })); // prettier-ignore
+    expect(host.selections()).toEqual(NONE);
+    const unready = createGitReadHost({ os: 'linux', environment: {}, probeDirectory: 'relative' }); // prettier-ignore
+    await settle(unready.port.checkIgnoredPaths(request('')));
+    expect(unready.selections()).toEqual(NONE);
+  });
+
+  it('keeps at most the limit of distinct Gits and over-long fields out, marking overflow', async () => {
+    const { selections: limit, executableLength, versionLength } = GIT_READ_SELECTION_LIMITS; // prettier-ignore
+    const paths = Array.from({ length: limit + 1 }, (_, i) => `/g${i}/git`);
+    const long = `/${'x'.repeat(executableLength)}/git`;
+    const world = createWorld('linux', {
+      filesystem: {
+        ...Object.fromEntries(paths.map((path) => [path, version('2.47.1')])),
+        [long]: version('2.47.1'),
+        '/long-version/git': version(`2.47.1.${'9'.repeat(versionLength)}`),
+      },
+    });
+    const { host, resolve } = fakeHost(world);
+    await resolve(long);
+    await resolve('/long-version/git');
+    expect(host.selections()).toEqual({ selections: [], overflow: true });
+    for (const path of paths) await resolve(path);
+    // Repeats of a kept Git neither grow the report nor count against it.
+    await resolve(paths[0] ?? '');
+    const report = host.selections();
+    expect(report.selections.map(({ executable }) => executable)).toEqual(paths.slice(0, limit)); // prettier-ignore
+    expect(report.overflow).toBe(true);
+    // Each check-ignore still ran its own selection.
+    expect(world.checks.map(({ executable }) => executable)).toEqual([long, '/long-version/git', ...paths, paths[0]]); // prettier-ignore
+  });
+
+  it('records no Git a chunk chose after its runner stopped waiting', async () => {
+    const world = createWorld('linux', { filesystem: { '/a/git': version('2.45.0') } }); // prettier-ignore
+    const held = gate();
+    world.gates.set('/a/git', held.wait);
+    const { host, resolve } = fakeHost(world);
+    const abandoned = new AbortController();
+    const pending = settle(
+      host.port.checkIgnoredPaths(
+        request('/a/git', { signal: abandoned.signal }),
+      ),
+    );
+    while (started(world, '/a/git') === 0) await flush(1);
+    const reason = new Error('gone');
+    abandoned.abort(reason);
+    await expect(pending).resolves.toEqual({ error: reason });
+    // The shared detection still validates and hands the chunk its Git.
+    held.open();
+    while (ranCount(world, '/a/git') === 0) await flush(1);
+    await flush();
+    expect(host.selections()).toEqual(NONE);
+    expect(world.checks).toEqual([]);
+    // A later chunk that runs it is recorded.
+    await expect(resolve('/a/git')).resolves.toEqual({ resolved: '/a/git' });
+    expect(pairs(host)).toEqual([['/a/git', 'git version 2.45.0']]);
+  });
+
+  it('records no Git whose check-ignore was aborted or failed to spawn after selection', async () => {
+    const world = createWorld('linux', { filesystem: { '/a/git': version('2.45.0') } }); // prettier-ignore
+    const { host, resolve } = fakeHost(world);
+    // Aborted between selection and start.
+    const held = gate();
+    world.gates.set('git-check-ignore', held.wait);
+    const abandoned = new AbortController();
+    const pending = settle(
+      host.port.checkIgnoredPaths(
+        request('/a/git', { signal: abandoned.signal }),
+      ),
+    );
+    while (world.chosen.length === 0) await flush(1);
+    const reason = new Error('gone');
+    abandoned.abort(reason);
+    held.open();
+    await expect(pending).resolves.toEqual({ error: reason });
+    world.gates.delete('git-check-ignore');
+    // Selected, then refused at spawn.
+    world.unspawnable.add('/a/git');
+    await expect(resolve('/a/git')).resolves.toEqual({
+      resolved: null,
+      failure: 'git_unavailable',
+    });
+    expect(world.chosen).toEqual(['/a/git', '/a/git']);
+    expect(world.checks).toEqual([]);
+    expect(host.selections()).toEqual(NONE);
+    // Once its check-ignore starts, it is recorded.
+    world.unspawnable.clear();
+    await expect(resolve('/a/git')).resolves.toEqual({ resolved: '/a/git' });
+    expect(pairs(host)).toEqual([['/a/git', 'git version 2.45.0']]);
+  });
+
+  it('returns a frozen snapshot that later selections and callers cannot change', async () => {
+    const world = createWorld('linux', { filesystem: { '/a/git': version('2.45.0'), '/b/git': version('2.46.0') } }); // prettier-ignore
+    const { host, resolve } = fakeHost(world);
+    await resolve('/a/git');
+    const first = host.selections();
+    await resolve('/b/git');
+    expect(first.selections).toHaveLength(1);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.selections)).toBe(true);
+    expect(Object.isFrozen(first.selections[0])).toBe(true);
+    expect(pairs(host)).toEqual([
+      ['/a/git', 'git version 2.45.0'],
+      ['/b/git', 'git version 2.46.0'],
+    ]);
+  });
+
+  it('is exported from the package index with its limits', () => {
+    expect(packageIndex.GIT_READ_SELECTION_LIMITS).toBe(
+      GIT_READ_SELECTION_LIMITS,
+    );
+    expect(GIT_READ_SELECTION_LIMITS).toEqual({ selections: 4, executableLength: 4096, versionLength: 256 }); // prettier-ignore
   });
 });
 
@@ -578,49 +798,55 @@ describe('createGitReadHost login PATH', () => {
     expect(refreshes()).toBe(2);
   });
 
-  it('Linux x64: detection awaits the login refresh before any candidate', async () => {
-    const world = createWorld('linux', {
-      loginPath: '/login/bin',
-      filesystem: { '/login/bin/git': version('2.47.0') },
-    });
-    const held = gate();
-    world.gates.set('linux-login-shell-path', held.wait);
-    const { resolve } = fakeHost(world);
-    const pending = resolve('');
-    await flush();
-    expect(world.ran).toEqual([]);
-    held.open();
-    await expect(pending).resolves.toEqual({ resolved: '/login/bin/git' });
-  });
-
-  it('Linux x64: the snapshot SHELL, then the getent shell, then /bin/bash', async () => {
-    const shellsFor = async (
-      environment: Record<string, string | undefined>,
-      getent: string | undefined,
-      executable: string[],
-    ): Promise<string[]> => {
-      const world = createWorld('linux', { getent });
-      for (const shell of executable) world.filesystem[shell] = version('0');
-      const { host } = fakeHost(world, { environment: snapshotFor('linux', environment) }); // prettier-ignore
-      host.prewarm();
+  it.each(['x64', 'arm64'])(
+    'Linux %s: detection awaits the login refresh before any candidate',
+    async (arch) => {
+      const world = createWorld('linux', {
+        loginPath: '/login/bin',
+        filesystem: { '/login/bin/git': version('2.47.0') },
+      });
+      const held = gate();
+      world.gates.set('linux-login-shell-path', held.wait);
+      const { resolve } = fakeHost(world, {}, { arch });
+      const pending = resolve('');
       await flush();
-      return world.probes.flatMap(({ command }) =>
-        command.kind === 'linux-login-shell-path' ? [command.shell] : [],
-      );
-    };
-    // The login marker parses, so the first executable shell answers.
-    expect(await shellsFor({ SHELL: ` ${LOGIN_SHELL} ` }, undefined, [])).toEqual([LOGIN_SHELL]); // prettier-ignore
-    expect(
-      await shellsFor({ SHELL: undefined }, 'me:x:501:20::/home/me:/usr/bin/fish\n', ['/usr/bin/fish']), // prettier-ignore
-    ).toEqual(['/usr/bin/fish']);
-    expect(
-      await shellsFor({ SHELL: undefined }, 'me:x:502:20::/home/me:/usr/bin/fish\n', ['/usr/bin/fish', '/bin/bash']), // prettier-ignore
-    ).toEqual(['/bin/bash']);
-    expect(await shellsFor({ SHELL: '/missing/sh' }, undefined, ['/bin/bash'])).toEqual(['/bin/bash']); // prettier-ignore
-  });
+      expect(world.ran).toEqual([]);
+      held.open();
+      await expect(pending).resolves.toEqual({ resolved: '/login/bin/git' });
+    },
+  );
+
+  it.each(['x64', 'arm64'])(
+    'Linux %s: the snapshot SHELL, then the getent shell, then /bin/bash',
+    async (arch) => {
+      const shellsFor = async (
+        environment: Record<string, string | undefined>,
+        getent: string | undefined,
+        executable: string[],
+      ): Promise<string[]> => {
+        const world = createWorld('linux', { getent });
+        for (const shell of executable) world.filesystem[shell] = version('0');
+        const { host } = fakeHost(world, { environment: snapshotFor('linux', environment) }, { arch }); // prettier-ignore
+        host.prewarm();
+        await flush();
+        return world.probes.flatMap(({ command }) =>
+          command.kind === 'linux-login-shell-path' ? [command.shell] : [],
+        );
+      };
+      // The login marker parses, so the first executable shell answers.
+      expect(await shellsFor({ SHELL: ` ${LOGIN_SHELL} ` }, undefined, [])).toEqual([LOGIN_SHELL]); // prettier-ignore
+      expect(
+        await shellsFor({ SHELL: undefined }, 'me:x:501:20::/home/me:/usr/bin/fish\n', ['/usr/bin/fish']), // prettier-ignore
+      ).toEqual(['/usr/bin/fish']);
+      expect(
+        await shellsFor({ SHELL: undefined }, 'me:x:502:20::/home/me:/usr/bin/fish\n', ['/usr/bin/fish', '/bin/bash']), // prettier-ignore
+      ).toEqual(['/bin/bash']);
+      expect(await shellsFor({ SHELL: '/missing/sh' }, undefined, ['/bin/bash'])).toEqual(['/bin/bash']); // prettier-ignore
+    },
+  );
 
   it.each([
-    ['linux', 'arm64', []],
+    ['linux', 'arm64', ['linux-login-shell-path']],
     ['win32', 'x64', []],
     ['darwin', 'arm64', ['macos-login-shell-path']],
     ['linux', 'x64', ['linux-login-shell-path']],
@@ -1912,7 +2138,7 @@ describe('deliberate divergences (R6 §2.7), each named', () => {
 
   divergence(
     'other-linux-snapshot-path',
-    'Linux without discovery spawns the override or git unvalidated',
+    'Unsupported Linux architecture without discovery spawns the override or git unvalidated',
     async () => {
       const reads: string[] = [];
       const readSaved = (): Promise<string> => {
@@ -1920,13 +2146,13 @@ describe('deliberate divergences (R6 §2.7), each named', () => {
         return Promise.resolve('/opt/saved/git');
       };
       const plain = createWorld('linux');
-      const { host } = fakeHost(plain, {}, { arch: 'arm64' });
+      const { host } = fakeHost(plain, {}, { arch: 's390x' });
       await expect(host.port.checkIgnoredPaths(request(readSaved))).resolves.toEqual(new Set(['git'])); // prettier-ignore
       const overridden = createWorld('linux');
       const second = fakeHost(
         overridden,
         { environment: snapshotFor('linux', { CANOPY_GIT_EXECUTABLE: ' /env/git ' }) }, // prettier-ignore
-        { arch: 'arm64' },
+        { arch: 's390x' },
       );
       await expect(second.host.port.checkIgnoredPaths(request(readSaved))).resolves.toEqual(new Set(['/env/git'])); // prettier-ignore
       expect(reads).toEqual([]);

@@ -11,7 +11,9 @@ jest.mock('../../lib/sidebar-items', () => ({
   }),
 }));
 jest.mock('../pipelines-service', () => ({
-  listPipelinesStrict: mockListPipelinesStrict,
+  get listPipelinesStrict(): typeof mockListPipelinesStrict {
+    return mockListPipelinesStrict;
+  },
   pipelineListTargetFor: (
     item: { id: string },
     worktreeLocalId: string,
@@ -22,7 +24,9 @@ jest.mock('../pipelines-service', () => ({
   }),
 }));
 jest.mock('../../lib/main-process-logging', () => ({
-  logMainProcessError: mockLogMainProcessError,
+  get logMainProcessError(): typeof mockLogMainProcessError {
+    return mockLogMainProcessError;
+  },
 }));
 jest.mock('../../lib/workspace-persistence', () => ({
   readWorkspaceConfigDetailed: (...args: unknown[]): unknown =>

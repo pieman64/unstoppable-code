@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, type Dirent } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { THINKING_LEVELS } from '@canopy/protocol/thinking';
 
 /**
  * Repo-wide sweep guarding the thinking-level vocabulary's single home,
@@ -16,7 +17,11 @@ const CANONICAL_DIR = join(
   'src',
   'thinking',
 );
-const ALLOWLIST = new Set<string>();
+// canopy-core may import only Zod and sibling modules (eslint.config.mjs), so
+// its portable wire contract keeps a local copy; the parity test below pins it.
+const CORE_WIRE_COPY =
+  'packages/protocol/src/canopy-core/core/chat/transcript.ts';
+const ALLOWLIST = new Set<string>([CORE_WIRE_COPY]);
 const THINKING_PAIR =
   /\[[^\]]*?(?:'xhigh'[\s\S]{0,80}?'max'|'max'[\s\S]{0,80}?'xhigh')[^\]]*?\]/;
 
@@ -68,5 +73,15 @@ describe('thinking vocabulary ownership', () => {
       .sort();
 
     expect(duplicates).toEqual([]);
+  });
+
+  it('keeps the canopy-core wire copy identical to the canonical levels', () => {
+    const source = readFileSync(join(REPO_ROOT, CORE_WIRE_COPY), 'utf8');
+    const literal = /const THINKING_LEVELS = \[([^\]]*)\] as const;/.exec(
+      source,
+    );
+    expect(
+      literal?.[1].match(/'[^']+'/g)?.map((value) => value.slice(1, -1)),
+    ).toEqual([...THINKING_LEVELS]);
   });
 });

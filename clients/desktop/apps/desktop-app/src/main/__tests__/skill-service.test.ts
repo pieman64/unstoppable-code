@@ -95,8 +95,12 @@ const existsSyncMock = fs.existsSync as jest.MockedFunction<
   typeof fs.existsSync
 >;
 const rmSyncMock = fs.rmSync as jest.MockedFunction<typeof fs.rmSync>;
-const readdirSyncMock = fs.readdirSync as jest.MockedFunction<
-  typeof fs.readdirSync
+// Narrow the overloaded Jest mock to the string-name forms used by this suite.
+const readdirSyncMock = fs.readdirSync as unknown as jest.MockedFunction<
+  (
+    path: fs.PathLike,
+    options?: { withFileTypes?: boolean },
+  ) => string[] | fs.Dirent[]
 >;
 const readFileSyncMock = fs.readFileSync as jest.MockedFunction<
   typeof fs.readFileSync
@@ -111,7 +115,10 @@ const renameSyncMock = fs.renameSync as jest.MockedFunction<
 const statMock = jest.mocked(fsp.stat);
 const lstatMock = jest.mocked(fsp.lstat);
 const realpathMock = jest.mocked(fsp.realpath);
-const readdirMock = jest.mocked(fsp.readdir);
+// Narrow the overload to the withFileTypes call used by the production code.
+const readdirMock = fsp.readdir as unknown as jest.MockedFunction<
+  (path: fs.PathLike, options: { withFileTypes: true }) => Promise<fs.Dirent[]>
+>;
 const opendirMock = jest.mocked(fsp.opendir);
 const openMock = jest.mocked(fsp.open);
 const cpMock = jest.mocked(fsp.cp);
@@ -229,8 +236,7 @@ describe('removeSkill', () => {
 
   it('removes skill directory for valid inputs', () => {
     existsSyncMock.mockReturnValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
-    readdirSyncMock.mockReturnValue(['other-skill'] as any);
+    readdirSyncMock.mockReturnValue(['other-skill']);
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const { removeLockEntry } = jest.requireMock('../skills/lock-file');
@@ -1247,8 +1253,7 @@ describe('saveCustomSkill', () => {
 describe('removeSkill (custom source)', () => {
   it('removes a custom skill without touching the lock file', () => {
     existsSyncMock.mockReturnValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
-    readdirSyncMock.mockReturnValue(['other-skill'] as any);
+    readdirSyncMock.mockReturnValue(['other-skill']);
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const { removeLockEntry } = jest.requireMock('../skills/lock-file');

@@ -309,6 +309,10 @@ async function discover(
             createdAt: getCreatedAt(fileStats),
             updatedAt: fileStats.mtime.toISOString(),
             triggerTypes: getTriggerTypes(pipeline.on),
+            stepCount: Object.values(pipeline.jobs).reduce(
+              (count, job) => count + job.steps.length,
+              0,
+            ),
             scopes: normalized.scope,
             source: 'project',
             readonly: true,
@@ -325,6 +329,10 @@ async function discover(
           createdAt: getCreatedAt(fileStats),
           updatedAt: fileStats.mtime.toISOString(),
           triggerTypes: getTriggerTypes(pipeline.on),
+          stepCount: Object.values(pipeline.jobs).reduce(
+            (count, job) => count + job.steps.length,
+            0,
+          ),
           scopes: normalized.scope,
           source: 'project',
           readonly: true,

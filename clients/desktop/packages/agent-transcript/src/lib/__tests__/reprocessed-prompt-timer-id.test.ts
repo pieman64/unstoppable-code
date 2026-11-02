@@ -15,6 +15,7 @@ const HISTORICAL_TIMER_ID = `${CHAT_ID}:${MUTATION_ID}:0`;
 function mainStyleOptions(now: number): TranscriptReducerOptions {
   let sequence = 0;
   return {
+    childToolLiveness: { kind: 'unknown' },
     now,
     createMessageId: () => `${CHAT_ID}:${MUTATION_ID}:${sequence++}`,
   };

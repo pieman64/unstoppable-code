@@ -51,10 +51,15 @@ function entry(id: string, title: string): CoworkWorkEntryMeta {
   return { id, title, createdAt: '2026-10-01T10:00:00.000Z', chatCount: 1 };
 }
 
+const ORG_ID = '7f0c1d2e-3b4a-4c5d-8e6f-901234567890';
+
 const SOURCES: LedgerFeedScopeSources = {
   projects: [CODE, COWORK],
   coworkEntries: { 'cowork-1': [entry('entry-1', 'Vendor survey')] },
+  organizations: [{ id: ORG_ID, name: 'Acme Robotics', role: 'MEMBER' }],
 };
+
+const LEDGER_ID = '0b9d7c5a-1e2f-4a3b-9c8d-7e6f5a4b3c2d';
 
 describe('describeLedgerScope', () => {
   it('names a worktree or task under its project, as the sidebar does', () => {
@@ -96,7 +101,47 @@ describe('describeLedgerScope', () => {
         { projectId: APP_ADVISOR_PROJECT_ID, worktreeId: 'entry-9' },
         SOURCES,
       ),
-    ).toBe('Advisor');
+    ).toBe('Orchestrator');
+  });
+});
+
+describe('describeLedgerScope for global (workflow) scopes', () => {
+  it('names a Personal workflow scope', () => {
+    expect(
+      describeLedgerScope(
+        { kind: 'global', owner: { kind: 'personal' }, ledgerId: LEDGER_ID },
+        SOURCES,
+      ),
+    ).toBe('Workflows · Personal');
+  });
+
+  it("names an organization's workflow scope from the account's organizations", () => {
+    expect(
+      describeLedgerScope(
+        {
+          kind: 'global',
+          owner: { kind: 'organization', organizationId: ORG_ID },
+          ledgerId: LEDGER_ID,
+        },
+        SOURCES,
+      ),
+    ).toBe('Workflows · Acme Robotics');
+  });
+
+  it('reads as Workflows alone for an organization the account no longer has', () => {
+    expect(
+      describeLedgerScope(
+        {
+          kind: 'global',
+          owner: {
+            kind: 'organization',
+            organizationId: '11111111-2222-4333-8444-555555555555',
+          },
+          ledgerId: LEDGER_ID,
+        },
+        SOURCES,
+      ),
+    ).toBe('Workflows');
   });
 });
 

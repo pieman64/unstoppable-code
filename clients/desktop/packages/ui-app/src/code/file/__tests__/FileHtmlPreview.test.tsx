@@ -484,10 +484,10 @@ describe('searchable HTML isolation', () => {
   it('requires a per-document bridge token before the parent sends search queries', () => {
     const srcDoc = buildSearchableHtmlSrcDoc(
       '<p>Orchid</p>',
-      'known-preview-bridge-token',
+      '00000000-0000-4000-8000-000000000001',
     );
 
     expect(srcDoc).toContain('preview-search-ready');
-    expect(srcDoc).toContain('known-preview-bridge-token');
+    expect(srcDoc).toContain('00000000-0000-4000-8000-000000000001');
   });
 });

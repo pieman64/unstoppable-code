@@ -88,7 +88,10 @@ describe('navigationStore page availability (CAN-3661)', () => {
   it('treats a denied request exactly like one navigation to New task', () => {
     useNavigationStore.setState({
       activePage: 'automations',
-      pendingAutomationReveal: { activityId: 'activity-1', nonce: 1 },
+      pendingAutomationReveal: {
+        activityId: 'activity-1',
+        outcome: 'installed',
+      },
       pluginsBrowseSectionId: 'section-1',
     });
     useNavigationStore.getState().navigate('workers');
@@ -97,7 +100,10 @@ describe('navigationStore page availability (CAN-3661)', () => {
     useNavigationStore.setState({
       activePage: 'automations',
       homeComposerFocusRequest: 0,
-      pendingAutomationReveal: { activityId: 'activity-1', nonce: 1 },
+      pendingAutomationReveal: {
+        activityId: 'activity-1',
+        outcome: 'installed',
+      },
       pluginsBrowseSectionId: 'section-1',
     });
     useNavigationStore.getState().navigate('home');

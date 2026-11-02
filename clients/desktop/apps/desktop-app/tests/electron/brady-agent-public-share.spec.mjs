@@ -104,17 +104,41 @@ test('publishes, installs, uninstalls, and manages a public Agent link', async (
     const shareModal = window.getByTestId('share-agent-modal');
     await shareModal.getByTestId('share-agent-scope-public').click();
     await shareModal.getByTestId('share-agent-submit').click();
-    await expect(shareModal).toHaveCount(0);
-    const publicToast = window
-      .getByTestId('toast-card')
-      .filter({ hasText: 'Agent is now public' });
-    await publicToast.getByTestId('toast-copy-link').click();
-    await expect(
-      publicToast.getByText('Copied', { exact: true }),
-    ).toBeVisible();
+    // Publishing keeps the dialog open in its published state: the success
+    // notice, the new link and Copy link, with no toast over the page.
+    const publicLink = new RegExp(`/portal/plugins/agents/${PUBLIC_SHARE_ID}$`);
+    await expect(shareModal.getByTestId('share-agent-success')).toContainText(
+      'Agent is now public',
+    );
+    await expect(shareModal.getByTestId('share-agent-link')).toHaveText(
+      publicLink,
+    );
+    await expect(shareModal.getByTestId('share-agent-submit')).toHaveCount(0);
+    await expect(window.getByTestId('toast-card')).toHaveCount(0);
+    const publishedState = await getAdvisorUiState(electronApp);
+    expect(
+      publishedState.uiState.snapshot.agents.publicShareModal,
+    ).toMatchObject({
+      open: true,
+      localAgentId: AGENT_ID,
+      state: 'published',
+      copied: false,
+    });
+    await shareModal.getByTestId('share-agent-copy-link').click();
+    await expect(shareModal.getByTestId('share-agent-copy-link')).toContainText(
+      'Copied',
+    );
     await expect
       .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
-      .toMatch(new RegExp(`/portal/plugins/agents/${PUBLIC_SHARE_ID}$`));
+      .toMatch(publicLink);
+    await expect
+      .poll(async () => {
+        const state = await getAdvisorUiState(electronApp);
+        return state.uiState.snapshot.agents.publicShareModal?.copied;
+      })
+      .toBe(true);
+    await shareModal.getByTestId('share-agent-done').click();
+    await expect(shareModal).toHaveCount(0);
 
     const existingDetail = await window.evaluate(
       (agentId) => window.agents.getShared(agentId),
@@ -322,10 +346,12 @@ test('publishes, installs, uninstalls, and manages a public Agent link', async (
       .getByTestId(`share-agent-team-picker-option-${SHARE_MEMBERSHIP_TEAM.id}`)
       .click();
     await shareModal.getByTestId('share-agent-submit').click();
+    await expect(shareModal.getByTestId('share-agent-success')).toContainText(
+      'Agent updated',
+    );
+    await expect(window.getByTestId('toast-card')).toHaveCount(0);
+    await shareModal.getByTestId('share-agent-done').click();
     await expect(shareModal).toHaveCount(0);
-    await expect(
-      window.getByTestId('toast-card').filter({ hasText: 'Agent updated' }),
-    ).toBeVisible();
     expect(
       await electronApp.evaluate(
         () => globalThis.__agentAudienceTransitionOrder,

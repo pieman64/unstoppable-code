@@ -14,7 +14,12 @@ import { useNavigationStore } from './navigationStore';
 let started = false;
 let lastSent: boolean | null = null;
 
-function computeAvailable(): boolean {
+/**
+ * Whether the selected worktree's Browser panel can take a link right now:
+ * a worktree is selected and the main page shows, not covered by Settings or
+ * the Portal. Customize, Home and similar pages cannot host the panel.
+ */
+export function isLinkBrowserTargetAvailable(): boolean {
   const navigation = useNavigationStore.getState();
   return (
     useChatStore.getState().selectedWorktree !== null &&
@@ -25,7 +30,7 @@ function computeAvailable(): boolean {
 }
 
 function publish(): void {
-  const available = computeAvailable();
+  const available = isLinkBrowserTargetAvailable();
   if (available === lastSent) return;
   lastSent = available;
   window.api.browser.reportLinkBrowserTarget({ available });

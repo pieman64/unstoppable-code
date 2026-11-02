@@ -32,6 +32,7 @@ const curated: CuratedMcpServerEntry = {
   sortOrder: 1,
   transport: 'http',
   url: 'https://mcp.linear.app',
+  updatedAt: '2026-10-01T00:00:00.000Z',
 };
 
 describe('CuratedMcpDetail', () => {
@@ -499,6 +500,8 @@ describe('McpServerReadDetail', () => {
         type: 'command',
         command: 'node',
         args: ['server.js', '--token', 'secret-value'],
+        createdAt: '2026-10-01T00:00:00.000Z',
+        updatedAt: '2026-10-01T00:00:00.000Z',
       },
       configs: [
         {
@@ -508,6 +511,9 @@ describe('McpServerReadDetail', () => {
           enabled: true,
           envVars: { API_KEY: 'secret-value' },
           extraArgs: [],
+          extraHeaders: {},
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
         },
       ],
     };

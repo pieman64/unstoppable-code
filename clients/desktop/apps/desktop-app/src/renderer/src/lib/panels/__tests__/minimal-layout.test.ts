@@ -39,6 +39,46 @@ function source(panels: ISerializedPanelEntry[]): SerializablePanelLayoutFile {
   };
 }
 
+type SerializedPanelLeaf = Extract<
+  SerializablePanelLayoutFile['grid']['root'],
+  { type: 'leaf' }
+>;
+
+function withUpdatedLeaf(
+  layout: SerializablePanelLayoutFile,
+  groupId: string,
+  update: (leaf: SerializedPanelLeaf) => SerializedPanelLeaf,
+): SerializablePanelLayoutFile {
+  const updateNode = (
+    node: SerializablePanelLayoutFile['grid']['root'],
+  ): SerializablePanelLayoutFile['grid']['root'] => {
+    if (node.type === 'leaf') {
+      return node.groupId === groupId ? update(node) : node;
+    }
+    return { ...node, children: node.children.map(updateNode) };
+  };
+
+  return {
+    ...layout,
+    grid: { ...layout.grid, root: updateNode(layout.grid.root) },
+  };
+}
+
+function withLeafSize(
+  layout: SerializablePanelLayoutFile,
+  groupId: string,
+  size: number,
+): SerializablePanelLayoutFile {
+  return withUpdatedLeaf(
+    layout,
+    groupId,
+    (leaf): SerializedPanelLeaf => ({
+      ...leaf,
+      size,
+    }),
+  );
+}
+
 function leafGroups(
   node: SerializablePanelLayoutFile['grid']['root'],
 ): string[] {
@@ -64,11 +104,13 @@ describe('Minimal layout planner', () => {
   ])(
     'preserves the coordinate space when converting a %i × %i workspace repeatedly',
     (width, height) => {
-      const current = source([
+      const sourceLayout = source([
         { panelId: 'chat', kind: 'chat', instance: { chatTabId: 'c1' } },
       ]);
-      current.grid.width = width;
-      current.grid.height = height;
+      const current: SerializablePanelLayoutFile = {
+        ...sourceLayout,
+        grid: { ...sourceLayout.grid, width, height },
+      };
       let layout = planMinimalLayout(current).layout;
       const side = resultLeaves(layout.grid.root).find(
         (group) => group.groupId === DEFAULT_EXTRAS_GROUP_ID,
@@ -77,8 +119,8 @@ describe('Minimal layout planner', () => {
         (group) => group.groupId === DEFAULT_TERMINAL_GROUP_ID,
       );
       if (!side || !bottom) throw new Error('Missing Minimal destinations');
-      side.size = 350;
-      bottom.size = 200;
+      layout = withLeafSize(layout, DEFAULT_EXTRAS_GROUP_ID, 350);
+      layout = withLeafSize(layout, DEFAULT_TERMINAL_GROUP_ID, 200);
       for (let cycle = 0; cycle < 4; cycle++) {
         layout = planMinimalLayout(layout).layout;
         expect(layout.grid).toMatchObject({ width, height });
@@ -220,7 +262,7 @@ describe('Minimal layout planner', () => {
           kind: 'terminal',
           instance: { terminalId: 't1' },
         },
-        { panelId: 'closed', kind: 'settings' },
+        { panelId: 'closed', kind: 'cost' },
       ]),
     );
     expect(leafGroups(plan.layout.grid.root)).toEqual([
@@ -238,7 +280,7 @@ describe('Minimal layout planner', () => {
         'file-explorer',
         'file-diff',
         'browser',
-        'settings',
+        'cost',
       ]);
       expect(sidePanel.panels[1]?.panelId).toBe(DEFAULT_FILE_EXPLORER_PANEL_ID);
     }
@@ -521,12 +563,16 @@ describe('Minimal layout planner', () => {
       'browser-aux',
     );
 
+    const auxiliaryRoot = auxiliary.grid.root;
+    if (auxiliaryRoot.type !== 'leaf') {
+      throw new Error('Expected a leaf auxiliary root');
+    }
     const customGroupAuxiliary = {
       ...auxiliary,
       grid: {
         ...auxiliary.grid,
         root: {
-          ...auxiliary.grid.root,
+          ...auxiliaryRoot,
           groupId: 'group-custom-bottom',
         },
       },
@@ -579,7 +625,7 @@ describe('Minimal layout planner', () => {
                       kind: 'browser',
                       instance: { browserId: 'b1' },
                     },
-                    { panelId: 'settings-bottom', kind: 'settings' },
+                    { panelId: 'settings-bottom', kind: 'cost' },
                   ],
                   activePanelId: 'browser-bottom',
                   size: 240,
@@ -645,7 +691,7 @@ describe('Minimal layout planner', () => {
             {
               type: 'leaf',
               groupId: 'advanced-side-first',
-              panels: [{ panelId: 'settings-first', kind: 'settings' }],
+              panels: [{ panelId: 'settings-first', kind: 'cost' }],
               activePanelId: 'settings-first',
               size: 300,
             },

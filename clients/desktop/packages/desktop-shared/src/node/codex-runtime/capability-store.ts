@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import type { CodexCapabilityLeaseFile } from './capability-types';
 import type { SelectedCapabilityRoot } from './generated/v2/SelectedCapabilityRoot';
 
@@ -231,15 +232,11 @@ function updateRootDigest(
 
 async function syncDirectory(directory: string): Promise<void> {
   try {
-    const handle = await fs.open(directory, 'r');
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    await flushDirectory(directory);
   } catch {
-    // Directory fsync is unavailable on some Windows filesystems. The file
-    // itself is still synced before its atomic rename.
+    // Best effort, retained (CAN-5151): a failed flush never fails a
+    // publication, pin or lease, and each file is synced before its rename.
+    // Revisit when this store's owner qualifies its crash durability.
   }
 }
 

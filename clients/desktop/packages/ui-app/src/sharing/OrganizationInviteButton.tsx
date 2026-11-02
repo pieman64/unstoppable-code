@@ -1,8 +1,12 @@
 'use client';
 
 import type { JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 
-/** The shared organization invite control, with permission resolved by its host. */
+/**
+ * The shared organization invite control, with permission resolved by its
+ * host: the primary action, drawn as the 28px compact capsule.
+ */
 export function OrganizationInviteButton({
   onClick,
   testId,
@@ -11,13 +15,13 @@ export function OrganizationInviteButton({
   readonly testId?: string;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition hover:opacity-90"
+    <Button
+      size="compact"
+      variant="primary"
       data-testid={testId}
       onClick={onClick}
     >
       Invite a teammate
-    </button>
+    </Button>
   );
 }

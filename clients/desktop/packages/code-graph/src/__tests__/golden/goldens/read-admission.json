@@ -1,0 +1,2379 @@
+{
+  "classes-and-active-limits": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "i1"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "i2"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "received": "i3"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 4,
+        "received": "c1"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 5,
+        "received": "i4"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 6,
+        "fork": true
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 6,
+        "received": "c2"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 7,
+        "fork": true
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 7,
+        "received": "m1"
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 6,
+        "kill": true
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 6,
+        "exited": 0
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "process": 7,
+        "kill": true
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "process": 7,
+        "exited": 0
+      },
+      {
+        "step": 15,
+        "t": 0,
+        "process": 5,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 8,
+        "t": 0,
+        "read": "i1",
+        "resolved": "ok"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "read": "c1",
+        "resolved": "ok"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "read": "i2",
+        "resolved": "ok"
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "read": "i3",
+        "resolved": "ok"
+      },
+      {
+        "step": 12,
+        "t": 0,
+        "read": "i4",
+        "resolved": "ok"
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "read": "c2",
+        "resolved": "ok"
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "read": "m1",
+        "resolved": "ok"
+      }
+    ]
+  },
+  "task-class-assignment": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "query"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 1,
+        "received": "summary"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 1,
+        "received": "base-summary"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 1,
+        "received": "detect"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 1,
+        "received": "impact"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 2,
+        "received": "metadata"
+      },
+      {
+        "step": 12,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 3,
+        "received": "persist"
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 15,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 15,
+        "t": 0,
+        "process": 4,
+        "received": "validate"
+      },
+      {
+        "step": 16,
+        "t": 0,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 16,
+        "t": 0,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 17,
+        "t": 0,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 17,
+        "t": 0,
+        "process": 5,
+        "received": "identity"
+      },
+      {
+        "step": 18,
+        "t": 0,
+        "process": 5,
+        "kill": true
+      },
+      {
+        "step": 18,
+        "t": 0,
+        "process": 5,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 2,
+        "t": 0,
+        "read": "query",
+        "resolved": "ok"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "summary",
+        "resolved": "ok"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "read": "base-summary",
+        "resolved": "ok"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "read": "detect",
+        "resolved": "ok"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "read": "impact",
+        "resolved": "ok"
+      },
+      {
+        "step": 12,
+        "t": 0,
+        "read": "metadata",
+        "resolved": "ok"
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "read": "persist",
+        "resolved": "ok"
+      },
+      {
+        "step": 16,
+        "t": 0,
+        "read": "validate",
+        "resolved": "ok"
+      },
+      {
+        "step": 18,
+        "t": 0,
+        "read": "identity",
+        "resolved": "ok"
+      }
+    ]
+  },
+  "interactive-queue-full-is-busy": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "i1"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "i2"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "received": "i3"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 4,
+        "received": "other-class"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 4,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 5,
+        "t": 0,
+        "read": "overflow",
+        "rejected": "busy"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q3",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q4",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q5",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q6",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q7",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q8",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q9",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q10",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q11",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q12",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q13",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q14",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q15",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q16",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q17",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q18",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q19",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q20",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q21",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q22",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q23",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q24",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q25",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q26",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q27",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q28",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q29",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q30",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q31",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "q32",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "i1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "i2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "i3",
+        "rejected": "canceled"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "read": "other-class",
+        "rejected": "canceled"
+      }
+    ]
+  },
+  "comparison-queue-full-is-busy": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "c0"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 2,
+        "received": "interactive"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 3,
+        "t": 0,
+        "read": "overflow",
+        "rejected": "busy"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c3",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c4",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c5",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c6",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c7",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c8",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "c0",
+        "rejected": "canceled"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "read": "interactive",
+        "rejected": "canceled"
+      }
+    ]
+  },
+  "maintenance-queue-full-is-busy": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "m0"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 3,
+        "t": 0,
+        "read": "overflow",
+        "rejected": "busy"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m3",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m4",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m5",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m6",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m7",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m8",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m9",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m10",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m11",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m12",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m13",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m14",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m15",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m16",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m17",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m18",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m19",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m20",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m21",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m22",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m23",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m24",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m25",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m26",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m27",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m28",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m29",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m30",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m31",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m32",
+        "rejected": "canceled"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "m0",
+        "rejected": "canceled"
+      }
+    ]
+  },
+  "interactive-queue-timeout": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "i1"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "i2"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "received": "i3"
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "process": 1,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 6,
+        "t": 5000,
+        "read": "waiting",
+        "rejected": "queue-timeout"
+      },
+      {
+        "step": 7,
+        "t": 5000,
+        "read": "i1",
+        "resolved": "ok"
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "read": "i2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 8,
+        "t": 5000,
+        "read": "i3",
+        "rejected": "canceled"
+      }
+    ]
+  },
+  "comparison-and-maintenance-queue-timeouts": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "c0"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "received": "m0"
+      },
+      {
+        "step": 6,
+        "t": 30000,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 6,
+        "t": 30000,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 6,
+        "t": 30000,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 6,
+        "t": 30000,
+        "process": 2,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 6,
+        "t": 30000,
+        "read": "c1",
+        "rejected": "queue-timeout"
+      },
+      {
+        "step": 6,
+        "t": 30000,
+        "read": "m1",
+        "rejected": "queue-timeout"
+      },
+      {
+        "step": 6,
+        "t": 30000,
+        "read": "c0",
+        "rejected": "execution-timeout"
+      },
+      {
+        "step": 6,
+        "t": 30000,
+        "read": "m0",
+        "rejected": "execution-timeout"
+      }
+    ]
+  },
+  "execution-timeouts": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "query"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "impact"
+      },
+      {
+        "step": 4,
+        "t": 30000,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 4,
+        "t": 30000,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 5,
+        "t": 300000,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 5,
+        "t": 300000,
+        "process": 2,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 4,
+        "t": 30000,
+        "read": "query",
+        "rejected": "execution-timeout"
+      },
+      {
+        "step": 5,
+        "t": 300000,
+        "read": "impact",
+        "rejected": "execution-timeout"
+      }
+    ]
+  },
+  "aged-comparison-takes-one-turn": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "i1"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "i2"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "received": "c1"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 4,
+        "received": "m1"
+      },
+      {
+        "step": 9,
+        "t": 15000,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 9,
+        "t": 15000,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 9,
+        "t": 15000,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 9,
+        "t": 15000,
+        "process": 5,
+        "received": "c2"
+      },
+      {
+        "step": 10,
+        "t": 15000,
+        "process": 5,
+        "kill": true
+      },
+      {
+        "step": 10,
+        "t": 15000,
+        "process": 5,
+        "exited": 0
+      },
+      {
+        "step": 10,
+        "t": 15000,
+        "process": 6,
+        "fork": true
+      },
+      {
+        "step": 10,
+        "t": 15000,
+        "process": 6,
+        "received": "late"
+      },
+      {
+        "step": 11,
+        "t": 15000,
+        "process": 6,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 15000,
+        "process": 6,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 15000,
+        "process": 7,
+        "fork": true
+      },
+      {
+        "step": 11,
+        "t": 15000,
+        "process": 7,
+        "received": "c3"
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 7,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "process": 7,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 9,
+        "t": 15000,
+        "read": "c1",
+        "resolved": "ok"
+      },
+      {
+        "step": 10,
+        "t": 15000,
+        "read": "c2",
+        "resolved": "ok"
+      },
+      {
+        "step": 11,
+        "t": 15000,
+        "read": "late",
+        "resolved": "ok"
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "read": "i1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "read": "i2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "read": "m1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 12,
+        "t": 15000,
+        "read": "c3",
+        "rejected": "canceled"
+      }
+    ]
+  },
+  "aged-maintenance-takes-one-turn": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "i1"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "i2"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "received": "c1"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 4,
+        "received": "m1"
+      },
+      {
+        "step": 9,
+        "t": 5000,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 9,
+        "t": 5000,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 9,
+        "t": 5000,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 9,
+        "t": 5000,
+        "process": 5,
+        "received": "m2"
+      },
+      {
+        "step": 10,
+        "t": 5000,
+        "process": 5,
+        "kill": true
+      },
+      {
+        "step": 10,
+        "t": 5000,
+        "process": 5,
+        "exited": 0
+      },
+      {
+        "step": 10,
+        "t": 5000,
+        "process": 6,
+        "fork": true
+      },
+      {
+        "step": 10,
+        "t": 5000,
+        "process": 6,
+        "received": "late"
+      },
+      {
+        "step": 11,
+        "t": 5000,
+        "process": 6,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 5000,
+        "process": 6,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 5000,
+        "process": 7,
+        "fork": true
+      },
+      {
+        "step": 11,
+        "t": 5000,
+        "process": 7,
+        "received": "m3"
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 7,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "process": 7,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 9,
+        "t": 5000,
+        "read": "m1",
+        "resolved": "ok"
+      },
+      {
+        "step": 10,
+        "t": 5000,
+        "read": "m2",
+        "resolved": "ok"
+      },
+      {
+        "step": 11,
+        "t": 5000,
+        "read": "late",
+        "resolved": "ok"
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "read": "i1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "read": "i2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "read": "c1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 12,
+        "t": 5000,
+        "read": "m3",
+        "rejected": "canceled"
+      }
+    ]
+  },
+  "warm-worker-reuse-and-retirement": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "q1"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 1,
+        "received": "q2"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 1,
+        "received": "impact"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 2,
+        "received": "summary"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 3,
+        "received": "q3"
+      },
+      {
+        "step": 11,
+        "t": 180000,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 180000,
+        "process": 3,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 2,
+        "t": 0,
+        "read": "q1",
+        "resolved": "ok"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "q2",
+        "resolved": "ok"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "read": "impact",
+        "resolved": "ok"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "read": "summary",
+        "resolved": "ok"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "read": "q3",
+        "resolved": "ok"
+      }
+    ]
+  },
+  "cold-key-evicts-least-recent-idle-worker": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "a"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "received": "b"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 3,
+        "received": "c"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 4,
+        "received": "d"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 5,
+        "received": "e"
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 6,
+        "fork": true
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 6,
+        "received": "a-again"
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 5,
+        "kill": true
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 6,
+        "kill": true
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 5,
+        "exited": 0
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "process": 6,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 2,
+        "t": 0,
+        "read": "a",
+        "resolved": "ok"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "b",
+        "resolved": "ok"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "read": "c",
+        "resolved": "ok"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "read": "d",
+        "resolved": "ok"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "read": "e",
+        "resolved": "ok"
+      },
+      {
+        "step": 12,
+        "t": 0,
+        "read": "a-again",
+        "resolved": "ok"
+      }
+    ]
+  },
+  "worker-failures": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "crash"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 1,
+        "exited": 1
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "received": "malformed"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 3,
+        "received": "busy"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 4,
+        "received": "summary-busy"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 3,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 2,
+        "t": 0,
+        "read": "crash",
+        "rejected": "worker-exit"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "read": "malformed",
+        "rejected": "invalid-response"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "read": "busy",
+        "resolved": "busy",
+        "message": "The retained Code Graph could not be read. Try again."
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "read": "summary-busy",
+        "resolved": "ok"
+      }
+    ]
+  },
+  "cancellation-and-fences": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "i1"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "i2"
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 3,
+        "received": "i3"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 4,
+        "received": "queued-d"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 12,
+        "t": 0,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 12,
+        "t": 0,
+        "process": 5,
+        "received": "after-cancel"
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "process": 5,
+        "kill": true
+      },
+      {
+        "step": 14,
+        "t": 0,
+        "process": 5,
+        "exited": 0
+      }
+    ],
+    "reads": [
+      {
+        "step": 6,
+        "t": 0,
+        "read": "queued-a",
+        "rejected": "canceled"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "read": "i1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "read": "fenced-b",
+        "rejected": "canceled"
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "read": "released-b",
+        "rejected": "canceled"
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "read": "i2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "read": "i3",
+        "rejected": "canceled"
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "read": "queued-d",
+        "rejected": "canceled"
+      },
+      {
+        "step": 13,
+        "t": 0,
+        "read": "after-cancel",
+        "resolved": "ok"
+      },
+      {
+        "step": 15,
+        "t": 0,
+        "read": "after-shutdown",
+        "rejected": "canceled"
+      }
+    ]
+  }
+}

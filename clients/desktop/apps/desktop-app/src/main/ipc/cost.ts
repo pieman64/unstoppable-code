@@ -181,7 +181,7 @@ export async function getCostPipelineRunForView(
     !params.success ||
     !idsAreValid(params.data.scope, [params.data.executionId])
   ) {
-    return invalidInput('Invalid pipeline run cost request.');
+    return invalidInput('Invalid workflow run cost request.');
   }
   try {
     const result = await dispatcher.query(
@@ -194,7 +194,7 @@ export async function getCostPipelineRunForView(
       value: CostPipelineRunGetResultSchema.parse(result),
     };
   } catch (error) {
-    return costViewError(error, 'The pipeline run cost could not be read.');
+    return costViewError(error, 'The workflow run cost could not be read.');
   }
 }
 

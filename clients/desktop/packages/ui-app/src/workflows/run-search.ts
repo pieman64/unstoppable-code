@@ -7,6 +7,7 @@ import {
   type WorkflowRunStarter,
   type WorkflowRunStatus,
 } from './workflow-run-model';
+import { workflowSearchAlias } from '@canopy/ui-shared/lib/workflow-labels';
 
 /**
  * Runs search (CAN-3981): free text plus `status:`, `kind:` and `by:` tokens.
@@ -32,10 +33,19 @@ const STATUS_TOKENS: Readonly<Record<string, readonly WorkflowRunStatus[]>> = {
   fired: ['fired'],
 };
 
+/**
+ * Kind tokens use the Kind column's words (`Scheduled`, `On demand`); the
+ * former names `automation` and `pipeline` stay accepted as aliases but are
+ * not offered in the hint (CAN-4651).
+ */
 const KIND_TOKENS: Readonly<Record<string, WorkflowRunKind>> = {
+  scheduled: 'automation',
+  schedule: 'automation',
+  'on-demand': 'pipeline',
+  ondemand: 'pipeline',
+  watcher: 'watcher',
   automation: 'automation',
   pipeline: 'pipeline',
-  watcher: 'watcher',
 };
 
 const STARTER_TOKENS: Readonly<Record<string, WorkflowRunStarter>> = {
@@ -68,8 +78,11 @@ export const RUN_SEARCH_STATUS_VALUES: readonly string[] = [
   'canceled',
   'missed',
 ];
-export const RUN_SEARCH_KIND_VALUES: readonly string[] =
-  Object.keys(KIND_TOKENS);
+export const RUN_SEARCH_KIND_VALUES: readonly string[] = [
+  'scheduled',
+  'on-demand',
+  'watcher',
+];
 export const RUN_SEARCH_STARTER_VALUES: readonly string[] = [
   'schedule',
   'catch-up',
@@ -169,6 +182,7 @@ function searchableText(row: WorkflowRunRow): string {
     row.detail ?? '',
     row.where ?? '',
     WORKFLOW_RUN_KIND_LABELS[row.kind],
+    workflowSearchAlias(row.kind) ?? '',
     WORKFLOW_RUN_STATUS_LABELS[row.status],
     row.starter ? WORKFLOW_RUN_STARTER_LABELS[row.starter] : '',
   ]

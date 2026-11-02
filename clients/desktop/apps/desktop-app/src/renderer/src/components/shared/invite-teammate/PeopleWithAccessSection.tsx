@@ -4,7 +4,11 @@ import type {
   SharedContainerGrantSummary,
   SharedContainerType,
 } from '@canopy/protocol/shared-containers';
-import { CapabilityPill, StatusPill } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CapabilityPill,
+  StatusPill,
+} from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   CANCEL_LABEL,
@@ -196,17 +200,18 @@ export function PeopleWithAccessSection({
                     ))
                   )}
                 </span>
-                <button
-                  type="button"
+                <Button
+                  variant="ghost-destructive"
+                  size="compact"
+                  className="ml-auto"
                   disabled={
                     accessActionsDisabled || recipients.revokingId !== null
                   }
-                  className="focus-ring ml-auto shrink-0 rounded-md px-2 py-0.5 text-xs font-medium fg-destructive transition hover:bg-destructive-subtle disabled:opacity-50"
                   data-testid={`shared-container-invite-modal-revoke-${grantRowKey(grant)}`}
                   onClick={() => recipients.requestRevoke(grant)}
                 >
                   {REVOKE_LABEL}
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -241,22 +246,22 @@ export function PeopleWithAccessSection({
               </p>
             </div>
             <div className="flex justify-end gap-2">
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="compact"
                 disabled={accessActionsDisabled}
-                className="focus-ring rounded-lg px-3 py-1.5 text-xs font-medium fg-secondary transition hover:bg-fg-primary/[0.06] disabled:opacity-50"
                 onClick={recipients.cancelRevoke}
               >
                 {CANCEL_LABEL}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="destructive"
+                size="compact"
                 disabled={accessActionsDisabled}
-                className="focus-ring rounded-lg bg-fg-destructive px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:opacity-50"
                 onClick={recipients.confirmRevoke}
               >
                 Remove access
-              </button>
+              </Button>
             </div>
           </div>
         )}

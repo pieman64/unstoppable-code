@@ -1,4 +1,4 @@
-import { OPERATIONAL_STATUS_COLORS } from '../operational-status-colors';
+import { badgeClassName } from '../badge';
 import {
   ACTION_CHIP_BASE_CLASS,
   SECONDARY_SURFACE_CLASS,
@@ -27,38 +27,34 @@ describe('row chip class builders', () => {
   ];
   const chipTones: ActionChipTone[] = ['neutral', 'warning', 'destructive'];
 
-  it('gives every status badge tone the same geometry and a ring, never a border', () => {
+  it('gives every status badge tone the shared 18px badge geometry, with no ring or border', () => {
     for (const tone of badgeTones) {
       for (const muted of [false, true]) {
         const className = statusBadgeClassName(tone, { muted });
         expect(className.startsWith(STATUS_BADGE_BASE_CLASS)).toBe(true);
-        for (const token of [
-          'h-5',
-          'rounded-full',
-          'text-3xs',
-          'ring-[length:var(--border-hairline)]',
-        ]) {
+        for (const token of ['h-4.5', 'rounded-full', 'text-2xs']) {
           expect(className.split(' ')).toContain(token);
         }
         expect(className).not.toMatch(FORBIDDEN);
-        expect(className).toMatch(/\bring-[a-z-]+(\/\d+)?/);
+        expect(className).not.toMatch(/\bring-/);
+        expect(className).not.toContain('accent');
       }
     }
   });
 
-  it('maps operational tones onto the shared status colours', () => {
-    expect(statusBadgeClassName('active')).toContain(
-      `${OPERATIONAL_STATUS_COLORS.active.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.active.foreground} ${OPERATIONAL_STATUS_COLORS.active.ring}`,
-    );
-    expect(statusBadgeClassName('success', { muted: true })).toContain(
-      `${OPERATIONAL_STATUS_COLORS.success.backgroundQuiet} ${OPERATIONAL_STATUS_COLORS.success.foregroundQuiet} ${OPERATIONAL_STATUS_COLORS.success.ringQuiet}`,
+  it('maps operational tones onto the badge tones', () => {
+    expect(statusBadgeClassName('active')).toBe(badgeClassName('info'));
+    expect(statusBadgeClassName('unread')).toBe(badgeClassName('info'));
+    expect(statusBadgeClassName('failed')).toBe(badgeClassName('danger'));
+    expect(statusBadgeClassName('merged')).toBe(badgeClassName('special'));
+    expect(statusBadgeClassName('paused')).toBe(badgeClassName('neutral'));
+    expect(statusBadgeClassName('success', { muted: true })).toBe(
+      badgeClassName('success', { muted: true }),
     );
     expect(statusBadgeClassName('warning')).toContain(
-      'bg-warning-subtle fg-warning ring-line-attention/30',
+      'bg-warning-subtle fg-warning-strong',
     );
-    expect(statusBadgeClassName('neutral')).toContain(
-      'bg-subtle fg-secondary ring-line-secondary',
-    );
+    expect(statusBadgeClassName('neutral')).toContain('bg-muted fg-secondary');
   });
 
   it('gives every action chip tone the same geometry and a ring, never a border', () => {

@@ -79,14 +79,17 @@ async function writeModeFileAtomically(
   const file: PanelLayoutModeFileV1 = { version: 1, mode };
   let cleanupTemp = true;
   try {
+    // eslint-disable-next-line admitted-writers/no-unadmitted-write -- a panel-layout-mode.json temp file; remove when this module stops reading preferences.
     await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, {
       encoding: 'utf8',
       mode: existingMode,
     });
+    // eslint-disable-next-line admitted-writers/no-unadmitted-write -- commits panel-layout-mode.json; remove when this module stops reading preferences.
     await rename(tempPath, filePath);
     cleanupTemp = false;
   } finally {
     if (cleanupTemp) {
+      // eslint-disable-next-line admitted-writers/no-unadmitted-write -- a panel-layout-mode.json temp file; remove when this module stops reading preferences.
       await unlink(tempPath).catch(() => undefined);
     }
   }

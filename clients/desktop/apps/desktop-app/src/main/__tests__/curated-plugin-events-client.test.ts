@@ -7,8 +7,11 @@ const mockRequestCanopyCloudNoContent = jest.fn<
 jest.mock('../canopy-cloud/client', () => ({
   requestCanopyCloudJson: (...args: unknown[]): Promise<unknown> =>
     Promise.resolve(mockRequestCanopyCloudJson(...args)),
-  requestCanopyCloudNoContent: (...args: unknown[]): Promise<void> =>
-    Promise.resolve(mockRequestCanopyCloudNoContent(...args)),
+  requestCanopyCloudNoContent: (
+    path: string,
+    init: RequestInit,
+  ): Promise<void> =>
+    Promise.resolve(mockRequestCanopyCloudNoContent(path, init)),
 }));
 
 import { reportCuratedPluginInstalled } from '../plugins/curated-plugin-events';

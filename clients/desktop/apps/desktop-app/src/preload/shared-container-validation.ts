@@ -15,6 +15,7 @@ import { SHARED_CONTAINER_SYNC_PHASES } from '@canopy/desktop-shared/types';
 import {
   SHARED_CONTAINER_TYPES,
   isListDismissedSharedContainersResponse,
+  isSharedContainerRevisionPackage,
   isSharedContainerSummary,
 } from '@canopy/protocol/shared-containers';
 
@@ -61,6 +62,7 @@ const REVISION_KEYS: readonly string[] = [
   'revisionCreatedAt',
   'withheldFileCount',
   'withheldFileReasons',
+  'package',
 ];
 
 const BLOCKED_KEYS: readonly string[] = [
@@ -141,7 +143,9 @@ export function isSharedContainerReplicaState(
                 reason === 'undisclosed-repo' ||
                 reason === 'oversized' ||
                 reason === 'symlink-escaping',
-            )))
+            ))) &&
+        (value.package === undefined ||
+          isSharedContainerRevisionPackage(value.package))
       );
     case 'blocked':
       return (

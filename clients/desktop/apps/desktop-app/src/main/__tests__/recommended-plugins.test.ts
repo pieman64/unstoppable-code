@@ -194,14 +194,18 @@ beforeEach(() => {
   mockedWriteWorkspaceConfig.mockResolvedValue(undefined);
   mockedInstallSkills.mockResolvedValue({ success: true, data: undefined });
   mockedAddMarketplace.mockResolvedValue({ success: true, data: undefined });
-  mockedLoadMarketplaces.mockReturnValue({
-    success: true,
-    data: { version: 1, lastRefreshed: '', marketplaces: [] },
-  });
-  mockedRefreshMarketplaces.mockReturnValue({
-    success: true,
-    data: { version: 1, lastRefreshed: '', marketplaces: [] },
-  });
+  mockedLoadMarketplaces.mockReturnValue(
+    Promise.resolve({
+      success: true,
+      data: { version: 2, lastRefreshed: '', marketplaces: [] },
+    }),
+  );
+  mockedRefreshMarketplaces.mockReturnValue(
+    Promise.resolve({
+      success: true,
+      data: { version: 2, lastRefreshed: '', marketplaces: [] },
+    }),
+  );
   mockedProbeRequirement.mockImplementation((requirement) =>
     Promise.resolve({
       ...requirement,

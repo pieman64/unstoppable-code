@@ -81,8 +81,10 @@ describe('resolveEffectiveBaseBranchForRepo', () => {
   it('recognizes a locally available tracked commit SHA as a diff base', async () => {
     const commitSha = 'a'.repeat(40);
     mockedReadWorkspaceConfig.mockResolvedValue({
+      version: 1,
       type: 'single-repo',
       repoPath: '/repo',
+      repos: [],
     });
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       {
@@ -115,8 +117,10 @@ describe('resolveEffectiveBaseBranchForRepo', () => {
   it('recognizes a 40-hex tracked branch when no same-named commit exists', async () => {
     const branchName = 'f'.repeat(40);
     mockedReadWorkspaceConfig.mockResolvedValue({
+      version: 1,
       type: 'single-repo',
       repoPath: '/repo',
+      repos: [],
     });
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       {

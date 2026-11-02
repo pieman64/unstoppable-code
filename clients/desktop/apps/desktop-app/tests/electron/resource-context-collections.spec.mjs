@@ -82,27 +82,26 @@ test('collection skills follow only its owning organization context', async () =
     await selectWorkspaceContext(window, ORG_CONTEXT_A);
     await app.openPluginsPage();
     await app.openPluginsTab('collections');
-    await window.getByTestId('collections-view-tab-shared').click();
-    const row = window
-      .getByTestId('shared-collections-section')
-      .getByText(collection.name, { exact: true });
+    // CAN-4267: another organization's shared collection is a Browse row of
+    // the Collections tab; the Shared tab and its list were deleted.
+    const row = window.getByTestId(
+      `plugins-entry-collection:shared:${collection.id}`,
+    );
     await expect(row).toBeVisible();
     await row.click();
-    await expect(
-      window.getByRole('dialog', { name: collection.name, exact: true }),
-    ).toContainText(skill.name);
-    await window.keyboard.press('Escape');
+    const detail = window.getByTestId('plugins-entry-detail-page');
+    // Customize title-cases display names; the stored names are lowercase.
+    await expect(detail).toContainText(new RegExp(collection.name, 'i'));
+    await expect(detail).toContainText(new RegExp(skill.name, 'i'));
+    // The detail is a page, not a dialog: its breadcrumb leads back.
+    await window.getByTestId('plugins-entry-detail-breadcrumb-root').click();
+    await expect(detail).toHaveCount(0);
     for (const context of ['personal', ORG_CONTEXT_B]) {
-      await window.getByTestId('plugins-management-back').click();
       await selectWorkspaceContext(window, context);
       await app.openPluginsPage();
       await app.openPluginsTab('collections');
-      await window.getByTestId('collections-view-tab-shared').click();
-      const refresh = window
-        .getByTestId('shared-collections-section')
-        .getByRole('button', { name: 'Refresh', exact: true });
-      await refresh.click();
-      await expect(refresh).toBeEnabled();
+      // Customize re-reads shares when the context changes and has no manual
+      // Refresh, so the row's absence and the denied read carry this check.
       await expect(row).toHaveCount(0);
       const result = await window.evaluate(async (id) => {
         try {

@@ -31,7 +31,7 @@ const swatch = (container: HTMLElement, color: string): HTMLButtonElement => {
   return found;
 };
 
-it('renders the workspace palette by default and rings the selected swatch', () => {
+it('renders the workspace palette by default and checks the selected swatch', () => {
   const { container, cleanup } = render({
     value: WORKSPACE_COLOR_PALETTE[1],
     onChange: jest.fn(),
@@ -43,11 +43,12 @@ it('renders the workspace palette by default and rings the selected swatch', () 
     ).toHaveLength(WORKSPACE_COLOR_PALETTE.length);
     const selected = swatch(container, WORKSPACE_COLOR_PALETTE[1]);
     expect(selected.getAttribute('aria-pressed')).toBe('true');
-    expect(selected.className).toContain('ring-2');
-    expect(selected.className).toContain('ring-line-focus');
+    // A checkmark marks the choice; there is no ring.
+    expect(selected.querySelector('svg')).toBeInstanceOf(SVGElement);
+    expect(selected.className).not.toContain('ring-');
     const other = swatch(container, WORKSPACE_COLOR_PALETTE[0]);
     expect(other.getAttribute('aria-pressed')).toBe('false');
-    expect(other.className).not.toContain('ring-2');
+    expect(other.querySelector('svg')).toBeNull();
   } finally {
     cleanup();
   }
@@ -144,6 +145,22 @@ it('labels semantic swatches while reporting their stored key and preserving geo
         .querySelector('[aria-label="Neutral"]')
         ?.getAttribute('aria-pressed'),
     ).toBe('true');
+  } finally {
+    cleanup();
+  }
+});
+
+it('draws smaller swatches in a settings row', () => {
+  const { container, cleanup } = render({
+    value: WORKSPACE_COLOR_PALETTE[0],
+    onChange: jest.fn(),
+    size: 'compact',
+  });
+  try {
+    const selected = swatch(container, WORKSPACE_COLOR_PALETTE[0]);
+    expect(selected.className).toContain('h-5');
+    expect(selected.className).toContain('w-5');
+    expect(selected.querySelector('svg')).toBeInstanceOf(SVGElement);
   } finally {
     cleanup();
   }

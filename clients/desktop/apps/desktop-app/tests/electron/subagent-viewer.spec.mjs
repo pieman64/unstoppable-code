@@ -1,8 +1,10 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { openBackgroundDrawer } from './backgroundDrawer.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { readChatStorageTabs } from './readChatStorage.mjs';
 import {
   cleanupDemoWorkspaces,
   seedDemoWorkspaces,
@@ -11,9 +13,16 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   clearScenario,
   DEFAULT_MOCK_BASE_URL,
+  injectChatEvent,
   registerScenario,
+  seedWorkspaceApprovals,
+  seedWorktreeChat,
+  writeJson,
 } from './seeders/index.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
+import { baseManagedDelegationPreferences } from './fixtures/delegation-capabilities/helpers.mjs';
+import { createDelegationInference } from './delegationRuntime.mjs';
+import { createLifetimeLimitProviderScript } from './fixtures/lifetime-limit-provider-script.mjs';
 import {
   seedSubagentViewerTreeChat,
   SUBAGENT_VIEWER_CHAT_ID,
@@ -28,7 +37,6 @@ import {
   openActivityChat,
   seedActivityChat,
 } from './codexSubagentActivity.mjs';
-import { injectChatEvent, seedWorktreeChat } from './seeders/index.mjs';
 import {
   seedSubagentViewerLongListChat,
   SUBAGENT_VIEWER_LONG_LIST_CHAT_ID,
@@ -46,6 +54,257 @@ const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
 const ROOT_SEND_SCENARIO = 'Canopy-CSUBAGENTVIEWERSEND';
 const ROOT_SEND_REPLY = 'Root replied through the deterministic mock provider';
+const LIFETIME_ORIGIN_CHAT_ID = 'lifetime-limit-origin';
+const LIFETIME_OTHER_CHAT_ID = 'lifetime-limit-other';
+const LIFETIME_FINAL_REPLY =
+  'The delegate start was refused; no child was started.';
+const LIFETIME_LIMIT = 512;
+const LIFETIME_TEST_CAP = 1024;
+
+function seedLifetimeLimitWorktree({
+  userDataDir,
+  chatId,
+  retained,
+  measuredCap,
+}) {
+  const demo = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorkspaceApprovals({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    defaultMode: 'full-access',
+  });
+  writeJson(
+    path.join(userDataDir, 'preferences.json'),
+    baseManagedDelegationPreferences(),
+  );
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    activeTabId: LIFETIME_ORIGIN_CHAT_ID,
+    tabs: [
+      {
+        id: LIFETIME_ORIGIN_CHAT_ID,
+        title: 'Lifetime limit origin',
+        providerType: 'claude',
+        executionHarness: 'claude',
+        model: 'claude-sonnet-4-6',
+        approvalMode: 'full-access',
+      },
+      {
+        id: LIFETIME_OTHER_CHAT_ID,
+        title: 'Lifetime limit other chat',
+        providerType: 'claude',
+        executionHarness: 'claude',
+        model: 'claude-sonnet-4-6',
+        approvalMode: 'full-access',
+      },
+    ],
+  });
+  const fixturePath = path.join(userDataDir, 'lifetime-limit-fixture.json');
+  writeFileSync(
+    fixturePath,
+    JSON.stringify(
+      {
+        version: 1,
+        projectId: WORKSPACE_ID,
+        worktreeId: WORKTREE_ID,
+        chatId,
+        retained,
+        ...(measuredCap === undefined ? {} : { measuredCap }),
+      },
+      null,
+      2,
+    ),
+  );
+  return { demo, fixturePath };
+}
+
+async function openLifetimeLimitCase({ caseId, measuredCap, withProvider }) {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'subagent-viewer-lifetime-limit-'),
+  );
+  const { demo, fixturePath: lifetimeFixturePath } = seedLifetimeLimitWorktree({
+    userDataDir,
+    chatId: LIFETIME_ORIGIN_CHAT_ID,
+    retained: LIFETIME_LIMIT,
+    measuredCap,
+  });
+  const providerScript = withProvider
+    ? createLifetimeLimitProviderScript()
+    : undefined;
+  let inference;
+  let electronApp;
+  try {
+    if (providerScript) {
+      inference = await createDelegationInference({
+        parent: 'claude',
+        child: 'claude',
+        mode: 'foreground',
+        caseId,
+        script: providerScript.run,
+      });
+    }
+    ({ electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({
+        userDataDir,
+        env: {
+          CANOPY_E2E_SEED_LIFETIME_LIMIT_FIXTURE: lifetimeFixturePath,
+          ...(inference ? { CANOPY_MOCK_LLM_BASE_URL: inference.url } : {}),
+        },
+      }),
+    ));
+    // Two seeded chats render two chat panels; target the origin chat's own panel.
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    // Inspect individual steps while retaining the Clean chat look.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const panel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${LIFETIME_ORIGIN_CHAT_ID}"]`,
+    );
+    await expect(panel).toBeVisible();
+    const opened = { app, panel, window };
+    return {
+      ...opened,
+      demo,
+      electronApp,
+      inference,
+      providerScript,
+      userDataDir,
+    };
+  } catch (error) {
+    await inference?.close();
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+    cleanupDemoWorkspaces(demo);
+    throw error;
+  }
+}
+
+async function closeLifetimeLimitCase(fixture) {
+  await fixture.inference?.close();
+  if (fixture.electronApp)
+    await closeCanopy(fixture.electronApp, fixture.userDataDir);
+  cleanupDemoWorkspaces(fixture.demo);
+}
+
+async function startLifetimeLimitRefusal(fixture) {
+  const message = `[${fixture.inference.parentMarker}] Please start one managed delegate to report a short finding.`;
+  const composer = fixture.window.getByRole('textbox').first();
+  await expect(composer).toBeVisible();
+  await composer.fill(message);
+  await fixture.window.getByRole('button', { name: 'Send message' }).click();
+  await expect(fixture.panel.getByText(LIFETIME_FINAL_REPLY)).toBeVisible({
+    timeout: 120_000,
+  });
+  await expect
+    .poll(() => fixture.providerScript.getSpawnAttemptCount())
+    .toBe(1);
+  await expect(
+    fixture.panel.getByTestId('lifetime-limit-notice'),
+  ).toHaveAttribute('data-state', 'full');
+  expect(
+    fixture.inference.requests.some((request) => request.role === 'child'),
+  ).toBe(false);
+}
+
+async function switchLifetimeLimitChat(window, chatId) {
+  const tab = window.getByTestId(`panel-tab-panel-chat-${chatId}`);
+  await expect(tab).toBeVisible();
+  await tab.click();
+  await expect(tab).toHaveAttribute('data-active', 'true');
+  return window.locator('[data-testid="panel-content-chat"]:visible');
+}
+
+async function expectNoLifetimeLimitNoticeInChat(window, chatId) {
+  const chatPanel = await switchLifetimeLimitChat(window, chatId);
+  await expect(chatPanel.getByTestId('lifetime-limit-notice')).toHaveCount(0);
+}
+
+async function expectNoAutomaticLifetimeRetry(fixture, requestCount) {
+  await fixture.window.waitForTimeout(1_500);
+  expect(fixture.providerScript.getSpawnAttemptCount()).toBe(1);
+  expect(fixture.inference.requests).toHaveLength(requestCount);
+  expect(
+    fixture.inference.requests.some((request) => request.role === 'child'),
+  ).toBe(false);
+}
+
+async function selectLifetimeLimitSubagentsTab(window) {
+  const subagentsTab = window.getByRole('tab', { name: /Subagents/ });
+  await expect(subagentsTab).toBeVisible();
+  await subagentsTab.click();
+  const panel = window.getByTestId('panel-content-subagents');
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+async function runTestCapLifetimeLimitExtensionCase(caseId, placement) {
+  let fixture;
+  try {
+    fixture = await openLifetimeLimitCase({
+      caseId,
+      measuredCap: LIFETIME_TEST_CAP,
+      withProvider: true,
+    });
+    await startLifetimeLimitRefusal(fixture);
+    await expectNoLifetimeLimitNoticeInChat(
+      fixture.window,
+      LIFETIME_OTHER_CHAT_ID,
+    );
+
+    const panel = await openSubagentsFromMenu(fixture.window);
+    const panelNotice = panel.getByTestId('lifetime-limit-notice');
+    await expect(panelNotice).toHaveAttribute('data-state', 'full');
+    await expect(
+      panelNotice.getByRole('button', { name: 'Extend' }),
+    ).toBeVisible();
+
+    const requestCountBeforeExtension = fixture.inference.requests.length;
+    if (placement === 'chat') {
+      const originChat = await switchLifetimeLimitChat(
+        fixture.window,
+        LIFETIME_ORIGIN_CHAT_ID,
+      );
+      const chatNotice = originChat.getByTestId('lifetime-limit-notice');
+      await expect(chatNotice).toHaveAttribute('data-state', 'full');
+      await chatNotice.getByRole('button', { name: 'Extend' }).click();
+      await expect(chatNotice).toHaveCount(0);
+
+      const refreshedPanel = await selectLifetimeLimitSubagentsTab(
+        fixture.window,
+      );
+      await expect(
+        refreshedPanel.getByTestId('lifetime-limit-notice'),
+      ).toHaveCount(0);
+    } else {
+      await panelNotice.getByRole('button', { name: 'Extend' }).click();
+      await expect(panelNotice).toHaveCount(0);
+
+      const originChat = await switchLifetimeLimitChat(
+        fixture.window,
+        LIFETIME_ORIGIN_CHAT_ID,
+      );
+      await expect(originChat.getByTestId('lifetime-limit-notice')).toHaveCount(
+        0,
+      );
+    }
+
+    await expectNoLifetimeLimitNoticeInChat(
+      fixture.window,
+      LIFETIME_OTHER_CHAT_ID,
+    );
+    await expectNoAutomaticLifetimeRetry(fixture, requestCountBeforeExtension);
+  } finally {
+    if (fixture) await closeLifetimeLimitCase(fixture);
+  }
+}
+
 /** The seeded root chat's title (seedSubagentViewerTreeChat). */
 const SUBAGENT_VIEWER_ROOT_TITLE = 'Demo parser subagent tree';
 
@@ -66,6 +325,10 @@ async function openRootChat(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
+  // Inspect individual steps while retaining the Clean chat look.
+  await window.evaluate(() =>
+    window.api.savePreferences({ chatDetail: 'detailed' }),
+  );
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_ID);
   const panel = window.getByTestId('panel-content-chat');
@@ -74,7 +337,8 @@ async function openRootChat(electronApp) {
 }
 
 async function openSubagentsFromMenu(window) {
-  await window.getByTestId('panel-add-panel-group-chat').click();
+  // The tab strip's + opens the add menu.
+  await window.getByTestId('panel-add-tab-group-chat').click();
   const menu = window.getByTestId('panel-add-menu');
   await expect(menu).toBeVisible();
   await menu.getByTestId('panel-add-menu-item-subagents').click();
@@ -120,6 +384,12 @@ test('opens Subagents from the add menu and browses the seeded root tree', async
     await rootOption.click();
 
     await expect(panel.getByTestId('subagents-tree')).toBeVisible();
+    // Levels sits beside the Tree/List switch at its 28px height.
+    await expect(panel.getByTestId('subagents-levels')).toBeVisible();
+    const levels = await panel.getByTestId('subagents-levels').boundingBox();
+    const views = await panel.getByTestId('subagents-view').boundingBox();
+    expect(levels?.height).toBe(28);
+    expect(views?.height).toBe(28);
     await panel.getByTestId('subagents-view-list').click();
     await expect(panel.getByTestId('subagents-list')).toBeVisible();
     await panel.getByTestId('subagents-view-tree').click();
@@ -130,7 +400,7 @@ test('opens Subagents from the add menu and browses the seeded root tree', async
   }
 });
 
-test('opens the seeded tree from View tree in Agent activity', async () => {
+test('opens the seeded tree from View tree in the background drawer', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'subagent-viewer-'));
   const demo = seedViewerFixture(userDataDir);
@@ -138,15 +408,14 @@ test('opens the seeded tree from View tree in Agent activity', async () => {
   try {
     ({ electronApp } = await launchCanopy({ userDataDir }));
     const { panel: rootPanel, window } = await openRootChat(electronApp);
-    const activity = rootPanel.getByTestId('agent-activity-active');
-    await expect(activity).toBeVisible();
-    // Subagents view is off by default: no running count in the top bar.
+    const tray = await openBackgroundDrawer(rootPanel);
+    // The retired running-count control stays absent.
     await expect(
       window
         .getByTestId('pr-status-bar')
         .getByTestId('running-subagents-button'),
     ).toHaveCount(0);
-    const viewTree = activity.getByTestId('agent-activity-view-tree');
+    const viewTree = tray.getByTestId('background-tray-view-tree');
     await expect(viewTree).toBeVisible();
     await viewTree.click();
 
@@ -166,29 +435,19 @@ test('opens the seeded tree from View tree in Agent activity', async () => {
   }
 });
 
-test('Subagents view: the top bar counts running subagents and opens Subagents on this chat', async () => {
+test('unopened chat activity does not create a top-bar control or a panel root', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'subagent-viewer-'));
-  const demo = seedViewerFixture(userDataDir);
+  // No chat with subagents is open in the worktree.
+  const demo = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
   let electronApp;
   try {
     ({ electronApp } = await launchCanopy({ userDataDir }));
-    const { panel: rootPanel, window } = await openRootChat(electronApp);
-    // Settings → Labs → Subagents view; off by default.
-    await window.evaluate(() =>
-      window.api.experiments.setChoice({
-        experimentId: 'subagents-view',
-        enabled: true,
-      }),
-    );
-    // Nothing is pinned above the composer under the view.
-    await expect(rootPanel.getByTestId('agent-activity-active')).toHaveCount(0);
-    const running = window
-      .getByTestId('pr-status-bar')
-      .getByTestId('running-subagents-button');
-    // The count follows main's live delegation activity (the seeded tree is
-    // only a transcript), so this pushes what main sends while six run.
-    await expect(running).toHaveCount(0);
+    const { window } = await openRootChat(electronApp);
+
+    // Main reports live delegations for a chat that is not open here: the
+    // reported case, where the top bar said "2 running" and the panel said
+    // no chat had started subagents.
     await electronApp.evaluate(
       ({ BrowserWindow }, activity) => {
         for (const win of BrowserWindow.getAllWindows()) {
@@ -198,47 +457,25 @@ test('Subagents view: the top bar counts running subagents and opens Subagents o
       {
         projectId: WORKSPACE_ID,
         worktreeId: WORKTREE_ID,
-        chatId: SUBAGENT_VIEWER_CHAT_ID,
-        live: 5,
-        queued: 1,
+        chatId: 'chat-not-open-in-this-worktree',
+        live: 2,
+        queued: 0,
       },
     );
-    await expect(running).toBeVisible();
-    await expect(running).toHaveText('6 running');
-    await expect(running.locator('.canopy-text-shimmer')).toHaveCount(1);
-    if (process.env.SUBAGENTS_TOP_BAR_CAPTURE) {
-      await window.screenshot({ path: process.env.SUBAGENTS_TOP_BAR_CAPTURE });
-    }
-
-    await running.click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
+    await window
+      .getByTestId('panel-add-menu')
+      .getByTestId('panel-add-menu-item-subagents')
+      .click();
     const subagents = window.getByTestId('panel-content-subagents');
-    await expect(subagents).toBeVisible();
-    await expect(subagents.getByTestId('subagents-panel')).toBeVisible();
-    // It opens beside the chat, not in the chat's own group.
+    await expect(subagents.getByTestId('subagents-panel')).toContainText(
+      'No chats have started subagents',
+    );
     await expect(
       window
-        .getByTestId('panel-group-group-chat')
-        .getByTestId('panel-content-subagents'),
+        .getByTestId('pr-status-bar')
+        .getByTestId('running-subagents-button'),
     ).toHaveCount(0);
-    // On the current chat, filtered to Active, in the one-row toolbar.
-    await expect(subagents.getByTestId('subagents-root-picker')).toContainText(
-      SUBAGENT_VIEWER_ROOT_TITLE,
-    );
-    await expect(
-      subagents.getByTestId('subagents-filter-active'),
-    ).toHaveAttribute('aria-pressed', 'true');
-    await expect(subagents.getByTestId('subagents-view-list')).toHaveAttribute(
-      'aria-label',
-      'List',
-    );
-    if (process.env.SUBAGENTS_TOP_BAR_CAPTURE) {
-      await window.screenshot({
-        path: process.env.SUBAGENTS_TOP_BAR_CAPTURE.replace(
-          /\.png$/,
-          '-open.png',
-        ),
-      });
-    }
   } finally {
     if (electronApp) await closeCanopy(electronApp, userDataDir);
     cleanupDemoWorkspaces(demo);
@@ -292,7 +529,7 @@ test('Active and Needs attention filters project live descendants and failures',
   }
 });
 
-test('managed activity and managed/native transcript cards open their chats', async () => {
+test('managed drawer rows and managed/native transcript cards open their chats', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'subagent-viewer-'));
   const demo = seedViewerFixture(userDataDir);
@@ -300,19 +537,18 @@ test('managed activity and managed/native transcript cards open their chats', as
   try {
     ({ electronApp } = await launchCanopy({ userDataDir }));
     const { panel: rootPanel, window } = await openRootChat(electronApp);
-    const activity = rootPanel.getByTestId('agent-activity-active');
-    await expect(
-      activity.getByTestId('agent-activity-view-tree'),
-    ).toBeVisible();
+    const tray = await openBackgroundDrawer(rootPanel);
+    await expect(tray.getByTestId('background-tray-view-tree')).toBeVisible();
 
-    const managedActivityCard = activity.locator(
-      `[data-testid="chat-delegated-agent"][data-delegation-id="${SUBAGENT_VIEWER_TREE_IDS.liveChild}"]`,
+    // A live managed child is a drawer row; its inspector opens its chat.
+    const managedRow = tray.locator(
+      `[data-tray-row="agent:managed:${SUBAGENT_VIEWER_TREE_IDS.liveChild}"]`,
     );
-    await expect(managedActivityCard).toBeVisible();
-    await managedActivityCard
-      .getByRole('button', { name: 'Expand delegated task' })
-      .click();
-    await managedActivityCard.getByTestId('agent-card-open-chat').click();
+    await expect(managedRow).toBeVisible();
+    await managedRow.getByTestId('background-tray-row-toggle').click();
+    const openChat = managedRow.getByTestId('background-tray-inspector-open');
+    await expect(openChat).toHaveText('Open chat');
+    await openChat.click();
     await expect(
       subagentChatFor(window, SUBAGENT_VIEWER_TREE_IDS.liveChild),
     ).toBeVisible();
@@ -842,6 +1078,35 @@ test('a workflow agent opens in a read-only subagent chat with its run and phase
   }
 });
 
+test('C36: shipped cap shows the Subagents panel notice without an Extend action', async () => {
+  test.setTimeout(180_000);
+  const fixture = await openLifetimeLimitCase({
+    caseId: 'lifetime-shipped-cap-panel',
+    withProvider: false,
+  });
+  try {
+    const panel = await openSubagentsFromMenu(fixture.window);
+    const notice = panel.getByTestId('lifetime-limit-notice');
+    await expect(notice).toHaveAttribute('data-state', 'full');
+    await expect(notice).toContainText(
+      "This worktree has reached this build's maximum lifetime limit for managed delegates.",
+    );
+    await expect(notice.getByRole('button')).toHaveCount(0);
+  } finally {
+    await closeLifetimeLimitCase(fixture);
+  }
+});
+
+test('C36: a real refused spawn in one of several chats shows only its chat and panel notices; chat Extend clears both without retry', async () => {
+  test.setTimeout(240_000);
+  await runTestCapLifetimeLimitExtensionCase('lifetime-chat-extend', 'chat');
+});
+
+test('C36: a real refused spawn in one of several chats shows only its chat and panel notices; panel Extend clears both without retry', async () => {
+  test.setTimeout(240_000);
+  await runTestCapLifetimeLimitExtensionCase('lifetime-panel-extend', 'panel');
+});
+
 // CAN-4051: a failed Claude subagent carries its error, and a background one
 // settles when its process ends, not at its launch receipt.
 test('a failed Claude subagent shows its error and a background one settles when it ends', async () => {
@@ -980,6 +1245,152 @@ test('a failed Claude subagent shows its error and a background one settles when
   }
 });
 
+// CAN-5204: a Claude subagent spawned inside another is a nested agent card in
+// its parent's chat, as on cloud, and every Claude node carries its model.
+test('a nested Claude subagent is a nested agent card and its nodes show their model', async () => {
+  test.setTimeout(180_000);
+  const chatId = 'claude-nested-subagent';
+  const outerId = 'toolu_explore_routes';
+  const nestedId = 'toolu_check_auth';
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'subagent-viewer-'));
+  const demo = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    activeTabId: chatId,
+    tabs: [{ id: chatId, title: 'Audit the API', providerType: 'claude' }],
+  });
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy({ userDataDir }));
+    const { window } = await openRootChat(electronApp);
+    const inject = (data) =>
+      injectChatEvent(electronApp, {
+        projectId: WORKSPACE_ID,
+        worktreeId: WORKTREE_ID,
+        chatId,
+        providerType: 'claude',
+        data,
+      });
+    const parent = (scope) => (scope ? { parent_tool_use_id: scope } : {});
+    const assistant = (uuid, scope, content) =>
+      inject({
+        type: 'assistant',
+        uuid,
+        ...parent(scope),
+        message: {
+          id: `msg-${uuid}`,
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-sonnet-5-5',
+          content,
+          usage: { input_tokens: 1200, output_tokens: 80 },
+        },
+      });
+    const result = (uuid, scope, toolUseId, content) =>
+      inject({
+        type: 'user',
+        uuid,
+        ...parent(scope),
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: toolUseId, content }],
+        },
+      });
+
+    await inject({
+      type: 'canopy_user_prompt',
+      original_text: 'Audit which API routes skip auth.',
+      user_message_id: 'user-nested-1',
+    });
+    await assistant('nested-1', null, [
+      {
+        type: 'tool_use',
+        id: outerId,
+        name: 'Agent',
+        input: {
+          subagent_type: 'Explore',
+          description: 'Map the API routes',
+          prompt: 'List every route in src/routes.ts.',
+        },
+      },
+    ]);
+    await assistant('nested-2', outerId, [
+      {
+        type: 'tool_use',
+        id: nestedId,
+        name: 'Agent',
+        input: {
+          subagent_type: 'general-purpose',
+          description: 'Check the auth middleware',
+          prompt: 'Report which routes skip requireAuth.',
+        },
+      },
+    ]);
+    await assistant('nested-3', nestedId, [
+      {
+        type: 'tool_use',
+        id: 'toolu_grep_auth',
+        name: 'Grep',
+        input: { pattern: 'requireAuth', path: 'src' },
+      },
+    ]);
+    await result(
+      'nested-4',
+      nestedId,
+      'toolu_grep_auth',
+      "src/routes.ts:3:  ['/users', requireAuth(users)],",
+    );
+    await assistant('nested-5', nestedId, [
+      { type: 'text', text: 'Only /health skips requireAuth.' },
+    ]);
+    await result(
+      'nested-6',
+      outerId,
+      nestedId,
+      'Only /health skips requireAuth.',
+    );
+    await result(
+      'nested-7',
+      null,
+      outerId,
+      'Mapped 2 routes; only /health skips requireAuth.',
+    );
+    await inject({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: '',
+      session_id: 'claude-nested-session',
+    });
+
+    const subagents = await openSubagentsFromMenu(window);
+    await subagents.getByTestId('subagents-root-picker').click();
+    await window.getByTestId(`subagents-root-option-${chatId}`).click();
+    await subagents.getByTestId('subagents-view-list').click();
+    for (const id of [outerId, nestedId]) {
+      await expect(
+        subagents.getByTestId(`subagents-list-row-${id}`),
+      ).toContainText('Sonnet 5.5');
+    }
+
+    await subagents.getByTestId(`subagents-list-open-${outerId}`).click();
+    const outerChat = window.getByTestId('subagent-chat-panel');
+    await expect(outerChat.getByTestId('subagent-chat-banner')).toContainText(
+      'Sonnet 5.5',
+    );
+    const nestedCard = outerChat.locator(
+      `[data-testid="agent-block"][data-tool-use-id="${nestedId}"]`,
+    );
+    await expect(nestedCard).toBeVisible();
+    await expect(nestedCard).toContainText('Check the auth middleware');
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+    cleanupDemoWorkspaces(demo);
+  }
+});
+
 // CAN-4049: the Codex follow-up calls and child turns the cloud fold mirrors.
 // Wait, sendInput, resumeAgent and closeAgent refresh the cards their
 // receivers belong to, and a child that settles and starts again keeps its
@@ -1019,12 +1430,12 @@ test('Codex follow-ups and a reopened child keep the same cards and tree nodes',
     const turn = (threadId, type) =>
       inject({ type, thread_id: threadId, turn_id: `${threadId}-reopen` });
 
-    const research = chat.getByRole('button', { name: /Agent · Tesla/ });
+    const research = chat.getByRole('button', { name: /Tesla agent/ });
     await expect(research).toBeVisible();
     const cards = chat.getByTestId('agent-block');
     await expect(cards).toHaveCount(1);
     await research.click();
-    const desktop = chat.getByRole('button', { name: /Agent · Raman/ });
+    const desktop = chat.getByRole('button', { name: /Raman agent/ });
     await expect(desktop).toBeVisible();
     await expect(cards).toHaveCount(2);
 
@@ -1072,7 +1483,7 @@ test('Codex follow-ups and a reopened child keep the same cards and tree nodes',
     const subagentsTab = window.getByRole('tab', { name: /^Subagents/ });
     const spinner = cards
       .first()
-      .getByLabel('Thinking', { exact: true })
+      .locator('[data-step-row-words].canopy-text-shimmer-strong')
       .first();
     await turn('root', 'turn.started');
     await turn('research', 'turn.started');
@@ -1103,5 +1514,158 @@ test('Codex follow-ups and a reopened child keep the same cards and tree nodes',
     ).toContainText('Tesla');
   } finally {
     if (electronApp) await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-5203: a Codex node is timed by its own child turn, as cloud nodes are
+// timed by Core's task times, not by the spawn card's message.
+test('a Codex node is timed by its own child turn', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'subagent-viewer-'));
+  seedActivityChat(userDataDir);
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy({ userDataDir }));
+    const { window } = await openActivityChat(electronApp);
+    await injectActivityEvents(electronApp);
+    const turn = (type) =>
+      injectChatEvent(electronApp, {
+        projectId: WORKSPACE_ID,
+        worktreeId: WORKTREE_ID,
+        chatId: ACTIVITY_CHAT_ID,
+        data: {
+          type: 'codex',
+          event: { type, thread_id: 'research', turn_id: 'research-timed' },
+        },
+      });
+    const subagents = await openSubagentsFromMenu(window);
+    await subagents.getByTestId('subagents-root-picker').click();
+    await window
+      .getByTestId(`subagents-root-option-${ACTIVITY_CHAT_ID}`)
+      .click();
+    await subagents.getByTestId('subagents-view-list').click();
+    const researchRow = subagents.getByTestId('subagents-list-row-research');
+    await turn('turn.started');
+    await expect(researchRow).toContainText('Running');
+    await window.waitForTimeout(3_000);
+    await turn('turn.completed');
+    await expect(researchRow).toContainText('Done');
+    await expect(researchRow).toContainText(
+      /(?<!\d)(?:[3-9]|[1-5]\d)s(?![a-z])/,
+    );
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-4811: the child panel builds a separate transcript from canonical rows.
+test('a native child chat retains its safety denial receipt beside the denied call', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'subagent-safety-receipt-'),
+  );
+  const demo = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const seeded = seedSubagentViewerTreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+  });
+  const tab = seeded.file.tabs.find(
+    (entry) => entry.id === SUBAGENT_VIEWER_CHAT_ID,
+  );
+  const child = tab?.messages.find(
+    (entry) => entry.id === 'subagent-viewer-native-child',
+  );
+  const user = tab?.messages.find((entry) => entry.role === 'user');
+  if (!tab || !child || !user) throw new Error('Missing native child fixture');
+  child.blocks.push(
+    {
+      type: 'tool_use',
+      toolUseId: 'child-safety-call',
+      toolName: 'Bash',
+      input: '{"command":"git push --force origin HEAD"}',
+    },
+    {
+      type: 'tool_result',
+      toolUseId: 'child-safety-call',
+      toolName: 'Bash',
+      output: 'Blocked by a safety rule (force-push).',
+      isError: true,
+    },
+    { type: 'text', text: 'The child chose a safe alternative.' },
+  );
+  tab.messages.push({
+    id: 'child-safety-receipt',
+    role: 'system',
+    timestamp: child.timestamp + 1,
+    blocks: [
+      {
+        type: 'approval_safety_denied_info',
+        receiptId: 'child-safety-receipt',
+        timestamp: child.timestamp + 1,
+        reason: 'force-push',
+        mode: 'ask',
+        command: 'git push --force origin HEAD',
+        toolUseId: 'child-safety-call',
+        subagentId: 'native-child-agent',
+        turnUserMessageId: user.id,
+      },
+    ],
+  });
+  writeJson(seeded.filePath, seeded.file);
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy({ userDataDir }));
+    const { panel, window } = await openRootChat(electronApp);
+    const persisted = readChatStorageTabs(
+      path.join(userDataDir, 'workspaces', WORKSPACE_ID),
+      WORKTREE_ID,
+    );
+    expect(
+      persisted.tabs
+        .find((entry) => entry.id === SUBAGENT_VIEWER_CHAT_ID)
+        ?.messages.flatMap((message) => message.blocks)
+        .filter((block) => block.type === 'approval_safety_denied_info'),
+    ).toHaveLength(1);
+    const transcript = panel.getByTestId('chat-message-list-content');
+    await transcript
+      .getByRole('button', { name: /^Agent steps:/, expanded: false })
+      .first()
+      .click();
+    const nativeCard = transcript
+      .getByTestId('agent-block')
+      .filter({ hasText: 'Review the native parser card' });
+    await nativeCard.locator('button[aria-expanded]').first().click();
+    await transcript
+      .getByTestId('agent-block')
+      .getByTestId('agent-card-open-chat')
+      .click();
+    const childChat = subagentChatFor(window, SUBAGENT_VIEWER_TREE_IDS.native);
+    await expect(childChat).toBeVisible();
+    const notice = childChat.getByTestId('approval-safety-denied-notice');
+    await expect(notice).toBeVisible();
+    await expect(notice).toHaveCount(1);
+    await expect(
+      childChat.locator('[data-tool-name="Bash"][data-tool-status="error"]'),
+    ).toBeVisible();
+    expect(
+      await notice.evaluate((element) => {
+        const panel = element.closest('[data-testid="subagent-chat-panel"]');
+        const walker = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT);
+        for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+          if (
+            text.textContent?.includes('The child chose a safe alternative.')
+          ) {
+            return Boolean(
+              element.compareDocumentPosition(text) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+            );
+          }
+        }
+        return false;
+      }),
+    ).toBe(true);
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+    cleanupDemoWorkspaces(demo);
   }
 });

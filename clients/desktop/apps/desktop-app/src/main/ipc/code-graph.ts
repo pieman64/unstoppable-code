@@ -17,7 +17,7 @@ import {
 import type {
   ReadCodeGraphSummaryProjectionResult,
   CodeGraphSummaryProjectionV1,
-} from '@canopy/desktop-shared/node/code-graph/summary-projection';
+} from '@canopy/code-graph/summary-projection';
 import type {
   CodeGraphBuildState,
   CodeGraphReadFailure,

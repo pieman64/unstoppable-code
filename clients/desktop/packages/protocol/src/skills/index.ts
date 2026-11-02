@@ -1,5 +1,6 @@
 import { MARKETPLACE_PUBLIC_SHARE_PREFIXES } from '../marketplace';
 import type { ResourceOwner } from '../resource-owner';
+import type { WorkspaceContext } from '../workspace-context';
 import type { PublicShareVersion, ShareRemoteMetadata } from '../sharing';
 // ---------------------------------------------------------------------------
 // Shared custom-skill API contracts.
@@ -285,8 +286,8 @@ export interface InstalledSkillInfo {
   /** Author-side link to this local skill's current cloud share. */
   remote?: ShareRemoteMetadata;
   /**
-   * Recipient-side origin: the team or organization share this custom skill
-   * was installed from, read from its install receipt. Present only when
+   * Recipient-side origin: the authenticated share this custom skill was
+   * installed from, read from its install receipt. Present only when
    * resource context enforcement is on.
    */
   installedFromShare?: SharedSkillInstallOrigin;
@@ -297,6 +298,24 @@ export interface SharedSkillInstallOrigin {
   remoteId: string;
   /** Digest of the share's supporting-file package, once it installed. */
   packageDigest?: string;
+  /** A durable update marker still needs a fresh review/reconciliation, even if hashes match. */
+  replacementPending?: boolean;
+  /**
+   * Receipt-backed display metadata, never authorization. Optional for older
+   * producers: legacy origins retain source navigation but cannot compare hashes.
+   */
+  shareScope?: SkillShareScope;
+  ownerContext?: WorkspaceContext;
+  /**
+   * SHA-256 of the installed source's raw SKILL.md, not locally edited bytes.
+   * Omitted when a legacy receipt's multiple aliases make that baseline ambiguous.
+   */
+  contentHash?: string;
+  authorizedAt?: string;
+  sharedByName?: string;
+  /** Organization name, including the organization owning a team share. */
+  ownerName?: string;
+  teamName?: string;
 }
 
 // ---- Skill Content (for detail modal) ----

@@ -1,4 +1,5 @@
 import {
+  type ChatTabPluginSelections,
   type GatewayRouteEntry,
   initAgentModels,
   initAiGatewayModels,
@@ -45,12 +46,22 @@ function gatewayRoute(
   return {
     modelId,
     gatewayId: `vendor/${modelId}`,
+    family: 'claude',
     recommendedHarness: 'claude',
     gatewayOnly,
     contextWindow: 100_000,
     supportsPromptCaching: false,
     supportedThinkingLevels: [],
     toolSchemaProfile: 'standard',
+  };
+}
+
+function emptyPluginSelections(): ChatTabPluginSelections {
+  return {
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+    mcpServerRefs: [],
   };
 }
 
@@ -98,7 +109,9 @@ beforeAll(() => {
     // model for the overlay to resolve, and Luna is a native Codex row.
     { id: GUEST_ALLOWED_NATIVE, label: 'GPT 6 Luna' },
   ]);
-  initOllamaModels([{ id: OLLAMA_MODEL, label: 'Llama' }]);
+  initOllamaModels([
+    { id: OLLAMA_MODEL, rawModelId: OLLAMA_MODEL, label: 'Llama' },
+  ]);
   // Native registry init no longer feeds the gateway route table:
   // `initAiGatewayModels` is the only writer, and it atomically replaces both
   // the API-only rows and ALL routes. Routes for managed models live here.
@@ -638,6 +651,23 @@ describe('resolveModelRowGate — guest model gate (CAN-3026)', () => {
   /** Funded: every consented guest receives the daily AI-credit drip. */
   const fundedGuest = avail({ creditsEligible: true, nativeAuth: false });
 
+  it('CAN-5211 sends an unfunded guest native route to the account gate', () => {
+    expect(
+      gate({
+        model: GUEST_BLOCKED_NATIVE,
+        availability: avail({ creditsEligible: false, nativeAuth: false }),
+        isGuest: true,
+        libraryAccess: 'needs_sign_in_then_purchase',
+      }),
+    ).toEqual({
+      kind: 'recoverable',
+      recovery: {
+        kind: 'needs-account',
+        access: 'needs_sign_in_then_purchase',
+      },
+    });
+  });
+
   it('intercepts a guest picking a gateway-only model Canopy pays for', () => {
     // Funded on purpose. The gate must sit AHEAD of the credits probe —
     // otherwise the guest resolves `available` first and the drip pays for the
@@ -707,7 +737,7 @@ describe('resolveModelRowGate — guest model gate (CAN-3026)', () => {
         name: 'Luna Agent',
         baseModel: GUEST_ALLOWED_NATIVE,
         instructions: '',
-        pluginSelections: [],
+        pluginSelections: emptyPluginSelections(),
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         available: true,
@@ -717,7 +747,7 @@ describe('resolveModelRowGate — guest model gate (CAN-3026)', () => {
         name: 'Fable Agent',
         baseModel: GUEST_BLOCKED_NATIVE,
         instructions: '',
-        pluginSelections: [],
+        pluginSelections: emptyPluginSelections(),
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         available: true,
@@ -1137,7 +1167,7 @@ describe('isGuestAllowedSelection (CAN-3026)', () => {
         name: 'Luna Agent',
         baseModel: GUEST_ALLOWED_NATIVE,
         instructions: '',
-        pluginSelections: [],
+        pluginSelections: emptyPluginSelections(),
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         available: true,

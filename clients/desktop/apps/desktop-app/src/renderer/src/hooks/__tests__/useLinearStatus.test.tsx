@@ -9,7 +9,10 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { LinearStatus } from '@canopy/desktop-shared/types';
+import type {
+  CredentialReadFailure,
+  LinearStatus,
+} from '@canopy/desktop-shared/types';
 import { LINEAR_CONNECTION_CHANGED_EVENT } from '@/lib/integrationConnectionEvents';
 import {
   invalidateLinearStatusCache,
@@ -51,8 +54,29 @@ async function flushAsyncEffects(): Promise<void> {
 }
 
 describe('useLinearAvailability', () => {
+  it('distinguishes a failed token read from a known unconnected account (CAN-4007)', async () => {
+    loadLinearTokenMock.mockRejectedValueOnce(
+      new Error('Secure storage unavailable'),
+    );
+    const probe: Probe = { current: null };
+    await act(async () => {
+      root.render(<HookHarness probe={probe} />);
+      await flushAsyncEffects();
+    });
+    expect(probe.current?.tokenReadFailed).toBe(true);
+    expect(probe.current?.tokenLoaded).toBe(true);
+    loadLinearTokenMock.mockResolvedValue('');
+    await act(async () => {
+      window.dispatchEvent(new Event(LINEAR_CONNECTION_CHANGED_EVENT));
+      await flushAsyncEffects();
+    });
+    expect(probe.current?.tokenReadFailed).toBe(false);
+  });
   const originalApiDescriptor = Object.getOwnPropertyDescriptor(window, 'api');
-  const loadLinearTokenMock = jest.fn<Promise<string>, []>();
+  const loadLinearTokenMock = jest.fn<
+    Promise<string | CredentialReadFailure>,
+    []
+  >();
   const validateLinearTokenMock = jest.fn<Promise<LinearStatus>, [string]>();
 
   let container: HTMLDivElement;
@@ -89,6 +113,33 @@ describe('useLinearAvailability', () => {
     } else {
       Reflect.deleteProperty(window, 'api');
     }
+  });
+
+  it('keeps a returned credential read failure unknown until a successful reload', async () => {
+    loadLinearTokenMock.mockResolvedValue({
+      success: false,
+      error: 'Secure storage unavailable',
+    });
+    const probe: Probe = { current: null };
+    await act(async () => {
+      root.render(<HookHarness probe={probe} />);
+      await flushAsyncEffects();
+    });
+    expect(probe.current?.tokenLoaded).toBe(true);
+    expect(probe.current?.tokenPresent).toBe(false);
+    expect(probe.current?.available).toBe(false);
+    expect(validateLinearTokenMock).not.toHaveBeenCalled();
+    expect(probe.current?.tokenReadFailed).toBe(true);
+
+    loadLinearTokenMock.mockResolvedValue('recovered-token');
+    await act(async () => {
+      window.dispatchEvent(new Event(LINEAR_CONNECTION_CHANGED_EVENT));
+      await flushAsyncEffects();
+    });
+    expect(probe.current?.tokenReadFailed).toBe(false);
+    expect(probe.current?.tokenPresent).toBe(true);
+    expect(probe.current?.available).toBe(true);
+    expect(validateLinearTokenMock).toHaveBeenCalledWith('recovered-token');
   });
 
   it('ignores an older token load that resolves after a connection-change reload', async () => {

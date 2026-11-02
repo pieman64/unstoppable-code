@@ -40,10 +40,9 @@ import type {
   TrackedPlanData,
   WorkspaceAttachmentItem,
 } from '@canopy/desktop-shared/types';
-import type {
-  ExecutionState,
-  ExecutionSummary,
-} from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import { toPipelineRunRowState } from '@/lib/pipelineRunRowState';
+import type { PipelineRunRowState } from '@/lib/pipelineRunRowState';
 import type { ChatTab } from '@/stores/chatStore';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
 import { RetainedCostView, type CostScopeRowTarget } from '@canopy/ui-app/cost';
@@ -63,6 +62,7 @@ import { ArchivedAttachmentViewer } from './ArchivedAttachmentViewer';
 import { FileTypeIcon } from '@/components/shared/file-icons';
 import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import {
+  Button,
   Markdown,
   TranscriptPagingControls,
 } from '@canopy/ui-shared/components';
@@ -89,7 +89,8 @@ import {
   TrashPermanentlyIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { RunningActionIcon } from '@/components/shared/CancelableActionButton';
-import { formatByteSize, formatDateOrEmpty } from '@/lib/format';
+import { formatByteSize } from '@canopy/ui-shared/lib';
+import { formatDateOrEmpty } from '@/lib/format';
 import {
   HeaderActionButton,
   Notice,
@@ -470,8 +471,8 @@ export function ArchivedContainerView({
 
   // ----- Pipelines -----
   const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
-  const [executionStatesById, setExecutionStatesById] = useState<
-    Record<string, ExecutionState>
+  const [executionRowsById, setExecutionRowsById] = useState<
+    Record<string, PipelineRunRowState>
   >({});
   useEffect(() => {
     if (kind !== 'worktree') {
@@ -483,13 +484,19 @@ export function ArchivedContainerView({
       .then((response) => {
         if (!cancelled) {
           setExecutions(response.executions);
-          setExecutionStatesById(response.statesById);
+          const rowsById: Record<string, PipelineRunRowState> = {};
+          for (const [executionId, state] of Object.entries(
+            response.statesById,
+          )) {
+            rowsById[executionId] = toPipelineRunRowState(state);
+          }
+          setExecutionRowsById(rowsById);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setExecutions([]);
-          setExecutionStatesById({});
+          setExecutionRowsById({});
         }
       });
     return (): void => {
@@ -571,7 +578,7 @@ export function ArchivedContainerView({
           ? (summary?.executionCount ?? 0)
           : topLevelExecutions.length;
       tabs.push(
-        { id: 'pipelines', label: `Pipelines (${pipelineCount})` },
+        { id: 'pipelines', label: `Workflows (${pipelineCount})` },
         {
           id: 'attachments',
           label:
@@ -921,7 +928,7 @@ export function ArchivedContainerView({
           title="Measured archive footprint; retained Git objects may be shared"
         >
           {diskUsageBytes !== null
-            ? `· ${diskUsageComplete ? '' : 'At least '}${formatByteSize(diskUsageBytes)} on disk`
+            ? `· ${diskUsageComplete ? '' : 'At least '}${formatByteSize(diskUsageBytes, { precision: 'adaptive' })} on disk`
             : '· Measuring size…'}
         </span>
         {/* Same shell as the worktree top bar's git actions
@@ -959,7 +966,7 @@ export function ArchivedContainerView({
               gitCleanupOnly
                 ? 'Retry cleaning up the archived Git worktree registration'
                 : partiallyRestored
-                  ? 'Retry importing the pipeline runs into the restored worktree'
+                  ? 'Retry importing the workflow runs into the restored worktree'
                   : 'Bring this item back as a live worktree or chat'
             }
           >
@@ -973,7 +980,7 @@ export function ArchivedContainerView({
               : gitCleanupOnly
                 ? 'Retry Git cleanup'
                 : partiallyRestored
-                  ? 'Retry pipeline import'
+                  ? 'Retry workflow import'
                   : 'Restore'}
           </HeaderActionButton>
           {confirmingDelete ? (
@@ -1025,7 +1032,7 @@ export function ArchivedContainerView({
           className="mx-4 my-2 shrink-0"
           data-testid="archived-partial-restore-banner"
         >
-          Partially restored — pipeline runs pending
+          Partially restored — workflow runs pending
         </Notice>
       )}
 
@@ -1051,7 +1058,7 @@ export function ArchivedContainerView({
                   setCostTabScopeKey(null);
                   selectTab(tab.id);
                 }}
-                className={`focus-ring rounded px-2.5 py-1 text-xs transition ${
+                className={`focus-ring rounded px-2.5 py-1 text-xs transition-colors ${
                   selected
                     ? 'bg-fg-primary/[0.08] font-medium fg-primary'
                     : 'fg-secondary hover:bg-fg-primary/[0.04] hover:fg-primary'
@@ -1142,7 +1149,7 @@ export function ArchivedContainerView({
                     type="button"
                     data-testid={`archived-chat-row-${chat.chatId}`}
                     onClick={() => selectChat(chat.chatId)}
-                    className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition ${
+                    className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
                       isSelected
                         ? 'bg-fg-primary/[0.08]'
                         : 'hover:bg-fg-primary/[0.04]'
@@ -1168,7 +1175,7 @@ export function ArchivedContainerView({
                     onClick={() =>
                       setArchivedChatsExpanded((expanded) => !expanded)
                     }
-                    className="focus-ring flex w-full items-center gap-1.5 rounded-md px-2.5 py-2 text-left text-xs fg-secondary transition hover:bg-fg-primary/[0.04] hover:fg-primary"
+                    className="focus-ring flex w-full items-center gap-1.5 rounded-md px-2.5 py-2 text-left text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-primary"
                   >
                     <span
                       aria-hidden="true"
@@ -1198,7 +1205,7 @@ export function ArchivedContainerView({
                           type="button"
                           data-testid={`archived-chat-row-${chat.chatId}`}
                           onClick={() => selectChat(chat.chatId)}
-                          className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 pl-5 text-left transition ${
+                          className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 pl-5 text-left transition-colors ${
                             isSelected
                               ? 'bg-fg-primary/[0.08]'
                               : 'hover:bg-fg-primary/[0.04]'
@@ -1305,7 +1312,7 @@ export function ArchivedContainerView({
             </div>
           ) : topLevelExecutions.length === 0 ? (
             <div className="flex min-h-30 items-center justify-center text-sm fg-secondary">
-              No pipeline runs were retained with this archive.
+              No workflow runs were retained with this archive.
             </div>
           ) : (
             <div className="mx-auto flex w-full max-w-3xl flex-col gap-1.5">
@@ -1313,7 +1320,7 @@ export function ArchivedContainerView({
                 <ArchivedExecutionRow
                   key={execution.id}
                   summary={execution}
-                  executionState={executionStatesById[execution.id]}
+                  executionState={executionRowsById[execution.id]}
                   onOpen={setOpenExecutionId}
                 />
               ))}
@@ -1336,7 +1343,7 @@ export function ArchivedContainerView({
                 <div
                   key={attachment.filename}
                   data-testid={`archived-attachment-row-${attachment.filename}`}
-                  className="group flex items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-2 transition hover:border-fg-primary/10"
+                  className="group flex items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-2 transition-colors hover:border-fg-primary/10"
                   onMouseEnter={(event): void =>
                     attachmentMouseEnter(
                       attachment.absolutePath,
@@ -1357,18 +1364,20 @@ export function ArchivedContainerView({
                   <span className="shrink-0 text-2xs fg-secondary">
                     {formatDateOrEmpty(attachment.createdAt)}
                   </span>
-                  <button
-                    type="button"
-                    data-testid={`archived-attachment-reveal-${attachment.filename}`}
-                    onClick={() =>
-                      void window.api.showInFinder({
-                        absolutePath: attachment.absolutePath,
-                      })
-                    }
-                    className="focus-ring shrink-0 rounded-md border bg-fg-primary/[0.04] px-2 py-0.5 text-2xs font-medium fg-primary opacity-0 transition hover:bg-fg-primary/[0.08] group-hover:opacity-100"
-                  >
-                    Reveal
-                  </button>
+                  {/* Hover-revealed, and shown while focused inside. */}
+                  <span className="shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    <Button
+                      size="compact"
+                      data-testid={`archived-attachment-reveal-${attachment.filename}`}
+                      onClick={() =>
+                        void window.api.showInFinder({
+                          absolutePath: attachment.absolutePath,
+                        })
+                      }
+                    >
+                      Reveal
+                    </Button>
+                  </span>
                 </div>
               ))}
               {hoveredPath && (
@@ -1413,7 +1422,7 @@ export function ArchivedContainerView({
                   type="button"
                   data-testid={`archived-plan-row-${plan.id}`}
                   onClick={() => selectPlan(plan.id)}
-                  className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition ${
+                  className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
                     isSelected
                       ? 'bg-fg-primary/[0.08]'
                       : 'hover:bg-fg-primary/[0.04]'

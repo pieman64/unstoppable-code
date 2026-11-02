@@ -14,9 +14,13 @@ import type {
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import type { ProjectDiscoveryCaller } from './index';
 import { DiscoveryError } from './errors';
-import { requireAuthorizedProject } from './owner-policy';
+import {
+  requireAuthorizedProject,
+  type AuthorizedProjectIdentity,
+} from './owner-policy';
 import { listDiscoverableTaskIds, projectChatRow } from './chats-list';
 import { readTaskRuntimeSnapshot } from './runtime-state';
+import { readCommittedTaskSnapshot } from './sources';
 
 /** The canonical transcript scope of one retained chat. */
 export interface ChatReadScope {
@@ -58,6 +62,39 @@ export type ChatReadAddress = ProjectChatAddress | BotChatAddress;
 
 /** A fully resolved transcript context for either a project or a bot chat. */
 export type ChatReadContext = AuthorizedChatReadContext | BotChatReadContext;
+
+export interface AuthorizedWatcherChatIdentity {
+  scope: ChatReadScope;
+  tab: PersistedChatTab;
+  snapshot: ChatStateSnapshot;
+}
+
+/** A trusted watcher already authorized the project; read only committed chat state. */
+export async function resolveAuthorizedWatcherChat(
+  address: ProjectChatAddress,
+  project: AuthorizedProjectIdentity,
+  task: { id: string },
+): Promise<AuthorizedWatcherChatIdentity> {
+  if (task.id !== address.taskId)
+    throw new DiscoveryError('not_found', 'Task was not found.');
+  const snapshot = await readCommittedTaskSnapshot(
+    project.projectId,
+    address.taskId,
+  );
+  const tab = snapshot.tabsFile.tabs.find(
+    (candidate) => candidate.id === address.chatId && candidate.kind !== 'file',
+  );
+  if (!tab) throw new DiscoveryError('not_found', 'Chat was not found.');
+  return {
+    scope: {
+      workspaceId: resolveCoworkWorkspaceId(project.projectId),
+      worktreeId: address.taskId,
+      chatId: tab.id,
+    },
+    tab,
+    snapshot,
+  };
+}
 
 /**
  * Resolve an explicit project chat address for a read. The project goes

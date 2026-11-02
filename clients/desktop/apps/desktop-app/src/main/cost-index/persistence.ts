@@ -1,5 +1,4 @@
 import {
-  copyFile,
   mkdir,
   readFile,
   readdir,
@@ -9,6 +8,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
+import { writeFileAtomically } from '../lib/atomic-file';
 import {
   COST_BILLING_BASES,
   COST_HELPER_KINDS,
@@ -513,6 +513,126 @@ function isCheckpoint(value: unknown): value is CostIndexCheckpoint {
   return validCursors && validLastRefresh;
 }
 
+/** Upgrades a checkpoint from one file version to the next. */
+export type CheckpointUpgradeStep = (
+  value: Readonly<Record<string, unknown>>,
+) => Record<string, unknown>;
+
+export interface CheckpointMigrations<Checkpoint> {
+  readonly currentVersion: number;
+  /** Keyed by the version a step upgrades from; it returns the next version. */
+  readonly steps: Readonly<Record<number, CheckpointUpgradeStep>>;
+  readonly isCurrent: (value: unknown) => value is Checkpoint;
+}
+
+/** What a checkpoint written by a later release keeps when this one reads it. */
+export interface NewerCheckpointState {
+  readonly firstBuild?: CostIndexCheckpoint['firstBuild'];
+  readonly retainedFillComplete?: boolean;
+}
+
+export type CheckpointMigration<Checkpoint> =
+  | { readonly kind: 'current'; readonly value: Checkpoint }
+  | {
+      readonly kind: 'migrated';
+      readonly from: number;
+      readonly value: Checkpoint;
+    }
+  | {
+      readonly kind: 'newer';
+      readonly version: number;
+      readonly preserved: NewerCheckpointState;
+    }
+  | { readonly kind: 'corrupt' };
+
+/**
+ * The file version is the checkpoint's shape. It is separate from
+ * `generation`, which records the classification rules its records follow.
+ */
+const CHECKPOINT_MIGRATIONS: CheckpointMigrations<CostIndexCheckpoint> = {
+  currentVersion: 1,
+  steps: {},
+  isCurrent: isCheckpoint,
+};
+
+/**
+ * The state every upgrade step carries unchanged: the audit byte cursors, the
+ * first build, the retained fill flag, the generation and the last refresh.
+ */
+export function carryCheckpointFields(
+  value: Readonly<Record<string, unknown>>,
+  version: number,
+): Record<string, unknown> {
+  return {
+    version,
+    generation: value.generation,
+    firstBuild: value.firstBuild,
+    audit: value.audit,
+    ...(value.retainedFillComplete === undefined
+      ? {}
+      : { retainedFillComplete: value.retainedFillComplete }),
+    ...(value.lastRefresh === undefined
+      ? {}
+      : { lastRefresh: value.lastRefresh }),
+  };
+}
+
+export function migrateCheckpoint(
+  raw: unknown,
+): CheckpointMigration<CostIndexCheckpoint> {
+  return migrateCheckpointWith(raw, CHECKPOINT_MIGRATIONS);
+}
+
+/** Upgrades `raw` one version at a time; nothing here writes the file. */
+export function migrateCheckpointWith<Checkpoint>(
+  raw: unknown,
+  migrations: CheckpointMigrations<Checkpoint>,
+): CheckpointMigration<Checkpoint> {
+  if (!isRecord(raw)) return { kind: 'corrupt' };
+  const version = raw.version;
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1)
+    return { kind: 'corrupt' };
+  if (version > migrations.currentVersion) {
+    return { kind: 'newer', version, preserved: newerCheckpointState(raw) };
+  }
+  if (version === migrations.currentVersion) {
+    return migrations.isCurrent(raw)
+      ? { kind: 'current', value: raw }
+      : { kind: 'corrupt' };
+  }
+  let value: Record<string, unknown> = raw;
+  for (let from = version; from < migrations.currentVersion; from += 1) {
+    const step = migrations.steps[from];
+    if (step === undefined) return { kind: 'corrupt' };
+    value = step(value);
+  }
+  return migrations.isCurrent(value)
+    ? { kind: 'migrated', from: version, value }
+    : { kind: 'corrupt' };
+}
+
+/** Cursors of a later file shape have no known meaning and are not kept. */
+function newerCheckpointState(
+  raw: Readonly<Record<string, unknown>>,
+): NewerCheckpointState {
+  const firstBuild = raw.firstBuild;
+  return {
+    ...(isRecord(firstBuild) &&
+    isString(firstBuild.at) &&
+    isString(firstBuild.coverageStart)
+      ? {
+          firstBuild: {
+            at: firstBuild.at,
+            coverageStart: firstBuild.coverageStart,
+          },
+        }
+      : {}),
+    ...(typeof raw.retainedFillComplete === 'boolean'
+      ? { retainedFillComplete: raw.retainedFillComplete }
+      : {}),
+  };
+}
+
 export async function readJsonFile<T>(
   filePath: string,
   validate: (value: unknown) => value is T,
@@ -539,10 +659,53 @@ export async function readJsonFile<T>(
   return { value, corrupt: false };
 }
 
+export interface CheckpointRead extends PersistedRead<CostIndexCheckpoint> {
+  /** Set when a later release wrote the file; its original is kept aside. */
+  readonly newer?: {
+    readonly version: number;
+    readonly preserved: NewerCheckpointState;
+  };
+}
+
+/**
+ * A checkpoint from an earlier file version is upgraded in memory; the next
+ * end-of-pass write stores it. One from a later version is not corrupt: its
+ * bytes are kept aside once as `<name>.v<version>-<ms>` before this release
+ * replaces it.
+ */
 export async function readCheckpointFile(
   filePath: string,
-): Promise<PersistedRead<CostIndexCheckpoint>> {
-  return readJsonFile(filePath, isCheckpoint);
+): Promise<CheckpointRead> {
+  let source: Buffer;
+  try {
+    source = await readFile(filePath);
+  } catch (error) {
+    if (isMissingFile(error)) return { value: null, corrupt: false };
+    throw error;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(source.toString('utf8'));
+  } catch {
+    await preserveCorruptFile(filePath);
+    return { value: null, corrupt: true };
+  }
+  const migration = migrateCheckpoint(raw);
+  switch (migration.kind) {
+    case 'current':
+    case 'migrated':
+      return { value: migration.value, corrupt: false };
+    case 'newer':
+      await preserveFileOnce(filePath, `.v${migration.version}-`, source);
+      return {
+        value: null,
+        corrupt: false,
+        newer: { version: migration.version, preserved: migration.preserved },
+      };
+    case 'corrupt':
+      await preserveCorruptFile(filePath);
+      return { value: null, corrupt: true };
+  }
 }
 
 export async function readSummaryFile(
@@ -616,11 +779,16 @@ export async function writeSummaryFile(
   await writeJsonAtomically(path.join(directory, 'summary.json'), value);
 }
 
+/** The cursors say which audit lines are already in the scope files. */
 export async function writeCheckpointFile(
   filePath: string,
   value: CostIndexCheckpoint,
 ): Promise<void> {
-  await writeJsonAtomically(filePath, value);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFileAtomically(filePath, `${JSON.stringify(value)}\n`, {
+    encoding: 'utf8',
+    durable: true,
+  });
 }
 
 export async function writeJsonAtomically(
@@ -661,13 +829,75 @@ function chatFilePath(directory: string, chatId: string): string {
 }
 
 async function preserveCorruptFile(filePath: string): Promise<void> {
-  const destination = `${filePath}.corrupt-${Date.now()}-${++corruptFileSequence}`;
+  let contents: Buffer;
   try {
-    await copyFile(filePath, destination);
+    contents = await readFile(filePath);
   } catch (error) {
     if (isMissingFile(error)) return;
     throw error;
   }
+  await preserveFileOnce(filePath, '.corrupt-', contents);
+}
+
+const preservationsInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Keep `contents` beside `filePath` as `<name><marker><suffix>`, unless a copy
+ * with the same marker and bytes is already there. A file read again and
+ * again (a retained summary is never rebuilt) is kept once.
+ */
+async function preserveFileOnce(
+  filePath: string,
+  marker: string,
+  contents: Buffer,
+): Promise<void> {
+  const key = `${filePath}\0${marker}`;
+  for (;;) {
+    const inFlight = preservationsInFlight.get(key);
+    if (inFlight === undefined) break;
+    await inFlight.catch(() => undefined);
+  }
+  const task = (async (): Promise<void> => {
+    if (await hasPreservedCopy(filePath, marker, contents)) return;
+    const suffix =
+      marker === '.corrupt-'
+        ? `${Date.now()}-${++corruptFileSequence}`
+        : `${Date.now()}`;
+    await writeFile(`${filePath}${marker}${suffix}`, contents, { flag: 'wx' });
+  })();
+  preservationsInFlight.set(key, task);
+  try {
+    await task;
+  } finally {
+    if (preservationsInFlight.get(key) === task)
+      preservationsInFlight.delete(key);
+  }
+}
+
+async function hasPreservedCopy(
+  filePath: string,
+  marker: string,
+  contents: Buffer,
+): Promise<boolean> {
+  const directory = path.dirname(filePath);
+  const prefix = `${path.basename(filePath)}${marker}`;
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if (isMissingFile(error)) return false;
+    throw error;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    try {
+      if (contents.equals(await readFile(path.join(directory, name))))
+        return true;
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+  }
+  return false;
 }
 
 function isMissingFile(error: unknown): boolean {

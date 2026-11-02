@@ -2,8 +2,8 @@ import type { TrackedPlanData } from '@canopy/desktop-shared/types';
 import { CURSOR_PLAN_EXECUTION_UNAVAILABLE } from '@canopy/desktop-shared/plan-review';
 import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
 import { sendToOwningWorktreeChat } from '@/lib/chat/owningWorktreeChat';
-import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
+import { updateTrackedPlanReview } from '@/stores/chat/plan-utils';
 
 /** The chat message that asks the agent to implement a plan. */
 export function buildImplementPlanMessage(content: string): string {
@@ -33,22 +33,30 @@ export async function implementTrackedPlan(
     throw new Error(CURSOR_PLAN_EXECUTION_UNAVAILABLE);
   }
   const { projectId, worktreeId } = plan;
+  let reviewSync: Promise<unknown> | undefined;
+  const approveAcceptedPlan = (chatId: string): void => {
+    if (reviewSync) return;
+    useChatStore
+      .getState()
+      .markTrackedPlanExecuted({ projectId, worktreeId, planId: plan.id });
+    reviewSync = updateTrackedPlanReview(
+      {
+        projectId,
+        worktreeId,
+        targetChatId: chatId,
+        tab: { trackedPlanId: plan.id },
+      },
+      'approved',
+    );
+  };
   const chatId = await sendToOwningWorktreeChat(
     { projectId, worktreeId },
     buildImplementPlanMessage(plan.content),
-    options,
+    { ...options, onDispatchAccepted: approveAcceptedPlan },
   );
-  useChatStore
-    .getState()
-    .markTrackedPlanExecuted({ projectId, worktreeId, planId: plan.id });
-  await window.api.activity.plans.update({
-    projectId,
-    worktreeId,
-    planId: plan.id,
-    reviewStatus: 'approved',
-    approvedAt: new Date().toISOString(),
-    initiationSource: 'user',
-  });
-  await useActivityStore.getState().loadTrackedPlans(projectId, worktreeId);
+  // Legacy sends may only report acceptance by resolving. Modern sends
+  // synchronize at admission, before a long-running implementation settles.
+  approveAcceptedPlan(chatId);
+  await reviewSync;
   return { chatId };
 }

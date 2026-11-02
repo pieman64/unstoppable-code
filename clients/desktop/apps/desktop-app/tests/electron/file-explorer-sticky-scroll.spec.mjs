@@ -70,7 +70,7 @@ test('file explorer sticky headers and scroll restoration work in Electron', asy
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_BRANCH);
 
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-item-file-explorer').click();
     await expect(
       window.getByTestId('panel-content-file-explorer'),
@@ -153,7 +153,7 @@ test('file explorer sticky headers and scroll restoration work in Electron', asy
       0,
     );
 
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-item-file-explorer').click();
     await expect(
       window.getByTestId('panel-content-file-explorer'),

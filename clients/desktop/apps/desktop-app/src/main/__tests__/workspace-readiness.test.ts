@@ -61,8 +61,9 @@ jest.mock('../lib/workspace-reference-repo', () => ({
 }));
 const mockEnqueueWorkspaceClaudeMemoryImportBatch = jest.fn();
 jest.mock('../memory/local/import/import-job', () => ({
-  enqueueWorkspaceLocalMemoryImportBatch:
-    mockEnqueueWorkspaceClaudeMemoryImportBatch,
+  get enqueueWorkspaceLocalMemoryImportBatch(): typeof mockEnqueueWorkspaceClaudeMemoryImportBatch {
+    return mockEnqueueWorkspaceClaudeMemoryImportBatch;
+  },
 }));
 
 import { access, lstat, readlink } from 'node:fs/promises';
@@ -171,7 +172,7 @@ describe('project readiness audit', () => {
       {
         launch: {
           definition: { command: 'npm run dev' },
-          source: 'repo-canopy',
+          source: 'repo-canopy' as const,
         },
       },
       'Add a setup script',
@@ -180,7 +181,7 @@ describe('project readiness audit', () => {
       {
         setup: {
           definition: { command: 'npm install' },
-          source: 'repo-canopy',
+          source: 'repo-canopy' as const,
         },
       },
       'Add a launch script',
@@ -208,13 +209,19 @@ describe('project readiness audit', () => {
 
   it('does not warn when teardown alone is absent', async () => {
     mockedResolveProjectScripts.mockResolvedValue({
-      setup: { definition: { command: 'npm install' }, source: 'local' },
-      launch: { definition: { command: 'npm run dev' }, source: 'manifest' },
+      setup: {
+        definition: { command: 'npm install' },
+        source: 'local-override',
+      },
+      launch: {
+        definition: { command: 'npm run dev' },
+        source: 'workspace-manifest',
+      },
     });
     mockedResolveProjectHooks.mockResolvedValue({
       'pr:create': {
         actions: [{ type: 'command', command: 'npm test' }],
-        source: 'conductor',
+        source: 'workspace-hook',
       },
     });
     mockedAccess.mockResolvedValue(undefined);

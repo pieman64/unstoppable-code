@@ -89,7 +89,7 @@ function makeChatTab(id: string, overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     ...overrides,
   };

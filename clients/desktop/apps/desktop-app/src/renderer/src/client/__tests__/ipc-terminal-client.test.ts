@@ -121,20 +121,39 @@ function createTerminalBridgeHarness(): TerminalBridgeHarness {
         (): Promise<TerminalSession[]> =>
           Promise.resolve([SESSION_ONE, SESSION_TWO, SESSION_THREE]),
       ),
-      loadWorktreeState: jest.fn(() => Promise.resolve(WORKTREE_STATE)),
-      spawn: jest.fn(() => Promise.resolve(SESSION_ONE)),
-      attach: jest.fn(() =>
+      loadWorktreeState: jest.fn<
+        Promise<LoadWorktreeTerminalStateResponse>,
+        [{ projectId: string; worktreeId: string }]
+      >(() => Promise.resolve(WORKTREE_STATE)),
+      spawn: jest.fn<Promise<TerminalSession>, [TerminalSpawnRequest]>(() =>
+        Promise.resolve(SESSION_ONE),
+      ),
+      attach: jest.fn<
+        Promise<{ session: TerminalSession; replay: Uint8Array; seq: number }>,
+        [TerminalAttachRequest]
+      >(() =>
         Promise.resolve({
           session: SESSION_ONE,
           replay: new Uint8Array([1, 2]),
           seq: 2,
         }),
       ),
-      write: jest.fn(() => Promise.resolve('already_written')),
-      resize: jest.fn(() => Promise.resolve()),
-      kill: jest.fn(() => Promise.resolve()),
-      restore: jest.fn(() => Promise.resolve(SESSION_ONE)),
-      saveWorktreeState: jest.fn(() => Promise.resolve()),
+      write: jest.fn<Promise<'already_written'>, [TerminalWriteRequest]>(() =>
+        Promise.resolve('already_written'),
+      ),
+      resize: jest.fn<Promise<void>, [TerminalResizeRequest]>(() =>
+        Promise.resolve(),
+      ),
+      kill: jest.fn<Promise<void>, [TerminalKillRequest]>(() =>
+        Promise.resolve(),
+      ),
+      restore: jest.fn<Promise<TerminalSession>, [TerminalRestoreRequest]>(() =>
+        Promise.resolve(SESSION_ONE),
+      ),
+      saveWorktreeState: jest.fn<
+        Promise<void>,
+        [SaveWorktreeTerminalStateRequest]
+      >(() => Promise.resolve()),
       onOutput: jest.fn((listener): (() => void) => {
         outputListener = listener;
         return outputUnsubscribe;

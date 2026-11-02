@@ -26,6 +26,8 @@ const UNKNOWN_AVAILABILITY: BillingLaneAvailability = {
 let currentAvailability: BillingLaneAvailability = UNKNOWN_AVAILABILITY;
 let currentLastResolvedLane: BillingLane | undefined;
 let currentGuestPrincipal: boolean | undefined;
+let currentCodexAccountModels: ReadonlySet<string> | null = null;
+let currentCodexAccountModelsKey = '';
 let laneFactsVersion = 0;
 const laneFactsListeners = new Set<() => void>();
 
@@ -117,10 +119,39 @@ export function isRendererGuestPrincipalHydrated(): boolean {
   return currentGuestPrincipal !== undefined;
 }
 
+/**
+ * The signed-in ChatGPT account's own Codex model ids (`id` and `model` of
+ * every non-hidden `model/list` entry), mirrored from main's catalog. `null`
+ * is UNKNOWN and never filters anything; see `isCodexModelAvailableToAccount`
+ * (CAN-4716). Compared by content, so an unchanged list never bumps the
+ * version.
+ */
+export function setRendererCodexAccountModels(
+  models: ReadonlySet<string> | null,
+): void {
+  const next = models && models.size > 0 ? models : null;
+  const key = next ? Array.from(next).sort().join('\n') : '';
+  if (key === currentCodexAccountModelsKey) return;
+  currentCodexAccountModels = next;
+  currentCodexAccountModelsKey = key;
+  bumpLaneFactsVersion();
+}
+
+export function getRendererCodexAccountModels(): ReadonlySet<string> | null {
+  return currentCodexAccountModels;
+}
+
+/** Content key of the account model ids; empty while the list is unknown. */
+export function getRendererCodexAccountModelsKey(): string {
+  return currentCodexAccountModelsKey;
+}
+
 /** Test-only reset so a spec can re-enter the pre-hydration state. */
 export function resetRendererBillingLaneForTests(): void {
   currentAvailability = UNKNOWN_AVAILABILITY;
   currentLastResolvedLane = undefined;
   currentGuestPrincipal = undefined;
+  currentCodexAccountModels = null;
+  currentCodexAccountModelsKey = '';
   bumpLaneFactsVersion();
 }

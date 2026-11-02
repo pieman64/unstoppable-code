@@ -154,29 +154,32 @@ describe('portalRepositoryCloneErrorMessage', () => {
       ).toBe(message);
     }
   });
-  it.each([
-    null,
-    undefined,
-    42,
-    {},
-    { message: REPOSITORY_CLONE_FAILURE_MESSAGE },
-    Object.assign(new Error('malformed'), { message: 42 }),
-    Object.assign(new Error('malformed'), { message: null }),
-    {
-      toString: (): never => {
-        throw new Error('must not stringify');
+  const unknownInputs: Array<[unknown]> = [
+    [null],
+    [undefined],
+    [42],
+    [{}],
+    [{ message: REPOSITORY_CLONE_FAILURE_MESSAGE }],
+    [Object.assign(new Error('malformed'), { message: 42 })],
+    [Object.assign(new Error('malformed'), { message: null })],
+    [
+      {
+        toString: (): never => {
+          throw new Error('must not stringify');
+        },
       },
-    },
-    'fatal: clone https://user:secret@host/r into /private/path failed',
-    new Error('disconnected'),
-    '',
-    'Check Projects',
-    `diagnostic ${REPOSITORY_CLONE_FAILURE_MESSAGE}`,
-    `${REPOSITORY_CLONE_FAILURE_MESSAGE} fatal: secret`,
-    ` ${REPOSITORY_CLONE_FAILURE_MESSAGE}`,
-    `${prefix}${prefix}${REPOSITORY_CLONE_FAILURE_MESSAGE}`,
-    `Portal command other failed: ${REPOSITORY_CLONE_FAILURE_MESSAGE}`,
-  ])('keeps unknown completion uncertain (%p)', (input) => {
+    ],
+    ['fatal: clone https://user:secret@host/r into /private/path failed'],
+    [new Error('disconnected')],
+    [''],
+    ['Check Projects'],
+    [`diagnostic ${REPOSITORY_CLONE_FAILURE_MESSAGE}`],
+    [`${REPOSITORY_CLONE_FAILURE_MESSAGE} fatal: secret`],
+    [` ${REPOSITORY_CLONE_FAILURE_MESSAGE}`],
+    [`${prefix}${prefix}${REPOSITORY_CLONE_FAILURE_MESSAGE}`],
+    [`Portal command other failed: ${REPOSITORY_CLONE_FAILURE_MESSAGE}`],
+  ];
+  it.each(unknownInputs)('keeps unknown completion uncertain (%p)', (input) => {
     expect(portalRepositoryCloneErrorMessage(input)).toBe(
       PORTAL_REPOSITORY_CLONE_UNCONFIRMED_MESSAGE,
     );

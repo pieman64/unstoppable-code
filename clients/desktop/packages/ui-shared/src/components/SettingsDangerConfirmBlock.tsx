@@ -27,6 +27,12 @@ export interface SettingsDangerConfirmBlockProps {
   /** When `'destructive'` (default) the trigger uses destructive styling.
    * `'warning'` mirrors the amber "Convert to ..." sections. */
   variant?: 'destructive' | 'warning';
+  /**
+   * `card` frames the action on its own. `row` is one settings row: the
+   * label and explanation leading, a quiet text action trailing (danger ink
+   * for `destructive`), and the confirm step in place of the action.
+   */
+  surface?: 'card' | 'row';
 }
 
 /**
@@ -48,7 +54,56 @@ export function SettingsDangerConfirmBlock({
   confirmLabel,
   confirmInProgressLabel,
   variant = 'destructive',
+  surface = 'card',
 }: SettingsDangerConfirmBlockProps): JSX.Element {
+  if (surface === 'row') {
+    return (
+      <div className="flex min-h-10 items-center justify-between gap-6">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="text-s font-medium fg-primary">{title}</div>
+          {description && (
+            <div className="text-xs text-pretty fg-secondary">
+              {description}
+            </div>
+          )}
+          {warning}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {!confirming ? (
+            <Button
+              onClick={onConfirmStart}
+              disabled={triggerDisabled || isWorking}
+              variant={
+                variant === 'destructive' ? 'ghost-destructive' : 'ghost'
+              }
+              size="compact"
+            >
+              {triggerLabel}
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={onConfirmCancel}
+                disabled={isWorking}
+                variant="ghost"
+                size="compact"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={onConfirm}
+                disabled={isWorking}
+                variant={variant === 'destructive' ? 'destructive' : 'primary'}
+                size="compact"
+              >
+                {isWorking ? confirmInProgressLabel : confirmLabel}
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
   const cardBorderClass =
     variant === 'destructive'
       ? 'border-line-destructive/30'

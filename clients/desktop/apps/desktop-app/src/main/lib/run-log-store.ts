@@ -1,7 +1,10 @@
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { writeFileAtomically } from './atomic-file';
 
 export const MAX_RUN_LOG_BYTES = 1024 * 1024;
 export const MAX_RUN_LOG_LINES = 2000;
+const COMPACT_RUN_LOG_AT_BYTES = Math.floor(MAX_RUN_LOG_BYTES * 1.25);
+const COMPACT_RUN_LOG_AT_LINES = Math.floor(MAX_RUN_LOG_LINES * 1.25);
 
 export interface ActiveRunLogState {
   runId: string;
@@ -36,6 +39,15 @@ export interface RunLogPaths {
   logPath: string;
 }
 
+export async function writeRunLogMeta(
+  metaPath: string,
+  meta: unknown,
+): Promise<void> {
+  await writeFileAtomically(metaPath, JSON.stringify(meta, null, 2), {
+    encoding: 'utf8',
+  });
+}
+
 export async function startRunLogFiles(args: {
   coordinator: RunLogCoordinator;
   projectId: string;
@@ -44,6 +56,8 @@ export async function startRunLogFiles(args: {
   runId: string;
   paths: RunLogPaths;
   meta: unknown;
+  /** Runs on the write chain before the run's files are replaced. */
+  beforeStart?: () => Promise<void>;
 }): Promise<void> {
   const writeKey = args.coordinator.getWriteKey(
     args.projectId,
@@ -63,13 +77,10 @@ export async function startRunLogFiles(args: {
       return;
     }
 
+    await args.beforeStart?.();
     await mkdir(args.paths.dirPath, { recursive: true });
     await Promise.all([
-      writeFile(
-        args.paths.metaPath,
-        JSON.stringify(args.meta, null, 2),
-        'utf8',
-      ),
+      writeRunLogMeta(args.paths.metaPath, args.meta),
       writeFile(args.paths.logPath, '', 'utf8'),
     ]);
     args.coordinator.activeRunStates.set(
@@ -117,11 +128,9 @@ export async function completeRunLogFiles<
 
       await compactRunLog(args.paths.logPath, args.runId);
 
-      const nextMeta = args.buildNextMeta(meta, new Date().toISOString());
-      await writeFile(
+      await writeRunLogMeta(
         args.paths.metaPath,
-        JSON.stringify(nextMeta, null, 2),
-        'utf8',
+        args.buildNextMeta(meta, new Date().toISOString()),
       );
     });
   } finally {
@@ -308,9 +317,23 @@ export async function compactRunLog(
   const compactedLines = compactLogLines(parseLogLines(raw));
   const compactedText = serializeLogLines(compactedLines);
   if (compactedText !== raw) {
-    await writeFile(logPath, compactedText, 'utf8');
+    await writeFileAtomically(logPath, compactedText, { encoding: 'utf8' });
   }
   return buildActiveRunState(runId, compactedLines);
+}
+
+/** The newest lines of a run log, within the line and byte caps. */
+export async function readRunLogTailLines(
+  logPath: string,
+  maxLines: number,
+): Promise<string[]> {
+  const safeMaxLines = Math.max(0, Math.min(maxLines, MAX_RUN_LOG_LINES));
+  if (safeMaxLines === 0) {
+    return [];
+  }
+  const raw = await readFile(logPath, 'utf8').catch(() => '');
+  const lines = compactLogLines(parseLogLines(raw));
+  return lines.length > safeMaxLines ? lines.slice(-safeMaxLines) : lines;
 }
 
 export async function appendRunLogLines(args: {
@@ -363,8 +386,8 @@ export async function appendRunLogLines(args: {
       byteCount: state.byteCount + appendedByteCount,
     };
     if (
-      nextState.lineCount > MAX_RUN_LOG_LINES ||
-      nextState.byteCount > MAX_RUN_LOG_BYTES
+      nextState.lineCount > COMPACT_RUN_LOG_AT_LINES ||
+      nextState.byteCount > COMPACT_RUN_LOG_AT_BYTES
     ) {
       args.coordinator.activeRunStates.set(
         writeKey,

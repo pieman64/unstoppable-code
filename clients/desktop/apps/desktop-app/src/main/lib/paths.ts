@@ -10,6 +10,11 @@ import {
 } from '@canopy/desktop-shared/canopy-paths';
 import { getWorktreeCodeGraphDir as getSharedWorktreeCodeGraphDir } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import {
+  pipelineAssetsDir,
+  pipelineAssetsManifestPath,
+  pipelineDataDir,
+} from '@canopy/desktop-shared/node/pipelines/pipeline-assets';
+import {
   APP_ADVISOR_PROJECT_ID,
   CODE_REVIEW_CHAT_PROJECT_ID,
   DEFAULT_CHAT_PROJECT_ID,
@@ -35,6 +40,29 @@ export function getDataDir(): string {
 
 export function getPipelinePackagesDir(): string {
   return join(getDataDir(), 'pipeline-packages', 'v1');
+}
+
+/** `<data>/pipeline-data`: per-pipeline state and installed assets. */
+export function getPipelineDataRoot(): string {
+  return join(getDataDir(), 'pipeline-data');
+}
+
+/** `<data>/pipeline-data/<id>/state`, read as `canopy.pipeline_data_dir`. */
+export function getPipelineDataDir(id: string): string {
+  validateId(id, 'pipeline data id');
+  return pipelineDataDir(getPipelineDataRoot(), id);
+}
+
+/** `<data>/pipeline-data/<id>/assets`, the installed asset root. */
+export function getPipelineAssetsDir(id: string): string {
+  validateId(id, 'pipeline data id');
+  return pipelineAssetsDir(getPipelineDataRoot(), id);
+}
+
+/** `<data>/pipeline-data/<id>/assets.json`, per-file install hashes. */
+export function getPipelineAssetsManifestPath(id: string): string {
+  validateId(id, 'pipeline data id');
+  return pipelineAssetsManifestPath(getPipelineDataRoot(), id);
 }
 
 export function getPipelinePackageInstallStorePath(): string {
@@ -66,6 +94,15 @@ export function getSharedContainerAcceptanceFilePath(): string {
 
 export function getSharedContainerRunEnvFilePath(): string {
   return join(getDataDir(), 'shared-container-run-env.json');
+}
+
+/**
+ * Attempt journals for installing a fork's capability package: what each
+ * attempt created, so a crashed attempt can be finished or compensated. App
+ * metadata beside the install ledger; never inside a checkout.
+ */
+export function getSharedContainerCapabilityInstallJournalDir(): string {
+  return join(getDataDir(), 'shared-container-capability-installs');
 }
 
 export function getWorkspacesRootDir(): string {
@@ -145,8 +182,25 @@ export function getW5CommitLogPath(): string {
   return join(getDataDir(), 'w5', 'commit-log.sqlite');
 }
 
+/**
+ * The durable operation ledger (CAN-4130): one record per accepted unit of
+ * execution work, with its retry receipt, lineage, owner and outcome. Opened
+ * on the first `core.operation.*` call or domain admission, never at startup.
+ */
+export function getOperationLedgerPath(): string {
+  return join(getDataDir(), 'operations', 'operation-ledger.sqlite');
+}
+
 export function getW5DestructiveLifecycleDir(): string {
   return join(getDataDir(), 'w5', 'destructive-lifecycles');
+}
+
+/**
+ * CAN-5335: unreadable lifecycle journal entries the user moved aside. A
+ * sibling of the journal directory, on its device, that no scanner reads.
+ */
+export function getW5QuarantinedLifecycleDir(): string {
+  return join(getDataDir(), 'w5', 'quarantined-lifecycles');
 }
 
 /**
@@ -241,13 +295,8 @@ export function getSpaceNotificationPolicyDir(): string {
   return join(getDataDir(), 'space-notification-policy');
 }
 
-/**
- * Persistent sidebar onboarding checklist state (CAN-788): completion
- * latches derived from real product state, plus dismissal/snooze and
- * provider "not used" marks. Latching keeps finished work complete for
- * returning users without re-scanning history.
- */
-export function getOnboardingChecklistFilePath(): string {
+/** Read-only compatibility input for the campaign activation history migration. */
+export function getLegacyOnboardingChecklistFilePath(): string {
   return join(getDataDir(), 'onboarding-checklist.json');
 }
 
@@ -355,6 +404,14 @@ export function getGitDefaultBranchFreshnessFilePath(): string {
  */
 export function getCodexAppServerPidsFilePath(): string {
   return join(getDataDir(), 'codex-app-server-pids.json');
+}
+
+/**
+ * Identity of Claude CLIs the Claude process host started for this data dir's
+ * app instance. Read on startup to reap CLIs a crashed run left behind.
+ */
+export function getClaudeProcessPidsFilePath(): string {
+  return join(getDataDir(), 'claude-process-pids.json');
 }
 
 /**
@@ -720,6 +777,25 @@ export function getWorktreeSharePublicationStatePath(
   );
 }
 
+/** Ephemeral delegation transcript spools live outside user checkouts. */
+export function getDelegationTranscriptSpoolRootDir(): string {
+  return join(getDataDir(), 'delegation-transcript-spools');
+}
+
+/**
+ * Disposable cache of normalized per-transcript capability usage, kept beside
+ * the share publication state. App metadata; never inside a checkout.
+ */
+export function getWorktreeShareCapabilityUsageCachePath(
+  workspaceId: string,
+  worktreeId: string,
+): string {
+  return join(
+    getWorktreeDataDir(workspaceId, worktreeId),
+    'share-capability-usage-cache.json',
+  );
+}
+
 /** Ciphertext staging is app-owned and never placed in a user checkout. */
 export function getSharedContainerPublishStagingRootDir(): string {
   return join(getDataDir(), 'shared-container-publish-staging');
@@ -1034,6 +1110,10 @@ export function getLegacyGitHubPatFilePath(): string {
   return join(getLegacySecureStorageDir(), 'github-pat.enc');
 }
 
+export function getCopilotRotationAttemptPath(): string {
+  return join(getSecureStorageDir(), 'copilot-rotation-attempt.json');
+}
+
 export function getCopilotCredentialFilePath(): string {
   return join(getSecureStorageDir(), 'copilot-account.enc');
 }
@@ -1255,6 +1335,11 @@ export function getCuratedPluginsStagingDir(): string {
 /** Which provider accounts the plugin backfill already ran for (CAN-3639). */
 export function getProviderPluginBackfillStateFilePath(): string {
   return join(getDataDir(), 'provider-plugin-backfill.json');
+}
+
+/** Receipts for the managed marketplaces Canopy registered with a provider (CAN-4482). */
+export function getBuiltInPluginMarketplacesFilePath(): string {
+  return join(getDataDir(), 'built-in-plugin-marketplaces.json');
 }
 
 export function getCodexCompatibilityCacheRootDir(): string {
@@ -1739,6 +1824,10 @@ export function getOrgProjectSetupsDir(): string {
   return join(getDataDir(), 'org-project-setups');
 }
 
+export function getOrgSharedMultiRepoCreationsDir(): string {
+  return join(getDataDir(), 'org-shared-multi-repo-creations');
+}
+
 /** The device's fencing generation for organization project claims. */
 export function getInstallationGenerationFilePath(): string {
   return join(getDataDir(), 'installation-generation.json');
@@ -1772,6 +1861,9 @@ export function getPersonalOrganizationUpgradeFilePath(): string {
 
 export function getLabsExperimentChoicesPath(): string {
   return join(getDataDir(), 'labs-experiments', 'choices.json');
+}
+export function getLabsExperimentPendingSyncPath(): string {
+  return join(getDataDir(), 'labs-experiments', 'pending-sync.json');
 }
 export function getLabsExperimentAvailabilityCachePath(): string {
   return join(getDataDir(), 'feature-flags', 'labs-experiments-cache.json');

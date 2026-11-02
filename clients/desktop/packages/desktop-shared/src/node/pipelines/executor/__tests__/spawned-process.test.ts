@@ -1129,6 +1129,53 @@ describe('runSpawnedProcessLocally', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it('holds the step while its output gate is congested', async () => {
+    const total = 4 * 1024 * 1024;
+    let congested = true;
+    let release: () => void = () => undefined;
+    let received = 0;
+    const result = runSpawnedProcessLocally(
+      {
+        command: process.execPath,
+        args: [
+          '-e',
+          `const chunk = 'x'.repeat(64 * 1024);
+           let left = ${total / (64 * 1024)};
+           const next = () => { while (left > 0) { left -= 1; if (!process.stdout.write(chunk)) return process.stdout.once('drain', next); } };
+           next();`,
+        ],
+      },
+      {
+        cwd: directory,
+        env: definedEnvironment(process.env),
+        signal: new AbortController().signal,
+        timeout_minutes: 1,
+        logFile: join(directory, 'gate.log'),
+        outputFile: join(directory, 'gate.out'),
+        envFile: join(directory, 'gate.env'),
+        onOutput: (_stream, data) => {
+          received += data.length;
+        },
+        outputGate: {
+          congested: () => congested,
+          onceDrained: (listener) => {
+            release = listener;
+          },
+        },
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Held after the first chunk: the step blocks on its pipe meanwhile.
+    expect(received).toBeGreaterThan(0);
+    expect(received).toBeLessThan(total / 4);
+
+    congested = false;
+    release();
+    await expect(result).resolves.toMatchObject({ status: 'success' });
+    expect(received).toBe(total);
+  });
+
   it('redacts logs and reads action output files in the host process', async () => {
     const logFile = join(directory, 'step.log');
     const outputFile = join(directory, 'output.txt');
@@ -1576,7 +1623,7 @@ describe('runSpawnedProcessLocally', () => {
       const parsed: unknown = JSON.parse(output.trim());
       expect(
         typeof parsed === 'object' && parsed !== null && 'a' in parsed
-          ? String((parsed as { a: unknown }).a).length
+          ? String(parsed.a).length
           : -1,
       ).toBe(256 * 4_096);
     });

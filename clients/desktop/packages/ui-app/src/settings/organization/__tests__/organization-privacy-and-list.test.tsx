@@ -307,6 +307,7 @@ describe('Organizations list', () => {
       <TeamPanel
         initialOrganizations={ORGANIZATIONS}
         initialInvitations={INVITATIONS}
+        onCreate={jest.fn()}
       />,
       host(client, push, refresh, selectOrganization),
     );
@@ -336,6 +337,78 @@ describe('Organizations list', () => {
     ).toBeNull();
   });
 
+  // CAN-3672: the invitation's organization id outranks names, so a
+  // concurrent same-named addition never gets selected instead.
+  it('selects the invitation organization id among several new memberships', async () => {
+    const summary = (id: string): OrganizationSummary => ({
+      id,
+      name: 'Globex',
+      role: 'MEMBER',
+      memberCount: 1,
+      subTeamCount: 0,
+      logoUrl: null,
+    });
+    const client = createFakeSettingsClient({
+      'organization.invitations.respond': () => ({ ok: true }),
+      'organization.list': () => ({
+        organizations: [
+          ...ORGANIZATIONS,
+          summary('org-other'),
+          summary('org-joined'),
+        ],
+      }),
+      'organization.invitations.incoming': () => ({ invitations: [] }),
+    });
+    const selectOrganization = jest.fn();
+    await render(
+      <TeamPanel
+        initialOrganizations={ORGANIZATIONS}
+        initialInvitations={INVITATIONS.map((invite) => ({
+          ...invite,
+          organizationId: 'org-joined',
+        }))}
+        onCreate={jest.fn()}
+      />,
+      host(client, jest.fn(), jest.fn(), selectOrganization),
+    );
+
+    await clickAndSettle('[data-testid="team-invitation-accept"]');
+
+    expect(selectOrganization).toHaveBeenCalledTimes(1);
+    expect(selectOrganization).toHaveBeenCalledWith('org-joined');
+  });
+
+  it('selects nothing for an older invitation when two same-named memberships arrive', async () => {
+    const summary = (id: string): OrganizationSummary => ({
+      id,
+      name: 'Globex',
+      role: 'MEMBER',
+      memberCount: 1,
+      subTeamCount: 0,
+      logoUrl: null,
+    });
+    const client = createFakeSettingsClient({
+      'organization.invitations.respond': () => ({ ok: true }),
+      'organization.list': () => ({
+        organizations: [...ORGANIZATIONS, summary('org-a'), summary('org-b')],
+      }),
+      'organization.invitations.incoming': () => ({ invitations: [] }),
+    });
+    const selectOrganization = jest.fn();
+    await render(
+      <TeamPanel
+        initialOrganizations={ORGANIZATIONS}
+        initialInvitations={INVITATIONS}
+        onCreate={jest.fn()}
+      />,
+      host(client, jest.fn(), jest.fn(), selectOrganization),
+    );
+
+    await clickAndSettle('[data-testid="team-invitation-accept"]');
+
+    expect(selectOrganization).not.toHaveBeenCalled();
+  });
+
   it('does not refresh the host when accepting is refused', async () => {
     const client = createFakeSettingsClient({
       'organization.invitations.respond': () => {
@@ -352,6 +425,7 @@ describe('Organizations list', () => {
       <TeamPanel
         initialOrganizations={ORGANIZATIONS}
         initialInvitations={INVITATIONS}
+        onCreate={jest.fn()}
       />,
       host(client, jest.fn(), refresh, selectOrganization),
     );

@@ -11,12 +11,12 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
 // Doc 3 — G10: Settings → MCP tab (auth mode + proxy port).
 //
-// Distinct from the Plugins → MCP Servers tab. Covers the deterministic config
-// surface in `settings/McpTab.tsx`: switching the default HTTP auth handler
-// (which swaps the description copy) and editing + applying the local proxy
-// port (persisted via `savePreferences` + `applyProxyPort`). The real proxy
-// bind is not asserted — only that the "saved" affordance appears and that the
-// values survive a relaunch.
+// Distinct from the Customize → MCP servers tab. Covers the deterministic
+// config surface in `settings/McpTab.tsx`: switching the default HTTP auth
+// handler (which swaps the description copy) and editing + applying the local
+// proxy port (persisted via `savePreferences` + `applyProxyPort`). The real
+// proxy bind is not asserted — only that the "saved" affordance appears and
+// that the values survive a relaunch.
 //
 // Auth-mode and port copy come from `settings/mcp-tab-helpers.ts`:
 //   provider description: "Claude and Codex handle MCP auth directly. ..."
@@ -187,12 +187,12 @@ for (const enabled of [false, true]) {
         await expect(window.getByTestId('settings-mcp-saved')).toBeVisible();
       }
       await window.keyboard.press('Escape');
+      // CAN-4267: a custom server is added from the Customize header's Add
+      // custom menu, which opens the same server editor.
       await app.openPluginsPage();
       await app.openPluginsTab('mcp');
-      const panel = window.getByTestId('plugins-management-section-mcp');
-      await panel
-        .getByRole('button', { name: 'Add custom', exact: true })
-        .click();
+      await window.getByTestId('plugins-add-custom-menu').click();
+      await window.getByTestId('plugins-add-custom-mcp').click();
       const dialog = window.getByRole('dialog', { name: 'New MCP server' });
       await dialog.getByRole('button', { name: 'HTTP', exact: true }).click();
       const cloudScope = dialog.getByTestId('mcp-server-scope-cloud');
@@ -227,6 +227,19 @@ for (const enabled of [false, true]) {
         .fill('fixture-custom-token');
       await dialog.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(dialog).toHaveCount(0);
+      // Saving opens the new server's detail (#6140). An account-bound
+      // server's detail is a dialog over the list; close it to move on.
+      const created = window
+        .getByRole('dialog')
+        .filter({ hasText: 'Account MCP' });
+      await expect(created).toBeVisible();
+      await created.getByRole('button', { name: 'Close', exact: true }).click();
+      await expect(created).toHaveCount(0);
+      // The account binding and its status are read from the account
+      // connections table, which Settings keeps.
+      await app.openSettings();
+      await app.openSettingsSection('mcp');
+      const panel = window.getByTestId('settings-mcp-account-connections');
       await expect(panel.getByTestId('mcp-account-status')).toHaveText(
         'Connected',
         { timeout: 15_000 },
@@ -361,11 +374,15 @@ test('account binding matches curated keys and recovers from connection list fai
     });
     await app.openPluginsPage();
     await app.openPluginsTab('mcp');
-    const panel = window.getByTestId('plugins-management-section-mcp');
-    await panel
-      .locator('tr', { hasText: 'Curated GitHub' })
-      .getByTestId('mcp-server-edit-button')
+    // CAN-4267: the installed server's detail page opens the server editor
+    // from Advanced configuration. With no catalog loaded the server keeps its
+    // own row; a loaded catalog would fold it into the GitHub card instead.
+    await window
+      .getByTestId('customize-section-installed')
+      .locator('[data-testid^="customize-row-mcp-"]', { hasText: 'GitHub' })
       .click();
+    await expect(window.getByTestId('mcp-browse-detail')).toBeVisible();
+    await window.getByTestId('plugin-advanced-configuration').click();
     const dialog = window.getByRole('dialog', { name: 'Edit MCP server' });
     const cloudScope = dialog.getByTestId('mcp-server-scope-cloud');
     const reason = dialog.getByTestId('mcp-cloud-local-reason');
@@ -451,9 +468,13 @@ for (const authStatus of ['not_connected', 'error']) {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell();
-      await app.openPluginsPage();
-      await app.openPluginsTab('mcp');
-      const row = window.locator('tr', { hasText: 'Account recovery' });
+      // CAN-4267: the table's "Connect in cloud" recovery is kept by the
+      // account connections table in Settings.
+      await app.openSettings();
+      await app.openSettingsSection('mcp');
+      const row = window
+        .getByTestId('settings-mcp-account-connections')
+        .locator('tr', { hasText: 'Account recovery' });
       await row
         .getByRole('button', {
           name:
@@ -472,3 +493,82 @@ for (const authStatus of ['not_connected', 'error']) {
     }
   });
 }
+
+test('Settings → MCP tab keeps its labels while values load, then fills them in place', async () => {
+  test.setTimeout(120_000);
+
+  const { electronApp, userDataDir } = await launchCanopy();
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+
+    // Hold the page's preferences read until the test lets it go.
+    await electronApp.evaluate(({ ipcMain }) => {
+      const channel = 'preferences:load';
+      const original = ipcMain._invokeHandlers.get(channel);
+      ipcMain.removeHandler(channel);
+      const held = new Promise((resolve) => {
+        globalThis.releasePreferences = resolve;
+      });
+      ipcMain.handle(channel, async (...args) => {
+        await held;
+        return original(...args);
+      });
+    });
+
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
+    const page = window.getByTestId('settings-tab-mcp');
+    await expect(page).toBeVisible();
+    // Real headings and labels from the first frame; no centered "Loading…".
+    await expect(page).toContainText('Local HTTP proxy');
+    await expect(page).toContainText('Default auth path');
+    await expect(page).toContainText('Proxy port');
+    await expect(page.getByTestId('settings-skeleton-form')).toHaveCount(0);
+    await expect(page.getByTestId('settings-mcp-port-input')).toHaveCount(0);
+    // Only the values pulse, once the shared delay has passed.
+    const values = page.getByTestId('settings-mcp-loading-value');
+    await expect(values.first()).toBeVisible();
+    await expect(
+      values.first().locator('.animate-pulse').first(),
+    ).toBeVisible();
+    await expect(page.getByTestId('slow-load-note')).toHaveText('');
+
+    await electronApp.evaluate(() => globalThis.releasePreferences());
+    await expect(page.getByTestId('settings-mcp-port-input')).toBeVisible();
+    await expect(values).toHaveCount(0);
+    await expect(page.getByTestId('slow-load-note')).toHaveCount(0);
+    // Apply is a capsule that can be busy: it reserves its busy label.
+    const apply = page.getByTestId('settings-mcp-save');
+    await expect(apply).toHaveAttribute('aria-busy', 'false');
+    await expect(
+      apply.locator('[data-busy-layer="busy"] [data-reserved-label]'),
+    ).toHaveAttribute('data-reserved-label', 'Applying…');
+    await expect(apply).toHaveText('Apply');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('CAN-4267 Settings MCP Manage opens Customize Installed MCP servers', async () => {
+  const launch = await launchCanopy();
+  try {
+    const window = await launch.electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
+    await window.getByTestId('settings-mcp-manage').click();
+    await expect(window.getByTestId('settings-tab-mcp')).toBeHidden();
+    await expect(window.getByTestId('plugins-type-tab-app')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(
+      window.getByTestId('customize-section-installed'),
+    ).toBeVisible();
+  } finally {
+    await closeCanopy(launch.electronApp, launch.userDataDir);
+  }
+});

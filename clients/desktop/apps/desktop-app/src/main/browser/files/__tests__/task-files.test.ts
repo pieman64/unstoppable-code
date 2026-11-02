@@ -48,12 +48,15 @@ let events: BrowserEvent[];
 let diagnostics: BrowserFilesSessionEvent[];
 let store: BrowserTaskFiles;
 function create(deps: Partial<BrowserTaskFilesDeps> = {}): BrowserTaskFiles {
+  // A replaced store's pending throttle timer must not emit into a later test.
+  const sink = events;
+  const sinkDiagnostics = diagnostics;
   return new BrowserTaskFiles({
     taskDir: () => root,
     now: () => now,
     platform: 'linux',
-    emit: (event) => events.push(event),
-    recordEvent: (_scope, event) => diagnostics.push(event),
+    emit: (event) => sink.push(event),
+    recordEvent: (_scope, event) => sinkDiagnostics.push(event),
     ...deps,
   });
 }
@@ -374,11 +377,17 @@ it('keys attribution by the entire runtime and projects only host-neutral DTOs a
   expect(store.forAction(newer, 'action')).toEqual([]);
   store.setAttribution(runtime, undefined);
   expect(store.attributionFor(runtime)).toBeUndefined();
-  expect(store.get(scope, 'one')?.origin).toBe('https://example.com/report');
+  const report = store.get(scope, 'one');
+  if (report?.kind !== 'download') throw new Error('Missing report download');
+  expect(report.origin).toBe('https://example.com/report');
   staging('blob', { url: 'blob:https://example.com/private?secret' });
   staging('data', { url: 'data:text/plain,secret' });
-  expect(store.get(scope, 'blob')?.origin).toBe('blob:');
-  expect(store.get(scope, 'data')?.origin).toBe('data:');
+  const blob = store.get(scope, 'blob');
+  const data = store.get(scope, 'data');
+  if (blob?.kind !== 'download' || data?.kind !== 'download')
+    throw new Error('Missing blob or data download');
+  expect(blob.origin).toBe('blob:');
+  expect(data.origin).toBe('data:');
   const json = JSON.stringify([
     store.list(scope, 'tab', { browserId: 'tab' }),
     events,
@@ -685,9 +694,9 @@ it("never stages a download at another download's final name", async () => {
   const one = store.get(scope, 'first');
   const two = store.get(scope, 'second');
   expect([one?.status, two?.status]).toEqual(['complete', 'complete']);
-  expect(one?.fileName).toBe('x.txt.download');
   if (one?.kind !== 'download' || two?.kind !== 'download')
     throw new Error('Missing downloads');
+  expect(one.fileName).toBe('x.txt.download');
   expect(await readFile(join(downloads, one.fileName), 'utf8')).toBe('first');
   expect(await readFile(join(downloads, two.fileName), 'utf8')).toBe('second');
 });
@@ -857,7 +866,9 @@ it('reports a download complete only once its catalog write has succeeded', asyn
   // While the write is pending nothing may read the download as complete,
   // including a waiter woken by another download's update.
   expect(store.get(scope, 'one')?.status).toBe('in_progress');
-  expect(store.list(scope, 'tab', {}).transfers[0]?.status).toBe('in_progress');
+  expect(
+    store.list(scope, 'tab', { browserId: 'tab' }).transfers[0]?.status,
+  ).toBe('in_progress');
   expect(admit('two').ok).toBe(true);
   release();
   await completing;

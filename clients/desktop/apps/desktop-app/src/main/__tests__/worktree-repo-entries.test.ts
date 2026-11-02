@@ -33,6 +33,15 @@ const directoryEntry = (name: string): Dirent =>
     isDirectory: (): boolean => true,
   });
 
+// These fixtures mirror the default string-encoding readdir overload.
+const mockedDirentReaddir = mockedReaddir as unknown as jest.MockedFunction<
+  (path: Parameters<typeof readdir>[0]) => Promise<Dirent[]>
+>;
+
+function mockStringDirentResult(entries: Dirent[]): void {
+  mockedDirentReaddir.mockResolvedValue(entries);
+}
+
 describe('listWorkspaceWorktreeRepoEntries', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -52,7 +61,7 @@ describe('listWorkspaceWorktreeRepoEntries', () => {
       type: 'multi-repo',
       repos: [{ id: 'app', name: 'App', repoPath: '/repos/app' }],
     });
-    mockedReaddir.mockResolvedValue([directoryEntry('app')]);
+    mockStringDirentResult([directoryEntry('app')]);
 
     await expect(
       listWorkspaceWorktreeRepoEntries('workspace-1', '/worktrees/feature'),
@@ -76,7 +85,7 @@ describe('listWorkspaceWorktreeRepoEntries', () => {
       type: 'multi-repo',
       repos: [{ id: 'app', name: 'App', repoPath: '/repos/app' }],
     });
-    mockedReaddir.mockResolvedValue([directoryEntry('app')]);
+    mockStringDirentResult([directoryEntry('app')]);
 
     await expect(
       listWorkspaceWorktreeRepoEntries('workspace-1', '/worktrees/feature'),

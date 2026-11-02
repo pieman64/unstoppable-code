@@ -6,6 +6,13 @@ import {
 } from '../cursor/tool-approval';
 import type { ApprovalSessionHandle } from '../approvals/approval-service';
 
+function noPendingApprovalReevaluation(): ApprovalSessionHandle['reevaluatePendingApprovals'] {
+  return jest.fn<
+    ReturnType<ApprovalSessionHandle['reevaluatePendingApprovals']>,
+    Parameters<ApprovalSessionHandle['reevaluatePendingApprovals']>
+  >(() => Promise.resolve());
+}
+
 describe('Cursor native tool authorization', () => {
   const check = jest.fn<
     ReturnType<ApprovalSessionHandle['check']>,
@@ -13,6 +20,7 @@ describe('Cursor native tool authorization', () => {
   >();
   const approval: ApprovalSessionHandle = {
     check,
+    reevaluatePendingApprovals: noPendingApprovalReevaluation(),
     setMode: jest.fn(),
     dispose: jest.fn(),
   };
@@ -46,6 +54,24 @@ describe('Cursor native tool authorization', () => {
       { kind: 'file-write', path: '/workspace/a' },
     ]);
   });
+  it('passes proposed Write content and a relative display path to shared approval', async () => {
+    await authorizeCursorTool(
+      payload('Write', { file_path: '/workspace/a', content: 'proposed\n' }),
+      context,
+    );
+    expect(check).toHaveBeenCalledWith(
+      { kind: 'file-write', path: '/workspace/a' },
+      expect.objectContaining({
+        details: {
+          kind: 'file-write',
+          path: '/workspace/a',
+          displayPath: 'a',
+          change: { kind: 'write', content: 'proposed\n' },
+        },
+        suggestedTarget: { kind: 'file-write', path: '/workspace/a' },
+      }),
+    );
+  });
   it('preserves the complete shell command and working directory', async () => {
     const command = 'awk \'BEGIN {system("touch result")}\'';
     await authorizeCursorTool(
@@ -59,30 +85,36 @@ describe('Cursor native tool authorization', () => {
       }),
     );
   });
-  it('returns the shared policy denial for a native Shell operation', async () => {
-    const denied = {
-      decision: 'deny' as const,
-      message: 'Workspace rule denied this command.',
-    };
-    check.mockResolvedValue(denied);
-    expect(
-      await authorizeCursorTool(
-        payload('Shell', {
+  it.each([
+    'Workspace rule denied this command.',
+    'Blocked by a safety rule (force-push). This call cannot be approved from a prompt. Do not retry or repackage the blocked operation. Choose a safe alternative or explain the block to the user.',
+  ])(
+    'returns the shared policy denial for a native Shell operation: %s',
+    async (message) => {
+      const denied = {
+        decision: 'deny' as const,
+        message,
+      };
+      check.mockResolvedValue(denied);
+      expect(
+        await authorizeCursorTool(
+          payload('Shell', {
+            command: 'printf blocked > result',
+            cwd: '/workspace',
+          }),
+          context,
+        ),
+      ).toEqual(denied);
+      expect(check).toHaveBeenCalledWith(
+        {
+          kind: 'command',
           command: 'printf blocked > result',
           cwd: '/workspace',
-        }),
-        context,
-      ),
-    ).toEqual(denied);
-    expect(check).toHaveBeenCalledWith(
-      {
-        kind: 'command',
-        command: 'printf blocked > result',
-        cwd: '/workspace',
-      },
-      expect.objectContaining({ toolUseId: 'shared-id' }),
-    );
-  });
+        },
+        expect.objectContaining({ toolUseId: 'shared-id' }),
+      );
+    },
+  );
   it.each(['Task', 'mcp__server__tool', 'Edit', 'Unknown'])(
     'denies unimplemented %s without a permissive generic fallback',
     async (tool) => {
@@ -301,6 +333,7 @@ describe('Cursor MCP tool authorization', () => {
   >();
   const approval: ApprovalSessionHandle = {
     check,
+    reevaluatePendingApprovals: noPendingApprovalReevaluation(),
     setMode: jest.fn(),
     dispose: jest.fn(),
   };
@@ -587,6 +620,7 @@ describe('Cursor MCP tool authorization in App Advisor mode', () => {
   >();
   const approval: ApprovalSessionHandle = {
     check,
+    reevaluatePendingApprovals: noPendingApprovalReevaluation(),
     setMode: jest.fn(),
     dispose: jest.fn(),
   };
@@ -688,6 +722,7 @@ describe('Cursor Pipeline Assistant authorization', () => {
   const check = jest.fn().mockResolvedValue({ decision: 'allow' });
   const approval: ApprovalSessionHandle = {
     check,
+    reevaluatePendingApprovals: noPendingApprovalReevaluation(),
     setMode: jest.fn(),
     dispose: jest.fn(),
   };

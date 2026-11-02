@@ -6,6 +6,11 @@ export interface ToggleSwitchProps {
   readonly id?: string;
   readonly checked: boolean;
   readonly disabled?: boolean;
+  /**
+   * Set while the value has not been read yet. `aria-checked` stays boolean
+   * because WAI-ARIA does not allow `mixed` on `switch`.
+   */
+  readonly busy?: boolean;
   /** Accessible name. Required: the track renders no text of its own. */
   readonly label: string;
   /** Id of an element that describes the switch, such as a note beside it. */
@@ -90,6 +95,7 @@ export function ToggleSwitch({
   id,
   checked,
   disabled,
+  busy,
   label,
   describedBy,
   onChange,
@@ -102,6 +108,7 @@ export function ToggleSwitch({
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-busy={busy || undefined}
       aria-label={label}
       aria-describedby={describedBy}
       disabled={disabled}

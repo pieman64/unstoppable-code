@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
 import { buildCmdCommandLine } from '@canopy/desktop-shared/node/lib/windows-process';
 import type {
@@ -9,10 +10,7 @@ import type {
   ScriptRunResponse,
   ScriptStartedEvent,
 } from '@canopy/desktop-shared/types';
-import {
-  IPC_CHANNELS,
-  TERMINAL_USER_CLOSE_SIGNAL,
-} from '@canopy/desktop-shared/types';
+import { TERMINAL_USER_CLOSE_SIGNAL } from '@canopy/desktop-shared/types';
 import {
   MAX_SCRIPT_TIMEOUT_SECONDS,
   type CommandShellDefinition,
@@ -28,6 +26,10 @@ import {
   getResourceMonitorService,
   type ResourceRegistrationHandle,
 } from '../resource-monitor';
+import {
+  getExecutionAccounting,
+  withExecutionLease,
+} from '../execution-accounting';
 import { assertWorkspaceTargetRuntimeStartAllowed } from './workspace-target-exclusion';
 
 const FORCE_KILL_DELAY_MS = 5_000;
@@ -154,7 +156,7 @@ async function runInteractiveShellScript(
   // Keep the PTY backend off the ordinary readonly runner's import path. This
   // avoids loading terminal/native dependencies for hooks and non-interactive
   // scripts while still sharing the tracking registry below.
-  const { ptyManager } = await import('../terminal/pty-manager');
+  const { workerTerminal } = await import('../terminal/worker-terminal');
   let shell: ReturnType<typeof buildShellScriptCommand>;
   try {
     shell = buildShellScriptCommand(options.script, options.shell);
@@ -242,41 +244,32 @@ async function runInteractiveShellScript(
       resolve(response);
     };
 
-    const unsubscribeEvents = ptyManager.addEventListener(
-      (channel, payload): void => {
-        if (
-          terminalId === null ||
-          !('terminalId' in payload) ||
-          payload.terminalId !== terminalId
-        ) {
-          return;
+    const unsubscribeEvents = workerTerminal.addEventListener((event): void => {
+      if (terminalId === null) return;
+      if (event.type === 'output') {
+        if (event.payload.terminalId === terminalId) {
+          emitChunk(Buffer.from(event.payload.data));
         }
-        if (channel === IPC_CHANNELS.terminalOutput) {
-          if ('data' in payload) {
-            emitChunk(Buffer.from(payload.data));
-          }
-        } else if (
-          channel === IPC_CHANNELS.terminalExit &&
-          'exitCode' in payload &&
-          'signal' in payload
-        ) {
-          finish(payload.exitCode, payload.signal);
-        }
-      },
-    );
+      } else if (
+        event.type === 'exit' &&
+        event.payload.terminalId === terminalId
+      ) {
+        finish(event.payload.exitCode, event.payload.signal);
+      }
+    });
 
     const stop = (reason: 'manual' | 'abort' | 'timeout' = 'manual'): void => {
       if (settled || terminalId === null) return;
       if (reason === 'manual') stoppedManually = true;
       if (reason === 'abort') aborted = true;
       if (reason === 'timeout') timedOut = true;
-      ptyManager.kill(terminalId);
+      workerTerminal.kill(terminalId);
     };
     const activeScript: ActiveShellScript = {
       stop,
       drain: async () => {
         stoppedManually = true;
-        if (terminalId !== null) await ptyManager.drainTerminal(terminalId);
+        if (terminalId !== null) await workerTerminal.release(terminalId);
         await waitForExit;
       },
       waitForExit,
@@ -302,28 +295,26 @@ async function runInteractiveShellScript(
       // this to keep Canopy-held and user-assigned secrets out of the PTY that
       // backs an interactive published command.
       const session = options.env
-        ? ptyManager.spawnWithEnvironment(
-            options.env,
-            tracking.projectId,
-            tracking.worktreeId,
-            80,
-            24,
-            undefined,
+        ? workerTerminal.create({
+            projectId: tracking.projectId,
+            worktreeId: tracking.worktreeId,
+            cols: 80,
+            rows: 24,
             managedCommand,
-            options.cwd,
-          )
-        : ptyManager.spawn(
-            tracking.projectId,
-            tracking.worktreeId,
-            80,
-            24,
-            undefined,
+            cwd: options.cwd,
+            environment: options.env,
+          })
+        : workerTerminal.create({
+            projectId: tracking.projectId,
+            worktreeId: tracking.worktreeId,
+            cols: 80,
+            rows: 24,
             managedCommand,
-            options.cwd,
-          );
+            cwd: options.cwd,
+          });
       terminalId = session.id;
       if (launch.lowerPriorityAfterSpawn) {
-        ptyManager.lowerPriority(session.id);
+        workerTerminal.lowerPriority(session.id);
       }
     } catch (error) {
       unsubscribeEvents();
@@ -387,7 +378,8 @@ export function buildShellScriptCommand(
   args: string[];
   cleanup?: () => void;
 } {
-  if (process.platform === 'win32') {
+  const platform = hostPlatformOperatingSystem();
+  if (platform === 'win32') {
     const requestedShell = shell?.windows;
     if (requestedShell === 'bash') {
       const bash = resolveWindowsGitBash();
@@ -437,7 +429,21 @@ export function buildShellScriptCommand(
     };
   }
 
-  const requestedShell = process.platform === 'darwin' ? shell?.mac : undefined;
+  if (platform === 'linux') {
+    const requestedShell = shell?.linux ?? 'bash';
+    const resolvedShell = findExecutableOnPath(requestedShell);
+    if (requestedShell === 'zsh' && resolvedShell === null) {
+      throw new Error(
+        'zsh configured in shell.linux is not available on PATH. Install zsh or change shell.linux to "bash".',
+      );
+    }
+    return {
+      command: resolvedShell ?? '/bin/bash',
+      args: [options?.interactive === false ? '-l' : '-li', '-c', script],
+    };
+  }
+
+  const requestedShell = platform === 'darwin' ? shell?.mac : undefined;
   const command = requestedShell
     ? (findExecutableOnPath(requestedShell) ?? `/bin/${requestedShell}`)
     : process.env.SHELL || '/bin/bash';
@@ -669,6 +675,7 @@ export function runShellScript(
       return;
     }
 
+    const platform = hostPlatformOperatingSystem();
     let child: ReturnType<typeof spawn>;
     try {
       const launch = prepareBackgroundProcessLaunch(
@@ -682,7 +689,7 @@ export function runShellScript(
         stdio: ['ignore', 'pipe', 'pipe'],
         // Windows drops piped output for detached children; taskkill /t still
         // lets us terminate the process tree without CREATE_NEW_PROCESS_GROUP.
-        detached: process.platform !== 'win32',
+        detached: platform !== 'win32',
         windowsHide: true,
       });
     } catch (error) {
@@ -692,7 +699,7 @@ export function runShellScript(
     }
     if (
       options.backgroundPriority &&
-      process.platform !== 'darwin' &&
+      platform !== 'darwin' &&
       typeof child.pid === 'number'
     ) {
       lowerSpawnedProcessPriority(child.pid);
@@ -701,8 +708,9 @@ export function runShellScript(
     const tracking = options.tracking;
     const trackedScript = tracking?.script;
     if (tracking && trackedScript && typeof child.pid === 'number') {
-      resourceHandle = getResourceMonitorService().registerProcess({
-        id: `script:${tracking.projectId}:${tracking.worktreeId}:${tracking.scriptKey}:${child.pid}`,
+      const scriptResourceId = `script:${tracking.projectId}:${tracking.worktreeId}:${tracking.scriptKey}:${child.pid}`;
+      const registration = getResourceMonitorService().registerProcess({
+        id: scriptResourceId,
         groupId: 'scripts',
         kind: 'script',
         label: trackedScript.label,
@@ -725,6 +733,10 @@ export function runShellScript(
           },
         },
       });
+      resourceHandle = withExecutionLease(
+        getExecutionAccounting().track('script', scriptResourceId),
+        registration,
+      );
     }
     const collectChunk = (chunk: Buffer): void => {
       if (totalBytes >= MAX_OUTPUT_BYTES) return;

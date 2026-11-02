@@ -5,6 +5,7 @@ import {
   type WorkspaceReferenceRepoStatusEvent,
   type WorkspaceReferenceRepoWarningCode,
 } from '@canopy/desktop-shared/types';
+import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
 import { inspectReferenceRepo } from './workspace-reference-repo-health';
 import { sendToWindow, type SendableBrowserWindow } from './window-send';
 
@@ -23,6 +24,7 @@ const immediateQueue: string[] = [];
 const gradualQueue: string[] = [];
 let pollTimeout: ReturnType<typeof setTimeout> | null = null;
 let getWindowFn: (() => SendableBrowserWindow | null) | null = null;
+let gitDispatcher: WorkerGitDispatcher | null = null;
 let running = false;
 let ticking = false;
 let lastPollAt = 0;
@@ -85,9 +87,10 @@ function statusesMatch(
 }
 
 async function checkWorkspace(
+  dispatcher: WorkerGitDispatcher,
   entry: TrackedWorkspaceReferenceRepo,
 ): Promise<void> {
-  const status = await inspectReferenceRepo(entry.workspaceId);
+  const status = await inspectReferenceRepo(dispatcher, entry.workspaceId);
   const didUpdateReferenceRepo = Boolean(status?.didAutoPull);
   const changed = !statusesMatch(entry.lastStatus, status);
 
@@ -188,7 +191,8 @@ function scheduleNext(): void {
 }
 
 async function tick(): Promise<void> {
-  if (!running || ticking) {
+  const dispatcher = gitDispatcher;
+  if (!running || ticking || !dispatcher) {
     return;
   }
 
@@ -204,7 +208,7 @@ async function tick(): Promise<void> {
         const entry = tracked.get(workspaceId);
         if (entry) {
           lastPollAt = Date.now();
-          await checkWorkspace(entry);
+          await checkWorkspace(dispatcher, entry);
           return;
         }
       }
@@ -219,7 +223,7 @@ async function tick(): Promise<void> {
           lastPollAt = Date.now();
           lastGradualPollAt = lastPollAt;
           rotateGradualQueue(workspaceId);
-          await checkWorkspace(entry);
+          await checkWorkspace(dispatcher, entry);
           return;
         }
       }
@@ -232,8 +236,10 @@ async function tick(): Promise<void> {
 
 export function startPolling(
   getWindow: () => SendableBrowserWindow | null,
+  dispatcher: WorkerGitDispatcher,
 ): void {
   getWindowFn = getWindow;
+  gitDispatcher = dispatcher;
   running = true;
   scheduleNext();
 }

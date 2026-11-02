@@ -83,7 +83,7 @@ function ChangedFiles({
         </p>
       ) : null}
       <div>
-        <Button size="control" variant="secondary" onClick={onRefresh}>
+        <Button size="compact" variant="secondary" onClick={onRefresh}>
           {DELEGATED_AGENT_REFRESH_CHANGES_LABEL}
         </Button>
       </div>
@@ -145,7 +145,7 @@ export function SubagentChangesDialog({
           <p className="text-sm fg-destructive">
             {DELEGATED_AGENT_CHANGES_FAILED_LABEL}
           </p>
-          <Button size="control" variant="secondary" onClick={retry}>
+          <Button size="compact" variant="secondary" onClick={retry}>
             {DELEGATED_AGENT_CHANGES_RETRY_LABEL}
           </Button>
         </div>

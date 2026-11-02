@@ -5,9 +5,9 @@ import type {
 } from '@canopy/desktop-shared/types';
 
 /**
- * Discriminated state for the Windows/macOS Git startup gate.
+ * Discriminated state for the desktop Git startup gate.
  *
- * - `not-required` — not a Windows/macOS build, or Git is already usable, so the gate
+ * - `not-required` — not a supported desktop build, or Git is already usable, so the gate
  *   must never render and the app proceeds straight to the shell.
  * - `checking` — the initial `getGitExecutableStatus()` probe is in flight. The
  *   shell stays blocked while this resolves so a supported build can never reach
@@ -64,7 +64,11 @@ const INITIAL_INSTALL_PROGRESS: GitExecutableInstallProgress = {
 };
 
 function requiresGit(): boolean {
-  return window.platform === 'win32' || window.platform === 'darwin';
+  return (
+    window.platform === 'win32' ||
+    window.platform === 'darwin' ||
+    window.platform === 'linux'
+  );
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -122,9 +126,8 @@ export function resolveStartupGateView(
 }
 
 /**
- * Drives the Windows/macOS Git startup gate. On unsupported builds it resolves
- * to `not-required` synchronously and performs no IPC, so Linux behavior is
- * unchanged. On supported platforms it probes `getGitExecutableStatus()` on mount and
+ * Drives the desktop Git startup gate. On unsupported builds it resolves
+ * to `not-required` synchronously and performs no IPC. On supported platforms it probes `getGitExecutableStatus()` on mount and
  * exposes the Recheck / Auto-install / Continue actions the gate renders.
  */
 export function useWindowsGitRequirement(
@@ -237,7 +240,8 @@ export function useWindowsGitRequirement(
   }, [enabled, safeSetState]);
 
   const autoInstall = useCallback(async (): Promise<void> => {
-    if (!enabled || !requiresGit()) return;
+    // Linux installation stays in the user's terminal; never launch a privileged installer.
+    if (!enabled || !requiresGit() || window.platform === 'linux') return;
     const priorStatus = statusFromState(state);
     if (window.platform === 'darwin') {
       stopInstallPolling();

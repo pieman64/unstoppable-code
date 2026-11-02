@@ -474,7 +474,10 @@ describe('usePlanComments shared plan controller', () => {
       resolve: (sent: boolean) => void;
       reject: (error: Error) => void;
     } = { resolve: () => undefined, reject: () => undefined };
-    const send = jest.fn(
+    const send = jest.fn<
+      Promise<boolean>,
+      [string, PlanCommentSubmitHiddenContext]
+    >(
       (): Promise<boolean> =>
         new Promise<boolean>((resolve, reject) => {
           settle.resolve = resolve;

@@ -1,3 +1,4 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -112,6 +113,10 @@ test('chat playground exercises question submission, recovery and terminal state
   const { electronApp } = await launchCanopy({ userDataDir });
   try {
     const window = await electronApp.firstWindow();
+    await connectMockCloudAccount(
+      window,
+      'csk_activity_states_page_attachments_e2e',
+    );
     await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
     await window.getByTestId('sidebar-more').click();
     await window.getByTestId('sidebar-more-item-dev-pages').click();

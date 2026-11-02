@@ -27,7 +27,7 @@ import {
   resolveWorkEntryForChat,
   updateWorkEntry,
 } from '../lib/cowork-work-entries';
-import { assertNoLiveDelegationsInWorktree } from '../agents/delegation/activity';
+import { assertWorktreeCanBeRemoved } from '../agents/background-work';
 import { getTelemetrySyncService } from '../services/telemetry-sync-service';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
@@ -42,6 +42,7 @@ import { getChatQueueService } from '../services/chat-queue-service';
 import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
 import { notifyLedgerContainerArchived } from '../ledger/lifecycle';
 import { workEntryLedgerIncarnation } from '../ledger/lifecycle-containers';
+import { runAsLocalFenceHolder } from '../app-advisor/local-fence-holder';
 
 /**
  * Tells the Ledger that a Cowork or App Advisor Work Entry was deleted, so its
@@ -249,8 +250,7 @@ export function registerWorkEntryHandlers(): void {
     if (!entry) {
       throw new Error(`Unknown work entry ${request.entryId}`);
     }
-    // A chat with live delegates keeps its Work Entry (the row shows working).
-    assertNoLiveDelegationsInWorktree(workspaceId, request.entryId);
+    assertWorktreeCanBeRemoved(workspaceId, request.entryId);
     const retentionDays = await resolveContainerRetentionDays(workspaceId);
     let retained = false;
     let removedChatIds: string[] = [];
@@ -260,7 +260,12 @@ export function registerWorkEntryHandlers(): void {
       projectId: workspaceId,
       worktreeId: request.entryId,
     };
-    await chatStateService.runWithScopeDeletionLifecycle(scope, async () => {
+    // One fence holder, so another operation's release keeps this fence.
+    const runDeletion = (operation: () => Promise<void>): Promise<void> =>
+      runAsLocalFenceHolder(() =>
+        chatStateService.runWithScopeDeletionLifecycle(scope, operation),
+      );
+    await runDeletion(async () => {
       const queueDeletion = getChatQueueService().beginWorktreeDeletion(
         workspaceId,
         request.entryId,

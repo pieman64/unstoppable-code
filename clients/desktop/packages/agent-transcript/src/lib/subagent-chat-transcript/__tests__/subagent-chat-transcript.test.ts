@@ -443,6 +443,7 @@ describe('buildSubagentChatTranscript', () => {
             {
               type: 'tool_result',
               toolUseId: 'native-task',
+              toolName: 'Task',
               output: 'The bug is in the tokenizer.',
               isError: false,
             },

@@ -25,3 +25,14 @@ export const APPROVAL_MODE_PROSE_LABELS: Record<ApprovalMode, string> = {
   auto: 'Accept edits',
   'full-access': 'Full access',
 };
+
+/**
+ * One-line subtitles under each mode in the approval picker. They leave out
+ * that saved rules still answer in both prompting modes and that safety rules
+ * block risky commands there; only Full access skips those safety rules.
+ */
+export const APPROVAL_MODE_DESCRIPTIONS: Record<ApprovalMode, string> = {
+  ask: 'Ask before running tools',
+  auto: 'Edit project files without asking',
+  'full-access': 'Skip approvals and safety rules',
+};

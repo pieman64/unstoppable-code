@@ -208,7 +208,7 @@ function HookActionDetails({
     }
   } else if (action.type === 'pipeline') {
     if (action.allowPipelineConcurrency === true) {
-      items.push({ label: 'Allows concurrent pipelines' });
+      items.push({ label: 'Allows concurrent workflows' });
     }
   }
 

@@ -2,6 +2,7 @@
 
 import { useRef, useState, type FormEvent, type JSX } from 'react';
 import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organization-memory';
+import { Button } from '@canopy/ui-shared/components';
 import { useSettingsClient } from '../host';
 import { previewMemorySearch } from './api';
 import { useMemoryErrorCopy } from './memory-error-copy';
@@ -81,13 +82,14 @@ export function GraphRetrievalPanel({
           aria-label="Retrieval highlight query"
           className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
         />
-        <button
+        <Button
           type="submit"
+          size="compact"
           disabled={loading || query.trim().length === 0}
-          className="shrink-0 rounded-lg border bg-base px-4 py-2 text-s font-medium fg-primary hover:bg-card disabled:opacity-50"
+          className="self-center"
         >
           {loading ? 'Previewing…' : 'Highlight'}
-        </button>
+        </Button>
       </form>
       <p className="mt-2 text-xs fg-secondary">
         Runs the exact turn-time retrieval pipeline. Entities of injected facts

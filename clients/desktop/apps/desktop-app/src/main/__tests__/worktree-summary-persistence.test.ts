@@ -35,6 +35,7 @@ import {
   emitWorktreeSummaryPortalDelta,
   readWorktreeSummary,
   readWorktreeSummaryFile,
+  readWorktreeSummaryWriteAbortReason,
   writeWorktreeSummary,
   writeWorktreeSummarySnapshot,
   isWorktreeSummaryData,
@@ -270,6 +271,60 @@ describe('writeWorktreeSummary', () => {
   });
 });
 
+describe('readWorktreeSummaryWriteAbortReason', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedResolveWorktreeSummaryFilePath.mockReturnValue('/tmp/summary.json');
+  });
+
+  it.each([
+    [
+      'a file it cannot read',
+      (): void => {
+        mockedReadFile.mockRejectedValue(
+          Object.assign(new Error('EACCES'), { code: 'EACCES' }),
+        );
+      },
+      'unreadable',
+    ],
+    [
+      'a file a newer app wrote',
+      (): void => {
+        mockedReadFile.mockResolvedValue(
+          JSON.stringify({ version: 3, summary: makeSummary(), history: [] }),
+        );
+      },
+      'future_version',
+    ],
+    [
+      'a missing file',
+      (): void => {
+        mockedReadFile.mockRejectedValue(
+          Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+        );
+      },
+      null,
+    ],
+    [
+      'a corrupt file',
+      (): void => {
+        mockedReadFile.mockResolvedValue('{"version": 2, "history": [');
+      },
+      null,
+    ],
+  ])(
+    'reports whether a write over %s would abort',
+    async (_, arrange, reason) => {
+      arrange();
+
+      await expect(
+        readWorktreeSummaryWriteAbortReason('project-a', 'wt-1'),
+      ).resolves.toBe(reason);
+      expect(mockedWriteFileAtomically).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('writeWorktreeSummarySnapshot', () => {
   const provenance: WorktreeSummaryProvenance = {
     generationId: 'generation-1',
@@ -334,8 +389,126 @@ describe('writeWorktreeSummarySnapshot', () => {
     );
 
     // Its unpublished snapshots stay for a later write or reconciliation.
-    expect(result).toBeNull();
+    expect(result).toEqual({ kind: 'aborted', reason: 'unreadable' });
     expect(mockedWriteFileAtomically).not.toHaveBeenCalled();
+  });
+
+  it.each([3, 2.5])(
+    'writes nothing over a version %s file a newer app wrote',
+    async (version) => {
+      const summary = makeSummary();
+      mockedReadFile.mockResolvedValue(
+        JSON.stringify({
+          version,
+          summary,
+          history: [{ snapshotId: 'snap-1', summary, provenance }],
+        }),
+      );
+      const listener = jest.fn<
+        void,
+        Parameters<WorktreeSummaryChangeListener>
+      >();
+      addWorktreeSummaryChangeListener(listener);
+
+      const result = await writeWorktreeSummarySnapshot(
+        'project-a',
+        'wt-1',
+        { ...summary, description: 'A different description' },
+        provenance,
+      ).finally(() => removeWorktreeSummaryChangeListener(listener));
+
+      expect(result).toEqual({ kind: 'aborted', reason: 'future_version' });
+      expect(mockedWriteFileAtomically).not.toHaveBeenCalled();
+      expect(listener).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still replaces a file whose version is not a number', async () => {
+    mockedReadFile.mockResolvedValue(
+      JSON.stringify({ version: '3', summary: makeSummary(), history: [] }),
+    );
+
+    const result = await writeWorktreeSummarySnapshot(
+      'project-a',
+      'wt-1',
+      makeSummary(),
+      provenance,
+    );
+
+    expect(result).toMatchObject({
+      kind: 'written',
+      replacedCorruptFile: true,
+    });
+  });
+
+  it('counts the history entries and publishable provenance it discards', async () => {
+    const summary = makeSummary();
+    const invalidProvenance = { ...provenance, generationId: '' };
+    mockedReadFile.mockResolvedValue(
+      JSON.stringify({
+        version: 2,
+        summary,
+        history: [
+          { snapshotId: '', summary },
+          { snapshotId: 'snap-broken', summary: { title: 'x' } },
+          'not a snapshot',
+          {
+            snapshotId: 'snap-stripped',
+            summary,
+            provenance: invalidProvenance,
+          },
+          {
+            snapshotId: 'snap-unpublishable',
+            summary,
+            provenance: { ...invalidProvenance, ledgerPublishable: false },
+          },
+          { snapshotId: 'snap-kept', summary, provenance },
+        ],
+      }),
+    );
+
+    const result = await writeWorktreeSummarySnapshot(
+      'project-a',
+      'wt-1',
+      { ...summary, description: 'A different description' },
+      provenance,
+    );
+
+    expect(result).toMatchObject({
+      kind: 'written',
+      droppedInvalidSnapshotCount: 3,
+      strippedPublishableSnapshotIds: ['snap-stripped'],
+      droppedPublishableSnapshotIds: [],
+      replacedCorruptFile: false,
+    });
+    const history = lastWrittenFile().history;
+    expect(history.map((snapshot) => snapshot.snapshotId)).toEqual([
+      'snap-stripped',
+      'snap-unpublishable',
+      'snap-kept',
+      expect.any(String),
+    ]);
+    expect(history[0]?.provenance).toBeUndefined();
+    expect(history[2]?.provenance).toEqual(provenance);
+  });
+
+  it('discards nothing from a valid or legacy file', async () => {
+    const summary = makeSummary();
+    mockedReadFile.mockResolvedValue(JSON.stringify({ version: 1, summary }));
+
+    const result = await writeWorktreeSummarySnapshot(
+      'project-a',
+      'wt-1',
+      summary,
+      provenance,
+    );
+
+    expect(result).toMatchObject({
+      kind: 'written',
+      isNewSnapshot: false,
+      droppedInvalidSnapshotCount: 0,
+      strippedPublishableSnapshotIds: [],
+    });
   });
 
   it.each([
@@ -357,7 +530,9 @@ describe('writeWorktreeSummarySnapshot', () => {
         isNewSnapshot: true,
         replacedCorruptFile: true,
       });
-      expect(lastWrittenFile().history).toEqual([result?.snapshot]);
+      expect(lastWrittenFile().history).toEqual([
+        result?.kind === 'written' ? result.snapshot : null,
+      ]);
     },
   );
 
@@ -407,7 +582,7 @@ describe('writeWorktreeSummarySnapshot', () => {
       provenance,
     );
 
-    expect(result?.droppedPublishableSnapshotIds).toEqual(['snap-0']);
+    expect(result).toMatchObject({ droppedPublishableSnapshotIds: ['snap-0'] });
   });
 });
 

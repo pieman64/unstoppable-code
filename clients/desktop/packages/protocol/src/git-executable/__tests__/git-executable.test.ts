@@ -6,12 +6,18 @@ import {
   MAC_COMMAND_LINE_TOOLS_GIT_PATH,
   MAC_HOMEBREW_GIT_PATHS,
   type GitCandidatePaths,
+  getGitExecutableDetectionMode,
+  getGitExecutableProbeOrder,
+  getGitExecutableRequirement,
   getLinuxGitCandidates,
   getMacGitCandidates,
   getWindowsGitCandidates,
   isMacGitShim,
   parseGitVersion,
   parseWhereExeOutput,
+  selectLinuxExplicitGitChoice,
+  shapeGitExecutableStatus,
+  shouldJoinGitExecutableDetection,
 } from '../index';
 
 const joinFlavorSchema = z.enum(['posix', 'win32']);
@@ -211,6 +217,140 @@ describe('git executable selection inputs', () => {
       'join one,git',
       'isAbsolute dev',
       'join dev,usr/bin/git',
+    ]);
+  });
+});
+
+describe('git executable status and precedence policy', () => {
+  it.each([
+    ['linux', 'x64', 'linux', true],
+    ['linux', 'arm64', 'linux', true],
+    ['darwin', 'arm64', 'probe', true],
+    ['darwin', 'x64', 'probe', true],
+    ['win32', 'x64', 'probe', true],
+    ['win32', 'arm64', 'probe', true],
+    ['freebsd', 'x64', 'optional', false],
+  ] as const)(
+    'selects the %s/%s detection from its arguments',
+    (os, arch, mode, required) => {
+      expect(getGitExecutableDetectionMode(os, arch)).toBe(mode);
+      expect(getGitExecutableRequirement(os, arch)).toEqual({
+        platform: os,
+        required,
+      });
+      expect(Object.keys(getGitExecutableRequirement(os, arch))).toEqual([
+        'platform',
+        'required',
+      ]);
+    },
+  );
+
+  it.each([
+    ['darwin', false, true],
+    ['darwin', true, true],
+    ['win32', false, true],
+    ['win32', true, false],
+    ['linux', false, true],
+    ['linux', true, false],
+  ] as const)(
+    'on %s joins a running detection when force is %s: %s',
+    (os, force, joins) => {
+      expect(shouldJoinGitExecutableDetection(os, force)).toBe(joins);
+    },
+  );
+
+  it('prefers the saved Linux choice, then an override it did not discover', () => {
+    expect(
+      selectLinuxExplicitGitChoice({
+        saved: '/saved/git',
+        override: '/override/git',
+        discovered: null,
+      }),
+    ).toBe('/saved/git');
+    expect(
+      selectLinuxExplicitGitChoice({
+        saved: null,
+        override: '/override/git',
+        discovered: '/found/git',
+      }),
+    ).toBe('/override/git');
+    for (const override of [undefined, '', '/found/git'])
+      expect(
+        selectLinuxExplicitGitChoice({
+          saved: null,
+          override,
+          discovered: '/found/git',
+        }),
+      ).toBeNull();
+  });
+
+  it('drops macOS shims and repeats in probe order', () => {
+    expect(
+      getGitExecutableProbeOrder('darwin', [
+        '/usr/bin/git',
+        '/opt/homebrew/bin/git',
+        '/usr/local/Library/Homebrew/shims/git',
+        '/opt/homebrew/bin/git',
+        '/Opt/Homebrew/bin/git',
+        '/usr/bin/xcrun',
+      ]),
+    ).toEqual(['/opt/homebrew/bin/git', '/Opt/Homebrew/bin/git']);
+  });
+
+  it('drops Windows repeats case-insensitively, keeping the first spelling', () => {
+    expect(
+      getGitExecutableProbeOrder('win32', [
+        'C:\\Git\\cmd\\git.exe',
+        'c:\\git\\CMD\\GIT.EXE',
+        '/usr/bin/git',
+        'D:\\Git\\git.exe',
+      ]),
+    ).toEqual(['C:\\Git\\cmd\\git.exe', '/usr/bin/git', 'D:\\Git\\git.exe']);
+  });
+
+  it('shapes statuses in the reported key order and omits an empty error', () => {
+    const requirement = getGitExecutableRequirement('win32', 'x64');
+    const ready = shapeGitExecutableStatus(
+      requirement,
+      '2026-10-26T00:00:00.000Z',
+      {
+        ready: true,
+        path: 'C:\\Git\\git.exe',
+        version: 'git version 2.47.1',
+        source: 'cache',
+        wingetAvailable: true,
+      },
+    );
+    expect(JSON.stringify(ready)).toBe(
+      '{"platform":"win32","required":true,"checkedAt":"2026-10-26T00:00:00.000Z","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1","source":"cache","wingetAvailable":true}',
+    );
+    const values = {
+      ready: false,
+      path: null,
+      version: null,
+      source: 'not-found',
+      wingetAvailable: false,
+    } as const;
+    expect(
+      shapeGitExecutableStatus(requirement, 'now', { ...values, error: '' }),
+    ).not.toHaveProperty('error');
+    expect(
+      Object.keys(
+        shapeGitExecutableStatus(requirement, 'now', {
+          ...values,
+          error: 'missing',
+        }),
+      ),
+    ).toEqual([
+      'platform',
+      'required',
+      'checkedAt',
+      'ready',
+      'path',
+      'version',
+      'source',
+      'wingetAvailable',
+      'error',
     ]);
   });
 });

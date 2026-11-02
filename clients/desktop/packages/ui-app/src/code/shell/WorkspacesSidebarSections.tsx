@@ -9,6 +9,8 @@ import {
   type SidebarItemGroupBlock,
 } from './sidebar/sidebar-item-groups-model';
 import {
+  Button,
+  Dot,
   SidebarItemGroupHeader,
   sidebarItemGroupColor,
   type WorktreeMenuItem,
@@ -52,6 +54,7 @@ import type {
   WorktreeRemovalCapability,
 } from '@canopy/app-core';
 import {
+  AgentStateGlyph,
   HiddenItemsDisclosureRow,
   LoadingSpinner,
   openWorktreeActionsMenuAt,
@@ -103,6 +106,7 @@ import {
 } from './workspace-sections-model';
 import {
   deriveWorkspaceBackend,
+  deriveWorktreeUiStatus,
   sidebarRowLabel,
   workspaceLayout,
 } from './worktree-status';
@@ -111,13 +115,19 @@ import { workspaceColor, workspaceKind } from './sidebar-model';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { isMacPlatform } from '../../find/shortcut-target';
 import {
+  resolveSelectionClick,
+  resolveSelectionKey,
+  shiftMouseDownSuppressesTextSelection,
+} from '@canopy/ui-shared/lib/sidebar-row-selection-gestures';
+import {
   worktreeSelectionRowsFor,
   type WorktreeMultiSelectBinding,
 } from './sidebar/use-sidebar-worktree-bulk';
+import type { WorkEntryMultiSelectBinding } from './sidebar/use-sidebar-work-entry-bulk';
 import {
-  WORKTREE_SELECTION_ROW_ATTR,
-  type WorktreeSelectionRow,
-} from './sidebar/worktree-selection';
+  SIDEBAR_SELECTION_ROW_ATTR,
+  type SidebarSelectionRow,
+} from './sidebar/sidebar-row-selection';
 
 /** A host-owned project participating in the shared project list limit. */
 export interface SidebarAdditionalProject {
@@ -155,6 +165,11 @@ export interface CoworkWorkspaceSlotContext extends WorkspaceSectionSlotContext 
   readonly hasFollowingWorkspace: boolean;
   readonly onSelect?: () => void;
   readonly onCollapsedChange?: (collapsed: boolean) => void;
+  /**
+   * The bulk selection for this workspace's Work Entry rows (CAN-3975);
+   * absent where the host wired no Work Entry removal.
+   */
+  readonly workEntryMultiSelect?: WorkEntryMultiSelectBinding;
 }
 
 export interface ArchivedWorktreeEntry {
@@ -210,6 +225,7 @@ const WORKTREE_ROW_OVERRIDE_KEYS = [
   'lastActivityAt',
   'runtimeState',
   'isStreaming',
+  'backgroundTasks',
   'awaitingApproval',
   'hasPendingQuestion',
   'hasPendingToolApproval',
@@ -313,6 +329,43 @@ export function pickWorktreeRowOverrides(
     copyWorktreeRowOverrideKey(picked, overrides, key);
   }
   return picked;
+}
+
+/**
+ * A muted space hides its blue dots (CAN-4378). A host's live overrides carry
+ * unread and pipeline state the snapshot mask in `projectWorktreeRuntime`
+ * never saw, so they are masked the same way; orange and red states, and live
+ * work, still show.
+ */
+function maskMutedWorktreeRowOverrides(
+  overrides: WorktreeRowOverrides,
+  rowProps: ComponentProps<typeof WorktreeRow>,
+  spaceMuted: boolean,
+): WorktreeRowOverrides {
+  if (!spaceMuted) return overrides;
+  const pipelineStatus =
+    overrides.pipelineStatus === 'unseen'
+      ? undefined
+      : overrides.pipelineStatus;
+  return {
+    ...overrides,
+    ...('hasUnread' in overrides ? { hasUnread: undefined } : {}),
+    ...('pipelineStatus' in overrides ? { pipelineStatus } : {}),
+    ...(overrides.uiStatus === 'unread'
+      ? {
+          uiStatus: deriveWorktreeUiStatus({
+            isStreaming: overrides.isStreaming ?? rowProps.isStreaming,
+            isRunningRun: rowProps.isRunningRun,
+            awaitingApproval:
+              overrides.awaitingApproval ?? rowProps.awaitingApproval,
+            pipelineStatus:
+              'pipelineStatus' in overrides
+                ? pipelineStatus
+                : rowProps.pipelineStatus,
+          }),
+        }
+      : {}),
+  };
 }
 
 /**
@@ -451,6 +504,8 @@ interface PopoverWorktreeRowProps {
   readonly rowContext: WorktreeRowSlotContext;
   readonly rowProps: ComponentProps<typeof WorktreeRow>;
   readonly useRowOverrides?: UseWorktreeRowOverrides;
+  /** The row's space is muted: live overrides lose their blue dots too. */
+  readonly spaceMuted?: boolean;
   readonly renderPipelinePopover?: (
     context: WorktreePipelinePopoverSlotContext,
   ) => ReactNode;
@@ -464,6 +519,7 @@ const PopoverWorktreeRow = memo(function PopoverWorktreeRow({
   rowContext,
   rowProps,
   useRowOverrides = useNoWorktreeRowOverrides,
+  spaceMuted = false,
   renderPipelinePopover,
   renderTerminalPopover,
 }: PopoverWorktreeRowProps): JSX.Element {
@@ -473,10 +529,15 @@ const PopoverWorktreeRow = memo(function PopoverWorktreeRow({
   // fields) must not be able to override row identity or selection just
   // because `WorktreeRowOverrideKey` narrowed its TYPE. See
   // `pickWorktreeRowOverrides`.
-  const safeOverrides = useMemo(
+  const pickedOverrides = useMemo(
     (): WorktreeRowOverrides =>
       overrides ? pickWorktreeRowOverrides(overrides) : {},
     [overrides],
+  );
+  const safeOverrides = maskMutedWorktreeRowOverrides(
+    pickedOverrides,
+    rowProps,
+    spaceMuted,
   );
   const [pipelineAnchorRect, setPipelineAnchorRect] = useState<DOMRect | null>(
     null,
@@ -688,10 +749,12 @@ function WorktreeRowDragPreview({
   rowContext,
   rowProps,
   useRowOverrides = useNoWorktreeRowOverrides,
+  spaceMuted = false,
 }: {
   readonly rowContext: WorktreeRowSlotContext;
   readonly rowProps: ComponentProps<typeof WorktreeRow>;
   readonly useRowOverrides?: UseWorktreeRowOverrides;
+  readonly spaceMuted?: boolean;
 }): JSX.Element {
   const overrides = useRowOverrides(rowContext);
   // Same runtime allowlist enforcement as `PopoverWorktreeRow` (CAN-3053
@@ -699,7 +762,13 @@ function WorktreeRowDragPreview({
   // override value and must not let a loosely-typed override object smuggle
   // identity/selection past the drag preview's own deliberately-omitted
   // `data-*`/`selected` props either.
-  const safeOverrides = overrides ? pickWorktreeRowOverrides(overrides) : {};
+  const safeOverrides = overrides
+    ? maskMutedWorktreeRowOverrides(
+        pickWorktreeRowOverrides(overrides),
+        rowProps,
+        spaceMuted,
+      )
+    : {};
   return <WorktreeRow {...rowProps} {...safeOverrides} />;
 }
 
@@ -772,6 +841,10 @@ export interface WorkspacesSidebarSectionsProps {
    * menu's Select. Absent: every click navigates.
    */
   readonly worktreeMultiSelect?: WorktreeMultiSelectBinding;
+  /** The Work Entry bulk selection a cowork workspace's rows bind to. */
+  readonly workEntryMultiSelectFor?: (
+    workspaceLocalId: string,
+  ) => WorkEntryMultiSelectBinding | undefined;
   /** Intent on a worktree row, addressed with the same ids as selection. */
   readonly onWorktreeIntent?: (
     workspaceLocalId: string,
@@ -869,8 +942,21 @@ export interface WorkspacesSidebarSectionsProps {
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => boolean;
+  /** The removal a row waits for in the rail's bulk removal queue. */
+  readonly getWorktreeQueuedRemoval?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => 'archive' | 'delete' | undefined;
   /** Host-owned: the worktree is shared with teammates (badge on the row). */
   readonly isWorktreeShared?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => boolean;
+  /**
+   * Host-owned: the row's space is muted, so its blue dots (unread chats, an
+   * unseen pipeline success) and the group rollup's unread dot are hidden.
+   */
+  readonly isWorktreeSpaceMuted?: (
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => boolean;
@@ -1148,6 +1234,7 @@ export function WorkspacesSidebarSections({
   workspaceNameTogglesCollapse,
   onSelectWorktree,
   worktreeMultiSelect,
+  workEntryMultiSelectFor,
   onWorktreeIntent,
   touchTargets = false,
   className,
@@ -1168,7 +1255,9 @@ export function WorkspacesSidebarSections({
   isWorkspacePinned,
   getWorktreeSetupPhase,
   isWorktreeRemovalInProgress,
+  getWorktreeQueuedRemoval,
   isWorktreeShared,
+  isWorktreeSpaceMuted,
   isWorktreeListed,
   renderCoworkWorkspace,
   archivedCount,
@@ -1470,7 +1559,7 @@ export function WorkspacesSidebarSections({
 
   // The rows each workspace renders, in order, for ranges and select-all.
   // Filled while rendering and reported once the render commits.
-  const selectionRowsDraft = new Map<string, WorktreeSelectionRow[]>();
+  const selectionRowsDraft = new Map<string, SidebarSelectionRow[]>();
   const reportSelectionRows = worktreeMultiSelect?.onRowsChange;
   useEffect(() => {
     reportSelectionRows?.(selectionRowsDraft);
@@ -1579,6 +1668,7 @@ export function WorkspacesSidebarSections({
           ? (collapsed): void =>
               onWorkspaceCollapsedChange(workspace.localId, collapsed)
           : undefined,
+        workEntryMultiSelect: workEntryMultiSelectFor?.(workspace.localId),
       };
       const section = (
         <div
@@ -1932,6 +2022,9 @@ export function WorkspacesSidebarSections({
           hasPendingQuestion: pendingQuestionWorktreeKeys.has(
             worktreeRowKey(workspace.localId, worktree.localId),
           ),
+          spaceMuted:
+            isWorktreeSpaceMuted?.(workspace.localId, worktree.localId) ===
+            true,
         }),
         ...(getWorktreeSetupPhase?.(workspace.localId, worktree.localId)
           ? {
@@ -1941,6 +2034,10 @@ export function WorkspacesSidebarSections({
               ),
             }
           : {}),
+        queuedRemoval: getWorktreeQueuedRemoval?.(
+          workspace.localId,
+          worktree.localId,
+        ),
         diffStatsStyle: worktreeDiffStatsStyle,
         lastKnownPrStatus: derivePrStatus?.(rowContext),
         doneLabel: deriveDoneLabel?.(rowContext),
@@ -2047,7 +2144,7 @@ export function WorkspacesSidebarSections({
             ? { 'data-sidebar-selected-item': '' }
             : {})}
           {...(multiSelection !== undefined
-            ? { [WORKTREE_SELECTION_ROW_ATTR]: '' }
+            ? { [SIDEBAR_SELECTION_ROW_ATTR]: '' }
             : {})}
           variant="bare"
           // The frame owns keyboard activation; the shared row owns pointer
@@ -2090,18 +2187,20 @@ export function WorkspacesSidebarSections({
                   // extends the bulk selection, without navigating, selecting
                   // text, or opening a new tab. A plain click navigates and
                   // leaves bulk mode, clearing the selection.
-                  const toggles = isMacPlatform()
-                    ? event.metaKey
-                    : event.ctrlKey;
-                  const modified = toggles || event.shiftKey;
-                  if (rowSelectable && modified) {
+                  const intent = resolveSelectionClick(
+                    event,
+                    {
+                      selectable: rowSelectable,
+                      active: multiSelection?.active === true,
+                    },
+                    isMacPlatform(),
+                  );
+                  if (intent === 'toggle' || intent === 'range') {
                     event.preventDefault();
-                    toggleRowSelection(!toggles && event.shiftKey);
+                    toggleRowSelection(intent === 'range');
                     return;
                   }
-                  if (!modified && multiSelection?.active === true) {
-                    multiSelection.clear();
-                  }
+                  if (intent === 'open-and-clear') multiSelection?.clear();
                   onSelectWorktree(workspace.localId, worktree.localId);
                 }
           }
@@ -2111,7 +2210,11 @@ export function WorkspacesSidebarSections({
               : (event): void => {
                   // The browser selects text on a Shift-click's mousedown,
                   // before the click that extends the selection.
-                  if (event.shiftKey) event.preventDefault();
+                  if (
+                    shiftMouseDownSuppressesTextSelection(event, rowSelectable)
+                  ) {
+                    event.preventDefault();
+                  }
                 }
           }
           onKeyDown={
@@ -2121,32 +2224,21 @@ export function WorkspacesSidebarSections({
                   // Only the focused row itself: inline inputs, menus, and
                   // popovers that bubble through it keep their own keys.
                   if (event.target !== event.currentTarget) return;
-                  const command = isMacPlatform()
-                    ? event.metaKey
-                    : event.ctrlKey;
-                  if (
-                    (event.key === 'x' || event.key === 'X') &&
-                    !command &&
-                    !event.altKey &&
-                    rowSelectable
-                  ) {
-                    event.preventDefault();
-                    toggleRowSelection(false);
-                  } else if (
-                    (event.key === 'a' || event.key === 'A') &&
-                    command &&
-                    !event.altKey
-                  ) {
-                    event.preventDefault();
-                    multiSelection.selectAllInWorkspace(workspace.localId);
-                  } else if (
-                    event.key === 'Escape' &&
-                    multiSelection.active &&
-                    worktreeMultiSelect?.escapeClears === true
-                  ) {
-                    event.preventDefault();
-                    multiSelection.clear();
-                  }
+                  const intent = resolveSelectionKey(
+                    event,
+                    {
+                      selectable: rowSelectable,
+                      active: multiSelection.active,
+                      escapeClears: worktreeMultiSelect?.escapeClears === true,
+                    },
+                    isMacPlatform(),
+                  );
+                  if (intent === null) return;
+                  event.preventDefault();
+                  if (intent === 'toggle') toggleRowSelection(false);
+                  else if (intent === 'select-all') {
+                    multiSelection.selectAllInList(workspace.localId);
+                  } else multiSelection.clear();
                 }
           }
           // Right-click (and the ContextMenu key, which the browser turns
@@ -2183,6 +2275,10 @@ export function WorkspacesSidebarSections({
           <PopoverWorktreeRow
             rowContext={rowContext}
             useRowOverrides={useWorktreeRowOverrides}
+            spaceMuted={
+              isWorktreeSpaceMuted?.(workspace.localId, worktree.localId) ===
+              true
+            }
             renderPipelinePopover={renderPipelinePopover}
             renderTerminalPopover={renderTerminalPopover}
             rowProps={{
@@ -2365,7 +2461,15 @@ export function WorkspacesSidebarSections({
         .flatMap((unit) => unit.itemIds)
         .flatMap((id) => {
           const row = rows.visible.find((row) => row.localId === id);
-          return row ? [projectWorktreeRuntime(row)] : [];
+          return row
+            ? [
+                projectWorktreeRuntime(row, {
+                  spaceMuted:
+                    isWorktreeSpaceMuted?.(workspace.localId, row.localId) ===
+                    true,
+                }),
+              ]
+            : [];
         });
       if (runtime.some((row) => row.isStreaming || row.isRunningRun))
         return (
@@ -2373,11 +2477,15 @@ export function WorkspacesSidebarSections({
             <LoadingSpinner sizePx={14} decorative />
           </span>
         );
-      return runtime.some((row) => row.hasUnread) ? (
-        <span
-          className="h-1.5 w-1.5 rounded-full bg-accent"
-          aria-label="Unread work in group"
-        />
+      // Unread outranks background work: a long-running server would hide it.
+      if (runtime.some((row) => row.hasUnread))
+        return <Dot tone="unread" label="Unread work in group" />;
+      const backgroundTasks = runtime.reduce(
+        (total, row) => total + (row.backgroundTasks ?? 0),
+        0,
+      );
+      return backgroundTasks > 0 ? (
+        <AgentStateGlyph state="background" backgroundTasks={backgroundTasks} />
       ) : null;
     };
     const visibleList = itemGroupsEnabled ? (
@@ -2398,6 +2506,7 @@ export function WorkspacesSidebarSections({
           const row = rows.visible.find((row) => row.localId === id);
           return row !== undefined && canSortWorktree(row);
         }}
+        selectionCount={worktreeMultiSelect?.selection.count}
         isItemSelected={
           worktreeMultiSelect?.selection.active === true
             ? (id): boolean =>
@@ -2436,6 +2545,10 @@ export function WorkspacesSidebarSections({
             <WorktreeRowDragPreview
               rowContext={context}
               useRowOverrides={useWorktreeRowOverrides}
+              spaceMuted={
+                isWorktreeSpaceMuted?.(workspace.localId, worktree.localId) ===
+                true
+              }
               rowProps={worktreeRowDisplayProps(worktree, context)}
             />
           );
@@ -2488,6 +2601,12 @@ export function WorkspacesSidebarSections({
               <WorktreeRowDragPreview
                 rowContext={previewContext}
                 useRowOverrides={useWorktreeRowOverrides}
+                spaceMuted={
+                  isWorktreeSpaceMuted?.(
+                    workspace.localId,
+                    worktree.localId,
+                  ) === true
+                }
                 // Same display projection `renderRow` uses (CAN-3053 finding
                 // 10), so the preview never drifts from the in-flow row's
                 // fields again — a repoless Cowork row stays compact and
@@ -3056,8 +3175,10 @@ export function WorkspacesSidebarSections({
                                     )}
                                   </span>
                                 ) : onRestoreArchived ? (
-                                  <button
-                                    type="button"
+                                  <Button
+                                    variant="ghost-quiet"
+                                    size="compact"
+                                    iconOnly
                                     aria-label={`Restore ${entry.title}`}
                                     onClick={(): void =>
                                       onRestoreArchived(
@@ -3065,14 +3186,15 @@ export function WorkspacesSidebarSections({
                                         entry.id,
                                       )
                                     }
-                                    className="focus-ring rounded-md p-1 fg-tertiary hover:bg-subtle hover:fg-primary"
                                   >
                                     <RefreshIcon width={16} height={16} />
-                                  </button>
+                                  </Button>
                                 ) : null}
                                 {!renderArchivedActions && onDeleteArchived && (
-                                  <button
-                                    type="button"
+                                  <Button
+                                    variant="ghost-quiet"
+                                    size="compact"
+                                    iconOnly
                                     aria-label={`Delete ${entry.title}`}
                                     onClick={(): void =>
                                       onDeleteArchived(
@@ -3080,10 +3202,9 @@ export function WorkspacesSidebarSections({
                                         entry.id,
                                       )
                                     }
-                                    className="focus-ring rounded-md p-1 fg-tertiary hover:bg-subtle hover:fg-destructive"
                                   >
                                     <TrashIcon size={16} />
-                                  </button>
+                                  </Button>
                                 )}
                               </div>
                             ))}

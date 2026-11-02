@@ -2,6 +2,7 @@ import type {
   CanopyInstructionHandler,
   CanopyQueryHandler,
   LedgerContainer,
+  LedgerGlobalOwner,
 } from '@canopy/protocol/canopy-core';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type { CanopyHandlerContext } from '@canopy/core-runtime';
@@ -82,10 +83,24 @@ function isLedgerFlagEnabled(): boolean {
 }
 
 /** The signed-in account's server ID, or null when signed out or unreadable. */
-async function readSignedInAccountId(): Promise<string | null> {
+export async function readSignedInLedgerAccountId(): Promise<string | null> {
   const result = await readCanopyCloudAccountWithStatus();
   const accountId =
     result.status === 'ok' ? result.entry?.account?.id.trim() : undefined;
+  return accountId !== undefined && accountId.length > 0 ? accountId : null;
+}
+
+/**
+ * The account a global (workflow) Ledger belongs to: the signed-in account's
+ * server ID, or null when signed out. Throws when the account cannot be read,
+ * so a failed read never selects the signed-out Ledger.
+ */
+export async function readLedgerGlobalAccountId(): Promise<string | null> {
+  const result = await readCanopyCloudAccountWithStatus();
+  if (result.status !== 'ok') {
+    throw new Error('The signed-in account could not be read');
+  }
+  const accountId = result.entry?.account?.id.trim();
   return accountId !== undefined && accountId.length > 0 ? accountId : null;
 }
 
@@ -103,7 +118,8 @@ export function createDesktopLedgerService(): LedgerCoreService {
   return createLedgerService({
     store: (): LedgerStoreClient => getLedgerStoreClient(),
     isEnabled: isLedgerFlagEnabled,
-    getAccountId: readSignedInAccountId,
+    getAccountId: readSignedInLedgerAccountId,
+    getGlobalAccountId: readLedgerGlobalAccountId,
     liveChats: readLedgerContainerLiveChats,
     liveDelegates: readLedgerContainerLiveDelegates,
     pipelineAgents: getLedgerPipelineAgentOwners(),
@@ -154,4 +170,26 @@ export function resolveDesktopLedgerScope(
     container,
     containerCreatedAt,
   );
+}
+
+/**
+ * An owner's global (workflow) Ledger for the signed-in account, minting it
+ * on first use, through the same cache the handlers use. Only the pipeline
+ * host binds one, once its exposure gate passed.
+ */
+export function resolveDesktopGlobalLedgerScope(
+  owner: LedgerGlobalOwner,
+): Promise<LedgerBoundScope> {
+  return getDesktopLedgerCoreService().scopes.resolveGlobal(owner);
+}
+
+/**
+ * An owner's global (workflow) Ledger for the signed-in account, looked up
+ * without minting one: null when that account never recorded there.
+ */
+export async function findDesktopGlobalLedgerScope(
+  owner: LedgerGlobalOwner,
+): Promise<LedgerBoundScope | null> {
+  const { scopes } = getDesktopLedgerCoreService();
+  return scopes.findGlobal(owner, await scopes.readGlobalAccountId());
 }

@@ -12,11 +12,15 @@ import {
 import {
   canonicalSource,
   AgentChatSendError,
+  pipelineDiscoveryCaller,
+  type AgentSendFixedIds,
   type TrustedSendCaller,
 } from './send-orchestration';
 import {
   isAgentSenderContextError,
+  pipelineSenderIdentity,
   resolveAgentSenderIdentity,
+  revalidatePipelineAgentOrigin,
 } from './sender-context';
 import { resolveAuthorizedChat } from '../project-discovery/chat-target';
 import type { ProjectDiscoveryCaller } from '../project-discovery';
@@ -29,16 +33,26 @@ import {
 } from '../canopy-runtime/core-chat-command-adapter';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 
+type SteeringActor = Awaited<ReturnType<typeof resolveAgentSenderIdentity>>;
+
 const STEERING_UNAVAILABLE =
   "The queued message can't be steered now. It stays queued.";
 
 /** Promote an existing input without replacing its captured sender context. */
 export async function dispatchAgentChatSteer(
   action: ProjectsSteerQueuedMessageAction,
-  context: { caller: TrustedSendCaller },
+  context: {
+    caller: TrustedSendCaller;
+    /** Host-step replays: the steer's fixed command ID. */
+    fixedIds?: Pick<AgentSendFixedIds, 'steerCommandId'>;
+  },
 ): Promise<SteeredInputReceipt> {
   try {
-    return await steer(action, context.caller);
+    return await steer(
+      action,
+      context.caller,
+      context.fixedIds?.steerCommandId,
+    );
   } catch (error) {
     if (isAgentSenderContextError(error)) {
       const hidden =
@@ -63,6 +77,7 @@ export async function dispatchAgentChatSteer(
 async function steer(
   input: ProjectsSteerQueuedMessageAction,
   trustedCaller: TrustedSendCaller,
+  fixedCommandId: string | undefined,
 ): Promise<SteeredInputReceipt> {
   const parsed = parseProjectMessageControlAction(input);
   if (!parsed.ok)
@@ -73,19 +88,31 @@ async function steer(
       'validation_failed',
       'Expected a steer action.',
     );
-  const source = await canonicalSource(trustedCaller.source);
-  if (
-    (trustedCaller.kind === 'app_advisor') !==
-    (source.projectId === APP_ADVISOR_PROJECT_ID)
-  )
-    throw new AgentChatSendError(
-      'validation_failed',
-      'The trusted sender runtime is inconsistent.',
-    );
-  const caller: ProjectDiscoveryCaller =
-    trustedCaller.kind === 'app_advisor'
-      ? { kind: 'app_advisor', chatId: source.chatId }
-      : { kind: 'project_agent', ...source };
+  let caller: ProjectDiscoveryCaller;
+  let steeringActor: () => Promise<SteeringActor>;
+  if (trustedCaller.kind === 'pipeline') {
+    caller = pipelineDiscoveryCaller(trustedCaller.source);
+    // A pipeline's actor is its captured identity, with no I/O; the queue
+    // checks at claim time that it steers only its own row.
+    const actor = pipelineSenderIdentity(trustedCaller.source);
+    steeringActor = (): Promise<SteeringActor> => Promise.resolve(actor);
+  } else {
+    const source = await canonicalSource(trustedCaller.source);
+    steeringActor = (): Promise<SteeringActor> =>
+      resolveAgentSenderIdentity(source);
+    if (
+      (trustedCaller.kind === 'app_advisor') !==
+      (source.projectId === APP_ADVISOR_PROJECT_ID)
+    )
+      throw new AgentChatSendError(
+        'validation_failed',
+        'The trusted sender runtime is inconsistent.',
+      );
+    caller =
+      trustedCaller.kind === 'app_advisor'
+        ? { kind: 'app_advisor', chatId: source.chatId }
+        : { kind: 'project_agent', ...source };
+  }
   const target = await resolveAuthorizedChat(
     {
       projectId: action.projectId,
@@ -103,10 +130,18 @@ async function steer(
       'not_found',
       'The target chat is not available.',
     );
-  const agentSteeringActor = await resolveAgentSenderIdentity(source);
+  // D11: before any effect, the run's agent must still be current and keep
+  // the run's owner, as for a send or a creation.
+  if (trustedCaller.kind === 'pipeline' && trustedCaller.source.agentOrigin)
+    await revalidatePipelineAgentOrigin(
+      trustedCaller.source.agentOrigin,
+      trustedCaller.source.owner,
+      target.scope.workspaceId,
+    );
+  const agentSteeringActor = await steeringActor();
   const envelope: ChatCommandEnvelope = {
     schemaVersion: 1,
-    commandId: randomUUID(),
+    commandId: fixedCommandId ?? randomUUID(),
     projectId: target.scope.workspaceId,
     worktreeId: target.scope.worktreeId,
     command: {
@@ -122,6 +157,21 @@ async function steer(
       'target_not_ready',
       'Chat command dispatch is unavailable.',
     );
+  // A host-step replay of an applied steer does not steer again.
+  const replayed = fixedCommandId
+    ? await port.getCommandReceipt?.(envelope)
+    : undefined;
+  if (
+    replayed?.outcome === 'applied' ||
+    replayed?.outcome === 'already_applied'
+  )
+    return {
+      address: target.address,
+      queuedMessageId: action.queuedMessageId,
+      disposition: 'steered',
+      // The command receipt keeps no time; the host journal holds the first.
+      steeredAt: new Date().toISOString(),
+    };
   let result: ChatCommandResult;
   try {
     result = await dispatchTrustedChatCommand(

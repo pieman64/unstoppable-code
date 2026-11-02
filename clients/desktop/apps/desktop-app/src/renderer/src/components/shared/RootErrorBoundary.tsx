@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { brandText } from '@/lib/brand';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
+import { Button } from '@/components/shared/Button';
 
 interface RootErrorBoundaryProps {
   children: ReactNode;
@@ -62,18 +63,14 @@ export class RootErrorBoundary extends Component<
               </p>
             </div>
             <div className="rounded-lg border border-line-destructive/20 bg-destructive-subtle px-4 py-3">
-              <p className="text-s fg-destructive">
+              <p className="text-s fg-destructive" data-selectable>
                 {error.message || error.name || 'Unknown renderer error'}
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={this.handleReload}
-                className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition hover:opacity-90"
-              >
+              <Button variant="primary" onClick={this.handleReload}>
                 Reload window
-              </button>
+              </Button>
               <p className="text-xs fg-secondary">
                 This usually matches `Cmd+R`, but keeps the failure visible.
               </p>

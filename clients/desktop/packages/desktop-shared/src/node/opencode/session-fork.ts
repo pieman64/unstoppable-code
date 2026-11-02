@@ -15,6 +15,10 @@ import {
   type OpenCodeCapabilityBinding,
 } from './capability-snapshot';
 import {
+  prepareOpenCodeInferenceRoute,
+  assertOpenCodeInferenceBinding,
+} from './inference-route';
+import {
   startOpenCodeRuntime,
   type OpenCodeRuntimeOptions,
   type OwnedOpenCodeRuntime,
@@ -27,6 +31,7 @@ type RuntimeOptions = Pick<
   | 'prefix'
   | 'env'
   | 'providerConfig'
+  | 'inferenceRoute'
   | 'runtimeIdentity'
   | 'signal'
 >;
@@ -268,6 +273,9 @@ export async function forkOpenCodeSession(
   options: OpenCodeSessionForkOptions,
 ): Promise<{ sessionId: string; binding: OpenCodeCapabilityBinding }> {
   options.signal.throwIfAborted();
+  const inference = options.inferenceRoute
+    ? prepareOpenCodeInferenceRoute(options.inferenceRoute)
+    : undefined;
   if (
     resolve(options.source.profileDir) ===
     resolve(options.destination.profileDir)
@@ -282,6 +290,7 @@ export async function forkOpenCodeSession(
   );
   if (!originalBinding)
     throw new Error('OpenCode source capability history is unavailable.');
+  assertOpenCodeInferenceBinding(originalBinding, inference);
   const sourceCwd = await realpath(options.source.cwd);
   const destinationCwd = await realpath(options.destination.cwd);
   await mkdir(dirname(options.destination.profileDir), {
@@ -327,6 +336,7 @@ export async function forkOpenCodeSession(
     // Use the destination's private host configuration; source profile bytes stay untouched.
     runtime = await startOpenCodeRuntime({
       ...options,
+      inferenceRoute: inference?.route,
       signal: creator.signal,
       cwd: sourceCwd,
       profileDir: options.destination.profileDir,
@@ -430,6 +440,7 @@ export async function forkOpenCodeSession(
     const completedRuntime = runtime;
     runtime = undefined;
     await completedRuntime.close();
+    signal.throwIfAborted();
     return { sessionId: forkId, binding };
   } catch (error) {
     const cleanupErrors: unknown[] = [];

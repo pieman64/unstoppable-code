@@ -73,6 +73,13 @@ function persistedState(
   };
 }
 
+function requireOpenResult<T>(result: T | null): T {
+  if (result === null) {
+    throw new Error('Expected the in-app browser to be available in this test');
+  }
+  return result;
+}
+
 beforeEach(() => {
   browserApi = {
     loadWorktreeState: jest.fn(),
@@ -644,11 +651,11 @@ describe('browserStore renderer-first open', () => {
     const created = deferred<BrowserSessionSnapshot>();
     browserApi.create.mockReturnValue(created.promise);
 
-    const opened = useBrowserStore
-      .getState()
-      .openBrowser(PROJECT_ID, WORKTREE_ID, {
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openBrowser(PROJECT_ID, WORKTREE_ID, {
         url: 'http://localhost:5173/app',
-      });
+      }),
+    );
 
     // Synchronously: a placeholder the pane can render right away.
     const placeholder =
@@ -698,11 +705,11 @@ describe('browserStore renderer-first open', () => {
   it('keeps a failed open in its tab with the error, and resolves null', async () => {
     browserApi.create.mockRejectedValue(new Error('Profile unavailable'));
 
-    const opened = useBrowserStore
-      .getState()
-      .openBrowser(PROJECT_ID, WORKTREE_ID, {
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openBrowser(PROJECT_ID, WORKTREE_ID, {
         url: 'http://localhost:5173/app',
-      });
+      }),
+    );
 
     await expect(opened.ready).resolves.toBeNull();
     const bucket = useBrowserStore.getState().worktrees[KEY];
@@ -719,9 +726,9 @@ describe('browserStore renderer-first open', () => {
     const hydration = deferred<unknown>();
     browserApi.loadWorktreeState.mockReturnValue(hydration.promise);
 
-    const opened = useBrowserStore
-      .getState()
-      .openBrowser(PROJECT_ID, WORKTREE_ID);
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openBrowser(PROJECT_ID, WORKTREE_ID),
+    );
     await useBrowserStore
       .getState()
       .destroyBrowser(PROJECT_ID, WORKTREE_ID, opened.browserId);
@@ -739,9 +746,9 @@ describe('browserStore renderer-first open', () => {
     const created = deferred<BrowserSessionSnapshot>();
     browserApi.create.mockReturnValue(created.promise);
 
-    const opened = useBrowserStore
-      .getState()
-      .openBrowser(PROJECT_ID, WORKTREE_ID);
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openBrowser(PROJECT_ID, WORKTREE_ID),
+    );
     const selecting = useBrowserStore
       .getState()
       .setActiveBrowser(PROJECT_ID, WORKTREE_ID, opened.browserId);
@@ -766,9 +773,11 @@ describe('browserStore renderer-first open', () => {
     const created = deferred<BrowserSessionSnapshot>();
     browserApi.create.mockReturnValue(created.promise);
 
-    const opened = useBrowserStore
-      .getState()
-      .openBrowser(PROJECT_ID, WORKTREE_ID, { url: 'http://localhost:3000/' });
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openBrowser(PROJECT_ID, WORKTREE_ID, {
+        url: 'http://localhost:3000/',
+      }),
+    );
     const ensuring = useBrowserStore
       .getState()
       .ensureLiveView(PROJECT_ID, WORKTREE_ID, opened.browserId);
@@ -793,11 +802,11 @@ describe('browserStore renderer-first open', () => {
       Promise.resolve(liveSnapshot({ id: request.browserId })),
     );
 
-    const opened = useBrowserStore
-      .getState()
-      .openUrlFromDevServer(PROJECT_ID, WORKTREE_ID, {
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openUrlFromDevServer(PROJECT_ID, WORKTREE_ID, {
         url: 'http://localhost:3000/',
-      });
+      }),
+    );
 
     expect(opened.createdNewSession).toBe(true);
     expect(opened.browserId).not.toBe(BROWSER_ID);
@@ -814,9 +823,9 @@ describe('browserStore renderer-first open', () => {
   it('keeps a URL submitted while opening loading over the blank created session', async () => {
     const created = deferred<BrowserSessionSnapshot>();
     browserApi.create.mockReturnValue(created.promise);
-    const opened = useBrowserStore
-      .getState()
-      .openBrowser(PROJECT_ID, WORKTREE_ID);
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openBrowser(PROJECT_ID, WORKTREE_ID),
+    );
     const placeholder = (): BrowserSessionSnapshot =>
       useBrowserStore.getState().worktrees[KEY].browsers[opened.browserId];
 
@@ -864,9 +873,9 @@ describe('browserStore renderer-first open', () => {
     const created = deferred<BrowserSessionSnapshot>();
     browserApi.create.mockReturnValue(created.promise);
 
-    const opened = useBrowserStore
-      .getState()
-      .openBrowser(PROJECT_ID, WORKTREE_ID);
+    const opened = requireOpenResult(
+      useBrowserStore.getState().openBrowser(PROJECT_ID, WORKTREE_ID),
+    );
     const selecting = useBrowserStore
       .getState()
       .setActiveBrowser(PROJECT_ID, WORKTREE_ID, opened.browserId);

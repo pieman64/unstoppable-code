@@ -375,8 +375,9 @@ export function createW4LocalTransportBinding(
                     ...Object.keys(QUERIES).map((name) => ({
                       name,
                       kind: 'query' as const,
+                      declaresMeta: false,
                     })),
-                    { name: EVENTS, kind: 'stream' },
+                    { name: EVENTS, kind: 'stream', declaresMeta: false },
                   ],
                   callerFor: ({ connectionId, lease }) => ({
                     principalId: 'w4-fixture',

@@ -1,3 +1,4 @@
+import { noteChatCreatedInSession } from './created-in-session';
 // Tab creation/fork lifecycle helpers that need chat-store state types.
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -340,6 +341,7 @@ export function appendNewTab(
     ? beginOptimisticActiveTabSelection(sel.projectId, sel.worktreeId, tab.id)
     : undefined;
   let replacedEmptyTabId: string | undefined;
+  noteChatCreatedInSession(tab.id);
   set((state) => {
     // When the worktree has no store entry yet (hydration failed, is still in
     // flight, or was never triggered), the user's click means "give me one new

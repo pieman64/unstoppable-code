@@ -17,7 +17,11 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { createPortal } from 'react-dom';
+import {
+  DialogModal,
+  ExecutionActionButton,
+  OverlayScrollArea,
+} from '@canopy/ui-shared/components';
 import { useShallow } from 'zustand/react/shallow';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
@@ -34,7 +38,6 @@ import {
 import { useChatSidebarStore } from '@/stores/chatSidebarStore';
 import {
   formatGitHubRunSampleLabel,
-  formatRelativeTime,
   githubRunSampleOverflow,
   githubWatcherTargetDisplay,
   liveWatcherDestinationTitle,
@@ -46,12 +49,12 @@ import {
   localWatcherProgressLabel,
   watcherTitleReplayClass,
 } from './watcherDisplay';
+import { formatRelativeTime } from '@/lib/format';
 import { jumpToWatcherSubscriberChat } from './jumpToWatcherSubscriberChat';
 import {
   WatcherRecipientPicker,
   type WatcherRecipientGroup,
 } from './WatcherRecipientPicker';
-import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 /**
  * Opt-in configuration enabling the modal's "Add a watcher" section. When
@@ -214,20 +217,6 @@ export function WatcherManagementModal({
     ...(modalChatId ? { chatId: modalChatId } : {}),
   });
 
-  // Close on Escape — mirrors the existing App Advisor watcher modal.
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    modalDocument.addEventListener('keydown', handleKeyDown);
-    return (): void => {
-      modalDocument.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [modalDocument, onClose]);
-
   // If the row currently in confirmation state disappears (delete broadcast
   // or filter change), reset the local UI state so we never confirm-delete
   // against a stale id.
@@ -297,432 +286,428 @@ export function WatcherManagementModal({
     [onClose, onJumpToChat],
   );
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-modal flex items-start justify-center bg-overlay-scrim px-4 pt-[15vh]"
-      data-testid="watcher-management-modal-backdrop"
-      onClick={onClose}
+  return (
+    <DialogModal
+      title={title}
+      onClose={onClose}
+      ownerDocument={modalDocument}
+      dataTestId="watcher-management-modal"
+      maxWidth="md"
+      maxHeight="70vh"
+      headerAlignment="center"
+      closeButtonAppearance="compact"
+      placement="center"
+      scrollableBody={false}
+      trapFocus
     >
-      {/* Command watcher titles and follow-up instructions are blocked. */}
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        data-testid="watcher-management-modal"
-        className="electron-no-drag flex max-h-[70vh] w-full max-w-144 flex-col overflow-hidden rounded-lg bg-card shadow-xl"
-        onClick={(event): void => event.stopPropagation()}
+      <OverlayScrollArea
+        className="flex-1"
+        viewportClassName="overscroll-contain"
       >
-        <header className="flex items-center justify-between border-b px-4 py-3">
-          <h2 className="text-s font-semibold fg-primary">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="focus-ring rounded-md p-1 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-          >
-            <AppCatalogCloseIcon width="14" height="14" aria-hidden="true" />
-          </button>
-        </header>
-        {add && (
-          <div
-            className="border-b px-4 py-3"
-            data-testid="watcher-management-add-section"
-          >
-            <div className="text-xs font-semibold fg-secondary">
-              {add.heading ?? 'Add a watcher'}
-            </div>
-            {add.description && (
-              <p className="mt-1 text-2xs fg-secondary">{add.description}</p>
-            )}
-            <div className="mt-2 flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <span className="w-20 shrink-0 text-2xs fg-secondary">
-                  Notify
-                </span>
-                <WatcherRecipientPicker
-                  groups={add.recipientGroups}
-                  value={addRecipient}
-                  onChange={(destination): void => {
-                    setAddRecipient(destination);
-                    setAddError(null);
-                  }}
-                  dataTestId="watcher-management-add-recipient"
-                />
-              </div>
-              <textarea
-                value={addFollowUp}
-                onChange={(event): void => setAddFollowUp(event.target.value)}
-                placeholder="Optional follow-up instruction for the notified chat…"
-                rows={2}
-                data-testid="watcher-management-add-followup"
-                className="focus-ring w-full resize-none rounded-md border bg-popover px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary"
-              />
-              <div className="flex items-center justify-between gap-2">
-                {addError ? (
-                  <span
-                    role="alert"
-                    data-testid="watcher-management-add-error"
-                    className="text-2xs fg-destructive"
-                  >
-                    {addError}
-                  </span>
-                ) : (
-                  <span />
-                )}
-                <button
-                  type="button"
-                  disabled={addBusy || !addRecipient}
-                  onClick={(): void => {
-                    void handleAdd();
-                  }}
-                  data-testid="watcher-management-add-submit"
-                  className="focus-ring rounded-md border border-fg-info/30 bg-info-subtle px-3 py-1 text-xs font-medium fg-info transition hover:bg-info-subtle/80 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {addBusy ? 'Adding…' : 'Add watcher'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-3">
-          {watchers.length === 0 ? (
-            <p
-              className="text-s fg-secondary"
-              data-testid="watcher-management-empty"
+        <div className="p-2">
+          {add && (
+            <div
+              className="border-b border-line-tertiary px-3 py-3"
+              data-testid="watcher-management-add-section"
             >
-              {emptyMessage}
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-3">
-              {watchers.map((watcher, index) => {
-                const target = watcherTargetDisplay(watcher.target);
-                const github = githubWatcherTargetDisplay(watcher.target);
-                const destinationLabel = watcherDestinationDisplay(
-                  watcher.destination,
-                  liveDestinationTitles[index],
-                );
-                const owner = watcher.ownerDelegate
-                  ? watcherOwnerDelegateDisplay(watcher.ownerDelegate)
-                  : null;
-                const isConfirming = confirmingDeleteId === watcher.id;
-                const deleteError = deleteErrors[watcher.id];
-                const rowJumpError =
-                  jumpError?.watcherId === watcher.id
-                    ? jumpError.message
+              <div className="text-xs font-semibold fg-secondary">
+                {add.heading ?? 'Add a watcher'}
+              </div>
+              {add.description && (
+                <p className="mt-1 text-2xs fg-secondary">{add.description}</p>
+              )}
+              <div className="mt-2 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-20 shrink-0 text-2xs fg-secondary">
+                    Notify
+                  </span>
+                  <WatcherRecipientPicker
+                    groups={add.recipientGroups}
+                    value={addRecipient}
+                    onChange={(destination): void => {
+                      setAddRecipient(destination);
+                      setAddError(null);
+                    }}
+                    dataTestId="watcher-management-add-recipient"
+                  />
+                </div>
+                <textarea
+                  value={addFollowUp}
+                  onChange={(event): void => setAddFollowUp(event.target.value)}
+                  placeholder="Optional follow-up instruction for the notified chat…"
+                  rows={2}
+                  data-testid="watcher-management-add-followup"
+                  className="focus-ring w-full resize-none rounded-md border bg-popover px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  {addError ? (
+                    <span
+                      role="alert"
+                      data-testid="watcher-management-add-error"
+                      className="text-2xs fg-destructive"
+                    >
+                      {addError}
+                    </span>
+                  ) : (
+                    <span />
+                  )}
+                  <ExecutionActionButton
+                    disabled={addBusy || !addRecipient}
+                    onClick={(): void => {
+                      void handleAdd();
+                    }}
+                    dataTestId="watcher-management-add-submit"
+                    label={addBusy ? 'Adding…' : 'Add watcher'}
+                    ariaLabel="Add watcher"
+                    variant="primary"
+                    stopKeyDownPropagation={false}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="flex min-h-0 flex-col">
+            {watchers.length === 0 ? (
+              <p
+                className="text-s fg-secondary"
+                data-testid="watcher-management-empty"
+              >
+                {emptyMessage}
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {watchers.map((watcher, index) => {
+                  const target = watcherTargetDisplay(watcher.target);
+                  const github = githubWatcherTargetDisplay(watcher.target);
+                  const destinationLabel = watcherDestinationDisplay(
+                    watcher.destination,
+                    liveDestinationTitles[index],
+                  );
+                  const owner = watcher.ownerDelegate
+                    ? watcherOwnerDelegateDisplay(watcher.ownerDelegate)
                     : null;
-                return (
-                  <li
-                    key={watcher.id}
-                    data-testid={`watcher-management-row-${watcher.id}`}
-                    className="rounded-lg border bg-fg-primary/[0.02] p-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div
-                          className={`${watcherTitleReplayClass(watcher.target)} truncate text-s font-medium fg-primary`}
-                        >
-                          {watcher.label || target.title}
-                        </div>
-                        <div className="mt-0.5 truncate text-xs fg-secondary">
-                          {triggerTitle(watcher.trigger)}
-                        </div>
-                        {watcher.localProgress && (
+                  const isConfirming = confirmingDeleteId === watcher.id;
+                  const deleteError = deleteErrors[watcher.id];
+                  const rowJumpError =
+                    jumpError?.watcherId === watcher.id
+                      ? jumpError.message
+                      : null;
+                  return (
+                    <li
+                      key={watcher.id}
+                      data-testid={`watcher-management-row-${watcher.id}`}
+                      className="rounded-lg bg-subtle p-3"
+                    >
+                      <div className="flex min-w-0 flex-col gap-3">
+                        <div className="min-w-0 flex-1">
                           <div
-                            className="mt-1 text-xs fg-secondary"
-                            data-testid={`local-watcher-progress-${watcher.id}`}
+                            className={`${watcherTitleReplayClass(watcher.target)} break-words text-s font-normal fg-primary`}
                           >
-                            {localWatcherProgressLabel(watcher)}
+                            {watcher.label || target.title}
                           </div>
-                        )}
-                        <dl className="mt-2 grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-                          <div className="contents">
-                            <dt className="fg-secondary">Watching</dt>
-                            <dd className="min-w-0 break-words fg-primary">
-                              <span
-                                className={`${watcherTitleReplayClass(watcher.target)} font-medium`}
-                              >
-                                {target.title}
-                              </span>
-                              {target.subtitle && (
-                                <span className="ml-1 fg-secondary">
-                                  · {target.subtitle}
-                                </span>
-                              )}
-                            </dd>
+                          <div className="mt-0.5 break-words text-xs fg-tertiary">
+                            {triggerTitle(watcher.trigger)}
                           </div>
-                          <div className="contents">
-                            <dt className="fg-secondary">Subscribed chat</dt>
-                            <dd
-                              className="min-w-0 break-words fg-primary"
-                              data-testid={`watcher-management-destination-${watcher.id}`}
+                          {watcher.localProgress && (
+                            <div
+                              className="mt-1 text-xs fg-secondary"
+                              data-testid={`local-watcher-progress-${watcher.id}`}
                             >
-                              {destinationLabel}
-                            </dd>
-                          </div>
-                          {owner && (
+                              {localWatcherProgressLabel(watcher)}
+                            </div>
+                          )}
+                          <dl className="mt-2 grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
                             <div className="contents">
-                              <dt className="fg-secondary">Delegate</dt>
-                              <dd
-                                className="min-w-0 break-words fg-primary"
-                                data-testid={`watcher-management-owner-${watcher.id}`}
-                              >
-                                {owner.name}
-                                {owner.detail && (
-                                  <span className="fg-secondary">
-                                    {` · ${owner.detail}`}
+                              <dt className="fg-tertiary">Watching</dt>
+                              <dd className="min-w-0 break-words fg-primary">
+                                <span
+                                  className={`${watcherTitleReplayClass(watcher.target)} font-medium`}
+                                >
+                                  {target.title}
+                                </span>
+                                {target.subtitle && (
+                                  <span className="ml-1 fg-secondary">
+                                    · {target.subtitle}
                                   </span>
                                 )}
                               </dd>
                             </div>
-                          )}
-                          <div className="contents">
-                            <dt className="fg-secondary">Created</dt>
-                            <dd className="min-w-0 break-words fg-primary">
-                              {formatRelativeTime(watcher.createdAt)}
-                            </dd>
-                          </div>
-                          <div className="contents">
-                            <dt className="fg-secondary">Status</dt>
-                            <dd
-                              className="min-w-0 break-words fg-primary"
-                              data-testid={`watcher-management-status-${watcher.id}`}
-                            >
-                              {watcherStatusLabelWithFailure(
-                                watcher.status,
-                                watcher.failureKind,
-                              )}
-                            </dd>
-                          </div>
-                          {watcher.status === 'delivery_failed' &&
-                            watcher.deliveryError && (
+                            <div className="contents">
+                              <dt className="fg-tertiary">Subscribed chat</dt>
+                              <dd
+                                className="min-w-0 break-words fg-primary"
+                                data-testid={`watcher-management-destination-${watcher.id}`}
+                              >
+                                {destinationLabel}
+                              </dd>
+                            </div>
+                            {owner && (
                               <div className="contents">
-                                <dt className="fg-secondary">Delivery error</dt>
+                                <dt className="fg-tertiary">Delegate</dt>
                                 <dd
-                                  className="min-w-0 break-words fg-destructive"
-                                  data-testid={`watcher-management-delivery-error-${watcher.id}`}
+                                  className="min-w-0 break-words fg-primary"
+                                  data-testid={`watcher-management-owner-${watcher.id}`}
                                 >
-                                  {watcher.deliveryError}
+                                  {owner.name}
+                                  {owner.detail && (
+                                    <span className="fg-secondary">
+                                      {` · ${owner.detail}`}
+                                    </span>
+                                  )}
                                 </dd>
                               </div>
                             )}
-                        </dl>
-                        {github &&
-                          (github.filters.length > 0 ||
-                            github.sample.length > 0) && (
-                            <div
-                              className="mt-2 flex flex-col gap-1"
-                              data-testid={`watcher-management-github-${watcher.id}`}
-                            >
-                              {github.filters.length > 0 && (
-                                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-2xs">
-                                  {github.filters.map((filter) => (
-                                    <span key={filter.label}>
-                                      <span className="fg-secondary">
-                                        {filter.label}:
-                                      </span>{' '}
-                                      <span className="fg-primary">
-                                        {filter.value}
-                                      </span>
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                              {github.sample.length > 0 && (
-                                <ul className="flex flex-col gap-0.5">
-                                  {github.sample.map((run) => (
-                                    <li
-                                      key={`${run.repository}#${run.runId}`}
-                                      className="truncate text-2xs fg-secondary"
-                                    >
-                                      {formatGitHubRunSampleLabel(run)}
-                                    </li>
-                                  ))}
-                                  {githubRunSampleOverflow(
-                                    github,
-                                    github.sample.length,
-                                  ) > 0 && (
-                                    <li className="text-2xs fg-secondary/80">
-                                      +
-                                      {githubRunSampleOverflow(
-                                        github,
-                                        github.sample.length,
-                                      )}{' '}
-                                      more
-                                    </li>
-                                  )}
-                                </ul>
-                              )}
+                            <div className="contents">
+                              <dt className="fg-tertiary">Created</dt>
+                              <dd className="min-w-0 break-words fg-primary">
+                                {formatRelativeTime(watcher.createdAt)}
+                              </dd>
                             </div>
-                          )}
-                        {(watcher.followUpInstruction || allowEditFollowUp) && (
-                          <div className="mt-2 text-xs">
-                            {editingId === watcher.id ? (
-                              <div className="flex flex-col gap-1">
-                                <span className="fg-secondary">
-                                  Follow-up instruction
-                                </span>
-                                <textarea
-                                  value={editText}
-                                  onChange={(event): void =>
-                                    setEditText(event.target.value)
-                                  }
-                                  rows={2}
-                                  placeholder="Instruction for the notified chat…"
-                                  data-testid={`watcher-management-edit-followup-${watcher.id}`}
-                                  className="focus-ring w-full resize-none rounded-md border bg-popover px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary"
-                                />
-                                {editError && (
-                                  <span
-                                    role="alert"
-                                    data-testid={`watcher-management-edit-error-${watcher.id}`}
-                                    className="text-2xs fg-destructive"
-                                  >
-                                    {editError}
-                                  </span>
+                            <div className="contents">
+                              <dt className="fg-tertiary">Status</dt>
+                              <dd
+                                className="min-w-0 break-words fg-primary"
+                                data-testid={`watcher-management-status-${watcher.id}`}
+                              >
+                                {watcherStatusLabelWithFailure(
+                                  watcher.status,
+                                  watcher.failureKind,
                                 )}
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    disabled={editBusy}
-                                    onClick={(): void => {
-                                      void handleSaveEdit();
-                                    }}
-                                    data-testid={`watcher-management-edit-save-${watcher.id}`}
-                                    className="focus-ring rounded-md border border-fg-info/30 bg-info-subtle px-2 py-1 text-2xs font-medium fg-info transition hover:bg-info-subtle/80 disabled:cursor-not-allowed disabled:opacity-50"
+                              </dd>
+                            </div>
+                            {watcher.status === 'delivery_failed' &&
+                              watcher.deliveryError && (
+                                <div className="contents">
+                                  <dt className="fg-tertiary">
+                                    Delivery error
+                                  </dt>
+                                  <dd
+                                    className="min-w-0 break-words fg-destructive"
+                                    data-testid={`watcher-management-delivery-error-${watcher.id}`}
                                   >
-                                    {editBusy ? 'Saving…' : 'Save'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(): void => {
-                                      setEditingId(null);
-                                      setEditText('');
-                                      setEditError(null);
-                                    }}
-                                    className="text-2xs fg-secondary underline hover:fg-primary"
-                                  >
-                                    Cancel
-                                  </button>
+                                    {watcher.deliveryError}
+                                  </dd>
                                 </div>
-                              </div>
-                            ) : (
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="min-w-0">
-                                  <span className="fg-secondary">
-                                    Follow-up
-                                  </span>{' '}
-                                  <span
-                                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} break-words fg-primary`}
-                                  >
-                                    {watcher.followUpInstruction || 'None'}
-                                  </span>
-                                </div>
-                                {allowEditFollowUp && (
-                                  <button
-                                    type="button"
-                                    onClick={(): void =>
-                                      handleStartEdit(watcher)
-                                    }
-                                    data-testid={`watcher-management-edit-followup-button-${watcher.id}`}
-                                    className="focus-ring shrink-0 rounded-md border bg-popover px-2 py-0.5 text-2xs fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
-                                  >
-                                    Edit
-                                  </button>
+                              )}
+                          </dl>
+                          {github &&
+                            (github.filters.length > 0 ||
+                              github.sample.length > 0) && (
+                              <div
+                                className="mt-2 flex flex-col gap-1"
+                                data-testid={`watcher-management-github-${watcher.id}`}
+                              >
+                                {github.filters.length > 0 && (
+                                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-2xs">
+                                    {github.filters.map((filter) => (
+                                      <span key={filter.label}>
+                                        <span className="fg-secondary">
+                                          {filter.label}:
+                                        </span>{' '}
+                                        <span className="fg-primary">
+                                          {filter.value}
+                                        </span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                                {github.sample.length > 0 && (
+                                  <ul className="flex flex-col gap-0.5">
+                                    {github.sample.map((run) => (
+                                      <li
+                                        key={`${run.repository}#${run.runId}`}
+                                        className="truncate text-2xs fg-secondary"
+                                      >
+                                        {formatGitHubRunSampleLabel(run)}
+                                      </li>
+                                    ))}
+                                    {githubRunSampleOverflow(
+                                      github,
+                                      github.sample.length,
+                                    ) > 0 && (
+                                      <li className="text-2xs fg-secondary/80">
+                                        +
+                                        {githubRunSampleOverflow(
+                                          github,
+                                          github.sample.length,
+                                        )}{' '}
+                                        more
+                                      </li>
+                                    )}
+                                  </ul>
                                 )}
                               </div>
                             )}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-1">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={(): void => handleJumpClick(watcher)}
-                            data-testid={`watcher-management-jump-${watcher.id}`}
-                            className="focus-ring rounded-md border bg-popover px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
-                          >
-                            Jump to chat
-                          </button>
-                          {isConfirming ? (
-                            <button
-                              type="button"
-                              onClick={(): void =>
-                                handleDeleteClick(watcher.id)
-                              }
-                              data-testid={`watcher-management-confirm-delete-${watcher.id}`}
-                              className="focus-ring rounded-md border border-line-destructive/40 bg-destructive-subtle px-2 py-1 text-xs font-medium fg-destructive transition hover:bg-destructive-subtle/80"
-                            >
-                              Confirm delete
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={(): void =>
-                                handleDeleteClick(watcher.id)
-                              }
-                              data-testid={`watcher-management-delete-${watcher.id}`}
-                              className="focus-ring rounded-md border bg-popover px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
-                            >
-                              Delete
-                            </button>
+                          {(watcher.followUpInstruction ||
+                            allowEditFollowUp) && (
+                            <div className="mt-2 text-xs">
+                              {editingId === watcher.id ? (
+                                <div className="flex flex-col gap-1">
+                                  <span className="fg-secondary">
+                                    Follow-up instruction
+                                  </span>
+                                  <textarea
+                                    value={editText}
+                                    onChange={(event): void =>
+                                      setEditText(event.target.value)
+                                    }
+                                    rows={2}
+                                    placeholder="Instruction for the notified chat…"
+                                    data-testid={`watcher-management-edit-followup-${watcher.id}`}
+                                    className="focus-ring w-full resize-none rounded-md border bg-popover px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary"
+                                  />
+                                  {editError && (
+                                    <span
+                                      role="alert"
+                                      data-testid={`watcher-management-edit-error-${watcher.id}`}
+                                      className="text-2xs fg-destructive"
+                                    >
+                                      {editError}
+                                    </span>
+                                  )}
+                                  <div className="flex items-center gap-2">
+                                    <ExecutionActionButton
+                                      disabled={editBusy}
+                                      onClick={(): void => {
+                                        void handleSaveEdit();
+                                      }}
+                                      dataTestId={`watcher-management-edit-save-${watcher.id}`}
+                                      label={editBusy ? 'Saving…' : 'Save'}
+                                      ariaLabel="Save"
+                                      variant="primary"
+                                      stopKeyDownPropagation={false}
+                                    />
+                                    <ExecutionActionButton
+                                      onClick={(): void => {
+                                        setEditingId(null);
+                                        setEditText('');
+                                        setEditError(null);
+                                      }}
+                                      label="Cancel"
+                                      ariaLabel="Cancel"
+                                      variant="text"
+                                      stopKeyDownPropagation={false}
+                                    />
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <span className="fg-secondary">
+                                      Follow-up
+                                    </span>{' '}
+                                    <span
+                                      className={`${POSTHOG_REPLAY_BLOCK_CLASS} break-words fg-primary`}
+                                    >
+                                      {watcher.followUpInstruction || 'None'}
+                                    </span>
+                                  </div>
+                                  {allowEditFollowUp && (
+                                    <ExecutionActionButton
+                                      onClick={(): void =>
+                                        handleStartEdit(watcher)
+                                      }
+                                      dataTestId={`watcher-management-edit-followup-button-${watcher.id}`}
+                                      label="Edit"
+                                      ariaLabel="Edit"
+                                      variant="text"
+                                      stopKeyDownPropagation={false}
+                                    />
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
-                        {isConfirming && (
-                          <div className="flex flex-col items-end gap-0.5">
-                            <label className="inline-flex items-center gap-1.5 text-2xs fg-secondary">
-                              <input
-                                type="checkbox"
-                                checked={notifySubscriber}
-                                data-testid={`watcher-management-notify-${watcher.id}`}
-                                onChange={(event): void =>
-                                  setNotifySubscriber(event.target.checked)
+                        <div className="flex min-w-0 flex-col items-end gap-1">
+                          <div className="-mr-2.5 flex flex-wrap items-center gap-0">
+                            <ExecutionActionButton
+                              onClick={(): void => handleJumpClick(watcher)}
+                              dataTestId={`watcher-management-jump-${watcher.id}`}
+                              label="Jump to chat"
+                              ariaLabel="Jump to chat"
+                              variant="text"
+                              stopKeyDownPropagation={false}
+                            />
+                            {isConfirming ? (
+                              <ExecutionActionButton
+                                onClick={(): void =>
+                                  handleDeleteClick(watcher.id)
                                 }
-                                className="h-3 w-3 rounded border bg-popover fg-accent focus-ring"
+                                dataTestId={`watcher-management-confirm-delete-${watcher.id}`}
+                                label="Confirm delete"
+                                ariaLabel="Confirm delete"
+                                variant="destructive"
+                                stopKeyDownPropagation={false}
                               />
-                              Notify subscribing chat
-                            </label>
-                            <span className="max-w-64 text-right text-3xs fg-secondary">
-                              Sends a final watcher-deleted message to the chat
-                              that subscribed to this watcher.
-                            </span>
-                            <button
-                              type="button"
-                              onClick={handleCancelDelete}
-                              className="text-3xs fg-secondary underline hover:fg-primary"
-                            >
-                              Cancel
-                            </button>
+                            ) : (
+                              <ExecutionActionButton
+                                onClick={(): void =>
+                                  handleDeleteClick(watcher.id)
+                                }
+                                dataTestId={`watcher-management-delete-${watcher.id}`}
+                                label="Delete"
+                                ariaLabel="Delete"
+                                variant="text"
+                                stopKeyDownPropagation={false}
+                              />
+                            )}
                           </div>
-                        )}
-                        {deleteError && (
-                          <span
-                            role="alert"
-                            data-testid={`watcher-management-delete-error-${watcher.id}`}
-                            className="text-2xs fg-destructive"
-                          >
-                            Could not delete watcher.
-                          </span>
-                        )}
-                        {rowJumpError && (
-                          <span
-                            role="alert"
-                            data-testid={`watcher-management-jump-error-${watcher.id}`}
-                            className="text-2xs fg-destructive"
-                          >
-                            {rowJumpError}
-                          </span>
-                        )}
+                          {isConfirming && (
+                            <div className="flex flex-col items-end gap-0.5">
+                              <label className="inline-flex items-center gap-1.5 text-2xs fg-secondary">
+                                <input
+                                  type="checkbox"
+                                  checked={notifySubscriber}
+                                  data-testid={`watcher-management-notify-${watcher.id}`}
+                                  onChange={(event): void =>
+                                    setNotifySubscriber(event.target.checked)
+                                  }
+                                  className="h-3 w-3 rounded border bg-popover fg-accent focus-ring"
+                                />
+                                Notify subscribing chat
+                              </label>
+                              <span className="max-w-64 text-right text-3xs fg-secondary">
+                                Sends a final watcher-deleted message to the
+                                chat that subscribed to this watcher.
+                              </span>
+                              <ExecutionActionButton
+                                onClick={handleCancelDelete}
+                                label="Cancel"
+                                ariaLabel="Cancel"
+                                variant="text"
+                                stopKeyDownPropagation={false}
+                              />
+                            </div>
+                          )}
+                          {deleteError && (
+                            <span
+                              role="alert"
+                              data-testid={`watcher-management-delete-error-${watcher.id}`}
+                              className="text-2xs fg-destructive"
+                            >
+                              Could not delete watcher.
+                            </span>
+                          )}
+                          {rowJumpError && (
+                            <span
+                              role="alert"
+                              data-testid={`watcher-management-jump-error-${watcher.id}`}
+                              className="text-2xs fg-destructive"
+                            >
+                              {rowJumpError}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         </div>
-      </section>
-    </div>,
-    modalDocument.body,
+      </OverlayScrollArea>
+    </DialogModal>
   );
 }

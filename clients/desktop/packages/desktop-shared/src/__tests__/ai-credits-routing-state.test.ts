@@ -141,4 +141,24 @@ describe('isAiCreditsRoutingInEffect', () => {
   it('keeps legacy session routing with no reset and no account change', () => {
     expect(isAiCreditsRoutingInEffect(session(), { now: NOW })).toBe(true);
   });
+
+  it('expires a legacy no-reset session choice after a newer fresh subscription restoration', () => {
+    const restored = { now: NOW, subscriptionRestoredAt: NOW - 500 };
+    expect(
+      isAiCreditsRoutingInEffect({ active: true, scope: 'session' }, restored),
+    ).toBe(false);
+  });
+
+  it('keeps a later session choice and a persistent credits choice after restoration', () => {
+    const restored = { now: NOW, subscriptionRestoredAt: NOW - 500 };
+    expect(
+      isAiCreditsRoutingInEffect(session({ activatedAt: NOW - 100 }), restored),
+    ).toBe(true);
+    expect(
+      isAiCreditsRoutingInEffect(
+        session({ scope: 'persistent', activatedAt: NOW - 1000 }),
+        restored,
+      ),
+    ).toBe(true);
+  });
 });

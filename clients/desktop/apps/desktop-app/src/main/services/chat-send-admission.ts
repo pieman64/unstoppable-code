@@ -38,7 +38,9 @@ function admissionKey(target: ChatSendAdmissionTarget): string {
 /**
  * Runs `send` with `check` guarding the admission of this one message: the
  * chat state owner applies it in the same synchronous step that commits the
- * message, so nothing it checked can change before the turn is admitted.
+ * message, so nothing it checked can change before the turn is admitted. A
+ * turn that starts while `send` runs applies it again to the tab it starts
+ * with (`resolveChatTurnApprovalAuthority`).
  */
 export async function withChatSendAdmission<T>(
   target: ChatSendAdmissionTarget,
@@ -51,6 +53,14 @@ export async function withChatSendAdmission<T>(
     return await send();
   } finally {
     if (checks.get(key) === check) checks.delete(key);
+  }
+}
+
+/** A registered admission check refused a message when its turn started. */
+export class ChatSendAdmissionRefusedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'ChatSendAdmissionRefusedError';
   }
 }
 

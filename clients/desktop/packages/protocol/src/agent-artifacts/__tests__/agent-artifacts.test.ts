@@ -140,7 +140,7 @@ it('keeps ordering and aliases without combining runs, references and definition
     ...normalized[0],
     dedupeKey: 'canopy:agent:local:a2',
     aliases: [agent.dedupeKey],
-  } as AgentArtifactReceiptV1;
+  };
   expect(mergeLatestAgentArtifacts(normalized, [renamed])).toEqual([
     normalized[1],
     normalized[2],

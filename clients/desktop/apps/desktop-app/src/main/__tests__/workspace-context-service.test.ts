@@ -564,7 +564,9 @@ describe('startup resilience', () => {
     const entry = account('acct', [{ id: ORG_A, name: 'Acme' }]);
     // A persisted record that lost its id: rebuilt through JSON so the
     // fixture is genuinely untyped rather than cast into shape.
-    const { id: _dropped, ...accountWithoutId } = entry.account;
+    const accountInfo = entry.account;
+    if (!accountInfo) throw new Error('Expected account info in fixture');
+    const { id: _dropped, ...accountWithoutId } = accountInfo;
     void _dropped;
     const malformed: unknown = JSON.parse(
       JSON.stringify({ ...entry, account: accountWithoutId }),

@@ -19,6 +19,16 @@ interface MockInspectorSession {
   ): void;
 }
 
+interface MockRendererDebugger {
+  readonly attach: jest.Mock<void, [string?]>;
+  readonly detach: jest.Mock<void, []>;
+  readonly isAttached: jest.Mock<boolean, []>;
+  readonly sendCommand: jest.Mock<
+    Promise<Record<string, unknown>>,
+    [string, Record<string, unknown>?]
+  >;
+}
+
 interface MockStatFs {
   readonly bavail: number;
   readonly bfree: number;
@@ -47,12 +57,21 @@ interface FixtureOptions {
   readonly rendererCount?: number;
   readonly rendererPrivateBytesKb?: number | null;
   readonly rendererWorkingSetKb?: number;
+  /** Rejects `contentTracing.startRecording`, as when another trace records. */
+  readonly nativeTraceStartFailure?: Error;
+  /** Rejects deleting the raw trace, as with EPERM. */
+  readonly nativeTraceRemoveFailure?: Error;
+  readonly nativeDumpWaitMs?: number;
 }
 
 interface MemoryDiagnosticsFixture {
   readonly app: {
     readonly getAppMetrics: jest.Mock<ProcessMetric[], []>;
     readonly getVersion: jest.Mock<string, []>;
+  };
+  readonly contentTracing: {
+    readonly startRecording: jest.Mock<Promise<void>, [unknown]>;
+    readonly stopRecording: jest.Mock<Promise<string>, [string]>;
   };
   readonly directoryModes: Map<string, number>;
   readonly directories: Set<string>;
@@ -82,6 +101,8 @@ interface MemoryDiagnosticsFixture {
   readonly inspectorModuleLoaded: () => boolean;
   readonly order: string[];
   readonly reportsDirectory: string;
+  readonly rendererDebuggers: readonly MockRendererDebugger[];
+  readonly rendererStatisticsCommandStarted: Promise<void>;
   readonly rendererSnapshotStarted: Promise<void>;
   readonly samplingStartRequested: Promise<void>;
   readonly service: MemoryDiagnosticsService;
@@ -97,6 +118,7 @@ interface MemoryDiagnosticsFixture {
   };
   readonly setFreeDiskBytes: (value: number) => void;
   readonly setHeap: (usedBytes: number, limitBytes: number) => void;
+  readonly notifyRendererStatisticsCommandStarted: () => void;
   readonly notifySamplingStartRequested: () => void;
   readonly completeRendererSnapshot: () => void;
   readonly setRendererSnapshotFailure: (error: Error | null) => void;
@@ -153,16 +175,21 @@ async function createFixture(
   const fileModes = new Map<string, number>();
   const directoryModes = new Map<string, number>([[reportsDirectory, 0o700]]);
   const order: string[] = [];
+  const rendererDebuggers: MockRendererDebugger[] = [];
   let freeDiskBytes = 10_000_000_000;
   let heapUsedBytes = 512 * 1024 * 1024;
   let heapLimitBytes = 1024 * 1024 * 1024;
   let rendererSnapshotFailure: Error | null = null;
   const symlinks = new Map<string, string>();
   let resolveRendererSnapshotStarted: (() => void) | undefined;
+  let resolveRendererStatisticsCommandStarted: (() => void) | undefined;
   let completeDeferredRendererSnapshot: (() => void) | undefined;
   let resolveSamplingStartRequested: (() => void) | undefined;
   const rendererSnapshotStarted = new Promise<void>((resolve) => {
     resolveRendererSnapshotStarted = resolve;
+  });
+  const rendererStatisticsCommandStarted = new Promise<void>((resolve) => {
+    resolveRendererStatisticsCommandStarted = resolve;
   });
   const samplingStartRequested = new Promise<void>((resolve) => {
     resolveSamplingStartRequested = resolve;
@@ -279,6 +306,12 @@ async function createFixture(
     },
   );
   const rm = jest.fn<Promise<void>, [string]>((path: string): Promise<void> => {
+    if (
+      options.nativeTraceRemoveFailure &&
+      basename(path) === 'native-memory.trace.json'
+    ) {
+      return Promise.reject(options.nativeTraceRemoveFailure);
+    }
     removePath(path);
     return Promise.resolve();
   });
@@ -294,6 +327,14 @@ async function createFixture(
       directories.delete(path);
       directoryModes.delete(path);
       return Promise.resolve();
+    },
+  );
+  const readFile = jest.fn<Promise<string>, [string, string?]>(
+    (path: string): Promise<string> => {
+      const contents = files.get(path);
+      return contents === undefined
+        ? Promise.reject(new Error(`ENOENT: ${path}`))
+        : Promise.resolve(contents);
     },
   );
   const stat = jest.fn<Promise<MockFileStats>, [string]>(
@@ -331,6 +372,7 @@ async function createFixture(
     chmod,
     mkdir,
     readdir,
+    readFile,
     rename,
     rm,
     rmdir,
@@ -469,6 +511,62 @@ async function createFixture(
   ]);
   const getVersion = jest.fn<string, []>(() => '9.8.7');
   const app = { getAppMetrics, getVersion };
+  // One memory-infra dump, shaped like Electron 42's: a process's totals and
+  // allocators arrive in separate events, and values are hex strings.
+  const nativeTrace = {
+    traceEvents: [
+      {
+        ph: 'M',
+        pid: process.pid,
+        name: 'process_name',
+        args: { name: 'Browser' },
+      },
+      {
+        ph: 'v',
+        pid: process.pid,
+        id: '0x0',
+        args: {
+          dumps: { process_totals: { private_footprint_bytes: '400000' } },
+        },
+      },
+      {
+        ph: 'v',
+        pid: process.pid,
+        id: '0x0',
+        args: {
+          dumps: {
+            allocators: {
+              malloc: {
+                attrs: {
+                  size: { type: 'scalar', units: 'bytes', value: '100000' },
+                  effective_size: {
+                    type: 'scalar',
+                    units: 'bytes',
+                    value: 'f0000',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  };
+  const contentTracing = {
+    startRecording: jest.fn<Promise<void>, [unknown]>((): Promise<void> => {
+      order.push('tracing:start');
+      return options.nativeTraceStartFailure
+        ? Promise.reject(options.nativeTraceStartFailure)
+        : Promise.resolve();
+    }),
+    stopRecording: jest.fn<Promise<string>, [string]>(
+      (filePath: string): Promise<string> => {
+        order.push('tracing:stop');
+        files.set(filePath, JSON.stringify(nativeTrace));
+        return Promise.resolve(filePath);
+      },
+    ),
+  };
   const logMainProcessError = jest.fn<void, [string, unknown]>();
 
   jest.doMock('node:fs/promises', () => ({
@@ -478,14 +576,16 @@ async function createFixture(
   jest.doMock('fs/promises', () => ({ ...fsPromises, default: fsPromises }));
   jest.doMock('node:fs', () => ({ ...fsSync, default: fsSync }));
   jest.doMock('fs', () => ({ ...fsSync, default: fsSync }));
-  jest.doMock('node:inspector', () => {
-    inspectorModuleLoaded = true;
-    return inspector;
-  });
-  jest.doMock('inspector', () => {
-    inspectorModuleLoaded = true;
-    return inspector;
-  });
+  const originalGetBuiltinModule = process.getBuiltinModule.bind(process);
+  jest
+    .spyOn(process, 'getBuiltinModule')
+    .mockImplementation((id: string): object | undefined => {
+      if (id === 'node:inspector' || id === 'inspector') {
+        inspectorModuleLoaded = true;
+        return inspector;
+      }
+      return originalGetBuiltinModule(id);
+    });
   jest.doMock('node:v8', () => ({ ...v8, default: v8 }));
   jest.doMock('v8', () => ({ ...v8, default: v8 }));
   jest.doMock('../../lib/paths', () => ({
@@ -495,10 +595,16 @@ async function createFixture(
     logMainProcessError,
   }));
   let nextRendererIndex = 0;
+  jest.doMock('../native-memory', () => ({
+    ...jest.requireActual<Record<string, unknown>>('../native-memory'),
+    NATIVE_DUMP_WAIT_MS: options.nativeDumpWaitMs ?? 0,
+  }));
   jest.doMock('electron', () => ({
     app,
+    contentTracing,
     BrowserWindow: class {
       readonly webContents: {
+        readonly debugger: MockRendererDebugger;
         readonly getOSProcessId: jest.Mock;
         readonly isDestroyed: jest.Mock;
         readonly takeHeapSnapshot: jest.Mock;
@@ -507,10 +613,43 @@ async function createFixture(
       constructor() {
         const rendererIndex = nextRendererIndex;
         nextRendererIndex += 1;
+        let debuggerAttached = false;
+        const rendererDebugger: MockRendererDebugger = {
+          attach: jest.fn<void, [string?]>((protocolVersion?: string): void => {
+            order.push(
+              `debugger:attach:${rendererIndex}:${protocolVersion ?? ''}`,
+            );
+            debuggerAttached = true;
+          }),
+          detach: jest.fn<void, []>((): void => {
+            order.push(`debugger:detach:${rendererIndex}`);
+            debuggerAttached = false;
+          }),
+          isAttached: jest.fn((): boolean => debuggerAttached),
+          sendCommand: jest.fn<
+            Promise<Record<string, unknown>>,
+            [string, Record<string, unknown>?]
+          >((method: string): Promise<Record<string, unknown>> => {
+            order.push(`debugger:command:${rendererIndex}:${method}`);
+            resolveRendererStatisticsCommandStarted?.();
+            const result =
+              method === 'Runtime.getHeapUsage'
+                ? {
+                    usedSize: 123,
+                    totalSize: 456,
+                    embedderHeapUsedSize: 78,
+                    backingStorageSize: 90,
+                  }
+                : { documents: 1, nodes: 2, jsEventListeners: 3 };
+            return Promise.resolve(result);
+          }),
+        };
+        rendererDebuggers.push(rendererDebugger);
         const processId =
           process.pid +
           (options.duplicateRendererPid === true ? 1 : rendererIndex + 1);
         this.webContents = {
+          debugger: rendererDebugger,
           getOSProcessId: jest.fn((): number => processId),
           isDestroyed: jest.fn(
             (): boolean =>
@@ -562,6 +701,7 @@ async function createFixture(
 
   const fixture: MemoryDiagnosticsFixture = {
     app,
+    contentTracing,
     directoryModes,
     directories,
     fileModes,
@@ -571,6 +711,8 @@ async function createFixture(
     inspectorModuleLoaded: (): boolean => inspectorModuleLoaded,
     order,
     reportsDirectory,
+    rendererDebuggers,
+    rendererStatisticsCommandStarted,
     rendererSnapshotStarted,
     samplingStartRequested,
     service: module.getMemoryDiagnosticsService(),
@@ -583,6 +725,9 @@ async function createFixture(
     setHeap: (usedBytes: number, limitBytes: number): void => {
       heapUsedBytes = usedBytes;
       heapLimitBytes = limitBytes;
+    },
+    notifyRendererStatisticsCommandStarted: (): void => {
+      resolveRendererStatisticsCommandStarted?.();
     },
     notifySamplingStartRequested: (): void => {
       resolveSamplingStartRequested?.();
@@ -622,12 +767,34 @@ function reportDirectories(fixture: MemoryDiagnosticsFixture): string[] {
   );
 }
 
+function readSummary(
+  fixture: MemoryDiagnosticsFixture,
+  directory: string,
+): Record<string, unknown> {
+  const summaryContents = fixture.files.get(join(directory, 'summary.json'));
+  if (summaryContents === undefined) {
+    throw new Error(`Summary was not written for ${directory}`);
+  }
+  return parseJsonObject(summaryContents);
+}
+
+function readReportSummary(
+  fixture: MemoryDiagnosticsFixture,
+  reportId: string,
+): Record<string, unknown> {
+  return readSummary(fixture, join(fixture.reportsDirectory, reportId));
+}
+
 describe('memory diagnostics service public API', () => {
   afterEach(async () => {
     const fixture = activeFixture;
     activeFixture = undefined;
-    if (fixture !== undefined) await fixture.service.dispose();
-    jest.useRealTimers();
+    try {
+      if (fixture !== undefined) await fixture.service.dispose();
+    } finally {
+      jest.restoreAllMocks();
+      jest.useRealTimers();
+    }
   });
 
   it('stays inert while disabled and refuses a report without loading inspector or writing files', async () => {
@@ -700,6 +867,18 @@ describe('memory diagnostics service public API', () => {
     expect((await fixture.service.getStatus()).lastReport).toEqual(
       result.report,
     );
+  });
+
+  it('adds the native memory dump wait to the report estimate', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture({
+      rendererCount: 0,
+      nativeDumpWaitMs: 3000,
+    });
+    fixture.setHeap(1024 ** 3, 2 * 1024 ** 3);
+    fixture.service.setEnabled(true);
+
+    expect((await fixture.service.getStatus()).estimatedReportSeconds).toBe(28);
   });
 
   it('uses working-set fallback metrics and counts same-process renderers separately from estimates', async () => {
@@ -1035,6 +1214,508 @@ describe('memory diagnostics service public API', () => {
     }
     expect(fixture.service.resolveReportPath(result.report.reportId)).toBe(
       reportDirectory,
+    );
+  });
+
+  it('records one native memory dump before any snapshot and keeps no trace file', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture();
+    fixture.service.setEnabled(true);
+
+    const result = await fixture.service.createReport();
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const stopIndex = fixture.order.indexOf('tracing:stop');
+    expect(fixture.order.indexOf('tracing:start')).toBeGreaterThanOrEqual(0);
+    expect(stopIndex).toBeLessThan(
+      fixture.order.findIndex((entry) => entry.startsWith('debugger:attach')),
+    );
+    expect(stopIndex).toBeLessThan(
+      fixture.order.findIndex((entry) => entry.startsWith('renderer:')),
+    );
+    expect(fixture.contentTracing.startRecording).toHaveBeenCalledWith({
+      included_categories: ['disabled-by-default-memory-infra'],
+      memory_dump_config: {
+        triggers: [{ mode: 'detailed', periodic_interval_ms: 600_000 }],
+      },
+    });
+
+    const reportDirectory = join(
+      fixture.reportsDirectory,
+      result.report.reportId,
+    );
+    const summary = readReportSummary(fixture, result.report.reportId);
+    const nativeMemory = jsonObjectField(summary, 'nativeMemory');
+    expect(typeof nativeMemory.durationMs).toBe('number');
+    expect(nativeMemory).toMatchObject({
+      captured: true,
+      unavailableReason: null,
+      processes: [
+        {
+          pid: process.pid,
+          privateFootprintBytes: 0x400000,
+          allocators: {
+            malloc: { sizeBytes: 0x100000, effectiveSizeBytes: 0xf0000 },
+          },
+        },
+      ],
+      // The fixture trace has no dump for the renderer.
+      missingProcessIds: [process.pid + 1],
+    });
+    const reportFiles = Array.from(fixture.files.keys()).filter((filePath) =>
+      pathIsWithin(filePath, reportDirectory),
+    );
+    expect(reportFiles.map((filePath) => basename(filePath))).not.toContain(
+      'native-memory.trace.json',
+    );
+    expect(result.report.fileCount).toBe(reportFiles.length);
+  });
+
+  it('records why native memory was not captured and still writes the report', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture({
+      nativeTraceStartFailure: new Error('Tracing is already active'),
+    });
+    fixture.service.setEnabled(true);
+
+    const result = await fixture.service.createReport();
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const nativeMemory = jsonObjectField(
+      readReportSummary(fixture, result.report.reportId),
+      'nativeMemory',
+    );
+    expect(typeof nativeMemory.durationMs).toBe('number');
+    expect(nativeMemory).toMatchObject({
+      captured: false,
+      unavailableReason: 'Tracing is already active',
+      processes: [],
+      missingProcessIds: [],
+    });
+    expect(fixture.contentTracing.stopRecording).not.toHaveBeenCalled();
+    expect(
+      fixture.order.filter((entry) => entry.startsWith('renderer:')),
+    ).toHaveLength(1);
+    expect(fixture.logMainProcessError).toHaveBeenCalledWith(
+      'Memory report native memory capture failed',
+      expect.any(Error),
+    );
+  });
+
+  it('fails the report rather than keep a raw trace it could not delete', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture({
+      nativeTraceRemoveFailure: new Error('EPERM: operation not permitted'),
+    });
+    fixture.service.setEnabled(true);
+
+    const result = await fixture.service.createReport();
+
+    expect(result).toEqual(
+      expect.objectContaining({ ok: false, reason: 'failed' }),
+    );
+    expect(
+      Array.from(fixture.files.keys()).filter(
+        (filePath) => basename(filePath) === 'summary.json',
+      ),
+    ).toEqual([]);
+    expect(
+      fixture.order.filter((entry) => entry.startsWith('renderer:')),
+    ).toEqual([]);
+  });
+
+  it('does not record native memory in automatic dumps', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture({ rendererCount: 0 });
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+    fixture.setHeap(820, 1000);
+    await jest.advanceTimersByTimeAsync(15_000);
+
+    const [dumpDirectory] = automaticDumpDirectories(fixture);
+    if (dumpDirectory === undefined) throw new Error('No automatic dump');
+    expect(readSummary(fixture, dumpDirectory)).not.toHaveProperty(
+      'nativeMemory',
+    );
+    expect(fixture.contentTracing.startRecording).not.toHaveBeenCalled();
+  });
+
+  it('records renderer heap and DOM statistics immediately before each snapshot', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture({
+      rendererCount: 2,
+      rendererLabels: ['main', 'app-advisor'],
+    });
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+
+    const result = await fixture.service.createReport();
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const summary = readReportSummary(fixture, result.report.reportId);
+    expect(summary.version).toBe(1);
+    expect(summary.rendererSnapshots).toEqual([
+      expect.objectContaining({
+        label: 'main',
+        heapUsage: {
+          usedSize: 123,
+          totalSize: 456,
+          embedderHeapUsedSize: 78,
+          backingStorageSize: 90,
+        },
+        domCounters: { documents: 1, nodes: 2, jsEventListeners: 3 },
+      }),
+      expect.objectContaining({
+        label: 'app-advisor',
+        heapUsage: {
+          usedSize: 123,
+          totalSize: 456,
+          embedderHeapUsedSize: 78,
+          backingStorageSize: 90,
+        },
+        domCounters: { documents: 1, nodes: 2, jsEventListeners: 3 },
+      }),
+    ]);
+
+    const statisticsAndSnapshots = fixture.order.filter(
+      (entry) => entry.startsWith('debugger:') || entry.startsWith('renderer:'),
+    );
+    expect(statisticsAndSnapshots).toEqual([
+      'debugger:attach:0:1.3',
+      'debugger:command:0:Runtime.getHeapUsage',
+      'debugger:command:0:Memory.getDOMCounters',
+      'debugger:detach:0',
+      expect.stringMatching(/renderer-main\.heapsnapshot$/),
+      'debugger:attach:1:1.3',
+      'debugger:command:1:Runtime.getHeapUsage',
+      'debugger:command:1:Memory.getDOMCounters',
+      'debugger:detach:1',
+      expect.stringMatching(/renderer-app-advisor\.heapsnapshot$/),
+    ]);
+  });
+
+  it('leaves an already attached renderer debugger untouched and still snapshots', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture();
+    const rendererDebugger = fixture.rendererDebuggers[0];
+    if (rendererDebugger === undefined) {
+      throw new Error('Renderer debugger was not created');
+    }
+    rendererDebugger.isAttached.mockReturnValue(true);
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+
+    const result = await fixture.service.createReport();
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const summary = readReportSummary(fixture, result.report.reportId);
+    expect(summary.rendererSnapshots).toEqual([
+      expect.objectContaining({
+        label: 'renderer-1',
+        statisticsUnavailableReason: 'debugger-attached',
+      }),
+    ]);
+    expect(rendererDebugger.attach).not.toHaveBeenCalled();
+    expect(rendererDebugger.sendCommand).not.toHaveBeenCalled();
+    expect(rendererDebugger.detach).not.toHaveBeenCalled();
+    expect(fixture.order.some((entry) => entry.startsWith('renderer:'))).toBe(
+      true,
+    );
+  });
+
+  it('records debugger attach failures without skipping the renderer snapshot', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture();
+    const rendererDebugger = fixture.rendererDebuggers[0];
+    if (rendererDebugger === undefined) {
+      throw new Error('Renderer debugger was not created');
+    }
+    rendererDebugger.attach.mockImplementation((): void => {
+      throw new Error('debugger attach failed');
+    });
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+
+    const result = await fixture.service.createReport();
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const summary = readReportSummary(fixture, result.report.reportId);
+    expect(summary.rendererSnapshots).toEqual([
+      expect.objectContaining({
+        statisticsUnavailableReason: 'attach-failed',
+      }),
+    ]);
+    expect(rendererDebugger.detach).toHaveBeenCalledTimes(1);
+    expect(fixture.order.some((entry) => entry.startsWith('renderer:'))).toBe(
+      true,
+    );
+  });
+
+  it('records command failures, detaches the debugger and still snapshots', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture();
+    const rendererDebugger = fixture.rendererDebuggers[0];
+    if (rendererDebugger === undefined) {
+      throw new Error('Renderer debugger was not created');
+    }
+    rendererDebugger.sendCommand.mockRejectedValueOnce(
+      new Error('heap command failed'),
+    );
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+
+    const result = await fixture.service.createReport();
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const summary = readReportSummary(fixture, result.report.reportId);
+    expect(summary.rendererSnapshots).toEqual([
+      expect.objectContaining({
+        statisticsUnavailableReason: 'command-failed',
+      }),
+    ]);
+    expect(rendererDebugger.detach).toHaveBeenCalledTimes(1);
+    expect(fixture.order.some((entry) => entry.startsWith('renderer:'))).toBe(
+      true,
+    );
+  });
+
+  it('times out renderer statistics commands but still snapshots', async () => {
+    jest.useFakeTimers();
+    const controller = new AbortController();
+    const timeoutSpy = jest
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((): AbortSignal => controller.signal);
+    const fixture = await createFixture();
+    const rendererDebugger = fixture.rendererDebuggers[0];
+    if (rendererDebugger === undefined) {
+      throw new Error('Renderer debugger was not created');
+    }
+    rendererDebugger.sendCommand.mockImplementationOnce(
+      (method: string): Promise<Record<string, unknown>> => {
+        fixture.order.push(`debugger:command:0:${method}`);
+        fixture.notifyRendererStatisticsCommandStarted();
+        return new Promise<Record<string, unknown>>(() => undefined);
+      },
+    );
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+
+    const reportPromise = fixture.service.createReport();
+    const state = await Promise.race([
+      fixture.rendererStatisticsCommandStarted.then(() => 'started'),
+      reportPromise.then(() => 'finished'),
+    ]);
+    expect(state).toBe('started');
+    controller.abort();
+    const result = await reportPromise;
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const summary = readReportSummary(fixture, result.report.reportId);
+    expect(summary.rendererSnapshots).toEqual([
+      expect.objectContaining({ statisticsUnavailableReason: 'timeout' }),
+    ]);
+    expect(rendererDebugger.detach).toHaveBeenCalledTimes(1);
+    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    expect(
+      fixture.order.filter(
+        (entry) =>
+          entry.startsWith('debugger:') || entry.startsWith('renderer:'),
+      ),
+    ).toEqual([
+      'debugger:attach:0:1.3',
+      'debugger:command:0:Runtime.getHeapUsage',
+      'debugger:detach:0',
+      expect.stringMatching(/renderer-renderer-1\.heapsnapshot$/),
+    ]);
+  });
+
+  it('marks malformed renderer statistics as unavailable and still snapshots', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture();
+    const rendererDebugger = fixture.rendererDebuggers[0];
+    if (rendererDebugger === undefined) {
+      throw new Error('Renderer debugger was not created');
+    }
+    rendererDebugger.sendCommand.mockResolvedValueOnce({
+      usedSize: -1,
+      totalSize: 456,
+    });
+    rendererDebugger.detach.mockImplementation((): void => {
+      throw new Error('debugger detach failed');
+    });
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+
+    const result = await fixture.service.createReport();
+    if (!result.ok) throw new Error(`Report failed: ${result.message}`);
+
+    const summary = readReportSummary(fixture, result.report.reportId);
+    expect(summary.rendererSnapshots).toEqual([
+      expect.objectContaining({
+        statisticsUnavailableReason: 'invalid-result',
+      }),
+    ]);
+    expect(rendererDebugger.detach).toHaveBeenCalledTimes(1);
+    expect(fixture.order.some((entry) => entry.startsWith('renderer:'))).toBe(
+      true,
+    );
+  });
+
+  it('tracks prior reports and automatic dumps while preserving summary version 1', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-21T00:00:00.000Z'));
+    const fixture = await createFixture({ rendererCount: 0 });
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+
+    const firstReport = await fixture.service.createReport();
+    if (!firstReport.ok) {
+      throw new Error(`First report failed: ${firstReport.message}`);
+    }
+    const firstSummary = readReportSummary(
+      fixture,
+      firstReport.report.reportId,
+    );
+    const firstProcessHistory = jsonObjectField(firstSummary, 'processHistory');
+    expect(firstSummary.version).toBe(1);
+    expect(firstProcessHistory.reportsWrittenBefore).toBe(0);
+    expect(firstProcessHistory.automaticDumpsWrittenBefore).toBe(0);
+    expect(firstProcessHistory.mainSnapshotsWrittenBefore).toBe(0);
+    const firstProcessUptimeSeconds = firstProcessHistory.processUptimeSeconds;
+    if (typeof firstProcessUptimeSeconds !== 'number') {
+      throw new Error('Process uptime must be a number');
+    }
+    expect(Number.isInteger(firstProcessUptimeSeconds)).toBe(true);
+
+    const secondReport = await fixture.service.createReport();
+    if (!secondReport.ok) {
+      throw new Error(`Second report failed: ${secondReport.message}`);
+    }
+    const secondSummary = readReportSummary(
+      fixture,
+      secondReport.report.reportId,
+    );
+    const secondProcessHistory = jsonObjectField(
+      secondSummary,
+      'processHistory',
+    );
+    expect(secondSummary.version).toBe(1);
+    expect(secondProcessHistory).toEqual(
+      expect.objectContaining({
+        reportsWrittenBefore: 1,
+        automaticDumpsWrittenBefore: 0,
+        mainSnapshotsWrittenBefore: 1,
+      }),
+    );
+    expect(Number.isInteger(secondProcessHistory.processUptimeSeconds)).toBe(
+      true,
+    );
+
+    fixture.setHeap(800, 1000);
+    await jest.advanceTimersByTimeAsync(15_000);
+    const automaticDirectory = automaticDumpDirectories(fixture)[0];
+    if (automaticDirectory === undefined) {
+      throw new Error('Automatic dump directory was not created');
+    }
+    const automaticSummary = readSummary(fixture, automaticDirectory);
+    expect(automaticSummary.version).toBe(1);
+    expect(automaticSummary.processHistory).toEqual(
+      expect.objectContaining({
+        reportsWrittenBefore: 2,
+        automaticDumpsWrittenBefore: 0,
+        mainSnapshotsWrittenBefore: 2,
+      }),
+    );
+
+    const thirdReport = await fixture.service.createReport();
+    if (!thirdReport.ok) {
+      throw new Error(`Third report failed: ${thirdReport.message}`);
+    }
+    const thirdSummary = readReportSummary(
+      fixture,
+      thirdReport.report.reportId,
+    );
+    expect(thirdSummary.processHistory).toEqual(
+      expect.objectContaining({
+        reportsWrittenBefore: 3,
+        automaticDumpsWrittenBefore: 1,
+        mainSnapshotsWrittenBefore: 2,
+      }),
+    );
+  });
+
+  it('does not include failed reports in process history counters', async () => {
+    jest.useFakeTimers();
+    const fixture = await createFixture();
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+    fixture.setRendererSnapshotFailure(new Error('renderer snapshot failed'));
+
+    const failedResult = await fixture.service.createReport();
+
+    expect(failedResult).toEqual(
+      expect.objectContaining({ ok: false, reason: 'failed' }),
+    );
+    fixture.setRendererSnapshotFailure(null);
+    jest.setSystemTime(new Date(Date.now() + 1000));
+    const successfulResult = await fixture.service.createReport();
+    if (!successfulResult.ok) {
+      throw new Error(`Report failed: ${successfulResult.message}`);
+    }
+
+    const summary = readReportSummary(
+      fixture,
+      successfulResult.report.reportId,
+    );
+    expect(summary.processHistory).toEqual(
+      expect.objectContaining({
+        reportsWrittenBefore: 0,
+        automaticDumpsWrittenBefore: 0,
+        mainSnapshotsWrittenBefore: 0,
+      }),
+    );
+  });
+
+  it('counts a written main snapshot when summary finalization later fails', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-21T00:00:00.000Z'));
+    const fixture = await createFixture({ rendererCount: 0 });
+    fixture.service.setEnabled(true);
+    await fixture.service.getStatus();
+    const writeSnapshot = fixture.v8.writeHeapSnapshot.getMockImplementation();
+    if (writeSnapshot === undefined) {
+      throw new Error('Main snapshot writer was not configured');
+    }
+    fixture.v8.writeHeapSnapshot.mockImplementationOnce(
+      (filePath: string): string => {
+        const writtenPath = writeSnapshot(filePath);
+        fixture.fs.writeFile.mockRejectedValueOnce(
+          new Error('summary finalization failed'),
+        );
+        return writtenPath;
+      },
+    );
+
+    const failedResult = await fixture.service.createReport();
+
+    expect(failedResult).toEqual(
+      expect.objectContaining({ ok: false, reason: 'failed' }),
+    );
+    expect(fixture.v8.writeHeapSnapshot).toHaveBeenCalledTimes(1);
+    jest.setSystemTime(new Date('2026-10-21T00:00:01.000Z'));
+    const successfulResult = await fixture.service.createReport();
+    if (!successfulResult.ok) {
+      throw new Error(`Report failed: ${successfulResult.message}`);
+    }
+
+    const summary = readReportSummary(
+      fixture,
+      successfulResult.report.reportId,
+    );
+    expect(summary.processHistory).toEqual(
+      expect.objectContaining({
+        reportsWrittenBefore: 0,
+        automaticDumpsWrittenBefore: 0,
+        mainSnapshotsWrittenBefore: 1,
+      }),
     );
   });
 

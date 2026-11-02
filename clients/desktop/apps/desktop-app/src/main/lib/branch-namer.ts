@@ -27,7 +27,7 @@ import {
   readLocalMemoryEnabledPreference,
   readPreferencesFile,
 } from '../lib/preferences-store';
-import { checkGitHubCliStatus } from '../ipc/settings';
+import { checkGitHubCliStatus } from './github-auth';
 import type { HelperUsage } from '../agents/utils';
 import { getObservabilityService } from '../observability';
 import type { BranchMatchResult } from './resolve-worktree';

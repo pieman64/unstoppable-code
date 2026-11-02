@@ -25,6 +25,7 @@ jest.mock('../lib/workspace-registry', () => ({
 }));
 
 import { getCurrentBranch, getRemoteUrl } from '../lib/git';
+import type { Octokit } from '@octokit/rest';
 import {
   getGitHubBroker,
   resetGitHubBrokerForTests,
@@ -50,6 +51,11 @@ import {
   PR_MERGE_RETRY_DELAYS_MS,
   updatePrBodyForRepo,
 } from '../lib/github-pr';
+import {
+  findOpenGitHubPullRequestForBranch,
+  readGitHubBranchHead,
+  updateGitHubPullRequest,
+} from '../lib/github-pr-writes';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { isMultiRepoWorkspace } from '../lib/workspace-registry';
@@ -65,11 +71,22 @@ const mockedIsMultiRepoWorkspace = jest.mocked(isMultiRepoWorkspace);
 /** A merge queue read time; its value is the clock at the read. */
 const ANY_STRING: unknown = expect.any(String);
 
-type MergePrTestOctokit = {
-  repos: { get: jest.Mock };
-  pulls: { merge: jest.Mock; get: jest.Mock };
-  graphql?: jest.Mock;
-};
+type GitHubEnqueueOperation = Parameters<GitHubClient['enqueue']>[0];
+
+function asGitHubClientEnqueue<Args extends unknown[]>(
+  enqueue: jest.Mock<
+    Promise<unknown>,
+    [operation: GitHubEnqueueOperation, ...args: Args]
+  >,
+): GitHubClient['enqueue'] {
+  // Jest mocks cannot preserve enqueue's generic continuation return type.
+  return enqueue as unknown as GitHubClient['enqueue'];
+}
+
+function asTestOctokit(client: object): Octokit {
+  // These fixtures provide only the endpoints exercised by each test.
+  return client as Octokit;
+}
 
 describe('parseGitHubRemote', () => {
   it('parses SSH remote URLs', () => {
@@ -130,15 +147,7 @@ describe('fetchArchivedPullRequestMetadata', () => {
     per_page: number;
   }
 
-  interface PullListOctokit {
-    pulls: {
-      list(request: PullListRequest): Promise<{ data: unknown[] }>;
-    };
-  }
-
-  function isPullListOperation(
-    value: unknown,
-  ): value is (octokit: PullListOctokit) => Promise<unknown> {
+  function isPullListOperation(value: unknown): boolean {
     return typeof value === 'function';
   }
 
@@ -161,16 +170,19 @@ describe('fetchArchivedPullRequestMetadata', () => {
       return Promise.resolve(response);
     };
     const enqueue: GitHubClient['enqueue'] = <T>(
-      request: unknown,
+      request: (
+        octokit: Octokit,
+        conditionalHeaders: Record<string, string>,
+      ) => Promise<T>,
       _priority?: 'high' | 'normal',
-      options: GitHubClientEnqueueOptions = {},
+      options: GitHubClientEnqueueOptions<T> = {},
     ): Promise<T> => {
       if (!isPullListOperation(request)) {
         return Promise.reject(new Error('Expected pull-list operation.'));
       }
       enqueueCallCount += 1;
       enqueueOptions.push(options);
-      return request({ pulls: { list } });
+      return request(asTestOctokit({ pulls: { list } }), {});
     };
     const client: GitHubClient = { enqueue };
     mockedGetGitHubClient.mockReturnValue(client);
@@ -659,21 +671,27 @@ describe('fetchPrStatusForRepo', () => {
       data: { check_runs: [] },
     });
     const listReviews = jest.fn().mockResolvedValue({ data: [] });
-    const enqueue = jest.fn((operation: (octokit: unknown) => unknown) =>
-      operation({
-        pulls: {
-          list: pullsList,
-          get: pullsGet,
-          listReviews,
-        },
-        checks: {
-          listForRef,
-        },
-      }),
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
+          pulls: {
+            list: pullsList,
+            get: pullsGet,
+            listReviews,
+          },
+          checks: {
+            listForRef,
+          },
+        }),
+        {},
+      ),
     );
 
     mockedGetGitHubClient.mockReturnValue({
-      enqueue,
+      enqueue: asGitHubClientEnqueue(enqueue),
     });
 
     const result = await fetchPrStatusForRepo('/tmp/repo', 'feature-branch');
@@ -2114,19 +2132,22 @@ describe('hasGitHubPullRequestHistoryForBranch', () => {
     const pullsList = jest.fn().mockResolvedValue({
       data: [{ number: 42 }],
     });
-    type PullsClient = {
-      pulls: {
-        list: typeof pullsList;
-      };
-    };
-    const enqueue = jest.fn((fn: (client: PullsClient) => Promise<unknown>) =>
-      fn({
-        pulls: {
-          list: pullsList,
-        },
-      }),
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
+          pulls: {
+            list: pullsList,
+          },
+        }),
+        {},
+      ),
     );
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     await expect(
       hasGitHubPullRequestHistoryForBranch('/tmp/repo', 'feature/api'),
@@ -2138,6 +2159,136 @@ describe('hasGitHubPullRequestHistoryForBranch', () => {
       head: 'acme:feature/api',
       state: 'all',
       per_page: 1,
+    });
+  });
+});
+
+// CAN-4109: the GitHub calls the core.pullRequest request handle composes.
+describe('core.pullRequest GitHub calls', () => {
+  const remote = { owner: 'acme', repo: 'example-repo' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  /** Runs the one enqueued request against `octokit`; returns its options. */
+  function enqueueing(result: unknown): {
+    enqueue: jest.Mock;
+    run: (octokit: unknown) => Promise<unknown>;
+  } {
+    const enqueue = jest.fn().mockResolvedValue(result);
+    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    return {
+      enqueue,
+      run: (octokit) => {
+        const calls = enqueue.mock.calls as Array<
+          [(client: unknown) => Promise<unknown>]
+        >;
+        return calls[0][0](octokit);
+      },
+    };
+  }
+
+  it('reads a branch head, answering null for a branch GitHub does not have', async () => {
+    const getBranch = jest.fn();
+    const { enqueue, run } = enqueueing({
+      data: { name: 'feature/x', commit: { sha: 'c'.repeat(40) } },
+    });
+    await expect(readGitHubBranchHead(remote, 'feature/x')).resolves.toBe(
+      'c'.repeat(40),
+    );
+    await run({ repos: { getBranch } });
+    expect(getBranch).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'example-repo',
+      branch: 'feature/x',
+    });
+    expect(enqueue).toHaveBeenCalledWith(expect.any(Function), 'high', {
+      operation: 'read',
+      idempotency: 'safe',
+    });
+
+    enqueue.mockRejectedValue(
+      new GitHubBrokerError('not_found', 'Branch not found', { status: 404 }),
+    );
+    await expect(readGitHubBranchHead(remote, 'gone')).resolves.toBeNull();
+    // GitHub's own error, kept as the broker error's cause.
+    enqueue.mockRejectedValue(
+      new GitHubBrokerError('not_found', 'GitHub API request failed.', {
+        status: 404,
+        cause: {
+          status: 404,
+          response: { data: { message: 'Branch not found' } },
+        },
+      }),
+    );
+    await expect(readGitHubBranchHead(remote, 'gone')).resolves.toBeNull();
+    // A repository the credential cannot see is no missing head.
+    const hidden = new GitHubBrokerError('not_found', 'Not Found', {
+      status: 404,
+    });
+    enqueue.mockRejectedValue(hidden);
+    await expect(readGitHubBranchHead(remote, 'x')).rejects.toBe(hidden);
+    // GitHub redirects a renamed branch's old name to the new branch.
+    enqueue.mockResolvedValue({
+      data: { name: 'renamed', commit: { sha: 'd'.repeat(40) } },
+    });
+    await expect(readGitHubBranchHead(remote, 'old-name')).resolves.toBeNull();
+    const forbidden = new GitHubBrokerError('permission_denied', 'Forbidden', {
+      status: 403,
+    });
+    enqueue.mockRejectedValue(forbidden);
+    await expect(readGitHubBranchHead(remote, 'x')).rejects.toBe(forbidden);
+  });
+
+  it('finds the open pull request of a head branch', async () => {
+    const list = jest.fn();
+    const { run } = enqueueing({
+      data: [
+        { number: 5, html_url: 'https://github.com/acme/example-repo/pull/5' },
+      ],
+    });
+    await expect(
+      findOpenGitHubPullRequestForBranch(remote, 'feature'),
+    ).resolves.toEqual({
+      number: 5,
+      url: 'https://github.com/acme/example-repo/pull/5',
+    });
+    await run({ pulls: { list } });
+    expect(list).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'example-repo',
+      head: 'acme:feature',
+      state: 'open',
+      per_page: 1,
+    });
+    enqueueing({ data: [] });
+    await expect(
+      findOpenGitHubPullRequestForBranch(remote, 'feature'),
+    ).resolves.toBeNull();
+  });
+
+  it('updates only the given members as one mutation', async () => {
+    const update = jest.fn();
+    const { enqueue, run } = enqueueing({
+      data: { html_url: 'https://github.com/acme/example-repo/pull/9' },
+    });
+    await expect(
+      updateGitHubPullRequest({ ...remote, number: 9 }, { title: 'T' }),
+    ).resolves.toEqual({
+      number: 9,
+      url: 'https://github.com/acme/example-repo/pull/9',
+    });
+    await run({ pulls: { update } });
+    expect(update).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'example-repo',
+      pull_number: 9,
+      title: 'T',
+    });
+    expect(enqueue).toHaveBeenCalledWith(expect.any(Function), 'high', {
+      operation: 'mutation',
+      idempotency: 'unsafe',
     });
   });
 });
@@ -2359,20 +2510,28 @@ describe('mergePrForRepo', () => {
           merge_commit_sha: 'merge-sha',
         },
       });
-    const enqueue = jest.fn(
-      (operation: (octokit: MergePrTestOctokit) => Promise<unknown>) =>
-        operation({
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
           repos: { get: reposGet },
           pulls: { merge: pullsMerge, get: pullsGet },
         }),
+        {},
+      ),
     );
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     try {
       await expect(
         mergePrForRepo('/tmp/repo', 42, 'head-sha', { retryDelaysMs: [0] }),
       ).resolves.toEqual({
         outcome: 'merged',
+        newlyMerged: true,
         mergeMethod: 'squash',
         mergeCommitSha: 'merge-sha',
       });
@@ -2422,14 +2581,21 @@ describe('mergePrForRepo', () => {
         mergeable_state: 'unknown',
       },
     });
-    const enqueue = jest.fn(
-      (operation: (octokit: MergePrTestOctokit) => Promise<unknown>) =>
-        operation({
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
           repos: { get: reposGet },
           pulls: { merge: pullsMerge, get: pullsGet },
         }),
+        {},
+      ),
     );
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     try {
       const resultPromise = mergePrForRepo('/tmp/repo', 42, 'head-sha');
@@ -2476,14 +2642,21 @@ describe('mergePrForRepo', () => {
         mergeable_state: 'unknown',
       },
     });
-    const enqueue = jest.fn(
-      (operation: (octokit: MergePrTestOctokit) => Promise<unknown>) =>
-        operation({
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
           repos: { get: reposGet },
           pulls: { merge: pullsMerge, get: pullsGet },
         }),
+        {},
+      ),
     );
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     try {
       await expect(
@@ -2526,14 +2699,21 @@ describe('mergePrForRepo', () => {
         mergeable_state: 'dirty',
       },
     });
-    const enqueue = jest.fn(
-      (operation: (octokit: MergePrTestOctokit) => Promise<unknown>) =>
-        operation({
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
           repos: { get: reposGet },
           pulls: { merge: pullsMerge, get: pullsGet },
         }),
+        {},
+      ),
     );
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     try {
       await expect(
@@ -2597,21 +2777,27 @@ describe('mergePrForRepo', () => {
       });
       const calls: Array<{ options: GitHubClientEnqueueOptions | undefined }> =
         [];
-      const enqueue = jest.fn(
-        (
-          operation: (octokit: MergePrTestOctokit) => Promise<unknown>,
-          _priority?: string,
+      const enqueue = jest.fn<
+        Promise<unknown>,
+        [
+          operation: GitHubEnqueueOperation,
+          _priority?: 'high' | 'normal',
           options?: GitHubClientEnqueueOptions,
-        ) => {
-          calls.push({ options });
-          return operation({
+        ]
+      >((operation, _priority, options) => {
+        calls.push({ options });
+        return operation(
+          asTestOctokit({
             repos: { get: reposGet },
             pulls: { merge: pullsMerge, get: pullsGet },
             graphql,
-          });
-        },
-      );
-      mockedGetGitHubClient.mockReturnValue({ enqueue });
+          }),
+          {},
+        );
+      });
+      mockedGetGitHubClient.mockReturnValue({
+        enqueue: asGitHubClientEnqueue(enqueue),
+      });
       return { pullsMerge, pullsGet, calls };
     };
     const isMutation = (query: string): boolean =>
@@ -2729,6 +2915,27 @@ describe('mergePrForRepo', () => {
       );
     });
 
+    it('distinguishes an external merge discovered after a refused mutation', async () => {
+      const graphql = jest.fn(() => queueState({ isMergeQueueEnabled: false }));
+      const pullsMerge = jest.fn().mockRejectedValue(
+        Object.assign(new Error('Pull Request is not mergeable'), {
+          status: 405,
+        }),
+      );
+      const pullsGet = jest.fn().mockResolvedValue({
+        data: {
+          state: 'closed',
+          merged: true,
+          merge_commit_sha: 'external-sha',
+        },
+      });
+      setup({ graphql, pullsMerge, pullsGet });
+      await expect(
+        mergePrForRepo('/tmp/repo', 42, 'head-sha', { retryDelaysMs: [0] }),
+      ).resolves.toMatchObject({ outcome: 'merged', newlyMerged: false });
+      expect(pullsMerge).toHaveBeenCalledTimes(1);
+    });
+
     it('merges directly when the base branch has no merge queue', async () => {
       const graphql = jest.fn(() => queueState({ isMergeQueueEnabled: false }));
       const pullsMerge = jest
@@ -2743,6 +2950,7 @@ describe('mergePrForRepo', () => {
         mergePrForRepo('/tmp/repo', 42, 'head-sha'),
       ).resolves.toEqual({
         outcome: 'merged',
+        newlyMerged: true,
         mergeMethod: 'merge',
         mergeCommitSha: 'merge-sha',
       });
@@ -2958,14 +3166,22 @@ describe('closePrForRepo', () => {
       calls.push('update');
       return Promise.resolve({ data: {} });
     });
-    const enqueue = jest.fn((callback: (octokit: unknown) => unknown) =>
-      callback({
-        issues: { createComment },
-        pulls: { update: updatePr },
-      }),
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
+          issues: { createComment },
+          pulls: { update: updatePr },
+        }),
+        {},
+      ),
     );
 
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     await closePrForRepo('/tmp/repo', 42, 'Closing in favor of split PRs');
 
@@ -2999,14 +3215,22 @@ describe('closePrForRepo', () => {
 
     const createComment = jest.fn().mockResolvedValue({ data: {} });
     const updatePr = jest.fn().mockResolvedValue({ data: {} });
-    const enqueue = jest.fn((callback: (octokit: unknown) => unknown) =>
-      callback({
-        issues: { createComment },
-        pulls: { update: updatePr },
-      }),
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(
+        asTestOctokit({
+          issues: { createComment },
+          pulls: { update: updatePr },
+        }),
+        {},
+      ),
     );
 
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     await closePrForRepo('/tmp/repo', 42);
 
@@ -3053,11 +3277,16 @@ describe('updatePrBodyForRepo', () => {
     );
 
     const updatePr = jest.fn().mockResolvedValue({ data: {} });
-    const enqueue = jest.fn((callback: (octokit: unknown) => unknown) =>
-      callback({ pulls: { update: updatePr } }),
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) =>
+      operation(asTestOctokit({ pulls: { update: updatePr } }), {}),
     );
 
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     await updatePrBodyForRepo('/tmp/repo', 42, 'Updated body text');
 
@@ -3111,11 +3340,14 @@ describe('listOpenPrsBasedOnBranchForRepo', () => {
         },
       ],
     });
-    const enqueue = jest.fn((callback: (octokit: unknown) => unknown) =>
-      callback({ pulls: { list } }),
-    );
+    const enqueue = jest.fn<
+      Promise<unknown>,
+      [operation: GitHubEnqueueOperation]
+    >((operation) => operation(asTestOctokit({ pulls: { list } }), {}));
 
-    mockedGetGitHubClient.mockReturnValue({ enqueue });
+    mockedGetGitHubClient.mockReturnValue({
+      enqueue: asGitHubClientEnqueue(enqueue),
+    });
 
     const result = await listOpenPrsBasedOnBranchForRepo(
       '/tmp/repo',
@@ -3619,19 +3851,17 @@ describe('conditional PR tracking reads', () => {
       checks: { listForRef: record('checks.listForRef', { check_runs: [] }) },
     };
     const conditionalHeaders = { 'if-none-match': 'W/"cached"' };
-    const enqueue = jest.fn(
-      (
-        operation: (
-          client: unknown,
-          headers: Record<string, string>,
-        ) => unknown,
-        _priority?: 'high' | 'normal',
-        requestOptions?: GitHubClientEnqueueOptions,
-      ) => {
-        options.push(requestOptions ?? {});
-        return operation(octokit, conditionalHeaders);
-      },
-    );
+    const enqueue: GitHubClient['enqueue'] = <T>(
+      operation: (
+        client: Octokit,
+        headers: Record<string, string>,
+      ) => Promise<T>,
+      _priority?: 'high' | 'normal',
+      requestOptions?: GitHubClientEnqueueOptions<T>,
+    ): Promise<T> => {
+      options.push(requestOptions ?? {});
+      return operation(asTestOctokit(octokit), conditionalHeaders);
+    };
     mockedGetGitHubClient.mockReturnValue({ enqueue });
     return { requests, options };
   }

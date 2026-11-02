@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import type * as StorageModule from '@canopy/core-runtime/storage';
 import type { StorageOwnershipRow } from '@canopy/core-runtime/storage';
 import type { SidebarItem } from '../../../types';
+import { registerW5Host } from '../../w5-host-cohort';
 import {
   addWorkspaceFromRemote,
   createAndPersistNewMultiRepoWorkspace,
@@ -106,7 +107,7 @@ describe('W5 CLI storage writes', () => {
     ],
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-w5-cli-storage-')),
     );
@@ -116,6 +117,11 @@ describe('W5 CLI storage writes', () => {
     fs.mkdirSync(path.join(workspacesDir, 'existing'), { recursive: true });
     fs.writeFileSync(indexPath, existingIndex, 'utf8');
     setOwnership(actualStorage.STORAGE_OWNERSHIP);
+    // Shared W5 writers run only in registered hosts (CAN-3797).
+    await registerW5Host({
+      dataRoot: process.env.CANOPY_DATA_DIR ?? '',
+      hostKind: 'cli',
+    });
   });
 
   afterEach(() => {

@@ -7,10 +7,11 @@ import {
   type RefObject,
 } from 'react';
 import type { DetailMoreMenuItem } from '@canopy/ui-shared/components/DetailMoreMenu';
+import { Button } from '@canopy/ui-shared/components/Button';
 import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
+import { Tooltip } from '@canopy/ui-shared/components/Tooltip';
 import { UnshareIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
 import {
   MARKETPLACE_UNSHARE_BUSY_LABEL,
   MARKETPLACE_UNSHARE_LABEL,
@@ -38,6 +39,8 @@ export interface MarketplaceUnshareActionProps {
    */
   readonly onUnshared: () => void;
   readonly dataTestId?: string;
+  /** Compact row trigger; detail buttons keep their visible label. */
+  readonly iconOnly?: boolean;
 }
 
 export type UseMarketplaceUnshareOptions = Omit<
@@ -152,7 +155,6 @@ export function useMarketplaceUnshare({
         busy={pending}
         errorMessage={error}
         destructive
-        focusCancel
         restoreFocusRef={restoreFocusRef}
         onConfirm={confirm}
         onCancel={close}
@@ -171,6 +173,7 @@ export function useMarketplaceUnshare({
  */
 export function MarketplaceUnshareAction({
   dataTestId = 'marketplace-unshare',
+  iconOnly = false,
   ...options
 }: MarketplaceUnshareActionProps): JSX.Element {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -181,17 +184,34 @@ export function MarketplaceUnshareAction({
   });
   return (
     <>
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={unshare.open}
-        disabled={unshare.disabled}
-        data-testid={dataTestId}
-        className={`${SECONDARY_ACTION_BUTTON_CLASS} gap-1.5 hover:fg-destructive disabled:opacity-50`}
-      >
-        <UnshareIcon width={12} height={12} aria-hidden />
-        {MARKETPLACE_UNSHARE_LABEL}
-      </button>
+      {iconOnly ? (
+        <Tooltip label={MARKETPLACE_UNSHARE_LABEL}>
+          <Button
+            ref={triggerRef}
+            iconOnly
+            size="sm"
+            variant="ghost-quiet"
+            aria-label={MARKETPLACE_UNSHARE_LABEL}
+            onClick={unshare.open}
+            disabled={unshare.disabled}
+            data-testid={dataTestId}
+          >
+            <UnshareIcon size={16} aria-hidden />
+          </Button>
+        </Tooltip>
+      ) : (
+        <Button
+          ref={triggerRef}
+          type="button"
+          size="compact"
+          onClick={unshare.open}
+          disabled={unshare.disabled}
+          data-testid={dataTestId}
+        >
+          <UnshareIcon width={12} height={12} aria-hidden />
+          {MARKETPLACE_UNSHARE_LABEL}
+        </Button>
+      )}
       {unshare.dialog}
     </>
   );

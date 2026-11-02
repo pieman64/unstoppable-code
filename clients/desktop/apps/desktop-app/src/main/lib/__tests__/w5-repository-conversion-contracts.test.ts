@@ -1,7 +1,9 @@
 // CAN-4614: inactive W3b contracts, using the real W5 worker and canonical files.
+import { jsonRecordRoundTrip } from './fixtures/json-record-round-trip';
 import { createW5BoundaryFixture } from './fixtures/w5-boundary-fixture';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import * as recordPort from '../workspace-record-decision-port';
 import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-worker-threads';
 jest.mock('node:worker_threads', () => {
   const fixture = jest.requireActual<typeof TsxWorkerThreads>(
@@ -310,8 +312,8 @@ const retry = { idempotencyKey: 'retry' };
 const initialRevision = { ...retry, expectedRevision: 0 };
 const revisionGuard = [{ resource, revision: 0 }];
 const interruption = new Error('interrupted');
-const durableWorktrees = { includeRecentlyRemoved: true };
-const projectedWorktrees = { persistRemovalCleanup: false };
+const durableWorktrees = { includeRecentlyRemoved: true } as const;
+const projectedWorktrees = { persistRemovalCleanup: false } as const;
 
 it.each(kinds)('%s: durable response-loss replay', async (kind) => {
   prepare(kind);
@@ -752,3 +754,62 @@ it('replays the script discovery receipt after restart without notifying again',
     unsubscribe();
   }
 });
+
+// W6f2: plain decisions retain the index + manifest atomic decision and
+// receipt in that same decision. Existing tests above retain recovery coverage.
+it.each(conversionKinds)(
+  'W6f2 %s applies JSON decisions in the existing commit sequence',
+  async (kind) => {
+    prepare(kind);
+    const events: unknown[] = [];
+    const applyIndex = recordPort.applyWorkspaceIndexDecision;
+    const applyManifest = recordPort.applyWorkspaceManifestDecision;
+    jest
+      .spyOn(recordPort, 'applyWorkspaceIndexDecision')
+      .mockImplementation(async (decision) => {
+        events.push(`decision:${decision.kind}`);
+        return applyIndex(jsonRecordRoundTrip(decision));
+      });
+    jest
+      .spyOn(recordPort, 'applyWorkspaceManifestDecision')
+      .mockImplementation(async (id, decision) => {
+        events.push(`decision:${decision.kind}`);
+        return applyManifest(id, jsonRecordRoundTrip(decision));
+      });
+    reservations.mockImplementation(async (input) => {
+      events.push('reserve');
+      return reserveOriginal(input);
+    });
+    commits.mockImplementation(async (input) => {
+      events.push({
+        files: input.files.map((file) => relative(root, file.path)),
+        receipt: Boolean(input.receipt),
+      });
+      return commitOriginal(input);
+    });
+    const request = conversionFor(kind, {
+      idempotencyKey: 'port',
+      expectedRevision: 0,
+    });
+    await convert(request);
+    expect(events).toEqual([
+      'reserve',
+      'decision:workspace.conversion.index',
+      'decision:workspace.conversion.manifest',
+      {
+        files: ['index.json', 'index.json.bak', join('a', 'workspace.json')],
+        receipt: true,
+      },
+    ]);
+    const config: unknown = JSON.parse(readFileSync(manifest(), 'utf8'));
+    expect(config).not.toHaveProperty(
+      kind === 'convert-multi' ? 'repoPath' : 'sourceRepoPath',
+    );
+    expect(config).toHaveProperty('type', request.targetType);
+    const before = await observation();
+    events.length = 0;
+    await convert(request);
+    expect(events).toEqual([]);
+    expect(await observation()).toEqual(before);
+  },
+);

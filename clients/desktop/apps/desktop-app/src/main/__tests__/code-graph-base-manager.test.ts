@@ -5,10 +5,12 @@ import type {
 import type * as NodeCrypto from 'node:crypto';
 import { createHash } from 'node:crypto';
 import {
+  access,
   mkdtemp,
   mkdir,
   readFile,
   rm,
+  stat,
   truncate,
   writeFile,
 } from 'node:fs/promises';
@@ -18,7 +20,7 @@ import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import {
   CODE_GRAPH_CUSTOM_WASM_MAX_BYTES,
   fingerprintCustomLanguageInputs,
-} from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+} from '@canopy/code-graph/languages/custom-config';
 
 jest.mock('../code-graph/build-runner', () => ({
   cancelBuild: jest.fn().mockResolvedValue(undefined),
@@ -97,6 +99,27 @@ import {
 } from '../lib/code-graph-base-store';
 import { withEnsuredRepoShadow } from '../lib/repo-shadow';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
+
+function workspaceFingerprintFile(workspaceId: string): string {
+  return path.join(
+    tmpdir(),
+    'canopy-code-graph-base-manager-jest',
+    'code-graph-workspace-fingerprints',
+    createHash('sha256').update(workspaceId).digest('hex'),
+  );
+}
+
+async function waitUntilMissing(filePath: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const exists = await access(filePath).then(
+      () => true,
+      () => false,
+    );
+    if (!exists) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return false;
+}
 
 const single: SingleRepoSidebarItem = {
   type: 'single-repo',
@@ -213,6 +236,56 @@ describe('code graph base manager descriptors', () => {
       ),
       { force: true },
     );
+  });
+
+  it('replaces a workspace fingerprint file instead of rewriting it in place', async () => {
+    const workspaceId = `atomic-${process.pid}-${Date.now()}`;
+    const fingerprintFile = workspaceFingerprintFile(workspaceId);
+    await mkdir(path.dirname(fingerprintFile), { recursive: true });
+    await writeFile(fingerprintFile, 'previous');
+    const previousInode = (await stat(fingerprintFile)).ino;
+    try {
+      const prepared =
+        await codeGraphBaseManagerTestExports.prepareWorkspaceCustomLanguages({
+          workspaceId,
+          customLanguageRepoPath: null,
+          repositories: [
+            { repoId: WORKSPACE_ROOT_REPO_ID, repoPath: '/repos/atomic' },
+          ],
+        });
+
+      expect(await readFile(fingerprintFile, 'utf8')).toBe(
+        prepared?.fingerprint,
+      );
+      expect((await stat(fingerprintFile)).ino).not.toBe(previousInode);
+    } finally {
+      await rm(fingerprintFile, { force: true });
+    }
+  });
+
+  it('deletes the fingerprint file of a workspace that leaves the desired set', async () => {
+    const leaving: MultiRepoSidebarItem = {
+      ...multi,
+      id: `leaving-${process.pid}-${Date.now()}`,
+      sourceRepoPath: undefined,
+    };
+    const fingerprintFile = workspaceFingerprintFile(leaving.id);
+    try {
+      syncCodeGraphBaseRepositories([leaving]);
+      const descriptor = getCodeGraphBaseWorkspaceDescriptor(leaving.id);
+      if (descriptor === null) throw new Error('Expected a descriptor.');
+      await codeGraphBaseManagerTestExports.prepareWorkspaceCustomLanguages(
+        descriptor,
+      );
+      await expect(access(fingerprintFile)).resolves.toBeUndefined();
+
+      syncCodeGraphBaseRepositories([]);
+
+      expect(await waitUntilMissing(fingerprintFile)).toBe(true);
+    } finally {
+      syncCodeGraphBaseRepositories([]);
+      await rm(fingerprintFile, { force: true });
+    }
   });
 
   it('uses globally distinct slash-free worker keys for equal variants in different shadows', () => {

@@ -196,6 +196,41 @@ describe('prepareBranchFromWorktree', () => {
     expect(useGitHubStore.getState().commitOnly).not.toHaveBeenCalled();
   });
 
+  it('leaves uncommitted changes in the source without requesting confirmation', async () => {
+    useProjectsStore.setState({
+      uncommittedChanges: { 'project/worktree': true },
+    });
+
+    const result = prepareBranchFromWorktree('project', 'worktree', {
+      uncommittedChanges: 'leave-in-source',
+    });
+    for (let index = 0; index < 20; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(useBranchFromStore.getState().pending).toBeNull();
+    await expect(result).resolves.toEqual({ status: 'ready' });
+    expect(
+      useProjectsStore.getState().refreshWorktreeDiffStatsVerified,
+    ).toHaveBeenCalledWith('project', 'worktree');
+    expect(useGitHubStore.getState().commitOnly).not.toHaveBeenCalled();
+  });
+
+  it('still fails without confirmation when the non-interactive status check fails', async () => {
+    useProjectsStore.setState({
+      uncommittedChanges: { 'project/worktree': true },
+      refreshWorktreeDiffStatsVerified: jest.fn().mockResolvedValue(false),
+    });
+
+    await expect(
+      prepareBranchFromWorktree('project', 'worktree', {
+        uncommittedChanges: 'leave-in-source',
+      }),
+    ).resolves.toEqual({ status: 'failed', retryable: true });
+    expect(useBranchFromStore.getState().pending).toBeNull();
+    expect(useGitHubStore.getState().addToast).not.toHaveBeenCalled();
+  });
+
   it('does not start commit-first while Create PR is active', async () => {
     useProjectsStore.setState({
       uncommittedChanges: { 'project/worktree': true },

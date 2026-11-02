@@ -6,7 +6,9 @@ import {
   type MarketplaceProviderStatus,
   type PluginInfo,
   type PluginProvider,
+  type SharedPluginSummary,
 } from '@canopy/protocol/plugins';
+import type { SharedAgentSummary } from '@canopy/protocol/agents';
 import type {
   InstalledSkillInfo,
   SharedSkillSummary,
@@ -23,6 +25,7 @@ import type {
 } from '@canopy/protocol/mcp-servers';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
 import type { CuratedAutomationSummary } from '@canopy/protocol/automation-catalog';
+import type { WorkspaceTemplateShareSummary } from '@canopy/protocol/workspace-templates';
 import type { UnifiedLocalAgentInput } from '@canopy/protocol/unified-entry';
 import {
   buildInstalledSkillEntry,
@@ -30,6 +33,8 @@ import {
   collectEntryCategories,
   githubOwnerAvatarUrl,
   localAgentIdFromEntryId,
+  marketplacePluginAlternatives,
+  marketplacePluginBundledServerRows,
   pendingLocalAgentEntry,
   pendingSharedAutomationEntry,
   pluginOwnerAvatarUrl,
@@ -42,7 +47,186 @@ import {
   type UnifiedPluginEntry,
 } from '../unifiedPluginEntries';
 import { MCP_BRAND_LOGOS } from '@canopy/ui-shared/lib/mcp-brand-logos';
+import { listedAsItsPlugin } from '../marketplaceBrowse';
 import { unifiedEntryIdForRef } from '../unified-entry-id';
+import { describeRunUnavailable } from '../../workflows/workflow-library-model';
+import {
+  installedEntryStatusStates,
+  sharedByMeLine,
+} from '@canopy/ui-shared/lib';
+import {
+  sharedByYouAudienceCount,
+  sharedByYouAudiences,
+} from '../../sharing/sharedByYouAudiences';
+import { buildCustomizeTabModel } from '../customizeSections';
+
+describe('author-side shared skill installed identity (CAN-5272)', () => {
+  const statuses = ['active', 'available', 'disabled'] as const;
+  const shares: SharedSkillSummary[] = [...statuses, 'unlinked'].map(
+    (status) => ({
+      id: `share-${status}`,
+      name: `published-${status}`,
+      description: '',
+      contentHash: 'hash',
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'org-1', name: 'Org' },
+      createdBy: { id: 'viewer', name: 'Viewer', email: null },
+      createdAt: '2026-10-28T00:00:00Z',
+      updatedAt: '2026-10-28T00:00:00Z',
+      canUpdate: true,
+      canDelete: true,
+      publicShare: null,
+    }),
+  );
+  const skills = statuses.map((status) =>
+    makeSkill({
+      name: `local-${status}`,
+      remote: {
+        accountId: 'viewer',
+        remoteId: `share-${status}`,
+        contentHash: 'hash',
+        shareScope: 'organization',
+        sharedAt: 'now',
+      },
+    }),
+  );
+  function projected(
+    viewerId: string | null = 'viewer',
+    installedSkills = skills,
+  ): UnifiedPluginEntry[] {
+    return buildUnifiedPluginEntries(
+      emptyInputs({ viewerId, installedSkills, sharedSkills: shares }),
+    );
+  }
+  function states(
+    entries: UnifiedPluginEntry[],
+  ): ReturnType<typeof installedEntryStatusStates> {
+    return installedEntryStatusStates(entries, {
+      kind: 'ready',
+      snapshot: {
+        items: statuses.map((status) => ({
+          target: {
+            kind: 'skill',
+            sourceId: 'local',
+            skillName: `local-${status}`,
+          },
+          status,
+          removable: true,
+          notices: [],
+        })),
+      },
+    });
+  }
+  it('projects persisted remote identity and the installed status onto differently named owned shares', () => {
+    const entries = projected();
+    const projectedStates = states(entries);
+    for (const status of statuses) {
+      const id = `skill:shared:share-${status}`;
+      expect(entries.find((row) => row.id === id)).toMatchObject({
+        installedEntryId: `skill:local:local-${status}`,
+        ownedByViewer: true,
+      });
+      expect(projectedStates[id]).toMatchObject({
+        kind: 'ready',
+        item: { status },
+      });
+      for (const tab of ['all', 'skill'] as const) {
+        const model = buildCustomizeTabModel({
+          tab,
+          entries,
+          installedInventory: 'ready',
+          ownershipAvailable: true,
+          installedStatusFilter: status,
+          installedStatusStates: projectedStates,
+        });
+        expect(
+          model.sections.map((section) => [section.id, section.count]),
+        ).toEqual([
+          ['installed', 1],
+          ['shared-by-me', 1],
+        ]);
+        expect(
+          model.sections
+            .find((section) => section.id === 'shared-by-me')
+            ?.entries.map((row) => row.id),
+        ).toEqual([id]);
+        expect(model.resultCount).toBe(1);
+      }
+    }
+  });
+  it('keeps unlinked shares Any-only and excludes linked installs from Browse on both tabs and search', () => {
+    const entries = projected();
+    for (const tab of ['all', 'skill'] as const) {
+      for (const query of ['', 'published']) {
+        const model = buildCustomizeTabModel({
+          tab,
+          entries,
+          query,
+          installedInventory: 'ready',
+          ownershipAvailable: true,
+          installedStatusStates: states(entries),
+        });
+        expect(
+          model.sections
+            .find((section) => section.id === 'browse')
+            ?.entries.map((row) => row.id),
+        ).toEqual(['skill:shared:share-unlinked']);
+        expect(
+          model.sections.find((section) => section.id === 'shared-by-me')
+            ?.count,
+        ).toBe(4);
+        expect(model.resultCount).toBe(4);
+      }
+    }
+  });
+  it('never guesses author links from names, another account, or absent ownership', () => {
+    const wrongAccount = skills.map((skill) => ({
+      ...skill,
+      remote: skill.remote && { ...skill.remote, accountId: 'other' },
+    }));
+    for (const entries of [
+      projected('viewer', wrongAccount),
+      projected('other'),
+      projected(null),
+      projected('viewer', [makeSkill({ name: 'published-active' })]),
+    ]) {
+      expect(
+        entries
+          .filter((row) => row.origin === 'shared')
+          .every((row) => row.installedEntryId === undefined),
+      ).toBe(true);
+    }
+  });
+  it('does not choose a status when multiple installed copies claim the same author share', () => {
+    const entries = projected('viewer', [
+      ...skills,
+      { ...skills[0], name: 'second-copy' },
+    ]);
+    expect(
+      entries.find((row) => row.id === 'skill:shared:share-active')
+        ?.installedEntryId,
+    ).toBeUndefined();
+  });
+  it('accepts the existing portable Portal share identity through the same projection', () => {
+    const portalSkill = {
+      name: 'portal-copy',
+      sourceId: 'local',
+      description: '',
+      shareRemoteId: 'share-active',
+    };
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        viewerId: 'viewer',
+        sharedSkills: shares,
+        installedSkills: [portalSkill],
+      }),
+    );
+    expect(
+      entries.find((row) => row.id === 'skill:shared:share-active')
+        ?.installedEntryId,
+    ).toBe('skill:local:portal-copy');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fixture builders — explicit typed literals, no `as`.
@@ -472,6 +656,7 @@ describe('buildUnifiedPluginEntries — non-curated marketplace plugins (rule 3)
             ],
             mcpServers: [{ name: 'm1', type: 'http', url: 'https://x' }],
             lspServers: [],
+            hooks: [],
             hasReadme: true,
           },
         }),
@@ -501,6 +686,13 @@ describe('githubOwnerAvatarUrl', () => {
         'https://github.com/anthropics/claude-plugins-official',
       ),
     ).toBe('https://github.com/anthropics.png?size=128');
+  });
+
+  it('accepts a GitHub SSH remote, through the shared owner parser', () => {
+    expect(
+      githubOwnerAvatarUrl('git@github.com:anthropics/claude-plugins.git'),
+    ).toBe('https://github.com/anthropics.png?size=128');
+    expect(githubOwnerAvatarUrl('git@github.com:../x.git')).toBeUndefined();
   });
 
   it('accepts an owner-only URL, since the avatar needs no repo', () => {
@@ -1347,14 +1539,10 @@ describe('buildUnifiedPluginEntries — MCP surface and account state', () => {
     },
   );
 
-  it('keeps the status-driven state when a desktop status exists', () => {
+  it('lets a desktop status refine a connected account row', () => {
     expect(
       onlyEntry({
-        mcpServers: [
-          makeMcpIndexEntry({
-            accountConnection: { ...connection, status: 'DISCONNECTED' },
-          }),
-        ],
+        mcpServers: [makeMcpIndexEntry({ accountConnection: connection })],
         mcpStatuses: [
           makeMcpStatus({
             connectionStatus: 'auth_required',
@@ -1363,6 +1551,294 @@ describe('buildUnifiedPluginEntries — MCP surface and account state', () => {
         ],
       }).state,
     ).toBe('needs-auth');
+  });
+
+  /**
+   * The desktop's status list describes every account connection that is not
+   * CONNECTED as `auth_required` with a `not_connected` configuration. A
+   * connection the user never finished (PENDING) or ended (DISCONNECTED) is
+   * not something they have, so its lifecycle, not that description, decides
+   * whether the row is installed. One account listed 252 abandoned sign-ins
+   * under Installed, each reading "Needs attention" (CAN-5303).
+   */
+  describe('the account connection lifecycle decides whether a row is installed (CAN-5303)', () => {
+    /** The status `listMcpServerStatuses` reports for an account row. */
+    const accountStatus = (
+      authStatus: 'connected' | 'error' | 'expired' | 'not_connected',
+    ): McpServerStatusEntry =>
+      makeMcpStatus({
+        handler: 'account',
+        handlerSource: 'server',
+        reachability: 'unknown',
+        connectionStatus:
+          authStatus === 'connected' ? 'connected' : 'auth_required',
+        configs: [{ configId: connection.configId, authStatus }],
+      });
+    const accountRow = (
+      status: AccountMcpConnection['status'],
+      overrides: Partial<McpServerIndexEntry> = {},
+    ): McpServerIndexEntry =>
+      makeMcpIndexEntry({
+        scope: 'account',
+        accountConnectionId: connection.id,
+        accountConnection: { ...connection, status },
+        configs: [{ id: connection.configId, name: 'Default', enabled: true }],
+        ...overrides,
+      });
+
+    it.each(['PENDING', 'DISCONNECTED'] as const)(
+      'offers a %s connection with a not_connected status as available',
+      (status) => {
+        const entry = onlyEntry({
+          mcpServers: [accountRow(status)],
+          mcpStatuses: [accountStatus('not_connected')],
+        });
+        expect(entry.state).toBe('available');
+        expect(entry.pendingSignIns).toBeUndefined();
+      },
+    );
+
+    it('reads a not_connected Portal account row without its connection as available', () => {
+      // The Portal shows the desktop's own account rows until the cloud
+      // connection list arrives (or when it fails); they carry the status
+      // but not the connection, and `not_connected` is the account
+      // handler's word for a pending or disconnected connection.
+      const portalRow = (): McpServerIndexEntry =>
+        accountRow('PENDING', { accountConnection: undefined });
+      expect(
+        onlyEntry({
+          mcpServers: [portalRow()],
+          mcpStatuses: [accountStatus('not_connected')],
+        }).state,
+      ).toBe('available');
+      expect(
+        onlyEntry({
+          mcpServers: [portalRow()],
+          mcpStatuses: [accountStatus('error')],
+        }).state,
+      ).toBe('needs-auth');
+      expect(
+        onlyEntry({
+          mcpServers: [portalRow()],
+          mcpStatuses: [accountStatus('connected')],
+        }).state,
+      ).toBe('installed');
+    });
+
+    it('keeps a REAUTH_REQUIRED connection installed and asking for sign-in', () => {
+      const entry = onlyEntry({
+        mcpServers: [accountRow('REAUTH_REQUIRED')],
+        mcpStatuses: [accountStatus('error')],
+      });
+      expect(entry.state).toBe('needs-auth');
+    });
+
+    it('lets an expired configuration refine a CONNECTED connection', () => {
+      const entry = onlyEntry({
+        mcpServers: [accountRow('CONNECTED')],
+        mcpStatuses: [accountStatus('expired')],
+      });
+      expect(entry.state).toBe('needs-auth');
+      expect(entry.pendingSignIns).toBe(1);
+    });
+
+    it('keeps a healthy CONNECTED connection installed', () => {
+      const entry = onlyEntry({
+        mcpServers: [accountRow('CONNECTED')],
+        mcpStatuses: [accountStatus('connected')],
+      });
+      expect(entry.state).toBe('installed');
+      expect(entry.pendingSignIns).toBeUndefined();
+    });
+
+    it.each(['PENDING', 'DISCONNECTED'] as const)(
+      'offers the integration card for a %s connection with a not_connected status',
+      (status) => {
+        const curated = makeCuratedMcp({ oauthHints: { scopes: ['read'] } });
+        const entry = onlyEntry({
+          curatedMcpServers: [curated],
+          mcpServers: [
+            accountRow(status, {
+              id: curated.key,
+              curatedKey: curated.key,
+              accountConnection: {
+                ...connection,
+                status,
+                kind: 'CURATED',
+                serverKey: curated.key,
+              },
+            }),
+          ],
+          mcpStatuses: [
+            { ...accountStatus('not_connected'), serverId: curated.key },
+          ],
+        });
+        expect(entry.state).toBe('available');
+        expect(entry.pendingSignIns).toBeUndefined();
+        expect(entry.integration?.connections).toEqual([
+          expect.objectContaining({ binding: 'account', state: 'available' }),
+        ]);
+      },
+    );
+  });
+  describe('pending sign-ins (CAN-4840)', () => {
+    it('counts only the device configurations that need sign-in', () => {
+      const entry = onlyEntry({
+        mcpServers: [makeMcpIndexEntry()],
+        mcpStatuses: [
+          makeMcpStatus({
+            connectionStatus: 'auth_required',
+            configs: [
+              { configId: 'a', authStatus: 'connected' },
+              { configId: 'b', authStatus: 'not_connected' },
+            ],
+          }),
+        ],
+      });
+      expect(entry.state).toBe('needs-auth');
+      expect(entry.pendingSignIns).toBe(1);
+    });
+
+    it('omits the count when every configuration is signed in', () => {
+      const entry = onlyEntry({
+        mcpServers: [makeMcpIndexEntry()],
+        mcpStatuses: [
+          makeMcpStatus({
+            configs: [
+              { configId: 'a', authStatus: 'connected' },
+              { configId: 'b', authStatus: 'connected' },
+            ],
+          }),
+        ],
+      });
+      expect(entry.pendingSignIns).toBeUndefined();
+    });
+
+    it('reads only its own configuration on an account row', () => {
+      const entry = onlyEntry({
+        mcpServers: [makeMcpIndexEntry({ accountConnection: connection })],
+        mcpStatuses: [
+          makeMcpStatus({
+            configs: [
+              { configId: connection.configId, authStatus: 'expired' },
+              { configId: 'sibling', authStatus: 'connected' },
+            ],
+          }),
+        ],
+      });
+      expect(entry.state).toBe('needs-auth');
+      expect(entry.pendingSignIns).toBe(1);
+    });
+
+    it('counts an account row that needs reauthorization without a status', () => {
+      const entry = onlyEntry({
+        mcpServers: [
+          makeMcpIndexEntry({
+            accountConnection: { ...connection, status: 'REAUTH_REQUIRED' },
+          }),
+        ],
+      });
+      expect(entry.pendingSignIns).toBe(1);
+    });
+
+    it('counts the connections on an integration card that need sign-in', () => {
+      const curated = makeCuratedMcp();
+      const entry = onlyEntry({
+        curatedMcpServers: [curated],
+        mcpServers: [
+          makeMcpIndexEntry({ id: 's1', curatedKey: curated.key }),
+          makeMcpIndexEntry({
+            id: 's2',
+            name: 'Second',
+            curatedKey: curated.key,
+          }),
+        ],
+        mcpStatuses: [
+          makeMcpStatus({ serverId: 's1', connectionStatus: 'auth_required' }),
+          makeMcpStatus({ serverId: 's2' }),
+        ],
+      });
+      expect(entry.pendingSignIns).toBe(1);
+    });
+
+    it('never counts an auth error as a pending sign-in', () => {
+      const device = onlyEntry({
+        mcpServers: [makeMcpIndexEntry()],
+        mcpStatuses: [
+          makeMcpStatus({
+            connectionStatus: 'auth_required',
+            configs: [
+              { configId: 'a', authStatus: 'error' },
+              { configId: 'b', authStatus: 'connected' },
+            ],
+          }),
+        ],
+      });
+      expect(device.state).toBe('needs-auth');
+      expect(device.pendingSignIns).toBeUndefined();
+
+      const account = onlyEntry({
+        mcpServers: [makeMcpIndexEntry({ accountConnection: connection })],
+        mcpStatuses: [
+          makeMcpStatus({
+            connectionStatus: 'auth_required',
+            configs: [{ configId: connection.configId, authStatus: 'error' }],
+          }),
+        ],
+      });
+      expect(account.state).toBe('needs-auth');
+      expect(account.pendingSignIns).toBeUndefined();
+    });
+
+    it('counts a card device server the way its own row counts it', () => {
+      const curated = makeCuratedMcp();
+      const card = (
+        configs: {
+          configId: string;
+          authStatus: 'connected' | 'error' | 'expired' | 'not_connected';
+        }[],
+      ): UnifiedPluginEntry =>
+        onlyEntry({
+          curatedMcpServers: [curated],
+          mcpServers: [makeMcpIndexEntry({ curatedKey: curated.key })],
+          mcpStatuses: [
+            makeMcpStatus({ connectionStatus: 'auth_required', configs }),
+          ],
+        });
+      expect(
+        card([
+          { configId: 'a', authStatus: 'error' },
+          { configId: 'b', authStatus: 'connected' },
+        ]).pendingSignIns,
+      ).toBeUndefined();
+      expect(
+        card([
+          { configId: 'a', authStatus: 'not_connected' },
+          { configId: 'b', authStatus: 'expired' },
+        ]).pendingSignIns,
+      ).toBe(2);
+    });
+
+    it('counts an integration card connection only when it waits for sign-in', () => {
+      const curated = makeCuratedMcp();
+      const entry = onlyEntry({
+        curatedMcpServers: [curated],
+        mcpServers: [
+          makeMcpIndexEntry({
+            accountConnection: connection,
+            curatedKey: curated.key,
+          }),
+        ],
+        mcpStatuses: [
+          makeMcpStatus({
+            connectionStatus: 'auth_required',
+            configs: [{ configId: connection.configId, authStatus: 'error' }],
+          }),
+        ],
+      });
+      expect(entry.state).toBe('needs-auth');
+      expect(entry.pendingSignIns).toBeUndefined();
+    });
   });
 });
 
@@ -1581,7 +2057,12 @@ describe('buildUnifiedPluginEntries — capability marketplace', () => {
             description: 'Reviews interfaces',
             contentHash: 'ui-review-hash',
             shareScope: 'team',
-            owner: { type: 'team', id: 'team-1', name: 'Design Team' },
+            owner: {
+              type: 'team',
+              id: 'team-1',
+              name: 'Design Team',
+              organization: { id: 'org-1', name: 'Acme' },
+            },
             createdBy: { id: 'user-1', name: 'Ada', email: 'ada@example.com' },
             createdAt: timestamp,
             updatedAt: timestamp,
@@ -1598,7 +2079,12 @@ describe('buildUnifiedPluginEntries — capability marketplace', () => {
             contentHash: 'qa-automation-hash',
             itemCounts: { skills: 1, plugins: 1, customSkills: 0 },
             shareScope: 'team',
-            owner: { type: 'team', id: 'team-1', name: 'Design Team' },
+            owner: {
+              type: 'team',
+              id: 'team-1',
+              name: 'Design Team',
+              organization: { id: 'org-1', name: 'Acme' },
+            },
             createdBy: { id: 'user-1', name: 'Ada', email: 'ada@example.com' },
             createdAt: timestamp,
             updatedAt: timestamp,
@@ -1652,7 +2138,12 @@ describe('buildUnifiedPluginEntries — capability marketplace', () => {
       description: 'Reviews product changes',
       contentHash: 'skill-hash',
       shareScope: 'team',
-      owner: { type: 'team', id: 'team-1', name: 'Design Team' },
+      owner: {
+        type: 'team',
+        id: 'team-1',
+        name: 'Design Team',
+        organization: { id: 'org-1', name: 'Acme' },
+      },
       createdBy: { id: 'user-1', name: 'Ada', email: 'ada@example.com' },
       createdAt: '2026-08-01T00:00:00.000Z',
       updatedAt: '2026-08-01T00:00:00.000Z',
@@ -1667,7 +2158,12 @@ describe('buildUnifiedPluginEntries — capability marketplace', () => {
       contentHash: 'collection-hash',
       itemCounts: { skills: 1, plugins: 2, customSkills: 1 },
       shareScope: 'team',
-      owner: { type: 'team', id: 'team-1', name: 'Design Team' },
+      owner: {
+        type: 'team',
+        id: 'team-1',
+        name: 'Design Team',
+        organization: { id: 'org-1', name: 'Acme' },
+      },
       createdBy: { id: 'user-1', name: 'Ada', email: 'ada@example.com' },
       createdAt: '2026-08-01T00:00:00.000Z',
       updatedAt: '2026-08-01T00:00:00.000Z',
@@ -1689,7 +2185,7 @@ describe('buildUnifiedPluginEntries — capability marketplace', () => {
         expect.objectContaining({
           id: 'pipeline:user:release',
           kind: 'pipeline',
-          typeLabel: 'Pipeline',
+          typeLabel: 'Workflow',
           sourceLabel: 'Local',
         }),
         expect.objectContaining({
@@ -1784,6 +2280,19 @@ describe('searchUnifiedEntries — scoring', () => {
       'Acme Alpha',
       'Acme Zephyr',
     ]);
+  });
+
+  // The source label now names provider and owner (CAN-3653), so the catalog
+  // must stay searchable on its own.
+  it('finds a marketplace plugin by its catalog id', () => {
+    const entry = {
+      ...marketplaceEntry('Slack', 'desc', []),
+      sourceLabel: 'Claude · slackapi',
+    };
+
+    const results = searchUnifiedEntries([entry], 'mkt-1', null);
+
+    expect(results.marketplace.map((e) => e.id)).toEqual([entry.id]);
   });
 
   it('matches case-insensitively', () => {
@@ -2049,10 +2558,8 @@ describe('buildUnifiedPluginEntries — provider connectors', () => {
             provider: 'codex',
             connectors: [
               {
-                name: 'Gmail',
                 displayName: 'Gmail',
                 connected: true,
-                status: 'Connected',
               },
             ],
           },
@@ -2261,6 +2768,7 @@ describe('provider connectors never hide an installed server', () => {
             name: 'Gmail',
             type: 'http',
             curatedKey: 'gmail-gmailmcp',
+            description: 'Email access for Gmail.',
             configs: [{ id: 'cfg-1', name: 'Default', enabled: true }],
             updatedAt: '2026-08-28T00:00:00.000Z',
           },
@@ -3296,10 +3804,8 @@ describe('buildUnifiedPluginEntries — one card per integration (REG-3033)', ()
             provider: 'claude',
             connectors: [
               {
-                name: 'Linear',
                 displayName: 'Linear',
                 connected: true,
-                status: 'Connected',
               },
             ],
           },
@@ -3611,7 +4117,11 @@ describe('buildUnifiedPluginEntries — shared agents, plugins and project templ
       createdBy: { id: 'user-1', name: 'Aaron' },
       externalId: 'plugin-share-1',
       refKey: 'plugin:acme/tools:deploy',
-      ref: { type: 'plugin', marketplace: 'acme/tools', name: 'deploy' },
+      ref: {
+        type: 'plugin',
+        marketplace: { type: 'github', repo: 'acme/tools' },
+        plugin_name: 'deploy',
+      },
       name: 'Deploy tools',
       description: null,
       marketplaceOrigin: 'acme/tools',
@@ -3756,6 +4266,7 @@ describe('buildUnifiedPluginEntries — shared agents, plugins and project templ
             updatedAt: '2026-09-01T00:00:00.000Z',
             canUpdate: false,
             canDelete: false,
+            publicShare: null,
           },
         ],
         sharedCollections: [
@@ -3770,8 +4281,6 @@ describe('buildUnifiedPluginEntries — shared agents, plugins and project templ
               skills: 1,
               customSkills: 0,
               plugins: 0,
-              pipelines: 0,
-              mcpServers: 0,
             },
             createdBy: { id: 'user-1', name: 'Aaron', email: null },
             createdAt: '2026-09-01T00:00:00.000Z',
@@ -3992,6 +4501,25 @@ describe('buildUnifiedPluginEntries — shared agents, plugins and project templ
         'iOS Reviewer',
       ]);
     });
+  });
+
+  it('records when each share was made (CAN-4840)', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        sharedAgents: [makeSharedAgent()],
+        sharedPlugins: [makeSharedPlugin()],
+        sharedBlueprints: [makeSharedBlueprint()],
+      }),
+    );
+    const since = (id: string): string | undefined =>
+      entries.find((entry) => entry.id === id)?.sharedSince;
+    expect(since('agent:shared:agent-1')).toBe('2026-09-01T00:00:00.000Z');
+    expect(since('plugin:shared:plugin-share-1')).toBe(
+      '2026-09-01T00:00:00.000Z',
+    );
+    expect(since('blueprint:shared:template-share-1')).toBe(
+      '2026-09-01T00:00:00.000Z',
+    );
   });
 });
 
@@ -4368,4 +4896,1747 @@ it('keeps credential-free Portal account row configurations distinct (CAN-4265 s
     ['mcp-local:custom:shared/default', 'auth_required'],
     ['mcp-local:custom:shared/work', 'connected'],
   ]);
+});
+
+describe('buildUnifiedPluginEntries — curated pipelines', () => {
+  it('projects a curated pipeline template as an available Curated pipeline', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        curatedPipelines: [
+          {
+            key: 'review',
+            name: 'Review workflow',
+            shortDescription: 'Review open work',
+            icon: '',
+            version: '1',
+            triggerTypes: ['dispatch'],
+            scopes: ['directory'],
+            jobCount: 1,
+            stepCount: 1,
+            contentHash: 'a'.repeat(64),
+            contentSizeBytes: 64,
+            categories: ['review'],
+            popular: true,
+            sortOrder: 2,
+            revision: 1,
+            authorName: 'Canopy',
+            authorUrl: null,
+            docsUrl: null,
+            createdAt: '2026-10-01T00:00:00.000Z',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          },
+        ],
+      }),
+    ).filter((entry) => entry.kind === 'pipeline');
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        id: 'pipeline:curated:review',
+        origin: 'curated',
+        name: 'Review workflow',
+        typeLabel: 'Workflow',
+        description: 'Review open work',
+        categories: ['review'],
+        authorName: 'Canopy',
+        sourceLabel: 'Curated',
+        state: 'available',
+        recommended: true,
+        catalogSortOrder: 2,
+        pipeline: {
+          source: 'curated',
+          scopes: ['directory'],
+          triggerTypes: ['dispatch'],
+        },
+        ref: { type: 'curated-pipeline', key: 'review' },
+      }),
+    ]);
+    expect(unifiedEntryIdForRef(entries[0].ref)).toBe(entries[0].id);
+  });
+});
+
+describe('CAN-3653 — plugins are the Customize entity', () => {
+  const SLACK_URL = 'https://mcp.slack.example/mcp';
+  const CLAUDE_SLACK = 'mkt:claude-plugins-official/slack';
+  const CODEX_SLACK = 'mkt:openai-curated/slack';
+  const installedCodex = {
+    codex: { available: true, installed: true },
+    claude: { available: false, installed: false },
+    checkedAt: '2026-10-23T00:00:00.000Z',
+  };
+  const slackDetails = {
+    skills: [],
+    commands: [],
+    agents: [],
+    mcpServers: [{ name: 'slack', type: 'http' as const, url: SLACK_URL }],
+  };
+
+  function claudeMarketplace(
+    pluginOverrides: Partial<PluginInfo> = {},
+  ): MarketplaceInfo {
+    return makeMarketplace({
+      id: 'claude-plugins-official',
+      name: 'claude-plugins-official',
+      sourceUrl: 'https://github.com/anthropics/claude-plugins-official',
+      plugins: [
+        makePluginInfo({
+          name: 'slack',
+          displayName: 'Slack',
+          marketplaceId: 'claude-plugins-official',
+          providerSupport: { claude: 'native', codex: 'compat' },
+          externalSource: {
+            source: 'url',
+            url: 'https://github.com/slackapi/slack-mcp-plugin.git',
+          },
+          details: {
+            ...slackDetails,
+            hooks: [],
+            lspServers: [],
+            hasReadme: false,
+          },
+          ...pluginOverrides,
+        }),
+      ],
+    });
+  }
+
+  function codexMarketplace(
+    pluginOverrides: Partial<PluginInfo> = {},
+  ): MarketplaceInfo {
+    return makeMarketplace({
+      id: 'openai-curated',
+      name: 'Codex official',
+      sourceUrl: 'https://github.invalid/openai/curated',
+      plugins: [
+        makePluginInfo({
+          name: 'slack',
+          displayName: 'Slack',
+          marketplaceId: 'openai-curated',
+          providerSupport: { claude: 'none', codex: 'native' },
+          externalSource: {
+            source: 'url',
+            url: 'https://github.invalid/openai/slack.git',
+          },
+          details: {
+            ...slackDetails,
+            hooks: [],
+            lspServers: [],
+            hasReadme: false,
+          },
+          globalInstallStatus: installedCodex,
+          ...pluginOverrides,
+        }),
+      ],
+    });
+  }
+
+  const bundledRow = makeMcpIndexEntry({
+    id: 'slack-codex-plugin',
+    name: 'Slack',
+    type: 'http',
+    urlHost: 'mcp.slack.example',
+  });
+  const standaloneRow = makeMcpIndexEntry({
+    id: 'team-notes',
+    name: 'Team notes MCP',
+    type: 'http',
+    urlHost: 'notes.example.test',
+  });
+  const slackCatalog = makeCuratedMcp({
+    key: 'slack',
+    name: 'Slack',
+    url: SLACK_URL,
+  });
+
+  function byId(
+    entries: UnifiedPluginEntry[],
+    id: string,
+  ): UnifiedPluginEntry | undefined {
+    return entries.find((entry) => entry.id === id);
+  }
+
+  it('keeps both Slack plugins, hides the bundled server and marks the catalog card installed via the plugin', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [claudeMarketplace(), codexMarketplace()],
+        mcpServers: [bundledRow, standaloneRow],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    const plugins = entries.filter(
+      (entry) =>
+        entry.ref.type === 'marketplace-plugin' && entry.name === 'Slack',
+    );
+    expect(plugins.map((entry) => entry.id)).toEqual([
+      CLAUDE_SLACK,
+      CODEX_SLACK,
+    ]);
+    expect(byId(entries, CLAUDE_SLACK)?.sourceLabel).toBe('Claude · slackapi');
+    expect(byId(entries, CODEX_SLACK)?.sourceLabel).toBe('Codex official');
+
+    const link = { entryId: CODEX_SLACK, name: 'Slack' };
+    expect(byId(entries, 'mcp-local:slack-codex-plugin')?.bundledBy).toEqual(
+      link,
+    );
+    // The hidden row stays reachable from its plugin's page.
+    expect(byId(entries, CODEX_SLACK)?.bundledServerRows).toEqual([
+      {
+        serverName: 'slack',
+        endpoint: 'http:mcp.slack.example',
+        entryId: 'mcp-local:slack-codex-plugin',
+        serverId: 'slack-codex-plugin',
+      },
+    ]);
+    expect(byId(entries, CLAUDE_SLACK)?.bundledServerRows).toBeUndefined();
+    const card = byId(entries, 'mcp-catalog:slack');
+    expect(card?.state).toBe('available');
+    expect(card?.installedVia).toEqual(link);
+
+    expect(byId(entries, CLAUDE_SLACK)?.alsoAvailableFrom).toEqual([
+      {
+        entryId: CODEX_SLACK,
+        label: 'Codex official',
+        ref: {
+          type: 'marketplace-plugin',
+          marketplaceId: 'openai-curated',
+          pluginName: 'slack',
+        },
+      },
+    ]);
+    expect(byId(entries, CODEX_SLACK)?.alsoAvailableFrom).toEqual([
+      {
+        entryId: CLAUDE_SLACK,
+        label: 'Claude · slackapi',
+        ref: {
+          type: 'marketplace-plugin',
+          marketplaceId: 'claude-plugins-official',
+          pluginName: 'slack',
+        },
+      },
+    ]);
+  });
+
+  it('matches the source label in search', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({ marketplaces: [claudeMarketplace(), codexMarketplace()] }),
+    );
+    expect(
+      searchUnifiedEntries(entries, 'slackapi', null).marketplace.map(
+        (entry) => entry.id,
+      ),
+    ).toContain(CLAUDE_SLACK);
+  });
+
+  it('leaves a standalone server untouched', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace()],
+        mcpServers: [bundledRow, standaloneRow],
+      }),
+    );
+    const standalone = byId(entries, 'mcp-local:team-notes');
+    expect(standalone?.bundledBy).toBeUndefined();
+    expect(standalone?.installedVia).toBeUndefined();
+  });
+
+  it('attributes to the first installed plugin when two installed plugins bundle one endpoint', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [
+          claudeMarketplace({
+            globalInstallStatus: {
+              claude: { available: true, installed: true },
+              checkedAt: '2026-10-23T00:00:00.000Z',
+            },
+          }),
+          codexMarketplace(),
+        ],
+        mcpServers: [bundledRow],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    const first = { entryId: CLAUDE_SLACK, name: 'Slack' };
+    expect(byId(entries, CLAUDE_SLACK)).toBeDefined();
+    expect(byId(entries, CODEX_SLACK)).toBeDefined();
+    expect(byId(entries, 'mcp-local:slack-codex-plugin')?.bundledBy).toEqual(
+      first,
+    );
+    expect(byId(entries, 'mcp-catalog:slack')?.installedVia).toEqual(first);
+  });
+
+  it('returns a bundled row to Installed once its plugin is uninstalled', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [
+          claudeMarketplace(),
+          codexMarketplace({ globalInstallStatus: undefined }),
+        ],
+        mcpServers: [bundledRow],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    expect(
+      byId(entries, 'mcp-local:slack-codex-plugin')?.bundledBy,
+    ).toBeUndefined();
+    const card = byId(entries, 'mcp-catalog:slack');
+    expect(card?.installedVia).toBeUndefined();
+    expect(card?.state).toBe('available');
+  });
+
+  it('leaves the row standalone when the installed plugin has no details', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace({ details: null })],
+        mcpServers: [bundledRow],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    expect(
+      byId(entries, 'mcp-local:slack-codex-plugin')?.bundledBy,
+    ).toBeUndefined();
+    expect(byId(entries, 'mcp-catalog:slack')?.installedVia).toBeUndefined();
+  });
+
+  it('leaves every row visible when several rows match one bundled server', () => {
+    // Two installed rows on one host with one name: which one the plugin
+    // brought is unknown, so neither is hidden behind it.
+    const secondRow = makeMcpIndexEntry({
+      id: 'slack-manual',
+      name: 'Slack',
+      type: 'http',
+      urlHost: 'mcp.slack.example',
+    });
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace()],
+        mcpServers: [bundledRow, secondRow],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    expect(
+      byId(entries, 'mcp-local:slack-codex-plugin')?.bundledBy,
+    ).toBeUndefined();
+    expect(byId(entries, 'mcp-local:slack-manual')?.bundledBy).toBeUndefined();
+    expect(byId(entries, CODEX_SLACK)?.bundledServerRows).toBeUndefined();
+    // The catalog card still reads installed via the plugin.
+    expect(byId(entries, 'mcp-catalog:slack')?.installedVia).toEqual({
+      entryId: CODEX_SLACK,
+      name: 'Slack',
+    });
+  });
+
+  it('never attributes a command server row, even with the same name', () => {
+    // Index rows carry no executable, so a name match cannot show the plugin
+    // installed the row; hiding it could drop a user's own server (CAN-3653).
+    const commandDetails = {
+      ...slackDetails,
+      hooks: [],
+      lspServers: [],
+      hasReadme: false,
+      mcpServers: [
+        { name: 'slack', type: 'command' as const, command: '/bin/slack' },
+      ],
+    };
+    const commandRow = makeMcpIndexEntry({
+      id: 'slack-command',
+      name: 'Slack',
+      type: 'command',
+    });
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace({ details: commandDetails })],
+        mcpServers: [bundledRow, commandRow],
+      }),
+    );
+    expect(byId(entries, 'mcp-local:slack-command')?.bundledBy).toBeUndefined();
+    expect(
+      byId(entries, 'mcp-local:slack-codex-plugin')?.bundledBy,
+    ).toBeUndefined();
+    expect(entries.some((entry) => entry.bundledBy !== undefined)).toBe(false);
+  });
+
+  it('does not tag a curated card that already holds an installed connection', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace()],
+        mcpServers: [{ ...bundledRow, curatedKey: 'slack' }],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    const card = byId(entries, 'mcp-catalog:slack');
+    expect(card?.state).not.toBe('available');
+    expect(card?.installedVia).toBeUndefined();
+    expect(entries.some((entry) => entry.bundledBy !== undefined)).toBe(false);
+  });
+
+  it('does not tag a provider-connector card', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace()],
+        curatedMcpServers: [
+          { ...slackCatalog, providerConnector: { providers: ['claude'] } },
+        ],
+      }),
+    );
+    expect(byId(entries, 'mcp-catalog:slack')?.installedVia).toBeUndefined();
+  });
+
+  it('does not touch a folded integration card', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        foldSingleKeyPlugins: true,
+        curatedPlugins: [
+          makeCuratedPlugin({
+            key: 'slack',
+            name: 'Slack',
+            mcpServers: ['slack'],
+          }),
+        ],
+        marketplaces: [
+          {
+            id: CURATED_PLUGIN_MARKETPLACE_ID,
+            name: 'Curated',
+            curated: true,
+            plugins: [
+              {
+                name: 'slack',
+                marketplaceId: CURATED_PLUGIN_MARKETPLACE_ID,
+                providerSupport: { claude: 'native', codex: 'native' },
+                installed: true,
+              },
+            ],
+          },
+          codexMarketplace(),
+        ],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    const card = byId(entries, 'mcp-catalog:slack');
+    expect(card?.integration?.plugin).toBeDefined();
+    expect(card?.installedVia).toBeUndefined();
+  });
+
+  it('links a curated plugin and a marketplace plugin for the same app', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        foldSingleKeyPlugins: false,
+        curatedPlugins: [
+          makeCuratedPlugin({
+            key: 'slack',
+            name: 'Slack',
+            mcpServers: ['slack'],
+          }),
+        ],
+        marketplaces: [
+          {
+            id: CURATED_PLUGIN_MARKETPLACE_ID,
+            name: 'Curated',
+            curated: true,
+            plugins: [
+              {
+                name: 'slack',
+                marketplaceId: CURATED_PLUGIN_MARKETPLACE_ID,
+                providerSupport: { claude: 'native', codex: 'native' },
+              },
+            ],
+          },
+          codexMarketplace(),
+        ],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    const curated = entries.find(
+      (entry) => entry.ref.type === 'curated-plugin' && entry.name === 'Slack',
+    );
+    expect(curated?.alsoAvailableFrom?.map((link) => link.entryId)).toEqual([
+      CODEX_SLACK,
+    ]);
+    expect(byId(entries, CODEX_SLACK)?.alsoAvailableFrom).toEqual([
+      {
+        entryId: curated?.id,
+        label: 'the curated catalog',
+        ref: { type: 'curated-plugin', key: 'slack' },
+      },
+    ]);
+  });
+
+  it('marks a catalog card installed via an installed curated plugin', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        foldSingleKeyPlugins: false,
+        curatedPlugins: [
+          makeCuratedPlugin({
+            key: 'slack',
+            name: 'Slack',
+            mcpServers: ['slack'],
+          }),
+        ],
+        marketplaces: [
+          {
+            id: CURATED_PLUGIN_MARKETPLACE_ID,
+            name: 'Curated',
+            curated: true,
+            plugins: [
+              {
+                name: 'slack',
+                marketplaceId: CURATED_PLUGIN_MARKETPLACE_ID,
+                providerSupport: { claude: 'native', codex: 'native' },
+                installed: true,
+              },
+            ],
+          },
+        ],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    const curated = entries.find(
+      (entry) => entry.ref.type === 'curated-plugin',
+    );
+    expect(curated?.state).not.toBe('available');
+    expect(byId(entries, 'mcp-catalog:slack')?.installedVia).toEqual({
+      entryId: curated?.id,
+      name: 'Slack',
+    });
+  });
+
+  describe('package-keyed collapse', () => {
+    function overlapping(
+      firstUrl: string | undefined,
+      secondUrl: string | undefined,
+    ): UnifiedPluginEntry[] {
+      const copy = (id: string, url: string | undefined): MarketplaceInfo =>
+        makeMarketplace({
+          id,
+          plugins: [
+            makePluginInfo({
+              name: 'slack',
+              marketplaceId: id,
+              ...(url ? { externalSource: { source: 'url', url } } : {}),
+            }),
+          ],
+        });
+      return buildUnifiedPluginEntries(
+        emptyInputs({
+          marketplaces: [
+            copy('openai-curated-remote', firstUrl),
+            copy('claude-plugins-official', secondUrl),
+          ],
+        }),
+      ).filter((entry) => entry.name.toLowerCase() === 'slack');
+    }
+
+    it('still collapses the identical package republished by overlapping marketplaces', () => {
+      expect(
+        overlapping(
+          'https://github.com/slackapi/slack-mcp-plugin.git',
+          'https://github.com/SlackAPI/slack-mcp-plugin',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('still collapses same-name copies that publish no external source', () => {
+      expect(overlapping(undefined, undefined)).toHaveLength(1);
+    });
+
+    it('never collapses when only one copy has an external source', () => {
+      expect(
+        overlapping(
+          'https://github.com/slackapi/slack-mcp-plugin.git',
+          undefined,
+        ),
+      ).toHaveLength(2);
+    });
+
+    it('never collapses copies with different external sources', () => {
+      expect(
+        overlapping(
+          'https://github.com/slackapi/slack-mcp-plugin.git',
+          'https://github.com/openai/slack.git',
+        ),
+      ).toHaveLength(2);
+    });
+  });
+
+  describe('marketplacePluginBundledServerRows', () => {
+    it('returns the installed rows hidden behind a plugin', () => {
+      expect(
+        marketplacePluginBundledServerRows(
+          [claudeMarketplace(), codexMarketplace()],
+          [bundledRow, standaloneRow],
+          { marketplaceId: 'openai-curated', pluginName: 'slack' },
+        ),
+      ).toEqual([
+        {
+          serverName: 'slack',
+          endpoint: 'http:mcp.slack.example',
+          entryId: 'mcp-local:slack-codex-plugin',
+          serverId: 'slack-codex-plugin',
+        },
+      ]);
+    });
+
+    it('returns nothing for a plugin that is not installed', () => {
+      expect(
+        marketplacePluginBundledServerRows(
+          [claudeMarketplace(), codexMarketplace()],
+          [bundledRow],
+          { marketplaceId: 'claude-plugins-official', pluginName: 'slack' },
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  describe('marketplacePluginAlternatives', () => {
+    it('returns the other catalog for a plugin', () => {
+      expect(
+        marketplacePluginAlternatives(
+          [claudeMarketplace(), codexMarketplace()],
+          { marketplaceId: 'openai-curated', pluginName: 'slack' },
+        ).map((link) => [link.entryId, link.label]),
+      ).toEqual([[CLAUDE_SLACK, 'Claude · slackapi']]);
+    });
+
+    it('returns nothing for an unknown plugin', () => {
+      expect(
+        marketplacePluginAlternatives([claudeMarketplace()], {
+          marketplaceId: 'nowhere',
+          pluginName: 'slack',
+        }),
+      ).toEqual([]);
+    });
+  });
+  it('leaves a bundled server that needs sign-in to count on its own listed row (CAN-4840)', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [claudeMarketplace(), codexMarketplace()],
+        mcpServers: [bundledRow],
+        mcpStatuses: [
+          makeMcpStatus({
+            serverId: 'slack-codex-plugin',
+            connectionStatus: 'auth_required',
+          }),
+        ],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    // A server that needs sign-in stays listed on its own row
+    // (`listedAsItsPlugin`), so its plugin does not repeat the prompt.
+    const listed = byId(entries, 'mcp-local:slack-codex-plugin');
+    expect(listed?.state).toBe('needs-auth');
+    expect(listed?.bundledBy).toEqual({ entryId: CODEX_SLACK, name: 'Slack' });
+    expect(listed && listedAsItsPlugin(listed)).toBe(false);
+    expect(listed?.pendingSignIns).toBe(1);
+    expect(byId(entries, CODEX_SLACK)?.pendingSignIns).toBeUndefined();
+    expect(byId(entries, CLAUDE_SLACK)?.pendingSignIns).toBeUndefined();
+  });
+
+  it('counts a bundled server’s waiting configuration even when the server is installed (CAN-4840)', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace()],
+        mcpServers: [bundledRow],
+        mcpStatuses: [
+          makeMcpStatus({
+            serverId: 'slack-codex-plugin',
+            configs: [
+              { configId: 'a', authStatus: 'connected' },
+              { configId: 'b', authStatus: 'expired' },
+            ],
+          }),
+        ],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    const hidden = byId(entries, 'mcp-local:slack-codex-plugin');
+    expect(hidden?.state).not.toBe('needs-auth');
+    expect(hidden?.pendingSignIns).toBe(1);
+    expect(byId(entries, CODEX_SLACK)?.pendingSignIns).toBe(1);
+  });
+
+  it('leaves a plugin whose bundled servers are signed in without a count (CAN-4840)', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [codexMarketplace()],
+        mcpServers: [bundledRow],
+        mcpStatuses: [makeMcpStatus({ serverId: 'slack-codex-plugin' })],
+        curatedMcpServers: [slackCatalog],
+      }),
+    );
+    expect(byId(entries, CODEX_SLACK)?.pendingSignIns).toBeUndefined();
+  });
+});
+
+describe('CAN-4840 — Customize row data', () => {
+  const since = '2026-10-12T00:00:00.000Z';
+
+  it('records when shared skills, collections and automations were shared', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        sharedSkills: [
+          {
+            id: 'ui-review',
+            name: 'ui-review-helper',
+            description: 'Reviews interfaces',
+            contentHash: 'ui-review-hash',
+            shareScope: 'team',
+            owner: {
+              type: 'team',
+              id: 'team-1',
+              name: 'Design Team',
+              organization: { id: 'org-1', name: 'Acme' },
+            },
+            createdBy: { id: 'user-1', name: 'Ada', email: 'ada@example.com' },
+            createdAt: since,
+            updatedAt: since,
+            canUpdate: true,
+            canDelete: true,
+            publicShare: null,
+          },
+        ],
+        sharedCollections: [
+          {
+            id: 'qa-automation',
+            name: 'qa-automation-kit',
+            description: 'Quality capabilities',
+            contentHash: 'qa-automation-hash',
+            itemCounts: { skills: 1, plugins: 1, customSkills: 0 },
+            shareScope: 'team',
+            owner: {
+              type: 'team',
+              id: 'team-1',
+              name: 'Design Team',
+              organization: { id: 'org-1', name: 'Acme' },
+            },
+            createdBy: { id: 'user-1', name: 'Ada', email: 'ada@example.com' },
+            createdAt: since,
+            updatedAt: since,
+            canUpdate: true,
+            canDelete: true,
+          },
+        ],
+        sharedAutomations: [makeSharedAutomation({ createdAt: since })],
+      }),
+    );
+    const sharedSince = (id: string): string | undefined =>
+      entries.find((entry) => entry.id === id)?.sharedSince;
+    expect(sharedSince('skill:shared:ui-review')).toBe(since);
+    expect(sharedSince('collection:shared:qa-automation')).toBe(since);
+    expect(sharedSince('automation:shared:share-1')).toBe(since);
+  });
+
+  function pluginVersion(
+    plugin: UnifiedMarketplacePluginInput,
+  ): string | undefined {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [{ id: 'mkt-1', name: 'Marketplace', plugins: [plugin] }],
+      }),
+    );
+    return entries.find((entry) => entry.id === 'mkt:mkt-1/tool')?.version;
+  }
+  const basePlugin: UnifiedMarketplacePluginInput = {
+    name: 'tool',
+    marketplaceId: 'mkt-1',
+    providerSupport: { claude: 'native', codex: 'none' },
+    version: '1.2.0',
+  };
+
+  it('falls back to the manifest version for an installed plugin without provider status', () => {
+    expect(pluginVersion({ ...basePlugin, installed: true })).toBe('1.2.0');
+  });
+
+  it('shows no version for a plugin that is not installed', () => {
+    expect(pluginVersion(basePlugin)).toBeUndefined();
+  });
+
+  it('keeps the provider status version over the manifest version', () => {
+    expect(
+      pluginVersion({
+        ...basePlugin,
+        globalInstallStatus: {
+          claude: { available: true, installed: true, version: '1.1.0' },
+          codex: { available: false, installed: false },
+          checkedAt: '2026-10-23T00:00:00.000Z',
+        },
+      }),
+    ).toBe('1.1.0');
+  });
+});
+
+describe('CAN-4844 — custom skill edit dates', () => {
+  it('projects a custom skill edit date as editedAt', () => {
+    const entry = buildInstalledSkillEntry(
+      makeSkill({
+        sourceId: 'custom:app',
+        custom: true,
+        updatedAt: '2026-10-10T12:00:00.000Z',
+      }),
+    );
+    expect(entry.editedAt).toBe('2026-10-10T12:00:00.000Z');
+  });
+
+  it('leaves editedAt unset for non-custom skills and empty dates', () => {
+    expect(
+      buildInstalledSkillEntry(
+        makeSkill({ updatedAt: '2026-10-10T12:00:00.000Z' }),
+      ).editedAt,
+    ).toBeUndefined();
+    expect(
+      buildInstalledSkillEntry(
+        makeSkill({ sourceId: 'custom:app', custom: true, updatedAt: '' }),
+      ).editedAt,
+    ).toBeUndefined();
+  });
+});
+
+describe('CAN-4844 — plugin-bundled skills', () => {
+  const skillDetails = (
+    ...names: string[]
+  ): UnifiedMarketplacePluginInput['details'] => ({
+    skills: names.map((name) => ({
+      name,
+      description: `About ${name}`,
+      path: `skills/${name}/SKILL.md`,
+    })),
+    agents: [],
+    commands: [],
+    mcpServers: [],
+  });
+
+  function plugin(
+    overrides: Partial<UnifiedMarketplacePluginInput> = {},
+  ): UnifiedMarketplacePluginInput {
+    return {
+      ...makePluginInfo({
+        name: 'slack',
+        displayName: 'Slack',
+        marketplaceId: 'openai-curated',
+      }),
+      installed: true,
+      details: skillDetails('summarize-channel'),
+      ...overrides,
+    };
+  }
+
+  function marketplace(
+    plugins: UnifiedMarketplacePluginInput[],
+    id = 'openai-curated',
+  ): UnifiedMarketplaceInput {
+    return { id, name: id, plugins };
+  }
+
+  function idsOf(entries: readonly UnifiedPluginEntry[]): string[] {
+    return entries
+      .filter((entry) => entry.ref.type === 'plugin-skill')
+      .map((entry) => entry.id);
+  }
+
+  it("lists an installed plugin's skills as bundled skill entries", () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({ marketplaces: [marketplace([plugin()])] }),
+    );
+    const entry = entries.find(
+      (candidate) =>
+        candidate.id === 'plugin-skill:openai-curated/slack:summarize-channel',
+    );
+    expect(entry).toMatchObject({
+      kind: 'skill',
+      state: 'installed',
+      // Title-cased like every other skill row.
+      name: 'Summarize Channel',
+      description: 'About summarize-channel',
+      bundledBy: { entryId: 'mkt:openai-curated/slack', name: 'Slack' },
+      ref: {
+        type: 'plugin-skill',
+        marketplaceId: 'openai-curated',
+        pluginName: 'slack',
+        skillName: 'summarize-channel',
+      },
+    });
+    expect(entry && unifiedEntryIdForRef(entry.ref)).toBe(entry?.id);
+    expect(entry && listedAsItsPlugin(entry)).toBe(false);
+  });
+
+  it('links installed curated skills to their canonical plugin row and searches by its name', () => {
+    const curatedMarketplace = {
+      ...marketplace([plugin()], 'curated-feed'),
+      curated: true,
+    };
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        curatedPlugins: [makeCuratedPlugin({ key: 'slack', name: 'Slack' })],
+        marketplaces: [
+          curatedMarketplace,
+          { ...curatedMarketplace, curated: false },
+        ],
+      }),
+    );
+    const parent = entries.find((entry) => entry.id === 'curated:slack');
+    const skills = entries.filter((entry) => entry.ref.type === 'plugin-skill');
+    expect(parent?.state).toBe('installed');
+    expect(skills).toHaveLength(1);
+    expect(skills[0]).toMatchObject({
+      state: parent?.state,
+      name: 'Summarize Channel',
+      bundledBy: { entryId: parent?.id, name: 'Slack' },
+    });
+    expect(
+      searchUnifiedEntries(entries, 'Slack', null).installed,
+    ).toContainEqual(skills[0]);
+  });
+
+  it('reads bundled skills from bundledSkills when a row carries no details', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [
+          marketplace([
+            plugin({
+              details: undefined,
+              bundledSkills: [{ name: 'review', description: 'Review' }],
+            }),
+          ]),
+        ],
+      }),
+    );
+    expect(idsOf(entries)).toEqual([
+      'plugin-skill:openai-curated/slack:review',
+    ]);
+  });
+
+  it('skips skills of plugins that are not installed', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [marketplace([plugin({ installed: false })])],
+      }),
+    );
+    expect(idsOf(entries)).toEqual([]);
+  });
+
+  it('keys bundled skills by plugin', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [
+          marketplace([
+            plugin({ details: skillDetails('review') }),
+            plugin({
+              name: 'linear',
+              displayName: 'Linear',
+              details: skillDetails('review'),
+            }),
+          ]),
+        ],
+      }),
+    );
+    expect(idsOf(entries).sort()).toEqual([
+      'plugin-skill:openai-curated/linear:review',
+      'plugin-skill:openai-curated/slack:review',
+    ]);
+  });
+
+  it('dedupes repeated skill names within a plugin', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        marketplaces: [
+          marketplace([plugin({ details: skillDetails('review', 'review') })]),
+        ],
+      }),
+    );
+    expect(idsOf(entries)).toEqual([
+      'plugin-skill:openai-curated/slack:review',
+    ]);
+  });
+
+  it('does not collapse a bundled skill into a same-named installed skill', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        installedSkills: [makeSkill({ name: 'review', sourceId: 'local' })],
+        marketplaces: [
+          marketplace([plugin({ details: skillDetails('review') })]),
+        ],
+      }),
+    );
+    const ids = entries.map((entry) => entry.id);
+    expect(ids).toContain('skill:local:review');
+    expect(ids).toContain('plugin-skill:openai-curated/slack:review');
+  });
+
+  it('finds a bundled skill by its plugin name', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({ marketplaces: [marketplace([plugin()])] }),
+    );
+    const results = searchUnifiedEntries(entries, 'Slack', null);
+    expect(results.installed.map((entry) => entry.id)).toContain(
+      'plugin-skill:openai-curated/slack:summarize-channel',
+    );
+  });
+
+  it('matches only bundled skills, not other bundled rows, by plugin name', () => {
+    const [skill] = buildUnifiedPluginEntries(
+      emptyInputs({ marketplaces: [marketplace([plugin()])] }),
+    ).filter((entry) => entry.ref.type === 'plugin-skill');
+    const server: UnifiedPluginEntry = {
+      ...skill,
+      id: 'mcp-local:workspace-server',
+      kind: 'app',
+      name: 'workspace-server',
+      description: '',
+      sourceLabel: undefined,
+    };
+    const results = searchUnifiedEntries([server], 'Slack', null);
+    expect(results.installed).toEqual([]);
+  });
+});
+
+describe('buildUnifiedPluginEntries — workflow facets (CAN-4845)', () => {
+  function makePipeline(overrides: Partial<PipelineInfo> = {}): PipelineInfo {
+    return {
+      id: 'release',
+      name: 'Release Flow',
+      filename: 'release.yaml',
+      description: 'Publishes the application',
+      icon: '',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      source: 'user',
+      readonly: false,
+      ...overrides,
+    };
+  }
+
+  function pipelineEntry(
+    overrides: Partial<UnifiedEntryInputs> = {},
+  ): UnifiedPluginEntry | undefined {
+    return buildUnifiedPluginEntries(
+      emptyInputs({ pipelines: [makePipeline()], ...overrides }),
+    ).find((entry) => entry.kind === 'pipeline');
+  }
+
+  // CAN-4551: an automation's own pipeline lists under its automation.
+  it('leaves out a user pipeline an automation owns', () => {
+    expect(pipelineEntry({ ownedPipelineIds: new Set(['release']) })).toBe(
+      undefined,
+    );
+    expect(
+      pipelineEntry({ ownedPipelineIds: new Set(['other']) }),
+    ).toBeDefined();
+  });
+
+  it('carries readonly from a project pipeline into row availability', () => {
+    expect(
+      pipelineEntry({
+        pipelines: [makePipeline({ source: 'project', readonly: true })],
+      })?.workflow?.readonly,
+    ).toBe(true);
+  });
+
+  it('describes an event-only pipeline as not runnable by hand', () => {
+    const entry = pipelineEntry({
+      pipelines: [makePipeline({ triggerTypes: ['plan_ready'] })],
+    });
+    expect(entry?.workflow).toEqual({
+      triggers: [
+        {
+          kind: 'plan-approved',
+          label: 'Plan approval',
+          explainer: 'Runs automatically when a plan is approved',
+        },
+      ],
+      runnable: false,
+      runUnavailableLabel: describeRunUnavailable(['plan-approved']),
+    });
+  });
+
+  it('marks a dispatchable or trigger-less pipeline as runnable', () => {
+    expect(
+      pipelineEntry({
+        pipelines: [makePipeline({ triggerTypes: ['dispatch'] })],
+      })?.workflow,
+    ).toEqual({
+      triggers: [
+        {
+          kind: 'manual',
+          label: 'Manual',
+          explainer: 'Runs when you start it',
+        },
+      ],
+      runnable: true,
+    });
+    expect(pipelineEntry()?.workflow).toEqual({
+      triggers: [
+        {
+          kind: 'manual',
+          label: 'Manual',
+          explainer: 'Runs when you start it',
+        },
+      ],
+      runnable: true,
+    });
+  });
+
+  it('projects the loaded pipeline step count with correct plurality', () => {
+    expect(
+      pipelineEntry({ pipelines: [makePipeline({ stepCount: 1 })] })?.workflow
+        ?.stepCount,
+    ).toBe(1);
+    expect(
+      pipelineEntry({ pipelines: [makePipeline({ stepCount: 4 })] })?.workflow
+        ?.stepCount,
+    ).toBe(4);
+  });
+
+  it('uses the host run-unavailable reason for a manual pipeline', () => {
+    expect(
+      pipelineEntry({
+        pipelineRunUnavailable: new Map([
+          ['pipeline:user:release', 'Cannot be started from here'],
+        ]),
+      })?.workflow,
+    ).toEqual({
+      triggers: [
+        {
+          kind: 'manual',
+          label: 'Manual',
+          explainer: 'Runs when you start it',
+        },
+      ],
+      runnable: false,
+      runUnavailableLabel: 'Cannot be started from here',
+    });
+  });
+
+  it('reads the last run from the host map, null when the map lacks the id', () => {
+    const at = Date.UTC(2026, 9, 26);
+    expect(
+      pipelineEntry({ pipelineLastRuns: new Map() })?.workflow?.lastRun,
+    ).toBeNull();
+    expect(
+      pipelineEntry({
+        pipelineLastRuns: new Map([['release', { state: 'success', at }]]),
+      })?.workflow?.lastRun,
+    ).toEqual({ state: 'success', at });
+    expect(pipelineEntry()?.workflow).not.toHaveProperty('lastRun');
+  });
+
+  it('copies a local automation’s facets and names the share it came from', () => {
+    const workflow = {
+      triggerText: 'Every day at 09:00',
+      summary: 'App Advisor prompt',
+      lastRun: null,
+      enabled: true,
+    };
+    const [installed] = automationEntries({
+      localAutomations: [
+        makeLocalAutomation({
+          workflow,
+          installedFrom: { remoteId: 'share-1', contentHash: AUTOMATION_HASH },
+        }),
+      ],
+      sharedAutomations: [makeSharedAutomation()],
+    });
+    expect(installed?.workflow).toEqual({
+      ...workflow,
+      sourceText: 'Shared by Platform',
+    });
+
+    const [unnamed] = automationEntries({
+      localAutomations: [
+        makeLocalAutomation({
+          workflow,
+          installedFrom: { remoteId: 'share-1', contentHash: AUTOMATION_HASH },
+        }),
+      ],
+      sharedAutomations: [
+        makeSharedAutomation({
+          owner: {
+            type: 'team',
+            id: 'team-1',
+            name: null,
+            organization: { id: 'org-1', name: 'Acme' },
+          },
+        }),
+      ],
+    });
+    expect(unnamed?.workflow).toEqual(workflow);
+
+    const [person] = automationEntries({
+      localAutomations: [
+        makeLocalAutomation({
+          workflow,
+          installedFrom: { remoteId: 'share-1', contentHash: AUTOMATION_HASH },
+        }),
+      ],
+      sharedAutomations: [
+        makeSharedAutomation({
+          owner: { type: 'user', id: 'user-1', name: 'Ada' },
+        }),
+      ],
+    });
+    expect(person?.workflow).toEqual({
+      ...workflow,
+      sourceText: 'Shared by Ada',
+      sourceIsPerson: true,
+    });
+  });
+
+  it('leaves an automation without host facets unchanged', () => {
+    const [entry] = automationEntries({
+      localAutomations: [makeLocalAutomation()],
+    });
+    expect(entry?.workflow).toBeUndefined();
+  });
+});
+
+describe('buildUnifiedPluginEntries — installed shared skills (CAN-5223)', () => {
+  const HASH = 'a'.repeat(64);
+  const OTHER_HASH = 'b'.repeat(64);
+
+  function makeSharedSkill(
+    overrides: Partial<SharedSkillSummary> = {},
+  ): SharedSkillSummary {
+    return {
+      id: 'share-1',
+      name: 'Review Helper',
+      description: 'Reviews product changes',
+      contentHash: HASH,
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'org-1', name: 'Northwind' },
+      createdBy: { id: 'user-ada', name: 'Ada', email: 'ada@example.com' },
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      canUpdate: false,
+      canDelete: false,
+      publicShare: null,
+      ...overrides,
+    };
+  }
+
+  function makeReceiptedSkill(
+    name: string,
+    installedFromShare: InstalledSkillInfo['installedFromShare'],
+    overrides: Partial<InstalledSkillInfo> = {},
+  ): InstalledSkillInfo {
+    return makeSkill({
+      name,
+      sourceId: 'custom:app',
+      custom: true,
+      ...(installedFromShare ? { installedFromShare } : {}),
+      ...overrides,
+    });
+  }
+
+  function shareEntry(
+    entries: UnifiedPluginEntry[],
+    id = 'share-1',
+  ): UnifiedPluginEntry | undefined {
+    return entries.find((entry) => entry.id === `skill:shared:${id}`);
+  }
+
+  function project(
+    installedSkills: InstalledSkillInfo[],
+    sharedSkills: SharedSkillSummary[] = [makeSharedSkill()],
+    overrides: Partial<UnifiedEntryInputs> = {},
+  ): UnifiedPluginEntry[] {
+    return buildUnifiedPluginEntries(
+      emptyInputs({ installedSkills, sharedSkills, ...overrides }),
+    );
+  }
+
+  it.each([
+    ['an unchanged hash', HASH],
+    ['a changed hash', OTHER_HASH],
+    ['no hash', undefined],
+    ['a malformed hash', 'not-a-hash'],
+  ])('folds a share into the copy its receipt names, with %s', (_, hash) => {
+    const entries = project([
+      makeReceiptedSkill('review-helper', {
+        remoteId: 'share-1',
+        ...(hash === undefined ? {} : { contentHash: hash }),
+      }),
+    ]);
+
+    expect(shareEntry(entries)).toMatchObject({
+      origin: 'shared',
+      state: 'installed',
+      availabilityLabel: 'Installed',
+      installedEntryId: 'skill:custom:app:review-helper',
+      ref: { type: 'shared-skill', skillId: 'share-1' },
+      ownershipLabel: 'Northwind · Organization',
+      sharedSince: '2026-08-01T00:00:00.000Z',
+    });
+  });
+
+  it('folds a share whose source hash matches a copy installed from another share', () => {
+    const entries = project([
+      makeReceiptedSkill('review-helper', {
+        remoteId: 'older-share',
+        contentHash: HASH.toUpperCase(),
+      }),
+    ]);
+
+    expect(shareEntry(entries)).toMatchObject({
+      state: 'installed',
+      installedEntryId: 'skill:custom:app:review-helper',
+    });
+  });
+
+  it.each([
+    ['an unequal hash', OTHER_HASH, HASH],
+    ['no hash', undefined, ''],
+    ['an empty hash', '', ''],
+    ['a malformed hash', 'aaaa', 'aaaa'],
+  ])(
+    'leaves a share available beside a receipt with %s',
+    (_, receiptHash, shareHash) => {
+      const entries = project(
+        [
+          makeReceiptedSkill('review-helper', {
+            remoteId: 'older-share',
+            ...(receiptHash === undefined ? {} : { contentHash: receiptHash }),
+          }),
+        ],
+        [makeSharedSkill({ contentHash: shareHash })],
+      );
+
+      expect(shareEntry(entries)).toMatchObject({
+        state: 'available',
+        availabilityLabel: 'Available',
+      });
+      expect(shareEntry(entries)?.installedEntryId).toBeUndefined();
+    },
+  );
+
+  it('never matches a same-name copy without a receipt', () => {
+    const entries = project([makeReceiptedSkill('Review Helper', undefined)]);
+
+    expect(shareEntry(entries)?.state).toBe('available');
+  });
+
+  it('never matches a receipt outside custom:app or on a built-in skill', () => {
+    const receipt = { remoteId: 'share-1', contentHash: HASH };
+    const entries = project([
+      makeReceiptedSkill('review-helper', receipt, {
+        sourceId: 'github:octo:skills',
+      }),
+      makeReceiptedSkill('bundled-helper', receipt, { builtIn: true }),
+    ]);
+
+    expect(shareEntry(entries)?.state).toBe('available');
+  });
+
+  it('prefers an exact receipt id over an earlier hash match', () => {
+    const entries = project([
+      makeReceiptedSkill('hash-copy', {
+        remoteId: 'older-share',
+        contentHash: HASH,
+      }),
+      makeReceiptedSkill('id-copy', { remoteId: 'share-1' }),
+    ]);
+
+    expect(shareEntry(entries)?.installedEntryId).toBe(
+      'skill:custom:app:id-copy',
+    );
+  });
+
+  it('links to the first matching copy within each match class', () => {
+    const entries = project(
+      [
+        makeReceiptedSkill('first-id', { remoteId: 'share-1' }),
+        makeReceiptedSkill('second-id', { remoteId: 'share-1' }),
+        makeReceiptedSkill('first-hash', {
+          remoteId: 'x',
+          contentHash: OTHER_HASH,
+        }),
+        makeReceiptedSkill('second-hash', {
+          remoteId: 'y',
+          contentHash: OTHER_HASH,
+        }),
+      ],
+      [
+        makeSharedSkill(),
+        makeSharedSkill({ id: 'share-2', contentHash: OTHER_HASH }),
+      ],
+    );
+
+    expect(shareEntry(entries)?.installedEntryId).toBe(
+      'skill:custom:app:first-id',
+    );
+    expect(shareEntry(entries, 'share-2')?.installedEntryId).toBe(
+      'skill:custom:app:first-hash',
+    );
+  });
+
+  it('links several shares to one copy without changing the copy', () => {
+    const copy = makeReceiptedSkill('review-helper', {
+      remoteId: 'share-1',
+      contentHash: HASH,
+    });
+    const entries = project(
+      [copy],
+      [makeSharedSkill(), makeSharedSkill({ id: 'share-2' })],
+    );
+
+    expect(shareEntry(entries)?.installedEntryId).toBe(
+      'skill:custom:app:review-helper',
+    );
+    expect(shareEntry(entries, 'share-2')?.installedEntryId).toBe(
+      'skill:custom:app:review-helper',
+    );
+    expect(
+      entries.find((entry) => entry.id === 'skill:custom:app:review-helper'),
+    ).toMatchObject({
+      origin: 'installed-standalone',
+      state: 'installed',
+      custom: true,
+    });
+    expect(copy.installedFromShare).toEqual({
+      remoteId: 'share-1',
+      contentHash: HASH,
+    });
+  });
+
+  it('keeps an installed owned share eligible for Shared by me', () => {
+    const entries = project(
+      [makeReceiptedSkill('review-helper', { remoteId: 'share-1' })],
+      [makeSharedSkill()],
+      { viewerId: 'user-ada' },
+    );
+
+    expect(shareEntry(entries)).toMatchObject({
+      state: 'installed',
+      ownedByViewer: true,
+      isShared: true,
+    });
+  });
+
+  it('restores availability once the last matching copy is removed', () => {
+    const copy = makeReceiptedSkill('review-helper', { remoteId: 'share-1' });
+    expect(shareEntry(project([copy]))?.state).toBe('installed');
+
+    const removed = shareEntry(project([]));
+    expect(removed).toMatchObject({
+      state: 'available',
+      availabilityLabel: 'Available',
+    });
+    expect(removed?.installedEntryId).toBeUndefined();
+  });
+
+  it('carries trimmed receipt names onto the installed copy', () => {
+    const entries = project([
+      makeReceiptedSkill('review-helper', {
+        remoteId: 'share-1',
+        sharedByName: '  Ada  ',
+        ownerName: 'Northwind ',
+        teamName: ' Platform ',
+      }),
+    ]);
+
+    expect(
+      entries.find((entry) => entry.id === 'skill:custom:app:review-helper'),
+    ).toMatchObject({
+      custom: true,
+      installedFrom: {
+        sharedByName: 'Ada',
+        ownerName: 'Northwind',
+        teamName: 'Platform',
+      },
+    });
+  });
+
+  it('records a receipt with no names as an empty attribution', () => {
+    const entry = buildInstalledSkillEntry(
+      makeReceiptedSkill('review-helper', { remoteId: 'share-1' }),
+    );
+
+    expect(entry.installedFrom).toEqual({});
+  });
+
+  it('gives a receipt-less or built-in skill no attribution', () => {
+    expect(
+      buildInstalledSkillEntry(makeReceiptedSkill('mine', undefined))
+        .installedFrom,
+    ).toBeUndefined();
+    expect(
+      buildInstalledSkillEntry(
+        makeReceiptedSkill(
+          'bundled',
+          { remoteId: 'share-1', sharedByName: 'Ada' },
+          { builtIn: true },
+        ),
+      ).installedFrom,
+    ).toBeUndefined();
+  });
+});
+
+describe('buildUnifiedPluginEntries — public links on shared entries (CAN-5220)', () => {
+  const LINK_CREATED = '2026-09-26T12:00:00.000Z';
+  interface PublicLinkFixture {
+    externalId: string;
+    pinnedContentHash: string;
+    pinnedRefKey: string;
+    upToDate: boolean;
+    sharePath: string;
+    createdAt: string;
+    updatedAt: string;
+  }
+  function link(upToDate = true): PublicLinkFixture {
+    return {
+      externalId: 'link-1',
+      pinnedContentHash: 'hash',
+      pinnedRefKey: 'plugin:acme/tools:deploy',
+      upToDate,
+      sharePath: '/share/link-1',
+      createdAt: LINK_CREATED,
+      updatedAt: LINK_CREATED,
+    };
+  }
+  const base = {
+    shareScope: 'organization',
+    owner: { type: 'organization', id: 'org-1', name: 'Northwind' },
+    createdBy: { id: 'viewer', name: 'Viewer', email: null },
+    createdAt: '2026-10-12T00:00:00.000Z',
+    updatedAt: '2026-10-12T00:00:00.000Z',
+    canUpdate: true,
+    canDelete: true,
+  } as const;
+  function skill(
+    id: string,
+    publicShare: PublicLinkFixture | null,
+  ): SharedSkillSummary {
+    return {
+      ...base,
+      id,
+      name: `skill-${id}`,
+      description: '',
+      contentHash: 'hash',
+      publicShare,
+    };
+  }
+  function collection(
+    id: string,
+    publicShare?: PublicLinkFixture | null,
+  ): SharedCollectionSummary {
+    return {
+      ...base,
+      id,
+      name: `collection-${id}`,
+      description: '',
+      contentHash: 'hash',
+      itemCounts: { skills: 1, plugins: 0, customSkills: 0 },
+      publicShare,
+    };
+  }
+  function agent(
+    id: string,
+    publicShare?: PublicLinkFixture | null,
+  ): SharedAgentSummary {
+    return {
+      ...base,
+      id,
+      name: `agent-${id}`,
+      modelId: 'agent_model_1',
+      baseModel: 'claude-sonnet',
+      instructionsPreview: '',
+      contentHash: 'hash',
+      publicShare,
+    };
+  }
+  function plugin(
+    externalId: string,
+    publicShare?: PublicLinkFixture | null,
+  ): SharedPluginSummary {
+    return {
+      ...base,
+      externalId,
+      refKey: 'plugin:acme/tools:deploy',
+      ref: {
+        type: 'plugin',
+        marketplace: { type: 'github', repo: 'acme/tools' },
+        plugin_name: 'deploy',
+      },
+      name: 'Deploy tools',
+      description: null,
+      marketplaceOrigin: 'acme/tools',
+      publicShare,
+    };
+  }
+  function project(
+    overrides: Partial<UnifiedEntryInputs>,
+  ): UnifiedPluginEntry[] {
+    return buildUnifiedPluginEntries(
+      emptyInputs({ viewerId: 'viewer', ...overrides }),
+    );
+  }
+  const byId = (
+    entries: UnifiedPluginEntry[],
+    id: string,
+  ): UnifiedPluginEntry | undefined => entries.find((entry) => entry.id === id);
+
+  it('projects the link date and freshness for every kind that reports one', () => {
+    const entries = project({
+      sharedSkills: [skill('s1', link())],
+      sharedCollections: [collection('c1', link(false))],
+      sharedAgents: [agent('a1', link())],
+      sharedPlugins: [plugin('p1', link(false))],
+      sharedAutomations: [
+        makeSharedAutomation({
+          id: 'au1',
+          createdBy: { id: 'viewer', name: 'Viewer', email: null },
+          publicShare: link(),
+        }),
+      ],
+    });
+    expect(byId(entries, 'skill:shared:s1')?.publicShare).toEqual({
+      since: LINK_CREATED,
+      upToDate: true,
+    });
+    expect(byId(entries, 'collection:shared:c1')?.publicShare).toEqual({
+      since: LINK_CREATED,
+      upToDate: false,
+    });
+    expect(byId(entries, 'agent:shared:a1')?.publicShare).toEqual({
+      since: LINK_CREATED,
+      upToDate: true,
+    });
+    expect(byId(entries, 'plugin:shared:p1')?.publicShare).toEqual({
+      since: LINK_CREATED,
+      upToDate: false,
+    });
+    expect(byId(entries, 'automation:shared:au1')?.publicShare).toEqual({
+      since: LINK_CREATED,
+      upToDate: true,
+    });
+  });
+
+  it('leaves null, absent and blueprint shares without a public link', () => {
+    const entries = project({
+      sharedSkills: [skill('s1', null)],
+      sharedCollections: [collection('c1')],
+      sharedAgents: [agent('a1', null)],
+      sharedPlugins: [plugin('p1')],
+      sharedAutomations: [makeSharedAutomation({ publicShare: null })],
+      sharedBlueprints: [
+        {
+          externalId: 'bp1',
+          sharePath: '/share/project-templates/bp1',
+          pinnedContentHash: 'hash',
+          name: 'Launch plan',
+          description: '',
+          audience: 'ORGANIZATION',
+          owner: base.owner,
+          createdBy: { id: 'viewer', name: 'Viewer' },
+          createdAt: base.createdAt,
+          updatedAt: base.updatedAt,
+        },
+      ],
+    });
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) expect(entry.publicShare).toBeUndefined();
+  });
+
+  it('keeps public-link presence when a runtime summary has no link metadata', () => {
+    const summary = skill('s1', link());
+    // Older/incomplete runtime data can omit metadata despite the full wire DTO.
+    Reflect.set(summary, 'publicShare', {});
+    const entry = byId(project({ sharedSkills: [summary] }), 'skill:shared:s1');
+    expect(entry?.publicShare).toEqual({});
+    expect(entry && sharedByMeLine(entry)?.publicLink).toBe(true);
+  });
+
+  it('clears the link on the next projection once the summary loses it', () => {
+    expect(
+      byId(project({ sharedSkills: [skill('s1', link())] }), 'skill:shared:s1')
+        ?.publicShare,
+    ).toBeDefined();
+    const refreshed = byId(
+      project({ sharedSkills: [skill('s1', null)] }),
+      'skill:shared:s1',
+    );
+    expect(refreshed?.publicShare).toBeUndefined();
+    expect(refreshed?.isShared).toBe(true);
+  });
+
+  it('does not confuse an owner with an audience on public-only shares of any kind', () => {
+    const entries = project({
+      sharedSkills: [{ ...skill('s1', link()), shareScope: 'private' }],
+      sharedCollections: [
+        { ...collection('c1', link()), shareScope: 'private' },
+      ],
+      sharedAgents: [{ ...agent('a1', link()), shareScope: 'private' }],
+      sharedPlugins: [{ ...plugin('p1', link()), shareScope: 'private' }],
+      sharedAutomations: [
+        makeSharedAutomation({
+          id: 'au1',
+          owner: base.owner,
+          shareScope: 'private',
+          createdBy: base.createdBy,
+          publicShare: link(false),
+        }),
+      ],
+    });
+    const shared = entries.filter((entry) => entry.origin === 'shared');
+    expect(shared).toHaveLength(5);
+    for (const entry of shared) {
+      expect(entry.ownedByViewer).toBe(true);
+      expect(entry.isShared).toBe(true);
+      expect(entry.sharedWith).toBeUndefined();
+      expect(entry.sharedSince).toBeUndefined();
+      expect(sharedByMeLine(entry)).toEqual({
+        publicLink: true,
+        publicLinkTitle: 'Public link · Since Sep 26',
+      });
+    }
+  });
+
+  it('keeps the link on its own kind and off installed counterparts', () => {
+    const entries = project({
+      sharedSkills: [skill('same', link())],
+      sharedAgents: [agent('same', null)],
+      installedSkills: [
+        makeSkill({
+          name: 'local-copy',
+          remote: {
+            accountId: 'viewer',
+            remoteId: 'same',
+            contentHash: 'hash',
+            shareScope: 'organization',
+            sharedAt: 'now',
+          },
+        }),
+      ],
+    });
+    expect(byId(entries, 'skill:shared:same')?.publicShare).toBeDefined();
+    expect(byId(entries, 'agent:shared:same')?.publicShare).toBeUndefined();
+    expect(
+      entries
+        .filter((entry) => entry.origin !== 'shared')
+        .some((entry) => entry.publicShare !== undefined),
+    ).toBe(false);
+  });
+
+  it.each([
+    ['account only', 'organization', null],
+    ['account and public link', 'organization', link()],
+    ['public link only', 'private', link()],
+    ['stale public link', 'organization', link(false)],
+  ] as const)(
+    'agrees with the detail card on the public audience: %s',
+    (_label, shareScope, publicShare) => {
+      const share = { ...skill('s1', publicShare), shareScope };
+      const entry = byId(project({ sharedSkills: [share] }), 'skill:shared:s1');
+      const listShowsLink = entry
+        ? (sharedByMeLine(entry)?.publicLink ?? false)
+        : false;
+      const detailPublicRows =
+        sharedByYouAudienceCount(share, null) -
+        sharedByYouAudienceCount({ ...share, publicShare: null }, null);
+      expect(listShowsLink).toBe(detailPublicRows === 1);
+      expect(listShowsLink).toBe(publicShare !== null);
+      const detail = sharedByYouAudiences(share, null, {
+        deleteShare: { available: false, reason: 'Test' },
+        revokePublicLink: { available: false, reason: 'Test' },
+      });
+      const account = detail.find((audience) => audience.id === 'account');
+      expect(entry?.sharedWith?.name).toBe(account?.name);
+      expect(entry?.sharedSince).toBe(account?.sinceIso);
+    },
+  );
 });

@@ -19,12 +19,14 @@ import { join, relative } from 'node:path';
 import { act, type JSX, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
+import type { projectPersistedChatTranscript } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { SHARED_CHAT_TRANSCRIPT_PROJECTION_ENABLED } from '../shared-chat-projection-gate';
 import { DesktopSharedChatPanelBridge } from '../WorktreeChatSurface';
 import type { ActiveComposerView, ActiveTranscriptView } from '../types';
 
 const mockHydrate = jest.fn();
-const mockProject = jest.fn((): never[] => []);
+type ProjectionInput = Parameters<typeof projectPersistedChatTranscript>[0];
+const mockProject = jest.fn<never[], [input: ProjectionInput]>(() => []);
 
 jest.mock('@canopy/app-state', () => ({
   useChatStore: (
@@ -32,8 +34,8 @@ jest.mock('@canopy/app-state', () => ({
   ): unknown => selector({ hydrate: mockHydrate }),
 }));
 jest.mock('@canopy/desktop-shared/portal/persisted-chat-projection', () => ({
-  projectPersistedChatTranscript: (...args: unknown[]): never[] =>
-    mockProject(...args),
+  projectPersistedChatTranscript: (input: ProjectionInput): never[] =>
+    mockProject(input),
 }));
 jest.mock('@canopy/ui-app/chat-panel', () => ({
   ChatPanel: ({
@@ -104,6 +106,7 @@ describe('DesktopSharedChatPanelBridge projection gate', () => {
           onStop={noop}
           renderTranscript={renderNothing}
           renderComposer={renderNothing}
+          hostQueuedMessageEditor={null}
         />,
       );
     });

@@ -13,7 +13,7 @@ describe('persisted organization memory normalization', () => {
           id: 'message-1',
           role: 'user',
           blocks: [{ type: 'text', text: 'question' }],
-          timestamp: '2026-07-13T00:00:00.000Z',
+          timestamp: 1783900800000,
         },
       ],
       memoryByMessageId: {

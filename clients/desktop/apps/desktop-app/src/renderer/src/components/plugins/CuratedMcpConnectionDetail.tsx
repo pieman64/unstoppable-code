@@ -315,7 +315,7 @@ function InstallSkillsButton({
   return (
     <Button
       variant="secondary"
-      size="control"
+      size="compact"
       data-testid="mcp-browse-detail-install-skills"
       disabled={pluginInstall.status === 'installing'}
       onClick={() => void onInstall()}
@@ -971,7 +971,7 @@ function AppMcpConnectionDetail({
       : MCP_CONNECT_ONCE_FOR_HARNESSES;
   const connectAction = (variant: 'primary' | 'secondary'): JSX.Element => (
     <McpConnectActionButton
-      size="control"
+      size="compact"
       variant={variant}
       data-testid="mcp-browse-detail-add"
       serviceName={serviceName}
@@ -995,7 +995,7 @@ function AppMcpConnectionDetail({
   );
   const moveAction = (variant: 'primary' | 'secondary'): JSX.Element => (
     <McpConnectActionButton
-      size="control"
+      size="compact"
       variant={variant}
       data-testid="mcp-browse-detail-connect-account"
       serviceName={serviceName}
@@ -1044,7 +1044,7 @@ function AppMcpConnectionDetail({
         secondary={
           <>
             <PluginConfigurationButton
-              size="control"
+              size="compact"
               onConfigure={() => setEditorOpen(true)}
               disabled={saving || accountPending || managementBusy}
             />

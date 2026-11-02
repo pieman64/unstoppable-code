@@ -14,15 +14,21 @@ import {
   osNotificationSoundsForPlatform,
   resolveOsNotificationSoundForPlatform,
 } from '@canopy/desktop-shared/notification-sounds';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import { brandText } from '@/lib/brand';
 import { defaultInAppNotificationPlacement } from '@/lib/useInAppNotificationPlacement';
 import { pt } from '@/lib/platform-text';
 import { localPlatform } from '@/lib/local-platform';
 import { uiText } from '@/lib/ui-text';
-import { Button, Notice, ToggleSwitch } from '@canopy/ui-shared/components';
-import { SettingsRow, SettingsSelect, SettingsSubRow } from './SettingsLayout';
-import { SETTINGS_CHECK_INPUT_CLASS_NAME } from './settings-classes';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
+import {
+  Button,
+  Checkbox,
+  Notice,
+  SettingsSelect,
+  ToggleSwitch,
+  type SettingsSelectOption,
+} from '@canopy/ui-shared/components';
+import { SettingsRow, SettingsSubRow } from './SettingsLayout';
 import type {
   NotificationSettingsController,
   NotificationTestStatus,
@@ -76,8 +82,8 @@ const CATEGORY_ENTRIES: CategoryEntry[] = [
   },
   {
     key: 'pipeline',
-    label: 'Pipeline',
-    description: 'Pipeline completion and worktree lifecycle alerts',
+    label: WORKFLOW_ITEM_LABEL,
+    description: `${WORKFLOW_ITEM_LABEL} completion and worktree lifecycle alerts`,
   },
   {
     key: 'terminal',
@@ -106,12 +112,6 @@ interface PromotionalChildEntry {
  */
 const PROMOTIONAL_CHILD_ENTRIES: PromotionalChildEntry[] = [
   {
-    key: 'gettingStarted',
-    label: 'Getting started notifications',
-    description: 'At most one tip a day until you finish the setup checklist',
-    testId: 'notifications-toggle-promotional-getting-started',
-  },
-  {
     key: 'arbitrary',
     label: 'Other promotional notifications',
     description: 'Occasional product tips and offers',
@@ -119,11 +119,13 @@ const PROMOTIONAL_CHILD_ENTRIES: PromotionalChildEntry[] = [
   },
 ];
 
-const HOUR_OPTIONS = Array.from({ length: 24 }, (_unused, hour) => (
-  <option key={hour} value={hour}>
-    {`${String(hour).padStart(2, '0')}:00`}
-  </option>
-));
+const HOUR_OPTIONS: readonly SettingsSelectOption[] = Array.from(
+  { length: 24 },
+  (_unused, hour) => ({
+    value: String(hour),
+    label: `${String(hour).padStart(2, '0')}:00`,
+  }),
+);
 
 // Category, In-app, OS notification (checkbox + sound + test).
 const CATEGORY_GRID_COLUMNS = '1fr 3.5rem 15rem';
@@ -171,7 +173,6 @@ export function InAppNotificationRows({
 export function OsNotificationRows({
   settings,
 }: NotificationRowsProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const {
     osPrefs,
     quietHours,
@@ -237,7 +238,7 @@ export function OsNotificationRows({
               description={
                 quietHours.startHour === quietHours.endHour
                   ? 'Start and end are the same, so no quiet time applies. Pick different hours.'
-                  : 'Holds promotional notifications only. Agent and pipeline alerts still come through.'
+                  : 'Holds promotional notifications only. Agent and workflow alerts still come through.'
               }
               control={
                 <>
@@ -250,17 +251,16 @@ export function OsNotificationRows({
                   <SettingsSelect
                     width="fit"
                     id="quiet-hours-start"
-                    value={quietHours.startHour}
-                    onChange={(event) => {
+                    options={HOUR_OPTIONS}
+                    value={String(quietHours.startHour)}
+                    onValueChange={(next) => {
                       void persistQuietHours({
                         ...quietHours,
-                        startHour: Number(event.target.value),
+                        startHour: Number(next),
                       });
                     }}
                     data-testid="notifications-quiet-hours-start"
-                  >
-                    {HOUR_OPTIONS}
-                  </SettingsSelect>
+                  />
                   <label
                     htmlFor="quiet-hours-end"
                     className="text-xs fg-secondary"
@@ -270,17 +270,16 @@ export function OsNotificationRows({
                   <SettingsSelect
                     width="fit"
                     id="quiet-hours-end"
-                    value={quietHours.endHour}
-                    onChange={(event) => {
+                    options={HOUR_OPTIONS}
+                    value={String(quietHours.endHour)}
+                    onValueChange={(next) => {
                       void persistQuietHours({
                         ...quietHours,
-                        endHour: Number(event.target.value),
+                        endHour: Number(next),
                       });
                     }}
                     data-testid="notifications-quiet-hours-end"
-                  >
-                    {HOUR_OPTIONS}
-                  </SettingsSelect>
+                  />
                 </>
               }
             />
@@ -310,7 +309,7 @@ export function OsNotificationRows({
         description={pt(uiText.notifications.permissionHelper)}
         control={
           <Button
-            size={settingsButtonSize}
+            size="compact"
             variant="secondary"
             onClick={() => {
               void settings.handleTestNotification();
@@ -484,7 +483,6 @@ function CategoryMatrixRow({
   onSoundChange,
   onTest,
 }: CategoryMatrixRowProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   return (
     <div
       className="grid items-center gap-x-4"
@@ -495,9 +493,7 @@ function CategoryMatrixRow({
         <span className="text-xs fg-secondary">{entry.description}</span>
       </div>
       <div className="flex justify-center">
-        <input
-          type="checkbox"
-          className={SETTINGS_CHECK_INPUT_CLASS_NAME}
+        <Checkbox
           checked={inAppChecked}
           disabled={inAppDisabled}
           onChange={(e) => onInAppToggle(e.target.checked)}
@@ -506,9 +502,7 @@ function CategoryMatrixRow({
         />
       </div>
       <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          className={SETTINGS_CHECK_INPUT_CLASS_NAME}
+        <Checkbox
           checked={osChecked}
           disabled={osDisabled}
           onChange={(e) => onOsToggle(e.target.checked)}
@@ -524,8 +518,8 @@ function CategoryMatrixRow({
           testId={`notifications-sound-${entry.key}`}
         />
         <Button
-          size={settingsButtonSize}
-          variant="ghost"
+          size="compact"
+          variant="secondary"
           onClick={onTest}
           disabled={osDisabled || !osChecked}
           aria-label={`Test ${entry.label} notification`}
@@ -564,7 +558,7 @@ function SoundSelect({
   // window that shows another computer the list is still this one's.
   const platform = localPlatform();
   const platformSounds = osNotificationSoundsForPlatform(platform);
-  const options: readonly string[] = includeDefault
+  const sounds: readonly string[] = includeDefault
     ? ['Default', ...platformSounds]
     : platformSounds;
   const shownValue = resolveOsNotificationSoundForPlatform(
@@ -575,17 +569,12 @@ function SoundSelect({
     <SettingsSelect
       id={id}
       width={width}
+      options={sounds.map((sound) => ({ value: sound, label: sound }))}
       value={shownValue}
       disabled={disabled}
-      onChange={(e) => onChange(e.target.value)}
+      onValueChange={onChange}
       data-testid={testId}
-    >
-      {options.map((option) => (
-        <option key={option} value={option}>
-          {option}
-        </option>
-      ))}
-    </SettingsSelect>
+    />
   );
 }
 
@@ -633,22 +622,19 @@ function PlacementSelect({
   return (
     <SettingsSelect
       id={id}
+      options={IN_APP_NOTIFICATION_PLACEMENTS.map((option) => ({
+        value: option,
+        label: PLACEMENT_LABELS[option],
+      }))}
       value={value}
       disabled={disabled}
-      onChange={(e) => {
-        const nextValue = e.target.value;
+      onValueChange={(nextValue) => {
         if (isInAppNotificationPlacementValue(nextValue)) {
           onChange(nextValue);
         }
       }}
       data-testid={testId}
-    >
-      {IN_APP_NOTIFICATION_PLACEMENTS.map((option) => (
-        <option key={option} value={option}>
-          {PLACEMENT_LABELS[option]}
-        </option>
-      ))}
-    </SettingsSelect>
+    />
   );
 }
 

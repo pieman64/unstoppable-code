@@ -1,22 +1,39 @@
+import { isNativeOpenCodeSelection } from '@canopy/desktop-shared/lib/chat-model-selection';
+import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import {
   getEffectiveModelContextWindow,
   getListedModelContextWindow,
   type ChatModel,
+  type ModelHarness,
   type ChatTabUsage,
 } from '@canopy/desktop-shared/types';
+
+/** A managed OpenCode choice uses its route capacity, independently of the model source. */
+function effectiveContextWindow(
+  model: ChatModel,
+  aiCreditsRouted: boolean,
+  executionHarness?: ModelHarness,
+): number | undefined {
+  if (executionHarness === 'opencode' && !isNativeOpenCodeSelection(model)) {
+    return resolveGatewayModelEntry(model)?.contextWindow;
+  }
+  return getEffectiveModelContextWindow(model, aiCreditsRouted);
+}
 
 export function normalizePersistedUsage(
   usage: ChatTabUsage | undefined,
   model: ChatModel | undefined,
   aiCreditsRouted = false,
+  executionHarness?: ModelHarness,
 ): ChatTabUsage | undefined {
   if (!usage || !model) {
     return usage;
   }
 
-  const configuredContextWindow = getEffectiveModelContextWindow(
+  const configuredContextWindow = effectiveContextWindow(
     model,
     aiCreditsRouted,
+    executionHarness,
   );
   if (
     typeof configuredContextWindow !== 'number' ||
@@ -39,11 +56,16 @@ export function normalizePersistedUsage(
 function startingContextWindow(
   model: ChatModel,
   aiCreditsRouted: boolean,
+  executionHarness?: ModelHarness,
 ): number | undefined {
-  return (
-    getEffectiveModelContextWindow(model, aiCreditsRouted) ??
-    getListedModelContextWindow(model)
+  const configured = effectiveContextWindow(
+    model,
+    aiCreditsRouted,
+    executionHarness,
   );
+  if (executionHarness === 'opencode' && !isNativeOpenCodeSelection(model))
+    return configured;
+  return configured ?? getListedModelContextWindow(model);
 }
 
 /**
@@ -59,11 +81,16 @@ function startingContextWindow(
 export function createSeededTabUsage(
   model: ChatModel | undefined,
   aiCreditsRouted = false,
+  executionHarness?: ModelHarness,
 ): ChatTabUsage | undefined {
   if (!model) {
     return undefined;
   }
-  const contextWindow = startingContextWindow(model, aiCreditsRouted);
+  const contextWindow = startingContextWindow(
+    model,
+    aiCreditsRouted,
+    executionHarness,
+  );
   if (typeof contextWindow !== 'number' || contextWindow <= 0) {
     return undefined;
   }
@@ -96,11 +123,16 @@ export function resolveTabUsageForModel(
   usage: ChatTabUsage | undefined,
   model: ChatModel,
   aiCreditsRouted = false,
+  executionHarness?: ModelHarness,
 ): ChatTabUsage | undefined {
   if (!usage) {
-    return createSeededTabUsage(model, aiCreditsRouted);
+    return createSeededTabUsage(model, aiCreditsRouted, executionHarness);
   }
-  const configuredContextWindow = startingContextWindow(model, aiCreditsRouted);
+  const configuredContextWindow = startingContextWindow(
+    model,
+    aiCreditsRouted,
+    executionHarness,
+  );
   const contextWindow =
     typeof configuredContextWindow === 'number' && configuredContextWindow > 0
       ? configuredContextWindow

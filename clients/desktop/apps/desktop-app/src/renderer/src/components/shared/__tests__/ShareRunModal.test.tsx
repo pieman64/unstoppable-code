@@ -282,8 +282,9 @@ describe('ShareRunModal', () => {
       storageAvailable: true,
       account: {
         id: 'guest-account-1',
+        name: 'Guest',
         email: 'guest@example.test',
-        role: 'MEMBER',
+        role: 'DEVELOPER',
       },
     });
 
@@ -475,6 +476,7 @@ describe('ShareRunModal', () => {
         Promise.resolve({
           shareable: false,
           reason: 'blocked-by-org-billing',
+          auditRetentionDays: 7,
           blockedByOrganizationNames: ['Acme'],
         }),
     });
@@ -503,6 +505,7 @@ describe('ShareRunModal', () => {
         Promise.resolve({
           shareable: false,
           reason: 'blocked-by-org-billing',
+          auditRetentionDays: 7,
           blockedByOrganizationNames: ['Acme', 'Initech'],
         }),
     });

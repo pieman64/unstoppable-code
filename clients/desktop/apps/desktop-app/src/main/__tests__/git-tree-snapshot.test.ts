@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -258,6 +259,33 @@ describe('git tree snapshots', () => {
         process.env.CANOPY_GIT_EXECUTABLE = previousGitExecutable;
       }
     }
+  });
+
+  it('captures a same-size edit that is racily clean in the copied index', async () => {
+    repoPath = createRepo();
+    // Minimal stat checks leave Git's racy-entry check, which compares entry
+    // times with the index file's own mtime, as the only way to see the edit.
+    runGit(repoPath, ['config', 'core.trustctime', 'false']);
+    runGit(repoPath, ['config', 'core.checkStat', 'minimal']);
+    const trackedPath = join(repoPath, 'tracked.txt');
+    const repoIndexPath = join(repoPath, '.git', 'index');
+    const sameTick = new Date('2000-01-01T00:00:00.000Z');
+    writeFileSync(trackedPath, 'original\n', 'utf8');
+    utimesSync(trackedPath, sameTick, sameTick);
+    runGit(repoPath, ['add', 'tracked.txt']);
+    runGit(repoPath, ['commit', '-m', 'initial']);
+    // The edit lands in the same timestamp tick as the last index write.
+    utimesSync(repoIndexPath, sameTick, sameTick);
+    writeFileSync(trackedPath, 'modified\n', 'utf8');
+    utimesSync(trackedPath, sameTick, sameTick);
+    const indexBefore = readFileSync(repoIndexPath);
+
+    const snapshotTree = await captureWorkingTreeSha(repoPath);
+
+    expect(
+      runGit(repoPath, ['cat-file', 'blob', `${snapshotTree}:tracked.txt`]),
+    ).toBe('modified');
+    expect(readFileSync(repoIndexPath)).toEqual(indexBefore);
   });
 
   it('captures conflict markers without modifying the live unmerged index', async () => {

@@ -200,6 +200,8 @@ describe('openSharedContainerInOwningContext', () => {
         containerId: CONTAINER_ID,
         organizationId: ORG_A,
         access: 'direct',
+        // The listing's type is main's acceptance telemetry hint.
+        containerType: 'CODE_WORKTREE',
       }),
     );
     expect(openContainer).not.toHaveBeenCalled();

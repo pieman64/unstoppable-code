@@ -187,6 +187,9 @@ function changedFileActionTarget(
 interface ChangedFilesSectionProps {
   uncommitted: ChangedFileInfo[];
   committed: ChangedFileInfo[];
+  /** Stable reveal-budget scope for the shared Changed files list. */
+  workspaceLocalId?: string;
+  worktreeLocalId?: string;
   onFileClick?: (file: ChangedFileInfo, source: FileDiffSource) => void;
   onRevertFile?: (file: ChangedFileInfo) => void;
   onReviewChanges?: () => void;
@@ -254,6 +257,8 @@ function useChangedFilesFilterChrome(
 export function ChangedFilesSection({
   uncommitted,
   committed,
+  workspaceLocalId,
+  worktreeLocalId,
   onFileClick,
   onRevertFile,
   onReviewChanges,
@@ -265,15 +270,23 @@ export function ChangedFilesSection({
     committed,
   );
   const headerChrome = getChangedFilesHeaderChrome(filter);
-  const changedFiles = toPortalChangedFiles(
-    {
-      uncommitted: filter.visibleUncommitted,
-      committed: filter.visibleCommitted,
-    },
-    // Satisfies the PortalChangedFiles shape only; never read, because this
-    // caller supplies onFileClick, which replaces the onSelectFile path that
-    // consumes worktreeLocalId.
-    'native-standalone',
+  const scope = useMemo(
+    () => ({
+      workspaceLocalId: workspaceLocalId ?? 'native-standalone',
+      worktreeLocalId: worktreeLocalId ?? 'native-standalone',
+    }),
+    [workspaceLocalId, worktreeLocalId],
+  );
+  const changedFiles = useMemo(
+    () =>
+      toPortalChangedFiles(
+        {
+          uncommitted: filter.visibleUncommitted,
+          committed: filter.visibleCommitted,
+        },
+        scope.worktreeLocalId,
+      ),
+    [filter.visibleCommitted, filter.visibleUncommitted, scope],
   );
 
   return (
@@ -314,6 +327,8 @@ export function ChangedFilesSection({
           canRevert={onRevertFile !== undefined}
           emptyState={null}
           scrollable={chrome !== 'frameless'}
+          workspaceLocalId={scope.workspaceLocalId}
+          worktreeLocalId={scope.worktreeLocalId}
           onFileClick={
             onFileClick
               ? (row): void => {
@@ -621,17 +636,27 @@ export function useChangedFilesSectionHostModel({
     changedFiles.uncommitted,
     changedFiles.committed,
   );
-  const portalChangedFiles = toPortalChangedFiles(
-    {
-      uncommitted: filter.visibleUncommitted,
-      committed: filter.visibleCommitted,
-    },
-    worktreeId,
+  const scope = useMemo(
+    () => ({ workspaceLocalId: projectId, worktreeLocalId: worktreeId }),
+    [projectId, worktreeId],
+  );
+  const portalChangedFiles = useMemo(
+    () =>
+      toPortalChangedFiles(
+        {
+          uncommitted: filter.visibleUncommitted,
+          committed: filter.visibleCommitted,
+        },
+        scope.worktreeLocalId,
+      ),
+    [filter.visibleCommitted, filter.visibleUncommitted, scope],
   );
   const total = filter.totalCount;
 
   return {
     changedFiles: portalChangedFiles,
+    workspaceLocalId: scope.workspaceLocalId,
+    worktreeLocalId: scope.worktreeLocalId,
     canRevert: !readOnly,
     emptyState: null,
     // In a standalone (frameless) activity-card panel the PanelSection body

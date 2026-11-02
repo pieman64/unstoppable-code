@@ -43,11 +43,16 @@ import {
   isFileTreeSetSearchDetail,
 } from '@/lib/fileTreeSearchEvents';
 import {
+  APP_MANAGED_ROOTS_NODE_ID,
+  APP_MANAGED_ROOTS_TREE_PATH,
   buildFilteredFileTree,
   getAutoExpandRepoPath,
   getDirectoryTreePath,
   getRepoTreePath,
+  isCoworkWorkspaceFileTreeRoot,
+  isVisibleExpandedTreePath,
   normalizeFileTreeSearchQuery,
+  partitionFileTreeRoots,
   shouldFetchFilesTreeDirectory,
   shouldFetchFilesTreeIndex,
   shouldFetchFilesTreeRoots,
@@ -57,9 +62,11 @@ import {
 } from './files-tree-tab-state';
 import { FileTypeIcon } from '@/components/shared/file-icons';
 import {
+  FileRootGroupRow,
   FileTreeRow,
   FilesTreeRefreshButton,
 } from '@canopy/ui-shared/components';
+import { brandText } from '@/lib/brand';
 import { Tooltip } from '@canopy/ui-shared';
 import { FolderIcon } from '@canopy/ui-shared/icons';
 // Search/close glyphs come from the canonical app icon API (the same
@@ -92,29 +99,10 @@ import {
   startPagesEqual,
 } from '@/lib/start-page/project-start-page';
 import { saveStartPageFromAction } from '@/lib/start-page/save-start-page';
+import { Button } from '@canopy/ui-shared/components';
 
 const EMPTY_EXPANDED_PATHS = new Set<string>();
 const DRAG_AUTO_EXPAND_DELAY_MS = 500;
-
-function isVisibleExpandedTreePath(
-  treePath: string,
-  expandedPaths: ReadonlySet<string>,
-): boolean {
-  const separatorIndex = treePath.indexOf('/');
-  const rootTreePath =
-    separatorIndex === -1 ? treePath : treePath.slice(0, separatorIndex);
-  if (!rootTreePath.startsWith('repo:') || !expandedPaths.has(rootTreePath)) {
-    return false;
-  }
-  if (separatorIndex === -1) return true;
-  const repoId = rootTreePath.slice('repo:'.length);
-  const segments = treePath.slice(separatorIndex + 1).split('/');
-  return segments.every((_segment, index) =>
-    expandedPaths.has(
-      getDirectoryTreePath(repoId, segments.slice(0, index + 1).join('/')),
-    ),
-  );
-}
 
 type ExplorerNode = FileTreeActionNode;
 
@@ -212,6 +200,9 @@ function resolveFileTreeTarget(
   if (!match) return null;
 
   const expandedPaths = new Set<string>([getRepoTreePath(match.root)]);
+  if (partitionFileTreeRoots(roots).appManaged.includes(match.root)) {
+    expandedPaths.add(APP_MANAGED_ROOTS_TREE_PATH);
+  }
   const pathSegments = match.relativePath.split('/').filter(Boolean);
   const directorySegments =
     kind === 'directory' ? pathSegments : pathSegments.slice(0, -1);
@@ -434,10 +425,13 @@ interface FolderRowProps {
   root?: FileTreeRoot;
   repoCount?: number;
   relativePath?: string;
+  /** Mask the label in session replays, e.g. for a project title. */
+  replayMaskLabel?: boolean;
 }
 
 function FolderRow({
   label,
+  replayMaskLabel,
   depth,
   expanded,
   isRepo,
@@ -534,6 +528,7 @@ function FolderRow({
   return (
     <FileTreeRow
       label={label}
+      replayMaskLabel={replayMaskLabel}
       depth={depth}
       isDirectory
       expanded={expanded}
@@ -578,7 +573,7 @@ function FolderRow({
             <button
               type="button"
               data-testid="files-tree-row-open-in-file-manager"
-              className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
+              className="focus-ring rounded p-1 fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary"
               aria-label={pt(uiText.fileManager.openItem)}
               onClick={(event): void => {
                 event.preventDefault();
@@ -711,7 +706,7 @@ const FileNodeRow = memo(function FileNodeRow({
           <button
             type="button"
             data-testid="files-tree-row-open-in-file-manager"
-            className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
+            className="focus-ring rounded p-1 fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary"
             aria-label={pt(uiText.fileManager.openItem)}
             onClick={(event): void => {
               event.preventDefault();
@@ -917,6 +912,7 @@ const RootRenderer = memo(function RootRenderer({
     <div>
       <FolderRow
         label={root.repoName}
+        replayMaskLabel={isCoworkWorkspaceFileTreeRoot(root)}
         depth={depth}
         expanded={isExpanded}
         isRepo
@@ -1310,6 +1306,12 @@ export function FilesTreeTab({
   const roots = useMemo<FileTreeRoot[]>(
     () => renderedRootsEntry?.data.roots ?? [],
     [renderedRootsEntry],
+  );
+  // The catalog stays flat; only its presentation groups app-owned roots.
+  const rootGroups = useMemo(() => partitionFileTreeRoots(roots), [roots]);
+  const groupedRootTreePaths = useMemo(
+    () => new Set(rootGroups.appManaged.map(getRepoTreePath)),
+    [rootGroups],
   );
   const currentFileTarget = useMemo(
     () => resolveFileTreeTarget(currentFilePath, roots, 'file'),
@@ -2075,7 +2077,14 @@ export function FilesTreeTab({
     // in place after the user clicks Refresh.
     if (searchActive) return;
     expandedPaths.forEach((treePath) => {
-      if (!isVisibleExpandedTreePath(treePath, expandedPaths)) return;
+      if (
+        !isVisibleExpandedTreePath(
+          treePath,
+          expandedPaths,
+          groupedRootTreePaths,
+        )
+      )
+        return;
       const repoMatch = /^repo:([^/]+)(?:\/(.*))?$/.exec(treePath);
       if (!repoMatch) return;
       const [, repoId, relativePath] = repoMatch;
@@ -2096,6 +2105,7 @@ export function FilesTreeTab({
     fetchFileTreeRoots,
     fetchFileTreeDirectory,
     expandedPaths,
+    groupedRootTreePaths,
   ]);
 
   const refreshVisibleDirectories = useCallback(async (): Promise<void> => {
@@ -2109,7 +2119,14 @@ export function FilesTreeTab({
     }
     if (!searchActive) {
       expandedPaths.forEach((treePath) => {
-        if (!isVisibleExpandedTreePath(treePath, expandedPaths)) return;
+        if (
+          !isVisibleExpandedTreePath(
+            treePath,
+            expandedPaths,
+            groupedRootTreePaths,
+          )
+        )
+          return;
         const repoMatch = /^repo:([^/]+)(?:\/(.*))?$/.exec(treePath);
         if (!repoMatch) return;
         requests.push(
@@ -2125,6 +2142,7 @@ export function FilesTreeTab({
     await Promise.all(requests);
   }, [
     expandedPaths,
+    groupedRootTreePaths,
     fetchFileTreeDirectory,
     fetchFileTreeIndex,
     fetchFileTreeRoots,
@@ -2666,6 +2684,69 @@ export function FilesTreeTab({
     [visibleRowIds],
   );
 
+  const focusAppManagedRootsGroup = useCallback((): void => {
+    setFocusedId(APP_MANAGED_ROOTS_NODE_ID);
+    setSelectedIds(new Set([APP_MANAGED_ROOTS_NODE_ID]));
+    setSelectionAnchorId(APP_MANAGED_ROOTS_NODE_ID);
+  }, []);
+
+  const keyDownAppManagedRootsGroup = useCallback(
+    (
+      expanded: boolean,
+      onToggle: () => void,
+      event: ReactKeyboardEvent<HTMLButtonElement>,
+    ): void => {
+      const id = APP_MANAGED_ROOTS_NODE_ID;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        focusVisibleRow(id, event.key === 'ArrowDown' ? 1 : -1);
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        // focusVisibleRow clamps, so a full-length offset lands on an end row.
+        const count = visibleRowIds().length;
+        focusVisibleRow(id, event.key === 'End' ? count : -count);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        if (expanded) focusVisibleRow(id, 1);
+        else onToggle();
+      } else if (event.key === 'ArrowLeft') {
+        if (!expanded) return;
+        event.preventDefault();
+        onToggle();
+      } else if (
+        event.key === 'Enter' ||
+        event.key === ' ' ||
+        event.key === 'Spacebar'
+      ) {
+        event.preventDefault();
+        onToggle();
+      }
+    },
+    [focusVisibleRow, visibleRowIds],
+  );
+
+  const handleToggleAppManagedRoots = useCallback((): void => {
+    // Collapsing hides the managed rows; keep the roving focus on a mounted
+    // row so the tree stays reachable from the keyboard.
+    const managedNodePrefixes = rootGroups.appManaged.map(
+      (root) => `${encodeURIComponent(root.repoId)}:`,
+    );
+    if (
+      expandedPaths.has(APP_MANAGED_ROOTS_TREE_PATH) &&
+      focusedId !== null &&
+      managedNodePrefixes.some((prefix) => focusedId.startsWith(prefix))
+    ) {
+      focusAppManagedRootsGroup();
+    }
+    handleTogglePath(APP_MANAGED_ROOTS_TREE_PATH);
+  }, [
+    expandedPaths,
+    focusAppManagedRootsGroup,
+    focusedId,
+    handleTogglePath,
+    rootGroups,
+  ]);
+
   const keyDownNode = useCallback(
     (
       node: ExplorerNode,
@@ -2706,6 +2787,17 @@ export function FilesTreeTab({
         if (expanded) {
           event.preventDefault();
           event.currentTarget.click();
+        } else if (
+          node.relativePath === '' &&
+          rootGroups.appManaged.some((root) => root.repoId === node.root.repoId)
+        ) {
+          event.preventDefault();
+          hostRef.current
+            ?.querySelector<HTMLElement>(
+              `[data-file-tree-id="${APP_MANAGED_ROOTS_NODE_ID}"]`,
+            )
+            ?.focus();
+          focusAppManagedRootsGroup();
         }
         return;
       }
@@ -2782,6 +2874,8 @@ export function FilesTreeTab({
       beginEditor,
       clipboard,
       focusVisibleRow,
+      focusAppManagedRootsGroup,
+      rootGroups,
       readOnly,
       selectedNodesFor,
       transferNodes,
@@ -3074,6 +3168,86 @@ export function FilesTreeTab({
     [roots],
   );
 
+  const filteredPrimaryEntries = filteredResults.entries.filter(
+    ({ root }) => !rootGroups.appManaged.includes(root),
+  );
+  const filteredManagedEntries = filteredResults.entries.filter(({ root }) =>
+    rootGroups.appManaged.includes(root),
+  );
+  // Search reveals matches inside the group without touching its saved
+  // expansion; collapsing it here is temporary to the current query.
+  const filteredManagedExpanded = !collapsedSearchPaths.has(
+    APP_MANAGED_ROOTS_TREE_PATH,
+  );
+  const toggleFilteredManagedRoots = (): void => {
+    focusAppManagedRootsGroup();
+    handleToggleFilteredPath(APP_MANAGED_ROOTS_TREE_PATH);
+  };
+  const renderFilteredRoot = (
+    {
+      root,
+      nodes,
+    }: { root: FileTreeRoot; nodes: readonly FilteredFileTreeNode[] },
+    depth: number,
+  ): JSX.Element => {
+    const treePath = getRepoTreePath(root);
+    const isExpanded = !collapsedSearchPaths.has(treePath);
+    return (
+      <div key={treePath}>
+        <FolderRow
+          label={root.repoName}
+          replayMaskLabel={isCoworkWorkspaceFileTreeRoot(root)}
+          depth={depth}
+          expanded={isExpanded}
+          isRepo
+          onToggle={() => handleToggleFilteredPath(treePath)}
+          copyPath="."
+          absolutePath={root.absolutePath}
+          relativePath=""
+          root={root}
+          repoCount={roots.length}
+          onActionMenu={handleOpenActionMenu}
+          onOpenInFileManager={handleOpenInFileManager}
+        />
+        {isExpanded && (
+          <FilteredNodes
+            nodes={nodes}
+            root={root}
+            repoCount={roots.length}
+            depth={depth + 1}
+            collapsedPaths={collapsedSearchPaths}
+            onToggle={handleToggleFilteredPath}
+            onActionMenu={handleOpenActionMenu}
+            onOpenInFileManager={handleOpenInFileManager}
+          />
+        )}
+      </div>
+    );
+  };
+  const managedRootsExpanded = expandedPaths.has(APP_MANAGED_ROOTS_TREE_PATH);
+  const toggleManagedRoots = (): void => {
+    focusAppManagedRootsGroup();
+    handleToggleAppManagedRoots();
+  };
+  const renderRoot = (
+    root: FileTreeRoot,
+    depth: number,
+    scope: { projectId: string; worktreeId: string },
+  ): JSX.Element => (
+    <RootRenderer
+      key={getRepoTreePath(root)}
+      projectId={scope.projectId}
+      worktreeId={scope.worktreeId}
+      root={root}
+      repoCount={roots.length}
+      depth={depth}
+      expandedPaths={expandedPaths}
+      onToggle={handleTogglePath}
+      onActionMenu={handleOpenActionMenu}
+      onOpenInFileManager={handleOpenInFileManager}
+    />
+  );
+
   let body: JSX.Element;
   if (!projectId || !worktreeId) {
     body = (
@@ -3118,40 +3292,31 @@ export function FilesTreeTab({
     } else {
       body = (
         <>
-          {filteredResults.entries.map(({ root, nodes }) => {
-            const treePath = getRepoTreePath(root);
-            const isExpanded = !collapsedSearchPaths.has(treePath);
-            return (
-              <div key={treePath}>
-                <FolderRow
-                  label={root.repoName}
-                  depth={0}
-                  expanded={isExpanded}
-                  isRepo
-                  onToggle={() => handleToggleFilteredPath(treePath)}
-                  copyPath="."
-                  absolutePath={root.absolutePath}
-                  relativePath=""
-                  root={root}
-                  repoCount={roots.length}
-                  onActionMenu={handleOpenActionMenu}
-                  onOpenInFileManager={handleOpenInFileManager}
-                />
-                {isExpanded && (
-                  <FilteredNodes
-                    nodes={nodes}
-                    root={root}
-                    repoCount={roots.length}
-                    depth={1}
-                    collapsedPaths={collapsedSearchPaths}
-                    onToggle={handleToggleFilteredPath}
-                    onActionMenu={handleOpenActionMenu}
-                    onOpenInFileManager={handleOpenInFileManager}
-                  />
+          {filteredPrimaryEntries.map((entry) => renderFilteredRoot(entry, 0))}
+          {filteredManagedEntries.length > 0 && (
+            <div>
+              <FileRootGroupRow
+                label={brandText.appName}
+                expanded={filteredManagedExpanded}
+                onToggle={toggleFilteredManagedRoots}
+                nodeId={APP_MANAGED_ROOTS_NODE_ID}
+                selected={selectedIds.has(APP_MANAGED_ROOTS_NODE_ID)}
+                tabIndex={focusedId === APP_MANAGED_ROOTS_NODE_ID ? 0 : -1}
+                onKeyDown={(event): void =>
+                  keyDownAppManagedRootsGroup(
+                    filteredManagedExpanded,
+                    toggleFilteredManagedRoots,
+                    event,
+                  )
+                }
+                dataTestId="files-tree-root-group"
+              />
+              {filteredManagedExpanded &&
+                filteredManagedEntries.map((entry) =>
+                  renderFilteredRoot(entry, 1),
                 )}
-              </div>
-            );
-          })}
+            </div>
+          )}
           {filteredResults.shownCount < filteredResults.matchCount && (
             <div
               className="px-3 py-2 text-3xs fg-secondary"
@@ -3189,22 +3354,32 @@ export function FilesTreeTab({
       </div>
     );
   } else {
+    const scope = { projectId, worktreeId };
     body = (
       <>
-        {roots.map((root) => (
-          <RootRenderer
-            key={getRepoTreePath(root)}
-            projectId={projectId}
-            worktreeId={worktreeId}
-            root={root}
-            repoCount={roots.length}
-            depth={0}
-            expandedPaths={expandedPaths}
-            onToggle={handleTogglePath}
-            onActionMenu={handleOpenActionMenu}
-            onOpenInFileManager={handleOpenInFileManager}
-          />
-        ))}
+        {rootGroups.primary.map((root) => renderRoot(root, 0, scope))}
+        {rootGroups.appManaged.length > 0 && (
+          <div>
+            <FileRootGroupRow
+              label={brandText.appName}
+              expanded={managedRootsExpanded}
+              onToggle={toggleManagedRoots}
+              nodeId={APP_MANAGED_ROOTS_NODE_ID}
+              selected={selectedIds.has(APP_MANAGED_ROOTS_NODE_ID)}
+              tabIndex={focusedId === APP_MANAGED_ROOTS_NODE_ID ? 0 : -1}
+              onKeyDown={(event): void =>
+                keyDownAppManagedRootsGroup(
+                  managedRootsExpanded,
+                  handleToggleAppManagedRoots,
+                  event,
+                )
+              }
+              dataTestId="files-tree-root-group"
+            />
+            {managedRootsExpanded &&
+              rootGroups.appManaged.map((root) => renderRoot(root, 1, scope))}
+          </div>
+        )}
       </>
     );
   }
@@ -3249,55 +3424,57 @@ export function FilesTreeTab({
           <span className="text-3xs font-medium fg-secondary">Files</span>
           <div className="flex items-center gap-0.5">
             <Tooltip label="New file…">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 onClick={() => handleToolbarCreate('create-file')}
                 disabled={!projectId || !worktreeId || roots.length === 0}
                 data-testid="files-tree-new-file"
-                className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
                 aria-label="New file…"
               >
                 <PlusIcon className="h-3 w-3" />
-              </button>
+              </Button>
             </Tooltip>
             <Tooltip label="New folder…">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 onClick={() => handleToolbarCreate('create-directory')}
                 disabled={!projectId || !worktreeId || roots.length === 0}
                 data-testid="files-tree-new-folder"
-                className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
                 aria-label="New folder…"
               >
                 <FolderPlusIcon className="h-3 w-3" />
-              </button>
+              </Button>
             </Tooltip>
             <Tooltip label="Search files">
-              <button
-                type="button"
+              <Button
+                variant="ghost-quiet"
+                size="compact"
+                iconOnly
                 onClick={handleToggleSearch}
                 data-testid="files-tree-search-toggle"
                 aria-expanded={searchOpen}
-                className={`focus-ring rounded p-1 transition hover:bg-fg-primary/[0.08] hover:fg-primary ${
-                  searchOpen ? 'fg-primary' : 'fg-secondary'
-                }`}
                 aria-label="Search files"
               >
                 <SearchIcon className="h-3 w-3" />
-              </button>
+              </Button>
             </Tooltip>
             {currentFilePath && (
               <Tooltip label="Jump to file">
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
                   onClick={revealCurrentFile}
                   disabled={!currentFileTarget}
                   data-testid="files-tree-jump-to-file"
-                  className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
                   aria-label="Jump to file"
                 >
                   <FocusSquareIcon className="h-3 w-3" />
-                </button>
+                </Button>
               </Tooltip>
             )}
             <FilesTreeRefreshButton
@@ -3308,16 +3485,17 @@ export function FilesTreeTab({
               showTooltip={false}
             />
             <Tooltip label="Collapse all">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 onClick={handleCollapseAll}
                 disabled={!projectId || !worktreeId || expandedPaths.size === 0}
                 data-testid="files-tree-collapse-all"
-                className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
                 aria-label="Collapse all"
               >
                 <ChevronUp className="h-3 w-3" />
-              </button>
+              </Button>
             </Tooltip>
           </div>
         </div>
@@ -3345,22 +3523,23 @@ export function FilesTreeTab({
                 type="button"
                 onClick={() => setSearchQuery('')}
                 data-testid="files-tree-search-clear"
-                className="shrink-0 rounded-sm p-0.5 fg-secondary transition hover:fg-primary"
+                className="shrink-0 rounded-sm p-0.5 fg-secondary transition-colors hover:fg-primary"
                 aria-label="Clear file filter"
               >
                 <CloseIcon className="h-3 w-3" />
               </button>
             )}
           </div>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={handleCloseSearch}
             data-testid="files-tree-search-close"
-            className="focus-ring shrink-0 rounded p-1 fg-secondary transition hover:fg-primary"
             aria-label="Close file search"
           >
             <CloseIcon className="h-3 w-3" />
-          </button>
+          </Button>
         </div>
       )}
       {!inlineEditor && mutationError && (

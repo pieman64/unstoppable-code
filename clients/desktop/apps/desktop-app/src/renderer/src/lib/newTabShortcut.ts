@@ -18,8 +18,6 @@ import { requestTerminalSpawn } from '@/lib/terminalSpawnRequests';
 import { registerPendingBrowserActivation } from '@/lib/panels/browser-panel-activation';
 import { browserPanelIdFor } from '@/lib/panels/browser-panel-identity';
 import { ensureMinimalDestination } from '@/lib/panels/minimal-layout';
-import { refuseFullNewChatRow } from '@/lib/panels/chat-panel-sync';
-import { refuseFullTabRow } from '@/lib/panels/tab-row-limit';
 import {
   resolveNewTabSurface,
   type NewTabSurfaceKind,
@@ -109,10 +107,6 @@ async function createBrowserPanel(
   const groupId = minimal
     ? ensureMinimalDestination(worktreeKey, 'browser')
     : (getPanelLayoutViewModel(panelKey)?.activeGroupId ?? null);
-  // A full row refuses before a browser session is opened for it.
-  if (groupId !== null && refuseFullTabRow(destinationKey, groupId)) {
-    return;
-  }
   // Placed and focused at once; the session is created in the background.
   const opened = useBrowserStore.getState().openBrowser(projectId, worktreeId);
   if (opened === null) {
@@ -175,15 +169,6 @@ export function runNewTabShortcut(
     // to spawn (PTY spawn sizing is component-local — see
     // `terminalSpawnRequests`).
     const viewModel = getPanelLayoutViewModel(panelKey);
-    // The new terminal opens beside the focused one, in its row: a full row
-    // refuses before a session is spawned for it.
-    if (
-      viewModel !== null &&
-      viewModel.activeGroupId !== null &&
-      refuseFullTabRow(panelKey, viewModel.activeGroupId)
-    ) {
-      return surface;
-    }
     const source =
       params.layoutKey !== undefined &&
       viewModel !== null &&
@@ -213,9 +198,6 @@ export function runNewTabShortcut(
     return surface;
   }
 
-  // A full row refuses before the chat exists.
-  if (!refuseFullNewChatRow(worktreeKey)) {
-    createChatTab();
-  }
+  createChatTab();
   return surface;
 }

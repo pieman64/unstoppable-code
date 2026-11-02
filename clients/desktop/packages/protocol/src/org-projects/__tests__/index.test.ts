@@ -11,6 +11,7 @@ import {
   orgProjectPlaceholderLocalId,
   parseOrgProjectPlaceholderLocalId,
   type OrgProjectSummary,
+  type OrgProjectRepository,
 } from '../index';
 import type { WorkspaceContextOrganizationRole } from '../../workspace-context';
 
@@ -96,7 +97,7 @@ const summary: OrgProjectSummary = {
   capabilities: { administer: true, manageCloud: false, use: true },
   instance: null,
 };
-const repository = {
+const repository: OrgProjectRepository = {
   provider: 'github',
   host: 'github.com',
   owner: 'owner',
@@ -273,20 +274,19 @@ describe('organization project placeholders', () => {
   it('marks a project that does not run on this machine before anything else', (): void => {
     // A cloud project can never become ready locally, so no catalog or GitHub
     // condition should be able to describe it as something to set up here.
-    for (const overrides of [{ location: 'CLOUD' }, { kind: 'DOC' }] as const) {
-      expect(
-        deriveOrgProjectPlaceholderState({
-          snapshotError: null,
-          project: { ...summary, ...overrides },
-        }),
-      ).toBe('not-local');
-      expect(
-        deriveOrgProjectPlaceholderState({
-          snapshotError: 'offline',
-          project: { ...summary, ...overrides },
-        }),
-      ).toBe('not-local');
-    }
+    expect(
+      deriveOrgProjectPlaceholderState({
+        snapshotError: null,
+        project: { ...summary, location: 'CLOUD' },
+      }),
+    ).toBe('not-local');
+    expect(
+      deriveOrgProjectPlaceholderState({
+        snapshotError: 'offline',
+        project: { ...summary, location: 'CLOUD' },
+      }),
+    ).toBe('not-local');
+    expect(isOrgProjectSummary({ ...summary, kind: 'DOC' })).toBe(false);
   });
 
   it('gives snapshot and instance access states precedence over repository verification', (): void => {
@@ -373,5 +373,49 @@ describe('organization project placeholders', () => {
         project: { ...summary, kind: 'COWORK' },
       }),
     ).toBe('ready-to-set-up');
+  });
+});
+
+describe('versioned shared multi-repo setup (CAN-3571)', () => {
+  const repo = {
+    ...repository,
+    provider: 'github' as const,
+    verification: 'VERIFIED' as const,
+    host: 'github.com',
+    providerRepoId: '1',
+  };
+  const full: OrgProjectSummary = {
+    ...summary,
+    organizationId: 'org',
+    topology: 'multi-repo',
+    materializationVersion: 1,
+    repositories: [repo],
+    repository: repo,
+    repositoryCount: 1,
+    repositoriesComplete: true,
+  };
+  it('supports one-repository combinations with complete metadata', () => {
+    expect(isOrgProjectSummary(full)).toBe(true);
+    expect(isOrgProjectCatalogSetupSupported(full)).toBe(true);
+  });
+  it.each([
+    { materializationVersion: undefined },
+    { materializationVersion: 2 },
+    { repositoriesComplete: false },
+    { repositoryCount: 2 },
+    { repository: null },
+    { revision: 0 },
+    { memberOwned: true, visibility: 'private' as const },
+    { repositories: [repo, repo], repositoryCount: 2 },
+  ])(
+    'refuses incomplete, unknown, private, or contradictory metadata: %p',
+    (patch) => {
+      expect(isOrgProjectCatalogSetupSupported({ ...full, ...patch })).toBe(
+        false,
+      );
+    },
+  );
+  it('rejects known-version count contradictions at the wire boundary', () => {
+    expect(isOrgProjectSummary({ ...full, repositoryCount: 4 })).toBe(false);
   });
 });

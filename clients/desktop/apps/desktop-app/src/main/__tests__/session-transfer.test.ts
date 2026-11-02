@@ -100,14 +100,20 @@ jest.mock('../ipc/register', () => ({
 
 const loadCanopyCloudAccountMock = jest.fn();
 jest.mock('../lib/canopy-cloud-account-store', () => ({
-  loadCanopyCloudAccount: loadCanopyCloudAccountMock,
+  get loadCanopyCloudAccount() {
+    return loadCanopyCloudAccountMock;
+  },
   subscribeCanopyCloudAccountChanges: jest.fn(() => jest.fn()),
 }));
 const getMcpServerStatusByCatalogIdMock = jest.fn();
 const getMcpServerStatusByNameMock = jest.fn();
 jest.mock('../mcp/connection-status', () => ({
-  getMcpServerStatusByCatalogId: getMcpServerStatusByCatalogIdMock,
-  getMcpServerStatusByName: getMcpServerStatusByNameMock,
+  get getMcpServerStatusByCatalogId() {
+    return getMcpServerStatusByCatalogIdMock;
+  },
+  get getMcpServerStatusByName() {
+    return getMcpServerStatusByNameMock;
+  },
 }));
 jest.mock('../canopy-cloud/config', () => ({
   getCanopyCloudBaseUrl: jest.fn(() => 'https://canopy.example.test'),
@@ -141,11 +147,21 @@ const downloadSessionExportBundleMock = jest.fn<
 >();
 const deleteSessionExportMock = jest.fn<Promise<void>, [string]>();
 jest.mock('../session-exports/canopy-server-client', () => ({
-  uploadSessionExport: uploadSessionExportMock,
-  listSessionExports: listSessionExportsMock,
-  getSessionExport: getSessionExportMock,
-  downloadSessionExportBundle: downloadSessionExportBundleMock,
-  deleteSessionExport: deleteSessionExportMock,
+  get uploadSessionExport() {
+    return uploadSessionExportMock;
+  },
+  get listSessionExports() {
+    return listSessionExportsMock;
+  },
+  get getSessionExport() {
+    return getSessionExportMock;
+  },
+  get downloadSessionExportBundle() {
+    return downloadSessionExportBundleMock;
+  },
+  get deleteSessionExport() {
+    return deleteSessionExportMock;
+  },
 }));
 
 import { getActiveChatIds } from '../agents/session-manager';
@@ -256,8 +272,12 @@ async function createRemoteClone(args: {
   return { remotePath, clonePath };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function requireRecord(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new Error('Expected an object');
   }
   return value;
@@ -273,7 +293,9 @@ async function readManifest(
   if (record.version !== 1 || !Array.isArray(record.repos)) {
     throw new Error('Expected a session manifest');
   }
-  return parsed;
+  // This test helper reads manifests produced by exportChatSession and checks
+  // their envelope before exposing the typed view to assertions.
+  return parsed as SessionExportManifest;
 }
 
 function hashBytes(bytes: Buffer): string {
@@ -316,6 +338,24 @@ function coworkWorkspace(args: { id: string; name: string }): SidebarItem {
 jest.setTimeout(60_000);
 
 describe('session transfer', () => {
+  it('exports stream children from old pages with exact full bodies', async () => {
+    const { portableFixture, portableRows, OLD_TEXT, BODY_TEXT } =
+      await import('./helpers/stream-portable-fixture');
+    const { backend } = await portableFixture(root);
+    jest
+      .mocked(readChatTranscript)
+      .mockImplementation(() => portableRows(backend));
+    const exported = await exportChatSession({
+      projectId: 'source-workspace',
+      worktreeId: 'source-worktree',
+      chatId: 'chat-source',
+    });
+    const bundle = await unpackUploadedExport(exported.exportId);
+    const text = await readFile(join(bundle, 'canopy-session.json'), 'utf8');
+    expect(text).toContain(JSON.stringify(OLD_TEXT).slice(1, -1));
+    expect(text).toContain(JSON.stringify(BODY_TEXT).slice(1, -1));
+    expect(text).not.toContain('transcriptStore');
+  });
   let root: string;
   let dataDir: string;
   let homeDir: string;
@@ -437,7 +477,11 @@ describe('session transfer', () => {
       providerType: 'claude',
       sdkSessionId: 'claude-session-1',
       selectedRepoId: 'source-workspace',
-      discovery: { commands: [], agents: [], skills: [] },
+      discovery: {
+        slashCommands: [],
+        mcpServers: [],
+        discoveredAt: '2026-07-16T10:00:00.000Z',
+      },
       autoArchive: true,
       claudeForkSessionOnNextSend: true,
     };
@@ -751,11 +795,14 @@ describe('session transfer', () => {
   ])('warns when a transferred MCP server $label', async ({ status }) => {
     getMcpServerStatusByCatalogIdMock.mockResolvedValue(status);
 
-    const resolved = await resolvePortableSessionSelectionsForTesting({
-      refs: [],
-      mcpServers: [{ name: 'Linear', catalogId: 'linear' }],
-      unresolved: [],
-    });
+    const resolved = await resolvePortableSessionSelectionsForTesting(
+      {
+        refs: [],
+        mcpServers: [{ name: 'Linear', catalogId: 'linear' }],
+        unresolved: [],
+      },
+      false,
+    );
 
     expect(resolved.readiness).toEqual([
       expect.objectContaining({

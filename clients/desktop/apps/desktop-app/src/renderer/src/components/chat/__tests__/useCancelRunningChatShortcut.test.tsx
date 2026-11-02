@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { act, createElement, StrictMode } from 'react';
+import { act, createElement, StrictMode, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useOverlayEscape } from '@canopy/ui-shared/components';
 import {
@@ -883,5 +883,120 @@ describe('useCancelRunningChatShortcut', () => {
 
     expect(handled).toBe(false);
     dialog.remove();
+  });
+
+  // Hand-rolled modals render `aria-modal="true"` without registering with
+  // `useOverlayEscape`, and a modal opened from the composer may leave focus
+  // in the composer or on `<body>`. The capture-phase shortcut must still let
+  // such a modal take Escape instead of arming underneath it.
+  describe('with a modal dialog in the document', () => {
+    let targetRoot: HTMLElement;
+    let input: HTMLInputElement;
+    let modal: HTMLDivElement;
+
+    beforeEach(() => {
+      targetRoot = document.createElement('section');
+      input = document.createElement('input');
+      targetRoot.append(input);
+      document.body.append(targetRoot);
+      modal = document.createElement('div');
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+    });
+
+    afterEach(() => {
+      modal.remove();
+      targetRoot.remove();
+    });
+
+    function stubModalVisibility(visible: boolean): void {
+      Object.defineProperty(modal, 'checkVisibility', {
+        configurable: true,
+        value: (): boolean => visible,
+      });
+    }
+
+    function renderScoped(onCancel: () => void): void {
+      renderHarness(true, onCancel, 'project/worktree/chat', true, undefined, {
+        current: targetRoot,
+      });
+    }
+
+    function expectDeferred(event: KeyboardEvent, onCancel: jest.Mock): void {
+      expect(useCancelShortcutConfirmationStore.getState().armedChatKey).toBe(
+        null,
+      );
+      expect(onCancel).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    }
+
+    function expectArmed(event: KeyboardEvent, onCancel: jest.Mock): void {
+      expect(useCancelShortcutConfirmationStore.getState().armedChatKey).toBe(
+        'project/worktree/chat',
+      );
+      expect(onCancel).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(true);
+    }
+
+    it('defers while the modal is open and focus is in the chat root', () => {
+      stubModalVisibility(true);
+      document.body.append(modal);
+      const onCancel = jest.fn();
+      renderScoped(onCancel);
+
+      expectDeferred(dispatchEscape(input), onCancel);
+    });
+
+    it('defers while the modal is open and nothing is focused', () => {
+      stubModalVisibility(true);
+      document.body.append(modal);
+      const onCancel = jest.fn();
+      renderScoped(onCancel);
+
+      expectDeferred(dispatchEscape(document.body), onCancel);
+    });
+
+    it('still arms when the only modal is not rendered', () => {
+      stubModalVisibility(false);
+      document.body.append(modal);
+      const onCancel = jest.fn();
+      renderScoped(onCancel);
+
+      expectArmed(dispatchEscape(input), onCancel);
+    });
+
+    it('still arms when the only dialog is non-modal', () => {
+      stubModalVisibility(true);
+      modal.setAttribute('aria-modal', 'false');
+      document.body.append(modal);
+      const onCancel = jest.fn();
+      renderScoped(onCancel);
+
+      expectArmed(dispatchEscape(input), onCancel);
+    });
+
+    it('still arms when the modal is open in another document', () => {
+      const otherDocument = document.implementation.createHTMLDocument();
+      const otherModal = otherDocument.createElement('div');
+      otherModal.setAttribute('aria-modal', 'true');
+      otherDocument.body.append(otherModal);
+      const onCancel = jest.fn();
+      renderScoped(onCancel);
+
+      expectArmed(dispatchEscape(input), onCancel);
+    });
+
+    // A modal that hosts the chat is the chat's container, not a layer above
+    // it. Escape from inside the composer is already deferred by the dialog
+    // target check, so the unparked-caret path is the one this pins.
+    it('still arms when the modal contains the chat root', () => {
+      stubModalVisibility(true);
+      modal.append(targetRoot);
+      document.body.append(modal);
+      const onCancel = jest.fn();
+      renderScoped(onCancel);
+
+      expectArmed(dispatchEscape(document.body), onCancel);
+    });
   });
 });

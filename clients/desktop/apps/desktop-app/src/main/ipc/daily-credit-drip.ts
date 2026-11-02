@@ -11,6 +11,11 @@ import {
   loadDailyCreditDrip,
   saveDailyCreditDrip,
 } from '../canopy-cloud/daily-credit-drip';
+import { loadCanopyCloudAccount } from '../lib/canopy-cloud-account-store';
+import {
+  captureDailyCreditGrantAccount,
+  recordDailyCreditGrantFromSave,
+} from '../lib/daily-credit-grant-telemetry';
 import { registerIpcHandler } from './register';
 
 /**
@@ -23,7 +28,8 @@ import { registerIpcHandler } from './register';
  * both directions: its 30-second cache would otherwise keep routing as if the
  * balance had not changed (e.g. as if a freshly opted-in user had no credits).
  * Clearing after a failed save is harmless and covers a PUT that committed but
- * whose response was lost.
+ * whose response was lost. A confirmed save also reports its grant outcome
+ * (CAN-4633); every save surface reaches this handler.
  */
 export async function handleSaveDailyCreditDrip(
   payload: unknown,
@@ -33,7 +39,11 @@ export async function handleSaveDailyCreditDrip(
     throw new Error('Invalid daily free credits payload: expected { enabled }');
   }
   try {
-    return await saveDailyCreditDrip(input);
+    await loadCanopyCloudAccount();
+    const grantAccount = captureDailyCreditGrantAccount();
+    const result = await saveDailyCreditDrip(input);
+    recordDailyCreditGrantFromSave(result, undefined, grantAccount);
+    return result;
   } finally {
     clearAiCreditsRoutingContextCache();
   }

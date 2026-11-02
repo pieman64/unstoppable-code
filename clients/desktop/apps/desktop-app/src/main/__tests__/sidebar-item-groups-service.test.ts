@@ -2,7 +2,15 @@ import { IdentifierValidationError } from '../lib/validation';
 import { dispatchSidebarItemGroupAction } from '../canopy-tools/sidebar-item-group-actions';
 import * as WorkspacePersistence from '../lib/workspace-persistence';
 import { serializeWorkspaceMutation } from '../lib/chat-project-operation-queue';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  writeFile,
+  rm,
+} from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type * as AtomicFile from '../lib/atomic-file';
@@ -56,6 +64,7 @@ import {
 import {
   readSidebarItemGroupsEnvelope,
   onSidebarItemGroupsChanged,
+  publishSidebarItemGroupsChanged,
 } from '../lib/sidebar-item-groups';
 import {
   createWorkEntry,
@@ -896,11 +905,13 @@ it.each(['code', 'cowork', 'advisor'] as const)(
           JSON.stringify({ version: 1, type: 'cowork' }),
         );
       await updateWorkEntryRegistry(workspaceId, () =>
-        ['a', 'b', 'c', 'd'].map((id) => ({
-          id,
-          title: id,
-          createdAt: '2026-10-07T00:00:00Z',
-        })),
+        Promise.resolve(
+          ['a', 'b', 'c', 'd'].map((id) => ({
+            id,
+            title: id,
+            createdAt: '2026-10-07T00:00:00Z',
+          })),
+        ),
       );
     }
     const readOrder = async (): Promise<string[]> =>
@@ -1064,10 +1075,12 @@ it.each(['code', 'cowork'] as const)(
           cwd: root,
         }),
       );
-      await updateWorkEntryRegistry(projectId, () => [
-        { id: 'a', title: 'First', createdAt: '2026-10-05T00:00:00Z' },
-        { id: 'b', title: 'Second', createdAt: '2026-10-05T00:00:00Z' },
-      ]);
+      await updateWorkEntryRegistry(projectId, () =>
+        Promise.resolve([
+          { id: 'a', title: 'First', createdAt: '2026-10-05T00:00:00Z' },
+          { id: 'b', title: 'Second', createdAt: '2026-10-05T00:00:00Z' },
+        ]),
+      );
     }
     const target = { projectId, worktreeId: 'a' };
     const created = await dispatchSidebarItemGroupAction(
@@ -1468,9 +1481,6 @@ it('detaching a child preserves membership and places it after its former comple
     row('d'),
   ]);
   const group = await service.create({ scope, itemId: 'a' });
-  await expect(service.create({ scope, itemId: 'b' })).rejects.toThrow(
-    'cannot be grouped',
-  );
   await updateWorkspaceWorktrees(scope.workspaceLocalId, (rows) =>
     rows.map((item) =>
       item.id === 'b' ? { ...item, branchGroupingOverride: 'ungroup' } : item,
@@ -1662,11 +1672,13 @@ it.each(['sidecar', 'registry'] as const)(
           return native.writeFileAtomically(path, data, options);
         });
     else
-      jest.mocked(renameWithRetry).mockImplementation(async (from, to) => {
-        enter();
-        await held;
-        return native.renameWithRetry(from, to);
-      });
+      jest
+        .mocked(renameWithRetry)
+        .mockImplementation(async (from, to, options) => {
+          enter();
+          await held;
+          return native.renameWithRetry(from, to, options);
+        });
     const creating = createWorkEntry('app-advisor', {
       id: 'entry-new',
       title: 'New',
@@ -1793,6 +1805,57 @@ it('root creation restores reused membership when its registry write fails', asy
   expect(await service.list(advisor)).toEqual([group]);
   await createWorkEntry('app-advisor');
   expect(await service.list(advisor)).toEqual([]);
+});
+
+it('grouped creation restores membership when its commit fence fails during a registry rename retry', async () => {
+  const advisor = { appAdvisor: true } as const;
+  await createWorkEntry('app-advisor', { id: 'empty' });
+  const group = await service.create({ scope: advisor, itemId: 'empty' });
+  const registryPath = getWorkspaceWorkEntriesFilePath('app-advisor');
+  const before = await readFile(registryPath, 'utf8');
+  const fs = jest.requireActual<typeof FsPromises>('node:fs/promises');
+  const originalRename = fs.rename;
+  let authorized = true;
+  let registryRenames = 0;
+  // Membership is written before the registry; authorization ends during the
+  // sharing-violation backoff, after the pre-rename fence passed.
+  const rename = jest
+    .spyOn(fs, 'rename')
+    .mockImplementation(async (from, to) => {
+      if (to === registryPath) {
+        registryRenames += 1;
+        if (registryRenames === 1) {
+          setImmediate(() => {
+            authorized = false;
+          });
+          throw Object.assign(new Error('sharing violation'), {
+            code: 'EBUSY',
+          });
+        }
+      }
+      return originalRename(from, to);
+    });
+  try {
+    await expect(
+      createWorkEntry('app-advisor', {
+        id: 'entry-new',
+        sidebarItemGroupId: group.id,
+        assertCanCommit: () => {
+          if (!authorized) throw new Error('unauthorized');
+        },
+      }),
+    ).rejects.toThrow('unauthorized');
+  } finally {
+    rename.mockRestore();
+  }
+  expect(registryRenames).toBe(1);
+  expect(await readFile(registryPath, 'utf8')).toBe(before);
+  expect(await service.list(advisor)).toEqual([group]);
+  expect(
+    (await readdir(dirname(registryPath))).filter((name) =>
+      name.endsWith('.tmp'),
+    ),
+  ).toEqual([]);
 });
 
 it.each(['cowork-default', 'group-cowork'])(
@@ -2230,31 +2293,78 @@ describe('named assignment color and typed refusals', () => {
     });
   });
 
-  it('types a stacked child worktree as not groupable', async () => {
-    const preferences = jest.requireActual<typeof PreferencesStore>(
-      '../lib/preferences-store',
-    ).DEFAULT_PREFERENCES;
-    jest
-      .mocked(readPreferencesFile)
-      .mockResolvedValue({ ...preferences, groupChildBranchesWithBase: true });
+  it.each([
+    [
+      'moveItem',
+      async (groupId: string): Promise<unknown> =>
+        service.moveItem({ scope, itemId: 'child', groupId }),
+    ],
+    [
+      'assignItemToNamedGroup',
+      async (): Promise<unknown> =>
+        service.assignItemToNamedGroup({
+          scope,
+          itemId: 'child',
+          name: 'Other',
+        }),
+    ],
+    [
+      'create',
+      async (): Promise<unknown> => service.create({ scope, itemId: 'child' }),
+    ],
+  ] as const)(
+    '%s unstacks a stacked child worktree from its base before grouping it',
+    async (method, attempt) => {
+      const preferences = jest.requireActual<typeof PreferencesStore>(
+        '../lib/preferences-store',
+      ).DEFAULT_PREFERENCES;
+      jest.mocked(readPreferencesFile).mockResolvedValue({
+        ...preferences,
+        groupChildBranchesWithBase: true,
+      });
+      await updateWorkspaceWorktrees(scope.workspaceLocalId, () => [
+        row('a'),
+        { ...row('child'), branchGroupingParentWorktreeId: 'a' },
+        { ...row('grandchild'), branchGroupingParentWorktreeId: 'child' },
+        row('b'),
+      ]);
+      const group = await service.create({ scope, itemId: 'b', name: 'Other' });
+
+      await attempt(group.id);
+
+      const rows = await readWorkspaceWorktrees(scope.workspaceLocalId);
+      // A created group stays where the child painted; a move joins the target.
+      const stacked: Array<[string, string | undefined]> = [
+        ['child', 'ungroup'],
+        ['grandchild', undefined],
+      ];
+      expect(
+        rows.map((item) => [item.id, item.branchGroupingOverride]),
+      ).toEqual(
+        method === 'create'
+          ? [['a', undefined], ...stacked, ['b', undefined]]
+          : [['a', undefined], ['b', undefined], ...stacked],
+      );
+      expect(
+        (await groups()).find((item) => item.memberIds.includes('child'))
+          ?.memberIds,
+      ).toEqual(method === 'create' ? ['child'] : ['b', 'child']);
+    },
+  );
+
+  it('still refuses to remove a stacked child from a group it is not in', async () => {
     await updateWorkspaceWorktrees(scope.workspaceLocalId, () => [
       row('a'),
       { ...row('child'), branchGroupingParentWorktreeId: 'a' },
-      row('b'),
     ]);
-    const group = await service.create({ scope, itemId: 'b', name: 'Other' });
-
-    for (const attempt of [
-      service.assignItemToNamedGroup({ scope, itemId: 'child', name: 'Docs' }),
-      service.moveItem({ scope, itemId: 'child', groupId: group.id }),
-    ]) {
-      const error = await attempt.catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(SidebarItemGroupRefusalError);
-      expect(error).toMatchObject({
-        code: 'item_not_groupable',
-        message: 'Sidebar item cannot be grouped',
-      });
-    }
+    const error = await service
+      .moveItem({ scope, itemId: 'child', groupId: null })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: 'item_not_groupable' });
+    expect(
+      (await readWorkspaceWorktrees(scope.workspaceLocalId))[1]
+        ?.branchGroupingOverride,
+    ).toBeUndefined();
   });
 
   it('types an unknown group id as group_not_found', async () => {
@@ -2276,3 +2386,519 @@ describe('named assignment color and typed refusals', () => {
     expect(await groups()).toEqual([]);
   });
 });
+
+// PR A characterizes the real owner queues/reconciliation with Jest's injected
+// nodeW5FileStore. It does not exercise a worker decision log or main restart.
+describe.each(['Work Entry', 'worktree'] as const)(
+  '%s owner-phase characterization',
+  (owner) => {
+    async function fixture(): Promise<{
+      workspaceId: string;
+      targetScope: Parameters<typeof service.list>[0];
+      group: SidebarItemGroup;
+      registryIds: () => Promise<string[]>;
+      registryPath: string;
+      sidecarPath: string;
+      registryBefore: string;
+      sidecarBefore: string;
+      create: () =>
+        | ReturnType<typeof createWorkEntry>
+        | ReturnType<typeof updateWorkspaceWorktrees>;
+      pin: () =>
+        | ReturnType<typeof updateWorkEntry>
+        | ReturnType<typeof updateWorkspaceWorktrees>;
+      noop: () =>
+        | ReturnType<typeof updateWorkEntryRegistry>
+        | ReturnType<typeof updateWorkspaceWorktrees>;
+      project: () => ReturnType<typeof projectSidebarItemGroups>;
+    }> {
+      const workEntries = owner === 'Work Entry';
+      const workspaceId = workEntries ? 'app-advisor' : scope.workspaceLocalId;
+      const targetScope = workEntries ? { appAdvisor: true as const } : scope;
+      if (workEntries) {
+        await updateWorkEntryRegistry(workspaceId, () =>
+          Promise.resolve(
+            ['a', 'b', 'c', 'd'].map((id) => ({
+              id,
+              title: id,
+              createdAt: '2026-10-04T00:00:00Z',
+            })),
+          ),
+        );
+      }
+      const group = await service.create({ scope: targetScope, itemId: 'a' });
+      const registryPath = workEntries
+        ? getWorkspaceWorkEntriesFilePath(workspaceId)
+        : getWorkspaceWorktreesFilePath(workspaceId);
+      const sidecarPath = getSidebarItemGroupsFilePath(workspaceId);
+      const registryIds = async (): Promise<string[]> =>
+        workEntries
+          ? (await readWorkEntriesFile(workspaceId)).entries.map(
+              (item) => item.id,
+            )
+          : (await readWorkspaceWorktrees(workspaceId)).map((item) => item.id);
+      expect(await registryIds()).toEqual(['a', 'b', 'c', 'd']);
+      return {
+        workspaceId,
+        targetScope,
+        group,
+        registryIds,
+        registryPath,
+        sidecarPath,
+        registryBefore: await readFile(registryPath, 'utf8'),
+        sidecarBefore: await readFile(sidecarPath, 'utf8'),
+        create: () =>
+          workEntries
+            ? createWorkEntry(workspaceId, {
+                id: 'new',
+                title: 'New',
+                sidebarItemGroupId: group.id,
+              })
+            : updateWorkspaceWorktrees(
+                workspaceId,
+                (rows) => [...rows, row('new')],
+                { sidebarItemGroupId: group.id, newItemId: 'new' },
+              ),
+        pin: () =>
+          workEntries
+            ? updateWorkEntry(workspaceId, 'a', { pinned: true })
+            : updateWorkspaceWorktrees(workspaceId, (rows) =>
+                rows.map((item) =>
+                  item.id === 'a' ? { ...item, pinned: true } : item,
+                ),
+              ),
+        noop: () =>
+          workEntries
+            ? updateWorkEntryRegistry(workspaceId, (rows) =>
+                Promise.resolve(rows),
+              )
+            : updateWorkspaceWorktrees(workspaceId, (rows) => rows),
+        project: async () =>
+          projectSidebarItemGroups(
+            targetScope,
+            workEntries
+              ? undefined
+              : {
+                  worktrees: await readWorkspaceWorktrees(workspaceId),
+                  groupChildBranchesWithBase: true,
+                },
+          ),
+      };
+    }
+
+    type Write = 'sidecar' | 'registry';
+    function probe(
+      state: Awaited<ReturnType<typeof fixture>>,
+      before: (target: Write) => void = () => undefined,
+      after: (target: Write) => void = () => undefined,
+    ): Write[] {
+      const native =
+        jest.requireActual<typeof AtomicFile>('../lib/atomic-file');
+      const writes: Write[] = [];
+      jest
+        .mocked(writeFileAtomically)
+        .mockImplementation(async (path, data, options) => {
+          const target =
+            path === state.sidecarPath
+              ? 'sidecar'
+              : path === state.registryPath
+                ? 'registry'
+                : undefined;
+          if (target) {
+            writes.push(target);
+            before(target);
+          }
+          await native.writeFileAtomically(path, data, options);
+          if (target) after(target);
+        });
+      jest
+        .mocked(renameWithRetry)
+        .mockImplementation(async (from, to, options) => {
+          if (to === state.registryPath) {
+            writes.push('registry');
+            before('registry');
+          }
+          await native.renameWithRetry(from, to, options);
+          if (to === state.registryPath) after('registry');
+        });
+      return writes;
+    }
+
+    afterEach(() => {
+      // Pending invalidation is workspace-scoped, not tied to the temp root.
+      publishSidebarItemGroupsChanged('app-advisor');
+      publishSidebarItemGroupsChanged(scope.workspaceLocalId);
+    });
+
+    it.each([
+      'success',
+      'prewrite refusal',
+      'prewrite installed then rejected',
+      'registry refusal',
+      'rollback refusal',
+    ] as const)('grouped creation: %s', async (failure) => {
+      const state = await fixture();
+      const primary = new Error('primary failure');
+      const rollback = new Error('rollback failure');
+      let sidecarWrites = 0;
+      const changed = jest.fn();
+      const writes = probe(
+        state,
+        (target) => {
+          if (target === 'sidecar') {
+            sidecarWrites += 1;
+            if (failure === 'prewrite refusal') throw primary;
+            if (sidecarWrites === 2 && failure === 'rollback refusal')
+              throw rollback;
+          } else if (
+            failure === 'registry refusal' ||
+            failure === 'rollback refusal'
+          ) {
+            throw primary;
+          }
+        },
+        (target) => {
+          expect(changed).not.toHaveBeenCalled();
+          // A rejected beforeWrite never arms rollback, even if it wrote bytes.
+          if (
+            target === 'sidecar' &&
+            failure === 'prewrite installed then rejected'
+          )
+            throw primary;
+        },
+      );
+      const unsubscribe = onSidebarItemGroupsChanged(changed);
+      try {
+        if (failure === 'success') await state.create();
+        else if (failure === 'rollback refusal') {
+          await expect(state.create()).rejects.toMatchObject({
+            message: 'Registry write and group rollback failed',
+            errors: [primary, rollback],
+          });
+        } else await expect(state.create()).rejects.toBe(primary);
+        expect(writes).toEqual(
+          failure.startsWith('prewrite')
+            ? ['sidecar']
+            : failure === 'success'
+              ? ['sidecar', 'registry']
+              : ['sidecar', 'registry', 'sidecar'],
+        );
+        const registry = await readFile(state.registryPath, 'utf8');
+        if (failure === 'success')
+          expect(registry).not.toBe(state.registryBefore);
+        else expect(registry).toBe(state.registryBefore);
+        const advanced =
+          failure === 'success' ||
+          failure === 'rollback refusal' ||
+          failure === 'prewrite installed then rejected';
+        if (advanced) {
+          expect(
+            await readSidebarItemGroupsEnvelope(state.workspaceId),
+          ).toEqual({
+            version: 1,
+            groups: [{ ...state.group, memberIds: ['a', 'new'] }],
+          });
+        } else
+          expect(await readFile(state.sidecarPath, 'utf8')).toBe(
+            state.sidecarBefore,
+          );
+        expect(changed.mock.calls).toEqual(
+          failure === 'success' ? [[state.workspaceId]] : [],
+        );
+        // Reading the projection hides a phantom; it does not repair disk.
+        expect(await state.project()).toEqual([
+          {
+            ...state.group,
+            memberIds: failure === 'success' ? ['a', 'new'] : ['a'],
+          },
+        ]);
+        if (advanced && failure !== 'success') {
+          expect(
+            await readSidebarItemGroupsEnvelope(state.workspaceId),
+          ).toMatchObject({
+            groups: [{ memberIds: ['a', 'new'] }],
+          });
+        }
+        const laterWrites = probe(state);
+        await state.noop();
+        expect(laterWrites).toEqual([]);
+        expect(changed.mock.calls).toEqual(
+          failure === 'success' || failure === 'rollback refusal'
+            ? [[state.workspaceId]]
+            : [],
+        );
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it.each([
+      'success',
+      'registry refusal',
+      'cleanup refusal',
+      'cleanup installed then rejected',
+    ] as const)('lifecycle afterWrite: %s', async (failure) => {
+      const state = await fixture();
+      const primary = new Error('lifecycle failure');
+      const changed = jest.fn();
+      const writes = probe(
+        state,
+        (target) => {
+          if (
+            (target === 'registry' && failure === 'registry refusal') ||
+            (target === 'sidecar' && failure === 'cleanup refusal')
+          )
+            throw primary;
+        },
+        (target) => {
+          expect(changed).not.toHaveBeenCalled();
+          if (
+            target === 'sidecar' &&
+            failure === 'cleanup installed then rejected'
+          )
+            throw primary;
+        },
+      );
+      const registryChanged = jest.fn();
+      const unsubscribe = onSidebarItemGroupsChanged(changed);
+      const unsubscribeRegistry = onWorkEntryListChanged(registryChanged);
+      jest.mocked(notifyPortalStructureChanged).mockClear();
+      jest.mocked(schedulePortalStructuralSync).mockClear();
+      try {
+        if (failure === 'success') await state.pin();
+        else await expect(state.pin()).rejects.toBe(primary);
+        expect(writes).toEqual(
+          failure === 'registry refusal'
+            ? ['registry']
+            : ['registry', 'sidecar'],
+        );
+        if (failure === 'registry refusal') {
+          expect(await readFile(state.registryPath, 'utf8')).toBe(
+            state.registryBefore,
+          );
+        } else {
+          expect(await readFile(state.registryPath, 'utf8')).toContain(
+            '"pinned": true',
+          );
+        }
+        if (
+          failure === 'success' ||
+          failure === 'cleanup installed then rejected'
+        ) {
+          expect(
+            await readSidebarItemGroupsEnvelope(state.workspaceId),
+          ).toEqual({ version: 1, groups: [] });
+        } else
+          expect(await readFile(state.sidecarPath, 'utf8')).toBe(
+            state.sidecarBefore,
+          );
+        expect(changed.mock.calls).toEqual(
+          failure === 'success' ? [[state.workspaceId]] : [],
+        );
+        if (
+          failure === 'cleanup refusal' ||
+          failure === 'cleanup installed then rejected'
+        ) {
+          if (owner === 'Work Entry')
+            expect(registryChanged.mock.calls).toEqual([[state.workspaceId]]);
+          else {
+            expect(notifyPortalStructureChanged).toHaveBeenCalledTimes(1);
+            expect(schedulePortalStructuralSync).toHaveBeenCalledTimes(1);
+          }
+          expect(await state.project()).toEqual([]);
+          const sidecar = await readFile(state.sidecarPath, 'utf8');
+          if (failure === 'cleanup refusal')
+            expect(sidecar).toBe(state.sidecarBefore);
+          const laterWrites = probe(state);
+          await state.noop();
+          expect(laterWrites).toEqual([]);
+          expect(await readFile(state.sidecarPath, 'utf8')).toBe(sidecar);
+          expect(changed).not.toHaveBeenCalled();
+        }
+      } finally {
+        unsubscribe();
+        unsubscribeRegistry();
+      }
+    });
+
+    it.each(['no-op', 'list'] as const)(
+      'pins explicit command second-write disagreement and notification on subsequent %s',
+      async (next) => {
+        const state = await fixture();
+        const primary = new Error('second write failed');
+        const second = owner === 'Work Entry' ? 'sidecar' : 'registry';
+        const writes = probe(state, (target) => {
+          if (target === second) throw primary;
+        });
+        const changed = jest.fn();
+        const unsubscribe = onSidebarItemGroupsChanged(changed);
+        try {
+          await expect(
+            service.moveItem({
+              scope: state.targetScope,
+              itemId: 'c',
+              groupId: state.group.id,
+            }),
+          ).rejects.toBe(primary);
+          expect(writes).toEqual(
+            owner === 'Work Entry'
+              ? ['registry', 'sidecar']
+              : ['sidecar', 'registry'],
+          );
+          const expectedGroups = [
+            {
+              ...state.group,
+              memberIds: owner === 'Work Entry' ? ['a'] : ['a', 'c'],
+            },
+          ];
+          expect(await state.registryIds()).toEqual(
+            owner === 'Work Entry'
+              ? ['a', 'c', 'b', 'd']
+              : ['a', 'b', 'c', 'd'],
+          );
+          expect(
+            await readSidebarItemGroupsEnvelope(state.workspaceId),
+          ).toEqual({
+            version: 1,
+            groups: expectedGroups,
+          });
+          if (owner === 'Work Entry')
+            expect(await readFile(state.sidecarPath, 'utf8')).toBe(
+              state.sidecarBefore,
+            );
+          else
+            expect(await readFile(state.registryPath, 'utf8')).toBe(
+              state.registryBefore,
+            );
+          expect(changed).not.toHaveBeenCalled();
+          // Neither path repairs this disagreement: the members still exist.
+          const registry = await readFile(state.registryPath, 'utf8');
+          const sidecar = await readFile(state.sidecarPath, 'utf8');
+          const laterWrites = probe(state);
+          if (next === 'no-op') await state.noop();
+          else
+            expect(await service.list(state.targetScope)).toEqual(
+              expectedGroups,
+            );
+          expect(laterWrites).toEqual([]);
+          expect(await readFile(state.registryPath, 'utf8')).toBe(registry);
+          expect(await readFile(state.sidecarPath, 'utf8')).toBe(sidecar);
+          expect(changed.mock.calls).toEqual(
+            owner === 'Work Entry' ? [] : [[state.workspaceId]],
+          );
+          await state.noop();
+          expect(changed).toHaveBeenCalledTimes(owner === 'Work Entry' ? 0 : 1);
+        } finally {
+          unsubscribe();
+        }
+      },
+    );
+
+    it.each(['no-op', 'list'] as const)(
+      'defers failed creation rollback invalidation until a subsequent %s and isolates listener failures',
+      async (next) => {
+        const state = await fixture();
+        const primary = new Error('registry refused');
+        const rollback = new Error('rollback refused');
+        let sidecarWrites = 0;
+        const writes = probe(state, (target) => {
+          if (target === 'registry') throw primary;
+          if (++sidecarWrites === 2) throw rollback;
+        });
+        const throwing = jest.fn(() => {
+          throw new Error('listener failed');
+        });
+        const changed = jest.fn();
+        const unsubscribeThrowing = onSidebarItemGroupsChanged(throwing);
+        const unsubscribe = onSidebarItemGroupsChanged(changed);
+        try {
+          await expect(state.create()).rejects.toMatchObject({
+            message: 'Registry write and group rollback failed',
+            errors: [primary, rollback],
+          });
+          expect(writes).toEqual(['sidecar', 'registry', 'sidecar']);
+          expect(changed).not.toHaveBeenCalled();
+          expect(throwing).not.toHaveBeenCalled();
+          const sidecar = await readFile(state.sidecarPath, 'utf8');
+          expect(
+            await readSidebarItemGroupsEnvelope(state.workspaceId),
+          ).toEqual({
+            version: 1,
+            groups: [{ ...state.group, memberIds: ['a', 'new'] }],
+          });
+          expect(await readFile(state.registryPath, 'utf8')).toBe(
+            state.registryBefore,
+          );
+          publishSidebarItemGroupsChanged('unrelated-workspace');
+          expect(changed).not.toHaveBeenCalled();
+          const laterWrites = probe(state);
+          if (next === 'no-op') await state.noop();
+          else
+            expect(await service.list(state.targetScope)).toEqual([
+              state.group,
+            ]);
+          expect(laterWrites).toEqual(next === 'no-op' ? [] : ['sidecar']);
+          expect(throwing.mock.calls).toEqual([[state.workspaceId]]);
+          expect(changed.mock.calls).toEqual([[state.workspaceId]]);
+          expect(await readFile(state.registryPath, 'utf8')).toBe(
+            state.registryBefore,
+          );
+          expect(await readFile(state.sidecarPath, 'utf8')).toBe(
+            next === 'no-op' ? sidecar : state.sidecarBefore,
+          );
+          await state.noop();
+          expect(changed).toHaveBeenCalledTimes(1);
+          expect(throwing).toHaveBeenCalledTimes(1);
+          await state.pin();
+          expect(
+            await readSidebarItemGroupsEnvelope(state.workspaceId),
+          ).toEqual({ version: 1, groups: [] });
+          expect(throwing.mock.calls).toEqual([
+            [state.workspaceId],
+            [state.workspaceId],
+          ]);
+          expect(changed.mock.calls).toEqual([
+            [state.workspaceId],
+            [state.workspaceId],
+          ]);
+        } finally {
+          unsubscribeThrowing();
+          unsubscribe();
+        }
+      },
+    );
+
+    it('preserves a future sidecar through ordinary lifecycle but refuses explicit grouped creation', async () => {
+      const state = await fixture();
+      const future = '{"version":99,"groups":[],"future":"untouched"}';
+      await writeFile(state.sidecarPath, future);
+      const writes = probe(state);
+      const changed = jest.fn();
+      const unsubscribe = onSidebarItemGroupsChanged(changed);
+      try {
+        await state.pin();
+        expect(writes).toEqual(['registry']);
+        expect(await readFile(state.registryPath, 'utf8')).toContain(
+          '"pinned": true',
+        );
+        const registry = await readFile(state.registryPath, 'utf8');
+        await expect(state.create()).rejects.toThrow(
+          'Unsupported sidebar item groups version: 99',
+        );
+        await expect(
+          service.update({
+            scope: state.targetScope,
+            groupId: state.group.id,
+            name: 'Refused',
+          }),
+        ).rejects.toThrow('Unsupported sidebar item groups version: 99');
+        expect(writes).toEqual(['registry']);
+        expect(await readFile(state.registryPath, 'utf8')).toBe(registry);
+        expect(await readFile(state.sidecarPath, 'utf8')).toBe(future);
+        expect(changed).not.toHaveBeenCalled();
+      } finally {
+        unsubscribe();
+      }
+    });
+  },
+);

@@ -123,10 +123,6 @@
               "label": "Contact",
               "href": "mailto:support@unstoppabledomains.com"
             },
-            {
-              "label": "GitHub",
-              "href": "https://github.com/unstoppabledomains"
-            },
             { "label": "Terms", "href": "/terms" },
             { "label": "Privacy", "href": "/privacy" },
             {
@@ -168,6 +164,18 @@
           "href": "https://twitter.com/unstoppableweb"
         },
         {
+          "label": "YouTube",
+          "href": "https://www.youtube.com/c/UnstoppableDomains/featured"
+        },
+        {
+          "label": "Reddit",
+          "href": "https://www.reddit.com/r/unstoppabledomains/"
+        },
+        {
+          "label": "LinkedIn",
+          "href": "https://www.linkedin.com/company/unstoppable-domains"
+        },
+        {
           "label": "Instagram",
           "href": "https://www.instagram.com/unstoppabledomains/"
         },
@@ -176,26 +184,18 @@
           "href": "https://www.facebook.com/unstoppableweb/"
         },
         {
-          "label": "LinkedIn",
-          "href": "https://www.linkedin.com/company/unstoppable-domains"
+          "label": "Spotify",
+          "href": "https://open.spotify.com/show/2ZlyOpkkprGKS5KODk1PSS"
         },
+        { "label": "TikTok", "href": "https://www.tiktok.com/@unstoppableweb" },
         {
-          "label": "Reddit",
-          "href": "https://www.reddit.com/r/unstoppabledomains/"
+          "label": "GitHub",
+          "href": "https://github.com/unstoppabledomains"
         },
         {
           "label": "Discord",
           "href": "https://discord.gg/thU89YfnR"
-        },
-        {
-          "label": "YouTube",
-          "href": "https://www.youtube.com/c/UnstoppableDomains/featured"
-        },
-        {
-          "label": "Spotify",
-          "href": "https://open.spotify.com/show/2ZlyOpkkprGKS5KODk1PSS"
-        },
-        { "label": "TikTok", "href": "https://www.tiktok.com/@unstoppableweb" }
+        }
       ]
     }
   },

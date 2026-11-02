@@ -7,7 +7,6 @@ import {
   type UnifiedPluginEntry,
 } from '@canopy/ui-app/capability';
 
-import type { CuratedPipelineSummary } from '@canopy/protocol/pipeline-catalog';
 import { skillSharePath } from '@canopy/protocol/skills';
 
 export * from '@canopy/ui-app/capability';
@@ -40,7 +39,6 @@ export function visibleEntryId(
 
 export function buildUnifiedPluginEntries(
   inputs: UnifiedEntryInputs & {
-    curatedPipelines?: CuratedPipelineSummary[];
     publisherSkills?: DesktopPublisherSkill[];
   },
 ): UnifiedPluginEntry[] {
@@ -81,31 +79,6 @@ export function buildUnifiedPluginEntries(
           externalId: skill.externalId,
           sharePath: skillSharePath(skill.externalId),
         },
-      }),
-    ),
-    ...(inputs.curatedPipelines ?? []).map(
-      (pipeline): UnifiedPluginEntry => ({
-        id: `pipeline:curated:${pipeline.key}`,
-        kind: 'pipeline',
-        origin: 'curated',
-        name: pipeline.name,
-        description: pipeline.shortDescription,
-        categories: pipeline.categories,
-        authorName: pipeline.authorName ?? undefined,
-        typeLabel: 'Pipeline',
-        sourceLabel: 'Curated',
-        availabilityLabel: 'Available',
-        components: { skills: 0, mcpServers: 0, commands: 0, agents: 0 },
-        providerSupport: { claude: false, codex: false },
-        state: 'available',
-        recommended: pipeline.popular,
-        catalogSortOrder: pipeline.sortOrder,
-        pipeline: {
-          source: 'curated',
-          scopes: pipeline.scopes,
-          triggerTypes: pipeline.triggerTypes,
-        },
-        ref: { type: 'curated-pipeline', key: pipeline.key },
       }),
     ),
   ];

@@ -1,5 +1,12 @@
 import { BRAND } from '@canopy/brand/current';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import type { TurnBinding } from '@canopy/protocol/canopy-core';
+import type { TurnLifecycleProvider } from './agents/provider-turn-lifecycle';
+import {
+  deliverWatcherMessageToChat,
+  type WatcherChatDelivery,
+  type WatcherChatDeliveryOutcome,
+} from './services/watcher-chat-delivery';
 import type {
   AppAdvisorBrowserAction,
   AppAdvisorWatcherDestination,
@@ -25,6 +32,7 @@ import { join, resolve } from 'path';
 import { advertiseWindowsDefaultBrowserCapabilities } from './browser/windows-default-browser-capabilities';
 import { reportShareHandoffEvent } from './canopy-cloud/share-handoff-events';
 import { drainChatStateBeforeRuntimeShutdown } from './canopy-runtime/chat-state-shutdown';
+import { allowsRendererClipboardWrite } from './lib/renderer-clipboard-permission';
 import { deriveDesktopIpcCaller } from './canopy-runtime/desktop-ipc-caller';
 import {
   createDesktopRuntime,
@@ -96,12 +104,17 @@ import {
 import { getOrgProjectMaterialization } from './lib/org-project-materialization';
 import { setRemoteControlEnabled } from './lib/remote-control-preference';
 import {
+  CHILD_TOOL_LIVENESS_STAMP,
+  readChildToolLivenessStamp,
+} from '@canopy/agent-transcript';
+import {
   APP_ADVISOR_RENDERER_PAGE,
   APP_ADVISOR_RENDERER_SEARCH,
   MAIN_WINDOW_RENDERER_PAGE,
   appAdvisorDevServerUrl,
 } from './lib/renderer-pages';
 import { configureLinuxSecureStorage } from './lib/secure-storage-policy';
+import { configureLinuxDesktopIdentity } from './lib/linux-desktop-identity';
 import { isAllowedMainWindowFrameNavigation } from './lib/subframe-navigation-guard';
 import {
   getUiAutomationWindowWebPreferences,
@@ -161,12 +174,14 @@ import {
 // index → ipc barrel → snapshot handler cannot leave this binding
 // undefined when the before-quit cleanup path runs.
 import {
+  createForeignCrashDumpFilter,
   flushDesktopInstrumentation,
   initializeDesktopInstrumentationMain,
   initializePostHogMain,
   setDesktopInstrumentationUser,
 } from '@canopy/desktop-instrumentation/electron/main';
 import { getPostHogEmailDomain } from '@canopy/desktop-instrumentation/posthog-account';
+import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
   appAdvisorWindowButtonPosition,
@@ -174,8 +189,13 @@ import {
 } from '@canopy/desktop-shared/lib/titlebar-geometry';
 import { chatStorageCommitTotal } from '@canopy/desktop-shared/node/chat-storage-activity';
 import { getCodeGraphWorktreeService } from '@canopy/desktop-shared/node/code-graph/service';
+import { installDesktopCodeGraphResources } from '@canopy/desktop-shared/node/code-graph/resources';
 import { installWorkCountersQuery } from '@canopy/desktop-shared/node/work-counters';
-import { prewarmLoginShellPath } from '@canopy/desktop-shared/pipelines/config-paths';
+import {
+  prewarmLoginShellPath,
+  setLoginShellProbe,
+} from '@canopy/desktop-shared/pipelines/config-paths';
+import { createPortLoginShellProbe } from '@canopy/desktop-shared/node/execution-host/login-shell-probe';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import {
   APP_ADVISOR_FLOATING_DEFAULT_SIZE,
@@ -197,7 +217,10 @@ import {
   type PreferencesData,
   type WindowBounds,
 } from '@canopy/desktop-shared/types';
-import { isPanelAuxWindowFrameName } from '@canopy/protocol';
+import {
+  isPanelAuxWindowFrameName,
+  ORCHESTRATOR_LABEL,
+} from '@canopy/protocol';
 import { shutdownLocalAccountProxyAtQuit } from './account-proxy/local-shutdown';
 import {
   clearAiCreditsRoutingContextCache,
@@ -206,6 +229,11 @@ import {
   prewarmAiCreditsRoutingMode,
 } from './agents/ai-credits-routing';
 import { shutdownClaudeProcessHost } from './agents/claude-process-host-runner';
+import {
+  enableClaudeProcessPidPersistence,
+  reapStaleClaudeProcesses,
+} from './agents/claude-process-registry';
+import { recordReapedClaudeProcessDiagnostic } from './agents/claude-process-diagnostics';
 import {
   getCodexGatewayProxyService,
   setCodexGatewayProxyDiagnosticSink,
@@ -217,8 +245,11 @@ import {
   applyE2eIngestedLiveBackgroundTaskEvent,
   destroyAllSessions,
   getChatTurnConcurrencySnapshot,
+  getChildToolLiveness,
   hasActiveChatTurnsForProject,
+  updateClaudeSessionIdleTimeoutMinutes,
 } from './agents/session-manager';
+import { startChildToolsSettlement } from './agents/child-tools-settlement';
 import {
   createAiGatewayModelCatalogService,
   type AiGatewayModelCatalogService,
@@ -265,6 +296,8 @@ import {
   closeChatSearchService,
   getChatSearchService,
 } from './chat-search/service';
+import { installTurnStateAudit } from './observability/turn-state-audit';
+import { installTurnStateInvariantGuard } from './observability/turn-state-invariant-guard';
 import {
   getCodeGraphGenerationQueueSnapshot,
   killAllBuilds,
@@ -297,7 +330,10 @@ import { subscribeTurnFeedbackFlush } from './feedback/turn-feedback-client';
 import { getClaudeTerminalSessionService } from './integration/claude-terminal-session-service';
 import { getClaudeWorkerSessionService } from './integration/claude-worker-session-service';
 import { redeliverPendingAppAdvisorAskUserRequests } from './ipc/app-advisor';
-import { projectChatTabsMaterialization } from './ipc/chat-persistence';
+import {
+  nudgeCoworkWorkEntrySidebar,
+  projectChatTabsMaterialization,
+} from './ipc/chat-persistence';
 import { shutdownCopilotConnections } from './ipc/copilot-connection';
 import { shutdownCursorApprovalChecks } from './ipc/cursor-approval-check';
 import { shutdownCursorConnections } from './ipc/cursor-connection';
@@ -325,6 +361,7 @@ import {
 } from './ledger/sync-host';
 import { refreshAgentModelsFromStore } from './lib/agent-models';
 import {
+  getPostHogInstallLaunch,
   getStableAnonymousKey,
   getStablePostHogAnonymousKey,
 } from './lib/anonymous-id';
@@ -363,7 +400,11 @@ import {
 import { readChatArchivesFile } from './lib/chat-archives';
 import { syncWorktreeChatBadgesFromWrite } from './lib/chat-badge-sync';
 import { startChatStorageActivityDiagnostics } from './lib/chat-storage-activity-diagnostics';
-import { setChatTabsWriteObserver } from './lib/chat-tabs';
+import { createChatTabsAuxiliaryProjectionObserver } from './lib/chat-tabs-auxiliary-projection';
+import {
+  setChatTabsRequiredDurabilityObserver,
+  setChatTabsWriteObserver,
+} from './lib/chat-tabs';
 import {
   reconcileCodeGraphAvailability,
   setCodeGraphPreferences,
@@ -424,6 +465,8 @@ import {
 import {
   flushPreferencesWrites,
   readPreferencesFile,
+  startPreferencesGenerationStamp,
+  stopPreferencesGenerationStamp,
   updatePreferencesFile,
   writePreferencesFile,
 } from './lib/preferences-store';
@@ -457,6 +500,7 @@ import {
   uiZoomWebPreferences,
 } from './lib/ui-zoom';
 import { validateId } from './lib/validation';
+import { admitDesktopW5Host } from './lib/w5-host-admission';
 import {
   ipcWindowLabel,
   registerIpcSurface,
@@ -465,10 +509,12 @@ import {
 import { primaryWindowFocus } from './lib/window-focus-recency';
 import {
   getMainWindowMaterialOptions,
+  getMainWindowStartupBackgroundColor,
   getNativeThemeSource,
 } from './lib/window-material';
 import { sendToAllWindows, sendToWindowDetailed } from './lib/window-send';
 import { validateWindowBounds } from './lib/window-state';
+import { getWindowTitleBarOptions } from './lib/window-title-bar';
 import {
   flushWorkspaceTargetTouches,
   touchWorkspaceTarget,
@@ -477,7 +523,11 @@ import {
 import { stopWorkspaceApprovalsManifestWatchers } from './lib/workspace-approvals-manifest';
 import { getWorkspaceContextService } from './lib/workspace-context-service';
 import { isWorkspaceTargetRuntimeStartReserved } from './lib/workspace-target-exclusion';
-import { stopWorktreeBranchWatchers } from './lib/worktree-branch-watcher';
+import {
+  startWorktreeBranchEnrollment,
+  startWorktreeBranchObserver,
+  stopWorktreeBranchWatchers,
+} from './lib/worktree-branch-watcher';
 import { stopWorktreesFileWatchers } from './lib/worktrees-file-watcher';
 import {
   resolveAppActivationTarget,
@@ -549,6 +599,7 @@ import {
 } from './pipelines';
 import { getPipelineAdvisorService } from './pipelines/pipeline-advisor';
 import { shutdownPipelineProcessHost } from './pipelines/process-host-runner';
+import { getExecutionHostPort } from './execution-host/utility-process-host';
 import { registerPluginHandlers } from './plugins';
 import { shutdownCodexPluginMaterializationWorker } from './plugins/codex-plugin-materialization-runner';
 import { startProviderPluginBackfill } from './plugins/provider-plugin-backfill';
@@ -559,6 +610,7 @@ import {
 } from './portal/portal-session-manager';
 import { cancelPortalStructuralSync } from './portal/portal-structural-sync';
 import { getWakeLockService } from './power/wake-lock-service';
+import { installExecutionAccountingHost } from './execution-accounting';
 import {
   configureMemoryDiagnostics,
   getMemoryDiagnosticsService,
@@ -605,48 +657,59 @@ import {
 import { registerSkillHandlers } from './skills';
 import { scheduleDeferredStartupBackgroundTasks } from './startup-background-tasks';
 import { terminalPersistenceStore } from './terminal/persistence';
-import { ptyManager } from './terminal/pty-manager';
+import { workerTerminal } from './terminal/worker-terminal';
 import { startUpdater, stopUpdater } from './updater';
 import { getVoiceService } from './voice/service';
 import { shutdownW5CommitLogHost } from './w5-commit-log/commit-log-host';
 
 initializeMainProcessLogging();
+installDesktopCodeGraphResources();
 
-setChatTabsWriteObserver(async (projectId, worktreeId, data, delta) => {
+getChatStateService().subscribeChildSearchDirty((event): void => {
+  getChatSearchService().childSearchDirty(event);
+});
+
+setChatTabsRequiredDurabilityObserver(async (projectId, worktreeId) => {
   // A canonical chat command holds the target reservation until this durable
   // watermark completes, so Auto Delete cannot enter between the journal
   // commit and its activity update.
   await touchWorkspaceTargetAfterCommit(projectId, worktreeId);
-  if (delta) {
+});
+
+setChatTabsWriteObserver(
+  createChatTabsAuxiliaryProjectionObserver({
     // Partial persistence identifies exactly which tabs changed. Applying the
     // same delta to search avoids rebuilding FTS for large, unchanged
     // transcripts while keeping concurrent rename/close operations correct.
-    getChatSearchService().indexLiveTabChanges(
-      projectId,
-      worktreeId,
-      data,
-      delta.changedTabIds,
-      delta.removedTabIds,
-    );
-  } else {
-    getChatSearchService().indexLiveTabs(projectId, worktreeId, data);
-  }
-  // Keep the worktree's persisted chat badge summary current so sidebar
-  // badges render at startup without hydrating full transcripts.
-  syncWorktreeChatBadgesFromWrite(projectId, worktreeId, data);
-  await syncWorkEntrySummaryFromWrite(projectId, worktreeId, data);
-  handleChatTabsWritten(projectId, worktreeId, data);
-  // Portal chat-summary/todo/MCP projections and the cowork sidebar nudge
-  // follow every canonical materialization (throttled per scope) now that the
-  // renderer-driven save choke point is gone.
-  projectChatTabsMaterialization(
-    () => mainWindow,
-    projectId,
-    worktreeId,
-    data,
-    delta,
-  );
-});
+    indexSearch: (projectId, worktreeId, data, delta, isCurrent) =>
+      getChatSearchService().projectLiveTabs(
+        projectId,
+        worktreeId,
+        data,
+        delta,
+        isCurrent,
+      ),
+    // Keep the worktree's persisted chat badge summary current so sidebar
+    // badges render at startup without hydrating full transcripts.
+    syncBadges: syncWorktreeChatBadgesFromWrite,
+    syncWorkEntrySummary: syncWorkEntrySummaryFromWrite,
+    logRetry: logMainProcessWarn,
+    publishRuntimeStatus: handleChatTabsWritten,
+    // Portal chat-summary/todo/MCP projections and the cowork sidebar nudge
+    // follow every canonical materialization (throttled per scope) now that
+    // the renderer-driven save choke point is gone.
+    publishScope: (projectId, worktreeId, data, delta) =>
+      projectChatTabsMaterialization(
+        () => mainWindow,
+        projectId,
+        worktreeId,
+        data,
+        delta,
+      ),
+    nudgeSummary: (projectId) =>
+      nudgeCoworkWorkEntrySidebar(() => mainWindow, projectId),
+  }),
+);
 
 // Observability's first initialization prunes audit days; install its reader first.
 registerCostRetentionGuard();
@@ -656,8 +719,8 @@ let mainWindowRendererReady = false;
 /**
  * The main window's page crashed or a main-frame reload committed, and its
  * renderer has not come back up. App Advisor raises its own chat
- * notifications meanwhile. Unlike `mainWindowRendererReady`, sub-frame loads
- * leave it alone.
+ * notifications meanwhile. Sub-frame loads (an HTML file preview's iframe)
+ * leave it, and `mainWindowRendererReady`, alone.
  */
 let mainWindowPageDown = false;
 
@@ -687,13 +750,19 @@ function linkContextMenuDeps(contents: WebContents): LinkContextMenuDeps {
 let pendingAutoArchiveNotifications: AutoArchiveNotification[] = [];
 /**
  * The full App Advisor window. Without early access its own page is the App
- * Advisor renderer. Under early access the renderer is `appAdvisorView`,
- * which `appAdvisorHost` moves between this window and a floating panel in
- * the main window (see `advisor-host.ts`); sends addressed to this window
- * still reach the renderer (`hostRendererInView`).
+ * Advisor renderer. Under early access the renderer is a view's page
+ * (`appAdvisorViewContents`), which `appAdvisorHost` moves between this
+ * window and a floating panel in the main window (see `advisor-host.ts`);
+ * sends addressed to this window still reach the renderer
+ * (`hostRendererInView`).
  */
 let appAdvisorWindow: BrowserWindow | null = null;
-let appAdvisorView: WebContentsView | null = null;
+/**
+ * Read once, when the view is made: a view's `webContents` reads `undefined`
+ * once its page is destroyed, which at quit happens before the window's
+ * `closed`.
+ */
+let appAdvisorViewContents: WebContents | null = null;
 let appAdvisorHost: AppAdvisorViewHost<WebContentsView, BrowserWindow> | null =
   null;
 /** Transparent native surfaces owned by the main renderer. */
@@ -730,6 +799,8 @@ const DEFAULT_WINDOW_WIDTH = 1400;
 const APP_ADVISOR_MIN_WIDTH = 360;
 /** How long the floating panel waits for its page to paint before showing. */
 const APP_ADVISOR_PAINT_WAIT_MS = 500;
+// Matches the deferred startup tasks' delay.
+const WORKTREE_BRANCH_ENROLLMENT_FALLBACK_MS = 5_000;
 /**
  * Window minimums at 100% interface scale. The live minimum is
  * `base × zoom` (`lib/ui-zoom.ts`), so the renderer's CSS-px layout floors
@@ -792,6 +863,8 @@ let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
   null;
 let disposeCuratedMcpRefresh: (() => void) | null = null;
 let disposeOnboardingProfileSync: (() => void) | null = null;
+let childToolsSettlement: ReturnType<typeof startChildToolsSettlement> | null =
+  null;
 let disposeProviderPluginBackfill: (() => void) | null = null;
 let disposeNativeAccountChangeTracking: (() => void) | null = null;
 let disposeProviderAccountConnectTelemetry: (() => void) | null = null;
@@ -827,6 +900,13 @@ interface E2eChatEventPayload {
  */
 function installE2eChatEventIngestor(): void {
   if (!__CANOPY_E2E__) return;
+  Object.defineProperty(globalThis, '__CANOPY_E2E_DELIVER_WATCHER_MESSAGE__', {
+    configurable: true,
+    value: (
+      delivery: WatcherChatDelivery,
+    ): Promise<WatcherChatDeliveryOutcome> =>
+      deliverWatcherMessageToChat(delivery),
+  });
   Object.defineProperty(globalThis, '__CANOPY_E2E_PREVIEW_VISUAL__', {
     configurable: true,
     value: async (input: {
@@ -904,6 +984,54 @@ function installE2eChatEventIngestor(): void {
       // Normal completion and Stop release it through the production queue.
       queue.invalidatePendingInputOperations(target);
       queue.confirmTurnRevived(target, target.turnUserMessageId);
+    },
+  });
+  // Canonical root turns start and end only from lifecycle receipts (turn-state
+  // phase 35c5d), which injected chat events lack. Publish a provider
+  // session's receipts for an injected turn through the production producer.
+  Object.defineProperty(globalThis, '__CANOPY_E2E_PUBLISH_TURN_LIFECYCLE__', {
+    configurable: true,
+    value: async (input: {
+      projectId: string;
+      worktreeId: string;
+      chatId: string;
+      turnUserMessageId: string;
+      phase: 'start' | 'end';
+      outcome?: 'completed' | 'failed';
+      atMs?: number;
+      providerType?: TurnLifecycleProvider;
+    }): Promise<void> => {
+      const { getTurnLifecycleProducer } =
+        await import('./agents/provider-turn-lifecycle');
+      const producer = getTurnLifecycleProducer(
+        input.providerType ?? 'claude',
+        {
+          projectId: input.projectId,
+          worktreeId: input.worktreeId,
+          chatId: input.chatId,
+        },
+      );
+      const binding = {
+        turnId: `e2e-turn:${input.turnUserMessageId}`,
+        origin: 'user',
+        binding: 'bound',
+        submissionIds: [],
+        userMessageIds: [input.turnUserMessageId],
+        providerUserMessageUuids: [],
+      } satisfies TurnBinding;
+      if (input.phase === 'start')
+        producer.turnStarted({
+          ...binding,
+          phase: 'start',
+          startedAtMs: input.atMs ?? Date.now(),
+        });
+      else
+        producer.turnEnded({
+          ...binding,
+          endedAtMs: input.atMs ?? Date.now(),
+          outcome: input.outcome ?? 'completed',
+          source: 'result',
+        });
     },
   });
   Object.defineProperty(globalThis, '__CANOPY_E2E_INGEST_PIPELINE_EVENT__', {
@@ -1512,12 +1640,29 @@ function installE2eChatEventIngestor(): void {
         event.chatId,
         event.data,
       );
+      const data =
+        (event.providerType === undefined || event.providerType === 'claude') &&
+        isRecord(event.data) &&
+        (event.data.type === 'error' ||
+          (event.data.type === 'result' &&
+            event.data.canopy_session_continues !== true))
+          ? {
+              ...event.data,
+              [CHILD_TOOL_LIVENESS_STAMP]:
+                readChildToolLivenessStamp(event.data) ??
+                getChildToolLiveness(
+                  event.projectId,
+                  event.worktreeId,
+                  event.chatId,
+                ),
+            }
+          : event.data;
       const outcome =
         await getChatStateService().ingestProviderEventWithOutcome({
           projectId: event.projectId,
           worktreeId: event.worktreeId,
           chatId: event.chatId,
-          data: event.data,
+          data,
           mutationId: `e2e-provider:${randomUUID()}`,
           ...(event.providerType ? { providerType: event.providerType } : {}),
           ...(event.turnUserMessageId
@@ -1526,11 +1671,10 @@ function installE2eChatEventIngestor(): void {
         });
       if (outcome === 'not-applied') return;
       if (mainWindow)
-        sendToWebContents(
-          mainWindow.webContents,
-          IPC_CHANNELS.chatEvent,
-          event,
-        );
+        sendToWebContents(mainWindow.webContents, IPC_CHANNELS.chatEvent, {
+          ...event,
+          data,
+        });
     },
   });
   Object.defineProperty(globalThis, E2E_PENDING_QUESTION_UPSERTER_KEY, {
@@ -1563,23 +1707,27 @@ function getInstrumentationAccountEmail(
 }
 
 function startDesktopInstrumentation(): void {
-  void initializePostHogMain(getStablePostHogAnonymousKey, {
-    getSnapshot: async (): Promise<string | null> =>
-      getPostHogEmailDomain(
-        getInstrumentationAccountEmail(await loadCanopyCloudAccount()),
-      ),
-    onSnapshotChanged: (listener): (() => void) =>
-      subscribeCanopyCloudAccountChanges((account): void => {
-        const domain = getPostHogEmailDomain(
-          getInstrumentationAccountEmail(account),
-        );
-        listener(domain);
-        sendToAllWindows(
-          IPC_CHANNELS.observabilityPostHogEmailDomainUpdate,
-          domain,
-        );
-      }),
-  }).then((result) => {
+  void initializePostHogMain(
+    getStablePostHogAnonymousKey,
+    {
+      getSnapshot: async (): Promise<string | null> =>
+        getPostHogEmailDomain(
+          getInstrumentationAccountEmail(await loadCanopyCloudAccount()),
+        ),
+      onSnapshotChanged: (listener): (() => void) =>
+        subscribeCanopyCloudAccountChanges((account): void => {
+          const domain = getPostHogEmailDomain(
+            getInstrumentationAccountEmail(account),
+          );
+          listener(domain);
+          sendToAllWindows(
+            IPC_CHANNELS.observabilityPostHogEmailDomainUpdate,
+            domain,
+          );
+        }),
+    },
+    getPostHogInstallLaunch,
+  ).then((result) => {
     if (!result.enabled && result.reason && result.reason !== 'disabled') {
       getObservabilityService().recordAppDiagnostic({
         version: 1,
@@ -1589,7 +1737,17 @@ function startDesktopInstrumentation(): void {
       });
     }
   });
-  desktopInstrumentationInitPromise ??= initializeDesktopInstrumentationMain();
+  const hostOs = hostOperatingSystem();
+  desktopInstrumentationInitPromise ??= initializeDesktopInstrumentationMain({
+    // Unsupported hosts keep the SDK's default of processing every dump.
+    crashDumpFilter: hostOs
+      ? createForeignCrashDumpFilter({
+          getCrashDumpsDir: () => app.getPath('crashDumps'),
+          getExePath: () => app.getPath('exe'),
+          platform: hostOs,
+        })
+      : undefined,
+  });
   void desktopInstrumentationInitPromise
     .then((result): void => {
       if (!result.enabled && result.reason && result.reason !== 'disabled') {
@@ -1654,6 +1812,32 @@ function startDesktopInstrumentation(): void {
         reason: error instanceof Error ? error.message : String(error),
       });
     });
+}
+
+const W5_REFUSAL_FLUSH_TIMEOUT_MS = 1_000;
+
+/**
+ * TRANSITIONAL (CAN-3797 Q3): startup refuses while data maintenance holds the
+ * data folder. Final copy waits until maintenance is user-facing (CAN-4498);
+ * remove with the W5 host cohort. Nothing has started yet, so exit directly.
+ */
+function exitForW5HostRefusal(message: string): void {
+  // A modal alert would block headless E2E launches, which assert the exit.
+  if (!__CANOPY_E2E__)
+    dialog.showErrorBox(`Couldn't open ${BRAND.displayName}`, message);
+  let exited = false;
+  const exit = (): void => {
+    if (exited) return;
+    exited = true;
+    app.exit(1);
+  };
+  // Exit once stderr flushes: pipe writes are asynchronous on macOS, and
+  // app.exit() drops a pending one. The timer bounds a stalled stderr.
+  const flushTimeout = setTimeout(exit, W5_REFUSAL_FLUSH_TIMEOUT_MS);
+  process.stderr.write(`${message}\n`, (): void => {
+    clearTimeout(flushTimeout);
+    exit();
+  });
 }
 
 function movePackagedMacAppToApplicationsIfNeeded(): boolean {
@@ -1927,6 +2111,7 @@ async function cleanupRuntimeResources(
   }
 
   appIsQuitting = true;
+  stopPreferencesGenerationStamp();
   stopMainEventLoopMonitor?.();
   stopMainEventLoopMonitor = null;
   stopPersonalCatalogSync();
@@ -1947,6 +2132,17 @@ async function cleanupRuntimeResources(
   });
   drainedProcessExitGuard = exitGuard;
   runtimeCleanupPromise = stages.run('runtime', async (): Promise<void> => {
+    // A failed preparatory stage must not skip the recovery drains or the
+    // provider stops below; it fails the runtime stage once teardown finishes.
+    const preparationFailures: unknown[] = [];
+    const deferPreparationFailure = (stage: Promise<unknown>): Promise<void> =>
+      stage.then(
+        () => undefined,
+        (error: unknown): void => {
+          logMainProcessWarn('[shutdown] Preparatory stage failed', error);
+          preparationFailures.push(error);
+        },
+      );
     // Release the OS-level chord first: nothing below depends on it and a
     // registration must never outlive the process that owns the callback.
     disposeGlobalFocusShortcutService();
@@ -1963,11 +2159,13 @@ async function cleanupRuntimeResources(
     await settleBestEffortCleanup(
       stages.run('local-memory-usage', flushPendingLocalMemoryUsage),
     );
-    await stages.run('resume-queue', flushResumeQueue);
+    await deferPreparationFailure(stages.run('resume-queue', flushResumeQueue));
     setLedgerPendingTitleScheduler(undefined);
-    await stages.run(
-      'ledger-pending-titles',
-      shutdownDesktopPendingTitleOrchestrator,
+    await deferPreparationFailure(
+      stages.run(
+        'ledger-pending-titles',
+        shutdownDesktopPendingTitleOrchestrator,
+      ),
     );
     shutdownBackgroundHelperQueue();
     const windowStateFlush = stages.run(
@@ -2008,8 +2206,8 @@ async function cleanupRuntimeResources(
     // Disarm the scheduler and drain any active sweep before services used by
     // Auto Delete begins shutting down. Activity subscriptions stay attached
     // until producers have emitted their final inactivity watermarks below.
-    await stages.run('auto-archive', () =>
-      autoArchiveScheduler?.stopScheduling(),
+    await deferPreparationFailure(
+      stages.run('auto-archive', () => autoArchiveScheduler?.stopScheduling()),
     );
     // Stop schedulers before closing admission and checkpointing active work.
     getAutomationsService().stop();
@@ -2021,7 +2219,9 @@ async function cleanupRuntimeResources(
     cancelStartupBackgroundTasks?.();
     cancelStartupBackgroundTasks = null;
     if (startupRecoveryPromise)
-      await stages.run('startup-recovery', () => startupRecoveryPromise);
+      await deferPreparationFailure(
+        stages.run('startup-recovery', () => startupRecoveryPromise),
+      );
     const pipelinePause = stages.run(
       'pipeline-recovery',
       pauseAllActivePipelineExecutions,
@@ -2061,6 +2261,9 @@ async function cleanupRuntimeResources(
       chatShutdown,
       claudeTerminalShutdown,
     ]);
+    // First provider stop: Copilot closes admission and revokes runtimes, then
+    // drains rotations alongside the other provider stops in the stage below.
+    const copilotShutdown = shutdownCopilotConnections();
     // Session teardown performs the bounded final output drain. Clear any
     // orphan pollers only after that drain has had access to their state.
     stopAllOutputPolling();
@@ -2083,7 +2286,7 @@ async function cleanupRuntimeResources(
         Promise.allSettled([
           shutdownCursorApprovalChecks(),
           shutdownCursorConnections(),
-          shutdownCopilotConnections(),
+          copilotShutdown,
           shutdownOpenCodeConnections(),
         ]),
         new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
@@ -2159,7 +2362,7 @@ async function cleanupRuntimeResources(
     // Flush any debounce-pending panel-layout writes before quit so the last
     // grid mutation survives the restart.
     panelLayoutPersistenceStore.flushAllSync();
-    ptyManager.killAll();
+    workerTerminal.killAll();
     cancelPortalStructuralSync();
     getDesktopInventorySyncService().dispose();
     void stopCanopyPortal('app_shutdown').catch(() => undefined);
@@ -2191,6 +2394,11 @@ async function cleanupRuntimeResources(
       .catch(() => undefined);
     await browserShutdown;
     await claudeWorkerShutdown;
+    childToolsSettlement?.stop();
+    await stages.run('child-tools-settlement', () =>
+      childToolsSettlement?.drain(),
+    );
+    childToolsSettlement = null;
     try {
       await drainChatStateBeforeRuntimeShutdown(
         () => stages.run('chat-state', () => getChatStateService().drain()),
@@ -2268,8 +2476,8 @@ async function cleanupRuntimeResources(
     await windowStateFlush;
     await appAdvisorWindowStateFlush;
     appAdvisorHost?.dispose();
-    if (appAdvisorView && !appAdvisorView.webContents.isDestroyed()) {
-      appAdvisorView.webContents.close();
+    if (appAdvisorViewContents && !appAdvisorViewContents.isDestroyed()) {
+      appAdvisorViewContents.close();
     }
     if (appAdvisorWindow && !appAdvisorWindow.isDestroyed()) {
       appAdvisorWindow.close();
@@ -2304,6 +2512,13 @@ async function cleanupRuntimeResources(
           .map((result) => formatUnknownError(result.reason))
           .join('; ')}`,
       );
+    }
+    // Failed preparatory stages already reported and logged; rethrow the first.
+    if (preparationFailures.length > 0) {
+      const [failure] = preparationFailures;
+      throw failure instanceof Error
+        ? failure
+        : new Error(formatUnknownError(failure));
     }
   });
   runtimeCleanupPromise = runtimeCleanupPromise.then(
@@ -2596,8 +2811,16 @@ function setAppAdvisorFloatingSize(size: unknown): AppAdvisorWindowState {
   return getAppAdvisorWindowState();
 }
 
-/** App Advisor raises its own chat notifications until the page is back. */
+/**
+ * The main page crashed or a main-frame reload committed. Main waits for the
+ * new renderer before it delivers app links or notifications to it, and App
+ * Advisor raises its own chat notifications until the page is back. Not on
+ * `did-start-loading`: sub-frame loads (agent visuals, HTML previews) fire it
+ * too, and treating them as a reload sent every later chat link to the system
+ * browser.
+ */
 function markMainWindowPageDown(): void {
+  mainWindowRendererReady = false;
   mainWindowPageDown = true;
   broadcastAppAdvisorWindowState();
 }
@@ -3105,13 +3328,14 @@ async function createAppAdvisorWindowIfMissing(
       minWidth: minimum.width,
       minHeight: minimum.height,
       show: false,
-      title: 'App Advisor',
+      title: ORCHESTRATOR_LABEL,
       icon: getIconPath(),
-      titleBarStyle: 'hiddenInset',
-      // Centred on the popout's header row at the current interface scale.
-      trafficLightPosition: appAdvisorWindowButtonPosition(
-        uiScaleToZoomFactor(preferences.uiScale),
-      ),
+      ...getWindowTitleBarOptions({
+        titleBarStyle: 'hiddenInset',
+        trafficLightPosition: appAdvisorWindowButtonPosition(
+          uiScaleToZoomFactor(preferences.uiScale),
+        ),
+      }),
       autoHideMenuBar: true,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
@@ -3146,11 +3370,12 @@ async function createAppAdvisorWindowIfMissing(
         additionalArguments: [appAdvisorInitialLayoutArgument(initialLayout)],
       },
     });
+    // The only read of the view's page (see `appAdvisorViewContents`).
     const contents = view?.webContents ?? win.webContents;
     const rendererSurface: RendererSurfaceWindow = view
       ? {
-          isDestroyed: (): boolean => view.webContents.isDestroyed(),
-          webContents: view.webContents,
+          isDestroyed: (): boolean => contents.isDestroyed(),
+          webContents: contents,
         }
       : win;
     // Transparent behind the page: the floating panel rounds its own corners
@@ -3162,21 +3387,21 @@ async function createAppAdvisorWindowIfMissing(
       // The page lives in the view, which no `browser-window-created` hook
       // reaches: give it the windows' input guards and text-field menu, the
       // menu over whichever window holds the page when it opens.
-      attachInputGuardsToContents(view.webContents);
-      attachEditableContextMenuToContents(view.webContents, () =>
+      attachInputGuardsToContents(contents);
+      attachEditableContextMenuToContents(contents, () =>
         appAdvisorHost?.placement === 'floating' ? mainWindow : win,
       );
       attachLinkContextMenuToContents(
-        view.webContents,
+        contents,
         () => (appAdvisorHost?.placement === 'floating' ? mainWindow : win),
-        linkContextMenuDeps(view.webContents),
+        linkContextMenuDeps(contents),
       );
     }
-    appAdvisorView = view;
+    appAdvisorViewContents = view ? contents : null;
     appAdvisorPanelZoom = uiScaleToZoomFactor(preferences.uiScale);
     const stopHostingRenderer = view
       ? hostRendererInView(win.webContents, () =>
-          view.webContents.isDestroyed() ? null : view.webContents,
+          contents.isDestroyed() ? null : contents,
         )
       : null;
     if (view) {
@@ -3192,7 +3417,7 @@ async function createAppAdvisorWindowIfMissing(
           ),
         onPlacementChange: broadcastAppAdvisorWindowState,
         whenPainted: (layout, size): Promise<void> =>
-          whenAppAdvisorPainted(view.webContents, layout, size),
+          whenAppAdvisorPainted(contents, layout, size),
       });
       appAdvisorHost = host;
       // Hidden until opened, where it opens: at the floating panel's place
@@ -3246,8 +3471,8 @@ async function createAppAdvisorWindowIfMissing(
         appAdvisorHost?.dispose();
         appAdvisorHost = null;
         stopHostingRenderer?.();
-        if (view && !view.webContents.isDestroyed()) view.webContents.close();
-        appAdvisorView = null;
+        if (view && !contents.isDestroyed()) contents.close();
+        appAdvisorViewContents = null;
       }
       if (appAdvisorWindowStateSaveTimeout !== null) {
         clearTimeout(appAdvisorWindowStateSaveTimeout);
@@ -3614,14 +3839,27 @@ function createWindowWithState(preferences: PreferencesData): void {
     height: Math.max(validatedBounds?.height ?? 900, minimum.height),
     minWidth: minimum.width,
     minHeight: minimum.height,
-    show: false,
+    // A hidden native Wayland surface may never receive the frame that emits
+    // ready-to-show. Map Linux windows on creation so cold activation can paint.
+    show: hostOperatingSystem() === 'linux' && shouldShowUiAutomationWindow(),
+    // Mapping before first paint otherwise exposes Chromium's white canvas,
+    // even when the persisted appearance is dark. Keep macOS vibrancy intact.
+    ...(hostOperatingSystem() === 'linux'
+      ? {
+          backgroundColor: getMainWindowStartupBackgroundColor(
+            preferences.theme,
+            nativeTheme.shouldUseDarkColors,
+          ),
+        }
+      : {}),
     title: BRAND.displayName,
     icon: getIconPath(),
-    titleBarStyle: 'hiddenInset',
-    // Centred on the renderer's titlebar row at the current interface scale.
-    trafficLightPosition: macWindowButtonPosition(
-      uiScaleToZoomFactor(preferences.uiScale),
-    ),
+    ...getWindowTitleBarOptions({
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: macWindowButtonPosition(
+        uiScaleToZoomFactor(preferences.uiScale),
+      ),
+    }),
     autoHideMenuBar: true,
     ...getMainWindowMaterialOptions(process.platform),
     webPreferences: {
@@ -3707,6 +3945,7 @@ function createWindowWithState(preferences: PreferencesData): void {
   });
 
   mainWindow.on('ready-to-show', () => {
+    // Linux is already mapped; do not undo a user's hide during startup.
     // Under UI automation, keep the window hidden so the suite runs truly
     // headless. Hidden Linux automation uses an offscreen compositor so
     // animation frames continue without a mapped X11 window.
@@ -3714,7 +3953,7 @@ function createWindowWithState(preferences: PreferencesData): void {
     // CANOPY_E2E_SHOW_WINDOW=1 opts a single run back into a visible window so a
     // seeded scenario can be looked at and clicked by hand. Only reachable from
     // an E2E or unpackaged release-like launch, and off unless explicitly set.
-    if (!shouldShowUiAutomationWindow()) {
+    if (hostOperatingSystem() === 'linux' || !shouldShowUiAutomationWindow()) {
       return;
     }
     mainWindow?.show();
@@ -3782,8 +4021,29 @@ function createWindowWithState(preferences: PreferencesData): void {
     }
   });
 
+  const panelClipboardWriters = new WeakSet<WebContents>();
   mainWindow.webContents.session.setPermissionRequestHandler(
-    (_webContents, permission, callback, details) => {
+    (webContents, permission, callback, details) => {
+      if (permission === 'clipboard-sanitized-write') {
+        const pages = rendererOrigin.trustedRendererPageUrls();
+        const devUrl = is.dev
+          ? process.env['ELECTRON_RENDERER_URL']
+          : undefined;
+        if (devUrl) {
+          pages.push(new URL(MAIN_WINDOW_RENDERER_PAGE, devUrl).href);
+          pages.push(appAdvisorDevServerUrl(devUrl));
+        }
+        callback(
+          allowsRendererClipboardWrite(
+            webContents,
+            details,
+            pages,
+            devUrl,
+            panelClipboardWriters.has(webContents),
+          ),
+        );
+        return;
+      }
       // Voice dictation is the only renderer feature that requests media.
       // Grant microphone-only access, deny everything else (including video).
       if (permission !== 'media' || !('mediaTypes' in details)) {
@@ -3869,15 +4129,19 @@ function createWindowWithState(preferences: PreferencesData): void {
             source: 'app-link',
           }),
       });
+      panelClipboardWriters.add(childWindow.webContents);
     }
-  });
-
-  mainWindow.webContents.on('did-start-loading', (): void => {
-    mainWindowRendererReady = false;
   });
 
   mainWindow.webContents.on('did-finish-load', (): void => {
     if (mainWindow) reassertUiZoomAfterLoad(mainWindow);
+  });
+  // Branch enrollment's fallback when no projects:load follows first paint.
+  mainWindow.webContents.once('did-finish-load', (): void => {
+    setTimeout(
+      startWorktreeBranchEnrollment,
+      WORKTREE_BRANCH_ENROLLMENT_FALLBACK_MS,
+    ).unref();
   });
 
   mainWindow.webContents.on('will-navigate', (event, url): void => {
@@ -4066,6 +4330,7 @@ function createWindowWithState(preferences: PreferencesData): void {
     // The reloaded renderer republishes its link target once it starts. Not
     // on `did-start-loading`, which sub-frame loads also fire (CAN-2632).
     setLinkBrowserTargetAvailable(false);
+    // Also clears renderer readiness until the new page reports startup.
     markMainWindowPageDown();
   });
 
@@ -4398,7 +4663,7 @@ if (!hasSingleInstanceLock) {
     if ('destination' in link && link.destination === 'settings') {
       if (!mainWindowRendererReady || window.webContents.isDestroyed())
         return false;
-      if (link.optIn) {
+      if (link.section === 'privacy' && link.optIn) {
         sendToWebContents(
           window.webContents,
           IPC_CHANNELS.deepLinkPrivacyOptInOpen,
@@ -4488,6 +4753,8 @@ if (!hasSingleInstanceLock) {
 
 // -------------------------------------------------------------------------
 
+configureLinuxDesktopIdentity(app);
+
 // Before ready: agent visuals run in their own process, not the app's.
 pinIsolateSandboxedIframes(app.commandLine);
 configureLinuxSecureStorage(app.commandLine, {
@@ -4500,6 +4767,20 @@ configureLinuxSecureStorage(app.commandLine, {
 
 void app.whenReady().then(async (): Promise<void> => {
   if (!hasSingleInstanceLock) return;
+  // TRANSITIONAL (CAN-3797): joins the W5 host cohort before any W5 I/O.
+  // Remove when the W5 rows move to `daemon` and the legacy Electron writers
+  // are deleted (CAN-3795 / CAN-3802).
+  const w5Host = await admitDesktopW5Host(getCanopyDataDir());
+  if (w5Host.kind === 'refused') {
+    exitForW5HostRefusal(w5Host.message);
+    return;
+  }
+  installExecutionAccountingHost({
+    wakeLock: getWakeLockService(),
+    recordDiagnostic: (record): void => {
+      getObservabilityService().recordAppDiagnostic(record);
+    },
+  });
   initializeSidebarItemGroups();
   if (__CANOPY_E2E__) {
     // The performance harness's J1 journey reads when main became ready.
@@ -4563,6 +4844,7 @@ void app.whenReady().then(async (): Promise<void> => {
   const localMemoryModelSnapshot =
     preferenceMigrationSnapshots?.localMemoryModel;
   startDesktopInstrumentation();
+  childToolsSettlement ??= startChildToolsSettlement();
   setCodexGatewayProxyDiagnosticSink((record) => {
     getObservabilityService().recordSessionDiagnostic(record);
   });
@@ -4600,7 +4882,9 @@ void app.whenReady().then(async (): Promise<void> => {
   getSharedContainerInboxWatcher().start();
   // Resolve the user's login-shell PATH in the background now so the first
   // terminal/agent spawn never blocks on (or falls back around) the
-  // multi-second interactive shell init.
+  // multi-second interactive shell init. Lookups launch through the
+  // execution host port, like the pipeline and code-graph hosts.
+  setLoginShellProbe(createPortLoginShellProbe(getExecutionHostPort()));
   const loginShellPathPrewarm = prewarmLoginShellPath();
   // Log any promised bundle member that is not staged, once the PATH used for
   // the macOS development fallback is known.
@@ -4616,6 +4900,17 @@ void app.whenReady().then(async (): Promise<void> => {
       console.warn('Failed to reap stale Codex app-server processes:', error);
     },
   );
+  // Reap Claude CLIs a crashed run left behind (they run detached). Each PID
+  // must still match its recorded start time and executable before a kill.
+  enableClaudeProcessPidPersistence();
+  void reapStaleClaudeProcesses()
+    .then((reaped): void => {
+      for (const record of reaped) recordReapedClaudeProcessDiagnostic(record);
+    })
+    .catch((error: unknown): void => {
+      // eslint-disable-next-line no-console
+      console.warn('Failed to reap stale Claude processes:', error);
+    });
   void sweepOrphanedMacosWorktreeDirectories().catch((error: unknown): void => {
     // eslint-disable-next-line no-console
     console.warn('Failed to sweep orphaned macOS worktree directories.', {
@@ -4729,8 +5024,11 @@ void app.whenReady().then(async (): Promise<void> => {
   startOrgProjectAutoConversion();
   void getOrgProjectMaterialization()
     .sweepInterruptedSetups()
-    .then((): void => {
+    .then(async (): Promise<void> => {
       startPersonalOrganizationUpgradeRecovery();
+      const { resumeDesktopSharedMultiRepoCreations } =
+        await import('./canopy-runtime/core-shared-multi-repo-host');
+      await resumeDesktopSharedMultiRepoCreations();
     })
     .catch((error: unknown): void => {
       getObservabilityService().recordAppDiagnostic({
@@ -4943,6 +5241,18 @@ void app.whenReady().then(async (): Promise<void> => {
     console.error('Failed to migrate built-in browser link default:', error);
   }
   if (appIsQuitting) return;
+  // CAN-5154: a profile without a generation record gets one in the background.
+  void startPreferencesGenerationStamp();
+  try {
+    await (await import('./copilot/connection')).recoverCopilotAtStartup();
+  } catch (error) {
+    logMainProcessWarn(
+      '[copilot] Startup process recovery did not finish',
+      error,
+    );
+  }
+  // Re-check after the reaper: quit may already be past its startup-recovery stage.
+  if (appIsQuitting) return;
   startupRecoveryPromise = (async (): Promise<void> => {
     await staleCodexCleanup;
     await recoverInterruptedWorkAtStartup();
@@ -4968,6 +5278,14 @@ void app.whenReady().then(async (): Promise<void> => {
   nativeTheme.themeSource = getNativeThemeSource(preferences.colorMode);
   setAppAdvisorProjectAgentAccess(preferences.appAdvisorProjectAgentAccess);
   setCodeGraphPreferences(preferences.codeGraph);
+  // Canonical turn state decides the audit entries of turns no dispatcher started.
+  installTurnStateAudit(getObservabilityService(), getChatStateService());
+  // Committed turn state and its timer rows must agree (turn-state phase 43c).
+  installTurnStateInvariantGuard(
+    (diagnostic) =>
+      getObservabilityService().recordSessionDiagnostic(diagnostic),
+    getChatStateService(),
+  );
   setRemoteControlEnabled(preferences.remoteControlEnabled === true);
   let previousCanopyPortalEnabled = getFeatureFlagService().isEnabled(
     CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key,
@@ -6156,6 +6474,16 @@ void app.whenReady().then(async (): Promise<void> => {
   const activeDesktopCanopyRuntime = desktopCanopyRuntime;
   bindConfiguredPromptFilesystemDispatcher(activeDesktopCanopyRuntime);
   bindLedgerToolsDispatcher(activeDesktopCanopyRuntime);
+  if (__CANOPY_E2E__ && process.env.CANOPY_E2E_SEED_LIFETIME_LIMIT_FIXTURE) {
+    const { seedDelegationLifetimeLimitFixture } =
+      await import('./e2e-fixtures/lifetime-limit-fixture');
+    await seedDelegationLifetimeLimitFixture();
+  }
+  if (__CANOPY_E2E__ && process.env.CANOPY_E2E_SEED_STREAM_FIXTURE) {
+    const { seedDelegationStreamFixture } =
+      await import('./e2e-fixtures/delegation-stream-fixture');
+    await seedDelegationStreamFixture(getChatStateService());
+  }
   closeChatStatePush = registerAllIpcHandlers(
     {
       getMainWindow,
@@ -6245,6 +6573,13 @@ void app.whenReady().then(async (): Promise<void> => {
         }),
     },
   );
+  // Git HEAD observation runs in main, independent of the renderer. Every
+  // build, E2E included, enrolls at the first projects:load or the
+  // first-paint fallback, so perf measures the production trigger (CAN-4899).
+  startWorktreeBranchObserver({
+    dispatcher: activeDesktopCanopyRuntime,
+    getWindow: getMainWindow,
+  });
   // A paired computer mirrors the main window, so its bridge answers the
   // approval prompts that window shows. App Advisor prompts stay local.
   setApprovalOwnerResolver((sender) => {
@@ -6344,6 +6679,9 @@ void app.whenReady().then(async (): Promise<void> => {
   getCodexRuntimeService()
     .admin()
     .updateIdleTimeoutMinutes(preferences.codexAppServerIdleTimeoutMinutes);
+  updateClaudeSessionIdleTimeoutMinutes(
+    preferences.claudeSessionIdleTimeoutMinutes,
+  );
   await rendererOriginDecided;
   createWindowWithState(preferences);
   // The scheduler runs its first sweep immediately. Start it only after the

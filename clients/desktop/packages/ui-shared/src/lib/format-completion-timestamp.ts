@@ -36,8 +36,10 @@ const monthDayYearFormatter = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
 });
 
-export function formatCompletionTimestamp(timestamp: number): string {
-  const nowMs = Date.now();
+export function formatCompletionTimestamp(
+  timestamp: number,
+  nowMs: number = Date.now(),
+): string {
   const diffMs = nowMs - timestamp;
   if (!Number.isFinite(timestamp) || diffMs < 0) {
     return 'just now';
@@ -70,4 +72,33 @@ export function formatCompletionTimestamp(timestamp: number): string {
       ? monthDayFormatter
       : monthDayYearFormatter;
   return `${dateFormatter.format(timestamp)}, ${timeFormatter.format(timestamp)}`;
+}
+
+const fullFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+/**
+ * The hover text for a completion stamp: only what the stamp itself doesn't
+ * show. A relative or time-only stamp ("5m ago", "10:11 AM", "Monday,
+ * 9:15 AM") gains the full date and time; a stamp that already shows its
+ * date ("Apr 10, 9:15 AM") gains nothing, since a tooltip never repeats its
+ * label. The model that answered, which the stamp never shows, stays.
+ */
+export function completionStampTooltip(
+  timestamp: number,
+  modelLabel?: string,
+  nowMs: number = Date.now(),
+): string | undefined {
+  const label = formatCompletionTimestamp(timestamp, nowMs);
+  const showsDate = label.includes(monthDayFormatter.format(timestamp));
+  const parts = [
+    ...(showsDate ? [] : [fullFormatter.format(timestamp)]),
+    ...(modelLabel === undefined ? [] : [modelLabel]),
+  ];
+  return parts.length > 0 ? parts.join(' · ') : undefined;
 }

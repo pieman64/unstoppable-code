@@ -42,10 +42,15 @@ test('Settings → Plugins persists deferred-tools defaults', async () => {
     );
     expect(created.success).toBe(true);
     await window.getByTestId('active-items-summary-manage').click();
-    await expect(
-      window.getByTestId('plugins-installed-status-filter'),
-    ).toBeVisible();
-    await window.getByTestId('plugins-installed-status-filter-clear').click();
+    const statusFilter = window.getByTestId(
+      'customize-installed-status-filter',
+    );
+    await expect(statusFilter).toHaveAttribute('data-status', 'active');
+    await statusFilter.click();
+    await window
+      .getByTestId('customize-installed-status-filter-option-any')
+      .click();
+    await expect(statusFilter).toHaveAttribute('data-status', 'any');
     const status = window.getByTestId(
       'plugins-entry-status-skill:custom:app:settings-active-skill',
     );
@@ -57,7 +62,6 @@ test('Settings → Plugins persists deferred-tools defaults', async () => {
       )
       .click();
     await expect(status).toHaveAttribute('data-status', 'active');
-    await window.getByTestId('plugins-management-back').click();
     await app.openSettings();
     await app.openSettingsSection('plugins');
     await expect(

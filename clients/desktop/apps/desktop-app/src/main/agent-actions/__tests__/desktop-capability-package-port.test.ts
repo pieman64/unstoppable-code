@@ -49,6 +49,8 @@ function setup(
   };
   const call: AgentActionCall<CanopyInjectedToolRuntime> = {
     host: {
+      requestUserAnswers: () => Promise.resolve([]),
+      loadScriptOutput: () => Promise.resolve({ found: false, lines: [] }),
       worktreeActionRuntime: {
         projectId: 'project',
         worktreeId: 'worktree',

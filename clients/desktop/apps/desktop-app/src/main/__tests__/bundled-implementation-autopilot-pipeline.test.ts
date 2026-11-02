@@ -755,6 +755,9 @@ describe('bundled implementation autopilot pipeline', () => {
       getStep(pipeline, 'qa_fix_loop', 'run_verification_commands'),
     ];
     const packageScriptPolicyFragments = stepsToCheck.map((step) => {
+      if (!step.run) {
+        throw new Error('Expected pipeline step to include a run script');
+      }
       const constants = step.run.match(
         /const packageManagerCommandPattern =[\s\S]*?(?=const bashSyntaxCheckPattern =)/,
       );
@@ -767,6 +770,9 @@ describe('bundled implementation autopilot pipeline', () => {
     });
 
     for (const step of stepsToCheck) {
+      if (!step.run) {
+        throw new Error('Expected pipeline step to include a run script');
+      }
       expect(step.run).toContain(expectedRecipePattern);
       expect(step.run).toContain(expectedCommandToolPattern);
       expect(step.run).not.toContain(

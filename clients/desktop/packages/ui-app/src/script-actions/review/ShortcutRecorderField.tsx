@@ -15,7 +15,7 @@ import {
 import {
   Button,
   LoadingSpinner,
-  ShortcutKeys,
+  Kbd,
   TextInput,
 } from '@canopy/ui-shared/components';
 import { interpretShortcutRecorderKey } from './shortcut-recorder';
@@ -143,7 +143,7 @@ export function ShortcutRecorderField({
             <span className="text-xs fg-tertiary">No shortcut</span>
           ) : (
             <span data-testid={`${testId}-value`}>
-              <ShortcutKeys shortcut={display} />
+              <Kbd data-testid="shortcut-keys" shortcut={display} />
             </span>
           )}
           <Button
@@ -198,7 +198,7 @@ export function ShortcutRecorderField({
           {preview === 'none' ? (
             <span className="text-xs fg-tertiary">No shortcut</span>
           ) : preview !== null ? (
-            <ShortcutKeys shortcut={preview} />
+            <Kbd data-testid="shortcut-keys" shortcut={preview} />
           ) : null}
         </span>
         <Button

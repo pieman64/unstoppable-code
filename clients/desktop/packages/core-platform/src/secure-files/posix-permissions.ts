@@ -4,6 +4,7 @@ import { lstat, open } from 'node:fs/promises';
 import {
   checkShape,
   fail,
+  PATH_CHANGED_DURING_CHECK,
   PRIVATE,
   sameNode,
   type PermissionRequest,
@@ -70,7 +71,7 @@ export async function posixPermissions(
           );
     const after = await handle.stat({ bigint: true });
     if (!sameNode(after, await lstat(request.path, { bigint: true }))) {
-      return fail('insecure', 'path changed during permission check');
+      return fail('insecure', PATH_CHANGED_DURING_CHECK);
     }
     return acl ?? checkNode(after, request, uid) ?? checkMode(after, expected);
   } finally {

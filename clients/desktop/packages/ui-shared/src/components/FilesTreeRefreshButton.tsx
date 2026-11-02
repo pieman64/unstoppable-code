@@ -1,13 +1,15 @@
 import type { JSX } from 'react';
 import { RefreshIcon as CentralRefreshIcon } from '../icons/AppIcons';
+import { Button } from './Button';
 import { useIconStyle } from './icon-style';
 import { RefreshSpinner } from './RefreshSpinner';
 import { Tooltip } from './Tooltip';
 
 /**
- * Toolbar density the Files tab draws the control at. `compact` matches the
- * desktop Files header's 12px glyph row; `comfortable` matches the Portal and
- * cloud Files toolbar's 16px glyph row.
+ * Glyph density the Files tab draws the control at. `compact` matches the
+ * desktop Files header's 12px glyphs; `comfortable` matches the Portal and
+ * cloud Files toolbar's 16px glyphs. Both sit in the same 28px icon button
+ * as the toolbar's other icon actions.
  */
 export type FilesTreeRefreshButtonDensity = 'compact' | 'comfortable';
 
@@ -26,13 +28,6 @@ export interface FilesTreeRefreshButtonProps {
 }
 
 const LABEL = 'Refresh files';
-
-const BUTTON_CLASS_NAMES: Record<FilesTreeRefreshButtonDensity, string> = {
-  compact:
-    'focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50',
-  comfortable:
-    'focus-ring rounded p-1 fg-secondary hover:bg-fg-primary/[0.06] disabled:opacity-50',
-};
 
 const CENTRAL_ICON_CLASS_NAMES: Record<FilesTreeRefreshButtonDensity, string> =
   {
@@ -59,12 +54,13 @@ export function FilesTreeRefreshButton({
 }: FilesTreeRefreshButtonProps): JSX.Element {
   const central = useIconStyle() === 'central';
   const button = (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="compact"
+      iconOnly
       aria-label={LABEL}
       data-testid="files-tree-refresh"
       disabled={disabled}
-      className={BUTTON_CLASS_NAMES[density]}
       onClick={onClick}
     >
       {central ? (
@@ -77,7 +73,7 @@ export function FilesTreeRefreshButton({
           size={CLASSIC_ICON_SIZES[density]}
         />
       )}
-    </button>
+    </Button>
   );
   return showTooltip ? <Tooltip label={LABEL}>{button}</Tooltip> : button;
 }

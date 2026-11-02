@@ -2,6 +2,7 @@ export * from './platform-services';
 export * from './endpoints';
 export {
   deriveLocalAuthorityIdentity,
+  hostLocalAuthorityObservation,
   LocalAuthorityIdentityError,
   type LocalAuthorityIdentity,
   type LocalAuthorityObservation,
@@ -10,15 +11,57 @@ export {
   createOwnedChildServices,
   OWNED_CHILD_FILE,
   OwnedChildError,
+  type OwnedChildChannel,
   type OwnedChildErrorCode,
+  type OwnedChildLaunch,
+  type OwnedChildServices,
 } from './supervision/owned-child';
+export {
+  createProcessTableReader,
+  type ProcessTableOperations,
+} from './supervision/process-table';
+export {
+  createExecutionProcessServices,
+  ExecutionProcessError,
+  type ExecutionProcessErrorCode,
+} from './supervision/execution-process';
+export {
+  createPeerIdentityServices,
+  type DaemonBuildBinding,
+  type DaemonIdentity,
+  daemonRequirement,
+  type DaemonRequirement,
+  type EvidenceCapture,
+  type LauncherChannel,
+  type LauncherChannelClaim,
+  type LauncherIdentity,
+  launcherRequirement,
+  type LauncherRequirement,
+  PEER_IDENTITY_FILE,
+  peerEvidenceFor,
+  peerCaptureFor,
+  type PeerEvidence,
+  PeerIdentityError,
+  type PeerIdentityErrorCode,
+  type PeerIdentityServices,
+  type PeerRefusalReason,
+} from './peer-identity';
 export { createFileIndexingMatchPolicy } from './file-indexing';
+export { createNativeTrashServices, type NativeTrashOptions } from './trash';
 export {
   createGitReadHost,
+  GIT_READ_SELECTION_LIMITS,
   type GitReadHost,
   type GitReadHostCleanupReport,
   type GitReadHostOptions,
+  type GitReadSelected,
+  type GitReadSelections,
 } from './git-read/host';
+export {
+  createGitWriteHost,
+  type GitWriteHost,
+  type GitWriteHostOptions,
+} from './git-write/host';
 export {
   captureWindowsClosureContext,
   createWindowsClosureWitness,

@@ -46,10 +46,14 @@ const mockPinnedHttpFetch = jest.fn(
 );
 
 jest.mock('node:dns/promises', () => ({
-  lookup: mockDnsLookup,
+  get lookup(): typeof mockDnsLookup {
+    return mockDnsLookup;
+  },
 }));
 jest.mock('../mcp/pinned-http-fetch', () => ({
-  fetchPinnedHttpResponse: mockPinnedHttpFetch,
+  get fetchPinnedHttpResponse(): typeof mockPinnedHttpFetch {
+    return mockPinnedHttpFetch;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({
@@ -60,10 +64,14 @@ jest.mock('../lib/paths', () => ({
     join(mockRoot, 'tools-cache.json'),
 }));
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferences,
+  get readPreferencesFile(): typeof mockReadPreferences {
+    return mockReadPreferences;
+  },
 }));
 jest.mock('../mcp/oauth-client', () => ({
-  getValidMcpAccessToken: mockGetValidMcpAccessToken,
+  get getValidMcpAccessToken(): typeof mockGetValidMcpAccessToken {
+    return mockGetValidMcpAccessToken;
+  },
 }));
 jest.mock('../mcp/oauth-token-store', () => ({
   getMcpOAuthAuthStatusForDefinition: jest.fn(),
@@ -631,8 +639,13 @@ describe('MCP tool discovery/cache', () => {
     mockDnsLookup.mockReturnValue(new Promise(() => undefined));
     try {
       const discovery = discoverHttpTools({
+        id: 'server-1',
+        name: 'Server',
+        description: '',
         type: 'http',
         url: 'https://mcp.example.test',
+        createdAt: '2026-07-14T00:00:00.000Z',
+        updatedAt: '2026-07-14T00:00:00.000Z',
       });
       const rejection = expect(discovery).rejects.toMatchObject({
         kind: 'timeout',

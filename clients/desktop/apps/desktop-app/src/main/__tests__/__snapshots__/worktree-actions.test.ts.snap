@@ -29,7 +29,7 @@ exports[`searchWorktreeActions ranking characterization ranks directory empty in
   "category": undefined,
   "query": "",
   "returned": 20,
-  "totalMatches": 44,
+  "totalMatches": 43,
 }
 `;
 
@@ -52,7 +52,6 @@ exports[`searchWorktreeActions ranking characterization ranks directory pipeline
 {
   "actionType": undefined,
   "actions": [
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
     "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
@@ -72,12 +71,13 @@ exports[`searchWorktreeActions ranking characterization ranks directory pipeline
     "pipeline.execution_retry_matrix_job [pipeline] fields=executionId,jobId,mode,variantJobIds req=executionId,jobId,mode opt=variantJobIds example=type,executionId,jobId,mode notes=1",
     "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
     "pipeline.execution_retry [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+    "automation.run_now [automations] fields=id,watchers req=id opt=watchers example=type,id notes=2",
   ],
   "categories": "sidebar,skills,sharing,pipeline,browser,automations",
   "category": undefined,
   "query": "run pipeline",
   "returned": 20,
-  "totalMatches": 27,
+  "totalMatches": 26,
 }
 `;
 
@@ -152,14 +152,13 @@ exports[`searchWorktreeActions ranking characterization ranks restricted directo
 {
   "actionType": undefined,
   "actions": [
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
   ],
   "categories": "pipeline",
   "category": undefined,
   "query": "run",
-  "returned": 2,
-  "totalMatches": 2,
+  "returned": 1,
+  "totalMatches": 1,
 }
 `;
 
@@ -170,13 +169,12 @@ exports[`searchWorktreeActions ranking characterization ranks restricted empty i
     "worktree.run_script [worktree] fields=scriptId,repo,waitSeconds req=scriptId opt=repo,waitSeconds example=type,scriptId,waitSeconds notes=4",
     "hook.pause [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
   ],
   "categories": "pipeline,worktree,hook",
   "category": undefined,
   "query": "",
-  "returned": 4,
-  "totalMatches": 4,
+  "returned": 3,
+  "totalMatches": 3,
 }
 `;
 
@@ -197,14 +195,13 @@ exports[`searchWorktreeActions ranking characterization ranks restricted query 1
   "actionType": undefined,
   "actions": [
     "worktree.run_script [worktree] fields=scriptId,repo,waitSeconds req=scriptId opt=repo,waitSeconds example=type,scriptId,waitSeconds notes=4",
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
   ],
   "categories": "pipeline,worktree,hook",
   "category": undefined,
   "query": "run",
-  "returned": 3,
-  "totalMatches": 3,
+  "returned": 2,
+  "totalMatches": 2,
 }
 `;
 
@@ -212,10 +209,10 @@ exports[`searchWorktreeActions ranking characterization ranks worktree automatio
 {
   "actionType": undefined,
   "actions": [
-    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=15",
     "automation.list [automations] fields=includeRuns req= opt=includeRuns example=type,includeRuns notes=1",
     "automation.get [automations] fields=id req=id opt= example=type,id notes=1",
-    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=4",
+    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=5",
     "automation.delete [automations] fields=id req=id opt= example=type,id notes=1",
     "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
     "automation.run_now [automations] fields=id,watchers req=id opt=watchers example=type,id notes=2",
@@ -259,7 +256,6 @@ exports[`searchWorktreeActions ranking characterization ranks worktree category 
     "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
     "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
     "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
     "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
@@ -273,8 +269,8 @@ exports[`searchWorktreeActions ranking characterization ranks worktree category 
   "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
   "category": "pipeline",
   "query": "",
-  "returned": 20,
-  "totalMatches": 20,
+  "returned": 19,
+  "totalMatches": 19,
 }
 `;
 
@@ -284,8 +280,8 @@ exports[`searchWorktreeActions ranking characterization ranks worktree category 
   "actions": [
     "automation.list [automations] fields=includeRuns req= opt=includeRuns example=type,includeRuns notes=1",
     "automation.get [automations] fields=id req=id opt= example=type,id notes=1",
-    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
-    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=4",
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=15",
+    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=5",
     "automation.delete [automations] fields=id req=id opt= example=type,id notes=1",
     "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
     "automation.run_now [automations] fields=id,watchers req=id opt=watchers example=type,id notes=2",
@@ -327,7 +323,7 @@ exports[`searchWorktreeActions ranking characterization ranks worktree empty inp
   "category": undefined,
   "query": "",
   "returned": 20,
-  "totalMatches": 50,
+  "totalMatches": 49,
 }
 `;
 
@@ -400,7 +396,6 @@ exports[`searchWorktreeActions ranking characterization ranks worktree large lim
     "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
     "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
     "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
     "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
@@ -412,8 +407,8 @@ exports[`searchWorktreeActions ranking characterization ranks worktree large lim
     "pipeline.execution_chain [pipeline] fields=executionId,pipelineId,inputs,repoId req=executionId,pipelineId opt=inputs,repoId example=type,executionId,pipelineId notes=1",
     "automation.list [automations] fields=includeRuns req= opt=includeRuns example=type,includeRuns notes=1",
     "automation.get [automations] fields=id req=id opt= example=type,id notes=1",
-    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
-    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=4",
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=15",
+    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=5",
     "automation.delete [automations] fields=id req=id opt= example=type,id notes=1",
     "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
     "automation.run_now [automations] fields=id,watchers req=id opt=watchers example=type,id notes=2",
@@ -421,8 +416,8 @@ exports[`searchWorktreeActions ranking characterization ranks worktree large lim
   "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
   "category": undefined,
   "query": "",
-  "returned": 50,
-  "totalMatches": 50,
+  "returned": 49,
+  "totalMatches": 49,
 }
 `;
 
@@ -442,7 +437,6 @@ exports[`searchWorktreeActions ranking characterization ranks worktree pipeline 
 {
   "actionType": undefined,
   "actions": [
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
     "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
@@ -462,12 +456,13 @@ exports[`searchWorktreeActions ranking characterization ranks worktree pipeline 
     "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
     "pipeline.execution_retry_matrix_job [pipeline] fields=executionId,jobId,mode,variantJobIds req=executionId,jobId,mode opt=variantJobIds example=type,executionId,jobId,mode notes=1",
     "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
+    "pipeline.execution_retry [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
   ],
   "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
   "category": undefined,
   "query": "run pipeline",
   "returned": 20,
-  "totalMatches": 29,
+  "totalMatches": 28,
 }
 `;
 
@@ -477,7 +472,6 @@ exports[`searchWorktreeActions ranking characterization ranks worktree plan quer
   "actions": [
     "tracked-plan.import [tracked-plan] fields=filePath,repoId req=filePath,repoId opt= example=type,filePath,repoId notes=1",
     "skills.import_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
     "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
@@ -486,8 +480,8 @@ exports[`searchWorktreeActions ranking characterization ranks worktree plan quer
   "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
   "category": undefined,
   "query": "import tracked plan",
-  "returned": 7,
-  "totalMatches": 7,
+  "returned": 6,
+  "totalMatches": 6,
 }
 `;
 
@@ -525,16 +519,16 @@ exports[`searchWorktreeActions ranking characterization ranks worktree share que
     "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
     "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
     "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
-    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
     "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
     "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
     "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
+    "pipeline.execution_cancel [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
   ],
   "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
   "category": undefined,
   "query": "share pipeline",
   "returned": 20,
-  "totalMatches": 28,
+  "totalMatches": 27,
 }
 `;
 
@@ -575,7 +569,7 @@ exports[`searchWorktreeActions ranking characterization ranks worktree skills qu
     "skills.update_shared [skills] fields=skillId,name req=skillId,name opt= example=type,skillId,name notes=1",
     "skills.delete_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
     "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
-    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=15",
     "sidebar.item_groups.set_item [sidebar] fields=groupId,newGroup req= opt=groupId,newGroup example=type,newGroup notes=3",
     "sidebar.item_groups.update [sidebar] fields=groupId,name,color,collapsed,labelHidden,keepWhenEmpty req=groupId opt=name,color,collapsed,labelHidden,keepWhenEmpty example=type,groupId,collapsed notes=3",
     "sharing.open_dialog [sharing] fields=target req=target opt= example=type,target notes=2",
@@ -603,7 +597,7 @@ exports[`searchWorktreeActions ranking characterization ranks worktree small lim
   "category": undefined,
   "query": "pipeline",
   "returned": 3,
-  "totalMatches": 22,
+  "totalMatches": 21,
 }
 `;
 
@@ -1023,108 +1017,6 @@ exports[`searchWorktreeActions ranking characterization scopes the hook.pause ca
 }
 `;
 
-exports[`searchWorktreeActions ranking characterization scopes the pipeline.run catalog entry for { executionScope: 'directory' } 1`] = `
-[
-  "type",
-  "category",
-  "summary",
-  "fields",
-  "example",
-  "requiredFields",
-  "optionalFields",
-  "notes",
-]
-`;
-
-exports[`searchWorktreeActions ranking characterization scopes the pipeline.run catalog entry for { executionScope: 'directory' } 2`] = `
-{
-  "category": "pipeline",
-  "example": {
-    "inputs": {
-      "target": "test",
-    },
-    "pipelineId": "build",
-    "type": "pipeline.run",
-    "watchers": [
-      {
-        "terminalStatuses": [
-          "success",
-          "failure",
-          "cancelled",
-        ],
-      },
-    ],
-  },
-  "fields": [
-    {
-      "description": "Pipeline id to run.",
-      "name": "pipelineId",
-      "required": true,
-      "type": "string",
-    },
-    {
-      "description": "Pipeline input values.",
-      "name": "inputs",
-      "required": false,
-      "type": "Record<string,string>",
-    },
-    {
-      "description": "Run mode/event to use. Defaults to dispatch.",
-      "name": "runMode",
-      "required": false,
-      "type": "'dispatch' | 'plan_ready' | 'task_ready'",
-    },
-    {
-      "description": "Plan file path required for plan_ready and optional for task_ready.",
-      "name": "planPath",
-      "required": false,
-      "type": "string",
-    },
-    {
-      "description": "Task file path required for task_ready.",
-      "name": "taskPath",
-      "required": false,
-      "type": "string",
-    },
-    {
-      "description": "Optional tracked plan id.",
-      "name": "planId",
-      "required": false,
-      "type": "string",
-    },
-    {
-      "description": "Optional repo id for source-backed project execution cwd.",
-      "name": "repoId",
-      "required": false,
-      "type": "string",
-    },
-    {
-      "description": "Optional watcher entries to arm for the new pipeline execution immediately after it starts. Do not include target or destination ids.",
-      "name": "watchers",
-      "required": false,
-      "type": "AppAdvisorInlineWatcherSetup[]",
-    },
-  ],
-  "notes": [
-    "Do not provide projectId or worktreeId; this cowork project chat supplies its project scope server-side.",
-  ],
-  "optionalFields": [
-    "inputs",
-    "runMode",
-    "planPath",
-    "taskPath",
-    "planId",
-    "repoId",
-    "watchers",
-  ],
-  "requiredFields": [
-    "pipelineId",
-  ],
-  "summary": "Run a pipeline for a Code entry (worktree). Current cowork project scope is applied by Canopy.",
-  "type": "pipeline.run",
-}
-`;
-
 exports[`searchWorktreeActions ranking characterization scopes the sidebar.item_groups.set_item catalog entry for { executionScope: 'directory' } 1`] = `
 [
   "type",
@@ -1250,7 +1142,7 @@ exports[`searchWorktreeActions ranking characterization scopes the worktree.get_
   },
   "fields": [],
   "notes": [
-    "This scoped action returns projectId, worktreeId, trackedBaseBranch and trackedRepoBaseBranches for the intended comparison base, pausedHookKeys, and hooks; it does not return App Advisor UI effective overrides.",
+    "This scoped action returns projectId, worktreeId, trackedBaseBranch and trackedRepoBaseBranches for the intended comparison base, pausedHookKeys, and hooks; it does not return Orchestrator UI effective overrides.",
     "Do not provide projectId or worktreeId; this worktree chat supplies them server-side.",
   ],
   "optionalFields": [],

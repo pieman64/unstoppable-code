@@ -7,8 +7,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type {
+  LedgerTaskViewScope,
   LedgerViewResult,
-  LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
 import {
   indexLedgerActorLabels,
@@ -73,7 +73,7 @@ function ledgerUnavailable(): LedgerAdvisorOutcome | null {
 function resolveScope(action: {
   readonly projectId?: string;
   readonly worktreeId?: string;
-}): LedgerViewScope | null {
+}): LedgerTaskViewScope | null {
   if (action.projectId !== undefined && action.worktreeId !== undefined) {
     return { projectId: action.projectId, worktreeId: action.worktreeId };
   }
@@ -148,7 +148,7 @@ function nextFrame(): Promise<void> {
 }
 
 /** Shows the scope, opening its Ledger panel once its layout is built. */
-async function showLedger(scope: LedgerViewScope): Promise<boolean> {
+async function showLedger(scope: LedgerTaskViewScope): Promise<boolean> {
   const chat = useChatStore.getState();
   const selected = chat.selectedWorktree;
   const isSelected =

@@ -1,9 +1,10 @@
-// Early access inset window layout: the work area is cards inset from the
-// window. The worktree page's left card sits one hairline inside the sidebar
-// edge. The page clips its panel grid with a margin, leaving the card's edge line
-// and shadow visible on its left. Settings is one card like the main window's:
-// under the window's empty 46px top row, 4px from the right and bottom edges.
-// With early access off, Settings keeps its full-height page.
+// Inset window layout: the work area is cards inset from the window. The
+// worktree page's left card sits one hairline inside the sidebar edge. The
+// page clips its panel grid with a margin, leaving the card's edge line and
+// shadow visible on its left. Settings is one card like the main window's:
+// under the window's empty 46px top row, 6px from the right and bottom edges.
+// The layout graduated from early access, so Settings is the same card
+// whether or not the user opted in.
 //
 // Run after building the implementation:
 //   pnpm run test:electron:built inset-window-layout-settings.spec.mjs --reporter=line
@@ -30,7 +31,7 @@ const WORKTREE_ID = 'demo-main';
 /** The window's empty top row above the inset cards. */
 const TOP_ROW = 46;
 /** The cards' gap to the window's right and bottom edges. */
-const EDGE_INSET = 4;
+const EDGE_INSET = 6;
 const CAPTURE_DIR = process.env.INSET_LAYOUT_CAPTURE_DIR;
 
 async function capture(window, name) {
@@ -94,7 +95,7 @@ async function settingsCard(window) {
   });
 }
 
-test('early access insets Settings and keeps the left card edge visible', async () => {
+test('insets Settings and keeps the left card edge visible', async () => {
   test.setTimeout(120_000);
   const { app, launched, userDataDir, window } = await launch({
     earlyAccess: true,
@@ -161,27 +162,28 @@ test('early access insets Settings and keeps the left card edge visible', async 
   }
 });
 
-test('with early access off Settings keeps its full-height page', async () => {
+test('without the early access opt-in Settings is still the inset card', async () => {
   test.setTimeout(120_000);
   const { app, launched, userDataDir, window } = await launch({
     earlyAccess: false,
   });
   try {
     await app.openSettings();
-    await expect(window.getByTestId('settings-overlay')).not.toHaveAttribute(
+    await expect(window.getByTestId('settings-overlay')).toHaveAttribute(
       'data-settings-layout',
-      /.*/,
+      'inset',
     );
     const card = await settingsCard(window);
     expect(card).not.toBeNull();
-    expect(Math.round(card.top)).toBe(0);
-    expect(Math.round(card.right)).toBe(0);
-    expect(Math.round(card.bottom)).toBe(0);
+    expect(Math.round(card.top)).toBe(TOP_ROW);
+    expect(Math.round(card.right)).toBe(EDGE_INSET);
+    expect(Math.round(card.bottom)).toBe(EDGE_INSET);
+    expect(card.radius).toBeGreaterThan(0);
     await expect(
       window.getByTestId('settings-content').getByText('General').first(),
     ).toBeVisible();
     await window.waitForTimeout(400);
-    await capture(window, 'settings-early-access-off');
+    await capture(window, 'settings-without-opt-in');
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }

@@ -1,4 +1,4 @@
-import type { JSX, ReactNode } from 'react';
+import { useId, type JSX, type ReactNode } from 'react';
 import type {
   PanelCollapseEdge,
   PanelGroupModel,
@@ -20,6 +20,7 @@ export interface PanelBranchCollapsedBarProps {
   callbacks: PanelIntentCallbacks;
   renderTabIcon?: (tab: PanelTabModel) => ReactNode;
   getTabTitle?: (tab: PanelTabModel) => string;
+  renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
   renderTabTooltip?: (tab: PanelTabModel) => ReactNode | null;
 }
 
@@ -30,8 +31,10 @@ export function PanelBranchCollapsedBar({
   callbacks,
   renderTabIcon,
   getTabTitle,
+  renderTabAccessibleStatus,
   renderTabTooltip,
 }: PanelBranchCollapsedBarProps): JSX.Element {
+  const statusIdPrefix = useId();
   const vertical = edge === 'left' || edge === 'right';
   const ExpandIcon =
     edge === 'left'
@@ -136,11 +139,24 @@ export function PanelBranchCollapsedBar({
                   className="canopy-panel-collapsed-tab"
                   data-testid={`panel-branch-tab-${tab.panelId}`}
                   aria-label={getTabTitle?.(tab) ?? tab.title}
+                  aria-describedby={
+                    renderTabAccessibleStatus
+                      ? `${statusIdPrefix}-${tab.panelId}`
+                      : undefined
+                  }
                   onClick={() =>
                     callbacks.onExpandGroupToTab?.(group.groupId, tab.panelId)
                   }
                 >
                   {renderTabIcon?.(tab) ?? tab.title.slice(0, 1)}
+                  {renderTabAccessibleStatus ? (
+                    <span
+                      className="sr-only"
+                      id={`${statusIdPrefix}-${tab.panelId}`}
+                    >
+                      {renderTabAccessibleStatus(tab)}
+                    </span>
+                  ) : null}
                 </button>
               </Tooltip>
             ))}

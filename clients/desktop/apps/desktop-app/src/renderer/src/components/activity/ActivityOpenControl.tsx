@@ -13,13 +13,16 @@ import { createPortal } from 'react-dom';
 import type { DevServerHit } from '@/lib/scriptDevServerDetection';
 import { useCloseOnOutsideMouseDown } from '@/hooks/useCloseOnOutsideMouseDown';
 import { useWindowPositionInvalidation } from '@/hooks/useWindowPositionInvalidation';
-import { GlobeIcon } from '@canopy/ui-shared/icons';
+import { ChevronIcon, GlobeIcon } from '@canopy/ui-shared/icons';
 import {
   DropdownMenuDivider,
   DropdownMenuLabel,
   DropdownMenuSurface,
 } from '@canopy/ui-shared';
-import { ActionMenuRowStyle } from '@canopy/ui-shared/components';
+import {
+  ActionMenuRowStyle,
+  HeaderActionButton,
+} from '@canopy/ui-shared/components';
 import { DevServerMenuItem } from './DevServerMenuItem';
 import {
   getDevServerOpenAriaLabel,
@@ -27,7 +30,6 @@ import {
   openDevServerHit,
   type DevServerOpenContext,
 } from './devServerOpen';
-import { ChevronIcon } from './RunOutputControls';
 import { Tooltip } from '@canopy/ui-shared';
 
 const MENU_WIDTH = 280;
@@ -138,28 +140,23 @@ export function ActivityOpenControl({
     return <></>;
   }
 
-  const triggerClass =
-    variant === 'collapsed'
-      ? 'focus-ring flex h-6.5 w-full items-center justify-center gap-1 rounded-md fg-accent px-2 text-2xs font-medium transition-colors hover:bg-accent-subtle'
-      : // Same ghost shell + accent tone as the header's Create PR button —
-        // this control sits beside it and was the last one on hardcoded
-        // palette colors (sky-500) with a bordered/filled body.
-        'electron-no-drag focus-ring flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal transition-colors fg-accent hover:bg-accent-subtle';
+  // The header's accent action, like the Create PR button it sits beside.
+  const triggerClass = variant === 'collapsed' ? 'w-full' : undefined;
 
   const globeSizeClass = variant === 'collapsed' ? 'h-3 w-3' : 'h-4 w-4';
 
   if (singleHit) {
     return (
       <Tooltip label={singleHit.url}>
-        <button
-          type="button"
+        <HeaderActionButton
+          tone="accent"
           onClick={(): void => openDevServerHit(singleHit, context)}
           aria-label={getDevServerOpenAriaLabel(singleHit)}
           className={triggerClass}
         >
           <GlobeIcon className={globeSizeClass} aria-hidden="true" />
           {getDevServerOpenButtonText(singleHit)}
-        </button>
+        </HeaderActionButton>
       </Tooltip>
     );
   }
@@ -168,9 +165,9 @@ export function ActivityOpenControl({
 
   return (
     <div className={variant === 'collapsed' ? 'w-full' : 'inline-flex'}>
-      <button
+      <HeaderActionButton
         ref={triggerRef}
-        type="button"
+        tone="accent"
         onClick={(): void => setMenuOpen((prev) => !prev)}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
@@ -180,7 +177,7 @@ export function ActivityOpenControl({
         <GlobeIcon className={globeSizeClass} aria-hidden="true" />
         <span>Open</span>
         <ChevronIcon open={menuOpen} />
-      </button>
+      </HeaderActionButton>
       {menuOpen &&
         createPortal(
           <DropdownMenuSurface

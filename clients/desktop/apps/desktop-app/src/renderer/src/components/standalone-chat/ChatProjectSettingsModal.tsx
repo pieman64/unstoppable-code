@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
+import { Button } from '@canopy/ui-shared/components';
+import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
 import {
   isDefaultCoworkWorkspaceId,
   type ChatProjectData,
@@ -41,6 +43,11 @@ import {
 } from '../settings/start-page/StartPageSettingControl';
 import { startPagesEqual } from '@/lib/start-page/project-start-page';
 import { useStartPageStore } from '@/stores/startPageStore';
+import {
+  getSidebarProjectEntries,
+  useStandaloneChatStore,
+} from '@/stores/standaloneChatStore';
+import { recheckWorkspaceRemovalBlockedReason } from '@/stores/chat/close-guard';
 
 type ChatProjectSettingsTab =
   | 'general'
@@ -338,9 +345,35 @@ export function ChatProjectSettingsModal({
     setIsDeleting(true);
     setError('');
     try {
+      const standaloneState = useStandaloneChatStore.getState();
+      let worktreeIds = getSidebarProjectEntries(
+        standaloneState,
+        currentProject.id,
+      ).map((entry) => entry.id);
+      if (
+        worktreeIds.length === 0 &&
+        standaloneState.activeChatProjectId !== currentProject.id
+      ) {
+        await useStandaloneChatStore
+          .getState()
+          .loadSidebarProjectEntries(currentProject.id);
+        worktreeIds = getSidebarProjectEntries(
+          useStandaloneChatStore.getState(),
+          currentProject.id,
+        ).map((entry) => entry.id);
+      }
+      const removalReason = await recheckWorkspaceRemovalBlockedReason(
+        currentProject.id,
+        worktreeIds,
+      );
+      if (removalReason !== undefined) {
+        setError(removalReason);
+        return;
+      }
       await onDelete(currentProject.id);
       onClose();
     } catch (cause) {
+      offerLifecycleJournalQuarantine(cause);
       setError(cause instanceof Error ? cause.message : 'Failed to delete');
     } finally {
       setIsDeleting(false);
@@ -625,31 +658,32 @@ export function ChatProjectSettingsModal({
             </div>
 
             {!confirmingDelete ? (
-              <button
-                type="button"
+              <Button
+                variant="ghost-destructive"
+                size="compact"
                 onClick={() => setConfirmingDelete(true)}
-                className="focus-ring mt-4 rounded-md bg-destructive-subtle px-3 py-1.5 text-xs font-medium fg-destructive hover:bg-destructive-subtle/80"
+                className="mt-4"
               >
                 {dangerTabCopy.triggerButtonLabel}
-              </button>
+              </Button>
             ) : (
               <div className="mt-4 flex items-center gap-2">
-                <button
-                  type="button"
+                <Button
+                  variant="destructive"
+                  size="compact"
                   onClick={() => void handleDelete()}
                   disabled={isDeleting}
-                  className="focus-ring rounded-md bg-destructive px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
                 >
                   {dangerTabCopy.confirmButtonLabel}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="compact"
                   onClick={() => setConfirmingDelete(false)}
                   disabled={isDeleting}
-                  className="focus-ring rounded-md px-3 py-1.5 text-xs fg-secondary hover:fg-primary"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             )}
           </div>
@@ -661,14 +695,14 @@ export function ChatProjectSettingsModal({
         activeTab !== 'share' &&
         isDirty && (
           <div className="flex justify-end border-t px-5 py-3">
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={() => void handleSave()}
               disabled={isSaving || !startPageValid}
-              className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
             >
               {isSaving ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
           </div>
         )}
 

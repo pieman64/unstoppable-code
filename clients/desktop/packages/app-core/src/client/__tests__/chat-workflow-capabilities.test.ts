@@ -17,6 +17,12 @@ const base = {
     },
   },
 };
+const SCHEDULED_PROVIDERS: readonly string[] = [
+  'claude',
+  'codex',
+  'ollama',
+  'opencode',
+];
 
 test('enables Cursor workflows separately and keeps deferred loading closed', () => {
   expect(deriveChatWorkflowCapabilities(base)).toEqual({
@@ -40,8 +46,7 @@ test.each(['claude', 'codex', 'ollama', 'cursor', 'copilot', 'opencode'])(
     });
     const supported = resolvedProvider !== 'copilot';
     expect(result.scheduledMessages).toBe(
-      (supported && resolvedProvider !== 'cursor') ||
-        resolvedProvider === 'opencode',
+      SCHEDULED_PROVIDERS.includes(resolvedProvider),
     );
     expect(result.planMode).toBe(supported);
     expect(result.planReview).toBe(supported);

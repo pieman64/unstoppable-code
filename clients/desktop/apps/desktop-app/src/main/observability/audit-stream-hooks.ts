@@ -11,17 +11,48 @@ import type {
  * status only.
  */
 
+/** The file a reader consumed. `ino` is absent when the platform reports none. */
+export interface AuditDayFileIdentity {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ino?: number;
+}
+
+/** An inode of 0 is no identity: some filesystems report it for every file. */
+export function sameAuditDayFileIdentity(
+  left: AuditDayFileIdentity,
+  right: AuditDayFileIdentity,
+): boolean {
+  if (left.size !== right.size || left.mtimeMs !== right.mtimeMs) return false;
+  const leftIno = left.ino === 0 ? undefined : left.ino;
+  const rightIno = right.ino === 0 ? undefined : right.ino;
+  return (
+    leftIno === undefined || rightIno === undefined || leftIno === rightIno
+  );
+}
+
 /**
  * Asked before an audit day file is deleted by retention. The guard catches
- * its reader up on the file, then resolves true when every line has been
- * consumed, so deleting it loses nothing. `dayFilename` is the file's name,
- * such as `2026-10-08.jsonl`.
+ * its reader up on the file, then resolves with the identity of the file it
+ * consumed completely, or null when it has not. Retention deletes the file
+ * only while it still has that identity, so a line appended after the check
+ * is kept. `dayFilename` is the file's name, such as `2026-10-08.jsonl`.
  *
  * A reader must register before observability initializes: its first prune
  * runs during initialization, and with no guard registered a due file is
  * deleted unread.
  */
-export type AuditDayPruneGuard = (dayFilename: string) => Promise<boolean>;
+export type AuditDayPruneGuard = (
+  dayFilename: string,
+) => Promise<AuditDayFileIdentity | null>;
+
+/**
+ * `verified` is the identity the reader consumed; the file may be deleted
+ * only while it still matches. Without it the file is deleted as it is.
+ */
+export type AuditDayPruneDecision =
+  | { readonly prune: false }
+  | { readonly prune: true; readonly verified?: AuditDayFileIdentity };
 
 let pruneGuard: AuditDayPruneGuard | null = null;
 
@@ -43,18 +74,20 @@ export async function mayPruneAuditDayFile(options: {
   /** Files older than this are due for deletion. */
   readonly cutoffTime: number;
   readonly retentionDays: number;
-}): Promise<boolean> {
+}): Promise<AuditDayPruneDecision> {
   const guard = pruneGuard;
-  if (guard === null) return true;
-  let consumed = false;
+  if (guard === null) return { prune: true };
+  let consumed: AuditDayFileIdentity | null = null;
   try {
     consumed = await guard(options.dayFilename);
   } catch {
-    consumed = false;
+    consumed = null;
   }
-  if (consumed) return true;
+  if (consumed !== null) return { prune: true, verified: consumed };
   const graceMs = Math.max(1, options.retentionDays) * 24 * 60 * 60 * 1000;
-  return options.fileDayTime < options.cutoffTime - graceMs;
+  return options.fileDayTime < options.cutoffTime - graceMs
+    ? { prune: true }
+    : { prune: false };
 }
 
 /**

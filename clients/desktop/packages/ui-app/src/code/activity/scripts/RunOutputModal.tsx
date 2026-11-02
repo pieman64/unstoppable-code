@@ -1,5 +1,5 @@
 import { type JSX, type ReactNode } from 'react';
-import { AnsiOutput, DialogModal } from '@canopy/ui-shared/components';
+import { AnsiOutput, Button, DialogModal } from '@canopy/ui-shared/components';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 
 /** Operational status of the run, which inks the status text. */
@@ -113,14 +113,15 @@ export function RunOutputModal({
                 </span>
               )}
               {isRunning && onStop && (
-                <button
+                <Button
                   type="button"
+                  variant="ghost-destructive"
+                  size="compact"
                   onClick={onStop}
                   disabled={stopDisabled}
-                  className="focus-ring rounded-md px-2 py-0.5 text-2xs font-medium fg-destructive transition hover:bg-destructive-subtle disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                 >
                   {stopLabel ?? 'Stop'}
-                </button>
+                </Button>
               )}
             </div>
           </div>

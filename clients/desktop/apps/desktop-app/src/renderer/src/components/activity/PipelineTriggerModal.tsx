@@ -1,6 +1,7 @@
 import { pipelineSupportsExecutionScope } from '@/lib/pipelineExecutionScope';
 import {
   type JSX,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -61,8 +62,6 @@ import { areAliasPreferencesBlocked } from '@/lib/pipelineModelAliases';
 import { useAgentsStore } from '@/stores/agentsStore';
 import {
   buildCombinedTriggerRows,
-  filterPipelineInfosByExecutionScope,
-  filterTriggerRowsByExecutionScope,
   shouldIncludeSharedRows,
   type PipelineTriggerRow,
 } from '@/lib/pipelineTriggerRows';
@@ -90,6 +89,7 @@ import { stableStringify } from './pipelineTriggerModalUtils';
 import { Tooltip } from '@canopy/ui-shared';
 import { pipelineSourceBadgeClassName } from '@canopy/ui-shared/lib';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
+import { Button, SegmentedControl } from '@canopy/ui-shared/components';
 
 export interface PipelineRepoChoice {
   repoId: string;
@@ -138,10 +138,10 @@ const SOURCE_BADGE_CLASS: Record<PipelineInfo['source'], string> = {
 };
 
 const UNRESOLVED_REQUIRED_BLOCKING_MESSAGE =
-  "This pipeline can't run until all required pipeline plugins are installed locally.";
+  "This workflow can't run until all required workflow plugins are installed locally.";
 const SAVE_DEFAULTS_SUCCESS_MESSAGE = 'Saved as local defaults.';
 const NO_PIPELINES_FOR_CONTEXT_MESSAGE =
-  'No pipelines available for this context.';
+  'No workflows available for this context.';
 
 interface TriggerLabels {
   title: string;
@@ -173,6 +173,11 @@ export interface PipelineTriggerModalProps {
   repoChoices?: PipelineRepoChoice[];
   defaultRepoId?: string;
   /**
+   * Reports the selected working directory, initially and on each change, for
+   * callers whose discovery `cwd` depends on it.
+   */
+  onRepoChange?: (repoId: string | undefined) => void;
+  /**
    * Execution scope of the surface opening the modal. Worktree surfaces pass
    * `worktree`, directory-only surfaces pass `directory`, global surfaces pass
    * `global`. Selectable pipelines are filtered with the capability relation
@@ -182,6 +187,26 @@ export interface PipelineTriggerModalProps {
    * hiding `worktree`-only pipelines.
    */
   executionScope?: PipelineExecutionScope;
+  /**
+   * Every execution scope the surface can run in, when it can run in more
+   * than one (Workflows: no project, plus the current task's scope). A row is
+   * listed when it supports any of them. Overrides {@link executionScope}.
+   */
+  executionScopes?: readonly PipelineExecutionScope[];
+  /**
+   * The surface's folder and scope are still resolving. The list waits, so it
+   * loads once for the final surface instead of again when they settle.
+   */
+  contextPending?: boolean;
+  /**
+   * Resolves the selected pipeline's destination and owner fields. Omitted on
+   * task surfaces, which keep running in their task.
+   */
+  runContextReview?: (
+    pipeline: PipelineData,
+  ) => PipelineRunContextReview | null;
+  /** Changing it re-reads the pipelines, such as after a refused start. */
+  reloadToken?: number;
   /**
    * Preselects this pipeline in the select step once the list loads
    * (CAN-2361 PR2b: the share landing's "Try now" opens the dispatch modal
@@ -226,6 +251,23 @@ export interface PipelineTriggerModalProps {
   onWatcherSelectionChange?: (
     selection: PipelineWatcherSelection | null,
   ) => void;
+}
+
+/**
+ * Where and as whom the selected pipeline runs (CAN-4542), as the host
+ * resolves it for one pipeline.
+ */
+export interface PipelineRunContextReview {
+  /** Fields the configure step shows above the inputs. */
+  fields: ReactNode;
+  /** A choice is shown, so Continue opens the configure step even without inputs. */
+  needsReview: boolean;
+  /** Run stays disabled: owners are loading, failed, or none is chosen. */
+  runBlocked: boolean;
+  /** Why Run is off when nothing in the dialog can turn it on. */
+  blockedReason?: string;
+  /** The run targets the current task, so repository and watcher controls apply. */
+  targeted: boolean;
 }
 
 type LoadState =
@@ -283,13 +325,9 @@ function SharedPipelineSelector({
     return (
       <div className="space-y-2 py-6 text-center text-s fg-secondary">
         <div>No {brandText.appName} Cloud account configured.</div>
-        <button
-          type="button"
-          onClick={onOpenAccountSettings}
-          className="mx-auto rounded-md border bg-secondary px-3 py-1 text-xs font-medium fg-primary hover:bg-accent-subtle hover:fg-accent"
-        >
+        <Button size="compact" onClick={onOpenAccountSettings}>
           Open account settings
-        </button>
+        </Button>
       </div>
     );
   }
@@ -302,7 +340,7 @@ function SharedPipelineSelector({
       >
         {state.loading && state.rows.length === 0 && (
           <div className="py-6 text-center text-s fg-secondary">
-            Loading shared pipelines…
+            Loading shared workflows…
           </div>
         )}
         {state.error && (
@@ -318,7 +356,7 @@ function SharedPipelineSelector({
             <div className="py-6 text-center text-s fg-secondary">
               {state.rows.length > 0
                 ? NO_PIPELINES_FOR_CONTEXT_MESSAGE
-                : 'No shared pipelines found.'}
+                : 'No shared workflows found.'}
             </div>
           )}
         {state.loaded &&
@@ -326,7 +364,7 @@ function SharedPipelineSelector({
           !state.error &&
           (state.loadingMore || state.nextCursor) && (
             <div className="py-6 text-center text-s fg-secondary">
-              Loading shared pipelines…
+              Loading shared workflows…
             </div>
           )}
         {rows.map((info) => {
@@ -341,7 +379,7 @@ function SharedPipelineSelector({
                 if (!info.remoteId) return;
                 void onSelect(info.remoteId, info.id);
               }}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition disabled:opacity-60 ${
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
                 isSelected
                   ? 'bg-accent-subtle ring-1 ring-line-accent/40'
                   : 'hover:bg-fg-primary/[0.06]'
@@ -549,7 +587,12 @@ export function PipelineTriggerModal({
   cwd,
   repoChoices,
   defaultRepoId,
+  onRepoChange,
   executionScope = 'directory',
+  executionScopes,
+  contextPending = false,
+  runContextReview,
+  reloadToken = 0,
   initialPipelineId,
   initialInputs,
   onClose,
@@ -564,6 +607,21 @@ export function PipelineTriggerModal({
   onWatcherSelectionChange,
 }: PipelineTriggerModalProps): JSX.Element {
   const [loadState, setLoadState] = useState<LoadState>({ status: 'loading' });
+  // Callers pass a stable `executionScopes`; the list reloads when it changes.
+  const surfaceScopes = useMemo(
+    () => executionScopes ?? [executionScope],
+    [executionScope, executionScopes],
+  );
+  const supportsSurface = useCallback(
+    (info: PipelineInfo): boolean =>
+      surfaceScopes.some(
+        (scope) =>
+          // A project file only runs in its checkout, never with no project.
+          (scope !== 'global' || info.source !== 'project') &&
+          pipelineSupportsExecutionScope(info, scope),
+      ),
+    [surfaceScopes],
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [step, setStep] = useState<ModalStep>('select');
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
@@ -679,12 +737,8 @@ export function PipelineTriggerModal({
   // Shared rows for the dedicated Shared tab are rendered directly (not through
   // `buildCombinedTriggerRows`), so apply the same scope filter to them.
   const scopedSharedRows = useMemo(
-    (): PipelineInfo[] =>
-      filterPipelineInfosByExecutionScope(
-        triggerScopedSharedRows,
-        executionScope,
-      ),
-    [triggerScopedSharedRows, executionScope],
+    (): PipelineInfo[] => triggerScopedSharedRows.filter(supportsSurface),
+    [triggerScopedSharedRows, supportsSurface],
   );
 
   const triggerScopedSharedList = useMemo(
@@ -752,12 +806,17 @@ export function PipelineTriggerModal({
     });
   }, [repoChoices, defaultRepoId]);
 
+  useEffect(() => {
+    onRepoChange?.(selectedRepoId);
+  }, [onRepoChange, selectedRepoId]);
+
   const showRepoDropdown = (repoChoices?.length ?? 0) > 1;
 
   useEffect(() => {
     let cancelled = false;
 
     async function load(): Promise<void> {
+      if (contextPending) return;
       try {
         const [listResult, projectResult] = await Promise.all([
           window.pipelines.list(),
@@ -777,7 +836,7 @@ export function PipelineTriggerModal({
         if (allInfos.length === 0 && !listResult.success) {
           setLoadState({
             status: 'error',
-            message: listResult.error ?? 'Failed to load pipelines',
+            message: listResult.error ?? 'Failed to load workflows',
           });
           return;
         }
@@ -817,7 +876,7 @@ export function PipelineTriggerModal({
               info.source === 'curated' &&
               info.id === initialPipelineId &&
               info.triggerTypes?.includes(triggerType) &&
-              pipelineSupportsExecutionScope(info, executionScope),
+              supportsSurface(info),
           )
         ) {
           const generation = ++selectionGeneration.current;
@@ -830,14 +889,14 @@ export function PipelineTriggerModal({
             if (cancelled || generation !== selectionGeneration.current) return;
             if (!result.success || !result.data)
               throw new Error(
-                result.error ?? 'Failed to download curated pipeline',
+                result.error ?? 'Failed to download curated workflow',
               );
             if (
               !getTriggerTypes(result.data.content.on).includes(triggerType) ||
-              !pipelineSupportsExecutionScope(result.data.info, executionScope)
+              !supportsSurface(result.data.info)
             ) {
               throw new Error(
-                'This pipeline no longer supports this trigger or execution scope. Refresh the pipeline list.',
+                'This workflow no longer supports this trigger or execution scope. Refresh the workflow list.',
               );
             }
             const data = result.data;
@@ -851,7 +910,7 @@ export function PipelineTriggerModal({
             setSharedHydrateError(
               err instanceof Error
                 ? err.message
-                : 'Failed to download curated pipeline',
+                : 'Failed to download curated workflow',
             );
           } finally {
             if (!cancelled && generation === selectionGeneration.current)
@@ -863,7 +922,7 @@ export function PipelineTriggerModal({
           const message =
             err instanceof Error
               ? err.message
-              : 'Unknown error loading pipelines';
+              : 'Unknown error loading workflows';
           setLoadState({ status: 'error', message });
         }
       }
@@ -873,7 +932,15 @@ export function PipelineTriggerModal({
     return (): void => {
       cancelled = true;
     };
-  }, [triggerType, cwd, initialPipelineId, sharedCloudAccount, executionScope]);
+  }, [
+    triggerType,
+    cwd,
+    contextPending,
+    initialPipelineId,
+    sharedCloudAccount,
+    supportsSurface,
+    reloadToken,
+  ]);
 
   const selectedPipeline = useMemo((): PipelineData | null => {
     if (!selectedId) return null;
@@ -988,8 +1055,8 @@ export function PipelineTriggerModal({
   // surface hides `worktree`-only pipelines.
   const scopedRows = useMemo(
     (): PipelineTriggerRow[] =>
-      filterTriggerRowsByExecutionScope(combinedRows, executionScope),
-    [combinedRows, executionScope],
+      combinedRows.filter((row) => supportsSurface(row.info)),
+    [combinedRows, supportsSurface],
   );
 
   // Distinguish "no rows match the search" from "rows exist but none are valid
@@ -1130,14 +1197,14 @@ export function PipelineTriggerModal({
       });
       if (generation !== selectionGeneration.current) return;
       if (!result.success || !result.data) {
-        throw new Error(result.error ?? 'Failed to download curated pipeline');
+        throw new Error(result.error ?? 'Failed to download curated workflow');
       }
       if (
         !getTriggerTypes(result.data.content.on).includes(triggerType) ||
-        !pipelineSupportsExecutionScope(result.data.info, executionScope)
+        !supportsSurface(result.data.info)
       ) {
         throw new Error(
-          'This pipeline no longer supports this trigger or execution scope. Refresh the pipeline list.',
+          'This workflow no longer supports this trigger or execution scope. Refresh the workflow list.',
         );
       }
       const data = result.data;
@@ -1148,7 +1215,7 @@ export function PipelineTriggerModal({
       setSharedHydrateError(
         error instanceof Error
           ? error.message
-          : 'Failed to download curated pipeline',
+          : 'Failed to download curated workflow',
       );
     } finally {
       if (generation === selectionGeneration.current) setSharedHydrating(null);
@@ -1170,7 +1237,7 @@ export function PipelineTriggerModal({
           if (generation !== selectionGeneration.current) return;
           if (!result.success || !result.data) {
             setSharedHydrateError(
-              result.error ?? 'Failed to load shared pipeline',
+              result.error ?? 'Failed to load shared workflow',
             );
             return;
           }
@@ -1203,7 +1270,7 @@ export function PipelineTriggerModal({
           setSharedHydrateError(
             err instanceof Error
               ? err.message
-              : 'Failed to load shared pipeline',
+              : 'Failed to load shared workflow',
           );
           return;
         } finally {
@@ -1238,8 +1305,24 @@ export function PipelineTriggerModal({
       packageReadiness.requirements.some(
         (requirement) => requirement.status !== 'available',
       ));
+  const runContext =
+    selectedPipeline && runContextReview
+      ? runContextReview(selectedPipeline)
+      : null;
+  // A destination or owner to confirm keeps an input-less pipeline from
+  // running on Continue.
+  const needsRunContextReview = runContext?.needsReview ?? false;
+  const runContextBlocked = runContext?.runBlocked ?? false;
+  const runContextBlockedReason = runContextBlocked
+    ? runContext?.blockedReason
+    : undefined;
+  const showTargetControls = runContext?.targeted ?? true;
   const hasConfigurationStep =
-    hasInputs || hasCollections || hasAliases || packageNeedsReview;
+    hasInputs ||
+    hasCollections ||
+    hasAliases ||
+    packageNeedsReview ||
+    needsRunContextReview;
 
   // ---------------------------------------------------------------------
   // Plugin collection lifecycle
@@ -1281,7 +1364,7 @@ export function PipelineTriggerModal({
         if (cancelled) return;
         if (!result.success || !result.data) {
           setCollectionError(
-            result.error ?? 'Failed to load pipeline plugin collections',
+            result.error ?? 'Failed to load workflow plugin collections',
           );
           setCollectionPreview([]);
           setCollectionValidation(null);
@@ -1299,7 +1382,7 @@ export function PipelineTriggerModal({
         setCollectionError(
           err instanceof Error
             ? err.message
-            : 'Failed to load pipeline plugin collections',
+            : 'Failed to load workflow plugin collections',
         );
         setCollectionPreview([]);
         setCollectionValidation(null);
@@ -1388,7 +1471,7 @@ export function PipelineTriggerModal({
         if (cancelled) return;
         if (!result.success || !result.data) {
           setCollectionError(
-            result.error ?? 'Failed to refresh pipeline plugin collections',
+            result.error ?? 'Failed to refresh workflow plugin collections',
           );
           return;
         }
@@ -1400,7 +1483,7 @@ export function PipelineTriggerModal({
         setCollectionError(
           err instanceof Error
             ? err.message
-            : 'Failed to refresh pipeline plugin collections',
+            : 'Failed to refresh workflow plugin collections',
         );
       } finally {
         if (!cancelled) {
@@ -1499,14 +1582,14 @@ export function PipelineTriggerModal({
         if (!result.success || !result.data) {
           setSaveDefaultsState({
             status: 'error',
-            message: result.error ?? 'Failed to save pipeline defaults',
+            message: result.error ?? 'Failed to save workflow defaults',
           });
           return;
         }
         if (result.data.ok === false) {
           setSaveDefaultsState({
             status: 'error',
-            message: 'This pipeline cannot save defaults locally.',
+            message: 'This workflow cannot save defaults locally.',
           });
           return;
         }
@@ -1526,14 +1609,14 @@ export function PipelineTriggerModal({
         if (!aliasResult.success || !aliasResult.data) {
           setSaveDefaultsState({
             status: 'error',
-            message: aliasResult.error ?? 'Failed to save pipeline defaults',
+            message: aliasResult.error ?? 'Failed to save workflow defaults',
           });
           return;
         }
         if (aliasResult.data.ok === false) {
           setSaveDefaultsState({
             status: 'error',
-            message: 'This pipeline cannot save defaults locally.',
+            message: 'This workflow cannot save defaults locally.',
           });
           return;
         }
@@ -1551,7 +1634,7 @@ export function PipelineTriggerModal({
         message:
           err instanceof Error
             ? err.message
-            : 'Failed to save pipeline defaults',
+            : 'Failed to save workflow defaults',
       });
     }
   }, [
@@ -1577,6 +1660,7 @@ export function PipelineTriggerModal({
   );
 
   const watcherSupported =
+    showTargetControls &&
     watcherRecipientGroups !== undefined &&
     watcherRecipientGroups.some((group) => group.options.length > 0);
 
@@ -1665,14 +1749,14 @@ export function PipelineTriggerModal({
         if (!aliasResult.success || !aliasResult.data) {
           setSaveDefaultsState({
             status: 'error',
-            message: aliasResult.error ?? 'Failed to save pipeline defaults',
+            message: aliasResult.error ?? 'Failed to save workflow defaults',
           });
           return;
         }
         if (aliasResult.data.ok === false) {
           setSaveDefaultsState({
             status: 'error',
-            message: 'This pipeline cannot save defaults locally.',
+            message: 'This workflow cannot save defaults locally.',
           });
           return;
         }
@@ -1685,7 +1769,7 @@ export function PipelineTriggerModal({
           message:
             err instanceof Error
               ? err.message
-              : 'Failed to save pipeline defaults',
+              : 'Failed to save workflow defaults',
         });
       }
     },
@@ -1704,6 +1788,8 @@ export function PipelineTriggerModal({
     if (!selectedPipeline || selectedPipelineError || isRunning) return;
     if (packageReadinessLoading) return;
     if (!collectionReadyToRun || !aliasReadyToRun) return;
+    // With no configure step, Run starts right away, so a blocked run waits.
+    if (!hasConfigurationStep && runContextBlocked) return;
 
     if (!hasConfigurationStep) {
       void onRun(
@@ -1755,6 +1841,7 @@ export function PipelineTriggerModal({
     if (packageReadinessLoading) return;
     if (!collectionReadyToRun || !aliasReadyToRun) return;
     if (hasUnresolvedRequiredDefaults || aliasesBlocked) return;
+    if (runContextBlocked) return;
 
     const errors = validateInputs(selectedInputDefs, inputValues);
     if (Object.keys(errors).length > 0) {
@@ -1805,7 +1892,7 @@ export function PipelineTriggerModal({
             {loadState.status === 'loading' && (
               <div className="flex items-center justify-center gap-2 py-8 text-s fg-secondary">
                 <LoadingSpinner />
-                <span>Loading pipelines…</span>
+                <span>Loading workflows…</span>
               </div>
             )}
 
@@ -1829,7 +1916,7 @@ export function PipelineTriggerModal({
                 loadState.curated.length > 0 ||
                 cloudReady) && (
                 <>
-                  {showRepoDropdown && repoChoices && (
+                  {showRepoDropdown && showTargetControls && repoChoices && (
                     <div
                       className="mb-3"
                       data-testid="pipeline-trigger-modal-repo-select"
@@ -1857,32 +1944,25 @@ export function PipelineTriggerModal({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search pipelines…"
+                    placeholder="Search workflows…"
                     className="mb-2 w-full rounded-lg border bg-fg-primary/[0.04] px-3 py-2 text-s fg-primary placeholder:fg-secondary focus:border-line-accent/50 focus:outline-none"
                     autoFocus
                   />
 
                   {sourceFilterOptions.length > 0 && (
-                    <div className="mb-2 flex gap-1">
-                      {sourceFilterOptions.map((filter) => {
-                        const label =
-                          filter === 'all' ? 'All' : SOURCE_LABEL[filter];
-                        const active = sourceFilter === filter;
-                        return (
-                          <button
-                            key={filter}
-                            type="button"
-                            onClick={() => setSourceFilter(filter)}
-                            className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
-                              active
-                                ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
-                                : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
+                    <div className="mb-2 flex">
+                      <SegmentedControl
+                        label="Workflow source"
+                        shape="capsule"
+                        width="content"
+                        value={sourceFilter}
+                        onChange={setSourceFilter}
+                        options={sourceFilterOptions.map((filter) => ({
+                          value: filter,
+                          label:
+                            filter === 'all' ? 'All' : SOURCE_LABEL[filter],
+                        }))}
+                      />
                     </div>
                   )}
 
@@ -1904,7 +1984,7 @@ export function PipelineTriggerModal({
                         <div className="py-6 text-center text-s fg-secondary">
                           {hiddenOnlyByScope
                             ? NO_PIPELINES_FOR_CONTEXT_MESSAGE
-                            : 'No pipelines match your search'}
+                            : 'No workflows match your search'}
                         </div>
                       ) : (
                         <div
@@ -1937,7 +2017,7 @@ export function PipelineTriggerModal({
                                 type="button"
                                 disabled={isHydrating}
                                 onClick={onClick}
-                                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition disabled:opacity-60 ${
+                                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
                                   isSelected
                                     ? 'bg-accent-subtle ring-1 ring-line-accent/40'
                                     : 'hover:bg-fg-primary/[0.06]'
@@ -1979,7 +2059,7 @@ export function PipelineTriggerModal({
                             sharedHasPendingOrRows &&
                             scopedRows.length === 0 && (
                               <div className="py-6 text-center text-s fg-secondary">
-                                Loading shared pipelines…
+                                Loading shared workflows…
                               </div>
                             )}
                           {shouldIncludeSharedRows(sourceFilter) &&
@@ -2004,7 +2084,7 @@ export function PipelineTriggerModal({
                       className="mt-3 rounded-lg border border-line-destructive bg-destructive-subtle px-3 py-2 text-s fg-destructive"
                       data-testid="pipeline-trigger-modal-selection-error"
                     >
-                      This pipeline cannot be run: {selectedPipelineError}
+                      This workflow cannot be run: {selectedPipelineError}
                     </div>
                   )}
                 </>
@@ -2021,15 +2101,16 @@ export function PipelineTriggerModal({
                 selectedPipeline.info.distributionMode !== 'package'
               }
             />
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
               onClick={handleBack}
               disabled={isRunning}
-              className="mb-4 flex items-center gap-1 text-xs fg-secondary transition hover:fg-primary disabled:opacity-50"
+              className="mb-4"
             >
               <BackArrowIcon />
-              Back to pipeline list
-            </button>
+              Back to workflow list
+            </Button>
 
             <div className="mb-4 flex items-center gap-3 rounded-lg bg-fg-primary/[0.03] px-3 py-2.5">
               <PipelineListIcon icon={selectedPipeline.info.icon} />
@@ -2047,6 +2128,10 @@ export function PipelineTriggerModal({
                 )}
               </div>
             </div>
+
+            {runContext?.fields ? (
+              <div className="mb-4">{runContext.fields}</div>
+            ) : null}
 
             <div
               className="space-y-4"
@@ -2100,8 +2185,8 @@ export function PipelineTriggerModal({
                   label="Change a selection to enable saving it as the default."
                   suppressed={collectionDefaultsDirty || aliasDefaultsDirty}
                 >
-                  <button
-                    type="button"
+                  <Button
+                    size="compact"
                     onClick={handleSaveDefaults}
                     disabled={
                       !canSaveDefaults ||
@@ -2109,14 +2194,13 @@ export function PipelineTriggerModal({
                       collectionResolving
                     }
                     data-testid="pipeline-trigger-modal-save-defaults"
-                    className="focus-ring shrink-0 rounded-lg border bg-popover px-3 py-1 text-xs font-medium fg-primary transition hover:bg-fg-primary/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {saveDefaultsState.status === 'saving'
                       ? 'Saving…'
                       : hasCollections
                         ? 'Save plugin selections as defaults'
                         : 'Save model aliases as defaults'}
-                  </button>
+                  </Button>
                 </Tooltip>
                 {saveDefaultsState.status === 'saved' && (
                   <span
@@ -2163,6 +2247,14 @@ export function PipelineTriggerModal({
         {selectedPipelineError && step === 'configure' && (
           <div className="text-xs fg-destructive">{selectedPipelineError}</div>
         )}
+        {selectedPipeline && runContextBlockedReason && (
+          <div
+            className="text-xs fg-tertiary"
+            data-testid="pipeline-trigger-modal-run-blocked"
+          >
+            {runContextBlockedReason}
+          </div>
+        )}
         {step === 'configure' &&
           hasCollections &&
           hasUnresolvedRequiredDefaults && (
@@ -2195,7 +2287,7 @@ export function PipelineTriggerModal({
             className="text-xs fg-destructive"
             data-testid="pipeline-trigger-modal-alias-blocking"
           >
-            Configure every required model alias before running this pipeline.
+            Configure every required model alias before running this workflow.
           </div>
         )}
         {packageSetupBlocked && (
@@ -2203,7 +2295,7 @@ export function PipelineTriggerModal({
             className="text-xs fg-destructive"
             data-testid="pipeline-trigger-modal-setup-blocking"
           >
-            Complete the required setup above before running this pipeline.
+            Complete the required setup above before running this workflow.
           </div>
         )}
         {runError && <div className="text-xs fg-destructive">{runError}</div>}
@@ -2215,15 +2307,15 @@ export function PipelineTriggerModal({
                   title="Notify a chat"
                   description={
                     watcherEnabled
-                      ? 'Pick a chat to notify when this pipeline completes.'
-                      : 'Notify a chat when this pipeline completes.'
+                      ? 'Pick a chat to notify when this workflow completes.'
+                      : 'Notify a chat when this workflow completes.'
                   }
                 >
                   <button
                     type="button"
                     role="switch"
                     aria-checked={watcherEnabled}
-                    aria-label="Notify a chat when this pipeline completes"
+                    aria-label="Notify a chat when this workflow completes"
                     onClick={(): void => {
                       setWatcherEnabled((prev) => {
                         const next = !prev;
@@ -2241,7 +2333,7 @@ export function PipelineTriggerModal({
                     }}
                     data-testid="pipeline-trigger-modal-watcher-toggle"
                     data-active={watcherEnabled ? 'true' : 'false'}
-                    className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border transition ${
+                    className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border transition-colors ${
                       watcherEnabled
                         ? 'border-fg-info/30 bg-info-subtle fg-info hover:bg-info-subtle/80'
                         : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
@@ -2271,46 +2363,43 @@ export function PipelineTriggerModal({
             )}
           </div>
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={onClose}
               disabled={isRunning}
               data-testid="pipeline-trigger-modal-cancel"
-              className="rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40"
             >
               Cancel
-            </button>
+            </Button>
 
             {step === 'select' && (
-              <button
-                type="button"
+              <Button
+                variant={hasConfigurationStep ? 'primary' : 'warning'}
+                size="compact"
                 disabled={
                   !selectedPipeline ||
                   Boolean(selectedPipelineError) ||
                   isRunning ||
                   packageReadinessLoading ||
                   !collectionReadyToRun ||
-                  !aliasReadyToRun
+                  !aliasReadyToRun ||
+                  (!hasConfigurationStep && runContextBlocked)
                 }
                 onClick={handleContinue}
                 data-testid="pipeline-trigger-modal-run"
-                className={
-                  hasConfigurationStep
-                    ? 'rounded-lg bg-accent-subtle px-4 py-1.5 text-s font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-not-allowed disabled:opacity-40'
-                    : 'rounded-lg bg-warning-subtle px-4 py-1.5 text-s font-medium fg-warning transition hover:bg-warning-subtle/80 disabled:cursor-not-allowed disabled:opacity-40'
-                }
               >
                 {isRunning
                   ? runLoadingLabel
                   : hasConfigurationStep
                     ? 'Continue'
                     : runLabel}
-              </button>
+              </Button>
             )}
 
             {step === 'configure' && (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 disabled={
                   !selectedPipeline ||
                   Boolean(selectedPipelineError) ||
@@ -2320,14 +2409,14 @@ export function PipelineTriggerModal({
                   !aliasReadyToRun ||
                   hasUnresolvedRequiredDefaults ||
                   aliasesBlocked ||
-                  packageSetupBlocked
+                  packageSetupBlocked ||
+                  runContextBlocked
                 }
                 onClick={handleSubmit}
                 data-testid="pipeline-trigger-modal-run"
-                className="rounded-lg bg-accent-subtle px-4 py-1.5 text-s font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {isRunning ? runLoadingLabel : runLabel}
-              </button>
+              </Button>
             )}
           </div>
         </div>

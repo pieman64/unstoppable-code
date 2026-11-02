@@ -13,6 +13,7 @@ import type {
   PluginInfo,
   PluginProviderSupport,
 } from '@canopy/desktop-shared/types/plugins';
+import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import type {
   UnifiedTableRow,
   UseUnifiedTableDataReturn,
@@ -74,6 +75,19 @@ const mockUseUnifiedTableData =
   useUnifiedTableData as unknown as jest.MockedFunction<
     () => UseUnifiedTableDataReturn
   >;
+
+const GMAIL_CONNECTOR: CuratedMcpServerEntry = {
+  key: 'gmail-gmailmcp',
+  name: 'Gmail',
+  shortDescription: 'Read and send mail',
+  url: 'https://mcp.gmail.example.test',
+  transport: 'http',
+  categories: [],
+  popular: false,
+  sortOrder: 0,
+  providerConnector: { providers: ['claude', 'codex'] },
+  updatedAt: '2026-08-31T00:00:00.000Z',
+};
 
 function makePluginRow(
   name: string,
@@ -290,7 +304,7 @@ describe('PluginSelector provider scope sanitization', () => {
         claude: 'native',
         codex: 'native',
       });
-      if (!('facets' in plugin.original))
+      if (!plugin.original || !('facets' in plugin.original))
         throw new Error('Expected plugin fixture');
       const details: PluginDetails = {
         skills: [],
@@ -315,6 +329,7 @@ describe('PluginSelector provider scope sanitization', () => {
         provider: 'claude',
         mode: 'native',
         name: 'scoped-plugin',
+        installLocation: '/plugins/scoped-plugin',
         sourcePath: 'plugin',
         details: {
           ...details,
@@ -375,12 +390,13 @@ describe('PluginSelector provider scope sanitization', () => {
         claude: 'none',
         codex: 'native',
       });
-      if (!('facets' in codexOnly.original))
+      if (!codexOnly.original || !('facets' in codexOnly.original))
         throw new Error('Expected plugin fixture');
       codexOnly.original.facets.codex = {
         provider: 'codex',
         mode: 'native',
         name: 'codex-plugin',
+        installLocation: '/plugins/codex-plugin',
         sourcePath: 'plugin',
         details: {
           ...base,
@@ -394,12 +410,13 @@ describe('PluginSelector provider scope sanitization', () => {
         claude: 'native',
         codex: 'none',
       });
-      if (!('facets' in claudeOnly.original))
+      if (!claudeOnly.original || !('facets' in claudeOnly.original))
         throw new Error('Expected plugin fixture');
       claudeOnly.original.facets.claude = {
         provider: 'claude',
         mode: 'native',
         name: 'claude-plugin',
+        installLocation: '/plugins/claude-plugin',
         sourcePath: 'plugin',
         details: {
           ...base,
@@ -656,6 +673,7 @@ describe('PluginSelector provider scope sanitization', () => {
       toggleMode: 'locked',
       excludeFromSelectionCount: true,
       providerSupport: { claude: 'native', codex: 'native' },
+      original: GMAIL_CONNECTOR,
     };
     mockUseUnifiedTableData.mockReturnValue({
       rows: [connector],
@@ -707,6 +725,7 @@ describe('PluginSelector provider scope sanitization', () => {
       lastUpdated: '2026-08-31T00:00:00.000Z',
       toggleMode: 'locked',
       providerSupport: { claude: 'none', codex: 'native' },
+      original: GMAIL_CONNECTOR,
     };
     mockUseUnifiedTableData.mockReturnValue({
       rows: [connector],
@@ -1112,6 +1131,7 @@ describe('PluginSelector provider scope sanitization', () => {
 
     const initial: ChatTabPluginSelections = {
       bundleIds: [],
+      collectionIds: [],
       skillRefs: [],
       pluginRefs: [{ marketplaceId: 'mkt', pluginName: 'codex-only' }],
       mcpServerRefs: [],
@@ -1163,6 +1183,7 @@ describe('PluginSelector provider scope sanitization', () => {
 
     const initial: ChatTabPluginSelections = {
       bundleIds: [],
+      collectionIds: [],
       skillRefs: [],
       pluginRefs: [{ marketplaceId: 'mkt', pluginName: 'codex-only' }],
       mcpServerRefs: [],

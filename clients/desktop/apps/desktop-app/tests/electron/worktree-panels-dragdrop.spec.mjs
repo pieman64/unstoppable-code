@@ -19,7 +19,7 @@
 //      edge strip: overlay shows data-direction="left", drop creates a new
 //      group left of chat and closes the emptied activity group.
 //   3. Tab reorder — drag the terminal tab onto the left half of the chat
-//      tab in the same strip: insertion indicator renders, drop reorders the
+//      tab in the same strip: tabs shift live, drop reorders the
 //      group's tabs (store reorderTab; no topology change).
 //   4. Root-edge drop (separate test) — drag the terminal tab onto the RIGHT
 //      root-edge strip: a new FULL-HEIGHT group is created as a direct child
@@ -52,11 +52,14 @@ import {
  * through the rest of the sequence. */
 async function beginTabDrag(window, panelId) {
   const dataTransfer = await window.evaluateHandle(() => new DataTransfer());
-  await window.dispatchEvent(
-    `[data-testid="panel-tab-${panelId}"]`,
-    'dragstart',
-    { dataTransfer },
-  );
+  const tab = window.getByTestId(`panel-tab-${panelId}`);
+  const box = await tab.boundingBox();
+  expect(box).not.toBeNull();
+  await tab.dispatchEvent('dragstart', {
+    dataTransfer,
+    clientX: box.x + box.width / 2,
+    clientY: box.y + box.height / 2,
+  });
   return dataTransfer;
 }
 
@@ -275,9 +278,22 @@ test('dragging tabs merges into a group center, splits at an edge, and reorders 
     const chatTabSelector = `[data-testid="panel-tab-${DEFAULT_PANEL_IDS.chat}"]`;
 
     await dragOverAt(window, chatTabSelector, dataTransfer, stripX, stripY);
-    // Insertion indicator renders at the drop boundary.
+    // Filled tabs follow the pointer and shift their neighbour live.
+    const terminalTab = window.getByTestId(
+      `panel-tab-${DEFAULT_PANEL_IDS.terminal}`,
+    );
+    await expect(terminalTab).toHaveAttribute('data-live-drag', 'strip');
+    await expect(chatTab).toHaveAttribute('data-live-shift', '');
+    await expect
+      .poll(() =>
+        chatTab.evaluate(
+          (element) =>
+            new DOMMatrixReadOnly(getComputedStyle(element).transform).m41,
+        ),
+      )
+      .toBeGreaterThan(0);
     await expect(window.locator('.canopy-panel-tab-drop-before')).toHaveCount(
-      1,
+      0,
     );
 
     await dropAt(
@@ -298,7 +314,10 @@ test('dragging tabs merges into a group center, splits at an edge, and reorders 
       })
       .toEqual([DEFAULT_PANEL_IDS.terminal, DEFAULT_PANEL_IDS.chat]);
 
-    // Indicator cleared; still two leaves (no topology change); the active
+    await expect(terminalTab).not.toHaveAttribute('data-live-drag');
+    await expect(chatTab).not.toHaveAttribute('data-live-shift');
+
+    // Drag feedback cleared; still two leaves (no topology change); the active
     // tab is unchanged by a reorder.
     await expect(window.locator('.canopy-panel-tab-drop-before')).toHaveCount(
       0,
@@ -517,7 +536,7 @@ test('orthogonal root-edge drop preserves a collapsed sibling ratio across expan
     // the pure orthogonal-wrap path under review, not a second topology
     // mutation caused by removing an emptied source group.
     await window
-      .getByTestId(`panel-add-panel-${DEFAULT_GROUP_IDS.terminal}`)
+      .getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.terminal}`)
       .click();
     await window.getByTestId('panel-add-menu-item-file-explorer').click();
     await expect(

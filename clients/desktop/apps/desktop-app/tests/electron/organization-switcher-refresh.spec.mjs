@@ -23,6 +23,7 @@ import {
   openWorkspaceContextMenu,
   selectWorkspaceContext,
 } from './workspaceContextMenu.mjs';
+import { openOrganizationsList } from './hostedSettingsLocators.mjs';
 
 const OWNER = HOSTED_SETTINGS_ORG_IDS.owner;
 const MEMBER = HOSTED_SETTINGS_ORG_IDS.member;
@@ -68,7 +69,7 @@ async function withSettings(tag, overrides, run) {
 
 async function openOrganizations(app, window) {
   await app.openSettings();
-  await window.getByTestId('settings-nav-organizations-list').click();
+  await openOrganizationsList(window);
   await expect(window.getByTestId('team-panel')).toBeVisible();
 }
 
@@ -149,7 +150,7 @@ for (const [operation, id, selected] of [
           .click();
         await window
           .getByTestId(
-            `settings-nav-organization-${operation === 'delete' ? 'settings' : 'members'}`,
+            `settings-nav-organization-${operation === 'delete' ? 'settings-general' : 'members'}`,
           )
           .click();
         await window.getByTestId(`team-${operation}`).click();

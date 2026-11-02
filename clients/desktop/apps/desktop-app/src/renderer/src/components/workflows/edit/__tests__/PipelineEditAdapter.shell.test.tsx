@@ -12,7 +12,7 @@ import type * as PipelineEditMocks from './pipelineEditMocks';
 
 const mockRelatedNavigateContinuation = jest.fn();
 let mockOnShared: ((detail: { id: string }) => void) | undefined;
-const mockOpenDispatchPipelineModal = jest.fn();
+const mockOpenWorkflowsRunModal = jest.fn();
 
 jest.mock('@/hooks/usePipelineEditor', () => ({
   usePipelineEditor: (target: {
@@ -68,10 +68,10 @@ jest.mock('@canopy/app-state', () => ({
 }));
 jest.mock('@/components/activity/useDispatchPipelineModal', () => ({
   useDispatchPipelineModal: (): {
-    openDispatchPipelineModal: jest.Mock;
+    openWorkflowsRunModal: jest.Mock;
     dispatchPipelineModal: null;
   } => ({
-    openDispatchPipelineModal: mockOpenDispatchPipelineModal,
+    openWorkflowsRunModal: mockOpenWorkflowsRunModal,
     dispatchPipelineModal: null,
   }),
 }));
@@ -125,6 +125,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { setNativeInputValue } from '@/test-utils/dom';
 import {
+  automationsApi,
   byTestId,
   click,
   flush,
@@ -268,7 +269,7 @@ describe('PipelineEditAdapter actions on the saved version', () => {
     );
     expectExplainedDisabled('pipeline-share', WORKFLOW_EDIT_SHARE_DIRTY_REASON);
     click(byTestId('workflow-edit-run'));
-    expect(mockOpenDispatchPipelineModal).not.toHaveBeenCalled();
+    expect(mockOpenWorkflowsRunModal).not.toHaveBeenCalled();
 
     // Duplicate waits in the More menu, with its reason beneath it.
     openMoreMenu();
@@ -292,9 +293,20 @@ describe('PipelineEditAdapter actions on the saved version', () => {
     );
     click(byTestId('workflow-edit-run'));
 
-    expect(mockOpenDispatchPipelineModal).toHaveBeenCalledWith({
-      projectId: 'project-a',
-      worktreeId: 'worktree-a',
+    expect(mockOpenWorkflowsRunModal).toHaveBeenCalledWith({
+      initialPipelineId: 'review',
+      currentTarget: { projectId: 'project-a', worktreeId: 'worktree-a' },
+    });
+  });
+
+  it('runs the saved pipeline with no selected task', () => {
+    setMockEditor('review', { isDirty: false });
+    renderShell(REVIEW);
+
+    click(byTestId('workflow-edit-run'));
+
+    // A global pipeline needs no task; the dialog offers only what fits.
+    expect(mockOpenWorkflowsRunModal).toHaveBeenCalledWith({
       initialPipelineId: 'review',
     });
   });
@@ -311,6 +323,26 @@ describe('PipelineEditAdapter actions on the saved version', () => {
     click(assistant);
 
     expect(pipelines.assistant.toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a long name inside the title row, in the title type', () => {
+    setMockEditor('review', { isDirty: false });
+    renderShell(REVIEW);
+
+    const heading = byTestId('workflow-edit-name');
+    const rename = heading?.querySelector('button');
+    expect(rename).toBeInstanceOf(HTMLButtonElement);
+    // The rename control never grows past the heading, so a long name ends
+    // in an ellipsis instead of running under the save state and actions.
+    expect(rename?.className.split(' ')).toEqual(
+      expect.arrayContaining(['min-w-0', 'max-w-full', 'truncate']),
+    );
+    click(rename);
+    const field = byTestId('pipeline-editor-name-input');
+    expect(field).toBeInstanceOf(HTMLInputElement);
+    // The field takes the header title's type rather than its own.
+    for (const local of ['text-lg', 'font-semibold'])
+      expect(field?.className.split(' ')).not.toContain(local);
   });
 
   it('turns the pipeline off through the page', () => {
@@ -555,12 +587,63 @@ describe('PipelineEditAdapter drafts', () => {
   });
 });
 
+// CAN-4551: a converted chat automation's own pipeline names it.
+describe('PipelineEditAdapter owned pipeline', () => {
+  it('names the automation that owns it, and opens it', () => {
+    setMockEditor('review');
+    const owner = {
+      version: 1 as const,
+      id: 'activity-1',
+      name: 'Morning notes',
+      enabled: true,
+      schedule: {
+        kind: 'cron' as const,
+        expression: '0 9 * * *',
+        timezone: 'local' as const,
+      },
+      action: {
+        type: 'standalone_prompt' as const,
+        chatProjectId: 'cowork-1',
+        prompt: 'Organize notes',
+      },
+      createdAt: '2026-10-29T00:00:00.000Z',
+      updatedAt: '2026-10-29T00:00:00.000Z',
+      failureCount: 0,
+      ownedPipeline: {
+        pipelineId: 'review',
+        chatEditable: true,
+        storedAction: {
+          type: 'standalone_prompt' as const,
+          chatProjectId: 'cowork-1',
+          prompt: 'Organize notes',
+        },
+      },
+    };
+    const automations = automationsApi({ activities: [owner] });
+    renderShell(REVIEW, { automations });
+
+    expect(byTestId('pipeline-editor-owned-by')?.textContent).toContain(
+      'This workflow belongs to the automation Morning notes.',
+    );
+    click(
+      byTestId('pipeline-editor-owned-by')?.querySelector('button') ?? null,
+    );
+    expect(automations.beginEdit).toHaveBeenCalledWith(owner);
+  });
+
+  it('shows nothing for a pipeline no automation owns', () => {
+    setMockEditor('review');
+    renderShell(REVIEW);
+    expect(byTestId('pipeline-editor-owned-by')).toBeNull();
+  });
+});
+
 describe('PipelineEditAdapter missing pipeline', () => {
   it('says the pipeline is gone and leaves without asking', () => {
     renderShell({ kind: 'pipeline', pipelineId: 'deleted' });
 
     expect(byTestId('workflow-edit-not-found')?.textContent).toContain(
-      'This pipeline no longer exists.',
+      'This workflow no longer exists.',
     );
     expect(byTestId('workflow-edit-shell')).toBeNull();
 

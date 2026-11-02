@@ -4,8 +4,10 @@ import type {
   PlatformOperatingSystem,
   PlatformServices,
   PlatformSupportTier,
+  PlatformTrashServices,
 } from '@canopy/core-runtime';
 import { createPlatformPathServices } from './paths';
+import { createPowerServices, type PowerHostOptions } from './power';
 import { createSecureFileServices } from './secure-files';
 import { windowsProcessObserver } from './supervision/windows-process';
 import { createSupervisionServices } from './supervision';
@@ -21,6 +23,16 @@ const HOST_POLICIES: Readonly<Record<PlatformOperatingSystem, HostPolicy>> = {
   win32: { tier: 'primary', endpointSemantics: 'first-instance-pipe' },
   linux: { tier: 'primary', endpointSemantics: 'filesystem-socket' },
 };
+
+/** Trusted host inputs; never operation DTOs. */
+export interface PlatformHostOptions extends PowerHostOptions {
+  readonly windowsProcessPath?: string;
+  /**
+   * Passed through as supplied; composition never builds one of its own.
+   * `createNativeTrashServices` builds the native backends.
+   */
+  readonly trash?: PlatformTrashServices;
+}
 
 export type PlatformServicesErrorCode =
   | 'unsupported_platform'
@@ -46,7 +58,7 @@ function isPlatformOperatingSystem(
 export function createPlatformServices(
   platform: string,
   endpoints: PlatformEndpointServices,
-  host: { readonly windowsProcessPath?: string } = {},
+  host: PlatformHostOptions = {},
 ): PlatformServices {
   if (!isPlatformOperatingSystem(platform)) {
     throw new PlatformServicesError(
@@ -73,6 +85,8 @@ export function createPlatformServices(
         ? { windowsProcess: windowsProcessObserver(host.windowsProcessPath) }
         : {},
     ),
+    power: createPowerServices(platform, host),
+    ...(host.trash && { trash: host.trash }),
   });
 }
 
@@ -95,7 +109,7 @@ export function hostPlatformOperatingSystem(): PlatformOperatingSystem {
 /** Composes services for the host platform. */
 export function hostPlatformServices(
   endpoints: PlatformEndpointServices,
-  host: { readonly windowsProcessPath?: string } = {},
+  host: PlatformHostOptions = {},
 ): PlatformServices {
   return createPlatformServices(hostPlatformOperatingSystem(), endpoints, host);
 }

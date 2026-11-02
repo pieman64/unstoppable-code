@@ -8,8 +8,8 @@ import {
 import type {
   CodeGraphSummaryProjectionV1,
   ReadCodeGraphSummaryProjectionResult,
-} from '@canopy/desktop-shared/node/code-graph/summary-projection';
-import type { ReadonlyCodeGraphSummary } from '@canopy/desktop-shared/node/code-graph/base-graph';
+} from '@canopy/code-graph/summary-projection';
+import type { ReadonlyCodeGraphSummary } from '@canopy/code-graph/base-graph';
 import type {
   CodeGraphWorkerReadInput,
   CodeGraphWorkerReadResponse,
@@ -245,7 +245,7 @@ jest.mock('../lib/code-graph-telemetry', () => ({
 const mockHasPublishedBase = jest.fn<Promise<boolean>, [unknown]>(() =>
   Promise.resolve(false),
 );
-jest.mock('@canopy/desktop-shared/node/code-graph/base-graph', () => ({
+jest.mock('@canopy/code-graph/base-graph', () => ({
   hasPublishedCodeGraphBaseForRepository: (
     identity: unknown,
   ): Promise<boolean> => mockHasPublishedBase(identity),

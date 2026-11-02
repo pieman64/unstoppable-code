@@ -44,7 +44,10 @@ class MockFrame {
     frameTreeNodeId: 22,
     parent: { frameTreeNodeId: 1 },
   };
-  executeJavaScript = jest.fn(async (code: string) => {
+  executeJavaScript = jest.fn<
+    Promise<unknown>,
+    [code: string, userGesture?: boolean]
+  >(async (code: string) => {
     const kind = code.includes('documentHeight()') ? 'measure' : 'agent-settle';
     operations.push(kind);
     if (kind === 'agent-settle' && agentSettleDelayMs > 0)
@@ -783,7 +786,7 @@ it('settles with expressions that return only true, whatever the page does to Pr
   });
   const frame = windows[0]?.webContents.mainFrame.framesInSubtree[0];
   const settle = frame?.executeJavaScript.mock.calls
-    .map(([code]: [string]) => code)
+    .map((call) => call[0])
     .find((code: string) => !code.includes('documentHeight()'));
   const shell = windows[0]?.webContents.executeJavaScript.mock.calls
     .map(([code]: [string]) => code)

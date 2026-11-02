@@ -1,8 +1,11 @@
 import type { JSX } from 'react';
+import { Users } from '../icons/AppIcons';
 import {
   type SelectableShareAudience,
-  shareAudienceLabel,
-} from './ShareScopeControls';
+  shareAudienceLabelText,
+} from '../lib/share-audience-label';
+
+export { shareAudienceLabelText } from '../lib/share-audience-label';
 
 /**
  * The shared-state label every list row and detail header shows after a
@@ -21,18 +24,11 @@ export interface ShareAudienceLabelProps {
   /** Placement only; the ink and size belong to the label. */
   className?: string;
   dataTestId?: string;
-}
-
-/** The label's text, for hosts that render it inside their own element. */
-export function shareAudienceLabelText(
-  audience: SelectableShareAudience,
-  teamName?: string | null,
-  personal = false,
-): string {
-  if (audience === 'organization' && personal) return 'Personal';
-  const label = shareAudienceLabel(audience);
-  const name = teamName?.trim();
-  return audience === 'team' && name ? `${label}: ${name}` : label;
+  /**
+   * Show a team share as a team icon and the team's name, for dense rows such
+   * as Browse cards. Screen readers still hear `Team: <name>`.
+   */
+  teamIcon?: boolean;
 }
 
 export function ShareAudienceLabel({
@@ -41,16 +37,27 @@ export function ShareAudienceLabel({
   personal,
   className,
   dataTestId,
+  teamIcon = false,
 }: ShareAudienceLabelProps): JSX.Element {
+  const name = teamName?.trim();
+  const iconTeam = teamIcon && audience === 'team' && Boolean(name);
   return (
     <span
       data-testid={dataTestId}
       data-share-audience={audience}
       className={`shrink-0 whitespace-nowrap text-xs fg-tertiary${
-        className ? ` ${className}` : ''
-      }`}
+        iconTeam ? ' inline-flex items-center gap-1' : ''
+      }${className ? ` ${className}` : ''}`}
     >
-      {shareAudienceLabelText(audience, teamName, personal)}
+      {iconTeam ? (
+        <>
+          <Users size={12} aria-hidden="true" className="shrink-0" />
+          <span className="sr-only">{`${shareAudienceLabelText(audience)}: `}</span>
+          {name}
+        </>
+      ) : (
+        shareAudienceLabelText(audience, teamName, personal)
+      )}
     </span>
   );
 }

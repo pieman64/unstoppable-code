@@ -233,7 +233,7 @@ describe('shared-container file-scope store', () => {
     await writeSharedContainerFileScope('project-1', 'worktree-1', {
       includedPaths: [],
       legacyAllowlist: true,
-    } as SharedContainerFileScope & { legacyAllowlist: true });
+    });
 
     expect(existsSync(filePath)).toBe(true);
     expect(JSON.parse(readFileSync(filePath, 'utf8'))).toMatchObject({

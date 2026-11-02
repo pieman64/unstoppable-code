@@ -31,6 +31,18 @@ export async function opencodeRuntimeFixture({ models = [] } = {}) {
     '/* account-metadata-fixture */',
     `accounts: async () => JSON.parse(await readFile(${JSON.stringify(accountsFile)}, 'utf8')),`,
   );
+  const diagnosticsFile = path.join(root, 'diagnostics.jsonl');
+  // Retain only fixture phases and synthetic errors, never configuration or tokens.
+  source =
+    `import { appendFileSync as appendFixtureDiagnostic } from 'node:fs';
+const recordFixtureDiagnostic = (entry) => appendFixtureDiagnostic(${JSON.stringify(diagnosticsFile)}, JSON.stringify(entry) + '\\n');
+recordFixtureDiagnostic({ phase: 'start' });
+process.on('uncaughtExceptionMonitor', (error) => recordFixtureDiagnostic({ phase: 'uncaught', message: error.message }));
+` +
+    source.replace(
+      'const { id, method, params } = message;',
+      "const { id, method, params } = message; recordFixtureDiagnostic({ phase: 'rpc', method });",
+    );
   const require = createRequire(import.meta.url);
   for (const specifier of [
     '@modelcontextprotocol/sdk/client/index.js',
@@ -64,6 +76,18 @@ export async function opencodeRuntimeFixture({ models = [] } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     state,
+    async readDiagnostics() {
+      const contents = await readFile(diagnosticsFile, 'utf8').catch(
+        (error) => {
+          if (error.code === 'ENOENT') return '';
+          throw error;
+        },
+      );
+      return contents
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
     async setAccounts(value) {
       await writeFile(accountsFile, JSON.stringify(value));
     },

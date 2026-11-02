@@ -20,10 +20,16 @@ import {
   type ApprovalSessionHandle,
 } from '../approvals/approval-service';
 import {
+  DESKTOP_LEDGER_TOOLS_HOST,
   openLedgerPipelineAgentTools,
   type LedgerToolKey,
+  type LedgerToolsHost,
   type LedgerToolsRuntime,
 } from '../canopy-tools/ledger-tools-runtime';
+import {
+  findDesktopGlobalLedgerScope,
+  resolveDesktopGlobalLedgerScope,
+} from '../ledger/core-ledger-adapter';
 import { buildLedgerCodexDynamicToolSpecs } from '../codex/canopy-dynamic-tools';
 import {
   getLedgerPipelineAgentOwners,
@@ -59,6 +65,41 @@ const LEDGER_TOOL_KEYS: readonly LedgerToolKey[] = [
 export interface PipelineLedgerAttemptTools extends LedgerToolsRuntime {
   /** The Ledger block for a new thread's or session's instructions. */
   systemPrompt(): string;
+}
+
+/**
+ * The desktop tools host, plus the binding of a run owner's global (workflow)
+ * Ledger: the signed-in account's, minted on first use. A recheck only looks
+ * it up: after an account switch it finds another account's Ledger, or none,
+ * so the open attempt's calls fail closed instead of writing there.
+ */
+const PIPELINE_LEDGER_TOOLS_HOST: LedgerToolsHost = {
+  ...DESKTOP_LEDGER_TOOLS_HOST,
+  containerCreatedAt: async (container): Promise<string | null> =>
+    container.kind === 'global'
+      ? (await resolveDesktopGlobalLedgerScope(container.owner))
+          .containerCreatedAt
+      : DESKTOP_LEDGER_TOOLS_HOST.containerCreatedAt(container),
+  findContainerCreatedAt: async (container): Promise<string | null> =>
+    container.kind === 'global'
+      ? ((await findDesktopGlobalLedgerScope(container.owner))
+          ?.containerCreatedAt ?? null)
+      : DESKTOP_LEDGER_TOOLS_HOST.containerCreatedAt(container),
+};
+
+/**
+ * Where an attempt's approval session and route are keyed: its execution's
+ * workspace and worktree, so a directory run keeps its project's deny rules.
+ * A projectless run uses the executor's synthetic pipeline route.
+ */
+function attemptRouteScope(request: PipelineLedgerAttemptRequest): {
+  readonly projectId: string;
+  readonly worktreeId: string;
+} {
+  return {
+    projectId: request.projectId ?? 'pipeline',
+    worktreeId: request.worktreeId ?? request.executionId,
+  };
 }
 
 /** An open attempt's tools and the request that opened them. */
@@ -200,10 +241,11 @@ function createPipelineLedgerApprovalSession(
   provider: 'claude' | 'codex',
 ): ApprovalSessionHandle {
   const createdAt = new Date().toISOString();
+  const route = attemptRouteScope(request);
   return createApprovalSession({
     sessionKey: `pipeline-ledger-${provider}-${attemptKey}`,
-    projectId: request.projectId,
-    worktreeId: request.worktreeId,
+    projectId: route.projectId,
+    worktreeId: route.worktreeId,
     chatId: `pipeline:${request.executionId}`,
     provider,
     workspaceRoot: cwd,
@@ -276,8 +318,8 @@ export function openPipelineLedgerCodexTools(
 
 /**
  * Opens one agent attempt's Ledger tools when the gate passes: the flag, the
- * "Agents add to the Feed" setting and a Ledger scope for the execution's
- * worktree.
+ * "Agents add to the Feed" setting and a Ledger scope, the execution's
+ * worktree or its owner's global Ledger.
  */
 async function openAttempt(
   request: PipelineLedgerAttemptRequest,
@@ -287,12 +329,17 @@ async function openAttempt(
   // minted for its run, and every other run is a new agent.
   const agentSessionId = request.resumedAgentSessionId ?? randomUUID();
   const displayName = pipelineAgentDisplayName(request);
+  const { target } = request;
+  const route = attemptRouteScope(request);
   const tools = await openLedgerPipelineAgentTools({
     target: {
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
+      ...(target.kind === 'task'
+        ? { projectId: target.projectId, worktreeId: target.worktreeId }
+        : route),
       chatId: `pipeline:${request.executionId}`,
     },
+    ...(target.kind === 'global' ? { globalOwner: target.owner } : {}),
+    host: PIPELINE_LEDGER_TOOLS_HOST,
     harness: request.harness,
     readSettings: () => ({
       model: request.model ?? null,
@@ -346,8 +393,8 @@ async function openAttempt(
     routeApproval = approval;
     await proxy.registerCanopyWorktreeSessionRoute({
       sessionKey,
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
+      projectId: route.projectId,
+      worktreeId: route.worktreeId,
       chatId: `pipeline:${request.executionId}`,
       // The worker surface lists the Ledger tools only for a route whose
       // session passed the gate, and nothing else: no memory tools (their
@@ -412,6 +459,7 @@ async function openAttempt(
           stepId: request.stepId,
           attempt: request.attempt,
           container: tools.scope.container,
+          containerCreatedAt: tools.scope.containerCreatedAt,
           checkpointId: outcome.checkpointId,
           pausedAt: outcome.pausedAt,
         });

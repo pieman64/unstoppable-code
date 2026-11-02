@@ -5,6 +5,10 @@ import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
 // eslint-disable-next-line no-restricted-imports -- jsdom needs this test-only TextEncoder polyfill.
 import { TextEncoder } from 'node:util';
+import {
+  FileSaveConflictError,
+  isFileSaveConflictError,
+} from '@canopy/app-core';
 import type { OrgProjectSetupProgress } from '@canopy/protocol/org-projects';
 import { desktopPersonalOrganizationUpgradePort } from '@/lib/personal-organization-upgrade-port';
 
@@ -24,6 +28,10 @@ import type {
   ConnectionStatusEvent,
   SessionViewModel,
 } from '@canopy/app-core';
+import type {
+  ManagedDelegationExtendLifetimeLimitResult,
+  ManagedDelegationLifetimeStatus,
+} from '@canopy/protocol/delegation';
 import {
   createDesktopCapabilities,
   IpcCanopyClient,
@@ -84,12 +92,14 @@ describe('createDesktopCapabilities', () => {
 
   it('reports the full local-first capability set on macOS', () => {
     expect(createDesktopCapabilities('darwin')).toEqual({
+      sharedMultiRepo: true,
       githubConnection: true,
       localExecution: true,
       embeddedOAuthBrowser: true,
       repoRulesImport: true,
       scriptActions: true,
       marketplaceSources: true,
+      marketplaceSourceAdd: true,
       marketplaceSourcePluginInstall: true,
       terminalPty: true,
       fileSystemAccess: 'read-write',
@@ -105,13 +115,16 @@ describe('createDesktopCapabilities', () => {
       marketplaceOwnedAutomationShares: true,
       marketplaceOwnedShares: true,
       marketplaceSharedCollectionEdit: true,
+      customSkillEdit: true,
       automations: true,
       watchers: true,
+      workflowManagement: true,
       chatWorkflows: {
         planMode: true,
         planReview: true,
         deferredCapabilities: true,
         independentFork: true,
+        interruptedTurnResume: true,
       },
       panelLayoutControls: false,
       itemGrouping: false,
@@ -127,17 +140,32 @@ describe('createDesktopCapabilities', () => {
       turnFeedback: true,
       // Install update emails go through the settings IPC pair (CAN-2334).
       installUpdateEmails: true,
+      // Tip dismissals live in the desktop preferences (CAN-4904).
+      onboardingTips: true,
       // Desktop reads promoted visuals through `window.api.chat.readVisual`.
       chatVisuals: true,
+      imageClipboard: true,
       // The subagent viewer's controls run through the local
       // managed-delegation and native-subagent IPC.
       delegationStop: true,
+      delegationTranscriptReads: true,
+      delegationBlockReads: true,
+      delegationLifetimeStatusReads: true,
+      delegationLifetimeLimitExtension: true,
+      primaryContentReads: true,
       delegationWorktreeDetails: true,
       delegationMessaging: true,
       nativeSubagentInterrupt: true,
       // Desktop reads each scope's Agent Ledger over IPC.
       ledger: true,
+      // The Feed merges this device's Ledger with the mirror.
+      ledgerFeed: true,
+      ledgerLocal: true,
       referencePreviews: true,
+      backgroundTaskStop: true,
+      lifecycleJournalQuarantine: true,
+      worktreeDiscard: true,
+      projectDeletionDiscard: true,
       // Desktop reads observed cost over IPC.
       costInsights: true,
       providerQuotas: true,
@@ -382,6 +410,22 @@ describe('IpcCanopyClient', () => {
     expect(unsubscribeBridge).toHaveBeenCalledTimes(1);
   });
 
+  it('stops one background task over the activity IPC and returns its outcome', async () => {
+    const stopBgProcess = jest.fn().mockResolvedValue('stopped');
+    installWindowBridges({ api: { activity: { stopBgProcess } } });
+    const target = {
+      projectId: 'p1',
+      worktreeId: 'wt1',
+      chatId: 'c1',
+      taskId: 'task-1',
+    };
+
+    await expect(
+      createClient().command('activity.stopBackgroundTask', target),
+    ).resolves.toBe('stopped');
+    expect(stopBgProcess).toHaveBeenCalledWith(target);
+  });
+
   it('maps project settings queries and saves over exact IPC', async () => {
     const loadClaudeMd = jest.fn().mockResolvedValue('# Rules');
     const readWorkspaceScripts = jest
@@ -452,6 +496,63 @@ describe('IpcCanopyClient', () => {
     expect(saveInstallUpdateEmailPreference).toHaveBeenCalledWith({
       enabled: false,
     });
+  });
+
+  it('keeps onboarding tip dismissals in the desktop preferences', async () => {
+    const loadPreferences = jest.fn().mockResolvedValue({
+      onboardingTipsDismissed: {
+        'worktree-chat': '2026-10-24T08:00:00.000Z',
+        retired: '2026-10-24T08:00:00.000Z',
+      },
+    });
+    const stored = {
+      dismissed: {
+        'worktree-chat': '2026-10-24T08:00:00.000Z',
+        workflows: '2026-10-24T09:00:00.000Z',
+      },
+    };
+    const updateOnboardingTips = jest.fn().mockResolvedValue(stored);
+    installWindowBridges({ api: { loadPreferences, updateOnboardingTips } });
+    const client = createClient();
+    await expect(client.query('onboardingTips.get', {})).resolves.toEqual({
+      dismissed: { 'worktree-chat': '2026-10-24T08:00:00.000Z' },
+    });
+    // Main merges the update inside its serialized preferences write.
+    await expect(
+      client.command('onboardingTips.update', {
+        action: 'dismiss',
+        tipId: 'workflows',
+      }),
+    ).resolves.toEqual(stored);
+    expect(updateOnboardingTips).toHaveBeenCalledWith({
+      action: 'dismiss',
+      tipId: 'workflows',
+    });
+  });
+
+  it('shows no tips when the preferences file failed to load', async () => {
+    installWindowBridges({
+      api: {
+        loadPreferences: jest.fn().mockResolvedValue({
+          onboardingTipsDismissed: {},
+          __error: { kind: 'parse', message: 'bad' },
+        }),
+      },
+    });
+    await expect(
+      createClient().query('onboardingTips.get', {}),
+    ).rejects.toThrow('Preferences could not be loaded.');
+  });
+
+  it('shows no tips when the host does not store tip dismissals', async () => {
+    // A host built before onboarding tips sends no dismissals field and has
+    // no update channel, so a dismissal there could never be saved.
+    installWindowBridges({
+      api: { loadPreferences: jest.fn().mockResolvedValue({}) },
+    });
+    await expect(
+      createClient().query('onboardingTips.get', {}),
+    ).rejects.toThrow('This host does not store onboarding tip dismissals.');
   });
 
   it('propagates a rejected install update email preference load', async () => {
@@ -1153,7 +1254,7 @@ describe('IpcCanopyClient', () => {
   });
 
   describe('file.read', () => {
-    it('resolves the target root, reads through readFileContent, and shapes a PortalFilePreview', async () => {
+    it('falls back to the legacy response from a host without the canonical read', async () => {
       const getFileTreeRoots = jest.fn().mockResolvedValue(FILE_ROOTS);
       const readFileContent = jest.fn().mockResolvedValue({
         kind: 'text',
@@ -1183,6 +1284,7 @@ describe('IpcCanopyClient', () => {
           projectId: 'ws-1',
           worktreeId: 'wt-1',
         },
+        file: { fileRootId: 'repo-1', relativePath: 'docs/notes.md' },
       });
       expect(preview).toEqual({
         workspaceLocalId: 'ws-1',
@@ -1195,6 +1297,55 @@ describe('IpcCanopyClient', () => {
         version: '11:1750000000123',
         truncated: false,
         modifiedAt: new Date(1750000000123.4).toISOString(),
+      });
+    });
+
+    it('shapes the preview from the canonical read without reconstructing it', async () => {
+      const getFileTreeRoots = jest.fn().mockResolvedValue(FILE_ROOTS);
+      const readFileContent = jest.fn().mockResolvedValue({
+        kind: 'markdown',
+        content: '# Notes',
+        filename: 'notes.md',
+        sizeBytes: 7,
+        truncated: false,
+        modifiedAtMs: 1750000000123.4,
+        canonical: {
+          fileRootId: 'repo-1',
+          relativePath: 'docs/notes.md',
+          name: 'notes.md',
+          contentKind: 'markdown',
+          sizeBytes: 7,
+          returnedBytes: 7,
+          truncated: false,
+          modifiedAt: '2025-06-15T15:06:40.123Z',
+          version: 'canonical-version',
+        },
+      });
+      installWindowBridges({ api: { getFileTreeRoots, readFileContent } });
+
+      const preview = await createClient().query('file.read', {
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        repoId: 'repo-1',
+        relativePath: './docs//notes.md',
+      });
+
+      expect(readFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file: { fileRootId: 'repo-1', relativePath: 'docs/notes.md' },
+        }),
+      );
+      expect(preview).toEqual({
+        workspaceLocalId: 'ws-1',
+        worktreeLocalId: 'wt-1',
+        fileRootLocalId: 'repo-1',
+        path: './docs//notes.md',
+        content: '# Notes',
+        language: 'md',
+        size: 7,
+        version: 'canonical-version',
+        truncated: false,
+        modifiedAt: '2025-06-15T15:06:40.123Z',
       });
     });
 
@@ -1224,6 +1375,7 @@ describe('IpcCanopyClient', () => {
           projectId: 'ws-1',
           worktreeId: 'wt-1',
         },
+        file: { fileRootId: 'attachments', relativePath: 'a.txt' },
       });
     });
 
@@ -1326,6 +1478,63 @@ describe('IpcCanopyClient', () => {
           relativePath: 'a.txt',
         }),
       ).rejects.toThrow(/Unknown file root/);
+    });
+  });
+
+  describe('file.resolveLink', () => {
+    it('projects a transcript resolution through file-reference:resolve', async () => {
+      const resolveFileReference = jest.fn().mockResolvedValue({
+        absolutePath: '/host/repo/docs/guide.md',
+        filename: 'guide.md',
+        kind: 'file',
+        canonical: {
+          fileRootId: 'repo-1',
+          relativePath: 'docs/guide.md',
+          name: 'guide.md',
+          kind: 'file',
+        },
+      });
+      installWindowBridges({ api: { resolveFileReference } });
+
+      await expect(
+        createClient().query('file.resolveLink', {
+          projectId: 'ws-1',
+          worktreeId: 'wt-1',
+          href: 'docs/guide.md#L2',
+        }),
+      ).resolves.toEqual({
+        fileRootLocalId: 'repo-1',
+        relativePath: 'docs/guide.md',
+      });
+      expect(resolveFileReference).toHaveBeenCalledWith({
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        baseFilePath: '',
+        href: 'docs/guide.md#L2',
+        mode: 'transcript',
+      });
+    });
+
+    it('answers null for an unresolved link and for a host without transcript mode', async () => {
+      const resolveFileReference = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        // A host that predates `mode` resolves markdown, without `canonical`.
+        .mockResolvedValueOnce({
+          absolutePath: '/host/repo/a.md',
+          filename: 'a.md',
+          kind: 'file',
+        });
+      installWindowBridges({ api: { resolveFileReference } });
+      const client = createClient();
+      for (let call = 0; call < 2; call += 1)
+        await expect(
+          client.query('file.resolveLink', {
+            projectId: 'ws-1',
+            worktreeId: 'wt-1',
+            href: 'a.md',
+          }),
+        ).resolves.toBeNull();
     });
   });
 
@@ -1496,6 +1705,59 @@ describe('IpcCanopyClient', () => {
           expectedModifiedAtMs: 1750000000123,
         }),
       ).rejects.toThrow('File changed on disk since it was loaded.');
+    });
+
+    it('restores the typed conflict from a named Electron rejection', async () => {
+      const getFileTreeRoots = jest.fn().mockResolvedValue(FILE_ROOTS);
+      const saveFileContent = jest
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "Error invoking remote method 'file:save-content': FileSaveConflictError: File changed on disk since it was loaded.",
+          ),
+        );
+      installWindowBridges({ api: { getFileTreeRoots, saveFileContent } });
+
+      const error: unknown = await createClient()
+        .command('file.save', {
+          projectId: 'ws-1',
+          worktreeId: 'wt-1',
+          repoId: 'repo-1',
+          relativePath: 'a.txt',
+          content: 'local edit',
+          expectedModifiedAtMs: 1750000000123,
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(isFileSaveConflictError(error)).toBe(true);
+      expect(error).toBeInstanceOf(FileSaveConflictError);
+      expect((error as Error).message).toBe(
+        'File changed on disk since it was loaded.',
+      );
+    });
+
+    it.each([
+      "Error invoking remote method 'file:save-content': Error: File changed on disk since it was loaded.",
+      "Error invoking remote method 'file:save-content': Error: EACCES: permission denied",
+      "Error invoking remote method 'file:save-content': ResourceGuardError: busy",
+    ])('keeps unrelated failures untyped: %s', async (message) => {
+      const getFileTreeRoots = jest.fn().mockResolvedValue(FILE_ROOTS);
+      const saveFileContent = jest.fn().mockRejectedValue(new Error(message));
+      installWindowBridges({ api: { getFileTreeRoots, saveFileContent } });
+
+      const error: unknown = await createClient()
+        .command('file.save', {
+          projectId: 'ws-1',
+          worktreeId: 'wt-1',
+          repoId: 'repo-1',
+          relativePath: 'a.txt',
+          content: 'local edit',
+          expectedModifiedAtMs: 1750000000123,
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(isFileSaveConflictError(error)).toBe(false);
+      expect(error).toBeInstanceOf(Error);
     });
   });
 
@@ -2243,6 +2505,44 @@ describe('IpcCanopyClient', () => {
       ).rejects.toThrow('Plan not found.');
     });
 
+    it('plan.get honors a pinned revision instead of returning the latest (CAN-5354)', async () => {
+      const get = jest.fn().mockResolvedValue({
+        ...PLAN,
+        revisions: [
+          {
+            revisionNumber: 2,
+            content: ' # Older plan\n',
+            source: 'claude',
+            reviewStatus: 'dismissed',
+            createdAt: '2026-07-09T00:00:00.000Z',
+            dismissedAt: '2026-07-09T01:00:00.000Z',
+          },
+        ],
+      });
+      installWindowBridges({ api: { activity: { plans: { get } } } });
+      const query = (revisionNumber: number): Promise<unknown> =>
+        createClient().query('plan.get', {
+          projectId: 'ws-1',
+          worktreeId: 'wt-1',
+          planId: 'plan-1',
+          revisionNumber,
+        });
+
+      await expect(query(2)).resolves.toMatchObject({
+        content: ' # Older plan\n',
+        body: ' # Older plan\n',
+        revisionNumber: 2,
+        latestRevisionNumber: 3,
+        reviewStatus: 'dismissed',
+        dismissedAt: '2026-07-09T01:00:00.000Z',
+      });
+      await expect(query(3)).resolves.toMatchObject({
+        content: '# Plan body',
+        revisionNumber: 3,
+      });
+      await expect(query(1)).rejects.toThrow('Plan not found.');
+    });
+
     it('plan.update narrows the wire payload onto UpdateTrackedPlanRequest', async () => {
       const update = jest.fn().mockResolvedValue(PLAN);
       installWindowBridges({ api: { activity: { plans: { update } } } });
@@ -2722,6 +3022,86 @@ it('routes Personal organization upgrade operations to the preload bridge', asyn
   expect(bridge.status).toHaveBeenCalledWith({ operationId: OP });
 });
 
+it('wires the local transcript read seam and opts into delegation reads', () => {
+  const client = createClient();
+  expect(client.capabilities.delegationTranscriptReads).toBe(true);
+  expect(client.capabilities.delegationBlockReads).toBe(true);
+  expect(client.capabilities.primaryContentReads).toBe(true);
+  expect(typeof client.transcripts.delegationPage).toBe('function');
+  expect(typeof client.transcripts.content).toBe('function');
+});
+
+it('maps managed-delegation lifetime reads, extension, and scoped change events', async () => {
+  const scope = { projectId: 'project-1', worktreeId: 'worktree-1' };
+  const status = {
+    kind: 'available',
+    occupied: 4,
+    retained: 4,
+    limit: 4,
+    cap: 8,
+    atLimit: true,
+    canExtend: true,
+    atCap: false,
+    refusedChatIds: ['chat-1'],
+  } satisfies ManagedDelegationLifetimeStatus;
+  const extension = {
+    ok: true,
+    baseline: 4,
+    effectiveLimit: 8,
+    retained: 4,
+  } satisfies ManagedDelegationExtendLifetimeLimitResult;
+  type LifetimeScope = { projectId: string; worktreeId: string };
+  let emitChanged: (event: LifetimeScope) => void = () => {};
+  const unsubscribe = jest.fn();
+  const getLifetimeStatus = jest.fn<Promise<typeof status>, [LifetimeScope]>(
+    () => Promise.resolve(status),
+  );
+  const extendLifetimeLimit = jest.fn<
+    Promise<typeof extension>,
+    [LifetimeScope]
+  >(() => Promise.resolve(extension));
+  const onLifetimeChanged = jest.fn(
+    (listener: (event: LifetimeScope) => void) => {
+      emitChanged = listener;
+      return unsubscribe;
+    },
+  );
+  installWindowBridges({
+    api: {
+      managedDelegation: {
+        getLifetimeStatus,
+        extendLifetimeLimit,
+        onLifetimeChanged,
+      },
+    },
+  });
+  const client = createClient();
+  expect(client.capabilities.delegationLifetimeStatusReads).toBe(true);
+  expect(client.capabilities.delegationLifetimeLimitExtension).toBe(true);
+  await expect(
+    client.query('delegation.lifetimeStatus', scope),
+  ).resolves.toEqual(status);
+  expect(getLifetimeStatus).toHaveBeenCalledWith(scope);
+  await expect(
+    client.command('delegation.extendLifetimeLimit', scope),
+  ).resolves.toEqual(extension);
+  expect(extendLifetimeLimit).toHaveBeenCalledWith(scope);
+
+  const listener = jest.fn<void, [LifetimeScope & { occurredAt: string }]>();
+  const off = client.subscribe('delegation.lifetimeChanged', listener, scope);
+  expect(onLifetimeChanged).toHaveBeenCalledTimes(1);
+  emitChanged({ projectId: 'other-project', worktreeId: scope.worktreeId });
+  emitChanged({ projectId: scope.projectId, worktreeId: 'other-worktree' });
+  expect(listener).not.toHaveBeenCalled();
+  emitChanged(scope);
+  const [event] = listener.mock.calls[0] ?? [];
+  expect(event?.projectId).toBe(scope.projectId);
+  expect(event?.worktreeId).toBe(scope.worktreeId);
+  expect(typeof event?.occurredAt).toBe('string');
+  off();
+  expect(unsubscribe).toHaveBeenCalledTimes(1);
+});
+
 it('refreshes Copilot account quotas through the existing observability authority', async () => {
   const refreshUsage = jest.fn().mockResolvedValue({});
   installWindowBridges({ api: { observability: { refreshUsage } } });
@@ -2781,5 +3161,54 @@ describe('script actions', () => {
         decision: 'approve',
       }),
     ).rejects.toBe(error);
+  });
+});
+
+test('shared multi-repo client forwards immutable requests and observes without replaying creation', async () => {
+  const prepare = jest.fn().mockResolvedValue({ repositories: [] });
+  const create = jest.fn().mockResolvedValue({ state: 'creating' });
+  const getCreation = jest.fn().mockResolvedValue(null);
+  const listCreations = jest.fn().mockResolvedValue([]);
+  const setupCancel = jest.fn().mockResolvedValue(undefined);
+  installWindowBridges({
+    api: {
+      orgProjects: {
+        sharedMultiRepo: { prepare, create, getCreation, listCreations },
+        setupCancel,
+      },
+    },
+  });
+  const client = createClient();
+  const params = {
+    mode: 'convert' as const,
+    selections: [{ kind: 'workspace' as const, id: 'source' }],
+    request: {
+      organizationId: 'org',
+      creationKey: 'same-key',
+      name: 'New shared project',
+      sourceProjects: [{ projectId: 'definition', expectedRevision: 2 }],
+    },
+  };
+  await client.sharedMultiRepo.prepare(params);
+  await client.sharedMultiRepo.create(params);
+  await client.sharedMultiRepo.getCreation('same-key');
+  await client.sharedMultiRepo.listCreations();
+  await client.sharedMultiRepo.cancelSetup('org', 'destination');
+  expect(prepare).toHaveBeenCalledWith(params);
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(create).toHaveBeenCalledWith(params);
+  expect(getCreation).toHaveBeenCalledWith('same-key');
+  expect(listCreations).toHaveBeenCalledTimes(1);
+  expect(setupCancel).toHaveBeenCalledWith({ projectId: 'destination' });
+  await client.sharedMultiRepo.resume?.('same-key');
+  expect(create).toHaveBeenLastCalledWith({ creationKey: 'same-key' });
+});
+
+test('repository URLs use the always-external desktop browser path', () => {
+  const openExternal = jest.fn().mockResolvedValue(undefined);
+  installWindowBridges({ api: { browser: { openExternal } } });
+  createClient().openExternalUrl('https://github.com/acme/setup-repo');
+  expect(openExternal).toHaveBeenCalledWith({
+    url: 'https://github.com/acme/setup-repo',
   });
 });

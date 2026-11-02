@@ -78,7 +78,7 @@ function makeProcess(
   overrides: Pick<ResourceProcessSnapshot, 'id' | 'label'> &
     Partial<ResourceProcessSnapshot>,
 ): ResourceProcessSnapshot {
-  return {
+  const process: ResourceProcessSnapshot = {
     id: overrides.id,
     kind: 'other',
     groupId: 'other',
@@ -87,8 +87,8 @@ function makeProcess(
     memoryRssBytes: 0,
     processCount: 1,
     status: 'running',
-    ...overrides,
   };
+  return Object.assign(process, overrides);
 }
 
 function makeGroup(
@@ -691,6 +691,19 @@ describe('ResourceDiagnosticsPopover', () => {
     // processes the app runs for itself.
     expect(html).not.toContain('resource-diagnostics-popover-pressure');
     expect(html).toContain('resource-diagnostics-popover-app-totals');
+  });
+
+  it('opts the portaled panel out of window-drag regions beneath it', () => {
+    const { container, cleanup } = renderPopover(makeSnapshot());
+    try {
+      expect(
+        container
+          .querySelector('[data-testid="resource-diagnostics-popover-content"]')
+          ?.classList.contains('electron-no-drag'),
+      ).toBe(true);
+    } finally {
+      cleanup();
+    }
   });
 
   it('renders nested pipeline subprocesses under the pipeline row', () => {

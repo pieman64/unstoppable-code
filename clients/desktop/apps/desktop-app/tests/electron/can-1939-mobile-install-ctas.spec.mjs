@@ -288,6 +288,14 @@ test('store-enabled desktop CTAs share snooze and suppress live after activation
     await expect(
       window.getByTestId('remote-control-mobile-apps-cta'),
     ).toBeVisible();
+    await expect(
+      window.getByTestId('remote-control-mobile-apps-cta'),
+    ).toContainText(
+      'mobile app to monitor your agents and manage your projects from your phone.',
+    );
+    await expect(
+      window.getByTestId('remote-control-mobile-apps-cta'),
+    ).toHaveCount(1);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

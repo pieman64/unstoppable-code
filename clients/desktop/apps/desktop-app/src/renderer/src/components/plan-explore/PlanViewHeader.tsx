@@ -1,17 +1,17 @@
 import { useCallback, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   ActionMenuRowStyle,
+  Button,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuItemTrailing,
   FloatingMenu,
+  PipelineDispatchedTime,
+  PlanReviewStatusBadge,
+  PlanStatusNote,
 } from '@canopy/ui-shared/components';
-import type {
-  TrackedPlanData,
-  TrackedPlanReviewStatus,
-} from '@canopy/desktop-shared/types';
+import type { TrackedPlanData } from '@canopy/desktop-shared/types';
 import { PipelineIcon } from '@canopy/ui-shared/icons';
-import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';
 import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { PlanReadyPipelineModal } from '@/components/chat/PlanReadyPipelineModal';
 import type {
@@ -22,13 +22,11 @@ import { PlanActionControls } from '@/components/shared/PlanActionControls';
 import { SharePlanModal } from '@/components/shared/SharePlanModal';
 import { shareButtonLabel } from '@/components/shared/planShareLabel';
 import { getPlanSourceLabel } from '@/lib/providerLabels';
-import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
-
-const REVIEW_STATUS_PILL: Record<TrackedPlanReviewStatus, string> = {
-  pending: 'border-line-attention bg-warning-subtle fg-warning',
-  approved: 'border-line-positive bg-success-subtle fg-success',
-  dismissed: 'bg-fg-primary/[0.04] fg-secondary',
-};
+import {
+  planExecuteAvailability,
+  usePlanImplementationState,
+  type PlanStatusNoteTarget,
+} from '@/components/plan-explore/usePlanImplementationState';
 
 export interface PlanViewHeaderProps {
   /** The latest tracked plan. */
@@ -58,6 +56,8 @@ export interface PlanViewHeaderProps {
   responsive?: boolean;
   /** Open a linked pipeline run. */
   onOpenExecution: (executionId: string) => void;
+  /** Bring up a chat in the plan's worktree; omitted hides View chat. */
+  onOpenChat?: (chatId: string) => void;
 }
 
 interface LinkedExecutionsMenuProps {
@@ -78,23 +78,22 @@ function LinkedExecutionsMenu({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   return (
     <div className="relative shrink-0">
-      <button
+      <Button
+        size="compact"
         ref={triggerRef}
-        type="button"
         data-testid={testId}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={(): void => onOpenChange(!open)}
-        className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.04] px-2.5 py-1 text-xs fg-primary transition hover:bg-fg-primary/[0.08]"
       >
         <PipelineIcon width={12} height={12} className="shrink-0" />
         {executions.length} linked
         <AppCatalogChevronDownMediumIcon
           width="11"
           height="11"
-          className={`transition ${open ? 'rotate-180' : ''}`}
+          className={`transition-transform ${open ? 'rotate-180' : ''}`}
         />
-      </button>
+      </Button>
       <FloatingMenu
         open={open}
         onOpenChange={onOpenChange}
@@ -115,11 +114,15 @@ function LinkedExecutionsMenu({
                 {index === 0 ? <PipelineIcon /> : null}
               </DropdownMenuItemIcon>
               <span className="min-w-0 truncate">{execution.label}</span>
-              {execution.status && (
-                <DropdownMenuItemTrailing>
-                  {execution.status}
-                </DropdownMenuItemTrailing>
-              )}
+              {/* One trailing slot keeps the status beside the dispatched
+                  time instead of splitting the row's free space. */}
+              <DropdownMenuItemTrailing className="flex items-center">
+                {execution.status}
+                <PipelineDispatchedTime
+                  startedAt={execution.startedAt}
+                  variant="menu"
+                />
+              </DropdownMenuItemTrailing>
             </DropdownMenuItem>
           ))}
         </ActionMenuRowStyle>
@@ -199,7 +202,6 @@ function PlanFollowUpDialogs({
           existingShare={plan.share}
           onClose={actions.closeShareModal}
           onShare={actions.submitShare}
-          onShared={actions.handleShared}
         />
       )}
       {actions.shareGateModal}
@@ -225,6 +227,7 @@ export function PlanViewHeader({
   trailing,
   responsive = false,
   onOpenExecution,
+  onOpenChat,
 }: PlanViewHeaderProps): JSX.Element {
   // Dialogs open in the document hosting this header, so a header inside a
   // popped-out panel window opens them in that window.
@@ -243,6 +246,19 @@ export function PlanViewHeader({
     [onOpenExecution, setExecutionsOpen],
   );
   const reviewedRevisionNumber = viewedRevision ?? plan.latestRevisionNumber;
+  const implementation = usePlanImplementationState(plan);
+  const openNoteTarget = (target: PlanStatusNoteTarget): void => {
+    if (target.kind === 'run') {
+      openExecution(target.executionId);
+    } else {
+      onOpenChat?.(target.chatId);
+    }
+  };
+  const notes = readOnly
+    ? []
+    : implementation.notes.filter(
+        (note) => note.target.kind === 'run' || onOpenChat !== undefined,
+      );
 
   return (
     <>
@@ -255,12 +271,23 @@ export function PlanViewHeader({
         }
       >
         {leading}
-        <span
-          className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-2xs font-medium ${REVIEW_STATUS_PILL[plan.reviewStatus]}`}
+        <PlanReviewStatusBadge
+          status={implementation.status}
           data-testid={`${testIdPrefix}-status-badge`}
-        >
-          {capitalizeFirstLetter(plan.reviewStatus)}
-        </span>
+        />
+        {notes.map((note) => (
+          <PlanStatusNote
+            key={`${note.target.kind}-${note.target.kind === 'run' ? note.target.executionId : note.target.chatId}`}
+            text={note.text}
+            className="shrink-0"
+            data-testid={`${testIdPrefix}-status-note${note.text ? '-outcome' : ''}`}
+            link={{
+              label: note.linkLabel,
+              onSelect: (): void => openNoteTarget(note.target),
+              'data-testid': `${testIdPrefix}-status-note-${note.target.kind}${note.text ? '-outcome' : ''}`,
+            }}
+          />
+        ))}
         <span
           className={
             responsive
@@ -302,7 +329,8 @@ export function PlanViewHeader({
               showExplore={false}
               dataTestIdPrefix={testIdPrefix}
               planContent={plan.content}
-              executeDisabled={isCursorPlanExecutionUnavailable(plan)}
+              {...planExecuteAvailability(plan, implementation)}
+              executeEmphasis={implementation.status.executeEmphasis}
               onExplore={(): void => {}}
               onImplement={actions.implement}
               onPipeline={actions.openPipelineModal}

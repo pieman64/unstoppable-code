@@ -73,6 +73,7 @@ import {
   normalizeTabForInheritedPluginDefaults,
   normalizeWorkspaceChatsForInheritedPluginDefaults,
 } from '../lib/inherited-plugin-defaults-normalization';
+import { captureMcpRefRewriteOutcome } from '../mcp/server-ref-rewrite-outcome';
 
 const linear = { serverId: 'linear', configId: 'default' };
 const github = { serverId: 'github', configId: 'default' };
@@ -333,6 +334,31 @@ describe('normalizeWorkspaceChatsForInheritedPluginDefaults', () => {
       ),
     ).rejects.toThrow('global plugin defaults');
 
+    expect(mockUpdateCompatibilityTabs).not.toHaveBeenCalled();
+  });
+
+  it('identifies an unreadable global authority inside a rewrite without changing the legacy error', async () => {
+    preferencesRead('unreadable');
+    const outcome = await captureMcpRefRewriteOutcome(async () => {
+      await normalizeWorkspaceChatsForInheritedPluginDefaults(
+        'ws-1',
+        selections({ mcpServerRefs: [linear] }),
+      );
+      return { globalDefaults: false, workspaces: 0, chats: 0 };
+    });
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'unavailable',
+        code: 'core.catalog.mcpServer.rewriteFailed',
+        details: { phase: 'normalization', effects: 'unknown' },
+      },
+    });
+    if (outcome.ok || !('legacyError' in outcome))
+      throw new Error('Expected rejection');
+    expect(outcome.legacyError).toEqual(
+      new Error('Could not read the global plugin defaults'),
+    );
     expect(mockUpdateCompatibilityTabs).not.toHaveBeenCalled();
   });
 

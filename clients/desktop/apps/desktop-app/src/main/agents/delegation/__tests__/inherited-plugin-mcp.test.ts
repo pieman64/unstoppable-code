@@ -60,13 +60,16 @@ const name = buildManagedMcpServerName({
   friendlyParts: ['tool', 'review'],
   identityParts: ['market', 'tool', 'review'],
 });
-function snapshot(config: Record<string, unknown>): AgentCapabilitySnapshot {
+function snapshot(
+  config: Record<string, unknown>,
+  configDigest = mcpTransportDigest(config, identity),
+): AgentCapabilitySnapshot {
   const selection = {
     source: 'inherited-plugin' as const,
     installationDigest,
     ...identity,
     root: 'home/tool',
-    configDigest: mcpTransportDigest(config, identity),
+    configDigest,
   };
   return {
     claudePluginRoots: ['home/tool'],
@@ -376,10 +379,9 @@ it('rejects a changed credential selector before resolving inherited plugin secr
     url: 'https://installed.test/mcp',
     env_http_headers: { Authorization: 'COPILOT_PIN_SCOPED_TOKEN' },
   };
-  const retained = snapshot(config);
-  retained.mcpSelections[0].configDigest = inheritedPluginMcpTransportDigest(
+  const retained = snapshot(
     config,
-    identity,
+    inheritedPluginMcpTransportDigest(config, identity),
   );
   readConfig.mockReturnValue({
     review: {

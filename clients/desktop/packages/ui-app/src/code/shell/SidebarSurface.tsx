@@ -2,12 +2,17 @@
 
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
 import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
+import {
+  offerLifecycleJournalQuarantine,
+  offerProjectDeletionDiscard,
+} from '@canopy/app-state';
 
 import {
   WORKSPACE_LABEL_PLURAL,
   defaultCoworkWorkspaceIdForContext,
 } from '@canopy/protocol/ui-labels';
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -48,6 +53,7 @@ import {
   worktreeActionsMenuButtonCount,
   type WorktreeDirectAction,
   WorktreeInfoDialog,
+  isSpaceNotificationMuted,
   type PipelineStatusPopoverEntry,
   type TerminalPopoverRow,
 } from '@canopy/ui-shared/components';
@@ -59,6 +65,7 @@ import {
 } from '@canopy/ui-shared';
 import {
   ActionMenuRowStyle,
+  Button,
   RailIconButton,
   SIDEBAR_LIST_ICON_CLASSNAME,
   SIDEBAR_NAV_ICON_CLASSNAME,
@@ -102,6 +109,7 @@ import {
   PROJECTS_HEADER_SELECTOR,
   RAIL_SECTION_HEADER_PADDING_RIGHT,
   shouldShowProjectsPin,
+  SIDEBAR_FOOTER_CALLOUT_HOST_SELECTOR,
   SIDEBAR_ROOT_SELECTOR,
   SIDEBAR_VIEWPORT_ATTR,
   SIDEBAR_VIEWPORT_SELECTOR,
@@ -122,6 +130,7 @@ import {
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   isSidebarActivityAvailable,
+  withSidebarActivitySpaceMute,
   type SidebarActivityHost,
 } from './sidebar-activity-host';
 import { SidebarActivityModeSwitch } from './SidebarActivityModeView';
@@ -129,10 +138,27 @@ import { SidebarContextHeader } from './sidebar/SidebarContextHeader';
 import type {
   GetWorktreeBatchRemovalFacts,
   RemoveWorktreeInBatch,
+  SidebarBatchRemovalUiState,
   WorktreeBatchRemovalUiState,
-} from './sidebar/use-worktree-batch-removal';
+} from './sidebar/use-sidebar-batch-removal';
+import {
+  useSidebarWorkEntryBulk,
+  type GetWorkEntryBatchRemovalFacts,
+  type GetWorkEntryBulkState,
+  type RemoveWorkEntryInBatch,
+  type WorkEntryMultiSelectBinding,
+} from './sidebar/use-sidebar-work-entry-bulk';
+import { withSelectionGroupItems } from './sidebar-selection-menu-items';
 import { SidebarActivityModeToggle } from './SidebarActivityModeToggle';
-import { useSidebarWorktreeBulk } from './sidebar/use-sidebar-worktree-bulk';
+import {
+  useSidebarWorktreeBulk,
+  worktreeBulkRowMenu,
+} from './sidebar/use-sidebar-worktree-bulk';
+import {
+  useSidebarBulk,
+  useSidebarSelectionRows,
+  type SidebarRowMultiSelect,
+} from './sidebar/use-sidebar-bulk';
 
 /**
  * How many chats the hoisted Chats section lists before "Show all".
@@ -165,12 +191,14 @@ import {
 import {
   isWorktreeDone,
   snapshotWorkspaceMatchesContext,
+  worktreeRowKey,
   type WorkspaceSectionsSnapshot,
 } from './workspace-sections-model';
 import {
   filterSidebarChatSearchResults,
   type SidebarChatSearchResult,
 } from './sidebar-chat-search-model';
+import { activateSidebarNavItem } from './sidebar/sidebar-nav-activation';
 
 export type SidebarSelection =
   | { readonly kind: 'workspace'; readonly workspaceLocalId: string }
@@ -280,6 +308,8 @@ export interface SidebarSurfaceTestIds {
   readonly worktreeNotifications?: WorktreeTestId;
   readonly worktreeRemovalConfirm?: WorktreeTestId;
   readonly worktreeBatchRemovalDialog?: string;
+  /** The Work Entry batch dialog; defaults to `work-entry-batch-removal-dialog`. */
+  readonly workEntryBatchRemovalDialog?: string;
   readonly workspaceRemovalConfirm?: string;
   readonly coworkWorkspace?: (workspaceLocalId: string) => string;
   readonly standaloneChatList?: string;
@@ -315,6 +345,13 @@ export interface SidebarNavItemAction {
   readonly onSelect?: () => void;
   /** Marks the item as the current destination. */
   readonly active?: boolean;
+  /**
+   * Invoked instead of `onSelect` when the current item is activated: it
+   * returns the section to its root, the same as entering it fresh (see
+   * `activateSidebarNavItem`). An `href` item routes to its href either way,
+   * which for a URL host is already the section's root.
+   */
+  readonly onReturnToRoot?: () => void;
 }
 
 export interface SidebarSurfaceProps {
@@ -447,6 +484,44 @@ export interface SidebarSurfaceProps {
   /** The batch dialog opened, changed phase, or closed (`null`). */
   readonly onWorktreeBatchRemovalStateChange?: (
     state: WorktreeBatchRemovalUiState | null,
+  ) => void;
+  /**
+   * Bulk removal of Work Entries (chats): removes one entry of a confirmed
+   * batch and settles when that removal has finished, rejecting with the
+   * reason when it failed. Omitted: Work Entry rows offer no multi-select.
+   */
+  readonly onRemoveWorkEntryInBatch?: RemoveWorkEntryInBatch;
+  /**
+   * Host facts for one Work Entry of a batch: `undefined` when the entry no
+   * longer exists, a reason when it can't be removed right now. Hosts that
+   * wire {@link onRemoveWorkEntryInBatch} wire this too.
+   */
+  readonly getWorkEntryBatchRemovalFacts?: GetWorkEntryBatchRemovalFacts;
+  /**
+   * A Work Entry's pin and done state for the selection's Pin and Mark
+   * items. Hosts that wire {@link onSetWorkEntryPinned} or
+   * {@link onSetWorkEntryStatus} wire this too.
+   */
+  readonly getWorkEntryBulkState?: GetWorkEntryBulkState;
+  /** The Work Entry row's own Pin to top, for a selection; settles when saved. */
+  readonly onSetWorkEntryPinned?: (
+    workspaceLocalId: string,
+    workEntryId: string,
+    pinned: boolean,
+  ) => Promise<void>;
+  /** The Work Entry row's own Mark done / Mark active, for a selection. */
+  readonly onSetWorkEntryStatus?: (
+    workspaceLocalId: string,
+    workEntryId: string,
+    status: 'active' | 'done',
+  ) => Promise<void>;
+  /** A workspace's deletion-retention window for the Work Entry batch copy. */
+  readonly workEntryRetentionDaysFor?: (
+    workspaceLocalId: string,
+  ) => number | undefined;
+  /** The Work Entry batch dialog opened, changed phase, or closed (`null`). */
+  readonly onWorkEntryBatchRemovalStateChange?: (
+    state: SidebarBatchRemovalUiState | null,
   ) => void;
   /**
    * The saved notification choice for a row's space, read synchronously from
@@ -787,6 +862,12 @@ export interface SidebarSurfaceProps {
     workspaceLocalId: string,
     commands: Record<string, string>,
   ) => Promise<void>;
+  /** Host content for the organization workspace’s Repositories tab. */
+  readonly renderWorkspaceRepositoriesAccessory?: (
+    workspaceLocalId: string,
+    onClose: () => void,
+    onOpenDestination: (workspaceLocalId: string) => Promise<void>,
+  ) => ReactNode;
   /** Host content for a workspace's settings Scripts tab. */
   readonly renderWorkspaceScriptsAccessory?: (
     workspaceLocalId: string,
@@ -1166,16 +1247,15 @@ const NAV_ITEM_DEFS = getSidebarNavItemDefs(NAV_ICON_SIZE);
  * first; no mode is the archive of a host without retention.
  */
 function savedChangesRemovalMessage(
-  label: string,
   mode: 'archive' | 'delete' | undefined,
   retentionDays: number,
 ): string {
   const fallback = "If they can't be saved, you choose what happens.";
   if (mode === 'delete') {
     const kept = `${retentionDays} ${retentionDays === 1 ? 'day' : 'days'}`;
-    return `Delete ${label}? It's archived first, with its changes saved. ${fallback} Deleted worktrees are kept for ${kept}, then removed. You can restore it from Archived and deleted.`;
+    return `It's archived first, with its changes saved. ${fallback} Deleted worktrees are kept for ${kept}, then removed. You can restore it from Archived and deleted.`;
   }
-  const saved = `Archive ${label}? Its changes are saved before it stops. ${fallback}`;
+  const saved = `Its changes are saved before it stops. ${fallback}`;
   return mode === 'archive'
     ? `${saved} Archived worktrees are kept until you delete them.`
     : saved;
@@ -1183,6 +1263,67 @@ function savedChangesRemovalMessage(
 
 function navItemDef(key: string): SidebarNavItemDef | undefined {
   return Object.entries(NAV_ITEM_DEFS).find(([defKey]) => defKey === key)?.[1];
+}
+
+/** The row a worktree or session removal confirmation was opened for. */
+interface WorktreeRemovalConfirmTarget {
+  readonly label: string;
+  readonly subject: 'worktree' | 'session';
+  readonly mode?: 'archive' | 'delete';
+  readonly backend?: PortalRowBackend;
+  readonly presentation: 'archive' | 'delete';
+  readonly copy?: 'saved-changes';
+}
+
+/**
+ * Title, sentence and action for a row removal confirmation. The title is a
+ * question naming the row, the action repeats its verb and noun, and the
+ * sentence says what happens to the work. Cloud rows are chats to the user,
+ * so they read as chats.
+ */
+function worktreeRemovalConfirmCopy(
+  target: WorktreeRemovalConfirmTarget,
+  retentionDays: number,
+  remoteRetentionWindow: string,
+): { title: ReactNode; message: string; confirmLabel: string } {
+  const removal = target.mode ?? target.presentation;
+  const verb = removal === 'archive' ? 'Archive' : 'Delete';
+  const chatLike = target.backend === 'cloud';
+  const noun = chatLike ? 'chat' : target.subject;
+  const label = target.label.trim();
+  // A row's name is user-authored, so it is masked in session replay.
+  const title =
+    label === '' ? (
+      `${verb} ${noun}?`
+    ) : (
+      <>
+        {chatLike ? verb : `${verb} ${noun}`} “
+        <span className={REPLAY_MASK_CLASS}>{label}</span>”?
+      </>
+    );
+  const kept = `${retentionDays} ${retentionDays === 1 ? 'day' : 'days'}`;
+  let message: string;
+  if (target.copy === 'saved-changes') {
+    message = savedChangesRemovalMessage(target.mode, retentionDays);
+  } else if (target.mode === 'archive') {
+    message =
+      target.backend === 'cloud'
+        ? 'Archived chats are kept until you delete them.'
+        : 'This removes the active checkout. Archived worktrees are kept until you delete them. Restore it from the desktop app.';
+  } else if (target.mode === 'delete') {
+    message =
+      target.backend === 'cloud'
+        ? `Deleted chats are kept for ${kept}, then removed. You can restore it from Archived and deleted.`
+        : `This removes the active checkout. Deleted worktrees are kept for ${remoteRetentionWindow}, then removed. Restore it from the desktop app.`;
+  } else if (removal === 'archive') {
+    message =
+      target.subject === 'session'
+        ? 'This removes the session from the sidebar while keeping its chat history.'
+        : 'This removes the worktree from disk while keeping its chats and eligible workflow history.';
+  } else {
+    message = 'This removes the worktree and its checkout and can’t be undone.';
+  }
+  return { title, message, confirmLabel: `${verb} ${noun}` };
 }
 
 /**
@@ -1275,18 +1416,32 @@ function routeAnchorClick(
   if (
     onNavigateHref === undefined ||
     event.defaultPrevented ||
+    !opensAnchorInPlace(event)
+  ) {
+    return;
+  }
+  event.preventDefault();
+  onNavigateHref(href);
+}
+
+/**
+ * An unmodified primary click on a same-tab anchor. Anything else opens the
+ * link elsewhere (new tab, new window, download), leaving this tab as it is.
+ */
+function opensAnchorInPlace(
+  event: ReactMouseEvent<HTMLAnchorElement>,
+): boolean {
+  if (
     event.button !== 0 ||
     event.metaKey ||
     event.ctrlKey ||
     event.shiftKey ||
     event.altKey
   ) {
-    return;
+    return false;
   }
   const target = event.currentTarget.getAttribute('target');
-  if (target !== null && target !== '' && target !== '_self') return;
-  event.preventDefault();
-  onNavigateHref(href);
+  return target === null || target === '' || target === '_self';
 }
 
 function navActionFor(
@@ -1489,7 +1644,13 @@ function SidebarNavItemRow({
         <a
           href={href}
           onClick={(event): void => {
-            action.onSelect?.();
+            // Opening the current row in a new tab leaves this tab's section
+            // where it is.
+            activateSidebarNavItem(
+              opensAnchorInPlace(event)
+                ? action
+                : { ...action, onReturnToRoot: undefined },
+            );
             routeAnchorClick(event, href, onNavigateHref);
           }}
           data-testid={testId}
@@ -1507,7 +1668,7 @@ function SidebarNavItemRow({
     <NavItemTooltip label={def.label} compact={compact}>
       <button
         type="button"
-        onClick={action.onSelect}
+        onClick={(): void => activateSidebarNavItem(action)}
         data-testid={testId}
         aria-current={action.active ? 'page' : undefined}
         aria-label={ariaLabel}
@@ -1551,7 +1712,7 @@ function MoreMenuAnchorRow({
       data-testid={testId}
       href={href}
       onClick={onClick}
-      className={`canopy-dropdown-menu-item focus-ring flex h-8 w-full items-center gap-2 rounded-md px-2 text-left ${textClassName} font-normal fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle ${className}`}
+      className={`canopy-dropdown-menu-item outline-none flex h-8 w-full items-center gap-2 rounded-md px-2 text-left ${textClassName} font-normal fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle ${className}`}
     >
       <DropdownMenuItemIcon
         tone={rowStyle.iconTone === 'tertiary' ? 'tertiary' : undefined}
@@ -1759,17 +1920,27 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
   // The Projects body lists no project: its header "+" is then the only way
   // to add one, so it stays on screen instead of waiting for a hover.
   const [projectsListEmpty, setProjectsListEmpty] = useState(false);
+  // A rail that owns scrolling seats the footer callout in its footer stack;
+  // in flow here it would scroll away with the rows below the fold.
+  const [footerCalloutHost, setFooterCalloutHost] =
+    useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
     if (props.scrollOwner !== 'host') {
       setSlotContainer(null);
+      setFooterCalloutHost(null);
       return;
     }
+    // Reached from the viewport rather than a root ref: `SidebarChrome`
+    // forwards none, and this element is inside the rail either way.
+    const rail = scrollViewportRef.current?.closest<HTMLElement>(
+      SIDEBAR_ROOT_SELECTOR,
+    );
     setSlotContainer(
-      // Reached from the viewport rather than a root ref: `SidebarChrome`
-      // forwards none, and this element is inside the rail either way.
-      scrollViewportRef.current
-        ?.closest<HTMLElement>(SIDEBAR_ROOT_SELECTOR)
-        ?.querySelector<HTMLElement>(STICKY_WORKSPACE_SLOT_SELECTOR) ?? null,
+      rail?.querySelector<HTMLElement>(STICKY_WORKSPACE_SLOT_SELECTOR) ?? null,
+    );
+    setFooterCalloutHost(
+      rail?.querySelector<HTMLElement>(SIDEBAR_FOOTER_CALLOUT_HOST_SELECTOR) ??
+        null,
     );
   }, [props.scrollOwner]);
   useEffect((): (() => void) | undefined => {
@@ -2013,6 +2184,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
   } | null>(null);
   const [settingsDialog, setSettingsDialog] = useState<{
     workspace: SidebarSurfaceSnapshot['workspaces'][number];
+    initialTab?: string;
     content: string;
     scripts: Record<string, string>;
   } | null>(null);
@@ -2098,6 +2270,57 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
   useLayoutEffect(() => {
     generationRef.current = ownerGeneration;
   }, [ownerGeneration]);
+  // CAN-5337: a discard confirmation's Retry runs the current owner's
+  // deletion, and only for the owner that offered it.
+  const deleteWorkspaceRef = useRef(props.onDeleteWorkspace);
+  useLayoutEffect(() => {
+    deleteWorkspaceRef.current = props.onDeleteWorkspace;
+  });
+  /**
+   * CAN-5337: offers the discards a refused project deletion can take. The
+   * host opens the confirmation only when discardable items are all that
+   * block it (`onOpen` then hands over from this surface's own dialog);
+   * otherwise the refusal shown here stands. A retry that is refused again
+   * shows its refusal and offers again. A refusal that settles after the
+   * owner changed offers nothing: the new owner did not issue it.
+   */
+  const offerDeletionDiscard = (
+    removal: {
+      workspaceId: string;
+      name: string;
+      presentation: 'archive' | 'delete';
+    },
+    message: string,
+    generation: number,
+    onOpen: () => void,
+  ): void => {
+    if (generationRef.current !== generation) return;
+    if (capabilitiesOf(removal.workspaceId).projectDeletionDiscard !== true)
+      return;
+    offerProjectDeletionDiscard({
+      workspaceId: removal.workspaceId,
+      projectName: removal.name,
+      message,
+      onOpen,
+      retry: () => {
+        const remove = deleteWorkspaceRef.current;
+        if (!remove || generationRef.current !== generation) return;
+        remove(removal.workspaceId).catch((error: unknown) => {
+          offerLifecycleJournalQuarantine(error);
+          if (generationRef.current !== generation) return;
+          const text =
+            error instanceof Error && error.message
+              ? error.message
+              : `Could not ${removal.presentation} this project.`;
+          setPendingWorkspaceRemoval({ ...removal, busy: false, error: text });
+          offerDeletionDiscard(removal, text, generation, () => {
+            if (generationRef.current === generation)
+              setPendingWorkspaceRemoval(null);
+          });
+        });
+      },
+    });
+  };
   // The workspace the open settings dialog describes, re-read from the live
   // snapshot every render. Renaming or recoloring from Details persists through
   // the host and comes back on the next overview refresh, so holding the object
@@ -2180,6 +2403,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         : value) ?? fallback;
   // Bulk selection and removal (CAN-3975): offered only where the host wired
   // an awaitable batch removal.
+  const selectionRows = useSidebarSelectionRows();
   const worktreeBulk = useSidebarWorktreeBulk({
     enabled: props.onRemoveWorktreeInBatch !== undefined,
     snapshot,
@@ -2203,7 +2427,98 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
     },
     worktreeRetentionDaysFor: props.worktreeRetentionDaysFor,
     dialogTestId: testIds?.worktreeBatchRemovalDialog,
+    // The same commands the rows' own Pin to top, Hide, and notification
+    // choices run, with the same gates (see the row's callbacks below).
+    setWorktreePinned:
+      props.capabilities.worktreePinning === true && props.onUpdateWorktree
+        ? (workspaceLocalId, worktreeLocalId, pinned): void =>
+            props.onUpdateWorktree?.(workspaceLocalId, worktreeLocalId, {
+              pinned,
+            })
+        : undefined,
+    hideWorktree: props.onUpdateWorktree
+      ? (workspaceLocalId, worktreeLocalId): void =>
+          props.onUpdateWorktree?.(workspaceLocalId, worktreeLocalId, {
+            hidden: true,
+          })
+      : undefined,
+    getNotificationState: props.getWorktreeNotificationSettings,
+    setNotificationChoice: props.onSetWorktreeNotificationLevel,
+    requestNotificationState: props.onWorktreeNotificationSettingsRequested,
   });
+  // Work Entry rows (chats) select with the same gestures and confirm.
+  let openWorkEntryKey: string | undefined;
+  for (const listRows of selectionRows.rows.values()) {
+    const open = listRows.find((row) => row.kind === 'work-entry' && row.open);
+    if (open !== undefined) {
+      openWorkEntryKey = open.key;
+      break;
+    }
+  }
+  const workEntryBulk = useSidebarWorkEntryBulk({
+    enabled: props.onRemoveWorkEntryInBatch !== undefined,
+    remove: props.onRemoveWorkEntryInBatch,
+    getFacts: props.getWorkEntryBatchRemovalFacts,
+    rows: selectionRows.rows,
+    activeKey: openWorkEntryKey,
+    isWorkspaceCommandDisabled: props.isWorkspaceCommandDisabled,
+    retentionDaysFor: props.workEntryRetentionDaysFor,
+    dialogTestId: testIds?.workEntryBatchRemovalDialog,
+    onStateChange: props.onWorkEntryBatchRemovalStateChange,
+    getEntryState: props.getWorkEntryBulkState,
+    setPinned: props.onSetWorkEntryPinned,
+    setStatus: props.onSetWorkEntryStatus,
+    // A Work Entry keys its notification choice like a worktree does, as the
+    // row's own menu does below.
+    getNotificationState: props.getWorktreeNotificationSettings,
+    setNotificationChoice: props.onSetWorktreeNotificationLevel,
+    requestNotificationState: props.onWorktreeNotificationSettingsRequested,
+  });
+  const bulk = useSidebarBulk({
+    ...selectionRows,
+    bindings: [worktreeBulk.binding, workEntryBulk.binding],
+  });
+  // A row queued for bulk removal is muted and inert like one the host is
+  // already removing; the binding itself keeps reading the host's own signal
+  // so the queue never skips its own items.
+  const hostRemovalInProgress = props.isWorktreeRemovalInProgress;
+  const isQueuedForRemoval = bulk.isQueuedForRemoval;
+  const isRowRemovalInProgress = useCallback(
+    (workspaceLocalId: string, worktreeLocalId: string): boolean =>
+      hostRemovalInProgress?.(workspaceLocalId, worktreeLocalId) === true ||
+      isQueuedForRemoval(worktreeRowKey(workspaceLocalId, worktreeLocalId)),
+    [hostRemovalInProgress, isQueuedForRemoval],
+  );
+  const queuedRemovalFor = bulk.queuedRemovalFor;
+  const queuedWorktreeRemoval = useCallback(
+    (
+      workspaceLocalId: string,
+      worktreeLocalId: string,
+    ): 'archive' | 'delete' | undefined =>
+      queuedRemovalFor(worktreeRowKey(workspaceLocalId, worktreeLocalId)),
+    [queuedRemovalFor],
+  );
+  // Kept per list binding, so a Work Entry list's binding is as stable as
+  // the core's; selectability reads the latest host facts.
+  const workEntryIsSelectableRef = useRef(workEntryBulk.isSelectable);
+  workEntryIsSelectableRef.current = workEntryBulk.isSelectable;
+  const workEntryBindingsRef = useRef(
+    new WeakMap<SidebarRowMultiSelect, WorkEntryMultiSelectBinding>(),
+  );
+  const workEntryMultiSelectFor = (
+    workspaceLocalId: string,
+  ): WorkEntryMultiSelectBinding | undefined => {
+    if (!workEntryBulk.binding.enabled) return undefined;
+    const base = bulk.bindingFor(workspaceLocalId);
+    const cached = workEntryBindingsRef.current.get(base);
+    if (cached !== undefined) return cached;
+    const extended: WorkEntryMultiSelectBinding = {
+      ...base,
+      isSelectable: (workspace) => workEntryIsSelectableRef.current(workspace),
+    };
+    workEntryBindingsRef.current.set(base, extended);
+    return extended;
+  };
 
   // Mirrors the two escape hatches inside `openSettings` below: a host either
   // handles the request itself, or supplies the loaders the built-in dialog
@@ -2230,6 +2545,23 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       requestNotificationSettings,
       setNotificationLevel,
     ],
+  );
+  // A muted space hides its rows' blue dots (CAN-4378). Without a host lookup
+  // nothing is muted, so the rows keep every dot.
+  const isWorktreeSpaceMuted = useMemo(
+    () =>
+      getNotificationSettings
+        ? (workspaceLocalId: string, worktreeLocalId: string): boolean =>
+            isSpaceNotificationMuted(
+              getNotificationSettings(workspaceLocalId, worktreeLocalId),
+            )
+        : undefined,
+    [getNotificationSettings],
+  );
+  // Activity follows the same mute: its builds and dots read this lookup.
+  const activityHost = useMemo(
+    () => withSidebarActivitySpaceMute(props.activity, isWorktreeSpaceMuted),
+    [props.activity, isWorktreeSpaceMuted],
   );
   const canOpenWorkspaceSettings =
     props.onOpenWorkspaceSettingsOverride !== undefined ||
@@ -2262,11 +2594,17 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           content !== null &&
           scripts !== null
         ) {
-          setSettingsDialog({ workspace, content, scripts });
+          setSettingsDialog({ workspace, initialTab, content, scripts });
         }
       })
       .catch(() => undefined);
   };
+
+  // Shared creation can finish after this render's destination snapshot.
+  const openSettingsRef = useRef({ snapshot, open: openSettings });
+  useLayoutEffect(() => {
+    openSettingsRef.current = { snapshot, open: openSettings };
+  });
 
   const renderActions = ({
     workspace,
@@ -2357,7 +2695,12 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         : groupingState?.hasEligibleParent
           ? ({ kind: 'group-with-base' } as const)
           : undefined;
-    const rowBulk = worktreeBulk.menuFor(workspace, worktree);
+    const rowBulk = worktreeBulkRowMenu(
+      worktreeBulk.binding.enabled
+        ? bulk.bindingFor(workspace.localId)
+        : undefined,
+      worktreeRowKey(workspace.localId, worktree.localId),
+    );
     const menu = deriveWorktreeMenuItems(
       {
         ...rowBulk.context,
@@ -2398,11 +2741,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             worktree.localId,
           ) === true,
         removalLockedBySplitPr: worktree.splitPrLocked === true,
-        removalInProgress:
-          props.isWorktreeRemovalInProgress?.(
-            workspace.localId,
-            worktree.localId,
-          ) === true,
+        removalInProgress: isRowRemovalInProgress(
+          workspace.localId,
+          worktree.localId,
+        ),
         retentionDays: props.worktreeRetentionDaysFor?.(workspace.localId),
         notifications: props.getWorktreeNotificationSettings?.(
           workspace.localId,
@@ -2667,6 +3009,18 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             undefined,
             'portal-worktree-actions-toggle-selection',
           ),
+          bulkPin: worktreeTestId(
+            undefined,
+            'portal-worktree-actions-bulk-pin',
+          ),
+          bulkHide: worktreeTestId(
+            undefined,
+            'portal-worktree-actions-bulk-hide',
+          ),
+          bulkNotifications: worktreeTestId(
+            undefined,
+            'portal-worktree-actions-bulk-notifications',
+          ),
           bulkArchive: worktreeTestId(
             undefined,
             'portal-worktree-actions-bulk-archive',
@@ -2701,16 +3055,22 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       ...(pinnedSurface ? { pinnedSurface } : {}),
     };
     const pinIndex = menu.items.findIndex((item) => item.key === 'toggle-pin');
-    // A selection's menu is the bulk bar's actions alone; host and grouping
-    // rows address one worktree and stay out of it.
-    const bulkMenu = menu.items.some((item) => item.key === 'bulk-archive');
+    // A selection's menu is the selection's actions alone, with its group
+    // moves after its Pin row as on the row's menu; host rows address one
+    // worktree and stay out of it.
+    const bulkMenu =
+      rowBulk.context.bulkSelection !== undefined &&
+      rowBulk.context.bulkSelection.count >= 2 &&
+      rowBulk.callbacks.onBulkRemovalRequested !== undefined;
     const organizingItems =
-      itemGroupMenuItems && !rowCommandsDisabled && !pinnedSurface && !bulkMenu
-        ? [
-            ...menu.items.slice(0, pinIndex + 1),
-            ...itemGroupMenuItems,
-            ...menu.items.slice(pinIndex + 1),
-          ]
+      itemGroupMenuItems && !rowCommandsDisabled && !pinnedSurface
+        ? bulkMenu
+          ? withSelectionGroupItems(menu.items, itemGroupMenuItems)
+          : [
+              ...menu.items.slice(0, pinIndex + 1),
+              ...itemGroupMenuItems,
+              ...menu.items.slice(pinIndex + 1),
+            ]
         : menu.items;
     const transformedItems = bulkMenu
       ? organizingItems
@@ -2771,11 +3131,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       )
         ? worktreeArchiveBlockedReason({
             removalLockedBySplitPr: worktree.splitPrLocked === true,
-            removalInProgress:
-              props.isWorktreeRemovalInProgress?.(
-                workspace.localId,
-                worktree.localId,
-              ) === true,
+            removalInProgress: isRowRemovalInProgress(
+              workspace.localId,
+              worktree.localId,
+            ),
           })
         : undefined;
     const hoverActions: readonly WorktreeDirectAction[] =
@@ -3075,10 +3434,19 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             worktreeLocalId,
           })
         }
+        workEntryMultiSelectFor={readOnly ? undefined : workEntryMultiSelectFor}
         worktreeMultiSelect={
-          readOnly
+          readOnly || !worktreeBulk.binding.enabled
             ? undefined
-            : worktreeBulk.bindingFor(listTestIds.hiddenWorkspacesToggle)
+            : {
+                ...bulk.bindingFor(listTestIds.hiddenWorkspacesToggle),
+                // A queued row is inert until the queue finishes or stops.
+                isSelectable: (workspace, worktree) =>
+                  worktreeBulk.isSelectable(workspace, worktree) &&
+                  !isQueuedForRemoval(
+                    worktreeRowKey(workspace.localId, worktree.localId),
+                  ),
+              }
         }
         touchTargets={touch}
         creationEnabled={!readOnly && props.onCreateWorktree !== undefined}
@@ -3166,8 +3534,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         getWorkspaceHeaderEmphasis={props.getWorkspaceHeaderEmphasis}
         isWorkspacePinned={props.isWorkspacePinned}
         getWorktreeSetupPhase={props.getWorktreeSetupPhase}
-        isWorktreeRemovalInProgress={props.isWorktreeRemovalInProgress}
+        isWorktreeRemovalInProgress={isRowRemovalInProgress}
+        getWorktreeQueuedRemoval={queuedWorktreeRemoval}
         isWorktreeShared={props.isWorktreeShared}
+        isWorktreeSpaceMuted={isWorktreeSpaceMuted}
         isWorktreeListed={props.isWorktreeListed}
         renderPipelinePopover={({
           workspace,
@@ -3225,6 +3595,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             workspace,
             onSelect: onSelectWorkspace,
             onCollapsedChange,
+            workEntryMultiSelect,
           }): JSX.Element | null =>
             snapshotWorkspaceMatchesContext(
               workspace,
@@ -3234,6 +3605,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               <StandaloneChatsSidebarSection
                 snapshot={scopedSnapshot}
                 workspace={workspace}
+                workEntryMultiSelect={workEntryMultiSelect}
                 itemGroupCommands={
                   !readOnly &&
                   !props.isWorkspaceCommandDisabled?.(workspace.localId) &&
@@ -3541,6 +3913,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           }
           headerPresentation="section"
           workEntryNotifications={workEntryNotifications}
+          workEntryMultiSelect={workEntryMultiSelectFor(chatsOwner.localId)}
           // Desktop's Chats header carries a settings control; wiring it
           // here gives both hosts the same one. Passed only when the action
           // can actually run — the host either overrides it or supplies the
@@ -4077,6 +4450,16 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       holdHoverWhenExpanded
     />
   );
+  const footerCallout =
+    bulk.notice !== null || props.footerCallout ? (
+      <div
+        data-testid="sidebar-footer-callout"
+        className="relative flex shrink-0 flex-col gap-2 px-1.5 pb-1.5 pt-2"
+      >
+        {bulk.notice}
+        {props.footerCallout}
+      </div>
+    ) : null;
 
   return (
     <>
@@ -4105,7 +4488,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             {chatSearchInHeader && headerSearchButton}
             {activityToggleInHeader && (
               <SidebarActivityModeToggle
-                host={props.activity}
+                host={activityHost}
                 capabilities={capabilities}
               />
             )}
@@ -4119,7 +4502,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
                 <>
                   {activityToggleInContextRow && (
                     <SidebarActivityModeToggle
-                      host={props.activity}
+                      host={activityHost}
                       capabilities={capabilities}
                     />
                   )}
@@ -4239,15 +4622,17 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               className={`w-full min-w-0 flex-1 bg-transparent text-s fg-primary outline-none placeholder:fg-secondary [&::-webkit-search-cancel-button]:hidden ${touch ? 'min-h-8' : ''}`}
             />
             {chatSearchQuery.length > 0 && (
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 onClick={() => setChatSearchQuery('')}
                 aria-label="Clear chat search"
                 data-testid="portal-sidebar-chat-search-clear"
-                className="focus-ring shrink-0 rounded p-0.5 fg-secondary hover:bg-subtle"
+                className="-my-1"
               >
                 <CloseIcon className="h-4 w-4" />
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -4337,7 +4722,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           >
             {activityAttached ? (
               <SidebarActivityModeSwitch
-                host={props.activity}
+                host={activityHost}
                 capabilities={capabilities}
                 touch={touch}
                 tree={workspaceTree}
@@ -4405,14 +4790,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             <ChevronDownMediumIcon className="h-4 w-4 shrink-0" aria-hidden />
           </button>
         )}
-        {props.footerCallout && (
-          <div
-            data-testid="sidebar-footer-callout"
-            className="relative shrink-0 px-1.5 pb-1.5 pt-2"
-          >
-            {props.footerCallout}
-          </div>
-        )}
+        {footerCallout !== null &&
+          (footerCalloutHost === null
+            ? footerCallout
+            : createPortal(footerCallout, footerCalloutHost))}
         {props.footer && (
           // The status strip's rule separates it from the SCROLLING list. A
           // callout already stands between the two as its own bounded object,
@@ -4424,7 +4805,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             // Desktop's `SidebarAccountFooter` framing: 8px sides and bottom,
             // 8px above the row, full-width rule.
             className={`relative flex shrink-0 items-center px-2 pb-2 pt-2${
-              props.footerCallout ? '' : ' border-t'
+              props.footerCallout || bulk.notice !== null ? '' : ' border-t'
             }`}
           >
             {props.footer}
@@ -4451,30 +4832,22 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
        * absent handler reads as a completed removal. */}
       {pendingWorkspaceRemoval && props.onDeleteWorkspace && (
         <ConfirmDialog
-          title={`${
-            pendingWorkspaceRemoval.presentation === 'archive'
-              ? 'Archive'
-              : 'Delete'
-          } project?`}
+          title={
+            <>
+              {pendingWorkspaceRemoval.presentation === 'archive'
+                ? 'Archive'
+                : 'Delete'}{' '}
+              project “
+              <span className={REPLAY_MASK_CLASS}>
+                {pendingWorkspaceRemoval.name}
+              </span>
+              ”?
+            </>
+          }
           message={
-            pendingWorkspaceRemoval.presentation === 'archive' ? (
-              <>
-                Archive{' '}
-                <span className="font-medium">
-                  {pendingWorkspaceRemoval.name}
-                </span>
-                ? It stops appearing in the sidebar and its work is kept on the
-                server.
-              </>
-            ) : (
-              <>
-                Delete{' '}
-                <span className="font-medium">
-                  {pendingWorkspaceRemoval.name}
-                </span>
-                ? This can&rsquo;t be undone.
-              </>
-            )
+            pendingWorkspaceRemoval.presentation === 'archive'
+              ? 'It stops appearing in the sidebar and its work is kept on the server.'
+              : 'Its work is removed. This can’t be undone.'
           }
           errorMessage={pendingWorkspaceRemoval.error}
           busy={pendingWorkspaceRemoval.busy}
@@ -4485,8 +4858,8 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           }
           confirmLabel={
             pendingWorkspaceRemoval.presentation === 'archive'
-              ? 'Archive'
-              : 'Delete'
+              ? 'Archive project'
+              : 'Delete project'
           }
           destructive={pendingWorkspaceRemoval.presentation === 'delete'}
           dataTestId={
@@ -4511,14 +4884,20 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
                 if (generationRef.current !== generation) return;
                 setPendingWorkspaceRemoval(null);
               } catch (error) {
+                offerLifecycleJournalQuarantine(error);
                 if (generationRef.current !== generation) return;
+                const message =
+                  error instanceof Error && error.message
+                    ? error.message
+                    : `Could not ${pending.presentation} this project.`;
                 setPendingWorkspaceRemoval({
                   ...pending,
                   busy: false,
-                  error:
-                    error instanceof Error && error.message
-                      ? error.message
-                      : `Could not ${pending.presentation} this project.`,
+                  error: message,
+                });
+                offerDeletionDiscard(pending, message, generation, () => {
+                  if (generationRef.current === generation)
+                    setPendingWorkspaceRemoval(null);
                 });
               }
             })();
@@ -4532,56 +4911,11 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
        * settings dialog below has always been guarded this way. */}
       {pendingDelete && props.onArchiveWorktree && (
         <ConfirmDialog
-          title={`${(pendingDelete.mode ?? pendingDelete.presentation) === 'archive' ? 'Archive' : 'Delete'} ${pendingDelete.subject}?`}
-          message={
-            pendingDelete.copy === 'saved-changes' ? (
-              savedChangesRemovalMessage(
-                pendingDelete.label,
-                pendingDelete.mode,
-                pendingRetentionDays ?? DEFAULT_ARCHIVE_RETENTION_DAYS,
-              )
-            ) : pendingDelete.mode === 'archive' ? (
-              pendingDelete.backend === 'cloud' ? (
-                `Archive ${pendingDelete.label}? Archived chats are kept until you delete them.`
-              ) : (
-                `Archive ${pendingDelete.label}? This removes the active checkout. Archived worktrees are kept until you delete them. Restore it from the desktop app.`
-              )
-            ) : pendingDelete.mode === 'delete' ? (
-              pendingDelete.backend === 'cloud' ? (
-                `Delete ${pendingDelete.label}? Deleted chats are kept for ${pendingRetentionDays ?? DEFAULT_ARCHIVE_RETENTION_DAYS} days, then removed. You can restore it from Archived and deleted.`
-              ) : (
-                `Delete ${pendingDelete.label}? This removes the active checkout. Deleted worktrees are kept for ${remoteRetentionWindow}, then removed. Restore it from the desktop app.`
-              )
-            ) : (pendingDelete.mode ?? pendingDelete.presentation) ===
-              'archive' ? (
-              pendingDelete.subject === 'session' ? (
-                <>
-                  Archive{' '}
-                  <span className="font-medium">{pendingDelete.label}</span>?
-                  This removes the session from the sidebar while keeping its
-                  chat history.
-                </>
-              ) : (
-                <>
-                  Archive{' '}
-                  <span className="font-medium">{pendingDelete.label}</span>?
-                  This removes the worktree from disk while keeping its chats
-                  and eligible pipeline history.
-                </>
-              )
-            ) : (
-              <>
-                Delete{' '}
-                <span className="font-medium">{pendingDelete.label}</span>? This
-                removes the worktree and its checkout and can&rsquo;t be undone.
-              </>
-            )
-          }
-          confirmLabel={
-            (pendingDelete.mode ?? pendingDelete.presentation) === 'archive'
-              ? 'Archive'
-              : 'Delete'
-          }
+          {...worktreeRemovalConfirmCopy(
+            pendingDelete,
+            pendingRetentionDays ?? DEFAULT_ARCHIVE_RETENTION_DAYS,
+            remoteRetentionWindow,
+          )}
           destructive={
             (pendingDelete.mode ?? pendingDelete.presentation) === 'delete'
           }
@@ -4600,7 +4934,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           onCancel={() => setPendingDelete(null)}
         />
       )}
-      {worktreeBulk.dialog}
+      {bulk.dialog}
       {settingsDialog &&
         settingsWorkspace &&
         props.onSaveClaudeMd &&
@@ -4608,6 +4942,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         props.onUpdateWorkspace && (
           <DeferredWorkspaceSettingsDialog
             workspaceName={settingsWorkspace.name}
+            initialTab={settingsDialog.initialTab}
             initialValues={{
               name: settingsWorkspace.name,
               color: settingsWorkspace.color,
@@ -4616,6 +4951,58 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             }}
             tabs={['details', 'claude-md', 'scripts', 'danger']}
             tabLabels={{ 'claude-md': 'Instructions' }}
+            extraTabs={
+              (props.renderWorkspaceRepositoriesAccessory ||
+                settingsWorkspace.type === 'multi-repo') &&
+              settingsWorkspace.owner?.type === 'organization'
+                ? [
+                    {
+                      id: 'repositories',
+                      label: 'Repositories',
+                      content:
+                        settingsWorkspace.type === 'multi-repo' ? (
+                          <ul aria-label="Repositories" className="space-y-2">
+                            {settingsWorkspace.repos?.map((repo) => (
+                              <li key={repo.id} className="text-s fg-primary">
+                                {repo.name}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          props.renderWorkspaceRepositoriesAccessory?.(
+                            settingsWorkspace.localId,
+                            () => setSettingsDialog(null),
+                            async (id): Promise<void> => {
+                              for (
+                                let attempt = 0;
+                                attempt < 100;
+                                attempt += 1
+                              ) {
+                                if (generationRef.current !== ownerGeneration)
+                                  throw new Error('The settings owner changed');
+                                const current = openSettingsRef.current;
+                                if (
+                                  current.snapshot.workspaces.some(
+                                    (item) => item.localId === id,
+                                  )
+                                ) {
+                                  current.open(id, 'repositories');
+                                  return;
+                                }
+                                await new Promise<void>((resolve) =>
+                                  setTimeout(resolve, 100),
+                                );
+                              }
+                              throw new Error(
+                                'The destination has not reached the sidebar',
+                              );
+                            },
+                          )
+                        ),
+                    },
+                  ]
+                : undefined
+            }
             scriptsAccessory={props.renderWorkspaceScriptsAccessory?.(
               settingsWorkspace.localId,
             )}
@@ -4634,7 +5021,30 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               props.isWorkspaceCommandDisabled?.(settingsWorkspace.localId) !==
                 true
                 ? async (): Promise<void> => {
-                    await props.onDeleteWorkspace?.(settingsWorkspace.localId);
+                    const generation = ownerGeneration;
+                    try {
+                      await props.onDeleteWorkspace?.(
+                        settingsWorkspace.localId,
+                      );
+                    } catch (error) {
+                      offerLifecycleJournalQuarantine(error);
+                      offerDeletionDiscard(
+                        {
+                          workspaceId: settingsWorkspace.localId,
+                          name: settingsWorkspace.name,
+                          presentation: 'delete',
+                        },
+                        error instanceof Error && error.message
+                          ? error.message
+                          : 'Could not delete this project.',
+                        generation,
+                        () => {
+                          if (generationRef.current === generation)
+                            setSettingsDialog(null);
+                        },
+                      );
+                      throw error;
+                    }
                   }
                 : undefined
             }

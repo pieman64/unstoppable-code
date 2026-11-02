@@ -13,11 +13,13 @@ import { localPlatform } from '@/lib/local-platform';
 import {
   openCloudAccountSettings,
   openIntegrationSettings,
+  openSettingsDeepLink,
 } from '@/lib/navigation/settings-destinations';
 import { canTransferChatSession } from '@/lib/session-transfer-eligibility';
 import { resolveSharedRunUrl } from '@/lib/share-links';
 import { installAutoArchiveAfterDelegates } from '@/stores/chat/slices/revisioned';
 import { initializeDelegationActivityStore } from '@/stores/delegationActivityStore';
+import { initializeLiveBackgroundTaskStore } from '@/stores/liveBackgroundTaskStore';
 import { initializeSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
 import { initializeSharedContainersStore } from '@/stores/sharedContainersStore';
 import {
@@ -52,6 +54,7 @@ import {
 } from '@canopy/ui-shared';
 import { EditBigIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -69,7 +72,6 @@ import { AppAdvisorMainRuntimeBridge } from './components/app-advisor/AppAdvisor
 import { AutomationInstallContinuationHost } from './components/automations/AutomationInstallContinuationHost';
 import { CommitMessageReviewModalHost } from './components/github/CommitMessageReviewModal';
 import { GitHubConnectOfferHost } from './components/github/GitHubConnectOfferHost';
-import { OnboardingSuggestionsRuntime } from './components/home/onboarding-suggestions/OnboardingSuggestionsRuntime';
 import { ImportProjectsInvite } from './components/import-projects/ImportProjectsInvite';
 import { ImportProjectsModalHost } from './components/import-projects/ImportProjectsModalHost';
 import { DevPagesShell } from './components/pages/DevPagesShell';
@@ -94,6 +96,7 @@ import { ShareSessionStatusModal } from './components/shared/ShareSessionStatusM
 import { LoadingPlaceholder } from './components/shared/StatusBlocks';
 import { ToastContainer } from './components/shared/ToastContainer';
 import { OverlayLayerSlot } from './components/overlay-layer/OverlayLayerSlot';
+import { installAboveBrowserMirror } from './components/above-browser/aboveBrowserMirror';
 import {
   shouldReserveSidebarTrafficLightRegion,
   sidebarDockedEdgeCss,
@@ -177,6 +180,10 @@ import { tabRequestedCodexSpeed } from './stores/chat/codex-speed';
 import { waitForWorktreeHydration } from './stores/chat/hydration';
 import { isRetiredPlanChatScope } from './stores/chat/plan-explore-registry';
 import {
+  isClaudeTerminalBackedChatTab,
+  WATCHER_TERMINAL_ONLY_MESSAGE,
+} from './stores/chat/tab-utils';
+import {
   useStaleChatCatchUp,
   type StaleChatCatchUpHost,
 } from './stores/chat/stale-catch-up';
@@ -207,6 +214,7 @@ import { useSidebarPageHandoffStore } from './stores/sidebarPageHandoffStore';
 import { useSidebarStore } from './stores/sidebarStore';
 import { isWorkerUnsettled, useWorkersStore } from './stores/workersStore';
 import { useWorkspaceContextStore } from './stores/workspaceContextStore';
+import { useMemoryReportStore } from './stores/memoryReportStore';
 
 const staleChatCatchUpHost: StaleChatCatchUpHost = {
   current: getChatInterest,
@@ -218,6 +226,12 @@ const SettingsOverlay = lazy(() =>
   import('./components/settings/SettingsOverlay').then((module) => ({
     default: module.SettingsOverlay,
   })),
+);
+
+const MemoryReportOverlay = lazy(() =>
+  import('./components/resource-diagnostics/MemoryReportOverlay').then(
+    (module) => ({ default: module.MemoryReportOverlay }),
+  ),
 );
 
 const OverviewPage = lazy(() =>
@@ -439,10 +453,19 @@ function App(): JSX.Element {
     NAVIGATION_PAGE_REPLAY_PRIVACY[activePage],
   );
   const settingsOpen = useNavigationStore((s) => s.settingsOpen);
+  const memoryReportActive = useMemoryReportStore(
+    (s) => s.flow.phase !== 'idle',
+  );
   const secondarySidebarPageOpen = useSidebarPageHandoffStore(
     (state) => state.active,
   );
   const sidebarPageOpen = settingsOpen || secondarySidebarPageOpen;
+  // A secondary page that covers the window (project settings) hides the
+  // shell under it as Settings does.
+  const secondaryPageCoversShell = useSidebarPageHandoffStore(
+    (state) => state.coversMainShell,
+  );
+  const mainShellCovered = settingsOpen || secondaryPageCoversShell;
   const settingsInitialSection = useNavigationStore(
     (s) => s.settingsInitialSection,
   );
@@ -525,8 +548,8 @@ function App(): JSX.Element {
     (cloudConnected === true && cloudSignInWallComplete) ||
     guestConsentSatisfiesGate;
   const startupUnlockSentRef = useRef(false);
-  // Windows-only Git startup gate. On non-Windows builds this resolves to
-  // `not-required` synchronously and performs no IPC. When cloud sign-in is
+  // Desktop Git startup gate. Unsupported builds resolve to `not-required`
+  // synchronously and perform no IPC. When cloud sign-in is
   // required, keep the probe dormant until the account check is satisfied.
   const gitGate = useWindowsGitRequirement({ enabled: cloudGateSatisfied });
   const appAdvisorOpen = useNavigationStore((s) => s.appAdvisorOpen);
@@ -559,6 +582,8 @@ function App(): JSX.Element {
     ),
   );
   const navigate = useNavigationStore((s) => s.navigate);
+  const returnToSectionRoot = useNavigationStore((s) => s.returnToSectionRoot);
+  const sectionRootRequest = useNavigationStore((s) => s.sectionRootRequest);
   const sidebarHidden = useSidebarStore((s) => s.hidden);
   const sidebarPreviewing = useSidebarStore((s) => s.previewing);
   const sidebarPreviewPresented = useSidebarStore((s) => s.previewPresented);
@@ -649,6 +674,10 @@ function App(): JSX.Element {
     };
   }, []);
 
+  // Tooltips, hover cards and resize handles marked to draw above in-app
+  // browser pages are copied into a native layer over the live page.
+  useEffect(() => installAboveBrowserMirror(document), []);
+
   // Same shape for the Personal/organization context (CAN-2952): hydrate once,
   // then mirror every main-process broadcast so all windows agree.
   useEffect(() => {
@@ -687,11 +716,15 @@ function App(): JSX.Element {
   useEffect(() => initializeSharedContainersStore(), []);
   // Per-chat managed delegation activity keeps a chat with live delegates
   // open and shown as working, and defers its auto-archive until the
-  // delegates finish. App-lifetime, like the other main-pushed mirrors.
+  // delegates finish. The live provider background-task mirror keeps the
+  // background-process cards current. App-lifetime, like the other
+  // main-pushed mirrors.
   useEffect(() => {
     const disposeAutoArchive = installAutoArchiveAfterDelegates();
     const disposeActivity = initializeDelegationActivityStore();
+    const disposeLiveBackgroundTasks = initializeLiveBackgroundTaskStore();
     return (): void => {
+      disposeLiveBackgroundTasks();
       disposeActivity();
       disposeAutoArchive();
     };
@@ -871,6 +904,9 @@ function App(): JSX.Element {
       if (!tab || tab.kind === 'file' || tab.readOnly === true) {
         throw new Error('Watcher destination chat is not available.');
       }
+      if (!isClaudeTerminalBackedChatTab(tab)) {
+        throw new Error(WATCHER_TERMINAL_ONLY_MESSAGE);
+      }
       await useChatStore.getState().sendMessage(
         command.text,
         undefined,
@@ -898,9 +934,10 @@ function App(): JSX.Element {
       );
     };
 
-    // Deliveries to one chat stay in order; a busy or stuck chat must not
-    // hold up other chats, so each delivery is bounded by the scheduler's
-    // global concurrency limit and timeout.
+    // Main delivers watcher messages directly for every chat except
+    // Claude terminal-backed chats, whose terminal lives in this renderer.
+    // This is the terminal presenter only; each delivery stays ordered per
+    // chat and bounded by the scheduler's global limit and timeout.
     return window.api.chat.onWindowCommand((command) => {
       const deduplicator = watcherDeliveryDeduplicatorRef.current;
       if (!deduplicator.begin(command)) return;
@@ -1358,9 +1395,17 @@ function App(): JSX.Element {
 
         const actions = useChatStore.getState();
         let pluginSelectionsApplied = true;
+        let modelApplied = true;
         switch (command.kind) {
           case 'model':
-            await actions.setModelAndWait(command.model, target);
+            modelApplied =
+              command.executionHarness === undefined
+                ? await actions.setModelAndWait(command.model, target)
+                : await actions.setModelAndWait(
+                    command.model,
+                    target,
+                    command.executionHarness,
+                  );
             break;
           case 'thinking':
             await actions.setThinkingLevel(command.thinkingLevel, target);
@@ -1396,7 +1441,12 @@ function App(): JSX.Element {
           }
           switch (command.kind) {
             case 'model':
-              return updatedTab.model === command.model;
+              return (
+                modelApplied &&
+                updatedTab.model === command.model &&
+                (command.executionHarness === undefined ||
+                  updatedTab.executionHarness === command.executionHarness)
+              );
             case 'thinking':
               return updatedTab.thinkingLevel === command.thinkingLevel;
             case 'fast':
@@ -1752,7 +1802,7 @@ function App(): JSX.Element {
     };
   }, [guestModeEnabled, guestConsentAccepted, cloudConnected]);
 
-  // Notify startup consumers only after cloud auth, hydration, and Windows Git
+  // Notify startup consumers only after cloud auth, hydration, and Git
   // checks have cleared. Auto-onboarding uses the same readiness boundary.
   useEffect(() => {
     if (!startupUnlockReady || startupUnlockSentRef.current) return;
@@ -1777,9 +1827,7 @@ function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    return window.api.onDeepLinkSettingsOpen((section) => {
-      useNavigationStore.getState().openSettings(section);
-    });
+    return window.api.onDeepLinkSettingsOpen(openSettingsDeepLink);
   }, []);
 
   // Privacy opt-in links (CAN-3383) open a confirmation sheet; receipt never
@@ -1990,12 +2038,11 @@ function App(): JSX.Element {
       // inset layout gives them the same 4px there as on the right and bottom.
       data-sidebar-hidden={sidebarHidden ? 'true' : undefined}
     >
-      <OnboardingSuggestionsRuntime />
       <div
-        inert={settingsOpen}
-        aria-hidden={settingsOpen || undefined}
+        inert={mainShellCovered}
+        aria-hidden={mainShellCovered || undefined}
         className="relative h-full shrink-0"
-        data-page-active={settingsOpen ? 'false' : 'true'}
+        data-page-active={mainShellCovered ? 'false' : 'true'}
         data-testid="app-sidebar-page"
       >
         <AppSidebar
@@ -2003,6 +2050,7 @@ function App(): JSX.Element {
           onNavigate={(page) =>
             dispatchUiAction({ type: 'navigation.go_to_page', page })
           }
+          onReturnToSectionRoot={returnToSectionRoot}
           onSettingsClick={() =>
             dispatchUiAction({ type: 'navigation.open_settings' })
           }
@@ -2023,9 +2071,9 @@ function App(): JSX.Element {
         />
       </div>
       <div
-        inert={settingsOpen}
-        aria-hidden={settingsOpen || undefined}
-        className={`relative flex min-w-0 flex-1 flex-col bg-base ${settingsOpen ? 'invisible' : ''}`}
+        inert={mainShellCovered}
+        aria-hidden={mainShellCovered || undefined}
+        className={`relative flex min-w-0 flex-1 flex-col bg-base ${mainShellCovered ? 'invisible' : ''}`}
         data-testid="app-main-shell"
       >
         {localPlatform() === 'darwin' && (
@@ -2076,47 +2124,56 @@ function App(): JSX.Element {
             >
               <MainPage />
             </div>
-            {visiblePage === 'overview' && <OverviewPage />}
-            {visiblePage === 'home' && <HomePage />}
-            {visiblePage === 'chat' && <StandaloneChatPage />}
-            {visiblePage !== null && isWorkflowsTabId(visiblePage) && (
-              <WorkflowsPage tab={visiblePage} />
-            )}
-            {visiblePage === 'plugins' && (
-              <PluginsPage
-                onOpenAccountSettings={() => {
-                  dispatchUiAction({
-                    type: 'canopy_portal.open_account_settings',
-                  });
-                }}
-              />
-            )}
-            {visiblePage === 'audit' && <AuditTrailPage />}
-            {visiblePage !== null && isDevPage(visiblePage) && (
-              <DevPagesShell
-                page={visiblePage}
-                onNavigate={(page) =>
-                  dispatchUiAction({ type: 'navigation.go_to_page', page })
-                }
-              >
-                {visiblePage === 'notice-states' && <NoticeStateGalleryPage />}
-                {visiblePage === 'header-states' && <HeaderStateGalleryPage />}
-                {visiblePage === 'worktree-states' && (
-                  <WorktreeStateGalleryPage />
-                )}
-                {visiblePage === 'activity-states' && (
-                  <ActivityStateGalleryPage />
-                )}
-                {visiblePage === 'message-bubble-states' && (
-                  <MessageBubbleStateGalleryPage />
-                )}
-                {visiblePage === 'change-review' && <ChangeReviewPage />}
-              </DevPagesShell>
-            )}
-            {visiblePage === 'statistics' && <StatisticsPage />}
-            {visiblePage === 'usage' && <UsagePage />}
-            {visiblePage === 'workers' && <WorkersPage />}
-            {visiblePage === 'feed' && <FeedPage />}
+            {/* Keyed so a section returning to its root from the sidebar
+                mounts fresh. Entering Customize from another page restores
+                where it was left (CAN-4267); its root return clears that. */}
+            <Fragment key={sectionRootRequest}>
+              {visiblePage === 'overview' && <OverviewPage />}
+              {visiblePage === 'home' && <HomePage />}
+              {visiblePage === 'chat' && <StandaloneChatPage />}
+              {visiblePage !== null && isWorkflowsTabId(visiblePage) && (
+                <WorkflowsPage tab={visiblePage} />
+              )}
+              {visiblePage === 'plugins' && (
+                <PluginsPage
+                  onOpenAccountSettings={() => {
+                    dispatchUiAction({
+                      type: 'canopy_portal.open_account_settings',
+                    });
+                  }}
+                />
+              )}
+              {visiblePage === 'audit' && <AuditTrailPage />}
+              {visiblePage !== null && isDevPage(visiblePage) && (
+                <DevPagesShell
+                  page={visiblePage}
+                  onNavigate={(page) =>
+                    dispatchUiAction({ type: 'navigation.go_to_page', page })
+                  }
+                >
+                  {visiblePage === 'notice-states' && (
+                    <NoticeStateGalleryPage />
+                  )}
+                  {visiblePage === 'header-states' && (
+                    <HeaderStateGalleryPage />
+                  )}
+                  {visiblePage === 'worktree-states' && (
+                    <WorktreeStateGalleryPage />
+                  )}
+                  {visiblePage === 'activity-states' && (
+                    <ActivityStateGalleryPage />
+                  )}
+                  {visiblePage === 'message-bubble-states' && (
+                    <MessageBubbleStateGalleryPage />
+                  )}
+                  {visiblePage === 'change-review' && <ChangeReviewPage />}
+                </DevPagesShell>
+              )}
+              {visiblePage === 'statistics' && <StatisticsPage />}
+              {visiblePage === 'usage' && <UsagePage />}
+              {visiblePage === 'workers' && <WorkersPage />}
+              {visiblePage === 'feed' && <FeedPage />}
+            </Fragment>
           </main>
         </Suspense>
         {/* Floating overlay, not a flow row: this host exists only for small
@@ -2150,6 +2207,12 @@ function App(): JSX.Element {
           initialSection={settingsInitialSection}
         />
       </Suspense>
+      {/* After Settings, which a report started from Settings must cover. */}
+      {memoryReportActive && (
+        <Suspense fallback={null}>
+          <MemoryReportOverlay />
+        </Suspense>
+      )}
       {commandPaletteOpen && (
         <Suspense fallback={null}>
           <CommandPalette

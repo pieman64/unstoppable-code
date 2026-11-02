@@ -324,6 +324,7 @@ describe('desktop model configuration', () => {
     expect(codexLegacyModels).toEqual([
       ['gpt-6-sol', 'Codex'],
       ['gpt-5.6-sol', 'Codex'],
+      ['gpt-5.6-terra', 'Codex'],
       ['gpt-5.6-luna', 'Codex'],
     ]);
   });

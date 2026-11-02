@@ -16,10 +16,10 @@ jest.mock('../../../services/pr-service', () => ({
 const mockedRunPrAction = jest.mocked(runPrAction);
 const mockedCreatePullRequest = jest.mocked(createPullRequest);
 
-function command(
-  payload: unknown,
+function command<TPayload>(
+  payload: TPayload,
   type: PortalCommandEnvelope['type'] = 'portal.pr.action',
-): PortalCommandEnvelope {
+): PortalCommandEnvelope<TPayload> {
   return {
     id: 'cmd-1',
     sequence: 7,
@@ -35,7 +35,7 @@ function adapterContext(
   getWindow?: PortalAdapterContext['getWindow'],
 ): PortalAdapterContext {
   return {
-    getWindow,
+    getWindow: getWindow ?? ((): null => null),
     enqueueEvent: (event) => events.push(event),
     complete: (cmd, result): void => {
       events.push({
@@ -78,7 +78,7 @@ describe('PR portal adapter', () => {
           body: 'Created from Remote Control.',
         },
         'portal.pr.create',
-      ) as Parameters<typeof handlePortalPrCreate>[0],
+      ),
       adapterContext(events),
     );
 
@@ -110,7 +110,7 @@ describe('PR portal adapter', () => {
         action: 'push',
         workspaceLocalId: 'ws-1',
         worktreeLocalId: 'wt-1',
-      }) as Parameters<typeof handlePortalPrAction>[0],
+      }),
       adapterContext(events, getWindow),
     );
 
@@ -139,7 +139,7 @@ describe('PR portal adapter', () => {
         action: 'push',
         workspaceLocalId: 'ws-1',
         worktreeLocalId: 'wt-1',
-      }) as Parameters<typeof handlePortalPrAction>[0],
+      }),
       adapterContext(events),
     );
 

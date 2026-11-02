@@ -17,7 +17,6 @@ import {
 import {
   DEFAULT_PANEL_LEAF_MINIMUM_HEIGHT,
   DEFAULT_PANEL_LEAF_MINIMUM_WIDTH,
-  MAX_TABS_PER_GROUP,
   PANEL_COLLAPSED_BAR_SIZE,
   type PanelLayoutViewModel,
   type PanelLeafLayoutBox,
@@ -1287,103 +1286,71 @@ describe('setTabPinned under a fixed topology', () => {
   });
 });
 
-describe('tab row limit', () => {
-  // Off by default; hosts whose tab rows cannot scroll turn it on.
-  beforeEach(() => {
-    store().setTabRowLimit(MAX_TABS_PER_GROUP);
-  });
-  afterEach(() => {
-    store().setTabRowLimit(null);
-  });
-
-  /** Adds file tabs to `groupId` until it holds `total` tabs. */
-  function fillGroup(key: string, groupId: string, total: number): void {
-    let index = 0;
-    while (store().layouts[key].groups[groupId].tabs.length < total) {
-      index += 1;
-      const added = store().addTab(key, groupId, 'file-diff', {
-        instance: { fileTabId: `fill-${groupId}-${index}` },
-        activate: false,
-      });
-      expect(added).not.toBeNull();
+describe('crowded tab row', () => {
+  test('a group with 20+ tabs still accepts a new tab and a center dock', () => {
+    const key = nextKey();
+    store().initializeLayout(key, TWO_GROUPS);
+    for (let index = 1; index <= 20; index += 1) {
+      expect(
+        store().addTab(key, 'group-a', 'file-diff', {
+          instance: { fileTabId: `crowded-${index}` },
+          activate: false,
+        }),
+      ).not.toBeNull();
     }
-  }
-
-  test('a full row reports no room, but a tab that arrives on its own is still placed', () => {
-    const key = nextKey();
-    store().initializeLayout(key, ONE_GROUP);
-    fillGroup(key, 'group-a', MAX_TABS_PER_GROUP - 1);
-    expect(store().canAddTabToGroup(key, 'group-a')).toBe(true);
+    expect(store().layouts[key].groups['group-a'].tabs).toHaveLength(21);
 
     expect(
       store().addTab(key, 'group-a', 'file-diff', {
-        instance: { fileTabId: 'file-last' },
+        instance: { fileTabId: 'crowded-next' },
       }),
     ).not.toBeNull();
-    expect(store().layouts[key].groups['group-a'].tabs).toHaveLength(
-      MAX_TABS_PER_GROUP,
+    expect(store().canMovePanel(key, 'panel-b', 'group-a', 'center')).toBe(
+      true,
     );
-    expect(store().canAddTabToGroup(key, 'group-a')).toBe(false);
-
-    // User actions check `canAddTabToGroup` first; the store itself never
-    // leaves an agent's terminal or a delegated chat without a tab.
-    expect(
-      store().addTab(key, 'group-a', 'file-diff', {
-        instance: { fileTabId: 'file-over' },
-      }),
-    ).not.toBeNull();
-    expect(store().layouts[key].groups['group-a'].tabs).toHaveLength(
-      MAX_TABS_PER_GROUP + 1,
-    );
-  });
-
-  test('reports no room for an unknown group', () => {
-    const key = nextKey();
-    store().initializeLayout(key, ONE_GROUP);
-    expect(store().canAddTabToGroup(key, 'group-missing')).toBe(false);
-  });
-
-  test('a center dock into a full row is refused; an edge drop still splits', () => {
-    const key = nextKey();
-    store().initializeLayout(key, TWO_GROUPS);
-    fillGroup(key, 'group-a', MAX_TABS_PER_GROUP);
-
-    expect(store().movePanel(key, 'panel-b', 'group-a', 'center')).toBe(false);
-    expect(store().layouts[key].groups['group-b'].tabs[0].panelId).toBe(
-      'panel-b',
-    );
-    expect(store().layouts[key].groups['group-a'].tabs).toHaveLength(
-      MAX_TABS_PER_GROUP,
-    );
-
-    expect(store().movePanel(key, 'panel-b', 'group-a', 'right')).toBe(true);
-    expect(store().layouts[key].groups['group-a'].tabs).toHaveLength(
-      MAX_TABS_PER_GROUP,
-    );
-  });
-
-  test('without a limit a row takes any number of tabs', () => {
-    store().setTabRowLimit(null);
-    const key = nextKey();
-    store().initializeLayout(key, TWO_GROUPS);
-    fillGroup(key, 'group-a', MAX_TABS_PER_GROUP + 1);
-    expect(store().canAddTabToGroup(key, 'group-a')).toBe(true);
     expect(store().movePanel(key, 'panel-b', 'group-a', 'center')).toBe(true);
-  });
-
-  test('reordering within a full row still works', () => {
-    const key = nextKey();
-    store().initializeLayout(key, ONE_GROUP);
-    fillGroup(key, 'group-a', MAX_TABS_PER_GROUP);
-
-    expect(store().movePanel(key, 'panel-a', 'group-a', 'center')).toBe(true);
-    expect(store().layouts[key].groups['group-a'].activePanelId).toBe(
-      'panel-a',
-    );
+    expect(store().layouts[key].groups['group-a'].tabs).toHaveLength(23);
   });
 });
 
 describe('movePanel', () => {
+  test('a background existing-file move preserves selections and focus in every publication', () => {
+    const key = nextKey();
+    store().initializeLayout(key, TWO_GROUPS);
+    const panelId = store().addTab(key, 'group-b', 'file-diff', {
+      instance: { fileTabId: 'background-legacy' },
+      activate: false,
+    });
+    if (panelId === null) throw new Error('File fixture did not materialize');
+    const before = store().layouts[key];
+    const published: boolean[] = [];
+    const unsubscribe = usePanelLayoutStore.subscribe((state) => {
+      const layout = state.layouts[key];
+      published.push(
+        layout.activeGroupId === before.activeGroupId &&
+          layout.groups['group-a'].activePanelId ===
+            before.groups['group-a'].activePanelId &&
+          layout.groups['group-b'].activePanelId ===
+            before.groups['group-b'].activePanelId,
+      );
+    });
+    try {
+      expect(
+        store().movePanel(key, panelId, 'group-a', 'center', undefined, {
+          activate: false,
+        }),
+      ).toBe(true);
+      expect(published).toEqual([true]);
+      expect(
+        store().layouts[key].groups['group-a'].tabs.some(
+          (tab) => tab.panelId === panelId,
+        ),
+      ).toBe(true);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test('center inserts a cross-group tab at the requested target index', () => {
     const key = nextKey();
     store().initializeLayout(key, TWO_GROUPS);
@@ -2131,7 +2098,7 @@ describe('collapseGroup / expandGroup', () => {
       let key = initializeInnerSplit('vertical');
       store().closeGroup(key, 'a');
       store().closeGroup(key, 'd');
-      store().resizeGroup(key, 'b', { height: 360 });
+      store().resizeGroup(key, 'b', { width: 1000, height: 360 });
       const before = boxes(key);
       const actions: (() => boolean)[] = [
         (): boolean => store().collapseGroup(key, 'c'),
@@ -2175,7 +2142,7 @@ describe('collapseGroup / expandGroup', () => {
     const key = initializeInnerSplit('vertical');
     const before = boxes(key);
     expect(store().collapseGroup(key, 'a')).toBe(true);
-    store().resizeGroup(key, 'c', { height: 275 });
+    store().resizeGroup(key, 'c', { width: 1000, height: 275 });
     expect(store().expandGroup(key, 'a')).toBe(true);
     const after = boxes(key);
     expect(after.a).toEqual(before.a);
@@ -2211,7 +2178,7 @@ describe('collapseGroup / expandGroup', () => {
     const key = initializeInnerSplit('vertical');
     store().closeGroup(key, 'a');
     store().closeGroup(key, 'd');
-    store().resizeGroup(key, 'b', { height: 360 });
+    store().resizeGroup(key, 'b', { width: 1000, height: 360 });
     for (const id of ['c', 'b'])
       expect(store().collapseGroup(key, id)).toBe(true);
     store().layoutContainer(key, 1000, 1800);
@@ -3902,13 +3869,17 @@ describe('pipeline-execution panel instance contract', () => {
     store().initializeLayout(key, TWO_GROUPS);
     const before = store().layouts[key];
 
-    for (const instance of [
+    const invalidInstances: readonly (
+      | Readonly<Record<string, string>>
+      | undefined
+    )[] = [
       undefined,
       {},
       { executionId: '' },
       { executionId: '  run-1' },
       { executionId: 'run-1', jobId: 'job-1' },
-    ]) {
+    ];
+    for (const instance of invalidInstances) {
       expect(
         store().addTab(key, 'group-a', 'pipeline-execution', {
           ...(instance !== undefined ? { instance } : {}),
@@ -4233,14 +4204,18 @@ describe('subagent panel kinds', () => {
     const key = nextKey();
     store().initializeLayout(key, TWO_GROUPS);
     const before = store().layouts[key];
-    for (const instance of [
+    const invalidInstances: readonly (
+      | Readonly<Record<string, string>>
+      | undefined
+    )[] = [
       undefined,
       {},
       { rootChatId: 'chat-root', subagentId: 'delegation-1' },
       { ...SUB_1, subagentKind: 'other' },
       { ...SUB_1, subagentId: ' delegation-1' },
       { ...SUB_1, extra: 'x' },
-    ]) {
+    ];
+    for (const instance of invalidInstances) {
       expect(
         store().addTab(key, 'group-a', 'subagent-chat', {
           ...(instance !== undefined ? { instance } : {}),
@@ -5517,25 +5492,6 @@ describe('chat group restriction', () => {
     expect(store().canMovePanel(key, 'panel-a', 'group-b', 'center')).toBe(
       true,
     );
-  });
-
-  test('canMovePanel matches movePanel on a full row', () => {
-    const key = nextKey();
-    store().initializeLayout(key, THREE_GROUPS);
-    store().setTabRowLimit(1);
-    try {
-      expect(store().canMovePanel(key, 'panel-b', 'group-c', 'center')).toBe(
-        false,
-      );
-      expect(store().movePanel(key, 'panel-b', 'group-c', 'center')).toBe(
-        false,
-      );
-      expect(store().canMovePanel(key, 'panel-b', 'group-c', 'right')).toBe(
-        true,
-      );
-    } finally {
-      store().setTabRowLimit(null);
-    }
   });
 
   test('a chat never seeds a split or replaces a tab outside the chat group', () => {

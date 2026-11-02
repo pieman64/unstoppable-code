@@ -15,6 +15,8 @@
  * counted, not measured, so jsdom tests and the renderer agree.
  */
 
+import type { ApprovalRequestEvent } from '@canopy/desktop-shared/types';
+
 /** Line budget for the in-card content preview. */
 export const APPROVAL_CONTENT_PREVIEW_MAX_LINES = 8;
 /** Character budget for the in-card content preview (guards one huge line). */
@@ -75,4 +77,43 @@ export function previewApprovalTargetLabel(
     truncated = true;
   }
   return { text, truncated };
+}
+
+/** The one-line context an arrival announcement names after the title. */
+function approvalAnnouncementContext(
+  details: ApprovalRequestEvent['details'],
+): string {
+  switch (details.kind) {
+    case 'command':
+      return details.command;
+    case 'file-write':
+      return details.displayPath ?? details.path ?? '';
+    case 'mcp':
+      return `${details.server}: ${details.tool}`;
+    case 'network':
+      return details.host;
+    case 'tool':
+      return details.toolName;
+    case 'browser-upload':
+      return `To ${details.origin}`;
+    case 'browser-file-request':
+      return `For ${details.origin}`;
+    default:
+      return '';
+  }
+}
+
+/**
+ * Polite live-region text for a newly pending approval (CAN-4997): the title,
+ * then the command, path, or tool on one bounded line.
+ */
+export function approvalAnnouncementText(
+  pending: ApprovalRequestEvent,
+): string {
+  const titlePreview = previewApprovalTargetLabel(pending.title);
+  const title = `Approval needed: ${titlePreview.text}${titlePreview.truncated ? '…' : ''}`;
+  const context = approvalAnnouncementContext(pending.details).trim();
+  if (!context) return title;
+  const preview = previewApprovalTargetLabel(context);
+  return `${title}. ${preview.text}${preview.truncated ? '…' : ''}`;
 }

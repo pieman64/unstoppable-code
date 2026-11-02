@@ -6,13 +6,16 @@
  * `canopy-portal-enabled`, resumes when the flag recovers without a restart.
  */
 const mockInitialize = jest.fn();
-const mockElectronApp = {
-  isPackaged: false,
-  getPath: jest.fn(() => '/tmp/canopy-feature-flags-test'),
-};
-jest.mock('electron', () => ({ app: mockElectronApp }));
+jest.mock('electron', () => ({
+  app: {
+    isPackaged: false,
+    getPath: jest.fn(() => '/tmp/canopy-feature-flags-test'),
+  },
+}));
 jest.mock('launchdarkly-node-client-sdk', () => ({
-  initialize: mockInitialize,
+  get initialize(): typeof mockInitialize {
+    return mockInitialize;
+  },
 }));
 jest.mock('../feature-flags/context', () => ({
   buildDesktopFeatureFlagContext: jest.fn(() =>

@@ -159,18 +159,16 @@ function seedTerminals(
 }
 
 function seedBrowsers(key: string, live: Record<string, boolean>): void {
+  const browserIds = Object.keys(live);
+  const liveBrowserIds = browserIds.filter((browserId) => live[browserId]);
   useBrowserStore.setState((state) => ({
     worktrees: {
       ...state.worktrees,
       [key]: {
-        groups: [],
-        activeGroupId: null,
-        nextGroupOrdinal: 1,
-        groupOrdinals: {},
-        browserCustomNames: {},
-        groupCustomNames: {},
+        browserOrder: browserIds,
+        activeBrowserId: null,
         browsers: {},
-        live,
+        live: new Set(liveBrowserIds),
         hydrated: true,
       },
     },

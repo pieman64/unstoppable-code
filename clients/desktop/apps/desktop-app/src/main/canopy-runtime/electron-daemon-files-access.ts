@@ -2,8 +2,8 @@ import type { ReadEvidenceCursor } from '@canopy/desktop-shared/lib/bounded-read
 import { snapshotFilesWorkCounters } from '@canopy/desktop-shared/node/work-counters';
 import { BRAND } from '@canopy/brand/current';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { getFeatureFlagService } from '../feature-flags';
+import type { LabsExperimentsSnapshot } from '@canopy/desktop-shared/lib/labs-experiments';
+import { getLabsExperimentsService } from '../services/labs-experiments-runtime';
 import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';
 import { getWorkspaceType } from '../lib/workspace-registry';
 import {
@@ -18,21 +18,30 @@ import {
   getElectronDaemonFilesContext,
 } from './electron-daemon-access';
 
-const FLAG = CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.key;
-
 let route: ObservedDaemonFilesRoute | undefined;
 
 /**
  * The production Files route, built on the first file-tree read. Building it
- * subscribes to flag changes only; the daemon is contacted only for a read
+ * subscribes to authoritative Labs changes only; the daemon is contacted only for a read
  * the route selects.
  */
 export function getDesktopDaemonFilesRoute(): ObservedDaemonFilesRoute {
   if (route) return route;
-  const flags = getFeatureFlagService();
+  const labs = getLabsExperimentsService();
+  const projectEnabled = (snapshot: LabsExperimentsSnapshot): boolean =>
+    snapshot.ready &&
+    snapshot.experiments.some(
+      (entry) => entry.id === 'daemon-files-reads' && entry.enabled,
+    );
+  // getSnapshot clones the whole registry; read eligibility needs only this bit.
+  let enabled = projectEnabled(labs.getSnapshot());
   route = createDaemonFilesRoute({
-    isFlagEnabled: () => flags.isEnabled(FLAG),
-    onFlagChanged: (listener) => flags.onSnapshotChanged(listener),
+    isFlagEnabled: (): boolean => enabled,
+    onFlagChanged: (listener) =>
+      labs.onSnapshotChanged((snapshot) => {
+        enabled = projectEnabled(snapshot);
+        listener();
+      }),
     lifetime: getElectronDaemonCallerLifetime(),
     connections: getElectronDaemonConnections,
     hostContext: getElectronDaemonFilesContext,

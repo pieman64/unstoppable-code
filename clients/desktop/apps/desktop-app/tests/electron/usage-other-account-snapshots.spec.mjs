@@ -28,14 +28,12 @@ const OTHER_RESETS_AT = '2099-01-01T00:00:00.000Z'; // genuinely future → pass
 const OTHER_ACCOUNT_KEY = 'codex:previous@example.com:pro';
 
 /**
- * Resolve the provider usage card `<article>` by its provider heading text
- * (`Codex` / `Claude`). `ProviderUsageCards.tsx` renders one `<article>` per
- * provider with an `<h2>` carrying the provider label.
+ * Resolve a provider's usage group (`codex` / `claude`). `ProviderUsageCards.tsx`
+ * renders one `<section data-testid="usage-provider-card-<provider>">` per
+ * provider, headed by its name and plan.
  */
-function providerCard(window, providerLabel) {
-  return window
-    .locator('article')
-    .filter({ has: window.getByRole('heading', { name: providerLabel }) });
+function providerCard(window, provider) {
+  return window.getByTestId(`usage-provider-card-${provider}`);
 }
 
 test('Codex card shows a retained other-account snapshot distinct from the active account', async ({}, testInfo) => {
@@ -92,12 +90,11 @@ test('Codex card shows a retained other-account snapshot distinct from the activ
 
     await app.openUsagePage();
 
-    const codexCard = providerCard(window, 'Codex');
+    const codexCard = providerCard(window, 'codex');
     await expect(codexCard).toBeVisible({ timeout: 30_000 });
 
-    await codexCard
-      .getByRole('button', { name: 'Refresh Codex usage' })
-      .click();
+    // The Usage page has one refresh control, in its heading.
+    await window.getByTestId('page-usage').getByTestId('usage-refresh').click();
 
     // Confirm the active account is tester@example.com (not the seeded
     // "other" account) by waiting for the low-usage scenario's primary
@@ -106,7 +103,7 @@ test('Codex card shows a retained other-account snapshot distinct from the activ
       .poll(async () => (await codexCard.innerText()).replace(/\s+/g, ' '), {
         timeout: 30_000,
       })
-      .toContain('Usage: 10.0%');
+      .toContain('10%');
 
     const toggle = codexCard.getByTestId(
       'other-account-snapshots-toggle-codex',
@@ -122,8 +119,8 @@ test('Codex card shows a retained other-account snapshot distinct from the activ
     await expect(accountLabel).toContainText('previous@example.com');
 
     // The single-account branch renders the OTHER account's meter/text,
-    // distinct from the active 10.0%, without a picker interaction.
-    await expect(codexCard).toContainText('Usage: 55.0%');
+    // distinct from the active 10%, without a picker interaction.
+    await expect(codexCard).toContainText('55%');
 
     await window.screenshot({
       path: testInfo.outputPath('usage-other-account-snapshots.png'),

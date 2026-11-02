@@ -11,14 +11,14 @@ jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
   return {
     ...actual,
-    stat: async (...args: Parameters<typeof actual.stat>): Promise<Stats> => {
+    stat: async (path: Parameters<typeof actual.stat>[0]): Promise<Stats> => {
       mockStatTracker.inFlight += 1;
       mockStatTracker.peak = Math.max(
         mockStatTracker.peak,
         mockStatTracker.inFlight,
       );
       try {
-        return await actual.stat(...args);
+        return await actual.stat(path);
       } finally {
         mockStatTracker.inFlight -= 1;
       }

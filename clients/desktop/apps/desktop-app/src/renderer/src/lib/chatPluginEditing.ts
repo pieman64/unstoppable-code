@@ -10,6 +10,7 @@ import {
   projectDefaultsForChat,
   splitChosenChatPluginSelections,
   subtractPluginSelections,
+  unionPluginSelections,
   chatSurfaceUsesGlobalPluginDefaults,
   type InheritedPluginLayers,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
@@ -25,6 +26,7 @@ import {
   getProjectPluginDefaults,
   getProjectPluginTombstones,
 } from '@/stores/chat/tab-utils';
+import { queueDesktopTryItSelectionUpdate } from './tryItContinuationRunner';
 import { shouldMaterializeCodexThread } from '@/components/chat/codex-thread-materialization';
 
 type ChatState = ReturnType<typeof useChatStore.getState>;
@@ -117,66 +119,96 @@ export function chatPluginEditingState(
   };
 }
 
+/**
+ * {@link chatPluginEditingState} for render: `null` when the chat is gone.
+ * React reads the active chat id from the frame-batched render view, which can
+ * still show a chat the live store has already removed.
+ */
+export function renderedChatPluginEditingState(
+  state: ChatState,
+  target: PluginChatTarget,
+): ReturnType<typeof chatPluginEditingState> | null {
+  return state.worktreeChats[
+    `${target.projectId}/${target.worktreeId}`
+  ]?.tabs.some((t) => t.id === target.chatId)
+    ? chatPluginEditingState(state, target)
+    : null;
+}
+
 export async function editChatPlugins(
   getState: () => ChatState,
   target: PluginChatTarget,
   edit: (current: ChatTabPluginSelections) => ChatTabPluginSelections,
 ): Promise<void> {
-  const { tab, global, projectDefaults, projectTombstones, agent, effective } =
-    chatPluginEditingState(getState(), target);
-  if (tab.readOnly || tab.status === 'streaming')
-    throw new Error('Wait for this chat to finish before changing plugins.');
-  const chosen = edit(effective);
-  const stripped = stripAgentOnlyChatPluginSelections(
-    chosen,
-    agent,
-    tab.pluginSelections,
-  );
-  // Tombstones derive from the pre-strip chosen set so agent-locked stripping
-  // cannot turn off a default the user left on.
-  const { localSelections } = splitChosenChatPluginSelections({
-    chosen: stripped,
-    projectDefaults,
-    global,
-    projectTombstones,
-    previousLocal: tab.pluginSelections,
-    previousTombstones: tab.disabledGlobalPluginSelections,
+  return queueDesktopTryItSelectionUpdate(target, async () => {
+    const {
+      tab,
+      global,
+      projectDefaults,
+      projectTombstones,
+      agent,
+      effective,
+    } = chatPluginEditingState(getState(), target);
+    if (
+      tab.readOnly ||
+      tab.pendingInitialCreation ||
+      tab.status === 'streaming'
+    )
+      throw new Error('Wait for this chat to finish before changing plugins.');
+    const chosen = edit(effective);
+    const stripped = stripAgentOnlyChatPluginSelections(
+      chosen,
+      agent,
+      tab.pluginSelections,
+    );
+    // Tombstones derive from the pre-strip chosen set so agent-locked stripping
+    // cannot turn off a default the user left on.
+    const { localSelections } = splitChosenChatPluginSelections({
+      chosen: stripped,
+      projectDefaults,
+      global,
+      projectTombstones,
+      previousLocal: tab.pluginSelections,
+      previousTombstones: tab.disabledGlobalPluginSelections,
+    });
+    const { tombstones } = splitChosenChatPluginSelections({
+      chosen,
+      projectDefaults,
+      global,
+      projectTombstones,
+      previousTombstones: tab.disabledGlobalPluginSelections,
+    });
+    const inherits = global !== undefined || projectDefaults !== undefined;
+    const response = await window.api.chat.updatePlugins({
+      ...target,
+      pluginSelections: localSelections,
+      ...(inherits ? { disabledGlobalPluginSelections: tombstones } : {}),
+      deferredToolsAllowed: tab.deferredToolsAllowed,
+      materializeCodexThread: shouldMaterializeCodexThread({
+        providerType: tab.providerType,
+        executionHarness: tab.executionHarness,
+        sdkSessionId: tab.sdkSessionId,
+      }),
+      expectedCurrentThreadId: tab.sdkSessionId,
+    });
+    getState().setPluginSelections(
+      response.pluginSelections,
+      target,
+      response.deferredToolsAllowed,
+      {
+        runtimeAlreadyUpdated: true,
+        ...(inherits
+          ? {
+              disabledGlobalPluginSelections:
+                response.disabledGlobalPluginSelections ?? tombstones,
+            }
+          : {}),
+        ...(response.sdkSessionId
+          ? { sdkSessionId: response.sdkSessionId }
+          : {}),
+      },
+    );
   });
-  const { tombstones } = splitChosenChatPluginSelections({
-    chosen,
-    projectDefaults,
-    global,
-    projectTombstones,
-    previousTombstones: tab.disabledGlobalPluginSelections,
-  });
-  const inherits = global !== undefined || projectDefaults !== undefined;
-  const response = await window.api.chat.updatePlugins({
-    ...target,
-    pluginSelections: localSelections,
-    ...(inherits ? { disabledGlobalPluginSelections: tombstones } : {}),
-    deferredToolsAllowed: tab.deferredToolsAllowed,
-    materializeCodexThread: shouldMaterializeCodexThread({
-      providerType: tab.providerType,
-      executionHarness: tab.executionHarness,
-      sdkSessionId: tab.sdkSessionId,
-    }),
-    expectedCurrentThreadId: tab.sdkSessionId,
-  });
-  getState().setPluginSelections(
-    response.pluginSelections,
-    target,
-    response.deferredToolsAllowed,
-    {
-      runtimeAlreadyUpdated: true,
-      ...(inherits
-        ? {
-            disabledGlobalPluginSelections:
-              response.disabledGlobalPluginSelections ?? tombstones,
-          }
-        : {}),
-      ...(response.sdkSessionId ? { sdkSessionId: response.sdkSessionId } : {}),
-    },
-  );
 }
 
 /**
@@ -185,34 +217,85 @@ export async function editChatPlugins(
  * Choices that match an inherited default are left to that default, so the
  * chat's own selection never picks up copies of inherited plugins.
  */
-export function setChatAuthPreferencesFromEffective(
+export async function setChatAuthPreferencesFromEffective(
   getState: () => ChatState,
   target: PluginChatTarget,
   next: ChatTabPluginSelections,
-): void {
-  const { tab, global, projectDefaults, projectTombstones } =
-    chatPluginEditingState(getState(), target);
-  const inherited = inheritedPluginSelections({
-    projectDefaults,
-    global,
-    projectTombstones,
+): Promise<boolean> {
+  // Capture only the preference intent; selections may resolve while queued.
+  const before = chatPluginEditingState(getState(), target).effective;
+  const empty = normalizePluginSelections(undefined);
+  const removed = {
+    ...empty,
+    mcpHttpAuthPreferences: subtractPluginSelections(before, next)
+      .mcpHttpAuthPreferences,
+  };
+  const added = {
+    ...empty,
+    mcpHttpAuthPreferences: subtractPluginSelections(next, before)
+      .mcpHttpAuthPreferences,
+  };
+  return queueDesktopTryItSelectionUpdate(target, async () => {
+    const { tab, global, projectDefaults, projectTombstones, effective } =
+      chatPluginEditingState(getState(), target);
+    if (
+      tab.readOnly ||
+      tab.pendingInitialCreation ||
+      tab.status === 'streaming'
+    )
+      throw new Error('Wait for this chat to finish before changing plugins.');
+    const inherited = inheritedPluginSelections({
+      projectDefaults,
+      global,
+      projectTombstones,
+    });
+    const chosen = unionPluginSelections(
+      subtractPluginSelections(effective, removed),
+      added,
+    );
+    const { mcpHttpAuthPreferences } = inherited
+      ? subtractPluginSelections(chosen, inherited)
+      : chosen;
+    const local = { ...normalizePluginSelections(tab.pluginSelections) };
+    if (mcpHttpAuthPreferences)
+      local.mcpHttpAuthPreferences = mcpHttpAuthPreferences;
+    else delete local.mcpHttpAuthPreferences;
+    const previous = JSON.stringify(tab.pluginSelections);
+    const response = await window.api.chat.updatePlugins({
+      ...target,
+      pluginSelections: local,
+      deferredToolsAllowed: tab.deferredToolsAllowed,
+      materializeCodexThread: shouldMaterializeCodexThread({
+        providerType: tab.providerType,
+        executionHarness: tab.executionHarness,
+        sdkSessionId: tab.sdkSessionId,
+      }),
+      expectedCurrentThreadId: tab.sdkSessionId,
+    });
+    const current = JSON.stringify(
+      chatPluginEditingState(getState(), target).tab.pluginSelections,
+    );
+    // Main publishes the canonical settings before replying. Its own accepted
+    // selections are not a competing edit; a different later selection still is.
+    if (
+      current !== previous &&
+      current !== JSON.stringify(response.pluginSelections)
+    )
+      return false;
+    return (
+      getState().setPluginSelections(
+        response.pluginSelections,
+        target,
+        response.deferredToolsAllowed,
+        {
+          runtimeAlreadyUpdated: true,
+          ...(response.sdkSessionId
+            ? { sdkSessionId: response.sdkSessionId }
+            : {}),
+        },
+      ) !== undefined
+    );
   });
-  if (!inherited) {
-    getState().setPluginSelections(next, target);
-    return;
-  }
-  const own = normalizePluginSelections(tab.pluginSelections);
-  const { mcpHttpAuthPreferences } = subtractPluginSelections(next, inherited);
-  getState().setPluginSelections(
-    {
-      collectionIds: own.collectionIds,
-      skillRefs: own.skillRefs,
-      pluginRefs: own.pluginRefs,
-      mcpServerRefs: own.mcpServerRefs ?? [],
-      ...(mcpHttpAuthPreferences ? { mcpHttpAuthPreferences } : {}),
-    },
-    target,
-  );
 }
 
 /**

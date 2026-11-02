@@ -18,9 +18,13 @@
 // main and synthesizes the keydown with `sendInputEvent`, which runs through
 // the same `before-input-event` interception as a real key press.
 
+import { mkdtempSync } from 'node:fs';
 import { createServer } from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { closeCanopy } from './launchCanopy.mjs';
+import { CanopyAppDriver } from './canopyApp.mjs';
+import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   chatPanelLocator,
   DEFAULT_PANEL_IDS,
@@ -29,11 +33,83 @@ import {
   seedVisibleBrowserPanel,
   spawnPanelTerminal,
 } from './panelHarness.mjs';
+import { writeJson } from './seeders/fsHelpers.mjs';
+import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
+
+const COWORK_WORKSPACE_ID = 'cowork-default';
+const COWORK_ENTRY_ID = 'entry-close';
 
 const BROWSER_OWNER = {
   projectId: 'demo-ts-pnpm-vite',
   worktreeId: 'demo-main',
 };
+
+/**
+ * Seeds a sole Cowork workspace with one work entry holding two persisted
+ * chat tabs, each with a user message so neither is the auto-provisioned
+ * empty chat.
+ */
+function seedCoworkEntryWithTwoChats(userDataDir) {
+  const workspaceDir = path.join(
+    userDataDir,
+    'workspaces',
+    COWORK_WORKSPACE_ID,
+  );
+  const createdAt = '2026-10-27T12:00:00.000Z';
+  const cowork = { createdAt, archiveRetentionDays: null };
+
+  writeJson(path.join(userDataDir, 'workspaces', 'index.json'), {
+    version: 1,
+    workspaces: [
+      {
+        id: COWORK_WORKSPACE_ID,
+        name: 'Close Tab Project',
+        type: 'cowork',
+        color: '#7C9B6D',
+        collapsed: false,
+        order: 0,
+        cowork,
+      },
+    ],
+  });
+  writeJson(path.join(workspaceDir, 'workspace.json'), {
+    version: 1,
+    type: 'cowork',
+    repos: [],
+    cowork,
+  });
+  writeJson(path.join(workspaceDir, 'work-entries.json'), {
+    version: 1,
+    entries: [{ id: COWORK_ENTRY_ID, createdAt }],
+  });
+
+  const userMessage = (id, text) => ({
+    id,
+    role: 'user',
+    blocks: [{ type: 'text', text }],
+    timestamp: Date.parse(createdAt),
+  });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: COWORK_WORKSPACE_ID,
+    worktreeId: COWORK_ENTRY_ID,
+    tabs: [
+      {
+        id: 'chat-keep',
+        title: 'Keep',
+        createdAt,
+        messages: [userMessage('message-keep', 'Keep this chat open.')],
+      },
+      {
+        id: 'chat-close',
+        title: 'Close me',
+        createdAt,
+        messages: [userMessage('message-close', 'Close this chat.')],
+      },
+    ],
+    activeTabId: 'chat-close',
+  });
+}
 
 /** Serves pages titled by their path so each native view can be located. */
 async function startTitledPages() {
@@ -135,7 +211,7 @@ test('ControlOrMeta+W closes the focused browser tab, not a chat tab (ECW-7984)'
 
     // Open a Browser panel in the terminal group (each browser is its own
     // panel post browser-panel-refactor).
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await expect(window.getByTestId('panel-add-menu')).toBeVisible();
     await window.getByTestId('panel-add-menu-item-browser').click();
     await expect(window.getByTestId('browser-panel-surface')).toBeVisible();
@@ -260,5 +336,62 @@ test('ControlOrMeta+W inside the native browser page closes exactly that tab (CA
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('ControlOrMeta+W closes the active Cowork chat tab, never the window', async () => {
+  test.setTimeout(120_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-cowork-close-tab-'),
+  );
+  seedCoworkEntryWithTwoChats(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+
+    // A sole Cowork workspace has no toggle and is force-expanded (CAN-2672).
+    const workEntry = window.getByTestId(
+      `sidebar-work-entry-${COWORK_ENTRY_ID}`,
+    );
+    await expect(workEntry).toBeVisible({ timeout: 15_000 });
+    await workEntry.click();
+    const coworkTopBar = window.getByTestId('cowork-top-bar');
+    await expect(coworkTopBar).toBeVisible({ timeout: 15_000 });
+
+    const closingTab = window.getByTestId('panel-tab-panel-chat-chat-close');
+    const keptTab = window.getByTestId('panel-tab-panel-chat-chat-keep');
+    await expect(closingTab).toBeVisible();
+    await expect(keptTab).toBeVisible();
+
+    // Focus the chat group from grid chrome so the chord targets its active
+    // panel, as in the browser-tab test above.
+    await closingTab.click();
+    await window.keyboard.press('ControlOrMeta+w');
+
+    await expect(closingTab).toHaveCount(0);
+    await expect(keptTab).toBeVisible();
+    await expect(coworkTopBar).toBeVisible();
+    expect(window.isClosed()).toBe(false);
+
+    // Closing the last chat replaces it in place (as the tab's "X" does), so
+    // the group keeps a chat tab and the window never closes.
+    await window.keyboard.press('ControlOrMeta+w');
+    await expect(keptTab).toHaveCount(0);
+    await expect(
+      window.locator('[data-testid^="panel-tab-panel-chat-"]').first(),
+    ).toBeVisible();
+    await window.keyboard.press('ControlOrMeta+w');
+    await window.waitForTimeout(250);
+    expect(window.isClosed()).toBe(false);
+    await expect(coworkTopBar).toBeVisible();
+    await expect(
+      window.locator('[data-testid^="panel-tab-panel-chat-"]').first(),
+    ).toBeVisible();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
   }
 });

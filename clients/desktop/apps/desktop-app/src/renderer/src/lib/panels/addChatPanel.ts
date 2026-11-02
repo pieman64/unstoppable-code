@@ -1,11 +1,9 @@
 import { useChatStore, type ChatTab } from '@/stores/chatStore';
 import {
   getAuxPanelLayoutOwnerKey,
-  restrictedChatGroupId,
   usePanelLayoutStore,
 } from '@/stores/panelLayoutStore';
 import { chatTabToPanelSeed } from './chat-panel-binding';
-import { refuseFullTabRow } from './tab-row-limit';
 
 /**
  * Creates a chat tab and places its bound panel in `groupId`.
@@ -22,16 +20,6 @@ export function addChatPanelToGroup(
   worktreeKey: string,
   groupId: string,
 ): void {
-  // A full row refuses before the chat exists, so no chat is left tabless.
-  // The row is the chat group's when early access keeps chats there (the
-  // store lands the chat in it whichever group asked).
-  const rowGroupId =
-    restrictedChatGroupId(
-      usePanelLayoutStore.getState().layouts[worktreeKey],
-    ) ?? groupId;
-  if (refuseFullTabRow(worktreeKey, rowGroupId)) {
-    return;
-  }
   // Aux layout keys (`<worktreeKey>#<auxWindowId>`) still create the chat tab
   // under the OWNING worktree; the panel lands in the aux group.
   const ownerKey = getAuxPanelLayoutOwnerKey(worktreeKey) ?? worktreeKey;
@@ -87,9 +75,6 @@ export function addEmptyFileTabPanelToGroup(
   worktreeKey: string,
   groupId: string,
 ): string | null {
-  if (refuseFullTabRow(worktreeKey, groupId)) {
-    return null;
-  }
   const ownerKey = getAuxPanelLayoutOwnerKey(worktreeKey) ?? worktreeKey;
   const separator = ownerKey.indexOf('/');
   const projectId = ownerKey.slice(0, separator);

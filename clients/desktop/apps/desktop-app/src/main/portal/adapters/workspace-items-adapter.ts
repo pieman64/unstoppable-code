@@ -21,8 +21,8 @@ import {
   readNoteForProject,
   listPromptsForProject,
   readPromptForProject,
-  listAttachmentsForProject,
 } from '../../services/workspace-items-service';
+import { listPortalWorkspaceAttachments } from '../portal-workspace-reads';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import type { PortalAdapterContext } from './types';
 import { failServiceError, isRecord } from './validation';
@@ -264,7 +264,8 @@ export async function handlePortalWorkspaceItemsListAttachments(
     return;
   }
   try {
-    const value = await listAttachmentsForProject(
+    // core.workspace.item.list
+    const value = await listPortalWorkspaceAttachments(
       command.payload.projectId,
       command.payload.worktreeId,
     );

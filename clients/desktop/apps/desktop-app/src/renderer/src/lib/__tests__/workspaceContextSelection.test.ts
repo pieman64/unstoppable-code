@@ -1,10 +1,19 @@
+import type { Descendant } from 'slate';
 import {
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import type { WorkspaceContext } from '@canopy/desktop-shared/types';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  STANDALONE_CHAT_PROJECT_ID,
+  type WorkspaceContext,
+  type WorkspaceContextState,
+  type CoworkWorkEntryListResponse,
+} from '@canopy/desktop-shared/types';
+import { orgDefaultCoworkWorkspaceId } from '@canopy/protocol/ui-labels';
 import { useChatStore } from '@/stores/chatStore';
+import { useLinkedPersonalWorkspacesStore } from '@/stores/linkedPersonalWorkspacesStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
@@ -12,13 +21,24 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import {
   installWorkspaceContextSelectionSync,
+  reconcileSelectionWithScoping,
   syncSelectionForContextChange,
 } from '../workspaceContextSelection';
+import { openForkedContainer } from '../shared-containers/open-forked-container';
 
 const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PERSONAL: WorkspaceContext = { kind: 'personal' };
 const COWORK_SELECTION = { projectId: 'cowork-1', worktreeId: 'entry-1' };
 const ACME: WorkspaceContext = { kind: 'organization', organizationId: ORG_A };
+const originalStandaloneMethods = useStandaloneChatStore.getState();
+
+function orgProjectsFeatureFlagSnapshot(
+  enabled: boolean,
+): ReturnType<typeof getDefaultFeatureFlagSnapshot> {
+  const snapshot = getDefaultFeatureFlagSnapshot();
+  snapshot.values[CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key] = enabled;
+  return snapshot;
+}
 
 describe('workspace context selection sync (CAN-2954)', (): void => {
   let selectWorktree: jest.Mock;
@@ -79,13 +99,21 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
       activeChatProjectId: 'cowork-1',
       activeWorkEntryId: null,
       workEntries: [
-        { id: 'entry-1', title: 'Task', createdAt: '2026-07-01T10:00:00.000Z' },
+        {
+          id: 'entry-1',
+          title: 'Task',
+          createdAt: '2026-07-01T10:00:00.000Z',
+          chatCount: 0,
+        },
       ],
       openWorkEntryFromSidebar,
       clearActiveWorkEntry,
       cancelPendingWorkEntryNavigation,
     };
-    useStandaloneChatStore.setState(standaloneState);
+    useStandaloneChatStore.setState({
+      ...originalStandaloneMethods,
+      ...standaloneState,
+    });
     useWorkspaceContextStore.setState({
       state: {
         context: PERSONAL,
@@ -104,6 +132,119 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
     });
     expect(deselectWorktree).toHaveBeenCalledTimes(1);
     expect(selectWorktree).not.toHaveBeenCalled();
+  });
+
+  it('preserves the latest Code selection after real cold Cowork initialization is cancelled', async (): Promise<void> => {
+    const chatBefore = useChatStore.getState();
+    const standaloneBefore = useStandaloneChatStore.getState();
+    const originalLoad = useProjectsStore.getState().loadProjects;
+    let finishListing: (
+      response: CoworkWorkEntryListResponse,
+    ) => void = (): void => {
+      throw new Error('Listing did not start');
+    };
+    let listingStarted: () => void = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      listingStarted = resolve;
+    });
+    const listing = new Promise<CoworkWorkEntryListResponse>((resolve) => {
+      finishListing = resolve;
+    });
+    const previousWindow = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'window',
+    );
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        api: {
+          standaloneChat: { init: jest.fn(() => Promise.resolve()) },
+          workEntries: {
+            list: jest.fn(() => {
+              listingStarted();
+              return listing;
+            }),
+          },
+        },
+      },
+    });
+    useChatStore.setState({
+      ensureModelDefaultsLoaded: jest.fn(() => Promise.resolve(null)),
+      loadTabs: jest.fn(() => Promise.resolve()),
+      syncActiveEmptyTabToDefaults: jest.fn(() => Promise.resolve()),
+      setWorktreeDefaultPlugins: jest.fn(),
+    });
+    useProjectsStore.setState({
+      loadProjects: jest.fn(() => Promise.resolve()),
+    });
+    useStandaloneChatStore.setState({
+      initialized: false,
+      scopedWorkspaceId: null,
+      workEntries: [],
+      chatProjects: [
+        { id: 'cowork-1', name: 'Cowork', createdAt: '2026-07-01' },
+      ],
+      loadChatProjects: jest.fn(() => Promise.resolve()),
+      initialize: originalStandaloneMethods.initialize,
+      openWorkEntryFromSidebar:
+        originalStandaloneMethods.openWorkEntryFromSidebar,
+      cancelPendingWorkEntryNavigation:
+        originalStandaloneMethods.cancelPendingWorkEntryNavigation,
+      clearActiveWorkEntry: originalStandaloneMethods.clearActiveWorkEntry,
+    });
+    try {
+      const opening = openForkedContainer({
+        containerType: 'COWORK_WORK_ENTRY',
+        projectId: 'cowork-1',
+        worktreeId: 'entry-1',
+        warnings: [],
+        provenance: {
+          sourceContainerId: 'share-1',
+          sourceRevisionId: 'revision-1',
+          sourceOwnerDisplayName: 'Dana',
+          organizationId: ORG_A,
+          forkedAt: '2026-10-22T10:00:00.000Z',
+        },
+      });
+      const rejected = expect(opening).rejects.toThrow();
+      await started;
+      selectWorktree('p1', 'first-choice');
+      selectWorktree('p1', 'latest-choice');
+      finishListing({
+        entries: [
+          {
+            id: 'entry-1',
+            title: 'Task',
+            createdAt: '2026-07-01',
+            chatCount: 0,
+          },
+        ],
+      });
+      await rejected;
+      expect(useChatStore.getState().selectedWorktree).toEqual({
+        projectId: 'p1',
+        worktreeId: 'latest-choice',
+      });
+      expect(useStandaloneChatStore.getState().activeWorkEntryId).toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
+    } finally {
+      finishListing({
+        entries: [
+          {
+            id: 'entry-1',
+            title: 'Task',
+            createdAt: '2026-07-01',
+            chatCount: 0,
+          },
+        ],
+      });
+      if (previousWindow === undefined)
+        Reflect.deleteProperty(globalThis, 'window');
+      else Object.defineProperty(globalThis, 'window', previousWindow);
+      useChatStore.setState(chatBefore);
+      useStandaloneChatStore.setState(standaloneBefore);
+      useProjectsStore.setState({ loadProjects: originalLoad });
+    }
   });
 
   it('restores the last selection of the context being entered', (): void => {
@@ -125,26 +266,189 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
     ).toBeNull();
   });
 
+  it.each([STANDALONE_CHAT_PROJECT_ID, APP_ADVISOR_PROJECT_ID])(
+    'preserves standalone selection behavior for %s without a workspace row',
+    (projectId): void => {
+      useWorkspaceContextStore.setState({
+        lastSelectionByContext: {
+          personal: { projectId, worktreeId: 'standalone-entry' },
+        },
+      });
+      useChatStore.setState({ selectedWorktree: null });
+
+      syncSelectionForContextChange(ACME, PERSONAL);
+
+      expect(selectWorktree).toHaveBeenCalledWith(
+        projectId,
+        'standalone-entry',
+      );
+      reconcileSelectionWithScoping(PERSONAL);
+      expect(deselectWorktree).not.toHaveBeenCalled();
+    },
+  );
+
   it('clears the outgoing selection and drops a remembered worktree that no longer exists', (): void => {
     useWorkspaceContextStore.setState({
       lastSelectionByContext: {
         [`org:${ORG_A}`]: { projectId: 'p2', worktreeId: 'deleted' },
       },
     });
-    selectWorktree.mockImplementation((): void => {
-      expect(useChatStore.getState().selectedWorktree).toBeNull();
-    });
 
     syncSelectionForContextChange(PERSONAL, ACME);
 
     expect(deselectWorktree).toHaveBeenCalledTimes(1);
-    expect(selectWorktree).toHaveBeenCalledWith('p2', 'deleted');
+    expect(selectWorktree).not.toHaveBeenCalled();
     expect(useChatStore.getState().selectedWorktree).toBeNull();
     expect(useWorkspaceContextStore.getState().lastSelectionByContext).toEqual({
       personal: { projectId: 'p1', worktreeId: 'w1' },
       [`org:${ORG_A}`]: null,
     });
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  describe('foreign selections (CAN-4781)', (): void => {
+    const ACME_OWNER = {
+      type: 'organization' as const,
+      organizationId: ORG_A,
+      projectId: 'project-1',
+      instanceId: 'instance-1',
+      bindingGeneration: 1,
+    };
+
+    beforeEach((): void => {
+      useLinkedPersonalWorkspacesStore.setState({ ids: [] });
+      useProjectsStore.setState({
+        projects: [
+          ...useProjectsStore.getState().projects,
+          {
+            type: 'single-repo',
+            id: 'org-copy',
+            name: 'Org copy',
+            repoPath: '/org-copy',
+            color: '#000000',
+            collapsed: false,
+            order: 2,
+            worktrees: [],
+            owner: ACME_OWNER,
+          },
+        ],
+      });
+    });
+
+    it('does not remember a workspace owned by another context for the departing one', (): void => {
+      // An organization copy opened while Personal was active.
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'org-copy', worktreeId: 'w-copy' },
+      });
+
+      syncSelectionForContextChange(PERSONAL, ACME);
+
+      expect(
+        useWorkspaceContextStore.getState().lastSelectionByContext.personal,
+      ).toBeNull();
+    });
+
+    it('never restores a foreign remembered selection when switching back', (): void => {
+      useWorkspaceContextStore.setState({
+        lastSelectionByContext: {
+          personal: { projectId: 'org-copy', worktreeId: 'w-copy' },
+        },
+      });
+      useChatStore.setState({ selectedWorktree: null });
+
+      syncSelectionForContextChange(ACME, PERSONAL);
+
+      expect(selectWorktree).not.toHaveBeenCalled();
+      expect(useChatStore.getState().selectedWorktree).toBeNull();
+      expect(
+        useWorkspaceContextStore.getState().lastSelectionByContext.personal,
+      ).toBeNull();
+    });
+
+    it('does not restore an absent organization default chat as a Personal standalone chat', (): void => {
+      useWorkspaceContextStore.setState({
+        lastSelectionByContext: {
+          personal: {
+            projectId: orgDefaultCoworkWorkspaceId(ORG_A),
+            worktreeId: 'org-entry',
+          },
+        },
+      });
+      useChatStore.setState({ selectedWorktree: null });
+
+      syncSelectionForContextChange(ACME, PERSONAL);
+
+      expect(selectWorktree).not.toHaveBeenCalled();
+      expect(
+        useWorkspaceContextStore.getState().lastSelectionByContext.personal,
+      ).toBeNull();
+    });
+
+    it('does not restore a Personal standalone chat remembered for an organization', (): void => {
+      useWorkspaceContextStore.setState({
+        lastSelectionByContext: {
+          [`org:${ORG_A}`]: {
+            projectId: STANDALONE_CHAT_PROJECT_ID,
+            worktreeId: 'personal-entry',
+          },
+        },
+      });
+      useChatStore.setState({ selectedWorktree: null });
+
+      syncSelectionForContextChange(PERSONAL, ACME);
+
+      expect(selectWorktree).not.toHaveBeenCalled();
+      expect(
+        useWorkspaceContextStore.getState().lastSelectionByContext[
+          `org:${ORG_A}`
+        ],
+      ).toBeNull();
+    });
+
+    it('still restores a valid selection in the organization it belongs to', (): void => {
+      useWorkspaceContextStore.setState({
+        lastSelectionByContext: {
+          [`org:${ORG_A}`]: { projectId: 'org-copy', worktreeId: 'w-copy' },
+        },
+      });
+
+      syncSelectionForContextChange(PERSONAL, ACME);
+
+      expect(selectWorktree).toHaveBeenCalledWith('org-copy', 'w-copy');
+      expect(navigate).toHaveBeenCalledWith('main');
+    });
+
+    it('does not remember a linked Personal checkout as organization-owned', (): void => {
+      useLinkedPersonalWorkspacesStore.setState({ ids: ['p1'] });
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'p1', worktreeId: 'w1' },
+      });
+
+      syncSelectionForContextChange(ACME, PERSONAL);
+
+      expect(
+        useWorkspaceContextStore.getState().lastSelectionByContext[
+          `org:${ORG_A}`
+        ],
+      ).toBeNull();
+    });
+
+    it('forgets a remembered workspace whose owner changed since', (): void => {
+      useWorkspaceContextStore.setState({
+        lastSelectionByContext: {
+          [`org:${ORG_A}`]: { projectId: 'p1', worktreeId: 'w1' },
+        },
+      });
+
+      syncSelectionForContextChange(PERSONAL, ACME);
+
+      expect(selectWorktree).not.toHaveBeenCalled();
+      expect(
+        useWorkspaceContextStore.getState().lastSelectionByContext[
+          `org:${ORG_A}`
+        ],
+      ).toBeNull();
+    });
   });
 
   it('clears an open Cowork task and leaves the chat page when entering an organization', (): void => {
@@ -178,7 +482,7 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
   it('does not leave a non-chat page when clearing', (): void => {
     useChatStore.setState({ selectedWorktree: COWORK_SELECTION });
     useStandaloneChatStore.setState({ activeWorkEntryId: 'entry-1' });
-    useNavigationStore.setState({ activePage: 'settings' });
+    useNavigationStore.setState({ activePage: 'overview' });
 
     syncSelectionForContextChange(PERSONAL, ACME);
 
@@ -193,6 +497,78 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
       useWorkspaceContextStore.setState({
         lastSelectionByContext: { personal: COWORK_SELECTION },
       });
+    });
+
+    it('keeps a revealed copy after the context switch starts a deferred Cowork restore', async () => {
+      let finishRestore: () => void = () => undefined;
+      const restoring = new Promise<void>((resolve) => {
+        finishRestore = resolve;
+      });
+      openWorkEntryFromSidebar.mockImplementation(async () => {
+        await restoring;
+        useChatStore.setState({ selectedWorktree: COWORK_SELECTION });
+        useStandaloneChatStore.setState({
+          activeChatProjectId: 'cowork-1',
+          activeWorkEntryId: 'entry-1',
+        });
+      });
+      const originalLoad = useProjectsStore.getState().loadProjects;
+      const originalSetContext = useWorkspaceContextStore.getState().setContext;
+      useProjectsStore.setState({
+        loadProjects: jest.fn(() => Promise.resolve()),
+      });
+      useWorkspaceContextStore.setState((store) => ({
+        hydrated: true,
+        state: { ...store.state, context: ACME },
+        setContext: (context): Promise<WorkspaceContextState> => {
+          useWorkspaceContextStore.setState((current) => ({
+            state: { ...current.state, context },
+          }));
+          syncSelectionForContextChange(ACME, context);
+          return Promise.resolve(useWorkspaceContextStore.getState().state);
+        },
+      }));
+      const snapshot = useFeatureFlagsStore.getState().snapshot;
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...snapshot,
+          values: {
+            ...snapshot.values,
+            [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: true,
+          },
+        },
+      });
+      try {
+        await openForkedContainer({
+          containerType: 'CODE_WORKTREE',
+          projectId: 'p1',
+          worktreeId: 'copy-1',
+          warnings: [],
+          provenance: {
+            sourceContainerId: 'share-1',
+            sourceRevisionId: 'revision-1',
+            sourceOwnerDisplayName: 'Dana',
+            organizationId: ORG_A,
+            forkedAt: '2026-10-22T10:00:00.000Z',
+          },
+        });
+        expect(openWorkEntryFromSidebar).toHaveBeenCalled();
+        finishRestore();
+        await restoring;
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(useChatStore.getState().selectedWorktree).toEqual({
+          projectId: 'p1',
+          worktreeId: 'copy-1',
+        });
+        expect(navigate).toHaveBeenLastCalledWith('main');
+      } finally {
+        finishRestore();
+        await restoring;
+        useFeatureFlagsStore.setState({ snapshot });
+        useProjectsStore.setState({ loadProjects: originalLoad });
+        useWorkspaceContextStore.setState({ setContext: originalSetContext });
+      }
     });
 
     it('restores a remembered Cowork task through the Cowork navigation path', async (): Promise<void> => {
@@ -222,14 +598,14 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
       });
 
       syncSelectionForContextChange(ACME, PERSONAL);
-      useNavigationStore.setState({ activePage: 'settings' });
+      useNavigationStore.setState({ activePage: 'overview' });
       finishRestore();
       await pendingRestore;
       await Promise.resolve();
       await Promise.resolve();
 
       expect(navigate).not.toHaveBeenCalled();
-      expect(useNavigationStore.getState().activePage).toBe('settings');
+      expect(useNavigationStore.getState().activePage).toBe('overview');
       // The user's page wins and nothing from the restore stays installed.
       expect(useChatStore.getState().selectedWorktree).toBeNull();
       expect(useStandaloneChatStore.getState().activeWorkEntryId).toBeNull();
@@ -677,10 +1053,7 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
 
   it('runs on every applied context change once installed', (): void => {
     useFeatureFlagsStore.setState({
-      snapshot: {
-        ...getDefaultFeatureFlagSnapshot(),
-        values: { [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: true },
-      },
+      snapshot: orgProjectsFeatureFlagSnapshot(true),
     });
     useWorkspaceContextStore.setState({ hydrated: true });
     const unsubscribe = installWorkspaceContextSelectionSync();
@@ -703,12 +1076,7 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
   describe('runtime scoping activation', (): void => {
     function setEnabled(enabled: boolean): void {
       useFeatureFlagsStore.setState({
-        snapshot: {
-          ...getDefaultFeatureFlagSnapshot(),
-          values: {
-            [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: enabled,
-          },
-        },
+        snapshot: orgProjectsFeatureFlagSnapshot(enabled),
       });
     }
 
@@ -747,7 +1115,7 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
         });
         setEnabled(true);
         const revision = useWorkspaceContextStore.getState().state.revision;
-        const draft = [
+        const draft: Descendant[] = [
           {
             type: 'paragraph',
             children: [{ text: 'Keep typing in this worktree' }],
@@ -898,12 +1266,7 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
     'leaves the selection alone while organization scoping is inactive (%j)',
     ({ enabled, hydrated }): void => {
       useFeatureFlagsStore.setState({
-        snapshot: {
-          ...getDefaultFeatureFlagSnapshot(),
-          values: {
-            [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: enabled,
-          },
-        },
+        snapshot: orgProjectsFeatureFlagSnapshot(enabled),
       });
       useWorkspaceContextStore.setState({ hydrated });
       const unsubscribe = installWorkspaceContextSelectionSync();
@@ -931,12 +1294,7 @@ describe('workspace context selection sync (CAN-2954)', (): void => {
           useWorkspaceContextStore.getState().lastSelectionByContext,
         ).toEqual({});
         useFeatureFlagsStore.setState({
-          snapshot: {
-            ...getDefaultFeatureFlagSnapshot(),
-            values: {
-              [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: true,
-            },
-          },
+          snapshot: orgProjectsFeatureFlagSnapshot(true),
         });
         useWorkspaceContextStore.setState({ hydrated: true });
         useWorkspaceContextStore.getState().applyBroadcast({

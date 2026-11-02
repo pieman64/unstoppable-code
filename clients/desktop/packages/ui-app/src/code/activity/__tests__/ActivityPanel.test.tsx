@@ -470,7 +470,7 @@ describe('ActivityPanel', () => {
   it("renders only the sections the workspace's client implements (REG-3022)", () => {
     const repositorySnapshot = populatedSnapshot();
     repositorySnapshot.workspaces = [
-      { localId: 'ws1', name: 'Repo', type: 'single-repo', chatIds: [] },
+      { localId: 'ws1', name: 'Repo', type: 'single-repo' },
     ];
     mockActivity = { ...baseState(), snapshot: repositorySnapshot };
     const render = (): string =>
@@ -1760,6 +1760,7 @@ describe('ActivityPanel', () => {
     mockCaps = CAPS;
     const snapshot = populatedSnapshot();
     snapshot.changedFiles.wt1 = {
+      worktreeLocalId: 'wt1',
       uncommitted: [{ filePath: 'src/app.ts', status: 'modified' }],
       committed: [],
     };
@@ -1865,13 +1866,13 @@ describe('ActivityPanel', () => {
     expect(withHandler).toContain(
       `activity-plan-pipeline-${snapshot.plans[0].localId ?? snapshot.plans[0].title}`,
     );
-    expect(withHandler).toContain('>Pipeline</button>');
+    expect(withHandler).toContain('>Workflow</button>');
 
     const withoutHandler = renderToString(
       <ActivityPanel workspaceLocalId="ws1" worktreeLocalId="wt1" />,
     );
     expect(withoutHandler).not.toContain('activity-plan-pipeline-');
-    expect(withoutHandler).not.toContain('>Pipeline</button>');
+    expect(withoutHandler).not.toContain('>Workflow</button>');
   });
 
   it('omits the plan Pipeline action for a plan with no loaded body', () => {
@@ -1946,7 +1947,7 @@ describe('ActivityPanel', () => {
     // Body-level empty states are replaced by the loading placeholder; the
     // header subtitle still shows the semantic (desktop-matched) copy.
     expect(out).not.toContain('data-testid="activity-changed-files-empty"');
-    expect(out).not.toContain('No plans.');
+    expect(out).not.toContain('data-testid="activity-plans-empty"');
   });
 
   it('renders populated sections normally while hydrating', () => {
@@ -2056,7 +2057,7 @@ describe('ActivityPanel', () => {
     'Agent background processes',
     'MCP servers',
     'Plans',
-    'Pipeline runs',
+    'Workflow runs',
     'Cost',
     'Scripts',
     'Hooks',
@@ -2729,9 +2730,10 @@ describe('activity section content predicate', () => {
     const withSession = input();
     withSession.snapshot?.terminalSessions.push({
       localId: 't1',
+      terminalLocalId: 't1',
       worktreeLocalId: 'wt1',
       title: 'zsh',
-      status: 'running',
+      running: true,
     });
     expect(activitySectionHasContent('terminals', withSession)).toBe(true);
     expect(activityPanelHasContent(withSession)).toBe(true);
@@ -2866,9 +2868,7 @@ describe('activity section content predicate', () => {
 
   it('drops code-only sections for a repoless cowork project', () => {
     const snapshot = populatedSnapshot();
-    snapshot.workspaces = [
-      { localId: 'ws1', name: 'Cowork', type: 'cowork', chatIds: [] },
-    ];
+    snapshot.workspaces = [{ localId: 'ws1', name: 'Cowork', type: 'cowork' }];
     const cowork = input({ snapshot });
     // `populatedSnapshot` seeds changed files, a PR, and plans — all code-only.
     expect(activitySectionHasContent('changed-files', cowork)).toBe(false);
@@ -2892,7 +2892,7 @@ describe('activity section content predicate', () => {
     function repositorySnapshot(): SessionViewModel {
       const snapshot = populatedSnapshot();
       snapshot.workspaces = [
-        { localId: 'ws1', name: 'Repo', type: 'single-repo', chatIds: [] },
+        { localId: 'ws1', name: 'Repo', type: 'single-repo' },
       ];
       return snapshot;
     }
@@ -2941,7 +2941,7 @@ describe('activity section content predicate', () => {
     it('does not let an allowlist reveal what the Cowork type hides', () => {
       const snapshot = populatedSnapshot();
       snapshot.workspaces = [
-        { localId: 'ws1', name: 'Cowork', type: 'cowork', chatIds: [] },
+        { localId: 'ws1', name: 'Cowork', type: 'cowork' },
       ];
       const cowork = input({
         snapshot,
@@ -2985,16 +2985,23 @@ describe('activity section content predicate', () => {
   it('counts configured-but-never-run scripts and hooks', () => {
     const configured = input({
       scriptsSection: {
+        identityKey: 'configured-scripts',
         entries: [
           {
-            key: 'setup',
-            kind: 'setup',
-            label: 'Setup',
-            command: 'npm i',
-            status: 'idle',
+            script: {
+              scriptKey: 'setup',
+              scriptName: 'setup',
+              label: 'Setup',
+              displayName: 'Setup',
+              command: 'npm i',
+              lifecycle: 'setup',
+              target: 'project',
+            },
+            confirmBeforeRun: true,
+            runDisabled: false,
           },
         ],
-        unconfiguredKinds: [],
+        runs: {},
       },
     });
     expect(activitySectionHasContent('scripts', configured)).toBe(true);
@@ -3549,6 +3556,63 @@ describe('ActivityPanel card layout', () => {
 });
 
 describe('ActivityPanel changed-files bounded answers (REG-3024)', () => {
+  function installActivityVirtualLayout(): () => void {
+    const prototype = HTMLElement.prototype;
+    const properties = [
+      'offsetHeight',
+      'offsetWidth',
+      'clientHeight',
+      'clientWidth',
+      'scrollHeight',
+    ] as const;
+    const descriptors = new Map(
+      properties.map((property) => [
+        property,
+        Object.getOwnPropertyDescriptor(prototype, property),
+      ]),
+    );
+    for (const property of properties) {
+      Object.defineProperty(prototype, property, {
+        configurable: true,
+        get: function (this: HTMLElement): number {
+          if (this.hasAttribute('data-index')) {
+            return property.endsWith('Width') ? 400 : 24;
+          }
+          if (this.dataset['testid'] === 'activity-changed-files') {
+            return property === 'scrollHeight'
+              ? 1_000_000
+              : property.endsWith('Width')
+                ? 400
+                : 500;
+          }
+          return 0;
+        },
+      });
+    }
+    const rect = jest
+      .spyOn(prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement): DOMRect {
+        if (this.dataset['testid'] === 'activity-changed-files') {
+          return DOMRect.fromRect({ x: 0, y: 0, width: 400, height: 500 });
+        }
+        if (this.hasAttribute('data-index')) {
+          return DOMRect.fromRect({ x: 0, y: 0, width: 400, height: 24 });
+        }
+        return DOMRect.fromRect({ x: 0, y: 0, width: 400, height: 0 });
+      });
+    return (): void => {
+      rect.mockRestore();
+      for (const property of properties) {
+        const descriptor = descriptors.get(property);
+        if (descriptor === undefined) {
+          Reflect.deleteProperty(prototype, property);
+        } else {
+          Object.defineProperty(prototype, property, descriptor);
+        }
+      }
+    };
+  }
+
   function withChangedFiles(
     changedFiles: SessionViewModel['changedFiles'][string],
   ): SessionViewModel {
@@ -3599,6 +3663,77 @@ describe('ActivityPanel changed-files bounded answers (REG-3024)', () => {
       <ActivityPanel workspaceLocalId="ws1" worktreeLocalId="wt1" />,
     ).replace(/<!-- -->/g, '');
     expect(out).toContain('1+ files');
+  });
+
+  it('uses exact paging totals in the header and calls the host load-more action', () => {
+    mockCaps = CAPS;
+    const snapshot = withChangedFiles({
+      worktreeLocalId: 'wt1',
+      uncommitted: [{ filePath: 'local.ts', status: 'modified' }],
+      committed: [],
+      notices: [{ kind: 'truncated' }],
+      page: {
+        revision: 'rev-1',
+        uncommitted: { total: 12, nextCursor: 'cursor-u' },
+        committed: { total: 4 },
+      },
+    });
+    mockActivity = { ...baseState(), snapshot };
+    const onLoadMoreChangedFiles = jest.fn();
+    const restoreVirtualLayout = installActivityVirtualLayout();
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <ActivityPanel
+          workspaceLocalId="ws1"
+          worktreeLocalId="wt1"
+          hostActions={{ onLoadMoreChangedFiles }}
+        />,
+      );
+    });
+    const viewport = container.querySelector<HTMLElement>(
+      '[data-testid="activity-changed-files"]',
+    );
+    if (viewport) {
+      viewport.scrollTop = 1_000;
+      act(() => {
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+    }
+
+    expect(container.textContent).toContain('16 files');
+    expect(container.textContent).not.toContain('2+ files');
+    const loadMore = container.querySelector<HTMLButtonElement>(
+      '[data-testid="activity-changed-files-show-more"][data-load-more="true"]',
+    );
+    expect(loadMore?.getAttribute('data-group')).toBe('uncommitted');
+    act(() => loadMore?.click());
+    expect(onLoadMoreChangedFiles).toHaveBeenCalledWith('wt1', 'uncommitted');
+    act(() => root.unmount());
+    restoreVirtualLayout();
+  });
+
+  it('does not wire a load-more control when the host has no paging action', () => {
+    mockCaps = CAPS;
+    mockActivity = {
+      ...baseState(),
+      snapshot: withChangedFiles({
+        worktreeLocalId: 'wt1',
+        uncommitted: [{ filePath: 'local.ts', status: 'modified' }],
+        committed: [],
+        page: {
+          revision: 'rev-1',
+          uncommitted: { total: 12, nextCursor: 'cursor-u' },
+          committed: { total: 0 },
+        },
+      }),
+    };
+    const out = renderToString(
+      <ActivityPanel workspaceLocalId="ws1" worktreeLocalId="wt1" />,
+    );
+
+    expect(out).not.toContain('data-load-more="true"');
   });
 
   it('names each repository when the list spans several', () => {

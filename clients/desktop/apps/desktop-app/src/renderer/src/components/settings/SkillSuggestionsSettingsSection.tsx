@@ -3,6 +3,7 @@ import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { SKILL_SUGGESTION_COPY } from '@canopy/ui-app';
 import {
   Button,
+  Count,
   ErrorBanner,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
@@ -156,11 +157,11 @@ function SkillSuggestionsRows(): JSX.Element {
             {SKILL_SUGGESTION_COPY.viewSuggestions}
             {count > 0 ? (
               <span
-                className="ml-1.5 rounded-full bg-accent px-1.5 text-3xs font-medium tabular-nums fg-emphasis"
+                className="ml-1.5 inline-flex"
                 data-testid="skill-suggestions-settings-badge"
                 aria-label={`${String(count)} open`}
               >
-                {count}
+                <Count value={count} />
               </span>
             ) : null}
           </Button>

@@ -28,7 +28,7 @@ export function AttachmentTileRemoveButton({
       onClick={onRemove}
       data-testid={testId}
       aria-label={`Remove ${label}`}
-      className={`${BUBBLE_BADGE_CHROME} absolute -right-1.5 -top-1.5 z-10 h-5 w-5 opacity-0 transition hover:fg-primary focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100`}
+      className={`${BUBBLE_BADGE_CHROME} absolute -right-1.5 -top-1.5 z-10 h-5 w-5 opacity-0 transition-opacity hover:fg-primary focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100`}
     >
       <CloseIcon width={12} height={12} />
     </button>

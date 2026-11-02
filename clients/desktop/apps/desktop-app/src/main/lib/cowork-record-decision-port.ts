@@ -1,9 +1,14 @@
+import { rm } from 'node:fs/promises';
 import { PROJECT_COLORS } from '@canopy/desktop-shared/constants/project-colors';
 import type {
+  CoworkSidebarItem,
   CoworkWorkspaceSettings,
   WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
 import { ensureCoworkHomeScaffold } from './chat-project-utils';
+import { getWorkspaceDir } from './paths';
+import { slugify, uniqueId } from './string-utils';
+import { workspaceCreationPathOccupied } from './w5-workspace-creation-commit';
 import {
   getWorkspaceIndexRepository,
   renameWorkspaceIndexEntry,
@@ -16,31 +21,58 @@ import {
 } from './workspace-persistence';
 import {
   admitCoworkIndex,
+  admitCoworkMetadataEntry,
+  admitCoworkMetadataManifest,
   admitCoworkProvisionEntry,
   admitCoworkProvisionManifest,
+  admitCoworkPublishEntry,
+  admitCoworkPublishManifest,
+  admitCoworkStageEntry,
+  admitCoworkStageManifest,
   allocateCoworkMigrationTo,
+  applyCoworkCreationIndexTo,
+  applyCoworkCreationManifestTo,
+  applyCoworkMetadataIndexTo,
+  applyCoworkMetadataTo,
   applyCoworkMigrationManifestTo,
   applyCoworkProvisionIndexTo,
   applyCoworkProvisionManifestCreateTo,
   applyCoworkProvisionManifestTo,
+  applyCoworkPublishIndexTo,
+  applyCoworkPublishManifestTo,
+  applyCoworkStageManifestTo,
+  checkCoworkDiscardIndex,
+  coworkCreationItemFor,
+  coworkCreationScaffolds,
+  coworkCreationTaken,
+  discardsCoworkStaging,
   withUnknownCoworkFields,
 } from './worktree-record-decision-apply';
 import type {
+  CoworkCreationAllocationDecision,
+  CoworkCreationDecision,
+  CoworkCreationManifestDecision,
   CoworkDefaultNameDecision,
   CoworkDefaultNameOutcome,
+  CoworkDiscardDecision,
+  CoworkDiscardStatus,
   CoworkIndexDecision,
   CoworkIndexDecisionOutcome,
   CoworkManifestDecision,
+  CoworkMetadataDecision,
   CoworkMigrationDecision,
   CoworkMigrationOutcome,
   CoworkProvisionDecision,
   CoworkProvisionManifestPass,
   CoworkProvisionOutcome,
+  CoworkPublishDecision,
+  CoworkPublishOutcome,
+  CoworkStageDecision,
 } from './worktree-record-decisions';
 
-// The designated Cowork members of `W5RecordDecisionPort` (W5c2), applied by
-// the writers the records used. Kept apart so the ownership, private memory
-// and seed records do not load the Cowork scaffold.
+// The designated Cowork members of `W5RecordDecisionPort` (W5c2, W6a2),
+// applied by the writers the records used. Kept apart so the ownership,
+// private memory and seed records do not load the Cowork scaffold.
 
 function paletteColor(count: number): string {
   return PROJECT_COLORS[count % PROJECT_COLORS.length];
@@ -169,4 +201,214 @@ export async function applyCoworkManifestDecision(
       );
       return;
   }
+}
+
+// ---------------------------------------------------------------------------
+// W6a2 (CAN-4814): create, stage, publish, metadata and discard. Each index
+// member runs in the caller's workspace mutation queue.
+// ---------------------------------------------------------------------------
+
+/**
+ * Selects a new identity under the index queue, past every indexed, pending
+ * and occupied one; `admit` is the host's id admission. Commits nothing.
+ */
+export function applyCoworkCreationAllocation(
+  decision: CoworkCreationAllocationDecision,
+  admit: (workspaceId: string) => void,
+): Promise<CoworkSidebarItem> {
+  return getWorkspaceIndexRepository().update(async (snapshot) => {
+    admitCoworkIndex(snapshot.authority);
+    const taken = coworkCreationTaken(snapshot.entries, decision);
+    const base = slugify(decision.name) || 'workspace';
+    let id = uniqueId(base, taken);
+    while (await workspaceCreationPathOccupied(getWorkspaceDir(id))) {
+      taken.add(id);
+      id = uniqueId(base, taken);
+    }
+    admit(id);
+    return {
+      result: coworkCreationItemFor(
+        id,
+        {
+          count: snapshot.entries.length,
+          color: paletteColor(snapshot.entries.length),
+        },
+        decision,
+      ),
+    };
+  });
+}
+
+/**
+ * Publishes an allocated identity in the caller's creation boundary step: a
+ * bound manifest inside the index update, then a managed home, marked by
+ * `beforeScaffold` before it starts, then the index entry.
+ */
+export function applyCoworkCreationDecision(
+  decision: CoworkCreationDecision,
+  beforeScaffold: () => void,
+): Promise<void> {
+  return getWorkspaceIndexRepository().update(async (snapshot) => {
+    admitCoworkIndex(snapshot.authority);
+    const entries = applyCoworkCreationIndexTo(snapshot.entries, decision);
+    if (decision.item.owner)
+      await applyCoworkCreationManifestDecision(decision.item.id, {
+        kind: 'cowork.create.manifest',
+        item: decision.item,
+      });
+    if (coworkCreationScaffolds(decision)) {
+      beforeScaffold();
+      await ensureCoworkHomeScaffold(decision.item.id);
+    }
+    return { result: undefined, entries };
+  });
+}
+
+/**
+ * Creates a new identity's absent manifest: a bound one inside the index
+ * update, replacing ownership; an unbound one after the index entry.
+ */
+export function applyCoworkCreationManifestDecision(
+  workspaceId: string,
+  decision: CoworkCreationManifestDecision,
+): Promise<void> {
+  return updateWorkspaceConfig(
+    workspaceId,
+    (config, read): void =>
+      applyCoworkCreationManifestTo(config, read, decision),
+    decision.item.owner ? { ownership: 'replace' } : undefined,
+  );
+}
+
+/**
+ * Stores or refreshes a staged workspace's manifest from the manifest read
+ * under the index queue; the index is read, never written.
+ */
+export function applyCoworkStageDecision(
+  decision: CoworkStageDecision,
+): Promise<boolean> {
+  return getWorkspaceIndexRepository().update(async (snapshot) => {
+    admitCoworkIndex(snapshot.authority);
+    const indexed = admitCoworkStageEntry(snapshot.entries, decision);
+    const created = await updateWorkspaceConfig(
+      decision.item.id,
+      async (config, read): Promise<boolean> => {
+        admitCoworkStageManifest(config, read, decision);
+        if (read.authority !== 'absent')
+          await preserveCoworkFields(decision.item.id, config);
+        return applyCoworkStageManifestTo(
+          config,
+          read,
+          indexed !== undefined,
+          decision,
+        );
+      },
+      { ownership: 'replace' },
+    );
+    return { result: created };
+  });
+}
+
+/**
+ * Publishes a staged manifest under the index queue: the host `precheck`
+ * runs on the admitted read, then the manifest, then the index entry.
+ */
+export function applyCoworkPublishDecision(
+  decision: CoworkPublishDecision,
+  precheck?: () => Promise<void>,
+): Promise<CoworkPublishOutcome> {
+  return getWorkspaceIndexRepository().update(async (snapshot) => {
+    admitCoworkIndex(snapshot.authority);
+    await precheck?.();
+    const entry = admitCoworkPublishEntry(snapshot.entries, decision);
+    const outcome = await updateWorkspaceConfig(
+      decision.workspaceId,
+      async (config, read): Promise<CoworkPublishOutcome> => {
+        admitCoworkPublishManifest(config, read, decision);
+        await preserveCoworkFields(decision.workspaceId, config);
+        return applyCoworkPublishManifestTo(
+          config,
+          {
+            entry,
+            count: snapshot.entries.length,
+            color: paletteColor(snapshot.entries.length),
+          },
+          decision,
+        );
+      },
+      { ownership: 'replace', shouldWrite: (result) => result.changed },
+    );
+    const entries = applyCoworkPublishIndexTo(snapshot.entries, entry, outcome);
+    return { result: outcome, ...(entries ? { entries } : {}) };
+  });
+}
+
+/** Applies a metadata change to the manifest, then an import's name or color to the index. */
+export function applyCoworkMetadataDecision(
+  decision: CoworkMetadataDecision,
+): Promise<void> {
+  return getWorkspaceIndexRepository().update(async (snapshot) => {
+    admitCoworkIndex(snapshot.authority);
+    const entry = admitCoworkMetadataEntry(snapshot.entries, decision);
+    await updateWorkspaceConfig(
+      decision.workspaceId,
+      async (config, read): Promise<void> => {
+        admitCoworkMetadataManifest(config, read);
+        const settings = await preserveCoworkFields(
+          decision.workspaceId,
+          config,
+        );
+        applyCoworkMetadataTo(config, settings, decision);
+      },
+    );
+    const entries = applyCoworkMetadataIndexTo(
+      snapshot.entries,
+      entry,
+      decision,
+    );
+    return { result: undefined, ...(entries ? { entries } : {}) };
+  });
+}
+
+/**
+ * Removes an unpublished staging's metadata directory: the index read under
+ * its queue proves it unpublished, then the manifest read in the manifest
+ * queue proves it this project's. Commits nothing; an attached folder lies
+ * outside the directory and is never removed.
+ */
+export function applyCoworkDiscardDecision(
+  decision: CoworkDiscardDecision,
+): Promise<CoworkDiscardStatus> {
+  return getWorkspaceIndexRepository().update(async (snapshot) => {
+    const held = checkCoworkDiscardIndex(
+      snapshot.authority,
+      snapshot.entries,
+      decision,
+    );
+    if (held) return { result: held };
+    const removed = await getWorkspaceManifestRepository().serialize(
+      decision.workspaceId,
+      async (): Promise<boolean> => {
+        const read = await readWorkspaceConfigDetailed(decision.workspaceId);
+        if (
+          !discardsCoworkStaging(
+            {
+              authority: read.authority,
+              ownerMalformed: read.ownerMalformed,
+              type: read.config.type,
+              owner: read.config.owner,
+            },
+            decision,
+          )
+        )
+          return false;
+        await rm(getWorkspaceDir(decision.workspaceId), {
+          recursive: true,
+          force: true,
+        });
+        return true;
+      },
+    );
+    return { result: removed ? 'removed' : 'kept' };
+  });
 }

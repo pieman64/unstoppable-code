@@ -30,6 +30,8 @@ import type {
 import type { CoreChatTranscriptPageParams } from '@canopy/protocol/canopy-core';
 import type { CoworkWorkEntriesFile } from '@canopy/desktop-shared/types';
 import { dispatchProjectReadAction } from '../project-discovery/reads';
+import { resolveAuthorizedWatcherChat } from '../project-discovery/chat-target';
+import * as projectSources from '../project-discovery/sources';
 import {
   getCallerOwner,
   requireAuthorizedProject,
@@ -425,6 +427,33 @@ function successfulResult(
 }
 
 describe('project read actions', () => {
+  test('watcher chat identity reuses its authorized project and committed tab', async () => {
+    const committed = jest
+      .spyOn(projectSources, 'readCommittedTaskSnapshot')
+      .mockResolvedValue(snapshot(PROJECT, TASK));
+    jest
+      .mocked(requireAuthorizedProject)
+      .mockRejectedValue(new Error('full inventory was read'));
+    try {
+      const identity = await resolveAuthorizedWatcherChat(
+        { projectId: PROJECT, taskId: TASK, chatId: CHAT },
+        authorizedProject(),
+        { id: TASK },
+      );
+
+      expect(identity.scope).toEqual({
+        workspaceId: PROJECT,
+        worktreeId: TASK,
+        chatId: CHAT,
+      });
+      expect(identity.tab.id).toBe(CHAT);
+      expect(committed).toHaveBeenCalledTimes(1);
+      expect(requireAuthorizedProject).not.toHaveBeenCalled();
+      expect(mockRuntime.queryChatStateForLegacyIpc).not.toHaveBeenCalled();
+    } finally {
+      committed.mockRestore();
+    }
+  });
   test('returns the newest explicit self-chat user message through the dispatcher', async () => {
     useMessages([
       message('u1', 'user', 'older'),

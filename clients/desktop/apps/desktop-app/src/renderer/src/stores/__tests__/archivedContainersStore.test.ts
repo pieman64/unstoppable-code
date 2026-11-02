@@ -4,6 +4,7 @@
 import type {
   ArchivedContainerRestoreResponse,
   ArchivedContainerSummary,
+  ArchivedContainerSummaryV1,
   ArchivedContainersChangedEvent,
 } from '@canopy/desktop-shared/types';
 import {
@@ -37,8 +38,8 @@ jest.mock('@/stores/standaloneChatStore', () => ({
 }));
 
 function summary(
-  overrides: Partial<ArchivedContainerSummary> = {},
-): ArchivedContainerSummary {
+  overrides: Partial<Omit<ArchivedContainerSummaryV1, 'version' | 'kind'>> = {},
+): ArchivedContainerSummaryV1 {
   return {
     version: 1,
     id: 'container-1',
@@ -150,8 +151,9 @@ describe('archivedContainersStore', () => {
   });
 
   it('coalesces concurrent loads for the same project', async () => {
-    let resolveList: ((summaries: ArchivedContainerSummary[]) => void) | null =
-      null;
+    let resolveList: (
+      summaries: ArchivedContainerSummary[],
+    ) => void = (): void => undefined;
     listMock.mockImplementationOnce(
       () =>
         new Promise<ArchivedContainerSummary[]>((resolve) => {
@@ -170,7 +172,7 @@ describe('archivedContainersStore', () => {
     expect(
       useArchivedContainersStore.getState().loadingWorkspaces['workspace-1'],
     ).toBe(true);
-    resolveList?.([summary()]);
+    resolveList([summary()]);
     await Promise.all([firstLoad, secondLoad]);
 
     expect(
@@ -182,9 +184,9 @@ describe('archivedContainersStore', () => {
   });
 
   it('performs a trailing authoritative read after an in-flight load', async () => {
-    let resolveStaleList:
-      | ((summaries: ArchivedContainerSummary[]) => void)
-      | null = null;
+    let resolveStaleList: (
+      summaries: ArchivedContainerSummary[],
+    ) => void = (): void => undefined;
     listMock
       .mockImplementationOnce(
         () =>
@@ -202,7 +204,7 @@ describe('archivedContainersStore', () => {
       .loadForWorkspace('workspace-1', { trailing: true });
 
     expect(listMock).toHaveBeenCalledTimes(1);
-    resolveStaleList?.([]);
+    resolveStaleList([]);
     await Promise.all([staleLoad, trailingLoad]);
 
     expect(listMock).toHaveBeenCalledTimes(2);
@@ -262,7 +264,7 @@ describe('archivedContainersStore', () => {
   });
 
   it('isolates a strict in-flight failure from best-effort joiners', async () => {
-    let rejectList: ((error: Error) => void) | null = null;
+    let rejectList: (error: Error) => void = (): void => undefined;
     listMock
       .mockImplementationOnce(
         () =>
@@ -292,7 +294,7 @@ describe('archivedContainersStore', () => {
       trailingBestEffortLoad,
     ).resolves.toBeUndefined();
 
-    rejectList?.(new Error('authoritative reload failed'));
+    rejectList(new Error('authoritative reload failed'));
     await Promise.all([
       strictExpectation,
       bestEffortExpectation,
@@ -302,7 +304,7 @@ describe('archivedContainersStore', () => {
   });
 
   it('preserves strict failure reporting for a best-effort in-flight load', async () => {
-    let rejectList: ((error: Error) => void) | null = null;
+    let rejectList: (error: Error) => void = (): void => undefined;
     listMock.mockImplementationOnce(
       () =>
         new Promise<ArchivedContainerSummary[]>((_resolve, reject) => {
@@ -323,7 +325,7 @@ describe('archivedContainersStore', () => {
       'authoritative reload failed',
     );
 
-    rejectList?.(new Error('authoritative reload failed'));
+    rejectList(new Error('authoritative reload failed'));
     await Promise.all([bestEffortExpectation, strictExpectation]);
     expect(listMock).toHaveBeenCalledTimes(1);
   });
@@ -562,9 +564,9 @@ describe('archivedContainersStore', () => {
     listMock.mockResolvedValueOnce([deleted]);
     await useArchivedContainersStore.getState().loadForWorkspace('workspace-1');
 
-    let resolveStaleList:
-      | ((summaries: ArchivedContainerSummary[]) => void)
-      | null = null;
+    let resolveStaleList: (
+      summaries: ArchivedContainerSummary[],
+    ) => void = (): void => undefined;
     listMock
       .mockImplementationOnce(
         () =>
@@ -584,7 +586,7 @@ describe('archivedContainersStore', () => {
     await flushAsync();
     expect(listMock).toHaveBeenCalledTimes(2);
 
-    resolveStaleList?.([deleted]);
+    resolveStaleList([deleted]);
     await staleLoad;
     const result = await emptyTrash;
 

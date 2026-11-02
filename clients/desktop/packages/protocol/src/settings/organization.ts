@@ -424,6 +424,8 @@ export interface AddMemberRequest {
  */
 export interface IncomingTeamInvitation {
   id: string;
+  /** Organization externalId used by routes; absent on older servers. */
+  organizationId?: string;
   organizationName: string;
   organizationTeamName: string | null;
   role: OrganizationRole;
@@ -624,6 +626,7 @@ export const organizationConfigDetailSchema =
 
 export const incomingTeamInvitationShape = z.looseObject({
   id: z.string(),
+  organizationId: z.string().optional(),
   organizationName: z.string(),
   organizationTeamName: z.string().nullable(),
   role: organizationRoleSchema,

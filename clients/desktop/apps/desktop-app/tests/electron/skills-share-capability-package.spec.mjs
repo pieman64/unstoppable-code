@@ -18,12 +18,14 @@ import {
 //
 // Testids exercised:
 //   - `skill-editor-add-file`            -> supporting-file authoring
-//   - `skill-share-custom:app-<name>`    -> custom row Share action
+//   - `plugins-add-custom-menu` / `plugins-add-custom-skill-custom`
+//                                        -> Add custom > Create custom skill
+//   - `plugins-entry-detail-page` / `skill-read-detail-share`
+//                                        -> the created skill's detail Share
 //   - `share-skill-modal`                -> Share Skill dialog
 //   - `share-skill-dependencies`         -> shared capability-package section
 //   - `share-skill-dependencies-summary` -> collapsed "Included files" summary
-//   - `share-skill-dependencies-toggle`  -> Show details / Hide details
-//   - `share-skill-dependencies-list`    -> the packaged resources
+//   - `share-skill-dependencies-help`    -> help icon naming the packaged files
 //   - `share-skill-single-file-note`     -> retired warning, must stay absent
 //   - `share-skill-consent`              -> retired consent, must stay absent
 //   - `share-skill-submit`              -> submit, gated on a ready analysis
@@ -52,7 +54,10 @@ test('sharing a multi-file skill discloses its packaged files', async () => {
     // ---------------------------------------------------------------------
     // Author a skill with one supporting file beside SKILL.md.
     // ---------------------------------------------------------------------
-    await window.getByRole('button', { name: 'Create skill' }).click();
+    // CAN-4267: Create skill moved from the Skills list toolbar to the
+    // page's Add custom menu.
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-skill-custom').click();
     await expect(window.locator('#create-skill-modal-title')).toBeVisible();
 
     await window
@@ -95,11 +100,9 @@ test('sharing a multi-file skill discloses its packaged files', async () => {
       window.dispatchEvent(new Event('canopy:cloud-account-changed'));
     });
 
-    const shareButton = window.getByTestId(
-      `skill-share-custom:app-${SKILL_NAME}`,
-    );
-    await expect(shareButton).toBeVisible();
-    await shareButton.click();
+    // Add custom opens the created skill's detail page; Share is there.
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    await window.getByTestId('skill-read-detail-share').click();
 
     await expect(window.getByTestId('share-skill-modal')).toBeVisible();
 
@@ -113,21 +116,21 @@ test('sharing a multi-file skill discloses its packaged files', async () => {
       window.getByTestId('share-skill-single-file-note'),
     ).toHaveCount(0);
 
-    // The review is collapsed by default: the summary is always visible and
-    // the packaged files appear only after expanding the details.
+    // The summary is always visible; the packaged files are named in the
+    // tooltip of its help icon, and no file list renders.
     await expect(
       window.getByTestId('share-skill-dependencies-summary'),
     ).toContainText('Included files');
     const dependencyList = window.getByTestId('share-skill-dependencies-list');
     await expect(dependencyList).toHaveCount(0);
-    const dependenciesToggle = window.getByTestId(
-      'share-skill-dependencies-toggle',
-    );
-    await expect(dependenciesToggle).toHaveAttribute('aria-expanded', 'false');
-    await dependenciesToggle.click();
-    await expect(dependenciesToggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(dependencyList).toBeVisible();
-    await expect(dependencyList).toContainText(SKILL_NAME);
+    await expect(
+      window.getByTestId('share-skill-dependencies-toggle'),
+    ).toHaveCount(0);
+    await window.getByTestId('share-skill-dependencies-help').hover();
+    await expect(
+      window.getByTestId('share-skill-dependencies-help-details'),
+    ).toContainText(SKILL_NAME);
+    await window.mouse.move(0, 0);
 
     // Same layout as the pipeline and automation share dialogs: the scope
     // comes first, then what the share carries.
@@ -226,7 +229,10 @@ test('sharing a single-file skill keeps the plain share', async () => {
     await app.openPluginsTab('skills');
     await app.expectPluginsTab('skills');
 
-    await window.getByRole('button', { name: 'Create skill' }).click();
+    // CAN-4267: Create skill moved from the Skills list toolbar to the
+    // page's Add custom menu.
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-skill-custom').click();
     await expect(window.locator('#create-skill-modal-title')).toBeVisible();
     await window
       .getByPlaceholder('my-skill-name')
@@ -282,11 +288,9 @@ test('sharing a single-file skill keeps the plain share', async () => {
       window.dispatchEvent(new Event('canopy:cloud-account-changed'));
     });
 
-    const shareButton = window.getByTestId(
-      `skill-share-custom:app-${singleFileSkill}`,
-    );
-    await expect(shareButton).toBeVisible();
-    await shareButton.click();
+    // Add custom opens the created skill's detail page; Share is there.
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    await window.getByTestId('skill-read-detail-share').click();
     await expect(window.getByTestId('share-skill-modal')).toBeVisible();
     await expect(window.getByTestId('share-skill-scope-team')).toHaveAttribute(
       'aria-checked',
@@ -296,27 +300,33 @@ test('sharing a single-file skill keeps the plain share', async () => {
       .getByTestId(`share-skill-team-picker-option-${SHARE_MEMBERSHIP_TEAM.id}`)
       .click();
 
-    // Share enabling means the analysis has settled; the collapsed review
-    // summarizes a plain definition share, and expanding it shows the
-    // completed empty state.
+    // Share enabling means the analysis has settled; the summary reads as a
+    // plain definition share, and its help icon says so in full.
     await expect(window.getByTestId('share-skill-submit')).toBeEnabled({
       timeout: 30_000,
     });
     await expect(
       window.getByTestId('share-skill-dependencies-summary'),
     ).toContainText('Definition only');
-    await window.getByTestId('share-skill-dependencies-toggle').click();
+    await window.getByTestId('share-skill-dependencies-help').hover();
     await expect(
-      window.getByTestId('share-skill-dependencies-empty'),
-    ).toContainText('no local dependencies');
+      window.getByTestId('share-skill-dependencies-help-details'),
+    ).toContainText('Only the skill definition is shared.');
+    await window.mouse.move(0, 0);
 
     await window.getByTestId('share-skill-submit').click();
-    await expect(window.getByTestId('share-skill-modal')).toHaveCount(0);
+    // The dialog stays open on its success notice; no toast is raised.
+    const shareModal = window.getByTestId('share-skill-modal');
+    await expect(shareModal.getByTestId('share-skill-success')).toContainText(
+      'Skill shared',
+    );
     await expect(
       window.getByTestId('toast-card').filter({ hasText: 'Skill shared' }),
-    ).toBeVisible();
-    await window.getByTestId('skills-view-tab-shared').click();
-    await expect(window.getByTestId('shared-skills-section')).not.toContainText(
+    ).toHaveCount(0);
+    await shareModal.getByTestId('share-skill-done').click();
+    await expect(shareModal).toHaveCount(0);
+    // CAN-4267: sharing stays on Customize after the legacy Shared tab's removal.
+    await expect(window.getByTestId('page-plugins')).not.toContainText(
       'Skill shared successfully.',
     );
   } finally {

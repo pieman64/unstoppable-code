@@ -62,11 +62,15 @@ describe('pipeline.open_run', () => {
   });
 
   it('awaits the opener and succeeds only once the run panel is shown', async () => {
-    let settle: (() => void) | null = null;
+    const openerResolution: { settle: () => void } = {
+      settle: (): void => {
+        throw new Error('The pipeline opener did not create a resolver');
+      },
+    };
     openPipelineExecutionPanel.mockImplementation(
       () =>
         new Promise((resolve) => {
-          settle = (): void =>
+          openerResolution.settle = (): void =>
             resolve({
               status: 'applied',
               ownerKey: 'project-1/worktree-1',
@@ -94,7 +98,7 @@ describe('pipeline.open_run', () => {
       target: { jobId: 'deploy' },
     });
 
-    settle?.();
+    openerResolution.settle();
     const response = await pending;
 
     expect(response.ok).toBe(true);

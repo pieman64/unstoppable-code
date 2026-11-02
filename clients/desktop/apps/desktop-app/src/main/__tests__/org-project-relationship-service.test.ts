@@ -19,15 +19,27 @@ jest.mock('../feature-flags', () => ({
   getFeatureFlagService: (): unknown => ({ isEnabled: mockEnabled }),
 }));
 jest.mock('../lib/canopy-cloud-account-store', () => ({
-  getCanopyCloudCredentials: mockCredentials,
+  get getCanopyCloudCredentials(): typeof mockCredentials {
+    return mockCredentials;
+  },
 }));
 jest.mock('../lib/sidebar-items', () => ({
-  readAllSidebarItems: mockReadItems,
+  get readAllSidebarItems(): typeof mockReadItems {
+    return mockReadItems;
+  },
 }));
-jest.mock('../lib/git', () => ({ getRemoteUrlStrict: mockRemote }));
+jest.mock('../lib/git', () => ({
+  get getRemoteUrlStrict(): typeof mockRemote {
+    return mockRemote;
+  },
+}));
 jest.mock('../lib/org-project-links', () => ({
-  readOrgProjectLinks: mockReadLinks,
-  dismissOrgProjectLink: mockDismiss,
+  get readOrgProjectLinks(): typeof mockReadLinks {
+    return mockReadLinks;
+  },
+  get dismissOrgProjectLink(): typeof mockDismiss {
+    return mockDismiss;
+  },
 }));
 jest.mock('../services/org-project-catalog-service', () => ({
   getOrgProjectCatalogService: (): unknown => ({
@@ -60,6 +72,9 @@ const snapshot: DesktopOrgProjectCatalogSnapshot = {
       name: 'Repo',
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: {
         provider: 'github',

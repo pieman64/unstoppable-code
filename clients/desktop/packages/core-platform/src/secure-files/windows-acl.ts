@@ -6,6 +6,7 @@ import { observeWindowsClosure } from '../supervision/windows-closure';
 import {
   checkShape,
   fail,
+  PATH_CHANGED_DURING_CHECK,
   PRIVATE,
   sameNode,
   type PermissionRequest,
@@ -18,15 +19,24 @@ export type WindowsAclReader = (target: string) => Promise<string>;
 const PATH_VARIABLE = 'CANOPY_SECURE_FILE_PATH';
 const MODULES = 'WindowsPowerShell/v1.0/Modules';
 
-// Fixed script: the path is data (environment plus -LiteralPath), never code.
+// Fixed script: the path is data (environment, passed to .NET), never code.
 // .NET parses the descriptor; numeric ACE types avoid locale-dependent names.
+// Cmdlets are never used: the first module autoload under a fresh module path
+// builds PowerShell's analysis cache, which outlasts the timeout below on
+// windows-2022. JSON is assembled by hand; every value is a SID, int or bool.
 const ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  "$PSModuleAutoLoadingPreference = 'None'",
   `$p = $env:${PATH_VARIABLE}`,
-  '$item = Get-Item -LiteralPath $p -Force',
-  "$sd = New-Object System.Security.AccessControl.RawSecurityDescriptor((Get-Acl -LiteralPath $p).GetSecurityDescriptorSddlForm('Owner, Access'))",
-  '$aces = @(if ($null -ne $sd.DiscretionaryAcl) { foreach ($ace in $sd.DiscretionaryAcl) { [pscustomobject]@{ type = [int]$ace.AceType; sid = $(if ($ace -is [System.Security.AccessControl.KnownAce]) { $ace.SecurityIdentifier.Value } else { $null }) } } })',
-  '[pscustomobject]@{ user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; owner = $(if ($null -ne $sd.Owner) { $sd.Owner.Value } else { $null }); reparse = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint); directory = [bool]$item.PSIsContainer; dacl = $null -ne $sd.DiscretionaryAcl; aces = $aces } | ConvertTo-Json -Compress -Depth 4',
+  '$attributes = [System.IO.File]::GetAttributes($p)',
+  '$directory = ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0',
+  "$sections = [System.Security.AccessControl.AccessControlSections]'Owner, Access'",
+  '$acl = if ($directory) { [System.IO.Directory]::GetAccessControl($p, $sections) } else { [System.IO.File]::GetAccessControl($p, $sections) }',
+  '$sd = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorSddlForm($sections))',
+  "function q($v) { if ($null -eq $v) { 'null' } else { '\"' + $v + '\"' } }",
+  "function b($v) { if ($v) { 'true' } else { 'false' } }",
+  `$aces = @(if ($null -ne $sd.DiscretionaryAcl) { foreach ($ace in $sd.DiscretionaryAcl) { '{"type":' + [int]$ace.AceType + ',"sid":' + (q $(if ($ace -is [System.Security.AccessControl.KnownAce]) { $ace.SecurityIdentifier.Value } else { $null })) + '}' } })`,
+  `'{"user":' + (q ([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) + ',"owner":' + (q $(if ($null -ne $sd.Owner) { $sd.Owner.Value } else { $null })) + ',"reparse":' + (b (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) + ',"directory":' + (b $directory) + ',"dacl":' + (b ($null -ne $sd.DiscretionaryAcl)) + ',"aces":[' + ($aces -join ',') + ']}'`,
 ].join('\n');
 
 // Inherited PowerShell 7 module paths break 5.1's Get-Acl autoload. Pinning the
@@ -138,7 +148,7 @@ export async function windowsPermissions(
   if (result.state === 'private') {
     const after = await lstat(request.path, { bigint: true });
     result = !sameNode(stats, after)
-      ? fail('unverifiable', 'path changed during Windows ACL reading')
+      ? fail('unverifiable', PATH_CHANGED_DURING_CHECK)
       : (checkShape(after, request.kind) ?? result);
   }
   return result.state === 'private' || request.action === 'verify'

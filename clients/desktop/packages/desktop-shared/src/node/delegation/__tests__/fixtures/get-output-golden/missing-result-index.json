@@ -1,0 +1,21 @@
+{
+  "invocation": {
+    "ok": false,
+    "error": {
+      "code": "invalid_request",
+      "message": "Result index is not available.",
+      "retryable": false
+    }
+  },
+  "serializedInvocation": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Result index is not available.\",\"retryable\":false}}",
+  "codexResponse": {
+    "success": false,
+    "contentItems": [
+      {
+        "type": "inputText",
+        "text": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Result index is not available.\",\"retryable\":false}}"
+      }
+    ]
+  },
+  "serializedCodexResponse": "{\"success\":false,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"invalid_request\\\",\\\"message\\\":\\\"Result index is not available.\\\",\\\"retryable\\\":false}}\"}]}"
+}

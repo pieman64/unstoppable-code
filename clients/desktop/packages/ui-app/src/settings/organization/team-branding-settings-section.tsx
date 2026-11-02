@@ -1,12 +1,27 @@
 'use client';
 
-import { type JSX } from 'react';
-import { Image as ImageIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type JSX,
+} from 'react';
+import { Button, ErrorBanner, TextInput } from '@canopy/ui-shared/components';
+import {
+  SETTINGS_CARD_ROW_CLASS,
+  SettingsCard,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
+import { ALLOWED_AVATAR_MIME_TYPES } from '@canopy/protocol/settings/account';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { canEditOrg } from '@canopy/protocol/settings/organization-permissions';
-import { useSettingsBrand } from '../host';
-import { OrganizationLogoEditor } from './OrganizationLogoEditor';
+import { useSettingsClient } from '../host';
+import { useSettingsErrorCopy } from '../errors';
+import { OrganizationLogo } from './OrganizationLogo';
+import { renameOrganization } from './team-api';
 import { useOrgLogoEditor } from './use-org-logo-editor';
+
+const LOGO_INPUT_ACCEPT = ALLOWED_AVATAR_MIME_TYPES.join(',');
 
 interface TeamBrandingSettingsSectionProps {
   detail: OrganizationDetail;
@@ -14,71 +29,152 @@ interface TeamBrandingSettingsSectionProps {
 }
 
 /**
- * Owner/admin control for the organization's appearance. Today it holds the
- * moderated logo upload/remove; it is named "branding" (not "logo") so future
- * theme/palette controls join this same panel. Setting or clearing the logo
- * returns a fresh {@link OrganizationDetail} which replaces the in-memory
- * detail so the org-page header updates immediately.
+ * Owner/admin rows for the organization's identity on General: its logo
+ * (moderated upload, or remove) and its name. Each change saves at once and
+ * returns a fresh {@link OrganizationDetail}, which replaces the in-memory
+ * detail so the settings rail's scope picker catches up.
  */
 export function TeamBrandingSettingsSection({
   detail,
   onDetailChange,
 }: TeamBrandingSettingsSectionProps): JSX.Element | null {
-  const brand = useSettingsBrand();
+  const client = useSettingsClient();
+  const errorCopy = useSettingsErrorCopy('settings.organization.overview');
   const logoEditor = useOrgLogoEditor(detail.id);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [name, setName] = useState(detail.name);
+  const [savedName, setSavedName] = useState(detail.name);
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  // A rename elsewhere (another tab, a refresh) replaces the field's value.
+  if (detail.name !== savedName) {
+    setSavedName(detail.name);
+    setName(detail.name);
+  }
 
   if (!canEditOrg(detail.viewerRole)) {
     return null;
   }
 
-  const handlePick = (file: File): void => {
+  const handlePick = (event: ChangeEvent<HTMLInputElement>): void => {
+    const file = event.target.files?.[0];
+    // Reset so re-picking the same file re-triggers `onChange`.
+    event.target.value = '';
+    if (!file) return;
     void logoEditor.uploadLogo(file).then((updated) => {
-      if (updated) {
-        onDetailChange(updated);
-      }
+      if (updated) onDetailChange(updated);
     });
   };
 
   const handleRemove = (): void => {
     void logoEditor.removeLogo().then((updated) => {
-      if (updated) {
-        onDetailChange(updated);
-      }
+      if (updated) onDetailChange(updated);
     });
   };
 
-  return (
-    <section
-      className="rounded-xl bg-card p-5 shadow-sm"
-      data-testid="team-branding-settings-section"
-    >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-          <ImageIcon size={18} />
-        </span>
-        <div className="flex-1">
-          <h2 className="text-m font-semibold fg-primary">
-            Organization branding
-          </h2>
-          <p className="mt-1 text-s fg-secondary">
-            Upload a logo to represent your organization across{' '}
-            {brand.displayName}. PNG, JPEG, or GIF up to 5 MB; it&apos;s shown
-            as a rounded square and wide logos are center-cropped.
-          </p>
+  const saveName = async (): Promise<void> => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setName(detail.name);
+      return;
+    }
+    if (trimmed === detail.name || savingName) return;
+    try {
+      setSavingName(true);
+      setNameError(null);
+      onDetailChange(await renameOrganization(client, detail.id, trimmed));
+    } catch (err) {
+      setNameError(
+        errorCopy.actionCopy(err, { action: 'rename the organization' }),
+      );
+    } finally {
+      setSavingName(false);
+    }
+  };
 
-          <div className="mt-4 flex justify-start">
-            <OrganizationLogoEditor
-              name={detail.name}
-              logoUrl={detail.logoUrl}
-              size={72}
-              busy={logoEditor.busy}
-              error={logoEditor.error}
-              onPick={handlePick}
-              onRemove={handleRemove}
-            />
-          </div>
+  const handleNameSubmit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    void saveName();
+  };
+
+  const logoError = logoEditor.error;
+
+  return (
+    <SettingsCard title="Organization" testId="team-branding-settings-section">
+      <div className={SETTINGS_CARD_ROW_CLASS}>
+        <div className="min-w-0">
+          <div className="text-s font-medium fg-primary">Logo</div>
+          <p className="text-xs text-pretty fg-secondary">
+            PNG, JPEG or GIF up to 5 MB, shown as a rounded square.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <OrganizationLogo
+            name={detail.name}
+            logoUrl={detail.logoUrl}
+            size={28}
+          />
+          <Button
+            size="compact"
+            variant="secondary"
+            onClick={() => inputRef.current?.click()}
+            disabled={logoEditor.busy}
+            data-testid="org-logo-edit"
+          >
+            {detail.logoUrl ? 'Change' : 'Add logo'}
+          </Button>
+          {detail.logoUrl ? (
+            <Button
+              size="compact"
+              variant="secondary"
+              onClick={handleRemove}
+              disabled={logoEditor.busy}
+              data-testid="org-logo-remove"
+            >
+              Remove
+            </Button>
+          ) : null}
+          <input
+            ref={inputRef}
+            type="file"
+            accept={LOGO_INPUT_ACCEPT}
+            className="sr-only"
+            data-testid="org-logo-input"
+            onChange={handlePick}
+          />
         </div>
       </div>
-    </section>
+      {logoError ? (
+        <div className="pb-3">
+          <ErrorBanner error={logoError} />
+        </div>
+      ) : null}
+      <form className={SETTINGS_CARD_ROW_CLASS} onSubmit={handleNameSubmit}>
+        <label
+          htmlFor="team-name-input"
+          className="min-w-0 text-s font-medium fg-primary"
+        >
+          Name
+        </label>
+        <div className="w-52 shrink-0">
+          <TextInput
+            id="team-name-input"
+            density="settings"
+            required
+            maxLength={120}
+            value={name}
+            disabled={savingName}
+            onChange={(event) => setName(event.target.value)}
+            onBlur={() => void saveName()}
+            data-testid="team-name-input"
+          />
+        </div>
+      </form>
+      {nameError ? (
+        <div className="pb-3">
+          <ErrorBanner error={nameError} />
+        </div>
+      ) : null}
+    </SettingsCard>
   );
 }

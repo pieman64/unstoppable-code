@@ -16,6 +16,7 @@
  * is app-managed and cannot be deleted. The global Settings → App Advisor
  * tab remains available in the main window.
  */
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   AppAdvisorWorkspaceSettingsFile,
@@ -24,6 +25,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { DialogModal } from '@/components/shared';
 import { AutoArchiveSettingsControl } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { ModelThinkingPreferenceRow } from '@/components/settings/ModelThinkingPreferenceRow';
 import { SettingsPluginPicker } from '@/components/settings/SettingsPluginPicker';
 import { saveAppAdvisorPreferencePatch } from '@/lib/appAdvisorPreferenceSave';
@@ -204,7 +206,7 @@ export function AppAdvisorSettingsModal({
   return (
     <DialogModal
       onClose={onClose}
-      title="App Advisor"
+      title={ORCHESTRATOR_LABEL}
       titleId="app-advisor-settings-title"
       maxWidth="2xl"
       minHeight="28rem"
@@ -242,7 +244,7 @@ export function AppAdvisorSettingsModal({
             <div className="space-y-6">
               <ModelThinkingPreferenceRow
                 title="Default model"
-                description="Model and thinking level used for new App Advisor chats."
+                description={`Model and thinking level used for new ${ORCHESTRATOR_LABEL} chats.`}
                 model={prefs.appAdvisorModel}
                 thinkingLevel={prefs.appAdvisorThinkingLevel}
                 defaultThinkingLevel="high"
@@ -260,7 +262,7 @@ export function AppAdvisorSettingsModal({
               />
               <SettingsPluginPicker
                 label="Default plugins"
-                description="Loaded when App Advisor starts a new chat."
+                description={`Loaded when ${ORCHESTRATOR_LABEL} starts a new chat.`}
                 selections={prefs.appAdvisorPluginSelections}
                 onChange={(selections: ChatTabPluginSelections) =>
                   savePreferences({ appAdvisorPluginSelections: selections })
@@ -287,7 +289,7 @@ export function AppAdvisorSettingsModal({
               id="app-advisor-claude-md-description"
               className="mt-1 text-xs fg-secondary"
             >
-              Instructions loaded into every App Advisor chat.
+              Instructions loaded into every {ORCHESTRATOR_LABEL} chat.
             </p>
             <textarea
               value={claudeMd}
@@ -297,7 +299,7 @@ export function AppAdvisorSettingsModal({
               aria-describedby="app-advisor-claude-md-description"
               data-testid="app-advisor-settings-claude-md"
               className="focus-ring mt-2 min-h-0 w-full flex-1 resize-y rounded-lg bg-base px-3 py-2 font-mono text-xs ring-1 ring-inset ring-line-base disabled:opacity-50"
-              placeholder="# App Advisor instructions&#10;&#10;Add assistant instructions here..."
+              placeholder={`# ${ORCHESTRATOR_LABEL} instructions\n\nAdd assistant instructions here...`}
             />
           </div>
         )}
@@ -367,15 +369,15 @@ export function AppAdvisorSettingsModal({
               {saveError}
             </span>
           )}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => void handleSave()}
             disabled={saving || !isDirty}
             data-testid="app-advisor-settings-save"
-            className="focus-ring rounded-lg bg-accent px-4 py-1.5 text-sm font-medium fg-emphasis transition hover:bg-accent/90 disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Save'}
-          </button>
+          </Button>
         </div>
       )}
     </DialogModal>

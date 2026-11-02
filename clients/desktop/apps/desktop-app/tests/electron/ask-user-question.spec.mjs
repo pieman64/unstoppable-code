@@ -30,7 +30,7 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 //  from the `Q: <question>\nA: <answer>` output, anchored on the verbatim
 //  question text from the tool input (with an optional `\nAdditional: <text>`
 //  free-form tail). `ChatBlockRenderer` then renders the standard collapsed
-//  "User questions" tool row (`ToolCallBlock`) followed by
+//  "Asked you N questions · <answers>" tool row (`ToolCallBlock`) followed by
 //  `AnsweredQuestionsBlock` (`answered-questions` / `answered-question`
 //  testids added in PR 806), one bubble per answered question, showing the
 //  chosen answer (and any "Other" free-form text).
@@ -43,9 +43,10 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 //  for a tab without an active main-process session, synthesizing a
 //  `{ output: 'Cancelled', isError: false }` result. That makes `block.result`
 //  truthy, so the live-card branch (`!block.result`) never fires — the block
-//  renders as a collapsed "User questions" row instead. And the answered
-//  read-only card variant requires a hydrated pending question with
-//  `answeredAt` set, which `hydratePendingQuestionsFromFile` explicitly drops.
+//  renders as a collapsed ask-user row instead. Answered pending questions
+//  (`answeredAt` set) are persisted and rehydrated; when one matches such a
+//  `Cancelled` block, the row shows the recorded answer (CAN-4959, covered by
+//  the `ChatBlockRenderer` restored-question unit tests).
 //  Exercising the live card therefore needs a live session and belongs to the
 //  live-turn specs, not this seeded-state spec. This spec asserts the answered
 //  bubble surface (PR 806), which fully reflects the seeded transcript.
@@ -170,6 +171,12 @@ test('renders answered ask-user bubbles with the chosen answers and free-form te
     const app = new CanopyAppDriver(window);
 
     await app.waitForShell({ timeout: 30_000 });
+
+    // Inspect individual steps without changing the product's Recent default.
+
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
 
     await app.selectWorktree(WORKTREE_ID);
@@ -184,9 +191,10 @@ test('renders answered ask-user bubbles with the chosen answers and free-form te
     const answeredBubbles = window.getByTestId('answered-question');
     await expect(answeredBubbles).toHaveCount(3);
 
-    // Each collapsed "User questions" tool row (one per answered call) renders
-    // above its answer bubbles.
-    await expect(window.getByText('User questions')).toHaveCount(2);
+    // Clean shows each answer once, without the duplicate tool summary.
+    await expect(window.getByText(/^Asked you \d+ questions? · /)).toHaveCount(
+      0,
+    );
 
     // Bubble 1 — single-question color answer.
     const colorBubble = answeredBubbles.nth(0);
@@ -224,6 +232,10 @@ test('keeps question progress when switching panels', async () => {
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    // Inspect individual steps without changing the product's Recent default.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree('demo-main');
     const prompt = window.getByTestId('chat-question-prompt');
@@ -287,6 +299,10 @@ test('agent controls collect structured answers in chat', async () => {
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    // Inspect individual steps without changing the product's Recent default.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree('demo-main');
     // The composer box asks the question, one step at a time.

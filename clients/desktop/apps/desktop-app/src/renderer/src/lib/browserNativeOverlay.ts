@@ -1,3 +1,5 @@
+import { ABOVE_BROWSER_ATTRIBUTE } from '@canopy/ui-shared/lib/above-browser';
+
 export const BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE =
   'data-canopy-browser-native-overlay';
 
@@ -46,7 +48,82 @@ const BROWSER_NATIVE_VIEW_OVERLAY_MARKER_SELECTOR = `[${BROWSER_NATIVE_VIEW_OVER
 export const BROWSER_NATIVE_VIEW_AVAILABLE_ATTRIBUTE =
   'data-browser-native-view-available';
 
+/**
+ * `"true"` on a Browser page area while an overlay covers it. Set by the
+ * pane's own overlay check, in the frame it runs in.
+ */
+export const BROWSER_NATIVE_VIEW_COVERED_ATTRIBUTE =
+  'data-browser-native-view-covered';
+
+/**
+ * `"true"` on a Browser page area while its freeze frame stands in for the
+ * live view. While a page is covered but not frozen yet, the above-browser
+ * mirror draws its overlays over the live page, so the live view never cuts
+ * one off while a frame is captured.
+ */
+export const BROWSER_NATIVE_VIEW_FROZEN_ATTRIBUTE =
+  'data-browser-native-view-frozen';
+
+/**
+ * Dispatched on `window` when a page area's covered or frozen state changes.
+ * Not part of the observed overlay topology, so it never re-tests the panes.
+ */
+export const BROWSER_NATIVE_VIEW_COVER_CHANGED_EVENT =
+  'canopy:browser-native-view-cover-changed';
+
 const HIDDEN_ATTRIBUTE_SELECTOR = '[hidden], [inert], [aria-hidden="true"]';
+
+const ABOVE_BROWSER_SELECTOR = `[${ABOVE_BROWSER_ATTRIBUTE}]`;
+
+// Whether the above-browser mirror is drawing marked elements over pages.
+// While it is, those elements need no freeze frame; once it cannot (no layer
+// on this page), they count as overlays again.
+let aboveBrowserMirrorActive = false;
+// The page area the mirror draws over, or `null` while it draws nothing. A
+// marked element still counts as an overlay for any other page, since the
+// layer covers one page only.
+let aboveBrowserMirrorPage: BrowserNativeViewOverlayTargetRect | null = null;
+
+/** Set by the above-browser mirror; re-tests every pane on a change. */
+export function setAboveBrowserMirrorActive(active: boolean): void {
+  if (aboveBrowserMirrorActive === active) {
+    return;
+  }
+  aboveBrowserMirrorActive = active;
+  notifyBrowserOverlayTopologyChanged();
+}
+
+/** Set by the above-browser mirror; re-tests every pane on a change. */
+export function setAboveBrowserMirrorPage(
+  page: BrowserNativeViewOverlayTargetRect | null,
+): void {
+  const current = aboveBrowserMirrorPage;
+  if (
+    current === page ||
+    (current !== null &&
+      page !== null &&
+      current.left === page.left &&
+      current.top === page.top &&
+      current.right === page.right &&
+      current.bottom === page.bottom)
+  ) {
+    return;
+  }
+  aboveBrowserMirrorPage = page;
+  notifyBrowserOverlayTopologyChanged();
+}
+
+/** Whether marked elements over `targetRect` are the mirror's to draw. */
+function mirrorDraws(
+  targetRect: BrowserNativeViewOverlayTargetRect | null,
+): boolean {
+  return (
+    aboveBrowserMirrorActive &&
+    (targetRect === null ||
+      aboveBrowserMirrorPage === null ||
+      rectsOverlap(targetRect, aboveBrowserMirrorPage))
+  );
+}
 
 /**
  * Whether the nearest `data-canopy-browser-native-overlay` marker (on the
@@ -72,6 +149,7 @@ interface BrowserNativeViewOverlayTargetRect {
 
 function isElementVisibleForNativeOverlay(
   element: Element,
+  skipMarked: boolean,
 ): element is HTMLElement {
   if (!(element instanceof HTMLElement) || !element.isConnected) {
     return false;
@@ -79,7 +157,8 @@ function isElementVisibleForNativeOverlay(
 
   if (
     element.closest(HIDDEN_ATTRIBUTE_SELECTOR) ||
-    isOptedOutOfNativeOverlay(element)
+    isOptedOutOfNativeOverlay(element) ||
+    (skipMarked && element.closest(ABOVE_BROWSER_SELECTOR))
   ) {
     return false;
   }
@@ -126,12 +205,35 @@ export function hasBrowserNativeViewOverlay(
   root: ParentNode = document,
   targetRect: BrowserNativeViewOverlayTargetRect | null = null,
 ): boolean {
+  const skipMarked = mirrorDraws(targetRect);
   return Array.from(
     root.querySelectorAll(BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR),
   ).some(
     (element) =>
-      isElementVisibleForNativeOverlay(element) &&
+      isElementVisibleForNativeOverlay(element, skipMarked) &&
       intersectsTargetRect(element, targetRect),
+  );
+}
+
+/**
+ * The outermost overlays (as {@link hasBrowserNativeViewOverlay} counts them)
+ * that intersect `targetRect`; an overlay inside another is left out.
+ */
+export function findBrowserNativeViewOverlays(
+  root: ParentNode,
+  targetRect: BrowserNativeViewOverlayTargetRect,
+): HTMLElement[] {
+  const skipMarked = mirrorDraws(targetRect);
+  const overlays = Array.from(
+    root.querySelectorAll(BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR),
+  ).filter(
+    (element): element is HTMLElement =>
+      isElementVisibleForNativeOverlay(element, skipMarked) &&
+      intersectsTargetRect(element, targetRect),
+  );
+  return overlays.filter(
+    (element) =>
+      !overlays.some((other) => other !== element && other.contains(element)),
   );
 }
 
@@ -154,6 +256,7 @@ let overlayTopologyObserver: MutationObserver | null = null;
 const OVERLAY_OBSERVED_ATTRIBUTES = [
   'aria-hidden',
   'aria-modal',
+  ABOVE_BROWSER_ATTRIBUTE,
   'class',
   BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE,
   BROWSER_NATIVE_VIEW_AVAILABLE_ATTRIBUTE,
@@ -166,6 +269,11 @@ function notifyOverlayTopologyListeners(): void {
   for (const listener of Array.from(overlayTopologyListeners)) {
     listener();
   }
+}
+
+/** Re-runs every subscriber, for a change the DOM observer cannot see. */
+export function notifyBrowserOverlayTopologyChanged(): void {
+  notifyOverlayTopologyListeners();
 }
 
 /**

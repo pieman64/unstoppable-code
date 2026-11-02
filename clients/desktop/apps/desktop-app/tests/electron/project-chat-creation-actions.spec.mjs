@@ -5,11 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { expandAppAdvisorToFullWindow } from './helpers/appAdvisorFullWindow.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedAdvisorGroups } from './seeders/advisorItemGroupsFixture.mjs';
 import {
   DEFAULT_MOCK_BASE_URL,
   registerScenario,
+  seedAgentModels,
   seedCoworkWorkspace,
   seedWorktreeChat,
   writeJson,
@@ -19,6 +21,7 @@ const PROJECT_ID = 'creation-cowork';
 const ORIGINAL_ENTRY = 'creation-original-entry';
 const ORIGINAL_CHAT = 'creation-original-chat';
 const CREATED_AT = '2026-10-17T12:00:00.000Z';
+const AGENT_ID = 'agent_model_creation_helper';
 
 function advisorTab(id) {
   return {
@@ -100,7 +103,7 @@ test('Advisor creates a cowork task then reuses its empty chat without changing 
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-chat-creation-'),
   );
-  seedAdvisorGroups(userDataDir);
+  seedAdvisorGroups(userDataDir, { includeThird: true });
   writeJson(path.join(userDataDir, 'preferences.json'), {
     version: 1,
     preferences: {
@@ -116,6 +119,7 @@ test('Advisor creates a cowork task then reuses its empty chat without changing 
   for (const [entryId, chatId] of [
     ['advisor-first', 'creation-source-task'],
     ['advisor-second', 'creation-source-chat'],
+    ['advisor-third', 'creation-source-agent'],
   ]) {
     writeJson(
       path.join(
@@ -128,6 +132,23 @@ test('Advisor creates a cowork task then reuses its empty chat without changing 
       { version: 1, activeTabId: chatId, tabs: [advisorTab(chatId)] },
     );
   }
+  // Inherits the default model, so creation pins it to the target default.
+  seedAgentModels(userDataDir, [
+    {
+      id: AGENT_ID,
+      name: 'Creation helper',
+      baseModel: 'default',
+      instructions: 'Help with the created task.',
+      pluginSelections: {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [],
+      },
+      createdAt: CREATED_AT,
+      updatedAt: CREATED_AT,
+    },
+  ]);
   seedCoworkWorkspace({
     userDataDir,
     workspaceId: PROJECT_ID,
@@ -181,6 +202,7 @@ test('Advisor creates a cowork task then reuses its empty chat without changing 
     );
     await expect(originalTab).toBeVisible();
     const advisor = await app.openAppAdvisorWindow(electronApp);
+    await expandAppAdvisorToFullWindow(advisor);
     const created = await runCreationTurn(
       advisor,
       'advisor-first',
@@ -240,6 +262,47 @@ test('Advisor creates a cowork task then reuses its empty chat without changing 
       created.address.chatId,
     ]);
     expect(createdState.tabs[0].messages).toEqual([]);
+
+    // An explicit Agent never reuses the empty founding tab.
+    const agentMarker = 'Canopy-CP11CREATEAGENTCHAT';
+    await registerCreationTurn(
+      agentMarker,
+      {
+        type: 'projects.create_task_chat',
+        projectId: PROJECT_ID,
+        taskId: created.address.taskId,
+        model: AGENT_ID,
+      },
+      'The Agent chat is ready.',
+    );
+    const agentChat = await runCreationTurn(
+      advisor,
+      'advisor-third',
+      'creation-source-agent',
+      agentMarker,
+      'The Agent chat is ready.',
+    );
+    expect(agentChat).toMatchObject({
+      address: {
+        projectId: PROJECT_ID,
+        taskId: created.address.taskId,
+      },
+      taskCreated: false,
+      chatCreated: true,
+      agentId: AGENT_ID,
+    });
+    expect(agentChat.model).toMatch(new RegExp(`^${AGENT_ID}@.+`));
+    expect(agentChat.address.chatId).not.toBe(created.address.chatId);
+    const withAgent = await window.evaluate(
+      (scope) => window.api.chat.loadTabs(scope),
+      { projectId: PROJECT_ID, worktreeId: created.address.taskId },
+    );
+    expect(
+      withAgent.tabs.map((tab) => [tab.id, tab.model, tab.messages.length]),
+    ).toEqual([
+      [created.address.chatId, createdState.tabs[0].model, 0],
+      [agentChat.address.chatId, agentChat.model, 0],
+    ]);
 
     // User-origin selection can reveal the returned, durable founding tab.
     await entry.click();

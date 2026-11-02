@@ -95,7 +95,11 @@ describe('plan share repo snapshots', () => {
           repoPath: '/secret/source',
           color: 'blue',
           worktrees: [
-            { id: 'wt-1', name: 'Worktree', path: '/tmp/local/repo' },
+            {
+              id: 'wt-1',
+              branchName: 'feature',
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
           ],
           collapsed: false,
           order: 0,
@@ -134,7 +138,11 @@ describe('plan share repo snapshots', () => {
           color: 'blue',
           repos: [],
           worktrees: [
-            { id: 'wt-1', name: 'Worktree', path: '/tmp/workspace/wt-1' },
+            {
+              id: 'wt-1',
+              branchName: 'feature',
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
           ],
           collapsed: false,
           order: 0,

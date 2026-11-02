@@ -1,13 +1,13 @@
 /** @jest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MAX_TABS_PER_GROUP } from '@canopy/ui-shared/panels';
 import {
   makeWorktreePanelKey,
   usePanelLayoutStore,
   type DefaultLayoutDescriptor,
 } from '@/stores/panelLayoutStore';
 import { NewTabPanel } from '../NewTabPanel';
+import type * as AppIconsModule from '@canopy/ui-shared/icons/AppIcons';
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -29,9 +29,21 @@ jest.mock('@/lib/panels/browser-panel-sync', () => ({
   discardOpenedBrowser: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('@/lib/panels/registry', () => ({
-  listAddablePanels: (): unknown[] => [
-    { kind: 'browser', label: 'Browser', icon: null },
-  ],
+  listAddablePanels: (): unknown[] => {
+    const { AutomationsIcon } = jest.requireActual<typeof AppIconsModule>(
+      '@canopy/ui-shared/icons/AppIcons',
+    );
+    return [
+      { kind: 'browser', label: 'Browser', icon: null },
+      {
+        kind: 'automations',
+        label: 'Automations',
+        group: 'automations',
+        instance: { variant: 'full' },
+        icon: <AutomationsIcon />,
+      },
+    ];
+  },
 }));
 
 const KEY = makeWorktreePanelKey('project', 'new-tab-panel');
@@ -77,20 +89,30 @@ describe('NewTabPanel', () => {
     container.remove();
     const state = usePanelLayoutStore.getState();
     state.disposeLayout(KEY);
-    state.setTabRowLimit(null);
   });
 
-  it('replaces itself with the chosen surface in a full tab row', async () => {
+  it('matches the Automations icon to the compact new-tab catalog icons', () => {
+    usePanelLayoutStore.getState().initializeLayout(KEY, SIDE_PANEL);
+    act(() =>
+      root.render(<NewTabPanel panelId="panel-new-tab" worktreeKey={KEY} />),
+    );
+    const icon = container.querySelector(
+      '[data-testid="side-panel-empty-item-automations"] svg',
+    );
+    expect(icon?.getAttribute('width')).toBe('14px');
+    expect(icon?.getAttribute('height')).toBe('14px');
+  });
+
+  it('replaces itself with the chosen surface in a crowded tab row', async () => {
     const store = usePanelLayoutStore.getState();
     store.initializeLayout(KEY, SIDE_PANEL);
-    // Fill the row: the New tab plus browsers up to the limit.
-    for (let index = 1; index < MAX_TABS_PER_GROUP; index += 1) {
+    // A crowded row: the New tab plus 20 browsers.
+    for (let index = 1; index <= 20; index += 1) {
       store.addTab(KEY, 'group-extras', 'browser', {
         instance: { browserId: `existing-${index}` },
       });
     }
-    store.setTabRowLimit(MAX_TABS_PER_GROUP);
-    expect(extrasKinds()).toHaveLength(MAX_TABS_PER_GROUP);
+    expect(extrasKinds()).toHaveLength(21);
 
     await act(async () => {
       root.render(<NewTabPanel panelId="panel-new-tab" worktreeKey={KEY} />);
@@ -106,7 +128,7 @@ describe('NewTabPanel', () => {
     });
 
     const kinds = extrasKinds();
-    expect(kinds).toHaveLength(MAX_TABS_PER_GROUP);
+    expect(kinds).toHaveLength(21);
     expect(kinds).not.toContain('new-tab');
   });
 });

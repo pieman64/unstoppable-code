@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   ShareResourceDialog,
+  type CapabilityPackagePipelineAdd,
   type CapabilityPackageRepairBinding,
   type CapabilityPackageSharePort,
   type ShareResourceAccount,
@@ -174,6 +175,8 @@ export interface DesktopShareCapabilityPackage {
   readonly repair?: CapabilityPackageRepairBinding;
   /** `host` moves an unblocked review into the host's `extraOptions`. */
   readonly placement?: 'inline' | 'host';
+  /** Offers an "Add pipeline" control in the review's Pipelines group. */
+  readonly pipelineAdd?: CapabilityPackagePipelineAdd;
 }
 
 export type DesktopShareResourceDialogProps = Omit<
@@ -317,6 +320,9 @@ export function DesktopShareResourceDialog({
                 : {}),
               ...(capabilityPackage.placement
                 ? { placement: capabilityPackage.placement }
+                : {}),
+              ...(capabilityPackage.pipelineAdd
+                ? { pipelineAdd: capabilityPackage.pipelineAdd }
                 : {}),
             },
           }

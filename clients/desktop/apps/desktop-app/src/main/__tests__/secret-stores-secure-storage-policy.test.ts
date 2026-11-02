@@ -30,10 +30,13 @@ const mockDecrypt = jest.fn((data: Buffer): string => {
   );
 });
 const mockProbe = jest.fn((): boolean => mockAvailable);
-const mockElectron: { app: unknown; safeStorage?: unknown } = {
+interface ElectronMock {
+  app: unknown;
+  safeStorage?: unknown;
+}
+jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
-};
-jest.mock('electron', () => mockElectron);
+}));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): string => mockPlatform,
 }));
@@ -101,10 +104,18 @@ jest.mock('node:fs/promises', () => ({
   ),
   mkdir: jest.fn((): Promise<void> => Promise.resolve()),
   chmod: jest.fn((): Promise<void> => Promise.resolve()),
-  rm: mockRemove,
-  unlink: mockRemove,
-  rename: mockRename,
-  writeFile: mockWrite,
+  get rm(): typeof mockRemove {
+    return mockRemove;
+  },
+  get unlink(): typeof mockRemove {
+    return mockRemove;
+  },
+  get rename(): typeof mockRename {
+    return mockRename;
+  },
+  get writeFile(): typeof mockWrite {
+    return mockWrite;
+  },
 }));
 jest.mock('node:fs', () => ({
   readFileSync: jest.fn((path: string, encoding?: unknown): Buffer | string =>
@@ -116,8 +127,12 @@ jest.mock('node:fs', () => ({
   }),
 }));
 jest.mock('../lib/atomic-file', () => ({
-  writeFileAtomically: mockWrite,
-  renameWithRetry: mockRename,
+  get writeFileAtomically(): typeof mockWrite {
+    return mockWrite;
+  },
+  get renameWithRetry(): typeof mockRename {
+    return mockRename;
+  },
 }));
 jest.mock('../lib/paths', () => ({
   getCanopyCloudAccountFilePath: (): string => '/fake/cloud.enc',
@@ -155,7 +170,9 @@ jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
 }));
 const mockWarn = jest.fn();
 jest.mock('../lib/main-process-logging', () => ({
-  logMainProcessWarn: mockWarn,
+  get logMainProcessWarn(): typeof mockWarn {
+    return mockWarn;
+  },
 }));
 const mockPurge = jest.fn((): Promise<void> => Promise.resolve());
 jest.mock('../shared-containers/reconciliation-service', () => ({
@@ -181,8 +198,12 @@ const mockEnvironmentInjector = jest.fn<
   [(context?: ResolveEnvironmentRequest) => Record<string, string>]
 >();
 jest.mock('../pipelines/config-paths', () => ({
-  registerSecretsEnvInjector: mockSecretsInjector,
-  registerUserEnvironmentInjector: mockEnvironmentInjector,
+  get registerSecretsEnvInjector(): typeof mockSecretsInjector {
+    return mockSecretsInjector;
+  },
+  get registerUserEnvironmentInjector(): typeof mockEnvironmentInjector {
+    return mockEnvironmentInjector;
+  },
   getBundledGhBinaryPath: (): string => '/fake/gh',
   getEnhancedEnv: (): Record<string, string> => ({}),
 }));
@@ -222,7 +243,9 @@ jest.mock('../lib/preferences-store', () => ({}));
 const mockRefreshContext = jest.fn((): Promise<void> => Promise.resolve());
 jest.mock('../feature-flags', () => ({
   getFeatureFlagService: (): { refreshContext(): Promise<void> } => ({
-    refreshContext: mockRefreshContext,
+    get refreshContext(): typeof mockRefreshContext {
+      return mockRefreshContext;
+    },
   }),
 }));
 jest.mock('../lib/e2e-mock-control-plane', () => ({}));
@@ -241,6 +264,7 @@ jest.mock('../ipc/register', () => ({
 
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-environment';
+const mockElectron = jest.requireMock<ElectronMock>('electron');
 import {
   getSecretStoragePolicy,
   getSecureStorageFailure,
@@ -273,9 +297,9 @@ import {
   type McpOAuthTokenRecord,
 } from '../mcp/oauth-token-store';
 import {
+  createCopilotCredential,
   readCopilotCredential,
-  saveCopilotCredential,
-  type CopilotCredential,
+  type CopilotGrant,
 } from '../copilot/credential-store';
 import {
   loadAccountProxyCredentials,
@@ -352,8 +376,7 @@ const mcp: McpOAuthTokenRecord = {
   tokenType: 'Bearer',
   updatedAt: DATE,
 };
-const copilot: CopilotCredential = {
-  version: 1,
+const copilot: CopilotGrant = {
   clientId: 'fake-client',
   host: 'github.com',
   login: 'fixture-user',
@@ -499,7 +522,7 @@ const stores: StoreCase[] = [
     name: 'Copilot',
     path: '/fake/copilot.enc',
     save: (accessToken): ReturnType<StoreCase['save']> =>
-      saveCopilotCredential({ ...copilot, accessToken }),
+      createCopilotCredential({ ...copilot, accessToken }),
     read: async (): ReturnType<StoreCase['read']> => {
       const result = await readCopilotCredential();
       if (result.status === 'present')
@@ -584,7 +607,16 @@ beforeAll(async () => {
     encryptString: mockEncrypt,
     decryptString: mockDecrypt,
   };
-  registerSettingsHandlers();
+  // core.integration.* is not exercised here; a dispatch would fail loudly.
+  registerSettingsHandlers({
+    dispatcher: {
+      query: (): Promise<never> =>
+        Promise.reject(new Error('Unexpected core.integration query.')),
+    },
+    resolveCaller: () => {
+      throw new Error('Unexpected core.integration caller.');
+    },
+  });
   initializeGitHubPatEnvRuntime();
   initializeUserEnvironmentRuntime();
   // Let real migration warmers finish before fixtures or effect counters reset.

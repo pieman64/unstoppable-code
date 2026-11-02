@@ -6,4 +6,5 @@ export * from './invocation-grammar';
 export * from './projection';
 export * from './native-projection';
 export * from './cursor-support';
+export * from './harness-support';
 export { comparePluginPaths } from './file-map';

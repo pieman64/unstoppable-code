@@ -9,8 +9,13 @@ import type {
   AppAdvisorWatcherSummary,
   AppAdvisorWatcherDestination,
 } from '@canopy/desktop-shared/types';
+import {
+  agentArtifactTurnRelation,
+  latestGitHubRunObservation,
+} from '@canopy/protocol/agent-artifacts';
 import type { DisplayBlock, TurnGroupOrMessage } from './types';
 import { isClaudeAgentRunning, codexAgentState } from './agent-block-state';
+import { isAsyncAgentLaunchText } from '@canopy/desktop-shared/lib/background-work';
 import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import {
   buildGitHubWorkflowRunArtifactReceipt,
@@ -117,13 +122,24 @@ export function selectActiveAgentBlocks(
       );
     }
     if (block.type === 'agent') {
-      return (
-        block.runInBackground &&
-        isClaudeAgentRunning(
-          true,
+      const backgroundStatus = nativeStatuses.get(block.toolUseId);
+      if (backgroundStatus !== undefined) {
+        return isClaudeAgentRunning(
+          block.runInBackground,
           block.result,
           block.taskOutputResult,
-          nativeStatuses.get(block.toolUseId),
+          backgroundStatus,
+        );
+      }
+      return (
+        (block.runInBackground ||
+          (block.result !== undefined &&
+            !block.result.isError &&
+            isAsyncAgentLaunchText(block.result.output))) &&
+        isClaudeAgentRunning(
+          block.runInBackground,
+          block.result,
+          block.taskOutputResult,
         )
       );
     }
@@ -317,36 +333,40 @@ function receiptFromGitHubProgress(
  * replacing the run snapshot, so the run's own `observedAt` alone would hide a
  * job-only change.
  */
-function latestObservedAt(run: {
-  observedAt: string;
-  jobs?: readonly { observedAt: string }[];
-}): string {
-  let latest = run.observedAt;
-  for (const job of run.jobs ?? []) {
-    if (job.observedAt.localeCompare(latest) > 0) latest = job.observedAt;
-  }
-  return latest;
+
+/**
+ * Whether a GitHub watcher still follows what it watches. While it delivers
+ * an update main lists it as `firing` in the fire history, not in the active
+ * list, then makes it active again; for that window its run or pull request
+ * is still live and stays in the background drawer.
+ */
+export function isFollowingWatcher(watcher: AppAdvisorWatcherSummary): boolean {
+  return watcher.status === 'active' || watcher.status === 'firing';
 }
 
 /**
  * Resolve every GitHub workflow run this chat is actively watching, one
  * receipt per run. When several watchers follow the same run the most recent
- * observation wins. Only active watchers whose destination is this chat
- * contribute; their progress comes from the watcher's own polling, so no
- * additional GitHub request is ever made here. Each receipt is then refreshed
- * from `completedWatchers` exactly as the run card refreshes it: the fire
- * history is read separately and can be newer, and two writers recording
- * different snapshots of one run would overwrite each other on every render.
+ * observation wins. Only watchers following their run
+ * (`isFollowingWatcher`) whose destination is this chat contribute; their
+ * progress comes from the watcher's own polling, so no additional GitHub
+ * request is ever made here. Each receipt is then refreshed from
+ * `completedWatchers` exactly as the run card refreshes it: the fire history
+ * is read separately and can be newer, and two writers recording different
+ * snapshots of one run would overwrite each other on every render.
  */
 export function selectWatchedGitHubWorkflowRuns(
   watchers: readonly AppAdvisorWatcherSummary[],
   destination: AppAdvisorWatcherDestination,
   completedWatchers: readonly AppAdvisorWatcherSummary[] = [],
 ): GitHubWorkflowRunArtifactReceiptV1[] {
-  const activeDestinationWatchers = watchersForSubscriberDestination(
-    [...watchers],
-    destination,
-  ).filter((watcher) => watcher.status === 'active');
+  const activeDestinationWatchers = [...watchers, ...completedWatchers].filter(
+    (watcher) =>
+      isFollowingWatcher(watcher) &&
+      watcher.destination.projectId === destination.projectId &&
+      watcher.destination.worktreeId === destination.worktreeId &&
+      watcher.destination.chatId === destination.chatId,
+  );
   const selected = new Map<string, GitHubWorkflowRunArtifactReceiptV1>();
   for (const watcher of activeDestinationWatchers) {
     if (
@@ -364,7 +384,9 @@ export function selectWatchedGitHubWorkflowRuns(
       const existing = selected.get(receipt.dedupeKey);
       if (
         !existing ||
-        latestObservedAt(existing).localeCompare(latestObservedAt(run)) <= 0
+        latestGitHubRunObservation(existing).localeCompare(
+          latestGitHubRunObservation(run),
+        ) <= 0
       ) {
         selected.set(receipt.dedupeKey, receipt);
       }
@@ -406,7 +428,9 @@ export function refreshGitHubWorkflowRunReceipt(
         run.repository !== receipt.repository ||
         run.runId !== receipt.runId ||
         run.runAttempt !== receipt.runAttempt ||
-        latestObservedAt(run).localeCompare(latestObservedAt(best)) < 0
+        latestGitHubRunObservation(run).localeCompare(
+          latestGitHubRunObservation(best),
+        ) < 0
       ) {
         continue;
       }
@@ -418,6 +442,47 @@ export function refreshGitHubWorkflowRunReceipt(
       );
       if (!isSameAgentArtifactCarryReceipt(best, candidate)) best = candidate;
     }
+  }
+  return best;
+}
+
+/**
+ * Bring a carried GitHub run receipt up to the newest snapshot of the same run
+ * attempt in `observed`, the receipts another turn just recorded. A watcher
+ * turn delivered while the run is still going takes over the pinned section,
+ * so the run finishes under that turn; earlier turns that carried it follow
+ * it to its final state instead of keeping their last in-progress snapshot.
+ *
+ * Any watcher's observation counts: one run has one state, unlike
+ * `refreshGitHubWorkflowRunReceipt`, which reads only the receipt's own
+ * watcher summaries. The snapshot fields (state, jobs, definition, aliases,
+ * navigation target) come from the newer receipt; the carried receipt keeps
+ * its creation time and watcher, so its card still manages that watcher.
+ * Returns the same reference when nothing newer was observed, so an older
+ * observation never regresses a turn.
+ */
+export function refreshCarriedGitHubWorkflowRun(
+  carried: AgentArtifactCarryReceiptV1,
+  observed: readonly AgentArtifactCarryReceiptV1[],
+): AgentArtifactCarryReceiptV1 {
+  if (carried.kind !== 'github_workflow_run') return carried;
+  let best: GitHubWorkflowRunArtifactReceiptV1 = carried;
+  for (const receipt of observed) {
+    if (
+      receipt.kind !== 'github_workflow_run' ||
+      receipt.dedupeKey !== carried.dedupeKey ||
+      receipt.runAttempt !== carried.runAttempt ||
+      latestGitHubRunObservation(receipt).localeCompare(
+        latestGitHubRunObservation(best),
+      ) <= 0
+    ) {
+      continue;
+    }
+    best = {
+      ...receipt,
+      createdAt: carried.createdAt,
+      watcherId: carried.watcherId,
+    };
   }
   return best;
 }
@@ -442,4 +507,30 @@ export function selectWatchedCarryReceipts(
       completedWatchers,
     ),
   ];
+}
+
+/**
+ * The watched runs a chat may persist as carry. A run this chat launched
+ * already lives in its launching turn's transcript receipts; carrying a copy
+ * would overwrite that `launched` receipt (latest wins by dedupeKey) or
+ * re-list the run under a later turn, so a run whose transcript receipt is
+ * `launched` is dropped. Runs started elsewhere, including ones the chat only
+ * watched through a tool, are kept (CAN-4690). Returns the input array when
+ * nothing is dropped.
+ */
+export function selectPersistableCarryReceipts(
+  watchedRuns: readonly AgentArtifactCarryReceiptV1[],
+  chatInitiatedPipelineRuns: Readonly<
+    Record<string, PipelineRunArtifactReceiptV1>
+  >,
+): readonly AgentArtifactCarryReceiptV1[] {
+  const kept = watchedRuns.filter((receipt) => {
+    if (receipt.kind !== 'pipeline_run') return true;
+    const transcriptReceipt = chatInitiatedPipelineRuns[receipt.executionId];
+    return (
+      transcriptReceipt === undefined ||
+      agentArtifactTurnRelation(transcriptReceipt) === 'watching'
+    );
+  });
+  return kept.length === watchedRuns.length ? watchedRuns : kept;
 }

@@ -740,6 +740,8 @@ async function fixture(kind) {
     path.join(tmpdir(), 'browser-profile-ci-process-test-'),
   );
   const pidFile = path.join(directory, 'grandchild.pid');
+  // Reproduce observing the file between creation and the child's PID write.
+  await writeFile(pidFile, '');
   let leaderPid, grandchildPid;
   const foreign = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
     stdio: 'ignore',
@@ -767,12 +769,15 @@ async function fixture(kind) {
     });
     for (let i = 0; i < 100; i++) {
       try {
-        grandchildPid = Number(await readFile(pidFile, 'utf8'));
-        break;
+        const candidatePid = Number(await readFile(pidFile, 'utf8'));
+        if (Number.isInteger(candidatePid) && candidatePid > 1) {
+          grandchildPid = candidatePid;
+          break;
+        }
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
-        await delay(10);
       }
+      await delay(10);
     }
     assert(
       Number.isInteger(grandchildPid) && grandchildPid > 1,
@@ -1148,7 +1153,8 @@ test('explicit release overlays reject new arbitrary helper files or changed ori
   assert.equal(
     supervisorSha256,
     // CAN-2798 normalizes ps creation-time rendering across caller environments.
-    '22623fb692fe4a827b0134bb91a3133e91d74ddacb302362b1f504ab56c9cdee',
+    // CAN-4863 reports why the Windows supervisor selected a nonzero exit.
+    '7eecae599bc42a3fdbe4a8aa58f5b00ea21c61f5b24db7bf0f58123e43b54087',
   );
   assert.doesNotThrow(() =>
     assertReviewedReleaseOverlay(
@@ -1349,10 +1355,15 @@ const MERGED_BASE_RELEASE_HELPER_IDENTITIES = Object.freeze({
     'cd6e17360673055c70c4c29c608a2cc594bee4d464360142bd25e008e414efa1',
 });
 const REVIEWED_PR_RELEASE_HELPER_IDENTITIES = Object.freeze({
+  // CAN-4635 fixes normalized keychain argv and adds native timing diagnostics.
+  // Keep the closed study original/installed identities unchanged.
+  'apps/desktop-app/tests/performance/browser-profiles-production-headless-bootstrap.cjs':
+    '2eda7963b7b4f7c7e3fc10dad3b99ecf50dab74cfed54707685068fdd02b2206',
   // CAN-2798 normalizes ps creation-time rendering across caller environments.
   // Preserve the closed study's original and installed supervisor identities.
+  // CAN-4863 reports why the Windows supervisor selected a nonzero exit.
   'apps/desktop-app/tests/performance/process-tree-supervisor.mjs':
-    '22623fb692fe4a827b0134bb91a3133e91d74ddacb302362b1f504ab56c9cdee',
+    '7eecae599bc42a3fdbe4a8aa58f5b00ea21c61f5b24db7bf0f58123e43b54087',
   // PR #4973 adds scoped sizing for the opt-in Cost index workload;
   // foreground-first streaming phase 01 adds the opt-in background-streaming
   // and chat-switch-catch-up scenarios and their scoped sizing keys; phase 04
@@ -1406,7 +1417,11 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
       // CAN-3804 adds the worktree Git gate keys; other defaults are unchanged.
       // Compose CAN-385 backfill with foreground-first streaming scenarios and
       // the CAN-1570 opt-in browser-actions and browser-agent-actions scenarios.
-      'edfe8b821b674a87b99a98c627c3f9aff99650d4a3ac9980033a59cd1c9bf2f0',
+      // CAN-3987 adds the opt-in claude-graph-orientation scenario's sizing keys.
+      // Sidebar reorder is opt-in; every existing workload default is unchanged.
+      // CAN-4495 adds the opt-in Code Review registry scenarios and their
+      // scoped sizing keys; existing defaults are unchanged.
+      '6c025906738df9b1e3e83afe25098a3077b6110e74f03d3eea511fe5e38b3778',
   }),
   // Phase 17 adds the local-only CANOPY_E2E_RENDERER_CODE_CACHE_SCHEME switch
   // that seeds the code-cache scheme experiment, expects its window URL and
@@ -1431,7 +1446,22 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
       // PR #5730 pins the external-agents menu on in shared E2E defaults.
       // CAN-4455 isolates the test renderer from an inherited Crashpad pipe.
       // CAN-4266 drops the retired Labs Agents page flag from the E2E defaults.
-      'a4ee92c012e743bd7aa8e0a748ff1c22d9e81848a5ffcba65f7d31c8cd75bc98',
+      // CAN-4863 waits for the Windows launcher to close before its terminal
+      // check, retries a late Windows supervised PID file, passes only a
+      // launch's own offscreen-window request, and reports Windows close steps
+      // and launcher output with a nonzero terminal result. An expired
+      // launcher wait keeps and names the fixture data roots and fails teardown.
+      // CAN-4603 pins Files reads to offered so ordinary E2E stays direct.
+      // CAN-4904 seeds every onboarding tip as dismissed unless a spec opts
+      // out with freshOnboardingTips.
+      // CAN-4010 removes retired checklist seeding and its launch env seam.
+      // CAN-4633 permits an explicit LaunchDarkly startup fixture client only
+      // with an HTTP loopback endpoint; inherited live clients stay unset.
+      // PR #6905 relays main's best-effort render-process-gone reason to the
+      // test's stderr; launch behavior is unchanged.
+      // CAN-4551 pins the chat automation pipelines experiment to offered so
+      // ordinary E2E saves chat automations natively.
+      '7e309a3641f379a8eb6395d45fdafee72f43b445eddb4f6c33d5b7bc62ff7663',
   }),
   // CAN-3972 adds Home Getting Started checklist helpers to the app driver
   // while the sidebar card is hidden on Home. CAN-3980 adds Workflows tab and
@@ -1448,9 +1478,22 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
   // CAN-4260 renames the plugins page heading from Marketplace to Customize.
   // CAN-4266 opens local agents from the Marketplace Agents tab.
   // CAN-4261 merges the shared Installed rows and breadcrumb navigation.
+  // CAN-4267 preserves Customize navigation alongside the root-return helper.
+  // Labs graduation opens Advisor in its native view before expanding it,
+  // preserving a collapsed navigation pane in the full layout.
+  // PR #6140 lands an agent created from Add custom on its own detail.
+  // PR #6126 expects the Customize row to return to the root, so the
+  // Marketplace Agents helper no longer closes an open detail itself.
+  // The UI Automation triage of #6116 lands any item created from Add custom
+  // on its own detail.
+  // PR #6419 (search fields) adds the Library Filter helper: facets open from
+  // the Filter button nested in the search field.
+  // PR #6728 (page search rows) opens each Library filter from its row in the
+  // Filter dropdown and adds the Audit trail filter helper.
   'apps/desktop-app/tests/electron/canopyApp.mjs': Object.freeze({
     '2ce655e6a2782cb311f928f95ba62f854d17f4d4d1318e896ccf9eddac20dc8d':
-      'e777bcd14b37cddd0ebc7c06abf80614a32fa059892eff8681aa3005e868439d',
+      // CAN-4010 removes only the retired Home checklist driver helpers.
+      'cbac6b8d5a605d3c932d129d6eba0c222e2606b911e5c866edc7e5d9a20416f9',
   }),
   // Phase 16 gives App Advisor its own renderer page, so the evidence and the
   // preflight accept app-advisor.html?surface=app-advisor beside index.html.
@@ -1808,9 +1851,9 @@ test('local options admit only the closed 33-attempt qualification and reject al
   assert.equal(schedule(hosted.protocol).length, 66);
 });
 test('local host rejects every actual safety override and CI/runner marker, even false or empty values', () => {
-  requireLocalPhysicalMac({}, 'darwin', 'v24.21.0');
+  requireLocalPhysicalMac({}, 'darwin', 'v24.22.1');
   assert.throws(
-    () => requireLocalPhysicalMac({}, 'linux', 'v24.21.0'),
+    () => requireLocalPhysicalMac({}, 'linux', 'v24.22.1'),
     /Darwin/,
   );
   assert.throws(
@@ -1833,7 +1876,7 @@ test('local host rejects every actual safety override and CI/runner marker, even
   ])
     for (const value of ['', 'false', '1'])
       assert.throws(
-        () => requireLocalPhysicalMac({ [key]: value }, 'darwin', 'v24.21.0'),
+        () => requireLocalPhysicalMac({ [key]: value }, 'darwin', 'v24.22.1'),
         /rejects/,
       );
 });
@@ -1860,7 +1903,7 @@ test('local child environment omits simulation and retains every production buil
     if (!/^(CI$|GITHUB_|RUNNER_|PATH$)/.test(key))
       assert.equal(local[key], value, key);
   assert.equal(local.CANOPY_E2E_BUILD, '0');
-  assert.equal(local.CANOPY_RENDERER_OBFUSCATION, 'true');
+  assert.equal(local.CANOPY_RENDERER_OBFUSCATION, 'false');
   assert.equal(local.CANOPY_RENDERER_OBFUSCATE_VENDOR, 'false');
   assert.deepEqual(releaseDriverPrefix('hosted'), [
     'scripts/run-guarded-dev-script.mjs',
@@ -3472,7 +3515,7 @@ async function completeReleaseRaw(
   sample.runtime = {
     electron: '42.3.0',
     chromium: '148.0.7778.180',
-    node: '24.15.0',
+    node: '24.22.1',
   };
   raw.mode = mode;
   raw.configuration = { samples: 1, warmups: 0, windowMode: 'headless' };
@@ -3486,7 +3529,7 @@ async function completeReleaseRaw(
     release: 'test-owned',
     cpu: 'test-owned',
     memoryBytes: 1024,
-    node: 'v24.15.0',
+    node: 'v24.22.1',
     power: 'AC Power',
     settings: {},
     powerSettings: {},

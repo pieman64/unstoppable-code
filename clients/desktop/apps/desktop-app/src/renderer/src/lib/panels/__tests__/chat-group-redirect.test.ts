@@ -86,7 +86,6 @@ beforeEach(() => {
 
 afterEach(() => {
   setPanelLayoutChatGroup(null);
-  store().setTabRowLimit(null);
   for (const key of Object.keys(store().layouts)) store().disposeLayout(key);
 });
 
@@ -104,25 +103,6 @@ describe('chats started from another group', () => {
     expect(tabsOf('group-extras')).toEqual(['panel-term']);
     expect(layout.maximizedGroupId).toBeNull();
     expect(layout.activeGroupId).toBe('group-chat');
-  });
-
-  it('checks the chat group row, not the row that asked', () => {
-    mockChats.tabs.push({ id: 'chat-b', kind: 'chat', title: 'B' });
-    store().addTab(KEY, 'group-chat', 'chat', {
-      panelId: 'panel-chat-chat-b',
-      instance: { chatTabId: 'chat-b' },
-    });
-    store().setTabRowLimit(2);
-
-    addChatPanelToGroup(KEY, 'group-extras');
-
-    // The drawer row has room, but the chat group the chat would land in is
-    // full, so nothing is created or added.
-    expect(mockChats.tabs.map((tab) => tab.id)).toEqual(['chat-a', 'chat-b']);
-    expect(tabsOf('group-chat')).toEqual([
-      'panel-chat-chat-a',
-      'panel-chat-chat-b',
-    ]);
   });
 
   it('a standalone chat already in the chat group is revealed there', () => {

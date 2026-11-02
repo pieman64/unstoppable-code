@@ -19,21 +19,17 @@ function makeWatcher(
     trigger: overrides.trigger ?? 'worktree_chat_completion',
     status: overrides.status ?? 'active',
     label: overrides.label ?? 'My watcher',
-    target:
-      overrides.target ??
-      ({
-        kind: 'worktree_chat',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-      } as AppAdvisorWatcherSummary['target']),
-    destination:
-      overrides.destination ??
-      ({
-        projectId: APP_ADVISOR_PROJECT_ID,
-        worktreeId: APP_ADVISOR_WORKTREE_ID,
-        chatId: 'advisor-chat-1',
-      } as AppAdvisorWatcherSummary['destination']),
+    target: overrides.target ?? {
+      kind: 'worktree_chat',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    },
+    destination: overrides.destination ?? {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: APP_ADVISOR_WORKTREE_ID,
+      chatId: 'advisor-chat-1',
+    },
     ...(overrides.followUpInstruction
       ? { followUpInstruction: overrides.followUpInstruction }
       : {}),

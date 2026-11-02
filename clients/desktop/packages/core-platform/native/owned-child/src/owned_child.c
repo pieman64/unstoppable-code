@@ -5,15 +5,20 @@
 // unreaped, so its PID, and with it the group ID, cannot be reused until this
 // addon reaps it. Group signals are sent only through a validated, owned,
 // unreaped handle. Errors carry fixed text: no paths, arguments, or input.
+//
+// A launcher-channel spawn also hands the child one end of a socketpair as fd
+// 3. The parent end stays in the record and never reaches JS as a descriptor.
 #ifndef __APPLE__
 #error "core-owned-child supports Darwin only"
 #endif
 
 #include <node_api.h>
 
+#include <bsm/libbsm.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <libproc.h>
+#include <mach/mach.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -21,6 +26,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -30,6 +37,8 @@
 #define MAX_VECTOR 4096
 #define GROUP_CAPACITY 4096
 #define DEADLINE_MS 2000
+#define CHANNEL_FD 3
+#define MAX_CHANNEL_BYTES (64 * 1024)
 
 typedef enum { OWNED, COMMITTED } handle_state;
 
@@ -38,6 +47,12 @@ typedef struct record {
   pid_t pid;
   handle_state state;
   bool delivered;
+  // Parent end of the launcher channel, or -1.
+  int channel;
+  // The root's pidversion right after spawn; an exec changes it.
+  int pidversion;
+  // Bytes read from the channel: peer evidence waits for the peer's frame.
+  uint64_t received;
   struct record *next;
 } record;
 
@@ -113,6 +128,13 @@ static int group_members(pid_t pid) {
   return root ? count : -1;
 }
 
+// SIGKILL to the root's group. Darwin answers EPERM, not ESRCH, while a member
+// is exiting or once only the exited root remains. Callers confirm the stop
+// by enumeration and reaping, so a lasting EPERM runs into their deadline.
+static bool signal_group(pid_t pid) {
+  return kill(-pid, SIGKILL) == 0 || errno == ESRCH || errno == EPERM;
+}
+
 static bool reap(pid_t pid) {
   int status = 0;
   pid_t reaped;
@@ -122,11 +144,22 @@ static bool reap(pid_t pid) {
   return reaped == pid;
 }
 
+static void close_channel(record *item) {
+  if (item->channel < 0) return;
+  close(item->channel);
+  item->channel = -1;
+}
+
+static void free_record(record *item) {
+  close_channel(item);
+  free(item);
+}
+
 static void unlink_record(instance *inst, record *target) {
   for (record **at = &inst->head; *at; at = &(*at)->next)
     if (*at == target) {
       *at = target->next;
-      free(target);
+      free_record(target);
       return;
     }
 }
@@ -142,7 +175,7 @@ static bool rollback_blocking(pid_t pid) {
     if (root == ROOT_LOST) return false;
     if (root == ROOT_EXITED && group_members(pid) == 0) return reap(pid);
     // Repeated: a member forked after the previous signal is caught next.
-    if (kill(-pid, SIGKILL) != 0 && errno != ESRCH) return false;
+    if (!signal_group(pid)) return false;
     if (now_ms() >= deadline) return false;
     sleep_ms(10);
   }
@@ -163,7 +196,7 @@ static void env_cleanup(void *data) {
     record *next = item->next;
     if (item->state == OWNED && !rollback_blocking(item->pid))
       report_teardown_failure();
-    free(item);
+    free_record(item);
     item = next;
   }
   free(inst);
@@ -283,14 +316,19 @@ static char **copy_vector(napi_env env, napi_value value, size_t minimum) {
   return items;
 }
 
+// channel_fd, when >= 0, is above fd 3 (raise_fd), so no stdio action
+// replaces it before its dup2; stdin's dup2 runs first in case it is fd 3.
+// A channel root starts suspended until its pidversion is read.
 static int prepare_spawn(posix_spawnattr_t *attrs,
-                         posix_spawn_file_actions_t *actions, int stdin_fd) {
+                         posix_spawn_file_actions_t *actions, int stdin_fd,
+                         int channel_fd) {
   sigset_t defaults, mask;
   sigfillset(&defaults);
   sigemptyset(&mask);
   int failed = posix_spawnattr_setflags(
       attrs, POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT |
-                 POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+                 POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK |
+                 (channel_fd >= 0 ? POSIX_SPAWN_START_SUSPENDED : 0));
   failed = failed || posix_spawnattr_setsigdefault(attrs, &defaults);
   failed = failed || posix_spawnattr_setsigmask(attrs, &mask);
   failed = failed ||
@@ -298,6 +336,10 @@ static int prepare_spawn(posix_spawnattr_t *attrs,
                 ? posix_spawn_file_actions_adddup2(actions, stdin_fd, 0)
                 : posix_spawn_file_actions_addopen(actions, 0, "/dev/null",
                                                    O_RDONLY, 0));
+  // dup2 clears CLOEXEC on fd 3 only; the daemon sets it again at startup.
+  failed = failed ||
+           (channel_fd >= 0 &&
+            posix_spawn_file_actions_adddup2(actions, channel_fd, CHANNEL_FD));
   failed = failed || posix_spawn_file_actions_addopen(actions, 1, "/dev/null",
                                                       O_WRONLY, 0);
   failed = failed || posix_spawn_file_actions_addopen(actions, 2, "/dev/null",
@@ -334,8 +376,64 @@ static bool open_pipe(int fds[2]) {
   if (!ok) {
     close(fds[0]);
     close(fds[1]);
+    fds[0] = fds[1] = -1;
   }
   return ok;
+}
+
+// Moves a CLOEXEC descriptor above CHANNEL_FD.
+static bool raise_fd(int *fd) {
+  if (*fd > CHANNEL_FD) return true;
+  int moved = fcntl(*fd, F_DUPFD_CLOEXEC, CHANNEL_FD + 1);
+  if (moved < 0) return false;
+  close(*fd);
+  *fd = moved;
+  return true;
+}
+
+// fds[0] stays with the parent, nonblocking; fds[1] becomes the child's fd 3.
+// Both ends are CLOEXEC, so no other spawn in this process inherits either.
+static bool open_channel(int fds[2]) {
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return false;
+  int on = 1;
+  bool ok = fcntl(fds[0], F_SETFD, FD_CLOEXEC) == 0 &&
+            fcntl(fds[1], F_SETFD, FD_CLOEXEC) == 0 &&
+            setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on) ==
+                0 &&
+            fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0 && raise_fd(&fds[1]);
+  if (!ok) {
+    close(fds[0]);
+    close(fds[1]);
+    fds[0] = fds[1] = -1;
+  }
+  return ok;
+}
+
+// The audit token of a live task names its pid and pidversion.
+static bool task_pidversion(pid_t pid, int *version) {
+  mach_port_t name = MACH_PORT_NULL;
+  if (task_name_for_pid(mach_task_self(), pid, &name) != KERN_SUCCESS)
+    return false;
+  audit_token_t token;
+  mach_msg_type_number_t count = TASK_AUDIT_TOKEN_COUNT;
+  kern_return_t status =
+      task_info(name, TASK_AUDIT_TOKEN, (task_info_t)&token, &count);
+  mach_port_deallocate(mach_task_self(), name);
+  if (status != KERN_SUCCESS || audit_token_to_pid(token) != pid) return false;
+  *version = audit_token_to_pidversion(token);
+  return true;
+}
+
+// A record whose handle cannot be delivered: roll the child back here.
+static napi_value fail_undelivered(napi_env env, instance *inst,
+                                   record *item) {
+  bool cleaned = rollback_blocking(item->pid);
+  if (cleaned) unlink_record(inst, item);
+  else close_channel(item);
+  throw_code(env, cleaned ? "ERR_OWNED_CHILD_SPAWN" : "ERR_OWNED_CHILD_CLEANUP",
+             cleaned ? "Owned child could not be started."
+                     : "Owned child cleanup did not complete.");
+  return NULL;
 }
 
 // Wraps a fresh record; on failure the child is rolled back here, since no
@@ -360,16 +458,11 @@ static napi_value make_handle(napi_env env, instance *inst, record *item) {
     item->delivered = true;
     return result;
   }
-  bool cleaned = rollback_blocking(item->pid);
-  if (cleaned) unlink_record(inst, item);
-  throw_code(env, cleaned ? "ERR_OWNED_CHILD_SPAWN" : "ERR_OWNED_CHILD_CLEANUP",
-             cleaned ? "Owned child could not be started."
-                     : "Owned child cleanup did not complete.");
-  return NULL;
+  return fail_undelivered(env, inst, item);
 }
 
-// spawn(executable, argv, envPairs, stdin | null) -> { handle, pid }
-static napi_value spawn_child(napi_env env, napi_callback_info info) {
+static napi_value spawn_record(napi_env env, napi_callback_info info,
+                               bool channel) {
   size_t argc = 4;
   napi_value argv[4];
   void *data = NULL;
@@ -390,29 +483,48 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
     valid = strchr(*at, '=') != NULL && **at != '=';
   record *item = valid ? calloc(1, sizeof *item) : NULL;
   int fds[2] = {-1, -1};
+  int pair[2] = {-1, -1};
   pid_t pid = 0;
   int spawn_error = -1;
-  if (item && (!input || open_pipe(fds))) {
+  int version = 0;
+  bool started = false;
+  if (item && (!input || open_pipe(fds)) && (!channel || open_channel(pair))) {
     posix_spawnattr_t attrs;
     posix_spawn_file_actions_t actions;
     if (posix_spawnattr_init(&attrs) == 0) {
       if (posix_spawn_file_actions_init(&actions) == 0) {
-        if (!prepare_spawn(&attrs, &actions, fds[0]))
+        if (!prepare_spawn(&attrs, &actions, fds[0], pair[1]))
           spawn_error =
               posix_spawn(&pid, executable, &actions, &attrs, args, environment);
         posix_spawn_file_actions_destroy(&actions);
       }
       posix_spawnattr_destroy(&attrs);
     }
+    // The child end lives only in the child.
+    if (pair[1] >= 0) close(pair[1]);
     if (fds[0] >= 0) close(fds[0]);
-    if (spawn_error == 0 && input) write_stdin(fds[1], input, strlen(input));
+    // A channel root is read while still suspended, so even an immediate
+    // exec changes its pidversion; peer evidence must match this one. It is
+    // resumed before stdin is written and before any rollback, because
+    // waitid(WEXITED) reports a stopped root as if it had exited.
+    started = spawn_error == 0;
+    if (started && channel) {
+      bool captured = task_pidversion(pid, &version);
+      started = kill(pid, SIGCONT) == 0 && captured;
+      if (!started) kill(pid, SIGKILL);
+    }
+    if (started && input) write_stdin(fds[1], input, strlen(input));
     if (fds[1] >= 0) close(fds[1]);
+  } else if (fds[0] >= 0) {
+    close(fds[0]);
+    close(fds[1]);
   }
   free(executable);
   free_vector(args);
   free_vector(environment);
   free(input);
   if (spawn_error != 0 || pid <= 1) {
+    if (pair[0] >= 0) close(pair[0]);
     free(item);
     throw_code(env, valid ? "ERR_OWNED_CHILD_SPAWN" : "ERR_OWNED_CHILD_ARGUMENT",
                valid ? "Owned child could not be started."
@@ -423,9 +535,23 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
   item->serial = __atomic_add_fetch(&next_serial, 1, __ATOMIC_RELAXED);
   item->pid = pid;
   item->state = OWNED;
+  item->channel = pair[0];
+  item->pidversion = version;
   item->next = inst->head;
   inst->head = item;
+  if (!started) return fail_undelivered(env, inst, item);
   return make_handle(env, inst, item);
+}
+
+// spawn(executable, argv, envPairs, stdin | null) -> { handle, pid }
+static napi_value spawn_child(napi_env env, napi_callback_info info) {
+  return spawn_record(env, info, false);
+}
+
+// spawnChannel(executable, argv, envPairs, stdin | null) -> { handle, pid }
+// As spawn, plus the launcher channel on the child's fd 3.
+static napi_value spawn_channel(napi_env env, napi_callback_info info) {
+  return spawn_record(env, info, true);
 }
 
 // observe(handle) -> { state: 'running' | 'lost' } | { state: 'exited', code, signal }
@@ -475,7 +601,7 @@ static napi_value stop_group(napi_env env, napi_callback_info info) {
   root_state root;
   if (!item || !require_owned(env, item) || !require_waitable(env, item, &root))
     return NULL;
-  if (kill(-item->pid, SIGKILL) != 0 && errno != ESRCH) {
+  if (!signal_group(item->pid)) {
     throw_code(env, "ERR_OWNED_CHILD_SIGNAL", "Owned child could not be signaled.");
     return NULL;
   }
@@ -568,6 +694,140 @@ static napi_value rollback_undelivered(napi_env env, napi_callback_info info) {
   return make_bool(env, complete);
 }
 
+// Resolves (handle, ...) for a channel call; `extra` arguments follow.
+static record *channel_args(napi_env env, napi_callback_info info,
+                            napi_value *extra, size_t count) {
+  size_t argc = 3;
+  napi_value argv[3];
+  void *data = NULL;
+  if (count > 2 ||
+      napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok ||
+      argc != count + 1 || !data) {
+    throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+    return NULL;
+  }
+  record *item = resolve_handle(env, data, argv[0]);
+  if (!item) return NULL;
+  if (item->channel < 0) {
+    throw_code(env, "ERR_OWNED_CHILD_CHANNEL",
+               "Owned child channel is unavailable.");
+    return NULL;
+  }
+  for (size_t n = 0; n < count; n++) extra[n] = argv[n + 1];
+  return item;
+}
+
+static void channel_failed(napi_env env, record *item) {
+  close_channel(item);
+  throw_code(env, "ERR_OWNED_CHILD_CHANNEL",
+             "Owned child channel is unavailable.");
+}
+
+// channelRead(handle, max) -> Buffer (empty while nothing is ready) | null at
+// end of stream. A read error closes the channel.
+static napi_value channel_read(napi_env env, napi_callback_info info) {
+  napi_value extra[1];
+  record *item = channel_args(env, info, extra, 1);
+  if (!item) return NULL;
+  int64_t max = 0;
+  if (napi_get_value_int64(env, extra[0], &max) != napi_ok || max < 1 ||
+      max > MAX_CHANNEL_BYTES) {
+    throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+    return NULL;
+  }
+  char bytes[MAX_CHANNEL_BYTES];
+  ssize_t n;
+  do {
+    n = read(item->channel, bytes, (size_t)max);
+  } while (n < 0 && errno == EINTR);
+  if (n == 0) return make_null(env);
+  if (n < 0 && errno != EAGAIN) {
+    channel_failed(env, item);
+    return NULL;
+  }
+  size_t size = n > 0 ? (size_t)n : 0;
+  item->received += size;
+  napi_value out;
+  if (napi_create_buffer_copy(env, size, bytes, NULL, &out) != napi_ok)
+    return NULL;
+  return out;
+}
+
+// channelWrite(handle, Uint8Array) -> bytes written; 0 while the peer is not
+// reading. A write error, such as a closed peer, closes the channel.
+static napi_value channel_write(napi_env env, napi_callback_info info) {
+  napi_value extra[1];
+  record *item = channel_args(env, info, extra, 1);
+  if (!item) return NULL;
+  bool typed = false;
+  napi_typedarray_type type;
+  size_t length = 0;
+  void *bytes = NULL;
+  if (napi_is_typedarray(env, extra[0], &typed) != napi_ok || !typed ||
+      napi_get_typedarray_info(env, extra[0], &type, &length, &bytes, NULL,
+                               NULL) != napi_ok ||
+      type != napi_uint8_array || length < 1 || length > MAX_CHANNEL_BYTES) {
+    throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+    return NULL;
+  }
+  ssize_t n;
+  do {
+    n = write(item->channel, bytes, length);
+  } while (n < 0 && errno == EINTR);
+  if (n < 0 && errno != EAGAIN) {
+    channel_failed(env, item);
+    return NULL;
+  }
+  return make_int(env, n > 0 ? n : 0);
+}
+
+static napi_value refused(napi_env env, const char *reason) {
+  napi_value out = make_state(env, "refused"), text;
+  napi_create_string_utf8(env, reason, NAPI_AUTO_LENGTH, &text);
+  napi_set_named_property(env, out, "reason", text);
+  return out;
+}
+
+// channelPeer(handle) -> { state: 'peer', pid, pidversion, token } |
+// { state: 'refused', reason }. The kernel reports the last process to use
+// the peer end, so this is meaningful only after the peer's first frame. The
+// unreaped root reserves its pid; the spawn-time pidversion refuses an exec.
+static napi_value channel_peer(napi_env env, napi_callback_info info) {
+  record *item = channel_args(env, info, NULL, 0);
+  if (!item) return NULL;
+  if (inspect_root(item->pid, NULL) != ROOT_RUNNING)
+    return refused(env, "not_running");
+  if (item->received == 0) return refused(env, "no_frame");
+  audit_token_t token;
+  socklen_t size = sizeof token;
+  if (getsockopt(item->channel, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &size) !=
+          0 ||
+      size != sizeof token)
+    return refused(env, "not_connected");
+  if (audit_token_to_pid(token) != item->pid)
+    return refused(env, "pid_mismatch");
+  if (audit_token_to_pidversion(token) != item->pidversion)
+    return refused(env, "pidversion_changed");
+  napi_value out = make_state(env, "peer"), bytes;
+  if (napi_create_buffer_copy(env, sizeof token, &token, NULL, &bytes) !=
+      napi_ok)
+    return NULL;
+  napi_set_named_property(env, out, "pid", make_int(env, item->pid));
+  napi_set_named_property(env, out, "pidversion",
+                          make_int(env, item->pidversion));
+  napi_set_named_property(env, out, "token", bytes);
+  return out;
+}
+
+// channelClose(handle) -> true; idempotent. Reaping the root also closes it.
+static napi_value channel_close(napi_env env, napi_callback_info info) {
+  instance *inst;
+  record *item = handle_arg(env, info, &inst);
+  if (!item) return NULL;
+  close_channel(item);
+  return make_bool(env, true);
+}
+
 NAPI_MODULE_INIT() {
   instance *inst = calloc(1, sizeof *inst);
   if (!inst || napi_add_env_cleanup_hook(env, env_cleanup, inst) != napi_ok) {
@@ -586,6 +846,16 @@ NAPI_MODULE_INIT() {
        inst},
       {"rollbackUndelivered", NULL, rollback_undelivered, NULL, NULL, NULL,
        napi_enumerable, inst},
+      {"spawnChannel", NULL, spawn_channel, NULL, NULL, NULL, napi_enumerable,
+       inst},
+      {"channelRead", NULL, channel_read, NULL, NULL, NULL, napi_enumerable,
+       inst},
+      {"channelWrite", NULL, channel_write, NULL, NULL, NULL, napi_enumerable,
+       inst},
+      {"channelPeer", NULL, channel_peer, NULL, NULL, NULL, napi_enumerable,
+       inst},
+      {"channelClose", NULL, channel_close, NULL, NULL, NULL, napi_enumerable,
+       inst},
   };
   // On failure the hook stays: it frees the empty instance at teardown.
   if (napi_define_properties(env, exports, sizeof methods / sizeof *methods,

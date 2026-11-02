@@ -4,6 +4,7 @@ import { formatOrgNameList } from '@canopy/ui-shared/lib/org-lapse-sentence';
 import { brandText } from '@/lib/brand';
 import { DesktopDataSharingOptIn } from '@/components/settings/DesktopDataSharingOptIn';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { Button } from '@/components/shared/Button';
 
 export interface ShareSetupCtaProps {
   reason: Extract<
@@ -76,9 +77,9 @@ export function ShareSetupCta({
             <p className="text-xs fg-secondary">
               {`Inviting a teammate needs this project to be registered with ${CLOUD_ACCOUNT_NAME}. Turn project data sharing on and the invite becomes available, and you can keep transcripts, plans, and summaries off.`}
             </p>
-            <button
-              type="button"
-              className="focus-ring rounded-lg border border-line-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent-subtle"
+            <Button
+              variant="secondary"
+              size="compact"
               data-testid="shared-container-setup-cta-open-settings"
               onClick={() => {
                 useNavigationStore.getState().openSettings('privacy');
@@ -86,7 +87,7 @@ export function ShareSetupCta({
               }}
             >
               {OPEN_SETTINGS_LABEL}
-            </button>
+            </Button>
           </>
         }
       />

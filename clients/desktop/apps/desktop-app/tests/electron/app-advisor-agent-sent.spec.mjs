@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { expandAppAdvisorToFullWindow } from './helpers/appAdvisorFullWindow.mjs';
 import {
   cleanupDemoWorkspaces,
   seedDemoWorkspaces,
@@ -155,6 +156,7 @@ test('an Advisor send to a busy Advisor chat shows the sender title when queued 
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
     const advisor = await app.openAppAdvisorWindow(electronApp);
+    await expandAppAdvisorToFullWindow(advisor);
     const scope = { projectId: 'app-advisor', worktreeId: ENTRY_ID };
     const sourceScope = {
       projectId: 'app-advisor',
@@ -245,91 +247,96 @@ test('an Advisor send to a busy Advisor chat shows the sender title when queued 
     await expect(reloaded.getByTestId('agent-sent-title')).toHaveText(
       SOURCE_TITLE,
     );
-    // The title opens the sending chat, here in this same window.
+    // The title opens the sending chat, here in this same window, in
+    // whichever layout (floating or full) the window shows it.
     await reloaded.getByTestId('agent-sent-title').click();
-    await expect(
-      advisor
-        .getByTestId('panel-content-chat')
-        .getByText(`Earlier ${SOURCE_TITLE} context`),
-    ).toBeVisible({ timeout: 30_000 });
-  } finally {
-    await closeCanopy(electronApp, userDataDir);
-  }
-});
-
-test('a project chat shows the sender project beside an Advisor sender title', async () => {
-  test.setTimeout(120_000);
-  const userDataDir = makeUserDataDir();
-  const demo = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
-  seedPreferences(userDataDir);
-  seedAdvisorEntry(userDataDir);
-  seedWorktreeChat({
-    userDataDir,
-    workspaceId: 'demo-ts-pnpm-vite',
-    worktreeId: 'demo-main',
-    providerType: 'claude',
-    activeTabId: 'agent-sent-project-chat',
-    tabs: [
-      {
-        id: 'agent-sent-project-chat',
-        title: 'Release checklist',
-        messages: [
-          {
-            id: 'agent-sent-project-user',
-            role: 'user',
-            timestamp: Date.parse(CREATED_AT),
-            userMessageSource: 'agent',
-            agentSent: {
-              sender: {
-                kind: 'bot',
-                botId: 'app_advisor',
-                taskId: SOURCE_ENTRY_ID,
-                chatId: SOURCE_CHAT_ID,
-              },
-              chatTitle: SOURCE_TITLE,
-              projectLabel: 'App Advisor',
-            },
-            blocks: [{ type: 'text', text: 'Please run the release checks.' }],
-          },
-          {
-            id: 'agent-sent-project-reply',
-            role: 'assistant',
-            timestamp: Date.parse(CREATED_AT) + 1_000,
-            blocks: [{ type: 'text', text: 'Release checks are running.' }],
-          },
-        ],
-      },
-    ],
-  });
-
-  const { electronApp } = await launchCanopy({ userDataDir });
-  try {
-    const window = await electronApp.firstWindow();
-    const app = new CanopyAppDriver(window);
-    await app.waitForShell({ timeout: 30_000 });
-    await app.openMainPage();
-    await app.selectWorktree('demo-main');
-    const sent = window
-      .getByTestId('panel-content-chat')
-      .locator('[data-role="user"]')
-      .filter({ hasText: 'Please run the release checks.' });
-    const title = sent.getByTestId('agent-sent-title');
-    await expect(title).toContainText(SOURCE_TITLE);
-    await expect(title).toContainText('App Advisor');
-    await expect(sent).not.toContainText('Sent by');
-    // The title opens the sending App Advisor chat in the Advisor window.
-    const advisorWindow = electronApp.waitForEvent('window');
-    await title.click();
-    const advisor = await advisorWindow;
-    // The window opens floating or full; either shows the sending chat.
     await expect(
       advisor.getByText(`Earlier ${SOURCE_TITLE} context`),
     ).toBeVisible({ timeout: 30_000 });
   } finally {
     await closeCanopy(electronApp, userDataDir);
-    cleanupDemoWorkspaces(demo);
   }
 });
+
+// Stored labels render as written: transcripts from before the rename keep
+// 'App Advisor', and new sends store 'Orchestrator' (ORCHESTRATOR_LABEL).
+for (const projectLabel of ['App Advisor', 'Orchestrator']) {
+  test(`a project chat shows the sender project beside an Advisor sender title (${projectLabel})`, async () => {
+    test.setTimeout(120_000);
+    const userDataDir = makeUserDataDir();
+    const demo = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedPreferences(userDataDir);
+    seedAdvisorEntry(userDataDir);
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: 'demo-ts-pnpm-vite',
+      worktreeId: 'demo-main',
+      providerType: 'claude',
+      activeTabId: 'agent-sent-project-chat',
+      tabs: [
+        {
+          id: 'agent-sent-project-chat',
+          title: 'Release checklist',
+          messages: [
+            {
+              id: 'agent-sent-project-user',
+              role: 'user',
+              timestamp: Date.parse(CREATED_AT),
+              userMessageSource: 'agent',
+              agentSent: {
+                sender: {
+                  kind: 'bot',
+                  botId: 'app_advisor',
+                  taskId: SOURCE_ENTRY_ID,
+                  chatId: SOURCE_CHAT_ID,
+                },
+                chatTitle: SOURCE_TITLE,
+                projectLabel,
+              },
+              blocks: [
+                { type: 'text', text: 'Please run the release checks.' },
+              ],
+            },
+            {
+              id: 'agent-sent-project-reply',
+              role: 'assistant',
+              timestamp: Date.parse(CREATED_AT) + 1_000,
+              blocks: [{ type: 'text', text: 'Release checks are running.' }],
+            },
+          ],
+        },
+      ],
+    });
+
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree('demo-main');
+      const sent = window
+        .getByTestId('panel-content-chat')
+        .locator('[data-role="user"]')
+        .filter({ hasText: 'Please run the release checks.' });
+      const title = sent.getByTestId('agent-sent-title');
+      await expect(title).toContainText(SOURCE_TITLE);
+      await expect(title).toContainText(projectLabel);
+      await expect(sent).not.toContainText('Sent by');
+      // The title opens the sending App Advisor chat in the Advisor window.
+      const advisorWindow = electronApp.waitForEvent('window');
+      await title.click();
+      const advisor = await advisorWindow;
+      // The window opens floating or full; either shows the sending chat.
+      await expect(
+        advisor.getByText(`Earlier ${SOURCE_TITLE} context`),
+      ).toBeVisible({ timeout: 30_000 });
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+      cleanupDemoWorkspaces(demo);
+    }
+  });
+}
 
 test('a project root sends to another project without navigation or target-setting changes', async () => {
   test.setTimeout(180_000);

@@ -40,7 +40,7 @@ class FakeSocket implements RelaySocket {
     readonly protocols: string[],
     readonly handlers: RelaySocketHandlers,
   ) {}
-  transmit(data: string | Uint8Array): void {
+  transmit(data: string | Uint8Array<ArrayBuffer>): void {
     this.sent.push(data);
   }
   close(): void {

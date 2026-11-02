@@ -14,10 +14,12 @@
     "./events": "./src/events/index.ts",
     "./gating": "./src/gating/index.ts",
     "./ledger": "./src/ledger/index.ts",
+    "./local-memory": "./src/local-memory/index.ts",
     "./navigation": "./src/navigation/index.ts",
     "./view-model": "./src/view-model/index.ts",
     "./release-notes": "./src/release-notes/index.ts",
-    "./settings": "./src/settings/index.ts"
+    "./settings": "./src/settings/index.ts",
+    "./conversation": "./src/conversation/index.ts"
   },
   "dependencies": {
     "@canopy/protocol": "workspace:*"

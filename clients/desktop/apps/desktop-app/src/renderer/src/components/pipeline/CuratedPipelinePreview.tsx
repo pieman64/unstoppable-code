@@ -1,7 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import {
-  CuratedPipelineCatalog,
-  DialogModal,
+  CuratedPipelinePreviewDialog,
   type CuratedPipelineCatalogProps,
 } from '@canopy/ui-shared';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -12,7 +11,7 @@ export interface CuratedPipelinePreviewProps {
   breadcrumbs?: ReactNode;
 }
 
-/** Only selected content is mounted; discovery stays in the host's unified list. */
+/** The shared preview dialog, reporting its state to the desktop's UI state. */
 export function CuratedPipelinePreview({
   catalog,
   breadcrumbs,
@@ -28,20 +27,10 @@ export function CuratedPipelinePreview({
         }
       : null,
   );
-  if (!catalog.selectedKey) return null;
   return (
-    <DialogModal
-      title="Preview pipeline"
-      onClose={catalog.onBack}
-      maxWidth="3xl"
-      dataTestId="curated-pipeline-preview-dialog"
-    >
-      {breadcrumbs}
-      <CuratedPipelineCatalog
-        {...catalog}
-        cloudDisplayName={`${brandText.appName} Cloud`}
-        rows={[]}
-      />
-    </DialogModal>
+    <CuratedPipelinePreviewDialog
+      catalog={{ ...catalog, cloudDisplayName: `${brandText.appName} Cloud` }}
+      breadcrumbs={breadcrumbs}
+    />
   );
 }

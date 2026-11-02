@@ -10,6 +10,7 @@ import type {
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '@/components/shared/DialogModal';
 import {
+  Button,
   PluginSection,
   StandaloneConfigsSection,
 } from '@canopy/ui-shared/components';
@@ -165,14 +166,14 @@ export function McpServerDetailsModal({
 
   const headerActions =
     standaloneServerId !== undefined ? (
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="compact"
         onClick={(): void => onEdit(standaloneServerId)}
         data-testid="mcp-server-details-edit"
-        className="focus-ring rounded-md bg-accent px-2.5 py-1 text-xs font-medium fg-emphasis transition hover:bg-accent/90"
       >
         Edit
-      </button>
+      </Button>
     ) : undefined;
 
   return (
@@ -198,7 +199,10 @@ export function McpServerDetailsModal({
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="fg-secondary">Auth status:</span>
           <span
-            className={`rounded-full px-1.5 py-0.5 text-3xs font-medium ${mcpAuthStatusBadgeClass(server.authStatus, server.canRefresh)}`}
+            className={mcpAuthStatusBadgeClass(
+              server.authStatus,
+              server.canRefresh,
+            )}
             data-testid="mcp-server-details-auth-badge"
           >
             {server.authStatusLabel}

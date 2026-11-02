@@ -123,8 +123,14 @@ export function SidebarPageNav({
 }
 
 export interface SidebarPageNavGroupProps {
-  /** Visible, accessible group heading. */
-  readonly label: ReactNode;
+  /**
+   * Visible, accessible group heading. `null` for rows that a control above
+   * them already names (the settings scope picker); `ariaLabel` then names
+   * the group for assistive technology.
+   */
+  readonly label: ReactNode | null;
+  /** The group's accessible name when it has no visible heading. */
+  readonly ariaLabel?: string;
   /** Stable automation hook; never used as the heading's DOM ID. */
   readonly testId: string;
   readonly children: ReactNode;
@@ -136,10 +142,18 @@ export interface SidebarPageNavGroupProps {
  */
 export function SidebarPageNavGroup({
   label,
+  ariaLabel,
   testId,
   children,
 }: SidebarPageNavGroupProps): JSX.Element {
   const headingId = useId();
+  if (label === null) {
+    return (
+      <section aria-label={ariaLabel} className="mt-1" data-testid={testId}>
+        <div className="flex flex-col gap-px">{children}</div>
+      </section>
+    );
+  }
   return (
     <section aria-labelledby={headingId} className="mt-3" data-testid={testId}>
       <div id={headingId} className="px-2 text-xs font-normal fg-tertiary">

@@ -6,6 +6,10 @@ import {
   type LedgerFeedStore,
   type LedgerViewStore,
 } from '@canopy/app-state';
+import {
+  ledgerViewScopeKey,
+  type LedgerViewScope,
+} from '@canopy/protocol/ledger-view';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   canopyCloudAccountIdentity,
@@ -67,13 +71,23 @@ function watchAccount(): void {
   void checkAccount();
 }
 
-/** The view store of one scope, created on first use. */
+/** The view store of one task, created on first use. */
 export function ledgerViewStoreFor(
   projectId: string,
   worktreeId: string,
 ): LedgerViewStore {
+  return ledgerViewStoreForScope({ projectId, worktreeId });
+}
+
+/**
+ * The view store of one scope, a task or a global (workflow) Ledger, created
+ * on first use.
+ */
+export function ledgerViewStoreForScope(
+  scope: LedgerViewScope,
+): LedgerViewStore {
   watchAccount();
-  const key = `${projectId}/${worktreeId}`;
+  const key = ledgerViewScopeKey(scope);
   const existing = retainedViews.get(key);
   if (existing !== undefined) {
     // Most recently used last.
@@ -81,10 +95,7 @@ export function ledgerViewStoreFor(
     retainedViews.set(key, existing);
     return existing;
   }
-  const store = createLedgerViewStore(desktopLedgerClient, {
-    projectId,
-    worktreeId,
-  });
+  const store = createLedgerViewStore(desktopLedgerClient, scope);
   retainedViews.set(key, store);
   while (retainedViews.size > RETAINED_LEDGER_VIEWS) {
     // The oldest view without a draft: letting a draft go would lose what
@@ -112,7 +123,12 @@ export function ledgerViewHasDraft(
   projectId: string,
   worktreeId: string,
 ): boolean {
-  return holdsDraft(retainedViews.get(`${projectId}/${worktreeId}`));
+  return ledgerViewScopeHasDraft({ projectId, worktreeId });
+}
+
+/** {@link ledgerViewHasDraft} for any scope, a task or a global Ledger. */
+export function ledgerViewScopeHasDraft(scope: LedgerViewScope): boolean {
+  return holdsDraft(retainedViews.get(ledgerViewScopeKey(scope)));
 }
 
 /** The Feed's view store, created on first use. */

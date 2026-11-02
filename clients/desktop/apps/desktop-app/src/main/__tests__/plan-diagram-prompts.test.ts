@@ -240,9 +240,10 @@ describe('DATA_MODEL_DIFF_GENERATION_JSON_SCHEMA', () => {
     const changesSchema =
       DATA_MODEL_DIFF_GENERATION_JSON_SCHEMA.properties.diagram.properties
         .changes;
-    const fieldChangeSchema = changesSchema.items.anyOf.find((schema) =>
-      schema.required.includes('fieldId'),
-    );
+    const fieldChangeSchema = changesSchema.items.anyOf.find((schema) => {
+      const requiredFields: readonly string[] = schema.required;
+      return requiredFields.includes('fieldId');
+    });
 
     expect(fieldChangeSchema?.required).toEqual([
       'id',

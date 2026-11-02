@@ -109,6 +109,10 @@ function normalizeEntry(value: unknown): UsageLimitedChatEntry | null {
     worktreeId,
     chatId,
     provider,
+    ...(typeof value.interruptedUserMessageId === 'string' &&
+    value.interruptedUserMessageId
+      ? { interruptedUserMessageId: value.interruptedUserMessageId }
+      : {}),
     detectedAt: typeof value.detectedAt === 'number' ? value.detectedAt : 0,
     ...(typeof value.resetsAt === 'number' ? { resetsAt: value.resetsAt } : {}),
     resumeReason,

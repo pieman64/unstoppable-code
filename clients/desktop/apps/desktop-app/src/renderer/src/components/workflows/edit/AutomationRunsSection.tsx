@@ -132,7 +132,7 @@ export function AutomationRunsSection({
     >
       {feed.error !== null && runsPipeline && (
         <Notice intent="destructive" data-testid="workflows-runs-error">
-          Pipeline runs could not be loaded, so a run&apos;s pipeline status may
+          Workflow runs could not be loaded, so a run&apos;s workflow status may
           be out of date.
         </Notice>
       )}

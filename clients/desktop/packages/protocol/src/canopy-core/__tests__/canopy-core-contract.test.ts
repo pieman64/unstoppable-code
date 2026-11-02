@@ -25,6 +25,7 @@ import {
   type CanopyInstructionName,
   type CorePlaneQueryName,
   type WorkerPlaneQueryName,
+  type CanopyWorkspaceScope,
   COST_GRANTS,
   COST_INSTRUCTION_DEFINITIONS,
   COST_QUERY_DEFINITIONS,
@@ -48,6 +49,13 @@ import {
   CoreChatTranscriptSearchResultSchema,
   CoreChatToolOutputReadParamsSchema,
   CoreChatToolOutputReadResultSchema,
+  CoreChatContentReadParamsSchema,
+  CoreChatContentReadResultSchema,
+  CoreChatTranscriptBlocksPageParamsSchema,
+  CoreChatTranscriptBlocksPageResultSchema,
+  CoreChatTranscriptBlocksPageErrorSchema,
+  CoreChatTranscriptBoundedBlocksPageResultSchema,
+  TRANSCRIPT_BOUNDED_BLOCK_PAGE_BYTES,
 } from '../core';
 import {
   WORKER_QUERY_DEFINITIONS,
@@ -70,15 +78,36 @@ type _QueryNamesAreExact = Expect<
     CanopyQueryName,
     | 'worker.filesystem.roots.list'
     | 'worker.filesystem.directory.list'
+    | 'worker.filesystem.file.read'
+    | 'worker.filesystem.search'
+    | 'worker.git.branch.list'
+    | 'worker.git.executable.get'
+    | 'worker.git.remote.get'
+    | 'worker.git.worktree.health.get'
+    | 'worker.git.diff.get'
+    | 'worker.filesystem.link.resolve'
     | 'core.chat.snapshot.get'
     | 'core.chat.list'
     | 'core.workspace.list'
     | 'core.workspace.get'
+    | 'core.workspace.sharedMultiRepo.prepare'
+    | 'core.workspace.sharedMultiRepo.getCreation'
+    | 'core.workspace.sharedMultiRepo.listCreations'
     | 'core.chat.transcript.page'
     | 'core.chat.transcript.search'
     | 'core.chat.toolOutput.read'
+    | 'core.chat.content.read'
+    | 'core.chat.transcript.blocks.page'
     | 'core.chat.visual.read'
     | 'core.chat.send.receipt'
+    | 'core.workspace.instructions.get'
+    | 'core.workspace.item.get'
+    | 'core.workspace.item.list'
+    | 'core.workspace.repoRules.scan'
+    | 'core.workspace.repoRules.preview'
+    | 'core.workspace.repoRules.status'
+    | 'core.worktree.list'
+    | 'core.worktree.get'
     | 'core.ledger.entries.search'
     | 'core.ledger.entry.get'
     | 'core.ledger.owners.list'
@@ -86,24 +115,57 @@ type _QueryNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.annotation.document.get'
+    | 'core.annotation.thread.get'
+    | 'core.annotation.thread.list'
+    | 'core.script.definition.list'
+    | 'core.script.definition.get'
+    | 'core.initiatedWork.source.list'
+    | 'core.initiatedWork.source.get'
+    | 'core.pipeline.definition.list'
+    | 'core.pipeline.definition.get'
+    | 'core.pipeline.definition.validate'
+    | 'core.operation.get'
+    | 'core.operation.list'
+    | 'core.execution.status.get'
+    | 'core.integration.get'
+    | 'core.integration.list'
+    | 'core.integration.resource.list'
+    | 'core.pullRequest.get'
+    | 'core.pullRequest.list'
   >
 >;
 type _WorkerNamesAreExact = Expect<
   Equal<
     WorkerPlaneQueryName,
-    'worker.filesystem.roots.list' | 'worker.filesystem.directory.list'
+    | 'worker.filesystem.roots.list'
+    | 'worker.filesystem.directory.list'
+    | 'worker.filesystem.file.read'
+    | 'worker.filesystem.search'
+    | 'worker.git.branch.list'
+    | 'worker.git.executable.get'
+    | 'worker.git.remote.get'
+    | 'worker.git.worktree.health.get'
+    | 'worker.git.diff.get'
+    | 'worker.filesystem.link.resolve'
   >
 >;
 type _CoreNamesAreExact = Expect<
   Equal<
     CorePlaneQueryName,
     | 'core.chat.snapshot.get'
+    | 'core.chat.send.receipt'
     | 'core.chat.list'
     | 'core.workspace.list'
     | 'core.workspace.get'
+    | 'core.workspace.sharedMultiRepo.prepare'
+    | 'core.workspace.sharedMultiRepo.getCreation'
+    | 'core.workspace.sharedMultiRepo.listCreations'
     | 'core.chat.transcript.page'
     | 'core.chat.transcript.search'
     | 'core.chat.toolOutput.read'
+    | 'core.chat.content.read'
+    | 'core.chat.transcript.blocks.page'
     | 'core.chat.visual.read'
     | 'core.ledger.entries.search'
     | 'core.ledger.entry.get'
@@ -112,6 +174,32 @@ type _CoreNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.annotation.document.get'
+    | 'core.annotation.thread.get'
+    | 'core.annotation.thread.list'
+    | 'core.script.definition.list'
+    | 'core.script.definition.get'
+    | 'core.initiatedWork.source.list'
+    | 'core.initiatedWork.source.get'
+    | 'core.pipeline.definition.list'
+    | 'core.pipeline.definition.get'
+    | 'core.pipeline.definition.validate'
+    | 'core.operation.get'
+    | 'core.operation.list'
+    | 'core.execution.status.get'
+    | 'core.integration.get'
+    | 'core.integration.list'
+    | 'core.integration.resource.list'
+    | 'core.pullRequest.get'
+    | 'core.pullRequest.list'
+    | 'core.workspace.instructions.get'
+    | 'core.workspace.item.get'
+    | 'core.workspace.item.list'
+    | 'core.workspace.repoRules.scan'
+    | 'core.workspace.repoRules.preview'
+    | 'core.workspace.repoRules.status'
+    | 'core.worktree.list'
+    | 'core.worktree.get'
   >
 >;
 type _CostRefreshInstructionIsRegistered = Expect<
@@ -123,19 +211,7 @@ type _CostRefreshInstructionIsRegistered = Expect<
 type _RootsParamsAreMapped = Expect<
   Equal<
     CanopyQueryParams<'worker.filesystem.roots.list'>,
-    {
-      scope: {
-        organizationId?: string;
-        workspaceId?: string;
-        worktreeId?: string;
-        chatId?: string;
-        operationId?: string;
-        executionId?: string;
-        repoId?: string;
-        authorityId?: string;
-        targetId?: string;
-      };
-    }
+    { scope: CanopyWorkspaceScope; catalogRevision?: string | undefined }
   >
 >;
 type CompileTimeAssertions = [
@@ -156,11 +232,19 @@ void compileTimeAssertions;
 
 const typedHandlers: Pick<
   CanopyQueryHandlerMap<{ requestId: string }>,
-  | WorkerPlaneQueryName
+  | 'worker.filesystem.roots.list'
+  | 'worker.filesystem.directory.list'
+  | 'worker.filesystem.file.read'
+  | 'worker.filesystem.search'
+  | 'worker.filesystem.link.resolve'
   | 'core.chat.snapshot.get'
   | 'core.chat.list'
   | 'core.chat.transcript.page'
   | 'core.chat.transcript.search'
+  | 'core.chat.toolOutput.read'
+  | 'core.chat.content.read'
+  | 'core.chat.transcript.blocks.page'
+  | 'core.chat.visual.read'
 > = {
   'core.chat.snapshot.get': (params) => ({
     workspaceId: params.scope.workspaceId,
@@ -179,6 +263,14 @@ const typedHandlers: Pick<
   }),
   'core.chat.transcript.search': () => ({ matches: [], totalCount: 0 }),
   'core.chat.toolOutput.read': () => ({ text: '', byteLength: 0 }),
+  'core.chat.content.read': () => ({ text: '', byteLength: 0 }),
+  'core.chat.transcript.blocks.page': () => ({
+    messageId: 'message-1',
+    firstBlockOrdinal: 0,
+    blocks: [],
+    blockCount: 0,
+    transcriptRevision: 0,
+  }),
   'core.chat.visual.read': () => ({
     data: '',
     offset: 0,
@@ -208,6 +300,38 @@ const typedHandlers: Pick<
         hasChildren: true,
       },
     ],
+  }),
+  'worker.filesystem.file.read': (params) => ({
+    fileRootId: params.fileRootId,
+    relativePath: params.relativePath,
+    name: 'a.ts',
+    contentKind: 'text',
+    encoding: 'utf8',
+    content: '',
+    sizeBytes: 0,
+    returnedBytes: 0,
+    truncated: false,
+    modifiedAt: '2026-10-24T00:00:00.000Z',
+    version: '0:0',
+  }),
+  'worker.filesystem.search': (params) => ({
+    matches: [
+      {
+        fileRootId: params.fileRootId,
+        path: 'src/a.ts',
+        kind: 'file',
+        name: 'a.ts',
+        isIgnored: false,
+      },
+    ],
+    nextCursor: null,
+    truncated: false,
+  }),
+  'worker.filesystem.link.resolve': (params) => ({
+    fileRootId: params.base?.fileRootId ?? 'repo',
+    relativePath: 'docs/guide.md',
+    name: 'guide.md',
+    kind: 'file',
   }),
 };
 void typedHandlers;
@@ -262,6 +386,31 @@ describe('core chat read DTOs', () => {
         },
         CoreChatToolOutputReadResultSchema,
         { text: 'test', byteLength: 4 },
+      ],
+      [
+        CoreChatContentReadParamsSchema,
+        {
+          scope,
+          messageId: 'message-1',
+          blockOrdinal: 0,
+          field: 'text',
+          offset: 0,
+          limit: 4,
+        },
+        CoreChatContentReadResultSchema,
+        { text: 'test', byteLength: 4 },
+      ],
+      [
+        CoreChatTranscriptBlocksPageParamsSchema,
+        { scope, messageId: 'message-1', limit: 1 },
+        CoreChatTranscriptBlocksPageResultSchema,
+        {
+          messageId: 'message-1',
+          firstBlockOrdinal: 0,
+          blocks: [],
+          blockCount: 0,
+          transcriptRevision: 1,
+        },
       ],
     ] as const;
     for (const [paramsSchema, params, resultSchema, result] of pairs) {
@@ -366,6 +515,65 @@ describe('core chat read DTOs', () => {
     }
   });
 
+  it('preserves run truncation only when true on target-aware read results', () => {
+    const page = {
+      messages: [],
+      totalMessages: 0,
+      transcriptRevision: 1,
+      runTruncated: true,
+    };
+    const pageResult = CoreChatTranscriptPageResultSchema.safeParse(page);
+    expect(pageResult.success).toBe(true);
+    if (pageResult.success) {
+      expect(pageResult.data).toMatchObject({ runTruncated: true });
+    }
+    expect(
+      CoreChatTranscriptPageResultSchema.safeParse({
+        ...page,
+        runTruncated: false,
+      }).success,
+    ).toBe(false);
+
+    const contentRange = {
+      text: 'x',
+      byteLength: 1,
+      runTruncated: true,
+    };
+    const contentResult =
+      CoreChatContentReadResultSchema.safeParse(contentRange);
+    expect(contentResult.success).toBe(true);
+    if (contentResult.success) {
+      expect(contentResult.data).toMatchObject({ runTruncated: true });
+    }
+    expect(
+      CoreChatContentReadResultSchema.safeParse({
+        ...contentRange,
+        runTruncated: false,
+      }).success,
+    ).toBe(false);
+
+    const blockPage = {
+      messageId: 'message-1',
+      firstBlockOrdinal: 0,
+      blocks: [],
+      blockCount: 0,
+      transcriptRevision: 1,
+      runTruncated: true,
+    };
+    const blockPageResult =
+      CoreChatTranscriptBlocksPageResultSchema.safeParse(blockPage);
+    expect(blockPageResult.success).toBe(true);
+    if (blockPageResult.success) {
+      expect(blockPageResult.data).toMatchObject({ runTruncated: true });
+    }
+    expect(
+      CoreChatTranscriptBlocksPageResultSchema.safeParse({
+        ...blockPage,
+        runTruncated: false,
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects malformed tool-output references, ranges, and scopes', () => {
     const valid = {
       scope,
@@ -394,6 +602,589 @@ describe('core chat read DTOs', () => {
         CoreChatToolOutputReadParamsSchema.safeParse(invalid).success,
       ).toBe(false);
   });
+
+  it('binds each row read target to the scope chat', () => {
+    const primaryTarget = { kind: 'primary', chatId: scope.chatId } as const;
+    const delegationTarget = {
+      kind: 'delegation',
+      chatId: scope.chatId,
+      delegationId: 'delegation-1',
+      runGeneration: 0,
+    } as const;
+    const otherTargets = [
+      { ...primaryTarget, chatId: 'chat-2' },
+      { ...delegationTarget, chatId: 'chat-2' },
+    ];
+    const baseToolOutput = {
+      scope,
+      messageId: 'message-1',
+      toolUseId: 'tool-1',
+      reference: {
+        version: 1,
+        artifactId: `sha256-v1-${'a'.repeat(64)}`,
+        byteLength: 4,
+        sha256: 'a'.repeat(64),
+        encoding: 'utf-8',
+        mediaType: 'text/plain',
+      },
+      offset: 0,
+      limit: 4,
+    };
+    const baseContent = {
+      scope,
+      messageId: 'message-1',
+      blockOrdinal: 0,
+      field: 'text',
+      offset: 0,
+      limit: 4,
+    };
+    const baseBlocksPage = { scope, messageId: 'message-1', limit: 1 };
+
+    for (const target of [primaryTarget, delegationTarget]) {
+      expect(
+        CoreChatTranscriptPageParamsSchema.safeParse({ scope, target }).success,
+      ).toBe(true);
+      expect(
+        CoreChatTranscriptSearchParamsSchema.safeParse({
+          scope,
+          target,
+          query: 'hello',
+        }).success,
+      ).toBe(true);
+      expect(
+        CoreChatToolOutputReadParamsSchema.safeParse({
+          ...baseToolOutput,
+          target,
+        }).success,
+      ).toBe(true);
+      expect(
+        CoreChatContentReadParamsSchema.safeParse({ ...baseContent, target })
+          .success,
+      ).toBe(true);
+      expect(
+        CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+          ...baseBlocksPage,
+          target,
+        }).success,
+      ).toBe(true);
+    }
+
+    for (const target of otherTargets) {
+      expect(
+        CoreChatTranscriptPageParamsSchema.safeParse({ scope, target }).success,
+      ).toBe(false);
+      expect(
+        CoreChatTranscriptSearchParamsSchema.safeParse({
+          scope,
+          target,
+          query: 'hello',
+        }).success,
+      ).toBe(false);
+      expect(
+        CoreChatToolOutputReadParamsSchema.safeParse({
+          ...baseToolOutput,
+          target,
+        }).success,
+      ).toBe(false);
+      expect(
+        CoreChatContentReadParamsSchema.safeParse({ ...baseContent, target })
+          .success,
+      ).toBe(false);
+      expect(
+        CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+          ...baseBlocksPage,
+          target,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('pages delegation transcripts only by a bounded opaque cursor', () => {
+    const delegationTarget = {
+      kind: 'delegation',
+      chatId: scope.chatId,
+      delegationId: 'delegation-1',
+      runGeneration: 0,
+    } as const;
+    const delegationPage = { scope, target: delegationTarget };
+
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        ...delegationPage,
+        cursor: 'x',
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        ...delegationPage,
+        cursor: 'opaque-cursor',
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        ...delegationPage,
+        cursor: 'x'.repeat(2048),
+      }).success,
+    ).toBe(true);
+    for (const invalid of [
+      { ...delegationPage, cursor: '' },
+      { ...delegationPage, cursor: 'x'.repeat(2049) },
+      { ...delegationPage, before: 0 },
+      { ...delegationPage, transcriptRevision: 0 },
+      { ...delegationPage, view: 'turns' },
+    ]) {
+      expect(
+        CoreChatTranscriptPageParamsSchema.safeParse(invalid).success,
+      ).toBe(false);
+    }
+
+    const primaryTarget = { kind: 'primary', chatId: scope.chatId } as const;
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({ scope, cursor: 'opaque' })
+        .success,
+    ).toBe(false);
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        scope,
+        target: primaryTarget,
+        cursor: 'opaque',
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({ scope, before: 3 })
+        .success,
+    ).toBe(true);
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        scope,
+        target: primaryTarget,
+        before: 3,
+        transcriptRevision: 4,
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        scope,
+        view: 'turns',
+        turnId: 'turn-1',
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        scope,
+        turnId: 'turn-1',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('bounds stored message-content reads in bytes and validates the body field', () => {
+    const base = {
+      scope,
+      messageId: 'message-1',
+      blockOrdinal: 0,
+      field: 'text',
+      offset: 0,
+      limit: 4,
+    };
+    for (const field of [
+      'output',
+      'input',
+      'text',
+      'partialText',
+      'finalText',
+    ]) {
+      expect(
+        CoreChatContentReadParamsSchema.safeParse({ ...base, field }).success,
+      ).toBe(true);
+    }
+    expect(
+      CoreChatContentReadParamsSchema.safeParse({ ...base, field: 'path' })
+        .success,
+    ).toBe(false);
+    for (const limit of [4, 65_536])
+      expect(
+        CoreChatContentReadParamsSchema.safeParse({ ...base, limit }).success,
+      ).toBe(true);
+    expect(
+      CoreChatContentReadParamsSchema.safeParse({ ...base, offset: 3 }).success,
+    ).toBe(true);
+    for (const invalid of [
+      { ...base, offset: -1 },
+      { ...base, offset: 1.5 },
+      { ...base, limit: 3 },
+      { ...base, limit: 65_537 },
+      { ...base, limit: 4.5 },
+    ])
+      expect(CoreChatContentReadParamsSchema.safeParse(invalid).success).toBe(
+        false,
+      );
+  });
+
+  it('pages logical transcript blocks with exclusive position or cursor', () => {
+    const base = { scope, messageId: 'message-1' };
+    for (const limit of [1, 512])
+      expect(
+        CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+          ...base,
+          firstBlockOrdinal: 0,
+          limit,
+        }).success,
+      ).toBe(true);
+    expect(
+      CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+        ...base,
+        cursor: 'opaque-cursor',
+        limit: 1,
+      }).success,
+    ).toBe(true);
+    for (const invalid of [
+      { ...base, limit: 0 },
+      { ...base, limit: 513 },
+      { ...base, limit: 1.5 },
+      { ...base, firstBlockOrdinal: 0, cursor: 'opaque-cursor', limit: 1 },
+    ])
+      expect(
+        CoreChatTranscriptBlocksPageParamsSchema.safeParse(invalid).success,
+      ).toBe(false);
+  });
+
+  it('opts into logical field reads and bounded block pages', () => {
+    const content = {
+      scope,
+      messageId: 'message-1',
+      blockOrdinal: 0,
+      field: 'output',
+      offset: 0,
+      limit: 4,
+    };
+    for (const fieldSource of ['stored', 'logical'])
+      expect(
+        CoreChatContentReadParamsSchema.safeParse({ ...content, fieldSource })
+          .success,
+      ).toBe(true);
+    expect(
+      CoreChatContentReadParamsSchema.safeParse({
+        ...content,
+        fieldSource: 'inline',
+      }).success,
+    ).toBe(false);
+    const blocks = { scope, messageId: 'message-1', limit: 1 };
+    expect(
+      CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+        ...blocks,
+        projection: 'bounded-v1',
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+        ...blocks,
+        projection: 'bounded-v2',
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatTranscriptBlocksPageErrorSchema.safeParse({
+        kind: 'failed_precondition',
+        message: 'Stale cursor',
+        code: 'core.chat.transcript.blocks.page.staleCursor',
+        retry: { kind: 'never' },
+      }).success,
+    ).toBe(true);
+  });
+
+  describe('bounded block pages', () => {
+    const page = {
+      projection: 'bounded-v1',
+      messageId: 'message-1',
+      firstBlockOrdinal: 2,
+      blockCount: 5,
+      transcriptRevision: 3,
+    } as const;
+    const text = (ordinal: number): Record<string, unknown> => ({
+      kind: 'block',
+      ordinal,
+      block: { type: 'text', text: `block ${ordinal}` },
+    });
+    const parse = (value: object): boolean =>
+      CoreChatTranscriptBoundedBlocksPageResultSchema.safeParse(value).success;
+
+    it('names consecutive ordinals and continues exactly where they end', () => {
+      expect(
+        parse({
+          ...page,
+          entries: [text(2), text(3)],
+          nextBlockOrdinal: 4,
+          cursor: 'next',
+        }),
+      ).toBe(true);
+      // The last page ends at the row's block count, without a cursor.
+      expect(parse({ ...page, entries: [text(2), text(3), text(4)] })).toBe(
+        true,
+      );
+      // Only a page at the row's end may be empty.
+      expect(parse({ ...page, firstBlockOrdinal: 5, entries: [] })).toBe(true);
+      for (const invalid of [
+        {
+          ...page,
+          entries: [text(2), text(4)],
+          nextBlockOrdinal: 4,
+          cursor: 'c',
+        },
+        { ...page, entries: [text(3)], nextBlockOrdinal: 3, cursor: 'c' },
+        { ...page, entries: [text(2)], nextBlockOrdinal: 4, cursor: 'c' },
+        { ...page, entries: [text(2)], cursor: 'c' },
+        { ...page, entries: [text(2)], nextBlockOrdinal: 3 },
+        { ...page, entries: [text(2)] },
+        { ...page, entries: [], nextBlockOrdinal: 2, cursor: 'c' },
+        {
+          ...page,
+          entries: [text(2), text(3), text(4)],
+          nextBlockOrdinal: 5,
+          cursor: 'c',
+        },
+        { ...page, firstBlockOrdinal: 4, entries: [text(4), text(5)] },
+      ])
+        expect(parse(invalid)).toBe(false);
+    });
+
+    it('previews and notices consume one ordinal without storage details', () => {
+      const end = { ...page, firstBlockOrdinal: 4 };
+      expect(
+        parse({
+          ...end,
+          entries: [
+            {
+              kind: 'preview',
+              ordinal: 4,
+              block: {
+                type: 'tool_result',
+                toolUseId: 'call-1',
+                output: 'preview',
+                isError: false,
+              },
+              omittedFields: ['output'],
+            },
+          ],
+        }),
+      ).toBe(true);
+      expect(
+        parse({
+          ...end,
+          entries: [
+            {
+              kind: 'notice',
+              ordinal: 4,
+              reason: 'tooLarge',
+              blockType: 'thinking',
+            },
+          ],
+        }),
+      ).toBe(true);
+      for (const entry of [
+        // A body reference never crosses, even beside its preview.
+        {
+          kind: 'preview',
+          ordinal: 4,
+          block: {
+            type: 'tool_result',
+            output: 'preview',
+            fullOutputRef: { byteLength: 9 },
+          },
+          omittedFields: ['output'],
+        },
+        // An omitted field must be a field of the previewed block.
+        {
+          kind: 'preview',
+          ordinal: 4,
+          block: { type: 'text', text: 'preview' },
+          omittedFields: ['output'],
+        },
+        {
+          kind: 'preview',
+          ordinal: 4,
+          block: { type: 'text', text: 'preview' },
+          omittedFields: ['text', 'text'],
+        },
+        { kind: 'block', ordinal: 4, block: { type: 'image', path: 'a.png' } },
+        {
+          kind: 'block',
+          ordinal: 4,
+          block: { type: 'text', text: 'x', absolutePath: '/Users/a/b' },
+        },
+        { kind: 'notice', ordinal: 4, reason: 'missing' },
+        { kind: 'notice', ordinal: 4, reason: 'unsupported', blockType: 'A b' },
+      ])
+        expect(parse({ ...end, entries: [entry] })).toBe(false);
+    });
+
+    it('fits the byte budget, measured on the serialized page', () => {
+      const entry = (length: number): Record<string, unknown> => ({
+        kind: 'block',
+        ordinal: 4,
+        block: { type: 'text', text: '"'.repeat(length) },
+      });
+      const end = { ...page, firstBlockOrdinal: 4 };
+      // Escaping doubles each quote, so the serialized size decides.
+      expect(
+        parse({
+          ...end,
+          entries: [entry(TRANSCRIPT_BOUNDED_BLOCK_PAGE_BYTES / 2 - 200)],
+        }),
+      ).toBe(true);
+      expect(
+        parse({
+          ...end,
+          entries: [entry(TRANSCRIPT_BOUNDED_BLOCK_PAGE_BYTES / 2)],
+        }),
+      ).toBe(false);
+    });
+
+    it('is a result of the block page operation beside the raw shape', () => {
+      expect(
+        CoreChatTranscriptBlocksPageResultSchema.safeParse({
+          ...page,
+          firstBlockOrdinal: 4,
+          entries: [text(4)],
+        }).success,
+      ).toBe(true);
+    });
+  });
+
+  it('enforces worktree archive scope for transcript row reads', () => {
+    const toolOutput = {
+      scope,
+      messageId: 'message-1',
+      toolUseId: 'tool-1',
+      reference: {
+        version: 1,
+        artifactId: `sha256-v1-${'a'.repeat(64)}`,
+        byteLength: 4,
+        sha256: 'a'.repeat(64),
+        encoding: 'utf-8',
+        mediaType: 'text/plain',
+      },
+      offset: 0,
+      limit: 4,
+    };
+    const content = {
+      scope,
+      messageId: 'message-1',
+      blockOrdinal: 0,
+      field: 'text',
+      offset: 0,
+      limit: 4,
+    };
+    const blocks = { scope, messageId: 'message-1', limit: 1 };
+
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        scope,
+        archivedContainerId: scope.worktreeId,
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatToolOutputReadParamsSchema.safeParse({
+        ...toolOutput,
+        archivedContainerId: scope.worktreeId,
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatContentReadParamsSchema.safeParse({
+        ...content,
+        archivedContainerId: scope.worktreeId,
+      }).success,
+    ).toBe(true);
+    expect(
+      CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+        ...blocks,
+        archivedContainerId: scope.worktreeId,
+      }).success,
+    ).toBe(true);
+
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        scope,
+        archivedContainerId: 'another-worktree',
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatToolOutputReadParamsSchema.safeParse({
+        ...toolOutput,
+        archivedContainerId: 'another-worktree',
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatContentReadParamsSchema.safeParse({
+        ...content,
+        archivedContainerId: 'another-worktree',
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+        ...blocks,
+        archivedContainerId: 'another-worktree',
+      }).success,
+    ).toBe(false);
+
+    expect(
+      CoreChatTranscriptPageParamsSchema.safeParse({
+        scope,
+        archivedContainerId: scope.worktreeId,
+        standaloneHistory: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatToolOutputReadParamsSchema.safeParse({
+        ...toolOutput,
+        archivedContainerId: scope.worktreeId,
+        standaloneHistory: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatContentReadParamsSchema.safeParse({
+        ...content,
+        archivedContainerId: scope.worktreeId,
+        standaloneHistory: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      CoreChatTranscriptBlocksPageParamsSchema.safeParse({
+        ...blocks,
+        archivedContainerId: scope.worktreeId,
+        standaloneHistory: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects host-local paths in blocks pages but allows authored path text', () => {
+    const result = {
+      messageId: 'message-1',
+      firstBlockOrdinal: 0,
+      blocks: [],
+      blockCount: 0,
+      transcriptRevision: 1,
+    };
+    for (const block of [
+      { absolutePath: '/Users/alice/project/file.ts' },
+      { attachmentPath: '/Users/alice/private.txt' },
+      { attachmentPaths: ['/Users/alice/private.txt'] },
+      { attachmentPromptContexts: [{ attachmentPath: '/Users/alice/file' }] },
+      { type: 'image', path: '/Users/alice/private.png' },
+      { type: 'compaction_info', transcriptPath: '/Users/alice/raw.jsonl' },
+    ]) {
+      expect(
+        CoreChatTranscriptBlocksPageResultSchema.safeParse({
+          ...result,
+          blocks: [block],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      CoreChatTranscriptBlocksPageResultSchema.safeParse({
+        ...result,
+        blocks: [{ type: 'text', text: 'See /Users/alice/project/file.ts' }],
+      }).success,
+    ).toBe(true);
+  });
 });
 
 const compileTimeDefinition = defineCanopyQuery({
@@ -409,7 +1200,6 @@ const compileTimeDefinition = defineCanopyQuery({
 });
 
 function assertInvalidDefinitionsFailToCompile(): void {
-  // @ts-expect-error a worker definition cannot require a core-owned grant
   defineCanopyQuery({
     error: CanopyErrorPayloadSchema,
     plane: 'worker',
@@ -417,17 +1207,18 @@ function assertInvalidDefinitionsFailToCompile(): void {
     version: 1,
     placement: 'target-selectable',
     idempotency: 'inherent',
+    // @ts-expect-error a worker definition cannot require a core-owned grant
     requiredGrants: ['core.filesystem.read'],
     params: z.strictObject({}),
     result: z.looseObject({}),
   });
 
-  // @ts-expect-error a worker definition cannot declare core-only placement
   defineCanopyQuery({
     error: CanopyErrorPayloadSchema,
     plane: 'worker',
     domain: 'filesystem',
     version: 1,
+    // @ts-expect-error a worker definition cannot declare core-only placement
     placement: 'core-only',
     idempotency: 'inherent',
     requiredGrants: ['worker.filesystem.read'],
@@ -441,6 +1232,40 @@ function assertInvalidDefinitionsFailToCompile(): void {
   });
 }
 void assertInvalidDefinitionsFailToCompile;
+
+function withRuntimeProperty<Value extends object>(
+  value: Value,
+  property: keyof Value,
+  replacement: unknown,
+): Value {
+  const copy = { ...value };
+  Object.defineProperty(copy, property, {
+    configurable: true,
+    enumerable: true,
+    value: replacement,
+  });
+  return copy;
+}
+
+function runtimeQueryRegistry(
+  name: string,
+  definition: typeof compileTimeDefinition,
+): { 'worker.filesystem.read': typeof compileTimeDefinition } {
+  const registry = { 'worker.filesystem.read': definition };
+  return new Proxy(registry, {
+    ownKeys: (): string[] => [name],
+    getOwnPropertyDescriptor: (_target, key): PropertyDescriptor | undefined =>
+      key === name
+        ? {
+            configurable: true,
+            enumerable: true,
+            value: definition,
+          }
+        : undefined,
+    get: (_target, key): typeof compileTimeDefinition | undefined =>
+      key === name ? definition : undefined,
+  });
+}
 
 describe('universal Canopy query registry', () => {
   it('accepts only portable pending approval and TODO projections', () => {
@@ -487,11 +1312,26 @@ describe('universal Canopy query registry', () => {
       'core.chat.transcript.page',
       'core.chat.transcript.search',
       'core.chat.toolOutput.read',
+      'core.chat.content.read',
+      'core.chat.transcript.blocks.page',
       'core.chat.visual.read',
       'core.workspace.list',
       'core.workspace.get',
+      'core.workspace.sharedMultiRepo.prepare',
+      'core.workspace.sharedMultiRepo.getCreation',
+      'core.workspace.sharedMultiRepo.listCreations',
+      'core.workspace.instructions.get',
+      'core.workspace.item.get',
+      'core.workspace.item.list',
+      'core.workspace.repoRules.scan',
+      'core.workspace.repoRules.preview',
+      'core.workspace.repoRules.status',
+      'core.script.definition.list',
+      'core.script.definition.get',
       'core.worktree.list',
       'core.worktree.get',
+      'core.initiatedWork.source.list',
+      'core.initiatedWork.source.get',
       'core.ledger.entries.search',
       'core.ledger.entry.get',
       'core.ledger.owners.list',
@@ -499,25 +1339,188 @@ describe('universal Canopy query registry', () => {
       'core.cost.scope.get',
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
+      'core.annotation.document.get',
+      'core.annotation.thread.get',
+      'core.annotation.thread.list',
+      'core.pipeline.definition.list',
+      'core.pipeline.definition.get',
+      'core.pipeline.definition.validate',
+      'core.operation.get',
+      'core.operation.list',
+      'core.execution.status.get',
+      'core.integration.get',
+      'core.integration.list',
+      'core.integration.resource.list',
+      'core.pullRequest.get',
+      'core.pullRequest.list',
     ]);
     expect(Object.keys(WORKER_QUERY_DEFINITIONS)).toEqual([
       'worker.filesystem.roots.list',
       'worker.filesystem.directory.list',
+      'worker.filesystem.file.read',
+      'worker.filesystem.search',
+      'worker.filesystem.link.resolve',
+      'worker.git.branch.list',
+      'worker.git.executable.get',
+      'worker.git.remote.get',
+      'worker.git.worktree.health.get',
+      'worker.git.diff.get',
     ]);
     expect(CANOPY_QUERY_DEFINITIONS).toEqual({
       ...CORE_QUERY_DEFINITIONS,
       ...WORKER_QUERY_DEFINITIONS,
     });
 
-    for (const definition of Object.values(WORKER_QUERY_DEFINITIONS)) {
+    for (const name of [
+      'core.chat.transcript.page',
+      'core.chat.transcript.search',
+      'core.chat.toolOutput.read',
+      'core.chat.content.read',
+      'core.chat.transcript.blocks.page',
+      'core.chat.visual.read',
+    ] as const) {
+      expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
+        kind: 'query',
+        plane: 'core',
+        domain: 'chat',
+        version: 1,
+        placement: 'core-only',
+        idempotency: 'inherent',
+        requiredGrants: ['core.chat.read'],
+      });
+    }
+    expect(
+      CORE_QUERY_DEFINITIONS['core.workspace.instructions.get'],
+    ).toMatchObject({
+      kind: 'query',
+      plane: 'core',
+      domain: 'workspace',
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.workspace.read'],
+    });
+    expect(
+      CANOPY_INSTRUCTION_DEFINITIONS['core.workspace.instructions.update'],
+    ).toMatchObject({
+      kind: 'instruction',
+      plane: 'core',
+      domain: 'workspace',
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.workspace.write'],
+    });
+    for (const name of [
+      'core.workspace.item.get',
+      'core.workspace.item.list',
+    ] as const) {
+      expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
+        kind: 'query',
+        plane: 'core',
+        domain: 'workspace',
+        placement: 'core-only',
+        idempotency: 'inherent',
+        requiredGrants: ['core.workspace.read'],
+      });
+    }
+    expect(
+      CANOPY_INSTRUCTION_DEFINITIONS['core.workspace.item.import'],
+    ).toMatchObject({
+      kind: 'instruction',
+      plane: 'core',
+      domain: 'workspace',
+      placement: 'core-only',
+      idempotency: 'keyed',
+      requiredGrants: ['core.workspace.write'],
+    });
+    for (const name of [
+      'core.workspace.repoRules.scan',
+      'core.workspace.repoRules.preview',
+      'core.workspace.repoRules.status',
+    ] as const) {
+      expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
+        kind: 'query',
+        plane: 'core',
+        domain: 'workspace',
+        placement: 'core-only',
+        idempotency: 'inherent',
+        requiredGrants: ['core.workspace.read'],
+      });
+    }
+    expect(
+      CANOPY_INSTRUCTION_DEFINITIONS['core.workspace.repoRules.apply'],
+    ).toMatchObject({
+      kind: 'instruction',
+      plane: 'core',
+      domain: 'workspace',
+      placement: 'core-only',
+      idempotency: 'none',
+      requiredGrants: ['core.workspace.write'],
+    });
+    for (const name of [
+      'core.script.definition.list',
+      'core.script.definition.get',
+    ] as const) {
+      expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
+        kind: 'query',
+        plane: 'core',
+        domain: 'script',
+        placement: 'core-only',
+        idempotency: 'inherent',
+        requiredGrants: ['core.script.read'],
+      });
+    }
+    for (const name of [
+      'core.script.definition.upsert',
+      'core.script.definition.delete',
+    ] as const) {
+      expect(CANOPY_INSTRUCTION_DEFINITIONS[name]).toMatchObject({
+        kind: 'instruction',
+        plane: 'core',
+        domain: 'script',
+        placement: 'core-only',
+        idempotency: 'keyed',
+        requiredGrants: ['core.script.write'],
+      });
+    }
+
+    for (const name of [
+      'core.workspace.sharedMultiRepo.prepare',
+      'core.workspace.sharedMultiRepo.getCreation',
+      'core.workspace.sharedMultiRepo.listCreations',
+    ] as const) {
+      expect(CORE_QUERY_DEFINITIONS[name]).toMatchObject({
+        kind: 'query',
+        plane: 'core',
+        domain: 'workspace',
+        version: 1,
+        placement: 'core-only',
+        idempotency: 'inherent',
+        requiredGrants: ['core.workspace.read'],
+      });
+    }
+
+    expect(
+      CANOPY_INSTRUCTION_DEFINITIONS['core.workspace.sharedMultiRepo.create'],
+    ).toMatchObject({
+      kind: 'instruction',
+      plane: 'core',
+      domain: 'workspace',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.workspace.write'],
+    });
+
+    for (const [name, definition] of Object.entries(WORKER_QUERY_DEFINITIONS)) {
+      const domain = name.split('.')[1];
       expect(definition).toMatchObject({
         kind: 'query',
         plane: 'worker',
-        domain: 'filesystem',
+        domain,
         version: 1,
         placement: 'target-selectable',
         idempotency: 'inherent',
-        requiredGrants: ['worker.filesystem.read'],
+        requiredGrants: [`worker.${domain}.read`],
       });
     }
   });
@@ -947,39 +1950,32 @@ describe('universal Canopy query registry', () => {
   });
 
   it('enforces registry name, metadata, grant, placement, and uniqueness invariants', () => {
-    const definition = defineCanopyQuery({
-      error: CanopyErrorPayloadSchema,
-      plane: 'worker',
-      domain: 'filesystem',
-      version: 1,
-      placement: 'target-selectable',
-      idempotency: 'inherent',
-      requiredGrants: ['worker.filesystem.read'],
-      params: z.strictObject({}),
-      result: z.looseObject({}),
-    });
-
     const invalidRegistries = [
-      ['core.filesystem.read', definition],
-      ['worker.session.read', definition],
+      ['core.filesystem.read', compileTimeDefinition],
+      ['worker.session.read', compileTimeDefinition],
       [
         'worker.filesystem.read',
-        { ...definition, requiredGrants: ['core.filesystem.read'] },
+        withRuntimeProperty(compileTimeDefinition, 'requiredGrants', [
+          'core.filesystem.read',
+        ]),
       ],
-      ['worker.filesystem.read', { ...definition, placement: 'core-only' }],
-      ['worker.worker.filesystem.read', definition],
+      [
+        'worker.filesystem.read',
+        withRuntimeProperty(compileTimeDefinition, 'placement', 'core-only'),
+      ],
+      ['worker.worker.filesystem.read', compileTimeDefinition],
     ] as const;
 
     for (const [name, invalidDefinition] of invalidRegistries) {
       expect(() =>
         defineCanopyQueryRegistry('worker', {
-          [name]: invalidDefinition,
+          ...runtimeQueryRegistry(name, invalidDefinition),
         }),
       ).toThrow();
     }
 
     const first = defineCanopyQueryRegistry('worker', {
-      'worker.filesystem.read': definition,
+      'worker.filesystem.read': compileTimeDefinition,
     });
     const duplicate = { ...first };
     expect(() => composeCanopyQueryRegistries(first, duplicate)).toThrow(
@@ -1062,26 +2058,59 @@ describe('common request and error contracts', () => {
 
   it('registers core queries, chat instructions and events, and aliases command to instruction', () => {
     expect(Object.keys(CORE_QUERY_DEFINITIONS).sort()).toEqual([
+      'core.annotation.document.get',
+      'core.annotation.thread.get',
+      'core.annotation.thread.list',
+      'core.chat.content.read',
       'core.chat.list',
       'core.chat.send.receipt',
       'core.chat.snapshot.get',
       'core.chat.toolOutput.read',
+      'core.chat.transcript.blocks.page',
       'core.chat.transcript.page',
       'core.chat.transcript.search',
       'core.chat.visual.read',
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
       'core.cost.scope.get',
+      'core.execution.status.get',
+      'core.initiatedWork.source.get',
+      'core.initiatedWork.source.list',
+      'core.integration.get',
+      'core.integration.list',
+      'core.integration.resource.list',
       'core.ledger.changes.list',
       'core.ledger.entries.search',
       'core.ledger.entry.get',
       'core.ledger.owners.list',
+      'core.operation.get',
+      'core.operation.list',
+      'core.pipeline.definition.get',
+      'core.pipeline.definition.list',
+      'core.pipeline.definition.validate',
+      'core.pullRequest.get',
+      'core.pullRequest.list',
+      'core.script.definition.get',
+      'core.script.definition.list',
       'core.workspace.get',
+      'core.workspace.instructions.get',
+      'core.workspace.item.get',
+      'core.workspace.item.list',
       'core.workspace.list',
+      'core.workspace.repoRules.preview',
+      'core.workspace.repoRules.scan',
+      'core.workspace.repoRules.status',
+      'core.workspace.sharedMultiRepo.getCreation',
+      'core.workspace.sharedMultiRepo.listCreations',
+      'core.workspace.sharedMultiRepo.prepare',
       'core.worktree.get',
       'core.worktree.list',
     ]);
     expect(Object.keys(CANOPY_INSTRUCTION_DEFINITIONS).sort()).toEqual([
+      'core.annotation.document.append',
+      'core.annotation.document.dismiss',
+      'core.annotation.document.save',
+      'core.annotation.thread.reply',
       'core.chat.archive',
       'core.chat.create',
       'core.chat.delete',
@@ -1090,14 +2119,42 @@ describe('common request and error contracts', () => {
       'core.chat.queue.entry.cancel',
       'core.chat.queue.entry.force',
       'core.chat.queue.entry.update',
+      'core.chat.turn.cancel',
       'core.chat.update',
       'core.cost.index.refresh',
       'core.ledger.entry.add',
       'core.ledger.entry.update',
       'core.ledger.summary.publish',
+      'core.operation.cancel',
+      'core.pipeline.definition.delete',
+      'core.pipeline.definition.upsert',
+      'core.pullRequest.create',
+      'core.pullRequest.update',
+      'core.script.definition.delete',
+      'core.script.definition.upsert',
+      'core.workspace.instructions.update',
+      'core.workspace.item.import',
+      'core.workspace.repoRules.apply',
+      'core.workspace.sharedMultiRepo.create',
+      // CAN-5502: entry instructions admitted to the composed registry.
+      'worker.filesystem.entry.copy',
+      'worker.filesystem.entry.delete',
+      'worker.filesystem.entry.move',
+      // CAN-4108: the composed git branch-write instructions; CAN-5516 adds
+      // branch delete and rename.
+      'worker.git.branch.create',
+      'worker.git.branch.delete',
+      'worker.git.branch.rename',
+      'worker.git.checkout',
+      // CAN-5517.
+      'worker.git.fetch',
+      'worker.git.pull',
     ]);
     expect(Object.keys(CANOPY_STREAM_DEFINITIONS)).toEqual([
       'core.chat.events',
+      'core.operation.events',
+      'core.execution.status.events',
+      'worker.filesystem.watch',
     ]);
     expect(defineCanopyCommand).toBe(defineCanopyInstruction);
     const instruction = defineCanopyInstruction({
@@ -1120,7 +2177,7 @@ describe('common request and error contracts', () => {
     ).toThrow('Duplicate');
     expect(() =>
       defineCanopyInstructionRegistry('core', {
-        'core.example.write': { ...instruction, kind: 'query' },
+        'core.example.write': withRuntimeProperty(instruction, 'kind', 'query'),
       }),
     ).toThrow('kind instruction');
   });
@@ -1303,7 +2360,11 @@ describe('common request and error contracts', () => {
     );
     expect(() =>
       defineCanopyStreamRegistry('core', {
-        'core.example.events': { ...stream, idempotency: 'keyed' },
+        'core.example.events': withRuntimeProperty(
+          stream,
+          'idempotency',
+          'keyed',
+        ),
       }),
     ).toThrow('inherently idempotent');
   });

@@ -381,6 +381,27 @@ export class AutomationRunArchive {
     }
   }
 
+  /** The latest record of the run that started a pipeline execution. */
+  async findRunByPipelineExecution(
+    activityId: string,
+    executionId: string,
+  ): Promise<ScheduledActivityRun | null> {
+    await this.queues.get(activityId);
+    const filePath = getAutomationRunArchiveFilePath(activityId);
+    try {
+      const runs = parseLines(await readFile(filePath, 'utf8'));
+      for (let index = runs.length - 1; index >= 0; index -= 1) {
+        const candidate = runs[index];
+        if (candidate?.result?.pipelineExecutionId === executionId)
+          return candidate;
+      }
+      return null;
+    } catch (error) {
+      if (isMissingFile(error)) return null;
+      throw error;
+    }
+  }
+
   async compactActivityArchive(
     activityId: string,
     options: { retentionDays?: number; now?: Date } = {},

@@ -143,7 +143,7 @@ describe('shared inventory list refreshes', () => {
 
     replacement.resolve({ skills: [updatedSkill], nextCursor: null });
     await act(async () => refreshPromise);
-    expect(current?.skills).toEqual([updatedSkill]);
+    expect(getCurrent().skills).toEqual([updatedSkill]);
   });
 
   it('keeps a shared collection resolvable while an update-triggered refresh is in flight', async () => {
@@ -197,6 +197,6 @@ describe('shared inventory list refreshes', () => {
 
     replacement.resolve({ collections: [updatedCollection], nextCursor: null });
     await act(async () => refreshPromise);
-    expect(current?.collections).toEqual([updatedCollection]);
+    expect(getCurrent().collections).toEqual([updatedCollection]);
   });
 });

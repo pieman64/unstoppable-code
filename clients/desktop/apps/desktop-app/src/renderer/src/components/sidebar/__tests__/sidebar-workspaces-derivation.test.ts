@@ -1,4 +1,9 @@
-import type { SidebarItem, WorktreeData } from '@canopy/desktop-shared/types';
+import type {
+  CoworkSidebarItem,
+  SidebarItem,
+  SingleRepoSidebarItem,
+  WorktreeData,
+} from '@canopy/desktop-shared/types';
 import {
   buildSidebarWorkspaceFilterOptions,
   buildWorktreeStatusMap,
@@ -22,9 +27,9 @@ function makeWorktree(
 function makeProject(
   id: string,
   order: number,
-  overrides: Partial<SidebarItem> = {},
-): SidebarItem {
-  const base: SidebarItem = {
+  overrides: Partial<SingleRepoSidebarItem> = {},
+): SingleRepoSidebarItem {
+  const base: SingleRepoSidebarItem = {
     id,
     type: 'single-repo',
     name: id,
@@ -44,8 +49,8 @@ function makeProject(
 function makeCoworkProject(
   id: string,
   order: number,
-  overrides: Partial<SidebarItem> = {},
-): SidebarItem {
+  overrides: Partial<CoworkSidebarItem> = {},
+): CoworkSidebarItem {
   return {
     id,
     type: 'cowork',

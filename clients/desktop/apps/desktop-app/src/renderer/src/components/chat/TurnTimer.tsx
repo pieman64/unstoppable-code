@@ -3,7 +3,9 @@ import {
   AutoRoutedModelPill,
   CLEAN_FOOTER_ICON_BUTTON_CLASS,
   TurnTimer as SharedTurnTimer,
+  type TurnCompletionStatus,
   useCleanChatLook,
+  type PlanCopyState,
 } from '@canopy/ui-shared';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { getModelDisplayName } from '@canopy/desktop-shared/types';
@@ -18,6 +20,7 @@ export function TurnTimer({
   pausedAt,
   resumedAt,
   accumulatedPausedDurationMs,
+  waitingForUser = false,
   completedAt,
   showForkAction = false,
   onFork,
@@ -31,15 +34,19 @@ export function TurnTimer({
   alwaysVisible = false,
   workingLabel,
   autoRoutedModel,
-  liveStatusShown = false,
   copyText,
+  planCopy,
   moreMenu,
+  liveLine,
+  completionStatus,
 }: {
   pending?: boolean;
   startedAt?: number;
   pausedAt?: number | null;
   resumedAt?: number | null;
   accumulatedPausedDurationMs?: number;
+  /** The chat has a pending tool approval; pauses an unfinished turn. */
+  waitingForUser?: boolean;
   completedAt: number | null;
   showForkAction?: boolean;
   onFork?: () => void;
@@ -75,12 +82,16 @@ export function TurnTimer({
    * actions so each turn keeps a record of which model answered it.
    */
   autoRoutedModel?: string;
-  /** Clean chat look: a running step already shows what the turn is doing. */
-  liveStatusShown?: boolean;
   /** The finished reply's text, for the timer row's Copy button. */
   copyText?: string;
+  /** The turn's plan, whose Copy plan replaces the reply's Copy (CAN-5354). */
+  planCopy?: PlanCopyState;
   /** Clean chat look: the "…" menu with the turn's less-used actions. */
   moreMenu?: ReactNode;
+  /** Clean chat look: the running turn's live line; see the shared row. */
+  liveLine?: ReactNode;
+  /** How the settled turn ended; omitted while it runs. */
+  completionStatus?: TurnCompletionStatus;
 }): JSX.Element {
   const cleanChatLook = useCleanChatLook();
   if (pending) {
@@ -90,7 +101,7 @@ export function TurnTimer({
       <SharedTurnTimer
         spinner={<ThinkingSpinner tone="accent" />}
         {...(workingLabel ? { workingLabel } : {})}
-        liveStatusShown={liveStatusShown}
+        liveLine={liveLine}
         inset
       />
     );
@@ -124,7 +135,7 @@ export function TurnTimer({
             className={
               cleanChatLook
                 ? CLEAN_FOOTER_ICON_BUTTON_CLASS
-                : 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border bg-fg-primary/[0.04] fg-primary/80 transition hover:bg-fg-primary/[0.08] hover:fg-primary'
+                : 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border bg-fg-primary/[0.04] fg-primary/80 transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary'
             }
             aria-label={`Branch ${CHAT_UNIT_LABEL} into new worktree`}
           >
@@ -143,14 +154,17 @@ export function TurnTimer({
       pausedAt={pausedAt}
       resumedAt={resumedAt}
       accumulatedPausedDurationMs={accumulatedPausedDurationMs}
+      waitingForUser={waitingForUser}
       finishedAt={completedAt}
       spinner={<ThinkingSpinner tone="accent" />}
       trailing={trailing}
+      liveLine={liveLine}
       stampAccessory={feedbackControl}
       alwaysVisible={alwaysVisible}
+      {...(completionStatus !== undefined ? { completionStatus } : {})}
       {...(workingLabel ? { workingLabel } : {})}
-      liveStatusShown={liveStatusShown}
       {...(copyText !== undefined ? { copyText } : {})}
+      {...(planCopy !== undefined ? { planCopy } : {})}
       {...(cleanChatLook && moreMenu != null ? { moreMenu } : {})}
       {...(cleanChatLook && autoRoutedModel !== undefined
         ? { modelLabel: getModelDisplayName(autoRoutedModel) }

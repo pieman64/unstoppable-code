@@ -6,23 +6,34 @@ const cleanupPersistedWorktreeDataMock = jest.fn(() =>
 );
 
 jest.mock('../lib/github-poller', () => ({
-  reconcileTrackedWorkspaceWorktrees: reconcileTrackedWorkspaceWorktreesMock,
+  get reconcileTrackedWorkspaceWorktrees(): typeof reconcileTrackedWorkspaceWorktreesMock {
+    return reconcileTrackedWorkspaceWorktreesMock;
+  },
 }));
 jest.mock('../lib/worktree-live-cleanup', () => ({
-  cleanupLiveWorktreeState: cleanupLiveWorktreeStateMock,
-  purgeLiveWorktreeObservabilityData: purgeLiveWorktreeObservabilityDataMock,
+  get cleanupLiveWorktreeState(): typeof cleanupLiveWorktreeStateMock {
+    return cleanupLiveWorktreeStateMock;
+  },
+  get purgeLiveWorktreeObservabilityData(): typeof purgeLiveWorktreeObservabilityDataMock {
+    return purgeLiveWorktreeObservabilityDataMock;
+  },
 }));
 jest.mock('../lib/worktree-data-cleanup', () => ({
-  cleanupPersistedWorktreeData: cleanupPersistedWorktreeDataMock,
+  get cleanupPersistedWorktreeData(): typeof cleanupPersistedWorktreeDataMock {
+    return cleanupPersistedWorktreeDataMock;
+  },
 }));
 const notifyDesktopInventoryChangedMock = jest.fn();
 jest.mock('../services/desktop-inventory-sync-signals', () => ({
-  notifyDesktopInventoryChanged: notifyDesktopInventoryChangedMock,
+  get notifyDesktopInventoryChanged(): typeof notifyDesktopInventoryChangedMock {
+    return notifyDesktopInventoryChangedMock;
+  },
 }));
 const notifyLedgerContainerRemovedExternallyMock = jest.fn();
 jest.mock('../ledger/lifecycle', () => ({
-  notifyLedgerContainerRemovedExternally:
-    notifyLedgerContainerRemovedExternallyMock,
+  get notifyLedgerContainerRemovedExternally(): typeof notifyLedgerContainerRemovedExternallyMock {
+    return notifyLedgerContainerRemovedExternallyMock;
+  },
 }));
 
 import { reconcileExternalWorktreeSnapshot } from '../lib/worktree-registry-reconciliation';

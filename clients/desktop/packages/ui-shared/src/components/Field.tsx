@@ -7,9 +7,11 @@ import {
   useState,
   type InputHTMLAttributes,
   type JSX,
+  type ReactNode,
   type TextareaHTMLAttributes,
 } from 'react';
-import { ChevronDownMediumIcon } from '../icons/AppIcons';
+import { ChevronDownMediumIcon, WarningIcon } from '../icons/AppIcons';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { FLOATING_MENU_GAP } from './FloatingMenu';
 import {
   FloatingPickerMenu,
@@ -40,8 +42,16 @@ import {
  * `className` is for placement only (width, margins, flex). Surface, edge,
  * radius, inset, typography, and states belong here.
  */
-const FIELD_SURFACE_CLASS =
-  'w-full bg-transparent text-s fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none shadow-field transition-shadow focus-visible:shadow-field-focus disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled';
+/**
+ * The field edge at rest. A composite field (`SearchField`) draws it on the
+ * box around its input and swaps in {@link FIELD_FOCUS_WITHIN_CLASS}.
+ */
+export const FIELD_EDGE_CLASS = 'shadow-field transition-shadow';
+
+/** The neutral field focus, for a box whose input has focus. */
+export const FIELD_FOCUS_WITHIN_CLASS = 'has-[input:focus]:shadow-field-focus';
+
+const FIELD_SURFACE_CLASS = `w-full bg-transparent text-s fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none ${FIELD_EDGE_CLASS} focus-visible:shadow-field-focus disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled`;
 
 const FIELD_CLASS = `min-h-9 rounded-lg px-3 py-2 pointer-coarse:min-h-11 ${FIELD_SURFACE_CLASS}`;
 
@@ -108,7 +118,43 @@ export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(
 
 TextInput.displayName = 'TextInput';
 
-export type TextAreaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
+/**
+ * A field's validation message, directly under the field it is about. Point
+ * the field at it with `aria-describedby={id}` and set `aria-invalid`.
+ *
+ * Show it only after the person submits, keep what they typed, and drop it as
+ * soon as they edit the field: a message about a value they are still
+ * changing is not news. Say what is needed (`Enter a name.`), never
+ * `invalid`. The glyph and the copy carry the destructive ink; the field keeps
+ * its shape.
+ */
+export function FieldError({
+  id,
+  children,
+  'data-testid': dataTestId,
+}: {
+  readonly id: string;
+  readonly children: ReactNode;
+  readonly 'data-testid'?: string;
+}): JSX.Element {
+  return (
+    <p
+      id={id}
+      data-testid={dataTestId}
+      className="flex items-start gap-1.5 text-xs fg-destructive text-pretty"
+    >
+      <span aria-hidden="true" className="flex h-4 shrink-0 items-center">
+        <WarningIcon size={14} />
+      </span>
+      <span>{children}</span>
+    </p>
+  );
+}
+
+export interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
+  /** Monospace for code, commands, and patterns. */
+  readonly mono?: boolean;
+}
 
 /**
  * Multi-line field. Keeps native vertical resizing; `field-resize-grip`
@@ -116,15 +162,16 @@ export type TextAreaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
  * rounded corner.
  */
 export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
-  function TextArea({ rows = 2, className = '', ...props }, ref): JSX.Element {
+  function TextArea(
+    { rows = 2, mono = false, className = '', ...props },
+    ref,
+  ): JSX.Element {
+    const treatment = `${FIELD_CLASS} field-resize-grip resize-y${mono ? ' font-mono' : ''}`;
     return (
       <textarea
         ref={ref}
         rows={rows}
-        className={withPlacement(
-          `${FIELD_CLASS} field-resize-grip resize-y`,
-          className,
-        )}
+        className={withPlacement(treatment, className)}
         {...props}
       />
     );
@@ -137,6 +184,8 @@ export interface SelectOption {
   readonly value: string;
   readonly label: string;
   readonly disabled?: boolean;
+  /** The label is a user-authored title, masked in session replay. */
+  readonly maskInReplay?: boolean;
 }
 
 export interface SelectProps {
@@ -207,7 +256,7 @@ export function Select({
         className={`${FIELD_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:cursor-not-allowed`}
       >
         <span
-          className={`min-w-0 flex-1 truncate ${chosen ? '' : 'fg-tertiary'}`}
+          className={`min-w-0 flex-1 truncate ${chosen ? '' : 'fg-tertiary'}${chosen?.maskInReplay ? ` ${REPLAY_MASK_CLASS}` : ''}`}
         >
           {chosen?.label ?? placeholder}
         </span>
@@ -240,7 +289,13 @@ export function Select({
               onClick={() => onValueChange(option.value)}
             >
               <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
+                <PickerMenuOptionLabel>
+                  {option.maskInReplay ? (
+                    <span className={REPLAY_MASK_CLASS}>{option.label}</span>
+                  ) : (
+                    option.label
+                  )}
+                </PickerMenuOptionLabel>
               </PickerMenuOptionContent>
               <PickerMenuOptionCheck selected={selected} />
             </PickerMenuOption>

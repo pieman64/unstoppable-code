@@ -2,6 +2,7 @@ import {
   canPurgeLedgerScope,
   canRebindLedgerScope,
   canTransitionLedgerScope,
+  hasLedgerContainerLifecycle,
   isLedgerScopeLifecycleState,
   isLedgerScopeWritable,
   ledgerScopeLifecycleRejection,
@@ -76,5 +77,44 @@ describe('Ledger scope lifecycle', () => {
     for (const value of ['purged', 'deleted', 'Active', '', null, 1]) {
       expect(isLedgerScopeLifecycleState(value)).toBe(false);
     }
+  });
+
+  it('exempts global containers: they have no lifecycle to follow', () => {
+    expect(
+      hasLedgerContainerLifecycle({
+        kind: 'code_worktree',
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      }),
+    ).toBe(true);
+    expect(
+      hasLedgerContainerLifecycle({
+        kind: 'cowork_entry',
+        workspaceId: 'workspace-1',
+        entryId: 'entry-1',
+      }),
+    ).toBe(true);
+    expect(
+      hasLedgerContainerLifecycle({
+        kind: 'advisor_entry',
+        appWorkspaceId: 'app-advisor',
+        entryId: 'entry-1',
+      }),
+    ).toBe(true);
+    expect(
+      hasLedgerContainerLifecycle({
+        kind: 'global',
+        owner: { kind: 'personal' },
+      }),
+    ).toBe(false);
+    expect(
+      hasLedgerContainerLifecycle({
+        kind: 'global',
+        owner: {
+          kind: 'organization',
+          organizationId: '00000000-0000-4000-8000-00000000a001',
+        },
+      }),
+    ).toBe(false);
   });
 });

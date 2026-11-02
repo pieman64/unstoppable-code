@@ -8,7 +8,7 @@ import {
 
 const base = 'https://releases.unstoppable.ai';
 const checksum = Buffer.alloc(64).toString('base64');
-const name = `${BRAND.release.artifactPrefix}-1.2.0-linux-amd64.deb`;
+const name = `${BRAND.release.artifactPrefix}-1.2.0-linux-x64.deb`;
 const arm64Name = `${BRAND.release.artifactPrefix}-1.2.0-linux-arm64.deb`;
 const file = { url: name, sha512: checksum };
 const arm64File = { url: arm64Name, sha512: checksum };
@@ -113,8 +113,8 @@ describe('trusted Linux metadata contract', () => {
     ).toBeNull();
   });
   it.each([
-    'other-1.2.0-linux-amd64.deb',
-    `${BRAND.release.artifactPrefix}-1.2.1-linux-amd64.deb`,
+    'other-1.2.0-linux-x64.deb',
+    `${BRAND.release.artifactPrefix}-1.2.1-linux-x64.deb`,
     `${BRAND.release.artifactPrefix}-1.2.0-linux-arm64.deb`,
     `${BRAND.release.artifactPrefix}-1.2.0.AppImage`,
     `https://attacker.test/${name}`,
@@ -158,6 +158,30 @@ describe('trusted Linux metadata contract', () => {
         'x64',
       )?.url,
     ).toBe(`${base}/desktop/${BRAND.release.artifactPrefix}/1.2.0/${name}`);
+  });
+  it('retains read compatibility with the legacy amd64 stable package', () => {
+    const legacyName = `${BRAND.release.artifactPrefix}-1.2.0-linux-amd64.deb`;
+    expect(
+      verifiedLinuxMetadata(
+        { ...metadata, files: [{ ...file, url: legacyName }] },
+        base,
+        'x64',
+      )?.url,
+    ).toBe(
+      `${base}/desktop/${BRAND.release.artifactPrefix}/1.2.0/${legacyName}`,
+    );
+  });
+  it('refuses ambiguous new and legacy stable packages for the same architecture', () => {
+    expect(
+      verifiedLinuxMetadata(
+        {
+          ...metadata,
+          files: [file, { ...file, url: name.replace('-x64.', '-amd64.') }],
+        },
+        base,
+        'x64',
+      ),
+    ).toBeNull();
   });
   it('bounds response bodies before parsing', async () => {
     await expect(
@@ -257,8 +281,143 @@ function releaseFixture(
   };
 }
 
+function namedAsset(
+  tag: string,
+  name: string,
+): ReleaseFixture['assets'][number] {
+  return {
+    name,
+    digest: `sha256:${'d'.repeat(64)}`,
+    browser_download_url: `https://github.com/unstoppabledomains/canopy/releases/download/${tag}/${name}`,
+  };
+}
+
 describe('official targeted Linux releases', () => {
-  it('accepts the actual generated internal artifact name, with digest bound to the exact tag', () => {
+  describe.each([
+    { tag: 'internal-436', flavor: 'internal' as const, token: 'internal' },
+    { tag: 'v1.2.0-rc.3', flavor: 'rc' as const, token: '1.2.0-rc.3' },
+  ])('simple $flavor package names', ({ tag, flavor, token }) => {
+    describe.each(HOSTS)('on an installed %s package', (host) => {
+      const ownName = `${BRAND.release.artifactPrefix}-${token}-linux-${host}.deb`;
+      const release = {
+        ...releaseFixture(tag, flavor, []),
+        assets: HOSTS.map((arch) =>
+          namedAsset(
+            tag,
+            `${BRAND.release.artifactPrefix}-${token}-linux-${arch}.deb`,
+          ),
+        ),
+      };
+      it('selects the exact brand, channel, architecture and full RC version without a SHA filename', () => {
+        expect(verifiedLinuxRelease(release, flavor, host)).toEqual({
+          version: flavor === 'internal' ? tag : token,
+          architecture: host,
+          checksum: 'd'.repeat(64),
+          algorithm: 'SHA-256',
+          url: `https://github.com/unstoppabledomains/canopy/releases/tag/${tag}`,
+        });
+      });
+      it('ignores CLI and verification companions, even with valid asset digests', () => {
+        const stem = ownName.slice(0, -4);
+        const names = [
+          `${BRAND.release.artifactPrefix}-${token}-cli-linux-${host}.tar.gz`,
+          `${stem}.sha256`,
+          `${stem}-signing.json`,
+          `${stem}-VERIFYING.md`,
+          `${stem}.sha256.sig`,
+          `${stem}-signing-public.pub`,
+        ];
+        expect(
+          verifiedLinuxRelease(
+            {
+              ...release,
+              assets: [
+                ...release.assets,
+                ...names.map((name) => namedAsset(tag, name)),
+              ],
+            },
+            flavor,
+            host,
+          ),
+        ).toMatchObject({ architecture: host, checksum: 'd'.repeat(64) });
+        expect(
+          verifiedLinuxRelease(
+            {
+              ...release,
+              assets: names.map((name) => namedAsset(tag, name)),
+            },
+            flavor,
+            host,
+          ),
+        ).toBeNull();
+      });
+      it.each([
+        'brand',
+        'version',
+        'other-channel',
+        'architecture',
+        'foreign-url',
+        'wrong-tag-url',
+        'url-query',
+        'bad-digest',
+        'duplicate',
+        'legacy-pair',
+      ])('fails closed for simple packages with %s', (change) => {
+        const name =
+          change === 'brand'
+            ? `other-${token}-linux-${host}.deb`
+            : change === 'version'
+              ? `${BRAND.release.artifactPrefix}-1.2.1-rc.3-linux-${host}.deb`
+              : change === 'other-channel'
+                ? `${BRAND.release.artifactPrefix}-${flavor === 'rc' ? 'internal' : '1.2.0-rc.3'}-linux-${host}.deb`
+                : change === 'architecture'
+                  ? ownName.replace(
+                      `-${host}.deb`,
+                      `-${host === 'x64' ? 'arm64' : 'x64'}.deb`,
+                    )
+                  : ownName;
+        const asset = namedAsset(tag, name);
+        if (change === 'foreign-url')
+          asset.browser_download_url = `https://attacker.test/${name}`;
+        if (change === 'wrong-tag-url')
+          asset.browser_download_url = asset.browser_download_url.replace(
+            tag,
+            'internal-435',
+          );
+        if (change === 'url-query') asset.browser_download_url += '?download=1';
+        if (change === 'bad-digest') asset.digest = 'sha256:short';
+        const assets = [asset];
+        if (change === 'duplicate') assets.push(asset);
+        if (change === 'legacy-pair')
+          assets.push(stampedAsset(tag, flavor, host));
+        expect(
+          verifiedLinuxRelease({ ...release, assets }, flavor, host),
+        ).toBeNull();
+      });
+    });
+  });
+  it.each(HOSTS)(
+    'retains internal-435 stamped and legacy read compatibility for %s',
+    (host) => {
+      for (const asset of [
+        stampedAsset('internal-435', 'internal', host),
+        legacyAsset('internal-435', 'internal', host),
+      ]) {
+        expect(
+          verifiedLinuxRelease(
+            {
+              ...releaseFixture('internal-435', 'internal', []),
+              assets: [asset],
+            },
+            'internal',
+            host,
+          ),
+        ).toMatchObject({ version: 'internal-435', architecture: host });
+      }
+    },
+  );
+
+  it('accepts the legacy internal artifact name, with digest bound to the exact tag', () => {
     const release = releaseFixture('internal-123', 'internal');
     const name = `${BRAND.release.artifactPrefix}-internal-linux-amd64.deb`;
     release.assets = release.assets.map((asset) => ({

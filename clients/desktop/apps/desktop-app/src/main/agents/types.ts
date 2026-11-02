@@ -31,6 +31,7 @@ export interface AgentSessionOptions {
   managedDelegationMode?: ManagedDelegationMode;
   managedDelegationMaxConcurrent?: number;
   managedDelegationMaxDepth?: number;
+  managedDelegationLifetimeLimit?: number;
   selectedRepoId?: string;
   projectId: string;
   worktreeId: string;
@@ -137,17 +138,47 @@ export interface AgentSessionSendOptions {
   /** Explicit user-authored sends only; continuations/automation default to false. */
   countsTowardSkillUsage?: boolean;
   userMessageId?: string;
+  /** Host execution identity, independent of a reused visible prompt anchor. */
+  lifecycleExecutionId?: string;
+}
+
+/**
+ * A root chat's steering submission: an admission, or `pending` when the
+ * provider has not confirmed it within the delivery deadline while the
+ * session is still alive; a later acknowledgement, pickup, refusal or the
+ * session's end settles it. Main-only: delegation and protocol consumers never
+ * see `pending`.
+ */
+export type ChatInputSubmitResult =
+  | ChatInputAdmission
+  | {
+      kind: 'pending';
+      attemptId: string;
+      /** Resolves once with the provider's final answer to a soft-timed-out submit. */
+      settlement?: Promise<ChatInputAdmission>;
+    };
+
+export interface SteeringTarget {
+  sessionId: string;
+  turnId?: string;
 }
 
 export interface AgentSession {
   sendMessage(text: string, options?: AgentSessionSendOptions): void;
   getSteeringCapabilities?(): ChatSteeringCapabilities;
   getSteeringWorkingDirectory?(): string;
+  /**
+   * Where a steer submitted now would land: the provider session (Claude SDK
+   * session id, Codex thread id) and, for Codex, the active root turn.
+   */
+  getSteeringTarget?(): SteeringTarget | undefined;
+  /** With `target`, a provider whose live turn no longer matches refuses locally. */
   submitSteeringInput?(
     text: string,
     attemptId: string,
     userMessageId: string,
-  ): Promise<ChatInputAdmission>;
+    target?: SteeringTarget,
+  ): Promise<ChatInputSubmitResult>;
   withdrawSteeringInput?(attemptId: string): Promise<ChatInputWithdrawal>;
   /** Settles the old result before returning; preserves the reusable query. */
   interruptWithPendingSweep?(): Promise<void>;
@@ -186,6 +217,18 @@ export interface AgentSession {
   destroy(): Promise<void>;
   setPlanMode(enabled: boolean): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
+  /**
+   * The approval mode the session has applied, recorded by the session
+   * manager: the wider one while a switch is pending or after one fails.
+   * Undefined when unknown.
+   */
+  getAppliedApprovalMode?(): ApprovalMode | undefined;
+  /**
+   * The session approval rules the session evaluates, recorded by the session
+   * manager: the live list its approvals read, including grants made in the
+   * session and narrowing at a turn start. Undefined when unknown.
+   */
+  getAppliedApprovalRules?(): readonly ApprovalRule[] | undefined;
   /**
    * Apply the exact requested Codex speed to the next turn. Callers go through
    * `applyAgentSessionCodexSpeed`, which prefers this setter; the boolean

@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { BackIcon as AppCatalogBackIcon } from '../icons/AppIcons';
+import { Button } from './Button';
 
 const CONTENT_CLASS = 'flex-1 overflow-y-auto px-5 pb-5';
 
@@ -43,14 +44,15 @@ export function BackDetailOverlayShell({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-5 pt-5 pb-3">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={onBack}
-            className="focus-ring rounded-md p-1 fg-secondary hover:bg-secondary hover:fg-primary"
             aria-label="Back"
           >
             <AppCatalogBackIcon width="16" height="16" />
-          </button>
+          </Button>
           <h2
             id={titleId}
             className="text-lg font-semibold fg-primary truncate"

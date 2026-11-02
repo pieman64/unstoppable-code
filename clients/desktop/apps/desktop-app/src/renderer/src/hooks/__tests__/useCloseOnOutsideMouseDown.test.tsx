@@ -37,6 +37,8 @@ describe('useCloseOnOutsideMouseDown', () => {
     document.body.appendChild(iframe);
     const auxDocument = iframe.contentDocument;
     expect(auxDocument).not.toBeNull();
+    const auxWindow = iframe.contentWindow;
+    if (auxWindow === null) throw new Error('Expected the iframe window');
 
     const trigger = (auxDocument as Document).createElement('button');
     const content = (auxDocument as Document).createElement('div');
@@ -64,7 +66,7 @@ describe('useCloseOnOutsideMouseDown', () => {
         'mousedown',
         true,
         true,
-        iframe.contentWindow,
+        auxWindow,
         0,
         0,
         0,

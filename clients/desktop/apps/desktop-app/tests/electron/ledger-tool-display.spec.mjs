@@ -370,7 +370,12 @@ async function assertLedgerTurn(
     .getByRole('button', { name: COLLAPSED_SUMMARY_NAME, exact: true });
   await expect(summary).toBeVisible();
   await expect(summary).toHaveAttribute('aria-expanded', 'false');
-  await expect(summary.locator('span[title="app"]')).toContainText('3');
+  // Clean chat keeps step counts in the header's accessible description.
+  const appCount = panel
+    .getByTestId('turn-work-header')
+    .locator('[data-turn-step-count]');
+  await expect(appCount).toHaveAttribute('title', 'Used 3 tools');
+  await expect(appCount).toHaveAttribute('data-turn-step-count', '3');
   const toolCards = panel.getByTestId('chat-tool-call');
   await expect(toolCards).toHaveCount(0);
 
@@ -386,9 +391,7 @@ async function assertLedgerTurn(
     const card = toolCard(panel, toolNames[tool]);
     await expect(card).toHaveCount(1);
     await expect(card).toHaveAttribute('data-tool-status', 'success');
-    await expect(
-      card.locator('button[data-tool-family="canopy"]'),
-    ).toBeVisible();
+    await expect(card.locator('button[data-step-row]')).toBeVisible();
   }
 
   await expect(
@@ -415,7 +418,6 @@ async function assertLedgerTurn(
     await expect(result).toBeHidden();
     await card.getByRole('button').first().click();
     await expect(result).toBeVisible();
-    await expect(card).toContainText('Result');
     await card.getByRole('button').first().click();
     await expect(result).toBeHidden();
   }
@@ -436,6 +438,9 @@ test('renders Ledger tool calls and the collapsed turn summary for Claude, Codex
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
@@ -469,6 +474,9 @@ test('renders App Advisor Ledger tool calls like the worktree Ledger tool calls'
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     const advisor = await app.openAppAdvisorWindow(electronApp);
 
     const claudePanel = chatPanel(advisor, ADVISOR_CLAUDE_TAB_ID);

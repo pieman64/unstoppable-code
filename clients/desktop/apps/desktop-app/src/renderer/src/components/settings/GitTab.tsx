@@ -24,12 +24,22 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { createGitTabFailedLoadPreferences } from './git-tab-fallback-preferences';
 import { brandText } from '@/lib/brand';
+import {
+  GIT_LINUX_INSTALL_URL,
+  LinuxGitInstallInstructions,
+} from '../startup/LinuxGitInstallInstructions';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import { useGitHubCliStatus } from '@/hooks/useGitHubCliStatus';
 import { useBranchDisplayStore } from '@/stores/branchDisplayStore';
 import { useBranchGroupingPreferenceStore } from '@/stores/branchGroupingPreferenceStore';
 import { mergeMappingsWithBuiltins } from '@canopy/desktop-shared/lib/branch-display-mapping';
-import { Button, Notice, ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  SettingsSelect,
+  ToggleSwitch,
+  type SettingsSelectItem,
+} from '@canopy/ui-shared/components';
 import { getHookTriggerDisplayName } from '@canopy/desktop-shared/hooks';
 import {
   DEFAULT_MERGE_QUEUE_AGENT_HANDLING,
@@ -46,13 +56,11 @@ import {
   SettingsRow,
   SettingsSection,
   SettingsSegmentedControl,
-  SettingsSelect,
   SettingsSubRow,
   SettingsTextArea,
   SettingsTextField,
   type SettingsRadioOption,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const INSTRUCTION_MODES: readonly PrInstructionMode[] = ['append', 'replace'];
 
@@ -194,35 +202,55 @@ function formatGitExecutableVersion(version: string | null): string {
 }
 
 /**
- * The branch-prefix option that names the user's GitHub login. A native option
- * cannot hold a span, so session replay blocks the whole option while it
- * carries the login; the select stays recorded.
+ * The branch-prefix dropdown. Its GitHub option names the user's login, which
+ * shows on the trigger when chosen and in the menu, so session replay blocks
+ * the dropdown and its menu while a login is known; it stays recorded
+ * otherwise.
  */
-export function GitHubUsernamePrefixOption({
+export function BranchNamePrefixSelect({
+  id,
   username,
+  value,
+  onValueChange,
 }: {
+  id?: string;
   username: string | null;
+  value: BranchNamePrefixMode;
+  onValueChange: (value: string) => void;
 }): JSX.Element {
-  return username ? (
-    <option value="github" className={POSTHOG_REPLAY_BLOCK_CLASS}>
-      {`GitHub username (${username})`}
-    </option>
-  ) : (
-    <option value="github">GitHub username</option>
+  return (
+    <SettingsSelect
+      id={id}
+      options={[
+        {
+          value: 'github',
+          label: username ? `GitHub username (${username})` : 'GitHub username',
+        },
+        { value: 'custom', label: 'Custom' },
+        { value: 'none', label: 'None' },
+      ]}
+      value={value}
+      onValueChange={onValueChange}
+      replayPrivacy={
+        username ? { blockClassName: POSTHOG_REPLAY_BLOCK_CLASS } : undefined
+      }
+    />
   );
 }
 
 /**
- * Windows/macOS Git executable management. Shows the cached/detected path and
+ * Desktop Git executable management. Shows the cached/detected path and
  * version and exposes Redetect and Browse. Validation happens in the main
  * process; this UI only reflects the returned {@link GitExecutableStatus}. The
- * whole section is hidden on Linux.
+ * section uses the same backend status and recheck as startup.
  *
  * This is a validated executable path picker, not a generic PATH editor.
  */
 export function WindowsGitExecutableSection(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
-  const supported = window.platform === 'win32' || window.platform === 'darwin';
+  const supported =
+    window.platform === 'win32' ||
+    window.platform === 'darwin' ||
+    window.platform === 'linux';
   const executableName =
     window.platform === 'win32' ? 'git.exe' : 'Git executable';
   const [status, setStatus] = useState<GitExecutableStatus | null>(null);
@@ -323,7 +351,7 @@ export function WindowsGitExecutableSection(): JSX.Element {
           control={
             <>
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 onClick={() => void redetect()}
                 disabled={busy}
@@ -332,7 +360,7 @@ export function WindowsGitExecutableSection(): JSX.Element {
                 Redetect
               </Button>
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 onClick={() => void browse()}
                 disabled={busy}
@@ -364,6 +392,22 @@ export function WindowsGitExecutableSection(): JSX.Element {
             </div>
           ) : null}
         </SettingsRow>
+        {window.platform === 'linux' && status && !status.ready && (
+          <SettingsRow
+            label="Install Git"
+            description="Install Git in your terminal, then check again."
+          >
+            <LinuxGitInstallInstructions
+              brandName={brandText.appName}
+              recheckLabel="Redetect"
+              onOpenInstructions={(): void => {
+                void window.api.browser.openExternal({
+                  url: GIT_LINUX_INSTALL_URL,
+                });
+              }}
+            />
+          </SettingsRow>
+        )}
       </SettingsGroup>
     </SettingsSection>
   );
@@ -461,6 +505,37 @@ export function GitTab(): JSX.Element {
   // is display-only until the user selects a current registry-backed option.
   const rebaseResolutionProvider =
     getProviderForModel(rebaseResolutionModel) ?? 'claude';
+  // Custom Agent models (`agent_model_*`) are intentionally excluded: the
+  // automated rebase-resolution path runs the model directly against a
+  // provider and does not resolve Agent presets (instructions + plugins).
+  // Only real base models are offered here; Agents appear only in the chat
+  // ModelPicker.
+  const rebaseResolutionModelOptions: SettingsSelectItem[] = [
+    { value: '', label: 'Project default' },
+    {
+      label: 'Claude',
+      options: CLAUDE_MODELS.map((m) => ({
+        value: m,
+        label: getModelDisplayName(m),
+      })),
+    },
+    {
+      label: 'Codex',
+      options: CODEX_MODELS.map((m) => ({
+        value: m,
+        label: getModelDisplayName(m),
+      })),
+    },
+  ];
+  if (OLLAMA_MODELS.length > 0) {
+    rebaseResolutionModelOptions.push({
+      label: 'Ollama',
+      options: OLLAMA_MODELS.map((m) => ({
+        value: m,
+        label: getModelDisplayName(m),
+      })),
+    });
+  }
 
   return (
     <SettingsPage title="Git" dataTestId="settings-tab-git">
@@ -474,20 +549,16 @@ export function GitTab(): JSX.Element {
             htmlFor="settings-git-branch-prefix-mode"
             description="Prefix for new project branch names."
             control={
-              <SettingsSelect
+              <BranchNamePrefixSelect
                 id="settings-git-branch-prefix-mode"
+                username={ghUsername}
                 value={prefs.branchNamePrefixMode}
-                onChange={(e: React.ChangeEvent<HTMLSelectElement>): void => {
-                  const next = e.target.value;
+                onValueChange={(next): void => {
                   if (isBranchNamePrefixMode(next)) {
                     handlePrefixModeChange(next);
                   }
                 }}
-              >
-                <GitHubUsernamePrefixOption username={ghUsername} />
-                <option value="custom">Custom</option>
-                <option value="none">None</option>
-              </SettingsSelect>
+              />
             }
           >
             {prefs.branchNamePrefixMode === 'custom' && (
@@ -824,12 +895,10 @@ export function GitTab(): JSX.Element {
                   <>
                     <SettingsSelect
                       id="settings-git-agent-rebase-model"
+                      options={rebaseResolutionModelOptions}
                       value={prefs.agentRebaseResolutionModel ?? ''}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLSelectElement>,
-                      ): void => {
-                        const next =
-                          e.target.value === '' ? null : e.target.value;
+                      onValueChange={(value): void => {
+                        const next = value === '' ? null : value;
                         if (next === null) {
                           save({ agentRebaseResolutionModel: null });
                           return;
@@ -855,42 +924,16 @@ export function GitTab(): JSX.Element {
                         });
                       }}
                       data-testid="settings-git-agent-rebase-model"
-                    >
-                      {/*
-                      Custom Agent models (`agent_model_*`) are intentionally
-                      excluded: the automated rebase-resolution path runs the
-                      model directly against a provider and does not resolve
-                      Agent presets (instructions + plugins). Only real base
-                      models are offered here; Agents appear only in the chat
-                      ModelPicker.
-                    */}
-                      <option value="">Project default</option>
-                      <optgroup label="Claude">
-                        {CLAUDE_MODELS.map((m) => (
-                          <option key={m} value={m}>
-                            {getModelDisplayName(m)}
-                          </option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="Codex">
-                        {CODEX_MODELS.map((m) => (
-                          <option key={m} value={m}>
-                            {getModelDisplayName(m)}
-                          </option>
-                        ))}
-                      </optgroup>
-                      {OLLAMA_MODELS.length > 0 && (
-                        <optgroup label="Ollama">
-                          {OLLAMA_MODELS.map((m) => (
-                            <option key={m} value={m}>
-                              {getModelDisplayName(m)}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </SettingsSelect>
+                    />
                     <SettingsSelect
                       aria-label="Resolution thinking level"
+                      options={[
+                        { value: '', label: 'Project default' },
+                        ...getThinkingUiOptionsForProvider(
+                          rebaseResolutionProvider,
+                          rebaseResolutionModel,
+                        ),
+                      ]}
                       value={
                         prefs.agentRebaseResolutionThinkingLevel === null
                           ? ''
@@ -901,31 +944,19 @@ export function GitTab(): JSX.Element {
                               rebaseResolutionModel,
                             )
                       }
-                      onChange={(
-                        e: React.ChangeEvent<HTMLSelectElement>,
-                      ): void =>
+                      onValueChange={(value): void =>
                         save({
                           agentRebaseResolutionThinkingLevel:
-                            e.target.value === ''
+                            value === ''
                               ? null
                               : getSelectedThinkingLevel(
-                                  e.target.value,
+                                  value,
                                   prefs.agentRebaseResolutionThinkingLevel ??
                                     worktreeDefault.thinkingLevel,
                                 ),
                         })
                       }
-                    >
-                      <option value="">Project default</option>
-                      {getThinkingUiOptionsForProvider(
-                        rebaseResolutionProvider,
-                        rebaseResolutionModel,
-                      ).map((t) => (
-                        <option key={t.value} value={t.value}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </SettingsSelect>
+                    />
                   </>
                 }
               />

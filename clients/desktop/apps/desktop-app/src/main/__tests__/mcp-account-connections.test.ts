@@ -14,6 +14,7 @@ import {
   openAuthenticatedPortalPage,
   mintAuthenticatedPortalUrl,
 } from '../canopy-cloud/authenticated-portal';
+import type { CanopyServerAccountInfo } from '@canopy/protocol/canopy-server';
 import type * as CloudClientModule from '../canopy-cloud/client';
 import {
   CanopyCloudClientError,
@@ -53,6 +54,14 @@ const credentials = {
   apiKey: 'csk_test',
   capabilities: ['mcp-connections-v1', 'mcp-proxy-v1'],
 };
+function accountInfo(id: string): CanopyServerAccountInfo {
+  return {
+    id,
+    name: 'Test account',
+    email: 'test@example.test',
+    role: 'DEVELOPER',
+  };
+}
 const row: AccountMcpConnection = {
   id: 'account-1',
   serverKey: 'github',
@@ -472,7 +481,7 @@ describe('the browser a sign-in opens', () => {
   const authorizationUrl = 'https://auth.example.test/authorize?state=s';
   const signInPath = '/api/mcp-connections/authorize?state=s';
   it('is signed in as the starting account before it reaches the provider', async (): Promise<void> => {
-    const bound = { ...credentials, account: { id: 'acct-1' } };
+    const bound = { ...credentials, account: accountInfo('acct-1') };
     jest.mocked(resolveCanopyCloudCredentialContext).mockResolvedValue(bound);
     jest
       .mocked(requestCanopyCloudJson)
@@ -549,7 +558,7 @@ describe('the browser a sign-in opens', () => {
   });
 });
 it('binds a start to the account it was captured under and never forwards the binding', async (): Promise<void> => {
-  const bound = { ...credentials, account: { id: 'acct-1' } };
+  const bound = { ...credentials, account: accountInfo('acct-1') };
   jest.mocked(resolveCanopyCloudCredentialContext).mockResolvedValue(bound);
   jest
     .mocked(requestCanopyCloudJson)
@@ -574,7 +583,7 @@ it('binds a start to the account it was captured under and never forwards the bi
   jest.mocked(requestCanopyCloudJson).mockClear();
   jest
     .mocked(resolveCanopyCloudCredentialContext)
-    .mockResolvedValue({ ...credentials, account: { id: 'acct-2' } });
+    .mockResolvedValue({ ...credentials, account: accountInfo('acct-2') });
   await expect(
     startAccountMcpConnection({
       serverKey: 'github',
@@ -834,7 +843,7 @@ it('keeps the public host and header flag and drops unknown fields', async (): P
 });
 
 it('edits a connection through PATCH behind the edit capability', async (): Promise<void> => {
-  const bound = { ...credentials, account: { id: 'acct-1' } };
+  const bound = { ...credentials, account: accountInfo('acct-1') };
   jest.mocked(resolveCanopyCloudCredentialContext).mockResolvedValue(bound);
   const edited = { ...row, kind: 'CUSTOM' as const, displayName: 'Team' };
   jest
@@ -872,7 +881,7 @@ it('edits a connection through PATCH behind the edit capability', async (): Prom
 it('refuses an edit captured under another account before sending it', async (): Promise<void> => {
   jest
     .mocked(resolveCanopyCloudCredentialContext)
-    .mockResolvedValue({ ...credentials, account: { id: 'acct-2' } });
+    .mockResolvedValue({ ...credentials, account: accountInfo('acct-2') });
   await expect(
     updateAccountMcpConnection(row.id, {
       bearerToken: 'secret',
@@ -1007,7 +1016,7 @@ describe('embedded account MCP start', () => {
   beforeEach(() => {
     jest
       .mocked(resolveCanopyCloudCredentialContext)
-      .mockResolvedValue({ ...credentials, account: { id: 'acct-1' } });
+      .mockResolvedValue({ ...credentials, account: accountInfo('acct-1') });
     jest
       .mocked(requestCanopyCloudJson)
       .mockResolvedValue({ authorizationUrl, signInPath });
@@ -1032,7 +1041,7 @@ describe('embedded account MCP start', () => {
     );
     expect(mintAuthenticatedPortalUrl).toHaveBeenCalledWith(signInPath, {
       ...credentials,
-      account: { id: 'acct-1' },
+      account: accountInfo('acct-1'),
     });
   });
   it('falls back to the validated signed-out page when minting is unavailable', async () => {
@@ -1066,7 +1075,7 @@ describe('embedded account MCP start', () => {
     jest.mocked(resolveCanopyCloudCredentialContext).mockResolvedValue({
       ...credentials,
       baseUrl,
-      account: { id: 'acct-1' },
+      account: accountInfo('acct-1'),
     });
     expect(await startAccountMcpConnection(request)).toEqual({
       authorizationUrl,
@@ -1104,7 +1113,7 @@ describe('embedded account MCP start', () => {
       jest.mocked(resolveCanopyCloudCredentialContext).mockResolvedValue({
         ...credentials,
         apiKey: 'csk_other',
-        account: { id: 'other' },
+        account: accountInfo('other'),
       });
       return Promise.resolve('https://cloud.example.test/consume?code=once');
     });

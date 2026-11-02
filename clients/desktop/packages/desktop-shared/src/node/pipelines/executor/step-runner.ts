@@ -64,10 +64,12 @@ import {
   type ResolvedActionRuntime,
 } from '../action-resolver';
 import {
+  getExecutionCheckoutRoot,
   inferExecutionScope,
   resolvePipelineTarget,
 } from './pipeline-target-resolver';
 import type {
+  ActionRuns,
   Pipeline,
   PipelineExecutionScope,
   PipelineModelAlias,
@@ -83,6 +85,7 @@ import type { AgentActionFailureMetadata } from '@canopy/desktop-shared/agent-fa
 import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
 import { BASE_BRANCH_MANAGED_ENV_KEYS } from '@canopy/desktop-shared/pipelines/base-branch-env';
 import {
+  buildExpressionAssets,
   buildExpressionContext,
   cascadeEnv,
   inputsToEnv,
@@ -173,6 +176,7 @@ import {
 import type {
   LogFormatHint,
   PipelineAgentChatAddress,
+  PipelineAssetExecutionContext,
   PipelineExecutionInitiator,
   PipelineScalar,
   ResolvedPipelinePluginCollectionSnapshot,
@@ -197,6 +201,7 @@ import {
   pipelineLedgerAttemptIdentity,
   pipelineLedgerAttemptOutcome,
   resolvePipelineLedgerAgent,
+  resolvePipelineLedgerTarget,
 } from './pipeline-ledger';
 
 const FORCE_KILL_DELAY_MS = 5_000;
@@ -495,7 +500,30 @@ function buildExecutionMetadataEnv(
     EXECUTION_ID: options.executionId,
     PIPELINE_ID: options.pipelineId ?? '',
     EVENT_NAME: options.canopy?.event_name ?? '',
+    ...buildPipelineAssetEnvValues(options.pipelineAssets),
   });
+}
+
+/**
+ * Brand env suffixes for the run's asset context: `ASSET_<ID>` per declared
+ * asset, `ASSETS_DIR` and `PIPELINE_DATA_DIR`. A dir main did not resolve is
+ * omitted rather than set empty.
+ */
+export function buildPipelineAssetEnvValues(
+  pipelineAssets: PipelineAssetExecutionContext | undefined,
+): Record<string, string> {
+  if (!pipelineAssets) return {};
+  const values: Record<string, string> = {};
+  for (const [id, assetPath] of Object.entries(pipelineAssets.asset_paths)) {
+    values[`ASSET_${id.toUpperCase()}`] = assetPath;
+  }
+  if (pipelineAssets.assets_dir !== undefined) {
+    values.ASSETS_DIR = pipelineAssets.assets_dir;
+  }
+  if (pipelineAssets.pipeline_data_dir !== undefined) {
+    values.PIPELINE_DATA_DIR = pipelineAssets.pipeline_data_dir;
+  }
+  return values;
 }
 
 function getSecretValues(
@@ -682,6 +710,7 @@ export interface RunStepOptions {
   secretEnv?: Record<string, string>;
   runtime: ExecutionRuntime;
   repoPath?: string;
+  executionCheckoutRoot?: string | null;
   scope?: PipelineExecutionScope;
   target?: ResolvedPipelineExecutionTarget;
   modelConfig?: AgentModelConfig;
@@ -697,6 +726,8 @@ export interface RunStepOptions {
   resumeChildReasonIds?: string[];
   jobContext?: ExpressionJobState;
   canopy?: ExpressionCanopyContext;
+  /** Resolved asset paths and data dirs; inherited by child runs. */
+  pipelineAssets?: PipelineAssetExecutionContext;
   onStepOutput?: (event: StepOutputEvent) => void;
   onEvent?: (event: ExecutionEvent) => void;
   projectId?: string;
@@ -1370,6 +1401,10 @@ async function runNestedPipelineAction(
     },
     requested: options.step.target ?? { scope: 'inherit' },
   });
+  const executionCheckoutRoot =
+    options.step.target && options.step.target.scope !== 'inherit'
+      ? getExecutionCheckoutRoot(resolvedTarget)
+      : getExecutionCheckoutRoot(options);
   if (
     inputValues.cwd?.trim() &&
     resolvedTarget.scope !== 'global' &&
@@ -1430,7 +1465,7 @@ async function runNestedPipelineAction(
     )
   ) {
     throw new Error(
-      `Step "${options.step.id}" in job "${options.jobId}" targets scope "${resolvedTarget.scope}" but child pipeline "${pipelineId}" supports [${normalizedChildPipeline.scope.join(', ')}]`,
+      `Step "${options.step.id}" in job "${options.jobId}" targets scope "${resolvedTarget.scope}" but child workflow "${pipelineId}" supports [${normalizedChildPipeline.scope.join(', ')}]`,
     );
   }
   const parentStepId = options.parentStepId ?? options.step.id;
@@ -1445,6 +1480,7 @@ async function runNestedPipelineAction(
   const effectiveIteration = options.iteration ?? 1;
   const childExecutionOptions = {
     cwd: resolvedTarget.cwd,
+    executionCheckoutRoot,
     pipelineId,
     scope: resolvedTarget.scope,
     target: resolvedTarget.target,
@@ -1469,6 +1505,18 @@ async function runNestedPipelineAction(
     repoPath: resolvedTarget.repoPath,
     runtime: options.runtime,
     pipelinePackageOverlay: options.pipelinePackageOverlay,
+    // Children read the root run's assets and data dir (decision 11).
+    ...(options.pipelineAssets
+      ? {
+          assetPaths: options.pipelineAssets.asset_paths,
+          ...(options.pipelineAssets.pipeline_data_dir === undefined
+            ? {}
+            : { pipelineDataDir: options.pipelineAssets.pipeline_data_dir }),
+          ...(options.pipelineAssets.assets_dir === undefined
+            ? {}
+            : { assetsDir: options.pipelineAssets.assets_dir }),
+        }
+      : {}),
     depth: (options.depth ?? 0) + 1,
     eventName: resolveChildEventName(pipeline, options.canopy),
     eventData: options.canopy?.event,
@@ -1609,9 +1657,9 @@ async function runNestedPipelineAction(
           : undefined,
       error:
         childState.status === 'failure'
-          ? 'Child pipeline failed'
+          ? 'Child workflow failed'
           : childState.status === 'cancelled'
-            ? 'Child pipeline cancelled'
+            ? 'Child workflow cancelled'
             : undefined,
     });
   } finally {
@@ -2840,7 +2888,7 @@ function assertPipelineRuntimeModelIsNotAgentModel(model: string): void {
   const resolvedModel = resolveModelAlias(model);
   if (resolvedModel.startsWith(AGENT_MODEL_PREFIX)) {
     throw new Error(
-      `Agent model IDs are not supported directly in pipeline steps. Define a model_aliases entry with defaults.agent_id: ${resolvedModel} and use the alias id in with.model.`,
+      `Agent model IDs are not supported directly in workflow steps. Define a model_aliases entry with defaults.agent_id: ${resolvedModel} and use the alias id in with.model.`,
     );
   }
 }
@@ -2856,7 +2904,7 @@ async function resolveAgentAliasInputs(options: {
   const { aliasId, aliasName, agentId, inputValues, runtime } = options;
   if (!runtime.resolvePipelineAgentModelAlias) {
     throw new Error(
-      `Pipeline model alias "${aliasId}" references Agent "${agentId}", but Agent resolution is unavailable in this runtime.`,
+      `Workflow model alias "${aliasId}" references Agent "${agentId}", but Agent resolution is unavailable in this runtime.`,
     );
   }
   const resolution = await runtime.resolvePipelineAgentModelAlias(
@@ -2865,12 +2913,12 @@ async function resolveAgentAliasInputs(options: {
   );
   if (!resolution) {
     throw new Error(
-      `Pipeline model alias "${aliasId}" references Agent "${agentId}", but that Agent is not available locally.`,
+      `Workflow model alias "${aliasId}" references Agent "${agentId}", but that Agent is not available locally.`,
     );
   }
   if (!isRuntimeBaseModelAvailable(resolution.base)) {
     throw new Error(
-      `Pipeline model alias "${aliasId}" references Agent "${agentId}", but Agent "${resolution.name}" uses unavailable base model "${resolution.base}". Edit the Agent or choose another model.`,
+      `Workflow model alias "${aliasId}" references Agent "${agentId}", but Agent "${resolution.name}" uses unavailable base model "${resolution.base}". Edit the Agent or choose another model.`,
     );
   }
   const systemPrompt = appendAgentSystemPrompt(
@@ -2923,7 +2971,7 @@ export async function resolvePipelineModelInputs(options: {
     const defaults = preferenceDefaults ?? alias.defaults;
     if (!defaults) {
       throw new Error(
-        `Pipeline model alias "${alias.id}" requires a model configuration, but no run preference or pipeline default was provided. Configure the alias in the dispatch modal or automation settings.`,
+        `Workflow model alias "${alias.id}" requires a model configuration, but no run preference or workflow default was provided. Configure the alias in the dispatch modal or automation settings.`,
       );
     }
     if ('agent_id' in defaults) {
@@ -2976,6 +3024,52 @@ export async function resolvePipelineModelInputs(options: {
     runtimeModel: resolvedModel,
     aliasPluginCollectionIds: [],
   };
+}
+
+/**
+ * Resolves a host step's `model` input as the agent steps do, for a chat send.
+ *
+ * A pipeline alias uses the run preference, then its default. An Agent alias
+ * sends the Agent's model id (`defaults.agent_id`, already `agent_model_…`);
+ * desktop main validates and authorizes it. An alias that carries
+ * `instructions` or a plugin collection is refused, since a chat message has
+ * nowhere to put them. Anything else resolves `$` and global aliases; a raw
+ * Agent model id is refused as agent steps refuse it, and an unknown name
+ * passes through for the host to validate. Errors name the alias only.
+ */
+export function resolveHostStepModel(options: {
+  value: string;
+  modelAliases?: readonly PipelineModelAlias[];
+  modelAliasPreferences?: Record<string, PipelineModelAliasPreference>;
+}): string {
+  const alias = options.modelAliases?.find(
+    (candidate) => candidate.id === options.value,
+  );
+  if (alias) {
+    const defaults =
+      preferenceToDefaults(options.modelAliasPreferences?.[alias.id]) ??
+      alias.defaults;
+    if (!defaults) {
+      throw new Error(
+        `Workflow model alias "${alias.id}" requires a model configuration, but no run preference or workflow default was provided. Configure the alias in the dispatch modal or automation settings.`,
+      );
+    }
+    if ('agent_id' in defaults) {
+      return defaults.agent_id;
+    }
+    if (defaults.instructions?.trim() || defaults.plugin_collection_id) {
+      throw new Error(
+        `Model alias "${alias.id}" sets instructions or plugins, which a chat message can't carry.`,
+      );
+    }
+    assertPipelineRuntimeModelIsNotAgentModel(defaults.base);
+    return defaults.base;
+  }
+  const resolvedModel = resolveModelAlias(
+    resolvePipelineModelAlias(options.value),
+  );
+  assertPipelineRuntimeModelIsNotAgentModel(resolvedModel);
+  return resolvedModel;
 }
 
 /**
@@ -3217,6 +3311,14 @@ async function collectModelPolicyProbes(options: {
         source: 'action-default',
         pin: pinnable ? await isOrgPolicyActive() : false,
       });
+      continue;
+    }
+
+    // A host step that names no model leaves the choice to the host (a chat
+    // send keeps the chat's model or gets the user's policy-checked default),
+    // so there is no provider default to probe; a named host-step model is
+    // still probed above.
+    if (options.action.definition.runs.using === 'host') {
       continue;
     }
 
@@ -3537,7 +3639,7 @@ function resolveCodexStepFastMode(
     readCodexSpeedRecord(runModelConfig) === 'ultrafast'
   ) {
     throw new Error(
-      'Pipelines do not support Ultra fast. Set fast_mode on this step, or run the pipeline with Regular or Fast.',
+      'Workflows do not support Ultra fast. Set fast_mode on this step, or run the workflow with Regular or Fast.',
     );
   }
   return parseBooleanInput(rawFastMode, 'fast_mode', false);
@@ -4268,8 +4370,16 @@ async function maybeRunAccountProviderPrompt(options: {
     attempt,
     iteration,
   });
+  const executionCheckoutRoot = getExecutionCheckoutRoot(runStepOptions);
   const result = await runPrompt({
     cwd: effectiveCwd,
+    repositoryPolicyScope:
+      runStepOptions.target?.scope === 'global' ||
+      runStepOptions.scope === 'global'
+        ? { kind: 'rootless' }
+        : executionCheckoutRoot == null
+          ? undefined
+          : { kind: 'checkout', root: executionCheckoutRoot },
     prompt,
     environment: { ...runStepOptions.env, ...runStepOptions.secretEnv },
     systemPrompt: inputValues.system_prompt,
@@ -4284,6 +4394,12 @@ async function maybeRunAccountProviderPrompt(options: {
     pluginSelections: pluginCollectionRuntime.selections,
     packageOverlay: runStepOptions.pipelinePackageOverlay,
     projectId: runStepOptions.projectId,
+    ...(harness === 'opencode'
+      ? {
+          worktreeId: runStepOptions.worktreeId,
+          executionContext: runStepOptions.executionContext,
+        }
+      : {}),
     executionsDir: runStepOptions.runtime.executionsDir,
     executionId: runStepOptions.executionId,
     jobId: runStepOptions.jobId,
@@ -5175,6 +5291,9 @@ async function runCompositeAction(
                 steps: stepContext,
                 job: options.jobContext,
                 canopy: options.canopy,
+                assets: buildExpressionAssets(
+                  options.pipelineAssets?.asset_paths,
+                ),
               }),
             )
           : '',
@@ -5188,6 +5307,7 @@ async function runCompositeAction(
       steps: stepContext,
       job: options.jobContext,
       canopy: options.canopy,
+      assets: buildExpressionAssets(options.pipelineAssets?.asset_paths),
     });
 
     const shouldRun = evaluateCondition(nestedStep.if, expressionContext, {
@@ -5420,9 +5540,9 @@ export async function runStep(options: RunStepOptions): Promise<StepResult> {
 /**
  * Opens the Agent Ledger tools of an agent step's attempt when the host
  * exposes them: one of the five agent actions, on a route with tool support,
- * in a worktree-scoped execution with a host Ledger route. Null otherwise
- * (`resolvePipelineLedgerAgent` names why), and then the step runs exactly
- * as it would without the Ledger.
+ * with a host Ledger route, recording to its task or its owner's global
+ * Ledger. Null otherwise (`resolvePipelineLedgerAgent` names why), and then
+ * the step runs exactly as it would without the Ledger.
  */
 async function openStepLedgerAttempt(
   options: RunStepOptions,
@@ -5437,6 +5557,11 @@ async function openStepLedgerAttempt(
 ): Promise<PipelineLedgerAttempt | null> {
   const port = options.runtime.pipelineLedger;
   const { projectId, worktreeId } = options;
+  const target = resolvePipelineLedgerTarget({
+    projectId,
+    worktreeId,
+    executionContext: options.executionContext,
+  });
   const model =
     facts.logMetadata.agent_model ??
     resolveExplicitAgentModel(facts.inputValues.model);
@@ -5447,14 +5572,9 @@ async function openStepLedgerAttempt(
     model,
     permissionPresetInput: facts.inputValues.permission_preset,
     hostRoute: port !== undefined,
-    worktreeScoped: Boolean(projectId && worktreeId),
+    target,
   });
-  if (
-    agent.kind === 'excluded' ||
-    port === undefined ||
-    !projectId ||
-    !worktreeId
-  ) {
+  if (agent.kind === 'excluded' || port === undefined || target === undefined) {
     return null;
   }
   const checkpoint = facts.recoveryCheckpoint;
@@ -5474,8 +5594,9 @@ async function openStepLedgerAttempt(
     executionId: options.executionId,
     ...(options.pipelineId ? { pipelineId: options.pipelineId } : {}),
     ...(options.pipelineName ? { pipelineName: options.pipelineName } : {}),
-    projectId,
-    worktreeId,
+    target,
+    ...(projectId ? { projectId } : {}),
+    ...(worktreeId ? { worktreeId } : {}),
     physicalJobId: options.childId
       ? `${options.jobId}:${options.childId}`
       : options.jobId,
@@ -5527,6 +5648,26 @@ async function openLedgerSubprocessTools(
   }
 }
 
+/**
+ * The runtime a step's action actually uses. A bundled host action with a
+ * Node fallback runs as `node` only when the runtime has no host port; with a
+ * port, or without a fallback, it stays `host`.
+ */
+function effectiveRunsUsing(
+  action: ResolvedActionRuntime,
+  runtime: Pick<ExecutionRuntime, 'pipelineHostActions'>,
+): ActionRuns['using'] {
+  const runs = action.definition.runs;
+  if (
+    runs.using === 'host' &&
+    runs.fallback !== undefined &&
+    runtime.pipelineHostActions === undefined
+  ) {
+    return runs.fallback.using;
+  }
+  return runs.using;
+}
+
 async function runStepBody(
   options: RunStepOptions,
   ledger: StepLedgerState,
@@ -5537,7 +5678,7 @@ async function runStepBody(
       status: 'failure',
       conclusion: 'failure',
       outcome: 'failure',
-      error: `Nested pipeline or composite action depth exceeds maximum depth of ${MAX_NESTED_DEPTH}`,
+      error: `Nested workflow or composite action depth exceeds maximum depth of ${MAX_NESTED_DEPTH}`,
     });
   }
 
@@ -5823,13 +5964,15 @@ async function runStepBody(
       );
     }
 
-    if (options.step.target && action.definition.runs.using !== 'pipeline') {
+    const runsUsing = effectiveRunsUsing(action, options.runtime);
+
+    if (options.step.target && runsUsing !== 'pipeline') {
       throw new Error(
-        `Step "${options.step.id}" in job "${options.jobId}" defines target but action "${options.step.uses}" is not a pipeline action`,
+        `Step "${options.step.id}" in job "${options.jobId}" defines target but action "${options.step.uses}" is not a workflow action`,
       );
     }
 
-    if (action.definition.runs.using === 'composite') {
+    if (runsUsing === 'composite') {
       return await runCompositeAction(action, {
         ...options,
         resolvedCwd: effectiveCwd,
@@ -5840,7 +5983,7 @@ async function runStepBody(
       });
     }
 
-    if (action.definition.runs.using === 'pipeline') {
+    if (runsUsing === 'pipeline') {
       return await runNestedPipelineAction(action, {
         ...options,
         resolvedCwd: effectiveCwd,
@@ -5849,7 +5992,8 @@ async function runStepBody(
       });
     }
 
-    if (action.definition.runs.using === 'host') {
+    // Once taken, the host path is final: a refusal or error never falls back.
+    if (runsUsing === 'host') {
       return await runHostAction(action, {
         step: options.step,
         runtime: options.runtime,
@@ -5864,6 +6008,17 @@ async function runStepBody(
         pipelineName: options.pipelineName,
         executionContext: options.executionContext,
         initiationSource: options.initiationSource,
+        agentOrigin: options.agentOrigin,
+        initiator: options.initiator,
+        cwd: effectiveCwd,
+        resolveModel: (value) =>
+          Promise.resolve().then(() =>
+            resolveHostStepModel({
+              value,
+              modelAliases: options.modelAliases,
+              modelAliasPreferences: options.modelAliasPreferences,
+            }),
+          ),
         inputValues: rawInputValues,
         logFile,
         logMetadata,
@@ -6144,9 +6299,9 @@ async function runStepBody(
         }
       }
       let processSpec: ProcessSpec;
-      if (action.definition.runs.using === 'node') {
+      if (runsUsing === 'node') {
         processSpec = getNodeProcessSpec([action.mainPath ?? '']);
-      } else if (action.definition.runs.using === 'python') {
+      } else if (runsUsing === 'python') {
         processSpec = getPythonProcessSpec(action.mainPath ?? '');
       } else {
         const tsxProcessSpec = getTsxCommand();

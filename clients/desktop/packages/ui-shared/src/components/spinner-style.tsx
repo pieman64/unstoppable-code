@@ -5,8 +5,7 @@ import type { SpinnerTone } from './spinner-tone';
  * Which drawing the shared spinners use. `dots` is the dot-grid family
  * (`ThinkingSpinner`, `LoadingSpinner`); `comet` draws every one of them as
  * the `CometSpinner` ring. Hosts choose it once at their root, so every
- * spinner in the app changes together. Desktop picks `comet` under early
- * access.
+ * spinner in the app changes together. StandardPresentationProvider selects `comet` for desktop and web chats.
  */
 export type SpinnerStyle = 'dots' | 'comet';
 

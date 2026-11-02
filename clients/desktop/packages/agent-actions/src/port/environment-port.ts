@@ -199,7 +199,10 @@ export const AGENT_PORT_COMPOSITIONS = {
   },
   startChat: {
     composes: ['core.chat.create', 'core.chat.message.send'],
-    planned: ['core.worktree.create'],
+    // Not core.worktree.create: the web core serves it outside the shared
+    // catalog, and it makes the worktree's own first chat without answering
+    // its id, so it is not this composition's step (CAN-4158).
+    planned: [],
   },
   postMessage: {
     composes: ['core.chat.message.send'],

@@ -19,8 +19,11 @@ import {
   isPublishableSummarySnapshot,
   projectSummaryForLedger,
   publishResolvedSummarySnapshot,
+  reportAbortedSummaryWrite,
   reportDroppedSummarySnapshots,
+  reportInvalidSummarySnapshots,
   reportReplacedSummaryFile,
+  reportStrippedSummaryProvenance,
   resolveSummaryScopeLedger,
   type PublishableSummarySnapshot,
   type SummaryPublicationHost,
@@ -361,6 +364,50 @@ describe('Summary publication', () => {
     reportReplacedSummaryFile(SCOPE, host);
     reportReplacedSummaryFile({ projectId: 'other', worktreeId: 'wt' }, host);
     expect(gaps).toEqual(['journal_replaced: 1']);
+  });
+
+  it('reports an aborted summary write only while the Ledger is on', () => {
+    reportAbortedSummaryWrite(SCOPE, 'unreadable', host);
+    reportAbortedSummaryWrite(SCOPE, 'future_version', host);
+    expect(gaps).toEqual([
+      'journal_unreadable: 1',
+      'journal_future_version: 1',
+    ]);
+
+    state.enabled = false;
+    reportAbortedSummaryWrite(SCOPE, 'future_version', host);
+    expect(gaps).toHaveLength(2);
+  });
+
+  it('reports invalid history entries a write dropped, by count only', () => {
+    reportInvalidSummarySnapshots(SCOPE, 0, host);
+    reportInvalidSummarySnapshots(SCOPE, 3, host);
+    reportInvalidSummarySnapshots(
+      { projectId: 'other', worktreeId: 'wt' },
+      2,
+      host,
+    );
+    expect(gaps).toEqual(['journal_entries_dropped: 3']);
+  });
+
+  it('reports stripped provenance of snapshots that never published, by count only', async () => {
+    state.history = [snapshot('snapshot-1', 'Adds login', provenance('gen-1'))];
+    await publishPendingSummarySnapshots(SCOPE, reconciliation);
+
+    await reportStrippedSummaryProvenance(
+      SCOPE,
+      ['snapshot-1', 'snapshot-unpublished'],
+      host,
+    );
+    await reportStrippedSummaryProvenance(SCOPE, [], host);
+    expect(gaps).toEqual(['provenance_stripped: 1']);
+
+    state.enabled = false;
+    await reportStrippedSummaryProvenance(SCOPE, ['snapshot-2'], host);
+    expect(gaps).toEqual([
+      'provenance_stripped: 1',
+      'provenance_stripped_unverified: 1',
+    ]);
   });
 });
 

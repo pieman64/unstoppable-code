@@ -1,6 +1,6 @@
 // Unread-chat toasts, OS notifications, and delayed Claude unread
 // notification scheduling. Owns the delayed-notification timer registry.
-import { CHAT_LABEL } from '@canopy/protocol';
+import { CHAT_LABEL, ORCHESTRATOR_LABEL, chatTabLabel } from '@canopy/protocol';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -42,6 +42,7 @@ import {
   isChatAgentResponseEvent,
 } from './unread-previews';
 import { isNewResponseTurnEventData } from './turn-events';
+import { tagStatusWrite } from './runtime-divergence';
 import {
   findPlanExploreTarget,
   isVisiblePlanExploreChat,
@@ -217,20 +218,30 @@ export function cancelDelayedUnreadChatNotificationsForWorktree(
   });
 }
 
+/**
+ * An agent response proves a session the renderer marked stale is alive.
+ * `canonicalStatus` is set for revisioned scopes, where canonical runtime
+ * already projects the tab's status and error; only legacy scopes write them.
+ */
 export function reinstateStaleSessionOnAgentResponse(
   tab: ChatTab,
   data: Record<string, unknown>,
+  options?: { canonicalStatus?: boolean },
 ): ChatTab {
   if (!tab.staleSessionDetected || !isChatAgentResponseEvent(data)) {
     return tab;
   }
 
   const sdkSessionId = tab.sdkSessionId ?? tab.staleSessionResumeId;
+  if (options?.canonicalStatus !== true) {
+    tagStatusWrite(tab.id, 'stale-session');
+  }
 
   return {
     ...tab,
-    status: 'streaming',
-    error: null,
+    ...(options?.canonicalStatus === true
+      ? {}
+      : { status: 'streaming' as const, error: null }),
     readOnly: undefined,
     staleSessionDetected: undefined,
     staleSessionResumeId: undefined,
@@ -260,12 +271,12 @@ export function getUnreadChatFallbackMessage(options: {
 }): string {
   if (options.isAppAdvisor) {
     if (options.reason === 'plan') {
-      return `Plan ready for review in App Advisor${options.chatLabel}`;
+      return `Plan ready for review in ${ORCHESTRATOR_LABEL}${options.chatLabel}`;
     }
     if (options.reason === 'question') {
-      return `Question waiting in App Advisor${options.chatLabel}`;
+      return `Question waiting in ${ORCHESTRATOR_LABEL}${options.chatLabel}`;
     }
-    return `New App Advisor activity${options.chatLabel}`;
+    return `New ${ORCHESTRATOR_LABEL} activity${options.chatLabel}`;
   }
 
   const where =
@@ -343,17 +354,28 @@ export function getUnreadChatToastContext(
   worktreeName: string;
   message: string;
 } {
+  const tab = chatStoreApi()
+    .getState()
+    .worktreeChats[
+      worktreeKey({
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+      })
+    ]?.tabs.find((entry) => entry.id === options.chatId);
+  // Name the chat as its tab does: a rename, then the generated description,
+  // then the raw title callers pass.
+  const chatTitle = tab ? chatTabLabel(tab) : options.chatTitle;
   if (isAppAdvisorChatTarget(options.projectId, options.worktreeId)) {
-    const chatLabel = getUnreadChatLabel(options.chatTitle);
+    const chatLabel = getUnreadChatLabel(chatTitle);
     const message = options.agentResponsePreview
-      ? `App Advisor${chatLabel}: ${options.agentResponsePreview}`
+      ? `${ORCHESTRATOR_LABEL}${chatLabel}: ${options.agentResponsePreview}`
       : getUnreadChatFallbackMessage({
           reason: options.reason,
           chatLabel,
-          worktreeName: 'App Advisor',
+          worktreeName: ORCHESTRATOR_LABEL,
           isAppAdvisor: true,
         });
-    return { project: undefined, worktreeName: 'App Advisor', message };
+    return { project: undefined, worktreeName: ORCHESTRATOR_LABEL, message };
   }
 
   if (options.projectId === PLAN_EXPLORE_CHAT_PROJECT_ID) {
@@ -406,34 +428,28 @@ export function getUnreadChatToastContext(
     const coworkProject = useProjectsStore
       .getState()
       .projects.find((entry) => entry.id === options.projectId);
-    const tab = chatStoreApi()
-      .getState()
-      .worktreeChats[
-        worktreeKey({
-          projectId: options.projectId,
-          worktreeId: options.worktreeId,
-        })
-      ]?.tabs.find((entry) => entry.id === options.chatId);
     // Approximate the work-entry row title (derived main-side from the
-    // latest chat's description/title) without importing the standalone
-    // store — the completing chat is that "latest chat" in practice. Skip
-    // the chat label when it would just repeat the entry name.
-    const trimmedTitle = options.chatTitle?.trim();
-    const entryName =
-      tab?.description?.trim() ||
-      trimmedTitle ||
-      coworkProject?.name ||
-      CHAT_LABEL;
+    // latest chat's label) without importing the standalone store — the
+    // completing chat is that "latest chat" in practice. Skip the chat label
+    // when it would just repeat the entry name.
+    const trimmedTitle = chatTitle?.trim();
+    const entryName = trimmedTitle || coworkProject?.name || CHAT_LABEL;
     const coworkChatLabel =
       trimmedTitle && trimmedTitle !== entryName
-        ? getUnreadChatLabel(options.chatTitle)
+        ? getUnreadChatLabel(chatTitle)
         : '';
+    // The in-app headline names the entry, as it names a worktree.
+    const lead = includeWorktreeName
+      ? `${entryName}${coworkChatLabel}`
+      : coworkChatLabel.slice(2);
     const message = options.agentResponsePreview
-      ? `${entryName}${coworkChatLabel}: ${options.agentResponsePreview}`
+      ? lead
+        ? `${lead}: ${options.agentResponsePreview}`
+        : options.agentResponsePreview
       : getUnreadChatFallbackMessage({
           reason: options.reason,
           chatLabel: coworkChatLabel,
-          worktreeName: entryName,
+          worktreeName: includeWorktreeName ? entryName : undefined,
           isAppAdvisor: false,
         });
     return { project: coworkProject, worktreeName: entryName, message };
@@ -447,7 +463,7 @@ export function getUnreadChatToastContext(
       ? project.worktrees.find((entry) => entry.id === options.worktreeId)
       : undefined;
   const worktreeName = worktree?.branchName ?? options.worktreeId;
-  const chatLabel = getUnreadChatLabel(options.chatTitle);
+  const chatLabel = getUnreadChatLabel(chatTitle);
   // Without the branch, the chat title leads (dropping the label's `: `).
   const lead = includeWorktreeName
     ? `${worktreeName}${chatLabel}`
@@ -487,8 +503,10 @@ export interface WorktreeChatNavigationTarget {
  */
 export async function navigateToWorktreeChat(
   target: WorktreeChatNavigationTarget,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   if (
+    !isCurrent() ||
     !canNavigateToWorktreeFromSidebarItems(
       useProjectsStore.getState().projects,
       target.projectId,
@@ -510,6 +528,7 @@ export async function navigateToWorktreeChat(
   await waitForWorktreeHydration(
     worktreeKey({ projectId: target.projectId, worktreeId: target.worktreeId }),
   );
+  if (!isCurrent()) return;
   chatStoreApi().getState().selectWorktree(target.projectId, target.worktreeId);
   if (target.openArchivedTranscript) {
     // Auto-archived chat: it is no longer a live tab, so ask the tab bar to
@@ -733,7 +752,9 @@ export function getChatToastAttribution(target: WorktreeChatNavigationTarget): {
     void navigateToUnreadChat(target);
   };
   if (isAppAdvisorChatTarget(target.projectId, target.worktreeId)) {
-    return { meta: { workspaceName: 'App Advisor' }, onClick };
+    // No projectId: githubStore titles the OS notification "Orchestrator" only
+    // for chat toasts without one.
+    return { meta: { workspaceName: ORCHESTRATOR_LABEL }, onClick };
   }
   // Plan-explore and code-review chats live under synthetic scopes, so point
   // the toast's worktree target at the real worktree. This makes the toast
@@ -826,7 +847,7 @@ function deliverChatActivityNotification(
   const { message: body } = getUnreadChatToastContext(options);
 
   maybeFireOsNotification({
-    title: isAppAdvisorToast ? 'App Advisor' : CHAT_LABEL,
+    title: isAppAdvisorToast ? ORCHESTRATOR_LABEL : CHAT_LABEL,
     body,
     category: 'Chat',
     ...(isAppAdvisorToast

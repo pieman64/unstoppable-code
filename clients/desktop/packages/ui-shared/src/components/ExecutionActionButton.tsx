@@ -1,4 +1,10 @@
-import type { JSX, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import type {
+  AriaAttributes,
+  JSX,
+  KeyboardEvent,
+  MouseEvent,
+  ReactNode,
+} from 'react';
 import {
   actionChipClassName,
   SECONDARY_ACTION_BUTTON_CLASS,
@@ -12,11 +18,15 @@ export type ExecutionActionButtonVariant =
   | 'destructive'
   | 'destructive-chip'
   | 'ghost'
+  | 'text'
   | 'ghost-destructive';
 
-export interface ExecutionActionButtonProps {
+export interface ExecutionActionButtonProps extends Pick<
+  AriaAttributes,
+  'aria-describedby' | 'aria-haspopup'
+> {
   /** Visible label. Pass an empty string to render an icon-only button. */
-  label: string;
+  label: ReactNode;
   /** Icon glyph rendered to the left of the label. */
   icon?: ReactNode;
   onClick: () => void;
@@ -99,6 +109,7 @@ const VARIANT_CLASSES: Record<ExecutionActionButtonVariant, string> = {
   primary: primaryClassName(false),
   ghost:
     'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors h-7 rounded-md px-2.5 text-xs font-normal fg-secondary hover:bg-subtle hover:fg-primary',
+  text: 'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors h-7 rounded-md px-2.5 text-xs font-normal fg-tertiary hover:fg-primary',
   'ghost-destructive':
     'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors h-7 rounded-md px-2.5 text-xs font-normal fg-destructive hover:bg-destructive-subtle',
   destructive:
@@ -114,6 +125,8 @@ const VARIANT_CLASSES: Record<ExecutionActionButtonVariant, string> = {
  */
 export function ExecutionActionButton({
   label,
+  'aria-describedby': describedBy,
+  'aria-haspopup': hasPopup,
   icon,
   onClick,
   disabled = false,
@@ -144,6 +157,8 @@ export function ExecutionActionButton({
         data-state={dataState}
         data-execution-action-button="true"
         aria-label={ariaLabel}
+        aria-describedby={describedBy}
+        aria-haspopup={hasPopup}
         onClick={(event: MouseEvent<HTMLButtonElement>): void => {
           event.stopPropagation();
           onClick();

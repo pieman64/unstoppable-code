@@ -1,7 +1,11 @@
 /** @jest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { UsageIndicator, type UsageIndicatorUsage } from '../UsageIndicator';
+import {
+  UsageIndicator,
+  type UsageIndicatorCreditBalance,
+  type UsageIndicatorUsage,
+} from '../UsageIndicator';
 import {
   UsageCostPreviewRow,
   type UsageCostPreview,
@@ -56,9 +60,12 @@ describe('UsageIndicator cost preview', () => {
         readonly usage?: {
           readonly inputTokens: number;
           readonly outputTokens: number;
+          readonly estimatedCostUsd?: number;
         };
       };
       readonly usage?: UsageIndicatorUsage;
+      readonly hideCost?: boolean;
+      readonly creditBalance?: UsageIndicatorCreditBalance;
     } = {},
   ): Promise<void> {
     act(() => {
@@ -72,6 +79,8 @@ describe('UsageIndicator cost preview', () => {
             )
           }
           responseUsage={props.responseUsage}
+          hideCost={props.hideCost}
+          creditBalance={props.creditBalance}
         />,
       );
     });
@@ -233,5 +242,81 @@ describe('UsageIndicator cost preview', () => {
     expect(
       document.body.querySelector('[data-testid="usage-indicator-cost"]'),
     ).toBeNull();
+  });
+
+  describe('hideCost (CAN-5028)', () => {
+    async function expandContext(): Promise<void> {
+      await act(async () => {
+        document.body
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="usage-indicator-context"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+    }
+
+    function detailsText(): string {
+      return (
+        document.body.querySelector('[data-testid="usage-indicator-details"]')
+          ?.textContent ?? ''
+      );
+    }
+
+    it('drops the host cost preview and the session Cost figure', async () => {
+      await renderOpen({ costPreview: COST_PREVIEW, hideCost: true });
+
+      expect(
+        document.body.querySelector('[data-testid="usage-indicator-cost"]'),
+      ).toBeNull();
+      expect(
+        document.body.querySelector('[data-testid="usage-indicator-context"]'),
+      ).not.toBeNull();
+
+      await expandContext();
+      expect(detailsText()).toContain('Turns');
+      expect(detailsText()).not.toContain('Cost');
+    });
+
+    it('drops the inline Cost figure when there is no context meter', async () => {
+      await renderOpen({
+        hideCost: true,
+        usage: { ...USAGE, contextTokens: 0 },
+      });
+
+      expect(detailsText()).toContain('Turns');
+      expect(detailsText()).not.toContain('Cost');
+    });
+
+    it('drops the per-response Estimated cost row', async () => {
+      await renderOpen({
+        hideCost: true,
+        responseUsage: {
+          message: 'Tokens for this response.',
+          note: 'Billed elsewhere.',
+          usage: { inputTokens: 100, outputTokens: 20, estimatedCostUsd: 0.2 },
+        },
+      });
+
+      const popoverText =
+        document.body.querySelector('[data-testid="usage-indicator-popover"]')
+          ?.textContent ?? '';
+      expect(popoverText).toContain('Input');
+      expect(popoverText).not.toContain('Estimated cost');
+      expect(popoverText).not.toContain('$');
+    });
+
+    it('keeps the AI Credits balance', async () => {
+      await renderOpen({
+        hideCost: true,
+        creditBalance: { credits: 1200 },
+      });
+
+      expect(
+        document.body.querySelector(
+          '[data-testid="usage-indicator-account-credit-balance"]',
+        )?.textContent,
+      ).toContain('1,200');
+    });
   });
 });

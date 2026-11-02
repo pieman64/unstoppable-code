@@ -46,6 +46,15 @@ const mockGetAccountProxyStatus = jest.fn(
       routeCodex: true,
       keepChatOnOneAccount: true,
       refreshedAt: 2000,
+      local: {
+        phase: 'stopped',
+        version: null,
+        install: null,
+        port: null,
+        startWithApp: true,
+        message: null,
+      },
+      signIn: null,
       accounts: [
         {
           authIndex: 'ready',
@@ -97,12 +106,20 @@ const mockGetResumeQueue = jest.fn((): { isStopping: () => boolean } => ({
 }));
 
 jest.mock('../auth/codex-login', () => ({
-  codexLoginManager: { assertResumeAllowed: mockAssertResumeAllowed },
+  codexLoginManager: {
+    get assertResumeAllowed(): typeof mockAssertResumeAllowed {
+      return mockAssertResumeAllowed;
+    },
+  },
 }));
 jest.mock('../services/chat-queue-service', () => ({
   getChatQueueService: jest.fn(() => ({
-    releaseAuthenticationPause: mockReleaseAuthenticationPause,
-    pauseForAuthentication: mockPauseForAuthentication,
+    get releaseAuthenticationPause(): typeof mockReleaseAuthenticationPause {
+      return mockReleaseAuthenticationPause;
+    },
+    get pauseForAuthentication(): typeof mockPauseForAuthentication {
+      return mockPauseForAuthentication;
+    },
   })),
 }));
 
@@ -111,15 +128,23 @@ jest.mock('../services/chat-service', () => ({
   buildExistingTabDispatchOptions: jest.fn(),
 }));
 jest.mock('../services/resume-queue-host', () => ({
-  configureResumeQueue: mockConfigureResumeQueue,
-  getResumeQueue: mockGetResumeQueue,
+  get configureResumeQueue(): typeof mockConfigureResumeQueue {
+    return mockConfigureResumeQueue;
+  },
+  get getResumeQueue(): typeof mockGetResumeQueue {
+    return mockGetResumeQueue;
+  },
 }));
 jest.mock('../agents/session-manager', () => ({
-  getAllActiveSessionInfos: mockGetAllActiveSessionInfos,
+  get getAllActiveSessionInfos(): typeof mockGetAllActiveSessionInfos {
+    return mockGetAllActiveSessionInfos;
+  },
 }));
 jest.mock('../integration/claude-terminal-session-service', () => ({
   getClaudeTerminalSessionService: jest.fn(() => ({
-    getState: mockTerminalGetState,
+    get getState(): typeof mockTerminalGetState {
+      return mockTerminalGetState;
+    },
   })),
 }));
 jest.mock('../ipc/register', () => ({
@@ -142,9 +167,12 @@ jest.mock('../lib/usage-limited-chats-registry', () => {
     ...actual,
     clearUsageLimitedChat: jest.fn(),
     clearAuthenticationInterruptedChat: jest.fn(),
-    claimCodexAuthenticationResume: mockClaimCodexAuthenticationResume,
-    clearCodexAuthenticationResumeClaim:
-      mockClearCodexAuthenticationResumeClaim,
+    get claimCodexAuthenticationResume(): typeof mockClaimCodexAuthenticationResume {
+      return mockClaimCodexAuthenticationResume;
+    },
+    get clearCodexAuthenticationResumeClaim(): typeof mockClearCodexAuthenticationResumeClaim {
+      return mockClearCodexAuthenticationResumeClaim;
+    },
     readUsageLimitedChats: jest.fn(),
   };
 });
@@ -152,14 +180,22 @@ jest.mock('../pipelines/pipeline-resume-service', () => ({
   resumePipelineExecutionFromMain: jest.fn(),
 }));
 jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => ({
-  listExecutionSummaries: mockListExecutionSummaries,
-  loadExecutionState: mockLoadExecutionState,
+  get listExecutionSummaries(): typeof mockListExecutionSummaries {
+    return mockListExecutionSummaries;
+  },
+  get loadExecutionState(): typeof mockLoadExecutionState {
+    return mockLoadExecutionState;
+  },
 }));
 jest.mock('../lib/sidebar-items', () => ({
-  readWorkspaceIndexEntry: mockReadWorkspaceIndexEntry,
+  get readWorkspaceIndexEntry(): typeof mockReadWorkspaceIndexEntry {
+    return mockReadWorkspaceIndexEntry;
+  },
 }));
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceWorktrees: mockReadWorkspaceWorktrees,
+  get readWorkspaceWorktrees(): typeof mockReadWorkspaceWorktrees {
+    return mockReadWorkspaceWorktrees;
+  },
 }));
 jest.mock('../pipelines/execution-runtime', () => ({
   createElectronExecutionRuntime: jest.fn(() => ({
@@ -230,10 +266,14 @@ function executionState(id: string): ExecutionState {
     pipeline_id: 'pipeline',
     pipeline_snapshot: {
       name: 'Usage-limited pipeline',
+      scope: ['directory'],
       jobs: {},
     },
     status: 'paused',
     jobs: {},
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
     started_at: '2026-01-01T00:00:00.000Z',
     cwd: '/tmp/repo',
     env: {},
@@ -305,8 +345,394 @@ describe('handleResumeUsageLimitedChats', () => {
     mockedClearUsageLimitedChat.mockResolvedValue(undefined);
     mockedWriteChatTabsFile.mockResolvedValue(undefined);
     mockedReadChatTabsFile.mockResolvedValue(tabsFile([tab()]));
-    mockedReadUsageLimitedChats.mockResolvedValue([]);
+    mockedReadUsageLimitedChats.mockResolvedValue([
+      {
+        projectId: 'ws-a',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+        provider: 'claude',
+        detectedAt: Date.now(),
+        workspaceName: '',
+        chatTitle: '',
+      },
+      {
+        projectId: 'ws-a',
+        worktreeId: 'wt-1',
+        chatId: 'chat-good',
+        provider: 'claude',
+        detectedAt: Date.now(),
+        workspaceName: '',
+        chatTitle: '',
+      },
+      {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        provider: 'claude',
+        detectedAt: Date.now(),
+        workspaceName: '',
+        chatTitle: '',
+      },
+    ]);
     mockedClearAuthenticationInterruptedChat.mockResolvedValue(undefined);
+  });
+
+  it('does not attribute a resume when there is no eligible interruption', async () => {
+    mockedReadUsageLimitedChats.mockResolvedValue([]);
+    const target = { projectId: 'ws-a', worktreeId: 'wt-1', chatId: 'chat-1' };
+    expect(
+      await handleResumeUsageLimitedChats({ targets: [target] }, () => null),
+    ).toEqual({ resumedCount: 0, failedTargets: [target] });
+    expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'supports the registry-free restart fallback (agent progress: %s)',
+    async (hasProgress) => {
+      const target = {
+        projectId: 'ws-a',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+      };
+      mockedReadUsageLimitedChats.mockResolvedValue([]);
+      mockedReadChatTabsFile.mockResolvedValue(
+        tabsFile([
+          tab({
+            interruptedTurns: { original: {} },
+            messages: [
+              {
+                id: 'original',
+                role: 'user',
+                timestamp: 100,
+                inputMode: 'voice',
+                blocks: [{ type: 'text', text: 'Edit this' }],
+              },
+              ...(hasProgress
+                ? [
+                    {
+                      id: 'progress',
+                      role: 'assistant' as const,
+                      timestamp: 110,
+                      blocks: [{ type: 'text' as const, text: 'Working' }],
+                    },
+                  ]
+                : []),
+            ],
+          }),
+        ]),
+      );
+
+      expect(
+        await handleResumeUsageLimitedChats({ targets: [target] }, () => null),
+      ).toEqual({ resumedCount: 1, failedTargets: [] });
+      expect(mockedSendWorktreeChatMessage).toHaveBeenCalledTimes(1);
+      const sent = mockedSendWorktreeChatMessage.mock.calls[0]?.[0];
+      expect(sent).toMatchObject({
+        ...target,
+        text: hasProgress ? 'Continue' : 'Edit this',
+        resumesInterruptedTurn: true,
+        autoResume: {
+          reason: 'app_shutdown',
+          resumesUserMessageId: 'original',
+          resendsUserMessage: !hasProgress,
+        },
+      });
+      if (hasProgress) expect(sent).not.toHaveProperty('inputMode');
+      else expect(sent).toHaveProperty('inputMode', 'voice');
+      expect(mockedClearUsageLimitedChat).toHaveBeenCalledTimes(1);
+      expect(mockedClearUsageLimitedChat.mock.calls[0]?.[0]).toEqual(target);
+    },
+  );
+
+  it.each([{ resumedBy: 'resume' }, { abandoned: true as const }])(
+    'rejects resolved restart metadata without a registry entry: %j',
+    async (interruption) => {
+      const target = {
+        projectId: 'ws-a',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+      };
+      mockedReadUsageLimitedChats.mockResolvedValue([]);
+      mockedReadChatTabsFile.mockResolvedValue(
+        tabsFile([tab({ interruptedTurns: { original: interruption } })]),
+      );
+
+      expect(
+        await handleResumeUsageLimitedChats({ targets: [target] }, () => null),
+      ).toEqual({ resumedCount: 0, failedTargets: [target] });
+      expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
+      expect(mockedClearUsageLimitedChat).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a concurrent caller and releases the claim for retry after dispatch failure', async () => {
+    const target = { projectId: 'ws-a', worktreeId: 'wt-1', chatId: 'chat-1' };
+    let rejectDispatch: (error: Error) => void = () => undefined;
+    let markDispatchStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markDispatchStarted = resolve;
+    });
+    mockedSendWorktreeChatMessage.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectDispatch = reject;
+          markDispatchStarted();
+        }),
+    );
+    const first = handleResumeUsageLimitedChats(
+      { targets: [target] },
+      () => null,
+    );
+    await started;
+    expect(
+      await handleResumeUsageLimitedChats({ targets: [target] }, () => null),
+    ).toEqual({ resumedCount: 0, failedTargets: [target] });
+    expect(mockedSendWorktreeChatMessage).toHaveBeenCalledTimes(1);
+    expect(mockedClearUsageLimitedChat).not.toHaveBeenCalled();
+
+    rejectDispatch(new Error('Unavailable'));
+    expect(await first).toEqual({ resumedCount: 0, failedTargets: [target] });
+    expect(
+      await handleResumeUsageLimitedChats({ targets: [target] }, () => null),
+    ).toEqual({ resumedCount: 1, failedTargets: [] });
+    expect(mockedSendWorktreeChatMessage).toHaveBeenCalledTimes(2);
+    expect(mockedClearUsageLimitedChat).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['lost response', 'cleanup failure'])(
+    'reconciles an accepted app-shutdown resume after %s without another dispatch',
+    async (failure) => {
+      const target = {
+        projectId: 'ws-a',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+      };
+      let current = tab({
+        interruptedTurns: { original: {} },
+        messages: [
+          {
+            id: 'original',
+            role: 'user',
+            timestamp: 100,
+            blocks: [{ type: 'text', text: 'Edit this' }],
+          },
+        ],
+      });
+      mockedReadUsageLimitedChats.mockResolvedValue([
+        {
+          ...target,
+          provider: 'claude',
+          detectedAt: 120,
+          interruptedUserMessageId: 'original',
+          resumeReason: 'app_shutdown',
+          workspaceName: '',
+          chatTitle: '',
+        },
+      ]);
+      mockedReadChatTabsFile.mockImplementation(() =>
+        Promise.resolve(tabsFile([current])),
+      );
+      mockedSendWorktreeChatMessage.mockImplementationOnce((request) => {
+        if (!request.userMessageId)
+          throw new Error('Resume requires a message ID');
+        current = {
+          ...current,
+          lastAcceptedUserMessageId: request.userMessageId,
+          interruptedTurns: { original: { resumedBy: request.userMessageId } },
+          messages: [
+            ...current.messages,
+            {
+              id: request.userMessageId,
+              role: 'user',
+              timestamp: 150,
+              userMessageSource: 'auto_resume',
+              autoResume: request.autoResume,
+              blocks: [{ type: 'text', text: request.text }],
+            },
+          ],
+        };
+        return failure === 'lost response'
+          ? Promise.reject(new Error('Response lost after acceptance'))
+          : Promise.resolve({ ok: true, chatId: target.chatId });
+      });
+      const logError = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      if (failure === 'cleanup failure')
+        mockedClearUsageLimitedChat.mockRejectedValueOnce(new Error('ENOSPC'));
+      try {
+        expect(
+          await handleResumeUsageLimitedChats(
+            { targets: [target] },
+            () => null,
+          ),
+        ).toEqual(
+          failure === 'lost response'
+            ? { resumedCount: 0, failedTargets: [target] }
+            : { resumedCount: 1, failedTargets: [] },
+        );
+        expect(
+          await handleResumeUsageLimitedChats(
+            { targets: [target] },
+            () => null,
+          ),
+        ).toEqual({ resumedCount: 1, failedTargets: [] });
+        expect(mockedSendWorktreeChatMessage).toHaveBeenCalledTimes(1);
+        expect(mockedClearUsageLimitedChat.mock.calls.at(-1)?.[0]).toEqual(
+          target,
+        );
+      } finally {
+        logError.mockRestore();
+      }
+    },
+  );
+
+  it('derives app-shutdown provenance from the registry and exact interrupted turn', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      tabsFile([
+        tab({
+          interruptedTurns: { original: {} },
+          messages: [
+            {
+              id: 'original',
+              role: 'user',
+              timestamp: 100,
+              inputMode: 'voice',
+              blocks: [{ type: 'text', text: 'Edit this' }],
+            },
+            {
+              id: 'work',
+              role: 'assistant',
+              timestamp: 110,
+              blocks: [
+                {
+                  type: 'tool_use',
+                  toolUseId: 'edit',
+                  toolName: 'Edit',
+                  input: '{}',
+                },
+              ],
+            },
+          ],
+        }),
+      ]),
+    );
+    mockedReadUsageLimitedChats.mockResolvedValue([
+      {
+        projectId: 'ws-a',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+        provider: 'claude',
+        detectedAt: 120,
+        interruptedUserMessageId: 'original',
+        resumeReason: 'app_shutdown',
+        workspaceName: '',
+        chatTitle: '',
+      },
+    ]);
+    expect(
+      await handleResumeUsageLimitedChats(
+        {
+          targets: [
+            { projectId: 'ws-a', worktreeId: 'wt-1', chatId: 'chat-1' },
+          ],
+        },
+        () => null,
+      ),
+    ).toMatchObject({ resumedCount: 1 });
+    const sent = mockedSendWorktreeChatMessage.mock.calls[0]?.[0];
+    expect(sent).toMatchObject({
+      text: 'Continue',
+      autoResume: {
+        reason: 'app_shutdown',
+        resumesUserMessageId: 'original',
+        resendsUserMessage: false,
+      },
+    });
+    expect(sent).not.toHaveProperty('inputMode');
+  });
+
+  it('retries cleanup without duplicating an already accepted automatic resume', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      tabsFile([
+        tab({
+          lastAcceptedUserMessageId: 'accepted-resume',
+          interruptedTurns: { original: { resumedBy: 'accepted-resume' } },
+          messages: [
+            {
+              id: 'accepted-resume',
+              role: 'user',
+              timestamp: 150,
+              userMessageSource: 'auto_resume',
+              autoResume: {
+                reason: 'app_shutdown',
+                resumesUserMessageId: 'original',
+                resendsUserMessage: false,
+              },
+              blocks: [{ type: 'text', text: 'Continue' }],
+            },
+          ],
+        }),
+      ]),
+    );
+    const target = { projectId: 'ws-a', worktreeId: 'wt-1', chatId: 'chat-1' };
+    mockedReadUsageLimitedChats.mockResolvedValue([
+      {
+        ...target,
+        provider: 'claude',
+        detectedAt: 120,
+        interruptedUserMessageId: 'original',
+        resumeReason: 'app_shutdown',
+        workspaceName: '',
+        chatTitle: '',
+      },
+    ]);
+    expect(
+      await handleResumeUsageLimitedChats({ targets: [target] }, () => null),
+    ).toEqual({ resumedCount: 1, failedTargets: [] });
+    expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
+    expect(mockedClearUsageLimitedChat).toHaveBeenCalled();
+  });
+
+  it('refuses a registry anchor superseded by a newer human turn', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      tabsFile([
+        tab({
+          messages: [
+            {
+              id: 'new-human',
+              role: 'user',
+              timestamp: 100,
+              blocks: [{ type: 'text', text: 'New work' }],
+            },
+          ],
+        }),
+      ]),
+    );
+    mockedReadUsageLimitedChats.mockResolvedValue([
+      {
+        projectId: 'ws-a',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+        provider: 'claude',
+        detectedAt: 200,
+        interruptedUserMessageId: 'old',
+        resumeReason: 'app_shutdown',
+        workspaceName: '',
+        chatTitle: '',
+      },
+    ]);
+    expect(
+      await handleResumeUsageLimitedChats(
+        {
+          targets: [
+            { projectId: 'ws-a', worktreeId: 'wt-1', chatId: 'chat-1' },
+          ],
+        },
+        () => null,
+      ),
+    ).toMatchObject({ resumedCount: 0 });
+    expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
   });
 
   it('dispatches Continue with the built tab options and clears the registry entry', async () => {
@@ -361,8 +787,10 @@ describe('handleResumeUsageLimitedChats', () => {
     });
     const banner = {
       provider: 'claude' as const,
+      message: 'Usage limit reached',
       resetsAt: 1000,
       detectedAt: 1,
+      dismissKey: 'k1',
     };
     mockedReadChatTabsFile.mockImplementation((projectId, worktreeId) =>
       Promise.resolve(
@@ -542,9 +970,10 @@ describe('handleResumeUsageLimitedChats', () => {
     // The legacy pre-rename keys are not part of the current PersistedChatTab
     // type, so attach them the same way production data would carry them:
     // as extra fields on the persisted JSON object.
-    const legacyRecord: Record<string, unknown> = staleTab;
-    legacyRecord.claudeUsageLimitBanner = { message: 'legacy banner' };
-    legacyRecord.dismissedClaudeUsageLimitBannerKey = 'legacy-key';
+    Reflect.set(staleTab, 'claudeUsageLimitBanner', {
+      message: 'legacy banner',
+    });
+    Reflect.set(staleTab, 'dismissedClaudeUsageLimitBannerKey', 'legacy-key');
 
     mockedReadChatTabsFile.mockResolvedValue(tabsFile([staleTab]));
 
@@ -564,15 +993,12 @@ describe('handleResumeUsageLimitedChats', () => {
 
     const writtenTab = writtenFile.tabs.find((t) => t.id === 'chat-1');
     if (!writtenTab) throw new Error('expected the written chat-1 tab');
-    const writtenRecord: Record<string, unknown> = writtenTab;
-    expect(writtenRecord).not.toHaveProperty('llmProviderUsageLimitBanner');
-    expect(writtenRecord).not.toHaveProperty(
+    expect(writtenTab).not.toHaveProperty('llmProviderUsageLimitBanner');
+    expect(writtenTab).not.toHaveProperty(
       'dismissedLlmProviderUsageLimitBannerKey',
     );
-    expect(writtenRecord).not.toHaveProperty('claudeUsageLimitBanner');
-    expect(writtenRecord).not.toHaveProperty(
-      'dismissedClaudeUsageLimitBannerKey',
-    );
+    expect(writtenTab).not.toHaveProperty('claudeUsageLimitBanner');
+    expect(writtenTab).not.toHaveProperty('dismissedClaudeUsageLimitBannerKey');
   });
 
   it('does not write the tabs file when the tab carries no banner keys', async () => {
@@ -687,6 +1113,9 @@ describe('handleResumeUsageLimitedChats', () => {
       ],
     };
 
+    mockedReadChatTabsFile.mockResolvedValue(
+      tabsFile([tab({ id: 'chat-bad' }), tab({ id: 'chat-good' })]),
+    );
     const res = await handleResumeUsageLimitedChats(req, () => null);
 
     expect(res.resumedCount).toBe(1);
@@ -1608,6 +2037,10 @@ describe('resume queue IPC boundary and dispatch', () => {
         chatId: 'chat-1',
       },
     };
+    const legacyTarget = legacy.target;
+    if (legacyTarget.kind !== 'chat') {
+      throw new Error('Expected a legacy chat target');
+    }
     mockedResolveWorkEntryForChat.mockResolvedValue({
       entryId: 'owning-entry',
       archivedInEntryId: null,
@@ -1623,7 +2056,7 @@ describe('resume queue IPC boundary and dispatch', () => {
     );
     mockedReadUsageLimitedChats.mockResolvedValue([
       {
-        ...legacy.target,
+        ...legacyTarget,
         provider: 'claude',
         detectedAt: 1,
         workspaceName: 'Cowork',

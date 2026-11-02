@@ -1,0 +1,211 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`worktree:diff-stats under repository configuration answers diff-only and full batch rows alike 1`] = `
+{
+  "result": [
+    {
+      "deletions": 1,
+      "insertions": 26,
+      "mode": "diff_only",
+      "projectId": "quote-on-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "baseBranch": "main",
+      "baseBranchExistsInRemote": true,
+      "baseBranchExistsLocally": true,
+      "branchName": "feature-01",
+      "defaultBranch": "main",
+      "deletions": 1,
+      "hasBranchBeenPushed": false,
+      "hasCommitsAhead": true,
+      "hasOriginRemote": true,
+      "hasRemoteTrackingBranch": false,
+      "hasUncommittedChanges": true,
+      "hasUnpulledCommits": false,
+      "hasUnpushedCommits": false,
+      "insertions": 26,
+      "projectId": "quote-on-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "deletions": 1,
+      "insertions": 33,
+      "mode": "diff_only",
+      "projectId": "quote-off-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "baseBranch": "main",
+      "baseBranchExistsInRemote": true,
+      "baseBranchExistsLocally": true,
+      "branchName": "feature-01",
+      "defaultBranch": "main",
+      "deletions": 1,
+      "hasBranchBeenPushed": false,
+      "hasCommitsAhead": true,
+      "hasOriginRemote": true,
+      "hasRemoteTrackingBranch": false,
+      "hasUncommittedChanges": true,
+      "hasUnpulledCommits": false,
+      "hasUnpushedCommits": false,
+      "insertions": 33,
+      "projectId": "quote-off-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "deletions": 20,
+      "insertions": 45,
+      "mode": "diff_only",
+      "projectId": "renames-off-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "baseBranch": "main",
+      "baseBranchExistsInRemote": true,
+      "baseBranchExistsLocally": true,
+      "branchName": "feature-01",
+      "defaultBranch": "main",
+      "deletions": 20,
+      "hasBranchBeenPushed": false,
+      "hasCommitsAhead": true,
+      "hasOriginRemote": true,
+      "hasRemoteTrackingBranch": false,
+      "hasUncommittedChanges": true,
+      "hasUnpulledCommits": false,
+      "hasUnpushedCommits": false,
+      "insertions": 45,
+      "projectId": "renames-off-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "deletions": 1,
+      "insertions": 26,
+      "mode": "diff_only",
+      "projectId": "renames-on-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "baseBranch": "main",
+      "baseBranchExistsInRemote": true,
+      "baseBranchExistsLocally": true,
+      "branchName": "feature-01",
+      "defaultBranch": "main",
+      "deletions": 1,
+      "hasBranchBeenPushed": false,
+      "hasCommitsAhead": true,
+      "hasOriginRemote": true,
+      "hasRemoteTrackingBranch": false,
+      "hasUncommittedChanges": true,
+      "hasUnpulledCommits": false,
+      "hasUnpushedCommits": false,
+      "insertions": 26,
+      "projectId": "renames-on-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "deletions": 1,
+      "insertions": 6,
+      "mode": "diff_only",
+      "projectId": "copies-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "baseBranch": "main",
+      "baseBranchExistsInRemote": true,
+      "baseBranchExistsLocally": true,
+      "branchName": "feature-01",
+      "defaultBranch": "main",
+      "deletions": 1,
+      "hasBranchBeenPushed": false,
+      "hasCommitsAhead": true,
+      "hasOriginRemote": true,
+      "hasRemoteTrackingBranch": false,
+      "hasUncommittedChanges": true,
+      "hasUnpulledCommits": false,
+      "hasUnpushedCommits": false,
+      "insertions": 6,
+      "projectId": "copies-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "deletions": 0,
+      "insertions": 0,
+      "mode": "diff_only",
+      "projectId": "bad-bool-ws",
+      "worktreeId": "feature-01",
+    },
+    {
+      "deletions": 0,
+      "healthIssue": {
+        "checkedAt": "<time>",
+        "code": "git-error",
+        "gitError": "Git health check failed
+fatal: bad boolean config value 'maybe' for 'core.quotepath'",
+        "message": "Git could not validate this worktree.",
+        "status": "broken",
+        "worktreePath": "<root>/data/workspaces/bad-bool-ws/worktrees/feature-01",
+      },
+      "insertions": 0,
+      "projectId": "bad-bool-ws",
+      "worktreeId": "feature-01",
+    },
+  ],
+}
+`;
+
+exports[`worktree:diff-stats under repository configuration counts with each configuration: bad-bool-ws 1`] = `
+{
+  "error": {
+    "message": "Command failed: <git> diff HEAD --shortstat
+fatal: bad boolean config value 'maybe' for 'core.quotepath'
+",
+    "name": "Error",
+  },
+}
+`;
+
+exports[`worktree:diff-stats under repository configuration counts with each configuration: copies-ws 1`] = `
+{
+  "result": {
+    "deletions": 1,
+    "insertions": 6,
+  },
+}
+`;
+
+exports[`worktree:diff-stats under repository configuration counts with each configuration: quote-off-ws 1`] = `
+{
+  "result": {
+    "deletions": 1,
+    "insertions": 33,
+  },
+}
+`;
+
+exports[`worktree:diff-stats under repository configuration counts with each configuration: quote-on-ws 1`] = `
+{
+  "result": {
+    "deletions": 1,
+    "insertions": 26,
+  },
+}
+`;
+
+exports[`worktree:diff-stats under repository configuration counts with each configuration: renames-off-ws 1`] = `
+{
+  "result": {
+    "deletions": 20,
+    "insertions": 45,
+  },
+}
+`;
+
+exports[`worktree:diff-stats under repository configuration counts with each configuration: renames-on-ws 1`] = `
+{
+  "result": {
+    "deletions": 1,
+    "insertions": 26,
+  },
+}
+`;

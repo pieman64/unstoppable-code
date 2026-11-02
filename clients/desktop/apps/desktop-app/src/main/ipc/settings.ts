@@ -1,13 +1,17 @@
+import { createHash } from 'node:crypto';
+import {
+  observeProviderConnection,
+  recordProviderConnectionFailure,
+  withProviderConnectionAttempt,
+} from '../lib/provider-connection-events';
 import { BrowserWindow } from 'electron';
 import { loadCloudReleaseNotes } from '../canopy-cloud/release-notes';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
-import { execFile } from 'node:child_process';
 import { normalizeMemorySearchOrganizationExternalIds } from '@canopy/desktop-shared/lib/org-memory';
 import { mkdir, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { promisify } from 'node:util';
-import { LinearClient } from '@linear/sdk';
 import { parseLinearIdentifier } from '@canopy/desktop-shared/lib/create-from-reference';
+import { parseLinearIssueSearchQuery } from '@canopy/protocol/reference-previews';
 import { BRAND } from '@canopy/brand/current';
 import {
   IPC_CHANNELS,
@@ -83,6 +87,8 @@ import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
 import { parseAuthoritativeOrganizationSnapshot } from '../canopy-cloud/organization-snapshot';
 import { normalizeCanopyOrganizationSummaries } from '../canopy-cloud/organization-summary';
 import { openAuthenticatedPortalPage } from '../canopy-cloud/authenticated-portal';
+import { openAuthenticatedPortalRequest } from '../services/authenticated-portal-open';
+import type { AuthenticatedPortalResult } from '@canopy/desktop-shared/lib/authenticated-portal-request';
 import {
   getUnstoppableDomainsAiCreditsManageUrl,
   getUnstoppableDomainsAiCreditsPurchaseUrl,
@@ -97,6 +103,11 @@ import {
   subscribeModelLibraryAccess,
 } from '../canopy-cloud/model-library-access';
 import { sendToWebContents } from '../lib/web-contents-send';
+import {
+  captureDailyCreditGrantAccount,
+  clearDailyCreditGrantStatus,
+  recordDailyCreditGrantFromBalance,
+} from '../lib/daily-credit-grant-telemetry';
 import {
   loadCloudDigestPreferences,
   saveCloudDigestPreferences,
@@ -130,22 +141,27 @@ import {
   writePreferencesFile,
 } from '../lib/preferences-store';
 import {
-  buildLinearClientOptions,
   invalidateLinearTokenCache,
   resolveLinearToken,
   readStoredLinearTokenWithStatus,
 } from '../lib/linear-auth';
+import {
+  isLinearApiError,
+  readLinearIssueAttachments,
+  readLinearViewer,
+  searchLinearIssues as searchLinearApiIssues,
+  type LinearIssueSearchResult,
+} from '../lib/linear-api';
 import {
   getGitHubPatFilePath,
   getLegacyGitHubPatFilePath,
   getLegacyLinearTokenFilePath,
   getLinearTokenFilePath,
 } from '../lib/paths';
-import {
-  getBundledGhBinaryPath,
-  getEnhancedEnv,
-} from '../pipelines/config-paths';
 import { registerIpcHandler } from './register';
+import type { DesktopIpcCallerResolver } from './file-tree';
+import type { CoreIntegrationDispatcher } from '../canopy-runtime/core-integration-adapter';
+import { getGitHubCliStatus } from '../canopy-runtime/github-integration-dispatch';
 import { getFeatureFlagService } from '../feature-flags';
 import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
@@ -179,7 +195,6 @@ import {
   saveModelGatewayCredential,
 } from '../lib/model-gateway-credential-store';
 
-const execFileAsync = promisify(execFile);
 const REQUIRED_CANOPY_CLOUD_CAPABILITIES = [
   'pipelines-crud-v1',
   'account-v1',
@@ -239,157 +254,8 @@ function resetGitHubCredentialState(): void {
   invalidateReconcileViewerCache();
 }
 
-interface LinearViewerLike {
-  displayName?: string | null;
-  name: string;
-}
-
-interface LinearViewerClientLike {
-  viewer: Promise<LinearViewerLike>;
-}
-
-interface IssueSearchResultLike {
-  id: string;
-  identifier: string;
-  title: string;
-  description?: string | null;
-  url: string;
-  priority: number;
-  priorityLabel: string;
-  branchName: string;
-}
-
-interface LinearIssueSearchPayloadLike {
-  nodes: IssueSearchResultLike[];
-}
-
-interface LinearSearchClientLike {
-  searchIssues(term: string): Promise<LinearIssueSearchPayloadLike>;
-  issue?: (id: string) => Promise<unknown>;
-}
-
-interface LinearIssueWithAttachmentsLike {
-  attachments: (options: { first: number }) => Promise<unknown>;
-}
-
-interface LinearAttachmentLike {
-  url: string;
-  sourceType?: string | null;
-  title?: string | null;
-}
-
-interface LinearAttachmentsPayloadLike {
-  nodes: LinearAttachmentLike[];
-  pageInfo?: { hasNextPage: boolean };
-}
-
-function isLinearIssueWithAttachmentsLike(
-  value: unknown,
-): value is LinearIssueWithAttachmentsLike {
-  return isRecord(value) && typeof value.attachments === 'function';
-}
-
-function isLinearAttachmentsPayloadLike(
-  value: unknown,
-): value is LinearAttachmentsPayloadLike {
-  return (
-    isRecord(value) &&
-    Array.isArray(value.nodes) &&
-    value.nodes.every(
-      (node: unknown): boolean =>
-        isRecord(node) &&
-        typeof node.url === 'string' &&
-        (node.sourceType === undefined ||
-          node.sourceType === null ||
-          typeof node.sourceType === 'string') &&
-        (node.title === undefined ||
-          node.title === null ||
-          typeof node.title === 'string'),
-    ) &&
-    (value.pageInfo === undefined ||
-      (isRecord(value.pageInfo) &&
-        typeof value.pageInfo.hasNextPage === 'boolean'))
-  );
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
-  return isRecord(value) && typeof value.then === 'function';
-}
-
-function isLinearViewerLike(value: unknown): value is LinearViewerLike {
-  if (!isRecord(value) || typeof value.name !== 'string') {
-    return false;
-  }
-
-  return (
-    value.displayName === undefined ||
-    value.displayName === null ||
-    typeof value.displayName === 'string'
-  );
-}
-
-function isLinearViewerClientLike(
-  value: unknown,
-): value is LinearViewerClientLike {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return isPromiseLike<LinearViewerLike>(value.viewer);
-}
-
-function isIssueSearchResultLike(
-  value: unknown,
-): value is IssueSearchResultLike {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.identifier === 'string' &&
-    typeof value.title === 'string' &&
-    (value.description === undefined ||
-      value.description === null ||
-      typeof value.description === 'string') &&
-    typeof value.url === 'string' &&
-    typeof value.priority === 'number' &&
-    typeof value.priorityLabel === 'string' &&
-    typeof value.branchName === 'string'
-  );
-}
-
-function isLinearIssueSearchPayloadLike(
-  value: unknown,
-): value is LinearIssueSearchPayloadLike {
-  return (
-    isRecord(value) &&
-    Array.isArray(value.nodes) &&
-    value.nodes.every((node) => isIssueSearchResultLike(node))
-  );
-}
-
-function isLinearSearchClientLike(
-  value: unknown,
-): value is LinearSearchClientLike {
-  return isRecord(value) && typeof value.searchIssues === 'function';
-}
-
-function createLinearViewerClient(apiKey: string): LinearViewerClientLike {
-  const clientConstructor: unknown = LinearClient;
-  if (typeof clientConstructor !== 'function') {
-    throw new Error('Linear client is unavailable');
-  }
-
-  const client: unknown = Reflect.construct(clientConstructor, [
-    buildLinearClientOptions(apiKey),
-  ]);
-  if (!isLinearViewerClientLike(client)) {
-    throw new Error('Linear client is unavailable');
-  }
-
-  return client;
 }
 
 function normalizeCanopyTeams(value: unknown): CanopyTeamSummary[] {
@@ -901,6 +767,7 @@ export async function loadCanopyCloudAiCredits(
     await loadCanopyCloudAccount(),
   );
   if (!account.hasApiKey) {
+    clearDailyCreditGrantStatus();
     return disconnectedAiCreditsState();
   }
 
@@ -908,6 +775,7 @@ export async function loadCanopyCloudAiCredits(
   const purchaseUrl = getUnstoppableDomainsAiCreditsPurchaseUrl();
   const manageUrl = getUnstoppableDomainsAiCreditsManageUrl();
 
+  const grantAccount = captureDailyCreditGrantAccount();
   const [subscriptionResult, balanceResult] = await Promise.allSettled([
     requestCanopyCloudJson<AiCreditsSubscription>(
       '/api/v1/ai-credits/subscription',
@@ -922,6 +790,14 @@ export async function loadCanopyCloudAiCredits(
         : {}),
     }),
   ] as const);
+  // The balance can mint a grant even if subscription loading fails.
+  if (balanceResult.status === 'fulfilled') {
+    recordDailyCreditGrantFromBalance(
+      balanceResult.value,
+      undefined,
+      grantAccount,
+    );
+  }
   if (
     subscriptionResult.status === 'rejected' ||
     balanceResult.status === 'rejected'
@@ -1237,10 +1113,13 @@ export async function loadNativeAiCreditsAvailability(
           }
         : {}),
       // The pool balance, only from a read that actually reached the pool: a
-      // 404 resolves to an all-zero payload that is not a real balance.
+      // 404 resolves to an all-zero payload that is not a real balance. Member
+      // responses omit the balance without changing spendability classification.
       ...(ownerOrganization &&
       orgProbes[0]?.resolved &&
-      orgProbes[0].spendable.orgCreditPoolCapable
+      orgProbes[0].spendable.orgCreditPoolCapable &&
+      typeof orgProbes[0].spendable.balanceCredits === 'number' &&
+      Number.isFinite(orgProbes[0].spendable.balanceCredits)
         ? {
             ownerOrganizationBalanceCredits:
               orgProbes[0].spendable.balanceCredits,
@@ -1489,22 +1368,6 @@ async function resetUnreadableCloudAccount(): Promise<ResetUnreadableCanopyCloud
   return result;
 }
 
-function createLinearSearchClient(apiKey: string): LinearSearchClientLike {
-  const clientConstructor: unknown = LinearClient;
-  if (typeof clientConstructor !== 'function') {
-    throw new Error('Linear client is unavailable');
-  }
-
-  const client: unknown = Reflect.construct(clientConstructor, [
-    buildLinearClientOptions(apiKey),
-  ]);
-  if (!isLinearSearchClientLike(client)) {
-    throw new Error('Linear client is unavailable');
-  }
-
-  return client;
-}
-
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -1514,13 +1377,16 @@ function formatErrorMessage(error: unknown): string {
 }
 
 function logLinearSearchError(error: unknown): void {
+  const details = isLinearApiError(error)
+    ? `operation=${error.operation} status=${error.status ?? 'null'} type=${error.type}`
+    : 'type unknown';
   process.stderr.write(
-    `[settings] Failed to search Linear issues: ${formatErrorMessage(error)}\n`,
+    `[settings] Failed to search Linear issues: ${details}\n`,
   );
 }
 
 function mapLinearIssueSearchResult(
-  issue: IssueSearchResultLike,
+  issue: LinearIssueSearchResult,
 ): LinearTicketSearchResult {
   return {
     id: issue.id,
@@ -1535,170 +1401,28 @@ function mapLinearIssueSearchResult(
 }
 
 async function withLinearIssueAttachments(
-  client: LinearSearchClientLike,
+  token: string,
   result: LinearTicketSearchResult,
 ): Promise<LinearTicketSearchResult> {
   try {
-    if (!client.issue) return { ...result, attachmentsComplete: false };
-    const issue = await client.issue(result.id);
-    if (!isLinearIssueWithAttachmentsLike(issue)) {
-      return { ...result, attachmentsComplete: false };
-    }
-    // Bound this lookup. A subsequent page is explicitly incomplete evidence,
-    // never proof that this issue belongs to the one repository found so far.
-    const payload = await issue.attachments({ first: 50 });
-    if (!isLinearAttachmentsPayloadLike(payload)) {
-      return { ...result, attachmentsComplete: false };
-    }
+    // Bounded to one page of 50. A further page is incomplete evidence, never
+    // proof that this issue belongs to the one repository found so far.
+    const payload = await readLinearIssueAttachments(token, result.id);
     return {
       ...result,
-      attachments: payload.nodes.slice(0, 50).map((attachment) => ({
+      attachments: payload.attachments.map((attachment) => ({
         url: attachment.url,
         ...(attachment.sourceType !== undefined
           ? { source: attachment.sourceType }
           : {}),
         ...(attachment.title !== undefined ? { title: attachment.title } : {}),
       })),
-      attachmentsComplete:
-        payload.pageInfo?.hasNextPage === false && payload.nodes.length <= 50,
+      attachmentsComplete: payload.complete,
     };
   } catch (error: unknown) {
     logLinearSearchError(error);
     return { ...result, attachmentsComplete: false };
   }
-}
-
-// Env var names gh recognises as a "token source" — when one of these is
-// set, gh refuses to perform interactive `gh auth login` and reports its
-// name as the active entry's `tokenSource`. Keep this in sync with gh's
-// docs (https://cli.github.com/manual/gh_help_environment).
-const GH_ENV_TOKEN_SOURCES = new Set([
-  'GH_TOKEN',
-  'GITHUB_TOKEN',
-  'GH_ENTERPRISE_TOKEN',
-  'GITHUB_ENTERPRISE_TOKEN',
-]);
-
-const GH_PRIMARY_HOST = 'github.com';
-
-interface GhHostEntry {
-  active: boolean;
-  host: string;
-  login: string;
-  tokenSource: string;
-}
-
-function isGhHostEntry(value: unknown): value is GhHostEntry {
-  return (
-    isRecord(value) &&
-    typeof value.active === 'boolean' &&
-    typeof value.host === 'string' &&
-    typeof value.login === 'string' &&
-    typeof value.tokenSource === 'string'
-  );
-}
-
-function unauthenticatedGitHubCliStatus(error: string): GitHubCliStatus {
-  return {
-    authenticated: false,
-    username: null,
-    error,
-    tokenSource: null,
-    envOverride: false,
-    envOverrideName: null,
-    hasCredentialStoreLogin: false,
-  };
-}
-
-function summarizeGhHostEntries(entries: GhHostEntry[]): GitHubCliStatus {
-  const active = entries.find((entry) => entry.active) ?? null;
-  const tokenSource = active?.tokenSource ?? null;
-  const envOverride =
-    tokenSource !== null && GH_ENV_TOKEN_SOURCES.has(tokenSource);
-  const hasCredentialStoreLogin = entries.some(
-    (entry) =>
-      typeof entry.tokenSource === 'string' &&
-      !GH_ENV_TOKEN_SOURCES.has(entry.tokenSource),
-  );
-
-  if (!active) {
-    return {
-      ...unauthenticatedGitHubCliStatus('GitHub CLI is not authenticated.'),
-      hasCredentialStoreLogin,
-    };
-  }
-
-  return {
-    authenticated: true,
-    username: active.login || null,
-    error: null,
-    tokenSource,
-    envOverride,
-    envOverrideName: envOverride ? tokenSource : null,
-    hasCredentialStoreLogin,
-  };
-}
-
-export async function checkGitHubCliStatus(): Promise<GitHubCliStatus> {
-  let stdout: string;
-  try {
-    // Use the structured JSON output so we can reliably surface token-source
-    // info (env var masking vs. credential store). Run without the
-    // Canopy-managed PAT injection so the reported state reflects gh's
-    // actual credential store (or any externally-set GH_TOKEN/GITHUB_TOKEN),
-    // not whether Canopy injected a PAT.
-    const result = await execFileAsync(
-      getBundledGhBinaryPath(),
-      ['auth', 'status', '--json', 'hosts'],
-      {
-        timeout: 10_000,
-        env: getEnhancedEnv({
-          includeCanopySecrets: false,
-          environment: false,
-        }),
-        windowsHide: process.platform === 'win32',
-      },
-    );
-    stdout = result.stdout;
-  } catch (err: unknown) {
-    if (
-      err instanceof Error &&
-      ('code' in err || err.message.includes('ENOENT'))
-    ) {
-      const code = (err as { code?: string }).code;
-      if (code === 'ENOENT') {
-        return unauthenticatedGitHubCliStatus(
-          'GitHub CLI (gh) is not installed.',
-        );
-      }
-    }
-    return unauthenticatedGitHubCliStatus('GitHub CLI is not authenticated.');
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return unauthenticatedGitHubCliStatus(
-      'Unable to parse GitHub CLI status output.',
-    );
-  }
-
-  if (!isRecord(parsed) || !isRecord(parsed.hosts)) {
-    return unauthenticatedGitHubCliStatus('GitHub CLI is not authenticated.');
-  }
-
-  const rawEntries = parsed.hosts[GH_PRIMARY_HOST];
-  if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
-    return unauthenticatedGitHubCliStatus('GitHub CLI is not authenticated.');
-  }
-
-  const entries = rawEntries.filter(isGhHostEntry);
-  if (entries.length === 0) {
-    return unauthenticatedGitHubCliStatus('GitHub CLI is not authenticated.');
-  }
-
-  return summarizeGhHostEntries(entries);
 }
 
 function credentialReadResult(
@@ -1769,11 +1493,7 @@ async function validateLinearToken(token: string): Promise<LinearStatus> {
     return { authenticated: false, displayName: null, error: null };
   }
   try {
-    const client = createLinearViewerClient(normalized);
-    const viewer = await client.viewer;
-    if (!isLinearViewerLike(viewer)) {
-      throw new Error('Invalid Linear viewer payload');
-    }
+    const viewer = await readLinearViewer(normalized);
     return {
       authenticated: true,
       displayName: viewer.displayName ?? viewer.name,
@@ -1871,6 +1591,22 @@ async function validateModelGatewayCredential(
 }
 
 const modelGatewayCredentialSaveQueues = new Map<string, Promise<void>>();
+// A completed write supersedes older reads, including their final owner check.
+const modelGatewayCredentialSaveGenerations = new Map<string, number>();
+
+function gatewayCredentialSaveGeneration(scope: string | null): number {
+  return scope === null
+    ? 0
+    : (modelGatewayCredentialSaveGenerations.get(scope) ?? 0);
+}
+
+function advanceGatewayCredentialSaveGeneration(scope: string | null): void {
+  if (scope !== null)
+    modelGatewayCredentialSaveGenerations.set(
+      scope,
+      gatewayCredentialSaveGeneration(scope) + 1,
+    );
+}
 
 function enqueueModelGatewayCredentialSave<T>(
   organizationId: string,
@@ -1893,9 +1629,74 @@ function enqueueModelGatewayCredentialSave<T>(
   return result;
 }
 
+async function readGatewayConnectionScope(
+  organizationId: string,
+): Promise<string | null> {
+  try {
+    const account = await loadCanopyCloudAccount();
+    return JSON.stringify([
+      account?.account?.id.trim() ?? null,
+      organizationId,
+    ]);
+  } catch {
+    // Analytics must not affect credential reads or durable saves.
+    return null;
+  }
+}
+
+async function observeGatewayConnection(
+  organizationId: string,
+  scope: string | null,
+  apiKey: string,
+  baseUrl: string,
+  via: 'read' | 'in_app',
+  baselineOnly = false,
+  readGeneration?: number,
+): Promise<void> {
+  if (
+    scope === null ||
+    scope !== (await readGatewayConnectionScope(organizationId)) ||
+    (readGeneration !== undefined &&
+      readGeneration !== gatewayCredentialSaveGeneration(scope))
+  )
+    return;
+  observeProviderConnection({
+    provider: 'model_gateway',
+    connectionMethod: 'api_key',
+    via,
+    baselineOnly,
+    scope,
+    fingerprint: apiKey
+      ? createHash('sha256')
+          .update(JSON.stringify([baseUrl, apiKey]))
+          .digest('hex')
+      : null,
+  });
+}
+
 async function saveModelGatewayCredentialInOrder(
   input: ModelGatewayCredentialInput,
 ): Promise<ModelGatewayCredentialValidation> {
+  const scope = await readGatewayConnectionScope(input.organizationId);
+  const readGeneration = gatewayCredentialSaveGeneration(scope);
+  let previous: Awaited<ReturnType<typeof loadModelGatewayCredential>> = null;
+  try {
+    previous = await loadModelGatewayCredential(input.organizationId);
+    await observeGatewayConnection(
+      input.organizationId,
+      scope,
+      previous && previous.validated !== false && !previous.lastError
+        ? previous.apiKey
+        : '',
+      previous?.baseUrlAtSave ?? '',
+      'read',
+      previous?.validated === undefined,
+      readGeneration,
+    );
+  } catch {
+    // Analytics baseline collection must not block replacing an unreadable key.
+    // The existing validation and durable writer still decide the save result.
+  }
   const normalizedInput = {
     ...input,
     baseUrl: normalizeModelGatewayBaseUrl(input.baseUrl) ?? input.baseUrl,
@@ -1906,6 +1707,14 @@ async function saveModelGatewayCredentialInOrder(
       apiKey: '',
       baseUrlAtSave: normalizedInput.baseUrl,
     });
+    advanceGatewayCredentialSaveGeneration(scope);
+    await observeGatewayConnection(
+      input.organizationId,
+      scope,
+      '',
+      normalizedInput.baseUrl,
+      'in_app',
+    );
     await bestEffortInvalidateModelGatewayAuthSessions();
     return { valid: false, error: null };
   }
@@ -1915,10 +1724,35 @@ async function saveModelGatewayCredentialInOrder(
     apiKey: input.apiKey,
     baseUrlAtSave: normalizedInput.baseUrl,
     lastValidatedAt: new Date().toISOString(),
+    // A temporary outage cannot invalidate a prior success for the same key.
+    // Rejections and credential changes still require a fresh validation.
+    validated:
+      probe.valid ||
+      (!probe.rejected &&
+        previous?.validated === true &&
+        !previous.lastError &&
+        previous.apiKey.trim() === input.apiKey.trim() &&
+        normalizeModelGatewayBaseUrl(previous.baseUrlAtSave) ===
+          normalizedInput.baseUrl),
     // Only a gateway-issued rejection becomes the durable block routing
     // reads; see `probeModelGatewayCredential`.
     lastError: probe.rejected ? (probe.error ?? undefined) : undefined,
   });
+  advanceGatewayCredentialSaveGeneration(scope);
+  if (probe.valid)
+    await observeGatewayConnection(
+      input.organizationId,
+      scope,
+      input.apiKey.trim(),
+      normalizedInput.baseUrl,
+      'in_app',
+    );
+  else
+    recordProviderConnectionFailure(
+      'model_gateway',
+      'api_key',
+      probe.rejected ? 'authentication' : 'network',
+    );
   await bestEffortInvalidateModelGatewayAuthSessions();
   return { valid: probe.valid, error: probe.error };
 }
@@ -1958,24 +1792,19 @@ async function searchLinearIssues(
   }
 
   try {
-    const client = createLinearSearchClient(token);
-    const payload = await client.searchIssues(identifier ?? normalizedQuery);
-    if (!isLinearIssueSearchPayloadLike(payload)) {
-      throw new Error('Invalid Linear issue search payload');
-    }
+    const issues = await searchLinearApiIssues(
+      token,
+      identifier ?? normalizedQuery,
+    );
 
     // Keyword autocomplete keeps its existing single-request behavior. Fetch
     // evidence only for the exact identifier, never a fuzzy search neighbor.
     const exactIssues = identifier
-      ? payload.nodes.filter(
-          (issue) => issue.identifier.toUpperCase() === identifier,
-        )
+      ? issues.filter((issue) => issue.identifier.toUpperCase() === identifier)
       : [];
     const otherIssues = identifier
-      ? payload.nodes.filter(
-          (issue) => issue.identifier.toUpperCase() !== identifier,
-        )
-      : payload.nodes;
+      ? issues.filter((issue) => issue.identifier.toUpperCase() !== identifier)
+      : issues;
     const results = [...exactIssues, ...otherIssues]
       .slice(0, 20)
       .map(mapLinearIssueSearchResult);
@@ -1983,18 +1812,20 @@ async function searchLinearIssues(
       results.map(
         (result): Promise<LinearTicketSearchResult> =>
           identifier && result.identifier.toUpperCase() === identifier
-            ? withLinearIssueAttachments(client, result)
+            ? withLinearIssueAttachments(token, result)
             : Promise.resolve(result),
       ),
     );
   } catch (error: unknown) {
     logLinearSearchError(error);
     if (identifier) {
-      const message = error instanceof Error ? error.message : '';
-      if (/auth|credential|token|401|403/i.test(message)) {
+      if (
+        isLinearApiError(error) &&
+        (error.type === 'authentication' || error.type === 'forbidden')
+      ) {
         throw new Error('Reconnect Linear to look up this issue.');
       }
-      if (/rate.?limit|429/i.test(message)) {
+      if (isLinearApiError(error) && error.type === 'ratelimited') {
         throw new Error('Linear is rate limiting requests. Try again shortly.');
       }
       throw new Error('Couldn’t reach Linear. Try again.');
@@ -2052,7 +1883,10 @@ function withUserSuppliedCredentialFlag(
     : status;
 }
 
-export function registerSettingsHandlers(): void {
+export function registerSettingsHandlers(runtime: {
+  dispatcher: CoreIntegrationDispatcher;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   initializeGitHubPatEnvRuntime();
   registerIpcHandler(
     IPC_CHANNELS.settingsClaudeAuthStatus,
@@ -2095,7 +1929,8 @@ export function registerSettingsHandlers(): void {
 
   registerIpcHandler(
     IPC_CHANNELS.settingsGitHubCliStatus,
-    async (): Promise<GitHubCliStatus> => checkGitHubCliStatus(),
+    async (event): Promise<GitHubCliStatus> =>
+      getGitHubCliStatus(runtime.dispatcher, runtime.resolveCaller(event)),
   );
 
   registerIpcHandler(
@@ -2182,10 +2017,23 @@ export function registerSettingsHandlers(): void {
       _event,
       organizationId: string,
     ): Promise<ModelGatewayCredentialState> => {
+      const scope = await readGatewayConnectionScope(organizationId);
+      const readGeneration = gatewayCredentialSaveGeneration(scope);
       let record: Awaited<ReturnType<typeof loadModelGatewayCredential>> = null;
       let secureStorageFailure: SecureStorageFailure | null = null;
       try {
         record = await loadModelGatewayCredential(organizationId);
+        await observeGatewayConnection(
+          organizationId,
+          scope,
+          record && record.validated !== false && !record.lastError
+            ? record.apiKey
+            : '',
+          record?.baseUrlAtSave ?? '',
+          'read',
+          record?.validated === undefined,
+          readGeneration,
+        );
       } catch (error) {
         // Secure storage being unavailable is a renderable state, not an IPC
         // failure: the credential field must stay disabled rather than looking
@@ -2229,7 +2077,12 @@ export function registerSettingsHandlers(): void {
     ): Promise<ModelGatewayCredentialValidation> =>
       enqueueModelGatewayCredentialSave(input.organizationId, async () => {
         try {
-          return await saveModelGatewayCredentialInOrder(input);
+          return await withProviderConnectionAttempt(
+            'model_gateway',
+            'api_key',
+            undefined,
+            () => saveModelGatewayCredentialInOrder(input),
+          );
         } catch (error) {
           const secureStorageFailure = getSecureStorageFailure(error);
           if (!secureStorageFailure) throw error;
@@ -2267,12 +2120,14 @@ export function registerSettingsHandlers(): void {
 
   registerIpcHandler(
     IPC_CHANNELS.settingsOpenAuthenticatedPortalPage,
-    // Returns whether a page actually opened. Renderer CTAs render a "finish
-    // this in your browser" state off this answer, and every realistic failure
-    // degrades to a swallowed unauthenticated open — so "did not reject" is
-    // not evidence that anything opened.
-    async (_event, path: string): Promise<boolean> =>
-      openAuthenticatedPortalPage(path),
+    // Preserve legacy strings. Every other payload must pass strict validation.
+    async (
+      _event,
+      value: unknown,
+    ): Promise<boolean | AuthenticatedPortalResult> =>
+      typeof value === 'string'
+        ? openAuthenticatedPortalPage(value)
+        : openAuthenticatedPortalRequest(value),
   );
 
   registerIpcHandler(
@@ -2873,7 +2728,10 @@ export function registerSettingsHandlers(): void {
 
   registerIpcHandler(
     IPC_CHANNELS.settingsSearchLinearIssues,
-    async (_event, query: string): Promise<LinearTicketSearchResult[]> =>
-      searchLinearIssues(query),
+    async (_event, query: unknown): Promise<LinearTicketSearchResult[]> => {
+      const parsedQuery = parseLinearIssueSearchQuery(query);
+      if (parsedQuery === null) return [];
+      return searchLinearIssues(parsedQuery);
+    },
   );
 }

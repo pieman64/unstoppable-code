@@ -1,6 +1,10 @@
 'use client';
 
-import { hideDelegationTransportParts } from '@canopy/ui-shared/lib';
+import type { CanopyClient } from '@canopy/app-core';
+import {
+  foldToolResultsIntoToolUses,
+  omitRecoveredCreditHoldArtifacts,
+} from '@canopy/ui-shared/lib';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   useCallback,
@@ -8,30 +12,46 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type JSX,
   type ReactNode,
 } from 'react';
 import type {
   PortalChatMessage,
   PortalChatTurnGroup,
+  PortalAskUserQuestionState,
 } from '@canopy/protocol/portal';
 import {
+  ChatToolStepGroup,
   ThinkingSpinner,
+  TurnWorkHeader,
+  TurnFooterRow,
   useCleanChatLook,
+  isAskUserQuestionToolName,
+  portalAskUserQuestionRecordState,
+  parseAskUserQuestionTexts,
+  readToolCallResult,
 } from '@canopy/ui-shared/components';
+import { LightbulbIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   detectSentPrompt,
   hasLiveTurnTimer,
+  useOptionalCanopyClient,
   type ChatThreadStatus,
   type SentPromptSummary,
 } from '@canopy/app-state';
-import { TurnGroupView } from './TurnGroupView';
+import { ChatMessageView, normalizeChatMessageParts } from './ChatMessageView';
+import { TurnGroupView, isTurnAwaitingFirstOutput } from './TurnGroupView';
+import { useChatAgentActivityPlacement } from './agent-activity/chat-agent-activity-placement';
 import { useChatVisualHost } from './chat-visual-host';
 import {
   collectChatVisualOwners,
   useChatVisualsPublisher,
 } from './chat-visuals-source';
-import { useTurnWorkingStatus } from './ChatPartView';
+import {
+  useAskUserQuestionInteraction,
+  useTurnWorkingStatus,
+} from './ChatPartView';
 import { summarizeTranscriptPrompts } from './sent-prompt-summary';
 
 /**
@@ -42,6 +62,8 @@ import { summarizeTranscriptPrompts } from './sent-prompt-summary';
  * component pure and directly `renderToString`-testable.
  */
 export interface ChatTranscriptProps {
+  /** Continuation and context maintenance keep their existing work status. */
+  readonly firstSendStartingEnabled?: boolean;
   /**
    * The chat this transcript shows. A prompt the person sends re-arms
    * bottom-follow only within the same chat.
@@ -49,8 +71,15 @@ export interface ChatTranscriptProps {
   readonly chatId?: string;
   /** False while the host is hydrating history, including an empty history. */
   readonly initialized?: boolean;
+  /** Affirmative host evidence that the snapshot contains every tool result. */
+  readonly resultsComplete?: boolean;
   readonly messages: readonly PortalChatMessage[];
   readonly turnGroups: readonly PortalChatTurnGroup[];
+  /**
+   * Dedupe keys of the runs the host lists live elsewhere (the composer's
+   * background drawer): no turn lists them until they finish (CAN-4690).
+   */
+  readonly liveRunKeys?: ReadonlySet<string>;
   readonly status: ChatThreadStatus;
   readonly error?: string | null;
   readonly appIcon?: ReactNode;
@@ -83,6 +112,12 @@ export interface ChatTranscriptProps {
    */
   readonly footerStatus?: ReactNode;
   /**
+   * Messages the host is delivering to an idle agent now. They render as sent
+   * prompts after the transcript, with the working row under them, until the
+   * transcript itself carries them.
+   */
+  readonly deliveringMessages?: readonly PortalChatMessage[];
+  /**
    * Prompts the person has queued in `footerSlot`, excluding host entries.
    * Queuing a prompt is a send, so it re-arms bottom-follow.
    */
@@ -92,6 +127,12 @@ export interface ChatTranscriptProps {
   readonly queuedPromptMessageIds?: readonly string[];
   readonly onLoadOlder?: () => Promise<void>;
 }
+
+const EMPTY_DELIVERING_MESSAGES: readonly PortalChatMessage[] = [];
+
+// Presentation memory follows the injected client, including keyed panel
+// remounts. It carries no transcript or execution state and is never persisted.
+const pendingFirstSendPresentations = new WeakMap<CanopyClient, Set<string>>();
 
 export function getLatestMessageSignal(
   messages: readonly PortalChatMessage[],
@@ -105,6 +146,74 @@ export function getLatestMessageSignal(
         latestMessage.parts?.length ?? 0,
       ].join(':')
     : '';
+}
+
+/** How long a wake's link keeps the row it brought into view highlighted. */
+const CALL_FOCUS_HIGHLIGHT_MS = 2400;
+/** Frames a wake's link waits for its row to mount before giving up. */
+const CALL_FOCUS_MAX_FRAMES = 30;
+
+/** Use the same legacy Claude correlation as the interactive card itself. */
+function pendingQuestionToolUseId(
+  messages: readonly PortalChatMessage[],
+  question: PortalAskUserQuestionState,
+): string | undefined {
+  if (question.toolUseId !== undefined) return question.toolUseId;
+  for (const message of messages) {
+    for (const part of normalizeChatMessageParts(message.parts ?? [])) {
+      const data = part.data;
+      if (
+        part.kind !== 'tool_use' ||
+        typeof data !== 'object' ||
+        data === null ||
+        !('toolName' in data) ||
+        typeof data.toolName !== 'string' ||
+        !isAskUserQuestionToolName(data.toolName)
+      )
+        continue;
+      if ('result' in data && readToolCallResult(data.result) !== null)
+        continue;
+      const toolUseId =
+        'toolUseId' in data && typeof data.toolUseId === 'string'
+          ? data.toolUseId
+          : undefined;
+      const input =
+        'input' in data && typeof data.input === 'string'
+          ? data.input
+          : undefined;
+      if (
+        toolUseId !== undefined &&
+        portalAskUserQuestionRecordState([question], {
+          toolName: data.toolName,
+          toolUseId,
+          questionTexts: parseAskUserQuestionTexts(input),
+        }).kind === 'unanswered'
+      )
+        return toolUseId;
+    }
+  }
+  return undefined;
+}
+
+/** Whether a turn holds the tool call (or Agent call) with this id. */
+function turnHoldsToolCall(
+  turnGroup: PortalChatTurnGroup,
+  messagesById: Readonly<Record<string, PortalChatMessage | undefined>>,
+  toolUseId: string,
+): boolean {
+  return [
+    ...turnGroup.intermediateMessageIds,
+    ...turnGroup.finalMessageIds,
+  ].some((id) =>
+    messagesById[id]?.parts?.some(
+      (part) =>
+        (part.kind === 'tool_use' || part.kind === 'agent') &&
+        typeof part.data === 'object' &&
+        part.data !== null &&
+        'toolUseId' in part.data &&
+        part.data.toolUseId === toolUseId,
+    ),
+  );
 }
 
 /** Virtualized transcript geometry before turns are measured. */
@@ -142,9 +251,11 @@ function latestTurnShowsError(
 
 export function ChatTranscript({
   chatId,
+  firstSendStartingEnabled = true,
   initialized = true,
   messages: inputMessages,
   turnGroups,
+  liveRunKeys,
   status,
   error,
   appIcon,
@@ -153,10 +264,12 @@ export function ChatTranscript({
   renderLatestTurnAction,
   footerSlot,
   footerStatus,
+  deliveringMessages,
   queuedPromptCount = 0,
   queuedPromptIds,
   queuedPromptMessageIds,
   onLoadOlder,
+  resultsComplete = false,
 }: ChatTranscriptProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -166,8 +279,13 @@ export function ChatTranscript({
   const columnRef = useRef<HTMLDivElement>(null);
   const touchY = useRef<number | null>(null);
   const loadingOlder = useRef(false);
+  // Live turns deliver a call and its result as separate messages; fold them
+  // as the shell and the persisted projection do, so the call card completes.
   const messages = useMemo(
-    () => hideDelegationTransportParts(inputMessages),
+    () =>
+      foldToolResultsIntoToolUses(
+        omitRecoveredCreditHoldArtifacts(inputMessages),
+      ),
     [inputMessages],
   );
   // The Chat visuals panel lists what this transcript holds, so it needs no
@@ -180,7 +298,6 @@ export function ChatTranscript({
   );
   useChatVisualsPublisher(visualsSourceKey, visualOwners, visualHost);
   const hasMessages = messages.length > 0;
-  const hasFooter = footerSlot != null || footerStatus != null;
   const virtualized = turnGroups.length > 50;
   const virtualizer = useVirtualizer({
     count: turnGroups.length,
@@ -209,6 +326,56 @@ export function ChatTranscript({
     }
     return byId;
   }, [messages]);
+  const client = useOptionalCanopyClient();
+  const pendingPresentations = useMemo(() => {
+    if (!client) return new Set<string>();
+    const existing = pendingFirstSendPresentations.get(client);
+    if (existing) return existing;
+    const pending = new Set<string>();
+    pendingFirstSendPresentations.set(client, pending);
+    return pending;
+  }, [client]);
+  const pendingInThisChat =
+    chatId !== undefined && pendingPresentations.has(chatId);
+  const startingFirstTurn =
+    firstSendStartingEnabled &&
+    status !== 'error' &&
+    turnGroups.length === 1 &&
+    isTurnAwaitingFirstOutput(turnGroups[0], messagesById, pendingInThisChat) &&
+    (status === 'streaming' || pendingInThisChat);
+  // A user acknowledgement can precede the timer's streaming event. Once
+  // shown, retain this chat's presentation until output or a terminal state.
+  useLayoutEffect(() => {
+    const active =
+      firstSendStartingEnabled &&
+      status !== 'error' &&
+      (footerStatus != null || startingFirstTurn);
+    if (chatId === undefined) return;
+    if (active) pendingPresentations.add(chatId);
+    else pendingPresentations.delete(chatId);
+  }, [
+    chatId,
+    firstSendStartingEnabled,
+    footerStatus,
+    pendingPresentations,
+    startingFirstTurn,
+    status,
+  ]);
+  // Keep the same live-region slot when an optimistic host footer becomes
+  // an acknowledged first turn. The turn suppresses its duplicate status.
+  const transcriptStatus =
+    footerStatus ??
+    (startingFirstTurn ? (
+      <TurnWorkHeader starting dataTestId="turn-starting-status" />
+    ) : undefined);
+  const hasFooter = footerSlot != null || transcriptStatus != null;
+  // Each run renders once across the chat (CAN-4690): in its home turn,
+  // or, while live, where the host lists it.
+  const agentArtifactsByTurn = useChatAgentActivityPlacement(
+    turnGroups,
+    messagesById,
+    liveRunKeys,
+  );
   const latestMessageSignal = getLatestMessageSignal(messages);
   // Shared predicate from @canopy/app-state (same shape rule as the turn-group
   // float, aligned with the store's liveness rule): scoped to the current turn
@@ -219,6 +386,7 @@ export function ChatTranscript({
   const liveTurnTimer = useMemo(() => hasLiveTurnTimer(messages), [messages]);
   const cleanChatLook = useCleanChatLook();
   const workingStatus = useTurnWorkingStatus();
+  const delivering = deliveringMessages ?? EMPTY_DELIVERING_MESSAGES;
   // Fallback feedback for the send→timer gap and for hosts that never emit turn
   // timers; once a live timer row is on screen it owns the spinner (CAN-2342).
   //
@@ -241,19 +409,30 @@ export function ChatTranscript({
   // host that emits turn timers the `liveTurnTimer` guard hides this row
   // mid-turn, and the `TurnTimer` row that then owns the label has no live
   // region.
-  // Clean chat look: shimmering words in place of the spinner.
+  // Clean chat look: shimmering words in place of the spinner. A delivering
+  // prompt is the start of a turn, so it shows the same row under itself.
+  const working =
+    transcriptStatus == null &&
+    (status === 'streaming' || delivering.length > 0) &&
+    !liveTurnTimer;
   const workingRow =
-    status === 'streaming' && !liveTurnTimer && cleanChatLook ? (
-      <div
+    working && cleanChatLook ? (
+      // The same row, line and height as the turn's live timer row that
+      // takes over from it, so nothing moves when the timer arrives.
+      <TurnFooterRow
+        hostTurnGap
         {...(workingStatus === null ? {} : { role: 'status' })}
-        className="px-3 py-0.5 text-s fg-secondary"
         data-testid="chat-transcript-streaming"
       >
-        <span className="canopy-text-shimmer">
-          {workingStatus ?? 'Thinking'}
-        </span>
-      </div>
-    ) : status === 'streaming' && !liveTurnTimer ? (
+        <ChatToolStepGroup
+          summary=""
+          live={{
+            label: workingStatus ?? 'Thinking',
+            icon: <LightbulbIcon />,
+          }}
+        />
+      </TurnFooterRow>
+    ) : working ? (
       <div
         {...(workingStatus === null ? {} : { role: 'status' })}
         className="flex items-center gap-2 px-3 py-1 text-xs fg-secondary"
@@ -263,11 +442,146 @@ export function ChatTranscript({
         {workingStatus !== null && <span>{workingStatus}</span>}
       </div>
     ) : null;
+  const turnWorkingRow = delivering.length === 0 ? workingRow : null;
 
   const leaveBottom = (): void => {
     pinned.current = false;
     readerScrollTop.current = scrollRef.current?.scrollTop ?? 0;
   };
+
+  // A wake's boundary row brings the tool call that started its task into
+  // view, opening the turn that folds it away. Without the call loaded, it
+  // brings the prompt's bubble instead. Either way only that row highlights.
+  const [revealedCall, setRevealedCall] = useState<{
+    turnId: string;
+    request: { toolUseId: string };
+  } | null>(null);
+  const callFocusFrame = useRef<number | null>(null);
+  const callHighlight = useRef<{
+    element: HTMLElement;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const clearCallFocus = useCallback((): void => {
+    const active = callHighlight.current;
+    if (active) {
+      clearTimeout(active.timer);
+      delete active.element.dataset.chatCallFocus;
+      callHighlight.current = null;
+    }
+    if (callFocusFrame.current !== null) {
+      cancelAnimationFrame(callFocusFrame.current);
+      callFocusFrame.current = null;
+    }
+  }, []);
+  useEffect(() => clearCallFocus, [clearCallFocus]);
+
+  const showSpawningCall = ({
+    toolUseId,
+    userMessageId,
+    onReveal,
+  }: {
+    readonly toolUseId?: string;
+    readonly userMessageId?: string;
+    readonly onReveal?: () => void;
+  }): void => {
+    const callIndex =
+      toolUseId === undefined
+        ? -1
+        : turnGroups.findIndex((group) =>
+            turnHoldsToolCall(group, messagesById, toolUseId),
+          );
+    const showsCall = callIndex >= 0 && toolUseId !== undefined;
+    const index = showsCall
+      ? callIndex
+      : turnGroups.findIndex((group) => group.userMessageId === userMessageId);
+    const turnGroup = turnGroups[index];
+    if (!turnGroup) return;
+    leaveBottom();
+    clearCallFocus();
+    if (showsCall)
+      setRevealedCall({
+        turnId: turnGroup.userMessageId,
+        request: { toolUseId },
+      });
+    const findRow = (): HTMLElement | null | undefined => {
+      const turn = Array.from(
+        scrollRef.current?.querySelectorAll<HTMLElement>('[data-turn-id]') ??
+          [],
+      ).find((element) => element.dataset.turnId === turnGroup.userMessageId);
+      if (!showsCall)
+        return turn?.querySelector<HTMLElement>('[data-role="user"]');
+      return Array.from(
+        turn?.querySelectorAll<HTMLElement>('[data-tool-use-id]') ?? [],
+      ).find((element) => element.dataset.toolUseId === toolUseId);
+    };
+    let framesLeft = CALL_FOCUS_MAX_FRAMES;
+    const reveal = (): void => {
+      callFocusFrame.current = null;
+      const row = findRow();
+      if (row) {
+        row.scrollIntoView({ block: showsCall ? 'center' : 'start' });
+        onReveal?.();
+        row.dataset.chatCallFocus = 'true';
+        const timer = setTimeout(() => {
+          delete row.dataset.chatCallFocus;
+          callHighlight.current = null;
+        }, CALL_FOCUS_HIGHLIGHT_MS);
+        callHighlight.current = { element: row, timer };
+        return;
+      }
+      if (virtualized) virtualizer.scrollToIndex(index, { align: 'start' });
+      framesLeft -= 1;
+      if (framesLeft > 0)
+        callFocusFrame.current = requestAnimationFrame(reveal);
+      else if (showsCall) showSpawningCall({ userMessageId });
+    };
+    // The call's turn renders it only after it opens.
+    if (showsCall) callFocusFrame.current = requestAnimationFrame(reveal);
+    else reveal();
+  };
+
+  // A pending question may live in an older, collapsed/virtualized turn.
+  // Reuse the transcript's tool-call reveal path when this chat opens, waiting
+  // for hydration to supply its call instead of merely exposing the panel.
+  // Once revealed, streaming and question-state updates do not steal scroll.
+  const questionInteraction = useAskUserQuestionInteraction();
+  const revealedQuestionRef = useRef<string | undefined>(undefined);
+  const showPendingQuestionRef = useRef(showSpawningCall);
+  showPendingQuestionRef.current = showSpawningCall;
+  useEffect(() => {
+    // Cached tails can precede authoritative history. Revealing the cached
+    // call early lets the later history load move the reader back to the tail.
+    if (!initialized) return;
+    const question = questionInteraction?.states.find(
+      (state) => !state.answered,
+    );
+    if (question === undefined) return;
+    const identity = JSON.stringify([chatId, question.requestId]);
+    if (revealedQuestionRef.current === identity) return;
+    const toolUseId = pendingQuestionToolUseId(messages, question);
+    if (toolUseId === undefined) return;
+    if (
+      !turnGroups.some((group) =>
+        turnHoldsToolCall(group, messagesById, toolUseId),
+      )
+    )
+      return;
+    // Record success after the row is shown. StrictMode can cancel a queued
+    // frame during its effect cleanup, so scheduling alone cannot consume it.
+    showPendingQuestionRef.current({
+      toolUseId,
+      onReveal: (): void => {
+        revealedQuestionRef.current = identity;
+      },
+    });
+  }, [
+    initialized,
+    chatId,
+    questionInteraction?.states,
+    turnGroups,
+    messagesById,
+    messages,
+  ]);
 
   const followBottom = useCallback(() => {
     if (!pinned.current || scheduledScroll.current !== null) return;
@@ -283,6 +597,7 @@ export function ChatTranscript({
     followBottom,
     latestMessageSignal,
     messages.length,
+    delivering.length,
     status,
   ]);
 
@@ -386,7 +701,12 @@ export function ChatTranscript({
 
   // A queued first send has no messages yet but is not an empty chat: desktop
   // parity keeps the real transcript so the queue sits in the reading column.
-  if (messages.length === 0 && footerSlot == null && footerStatus == null) {
+  if (
+    messages.length === 0 &&
+    delivering.length === 0 &&
+    footerSlot == null &&
+    transcriptStatus == null
+  ) {
     return (
       <div
         className="flex h-full items-center justify-center p-6 text-center text-s fg-secondary"
@@ -403,7 +723,7 @@ export function ChatTranscript({
       // bottom of the transcript from chaining to the page/body behind it on
       // touch devices (CAN-1206). It has no effect on non-overscrolling
       // desktop scroll, so the desktop transcript is unchanged.
-      className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain p-3"
+      className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain p-3 [&_[data-chat-call-focus]]:rounded-lg [&_[data-chat-call-focus]]:ring-2 [&_[data-chat-call-focus]]:ring-line-accent"
       data-testid="chat-transcript"
       data-turn-count={turnGroups.length}
       ref={scrollRef}
@@ -524,9 +844,17 @@ export function ChatTranscript({
                 <TurnGroupView
                   key={turnGroup.userMessageId}
                   turnGroup={turnGroup}
+                  resultsComplete={resultsComplete}
                   messagesById={messagesById}
+                  agentArtifacts={agentArtifactsByTurn[turnGroup.userMessageId]}
                   appIcon={appIcon}
+                  onShowSpawningCall={showSpawningCall}
+                  {...(revealedCall?.turnId === turnGroup.userMessageId
+                    ? { revealRequest: revealedCall.request }
+                    : {})}
                   latest={index === turnGroups.length - 1}
+                  starting={startingFirstTurn && index === 0}
+                  startingStatusSlot={false}
                   {...(index === turnGroups.length - 1 && renderLatestTurnAction
                     ? {
                         actionSlot: renderLatestTurnAction({
@@ -534,13 +862,15 @@ export function ChatTranscript({
                         }),
                       }
                     : {})}
-                  {...(index === turnGroups.length - 1 && workingRow !== null
-                    ? { workingSlot: workingRow }
+                  {...(index === turnGroups.length - 1 &&
+                  turnWorkingRow !== null
+                    ? { workingSlot: turnWorkingRow }
                     : {})}
                   // `userMessageId` IS the renderer's per-turn `msg-{n}-{epochMs}`:
                   // the persisted-chat projection maps `messageId: message.id`, so no
                   // extra lookup is needed to reach the correlation key.
-                  {...(renderTurnFeedback
+                  // A wake's turn is headed by its boundary row, not a prompt.
+                  {...(renderTurnFeedback && turnGroup.wake === undefined
                     ? {
                         feedbackSlot: renderTurnFeedback(
                           turnGroup.userMessageId,
@@ -556,8 +886,30 @@ export function ChatTranscript({
         {/* Before the first turn group exists there is no slot to sit in, so
             the row renders here instead. `-mt-1` trims the column's `gap-2`
             back to the `space-y-1` rhythm the in-group placement gets. */}
-        {turnGroups.length === 0 && workingRow !== null && (
-          <div className="-mt-1">{workingRow}</div>
+        {turnGroups.length === 0 && turnWorkingRow !== null && (
+          <div className="-mt-1">{turnWorkingRow}</div>
+        )}
+
+        {/* A prompt on its way to an idle agent reads as the next turn's
+            prompt, as `TurnGroupView` lays one out; a host status replaces the
+            working row (a first send's own status). */}
+        {delivering.length > 0 && (
+          <div
+            className={cleanChatLook ? 'space-y-2' : 'space-y-1'}
+            data-testid="chat-transcript-delivering"
+          >
+            {delivering.map((message) => (
+              <ChatMessageView
+                key={message.messageId}
+                message={message}
+                appIcon={appIcon}
+              />
+            ))}
+            {cleanChatLook ? (
+              <div aria-hidden="true" className="h-2.5" />
+            ) : null}
+            {transcriptStatus == null ? workingRow : null}
+          </div>
         )}
 
         {status === 'error' &&
@@ -573,7 +925,7 @@ export function ChatTranscript({
 
         {footerSlot}
 
-        {footerStatus}
+        {transcriptStatus}
 
         <div />
       </div>

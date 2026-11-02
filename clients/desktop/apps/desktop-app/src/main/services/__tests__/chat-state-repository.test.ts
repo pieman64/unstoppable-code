@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
@@ -20,6 +21,8 @@ import type {
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import * as chatStateJournal from '../../lib/chat-state-journal';
+import { ChatStorageV2 } from '../../lib/chat-storage-v2';
+import { ChatStateV2Repository } from '../chat-state-v2-repository';
 import {
   ChatStateRepository,
   ChatStateRepositoryLoadError,
@@ -36,10 +39,17 @@ jest.mock('../../lib/chat-state-journal', () => {
   const actual = jest.requireActual<typeof chatStateJournal>(
     '../../lib/chat-state-journal',
   );
-  return {
-    ...actual,
-    writeSyncedJsonTemp: jest.fn(actual.writeSyncedJsonTemp),
-  };
+  const writeSyncedJsonTemp = jest.fn(
+    (...args: Parameters<typeof actual.writeSyncedJsonTemp>) =>
+      actual.writeSyncedJsonTemp(...args),
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      writeSyncedJsonTemp: { value: writeSyncedJsonTemp, enumerable: true },
+    },
+  );
 });
 
 const actualChatStateJournal = jest.requireActual<typeof chatStateJournal>(
@@ -1594,6 +1604,115 @@ describe('chat state repository', () => {
     expect(merged.tabsFile.tabs[0]?.messages).toEqual([]);
   });
 
+  it('persists an answered question exactly once across V2 reopen without changing committed JSONL bytes', async () => {
+    const pendingQuestion = {
+      requestId: 'durable-question',
+      toolUseId: 'question-tool',
+      chatId: 'chat-1',
+      questions: [{ id: 'choice', question: 'Pick', options: ['A', 'B'] }],
+    };
+    const answeredQuestion = {
+      ...pendingQuestion,
+      answers: [
+        { questionId: 'choice', question: 'Pick', selectedOptions: ['B'] },
+      ],
+      answeredAt: 123,
+    };
+    const repositoryPaths = paths;
+    const repo = new ChatStateV2Repository({
+      resolvePaths: () => repositoryPaths,
+    });
+    let reopened: ChatStateV2Repository | undefined;
+    try {
+      await repo.transact(
+        SCOPE,
+        [
+          { type: 'tab.created', tab: tab() },
+          {
+            type: 'message.upserted',
+            chatId: 'chat-1',
+            message: {
+              id: 'committed-question',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'tool_use',
+                  toolUseId: 'question-tool',
+                  toolName: 'AskUserQuestion',
+                  input: JSON.stringify({
+                    questions: pendingQuestion.questions,
+                  }),
+                },
+              ],
+            },
+          },
+          { type: 'pending_question.upserted', question: pendingQuestion },
+        ],
+        {
+          source: 'provider',
+          mutationId: 'commit-question-row',
+          fullTranscript: true,
+        },
+      );
+      const storage = ChatStorageV2.fromLegacyPaths(paths);
+      expect(await storage.format()).toBe('v3');
+      const transcriptPath = join(
+        storage.directory,
+        'transcripts',
+        'chat-1.jsonl',
+      );
+      const before = readFileSync(transcriptPath);
+      const size = statSync(transcriptPath).size;
+      const hash = createHash('sha256').update(before).digest('hex');
+      expect(size).toBeGreaterThan(0);
+      expect(before.toString('utf8')).toContain('AskUserQuestion');
+      const commit = await repo.transact(
+        SCOPE,
+        [
+          {
+            type: 'pending_question.upserted',
+            question: answeredQuestion,
+          },
+        ],
+        { source: 'renderer-command', mutationId: 'answer-durable-question' },
+      );
+      expect(commit.record.mutations.map(({ type }) => type)).toEqual([
+        'pending_question.upserted',
+      ]);
+      expect((await repo.getState(SCOPE)).tabsFile.pendingQuestions).toEqual([
+        answeredQuestion,
+      ]);
+      expect(statSync(transcriptPath).size).toBe(size);
+      expect(
+        createHash('sha256').update(readFileSync(transcriptPath)).digest('hex'),
+      ).toBe(hash);
+      expect(readFileSync(transcriptPath)).toEqual(before);
+
+      await repo.drainAll();
+      reopened = new ChatStateV2Repository({
+        resolvePaths: () => repositoryPaths,
+      });
+      const recovered = await reopened.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(recovered.tabsFile.pendingQuestions).toEqual([answeredQuestion]);
+      expect(recovered.tabsFile.tabs[0].messages).toHaveLength(1);
+      expect(recovered.tabsFile.tabs[0].messages[0].id).toBe(
+        'committed-question',
+      );
+      expect(statSync(transcriptPath).size).toBe(size);
+      expect(
+        createHash('sha256').update(readFileSync(transcriptPath)).digest('hex'),
+      ).toBe(hash);
+      expect(readFileSync(transcriptPath)).toEqual(before);
+    } finally {
+      await repo.drainAll();
+      await reopened?.drainAll();
+    }
+  });
+
   it('preserves answered questions during stale compatibility merges', async () => {
     const pendingQuestion = {
       requestId: 'question-1',
@@ -1907,9 +2026,21 @@ describe('chat state repository', () => {
     );
     expect(recovered.tabsFile.tabs[0]?.messages[1]).toMatchObject({
       id: 'timer-1',
-      blocks: [{ type: 'turn_timer', startedAt: 10, completedAt: 20 }],
+      blocks: [{ type: 'turn_timer', startedAt: 10, completedAt: 10 }],
+    });
+    expect(recovered.tabsFile.tabs[0]?.interruptedTurns).toEqual({
+      'user-1': {},
     });
     expect(recovered.tabsFile.revision).toBe(2);
+    await second.flushScope(SCOPE);
+    const reopened = await repository({ now: () => 1000 }).getState(SCOPE);
+    expect(reopened.tabsFile.tabs[0]?.messages).toEqual(
+      recovered.tabsFile.tabs[0]?.messages,
+    );
+    expect(reopened.runtimeByChatId['chat-1']?.lastActivityAt).toBe(10);
+    expect(reopened.tabsFile.tabs[0]?.interruptedTurns).toEqual({
+      'user-1': {},
+    });
     expect(readFileSync(paths.journal, 'utf8')).toContain('startup-reconcile');
   });
 

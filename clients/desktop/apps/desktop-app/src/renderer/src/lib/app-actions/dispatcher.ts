@@ -1,6 +1,9 @@
+import { marketplaceManagementDestination } from '@canopy/ui-shared/lib';
 import { scriptPreferencesActionSchema } from '@canopy/agent-actions/families/settings/script-preferences';
 import { requestScriptActionsReview } from '@canopy/ui-app/script-actions';
 import { isReplayableAppAdvisorResponse } from '@canopy/desktop-shared/lib/app-advisor-replay';
+import { pipelineAutomationTargetSummary } from '@canopy/desktop-shared/lib/automation-pipeline-target';
+import { storedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { classifyShareFailure } from '@canopy/ui-app/sharing';
 import {
@@ -22,6 +25,7 @@ import {
 import { chatTabStripLabel, getChatTabLabel } from '@/lib/chatTabLabel';
 import { getCursorSettingsSection } from '@/lib/cursor-settings';
 import { extractCreateFromReferences } from '@canopy/desktop-shared/lib/create-from-reference';
+import { extractPipelineReferenceTokens } from '@canopy/desktop-shared/lib/invocation-tokens';
 import {
   materializeHomeLinkPlan,
   resolveHomeLink,
@@ -55,7 +59,6 @@ import {
   ACCOUNT_MCP_ACTION_EVENT,
   type AccountMcpActionEventDetail,
 } from '../accountMcpEvents';
-import { derivePipelinePreferenceLocator } from '@/lib/pipelinePluginCollections';
 import { dispatchCursorSettingsAction } from '@/lib/cursor-settings-actions';
 import { resetLayoutToDefault } from '@/lib/panels/persistence-bridge';
 import {
@@ -185,6 +188,11 @@ import {
 import { installTranscriptPage } from '@/stores/chat/transcript-pages';
 import { tabRequestedCodexSpeed } from '@/stores/chat/codex-speed';
 import { useActivityStore } from '@/stores/activityStore';
+import { useLiveBackgroundTaskStore } from '@/stores/liveBackgroundTaskStore';
+import { getLockedHarness } from '@/lib/chatProviderLock';
+import { backgroundProcessKindForTaskType } from '@canopy/desktop-shared/lib/background-work';
+import { requestBackgroundTaskStop } from '@canopy/app-state';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { addPlanExploreOriginWorktreeKeys } from '@/lib/planExploreWorktreeKeys';
 import { useClaudeTerminalStore } from '@/stores/claudeTerminalStore';
 import { useCodeReviewStore } from '@/stores/codeReviewStore';
@@ -206,7 +214,11 @@ import { APP_ADVISOR_SETTINGS_SAVED_EVENT } from '@/lib/appAdvisorSettingsEvents
 import { requestPipelineAssistantOpen } from '@/lib/pipelineAssistantEvents';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useSkillSuggestionStore } from '@/stores/skillSuggestionStore';
-import { isSplitPrEligible, useGitHubStore } from '@/stores/githubStore';
+import {
+  isSplitPrEligible,
+  useGitHubStore,
+  type GitShippingSource,
+} from '@/stores/githubStore';
 import { useNavigationHistoryStore } from '@/stores/navigationHistoryStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
@@ -272,8 +284,13 @@ import {
   isAutomationsPanelVariant,
   isSessionBreakdownPanelInstance,
   isUsagePanelVariant,
+  ORCHESTRATOR_LABEL,
   PANEL_KINDS,
 } from '@canopy/protocol';
+import {
+  SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
+} from '@canopy/protocol/automations';
 import {
   openContentPanel,
   type ContentPanelSeed,
@@ -329,7 +346,6 @@ import {
   resolveModelAlias,
   type AdhocJoinedWorktreeMigration,
   type AdhocMultiRepoRepoMapping,
-  type AutomationAction,
   type AutomationMutationResponse,
   type BrowserSessionSnapshot,
   type CanopyCloudAccountPublicState,
@@ -382,9 +398,7 @@ import {
 } from '@canopy/desktop-shared/lib/agent-artifacts';
 import {
   AGENT_AUTOMATION_IF_COMMAND_POLICY_ERROR,
-  validateAgentAutomationCreatePolicy,
   validateAgentAutomationRunPolicy,
-  validateAgentAutomationUpdatePolicy,
 } from '@canopy/desktop-shared/lib/agent-automation-policy';
 import { validateAgentPipelineMutationPolicy } from '@canopy/desktop-shared/lib/agent-pipeline-policy';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
@@ -803,14 +817,6 @@ function claudeTuiChatsUnavailableError(): AppAdvisorActionError {
   return {
     code: 'surface_unavailable',
     message: 'Claude terminal chat mode is not available.',
-  };
-}
-
-function automationClaudeTuiChatsUnavailableError(): AppAdvisorActionError {
-  return {
-    code: 'surface_unavailable',
-    message:
-      'Claude terminal chat mode cannot be configured for automations while it is unavailable.',
   };
 }
 
@@ -1343,7 +1349,7 @@ function automationTargetLabel(activity: ScheduledActivity): string {
   const action = activity.action;
   switch (action.type) {
     case 'app_advisor_prompt':
-      return 'App Advisor';
+      return ORCHESTRATOR_LABEL;
     case 'standalone_prompt':
       return `cowork project ${action.chatProjectId}`;
     case 'worktree_prompt':
@@ -1351,7 +1357,7 @@ function automationTargetLabel(activity: ScheduledActivity): string {
     case 'worktree_session_prompt':
       return `chat ${action.workspaceId}/${action.worktreeId}/${action.chatId}`;
     case 'worktree_pipeline':
-      return `pipeline ${action.pipelineId} in project ${action.workspaceId}`;
+      return pipelineAutomationTargetSummary(action);
     case 'pipeline_execution_resume':
       return `pipeline execution ${action.executionId}`;
   }
@@ -1733,73 +1739,6 @@ async function resolveExplicitLocalMemoryScope(
   return { request: { scope: 'workspace', workspaceId } };
 }
 
-function buildPipelineExecuteOptions(
-  pipeline: PipelineData,
-  action: Extract<AppAdvisorAction, { type: 'pipeline.run' }>,
-  cwd: string,
-): Parameters<typeof window.pipelines.execute>[1] {
-  const eventName = action.runMode ?? 'dispatch';
-  return {
-    cwd,
-    pipelineId: pipeline.info.id,
-    ...(pipeline.info.source === 'curated'
-      ? {
-          pipelinePreferenceLocator:
-            derivePipelinePreferenceLocator(pipeline.info) ?? undefined,
-        }
-      : {}),
-    pipelineFilePath:
-      pipeline.info.source === 'project' ? pipeline.info.filePath : undefined,
-    repoPath: pipeline.info.source === 'project' ? cwd : undefined,
-    projectId: action.projectId,
-    worktreeId: action.worktreeId,
-    initiationSource: 'app_advisor',
-    eventName,
-    // Surface the plan id at the top level (in addition to the nested
-    // `eventData.plan_ready.planId`) so main's centralized implicit approval in
-    // `startPipelineExecutionFromMain` resolves it uniformly across trigger
-    // sources.
-    ...(eventName === 'plan_ready' && action.planId
-      ? { planId: action.planId }
-      : {}),
-    ...(eventName === 'plan_ready'
-      ? {
-          eventData: {
-            plan_ready: {
-              ...(action.planPath ? { plan_path: action.planPath } : {}),
-              ...(action.planId ? { planId: action.planId } : {}),
-            },
-          },
-        }
-      : {}),
-    ...(eventName === 'task_ready'
-      ? {
-          eventData: {
-            task_ready: {
-              ...(action.taskPath ? { task_path: action.taskPath } : {}),
-              ...(action.planPath ? { plan_path: action.planPath } : {}),
-            },
-          },
-        }
-      : {}),
-    ...(action.inputs && Object.keys(action.inputs).length > 0
-      ? { inputs: action.inputs }
-      : {}),
-    ...(pipeline.info.source === 'shared' && pipeline.info.remoteId
-      ? {
-          sharedPipeline: {
-            // The executor still keys on the local `serverId` for shared
-            // execution caching; the renderer always uses the constant
-            // since the desktop app is bound to a single Canopy Cloud
-            // backend.
-            serverId: CANOPY_CLOUD_SERVER_ID,
-            remoteId: pipeline.info.remoteId,
-          },
-        }
-      : {}),
-  };
-}
-
 /**
  * Dispatch a single {@link AppAdvisorAction} against the renderer. Used by
  * both the renderer-side App Advisor tool bridge (for assistant tool
@@ -1823,6 +1762,47 @@ type AppAdvisorActionRequestInput = Omit<AppAdvisorActionRequest, 'action'> & {
   action: unknown;
   signal?: AbortSignal;
 };
+
+/**
+ * Live provider tasks of a worktree that no process card lists: Agent
+ * activity's native task rows, which come from the live task set (turn-state
+ * phases 20 and 41d). Their Stop works only in a Claude chat (D10). A chat
+ * whose transcript isn't loaded may still be Claude, so only a known other
+ * harness refuses; main refuses a Codex stop itself.
+ */
+function uncardedLiveTasks(
+  projectId: string,
+  worktreeId: string,
+  processes: readonly { chatId: string; taskId?: string }[],
+): {
+  chatId: string;
+  task: { taskId: string; taskType?: string; status?: string };
+  canStop: boolean;
+}[] {
+  const carded = new Set(
+    processes.map((process) =>
+      JSON.stringify([process.chatId, process.taskId]),
+    ),
+  );
+  const tabs =
+    useChatStore.getState().worktreeChats[worktreeKey(projectId, worktreeId)]
+      ?.tabs ?? [];
+  return Object.values(useLiveBackgroundTaskStore.getState().byChat)
+    .filter(
+      (entry) =>
+        entry.projectId === projectId && entry.worktreeId === worktreeId,
+    )
+    .flatMap((entry) => {
+      const tab = tabs.find((candidate) => candidate.id === entry.chatId);
+      const harness = tab?.executionHarness ?? getLockedHarness(tab);
+      const canStop = harness === undefined || harness === 'claude';
+      return entry.liveTasks
+        .filter(
+          (task) => !carded.has(JSON.stringify([entry.chatId, task.taskId])),
+        )
+        .map((task) => ({ chatId: entry.chatId, task, canStop }));
+    });
+}
 
 export async function dispatchAppAction(
   request: AppAdvisorActionRequestInput,
@@ -3546,22 +3526,6 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
           ? valid()
           : invalid('includeYaml'))
       );
-    case 'pipeline.run':
-      return (
-        requireStrings(action, ['pipelineId', 'projectId', 'worktreeId']) ??
-        (action.inputs === undefined || isStringRecord(action.inputs)
-          ? (optionalStrings(action, [
-              'planPath',
-              'taskPath',
-              'planId',
-              'repoId',
-            ]) ??
-            validateOptionalInlineWatchers(action) ??
-            validateOptionalRunMode(action, 'runMode') ??
-            validatePipelineRunEventData(action) ??
-            valid())
-          : invalid('inputs'))
-      );
     case 'pipeline.open_run':
       return (
         requireStrings(action, ['executionId']) ??
@@ -4273,17 +4237,6 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
       : invalid(field);
   }
 
-  function validateOptionalRunMode(
-    record: Record<string, unknown>,
-    field: string,
-  ): ActionValidationResult | null {
-    return record[field] === undefined ||
-      (typeof record[field] === 'string' &&
-        PIPELINE_RUN_MODES.has(record[field] as PipelineTriggerType))
-      ? null
-      : invalid(field);
-  }
-
   function validateOptionalRunModeArray(
     record: Record<string, unknown>,
     field: string,
@@ -4337,19 +4290,6 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
         ok: false,
         message: `Action ${type} requires projectId and worktreeId to be supplied together.`,
       };
-    }
-    return null;
-  }
-
-  function validatePipelineRunEventData(
-    record: Record<string, unknown>,
-  ): ActionValidationResult | null {
-    const runMode = record.runMode ?? 'dispatch';
-    if (runMode === 'plan_ready' && !readString(record, 'planPath')) {
-      return missing('planPath');
-    }
-    if (runMode === 'task_ready' && !readString(record, 'taskPath')) {
-      return missing('taskPath');
     }
     return null;
   }
@@ -7597,8 +7537,8 @@ async function deleteCustomSkillResult(
 
 function openMarketplacesTab(): void {
   useNavigationStore.getState().openPluginsNavigation({
-    kind: 'management',
-    section: 'marketplaces',
+    kind: 'marketplace-source',
+    target: 'list',
   });
 }
 
@@ -7606,19 +7546,19 @@ function openMarketplacesTab(): void {
  * Curated MCP browse now lives on the Plugins **discovery** surface: the page
  * listens for `MCP_OPEN_BROWSE_EVENT` itself and focuses its search in apps
  * mode (API-2153, design section 5). Deliberately does NOT fire
- * `PLUGINS_OPEN_TAB_EVENT` first — that would open the management overlay on
- * top of the very surface this action is about to focus. The destination is
- * stored until the lazily-loaded Plugins page consumes it.
+ * `PLUGINS_OPEN_TAB_EVENT` first — that would route Customize to a tab
+ * destination instead of the search this action is about to focus. The
+ * destination is stored until the lazily-loaded Plugins page consumes it.
  */
 function openMcpBrowse(): void {
   useNavigationStore.getState().openPluginsNavigation({ kind: 'browse-apps' });
 }
 
-/** Open the Plugins page's "Your plugins" management view at `section`. */
+/** Retained Advisor action names resolve to canonical Customize destinations. */
 function openPluginsManagement(section: PluginsManagementSectionId): void {
   useNavigationStore.getState().openPluginsNavigation({
-    kind: 'management',
-    section,
+    kind: 'marketplace-browse',
+    ...marketplaceManagementDestination(section),
   });
 }
 
@@ -10704,6 +10644,26 @@ async function revokeAgentPublicShareResult(
 // Automations helpers (App Advisor → window.api.automations bridge)
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether sharing may need to package local pipelines, which only the Share
+ * dialog's dependency review can do. Deliberately cheap: stored
+ * dependencies, a user or project pipeline action, or any pipeline-ID-shaped
+ * token in the prompt, with no store lookup or analysis.
+ */
+function automationMayUsePipelines(activity: ScheduledActivity): boolean {
+  if ((activity.dependencies?.pipelines.length ?? 0) > 0) return true;
+  const { action } = activity;
+  if (action.type === 'worktree_pipeline') {
+    return (
+      action.pipelineSource === 'user' || action.pipelineSource === 'project'
+    );
+  }
+  return (
+    'prompt' in action &&
+    extractPipelineReferenceTokens(action.prompt, []).length > 0
+  );
+}
+
 async function shareAutomationResult(
   action: Extract<AppAdvisorAction, { type: 'automation.share' }>,
 ): Promise<{
@@ -10716,9 +10676,9 @@ async function shareAutomationResult(
   const organizationId = resolved.action.organizationId;
   try {
     const snapshot = await window.api.automations.list();
-    const activity = snapshot.activities.find(
-      (entry) => entry.id === action.id,
-    );
+    const listed = snapshot.activities.find((entry) => entry.id === action.id);
+    // A converted chat automation shares the workflow it runs (CAN-4551).
+    const activity = listed ? storedAutomationActivity(listed) : undefined;
     if (!activity) {
       return {
         ok: false,
@@ -10735,6 +10695,17 @@ async function shareAutomationResult(
           code: 'execution_failed',
           message:
             'This automation includes packaged capabilities. Open Workflows → Automations and use Share so its dependencies can be verified and included.',
+          retryable: false,
+        },
+      };
+    }
+    if (automationMayUsePipelines(activity)) {
+      return {
+        ok: false,
+        error: {
+          code: 'execution_failed',
+          message:
+            'This automation may run local pipelines. Open Workflows → Automations and use Share so its pipelines can be included.',
           retryable: false,
         },
       };
@@ -10905,6 +10876,26 @@ async function shareAutomationResult(
     // For an existing share with no explicit ownership in the action, omit
     // the ownership fields entirely so the server preserves the current
     // owner. Explicit (or target-inferred) ownership is forwarded as given.
+    if (
+      built.document.version === SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION
+    ) {
+      const account = await window.api.loadCanopyCloudAccount();
+      if (
+        !account.capabilities?.includes(
+          SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
+        )
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 'execution_failed',
+            message:
+              'Update the sharing server to share this workflow destination.',
+            retryable: false,
+          },
+        };
+      }
+    }
     if (built.document.version === 3) {
       const account = await window.api.loadCanopyCloudAccount();
       if (
@@ -11095,42 +11086,6 @@ function rejectAdvisorAutomationPolicy(message: string): {
   error?: AppAdvisorActionError;
 } {
   return { ok: false, error: { code: 'invalid_payload', message } };
-}
-
-function hasAutomationTerminalInterfaceMode(action: AutomationAction): boolean {
-  return (
-    action.type === 'worktree_prompt' &&
-    action.interfaceMode !== undefined &&
-    action.interfaceMode !== 'canopy'
-  );
-}
-
-function hasAutomationFullAccess(action: AutomationAction): boolean {
-  return (
-    (action.type === 'app_advisor_prompt' ||
-      action.type === 'standalone_prompt' ||
-      action.type === 'worktree_prompt') &&
-    action.approvalMode === 'full-access'
-  );
-}
-
-/**
- * Advisor mutations must persist the approval mode they were reviewed with.
- * Leaving the mode implicit would let later workspace/default changes escalate
- * an existing automation to Full Access without another explicit user action.
- */
-function withAdvisorSafeApprovalMode(
-  action: AutomationAction,
-): AutomationAction {
-  if (
-    (action.type === 'app_advisor_prompt' ||
-      action.type === 'standalone_prompt' ||
-      action.type === 'worktree_prompt') &&
-    action.approvalMode === undefined
-  ) {
-    return { ...action, approvalMode: 'ask' };
-  }
-  return action;
 }
 
 function watcherExecutionFailure(error: unknown): {
@@ -14046,7 +14001,7 @@ async function routeAction(
         ok: false,
         error: {
           code: 'unsupported_action',
-          message: 'Script preferences must use the App Advisor host port.',
+          message: `Script preferences must use the ${ORCHESTRATOR_LABEL} host port.`,
         },
       };
     case 'navigation.open_editor_setup': {
@@ -14737,9 +14692,9 @@ async function routeAction(
         };
       }
       const confirmLabel = mode === 'archive' ? 'Archive' : 'Delete';
-      const requestedItem = action.deleteBranch
-        ? 'Delete local'
-        : 'Preserve local';
+      const requestedBranch = action.deleteBranch
+        ? 'off, so the local branch is deleted'
+        : 'on, so the local branch is kept';
       return {
         ok: true,
         result: {
@@ -14748,7 +14703,7 @@ async function routeAction(
           confirmationOpened: true,
           requestedDeleteBranch: action.deleteBranch,
           mode,
-          note: `The "${confirmLabel} worktree?" confirmation is open; it has no mode switch. The user confirms by choosing Delete local or Preserve local, and the dialog names ${requestedItem} as the requested choice. Nothing is removed until the user picks one.`,
+          note: `The ${confirmLabel} worktree confirmation is open; it has no mode switch. Its Keep the local branch switch starts ${requestedBranch}, and the dialog names that request. The user can flip the switch and confirms with ${confirmLabel} worktree. Nothing is removed until the user confirms.`,
         },
       };
     }
@@ -14762,18 +14717,15 @@ async function routeAction(
         const preparation = await prepareBranchFromWorktree(
           action.workspaceId,
           action.baseWorktreeId,
+          { uncommittedChanges: 'leave-in-source' },
         );
         if (preparation.status !== 'ready') {
           return {
             ok: false,
             error: {
               code: 'execution_failed',
-              message:
-                preparation.status === 'cancelled'
-                  ? 'Worktree creation was cancelled.'
-                  : 'Fresh source worktree status could not be verified.',
-              retryable:
-                preparation.status === 'failed' && preparation.retryable,
+              message: 'Fresh source worktree status could not be verified.',
+              retryable: true,
             },
           };
         }
@@ -15867,15 +15819,21 @@ async function routeAction(
         .getState()
         .selectWorktree(action.projectId, action.worktreeId);
       const github = useGitHubStore.getState();
+      // Analytics attribution only; UI requests keep main's manual default.
+      const source: GitShippingSource | undefined =
+        request.source === 'assistant' ? 'chat' : undefined;
       switch (action.action) {
         case 'create-pr':
-          await github.createPr(action.projectId, action.worktreeId, repoIds);
+          await github.createPr(action.projectId, action.worktreeId, repoIds, {
+            source,
+          });
           break;
         case 'commit':
           await github.commitOnly(
             action.projectId,
             action.worktreeId,
             context.isMultiRepo ? repoIds : undefined,
+            { source },
           );
           break;
         case 'merge':
@@ -15893,6 +15851,7 @@ async function routeAction(
               repoIds: context.isMultiRepo ? repoIds : undefined,
               confirmUnresolvedComments:
                 action.ignoreUnresolvedCommentsWarning === true,
+              source,
             },
           );
           if (!response) {
@@ -16069,11 +16028,14 @@ async function routeAction(
           };
         }
         case 'commit-and-push':
-          await github.commitAndPush(action.projectId, action.worktreeId);
+          await github.commitAndPush(action.projectId, action.worktreeId, {
+            source,
+          });
           break;
         case 'pull-commit-and-push':
           await github.commitAndPush(action.projectId, action.worktreeId, {
             pullFirst: true,
+            source,
           });
           break;
         case 'push':
@@ -17161,11 +17123,8 @@ async function routeAction(
       return {
         ok: true,
         result: {
-          processes: processes
-            .filter(
-              (process) => !action.chatId || process.chatId === action.chatId,
-            )
-            .map((process) => ({
+          processes: [
+            ...processes.map((process) => ({
               id: process.id,
               chatId: process.chatId,
               ...(process.taskId ? { taskId: process.taskId } : {}),
@@ -17174,16 +17133,39 @@ async function routeAction(
               status: process.status,
               canStop: process.canStop,
             })),
+            // Provider descriptions can carry prompt text, so these rows
+            // have none.
+            ...uncardedLiveTasks(
+              action.projectId,
+              action.worktreeId,
+              processes,
+            ).map(({ chatId, task, canStop }) => ({
+              id: task.taskId,
+              chatId,
+              taskId: task.taskId,
+              kind: backgroundProcessKindForTaskType(task.taskType) ?? 'task',
+              status: task.status === 'pending' ? 'queued' : 'running',
+              canStop,
+            })),
+          ].filter(
+            (process) => !action.chatId || process.chatId === action.chatId,
+          ),
         },
       };
     }
     case 'worktree-chat.stop_background_process': {
       const key = worktreeKey(action.projectId, action.worktreeId);
-      const process = (useActivityStore.getState().bgProcesses[key] ?? []).find(
-        (candidate) =>
-          candidate.chatId === action.chatId &&
-          candidate.taskId === action.taskId,
-      );
+      const processes = useActivityStore.getState().bgProcesses[key] ?? [];
+      const process =
+        processes.find(
+          (candidate) =>
+            candidate.chatId === action.chatId &&
+            candidate.taskId === action.taskId,
+        ) ??
+        uncardedLiveTasks(action.projectId, action.worktreeId, processes).find(
+          (live) =>
+            live.chatId === action.chatId && live.task.taskId === action.taskId,
+        );
       if (!process) {
         return {
           ok: false,
@@ -17198,35 +17180,22 @@ async function routeAction(
           ok: false,
           error: {
             code: 'surface_unavailable',
-            message: `Background process ${action.taskId} is no longer running.`,
+            message:
+              'task' in process
+                ? `Background task ${action.taskId} has no per-task Stop in this chat's provider.`
+                : `Background process ${action.taskId} is no longer running.`,
           },
         };
       }
-      const stopOutcome = await window.api.activity.stopBgProcess({
+      const outcome = await requestBackgroundTaskStop(ipcCanopyClient, {
         projectId: action.projectId,
         worktreeId: action.worktreeId,
         chatId: action.chatId,
         taskId: action.taskId,
       });
-      if (stopOutcome === 'stopped') {
-        useActivityStore
-          .getState()
-          .handleSdkSystemEvent(
-            action.projectId,
-            action.worktreeId,
-            action.chatId,
-            {
-              type: 'system',
-              subtype: 'task_notification',
-              task_id: action.taskId,
-              status: 'stopped',
-              summary: 'Background process stopped.',
-            },
-          );
-      }
       return {
         ok: true,
-        result: { taskId: action.taskId, status: 'stopped' },
+        result: { taskId: action.taskId, status: outcome },
       };
     }
     case 'delegation.stop': {
@@ -17677,8 +17646,7 @@ async function routeAction(
           ok: false,
           error: {
             code: 'invalid_target',
-            message:
-              'Cursor is not available through App Advisor model changes.',
+            message: `Cursor is not available through ${ORCHESTRATOR_LABEL} model changes.`,
           },
         };
       }
@@ -18866,101 +18834,6 @@ async function routeAction(
       return loadPipelinesForScope(action);
     case 'pipeline.get':
       return getPipelineDetailsResult(action);
-    case 'pipeline.run': {
-      const pipelineRunLockError = refuseIfSplitLocked(
-        action.projectId,
-        action.worktreeId,
-      );
-      if (pipelineRunLockError) {
-        return { ok: false, error: pipelineRunLockError };
-      }
-      try {
-        const cwd = await window.api.getWorktreePath({
-          projectId: action.projectId,
-          worktreeId: action.worktreeId,
-          ...(action.repoId ? { repoId: action.repoId } : {}),
-        });
-        const pipeline = await loadRunnablePipeline(action.pipelineId, cwd);
-        if (!pipeline) {
-          return {
-            ok: false,
-            error: {
-              code: 'invalid_target',
-              message: `Pipeline ${action.pipelineId} was not found.`,
-            },
-          };
-        }
-        const runMode = action.runMode ?? 'dispatch';
-        if (!getTriggerTypes(pipeline.content.on).includes(runMode)) {
-          return {
-            ok: false,
-            error: {
-              code: 'invalid_target',
-              message: `Pipeline ${action.pipelineId} does not support ${runMode}.`,
-            },
-          };
-        }
-
-        const result = await window.pipelines.execute(
-          pipeline.content,
-          buildPipelineExecuteOptions(pipeline, action, cwd),
-        );
-        if (!result.success) {
-          return {
-            ok: false,
-            error: {
-              code: 'execution_failed',
-              message: result.error ?? 'Pipeline run failed.',
-            },
-          };
-        }
-        if (!result.data) {
-          return { ok: true, result: result as unknown as AppAdvisorJson };
-        }
-        const state = result.data;
-        try {
-          return attachAgentArtifacts(
-            { ok: true, result: result as unknown as AppAdvisorJson },
-            [
-              buildPipelineRunArtifactReceipt({
-                operation: action.type,
-                executionId: state.id,
-                pipelineId: state.pipeline_id,
-                pipelineName: state.pipeline_snapshot.name,
-                initialStatus:
-                  state.status === 'paused' || state.status === 'running'
-                    ? state.status
-                    : 'pending',
-                queuedAt: state.started_at,
-                ...(state.status === 'running'
-                  ? { startedAt: state.started_at }
-                  : {}),
-                projectId: action.projectId,
-                worktreeId: action.worktreeId,
-                ...(action.repoId ? { repoId: action.repoId } : {}),
-                navigationTarget: {
-                  kind: 'pipeline_execution',
-                  executionId: state.id,
-                  projectId: action.projectId,
-                  worktreeId: action.worktreeId,
-                },
-              }),
-            ],
-          );
-        } catch {
-          return { ok: true, result: result as unknown as AppAdvisorJson };
-        }
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error ? error.message : 'Pipeline run failed.',
-          },
-        };
-      }
-    }
     case 'pipeline.open_run': {
       // Success only once the run is shown: its panel revealed in its own
       // worktree or Cowork task, or the compatibility view for a run with no
@@ -20076,101 +19949,18 @@ async function routeAction(
         return automationExecutionFailure(error);
       }
     }
-    case 'automation.create': {
-      // Advisor-scoped guard: the advisor may never author a session prompt.
-      const advisorAction = withAdvisorSafeApprovalMode(action.input.action);
-      const policyError = validateAgentAutomationCreatePolicy({
-        ...action.input,
-        action: advisorAction,
-      });
-      if (policyError) return rejectAdvisorAutomationPolicy(policyError);
-      if (hasAutomationFullAccess(advisorAction)) {
-        return rejectAdvisorAutomationPolicy(
-          'Full access automations must be created explicitly in the Automations UI.',
-        );
-      }
-      if (
-        !isClaudeTuiChatsEnabled() &&
-        hasAutomationTerminalInterfaceMode(advisorAction)
-      ) {
-        return {
-          ok: false,
-          error: automationClaudeTuiChatsUnavailableError(),
-        };
-      }
-      try {
-        const result = await window.api.automations.create({
-          ...action.input,
-          action: advisorAction,
-        });
-        return resolveAutomationMutation(result, action.type);
-      } catch (error: unknown) {
-        return automationExecutionFailure(error);
-      }
-    }
-    case 'automation.update': {
-      const patchAction = action.patch.action
-        ? withAdvisorSafeApprovalMode(action.patch.action)
-        : undefined;
-      let currentActivity;
-      try {
-        const snapshot = await window.api.automations.list();
-        currentActivity = snapshot.activities.find(
-          (entry) => entry.id === action.id,
-        );
-      } catch (error: unknown) {
-        return automationExecutionFailure(error);
-      }
-      if (!currentActivity) {
-        return {
-          ok: false,
-          error: {
-            code: 'not_found',
-            message: `Triggered activity ${action.id} was not found.`,
-          },
-        };
-      }
-      if (
-        hasAutomationFullAccess(currentActivity.action) ||
-        (patchAction && hasAutomationFullAccess(patchAction))
-      ) {
-        return rejectAdvisorAutomationPolicy(
-          'App Advisor cannot create, modify, or re-enable a Full access automation. Change this automation explicitly in the Automations UI.',
-        );
-      }
-      const policyPatch = {
-        ...action.patch,
-        ...(patchAction ? { action: patchAction } : {}),
+    case 'automation.create':
+    case 'automation.update':
+      // CAN-4551 7c: agents' automation writes run in main, which marks them
+      // agent-authored and converts them. No caller reaches this dispatcher
+      // with one, and the person's save it would call would drop the marker.
+      return {
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: `${action.type} runs in the main process.`,
+        },
       };
-      const rejection = validateAgentAutomationUpdatePolicy(
-        currentActivity.action,
-        policyPatch,
-        currentActivity.ifCommand,
-        Boolean(currentActivity.agentScheduledSend),
-      );
-      if (rejection) {
-        return rejectAdvisorAutomationPolicy(rejection);
-      }
-      if (
-        patchAction &&
-        !isClaudeTuiChatsEnabled() &&
-        hasAutomationTerminalInterfaceMode(patchAction)
-      ) {
-        return {
-          ok: false,
-          error: automationClaudeTuiChatsUnavailableError(),
-        };
-      }
-      try {
-        const result = await window.api.automations.update({
-          ...policyPatch,
-          id: action.id,
-        });
-        return resolveAutomationMutation(result, action.type);
-      } catch (error: unknown) {
-        return automationExecutionFailure(error);
-      }
-    }
     case 'automation.disable': {
       try {
         const result = await window.api.automations.update({
@@ -20665,8 +20455,7 @@ async function routeAction(
         ok: false,
         error: {
           code: 'unsupported_action',
-          message:
-            'App Advisor chat actions run in the main process from an App Advisor chat.',
+          message: `${ORCHESTRATOR_LABEL} chat actions run in the main process from an ${ORCHESTRATOR_LABEL} chat.`,
         },
       };
     case 'projects.list':
@@ -20982,7 +20771,7 @@ async function runArchivedAction(
                 message:
                   confirmationOpened === false
                     ? 'Empty trash is already running.'
-                    : 'The App Advisor window did not confirm that the Empty trash dialog opened.',
+                    : `The ${ORCHESTRATOR_LABEL} window did not confirm that the Empty trash dialog opened.`,
                 retryable: confirmationOpened === null,
               },
             };
@@ -21186,6 +20975,6 @@ function deriveTitleFromPrompt(prompt: string): string {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .find((l) => l.length > 0);
-  if (!firstLine) return 'Debug pipeline';
+  if (!firstLine) return 'Debug workflow';
   return firstLine.length > 40 ? `${firstLine.slice(0, 37)}...` : firstLine;
 }

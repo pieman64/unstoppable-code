@@ -8,7 +8,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  CanopyApi,
   CanopyCloudAccountPublicState,
   ResetUnreadableCanopyCloudAccountResult,
 } from '@canopy/desktop-shared/types';
@@ -76,7 +75,7 @@ describe('cloud account recovery surfaces', () => {
         startCanopyCloudOAuthLogin,
         cancelCanopyCloudOAuthLogin: jest.fn().mockResolvedValue(undefined),
         resetUnreadableCanopyCloudAccount,
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 
@@ -147,9 +146,10 @@ describe('cloud account recovery surfaces', () => {
     it('cancels confirmation without mutating account state', async () => {
       await render();
       await click('cloud-account-recovery-reset');
-      const cancelButton = Array.from(
-        document.body.querySelectorAll<HTMLButtonElement>('button'),
-      ).find((button) => button.textContent?.trim() === 'Cancel');
+      // The shared confirmation's Cancel (its esc chip is part of its text).
+      const cancelButton = document.body.querySelector<HTMLButtonElement>(
+        '[data-testid="confirm-dialog-cancel"]',
+      );
 
       await act(async () => {
         cancelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

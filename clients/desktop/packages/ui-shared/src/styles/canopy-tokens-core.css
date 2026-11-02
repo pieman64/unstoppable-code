@@ -1,6 +1,11 @@
 @import './app-icons.css';
 
 :root {
+  /* Document canvases retain their own surfaces across app appearances.
+   * Resolve selection with the matching default light/dark bg-muted value. */
+  --bg-selection-paper: rgba(0, 0, 0, 0.075);
+  --bg-selection-dark: rgba(255, 255, 255, 0.105);
+
   /* Chat column geometry, shared by every host so a transcript reads at one
    * width on desktop and web. The composer shell includes the composer's
    * 16px side gutters on each side. */
@@ -194,13 +199,6 @@
   --color-fg-blue: var(--fg-blue);
   --color-fg-purple: var(--fg-purple);
   --color-fg-orange: var(--fg-orange);
-  --color-fg-kind-skill: var(--fg-kind-skill);
-  --color-fg-kind-workflow: var(--fg-kind-workflow);
-  --color-fg-kind-plugin: var(--fg-kind-plugin);
-  --color-fg-kind-mcp: var(--fg-kind-mcp);
-  --color-fg-kind-collection: var(--fg-kind-collection);
-  --color-fg-kind-agent: var(--fg-kind-agent);
-  --color-fg-kind-template: var(--fg-kind-template);
   --color-fg-tooltip-inverse: var(--fg-tooltip-inverse);
 
   /* Run states and git file statuses use the intent roles, whose hues are
@@ -513,6 +511,55 @@
   border-bottom-color: var(--line-accent);
 }
 
+/* A `fill` settings box (`SettingsRowsGroup fill`) grows into its section so
+ * its minimum stays content-based, but draws its surface as a layer that ends
+ * at its last child's bottom edge, so the unused height under the footer stays
+ * transparent. Without anchor positioning the layer covers the whole box. The
+ * component paints the layer with the settings surface utilities. */
+@utility settings-fill-box {
+  position: relative;
+  isolation: isolate;
+  anchor-scope: --settings-fill-end;
+
+  & > :last-child {
+    anchor-name: --settings-fill-end;
+  }
+
+  &::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1; /* z-exception: the box surface sits under its own rows */
+    content: '';
+  }
+
+  @supports (anchor-name: --settings-fill-end) {
+    &::before {
+      bottom: anchor(--settings-fill-end bottom);
+    }
+  }
+}
+
+/* The scrolling list in a `fill` settings box: it grows up to its rows'
+ * height and scrolls past it, and keeps 7rem, or its rows when they are
+ * shorter, before the page scrolls instead. A short viewport (a small window
+ * or a large UI scale) lets the page scroll every row: a nested 7rem scroller
+ * can be shorter than one wrapped row, which keyboard focus could then never
+ * reveal whole. At 40rem and below, the first-run page's header and footer
+ * already hold the list at its 7rem floor. Desktop UI scale is Chromium zoom,
+ * which shrinks the CSS viewport, so the query follows it. */
+@utility settings-fill-list {
+  flex: 1 1 0px;
+  max-height: max-content;
+  min-height: calc-size(max-content, min(size, 7rem));
+  overflow-y: auto;
+
+  @media (max-height: 40rem) {
+    flex: none;
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+
 /* Shared underline tabs use one uninterrupted divider for the list and draw
  * an accent indicator only beneath the selected trigger. Horizontal spacing
  * belongs to the list gap rather than trigger padding so the selected line is
@@ -585,42 +632,6 @@
   --fg-blue: var(--primitive-blue-600);
   --fg-purple: var(--fg-special);
   --fg-orange: var(--primitive-orange-600);
-
-  /* Customize type labels (CAN-4261): one muted ink per kind so Skill,
-   * Workflow, Plugin and the rest read apart without pulling focus from the
-   * name. Built on the fixed, contrast-checked chart hues (the same in every
-   * theme, tuned per light and dark) mixed toward the secondary ink; the
-   * label text still names the type, so color is never the only cue.
-   * Neighboring hues are kept off kinds that share a list: cyan sits too
-   * close to the Skill blue in dark, so MCP servers take green, and
-   * collections and templates stay neutral. */
-  --fg-kind-skill: color-mix(
-    in oklab,
-    var(--chart-categorical-1) 80%,
-    var(--fg-secondary)
-  );
-  --fg-kind-workflow: color-mix(
-    in oklab,
-    var(--chart-categorical-6) 80%,
-    var(--fg-secondary)
-  );
-  --fg-kind-plugin: color-mix(
-    in oklab,
-    var(--chart-categorical-2) 80%,
-    var(--fg-secondary)
-  );
-  --fg-kind-mcp: color-mix(
-    in oklab,
-    var(--chart-categorical-5) 80%,
-    var(--fg-secondary)
-  );
-  --fg-kind-collection: var(--fg-secondary);
-  --fg-kind-agent: color-mix(
-    in oklab,
-    var(--chart-categorical-3) 80%,
-    var(--fg-secondary)
-  );
-  --fg-kind-template: var(--fg-secondary);
 
   --bg-card: var(--bg-primary);
   --bg-activity-card-hover: var(--bg-secondary);
@@ -705,6 +716,125 @@ body {
     'calt' 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* App chrome behaves like native controls. Opt in on the body so public
+ * web pages keep normal browser selection; the body marker also covers
+ * portalled menus, dialogs, and tooltips. Do not apply this to every descendant:
+ * readable regions must be able to restore selection through inheritance.
+ * Keep this scope explicit: a body :has() descendant lookup invalidates the
+ * document during transcript updates.
+ * Base-layer rules keep explicit select-text/select-none utilities authoritative.
+ */
+@layer base {
+  /* Keep native selection theme-aware without recoloring syntax or links. */
+  @media (forced-colors: none) {
+    /* Let descendants inherit the highlight. A universal descendant highlight
+     * rule makes Chromium restyle the whole transcript as the caret moves. */
+    :where(body[data-app-selection])::selection {
+      background-color: var(--bg-muted);
+      color: currentColor;
+    }
+
+    :where(body[data-app-selection])
+      :where([data-selection-surface='paper'])::selection,
+    :where(body[data-app-selection])
+      :where([data-selection-surface='paper'])
+      ::selection {
+      background-color: var(--bg-selection-paper);
+    }
+
+    :where(body[data-app-selection])
+      :where([data-selection-surface='dark'])::selection,
+    :where(body[data-app-selection])
+      :where([data-selection-surface='dark'])
+      ::selection {
+      background-color: var(--bg-selection-dark);
+    }
+  }
+
+  :where(body[data-app-selection]) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  :where(body[data-app-selection] input),
+  :where(body[data-app-selection] textarea),
+  :where(body[data-app-selection] [contenteditable='']),
+  :where(body[data-app-selection] [contenteditable='true']),
+  :where(body[data-app-selection] [contenteditable='plaintext-only']),
+  :where(body[data-app-selection] [data-chat-window]),
+  :where(body[data-app-selection] [data-selectable]),
+  :where(body[data-app-selection] .prose),
+  :where(body[data-app-selection] pre),
+  :where(body[data-app-selection] code),
+  :where(body[data-app-selection] samp),
+  :where(body[data-app-selection] .font-mono),
+  :where(body[data-app-selection] .monaco-editor),
+  :where(body[data-app-selection] [role='alert']) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* Controls inside readable regions remain controls; inline prose links and
+   * rich preview details deliberately retain their region's selection. */
+  :where(body[data-app-selection] button),
+  :where(body[data-app-selection] [role='button']),
+  :where(body[data-app-selection] [role='tab']),
+  :where(body[data-app-selection] [role='menuitem']),
+  :where(body[data-app-selection] [role='menuitemcheckbox']),
+  :where(body[data-app-selection] [role='menuitemradio']),
+  :where(body[data-app-selection] [role='option']) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+/* Monaco paints selection in overlay elements, rather than ::selection.
+ * These variables cover both the single-file and diff editors. The app scope
+ * outranks Monaco's injected theme so load order and focus do not restore blue.
+ */
+@media (forced-colors: none) {
+  body[data-app-selection] .monaco-editor:not(.hc-black, .hc-light) {
+    --vscode-editor-selectionBackground: var(--bg-muted);
+    --vscode-editor-inactiveSelectionBackground: var(--bg-muted);
+  }
+}
+
+/*
+ * Wrapped UI text avoids a lone word on its last line. `text-wrap-style`
+ * inherits, so one value on the root reaches cards, menus, tooltips, dialogs
+ * and settings, portals included. It only moves line breaks: `truncate` and
+ * `whitespace-nowrap` text never wraps, and a `text-balance` or `text-wrap`
+ * utility still wins on its own element.
+ *
+ * Plain breaks stay where moving words hurts or isn't wanted: code, whose
+ * breaks are exact; fields and editors, where each keystroke would shift the
+ * words above the caret; numeric columns; and the chat itself
+ * (`data-chat-window`: transcript and composer), where streamed text would
+ * pull words already on screen between lines. Menus and tooltips opened from
+ * the chat render outside it and stay pretty. `@layer base` and `:where()`
+ * keep all of this below any utility a component sets.
+ */
+@layer base {
+  :root {
+    text-wrap-style: pretty;
+  }
+
+  :where(
+    pre,
+    code,
+    kbd,
+    samp,
+    .font-mono,
+    .tabular-nums,
+    textarea,
+    input,
+    [contenteditable],
+    [data-chat-window]
+  ) {
+    text-wrap-style: auto;
+  }
 }
 
 /* Tooltips use one quiet typographic voice. Apply the regular weight to the
@@ -828,6 +958,20 @@ body {
 }
 
 /*
+ * Search fields never draw the browser's own clear button (Chromium's blue
+ * ×) or search decoration, in any field of either app. A field that offers
+ * clearing renders the shared muted icon button instead (PickerMenuSearchInput
+ * `onClear`). Layered, so a field's own utilities still apply.
+ */
+@layer base {
+  input[type='search']::-webkit-search-cancel-button,
+  input[type='search']::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+}
+
+/*
  * Scrollbar geometry, in ONE place for both the overlay rails and the native
  * `::-webkit-scrollbar` long tail, switched by the `data-scrollbars` mode that
  * `useAlwaysVisibleScrollbars` stamps on the document root.
@@ -905,21 +1049,74 @@ body {
  * Overlay scrollbar motion, matching the desktop sidebar exactly: the rail
  * owns hover so the full 10px hit area grows the 6px thumb to 8px and deepens
  * it from `--fg-quaternary` to `--fg-secondary`, rather than only the visible
- * thumb pixels reacting.
+ * thumb pixels reacting. It grows by `scale` from its right edge rather than
+ * by `width`, so the motion runs on the compositor; the hovered corner is
+ * narrowed to 3px across first, so the scaled thumb lands on a true 4px round
+ * end.
  */
 [data-overlay-scrollbar] {
   transition: opacity 200ms ease-out;
 }
 
 [data-overlay-scrollbar-thumb] {
+  transform-origin: right center;
   transition:
-    width 250ms ease-out,
+    scale 250ms ease-out,
     background-color 250ms ease-out;
 }
 
 [data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {
-  width: 8px;
+  scale: calc(8 / 6) 1;
+  border-radius: 3px / 4px;
   background-color: var(--fg-secondary);
+}
+
+/*
+ * Lines that change thickness on hover by `scale` rather than `width`, so the
+ * motion runs on the compositor. The line inside every resize divider
+ * (`ResizeRailIndicator`) is a 2px box drawn at half its width at rest, and
+ * full while its `group` handle is hovered or a drag is in progress; the
+ * sidebar's 2px group rail doubles while hovered or its group is expanded.
+ * The resize line keeps its trailing edge still, where a 1px line centered in
+ * the 8px handle has always been drawn (Chromium snaps its half-pixel offset
+ * forward), so it thickens toward the leading side as it always has.
+ * Wherever a line is scaled, its corner is first divided across the scaled
+ * axis by the same factor, so it lands on the true round end of a line that
+ * thickness. Hover matches Tailwind's `group-hover`, which applies only where
+ * hover exists.
+ */
+[data-resize-rail-indicator='vertical'] {
+  transform-origin: right center;
+  scale: 0.5 1;
+  border-radius: 1px / 0.5px;
+}
+
+[data-resize-rail-indicator='horizontal'] {
+  transform-origin: center bottom;
+  scale: 1 0.5;
+  border-radius: 0.5px / 1px;
+}
+
+[data-resize-rail-indicator][data-active='true'] {
+  scale: none;
+  border-radius: var(--radius-full);
+}
+
+[data-group-rail-line][data-expanded='true'] {
+  scale: 2 1;
+  border-radius: 1px / 2px;
+}
+
+@media (hover: hover) {
+  .group:hover [data-resize-rail-indicator] {
+    scale: none;
+    border-radius: var(--radius-full);
+  }
+
+  .group\/group-rail:hover [data-group-rail-line] {
+    scale: 2 1;
+    border-radius: 1px / 2px;
+  }
 }
 
 /*
@@ -965,6 +1162,47 @@ body {
  * cut off at the container's edges. Use with `focus-ring`. */
 .focus-ring-inset:focus-visible {
   outline-offset: -2px;
+}
+
+/* The ring around a row, for a toggle whose `::before` stretches its hit area
+ * over the row while other controls sit beside it (a collapsed turn summary
+ * and its outcome control). Use with `focus-ring`. */
+.focus-ring-stretched:focus-visible {
+  outline: none;
+}
+
+.focus-ring-stretched:focus-visible::before {
+  outline: 2px solid var(--line-focus);
+  outline-offset: 2px;
+}
+
+/* Rows in a menu, picker or context menu show keyboard focus the way they
+ * show hover, as a fill, never as the ring (DESIGN.md, Interaction states).
+ * This holds for every menu, including rows that also carry `focus-ring`;
+ * the hover fill is the default below. Controls inside a row (a favorite
+ * star, a clear button) keep the ring. */
+:is([role='menu'], [role='listbox'])
+  :is(
+    [role='menuitem'],
+    [role='menuitemradio'],
+    [role='menuitemcheckbox'],
+    [role='option']
+  ):focus-visible {
+  outline: none;
+}
+
+/* The default fill sits in `base`, under Tailwind's utilities, so a row's own
+ * background (selected, accent, a tone's hover) still wins over it. */
+@layer base {
+  :is([role='menu'], [role='listbox'])
+    :is(
+      [role='menuitem'],
+      [role='menuitemradio'],
+      [role='menuitemcheckbox'],
+      [role='option']
+    ):focus-visible {
+    background-color: var(--bg-subtle);
+  }
 }
 
 /*
@@ -1337,6 +1575,14 @@ body {
   }
 }
 
+/* A busy button's hidden label (`canopy-reserved-label`): `LoadingButton`
+ * lays its resting and busy labels in one grid cell so the button keeps one
+ * width, and draws the label that is not showing from `data-reserved-label`,
+ * so it holds its width without adding text to the DOM. */
+.canopy-reserved-label::before {
+  content: attr(data-reserved-label);
+}
+
 /* Shimmering status text (`canopy-text-shimmer`), for work in progress such
  * as a focused sidebar row's "Running setup…": a primary-ink band sweeps
  * across text drawn in its own color. The band holds the full primary ink
@@ -1363,6 +1609,44 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
+/* A stronger shimmer for the clean chat look's live step: the words rest in
+ * the quaternary ink and a soft primary band sweeps across them in one
+ * continuous, linear pass. The gradient is a seamless 200%-wide tile
+ * (repeat-x) and the animation moves exactly one tile per cycle, so the loop
+ * never restarts visibly; eased intermediate stops keep the band's edges
+ * soft. Rows set `--canopy-shimmer-delay` from the document clock so a row
+ * that remounts picks up the sweep where it was instead of starting over. */
+.canopy-text-shimmer-strong {
+  color: var(--fg-quaternary);
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 22%,
+    color-mix(in oklab, currentColor 75%, var(--fg-primary)) 32%,
+    color-mix(in oklab, currentColor 30%, var(--fg-primary)) 42%,
+    var(--fg-primary) 50%,
+    color-mix(in oklab, currentColor 30%, var(--fg-primary)) 58%,
+    color-mix(in oklab, currentColor 75%, var(--fg-primary)) 68%,
+    currentColor 78%,
+    currentColor 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: repeat-x;
+  background-position: 0% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@keyframes canopy-text-shimmer-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
 @keyframes canopy-text-shimmer {
   from {
     background-position: 100% 0;
@@ -1375,6 +1659,21 @@ body {
 @media (prefers-reduced-motion: no-preference) {
   .canopy-text-shimmer {
     animation: canopy-text-shimmer 2s linear infinite;
+  }
+
+  .canopy-text-shimmer-strong {
+    animation: canopy-text-shimmer-sweep 2.4s linear infinite;
+    animation-delay: var(--canopy-shimmer-delay, 0s);
+  }
+}
+
+/* Without motion the band would sit still over part of the words, so the
+ * live step shows in plain secondary ink instead. */
+@media (prefers-reduced-motion: reduce) {
+  .canopy-text-shimmer-strong {
+    color: var(--fg-secondary);
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
   }
 }
 
@@ -1439,4 +1738,18 @@ body {
 .settings-nav-scroll-mask {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 0.75rem);
   mask-image: linear-gradient(to bottom, transparent 0, black 0.75rem);
+}
+
+/* Visibility and document lifecycle. Keep the resting glyph and
+ * accessible running state; inactive effects own no ticking animations or
+ * forced layers. This also covers a reduced-motion preference changed live. */
+[data-canopy-motion-active='false'],
+[data-canopy-motion-active='false'] * {
+  animation: none !important;
+  will-change: auto !important;
+}
+.canopy-text-shimmer-strong[data-canopy-motion-active='false'] {
+  color: var(--fg-secondary);
+  background-image: none;
+  -webkit-text-fill-color: currentColor;
 }

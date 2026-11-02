@@ -12,7 +12,9 @@ import { useTryItSetup, type TryItSetupPhase } from './useTryItSetup';
  * The guest Try it sign-in notice in the composer's notice stack (CAN-4396).
  * The shared connect gate offers both sign-in and account creation, so the
  * notice carries one sign-in action. Once signed in, a missing account MCP
- * connection offers Authorize (CAN-4451); see `useTryItSetup`.
+ * connection offers Authorize (CAN-4451); see `useTryItSetup`. Try it staged
+ * its prompt unsent (CAN-5218), so finishing either step only selects the
+ * capability; the user sends the draft.
  */
 export function TryItSignInBanner({
   target,
@@ -28,7 +30,7 @@ export function TryItSignInBanner({
         .find((tab) => tab.id === target.chatId)
         ?.messages.some((message) => message.role === 'user') ?? false,
   );
-  // The initial Try it send is still unacknowledged: no flash before it lands.
+  // The chat is still being created, or a turn is starting: no flash.
   const initialSendPending = useChatStore((state) => {
     const tab = state.worktreeChats[scopeKey]?.tabs.find(
       (candidate) => candidate.id === target.chatId,
@@ -63,6 +65,7 @@ export function TryItSignInBanner({
         state={gate.state}
         capabilityName={gate.capability.name}
         promptSaved={gate.promptSaved}
+        continuation="select"
         retry={gate.retry}
         signIn={{ onActivate: gate.signIn }}
         onRetryContinuation={gate.retryContinuation}

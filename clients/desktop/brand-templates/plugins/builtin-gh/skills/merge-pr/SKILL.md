@@ -14,9 +14,6 @@ description: >-
 
 # Merge PR
 
-Bundled from agent-plugins revision `a2beacb3b0a541dc92adb607bbb283b8c4b04bdc`;
-the shell scripts are byte-identical to that revision.
-
 Merge a pull request and do not stop until it is merged or genuinely blocked. Merge queues evict a
 PR when its merge-group checks fail. Those checks run on the PR combined with the latest base and
 any PRs ahead of it in the queue, so they can fail even when the PR's own checks passed. This skill

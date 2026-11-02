@@ -13,17 +13,20 @@ interface RecordedOutcome {
   at?: string;
 }
 
-const mockRunLocalMemoryConsolidation = jest.fn(() =>
+const mockRunLocalMemoryConsolidation = jest.fn<
+  Promise<RunConsolidationResult>,
+  [options: unknown]
+>(() =>
   Promise.resolve({ status: 'success' as const, inputHash: 'a'.repeat(64) }),
 );
 const mockRecordConsolidationRun = jest.fn<
   Promise<void>,
   [string, RecordedOutcome]
 >(() => Promise.resolve());
-const mockEnqueueBackgroundHelperTask = jest.fn(
-  async (options: { task: () => Promise<unknown> }): Promise<unknown> =>
-    options.task(),
-);
+const mockEnqueueBackgroundHelperTask = jest.fn<
+  Promise<unknown>,
+  [options: { priority: number; task: () => Promise<unknown> }]
+>((options) => options.task());
 const mockBroadcast = jest.fn();
 const mockWarn = jest.fn();
 const mockIsModelBlockedByStoredPolicy = jest.fn<
@@ -99,6 +102,7 @@ jest.mock('../memory/local/change-events', () => ({
 }));
 
 import type * as ConsolidationStateModule from '../memory/local/consolidation-state';
+import type { RunConsolidationResult } from '../memory/local/consolidation-task';
 import { initClaudeModels } from '@canopy/desktop-shared/types';
 import {
   LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE,

@@ -203,10 +203,11 @@ describe('hasAnySelections', () => {
   it('accepts legacy bundle-only persisted selection objects', () => {
     expect(
       hasAnySelections({
+        collectionIds: [],
         bundleIds: ['legacy-collection'],
         skillRefs: [],
         pluginRefs: [],
-      } as Parameters<typeof hasAnySelections>[0]),
+      }),
     ).toBe(true);
   });
 
@@ -219,7 +220,7 @@ describe('hasAnySelections', () => {
 
 it('retains unresolved Try it capabilities through desktop persistence normalization', () => {
   const capability = {
-    kind: 'mcp',
+    kind: 'mcp' as const,
     sourceId: 'curated',
     catalogId: 'github',
     name: 'GitHub',

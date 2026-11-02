@@ -1,11 +1,12 @@
 /**
- * Map a filename (basename, not full path) to a Monaco language id.
+ * Map a filename or path to a Monaco language id.
  *
  * Returns the supplied language hint for extensions we don't have a more
  * specific mapping for. Desktop file previews use the lowercase extension as
  * that hint, and many of those extensions are already valid Monaco language
- * ids. Without a hint, unknown extensions and extensionless files fall back to
- * `'plaintext'`.
+ * ids. Known LaTeX, BibTeX, and Lean extensions always use their canonical
+ * Monaco language ids. Without a hint, unknown extensions and extensionless
+ * files fall back to `'plaintext'`.
  *
  * Designed to be path-free so it can be unit-tested without filesystem
  * fixtures.
@@ -99,6 +100,16 @@ export function getMonacoLanguage(
       return 'sql';
     case '.xml':
       return 'xml';
+    case '.tex':
+    case '.sty':
+    case '.cls':
+    case '.ltx':
+    case '.bbl':
+      return 'latex';
+    case '.bib':
+      return 'bibtex';
+    case '.lean':
+      return 'lean';
     case '.ini':
       return 'ini';
     case '.toml':

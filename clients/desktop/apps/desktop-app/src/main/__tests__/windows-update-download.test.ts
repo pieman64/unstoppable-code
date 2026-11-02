@@ -45,7 +45,7 @@ describe('Windows full-download stream cleanup', () => {
       const address = server.address();
       if (!address || typeof address === 'string')
         throw new Error('Missing fixture address');
-      const executor = new ElectronHttpExecutor(null);
+      const executor = new ElectronHttpExecutor(undefined);
       const originalErrorHandlers =
         executor.addErrorAndTimeoutHandlers.bind(executor);
       jest

@@ -15,6 +15,13 @@ describe('toDiffFileStatus', () => {
     expect(toDiffFileStatus('??')).toBe('untracked');
   });
 
+  it.each(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'])(
+    'maps the merge-conflict code %s to unmerged',
+    (status) => {
+      expect(toDiffFileStatus(status)).toBe('unmerged');
+    },
+  );
+
   it('maps canonical word statuses', () => {
     expect(toDiffFileStatus('added')).toBe('added');
     expect(toDiffFileStatus('modified')).toBe('modified');

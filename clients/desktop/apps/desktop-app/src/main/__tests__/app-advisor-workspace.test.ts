@@ -108,7 +108,7 @@ describe('App Advisor project persistence', () => {
       'custom instructions',
     );
     expect(readlinkSync(join(home, 'AGENTS.md'))).toBe('CLAUDE.md');
-    for (const subdir of ['notes', 'prompts', 'attachments']) {
+    for (const subdir of ['notes', 'prompts', 'attachments'] as const) {
       expect(
         (await stat(getCoworkManagedSubdir(home, subdir))).isDirectory(),
       ).toBe(true);

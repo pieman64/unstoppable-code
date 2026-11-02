@@ -130,9 +130,9 @@ jest.mock('../lib/split-pr-persistence', () => ({
 
 // The split lock service is intentionally NOT mocked: the workflow handler
 // tests exercise real acquire/release/broadcast behavior.
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
-    killWorktreeTerminals: jest.fn(),
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    killWorktree: jest.fn(),
   },
 }));
 
@@ -150,6 +150,7 @@ jest.mock('../lib/hook-runner', () => ({
 
 jest.mock('../agents/session-manager', () => ({
   hasActiveChatTurnsForWorktree: jest.fn(() => false),
+  hasActiveChatWorkForWorktree: jest.fn(() => false),
 }));
 
 jest.mock(
@@ -166,6 +167,7 @@ jest.mock('../lib/paths', () => ({
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from '../ipc/register';
 import { planPrSplit, PrSplitPlanningError } from '../lib/pr-split-planner';
+import type { SplitPlanIssue } from '@canopy/desktop-shared/types/pr-split-plan';
 import {
   executePrSplit,
   SplitPrExecutionError,
@@ -175,7 +177,7 @@ import {
   deleteSplitPrMapForWorktree,
 } from '../lib/split-pr-persistence';
 import { getGitHubClient } from '../lib/github-client';
-import { ptyManager } from '../terminal/pty-manager';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { getBrowserService } from '../browser/browser-service-registry';
 import { stopWorktreeScripts } from '../services/scripts-service';
 import { stopHooksForWorktree } from '../lib/hook-runner';
@@ -186,7 +188,10 @@ import {
   SplitLockError,
   SplitStartBlockedError,
 } from '../services/split-lock-service';
-import { hasActiveChatTurnsForWorktree } from '../agents/session-manager';
+import {
+  hasActiveChatTurnsForWorktree,
+  hasActiveChatWorkForWorktree,
+} from '../agents/session-manager';
 import { listExecutionSummaries } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { getSplitPrRuntimeProjection } from '../services/split-pr-runtime-projection';
@@ -302,9 +307,8 @@ type ExitWorkflowHandlerFn = (
 const mockedGetBrowserService = jest.mocked(getBrowserService);
 const mockedStopWorktreeScripts = jest.mocked(stopWorktreeScripts);
 const mockedStopHooksForWorktree = jest.mocked(stopHooksForWorktree);
-const mockedKillWorktreeTerminals = jest.mocked(
-  ptyManager.killWorktreeTerminals,
-);
+const mockedKillWorktreeTerminals = jest.mocked(workerTerminal.killWorktree);
+const mockedHasActiveChatWork = jest.mocked(hasActiveChatWorkForWorktree);
 const mockedHasActiveChatTurns = jest.mocked(hasActiveChatTurnsForWorktree);
 const mockedListExecutionSummaries = jest.mocked(listExecutionSummaries);
 const windowSend = jest.fn();
@@ -336,7 +340,13 @@ describe('split PR IPC handlers', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    registerGitHubHandlers(() => mockWindow as any, {
+      // These tests reach no projected pull request read.
+      dispatcher: {} as never,
+      resolveCaller: () => {
+        throw new Error('No projected pull request read in this test.');
+      },
+    });
 
     planHandler = findHandler<PlanHandlerFn>(IPC_CHANNELS.githubSplitPrPlan);
     cancelHandler = findHandler<CancelHandlerFn>(
@@ -374,6 +384,8 @@ describe('split PR IPC handlers', () => {
     mockedStopWorktreeScripts.mockReset();
     mockedStopWorktreeScripts.mockResolvedValue(undefined);
     mockedKillWorktreeTerminals.mockReset();
+    mockedHasActiveChatWork.mockReset();
+    mockedHasActiveChatWork.mockReturnValue(false);
     mockedHasActiveChatTurns.mockReset();
     mockedHasActiveChatTurns.mockReturnValue(false);
     mockedListExecutionSummaries.mockReset();
@@ -476,7 +488,7 @@ describe('split PR IPC handlers', () => {
     });
 
     it('forwards issues on the refused envelope for invalid_plan failures', async () => {
-      const issues = [
+      const issues: SplitPlanIssue[] = [
         {
           code: 'unassigned-hunk',
           severity: 'error',
@@ -844,7 +856,22 @@ describe('split PR IPC handlers', () => {
 
     it('refuses with SplitStartBlockedError when a chat is active, without acquiring or terminating', async () => {
       mockedHasActiveChatTurns.mockReturnValue(true);
+      mockedHasActiveChatWork.mockReturnValue(true);
 
+      await expect(
+        startWorkflowHandler({} as any, {
+          projectId: 'project-a',
+          worktreeId: 'wt-1',
+        }),
+      ).rejects.toBeInstanceOf(SplitStartBlockedError);
+      expect(isSplitLocked('project-a', 'wt-1')).toBe(false);
+      expect(mockedKillWorktreeTerminals).not.toHaveBeenCalled();
+      expect(mockedPlanPrSplit).not.toHaveBeenCalled();
+    });
+
+    it('blocks Split PR while a background Agent runs without a foreground turn', async () => {
+      mockedHasActiveChatWork.mockReturnValue(true);
+      mockedHasActiveChatTurns.mockReturnValue(false);
       await expect(
         startWorkflowHandler({} as any, {
           projectId: 'project-a',

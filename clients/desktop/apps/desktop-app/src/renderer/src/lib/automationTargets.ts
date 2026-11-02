@@ -17,7 +17,7 @@ import {
   loadPipelineDocument,
 } from './pipelineDocument';
 
-const PIPELINE_UNREADABLE = 'The selected pipeline could not be read.';
+const PIPELINE_UNREADABLE = 'The selected workflow could not be read.';
 
 /** Maps a project row's `type` to a session target kind; unknown → undefined. */
 export function projectTypeToSessionTargetKind(

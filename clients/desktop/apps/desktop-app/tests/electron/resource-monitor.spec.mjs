@@ -415,6 +415,11 @@ test('resource popover collapses agent process trees and totals app processes in
     await pill.click();
     const popover = window.getByTestId('resource-diagnostics-popover');
     await expect(popover).toBeVisible();
+    // Synthetic clicks bypass app-region, so assert the computed region: the
+    // portaled panel must punch a hole in drag rects beneath its controls.
+    await expect(
+      popover.getByTestId('resource-diagnostics-popover-content'),
+    ).toHaveCSS('-webkit-app-region', 'no-drag');
 
     const agentRow = window.getByTestId('resource-row-claude:3001');
     await expect

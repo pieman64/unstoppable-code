@@ -8,7 +8,12 @@ import {
   type FeedbackSubmitResponse,
 } from '@canopy/desktop-shared/types';
 import { requestCanopyCloudJson } from '../canopy-cloud/client';
-import { prepareFeedbackBundle } from './feedback-bundle';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import {
+  cleanupStaleTemporaryFeedbackBundles,
+  prepareFeedbackBundle,
+  releaseTemporaryFeedbackBundle,
+} from './feedback-bundle';
 
 const FEEDBACK_REPORTS_PATH = '/api/v1/feedback/reports';
 const FEEDBACK_ATTACHMENT_COMMIT_PATH =
@@ -71,12 +76,20 @@ export async function submitFeedback(
   let bundlePath: string | undefined;
   let bundleSizeBytes: number | undefined;
   if (request.includeDiagnostics) {
-    const bundle = await prepareFeedbackBundle(
-      buildPrepareRequest(request, description),
-      { destination: 'temp' },
-    );
-    bundlePath = bundle.absolutePath;
-    bundleSizeBytes = bundle.sizeBytes;
+    // The sweep is deliberately best-effort even if a host adapter fails.
+    await cleanupStaleTemporaryFeedbackBundles().catch(() => undefined);
+    try {
+      const bundle = await prepareFeedbackBundle(
+        buildPrepareRequest(request, description),
+        { destination: 'temp' },
+      );
+      bundlePath = bundle.absolutePath;
+      bundleSizeBytes = bundle.sizeBytes;
+    } catch (error) {
+      logMainProcessWarn('Feedback diagnostics preparation failed', {
+        category: preparationFailureCategory(error),
+      });
+    }
   }
 
   try {
@@ -115,7 +128,11 @@ export async function submitFeedback(
     return { submitted: true };
   } finally {
     if (bundlePath !== undefined) {
-      await rm(bundlePath, { force: true }).catch(() => undefined);
+      try {
+        await rm(bundlePath, { force: true }).catch(() => undefined);
+      } finally {
+        releaseTemporaryFeedbackBundle(bundlePath);
+      }
     }
   }
 }
@@ -233,4 +250,27 @@ function mapContextToArea(context: FeedbackContextSnapshot): FeedbackArea {
 
 function isNonEmptyString(value: string | undefined): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function preparationFailureCategory(error: unknown): string {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? error.code
+      : undefined;
+  switch (code) {
+    case 'ENOENT':
+    case 'ENOTDIR':
+      return 'missing';
+    case 'EACCES':
+    case 'EPERM':
+      return 'inaccessible';
+    case 'EMFILE':
+    case 'ENFILE':
+      return 'resource-limit';
+    case 'ENOSPC':
+    case 'EIO':
+      return 'io';
+    default:
+      return 'unknown';
+  }
 }

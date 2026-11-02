@@ -90,6 +90,7 @@ describe('Agent model contracts', () => {
         {
           modelId: 'opus[1m]',
           gatewayId: 'anthropic/claude-opus-5',
+          family: 'anthropic',
           recommendedHarness: 'claude',
           gatewayOnly: false,
           contextWindow: 400_000,

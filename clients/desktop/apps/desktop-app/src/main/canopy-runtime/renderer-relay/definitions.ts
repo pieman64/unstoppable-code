@@ -1,5 +1,4 @@
 import {
-  CANOPY_INSTRUCTION_DEFINITIONS,
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
@@ -16,6 +15,7 @@ import {
   CANOPY_RUNTIME_STREAM_DEFINITIONS,
 } from '@canopy/core-runtime';
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
+import { DESKTOP_INSTRUCTION_DEFINITIONS } from '../desktop-instruction-definitions';
 
 export const CAPABILITIES_REGISTER = 'core.client.capabilities.register';
 
@@ -26,9 +26,9 @@ export interface RelayDefinitions {
 }
 
 /**
- * Everything the renderer relay can reach: the dispatched registries, runtime
- * health/events, and capability registration. The handshake is not listed;
- * the client runs it before any of these.
+ * Everything the renderer relay can reach: the desktop dispatcher's
+ * registries, runtime health/events, and capability registration. The
+ * handshake is not listed; the client runs it before any of these.
  */
 export const RELAY_DEFINITIONS: RelayDefinitions = {
   queries: composeCanopyQueryRegistries(
@@ -36,7 +36,7 @@ export const RELAY_DEFINITIONS: RelayDefinitions = {
     CANOPY_RUNTIME_QUERY_DEFINITIONS,
   ),
   instructions: composeCanopyInstructionRegistries(
-    CANOPY_INSTRUCTION_DEFINITIONS,
+    DESKTOP_INSTRUCTION_DEFINITIONS,
     {
       [CAPABILITIES_REGISTER]:
         CORE_TRANSPORT_INSTRUCTION_DEFINITIONS[CAPABILITIES_REGISTER],

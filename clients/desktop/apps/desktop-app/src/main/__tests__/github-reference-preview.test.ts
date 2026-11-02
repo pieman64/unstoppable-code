@@ -1,10 +1,12 @@
 import type { GitHubPreviewTarget } from '@canopy/protocol/reference-previews';
 import type * as Fs from 'node:fs/promises';
+import { sep } from 'node:path';
 import {
   findTrackedPrSnapshot,
   resetPrPreviewIndexForTests,
 } from '../lib/github-pr-hook-state';
 import { GitHubBrokerError } from '../lib/github-broker/errors';
+import { getWorktreeDataDir } from '../lib/paths';
 import {
   createGitHubReferencePreviewReader,
   PULL_FACTS_TIMEOUT_MS,
@@ -102,11 +104,23 @@ const flush = (): Promise<void> =>
 describe('createGitHubReferencePreviewReader', () => {
   it('reaches the broker fallback while a cold tracked-snapshot read remains held', async () => {
     const fs = jest.requireActual<typeof Fs>('node:fs/promises');
-    let release: (value: Buffer) => void = (): void => undefined;
-    const held = new Promise<Buffer>((resolve) => {
+    let release: (value: Buffer<ArrayBuffer>) => void = (): void => undefined;
+    const held = new Promise<Buffer<ArrayBuffer>>((resolve) => {
       release = resolve;
     });
-    const read = jest.spyOn(fs, 'readFile').mockImplementationOnce(() => held);
+    const realReadFile = fs.readFile;
+    const probeDir = `${getWorktreeDataDir('round5-probe', 'held')}${sep}`;
+    const isProbeRead = (path: unknown): boolean =>
+      typeof path === 'string' && path.startsWith(probeDir);
+    // Core modules are shared by every suite in the Jest worker, so other
+    // suites' in-flight reads pass through and go uncounted.
+    const read = jest
+      .spyOn(fs, 'readFile')
+      .mockImplementation((path, options) =>
+        isProbeRead(path) ? held : realReadFile(path, options),
+      );
+    const probeReads = (): number =>
+      read.mock.calls.filter(([path]) => isProbeRead(path)).length;
     resetPrPreviewIndexForTests();
     jest.useFakeTimers();
     const requestItem = jest.fn(() => Promise.resolve(ISSUE));
@@ -142,7 +156,7 @@ describe('createGitHubReferencePreviewReader', () => {
         status: 'ok',
         preview: { title: ISSUE.title },
       });
-      expect(read).toHaveBeenCalledTimes(1);
+      expect(probeReads()).toBe(1);
     } finally {
       release(Buffer.from('null'));
       await pending;

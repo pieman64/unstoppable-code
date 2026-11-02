@@ -120,7 +120,10 @@ function skill(overrides: Partial<InstalledSkillInfo>): InstalledSkillInfo {
     sourceId: 'custom:app',
     custom: true,
     description: '',
+    source: 'Custom',
     installedAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
+    updateAvailable: false,
     ...overrides,
   };
 }

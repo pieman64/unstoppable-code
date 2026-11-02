@@ -203,6 +203,9 @@ test('manages local agents from Marketplace › Agents', async ({}, testInfo) =>
       .fill('Find risky edge cases.');
     await window.getByTestId('agent-model-submit').click();
     await expect(window.getByTestId('agent-model-modal')).toHaveCount(0);
+    // Saving opens the new agent's detail; its card is on the list behind it.
+    await app.expectCreatedLocalAgentDetail('agent_model_bug_finder');
+    await app.closeMarketplaceEntryDetail();
     const createdCard = window.getByTestId(
       localEntry('agent_model_bug_finder'),
     );
@@ -399,9 +402,9 @@ test('the custom agents flag hides every Marketplace agent surface, live', async
     await selectModelOption(window, 'sonnet');
     await window.getByTestId('agent-model-instructions').fill('Probe.');
     await window.getByTestId('agent-model-submit').click();
+    // Saving opens the new agent's detail.
+    await app.expectCreatedLocalAgentDetail('agent_model_flag_probe');
     const probeCard = window.getByTestId(localEntry('agent_model_flag_probe'));
-    await expect(probeCard).toBeVisible();
-    await app.openLocalAgentDetail('agent_model_flag_probe');
 
     // Switching agents off closes the open agent detail and removes the tab,
     // the Add custom item and the palette's agent items.

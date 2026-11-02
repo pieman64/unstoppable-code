@@ -13,9 +13,11 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  Button,
   DelayedLoadingPlaceholder,
   Markdown,
   SettingsTableSkeleton,
+  useCopyToClipboard,
 } from '@canopy/ui-shared/components';
 import {
   AlertTriangle,
@@ -389,40 +391,44 @@ function CopyPermalinkButton({
   orgId,
   itemId,
 }: CopyPermalinkButtonProps): JSX.Element {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy: copyText } = useCopyToClipboard();
   const host = useSettingsHost();
 
   const copy = async (): Promise<void> => {
     // Permalinks always name the web feed, even when copied from desktop.
     const origin = host.webOrigin();
-    const url = `${origin}/organization/${orgId}/feed/${encodeURIComponent(itemId)}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard can reject (permissions / insecure context); ignore quietly.
-    }
+    // A rejected write (permissions / insecure context) stays quiet.
+    await copyText(
+      `${origin}/organization/${orgId}/feed/${encodeURIComponent(itemId)}`,
+    );
   };
 
-  return (
-    <button
-      type="button"
+  // The same capsule in both states, so focus stays on it: the circle with
+  // the link glyph, then the labelled "Copied" confirmation.
+  return copied ? (
+    <Button
+      variant="secondary"
+      size="compact"
       onClick={() => void copy()}
       data-testid="feed-item-copy-link"
       aria-label="Copy link to this activity"
       title="Copy link to this activity"
-      className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
     >
-      {copied ? (
-        <>
-          <ClipboardCheck size={13} />
-          Copied
-        </>
-      ) : (
-        <Link2 size={13} />
-      )}
-    </button>
+      <ClipboardCheck size={13} />
+      Copied
+    </Button>
+  ) : (
+    <Button
+      variant="ghost"
+      size="compact"
+      iconOnly
+      onClick={() => void copy()}
+      data-testid="feed-item-copy-link"
+      aria-label="Copy link to this activity"
+      title="Copy link to this activity"
+    >
+      <Link2 size={13} />
+    </Button>
   );
 }
 
@@ -808,6 +814,7 @@ function WorktreeUpdatedCard({
           {(overflows || expanded) && (
             <button
               type="button"
+              data-settings-control="link"
               onClick={() => setExpanded((prev) => !prev)}
               className="mt-1 text-xs fg-accent hover:underline"
             >
@@ -911,16 +918,18 @@ function WorktreeSummaryHistory({
 
   return (
     <div className="mt-2">
-      <button
+      <Button
         type="button"
+        variant="secondary"
+        size="compact"
+        data-settings-control="disclosure"
         onClick={() => void toggle()}
         data-testid="feed-summary-history-toggle"
         aria-expanded={open}
-        className="inline-flex items-center gap-1 text-xs fg-secondary transition-colors hover:fg-primary"
       >
         <History size={12} />
         {open ? 'Hide history' : 'History'}
-      </button>
+      </Button>
       {open && (
         <div
           data-testid="feed-summary-history-panel"
@@ -969,17 +978,18 @@ function WorktreeSummaryHistory({
             </ol>
           )}
           {status === 'loaded' && nextCursor !== null && (
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={() => void loadMore()}
               data-testid="feed-summary-history-load-more"
               disabled={loadingMore}
               aria-busy={loadingMore}
               aria-label="Load more history"
-              className="mt-3 text-xs fg-secondary transition-colors hover:fg-primary disabled:opacity-60"
+              className="mt-3"
             >
               {loadingMore ? 'Loading…' : 'Load more'}
-            </button>
+            </Button>
           )}
           {status === 'loaded' && loadMoreFailed && (
             <p className="mt-2 text-xs fg-destructive">
@@ -1041,7 +1051,7 @@ function PipelineRunCard({
       icon={<Workflow size={16} />}
       title={
         <>
-          ran pipeline{' '}
+          ran workflow{' '}
           <span className="font-medium fg-primary">{item.pipelineName}</span>
         </>
       }

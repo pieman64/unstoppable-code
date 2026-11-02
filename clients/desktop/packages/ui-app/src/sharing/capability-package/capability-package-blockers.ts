@@ -9,6 +9,7 @@ import type {
   PipelinePackageBlockerCode,
   PipelinePackageInvocationDismissal,
   PipelinePackageLimit,
+  PipelinePackageReferenceDismissal,
 } from '@canopy/protocol/pipelines';
 
 /**
@@ -41,6 +42,19 @@ export const DISMISSIBLE_BLOCKER_CODES: ReadonlySet<PipelinePackageBlockerCode> 
   new Set<PipelinePackageBlockerCode>(['UNRESOLVED_INVOCATION']);
 
 /**
+ * The pipeline-reference codes a publisher may dismiss, each with the words
+ * in its detail that become the dismiss link. A name the prompt only
+ * mentions is not a pipeline; a child chosen at run time is shared without
+ * its child on purpose.
+ */
+export const DISMISS_REFERENCE_PHRASES: Readonly<
+  Partial<Record<PipelinePackageBlockerCode, string>>
+> = {
+  AMBIGUOUS_PIPELINE_REFERENCE: 'mark it as not a pipeline',
+  UNRESOLVED_CHILD_PIPELINE_REF: 'share without it',
+};
+
+/**
  * Severity order for a deterministic list: security findings first (they are
  * about what would leave the machine), then a dependency that vanished, then
  * ambiguity, then a token that did not resolve, then the whole-package check.
@@ -52,9 +66,19 @@ const SEVERITY_RANK: Record<PipelinePackageBlockerCode, number> = {
   NATIVE_EXECUTABLE_BLOCKED: 3,
   OPAQUE_EXECUTABLE_BLOCKED: 4,
   EXPORT_DENIED_FILE: 5,
+  ASSET_PATH_OUTSIDE_HOME: 5,
+  ASSET_OVERLAPS_LOCAL_STATE: 5,
+  ASSETS_NOT_ALLOWED_FOR_PUBLIC: 5,
   MISSING_DEPENDENCY_SOURCE: 6,
+  MISSING_REQUIRED_ASSET: 6,
+  DEPENDENCY_HAS_INSTALLED_PACKAGE: 6,
   AMBIGUOUS_INVOCATION: 7,
+  AMBIGUOUS_PIPELINE_REFERENCE: 7,
+  DUPLICATE_PIPELINE_KEY: 7,
+  ASSETS_REQUIRE_AUTOMATION_SHARE: 8,
+  ASSETS_ON_PACKAGED_CHILD: 8,
   UNRESOLVED_INVOCATION: 8,
+  UNRESOLVED_CHILD_PIPELINE_REF: 8,
   PACKAGE_LIMIT_EXCEEDED: 9,
   INVALID_PACKAGE: 10,
 };
@@ -73,6 +97,8 @@ export interface CapabilityPackageProblem {
   relativePath?: string;
   occurrences: ReadonlyArray<{ jobId: string; stepId: string }>;
   dismissal?: { provider: 'claude' | 'codex'; token: string };
+  /** Set on a dismissible pipeline-reference problem. */
+  referenceDismissal?: PipelinePackageReferenceDismissal;
   dismissible: boolean;
 }
 
@@ -101,6 +127,10 @@ function titleFor(
   switch (code) {
     case 'UNRESOLVED_INVOCATION':
       return subject ? `${subject} was not found` : message;
+    case 'UNRESOLVED_CHILD_PIPELINE_REF':
+      return subject
+        ? `The child pipeline ${subject} is only known when the pipeline runs`
+        : 'A child pipeline is only known when the pipeline runs';
     case 'AMBIGUOUS_INVOCATION':
       return subject
         ? `${subject} matches more than one command`
@@ -133,6 +163,38 @@ function titleFor(
       return limitTitle(limit, subject);
     case 'INVALID_PACKAGE':
       return 'The package failed a safety check';
+    case 'AMBIGUOUS_PIPELINE_REFERENCE':
+      return subject
+        ? `${subject} matches more than one pipeline`
+        : 'The prompt matches more than one pipeline';
+    case 'DEPENDENCY_HAS_INSTALLED_PACKAGE':
+      return subject
+        ? `${subject} was installed from another share`
+        : 'A pipeline was installed from another share';
+    case 'DUPLICATE_PIPELINE_KEY':
+      return subject
+        ? `Two pipelines share the name ${subject}`
+        : 'Two pipelines share a name';
+    case 'ASSETS_REQUIRE_AUTOMATION_SHARE':
+      return 'This pipeline uses files that travel only with an automation';
+    case 'ASSETS_ON_PACKAGED_CHILD':
+      return subject
+        ? `The child pipeline ${subject} declares its own files`
+        : 'A child pipeline declares its own files';
+    case 'ASSETS_NOT_ALLOWED_FOR_PUBLIC':
+      return 'Files are not available for Public shares';
+    case 'ASSET_OVERLAPS_LOCAL_STATE':
+      return subject
+        ? `${subject} overlaps the pipeline's local state`
+        : "A shared folder overlaps the pipeline's local state";
+    case 'ASSET_PATH_OUTSIDE_HOME':
+      return subject
+        ? `${subject} is outside your home folder`
+        : 'A shared folder is outside your home folder';
+    case 'MISSING_REQUIRED_ASSET':
+      return subject
+        ? `${subject} was not found`
+        : 'A required folder was not found';
   }
 }
 
@@ -153,6 +215,10 @@ function detailFor(
         : 'Install it.';
     case 'AMBIGUOUS_INVOCATION':
       return 'Point the step at one plugin, or rename the other command.';
+    case 'UNRESOLVED_CHILD_PIPELINE_REF':
+      return dismissible
+        ? `Set the pipeline ID as a literal in env and reference that, or ${DISMISS_REFERENCE_PHRASES.UNRESOLVED_CHILD_PIPELINE_REF}.`
+        : 'Set the pipeline ID as a literal in env and reference that instead.';
     case 'MISSING_DEPENDENCY_SOURCE':
       return 'Reinstall it, or remove it from the step.';
     case 'SUSPECTED_SECRET':
@@ -171,6 +237,26 @@ function detailFor(
       return 'Move it out of the shared folder.';
     case 'INVALID_PACKAGE':
       return 'Close this and share again to recheck.';
+    case 'AMBIGUOUS_PIPELINE_REFERENCE':
+      return dismissible
+        ? `Reference it by ID, or ${DISMISS_REFERENCE_PHRASES.AMBIGUOUS_PIPELINE_REFERENCE} if the prompt only mentions it.`
+        : 'Rename one of the pipelines, or reference it by ID.';
+    case 'DEPENDENCY_HAS_INSTALLED_PACKAGE':
+      return 'Share the original automation, or remove this pipeline from the dependencies.';
+    case 'DUPLICATE_PIPELINE_KEY':
+      return 'Rename one of the project pipeline files.';
+    case 'ASSETS_REQUIRE_AUTOMATION_SHARE':
+      return 'Share the automation that runs this pipeline.';
+    case 'ASSETS_ON_PACKAGED_CHILD':
+      return 'Declare the files on the entry pipeline instead.';
+    case 'ASSETS_NOT_ALLOWED_FOR_PUBLIC':
+      return 'Share with your team or organization instead.';
+    case 'ASSET_OVERLAPS_LOCAL_STATE':
+      return 'Move the local state out of the shared folder.';
+    case 'ASSET_PATH_OUTSIDE_HOME':
+      return 'Move the folder inside your home folder.';
+    case 'MISSING_REQUIRED_ASSET':
+      return 'Create the folder, or mark the asset as not required.';
   }
 }
 
@@ -197,6 +283,16 @@ export function sameInvocationSet(
     right.map(({ provider, token }) => `${provider}\0${token}`),
   );
   return left.every(({ provider, token }) => seen.has(`${provider}\0${token}`));
+}
+
+/** {@link sameInvocationSet} for pipeline-reference dismissals. */
+export function sameReferenceSet(
+  left: readonly PipelinePackageReferenceDismissal[],
+  right: readonly PipelinePackageReferenceDismissal[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const seen = new Set(right.map(({ kind, token }) => `${kind}\0${token}`));
+  return left.every(({ kind, token }) => seen.has(`${kind}\0${token}`));
 }
 
 function stableProblemSlugSuffix(value: string): string {
@@ -240,9 +336,13 @@ export function buildCapabilityPackageProblems(
             `${blocker.dismissal?.provider ?? ''}\0${identity}`,
           )}`
         : base;
+    const referenceDismissible =
+      DISMISS_REFERENCE_PHRASES[blocker.code] !== undefined &&
+      blocker.referenceDismissal !== undefined;
     const dismissible =
-      DISMISSIBLE_BLOCKER_CODES.has(blocker.code) &&
-      blocker.dismissal !== undefined;
+      (DISMISSIBLE_BLOCKER_CODES.has(blocker.code) &&
+        blocker.dismissal !== undefined) ||
+      referenceDismissible;
     return {
       slug,
       code: blocker.code,
@@ -260,6 +360,9 @@ export function buildCapabilityPackageProblems(
         : {}),
       occurrences: blocker.occurrences ?? [],
       ...(blocker.dismissal ? { dismissal: blocker.dismissal } : {}),
+      ...(referenceDismissible && blocker.referenceDismissal
+        ? { referenceDismissal: blocker.referenceDismissal }
+        : {}),
       dismissible,
     };
   });

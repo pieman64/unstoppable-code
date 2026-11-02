@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type * as AtomicFile from '@canopy/desktop-shared/node/lib/atomic-file';
 import * as atomicFile from '@canopy/desktop-shared/node/lib/atomic-file';
 import { desktopW5Durability } from '@canopy/desktop-shared/node/w5-commit-log/durability';
@@ -57,15 +57,6 @@ function indexChange(contents: string): W5CommitRequest {
   };
 }
 
-function ancestors(folder: string): string[] {
-  const out: string[] = [];
-  for (let current = folder; dirname(current) !== current; ) {
-    current = dirname(current);
-    out.push(current);
-  }
-  return out;
-}
-
 // The worker composes the portable commit log with these modules (CAN-4408).
 describe('W5 commit log worker durability composition', () => {
   it('is the atomic-file port: durable UTF-8 installs and its folder sync, without storage admission', async () => {
@@ -114,10 +105,12 @@ describe('W5 commit log worker durability composition', () => {
   it('flushes the data root with atomic-file folder syncs', async () => {
     const created = join(dir, 'data', 'workspaces');
 
-    await ensureW5DataRoot(created);
+    await ensureW5DataRoot(created, undefined, { dataRoot: join(dir, 'data') });
 
-    expect(syncDirectory.mock.calls).toEqual(
-      ancestors(created).map((folder) => [folder]),
-    );
+    // Every folder up to the data root, the data root's parent last.
+    expect(syncDirectory.mock.calls).toEqual([
+      [join(dir, 'data')],
+      [resolve(dir)],
+    ]);
   });
 });

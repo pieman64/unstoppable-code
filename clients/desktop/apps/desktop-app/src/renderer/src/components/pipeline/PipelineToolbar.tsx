@@ -8,6 +8,11 @@ import {
 import { type JSX, type ReactNode, useState } from 'react';
 import type { ActivePanel, MainView } from '../../hooks/usePipelineEditor';
 import { Tooltip } from '@canopy/ui-shared';
+import {
+  Button,
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
 
 interface PipelineToolbarProps {
   name: string;
@@ -39,15 +44,6 @@ interface PipelineToolbarProps {
   headerAction?: ReactNode;
 }
 
-const VIEW_MODE_BUTTON_CLASS =
-  'px-3 py-1 text-xs font-medium rounded transition-colors';
-
-function viewModeButtonClass(active: boolean): string {
-  return `${VIEW_MODE_BUTTON_CLASS} ${
-    active ? 'bg-card fg-primary' : 'fg-secondary hover:fg-primary'
-  }`;
-}
-
 export type PipelineViewModeControlsProps =
   | {
       /** A read-only definition toggles its Flow and Details views. */
@@ -62,56 +58,44 @@ export type PipelineViewModeControlsProps =
       readonly onViewChange: (view: MainView) => void;
     };
 
+const READ_VIEW_OPTIONS: readonly SegmentedControlOption<
+  'flowchart' | 'details'
+>[] = [
+  { value: 'flowchart', label: 'Flow', dataTestId: 'pipeline-mode-flow' },
+  { value: 'details', label: 'Details', dataTestId: 'pipeline-mode-details' },
+];
+
+const EDIT_VIEW_OPTIONS: readonly SegmentedControlOption<MainView>[] = [
+  { value: 'flowchart', label: 'Flow', dataTestId: 'pipeline-mode-flow' },
+  { value: 'list', label: 'List', dataTestId: 'pipeline-mode-visual' },
+  { value: 'raw', label: 'Raw', dataTestId: 'pipeline-mode-raw' },
+];
+
 /** The segmented view switch: Flow/Details when read-only, else Flow/List/Raw. */
 export function PipelineViewModeControls(
   props: PipelineViewModeControlsProps,
 ): JSX.Element {
   if (props.mode === 'read') {
-    const { view, onViewChange } = props;
     return (
-      <div className="flex items-center bg-secondary rounded-md p-0.5">
-        <button
-          onClick={() => onViewChange('flowchart')}
-          data-testid="pipeline-mode-flow"
-          className={viewModeButtonClass(view === 'flowchart')}
-        >
-          Flow
-        </button>
-        <button
-          onClick={() => onViewChange('details')}
-          data-testid="pipeline-mode-details"
-          className={viewModeButtonClass(view === 'details')}
-        >
-          Details
-        </button>
-      </div>
+      <SegmentedControl
+        label="Workflow view"
+        value={props.view}
+        options={READ_VIEW_OPTIONS}
+        onChange={props.onViewChange}
+        shape="capsule"
+        width="content"
+      />
     );
   }
-  const { view, onViewChange } = props;
   return (
-    <div className="flex items-center bg-secondary rounded-md p-0.5">
-      <button
-        onClick={() => onViewChange('flowchart')}
-        data-testid="pipeline-mode-flow"
-        className={viewModeButtonClass(view === 'flowchart')}
-      >
-        Flow
-      </button>
-      <button
-        onClick={() => onViewChange('list')}
-        data-testid="pipeline-mode-visual"
-        className={viewModeButtonClass(view === 'list')}
-      >
-        List
-      </button>
-      <button
-        onClick={() => onViewChange('raw')}
-        data-testid="pipeline-mode-raw"
-        className={viewModeButtonClass(view === 'raw')}
-      >
-        Raw
-      </button>
-    </div>
+    <SegmentedControl
+      label="Workflow view"
+      value={props.view}
+      options={EDIT_VIEW_OPTIONS}
+      onChange={props.onViewChange}
+      shape="capsule"
+      width="content"
+    />
   );
 }
 
@@ -123,13 +107,9 @@ export function PipelineAddJobButton({
   onAddJob,
 }: PipelineAddJobButtonProps): JSX.Element {
   return (
-    <button
-      onClick={onAddJob}
-      className="px-3 py-1.5 text-xs font-medium fg-secondary hover:fg-primary
-            border rounded-md hover:bg-secondary transition-colors"
-    >
+    <Button size="compact" onClick={onAddJob}>
       Add job
-    </button>
+    </Button>
   );
 }
 
@@ -176,26 +156,28 @@ export function PipelineHistoryControls({
   return (
     <>
       <Tooltip label={`Undo (${modKey}+Z)`}>
-        <button
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onUndo}
           disabled={!canUndo}
-          className="p-1.5 fg-secondary hover:fg-primary transition-colors rounded-md
-                    hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed"
           aria-label="Undo"
         >
           <AppCatalogRevertIcon width="16" height="16" />
-        </button>
+        </Button>
       </Tooltip>
       <Tooltip label={`Redo (${modKey}+Shift+Z)`}>
-        <button
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onRedo}
           disabled={!canRedo}
-          className="p-1.5 fg-secondary hover:fg-primary transition-colors rounded-md
-                    hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed"
           aria-label="Redo"
         >
           <AppCatalogRedoIcon width="16" height="16" />
-        </button>
+        </Button>
       </Tooltip>
     </>
   );
@@ -229,18 +211,21 @@ export function PipelineToolbar({
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b bg-card shrink-0">
       {/* Back button */}
-      <button
+      <Button
+        variant="ghost"
+        size="compact"
+        iconOnly
         onClick={onBack}
         data-testid="pipeline-editor-back"
-        className="p-1.5 fg-secondary hover:fg-primary transition-colors rounded-md hover:bg-secondary"
+        aria-label="Back"
       >
         <AppCatalogChevronLeftMediumIcon width="18" height="18" />
-      </button>
+      </Button>
 
       {/* Pipeline name (inline editable, or static label when readonly) */}
       {readonly ? (
         <span className="text-s font-medium fg-primary px-1 py-0.5">
-          {name || 'Untitled pipeline'}
+          {name || 'Untitled workflow'}
         </span>
       ) : editingName ? (
         <input
@@ -256,7 +241,7 @@ export function PipelineToolbar({
           onClick={() => setEditingName(true)}
           className="text-s font-medium fg-primary hover:fg-accent transition-colors px-1 py-0.5"
         >
-          {name || 'Untitled pipeline'}
+          {name || 'Untitled workflow'}
         </button>
       )}
 
@@ -299,15 +284,10 @@ export function PipelineToolbar({
       {/* Sharing is offered for any pipeline when enabled; non-user pipelines
           share a snapshot copy. */}
       {onShare && (
-        <button
-          onClick={onShare}
-          data-testid="pipeline-share"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium fg-secondary
-            hover:fg-primary border rounded-md hover:bg-secondary transition-colors"
-        >
+        <Button size="compact" onClick={onShare} data-testid="pipeline-share">
           <ShareIcon width={13} height={13} />
           Share
-        </button>
+        </Button>
       )}
 
       {!readonly && (
@@ -325,15 +305,15 @@ export function PipelineToolbar({
           )}
 
           {/* Save */}
-          <button
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onSave}
             data-testid="pipeline-save"
             disabled={!isDirty || saving}
-            className="px-4 py-1.5 text-xs font-medium bg-accent fg-emphasis rounded-md
-              hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {saving ? 'Saving…' : 'Save'}
-          </button>
+          </Button>
         </>
       )}
     </div>

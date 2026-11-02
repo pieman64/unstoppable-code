@@ -33,11 +33,7 @@ import { readPreferencesFile } from '../lib/preferences-store';
 import { getSidebarItemsPreserveWorkspaceIds } from '../lib/sidebar-items-preservation';
 import { syncTrackedWorktrees as syncTrackedGitHubWorktrees } from '../lib/github-poller';
 import { repairExistingWorkspaceRootWorktrees } from '../lib/workspace-source-control';
-import {
-  ensureWorktreeBranchWatchers,
-  syncWorktreeBranchWatchers,
-} from '../lib/worktree-branch-watcher';
-import { registerWorktreeGitReadyHook } from '../lib/worktree-git-ready-hooks';
+import { publishWorktreeLifecycleChange } from '../lib/worktree-lifecycle-signals';
 import { syncWorktreesFileWatchers } from '../lib/worktrees-file-watcher';
 import { reconcileExternalWorktreeSnapshot } from '../lib/worktree-registry-reconciliation';
 import {
@@ -337,24 +333,16 @@ function observeFirstProjectsLoadMain(
   }
 }
 
-let unregisterBranchWatcherGitReadyHook: (() => void) | null = null;
-
 export function registerProjectHandlers(
   getWindow: () => BrowserWindow | null,
   dispatcher: DesktopCanopyDispatcher,
   resolveCaller: (event: IpcMainInvokeEvent) => CanopyCallerDescriptor,
 ): void {
-  // A checkout that becomes ready after the last load or save has no branch
-  // watcher yet; start it here, whichever caller created the worktree.
-  unregisterBranchWatcherGitReadyHook?.();
-  unregisterBranchWatcherGitReadyHook = registerWorktreeGitReadyHook((event) =>
-    ensureWorktreeBranchWatchers(event, getWindow),
-  );
   const deliveredSidebarItems = new WeakMap<
     IpcMainInvokeEvent['sender'],
     readonly SidebarItem[]
   >();
-  startPolling(getWindow);
+  startPolling(getWindow, dispatcher);
   recordRealisticStartupPerformanceEvent('startup:github-poller:started');
   startCodeGraphBaseManager();
   let didReconcileGitPendingWorktrees = false;
@@ -441,13 +429,9 @@ export function registerProjectHandlers(
         refreshedItems,
         refreshedFailedWorkspaceIds,
       );
-      trackDetachedWork(() =>
-        syncWorktreeBranchWatchers(
-          refreshedItems,
-          getWindow,
-          refreshedFailedWorkspaceIds,
-        ),
-      );
+      // Main's branch observer reads membership itself; the first load
+      // starts its enrollment and later loads reread it.
+      publishWorktreeLifecycleChange('projects-loaded');
       syncWorktreesFileWatchers(
         refreshedItems,
         getWindow,
@@ -621,13 +605,7 @@ export function registerProjectHandlers(
         }
         syncTrackedWorkspaces(result.items, preservedWorkspaceIds);
         syncCodeGraphBaseRepositories(result.items, preservedWorkspaceIds);
-        trackDetachedWork(() =>
-          syncWorktreeBranchWatchers(
-            result.items,
-            getWindow,
-            preservedWorkspaceIds,
-          ),
-        );
+        publishWorktreeLifecycleChange('projects-saved');
         syncWorktreesFileWatchers(
           result.items,
           getWindow,
@@ -689,12 +667,18 @@ export function registerProjectHandlers(
     IPC_CHANNELS.projectDelete,
     async (_event, request: DeleteProjectRequest): Promise<void> => {
       validateId(request.projectId, 'projectId');
+      if (request.supersedeInterruptedDeletion !== undefined)
+        validateId(
+          request.supersedeInterruptedDeletion,
+          'supersedeInterruptedDeletion',
+        );
       // The full workspace deletion (CAN-3799 B6): it refuses anything but a
       // single-repo project and also removes an app-created managed repo.
       const outcome = await deleteWorkspace({
         workspaceId: request.projectId,
         source: 'single_repo_project_delete',
         singleRepoProject: true,
+        supersedeInterruptedDeletion: request.supersedeInterruptedDeletion,
       });
       // This channel has always failed when the managed repository could not
       // be removed; keep that visible although the project itself is gone.

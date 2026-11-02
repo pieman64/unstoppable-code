@@ -335,6 +335,21 @@ async function switchContextWhileDialogOpen(window, contextId) {
   }, contextId);
 }
 
+/**
+ * Opens Share for the first bundled skill from its detail page (CAN-4267:
+ * the Skills list and its row Share icon are gone). The detail hosts the
+ * installed-skill actions whose share dialog a context switch dismisses.
+ */
+async function openBundledSkillShare(window) {
+  await window
+    .getByTestId('customize-section-installed')
+    .locator('[data-testid^="customize-row-skill:builtin:"]')
+    .first()
+    .click();
+  await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+  await window.getByTestId('skill-read-detail-share').click();
+}
+
 async function openWorktreeInvite(window, app, worktreeId) {
   await app.openMainPage();
   await app.selectWorktree(worktreeId);
@@ -402,10 +417,7 @@ test('defaults and rebinds share surfaces to the selected context', async () => 
 
     await app.openPluginsPage();
     await app.openPluginsTab('skills');
-    await window
-      .locator('[data-testid^="skill-share-builtin"]')
-      .first()
-      .click();
+    await openBundledSkillShare(window);
     const skillModal = window.getByTestId('share-skill-modal');
     await expect(skillModal).toBeVisible();
     await expect(
@@ -424,13 +436,13 @@ test('defaults and rebinds share surfaces to the selected context', async () => 
       window,
       OTHER_SHARED_CONTAINERS_ORGANIZATION_ID,
     );
-    // PR #4165 resets Skills page selection on a context change. Reopen
-    // the dialog and verify it binds to the new organization.
+    // PR #4165 resets Skills page selection on a context change; Customize
+    // closes the skill detail and its dialog the same way. Reopen the dialog
+    // and verify it binds to the new organization. A Share dialog opened from
+    // a Customize row menu closes on the same switch (PluginsPage test
+    // "closes a row Share dialog when the context changes").
     await expect(skillModal).toHaveCount(0);
-    await window
-      .locator('[data-testid^="skill-share-builtin"]')
-      .first()
-      .click();
+    await openBundledSkillShare(window);
     await expect(skillModal).toBeVisible();
     await expect(
       skillModal.getByTestId(`share-skill-team-picker-option-${TEAMS[1].id}`),
@@ -455,17 +467,15 @@ test('defaults and rebinds share surfaces to the selected context', async () => 
     }
     await switchContextWhileDialogOpen(window, 'personal');
     await expect(skillModal).toHaveCount(0);
-    await window
-      .locator('[data-testid^="skill-share-builtin"]')
-      .first()
-      .click();
+    await openBundledSkillShare(window);
     await expect(skillModal).toBeVisible();
-    await expect(skillModal.getByTestId('share-skill-scope-team')).toHaveCount(
-      0,
-    );
+    // Personal context: Team and Organization stay offered but disabled.
+    await expect(
+      skillModal.getByTestId('share-skill-scope-team'),
+    ).toBeDisabled();
     await expect(
       skillModal.getByTestId('share-skill-scope-organization'),
-    ).toHaveCount(0);
+    ).toBeDisabled();
     await skillModal
       .getByRole('button', { name: 'Close', exact: true })
       .click();

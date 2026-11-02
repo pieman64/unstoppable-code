@@ -14,10 +14,10 @@ const MODEL: CapabilityTileModel = {
   iconKind: 'skill',
   kindLabel: 'Skill',
   operationLabel: 'Recommended',
+  kindPhrase: 'Skill',
   name: 'Code review',
   summary: 'Reviews a diff',
-  sourceLabel: 'Installed',
-  state: { label: 'Installed', tone: 'success' },
+  state: { label: 'Installed', tone: 'muted' },
   reason: 'Matches your review request',
   external: false,
   removed: false,
@@ -60,6 +60,18 @@ function render(
 }
 
 describe('CapabilityTile', () => {
+  it('says what the item is and its state once, without the turn verb', () => {
+    const tile = render({ kind: 'action', onActivate: jest.fn() });
+    const text = tile.textContent ?? '';
+    expect(text.match(/Installed/g)).toHaveLength(1);
+    expect(text).toContain('Skill · Reviews a diff');
+    // "Recommended" stays in the accessible name only.
+    expect(text).not.toContain('Recommended');
+    expect(
+      tile.querySelector('[data-testid="capability-tile-state"]')?.textContent,
+    ).toBe('Installed');
+  });
+
   it('renders a button whose accessible name starts with the item name', () => {
     const onActivate = jest.fn();
     const tile = render({ kind: 'action', onActivate });
@@ -121,11 +133,11 @@ describe('CapabilityTile', () => {
     expect(tile.getAttribute('aria-label')).toContain('External');
   });
 
-  it('renders an unlinked group with its desktop hint', () => {
+  it('renders an unlinked group that names its hint without drawing it', () => {
     const tile = render({ kind: 'none', hint: 'Open on desktop' });
     expect(tile.tagName).toBe('DIV');
     expect(tile.getAttribute('role')).toBe('group');
-    expect(tile.textContent).toContain('Open on desktop');
+    expect(tile.textContent).not.toContain('Open on desktop');
     expect(tile.getAttribute('aria-label')).toMatch(
       /^Code review, .*Open on desktop$/,
     );
@@ -160,5 +172,17 @@ describe('CapabilityTile', () => {
     act(() => share?.click());
     expect(onShare).toHaveBeenCalledTimes(1);
     expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it('draws the accessory hover fill as a circle', () => {
+    render(
+      { kind: 'action', onActivate: jest.fn() },
+      MODEL,
+      <button type="button">Share</button>,
+    );
+    const slot = container.querySelector<HTMLElement>(
+      '[data-capability-tile-accessory]',
+    );
+    expect(slot?.className.split(' ')).toContain('[&_button]:rounded-full');
   });
 });

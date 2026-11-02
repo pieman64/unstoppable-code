@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import {
   lazy,
   Suspense,
@@ -148,6 +149,7 @@ import {
   type ArchiveWorktreeOptions,
 } from '@/stores/projectsStore';
 import { shouldPollSidebarStats } from '@/stores/projectsStore.diffStats';
+import { offerDiscardForRefusal } from './offerDiscardForRefusal';
 import { useChatStore } from '@/stores/chatStore';
 import { useChatSidebarStore } from '@/stores/chatSidebarStore';
 import { useActivityStore } from '@/stores/activityStore';
@@ -156,6 +158,7 @@ import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatBadgeKeys } from '@/components/sidebar/useChatBadgeKeys';
+import { parseBackgroundTaskCounts } from '@/components/sidebar/chatBadgeKeys';
 import { useGitHubStore } from '@/stores/githubStore';
 import {
   hasActiveSetupRun,
@@ -524,6 +527,10 @@ export function WorktreeManager(): JSX.Element {
       : [];
     return addPlanExploreOriginWorktreeKeys(streamingKeys, trackedPlans);
   }, [badgeKeys.streaming, trackedPlans]);
+  const backgroundTaskCounts = useMemo(
+    () => parseBackgroundTaskCounts(badgeKeys.background),
+    [badgeKeys.background],
+  );
   const activeSessionWorktreeKeys = useMemo(() => {
     const activeKeys = badgeKeys.active ? badgeKeys.active.split(',') : [];
     return addPlanExploreOriginWorktreeKeys(activeKeys, trackedPlans);
@@ -623,6 +630,9 @@ export function WorktreeManager(): JSX.Element {
   const { openDispatchPipelineModal, dispatchPipelineModal } =
     useDispatchPipelineModal();
   const [createTaskOpen, setCreateTaskOpen] = useState(false);
+  const [sharedTaskWorkspaceId, setSharedTaskWorkspaceId] = useState<
+    string | undefined
+  >();
   const [taskReadyPipelineCtx, setTaskReadyPipelineCtx] = useState<{
     workspaceId: string;
     taskText: string;
@@ -1455,6 +1465,20 @@ export function WorktreeManager(): JSX.Element {
           setTeardownError(err);
           return;
         }
+        if (
+          offerDiscardForRefusal(err, {
+            projectId,
+            worktreeId,
+            worktreeName: worktree?.label ?? worktree?.branchName ?? worktreeId,
+            retry: () =>
+              void requestArchiveWorktreeRef.current(
+                projectId,
+                worktreeId,
+                options,
+              ),
+          })
+        )
+          return;
         useGitHubStore
           .getState()
           .addToast(
@@ -1474,10 +1498,59 @@ export function WorktreeManager(): JSX.Element {
     },
     [archiveWorktree, projects],
   );
+  // A discard offer's Retry runs the latest request, not this render's.
+  const requestArchiveWorktreeRef = useRef(requestArchiveWorktree);
+  useEffect(() => {
+    requestArchiveWorktreeRef.current = requestArchiveWorktree;
+  }, [requestArchiveWorktree]);
+
+  // The teardown failure dialog's "Delete without teardown".
+  const requestArchiveWithoutTeardown = useCallback(
+    function retryWithoutTeardown(
+      projectId: string,
+      worktreeId: string,
+      options: ArchiveWorktreeOptions,
+    ): void {
+      const project = projects.find((p) => p.id === projectId);
+      const worktree =
+        project && project.type !== 'cowork'
+          ? project.worktrees.find((wt) => wt.id === worktreeId)
+          : undefined;
+      forceArchiveWorktree(projectId, worktreeId, options)
+        .then(() => {
+          finishWorktreeArchive({
+            projectId,
+            worktreeId,
+            refreshReferenceRepos: false,
+          });
+        })
+        .catch((err: unknown) => {
+          if (
+            offerDiscardForRefusal(err, {
+              projectId,
+              worktreeId,
+              worktreeName:
+                worktree?.label ?? worktree?.branchName ?? worktreeId,
+              retry: () => retryWithoutTeardown(projectId, worktreeId, options),
+            })
+          )
+            return;
+          useGitHubStore
+            .getState()
+            .addToast(
+              err instanceof Error ? err.message : 'Failed to delete worktree',
+              'error',
+              undefined,
+              { projectId, worktreeId },
+            );
+        });
+    },
+    [forceArchiveWorktree, projects],
+  );
 
   // Sidebar-initiated archive requests. Routes through the same
   // `requestArchiveWorktree` the kanban board's row action uses so a teardown
-  // failure surfaces the retry/force-delete `TeardownFailureDialog` instead of
+  // failure surfaces the retry/without-teardown `TeardownFailureDialog` instead of
   // the sidebar's toast-only fallback. Mirrors the other pending-request
   // consume effects above.
   useEffect(() => {
@@ -1518,7 +1591,7 @@ export function WorktreeManager(): JSX.Element {
       if (!created) return;
 
       // Capture whether the worktree is still doing git ops at creation time.
-      // The setup-queue treatment (intro block + queued bubble) must not depend
+      // The setup-queue treatment (queued bubble) must not depend
       // on winning the race against Phase B `git-ready`, which can complete
       // before `sendMessage` runs below.
       const createdWorkspace = useProjectsStore
@@ -1768,7 +1841,7 @@ export function WorktreeManager(): JSX.Element {
       } catch (err: unknown) {
         setTaskPipelineRunning(false);
         setTaskPipelineRunError(
-          err instanceof Error ? err.message : 'Failed to execute pipeline',
+          err instanceof Error ? err.message : 'Failed to execute workflow',
         );
       }
     },
@@ -1813,6 +1886,11 @@ export function WorktreeManager(): JSX.Element {
         <AddRepoToWorktreeModal
           sourceWorkspaceId={addRepoAdhocContext.workspaceId}
           sourceWorktreeId={addRepoAdhocContext.worktreeId}
+          onOpenSharedDestination={(workspaceId) => {
+            setAddRepoAdhocContext(null);
+            setSharedTaskWorkspaceId(workspaceId);
+            setCreateTaskOpen(true);
+          }}
           onClose={() => setAddRepoAdhocContext(null)}
         />
       )}
@@ -1827,8 +1905,10 @@ export function WorktreeManager(): JSX.Element {
 
       {createTaskOpen && (
         <CreateTaskModal
+          initialWorkspaceId={sharedTaskWorkspaceId}
           onClose={() => {
             setCreateTaskOpen(false);
+            setSharedTaskWorkspaceId(undefined);
           }}
           onChooseChat={(workspaceId, taskText, createOptions) => {
             void handleChooseChat(workspaceId, taskText, createOptions);
@@ -1867,6 +1947,9 @@ export function WorktreeManager(): JSX.Element {
               isOpen
               onClose={() => setSettingsContext(null)}
               workspace={settingsWorkspace}
+              onOpenSharedDestination={(workspaceId) =>
+                setSettingsContext({ workspaceId, initialTab: 'repositories' })
+              }
               initialTab={
                 settingsContext?.initialTab === 'share'
                   ? undefined
@@ -1892,6 +1975,9 @@ export function WorktreeManager(): JSX.Element {
               isOpen
               onClose={() => setSettingsContext(null)}
               project={settingsProject}
+              onOpenSharedDestination={(workspaceId) =>
+                setSettingsContext({ workspaceId, initialTab: 'repositories' })
+              }
               initialTab={
                 settingsContext?.initialTab === 'details' ||
                 settingsContext?.initialTab === 'scripts' ||
@@ -1960,9 +2046,9 @@ export function WorktreeManager(): JSX.Element {
               })
               .finally(() => setIsTeardownRetrying(false));
           }}
-          onForceDelete={() => {
+          onSkipTeardown={() => {
             setTeardownError(null);
-            void forceArchiveWorktree(
+            requestArchiveWithoutTeardown(
               teardownError.projectId,
               teardownError.worktreeId,
               {
@@ -1972,29 +2058,7 @@ export function WorktreeManager(): JSX.Element {
                 deleteWithoutRetentionIfMissing:
                   teardownError.deleteWithoutRetentionIfMissing,
               },
-            )
-              .then(() => {
-                finishWorktreeArchive({
-                  projectId: teardownError.projectId,
-                  worktreeId: teardownError.worktreeId,
-                  refreshReferenceRepos: false,
-                });
-              })
-              .catch((err: unknown) => {
-                useGitHubStore
-                  .getState()
-                  .addToast(
-                    err instanceof Error
-                      ? err.message
-                      : 'Failed to delete worktree',
-                    'error',
-                    undefined,
-                    {
-                      projectId: teardownError.projectId,
-                      worktreeId: teardownError.worktreeId,
-                    },
-                  );
-              });
+            );
           }}
           onCancel={() => setTeardownError(null)}
         />
@@ -2083,59 +2147,57 @@ export function WorktreeManager(): JSX.Element {
                         label="Add a project first"
                         suppressed={!createTaskDisabled}
                       >
-                        <button
-                          type="button"
+                        <Button
+                          size="compact"
                           onClick={() => {
                             setCreateTaskOpen(true);
                           }}
                           disabled={createTaskDisabled}
                           data-onboarding-anchor="task-create"
-                          className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-line-accent bg-transparent px-2 py-1 text-xs font-medium fg-accent transition-colors hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                         >
                           <TaskIcon width={12} height={12} />
                           Create task
-                        </button>
+                        </Button>
                       </Tooltip>
-                      <button
-                        type="button"
+                      <Button
+                        variant="ghost"
+                        size="compact"
                         onClick={() => openAddRepoModal()}
-                        className="focus-ring inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
                       >
                         <AppCatalogPlusIcon width="12" height="12" />
                         Add project
-                      </button>
+                      </Button>
                     </div>
                   </>
                 )}
-                <Tooltip
-                  label={
-                    kanbanChatPanelVisible
-                      ? 'Hide chat panel'
-                      : 'Show chat panel'
-                  }
-                >
-                  <button
-                    type="button"
-                    onClick={handleToggleKanbanChatPanel}
-                    aria-label={
+                <span className="electron-no-drag inline-flex">
+                  <Tooltip
+                    label={
                       kanbanChatPanelVisible
                         ? 'Hide chat panel'
                         : 'Show chat panel'
                     }
-                    aria-pressed={kanbanChatPanelVisible}
-                    className={`electron-no-drag focus-ring ml-auto inline-flex items-center justify-center rounded-md p-1.5 transition-colors ${
-                      kanbanChatPanelVisible
-                        ? 'bg-accent-subtle fg-accent'
-                        : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-                    }`}
                   >
-                    <AppCatalogMessageIcon
-                      width="14"
-                      height="14"
-                      aria-hidden="true"
-                    />
-                  </button>
-                </Tooltip>
+                    <Button
+                      variant={kanbanChatPanelVisible ? 'secondary' : 'ghost'}
+                      size="compact"
+                      iconOnly
+                      onClick={handleToggleKanbanChatPanel}
+                      aria-label={
+                        kanbanChatPanelVisible
+                          ? 'Hide chat panel'
+                          : 'Show chat panel'
+                      }
+                      aria-pressed={kanbanChatPanelVisible}
+                    >
+                      <AppCatalogMessageIcon
+                        width="14"
+                        height="14"
+                        aria-hidden="true"
+                      />
+                    </Button>
+                  </Tooltip>
+                </span>
               </div>
 
               <div className="relative flex min-h-0 flex-1 flex-col">
@@ -2162,6 +2224,7 @@ export function WorktreeManager(): JSX.Element {
                       discoveryLoading={discoveryLoading}
                       selectedWorktreeKey={selectedWorktreeKey}
                       streamingWorktreeKeys={streamingWorktreeKeys}
+                      backgroundTaskCounts={backgroundTaskCounts}
                       activeSessionWorktreeKeys={activeSessionWorktreeKeys}
                       awaitingApprovalKeys={awaitingApprovalKeys}
                       pendingQuestionWorktreeKeys={pendingQuestionWorktreeKeys}

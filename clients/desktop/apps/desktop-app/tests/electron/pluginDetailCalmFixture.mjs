@@ -103,6 +103,6 @@ export async function openCalmPluginDetail({ recordVideoDir } = {}) {
   await app.waitForShell();
   await app.openPluginsPage();
   await window.getByTestId('plugins-search').fill('CrowdStrike');
-  await window.getByTestId('plugins-entry-mkt:demo/market/gmail').click();
+  await window.getByTestId('customize-row-mkt:demo/market/gmail').click();
   return { electronApp, window, userDataDir };
 }

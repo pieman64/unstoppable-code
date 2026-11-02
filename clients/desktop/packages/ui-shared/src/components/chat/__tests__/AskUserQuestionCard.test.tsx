@@ -584,8 +584,10 @@ describe('AskUserQuestionCard', () => {
         node = node.parentElement;
       }
     }
-    for (const hint of Array.from(container.querySelectorAll('kbd'))) {
-      expect(hint.getAttribute('aria-hidden')).toBe('true');
+    const hints = Array.from(container.querySelectorAll('kbd'));
+    expect(hints.length).toBeGreaterThan(0);
+    for (const hint of hints) {
+      expect(hint.closest('[aria-hidden="true"]')).toBeInstanceOf(Element);
     }
   });
 

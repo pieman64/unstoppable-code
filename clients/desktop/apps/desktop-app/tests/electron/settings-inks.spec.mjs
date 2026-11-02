@@ -72,7 +72,7 @@ test.describe('settings inks', () => {
         .poll(() => computed(addPreset, 'background-image'))
         .toMatch(/^linear-gradient\(/);
 
-      // The preset editor's Cancel is the ghost Button: the house hover fill.
+      // Cancel is a secondary capsule after #6699, with the same hover overlay.
       const hoverFill = await probeColor(
         window,
         'bg-secondary',
@@ -86,11 +86,12 @@ test.describe('settings inks', () => {
         exact: true,
       });
       await window.mouse.move(0, 0);
-      expect(await computed(cancel, 'background-color')).not.toBe(hoverFill);
+      expect(await computed(cancel, 'background-color')).toBe(hoverFill);
+      expect(await computed(cancel, 'background-image')).toBe('none');
       await cancel.hover();
       await expect
-        .poll(() => computed(cancel, 'background-color'))
-        .toBe(hoverFill);
+        .poll(() => computed(cancel, 'background-image'))
+        .toMatch(/^linear-gradient\(/);
       await window.mouse.move(0, 0);
       await cancel.click();
       await expect(editor).toBeHidden();

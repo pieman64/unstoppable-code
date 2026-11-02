@@ -8,9 +8,9 @@ import {
 import { getElectronDaemonConnections } from '../electron-daemon-access';
 import { FakeSender, localCaller } from './daemon-files-route-harness';
 
-jest.mock('../../feature-flags', () => ({
-  getFeatureFlagService: jest.fn().mockReturnValue({
-    isEnabled: jest.fn().mockReturnValue(false),
+jest.mock('../../services/labs-experiments-runtime', () => ({
+  getLabsExperimentsService: jest.fn().mockReturnValue({
+    getSnapshot: jest.fn().mockReturnValue({ ready: false, experiments: [] }),
     onSnapshotChanged: jest.fn(() => jest.fn()),
   }),
 }));

@@ -14,6 +14,10 @@ jest.mock('../lib/workspace-reference-repo', () => ({
 }));
 
 import type { WorkspaceConfigFile } from '@canopy/desktop-shared/types';
+import { WORKER_GIT_REMOTE_QUERY_DEFINITIONS } from '@canopy/protocol/canopy-core';
+import { createCanopyDispatcher } from '@canopy/core-runtime';
+import { createWorkerGitRemoteHandlers } from '@canopy/core-runtime/node/git';
+import { desktopWorkerGitRemoteHost } from '../canopy-runtime/worker-git-adapter';
 import {
   getRemoteUrlStrict,
   getRepoRootFromWorktree,
@@ -33,6 +37,13 @@ const mockedReadWorkspaceConfig = jest.mocked(readWorkspaceConfig);
 const mockedResolveWorkspaceReferenceRepoPath = jest.mocked(
   resolveWorkspaceReferenceRepoPath,
 );
+
+// The desktop `worker.git.remote.get` handler over the mocked Git helpers.
+const dispatcher = createCanopyDispatcher({
+  profile: 'worker',
+  definitions: WORKER_GIT_REMOTE_QUERY_DEFINITIONS,
+  handlers: createWorkerGitRemoteHandlers(desktopWorkerGitRemoteHost),
+});
 
 function createWorkspaceConfig(
   overrides: Partial<WorkspaceConfigFile> = {},
@@ -77,7 +88,9 @@ describe('inspectReferenceRepo', () => {
   it('returns null when the project has no sourceRepoPath', async () => {
     mockedReadWorkspaceConfig.mockResolvedValue(createWorkspaceConfig());
 
-    await expect(inspectReferenceRepo('workspace-1')).resolves.toBeNull();
+    await expect(
+      inspectReferenceRepo(dispatcher, 'workspace-1'),
+    ).resolves.toBeNull();
     expect(mockedEnsureRepoShadow).not.toHaveBeenCalled();
   });
 
@@ -96,7 +109,7 @@ describe('inspectReferenceRepo', () => {
       lastSyncAt: '2026-07-07T00:00:00.000Z',
     });
 
-    const status = await inspectReferenceRepo('workspace-1');
+    const status = await inspectReferenceRepo(dispatcher, 'workspace-1');
 
     // Health inspection always probes live past the recent-failure cache so a
     // just-fixed remote heals immediately.
@@ -126,7 +139,7 @@ describe('inspectReferenceRepo', () => {
     mockedGetRemoteUrlStrict.mockResolvedValue(null);
     mockedIsGitRepo.mockResolvedValue(true);
 
-    const status = await inspectReferenceRepo('workspace-1');
+    const status = await inspectReferenceRepo(dispatcher, 'workspace-1');
 
     expect(mockedEnsureRepoShadow).not.toHaveBeenCalled();
     expect(typeof status?.lastCheckedAt).toBe('string');
@@ -148,7 +161,7 @@ describe('inspectReferenceRepo', () => {
     mockedGetRemoteUrlStrict.mockResolvedValue('git@example.com:org/repo.git');
     mockedEnsureRepoShadow.mockRejectedValue(new Error('no remote default'));
 
-    const status = await inspectReferenceRepo('workspace-1');
+    const status = await inspectReferenceRepo(dispatcher, 'workspace-1');
 
     expect(typeof status?.lastCheckedAt).toBe('string');
     expect(status).toEqual({
@@ -169,7 +182,7 @@ describe('inspectReferenceRepo', () => {
     mockedIsGitRepo.mockResolvedValue(false);
     mockedEnsureRepoShadow.mockRejectedValue(new Error('not a git repository'));
 
-    const status = await inspectReferenceRepo('workspace-1');
+    const status = await inspectReferenceRepo(dispatcher, 'workspace-1');
 
     expect(status).toEqual({
       referenceRepoPath: '/repos/missing',
@@ -194,9 +207,9 @@ describe('inspectReferenceRepo', () => {
     );
     mockedIsGitRepo.mockResolvedValue(true);
 
-    await expect(inspectReferenceRepo('workspace-1')).rejects.toThrow(
-      'git remote lookup failed',
-    );
+    await expect(
+      inspectReferenceRepo(dispatcher, 'workspace-1'),
+    ).rejects.toThrow('git remote lookup failed');
     expect(mockedEnsureRepoShadow).not.toHaveBeenCalled();
   });
 
@@ -210,7 +223,7 @@ describe('inspectReferenceRepo', () => {
     );
     mockedIsGitRepo.mockResolvedValue(false);
 
-    const status = await inspectReferenceRepo('workspace-1');
+    const status = await inspectReferenceRepo(dispatcher, 'workspace-1');
 
     expect(status).toEqual({
       referenceRepoPath: '/repos/missing',

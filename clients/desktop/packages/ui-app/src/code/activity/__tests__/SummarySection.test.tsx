@@ -101,7 +101,7 @@ describe('portal SummarySectionBody adoption', () => {
       '[data-testid="summary-detail-modal"]',
     );
     const refreshIcon = modal?.querySelector('button svg');
-    const highlightDot = modal?.querySelector('.rounded-full');
+    const highlightDot = modal?.querySelector('span.rounded-full');
     expect(refreshIcon?.classList.contains('fg-accent')).toBe(true);
     expect(highlightDot?.classList.contains('bg-accent')).toBe(true);
     expect(modal?.innerHTML).not.toMatch(/(?:text|bg)-sky-/);

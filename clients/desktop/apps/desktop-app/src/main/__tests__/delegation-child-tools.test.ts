@@ -6,7 +6,10 @@ import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
 import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import type { WorkspaceType } from '@canopy/desktop-shared/types';
-import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
+import type {
+  AgentDelegationSnapshot,
+  AgentDelegationError,
+} from '@canopy/protocol/delegation';
 import type { DelegateCanopyToolCallContext } from '../agents/delegation/canopy-tools';
 import {
   createClaudeChildTools,
@@ -90,6 +93,7 @@ function parentPolicy(
 function parent(
   enableDelegationTools = true,
   delegationToolsWithheld?: 'not_enabled' | 'depth_limit',
+  spawnError?: AgentDelegationError,
 ): DelegationParent {
   const snapshot: AgentDelegationSnapshot = {
     delegationId: 'grandchild',
@@ -97,28 +101,25 @@ function parent(
     outputTruncated: false,
   };
   const broker: DelegationParentBroker = {
-    spawn: jest.fn(() => Promise.resolve({ ok: true, value: snapshot })),
-    watch: jest.fn(() =>
+    spawn: jest.fn(() =>
+      Promise.resolve(
+        spawnError
+          ? { ok: false, error: spawnError }
+          : { ok: true, value: snapshot },
+      ),
+    ),
+    getOutput: jest.fn(() =>
       Promise.resolve({
         ok: true,
         value: {
-          watcherId: 'watcher',
-          mode: 'any',
-          deadlineAt: 1,
-          targets: [],
+          delegationId: 'grandchild',
+          currentRunGeneration: 1,
+          currentStatus: 'pending',
+          latestResultIndex: null,
+          result: null,
         },
       }),
     ),
-    getOutput: jest.fn(() => ({
-      ok: true,
-      value: {
-        delegationId: 'grandchild',
-        currentRunGeneration: 1,
-        currentStatus: 'pending',
-        latestResultIndex: null,
-        result: null,
-      },
-    })),
     inspect: jest.fn(() => undefined),
     list: jest.fn(() => []),
     stop: jest.fn(() => ({ ok: true, value: snapshot })),
@@ -146,7 +147,6 @@ function parent(
       spawn: 'DelegateTask',
       inspect: 'InspectDelegate',
       list: 'ListDelegates',
-      watch: 'WatchDelegates',
       output: 'GetDelegateOutput',
       stop: 'StopDelegate',
       manageWorktree: 'ManageDelegateWorktree',
@@ -162,6 +162,61 @@ function parent(
     requestSteering: jest.fn(() => Promise.resolve({ ok: true, value: {} })),
   });
 }
+
+it('preserves the non-retryable lifetime refusal through both child adapters', async () => {
+  const error: AgentDelegationError = {
+    code: 'lifetime_limit_reached',
+    message:
+      'This worktree has reached its lifetime subagent limit. This is the most this build allows.',
+    retryable: false,
+  };
+  const input = {
+    model: 'model',
+    description: 'Review',
+    prompt: 'Review file',
+  };
+  const claude = createClaudeChildTools(parent(true, undefined, error));
+  const approved = claude.bind(
+    'mcp__canopy__DelegateTask',
+    input,
+    'lifetime-call',
+  );
+  if (!approved.ok) throw new Error('Expected host binding');
+  const definition = mockDefinitions.find(
+    (entry) => entry.name === 'DelegateTask',
+  );
+  if (!definition) throw new Error('Missing tool');
+  const claudeResult = await definition.handler(approved.value);
+  expect(claudeResult.isError).toBe(true);
+  expect(JSON.parse(claudeResult.content?.[0]?.text ?? 'null')).toEqual({
+    ok: false,
+    error,
+  });
+  const codex = createCodexChildTools(
+    parent(true, undefined, error),
+    'native-child',
+  );
+  const codexResult = await codex.policy.execute(
+    {
+      threadId: 'native-child',
+      turnId: 'owned-turn',
+      callId: 'lifetime-call',
+      namespace: null,
+      tool: 'DelegateTask',
+      arguments: input,
+    },
+    new AbortController().signal,
+  );
+  expect(codexResult.success).toBe(false);
+  expect(codexResult.contentItems).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'inputText',
+        text: JSON.stringify({ ok: false, error }),
+      }),
+    ]),
+  );
+});
 
 it('only exposes managed tools and requires a native Claude hook binding', async () => {
   const owner = parent();
@@ -573,7 +628,9 @@ describe('Ledger tools for a managed delegate', () => {
 
     function codexCall(
       tool: string,
-      args: Record<string, unknown>,
+      args: Parameters<
+        ReturnType<typeof createCodexChildTools>['policy']['execute']
+      >[0]['arguments'],
       callId: string,
     ): Parameters<
       ReturnType<typeof createCodexChildTools>['policy']['execute']
@@ -747,9 +804,17 @@ describe('app-owned tools beside delegation tools', () => {
         name === 'mcp__canopy__SearchMemory' ? appTool : undefined,
       toolForCodexName: (name) =>
         name === 'canopy_search_memory' ? appTool : undefined,
-      authorize: jest.fn(() => Promise.resolve(authorized)),
-      run: jest.fn(() => Promise.resolve({ text: 'memory hit' })),
-      execute: jest.fn(() => Promise.resolve({ text: 'memory hit' })),
+      authorize: jest.fn<Promise<boolean>, [typeof appTool, unknown]>(() =>
+        Promise.resolve(authorized),
+      ),
+      run: jest.fn<
+        Promise<{ text: string }>,
+        [typeof appTool, unknown, unknown]
+      >(() => Promise.resolve({ text: 'memory hit' })),
+      execute: jest.fn<
+        Promise<{ text: string; isError?: boolean }>,
+        [typeof appTool, unknown, DelegateCanopyToolCallContext]
+      >(() => Promise.resolve({ text: 'memory hit' })),
     };
   }
   const call = {

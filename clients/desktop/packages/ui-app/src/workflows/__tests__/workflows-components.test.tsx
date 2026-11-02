@@ -10,6 +10,7 @@ import {
   WorkflowsLibraryEmptyState,
   WorkflowsLibraryPagination,
   WorkflowsLibraryTable,
+  WorkflowsLibraryTableSkeleton,
   WorkflowsLibraryToolbar,
 } from '../WorkflowsLibrary';
 import { NewWorkflowMenu } from '../WorkflowsNotices';
@@ -354,7 +355,6 @@ describe('WorkflowsRunsToolbar and empty state', () => {
         query="deploy"
         filters={EMPTY_WORKFLOW_RUN_FILTERS}
         onClearFilters={onClearFilters}
-        onRunPipeline={jest.fn()}
       />,
     );
     expect(query('workflows-runs-empty')).toBeNull();
@@ -579,6 +579,64 @@ describe('WorkflowsLibraryTable', () => {
   });
 });
 
+describe('WorkflowsLibraryTableSkeleton', () => {
+  function headings(root: HTMLElement): string[] {
+    return Array.from(root.querySelectorAll('th')).map(
+      (th) => th.textContent ?? '',
+    );
+  }
+
+  it('keeps the real column heads and pulses only the values', () => {
+    render(<WorkflowsLibraryTableSkeleton />);
+    const skeleton = get('workflows-library-skeleton');
+    expect(skeleton.getAttribute('role')).toBe('status');
+    expect(headings(skeleton)).toEqual([
+      'Workflow',
+      'Trigger',
+      'Last run',
+      'Next run',
+      'On or off, and actions',
+    ]);
+    const rows = Array.from(skeleton.querySelectorAll<HTMLElement>('tbody tr'));
+    expect(rows).toHaveLength(5);
+    // Every cell holds pulsing blocks only, no text.
+    for (const row of rows) {
+      expect(row.textContent).toBe('');
+      expect(row.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
+    }
+    for (const block of Array.from(
+      skeleton.querySelectorAll<HTMLElement>('.animate-pulse'),
+    )) {
+      expect(block.classList.contains('motion-reduce:animate-none')).toBe(true);
+    }
+  });
+
+  it('lines up with the table: same heads, cell padding and compact fold', () => {
+    render(
+      <>
+        <WorkflowsLibraryTableSkeleton compact rows={2} />
+        <WorkflowsLibraryTable
+          rows={[]}
+          now={NOW}
+          onOpen={jest.fn()}
+          onAction={jest.fn()}
+          compact
+        />
+      </>,
+    );
+    const skeleton = get('workflows-library-skeleton');
+    const table = get('workflows-library-table');
+    expect(skeleton.querySelector('thead')?.outerHTML).toBe(
+      table.querySelector('thead')?.outerHTML,
+    );
+    expect(headings(skeleton)).not.toContain('Next run');
+    expect(skeleton.querySelectorAll('tbody tr')).toHaveLength(2);
+    const firstCell = skeleton.querySelector('tbody td');
+    expect(firstCell?.classList.contains('px-4')).toBe(true);
+    expect(firstCell?.classList.contains('py-3')).toBe(true);
+  });
+});
+
 describe('WorkflowStepChain', () => {
   it('shows the trigger alone when there are no steps', () => {
     render(<WorkflowStepChain trigger="manual" steps={[]} />);
@@ -592,7 +650,7 @@ describe('WorkflowStepChain', () => {
 describe('WorkflowsLibraryToolbar, pagination and empty state', () => {
   const rows = [automationRow, eventPipelineRow, sharedRow];
 
-  it('shows counts, toggles several triggers, and clears from the result line', () => {
+  it('counts matches in the page field and filters from the Filter dropdown after it', () => {
     const onFiltersChange = jest.fn();
     render(
       <WorkflowsLibraryToolbar
@@ -608,9 +666,28 @@ describe('WorkflowsLibraryToolbar, pagination and empty state', () => {
         matched={1}
       />,
     );
-    expect(get('workflows-library-result-line').textContent).toContain(
-      '1 of 3 workflows match "triage"',
+    const field = get('workflows-library-search-field');
+    expect(field.getAttribute('data-search-field')).toBe('md');
+    expect(field.querySelector('[data-search-field-count]')?.textContent).toBe(
+      '1 of 3',
     );
+    // Four filters are more than fit inline: one Filter dropdown follows
+    // the field, outside it, grouped with the sort that comes last.
+    const filter = get('workflows-library-filter');
+    expect(field.contains(filter)).toBe(false);
+    const row = get('workflows-library-toolbar');
+    expect(Array.from(row.children).map((child) => child.textContent)).toEqual([
+      '1 of 3',
+      'FilterSort: Recently run',
+    ]);
+    // Only the query is set: the Filter dropdown names no count.
+    expect(filter.getAttribute('data-active')).toBe('false');
+    expect(filter.getAttribute('aria-label')).toBe('Filter');
+    expect(filter.textContent).toBe('Filter');
+    click(filter);
+    expect(filter.getAttribute('aria-expanded')).toBe('true');
+    // One row per filter; each opens its own submenu.
+    expect(get('workflows-library-filter-trigger').textContent).toBe('Trigger');
     click(get('workflows-library-filter-trigger'));
     expect(
       get('workflows-library-filter-trigger-option-schedule').textContent,
@@ -629,13 +706,50 @@ describe('WorkflowsLibraryToolbar, pagination and empty state', () => {
     expect(get('workflows-library-filter-source-option-mine').textContent).toBe(
       'Yours1',
     );
-    click(get('workflows-library-clear-filters'));
+    // Nothing to clear yet.
+    expect(query('workflows-library-filter-clear')).toBeNull();
+    // Clear search empties the query and leaves the filters.
+    click(get('workflows-library-search-clear'));
     expect(onFiltersChange).toHaveBeenLastCalledWith(
       EMPTY_WORKFLOW_LIBRARY_FILTERS,
     );
   });
 
-  it('hides the result line with no filter and reports a sort change', () => {
+  it('counts the filters on in the Filter dropdown and clears every one', () => {
+    const onFiltersChange = jest.fn();
+    render(
+      <WorkflowsLibraryToolbar
+        filters={{
+          ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+          query: 'triage',
+          triggers: ['schedule'],
+          source: 'mine',
+        }}
+        onFiltersChange={onFiltersChange}
+        sort="recently-run"
+        onSortChange={jest.fn()}
+        counts={countLibraryFacets(rows)}
+        triggers={['schedule', 'manual']}
+        projects={[]}
+        total={3}
+        matched={1}
+      />,
+    );
+    const filter = get('workflows-library-filter');
+    expect(filter.getAttribute('data-active')).toBe('true');
+    expect(filter.getAttribute('aria-label')).toBe('Filters: 2 on');
+    expect(filter.textContent).toBe('Filter · 2');
+    click(filter);
+    click(get('workflows-library-filter-clear'));
+    expect(onFiltersChange).toHaveBeenLastCalledWith({
+      ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+      query: 'triage',
+    });
+    // Closing the menu from its own row hands focus back to the button.
+    expect(document.activeElement).toBe(filter);
+  });
+
+  it('shows no count without a query and reports a sort change', () => {
     const onSortChange = jest.fn();
     render(
       <WorkflowsLibraryToolbar
@@ -650,7 +764,14 @@ describe('WorkflowsLibraryToolbar, pagination and empty state', () => {
         matched={3}
       />,
     );
-    expect(query('workflows-library-result-line')).toBeNull();
+    expect(
+      get('workflows-library-search-field').querySelector(
+        '[data-search-field-count]',
+      ),
+    ).toBeNull();
+    expect(get('workflows-library-sort').getAttribute('aria-label')).toBe(
+      'Sort: Recently run',
+    );
     click(get('workflows-library-sort'));
     click(get('workflows-library-sort-option-name'));
     expect(onSortChange).toHaveBeenCalledWith('name');
@@ -695,6 +816,10 @@ describe('WorkflowsLibraryToolbar, pagination and empty state', () => {
     );
     expect(get('workflows-library-no-matches').textContent).toContain(
       'No workflows match "deploy" with a one-time trigger',
+    );
+    // The one action names what it clears.
+    expect(get('workflows-library-empty-clear').textContent).toBe(
+      'Clear search and filters',
     );
     click(get('workflows-library-empty-clear'));
     expect(onClearFilters).toHaveBeenCalledTimes(1);
@@ -810,7 +935,7 @@ describe('useUnsavedChangesGuard', () => {
     expect(guard.canLeaveNow()).toBe(false);
     const { pending } = await ask();
     expect(get('workflows-unsaved-dialog').textContent).toContain(
-      'Save changes to "Nightly dependency check"?',
+      'Save changes to “Nightly dependency check”?',
     );
     await act(async () => {
       get('workflows-unsaved-save').click();
@@ -889,15 +1014,21 @@ describe('useUnsavedChangesGuard', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it('resolves false when the dialog is dismissed, with no Cancel button', async () => {
+  it('resolves false when Cancel keeps editing', async () => {
     render(<Harness isDirty save={jest.fn()} />);
     const { pending } = await ask();
+    // A two-way choice: Cancel on its own at the left, then Discard and the
+    // default Save changes.
     const labels = Array.from(
       get('workflows-unsaved-dialog').querySelectorAll('button'),
-    ).map((button) => button.textContent?.trim());
-    expect(labels).not.toContain('Cancel');
+    ).map((button) => button.firstChild?.textContent);
+    expect(labels).toEqual(['Cancel', 'Discard', 'Save changes']);
+    // The default carries its Enter key chip after the label.
+    expect(document.activeElement?.firstChild?.textContent).toBe(
+      'Save changes',
+    );
     await act(async () => {
-      guard.onKeepEditing();
+      get('workflows-unsaved-cancel').click();
       await pending;
     });
     await expect(pending).resolves.toBe(false);
@@ -1017,9 +1148,9 @@ describe('PipelineTriggers', () => {
         row.textContent,
       ]),
     ).toEqual([
-      ['manual', 'true', 'ManualRun, App Advisor or Remote ControlOn'],
+      ['manual', 'true', 'ManualRun, Orchestrator or Remote ControlOn'],
       ['plan-approved', 'true', 'Plan approvedFrom an approved planOn'],
-      ['task-ready', 'false', 'Task readyFrom a new task in pipeline modeOff'],
+      ['task-ready', 'false', 'Task readyFrom a new task in workflow modeOff'],
     ]);
     // Read-only: nothing to edit.
     expect(q('pipeline-trigger-edit-starts')).toHaveLength(0);
@@ -1048,10 +1179,10 @@ describe('PipelineTriggers', () => {
       />,
     );
     expect(q('pipeline-trigger-hooks-empty')[0]?.textContent).toBe(
-      'Hooks only run pipelines with a Manual trigger.',
+      'Hooks only run workflows with a Manual trigger.',
     );
     expect(q('pipeline-trigger-automations-empty')[0]?.textContent).toBe(
-      'Automations only run pipelines with a Manual trigger.',
+      'Automations only run workflows with a Manual trigger.',
     );
   });
 
@@ -1068,10 +1199,10 @@ describe('PipelineTriggers', () => {
       />,
     );
     expect(q('pipeline-trigger-hooks-empty')[0]?.textContent).toBe(
-      'No hooks run this pipeline.',
+      'No hooks run this workflow.',
     );
     expect(q('pipeline-trigger-automations-empty')[0]?.textContent).toBe(
-      'No automations run this pipeline.',
+      'No automations run this workflow.',
     );
     act(() => q('pipeline-trigger-edit-starts')[0]?.click());
     expect(onEditStarts).toHaveBeenCalledTimes(1);

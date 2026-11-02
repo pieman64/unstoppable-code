@@ -1,14 +1,28 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { Button, CopyButton } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CopyButton,
+  ProviderStatusDot,
+} from '@canopy/ui-shared/components';
 import type { CopilotConnectionStatus } from '@canopy/desktop-shared/types';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
+import { GitHubIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 
-export function CopilotConnection(): JSX.Element | null {
-  const buttonSize = useSettingsButtonSize();
-  const copyButtonSize = useSettingsButtonSize();
+interface CopilotConnectionProps {
+  /**
+   * `row`: one provider row inside the caller's group, as on Accounts beside
+   * Claude and Codex. `section` (default): its own untitled section and box,
+   * as on Labs.
+   */
+  readonly placement?: 'row' | 'section';
+}
+
+export function CopilotConnection({
+  placement = 'section',
+}: CopilotConnectionProps = {}): JSX.Element | null {
   const [status, setStatus] = useState<CopilotConnectionStatus>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -106,33 +120,106 @@ export function CopilotConnection(): JSX.Element | null {
             : status.phase === 'verifying'
               ? 'Verifying download…'
               : 'Preparing Copilot…';
-  return (
-    <section
-      className="space-y-3 rounded-xl bg-card p-5 ring-1 ring-line-base"
-      data-testid="copilot-connection"
+  // Mark, name and status dot as the label, as on the Claude, Codex and
+  // Cursor rows; the account actions sit on the row's trailing edge.
+  const row = (
+    <SettingsRow
+      dataTestId="copilot-connection"
+      label={
+        <span className="inline-flex items-center gap-2">
+          <GitHubIcon size={16} className="shrink-0 fg-primary" aria-hidden />
+          GitHub Copilot
+          {/* No dot until the first status read answers: "Checking setup…"
+              is neither connected nor disconnected. */}
+          {status && (
+            <ProviderStatusDot
+              data-testid="copilot-connection-status-dot"
+              tone={connected ? 'connected' : 'failed'}
+            />
+          )}
+        </span>
+      }
+      description={
+        <>
+          <span
+            role="status"
+            data-testid="copilot-connection-status"
+            className="block"
+          >
+            {label}
+          </span>
+          {connected && status?.account && !busy && (
+            <span data-testid="copilot-connection-account" className="block">
+              Signed in as{' '}
+              <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+                {status.account.login}
+              </span>
+            </span>
+          )}
+        </>
+      }
+      control={
+        <>
+          {busy && (
+            <Button
+              size="compact"
+              variant="secondary"
+              data-testid="copilot-cancel"
+              onClick={() => {
+                cancelRequested.current = true;
+                void window.api.copilotConnection?.cancel();
+              }}
+            >
+              Cancel
+            </Button>
+          )}
+          {connected && !busy && (
+            <Button
+              size="compact"
+              variant="secondary"
+              data-testid="copilot-change-account"
+              onClick={() => {
+                void act('changeAccount');
+              }}
+            >
+              Change account
+            </Button>
+          )}
+          <Button
+            size="compact"
+            variant={connected ? 'secondary' : 'primary'}
+            disabled={busy || !status}
+            data-testid="copilot-connect"
+            onClick={() => {
+              void act(connected ? 'disconnect' : 'connect');
+            }}
+          >
+            {connected ? 'Disconnect Copilot' : 'Connect Copilot'}
+          </Button>
+        </>
+      }
     >
-      <h2 className="text-m font-medium fg-primary">GitHub Copilot</h2>
-      <p className="text-s fg-secondary">
-        Connect your GitHub account to use Copilot models, tools, and skills.
-      </p>
-      <p className="text-xs fg-secondary">
-        {status?.archiveBytes
-          ? `${Math.round(status.archiveBytes / 1_000_000)}MB download · `
-          : ''}
-        Your Copilot plan and usage limits apply
-      </p>
-      <p
-        role="status"
-        className="text-s fg-secondary"
-        data-testid="copilot-connection-status"
-      >
-        {label}
-      </p>
+      {/* The pitch answers what Connect does, so it is spent once Copilot is
+          connected and stays through setup. */}
+      {!connected && (
+        <div className="space-y-1 text-xs text-pretty fg-secondary">
+          <p>
+            Connect your GitHub account to use Copilot models, tools, and
+            skills.
+          </p>
+          <p>
+            {status?.archiveBytes
+              ? `${Math.round(status.archiveBytes / 1_000_000)}MB download · `
+              : ''}
+            Your Copilot plan and usage limits apply
+          </p>
+        </div>
+      )}
       {busy && status?.phase === 'authorizing' && status.userCode && (
         <div className="flex flex-wrap items-center gap-2">
           {/* The device code is a live sign-in secret. */}
           <span
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} rounded-md px-3 py-1 font-mono text-m fg-primary ring-1 ring-line-base`}
+            className={`${POSTHOG_REPLAY_BLOCK_CLASS} rounded-md px-3 py-1 font-mono text-m fg-primary ring-[length:var(--border-hairline)] ring-inset ring-line-base`}
             data-testid="copilot-device-code"
             aria-label={`Device code ${status.userCode}`}
           >
@@ -140,13 +227,13 @@ export function CopilotConnection(): JSX.Element | null {
           </span>
           <CopyButton
             variant="secondary"
-            size={copyButtonSize}
+            size="compact"
             label="Copy code"
             value={status.userCode}
             dataTestId="copilot-copy-code"
           />
           <Button
-            size={buttonSize}
+            size="compact"
             variant="secondary"
             data-testid="copilot-open-github"
             onClick={() => {
@@ -160,55 +247,6 @@ export function CopilotConnection(): JSX.Element | null {
           </Button>
         </div>
       )}
-      {connected && status?.account && !busy && (
-        <p
-          className="text-s fg-secondary"
-          data-testid="copilot-connection-account"
-        >
-          Signed in as{' '}
-          <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
-            {status.account.login}
-          </span>
-        </p>
-      )}
-      <div className="flex gap-2">
-        <Button
-          size={buttonSize}
-          variant="primary"
-          disabled={busy || !status}
-          data-testid="copilot-connect"
-          onClick={() => {
-            void act(connected ? 'disconnect' : 'connect');
-          }}
-        >
-          {connected ? 'Disconnect Copilot' : 'Connect Copilot'}
-        </Button>
-        {connected && !busy && (
-          <Button
-            size={buttonSize}
-            variant="secondary"
-            data-testid="copilot-change-account"
-            onClick={() => {
-              void act('changeAccount');
-            }}
-          >
-            Change account
-          </Button>
-        )}
-        {busy && (
-          <Button
-            size={buttonSize}
-            variant="secondary"
-            data-testid="copilot-cancel"
-            onClick={() => {
-              cancelRequested.current = true;
-              void window.api.copilotConnection?.cancel();
-            }}
-          >
-            Cancel
-          </Button>
-        )}
-      </div>
       {connected && !progress && (
         <p className="text-xs fg-secondary">
           Disconnect signs out of Copilot on this device. Change account signs
@@ -218,12 +256,19 @@ export function CopilotConnection(): JSX.Element | null {
       {error && (
         <p
           role="alert"
-          className="text-s fg-destructive"
+          className="text-xs fg-destructive"
           data-testid="copilot-connection-error"
         >
           {error}
         </p>
       )}
-    </section>
+    </SettingsRow>
+  );
+  if (placement === 'row') return row;
+  return (
+    // Untitled: the row itself names Copilot, so a heading would repeat it.
+    <SettingsSection>
+      <SettingsGroup>{row}</SettingsGroup>
+    </SettingsSection>
   );
 }

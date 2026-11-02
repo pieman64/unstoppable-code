@@ -9,11 +9,19 @@ import type {
 import {
   getExecutionHarnessForModel,
   resolveModelAlias,
+  type ApprovalMode,
+  type ApprovalRule,
   type ChatSendMessageRequest,
   type PersistedChatTab,
 } from './types';
 import { DEFAULT_CODEX_SPEED, readCodexSpeedRecord } from './lib/codex-speed';
+import {
+  sessionApprovalWithinTurn,
+  type TurnApproval,
+} from './lib/send-approval-narrowing';
 import type { ChatInputDeliveryLedger } from '@canopy/protocol/portal';
+import { isInternalChatRequest } from './lib/internal-chat-row';
+import { isGeneratedInputRequest } from './lib/input-request-kind';
 
 export type InputLedger = ChatInputDeliveryLedger<ChatSendMessageRequest>;
 
@@ -52,7 +60,20 @@ function isAgentSenderProvenance(value: unknown): boolean {
     projectLabel: 'Project',
   })?.sender;
   if (sender?.kind === 'bot') return value.owner.kind === 'none';
-  if (sender?.kind !== 'project') return false;
+  if (sender?.kind === 'pipeline') {
+    // A run's owner, and the agent chat that started it when one did.
+    const origin = value.agentOrigin;
+    if (
+      origin !== undefined &&
+      !(
+        record(origin) &&
+        ['projectId', 'worktreeId', 'chatId'].every(
+          (key) => typeof origin[key] === 'string' && origin[key].trim(),
+        )
+      )
+    )
+      return false;
+  } else if (sender?.kind !== 'project') return false;
   return (
     value.owner.kind === 'personal' ||
     (value.owner.kind === 'organization' &&
@@ -148,6 +169,17 @@ export function isInputLedger(value: unknown): value is InputLedger {
       (row.origin !== undefined &&
         row.origin !== 'desktop' &&
         row.origin !== 'portal') ||
+      (row.ordinaryContinuation !== undefined &&
+        (!record(row.ordinaryContinuation) ||
+          typeof row.ordinaryContinuation.attemptId !== 'string' ||
+          !row.ordinaryContinuation.attemptId ||
+          !nonnegativeInteger(row.ordinaryContinuation.epoch))) ||
+      (row.ordinaryOnly !== undefined && row.ordinaryOnly !== true) ||
+      (row.notDelivered !== undefined &&
+        (!record(row.notDelivered) ||
+          typeof row.notDelivered.attemptId !== 'string' ||
+          !row.notDelivered.attemptId ||
+          !nonnegativeInteger(row.notDelivered.at))) ||
       !record(row.payload) ||
       !Array.isArray(row.attempts)
     )
@@ -190,7 +222,14 @@ export function isInputLedger(value: unknown): value is InputLedger {
                 attempt.turnOutcome,
               ))) ||
           (attempt.payloadSnapshot !== undefined &&
-            !isChatSendMessagePayload(attempt.payloadSnapshot))
+            !isChatSendMessagePayload(attempt.payloadSnapshot)) ||
+          (attempt.target !== undefined &&
+            (!record(attempt.target) ||
+              typeof attempt.target.sessionId !== 'string' ||
+              !attempt.target.sessionId ||
+              (attempt.target.turnId !== undefined &&
+                (typeof attempt.target.turnId !== 'string' ||
+                  !attempt.target.turnId))))
         )
           return false;
         attemptIds.add(attempt.id);
@@ -208,29 +247,91 @@ export function isInputLedger(value: unknown): value is InputLedger {
   });
 }
 
+/**
+ * The return to the queue a generated row still owes after its ordinary
+ * fallback, or undefined once anything superseded it: a newer attempt, an
+ * edit (including an unsaved draft left by closing the editor), a pickup,
+ * another state, or a new epoch (Stop, Interrupt, a copy).
+ */
+export function validOrdinaryContinuation(
+  ledger: InputLedger,
+  row: InputLedger['rows'][number],
+): { attemptId: string; epoch: number } | undefined {
+  const continuation = row.ordinaryContinuation;
+  if (
+    !continuation ||
+    row.state !== 'cancelled' ||
+    row.draft !== undefined ||
+    ledger.epoch !== continuation.epoch ||
+    row.currentAttemptId !== continuation.attemptId ||
+    row.attempts.some((attempt) => attempt.pickedUpAt !== undefined)
+  )
+    return undefined;
+  const attempt = row.attempts.find(
+    (candidate) => candidate.id === continuation.attemptId,
+  );
+  const attemptText = attempt?.displayText ?? attempt?.submittedText;
+  return attemptText !== undefined && attemptText === row.text
+    ? continuation
+    : undefined;
+}
+
+// Order is part of the persisted key format.
+const INPUT_SETTINGS_FIELDS = [
+  'model',
+  'providerType',
+  'planMode',
+  'approvalMode',
+  'sessionApprovalRules',
+  'thinkingLevel',
+  'modelConfig',
+  'pluginSelections',
+  'deferredToolsAllowed',
+  'interfaceMode',
+  'subscriptionBillingOverride',
+  'aiCreditsRouted',
+  'aiCreditsRouting',
+  'executionHarness',
+  'selectedRepoId',
+  'globalInstructionsSnapshot',
+  'disabledGlobalPluginSelections',
+  'codexFastModeEnabled',
+  'proposalMode',
+] as const satisfies readonly (keyof PersistedChatTab)[];
+
 /** Explicit settings that can change which session consumes a message. */
 export function inputSettingsKey(tab: PersistedChatTab): string {
-  return JSON.stringify([
-    tab.model ? resolveModelAlias(tab.model) : tab.model,
-    tab.providerType,
-    tab.planMode,
-    tab.approvalMode,
-    tab.sessionApprovalRules ?? [],
-    tab.thinkingLevel,
-    tab.modelConfig,
-    tab.pluginSelections,
-    tab.deferredToolsAllowed,
-    tab.interfaceMode,
-    tab.subscriptionBillingOverride,
-    tab.aiCreditsRouted,
-    tab.aiCreditsRouting,
-    tab.executionHarness,
-    tab.selectedRepoId,
-    tab.globalInstructionsSnapshot,
-    tab.disabledGlobalPluginSelections,
-    tab.codexFastModeEnabled,
-    tab.proposalMode,
-  ]);
+  return JSON.stringify(
+    INPUT_SETTINGS_FIELDS.map((field) => {
+      if (field === 'model')
+        return tab.model ? resolveModelAlias(tab.model) : tab.model;
+      if (field === 'sessionApprovalRules')
+        return tab.sessionApprovalRules ?? [];
+      return tab[field];
+    }),
+  );
+}
+
+/** Compare the persisted settings key exactly, except for approval authority. */
+export function inputSettingsKeyMatchesNonApproval(
+  tab: PersistedChatTab,
+  settingsKey: string,
+): boolean {
+  let stored: unknown;
+  try {
+    stored = JSON.parse(settingsKey);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(stored)) return false;
+  const storedSettings: unknown[] = stored;
+  INPUT_SETTINGS_FIELDS.forEach((field, index) => {
+    if (field === 'approvalMode')
+      storedSettings[index] = tab.approvalMode ?? null;
+    if (field === 'sessionApprovalRules')
+      storedSettings[index] = tab.sessionApprovalRules ?? [];
+  });
+  return JSON.stringify(storedSettings) === inputSettingsKey(tab);
 }
 
 /** UI projections never expose provider payloads or session identities. */
@@ -243,9 +344,12 @@ export function inputDeliveryViews(
     .filter(
       (row) =>
         row.dismissedAt === undefined &&
-        // A delegate's message to its root chat is host-owned and hidden, as
-        // it is in the chat queue.
-        row.payload.managedDelegationDeliveryId === undefined,
+        !isInternalChatRequest(row.payload) &&
+        !row.attempts.some(
+          (attempt) =>
+            attempt.payloadSnapshot !== undefined &&
+            isInternalChatRequest(attempt.payloadSnapshot),
+        ),
     )
     .map((row) => {
       const agentSent = parseChatAgentSentInfo(row.payload.agentSent);
@@ -264,12 +368,44 @@ export function inputDeliveryViews(
           capabilities?.withdraw === true &&
           capabilities.generation ===
             row.attempts.find((a) => a.id === row.currentAttemptId)?.generation,
+        ...(row.state === 'cancelled' &&
+        row.notDelivered !== undefined &&
+        row.notDelivered.attemptId === row.currentAttemptId
+          ? { notDelivered: true }
+          : {}),
+        ...(isGeneratedInputRequest(row.payload) ? { generated: true } : {}),
       };
     });
 }
 
-/** Explicit per-message settings must match the active session selection. */
+/**
+ * Whether `request` may steer into a session that applied
+ * `sessionApprovalMode` and `sessionApprovalRules`: its other settings match
+ * the chat's exactly, and the session holds no more approval authority than
+ * the request's own turn would start with (`turn`, computed as at turn start).
+ * A request narrower than the session therefore gets its own turn, and a
+ * wider one gains nothing by steering (see `sessionApprovalWithinTurn`).
+ */
 export function inputRequestMatchesSettings(
+  request: ChatSendMessageRequest,
+  tab: PersistedChatTab,
+  turn: TurnApproval,
+  sessionApprovalMode: ApprovalMode | undefined,
+  sessionApprovalRules: readonly ApprovalRule[] | undefined,
+): boolean {
+  return (
+    inputRequestMatchesNonApprovalSettings(request, tab) &&
+    sessionApprovalWithinTurn(
+      sessionApprovalMode,
+      sessionApprovalRules,
+      turn,
+      tab.sessionApprovalRules ?? [],
+    )
+  );
+}
+
+/** The per-message settings other than approval match the chat's exactly. */
+export function inputRequestMatchesNonApprovalSettings(
   request: ChatSendMessageRequest,
   tab: PersistedChatTab,
 ): boolean {
@@ -282,8 +418,6 @@ export function inputRequestMatchesSettings(
     request.providerType,
     requestExecutionHarness,
     request.planMode ?? false,
-    request.approvalMode ?? 'ask',
-    request.sessionApprovalRules ?? [],
     request.modelConfig?.thinkingLevel ?? request.thinkingLevel ?? 'high',
     // The exact requested speed, not its `fastMode` projection: Ultra fast
     // and Regular both project `false` but run different service tiers.
@@ -307,8 +441,6 @@ export function inputRequestMatchesSettings(
       (tab.model ? getExecutionHarnessForModel(tab.model) : undefined) ??
       (tab.providerType === 'codex' ? 'codex' : 'claude'),
     tab.planMode ?? false,
-    tab.approvalMode ?? 'ask',
-    tab.sessionApprovalRules ?? [],
     tab.modelConfig?.thinkingLevel ?? tab.thinkingLevel ?? 'high',
     readCodexSpeedRecord(tab.modelConfig, tab.codexFastModeEnabled) ??
       DEFAULT_CODEX_SPEED,
@@ -331,10 +463,16 @@ export function detachInputDelivery(
   createId: () => string,
 ): PersistedChatTab['inputDelivery'] {
   if (!isInputLedger(tab.inputDelivery)) return tab.inputDelivery;
+  // The source chat owns its watchers, delegates, questions and automations.
+  // Their undelivered input would otherwise surface in the copy as a message
+  // its user sent (the copy strips the markers that identify it).
+  const rows = tab.inputDelivery.rows.filter(
+    (row) => row.state === 'picked-up' || !isGeneratedInputRequest(row.payload),
+  );
   return {
     ...tab.inputDelivery,
     epoch: tab.inputDelivery.epoch + 1,
-    rows: tab.inputDelivery.rows.map((row) => {
+    rows: rows.map((row) => {
       const id = createId();
       const payload: ChatSendMessageRequest = {
         ...row.payload,
@@ -347,7 +485,11 @@ export function detachInputDelivery(
       delete payload.codexReconstructionSeedId;
       delete payload.sessionApprovalRules;
       delete payload.approvalMode;
+      // What the source chat admitted an agent send against.
+      delete payload.admittedApproval;
       delete payload.pluginSelections;
+      // A pipeline's per-turn settings, approvals and plugins included.
+      delete payload.turnOverride;
       delete payload.pendingSystemInstructions;
       // Plan ids are scoped to the source worktree.
       delete payload.activePlan;
@@ -363,6 +505,7 @@ export function detachInputDelivery(
       delete payload.asyncQuestionId;
       delete payload.watcherFired;
       delete payload.consolidatedWatcherUserMessageIds;
+      delete payload.watcherPartSnapshots;
       delete payload.deferredToolsReloadEnabledResources;
       delete payload.startsNewTrackedChat;
       const state = ['pending', 'sending', 'cancelling', 'uncertain'].includes(
@@ -388,6 +531,9 @@ export function detachInputDelivery(
         currentAttemptId: undefined,
         editResubmits: false,
         queueIntent: undefined,
+        ordinaryContinuation: undefined,
+        ordinaryOnly: undefined,
+        notDelivered: undefined,
         reason:
           state === 'uncertain'
             ? 'Copied message history. Delivery in the source chat was not confirmed.'

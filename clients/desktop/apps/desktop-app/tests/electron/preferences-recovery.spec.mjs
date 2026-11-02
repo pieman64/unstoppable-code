@@ -44,10 +44,38 @@ async function quitElectronApp(electronApp) {
   await closed.catch(() => undefined);
 }
 
-test('backs up corrupt preferences, restores defaults, and reports recovery in the UI', async () => {
+function listPreferencesBackups(userDataDir) {
+  return readdirSync(userDataDir).filter((name) =>
+    /^preferences\.backup-.+\.json$/.test(name),
+  );
+}
+
+test('backs up corrupt preferences, restores the last-good copy, and reports recovery in the UI', async () => {
   const userDataDir = createUserDataDir();
   const preferencesPath = path.join(userDataDir, 'preferences.json');
+  const lastGoodPath = path.join(userDataDir, 'preferences.last-good.json');
   writeFileSync(preferencesPath, '{not valid json', 'utf8');
+  // The harness skips its consent seed for an unparseable primary, so the
+  // last-good copy carries it. Non-default branch settings prove the source.
+  writeFileSync(
+    lastGoodPath,
+    JSON.stringify({
+      version: 1,
+      preferences: {
+        onboardingCompleted: ['v1'],
+        initializedCuratedPluginDefaults: [],
+        legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+        legalConsentTosVersion: '2026-07-06',
+        mcpProxyPort: 20000 + Math.floor(Math.random() * 15000),
+        branchNamePrefixMode: 'custom',
+        branchNameCustomPrefix: 'restored/',
+        deleteBranchOnArchive: false,
+      },
+    }),
+    'utf8',
+  );
+  // CAN-5154: no generation record and none in the files, so this is a
+  // profile saved only before the record existed, and last-good is restored.
 
   let electronApp;
   try {
@@ -57,38 +85,125 @@ test('backs up corrupt preferences, restores defaults, and reports recovery in t
     const app = new CanopyAppDriver(window);
 
     await app.waitForShell();
-    // Startup now lands on the Home composer. Recovery notifications remain
-    // durable in Overview after their transient toast has expired.
-    await app.openOverviewPage();
-    // The recovery message renders in both the notification-card body and an
-    // inner expandable span, so scope to the first match to avoid a strict-mode
-    // ambiguity that surfaces under load.
-    await expect(
-      window
-        .getByText(
-          /Preferences failed to load, so defaults were restored\. A backup was created at /,
-        )
-        .first(),
-    ).toBeVisible();
 
-    const entries = readFileSync(preferencesPath, 'utf8');
-    const restored = JSON.parse(entries);
-    expect(restored.version).toBe(1);
-    expect(restored.preferences.branchNamePrefixMode).toBe('github');
-    expect(restored.preferences.deleteBranchOnArchive).toBe(true);
-
-    const backupNames = readdirSync(userDataDir).filter((name) =>
-      /^preferences\.backup-.+\.json$/.test(name),
-    );
+    const backupNames = listPreferencesBackups(userDataDir);
     expect(backupNames).toHaveLength(1);
-
     const backupPath = path.join(userDataDir, backupNames[0]);
     const backup = readJson(backupPath);
     expect(backup.__error.reason).toBe('parse');
     expect(backup.__error.filePath).toBe(preferencesPath);
     expect(backup.__error.backupPath).toBe(backupPath);
+    expect(backup.__error.restoredFromPath).toBe(lastGoodPath);
     expect(backup.__error.message).toContain('JSON');
     expect(backup.rawContent).toBe('{not valid json');
+
+    // Later startup saves refresh last-good, so compare values, not bytes.
+    for (const filePath of [preferencesPath, lastGoodPath]) {
+      const persisted = readJson(filePath);
+      expect(persisted.version).toBe(1);
+      expect(persisted.preferences).toMatchObject({
+        branchNamePrefixMode: 'custom',
+        branchNameCustomPrefix: 'restored/',
+        deleteBranchOnArchive: false,
+      });
+    }
+
+    // The toast previews only the message start, which names the restore
+    // source; the backup's __error above pins the paths the message reports.
+    await expect(
+      window
+        .getByText(
+          /^Preferences failed to load, so the last saved preferences were restored from /,
+        )
+        .first(),
+    ).toBeVisible();
+  } finally {
+    if (electronApp) {
+      await closeCanopy(electronApp, userDataDir).catch(() => undefined);
+    }
+  }
+});
+
+test('restores nothing when the generation record shows last-good is stale', async () => {
+  const userDataDir = createUserDataDir();
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  const lastGoodPath = path.join(userDataDir, 'preferences.last-good.json');
+  const generationPath = path.join(userDataDir, 'preferences.generation.json');
+  writeFileSync(preferencesPath, '{not valid json', 'utf8');
+  writeFileSync(
+    lastGoodPath,
+    JSON.stringify({
+      version: 1,
+      preferences: {
+        onboardingCompleted: ['v1'],
+        initializedCuratedPluginDefaults: [],
+        legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+        legalConsentTosVersion: '2026-07-06',
+        mcpProxyPort: 20000 + Math.floor(Math.random() * 15000),
+      },
+    }),
+    'utf8',
+  );
+  // A later save (generation 1) committed; its last-good refresh did not.
+  writeFileSync(
+    generationPath,
+    JSON.stringify({ version: 1, generation: 1 }),
+    'utf8',
+  );
+  const files = [preferencesPath, lastGoodPath, generationPath];
+  const before = files.map((filePath) => readFileSync(filePath, 'utf8'));
+
+  let electronApp;
+  try {
+    const launched = await launchCanopy({ userDataDir });
+    electronApp = launched.electronApp;
+    const window = await electronApp.firstWindow();
+    // Writes are refused, yet the app stays usable (Git detection included).
+    await new CanopyAppDriver(window).waitForShell();
+    // Saves stay refused, acknowledged notice or not.
+    expect(
+      await window.evaluate(() =>
+        window.api.savePreferences({ sidebarCollapsed: true }).then(
+          () => 'saved',
+          () => 'refused',
+        ),
+      ),
+    ).toBe('refused');
+
+    expect(files.map((filePath) => readFileSync(filePath, 'utf8'))).toEqual(
+      before,
+    );
+    expect(listPreferencesBackups(userDataDir)).toEqual([]);
+  } finally {
+    if (electronApp) {
+      await closeCanopy(electronApp, userDataDir).catch(() => undefined);
+    }
+  }
+});
+
+test('refuses preference writes and preserves corrupt preferences without a last-good copy', async () => {
+  const userDataDir = createUserDataDir();
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  const lastGoodPath = path.join(userDataDir, 'preferences.last-good.json');
+  writeFileSync(preferencesPath, '{not valid json', 'utf8');
+
+  let electronApp;
+  try {
+    const launched = await launchCanopy({ userDataDir });
+    electronApp = launched.electronApp;
+    const window = await electronApp.firstWindow();
+
+    // The defaults fallback has no consent, and accepting it is a write.
+    await expect(window.getByTestId('legal-consent-gate')).toBeVisible({
+      timeout: 30_000,
+    });
+    await window.getByTestId('legal-consent-checkbox').check();
+    await window.getByTestId('legal-consent-accept').click();
+    await expect(window.getByTestId('legal-consent-error')).toBeVisible();
+
+    expect(readFileSync(preferencesPath, 'utf8')).toBe('{not valid json');
+    expect(existsSync(lastGoodPath)).toBe(false);
+    expect(listPreferencesBackups(userDataDir)).toEqual([]);
   } finally {
     if (electronApp) {
       await closeCanopy(electronApp, userDataDir).catch(() => undefined);

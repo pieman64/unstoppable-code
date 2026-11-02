@@ -23,6 +23,8 @@ describe('SidebarNavRow label', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    Reflect.deleteProperty(window, 'localPlatform');
+    Reflect.deleteProperty(window, 'platform');
   });
 
   function render(element: JSX.Element): void {
@@ -68,4 +70,36 @@ describe('SidebarNavRow label', () => {
     const back = button('page-nav-back');
     expect(back.textContent).toBe('Back');
   });
+
+  it.each<NodeJS.Platform>(['linux', 'darwin', 'win32'])(
+    'reserves an empty titlebar strip only without the local %s native frame',
+    (platform) => {
+      Object.defineProperty(window, 'localPlatform', {
+        configurable: true,
+        value: platform,
+      });
+      Object.defineProperty(window, 'platform', {
+        configurable: true,
+        value: platform === 'linux' ? 'darwin' : 'linux',
+      });
+      render(
+        <SidebarPageNav
+          ariaLabel="Settings"
+          sidebarTestId="page-nav"
+          backTestId="page-nav-back"
+          resizeHandleTestId="page-nav-resize"
+          scrollViewportTestId="page-nav-scroll"
+          onBack={jest.fn()}
+        >
+          <p>Page nav body</p>
+        </SidebarPageNav>,
+      );
+      const emptyStrip = Array.from(container.querySelectorAll('div')).find(
+        (element) => element.className === 'electron-drag h-10 shrink-0',
+      );
+      expect(Boolean(emptyStrip)).toBe(platform !== 'linux');
+      expect(button('page-nav-back').textContent).toBe('Back');
+      expect(container.textContent).toContain('Page nav body');
+    },
+  );
 });

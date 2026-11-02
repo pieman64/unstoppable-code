@@ -14,6 +14,7 @@ import {
 import { readWorkspaceWorktreesDetailed } from './workspace-persistence';
 import { resolveProjectReferenceRepoPath } from './project-reference-repo';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
+import { canonicalizePossiblyMissingPath } from './worktree-registration-removal';
 
 function issue(
   recovery: NonNullable<WorkspaceReadinessIssue['recovery']>,
@@ -74,6 +75,17 @@ export async function inspectWorktreeCreationRecovery(
         )
       : [],
   );
+  if (!registryComplete) return issues;
+  const canonicalPaths = new Map<string, Promise<string | null>>();
+  function canonicalPath(path: string): Promise<string | null> {
+    const absolute = resolve(path);
+    let result = canonicalPaths.get(absolute);
+    if (!result) {
+      result = canonicalizePossiblyMissingPath(absolute).catch(() => null);
+      canonicalPaths.set(absolute, result);
+    }
+    return result;
+  }
   const repositories =
     config.type === 'single-repo'
       ? config.repoPath
@@ -86,28 +98,33 @@ export async function inspectWorktreeCreationRecovery(
           ...config.repos.map((repo) => repo.repoPath),
         ];
   const ownedPaths = new Set(
-    rows
-      .flatMap((row) => [
-        getWorktreeDir(workspaceId, row.id),
-        getWorkspaceWorktreeRootRepoDir(workspaceId, row.id),
-        // Creation only checks out the selected child repositories; a missing
-        // scope means every configured repository, and [] is root-only.
-        ...config.repos
-          .filter(
-            (repo) =>
-              row.includedRepoIds === undefined ||
-              row.includedRepoIds.includes(repo.id),
-          )
-          .map((repo) =>
-            getWorkspaceWorktreeRepoDir(workspaceId, row.id, repo.id),
-          ),
-        ...(row.creation?.checkouts.map((checkout) => checkout.checkoutPath) ??
-          []),
-      ])
-      .map((path) => resolve(path)),
+    await Promise.all(
+      rows
+        .flatMap((row) => [
+          getWorktreeDir(workspaceId, row.id),
+          getWorkspaceWorktreeRootRepoDir(workspaceId, row.id),
+          // Creation only checks out the selected child repositories; a missing
+          // scope means every configured repository, and [] is root-only.
+          ...config.repos
+            .filter(
+              (repo) =>
+                row.includedRepoIds === undefined ||
+                row.includedRepoIds.includes(repo.id),
+            )
+            .map((repo) =>
+              getWorkspaceWorktreeRepoDir(workspaceId, row.id, repo.id),
+            ),
+          ...(row.creation?.checkouts.map(
+            (checkout) => checkout.checkoutPath,
+          ) ?? []),
+        ])
+        .map(canonicalPath),
+    ),
   );
-  const root = getWorkspaceWorktreesRootDir(workspaceId);
-  if (!registryComplete) return issues;
+  const root = await canonicalPath(getWorkspaceWorktreesRootDir(workspaceId));
+  // Unresolved ownership cannot prove an orphan. Missing paths still resolve
+  // through their existing ancestors, including macOS /var aliases.
+  if (root === null || ownedPaths.has(null)) return issues;
   for (const repositoryPath of Array.from(new Set(repositories))) {
     // An unreadable repository cannot prove a checkout is orphaned. Keep the
     // persisted diagnostics and continue scanning the other repositories.
@@ -118,17 +135,25 @@ export async function inspectWorktreeCreationRecovery(
     if (!listing) continue;
     const [registered, branches] = listing;
     const branchByPath = new Map(
-      Array.from(branches, ([branch, path]) => [resolve(path), branch]),
+      await Promise.all(
+        Array.from(
+          branches,
+          async ([branch, path]) =>
+            [await canonicalPath(path), branch] as const,
+        ),
+      ),
     );
     for (const checkoutPath of Array.from(registered)) {
-      const child = relative(root, checkoutPath);
+      const canonicalCheckout = await canonicalPath(checkoutPath);
+      if (canonicalCheckout === null) continue;
+      const child = relative(root, canonicalCheckout);
       if (
         !child ||
         child === '..' ||
         child.startsWith('../') ||
         child.startsWith('..\\') ||
         isAbsolute(child) ||
-        ownedPaths.has(resolve(checkoutPath))
+        ownedPaths.has(canonicalCheckout)
       )
         continue;
       issues.push(
@@ -137,7 +162,7 @@ export async function inspectWorktreeCreationRecovery(
           phase: 'orphan-checkout',
           repositoryPath,
           checkoutPath,
-          branchName: branchByPath.get(resolve(checkoutPath)) ?? 'HEAD',
+          branchName: branchByPath.get(canonicalCheckout) ?? 'HEAD',
         }),
       );
     }

@@ -72,13 +72,19 @@ describe('waitForCodexMcpServers', () => {
         data: [
           {
             name: 'selected',
+            runtimeStatus: null,
+            pluginId: null,
+            httpOrigin: null,
             // Some app-server/MCP protocol combinations publish the tool
             // inventory without preserving serverInfo. The verifier's
             // durability boundary is the selected tool inventory itself.
             serverInfo: null,
+            serverCapabilities: null,
             tools: {
               secret_echo: {} as never,
             },
+            toolListMeta: null,
+            toolsError: null,
             resources: [],
             resourceTemplates: [],
             authStatus: 'unsupported',
@@ -243,6 +249,9 @@ describe('waitForCodexMcpServers', () => {
         data: [
           {
             name: 'selected',
+            runtimeStatus: null,
+            pluginId: null,
+            httpOrigin: null,
             serverInfo: {
               name: 'inventory-probe',
               title: null,
@@ -251,9 +260,12 @@ describe('waitForCodexMcpServers', () => {
               icons: null,
               websiteUrl: null,
             },
+            serverCapabilities: null,
             tools: {
               linear_get_issue: linearGetIssueTool,
             },
+            toolListMeta: null,
+            toolsError: null,
             resources: [],
             resourceTemplates: [],
             authStatus: 'unsupported' as const,
@@ -326,6 +338,7 @@ describe('owning Codex MCP tool evidence', () => {
           tools: {
             events: { name: 'events', inputSchema: { type: 'object' } },
           },
+          toolListMeta: null,
           toolsError: null,
           resources: [],
           resourceTemplates: [],

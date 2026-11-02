@@ -2,6 +2,25 @@
 import { act, type JSX, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ComposerHeroFrame } from '../ComposerHeroFrame';
+import { HomeSection } from '../HomeSection';
+
+/** Opens the section's ••• menu and picks Hide section. */
+function clickHideSection(root: ParentNode = document): void {
+  const trigger = root.querySelector<HTMLButtonElement>(
+    '[data-testid^="home-section-more-"]',
+  );
+  if (!trigger) throw new Error('Missing section menu');
+  trigger.focus();
+  act(() => trigger.click());
+  const menu = document.getElementById(
+    trigger.getAttribute('aria-controls') ?? '',
+  );
+  const hide = menu?.querySelector<HTMLElement>(
+    '[data-testid^="home-section-hide-"]',
+  );
+  if (!hide) throw new Error('Missing Hide section');
+  act(() => hide.click());
+}
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -34,7 +53,39 @@ describe('ComposerHeroFrame', () => {
 
   afterEach(() => {
     act(() => root.unmount());
+    container.remove();
     jest.restoreAllMocks();
+  });
+
+  it('returns focus to the composer when no section survives restoration', () => {
+    document.body.append(container);
+    const renderSections = (visible: boolean): void => {
+      act(() =>
+        root.render(
+          <ComposerHeroFrame
+            rhythm="spacious"
+            composer={<textarea aria-label="Draft" />}
+            below={
+              visible ? (
+                <HomeSection sectionId="readiness" title="Project suggestions">
+                  Fix project
+                </HomeSection>
+              ) : null
+            }
+          />,
+        ),
+      );
+    };
+    renderSections(true);
+    clickHideSection(container);
+    renderSections(false);
+    const restore = container.querySelector<HTMLButtonElement>('button');
+    if (!restore) throw new Error('Missing restore action');
+    restore.focus();
+    act(() => restore.click());
+    expect(document.activeElement).toBe(
+      container.querySelector('[role="group"][aria-label="Chat composer"]'),
+    );
   });
 
   function render(rhythm: 'spacious' | 'compact'): void {
@@ -87,12 +138,12 @@ describe('ComposerHeroFrame', () => {
     render('spacious');
     expect(byTestId(container, 'group').className).toContain('px-6');
     expect(rows()).toContain('mt-16');
-    expect(rows()).toContain('gap-16');
+    expect(rows()).toContain('gap-12');
 
     render('compact');
     expect(byTestId(container, 'group').className).not.toContain('px-6');
     expect(rows()).toContain('mt-5');
-    expect(rows()).toContain('gap-5');
+    expect(rows()).toContain('gap-12');
   });
 
   // The server HTML already has the final geometry: nothing is measured or

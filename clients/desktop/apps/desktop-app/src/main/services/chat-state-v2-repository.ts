@@ -1,5 +1,24 @@
+import type {
+  ChildStreamCompatibilityPageReply,
+  ChildStreamCompatibilityPageRequest,
+} from '../agents/delegation/record-reader-contract';
+import { DELEGATION_COMPATIBILITY_PAGE_LIMITS } from '../agents/delegation/record-reader-contract';
+import type { DelegationReadMetadataSource } from '@canopy/desktop-shared/node/delegation/record-read-metadata';
+import { DelegationRegistryOperationError } from '../lib/chat-delta-journal/delegation-registry-error';
+import type {
+  DelegationRegistryOperations,
+  DelegationRegistryCursorContext,
+} from '../lib/chat-delta-journal/delegation-registry-api';
 import { isMcpActivationMessage } from './mcp-activation-message';
 import type { AgentDelegationTranscriptItem } from '@canopy/protocol/delegation';
+import type { DelegationChildRow } from '@canopy/agent-transcript';
+import type { ChildSearchDocumentIdentity } from '../chat-search/child-text';
+import {
+  TranscriptTargetSchema,
+  type TranscriptContentField,
+  type TranscriptTarget,
+  type TranscriptStreamDescriptor,
+} from '@canopy/protocol/canopy-core';
 import type {
   DelegationRun,
   DelegationRunItems,
@@ -11,16 +30,28 @@ import type {
 import type { CapturedTranscriptPreview } from '../lib/chat-transcript-log';
 import type { ChatRecoveryIndex } from '../lib/chat-storage-v2';
 import type {
+  ChatTranscriptBlocksPage,
+  ChatTranscriptBlocksRequest,
+  ChatTranscriptContentRequest,
+  ChatTranscriptPageRequest,
+  ChatTranscriptSearchRequest,
+  ChatTranscriptSearchResult,
+  ChatToolOutputRequest,
   ChatToolOutputResponse,
   ChatVisualReadResponse,
 } from '@canopy/desktop-shared/types';
 import type {
   ChatStorageImportOptions,
+  ChatStorageTransactionCheckpoint,
   TranscriptConsumeOptions,
 } from './chat-state-v2-backend';
 import { createHash, randomUUID } from 'node:crypto';
 import { readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import {
+  capturedStreamIdentity,
+  type StreamCopyParent,
+} from '../lib/chat-delta-journal/stream-closure-copy';
 import type {
   ChatCoreMutation,
   ChatJournalRecord,
@@ -36,6 +67,10 @@ import type {
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
+import {
+  type DeltaJournalDiagnostic,
+  type ChatDeltaJournalWriterOptions,
+} from '../lib/chat-delta-journal/writer';
 import { getDataDir } from '../lib/paths';
 import { isErrnoException } from '../lib/type-guards';
 import { VisualStagingStoreImpl } from '../lib/visual-staging';
@@ -55,7 +90,6 @@ import type {
   VisualStagingTarget,
   VisualToolIdentityResolver,
 } from '../lib/chat-visual-contracts';
-import { type DeltaJournalDiagnostic } from '../lib/chat-delta-journal/writer';
 import {
   deltaJournalBackendOptions,
   deltaJournalLifecycleDiagnostic,
@@ -81,6 +115,8 @@ import type { CanonicalChatState } from './chat-state-reducer';
 import { markChatApprovalStateChanged } from '../approvals/rule-revisions';
 import {
   ChatStateV2Backend,
+  type ChildStreamContentRange,
+  type ChildStreamRowsPage,
   type ChatReadSelection,
   type V2MutationOptions,
 } from './chat-state-v2-backend';
@@ -96,9 +132,12 @@ import {
   type ChatScopeKey,
   type ChatScopeLifecycle,
   type ChatStateCommit,
+  type ChatStateCommitListener,
+  type ChatStateCommitWaitStarter,
   type ChatStateStorageDiagnostic,
   type ChatStateTransactionContext,
 } from './chat-state-contracts';
+import type { ChatWaitOperation } from '../observability/chat-wait-diagnostics';
 
 /** Options of one repository transaction. */
 export type ChatStateTransactionOptions = V2MutationOptions & {
@@ -115,6 +154,11 @@ export interface ChatStateV2RepositoryOptions extends Omit<
   ChatStateRepositoryOptions,
   'hasLiveDependency'
 > {
+  enableFormat4?: boolean;
+  /** Read-only capsule injection; absent until broker record-v3 adoption. */
+  delegationReadMetadata?: DelegationReadMetadataSource;
+  /** Test-only journal durability fault observation; absent in production. */
+  deltaJournalOnBoundary?: ChatDeltaJournalWriterOptions['onBoundary'];
   hasLiveDependency?: (scope: ChatScopeKey) => boolean | Promise<boolean>;
   /** Delta-journal idle checkpoint delay (P1 §A: about one second). */
   deltaJournalIdleCheckpointMs?: number;
@@ -126,6 +170,12 @@ export interface ChatStateV2RepositoryOptions extends Omit<
   deltaJournalPromotionRetryMs?: number;
   /** Retries of a failed promotion; default 5. */
   deltaJournalPromotionRetryLimit?: number;
+  /** Deterministic storage interruption seams used by V2 recovery tests. */
+  testHooks?: {
+    storageCheckpoint?: (
+      point: ChatStorageTransactionCheckpoint,
+    ) => Promise<void>;
+  };
 }
 
 /**
@@ -152,6 +202,12 @@ function errorFromUnknown(value: unknown): Error {
     : Object.assign(new Error(String(value)), { cause: value });
 }
 
+export interface ChildSearchDirtyNotification {
+  scope: ChatScopeKey;
+  parentChatId: string;
+  target: Extract<TranscriptTarget, { kind: 'delegation' }>;
+}
+
 interface ScopeEntry {
   scope: ChatScopeKey;
   store: ChatStorageV2;
@@ -167,6 +223,13 @@ interface ScopeEntry {
   tail: Promise<unknown>;
   /** Observers see applied commits strictly in revision order per scope. */
   publishTail: Promise<void>;
+  /**
+   * Entries on `publishTail` not yet finished: commit publications and child
+   * search notifications. A commit's queue depth is the count ahead of it.
+   */
+  pendingPublications: number;
+  /** The commit publication at the head of `publishTail`, when one is. */
+  publishingWait?: ChatWaitOperation;
   previewReaders: Set<CapturedTranscriptPreview>;
   previewCloseFailure?: boolean;
   maintenanceChats: Set<string>;
@@ -333,6 +396,8 @@ export interface TranscriptPreviewOptions {
 
 export class ChatStateV2Repository {
   private readonly scopes = new Map<string, ScopeEntry>();
+  private readonly childTargetTails = new Map<string, Promise<void>>();
+  private readonly delegationTails = new Map<string, Promise<void>>();
   private accepting = true;
   private readonly diagnosticListeners = new Set<
     (diagnostic: ChatStateStorageDiagnostic) => void
@@ -342,6 +407,177 @@ export class ChatStateV2Repository {
     ChatStateStorageDiagnostic[]
   >();
   private onCommit?: ChatStateRepositoryOptions['onCommit'];
+  private startCommitWait?: ChatStateCommitWaitStarter;
+  private readonly childSearchListeners = new Set<
+    (event: ChildSearchDirtyNotification) => void
+  >();
+
+  public subscribeChildSearchDirty(
+    listener: (event: ChildSearchDirtyNotification) => void,
+  ): () => void {
+    this.childSearchListeners.add(listener);
+    return (): void => {
+      this.childSearchListeners.delete(listener);
+    };
+  }
+
+  private async notifyChildSearchDirty(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+  ): Promise<void> {
+    if (target.kind !== 'delegation') return;
+    const entry = this.entry(scope);
+    const event: ChildSearchDirtyNotification = {
+      scope: { ...scope },
+      parentChatId: target.chatId,
+      target: { ...target },
+    };
+    entry.pendingPublications += 1;
+    const publication = entry.publishTail.then((): void => {
+      try {
+        for (const listener of Array.from(this.childSearchListeners)) {
+          try {
+            listener(event);
+          } catch {
+            /* A projection cannot reject durable admission. */
+          }
+        }
+      } finally {
+        entry.pendingPublications -= 1;
+      }
+    });
+    entry.publishTail = publication;
+    await publication;
+  }
+
+  /**
+   * A child stream write. The operation calls `noteBase` once the scope is
+   * loaded. If the write then advanced the scope revision of a delegation
+   * whose card has V2 state, the advance is published as a card change with
+   * the unchanged card state and the new stream revision. Subscribers that
+   * apply events in revision order (the renderer) then see no gap, so they do
+   * not resync the scope, and mounted readers learn of the new rows. A write
+   * before the card has state (registration, opening) stays unpublished.
+   */
+  private async childSearchWrite<T>(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    operation: (noteBase: () => Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    const capturedScope = { ...scope };
+    const capturedTarget = { ...target };
+    const entry = this.entry(capturedScope);
+    const admitted = await this.serialized(entry, async () => {
+      let baseRevision: number | undefined;
+      const result = await operation(async (): Promise<void> => {
+        baseRevision ??= await entry.backend.revision();
+      });
+      const advance = await this.reserveStreamAdvance(
+        entry,
+        capturedScope,
+        capturedTarget,
+        baseRevision,
+      );
+      return {
+        result,
+        publication: advance?.publication,
+        dirty: this.reserveChildSearchDirty(
+          entry,
+          capturedScope,
+          capturedTarget,
+        ),
+      };
+    });
+    admitted.dirty.release();
+    await admitted.publication;
+    await admitted.dirty.publication;
+    return admitted.result;
+  }
+
+  private async reserveStreamAdvance(
+    entry: ScopeEntry,
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    baseRevision: number | undefined,
+  ): Promise<{ publication: Promise<void> } | undefined> {
+    if (baseRevision === undefined || target.kind !== 'delegation')
+      return undefined;
+    const revision = await entry.backend.revision();
+    if (revision === baseRevision) return undefined;
+    const descriptor = await entry.backend.childStreamDescriptor(target);
+    if (descriptor?.cardState?.version !== 2) return undefined;
+    // Reserved under the lease and wrapped, so an async return does not adopt
+    // it; the caller awaits it after leaving the lease.
+    const publication = this.reservePublication(
+      entry,
+      {
+        ...scope,
+        baseRevision,
+        revision,
+        applied: true,
+        state: await entry.backend.state({ chatIds: [] }),
+        record: {
+          v: 1,
+          revision,
+          mutationId: randomUUID(),
+          source: 'automation',
+          occurredAt: new Date().toISOString(),
+          mutations: [],
+        },
+        cardChanges: [
+          {
+            type: 'delegation.card_state_updated',
+            chatId: target.chatId,
+            delegationId: target.delegationId,
+            runGeneration: target.runGeneration,
+            cardRevision: descriptor.cardState.cardRevision,
+            streamRevision: descriptor.streamRevision,
+            cardState: descriptor.cardState,
+          },
+        ],
+      },
+      undefined,
+    );
+    return { publication };
+  }
+
+  /** Reserve durability order inside the lease, but invoke observers outside it. */
+  private reserveChildSearchDirty(
+    entry: ScopeEntry,
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+  ): { release: () => void; publication: Promise<void> } {
+    let release: () => void = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const event =
+      target.kind === 'delegation'
+        ? {
+            scope: { ...scope },
+            parentChatId: target.chatId,
+            target: { ...target },
+          }
+        : undefined;
+    entry.pendingPublications += 1;
+    const publication = entry.publishTail.then(async (): Promise<void> => {
+      try {
+        await released;
+        if (!event) return;
+        for (const listener of Array.from(this.childSearchListeners)) {
+          try {
+            listener(event);
+          } catch {
+            /* Durable state cannot be rolled back by a projection. */
+          }
+        }
+      } finally {
+        entry.pendingPublications -= 1;
+      }
+    });
+    entry.publishTail = publication;
+    return { release, publication };
+  }
   /** Visual staging sweeps of unloaded scopes; a load of the same directory waits. */
   private readonly sweepLocks = new Map<string, Promise<void>>();
   /** Visual staging sweeps in flight; a drain stops them and waits for them. */
@@ -432,20 +668,37 @@ export class ChatStateV2Repository {
 
   private async tryPromote(entry: ScopeEntry): Promise<void> {
     if (!this.promotable(entry.scope)) return;
-    try {
-      if (await entry.backend.promoteToDeltaJournal())
+    // Re-entering a checkpointed format 4 journal is handling, not promotion,
+    // so it never waits on the option.
+    if (!entry.backend.isDeltaJournal()) {
+      try {
+        if (await entry.backend.promoteToDeltaJournal())
+          this.recordDeltaJournalLifecycle(
+            entry,
+            entry.scope,
+            'delta_journal_promoted',
+          );
+      } catch {
+        // Version 2 remains selected; later activity may trigger a bounded retry.
         this.recordDeltaJournalLifecycle(
           entry,
           entry.scope,
-          'delta_journal_promoted',
+          'delta_journal_promotion_failed',
         );
-    } catch {
-      // The scope stays version 2 (a leftover journal is ignored and later
-      // removed); the backend retries at a later idle point, bounded.
+      }
+    }
+    if (
+      entry.backend.isDeltaJournal() &&
+      entry.backend.wantsFormat4Promotion() &&
+      (await entry.store.format()) === 'v3'
+    ) {
+      // False is a recovered promotion fault; a failed reopen must escape
+      // and become a repository load/storage error, never a ready scope.
+      const promoted = await entry.backend.promoteToFormat4();
       this.recordDeltaJournalLifecycle(
         entry,
         entry.scope,
-        'delta_journal_promotion_failed',
+        promoted ? 'delta_journal_promoted' : 'delta_journal_promotion_failed',
       );
     }
   }
@@ -455,7 +708,20 @@ export class ChatStateV2Repository {
     entry.formatReconcileQueued = false;
     if (entry.lifecycle !== 'ready' || entry.deleting || !this.accepting)
       return;
-    if (!entry.backend.isDeltaJournal()) await this.tryPromote(entry);
+    try {
+      await this.tryPromote(entry);
+    } catch (cause) {
+      // A promotion fault is recoverable only if the backend reopened the
+      // selected authority. Failed reopen/recovery is a load error, including
+      // when reconciliation was queued after an acknowledged commit.
+      entry.lifecycle = 'recovery_error';
+      const error = new ChatStateRepositoryLoadError(
+        `Unable to load chat scope ${entry.scope.projectId}/${entry.scope.worktreeId}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+      if (!isOperatingSystemFailure(cause)) entry.loadError = error;
+      throw error;
+    }
     this.scheduleJournalWork(entry);
   }
 
@@ -510,6 +776,7 @@ export class ChatStateV2Repository {
       return;
     }
     this.clearJournalIdleTimer(entry);
+    if (entry.backend.pendingPrimaryRecordCount() === 0) return;
     if (!entry.backend.journalIdleCheckpointWanted()) return;
     entry.journalIdleTimer = setTimeout(() => {
       entry.journalIdleTimer = undefined;
@@ -642,7 +909,9 @@ export class ChatStateV2Repository {
   }
   private entry(scope: ChatScopeKey, readmit = true): ScopeEntry {
     const paths = this.resolve(scope);
-    const store = ChatStorageV2.fromLegacyPaths(paths);
+    const store = ChatStorageV2.fromLegacyPaths(paths, {
+      maxManifestVersion: 4,
+    });
     let entry = this.scopes.get(store.directory);
     // A completed deletion leaves a disposed entry so continuations that
     // still hold it drain. Once no deletion is in flight, the same scope id
@@ -656,7 +925,9 @@ export class ChatStateV2Repository {
         store,
         paths,
         backend: new ChatStateV2Backend(store, {
+          enableFormat4: this.options.enableFormat4,
           deltaJournal: {
+            onBoundary: this.options.deltaJournalOnBoundary,
             ...deltaJournalBackendOptions(this.options, (diagnostic): void =>
               this.recordDeltaJournalDiagnostic(store.directory, diagnostic),
             ),
@@ -676,11 +947,15 @@ export class ChatStateV2Repository {
           },
           onVisualOwnerLedgerInvalid: ({ reason }): void =>
             this.recordVisualOwnerLedgerInvalid(store.directory, scope, reason),
+          testHooks: {
+            storageCheckpoint: this.options.testHooks?.storageCheckpoint,
+          },
         }),
         lifecycle: 'unloaded',
         deleting: 0,
         tail: Promise.resolve(),
         publishTail: Promise.resolve(),
+        pendingPublications: 0,
         previewReaders: new Set(),
         maintenanceChats: new Set(),
         maintenanceDeferred: new Set(),
@@ -986,10 +1261,9 @@ export class ChatStateV2Repository {
               'Chat migration is waiting for active turns to settle',
             );
           }
-          const migration =
-            (await entry.store.format()) === 'v3'
-              ? undefined
-              : await migrateLegacyChatScope(entry.store, entry.paths);
+          const migration = ['v3', 'v4'].includes(await entry.store.format())
+            ? undefined
+            : await migrateLegacyChatScope(entry.store, entry.paths);
           if (migration?.revisionGapRecovery)
             this.recordStorageDiagnostic(entry, {
               kind: 'legacy_chat_revision_gap_recovered',
@@ -1020,11 +1294,13 @@ export class ChatStateV2Repository {
             const state = await entry.backend.state({
               chatIds,
               fullTranscript: true,
+              rawStreamCards: true,
             });
             const mutations = await loadDelegationRecoveryMutations(
               scope,
               state.tabsFile,
               state.archivesFile,
+              { readMetadata: this.options.delegationReadMetadata },
             );
             if (mutations.length > 0) {
               const digest = createHash('sha256')
@@ -1041,8 +1317,7 @@ export class ChatStateV2Repository {
           entry.lifecycle = 'ready';
           // Always promote writable scopes after any pending
           // version 2 transaction and the recovery above.
-          if (this.promotable(scope) && !entry.backend.isDeltaJournal())
-            await this.tryPromote(entry);
+          await this.tryPromote(entry);
           await this.requestArtifactMaintenance(entry);
           this.scheduleJournalWork(entry);
         } catch (cause) {
@@ -1085,15 +1360,7 @@ export class ChatStateV2Repository {
    * back durable state, so a failing listener never rejects an applied commit.
    */
   private publish(entry: ScopeEntry, commit: ChatStateCommit): Promise<void> {
-    const publication = entry.publishTail.then(async (): Promise<void> => {
-      try {
-        await this.onCommit?.(commit);
-      } catch {
-        // Post-commit observers cannot reject a durable commit.
-      }
-    });
-    entry.publishTail = publication;
-    return publication;
+    return this.orderedPublication(entry, commit, undefined);
   }
 
   /**
@@ -1110,18 +1377,54 @@ export class ChatStateV2Repository {
     durable: Promise<void> | undefined,
     diagnostic?: ChatStateStorageDiagnostic,
   ): Promise<void> {
+    return this.orderedPublication(entry, commit, durable, diagnostic);
+  }
+
+  /**
+   * Queues a commit's publication behind the scope's earlier ones. Its timing
+   * starts here, so the wait for earlier publications (`queue_wait`) and for
+   * its batch (`required_durability`) are attributed before observers run.
+   * A queue wait names the commit publication ahead of it; a child search
+   * notification ahead counts in the depth but is not a named operation.
+   */
+  private orderedPublication(
+    entry: ScopeEntry,
+    commit: ChatStateCommit,
+    durable: Promise<void> | undefined,
+    diagnostic?: ChatStateStorageDiagnostic,
+  ): Promise<void> {
+    let wait: ChatWaitOperation | undefined;
+    try {
+      wait = this.startCommitWait?.(commit);
+      wait?.enterQueue(entry.pendingPublications, () => entry.publishingWait);
+    } catch {
+      // Diagnostics cannot change the publication they observe.
+    }
+    entry.pendingPublications += 1;
     const publication = entry.publishTail.then(async (): Promise<void> => {
-      if (durable)
-        try {
-          await durable;
-        } catch {
-          return;
-        }
+      entry.publishingWait = wait;
       try {
-        if (diagnostic) this.recordStorageDiagnostic(entry, diagnostic);
-        await this.onCommit?.(commit);
-      } catch {
-        // Post-commit observers cannot reject a durable commit.
+        if (durable) {
+          wait?.phase('required_durability');
+          try {
+            await durable;
+          } catch {
+            wait?.failPhase();
+            wait?.finish('failed');
+            return;
+          }
+        }
+        try {
+          if (diagnostic) this.recordStorageDiagnostic(entry, diagnostic);
+          await this.onCommit?.(commit, wait);
+          wait?.finish('completed');
+        } catch {
+          // Post-commit observers cannot reject a durable commit.
+          wait?.finish('failed');
+        }
+      } finally {
+        entry.pendingPublications -= 1;
+        if (entry.publishingWait === wait) entry.publishingWait = undefined;
       }
     });
     entry.publishTail = publication;
@@ -1141,10 +1444,13 @@ export class ChatStateV2Repository {
       throw new Error('Chat scope is being deleted');
   }
 
+  /** `startWait` times each commit from its publication reservation. */
   public setCommitListener(
-    listener: NonNullable<ChatStateRepositoryOptions['onCommit']>,
+    listener: ChatStateCommitListener,
+    startWait?: ChatStateCommitWaitStarter,
   ): void {
     this.onCommit = listener;
+    this.startCommitWait = startWait;
   }
   public async getState(
     scope: ChatScopeKey,
@@ -1161,6 +1467,26 @@ export class ChatStateV2Repository {
     return this.serialized(entry, async () => {
       await this.load(scope, entry);
       return entry.backend.revision();
+    });
+  }
+  /**
+   * Resolve generation-store policy from the authority selected by the
+   * repository after its ordered recovery and promotion work has completed.
+   */
+  public async generationStoreReadiness(scope: ChatScopeKey): Promise<{
+    formatVersion: 1 | 2 | 3 | 4;
+    enableFormat4: boolean;
+  }> {
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.load(scope, entry);
+      const format = await entry.store.format();
+      const formatVersion =
+        format === 'v4' ? 4 : format === 'v3' ? 3 : format === 'v2' ? 2 : 1;
+      return {
+        formatVersion,
+        enableFormat4: this.options.enableFormat4 === true,
+      };
     });
   }
   public async assertExpectedRevision(
@@ -1415,7 +1741,12 @@ export class ChatStateV2Repository {
         deletedChatIds,
       );
     // Group commit: acknowledged only once the commit's batch is durable.
-    if (durable) await durable;
+    if (durable) {
+      await durable;
+      // Activity-gated promotion retries are signalled only by durable
+      // commits, not the optimistic admission above.
+      this.scheduleJournalWork(entry);
+    }
     if (publication) await publication;
     return commit;
   }
@@ -1561,7 +1892,7 @@ export class ChatStateV2Repository {
     chatId: string,
     before?: number,
     expectedRevision?: number,
-    options: TranscriptViewRequest = {},
+    options: TranscriptViewRequest & Partial<ChatTranscriptPageRequest> = {},
   ): Promise<TranscriptPage> {
     const entry = this.entry(scope);
     return this.serialized(entry, async () => {
@@ -1620,6 +1951,667 @@ export class ChatStateV2Repository {
       return entry.backend.hasMessage(chatId, messageId);
     });
   }
+
+  public result(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['result']>
+  ): ReturnType<DelegationRegistryOperations['result']> {
+    return this.registryOperation(scope, (backend) => backend.result(...args));
+  }
+
+  public receipt(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['receipt']>
+  ): ReturnType<DelegationRegistryOperations['receipt']> {
+    return this.registryOperation(scope, (backend) => backend.receipt(...args));
+  }
+
+  public resultBySettlementKey(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultBySettlementKey']>
+  ): ReturnType<DelegationRegistryOperations['resultBySettlementKey']> {
+    return this.registryOperation(scope, (backend) =>
+      backend.resultBySettlementKey(...args),
+    );
+  }
+
+  public resultByGeneration(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultByGeneration']>
+  ): ReturnType<DelegationRegistryOperations['resultByGeneration']> {
+    return this.registryOperation(scope, (backend) =>
+      backend.resultByGeneration(...args),
+    );
+  }
+
+  public generation(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['generation']>
+  ): ReturnType<DelegationRegistryOperations['generation']> {
+    return this.registryOperation(scope, (backend) =>
+      backend.generation(...args),
+    );
+  }
+
+  public resultsPage(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultsPage']>
+  ): ReturnType<DelegationRegistryOperations['resultsPage']> {
+    return this.registryOperation(scope, (backend, context) =>
+      backend.resultsPage(args[0], context),
+    );
+  }
+
+  public generationsPage(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['generationsPage']>
+  ): ReturnType<DelegationRegistryOperations['generationsPage']> {
+    return this.registryOperation(scope, (backend, context) =>
+      backend.generationsPage(args[0], context),
+    );
+  }
+
+  public resultAnswerRange(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultAnswerRange']>
+  ): ReturnType<DelegationRegistryOperations['resultAnswerRange']> {
+    return this.registryOperation(scope, (backend) =>
+      backend.resultAnswerRange(...args),
+    );
+  }
+
+  public itemAdmission(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['itemAdmission']>
+  ): ReturnType<DelegationRegistryOperations['itemAdmission']> {
+    return this.registryOperation(scope, (backend) =>
+      backend.itemAdmission(...args),
+    );
+  }
+
+  public registerGeneration(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['registerGeneration']>
+  ): ReturnType<DelegationRegistryOperations['registerGeneration']> {
+    const target = TranscriptTargetSchema.parse({
+      kind: 'delegation',
+      chatId: args[0].chatId,
+      delegationId: args[0].delegationId,
+      runGeneration: args[0].runGeneration,
+    });
+    if (target.kind !== 'delegation')
+      throw new Error('Only delegation targets have a registry');
+    return this.withDelegation(scope, target.chatId, target.delegationId, () =>
+      this.withChildStreamTarget(scope, target, () =>
+        this.childSearchWrite(scope, target, async (noteBase) => {
+          const entry = this.entry(scope);
+          this.assertWritable(entry);
+          await this.load(scope, entry);
+          await noteBase();
+          this.assertWritable(entry);
+          return entry.backend.registerGeneration(...args);
+        }),
+      ),
+    );
+  }
+
+  public updateCardState(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['updateCardState']>
+  ): ReturnType<DelegationRegistryOperations['updateCardState']> {
+    const target = TranscriptTargetSchema.parse(args[0].target);
+    if (target.kind !== 'delegation')
+      throw new Error('Only delegation targets have a registry');
+    return this.withDelegation(scope, target.chatId, target.delegationId, () =>
+      this.withChildStreamTarget(scope, target, () =>
+        this.withCardStatePublication(scope, target, () =>
+          this.entry(scope).backend.updateCardState(...args),
+        ),
+      ),
+    );
+  }
+
+  public settleDelegationResult(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['settleDelegationResult']>
+  ): ReturnType<DelegationRegistryOperations['settleDelegationResult']> {
+    const target = TranscriptTargetSchema.parse(args[0].target);
+    if (target.kind !== 'delegation')
+      throw new Error('Only delegation targets have a registry');
+    return this.withDelegation(scope, target.chatId, target.delegationId, () =>
+      this.withChildStreamTarget(scope, target, () =>
+        this.settleRegistryOperation(scope, args[0]),
+      ),
+    );
+  }
+
+  public appendDelegationReceipt(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['appendDelegationReceipt']>
+  ): ReturnType<DelegationRegistryOperations['appendDelegationReceipt']> {
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      this.assertWritable(entry);
+      // Replay must remain read-only even when no journal exists.
+      await this.loadChildReadScope(scope, entry);
+      this.assertWritable(entry);
+      return entry.backend.appendDelegationReceipt(...args);
+    });
+  }
+
+  private settleRegistryOperation(
+    scope: ChatScopeKey,
+    input: Parameters<
+      DelegationRegistryOperations['settleDelegationResult']
+    >[0],
+  ): ReturnType<DelegationRegistryOperations['settleDelegationResult']> {
+    const entry = this.entry(scope);
+    return this.withCardStatePublication(scope, input.target, async () => {
+      this.assertWritable(entry);
+      if (await this.checkpointOnlyChildScope(entry)) {
+        const replay =
+          await entry.backend.readDelegationSettlementReplay(input);
+        if (replay !== undefined) return replay;
+      }
+      // Only a genuinely new settlement takes the existing load/promotion path.
+      await this.load(scope, entry);
+      this.assertWritable(entry);
+      return entry.backend.settleDelegationResult(input);
+    });
+  }
+
+  /** Reserve notification order under the scope lease; observers run only after durability. */
+  private async withCardStatePublication<T>(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const entry = this.entry(scope);
+    const admitted = await this.serialized(entry, async () => {
+      this.assertWritable(entry);
+      await this.loadChildReadScope(scope, entry);
+      const baseRevision = await entry.backend.revision();
+      const result = await operation();
+      const revision = await entry.backend.revision();
+      if (revision === baseRevision)
+        return {
+          result,
+          dirty: this.reserveChildSearchDirty(entry, scope, target),
+        };
+      const descriptor = await entry.backend.childStreamDescriptor(target);
+      if (target.kind !== 'delegation' || descriptor?.cardState?.version !== 2)
+        return {
+          result,
+          dirty: this.reserveChildSearchDirty(entry, scope, target),
+        };
+      const commit: ChatStateCommit = {
+        ...scope,
+        baseRevision,
+        revision,
+        applied: true,
+        state: await entry.backend.state({ chatIds: [] }),
+        record: {
+          v: 1,
+          revision,
+          mutationId: randomUUID(),
+          source: 'automation',
+          occurredAt: new Date().toISOString(),
+          mutations: [],
+        },
+        cardChanges: [
+          {
+            type: 'delegation.card_state_updated',
+            chatId: target.chatId,
+            delegationId: target.delegationId,
+            runGeneration: target.runGeneration,
+            cardRevision: descriptor.cardState.cardRevision,
+            streamRevision: descriptor.streamRevision,
+            cardState: descriptor.cardState,
+          },
+        ],
+      };
+      this.scheduleJournalWork(entry);
+      return {
+        result,
+        publication: this.reservePublication(entry, commit, undefined),
+        dirty: this.reserveChildSearchDirty(entry, scope, target),
+      };
+    });
+    admitted.dirty.release();
+    await admitted.publication;
+    await admitted.dirty.publication;
+    return admitted.result;
+  }
+
+  private async checkpointOnlyChildScope(entry: ScopeEntry): Promise<boolean> {
+    return (
+      this.options.enableFormat4 === true &&
+      (await entry.store.format()) === 'v4' &&
+      (await entry.store.journalFile()) === undefined
+    );
+  }
+
+  private async loadChildReadScope(
+    scope: ChatScopeKey,
+    entry: ScopeEntry,
+  ): Promise<void> {
+    if (await this.checkpointOnlyChildScope(entry)) {
+      this.assertWritable(entry);
+      if (entry.loadError) throw entry.loadError;
+      return;
+    }
+    await this.load(scope, entry);
+  }
+
+  private registryOperation<T>(
+    scope: ChatScopeKey,
+    operation: (
+      backend: ChatStateV2Backend,
+      context: DelegationRegistryCursorContext,
+    ) => Promise<T>,
+    writable = false,
+  ): Promise<T> {
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      if (writable) this.assertWritable(entry);
+      if (!writable) await this.loadChildReadScope(scope, entry);
+      else await this.load(scope, entry);
+      if (writable) this.assertWritable(entry);
+      return operation(entry.backend, {
+        projectId: scope.projectId,
+        worktreeId: scope.worktreeId,
+        archive: { kind: 'live' },
+        storageIdentity: createHash('sha256')
+          .update(entry.store.directory)
+          .digest('hex'),
+      });
+    });
+  }
+
+  private withDelegation<T>(
+    scope: ChatScopeKey,
+    chatId: string,
+    delegationId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = canonicalJson([
+      this.entry(scope).store.directory,
+      scope.projectId,
+      scope.worktreeId,
+      chatId,
+      delegationId,
+    ]);
+    return this.withRegistryLock(this.delegationTails, key, operation);
+  }
+
+  private async withRegistryLock<T>(
+    tails: Map<string, Promise<void>>,
+    key: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = tails.get(key) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const lock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(() => lock);
+    tails.set(key, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (tails.get(key) === tail) tails.delete(key);
+    }
+  }
+
+  /**
+   * Serialize a complete child-stream operation without holding a scope lease
+   * while its callback runs. The callback can call other repository methods;
+   * each takes and releases its own normal scope lease.
+   */
+  public async withChildStreamTarget<T>(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const validated = TranscriptTargetSchema.parse(target);
+    if (validated.kind !== 'delegation')
+      throw new Error('Only delegation targets can be serialized');
+    const key = canonicalJson([
+      this.entry(scope).store.directory,
+      scope.projectId,
+      scope.worktreeId,
+      validated,
+    ]);
+    return this.withRegistryLock(this.childTargetTails, key, operation);
+  }
+
+  /** Register a complete target once, or return its current descriptor. */
+  public async openChildStream(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+  ): Promise<TranscriptStreamDescriptor> {
+    const validated = TranscriptTargetSchema.parse(target);
+    if (validated.kind !== 'delegation')
+      throw new Error('Only delegation targets can be opened');
+    return this.withChildStreamTarget(scope, validated, async () => {
+      const entry = this.entry(scope);
+      return this.childSearchWrite(scope, validated, async (noteBase) => {
+        this.assertWritable(entry);
+        if (await this.checkpointOnlyChildScope(entry)) {
+          const existing = await entry.backend.childStreamDescriptor(validated);
+          if (existing !== undefined) return existing;
+        }
+        await this.load(scope, entry);
+        await noteBase();
+        this.assertWritable(entry);
+        const current = await entry.backend.childStreamDescriptor(validated);
+        if (current !== undefined) return current;
+        this.assertWritable(entry);
+        await entry.backend.registerTranscriptStream(validated);
+        const registered = await entry.backend.childStreamDescriptor(validated);
+        if (registered === undefined)
+          throw new Error(
+            'Child stream registration did not produce a descriptor',
+          );
+        return registered;
+      });
+    });
+  }
+
+  /**
+   * One bounded stored compatibility page, under the normal read lease.
+   * encodedBudget covers UTF-8 JSON.stringify(items), including its `[]`:
+   * the service subtracts (bytes(envelope with items: []) - 2) from 4 MiB.
+   */
+  public async childStreamCompatibilityPage(
+    scope: ChatScopeKey,
+    request: ChildStreamCompatibilityPageRequest,
+  ): Promise<ChildStreamCompatibilityPageReply> {
+    const target = TranscriptTargetSchema.safeParse(request?.target);
+    if (
+      !target.success ||
+      target.data.kind !== 'delegation' ||
+      !Number.isSafeInteger(request.streamRevision) ||
+      request.streamRevision < 0 ||
+      !Number.isSafeInteger(request.limit) ||
+      request.limit < 1 ||
+      request.limit > DELEGATION_COMPATIBILITY_PAGE_LIMITS.maxRows ||
+      !Number.isSafeInteger(request.encodedBudget) ||
+      request.encodedBudget < 0 ||
+      request.encodedBudget >
+        DELEGATION_COMPATIBILITY_PAGE_LIMITS.encodedBytes ||
+      (request.beforeSequence !== undefined &&
+        (!Number.isSafeInteger(request.beforeSequence) ||
+          request.beforeSequence < 1))
+    )
+      return {
+        ok: false,
+        code: 'invalid_request',
+        reason: 'Invalid compatibility page request',
+      };
+    try {
+      const entry = this.entry(scope);
+      return await this.serialized(entry, async () => {
+        await this.loadChildReadScope(scope, entry);
+        return entry.backend.childStreamCompatibilityPage(request);
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'failed',
+        reason:
+          error instanceof Error
+            ? error.message
+            : 'Compatibility page read failed',
+      };
+    }
+  }
+
+  /** A point read of the stored parent row, never the descriptor overlay. */
+  public async readStoredParentMessage(
+    scope: ChatScopeKey,
+    chatId: string,
+    messageId: string,
+  ): Promise<PersistedChatMessage | undefined> {
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.loadChildReadScope(scope, entry);
+      return entry.backend.readStoredParentMessage(chatId, messageId);
+    });
+  }
+
+  /** Return the journal-projected descriptor, or the checkpointed descriptor. */
+  public async getChildStreamState(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+  ): Promise<TranscriptStreamDescriptor | undefined> {
+    const validated = TranscriptTargetSchema.parse(target);
+    if (validated.kind !== 'delegation')
+      throw new Error('Only delegation targets have stream state');
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.loadChildReadScope(scope, entry);
+      return entry.backend.childStreamDescriptor(validated);
+    });
+  }
+
+  /** Deterministically identify and durably commit the supplied child rows. */
+  public async commitChildStream(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    mutationKey: string,
+    rows: readonly DelegationChildRow[],
+  ): Promise<{
+    applied: boolean;
+    revision: number;
+    descriptor: TranscriptStreamDescriptor;
+  }> {
+    const validated = TranscriptTargetSchema.parse(target);
+    if (validated.kind !== 'delegation')
+      throw new Error('Only delegation targets accept child rows');
+    const mutationId = createHash('sha256')
+      .update(canonicalJson({ target: validated, mutationKey }))
+      .digest('hex');
+    const entry = this.entry(scope);
+    return this.childSearchWrite(scope, validated, async (noteBase) => {
+      this.assertWritable(entry);
+      await this.load(scope, entry);
+      await noteBase();
+      this.assertWritable(entry);
+      await entry.backend.childStreamDescriptor(validated);
+      this.assertWritable(entry);
+      const result = await entry.backend.commitChildStream(
+        validated,
+        mutationId,
+        rows,
+        undefined,
+        mutationKey,
+      );
+      const descriptor = await entry.backend.childStreamDescriptor(validated);
+      if (descriptor === undefined)
+        throw new Error('Child stream disappeared after commit');
+      return { ...result, descriptor };
+    });
+  }
+
+  public listChildSearchDocuments(
+    scope: ChatScopeKey,
+    chatId: string,
+    signal?: AbortSignal,
+  ): Promise<ChildSearchDocumentIdentity[]> {
+    const entry = this.entry(scope, false);
+    return this.serialized(entry, async () => {
+      signal?.throwIfAborted();
+      await this.loadChildReadScope(scope, entry);
+      return entry.backend.listChildSearchDocuments(chatId, signal);
+    });
+  }
+
+  public readChildSearchDocument(
+    scope: ChatScopeKey,
+    identity: ChildSearchDocumentIdentity,
+    signal?: AbortSignal,
+  ): Promise<{ body: string; fingerprint: string }> {
+    const entry = this.entry(scope, false);
+    return this.serialized(entry, async () => {
+      signal?.throwIfAborted();
+      await this.loadChildReadScope(scope, entry);
+      return entry.backend.readChildSearchDocument(identity, signal);
+    });
+  }
+
+  /** Close the validation/publication race with canonical admissions/deletion. */
+  public commitChildSearchDocuments(
+    scope: ChatScopeKey,
+    chatId: string,
+    identities: readonly ChildSearchDocumentIdentity[],
+    publish: () => Promise<void>,
+    isCurrent: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const entry = this.entry(scope, false);
+    return this.serialized(entry, async () => {
+      signal?.throwIfAborted();
+      if (!isCurrent() || entry.deleting || entry.lifecycle === 'disposed')
+        return false;
+      await this.loadChildReadScope(scope, entry);
+      const current = await entry.backend.listChildSearchDocuments(
+        chatId,
+        signal,
+      );
+      if (
+        !isCurrent() ||
+        JSON.stringify(current.map((child) => child.fingerprint)) !==
+          JSON.stringify(identities.map((child) => child.fingerprint))
+      )
+        return false;
+      await publish();
+      return true;
+    });
+  }
+
+  /** Point-read a complete logical row only when its stream revision is current. */
+  public async getChildStreamMessage(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    messageId: string,
+    streamRevision: number,
+  ): Promise<DelegationChildRow | undefined> {
+    const validated = TranscriptTargetSchema.parse(target);
+    if (validated.kind !== 'delegation')
+      throw new Error('Only delegation targets have child messages');
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.loadChildReadScope(scope, entry);
+      const revision = normalizedChildPin(
+        await entry.backend.childStreamDescriptor(validated),
+        streamRevision,
+      );
+      return entry.backend.childStreamMessage(validated, messageId, revision);
+    });
+  }
+
+  /** Read one pinned cursor page through the existing phase-08 child reader. */
+  public async getChildStreamPage(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    streamRevision: number,
+    cursor?: string,
+    limit = 100,
+  ): Promise<ChildStreamRowsPage> {
+    const validated = TranscriptTargetSchema.parse(target);
+    if (validated.kind !== 'delegation')
+      throw new Error('Only delegation targets have child pages');
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.loadChildReadScope(scope, entry);
+      const revision = normalizedChildPin(
+        await entry.backend.childStreamDescriptor(validated),
+        streamRevision,
+      );
+      return entry.backend.childStreamPage(
+        scope,
+        validated,
+        revision,
+        cursor,
+        limit,
+      );
+    });
+  }
+
+  /** Read a pinned byte range from an inline or referenced child field. */
+  public async readChildStreamContent(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    streamRevision: number,
+    messageId: string,
+    blockOrdinal: number,
+    field: TranscriptContentField,
+    offset: number,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<ChildStreamContentRange> {
+    const validated = TranscriptTargetSchema.parse(target);
+    if (validated.kind !== 'delegation')
+      throw new Error('Only delegation targets have child content');
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.loadChildReadScope(scope, entry);
+      const revision = normalizedChildPin(
+        await entry.backend.childStreamDescriptor(validated),
+        streamRevision,
+      );
+      return entry.backend.childStreamContentRange(
+        validated,
+        revision,
+        messageId,
+        blockOrdinal,
+        field,
+        offset,
+        limit,
+        signal,
+      );
+    });
+  }
+  public async locateMessage(
+    scope: ChatScopeKey,
+    chatId: string,
+    messageId: string,
+  ): Promise<'missing' | 'active' | { committed: true; last: boolean }> {
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.load(scope, entry);
+      const transcript = entry.backend.storage.transcripts;
+      const active = await transcript.activeMessages(chatId);
+      const lastCommittedMessageId =
+        await transcript.lastCommittedMessageId(chatId);
+
+      return transcript.withCommittedMessageStates(
+        chatId,
+        async (
+          reader,
+        ): Promise<
+          'missing' | 'active' | { committed: true; last: boolean }
+        > => {
+          const isCommitted = await reader.hasCommittedMessage(messageId);
+          const isActive = active.some((message) => message.id === messageId);
+          if (!isCommitted) return isActive ? 'active' : 'missing';
+
+          if (lastCommittedMessageId !== messageId)
+            return { committed: true, last: false };
+
+          // Active rows follow committed history, so the prompt is last
+          // unless an active row is more than a committed echo.
+          for (const message of active)
+            if (!(await reader.hasCommittedMessage(message.id)))
+              return { committed: true, last: false };
+          return { committed: true, last: true };
+        },
+      );
+    });
+  }
   /**
    * See {@link ChatStateV2Backend.appendDelegationItems}. Only the check that
    * the chat still exists takes the scope lease; the log writes and syncs run
@@ -1638,6 +2630,13 @@ export class ChatStateV2Repository {
     });
     if (!listed) return false;
     await entry.backend.appendDelegationLog(chatId, runs);
+    for (const run of runs)
+      await this.notifyChildSearchDirty(scope, {
+        kind: 'delegation',
+        chatId,
+        delegationId: run.run.delegationId,
+        runGeneration: run.run.runGeneration,
+      });
     return true;
   }
   public async readDelegationItems(
@@ -1660,6 +2659,7 @@ export class ChatStateV2Repository {
     offset: number,
     length: number,
     signal?: AbortSignal,
+    request?: ChatToolOutputRequest,
   ): Promise<ChatToolOutputResponse> {
     const entry = this.entry(scope);
     return this.serialized(entry, async () => {
@@ -1672,9 +2672,56 @@ export class ChatStateV2Repository {
         offset,
         length,
         signal,
+        request,
       );
     });
   }
+
+  public async content(
+    request: ChatTranscriptContentRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatToolOutputResponse> {
+    const scope: ChatScopeKey = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+    };
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.load(scope, entry);
+      return entry.backend.content(request, signal);
+    });
+  }
+
+  public async blocks(
+    request: ChatTranscriptBlocksRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatTranscriptBlocksPage> {
+    const scope: ChatScopeKey = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+    };
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.load(scope, entry);
+      return entry.backend.blocks(request, signal);
+    });
+  }
+
+  public async search(
+    request: ChatTranscriptSearchRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatTranscriptSearchResult> {
+    const scope: ChatScopeKey = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+    };
+    const entry = this.entry(scope);
+    return this.serialized(entry, async () => {
+      await this.load(scope, entry);
+      return entry.backend.search(request, signal);
+    });
+  }
+
   public async visual(
     scope: ChatScopeKey,
     chatId: string,
@@ -1928,14 +2975,51 @@ export class ChatStateV2Repository {
         ].filter((tab) =>
           ids.some((id) => (sourceChatIds?.[id] ?? id) === tab.id),
         );
+        const streamParents: StreamCopyParent[] = ids
+          .slice()
+          .sort()
+          .map((targetChatId) => {
+            const sourceChatId = sourceChatIds?.[targetChatId] ?? targetChatId;
+            const log = source.backend.storage.transcripts;
+            return {
+              sourceChatId,
+              targetChatId,
+              rows: async function* (): AsyncGenerator<PersistedChatMessage> {
+                const through = throughMessageIds?.[targetChatId];
+                for await (const row of log.iterate(sourceChatId)) {
+                  yield row;
+                  if (row.id === through) return;
+                }
+                for (const row of await log.activeMessages(sourceChatId)) {
+                  yield row;
+                  if (row.id === through) return;
+                }
+              },
+            };
+          });
+        const streamIdentity =
+          (await source.store.format()) === 'v4'
+            ? await capturedStreamIdentity(
+                join(source.store.directory, 'transcripts'),
+                source.backend.storage.transcripts,
+                streamParents,
+              )
+            : [];
+        const legacyIdentity = [
+          source.store.directory,
+          ids,
+          sourceChatIds,
+          entries.map((tab) => [tab.id, tab.transcript.transcriptRevision]),
+        ];
         const mutationId = `copy:${createHash('sha256')
           .update(
-            JSON.stringify([
-              source.store.directory,
-              ids,
-              sourceChatIds,
-              entries.map((tab) => [tab.id, tab.transcript.transcriptRevision]),
-            ]),
+            streamIdentity.length
+              ? canonicalJson([
+                  ...legacyIdentity,
+                  throughMessageIds,
+                  streamIdentity,
+                ])
+              : JSON.stringify(legacyIdentity),
           )
           .digest('hex')}`;
         markImportedApprovalState(destinationScope, metadata);
@@ -1987,6 +3071,10 @@ export class ChatStateV2Repository {
       mutationId?: string;
       beforePublish?: () => void;
       preparePublish?: () => Promise<void>;
+      additionalTabMutations?: (
+        tab: PersistedChatTab,
+        current: CanonicalChatState,
+      ) => ChatCoreMutation[];
     } = {},
   ): Promise<CanonicalChatState> {
     const commit = await this.transactWith(
@@ -2051,6 +3139,8 @@ export class ChatStateV2Repository {
               'lastAcceptedUserMessageId',
               'unacceptedTurnEnds',
               'turnEnds',
+              'rootTurnInputIds',
+              'reducedRootTerminalTurnIds',
               'interruptedTurns',
             ] as const) {
               if (existing[key] === undefined) delete preserved[key];
@@ -2058,10 +3148,15 @@ export class ChatStateV2Repository {
             }
             metadata = preserved;
           }
-          mutations.push({
-            type: 'tab.created',
-            tab: { ...metadata, ...(messages ? { messages } : {}) },
-          });
+          const nextTab: PersistedChatTab = {
+            ...metadata,
+            ...(messages ? { messages } : {}),
+          };
+          mutations.push({ type: 'tab.created', tab: nextTab });
+          if (messages && !options.removedTabIds?.includes(nextTab.id))
+            mutations.push(
+              ...(options.additionalTabMutations?.(nextTab, current) ?? []),
+            );
           if (authoritative && existing && messages)
             mutations.push({
               type: 'messages.replaced',
@@ -2372,4 +3467,38 @@ export class ChatStateV2Repository {
       this.diagnosticListeners.delete(listener);
     };
   }
+}
+
+/** Port-only child methods normalize settled content; public core reads are unchanged. */
+function normalizedChildPin(
+  descriptor: TranscriptStreamDescriptor | undefined,
+  pin: number,
+): number {
+  if (!descriptor)
+    throw new DelegationRegistryOperationError({
+      code: 'not_found',
+      message: 'The child stream was not found.',
+      retryable: false,
+    });
+  const revision =
+    descriptor.status === 'settled'
+      ? descriptor.settleReceipt?.streamRevision
+      : descriptor.streamRevision;
+  if (revision === undefined)
+    throw new DelegationRegistryOperationError({
+      code: 'corruption',
+      message: 'The settled child stream has no receipt.',
+      retryable: false,
+    });
+  if (
+    !Number.isSafeInteger(pin) ||
+    pin < revision ||
+    pin > descriptor.streamRevision
+  )
+    throw new DelegationRegistryOperationError({
+      code: 'stale_identity',
+      message: 'The child stream revision is stale.',
+      retryable: false,
+    });
+  return revision;
 }

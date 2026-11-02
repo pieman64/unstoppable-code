@@ -9,6 +9,7 @@ import type {
 } from '@canopy/protocol/canopy-core';
 
 import { createCanopyClient } from '../client';
+import { CanopyDeliveryScope } from '../delivery';
 import { CanopyClientError, toCanopyClientError } from '../errors';
 import type { CanopyClient, CanopyClientOptions } from '../types';
 import {
@@ -21,74 +22,28 @@ import {
 
 export interface CanopyConnectOptions {
   readonly endpoint: CanopyClientEndpoint;
-  /** One deadline for connect, authentication, and initialize; defaults to 10000 ms. */
+  /**
+   * One deadline for connect, authentication, and initialize; defaults to
+   * `CANOPY_CONNECTION_DEFAULTS.connectTimeoutMs`. Setup sends once: a caller
+   * retrying under its own deadline passes the time it has left.
+   */
   readonly timeoutMs?: number;
   /** Cancels setup. After `connectCanopyClient` succeeds, aborting closes the client. */
   readonly signal?: AbortSignal;
 }
 
 const ignore = (): void => {};
+const SETUP_MESSAGES = {
+  cancelled: 'Connection setup was cancelled.',
+  timedOut: 'Connection setup timed out.',
+};
 
-class SetupScope {
-  failure: CanopyClientError | undefined;
-  private readonly controller = new AbortController();
-  readonly signal = this.controller.signal;
-  private readonly failed: Promise<never> = once(this.signal, 'abort').then(
-    () => Promise.reject(toCanopyClientError(this.signal.reason)),
-  );
-  private readonly expiresAt: number;
-  private readonly timer: ReturnType<typeof setTimeout>;
-  private readonly onAbort = (): void =>
-    this.fail('cancelled', 'Connection setup was cancelled.');
-  private readonly expire = (): void =>
-    this.fail('deadline_exceeded', 'Connection setup timed out.');
-
-  constructor(
-    timeoutMs: number,
-    private readonly callerSignal: AbortSignal | undefined,
-  ) {
-    this.failed.catch(ignore);
-    this.expiresAt = performance.now() + timeoutMs;
-    this.timer = setTimeout(this.expire, timeoutMs);
-    callerSignal?.addEventListener('abort', this.onAbort, { once: true });
-    if (callerSignal?.aborted) this.onAbort();
-  }
-
-  handshakeTimeoutMs(): number {
-    const remaining = Math.ceil(this.expiresAt - performance.now());
-    if (remaining < 1) this.expire();
-    if (this.failure) throw this.failure;
-    // +1 ms (capped): the setup timer fires first and destroys the socket; the
-    // transport's own timeout writes a close frame a silent peer never reads.
-    return Math.min(remaining + 1, MAX_CANOPY_CONNECT_TIMEOUT_MS);
-  }
-
-  async guard<T>(work: Promise<T>, release: (value: T) => void): Promise<T> {
-    let value: T;
-    try {
-      value = await Promise.race([work, this.failed]);
-    } catch (error) {
-      if (performance.now() >= this.expiresAt) this.expire();
-      if (this.failure) void work.then(release, ignore);
-      throw this.failure ?? error;
-    }
-    // A late timer must not admit a result that settled past the deadline.
-    if (performance.now() >= this.expiresAt) this.expire();
-    if (!this.failure) return value;
-    release(value);
-    throw this.failure;
-  }
-
-  dispose(): void {
-    clearTimeout(this.timer);
-    this.callerSignal?.removeEventListener('abort', this.onAbort);
-  }
-
-  private fail(kind: 'cancelled' | 'deadline_exceeded', message: string): void {
-    if (this.failure) return;
-    this.failure = canopyConnectError(kind, message);
-    this.controller.abort(this.failure);
-  }
+function handshakeTimeoutMs(scope: CanopyDeliveryScope): number {
+  const remaining = scope.remainingMs();
+  scope.check();
+  // +1 ms (capped): the setup timer fires first and destroys the socket; the
+  // transport's own timeout writes a close frame a silent peer never reads.
+  return Math.min(remaining + 1, MAX_CANOPY_CONNECT_TIMEOUT_MS);
 }
 
 /** Reads `code` structurally: Node errors may come from another realm (Jest). */
@@ -104,7 +59,7 @@ function socketError(error: unknown): CanopyClientError {
 
 async function openFramed(
   endpoint: CanopyClientEndpoint,
-  scope: SetupScope,
+  scope: CanopyDeliveryScope,
 ): Promise<CanopyFramedConnection> {
   if (endpoint.kind === 'inMemory') return endpoint.connection;
   const socket = createConnection({ path: endpoint.path });
@@ -120,7 +75,7 @@ async function openFramed(
       role: 'client',
       auth: endpoint.auth,
       maxFrameBytes: endpoint.maxFrameBytes,
-      handshakeTimeoutMs: scope.handshakeTimeoutMs(),
+      handshakeTimeoutMs: handshakeTimeoutMs(scope),
     });
     return await scope.guard(authenticating, (connection) =>
       connection.close(),
@@ -157,18 +112,19 @@ function redacted(
 
 async function setUp<T>(
   options: CanopyConnectOptions,
-  run: (scope: SetupScope) => Promise<T>,
+  run: (scope: CanopyDeliveryScope) => Promise<T>,
   release: (value: T) => void,
 ): Promise<T> {
   const { endpoint } = options;
-  let scope: SetupScope | undefined;
+  let scope: CanopyDeliveryScope | undefined;
   try {
     validateCanopyEndpoint(endpoint);
-    scope = new SetupScope(
-      validateCanopyTimeout(options.timeoutMs),
-      options.signal,
-    );
-    if (scope.failure) throw scope.failure;
+    scope = new CanopyDeliveryScope({
+      timeoutMs: validateCanopyTimeout(options.timeoutMs),
+      signal: options.signal,
+      messages: SETUP_MESSAGES,
+    });
+    scope.check();
     return await scope.guard(run(scope), release);
   } catch (error) {
     // The connector owns an adopted connection from the call onward.

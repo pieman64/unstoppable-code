@@ -7,6 +7,7 @@ import {
   type JSX,
   type MouseEvent,
 } from 'react';
+import { ResizeRailIndicator } from '@canopy/ui-shared/components';
 
 type Orientation = 'horizontal' | 'vertical';
 
@@ -22,7 +23,6 @@ interface ResizeHandleProps {
   divider?: boolean;
   /** Placement classes for the handle: position, flex participation. */
   className?: string;
-  indicatorClassName?: string;
   style?: CSSProperties;
   ariaLabel?: string;
   ariaValueMin?: number;
@@ -36,7 +36,6 @@ export function ResizeHandle({
   onCommit,
   divider = false,
   className,
-  indicatorClassName,
   style,
   ariaLabel,
   ariaValueMin,
@@ -102,18 +101,6 @@ export function ResizeHandle({
   const axisCursor =
     orientation === 'horizontal' ? 'cursor-col-resize' : 'cursor-row-resize';
   const axisShape = orientation === 'horizontal' ? 'h-full w-2' : 'h-2 w-full';
-  const indicatorShape =
-    orientation === 'horizontal'
-      ? `my-2 rounded-full transition-all ${
-          isResizing
-            ? 'w-0.5 bg-accent/80'
-            : 'w-px bg-line-base/70 group-hover:w-0.5 group-hover:bg-accent/60'
-        }`
-      : `mx-2 rounded-full transition-all ${
-          isResizing
-            ? 'h-0.5 bg-accent/80'
-            : 'h-px bg-line-base/70 group-hover:h-0.5 group-hover:bg-accent/60'
-        }`;
   const flexShape =
     orientation === 'horizontal'
       ? 'items-stretch justify-center'
@@ -136,12 +123,9 @@ export function ResizeHandle({
       aria-valuemax={ariaValueMax}
       aria-valuenow={ariaValueNow}
     >
-      <div
-        className={
-          indicatorClassName
-            ? `${indicatorShape} ${indicatorClassName}`
-            : indicatorShape
-        }
+      <ResizeRailIndicator
+        active={isResizing}
+        line={orientation === 'horizontal' ? 'vertical' : 'horizontal'}
       />
     </div>
   );

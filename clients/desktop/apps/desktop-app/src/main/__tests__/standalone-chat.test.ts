@@ -39,7 +39,9 @@ const mockCodexStartThread = jest.fn(
       threadId: 'summary-thread',
       runTurn: (turn: CodexEphemeralRequestForTest['turn']) =>
         mockCodexRunEphemeralTurn({ ...request, turn }),
-      delete: mockCodexDeleteThread,
+      get delete() {
+        return mockCodexDeleteThread;
+      },
     }),
 );
 const mockResolveCodexRuntimeEnvironmentProfile = jest.fn(() => ({
@@ -70,7 +72,9 @@ const mockFinalizeObservedTask = jest.fn<
 const mockIsModelBlockedByStoredPolicy = jest.fn(() => Promise.resolve(false));
 
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: mockQuery,
+  get query(): typeof mockQuery {
+    return mockQuery;
+  },
 }));
 jest.mock('@canopy/desktop-shared/lib/codex-model-config', () => ({
   codexServiceTierForModelConfig: jest.fn((config?: { fastMode?: boolean }) =>
@@ -80,12 +84,15 @@ jest.mock('@canopy/desktop-shared/lib/codex-model-config', () => ({
 }));
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({
-    startThread: mockCodexStartThread,
+    get startThread(): typeof mockCodexStartThread {
+      return mockCodexStartThread;
+    },
   })),
 }));
 jest.mock('../lib/user-environment-runtime', () => ({
-  resolveCodexRuntimeEnvironmentProfile:
-    mockResolveCodexRuntimeEnvironmentProfile,
+  get resolveCodexRuntimeEnvironmentProfile(): typeof mockResolveCodexRuntimeEnvironmentProfile {
+    return mockResolveCodexRuntimeEnvironmentProfile;
+  },
 }));
 jest.mock('../pipelines/config-paths', () => ({
   getBundledClaudeBinaryPath: jest.fn(() => '/mock/claude'),
@@ -94,20 +101,32 @@ jest.mock('../pipelines/config-paths', () => ({
 }));
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    seedTranscript: mockSeedTranscript,
-    appendTranscriptRecord: mockAppendTranscriptRecord,
-    updateObservedTask: mockUpdateObservedTask,
-    finalizeObservedTask: mockFinalizeObservedTask,
+    get seedTranscript(): typeof mockSeedTranscript {
+      return mockSeedTranscript;
+    },
+    get appendTranscriptRecord(): typeof mockAppendTranscriptRecord {
+      return mockAppendTranscriptRecord;
+    },
+    get updateObservedTask(): typeof mockUpdateObservedTask {
+      return mockUpdateObservedTask;
+    },
+    get finalizeObservedTask(): typeof mockFinalizeObservedTask {
+      return mockFinalizeObservedTask;
+    },
     beginClaudeQuery: jest.fn(),
     endClaudeQuery: jest.fn(),
     observeClaudeEvent: jest.fn(),
   })),
 }));
 jest.mock('../lib/model-policy-state', () => ({
-  isModelBlockedByStoredPolicy: mockIsModelBlockedByStoredPolicy,
+  get isModelBlockedByStoredPolicy(): typeof mockIsModelBlockedByStoredPolicy {
+    return mockIsModelBlockedByStoredPolicy;
+  },
 }));
 jest.mock('../ollama/claude-compatible', () => ({
-  resolveClaudeCompatibleInvocation: resolveClaudeCompatibleInvocationMock,
+  get resolveClaudeCompatibleInvocation(): typeof resolveClaudeCompatibleInvocationMock {
+    return resolveClaudeCompatibleInvocationMock;
+  },
 }));
 jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(() =>
@@ -118,11 +137,15 @@ jest.mock('../lib/preferences-store', () => ({
 }));
 jest.mock('../integration/claude-worker-session-service', () => ({
   getClaudeWorkerSessionService: jest.fn(() => ({
-    runWorker: mockRunWorker,
+    get runWorker(): typeof mockRunWorker {
+      return mockRunWorker;
+    },
   })),
 }));
 jest.mock('../agents/claude-process-host-runner', () => ({
-  spawnClaudeCodeProcessOffMain: mockSpawnClaudeCodeProcessOffMain,
+  get spawnClaudeCodeProcessOffMain(): typeof mockSpawnClaudeCodeProcessOffMain {
+    return mockSpawnClaudeCodeProcessOffMain;
+  },
 }));
 
 import {
@@ -131,6 +154,7 @@ import {
   initModelHarnessAssignments,
   initOllamaModels,
 } from '@canopy/desktop-shared/types';
+import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import {
   readLocalMemoryEnabledPreference,
@@ -150,6 +174,16 @@ import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-servi
 
 const mockedGetEnhancedEnv = jest.mocked(getEnhancedEnv);
 const mockedReadPreferencesFile = jest.mocked(readPreferencesFile);
+
+function preferencesForBackgroundProcessMode(
+  mode: PreferencesData['canopyBackgroundProcessesMode'],
+): PreferencesData {
+  const preferences: Partial<PreferencesData> = {
+    canopyBackgroundProcessesMode: mode,
+  };
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as PreferencesData;
+}
 
 initClaudeModels([{ id: 'haiku', label: 'Haiku 5.5' }]);
 initCodexModels([{ id: 'gpt-5.5', label: 'GPT 5.5' }]);
@@ -196,9 +230,9 @@ describe('standalone-chat Claude integration', () => {
     mockIsModelBlockedByStoredPolicy.mockReset();
     mockIsModelBlockedByStoredPolicy.mockResolvedValue(false);
     mockedGetEnhancedEnv.mockClear();
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'canopy',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      preferencesForBackgroundProcessMode('canopy'),
+    );
     resolveClaudeCompatibleInvocationMock.mockReset();
     resolveClaudeCompatibleInvocationMock.mockResolvedValue({
       providerType: 'claude',
@@ -765,9 +799,9 @@ describe('standalone-chat Claude integration', () => {
   });
 
   it('uses bypass permission for terminal-mode summary workers', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'terminal',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      preferencesForBackgroundProcessMode('terminal'),
+    );
     mockRunWorker.mockResolvedValueOnce({
       status: 'success',
       finalText: 'Terminal Summary',
@@ -800,9 +834,9 @@ describe('standalone-chat Claude integration', () => {
   });
 
   it('marks empty terminal-worker output as a fallback', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'terminal',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      preferencesForBackgroundProcessMode('terminal'),
+    );
     mockRunWorker.mockResolvedValueOnce({
       status: 'success',
       finalText: '',
@@ -820,9 +854,9 @@ describe('standalone-chat Claude integration', () => {
   it('retries transient terminal-mode summary worker failures', async () => {
     jest.useFakeTimers();
     try {
-      mockedReadPreferencesFile.mockResolvedValue({
-        canopyBackgroundProcessesMode: 'terminal',
-      });
+      mockedReadPreferencesFile.mockResolvedValue(
+        preferencesForBackgroundProcessMode('terminal'),
+      );
       let signalFirstWorkerStarted: (() => void) | undefined;
       const firstWorkerStarted = new Promise<void>((resolve) => {
         signalFirstWorkerStarted = resolve;

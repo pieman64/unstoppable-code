@@ -76,7 +76,7 @@ license at commit `8a1b2821bb768c484fe8da20c5e1838b6bf551a9` of
 ## Octicons
 
 Git and GitHub concepts only (see the iconography rule in
-[`DESIGN.md`](../../../../../DESIGN.md)). Fetched from
+[icons](../../../../../docs/design/icons.md)). Fetched from
 `https://cdn.jsdelivr.net/npm/@primer/octicons@19.40.0/build/svg/<name>-24.svg`;
 the npm tarball and its integrity hash are recorded in the manifest's
 `sources`. The existing 24px set and per-entry insets are preserved through

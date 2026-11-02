@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any */
 import type { CodexAgentCallBlock } from '@canopy/agent-transcript';
+import type { AuthDependencyFailure } from '@canopy/protocol/auth-recovery';
 import {
   computeIncrementalTurnGroups,
   createEmptyTurnGroupCache,
@@ -22,6 +23,12 @@ type Block =
       isError?: boolean;
       startedAt?: number;
       completedAt?: number | null;
+      activityName?: string;
+      timestamp?: number;
+      authFailure?: AuthDependencyFailure;
+      turnId?: string;
+      userMessageId?: string;
+      spawnedBy?: { taskId?: string; toolUseId?: string };
       subagentType?: string;
       description?: string;
       prompt?: string;
@@ -176,9 +183,90 @@ describe('findLastForkableTurnGroupIndex', () => {
 
     expect(findLastForkableTurnGroupIndex(result)).toBe(0);
   });
+
+  it("never picks a wake's turn: forking cuts at a prompt", () => {
+    const result = computeIncrementalTurnGroups(
+      'chat-1',
+      asChat([
+        msg('u1', 'user', [textBlock('first')]),
+        msg('t1', 'system', [
+          { ...timerBlock(100, 200), turnId: 'turn-1', userMessageId: 'u1' },
+        ]),
+        msg('a1', 'assistant', [textBlock('first answer')]),
+        msg('tw', 'system', [
+          { ...timerBlock(300, 400), turnId: 'wake', spawnedBy: {} },
+        ]),
+        msg('a-wake', 'assistant', [textBlock('wake answer')]),
+      ]),
+      undefined,
+      createEmptyTurnGroupCache(),
+    );
+
+    expect(result.map((item) => item.kind)).toEqual([
+      'turn-group',
+      'turn-group',
+    ]);
+    expect(findLastForkableTurnGroupIndex(result)).toBe(0);
+  });
 });
 
 describe('computeIncrementalTurnGroups', () => {
+  it('refreshes a cached wake turn once its spawning call loads', () => {
+    const wake = [
+      msg('tw', 'system', [
+        {
+          ...timerBlock(300, 400),
+          turnId: 'wake',
+          spawnedBy: { toolUseId: 'tool-1' },
+        },
+      ]),
+      msg('a-wake', 'assistant', [textBlock('wake answer')]),
+    ];
+    const cache = createEmptyTurnGroupCache();
+    // The wake's spawning call is in older history, not yet loaded.
+    const before = computeIncrementalTurnGroups(
+      'chat-1',
+      asChat(wake),
+      undefined,
+      cache,
+    );
+    const history = [
+      msg('u1', 'user', [textBlock('first')]),
+      msg('a1', 'assistant', [
+        {
+          type: 'tool_use',
+          toolName: 'Bash',
+          toolUseId: 'tool-1',
+          input: JSON.stringify({ description: 'Run the tests' }),
+        },
+      ]),
+      msg('t1', 'system', [
+        { ...timerBlock(100, 200), turnId: 'turn-1', userMessageId: 'u1' },
+      ]),
+    ];
+    const after = computeIncrementalTurnGroups(
+      'chat-1',
+      asChat([...history, ...wake]),
+      undefined,
+      cache,
+    );
+
+    expect(
+      before[0]?.kind === 'turn-group' && before[0].userMessage.blocks,
+    ).toEqual([{ type: 'wake_boundary', turnId: 'wake' }]);
+    expect(
+      after[1]?.kind === 'turn-group' && after[1].userMessage.blocks,
+    ).toEqual([
+      {
+        type: 'wake_boundary',
+        turnId: 'wake',
+        taskLabel: 'Run the tests',
+        spawningUserMessageId: 'u1',
+        spawningToolUseId: 'tool-1',
+      },
+    ]);
+  });
+
   it('produces correct groups for a complete conversation', () => {
     // Runtime order: user, timer, assistant
     const messages = asChat([
@@ -880,7 +968,7 @@ describe('computeIncrementalTurnGroups', () => {
     // change, or a completed turn group cached before the follow-up
     // `canopy_auth_failure` event arrives will reuse the stale (no
     // authFailure) object forever and the reconnect CTA never renders.
-    const authFailure = {
+    const authFailure: AuthDependencyFailure = {
       dependencyClass: 'provider',
       dependencyId: 'claude',
       displayName: 'Claude',

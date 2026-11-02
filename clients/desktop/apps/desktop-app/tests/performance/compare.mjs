@@ -562,6 +562,8 @@ function assertSameSampleSetup(first, artifact, config, scenarioConfig) {
     JSON.stringify(first.source?.measuredBuild)
   )
     throw new Error('Sample artifacts mix measured builds');
+  if (JSON.stringify(artifact.treatment) !== JSON.stringify(first.treatment))
+    throw new Error('Sample artifacts mix treatments');
   const expected = scenarioConfig ?? config;
   const actual = artifact.config ?? {};
   // A scenario's own configuration must match exactly, scoped keys included;
@@ -630,6 +632,7 @@ export function combineSampleArtifacts(
     startedAt: ordered[0].artifact.startedAt,
     completedAt: ordered[ordered.length - 1].artifact.completedAt,
     config,
+    ...(first.treatment ? { treatment: first.treatment } : {}),
     requestedScenarios: scenarios,
     source: first.source,
     environment: first.environment,

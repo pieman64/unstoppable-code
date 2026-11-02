@@ -262,10 +262,8 @@ export function useMarketplaceOwnedShare({
         onClose={close}
         onOpenAccountSettings={onOpenAccountSettings}
         onPublicLinkRemoved={onSharedSkillsChanged}
-        onShared={(): void => {
-          onSharedSkillsChanged();
-          close();
-        }}
+        // The dialog stays open on its success notice until Done.
+        onShared={onSharedSkillsChanged}
       />
     );
   } else if (open?.kind === 'collection') {
@@ -274,10 +272,7 @@ export function useMarketplaceOwnedShare({
         collection={open.collection}
         onClose={close}
         onOpenAccountSettings={onOpenAccountSettings}
-        onShared={(): void => {
-          onSharedCollectionsChanged();
-          close();
-        }}
+        onShared={onSharedCollectionsChanged}
       />
     );
   } else if (open?.kind === 'pipeline') {
@@ -288,10 +283,7 @@ export function useMarketplaceOwnedShare({
         onClose={close}
         onOpenAccountSettings={onOpenAccountSettings}
         onPublicLinkRemoved={onPipelinesChanged}
-        onShared={(): void => {
-          onPipelinesChanged();
-          close();
-        }}
+        onShared={onPipelinesChanged}
       />
     );
   } else if (open?.kind === 'automation') {

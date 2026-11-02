@@ -8,9 +8,10 @@ import { useChatStore } from '@/stores/chatStore';
 import { useWorkersStore } from '@/stores/workersStore';
 import { WorkersPage } from '../WorkersPage';
 
-const openPipelineExecutionFromUi = jest.fn(() =>
-  Promise.resolve({ status: 'applied' }),
-);
+const openPipelineExecutionFromUi = jest.fn<
+  Promise<{ status: string }>,
+  [request: unknown]
+>(() => Promise.resolve({ status: 'applied' }));
 
 jest.mock('@/lib/panels/open-pipeline-execution', () => ({
   openPipelineExecutionFromUi: (request: unknown): Promise<unknown> =>

@@ -119,7 +119,9 @@ it('turns an unknown link answer into a bounded transient error', async (): Prom
   });
   await expect(
     resolveWorkspaceTarget('personal', { organizationId: orgA }),
-  ).rejects.toMatchObject<WorkspaceTargetResolutionError>({
+  ).rejects.toMatchObject<
+    Pick<WorkspaceTargetResolutionError, 'reason' | 'transient'>
+  >({
     reason: 'unknown-provenance',
     transient: true,
   });
@@ -129,7 +131,9 @@ it('bounds an unavailable sidebar inventory as transient', async (): Promise<voi
   jest.mocked(readAllSidebarItems).mockRejectedValue(new Error('unavailable'));
   await expect(
     resolveWorkspaceTarget('personal', { organizationId: orgA }),
-  ).rejects.toMatchObject<WorkspaceTargetResolutionError>({
+  ).rejects.toMatchObject<
+    Pick<WorkspaceTargetResolutionError, 'reason' | 'transient'>
+  >({
     reason: 'unknown-provenance',
     transient: true,
   });

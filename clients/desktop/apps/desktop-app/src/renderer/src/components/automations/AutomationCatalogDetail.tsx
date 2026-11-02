@@ -1,16 +1,16 @@
 import { requestAutomationProjectCreation } from '@/stores/automationInstallContinuationStore';
-import { type JSX, useCallback, useEffect, useRef, useState } from 'react';
+import { type JSX, useEffect, useRef, useState } from 'react';
 import { Notice, NoticeButton } from '@canopy/ui-shared';
-import { DetailPageActions, BusyLabel } from '@canopy/ui-shared/components';
+import {
+  BusyLabel,
+  Button,
+  DetailPageActions,
+} from '@canopy/ui-shared/components';
 import { AutomationDefinitionSummary } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
 import { describeFiveFieldCron } from '@canopy/ui-shared/lib/cron-description';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import { getAutomationTriggerLabel } from '@canopy/desktop-shared/lib/automations';
-import type {
-  SharedAutomationDetail,
-  SharedAutomationInstallSource,
-} from '@canopy/protocol/automations';
+import type { SharedAutomationDetail } from '@canopy/protocol/automations';
 import {
   toCuratedAutomationInstallSource,
   type CuratedAutomationDetail,
@@ -21,12 +21,17 @@ import {
   installedCopiesOf,
   localBadgeForSummary,
   staleCopiesOf,
-  type AutomationInstallSourceKind,
 } from '@/lib/automationShareRelationship';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
 import { LoadingPlaceholder } from '../shared';
 import { McpServerLogo } from '../shared/McpServerLogo';
+import { AutomationUpdateModal } from './AutomationUpdateModal';
 import { InstallSharedAutomationModal } from './InstallSharedAutomationModal';
+import {
+  automationUpdateSourceOf,
+  useAutomationUpdateSource,
+  type MarketplaceAutomationSourceKind,
+} from './useAutomationUpdateSource';
 import { SharedAutomationPreview } from './SharedAutomationPreview';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -43,15 +48,6 @@ import {
  * several stale copies, and "Install another copy" still open the wizard
  * here until the review can collect those inputs.
  */
-
-const PRIMARY_ACTION_CLASS =
-  'focus-ring inline-flex h-7 shrink-0 items-center rounded-md bg-accent px-3 text-xs font-medium fg-emphasis transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50';
-
-/** Sources a Marketplace install or update can read from. */
-type MarketplaceAutomationSourceKind = Exclude<
-  AutomationInstallSourceKind,
-  'public'
->;
 
 function describeTrigger(activity: ScheduledActivity): string {
   const label = getAutomationTriggerLabel(activity.schedule);
@@ -81,16 +77,6 @@ function describeOrigin(activity: ScheduledActivity): string {
   return activity.remote ? 'Shared by you' : 'Local';
 }
 
-/** The Marketplace source a local copy can be updated from, if it has one. */
-function updateSourceOf(
-  activity: ScheduledActivity,
-): { sourceKind: MarketplaceAutomationSourceKind; remoteId: string } | null {
-  if (!activity.installedFrom) return null;
-  const sourceKind = activity.installedFrom.sourceKind ?? 'shared';
-  if (sourceKind === 'public') return null;
-  return { sourceKind, remoteId: activity.installedFrom.remoteId };
-}
-
 interface AutomationCatalogDetailProps {
   activity: ScheduledActivity;
   /** One line saying when the automation runs and what it does. */
@@ -107,49 +93,12 @@ export function AutomationCatalogDetail({
   updateAvailable,
   onOpenInAutomations,
 }: AutomationCatalogDetailProps): JSX.Element {
-  const workspaces = useInstallWorkspaces();
-  const [updateSource, setUpdateSource] = useState<{
-    sourceKind: MarketplaceAutomationSourceKind;
-    detail: SharedAutomationInstallSource;
-  } | null>(null);
-  const [loadingUpdate, setLoadingUpdate] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const requestRef = useRef(0);
-  useEffect(
-    () => (): void => {
-      requestRef.current += 1;
-    },
-    [],
-  );
-
-  const source = updateSourceOf(activity);
-  const sourceKind = source?.sourceKind ?? null;
-  const sourceRemoteId = source?.remoteId ?? null;
-  const openUpdate = useCallback(async (): Promise<void> => {
-    if (sourceKind === null || sourceRemoteId === null) return;
-    const request = ++requestRef.current;
-    setLoadingUpdate(true);
-    setUpdateError(null);
-    try {
-      const detail =
-        sourceKind === 'curated'
-          ? toCuratedAutomationInstallSource(
-              await window.api.automations.getCurated(sourceRemoteId),
-            )
-          : await window.api.automations.getShared(sourceRemoteId);
-      if (requestRef.current !== request) return;
-      setUpdateSource({ sourceKind, detail });
-    } catch (error: unknown) {
-      if (requestRef.current !== request) return;
-      setUpdateError(
-        resolveSharedResourceErrorMessage(error, {
-          unsupportedResource: 'automations',
-        }),
-      );
-    } finally {
-      if (requestRef.current === request) setLoadingUpdate(false);
-    }
-  }, [sourceKind, sourceRemoteId]);
+  const update = useAutomationUpdateSource();
+  const source = automationUpdateSourceOf(activity);
+  const openUpdate = (): void => {
+    // A failure shows in the notice below.
+    update.openUpdate(activity).catch(() => {});
+  };
 
   const canUpdate = updateAvailable && source !== null;
 
@@ -182,36 +131,35 @@ export function AutomationCatalogDetail({
         <DetailPageActions
           secondary={
             canUpdate ? (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={onOpenInAutomations}
                 data-testid="automation-catalog-open"
-                className={SECONDARY_ACTION_BUTTON_CLASS}
               >
                 Open in Workflows
-              </button>
+              </Button>
             ) : undefined
           }
           primary={
             canUpdate ? (
-              <button
-                type="button"
-                onClick={() => void openUpdate()}
-                disabled={loadingUpdate}
+              <Button
+                variant="primary"
+                size="compact"
+                onClick={openUpdate}
+                disabled={update.loading}
                 data-testid="automation-catalog-update"
-                className={PRIMARY_ACTION_CLASS}
               >
-                <BusyLabel busy={loadingUpdate}>Update</BusyLabel>
-              </button>
+                <BusyLabel busy={update.loading}>Update</BusyLabel>
+              </Button>
             ) : (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={onOpenInAutomations}
                 data-testid="automation-catalog-open"
-                className={PRIMARY_ACTION_CLASS}
               >
                 Open in Workflows
-              </button>
+              </Button>
             )
           }
         />
@@ -229,16 +177,14 @@ export function AutomationCatalogDetail({
         </Notice>
       )}
 
-      {updateError !== null && (
+      {update.error !== null && (
         <Notice
           intent="destructive"
           title="Couldn't load the update."
           data-testid="automation-catalog-update-error"
-          actions={
-            <NoticeButton onClick={() => void openUpdate()}>Retry</NoticeButton>
-          }
+          actions={<NoticeButton onClick={openUpdate}>Retry</NoticeButton>}
         >
-          {updateError}
+          {update.error}
         </Notice>
       )}
 
@@ -265,19 +211,8 @@ export function AutomationCatalogDetail({
         </div>
       </dl>
 
-      {updateSource && (
-        <InstallSharedAutomationModal
-          onCreateProject={requestAutomationProjectCreation}
-          detail={updateSource.detail}
-          source={updateSource.sourceKind}
-          staleActivities={[activity]}
-          workspaces={workspaces}
-          onClose={(): void => setUpdateSource(null)}
-          onDone={(): void => {
-            // The automations store refreshes through the service broadcast,
-            // and the Marketplace row recomputes from it.
-          }}
-        />
+      {update.pending && (
+        <AutomationUpdateModal update={update.pending} onClose={update.clear} />
       )}
     </div>
   );
@@ -334,24 +269,23 @@ function SourceAction({
     return (
       <DetailPageActions
         secondary={
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onInstallAnotherCopy}
             data-testid="automation-catalog-install-another-copy"
-            className={SECONDARY_ACTION_BUTTON_CLASS}
           >
             Install another copy
-          </button>
+          </Button>
         }
         primary={
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => onOpenInAutomations(step.activityId)}
             data-testid="automation-source-open"
-            className={PRIMARY_ACTION_CLASS}
           >
             Open in Workflows
-          </button>
+          </Button>
         }
       />
     );
@@ -359,14 +293,14 @@ function SourceAction({
   return (
     <DetailPageActions
       primary={
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="compact"
           onClick={onInstall}
           data-testid="automation-source-install"
-          className={PRIMARY_ACTION_CLASS}
         >
           {step.kind === 'update' ? 'Update' : 'Add'}
-        </button>
+        </Button>
       }
     />
   );

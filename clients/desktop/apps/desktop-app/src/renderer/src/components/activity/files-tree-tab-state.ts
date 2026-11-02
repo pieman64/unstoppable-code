@@ -3,6 +3,11 @@ import type {
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import {
+  isCoworkWorkspaceFileRoot,
+  partitionFileRoots,
+  type FileRootGroups,
+} from '@canopy/ui-shared/lib/file-root-groups';
+import {
   isFileIndexStale,
   isFileTreeCacheStale,
   type CachedDirectoryEntry,
@@ -17,6 +22,68 @@ import {
  */
 export function getRepoTreePath(root: Pick<FileTreeRoot, 'repoId'>): string {
   return `repo:${root.repoId}`;
+}
+
+/**
+ * Expand/collapse identifier for the brand-labelled group of app-owned roots.
+ * Directory and root identifiers always start with `repo:`, so this key can
+ * never collide with a filesystem node, and it does not change with the brand.
+ */
+export const APP_MANAGED_ROOTS_TREE_PATH = 'group:app-managed';
+
+/**
+ * Roving-focus id of the group row. Explorer node ids always contain a `:`
+ * between the encoded root id and path, so this id cannot match one.
+ */
+export const APP_MANAGED_ROOTS_NODE_ID = 'group-app-managed';
+
+/** Splits roots into the user's roots and the app-owned group by catalog identity. */
+export function partitionFileTreeRoots(
+  roots: readonly FileTreeRoot[],
+): FileRootGroups<FileTreeRoot> {
+  return partitionFileRoots(roots, (root) => ({
+    id: root.repoId,
+    kind: root.rootKind,
+  }));
+}
+
+/** Whether a root is the Cowork project's own working folder. */
+export function isCoworkWorkspaceFileTreeRoot(
+  root: Pick<FileTreeRoot, 'repoId' | 'rootKind'>,
+): boolean {
+  return isCoworkWorkspaceFileRoot({ id: root.repoId, kind: root.rootKind });
+}
+
+/**
+ * Whether an expanded tree path is actually rendered: its root and every
+ * ancestor directory are expanded, and a root inside the app-owned group also
+ * needs the group expanded. Hidden descendants must not trigger refreshes.
+ */
+export function isVisibleExpandedTreePath(
+  treePath: string,
+  expandedPaths: ReadonlySet<string>,
+  groupedRootTreePaths: ReadonlySet<string> = new Set(),
+): boolean {
+  const separatorIndex = treePath.indexOf('/');
+  const rootTreePath =
+    separatorIndex === -1 ? treePath : treePath.slice(0, separatorIndex);
+  if (!rootTreePath.startsWith('repo:') || !expandedPaths.has(rootTreePath)) {
+    return false;
+  }
+  if (
+    groupedRootTreePaths.has(rootTreePath) &&
+    !expandedPaths.has(APP_MANAGED_ROOTS_TREE_PATH)
+  ) {
+    return false;
+  }
+  if (separatorIndex === -1) return true;
+  const repoId = rootTreePath.slice('repo:'.length);
+  const segments = treePath.slice(separatorIndex + 1).split('/');
+  return segments.every((_segment, index) =>
+    expandedPaths.has(
+      getDirectoryTreePath(repoId, segments.slice(0, index + 1).join('/')),
+    ),
+  );
 }
 
 /**
@@ -318,16 +385,23 @@ export function buildFilteredFileTree(
 }
 
 /**
- * Compute the auto-expand path the very first time roots load. Returns the
- * single root's identifier when there is exactly one root (matching the
- * pre-split behavior), or null otherwise. The caller passes `didAutoExpand`
- * so the tab only auto-expands once per mount.
+ * Compute the auto-expand path the very first time roots load. A Cowork
+ * catalog expands the user's working folder and leaves the app-owned group
+ * collapsed; any other catalog expands its root only when it has exactly one.
+ * The caller passes `didAutoExpand` so the tab only auto-expands once per
+ * mount.
  */
 export function getAutoExpandRepoPath(
   roots: FileTreeRoot[],
   didAutoExpand: boolean,
 ): string | null {
-  if (didAutoExpand || roots.length !== 1) {
+  if (didAutoExpand) return null;
+  const coworkRoots = roots.filter(isCoworkWorkspaceFileTreeRoot);
+  const [coworkRoot] = coworkRoots;
+  if (coworkRoots.length === 1 && coworkRoot) {
+    return getRepoTreePath(coworkRoot);
+  }
+  if (roots.length !== 1) {
     return null;
   }
   const [onlyRoot] = roots;

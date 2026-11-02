@@ -158,7 +158,7 @@ function ExternalAgentConfirmationStoreContent({
             intent="attention"
             actions={
               <NoticeButton
-                variant="primary"
+                variant="secondary"
                 onClick={(): void => void state.load()}
               >
                 Try again
@@ -222,8 +222,8 @@ function ExternalAgentConfirmationDetails({
         <SettingsGroup>
           <FactRow label="Agent">
             <Button
-              variant="ghost"
-              size="control"
+              variant="secondary"
+              size="compact"
               data-testid="external-agent-confirmation-agent-link"
               onClick={(): void =>
                 onOpenPath(externalAgentPath(action.connectionId))
@@ -344,6 +344,7 @@ function ExactRequest({
     <div className="flex min-w-0 flex-col gap-3">
       <button
         type="button"
+        data-settings-control="disclosure"
         aria-expanded={open}
         aria-controls="external-agent-confirmation-request"
         data-testid="external-agent-confirmation-request-toggle"
@@ -435,7 +436,7 @@ function PendingActions({
         <Button
           type="button"
           variant="secondary"
-          size="md"
+          size="compact"
           className="flex-1"
           disabled={disabled}
           data-testid="external-agent-confirmation-decline"
@@ -448,9 +449,9 @@ function PendingActions({
           variant={
             action.confirmation.class === 'destructive'
               ? 'destructive'
-              : 'primary'
+              : 'secondary'
           }
-          size="md"
+          size="compact"
           className="flex-1"
           disabled={disabled}
           data-testid="external-agent-confirmation-confirm"
@@ -483,6 +484,7 @@ function PauseOffer({
         {`${action.clientName} can’t read or change anything until you resume it. `}
         <button
           type="button"
+          data-settings-control="link"
           className="font-medium underline underline-offset-2"
           onClick={(): void =>
             onOpenPath(externalAgentPath(action.connectionId))
@@ -512,7 +514,7 @@ function PauseOffer({
       <Button
         type="button"
         variant="secondary"
-        size="md"
+        size="compact"
         disabled={pausing}
         aria-busy={pausing}
         data-testid="external-agent-confirmation-pause"
@@ -568,7 +570,7 @@ function ActionOutcome({
               intent="neutral"
               actions={
                 <NoticeButton
-                  variant="primary"
+                  variant="secondary"
                   data-testid="external-agent-confirmation-reload"
                   onClick={(): void => void state.load()}
                 >
@@ -639,7 +641,7 @@ function OpenExternalAgents({
       <Button
         type="button"
         variant="secondary"
-        size="md"
+        size="compact"
         data-testid="external-agent-confirmation-open-agents"
         onClick={(): void => onOpenPath(EXTERNAL_AGENTS_PATH)}
       >

@@ -274,13 +274,38 @@ describe('ApprovalModePicker', () => {
     expect(row?.textContent).toContain('Accept edits');
     // Title (on its own 20px line) and subtitle sit 2px apart.
     expect(row?.querySelector('.flex-col')?.className).toContain('gap-0.5');
-    expect(row?.textContent).toContain(
-      'Edit project files, prompt for the rest',
-    );
+    expect(row?.textContent).toContain('Edit project files without asking');
     expect(trigger().getAttribute('aria-haspopup')).toBe('menu');
     expect(
       document.querySelector('[data-testid="approval-mode-menu"]')?.className,
-    ).toContain('w-69');
+    ).toContain('w-70');
+  });
+
+  it('gives each mode a one-line subtitle at the bigger size, without clipping', () => {
+    render(
+      createElement(ApprovalModePicker, { mode: 'ask', onChange: jest.fn() }),
+    );
+    click(trigger());
+    const descriptions: Record<ApprovalMode, string> = {
+      ask: 'Ask before running tools',
+      auto: 'Edit project files without asking',
+      'full-access': 'Skip approvals and safety rules',
+    };
+    for (const [mode, text] of Object.entries(descriptions)) {
+      const description = document.querySelector(
+        `[data-testid="approval-mode-option-description-${mode}"]`,
+      );
+      expect(description?.textContent).toBe(text);
+      // Subtitles wrap naturally: no single-line truncation or line clamp.
+      expect(description?.className).not.toMatch(/truncate|line-clamp/);
+      expect(description?.className).toContain('whitespace-normal');
+      expect(description?.className).toContain('text-xs');
+      expect(description?.className).not.toContain('text-2xs');
+      expect(text.length).toBeLessThan(40);
+    }
+    expect(document.body.textContent).not.toContain(
+      'Prompt before every tool call',
+    );
   });
 
   it('hides the label text in compact mode', () => {

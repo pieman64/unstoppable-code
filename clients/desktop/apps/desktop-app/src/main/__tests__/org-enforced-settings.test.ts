@@ -22,9 +22,12 @@ const mockMigrateOrgPinnedTelemetrySharing = jest.fn<
 >();
 const mockSendToWindow = jest.fn<boolean, unknown[]>();
 const mockGetAllWindows = jest.fn<unknown[], []>();
-const mockSetCurrentModelGatewayAccount = jest.fn(() => ({
+const mockSetCurrentModelGatewayAccount = jest.fn<
+  { changed: boolean; changedOrganizationIds: string[] },
+  [account: unknown]
+>(() => ({
   changed: false,
-  changedOrganizationIds: [] as string[],
+  changedOrganizationIds: [],
 }));
 const mockBroadcastModelRegistryUpdated = jest.fn<void, []>();
 const mockInvalidateSessionsForOrganizations = jest.fn<

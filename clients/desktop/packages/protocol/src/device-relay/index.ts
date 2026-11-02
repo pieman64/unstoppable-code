@@ -243,7 +243,7 @@ export interface DeviceRelayDataFrame {
 export function encodeDeviceRelayDataFrame(
   deviceId: string,
   payload: Uint8Array,
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   if (!isDeviceId(deviceId)) {
     throw new Error('Invalid device ID for relay data frame.');
   }

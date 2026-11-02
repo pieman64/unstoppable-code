@@ -1,9 +1,10 @@
 import type { HTMLAttributes, JSX } from 'react';
+import { badgeClassName } from '@canopy/ui-shared/lib/badge';
 
 /**
  * The account row's plan line, shared by the desktop sidebar and the web
  * portal so both paint the same thing: muted text under the name, a small
- * outlined pill only while a trial is active, and a skeleton that reserves the
+ * warning badge only while a trial is active (a trial runs out), and a skeleton that reserves the
  * line while entitlements load. Hosts map their own plan source onto it
  * (desktop's subscription hook, web's billing chrome).
  */
@@ -14,11 +15,10 @@ export interface SidebarPlanSubtitleProps {
   readonly loading?: boolean;
 }
 
-const PLAN_PILL_CLASS_NAME =
-  'inline-flex h-4 shrink-0 items-center rounded-full ring-[length:var(--border-hairline)] ring-inset ring-line-accent px-1.5 text-3xs font-medium leading-none fg-accent';
+const PLAN_PILL_CLASS_NAME = badgeClassName('warning');
 
 /**
- * The small outlined accent pill this row uses, as a primitive.
+ * The small warning badge this row uses, as a primitive.
  *
  * Extracted so a surface that needs the same chip around DIFFERENT copy — the
  * web account menu puts the trial countdown in one — reuses the treatment

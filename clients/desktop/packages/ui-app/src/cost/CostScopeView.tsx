@@ -384,7 +384,7 @@ function CostScopeViewContent({
                     {runs.length > 0 ? (
                       <div className="pt-2">
                         <ListHeading
-                          label="Pipeline runs"
+                          label="Workflow runs"
                           count={runs.length}
                           testId="cost-runs-heading"
                         />

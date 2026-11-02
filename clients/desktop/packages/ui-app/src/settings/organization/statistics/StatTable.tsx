@@ -163,6 +163,7 @@ export function StatTable<T>({
                   {isSortable ? (
                     <button
                       type="button"
+                      data-settings-control="sort"
                       onClick={() => handleSort(column)}
                       data-testid={
                         testId ? `${testId}-sort-${column.key}` : undefined

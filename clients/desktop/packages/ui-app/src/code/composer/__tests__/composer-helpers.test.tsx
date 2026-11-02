@@ -7,6 +7,7 @@
  */
 import type { ModelCatalog, ModelCatalogOption } from '@canopy/ui-shared';
 import type { PortalChatUsage } from '@canopy/protocol/portal';
+import { defaultChatPlaceholder as sharedDefaultChatPlaceholder } from '@canopy/ui-shared/lib';
 import {
   buildComposerOverflowMenuItems,
   defaultChatPlaceholder,
@@ -22,7 +23,7 @@ function modelOption(
 ): ModelCatalogOption {
   return {
     label: overrides.id,
-    provider: 'anthropic',
+    provider: 'claude',
     kind: 'model',
     available: true,
     ...overrides,
@@ -30,26 +31,10 @@ function modelOption(
 }
 
 describe('defaultChatPlaceholder', () => {
-  it('names every affordance the composer actually has', () => {
-    expect(defaultChatPlaceholder(true, true)).toBe(
-      'Send a message, @ to mention, / for skills and commands',
-    );
-    expect(defaultChatPlaceholder(false, true)).toBe(
-      'Send a message, @ to mention',
-    );
-    expect(defaultChatPlaceholder(true, false)).toBe(
-      'Send a message, / for skills and commands',
-    );
-    expect(defaultChatPlaceholder(false, false)).toBe('Send a message');
-  });
-
-  it('leads with the ask on a phone, where the long forms would truncate', () => {
-    expect(defaultChatPlaceholder(true, true, true)).toBe(
-      'Ask anything, / for skills',
-    );
-    expect(defaultChatPlaceholder(false, true, true)).toBe('Ask anything');
-    // The bare form already fits, so it has no phone variant.
-    expect(defaultChatPlaceholder(false, false, true)).toBe('Send a message');
+  // The wording is pinned in ui-shared, where the helper lives; this only
+  // checks the historical export path still reaches that one implementation.
+  it('re-exports the ui-shared helper', () => {
+    expect(defaultChatPlaceholder).toBe(sharedDefaultChatPlaceholder);
   });
 });
 
@@ -125,14 +110,14 @@ describe('execution harness resolution', () => {
     // A vendor the controls do not model must not fall back to a stale hint.
     expect(
       resolveModelOptionProviderType(
-        modelOption({ id: 'x', provider: 'google' }),
+        modelOption({ id: 'x', provider: 'unknown' }),
         'claude',
       ),
     ).toBeUndefined();
     expect(resolveModelOptionProviderType(undefined, 'claude')).toBe('claude');
     expect(
       resolveModelOptionProviderType(
-        modelOption({ id: 'x', provider: 'google' }),
+        modelOption({ id: 'x', provider: 'unknown' }),
         'claude',
         'codex',
       ),
@@ -142,7 +127,7 @@ describe('execution harness resolution', () => {
   it('reads the harness ahead of the provider on a gateway row', () => {
     expect(
       resolveModelOptionProviderType(
-        modelOption({ id: 'x', provider: 'anthropic', harness: 'codex' }),
+        modelOption({ id: 'x', provider: 'claude', harness: 'codex' }),
         undefined,
       ),
     ).toBe('codex');

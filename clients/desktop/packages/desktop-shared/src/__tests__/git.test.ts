@@ -21,6 +21,8 @@ jest.mock('../pipelines/config-paths', () => ({
 import {
   commitWithMessage,
   getCurrentBranchDisplayName,
+  hasBranchBeenPushedToRemote,
+  readBranchPublication,
   getRemoteDefaultBranch,
   setGitExecutableResolver,
   setLocalRemoteHeadBranch,
@@ -66,6 +68,61 @@ describe('shared git helpers', () => {
       'injected-branch',
     );
     expect(resolver).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['present', 'missing', 'unavailable'])(
+    'distinguishes publication from probe failure (%s ref)',
+    async (state) => {
+      if (state !== 'unavailable') {
+        execFileSync('git', ['init', '-b', 'feature'], {
+          cwd: tempDir,
+          stdio: 'ignore',
+        });
+        execFileSync(
+          'git',
+          [
+            '-c',
+            'core.hooksPath=',
+            '-c',
+            'commit.gpgsign=false',
+            '-c',
+            'user.name=Test',
+            '-c',
+            'user.email=test@example.com',
+            'commit',
+            '--allow-empty',
+            '-m',
+            'Seed',
+          ],
+          { cwd: tempDir, stdio: 'ignore' },
+        );
+      }
+      if (state === 'present') {
+        const refs = join(tempDir, '.git', 'refs', 'remotes', 'origin');
+        mkdirSync(refs, { recursive: true });
+        const value = execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: tempDir,
+          encoding: 'utf8',
+        });
+        writeFileSync(join(refs, 'feature'), value);
+      }
+      mockedGetEnhancedEnv.mockReturnValue({ ...process.env });
+      setGitExecutableResolver(() => Promise.resolve('git'));
+      await expect(readBranchPublication(tempDir)).resolves.toBe(
+        state === 'present' ? true : state === 'missing' ? false : null,
+      );
+      await expect(hasBranchBeenPushedToRemote(tempDir)).resolves.toBe(
+        state === 'present',
+      );
+    },
+  );
+
+  it('keeps a spawn failure unknown while the boolean API stays fail-closed', async () => {
+    setGitExecutableResolver(() =>
+      Promise.resolve(join(tempDir, 'missing-git')),
+    );
+    await expect(readBranchPublication(tempDir)).resolves.toBeNull();
+    await expect(hasBranchBeenPushedToRemote(tempDir)).resolves.toBe(false);
   });
 
   function installDefaultBranchGit(options?: {

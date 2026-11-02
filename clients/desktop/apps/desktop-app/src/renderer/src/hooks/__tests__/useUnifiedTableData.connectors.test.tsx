@@ -16,6 +16,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useUnifiedTableData } from '../useUnifiedTableData';
 import type { UnifiedTableRow } from '../useUnifiedTableData';
+import type { useMarketplaceList as useMarketplaceListHook } from '../useMarketplaceList';
+import type {
+  MarketplaceInfo,
+  PluginInfo,
+  PluginProviderSupport,
+} from '@canopy/desktop-shared/types/plugins';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
@@ -37,6 +43,100 @@ jest.mock('../useMcpServerList', () => ({
 
 let container: HTMLDivElement;
 let root: Root;
+
+function marketplacePlugin(
+  name: string,
+  marketplaceId: string,
+  description: string,
+  providerSupport: PluginProviderSupport,
+): PluginInfo {
+  const sourcePath = `${marketplaceId}/${name}`;
+  const facets: PluginInfo['facets'] = {};
+  if (providerSupport.claude === 'native') {
+    facets.claude = {
+      provider: 'claude',
+      mode: 'native',
+      name,
+      installLocation: marketplaceId,
+      sourcePath,
+    };
+  }
+  if (providerSupport.codex === 'native') {
+    facets.codex = {
+      provider: 'codex',
+      mode: 'native',
+      name,
+      installLocation: marketplaceId,
+      sourcePath,
+    };
+  } else if (providerSupport.codex === 'compat') {
+    facets.codexCompatibility = {
+      provider: 'codex',
+      mode: 'compat',
+      name,
+      installLocation: marketplaceId,
+      sourcePath,
+    };
+  }
+  return {
+    name,
+    marketplaceId,
+    description,
+    sourcePath,
+    providerSupport,
+    facets,
+  };
+}
+
+function marketplaceInfo(
+  info: Pick<
+    MarketplaceInfo,
+    'id' | 'name' | 'sourceType' | 'sourceUrl' | 'plugins'
+  >,
+): MarketplaceInfo {
+  const claudePluginCount = info.plugins.filter(
+    (plugin) => plugin.providerSupport.claude === 'native',
+  ).length;
+  const codexPluginCount = info.plugins.filter(
+    (plugin) => plugin.providerSupport.codex !== 'none',
+  ).length;
+  const claude: MarketplaceInfo['providerStatus']['claude'] = {
+    provider: 'claude',
+    state: claudePluginCount > 0 ? 'valid' : 'invalid',
+    accepted: claudePluginCount > 0,
+    pluginCount: claudePluginCount,
+    lastCheckedAt: '2026-10-25T12:00:00.000Z',
+  };
+  const codex: MarketplaceInfo['providerStatus']['codex'] = {
+    provider: 'codex',
+    state: codexPluginCount > 0 ? 'valid' : 'invalid',
+    accepted: codexPluginCount > 0,
+    pluginCount: codexPluginCount,
+    lastCheckedAt: '2026-10-25T12:00:00.000Z',
+  };
+  const validProviders: MarketplaceInfo['validProviders'] = [];
+  if (claudePluginCount > 0) validProviders.push('claude');
+  if (codexPluginCount > 0) validProviders.push('codex');
+  return {
+    ...info,
+    installLocation: `marketplaces/${info.id}`,
+    pluginCount: info.plugins.length,
+    providerStatus: { claude, codex },
+    validProviders,
+  };
+}
+
+const MARKETPLACE_LIST_DEFAULTS: Omit<
+  ReturnType<typeof useMarketplaceListHook>,
+  'cache' | 'loading'
+> = {
+  error: null,
+  progressMessage: null,
+  reload: (): Promise<void> => Promise.resolve(),
+  refresh: (): Promise<void> => Promise.resolve(),
+  upsertMarketplace: (): void => undefined,
+  applyMarketplaceRemoval: (): void => undefined,
+};
 
 function mountWithoutCollapse(): { rows: UnifiedTableRow[] } {
   const captured: { rows: UnifiedTableRow[] } = { rows: [] };
@@ -199,36 +299,39 @@ describe('duplicate plugins across overlapping marketplaces', () => {
     // the id passed while production never matched at all.
     const { useMarketplaceList } = await import('../useMarketplaceList');
     const listing: ReturnType<typeof useMarketplaceList> = {
+      ...MARKETPLACE_LIST_DEFAULTS,
       cache: {
+        version: 2,
+        lastRefreshed: '2026-10-25T12:00:00.000Z',
         marketplaces: [
-          {
+          marketplaceInfo({
             id: 'claude-plugins-official',
             name: 'Claude Plugins',
             sourceType: 'github',
             sourceUrl: 'https://github.com/anthropics/claude-plugins-official',
             plugins: [
               {
-                name: 'slack',
-                marketplaceId: 'claude-plugins-official',
-                description: '',
-                providerSupport: { claude: 'native', codex: 'native' },
+                ...marketplacePlugin('slack', 'claude-plugins-official', '', {
+                  claude: 'native',
+                  codex: 'native',
+                }),
               },
             ],
-          },
-          {
+          }),
+          marketplaceInfo({
             id: 'openai-curated-remote',
             name: 'Codex Curated',
             sourceType: 'codex',
             sourceUrl: 'openai-curated-remote',
             plugins: [
               {
-                name: 'slack',
-                marketplaceId: 'openai-curated-remote',
-                description: '',
-                providerSupport: { claude: 'none', codex: 'native' },
+                ...marketplacePlugin('slack', 'openai-curated-remote', '', {
+                  claude: 'none',
+                  codex: 'native',
+                }),
               },
             ],
-          },
+          }),
         ],
       },
       loading: false,
@@ -264,36 +367,39 @@ describe('a capability reachable on only one provider is never collapsed away', 
     // tell them apart.
     const { useMarketplaceList } = await import('../useMarketplaceList');
     const listing: ReturnType<typeof useMarketplaceList> = {
+      ...MARKETPLACE_LIST_DEFAULTS,
       cache: {
+        version: 2,
+        lastRefreshed: '2026-10-25T12:00:00.000Z',
         marketplaces: [
-          {
+          marketplaceInfo({
             id: 'claude-plugins-official',
             name: 'Claude Plugins',
             sourceType: 'github',
             sourceUrl: 'https://github.com/anthropics/claude-plugins-official',
             plugins: [
               {
-                name: 'slack',
-                marketplaceId: 'claude-plugins-official',
-                description: '',
-                providerSupport: { claude: 'native', codex: 'none' },
+                ...marketplacePlugin('slack', 'claude-plugins-official', '', {
+                  claude: 'native',
+                  codex: 'none',
+                }),
               },
             ],
-          },
-          {
+          }),
+          marketplaceInfo({
             id: 'openai-curated-remote',
             name: 'Codex Curated',
             sourceType: 'codex',
             sourceUrl: 'openai-curated-remote',
             plugins: [
               {
-                name: 'slack',
-                marketplaceId: 'openai-curated-remote',
-                description: '',
-                providerSupport: { claude: 'none', codex: 'native' },
+                ...marketplacePlugin('slack', 'openai-curated-remote', '', {
+                  claude: 'none',
+                  codex: 'native',
+                }),
               },
             ],
-          },
+          }),
         ],
       },
       loading: false,
@@ -392,36 +498,39 @@ describe('collapsing is opt-in', () => {
     // the whole renderer suite green.
     const { useMarketplaceList } = await import('../useMarketplaceList');
     const listing: ReturnType<typeof useMarketplaceList> = {
+      ...MARKETPLACE_LIST_DEFAULTS,
       cache: {
+        version: 2,
+        lastRefreshed: '2026-10-25T12:00:00.000Z',
         marketplaces: [
-          {
+          marketplaceInfo({
             id: 'claude-plugins-official',
             name: 'Claude Plugins',
             sourceType: 'github',
             sourceUrl: 'https://github.com/anthropics/claude-plugins-official',
             plugins: [
               {
-                name: 'slack',
-                marketplaceId: 'claude-plugins-official',
-                description: '',
-                providerSupport: { claude: 'native', codex: 'native' },
+                ...marketplacePlugin('slack', 'claude-plugins-official', '', {
+                  claude: 'native',
+                  codex: 'native',
+                }),
               },
             ],
-          },
-          {
+          }),
+          marketplaceInfo({
             id: 'openai-curated-remote',
             name: 'Codex Curated',
             sourceType: 'codex',
             sourceUrl: 'openai-curated-remote',
             plugins: [
               {
-                name: 'slack',
-                marketplaceId: 'openai-curated-remote',
-                description: '',
-                providerSupport: { claude: 'none', codex: 'native' },
+                ...marketplacePlugin('slack', 'openai-curated-remote', '', {
+                  claude: 'none',
+                  codex: 'native',
+                }),
               },
             ],
-          },
+          }),
         ],
       },
       loading: false,
@@ -542,22 +651,27 @@ describe('a connector and the provider’s wrapper for it are one capability', (
     // Canopy does not implement its ON_INSTALL auth.
     const { useMarketplaceList } = await import('../useMarketplaceList');
     const listing: ReturnType<typeof useMarketplaceList> = {
+      ...MARKETPLACE_LIST_DEFAULTS,
       cache: {
+        version: 2,
+        lastRefreshed: '2026-10-25T12:00:00.000Z',
         marketplaces: [
-          {
+          marketplaceInfo({
             id: 'openai-curated-remote',
             name: 'Codex Curated',
             sourceType: 'codex',
             sourceUrl: 'openai-curated-remote',
             plugins: [
               {
-                name: 'gmail',
-                marketplaceId: 'openai-curated-remote',
-                description: 'Gmail connector',
-                providerSupport: { claude: 'none', codex: 'native' },
+                ...marketplacePlugin(
+                  'gmail',
+                  'openai-curated-remote',
+                  'Gmail connector',
+                  { claude: 'none', codex: 'native' },
+                ),
               },
             ],
-          },
+          }),
         ],
       },
       loading: false,
@@ -593,22 +707,27 @@ describe('a curated plugin is never suppressed by a connector name', () => {
     // the Plugins page.
     const { useMarketplaceList } = await import('../useMarketplaceList');
     const listing: ReturnType<typeof useMarketplaceList> = {
+      ...MARKETPLACE_LIST_DEFAULTS,
       cache: {
+        version: 2,
+        lastRefreshed: '2026-10-25T12:00:00.000Z',
         marketplaces: [
-          {
+          marketplaceInfo({
             id: 'curated/cloud',
             name: 'Curated',
             sourceType: 'github',
             sourceUrl: 'https://github.com/acme/curated',
             plugins: [
               {
-                name: 'gmail',
-                marketplaceId: 'curated/cloud',
-                description: 'Gmail and Calendar skills',
-                providerSupport: { claude: 'native', codex: 'native' },
+                ...marketplacePlugin(
+                  'gmail',
+                  'curated/cloud',
+                  'Gmail and Calendar skills',
+                  { claude: 'native', codex: 'native' },
+                ),
               },
             ],
-          },
+          }),
         ],
       },
       loading: false,
@@ -655,11 +774,16 @@ describe('a server the user configured is never suppressed', () => {
         {
           id: 'gmail-local',
           name: 'Gmail',
+          description: 'Local Gmail server',
+          type: 'command',
           curatedKey: 'gmail-gmailmcp',
           configs: [{ id: 'default', name: 'default', enabled: true }],
+          updatedAt: '2026-10-25T12:00:00.000Z',
         },
       ],
       loading: false,
+      error: null,
+      refresh: (): Promise<void> => Promise.resolve(),
     };
     jest.mocked(useMcpServerList).mockReturnValue(servers);
 
@@ -692,6 +816,8 @@ describe('a server the user configured is never suppressed', () => {
     jest.mocked(useMcpServerList).mockReturnValue({
       servers: [],
       loading: false,
+      error: null,
+      refresh: (): Promise<void> => Promise.resolve(),
     });
   });
 });

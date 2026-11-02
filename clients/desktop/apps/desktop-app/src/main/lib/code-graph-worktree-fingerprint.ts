@@ -12,7 +12,7 @@
 
 import { stat } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
-import type { CodeGraphFingerprintMetadata } from '@canopy/desktop-shared/node/code-graph/store/database';
+import type { CodeGraphFingerprintMetadata } from '@canopy/code-graph/store/database';
 import type { CodeGraphReadFailure } from '@canopy/desktop-shared/types/code-graph-tools';
 import {
   CodeGraphReadFailureError,
@@ -225,6 +225,26 @@ export async function readPersistedCodeGraphWorktreeFingerprintSnapshot(
       readFailure: codeGraphReadFailure(error),
       durationMs: elapsed(),
     };
+  }
+}
+
+/**
+ * The graph's last build stamp, read in the code-graph read worker without the
+ * stat-keyed cache above: that cache keys on graph.db alone, and a build can
+ * publish through the WAL without changing it. `null` when unreadable.
+ */
+export async function readCodeGraphBuildStampUncached(
+  dbPath: string,
+  cancellationKey: string,
+): Promise<string | null> {
+  try {
+    const metadata = await readCodeGraphFingerprintMetadataOffThread(
+      dbPath,
+      cancellationKey,
+    );
+    return metadata.lastBuildAt ?? null;
+  } catch {
+    return null;
   }
 }
 

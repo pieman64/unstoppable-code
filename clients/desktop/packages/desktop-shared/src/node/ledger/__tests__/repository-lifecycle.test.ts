@@ -20,9 +20,14 @@ import {
   AUTHORITY_ID,
   CONTAINER_CREATED_AT,
   NO_DETAILS,
+  ORGANIZATION_OWNER,
+  PERSONAL_OWNER,
   WORKTREE_CONTAINER,
   addInput,
+  bindGlobal,
   captureLedgerError,
+  globalContainer,
+  readGlobalBindings,
   readLedgerDatabase,
   registerTestActor,
   setUpLedger,
@@ -933,6 +938,118 @@ describe('LedgerRepository scope lifecycle', () => {
           ),
         ),
       ).toMatchObject({ reason: 'INVALID_INPUT', field: 'container.kind' });
+    });
+  });
+
+  describe('global scopes', () => {
+    /** A global Ledger with an actor and an entry, and its outbox so far. */
+    function seedGlobalScope(): {
+      readonly scope: LedgerScopeRecord;
+      readonly receipt: LedgerCommandReceipt;
+    } {
+      const scope = bindGlobal(context.repository, PERSONAL_OWNER, 'account-1');
+      const ledgerId = scope.scope.ledgerId;
+      const agent = registerTestActor(
+        context.repository,
+        ledgerId,
+        'pipeline_agent',
+        'pipeline:attempt-1',
+        'Review step',
+      );
+      const receipt = context.repository.addEntry(
+        addInput({ ledgerId }, agent, TASK, 'global-task'),
+      );
+      return {
+        scope: context.repository.getScope(ledgerId) ?? scope,
+        receipt,
+      };
+    }
+
+    it('is always active: every lifecycle move is refused without writing', () => {
+      const { scope } = seedGlobalScope();
+      const ledgerId = scope.scope.ledgerId;
+      const counts = context.repository.getStorageCounts();
+      const states: LedgerScopeLifecycleState[] = [
+        'archived',
+        'retirement_pending',
+        'active',
+      ];
+      for (const state of states) {
+        expect(
+          captureLedgerError(() => setLifecycle(state, ledgerId)),
+        ).toMatchObject({ reason: 'FORBIDDEN', field: 'container.kind' });
+      }
+      expect(context.repository.getScope(ledgerId)).toEqual(scope);
+      expect(context.repository.getStorageCounts()).toEqual(counts);
+    });
+
+    it('is never moved to another container', () => {
+      const { scope } = seedGlobalScope();
+      const ledgerId = scope.scope.ledgerId;
+      const counts = context.repository.getStorageCounts();
+      for (const [container, containerCreatedAt] of [
+        [scope.scope.container, scope.containerCreatedAt],
+        [globalContainer(ORGANIZATION_OWNER), RESTORED_CREATED_AT],
+        [RESTORED_CONTAINER, RESTORED_CREATED_AT],
+      ] as const) {
+        expect(
+          captureLedgerError(() =>
+            context.repository.rebindScope({
+              ledgerId,
+              container,
+              containerCreatedAt,
+            }),
+          ),
+        ).toMatchObject({ reason: 'FORBIDDEN', field: 'container.kind' });
+      }
+      expect(context.repository.getScope(ledgerId)).toEqual(scope);
+      expect(context.repository.getStorageCounts()).toEqual(counts);
+    });
+
+    it('never rebinds a task scope to a global container', () => {
+      setLifecycle('archived');
+      const counts = context.repository.getStorageCounts();
+      expect(
+        captureLedgerError(() =>
+          context.repository.rebindScope({
+            ledgerId: context.ledgerId,
+            container: globalContainer(PERSONAL_OWNER),
+            containerCreatedAt: RESTORED_CREATED_AT,
+          }),
+        ),
+      ).toMatchObject({ reason: 'INVALID_INPUT', field: 'container.kind' });
+      expect(context.repository.getStorageCounts()).toEqual(counts);
+    });
+
+    it('is never purged', () => {
+      const { scope, receipt } = seedGlobalScope();
+      const ledgerId = scope.scope.ledgerId;
+      const counts = context.repository.getStorageCounts();
+      expect(
+        captureLedgerError(() => context.repository.purgeScope(ledgerId)),
+      ).toMatchObject({ reason: 'FORBIDDEN', field: 'container.kind' });
+      expect(context.repository.getScope(ledgerId)).toEqual(scope);
+      expect(
+        context.repository.getEntry({
+          ledgerId,
+          entryId: receipt.entry.entryId,
+        }).entry,
+      ).toEqual(receipt.entry);
+      expect(context.repository.getStorageCounts()).toEqual(counts);
+      context.repository.close();
+      expect(readGlobalBindings(context.databasePath)).toHaveLength(1);
+    });
+
+    it('is listed with the other scopes, as a global container', () => {
+      const { scope } = seedGlobalScope();
+      expect(
+        context.repository
+          .listScopes()
+          .map((record) => [record.scope.ledgerId, record.scope.container]),
+      ).toEqual([
+        [context.ledgerId, WORKTREE_CONTAINER],
+        [scope.scope.ledgerId, globalContainer(PERSONAL_OWNER)],
+      ]);
     });
   });
 });

@@ -11,11 +11,13 @@ import {
   writeJsonValuesCooperatively,
 } from './cooperative-json';
 
-type ChatTabsWriteObserver = (
+export type ChatTabsWriteObserver = (
   projectId: string,
   worktreeId: string,
   data: ChatTabsFile,
   delta: ChatTabsWriteDelta | undefined,
+  revision: number,
+  isCurrent?: () => boolean,
 ) => void | Promise<void>;
 
 export interface ChatTabsWriteDelta {
@@ -26,11 +28,34 @@ export interface ChatTabsWriteDelta {
 }
 
 let chatTabsWriteObserver: ChatTabsWriteObserver | null = null;
+let chatTabsRequiredDurabilityObserver: ChatTabsWriteObserver | null = null;
 
 export function setChatTabsWriteObserver(
   observer: ChatTabsWriteObserver | null,
 ): void {
   chatTabsWriteObserver = observer;
+}
+
+export function setChatTabsRequiredDurabilityObserver(
+  observer: ChatTabsWriteObserver | null,
+): void {
+  chatTabsRequiredDurabilityObserver = observer;
+}
+
+export async function ensureChatTabsRequiredDurability(
+  projectId: string,
+  worktreeId: string,
+  data: ChatTabsFile,
+  delta: ChatTabsWriteDelta | undefined,
+  revision: number,
+): Promise<void> {
+  await chatTabsRequiredDurabilityObserver?.(
+    projectId,
+    worktreeId,
+    data,
+    delta,
+    revision,
+  );
 }
 
 export const chatTabsTestExports = { writeBufferFully };
@@ -61,8 +86,13 @@ export async function notifyChatTabsMaterialized(
   worktreeId: string,
   data: ChatTabsFile,
   delta?: ChatTabsWriteDelta,
+  revision = data.revision ?? 0,
+  isCurrent?: () => boolean,
 ): Promise<void> {
-  await chatTabsWriteObserver?.(projectId, worktreeId, data, delta);
+  const observer = chatTabsWriteObserver;
+  if (!observer) return;
+  await observer(projectId, worktreeId, data, delta, revision, isCurrent);
+  if (isCurrent?.() === false) return;
   void import('../shared-containers/publish/scheduler')
     .then(({ getSharedContainerPublishScheduler }) =>
       getSharedContainerPublishScheduler().scheduleKnown(projectId, worktreeId),
@@ -91,6 +121,13 @@ export async function writeChatTabsSnapshotForTests(
     await rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
   }
+  await ensureChatTabsRequiredDurability(
+    projectId,
+    worktreeId,
+    data,
+    delta,
+    data.revision ?? 0,
+  );
   await notifyChatTabsMaterialized(projectId, worktreeId, data, delta);
 }
 

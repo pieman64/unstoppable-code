@@ -30,7 +30,8 @@ import type {
   EffectiveApprovalPolicy,
 } from '../approvals/effective-approval-policy';
 import {
-  boundingApprovalMode,
+  callerBoundingApprovalMode,
+  callerBoundingSessionApprovalRules,
   reachableApprovalMode,
 } from '../approvals/live-approval-modes';
 import {
@@ -167,16 +168,25 @@ export interface DesktopEnvironmentPortDeps {
   /**
    * A chat's approval mode as of now, from the in-memory registry a mode
    * switch updates before it awaits anything. As a `bound` (the calling
-   * chat), the strictest of `mode`, its live mode, and a pending switch; as
-   * a `reach` (a chat about to run), the looser of `mode` and a pending
-   * switch. Synchronous, so no switch lands between a check and the write
-   * it guards.
+   * chat), the strictest of `mode`, its live mode, a pending switch, and the
+   * mode its live session applied; as a `reach` (a chat about to run), the
+   * looser of `mode` and a pending switch. Synchronous, so no switch lands
+   * between a check and the write it guards.
    */
   liveApprovalMode(
     chat: { workspaceId: string; worktreeId: string; chatId: string },
     mode: ApprovalMode,
     use: 'bound' | 'reach',
   ): ApprovalMode;
+  /**
+   * The calling chat's session rules `rules`, narrowed to the rules its live
+   * session applies when it reports them, so an admitted turn's agent is
+   * bounded by what that turn applied. Never wider than `rules`.
+   */
+  callerSessionApprovalRules(
+    chat: { workspaceId: string; worktreeId: string; chatId: string },
+    rules: readonly ApprovalRule[],
+  ): readonly ApprovalRule[];
   /**
    * A revision of the approval settings every chat's policy reads beyond its
    * own tab: rule tiers, workspace approvals, and default modes. It changes
@@ -430,20 +440,35 @@ function textOfBlocks(blocks: readonly unknown[]): string {
 
 type ChatListItem = CanopyQueryResult<'core.chat.list'>['items'][number];
 
-/**
- * The environment port of desktop chats. Registered `core.*` reads and chat
- * writes run through the desktop dispatcher with an `mcp` caller. A started
- * chat is reserved through the chat state owner, in a worktree the renderer
- * bridge creates for `new_worktree`, then sent its first message through the
- * dispatcher, whose turn waits for any worktree setup.
- */
-export function createDesktopEnvironmentPort(
-  deps: DesktopEnvironmentPortDeps,
-): DesktopEnvironmentPort {
-  const startReceipts = new Map<string, AgentStartChatReceipt>();
-  const postReceipts = new Map<string, AgentPostMessageReceipt>();
-  const sentPostReceipts = new Map<string, AgentPostMessageReceipt>();
-
+/** Metadata-only lookup shared with transcript authorization; never loads lastResponse. */
+export function createDesktopChatMetadataLookup(
+  deps: Pick<DesktopEnvironmentPortDeps, 'runtime' | 'listWorkEntries'>,
+): {
+  findChatInWorktree(
+    this: void,
+    scope: { workspaceId: string; worktreeId: string },
+    chatId: string,
+    call: DesktopAgentActionCall,
+  ): Promise<ChatListItem | null>;
+  findChat(
+    this: void,
+    workspaceId: string,
+    chatId: string,
+    call: DesktopAgentActionCall,
+  ): Promise<ChatListItem | null>;
+  coworkEntries(
+    this: void,
+    workspaceId: string,
+    call: DesktopAgentActionCall,
+    requireWorkspace?: boolean,
+  ): Promise<readonly DesktopWorkEntry[] | null>;
+  isCoworkWorkspace(
+    this: void,
+    workspaceId: string,
+    call: DesktopAgentActionCall,
+    requireWorkspace?: boolean,
+  ): Promise<boolean>;
+} {
   const readOptions = (
     call: DesktopAgentActionCall,
   ): { caller: CanopyCallerDescriptor } => ({
@@ -477,6 +502,7 @@ export function createDesktopEnvironmentPort(
   async function isCoworkWorkspace(
     workspaceId: string,
     call: DesktopAgentActionCall,
+    requireWorkspace = false,
   ): Promise<boolean> {
     const workspace = await viaDispatcher(() =>
       deps
@@ -487,7 +513,11 @@ export function createDesktopEnvironmentPort(
           readOptions(call),
         ),
     ).catch((error: unknown) => {
-      if (error instanceof AgentPortError && error.code === 'not_found') {
+      if (
+        !requireWorkspace &&
+        error instanceof AgentPortError &&
+        error.code === 'not_found'
+      ) {
         return null;
       }
       throw error;
@@ -499,8 +529,9 @@ export function createDesktopEnvironmentPort(
   async function coworkEntries(
     workspaceId: string,
     call: DesktopAgentActionCall,
+    requireWorkspace = false,
   ): Promise<readonly DesktopWorkEntry[] | null> {
-    return (await isCoworkWorkspace(workspaceId, call))
+    return (await isCoworkWorkspace(workspaceId, call, requireWorkspace))
       ? deps.listWorkEntries(workspaceId)
       : null;
   }
@@ -551,6 +582,32 @@ export function createDesktopEnvironmentPort(
     }
     return null;
   }
+
+  return { findChat, findChatInWorktree, coworkEntries, isCoworkWorkspace };
+}
+
+/**
+ * The environment port of desktop chats. Registered `core.*` reads and chat
+ * writes run through the desktop dispatcher with an `mcp` caller. A started
+ * chat is reserved through the chat state owner, in a worktree the renderer
+ * bridge creates for `new_worktree`, then sent its first message through the
+ * dispatcher, whose turn waits for any worktree setup.
+ */
+export function createDesktopEnvironmentPort(
+  deps: DesktopEnvironmentPortDeps,
+): DesktopEnvironmentPort {
+  const startReceipts = new Map<string, AgentStartChatReceipt>();
+  const postReceipts = new Map<string, AgentPostMessageReceipt>();
+  const sentPostReceipts = new Map<string, AgentPostMessageReceipt>();
+
+  const readOptions = (
+    call: DesktopAgentActionCall,
+  ): { caller: CanopyCallerDescriptor } => ({
+    caller: agentActionCaller(call, READ_GRANTS),
+  });
+
+  const { findChat, findChatInWorktree, isCoworkWorkspace } =
+    createDesktopChatMetadataLookup(deps);
 
   async function lastResponse(
     chat: ChatListItem,
@@ -812,9 +869,13 @@ export function createDesktopEnvironmentPort(
   async function callerApprovalPolicy(
     call: DesktopAgentActionCall,
   ): Promise<DesktopChatApprovalPolicy> {
-    return call.scope
-      ? deps.chatApprovalPolicy(call.scope, call)
-      : { mode: FAIL_CLOSED_APPROVAL_MODE, sessionRules: [] };
+    const scope = call.scope;
+    if (!scope) return { mode: FAIL_CLOSED_APPROVAL_MODE, sessionRules: [] };
+    const policy = await deps.chatApprovalPolicy(scope, call);
+    return {
+      ...policy,
+      sessionRules: deps.callerSessionApprovalRules(scope, policy.sessionRules),
+    };
   }
 
   async function startTarget(
@@ -1583,11 +1644,18 @@ const defaultDeps: DesktopEnvironmentPortDeps = {
     );
   },
   liveApprovalMode: (chat, mode, use): ApprovalMode =>
-    (use === 'bound' ? boundingApprovalMode : reachableApprovalMode)(
+    (use === 'bound' ? callerBoundingApprovalMode : reachableApprovalMode)(
       chat.workspaceId,
       chat.worktreeId,
       chat.chatId,
       mode,
+    ),
+  callerSessionApprovalRules: (chat, rules): readonly ApprovalRule[] =>
+    callerBoundingSessionApprovalRules(
+      chat.workspaceId,
+      chat.worktreeId,
+      chat.chatId,
+      rules,
     ),
   approvalSettingsRevision: getApprovalSettingsRevision,
   chatApprovalStateRevision: (chat): number =>

@@ -1,7 +1,7 @@
 const FILE_URL_RE = /^file:/i;
 const WINDOWS_ROOTED_RE = /^(?:[A-Za-z]:[\\/]|\\)/;
 
-function isHostAbsolutePath(value: string): boolean {
+export function isHostAbsolutePath(value: string): boolean {
   return (
     value.startsWith('/') ||
     FILE_URL_RE.test(value) ||

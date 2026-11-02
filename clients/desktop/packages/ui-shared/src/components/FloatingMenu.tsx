@@ -16,6 +16,7 @@ import {
   type RefObject,
 } from 'react';
 import { focusableWithin } from '../lib/focusable';
+import { focusMenuRow } from '../lib/input-modality';
 import { suppressNextClick } from '../lib/suppress-next-click';
 import { pushMenuOpenBodyFlag } from '../lib/menu-open-body-flag';
 import { createPortal, flushSync } from 'react-dom';
@@ -69,6 +70,8 @@ export interface FloatingMenuProps extends Omit<
   DropdownMenuSurfaceProps,
   'children'
 > {
+  /** Disable when a composite owns trigger keys and anchors on a larger surface. */
+  readonly openOnArrowKeys?: boolean;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly anchorRef: RefObject<HTMLElement | null>;
@@ -151,6 +154,14 @@ export interface FloatingMenuProps extends Omit<
    * interaction boundary.
    */
   readonly outsidePressBoundaryRef?: RefObject<HTMLElement | null>;
+  /**
+   * Optional element where any press still dismisses this surface but is
+   * not swallowed: the click goes on to whatever is under the pointer. For a
+   * surface attached to a composer, a press on the composer's own controls
+   * (send, attach) is a deliberate action, not a dismissal gesture. Presses
+   * inside `outsidePressBoundaryRef` keep the surface open, as before.
+   */
+  readonly outsidePressClickThroughRef?: RefObject<HTMLElement | null>;
   /**
    * Marks this surface as a NESTED menu (a submenu flyout). Nested surfaces
    * portal to the document body like every other floating menu, so without
@@ -361,6 +372,8 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       interaction = 'menu',
       trapFocus = false,
       outsidePressBoundaryRef,
+      openOnArrowKeys = true,
+      outsidePressClickThroughRef,
       motion = 'enter',
       className = '',
       id: idProp,
@@ -414,13 +427,32 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         menu.style.setProperty('--floating-menu-anchor-width', anchorWidth);
       }
       const scrollViewport = scrollViewportRef.current;
+      // offsetWidth rounds fractional menu rows; transformed bounds include
+      // the entry animation's scale. Resolved CSS width keeps layout precision.
+      const menuStyle = view.getComputedStyle(menu);
+      const cssWidth = Number.parseFloat(menuStyle.width);
+      const horizontalInsets =
+        menuStyle.boxSizing === 'border-box'
+          ? 0
+          : [
+              menuStyle.paddingLeft,
+              menuStyle.paddingRight,
+              menuStyle.borderLeftWidth,
+              menuStyle.borderRightWidth,
+            ].reduce(
+              (total, value) => total + (Number.parseFloat(value) || 0),
+              0,
+            );
+      const menuWidth = Number.isFinite(cssWidth)
+        ? cssWidth + horizontalInsets
+        : menu.offsetWidth;
       const intrinsicMenuHeight = scrollViewport
         ? scrollViewport.scrollHeight +
           Math.max(0, menu.offsetHeight - scrollViewport.clientHeight)
         : Math.max(menu.scrollHeight, menu.offsetHeight);
       const next = computeFloatingMenuPosition({
         anchorRect,
-        menuWidth: menu.offsetWidth,
+        menuWidth,
         menuHeight: Math.min(
           intrinsicMenuHeight,
           heightLimit ?? Number.POSITIVE_INFINITY,
@@ -524,6 +556,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     }, [anchorRef, open, updatePosition]);
 
     useEffect((): (() => void) | void => {
+      if (!openOnArrowKeys) return;
       const trigger = anchorRef.current;
       if (!trigger) return;
       const handleTriggerKeyDown = (event: globalThis.KeyboardEvent): void => {
@@ -538,7 +571,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       trigger.addEventListener('keydown', handleTriggerKeyDown);
       return (): void =>
         trigger.removeEventListener('keydown', handleTriggerKeyDown);
-    }, [anchorRef, onOpenChange, open]);
+    }, [anchorRef, onOpenChange, open, openOnArrowKeys]);
 
     useEffect((): (() => void) | void => {
       if (!open) return;
@@ -575,7 +608,12 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         // hover-out grace period keeps the flyout mounted while the pointer
         // is over a parent row) and the parent trigger's own toggle. For a
         // genuinely outside press the parent's handler still suppresses.
-        if (!nested) {
+        // A press inside the click-through region dismisses and still
+        // activates its target.
+        if (
+          !nested &&
+          !outsidePressClickThroughRef?.current?.contains(event.target)
+        ) {
           suppressNextClick(doc);
         }
         onOpenChange(false);
@@ -651,6 +689,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       onOpenChange,
       open,
       outsidePressBoundaryRef,
+      outsidePressClickThroughRef,
       returnFocusRef,
       trapFocus,
     ]);
@@ -684,11 +723,17 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         interaction === 'listbox'
           ? items.find((item) => item.getAttribute('aria-selected') === 'true')
           : items.find((item) => item.getAttribute('aria-checked') === 'true');
+      // A listbox opens on its chosen option from either arrow, as a native
+      // select does, so Enter right away keeps the current choice.
       const target =
-        initialItemFocusRef.current === 'last'
-          ? items[items.length - 1]
-          : (selectedItem ?? items[0]);
-      (target ?? menuRef.current).focus();
+        interaction === 'listbox' && selectedItem
+          ? selectedItem
+          : initialItemFocusRef.current === 'last'
+            ? items[items.length - 1]
+            : (selectedItem ?? items[0]);
+      // A pointer open focuses the row unpainted; see `focusMenuRow`.
+      if (target) focusMenuRow(target);
+      else menuRef.current.focus();
       focusedForOpenRef.current = true;
     }, [focusOnOpen, initialFocusRef, interaction, open, position, trapFocus]);
 
@@ -734,6 +779,18 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       event: ReactKeyboardEvent<HTMLDivElement>,
     ): void => {
       onKeyDown?.(event);
+      // Tab always leaves a listbox. A focus trap that already placed focus
+      // (it prevented the Tab at its boundary) keeps that focus; otherwise
+      // focus goes back to the trigger so the browser's Tab moves on from it.
+      if (interaction === 'listbox' && event.key === 'Tab') {
+        if (!event.defaultPrevented) {
+          (returnFocusRef?.current ?? anchorRef.current)?.focus({
+            preventScroll: true,
+          });
+        }
+        onOpenChange(false);
+        return;
+      }
       if (
         event.defaultPrevented ||
         interaction === 'manual' ||
@@ -772,6 +829,12 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         });
         return;
       } else if (event.key === 'Tab') {
+        // Hand focus back to the trigger before the menu (and the focused
+        // option) unmounts, so the browser's Tab moves on from the trigger
+        // to the next control, as it does from a native select.
+        (returnFocusRef?.current ?? anchorRef.current)?.focus({
+          preventScroll: true,
+        });
         onOpenChange(false);
         return;
       } else if (

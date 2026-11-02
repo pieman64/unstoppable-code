@@ -216,6 +216,13 @@
       "class": "direct",
       "note": "Lucide arrow-up, 2px stroke. Replaces arrow_upward; regular 20px, compact 14px."
     },
+    "arrowUpDown": {
+      "source": "lucide",
+      "name": "arrow-up-down",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide arrow-up-down for sort controls (the search field's nested Sort button); 2px stroke, regular 20px / compact 14px."
+    },
     "arrowUpRight": {
       "source": "lucide",
       "name": "arrow-up-right",
@@ -512,6 +519,13 @@
       "fill": 0,
       "class": "direct",
       "note": "Lucide circle-stop, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
+    },
+    "circlePause": {
+      "source": "lucide",
+      "name": "circle-pause",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-pause for the shared Paused status glyph (StatusGlyph); 2px stroke, regular 20px / compact 14px."
     },
     "circleDashed": {
       "source": "lucide",
@@ -1120,6 +1134,13 @@
       "class": "direct",
       "note": "Lucide list-filter, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
     },
+    "listStart": {
+      "source": "lucide",
+      "name": "list-start",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide list-start for the wake turn boundary's show-where-it-started button; 2px stroke, regular 20px / compact 14px."
+    },
     "loader": {
       "source": "lucide",
       "name": "loader-circle",
@@ -1147,6 +1168,13 @@
       "fill": 0,
       "class": "direct",
       "note": "Lucide search, 2px stroke. Replaces search; regular 20px, compact 14px."
+    },
+    "searchX": {
+      "source": "lucide",
+      "name": "search-x",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide search-x for a search with no results (the shared search empty state); 2px stroke, regular 20px / compact 14px."
     },
     "map": {
       "source": "lucide",
@@ -1201,6 +1229,13 @@
       "class": "identity",
       "inset": 0.5,
       "note": "Official GitHub Octicon (git-merge-24), inset 0.5. Replaces the CAN-4423 gap decision merge."
+    },
+    "messageCircleDashed": {
+      "source": "lucide",
+      "name": "message-circle-dashed",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide message-circle-dashed for the wake turn boundary, a turn the agent continued on its own; 2px stroke, regular 20px / compact 14px."
     },
     "microphone": {
       "source": "lucide",
@@ -1265,6 +1300,13 @@
       "fill": 0,
       "class": "identity",
       "note": "Existing repository logo."
+    },
+    "orbit": {
+      "source": "lucide",
+      "name": "orbit",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide orbit, 2px stroke. Orchestrator; regular 20px, compact 14px."
     },
     "package": {
       "source": "lucide",
@@ -1874,6 +1916,34 @@
       "fill": 1,
       "class": "direct",
       "note": "Lucide zap, 2px stroke. Replaces bolt; regular 20px, compact 14px. Filled silhouette state."
+    },
+    "hermesAgent": {
+      "source": "repo",
+      "name": "HermesLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo; Hermes Agent assets/icon-master.svg (NousResearch/hermes-agent), svgo-optimized."
+    },
+    "metaMuse": {
+      "source": "repo",
+      "name": "MuseLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo; Meta Muse mark from Wikimedia Commons Muse_icon.svg."
+    },
+    "openclaw": {
+      "source": "repo",
+      "name": "OpenClawLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo; OpenClaw lobster mark from https://openclaw.ai/favicon.svg."
+    },
+    "opencode": {
+      "source": "repo",
+      "name": "OpenCodeLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo; OpenCode app icon from https://opencode.ai/favicon.svg."
     }
   }
 }

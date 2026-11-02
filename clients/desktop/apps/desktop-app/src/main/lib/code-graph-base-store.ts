@@ -9,7 +9,7 @@ import {
   type CodeGraphBaseIdentity,
   type CodeGraphSeedSource,
   type ValidatedCodeGraphBase,
-} from '@canopy/desktop-shared/node/code-graph/base-graph';
+} from '@canopy/code-graph/base-graph';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
 import { getRepoShadowDir } from './repo-shadow';
 

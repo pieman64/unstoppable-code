@@ -94,7 +94,7 @@ function isFallbackPipelineActivity(
 ): boolean {
   return (
     activity.key === 'untitled-pipeline' ||
-    activity.label === 'Untitled pipeline' ||
+    activity.label === 'Untitled workflow' ||
     activity.label === activity.key
   );
 }
@@ -129,7 +129,7 @@ export function buildTodayData(
     if (entry.pipelineExecutionId) {
       const key = entry.pipelineId ?? 'untitled-pipeline';
       const label =
-        entry.pipelineName?.trim() || entry.pipelineId || 'Untitled pipeline';
+        entry.pipelineName?.trim() || entry.pipelineId || 'Untitled workflow';
       const current = pipelineExecutions.get(entry.pipelineExecutionId) ?? {
         key,
         label,

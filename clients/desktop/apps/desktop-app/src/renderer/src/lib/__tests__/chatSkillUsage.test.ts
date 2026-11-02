@@ -68,8 +68,10 @@ function message(
   } as ChatMessage;
 }
 
-const text = (value: string): ChatMessage['blocks'][number] =>
-  ({ type: 'text', text: value }) as ChatMessage['blocks'][number];
+const text = (value: string): ChatMessage['blocks'][number] => ({
+  type: 'text',
+  text: value,
+});
 const skillCall = (input: string): ChatMessage['blocks'][number] =>
   ({
     type: 'tool_use',

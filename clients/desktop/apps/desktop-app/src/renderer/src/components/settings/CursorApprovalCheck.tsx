@@ -26,7 +26,6 @@ import {
   SettingsSection,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 interface CursorApprovalCheckProps {
   collapsible?: boolean;
@@ -35,7 +34,6 @@ interface CursorApprovalCheckProps {
 export function CursorApprovalCheck({
   collapsible = false,
 }: CursorApprovalCheckProps): JSX.Element | null {
-  const settingsButtonSize = useSettingsButtonSize();
   const [expanded, setExpanded] = useState(false);
   const pathInputId = useId();
   const [available, setAvailable] = useState(false);
@@ -273,7 +271,7 @@ export function CursorApprovalCheck({
         }
         control={
           <Button
-            size={settingsButtonSize}
+            size="compact"
             variant="secondary"
             disabled={running || saving || binaryPath.trim() === savedPath}
             onClick={(): void => {
@@ -295,8 +293,8 @@ export function CursorApprovalCheck({
           <>
             {running && (
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 onClick={(): void => {
                   void stop();
                 }}
@@ -305,7 +303,7 @@ export function CursorApprovalCheck({
               </Button>
             )}
             <Button
-              size={settingsButtonSize}
+              size="compact"
               disabled={running || !binaryPath.trim()}
               onClick={(): void => {
                 void run();
@@ -349,8 +347,8 @@ export function CursorApprovalCheck({
             description="Set the Cursor executable and run the check."
             control={
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 aria-expanded={expanded}
                 onClick={(): void => setExpanded((open) => !open)}
               >

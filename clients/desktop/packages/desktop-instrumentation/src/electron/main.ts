@@ -2,7 +2,10 @@ import { loadRequiredNodeModule } from '@canopy/desktop-shared/node/lib/packaged
 import { randomUUID } from 'node:crypto';
 import type { PostHog } from 'posthog-node';
 import type * as PostHogNodeModule from 'posthog-node';
-import type { PostHogSessionState } from '@canopy/desktop-shared/types/observability';
+import type {
+  PostHogInstallLaunch,
+  PostHogSessionState,
+} from '@canopy/desktop-shared/types/observability';
 import { isPostHogSessionState } from '../posthog-session';
 import { sanitizePostHogEvent } from '../posthog-privacy';
 import {
@@ -35,6 +38,7 @@ import type {
   DesktopInstrumentationInitResult,
   DesktopInstrumentationOperationOptions,
 } from '../types';
+export { createForeignCrashDumpFilter } from './crash-dumps/foreign-dump-filter';
 
 type DatadogElectronSdk = typeof DatadogElectronSdkModule;
 type DatadogElectronSdkPatchedExports = {
@@ -154,7 +158,9 @@ async function flushDatadogTransport(sdk: DatadogElectronSdk): Promise<void> {
   await flushTransport.call(sdk);
 }
 
-export async function initializeDesktopInstrumentationMain(): Promise<DesktopInstrumentationInitResult> {
+export async function initializeDesktopInstrumentationMain(options?: {
+  crashDumpFilter?: (filePath: string) => Promise<'process' | 'discard'>;
+}): Promise<DesktopInstrumentationInitResult> {
   if (initialized) {
     return { enabled: true, provider: 'datadog' };
   }
@@ -184,6 +190,9 @@ export async function initializeDesktopInstrumentationMain(): Promise<DesktopIns
       telemetrySampleRate: config.telemetrySampleRate,
       defaultPrivacyLevel: config.defaultPrivacyLevel,
       allowedWebViewHosts: config.allowedWebViewHosts,
+      ...(options?.crashDumpFilter
+        ? { crashDumpFilter: options.crashDumpFilter }
+        : {}),
     });
 
     initialized = didInitialize;
@@ -283,7 +292,13 @@ export function startDesktopOperation(
   name: DesktopOperationName,
   options?: DesktopInstrumentationOperationOptions,
 ): void {
-  safelyInvoke(() => posthogOperations.start(name, options));
+  safelyInvoke(() =>
+    posthogOperations.start(
+      name,
+      options,
+      isDesktopPostHogOperationCaptureEnabled(),
+    ),
+  );
   if (!initialized || !datadogSdk) {
     return;
   }
@@ -462,11 +477,24 @@ export function setDesktopPostHogOperationCaptureEnabled(
 ): void {
   posthogOperationCaptureEnabled = enabled;
   if (!enabled) {
+    posthogOperations.discardAcquisitionStarts();
     posthogOperationEpoch += 1;
     pendingPostHogOperations.length = 0;
   } else {
     publishPostHogAccount();
   }
+}
+
+/** Eligibility for durable product milestones. Never consume one while capture is off. */
+export function isDesktopPostHogOperationCaptureEnabled(): boolean {
+  return Boolean(
+    posthogOperationCaptureEnabled &&
+    posthog &&
+    posthogAnonymousId &&
+    !posthogInitializationUnavailable &&
+    !posthogShutdownRequested &&
+    !posthogShutdown,
+  );
 }
 
 let posthogAccount: PostHogAccountTracker | undefined;
@@ -532,6 +560,7 @@ export function adoptDesktopPostHogSession(
 export function initializePostHogMain(
   getAnonymousId: () => Promise<string>,
   accountSource?: PostHogAccountSource,
+  getInstallLaunch?: () => Promise<PostHogInstallLaunch>,
 ): Promise<DesktopInstrumentationInitResult> {
   return (posthogInitialization ??=
     (async (): Promise<DesktopInstrumentationInitResult> => {
@@ -539,6 +568,7 @@ export function initializePostHogMain(
         const result = await initializePostHogMainClient(
           getAnonymousId,
           accountSource,
+          getInstallLaunch,
         );
         posthogInitializationUnavailable = !result.enabled;
         return result;
@@ -551,10 +581,10 @@ export function initializePostHogMain(
 async function initializePostHogMainClient(
   getAnonymousId: () => Promise<string>,
   accountSource?: PostHogAccountSource,
+  getInstallLaunch?: () => Promise<PostHogInstallLaunch>,
 ): Promise<DesktopInstrumentationInitResult> {
-  const readiness = getPostHogInstrumentationReadiness(
-    getDesktopInstrumentationConfig().posthog,
-  );
+  const config = getDesktopInstrumentationConfig();
+  const readiness = getPostHogInstrumentationReadiness(config.posthog);
   if (!readiness.enabled)
     return {
       enabled: false,
@@ -581,6 +611,7 @@ async function initializePostHogMainClient(
     ) {
       throw new Error('PostHog anonymous identity is unavailable');
     }
+    const installLaunch = await readPostHogInstallLaunch(getInstallLaunch);
     const sdk = loadRequiredNodeModule<typeof PostHogNodeModule>({
       moduleId: 'posthog-node',
       requireFrom: __filename,
@@ -620,7 +651,23 @@ async function initializePostHogMainClient(
         reason: 'shutdown',
       };
     }
-    captureDesktopPostHogEvent('desktop:app_start');
+    captureDesktopPostHogEvent('desktop:app_start', {
+      ...(config.appVersion === undefined
+        ? {}
+        : { app_version: config.appVersion }),
+      ...(config.releaseChannel === undefined
+        ? {}
+        : { release_channel: config.releaseChannel }),
+      ...(installLaunch === undefined
+        ? {}
+        : {
+            is_first_launch: installLaunch.isFirstLaunch,
+            is_reinstall: installLaunch.isReinstall,
+            ...(typeof installLaunch.isInvitedInstall === 'boolean'
+              ? { is_invited_install: installLaunch.isInvitedInstall }
+              : {}),
+          }),
+    });
     publishPostHogAccount();
     if (posthogOperationCaptureEnabled) {
       for (const operation of pendingPostHogOperations) {
@@ -634,6 +681,18 @@ async function initializePostHogMainClient(
       provider: 'posthog',
       reason: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+/** Launch facts are best-effort; a failed read never blocks startup. */
+async function readPostHogInstallLaunch(
+  getInstallLaunch: (() => Promise<PostHogInstallLaunch>) | undefined,
+): Promise<PostHogInstallLaunch | undefined> {
+  if (!getInstallLaunch) return undefined;
+  try {
+    return await getInstallLaunch();
+  } catch {
+    return undefined;
   }
 }
 

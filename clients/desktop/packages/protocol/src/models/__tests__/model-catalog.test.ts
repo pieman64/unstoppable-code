@@ -14,6 +14,34 @@ import {
 } from '../index';
 
 describe('model catalog contract (CAN-1218)', () => {
+  it('uses the captured harness capability instead of the native model effort', () => {
+    const row = {
+      id: 'native',
+      label: 'Native',
+      kind: 'model' as const,
+      provider: 'codex' as const,
+      available: true,
+      supportedThinkingLevels: ['high' as const],
+      harnessChoices: [
+        {
+          harness: 'opencode' as const,
+          provider: 'opencode' as const,
+          supportedThinkingLevels: [],
+          supportsFastMode: false,
+          supportsImages: false,
+          contextWindow: 64_000,
+          funding: 'ai-credits' as const,
+        },
+      ],
+    };
+    expect(
+      resolveModelCatalogThinkingLevels([row], 'native', 'opencode'),
+    ).toEqual([]);
+    expect(resolveModelCatalogThinkingLevels([row], 'native', 'codex')).toEqual(
+      ['high'],
+    );
+  });
+
   it('enumerates the three concrete providers in desktop-picker order', () => {
     expect(MODEL_CATALOG_PROVIDERS).toEqual(['claude', 'codex', 'ollama']);
   });

@@ -1,6 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
+import { Badge } from '@canopy/ui-shared/components';
 import { SettingsLink, useSettingsPrivacy } from '../host';
 import { joinClassNames } from './digest-class-names';
 import {
@@ -119,9 +120,7 @@ export function DigestList({
               {digest.headline ?? 'Work digest'}
             </p>
             {digest.variant === 'NUDGE' && (
-              <span className="mt-2 inline-flex rounded-full bg-secondary px-2 py-1 text-xs fg-secondary">
-                Quiet period
-              </span>
+              <Badge className="mt-2">Quiet period</Badge>
             )}
             {!isReadable(digest.status) && (
               <p className="mt-2 text-xs fg-secondary">

@@ -4,7 +4,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { IconStyleProvider } from '@canopy/ui-shared/components';
-import { FilesTab, type FilesTabMutations } from '../FilesTab';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import {
+  FilesTab,
+  type FilesTabMutations,
+  type FilesTabRoot,
+} from '../FilesTab';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
@@ -1040,5 +1045,155 @@ describe('FilesTab toolbar glyphs', () => {
     ).toBe(true);
     act(() => root.unmount());
     container.remove();
+  });
+
+  describe('app-owned root group', () => {
+    beforeEach(() => localStorage.clear());
+    const coworkRoots: FilesTabRoot[] = [
+      { localId: 'workspace', label: 'Vendor Spend Q3', kind: 'standalone' },
+      { localId: 'notes', label: 'notes', kind: 'standalone' },
+      { localId: 'prompts', label: 'prompts', kind: 'standalone' },
+      { localId: 'attachments', label: 'attachments', kind: 'attachments' },
+    ];
+    const chipLabels = (container: HTMLElement): string[] =>
+      Array.from(
+        container.querySelectorAll<HTMLButtonElement>(
+          '[data-testid="activity-files-roots"] button:not([aria-expanded])',
+        ),
+        (chip) => chip.textContent ?? '',
+      );
+
+    it('groups app-owned roots under a collapsed brand control', () => {
+      const onSelectRoot = jest.fn();
+      const { container, root } = mountFilesTab(
+        <FilesTab
+          entries={[]}
+          roots={coworkRoots}
+          activeRootLocalId="workspace"
+          onSelectRoot={onSelectRoot}
+          appManagedRootsLabel="Canopy"
+        />,
+      );
+      const group = container.querySelector<HTMLButtonElement>(
+        '[data-testid="activity-files-root-group"]',
+      );
+      expect(group?.textContent).toContain('Canopy');
+      expect(group?.getAttribute('aria-expanded')).toBe('false');
+      expect(chipLabels(container)).toEqual(['Vendor Spend Q3']);
+      const projectLabel = container.querySelector(`.${REPLAY_MASK_CLASS}`);
+      expect(projectLabel?.textContent).toBe('Vendor Spend Q3');
+
+      act(() => group?.click());
+      expect(group?.getAttribute('aria-expanded')).toBe('true');
+      const controlled = group?.getAttribute('aria-controls') ?? '';
+      expect(document.getElementById(controlled)?.getAttribute('role')).toBe(
+        'group',
+      );
+      expect(chipLabels(container)).toEqual([
+        'Vendor Spend Q3',
+        'notes',
+        'prompts',
+        'attachments',
+      ]);
+      const notes = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('button'),
+      ).find((chip) => chip.textContent === 'notes');
+      act(() => notes?.click());
+      expect(onSelectRoot).toHaveBeenCalledWith('notes');
+      act(() => root.unmount());
+      container.remove();
+    });
+
+    it('isolates and restores group expansion across workspace switches and remounts', () => {
+      const view = (workspace: string): JSX.Element => (
+        <FilesTab
+          entries={[]}
+          roots={coworkRoots}
+          workspaceLocalId={workspace}
+          worktreeLocalId="home"
+          activeRootLocalId="workspace"
+          onSelectRoot={jest.fn()}
+          appManagedRootsLabel="Canopy"
+        />
+      );
+      const { container, root } = mountFilesTab(view('one'));
+      const group = (): HTMLButtonElement | null =>
+        container.querySelector('[data-testid="activity-files-root-group"]');
+      act(() => group()?.click());
+      expect(group()?.getAttribute('aria-expanded')).toBe('true');
+      act(() => root.render(view('two')));
+      expect(group()?.getAttribute('aria-expanded')).toBe('false');
+      act(() => root.render(view('one')));
+      expect(group()?.getAttribute('aria-expanded')).toBe('true');
+      act(() => group()?.click());
+      act(() => root.unmount());
+      container.remove();
+      const remounted = mountFilesTab(view('one'));
+      expect(
+        remounted.container
+          .querySelector('[data-testid="activity-files-root-group"]')
+          ?.getAttribute('aria-expanded'),
+      ).toBe('false');
+      act(() => remounted.root.unmount());
+      remounted.container.remove();
+    });
+
+    it('reveals the group when an app-owned root is active', () => {
+      const { container, root } = mountFilesTab(
+        <FilesTab
+          entries={[]}
+          roots={coworkRoots}
+          activeRootLocalId="notes"
+          onSelectRoot={jest.fn()}
+          appManagedRootsLabel="Canopy"
+        />,
+      );
+      expect(
+        container
+          .querySelector('[data-testid="activity-files-root-group"]')
+          ?.getAttribute('aria-expanded'),
+      ).toBe('true');
+      act(() => root.unmount());
+      container.remove();
+    });
+
+    it.each([
+      ['without a brand label', coworkRoots, undefined, true],
+      [
+        'for an older host without root kinds',
+        coworkRoots.map(({ localId, label }) => ({ localId, label })),
+        'Canopy',
+        false,
+      ],
+      [
+        'outside a Cowork catalog',
+        [
+          { localId: 'workspace', label: 'workspace', kind: 'git-repo' },
+          { localId: 'attachments', label: 'attachments', kind: 'attachments' },
+        ] satisfies FilesTabRoot[],
+        'Canopy',
+        false,
+      ],
+    ])('keeps every root chip visible %s', (_name, roots, label, masked) => {
+      const { container, root } = mountFilesTab(
+        <FilesTab
+          entries={[]}
+          roots={roots}
+          activeRootLocalId={roots[0]?.localId}
+          onSelectRoot={jest.fn()}
+          appManagedRootsLabel={label}
+        />,
+      );
+      expect(
+        container.querySelector('[data-testid="activity-files-root-group"]'),
+      ).toBeNull();
+      expect(chipLabels(container)).toEqual(roots.map((entry) => entry.label));
+      // Only an identified Cowork root carries the project title.
+      expect(container.querySelector(`.${REPLAY_MASK_CLASS}`) !== null).toBe(
+        masked,
+      );
+      act(() => root.unmount());
+      container.remove();
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { GitHubBrokerError } from '../lib/github-broker/errors';
+import type { Octokit } from '@octokit/rest';
 import type {
   GitHubClient,
   GitHubClientEnqueueOptions,
@@ -384,32 +385,30 @@ function installSweepClient(respond: (request: GraphQlRequest) => unknown): {
       });
     },
   };
-  const enqueue = jest.fn(
-    async (
-      operation: (client: unknown, headers: Record<string, string>) => unknown,
-      _priority?: 'high' | 'normal',
-      requestOptions?: GitHubClientEnqueueOptions,
-    ): Promise<unknown> => {
-      options.push(requestOptions);
-      try {
-        return await operation(octokit, {});
-      } catch (error) {
-        if (
-          typeof error === 'object' &&
-          error !== null &&
-          'status' in error &&
-          error.status === 429
-        ) {
-          throw new GitHubBrokerError(
-            'rate_limited',
-            'GitHub refused the background read.',
-            { retriable: true, retryAt: 1_000_000, resource: 'graphql' },
-          );
-        }
-        throw error;
+  const enqueue: GitHubClient['enqueue'] = async <T>(
+    operation: (client: Octokit, headers: Record<string, string>) => Promise<T>,
+    _priority?: 'high' | 'normal',
+    requestOptions?: GitHubClientEnqueueOptions<T>,
+  ): Promise<T> => {
+    options.push(requestOptions);
+    try {
+      return await operation(octokit as Octokit, {});
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'status' in error &&
+        error.status === 429
+      ) {
+        throw new GitHubBrokerError(
+          'rate_limited',
+          'GitHub refused the background read.',
+          { retriable: true, retryAt: 1_000_000, resource: 'graphql' },
+        );
       }
-    },
-  );
+      throw error;
+    }
+  };
   return { client: { enqueue }, requests, options };
 }
 

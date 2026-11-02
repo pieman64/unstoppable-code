@@ -107,11 +107,17 @@ const mockResolveCuratedMcpCatalogForSync = jest.fn<
 >();
 
 jest.mock('../plugins/curated-plugin-catalog', () => ({
-  fetchCuratedPluginsForSync: mockFetchCuratedPluginsForSync,
-  fetchCuratedPluginContent: mockFetchCuratedPluginContent,
+  get fetchCuratedPluginsForSync(): typeof mockFetchCuratedPluginsForSync {
+    return mockFetchCuratedPluginsForSync;
+  },
+  get fetchCuratedPluginContent(): typeof mockFetchCuratedPluginContent {
+    return mockFetchCuratedPluginContent;
+  },
 }));
 jest.mock('../mcp/curated-catalog', () => ({
-  resolveCuratedMcpCatalogForSync: mockResolveCuratedMcpCatalogForSync,
+  get resolveCuratedMcpCatalogForSync(): typeof mockResolveCuratedMcpCatalogForSync {
+    return mockResolveCuratedMcpCatalogForSync;
+  },
 }));
 
 import { scanPluginDetails } from '../plugins/plugin-scanner';

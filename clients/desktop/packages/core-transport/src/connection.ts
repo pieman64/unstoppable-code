@@ -224,8 +224,8 @@ class AsyncQueue<T> {
   weight = 0;
 
   constructor(
-    private readonly onDequeue: () => void = () => {},
-    private readonly weigh: (value: T) => number = () => 0,
+    private readonly onDequeue: () => void = (): void => {},
+    private readonly weigh: (value: T) => number = (): number => 0,
     private readonly onDirectDelivery = false,
   ) {}
 

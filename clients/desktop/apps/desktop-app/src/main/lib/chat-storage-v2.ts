@@ -1,7 +1,9 @@
+import { enumerateDelegationRegistryAnswerReferences } from './chat-delta-journal/delegation-registry-store';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, type BigIntStats } from 'node:fs';
 import {
   copyFile,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -18,7 +20,11 @@ import type {
   ChatRuntimeState,
   PersistedCommandReceipt,
 } from '@canopy/desktop-shared/types';
-import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
+import type {
+  PersistedChatMessage,
+  PersistedToolOutputReference,
+} from '@canopy/agent-transcript/types';
+import { PersistedToolOutputReferenceSchema } from '@canopy/protocol/canopy-core';
 import type { VisualOwnerFence } from './chat-visual-contracts';
 import {
   artifactRelativePath,
@@ -27,23 +33,42 @@ import {
 } from './chat-artifact-references';
 import { assertTranscriptIdentity } from './chat-transcript-artifacts';
 import {
+  assertNoNewerChatStorageManifest,
   ChatDeltaJournalIntegrityError,
   ChatStorageNewerFormatError,
   DELTA_CHECKPOINT_MARKER_NAME,
   DELTA_CHECKPOINT_STAGED_SUFFIX,
   DELTA_CHECKPOINT_WORK_DIRECTORY,
   DELTA_JOURNAL_FILE_NAME,
-  isDeltaJournalStorageManifest,
+  DELTA_JOURNAL_V2_FILE_NAME,
   type DeltaJournalStorageManifest,
+  type Format4CheckpointedManifest,
+  type Format4StorageManifest,
+  journalFileFor,
+  parseChatStorageManifest,
+  selectJournal,
 } from './chat-delta-journal/format';
+import {
+  loadStreamCatalog,
+  loadStreamRegistry,
+  parseStreamDescriptor,
+  streamDescriptorAnswerReferences,
+  streamRegistryPaths,
+  validateStreamClosure,
+} from './chat-delta-journal/stream-registry';
+import { delegationTranscriptPaths } from './transcript-stream-paths';
 import {
   readReplayedChatIndexes,
   summarizeDeltaJournal,
 } from './chat-delta-journal/reader';
 import {
   ChatTranscriptLog,
+  TranscriptStreamStore,
+  readCompleteTranscriptMessages,
   type TranscriptDescriptor,
 } from './chat-transcript-log';
+import { ChatTranscriptArtifacts } from './chat-transcript-artifacts';
+import { chatChildDeleteFence } from './chat-child-delete-fence';
 import {
   recordChatStorageAtomicReplacement,
   recordChatStorageFileSync,
@@ -327,6 +352,25 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Clears a directory promotion's destination. A file there is refused: a
+ * Windows rename would silently replace it with the staged tree (CAN-5151).
+ * Migration admission and the scope lease exclude this process's writers,
+ * so only another process could create one between the check and rename.
+ */
+async function clearPromotionDestination(path: string): Promise<void> {
+  let stats: BigIntStats;
+  try {
+    stats = await lstat(path, { bigint: true });
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return;
+    throw error;
+  }
+  if (stats.isFile())
+    throw new Error('Refusing to promote chat storage over a file');
+  await rm(path, { recursive: true });
+}
+
 async function hashFile(
   path: string,
 ): Promise<{ byteLength: number; sha256: string }> {
@@ -410,18 +454,90 @@ async function copyTreeVerified(
   return hash.digest('hex');
 }
 
+/**
+ * Visit every committed and open row of each registered child stream of a
+ * format 4 tree, verifying every body reference against its parent chat,
+ * which owns child artifacts.
+ */
+async function verifyChildStreamRows(
+  root: string,
+  artifacts: ChatTranscriptArtifacts,
+  visit: (
+    reference: PersistedToolOutputReference,
+    parentChatId: string,
+  ) => void | Promise<void>,
+  owningChats: ReadonlySet<string>,
+): Promise<void> {
+  const catalog = await loadStreamCatalog(root);
+  for (const parentChatId of Array.from(owningChats)) {
+    const registry = catalog.parents[parentChatId]
+      ? await loadStreamRegistry(root, parentChatId, { readOnly: true })
+      : undefined;
+    for await (const reference of enumerateDelegationRegistryAnswerReferences(
+      root,
+      parentChatId,
+    )) {
+      await artifacts.verify(parentChatId, reference);
+      await visit(reference, parentChatId);
+    }
+    for (const entry of registry?.entries ?? []) {
+      const paths = streamRegistryPaths(root, parentChatId, entry.streamKey);
+      const descriptor = parseStreamDescriptor(
+        await readFile(paths.descriptor),
+      );
+      for (const candidate of streamDescriptorAnswerReferences(descriptor)) {
+        const reference = PersistedToolOutputReferenceSchema.parse(candidate);
+        await artifacts.verify(parentChatId, reference);
+        await visit(reference, parentChatId);
+      }
+      const child = new TranscriptStreamStore(
+        delegationTranscriptPaths(root, entry.target),
+        artifacts,
+        undefined,
+        { readOnly: true, childMode: true },
+      );
+      const verifyRow = async (row: PersistedChatMessage): Promise<void> => {
+        for await (const reference of artifacts.referenceClosure(
+          parentChatId,
+          row,
+        )) {
+          await artifacts.verify(parentChatId, reference);
+          await visit(reference, parentChatId);
+        }
+      };
+      for await (const row of readCompleteTranscriptMessages(paths.log))
+        await verifyRow(row);
+      for (const row of await child.activeMessages(entry.streamKey))
+        await verifyRow(row);
+    }
+  }
+}
+
 async function reachableToolOutputPaths(
   directory: string,
   indexes: { live: ChatLiveIndex; archive: ChatArchiveIndex },
+  format: 'v1' | 'v2' | 'v3' | 'v4',
 ): Promise<Set<string>> {
-  const transcript = new ChatTranscriptLog(
-    join(directory, 'transcripts'),
-    undefined,
-    { readOnly: true },
-  );
+  const root = join(directory, 'transcripts');
+  const transcript = new ChatTranscriptLog(root, undefined, { readOnly: true });
   const paths = new Set<string>();
-  const add = (message: PersistedChatMessage, chatId: string): void => {
-    for (const block of message.blocks)
+  const artifacts = new ChatTranscriptArtifacts(root, true);
+  const addReference = (
+    reference: PersistedToolOutputReference,
+    chatId: string,
+  ): void => {
+    paths.add(
+      artifactRelativePath(chatId, { family: 'tool-output', reference }),
+    );
+  };
+  const add = async (
+    message: PersistedChatMessage,
+    chatId: string,
+  ): Promise<void> => {
+    for await (const reference of artifacts.referenceClosure(chatId, message))
+      addReference(reference, chatId);
+    // The closure covers tool output; visuals live on the logical blocks.
+    for (const block of (await artifacts.expandBlocks(chatId, message)).blocks)
       for (const ref of storedArtifactRefsOf(block))
         paths.add(artifactRelativePath(chatId, ref));
   };
@@ -430,10 +546,17 @@ async function reachableToolOutputPaths(
     ...indexes.archive.archived.map((entry) => entry.tab),
   ]) {
     for await (const message of transcript.iterate(tab.id))
-      add(message, tab.id);
+      await add(message, tab.id);
     for (const message of await transcript.activeMessages(tab.id))
-      add(message, tab.id);
+      await add(message, tab.id);
   }
+  if (format === 'v4')
+    await verifyChildStreamRows(
+      root,
+      artifacts,
+      addReference,
+      indexedChatIds(indexes),
+    );
   return paths;
 }
 
@@ -477,13 +600,18 @@ function capturePathPredicate(
   return (relativePath) =>
     !relativePath.endsWith('.tmp') &&
     !isDeltaJournalWorkingFile(relativePath) &&
+    relativePath !== DELTA_JOURNAL_V2_FILE_NAME &&
+    !relativePath
+      .split(sep)
+      .some((part) => part.endsWith('.checkpoint') || part.includes('.tmp')) &&
     !relativePath.startsWith(`${pendingTranscriptRoot}${sep}`) &&
     !relativePath.startsWith(`${visualStagingRoot}${sep}`) &&
     !storedArtifactRoots.some(
       (root) =>
         relativePath.startsWith(root) && !reachableArtifacts.has(relativePath),
     ) &&
-    (!relativePath.startsWith(`${delegationRoot}${sep}`) ||
+    (relativePath === join(delegationRoot, 'stream-catalog.json') ||
+      !relativePath.startsWith(`${delegationRoot}${sep}`) ||
       indexedChats.has(
         relativePath.slice(delegationRoot.length + 1).split(sep)[0] ?? '',
       ));
@@ -494,6 +622,7 @@ export class ChatStorageV2 {
   public readonly directory: string;
   public readonly manifestPath: string;
   private readonly legacyPaths: readonly string[];
+  public readonly maxManifestVersion: 3 | 4;
   private committedSummary?: {
     identities: readonly string[];
     summary: ChatIndexSummary;
@@ -503,7 +632,9 @@ export class ChatStorageV2 {
     private readonly workspaceRoot: string,
     private readonly scopeId: string,
     legacyPaths?: readonly string[],
+    options: { maxManifestVersion?: 3 | 4 } = {},
   ) {
+    this.maxManifestVersion = options.maxManifestVersion ?? 4;
     assertTranscriptIdentity(scopeId);
     this.directory = join(workspaceRoot, 'chat-storage-v2', scopeId);
     this.manifestPath = join(
@@ -529,11 +660,14 @@ export class ChatStorageV2 {
   /** Reuse the canonical legacy resolver, including cowork aliases and
    * sentinel namespaces. Cleanup uses those exact resolved file families.
    */
-  public static fromLegacyPaths(paths: {
-    tabs: string;
-    archives: string;
-    journal: string;
-  }): ChatStorageV2 {
+  public static fromLegacyPaths(
+    paths: {
+      tabs: string;
+      archives: string;
+      journal: string;
+    },
+    options: { maxManifestVersion?: 3 | 4 } = {},
+  ): ChatStorageV2 {
     const parent = dirname(paths.tabs);
     const namespace = basename(parent);
     const id = basename(paths.tabs, '.json');
@@ -543,6 +677,7 @@ export class ChatStorageV2 {
         : parent,
       namespace === 'plan-explore-chats' ? `${namespace}-${id}` : id,
       [paths.tabs, paths.archives, paths.journal],
+      options,
     );
   }
 
@@ -552,7 +687,10 @@ export class ChatStorageV2 {
    * journal writer, driven by the chat state backend, changes it.
    */
   private async manifest(): Promise<
-    StorageManifest | DeltaJournalStorageManifest | undefined
+    | StorageManifest
+    | DeltaJournalStorageManifest
+    | Format4StorageManifest
+    | undefined
   > {
     let parsed: unknown;
     try {
@@ -561,13 +699,22 @@ export class ChatStorageV2 {
       if (isErrnoException(error) && error.code === 'ENOENT') return undefined;
       throw error;
     }
-    if (
-      !(isStorageManifest(parsed) || isDeltaJournalStorageManifest(parsed)) ||
-      parsed.scopeId !== this.scopeId
-    ) {
-      throw new Error('Invalid chat storage authority manifest');
+    assertNoNewerChatStorageManifest(
+      parsed,
+      this.scopeId,
+      this.maxManifestVersion,
+    );
+    if (isStorageManifest(parsed)) {
+      if (parsed.scopeId !== this.scopeId)
+        throw new Error('Invalid chat storage authority manifest');
+      return parsed;
     }
-    return parsed;
+    if (!isRecord(parsed) || (parsed.version !== 3 && parsed.version !== 4))
+      throw new Error('Invalid chat storage authority manifest');
+    const manifest = parseChatStorageManifest(parsed);
+    if (manifest.scopeId !== this.scopeId)
+      throw new Error('Invalid chat storage authority manifest');
+    return manifest;
   }
 
   /** A delta-journal (version 3) scope is migrated: authority is never v1. */
@@ -576,10 +723,15 @@ export class ChatStorageV2 {
   }
 
   /** The manifest-selected on-disk format. */
-  public async format(): Promise<'v1' | 'v2' | 'v3'> {
+  public async format(): Promise<'v1' | 'v2' | 'v3' | 'v4'> {
     const manifest = await this.manifest();
     if (!manifest) return 'v1';
-    return manifest.version === 3 ? 'v3' : 'v2';
+    return manifest.version === 4 ? 'v4' : manifest.version === 3 ? 'v3' : 'v2';
+  }
+
+  /** The selected journal's file name; undefined when checkpointed. */
+  public async journalFile(): Promise<string | undefined> {
+    return journalFileFor(await this.manifest());
   }
 
   /** Every path that writes version 2 files refuses a version 3 scope. */
@@ -609,7 +761,7 @@ export class ChatStorageV2 {
   }> {
     const manifest = await this.manifest();
     if (!manifest) throw new Error('Scope has not migrated to v2');
-    if (manifest.version === 3) {
+    if (selectJournal(manifest)) {
       // A reader without the scope lease can meet a checkpoint between its
       // reads of the marker, the indexes and the journal: an integrity
       // failure, or live and archive indexes from adjacent checkpoints. Each
@@ -620,6 +772,7 @@ export class ChatStorageV2 {
           return await readReplayedChatIndexes(
             { directory: this.directory, scopeId: this.scopeId },
             assertChatStorageIndexes,
+            { maxManifestVersion: this.maxManifestVersion },
           );
         } catch (error) {
           if (
@@ -632,6 +785,12 @@ export class ChatStorageV2 {
             throw error;
         }
       }
+    }
+    if (manifest.version === 4) {
+      const root = join(this.directory, 'transcripts');
+      await validateStreamClosure(root, await loadStreamCatalog(root), {
+        readOnly: true,
+      });
     }
     return (await this.readCommittedIndexes()).indexes;
   }
@@ -646,6 +805,7 @@ export class ChatStorageV2 {
     const summary = await summarizeDeltaJournal({
       directory: this.directory,
       scopeId: this.scopeId,
+      maxManifestVersion: this.maxManifestVersion,
     });
     return summary.recordCount === 0 && !summary.tornTail;
   }
@@ -666,7 +826,7 @@ export class ChatStorageV2 {
   public async committedIndexSummary(): Promise<ChatIndexSummary> {
     const manifest = await this.manifest();
     if (!manifest) throw new Error('Scope has not migrated to v2');
-    if (manifest.version === 3) throw ChatStorageV2.newerFormat();
+    if (selectJournal(manifest)) throw ChatStorageV2.newerFormat();
     const cached = this.committedSummary;
     if (cached && sameIdentities(await this.indexFileIdentities(), cached))
       return cached.summary;
@@ -791,7 +951,7 @@ export class ChatStorageV2 {
   ): Promise<void> {
     const prior = await this.manifest();
     if (prior) {
-      if (prior.version === 3) throw ChatStorageV2.newerFormat();
+      if (selectJournal(prior)) throw ChatStorageV2.newerFormat();
       // Cleanup is a one-time migration operation. Afterwards each chat owns
       // its validation, and writes may legitimately advance beyond this digest.
       if (prior.cleanupComplete) return;
@@ -923,8 +1083,7 @@ export class ChatStorageV2 {
       await source.assertUnchanged?.();
       // A prior pre-manifest promotion is unselected and can be rebuilt from
       // the locked source. Never remove a directory selected by a manifest.
-      if (await exists(this.directory))
-        await rm(this.directory, { recursive: true });
+      await clearPromotionDestination(this.directory);
       await rename(staging, this.directory);
       // The promoted directory holds new index files; never trust a summary
       // of the directory it replaced.
@@ -970,103 +1129,199 @@ export class ChatStorageV2 {
       .then(async () => {
         // A capture copies checkpoint files. A version 3 source is copied
         // only once checkpointed (the repository flushes it under the scope
-        // lease first), without its journal; a version 3 destination would
-        // lose its journal. Copies are always version 2.
-        if ((await destination.format()) === 'v3')
-          throw ChatStorageV2.newerFormat();
+        // lease first), without its journal; a journaled destination would
+        // lose its journal. Format-4 sources retain checkpointed format 4.
+        if (await destination.journalFile()) throw ChatStorageV2.newerFormat();
         if (
-          (await this.format()) === 'v3' &&
+          (await this.journalFile()) &&
           !(await this.deltaJournalCheckpointed())
         )
           throw new Error('Chat capture requires a checkpointed delta journal');
         if ((await this.authority()) !== 'v2')
           throw new Error('Chat capture source must be migrated');
         const indexes = await this.readIndexes(this.directory);
-        const reachableArtifacts = await reachableToolOutputPaths(
-          this.directory,
-          indexes,
+        const sourceFormat = await this.format();
+        const captureLeases: Array<{
+          chatId: string;
+          generation: number;
+          release: () => void;
+        }> = [];
+        const childFence = chatChildDeleteFence(
+          join(this.directory, 'transcripts'),
         );
-        const includeCapturePath = capturePathPredicate(
-          reachableArtifacts,
-          indexedChatIds(indexes),
-        );
-        await destination.prepareStorageRoots();
-        if ((await destination.authority()) === 'v2') {
-          if (
-            !updateMetadata &&
-            (await treeDigest(this.directory, includeCapturePath)) ===
-              (await treeDigest(destination.directory))
-          ) {
-            await destination.validateClosure(destination.directory);
-            return;
-          }
-          throw new Error(
-            'Chat capture destination already exists with different contents',
-          );
-        }
-        if (
-          Object.values(indexes.live.runtimeByChatId).some(
-            (runtime) =>
-              ACTIVE_STATUSES.has(runtime.status) ||
-              runtime.queuedMessageIds.length,
-          )
-        ) {
-          throw new Error('Chat capture requires all active turns to settle');
-        }
-        if (
-          (
-            await readFile(
-              join(this.directory, 'metadata-journal.jsonl'),
-              'utf8',
-            )
-          ).trim()
-        )
-          throw new Error('Chat capture requires a flushed journal');
-        await this.validateClosure(this.directory);
-        const migrationId = randomUUID();
-        const staging = `${destination.directory}.staging-${migrationId}`;
         try {
-          const sourceTreeDigest = await treeDigest(this.directory);
-          const sourceDigest = await copyTreeVerified(
-            this.directory,
-            staging,
-            includeCapturePath,
-          );
-          // A caller-held lease excludes writes; this second digest also detects
-          // unexpected external modifications before authority publication.
-          if (sourceTreeDigest !== (await treeDigest(this.directory)))
-            throw new Error('Chat capture source changed during copy');
-          if (updateMetadata) {
-            updateMetadata(indexes);
-            await writeJson(join(staging, 'live-index.json'), indexes.live);
-            await writeJson(
-              join(staging, 'archive-index.json'),
-              indexes.archive,
-            );
-            await writeJson(
-              join(staging, 'recovery-index.json'),
-              indexes.recovery,
-            );
-            recordChatStorageIndexSerializations(3);
+          if (sourceFormat === 'v4') {
+            const root = join(this.directory, 'transcripts');
+            const catalog = await loadStreamCatalog(root);
+            for (const chatId of Array.from(indexedChatIds(indexes))) {
+              const lease = childFence.acquire(chatId);
+              if (!lease)
+                throw new Error(
+                  'Child stream parent was deleted during capture',
+                );
+              captureLeases.push({ chatId, ...lease });
+            }
+            await validateStreamClosure(root, catalog, {
+              readOnly: true,
+              deep: true,
+            });
           }
-          await destination.validateClosure(staging);
-          await fsyncDirectory(staging);
-          if (await exists(destination.directory))
-            await rm(destination.directory, { recursive: true });
-          await rename(staging, destination.directory);
-          destination.committedSummary = undefined;
-          recordChatStorageAtomicReplacement(destination.directory);
-          await fsyncDirectory(dirname(destination.directory));
-          await writeJson(destination.manifestPath, {
-            version: 2,
-            scopeId: destination.scopeId,
-            migrationId,
-            sourceRevision: indexes.live.revision,
-            sourceDigest,
-            cleanupComplete: true,
-          } satisfies StorageManifest);
+          const reachableArtifacts = await reachableToolOutputPaths(
+            this.directory,
+            indexes,
+            sourceFormat,
+          );
+          const includeCapturePath = capturePathPredicate(
+            reachableArtifacts,
+            indexedChatIds(indexes),
+          );
+          if (sourceFormat === 'v4') {
+            if (destination.maxManifestVersion !== 4)
+              throw ChatStorageV2.newerFormat();
+            const root = join(this.directory, 'transcripts');
+            await validateStreamClosure(root, await loadStreamCatalog(root), {
+              readOnly: true,
+              deep: true,
+            });
+            if (updateMetadata) {
+              const originalIds = indexedChatIds(indexes);
+              updateMetadata(indexes);
+              const updatedIds = indexedChatIds(indexes);
+              if (
+                originalIds.size !== updatedIds.size ||
+                Array.from(originalIds).some((id) => !updatedIds.has(id))
+              )
+                throw new Error(
+                  'Format-4 capture cannot re-key transcript streams',
+                );
+            }
+          }
+          await destination.prepareStorageRoots();
+          if ((await destination.authority()) === 'v2') {
+            if (
+              !updateMetadata &&
+              (await treeDigest(this.directory, includeCapturePath)) ===
+                (await treeDigest(destination.directory))
+            ) {
+              await destination.validateClosure(
+                destination.directory,
+                sourceFormat === 'v4',
+              );
+              if (sourceFormat === 'v4') {
+                const root = join(destination.directory, 'transcripts');
+                await validateStreamClosure(
+                  root,
+                  await loadStreamCatalog(root),
+                  {
+                    readOnly: true,
+                    deep: true,
+                  },
+                );
+              }
+              return;
+            }
+            throw new Error(
+              'Chat capture destination already exists with different contents',
+            );
+          }
+          if (
+            Object.values(indexes.live.runtimeByChatId).some(
+              (runtime) =>
+                ACTIVE_STATUSES.has(runtime.status) ||
+                runtime.queuedMessageIds.length,
+            )
+          ) {
+            throw new Error('Chat capture requires all active turns to settle');
+          }
+          if (
+            (
+              await readFile(
+                join(this.directory, 'metadata-journal.jsonl'),
+                'utf8',
+              )
+            ).trim()
+          )
+            throw new Error('Chat capture requires a flushed journal');
+          // Source child rows were verified while collecting reachable paths.
+          await this.validateClosure(
+            this.directory,
+            false,
+            sourceFormat === 'v4',
+          );
+          const migrationId = randomUUID();
+          const staging = `${destination.directory}.staging-${migrationId}`;
+          try {
+            const sourceTreeDigest = await treeDigest(this.directory);
+            const sourceDigest = await copyTreeVerified(
+              this.directory,
+              staging,
+              includeCapturePath,
+            );
+            // A caller-held lease excludes writes; this second digest also detects
+            // unexpected external modifications before authority publication.
+            if (sourceTreeDigest !== (await treeDigest(this.directory)))
+              throw new Error('Chat capture source changed during copy');
+            if (updateMetadata) {
+              if (sourceFormat !== 'v4') updateMetadata(indexes);
+              await writeJson(join(staging, 'live-index.json'), indexes.live);
+              await writeJson(
+                join(staging, 'archive-index.json'),
+                indexes.archive,
+              );
+              await writeJson(
+                join(staging, 'recovery-index.json'),
+                indexes.recovery,
+              );
+              recordChatStorageIndexSerializations(3);
+            }
+            await destination.validateClosure(staging, sourceFormat === 'v4');
+            if (sourceFormat === 'v4') {
+              const catalog = await loadStreamCatalog(
+                join(staging, 'transcripts'),
+              );
+              await validateStreamClosure(
+                join(staging, 'transcripts'),
+                catalog,
+                {
+                  readOnly: true,
+                  deep: true,
+                },
+              );
+            }
+            await fsyncDirectory(staging);
+            for (const lease of captureLeases)
+              if (childFence.isDeleted(lease.chatId, lease.generation))
+                throw new Error(
+                  'Child stream parent was deleted during capture',
+                );
+            await clearPromotionDestination(destination.directory);
+            await rename(staging, destination.directory);
+            destination.committedSummary = undefined;
+            recordChatStorageAtomicReplacement(destination.directory);
+            await fsyncDirectory(dirname(destination.directory));
+            for (const lease of captureLeases)
+              if (childFence.isDeleted(lease.chatId, lease.generation))
+                throw new Error(
+                  'Child stream parent was deleted during capture',
+                );
+            const copied: Omit<Format4CheckpointedManifest, 'version'> = {
+              scopeId: destination.scopeId,
+              migrationId,
+              sourceRevision: indexes.live.revision,
+              sourceDigest,
+              cleanupComplete: true,
+            };
+            await writeJson(
+              destination.manifestPath,
+              sourceFormat === 'v4'
+                ? ({ version: 4, ...copied } satisfies Format4StorageManifest)
+                : ({ version: 2, ...copied } satisfies StorageManifest),
+            );
+          } finally {
+            await rm(staging, { recursive: true, force: true });
+          }
         } finally {
-          await rm(staging, { recursive: true, force: true });
+          for (const lease of captureLeases) lease.release();
         }
       });
     migrationTails.set(destination.directory, next);
@@ -1082,8 +1337,7 @@ export class ChatStorageV2 {
     destination: ChatStorageV2,
     retained: NonNullable<ChatRecoveryIndex['legacyEvidence']>,
   ): Promise<NonNullable<ChatRecoveryIndex['legacyEvidence']>> {
-    if ((await destination.format()) === 'v3')
-      throw ChatStorageV2.newerFormat();
+    if (await destination.journalFile()) throw ChatStorageV2.newerFormat();
     const combined = [...retained];
     for (const evidence of (await this.indexes()).recovery.legacyEvidence ??
       []) {
@@ -1122,7 +1376,12 @@ export class ChatStorageV2 {
     return combined;
   }
 
-  private async validateClosure(directory: string): Promise<void> {
+  /** `childStreams`: a format 4 tree, whose child rows are verified too. */
+  private async validateClosure(
+    directory: string,
+    childStreams = false,
+    allowBlockPages = childStreams,
+  ): Promise<void> {
     const indexes = await this.readIndexes(directory);
     const transcript = new ChatTranscriptLog(
       join(directory, 'transcripts'),
@@ -1137,9 +1396,21 @@ export class ChatStorageV2 {
       const verifyMessage = async (
         message: PersistedChatMessage,
       ): Promise<void> => {
-        for (const block of message.blocks) {
+        for await (const reference of transcript.artifacts.referenceClosure(
+          tab.id,
+          message,
+        ))
+          await transcript.artifacts.verify(tab.id, reference);
+        if (!allowBlockPages && message.blocksRef)
+          throw new Error('Block pages require format 4');
+        const logical = await transcript.artifacts.expandBlocks(
+          tab.id,
+          message,
+        );
+        for (const block of logical.blocks) {
           for (const ref of storedArtifactRefsOf(block))
-            await transcript.artifacts.verifyArtifact(tab.id, ref);
+            if (ref.family === 'visual')
+              await transcript.artifacts.verifyArtifact(tab.id, ref);
           if (
             block.type === 'tool_result' &&
             block.outputTruncated &&
@@ -1175,6 +1446,13 @@ export class ChatStorageV2 {
       )
         throw new Error('Legacy recovery evidence failed integrity validation');
     }
+    if (childStreams)
+      await verifyChildStreamRows(
+        join(directory, 'transcripts'),
+        transcript.artifacts,
+        () => undefined,
+        indexedChatIds(indexes),
+      );
   }
 
   private async validate(
@@ -1202,10 +1480,16 @@ export class ChatStorageV2 {
       const chatDigest = createHash('sha256');
       let count = 0;
       for await (const message of transcript.iterate(tab.id)) {
-        for (const block of message.blocks) {
+        for await (const reference of transcript.artifacts.referenceClosure(
+          tab.id,
+          message,
+        ))
+          await transcript.artifacts.verify(tab.id, reference);
+        if (message.blocksRef) throw new Error('Block pages require format 4');
+        for (const block of message.blocks)
           for (const ref of storedArtifactRefsOf(block))
-            await transcript.artifacts.verifyArtifact(tab.id, ref);
-        }
+            if (ref.family === 'visual')
+              await transcript.artifacts.verifyArtifact(tab.id, ref);
         chatDigest.update(JSON.stringify(message)).update('\n');
         count += 1;
       }

@@ -1,4 +1,5 @@
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
+import { confirmSetupQueueInputDispatch } from '../setup-queue-dispatch';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { useDelegationTranscriptStore } from '../../delegationTranscriptStore';
 import {
@@ -20,7 +21,22 @@ import {
   scheduleIdleChatUnload,
 } from '../hydration';
 import { isTurnDiffEventData, turnDiffsMatch } from '../turn-diffs';
-import { latestChatActivityAt } from '../canonical-changes';
+import {
+  chatRuntimeStatusToTabStatus,
+  createSendingLease,
+  latestChatActivityAt,
+} from '../canonical-changes';
+import {
+  installRuntimeDivergenceDetector,
+  tagStatusWrite,
+} from '../runtime-divergence';
+import {
+  canonicalTurnStateFor,
+  confirmCanonicalTurn,
+  type CanonicalTurnState,
+} from '../turn-confirmation';
+import { scheduleSendingLeaseExpiry } from './messaging';
+import { getEffectiveClaudeChatInterfaceMode } from '@/lib/claude-tui-chats';
 import {
   applyTurnDiffEventToWorktree,
   dispatchActivityEvent,
@@ -34,6 +50,16 @@ import {
   recordCanonicalTerminalPresentation,
 } from './revisioned';
 import { chatHasLiveDelegates } from '../../delegationActivityStore';
+import {
+  showCompletionNotice,
+  takeCompletionNotice,
+} from '../held-completion-notices';
+import {
+  chatProviderBlocksClose,
+  isWorktreeLiveTasksHydrated,
+  selectChildToolLiveness,
+  useLiveBackgroundTaskStore,
+} from '../../liveBackgroundTaskStore';
 import { useProjectsStore } from '../../projectsStore';
 import { useAppAdvisorWatchersStore } from '../../appAdvisorWatchersStore';
 import { usePipelineRunsStore } from '../../pipelineRunsStore';
@@ -42,14 +68,17 @@ import {
   selectWatchedCarryReceipts,
 } from '@/components/chat/agent-artifact-projection';
 import { isRecord } from '../utils';
+import { reconcileProvisionalTerminalFirstSend } from '../provisional-first-send';
 import {
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
   GLOBAL_INSTRUCTIONS_SNAPSHOT_EVENT_TYPE,
   type AgentProviderType,
   type ChatEvent,
+  type ChatRuntimeState,
   getProviderForModel,
   isAiCreditsRoutingStatusEventData,
   isSetAutoArchiveRequestedEventData,
+  isTerminalBackedInterfaceMode,
   OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE,
   SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
 } from '@canopy/desktop-shared/types';
@@ -123,6 +152,7 @@ import {
 import {
   clearPendingPlanExitForChat,
   hasPendingTrackedPlanReview,
+  retiresSupersededPlanExit,
   triggerPlanDetectionScan,
 } from '../plan-utils';
 import { isVisiblePlanExploreChat } from '../plan-explore-registry';
@@ -137,7 +167,9 @@ import {
 } from '../persisted-tabs';
 import {
   hostQueueViewsToQueuedMessages,
+  preserveHostQueueSummaryForTab,
   preserveHostQueueMirror,
+  withHostQueueSummary,
 } from '../queue-mirror';
 import {
   requestTabDiscovery,
@@ -157,6 +189,39 @@ import { parseOrgMemoryUsedEvent } from '../memory';
 import { isCoworkChatTarget } from '@/lib/cowork';
 
 const pendingCodexCompletionResults = new Set<string>();
+
+/**
+ * The divergence detector subscribes to the assembled store, which registers
+ * itself after the slices are created; install it lazily from the entry
+ * points chat activity flows through. Idempotent.
+ */
+function installRuntimeDivergenceDetectorSafely(): void {
+  try {
+    installRuntimeDivergenceDetector();
+  } catch {
+    // The store is not registered (an isolated slice in a test).
+  }
+}
+
+/** Claude terminal-mode turns are projected from the terminal, not runtime. */
+function isClaudeTerminalModeTab(tab: ChatTab): boolean {
+  return (
+    tab.claudeTerminal !== undefined ||
+    isTerminalBackedInterfaceMode(
+      getEffectiveClaudeChatInterfaceMode(tab.interfaceMode),
+    )
+  );
+}
+
+interface CanonicalVerification {
+  key: string;
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+  /** The cached runtime when the read started; a newer patch wins. */
+  runtime: ChatRuntimeState | undefined;
+  state: CanonicalTurnState;
+}
 
 /**
  * Main-owned sends (Portal, automations) persist their tab before broadcasting
@@ -264,6 +329,7 @@ export const createEventsSlice: StateCreator<
   ChatEventsSlice
 > = (set, get) => ({
   handleChatQueueUpdated: (event): void => {
+    installRuntimeDivergenceDetectorSafely();
     const key = `${event.projectId}/${event.worktreeId}`;
     // A queue event can arrive before the worktree's tabs hydrate. Queue it
     // for replay-after-hydration like other pre-hydration chat events;
@@ -310,14 +376,17 @@ export const createEventsSlice: StateCreator<
               (message) => message.hostQueueEntryId === editingEntryId,
             )
           : -1;
-        const updatedTab = {
-          ...tab,
-          queuedMessages,
-          pendingQueueMessages: reconcilePendingQueueMessages(
-            tab.pendingQueueMessages,
-            mirroredRows,
-          ),
-        };
+        const updatedTab = withHostQueueSummary(
+          {
+            ...tab,
+            queuedMessages,
+            pendingQueueMessages: reconcilePendingQueueMessages(
+              tab.pendingQueueMessages,
+              mirroredRows,
+            ),
+          },
+          event,
+        );
         if (editingQueuedMessageIndex >= 0) {
           return { ...updatedTab, editingQueuedMessageIndex };
         }
@@ -334,8 +403,26 @@ export const createEventsSlice: StateCreator<
   },
 
   handleChatEvent: (event): void => {
+    installRuntimeDivergenceDetectorSafely();
     const key = `${event.projectId}/${event.worktreeId}`;
     const rawData = event.data;
+    // A fast completed turn can already look stale to the compatibility
+    // reducer below. This live acceptance still proves that our identified
+    // setup input started; resync/cancellation have already retired observers.
+    if (
+      isRecord(rawData) &&
+      rawData.type === CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE &&
+      typeof rawData.canopy_turn_user_message_id === 'string'
+    ) {
+      confirmSetupQueueInputDispatch(
+        {
+          projectId: event.projectId,
+          worktreeId: event.worktreeId,
+          chatId: event.chatId,
+        },
+        rawData.canopy_turn_user_message_id,
+      );
+    }
     // A logged delegate's progress is live-only: it is never committed, so
     // its card reads it from here (`delegated-agent-transcript.ts`).
     if (
@@ -864,7 +951,12 @@ export const createEventsSlice: StateCreator<
               watcherFired: pendingWatcher.watcherFired,
             };
           });
-          const messages = appendUniqueMessages(tab.messages, incomingMessages);
+          const appended = appendUniqueMessages(tab.messages, incomingMessages);
+          const reconciled = reconcileProvisionalTerminalFirstSend(
+            appended === tab.messages ? tab : { ...tab, messages: appended },
+            data.messages,
+          );
+          const messages = reconciled.messages;
           const newestIncomingUser =
             data.replayedFromStart === true
               ? undefined
@@ -890,7 +982,7 @@ export const createEventsSlice: StateCreator<
               )
             : [];
           if (
-            messages === tab.messages &&
+            reconciled === tab &&
             title === tab.title &&
             !hasSettingsPatch &&
             !hasTurnDiffPatch
@@ -902,7 +994,7 @@ export const createEventsSlice: StateCreator<
           // default-titled tabs adopt the first imported user message the
           // same way Canopy-native sends do.
           return {
-            ...tab,
+            ...reconciled,
             ...titlePatch,
             messages,
             ...(matchedPendingWatcherIndexes.size > 0
@@ -1303,6 +1395,7 @@ export const createEventsSlice: StateCreator<
             isCancellationTerminal,
           }),
           data,
+          { canonicalStatus: revisionedScopeKnown },
         );
         const resumedTurnUnreadCleared = clearUnreadOnResumedTurn(
           forcedQueueStateCleared,
@@ -1399,12 +1492,18 @@ export const createEventsSlice: StateCreator<
                   ? { openArchivedTranscript: true }
                   : {}),
               };
+            } else if (tab.unreadMarkedManually === true) {
+              // A reply on a chat the user marked unread replaces the mark
+              // with an automatic one, so its preview shows the reply. The
+              // chat was already unread: no second toast or worktree key.
+              shouldPersistUnread = true;
             }
             return {
               ...resumedTurnUnreadCleared,
               autoArchiveToggleVisible:
                 turnAutoArchiveControlCleared.autoArchiveToggleVisible,
               unread: true,
+              unreadMarkedManually: undefined,
               attentionDismissedAt: undefined,
             };
           }
@@ -1498,12 +1597,12 @@ export const createEventsSlice: StateCreator<
       );
     }
 
-    if (unreadToast) {
-      maybeShowUnreadChatToast(unreadToast);
-    }
-    for (const ping of osChatPings) {
-      maybeFireChatActivityNotification(ping);
-    }
+    // While background agents run, the chat reports once it is idle again.
+    const completionNotice = takeCompletionNotice(
+      { projectId: event.projectId, worktreeId: event.worktreeId, chatId },
+      { toast: unreadToast, pings: osChatPings },
+    );
+    if (completionNotice) showCompletionNotice(completionNotice);
     if (
       data.type === 'result' &&
       data.canopy_session_continues !== true &&
@@ -1559,9 +1658,13 @@ export const createEventsSlice: StateCreator<
     // unread state computed above (set when the chat finished off-screen), so
     // an unseen result archives as unread.
     if (!revisionedScopeKnown && shouldAutoArchiveCompletedResult) {
-      // Live delegates keep the chat open: keep the flag and archive when
-      // they finish instead of giving up on main's refusal.
-      if (chatHasLiveDelegates(event.projectId, event.worktreeId, chatId)) {
+      // Delegates keep priority; provider agents and workflows use the same
+      // deferral. Unknown worktree task state also waits for its first snapshot.
+      if (
+        chatHasLiveDelegates(event.projectId, event.worktreeId, chatId) ||
+        !isWorktreeLiveTasksHydrated(event.projectId, event.worktreeId) ||
+        chatProviderBlocksClose(event.projectId, event.worktreeId, chatId)
+      ) {
         deferLegacyAutoArchiveUntilDelegatesFinish(
           event.projectId,
           event.worktreeId,
@@ -1690,19 +1793,27 @@ export const createEventsSlice: StateCreator<
     }
 
     // Host-owned rows drain in the main process. When one is about to
-    // continue the conversation: keep the tab visibly working across the
-    // terminal (the legacy renderer drain re-sent synchronously, so the UI
-    // never flicked to idle), and drop a pending plan-exit card — the queued
-    // feedback supersedes it and main dispatches it as the next turn. An
-    // edit-locked head will not drain, so idle stands in that case.
+    // continue the conversation: drop a pending plan-exit card — the queued
+    // feedback supersedes it and main dispatches it as the next turn. In a
+    // legacy scope also keep the tab visibly working across the terminal (the
+    // legacy renderer drain re-sent synchronously, so the UI never flicked to
+    // idle). A revisioned scope never does: main writes `starting` when it
+    // dequeues the row, and a local `streaming` here would outlive a drain
+    // that never happens. An edit-locked head will not drain, so idle stands.
     if (
       (updatedTab?.status === 'idle' || updatedTab?.status === 'error') &&
       updatedTab.queuedMessages[0]?.hostQueueEntryId !== undefined
     ) {
       const keepStreaming =
+        !revisionedScopeKnown &&
         updatedTab.status === 'idle' &&
         updatedTab.queuedMessages[0]?.editLocked !== true;
-      const clearPlanCard = updatedTab.pendingPlanExit !== undefined;
+      // Only the legacy optimistic start clears here. Revisioned scopes wait
+      // for main's accepted-start delta; an edit-locked head has not started.
+      const retirePlanRequest =
+        keepStreaming && retiresSupersededPlanExit(updatedTab);
+      const clearPlanCard = retirePlanRequest;
+      if (keepStreaming) tagStatusWrite(chatId, 'keep-streaming');
       if (keepStreaming || clearPlanCard) {
         set((state) => {
           const currentWc = state.worktreeChats[key];
@@ -1712,6 +1823,9 @@ export const createEventsSlice: StateCreator<
               ? {
                   ...t,
                   ...(clearPlanCard ? { pendingPlanExit: undefined } : {}),
+                  ...(retirePlanRequest
+                    ? { pendingPlanExitRequestId: undefined }
+                    : {}),
                   ...(keepStreaming ? { status: 'streaming' as const } : {}),
                 }
               : t,
@@ -1825,9 +1939,34 @@ export const createEventsSlice: StateCreator<
     }
 
     recordWorktreeChatTouch(wtKey);
+    installRuntimeDivergenceDetectorSafely();
     const queuedMessage = event.queuedMessage;
     const isQueuedPlaceholder = queuedMessage !== undefined;
     let insertedIntoLoadedWorktree = false;
+    // A real start in a revisioned scope takes its status from canonical
+    // runtime; until main reports the hook's turn it shows as starting
+    // through a lease. Legacy scopes keep the optimistic `streaming`.
+    const canonicalOwnsStatus = isScopeRevisionedLive(
+      get(),
+      event.projectId,
+      event.worktreeId,
+    );
+    const hookRuntime = get().runtimeByChatId[event.chatId];
+    const startedStatus: ChatTab['status'] = !canonicalOwnsStatus
+      ? 'streaming'
+      : hookRuntime
+        ? chatRuntimeStatusToTabStatus(hookRuntime)
+        : 'idle';
+    const startedError =
+      startedStatus === 'error' ? (hookRuntime?.error?.message ?? null) : null;
+    const hookLease =
+      !isQueuedPlaceholder &&
+      canonicalOwnsStatus &&
+      startedStatus !== 'streaming'
+        ? createSendingLease(`hook:${event.chatId}`, 'hook', Date.now())
+        : undefined;
+    let hookLeaseIssued = false;
+    if (!isQueuedPlaceholder) tagStatusWrite(event.chatId, 'hook-start');
 
     let selectedPlaceholderStarted = false;
     set((state) => {
@@ -1906,14 +2045,20 @@ export const createEventsSlice: StateCreator<
           }
         : {
             ...fromPersistedTab(event.tab),
-            status: 'streaming',
-            error: null,
+            status: startedStatus,
+            error: startedError,
+            ...(hookLease ? { sendingLease: hookLease } : {}),
             queuedMessages: preservedQueuedMessages,
             lastEventAt: Date.now(),
           };
-      const nextTab = applyQueuedHookPlaceholderTabSettings(
+      hookLeaseIssued = hookLease !== undefined;
+      const nextTabWithSettings = applyQueuedHookPlaceholderTabSettings(
         baseNextTab,
         !isQueuedPlaceholder ? existingTab : undefined,
+      );
+      const nextTab = preserveHostQueueSummaryForTab(
+        existingTab,
+        nextTabWithSettings,
       );
       const updatedTabs =
         existingIndex >= 0
@@ -1931,6 +2076,10 @@ export const createEventsSlice: StateCreator<
         },
       };
     });
+
+    if (hookLease && hookLeaseIssued) {
+      scheduleSendingLeaseExpiry(wtKey, event.chatId, hookLease);
+    }
 
     if (insertedIntoLoadedWorktree) {
       // For queued placeholders, skip the save and the discovery request:
@@ -2072,57 +2221,173 @@ export const createEventsSlice: StateCreator<
   },
 
   verifyStreamingTabs: async (): Promise<void> => {
-    const allChats = get().worktreeChats;
+    installRuntimeDivergenceDetectorSafely();
+    const initial = get();
+    const allChats = initial.worktreeChats;
 
-    // Collect worktrees that have at least one streaming tab
+    // In a revisioned-live scope canonical runtime decides, from an awaited
+    // fresh read: a streaming tab, and an idle tab whose cached runtime says
+    // a turn is running. Legacy scopes, Claude terminal-mode chats (main does
+    // not project terminal turns) and chats main has no runtime for keep the
+    // session probe below.
+    const canonicalTargets: {
+      key: string;
+      projectId: string;
+      worktreeId: string;
+      chatId: string;
+      runtime: ChatRuntimeState;
+    }[] = [];
     const toVerify: { projectId: string; worktreeId: string; key: string }[] =
       [];
     for (const [key, wc] of Object.entries(allChats)) {
-      if (wc.tabs.some((t) => t.status === 'streaming')) {
-        // Key format is "projectId/worktreeId" — use indexOf to handle
-        // any future key format safely
-        const slashIdx = key.indexOf('/');
-        const projectId = key.slice(0, slashIdx);
-        const worktreeId = key.slice(slashIdx + 1);
-        toVerify.push({ projectId, worktreeId, key });
-      }
-    }
-
-    if (toVerify.length === 0) return;
-
-    const results = await Promise.all(
-      toVerify.map(
-        async ({
-          projectId,
-          worktreeId,
-          key,
-        }): Promise<StreamingTabVerificationResult | null> => {
-          try {
-            const active = await window.api.chat.activeSessions({
-              projectId,
-              worktreeId,
-            });
-            return {
+      // Key format is "projectId/worktreeId" — use indexOf to handle
+      // any future key format safely
+      const slashIdx = key.indexOf('/');
+      const projectId = key.slice(0, slashIdx);
+      const worktreeId = key.slice(slashIdx + 1);
+      const canonicalScope = isScopeRevisionedLive(
+        initial,
+        projectId,
+        worktreeId,
+      );
+      let legacyStreaming = false;
+      for (const tab of wc.tabs) {
+        const runtime = initial.runtimeByChatId[tab.id];
+        if (canonicalScope && runtime && !isClaudeTerminalModeTab(tab)) {
+          if (
+            tab.status === 'streaming' ||
+            canonicalTurnStateFor(runtime) === 'active'
+          ) {
+            canonicalTargets.push({
               key,
               projectId,
               worktreeId,
-              activeSet: new Set(active.activeChatIds),
-              sessionByChatId: new Map(
-                (active.sessions ?? []).map((s) => [s.chatId, s]),
-              ),
-            };
-          } catch {
-            return null;
+              chatId: tab.id,
+              runtime,
+            });
           }
-        },
-      ),
+        } else if (tab.status === 'streaming') {
+          legacyStreaming = true;
+        }
+      }
+      if (legacyStreaming) toVerify.push({ projectId, worktreeId, key });
+    }
+
+    if (toVerify.length === 0 && canonicalTargets.length === 0) return;
+    const canonicalChatKeys = new Set(
+      canonicalTargets.map(({ key, chatId }) => `${key}/${chatId}`),
     );
 
+    const [results, canonicalResults] = await Promise.all([
+      Promise.all(
+        toVerify.map(
+          async ({
+            projectId,
+            worktreeId,
+            key,
+          }): Promise<StreamingTabVerificationResult | null> => {
+            try {
+              const active = await window.api.chat.activeSessions({
+                projectId,
+                worktreeId,
+              });
+              return {
+                key,
+                projectId,
+                worktreeId,
+                activeSet: new Set(active.activeChatIds),
+                sessionByChatId: new Map(
+                  (active.sessions ?? []).map((s) => [s.chatId, s]),
+                ),
+              };
+            } catch {
+              return null;
+            }
+          },
+        ),
+      ),
+      Promise.all(
+        canonicalTargets.map(
+          async ({
+            key,
+            projectId,
+            worktreeId,
+            chatId,
+            runtime,
+          }): Promise<CanonicalVerification> => {
+            let state: CanonicalTurnState = 'unknown';
+            try {
+              state = (
+                await confirmCanonicalTurn({ projectId, worktreeId, chatId })
+              ).state;
+            } catch {
+              // A failed read is unknown, and unknown changes nothing.
+            }
+            return { key, projectId, worktreeId, chatId, runtime, state };
+          },
+        ),
+      ),
+    ]);
+
     let anyStillPreserved = false;
+    // A dropped session or a terminal turn ends the root turn, not its
+    // background children: the live-task mirror decides which stay open.
+    const liveTasks = useLiveBackgroundTaskStore.getState();
     set((state) => {
       let changed = false;
       const nextChats = { ...state.worktreeChats };
       const now = Date.now();
+
+      for (const result of canonicalResults) {
+        if (result.state === 'unknown') {
+          anyStillPreserved = true;
+          continue;
+        }
+        // A runtime patch that landed during the read is newer than it, and
+        // has already projected the tab.
+        if (state.runtimeByChatId[result.chatId] !== result.runtime) continue;
+        const wc = nextChats[result.key];
+        if (!wc) continue;
+        let tabsChanged = false;
+        const updatedTabs = wc.tabs.map((tab) => {
+          if (tab.id !== result.chatId) return tab;
+          if (result.state === 'active') {
+            if (tab.status === 'streaming') return tab;
+            tagStatusWrite(tab.id, 'verify-streaming-tabs');
+            tabsChanged = true;
+            return { ...tab, status: 'streaming' as const, error: null };
+          }
+          if (tab.status !== 'streaming') return tab;
+          tagStatusWrite(tab.id, 'verify-streaming-tabs');
+          tabsChanged = true;
+          const failed = result.runtime?.status === 'failed';
+          return {
+            ...tab,
+            status: failed ? ('error' as const) : ('idle' as const),
+            ...(failed
+              ? { error: result.runtime?.error?.message ?? tab.error }
+              : {}),
+            messages: closeOpenToolUseBlocks(
+              closeOpenTurnTimers(tab.messages),
+              {
+                liveness: selectChildToolLiveness(
+                  liveTasks,
+                  result.projectId,
+                  result.worktreeId,
+                  tab.id,
+                ),
+                codexRootThreadId: tab.sdkSessionId,
+              },
+            ),
+            currentTodos: undefined,
+            currentTaskTodos: undefined,
+          };
+        });
+        if (tabsChanged) {
+          changed = true;
+          nextChats[result.key] = { ...wc, tabs: updatedTabs };
+        }
+      }
 
       for (const result of results) {
         if (!result) continue;
@@ -2134,6 +2399,7 @@ export const createEventsSlice: StateCreator<
         let tabsChanged = false;
         const updatedTabs = wc.tabs.map((tab) => {
           if (tab.status !== 'streaming') return tab;
+          if (canonicalChatKeys.has(`${key}/${tab.id}`)) return tab;
           if (activeSet.has(tab.id)) return tab;
           const runtime = state.runtimeByChatId[tab.id];
           // Canonical turn ownership outlives a worker's startup/interrupt gap.
@@ -2146,6 +2412,8 @@ export const createEventsSlice: StateCreator<
           ) {
             return tab;
           }
+          // Legacy scopes only: with no canonical runtime, the reload marker
+          // is the one record that the turn outlives its session gap.
           if (tab.deferredToolsReload) {
             anyStillPreserved = true;
             return tab;
@@ -2185,7 +2453,18 @@ export const createEventsSlice: StateCreator<
           return {
             ...tab,
             status: 'idle' as const,
-            messages: closeOpenToolUseBlocks(closeOpenTurnTimers(tab.messages)),
+            messages: closeOpenToolUseBlocks(
+              closeOpenTurnTimers(tab.messages),
+              {
+                liveness: selectChildToolLiveness(
+                  liveTasks,
+                  projectId,
+                  worktreeId,
+                  tab.id,
+                ),
+                codexRootThreadId: tab.sdkSessionId,
+              },
+            ),
             currentTodos: undefined,
             currentTaskTodos: undefined,
           };

@@ -1,5 +1,10 @@
 /** @jest-environment jsdom */
 import type { SessionViewModel } from '@canopy/app-core';
+import type {
+  CoworkSidebarItem,
+  SidebarItem,
+  SingleRepoSidebarItem,
+} from '@canopy/desktop-shared/types';
 import {
   DESKTOP_SHARED_SIDEBAR_TEST_IDS,
   deferEmptyWorkspaces,
@@ -11,15 +16,51 @@ import {
   routeDesktopSidebarSelection,
 } from '../DesktopSharedSidebarHost';
 
+function makeSingleRepoProject(
+  id: string,
+  overrides: Partial<SingleRepoSidebarItem> = {},
+): SingleRepoSidebarItem {
+  return {
+    id,
+    type: 'single-repo',
+    name: id,
+    repoPath: `/tmp/${id}`,
+    color: '#123456',
+    order: 0,
+    collapsed: false,
+    worktrees: [],
+    scripts: {},
+    effectiveScripts: {},
+    hooks: {},
+    effectiveHooks: {},
+    ...overrides,
+  };
+}
+
+function makeCoworkProject(
+  id: string,
+  overrides: Partial<CoworkSidebarItem> = {},
+): CoworkSidebarItem {
+  return {
+    id,
+    type: 'cowork',
+    name: id,
+    color: '#654321',
+    collapsed: false,
+    order: 0,
+    ...overrides,
+  };
+}
+
 const snapshot = {
   standaloneChats: [{ localId: 'chat-1', projectLocalId: 'cowork-1' }],
   workspaces: [
-    { localId: 'cowork-1', type: 'cowork', layout: 'flat' },
-    { localId: 'code-1', type: 'single-repo', layout: 'tree' },
+    { localId: 'cowork-1', name: 'Cowork', type: 'cowork', layout: 'flat' },
+    { localId: 'code-1', name: 'Code', type: 'single-repo', layout: 'tree' },
     // A cloud workspace classifies as `cowork` but lays out as a tree and
     // projects its chats into worktrees (REG-2819), so it must route like a
     // code workspace rather than like a flat cowork one.
-    { localId: 'cloud-1', type: 'cowork', layout: 'tree' },
+    { localId: 'cloud-1', name: 'Cloud', type: 'cowork', layout: 'tree' },
   ],
 } as SessionViewModel;
 
@@ -258,25 +299,38 @@ describe('DesktopSharedSidebarHost wiring', () => {
     const base: SessionViewModel = {
       ...snapshot,
       workspaces: [
-        { localId: 'code-1', type: 'single-repo', layout: 'tree' },
-        { localId: 'cowork-1', type: 'cowork', layout: 'flat' },
+        {
+          localId: 'code-1',
+          name: 'Code',
+          type: 'single-repo',
+          layout: 'tree',
+        },
+        { localId: 'cowork-1', name: 'Cowork', type: 'cowork', layout: 'flat' },
       ],
       worktrees: [
         { localId: 'wt-1', workspaceLocalId: 'code-1', branch: 'a' },
         { localId: 'wt-2', workspaceLocalId: 'code-1', branch: 'b' },
       ],
     };
-    const projects = [
-      {
-        id: 'code-1',
-        type: 'single-repo',
+    const projects: SidebarItem[] = [
+      makeSingleRepoProject('code-1', {
         collapsed: true,
         worktrees: [
-          { id: 'wt-1', pinned: true },
-          { id: 'wt-2', hidden: true },
+          {
+            id: 'wt-1',
+            branchName: 'a',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            pinned: true,
+          },
+          {
+            id: 'wt-2',
+            branchName: 'b',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            hidden: true,
+          },
         ],
-      },
-      { id: 'cowork-1', type: 'cowork', collapsed: false },
+      }),
+      makeCoworkProject('cowork-1'),
     ];
 
     it('reads collapse, pin, and hide from the store ahead of the snapshot', () => {
@@ -304,17 +358,41 @@ describe('DesktopSharedSidebarHost wiring', () => {
     const ordered: SessionViewModel = {
       ...snapshot,
       workspaces: [
-        { localId: 'code-1', type: 'single-repo', layout: 'tree', order: 0 },
-        { localId: 'catalog', type: 'single-repo', layout: 'tree', order: 1 },
-        { localId: 'code-2', type: 'single-repo', layout: 'tree', order: 2 },
-        { localId: 'cowork-1', type: 'cowork', layout: 'flat', order: 3 },
+        {
+          localId: 'code-1',
+          name: 'Code 1',
+          type: 'single-repo',
+          layout: 'tree',
+          order: 0,
+        },
+        {
+          localId: 'catalog',
+          name: 'Catalog',
+          type: 'single-repo',
+          layout: 'tree',
+          order: 1,
+        },
+        {
+          localId: 'code-2',
+          name: 'Code 2',
+          type: 'single-repo',
+          layout: 'tree',
+          order: 2,
+        },
+        {
+          localId: 'cowork-1',
+          name: 'Cowork',
+          type: 'cowork',
+          layout: 'flat',
+          order: 3,
+        },
       ],
       worktrees: [],
     };
-    const orderedProjects = [
-      { id: 'code-1', type: 'single-repo', collapsed: false, worktrees: [] },
-      { id: 'code-2', type: 'single-repo', collapsed: false, worktrees: [] },
-      { id: 'cowork-1', type: 'cowork', collapsed: false },
+    const orderedProjects: SidebarItem[] = [
+      makeSingleRepoProject('code-1'),
+      makeSingleRepoProject('code-2'),
+      makeCoworkProject('cowork-1'),
     ];
     const rendered = (pinned: string[]): Array<[string, number | undefined]> =>
       [
@@ -359,8 +437,18 @@ describe('DesktopSharedSidebarHost wiring', () => {
     const base: SessionViewModel = {
       ...snapshot,
       workspaces: [
-        { localId: 'code-1', type: 'single-repo', layout: 'tree' },
-        { localId: 'code-2', type: 'single-repo', layout: 'tree' },
+        {
+          localId: 'code-1',
+          name: 'Code 1',
+          type: 'single-repo',
+          layout: 'tree',
+        },
+        {
+          localId: 'code-2',
+          name: 'Code 2',
+          type: 'single-repo',
+          layout: 'tree',
+        },
       ],
     };
 

@@ -152,6 +152,17 @@ test('SetBaseBranch confirms an open PR before updating the tracked base', async
       })
       .toBe(true);
 
+    // The agent opens the dialog while the user is typing in the composer.
+    // The dialog must take focus so later keystrokes stay out of the chat.
+    const composer = window
+      .locator('[data-chat-composer-root]:visible')
+      .first()
+      .getByRole('textbox')
+      .first();
+    await composer.click();
+    await window.keyboard.type('draft');
+    await expect(composer).toContainText('draft');
+
     const dialog = window.getByTestId('base-branch-change-confirmation');
     await dispatchSetBaseBranch(electronApp);
     await expect(dialog).toBeVisible();
@@ -159,9 +170,18 @@ test('SetBaseBranch confirms an open PR before updating the tracked base', async
       'TypeScript pnpm Vite has open PR #2847',
     );
     await expect(dialog).toContainText(TARGET_BRANCH);
+    await expect(dialog).toBeFocused();
+    // Spaces and Enter are what a typing user sends next. They must neither
+    // reach the composer nor press a dialog button.
+    await window.keyboard.type('leak more words');
+    await window.keyboard.press('Enter');
+    await expect(dialog).toBeVisible();
+    await expect(composer).not.toContainText('leak');
+    await expect(composer).not.toContainText('words');
 
     await dialog.getByRole('button', { name: 'No, just locally' }).click();
     await expect(dialog).toHaveCount(0);
+    await expect(composer).toBeFocused();
     await expect(
       window
         .getByTestId('pr-status-bar')

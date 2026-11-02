@@ -536,6 +536,90 @@ describe('ThinkingLevelControl', () => {
  * Every level set a model in the app declares (package metadata and the
  * hosted catalog), read off the effort panel's slider stop by stop.
  */
+describe('ThinkingLevelPanelPicker workspace defaults', () => {
+  it('distinguishes inherited High from an explicit High selection', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const change = jest.fn();
+    act(() =>
+      root.render(
+        <ThinkingLevelPanelPicker
+          value="high"
+          supportedLevels={['off', 'high']}
+          allowWorkspaceDefault
+          workspaceDefaultSelected
+          onChange={change}
+          testId="resolved-default"
+        />,
+      ),
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('button');
+      expect(trigger?.getAttribute('aria-label')).toBe(
+        'Effort, current level High',
+      );
+      act(() => trigger?.click());
+      const reset = document.querySelector<HTMLButtonElement>(
+        '[data-testid="resolved-default-default"]',
+      );
+      expect(reset?.getAttribute('aria-pressed')).toBe('true');
+      act(() => {
+        document
+          .querySelector('[role="slider"]')
+          ?.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'End', bubbles: true }),
+          );
+      });
+      expect(change).toHaveBeenCalledWith('high');
+      act(() => reset?.click());
+      expect(change.mock.calls).toEqual([['high'], [undefined]]);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it('clears the override through an opt-in Default action and keeps one trigger', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const change = jest.fn();
+    act(() =>
+      root.render(
+        <ThinkingLevelPanelPicker
+          value="low"
+          supportedLevels={['off', 'low', 'high']}
+          includeLow
+          allowWorkspaceDefault
+          onChange={change}
+          testId="effort-default"
+        />,
+      ),
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('button');
+      expect(trigger?.getAttribute('aria-label')).toBe(
+        'Effort, current level Low',
+      );
+      act(() => trigger?.click());
+      const defaultButton = document.querySelector<HTMLButtonElement>(
+        '[data-testid="effort-default-default"]',
+      );
+      expect(defaultButton).not.toBeNull();
+      act(() => defaultButton?.click());
+      expect(change).toHaveBeenCalledTimes(1);
+      expect(change).toHaveBeenCalledWith(undefined);
+      expect(
+        container.querySelectorAll('[data-testid="effort-default"]'),
+      ).toHaveLength(1);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+});
+
 describe('ThinkingLevelPanelPicker level sets', () => {
   function PanelHarness({
     levels,
@@ -731,4 +815,50 @@ describe('ThinkingLevelPanelPicker speed', () => {
       unmount();
     }
   });
+});
+
+it('offers speed without inventing effort levels for a speed-only model', () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const toggle = jest.fn();
+  const change = jest.fn();
+  act(() =>
+    root.render(
+      <ThinkingLevelPanelPicker
+        testId="speed-only"
+        value={undefined}
+        supportedLevels={[]}
+        speedOnly
+        allowWorkspaceDefault
+        fastMode={{ on: false, onToggle: toggle }}
+        onChange={change}
+      />,
+    ),
+  );
+  try {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-testid="speed-only"]',
+    );
+    expect(trigger?.getAttribute('aria-label')).toBe(
+      'Speed, current speed Regular',
+    );
+    act(() => trigger?.click());
+    expect(document.querySelector('[role="slider"]')).toBeNull();
+    expect(
+      document.querySelector('[data-testid="speed-only-default"]'),
+    ).toBeNull();
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="speed-only-fast-mode"]',
+        )
+        ?.click(),
+    );
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(change).not.toHaveBeenCalled();
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
 });

@@ -91,7 +91,7 @@ describe('transcript task projection', () => {
           ],
         },
       },
-      { now: 1, createMessageId },
+      { now: 1, createMessageId, childToolLiveness: { kind: 'unknown' } },
     );
 
     const withTask = applyClaudeTranscriptEvent(
@@ -112,7 +112,7 @@ describe('transcript task projection', () => {
           ],
         },
       },
-      { now: 2, createMessageId },
+      { now: 2, createMessageId, childToolLiveness: { kind: 'unknown' } },
     );
 
     expect(withTask.currentTodos).toEqual([

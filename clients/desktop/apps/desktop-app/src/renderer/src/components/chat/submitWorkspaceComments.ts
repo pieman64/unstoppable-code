@@ -26,6 +26,12 @@ export interface WorkspaceCommentDispatchOptions {
    * the older revision on screen), so the agent is pointed at its file.
    */
   readonly activePlan?: ChatActivePlanContext;
+  /**
+   * The chat the comments are for (the chat waiting on the plan), instead of
+   * the worktree's active editable chat. It must be loaded in the worktree;
+   * otherwise the dispatch refuses with `no-chat` rather than send elsewhere.
+   */
+  readonly chatId?: string;
 }
 
 /**
@@ -92,8 +98,8 @@ function withdrawRendererQueuedComments(
  * `options.activePlan` rides with the message (and with any queued copy) as
  * this turn's active plan; file and diagram comments send none.
  *
- * Picks the target chat the same way file/diagram comment submission always
- * has: the synchronous `resolveSelectionTargetTabId` policy over the
+ * `options.chatId` names the target chat outright. Otherwise this picks the
+ * target chat the same way file/diagram comment submission always has: the synchronous `resolveSelectionTargetTabId` policy over the
  * worktree's already-loaded tabs (fast path, no `await` before dispatch so
  * synchronous callers observe `switchTab`/`sendMessage` immediately). Only
  * when that finds nothing does this fall back to
@@ -112,13 +118,22 @@ export async function dispatchWorkspaceComments(
     useChatStore.getState().worktreeChats[
       `${scope.projectId}/${scope.worktreeId}`
     ];
-  const inlineChatId = worktree
-    ? resolveSelectionTargetTabId({
-        tabs: worktree.tabs,
-        activeTabId: worktree.activeTabId,
-        lastActiveEditableChatId: worktree.lastActiveEditableChatId,
-      })
-    : null;
+  const requestedChatId = options?.chatId;
+  if (
+    requestedChatId !== undefined &&
+    !worktree?.tabs.some((tab) => tab.id === requestedChatId)
+  ) {
+    return { ok: false, reason: 'no-chat' };
+  }
+  const inlineChatId =
+    requestedChatId ??
+    (worktree
+      ? resolveSelectionTargetTabId({
+          tabs: worktree.tabs,
+          activeTabId: worktree.activeTabId,
+          lastActiveEditableChatId: worktree.lastActiveEditableChatId,
+        })
+      : null);
 
   let chatId = inlineChatId;
   if (!chatId) {

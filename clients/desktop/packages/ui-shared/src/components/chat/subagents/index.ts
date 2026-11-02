@@ -56,7 +56,6 @@ export {
 } from '@canopy/agent-transcript';
 export * from './types';
 export * from './subagent-copy';
-export * from './subagents-view';
 export * from './common';
 export * from './reference';
 export * from './panel';

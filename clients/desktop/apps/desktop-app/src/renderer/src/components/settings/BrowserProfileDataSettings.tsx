@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { Button, Notice, NoticeButton } from '@canopy/ui-shared';
+import {
+  AdvancedDisclosure,
+  Button,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import type { BrowserProfileRecord } from '@canopy/protocol/browser-profiles';
 import type {
@@ -10,7 +15,6 @@ import type {
   BrowserProfileDataApi,
   BrowserProfileInventory,
 } from '@canopy/protocol/browser-profiles';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const dataClassLabels: Record<string, string> = {
   httpCache: 'HTTP cache',
@@ -119,7 +123,6 @@ export function BrowserProfileDataSettings({
   api,
   onChanged,
 }: BrowserProfileDataSettingsProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [inventory, setInventory] = useState<BrowserProfileInventory>();
   const [job, setJob] = useState<BrowserDataJob>();
   const [preview, setPreview] = useState<BrowserClearPreview>();
@@ -338,7 +341,7 @@ export function BrowserProfileDataSettings({
                   : `Approximately ${bytes(inventory.approximateBytes)}`}
               </span>
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 disabled={blocked}
                 data-testid="browser-profile-measure"
@@ -367,7 +370,7 @@ export function BrowserProfileDataSettings({
           label="HTTP cache"
           control={
             <Button
-              size={settingsButtonSize}
+              size="compact"
               variant="secondary"
               disabled={blocked}
               data-testid="browser-profile-clear-cache"
@@ -382,7 +385,7 @@ export function BrowserProfileDataSettings({
           description="Clears all browser data for this profile."
           control={
             <Button
-              size={settingsButtonSize}
+              size="compact"
               variant="secondary"
               disabled={blocked}
               data-testid="browser-profile-reset"
@@ -415,7 +418,7 @@ export function BrowserProfileDataSettings({
                   )}
                 </div>
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="secondary"
                   className="shrink-0"
                   disabled={blocked}
@@ -435,8 +438,8 @@ export function BrowserProfileDataSettings({
             )}
             {inventory?.nextOffset !== undefined && (
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 className="my-1"
                 disabled={busy}
                 onClick={() =>
@@ -465,21 +468,22 @@ export function BrowserProfileDataSettings({
           </div>
         </SettingsRow>
         {!!inventory?.cookieDomains.length && (
-          <details className="text-s fg-secondary">
-            <summary className="focus-ring cursor-pointer rounded fg-secondary">
-              {inventory.cookieDomains.length}{' '}
-              {inventory.cookieDomains.length === 1
+          <AdvancedDisclosure
+            label={`${inventory.cookieDomains.length} ${
+              inventory.cookieDomains.length === 1
                 ? 'cookie domain'
-                : 'cookie domains'}
-            </summary>
-            <ul className="mt-2 max-h-32 space-y-1 overflow-auto break-all">
+                : 'cookie domains'
+            }`}
+            dataTestId="browser-profile-cookie-domains"
+          >
+            <ul className="max-h-32 space-y-1 overflow-auto break-all text-xs fg-secondary">
               {inventory.cookieDomains.map((entry) => (
                 <li key={entry.domain}>
                   {entry.domain} ({entry.count})
                 </li>
               ))}
             </ul>
-          </details>
+          </AdvancedDisclosure>
         )}
         {preview && (
           <div
@@ -522,15 +526,15 @@ export function BrowserProfileDataSettings({
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 disabled={busy}
                 onClick={closePreview}
               >
                 Cancel
               </Button>
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="destructive"
                 disabled={busy}
                 data-testid="browser-profile-confirm-clear"

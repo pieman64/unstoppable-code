@@ -16,6 +16,7 @@ export interface BuildUsageLimitedEntryInput {
   chatId: string;
   provider: AgentProviderType;
   detectedAt: number;
+  interruptedUserMessageId?: string;
   resetsAt?: number;
   accountProxyConnectionId?: string;
   resumeReason?: AccountChangeResumeReason;
@@ -42,6 +43,9 @@ export function buildUsageLimitedEntry(
       ? { accountProxyConnectionId: input.accountProxyConnectionId }
       : {}),
     detectedAt: input.detectedAt,
+    ...(input.interruptedUserMessageId
+      ? { interruptedUserMessageId: input.interruptedUserMessageId }
+      : {}),
     ...(typeof input.resetsAt === 'number' ? { resetsAt: input.resetsAt } : {}),
     ...(input.resumeReason ? { resumeReason: input.resumeReason } : {}),
     workspaceName: input.workspaceName ?? '',

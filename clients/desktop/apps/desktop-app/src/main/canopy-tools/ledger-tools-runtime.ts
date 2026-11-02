@@ -19,6 +19,7 @@ import {
   type LedgerEntryType,
   type LedgerErrorDetails,
   type LedgerFileRef,
+  type LedgerGlobalOwner,
   type LedgerOwnerCandidatePage,
   type LedgerSearchEntriesToolInput,
   type LedgerSourceAvailability,
@@ -225,6 +226,13 @@ export interface LedgerToolsHost {
   readonly containerCreatedAt: (
     container: LedgerContainer,
   ) => Promise<string | null>;
+  /**
+   * A container's creation time, looked up without binding a scope: what an
+   * open session's recheck reads. Defaults to `containerCreatedAt`.
+   */
+  readonly findContainerCreatedAt?: (
+    container: LedgerContainer,
+  ) => Promise<string | null>;
   readonly chatTitle: (
     container: LedgerContainer,
     chatId: string,
@@ -283,7 +291,7 @@ const ASSIGNMENT_HINT_TIMEOUT_MS = 1_000;
 const SETTING_VALUE_MAX_CODE_POINTS = 256;
 const DEFAULT_CHAT_DISPLAY_NAME = 'Chat';
 const DEFAULT_DELEGATE_DISPLAY_NAME = 'Delegate';
-const DEFAULT_PIPELINE_AGENT_DISPLAY_NAME = 'Pipeline agent';
+const DEFAULT_PIPELINE_AGENT_DISPLAY_NAME = 'Workflow agent';
 
 let boundDispatcher: LedgerToolsDispatcher | null = null;
 
@@ -427,6 +435,29 @@ export async function resolveLedgerToolExposure(
 }
 
 /**
+ * The advertisement gate of a pipeline agent with no task, recording to its
+ * run owner's global (workflow) Ledger: `canopy-ledger-enabled`, the "Agents
+ * add to the Feed" setting, and the owner's global Ledger for the signed-in
+ * account, which binding mints on first use. Null when any fails.
+ */
+export async function resolveLedgerGlobalToolExposure(
+  owner: LedgerGlobalOwner,
+  host: LedgerToolsHost = DESKTOP_LEDGER_TOOLS_HOST,
+): Promise<LedgerChatScope | null> {
+  try {
+    if (!host.isFlagEnabled()) return null;
+    if (!(await host.isRecordingEnabled())) return null;
+    const container: LedgerContainer = { kind: 'global', owner };
+    const containerCreatedAt = await host.containerCreatedAt(container);
+    return containerCreatedAt === null
+      ? null
+      : { container, containerCreatedAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The file root a session's working directory belongs to, for Ledger
  * reference files: the App Advisor or Cowork folder, the selected repository
  * of a multi-repository project, or the single repository.
@@ -458,6 +489,15 @@ export function ledgerToolPromptFor(options: {
   readonly pipelineAgent?: LedgerPipelineAgentCaller;
   readonly host?: LedgerToolsHost;
 }): string {
+  // A global (workflow) Ledger's entries reference no files.
+  if (options.scope.container.kind === 'global') {
+    return buildLedgerToolPrompt(options.harness, {
+      ...(options.toolNames ? { toolNames: options.toolNames } : {}),
+      planModeException: false,
+      pipelineAgent: true,
+      globalScope: true,
+    });
+  }
   return buildLedgerToolPrompt(options.harness, {
     referenceRootId: ledgerReferenceRootIdFor(
       options.target,
@@ -543,9 +583,11 @@ export function openLedgerDelegateTools(
 /**
  * Opens the Ledger tools of one pipeline agent attempt when the gate passes:
  * `canopy-ledger-enabled`, the "Agents add to the Feed" setting and a Ledger
- * scope for the execution's worktree (`target`; its chat ID only labels the
- * route). Only code worktrees qualify. Null otherwise, and the step then runs
- * without Ledger tools.
+ * scope. An execution with a worktree records to it (`target`; its chat ID
+ * only labels the route), and only code worktrees qualify; one without
+ * (`globalOwner` set: a global or directory run) records to its owner's
+ * global (workflow) Ledger. Null otherwise, and the step then runs without
+ * Ledger tools.
  */
 export async function openLedgerPipelineAgentTools(
   options: Omit<
@@ -553,12 +595,24 @@ export async function openLedgerPipelineAgentTools(
     'scope' | 'delegate' | 'pipelineAgent'
   > & {
     readonly pipelineAgent: LedgerPipelineAgentCaller;
+    /** The run's owner, for an execution without a worktree. */
+    readonly globalOwner?: LedgerGlobalOwner;
   },
 ): Promise<LedgerChatToolsSession | null> {
+  const { globalOwner, ...session } = options;
+  if (globalOwner !== undefined) {
+    const scope = await resolveLedgerGlobalToolExposure(
+      globalOwner,
+      options.host,
+    );
+    return scope === null
+      ? null
+      : new LedgerChatToolsSession({ ...session, scope });
+  }
   const scope = await resolveLedgerToolExposure(options.target, options.host);
   return scope === null || scope.container.kind !== 'code_worktree'
     ? null
-    : new LedgerChatToolsSession({ ...options, scope });
+    : new LedgerChatToolsSession({ ...session, scope });
 }
 
 let lastRuntimeGeneration = 0;
@@ -964,6 +1018,13 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     if (current !== null) {
       const live = registry.resolve(current.id) !== undefined;
       if (live && current.detailsKey === detailsKey) {
+        // A global (workflow) Ledger is the signed-in account's: after an
+        // account switch, the session's binding speaks for no Ledger.
+        if (!(await this.isGlobalScopeCurrent())) {
+          registry.revoke(current.id);
+          this.binding = null;
+          return { kind: 'unavailable', reason: 'no_ledger_scope' };
+        }
         return { kind: 'caller', caller: callerFor(current.id) };
       }
       // A settings change replaces the binding; one revoked elsewhere (the
@@ -973,7 +1034,12 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
       this.binding = null;
     }
     const { container, containerCreatedAt } = this.options.scope;
-    const createdAt = await this.host.containerCreatedAt(container);
+    // A global Ledger was bound when the session opened, so a rebind only
+    // looks it up and never mints another account's.
+    const createdAt =
+      container.kind === 'global'
+        ? await this.findContainerCreatedAt(container)
+        : await this.host.containerCreatedAt(container);
     if (createdAt !== containerCreatedAt) {
       return { kind: 'unavailable', reason: 'no_ledger_scope' };
     }
@@ -996,6 +1062,26 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     const id = registry.register(this.registration(authorDetails, chatName));
     this.binding = { id, detailsKey };
     return { kind: 'caller', caller: callerFor(id) };
+  }
+
+  /**
+   * Whether a global (workflow) session's Ledger is still the signed-in
+   * account's own. True for any other session, whose container decides.
+   */
+  private async isGlobalScopeCurrent(): Promise<boolean> {
+    const { container, containerCreatedAt } = this.options.scope;
+    if (container.kind !== 'global') return true;
+    return (
+      (await this.findContainerCreatedAt(container)) === containerCreatedAt
+    );
+  }
+
+  private findContainerCreatedAt(
+    container: LedgerContainer,
+  ): Promise<string | null> {
+    const find =
+      this.host.findContainerCreatedAt ?? this.host.containerCreatedAt;
+    return find(container);
   }
 
   /**

@@ -21,7 +21,7 @@ export const PIPELINE_PACKAGE_NO_CREDENTIALS_NOTE =
 export const PIPELINE_PACKAGE_PUBLISHER_NO_CREDENTIALS_NOTE =
   'Credentials and external runtimes are never included.';
 export const PIPELINE_PACKAGE_DEFINITION_ONLY_WARNING =
-  'This share contains the pipeline definition only. Required dependencies are not included.';
+  'This share contains the workflow definition only. Required dependencies are not included.';
 export const PIPELINE_PACKAGE_EMPTY_DEPENDENCIES =
   'No dependency files are included.';
 /**
@@ -35,13 +35,13 @@ export const AUTOMATION_PACKAGE_DEFINITION_ONLY_WARNING =
  * definition rides along inside the share.
  */
 export const AUTOMATION_PACKAGE_BUNDLED_NOTE =
-  'The pipeline definition travels with this share.';
+  'The workflow definition travels with this share.';
 /**
  * Bundling disclosure for a legacy automation that points at a separately
  * shared pipeline instead of carrying its definition.
  */
 export const AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE =
-  'The pipeline definition is not included. You need access to the shared pipeline it points to.';
+  'The workflow definition is not included. You need access to the shared workflow it points to.';
 /** Short distribution line rendered beside an automation's requirements. */
 export const AUTOMATION_PACKAGE_DEPENDENCIES_INCLUDED_NOTE =
   'Required dependencies are included in this share.';
@@ -59,8 +59,14 @@ const KIND_LABELS: Record<PipelinePackageResource['kind'], string> = {
   plugin_skill: 'Skill',
   plugin_command: 'Command',
   plugin_agent: 'Agent',
-  pipeline_action: 'Pipeline action',
-  child_pipeline: 'Child pipeline',
+  pipeline_action: 'Workflow action',
+  child_pipeline: 'Child workflow',
+  automation_pipeline: 'Workflow',
+  file_asset: 'Files',
+  pipeline_definition: 'Workflow',
+  automation_definition: 'Automation',
+  agent_definition: 'Agent',
+  hook_definition: 'Hook',
 };
 
 /** Human label for a packaged resource kind ("Skill", "Command", "Agent"). */

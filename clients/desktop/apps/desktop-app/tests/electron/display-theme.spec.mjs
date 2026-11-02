@@ -8,6 +8,7 @@ import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { launchCanopyWithLabsPagesOffered } from './helpers/labsPages.mjs';
 import { closeCanopy } from './launchCanopy.mjs';
 import { readMainWindowZoomFactor } from './uiScale.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 async function chooseInterfaceScale(window, scale) {
   await window.getByTestId('settings-ui-scale-select').click();
@@ -541,11 +542,12 @@ test('Display theme/color-mode/UI-scale and diff stats apply and persist across 
     expect(displayRowLabels.indexOf('Scrollbars')).toBeLessThan(
       displayRowLabels.indexOf('Worktree diff stats'),
     );
+    // What each enrichment mode does is the section's description, not a row.
     expect(displayRowLabels.slice(-4)).toEqual([
       'Worktree diff stats',
       'Linear',
       'GitHub',
-      'How it works',
+      'Dollar-sign math',
     ]);
     // Every settings page shares one 640px content column: the title,
     // section headings, and grouped boxes all span it.
@@ -645,7 +647,7 @@ test('Display theme/color-mode/UI-scale and diff stats apply and persist across 
     expect(baseline.scrollbarBehavior).toBe('system');
 
     const scrollbarSelect = window.getByTestId('settings-scrollbar-behavior');
-    await scrollbarSelect.selectOption('hover');
+    await chooseSettingsOption(scrollbarSelect, 'hover');
     await expect
       .poll(() =>
         readHtmlState(window).then((state) => state.scrollbarBehavior),
@@ -677,7 +679,7 @@ test('Display theme/color-mode/UI-scale and diff stats apply and persist across 
       )
       .not.toBe('rgba(0, 0, 0, 0)');
 
-    await scrollbarSelect.selectOption('scroll');
+    await chooseSettingsOption(scrollbarSelect, 'scroll');
     await nativeScroller.evaluate((element) => {
       element.dispatchEvent(new Event('scroll'));
     });
@@ -686,7 +688,7 @@ test('Display theme/color-mode/UI-scale and diff stats apply and persist across 
       'true',
     );
 
-    await scrollbarSelect.selectOption('hover');
+    await chooseSettingsOption(scrollbarSelect, 'hover');
 
     // Theme dropdown: choose Cobalt and persist its underlying theme value.
     await window.getByTestId('settings-theme-select').click();

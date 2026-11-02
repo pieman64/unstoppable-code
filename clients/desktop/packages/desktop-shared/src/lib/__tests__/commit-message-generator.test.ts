@@ -1,6 +1,14 @@
 import { TransientAgentRetryExhaustedError } from '../../agent-failures/transient-retry';
 import { generateCommitMessageWithUsage } from '../commit-message-generator';
-import type { CodexStructuredHelperRunner } from '../structured-helper-query';
+import type {
+  ClaudeStructuredHelperQueryOptions,
+  CodexStructuredHelperRunner,
+  StructuredHelperQueryResult,
+} from '../structured-helper-query';
+
+type TestStructuredHelperRunner = <T>(
+  options: Omit<ClaudeStructuredHelperQueryOptions<T>, 'provider'>,
+) => Promise<StructuredHelperQueryResult<T>>;
 
 const ROUTED_GATEWAY_MODEL = 'anthropic/claude-sonnet-5.5';
 
@@ -32,6 +40,7 @@ describe('generateCommitMessageWithUsage', () => {
         branchName: 'fix/preserve-all-usage',
         diff: 'diff --git a/file b/file',
         model: 'claude-sonnet-4-6',
+        localMemoryEnabled: false,
         instructions: '',
         instructionMode: 'append',
       },
@@ -77,6 +86,7 @@ describe('generateCommitMessageWithUsage', () => {
         branchName: 'fix/preserve-retry-usage',
         diff: 'diff --git a/file b/file',
         model: 'claude-sonnet-4-6',
+        localMemoryEnabled: false,
         instructions: '',
         instructionMode: 'append',
       },
@@ -112,6 +122,7 @@ describe('generateCommitMessageWithUsage', () => {
           branchName: 'fix/cancel-generation',
           diff: 'diff --git a/file b/file',
           model: 'claude-sonnet-4-6',
+          localMemoryEnabled: false,
           instructions: '',
           instructionMode: 'append',
           abortController,
@@ -124,11 +135,16 @@ describe('generateCommitMessageWithUsage', () => {
 
   it('seeds a routed gateway model under the Claude harness instead of throwing', async () => {
     const seed = jest.fn(() => Promise.resolve());
-    const runner = jest.fn(() =>
-      Promise.resolve({
-        value: { message: 'feat: routed commit' },
-        usage: {},
-      }),
+    const runner: TestStructuredHelperRunner = jest.fn(
+      <T>(
+        options: Omit<ClaudeStructuredHelperQueryOptions<T>, 'provider'>,
+      ): Promise<StructuredHelperQueryResult<T>> => {
+        const result = { message: 'feat: routed commit' };
+        return Promise.resolve({
+          value: options.isResult(result) ? result : null,
+          usage: {},
+        });
+      },
     );
 
     const result = await generateCommitMessageWithUsage(

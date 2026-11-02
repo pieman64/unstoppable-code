@@ -168,7 +168,7 @@ function SlateEditorInner(
     [editor],
   );
 
-  // Selected text takes the neutral muted surface, not the system blue.
+  // Selected text uses the shared muted background token.
   const mergedEditableClassName = useMemo(
     () =>
       `${editableClassName ?? DEFAULT_EDITABLE_CLASS_NAME}${

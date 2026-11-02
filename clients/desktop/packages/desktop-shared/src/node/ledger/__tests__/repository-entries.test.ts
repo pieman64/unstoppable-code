@@ -14,9 +14,12 @@ import { LedgerStoreError } from '../errors';
 import { isLedgerEntryOpen } from '../policy';
 import {
   NO_DETAILS,
+  PERSONAL_OWNER,
   addInput,
   attributionFor,
+  bindGlobal,
   captureLedgerError,
+  registerTestActor,
   setUpLedger,
   updateInput,
   withUncheckedFields,
@@ -740,6 +743,164 @@ describe('LedgerRepository entries', () => {
       kind: 'user',
       ledgerId: context.ledgerId,
       userActorId: context.user.actorId,
+    });
+  });
+
+  describe('global scopes', () => {
+    const GLOBAL_TASK = {
+      type: 'TASK',
+      title: 'Review the release run',
+      content: 'Check the pipeline output.',
+    } as const;
+
+    /** A Personal global Ledger with one pipeline agent. */
+    function seedGlobal(): {
+      readonly ledgerId: string;
+      readonly agent: LedgerActorRef;
+    } {
+      const ledgerId = bindGlobal(
+        context.repository,
+        PERSONAL_OWNER,
+        'account-1',
+      ).scope.ledgerId;
+      return {
+        ledgerId,
+        agent: registerTestActor(
+          context.repository,
+          ledgerId,
+          'pipeline_agent',
+          'pipeline:attempt-1',
+          'Review step',
+        ),
+      };
+    }
+
+    it('rejects reference files without writing, and accepts entries without them', () => {
+      const { ledgerId, agent } = seedGlobal();
+      const counts = context.repository.getStorageCounts();
+      expect(
+        captureLedgerError(() =>
+          context.repository.addEntry(
+            addInput(
+              { ledgerId },
+              agent,
+              {
+                ...GLOBAL_TASK,
+                referenceFiles: [{ rootId: 'repo', path: 'src/release.ts' }],
+              },
+              nextKey(),
+            ),
+          ),
+        ),
+      ).toMatchObject({ reason: 'INVALID_INPUT', field: 'referenceFiles' });
+      expect(context.repository.getStorageCounts()).toEqual(counts);
+
+      const added = context.repository.addEntry(
+        addInput(
+          { ledgerId },
+          agent,
+          { ...GLOBAL_TASK, referenceFiles: [] },
+          nextKey(),
+        ),
+      );
+      expect(added.entry).toMatchObject({
+        scope: { ledgerId, container: { kind: 'global' } },
+        referenceFiles: [],
+        status: 'TODO',
+      });
+      // Status, revision and correction rules are those of any scope.
+      const started = context.repository.updateEntry(
+        updateInput(
+          { ledgerId },
+          agent,
+          {
+            entryId: added.entry.entryId,
+            expectedRevision: 1,
+            status: 'IN_PROGRESS',
+          },
+          nextKey(),
+        ),
+      );
+      expect(started.entry.revision).toBe(2);
+      expect(
+        captureLedgerError(() =>
+          context.repository.updateEntry(
+            updateInput(
+              { ledgerId },
+              agent,
+              {
+                entryId: added.entry.entryId,
+                expectedRevision: 1,
+                status: 'COMPLETED',
+              },
+              nextKey(),
+            ),
+          ),
+        ),
+      ).toMatchObject({ reason: 'REVISION_CONFLICT' });
+      // A correction may not reference files either.
+      expect(
+        captureLedgerError(() =>
+          context.repository.addEntry(
+            addInput(
+              { ledgerId },
+              agent,
+              {
+                type: 'DECISION',
+                title: 'Corrected review',
+                content: 'Supersedes the task.',
+                supersedesEntryId: added.entry.entryId,
+                referenceFiles: [{ rootId: 'repo', path: 'src/release.ts' }],
+              },
+              nextKey(),
+            ),
+          ),
+        ),
+      ).toMatchObject({ reason: 'INVALID_INPUT', field: 'referenceFiles' });
+    });
+
+    it('never links a correction across Ledgers', () => {
+      const { ledgerId, agent } = seedGlobal();
+      const taskEntry = addTask();
+      const globalEntry = context.repository.addEntry(
+        addInput({ ledgerId }, agent, GLOBAL_TASK, nextKey()),
+      );
+      const counts = context.repository.getStorageCounts();
+      expect(
+        captureLedgerError(() =>
+          context.repository.addEntry(
+            addInput(
+              { ledgerId },
+              agent,
+              {
+                type: 'DECISION',
+                title: 'Cross-Ledger correction',
+                content: 'Names a task entry.',
+                supersedesEntryId: taskEntry.entry.entryId,
+              },
+              nextKey(),
+            ),
+          ),
+        ),
+      ).toMatchObject({ reason: 'INVALID_INPUT', field: 'supersedesEntryId' });
+      expect(
+        captureLedgerError(() =>
+          context.repository.addEntry(
+            addInput(
+              context,
+              context.chat,
+              {
+                type: 'DECISION',
+                title: 'Cross-Ledger correction',
+                content: 'Names a global entry.',
+                supersedesEntryId: globalEntry.entry.entryId,
+              },
+              nextKey(),
+            ),
+          ),
+        ),
+      ).toMatchObject({ reason: 'INVALID_INPUT', field: 'supersedesEntryId' });
+      expect(context.repository.getStorageCounts()).toEqual(counts);
     });
   });
 });

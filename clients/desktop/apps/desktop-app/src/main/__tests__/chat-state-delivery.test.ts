@@ -108,6 +108,26 @@ function upsert(text: string): ChatStateChange {
   };
 }
 
+function aggregateChanges(): ChatStateChange[] {
+  return [
+    upsert('aggregate text 1'),
+    upsert('aggregate text 2'),
+    upsert('aggregate final text'),
+    runtime('streaming', 21),
+    runtime('streaming', 22),
+    {
+      type: 'message.upserted',
+      chatId: 'chat-1',
+      message: {
+        id: 'assistant-2',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'new aggregate row' }],
+        timestamp: 3,
+      },
+    },
+  ];
+}
+
 function event(
   scope: string,
   baseRevision: number,
@@ -527,6 +547,56 @@ describe('ChatStateDelivery snapshot boundaries', () => {
     delivery.publish(streamed('wt-a', 7), [advisor]);
     clock.advance(16);
     expect(revisions(sent).slice(5)).toEqual([['advisor', 6, 8]]);
+  });
+
+  it('delivers an aggregate whole and keeps it separate across a snapshot boundary', () => {
+    const { clock, delivery, sent, main, advisor } = setup();
+    const started = turnStart('wt-a', 1);
+    delivery.publish(started, [main, advisor]);
+
+    const finishSnapshot = delivery.beginSnapshot(advisor, 'project-1', 'wt-a');
+    const changes = aggregateChanges();
+    const aggregate = event('wt-a', 2, changes);
+    delivery.publish(aggregate, [main, advisor]);
+    finishSnapshot(3);
+
+    const afterBoundary = streamed('wt-a', 3);
+    delivery.publish(afterBoundary, [main, advisor]);
+    clock.advance(16);
+
+    const advisorEvents = sent
+      .filter((entry) => entry.target === 'advisor')
+      .map((entry) => entry.event);
+    expect(
+      advisorEvents.map(({ baseRevision, revision }) => [
+        baseRevision,
+        revision,
+      ]),
+    ).toEqual([
+      [1, 2],
+      [2, 3],
+      [3, 4],
+    ]);
+    expect(advisorEvents[1]).toEqual(aggregate);
+    expect(advisorEvents[1]?.changes).toEqual(changes);
+    expect(
+      advisorEvents[1]?.changes
+        .filter(
+          (change) =>
+            change.type === 'message.upserted' &&
+            change.message.id === 'assistant-1',
+        )
+        .map((change) =>
+          change.type === 'message.upserted' &&
+          change.message.blocks[0]?.type === 'text'
+            ? change.message.blocks[0].text
+            : undefined,
+        ),
+    ).toEqual(['aggregate text 1', 'aggregate text 2', 'aggregate final text']);
+    expect(advisorEvents[1]?.changes[5]).toMatchObject({
+      type: 'message.upserted',
+      message: { id: 'assistant-2' },
+    });
   });
 
   it('keeps a boundary per window and per scope', () => {

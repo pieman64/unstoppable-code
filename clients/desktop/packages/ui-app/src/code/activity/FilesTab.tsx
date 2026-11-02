@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -38,9 +39,15 @@ import type {
   PortalCodeViewerSelection,
   PortalFileTreeNode,
 } from '@canopy/protocol/portal';
-import { FileTreeRow } from '@canopy/ui-shared/components';
+import { FileRootGroupRow, FileTreeRow } from '@canopy/ui-shared/components';
+import {
+  isCoworkWorkspaceFileRoot,
+  partitionFileRoots,
+  type FileRootGroupKind,
+} from '@canopy/ui-shared/lib/file-root-groups';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { DownloadIcon } from '@canopy/ui-shared/icons';
-import { Tooltip } from '@canopy/ui-shared/components';
+import { Button, Tooltip } from '@canopy/ui-shared/components';
 import {
   FilesTreeRefreshButton,
   useIconStyle,
@@ -73,6 +80,31 @@ export interface FilesTabSearch {
 export interface FilesTabRoot {
   readonly localId: string;
   readonly label: string;
+  /** Stable catalog kind; absent from older hosts, which never group. */
+  readonly kind?: FileRootGroupKind;
+}
+
+function readRootGroupExpansion(key: string | undefined): boolean {
+  try {
+    return (
+      key !== undefined &&
+      typeof window !== 'undefined' &&
+      window.localStorage.getItem(key) === 'true'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function saveRootGroupExpansion(
+  key: string | undefined,
+  expanded: boolean,
+): void {
+  try {
+    if (key !== undefined) window.localStorage.setItem(key, String(expanded));
+  } catch {
+    // A disabled browser store must not prevent operating the disclosure.
+  }
 }
 
 /**
@@ -126,6 +158,11 @@ export interface FilesTabProps {
   readonly roots?: readonly FilesTabRoot[];
   readonly activeRootLocalId?: string;
   readonly onSelectRoot?: (rootLocalId: string) => void;
+  /**
+   * Brand display name for the group holding app-owned roots. The switcher
+   * groups those roots only when the host supplies it.
+   */
+  readonly appManagedRootsLabel?: string;
   /** Root-relative directory currently listed; empty string is the root. */
   readonly currentDir?: string;
   /** Show a loading placeholder instead of the empty state. */
@@ -165,6 +202,7 @@ export function FilesTab({
   roots,
   activeRootLocalId,
   onSelectRoot,
+  appManagedRootsLabel,
   currentDir,
   loading,
   dataTestId,
@@ -211,6 +249,51 @@ export function FilesTab({
   const [collapsedResults, setCollapsedResults] = useState<ReadonlySet<string>>(
     new Set(),
   );
+  const rootGroups = useMemo(
+    () =>
+      appManagedRootsLabel === undefined
+        ? { primary: roots ?? [], appManaged: [] }
+        : partitionFileRoots(roots ?? [], (root) => ({
+            id: root.localId,
+            kind: root.kind,
+          })),
+    [appManagedRootsLabel, roots],
+  );
+  const activeRootIsManaged = rootGroups.appManaged.some(
+    (root) => root.localId === activeRootLocalId,
+  );
+  const rootGroupStateKey =
+    workspaceLocalId && worktreeLocalId
+      ? `canopy:files-root-group:${JSON.stringify([workspaceLocalId, worktreeLocalId, dataTestId ?? 'activity'])}`
+      : undefined;
+  const [rootGroupState, setRootGroupState] = useState(() => ({
+    key: rootGroupStateKey,
+    activeRootLocalId,
+    activeRootIsManaged,
+    expanded: activeRootIsManaged || readRootGroupExpansion(rootGroupStateKey),
+  }));
+  if (
+    rootGroupState.key !== rootGroupStateKey ||
+    rootGroupState.activeRootLocalId !== activeRootLocalId ||
+    rootGroupState.activeRootIsManaged !== activeRootIsManaged
+  ) {
+    setRootGroupState({
+      key: rootGroupStateKey,
+      activeRootLocalId,
+      activeRootIsManaged,
+      expanded:
+        rootGroupState.key !== rootGroupStateKey
+          ? activeRootIsManaged || readRootGroupExpansion(rootGroupStateKey)
+          : activeRootIsManaged || rootGroupState.expanded,
+    });
+  }
+  const managedRootsExpanded = rootGroupState.expanded;
+  const toggleManagedRoots = (): void => {
+    const expanded = !managedRootsExpanded;
+    saveRootGroupExpansion(rootGroupStateKey, expanded);
+    setRootGroupState({ ...rootGroupState, expanded });
+  };
+  const managedRootsGroupId = useId();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const editorInputRef = useRef<HTMLInputElement>(null);
   const submittingRef = useRef(false);
@@ -282,7 +365,7 @@ export function FilesTab({
               type="button"
               data-testid="activity-files-mention"
               aria-label={`Mention ${target.name} in chat`}
-              className="focus-ring flex items-center rounded-md bg-base p-1 fg-secondary ring-1 ring-inset ring-line-base transition hover:fg-primary"
+              className="focus-ring flex items-center rounded-md bg-base p-1 fg-secondary ring-1 ring-inset ring-line-base transition-colors hover:fg-primary"
               onPointerDown={(event): void => event.stopPropagation()}
               onMouseDown={(event): void => event.stopPropagation()}
               onClick={(event): void => {
@@ -301,7 +384,7 @@ export function FilesTab({
               type="button"
               data-testid="activity-files-download"
               aria-label={`Download ${target.name}`}
-              className="focus-ring flex items-center rounded-md bg-base p-1 fg-secondary ring-1 ring-inset ring-line-base transition hover:fg-primary"
+              className="focus-ring flex items-center rounded-md bg-base p-1 fg-secondary ring-1 ring-inset ring-line-base transition-colors hover:fg-primary"
               onPointerDown={(event): void => event.stopPropagation()}
               onMouseDown={(event): void => event.stopPropagation()}
               onClick={(event): void => {
@@ -587,46 +670,52 @@ export function FilesTab({
         {mutations !== undefined && (
           <>
             <Tooltip label="New file">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="compact"
+                iconOnly
                 aria-label="New file"
                 data-testid="files-tree-new-file"
                 disabled={!mutable(dir) || mutations.busy}
-                className="focus-ring rounded p-1 fg-secondary hover:bg-fg-primary/[0.06] disabled:opacity-50"
                 onClick={(): void => beginCreate('create-file', dir)}
               >
                 <NewFileIcon className="h-4 w-4" />
-              </button>
+              </Button>
             </Tooltip>
             <Tooltip label="New folder">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="compact"
+                iconOnly
                 aria-label="New folder"
                 data-testid="files-tree-new-folder"
                 disabled={!mutable(dir) || mutations.busy}
-                className="focus-ring rounded p-1 fg-secondary hover:bg-fg-primary/[0.06] disabled:opacity-50"
                 onClick={(): void => beginCreate('create-directory', dir)}
               >
                 <NewFolderIcon className="h-4 w-4" />
-              </button>
+              </Button>
             </Tooltip>
           </>
         )}
         {search !== undefined && (
           <Tooltip label="Search files">
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="compact"
+              iconOnly
               aria-label="Search files"
               data-testid="files-tree-search-toggle"
               aria-expanded={searchOpen}
-              className="focus-ring rounded p-1 fg-secondary hover:bg-fg-primary/[0.06]"
               onClick={(): void => {
                 if (searchOpen) closeSearch();
                 else setSearchOpen(true);
               }}
             >
               <SearchFilesIcon className="h-4 w-4" />
-            </button>
+            </Button>
           </Tooltip>
         )}
         {onReload !== undefined && (
@@ -658,24 +747,27 @@ export function FilesTab({
           }
         }}
       />
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="compact"
         aria-label="Clear search"
         data-testid="files-tree-search-clear"
-        className="focus-ring px-1 text-xs fg-secondary"
         onClick={(): void => setSearchQuery('')}
       >
         Clear
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
+        variant="ghost"
+        size="compact"
+        iconOnly
         aria-label="Close search"
         data-testid="files-tree-search-close"
-        className="focus-ring px-1 text-xs fg-secondary"
         onClick={closeSearch}
       >
         ×
-      </button>
+      </Button>
     </div>
   ) : null;
   const searchBody = (
@@ -767,26 +859,55 @@ export function FilesTab({
     </>
   );
 
+  const renderRootChip = (root: FilesTabRoot): JSX.Element => (
+    <button
+      key={root.localId}
+      type="button"
+      onClick={(): void => onSelectRoot?.(root.localId)}
+      className={`focus-ring rounded-md border px-2 py-0.5 text-2xs transition-colors ${
+        root.localId === activeRootLocalId
+          ? 'border-line-accent/40 bg-fg-primary/[0.06] fg-primary'
+          : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
+      }`}
+    >
+      {isCoworkWorkspaceFileRoot({ id: root.localId, kind: root.kind }) ? (
+        // The Cowork root carries the user's project title.
+        <span className={REPLAY_MASK_CLASS}>{root.label}</span>
+      ) : (
+        root.label
+      )}
+    </button>
+  );
+
   const rootSwitcher =
     roots && roots.length > 1 && onSelectRoot ? (
       <div
         className="flex flex-wrap gap-1.5 border-b px-3 py-2"
         data-testid="activity-files-roots"
       >
-        {roots.map((root) => (
-          <button
-            key={root.localId}
-            type="button"
-            onClick={(): void => onSelectRoot(root.localId)}
-            className={`focus-ring rounded-md border px-2 py-0.5 text-2xs transition ${
-              root.localId === activeRootLocalId
-                ? 'border-line-accent/40 bg-fg-primary/[0.06] fg-primary'
-                : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-            }`}
-          >
-            {root.label}
-          </button>
-        ))}
+        {rootGroups.primary.map(renderRootChip)}
+        {rootGroups.appManaged.length > 0 && (
+          <>
+            <FileRootGroupRow
+              label={appManagedRootsLabel ?? ''}
+              expanded={managedRootsExpanded}
+              controlsId={managedRootsGroupId}
+              onToggle={toggleManagedRoots}
+              nodeId="group-app-managed"
+              presentation="switcher"
+              dataTestId="activity-files-root-group"
+            />
+            <div
+              id={managedRootsGroupId}
+              role="group"
+              aria-label={appManagedRootsLabel}
+              className="contents"
+            >
+              {managedRootsExpanded &&
+                rootGroups.appManaged.map(renderRootChip)}
+            </div>
+          </>
+        )}
       </div>
     ) : null;
 
@@ -796,14 +917,15 @@ export function FilesTab({
         className="flex items-center gap-1 border-b px-3 py-1.5 text-2xs"
         data-testid="activity-files-breadcrumb"
       >
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="compact"
           onClick={(): void => onOpenDirectory(parentDir)}
-          className="focus-ring rounded-md border px-1.5 py-0.5 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
           aria-label="Up one directory"
         >
           ../
-        </button>
+        </Button>
         <span className="truncate fg-primary/80">{dir}</span>
       </div>
     ) : null;

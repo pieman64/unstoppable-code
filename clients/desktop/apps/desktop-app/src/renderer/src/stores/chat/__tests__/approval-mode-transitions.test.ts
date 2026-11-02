@@ -6,7 +6,7 @@ import type {
   ApprovalRequestEvent,
 } from '@canopy/desktop-shared/types';
 import type { ChatMessage, ChatTab } from '../types';
-import { emptyWorktreeChat } from '../tab-utils';
+import { createEmptyTab, emptyWorktreeChat } from '../tab-utils';
 
 const scheduleSaveMock = jest.fn<void, unknown[]>();
 jest.mock('../persistence', () => ({
@@ -15,6 +15,7 @@ jest.mock('../persistence', () => ({
 
 function makeTab(overrides: Partial<ChatTab> = {}): ChatTab {
   return {
+    ...createEmptyTab(),
     id: 'chat',
     title: 'Chat',
     messages: [],
@@ -87,13 +88,13 @@ describe('approval-mode transitions', () => {
           chatProvider: 'claude',
           chatModelByProvider: {
             claude: { model: 'claude-sonnet-4-6', thinkingLevel: 'high' },
-            codex: null,
+            codex: { model: 'gpt-5.5', thinkingLevel: 'high' },
             ollama: null,
           },
           worktreeProvider: 'claude',
           worktreeModelByProvider: {
             claude: { model: 'claude-sonnet-4-6', thinkingLevel: 'high' },
-            codex: null,
+            codex: { model: 'gpt-5.5', thinkingLevel: 'high' },
             ollama: null,
           },
         },

@@ -71,7 +71,9 @@ test('Files settings: collapsible sections and the Labels editor', async () => {
     await expect(testsToggle).toHaveAttribute('aria-checked', 'false');
     await expect(labelsToggle).toHaveText(/Hide labels/);
 
-    // "Stop further labels" is configurable on seeded buckets.
+    // "Stop further labels" is configurable on seeded buckets, in the
+    // bucket's details under its row.
+    await window.getByTestId('file-label-expand-documentation').click();
     const docsStop = window.getByTestId('file-label-stop-documentation');
     await expect(docsStop).not.toBeChecked();
     await docsStop.check();

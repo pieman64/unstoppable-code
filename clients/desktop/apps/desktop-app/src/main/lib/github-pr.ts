@@ -48,6 +48,11 @@ import {
   type GitHubClientEnqueueOptions,
 } from './github-client';
 import { invalidateGitHubPullRequest } from './github-pr-read-model';
+import { isDuplicatePrError } from './github-pr-rejections';
+import {
+  createGitHubPullRequest,
+  updateGitHubPullRequest,
+} from './github-pr-writes';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import { isRecord } from './type-guards';
 import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
@@ -774,35 +779,6 @@ export async function fetchArchivedPullRequestMetadata(
     ...(pullRequest.base.ref ? { baseRefName: pullRequest.base.ref } : {}),
     updatedAt: new Date(pullRequest.updated_at).toISOString(),
   };
-}
-
-function hasDuplicatePrErrorMessage(value: unknown): boolean {
-  return typeof value === 'string' && /already exists/i.test(value);
-}
-
-function isDuplicatePrError(error: unknown): boolean {
-  if (error instanceof Error && hasDuplicatePrErrorMessage(error.message)) {
-    return true;
-  }
-
-  if (!isRecord(error) || error.status !== 422) {
-    return false;
-  }
-
-  const response = error.response;
-  if (!isRecord(response)) {
-    return false;
-  }
-
-  const data = response.data;
-  if (!isRecord(data) || !Array.isArray(data.errors)) {
-    return false;
-  }
-
-  return data.errors.some(
-    (entry: unknown) =>
-      isRecord(entry) && hasDuplicatePrErrorMessage(entry.message),
-  );
 }
 
 function mapCheckRunStatus(
@@ -1939,23 +1915,11 @@ export async function updatePrBaseBranchForRepo(
     );
   }
 
-  const client = getGitHubClient();
-  const result = await client.enqueue(
-    (octokit) =>
-      octokit.pulls.update({
-        owner: remote.owner,
-        repo: remote.repo,
-        pull_number: prNumber,
-        base: newBaseBranch,
-      }),
-    'high',
-    { operation: 'mutation', idempotency: 'unsafe' },
+  const { url } = await updateGitHubPullRequest(
+    { ...remote, number: prNumber },
+    { base: newBaseBranch },
   );
-  invalidateGitHubPullRequest({ ...remote, number: prNumber });
-
-  return {
-    prUrl: result.data.html_url,
-  };
+  return { prUrl: url };
 }
 
 /** A minimal reference to a PR discovered by base-branch lookup. */
@@ -2100,6 +2064,9 @@ export async function updatePrBodyForRepo(
 }
 
 export interface MergePrForRepoResult {
+  /** True only after this mutation merged the PR and a read confirmed it.
+   * False when retry reconciliation discovers a merge with unknown origin. */
+  newlyMerged?: boolean;
   /** `enqueued` when the base branch requires a merge queue. */
   outcome: MergePrRepoOutcome;
   /**
@@ -2255,6 +2222,7 @@ async function mergePrForRemote(
     if (latest.data.merged) {
       return {
         outcome: 'merged',
+        newlyMerged: false,
         mergeMethod,
         mergeCommitSha: latest.data.merge_commit_sha ?? null,
       };
@@ -2359,6 +2327,7 @@ async function mergePrForRemote(
 
     return {
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod,
       mergeCommitSha: mergeResult.data.sha ?? null,
     };
@@ -2385,28 +2354,16 @@ export async function createPrForRepo(
     );
   }
 
-  const client = getGitHubClient();
   try {
-    const result = await client.enqueue(
-      (octokit) =>
-        octokit.pulls.create({
-          owner: remote.owner,
-          repo: remote.repo,
-          title,
-          body,
-          head: branchName,
-          base: baseBranch,
-          draft,
-        }),
-      'high',
-      { operation: 'mutation', idempotency: 'unsafe' },
-    );
+    const { number, url } = await createGitHubPullRequest(remote, {
+      title,
+      body,
+      head: branchName,
+      base: baseBranch,
+      draft,
+    });
 
-    return {
-      prNumber: result.data.number,
-      prUrl: result.data.html_url,
-      created: true,
-    };
+    return { prNumber: number, prUrl: url, created: true };
   } catch (error: unknown) {
     if (!isDuplicatePrError(error)) {
       throw error;

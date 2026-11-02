@@ -21,8 +21,12 @@ import {
   codexServiceTierForModelConfig,
   type CodexConfig,
 } from '@canopy/desktop-shared/lib/codex-model-config';
+import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-multi-agent';
 import type { CodexSelectedCapabilityRoot } from '@canopy/desktop-shared/types';
-import { DelegationTranscriptRecorder } from './transcript-recorder';
+import {
+  DELEGATION_STREAM_PREVIEW_LIMITS,
+  DelegationTranscriptRecorder,
+} from './transcript-recorder';
 import { delegationCommandEnvironment } from '@canopy/desktop-shared/node/delegation/command-environment';
 import {
   LocalDelegationRunner,
@@ -34,6 +38,10 @@ import type {
   ResolvedAgentRouteSnapshot,
   RunnerAvailability,
 } from '@canopy/desktop-shared/node/delegation';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptPort,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
 import {
   CODEX_PROJECT_DOC_THREAD_CONFIG,
   loadCodexThreadSeedItemsWithLoadCount,
@@ -51,6 +59,12 @@ import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/genera
 import type { UserInput } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/UserInput';
 import { getCodexRuntimeService } from '../../codex/runtime-service';
 import { CodexDelegationProgress } from './codex-progress';
+import { DelegationChildNormalizer } from './child-row-normalizers';
+import {
+  createDefaultCommandOutputSpools,
+  type DelegationCommandSpools,
+} from './command-output-spools';
+import { delegationBlockId } from '@canopy/agent-transcript';
 import type { DelegationNativePolicy } from './native-policy';
 import {
   buildCodexDelegationPermissionProfiles,
@@ -170,6 +184,13 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;
 }
 
+function retryingCodexError(error: unknown): boolean {
+  const details = record(error);
+  return (
+    details?.willRetry === true || record(details?.params)?.willRetry === true
+  );
+}
+
 export function buildCodexDelegationThreadParams(options: {
   readonly cwd: string;
   readonly model: string;
@@ -198,7 +219,18 @@ export function buildCodexDelegationThreadParams(options: {
   readonly toolchainReadRoots?: readonly string[];
   readonly temporaryDirectory?: string;
 }): ThreadStartParams {
-  const configuredProvider = options.config.model_provider;
+  const config = applyCodexMultiAgentConfig(options.config, { enabled: false });
+  // Dotted overrides otherwise retain their insertion order and can outrank
+  // the nested locked feature table when the runtime flattens this config.
+  for (const name of [
+    ...DISABLED_FEATURES,
+    'request_permissions_tool',
+    'shell_tool',
+    'unified_exec',
+    'skip_host_skill_discovery',
+  ])
+    delete config[`features.${name}`];
+  const configuredProvider = config.model_provider;
   const profiles = buildCodexDelegationPermissionProfiles(options);
   const permissionProfile =
     options.permissionProfile === CODEX_DELEGATION_WRITE_PROFILE &&
@@ -228,7 +260,7 @@ export function buildCodexDelegationThreadParams(options: {
     developerInstructions: '',
     dynamicTools: [],
     config: {
-      ...options.config,
+      ...config,
       ...CODEX_PROJECT_DOC_THREAD_CONFIG,
       // The bundled prompt builder still preloads host skills when discovery is
       // skipped. Its minimum valid budget omits that ambient catalog while
@@ -444,6 +476,9 @@ export function createCodexDelegationRunner(options: {
     runtime: CodexRuntimeService,
     threadId: string,
   ) => Promise<JsonValue[]>;
+  transcriptPort?: DelegationTranscriptPort;
+  /** Command-output spools for a stream-backed run; one owner per run. */
+  spools?: () => DelegationCommandSpools;
 }): LocalDelegationRunner {
   return new LocalDelegationRunner(
     'codex',
@@ -683,7 +718,77 @@ export function createCodexDelegationRunner(options: {
       if (context.signal.aborted)
         throw new Error('Delegation cancelled after native thread allocation');
       const progress = new CodexDelegationProgress();
-      const transcript = new DelegationTranscriptRecorder();
+      const appendChildChanges = context.appendChildChanges;
+      const transcript = new DelegationTranscriptRecorder(
+        appendChildChanges ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
+      );
+      const spools = appendChildChanges
+        ? (options.spools ?? createDefaultCommandOutputSpools)()
+        : undefined;
+      const reportWithoutMasking = (error: unknown): void => {
+        try {
+          options.reportError(error);
+        } catch {
+          // Diagnostics must never replace the primary runner/storage error.
+        }
+      };
+      const childNormalizer = appendChildChanges
+        ? new DelegationChildNormalizer(
+            delegationBlockId(
+              context.request.delegationId,
+              context.request.runGeneration,
+            ),
+            {
+              ...(spools ? { spools } : {}),
+              onStorageFailure: (error: unknown): void => {
+                context.failTranscript?.(error);
+              },
+              onDiagnostic: ({ kind, segment, count }): void => {
+                reportWithoutMasking(
+                  new Error(
+                    `Codex delegation observed ${count} event${count === 1 ? '' : 's'} for closed segment ${segment} (${kind})`,
+                  ),
+                );
+              },
+            },
+          )
+        : undefined;
+      const appendNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => {
+        if (!changes.length || !appendChildChanges) return;
+        await appendChildChanges(changes);
+        childNormalizer?.acknowledge(changes);
+      };
+      let events: Promise<void> = Promise.resolve();
+      const settleChildTurn = async (
+        threadId: string,
+        turnId: string | undefined,
+        kind: 'completed' | 'interrupted' | 'failed',
+      ): Promise<void> => {
+        if (!childNormalizer) return;
+        let laneError: unknown;
+        let laneFailed = false;
+        try {
+          await events;
+        } catch (error) {
+          laneError = error;
+          laneFailed = true;
+        }
+        try {
+          await appendNormalizedChanges(
+            await childNormalizer.settleTurn({
+              threadId,
+              ...(turnId === undefined ? {} : { turnId }),
+              kind,
+            }),
+          );
+        } catch (error) {
+          reportWithoutMasking(error);
+          if (!laneFailed) throw error;
+        }
+        if (laneFailed) throw laneError;
+      };
       const loadToolName =
         CANOPY_INJECTED_TOOL_REGISTRY.load_deferred_tools.codexToolName;
       const reload = prepared.capabilityReload;
@@ -699,11 +804,11 @@ export function createCodexDelegationRunner(options: {
       } = {};
       let lastTranscript = 0;
       let lastProgress = 0;
-      let events: Promise<void> = Promise.resolve();
       // Usage of turns already ended by a capability reload. A reload opens a
       // new native thread, whose cumulative counters start again from zero.
       let settledUsage: AgentDelegationUsage = {};
       let outcomeUsage: AgentDelegationUsage = {};
+      let finalProgress = '';
       let input: readonly string[] = [context.request.task.prompt];
       let outcome: Awaited<ReturnType<CodexThreadHandle['runTurn']>>;
       try {
@@ -729,6 +834,7 @@ export function createCodexDelegationRunner(options: {
           // runtime knows the native turn id would restart the shared
           // app-server, so it waits for `turn/started`.
           let turnIdKnown = false;
+          let currentTurnId: string | undefined;
           let turnSettled = false;
           const stoppable = (): boolean =>
             segmentWrites &&
@@ -778,9 +884,14 @@ export function createCodexDelegationRunner(options: {
                 options.reportError(error);
               });
           };
+          // A rule save that may revoke a grant stops the turn at once: the
+          // grants' evaluation waits for the save, and the next thread opens
+          // under its outcome.
           const checkWriteAuthority = (force = false): void => {
             if (!stoppable()) return;
             if (!segmentPrepared.tools.writable()) stopReadOnly('planning');
+            else if (segmentPrepared.tools.codexSandboxWritesNarrowing())
+              stopReadOnly('grants');
             else checkGrants(force);
           };
           const turn = segment.runTurn({
@@ -805,11 +916,14 @@ export function createCodexDelegationRunner(options: {
                   // here under the parent policy, as a parent chat's are.
                   mcpElicitationPolicy: {
                     allowExternalMutation: true,
-                    evaluate: (call: {
-                      serverName: string;
-                      toolName: string;
-                      approvalKind: string;
-                    }):
+                    evaluate: (
+                      call: {
+                        serverName: string;
+                        toolName: string;
+                        approvalKind: string;
+                      },
+                      requestSignal?: AbortSignal,
+                    ):
                       | { approved: boolean; externalMutation: boolean }
                       | Promise<{
                           approved: boolean;
@@ -831,7 +945,7 @@ export function createCodexDelegationRunner(options: {
                           call.toolName,
                           undefined,
                           randomUUID(),
-                          context.signal,
+                          requestSignal ?? context.signal,
                         )
                         .then((approved) => ({
                           approved,
@@ -841,11 +955,38 @@ export function createCodexDelegationRunner(options: {
                   },
                 }
               : {}),
-            nativeApprovalPolicy: (method, request) => {
+            nativeApprovalPolicy: (method, request, requestSignal) => {
               checkWriteAuthority(true);
-              return segmentPrepared.tools.approveCodex(method, request);
+              return segmentPrepared.tools.approveCodex(
+                method,
+                request,
+                requestSignal,
+              );
             },
             onEvent: (event) => {
+              if (
+                event.method === 'turn/started' &&
+                event.params.threadId === segment.threadId
+              ) {
+                const eventTurn = record(event.params.turn);
+                const eventTurnId = eventTurn?.id;
+                if (typeof eventTurnId === 'string' && eventTurnId)
+                  currentTurnId = eventTurnId;
+              } else if (
+                currentTurnId === undefined &&
+                event.params.threadId === segment.threadId &&
+                (event.method === 'turn/completed' ||
+                  (event.method === 'error' &&
+                    event.params.willRetry === false))
+              ) {
+                const eventTurn = record(event.params.turn);
+                const eventTurnId =
+                  (typeof eventTurn?.id === 'string' && eventTurn.id) ||
+                  (typeof event.params.turnId === 'string' &&
+                    event.params.turnId) ||
+                  undefined;
+                if (eventTurnId) currentTurnId = eventTurnId;
+              }
               if (
                 !turnIdKnown &&
                 event.method === 'turn/started' &&
@@ -859,7 +1000,17 @@ export function createCodexDelegationRunner(options: {
               segmentPrepared.tools.observeCodex(event.method, event.params);
               progress.receive(event);
               transcript.codex(event);
-              if (transcript.limitExceeded && !transcriptLimitExceeded) {
+              if (childNormalizer) {
+                events = events.then(async () =>
+                  appendNormalizedChanges(await childNormalizer.codex(event)),
+                );
+                void events.catch(options.reportError);
+              }
+              if (
+                transcript.limitExceeded &&
+                !childNormalizer &&
+                !transcriptLimitExceeded
+              ) {
                 transcriptLimitExceeded = true;
                 transcriptInterrupt = segment.interrupt().catch((error) => {
                   options.reportError(error);
@@ -909,15 +1060,22 @@ export function createCodexDelegationRunner(options: {
                 );
                 void events.catch(options.reportError);
               }
-              if (progress.text && Date.now() - lastProgress >= 200) {
+              if (Date.now() - lastProgress >= 200) {
                 const captured = progress.text;
-                const truncated = progress.truncated;
-                lastProgress = Date.now();
-                events = events.then(() =>
-                  context.emit({ type: 'progress', text: captured, truncated }),
-                );
-                void events.catch(options.reportError);
+                if (captured) {
+                  const truncated = progress.truncated;
+                  lastProgress = Date.now();
+                  events = events.then(() =>
+                    context.emit({
+                      type: 'progress',
+                      text: captured,
+                      truncated,
+                    }),
+                  );
+                  void events.catch(options.reportError);
+                }
               }
+              return childNormalizer ? events : undefined;
             },
           });
           // Provider events can pause for a while (a silent command, or the
@@ -933,12 +1091,34 @@ export function createCodexDelegationRunner(options: {
               }, CODEX_DELEGATION_PLAN_CHECK_MS)
             : undefined;
           writeCheck?.unref?.();
+          let turnOutcome:
+            | Awaited<ReturnType<CodexThreadHandle['runTurn']>>
+            | undefined;
+          let turnError: unknown;
+          let turnFailed = false;
           try {
-            outcome = await turn;
+            turnOutcome = await turn;
+          } catch (error) {
+            turnFailed = true;
+            turnError = error;
           } finally {
             turnSettled = true;
             clearInterval(writeCheck);
           }
+          if (
+            childNormalizer &&
+            !(turnFailed && retryingCodexError(turnError))
+          ) {
+            await settleChildTurn(
+              segment.threadId,
+              turnOutcome?.turnId ?? currentTurnId,
+              turnOutcome?.status ?? 'failed',
+            );
+          }
+          if (turnFailed) throw turnError;
+          if (!turnOutcome)
+            throw new Error('Codex runTurn returned no outcome');
+          outcome = turnOutcome;
           const stopping = turnStop.interrupt;
           const stoppedReadOnly = turnStop.readOnly;
           turnStop.interrupt = undefined;
@@ -1059,7 +1239,21 @@ export function createCodexDelegationRunner(options: {
         throw error;
       } finally {
         if (context.signal.aborted) reload?.controller.cancel();
-        await events;
+        try {
+          await events;
+        } finally {
+          try {
+            await appendNormalizedChanges(
+              childNormalizer ? await childNormalizer.finish() : [],
+            );
+          } finally {
+            try {
+              await childNormalizer?.close();
+            } catch (error) {
+              reportWithoutMasking(error);
+            }
+          }
+        }
         await transcriptInterrupt;
         const items = transcript.take();
         if (items?.length)
@@ -1068,10 +1262,11 @@ export function createCodexDelegationRunner(options: {
             items,
             truncated: transcript.truncated,
           });
-        if (progress.text)
+        finalProgress = progress.text;
+        if (finalProgress)
           await context.emit({
             type: 'progress',
-            text: progress.text,
+            text: finalProgress,
             truncated: progress.truncated,
           });
       }
@@ -1088,7 +1283,7 @@ export function createCodexDelegationRunner(options: {
           ...(outcome.error ? { error: outcome.error } : {}),
           ...(outcome.errorInfo ? { errorInfo: outcome.errorInfo } : {}),
           partialOutput: Boolean(
-            outcome.finalText.trim() || progress.text.trim(),
+            outcome.finalText.trim() || finalProgress.trim(),
           ),
         });
         failure = described.error;
@@ -1117,5 +1312,6 @@ export function createCodexDelegationRunner(options: {
       };
     },
     options.reportError,
+    { transcriptPort: options.transcriptPort },
   );
 }

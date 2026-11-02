@@ -140,14 +140,14 @@ function seedWorkflows({ withPipelineAutomation = false } = {}) {
 }
 
 const WORKFLOWS_SUBTITLE =
-  'Chain together prompts and scripts from multiple agents and trigger them on a schedule, when something happens, or manually.';
+  'Chain prompts and scripts, and run them by hand, on a schedule, or when something happens.';
 
 /** Asserts the header's one subtitle reads exactly the approved copy. */
 async function expectWorkflowsSubtitle(window) {
   const subtitle = window
     .getByTestId('page-workflows')
-    .getByTestId('page-heading')
-    .locator('p');
+    .getByTestId('page-header')
+    .getByTestId('page-header-description');
   await expect(subtitle).toHaveCount(1);
   await expect(subtitle).toBeVisible();
   // Raw text, so a whitespace or punctuation change still fails.
@@ -276,7 +276,7 @@ test.describe('Workflows page', () => {
         window.getByTestId('workflows-tab-count-workflows'),
       ).toHaveText('1');
       // With runs listed, the header offers New workflow alone (CAN-4318).
-      const heading = window.getByTestId('page-heading');
+      const heading = window.getByTestId('page-header');
       await expect(heading.getByTestId('workflows-new-manual')).toHaveText(
         'New workflow',
       );
@@ -429,7 +429,7 @@ test.describe('Workflows page', () => {
       const trigger = await openWorkflowEditSection(window, 'trigger');
       await expect(
         trigger.getByTestId('pipeline-trigger-automations-empty'),
-      ).toHaveText('No automations run this pipeline.');
+      ).toHaveText('No automations run this workflow.');
       await expect(definition).toBeHidden();
       const runs = await openWorkflowEditSection(window, 'runs');
       await expect(runs.getByTestId('pipeline-runs-section')).toBeVisible();
@@ -471,23 +471,78 @@ test.describe('Workflows page', () => {
       await expect(shell).toHaveCount(0);
       await expectWorkflowsTab(window, LIBRARY);
 
-      // Search narrows the one table to matching rows of either kind.
-      await window.getByTestId('workflows-library-search').fill('standup');
+      // Search narrows the one table to matching rows of either kind. The
+      // field is the 32px page search filling its row: it counts the
+      // matches while there is a query, and Escape clears it before it
+      // leaves the field. The Filter and Sort dropdowns follow it.
+      const librarySearch = window.getByTestId('workflows-library-search');
+      const librarySearchField = window.getByTestId(
+        'workflows-library-search-field',
+      );
+      await expect(librarySearchField).toHaveAttribute(
+        'data-search-field',
+        'md',
+      );
+      const libraryRow = await window
+        .getByTestId('workflows-library-toolbar')
+        .boundingBox();
+      const libraryField = await librarySearchField.boundingBox();
+      const librarySort = await window
+        .getByTestId('workflows-library-sort')
+        .boundingBox();
+      expect(libraryField?.height).toBe(32);
+      expect(librarySort?.height).toBe(28);
+      // The field grows to fill the row; the sort ends it, its 8px end
+      // inset hanging past the content edge so its chevron's ink meets it.
+      expect(
+        Math.round((librarySort?.x ?? 0) + (librarySort?.width ?? 0)),
+      ).toBe(Math.round((libraryRow?.x ?? 0) + (libraryRow?.width ?? 0)) + 8);
+      expect(libraryField?.width ?? 0).toBeGreaterThan(
+        (libraryRow?.width ?? 0) / 2,
+      );
+      await expect(
+        librarySearchField.locator('[data-search-field-count]'),
+      ).toHaveCount(0);
+      await librarySearch.fill('standup');
       await expect(
         app.workflowsLibraryAutomationRow(ACTIVITY_ID),
       ).toBeVisible();
       await expect(app.workflowsLibraryPipelineRow(PIPELINE_ID)).toHaveCount(0);
-      // A search with no matches offers Clear filters alone: New workflow
-      // stays in the page header.
-      await window.getByTestId('workflows-library-search').fill('no such row');
+      await expect(
+        librarySearchField.locator('[data-search-field-count]'),
+      ).toHaveText(/^1 of \d+$/);
+      await librarySearch.press('Escape');
+      await expect(librarySearch).toHaveValue('');
+      await expect(librarySearch).toBeFocused();
+      await librarySearch.press('Escape');
+      await expect(librarySearch).not.toBeFocused();
+      await librarySearch.fill('standup');
+      await window.getByTestId('workflows-library-search-clear').click();
+      await expect(librarySearch).toHaveValue('');
+      await expect(librarySearch).toBeFocused();
+      // Four filters sit behind one Filter dropdown after the field, which
+      // counts the filters on.
+      const filterButton = window.getByTestId('workflows-library-filter');
+      await expect(filterButton).not.toHaveAttribute('data-active', 'true');
+      await expect(filterButton).toHaveText('Filter');
+      await app.chooseWorkflowsLibraryFilter('source', 'mine');
+      await expect(filterButton).toHaveAttribute('data-active', 'true');
+      await expect(filterButton).toHaveText('Filter · 1');
+      await app.chooseWorkflowsLibraryFilter('source', 'any');
+      await expect(filterButton).not.toHaveAttribute('data-active', 'true');
+      // A search with no matches offers one action that clears it: New
+      // workflow stays in the page header.
+      await librarySearch.fill('no such row');
       const noMatches = window.getByTestId('workflows-library-no-matches');
       await expect(noMatches).toBeVisible();
       await expect(noMatches.getByTestId('workflows-new')).toHaveCount(0);
       await expect(window.getByTestId('workflows-new')).toHaveCount(1);
-      await noMatches.getByTestId('workflows-library-empty-clear').click();
-      await expect(window.getByTestId('workflows-library-search')).toHaveValue(
-        '',
+      const clearSearch = noMatches.getByTestId(
+        'workflows-library-empty-clear',
       );
+      await expect(clearSearch).toHaveText('Clear search');
+      await clearSearch.click();
+      await expect(librarySearch).toHaveValue('');
       await expect(app.workflowsLibraryPipelineRow(PIPELINE_ID)).toBeVisible();
 
       // A watcher is cancelled from its Runs row, after a confirmation.
@@ -496,6 +551,13 @@ test.describe('Workflows page', () => {
       const watcherRow = app.workflowsWatcherRunRow(WATCHER_ID);
       await expect(watcherRow).toContainText('Workflows chat watcher');
       await expect(watcherRow).toHaveAttribute('data-run-kind', 'watcher');
+      // CAN-4651: the Kind column names each kind by how it starts.
+      await expect(
+        window.getByRole('columnheader', { name: 'Kind', exact: true }),
+      ).toBeVisible();
+      await expect(
+        watcherRow.getByRole('cell', { name: 'Watcher', exact: true }),
+      ).toBeVisible();
       await watcherRow.getByTestId('workflows-run-action-cancel').click();
       const confirm = window.getByTestId('workflows-runs-cancel-watcher');
       await expect(confirm).toBeVisible();
@@ -510,7 +572,7 @@ test.describe('Workflows page', () => {
         'Run a workflow',
       );
       await expect(empty.getByRole('button')).toHaveCount(1);
-      const heading = window.getByTestId('page-heading');
+      const heading = window.getByTestId('page-header');
       await expect(heading.getByTestId('workflows-new-manual')).toHaveText(
         'New workflow',
       );
@@ -547,7 +609,7 @@ test.describe('Workflows page', () => {
       await expect(empty).toBeVisible();
       // The header offers creation with no runs; the empty state still
       // offers Run a workflow alone.
-      const heading = window.getByTestId('page-heading');
+      const heading = window.getByTestId('page-header');
       const newWorkflow = heading.getByTestId('workflows-new-manual');
       await expect(newWorkflow).toHaveText('New workflow');
       await expect(heading.getByTestId('workflows-run-workflow')).toHaveCount(
@@ -575,7 +637,7 @@ test.describe('Workflows page', () => {
       await expect(window.getByTestId('pipeline-trigger-modal')).toHaveCount(0);
       await expect(
         window.getByText(
-          'Open a worktree or chat first, then run a pipeline in it.',
+          'Open a worktree or chat first, then run a workflow in it.',
         ),
       ).toHaveCount(0);
       // The draft belongs to the Library, so Back returns there.
@@ -625,7 +687,7 @@ test.describe('Workflows page', () => {
       await expect(
         empty.getByTestId('workflows-runs-empty-marketplace'),
       ).toHaveText('Browse Customize');
-      const heading = window.getByTestId('page-heading');
+      const heading = window.getByTestId('page-header');
       await expect(heading.getByTestId('workflows-new-manual')).toHaveCount(1);
       await expect(heading.getByTestId('workflows-new-manual')).toHaveText(
         'New workflow',
@@ -652,7 +714,7 @@ test.describe('Workflows page', () => {
     }
   });
 
-  test('Library Run retains the missing-target error and preselects the saved entry with a valid worktree', async () => {
+  test('Library Run opens without a task and preselects the saved entry with a valid worktree', async () => {
     test.setTimeout(120_000);
     const userDataDir = seedWorkflows();
     seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
@@ -666,12 +728,20 @@ test.describe('Workflows page', () => {
         .workflowsLibraryPipelineRow(PIPELINE_ID)
         .getByTestId('workflows-library-run');
       await run.click();
+      // Run needs no task (CAN-4542); a directory pipeline is simply not
+      // offered until a task can run it.
+      const noTask = window.getByTestId('pipeline-trigger-modal');
+      await expect(noTask).toBeVisible();
+      await expect(
+        noTask.getByText('No workflows available for this context.'),
+      ).toBeVisible();
       await expect(
         window.getByText(
-          'Open a worktree or chat first, then run a pipeline in it.',
+          'Open a worktree or chat first, then run a workflow in it.',
         ),
-      ).toBeVisible();
-      await expect(window.getByTestId('pipeline-trigger-modal')).toHaveCount(0);
+      ).toHaveCount(0);
+      await noTask.getByTestId('pipeline-trigger-modal-cancel').click();
+      await expect(noTask).toHaveCount(0);
 
       await app.openMainPage();
       await app.selectWorktree('demo-main');
@@ -776,6 +846,97 @@ test.describe('Workflows page', () => {
       ).toHaveCount(2);
     } finally {
       await discardWorkflowEditIfOpen(electronApp);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('a Library that partly failed and a failed row action each offer Try again', async () => {
+    test.setTimeout(120_000);
+    const userDataDir = seedWorkflows();
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      // Automations can't be listed until the test lets them; a held read
+      // shows the Try again spin.
+      await electronApp.evaluate(({ ipcMain }) => {
+        const original = ipcMain._invokeHandlers.get('automations:list');
+        ipcMain.removeHandler('automations:list');
+        globalThis.automationsUnavailable = true;
+        ipcMain.handle('automations:list', async (event, request) => {
+          if (globalThis.automationsUnavailable) {
+            throw new Error('automations store unavailable');
+          }
+          await globalThis.automationsListGate;
+          return original(event, request);
+        });
+      });
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openWorkflowsTab(LIBRARY);
+
+      // Part of the Library failed: one notice above what did load.
+      const notice = window.getByTestId('workflows-library-load-error');
+      await expect(notice).toContainText(
+        "Couldn't load some workflows. The rest are listed.",
+      );
+      await expect(notice).not.toContainText('automations store unavailable');
+      await expect(app.workflowsLibraryPipelineRow(PIPELINE_ID)).toBeVisible();
+      await expect(app.workflowsLibraryAutomationRow(ACTIVITY_ID)).toHaveCount(
+        0,
+      );
+
+      await electronApp.evaluate(() => {
+        globalThis.automationsUnavailable = false;
+        globalThis.automationsListGate = new Promise((resolve) => {
+          globalThis.releaseAutomationsList = resolve;
+        });
+      });
+      await notice.getByRole('button', { name: 'Try again' }).click();
+      // The notice stays, its capsule spinning, until the read settles.
+      const busy = notice.getByRole('button', { name: 'Trying again…' });
+      await expect(busy).toBeVisible();
+      await expect(busy).toBeDisabled();
+      await electronApp.evaluate(() => globalThis.releaseAutomationsList());
+      await expect(notice).toHaveCount(0);
+      await expect(
+        app.workflowsLibraryAutomationRow(ACTIVITY_ID),
+      ).toBeVisible();
+
+      // A row action that fails raises a toast whose Try again runs it again.
+      await electronApp.evaluate(({ ipcMain }) => {
+        const original = ipcMain._invokeHandlers.get('automations:update');
+        ipcMain.removeHandler('automations:update');
+        globalThis.updateFails = true;
+        ipcMain.handle('automations:update', async (event, request) => {
+          if (globalThis.updateFails) {
+            return { ok: false, error: 'The automations file is locked.' };
+          }
+          return original(event, request);
+        });
+      });
+      await app
+        .workflowsLibraryAutomationRow(ACTIVITY_ID)
+        .getByTestId('workflows-library-toggle')
+        .click();
+      const toast = window
+        .getByTestId('toast-stack-card')
+        .filter({ hasText: "Couldn't turn on Workflows standup" });
+      await expect(toast).toBeVisible();
+      await expect(toast).toContainText('The automations file is locked.');
+      const toastRetry = toast.getByTestId('toast-action');
+      await expect(toastRetry).toHaveText('Try again');
+
+      await electronApp.evaluate(() => {
+        globalThis.updateFails = false;
+      });
+      await toastRetry.click();
+      await expect(toast).toHaveCount(0);
+      await expect(
+        app
+          .workflowsLibraryAutomationRow(ACTIVITY_ID)
+          .getByTestId('workflows-library-toggle'),
+      ).toBeChecked();
+    } finally {
       await closeCanopy(electronApp, userDataDir);
     }
   });
@@ -1054,6 +1215,12 @@ test.describe('Workflows page', () => {
       const passed = runRow('runs-passed');
       await expect(failed).toHaveAttribute('data-run-status', 'failure');
       await expect(passed).toHaveAttribute('data-run-status', 'success');
+      // CAN-4651: a pipeline run's Kind reads On demand, never Pipeline.
+      for (const row of [failed, passed]) {
+        await expect(
+          row.getByRole('cell', { name: 'On demand', exact: true }),
+        ).toBeVisible();
+      }
       // The colored dot names its status on hover.
       await failed.getByTestId('workflows-run-status').hover();
       await expect(
@@ -1158,14 +1325,17 @@ test.describe('Workflows page', () => {
         await expect(window.getByTestId('workflows-tabs')).toHaveCount(0);
       };
 
-      // The Workflows row stays put on a Workflows tab, so it never drops an
-      // open editor. ⌘8 opens Runs, which closes the editor.
+      // ⌘8 opens Runs, which closes the editor. The Workflows row is the
+      // current row on every Workflows tab, so clicking it returns Workflows
+      // to its root, Runs, the same way (2026-10-22).
       const leaveForRuns = () => pressGlobalShortcut(window, '8');
 
       // An editor with no edits leaves at once, in visual and in raw mode.
       await openEditor();
       await sidebarRow.click();
-      await expectEditorStillOpen();
+      await expectWorkflowsTab(window, RUNS);
+      await expect(dialog).toHaveCount(0);
+      await openEditor();
       await leaveForRuns();
       await expectWorkflowsTab(window, RUNS);
       await expect(dialog).toHaveCount(0);
@@ -1181,7 +1351,7 @@ test.describe('Workflows page', () => {
       await editCommand('echo review', 'echo discarded');
       await leaveForRuns();
       await expect(dialog).toBeVisible();
-      await expect(dialog).toContainText('Save changes to "Workflows review"?');
+      await expect(dialog).toContainText('Save changes to “Workflows review”?');
       await expectEditorStillOpen();
 
       // Escape keeps editing: the editor and the edit are both still there.
@@ -1190,17 +1360,26 @@ test.describe('Workflows page', () => {
       await expectEditorStillOpen();
       await expect(rawYaml).toHaveValue(/echo discarded/);
 
-      // Another sidebar row asks too, and closing the prompt stays here.
+      // Another sidebar row asks too, and Cancel keeps editing here.
       await window.getByTestId('sidebar-nav-plugins').click();
       await expect(dialog).toBeVisible();
-      await dialog.getByRole('button', { name: 'Close' }).click();
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
       await expect(dialog).toHaveCount(0);
       await expect(window.getByTestId('page-plugins')).toHaveCount(0);
       await expectEditorStillOpen();
       await expect(rawYaml).toHaveValue(/echo discarded/);
 
+      // The current Workflows row asks before it returns to Runs, and
+      // closing the prompt stays in the editor with the edit.
+      await sidebarRow.click();
+      await expect(dialog).toBeVisible();
+      await window.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      await expectEditorStillOpen();
+      await expect(rawYaml).toHaveValue(/echo discarded/);
+
       // Discard leaves for Runs and drops the edit.
-      await leaveForRuns();
+      await sidebarRow.click();
       await expect(dialog).toBeVisible();
       await window.getByTestId('workflows-unsaved-discard').click();
       await expect(dialog).toHaveCount(0);
@@ -1230,6 +1409,68 @@ test.describe('Workflows page', () => {
       await expect(dialog).toHaveCount(0);
     } finally {
       await discardWorkflowEditIfOpen(electronApp);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  // Sergii's QA (2026-10-23): text typed into the Pipeline Assistant and not
+  // sent is unsaved work, so any sidebar row asks first and Discard drops it.
+  test('an unsent Pipeline Assistant draft asks before leaving, and Discard drops it', async () => {
+    test.setTimeout(120_000);
+    const userDataDir = seedWorkflows();
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+
+      const dialog = window.getByTestId('workflows-unsaved-dialog');
+      const shell = window.getByTestId('workflow-edit-shell');
+      const customizeRow = window.getByTestId('sidebar-nav-plugins');
+      const composer = window
+        .getByTestId('pipeline-chat-panel')
+        .getByRole('textbox')
+        .first();
+      const openEditorWithAssistant = async () => {
+        await app.openWorkflowsTab(LIBRARY);
+        await app.openWorkflowsLibraryRow(
+          app.workflowsLibraryPipelineRow(PIPELINE_ID),
+        );
+        await expect(shell).toHaveAttribute('data-kind', 'pipeline');
+        const assistant = shell.getByTestId('workflow-edit-assistant');
+        if ((await assistant.getAttribute('aria-pressed')) !== 'true') {
+          await assistant.click();
+        }
+        await expect(composer).toBeVisible();
+      };
+
+      await openEditorWithAssistant();
+      await composer.click();
+      await window.keyboard.type('Add a lint step');
+      await expect(composer).toContainText('Add a lint step');
+
+      // The pipeline itself is unedited; the draft alone asks.
+      await customizeRow.click();
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toContainText('Save changes to “Workflows review”?');
+      await window.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      await expect(window.getByTestId('page-plugins')).toHaveCount(0);
+      await expect(composer).toContainText('Add a lint step');
+
+      // Discard leaves for Customize and drops the draft.
+      await customizeRow.click();
+      await expect(dialog).toBeVisible();
+      await window.getByTestId('workflows-unsaved-discard').click();
+      await expect(dialog).toHaveCount(0);
+      await expect(window.getByTestId('page-plugins')).toBeVisible();
+
+      await openEditorWithAssistant();
+      await expect(composer).not.toContainText('Add a lint step');
+      await customizeRow.click();
+      await expect(window.getByTestId('page-plugins')).toBeVisible();
+      await expect(dialog).toHaveCount(0);
+    } finally {
       await closeCanopy(electronApp, userDataDir);
     }
   });
@@ -1283,11 +1524,11 @@ test.describe('Workflows page', () => {
       await openAndEdit('echo back asks');
       await back.click();
       await expect(dialog).toBeVisible();
-      await expect(dialog).toContainText('Save changes to "Workflows review"?');
+      await expect(dialog).toContainText('Save changes to “Workflows review”?');
       await expect(shell).toBeVisible();
 
-      // X keeps editing, and so does Escape.
-      await dialog.getByRole('button', { name: 'Close' }).click();
+      // Cancel keeps editing, and so does Escape.
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
       await expectStillEditing('echo back asks');
       await back.click();
       await expect(dialog).toBeVisible();
@@ -1314,10 +1555,10 @@ test.describe('Workflows page', () => {
       await expectStillEditing('echo history asks');
       await expect(historyBack).toBeEnabled();
 
-      // The history shortcut asks the same way; X keeps editing.
+      // The history shortcut asks the same way; Cancel keeps editing.
       await pressHistoryBack(window);
       await expect(dialog).toBeVisible();
-      await dialog.getByRole('button', { name: 'Close' }).click();
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
       await expectStillEditing('echo history asks');
 
       // Discard lets history Back through, to the Library.
@@ -1371,7 +1612,7 @@ test.describe('Workflows page', () => {
       await expect(automationRow).toContainText('Off');
       await automationRow.click();
       await expect(dialog).toBeVisible();
-      await expect(dialog).toContainText('Save changes to "Workflows review"?');
+      await expect(dialog).toContainText('Save changes to “Workflows review”?');
 
       // Escape keeps the pipeline and its edit, on the section it was on.
       await window.keyboard.press('Escape');
@@ -1395,7 +1636,7 @@ test.describe('Workflows page', () => {
         ACTIVITY_ID,
       );
       await expect(dialog).toBeVisible();
-      await dialog.getByRole('button', { name: 'Close' }).click();
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
       await expect(dialog).toHaveCount(0);
       await expect(shell).toHaveAttribute('data-kind', 'pipeline');
       await expect(rawYaml).toHaveValue(/echo not kept/);
@@ -1413,7 +1654,7 @@ test.describe('Workflows page', () => {
           .getByTestId('automations-form-name'),
       ).toHaveValue(PIPELINE_AUTOMATION_NAME);
       await expect(shell.getByTestId('workflow-edit-back')).toHaveText(
-        'Pipeline',
+        'Workflow',
       );
       expect(readFileSync(yamlPath, 'utf8')).not.toContain('echo not kept');
 
@@ -1803,6 +2044,117 @@ test.describe('Workflows page', () => {
       ).toHaveCount(0);
       expect(persisted(RUNNING_ID).status).toBe('cancelled');
       expect(persisted(RUNNING_ID).completed_at).toBeTruthy();
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+});
+
+/**
+ * Replaces the main-process handler for `channel` with one that waits for
+ * `globalThis[releaseName]()` before answering, so a load stays in flight.
+ */
+async function holdIpc(electronApp, channel, releaseName) {
+  await electronApp.evaluate(
+    ({ ipcMain }, { channel, releaseName }) => {
+      const original = ipcMain._invokeHandlers.get(channel);
+      ipcMain.removeHandler(channel);
+      let release = () => undefined;
+      const held = new Promise((resolve) => {
+        release = resolve;
+      });
+      globalThis[releaseName] = release;
+      ipcMain.handle(channel, async (...args) => {
+        await held;
+        return original(...args);
+      });
+    },
+    { channel, releaseName },
+  );
+}
+
+test.describe('Workflows Library loading', () => {
+  test('a slow first load shows the table in skeleton, rows replace it, and Refresh keeps the rows', async () => {
+    test.setTimeout(120_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-workflows-loading-'),
+    );
+    seedStoredPipeline({
+      userDataDir,
+      id: PIPELINE_ID,
+      name: 'Workflows review',
+      yaml: [
+        'name: Workflows review',
+        'on: dispatch',
+        'scope: directory',
+        'jobs:',
+        '  main:',
+        '    steps:',
+        '      - run: echo review',
+        '',
+      ].join('\n'),
+    });
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await holdIpc(electronApp, 'pipelines:list', 'releasePipelineList');
+
+      await app.openWorkflowsTab('library');
+      const library = window.getByTestId('workflows-library');
+      // Nothing flashes: the placeholder holds its box, then shows the
+      // table's real column heads over rows whose values pulse.
+      const placeholder = library.getByTestId('delayed-loading-placeholder');
+      await expect(placeholder).toHaveAttribute('data-visible', 'true');
+      const skeleton = placeholder.getByTestId('workflows-library-skeleton');
+      await expect(skeleton).toBeVisible();
+      await expect(skeleton.locator('thead th')).toHaveText([
+        'Workflow',
+        'Trigger',
+        'Last run',
+        'Next run',
+        'On or off, and actions',
+      ]);
+      await expect(skeleton.locator('tbody tr')).toHaveCount(5);
+      await expect(library).not.toContainText('Loading workflows…');
+      // Nothing counts rows that have not arrived.
+      await expect(
+        library.getByTestId('workflows-library-pagination'),
+      ).toHaveCount(0);
+      await expect(placeholder.getByTestId('slow-load-note')).toHaveText('');
+      const skeletonRowHeight = await skeleton
+        .locator('tbody tr')
+        .first()
+        .evaluate((row) => row.getBoundingClientRect().height);
+
+      await electronApp.evaluate(() => globalThis.releasePipelineList());
+      const row = app.workflowsLibraryPipelineRow(PIPELINE_ID);
+      await expect(row).toBeVisible();
+      await expect(
+        library.getByTestId('workflows-library-skeleton'),
+      ).toHaveCount(0);
+      // The skeleton rows stand at the height of a loaded row with its
+      // summary line (a built-in workflow's "Built-in").
+      const rowHeight = await library
+        .getByTestId('workflows-library-row')
+        .filter({ hasText: 'Built-in' })
+        .first()
+        .evaluate((element) => element.getBoundingClientRect().height);
+      expect(Math.abs(rowHeight - skeletonRowHeight)).toBeLessThanOrEqual(1);
+
+      // Refresh spins its own icon; the rows stay and no skeleton returns.
+      await holdIpc(electronApp, 'pipelines:list', 'releasePipelineRefresh');
+      const refresh = window.getByTestId('workflows-library-refresh');
+      await refresh.click();
+      await expect(refresh.locator('svg')).toHaveClass(/\banimate-spin\b/);
+      await expect(row).toBeVisible();
+      await expect(
+        library.getByTestId('workflows-library-skeleton'),
+      ).toHaveCount(0);
+      await electronApp.evaluate(() => globalThis.releasePipelineRefresh());
+      await expect(refresh.locator('svg')).not.toHaveClass(/\banimate-spin\b/);
+      await expect(row).toBeVisible();
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

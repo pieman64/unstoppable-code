@@ -48,7 +48,7 @@ test('Library lists owned pipelines only, and Marketplace adds an editable copy 
     expect(cloud.counts.details).toBe(0);
 
     await app.openPluginsPage();
-    await window.getByRole('tab', { name: 'Pipelines', exact: true }).click();
+    await window.getByRole('tab', { name: 'Workflows', exact: true }).click();
     await window
       .getByTestId('plugins-results-scroll')
       .getByTestId('plugins-entry-pipeline:curated:curated-review-0')
@@ -61,7 +61,7 @@ test('Library lists owned pipelines only, and Marketplace adds an editable copy 
     await expect(
       window
         .getByRole('status')
-        .filter({ hasText: 'Added to your pipelines.' }),
+        .filter({ hasText: 'Added to your workflows.' }),
     ).toBeVisible();
     await expect(
       window.getByTestId('curated-pipeline-open-imported'),
@@ -83,7 +83,7 @@ test('Library lists owned pipelines only, and Marketplace adds an editable copy 
       ),
     ).toContain('echo unchanged');
     cloud.state.offline = true;
-    await window.getByRole('button', { name: 'Open pipeline' }).click();
+    await window.getByRole('button', { name: 'Open workflow' }).click();
     await expect(
       window.getByRole('button', { name: 'Save', exact: true }),
     ).toBeVisible();
@@ -118,11 +118,11 @@ test('Marketplace blends shared and curated pipelines in one filtered inventory 
       }),
     );
     await app.openPluginsPage();
-    await window.getByRole('tab', { name: 'Pipelines', exact: true }).click();
-    // The filters head the Pipelines list, not the tab row.
+    await window.getByRole('tab', { name: 'Workflows', exact: true }).click();
+    // The filters head the Workflows Browse list, not the tab row.
     await expect(
       window
-        .getByTestId('plugins-section-pipelines')
+        .getByTestId('customize-section-browse')
         .getByTestId('plugins-pipeline-filters'),
     ).toBeVisible();
     const resultList = window.getByTestId('plugins-results-scroll');
@@ -150,32 +150,32 @@ test('Marketplace blends shared and curated pipelines in one filtered inventory 
     ).toHaveText('Curated');
     await window.getByTestId('plugins-search').fill('Curated review workflow');
     await expect(
-      window.getByTestId('plugins-section-pipelines'),
+      window.getByTestId('plugins-section-workflows'),
     ).toHaveAttribute('data-row-count', '1');
     // While searching, an empty list names the search, not the filters.
     await window.getByTestId('plugins-pipeline-filter-scope').click();
     await window.getByTestId('plugins-pipeline-filter-scope-worktree').click();
-    await expect(
-      window.getByTestId('plugins-section-empty-pipelines'),
-    ).toHaveText('Nothing matches your search.');
+    await expect(window.getByTestId('customize-section-browse')).toContainText(
+      'Nothing matches your search.',
+    );
     // Without a search, a filter that empties the list keeps the list and its
     // filters on screen, so it can be changed back.
     await window.getByTestId('plugins-search').fill('');
-    await expect(
-      window.getByTestId('plugins-section-empty-pipelines'),
-    ).toHaveText('No pipelines match these filters.');
+    await expect(window.getByTestId('customize-section-browse')).toContainText(
+      'No workflows match these filters.',
+    );
     await window.getByTestId('plugins-pipeline-filter-scope').click();
     await window.getByTestId('plugins-pipeline-filter-scope-all').click();
     await window.getByTestId('plugins-search').fill('Curated review workflow');
     await expect(
-      window.getByTestId('plugins-section-pipelines'),
+      window.getByTestId('plugins-section-workflows'),
     ).toHaveAttribute('data-row-count', '1');
     await expect(curatedEntry).toBeVisible();
     await curatedEntry.click();
     await expect(window.getByTestId('curated-pipeline-add')).toBeVisible();
     await expect(
       window.getByTestId('plugins-curated-pipeline-breadcrumbs'),
-    ).toContainText('CustomizePipelinesCurated review workflow');
+    ).toContainText('CustomizeWorkflowsCurated review workflow');
     await window
       .getByTestId('plugins-curated-pipeline-breadcrumb-type')
       .click();
@@ -183,7 +183,7 @@ test('Marketplace blends shared and curated pipelines in one filtered inventory 
       window.getByTestId('curated-pipeline-preview-dialog'),
     ).toHaveCount(0);
     await expect(
-      window.getByRole('tab', { name: 'Pipelines', exact: true }),
+      window.getByRole('tab', { name: 'Workflows', exact: true }),
     ).toHaveAttribute('aria-selected', 'true');
     await expect(window.getByTestId('plugins-search')).toHaveValue('');
     expect(cloud.counts.details).toBe(1);
@@ -193,7 +193,7 @@ test('Marketplace blends shared and curated pipelines in one filtered inventory 
   }
 });
 
-test('Marketplace refreshes pipelines from one compact control on the Pipelines tab only', async () => {
+test('Marketplace refreshes pipelines from one compact control on the Workflows tab only', async () => {
   const cloud = await startCuratedPipelinesCloud();
   const userDataDir = mkdtempSync(join(tmpdir(), 'curated-refresh-e2e-'));
   const { electronApp } = await launchCanopy({
@@ -224,23 +224,23 @@ test('Marketplace refreshes pipelines from one compact control on the Pipelines 
       0,
     );
 
-    await window.getByRole('tab', { name: 'Pipelines', exact: true }).click();
+    await window.getByRole('tab', { name: 'Workflows', exact: true }).click();
     const resultList = window.getByTestId('plugins-results-scroll');
     await expect(
       resultList.getByTestId('plugins-entry-pipeline:curated:curated-review-0'),
     ).toBeVisible();
 
-    // One icon-only control on the Pipelines list heading, beside the filters.
+    // One icon-only control on the Browse heading, beside the filters.
     const refresh = window
-      .getByTestId('plugins-section-pipelines')
+      .getByTestId('customize-section-browse')
       .getByTestId('plugins-pipelines-refresh');
     await expect(refresh).toBeVisible();
     await expect(refresh).toBeEnabled();
-    await expect(refresh).toHaveAccessibleName('Refresh pipelines');
+    await expect(refresh).toHaveAccessibleName('Refresh workflows');
     await expect(refresh).toHaveText('');
     await refresh.hover();
     await expect(
-      window.getByRole('tooltip').filter({ hasText: 'Refresh pipelines' }),
+      window.getByRole('tooltip').filter({ hasText: 'Refresh workflows' }),
     ).toBeVisible();
 
     const listsBefore = cloud.counts.lists;
@@ -252,7 +252,7 @@ test('Marketplace refreshes pipelines from one compact control on the Pipelines 
     await expect.poll(() => cloud.counts.lists).toBe(listsBefore + 1);
     await expect(refresh).toBeDisabled();
     await expect(refresh).toHaveAccessibleName(
-      'Refresh pipelines (in progress)',
+      'Refresh workflows (in progress)',
     );
     // A second click while it runs starts nothing.
     await refresh.click({ force: true });
@@ -260,7 +260,7 @@ test('Marketplace refreshes pipelines from one compact control on the Pipelines 
     cloud.state.listGate = null;
     releaseLists();
     await expect(refresh).toBeEnabled();
-    await expect(refresh).toHaveAccessibleName('Refresh pipelines');
+    await expect(refresh).toHaveAccessibleName('Refresh workflows');
     expect(cloud.counts.lists).toBe(listsBefore + 1);
     await expect(
       resultList.getByTestId('plugins-entry-pipeline:curated:curated-review-0'),
@@ -272,10 +272,10 @@ test('Marketplace refreshes pipelines from one compact control on the Pipelines 
   }
 });
 
-/** Opens Marketplace > Pipelines and returns a curated template's entry. */
+/** Opens Customize > Workflows and returns a curated template's entry. */
 async function openTemplateEntry(app, key) {
   await app.openPluginsPage();
-  await app.window.getByRole('tab', { name: 'Pipelines', exact: true }).click();
+  await app.window.getByRole('tab', { name: 'Workflows', exact: true }).click();
   const entry = app.window
     .getByTestId('plugins-results-scroll')
     .getByTestId(`plugins-entry-pipeline:curated:${key}`);
@@ -294,11 +294,11 @@ async function setTemplateEnabledFromPreview(app, key, enabled) {
   const dialog = window.getByTestId('curated-pipeline-preview-dialog');
   const toggle = dialog.getByTestId('curated-pipeline-toggle-enabled');
   await expect(toggle).toHaveText(
-    enabled ? 'Enable pipeline' : 'Disable pipeline',
+    enabled ? 'Enable workflow' : 'Disable workflow',
   );
   await toggle.click();
   await expect(toggle).toHaveText(
-    enabled ? 'Disable pipeline' : 'Enable pipeline',
+    enabled ? 'Disable workflow' : 'Enable workflow',
   );
   await expect(
     dialog.getByTestId('curated-pipeline-availability'),
@@ -413,7 +413,7 @@ test('task-ready launch lists undownloaded curated pipelines from Home', async (
     await home.getByTestId('home-send-button').click();
     const modal = window.getByTestId('pipeline-trigger-modal-body');
     await expect(
-      window.getByRole('heading', { name: 'Run task pipeline' }),
+      window.getByRole('heading', { name: 'Run task workflow' }),
     ).toBeVisible();
     await expect(
       modal.getByRole('button', { name: /Curated review workflow/ }),

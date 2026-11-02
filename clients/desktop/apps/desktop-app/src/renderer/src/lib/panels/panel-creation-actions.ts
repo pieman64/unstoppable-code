@@ -18,7 +18,6 @@ import {
   clearTerminalFocusRequest,
   requestTerminalFocus,
 } from '@/lib/terminal-focus-intent';
-import { refuseFullTabRow } from './tab-row-limit';
 import { extractIpcErrorMessage } from '@/lib/errors';
 
 const splitKey = (key: string): { projectId: string; worktreeId: string } => {
@@ -38,10 +37,6 @@ export async function createBrowserPanel(
   worktreeKey: string,
   requestedGroupId: string,
 ): Promise<boolean> {
-  // A full row refuses before a browser session is opened for it.
-  if (refuseFullTabRow(worktreeKey, requestedGroupId)) {
-    return false;
-  }
   const ownerKey = getAuxPanelLayoutOwnerKey(worktreeKey) ?? worktreeKey;
   const { projectId, worktreeId } = splitKey(ownerKey);
   const opened = useBrowserStore.getState().openBrowser(projectId, worktreeId);
@@ -90,10 +85,6 @@ export async function createTerminalPanel(
   initialCommand?: string,
   ownerDocument: Document = document,
 ): Promise<boolean> {
-  // A full row refuses before a terminal session is spawned for it.
-  if (refuseFullTabRow(worktreeKey, requestedGroupId)) {
-    return false;
-  }
   const ownerKey = getAuxPanelLayoutOwnerKey(worktreeKey) ?? worktreeKey;
   const { projectId, worktreeId } = splitKey(ownerKey);
   let terminalId: string | null = null;

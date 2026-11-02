@@ -1,6 +1,14 @@
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
+import type {
+  TurnOutcomeCounts,
+  TurnOutcomeStepDetail,
+} from '@canopy/protocol/portal';
 import { CollapsedTurnSummary, type TurnSummary } from './CollapsedTurnSummary';
+import {
+  resolveTurnCompletionStatus,
+  type TurnCompletionStatus,
+} from './turn-completion-status';
 
 export interface TurnGroupProps {
   /** Pre-rendered user-message bubble (typically a `UserBubble` instance). */
@@ -24,6 +32,18 @@ export interface TurnGroupProps {
    * difference: the summary discards zero, negative, and non-finite values.
    */
   intermediateElapsedMs?: number;
+  /**
+   * Blocked and errored counts for the collapsed row. Omit when the host has
+   * no outcome metadata.
+   */
+  intermediateOutcomes?: TurnOutcomeCounts;
+  /** The host's resolved end; this display wrapper only renders settled turns. */
+  completionStatus?: TurnCompletionStatus;
+  /**
+   * The steps behind `intermediateOutcomes`, for the outcome tooltip. This
+   * primitive has no way to reveal a row, so the outcome only describes them.
+   */
+  intermediateOutcomeSteps?: readonly TurnOutcomeStepDetail[];
   /** Optional host-provided branded app icon for app/tool summary chips. */
   appIcon?: ReactNode;
   /** Whether the intermediate region defaults to collapsed. Defaults to `true`. */
@@ -57,6 +77,9 @@ export function TurnGroup({
   intermediateBlocks,
   intermediateSummary,
   intermediateElapsedMs,
+  intermediateOutcomes,
+  completionStatus,
+  intermediateOutcomeSteps,
   appIcon,
   collapsedByDefault = true,
   reverted = false,
@@ -92,7 +115,7 @@ export function TurnGroup({
           onClick={(): void => setIsRevertedCollapsed(false)}
           aria-expanded={false}
           aria-label="Expand reverted turn"
-          className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition hover:bg-fg-primary/[0.04]"
+          className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04]"
         >
           <span className="flex-shrink-0">
             <ChevronRightIcon />
@@ -114,7 +137,7 @@ export function TurnGroup({
           onClick={(): void => setIsRevertedCollapsed(true)}
           aria-expanded={true}
           aria-label="Collapse reverted turn"
-          className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition hover:bg-fg-primary/[0.04]"
+          className="focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04]"
         >
           <span className="flex-shrink-0">
             <ChevronDownIcon />
@@ -132,6 +155,15 @@ export function TurnGroup({
           <CollapsedTurnSummary
             summary={intermediateSummary}
             elapsedMs={intermediateElapsedMs}
+            completionStatus={
+              completionStatus ??
+              resolveTurnCompletionStatus({
+                settled: true,
+                outcomes: intermediateOutcomes,
+              })
+            }
+            outcomes={intermediateOutcomes}
+            outcomeSteps={intermediateOutcomeSteps}
             isExpanded={!isCollapsed}
             onToggle={(): void => setIsCollapsed((prev) => !prev)}
             appIcon={appIcon}

@@ -8,6 +8,7 @@ import {
   type AnySettingsOperation,
   type SettingsOperationRequest,
 } from '../operation-definition';
+import type { AccountLabsResponse } from '../../experiments';
 
 const ISO = '2026-10-01T12:00:00.000Z';
 
@@ -82,6 +83,17 @@ const DIGEST_PREFERENCES = {
   monthlyAnchorDay: 1,
 };
 
+const ACCOUNT_LABS_RESPONSE: AccountLabsResponse = {
+  experiments: [
+    {
+      id: 'clean-chat',
+      name: 'Clean chat',
+      description: 'A quieter chat experience.',
+      enabled: true,
+    },
+  ],
+};
+
 const PUBLISHABLE = {
   id: 'src_1',
   title: 'Skill',
@@ -127,6 +139,11 @@ interface Fixture {
 }
 
 const FIXTURES: Record<AccountSettingsOperationName, Fixture> = {
+  'account.appearance.read': { input: {}, result: { chatDetail: 'recent' } },
+  'account.appearance.update': {
+    input: { chatDetail: 'detailed' },
+    result: { chatDetail: 'detailed' },
+  },
   'account.details.update': {
     input: { name: 'Ada' },
     result: { name: 'Ada', image: null },
@@ -422,6 +439,14 @@ const FIXTURES: Record<AccountSettingsOperationName, Fixture> = {
       balanceCredits: null,
       granted: 5,
     },
+  },
+  'account.labs.read': {
+    input: {},
+    result: ACCOUNT_LABS_RESPONSE,
+  },
+  'account.labs.update': {
+    input: { experimentId: 'clean-chat', enabled: true },
+    result: ACCOUNT_LABS_RESPONSE,
   },
 };
 

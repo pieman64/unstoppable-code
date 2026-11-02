@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -22,7 +23,7 @@ import { touchAllWorkspaceTargets } from './workspace-activity';
 import { withArchivedWorkspaceOperationLock } from './archived-containers';
 
 const APP_ADVISOR_CLAUDE_MD_CONTENT = [
-  'This project is the home for App Advisor conversations.',
+  `This project is the home for ${ORCHESTRATOR_LABEL} conversations.`,
   "Generated outputs (files you create) go directly in this folder's root unless the user names a different location.",
   `Durable notes, reusable prompt snippets, and user-provided attachments live under ${BRAND.storage.projectConfigDirNames[0]}/notes, ${BRAND.storage.projectConfigDirNames[0]}/prompts, and ${BRAND.storage.projectConfigDirNames[0]}/attachments.`,
   'Archived chat history lives outside this folder and is not browsable here.',

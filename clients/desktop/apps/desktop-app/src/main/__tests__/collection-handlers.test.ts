@@ -19,7 +19,9 @@ jest.mock('../canopy-cloud/client', () => ({
 }));
 
 jest.mock('../collections/collection-store', () => ({
-  rollbackNewCollectionInstall: mockRollbackNewCollectionInstall,
+  get rollbackNewCollectionInstall(): typeof mockRollbackNewCollectionInstall {
+    return mockRollbackNewCollectionInstall;
+  },
   deleteCollectionConfig: jest.fn(() => Promise.resolve()),
   readCollectionConfig: jest.fn(() =>
     Promise.resolve({ collection: { id: 'local-1', name: 'Local' } }),
@@ -28,7 +30,9 @@ jest.mock('../collections/collection-store', () => ({
     Promise.resolve({ collections: [{ id: 'local-1', name: 'Local' }] }),
   ),
   saveCollectionConfig: jest.fn((input: unknown) => Promise.resolve(input)),
-  writeCollectionRemoteMetadata: mockWriteCollectionRemoteMetadata,
+  get writeCollectionRemoteMetadata(): typeof mockWriteCollectionRemoteMetadata {
+    return mockWriteCollectionRemoteMetadata;
+  },
   clearCollectionRemoteMetadataByRemoteId: jest.fn(() => Promise.resolve()),
 }));
 
@@ -116,7 +120,9 @@ describe('collection IPC handlers', () => {
         pipelineContentHash: 'content-hash',
         resources: [],
         environmentRequirements: [],
-        bindings: {},
+        bindings: [],
+        totalFiles: 0,
+        totalBytes: 0,
       },
     });
   });
@@ -326,7 +332,13 @@ describe('collection IPC handlers', () => {
     mockInstallSubjectCapabilityPackage.mockImplementation(async (request) => {
       const installed = {
         supportingFileCount: 0,
-        installedSkills: [{ name: 'Helper', localName: 'helper-2' }],
+        installedSkills: [
+          {
+            name: 'Helper',
+            localName: 'helper-2',
+            resourceId: 'skill:helper',
+          },
+        ],
         uninstalledResourceLabels: [],
         keptLocalFiles: [],
       };
@@ -381,7 +393,9 @@ describe('collection IPC handlers', () => {
             setupHint: 'Connect Slack.',
           },
         ],
-        bindings: {},
+        bindings: [],
+        totalFiles: 0,
+        totalBytes: 0,
       },
     });
     mockGetMcpServerStatusByCatalogId.mockRejectedValue(

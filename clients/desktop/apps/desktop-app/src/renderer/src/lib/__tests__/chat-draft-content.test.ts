@@ -1,14 +1,17 @@
 import type { Descendant } from 'slate';
+import type { CustomText, FileReferenceElement } from '@canopy/ui-rich/types';
 import { draftHasContent } from '../chat-draft-content';
 
-function paragraph(...children: Descendant[]): Descendant {
+function paragraph(
+  ...children: (CustomText | FileReferenceElement)[]
+): Descendant {
   return {
     type: 'paragraph',
     children: children.length ? children : [{ text: '' }],
   };
 }
 
-const fileReference: Descendant = {
+const fileReference: FileReferenceElement = {
   type: 'file-reference',
   displayPath: 'src/a.ts',
   absolutePath: '/repo/src/a.ts',

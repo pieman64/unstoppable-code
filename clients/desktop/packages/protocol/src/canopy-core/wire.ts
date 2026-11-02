@@ -13,6 +13,11 @@ import {
   type CanopyStreamDefinition,
 } from './definitions';
 import {
+  CANOPY_HOST_EXECUTION_MEMBER,
+  CanopyHostExecutionSchema,
+  canopyOperationAcceptsHostExecution,
+} from './host-execution';
+import {
   CANOPY_ERROR_KINDS,
   CanopyErrorPayloadSchema,
   CanopyJsonValueSchema,
@@ -335,12 +340,44 @@ export interface CanopyOperationEnvelopes {
 }
 
 function withRequestMetadata(params: ZodType, keyed: boolean): ZodType {
+  // A union of objects (for example create-or-replace) gets `_meta` per branch.
+  if (
+    params instanceof z.ZodUnion &&
+    params.options.every((option) => option instanceof z.ZodObject)
+  )
+    return params.clone({
+      ...params.def,
+      options: params.options.map((option) =>
+        withRequestMetadata(option, keyed),
+      ),
+    });
   if (!(params instanceof z.ZodObject) || '_meta' in params.shape)
     return params;
   return params.extend({
     _meta: keyed
       ? CanopyRequestMetadataSchema.required({ idempotencyKey: true })
       : CanopyQueryRequestMetadataSchema.optional(),
+  });
+}
+
+/** Admits `_execution` beside `_meta`; no params schema may declare it. */
+function withHostExecution(name: string, params: ZodType): ZodType {
+  const options =
+    params instanceof z.ZodUnion &&
+    params.options.every((option) => option instanceof z.ZodObject)
+      ? params.options
+      : [params];
+  for (const option of options)
+    if (
+      option instanceof z.ZodObject &&
+      CANOPY_HOST_EXECUTION_MEMBER in option.shape
+    )
+      throw new Error(`${name} params declare ${CANOPY_HOST_EXECUTION_MEMBER}`);
+  if (!canopyOperationAcceptsHostExecution(name)) return params;
+  if (!(params instanceof z.ZodObject))
+    throw new Error(`${name} needs object params to accept host execution`);
+  return params.extend({
+    [CANOPY_HOST_EXECUTION_MEMBER]: CanopyHostExecutionSchema.optional(),
   });
 }
 
@@ -386,7 +423,10 @@ export function composeCanopyOperationEnvelopes(
 ): CanopyOperationEnvelopes {
   const keyed =
     definition.kind === 'instruction' && definition.idempotency === 'keyed';
-  const params = withRequestMetadata(definition.params, keyed);
+  const params = withHostExecution(
+    name,
+    withRequestMetadata(definition.params, keyed),
+  );
   if (definition.kind !== 'stream')
     return requestResponseEnvelopes(
       name,

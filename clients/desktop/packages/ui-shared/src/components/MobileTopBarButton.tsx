@@ -39,7 +39,7 @@ export const MobileTopBarButton = forwardRef<
       {...rest}
       ref={ref}
       type={type}
-      className={`focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${className}`.trim()}
+      className={`focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${className}`.trim()}
     >
       {children}
     </button>

@@ -57,9 +57,7 @@ function render(
   );
 }
 function refreshButton(): HTMLButtonElement {
-  const button = container.querySelector(
-    '[aria-label="Refresh GitHub Copilot usage"]',
-  );
+  const button = container.querySelector('[aria-label="Refresh usage"]');
   if (!(button instanceof HTMLButtonElement))
     throw new Error('Missing refresh button');
   return button;
@@ -83,7 +81,7 @@ afterEach(() => {
 
 it('renders reported zero with a determinate meter and hides account identity from replay', () => {
   render();
-  expect(container.textContent).toContain('0.0%');
+  expect(container.textContent).toContain('0%');
   expect(
     container
       .querySelector('[role="progressbar"]')
@@ -108,6 +106,23 @@ it('distinguishes an unlimited plan from an unreported limit', () => {
   expect(container.textContent).toContain('Usage unavailable');
   expect(container.textContent).not.toContain('Unlimited');
 });
+it('shows Claude Extra usage spend and cap without presenting a credit balance', () => {
+  render(
+    entry({
+      provider: 'claude',
+      windows: [
+        {
+          id: 'extra_usage-primary',
+          label: 'Extra usage',
+          spend: { currency: 'USD', used: 12.5, limit: 50, isEnabled: true },
+        },
+      ],
+    }),
+  );
+  expect(container.textContent).toContain('Monthly spend: $12.50');
+  expect(container.textContent).toContain('Monthly spending cap: $50.00');
+  expect(container.textContent).not.toContain('Remaining credits');
+});
 it.each([false, undefined])(
   'does not expose account data without an affirmative capability (%s)',
   (providerQuotas) => {
@@ -123,6 +138,75 @@ it.each([false, undefined])(
 it('does not mount hidden cards', () => {
   render(entry(), { isVisible: false });
   expect(container.firstChild).toBeNull();
+});
+it('names the provider and plan once, with one Updated line for the panel', () => {
+  render(
+    entry({
+      provider: 'claude',
+      planLabel: 'Claude Max 20x',
+      lastUpdatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    }),
+  );
+  expect(container.querySelector('h2')?.textContent).toBe('Claude · Max 20x');
+  expect(
+    container.querySelector('[data-testid="usage-updated-line"]')?.textContent,
+  ).toContain('Updated 3m ago');
+  expect(container.textContent).not.toContain('authenticated');
+  expect(container.querySelectorAll('button')).toHaveLength(1);
+});
+it('shows the provider brand mark and the window-elapsed triangle', () => {
+  const hour = 60 * 60 * 1000;
+  render(
+    entry({
+      provider: 'claude',
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5-hour limit',
+          usedPercent: 30,
+          resetsAt: new Date(Date.now() + 2 * hour).toISOString(),
+          windowDurationMs: 5 * hour,
+        },
+      ],
+    }),
+  );
+  expect(
+    container.querySelector('h2 [data-testid="usage-group-provider-mark"]'),
+  ).toBeInstanceOf(SVGElement);
+  const triangle = container.querySelector<SVGElement>(
+    '[data-testid="usage-window-elapsed"]',
+  );
+  expect(triangle).toBeInstanceOf(SVGElement);
+  expect(Number.parseFloat(triangle?.style.left ?? '')).toBeCloseTo(60, 0);
+});
+it('refreshes every provider in the selected workspace once at a time', async () => {
+  const projection: PortalProviderUsageProjection = {
+    updatedAt: '2026-10-12T12:00:00Z',
+    providers: [entry(), entry({ provider: 'codex', accountLabel: 'codex' })],
+  };
+  act(() =>
+    root.render(
+      <ProviderQuotaPanel
+        workspaceLocalId="workspace-c"
+        projection={projection}
+        isVisible
+      />,
+    ),
+  );
+  await act(() => {
+    refreshButton().click();
+    return Promise.resolve();
+  });
+  expect(mockCommand.mock.calls).toEqual([
+    [
+      'providerUsage.refresh',
+      { workspaceLocalId: 'workspace-c', provider: 'copilot' },
+    ],
+    [
+      'providerUsage.refresh',
+      { workspaceLocalId: 'workspace-c', provider: 'codex' },
+    ],
+  ]);
 });
 it('refreshes the selected workspace and prevents duplicate requests', async () => {
   let finish: (() => void) | undefined;
@@ -237,14 +321,10 @@ it('shows OpenCode accounts without quota entries and refreshes the selected des
   );
   expect(container.textContent).toContain('Work account');
   expect(container.querySelector('[role="progressbar"]')).toBeNull();
-  const button = container.querySelector(
-    '[aria-label="Refresh OpenCode accounts"]',
-  );
-  expect(button).toBeInstanceOf(HTMLButtonElement);
-  if (!(button instanceof HTMLButtonElement))
-    throw new Error('Missing account refresh');
+  // The panel's one refresh reads OpenCode too; the group has none of its own.
+  expect(container.querySelectorAll('button')).toHaveLength(1);
   await act(() => {
-    button.click();
+    refreshButton().click();
     return Promise.resolve();
   });
   expect(mockCommand).toHaveBeenCalledWith('providerUsage.refresh', {
@@ -305,11 +385,13 @@ it('uses proxy accounts instead of native provider usage and retains cached wind
   expect(
     container.querySelectorAll('[data-testid="provider-account-usage"]'),
   ).toHaveLength(1);
-  expect(container.textContent).toContain('via account proxy');
+  expect(container.querySelector('h2')?.textContent).toBe(
+    'Claude · Account proxy',
+  );
   expect(container.textContent).toContain('proxy-account@example.com');
   expect(container.textContent).toContain("Can't be used right now");
   expect(container.textContent).toContain('7-day Opus');
-  expect(container.textContent).toContain('Usage: 42.0%');
+  expect(container.textContent).toContain('42%');
   expect(container.textContent).not.toContain('native-account@example.com');
   expect(container.textContent).not.toContain('Native provider window');
   expect(container.querySelector('[role="status"]')?.textContent).toContain(

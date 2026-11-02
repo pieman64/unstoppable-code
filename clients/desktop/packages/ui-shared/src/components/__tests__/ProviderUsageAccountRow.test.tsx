@@ -38,7 +38,7 @@ describe('ProviderUsageAccountRow session replay', () => {
         </ProviderUsageAccountRow>,
       );
     });
-    expect(container.textContent).toBe('Account: alice@example.comManage');
+    expect(container.textContent).toBe('Accountalice@example.comManage');
     const blocks = container.querySelectorAll(`.${REPLAY_BLOCK_CLASS}`);
     expect(blocks).toHaveLength(1);
     expect(blocks[0]?.textContent).toBe('alice@example.com');
@@ -53,13 +53,12 @@ describe('ProviderUsageAccountRow session replay', () => {
         <ProviderUsageAccountRow
           accountLabel={null}
           statusLabel="Sign in to see usage"
-          frameless
         >
           <button type="button">Sign in</button>
         </ProviderUsageAccountRow>,
       );
     });
-    expect(container.textContent).toBe('Sign in to see usageSign in');
+    expect(container.textContent).toBe('AccountSign in to see usageSign in');
     expect(container.querySelector(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
   });
 });

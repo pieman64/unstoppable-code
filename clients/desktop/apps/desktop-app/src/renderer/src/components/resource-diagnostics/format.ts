@@ -26,3 +26,17 @@ export function formatCpuPercent(percent: number): string {
   if (!Number.isFinite(percent) || percent < 0) return '0';
   return String(Math.min(100, Math.round(percent)));
 }
+
+/** A memory report's size and save time, such as "612.4 MB, saved Oct 26, 2026, 1:47 PM". */
+export function describeMemoryReport(report: {
+  readonly totalBytes: number;
+  readonly createdAt: string;
+}): string {
+  const size = formatMemoryBytes(report.totalBytes);
+  const date = new Date(report.createdAt);
+  if (!Number.isFinite(date.getTime())) return size;
+  return `${size}, saved ${date.toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })}`;
+}

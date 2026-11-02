@@ -3,7 +3,11 @@ import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { RendererDiagnosticsSummary } from '@canopy/desktop-shared/types/observability';
 
 const ipcMain = new EventEmitter();
-jest.mock('electron', () => ({ ipcMain }));
+jest.mock('electron', () => ({
+  get ipcMain(): typeof ipcMain {
+    return ipcMain;
+  },
+}));
 
 import {
   registerRendererDiagnosticsHandler,

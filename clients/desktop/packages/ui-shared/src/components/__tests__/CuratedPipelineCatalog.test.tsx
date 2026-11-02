@@ -27,6 +27,12 @@ function expectTokenRing(selector: string): void {
   expect(element?.className).toContain('ring-line-base');
   expect(element?.className).not.toContain('border-border');
 }
+// Actions render through the shared Button, which owns its own surface.
+function expectNoLegacyBorder(selector: string): void {
+  const element = container.querySelector<HTMLElement>(selector);
+  expect(element).not.toBeNull();
+  expect(element?.className).not.toContain('border-border');
+}
 
 import {
   CuratedPipelineCatalog,
@@ -76,7 +82,7 @@ it('renders metadata and delegates selected preview without rendering definition
   expect(
     container.querySelector('[data-testid="curated-pipeline-yaml"]'),
   ).toBeNull();
-  expectTokenRing('[data-testid="curated-pipeline-refresh"]');
+  expectNoLegacyBorder('[data-testid="curated-pipeline-refresh"]');
   expectTokenRing('[data-testid="curated-pipeline-search"]');
   expectTokenRing('[data-testid="curated-pipeline-rows"]');
   click('[data-testid="curated-pipeline-preview-review"]');
@@ -101,7 +107,7 @@ it('pins import to displayed detail and respects paired-device availability', ()
   ).toBe(true);
   expectTokenRing('[data-testid="curated-pipeline-detail"]');
   expectTokenRing('[data-testid="curated-pipeline-yaml"]');
-  expectTokenRing('[data-testid="curated-pipeline-add"]');
+  expectNoLegacyBorder('[data-testid="curated-pipeline-add"]');
   act(() =>
     root.render(
       <CuratedPipelineCatalog

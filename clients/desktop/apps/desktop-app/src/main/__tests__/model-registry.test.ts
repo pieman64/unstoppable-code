@@ -5,6 +5,7 @@ import {
   initModelAliases,
   initOllamaModels,
 } from '@canopy/desktop-shared/types';
+import type { CodexModelEntry } from '@canopy/desktop-shared/types';
 import { replaceModelFamilyMetadata } from '@canopy/desktop-shared/model-config';
 
 jest.mock('../ollama', () => ({
@@ -78,7 +79,7 @@ describe('model registry snapshot descriptions', () => {
   });
 
   it('preserves package-owned Codex family metadata without classifying the ID', () => {
-    const entries = [
+    const entries: CodexModelEntry[] = [
       {
         id: 'deepseek-v4-pro',
         label: 'DeepSeek V4 Pro',

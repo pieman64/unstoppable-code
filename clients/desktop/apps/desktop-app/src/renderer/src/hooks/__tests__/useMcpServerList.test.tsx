@@ -22,6 +22,7 @@ function entry(overrides: Partial<McpServerIndexEntry>): McpServerIndexEntry {
   return {
     id: 'device-github',
     name: 'GitHub',
+    description: '',
     type: 'http',
     configs: [{ id: 'default', name: 'Default', enabled: true }],
     updatedAt: '2026-09-17T00:00:00.000Z',

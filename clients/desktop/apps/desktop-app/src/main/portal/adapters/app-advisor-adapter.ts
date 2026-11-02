@@ -1,3 +1,4 @@
+import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
 import { isSidebarItemGroupId } from '@canopy/protocol/sidebar';
 import { isCopilotRuntimeAvailable } from '../../copilot/runtime-availability';
 import { broadcastPreferencesSynced } from '../../lib/preferences-broadcast';
@@ -27,11 +28,17 @@ import {
   resolveCatalogAgentDefaultModel,
   resolveSendModelPin,
 } from '../../agents/agent-default-model';
-import { CHAT_UNIT_LABEL } from '@canopy/protocol';
+import { CHAT_UNIT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { THINKING_LEVELS } from '@canopy/protocol/thinking';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { MAX_ARCHIVE_RETENTION_DAYS } from '@canopy/desktop-shared/lib/archive-retention';
 import { validateId } from '../../lib/validation';
+import {
+  captureChatTurnStop,
+  isChatTurnStopCurrent,
+  type ChatTurnStopContext,
+} from '../../lib/chat-turn-cancel';
+import { getAllActiveSessionInfos } from '../../agents/session-manager';
 import { sendToWindow } from '../../lib/window-send';
 import {
   createWorkEntry,
@@ -45,6 +52,7 @@ import { completeAppAdvisorAskUserRequest } from '../../ipc/app-advisor';
 import { changeChatModel } from '../../ipc/chat';
 import { getClaudeTerminalSessionService } from '../../integration/claude-terminal-session-service';
 import { getPortalAppAdvisorSurfaces } from '../app-advisor-portal-surfaces';
+import { captureAppAdvisorSyntheticResultFence } from '../../app-advisor/chat-service';
 import type { AppAdvisorToolRuntimeSurfaces } from '../../app-advisor/runtime';
 import type { PortalAdapterContext } from './types';
 import { sanitizePortalFileReferences } from './chat-adapter';
@@ -86,7 +94,7 @@ function requireSurfaces(
     context.fail(
       command,
       'execution_failed',
-      'App Advisor is unavailable in this desktop build.',
+      `${ORCHESTRATOR_LABEL} is unavailable in this desktop build.`,
       true,
     );
     return null;
@@ -150,19 +158,21 @@ async function resolveOrMintEntry(
         requestedEntryId !== resolution.entryId
       ) {
         throw new Error(
-          `App Advisor chat ${chatId} belongs to Work Entry ${resolution.entryId}`,
+          `${ORCHESTRATOR_LABEL} chat ${chatId} belongs to Work Entry ${resolution.entryId}`,
         );
       }
       return { chatId, entryId: resolution.entryId };
     }
     if (resolution.archivedInEntryId && requestedEntryId) {
-      throw new Error(`App Advisor chat ${chatId} is archived`);
+      throw new Error(`${ORCHESTRATOR_LABEL} chat ${chatId} is archived`);
     }
   }
   if (requestedEntryId) {
     const entries = await listWorkEntries(APP_ADVISOR_PROJECT_ID);
     if (!entries.some((entry) => entry.id === requestedEntryId)) {
-      throw new Error(`Unknown App Advisor Work Entry ${requestedEntryId}`);
+      throw new Error(
+        `Unknown ${ORCHESTRATOR_LABEL} Work Entry ${requestedEntryId}`,
+      );
     }
     return { chatId: chatId ?? randomUUID(), entryId: requestedEntryId };
   }
@@ -238,7 +248,7 @@ export async function handlePortalAppAdvisorSettingsGet(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor settings get requires an object payload.',
+      `${ORCHESTRATOR_LABEL} settings get requires an object payload.`,
     );
     return;
   }
@@ -295,7 +305,7 @@ export async function handlePortalAppAdvisorSettingsSave(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor settings save requires an object payload.',
+      `${ORCHESTRATOR_LABEL} settings save requires an object payload.`,
     );
     return;
   }
@@ -336,7 +346,11 @@ export async function handlePortalAppAdvisorSettingsSave(
       typeof payload.approvalsUpgradeNoticeDismissed !== 'boolean') ||
     (payload.projectAgentAccess !== undefined && projectAgentAccess === null)
   ) {
-    context.fail(command, 'invalid_payload', 'Invalid App Advisor settings.');
+    context.fail(
+      command,
+      'invalid_payload',
+      `Invalid ${ORCHESTRATOR_LABEL} settings.`,
+    );
     return;
   }
 
@@ -431,7 +445,7 @@ export async function handlePortalAppAdvisorSend(
     context.fail(
       command,
       'invalid_payload',
-      'Invalid App Advisor send payload.',
+      `Invalid ${ORCHESTRATOR_LABEL} send payload.`,
     );
     return;
   }
@@ -581,7 +595,7 @@ export async function handlePortalAppAdvisorSend(
       context.fail(
         command,
         'conflict',
-        'Terminal-backed App Advisor chats cannot be driven from the portal yet.',
+        `Terminal-backed ${ORCHESTRATOR_LABEL} chats cannot be driven from the portal yet.`,
       );
       return;
     }
@@ -639,7 +653,7 @@ export async function handlePortalAppAdvisorSetModel(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor set_model requires chatId and model.',
+      `${ORCHESTRATOR_LABEL} set_model requires chatId and model.`,
     );
     return;
   }
@@ -690,7 +704,7 @@ export async function handlePortalAppAdvisorSetModel(
       payload.chatId,
     );
     if (!entryId) {
-      context.fail(command, 'not_found', 'Unknown App Advisor chat.');
+      context.fail(command, 'not_found', `Unknown ${ORCHESTRATOR_LABEL} chat.`);
       return;
     }
     const tabsFile = await readChatTabsFile(APP_ADVISOR_PROJECT_ID, entryId);
@@ -698,14 +712,14 @@ export async function handlePortalAppAdvisorSetModel(
       (candidate) => candidate.id === payload.chatId,
     );
     if (!tab) {
-      context.fail(command, 'not_found', 'Unknown App Advisor chat.');
+      context.fail(command, 'not_found', `Unknown ${ORCHESTRATOR_LABEL} chat.`);
       return;
     }
     if (tab.readOnly) {
       context.fail(
         command,
         'conflict',
-        'Read-only App Advisor chats cannot change models.',
+        `Read-only ${ORCHESTRATOR_LABEL} chats cannot change models.`,
       );
       return;
     }
@@ -724,7 +738,7 @@ export async function handlePortalAppAdvisorSetModel(
       context.fail(
         command,
         'conflict',
-        'Active terminal-backed App Advisor chats cannot change models from the portal yet.',
+        `Active terminal-backed ${ORCHESTRATOR_LABEL} chats cannot change models from the portal yet.`,
       );
       return;
     }
@@ -740,11 +754,17 @@ export async function handlePortalAppAdvisorSetModel(
         tab.messages.length) > 0
         ? resolvePersistedChatExecutionHarness(tab)
         : undefined;
+    const selectedHarness = payload.executionHarness;
+    if (selectedHarness !== undefined && !isModelHarness(selectedHarness)) {
+      context.fail(command, 'invalid_payload', 'executionHarness is invalid.');
+      return;
+    }
     const modelChangeRequest = {
       projectId: APP_ADVISOR_PROJECT_ID,
       worktreeId: entryId,
       chatId: payload.chatId,
       model,
+      ...(selectedHarness ? { executionHarness: selectedHarness } : {}),
       ...(lockedHarness ? { lockedHarness } : {}),
     };
     const accepted =
@@ -759,7 +779,7 @@ export async function handlePortalAppAdvisorSetModel(
       context.fail(
         command,
         'conflict',
-        'The selected model is unavailable for this App Advisor chat.',
+        `The selected model is unavailable for this ${ORCHESTRATOR_LABEL} chat.`,
       );
       return;
     }
@@ -785,7 +805,7 @@ export async function handlePortalAppAdvisorCancel(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor cancel requires a chatId.',
+      `${ORCHESTRATOR_LABEL} cancel requires a chatId.`,
     );
     return;
   }
@@ -795,30 +815,69 @@ export async function handlePortalAppAdvisorCancel(
   }
   try {
     validateId(payload.chatId, 'chatId');
+    const presentationFence = captureAppAdvisorSyntheticResultFence(
+      payload.chatId,
+    );
+    const capturedSessions = getAllActiveSessionInfos()
+      .filter(
+        (info) =>
+          info.projectId === APP_ADVISOR_PROJECT_ID &&
+          info.chatId === payload.chatId,
+      )
+      .map((info) =>
+        captureChatTurnStop({
+          projectId: info.projectId,
+          worktreeId: info.worktreeId,
+          chatId: info.chatId,
+        }),
+      );
     const { entryId } = await resolveWorkEntryForChat(
       APP_ADVISOR_PROJECT_ID,
       payload.chatId,
     );
     if (!entryId) {
-      context.fail(command, 'not_found', 'Unknown App Advisor chat.');
+      context.fail(command, 'not_found', `Unknown ${ORCHESTRATOR_LABEL} chat.`);
+      return;
+    }
+    const target = {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: entryId,
+      chatId: payload.chatId,
+    };
+    const stopContext =
+      capturedSessions.find(
+        (candidate) =>
+          candidate.target.projectId === target.projectId &&
+          candidate.target.worktreeId === target.worktreeId &&
+          candidate.target.chatId === target.chatId,
+      ) ??
+      ({
+        target,
+        session: undefined,
+        fence: undefined,
+      } satisfies ChatTurnStopContext);
+    // The Work Entry lookup is async. If a send/wake replaced the synchronously
+    // captured session in the meantime, do not hand the stale Stop to service.
+    if (!isChatTurnStopCurrent(stopContext)) {
+      context.complete(command, { ok: true });
       return;
     }
     // Break the adapter ↔ chat-service initialization cycle; cancellation is
     // loaded only for an existing App Advisor entry.
     const { cancelWorktreeChat } = await import('../../services/chat-service');
-    await cancelWorktreeChat({
-      projectId: APP_ADVISOR_PROJECT_ID,
-      worktreeId: entryId,
-      chatId: payload.chatId,
-    });
+    await cancelWorktreeChat(target, stopContext);
     // Provider cancellation resolves without a terminal chat event, so emit
     // the synthetic un-stream record both desktop windows and the portal use
     // to close the visible turn. Best-effort: the cancel itself succeeded.
     const { emitAppAdvisorSyntheticResultEvent } =
       await import('../../app-advisor/chat-service');
-    await emitAppAdvisorSyntheticResultEvent(payload.chatId, surfaces).catch(
-      () => undefined,
-    );
+    await emitAppAdvisorSyntheticResultEvent(payload.chatId, surfaces, {
+      fence: presentationFence,
+      ...(stopContext.fence?.userMessageId
+        ? { userMessageId: stopContext.fence.userMessageId }
+        : {}),
+      isCurrent: () => isChatTurnStopCurrent(stopContext),
+    }).catch(() => undefined);
     context.complete(command, { ok: true });
   } catch (error) {
     failServiceError(command, context, error);
@@ -837,7 +896,7 @@ export async function handlePortalAppAdvisorCreateTab(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor create_tab requires a browser-minted chatId.',
+      `${ORCHESTRATOR_LABEL} create_tab requires a browser-minted chatId.`,
     );
     return;
   }
@@ -984,7 +1043,7 @@ function settleAskUserQuestion(
     context.fail(
       command,
       'not_found',
-      'App Advisor question is no longer awaiting an answer.',
+      `${ORCHESTRATOR_LABEL} question is no longer awaiting an answer.`,
     );
     return;
   }
@@ -1018,7 +1077,7 @@ export function handlePortalAppAdvisorAnswerQuestion(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor answer requires chatId and requestId.',
+      `${ORCHESTRATOR_LABEL} answer requires chatId and requestId.`,
     );
     return;
   }
@@ -1027,7 +1086,7 @@ export function handlePortalAppAdvisorAnswerQuestion(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor answer requires a valid answers array.',
+      `${ORCHESTRATOR_LABEL} answer requires a valid answers array.`,
     );
     return;
   }
@@ -1057,7 +1116,7 @@ export function handlePortalAppAdvisorDismissQuestion(
     context.fail(
       command,
       'invalid_payload',
-      'App Advisor dismissal requires chatId and requestId.',
+      `${ORCHESTRATOR_LABEL} dismissal requires chatId and requestId.`,
     );
     return;
   }

@@ -5,6 +5,7 @@ import { isCursorModel } from '@canopy/desktop-shared/lib/cursor-models';
 import {
   useCallback,
   useEffect,
+  useMemo,
   useState,
   useSyncExternalStore,
   type JSX,
@@ -24,9 +25,11 @@ import {
   type AgentProviderType,
   type ChatContextUsageRequest,
   type ChatTabUsage,
+  type ModelHarness,
 } from '@canopy/desktop-shared/types';
 import { accountProxyHarnessForChat } from '@canopy/desktop-shared/lib/account-proxy';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useAiCreditsOnlyBilling } from '@/hooks/useAiCreditsOnlyBilling';
 import { useChatAccountSource } from '@/stores/accountProxyStore';
 import { desktopCostClient } from '@/lib/cost/ipc-cost-client';
 import { openSessionBreakdownPanel } from '@/lib/cost/open-cost-panels';
@@ -34,6 +37,12 @@ import { CursorAccountUsage } from './CursorAccountUsage';
 import { PlanAccountUsage, type PlanAccountProvider } from './PlanAccountUsage';
 import { ProxyAccountUsage } from './ProxyAccountUsage';
 import { createSeededTabUsage } from '@/lib/chatUsageNormalization';
+import {
+  useComposerAiCreditsBalance,
+  type ComposerAiCreditsTarget,
+} from '@/hooks/useComposerAiCreditsBalance';
+import { useWorkModelLibraryAccess } from '@/hooks/useModelLibraryAccess';
+import { chatAiCreditsScope } from '@/lib/aiCreditsScope';
 import {
   getRendererModelFactsVersion,
   subscribeRendererModelFacts,
@@ -44,6 +53,7 @@ interface UsageIndicatorProps {
   isCodex: boolean;
   /** Selected harness, independent of the model's shared identity. */
   isCursor?: boolean;
+  executionHarness?: ModelHarness;
   /**
    * The tab's current model. Lets the meter size itself to the model's
    * context window while `usage` is still undefined (a chat whose session has
@@ -75,7 +85,22 @@ interface UsageIndicatorProps {
   contextTarget?: ChatContextUsageRequest;
   /** Lines the popover up with the composer box's right edge. */
   alignRef?: RefObject<HTMLElement | null>;
+  /**
+   * The chat whose personal AI Credits balance the meter may show, including
+   * a chat outside any project. Absent, no balance shows.
+   */
+  creditTarget?: ComposerAiCreditsTarget;
+  /**
+   * Whether the selected model bills the chat's next turn to AI Credits. The
+   * balance shows only then, never for a chat billed to the user's own
+   * provider subscription.
+   */
+  aiCreditsBilled?: boolean;
+  /** True while the chat's turn runs; its end re-reads a charged balance. */
+  turnActive?: boolean;
 }
+
+const NO_CREDIT_TARGET: ComposerAiCreditsTarget = {};
 
 /**
  * Desktop wrapper over the shared composer usage meter: resolves the model's
@@ -86,6 +111,7 @@ export function UsageIndicator({
   usage,
   isCodex,
   isCursor,
+  executionHarness,
   model,
   providerType,
   aiCreditsRouted = false,
@@ -93,6 +119,9 @@ export function UsageIndicator({
   accountProxyRouted,
   contextTarget,
   alignRef,
+  creditTarget,
+  aiCreditsBilled = false,
+  turnActive = false,
 }: UsageIndicatorProps): JSX.Element {
   useSyncExternalStore(
     subscribeRendererModelFacts,
@@ -101,12 +130,41 @@ export function UsageIndicator({
   );
   const navigate = useNavigationStore((state) => state.navigate);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const creditBalance = useComposerAiCreditsBalance({
+    target: creditTarget ?? NO_CREDIT_TARGET,
+    aiCreditsRouted: aiCreditsRouted && creditTarget !== undefined,
+    aiCreditsBilled: aiCreditsBilled && creditTarget !== undefined,
+    turnActive,
+  });
+  // The balance shows only for Personal work billed to AI Credits, so its
+  // label reads the same work owner's access, and only while it shows.
+  const creditTargetProjectId = creditTarget?.projectId;
+  const creditTargetWorktreeId = creditTarget?.worktreeId;
+  const creditTargetChatId = creditTarget?.chatId;
+  const creditScope = useMemo(
+    () =>
+      chatAiCreditsScope(
+        creditTargetProjectId,
+        creditTargetWorktreeId,
+        creditTargetChatId,
+      ),
+    [creditTargetProjectId, creditTargetWorktreeId, creditTargetChatId],
+  );
+  const creditLibraryAccess = useWorkModelLibraryAccess(
+    creditScope,
+    creditBalance.credits !== null || creditBalance.pending,
+  );
+  const onManageCredits = useCallback(
+    (): void => navigate('usage'),
+    [navigate],
+  );
   const usageModel = usage?.model || model;
   const modelLabel = usageModel ? getModelDisplayName(usageModel) : undefined;
   const isCopilot = isCopilotModel(usageModel ?? '');
   const selectedModel = model ?? usageModel;
   const opencode =
-    (providerType ??
+    (executionHarness ??
+      providerType ??
       (selectedModel ? getProviderForModel(selectedModel) : undefined)) ===
     'opencode';
   const cursor = !isCopilot && (isCursor ?? isCursorModel(usageModel ?? ''));
@@ -123,6 +181,10 @@ export function UsageIndicator({
     isCostWorkScope(contextTarget.projectId, contextTarget.worktreeId)
       ? contextTarget
       : undefined;
+  // An account that bills every turn to AI Credits sees no USD for a chat
+  // billed that way: AI Credits is its only money figure (CAN-5028).
+  const creditsOnly = useAiCreditsOnlyBilling();
+  const costHidden = creditsOnly && aiCreditsBilled;
   const costScope: CostScopeRef = {
     kind: 'entry',
     projectId: costTarget?.projectId ?? '',
@@ -133,7 +195,7 @@ export function UsageIndicator({
     costScope,
     costTarget?.chatId ?? '',
     {
-      enabled: costTarget !== undefined && popoverOpen,
+      enabled: costTarget !== undefined && popoverOpen && !costHidden,
     },
   );
   const costPreview = costSummaryStore((state) =>
@@ -223,12 +285,26 @@ export function UsageIndicator({
           <PlanAccountUsage provider={planProvider} />
         ) : undefined
       }
-      {...(!opencode ? { onSeeDetails } : {})}
+      hideCost={costHidden}
+      {...(!opencode && !costHidden ? { onSeeDetails } : {})}
       {...(contextBreakdown ? { contextBreakdown } : {})}
-      {...(contextTarget !== undefined && costPreview !== undefined
+      {...(contextTarget !== undefined &&
+      costPreview !== undefined &&
+      !costHidden
         ? { costPreview: <UsageCostPreviewRow preview={costPreview} /> }
         : {})}
       onOpenChange={onOpenChange}
+      {...(creditBalance.credits !== null || creditBalance.pending
+        ? {
+            creditBalance: {
+              credits: creditBalance.credits,
+              onManage: onManageCredits,
+              ...(creditLibraryAccess !== undefined
+                ? { libraryAccess: creditLibraryAccess }
+                : {}),
+            },
+          }
+        : {})}
       capsule
       {...(alignRef ? { alignRef } : {})}
       responseUsage={
@@ -247,7 +323,7 @@ export function UsageIndicator({
       isCodex={isCodex}
       // An id with no display name stays unnamed rather than showing raw.
       modelLabel={modelLabel === usageModel ? '' : (modelLabel ?? '')}
-      seedUsage={createSeededTabUsage(model, aiCreditsRouted)}
+      seedUsage={createSeededTabUsage(model, aiCreditsRouted, executionHarness)}
     />
   );
 }

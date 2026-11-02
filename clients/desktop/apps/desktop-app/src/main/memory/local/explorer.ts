@@ -22,6 +22,9 @@ import { isMemoryMarkdownFileName, redactMemoryContent } from './store';
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_FILES = 2_000;
 const TITLE_PROBE_BYTES = 4 * 1024;
+const FRONT_MATTER = /^\uFEFF?---\r?\n(?:[\s\S]*?\r?\n)?---(?:\r?\n|$)/;
+const CHANGED_SINCE_OPENED =
+  'Memory changed since you opened it. Refresh before saving.';
 function revision(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -204,19 +207,99 @@ export function titleFromProbeHead(
   return options.inbox ? inboxLineTitle(firstLine) : undefined;
 }
 
-/** Reads at most the first 4 KiB of a memory file and titles it from them. */
-async function readLeadingTitle(
-  path: string,
-  options: { inbox: boolean },
-): Promise<string | undefined> {
+const EXCERPT_MAX_CHARS = 160;
+
+function clip(text: string, max: number): string {
+  const characters = Array.from(text);
+  return characters.length > max
+    ? `${characters.slice(0, max).join('').trimEnd()}…`
+    : text;
+}
+
+/** Inline Markdown reduced to its text: links, emphasis and code ticks. */
+function plainInline(text: string): string {
+  return text
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|`)/g, '')
+    .trim();
+}
+
+/**
+ * The line a list row shows under the title, as plain text: the first
+ * non-blank body line, after the title line when the file has one. Fenced
+ * code and rules are skipped.
+ */
+export function excerptFromProbeHead(
+  probeHead: string,
+  options: { titled: boolean },
+): string | undefined {
+  const lines = skipFrontMatter(
+    probeHead.replace(/^\uFEFF/, '').split(/\r?\n/),
+  );
+  const first = lines.findIndex((line) => line.trim() !== '');
+  if (first === -1) return undefined;
+  let fenced = false;
+  for (const line of lines.slice(options.titled ? first + 1 : first)) {
+    const trimmed = line.trim();
+    if (/^(```|~~~)/.test(trimmed)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced || trimmed === '' || /^(---|\*\*\*|___)$/.test(trimmed))
+      continue;
+    const text = plainInline(stripHeadingMarker(stripListMarker(trimmed)));
+    if (text) return clip(text, EXCERPT_MAX_CHARS);
+  }
+  return undefined;
+}
+
+/** Unquotes a front matter scalar written as JSON (`yamlString`) or bare. */
+function frontMatterScalar(raw: string): string | undefined {
+  const value = raw.trim();
+  if (value.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return typeof parsed === 'string' && parsed ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return value || undefined;
+}
+
+/** The `source` block an inbox note's front matter records, when present. */
+export function sourceFromProbeHead(
+  probeHead: string,
+): { provider: string; chatId: string } | undefined {
+  const lines = probeHead.replace(/^\uFEFF/, '').split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return undefined;
+  const end = lines.findIndex(
+    (line, index) => index > 0 && line.trim() === '---',
+  );
+  if (end === -1) return undefined;
+  let inSource = false;
+  let provider: string | undefined;
+  let chatId: string | undefined;
+  for (const line of lines.slice(1, end)) {
+    if (/^\S/.test(line)) {
+      inSource = line.trim() === 'source:';
+      continue;
+    }
+    if (!inSource) continue;
+    const match = /^\s+(provider|chatId):(.*)$/.exec(line);
+    if (match?.[1] === 'provider') provider = frontMatterScalar(match[2]);
+    if (match?.[1] === 'chatId') chatId = frontMatterScalar(match[2]);
+  }
+  return provider && chatId ? { provider, chatId } : undefined;
+}
+
+/** Reads at most the first 4 KiB of a memory file. */
+async function readProbeHead(path: string): Promise<string> {
   const handle = await open(path, 'r');
   try {
     const buffer = Buffer.alloc(TITLE_PROBE_BYTES);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return titleFromProbeHead(
-      buffer.subarray(0, bytesRead).toString('utf8'),
-      options,
-    );
+    return buffer.subarray(0, bytesRead).toString('utf8');
   } finally {
     await handle.close();
   }
@@ -259,9 +342,13 @@ export async function listLocalMemoryFiles(
       const path = await safePath(scopeDir, fileKey);
       const stat = await lstat(path);
       if (!stat.isFile()) continue;
-      const title = await readLeadingTitle(path, {
-        inbox: fileKey.startsWith('inbox/'),
+      const head = await readProbeHead(path);
+      const inbox = fileKey.startsWith('inbox/');
+      const title = titleFromProbeHead(head, { inbox });
+      const excerpt = excerptFromProbeHead(head, {
+        titled: title !== undefined,
       });
+      const source = inbox ? sourceFromProbeHead(head) : undefined;
       files.push({
         fileKey,
         kind:
@@ -273,6 +360,8 @@ export async function listLocalMemoryFiles(
         modifiedAt: stat.mtime.toISOString(),
         sizeBytes: stat.size,
         ...(title === undefined ? {} : { title }),
+        ...(excerpt === undefined ? {} : { excerpt }),
+        ...(source === undefined ? {} : { source }),
       });
     } catch (error) {
       if (
@@ -285,14 +374,23 @@ export async function listLocalMemoryFiles(
   return files;
 }
 
+/** The Markdown after a file's front matter and byte order mark. */
+function bodyMarkdown(content: string): string {
+  return content
+    .replace(/^\uFEFF/, '')
+    .replace(FRONT_MATTER, '')
+    .replace(/^\uFEFF/, '');
+}
+
 export async function readLocalMemoryDocument(
   scopeDir: string,
   fileKey: string,
 ): Promise<LocalMemoryDocument> {
-  return parseMemoryDocumentInWorker(
-    fileKey,
-    await readBounded(await safePath(scopeDir, fileKey)),
-  );
+  const content = await readBounded(await safePath(scopeDir, fileKey));
+  return {
+    ...(await parseMemoryDocumentInWorker(fileKey, content)),
+    markdown: bodyMarkdown(content),
+  };
 }
 
 export function mutateLocalMemoryItem(
@@ -303,9 +401,7 @@ export function mutateLocalMemoryItem(
     const path = await safePath(scopeDir, request.fileKey);
     const content = await readBounded(path);
     if (revision(content) !== request.revision)
-      throw new Error(
-        'Memory changed since you opened it. Refresh before saving.',
-      );
+      throw new Error(CHANGED_SINCE_OPENED);
     const find = (items: LocalMemoryItem[]): LocalMemoryItem | undefined => {
       for (const item of items) {
         if (item.id === request.itemId) return item;
@@ -345,26 +441,114 @@ export function mutateLocalMemoryItem(
       request.fileKey,
       result,
     );
-    const temporaryPath = `${path}.${randomUUID()}.tmp`;
-    try {
-      await mkdir(dirname(temporaryPath), { recursive: true, mode: 0o700 });
-      await writeFile(temporaryPath, result, {
-        encoding: 'utf8',
-        mode: 0o600,
-        flag: 'wx',
-      });
-      if (
-        (await safePath(scopeDir, request.fileKey)) !== path ||
-        revision(await readBounded(path)) !== request.revision
-      )
-        throw new Error(
-          'Memory changed since you opened it. Refresh before saving.',
-        );
-      await rename(temporaryPath, path);
-      recordMemoryEdit(scopeDir);
-    } finally {
-      await unlink(temporaryPath).catch(() => undefined);
-    }
-    return updatedDocument;
+    await replaceAtRevision(scopeDir, request, path, result);
+    return { ...updatedDocument, markdown: bodyMarkdown(result) };
+  });
+}
+
+/** Writes `result` over the file, only while it still has the read revision. */
+async function replaceAtRevision(
+  scopeDir: string,
+  request: { fileKey: string; revision: string },
+  path: string,
+  result: string,
+): Promise<void> {
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  try {
+    await mkdir(dirname(temporaryPath), { recursive: true, mode: 0o700 });
+    await writeFile(temporaryPath, result, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    if (
+      (await safePath(scopeDir, request.fileKey)) !== path ||
+      revision(await readBounded(path)) !== request.revision
+    )
+      throw new Error(CHANGED_SINCE_OPENED);
+    await rename(temporaryPath, path);
+    recordMemoryEdit(scopeDir);
+  } finally {
+    await unlink(temporaryPath).catch(() => undefined);
+  }
+}
+
+function deletableFileKey(fileKey: string): void {
+  if (!fileKey.startsWith('topics/') && !fileKey.startsWith('inbox/'))
+    throw new Error('Only topics and notes can be deleted.');
+}
+
+/**
+ * Replaces a memory file's Markdown body: the index, a topic or a note. The front matter block is
+ * kept (an inbox note's `modified` time moves to now), and a given title
+ * becomes the level-1 heading that starts the body.
+ */
+export async function updateLocalMemoryFile(
+  scopeDir: string,
+  request: { fileKey: string; revision: string; title?: string; body: string },
+): Promise<LocalMemoryDocument> {
+  return withMemoryWriteLock(scopeDir, async () => {
+    const path = await safePath(scopeDir, request.fileKey);
+    const content = await readBounded(path);
+    if (revision(content) !== request.revision)
+      throw new Error(CHANGED_SINCE_OPENED);
+    const normalize = (text: string): string =>
+      text.replace(/\r\n?/g, '\n').replace(/\0/g, '');
+    const title =
+      request.title === undefined
+        ? undefined
+        : normalize(request.title)
+            .replace(/\n+/g, ' ')
+            .replace(/^[ \t]+|[ \t]+$/g, '');
+    // Leading blank lines and trailing newlines go; indentation and a hard
+    // break's trailing spaces are Markdown and stay.
+    const body = normalize(request.body)
+      .replace(/^(?:[ \t]*\n)+/, '')
+      .replace(/\n+$/, '');
+    if (title === '') throw new Error('Add a title.');
+    if (!body.trim() && title === undefined)
+      throw new Error('Add the memory text.');
+    let markdown = redactMemoryContent(
+      title === undefined
+        ? `${body}\n`
+        : body
+          ? `# ${title}\n\n${body}\n`
+          : `# ${title}\n`,
+    );
+    const frontMatter = (FRONT_MATTER.exec(content)?.[0] ?? '').replace(
+      /^(modified:)[^\r\n]*$/m,
+      `$1 ${JSON.stringify(new Date().toISOString())}`,
+    );
+    // The blank lines between the front matter and the body stay as they were.
+    const lead = /^(?:[ \t]*\r?\n)*/.exec(bodyMarkdown(content))?.[0] ?? '';
+    markdown = `${frontMatter}${normalize(lead)}${markdown}`;
+    if (content.includes('\r\n')) markdown = markdown.replace(/\r?\n/g, '\r\n');
+    if (Buffer.byteLength(markdown, 'utf8') > MAX_FILE_BYTES)
+      throw new Error('This memory file is too large to save.');
+    const bom = content.startsWith('\uFEFF') && !frontMatter ? '\uFEFF' : '';
+    const result = `${bom}${markdown}`;
+    const updatedDocument = await parseMemoryDocumentInWorker(
+      request.fileKey,
+      result,
+    );
+    await replaceAtRevision(scopeDir, request, path, result);
+    return { ...updatedDocument, markdown: bodyMarkdown(result) };
+  });
+}
+
+/** Deletes a topic or inbox note, only while it still has the read revision. */
+export async function deleteLocalMemoryFile(
+  scopeDir: string,
+  request: { fileKey: string; revision: string },
+): Promise<void> {
+  deletableFileKey(request.fileKey);
+  return withMemoryWriteLock(scopeDir, async () => {
+    const path = await safePath(scopeDir, request.fileKey);
+    if (revision(await readBounded(path)) !== request.revision)
+      throw new Error(
+        'Memory changed since you opened it. Refresh before deleting.',
+      );
+    await unlink(path);
+    recordMemoryEdit(scopeDir);
   });
 }

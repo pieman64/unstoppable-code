@@ -260,7 +260,7 @@ export async function getSharedPipelineForExecutionContext(
       'Cloud account unavailable',
     );
   if (!before.entry?.account?.id)
-    throw new Error('Pipeline unavailable (access-removed)');
+    throw new Error('Workflow unavailable (access-removed)');
   const detail = await withLegacyPackageVersionFallback((headers) =>
     requestJson<SharedPipelineDetail>(
       `${API_PREFIX}/pipelines/${encodeURIComponent(remoteId)}`,
@@ -277,7 +277,7 @@ export async function getSharedPipelineForExecutionContext(
     after.entry?.account?.id !== before.entry.account.id ||
     after.entry.apiKey !== before.entry.apiKey
   )
-    throw new Error('Pipeline unavailable (access-removed)');
+    throw new Error('Workflow unavailable (access-removed)');
   return detail;
 }
 

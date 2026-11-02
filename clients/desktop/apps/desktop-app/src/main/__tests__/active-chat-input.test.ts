@@ -63,7 +63,12 @@ describe('canonical chat producer facts', () => {
   it('never captures a launch-local account epoch as durable bot evidence', async () => {
     mockRequireBotAccess.mockResolvedValue({ accountEpoch: 42 });
     await expect(
-      captureChatWatcherEvidence({ botId: 'app_advisor', chatId: 'chat' }),
+      // Preserve this legacy address without taskId; only the test boundary
+      // needs to bypass the canonical input type.
+      captureChatWatcherEvidence({
+        botId: 'app_advisor',
+        chatId: 'chat',
+      } as Parameters<typeof captureChatWatcherEvidence>[0]),
     ).resolves.toEqual({ sourceOwner: null });
   });
   it('preserves error and interrupted ahead of no output', () => {

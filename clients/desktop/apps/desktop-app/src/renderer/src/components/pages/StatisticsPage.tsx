@@ -1,7 +1,7 @@
 import { type JSX, useEffect, useState } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { PageHeading } from '../shared/PageHeading';
+import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import {
   CHAT_UNIT_LABEL_PLURAL,
   WORKTREE_UNIT_LABEL_PLURAL,
@@ -44,7 +44,7 @@ const TAB_LABELS: Record<StatisticsTab, string> = {
   Worktrees: WORKTREE_UNIT_LABEL_PLURAL,
   Chats: CHAT_UNIT_LABEL_PLURAL,
   Plans: 'Plans',
-  Pipelines: 'Pipelines',
+  Pipelines: 'Workflows',
   Tools: 'Tools',
 };
 
@@ -91,9 +91,9 @@ export function StatisticsPage(): JSX.Element {
     >
       <PageTitlebar />
       <PageContent stack>
-        <PageHeading
+        <PageHeader
           title="Statistics"
-          subtitle="Today's work at a glance, plus retained activity trends."
+          description="Today's work at a glance, plus retained activity trends."
         />
 
         <TodayStatisticsPanel />

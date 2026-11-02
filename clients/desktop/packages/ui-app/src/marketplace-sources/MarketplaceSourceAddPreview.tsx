@@ -1,0 +1,132 @@
+import type { JSX } from 'react';
+import type {
+  MarketplaceSourceAddPlugin,
+  MarketplaceSourceAddReview,
+} from '@canopy/app-core/client';
+import {
+  ExternalTextLink,
+  SecurityAuditSummary,
+} from '@canopy/ui-shared/components';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+
+function MarketplaceSourceAddPluginPreview({
+  plugin,
+}: {
+  readonly plugin: MarketplaceSourceAddPlugin;
+}): JSX.Element {
+  return (
+    <div className="rounded-md border px-3 py-2">
+      <p className={`text-s font-medium fg-primary ${REPLAY_BLOCK_CLASS}`}>
+        {plugin.name}
+      </p>
+      {plugin.description && (
+        <p className={`text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}>
+          {plugin.description}
+        </p>
+      )}
+      {(plugin.license !== null ||
+        plugin.sourceUrl !== null ||
+        plugin.securityAudit !== null) && (
+        <p
+          className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary"
+          data-testid="cloud-marketplace-plugin-provenance"
+        >
+          {plugin.license !== null && (
+            <span className={REPLAY_BLOCK_CLASS}>
+              License: {plugin.license}
+            </span>
+          )}
+          {plugin.sourceUrl !== null && (
+            <span className={REPLAY_BLOCK_CLASS}>
+              <ExternalTextLink href={plugin.sourceUrl} label="View source" />
+            </span>
+          )}
+          {plugin.securityAudit !== null && (
+            <SecurityAuditSummary
+              audit={plugin.securityAudit}
+              dataTestId="cloud-marketplace-plugin-security-audit"
+            />
+          )}
+        </p>
+      )}
+      {plugin.syncError && (
+        <p
+          className={`mt-1 text-xs fg-destructive ${REPLAY_BLOCK_CLASS}`}
+          data-testid="cloud-marketplace-plugin-error"
+        >
+          {plugin.syncError}
+        </p>
+      )}
+      {plugin.hooksStripped && (
+        <p
+          className="mt-1 text-xs fg-secondary"
+          data-testid="cloud-marketplace-plugin-warning"
+        >
+          Hooks will be omitted in cloud sessions.
+        </p>
+      )}
+      {plugin.mcpOnly && (
+        <p
+          className="mt-1 text-xs fg-secondary"
+          data-testid="cloud-marketplace-plugin-warning"
+        >
+          MCP-only plugins are not yet available in cloud sessions.
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function MarketplaceSourceAddPreview({
+  review,
+}: {
+  readonly review: MarketplaceSourceAddReview;
+}): JSX.Element {
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <h3 className={`text-s font-medium fg-primary ${REPLAY_BLOCK_CLASS}`}>
+          {review.name}
+        </h3>
+        {review.revision && (
+          <p
+            className="break-all text-xs fg-secondary"
+            data-testid="cloud-marketplace-preview-revision"
+          >
+            Pinned revision: {review.revision}
+          </p>
+        )}
+      </div>
+      {review.syncError && (
+        <p
+          className={`text-s fg-destructive ${REPLAY_BLOCK_CLASS}`}
+          role="status"
+        >
+          {review.syncError}
+        </p>
+      )}
+      <div className="max-h-64 space-y-2 overflow-y-auto">
+        {review.plugins.length === 0 ? (
+          <p className="text-xs fg-secondary">No plugins were detected.</p>
+        ) : (
+          review.plugins.map((plugin) => (
+            <MarketplaceSourceAddPluginPreview
+              key={plugin.pluginKey}
+              plugin={plugin}
+            />
+          ))
+        )}
+      </div>
+      {review.pluginsReported && !review.canConfirm && (
+        <p
+          className="text-s fg-destructive"
+          role="status"
+          data-testid="cloud-marketplace-no-usable-plugins"
+        >
+          This marketplace preview has no usable plugins. Add or fix a plugin
+          before confirming.
+        </p>
+      )}
+    </div>
+  );
+}

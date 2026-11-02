@@ -33,6 +33,7 @@ import {
   WORKTREE_ROUTE,
   worktreeMcpRoute,
 } from './browser-files-harness.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 const STAGES = ['before', 'after'] as const;
 const STAGE =
@@ -134,7 +135,7 @@ test('captures the upload approval surfaces', async () => {
         const form = window
           .getByTestId('approval-add-rule-global')
           .locator('xpath=..');
-        await form.getByLabel('Kind').selectOption('browser-upload');
+        await chooseSettingsOption(form.getByLabel('Kind'), 'browser-upload');
         await form.getByLabel('Site').fill('https://upload.example.com');
         await form.getByLabel('Path (optional)').fill('exports/**');
         await captureAddRuleForm(window, 'approvals-add-upload-rule');

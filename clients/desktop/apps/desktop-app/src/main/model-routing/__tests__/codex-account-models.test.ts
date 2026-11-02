@@ -31,14 +31,19 @@ jest.mock('../../codex/runtime-service', () => ({
 const mockFetchMockControlPlaneRecord = jest.fn();
 const mockGetMockLlmOrigin = jest.fn((): string | null => null);
 jest.mock('../../lib/e2e-mock-control-plane', () => ({
-  fetchMockControlPlaneRecord: mockFetchMockControlPlaneRecord,
-  getMockLlmOrigin: mockGetMockLlmOrigin,
+  get fetchMockControlPlaneRecord(): typeof mockFetchMockControlPlaneRecord {
+    return mockFetchMockControlPlaneRecord;
+  },
+  get getMockLlmOrigin(): typeof mockGetMockLlmOrigin {
+    return mockGetMockLlmOrigin;
+  },
 }));
 
 import {
   assertCodexSpeedAvailable,
   getCodexSpeedCatalogSnapshot,
   invalidateCodexSpeedCatalog,
+  peekCodexAccountModelIds,
   readCodexAccountModelIds,
   readCodexSpeedCatalog,
   reportCodexSpeedRejection,
@@ -184,6 +189,81 @@ describe('readCodexAccountModelIds', () => {
   });
 });
 
+describe('peekCodexAccountModelIds', () => {
+  beforeEach(() => {
+    mockRequest.mockReset();
+    resetCodexSpeedCatalogForTests();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('never fetches, and answers null until a list is cached', async () => {
+    expect(peekCodexAccountModelIds()).toBeNull();
+    expect(mockRequest).not.toHaveBeenCalled();
+
+    mockRequest.mockResolvedValueOnce(
+      page([{ id: 'gpt-6-luna', model: 'gpt-6-luna' }]),
+    );
+    await readCodexAccountModelIds();
+
+    const ids = peekCodexAccountModelIds();
+    expect(ids && [...ids]).toEqual(['gpt-6-luna']);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves hidden models out, and a hidden-only list is unknown', async () => {
+    mockRequest.mockResolvedValueOnce(
+      page([
+        nativeModel('gpt-6-luna', []),
+        nativeModel('gpt-6.1-sol', [], { hidden: true }),
+      ]),
+    );
+    const autoIds = await readCodexAccountModelIds();
+    // Auto keeps every listed model, hidden ones included.
+    expect(autoIds && [...autoIds].sort()).toEqual([
+      'gpt-6-luna',
+      'gpt-6.1-sol',
+    ]);
+    const eligible = peekCodexAccountModelIds();
+    expect(eligible && [...eligible]).toEqual(['gpt-6-luna']);
+
+    resetCodexAccountModelCache();
+    mockRequest.mockResolvedValueOnce(
+      page([nativeModel('gpt-6.1-sol', [], { hidden: true })]),
+    );
+    await readCodexAccountModelIds();
+    expect(peekCodexAccountModelIds()).toBeNull();
+  });
+
+  it('treats a truncated list as unknown for eligibility', async () => {
+    for (let index = 0; index < 10; index += 1) {
+      mockRequest.mockResolvedValueOnce(
+        page([{ id: `model-${index}`, model: `model-${index}` }], `c${index}`),
+      );
+    }
+    await readCodexAccountModelIds();
+
+    expect(getCodexSpeedCatalogSnapshot().truncated).toBe(true);
+    expect(peekCodexAccountModelIds()).toBeNull();
+  });
+
+  it('answers null once the cached list is stale', async () => {
+    jest.useFakeTimers();
+    mockRequest.mockResolvedValueOnce(
+      page([{ id: 'gpt-6-luna', model: 'gpt-6-luna' }]),
+    );
+    await readCodexAccountModelIds();
+    expect(peekCodexAccountModelIds()).not.toBeNull();
+
+    jest.advanceTimersByTime(FIVE_MINUTES + 1);
+
+    expect(peekCodexAccountModelIds()).toBeNull();
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('readCodexSpeedCatalog', () => {
   beforeEach(() => {
     jest.useFakeTimers({ now: new Date('2026-09-30T12:00:00Z') });
@@ -241,6 +321,8 @@ describe('readCodexSpeedCatalog', () => {
         model: 'gpt-6-astra',
         tiers: ['priority'],
         source: 'serviceTiers',
+        displayName: 'gpt-6-astra',
+        hidden: false,
       },
       {
         id: 'empty-modern',
@@ -265,6 +347,8 @@ describe('readCodexSpeedCatalog', () => {
         model: 'future-model-x',
         tiers: ['ultrafast', 'priority'],
         source: 'serviceTiers',
+        displayName: 'future-model-x',
+        hidden: false,
       },
     ]);
     expect(Object.keys(catalog).sort()).toEqual([
@@ -714,6 +798,8 @@ describe('UI-automation control-plane catalog (fixture evidence only)', () => {
         model: 'fixture-ultra',
         tiers: ['priority', 'ultrafast'],
         source: 'serviceTiers',
+        displayName: 'fixture-ultra',
+        hidden: false,
       },
     ]);
   });

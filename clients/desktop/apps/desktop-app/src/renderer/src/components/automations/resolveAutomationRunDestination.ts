@@ -12,6 +12,7 @@
  *    that the target still exists before moving the user rather than
  *    navigating optimistically.
  */
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
@@ -65,7 +66,7 @@ export function automationRunDestinationLabel(
 ): string {
   switch (destination.kind) {
     case 'app-advisor-chat':
-      return 'Open in App Advisor';
+      return `Open in ${ORCHESTRATOR_LABEL}`;
     case 'cowork-chat':
     case 'worktree-chat':
       return 'Open chat';
@@ -167,7 +168,7 @@ export function resolveAutomationRunDestination(
 
 const CHAT_UNAVAILABLE_REASON = 'That chat is no longer available.';
 const PIPELINE_UNAVAILABLE_REASON =
-  'That pipeline execution is no longer available.';
+  'That workflow execution is no longer available.';
 const APP_ADVISOR_PREFLIGHT_ATTEMPTS = 5;
 const APP_ADVISOR_PREFLIGHT_RETRY_MS = 250;
 
@@ -443,7 +444,7 @@ async function openAppAdvisorChat(
 ): Promise<OpenAutomationRunDestinationResult> {
   const appAdvisor = window.api?.appAdvisor;
   if (!appAdvisor?.openWindow) {
-    return { ok: false, error: 'App Advisor is unavailable.' };
+    return { ok: false, error: `${ORCHESTRATOR_LABEL} is unavailable.` };
   }
   try {
     // A renderer store value cannot cross the window boundary, so the turn id

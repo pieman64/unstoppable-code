@@ -3,6 +3,8 @@
 import type { JSX, ReactNode } from 'react';
 import type { SettingsErrorCode } from '@canopy/protocol/settings';
 import { Button } from '@canopy/ui-shared/components/Button';
+import { ErrorBanner } from '@canopy/ui-shared/components/StatusBlocks';
+import { TRY_AGAIN_LABEL } from '@canopy/ui-shared/components/useRetry';
 import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 
 /**
@@ -19,7 +21,7 @@ import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 export const HOSTED_SETTINGS_COPY = {
   signedOut: 'Sign in to manage your account and organizations.',
   expired: 'Your session ended. Sign in again to continue.',
-  offline: "Couldn't load these settings. Check your connection and try again.",
+  offline: "Couldn't load these settings. Check your connection.",
   accessLost: 'You no longer have access to this organization.',
   unsupported: 'These settings need a newer server.',
   uncertain: "Couldn't confirm the change. Check again before trying again.",
@@ -55,6 +57,11 @@ function StateFrame({
 export interface HostedSettingsErrorStateProps {
   readonly code: SettingsErrorCode | 'signed_out';
   readonly onRetry?: () => void;
+  /**
+   * A retry of a failed load is running: the failure stays and its Try again
+   * capsule spins in place until the retry settles.
+   */
+  readonly retrying?: boolean;
   readonly onSignIn?: () => void;
   readonly onOpenOrganizations?: () => void;
   readonly onOpenOnWeb?: () => void;
@@ -64,6 +71,7 @@ export interface HostedSettingsErrorStateProps {
 export function HostedSettingsErrorState({
   code,
   onRetry,
+  retrying = false,
   onSignIn,
   onOpenOrganizations,
   onOpenOnWeb,
@@ -77,7 +85,7 @@ export function HostedSettingsErrorState({
           message={HOSTED_SETTINGS_COPY.signedOut}
         >
           {onSignIn ? (
-            <Button variant="primary" size="compact" onClick={onSignIn}>
+            <Button variant="secondary" size="compact" onClick={onSignIn}>
               {HOSTED_SETTINGS_COPY.signIn}
             </Button>
           ) : null}
@@ -90,7 +98,7 @@ export function HostedSettingsErrorState({
           message={HOSTED_SETTINGS_COPY.expired}
         >
           {onSignIn ? (
-            <Button variant="primary" size="compact" onClick={onSignIn}>
+            <Button variant="secondary" size="compact" onClick={onSignIn}>
               {HOSTED_SETTINGS_COPY.signIn}
             </Button>
           ) : null}
@@ -143,17 +151,20 @@ export function HostedSettingsErrorState({
     case 'offline':
     case 'invalid_response':
     case 'failed':
+      // The page's own content failed, under a header that stays: one
+      // notice with Try again, as every settings section's load failure.
       return (
-        <StateFrame
-          testId="hosted-settings-failed"
-          message={HOSTED_SETTINGS_COPY.offline}
-        >
-          {onRetry ? (
-            <Button variant="secondary" size="compact" onClick={onRetry}>
-              {HOSTED_SETTINGS_COPY.retry}
-            </Button>
-          ) : null}
-        </StateFrame>
+        <SettingsPageColumn>
+          <div data-testid="hosted-settings-failed">
+            <ErrorBanner
+              className=""
+              error={HOSTED_SETTINGS_COPY.offline}
+              onRetry={onRetry}
+              retryLabel={TRY_AGAIN_LABEL}
+              retrying={retrying}
+            />
+          </div>
+        </SettingsPageColumn>
       );
   }
 }

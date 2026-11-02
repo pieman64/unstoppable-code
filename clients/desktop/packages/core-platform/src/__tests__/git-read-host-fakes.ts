@@ -1,6 +1,10 @@
 import { GitIgnoreHostError } from '@canopy/core-runtime/node';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
-import { GitReadError, type GitReadCommand } from '../git-read/commands';
+import {
+  GitReadError,
+  type GitReadCommand,
+  type SelectedGit,
+} from '../git-read/commands';
 import {
   createGitReadHostWith,
   type GitReadHost,
@@ -43,12 +47,25 @@ export interface World {
   probes: ProbeCall[];
   /** Executables a probe ran. */
   ran: string[];
-  /** Each `check-ignore` chunk's executable and cwd. */
-  checks: { readonly executable: string; readonly cwd: string }[];
-  /** Holds probes by kind, or by executable, until released. */
+  /** Each `check-ignore` chunk's executable, its selected version, and cwd. */
+  checks: {
+    readonly executable: string;
+    readonly version: string | undefined;
+    readonly cwd: string;
+  }[];
+  /**
+   * Holds probes by kind, or by executable, until released. The
+   * `git-check-ignore` gate holds a chunk after selection, before it starts.
+   */
   gates: Map<string, Promise<void>>;
+  /** Executables whose `check-ignore` fails to spawn after selection. */
+  unspawnable: Set<string>;
+  /** Each chunk's selected executable, before its `check-ignore` starts. */
+  chosen: string[];
   /** `getent passwd` stdout; unset fails the lookup. */
   getent?: string;
+  /** Repository-read output by command kind; unset exits 128. */
+  repository: Partial<Record<GitReadCommand['kind'], GitReadOutput>>;
 }
 
 /** Answers the login-shell executable check without recording an attempt. */
@@ -69,6 +86,9 @@ export function createWorld(
     ran: [],
     checks: [],
     gates: new Map(),
+    unspawnable: new Set(),
+    chosen: [],
+    repository: {},
     ...overrides,
   };
 }
@@ -150,7 +170,7 @@ export function worldIo(world: World): SelectionIo {
   };
 }
 
-const output = (stdout: string, code = 0): GitReadOutput => ({
+export const output = (stdout: string, code = 0): GitReadOutput => ({
   code,
   signal: null,
   stdout,
@@ -187,6 +207,24 @@ function answer(world: World, command: GitReadCommand): GitReadOutput {
     }
     case 'git-check-ignore':
       throw new Error('check-ignore runs through checkIgnoredPathsSelected');
+    case 'git-ls-files-ignored':
+      throw new Error('ls-files runs through listIgnoredPathsSelected');
+    case 'git-branch-refs':
+    case 'git-common-dir':
+    case 'git-worktree-list':
+    case 'git-origin-url':
+    case 'git-remote-names':
+    case 'git-dir':
+    case 'git-remote-head':
+    case 'git-origin-head':
+    case 'git-origin-branch':
+    case 'git-inside-work-tree':
+    case 'git-diff-name-status':
+    case 'git-diff-numstat':
+    case 'git-untracked-files':
+    case 'git-unmerged-files':
+    case 'git-object-exists':
+      return world.repository[command.kind] ?? output('', 128);
   }
 }
 
@@ -217,6 +255,7 @@ export function worldRunner(
         return answer(world, command);
       },
       checkIgnoredPathsWith: () => Promise.reject(new Error('unused')),
+      listIgnoredPathsSelected: () => Promise.reject(new Error('unused')),
       async checkIgnoredPathsSelected(request): Promise<Set<string>> {
         const signals = [request.signal, options.hostSignal].filter(
           (signal): signal is AbortSignal => signal !== undefined,
@@ -230,7 +269,7 @@ export function worldRunner(
           // As the runner: stop waiting at an abort or the deadline, and
           // abort the selection.
           const chosen = await new Promise<
-            { readonly executable: string } | { readonly failure: unknown }
+            { readonly selected: SelectedGit } | { readonly failure: unknown }
           >((settle) => {
             const stop = (failure: unknown): void => {
               clearTimeout(timer);
@@ -249,14 +288,28 @@ export function worldRunner(
             request
               .executableForChunk(chunk, selection.signal, request.deadlineAt)
               .then(
-                (executable) => settle({ executable }),
+                (selected) =>
+                  settle({
+                    selected:
+                      typeof selected === 'string'
+                        ? { executable: selected, version: undefined }
+                        : selected,
+                  }),
                 (failure: unknown) => settle({ failure }),
               )
               .finally(() => clearTimeout(timer));
           });
           if ('failure' in chosen) throw chosen.failure;
-          const { executable } = chosen;
-          world.checks.push({ executable, cwd: request.cwd });
+          const { executable, version } = chosen.selected;
+          // As the runner: planning and spawn come after selection, and an
+          // abort or spawn failure there starts nothing.
+          world.chosen.push(executable);
+          await world.gates.get('git-check-ignore');
+          signals.forEach((signal) => signal.throwIfAborted());
+          if (world.unspawnable.has(executable))
+            throw errno('ENOENT', `spawn ${executable}`);
+          request.onChunkStarted?.(chunk, chosen.selected);
+          world.checks.push({ executable, version, cwd: request.cwd });
           ignored.add(executable);
         }
         return ignored;

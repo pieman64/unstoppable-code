@@ -3,7 +3,7 @@
  */
 import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE } from '@/lib/browserNativeOverlay';
 import { DialogModal, useOverlayEscape } from '@canopy/ui-shared/components';

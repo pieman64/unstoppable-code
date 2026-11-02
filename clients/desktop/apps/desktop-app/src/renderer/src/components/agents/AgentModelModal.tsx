@@ -17,6 +17,7 @@ import {
   isAgentDefaultBaseModel,
 } from '@canopy/protocol/agents';
 import { Radio } from '@canopy/ui-shared/components/Choice';
+import { Button } from '@canopy/ui-shared/components';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { PluginsIcon } from '@canopy/ui-shared/icons';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -135,13 +136,6 @@ export function AgentModelModal({
         : agentModelIdFromSlug(modelIdSlug || deriveAgentModelSlug('')),
     [agent?.id, isEdit, modelIdSlug],
   );
-
-  const hasPluginSelections =
-    (pluginSelections.collectionIds?.length ?? 0) > 0 ||
-    (pluginSelections.skillRefs?.length ?? 0) > 0 ||
-    (pluginSelections.pluginRefs?.length ?? 0) > 0 ||
-    (pluginSelections.mcpServerRefs?.length ?? 0) > 0 ||
-    (pluginSelections.mcpHttpAuthPreferences?.length ?? 0) > 0;
 
   // Flattened display chips for the selected plugins, mirroring the hook action
   // editor's "selected plugins below the control" pattern. Labels are derived
@@ -415,7 +409,7 @@ export function AgentModelModal({
           <p className={helperClass}>
             {isEdit
               ? 'Model IDs cannot be changed after an agent is created.'
-              : 'Used in pipelines and model pickers. It must be unique and can only contain lowercase letters, numbers, and underscores.'}
+              : 'Used in workflows and model pickers. It must be unique and can only contain lowercase letters, numbers, and underscores.'}
           </p>
           {errors.modelIdSlug && (
             <p
@@ -538,23 +532,18 @@ export function AgentModelModal({
           <label className="block text-s font-medium fg-primary">Plugins</label>
           <p className={`${helperClass} mb-2`}>
             These plugins are enabled automatically in addition to the chat or
-            pipeline selections.
+            workflow selections.
           </p>
-          <button
-            type="button"
+          <Button
+            size="compact"
             disabled={submitting}
             onClick={(): void => setPluginsModalOpen(true)}
             data-testid="agent-model-plugins"
-            className={`flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
-              hasPluginSelections
-                ? 'bg-info-subtle fg-info'
-                : 'fg-secondary hover:bg-subtle hover:fg-primary disabled:hover:bg-transparent'
-            }`}
             aria-label="Plugins"
           >
             <PluginsIcon width={13} height={13} />
             <span>Plugins</span>
-          </button>
+          </Button>
 
           {pluginChips.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -580,7 +569,7 @@ export function AgentModelModal({
             </div>
           ) : (
             <p className="mt-2 text-2xs fg-secondary">
-              No plugins added. This agent uses only the chat or pipeline plugin
+              No plugins added. This agent uses only the chat or workflow plugin
               selections.
             </p>
           )}
@@ -594,25 +583,20 @@ export function AgentModelModal({
 
         {/* Footer */}
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={submitting}
-            className="focus-ring rounded-lg border px-4 py-2 text-s fg-primary transition-colors hover:bg-secondary disabled:opacity-50"
-          >
+          <Button size="compact" onClick={onClose} disabled={submitting}>
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={(): void => {
               void handleSubmit();
             }}
             disabled={submitting}
             data-testid="agent-model-submit"
-            className="focus-ring rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis transition-colors hover:bg-accent/90 disabled:opacity-50"
           >
             {isEdit ? 'Save changes' : 'Create agent'}
-          </button>
+          </Button>
         </div>
       </div>
 

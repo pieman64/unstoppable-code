@@ -10,6 +10,8 @@ import {
   steeringRequestPresentation,
 } from '@canopy/ui-shared';
 import {
+  AutoResumeMarker,
+  readMessageAutoResume,
   SUBAGENT_REFERENCE_PREFIX,
   SubagentReferenceAttachment,
   splitSubagentReference,
@@ -96,18 +98,19 @@ export const UserBubble = memo(function UserBubble({
   );
 
   // A delegate's steering request arrives as a hidden instruction block; show
-  // the request and its sender instead.
-  // An outside agent controls its message text, so text-derived presentation
-  // never applies to it: its trusted sender marker always shows.
+  // the request and its sender instead. An outside agent controls its message
+  // text, so text-derived presentation never applies to it: its trusted
+  // sender marker always shows.
   const agentSent = message.agentSent;
   const steeringRequest = useMemo(() => {
-    if (agentSent) return null;
     const textBlockIndex = message.blocks.findIndex(
       (block) => block.type === 'text',
     );
     const textBlock = message.blocks[textBlockIndex];
     if (textBlock?.type !== 'text') return null;
-    const request = steeringRequestPresentation(textBlock.text);
+    // Only a managed delegate's request keeps a text-derived presentation.
+    if (agentSent && !('kind' in agentSent)) return null;
+    const request = steeringRequestPresentation(textBlock.text, agentSent);
     return request ? { ...request, textBlockIndex } : null;
   }, [agentSent, message.blocks]);
 
@@ -149,11 +152,10 @@ export const UserBubble = memo(function UserBubble({
       return [];
     })
     .join('\n');
-  // The message menu copies the same text as the corner Copy badge,
-  // including its `@displayPath` file references (CAN-4277).
-  const getMarkdown = useCallback((): string => copyText, [copyText]);
+  // The message menu (CAN-4277) copies a selection inside the bubble; the
+  // corner Copy badge copies `copyText`.
   const { targetProps: contextMenuTarget, menu: contextMenu } =
-    useChatMessageContextMenu({ messageId: message.id, getMarkdown });
+    useChatMessageContextMenu({ messageId: message.id });
 
   const handleResetClick = useCallback((): void => {
     setResetDialogOpen(true);
@@ -185,6 +187,38 @@ export const UserBubble = memo(function UserBubble({
       block.steering !== undefined &&
       block.steering.startsTurn !== true,
   );
+  // An app-sent resume prompt is never a human bubble. Its provenance is the
+  // persisted source and metadata, never the prompt's text.
+  const isAutoResume = message.userMessageSource === 'auto_resume';
+  const autoResume = isAutoResume ? readMessageAutoResume(message) : undefined;
+  const autoResumeMarker = isAutoResume ? (
+    <AutoResumeMarker
+      autoResume={autoResume}
+      providerName={autoResume?.providerName}
+      timestamp={message.timestamp}
+      text={copyText}
+      copyText={
+        autoResume && !autoResume.resendsUserMessage ? copyText : undefined
+      }
+      onJumpToMessage={onJumpToMessage}
+    />
+  ) : null;
+  if (autoResume && !autoResume.resendsUserMessage) {
+    // A generated nudge: the marker takes the bubble's slot and keeps its
+    // message anchor for jumps, search and turn grouping.
+    return (
+      <>
+        <div
+          {...contextMenuTarget}
+          data-role="user"
+          data-chat-message-id={message.id}
+        >
+          {autoResumeMarker}
+        </div>
+        {contextMenu}
+      </>
+    );
+  }
   const statusHeader = message.watcherFired ? (
     <WatcherFiredTitle watcherFired={message.watcherFired} />
   ) : steeringRequest ? (
@@ -195,6 +229,7 @@ export const UserBubble = memo(function UserBubble({
 
   return (
     <>
+      {autoResumeMarker}
       {attachedSubagentReference ? (
         <SubagentReferenceAttachment title={attachedSubagentReference.title} />
       ) : null}
@@ -208,7 +243,7 @@ export const UserBubble = memo(function UserBubble({
         variant={
           message.watcherFired || steeringRequest?.variant === 'info'
             ? 'info'
-            : mutedBubble
+            : mutedBubble || isAutoResume
               ? 'muted'
               : 'default'
         }

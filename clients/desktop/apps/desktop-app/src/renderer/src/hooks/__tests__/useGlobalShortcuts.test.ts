@@ -772,7 +772,7 @@ describe('handleGlobalShortcutKeyDown', () => {
 
     it('falls back without a group when no grid is visible', () => {
       const { handleGlobalShortcutKeyDown, useNavigationStore } = loadModules();
-      useNavigationStore.setState({ activePage: 'settings' });
+      useNavigationStore.setState({ activePage: 'plugins' });
 
       handleGlobalShortcutKeyDown(createShortcutEvent({ key: 'f' }));
       mockRunFindShortcut.mock.calls[0]?.[1]();
@@ -980,6 +980,62 @@ describe('handleGlobalShortcutKeyDown', () => {
       expect(mockRunCloseTabShortcut).not.toHaveBeenCalled();
     });
 
+    it('routes cowork work entries on the chat page', () => {
+      const {
+        handleGlobalShortcutKeyDown,
+        useChatStore,
+        useNavigationStore,
+        registerCoworkWorkspaceIds,
+      } = loadModules();
+      registerCoworkWorkspaceIds(['cowork-ws']);
+      useNavigationStore.setState({ activePage: 'chat' });
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'cowork-ws', worktreeId: 'entry-1' },
+      });
+
+      const event = createShortcutEvent({ key: 'w' });
+      handleGlobalShortcutKeyDown(event);
+
+      expect(event.preventDefault).toHaveBeenCalledTimes(1);
+      expect(mockRunCloseTabShortcut).toHaveBeenCalledTimes(1);
+      expect(mockRunCloseTabShortcut).toHaveBeenCalledWith({
+        projectId: 'cowork-ws',
+        worktreeId: 'entry-1',
+      });
+    });
+
+    it('swallows the chord without closing when a cowork entry is selected on the main page', () => {
+      const {
+        handleGlobalShortcutKeyDown,
+        useChatStore,
+        useNavigationStore,
+        registerCoworkWorkspaceIds,
+      } = loadModules();
+      registerCoworkWorkspaceIds(['cowork-ws']);
+      useNavigationStore.setState({ activePage: 'main' });
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'cowork-ws', worktreeId: 'entry-1' },
+      });
+
+      const event = createShortcutEvent({ key: 'w' });
+      handleGlobalShortcutKeyDown(event);
+
+      expect(event.preventDefault).toHaveBeenCalledTimes(1);
+      expect(mockRunCloseTabShortcut).not.toHaveBeenCalled();
+    });
+
+    it('swallows the chord without closing on the chat page without a cowork selection', () => {
+      const { handleGlobalShortcutKeyDown, useNavigationStore } =
+        loadWithActiveTabOnMain();
+      useNavigationStore.setState({ activePage: 'chat' });
+
+      const event = createShortcutEvent({ key: 'w' });
+      handleGlobalShortcutKeyDown(event);
+
+      expect(event.preventDefault).toHaveBeenCalledTimes(1);
+      expect(mockRunCloseTabShortcut).not.toHaveBeenCalled();
+    });
+
     it('swallows the chord without closing while the quick prompt is open', () => {
       const { handleGlobalShortcutKeyDown, useNavigationStore } =
         loadWithActiveTabOnMain();
@@ -1154,6 +1210,291 @@ describe('handleGlobalShortcutKeyDown', () => {
 
       expect(mockRunPanelCommand).not.toHaveBeenCalled();
     });
+
+    // CAN-4616: tab cycling. The chords never edit text, so they run before
+    // the editable-target guard and act on the visible grid.
+    describe('tab cycling', () => {
+      function onPlatform(platform: string, run: () => void): void {
+        const originalNavigator = globalThis.navigator;
+        Object.defineProperty(globalThis, 'navigator', {
+          configurable: true,
+          value: { platform, userAgent: 'Mozilla/5.0' },
+        });
+        try {
+          run();
+        } finally {
+          Object.defineProperty(globalThis, 'navigator', {
+            configurable: true,
+            value: originalNavigator,
+          });
+        }
+      }
+
+      function macBracketEvent(
+        code: 'BracketRight' | 'BracketLeft',
+        overrides?: Partial<TestShortcutEvent>,
+      ): TestShortcutEvent {
+        return createShortcutEvent({
+          code,
+          key: code === 'BracketRight' ? '}' : '{',
+          shiftKey: true,
+          metaKey: true,
+          ctrlKey: false,
+          ...overrides,
+        });
+      }
+
+      function ctrlEvent(
+        key: 'Tab' | 'PageDown' | 'PageUp',
+        overrides?: Partial<TestShortcutEvent>,
+      ): TestShortcutEvent {
+        return createShortcutEvent({
+          key,
+          code: key,
+          ctrlKey: true,
+          metaKey: false,
+          ...overrides,
+        });
+      }
+
+      it.each([
+        ['BracketRight', 'panel-select-next-tab'],
+        ['BracketLeft', 'panel-select-previous-tab'],
+      ] as const)('dispatches ⌘⇧ %s on macOS as %s', (code, commandId) => {
+        onPlatform('MacIntel', () => {
+          const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+          const event = macBracketEvent(code);
+          handleGlobalShortcutKeyDown(event);
+
+          expect(event.preventDefault).toHaveBeenCalledTimes(1);
+          expect(mockRunPanelCommand).toHaveBeenCalledWith(
+            commandId,
+            'project-a/wt-1',
+          );
+        });
+      });
+
+      it('dispatches from an editable target and a terminal on macOS', () => {
+        onPlatform('MacIntel', () => {
+          const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+          for (const target of [
+            new ClosestTarget(['input']),
+            new ClosestTarget(['xterm']),
+          ]) {
+            const event = macBracketEvent('BracketRight', { target });
+            handleGlobalShortcutKeyDown(event);
+            expect(event.preventDefault).toHaveBeenCalledTimes(1);
+          }
+          expect(mockRunPanelCommand).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      it('does not dispatch from an editable target inside a dialog', () => {
+        onPlatform('MacIntel', () => {
+          const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+          const event = macBracketEvent('BracketRight', {
+            target: new ClosestTarget(['input', 'dialog']),
+          });
+          handleGlobalShortcutKeyDown(event);
+
+          expect(event.preventDefault).not.toHaveBeenCalled();
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+
+      it('does not match the macOS chord on other platforms', () => {
+        onPlatform('Win32', () => {
+          const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+          const event = macBracketEvent('BracketRight');
+          handleGlobalShortcutKeyDown(event);
+
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+
+      it.each([
+        ['Tab', false, 'panel-select-next-tab'],
+        ['Tab', true, 'panel-select-previous-tab'],
+        ['PageDown', false, 'panel-select-next-tab'],
+        ['PageUp', false, 'panel-select-previous-tab'],
+      ] as const)(
+        'dispatches Ctrl+%s (shift: %s) on Windows as %s',
+        (key, shiftKey, commandId) => {
+          onPlatform('Win32', () => {
+            const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+            const event = ctrlEvent(key, {
+              shiftKey,
+              target: new ClosestTarget(['input']),
+            });
+            handleGlobalShortcutKeyDown(event);
+
+            expect(event.preventDefault).toHaveBeenCalledTimes(1);
+            expect(mockRunPanelCommand).toHaveBeenCalledWith(
+              commandId,
+              'project-a/wt-1',
+            );
+          });
+        },
+      );
+
+      it('does not match Ctrl+Tab on macOS', () => {
+        onPlatform('MacIntel', () => {
+          const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+          const event = ctrlEvent('Tab');
+          handleGlobalShortcutKeyDown(event);
+
+          expect(event.preventDefault).not.toHaveBeenCalled();
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+
+      // Selecting a terminal tab focuses it, so a cycle that lands on one
+      // must still be able to leave it on Windows/Linux.
+      it.each([
+        ['Tab', 'panel-select-next-tab'],
+        ['PageUp', 'panel-select-previous-tab'],
+      ] as const)(
+        'dispatches Ctrl+%s from a focused terminal on Windows as %s',
+        (key, commandId) => {
+          onPlatform('Win32', () => {
+            const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+            const event = ctrlEvent(key, {
+              target: new ClosestTarget(['xterm']),
+            });
+            handleGlobalShortcutKeyDown(event);
+
+            expect(event.preventDefault).toHaveBeenCalledTimes(1);
+            expect(mockRunPanelCommand).toHaveBeenCalledWith(
+              commandId,
+              'project-a/wt-1',
+            );
+          });
+        },
+      );
+
+      it('still leaves other Ctrl chords to a focused terminal on Windows (CAN-338)', () => {
+        onPlatform('Win32', () => {
+          const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+          const event = createShortcutEvent({
+            key: '\\',
+            ctrlKey: true,
+            metaKey: false,
+            target: new ClosestTarget(['xterm']),
+          });
+          handleGlobalShortcutKeyDown(event);
+
+          expect(event.preventDefault).not.toHaveBeenCalled();
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+
+      it('does not dispatch from a focused button inside a dialog', () => {
+        onPlatform('MacIntel', () => {
+          const { handleGlobalShortcutKeyDown } = loadWithWorktreeOnMain();
+
+          const event = macBracketEvent('BracketRight', {
+            target: new ClosestTarget(['dialog']),
+          });
+          handleGlobalShortcutKeyDown(event);
+
+          expect(event.preventDefault).not.toHaveBeenCalled();
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+
+      it('routes cowork work entries on the chat page', () => {
+        onPlatform('MacIntel', () => {
+          const {
+            handleGlobalShortcutKeyDown,
+            useChatStore,
+            useNavigationStore,
+            registerCoworkWorkspaceIds,
+          } = loadModules();
+          registerCoworkWorkspaceIds(['cowork-ws']);
+          useNavigationStore.setState({ activePage: 'chat' });
+          useChatStore.setState({
+            selectedWorktree: { projectId: 'cowork-ws', worktreeId: 'entry-1' },
+          });
+
+          const event = macBracketEvent('BracketRight');
+          handleGlobalShortcutKeyDown(event);
+
+          expect(event.preventDefault).toHaveBeenCalledTimes(1);
+          expect(mockRunPanelCommand).toHaveBeenCalledWith(
+            'panel-select-next-tab',
+            'cowork-ws/entry-1',
+          );
+        });
+      });
+
+      it('stays unclaimed off a visible grid or without a selection', () => {
+        onPlatform('MacIntel', () => {
+          const {
+            handleGlobalShortcutKeyDown,
+            useChatStore,
+            useNavigationStore,
+          } = loadWithWorktreeOnMain();
+
+          useNavigationStore.setState({ activePage: 'workflows-library' });
+          const offPage = macBracketEvent('BracketRight');
+          handleGlobalShortcutKeyDown(offPage);
+
+          useNavigationStore.setState({ activePage: 'main' });
+          useChatStore.setState({ selectedWorktree: null });
+          const noSelection = macBracketEvent('BracketRight');
+          handleGlobalShortcutKeyDown(noSelection);
+
+          expect(offPage.preventDefault).not.toHaveBeenCalled();
+          expect(noSelection.preventDefault).not.toHaveBeenCalled();
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+
+      it('defers to the command palette and an already-consumed event', () => {
+        onPlatform('MacIntel', () => {
+          const { handleGlobalShortcutKeyDown, useNavigationStore } =
+            loadWithWorktreeOnMain();
+
+          const consumed = {
+            ...macBracketEvent('BracketRight'),
+            defaultPrevented: true,
+          };
+          handleGlobalShortcutKeyDown(consumed);
+
+          useNavigationStore.setState({ commandPaletteOpen: true });
+          handleGlobalShortcutKeyDown(macBracketEvent('BracketRight'));
+
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+
+      it.each([
+        'fileSearchPaletteOpen',
+        'prPickerOpen',
+        'settingsOpen',
+        'appAdvisorQuickPromptOpen',
+      ] as const)('does not dispatch while %s', (overlay) => {
+        onPlatform('MacIntel', () => {
+          const { handleGlobalShortcutKeyDown, useNavigationStore } =
+            loadWithWorktreeOnMain();
+
+          useNavigationStore.setState({ [overlay]: true });
+          const event = macBracketEvent('BracketRight');
+          handleGlobalShortcutKeyDown(event);
+
+          expect(event.preventDefault).not.toHaveBeenCalled();
+          expect(mockRunPanelCommand).not.toHaveBeenCalled();
+        });
+      });
+    });
   });
 
   describe('Cmd/Ctrl+S save shortcut (single Cmd/Ctrl+S owner)', () => {
@@ -1201,6 +1542,12 @@ describe('handleGlobalShortcutKeyDown', () => {
                 planMode: false,
                 proposalMode: 'optional',
                 thinkingLevel: 'high',
+                modelConfig: {
+                  thinkingLevel: 'high',
+                  speed: 'standard',
+                  fastMode: false,
+                },
+                fastModeExplicit: false,
               },
             ],
             activeTabId: 'file-1',

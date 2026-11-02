@@ -61,7 +61,11 @@ function event(
       version: 10,
       id: 'execution-1',
       pipeline_id: 'pipeline-1',
-      pipeline_snapshot: { name: 'Release', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Release',
+        scope: ['directory'],
+        jobs: {},
+      },
       status,
       jobs: {},
       job_definitions: {},

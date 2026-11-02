@@ -39,7 +39,7 @@ function recordParse(result: z.ZodSafeParseResult<unknown>): unknown {
       };
 }
 
-function installedBrowserDiscriminants(schema: z.ZodType): string[] {
+function installedBrowserDiscriminants(schema: unknown): string[] {
   if (schema instanceof z.ZodPipe)
     return installedBrowserDiscriminants(schema.in);
   if (schema instanceof z.ZodUnion)
@@ -260,10 +260,10 @@ describe('pre-refactor browser action baselines', () => {
     expect(observations).toMatchSnapshot();
   });
 
-  it('pins the complete advertised JSON Schema surfaces byte for byte', () => {
-    expect(JSON.stringify(mcpJsonSchema, null, 2)).toMatchSnapshot(
-      'MCP DispatchAction',
-    );
+  it('pins the Advisor advertised JSON Schema surfaces byte for byte', () => {
+    // The complete MCP surface is pinned through actual provider registration
+    // in agent-actions/__tests__/tool-surface-golden.test.ts. Keep the distinct
+    // Advisor hand-authored and SDK-converted surfaces here.
     expect(JSON.stringify(advisorJsonSchema, null, 2)).toMatchSnapshot(
       'Advisor dispatchActionJsonSchema',
     );

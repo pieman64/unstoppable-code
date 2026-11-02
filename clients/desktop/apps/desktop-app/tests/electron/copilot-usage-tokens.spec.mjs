@@ -105,11 +105,13 @@ test('Copilot account quotas appear on the Usage page and refresh after connecti
     await expect(card).toBeVisible();
     await expect(card).toContainText('copilot-fixture');
     await expect(card).toContainText('Premium requests');
-    await expect(card).toContainText('25.0%');
-    await card
-      .getByRole('button', { name: 'Refresh GitHub Copilot usage' })
+    await expect(card).toContainText('25%');
+    // The Usage page has one refresh control, in its heading.
+    await f.window
+      .getByTestId('page-usage')
+      .getByTestId('usage-refresh')
       .click();
-    await expect(card).toContainText('25.0%');
+    await expect(card).toContainText('25%');
     await card.getByTestId('usage-provider-copilot-manage').click();
     await expect(f.window.getByTestId('copilot-connection')).toBeVisible();
     await f.window.getByTestId('copilot-change-account').click();
@@ -140,7 +142,7 @@ test('Copilot quotas follow the active chat and have a pinned Usage panel', asyn
     await f.connect();
     await f.select();
     for (const variant of ['active-chat', 'copilot']) {
-      await f.window.getByTestId('panel-add-panel-group-chat').click();
+      await f.window.getByTestId('panel-add-tab-group-chat').click();
       await f.window.getByTestId('panel-add-menu-usage-submenu').click();
       await f.window
         .getByTestId(`panel-add-menu-item-usage-${variant}`)
@@ -150,7 +152,7 @@ test('Copilot quotas follow the active chat and have a pinned Usage panel', asyn
       );
       await expect(
         usage.getByTestId('usage-provider-card-copilot'),
-      ).toContainText('25.0%');
+      ).toContainText('25%');
       await expect(usage).toContainText('copilot-fixture');
     }
   } finally {

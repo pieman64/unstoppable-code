@@ -106,6 +106,12 @@ describe('App Advisor action catalog', () => {
     'advisor-chat.send_message',
   ] as const;
 
+  function hasReplacedExampleType(value: object): boolean {
+    if (!('type' in value)) return false;
+    const type = Reflect.get(value, 'type');
+    return replacedTypes.some((hidden) => hidden === type);
+  }
+
   it.each(replacedTypes)(
     'hides %s across discovery filters while retaining its catalog adapter',
     (type) => {
@@ -132,9 +138,9 @@ describe('App Advisor action catalog', () => {
           ),
         ).toBe(false);
         for (const action of result.actions) {
-          expect(replacedTypes).not.toContain(action.example.type);
+          expect(hasReplacedExampleType(action.example)).toBe(false);
           for (const example of action.additionalExamples ?? []) {
-            expect(replacedTypes).not.toContain(example.type);
+            expect(hasReplacedExampleType(example)).toBe(false);
           }
         }
       }
@@ -534,6 +540,27 @@ describe('App Advisor action catalog', () => {
         actionType: 'automation.create',
       }).actions.map((entry) => entry.type),
     ).toEqual(['automation.create']);
+  });
+
+  // CAN-4551 7c: a chat automation may be stored as its own workflow.
+  it('tells agents a chat automation may be stored as a workflow it owns', (): void => {
+    const [create] = searchAppAdvisorActions({
+      actionType: 'automation.create',
+    }).actions;
+    const [update] = searchAppAdvisorActions({
+      actionType: 'automation.update',
+    }).actions;
+    expect(create?.notes?.join(' ')).toContain(
+      'worktree_pipeline with target { kind: "global" }',
+    );
+    expect(update?.notes?.join(' ')).toContain('pipeline.update');
+    const chatAction: unknown = expect.objectContaining({
+      type: 'standalone_prompt',
+    });
+    const chatPatch: unknown = expect.objectContaining({ action: chatAction });
+    expect(update?.additionalExamples).toContainEqual(
+      expect.objectContaining({ id: 'chat-automation-1', patch: chatPatch }),
+    );
   });
 
   it('discovers the exact automation creation payload without a query', (): void => {
@@ -3007,6 +3034,9 @@ it.each([
   'turn on free daily credits',
   'daily free AI Credits',
   'stop daily credits',
+  'free daily AI Credits',
+  'turn on free daily AI Credits',
+  'stop free daily AI Credits',
 ])('finds the daily credit drip action for %s', (query: string) => {
   const result = searchAppAdvisorActions({ query });
 
@@ -3016,11 +3046,32 @@ it.each([
         type: 'settings.set_daily_credit_drip',
         category: 'settings',
         requiredFields: ['enabled'],
+        summary:
+          'Turn free daily AI Credits on or off for the connected cloud account.',
       }),
     ]),
   );
   expect(APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES).toEqual(
     expect.arrayContaining(['settings.set_daily_credit_drip']),
+  );
+});
+
+it('describes the free daily AI Credits choice with the current Settings label', () => {
+  const entry = APP_ADVISOR_ACTION_CATALOG.find(
+    (action) => action.type === 'settings.set_daily_credit_drip',
+  );
+
+  expect(entry?.fields).toEqual([
+    expect.objectContaining({
+      name: 'enabled',
+      type: 'boolean',
+      required: true,
+      description:
+        'True to opt in to free daily AI Credits; false to stop them.',
+    }),
+  ]);
+  expect(entry?.notes?.join(' ')).toContain(
+    'the Free daily AI Credits toggle in Settings',
   );
 });
 
@@ -3238,7 +3289,7 @@ it.each(['projects.send_message', 'bots.send_message'] as const)(
     expect(APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES).toContain(type);
     const action = searchAppAdvisorActions({ actionType: type }).actions[0];
     expect(action?.summary).toContain('without');
-    expect(action?.notes.join(' ')).toContain('AcceptedInputReceipt');
+    expect(action?.notes?.join(' ')).toContain('AcceptedInputReceipt');
     expect(action?.optionalFields).toContain('watchers');
   },
 );
@@ -3251,7 +3302,7 @@ it.each(['projects.steer_queued_message', 'projects.schedule_message'])(
     expect(action?.requiredFields).toEqual(
       expect.arrayContaining(['projectId', 'taskId', 'chatId']),
     );
-    expect(action?.notes.join(' ')).toContain('Receipt');
+    expect(action?.notes?.join(' ')).toContain('Receipt');
     expect(action?.fields.map(({ name }) => name)).not.toContain(
       'expectedUiRevision',
     );
@@ -3269,14 +3320,17 @@ it.each([
   expect(action?.requiredFields).toContain(
     type.startsWith('projects.') ? 'projectId' : 'botId',
   );
-  expect(action?.notes.join(' ')).toContain('CreatedTaskChatReceipt');
+  expect(action?.notes?.join(' ')).toContain('CreatedTaskChatReceipt');
   expect(action?.fields.map(({ name }) => name)).not.toContain(
     'expectedUiRevision',
   );
   if (type.endsWith('_chat')) {
     expect(action?.requiredFields).toContain('taskId');
-    expect(action?.notes.join(' ')).toContain('reuse');
+    expect(action?.notes?.join(' ')).toContain('reuse');
   }
-  if (type.startsWith('bots.'))
+  // D6: a bot task may start empty; a chat in an existing task still needs one.
+  if (type === 'bots.create_task_chat')
     expect(action?.requiredFields).toContain('initialMessage');
+  if (type === 'bots.create_task')
+    expect(action?.requiredFields).not.toContain('initialMessage');
 });

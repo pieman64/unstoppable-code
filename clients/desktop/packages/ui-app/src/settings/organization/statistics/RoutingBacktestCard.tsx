@@ -1,5 +1,7 @@
 'use client';
 
+import { useGlidingNumber } from './use-gliding-number';
+
 import {
   lazy,
   Suspense,
@@ -274,7 +276,6 @@ export function RoutingBacktestCard({
             {errorMessage}
           </p>
           <Button
-            variant="outline"
             size="compact"
             onClick={() => {
               setPollFailures(0);
@@ -366,7 +367,6 @@ function RoutingBacktestStart({
           </SettingsLink>
         ) : (
           <Button
-            variant="primary"
             size="compact"
             onClick={onStart}
             disabled={estimate === null || outOfRuns}
@@ -385,50 +385,6 @@ function RoutingBacktestStart({
   );
 }
 
-/** How long the turn counter takes to glide to a new poll's value. */
-const PROGRESS_GLIDE_MS = 900;
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
-}
-
-/**
- * Eases from the value on screen to `target` whenever it changes, so each
- * poll's jump reads as steady progress. Jumps straight there when the
- * viewer prefers reduced motion.
- */
-function useGlidingNumber(target: number): number {
-  const [shown, setShown] = useState(target);
-  const shownRef = useRef(target);
-  useEffect(() => {
-    const origin = shownRef.current;
-    if (origin === target) return;
-    const show = (value: number): void => {
-      shownRef.current = value;
-      setShown(value);
-    };
-    if (prefersReducedMotion()) {
-      show(target);
-      return;
-    }
-    let frame = 0;
-    let startedAt: number | null = null;
-    const step = (now: number): void => {
-      startedAt ??= now;
-      const t = Math.min(1, (now - startedAt) / PROGRESS_GLIDE_MS);
-      show(origin + (target - origin) * (1 - (1 - t) ** 3));
-      if (t < 1) frame = requestAnimationFrame(step);
-    };
-    frame = requestAnimationFrame(step);
-    return (): void => cancelAnimationFrame(frame);
-  }, [target]);
-  return shown;
-}
-
 function RoutingBacktestProgress({
   backtest,
 }: {
@@ -444,7 +400,7 @@ function RoutingBacktestProgress({
   const target =
     stage === 'preparing' ? 0 : Math.min(replayedTurnCount, plannedTurnCount);
   const shown = useGlidingNumber(target);
-  // The bar takes the real value; its own width transition smooths the jump.
+  // The bar takes the real value; its transform-based FLIP smooths the jump.
   const percentage =
     stage === 'preparing' ? 0 : Math.floor((target / plannedTurnCount) * 100);
   return (
@@ -606,12 +562,7 @@ function RoutingBacktestConfirmDialog({
           </p>
         ) : null}
         <div className="flex items-center justify-end gap-2">
-          <Button
-            variant="outline"
-            size="compact"
-            onClick={onCancel}
-            disabled={busy}
-          >
+          <Button size="compact" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
           <Button

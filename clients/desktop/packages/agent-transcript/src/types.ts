@@ -1,9 +1,21 @@
+import type {
+  AutoResumeMetadata,
+  ToolInterruption,
+} from '@canopy/protocol/portal';
+export type {
+  AutoResumeMetadata,
+  AutoResumeReason,
+  ToolInterruption,
+  ToolInterruptionReason,
+} from '@canopy/protocol/portal';
+import type { ApprovalSafetyDeniedInfo } from '@canopy/protocol/approvals';
 import type { OpenCodeReportedUsage } from '@canopy/protocol/portal';
 import type { AgentArtifactReceiptV1 } from '@canopy/protocol/agent-artifacts';
 import type {
   AgentDelegationSnapshot,
   DelegationMessageAuthor,
 } from '@canopy/protocol/delegation';
+import type { PersistedToolOutputReference } from '@canopy/protocol/canopy-core/core';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
 import type { ClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
@@ -19,7 +31,10 @@ import type { CursorReportedUsage } from './lib/cursor-usage';
  * imports from `@canopy/desktop-shared`.
  */
 
-import type { AuthDependencyFailure } from '@canopy/protocol/auth-recovery';
+import type {
+  AuthDependencyFailure,
+  CodexAccountModelAccessFailure,
+} from '@canopy/protocol/auth-recovery';
 import type { ChatWatcherFiredInfo } from '@canopy/protocol/portal';
 export type {
   ChatAgentSentInfo,
@@ -241,6 +256,14 @@ export interface CodexAgentReceiver {
   reasoningEffort?: string;
 }
 
+/** When a Codex child thread's own turns ran, in epoch ms. */
+export interface CodexAgentReceiverTimes {
+  /** Its first turn's start. */
+  startedAt?: number;
+  /** Its latest turn's end; absent while a turn runs. */
+  settledAt?: number;
+}
+
 /**
  * Codex-native persisted block representing a multi-agent collab tool call
  * (`spawnAgent`, `sendInput`, `resumeAgent`, `wait`, `closeAgent`). This is the
@@ -271,7 +294,12 @@ export interface DelegatedAgentCallBlock extends AgentDelegationSnapshot {
    * `chat-log-v1`: the child transcript lives in the parent chat's delegate
    * log, and this card is the run's only row in the parent transcript.
    */
-  transcriptStore?: 'chat-log-v1';
+  transcriptStore?: 'chat-log-v1' | 'chat-stream-v2';
+  /** Descriptor-backed read/display hint only; never durable card state. */
+  streamRevision?: number;
+  /** Format 4 only: complete bodies when `partialText`/`finalText` are previews. */
+  partialTextRef?: PersistedToolOutputReference;
+  finalTextRef?: PersistedToolOutputReference;
 }
 
 export interface CodexAgentCallBlock {
@@ -308,6 +336,8 @@ export interface CodexAgentCallBlock {
    * consumers must fall back to a stable label (e.g. `"Codex"`) when missing.
    */
   receiverAgents?: Record<string, CodexAgentReceiver>;
+  /** Each receiver thread's own turn times, recorded as its turns run. */
+  receiverTimes?: Record<string, CodexAgentReceiverTimes>;
 }
 
 /**
@@ -394,6 +424,11 @@ export type PersistedChatBlock =
   | {
       type: 'text';
       text: string;
+      /**
+       * Format 4 only: the complete body when `text` is its bounded preview.
+       * Published once, when the item is final; absent means `text` is whole.
+       */
+      textRef?: PersistedToolOutputReference;
       /** Correlated additional input; folded steering does not start a turn. */
       steering?: { startsTurn: boolean; rootUserMessageId?: string };
       /** Structured Codex async input request. `text` is its display fallback. */
@@ -432,6 +467,12 @@ export type PersistedChatBlock =
       authFailures?: AuthDependencyFailure[];
       /** Trusted launch-route context; text retains the original diagnostic. */
       errorCode?: ClaudeAiCreditsFallbackErrorCode;
+      /**
+       * The provider refused this turn because the signed-in account cannot
+       * use its model (CAN-4716). Stamped from the trusted terminal event;
+       * text retains the original diagnostic.
+       */
+      modelAccessFailure?: CodexAccountModelAccessFailure;
     }
   | { type: 'file_references'; references: FileReference[] }
   | {
@@ -443,18 +484,26 @@ export type PersistedChatBlock =
       dataUrl?: string;
       alt: string;
     }
-  | { type: 'thinking'; text: string }
+  | {
+      type: 'thinking';
+      text: string;
+      /** See the `text` variant. */
+      textRef?: PersistedToolOutputReference;
+    }
   | {
       type: 'tool_use';
       toolUseId: string;
       /** Provider-accurate values retained for transcript/audit replay. */
       toolName: string;
       input: string;
+      /** Format 4 only: the complete `input` when it holds a bounded preview. */
+      inputRef?: PersistedToolOutputReference;
       /** Optional display projection; never used for tool execution or approval. */
       display?: { toolName: string; input: string };
     }
   | {
       type: 'tool_result';
+      interruption?: ToolInterruption;
       toolUseId: string;
       toolName: string;
       output: string;
@@ -472,6 +521,24 @@ export type PersistedChatBlock =
     }
   | {
       type: 'turn_timer';
+      /** Canonical execution identity; absent on legacy transcript timers. */
+      turnId?: string;
+      /** The canonical execution's anchor; absent when it has no prompt. */
+      userMessageId?: string;
+      /**
+       * What started an autonomous turn: the finished task's ids, or empty
+       * when the provider doesn't name it; `event` when the task reported an
+       * event and keeps running. `toolsLoaded` marks the continuation after
+       * a tools load, which keeps its cause though it shares the prompt's
+       * anchor. Absent on every other turn.
+       */
+      spawnedBy?: {
+        taskId?: string;
+        toolUseId?: string;
+        event?: true;
+        scheduled?: true;
+        toolsLoaded?: true;
+      };
       startedAt?: number;
       pausedAt?: number | null;
       resumedAt?: number | null;
@@ -479,6 +546,29 @@ export type PersistedChatBlock =
       pauseOwnerIds?: string[];
       accumulatedPausedDurationMs?: number;
       completedAt: number | null;
+      /** Canonical exact-execution result; absent means unknown, including legacy timers. */
+      outcome?: 'completed' | 'cancelled' | 'failed';
+    }
+  | {
+      /**
+       * Display only: the head of an autonomous (wake) turn, which
+       * `reorderMessagesForDisplay` builds from the wake's timer. Never
+       * persisted.
+       */
+      type: 'wake_boundary';
+      turnId: string;
+      /** The finished task, from the tool call that started it. */
+      taskLabel?: string;
+      /** The prompt whose turn started the task, when it's in the transcript. */
+      spawningUserMessageId?: string;
+      /** The tool call that started the task, when it's in the transcript. */
+      spawningToolUseId?: string;
+      /** The task reported an event and keeps running, rather than finishing. */
+      taskEvent?: true;
+      /** A scheduled prompt (a cron job) fired; `taskLabel` is its prompt. */
+      scheduled?: true;
+      /** The agent continued after Canopy restarted it to load tools. */
+      toolsLoaded?: true;
     }
   | { type: 'hook_info'; triggerName: string; timestamp: number }
   | { type: 'automation_info'; activityName?: string; timestamp: number }
@@ -535,6 +625,7 @@ export type PersistedChatBlock =
       /** Approval-card titles this one resolution released. */
       titles: string[];
     }
+  | ApprovalSafetyDeniedInfo
   | {
       /**
        * Marker block emitted into the transcript when the user reverts the
@@ -569,15 +660,7 @@ export type PersistedChatBlock =
   | CodexAgentCallBlock
   | DelegatedAgentCallBlock;
 
-export interface PersistedToolOutputReference {
-  version: 1;
-  artifactId: string;
-  byteLength: number;
-  sha256: string;
-  /** UTF-16LE preserves rare unpaired code units that UTF-8 would replace. */
-  encoding: 'utf-8' | 'utf-16le';
-  mediaType: 'text/plain';
-}
+export type { PersistedToolOutputReference };
 
 export interface PersistedVisualReference {
   version: 1;
@@ -597,6 +680,7 @@ export interface PersistedVisualReference {
 
 export type PersistedUserMessageSource =
   | 'human'
+  | 'auto_resume'
   | 'agent'
   | 'hook'
   | 'watcher'
@@ -611,6 +695,7 @@ export interface PersistedChatMessage {
   blocks: PersistedChatBlock[];
   timestamp: number;
   userMessageSource?: PersistedUserMessageSource;
+  autoResume?: AutoResumeMetadata;
   /**
    * Public sender attribution for a user message another agent sent: a Canopy
    * chat, or an external MCP agent set only from a validated Portal command
@@ -635,6 +720,11 @@ export interface PersistedChatMessage {
   delegationSequence?: number;
   delegationAuthor?: DelegationMessageAuthor;
   delegationDelivery?: 'follow_up' | 'steer';
+  /**
+   * Stream-backed child rows only: the native provider segment (turn or
+   * message) that produced the item. Part of the row's identity digest.
+   */
+  delegationSegment?: string;
   /**
    * Codex thread id that produced this message. Forwarded from the Codex
    * protocol's `threadId` field so the renderer can group subagent output by
@@ -673,6 +763,25 @@ export interface PersistedChatMessage {
    * provider; callers must treat it as optional.
    */
   claudeUuid?: string;
+  /**
+   * Format 4 only: the row's block list lives in block pages and `blocks` is
+   * empty. Present only on a final row whose references-only form still
+   * exceeds the 16 MiB row guard.
+   */
+  blocksRef?: TranscriptBlocksReference;
+  /**
+   * Child page reads only, never stored: the row's blocks exceed the page's
+   * byte budget, so `blocks` is empty and its `blockCount` logical blocks are
+   * read by block page.
+   */
+  blocksOmitted?: { blockCount: number };
+}
+
+/** A paged row's root block manifest and its logical block count. */
+export interface TranscriptBlocksReference {
+  version: 1;
+  manifest: PersistedToolOutputReference;
+  blockCount: number;
 }
 
 /** Host-only orchestration messages never cross display or publication seams. */

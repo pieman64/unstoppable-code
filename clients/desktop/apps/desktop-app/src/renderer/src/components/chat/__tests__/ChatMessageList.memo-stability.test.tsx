@@ -11,7 +11,11 @@
 import { TextEncoder as NodeTextEncoder } from 'node:util';
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { CanopyClientProvider } from '@canopy/app-state';
 import type * as ReactNamespace from 'react';
+import type { ToolOutputReader } from '@canopy/ui-app';
+import type * as UiApp from '@canopy/ui-app';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import type { TranscriptTurnSummary } from '@canopy/agent-transcript/transcript-storage';
 import { computeTurnSummary } from '@canopy/desktop-shared/lib/turn-utils';
 import { ChatMessageList } from '../ChatMessageList';
@@ -23,6 +27,7 @@ const mockRenderCounts: Record<string, number> = {};
 const mockLoadHistoryCalls: string[] = [];
 const mockArtifactProps: Record<string, readonly unknown[] | undefined> = {};
 const mockAllowRemoteImages: Record<string, boolean | undefined> = {};
+let mockOutputReader: ToolOutputReader | null = null;
 
 jest.mock('@/stores/chatStore', () => {
   const mockState = (): unknown => ({
@@ -77,6 +82,8 @@ jest.mock('@/stores/fileListStore', () => ({
 jest.mock('../ForkedFromLink', () => ({ ForkedFromLink: (): null => null }));
 jest.mock('../TurnGroupRenderer', () => {
   const react = jest.requireActual<typeof ReactNamespace>('react');
+  const { ToolOutputReaderContext } =
+    jest.requireActual<typeof UiApp>('@canopy/ui-app');
   const { ChatMarkdownFileTargetContext } = jest.requireActual<{
     ChatMarkdownFileTargetContext: ReactNamespace.Context<
       { allowRemoteImages?: boolean } | undefined
@@ -87,16 +94,17 @@ jest.mock('../TurnGroupRenderer', () => {
   const TurnGroupRenderer = react.memo(function TurnGroupRenderer({
     group,
     onLoadHistory,
-    agentArtifacts,
+    completedAgentArtifacts,
   }: {
     group: { userMessage: { id: string } };
     onLoadHistory?: (userMessageId: string) => void | Promise<void>;
-    agentArtifacts?: readonly unknown[];
+    completedAgentArtifacts?: readonly unknown[];
   }): JSX.Element {
     const markdownTarget = react.useContext(ChatMarkdownFileTargetContext);
+    mockOutputReader = react.useContext(ToolOutputReaderContext);
     mockRenderCounts[group.userMessage.id] =
       (mockRenderCounts[group.userMessage.id] ?? 0) + 1;
-    mockArtifactProps[group.userMessage.id] = agentArtifacts;
+    mockArtifactProps[group.userMessage.id] = completedAgentArtifacts;
     mockAllowRemoteImages[group.userMessage.id] =
       markdownTarget?.allowRemoteImages;
     return react.createElement('button', {
@@ -113,9 +121,6 @@ jest.mock('../TurnGroupRenderer', () => {
 jest.mock('../ChatMessageItem', () => ({ ChatMessageItem: (): null => null }));
 jest.mock('../QueuedMessageBubble', () => ({
   QueuedMessageBubble: (): null => null,
-}));
-jest.mock('../QueuedMessageEditor', () => ({
-  QueuedMessageEditor: (): null => null,
 }));
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
@@ -252,29 +257,32 @@ function renderList(
 ): {
   root: Root;
   host: HTMLDivElement;
-  rerender: (next: ChatMessage[]) => void;
+  rerender: (next: ChatMessage[], waitingForApproval?: boolean) => void;
 } {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
   mountedRoots.push(root);
-  const render = (rows: ChatMessage[]): void => {
+  const render = (rows: ChatMessage[], waitingForApproval = false): void => {
     act(() => {
       root.render(
-        <ChatMessageList
-          messages={rows}
-          queuedMessages={[]}
-          chatId={mockChatId}
-          transcriptTurns={transcriptTurns}
-          onLoadTurn={onLoadTurn}
-          targetOverride={{
-            projectId: 'project-memo',
-            worktreeId: 'worktree-memo',
-            chatId: mockChatId,
-            allowRemoteImages: options.allowRemoteImages,
-          }}
-          onClearQueuedMessage={(): void => undefined}
-        />,
+        <CanopyClientProvider client={ipcCanopyClient}>
+          <ChatMessageList
+            messages={rows}
+            queuedMessages={[]}
+            chatId={mockChatId}
+            waitingForApproval={waitingForApproval}
+            transcriptTurns={transcriptTurns}
+            onLoadTurn={onLoadTurn}
+            targetOverride={{
+              projectId: 'project-memo',
+              worktreeId: 'worktree-memo',
+              chatId: mockChatId,
+              allowRemoteImages: options.allowRemoteImages,
+            }}
+            onClearQueuedMessage={(): void => undefined}
+          />
+        </CanopyClientProvider>,
       );
     });
   };
@@ -283,6 +291,7 @@ function renderList(
 }
 
 beforeEach(() => {
+  mockOutputReader = null;
   globalThis.ResizeObserver = TestResizeObserver;
   for (const key of Object.keys(mockRenderCounts)) delete mockRenderCounts[key];
   for (const key of Object.keys(mockArtifactProps)) {
@@ -303,6 +312,86 @@ afterEach(() => {
 });
 
 describe('ChatMessageList memo stability', () => {
+  it('keeps primary reference reads on the legacy API and rejects row identities before dispatch', async () => {
+    const oldApi = Object.getOwnPropertyDescriptor(window, 'api');
+    const oldUuid = Object.getOwnPropertyDescriptor(
+      globalThis.crypto,
+      'randomUUID',
+    );
+    const readToolOutput = jest
+      .fn()
+      .mockResolvedValue({ text: 'primary body', byteLength: 12 });
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        chat: {
+          readToolOutput,
+          cancelToolOutput: jest.fn().mockResolvedValue(undefined),
+        },
+      },
+    });
+    Object.defineProperty(globalThis.crypto, 'randomUUID', {
+      configurable: true,
+      value: (): string => 'request-1',
+    });
+    try {
+      renderList(transcript('Third'));
+      const reader = mockOutputReader;
+      if (!reader) throw new Error('Missing primary reader');
+      const reference = {
+        version: 1 as const,
+        artifactId: `sha256-v1-${'a'.repeat(64)}`,
+        sha256: 'a'.repeat(64),
+        byteLength: 100000,
+        encoding: 'utf-8' as const,
+        mediaType: 'text/plain' as const,
+      };
+      await expect(
+        reader(
+          {
+            kind: 'reference',
+            messageId: 'stored-message',
+            toolUseId: 'tool-1',
+            reference,
+          },
+          65536,
+          new AbortController().signal,
+        ),
+      ).resolves.toEqual({ text: 'primary body', byteLength: 12 });
+      expect(readToolOutput).toHaveBeenCalledWith({
+        projectId: 'project-memo',
+        worktreeId: 'worktree-memo',
+        chatId: mockChatId,
+        messageId: 'stored-message',
+        toolUseId: 'tool-1',
+        reference,
+        requestId: 'request-1',
+        offset: 65536,
+        limit: 65536,
+        archivedContainerId: undefined,
+        standaloneHistory: undefined,
+      });
+      await expect(
+        reader(
+          {
+            kind: 'row',
+            messageId: 'stored-message',
+            blockOrdinal: 2,
+            field: 'output',
+          },
+          0,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("Couldn't load full output in this view.");
+      expect(readToolOutput).toHaveBeenCalledTimes(1);
+    } finally {
+      if (oldApi) Object.defineProperty(window, 'api', oldApi);
+      else Reflect.deleteProperty(window, 'api');
+      if (oldUuid)
+        Object.defineProperty(globalThis.crypto, 'randomUUID', oldUuid);
+      else Reflect.deleteProperty(globalThis.crypto, 'randomUUID');
+    }
+  });
   it('preserves the remote-image policy while memoizing a transcript target', () => {
     renderList(transcript('Third'), { allowRemoteImages: false });
 
@@ -324,7 +413,23 @@ describe('ChatMessageList memo stability', () => {
     expect(mockRenderCounts['user-3']).toBeGreaterThanOrEqual(3);
   });
 
-  it('hands completed turns the same agentArtifacts identity across streaming deltas', () => {
+  it('changes approval waiting only on the latest group, retaining historical memo props (CAN-4996)', () => {
+    const messages = transcript('Third');
+    const { rerender } = renderList(messages);
+    const first = mockRenderCounts['user-1'];
+    const second = mockRenderCounts['user-2'];
+    const active = mockRenderCounts['user-3'];
+    rerender(messages, true);
+    expect(mockRenderCounts['user-3']).toBe(active + 1);
+    rerender(messages, true);
+    expect(mockRenderCounts['user-3']).toBe(active + 1);
+    rerender(messages, false);
+    expect(mockRenderCounts['user-3']).toBe(active + 2);
+    expect(mockRenderCounts['user-1']).toBe(first);
+    expect(mockRenderCounts['user-2']).toBe(second);
+  });
+
+  it('hands completed turns the same completedAgentArtifacts identity across streaming deltas', () => {
     const { rerender } = renderList(transcript('Third'));
     const firstArtifacts = mockArtifactProps['user-1'];
     const secondArtifacts = mockArtifactProps['user-2'];

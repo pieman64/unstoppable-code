@@ -44,6 +44,15 @@ function viewModel(): ReturnType<typeof store>['layouts'][string]['viewModel'] {
   return store().layouts[WORKTREE_KEY].viewModel;
 }
 
+/** Adds a second chat tab to group-a so tab cycling is available. */
+function addSecondChatTab(): void {
+  store().addTab(WORKTREE_KEY, 'group-a', 'chat', {
+    panelId: 'panel-a2',
+    instance: { chatTabId: 'chat-a2' },
+    activate: false,
+  });
+}
+
 function buildForCurrentLayout(): PaletteCommand[] {
   return buildPanelCommands(
     SELECTION,
@@ -81,8 +90,9 @@ describe('buildPanelCommands listing', () => {
     ]);
   });
 
-  test('lists every panel command for a multi-group layout, with definitions', () => {
+  test('lists every panel command for a multi-group, multi-tab layout, with definitions', () => {
     store().initializeLayout(WORKTREE_KEY, TWO_GROUPS);
+    addSecondChatTab();
 
     const commands = buildForCurrentLayout();
     expect(commands.map((command) => command.commandKey).sort()).toEqual(
@@ -115,6 +125,45 @@ describe('buildPanelCommands execution', () => {
     });
     expect(useNavigationStore.getState().activePage).toBe('main');
     expect(viewModel().groups).toHaveLength(3);
+  });
+
+  test('selects the next tab of the active group once it has two tabs', async () => {
+    store().initializeLayout(WORKTREE_KEY, TWO_GROUPS);
+    const unlisted = buildForCurrentLayout().map(
+      (command) => command.commandKey,
+    );
+    expect(unlisted).not.toContain('panel-select-next-tab');
+    expect(unlisted).not.toContain('panel-select-previous-tab');
+
+    addSecondChatTab();
+    const next = buildForCurrentLayout().find(
+      (command) => command.commandKey === 'panel-select-next-tab',
+    );
+    expect(next).toBeDefined();
+
+    await expect(Promise.resolve(next?.execute())).resolves.toEqual({
+      closePalette: true,
+    });
+    const groupA = viewModel().groups.find(
+      (group) => group.groupId === 'group-a',
+    );
+    expect(groupA?.activePanelId).toBe('panel-a2');
+  });
+
+  test('explains that tab cycling needs two tabs once the group shrinks', async () => {
+    store().initializeLayout(WORKTREE_KEY, TWO_GROUPS);
+    addSecondChatTab();
+    const previous = buildForCurrentLayout().find(
+      (command) => command.commandKey === 'panel-select-previous-tab',
+    );
+    expect(previous).toBeDefined();
+
+    store().closeTab(WORKTREE_KEY, 'group-a', 'panel-a2');
+
+    await expect(Promise.resolve(previous?.execute())).resolves.toEqual({
+      closePalette: false,
+      error: 'Open a panel group with at least two tabs to switch tabs.',
+    });
   });
 
   test('reports unavailability instead of closing when the selection is gone', async () => {

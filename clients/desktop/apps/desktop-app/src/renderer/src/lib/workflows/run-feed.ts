@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type {
   AppAdvisorWatcherSummary,
   AutomationAction,
@@ -7,6 +8,7 @@ import type {
 import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import { compactPipelineStatusReasonLabel } from '@canopy/ui-shared/lib';
 import {
+  NO_PROJECT_LABEL,
   normalizeAutomationRunStatus,
   sortWorkflowRunRows,
   workflowRunStatusFromPipeline,
@@ -21,6 +23,7 @@ import {
   type WorkflowWatcherRunRow,
   type WorkflowWatcherState,
 } from '@canopy/ui-app/workflows';
+import { resolveAutomationPipelineTarget } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 
 /**
  * The desktop Runs feed (CAN-3981): one projection over the stores the
@@ -89,6 +92,11 @@ export interface RunFeedInput {
     run: ScheduledActivityRun,
     activity: ScheduledActivity | undefined,
   ) => WorkflowRunResult;
+  /**
+   * Whether an automation run's result names a chat (CAN-5381): a pipeline
+   * run records the chat it sent to once its execution ends.
+   */
+  readonly automationRunOpensChat?: (run: ScheduledActivityRun) => boolean;
   readonly names: RunFeedNames;
 }
 
@@ -140,12 +148,42 @@ function executionStarter(execution: ExecutionSummary): WorkflowRunStarter {
   }
 }
 
+/** Where a pipeline automation with no project runs. */
+const PIPELINE_NO_PROJECT_LABEL = 'No project';
+/** A stored pipeline destination the validator would reject. */
+const PIPELINE_DESTINATION_UNAVAILABLE_LABEL = 'Unavailable destination';
+
 function joinWhere(
   project: string | undefined,
   place: string | undefined,
 ): string | undefined {
   if (project && place) return `${project} · ${place}`;
   return project ?? place;
+}
+
+function pipelineAutomationWhere(
+  action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+  names: RunFeedNames,
+): string | undefined {
+  const destination = resolveAutomationPipelineTarget(action);
+  // Stored data the validator rejects keeps its row; nothing picks a
+  // fallback project for it.
+  if (!destination) return PIPELINE_DESTINATION_UNAVAILABLE_LABEL;
+  switch (destination.kind) {
+    case 'global':
+      return PIPELINE_NO_PROJECT_LABEL;
+    case 'project':
+      return names.project(destination.workspaceId);
+    case 'task':
+      // A Work Entry or removed worktree has no name here; never show its ID.
+      return joinWhere(
+        names.project(destination.workspaceId),
+        names.worktree(destination.workspaceId, destination.taskId) ??
+          'existing task',
+      );
+    case 'new_worktree':
+      return joinWhere(names.project(destination.workspaceId), 'new worktree');
+  }
 }
 
 function automationRunWhere(
@@ -159,7 +197,7 @@ function automationRunWhere(
   }
   switch (action.type) {
     case 'app_advisor_prompt':
-      return 'App Advisor';
+      return ORCHESTRATOR_LABEL;
     case 'standalone_prompt':
       return joinWhere(names.project(action.chatProjectId), 'new chat');
     case 'worktree_prompt':
@@ -177,7 +215,7 @@ function automationRunWhere(
           action.chatTitle,
       );
     case 'worktree_pipeline':
-      return joinWhere(names.project(action.workspaceId), 'new worktree');
+      return pipelineAutomationWhere(action, names);
     case 'pipeline_execution_resume':
       return action.projectId ? names.project(action.projectId) : undefined;
   }
@@ -194,16 +232,16 @@ interface ActionPhrases {
 function deletedAutomationPhrases(run: ScheduledActivityRun): ActionPhrases {
   if (run.result?.pipelineExecutionId) {
     return {
-      running: 'Running a pipeline',
-      done: 'Ran a pipeline',
-      failed: 'The pipeline failed',
+      running: 'Running a workflow',
+      done: 'Ran a workflow',
+      failed: 'The workflow failed',
     };
   }
   if (run.result?.appAdvisorChatId) {
     return {
-      running: 'Asking App Advisor',
-      done: 'Asked App Advisor',
-      failed: 'Could not ask App Advisor',
+      running: `Asking ${ORCHESTRATOR_LABEL}`,
+      done: `Asked ${ORCHESTRATOR_LABEL}`,
+      failed: `Could not ask ${ORCHESTRATOR_LABEL}`,
     };
   }
   return {
@@ -220,9 +258,9 @@ function automationActionPhrases(
   switch (action.type) {
     case 'app_advisor_prompt':
       return {
-        running: 'Asking App Advisor',
-        done: 'Asked App Advisor',
-        failed: 'Could not ask App Advisor',
+        running: `Asking ${ORCHESTRATOR_LABEL}`,
+        done: `Asked ${ORCHESTRATOR_LABEL}`,
+        failed: `Could not ask ${ORCHESTRATOR_LABEL}`,
       };
     case 'standalone_prompt':
     case 'worktree_prompt': {
@@ -252,16 +290,16 @@ function automationActionPhrases(
     case 'worktree_pipeline': {
       const name = action.pipelineName ?? action.pipelineId;
       return {
-        running: `Running pipeline ${name}`,
-        done: `Pipeline ${name} finished`,
-        failed: `Pipeline ${name} failed`,
+        running: `Running workflow ${name}`,
+        done: `Workflow ${name} finished`,
+        failed: `Workflow ${name} failed`,
       };
     }
     case 'pipeline_execution_resume':
       return {
-        running: `Resuming pipeline ${action.pipelineName}`,
-        done: `Resumed pipeline ${action.pipelineName}`,
-        failed: `Could not resume pipeline ${action.pipelineName}`,
+        running: `Resuming workflow ${action.pipelineName}`,
+        done: `Resumed workflow ${action.pipelineName}`,
+        failed: `Could not resume workflow ${action.pipelineName}`,
       };
   }
 }
@@ -444,6 +482,10 @@ function buildAutomationRow(
             .filter((action) => action !== 'hide')
         : [],
       run.cancellable === true && run.status === 'running' ? ['cancel'] : [],
+      // The row opens its execution, so the chat it sent to is an action.
+      execution && input.automationRunOpensChat?.(run) === true
+        ? ['go-to-chat']
+        : [],
       activity ? ['open-library'] : [],
     ),
     ...(activity ? { libraryRowKey: automationLibraryKey(activity.id) } : {}),
@@ -460,9 +502,12 @@ function buildPipelineRow(
   execution: ExecutionSummary,
   input: RunFeedInput,
 ): WorkflowPipelineRunRow {
-  const project = execution.project_id
-    ? input.names.project(execution.project_id)
-    : undefined;
+  // A run with no project says so; a recorded project that is gone keeps the
+  // missing-project rendering.
+  const project =
+    execution.project_id === undefined
+      ? NO_PROJECT_LABEL
+      : input.names.project(execution.project_id);
   const worktree =
     execution.project_id && execution.worktree_id
       ? input.names.worktree(execution.project_id, execution.worktree_id)

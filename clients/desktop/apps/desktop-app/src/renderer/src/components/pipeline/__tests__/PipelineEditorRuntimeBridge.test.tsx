@@ -432,7 +432,7 @@ describe('PipelineEditorRuntimeBridge', () => {
     await harness.emit({ requestId: 'save-shared', kind: 'save' });
 
     const expectedNote =
-      'People using this pipeline in their automations will need to approve your changes before they run again.';
+      'People using this workflow in their automations will need to approve your changes before they run again.';
     expect(getToolResponseAt(harness.completeToolRequestMock, 0)).toMatchObject(
       { requestId: 'sy-shared', ok: true, note: expectedNote },
     );

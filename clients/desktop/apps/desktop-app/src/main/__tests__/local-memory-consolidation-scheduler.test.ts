@@ -11,15 +11,25 @@ const mockSessions: Array<{
 }> = [];
 let mockActivityListener: (() => void) | null = null;
 const mockIsE2eBuild = jest.fn<boolean, []>(() => false);
-const mockReadPreferencesFile = jest.fn(() =>
-  Promise.resolve({
+function preferencesFixture(
+  overrides: Partial<PreferencesData> = {},
+): PreferencesData {
+  const preferences: Partial<PreferencesData> = {
     localMemoryEnabled: true,
     localMemoryModel: 'claude-haiku-4-5-20251001',
     localMemoryThinkingLevel: 'off',
-    providerModelConfigDefaults: undefined,
-  }),
+    ...overrides,
+  };
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as PreferencesData;
+}
+const mockReadPreferencesFile = jest.fn<Promise<PreferencesData>, []>(() =>
+  Promise.resolve(preferencesFixture()),
 );
-const mockCollectConsolidationInput = jest.fn(() =>
+const mockCollectConsolidationInput = jest.fn<
+  Promise<ConsolidationInput>,
+  [scopeDir: string]
+>(() =>
   Promise.resolve({
     memoryMd: '# Index',
     topicFiles: [],
@@ -29,6 +39,7 @@ const mockCollectConsolidationInput = jest.fn(() =>
         fileKey: 'inbox/note.md',
         filename: 'note.md',
         content: 'remember this',
+        modifiedAt: '2026-08-05T10:00:00.000Z',
         usage: {
           usageCount: 0,
           lastUsedAt: null,
@@ -41,16 +52,25 @@ const mockCollectConsolidationInput = jest.fn(() =>
     usageTrackingSince: null,
   }),
 );
-const mockRunLocalMemoryConsolidation = jest.fn(() =>
+const mockRunLocalMemoryConsolidation = jest.fn<
+  Promise<RunConsolidationResult>,
+  [options: unknown]
+>(() =>
   Promise.resolve({ status: 'success' as const, inputHash: 'a'.repeat(64) }),
 );
-const mockReadConsolidationState = jest.fn(() => Promise.resolve(null));
-const mockWriteConsolidationState = jest.fn(() => Promise.resolve());
+const mockReadConsolidationState = jest.fn<
+  Promise<ConsolidationState | null>,
+  [scopeDir: string]
+>(() => Promise.resolve(null));
+const mockWriteConsolidationState = jest.fn<
+  Promise<void>,
+  [scopeDir: string, outcome: ConsolidationRunOutcome]
+>(() => Promise.resolve());
 const mockBroadcastLocalMemoryChanged = jest.fn();
-const mockEnqueueBackgroundHelperTask = jest.fn(
-  async (options: { task: () => Promise<void> }): Promise<void> =>
-    options.task(),
-);
+const mockEnqueueBackgroundHelperTask = jest.fn<
+  Promise<void>,
+  [options: { priority: number; task: () => Promise<void> }]
+>((options) => options.task());
 const mockIsLocalMemoryModelBlockedByPolicy = jest.fn<
   Promise<boolean>,
   [string, string | undefined]
@@ -129,7 +149,7 @@ jest.mock('../memory/local/consolidation-state', () => ({
   // the existing write assertions observe those calls.
   recordConsolidationRun: (
     scopeDir: string,
-    outcome: unknown,
+    outcome: ConsolidationRunOutcome,
   ): ReturnType<typeof mockWriteConsolidationState> =>
     mockWriteConsolidationState(scopeDir, outcome),
   consolidationRunOutcome: (result: {
@@ -151,10 +171,19 @@ jest.mock('../memory/local/change-events', () => ({
 }));
 
 import { initClaudeModels } from '@canopy/desktop-shared/types';
+import type { PreferencesData } from '@canopy/desktop-shared/types';
 import {
   LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE,
   LOCAL_MEMORY_MODEL_UNAVAILABLE_MESSAGE,
 } from '@canopy/desktop-shared/types/local-memory';
+import type {
+  ConsolidationInput,
+  RunConsolidationResult,
+} from '../memory/local/consolidation-task';
+import type {
+  ConsolidationRunOutcome,
+  ConsolidationState,
+} from '../memory/local/consolidation-state';
 import {
   beginLocalMemoryConsolidationRun,
   endLocalMemoryConsolidationRun,
@@ -230,12 +259,7 @@ describe('local memory consolidation scheduler', () => {
     localMemoryConsolidationRunTrackerTestExports.reset();
     mockSessions.splice(0, mockSessions.length, activeSession(true));
     mockIsE2eBuild.mockReturnValue(false);
-    mockReadPreferencesFile.mockResolvedValue({
-      localMemoryEnabled: true,
-      localMemoryModel: 'claude-haiku-4-5-20251001',
-      localMemoryThinkingLevel: 'off',
-      providerModelConfigDefaults: undefined,
-    });
+    mockReadPreferencesFile.mockResolvedValue(preferencesFixture());
     mockCollectConsolidationInput.mockResolvedValue({
       memoryMd: '# Index',
       topicFiles: [],
@@ -245,6 +269,7 @@ describe('local memory consolidation scheduler', () => {
           fileKey: 'inbox/note.md',
           filename: 'note.md',
           content: 'remember this',
+          modifiedAt: '2026-08-05T10:00:00.000Z',
           usage: {
             usageCount: 0,
             lastUsedAt: null,
@@ -274,12 +299,11 @@ describe('local memory consolidation scheduler', () => {
   });
 
   it('debounces an active-to-idle transition and stamps both dirty scopes', async () => {
-    mockReadPreferencesFile.mockResolvedValue({
-      localMemoryEnabled: true,
-      localMemoryModel: 'claude-haiku-4-5-20251001',
-      localMemoryThinkingLevel: 'off',
-      providerModelConfigDefaults: { claude: { thinkingLevel: 'low' } },
-    });
+    mockReadPreferencesFile.mockResolvedValue(
+      preferencesFixture({
+        providerModelConfigDefaults: { claude: { thinkingLevel: 'low' } },
+      }),
+    );
     startLocalMemoryConsolidationScheduler();
     await emitTurnIdle();
 
@@ -344,12 +368,9 @@ describe('local memory consolidation scheduler', () => {
 
   it('skips with a visible reason and never runs another model when the chosen model is unavailable', async () => {
     mockSessions.splice(0, mockSessions.length);
-    mockReadPreferencesFile.mockResolvedValue({
-      localMemoryEnabled: true,
-      localMemoryModel: 'ollama-offline-model',
-      localMemoryThinkingLevel: 'off',
-      providerModelConfigDefaults: undefined,
-    });
+    mockReadPreferencesFile.mockResolvedValue(
+      preferencesFixture({ localMemoryModel: 'ollama-offline-model' }),
+    );
     startLocalMemoryConsolidationScheduler();
     await localMemoryConsolidationSchedulerTestExports.attemptScopeConsolidation(
       { scopeDir: '/memory/user' },
@@ -440,12 +461,9 @@ describe('local memory consolidation scheduler', () => {
 
     it('runs with the model chosen meanwhile', async () => {
       const queued = await queueUserScope();
-      mockReadPreferencesFile.mockResolvedValue({
-        localMemoryEnabled: true,
-        localMemoryModel: 'claude-sonnet-4-6',
-        localMemoryThinkingLevel: 'off',
-        providerModelConfigDefaults: undefined,
-      });
+      mockReadPreferencesFile.mockResolvedValue(
+        preferencesFixture({ localMemoryModel: 'claude-sonnet-4-6' }),
+      );
 
       await queued();
 
@@ -457,12 +475,9 @@ describe('local memory consolidation scheduler', () => {
 
     it('skips without running another model when the new choice cannot run', async () => {
       const queued = await queueUserScope();
-      mockReadPreferencesFile.mockResolvedValue({
-        localMemoryEnabled: true,
-        localMemoryModel: 'ollama-offline-model',
-        localMemoryThinkingLevel: 'off',
-        providerModelConfigDefaults: undefined,
-      });
+      mockReadPreferencesFile.mockResolvedValue(
+        preferencesFixture({ localMemoryModel: 'ollama-offline-model' }),
+      );
 
       await queued();
 
@@ -600,6 +615,7 @@ describe('local memory consolidation scheduler', () => {
       inboxFiles: [],
       inputHash: 'b'.repeat(64),
       indexWithinLimits: true,
+      usageTrackingSince: null,
     });
     startLocalMemoryConsolidationScheduler();
     await emitTurnIdle();
@@ -680,6 +696,7 @@ describe('local memory consolidation scheduler', () => {
           fileKey: 'inbox/note.md',
           filename: 'note.md',
           content: 'remember this',
+          modifiedAt: '2026-08-05T10:00:00.000Z',
           usage: {
             usageCount: 0,
             lastUsedAt: null,
@@ -797,6 +814,7 @@ describe('local memory consolidation scheduler', () => {
           fileKey: 'inbox/note.md',
           filename: 'note.md',
           content: 'remember this',
+          modifiedAt: '2026-08-05T10:00:00.000Z',
           usage: {
             usageCount: 0,
             lastUsedAt: null,
@@ -971,10 +989,17 @@ describe('local memory consolidation scheduler', () => {
             fileKey: 'inbox/note.md',
             filename: 'note.md',
             content: 'remember this',
+            modifiedAt: '2026-08-05T10:00:00.000Z',
+            usage: {
+              usageCount: 0,
+              lastUsedAt: null,
+              createdAt: '2026-08-05T10:00:00.000Z',
+            },
           },
         ],
         inputHash: 'a'.repeat(64),
         indexWithinLimits: true,
+        usageTrackingSince: null,
       };
     });
 
@@ -1016,12 +1041,7 @@ describe('local memory consolidation scheduler', () => {
         await flushMicrotasks();
         emittingActivity = false;
       }
-      return {
-        localMemoryEnabled: true,
-        localMemoryModel: 'claude-haiku-4-5-20251001',
-        localMemoryThinkingLevel: 'off',
-        providerModelConfigDefaults: undefined,
-      };
+      return preferencesFixture();
     });
 
     await localMemoryConsolidationSchedulerTestExports.attemptScopeConsolidation(
@@ -1040,12 +1060,9 @@ describe('local memory consolidation scheduler', () => {
   it('does not write when the preference is toggled off while queued', async () => {
     startLocalMemoryConsolidationScheduler();
     await emitTurnIdle();
-    mockReadPreferencesFile.mockResolvedValue({
-      localMemoryEnabled: false,
-      localMemoryModel: 'claude-haiku-4-5-20251001',
-      localMemoryThinkingLevel: 'off',
-      providerModelConfigDefaults: undefined,
-    });
+    mockReadPreferencesFile.mockResolvedValue(
+      preferencesFixture({ localMemoryEnabled: false }),
+    );
     await jest.advanceTimersByTimeAsync(LOCAL_MEMORY_CONSOLIDATION_DEBOUNCE_MS);
     await settle();
 

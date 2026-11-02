@@ -10,13 +10,14 @@ import type {
 } from '@canopy/protocol/installed-items';
 import {
   installedItemTargetKey,
-  INSTALLED_ITEM_STATUS_COPY,
+  installedItemStatusDescription,
   type InstalledEntryStatusState,
   type InstalledItemMutationOutcome,
 } from '../lib/installed-item-status';
-import { MoreHorizontalIcon } from '../icons/AppIcons';
+import { MoreHorizontalIcon, TrashIcon } from '../icons/AppIcons';
 import { Button } from './Button';
 import { DetailPageActions } from './DetailActionBar';
+import { DetailMoreMenuRows, useDetailMoreItems } from './DetailMoreMenu';
 import { DropdownMenuItem } from './DropdownMenu';
 import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
 import {
@@ -91,6 +92,15 @@ export function InstalledItemStatusControl({
         testId={testId ? `${testId}-unavailable` : undefined}
       />
     );
+  if (state.kind === 'fixed')
+    return (
+      <InstalledItemStatusPicker
+        itemName={itemName}
+        status={state.status}
+        disabledReason={state.reason}
+        testId={testId}
+      />
+    );
   const { item } = state;
   if (item.status === null)
     return item.notices.some((notice) => notice.code === 'partial_removal') ? (
@@ -106,6 +116,7 @@ export function InstalledItemStatusControl({
     <InstalledItemStatusPicker
       itemName={itemName}
       status={item.status}
+      targetKind={target.kind}
       retryCurrent={item.notices.some((notice) => notice.retryable)}
       busy={pendingKeys.has(installedItemTargetKey(target))}
       testId={testId}
@@ -151,7 +162,7 @@ function NoticeLines({
 
 /**
  * The ⋯ More menu an installed item's detail declares into its action bar,
- * with Uninstall as its destructive row.
+ * with the host's rows first and Uninstall as its destructive row, last.
  */
 function InstalledItemMoreMenu({
   itemName,
@@ -168,13 +179,15 @@ function InstalledItemMoreMenu({
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const menuId = useId();
+  // A host's own rows (a plugin's Update) join this menu, above Uninstall.
+  const hostItems = useDetailMoreItems();
   return (
     <>
       <span ref={anchorRef} className="inline-flex">
         <Tooltip label="More actions">
           <Button
             variant="secondary"
-            size="control"
+            size="compact"
             iconOnly
             aria-label={`More actions for ${itemName}`}
             aria-haspopup="menu"
@@ -197,19 +210,39 @@ function InstalledItemMoreMenu({
         interaction="menu"
         aria-label={`Actions for ${itemName}`}
         data-testid={`${testId}-menu`}
-        className="min-w-44"
+        className="min-w-44 max-w-64"
       >
-        <DropdownMenuItem
-          tone="destructive"
-          disabled={disabled}
-          data-testid={`${testId}-uninstall`}
-          onClick={(): void => {
-            setOpen(false);
-            onUninstall();
-          }}
-        >
-          Uninstall…
-        </DropdownMenuItem>
+        {hostItems.length > 0 ? (
+          // With host rows, Uninstall joins them in one row style, last
+          // below a divider.
+          <DetailMoreMenuRows
+            items={[
+              ...hostItems,
+              {
+                id: 'uninstall',
+                label: 'Uninstall…',
+                icon: <TrashIcon />,
+                testId: `${testId}-uninstall`,
+                onSelect: onUninstall,
+                disabled,
+                destructive: true,
+              },
+            ]}
+            onClose={(): void => setOpen(false)}
+          />
+        ) : (
+          <DropdownMenuItem
+            tone="destructive"
+            disabled={disabled}
+            data-testid={`${testId}-uninstall`}
+            onClick={(): void => {
+              setOpen(false);
+              onUninstall();
+            }}
+          >
+            Uninstall…
+          </DropdownMenuItem>
+        )}
       </FloatingMenu>
     </>
   );
@@ -263,6 +296,15 @@ export function InstalledItemStatusRow({
         {state.reason}
       </span>
     );
+  } else if (state.kind === 'fixed') {
+    body = (
+      <InstalledItemStatusPicker
+        itemName={itemName}
+        status={state.status}
+        disabledReason={state.reason}
+        testId={`${testId}-picker`}
+      />
+    );
   } else if (state.item.status === null) {
     body = (
       <span data-testid={`${testId}-reason`} className="text-s fg-tertiary">
@@ -286,6 +328,7 @@ export function InstalledItemStatusRow({
         busy={pendingKeys.has(installedItemTargetKey(item.target))}
         testId={`${testId}-picker`}
         menuPlacement="bottom-left"
+        targetKind={item.target.kind}
         onChange={
           onSetStatus
             ? (status): void => change(item.target, status)
@@ -296,6 +339,8 @@ export function InstalledItemStatusRow({
   }
 
   const ready = state.kind === 'ready' ? state : null;
+  const describedStatus =
+    ready?.item.status ?? (state.kind === 'fixed' ? state.status : null);
   const uninstallTarget = ready?.item.uninstallTarget;
   const canUninstall =
     ready !== null &&
@@ -313,12 +358,15 @@ export function InstalledItemStatusRow({
       >
         <h3 className="text-s font-medium fg-primary">Status</h3>
         {body}
-        {ready?.item.status && (
+        {describedStatus && (
           <p
             className="text-xs fg-tertiary"
             data-testid={`${testId}-description`}
           >
-            {INSTALLED_ITEM_STATUS_COPY[ready.item.status].description}
+            {installedItemStatusDescription(
+              describedStatus,
+              ready?.item.target.kind,
+            )}
           </p>
         )}
       </div>
@@ -347,6 +395,7 @@ export function InstalledItemStatusRow({
                 <InstalledItemStatusPicker
                   itemName={`${itemName} (${name})`}
                   status={configuration.status}
+                  targetKind={ref.kind}
                   retryCurrent={configuration.notices.some(
                     (notice) => notice.retryable,
                   )}

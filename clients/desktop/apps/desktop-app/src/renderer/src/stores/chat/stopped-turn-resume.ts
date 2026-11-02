@@ -1,4 +1,5 @@
-import type { ChatMessage, ChatTab, StoppedTurnResumeState } from './types';
+import { latestRootUserMessageId } from './latest-root-user-message';
+import type { ChatTab, StoppedTurnResumeState } from './types';
 
 /**
  * Stopped-turn resume presentation rules (CAN-3137).
@@ -8,16 +9,6 @@ import type { ChatMessage, ChatTab, StoppedTurnResumeState } from './types';
  * that offer and hides it the moment it would describe an older turn, so a
  * stale Resume is never shown even before main is asked.
  */
-
-function latestUserMessageId(
-  messages: readonly ChatMessage[],
-): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role === 'user') return message.id;
-  }
-  return undefined;
-}
 
 /**
  * The offer the composer should present, or `undefined` when there is none.
@@ -44,7 +35,7 @@ export function presentableStoppedTurnResume(
     return undefined;
   }
   if (tab.queuedMessages.length > 0) return undefined;
-  if (latestUserMessageId(tab.messages) !== offer.userMessageId) {
+  if (latestRootUserMessageId(tab.messages) !== offer.userMessageId) {
     return undefined;
   }
   return offer;

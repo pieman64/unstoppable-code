@@ -4,6 +4,7 @@ import {
   PLAN_APPROVAL_TEXT_ROW_CLASS,
   PLAN_APPROVAL_EDITOR_CONTAINER_CLASS,
   type PlanApprovalOption,
+  type PlanApprovalUnsentComments,
 } from '@canopy/ui-shared/components/chat/PlanApprovalPrompt';
 
 export {
@@ -12,4 +13,5 @@ export {
   PLAN_APPROVAL_TEXT_ROW_CLASS,
   PLAN_APPROVAL_EDITOR_CONTAINER_CLASS,
   type PlanApprovalOption,
+  type PlanApprovalUnsentComments,
 };

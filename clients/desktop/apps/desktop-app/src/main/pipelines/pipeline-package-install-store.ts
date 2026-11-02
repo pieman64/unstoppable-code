@@ -102,6 +102,8 @@ function parseInstallRecord(
       : null);
   if (
     owner === null ||
+    (value.supportingFilesComplete !== undefined &&
+      typeof value.supportingFilesComplete !== 'boolean') ||
     (value.originExternalId !== undefined &&
       (typeof value.originExternalId !== 'string' ||
         value.originExternalId.length === 0)) ||
@@ -123,6 +125,9 @@ function parseInstallRecord(
       : {}),
     pipelineContentHash: value.pipelineContentHash,
     installedAt: value.installedAt,
+    ...(typeof value.supportingFilesComplete === 'boolean'
+      ? { supportingFilesComplete: value.supportingFilesComplete }
+      : {}),
   };
   if (value.distributionMode === 'definition_only') {
     return value.packageDigest === undefined

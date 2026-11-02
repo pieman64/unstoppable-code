@@ -1,13 +1,9 @@
 import { powerMonitor, type BrowserWindow } from 'electron';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import {
-  GETTING_STARTED_SEQUENCE_CAMPAIGN_ID,
-  IPC_CHANNELS,
-} from '@canopy/desktop-shared/types';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { ActivationCampaignNavigateEvent } from '@canopy/desktop-shared/types';
 import { isPromotionalCategoryEnabled } from '@canopy/desktop-shared/lib/promotional-notifications';
 import { getFeatureFlagService } from '../../feature-flags/service';
-import { computeOnboardingChecklistState } from '../../lib/onboarding-checklist-progress';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import { recordActivationCampaignTelemetry } from '../../lib/desktop-telemetry';
 import { showOsNotification } from '../../ipc/os-notifications';
@@ -24,7 +20,6 @@ import {
 import {
   drainActivationJourneyWrites,
   latchCampaignClicked,
-  latchSequenceStepClicked,
   recordFirstOpen,
 } from './journey-state';
 import { resolveCampaignVariantKey } from './variant-resolver';
@@ -84,13 +79,11 @@ function buildDeps(
         outcome.outcome === 'delivered'
           ? {
               campaignId: outcome.campaignId,
-              itemId: outcome.itemId,
               outcome: 'delivered',
               destination: outcome.destination,
             }
           : {
               campaignId: outcome.campaignId,
-              itemId: outcome.itemId,
               outcome: 'suppressed',
               reason: outcome.reason,
             },
@@ -113,14 +106,9 @@ function buildDeps(
             preferences.promotionalNotifications,
             'arbitrary',
           ),
-          gettingStartedCategoryEnabled: isPromotionalCategoryEnabled(
-            preferences.promotionalNotifications,
-            'gettingStarted',
-          ),
           quietHours: preferences.activationQuietHours,
         };
       },
-    readChecklistState: computeOnboardingChecklistState,
     isAppFocused: (): boolean => {
       const window = options.getMainWindow();
       return window !== null && !window.isDestroyed() && window.isFocused();
@@ -172,16 +160,10 @@ export async function initializeActivationJourney(
     // the intended silent fallback.
     .catch(() => undefined);
 
-  setCampaignClickObserver((campaignId, itemId) => {
-    const now = new Date().toISOString();
-    if (campaignId === GETTING_STARTED_SEQUENCE_CAMPAIGN_ID) {
-      if (itemId !== undefined) void latchSequenceStepClicked(itemId, now);
-    } else {
-      void latchCampaignClicked(campaignId, now);
-    }
+  setCampaignClickObserver((campaignId) => {
+    void latchCampaignClicked(campaignId, new Date().toISOString());
     recordActivationCampaignTelemetry({
       campaignId,
-      itemId,
       outcome: 'clicked',
     });
   });
@@ -197,7 +179,6 @@ export async function initializeActivationJourney(
     options.focusMainWindow();
     const event: ActivationCampaignNavigateEvent = {
       campaignId: payload.campaignId,
-      ...(payload.itemId !== undefined ? { itemId: payload.itemId } : {}),
       destination: payload.destination,
     };
     sendToWebContents(

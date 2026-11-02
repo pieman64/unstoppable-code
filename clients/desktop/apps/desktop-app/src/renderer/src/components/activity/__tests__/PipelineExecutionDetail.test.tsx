@@ -106,6 +106,7 @@ function executionState(
     pipeline_id: 'pipeline-1',
     pipeline_snapshot: {
       name: 'Build pipeline',
+      scope: ['directory'],
       jobs: {
         build: {
           name: 'Build',
@@ -135,7 +136,7 @@ function executionState(
     cwd: '/repo',
     env: {},
     inputs: {},
-    event_name: 'manual',
+    event_name: 'dispatch',
     project_id: 'project',
     worktree_id: 'worktree',
     ...overrides,
@@ -422,6 +423,7 @@ describe('PipelineExecutionDetail', () => {
             id: 'child-1',
             pipeline_snapshot: {
               name: 'Child pipeline',
+              scope: ['directory'],
               jobs: executionState().pipeline_snapshot.jobs,
             },
             parent_execution_id: 'exec-1',
@@ -1043,6 +1045,7 @@ describe('PipelineExecutionDetail', () => {
       pipeline_id: 'pipeline-1',
       pipeline_name: 'Child pipeline',
       status: 'success',
+      status_reasons: [],
       started_at: STARTED_AT,
       cwd: '/repo',
       parent_execution_id: 'exec-1',

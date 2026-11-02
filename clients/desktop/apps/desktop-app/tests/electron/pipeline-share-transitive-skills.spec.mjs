@@ -59,17 +59,14 @@ test('pipeline sharing ignores shell tokens and packages only real transitive sk
       },
     );
     await expect(dependencyReview).toHaveAttribute('data-state', 'ready');
-    // The review is collapsed by default, so expand it before checking
-    // which files are packaged.
-    const dependenciesToggle = window.getByTestId(
-      'share-pipeline-dependencies-toggle',
+    // The help icon after the summary names which skills are packaged.
+    await window.getByTestId('share-pipeline-dependencies-help').hover();
+    const included = window.getByTestId(
+      'share-pipeline-dependencies-help-details',
     );
-    await dependenciesToggle.click();
-    await expect(dependenciesToggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(dependencyReview).toContainText('/open-pr');
-    await expect(dependencyReview).toContainText('/review-multi');
-    await expect(dependencyReview).toContainText('$review:review-loop');
-    await expect(dependencyReview).toContainText('$review:review-multi');
+    await expect(included).toContainText('/open-pr');
+    await expect(included).toContainText('/review-multi');
+    await window.mouse.move(0, 0);
     // The problem list is the durable signal now that the old "Needs
     // attention" heading is gone: a ready analysis renders no problem rows.
     await expect(
@@ -201,14 +198,11 @@ test('project pipeline sharing constrains and packages dot-named repo-local comm
       { timeout: 15_000 },
     );
     await expect(dependencyReview).toHaveAttribute('data-state', 'ready');
-    // The automatic recheck resets the review; expand its fresh file list.
-    const dependenciesToggle = window.getByTestId(
-      'share-pipeline-dependencies-toggle',
-    );
-    await dependenciesToggle.click();
-    await expect(dependenciesToggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(dependencyReview).toContainText('/collect.py');
-    await expect(dependencyReview).toContainText('Local source');
+    // The automatic recheck names the fresh file in the help tooltip.
+    await window.getByTestId('share-pipeline-dependencies-help').hover();
+    await expect(
+      window.getByTestId('share-pipeline-dependencies-help-details'),
+    ).toContainText('/collect.py');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

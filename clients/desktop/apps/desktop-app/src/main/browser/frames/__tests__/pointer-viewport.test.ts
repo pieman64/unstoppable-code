@@ -15,14 +15,14 @@ it('projects top telemetry unchanged by a frame filter, and omits unavailable te
     scroll: { x: 0, y: 120, maxX: 20, maxY: 800 },
   };
   expect(
-    projectInputSnapshot(model, {}, model.page, {
+    projectInputSnapshot(model, { browserId: 'frames' }, model.page, {
       frames: model.frames.slice(1),
     }),
   ).toMatchObject(model.page.telemetry);
   delete model.page.telemetry;
-  expect(projectInputSnapshot(model, {}, model.page)).not.toHaveProperty(
-    'scroll',
-  );
+  expect(
+    projectInputSnapshot(model, { browserId: 'frames' }, model.page),
+  ).not.toHaveProperty('scroll');
 });
 
 it('searches a full text node beyond its compacted display prefix', async () => {
@@ -1106,6 +1106,31 @@ describe('scrolling to matched text', () => {
     await expect(
       textMatchRect(deps, target, 'line 60 here'),
     ).resolves.toBeUndefined();
+  });
+
+  it('gives the words in layout units at a device pixel ratio of 2', async () => {
+    const { textMatchRect } = await import('../scroll-state');
+    const { doc, page, element } = ranged(
+      () => ({ top: 1575, bottom: 1590, left: 34, right: 167.5 }),
+      { top: 90, bottom: 3090, left: 24, right: 220 },
+    );
+    // Chromium adds the rect to the node's layout box, which is in device
+    // pixels times page zoom: devicePixelRatio in the page.
+    const defaultView = doc.defaultView;
+    if (typeof defaultView !== 'object' || defaultView === null)
+      throw new Error('Expected a document default view');
+    Reflect.set(defaultView, 'devicePixelRatio', 2);
+    const log = element({ parentElement: page });
+    const text = textIn(doc, log);
+    const { registry, target } = ownerTarget();
+    const deps = {
+      registry,
+      send: fakeSend({ owner: log, hit: text }),
+      contexts: new ExecutionContexts(),
+    };
+    await expect(
+      textMatchRect(deps, { ...target, scrollNode: 9 }, 'line 60 here'),
+    ).resolves.toEqual({ x: 20, y: 2970, width: 267, height: 30 });
   });
 
   it('looks at where the words are without scrolling anything', async () => {

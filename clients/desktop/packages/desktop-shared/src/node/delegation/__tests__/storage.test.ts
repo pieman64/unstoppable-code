@@ -1,7 +1,13 @@
 import type { AgentDelegationWorkspaceObservation } from '@canopy/protocol/delegation';
+import type { Dir, Dirent } from 'node:fs';
 import * as fs from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  encodeManagedMessageReceiptV2,
+  type ManagedMessageReceiptV2,
+} from '../managed-message-receipt-v2';
 import {
   AgentDelegationBroker,
   delegationContentVersion,
@@ -18,6 +24,47 @@ import {
 import { AgentRunnerRegistry } from '../runner-registry';
 import { FakeRunner, routeFixture } from './fixtures';
 
+jest.mock('node:fs/promises', () => {
+  const actual: typeof FsPromises = jest.requireActual('node:fs/promises');
+  return {
+    ...actual,
+    opendir: jest.fn(actual.opendir),
+    open: jest.fn(actual.open),
+  };
+});
+
+const mockedOpendir = jest.mocked(fs.opendir);
+const mockedOpen = jest.mocked(fs.open);
+const realOpendir =
+  jest.requireActual<typeof FsPromises>('node:fs/promises').opendir;
+
+async function repeatedDirectoryEntries(
+  directoryPath: string,
+  entryName: string,
+  count: number,
+): Promise<{ handle: Dir; yielded: () => number }> {
+  const source = await fs.opendir(directoryPath);
+  let entry: Dirent | null = await source.read();
+  while (entry && entry.name !== entryName) entry = await source.read();
+  await source.close();
+  if (!entry) throw new Error(`Expected ${entryName} in test directory`);
+  const repeatedEntry = entry;
+
+  const handle = await fs.opendir(directoryPath);
+  let yielded = 0;
+  Object.defineProperty(handle, Symbol.asyncIterator, {
+    configurable: true,
+    value: async function* (): AsyncGenerator<Dirent> {
+      await Promise.resolve();
+      for (let index = 0; index < count; index += 1) {
+        yielded += 1;
+        yield repeatedEntry;
+      }
+    },
+  });
+  return { handle, yielded: () => yielded };
+}
+
 describe('private durable delegation registry', () => {
   let directory: string;
   beforeEach(async () => {
@@ -25,6 +72,28 @@ describe('private durable delegation registry', () => {
   });
   afterEach(async () => {
     await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  // Fall back to the shipped reader to pin its write-producing behavior in red.
+  async function readOnly(storage: FileDelegationStorage): Promise<unknown> {
+    const read = Reflect.get(storage, 'loadReadOnly');
+    return typeof read === 'function'
+      ? read.call(storage)
+      : { records: await storage.load(), missing: false };
+  }
+
+  it('observes a missing dormant registry without creating it', async () => {
+    const target = path.join(directory, 'absent', 'runs');
+    const result = await readOnly(new FileDelegationStorage(target));
+    await expect(fs.stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(result).toEqual({ records: [], missing: true });
+  });
+
+  it('fails a read-only count rather than silently undercounting a corrupt record', async () => {
+    const target = path.join(directory, 'corrupt');
+    await fs.mkdir(target, { mode: 0o700 });
+    await fs.writeFile(path.join(target, 'bad.json'), '{', { mode: 0o600 });
+    await expect(readOnly(new FileDelegationStorage(target))).rejects.toThrow();
   });
 
   async function populate(): Promise<FileDelegationStorage> {
@@ -113,6 +182,44 @@ describe('private durable delegation registry', () => {
     ).toEqual([nested]);
   });
 
+  it('loads records in delegation id order whatever order the directory lists them', async () => {
+    const storage = await populate();
+    const [record] = await storage.load();
+    const delegationId = '00000000-0000-4000-8000-000000000000';
+    const earlier = {
+      ...record,
+      state: { ...record.state, delegationId },
+      launch: { ...record.launch, delegationId },
+    };
+    await storage.commit(earlier);
+    const target = path.join(directory, 'records');
+    const names = (await fs.readdir(target))
+      .filter((name) => name.endsWith('.json'))
+      .sort();
+    expect(names).toHaveLength(2);
+    // Linux lists entries in hash order; reverse the sorted listing to model it.
+    const handle = await realOpendir(target);
+    const entries: Dirent[] = [];
+    for await (const entry of handle) entries.push(entry);
+    const reversed = entries
+      .filter((entry) => entry.name.endsWith('.json'))
+      .sort((left, right) => right.name.localeCompare(left.name));
+    const listing = await realOpendir(target);
+    Object.defineProperty(listing, Symbol.asyncIterator, {
+      configurable: true,
+      value: async function* (): AsyncGenerator<Dirent> {
+        await Promise.resolve();
+        yield* reversed;
+      },
+    });
+    mockedOpendir.mockResolvedValueOnce(listing);
+    expect(
+      (await storage.load()).map(
+        (loaded) => `${loaded.state.delegationId}.json`,
+      ),
+    ).toEqual(names);
+  });
+
   it('loads one record by its delegation id', async () => {
     const storage = await populate();
     const [record] = await storage.load();
@@ -169,7 +276,8 @@ describe('private durable delegation registry', () => {
   it('roundtrips a version-two private Agent artifact reference', async () => {
     const storage = await populate();
     const [record] = await storage.load();
-    if (!record) throw new Error('Expected retained record');
+    if (!record || record.version === 3 || !record.route)
+      throw new Error('Expected retained legacy record with route');
     const hash = 'a'.repeat(64);
     const withOverlay = {
       ...record,
@@ -340,9 +448,12 @@ describe('private durable delegation registry', () => {
     const invalid = path.join(recordsDirectory, 'invalid.json');
     await fs.writeFile(malformed, '{');
     await fs.writeFile(invalid, JSON.stringify({ version: 1 }));
+    const invalidV3 = path.join(recordsDirectory, 'invalid-v3.json');
+    await fs.writeFile(invalidV3, JSON.stringify({ version: 3 }));
     if (process.platform !== 'win32') {
       await fs.chmod(malformed, 0o600);
       await fs.chmod(invalid, 0o600);
+      await fs.chmod(invalidV3, 0o600);
     }
 
     await expect(storage.load()).resolves.toHaveLength(1);
@@ -433,6 +544,7 @@ describe('private durable delegation registry', () => {
     if (process.platform !== 'win32') await fs.chmod(file, 0o600);
 
     const [loaded] = await storage.load();
+    if (loaded?.version === 3) throw new Error('Expected a legacy record');
     expect(loaded?.state.delegationId).toBe(id);
     expect(loaded?.applyJournal).toEqual(legacyJournal);
     expect(loaded?.appliedFiles).toEqual([
@@ -450,7 +562,8 @@ describe('private durable delegation registry', () => {
   it('persists bounded cancellation receipts for stable call retries', async () => {
     const storage = await populate();
     const record = (await storage.load())[0];
-    if (!record) throw new Error('Expected retained record');
+    if (!record || record.version === 3)
+      throw new Error('Expected retained legacy record');
     const stopRequest = {
       operationId: '00000000-0000-4000-8000-000000000001',
       key: 'a'.repeat(64),
@@ -484,6 +597,26 @@ describe('private durable delegation registry', () => {
     expect((await storage.load())[0]?.state.finalText).toBe(finalText);
   });
 
+  it('rereads a record that a commit replaced after it was opened', async () => {
+    const storage = await populate();
+    const record = (await storage.load())[0];
+    if (!record) throw new Error('Expected retained record');
+    const replacement = {
+      ...record,
+      state: { ...record.state, finalText: 'replaced' },
+    };
+    const realOpen =
+      jest.requireActual<typeof FsPromises>('node:fs/promises').open;
+    mockedOpen.mockImplementationOnce(async (...args) => {
+      const handle = await realOpen(...args);
+      // The commit renames its new file over the one just opened.
+      await storage.commit(replacement);
+      return handle;
+    });
+    const loaded = await storage.loadOne(record.state.delegationId);
+    expect(loaded?.state.finalText).toBe('replaced');
+  });
+
   it('rejects a retained record that exceeds the hard storage byte quota', async () => {
     const storage = await populate();
     const record = (await storage.load())[0];
@@ -495,11 +628,127 @@ describe('private durable delegation registry', () => {
       }),
     ).rejects.toThrow(/byte bound|too big/i);
   });
+
+  it('loads more retained records than the former 512 product limit', async () => {
+    const storage = await populate();
+    const record = (await storage.load())[0];
+    if (!record) throw new Error('Expected retained record');
+    const recordsDirectory = path.join(directory, 'records');
+    const entryName = `${record.state.delegationId}.json`;
+    const repeated = await repeatedDirectoryEntries(
+      recordsDirectory,
+      entryName,
+      513,
+    );
+    mockedOpendir.mockResolvedValue(repeated.handle);
+    const read = jest.spyOn(storage, 'read');
+    read.mockImplementation(
+      <T>(
+        name: string,
+        parse: (text: string, name: string) => T | undefined,
+      ): Promise<T | undefined> => {
+        const text = JSON.stringify(record);
+        if (typeof text !== 'string') throw new Error('Expected JSON record');
+        return Promise.resolve(parse(text, name));
+      },
+    );
+    try {
+      expect(await storage.load()).toHaveLength(513);
+      expect(repeated.yielded()).toBe(513);
+    } finally {
+      mockedOpendir.mockImplementation(realOpendir);
+      read.mockRestore();
+      await repeated.handle.close();
+    }
+  });
+
+  it('loads more than the former 1,024 directory-entry limit', async () => {
+    const storage = await populate();
+    const recordsDirectory = path.join(directory, 'records');
+    await fs.writeFile(path.join(recordsDirectory, 'ignored.data'), 'x');
+    const repeated = await repeatedDirectoryEntries(
+      recordsDirectory,
+      'ignored.data',
+      1_025,
+    );
+    mockedOpendir.mockResolvedValue(repeated.handle);
+    try {
+      expect(await storage.load()).toEqual([]);
+      expect(repeated.yielded()).toBe(1_025);
+    } finally {
+      mockedOpendir.mockImplementation(realOpendir);
+      await repeated.handle.close();
+    }
+  });
+
+  it('retains the defensive record ceiling at 65,536 decoded records', async () => {
+    const storage = await populate();
+    const record = (await storage.load())[0];
+    if (!record) throw new Error('Expected retained record');
+    const recordsDirectory = path.join(directory, 'records');
+    const entryName = `${record.state.delegationId}.json`;
+    const repeated = await repeatedDirectoryEntries(
+      recordsDirectory,
+      entryName,
+      65_537,
+    );
+    mockedOpendir.mockResolvedValue(repeated.handle);
+    const read = jest.spyOn(storage, 'read');
+    read.mockImplementation(
+      <T>(
+        name: string,
+        parse: (text: string, name: string) => T | undefined,
+      ): Promise<T | undefined> => {
+        const text = JSON.stringify(record);
+        if (typeof text !== 'string') throw new Error('Expected JSON record');
+        return Promise.resolve(parse(text, name));
+      },
+    );
+    try {
+      await expect(storage.load()).rejects.toThrow(
+        'Delegation storage exceeds its record bound',
+      );
+      expect(repeated.yielded()).toBe(65_537);
+    } finally {
+      mockedOpendir.mockImplementation(realOpendir);
+      read.mockRestore();
+      await repeated.handle.close();
+    }
+    // 65,537 decoded records take a few seconds locally but over 30 s on CI runners.
+  }, 120_000);
+
+  it('retains the defensive directory-entry ceiling at 131,072 entries', async () => {
+    const storage = await populate();
+    const recordsDirectory = path.join(directory, 'records');
+    await fs.writeFile(path.join(recordsDirectory, 'ignored.data'), 'x');
+    const repeated = await repeatedDirectoryEntries(
+      recordsDirectory,
+      'ignored.data',
+      131_073,
+    );
+    mockedOpendir.mockResolvedValue(repeated.handle);
+    try {
+      await expect(storage.load()).rejects.toThrow(
+        'Delegation storage exceeds its entry bound',
+      );
+      expect(repeated.yielded()).toBe(131_073);
+    } finally {
+      mockedOpendir.mockImplementation(realOpendir);
+      await repeated.handle.close();
+    }
+  });
 });
 
 describe('private delegation message receipts', () => {
   const operationId = '123e4567-e89b-42d3-a456-426614174000';
   const requestHash = 'a'.repeat(64);
+  const versionedPendingReceipt: ManagedMessageReceiptV2 = {
+    version: 2,
+    codec: 'stream',
+    operationId,
+    requestHash,
+    status: 'pending',
+  };
   let directory: string;
   let receipts: string;
   beforeEach(async () => {
@@ -530,6 +779,9 @@ describe('private delegation message receipts', () => {
       requestHash,
       status: 'pending',
     });
+    expect(await fs.readFile(await receiptFile(), 'utf8')).toBe(
+      JSON.stringify({ operationId, requestHash, status: 'pending' }),
+    );
 
     const result = {
       ok: false,
@@ -548,7 +800,38 @@ describe('private delegation message receipts', () => {
       status: 'complete',
       result,
     });
+    expect(await fs.readFile(await receiptFile(), 'utf8')).toBe(
+      JSON.stringify({ operationId, requestHash, status: 'complete', result }),
+    );
     expect(await fs.readdir(receipts)).toHaveLength(1);
+  });
+
+  it('loads versioned receipts through the v2 decoder', async () => {
+    const storage = new FileManagedDelegationMessageStorage(receipts);
+    await storage.commit({ operationId, requestHash, status: 'pending' });
+    const file = await receiptFile();
+    await fs.writeFile(
+      file,
+      encodeManagedMessageReceiptV2(versionedPendingReceipt),
+    );
+
+    await expect(storage.load(operationId)).resolves.toEqual(
+      versionedPendingReceipt,
+    );
+  });
+
+  it('encodes versioned commits through the v2 encoder', async () => {
+    const storage = new FileManagedDelegationMessageStorage(receipts);
+
+    await expect(
+      storage.commit(versionedPendingReceipt),
+    ).resolves.toBeUndefined();
+    expect(await fs.readFile(await receiptFile(), 'utf8')).toBe(
+      encodeManagedMessageReceiptV2(versionedPendingReceipt),
+    );
+    await expect(storage.load(operationId)).resolves.toEqual(
+      versionedPendingReceipt,
+    );
   });
 
   it('fails closed on a corrupt or misfiled receipt', async () => {
@@ -571,6 +854,28 @@ describe('private delegation message receipts', () => {
     );
     await expect(storage.load(operationId)).rejects.toThrow(
       'Invalid private delegation message receipt',
+    );
+  });
+
+  it('fails closed on unsupported or malformed versioned receipts', async () => {
+    const storage = new FileManagedDelegationMessageStorage(receipts);
+    await storage.commit({ operationId, requestHash, status: 'pending' });
+    const file = await receiptFile();
+
+    await fs.writeFile(
+      file,
+      JSON.stringify({ ...versionedPendingReceipt, version: 3 }),
+    );
+    await expect(storage.load(operationId)).rejects.toThrow(
+      'Unsupported managed message receipt version',
+    );
+
+    await fs.writeFile(
+      file,
+      JSON.stringify({ ...versionedPendingReceipt, extra: true }),
+    );
+    await expect(storage.load(operationId)).rejects.toThrow(
+      'Invalid managed message receipt',
     );
   });
 

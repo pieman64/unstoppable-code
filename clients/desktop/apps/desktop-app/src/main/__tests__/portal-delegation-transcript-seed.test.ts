@@ -1,4 +1,8 @@
-import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
+import type {
+  ChatTabsFile,
+  PersistedChatMessage,
+} from '@canopy/desktop-shared/types';
+import type { PersistedAgentRouteSnapshot } from '@canopy/protocol/delegation';
 import { delegationTranscriptMessages } from '@canopy/agent-transcript';
 
 jest.mock('../portal/portal-event-bus', () => ({
@@ -27,6 +31,12 @@ import { registerWorkspaceTypes } from '../lib/workspace-registry';
 const mockedPortalChatTabsCache = jest.mocked(portalChatTabsCache);
 
 function loggedCard(): PersistedChatMessage {
+  // Legacy persisted snapshots may omit route fields introduced later.
+  const routeSnapshot = {
+    selectedModelId: 'model',
+    runtimeModelId: 'model',
+    harnessId: 'claude',
+  } as PersistedAgentRouteSnapshot;
   const [card] = delegationTranscriptMessages({
     delegationId: 'child',
     runGeneration: 1,
@@ -46,11 +56,7 @@ function loggedCard(): PersistedChatMessage {
       status: 'completed',
       outputTruncated: false,
       finalText: 'Done',
-      routeSnapshot: {
-        selectedModelId: 'model',
-        runtimeModelId: 'model',
-        harnessId: 'claude',
-      },
+      routeSnapshot,
     },
     transcript: [],
   });
@@ -62,7 +68,7 @@ describe('Portal transcript seed for logged delegate cards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     registerWorkspaceTypes(new Map());
-    const tabs = {
+    const tabs: ChatTabsFile = {
       version: 1,
       activeTabId: 'chat',
       tabs: [

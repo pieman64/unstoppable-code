@@ -13,6 +13,7 @@ import type {
 import type { BrowserWindow } from 'electron';
 import type * as GitHubPollerModule from '../lib/github-poller';
 import type * as GitHubModule from '../lib/github-pr';
+import type * as AppAdvisorWatchersModule from '../app-advisor/watchers';
 import type * as CredentialModule from '../lib/github-preview-credential';
 import type * as HookStateModule from '../lib/github-pr-hook-state';
 import type {
@@ -21,6 +22,7 @@ import type {
   SweptPullRequest,
 } from '../lib/github-pr-sweep';
 import type { GitHubRefreshLedgerEntry } from '../lib/github-refresh-ledger';
+import type * as GitHubRefreshLedgerModule from '../lib/github-refresh-ledger';
 
 jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(() =>
@@ -170,11 +172,28 @@ jest.mock('../lib/pr-status-change-emitter', () => ({
 jest.mock('../lib/workspace-registry', () => ({
   isMultiRepoWorkspace: jest.fn(() => false),
 }));
-const mockListAppAdvisorWatchers = jest.fn(() => Promise.resolve([]));
+type AppAdvisorWatcherService = ReturnType<
+  typeof AppAdvisorWatchersModule.getAppAdvisorWatcherService
+>;
+type AppAdvisorWatcherList = ReturnType<AppAdvisorWatcherService['list']>;
+const mockListAppAdvisorWatchers = jest.fn<
+  AppAdvisorWatcherList,
+  Parameters<AppAdvisorWatcherService['list']>
+>(() => Promise.resolve([]));
 const mockHandleHookTriggeredEvent = jest.fn();
-const mockReadGitHubRefreshLedgerEntry = jest.fn(() => Promise.resolve(null));
+type ReadGitHubRefreshLedgerEntry =
+  typeof GitHubRefreshLedgerModule.readGitHubRefreshLedgerEntry;
+const mockReadGitHubRefreshLedgerEntry = jest.fn<
+  ReturnType<ReadGitHubRefreshLedgerEntry>,
+  Parameters<ReadGitHubRefreshLedgerEntry>
+>(() => Promise.resolve(null));
 const mockRecordGitHubRefreshAttempt = jest.fn(() => Promise.resolve());
-const mockRecordGitHubRefreshSuccess = jest.fn(() => Promise.resolve());
+type RecordGitHubRefreshSuccess =
+  typeof GitHubRefreshLedgerModule.recordGitHubRefreshSuccess;
+const mockRecordGitHubRefreshSuccess = jest.fn<
+  ReturnType<RecordGitHubRefreshSuccess>,
+  Parameters<RecordGitHubRefreshSuccess>
+>(() => Promise.resolve());
 const mockRecordGitHubRefreshFailure = jest.fn(
   (args: { failedAt: number }): Promise<GitHubRefreshLedgerEntry> =>
     Promise.resolve({
@@ -648,7 +667,7 @@ describe('github-poller', () => {
     );
     expect(
       mockRecordGitHubRefreshSuccess.mock.calls.map(
-        ([args]) => (args as { worktreeId: string }).worktreeId,
+        ([args]) => args.worktreeId,
       ),
     ).toEqual(['worktree-a', 'worktree-b']);
     expect(mockedFetchRepoPrTrackingData).not.toHaveBeenCalled();
@@ -756,7 +775,7 @@ describe('github-poller', () => {
     expect(mockFetchPullRequestSweep).toHaveBeenCalledTimes(1);
     expect(
       mockRecordGitHubRefreshSuccess.mock.calls.map(
-        ([args]) => (args as { worktreeId: string }).worktreeId,
+        ([args]) => args.worktreeId,
       ),
     ).toEqual(['worktree-a', 'worktree-b']);
 
@@ -1557,6 +1576,7 @@ describe('github-poller', () => {
             reviewers: [],
             hasConflicts: false,
             commentCount: 0,
+            updatedAt: '2026-04-16T00:00:00.000Z',
           },
         },
       ],

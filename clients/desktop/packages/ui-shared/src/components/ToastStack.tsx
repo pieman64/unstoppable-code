@@ -1,9 +1,19 @@
 'use client';
 
 import { Toast } from '@base-ui/react/toast';
-import { useEffect, useRef, type JSX, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type JSX,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import type { InAppNotificationPlacement } from '../lib/notification-placement';
-import type { NoticeIntent } from './Notice';
+import { isPromiseLike } from '../lib/promise-like';
+import { NoticeButton, type NoticeIntent } from './Notice';
+import { attachToastSwipe, type ToastSwipe } from './toast-swipe';
 
 /**
  * Most toasts the stack shows at once. Older ones stay mounted but hidden
@@ -23,11 +33,113 @@ export interface ToastStackItem {
   readonly timeoutMs: number;
 }
 
+export interface ToastActionButtonProps {
+  readonly label: ReactNode;
+  /**
+   * The action. Return a promise for work that takes a while (`Try again`):
+   * the button spins inside its capsule until it settles, and only then does
+   * the toast close. A failed retry raises its own toast.
+   */
+  readonly run: () => unknown;
+  /** Closes the toast once the action has run. */
+  readonly onDone: () => void;
+  /** The label while the action runs. Defaults to `label`. */
+  readonly busyLabel?: ReactNode;
+  /**
+   * Shared by every button that runs the same action, such as a toast's card
+   * and its details dialog (the toast's id): while the action runs, each of
+   * them spins and none starts it again.
+   */
+  readonly actionKey?: string;
+  readonly 'data-testid'?: string;
+}
+
+/** Toast actions still running, by the `actionKey` their buttons share. */
+const runningToastActions = new Set<string>();
+const runningToastActionListeners = new Set<() => void>();
+
+function setToastActionRunning(key: string, running: boolean): void {
+  if (running) runningToastActions.add(key);
+  else runningToastActions.delete(key);
+  for (const listener of runningToastActionListeners) listener();
+}
+
+function subscribeToRunningToastActions(listener: () => void): () => void {
+  runningToastActionListeners.add(listener);
+  return (): void => {
+    runningToastActionListeners.delete(listener);
+  };
+}
+
+/**
+ * A toast's single action, such as `Try again` on a failed action. Presses
+ * never reach the card behind it (which may open a destination), and a
+ * second press while the action runs does nothing.
+ */
+export function ToastActionButton({
+  label,
+  run,
+  onDone,
+  busyLabel,
+  actionKey,
+  'data-testid': dataTestId,
+}: ToastActionButtonProps): JSX.Element {
+  const [ownBusy, setOwnBusy] = useState(false);
+  const sharedBusy = useSyncExternalStore(
+    subscribeToRunningToastActions,
+    () => actionKey !== undefined && runningToastActions.has(actionKey),
+    () => false,
+  );
+  const busy = ownBusy || sharedBusy;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return (): void => {
+      mounted.current = false;
+    };
+  }, []);
+  return (
+    <NoticeButton
+      data-testid={dataTestId}
+      busy={busy}
+      busyLabel={busyLabel}
+      onClick={(event: MouseEvent<HTMLButtonElement>): void => {
+        event.stopPropagation();
+        if (busy) return;
+        const result = run();
+        if (!isPromiseLike(result)) {
+          onDone();
+          return;
+        }
+        setOwnBusy(true);
+        if (actionKey !== undefined) setToastActionRunning(actionKey, true);
+        const settle = (): void => {
+          if (actionKey !== undefined) setToastActionRunning(actionKey, false);
+          if (mounted.current) setOwnBusy(false);
+          onDone();
+        };
+        Promise.resolve(result).then(settle, settle);
+      }}
+    >
+      {label}
+    </NoticeButton>
+  );
+}
+
 interface ToastStackData<T extends ToastStackItem> {
   readonly item: T;
 }
 
-type SwipeDirection = 'up' | 'down' | 'left' | 'right';
+/**
+ * A host's own swipe input for the stack, such as the desktop's two-finger
+ * trackpad swipe, driven through the stack's swipe controller so it feels
+ * like a mouse drag. Returns its cleanup.
+ */
+export type ToastStackSwipeInput = (
+  swipe: ToastSwipe,
+  host: HTMLElement,
+  side: ToastStackSide,
+) => () => void;
 
 export interface ToastStackProps<T extends ToastStackItem> {
   /** The host's live toasts, oldest first. */
@@ -44,15 +156,16 @@ export interface ToastStackProps<T extends ToastStackItem> {
    * `shape="toast"`, whose controls nest in the card's 20px corners.
    */
   readonly renderToast: (toast: T) => ReactNode;
+  /**
+   * Extra swipe input on top of the shared pointer swipe. Kept out of the
+   * shared stack so hosts that don't need it don't load it.
+   */
+  readonly swipeInput?: ToastStackSwipeInput;
   readonly 'data-testid'?: string;
 }
 
-const SWIPE_DIRECTIONS: Record<InAppNotificationPlacement, SwipeDirection[]> = {
-  'top-right': ['up', 'right'],
-  'top-left': ['up', 'left'],
-  'bottom-right': ['down', 'right'],
-  'bottom-left': ['down', 'left'],
-};
+/** Base UI's own drag is off: the stack's swipe controller owns swiping. */
+const NO_BASE_UI_SWIPE: never[] = [];
 
 /** The screen edge the stack sits against: cards enter from and leave to it. */
 function sideOf(placement: InAppNotificationPlacement): ToastStackSide {
@@ -61,7 +174,7 @@ function sideOf(placement: InAppNotificationPlacement): ToastStackSide {
 
 /** How far each toast behind the front one peeks out, in px. */
 const TOAST_PEEK_PX = 8;
-type ToastStackSide = 'left' | 'right';
+export type ToastStackSide = 'left' | 'right';
 
 function isElementNode(target: EventTarget | null): target is Element {
   return (
@@ -142,11 +255,52 @@ function ToastStackSync<T extends ToastStackItem>({
 function ToastStackCards<T extends ToastStackItem>({
   placement,
   renderToast,
+  swipeInput,
 }: {
   readonly placement: InAppNotificationPlacement;
   readonly renderToast: (toast: T) => ReactNode;
+  readonly swipeInput: ToastStackSwipeInput | undefined;
 }): JSX.Element {
-  const { toasts } = Toast.useToastManager<ToastStackData<T>>();
+  const { toasts, close, update } = Toast.useToastManager<ToastStackData<T>>();
+  const stackRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(close);
+  const updateRef = useRef(update);
+  const toastsRef = useRef(toasts);
+  const swipeInputRef = useRef(swipeInput);
+  useEffect(() => {
+    closeRef.current = close;
+    updateRef.current = update;
+    toastsRef.current = toasts;
+    swipeInputRef.current = swipeInput;
+  });
+  const side = sideOf(placement);
+  const edge = placement.startsWith('top') ? 'top' : 'bottom';
+  useEffect(() => {
+    const host = stackRef.current;
+    if (host === null) return undefined;
+    // A swiped card is already leaving; closing it reports it to the host
+    // (through the toast's `onClose`) and lets the deck close up behind it.
+    const swipe = attachToastSwipe(host, {
+      side,
+      edge,
+      onDismiss: (id) => closeRef.current(id),
+      // A held card keeps its toast up: no timer while pressed, and a fresh
+      // one once let go.
+      onHold: (id, held) => {
+        const timeoutMs =
+          toastsRef.current.find((toast) => toast.id === id)?.data?.item
+            .timeoutMs ?? 0;
+        if (timeoutMs > 0) {
+          updateRef.current(id, { timeout: held ? 0 : timeoutMs });
+        }
+      },
+    });
+    const detachInput = swipeInputRef.current?.(swipe, host, side);
+    return (): void => {
+      detachInput?.();
+      swipe.detach();
+    };
+  }, [side, edge]);
   // The stack is out of flow (each card is absolute), so the viewport
   // reserves the front card plus the edges peeking behind it. Anything the
   // host stacks beside it in the same corner keeps its place.
@@ -161,6 +315,7 @@ function ToastStackCards<T extends ToastStackItem>({
 
   return (
     <div
+      ref={stackRef}
       className="canopy-toast-stack"
       style={{ height: `${String(reservedHeight)}px` }}
     >
@@ -169,8 +324,9 @@ function ToastStackCards<T extends ToastStackItem>({
           <Toast.Root
             key={toast.id}
             toast={toast}
-            swipeDirection={SWIPE_DIRECTIONS[placement]}
+            swipeDirection={NO_BASE_UI_SWIPE}
             data-testid="toast-stack-card"
+            data-toast-stack-id={toast.id}
             data-toast-intent={toast.data.item.intent}
             // Base UI moves focus to the next card when one closes; keyboard
             // focus shows the shared ring, never the browser default outline.
@@ -191,10 +347,10 @@ function ToastStackCards<T extends ToastStackItem>({
  *
  * Hosts keep their own toast list (what to show, history, preferences) and
  * draw each card's content; the stack owns timing, stacking, motion, swipe to
- * dismiss, and the polite live region. Cards slide in from the stack's side
- * of the screen and leave to it. Cards rest as a deck with the newest in
- * front and spread out while the stack is hovered or focused. F6 moves focus
- * into the stack.
+ * dismiss (`toast-swipe.ts`), and the polite live region. Cards slide in from
+ * the stack's side of the screen and leave to it. Cards rest as a deck with
+ * the newest in front and spread out while the stack is hovered or focused.
+ * F6 moves focus into the stack.
  *
  * Render it inside the host's notification corner
  * (`getInAppNotificationContainerClasses`); it fills that corner's width and
@@ -205,6 +361,7 @@ export function ToastStack<T extends ToastStackItem>({
   placement,
   onClose,
   renderToast,
+  swipeInput,
   'data-testid': dataTestId,
 }: ToastStackProps<T>): JSX.Element {
   return (
@@ -216,7 +373,11 @@ export function ToastStack<T extends ToastStackItem>({
         data-side={sideOf(placement)}
         className="canopy-toast-viewport"
       >
-        <ToastStackCards placement={placement} renderToast={renderToast} />
+        <ToastStackCards
+          placement={placement}
+          renderToast={renderToast}
+          swipeInput={swipeInput}
+        />
       </Toast.Viewport>
     </Toast.Provider>
   );
@@ -353,8 +514,8 @@ export function ToastStackActivatableCard({
                   controller.abort();
                   if (Math.hypot(up.clientX - startX, up.clientY - startY) > 8)
                     return;
-                  // Base UI captures the pointer on Toast.Root, so the
-                  // subsequent click is retargeted away from this card.
+                  // A drag that started here may have captured the pointer
+                  // on Toast.Root, retargeting the click away from this card.
                   pointerActivated.current = true;
                   activateCard(card);
                   window.setTimeout(() => {

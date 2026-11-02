@@ -138,7 +138,10 @@ function deferredPaint(): {
   finish: () => Promise<void>;
 } {
   let resolvePaint: (() => void) | null = null;
-  const whenPainted = jest.fn(
+  const whenPainted = jest.fn<
+    Promise<void>,
+    ['floating' | 'full', { width: number; height: number }]
+  >(
     (): Promise<void> =>
       new Promise<void>((resolve) => {
         resolvePaint = resolve;

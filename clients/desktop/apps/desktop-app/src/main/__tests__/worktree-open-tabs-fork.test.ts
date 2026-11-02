@@ -285,6 +285,7 @@ describe('forkOpenWorktreeTabs', () => {
         },
         readOnly: true,
         unread: true,
+        unreadMarkedManually: true,
         pendingRevertAttachmentPath: '/tmp/renderer-injected-revert.md',
         forkedFrom: {
           projectId: 'project',
@@ -368,6 +369,7 @@ describe('forkOpenWorktreeTabs', () => {
       expect(persistedTab).not.toHaveProperty('sharedRun');
       expect(persistedTab).not.toHaveProperty('readOnly');
       expect(persistedTab).not.toHaveProperty('unread');
+      expect(persistedTab).not.toHaveProperty('unreadMarkedManually');
       expect(persistedTab).not.toHaveProperty('pendingRevertAttachmentPath');
     },
   );
@@ -953,6 +955,17 @@ describe('forkOpenWorktreeTabs', () => {
     const sourceRoot = join(sep, 'worktrees', 'source');
     const destinationRoot = join(sep, 'worktrees', 'destination');
     const sourceFilePath = join(sourceRoot, 'src', 'index.ts');
+    const legacyFileTab: ChatTabsFile['tabs'][number] = {
+      id: 'file-tab',
+      title: 'index.ts',
+      kind: 'file',
+      filePath: sourceFilePath,
+      description: sourceFilePath,
+      messages: [],
+      createdAt: '2026-07-30T00:00:00.000Z',
+    };
+    // Preserve the legacy input: the fork test verifies that this value survives.
+    Reflect.set(legacyFileTab, 'fileViewMode', 'rich');
     const source: ChatTabsFile = {
       version: 1,
       tabs: [
@@ -966,16 +979,7 @@ describe('forkOpenWorktreeTabs', () => {
           },
         },
         chatTab('codex-chat', 'codex', 'codex-thread'),
-        {
-          id: 'file-tab',
-          title: 'index.ts',
-          kind: 'file',
-          filePath: sourceFilePath,
-          description: sourceFilePath,
-          fileViewMode: 'rich',
-          messages: [],
-          createdAt: '2026-07-30T00:00:00.000Z',
-        },
+        legacyFileTab,
         {
           id: 'external-file-tab',
           title: 'shared-notes.md',

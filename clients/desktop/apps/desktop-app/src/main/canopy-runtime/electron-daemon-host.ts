@@ -1,3 +1,7 @@
+import {
+  ELECTRON_MIGRATION_ROLE,
+  createElectronMigrationLaunch,
+} from './migration-channel';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { app } from 'electron';
@@ -17,9 +21,11 @@ import {
   createOwnedChildServices,
   deriveLocalAuthorityIdentity,
   createPlatformEndpointServices,
+  hostLocalAuthorityObservation,
   hostPlatformOperatingSystem,
   hostPlatformServices,
   WINDOWS_PROCESS_FILE,
+  windowsPrincipalObserver,
 } from '@canopy/core-platform';
 import {
   createCanopyStartupClaimPort,
@@ -46,16 +52,27 @@ declare const __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__: string | undefined;
 export const ELECTRON_DAEMON_DEFINITIONS = {
   queries: {
     ...CORE_TRANSPORT_QUERY_DEFINITIONS,
-    // Only the two Files reads the opt-in route serves (CAN-4305).
+    // Only the Files reads the opt-in route has a daemon path for (CAN-4305,
+    // CAN-5509); its selection set decides which ones leave.
     'worker.filesystem.roots.list':
       WORKER_QUERY_DEFINITIONS['worker.filesystem.roots.list'],
     'worker.filesystem.directory.list':
       WORKER_QUERY_DEFINITIONS['worker.filesystem.directory.list'],
+    'worker.filesystem.file.read':
+      WORKER_QUERY_DEFINITIONS['worker.filesystem.file.read'],
+    'worker.filesystem.search':
+      WORKER_QUERY_DEFINITIONS['worker.filesystem.search'],
+    'worker.filesystem.link.resolve':
+      WORKER_QUERY_DEFINITIONS['worker.filesystem.link.resolve'],
   },
   instructions: CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   streams: {
     'core.runtime.events':
       CORE_TRANSPORT_STREAM_DEFINITIONS['core.runtime.events'],
+    // W5e: served only by a W5 qualification daemon; production's manifest
+    // lacks it, so the subscriber never attaches there.
+    'core.events.subscribe':
+      CORE_TRANSPORT_STREAM_DEFINITIONS['core.events.subscribe'],
   },
 };
 type D = typeof ELECTRON_DAEMON_DEFINITIONS;
@@ -84,6 +101,16 @@ const unavailable = (message: string): CanopyClientError =>
     retry: { kind: 'never' },
   });
 
+/** Fixed install or build location only; empty when neither is defined. */
+function selectWindowsProcessPath(inputs: ElectronDaemonHostInputs): string {
+  if (inputs.windowsProcessPath !== undefined) return inputs.windowsProcessPath;
+  if (app.isPackaged)
+    return join(process.resourcesPath, 'bin', WINDOWS_PROCESS_FILE);
+  return typeof __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__ === 'string'
+    ? __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__
+    : '';
+}
+
 /** Uses the H1 shared launch policy and the staged opaque native ownership adapter. */
 export async function createElectronDaemonHost(
   inputs: ElectronDaemonHostInputs = {},
@@ -95,24 +122,23 @@ export async function createElectronDaemonHost(
   connect: (options: ConnectOptions) => Promise<ElectronDaemonClient>;
 }> {
   const os = hostPlatformOperatingSystem();
+  // One selection serves both process inspection and the authority principal.
+  const windowsProcessPath =
+    os === 'win32' ? selectWindowsProcessPath(inputs) : undefined;
   const platform = hostPlatformServices(createPlatformEndpointServices(os), {
-    ...(os === 'win32' && {
-      windowsProcessPath:
-        inputs.windowsProcessPath ??
-        (app.isPackaged
-          ? join(process.resourcesPath, 'bin', WINDOWS_PROCESS_FILE)
-          : typeof __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__ === 'string'
-            ? __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__
-            : ''),
-    }),
+    ...(windowsProcessPath !== undefined && { windowsProcessPath }),
   });
   const requestedRoot = resolve(inputs.dataRoot ?? getCanopyDataDir());
   await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
   const { authorityId, canonicalDataRoot: dataRoot } =
-    await deriveLocalAuthorityIdentity({
-      brandId: BRAND.id,
-      dataRoot: requestedRoot,
-    });
+    await deriveLocalAuthorityIdentity(
+      { brandId: BRAND.id, dataRoot: requestedRoot },
+      hostLocalAuthorityObservation(
+        windowsProcessPath
+          ? windowsPrincipalObserver(windowsProcessPath)
+          : undefined,
+      ),
+    );
   const runtimeDirectory = platform.paths.runtimeDirectory({ dataRoot });
   const name = `${daemonName(BRAND)}${os === 'win32' ? '.exe' : ''}`;
   const executable =
@@ -190,7 +216,11 @@ export async function createElectronDaemonHost(
     dataRoot,
     endpointName: 'core',
   });
+  const migration = createElectronMigrationLaunch({
+    enabled: ELECTRON_MIGRATION_ROLE.enabled,
+  });
   const launch = createCanopyDaemonHostLaunch({
+    ...(migration && { migration }),
     dataRoot,
     runtimeMode: inputs.runtimeMode ?? getCanopyRuntimeMode(),
     executable,

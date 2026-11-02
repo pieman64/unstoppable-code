@@ -241,7 +241,14 @@ describe('SharedContainerLinkLandingModal', () => {
       useSharedContainerReplicasStore.setState({
         entries: [
           {
-            container: { ...REF, title: 'checkout-redesign' },
+            container: {
+              ...REF,
+              title: 'checkout-redesign',
+              revision: 1,
+              createdAt: '2026-09-27T00:00:00.000Z',
+              updatedAt: '2026-09-29T00:00:00.000Z',
+              capabilities: ['VIEW'],
+            },
             access: 'direct',
           },
         ],

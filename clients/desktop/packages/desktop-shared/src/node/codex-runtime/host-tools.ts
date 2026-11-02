@@ -1,3 +1,8 @@
+import {
+  ASK_USER_HTTP_TIMEOUT_MS,
+  CANOPY_MCP_TOOL_TIMEOUT_MS,
+  isCanopyAskUserToolName,
+} from '../../lib/canopy-injected-tools';
 import type { JsonValue } from './generated/serde_json/JsonValue';
 import type { DynamicToolCallParams } from './generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from './generated/v2/DynamicToolCallResponse';
@@ -98,15 +103,24 @@ function parseCall(request: unknown): DynamicToolCallParams | undefined {
   });
 }
 
-function boundResponse(
+export type CodexDynamicToolResultClass =
+  | { readonly kind: 'ok'; readonly normalized: DynamicToolCallResponse }
+  | { readonly kind: 'denied'; readonly text: string };
+
+/**
+ * The single bound for every host tool result: what the dispatcher would send,
+ * or the denial it would send instead. Callers that shape a result to fit
+ * (delegation output paging) classify with this same rule.
+ */
+export function classifyCodexDynamicToolResult(
   response: DynamicToolCallResponse,
-): DynamicToolCallResponse {
+): CodexDynamicToolResultClass {
   if (
     !Array.isArray(response.contentItems) ||
     response.contentItems.length > 256 ||
     typeof response.success !== 'boolean'
   )
-    return denied('Invalid host tool result.');
+    return { kind: 'denied', text: 'Invalid host tool result.' };
   let bytes = 0;
   for (const item of response.contentItems) {
     const value =
@@ -118,10 +132,13 @@ function boundResponse(
             ? item.audioUrl
             : undefined;
     if (typeof value !== 'string' || value.length > MAX_RESULT_BYTES)
-      return denied('Invalid or oversized host tool result.');
+      return { kind: 'denied', text: 'Invalid or oversized host tool result.' };
     bytes += Buffer.byteLength(value, 'utf8');
     if (bytes > MAX_RESULT_BYTES)
-      return denied('Host tool result exceeds the output limit.');
+      return {
+        kind: 'denied',
+        text: 'Host tool result exceeds the output limit.',
+      };
   }
   const contentItems = response.contentItems.map((item) => {
     switch (item.type) {
@@ -135,8 +152,20 @@ function boundResponse(
   });
   const result = { success: response.success, contentItems };
   if (Buffer.byteLength(JSON.stringify(result), 'utf8') > MAX_RESULT_BYTES)
-    return denied('Host tool result exceeds the output limit.');
-  return result;
+    return {
+      kind: 'denied',
+      text: 'Host tool result exceeds the output limit.',
+    };
+  return { kind: 'ok', normalized: result };
+}
+
+function boundResponse(
+  response: DynamicToolCallResponse,
+): DynamicToolCallResponse {
+  const classified = classifyCodexDynamicToolResult(response);
+  return classified.kind === 'ok'
+    ? classified.normalized
+    : denied(classified.text);
 }
 
 /** One turn's private dispatcher; no callback or tool authority survives it. */
@@ -165,10 +194,13 @@ export class CodexHostToolDispatcher {
       };
   }
 
-  async run(request: unknown): Promise<DynamicToolCallResponse> {
+  async run(
+    request: unknown,
+    requestSignal?: AbortSignal,
+  ): Promise<DynamicToolCallResponse> {
     if (!this.policy)
       return denied('Dynamic tools are unavailable for this runtime policy');
-    if (this.signal.aborted)
+    if (this.signal.aborted || requestSignal?.aborted)
       return denied('The host tool owner is no longer active.');
     let call: DynamicToolCallParams | undefined;
     try {
@@ -199,7 +231,13 @@ export class CodexHostToolDispatcher {
         : denied('Host tool call identity was reused with different input.');
     if (this.calls.size >= MAX_CALLS_PER_TURN)
       return denied('The host tool call limit was reached.');
-    const response = this.execute(call, this.policy);
+    const response = this.execute(
+      call,
+      this.policy,
+      requestSignal
+        ? AbortSignal.any([this.signal, requestSignal])
+        : this.signal,
+    );
     this.calls.set(call.callId, { fingerprint, response });
     return response;
   }
@@ -207,10 +245,14 @@ export class CodexHostToolDispatcher {
   private execute(
     call: DynamicToolCallParams,
     policy: CodexHostToolPolicy,
+    signal: AbortSignal,
   ): Promise<DynamicToolCallResponse> {
-    // No deadline unless the host sets one: the owner's signal already ends a
-    // call on interrupt, turn completion, disposal and process failure.
-    const timeoutMs = policy.timeoutMs;
+    // Include authorization and queued execution in the same wall-clock lease.
+    const timeoutMs =
+      policy.timeoutMs ??
+      (isCanopyAskUserToolName(call.tool)
+        ? ASK_USER_HTTP_TIMEOUT_MS
+        : CANOPY_MCP_TOOL_TIMEOUT_MS);
     if (
       timeoutMs !== undefined &&
       (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)
@@ -224,7 +266,7 @@ export class CodexHostToolDispatcher {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.signal.removeEventListener('abort', onAbort);
+        signal.removeEventListener('abort', onAbort);
         resolve(response);
       };
       const onAbort = (): void => {
@@ -234,10 +276,14 @@ export class CodexHostToolDispatcher {
       if (timeoutMs !== undefined)
         timer = setTimeout(() => {
           controller.abort();
-          finish(denied('The host tool call exceeded its deadline.'));
+          finish(
+            denied(
+              'The host tool call was stopped at its time limit; its effects may be incomplete.',
+            ),
+          );
         }, timeoutMs);
-      this.signal.addEventListener('abort', onAbort, { once: true });
-      if (this.signal.aborted) {
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
         onAbort();
         return;
       }

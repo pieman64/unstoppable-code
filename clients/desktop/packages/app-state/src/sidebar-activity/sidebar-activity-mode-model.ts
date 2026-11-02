@@ -54,6 +54,8 @@ export interface SidebarActivityStandaloneChat extends SidebarActivityChatFields
   readonly archived?: boolean;
   readonly hasUnread?: boolean;
   readonly hasActiveChat?: boolean;
+  /** The Cowork Work Entry the chat belongs to: its notification space. */
+  readonly workEntryId?: string;
 }
 
 export interface SidebarActivityChatSummary extends SidebarActivityChatFields {
@@ -75,6 +77,15 @@ export interface SidebarActivityInventory {
   readonly chatSummaries: readonly SidebarActivityChatSummary[];
 }
 
+/**
+ * Whether a space's acknowledged notification choice is Mute. A space is a
+ * code worktree, or a Cowork Work Entry in its workspace's worktree slot.
+ */
+export type SidebarActivitySpaceMuted = (
+  workspaceLocalId: string,
+  spaceLocalId: string,
+) => boolean;
+
 /** Everything one build reads. Hosts prepare it after a complete load. */
 export interface SidebarActivityBuildInput {
   readonly inventory: SidebarActivityInventory;
@@ -82,6 +93,12 @@ export interface SidebarActivityBuildInput {
   readonly unreadKeys?: ReadonlySet<string>;
   /** Chat keys with an unsent draft. Only hosts with `chatDrafts` supply it. */
   readonly draftKeys?: ReadonlySet<string>;
+  /**
+   * A muted space's chats never classify as unread (CAN-4378), matching the
+   * tree, which hides its blue dot. A Cowork chat without a Work Entry has no
+   * space to look up and is never masked.
+   */
+  readonly isSpaceMuted?: SidebarActivitySpaceMuted;
   /** Worktree row label; defaults to the branch. */
   readonly worktreeLabel?: (
     workspace: SidebarActivityWorkspace,
@@ -113,6 +130,8 @@ export interface SidebarActivityWorktreeEntry extends SidebarActivityEntryBase {
 export interface SidebarActivityStandaloneEntry extends SidebarActivityEntryBase {
   readonly kind: 'standalone-chat';
   readonly projectLocalId: string;
+  /** The chat's Work Entry, when known; its notification space. */
+  readonly workEntryId?: string;
 }
 
 export type SidebarActivityEntry =
@@ -179,8 +198,12 @@ function classify(
   unread: boolean,
   input: SidebarActivityBuildInput,
   unreplied: boolean,
+  spaceMuted: boolean,
 ): SidebarActivitySection | null {
-  if (input.unreadKeys === undefined ? unread : input.unreadKeys.has(key))
+  if (
+    !spaceMuted &&
+    (input.unreadKeys === undefined ? unread : input.unreadKeys.has(key))
+  )
     return 'unread';
   if (input.draftKeys?.has(key) === true) return 'drafts';
   return unreplied ? 'unreplied' : null;
@@ -258,6 +281,7 @@ function worktreeEntries(
       summary.hasUnread === true,
       input,
       summary.lastMessageRole === 'assistant' && summary.turnActive !== true,
+      input.isSpaceMuted?.(workspaceLocalId, worktreeLocalId) === true,
     );
     if (section === null) continue;
     // The shell carries a selected repo only on multi-repo summaries; every
@@ -302,6 +326,8 @@ function standaloneEntries(
       chat.hasUnread === true,
       input,
       chat.lastMessageRole === 'assistant' && chat.hasActiveChat !== true,
+      chat.workEntryId !== undefined &&
+        input.isSpaceMuted?.(chat.projectLocalId, chat.workEntryId) === true,
     );
     if (section === null) continue;
     entries.push({
@@ -313,6 +339,9 @@ function standaloneEntries(
       workspaceName: workspace.name,
       recencyAt: recencyOf(chat.lastMessageAt, chat.createdAt),
       projectLocalId: chat.projectLocalId,
+      ...(chat.workEntryId !== undefined
+        ? { workEntryId: chat.workEntryId }
+        : {}),
     });
   }
   return entries;

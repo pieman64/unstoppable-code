@@ -1,5 +1,11 @@
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
+import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
+import {
+  SettingsRowsGroup,
+  SettingsRowsRow,
+  SettingsRowsSection,
+} from '../settings/SettingsRows';
 import { Notice, NoticeButton } from '../Notice';
 
 /**
@@ -109,6 +115,12 @@ export interface CodeGraphSummaryViewProps {
   /** Opens Code Graph settings. */
   onOpenSettings: () => void;
   testId?: string;
+  /**
+   * `cards` shows the counts as stat cards, for a dialog. `rows` shows them
+   * as plain settings rows with the update action on the first row, for a
+   * settings page.
+   */
+  layout?: 'cards' | 'rows';
 }
 
 type SummaryReadiness = 'missing' | 'pending' | 'unreadable' | 'measured';
@@ -304,6 +316,169 @@ function RepositoryRow({
   );
 }
 
+/** One settings row: label and hint leading, value or control trailing. */
+function SummaryRow({
+  label,
+  description,
+  trailing,
+  testId,
+}: {
+  label: string;
+  description?: ReactNode;
+  trailing: ReactNode;
+  testId?: string;
+}): JSX.Element {
+  return (
+    <SettingsRowsRow
+      label={label}
+      description={description}
+      control={trailing}
+      dataTestId={testId}
+    />
+  );
+}
+
+/** A section of rows: a text-only heading over one grouped box. */
+function SummarySection({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <SettingsRowsSection title={title} description={description}>
+      <SettingsRowsGroup>{children}</SettingsRowsGroup>
+    </SettingsRowsSection>
+  );
+}
+
+function CountValue({ value }: { value: number }): JSX.Element {
+  return (
+    <span className="text-s tabular-nums fg-secondary">
+      {formatCount(value)}
+    </span>
+  );
+}
+
+function BuildButton({
+  building,
+  label,
+  onBuild,
+  testId,
+}: {
+  building: boolean;
+  label: string;
+  onBuild: () => void;
+  testId: string;
+}): JSX.Element {
+  return (
+    <Button
+      size="compact"
+      onClick={onBuild}
+      disabled={building}
+      data-testid={testId}
+    >
+      {building && <LoadingSpinner decorative />}
+      {label}
+    </Button>
+  );
+}
+
+/** The loaded summary as settings rows: index counts, then health. */
+function SummaryRows({
+  summary,
+  status,
+  buildAction,
+}: {
+  summary: CodeGraphSummaryViewData;
+  status: ReactNode;
+  buildAction: ReactNode;
+}): JSX.Element {
+  const { totals } = summary;
+  return (
+    <div
+      className="flex flex-col gap-10"
+      data-testid="code-graph-summary-details"
+    >
+      <SummarySection title="Index">
+        <SummaryRow
+          label="Code Graph"
+          description={status}
+          trailing={buildAction}
+        />
+        <SummaryRow
+          label="Files"
+          trailing={<CountValue value={totals.fileCount} />}
+          testId="code-graph-metric-files"
+        />
+        <SummaryRow
+          label="Symbols"
+          trailing={<CountValue value={totals.symbolCount} />}
+          testId="code-graph-metric-symbols"
+        />
+        <SummaryRow
+          label="Edges"
+          trailing={<CountValue value={totals.edgeCount} />}
+          testId="code-graph-metric-edges"
+        />
+        <SummaryRow
+          label="Repositories"
+          trailing={<CountValue value={summary.repositories.length} />}
+          testId="code-graph-metric-repositories"
+        />
+      </SummarySection>
+      <SummarySection
+        title="Health"
+        description="High numbers are normal in large repositories. They matter when they grow suddenly."
+      >
+        <SummaryRow
+          label="Unresolved edges"
+          description="Calls the graph could not link to a definition."
+          trailing={<CountValue value={totals.unresolvedEdgeCount} />}
+        />
+        <SummaryRow
+          label="Files with errors"
+          description="Files the parser could not read completely."
+          trailing={<CountValue value={totals.filesWithErrors} />}
+        />
+        <SummaryRow
+          label="Communities"
+          trailing={<CountValue value={totals.communityCount} />}
+        />
+        <SummaryRow
+          label="Flows"
+          trailing={<CountValue value={totals.flowCount} />}
+        />
+      </SummarySection>
+      {summary.repositories.length > 1 && (
+        <SummarySection title="Repositories">
+          {summary.repositories.map((repository) => {
+            const sha = shortGitHead(repository.gitHead);
+            return (
+              <SummaryRow
+                key={repository.repoId}
+                testId={`code-graph-repository-${repository.repoId}`}
+                label={repository.name}
+                description={`Last published ${formatTimestamp(repository.lastBuildAt)}${sha ? ` · ${sha}` : ''}`}
+                trailing={
+                  <span
+                    className={`text-xs font-medium ${repositoryStateClassName(repository.state)}`}
+                  >
+                    {repositoryStateLabel(repository.state)}
+                  </span>
+                }
+              />
+            );
+          })}
+        </SummarySection>
+      )}
+    </div>
+  );
+}
+
 function RetryButton({
   onRetry,
   disabled,
@@ -399,6 +574,7 @@ export function CodeGraphSummaryView({
   onBuild,
   onOpenSettings,
   testId = 'code-graph-summary',
+  layout = 'cards',
 }: CodeGraphSummaryViewProps): JSX.Element {
   // A reload keeps the previous summary in place until the read settles.
   if (phase === 'loading' && !summary) {
@@ -455,16 +631,16 @@ export function CodeGraphSummaryView({
           </Notice>
         )}
         {unreadable && (
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onBuild}
             disabled={building}
             data-testid={`${testId}-build`}
-            className="focus-ring inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:cursor-not-allowed disabled:opacity-60"
           >
             {building && <LoadingSpinner />}
             {building ? 'Updating Code Graph…' : 'Update Code Graph'}
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -519,6 +695,75 @@ export function CodeGraphSummaryView({
           )}
           {measured && <SummaryDetails summary={summary} />}
         </div>
+      ) : layout === 'rows' && readiness === 'measured' ? (
+        <div className="flex flex-col gap-4">
+          {buildErrorMessage && (
+            <Notice
+              intent="destructive"
+              shape="settings"
+              data-testid={`${testId}-build-error`}
+            >
+              {buildErrorMessage}
+            </Notice>
+          )}
+          <SummaryRows
+            summary={summary}
+            status={
+              building ? (
+                buildingLabel
+              ) : summary.message ? (
+                <span
+                  className={
+                    summary.state === 'error' ? 'fg-destructive' : undefined
+                  }
+                  data-testid={`${testId}-message`}
+                >
+                  {summary.message}
+                </span>
+              ) : (
+                `Updated ${formatTimestamp(summary.lastBuildAt)}`
+              )
+            }
+            buildAction={
+              <BuildButton
+                building={building}
+                label="Update"
+                onBuild={onBuild}
+                testId={`${testId}-build`}
+              />
+            }
+          />
+        </div>
+      ) : layout === 'rows' && readiness === 'missing' ? (
+        <div className="flex flex-col gap-4" data-testid={`${testId}-missing`}>
+          {buildErrorMessage && (
+            <Notice
+              intent="destructive"
+              shape="settings"
+              data-testid={`${testId}-build-error`}
+            >
+              {buildErrorMessage}
+            </Notice>
+          )}
+          <SummarySection title="Index">
+            <SummaryRow
+              label="Code Graph"
+              description={
+                building
+                  ? buildingLabel
+                  : 'No Code Graph has been generated yet.'
+              }
+              trailing={
+                <BuildButton
+                  building={building}
+                  label="Generate"
+                  onBuild={onBuild}
+                  testId={`${testId}-build`}
+                />
+              }
+            />
+          </SummarySection>
+        </div>
       ) : readiness === 'missing' ? (
         <div className="space-y-3" data-testid={`${testId}-missing`}>
           <p className="text-s fg-secondary">
@@ -533,16 +778,16 @@ export function CodeGraphSummaryView({
               {buildErrorMessage}
             </Notice>
           )}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onBuild}
             disabled={building}
             data-testid={`${testId}-build`}
-            className="focus-ring inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:cursor-not-allowed disabled:opacity-60"
           >
             {building && <LoadingSpinner />}
             {building ? buildingLabel : buildActionLabel}
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="space-y-4">
@@ -581,16 +826,16 @@ export function CodeGraphSummaryView({
               {buildErrorMessage}
             </Notice>
           )}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onBuild}
             disabled={building}
             data-testid={`${testId}-build`}
-            className="focus-ring inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:cursor-not-allowed disabled:opacity-60"
           >
             {building && <LoadingSpinner />}
             {building ? buildingLabel : buildActionLabel}
-          </button>
+          </Button>
         </div>
       )}
     </div>

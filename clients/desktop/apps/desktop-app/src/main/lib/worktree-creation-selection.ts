@@ -58,6 +58,11 @@ export interface WorktreeCreationSelection {
 
 export type WorktreeCreationRefusal =
   | 'branch-reserved'
+  | 'invalid-branch-name'
+  | 'branch-not-found'
+  | 'branch-checked-out'
+  | 'base-not-found'
+  | 'base-task-detached'
   | 'checkout-reserved'
   | 'read-only-scope'
   | 'invalid-selection'

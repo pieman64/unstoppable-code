@@ -15,10 +15,9 @@
 //
 // Testids exercised:
 //   - `share-pipeline-dependencies`            -> section root + data-state
-//   - `share-pipeline-dependencies-toggle`     -> expands the collapsed review
+//   - `share-pipeline-dependencies-help`       -> names what resolved
 //   - `share-pipeline-dependency-problems`     -> grouped problem list
 //   - `share-pipeline-dependencies-empty`      -> the empty state that must NOT render
-//   - `share-pipeline-dependencies-list`       -> what resolved anyway
 //   - `share-pipeline-dependency-problems-dismiss-*` -> per-row inline escape hatch
 //   - `share-pipeline-dependency-problems-dismissed-*` -> audit disclosure
 import { mkdtempSync } from 'node:fs';
@@ -81,16 +80,15 @@ test('blocked pipeline share groups problems beside what still resolved', async 
     });
 
     // 1. The contradiction: the empty state cannot render next to content.
-    //    The review is collapsed by default, so expand it before checking
-    //    what resolved.
-    await window.getByTestId('share-pipeline-dependencies-toggle').click();
+    //    What resolved is named in the tooltip of the help icon.
     await expect(
       window.getByTestId('share-pipeline-dependencies-empty'),
     ).toHaveCount(0);
+    await window.getByTestId('share-pipeline-dependencies-help').hover();
     await expect(
-      window.getByTestId('share-pipeline-dependencies-list'),
-    ).toBeVisible();
-    await expect(dependencyReview).toContainText('/open-pr');
+      window.getByTestId('share-pipeline-dependencies-help-details'),
+    ).toContainText('/open-pr');
+    await window.mouse.move(0, 0);
 
     // 2. Path-shaped prose never becomes a problem; the real miss becomes one
     //    row carrying both of its steps.

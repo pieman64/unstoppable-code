@@ -21,6 +21,7 @@ import {
   writeGitHubCloneAuthShim,
 } from './githubCloneAuthFixture.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { startPostHogCapture } from './posthogCapture.mjs';
 import {
   catalogProject,
   openSetup,
@@ -206,12 +207,26 @@ function seedBareRepository(userDataDir) {
 for (const scenario of [
   { name: 'preClone' },
   { name: 'cloneAuth' },
+  { name: 'cloneAuthPostHog' },
   { name: 'retryFails' },
   { name: 'cancel' },
   { name: 'notFound' },
 ]) {
   test(`CAN-4466 Home link ${scenario.name}`, async () => {
     test.setTimeout(150_000);
+    const telemetry = scenario.name === 'cloneAuthPostHog';
+    test.skip(
+      telemetry && !process.env.CANOPY_POSTHOG_STUB_URL,
+      'Requires the opt-in local PostHog build',
+    );
+    const collector = telemetry ? await startPostHogCapture() : null;
+    const sends = () =>
+      collector?.events.filter(
+        (event) =>
+          event.event === 'chat:message_send' &&
+          event.properties?.chat_surface === 'home',
+      ) ?? [];
+    const cloneSucceeds = scenario.name === 'cloneAuth' || telemetry;
     const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can-4466-home-'));
     seedDemoWorkspaces({
       userDataDir,
@@ -225,7 +240,23 @@ for (const scenario of [
     });
     if (scenario.name === 'notFound') git.setFailure('notfound');
     else if (scenario.name !== 'preClone') git.setFailure('auth');
-    const { electronApp } = await launchCanopy({ userDataDir, env: git.env });
+    const { electronApp } = await launchCanopy({
+      userDataDir,
+      env: {
+        ...git.env,
+        ...(telemetry
+          ? {
+              CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+                'canopy-desktop-posthog-capture-enabled': true,
+              }),
+            }
+          : {}),
+      },
+      ...(telemetry
+        ? { electronArgs: ['--disable-blink-features=AutomationControlled'] }
+        : {}),
+    });
+    let closed = false;
     try {
       await installGitHubConnectStubs(electronApp, {
         repository: REPOSITORY,
@@ -280,14 +311,15 @@ for (const scenario of [
       }
 
       await expect(offer).toBeVisible({ timeout: 30_000 });
+      if (telemetry) await expect.poll(() => sends().length).toBe(1);
       await expect(error).toHaveCount(0);
       await expect(editor).toContainText(prompt);
       expect(git.arguments()).toEqual([REMOTE_URL]);
       await setGitHubConnected(electronApp, true);
-      if (scenario.name === 'cloneAuth') git.setFailure(null);
+      if (cloneSucceeds) git.setFailure(null);
       await closeOffer(window, scenario.name === 'cancel');
 
-      if (scenario.name === 'cloneAuth') {
+      if (cloneSucceeds) {
         // One automatic resend, without pressing Try again.
         await expect(brandNew).toBeVisible({ timeout: 30_000 });
         await expect(error).toHaveCount(0);
@@ -311,8 +343,16 @@ for (const scenario of [
         'github-connect-offer-home-link-add-project',
       );
       expect(git.arguments()).toHaveLength(expectedClones);
+      if (collector) {
+        // Closing the window flushes the SDK queue, including any event
+        // incorrectly recorded by the automatic GitHub-connect resume.
+        await closeCanopy(electronApp, userDataDir);
+        closed = true;
+        expect(sends()).toHaveLength(1);
+      }
     } finally {
-      await closeCanopy(electronApp, userDataDir);
+      if (!closed) await closeCanopy(electronApp, userDataDir);
+      if (collector) await collector.shutdown();
     }
   });
 }

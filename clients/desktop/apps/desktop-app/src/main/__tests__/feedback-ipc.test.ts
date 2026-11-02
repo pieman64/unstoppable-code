@@ -73,6 +73,18 @@ describe('registerFeedbackHandlers', () => {
     expect(prepareFeedbackBundle).toHaveBeenCalledWith(request);
   });
 
+  it('preserves offline export preparation failure', async () => {
+    const failure = new Error('archive preparation failed');
+    jest.mocked(prepareFeedbackBundle).mockRejectedValueOnce(failure);
+    registerFeedbackHandlers();
+    await expect(
+      getHandler(IPC_CHANNELS.feedbackPrepare)(
+        {},
+        { description: 'offline', area: 'overview' },
+      ),
+    ).rejects.toBe(failure);
+  });
+
   it('registers feedback:submit', () => {
     registerFeedbackHandlers();
 

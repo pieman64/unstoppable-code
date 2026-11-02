@@ -5,12 +5,10 @@ import type { TeamPageProps } from './team-page';
 export type TeamPageDataProps = Pick<
   TeamPageProps,
   | 'initialDetail'
-  | 'organizations'
   | 'viewerEmail'
   | 'billingEnabled'
   | 'memoryEnabled'
   | 'projectsEnabled'
-  | 'billingNeedsAttention'
   | 'freeAccess'
   | 'lapsed'
   | 'mobileBrowser'
@@ -27,12 +25,10 @@ export function teamPagePropsFromData(
 ): TeamPageDataProps {
   return {
     initialDetail: data.detail,
-    organizations: data.organizations,
     viewerEmail: data.viewerEmail,
     billingEnabled: data.billingEnabled,
     memoryEnabled: data.memoryEnabled,
     projectsEnabled: data.projectsEnabled,
-    billingNeedsAttention: data.billingNeedsAttention,
     freeAccess: data.freeAccess,
     lapsed: data.lapsed,
     mobileBrowser: data.mobileBrowser,

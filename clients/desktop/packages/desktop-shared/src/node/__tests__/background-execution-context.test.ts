@@ -512,7 +512,7 @@ it('requires both lane access and the authorized snapshot for host-resolved chil
   expect(resolvePipelineResource).toHaveBeenCalledWith('shared-child', parent);
 
   resolvePipelineResource.mockRejectedValue(
-    new Error('Pipeline unavailable (access-removed)'),
+    new Error('Workflow unavailable (access-removed)'),
   );
   await expect(childResolver.resolveChildPipeline(args)).rejects.toThrow(
     'access-removed',
@@ -562,7 +562,7 @@ it.each(['user', 'bundled'])(
   async (source): Promise<void> => {
     if (source !== 'user' && source !== 'bundled')
       throw new Error('Unexpected source');
-    const child = { name: 'Child', jobs: {} };
+    const child: Pipeline = { name: 'Child', on: 'dispatch', jobs: {} };
     const resolve = jest
       .spyOn(childResolver, 'resolveChildPipeline')
       .mockResolvedValue({
@@ -579,8 +579,14 @@ it.each(['user', 'bundled'])(
           info: {
             id: 'child',
             name: 'Child',
+            filename: 'child.yaml',
+            description: '',
+            icon: '',
+            createdAt: '',
+            updatedAt: '',
             source,
-            path: '/stored/child.yaml',
+            readonly: false,
+            filePath: '/stored/child.yaml',
           },
         },
       });

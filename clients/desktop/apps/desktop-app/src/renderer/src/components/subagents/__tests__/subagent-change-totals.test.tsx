@@ -4,7 +4,10 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { SubagentNode } from '@canopy/agent-transcript';
 import type { SubagentChangeTotalsLookup } from '@canopy/ui-app/subagents';
-import { readSubagentWorktreeSummary } from '../subagent-commands';
+import {
+  readSubagentWorktreeSummary,
+  type SubagentWorktreeSummaryReadResult,
+} from '../subagent-commands';
 import {
   resetSubagentChangeTotalsForTests,
   useSubagentChangeTotals,
@@ -23,17 +26,21 @@ const options = {
   showWorkspaceDetails: true,
 };
 
-function summary(filesChanged: number): {
-  readonly ok: true;
-  readonly summary: {
-    readonly filesChanged: number;
-    readonly additions: number;
-    readonly deletions: number;
-  };
-} {
+function summary(filesChanged: number): SubagentWorktreeSummaryReadResult {
   return {
     ok: true,
-    summary: { filesChanged, additions: filesChanged * 10, deletions: 1 },
+    summary: {
+      checkout: 'retained',
+      startingRevision: 'abc1234',
+      filesChanged,
+      additions: filesChanged * 10,
+      deletions: 1,
+      commitsAhead: 0,
+      untrackedFiles: 0,
+      applyState: 'not_applied',
+      topFiles: [],
+      truncated: false,
+    },
   };
 }
 

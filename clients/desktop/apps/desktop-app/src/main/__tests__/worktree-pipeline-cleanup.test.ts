@@ -251,7 +251,7 @@ describe('cleanupWorktreePipelines', () => {
     expect(result.relocatedCount).toBe(0);
     expect(result.failedRelocationIds).toEqual(['exec-copy-fails']);
     expect(result.warnings).toEqual([
-      "Failed to archive pipeline execution 'exec-copy-fails' artifacts; the live artifacts were preserved.",
+      "Failed to archive workflow execution 'exec-copy-fails' artifacts; the live artifacts were preserved.",
     ]);
     expect(fs.existsSync(path.join(tempDir, 'exec-copy-fails.json'))).toBe(
       true,
@@ -323,7 +323,7 @@ describe('cleanupWorktreePipelines', () => {
       badRuntime,
     );
     expect(result.warnings).toEqual([
-      'Failed to list pipeline executions for cleanup',
+      'Failed to list workflow executions for cleanup',
     ]);
   });
 
@@ -374,6 +374,9 @@ describe('cleanupWorktreePipelines', () => {
     expect(result.relocatedCount).toBe(1);
     expect(result.failedRelocationIds).toEqual([]);
     expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(
+      /^Skipped 2 unreadable workflow execution state file\(s\) left in place: /,
+    );
     expect(result.warnings[0]).toContain('malformed.json');
     expect(result.warnings[0]).toContain('pr-exact6-r3-20260716T020318Z.json');
     expect(fs.existsSync(path.join(archiveDir, 'exec-survivor.json'))).toBe(

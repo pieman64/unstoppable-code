@@ -386,14 +386,17 @@ function renderShareDialog(agent: AgentModelDefinition): void {
 }
 
 describe('ShareAgentModal from the Marketplace', () => {
-  it('closes the share modal and announces the public link in a toast', async () => {
+  it('keeps the share modal open on the public link until Done', async () => {
     const agent = agentDef();
     mockAgentsState = baseAgentsState({ agents: [agent] });
     renderShareDialog(agent);
     await flushShareDialog();
 
-    // Public is selected automatically when it is the only usable audience.
-    expect(buttonByTestId('share-agent-scope-public')).toBeNull();
+    // Public is selected automatically when it is the only usable audience;
+    // the other pills stay visible, disabled.
+    expect(
+      buttonByTestId('share-agent-scope-public')?.getAttribute('aria-checked'),
+    ).toBe('true');
     expect(byTestId('share-agent-scope-description')?.textContent).toContain(
       'public',
     );
@@ -407,12 +410,19 @@ describe('ShareAgentModal from the Marketplace', () => {
     // A public share is stored as `private` with a published public link.
     expect(createRequest?.shareScope).toBe('private');
     expect(mockPublishAgentPublicShare).toHaveBeenCalledWith('shared-agent-id');
+    // The dialog stays open on its success notice instead of toasting.
+    expect(byTestId('share-agent-modal')).not.toBeNull();
+    expect(mockPostShareToast).not.toHaveBeenCalled();
+    expect(byTestId('share-agent-success')?.textContent).toContain(
+      'Agent is now public',
+    );
+    expect(byTestId('share-agent-link')?.textContent).toBe(
+      'https://cloud.example.test/share/agents/public-share-id',
+    );
+
+    await clickAsync(buttonByTestId('share-agent-done'));
     expect(byTestId('share-agent-modal')).toBeNull();
-    expect(mockPostShareToast).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Agent is now public',
-      link: 'https://cloud.example.test/share/agents/public-share-id',
-    });
+    expect(mockPostShareToast).not.toHaveBeenCalled();
   });
 
   it('updates an existing shared agent with the stored remote content hash', async () => {
@@ -519,7 +529,8 @@ describe('AgentModelModal validation', () => {
 
   function renderModal(
     agent: AgentModelDefinition | null,
-    onSave: (request: unknown) => Promise<void> = () => Promise.resolve(),
+    onSave: (request: SaveAgentModelRequest) => Promise<void> = () =>
+      Promise.resolve(),
   ): void {
     render(
       createElement(AgentModelModal, {

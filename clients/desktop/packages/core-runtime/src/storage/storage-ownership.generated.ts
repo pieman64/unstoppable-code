@@ -32,6 +32,53 @@ export const STORAGE_OWNERSHIP = [
     "workPackage": "W2"
   },
   {
+    "id": "operation_ledger",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 2,
+    "backupPolicy": "required_before_flip",
+    "workPackage": "W6",
+    "backupShape": "namespace_backup"
+  },
+  {
+    "id": "preferences",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/preferences-store"
+    ]
+  },
+  {
+    "id": "startup_migrations",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/migrations"
+    ]
+  },
+  {
+    "id": "workspace_approvals",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/approvals-persistence"
+    ]
+  },
+  {
     "id": "workspace_index",
     "transitionOwner": "legacy",
     "currentWriters": [

@@ -1,3 +1,8 @@
+import {
+  isTranscriptReadActionType,
+  dispatchAdvisorTranscriptRead,
+} from './transcript-read-actions';
+import type { AppAdvisorDispatchAction } from './definitions';
 import { z, ZodError } from 'zod';
 import {
   projectMessageControlActionSchema,
@@ -146,7 +151,7 @@ export interface AppAdvisorToolRuntime extends CanopyInjectedToolRuntime {
   ): Promise<unknown>;
   requestUiState(): Promise<AppAdvisorUiStateEnvelope>;
   dispatchRendererAction(
-    action: AppAdvisorAction,
+    action: AppAdvisorDispatchAction,
     expectedUiRevision?: number,
     requestId?: string,
     signal?: AbortSignal,
@@ -307,7 +312,6 @@ function getInlineWatchers(
   action: AppAdvisorAction,
 ): AppAdvisorInlineWatcherSetup[] | null {
   if (
-    action.type === 'pipeline.run' ||
     action.type === 'automation.create' ||
     action.type === 'automation.run_now'
   ) {
@@ -318,7 +322,6 @@ function getInlineWatchers(
 
 function stripInlineWatchers(action: AppAdvisorAction): AppAdvisorAction {
   if (
-    action.type === 'pipeline.run' ||
     action.type === 'automation.create' ||
     action.type === 'automation.run_now'
   ) {
@@ -327,25 +330,6 @@ function stripInlineWatchers(action: AppAdvisorAction): AppAdvisorAction {
     return rest;
   }
   return action;
-}
-
-function readExecutionId(result: unknown): string | null {
-  if (!isRecord(result)) return null;
-  const direct = result.executionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const data = result.data;
-  if (isRecord(data) && typeof data.id === 'string' && data.id.length > 0) {
-    return data.id;
-  }
-  const execution = result.execution;
-  if (
-    isRecord(execution) &&
-    typeof execution.id === 'string' &&
-    execution.id.length > 0
-  ) {
-    return execution.id;
-  }
-  return null;
 }
 
 function buildInlineWatcherTarget(
@@ -366,15 +350,6 @@ function buildInlineWatcherTarget(
         projectId: action.projectId,
         chatId: action.chatId,
       };
-    case 'pipeline.run': {
-      const executionId = readExecutionId(result);
-      return {
-        kind: 'worktree_pipeline',
-        projectId: action.projectId,
-        worktreeId: action.worktreeId,
-        ...(executionId ? { executionId } : { pipelineId: action.pipelineId }),
-      };
-    }
     case 'automation.create': {
       const automationId = readCreatedAutomationId(result);
       return automationId ? { kind: 'automation', automationId } : null;
@@ -416,7 +391,6 @@ function triggerForInlineWatcherTarget(
       return 'automation_run';
     case 'github_workflow_runs':
     case 'github_pull_requests':
-    case 'managed_delegation':
     case 'scheduled_wakeup':
     case 'command_watch':
       throw new Error('This watcher type cannot be created inline.');
@@ -446,6 +420,7 @@ export function createAppAdvisorToolRuntime(
     // Hosted settings live in the main window, even when the Advisor runs in
     // its own window.
     settingsWindow: () => surfaces.getMainWindow(),
+    appAdvisorPipelineWindow: surfaces.getMainWindow,
     setAutoArchiveForCurrentChat: async (enabled): Promise<void> => {
       const data = {
         type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
@@ -478,7 +453,7 @@ export function createAppAdvisorToolRuntime(
               destination.worktreeId === APP_ADVISOR_WORKTREE_ID
             ) {
               throw new Error(
-                'Starting an App Advisor fork requires a Work Entry chat.',
+                'Starting an Orchestrator fork requires a Work Entry chat.',
               );
             }
             // Deferred: the split-agent runtime pulls in worktree creation and
@@ -615,11 +590,19 @@ export function createAppAdvisorToolRuntime(
     },
 
     dispatchRendererAction: async (
-      action: AppAdvisorAction,
+      action: AppAdvisorDispatchAction,
       expectedUiRevision?: number,
       requestId = randomUUID(),
       signal?: AbortSignal,
     ): Promise<AppAdvisorActionResponse> => {
+      if (isTranscriptReadActionType(action)) {
+        return dispatchAdvisorTranscriptRead(
+          action,
+          runtime,
+          requestId,
+          signal,
+        );
+      }
       if (isAppAdvisorCodeGraphAction(action)) {
         // Reuse the worktree tools' live feature gate, target guards, input
         // validation and worker-backed graph access. Never use Advisor's home.
@@ -1403,14 +1386,7 @@ export function createAppAdvisorToolRuntime(
               {
                 watchers: inlineWatchers.map((watcher) => ({
                   trigger: triggerForInlineWatcherTarget(target),
-                  target:
-                    target.kind === 'worktree_pipeline' &&
-                    watcher.terminalStatuses?.length
-                      ? {
-                          ...target,
-                          terminalStatuses: watcher.terminalStatuses,
-                        }
-                      : target,
+                  target,
                   ...(watcher.label ? { label: watcher.label } : {}),
                   ...(watcher.followUpInstruction
                     ? { followUpInstruction: watcher.followUpInstruction }

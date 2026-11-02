@@ -251,6 +251,7 @@ describe('PipelinesPage edit shell (CAN-4072)', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'api', {
       configurable: true,
+      writable: true,
       value: {
         getWorktreePath: jest.fn(),
         loadPreferences: jest.fn(() => Promise.resolve({})),
@@ -488,7 +489,7 @@ describe('PipelinesPage edit shell (CAN-4072)', () => {
 
     await expect(
       listApi().openDuplicate({ ...USER_REVIEW, id: 'bundled-review' }),
-    ).rejects.toThrow('The pipeline could not be duplicated.');
+    ).rejects.toThrow('The workflow could not be duplicated.');
     expect(useNavigationStore.getState().workflowEdit).toMatchObject({
       pipelineId: 'bundled-review',
     });
@@ -520,15 +521,16 @@ describe('PipelinesPage edit shell (CAN-4072)', () => {
       await renderPage();
 
       type Opened = PipelineEditorControllerTarget | null;
-      let first: Opened = null;
-      let second: Opened = null;
+      const openedTargets: Opened[] = [];
       await act(async () => {
-        first = await pageController().openNewDraft();
+        openedTargets.push(await pageController().openNewDraft());
       });
       const firstShown = useNavigationStore.getState().workflowEdit;
       await act(async () => {
-        second = await pageController().openNewDraft();
+        openedTargets.push(await pageController().openNewDraft());
       });
+      const first = openedTargets[0] ?? null;
+      const second = openedTargets[1] ?? null;
 
       expect(first?.pipelineId).toBeNull();
       expect(typeof first?.draftKey).toBe('string');
@@ -663,6 +665,7 @@ describe('PipelinesPage row share races', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'api', {
       configurable: true,
+      writable: true,
       value: {
         getWorktreePath: jest.fn(),
         loadPreferences: jest.fn(() => Promise.resolve({})),
@@ -1028,6 +1031,7 @@ describe('PipelinesPage assistant drawer default (CAN-3980)', () => {
   function stubPreferences(preferences: Record<string, unknown>): void {
     Object.defineProperty(window, 'api', {
       configurable: true,
+      writable: true,
       value: {
         getWorktreePath: jest.fn(),
         loadPreferences: jest.fn(() => Promise.resolve(preferences)),

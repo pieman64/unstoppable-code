@@ -27,8 +27,8 @@ export interface WorktreeRemovalConfirmDialogProps {
   /** Removal cannot run (active session, split lock, identity drift). */
   blocked: boolean;
   /**
-   * The branch handling an App Advisor request asked for. Its button is
-   * marked and the hint names it; the user still makes the final choice.
+   * The branch handling an App Advisor request asked for. It presets the
+   * branch switch and the note names it; the user still makes the final choice.
    */
   requestedDeleteBranch?: boolean;
   /** Suffix for the automation ids on a pinned row copy. */
@@ -65,7 +65,8 @@ export function WorktreeRemovalConfirmDialog({
   });
   return (
     <WorktreeRemovalDialog
-      title={labels.dialogTitle}
+      confirmLabel={labels.dialogConfirmLabel}
+      destructive={labels.dialogDestructive}
       identity={{
         workspaceName: target.workspaceName,
         worktreeName: target.worktreeName,

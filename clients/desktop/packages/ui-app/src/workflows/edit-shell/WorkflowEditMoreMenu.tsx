@@ -21,6 +21,8 @@ export interface WorkflowEditMoreMenuProps {
   readonly name: string;
   /** Visible items in menu order. Delete sits below a divider. */
   readonly items: readonly WorkflowEditMenuItem[];
+  /** The trigger's size, as `DetailMoreMenu` takes it. */
+  readonly size?: 'compact';
 }
 
 /**
@@ -30,12 +32,14 @@ export interface WorkflowEditMoreMenuProps {
 export function WorkflowEditMoreMenu({
   name,
   items,
+  size,
 }: WorkflowEditMoreMenuProps): JSX.Element | null {
   return (
     <DetailMoreMenu
       name={name}
       triggerTestId="workflow-edit-more"
       menuTestId="workflow-edit-menu"
+      size={size}
       items={items.map((item) => ({
         id: item.id,
         label: item.label,

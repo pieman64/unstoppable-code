@@ -1,3 +1,4 @@
+import { AsyncResource } from 'node:async_hooks';
 import { closeSync } from 'node:fs';
 import { Socket } from 'node:net';
 
@@ -112,24 +113,28 @@ export function openSecurePipe(
     closed = true;
     native.close(server);
   };
+  // Bound to this call's async context: Node 24's N-API threadsafe-function
+  // callback does not restore the AsyncLocalStorage frame, so connections
+  // (and their socket events) would otherwise escape the caller's closure run.
+  const deliver = AsyncResource.bind((error: unknown, fd: unknown): void => {
+    if (closed || failed) return;
+    if (error !== null || typeof fd !== 'number' || !Number.isInteger(fd)) {
+      failed = true;
+      return;
+    }
+    let socket: Socket;
+    try {
+      socket = new Socket({ fd, readable: true, writable: true });
+    } catch {
+      closeSync(fd);
+      return;
+    }
+    admit(socket);
+  });
   try {
     if (evaluatePipeDescriptor(native.describe(server)) !== null)
       throw new Error('Pipe access unverified.');
-    native.listen(server, (error, fd) => {
-      if (closed || failed) return;
-      if (error !== null || typeof fd !== 'number' || !Number.isInteger(fd)) {
-        failed = true;
-        return;
-      }
-      let socket: Socket;
-      try {
-        socket = new Socket({ fd, readable: true, writable: true });
-      } catch {
-        closeSync(fd);
-        return;
-      }
-      admit(socket);
-    });
+    native.listen(server, deliver);
   } catch (error) {
     close();
     throw error;

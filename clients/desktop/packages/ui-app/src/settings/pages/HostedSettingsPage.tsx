@@ -1,16 +1,19 @@
 'use client';
 
-import { Component, Suspense, type JSX, type ReactNode } from 'react';
+import { Component, Suspense, useState, type JSX, type ReactNode } from 'react';
 import {
+  settingsRouteKey,
   useSettingsPage,
   useSettingsStoreApi,
 } from '@canopy/app-state/settings';
 import {
   settingsPageDataKindForRoute,
   type OrganizationSettingsRoute,
+  type SettingsErrorPayload,
   type SettingsPageData,
   type SettingsRoute,
 } from '@canopy/protocol/settings';
+import { useRetry } from '@canopy/ui-shared/components/useRetry';
 import { AccountSettingsFrame } from '../account/AccountSettingsFrame';
 import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 import { OrganizationListHeader } from '../organization/organization-list-header';
@@ -105,6 +108,10 @@ function RenderHostedPage({
     }
     case 'account.labs': {
       const Page = HOSTED_SETTINGS_PAGES['account.labs'];
+      return <Page route={route} page={page} />;
+    }
+    case 'account.appearance': {
+      const Page = HOSTED_SETTINGS_PAGES['account.appearance'];
       return <Page route={route} page={page} />;
     }
     case 'account.integrations': {
@@ -302,12 +309,57 @@ export function HostedSettingsPageContent({
   const store = useSettingsStoreApi();
   const entry = useSettingsPage(route);
   const view = useStalePage(route, entry);
+  const reload = useRetry(() =>
+    store.getState().loadPage(route, { force: true }),
+  );
+  // Try again keeps the failure on screen, its capsule spinning, until the
+  // reload settles, instead of blanking to the page skeleton.
+  const routeKey = settingsRouteKey(route);
+  const [lastFailure, setLastFailure] = useState<{
+    readonly routeKey: string;
+    readonly error: SettingsErrorPayload;
+  } | null>(null);
+  if (view.status === 'error' && lastFailure?.error !== view.error)
+    setLastFailure({ routeKey, error: view.error });
+  // The content stays mounted across organization tabs: a retry belongs to
+  // the route it was started on, and only that route's failure spins.
+  const [retryRouteKey, setRetryRouteKey] = useState<string | null>(null);
+  const retryingHere = reload.retrying && retryRouteKey === routeKey;
+  const retryHere = (): void => {
+    setRetryRouteKey(routeKey);
+    reload.retry();
+  };
   const retry = (): void => {
     void store.getState().loadPage(route, { force: true });
+  };
+  const renderFailure = (error: SettingsErrorPayload): JSX.Element => {
+    const failure = (
+      <HostedSettingsErrorState
+        code={error.code}
+        onRetry={retryHere}
+        retrying={retryingHere}
+        {...recovery}
+      />
+    );
+    const tabRoute = organizationTabRoute(route);
+    return (
+      <>
+        {renderFrame(
+          route,
+          tabRoute === null ? (
+            failure
+          ) : (
+            <OrganizationSettingsPlaceholder route={tabRoute} body={failure} />
+          ),
+        )}
+      </>
+    );
   };
 
   switch (view.status) {
     case 'loading':
+      if (retryingHere && lastFailure?.routeKey === routeKey)
+        return renderFailure(lastFailure.error);
       return (
         <>
           {renderFrame(
@@ -319,31 +371,8 @@ export function HostedSettingsPageContent({
           )}
         </>
       );
-    case 'error': {
-      const failure = (
-        <HostedSettingsErrorState
-          code={view.error.code}
-          onRetry={retry}
-          {...recovery}
-        />
-      );
-      const tabRoute = organizationTabRoute(route);
-      return (
-        <>
-          {renderFrame(
-            route,
-            tabRoute === null ? (
-              failure
-            ) : (
-              <OrganizationSettingsPlaceholder
-                route={tabRoute}
-                body={failure}
-              />
-            ),
-          )}
-        </>
-      );
-    }
+    case 'error':
+      return renderFailure(view.error);
     case 'page': {
       const resetKey = `${view.data.kind}:${view.revision}`;
       return (

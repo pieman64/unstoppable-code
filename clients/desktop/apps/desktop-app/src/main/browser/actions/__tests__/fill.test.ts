@@ -3,6 +3,7 @@ import { JSDOM } from 'jsdom';
 import type { BrowserCdpSend } from '../actionability';
 import { ActionLane, type ActionLaneContext } from '../action-lane';
 import { FormActionError } from '../form-action';
+import type { FocusDispatchResult } from '../input-dispatch';
 import { NORMALIZED_INPUT_VALUE_FUNCTION, runFill } from '../fill';
 import type { ResolvedActionTarget } from '../../frames/action-targets';
 
@@ -1317,12 +1318,13 @@ describe('browser fill action', () => {
   });
 
   it('does not focus or type again while the user is picking an element', async () => {
-    const focus = jest.fn(() =>
-      Promise.resolve({
-        focused: true,
-        completed: true,
-        inputMode: 'trusted' as const,
-      }),
+    const focusResult: FocusDispatchResult = {
+      focused: true,
+      completed: true,
+      inputMode: 'trusted',
+    };
+    const focus = jest.fn<Promise<FocusDispatchResult>, []>(() =>
+      Promise.resolve(focusResult),
     );
     const { send, calls } = harness([
       state(),

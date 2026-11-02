@@ -28,7 +28,7 @@ test('managed delegation settings location', async () => {
     const setting = window.getByTestId('managed-delegation-settings');
     await expect(
       window.getByTestId('settings-managed-delegation-mode'),
-    ).toHaveValue('off');
+    ).toHaveAttribute('data-value', 'off');
     mkdirSync(captureDir, { recursive: true });
     await setting.screenshot({
       path: path.join(captureDir, `section-${stage}.png`),

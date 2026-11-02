@@ -12,6 +12,7 @@ import {
 } from '../hydration';
 import { hasPendingQuestionForChat } from '../pending-questions';
 import { isScopeRevisionedLive } from './revisioned';
+import { tagStatusWrite } from '../runtime-divergence';
 import {
   fireChatActivityNotification,
   getVisibleWorktreeKey,
@@ -162,6 +163,13 @@ export const createQuestionsSlice: StateCreator<
       let nextPendingQuestions = state.pendingQuestions;
       if (wc) {
         if (response.accepted) {
+          // Canonical runtime projects `awaiting_input` as streaming and
+          // settles the turn itself; only legacy scopes resume locally.
+          const canonicalOwnsStatus = isScopeRevisionedLive(
+            state,
+            pq.projectId,
+            pq.worktreeId,
+          );
           let tabsChanged = false;
           const tabs = wc.tabs.map((tab) => {
             if (tab.id !== pq.chatId) {
@@ -173,7 +181,10 @@ export const createQuestionsSlice: StateCreator<
               `question:${requestId}`,
             );
             const shouldStream =
-              resumedMessages !== tab.messages && tab.status !== 'streaming';
+              !canonicalOwnsStatus &&
+              resumedMessages !== tab.messages &&
+              tab.status !== 'streaming';
+            if (shouldStream) tagStatusWrite(tab.id, 'question-answer');
             if (resumedMessages === tab.messages && !shouldStream) {
               return tab;
             }
@@ -395,9 +406,13 @@ export const createQuestionsSlice: StateCreator<
                       ? { unread: true, attentionDismissedAt: undefined }
                       : {}),
                     // Only a transition into unread is attributable to this
-                    // question; an already-unread tab keeps whatever raised it.
+                    // question; an already-unread tab keeps whatever raised it,
+                    // and a manual mark left over from before is dropped.
                     ...(shouldUpdateUnread
-                      ? { unreadRaisedByQuestion: true }
+                      ? {
+                          unreadRaisedByQuestion: true,
+                          unreadMarkedManually: undefined,
+                        }
                       : {}),
                   }
                 : tab;

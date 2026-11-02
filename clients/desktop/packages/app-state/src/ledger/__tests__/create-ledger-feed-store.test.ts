@@ -15,6 +15,7 @@ import type {
   LedgerViewReceipt,
   LedgerViewResult,
   LedgerViewScope,
+  LedgerTaskViewScope,
 } from '@canopy/protocol/ledger-view';
 import {
   DEFAULT_LEDGER_FEED_FILTERS,
@@ -798,9 +799,18 @@ describe('the Feed new entry', () => {
       newDraftId: () => `feed-draft-${String(++drafts)}`,
     });
   }
-  const WT1: LedgerViewScope = { projectId: 'project-1', worktreeId: 'wt-1' };
-  const WT2: LedgerViewScope = { projectId: 'project-1', worktreeId: 'wt-2' };
-  const OTHER: LedgerViewScope = { projectId: 'project-2', worktreeId: 'wt-3' };
+  const WT1: LedgerTaskViewScope = {
+    projectId: 'project-1',
+    worktreeId: 'wt-1',
+  };
+  const WT2: LedgerTaskViewScope = {
+    projectId: 'project-1',
+    worktreeId: 'wt-2',
+  };
+  const OTHER: LedgerTaskViewScope = {
+    projectId: 'project-2',
+    worktreeId: 'wt-3',
+  };
   const CHAT_OWNER: LedgerOwnerCandidate = {
     actor: {
       actorId: '00000000-0000-4000-8000-0000000000a2',
@@ -832,7 +842,7 @@ describe('the Feed new entry', () => {
           },
         }),
       getEntry: () =>
-        Promise.resolve({ status: 'unavailable', reason: 'LEDGER_DISABLED' }),
+        Promise.resolve({ status: 'unavailable', reason: 'disabled' }),
       addEntry: () => Promise.resolve(addAnswer.current),
       updateEntry: () =>
         Promise.resolve({ status: 'error', reason: 'UNKNOWN', message: '' }),
@@ -848,7 +858,7 @@ describe('the Feed new entry', () => {
     return {
       addAnswer,
       viewFor: (scope): LedgerViewStore => {
-        const key = `${scope.projectId}/${scope.worktreeId}`;
+        const key = JSON.stringify(scope);
         const existing = views.get(key);
         if (existing !== undefined) return existing;
         const created = createLedgerViewStore(viewClient, scope, {

@@ -2,17 +2,9 @@
  * Unit tests for the portal editor catalog service that backs the new
  * `portal.editor.list_slash_commands` and `portal.editor.list_file_mentions`
  * commands (Phase 5). The service reads cached worktree discovery for
- * slash commands and reuses the existing file-index builder for mentions —
- * both helpers are mocked here so the tests stay deterministic.
+ * slash commands through `core.worktree.get`, served here by stub workspace
+ * reads, and reuses the mocked file-index builder for mentions.
  */
-jest.mock('node:fs/promises', () => ({
-  readFile: jest.fn(),
-}));
-jest.mock('../../lib/paths', () => ({
-  getWorkspaceWorktreesFilePath: jest.fn(
-    () => '/mock/workspace/worktrees.json',
-  ),
-}));
 jest.mock('../../lib/validation', () => ({
   validateId: jest.fn((value: string, field: string): void => {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(value)) {
@@ -24,87 +16,158 @@ jest.mock('../files-service', () => ({
   buildFileIndexes: jest.fn(),
 }));
 
-import { readFile } from 'node:fs/promises';
+import type {
+  WorkspaceIndexEntry,
+  WorktreeData,
+} from '@canopy/desktop-shared/types';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../../canopy-runtime/desktop-runtime';
+import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
 import {
   listEditorFileMentions,
   listEditorSlashCommands,
 } from '../editor-service';
 import { buildFileIndexes } from '../files-service';
 
-const mockedReadFile = readFile as jest.MockedFunction<typeof readFile>;
 const mockedBuildFileIndexes = buildFileIndexes as jest.MockedFunction<
   typeof buildFileIndexes
 >;
+const SESSION = { sessionId: 'session-1' };
+
+const WORKSPACE_ONE: WorkspaceIndexEntry = {
+  id: 'workspace-1',
+  name: 'One',
+  type: 'single-repo',
+  color: '#fff',
+  collapsed: false,
+  order: 0,
+};
+
+const DISCOVERED: WorktreeData = {
+  id: 'wt-1',
+  branchName: 'feature/foo',
+  createdAt: '2026-05-12T00:00:00.000Z',
+  discovery: {
+    slashCommands: [
+      {
+        name: 'branch',
+        description: 'Name a branch',
+        insertText: '/branch ',
+      },
+    ],
+    mcpServers: [],
+    discoveredAt: '2026-05-12T00:00:00.000Z',
+    providerType: 'claude',
+  },
+};
 
 describe('editor-service', () => {
+  const runtimes: DesktopCanopyDispatcher[] = [];
+  let readWorkspaceWorktrees: jest.Mock;
+
+  /** workspace-1's rows, served only through `core.worktree.get`. */
+  function useWorktrees(rows: WorktreeData[] | Error): void {
+    readWorkspaceWorktrees = jest.fn(() =>
+      rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows),
+    );
+    const runtime = createDesktopRuntime({
+      workspaceServices: {
+        readAllSidebarItems: jest.fn(),
+        readWorkspaceIndexEntry: jest.fn((workspaceId: string) =>
+          Promise.resolve(
+            workspaceId === WORKSPACE_ONE.id ? WORKSPACE_ONE : null,
+          ),
+        ),
+        readWorkspaceConfig: jest.fn(),
+        readWorkspaceWorktrees,
+        readEffectiveWorkspaceConfig: jest.fn(),
+      },
+    });
+    runtimes.push(runtime);
+    setDesktopCanopyRuntime(runtime);
+  }
+
   beforeEach(() => {
     jest.resetAllMocks();
   });
 
-  it('returns the cached slash-command catalog from worktrees.json', async () => {
-    mockedReadFile.mockResolvedValueOnce(
-      JSON.stringify({
-        version: 1,
-        worktrees: [
-          {
-            id: 'wt-1',
-            branchName: 'feature/foo',
-            createdAt: '2026-05-12T00:00:00.000Z',
-            discovery: {
-              slashCommands: [
-                {
-                  name: 'branch',
-                  description: 'Name a branch',
-                  insertText: '/branch ',
-                },
-              ],
-              mcpServers: [],
-              discoveredAt: '2026-05-12T00:00:00.000Z',
-              providerType: 'claude',
-            },
-          },
-        ],
-      }),
-    );
+  afterEach(async () => {
+    setDesktopCanopyRuntime(null);
+    await Promise.all(runtimes.splice(0).map((runtime) => runtime.shutdown()));
+  });
 
-    const result = await listEditorSlashCommands({
-      projectId: 'workspace-1',
-      worktreeId: 'wt-1',
-    });
+  it('returns the cached slash-command catalog of the worktree row', async () => {
+    useWorktrees([DISCOVERED]);
+
+    const result = await listEditorSlashCommands(
+      { projectId: 'workspace-1', worktreeId: 'wt-1' },
+      SESSION,
+    );
 
     expect(result).toEqual([
       { name: 'branch', description: 'Name a branch', insertText: '/branch ' },
     ]);
+    expect(readWorkspaceWorktrees).toHaveBeenCalledWith('workspace-1');
   });
 
   it('returns an empty list when the worktree has no discovery cached', async () => {
-    mockedReadFile.mockResolvedValueOnce(
-      JSON.stringify({
-        version: 1,
-        worktrees: [
-          {
-            id: 'wt-1',
-            branchName: 'feature/foo',
-            createdAt: '2026-05-12T00:00:00.000Z',
-          },
-        ],
-      }),
-    );
+    useWorktrees([
+      {
+        id: 'wt-1',
+        branchName: 'feature/foo',
+        createdAt: '2026-05-12T00:00:00.000Z',
+      },
+    ]);
 
-    const result = await listEditorSlashCommands({
-      projectId: 'workspace-1',
-      worktreeId: 'wt-1',
-    });
+    const result = await listEditorSlashCommands(
+      { projectId: 'workspace-1', worktreeId: 'wt-1' },
+      SESSION,
+    );
     expect(result).toEqual([]);
   });
 
-  it('returns an empty list when worktrees.json cannot be read', async () => {
-    mockedReadFile.mockRejectedValueOnce(new Error('boom'));
-    const result = await listEditorSlashCommands({
-      projectId: 'workspace-1',
-      worktreeId: 'wt-1',
-    });
+  it("returns an empty list for another provider's catalog", async () => {
+    useWorktrees([DISCOVERED]);
+
+    const result = await listEditorSlashCommands(
+      { projectId: 'workspace-1', worktreeId: 'wt-1', providerType: 'codex' },
+      SESSION,
+    );
     expect(result).toEqual([]);
+  });
+
+  it('returns an empty list when the worktree cannot be read', async () => {
+    useWorktrees(new Error('boom'));
+    await expect(
+      listEditorSlashCommands(
+        { projectId: 'workspace-1', worktreeId: 'wt-1' },
+        SESSION,
+      ),
+    ).resolves.toEqual([]);
+
+    // Not indexed, not listed, or no runtime: no catalog either.
+    useWorktrees([DISCOVERED]);
+    await expect(
+      listEditorSlashCommands(
+        { projectId: 'workspace-2', worktreeId: 'wt-1' },
+        SESSION,
+      ),
+    ).resolves.toEqual([]);
+    await expect(
+      listEditorSlashCommands(
+        { projectId: 'workspace-1', worktreeId: 'wt-2' },
+        SESSION,
+      ),
+    ).resolves.toEqual([]);
+    setDesktopCanopyRuntime(null);
+    await expect(
+      listEditorSlashCommands(
+        { projectId: 'workspace-1', worktreeId: 'wt-1' },
+        SESSION,
+      ),
+    ).resolves.toEqual([]);
   });
 
   it('honors the limit and applies fuzzy contains over file mentions', async () => {

@@ -189,6 +189,41 @@ function isRenderedRoot(root: HTMLElement): boolean {
   return false;
 }
 
+/**
+ * True when `doc` holds a rendered `aria-modal="true"` element that does not
+ * itself contain `targetRoot`. An open modal owns Escape wherever focus sits,
+ * so the cancel shortcut must not arm underneath it. Hand-rolled modals do
+ * not register with `useOverlayEscape`, so the overlay stack alone cannot
+ * tell. A modal that hosts the chat is the chat's container, not a layer
+ * above it.
+ *
+ * Matches `aria-modal="true"` only: non-modal pickers render
+ * `role="dialog"` with `aria-modal="false"` and must not block the shortcut.
+ */
+function hasOpenModalDialogAbove(
+  doc: Document,
+  targetRoot: Element | null,
+): boolean {
+  for (const modal of Array.from(
+    doc.querySelectorAll<HTMLElement>('[aria-modal="true"]'),
+  )) {
+    if (!modal.isConnected) continue;
+    if (targetRoot && modal.contains(targetRoot)) continue;
+    // jsdom does not implement `checkVisibility`; treat it as rendered there,
+    // the same way `isRenderedRoot` does.
+    if (typeof modal.checkVisibility !== 'function') return true;
+    if (modal.checkVisibility()) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an Escape press may arm or confirm the cancel shortcut. It defers
+ * when an overlay registered through `useOverlayEscape` is open, when a
+ * rendered `aria-modal="true"` dialog sits above the chat, and when the press
+ * comes from a dialog, terminal, browser surface, or
+ * `data-chat-cancel-shortcut-ignore` subtree.
+ */
 export function shouldHandleCancelRunningChatShortcut(
   event: KeyboardEvent,
   /**
@@ -198,6 +233,11 @@ export function shouldHandleCancelRunningChatShortcut(
    * against the main window's overlays.
    */
   shortcutDocument: Document = document,
+  /**
+   * The chat surface this listener serves. A modal that contains it hosts the
+   * chat rather than covering it, so it does not block the shortcut.
+   */
+  targetRoot: Element | null = null,
 ): boolean {
   if (!ESCAPE_KEYS.has(event.key)) {
     return false;
@@ -218,6 +258,10 @@ export function shouldHandleCancelRunningChatShortcut(
   const eventDocument =
     readTargetOwnerDocument(event.target) ?? shortcutDocument;
   if (hasEscapeEnabledOverlay(eventDocument)) {
+    return false;
+  }
+
+  if (hasOpenModalDialogAbove(eventDocument, targetRoot)) {
     return false;
   }
 
@@ -354,6 +398,7 @@ export function useCancelRunningChatShortcut({
       const shouldHandle = shouldHandleCancelRunningChatShortcut(
         event,
         shortcutDocument,
+        targetRootRef?.current ?? null,
       );
       const pendingChatKey =
         chatKeyRef.current ?? cancellableChatKeyRef.current;

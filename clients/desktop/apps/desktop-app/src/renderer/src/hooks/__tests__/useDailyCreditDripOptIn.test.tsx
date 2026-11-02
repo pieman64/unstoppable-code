@@ -244,4 +244,201 @@ describe('useDailyCreditDripOptIn', () => {
     expect(current().error).toBe(DAILY_CREDIT_DRIP_SAVE_ERROR);
     expect(current().busy).toBe(false);
   });
+  describe('local save outcome', () => {
+    function saved(overrides: Record<string, unknown> = {}): unknown {
+      return {
+        enabled: true,
+        decidedAt: '2026-10-06T19:00:00.000Z',
+        capCredits: 25,
+        balanceCredits: 12.5,
+        granted: 12.5,
+        ...overrides,
+      };
+    }
+
+    it('keeps the grant, balance and blocked reason of its own turn-on', async () => {
+      loadCloudDailyCreditDrip.mockResolvedValue(cloudState());
+      saveCloudDailyCreditDrip
+        .mockResolvedValueOnce(saved())
+        .mockResolvedValueOnce(saved({ enabled: false, granted: 0 }))
+        .mockResolvedValueOnce(
+          saved({ blockedReason: 'network_limit', granted: 3 }),
+        );
+      await mount();
+      expect(current().outcome).toBeNull();
+
+      await act(async () => {
+        await current().turnOn();
+      });
+      expect(current().outcome).toEqual({
+        granted: 12.5,
+        balanceCredits: 12.5,
+      });
+
+      await act(async () => {
+        await current().notNow();
+      });
+      expect(current().outcome).toBeNull();
+
+      await act(async () => {
+        await current().turnOn();
+      });
+      expect(current().outcome).toEqual({
+        granted: 3,
+        balanceCredits: 12.5,
+        blockedReason: 'network_limit',
+      });
+    });
+
+    it('clears the outcome while a new save runs and when it fails', async () => {
+      loadCloudDailyCreditDrip.mockResolvedValue(cloudState());
+      saveCloudDailyCreditDrip.mockResolvedValueOnce(saved());
+      await mount();
+      await act(async () => {
+        await current().turnOn();
+      });
+      expect(current().outcome).not.toBeNull();
+
+      let fail: (error: Error) => void = () => undefined;
+      saveCloudDailyCreditDrip.mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+      );
+      let pending: Promise<void> = Promise.resolve();
+      act(() => {
+        pending = current().turnOn();
+      });
+      expect(current().outcome).toBeNull();
+      await act(async () => {
+        fail(new Error('offline'));
+        await pending;
+      });
+      expect(current().outcome).toBeNull();
+      expect(current().error).toBe(DAILY_CREDIT_DRIP_SAVE_ERROR);
+    });
+
+    it('never claims a grant for a turn-on saved elsewhere', async () => {
+      loadCloudDailyCreditDrip.mockResolvedValue(cloudState());
+      await mount();
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(DAILY_CREDIT_DRIP_CHANGED_EVENT, { detail: saved() }),
+        );
+      });
+      expect(current().live.enabled).toBe(true);
+      expect(current().outcome).toBeNull();
+    });
+
+    it('withdraws the outcome when another surface turns the drip off', async () => {
+      loadCloudDailyCreditDrip.mockResolvedValue(cloudState());
+      saveCloudDailyCreditDrip.mockResolvedValueOnce(saved());
+      await mount();
+      await act(async () => {
+        await current().turnOn();
+      });
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(DAILY_CREDIT_DRIP_CHANGED_EVENT, {
+            detail: saved({ enabled: false, granted: 0 }),
+          }),
+        );
+      });
+      expect(current().outcome).toBeNull();
+    });
+
+    it('drops the outcome when the account changes, and ignores a late result', async () => {
+      loadCloudDailyCreditDrip.mockResolvedValue(cloudState());
+      saveCloudDailyCreditDrip.mockResolvedValueOnce(saved());
+      await mount();
+      await act(async () => {
+        await current().turnOn();
+      });
+      act(() => {
+        window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+      });
+      await flush();
+      expect(current().outcome).toBeNull();
+
+      let finish: (value: unknown) => void = () => undefined;
+      saveCloudDailyCreditDrip.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      let pending: Promise<void> = Promise.resolve();
+      act(() => {
+        pending = current().turnOn();
+      });
+      act(() => {
+        window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+      });
+      await flush();
+      await act(async () => {
+        finish(saved());
+        await pending;
+      });
+      expect(current().outcome).toBeNull();
+    });
+  });
+});
+
+describe('save supersession', () => {
+  it('does not show a previous account save rejection', async () => {
+    loadCloudDailyCreditDrip.mockResolvedValue(cloudState());
+    await mount();
+    let rejectSave: (error: Error) => void = () => {};
+    saveCloudDailyCreditDrip.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectSave = reject;
+      }),
+    );
+    let pending = Promise.resolve();
+    act(() => {
+      pending = current().turnOn();
+    });
+    act(() => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    });
+    await flush();
+    await act(async () => {
+      rejectSave(new Error('old session'));
+      await pending;
+    });
+    expect(current().error).toBeNull();
+    expect(current().outcome).toBeNull();
+  });
+
+  it('a newer external disable supersedes a pending local enable', async () => {
+    loadCloudDailyCreditDrip.mockResolvedValue(cloudState());
+    await mount();
+    const disabled = {
+      enabled: false,
+      decidedAt: '2026-10-24T12:00:00.000Z',
+      capCredits: 25,
+      granted: 0,
+      balanceCredits: 10,
+    };
+    let resolveSave: (value: unknown) => void = () => {};
+    saveCloudDailyCreditDrip.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    let pending = Promise.resolve();
+    act(() => {
+      pending = current().turnOn();
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(DAILY_CREDIT_DRIP_CHANGED_EVENT, { detail: disabled }),
+      );
+    });
+    await act(async () => {
+      resolveSave({ ...disabled, enabled: true, granted: 10 });
+      await pending;
+    });
+    expect(current().live.enabled).toBe(false);
+    expect(current().outcome).toBeNull();
+  });
 });

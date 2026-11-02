@@ -13,6 +13,7 @@ import { rootClassList } from '@/test-utils/replay';
 let mockLineCount = 200;
 let mockModelPath = '/repo/src/secret.ts';
 let mockModelChanged: (() => void) | undefined;
+let mockEditorOptions: unknown;
 const mockClears: jest.Mock[] = [];
 const mockEditor = {
   getModel: (): {
@@ -23,7 +24,10 @@ const mockEditor = {
     uri: { toString: (): string => mockModelPath },
   }),
   deltaDecorations: jest.fn(() => []),
+  layout: jest.fn(),
   revealLineInCenter: jest.fn(),
+  revealLineInCenterIfOutsideViewport: jest.fn(),
+  hasTextFocus: jest.fn((): boolean => false),
   setPosition: jest.fn(),
   setScrollTop: jest.fn(),
   setScrollLeft: jest.fn(),
@@ -47,7 +51,9 @@ jest.mock('@monaco-editor/react', () => ({
   __esModule: true,
   default: function MockMonacoEditor({
     onMount,
+    options,
   }: {
+    options?: unknown;
     onMount: (
       editor: typeof mockEditor,
       api: {
@@ -58,6 +64,7 @@ jest.mock('@monaco-editor/react', () => ({
     ) => void;
   }): JSX.Element {
     const mount = useRef(onMount);
+    mockEditorOptions = options;
     useEffect(() => {
       mount.current(mockEditor, {
         KeyMod: { CtrlCmd: 1 },
@@ -101,6 +108,52 @@ describe('MonacoFileEditor', () => {
       'flex-1',
     ]);
     expect(markup).toContain('data-testid="monaco-editor"');
+  });
+});
+
+describe('MonacoFileEditor language options', () => {
+  beforeAll(() => {
+    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+      value: true,
+      configurable: true,
+    });
+  });
+
+  it('switches a reused editor between prose and code options', () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const renderLanguage = (filePath: string, language: string): void => {
+      act(() => {
+        root.render(
+          <MonacoFileEditor
+            tabId="tab-1"
+            filePath={filePath}
+            language={language}
+            value="Participants P1–P8 — “quoted”"
+            onChange={jest.fn()}
+          />,
+        );
+      });
+    };
+    try {
+      renderLanguage('/repo/src/index.ts', 'typescript');
+      expect(mockEditorOptions).toMatchObject({
+        wordWrap: 'off',
+        unicodeHighlight: { ambiguousCharacters: true },
+      });
+      renderLanguage('/repo/docs/findings.md', 'markdown');
+      expect(mockEditorOptions).toMatchObject({
+        wordWrap: 'on',
+        unicodeHighlight: { ambiguousCharacters: false },
+      });
+      renderLanguage('/repo/src/index.ts', 'typescript');
+      expect(mockEditorOptions).toMatchObject({
+        wordWrap: 'off',
+        unicodeHighlight: { ambiguousCharacters: true },
+      });
+    } finally {
+      act(() => root.unmount());
+    }
   });
 });
 
@@ -221,6 +274,43 @@ describe('Monaco file-link presentation', () => {
       expect(jest.getTimerCount()).toBe(0);
       expect(mockEditor.revealLineInCenter).toHaveBeenCalledTimes(4);
     } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('reveals and highlights without moving the caret of a focused editor', () => {
+    mockEditor.hasTextFocus.mockReturnValue(true);
+    const root = createRoot(document.createElement('div'));
+    try {
+      act(() =>
+        root.render(
+          <MonacoFileEditor
+            tabId="file"
+            filePath="/repo/src/secret.ts"
+            language="typescript"
+            value="loaded"
+            onChange={jest.fn()}
+            presentation={{ revision: 1, line: 150, lineEnd: 151 }}
+          />,
+        ),
+      );
+      expect(
+        mockEditor.revealLineInCenterIfOutsideViewport,
+      ).toHaveBeenCalledWith(150);
+      expect(mockEditor.revealLineInCenter).not.toHaveBeenCalled();
+      expect(mockEditor.setPosition).not.toHaveBeenCalled();
+      expect(mockEditor.createDecorationsCollection).toHaveBeenLastCalledWith([
+        expect.objectContaining({
+          range: {
+            startLineNumber: 150,
+            startColumn: 1,
+            endLineNumber: 151,
+            endColumn: 1,
+          },
+        }),
+      ]);
+    } finally {
+      mockEditor.hasTextFocus.mockReturnValue(false);
       act(() => root.unmount());
     }
   });

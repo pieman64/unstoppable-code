@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { badgeClassName, type BadgeTone } from '../lib/badge';
 
 /** Review summary states surfaced by both apps. The portable string
  * `changes-requested` is used in place of GitHub's `changes_requested` so
@@ -21,20 +22,18 @@ export interface ReviewStatusBadgeProps {
 
 const CONFIG: Record<
   ReviewStatusBadgeStatus,
-  { label: string; className: string }
+  { label: string; tone: BadgeTone }
 > = {
-  approved: { label: 'Approved', className: 'fg-success' },
-  'changes-requested': {
-    label: 'Changes requested',
-    className: 'fg-destructive',
-  },
-  pending: { label: 'Pending review', className: 'fg-warning' },
-  none: { label: 'No reviews', className: 'fg-secondary' },
+  approved: { label: 'Approved', tone: 'success' },
+  'changes-requested': { label: 'Changes requested', tone: 'warning' },
+  pending: { label: 'Pending review', tone: 'neutral' },
+  none: { label: 'No reviews', tone: 'neutral' },
 };
 
 /**
- * Pure review-status label rendered next to a PR summary. Variant maps to
- * a text color; no surrounding pill chrome to match the desktop visual.
+ * Review state next to a PR summary, on the shared Badge: approved is
+ * success, changes requested is warning, and the rest are neutral. An
+ * approval that is not ready to merge is neutral too.
  */
 export function ReviewStatusBadge({
   status,
@@ -43,10 +42,8 @@ export function ReviewStatusBadge({
   dataTestId,
 }: ReviewStatusBadgeProps): JSX.Element {
   const config = CONFIG[status];
-  const className =
-    status === 'approved' && approvedTone === 'muted'
-      ? 'fg-secondary'
-      : config.className;
+  const tone: BadgeTone =
+    status === 'approved' && approvedTone === 'muted' ? 'neutral' : config.tone;
   const title =
     status === 'approved' && approvedTone === 'muted'
       ? 'Has PR approval but is not ready to merge'
@@ -58,7 +55,8 @@ export function ReviewStatusBadge({
   return (
     <span
       data-testid={dataTestId}
-      className={`text-xs ${className}`}
+      className={badgeClassName(tone)}
+      data-badge-tone={tone}
       title={title}
       aria-label={ariaLabel}
     >

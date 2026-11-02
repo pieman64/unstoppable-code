@@ -359,8 +359,8 @@ function findClaudeAgentBlock(
 
 /**
  * A Claude Task's transcript: its streamed rows when the display transform
- * attached them, else the rows it owns through `parentToolUseId` (a nested
- * Task stays a raw tool call), else its final answer.
+ * attached them, else the rows it owns through `parentToolUseId`, else its
+ * final answer.
  */
 function claudeNativeTranscript(
   rootMessages: readonly ChatMessage[],

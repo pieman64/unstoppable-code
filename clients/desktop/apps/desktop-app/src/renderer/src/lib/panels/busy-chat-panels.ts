@@ -1,7 +1,8 @@
 /**
  * Render-time view of which chat panels cannot close right now, for the panel
- * grids' `canCloseTab` seam. A busy chat (active turn or live delegates) keeps
- * its panel: the tab × is withheld and the context menu's Close is disabled.
+ * grids' `canCloseTab` seam. A busy chat (active turn, live delegates, or
+ * provider agents/workflows) keeps its panel: the tab × is withheld and the
+ * context menu's Close is disabled.
  *
  * The click paths re-check the live state (`closePanelTab`), so this snapshot
  * only has to be current enough to render.
@@ -17,6 +18,10 @@ import {
   useDelegationActivityStore,
   type DelegationActivityState,
 } from '@/stores/delegationActivityStore';
+import {
+  useLiveBackgroundTaskStore,
+  type LiveBackgroundTaskState,
+} from '@/stores/liveBackgroundTaskStore';
 
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
@@ -29,9 +34,12 @@ function busyChatSignature(
   projectId: string,
   worktreeId: string,
   delegationState: DelegationActivityState,
+  liveTaskState: Pick<LiveBackgroundTaskState, 'byChat'>,
 ): string {
   return tabs
-    .filter((tab) => isChatTabBusy(tab, projectId, worktreeId, delegationState))
+    .filter((tab) =>
+      isChatTabBusy(tab, projectId, worktreeId, delegationState, liveTaskState),
+    )
     .map((tab) => tab.id)
     .join(',');
 }
@@ -42,6 +50,7 @@ export function useBusyChatIds(
   worktreeId: string | null,
 ): ReadonlySet<string> {
   const delegationState = useDelegationActivityStore((state) => state);
+  const liveTaskByChat = useLiveBackgroundTaskStore((state) => state.byChat);
   // The strip projection changes only when a strip-visible field does, which
   // includes everything closeability reads, never on streamed content.
   const tabs = useChatTabStrip(
@@ -53,8 +62,10 @@ export function useBusyChatIds(
     (): string =>
       projectId === null || worktreeId === null
         ? ''
-        : busyChatSignature(tabs, projectId, worktreeId, delegationState),
-    [tabs, projectId, worktreeId, delegationState],
+        : busyChatSignature(tabs, projectId, worktreeId, delegationState, {
+            byChat: liveTaskByChat,
+          }),
+    [tabs, projectId, worktreeId, delegationState, liveTaskByChat],
   );
   return useMemo(
     (): ReadonlySet<string> =>

@@ -1,4 +1,5 @@
 import { renderToString } from 'react-dom/server';
+import type { JSX } from 'react';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import type { ChatVisualOwner } from '../chat-visual-host';
 

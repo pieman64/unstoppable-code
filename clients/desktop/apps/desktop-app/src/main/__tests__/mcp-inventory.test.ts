@@ -80,6 +80,13 @@ import {
   listDetectedMcpServersForSelections,
 } from '../plugins/mcp-inventory';
 import { loadMarketplaces } from '../plugins/plugin-service';
+import { readPreferencesFile } from '../lib/preferences-store';
+import { setMcpHttpAuthPreference } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import type {
+  ChatTabPluginSelections,
+  PreferencesData,
+} from '@canopy/desktop-shared/types';
+import type { PluginsCache } from '@canopy/desktop-shared/types/plugins';
 
 const getBundleConfigFilePathMock = jest.mocked(getBundleConfigFilePath);
 const getCollectionConfigFilePathMock = jest.mocked(
@@ -93,6 +100,24 @@ const probeMcpHttpOAuthRequirementMock = jest.mocked(
   probeMcpHttpOAuthRequirement,
 );
 const loadMarketplacesMock = jest.mocked(loadMarketplaces);
+
+function partialPreferences(
+  preferences: Partial<PreferencesData>,
+): PreferencesData {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as PreferencesData;
+}
+
+function mockLegacyMarketplaceLoadResult(result: {
+  success: true;
+  data: unknown;
+}): void {
+  // These tests intentionally exercise version-1 cache data with nullable legacy metadata.
+  loadMarketplacesMock.mockResolvedValue({
+    success: result.success,
+    data: result.data as PluginsCache,
+  });
+}
 
 describe('mcp inventory', () => {
   let tempDir = '';
@@ -119,7 +144,7 @@ describe('mcp inventory', () => {
       challenge: {},
     });
     delete process.env.PLUGIN_TOKEN;
-    loadMarketplacesMock.mockReturnValue({
+    mockLegacyMarketplaceLoadResult({
       success: true,
       data: {
         version: 1,
@@ -689,7 +714,7 @@ describe('mcp inventory', () => {
       'utf8',
     );
     process.env.PLUGIN_TOKEN = 'plugin-token';
-    loadMarketplacesMock.mockReturnValue({
+    mockLegacyMarketplaceLoadResult({
       success: true,
       data: {
         version: 1,
@@ -776,7 +801,7 @@ describe('mcp inventory', () => {
       }),
       'utf8',
     );
-    loadMarketplacesMock.mockReturnValue({
+    mockLegacyMarketplaceLoadResult({
       success: true,
       data: {
         version: 1,
@@ -840,6 +865,82 @@ describe('mcp inventory', () => {
         connectLabel: 'Connect',
       }),
     ]);
+  });
+
+  it('uses a task desktop override for an unbound non-curated plugin under the account default', async (): Promise<void> => {
+    writeMarketplacePlugin('demo-market', 'repo-search', {
+      remote: {
+        type: 'http',
+        url: 'https://repo-search.example.test/mcp',
+        oauth: { clientId: 'repo-search' },
+      },
+    });
+    const selections: ChatTabPluginSelections = {
+      collectionIds: [],
+      skillRefs: [],
+      pluginRefs: [{ marketplaceId: 'demo-market', pluginName: 'repo-search' }],
+    };
+    const findConnection = jest.mocked(findAccountMcpConnection);
+    const previousFind = findConnection.getMockImplementation();
+    findConnection.mockResolvedValue(undefined);
+    jest
+      .mocked(readPreferencesFile)
+      .mockResolvedValue(
+        partialPreferences({ mcpHttpAuthDefaultHandler: 'account' }),
+      );
+    try {
+      const before = await listDetectedMcpServersForSelections(selections);
+      expect(before.servers).toEqual([
+        expect.objectContaining({
+          httpAuthHandler: 'account',
+          canConnect: false,
+        }),
+      ]);
+      expect(before.servers[0]?.accountConnectionId).toBeUndefined();
+      expect(before.servers[0]?.curatedKey).toBeUndefined();
+
+      const accepted = setMcpHttpAuthPreference(
+        selections,
+        {
+          kind: 'plugin',
+          marketplaceId: 'demo-market',
+          pluginName: 'repo-search',
+          serverName: 'remote',
+        },
+        'canopy',
+      );
+      const pending = await listDetectedMcpServersForSelections(accepted);
+      expect(pending.servers).toEqual([
+        expect.objectContaining({
+          pluginServerName: 'remote',
+          httpAuthHandler: 'canopy',
+          httpAuthHandlerSource: 'override',
+          canopyProxyEnabled: true,
+          authStatus: 'not_connected',
+          canConnect: true,
+        }),
+      ]);
+      getMcpOAuthAuthStatusForDefinitionMock.mockResolvedValue({
+        status: 'connected',
+      });
+      const connected = await listDetectedMcpServersForSelections(accepted);
+      expect(connected.servers[0]).toMatchObject({
+        authStatus: 'connected',
+        canConnect: false,
+      });
+      expect(selections).not.toHaveProperty('mcpHttpAuthPreferences');
+      expect(await readPreferencesFile()).toEqual({
+        mcpHttpAuthDefaultHandler: 'account',
+      });
+    } finally {
+      if (previousFind) findConnection.mockImplementation(previousFind);
+      else findConnection.mockReset();
+      jest
+        .mocked(readPreferencesFile)
+        .mockResolvedValue(
+          partialPreferences({ mcpHttpAuthDefaultHandler: 'canopy' }),
+        );
+    }
   });
 
   it('keeps plain plugin HTTP MCP servers unconnected when OAuth probe is false', async () => {
@@ -1069,7 +1170,7 @@ describe('mcp inventory', () => {
       }),
       'utf8',
     );
-    loadMarketplacesMock.mockReturnValue({
+    mockLegacyMarketplaceLoadResult({
       success: true,
       data: {
         version: 1,
@@ -1169,7 +1270,7 @@ describe('mcp inventory', () => {
       [],
       [{ marketplaceId: 'demo-market', pluginName: 'bundle-plugin' }],
     );
-    loadMarketplacesMock.mockReturnValue({
+    mockLegacyMarketplaceLoadResult({
       success: true,
       data: {
         version: 1,
@@ -1338,6 +1439,10 @@ describe('mcp inventory', () => {
         provider: 'claude',
         mode: 'native',
         name: plugin.name,
+        installLocation: path.join(
+          marketplace.installLocation,
+          plugin.sourcePath,
+        ),
         sourcePath: plugin.sourcePath,
       },
       codex: {
@@ -1345,6 +1450,7 @@ describe('mcp inventory', () => {
         mode: 'native',
         name: plugin.name,
         installLocation: codexPath,
+        sourcePath: codexPath,
       },
     };
     const result = await listDetectedMcpServersForSelections({
@@ -1372,6 +1478,67 @@ describe('mcp inventory', () => {
       (definition) => definition.name === 'collision',
     );
     expect(new Set(collisions.map((definition) => definition.id)).size).toBe(2);
+
+    // Routing is task/member scoped across facets; credentials remain declaration scoped.
+    jest
+      .mocked(readPreferencesFile)
+      .mockResolvedValue(
+        partialPreferences({ mcpHttpAuthDefaultHandler: 'account' }),
+      );
+    try {
+      getMcpOAuthAuthStatusForDefinitionMock.mockClear();
+      const routed = await listDetectedMcpServersForSelections(
+        setMcpHttpAuthPreference(
+          {
+            collectionIds: [],
+            skillRefs: [],
+            pluginRefs: [
+              { marketplaceId: marketplace.id, pluginName: plugin.name },
+            ],
+          },
+          {
+            kind: 'plugin',
+            marketplaceId: marketplace.id,
+            pluginName: plugin.name,
+            serverName: 'collision',
+          },
+          'canopy',
+        ),
+      );
+      const variants = routed.servers.filter(
+        (server) => server.pluginServerName === 'collision',
+      );
+      expect(variants).toHaveLength(2);
+      expect(variants.map((server) => server.pluginProvider).sort()).toEqual([
+        'claude',
+        'codex',
+      ]);
+      for (const variant of variants) {
+        expect(variant).toMatchObject({
+          httpAuthHandler: 'canopy',
+          httpAuthHandlerSource: 'override',
+          canConnect: true,
+        });
+      }
+      expect(
+        routed.servers.find(
+          (server) => server.pluginServerName === 'codexOnly',
+        ),
+      ).toMatchObject({ httpAuthHandler: 'account', canConnect: false });
+      expect(
+        new Set(
+          getMcpOAuthAuthStatusForDefinitionMock.mock.calls.map(
+            ([definition]) => definition.id,
+          ),
+        ),
+      ).toEqual(new Set(collisions.map((definition) => definition.id)));
+    } finally {
+      jest
+        .mocked(readPreferencesFile)
+        .mockResolvedValue(
+          partialPreferences({ mcpHttpAuthDefaultHandler: 'canopy' }),
+        );
+    }
   });
 
   describe('curated plugin member binding', (): void => {
@@ -1452,7 +1619,7 @@ describe('mcp inventory', () => {
     }
 
     beforeEach((): void => {
-      jest.mocked(getMcpServersIndexFilePath).mockReturnValue(undefined);
+      jest.mocked(getMcpServersIndexFilePath).mockReset();
       jest
         .mocked(readCachedCuratedMcpDesktopOnlyKeys)
         .mockResolvedValue(new Set());
@@ -1850,7 +2017,7 @@ describe('mcp inventory', () => {
       JSON.stringify({ mcpServers }),
       'utf8',
     );
-    loadMarketplacesMock.mockReturnValue({
+    mockLegacyMarketplaceLoadResult({
       success: true,
       data: {
         version: 1,

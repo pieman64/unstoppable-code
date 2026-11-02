@@ -1,3 +1,4 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 import { runSessionReuseFlow } from './seeders/sessionReuseFlow.mjs';
 import {
   mkdtempSync,
@@ -276,6 +277,10 @@ test('validates seeded standalone chat flows', async ({}, testInfo) => {
     const app = new CanopyAppDriver(window);
 
     await app.waitForShell();
+    await connectMockCloudAccount(
+      window,
+      'csk_standalone_chat_attachments_e2e',
+    );
     await app.openChatPage();
 
     // The chat list now lives in the unified sidebar's blended Cowork

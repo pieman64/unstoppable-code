@@ -239,10 +239,10 @@ test.describe('Codex account cutover', () => {
             .poll(() => readExecution().status, { timeout: 60_000 })
             .toBe('success');
           const resumeQueue = window.getByTestId('resume-queue-modal');
-          await expect(resumeQueue).toContainText('Finished');
-          await resumeQueue
-            .getByRole('button', { name: 'Close', exact: true })
-            .click();
+          await expect(
+            resumeQueue.getByTestId('resume-queue-status'),
+          ).toHaveText('Started');
+          await window.keyboard.press('Escape');
           await expect(resumeQueue).toBeHidden();
         } else {
           await resume.getByTestId('usage-limit-resume-cancel').click();
@@ -431,7 +431,13 @@ test('pauses a running chat and resumes it once after cancelled sign-in', async 
     writeFileSync(fixture.releasePath, 'release');
     await resume.getByTestId('usage-limit-resume-confirm').click();
     await expect(resume).toBeHidden();
-    await expect(window.getByTestId('resume-queue-modal')).toBeVisible();
+    // One confirmed chat opens directly instead of the queue dialog, behind
+    // the Settings page the sign-in started from.
+    await expect(window.getByTestId('resume-queue-modal')).toBeHidden();
+    await app.closeSettings();
+    await expect(
+      window.locator('[data-panel-id="panel-chat-active-login-chat"]'),
+    ).toBeVisible();
     await expect
       .poll(
         () =>

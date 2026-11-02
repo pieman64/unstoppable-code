@@ -97,17 +97,27 @@ test('publishes, copies, revokes, and republishes an automation public link', as
     await expect(
       shareModal.getByRole('button', { name: 'Close', exact: true }),
     ).toBeDisabled();
-    await expect(shareModal).toHaveCount(0);
-    const publicToast = window
-      .getByTestId('toast-card')
-      .filter({ hasText: 'Automation is now public' });
-    await publicToast.getByTestId('toast-copy-link').click();
+    // The dialog stays open on its success notice with the public link and
+    // Copy link; no share toast is raised.
     await expect(
-      publicToast.getByText('Copied', { exact: true }),
-    ).toBeVisible();
+      shareModal.getByTestId('share-automation-success'),
+    ).toContainText('Automation is now public');
+    await expect(shareModal.getByTestId('share-automation-link')).toHaveText(
+      new RegExp(`${SHARE_PATH}$`),
+    );
+    await expect(
+      window
+        .getByTestId('toast-card')
+        .filter({ hasText: 'Automation is now public' }),
+    ).toHaveCount(0);
+    const publishedLink = shareModal.getByTestId('share-automation-copy-link');
+    await publishedLink.click();
+    await expect(publishedLink).toContainText('Copied');
     await expect
       .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
       .toMatch(new RegExp(`${SHARE_PATH}$`));
+    await shareModal.getByTestId('share-automation-done').click();
+    await expect(shareModal).toHaveCount(0);
 
     const publicRemoteId = await window.evaluate(async (id) => {
       const { activities } = await window.api.automations.list();
@@ -121,6 +131,18 @@ test('publishes, copies, revokes, and republishes an automation public link', as
         .getByTestId('customize-section-shared-by-me')
         .getByTestId(`customize-row-automation:shared:${publicRemoteId}`),
     ).toBeVisible();
+    await expect(
+      window
+        .getByTestId('customize-section-shared-by-me')
+        .getByTestId(
+          `customize-row-public-link-automation:shared:${publicRemoteId}`,
+        ),
+    ).toHaveText('Public link');
+    await expect(
+      window.getByTestId(
+        `customize-row-subtitle-automation:shared:${publicRemoteId}`,
+      ),
+    ).toHaveText('Public link');
     await app.openAutomationsPage();
 
     // A scoped share and its public snapshot are independent. Moving the
@@ -141,12 +163,16 @@ test('publishes, copies, revokes, and republishes an automation public link', as
       .click();
     await shareModal.getByRole('button', { name: 'Acme Release' }).click();
     await shareModal.getByTestId('share-automation-submit').click();
-    await expect(shareModal).toHaveCount(0);
+    await expect(
+      shareModal.getByTestId('share-automation-success'),
+    ).toContainText('Automation updated');
     await expect(
       window
         .getByTestId('toast-card')
         .filter({ hasText: 'Automation updated' }),
-    ).toBeVisible();
+    ).toHaveCount(0);
+    await shareModal.getByTestId('share-automation-done').click();
+    await expect(shareModal).toHaveCount(0);
 
     await app.chooseWorkflowsLibraryRowAction(row, 'share');
     await expect(

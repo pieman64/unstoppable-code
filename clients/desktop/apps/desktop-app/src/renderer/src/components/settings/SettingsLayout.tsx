@@ -4,34 +4,33 @@ import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   InlineTextSkeleton,
-  SettingsControlSelect,
+  Radio,
+  SettingsBackButton,
   SettingsFormSkeleton,
+  SettingsRowsGroup,
+  SettingsRowsRow,
+  SettingsRowsSection,
+  SettingsRowsSubRow,
+  TextArea,
   TextInput,
-  NoticeShapeProvider,
   SegmentedControl,
-  type SettingsControlSelectProps,
   type SegmentedControlProps,
+  type SettingsRowsGroupProps,
 } from '@canopy/ui-shared/components';
-import { BackIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { SettingsPageColumn } from '@canopy/ui-shared/components/settings/SettingsPageColumn';
 import {
   forwardRef,
   useContext,
-  useRef,
   type InputHTMLAttributes,
   type JSX,
-  type MouseEvent,
   type ReactNode,
-  type RefObject,
   type TextareaHTMLAttributes,
 } from 'react';
 import {
   LOADING_PLACEHOLDER_DELAY_MS,
   useDelayedFlag,
 } from '@canopy/ui-shared/lib';
-import {
-  SETTINGS_CHECK_INPUT_CLASS_NAME,
-  SETTINGS_DROPDOWN_WIDTH_CLASS_NAME,
-} from './settings-classes';
 import { SettingsReplayPrivacyContext } from './settings-replay-privacy';
 
 /**
@@ -47,6 +46,11 @@ import { SettingsReplayPrivacyContext } from './settings-replay-privacy';
  * Each row is a label and a one-line hint on the leading side and one
  * control on the trailing side. Whitespace separates sections. The page
  * title and the section headings share the boxes' outer left edge.
+ *
+ * The page column and header, and the section, group and row kit, are the
+ * shared ones the account and organization pages and the web render
+ * (`SettingsPageColumn`, `PageHeader`, `SettingsRows*` in `@canopy/ui-shared`),
+ * so local and hosted pages in Settings stand alike.
  */
 
 interface SettingsPageProps {
@@ -64,6 +68,14 @@ interface SettingsPageProps {
     readonly onClick: () => void;
   };
   readonly dataTestId?: string;
+  /**
+   * Fill the height of the scroller the page sits in, so a `fill` section can
+   * take the space under the header and keep its footer at the bottom of the
+   * column, above the column's bottom inset. Off by default. The scroller
+   * needs a definite height; content whose minimum is taller still scrolls
+   * the page.
+   */
+  readonly fill?: boolean;
   readonly children?: ReactNode;
 }
 
@@ -73,6 +85,7 @@ export function SettingsPage({
   headerTrailing,
   back,
   dataTestId,
+  fill = false,
   children,
 }: SettingsPageProps): JSX.Element {
   // Session replay: the displayed section's classification, applied on the
@@ -82,56 +95,52 @@ export function SettingsPage({
     useContext(SettingsReplayPrivacyContext),
   );
 
+  // The shared settings column gives every `Notice` in the page the settings
+  // shape (a banner between sections is a card among cards); a section's box
+  // resets it for notices inside a row.
+  // The column is at least the scroller's height (`min-h-full`). A `fill`
+  // body grows into that height from a zero basis, so a scrolling list inside
+  // it never counts its full length toward the column's; when the content's
+  // minimum is taller, the column grows and the page scrolls, inset intact.
+  const contentClass = fill
+    ? 'flex grow basis-0 flex-col gap-10'
+    : 'flex flex-col gap-10';
   return (
-    <div
-      // One reading measure for every page: a 640px content column (704px
-      // minus the side padding) that labels, hints, controls, and the few
-      // tables all fit.
-      className="mx-auto w-full max-w-176 px-8 pb-16 pt-8"
-      data-testid={dataTestId}
-    >
-      <header
-        // The title and the section headings share the group boxes' outer
-        // left edge; only the rows' text is inset inside a box.
-        className="mb-10 flex items-start justify-between gap-6"
-      >
-        <div className="min-w-0 flex-1 space-y-1">
+    <SettingsPageColumn>
+      {/* The column's own rhythm (24px under the header), on one element
+          that carries the page's test id. */}
+      <div data-testid={dataTestId} className="flex flex-1 flex-col gap-6">
+        {/* The title and the section headings share the group boxes' outer
+            left edge; only the rows' text is inset inside a box. The column
+            already insets the top, so the header adds none. */}
+        <div className="flex flex-col gap-2">
           {back ? (
-            <button
-              type="button"
+            <SettingsBackButton
+              label={back.label}
               onClick={back.onClick}
-              data-testid="settings-page-back"
-              className="focus-ring -ml-1 mb-2 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-xs font-medium fg-secondary transition-colors hover:fg-primary"
-            >
-              <BackIcon width={14} height={14} aria-hidden={true} />
-              {back.label}
-            </button>
+              dataTestId="settings-page-back"
+            />
           ) : null}
-          <h1 className="text-xl font-medium fg-primary">{title}</h1>
-          {description ? (
-            <div className="text-s text-pretty fg-secondary">{description}</div>
-          ) : null}
+          <PageHeader
+            inset="none"
+            headingLevel="h1"
+            reserveActions
+            title={title}
+            description={description}
+            actions={headerTrailing ? headerTrailing : undefined}
+          />
         </div>
-        {headerTrailing ? (
-          <div className="flex shrink-0 items-center gap-2">
-            {headerTrailing}
-          </div>
-        ) : null}
-      </header>
-      <div
-        className={
-          replayBlockClass
-            ? `${replayBlockClass} flex flex-col gap-10`
-            : 'flex flex-col gap-10'
-        }
-      >
-        {/* Early access: a banner between sections is a card among cards,
-            with the same corners, and its glyph and buttons on the rows'
-            16px inset. The provider stays mounted either way, so toggling
-            early access does not remount the page and drop a pending save. */}
-        <NoticeShapeProvider shape={'settings'}>{children}</NoticeShapeProvider>
+        <div
+          className={
+            replayBlockClass
+              ? `${replayBlockClass} ${contentClass}`
+              : contentClass
+          }
+        >
+          {children}
+        </div>
       </div>
-    </div>
+    </SettingsPageColumn>
   );
 }
 
@@ -156,7 +165,9 @@ interface SettingsLoadingProps {
 export function SettingsLoading({
   variant = 'form',
   rows,
-  dataTestId,
+  // Every loading body is findable while it holds its space, before the
+  // delayed placeholder shows; page-specific ids also end in `-loading`.
+  dataTestId = 'settings-loading',
 }: SettingsLoadingProps): JSX.Element {
   if (variant === 'spinner') {
     return (
@@ -214,62 +225,18 @@ export function SettingsPageMessage({
   return <p className="text-s fg-secondary">{children}</p>;
 }
 
-interface SettingsSectionProps {
-  readonly title?: ReactNode;
-  readonly description?: ReactNode;
-  readonly headingId?: string;
-  readonly ariaLabel?: string;
-  readonly dataTestId?: string;
-  readonly children?: ReactNode;
-}
-
 /**
  * One group of related settings: the heading sits over the section's box,
  * on the box's outer left edge, and whitespace alone separates sections.
  * The heading holds only text. Every action lives in a row inside the box,
  * so no control floats outside it.
  */
-export function SettingsSection({
-  title,
-  description,
-  headingId,
-  ariaLabel,
-  dataTestId,
-  children,
-}: SettingsSectionProps): JSX.Element {
-  const hasHeader = Boolean(title || description);
-  return (
-    <section
-      className="flex flex-col gap-3"
-      aria-labelledby={title && headingId ? headingId : undefined}
-      aria-label={ariaLabel}
-      data-testid={dataTestId}
-    >
-      {hasHeader ? (
-        <div className="space-y-1">
-          {title ? (
-            <h2 id={headingId} className="text-m font-medium fg-primary">
-              {title}
-            </h2>
-          ) : null}
-          {description ? (
-            <div className="text-xs text-pretty fg-secondary">
-              {description}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {children}
-    </section>
-  );
-}
+export const SettingsSection = SettingsRowsSection;
 
-interface SettingsGroupProps {
-  readonly children?: ReactNode;
-  readonly dataTestId?: string;
-  readonly ariaLabel?: string;
-  /** Dims and blocks the rows while a parent setting turns them off. */
-  readonly disabled?: boolean;
+interface SettingsGroupProps extends Pick<
+  SettingsRowsGroupProps,
+  'children' | 'dataTestId' | 'ariaLabel' | 'disabled' | 'fill' | 'surface'
+> {
   /**
    * Block the box's rows from session replay, for rows that render user
    * content such as instruction text. The section heading above the box
@@ -280,230 +247,38 @@ interface SettingsGroupProps {
 }
 
 /**
- * The box a section's rows live in: the secondary surface with a hairline
- * edge. Every direct child is one row: it gets the row's vertical padding,
- * and an inset hairline splits it from the row above.
+ * The box a section's rows live in: the shared settings group (the secondary
+ * surface with a hairline edge), so desktop pages and the shared account and
+ * organization pages draw one box. Every direct child is one row.
  */
 export function SettingsGroup({
-  children,
-  dataTestId,
-  ariaLabel,
-  disabled,
   blockFromReplay = false,
+  ...props
 }: SettingsGroupProps): JSX.Element {
   return (
-    <div
-      role={ariaLabel ? 'group' : undefined}
-      aria-label={ariaLabel}
-      aria-disabled={disabled || undefined}
-      data-testid={dataTestId}
-      className={`${blockFromReplay ? `${POSTHOG_REPLAY_BLOCK_CLASS} ` : ''}flex flex-col divide-y rounded-lg bg-secondary px-4 ring-[length:var(--border-hairline)] ring-line-base *:py-3 ${
-        disabled ? 'pointer-events-none opacity-50' : ''
-      }`}
-    >
-      {/* A notice inside a row is part of that row's content, not a card.
-          Always mounted, so toggling early access keeps the rows' state. */}
-      <NoticeShapeProvider shape="default">{children}</NoticeShapeProvider>
-    </div>
+    <SettingsRowsGroup
+      {...props}
+      replayPrivacy={
+        blockFromReplay
+          ? { blockClassName: POSTHOG_REPLAY_BLOCK_CLASS }
+          : undefined
+      }
+    />
   );
-}
-
-// Targets in a row's text that keep their own click: links, buttons, fields,
-// and a label already naming its control.
-/**
- * Targets that keep their own click: controls, links, labels that already
- * name a control, and the code values settings text leaves selectable.
- */
-const ROW_TEXT_OWN_CLICK_SELECTOR =
-  'a, button, input, select, textarea, label[for], [role="button"], [role="link"], code, pre, .font-mono';
-
-const ROW_TOGGLE_SELECTOR = '[role="switch"], input[type="checkbox"]';
-
-/**
- * Settings text is not selectable, so a click on a row's label or
- * explanation flips the row's switch, as if it had landed on the switch. Only
- * a row with exactly one switch or checkbox does this; with more, a click on
- * the text could mean either.
- */
-function useRowToggleClick(): {
-  readonly controlRef: RefObject<HTMLDivElement | null>;
-  readonly onRowClick: (event: MouseEvent<HTMLDivElement>) => void;
-} {
-  const controlRef = useRef<HTMLDivElement>(null);
-  const onRowClick = (event: MouseEvent<HTMLDivElement>): void => {
-    const control = controlRef.current;
-    const target = event.target;
-    if (!control || !(target instanceof Element) || control.contains(target)) {
-      return;
-    }
-    // A double or triple click repeats the first press, and a click that ends
-    // a drag-select is selecting text, not asking for the switch.
-    const selection = target.ownerDocument.defaultView?.getSelection();
-    if (event.detail > 1 || (selection && !selection.isCollapsed)) {
-      return;
-    }
-    const ownClickTarget = target.closest(ROW_TEXT_OWN_CLICK_SELECTOR);
-    if (ownClickTarget && event.currentTarget.contains(ownClickTarget)) {
-      return;
-    }
-    const toggles = control.querySelectorAll<HTMLElement>(ROW_TOGGLE_SELECTOR);
-    const toggle = toggles.length === 1 ? toggles[0] : undefined;
-    if (
-      !toggle ||
-      toggle.matches(':disabled') ||
-      toggle.getAttribute('aria-disabled') === 'true'
-    ) {
-      return;
-    }
-    toggle.click();
-  };
-  return { controlRef, onRowClick };
-}
-
-interface SettingsRowProps {
-  readonly label: ReactNode;
-  readonly description?: ReactNode;
-  /** The row's control, aligned to the trailing edge. */
-  readonly control?: ReactNode;
-  /** Id of the control the label names, so clicking the label activates it. */
-  readonly htmlFor?: string;
-  readonly labelId?: string;
-  readonly dataTestId?: string;
-  /**
-   * Content under the label that belongs to this row: an editor, a status
-   * line, or `SettingsSubRow`s for settings that depend on this one.
-   */
-  readonly children?: ReactNode;
 }
 
 /**
  * One setting: its label and explanation on the leading side, its control on
- * the trailing side. The label keeps the primary ink at the heavier weight;
- * the explanation takes the secondary ink.
+ * the trailing side. A click on the row's text flips the row's switch when it
+ * holds exactly one.
  */
-export function SettingsRow({
-  label,
-  description,
-  control,
-  htmlFor,
-  labelId,
-  dataTestId,
-  children,
-}: SettingsRowProps): JSX.Element {
-  const labelClassName = 'block text-s font-medium fg-primary';
-  const { controlRef, onRowClick } = useRowToggleClick();
-  return (
-    <div className="flex flex-col gap-3" data-testid={dataTestId}>
-      <div
-        className="flex min-h-10 items-center justify-between gap-6"
-        onClick={onRowClick}
-      >
-        <div className="min-w-0 flex-1 space-y-0.5">
-          {htmlFor ? (
-            <label
-              id={labelId}
-              htmlFor={htmlFor}
-              className={labelClassName}
-              data-settings-row-label=""
-            >
-              {label}
-            </label>
-          ) : (
-            <div
-              id={labelId}
-              className={labelClassName}
-              data-settings-row-label=""
-            >
-              {label}
-            </div>
-          )}
-          {description ? (
-            <div className="text-xs text-pretty fg-secondary">
-              {description}
-            </div>
-          ) : null}
-        </div>
-        {control ? (
-          <div ref={controlRef} className="flex shrink-0 items-center gap-2">
-            {control}
-          </div>
-        ) : null}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-interface SettingsSubRowProps {
-  readonly label: ReactNode;
-  readonly description?: ReactNode;
-  readonly control?: ReactNode;
-  readonly htmlFor?: string;
-  readonly dataTestId?: string;
-  readonly children?: ReactNode;
-}
+export const SettingsRow = SettingsRowsRow;
 
 /**
  * A setting that depends on the row it sits in, such as the maximum behind a
- * "Limit…" switch. It goes in the parent `SettingsRow`'s children, so no
- * hairline splits it from its parent; its label takes the regular weight so
- * the parent stays the row's heading.
+ * "Limit…" switch. It goes in the parent `SettingsRow`'s children.
  */
-export function SettingsSubRow({
-  label,
-  description,
-  control,
-  htmlFor,
-  dataTestId,
-  children,
-}: SettingsSubRowProps): JSX.Element {
-  const labelClassName = 'block text-s fg-primary';
-  const { controlRef, onRowClick } = useRowToggleClick();
-  return (
-    <div className="flex flex-col gap-2" data-testid={dataTestId}>
-      <div
-        className="flex min-h-10 items-center justify-between gap-6"
-        onClick={onRowClick}
-      >
-        <div className="min-w-0 flex-1 space-y-0.5">
-          {htmlFor ? (
-            <label htmlFor={htmlFor} className={labelClassName}>
-              {label}
-            </label>
-          ) : (
-            <div className={labelClassName}>{label}</div>
-          )}
-          {description ? (
-            <div className="text-xs text-pretty fg-secondary">
-              {description}
-            </div>
-          ) : null}
-        </div>
-        {control ? (
-          <div ref={controlRef} className="flex shrink-0 items-center gap-2">
-            {control}
-          </div>
-        ) : null}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-// Fields share the control height and label size of the settings buttons.
-// `border-<color>` is inert under the unlayered base border rule (CAN-2734),
-// so the edge is a ring; an invalid field (`aria-invalid`) takes the
-// destructive edge.
-const FIELD_SURFACE_CLASS_NAME =
-  'focus-ring rounded-md bg-base fg-primary ring-[length:var(--border-hairline)] ring-inset placeholder:fg-tertiary disabled:cursor-not-allowed disabled:opacity-60';
-
-function fieldEdgeClassName(
-  invalid: InputHTMLAttributes<HTMLInputElement>['aria-invalid'],
-): string {
-  return invalid === true || invalid === 'true'
-    ? 'ring-line-destructive'
-    : 'ring-line-secondary';
-}
+export const SettingsSubRow = SettingsRowsSubRow;
 
 type SettingsFieldWidth = 'xs' | 'sm' | 'md' | 'full';
 
@@ -547,53 +322,15 @@ export interface SettingsTextAreaProps extends Omit<
   readonly mono?: boolean;
 }
 
-/** Multi-line writing, such as instructions, at reading size. */
+/**
+ * Multi-line writing, such as instructions, at reading size: the shared text
+ * area, with its vertical resize grip.
+ */
 export const SettingsTextArea = forwardRef<
   HTMLTextAreaElement,
   SettingsTextAreaProps
 >(function SettingsTextArea({ mono = false, ...props }, ref): JSX.Element {
-  return (
-    <textarea
-      ref={ref}
-      {...props}
-      className={`block w-full resize-none px-2.5 py-2 text-s ${mono ? 'font-mono' : ''} ${FIELD_SURFACE_CLASS_NAME} ${fieldEdgeClassName(props['aria-invalid'])}`}
-    />
-  );
-});
-
-type SettingsSelectWidth = 'control' | 'fit' | 'fill';
-
-export interface SettingsSelectProps extends Omit<
-  SettingsControlSelectProps,
-  'fill'
-> {
-  /**
-   * `control` (default): the compact 144px dropdown column, matching Appearance.
-   * `fit`: the chosen label's width, for a dropdown inside a sentence.
-   * `fill`: the parent's width, for a column the caller sizes.
-   */
-  readonly width?: SettingsSelectWidth;
-}
-
-/**
- * The settings dropdown: the shared control select (a native `<select>` on
- * the same 28px capsule as the settings buttons) at the settings
- * control column width.
- */
-export const SettingsSelect = forwardRef<
-  HTMLSelectElement,
-  SettingsSelectProps
->(function SettingsSelect({ width = 'control', ...props }, ref): JSX.Element {
-  if (width === 'fit') return <SettingsControlSelect ref={ref} {...props} />;
-  if (width === 'fill')
-    return <SettingsControlSelect ref={ref} fill {...props} />;
-  return (
-    <span
-      className={`inline-flex shrink-0 ${SETTINGS_DROPDOWN_WIDTH_CLASS_NAME}`}
-    >
-      <SettingsControlSelect ref={ref} fill {...props} />
-    </span>
-  );
+  return <TextArea ref={ref} {...props} mono={mono} className="block" />;
 });
 
 export interface SettingsRadioOption<T extends string> {
@@ -616,9 +353,9 @@ interface SettingsRadioGroupProps<T extends string> {
 }
 
 /**
- * A choice between options that each need a sentence of explanation. Native
- * radios in the theme accent; the label takes the primary ink and the
- * explanation the secondary ink under it.
+ * A choice between options that each need a sentence of explanation: the
+ * shared radio (a neutral fill when chosen, never the accent); the label takes
+ * the primary ink and the explanation the secondary ink under it.
  */
 export function SettingsRadioGroup<T extends string>({
   name,
@@ -643,15 +380,14 @@ export function SettingsRadioGroup<T extends string>({
             disabled || option.disabled ? 'opacity-60' : 'cursor-pointer'
           }`}
         >
-          <input
-            type="radio"
+          <Radio
             name={name}
             value={option.value}
             checked={value === option.value}
             disabled={disabled || option.disabled}
             onChange={() => onChange(option.value)}
             data-testid={option.dataTestId}
-            className={`mt-0.5 ${SETTINGS_CHECK_INPUT_CLASS_NAME}`}
+            className="mt-0.5"
           />
           <span className="min-w-0 space-y-0.5">
             <span className="block text-s font-medium fg-primary">
@@ -734,10 +470,12 @@ export function SettingsOptionCard({
  * Two or three short, mutually exclusive choices that switch a mode in place
  * (Append / Replace, CLI / token): the shared segmented picker at the width
  * of the settings control column. Each segment is a toggle button
- * (`aria-pressed`) inside a labelled group.
+ * (`aria-pressed`) inside a labelled group; with `semantics="tabs"` (a
+ * Key-Value / Bulk editor switch) the segments are tabs that name the view
+ * below them.
  */
 export function SettingsSegmentedControl<T extends string>(
-  props: Omit<SegmentedControlProps<T>, 'semantics' | 'width' | 'shape'>,
+  props: Omit<SegmentedControlProps<T>, 'width' | 'shape'>,
 ): JSX.Element {
   // Early access: the capsule of the compact Settings buttons.
   const shape = 'capsule';

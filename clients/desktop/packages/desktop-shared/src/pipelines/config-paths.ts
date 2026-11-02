@@ -3,6 +3,7 @@ import { constants, existsSync, realpathSync } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { BRAND } from '@canopy/brand/current';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getBrandEnv } from '../brand/env';
 import { sanitizeEnvVars } from '../lib/mcp-security';
 import { stripAgentSecretValues } from '../lib/agent-secret-values-env';
@@ -53,16 +54,16 @@ type BundledTarget =
 
 function getBundledTarget(): BundledTarget | null {
   if (
-    process.platform === 'darwin' &&
+    hostOperatingSystem() === 'darwin' &&
     (process.arch === 'arm64' || process.arch === 'x64')
   ) {
     return `darwin-${process.arch}`;
   }
-  if (process.platform === 'win32' && process.arch === 'x64') {
+  if (hostOperatingSystem() === 'win32' && process.arch === 'x64') {
     return 'win32-x64';
   }
   if (
-    process.platform === 'linux' &&
+    hostOperatingSystem() === 'linux' &&
     (process.arch === 'x64' || process.arch === 'arm64')
   ) {
     return `linux-${process.arch}`;
@@ -71,7 +72,7 @@ function getBundledTarget(): BundledTarget | null {
 }
 
 function withExeOnWindows(name: string): string {
-  return process.platform === 'win32' ? `${name}.exe` : name;
+  return hostOperatingSystem() === 'win32' ? `${name}.exe` : name;
 }
 
 /**
@@ -163,7 +164,7 @@ function findDevHostProviderFallback(
 ): string | undefined {
   if (
     !isDevRuntime() ||
-    process.platform === 'linux' ||
+    hostOperatingSystem() === 'linux' ||
     existsSync(bundledPath)
   ) {
     return undefined;
@@ -265,9 +266,12 @@ function getPipelineBundledBinDirOverride(): string | undefined {
 let loginShellPathRefreshInFlight: Promise<void> | null = null;
 let loginShellPathGeneration = 0;
 
-/** Linux x64 is the only Linux target with login-shell and terminal-shell resolution. */
+/** Linux x64 and arm64 use the same bounded login-shell and terminal-shell resolution. */
 export function isLinuxLoginShellPathSupported(): boolean {
-  return process.platform === 'linux' && process.arch === 'x64';
+  return (
+    hostOperatingSystem() === 'linux' &&
+    (process.arch === 'x64' || process.arch === 'arm64')
+  );
 }
 
 function getLoginShellPathFallback(): string {
@@ -306,22 +310,62 @@ export function getLinuxProbeEnv(): Record<string, string> {
   return sanitizeEnvVars(env);
 }
 
+/** One login-shell lookup: stdout of a clean exit, otherwise undefined. */
+export type LoginShellProbe = (request: {
+  readonly file: string;
+  readonly args: readonly string[];
+  readonly env: Record<string, string>;
+  readonly timeoutMs: number;
+  readonly maxBuffer: number;
+}) => Promise<string | undefined>;
+
+const execFileLoginShellProbe: LoginShellProbe = (request) =>
+  new Promise((resolve) => {
+    const child = execFile(
+      request.file,
+      [...request.args],
+      {
+        encoding: 'utf8',
+        env: request.env,
+        timeout: request.timeoutMs,
+        maxBuffer: request.maxBuffer,
+        killSignal: 'SIGKILL',
+      },
+      (error, stdout) => resolve(error ? undefined : stdout),
+    );
+    // The login shell can take seconds with heavy shell init; never let the
+    // pending refresh keep a short-lived CLI process alive.
+    child.unref?.();
+  });
+
+let loginShellProbe: LoginShellProbe = execFileLoginShellProbe;
+
+/**
+ * Runs login-shell lookups through a host's execution host port, so they
+ * launch like its other execution children. Without one (the CLI), lookups
+ * use an unreferenced `execFile`. `undefined` restores that default.
+ */
+export function setLoginShellProbe(probe: LoginShellProbe | undefined): void {
+  loginShellProbe = probe ?? execFileLoginShellProbe;
+}
+
+function processEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env))
+    if (value !== undefined) env[key] = value;
+  return env;
+}
+
 function runLinuxShellProbe(
   file: string,
   args: string[],
   env: Record<string, string>,
-  timeout: number,
+  timeoutMs: number,
   maxBuffer: number,
 ): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    const child = execFile(
-      file,
-      args,
-      { encoding: 'utf8', env, timeout, maxBuffer, killSignal: 'SIGKILL' },
-      (error, stdout) => resolve(error ? undefined : stdout),
-    );
-    child.unref?.();
-  });
+  return loginShellProbe({ file, args, env, timeoutMs, maxBuffer }).catch(
+    () => undefined,
+  );
 }
 
 async function isExecutableLinuxShell(
@@ -362,7 +406,7 @@ async function getLinuxAccountShell(
 }
 
 /**
- * The real-UID account shell for Linux x64 terminals, via the same bounded
+ * The real-UID account shell for Linux x64/arm64 terminals, via the same bounded
  * `getent` lookup the login-shell PATH probe uses. Never rejects.
  */
 export async function resolveLinuxAccountShell(): Promise<string | undefined> {
@@ -427,47 +471,35 @@ function startLoginShellPathRefresh(): Promise<void> {
     return loginShellPathRefreshInFlight;
   }
   const shell = process.env.SHELL || '/bin/zsh';
-  loginShellPathRefreshInFlight = new Promise<void>((resolve) => {
-    const child = execFile(
-      shell,
-      ['-lic', 'exec /usr/bin/printf \'%s\\n\' "$PATH"'],
-      {
-        encoding: 'utf8',
-        timeout: 10_000,
-        killSignal: 'SIGKILL',
-        windowsHide: process.platform === 'win32',
-      },
-      (error, stdout) => {
-        if (generation !== loginShellPathGeneration) {
-          resolve();
-          return;
-        }
-        loginShellPathRefreshInFlight = null;
-        if (error) {
-          cachedLoginShellPath = cachedLoginShellPath ?? fallback;
-        } else {
-          // Take the last non-empty line to skip any motd / shell init output
-          const lines = stdout
-            .split('\n')
-            .filter((line) => line.trim().length > 0);
-          const resolved =
-            lines.length > 0 ? lines[lines.length - 1].trim() : '';
-          cachedLoginShellPath =
-            resolved.length > 0 ? resolved : (cachedLoginShellPath ?? fallback);
-        }
-        cachedLoginShellPathAt = Date.now();
-        resolve();
-      },
-    );
-    // The login shell can take seconds with heavy shell init; never let the
-    // pending refresh keep a short-lived CLI process alive.
-    child.unref?.();
-  });
+  loginShellPathRefreshInFlight = loginShellProbe({
+    file: shell,
+    args: ['-lic', 'exec /usr/bin/printf \'%s\\n\' "$PATH"'],
+    env: processEnvironment(),
+    timeoutMs: 10_000,
+    maxBuffer: 1024 * 1024,
+  })
+    .catch(() => undefined)
+    .then((stdout): void => {
+      if (generation !== loginShellPathGeneration) return;
+      loginShellPathRefreshInFlight = null;
+      if (stdout === undefined) {
+        cachedLoginShellPath = cachedLoginShellPath ?? fallback;
+      } else {
+        // Take the last non-empty line to skip any motd / shell init output
+        const lines = stdout
+          .split('\n')
+          .filter((line) => line.trim().length > 0);
+        const resolved = lines.length > 0 ? lines[lines.length - 1].trim() : '';
+        cachedLoginShellPath =
+          resolved.length > 0 ? resolved : (cachedLoginShellPath ?? fallback);
+      }
+      cachedLoginShellPathAt = Date.now();
+    });
   return loginShellPathRefreshInFlight;
 }
 
 /**
- * Resolve the full login-shell PATH on macOS and Linux x64. Linux validates
+ * Resolve the full login-shell PATH on macOS and Linux x64/arm64. Linux validates
  * the configured/account shell and probes marked output, with a Bash fallback.
  * Desktop launchers (Finder/Dock or GNOME) can supply a minimal inherited
  * PATH. Running the
@@ -487,7 +519,7 @@ function startLoginShellPathRefresh(): Promise<void> {
  * Other platforms retain process.env.PATH without probing.
  */
 export function getLoginShellPath(): string {
-  if (process.platform !== 'darwin' && !isLinuxLoginShellPathSupported()) {
+  if (hostOperatingSystem() !== 'darwin' && !isLinuxLoginShellPathSupported()) {
     return process.env.PATH ?? '';
   }
 
@@ -506,12 +538,12 @@ export function getLoginShellPath(): string {
  * instead of the inherited fallback. `force` also refreshes a fresh cache, for
  * an explicit user recheck after installing a tool; it shares an in-flight
  * probe and keeps the previous value if the probe fails. No-op outside macOS
- * and Linux x64.
+ * and Linux x64/arm64.
  */
 export async function prewarmLoginShellPath(options?: {
   force?: boolean;
 }): Promise<void> {
-  if (process.platform !== 'darwin' && !isLinuxLoginShellPathSupported()) {
+  if (hostOperatingSystem() !== 'darwin' && !isLinuxLoginShellPathSupported()) {
     return;
   }
   if (
@@ -1061,6 +1093,10 @@ export function getCursorRuntimeStateDir(): string {
   return path.join(getCanopyDataDir(), 'cursor-runtime-state');
 }
 
+export function getCopilotRuntimeReceiptsDir(): string {
+  return path.join(getCanopyDataDir(), 'copilot-runtime-receipts');
+}
+
 export function getCopilotRuntimeRootDir(): string {
   return path.join(getCanopyDataDir(), 'copilot-runtime');
 }
@@ -1073,7 +1109,11 @@ export function getOpenCodeRuntimeStateDir(): string {
   return path.join(getCanopyDataDir(), 'opencode-runtime-state');
 }
 
-/** Official CLI account state. Per-chat session state uses a separate config directory. */
+/**
+ * Managed CLI configuration and state; never credentials
+ * (docs/desktop-persistence.md). Per-chat session state uses a separate config
+ * directory.
+ */
 export function getCopilotRuntimeStateDir(): string {
   return path.join(getCanopyDataDir(), 'copilot-runtime-state');
 }
@@ -1089,7 +1129,7 @@ export function getBundledDictateBinaryPath(): string {
     return override;
   }
 
-  if (process.platform !== 'darwin') {
+  if (hostOperatingSystem() !== 'darwin') {
     return '';
   }
 

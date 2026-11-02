@@ -49,6 +49,7 @@ import {
   type RestoredWorktreeRecord,
 } from '../archived-container-restore-records';
 import { getWorkspaceWorktreesFilePath } from '../paths';
+import * as SidebarItemGroups from '../sidebar-item-groups';
 import {
   clearWorktreesSelfWriteTracking,
   readWorkspaceWorktrees,
@@ -239,6 +240,10 @@ describe('archived container restore records (real fs)', () => {
       const contents = await writeList([
         row('recovery-1', { createdAt: '2026-10-05T00:00:00.000Z' }),
       ]);
+      const publish = jest.spyOn(
+        SidebarItemGroups,
+        'publishSidebarItemGroupsChanged',
+      );
 
       const error = await refusal(recordRestoredWorktree(record()));
 
@@ -249,6 +254,9 @@ describe('archived container restore records (real fs)', () => {
           'Staged recovery worktree recovery-1 no longer matches its destination identity; the archived container was preserved.',
       });
       expect(await readFile(listPath, 'utf8')).toBe(contents);
+      // Outside a commit scope too, the refusal leaves before any list hook.
+      expect(publish).not.toHaveBeenCalled();
+      publish.mockRestore();
     });
 
     it('refuses a destination archived in this process instead of reporting it recorded', async () => {

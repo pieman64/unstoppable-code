@@ -64,11 +64,13 @@ test('maximize hides sibling groups and restore returns their previous sizes', a
     await expect(activityGroup).toBeHidden();
     await expect(chatGroup).toBeVisible();
 
-    // The chat group now fills the whole grid.
+    // The allocated leaf fills the grid; the card retains its inset margins.
     const gridBox = await window.getByTestId('panel-grid-root').boundingBox();
+    const leafBox = await chatGroup.locator('xpath=..').boundingBox();
+    for (const key of ['x', 'y', 'width', 'height']) {
+      expect(Math.abs(leafBox[key] - gridBox[key]), key).toBeLessThanOrEqual(1);
+    }
     const chatBoxMaximized = await chatGroup.boundingBox();
-    expect(chatBoxMaximized.width).toBeGreaterThanOrEqual(gridBox.width - 4);
-    expect(chatBoxMaximized.height).toBeGreaterThanOrEqual(gridBox.height - 4);
     expect(chatBoxMaximized.width).toBeGreaterThan(chatBoxBefore.width + 40);
 
     // Serialized state: chat leaf maximized, the siblings hidden; maximize

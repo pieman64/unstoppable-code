@@ -1,6 +1,9 @@
 import { ChatPlanReviewApprovalSchema } from '../../chat-plan-review';
 import { z } from 'zod';
-import { CanopyRequestMetadataSchema } from '../../common';
+import {
+  CanopyQueryRequestMetadataSchema,
+  CanopyRequestMetadataSchema,
+} from '../../common';
 
 import {
   CanopyErrorPayloadSchema,
@@ -74,12 +77,63 @@ export const CoreChatQueueEntryUpdateParamsSchema =
         inputMode: z.enum(['typed', 'voice']).optional(),
       }),
       z.strictObject({ kind: z.literal('steer') }),
+      z.strictObject({
+        kind: z.literal('move'),
+        beforeEntryId: IdentifierSchema.nullable(),
+      }),
     ]),
   });
 
 export const CoreChatQueueEntryForceParamsSchema = ChatCommandBaseSchema.extend(
   { entryId: IdentifierSchema },
 );
+
+export const CoreChatTurnCancelParamsSchema = z.strictObject({
+  chatId: IdentifierSchema,
+  turnId: IdentifierSchema,
+  reason: z.enum(['user', 'superseded', 'shutdown', 'policy', 'timeout']),
+  _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+
+export const CoreChatTurnCancelResultSchema = z
+  .object({
+    chatId: IdentifierSchema,
+    workspaceId: IdentifierSchema,
+    worktreeId: z.string().nullable(),
+    title: z.string().max(512),
+    state: z.enum([
+      'idle',
+      'queued',
+      'running',
+      'awaiting_user',
+      'completed',
+      'failed',
+      'archived',
+    ]),
+    revision: RevisionSchema,
+    providerId: z.string().nullable().optional(),
+    modelId: z.string().nullable().optional(),
+    providerSessionId: z.string().nullable().optional(),
+    targetId: z.string().nullable().optional(),
+    createdAt: z.iso.datetime({ offset: true }),
+    updatedAt: z.iso.datetime({ offset: true }),
+  })
+  .catchall(CanopyJsonValueSchema);
+
+export const CoreChatTurnCancelErrorSchema = CanopyErrorPayloadSchema.extend({
+  code: z
+    .enum([
+      'core.chat.turn.invalidState',
+      'core.chat.turn.revisionConflict',
+      'core.chat.turn.notFound',
+    ])
+    .optional(),
+  retry: z.discriminatedUnion('kind', [
+    CanopyRetryDirectiveSchema.options[0],
+    CanopyRetryDirectiveSchema.options[1],
+    CanopyRetryDirectiveSchema.options[3],
+  ]),
+});
 
 const KeyedRetrySchema = z.discriminatedUnion('kind', [
   CanopyRetryDirectiveSchema.options[0],
@@ -141,6 +195,17 @@ export const CORE_CHAT_MESSAGE_INSTRUCTION_DEFINITIONS =
         'core.chat.revisionConflict',
         'core.chat.busy',
       ]),
+    }),
+    'core.chat.turn.cancel': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'chat',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.chat.write'],
+      params: CoreChatTurnCancelParamsSchema,
+      result: CoreChatTurnCancelResultSchema,
+      error: CoreChatTurnCancelErrorSchema,
     }),
     'core.chat.queue.entry.force': defineCanopyInstruction({
       plane: 'core',

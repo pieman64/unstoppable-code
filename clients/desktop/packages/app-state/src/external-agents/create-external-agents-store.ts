@@ -111,6 +111,7 @@ export interface ExternalAgentState {
     readonly access: ExternalAgentAccess;
     readonly expiry: ExternalAgentExpiryChange;
     readonly confirmation?: ExternalAgentConfirmationChange;
+    readonly textContentCompatibility?: boolean;
   }) => Promise<boolean>;
   readonly pause: () => Promise<boolean>;
   readonly resume: () => Promise<boolean>;
@@ -429,19 +430,20 @@ export function createExternalAgentStore(
         runAction(
           'save',
           (revision) =>
-            change.confirmation !== undefined &&
-            Object.keys(change.confirmation).length > 0
-              ? client.updateAccess(connectionId, {
-                  revision,
-                  access: change.access,
-                  expiry: change.expiry,
-                  confirmation: change.confirmation,
-                })
-              : client.updateAccess(connectionId, {
-                  revision,
-                  access: change.access,
-                  expiry: change.expiry,
-                }),
+            client.updateAccess(connectionId, {
+              revision,
+              access: change.access,
+              expiry: change.expiry,
+              ...(change.confirmation !== undefined &&
+              Object.keys(change.confirmation).length > 0
+                ? { confirmation: change.confirmation }
+                : {}),
+              ...(change.textContentCompatibility === undefined
+                ? {}
+                : {
+                    textContentCompatibility: change.textContentCompatibility,
+                  }),
+            }),
           { kind: 'saved' },
         ),
       pause: () =>

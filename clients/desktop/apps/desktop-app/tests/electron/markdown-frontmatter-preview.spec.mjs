@@ -76,14 +76,10 @@ test('markdown file preview renders YAML frontmatter', async () => {
       window.getByTestId(`panel-tab-panel-file-${TAB_ID}`),
     ).toBeVisible();
 
-    // The tab is seeded in preview mode, so the single-button toggle offers
-    // the way back to source — its presence proves preview mode is active.
+    // The tab is seeded in preview mode, so Formatted is the pressed view.
     await expect(
-      chatPanel.getByRole('button', {
-        name: 'View source; current view: preview',
-        exact: true,
-      }),
-    ).toBeVisible();
+      chatPanel.getByRole('button', { name: 'Formatted', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
 
     await expect(chatPanel.getByText('Title:', { exact: true })).toBeVisible();
     await expect(

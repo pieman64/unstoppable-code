@@ -4,7 +4,8 @@ const MAX_RETRY_AFTER_MS = 5_000;
 
 export class AutoModelRoutingInProgressError extends Error {
   readonly retryAfterMs: number;
-  readonly cause?: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
 
   constructor(retryAfterMs?: number, cause?: unknown) {
     super('Model routing is still in progress');

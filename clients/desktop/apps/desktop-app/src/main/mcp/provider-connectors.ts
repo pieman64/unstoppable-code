@@ -1,3 +1,4 @@
+import { listCuratedMcpServers } from './curated-catalog';
 import {
   getBundledClaudeBinaryPath,
   getEnhancedEnv,
@@ -27,6 +28,46 @@ import { runClaudeCliProcessOffMain } from '../agents/claude-process-host-runner
  * which means no Google restricted-scope verification and no annual CASA
  * assessment for those surfaces — that burden stays with the provider.
  */
+
+/** The existing desktop read, also projected by Portal's MCP inventory. */
+export async function listAdvertisedProviderConnectors(): Promise<
+  ProviderConnectorListResult[]
+> {
+  // The served catalog is the only source of what is advertised. Claude needs
+  // no such filter — its list is already only the account's connectors — but
+  // Codex reports a directory of thousands and has to be narrowed.
+  const catalog = await listCuratedMcpServers();
+  // Reading Claude costs a CLI spawn that health-checks every configured MCP
+  // server over the network, and this handler runs on Plugins-page mount and
+  // on every window focus. Scoped per provider rather than "does anything
+  // advertise a connector": a Codex-only catalog would otherwise still pay
+  // the Claude cost for a guaranteed-empty answer.
+  const claudeAdvertised = catalog.servers.some((entry) =>
+    entry.providerConnector?.providers.includes('claude'),
+  );
+  // Scoped to Codex: a Claude-only connector has no business being looked up
+  // in Codex's directory. The row builder re-filters by the same list, so
+  // this is currently only wasted work — but the two filters living in
+  // different files is precisely how the last drift bug started.
+  const codexAdvertised = catalog.servers
+    .filter((entry) => entry.providerConnector?.providers.includes('codex'))
+    .map((entry) => ({
+      displayName: entry.name,
+      ...(entry.providerConnector?.codexConnectorId
+        ? { codexConnectorId: entry.providerConnector.codexConnectorId }
+        : {}),
+    }));
+  // Read both providers together: one provider being signed out must not hide
+  // the other's connectors.
+  return Promise.all([
+    claudeAdvertised
+      ? listClaudeProviderConnectors()
+      : Promise.resolve({ provider: 'claude' as const, connectors: [] }),
+    codexAdvertised.length > 0
+      ? listCodexProviderConnectors(codexAdvertised)
+      : Promise.resolve({ provider: 'codex' as const, connectors: [] }),
+  ]);
+}
 
 /** Claude Code prefixes every claude.ai account connector with this. */
 const CLAUDE_CONNECTOR_PREFIX = 'claude.ai ';

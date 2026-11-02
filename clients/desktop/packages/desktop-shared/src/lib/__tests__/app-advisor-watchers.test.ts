@@ -34,7 +34,6 @@ const EXPECTED_TARGET_KINDS: Record<
   | 'worktree_pipeline'
   | 'worktree_hook'
   | 'automation'
-  | 'managed_delegation'
   | 'github_workflow_runs'
   | 'github_pull_requests'
   | 'scheduled_wakeup'
@@ -53,7 +52,6 @@ const EXPECTED_TARGET_KINDS: Record<
   worktree_pipeline_completion: 'worktree_pipeline',
   worktree_hook_triggered: 'worktree_hook',
   automation_run: 'automation',
-  managed_delegation_completion: 'managed_delegation',
   // The GitHub workflow-run catalog entry value is populated by the backend
   // plan; the trigger→targetKind pairing is fixed here for when it lands.
   github_workflow_runs_changed: 'github_workflow_runs',
@@ -116,7 +114,7 @@ describe('App Advisor watcher catalog', () => {
   });
 
   it('contains exactly the supported watcher triggers (uniquely)', () => {
-    expect(APP_ADVISOR_WATCHER_CATALOG).toHaveLength(16);
+    expect(APP_ADVISOR_WATCHER_CATALOG).toHaveLength(15);
 
     const triggers = APP_ADVISOR_WATCHER_CATALOG.map((entry) => entry.trigger);
     expect(new Set(triggers).size).toBe(triggers.length);
@@ -132,7 +130,6 @@ describe('App Advisor watcher catalog', () => {
         'automation_run',
         'github_workflow_runs_changed',
         'github_pull_requests_changed',
-        'managed_delegation_completion',
       ]),
     );
   });
@@ -151,7 +148,6 @@ describe('App Advisor watcher catalog', () => {
           'github_pull_requests_changed',
           'scheduled_wakeup',
           'command_watch_resolved',
-          'managed_delegation_completion',
         ].includes(candidate.trigger),
     )) {
       expect(entry.setupTool).toBe('setup_watchers');
@@ -166,11 +162,6 @@ describe('App Advisor watcher catalog', () => {
         (entry) => entry.trigger === 'github_pull_requests_changed',
       )?.setupTool,
     ).toBe('watch_github_items');
-    expect(
-      APP_ADVISOR_WATCHER_CATALOG.find(
-        (entry) => entry.trigger === 'managed_delegation_completion',
-      )?.setupTool,
-    ).toBe('watch_delegates');
   });
 
   it('guides canonical discovery without UI state or legacy list actions', () => {
@@ -215,7 +206,7 @@ describe('App Advisor watcher catalog', () => {
     expect(guidance).toContain('automation.run_now');
     expect(guidance).toContain('skipped');
     expect(guidance).toContain(
-      'App Advisor prompt dispatches still fire at dispatch',
+      'Orchestrator prompt dispatches still fire at dispatch',
     );
     expect(guidance).toContain('bot chat completion watches are separate');
   });
@@ -321,19 +312,13 @@ describe('App Advisor watcher catalog', () => {
     }
     expect(
       searchAppAdvisorWatchers({}, [], { botsEnabled: false }).catalog,
-    ).toHaveLength(10);
+    ).toHaveLength(9);
   });
 
   it('declares the expected required and optional fields per trigger', () => {
     const byTrigger = Object.fromEntries(
       APP_ADVISOR_WATCHER_CATALOG.map((entry) => [entry.trigger, entry]),
     );
-
-    expect(byTrigger.managed_delegation_completion).toMatchObject({
-      setupTool: 'watch_delegates',
-      requiredFields: ['delegationIds', 'mode', 'timeoutMs'],
-      optionalFields: [],
-    });
 
     expect(byTrigger.worktree_chat_completion).toMatchObject({
       requiredFields: ['projectId', 'worktreeId', 'chatId'],
@@ -431,7 +416,7 @@ describe('searchAppAdvisorWatchers', () => {
   it('returns the full catalog with a baseline score when no query is supplied', () => {
     const result = searchAppAdvisorWatchers({});
 
-    expect(result.catalog).toHaveLength(12);
+    expect(result.catalog).toHaveLength(11);
     expect(result.activeWatchers).toEqual([]);
     for (const row of result.catalog) {
       expect(row.score).toBeGreaterThan(0);
@@ -440,12 +425,10 @@ describe('searchAppAdvisorWatchers', () => {
           ? 'schedule_wakeup'
           : row.trigger === 'command_watch_resolved'
             ? 'watch_command'
-            : row.trigger === 'managed_delegation_completion'
-              ? 'watch_delegates'
-              : row.trigger === 'github_workflow_runs_changed' ||
-                  row.trigger === 'github_pull_requests_changed'
-                ? 'watch_github_items'
-                : 'setup_watchers',
+            : row.trigger === 'github_workflow_runs_changed' ||
+                row.trigger === 'github_pull_requests_changed'
+              ? 'watch_github_items'
+              : 'setup_watchers',
       );
       expect(row.usageGuidance).toBeUndefined();
     }
@@ -1204,7 +1187,7 @@ describe('describeWatcherFiredKind', () => {
           pipelineName: 'Deploy',
         },
       }),
-    ).toBe('Pipeline completion (Deploy)');
+    ).toBe('Workflow completion (Deploy)');
     expect(
       describeWatcherFiredKind({
         trigger: 'worktree_pipeline_completion',
@@ -1214,7 +1197,7 @@ describe('describeWatcherFiredKind', () => {
           worktreeId: 'w1',
         },
       }),
-    ).toBe('Pipeline completion');
+    ).toBe('Workflow completion');
   });
 
   it('describes hook watchers with the hook label or trigger display name', () => {
@@ -1361,9 +1344,9 @@ describe('SearchWatchers instance identity and paging', () => {
         kind: 'worktree_hook',
         projectId: 'p1',
         worktreeId: 't1',
-        triggerName: 'pr_created',
+        triggerName: 'pr:create',
       }),
-    ).toEqual({ projectId: 'p1', taskId: 't1', triggerName: 'pr_created' });
+    ).toEqual({ projectId: 'p1', taskId: 't1', triggerName: 'pr:create' });
     expect(
       watcherSearchTarget({ kind: 'automation', automationId: 'a1' }),
     ).toBeUndefined();

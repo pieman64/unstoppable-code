@@ -22,15 +22,21 @@ export function shouldShowUiAutomationWindow(): boolean {
   );
 }
 
-/** Hidden X11 native windows can stop supplying compositor frames. */
+/**
+ * Hidden X11 native windows can stop supplying compositor frames. A hidden
+ * Windows window draws about once a second, so the performance runner opts
+ * its Windows launches into offscreen rendering as well.
+ */
 export function getUiAutomationWindowWebPreferences(
   platform: NodeJS.Platform | null = hostOperatingSystem(),
   e2eBuild: boolean = isE2eBuild(),
   packaged: boolean = app.isPackaged,
   env: NodeJS.ProcessEnv = process.env,
 ): Pick<Electron.WebPreferences, 'offscreen'> {
-  return platform === 'linux' &&
-    isHeadlessUiAutomationLaunch(e2eBuild, packaged, env)
+  const offscreen =
+    platform === 'linux' ||
+    (platform === 'win32' && env.CANOPY_E2E_OFFSCREEN_WINDOW === '1');
+  return offscreen && isHeadlessUiAutomationLaunch(e2eBuild, packaged, env)
     ? { offscreen: true }
     : {};
 }

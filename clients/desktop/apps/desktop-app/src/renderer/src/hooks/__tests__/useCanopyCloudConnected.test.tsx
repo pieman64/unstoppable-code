@@ -3,10 +3,7 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type {
-  CanopyApi,
-  CanopyCloudAccountPublicState,
-} from '@canopy/desktop-shared/types';
+import type { CanopyCloudAccountPublicState } from '@canopy/desktop-shared/types';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   useCanopyCloudConnected,
@@ -60,7 +57,7 @@ async function renderHook(
     configurable: true,
     value: {
       loadCanopyCloudAccount,
-    } as Partial<CanopyApi> as CanopyApi,
+    },
   });
   const probe: Probe = { current: null };
   const container = document.createElement('div');

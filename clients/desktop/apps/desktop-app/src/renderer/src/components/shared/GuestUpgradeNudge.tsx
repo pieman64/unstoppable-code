@@ -118,15 +118,16 @@ export function GuestUpgradeNudge(): JSX.Element | null {
           </p>
           <p className="text-s fg-secondary">{GUEST_UPGRADE_NUDGE_BODY}</p>
         </div>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
+          iconOnly
           onClick={() => setDismissed(true)}
           data-testid="guest-upgrade-nudge-dismiss"
           aria-label="Dismiss sign-in reminder"
-          className="focus-ring shrink-0 rounded-md p-1 fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
         >
           <CloseMediumIcon size={16} aria-hidden="true" />
-        </button>
+        </Button>
       </div>
       <div className="mt-3 flex items-center gap-2">
         <Button

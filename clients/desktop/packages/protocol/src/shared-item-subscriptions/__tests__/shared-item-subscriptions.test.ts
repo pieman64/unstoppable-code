@@ -10,15 +10,17 @@ import {
   parseSharedItemSubscriptionBatchResult,
   parseSharedItemSubscriptionItemResult,
   sharedItemSubscriptionKey,
+  type SharedItemInstallRemoval,
+  type SharedItemInstallUpsert,
 } from '..';
 
-const removal = {
+const removal: SharedItemInstallRemoval = {
   kind: 'skill',
   remoteId: 'skill-ext-1',
   sourceKind: 'shared',
   sourceKey: 'desktop:device-1',
 };
-const upsert = { ...removal, contentHash: 'abc123' };
+const upsert: SharedItemInstallUpsert = { ...removal, contentHash: 'abc123' };
 
 describe('shared item subscription wire contract', () => {
   it('pins the shareable kinds', () => {

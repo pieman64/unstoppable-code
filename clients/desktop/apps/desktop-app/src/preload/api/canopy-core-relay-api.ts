@@ -6,10 +6,11 @@ import type {
   CanopyOperationCode,
   CanopyRetryDirective,
 } from '@canopy/protocol/canopy-core';
-import type {
-  CanopyCoreRelayApi,
-  CanopyCoreRelayReply,
-  CanopyCoreRelayRequest,
+import {
+  relayRetryFor,
+  type CanopyCoreRelayApi,
+  type CanopyCoreRelayReply,
+  type CanopyCoreRelayRequest,
 } from '../../shared/canopy-core-relay';
 
 // A type-checked kind table instead of the protocol barrel's schemas, which the preload bundle does not need.
@@ -92,7 +93,7 @@ function lostReplyRetry(request: CanopyCoreRelayRequest): CanopyRetryDirective {
       typeof meta.idempotencyKey === 'string' &&
       meta.idempotencyKey.length > 0
     )
-      return { kind: 'same_idempotency_key' };
+      return relayRetryFor(request.method, { kind: 'same_idempotency_key' });
   }
   return { kind: 'never' };
 }

@@ -1,7 +1,13 @@
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
+import { PIPELINE_TARGET_GLOBAL_PROJECT_PIPELINE_ERROR } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 import {
+  AUTOMATION_PIPELINE_TASK_REQUIRED_ERROR,
+  displayedPipelineRunIn,
   activityToFormState,
+  applyGlobalPipelineSelection,
+  applyPipelineRunInSelection,
   applyWorkspaceActionSelection,
+  automationFormActionCategory,
   automationDraftFromSeed,
   automationFormSnapshot,
   buildAction,
@@ -83,6 +89,49 @@ describe('buildAutomationMutationRequest', () => {
         without.mode === 'create' &&
         'targetRequirement' in without.request,
     ).toBe(false);
+  });
+
+  it('saves pipeline dependencies on create and clears them on edit', () => {
+    const pipelines = [{ pipelineId: 'pipeline-1', source: 'user' as const }];
+    expect(
+      buildAutomationMutationRequest(
+        validCreateState({ pipelineDependencies: pipelines }),
+      ),
+    ).toMatchObject({
+      ok: true,
+      mode: 'create',
+      request: { dependencies: { pipelines } },
+    });
+    const empty = buildAutomationMutationRequest(
+      validCreateState({ pipelineDependencies: [] }),
+    );
+    expect(
+      empty.ok && empty.mode === 'create' && 'dependencies' in empty.request,
+    ).toBe(false);
+
+    const loaded = activityToFormState(
+      activity({ dependencies: { pipelines } }),
+    );
+    expect(loaded.pipelineDependencies).toEqual(pipelines);
+    expect(buildAutomationMutationRequest(loaded)).toMatchObject({
+      ok: true,
+      mode: 'update',
+      request: { dependencies: { pipelines } },
+    });
+    expect(
+      buildAutomationMutationRequest({ ...loaded, pipelineDependencies: [] }),
+    ).toMatchObject({
+      ok: true,
+      mode: 'update',
+      request: { dependencies: null },
+    });
+  });
+
+  it('treats an empty pipeline list like no list in the dirty check', () => {
+    const state = activityToFormState(activity());
+    expect(automationFormSnapshot({ ...state, pipelineDependencies: [] })).toBe(
+      automationFormSnapshot(state),
+    );
   });
 
   it('builds an update request for an edit', () => {
@@ -197,7 +246,7 @@ describe('buildAutomationMutationRequest', () => {
       buildAutomationMutationRequest(validCreateState({ prompt: '  ' })),
     ).toEqual({
       ok: false,
-      error: 'Enter a prompt for App Advisor.',
+      error: 'Enter a prompt for Orchestrator.',
       field: 'prompt',
       section: 'definition',
     });
@@ -217,7 +266,7 @@ describe('buildAutomationMutationRequest', () => {
       ),
     ).toEqual({
       ok: false,
-      error: 'Pick a pipeline to run.',
+      error: 'Pick a workflow to run.',
       field: 'pipeline',
       section: 'definition',
     });
@@ -267,15 +316,22 @@ describe('buildAutomationMutationRequest', () => {
     );
     expect(result).toEqual({
       ok: false,
-      error: 'Scheduled pipeline resumes cannot be edited.',
+      error: 'Scheduled workflow resumes cannot be edited.',
       section: 'definition',
     });
   });
 });
 
 describe('automationDraftFromSeed', () => {
-  it('is the blank form without a seed', () => {
-    expect(automationDraftFromSeed()).toEqual(emptyFormState());
+  it('is a pipeline with no project without a seed', () => {
+    const draft = automationDraftFromSeed();
+    expect(draft).toEqual({
+      ...emptyFormState(),
+      actionType: 'worktree_pipeline',
+      pipelineTargetKind: 'global',
+      pipelineTargetExplicit: true,
+    });
+    expect(automationFormActionCategory(draft)).toBe('global');
   });
 
   it('targets a project worktree with a new chat each run', () => {
@@ -335,9 +391,12 @@ describe('automationDraftFromSeed', () => {
 describe('automationFormSnapshot', () => {
   it('ignores key order and undefined versus absent fields', () => {
     const state = emptyFormState();
-    const reordered: FormState = Object.fromEntries(
-      Object.entries({ ...state, approvalMode: undefined }).reverse(),
-    ) as FormState;
+    const reordered: FormState = { ...state, approvalMode: undefined };
+    const reversedEntries = Object.entries(reordered).reverse();
+    for (const key of Object.keys(reordered)) {
+      Reflect.deleteProperty(reordered, key);
+    }
+    Object.assign(reordered, Object.fromEntries(reversedEntries));
     expect(automationFormSnapshot(reordered)).toBe(
       automationFormSnapshot(state),
     );
@@ -393,5 +452,180 @@ describe('automationFormSnapshot', () => {
         pipelinePluginCollectionIds: [],
       }),
     ).toBe(automationFormSnapshot(state));
+  });
+});
+
+describe('pipeline destinations', () => {
+  const pipelineActivity = (
+    action: Partial<
+      Extract<ScheduledActivity['action'], { type: 'worktree_pipeline' }>
+    >,
+  ): ScheduledActivity =>
+    activity({
+      action: {
+        type: 'worktree_pipeline',
+        pipelineId: 'review',
+        pipelineName: 'Review',
+        ...action,
+      },
+    });
+
+  it('round-trips a pipeline with no project without a workspace', () => {
+    const state = activityToFormState(
+      pipelineActivity({ target: { kind: 'global' } }),
+    );
+    expect(automationFormActionCategory(state)).toBe('global');
+    expect(buildAction(state)).toEqual({
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId: 'review',
+        pipelineName: 'Review',
+      },
+    });
+  });
+
+  it('ignores the inert workspace of a pipeline with no project', () => {
+    const state = activityToFormState(
+      pipelineActivity({
+        target: { kind: 'global' },
+        workspaceId: 'workspace-1',
+      }),
+    );
+    expect(state.workspaceId).toBe('');
+    expect(buildAction(state).action).not.toHaveProperty('workspaceId');
+  });
+
+  it('saves an unchanged legacy action without a target', () => {
+    const legacy = pipelineActivity({
+      workspaceId: 'workspace-1',
+      baseWorktreeId: 'base',
+    });
+    const state = activityToFormState(legacy);
+    expect(state.pipelineTargetExplicit).toBe(false);
+    expect(buildAction(state).action).toEqual(legacy.action);
+    // A legacy action on a cowork project shows the project folder.
+    expect(displayedPipelineRunIn(state, true)).toBe('project');
+    expect(displayedPipelineRunIn(state, false)).toBe('new_worktree');
+    expect(applyPipelineRunInSelection(state, 'project', 'project')).toBe(
+      state,
+    );
+  });
+
+  it('builds task and project-folder destinations without a base worktree', () => {
+    const legacy = activityToFormState(
+      pipelineActivity({ workspaceId: 'workspace-1', baseWorktreeId: 'base' }),
+    );
+    const task = {
+      ...applyPipelineRunInSelection(legacy, 'task', 'new_worktree'),
+      pipelineTaskId: 'task-1',
+    };
+    expect(buildAction(task).action).toEqual({
+      type: 'worktree_pipeline',
+      workspaceId: 'workspace-1',
+      target: { kind: 'task', taskId: 'task-1' },
+      pipelineId: 'review',
+      pipelineName: 'Review',
+    });
+    const project = applyPipelineRunInSelection(
+      legacy,
+      'project',
+      'new_worktree',
+    );
+    expect(buildAction(project).action).toEqual({
+      type: 'worktree_pipeline',
+      workspaceId: 'workspace-1',
+      target: { kind: 'project' },
+      pipelineId: 'review',
+      pipelineName: 'Review',
+    });
+    expect(automationFormSnapshot(project)).not.toBe(
+      automationFormSnapshot(legacy),
+    );
+  });
+
+  it('asks for a task before saving a task destination', () => {
+    const state = applyPipelineRunInSelection(
+      activityToFormState(pipelineActivity({ workspaceId: 'workspace-1' })),
+      'task',
+      'new_worktree',
+    );
+    expect(buildAction(state)).toEqual({
+      error: AUTOMATION_PIPELINE_TASK_REQUIRED_ERROR,
+    });
+  });
+
+  it('clears project-only fields when switching to no project', () => {
+    const state = applyGlobalPipelineSelection(
+      activityToFormState(
+        activity({
+          targetRequirement: { contexts: ['worktree'] },
+          action: {
+            type: 'worktree_pipeline',
+            workspaceId: 'workspace-1',
+            baseWorktreeId: 'base',
+            repoId: 'repo-1',
+            pipelineId: 'review',
+            pipelineName: 'Review',
+            pipelineSource: 'user',
+          },
+        }),
+      ),
+    );
+    expect(state).toMatchObject({
+      workspaceId: '',
+      baseWorktreeId: '',
+      repoId: '',
+      targetRequirement: undefined,
+      pipelineId: 'review',
+    });
+    expect(buildAction(state).action).toEqual({
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      pipelineId: 'review',
+      pipelineName: 'Review',
+      pipelineSource: 'user',
+    });
+  });
+
+  it('drops a project pipeline when switching to no project', () => {
+    const state = applyGlobalPipelineSelection(
+      activityToFormState(
+        pipelineActivity({
+          workspaceId: 'workspace-1',
+          pipelineSource: 'project',
+          projectPipelineFilename: 'review.yaml',
+        }),
+      ),
+    );
+    expect(state.pipelineId).toBe('');
+    expect(
+      buildAction({ ...state, pipelineId: 'x', pipelineSource: 'project' }),
+    ).toEqual({ error: PIPELINE_TARGET_GLOBAL_PROJECT_PIPELINE_ERROR });
+  });
+
+  it('restores the default project destination after no project', () => {
+    const state = applyWorkspaceActionSelection(
+      automationDraftFromSeed(),
+      'pipeline',
+      { id: 'workspace-1', isCowork: false },
+    );
+    expect(automationFormActionCategory(state)).toBe('workspace');
+    expect(state.pipelineTargetExplicit).toBe(false);
+    expect(state.workspaceId).toBe('workspace-1');
+  });
+
+  it('turns an explicit new worktree into the project folder on a cowork project', () => {
+    const code = applyPipelineRunInSelection(
+      activityToFormState(pipelineActivity({ workspaceId: 'workspace-1' })),
+      'new_worktree',
+      'project',
+    );
+    const cowork = applyWorkspaceActionSelection(code, 'pipeline', {
+      id: 'cowork-1',
+      isCowork: true,
+    });
+    expect(cowork.pipelineTargetKind).toBe('project');
+    expect(cowork.pipelineTargetExplicit).toBe(true);
   });
 });

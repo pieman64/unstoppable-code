@@ -6,6 +6,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-proxy';
 import { AccountProxyStrategyRow } from '../AccountProxyStrategyRow';
 import { useAccountProxyStore } from '@/stores/accountProxyStore';
+import {
+  chooseSettingsOptionSync,
+  settingsSelectOptionLabels,
+  settingsSelectOptionValues,
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
@@ -69,12 +76,11 @@ function render(status: AccountProxyStatus): void {
   act(() => root.render(<AccountProxyStrategyRow status={status} />));
 }
 
-function select(): HTMLSelectElement {
-  const element = document.querySelector<HTMLSelectElement>(
+function select(): HTMLButtonElement {
+  return settingsSelectTrigger(
+    document,
     '[data-testid="account-proxy-strategy-select"]',
   );
-  if (!element) throw new Error('Missing account order select');
-  return element;
 }
 
 function row(): string {
@@ -85,11 +91,7 @@ function row(): string {
 }
 
 function choose(value: string): void {
-  act(() => {
-    const element = select();
-    element.value = value;
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  chooseSettingsOptionSync(select(), value);
 }
 
 describe('account order', () => {
@@ -99,17 +101,14 @@ describe('account order', () => {
         routing: { strategy: 'weighted-round-robin', sessionAffinity: true },
       }),
     );
-    expect(
-      Array.from(select().options).map((option) => [
-        option.value,
-        option.textContent,
-      ]),
-    ).toEqual([
+    const values = settingsSelectOptionValues(select());
+    const labels = settingsSelectOptionLabels(select());
+    expect(values.map((value, index) => [value, labels[index]])).toEqual([
       ['round-robin', 'Round robin'],
       ['weighted-round-robin', 'Weighted round robin'],
       ['fill-first', 'Fill first'],
     ]);
-    expect(select().value).toBe('weighted-round-robin');
+    expect(settingsSelectValue(select())).toBe('weighted-round-robin');
     expect(select().disabled).toBe(false);
     expect(row()).toContain(
       "Round robin sends each request to the next ready account. Weighted round robin spreads requests by each account's weight. Fill first uses one account until it reaches a limit.",
@@ -128,7 +127,7 @@ describe('account order', () => {
     choose('fill-first');
     expect(setRoutingStrategy).toHaveBeenCalledWith({ strategy: 'fill-first' });
     // Disabled on the chosen value while the proxy saves it.
-    expect(select().value).toBe('fill-first');
+    expect(settingsSelectValue(select())).toBe('fill-first');
     expect(select().disabled).toBe(true);
     const saved = statusWith({
       routing: { strategy: 'fill-first', sessionAffinity: true },
@@ -144,11 +143,11 @@ describe('account order', () => {
   it('goes back to the current strategy and says so when the change fails', async () => {
     setRoutingStrategy.mockRejectedValue(new Error('unreachable'));
     render(statusWith());
+    choose('fill-first');
     await act(async () => {
-      choose('fill-first');
       await Promise.resolve();
     });
-    expect(select().value).toBe('round-robin');
+    expect(settingsSelectValue(select())).toBe('round-robin');
     expect(
       document.querySelector('[data-testid="account-proxy-strategy-error"]')
         ?.textContent,

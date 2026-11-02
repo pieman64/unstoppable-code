@@ -17,6 +17,8 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react';
+import { focusMenuRow } from '@canopy/ui-shared/lib';
+import { Button } from '@canopy/ui-shared/components';
 import {
   DropdownMenuSurface,
   SlashCommandAvailableDivider,
@@ -26,6 +28,7 @@ import type { SlashCommandOption } from '@canopy/ui-rich/types';
 import { RefreshIcon as AppCatalogRefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 export interface CommandsPopupProps {
+  align?: 'start' | 'end';
   commands: SlashCommandOption[];
   isRefreshing: boolean;
   onSelect: (cmd: SlashCommandOption) => void;
@@ -44,6 +47,7 @@ export interface CommandsPopupProps {
  * `mousedown` (with `preventDefault`) so a mouse click keeps the editor's caret.
  */
 export function CommandsPopup({
+  align = 'end',
   commands,
   isRefreshing,
   onSelect,
@@ -63,8 +67,11 @@ export function CommandsPopup({
   // a dependency so focus is re-asserted onto the active row when a pending
   // enablement resolves — if focus was lost while the row was busy, the menu's
   // keydown handler would otherwise stop receiving keyboard events.
+  // A click open leaves the row unpainted until the first arrow; see
+  // `focusMenuRow`.
   useEffect(() => {
-    if (activeItem >= 0) itemRefs.current[activeItem]?.focus();
+    const row = activeItem >= 0 ? itemRefs.current[activeItem] : null;
+    if (row) focusMenuRow(row);
   }, [activeItem, count, pendingCommand]);
 
   const onMenuKeyDown = useCallback(
@@ -109,21 +116,21 @@ export function CommandsPopup({
       aria-label="Commands"
       aria-orientation="vertical"
       onKeyDown={onMenuKeyDown}
-      className="absolute bottom-full right-0 z-20 mb-2 w-72"
+      className={`absolute bottom-full z-20 mb-2 w-72 ${align === 'start' ? 'left-0' : 'right-0'}`}
     >
       <div className="flex items-center justify-between border-b px-3 py-2">
         <span className="text-xs font-medium fg-secondary">Commands</span>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           tabIndex={-1}
           onMouseDown={(event): void => event.preventDefault()}
           onClick={onRefresh}
           disabled={isRefreshing}
-          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary/80 disabled:opacity-50"
         >
           <RefreshGlyph spinning={isRefreshing} />
           Refresh
-        </button>
+        </Button>
       </div>
 
       <div className="max-h-60 overflow-y-auto py-1">
@@ -167,7 +174,7 @@ export function CommandsPopup({
                     if (pending || cmd.disabledReason !== undefined) return;
                     onSelect(cmd);
                   }}
-                  className="flex min-h-11 w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-fg-primary/[0.06] focus:bg-fg-primary/[0.08] focus:outline-none lg:min-h-0 lg:items-start"
+                  className="flex min-h-11 w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-fg-primary/[0.06] focus-visible:bg-fg-primary/[0.08] focus:outline-none lg:min-h-0 lg:items-start"
                 >
                   <span className="shrink-0 text-s font-medium fg-primary">
                     {cmd.displayName ?? `/${cmd.name}`}

@@ -45,6 +45,29 @@ function click(selector: string): void {
     ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 }
 
+/** Opens a scope pill's tooltip the way a pointer does. */
+function hover(selector: string): void {
+  act(() => {
+    document
+      .querySelector(selector)
+      ?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  });
+}
+
+function scopeOption(
+  audience: string,
+  prefix = 'share-skill',
+): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>(
+    `[data-testid="${prefix}-scope-${audience}"]`,
+  );
+}
+
+function successText(): string | null | undefined {
+  return document.querySelector('[data-testid="share-skill-success"]')
+    ?.textContent;
+}
+
 function clickText(text: string): void {
   Array.from(document.querySelectorAll('button'))
     .find((candidate) => candidate.textContent?.trim() === text)
@@ -116,15 +139,13 @@ describe('ShareResourceDialog', () => {
     ).toBe('Sign in');
   });
 
-  it('shares on confirm, completes, closes and toasts the link without copying it', async () => {
-    const share = jest
-      .fn()
-      .mockResolvedValue({ shareUrl: 'https://cloud.test/s/skills/abc' });
+  it('stays open in its published state with the link and Copy link after a share', async () => {
+    const shareUrl = 'https://cloud.test/s/skills/abc';
+    const share = jest.fn().mockResolvedValue({ shareUrl });
     const copyText = jest.fn().mockResolvedValue(true);
     const onCompleted = jest.fn();
     const onClose = jest.fn();
-    const notify = jest.fn();
-    renderDialog({ share, copyText, onCompleted, onClose, notify });
+    renderDialog({ share, copyText, onCompleted, onClose });
     await settle();
 
     click('[data-testid="share-skill-scope-public"]');
@@ -134,21 +155,104 @@ describe('ShareResourceDialog', () => {
 
     expect(share).toHaveBeenCalledWith({ scope: 'public' });
     expect(onCompleted).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill is now public',
-      link: 'https://cloud.test/s/skills/abc',
-    });
-    // The link rides on the toast; it is never copied automatically.
+    expect(onClose).not.toHaveBeenCalled();
+    const success = document.querySelector(
+      '[data-testid="share-skill-success"]',
+    );
+    expect(success?.textContent).toContain('Skill is now public');
+    expect(
+      document.querySelector('[data-testid="share-skill-link"]')?.textContent,
+    ).toBe(shareUrl);
+    // The landed share can't be submitted again: Done closes.
+    expect(
+      document.querySelector('[data-testid="share-skill-submit"]'),
+    ).toBeNull();
+    // The link is never copied automatically, only on Copy link.
     expect(copyText).not.toHaveBeenCalled();
-    // No success sentence or link renders in the dialog.
+    // The published state's own Copy link offers the new link.
+    const copy = document.querySelector<HTMLButtonElement>(
+      '[data-testid="share-skill-copy-link"]',
+    );
+    expect(copy?.textContent).toBe('Copy link');
+    expect(
+      document.querySelectorAll('[data-testid="share-skill-copy-link"]'),
+    ).toHaveLength(1);
+    await act(async () => {
+      copy?.click();
+      await Promise.resolve();
+    });
+    expect(copyText).toHaveBeenCalledWith(shareUrl);
+    expect(copy?.textContent).toBe('Copied');
+
+    click('[data-testid="share-skill-done"]');
+    await settle();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onCompleted).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts no toast when a share is published or updated', async () => {
+    const notify = jest.fn();
+    const share = jest
+      .fn()
+      .mockResolvedValue({ shareUrl: 'https://cloud.test/s/skills/abc' });
+    renderDialog({ notify, share });
+    await settle();
+    click('[data-testid="share-skill-scope-public"]');
+    await settle();
+    click('[data-testid="share-skill-submit"]');
+    await settle();
     expect(
       document.querySelector('[data-testid="share-skill-success"]'),
-    ).toBeNull();
+    ).not.toBeNull();
+    expect(notify).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    renderDialog({
+      notify,
+      share,
+      existingShare: {
+        audience: 'public',
+        link: { url: 'https://cloud.test/s/skills/abc', kind: 'public' },
+      },
+    });
+    await settle();
+    click('[data-testid="share-skill-submit"]');
+    await settle();
+    expect(
+      document.querySelector('[data-testid="share-skill-success"]')
+        ?.textContent,
+    ).toContain('Skill updated');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('stays open after a team share, offering its link only when there is one', async () => {
+    const notify = jest.fn();
+    const onClose = jest.fn();
+    renderDialog({ notify, onClose, share: jest.fn().mockResolvedValue({}) });
+    await settle();
+    click('[data-testid="share-skill-scope-team"]');
+    await settle();
+    click('[data-testid="share-skill-team-picker-option-team-1"]');
+    await settle();
+    click('[data-testid="share-skill-submit"]');
+    await settle();
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="share-skill-success"]')
+        ?.textContent,
+    ).toContain('Skill shared with Platform');
     expect(document.querySelector('[data-testid="share-skill-link"]')).toBe(
       null,
     );
+    expect(
+      document.querySelector('[data-testid="share-skill-copy-link"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-testid="share-skill-done"]'),
+    ).not.toBeNull();
   });
 
   it('spins the Share button and locks the form while sharing', async () => {
@@ -194,7 +298,8 @@ describe('ShareResourceDialog', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(successText()).toContain('Skill is now public');
   });
 
   it('stays open with the error notice when completion throws', async () => {
@@ -242,14 +347,12 @@ describe('ShareResourceDialog', () => {
     click('[data-testid="share-skill-done"]');
     await settle();
 
+    // Done retries completion and then closes: the author already has the
+    // link, so there is no success notice or toast to stay for.
     expect(share).toHaveBeenCalledTimes(1);
     expect(onCompleted).toHaveBeenCalledTimes(2);
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill is now public',
-      link: shareUrl,
-    });
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('shows Copy link in the footer when the share already has a link', async () => {
@@ -272,6 +375,58 @@ describe('ShareResourceDialog', () => {
     });
     expect(copyText).toHaveBeenCalledWith('https://cloud.test/s/skills/abc');
     expect(copy?.textContent).toBe('Copied');
+  });
+
+  it('reopening Share on a published item shows the published state with its link', async () => {
+    const url = 'https://cloud.test/s/skills/abc';
+    const onClose = jest.fn();
+    renderDialog({
+      onClose,
+      existingShare: { audience: 'public', link: { url, kind: 'public' } },
+      revokePublicLink: jest.fn().mockResolvedValue(undefined),
+    });
+    await settle();
+
+    // It was already public, so the notice doesn't say "now".
+    expect(successText()).toContain('Skill is public');
+    expect(successText()).not.toContain('now public');
+    expect(
+      document.querySelector('[data-testid="share-skill-link"]')?.textContent,
+    ).toBe(url);
+    expect(
+      document.querySelector('[data-testid="share-skill-copy-link"]')
+        ?.textContent,
+    ).toBe('Copy link');
+    // Update stays offered, and Remove public link is the trash icon at the
+    // end of the link line inside the notice, not a standalone text button.
+    expect(
+      document.querySelector('[data-testid="share-skill-submit"]')?.textContent,
+    ).toBe('Update');
+    const remove = document.querySelector<HTMLButtonElement>(
+      '[data-testid="share-skill-success"] [data-testid="share-skill-remove-public-link"]',
+    );
+    expect(remove?.getAttribute('aria-label')).toBe('Remove public link');
+    expect(remove?.textContent).toBe('');
+    expect(
+      document.querySelectorAll(
+        '[data-testid="share-skill-remove-public-link"]',
+      ),
+    ).toHaveLength(1);
+    expect(
+      Array.from(document.querySelectorAll('button')).some(
+        (button) => button.textContent?.trim() === 'Remove public link',
+      ),
+    ).toBe(false);
+    hover('[data-testid="share-skill-remove-public-link"]');
+    expect(document.body.textContent).toContain('Remove public link');
+
+    click('[data-testid="share-skill-done"]');
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    // Choosing another audience leaves the published notice.
+    click('[data-testid="share-skill-scope-team"]');
+    await settle();
+    expect(successText()).toBeUndefined();
   });
 
   it('hides Copy link without a link and in gates', async () => {
@@ -330,7 +485,7 @@ describe('ShareResourceDialog', () => {
     });
   });
 
-  it('toasts the team it shared with', async () => {
+  it('names the team it shared with and offers its link', async () => {
     const notify = jest.fn();
     renderDialog({
       notify,
@@ -345,11 +500,14 @@ describe('ShareResourceDialog', () => {
     await settle();
     click('[data-testid="share-skill-submit"]');
     await settle();
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill shared with Platform',
-      link: 'https://cloud.test/t/skills/abc',
-    });
+    expect(notify).not.toHaveBeenCalled();
+    expect(successText()).toContain('Skill shared with Platform');
+    expect(
+      document.querySelector('[data-testid="share-skill-link"]')?.textContent,
+    ).toBe('https://cloud.test/t/skills/abc');
+    expect(
+      document.querySelector('[data-testid="share-skill-copy-link"]'),
+    ).not.toBeNull();
   });
 
   it('keeps first-share wording when completion records the new remote share', async () => {
@@ -375,13 +533,11 @@ describe('ShareResourceDialog', () => {
     await settle();
 
     expect(onCompleted).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill shared with Platform',
-    });
+    expect(successText()).toBe('Skill shared with Platform');
+    expect(notify).not.toHaveBeenCalled();
   });
 
-  it('turns a host outcome message into a warning toast', async () => {
+  it('turns a host outcome message into a warning notice', async () => {
     const notify = jest.fn();
     renderDialog({
       notify,
@@ -394,10 +550,8 @@ describe('ShareResourceDialog', () => {
     await settle();
     click('[data-testid="share-skill-submit"]');
     await settle();
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'warning',
-      message: 'Shared, but the local copy stayed.',
-    });
+    expect(notify).not.toHaveBeenCalled();
+    expect(successText()).toBe('Shared, but the local copy stayed.');
   });
 
   it('renders the shared scope selector and team picker rows', async () => {
@@ -446,7 +600,7 @@ describe('ShareResourceDialog', () => {
     expect(row?.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('offers only Public for a new share in Personal context', async () => {
+  it('preselects Public and disables Team and Organization for a new share in Personal context', async () => {
     const listTeams = jest.fn().mockResolvedValue([team]);
     renderDialog({
       context: { kind: 'personal' },
@@ -455,12 +609,11 @@ describe('ShareResourceDialog', () => {
     });
     await settle();
 
-    expect(
-      document.querySelector('[data-testid="share-skill-scope-team"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="share-skill-scope-organization"]'),
-    ).toBeNull();
+    expect(scopeOption('team')?.getAttribute('aria-disabled')).toBe('true');
+    expect(scopeOption('organization')?.getAttribute('aria-disabled')).toBe(
+      'true',
+    );
+    expect(scopeOption('public')?.getAttribute('aria-checked')).toBe('true');
     expect(listTeams).not.toHaveBeenCalled();
   });
 
@@ -689,7 +842,7 @@ describe('ShareResourceDialog', () => {
     ).toContain('Switched to Beta.');
   });
 
-  it('disables sharing when a context switch to Personal removes every offered audience', async () => {
+  it('disables sharing when a context switch to Personal leaves no offered audience usable', async () => {
     renderDialog({
       scopes: ['team', 'organization'],
       context: { kind: 'organization', organizationId: 'org-1' },
@@ -712,12 +865,16 @@ describe('ShareResourceDialog', () => {
         '[data-testid="share-skill-submit"]',
       )?.disabled,
     ).toBe(true);
+    // The scopes stay visible, disabled, with the reason in their tooltip.
+    expect(scopeOption('team')?.getAttribute('aria-disabled')).toBe('true');
+    expect(scopeOption('organization')?.getAttribute('aria-disabled')).toBe(
+      'true',
+    );
+    hover('[data-testid="share-skill-scope-team"]');
     expect(
-      document.querySelector('[data-testid="share-skill-scope-team"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="share-skill-scope-organization"]'),
-    ).toBeNull();
+      document.querySelector('[data-testid="share-skill-scope-team-reason"]')
+        ?.textContent,
+    ).toBe('Switch to an organization to share with a team or organization.');
   });
 
   it('clears the picked team, reloads and reports an audience change when the account switches', async () => {
@@ -772,7 +929,145 @@ describe('ShareResourceDialog', () => {
     ).toBe(true);
   });
 
-  it('hides the selector when capabilities leave only Public usable', async () => {
+  it('keeps its options mounted while the same account is read again', async () => {
+    let notifyAccountChanged: () => void = () => {};
+    let resolveReread: (account: ShareResourceAccount) => void = () => {};
+    const loadAccount = jest
+      .fn<Promise<ShareResourceAccount>, []>()
+      .mockResolvedValueOnce({ ...readyAccount, id: 'account-1' })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveReread = resolve;
+          }),
+      );
+    renderDialog({
+      loadAccount,
+      subscribeAccountChanged: (listener) => {
+        notifyAccountChanged = listener;
+        return (): void => {};
+      },
+      extraOptions: <details data-testid="share-skill-options" />,
+    });
+    await settle();
+    const options = document.querySelector<HTMLDetailsElement>(
+      '[data-testid="share-skill-options"]',
+    );
+    expect(options).not.toBeNull();
+    if (options) options.open = true;
+
+    // An ambient re-read, or the dialog's own access check, must not swap the
+    // options for the loading line: that would close what the author opened.
+    await act(async () => {
+      notifyAccountChanged();
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).not.toContain('Loading account…');
+    expect(document.querySelector('[data-testid="share-skill-options"]')).toBe(
+      options,
+    );
+    // Nothing is shared against an account that is still being read.
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '[data-testid="share-skill-submit"]',
+      )?.disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      resolveReread({ ...readyAccount, id: 'account-1' });
+      await Promise.resolve();
+    });
+    await settle();
+    expect(document.querySelector('[data-testid="share-skill-options"]')).toBe(
+      options,
+    );
+    expect(options?.open).toBe(true);
+  });
+
+  it('keeps the form when a re-read fails', async () => {
+    let notifyAccountChanged: () => void = () => {};
+    const loadAccount = jest
+      .fn<Promise<ShareResourceAccount>, []>()
+      .mockResolvedValueOnce({ ...readyAccount, id: 'account-1' })
+      .mockRejectedValueOnce(new Error('offline'));
+    renderDialog({
+      loadAccount,
+      subscribeAccountChanged: (listener) => {
+        notifyAccountChanged = listener;
+        return (): void => {};
+      },
+      extraOptions: <details data-testid="share-skill-options" />,
+    });
+    await settle();
+    const options = document.querySelector(
+      '[data-testid="share-skill-options"]',
+    );
+
+    await act(async () => {
+      notifyAccountChanged();
+      await Promise.resolve();
+    });
+    await settle();
+
+    expect(loadAccount).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[data-testid="share-skill-options"]')).toBe(
+      options,
+    );
+    expect(document.body.textContent).not.toContain(
+      'Connect a cloud account to share this skill.',
+    );
+  });
+
+  it('applies only the latest of overlapping account reads', async () => {
+    let notifyAccountChanged: () => void = () => {};
+    const resolvers: Array<(account: ShareResourceAccount) => void> = [];
+    const loadAccount = jest
+      .fn<Promise<ShareResourceAccount>, []>()
+      .mockResolvedValueOnce({ ...readyAccount, id: 'account-1' })
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvers.push(resolve);
+          }),
+      );
+    renderDialog({
+      loadAccount,
+      subscribeAccountChanged: (listener) => {
+        notifyAccountChanged = listener;
+        return (): void => {};
+      },
+    });
+    await settle();
+    const submit = (): HTMLButtonElement | null =>
+      document.querySelector<HTMLButtonElement>(
+        '[data-testid="share-skill-submit"]',
+      );
+    click('[data-testid="share-skill-scope-public"]');
+    await settle();
+    expect(submit()?.disabled).toBe(false);
+
+    await act(async () => {
+      notifyAccountChanged();
+      notifyAccountChanged();
+      await Promise.resolve();
+    });
+    // The earlier read settling first must not end the later one's wait.
+    await act(async () => {
+      resolvers[0]?.({ ...readyAccount, id: 'account-1' });
+      await Promise.resolve();
+    });
+    await settle();
+    expect(submit()?.disabled).toBe(true);
+
+    await act(async () => {
+      resolvers[1]?.({ ...readyAccount, id: 'account-1' });
+      await Promise.resolve();
+    });
+    await settle();
+    expect(submit()?.disabled).toBe(false);
+  });
+
+  it('keeps the pills and explains the upgrade in a tooltip when capabilities leave only Public usable', async () => {
     renderDialog({
       loadAccount: jest.fn().mockResolvedValue({
         connected: true,
@@ -781,22 +1076,22 @@ describe('ShareResourceDialog', () => {
     });
     await settle();
 
-    // One usable scope is not a choice: no pills and no upgrade hint, only
-    // the Public disclosure.
     expect(
       document.querySelector('[data-testid="share-skill-scope"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="share-skill-scope-team"]'),
-    ).toBeNull();
+    ).not.toBeNull();
+    expect(scopeOption('team')?.getAttribute('aria-disabled')).toBe('true');
+    expect(scopeOption('public')?.getAttribute('aria-checked')).toBe('true');
+    // The upgrade reason is on the disabled pill, not under the selector.
     expect(
       document.querySelector('[data-testid="share-skill-scope-upgrade-hint"]'),
     ).toBeNull();
     expect(document.body.textContent).not.toContain('must be upgraded');
+    hover('[data-testid="share-skill-scope-organization"]');
     expect(
-      document.querySelector('[data-testid="share-skill-scope-description"]')
-        ?.textContent,
-    ).toBeTruthy();
+      document.querySelector(
+        '[data-testid="share-skill-scope-organization-reason"]',
+      )?.textContent,
+    ).toContain('must be upgraded');
   });
 
   it('hides the share form when the account lacks the resource capability', async () => {
@@ -864,7 +1159,7 @@ describe('ShareResourceDialog', () => {
     );
   });
 
-  it('completes, closes and toasts without a Done step, whatever the scope', async () => {
+  it('completes and stays open on the success notice until Done', async () => {
     const onShareSucceeded = jest.fn();
     const onCompleted = jest.fn();
     const onClose = jest.fn();
@@ -879,14 +1174,24 @@ describe('ShareResourceDialog', () => {
 
     expect(onShareSucceeded).toHaveBeenCalledTimes(1);
     expect(onCompleted).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(successText()).toBe('Skill is now public');
+    // The landed audience is locked; Done (or the X) closes the dialog.
+    expect(
+      document.querySelector<HTMLFieldSetElement>(
+        '[data-testid="share-skill-form"]',
+      )?.disabled,
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '[data-testid="share-skill-scope-team"]',
+      )?.disabled,
+    ).toBe(true);
+    click('[data-testid="share-skill-done"]');
+    await settle();
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill is now public',
-    });
-    expect(document.querySelector('[data-testid="share-skill-done"]')).toBe(
-      null,
-    );
+    expect(onCompleted).toHaveBeenCalledTimes(1);
   });
 
   it('uses the canonical sentence-case title and test ids', async () => {
@@ -1150,10 +1455,8 @@ describe('ShareResourceDialog', () => {
       teamId: 'team-1',
       targetName: 'Platform',
     });
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill updated',
-    });
+    expect(notify).not.toHaveBeenCalled();
+    expect(successText()).toBe('Skill updated');
   });
 
   it('preserves a solo account Personal share audience and organization UUID on update', async () => {
@@ -1253,7 +1556,7 @@ describe('ShareResourceDialog', () => {
     ).not.toBeNull();
   });
 
-  it('keeps a partial share open and closes with a toast after the retry', async () => {
+  it('keeps a partial share open and shows the public link after the retry', async () => {
     const retryPublicLink = jest
       .fn()
       .mockResolvedValue({ shareUrl: 'https://cloud.test/s/skills/abc' });
@@ -1290,12 +1593,15 @@ describe('ShareResourceDialog', () => {
     await settle();
     expect(retryPublicLink).toHaveBeenCalledTimes(1);
     expect(onCompleted).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill is now public',
-      link: 'https://cloud.test/s/skills/abc',
-    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="share-skill-partial"]'),
+    ).toBeNull();
+    expect(successText()).toContain('Skill is now public');
+    expect(
+      document.querySelector('[data-testid="share-skill-link"]')?.textContent,
+    ).toBe('https://cloud.test/s/skills/abc');
   });
 
   it('keeps Retry available and shows the reason when public-link retry fails', async () => {
@@ -1384,9 +1690,10 @@ describe('ShareResourceDialog', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    // A successful retry completes the share and closes the dialog.
+    // A successful retry completes the share and shows its success notice.
     expect(onCompleted).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(successText()).toContain('Skill is now public');
   });
 
   it('preselects Public when it is the only usable audience', async () => {
@@ -1402,14 +1709,9 @@ describe('ShareResourceDialog', () => {
 
     // Team and Organization are unavailable, so the one usable scope is
     // picked for the author instead of leaving Share disabled for a reason
-    // the dialog never states. With nothing to choose, only its disclosure
-    // renders.
-    expect(
-      document.querySelector('[data-testid="share-skill-scope"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="share-skill-scope-description"]'),
-    ).not.toBeNull();
+    // the dialog never states. The disabled pills stay, so the choice shows.
+    expect(scopeOption('public')?.getAttribute('aria-checked')).toBe('true');
+    expect(scopeOption('team')?.getAttribute('aria-disabled')).toBe('true');
     const submit = (): HTMLButtonElement | null =>
       document.querySelector<HTMLButtonElement>(
         '[data-testid="share-skill-submit"]',
@@ -1475,6 +1777,7 @@ describe('ShareResourceDialog', () => {
       };
       renderDialog({ ...props, context: { kind: 'personal' } }, personal);
       await settle();
+      hover('[data-testid="share-skill-scope-team"]');
       act(() => click('[data-testid="share-skill-set-up-organization"]'));
       await settle();
       const input = document.querySelector<HTMLInputElement>(
@@ -1558,6 +1861,7 @@ describe('ShareResourceDialog', () => {
         personal,
       );
       await settle();
+      hover('[data-testid="share-skill-scope-team"]');
       expect(
         document.querySelector(
           '[data-testid="share-skill-set-up-organization"]',
@@ -1577,9 +1881,81 @@ describe('ShareResourceDialog', () => {
         );
       });
       await settle();
+      hover('[data-testid="share-skill-scope-team"]');
       expect(
         document.querySelector(
           '[data-testid="share-skill-set-up-organization"]',
+        ),
+      ).not.toBeNull();
+    });
+
+    it('no team: pills shown, Team/Org disabled with tooltip, Public preselected', async () => {
+      const personal = '11111111-1111-4111-8111-111111111111';
+      renderDialog(
+        {
+          context: { kind: 'personal' },
+          loadAccount: jest.fn().mockResolvedValue({
+            ...readyAccount,
+            id: 'account-1',
+            personalOrganizationId: personal,
+            hasOrganization: false,
+            hasTeam: false,
+          }),
+          personalOrganizationUpgradePort: {
+            canPromote: true,
+            canInvite: true,
+            canBringProjects: false,
+            promote: jest.fn(),
+            invite: jest.fn(),
+            listProjects: jest.fn(),
+            convert: jest.fn(),
+            status: jest.fn(),
+          },
+        },
+        personal,
+      );
+      await settle();
+
+      // Every scope stays visible; the ineligible ones are disabled.
+      expect(
+        document.querySelector('[data-testid="share-skill-scope"]'),
+      ).not.toBeNull();
+      expect(scopeOption('team')?.getAttribute('aria-disabled')).toBe('true');
+      expect(scopeOption('organization')?.getAttribute('aria-disabled')).toBe(
+        'true',
+      );
+      expect(scopeOption('public')?.getAttribute('aria-checked')).toBe('true');
+      // No inline team block: the explanation lives on the Team pill.
+      expect(document.body.textContent).not.toContain('Create a team to share');
+      expect(
+        document.querySelector(
+          '[data-testid="share-skill-set-up-organization"]',
+        ),
+      ).toBeNull();
+
+      hover('[data-testid="share-skill-scope-team"]');
+      expect(
+        document.querySelector('[data-testid="share-skill-scope-team-reason"]')
+          ?.textContent,
+      ).toBe('Create a team to share this skill with teammates.');
+      expect(
+        document.querySelector(
+          '[data-testid="share-skill-set-up-organization"]',
+        )?.textContent,
+      ).toBe('Create a team');
+      expect(
+        document.querySelector<HTMLButtonElement>(
+          '[data-testid="share-skill-submit"]',
+        )?.disabled,
+      ).toBe(false);
+
+      // Activating the disabled pill never selects it; it opens the team
+      // setup, so keyboard and touch users reach the step without the tooltip.
+      click('[data-testid="share-skill-scope-team"]');
+      await settle();
+      expect(
+        document.querySelector(
+          '[data-testid="invite-to-organization-team-name"]',
         ),
       ).not.toBeNull();
     });
@@ -1659,20 +2035,23 @@ describe('ShareResourceDialog', () => {
       ).not.toBeNull();
     });
 
-    it('hides the selector and its setup hint, and preselects Public', async () => {
+    it('keeps the pills, disables Team and Organization with a tooltip, and preselects Public', async () => {
+      const onSetUpOrganization = jest.fn().mockResolvedValue(true);
       renderDialog({
         loadAccount: jest.fn().mockResolvedValue(soloAccount),
-        onSetUpOrganization: jest.fn().mockResolvedValue(true),
+        onSetUpOrganization,
       });
       await settle();
 
       expect(
         document.querySelector('[data-testid="share-skill-scope"]'),
-      ).toBeNull();
-      expect(
-        document.querySelector('[data-testid="share-skill-scope-description"]'),
       ).not.toBeNull();
-      // A single usable scope drops the setup and upgrade hints.
+      expect(scopeOption('team')?.getAttribute('aria-disabled')).toBe('true');
+      expect(scopeOption('organization')?.getAttribute('aria-disabled')).toBe(
+        'true',
+      );
+      expect(scopeOption('public')?.getAttribute('aria-checked')).toBe('true');
+      // The setup hint moved into the pills' tooltip.
       expect(
         document.querySelector('[data-testid="share-skill-organization-hint"]'),
       ).toBeNull();
@@ -1682,6 +2061,16 @@ describe('ShareResourceDialog', () => {
         ),
       ).toBeNull();
       expect(document.body.textContent).not.toContain('must be upgraded');
+
+      hover('[data-testid="share-skill-scope-organization"]');
+      expect(
+        document.querySelector(
+          '[data-testid="share-skill-scope-organization-reason"]',
+        )?.textContent,
+      ).toBe('Team and organization sharing start with an organization.');
+      click('[data-testid="share-skill-set-up-organization"]');
+      await settle();
+      expect(onSetUpOrganization).toHaveBeenCalledTimes(1);
       // Public is ready to share without an extra click.
       expect(
         document.querySelector<HTMLButtonElement>(
@@ -1702,25 +2091,32 @@ describe('ShareResourceDialog', () => {
     });
     await settle();
 
-    const option = (audience: string): HTMLButtonElement | null =>
-      document.querySelector<HTMLButtonElement>(
-        `[data-testid="share-skill-scope-${audience}"]`,
-      );
-    expect(option('team')?.disabled).toBe(true);
-    expect(option('organization')?.disabled).toBe(false);
-    expect(option('organization')?.getAttribute('aria-checked')).toBe('true');
+    expect(scopeOption('team')?.getAttribute('aria-disabled')).toBe('true');
+    expect(scopeOption('organization')?.disabled).toBe(false);
+    expect(scopeOption('organization')?.hasAttribute('aria-disabled')).toBe(
+      false,
+    );
+    expect(scopeOption('organization')?.getAttribute('aria-checked')).toBe(
+      'true',
+    );
     expect(
       document.querySelector('[data-testid="share-skill-organization-hint"]'),
     ).toBeNull();
-    // The disabled Team option says why.
+    // The disabled Team option says why, in its tooltip.
+    hover('[data-testid="share-skill-scope-team"]');
     expect(
-      document.querySelector('[data-testid="share-skill-team-hint"]')
+      document.querySelector('[data-testid="share-skill-scope-team-reason"]')
         ?.textContent,
     ).toBe('Team sharing starts with a team in your organization.');
     expect(document.body.textContent).not.toContain('must be upgraded');
   });
 
   describe('Remove public link', () => {
+    const link = {
+      url: 'https://cloud.test/s/skills/abc',
+      kind: 'public',
+    } as const;
+
     it('is offered only for an existing public share with a revoke port', async () => {
       renderDialog({
         existingShare: { audience: 'team', target: team },
@@ -1733,7 +2129,7 @@ describe('ShareResourceDialog', () => {
         ),
       ).toBeNull();
 
-      renderDialog({ existingShare: { audience: 'public' } });
+      renderDialog({ existingShare: { audience: 'public', link } });
       await settle();
       expect(
         document.querySelector(
@@ -1742,31 +2138,161 @@ describe('ShareResourceDialog', () => {
       ).toBeNull();
     });
 
-    it('keeps the audience in the confirm copy for a team-owned public share', async () => {
+    const confirmText = async (): Promise<string | null | undefined> => {
+      click('[data-testid="share-skill-remove-public-link"]');
+      await settle();
+      return document.querySelector(
+        '[data-testid="share-skill-remove-public-link-confirm"]',
+      )?.textContent;
+    };
+
+    it('names the team that keeps access for a team-owned public share', async () => {
       renderDialog({
-        existingShare: { audience: 'public', target: team },
+        existingShare: { audience: 'public', target: team, link },
         revokePublicLink: jest.fn().mockResolvedValue(undefined),
       });
       await settle();
 
-      click('[data-testid="share-skill-remove-public-link"]');
-      await settle();
-      const confirm = document.querySelector(
-        '[data-testid="share-skill-remove-public-link-confirm"]',
+      const text = await confirmText();
+      expect(text).toContain(
+        'People outside Platform who have the link will lose access. Platform members keep access, including through links they already have.',
       );
-      expect(confirm?.textContent).toContain(
-        'Anyone with the link will lose access. People it is shared with keep access.',
-      );
-      expect(confirm?.textContent).not.toContain('shared lists');
+      expect(text).not.toContain('shared lists');
     });
 
-    it('confirms, revokes, closes and toasts the removal', async () => {
+    it('names the organization that keeps access, literally', async () => {
+      const name = 'Acme & <Sons>, Inc.';
+      renderDialog({
+        existingShare: {
+          audience: 'public',
+          targetAudience: 'organization',
+          target: { id: 'org-1', name },
+          link,
+        },
+        revokePublicLink: jest.fn().mockResolvedValue(undefined),
+      });
+      await settle();
+
+      expect(await confirmText()).toContain(
+        `People outside ${name} who have the link will lose access. ${name} members keep access, including through links they already have.`,
+      );
+    });
+
+    const personalId = '33333333-3333-4333-8333-333333333333';
+
+    it('keeps the Personal context without naming it as a member group', async () => {
+      renderDialog(
+        {
+          existingShare: {
+            audience: 'public',
+            targetAudience: 'organization',
+            target: { id: personalId, name: 'Aaron’s organization' },
+            link,
+          },
+          revokePublicLink: jest.fn().mockResolvedValue(undefined),
+        },
+        personalId,
+      );
+      await settle();
+
+      const text = await confirmText();
+      expect(text).toContain(
+        'Anyone else with the link will lose access. It stays in your Personal context.',
+      );
+      expect(text).not.toContain('Aaron’s organization');
+      expect(text).not.toContain('members');
+    });
+
+    it('names the current share, not the one it was first opened with', async () => {
       const revokePublicLink = jest.fn().mockResolvedValue(undefined);
+      renderDialog(
+        {
+          existingShare: {
+            audience: 'public',
+            targetAudience: 'organization',
+            target: { id: personalId, name: 'Aaron’s organization' },
+            link,
+          },
+          revokePublicLink,
+        },
+        personalId,
+      );
+      await settle();
+      expect(await confirmText()).toContain('Personal context');
+      click('[data-testid="share-skill-remove-public-link-cancel"]');
+      await settle();
+
+      renderDialog(
+        {
+          existingShare: { audience: 'public', target: team, link },
+          revokePublicLink,
+        },
+        personalId,
+      );
+      await settle();
+      const text = await confirmText();
+      expect(text).toContain('Platform members keep access');
+      expect(text).not.toContain('Personal');
+    });
+
+    it('refreshes a named audience and clears it when reopened private-only', async () => {
+      const revokePublicLink = jest.fn().mockResolvedValue(undefined);
+      renderDialog({
+        existingShare: { audience: 'public', target: team, link },
+        revokePublicLink,
+      });
+      await settle();
+      expect(await confirmText()).toContain('Platform members keep access');
+      click('[data-testid="share-skill-remove-public-link-cancel"]');
+      await settle();
+
+      renderDialog({
+        existingShare: {
+          audience: 'public',
+          targetAudience: 'organization',
+          target: { id: 'org-2', name: 'Beta 研究 & Partners' },
+          link,
+        },
+        revokePublicLink,
+      });
+      await settle();
+      const updated = await confirmText();
+      expect(updated).toContain('Beta 研究 & Partners members keep access');
+      expect(updated).not.toContain('Platform');
+      click('[data-testid="share-skill-remove-public-link-cancel"]');
+      await settle();
+
+      act(() => root.unmount());
+      root = createRoot(container);
+      renderDialog({
+        existingShare: { audience: 'public', link },
+        revokePublicLink,
+      });
+      await settle();
+      const reopened = await confirmText();
+      expect(reopened).toContain(
+        "Anyone with the link will lose access, and it won't show up in shared lists anymore. You can share it again later.",
+      );
+      expect(reopened).not.toContain('Beta');
+      expect(revokePublicLink).not.toHaveBeenCalled();
+    });
+
+    it('confirms, revokes, toasts and stays open on the unshared state', async () => {
       const onCompleted = jest.fn();
       const onClose = jest.fn();
       const notify = jest.fn();
+      // Hosts clear their public share once the revoke lands.
+      const revokePublicLink = jest.fn((): Promise<void> => {
+        renderDialog({
+          revokePublicLink,
+          onCompleted,
+          onClose,
+          notify,
+        });
+        return Promise.resolve();
+      });
       renderDialog({
-        existingShare: { audience: 'public' },
+        existingShare: { audience: 'public', link },
         revokePublicLink,
         onCompleted,
         onClose,
@@ -1799,17 +2325,102 @@ describe('ShareResourceDialog', () => {
       click('[data-testid="share-skill-remove-public-link-confirm-action"]');
       await settle();
       expect(revokePublicLink).toHaveBeenCalledTimes(1);
-      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(onClose).not.toHaveBeenCalled();
       expect(onCompleted).not.toHaveBeenCalled();
       expect(notify).toHaveBeenCalledWith({
         tone: 'success',
         message: 'Public link removed',
       });
+      // The dialog stays open on the unshared state: no published notice,
+      // no remove control, and Share instead of Update.
+      expect(
+        document.querySelector('[data-testid="share-skill-modal"]'),
+      ).not.toBeNull();
+      expect(successText()).toBeUndefined();
+      expect(
+        document.querySelector(
+          '[data-testid="share-skill-remove-public-link"]',
+        ),
+      ).toBeNull();
+      expect(
+        document.querySelector('[data-testid="share-skill-submit"]')
+          ?.textContent,
+      ).toBe('Share');
+    });
+
+    it('publish -> remove link -> close -> reopen -> publish again shows the remove-link control immediately', async () => {
+      const url = 'https://cloud.test/s/skills/abc';
+      const revokePublicLink = jest.fn().mockResolvedValue(undefined);
+      const share = jest.fn().mockResolvedValue({ shareUrl: url });
+      const onClose = jest.fn();
+      const removeLink = (): Element | null =>
+        document.querySelector(
+          '[data-testid="share-skill-remove-public-link"]',
+        );
+      const publishPublicly = async (): Promise<void> => {
+        click('[data-testid="share-skill-scope-public"]');
+        await settle();
+        click('[data-testid="share-skill-submit"]');
+        await settle();
+        expect(successText()).toContain('Skill is now public');
+        expect(
+          document.querySelector('[data-testid="share-skill-link"]')
+            ?.textContent,
+        ).toBe(url);
+      };
+
+      // First publish: the success notice already offers removal.
+      renderDialog({ share, revokePublicLink, onClose });
+      await settle();
+      await publishPublicly();
+      expect(removeLink()).not.toBeNull();
+
+      click('[data-testid="share-skill-remove-public-link"]');
+      await settle();
+      click('[data-testid="share-skill-remove-public-link-confirm-action"]');
+      await settle();
+      expect(revokePublicLink).toHaveBeenCalledTimes(1);
+      // The dialog stays open on the unshared state.
+      expect(onClose).not.toHaveBeenCalled();
+      expect(successText()).toBeUndefined();
+      expect(removeLink()).toBeNull();
+
+      // Reopen on the now-unpublished skill and publish it again.
+      act(() => root.unmount());
+      root = createRoot(container);
+      renderDialog({ share, revokePublicLink, onClose });
+      await settle();
+      expect(removeLink()).toBeNull();
+      await publishPublicly();
+      expect(removeLink()).not.toBeNull();
+
+      click('[data-testid="share-skill-remove-public-link"]');
+      await settle();
+      click('[data-testid="share-skill-remove-public-link-confirm-action"]');
+      await settle();
+      expect(revokePublicLink).toHaveBeenCalledTimes(2);
+    });
+
+    it('is not offered after a share whose public link failed', async () => {
+      renderDialog({
+        share: jest.fn().mockResolvedValue({ publicLinkFailed: true }),
+        revokePublicLink: jest.fn().mockResolvedValue(undefined),
+      });
+      await settle();
+      click('[data-testid="share-skill-scope-public"]');
+      await settle();
+      click('[data-testid="share-skill-submit"]');
+      await settle();
+      expect(
+        document.querySelector(
+          '[data-testid="share-skill-remove-public-link"]',
+        ),
+      ).toBeNull();
     });
 
     it('reports a failed removal and keeps the dialog open', async () => {
       renderDialog({
-        existingShare: { audience: 'public' },
+        existingShare: { audience: 'public', link },
         revokePublicLink: jest
           .fn()
           .mockRejectedValue(new Error('Cloud is down.')),
@@ -1828,6 +2439,37 @@ describe('ShareResourceDialog', () => {
           '[data-testid="share-skill-remove-public-link"]',
         ),
       ).not.toBeNull();
+    });
+
+    it('drops a failed removal error once the author shares again', async () => {
+      const errorText = (): string | null | undefined =>
+        document.querySelector('[data-testid="share-skill-error"]')
+          ?.textContent;
+      renderDialog({
+        existingShare: { audience: 'public', link },
+        share: jest.fn().mockResolvedValue({ shareUrl: link.url }),
+        revokePublicLink: jest
+          .fn()
+          .mockRejectedValue(new Error('Cloud is down.')),
+      });
+      await settle();
+      click('[data-testid="share-skill-remove-public-link"]');
+      await settle();
+      click('[data-testid="share-skill-remove-public-link-confirm-action"]');
+      await settle();
+      expect(errorText()).toBe(
+        'Could not remove the public link. Cloud is down.',
+      );
+
+      click('[data-testid="share-skill-submit"]');
+      await settle();
+      expect(successText()).toContain('Skill updated');
+      expect(
+        document.querySelector(
+          '[data-testid="share-skill-remove-public-link"]',
+        ),
+      ).not.toBeNull();
+      expect(errorText()).toBeUndefined();
     });
   });
 
@@ -1985,7 +2627,9 @@ describe('ShareResourceDialog', () => {
       });
       await settle();
 
-      expect(option('team')?.disabled).toBe(true);
+      // Team needs an upgrade, explained in its tooltip; Public's reason is
+      // the locked hint under the selector.
+      expect(option('team')?.getAttribute('aria-disabled')).toBe('true');
       expect(option('organization')?.disabled).toBe(false);
       expect(option('public')?.disabled).toBe(true);
       expect(lockedHint()).not.toBeNull();
@@ -2462,12 +3106,24 @@ describe('ShareResourceDialog', () => {
         ],
         dismissedInvocations: [{ provider: 'claude', token: '/not-cmd' }],
       };
+      type RepairOpen = NonNullable<
+        NonNullable<
+          Parameters<typeof ShareResourceDialog>[0]['capabilityPackage']
+        >['repair']
+      >['open'];
+      function mockRepairOpen(
+        implementation?: RepairOpen,
+      ): jest.Mock<ReturnType<RepairOpen>, Parameters<RepairOpen>> {
+        return jest.fn<ReturnType<RepairOpen>, Parameters<RepairOpen>>(
+          implementation,
+        );
+      }
       const fixButton = (): HTMLButtonElement | null =>
         document.querySelector<HTMLButtonElement>(
           '[data-testid="share-skill-dependency-problems-fix-with-ai"]',
         );
       const repairBinding = (
-        open: jest.Mock,
+        open: RepairOpen,
       ): NonNullable<
         NonNullable<
           Parameters<typeof ShareResourceDialog>[0]['capabilityPackage']
@@ -2483,7 +3139,7 @@ describe('ShareResourceDialog', () => {
           ...blocked,
           expiresAt: '2000-01-01T00:00:00.000Z',
         });
-        const open = jest.fn().mockResolvedValue(undefined);
+        const open = mockRepairOpen().mockResolvedValue(undefined);
         renderDialog({
           capabilityPackage: {
             port: packagePort({ analyze }),
@@ -2508,7 +3164,7 @@ describe('ShareResourceDialog', () => {
         renderDialog({
           capabilityPackage: {
             port: packagePort({ analyze }),
-            repair: repairBinding(jest.fn()),
+            repair: repairBinding(mockRepairOpen()),
           },
         });
         await settle();
@@ -2565,7 +3221,7 @@ describe('ShareResourceDialog', () => {
       });
       it('ignores a failed launch after the audience changes', async () => {
         let rejectOpen: (error: Error) => void = () => {};
-        const open = jest.fn(
+        const open = mockRepairOpen(
           () =>
             new Promise<void>((_resolve, reject) => {
               rejectOpen = reject;
@@ -2617,7 +3273,7 @@ describe('ShareResourceDialog', () => {
         renderDialog({
           capabilityPackage: {
             port: packagePort(),
-            repair: repairBinding(jest.fn()),
+            repair: repairBinding(mockRepairOpen()),
           },
         });
         await settle();
@@ -2626,7 +3282,7 @@ describe('ShareResourceDialog', () => {
 
       it('opens one chat with the click-time context, then closes', async () => {
         let resolveOpen: () => void = () => {};
-        const open = jest.fn(
+        const open = mockRepairOpen(
           () =>
             new Promise<void>((resolve) => {
               resolveOpen = resolve;
@@ -2660,10 +3316,8 @@ describe('ShareResourceDialog', () => {
         expect(fixButton()?.textContent).toBe('Opening chat…');
         expect(fixButton()?.disabled).toBe(true);
 
-        const launch = open.mock.calls[0]?.[0] as {
-          request: Record<string, unknown>;
-          prompt: string;
-        };
+        const launch = open.mock.calls[0]?.[0];
+        if (!launch) throw new Error('Expected the repair chat to open');
         expect(launch.request).toMatchObject({
           subject: { kind: 'skill', skillName: 'mine' },
           displayName: 'Mine',
@@ -2685,7 +3339,7 @@ describe('ShareResourceDialog', () => {
       });
 
       it('stays open and usable when the chat cannot start', async () => {
-        const open = jest.fn().mockRejectedValue(new Error('no chat'));
+        const open = mockRepairOpen().mockRejectedValue(new Error('no chat'));
         const onClose = jest.fn();
         renderDialog({
           onClose,
@@ -2713,7 +3367,7 @@ describe('ShareResourceDialog', () => {
 
       it('does not close for a launch whose audience has since changed', async () => {
         let resolveOpen: () => void = () => {};
-        const open = jest.fn(
+        const open = mockRepairOpen(
           () =>
             new Promise<void>((resolve) => {
               resolveOpen = resolve;
@@ -2758,12 +3412,12 @@ describe('ShareResourceDialog', () => {
       expect(
         document.querySelector('[data-testid="share-skill-dependencies"]'),
       ).not.toBeNull();
-      // The review is collapsed; expanding it is optional.
+      // The details sit behind a help icon; reading them is optional.
       expect(
         document
-          .querySelector('[data-testid="share-skill-dependencies-toggle"]')
-          ?.getAttribute('aria-expanded'),
-      ).toBe('false');
+          .querySelector('[data-testid="share-skill-dependencies-help"]')
+          ?.getAttribute('aria-label'),
+      ).toBe('About included files');
       expect(
         document.querySelector('[data-testid="share-skill-consent"]'),
       ).toBeNull();
@@ -2954,14 +3608,8 @@ describe('ShareResourceDialog', () => {
       });
       await settle();
 
-      // Public is the only usable audience left, so the fallback lands on
-      // it (the selector collapses to its disclosure).
-      expect(
-        document.querySelector('[data-testid="share-skill-scope"]'),
-      ).toBeNull();
-      expect(
-        document.querySelector('[data-testid="share-skill-scope-description"]'),
-      ).not.toBeNull();
+      // Public is the only usable audience left, so the fallback lands on it.
+      expect(scopeOption('public')?.getAttribute('aria-checked')).toBe('true');
       expect(onAudienceChange.mock.calls.length).toBe(changesBefore + 1);
     });
 

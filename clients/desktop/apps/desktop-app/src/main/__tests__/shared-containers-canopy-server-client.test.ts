@@ -5,6 +5,7 @@ jest.mock('../canopy-cloud/client', () => {
     assertCanopyCloudCapability: jest.fn(),
     openCanopyCloudStream: jest.fn(),
     requestCanopyCloudJson: jest.fn(),
+    requestCanopyCloudBinary: jest.fn(),
     requestCanopyCloudNoContent: jest.fn(),
     resolveCanopyCloudCredentialContext: jest.fn(),
   };
@@ -14,6 +15,7 @@ import {
   CanopyCloudClientError,
   assertCanopyCloudCapability,
   requestCanopyCloudJson,
+  requestCanopyCloudBinary,
   requestCanopyCloudNoContent,
   resolveCanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
@@ -38,10 +40,17 @@ import {
   resetSharedContainerLink,
   resolveSharedContainerLink,
   claimSharedContainerLink,
+  getSharedContainerRevisionPackage,
+  getSharedContainerRevisionPackageBlob,
 } from '../shared-containers/canopy-server-client';
+import legacyRevision from '../../../../../packages/protocol/src/__fixtures__/legacy-shares/shared-container/revision-detail.2026-10-21.json';
+import { createHash } from 'node:crypto';
+import { computePipelinePackageDigestSync } from '@canopy/desktop-shared/node';
+import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
 
 const mockedAssert = jest.mocked(assertCanopyCloudCapability);
 const mockedJson = jest.mocked(requestCanopyCloudJson);
+const mockedBinary = jest.mocked(requestCanopyCloudBinary);
 const mockedNoContent = jest.mocked(requestCanopyCloudNoContent);
 const mockedResolveCredentials = jest.mocked(
   resolveCanopyCloudCredentialContext,
@@ -58,6 +67,241 @@ describe('shared containers Canopy Server client', () => {
     jest.clearAllMocks();
     mockedAssert.mockResolvedValue(undefined);
     mockedResolveCredentials.mockResolvedValue(credentialContext);
+  });
+
+  it('advertises package version 6 on every revision-detail and listing call', async () => {
+    mockedJson.mockResolvedValue({});
+    await listSharedContainersByMe({});
+    await listSharedContainersWithMe({});
+    await fetchLatestSharedContainerRevision('container', undefined);
+    await fetchSharedContainerRevision('container', 'revision', undefined);
+    await stageSharedContainerRevision('container', {
+      title: 'Share',
+      idempotencyKey: 'stage',
+      sourceDeviceId: 'device',
+      schemaVersion: 1,
+      artifacts: [],
+    });
+    await commitSharedContainerRevision('container', undefined, 'stage');
+    expect(mockedJson).toHaveBeenCalledTimes(6);
+    for (const [, options] of mockedJson.mock.calls) {
+      expect(options?.headers).toEqual({ 'X-Pipeline-Package-Version': '6' });
+    }
+  });
+
+  it('reads the retained legacy revision without inventing a package', async () => {
+    mockedJson.mockResolvedValue({ revision: legacyRevision });
+    await expect(
+      fetchSharedContainerRevision('container', legacyRevision.id, undefined),
+    ).resolves.toEqual({ revision: legacyRevision });
+    mockedJson.mockResolvedValue({ latestRevision: legacyRevision });
+    const detail = await fetchLatestSharedContainerRevision(
+      'container',
+      undefined,
+    );
+    expect(detail.latestRevision).toEqual(legacyRevision);
+    expect(detail.latestRevision).not.toHaveProperty('package');
+  });
+
+  it('reads only the requested revision package and verifies its canonical digest', async () => {
+    const manifest: PipelinePackageManifestV1 = {
+      version: 1,
+      pipelineContentHash: 'a'.repeat(64),
+      resources: [
+        {
+          id: 'agent',
+          kind: 'agent_definition',
+          displayName: 'Agent',
+          sourceLabel: 'private',
+          sourceVisibility: 'private',
+          invocationKeys: [],
+          dependencyResourceIds: [],
+          trees: [
+            {
+              provider: 'claude',
+              runtimeKind: 'plugin_fragment',
+              rootName: 'agent',
+              entries: [
+                {
+                  path: 'agent.json',
+                  sha256: 'a'.repeat(64),
+                  size: 2,
+                  mode: 'read',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      bindings: [{ target: 'subject', resourceIds: ['agent'] }],
+      environmentRequirements: [],
+      totalFiles: 1,
+      totalBytes: 2,
+    };
+    const digest = computePipelinePackageDigestSync(manifest);
+    const signal = new AbortController().signal;
+    mockedJson.mockResolvedValue({ digest, manifest });
+    await expect(
+      getSharedContainerRevisionPackage(
+        'container/1',
+        'revision/1',
+        'org-1',
+        digest,
+        signal,
+      ),
+    ).resolves.toEqual({ digest, manifest });
+    expect(mockedJson).toHaveBeenLastCalledWith(
+      `/api/v1/shared-containers/container%2F1/revisions/revision%2F1/package?organizationId=org-1&expectedPackageDigest=${encodeURIComponent(digest)}`,
+      { headers: { 'X-Pipeline-Package-Version': '6' }, signal },
+    );
+    mockedJson.mockResolvedValue({
+      digest,
+      manifest: { ...manifest, pipelineContentHash: 'b'.repeat(64) },
+    });
+    await expect(
+      getSharedContainerRevisionPackage(
+        'container',
+        'revision',
+        undefined,
+        digest,
+      ),
+    ).rejects.toThrow('digest');
+    mockedJson.mockResolvedValue({
+      digest: `pp:v1:${'c'.repeat(43)}`,
+      manifest,
+    });
+    await expect(
+      getSharedContainerRevisionPackage(
+        'container',
+        'revision',
+        undefined,
+        digest,
+      ),
+    ).rejects.toThrow('digest');
+    mockedJson.mockResolvedValue({
+      digest,
+      manifest: {
+        ...manifest,
+        resources: [{ ...manifest.resources[0], trees: [] }],
+      },
+    });
+    await expect(
+      getSharedContainerRevisionPackage(
+        'container',
+        'revision',
+        undefined,
+        digest,
+      ),
+    ).rejects.toThrow('manifest');
+    mockedJson.mockClear();
+    await expect(
+      getSharedContainerRevisionPackage(
+        'container',
+        'revision',
+        undefined,
+        'invalid',
+      ),
+    ).rejects.toThrow('digest');
+    expect(mockedJson).not.toHaveBeenCalled();
+  });
+
+  it('uses authenticated pinned blob reads and rejects tampered bytes', async () => {
+    const bytes = Buffer.from('verified');
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const digest = `pp:v1:${'a'.repeat(43)}`;
+    const signal = new AbortController().signal;
+    mockedBinary.mockResolvedValue(bytes);
+    await expect(
+      getSharedContainerRevisionPackageBlob(
+        'container/1',
+        'revision/1',
+        undefined,
+        digest,
+        hash,
+        signal,
+      ),
+    ).resolves.toEqual(new Uint8Array(bytes));
+    expect(mockedBinary).toHaveBeenCalledWith(
+      `/api/v1/shared-containers/container%2F1/revisions/revision%2F1/package/blobs/${hash}?expectedPackageDigest=${encodeURIComponent(digest)}`,
+      { headers: { 'X-Pipeline-Package-Version': '6' }, signal },
+    );
+    mockedBinary.mockResolvedValue(Buffer.from('tampered'));
+    await expect(
+      getSharedContainerRevisionPackageBlob(
+        'container',
+        'revision',
+        undefined,
+        digest,
+        hash,
+      ),
+    ).rejects.toThrow('hash');
+    mockedBinary.mockClear();
+    await expect(
+      getSharedContainerRevisionPackageBlob(
+        'container',
+        'revision',
+        undefined,
+        digest,
+        '../escape',
+      ),
+    ).rejects.toThrow('hash');
+    expect(mockedBinary).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403, 404, 409, 426])(
+    'preserves a package read refusal (%s) without switching revision or bypassing authorization',
+    async (status) => {
+      const refusal = new CanopyCloudClientError(
+        'http-error',
+        'Refused',
+        status,
+      );
+      mockedJson.mockRejectedValue(refusal);
+      await expect(
+        getSharedContainerRevisionPackage(
+          'container',
+          'pinned-revision',
+          undefined,
+          `pp:v1:${'a'.repeat(43)}`,
+        ),
+      ).rejects.toBe(refusal);
+      expect(mockedJson).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retries a negotiated older server version once and preserves cancellation', async () => {
+    const signal = new AbortController().signal;
+    const downgrade = new CanopyCloudClientError(
+      'http-error',
+      'Use version 4',
+      426,
+      'pipeline_package_client_upgrade_required',
+      undefined,
+      true,
+      undefined,
+      false,
+      4,
+    );
+    mockedJson
+      .mockRejectedValueOnce(downgrade)
+      .mockResolvedValueOnce({ revision: legacyRevision });
+    await expect(
+      fetchSharedContainerRevision(
+        'container',
+        legacyRevision.id,
+        undefined,
+        signal,
+      ),
+    ).resolves.toEqual({ revision: legacyRevision });
+    expect(mockedJson.mock.calls.map(([, init]) => init)).toEqual([
+      { headers: { 'X-Pipeline-Package-Version': '6' }, signal },
+      { headers: { 'X-Pipeline-Package-Version': '4' }, signal },
+    ]);
+    mockedJson.mockReset().mockRejectedValue(downgrade);
+    await expect(
+      fetchSharedContainerRevision('container', legacyRevision.id, undefined),
+    ).rejects.toBe(downgrade);
+    expect(mockedJson).toHaveBeenCalledTimes(2);
   });
 
   it('uses the owner and recipient capability-link routes', async () => {
@@ -112,6 +356,7 @@ describe('shared containers Canopy Server client', () => {
 
     expect(mockedJson).toHaveBeenCalledWith(
       '/api/v1/shared-containers/shared-by-me?organizationId=org-1&limit=100',
+      { headers: { 'X-Pipeline-Package-Version': '6' } },
     );
   });
 
@@ -316,6 +561,7 @@ describe('shared containers Canopy Server client', () => {
     mockedJson.mockResolvedValue({});
     const request = {
       organizationId: 'org-1',
+      title: 'Shared container',
       idempotencyKey: 'key-1',
       sourceDeviceId: 'device-1',
       schemaVersion: 1,
@@ -326,7 +572,12 @@ describe('shared containers Canopy Server client', () => {
     expect(mockedJson).toHaveBeenNthCalledWith(
       1,
       '/api/v1/shared-containers/container%2F1/revisions/stage',
-      { method: 'POST', body: JSON.stringify(request), signal: undefined },
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: { 'X-Pipeline-Package-Version': '6' },
+        signal: undefined,
+      },
     );
     expect(mockedJson).toHaveBeenNthCalledWith(
       2,
@@ -334,6 +585,7 @@ describe('shared containers Canopy Server client', () => {
       {
         method: 'POST',
         body: JSON.stringify({ stagingSessionId: 'stage-1' }),
+        headers: { 'X-Pipeline-Package-Version': '6' },
         signal: undefined,
       },
     );

@@ -72,9 +72,10 @@ jest.mock('../code-review-registry', () => ({
 jest.mock('../hydration', () => ({
   waitForWorktreeHydration: jest.fn((): Promise<void> => Promise.resolve()),
 }));
+let worktreeChats: Record<string, unknown> = {};
 jest.mock('../store-ref', () => ({
   chatStoreApi: (): { getState: () => { worktreeChats: object } } => ({
-    getState: () => ({ worktreeChats: {} }),
+    getState: () => ({ worktreeChats }),
   }),
 }));
 
@@ -97,6 +98,7 @@ const WORKTREE_OPTIONS: UnreadChatToastOptions = {
 beforeEach(() => {
   capturedToasts = [];
   capturedOsBodies = [];
+  worktreeChats = {};
 });
 
 describe('worktree chat toast copy', () => {
@@ -104,6 +106,47 @@ describe('worktree chat toast copy', () => {
     showUnreadChatToast(WORKTREE_OPTIONS);
     expect(capturedToasts.map((toast) => toast.message)).toEqual([
       'Fix the toast: Done.',
+    ]);
+  });
+
+  it('names the chat by its generated description, not its raw title', () => {
+    worktreeChats = {
+      'git-proj/wt-1': {
+        tabs: [
+          {
+            id: 'chat-1',
+            title: 'Fix the toast',
+            description: 'Polish toast headlines',
+          },
+        ],
+      },
+    };
+    showUnreadChatToast(WORKTREE_OPTIONS);
+    fireChatActivityNotification(WORKTREE_OPTIONS);
+    expect(capturedToasts.map((toast) => toast.message)).toEqual([
+      'Polish toast headlines: Done.',
+    ]);
+    expect(capturedOsBodies).toEqual([
+      'feature/x: Polish toast headlines: Done.',
+    ]);
+  });
+
+  it('keeps a renamed chat ahead of its generated description', () => {
+    worktreeChats = {
+      'git-proj/wt-1': {
+        tabs: [
+          {
+            id: 'chat-1',
+            title: 'Fix the toast',
+            description: 'Polish toast headlines',
+            customTitle: 'Toast work',
+          },
+        ],
+      },
+    };
+    showUnreadChatToast(WORKTREE_OPTIONS);
+    expect(capturedToasts.map((toast) => toast.message)).toEqual([
+      'Toast work: Done.',
     ]);
   });
 

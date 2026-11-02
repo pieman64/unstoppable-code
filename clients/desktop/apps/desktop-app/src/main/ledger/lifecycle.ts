@@ -16,12 +16,10 @@ import {
   getArchivedContainerManifestPath,
   getLedgerDatabasePath,
   getLedgerLifecycleIntentsPath,
-  getWorkspaceIndexFilePath,
   getWorkspaceWorkEntriesFilePath,
-  getWorkspaceWorktreesFilePath,
 } from '../lib/paths';
-import { isRecord } from '../lib/type-guards';
-import { parseWorktreesFileReconciliationSnapshot } from '../lib/workspace-persistence';
+import { getWorkspaceIndexRepository } from '../lib/sidebar-items';
+import { readWorkspaceWorktreesUnlocked } from '../lib/workspace-persistence';
 import { getObservabilityService } from '../observability';
 import {
   invalidateLedgerOwnerEligibility,
@@ -524,11 +522,6 @@ const FINAL_INTENT_REASONS: ReadonlySet<string> = new Set([
 const MAX_INTENT_CHAIN_HOPS = DEFAULT_MAX_INTENTS;
 /** Rounds of one replay; each takes up at least one intent it had not. */
 const MAX_REPLAY_ROUNDS = 4 * DEFAULT_MAX_INTENTS;
-const WORKSPACE_TYPES: readonly WorkspaceType[] = [
-  'single-repo',
-  'multi-repo',
-  'cowork',
-];
 /** Workspace types whose `worktrees.json` lists code worktrees. */
 const CODE_WORKSPACE_TYPES: readonly WorkspaceType[] = [
   'single-repo',
@@ -651,6 +644,10 @@ function locateContainer(container: LedgerContainer): LedgerContainerLocation {
         archiveKind: 'work-entry',
         workspaceTypes: null,
       };
+    case 'global':
+      // A global (workflow) Ledger has no container to persist; every pass
+      // skips it before it gets here.
+      throw new LedgerLifecycleError('GLOBAL_SCOPE');
   }
 }
 
@@ -666,6 +663,8 @@ function withItemId(
       return { ...container, entryId: itemId };
     case 'advisor_entry':
       return { ...container, entryId: itemId };
+    case 'global':
+      throw new LedgerLifecycleError('GLOBAL_SCOPE');
   }
 }
 
@@ -2130,7 +2129,10 @@ export class LedgerLifecycle {
     // Every failure the pass records, so its outcome can report them.
     const recorded = new Set<string>();
     if (!(await this.replayIntents(step, recorded))) return 'incomplete';
-    const listed = await step.store.listScopes();
+    // Global (workflow) Ledgers have no container: nothing retires them.
+    const listed = (await step.store.listScopes()).filter(
+      (scope) => scope.scope.container.kind !== 'global',
+    );
     const reads = this.presenceReads();
     const batchSize = Math.max(1, this.options.batchSize ?? DEFAULT_BATCH_SIZE);
     const pause = this.options.yieldToEventLoop ?? yieldToEventLoop;
@@ -2279,6 +2281,9 @@ export class LedgerLifecycle {
     reads: LedgerPresenceReads,
     held: ReadonlySet<string> | undefined,
   ): Promise<LedgerSettleOutcome> {
+    // A global (workflow) Ledger is always active: no container, run,
+    // account or sign-out ever archives or retires it.
+    if (scope.scope.container.kind === 'global') return SETTLED;
     if (scope.lifecycleState === 'retirement_pending') {
       await this.retireScope(step, scope);
       return SETTLED;
@@ -2717,71 +2722,30 @@ export class LedgerLifecycle {
   }
 }
 
+/**
+ * The index through its W5 repository, without its lock (CAN-5478). Only an
+ * `ok` read whose every entry has an id and one type is a proof.
+ */
 async function readDesktopWorkspaceIndex(): Promise<ReadonlyMap<
   string,
   WorkspaceType
 > | null> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(getWorkspaceIndexFilePath(), 'utf8'));
-  } catch {
-    return null;
-  }
-  if (
-    !isRecord(parsed) ||
-    parsed.version !== 1 ||
-    !Array.isArray(parsed.workspaces)
-  ) {
-    return null;
-  }
-  const entries: readonly unknown[] = parsed.workspaces;
+  const { entries, authority } = await getWorkspaceIndexRepository().read();
+  if (authority !== 'ok') return null;
   const workspaces = new Map<string, WorkspaceType>();
   for (const entry of entries) {
-    // An entry the app would leave out makes the index partial.
-    if (!isRecord(entry) || typeof entry.id !== 'string' || !entry.id) {
-      return null;
-    }
-    const type = WORKSPACE_TYPES.find((candidate) => candidate === entry.type);
     const known = workspaces.get(entry.id);
-    if (type === undefined || (known !== undefined && known !== type)) {
+    if (!entry.id || (known !== undefined && known !== entry.type)) {
       return null;
     }
-    workspaces.set(entry.id, type);
+    workspaces.set(entry.id, entry.type);
   }
   return workspaces;
 }
 
-function parseRegistryRows(
-  registry: LedgerContainerRegistryKind,
-  raw: string,
-): readonly { readonly id: string; readonly createdAt: string }[] | null {
-  if (registry === 'worktrees') {
-    return parseWorktreesFileReconciliationSnapshot(raw);
-  }
-  try {
-    return parseWorkEntriesFile(raw).entries;
-  } catch {
-    return null;
-  }
-}
-
-async function readDesktopContainerRegistry(
-  registry: LedgerContainerRegistryKind,
-  parentId: string,
-): Promise<LedgerContainerRegistryRead> {
-  let raw: string;
-  try {
-    raw = await readFile(
-      registry === 'worktrees'
-        ? getWorkspaceWorktreesFilePath(parentId)
-        : getWorkspaceWorkEntriesFilePath(parentId),
-      'utf8',
-    );
-  } catch (error) {
-    return isMissingPath(error) ? { status: 'absent' } : UNREADABLE_REGISTRY;
-  }
-  const rows = parseRegistryRows(registry, raw);
-  if (rows === null) return UNREADABLE_REGISTRY;
+function registryRead(
+  rows: readonly { readonly id: string; readonly createdAt: string }[],
+): LedgerContainerRegistryRead {
   const createdAtById = new Map<string, string>();
   for (const row of rows) {
     // Two rows with one ID leave the incarnation ambiguous.
@@ -2789,6 +2753,41 @@ async function readDesktopContainerRegistry(
     createdAtById.set(row.id, row.createdAt);
   }
   return { status: 'ok', createdAtById };
+}
+
+/**
+ * Every row of the list, tombstoned ones included, through its W5
+ * repository and without its lock: a lifecycle task inherits its
+ * participant's lock context. A row the list could not read leaves it
+ * unproven.
+ */
+async function readDesktopWorktreeRegistry(
+  workspaceId: string,
+): Promise<LedgerContainerRegistryRead> {
+  const { worktrees, authority } =
+    await readWorkspaceWorktreesUnlocked(workspaceId);
+  if (authority === 'absent') return { status: 'absent' };
+  return authority === 'ok' ? registryRead(worktrees) : UNREADABLE_REGISTRY;
+}
+
+async function readDesktopContainerRegistry(
+  registry: LedgerContainerRegistryKind,
+  parentId: string,
+): Promise<LedgerContainerRegistryRead> {
+  if (registry === 'worktrees') return readDesktopWorktreeRegistry(parentId);
+  let raw: string;
+  try {
+    raw = await readFile(getWorkspaceWorkEntriesFilePath(parentId), 'utf8');
+  } catch (error) {
+    return isMissingPath(error) ? { status: 'absent' } : UNREADABLE_REGISTRY;
+  }
+  let rows: readonly { readonly id: string; readonly createdAt: string }[];
+  try {
+    rows = parseWorkEntriesFile(raw).entries;
+  } catch {
+    return UNREADABLE_REGISTRY;
+  }
+  return registryRead(rows);
 }
 
 function toArchivedContainerRecord(

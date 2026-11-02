@@ -13,7 +13,8 @@
  *
  * This script reproduces the production layout directly:
  *   1. Copies the emitted build + fingerprint worker bundles +
- *      `web-tree-sitter` + `typescript` into a temp app dir and writes a
+ *      `web-tree-sitter` + `typescript` and its `@typescript/old` dependency
+ *      into a temp app dir and writes a
  *      minimal Electron `main`.
  *   2. Packs that dir into a real `app.asar` via `@electron/asar`.
  *   3. Launches Electron on the asar. The main forks the asar-internal worker
@@ -328,7 +329,13 @@ const resourcesDir = resolveFirstExisting(
 
 const webTreeSitterDir = path.join(repoRoot, 'node_modules', 'web-tree-sitter');
 const typescriptDir = path.join(repoRoot, 'node_modules', 'typescript');
-for (const dir of [webTreeSitterDir, typescriptDir]) {
+const typescriptOldDir = path.join(
+  repoRoot,
+  'node_modules',
+  '@typescript',
+  'old',
+);
+for (const dir of [webTreeSitterDir, typescriptDir, typescriptOldDir]) {
   if (!existsSync(dir)) {
     throw new Error(`Missing required module dir: ${dir}`);
   }
@@ -365,6 +372,14 @@ try {
   cpSync(typescriptDir, path.join(appSrc, 'node_modules', 'typescript'), {
     recursive: true,
   });
+  mkdirSync(path.join(appSrc, 'node_modules', '@typescript'), {
+    recursive: true,
+  });
+  cpSync(
+    typescriptOldDir,
+    path.join(appSrc, 'node_modules', '@typescript', 'old'),
+    { recursive: true },
+  );
 
   writeFileSync(
     path.join(appSrc, 'package.json'),

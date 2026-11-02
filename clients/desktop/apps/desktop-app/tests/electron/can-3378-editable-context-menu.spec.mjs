@@ -1,3 +1,4 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 /**
  * CAN-3378: right-clicking any text field opens a native menu with Cut, Copy,
  * Paste and Select All.
@@ -231,6 +232,10 @@ test.describe('CAN-3378 editable context menu', () => {
     const { electronApp, userDataDir, window, composer } =
       await launchWorktreeChat('can-3378-image');
     try {
+      await connectMockCloudAccount(
+        window,
+        'csk_can_3378_editable_context_menu_attachments_e2e',
+      );
       await electronApp.evaluate(({ clipboard, nativeImage }, dataUrl) => {
         clipboard.writeImage(nativeImage.createFromDataURL(dataUrl));
       }, ONE_PIXEL_PNG);

@@ -19,6 +19,9 @@ const consolidateMock = jest.fn();
 const rebuildMock = jest.fn();
 const restoreMock = jest.fn();
 const listSnapshotsMock = jest.fn();
+const updateFileMock = jest.fn();
+const deleteFileMock = jest.fn();
+const readUsageMock = jest.fn();
 
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (
@@ -36,6 +39,17 @@ jest.mock('../memory/local/explorer', () => ({
   listLocalMemoryFiles: (...args: unknown[]): unknown => listMock(...args),
   readLocalMemoryDocument: (...args: unknown[]): unknown => readMock(...args),
   mutateLocalMemoryItem: (...args: unknown[]): unknown => mutateMock(...args),
+  updateLocalMemoryFile: (...args: unknown[]): unknown =>
+    updateFileMock(...args),
+  deleteLocalMemoryFile: (...args: unknown[]): unknown =>
+    deleteFileMock(...args),
+}));
+jest.mock('../memory/local/usage', () => ({
+  readUsage: (...args: unknown[]): unknown => readUsageMock(...args),
+  usageEntryFor: (
+    entries: Map<string, { usageCount: number }>,
+    fileKey: string,
+  ): unknown => entries.get(fileKey.toLowerCase()),
 }));
 jest.mock('../memory/local/change-events', () => ({
   broadcastLocalMemoryChanged: (...args: unknown[]): unknown =>
@@ -86,6 +100,10 @@ describe('local memory explorer IPC', () => {
     jest.clearAllMocks();
     registered.clear();
     listMock.mockResolvedValue([]);
+    readUsageMock.mockResolvedValue({
+      trackingSince: null,
+      entries: new Map(),
+    });
     statusMock.mockResolvedValue(STATUS);
     consolidateMock.mockResolvedValue({
       status: 'completed',
@@ -212,6 +230,96 @@ describe('local memory explorer IPC', () => {
       text: 'New item',
     });
     expect(sendMock).toHaveBeenCalledWith({ scope: 'user' });
+  });
+
+  it('adds usage counts to listed files only while tracking is intact', async () => {
+    const files = [
+      { fileKey: 'MEMORY.md', kind: 'index', modifiedAt: 't', sizeBytes: 1 },
+      {
+        fileKey: 'topics/Ports.md',
+        kind: 'topic',
+        modifiedAt: 't',
+        sizeBytes: 1,
+      },
+    ];
+    listMock.mockResolvedValue(files);
+    await expect(
+      call(IPC_CHANNELS.localMemoryList, { scope: 'user' }),
+    ).resolves.toEqual(files);
+    readUsageMock.mockResolvedValueOnce({
+      trackingSince: '2026-10-01T00:00:00.000Z',
+      entries: new Map([['topics/ports.md', { usageCount: 6 }]]),
+    });
+    await expect(
+      call(IPC_CHANNELS.localMemoryList, { scope: 'user' }),
+    ).resolves.toEqual([
+      { ...files[0], usageCount: 0 },
+      { ...files[1], usageCount: 6 },
+    ]);
+    readUsageMock.mockRejectedValueOnce(new Error('unreadable'));
+    await expect(
+      call(IPC_CHANNELS.localMemoryList, { scope: 'user' }),
+    ).resolves.toEqual(files);
+    expect(readUsageMock).toHaveBeenCalledWith('/memory/user');
+  });
+
+  it('updates and deletes whole files in a validated scope and broadcasts', async () => {
+    updateFileMock.mockResolvedValue({
+      fileKey: 'topics/a.md',
+      revision: 'n',
+      items: [],
+    });
+    deleteFileMock.mockResolvedValue(undefined);
+    const target = {
+      scope: 'workspace',
+      workspaceId: 'my-workspace',
+      fileKey: 'topics/a.md',
+      revision: 'old',
+    };
+    await expect(
+      call(IPC_CHANNELS.localMemoryUpdateFile, target),
+    ).rejects.toThrow('Invalid memory request');
+    await expect(
+      call(IPC_CHANNELS.localMemoryUpdateFile, {
+        ...target,
+        body: 'x',
+        title: 7,
+      }),
+    ).rejects.toThrow('Invalid memory request');
+    await call(IPC_CHANNELS.localMemoryUpdateFile, {
+      ...target,
+      title: 'Title',
+      body: 'Body',
+    });
+    expect(updateFileMock).toHaveBeenCalledWith(
+      '/memory/workspaces/my-workspace',
+      {
+        fileKey: 'topics/a.md',
+        revision: 'old',
+        title: 'Title',
+        body: 'Body',
+      },
+    );
+    await call(IPC_CHANNELS.localMemoryDeleteFile, target);
+    expect(deleteFileMock).toHaveBeenCalledWith(
+      '/memory/workspaces/my-workspace',
+      {
+        fileKey: 'topics/a.md',
+        revision: 'old',
+      },
+    );
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    deleteFileMock.mockRejectedValueOnce(new Error('Memory changed'));
+    await expect(
+      call(IPC_CHANNELS.localMemoryDeleteFile, target),
+    ).rejects.toThrow('Memory changed');
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    await expect(
+      call(IPC_CHANNELS.localMemoryDeleteFile, {
+        ...target,
+        workspaceId: STANDALONE_CHAT_PROJECT_ID,
+      }),
+    ).rejects.toThrow('Choose a memory workspace');
   });
 
   it('does not broadcast a rejected write', async () => {

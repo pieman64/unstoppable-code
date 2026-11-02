@@ -46,6 +46,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  document.getSelection()?.removeAllRanges();
 });
 
 function render(msg: PortalChatMessage): HTMLElement {
@@ -78,6 +79,40 @@ async function choose(testId: string): Promise<void> {
   });
 }
 
+function menuLabels(): Array<string | null> {
+  return Array.from(
+    document.querySelectorAll(
+      '[data-testid="chat-message-context-menu"] [role="menuitem"]',
+    ),
+  ).map((item) => item.textContent);
+}
+
+/** Selects `node`'s rendered text and returns what the menu should copy. */
+function select(node: Node | null): string {
+  if (!node) throw new Error('missing selection target');
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const selection = document.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  return selection?.toString() ?? '';
+}
+
+/** Without a selection the menu holds one disabled Copy selection (CAN-4870). */
+async function expectOnlyDisabledSelectionCopy(): Promise<void> {
+  expect(menuLabels()).toEqual(['Copy selection']);
+  const item = document.querySelector(
+    '[data-testid="chat-message-copy-selection"]',
+  );
+  if (!(item instanceof HTMLButtonElement)) throw new Error('no item');
+  expect(item.disabled).toBe(true);
+  act(() => item.click());
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(writeText).not.toHaveBeenCalled();
+}
+
 function queryMenu(): Element | null {
   return document.querySelector('[data-testid="chat-message-context-menu"]');
 }
@@ -90,7 +125,7 @@ describe('ChatMessageView message context menu (CAN-4277)', () => {
     expect(html).not.toContain('chat-message-context-menu');
   });
 
-  it('copies the presented user body without the subagent reference', async () => {
+  it('copies only the selection inside the presented user body', async () => {
     const text = withSubagentReference(
       { kind: 'managed', id: 'child-1', title: 'Review source' },
       'Please **check** this.',
@@ -98,15 +133,17 @@ describe('ChatMessageView message context menu (CAN-4277)', () => {
     const row = render(message({ role: 'user', text }));
     openMenu(row.querySelector('p') ?? row);
     expect(queryMenu()).not.toBeNull();
-    await choose('chat-message-copy-markdown');
-    expect(writeText).toHaveBeenLastCalledWith('Please **check** this.');
+    await expectOnlyDisabledSelectionCopy();
 
+    const expected = select(row.querySelector('strong'));
+    expect(expected).toBe('check');
     openMenu(row.querySelector('p') ?? row);
-    await choose('chat-message-copy-plain');
-    expect(writeText).toHaveBeenLastCalledWith('Please check this.');
+    await choose('chat-message-copy-selection');
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenLastCalledWith(expected);
   });
 
-  it('copies assistant text without its tool parts', async () => {
+  it('copies only the selection inside assistant text', async () => {
     const row = render(
       message({
         role: 'assistant',
@@ -120,17 +157,19 @@ describe('ChatMessageView message context menu (CAN-4277)', () => {
       }),
     );
     openMenu(row);
-    await choose('chat-message-copy-markdown');
-    expect(writeText).toHaveBeenLastCalledWith('Done:\n\n1. **Built** it');
+    await expectOnlyDisabledSelectionCopy();
+
+    const expected = select(row.querySelector('li'));
+    expect(expected).toBe('Built it');
     openMenu(row);
-    await choose('chat-message-copy-plain');
-    expect(writeText).toHaveBeenLastCalledWith('Done:\n\n1. Built it');
+    await choose('chat-message-copy-selection');
+    expect(writeText).toHaveBeenLastCalledWith(expected);
   });
 
   it('reuses the user copy badge tab stop for the keyboard menu', () => {
     const row = render(message({ role: 'user', text: 'Keyboard message' }));
     expect(row.tabIndex).toBe(-1);
-    const badge = row.querySelector('[aria-label="Copy to clipboard"]');
+    const badge = row.querySelector('[aria-label="Copy your message"]');
     if (!(badge instanceof HTMLButtonElement))
       throw new Error('missing copy badge');
     expect(badge.tabIndex).toBe(0);
@@ -165,9 +204,9 @@ describe('ChatMessageView message context menu (CAN-4277)', () => {
     expect(row.tabIndex).toBe(0);
   });
 
-  it('copies the raw text behind a proxy-error summary', async () => {
-    // The visible summary is a notice; the copy is the underlying text, which
-    // differs from what is shown.
+  it('copies the selected proxy-error summary as shown', async () => {
+    // The visible summary is a notice; a selection copies what is shown, not
+    // the underlying text.
     const proxyFailureText = `unexpected status 502 Bad Gateway: ${JSON.stringify(
       {
         error: {
@@ -184,12 +223,18 @@ describe('ChatMessageView message context menu (CAN-4277)', () => {
     expect(
       row.querySelector('[data-testid="portal-chat-canopy-proxy-error"]'),
     ).not.toBeNull();
-    openMenu(row);
-    await choose('chat-message-copy-markdown');
-    expect(writeText).toHaveBeenLastCalledWith(proxyFailureText);
+    const summary = row.querySelector(
+      '[data-testid="portal-chat-canopy-proxy-error"]',
+    );
+    const expected = select(summary);
+    expect(expected).not.toBe('');
+    expect(expected).not.toBe(proxyFailureText);
+    openMenu(summary ?? row);
+    await choose('chat-message-copy-selection');
+    expect(writeText).toHaveBeenLastCalledWith(expected);
   });
 
-  it('opens on a message with no text but keeps whole-message copies disabled', () => {
+  it('opens on a message with no text with only a disabled selection copy', async () => {
     const row = render(
       message({
         role: 'assistant',
@@ -201,17 +246,11 @@ describe('ChatMessageView message context menu (CAN-4277)', () => {
         ],
       }),
     );
-    // No whole-message text: no Tab stop, but a selection can still be copied.
+    // No message text: no Tab stop, but the menu still opens for a selection.
     expect(row.hasAttribute('tabindex')).toBe(false);
     openMenu(row);
     expect(queryMenu()).not.toBeNull();
-    for (const testId of [
-      'chat-message-copy-plain',
-      'chat-message-copy-markdown',
-    ]) {
-      const item = document.querySelector(`[data-testid="${testId}"]`);
-      expect(item instanceof HTMLButtonElement && item.disabled).toBe(true);
-    }
+    await expectOnlyDisabledSelectionCopy();
   });
 
   it('offers Copy link and no open actions on a message link (CAN-2632)', async () => {
@@ -222,13 +261,7 @@ describe('ChatMessageView message context menu (CAN-4277)', () => {
     const anchor = row.querySelector(`a[href="${url}"]`);
     if (!anchor) throw new Error('missing link');
     openMenu(anchor);
-    expect(
-      Array.from(
-        document.querySelectorAll(
-          '[data-testid="chat-message-context-menu"] [role="menuitem"]',
-        ),
-      ).map((item) => item.textContent),
-    ).toEqual(['Copy link', 'Copy message', 'Copy as Markdown']);
+    expect(menuLabels()).toEqual(['Copy link', 'Copy selection']);
     await choose('chat-message-copy-link');
     expect(writeText).toHaveBeenLastCalledWith(url);
   });

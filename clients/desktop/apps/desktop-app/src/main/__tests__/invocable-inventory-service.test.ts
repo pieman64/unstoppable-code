@@ -113,6 +113,7 @@ import type {
 import type {
   MarketplaceInfo,
   PluginInfo,
+  PluginSkillInfo,
 } from '@canopy/desktop-shared/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import { getDataDir } from '../lib/paths';
@@ -226,6 +227,7 @@ describe('invocable inventory service', () => {
       loadMarketplacesMock(),
     );
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [{ sourceId: 'source-a', skillName: 'visible-skill' }],
       pluginRefs: [],
       mcpServerRefs: [],
@@ -546,6 +548,7 @@ describe('invocable inventory service', () => {
     };
     // Nothing selected: the inherited skill holds the base id.
     resolveEffectivePluginSelectionRefsMock.mockResolvedValueOnce({
+      disabledRefs: [],
       skillRefs: [],
       pluginRefs: [],
       mcpServerRefs: [],
@@ -565,6 +568,7 @@ describe('invocable inventory service', () => {
     // base id and the inherited copy the suffix, so the row inserts the
     // suffix rather than the cache's provisional text. Nothing is enabled.
     resolveEffectivePluginSelectionRefsMock.mockResolvedValueOnce({
+      disabledRefs: [],
       skillRefs: [{ sourceId: 'source-a', skillName: 'visible-skill' }],
       pluginRefs: [],
       mcpServerRefs: [],
@@ -631,6 +635,7 @@ describe('invocable inventory service', () => {
       sourceLabel,
     });
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [],
       pluginRefs: [],
       mcpServerRefs: [],
@@ -798,6 +803,7 @@ describe('invocable inventory service', () => {
       new Map([['claude-plugin@market', installRoot]]),
     );
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [],
       pluginRefs: [],
       mcpServerRefs: [],
@@ -882,6 +888,7 @@ describe('invocable inventory service', () => {
       fingerprint: 'scope',
     });
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [],
       pluginRefs: [],
       mcpServerRefs: [],
@@ -1157,6 +1164,7 @@ describe('invocable inventory service', () => {
       entry(entries, 'cursor', 'plugin_command', 'hidden-plug-skill'),
     ).toMatchObject({ displayName: '/claude-plugin-hidden-plug-skill-1' });
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [],
       pluginRefs: [{ marketplaceId: 'market', pluginName: 'claude-plugin' }],
       mcpServerRefs: [],
@@ -1186,6 +1194,7 @@ describe('invocable inventory service', () => {
     // same name onto a suffixed id.
     writeSkill(tempDir, 'source-b', 'review');
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [
         { sourceId: 'source-gone', skillName: 'review' },
         { sourceId: 'source-b', skillName: 'review' },
@@ -1231,6 +1240,7 @@ describe('invocable inventory service', () => {
     );
     writeSkill(tempDir, 'source-b', 'escape');
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [
         { sourceId: 'source-a', skillName: '../../escape' },
         { sourceId: 'source-b', skillName: 'escape' },
@@ -1294,8 +1304,16 @@ describe('invocable inventory service', () => {
                     sourcePath: '',
                     details: {
                       skills: [
-                        { name: 'foo-bar', description: '' },
-                        { name: 'foo bar', description: '' },
+                        {
+                          name: 'foo-bar',
+                          description: '',
+                          path: 'skills/foo-bar',
+                        },
+                        {
+                          name: 'foo bar',
+                          description: '',
+                          path: 'skills/foo bar',
+                        },
                       ],
                       agents: [],
                       commands: [],
@@ -1384,6 +1402,7 @@ describe('invocable inventory service', () => {
       },
     });
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [],
       pluginRefs: [{ marketplaceId: 'market', pluginName: 'disk-plugin' }],
       mcpServerRefs: [],
@@ -1445,6 +1464,7 @@ describe('invocable inventory service', () => {
       },
     });
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [
         { sourceId: 'source-a', skillName: 'visible-skill' },
         { sourceId: 'source-b', skillName: 'visible-skill' },
@@ -1981,6 +2001,7 @@ describe('invocable inventory service', () => {
 
   it('resolves Codex standalone skills hidden from Claude invocation', async () => {
     resolveEffectivePluginSelectionRefsMock.mockResolvedValueOnce({
+      disabledRefs: [],
       skillRefs: [{ sourceId: 'source-a', skillName: 'hidden-skill' }],
       pluginRefs: [],
       mcpServerRefs: [],
@@ -2121,7 +2142,13 @@ describe('invocable inventory service', () => {
         lastRefreshed: '2026-06-20T00:00:00.000Z',
         marketplaces: [
           marketplaceFixture({
-            compatSkills: [{ name: 'run-report', description: 'Collision' }],
+            compatSkills: [
+              {
+                name: 'run-report',
+                description: 'Collision',
+                path: 'skills/run-report',
+              },
+            ],
           }),
         ],
       },
@@ -2406,7 +2433,7 @@ function marketplaceFixture(options?: {
     description: string;
     filePath: string;
   }>;
-  compatSkills?: Array<{ name: string; description: string }>;
+  compatSkills?: PluginSkillInfo[];
   codexCompatDisabled?: boolean;
   codexNativeCompatDisabled?: boolean;
   /** Installed root of `claude-plugin`; Cursor resolves against its files. */
@@ -2429,13 +2456,22 @@ function marketplaceFixture(options?: {
           sourcePath: '',
           details: {
             skills: [
-              { name: 'plug-skill', description: 'Plugin skill' },
+              {
+                name: 'plug-skill',
+                description: 'Plugin skill',
+                path: 'skills/plug-skill',
+              },
               {
                 name: 'hidden-plug-skill',
                 description: '',
+                path: 'skills/hidden-plug-skill',
                 userInvocable: false,
               },
-              { name: 'run-report', description: 'Collision' },
+              {
+                name: 'run-report',
+                description: 'Collision',
+                path: 'skills/run-report',
+              },
             ],
             agents: [],
             commands: options?.claudeCommands ?? [
@@ -2465,11 +2501,31 @@ function marketplaceFixture(options?: {
           sourcePath: '',
           details: {
             skills: options?.compatSkills ?? [
-              { name: 'plug-skill', description: 'Plugin skill' },
-              { name: 'hidden-plug-skill', description: '' },
-              { name: 'run-report', description: 'Collision' },
-              { name: 'do-thing', description: 'Do thing' },
-              { name: 'run-report-2', description: 'Run report' },
+              {
+                name: 'plug-skill',
+                description: 'Plugin skill',
+                path: 'skills/plug-skill',
+              },
+              {
+                name: 'hidden-plug-skill',
+                description: '',
+                path: 'skills/hidden-plug-skill',
+              },
+              {
+                name: 'run-report',
+                description: 'Collision',
+                path: 'skills/run-report',
+              },
+              {
+                name: 'do-thing',
+                description: 'Do thing',
+                path: 'skills/do-thing',
+              },
+              {
+                name: 'run-report-2',
+                description: 'Run report',
+                path: 'skills/run-report-2',
+              },
             ],
             agents: [],
             commands: [],
@@ -2500,10 +2556,15 @@ function marketplaceFixture(options?: {
           sourcePath: '',
           details: {
             skills: [
-              { name: 'codex-skill', description: 'Codex skill' },
+              {
+                name: 'codex-skill',
+                description: 'Codex skill',
+                path: 'skills/codex-skill',
+              },
               {
                 name: 'hidden-codex-skill',
                 description: '',
+                path: 'skills/hidden-codex-skill',
                 userInvocable: false,
               },
             ],

@@ -1,3 +1,5 @@
+import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import { supportsChatHarnessChoice } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { ChatPlanReviewApprovalSchema } from '@canopy/protocol/portal';
 import { isCopilotRuntimeAvailable } from '../../copilot/runtime-availability';
 import { createHash, randomUUID } from 'node:crypto';
@@ -45,8 +47,8 @@ import {
 } from '../portal-chat-attachments';
 import type { ChatInputDeliveryAction } from '@canopy/protocol/portal';
 import {
+  BACKGROUND_WORK_CHAT_REFUSAL,
   LIVE_DELEGATES_CHAT_REFUSAL,
-  chatHasLiveDelegations,
 } from '../../agents/delegation/activity';
 import { sendToWindowDetailed } from '../../lib/window-send';
 import { assertShareScopeTarget } from '../../lib/share-scope-target';
@@ -624,9 +626,13 @@ async function executePortalChatSend(
       }
     }
     const coworkSend = isCoworkWorkspace(command.payload.projectId);
+    // Shared model IDs keep their native provider even when the saved chat
+    // runs through OpenCode. Preserve that host-owned execution choice.
     const payloadProvider =
       (coworkSend && command.payload.model === undefined && tabOptions.model
-        ? getProviderForModel(tabOptions.model)
+        ? tabOptions.executionHarness === 'opencode'
+          ? 'opencode'
+          : getProviderForModel(tabOptions.model)
         : command.payload.providerType) ??
       (typeof command.payload.model === 'string'
         ? getProviderForModel(command.payload.model)
@@ -1197,11 +1203,17 @@ async function executePortalChatSend(
     // contract, so strip these fields after the payload spread rather than
     // allowing remote messages to impersonate local host deliveries.
     Reflect.deleteProperty(sendRequest, 'watcherFired');
+    Reflect.deleteProperty(sendRequest, 'delegationNoticeBatchId');
+    Reflect.deleteProperty(sendRequest, 'watcherPartSnapshots');
+    // An internal row is a host-issued delegation request that no surface
+    // shows. A remote payload must never mark its own prompt that way.
+    Reflect.deleteProperty(sendRequest, 'internalRow');
     Reflect.deleteProperty(sendRequest, 'managedDelegationDeliveryId');
     // Approval state is host-owned. Portal JSON must not escalate a chat by
     // smuggling fields outside the wire contract through the payload spread.
     Reflect.deleteProperty(sendRequest, 'approvalMode');
     Reflect.deleteProperty(sendRequest, 'sessionApprovalRules');
+    Reflect.deleteProperty(sendRequest, 'admittedApproval');
     // Refs were materialized above; the service only understands local paths.
     Reflect.deleteProperty(sendRequest, 'cloudAttachments');
     // Sender attribution is main-owned; the payload spread above is never an
@@ -1304,18 +1316,24 @@ async function dispatchComposerCommand(
   composerCommand: PortalChatComposerCommand,
 ): Promise<void> {
   if (rejectUntrustedPortalChatInput(command, context)) return;
-  // A root chat with queued, starting or running delegates stays open on
-  // either path; name the reason instead of the generic active-work refusal.
-  if (
-    composerCommand.kind === 'close' &&
-    chatHasLiveDelegations(
+  // Name the close-blocking work before either the canonical command path or
+  // renderer fallback can create a side effect.
+  if (composerCommand.kind === 'close') {
+    const { chatCloseBlockReason } =
+      await import('../../agents/background-work');
+    const reason = chatCloseBlockReason(
       composerCommand.projectId,
       composerCommand.worktreeId,
       composerCommand.chatId,
-    )
-  ) {
-    context.fail(command, 'conflict', LIVE_DELEGATES_CHAT_REFUSAL, true);
-    return;
+    );
+    if (reason === 'delegates') {
+      context.fail(command, 'conflict', LIVE_DELEGATES_CHAT_REFUSAL, true);
+      return;
+    }
+    if (reason === 'background') {
+      context.fail(command, 'conflict', BACKGROUND_WORK_CHAT_REFUSAL, true);
+      return;
+    }
   }
   if (context.chatStatePort && composerCommand.kind === 'close') {
     try {
@@ -2311,7 +2329,11 @@ export async function handlePortalChatSetModel(
     return;
   }
   if (command.payload.selectionMode === 'auto') {
-    if ('model' in command.payload && command.payload.model !== undefined) {
+    if (
+      ('model' in command.payload && command.payload.model !== undefined) ||
+      ('executionHarness' in command.payload &&
+        command.payload.executionHarness !== undefined)
+    ) {
       context.fail(
         command,
         'invalid_payload',
@@ -2350,6 +2372,19 @@ export async function handlePortalChatSetModel(
     context.fail(command, 'invalid_payload', 'model must be a known model id.');
     return;
   }
+  const selectedHarness = command.payload.executionHarness;
+  if (
+    selectedHarness !== undefined &&
+    (!isModelHarness(selectedHarness) ||
+      !supportsChatHarnessChoice(model, selectedHarness))
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'This model does not support the selected harness.',
+    );
+    return;
+  }
   // Same runtime preflight as the desktop model-change IPC: a Cursor model
   // must not be durably persisted while the managed runtime cannot run it.
   // The renderer's `changeChatModel` path re-checks availability and still
@@ -2367,7 +2402,8 @@ export async function handlePortalChatSetModel(
     return;
   }
   if (
-    getProviderForModel(model) === 'opencode' &&
+    (selectedHarness === 'opencode' ||
+      getProviderForModel(model) === 'opencode') &&
     !(await isOpenCodeRuntimeAvailable())
   ) {
     context.fail(
@@ -2406,6 +2442,7 @@ export async function handlePortalChatSetModel(
     ...target,
     kind: 'model',
     model,
+    ...(selectedHarness ? { executionHarness: selectedHarness } : {}),
   });
 }
 

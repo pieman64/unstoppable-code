@@ -63,6 +63,7 @@ import {
   type UploadSource,
 } from '../browser/files/uploads';
 import type {
+  BrowserAutomationCommand,
   BrowserCopyTransfer,
   BrowserDownloadTransfer,
   BrowserFileChooser,
@@ -210,7 +211,10 @@ class MockWebContents extends EventEmitter {
     attach: jest.fn(),
     detach: jest.fn(),
     sendCommand: jest
-      .fn<Promise<unknown>, [string, Record<string, unknown>?]>()
+      .fn<
+        Promise<unknown>,
+        [method: string, params?: Record<string, unknown>, sessionId?: string]
+      >()
       .mockImplementation((method) => {
         if (method === 'Runtime.enable') {
           queueMicrotask(() => {
@@ -316,6 +320,7 @@ class MockWebContents extends EventEmitter {
   });
   invalidate = jest.fn();
   focus = jest.fn();
+  isFocused = jest.fn(() => false);
   sendInputEvent = jest.fn();
   close = jest.fn(() => {
     this.destroyed = true;
@@ -351,6 +356,18 @@ function sentBrowserEvents(): BrowserEvent[] {
     .mocked(sendToWindow)
     .mock.calls.map((call) => call[2])
     .filter(isBrowserEvent);
+}
+
+/**
+ * A recording's JSON without its random step IDs and clock times, which can
+ * spell a digit-only secret such as `4111` by chance.
+ */
+function recordingText(recording: unknown): string {
+  return JSON.stringify(recording, (key, value: unknown) =>
+    key === 'id' || key === 'timestamp' || key === 'chooserOpenedAt'
+      ? undefined
+      : value,
+  );
 }
 
 async function withScreenshotObservationGlobals<T>(
@@ -393,11 +410,22 @@ async function withScreenshotObservationGlobals<T>(
 
 const webContents = new MockWebContents();
 
-function appPromptBridgeSourceUrl(): string {
-  const promptBridgeCall = webContents.debugger.sendCommand.mock.calls.find(
-    ([method]) => method === 'Page.addScriptToEvaluateOnNewDocument',
+/**
+ * The prompt bridge's registration, found by its source: the page model's
+ * trackers are registered on the same session, and earlier.
+ */
+function appPromptBridgeCall():
+  | Parameters<typeof webContents.debugger.sendCommand>
+  | undefined {
+  return webContents.debugger.sendCommand.mock.calls.find(
+    ([method, params]) =>
+      method === 'Page.addScriptToEvaluateOnNewDocument' &&
+      String(params?.source).includes('canopyAppOwnedPrompt'),
   );
-  const source = promptBridgeCall?.[1]?.source;
+}
+
+function appPromptBridgeSourceUrl(): string {
+  const source = appPromptBridgeCall()?.[1]?.source;
   if (typeof source !== 'string') {
     throw new Error('Expected the app prompt bridge source to be installed.');
   }
@@ -771,7 +799,6 @@ jest.mock('electron', () => ({
     })),
   },
   shell: { openExternal: jest.fn().mockResolvedValue(undefined) },
-  BrowserWindow: { fromWebContents: jest.fn(() => null) },
 }));
 
 jest.mock('../lib/window-send', () => ({
@@ -936,6 +963,11 @@ jest.mock('../browser/browser-profile-data', () => ({
 jest.mock('../browser/browser-profile-service', () => ({
   getBrowserProfileService: (): BrowserProfileAuthority & {
     dataRoot: string;
+    repository: { listTaskSlots: typeof mockProfileTaskSlots };
+    taskContext: (
+      projectId: string,
+      worktreeId: string,
+    ) => Promise<BrowserTaskSlot>;
   } => ({
     dataRoot: '/virtual/browser-service-fixture',
     repository: { listTaskSlots: mockProfileTaskSlots },
@@ -1781,9 +1813,11 @@ describe('BrowserService', () => {
         browserId: transfer.browserId,
         command: { kind: 'wait_for', download: { downloadId: transfer.id } },
       });
-      expect(result.waitFor).toMatchObject({
-        satisfied: true,
-        observed: { download: final },
+      expect(result).toMatchObject({
+        waitFor: {
+          satisfied: true,
+          observed: { download: final },
+        },
       });
       const call = jest.mocked(service.taskFiles).waitForDownload.mock.calls[0];
       expect(call?.slice(0, 2)).toEqual([scope, transfer.browserId]);
@@ -2671,7 +2705,7 @@ describe('BrowserService', () => {
           locator: '#drop',
           files: [{ attachmentId: 'photo.png' }],
           actionId: 'attach-1',
-        } as const;
+        } satisfies BrowserAutomationCommand;
 
         it('uploads a file the user attached to the calling chat, named by its file name', async () => {
           const chatAttachmentPaths = jest.fn(() =>
@@ -3088,13 +3122,23 @@ describe('BrowserService', () => {
             () => undefined,
           );
           await settle();
+          // The receipt names the tab main asked the renderer to open.
+          const newTab = jest
+            .mocked(sendToWindow)
+            .mock.calls.map((call) => call[2])
+            .findLast(
+              (event) =>
+                isCDPRecord(event) && event.type === 'new-tab-requested',
+            );
+          if (!isCDPRecord(newTab)) throw new Error('Missing new tab.');
           expect(state.actionPopups).toEqual([
             {
               actionId: 'click-1',
               popup: {
                 url: 'https://elsewhere.example/a',
-                // A web URL the app allows opens in this tab.
+                // A web URL the app allows opens in a new tab.
                 handled: 'opened_in_tab',
+                browserId: newTab.newBrowserId,
               },
             },
           ]);
@@ -5791,6 +5835,7 @@ describe('BrowserService', () => {
   );
 
   it('drains a journal scan already admitted before task retirement', async () => {
+    await settleLeftoverSnapshotSaves();
     const service = new BrowserService({ getWindow: mockWindow });
     let release = (): void => {};
     let started = (): void => {};
@@ -6628,8 +6673,10 @@ describe('BrowserService', () => {
       worktreeId: original.worktreeId,
       browserId: original.id,
     });
-    expect(next.profile?.runtimeGeneration).toBeGreaterThan(
-      original.profile?.runtimeGeneration,
+    if (!original.profile || !next.profile)
+      throw new Error('Expected runtime profile bindings.');
+    expect(next.profile.runtimeGeneration).toBeGreaterThan(
+      original.profile.runtimeGeneration,
     );
     complete?.('old account data');
     await expect(pending).rejects.toMatchObject({ code: 'stale_runtime' });
@@ -7173,10 +7220,9 @@ describe('BrowserService', () => {
     expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
       'Debugger.enable',
     );
-    const promptBridgeCall = webContents.debugger.sendCommand.mock.calls.find(
-      ([method]) => method === 'Page.addScriptToEvaluateOnNewDocument',
+    expect(appPromptBridgeCall()?.[1]?.source).toContain(
+      'canopyAppOwnedPrompt',
     );
-    expect(promptBridgeCall?.[1]?.source).toContain('canopyAppOwnedPrompt');
     expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
       'Network.enable',
     );
@@ -10724,10 +10770,13 @@ describe('BrowserService', () => {
       ([method, params]) =>
         method === 'Runtime.callFunctionOn' && params?.userGesture === true,
     );
-    expect(trustedClickCall?.[1].userGesture).toBe(true);
+    const trustedClickParams = trustedClickCall?.[1];
+    if (!trustedClickParams)
+      throw new Error('Expected the covered trusted-click call.');
+    expect(trustedClickParams.userGesture).toBe(true);
     // The covered fallback runs on the action's retained target (D7); no
     // isolated-world token is resolved and nothing re-queries the page.
-    expect(trustedClickCall?.[1].objectId).toBe('delete-target');
+    expect(trustedClickParams.objectId).toBe('delete-target');
     expect(modelSeam.resolveActionTarget).toHaveBeenCalledTimes(1);
     expect(webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
       'DOM.querySelectorAll',
@@ -12762,13 +12811,62 @@ describe('BrowserService', () => {
       // bridge still installs for the documents that follow.
       for (const answer of release) answer();
       await new Promise((resolve) => setImmediate(resolve));
-      expect(
-        webContents.debugger.sendCommand.mock.calls.some(
-          ([method]) => method === 'Page.addScriptToEvaluateOnNewDocument',
-        ),
-      ).toBe(true);
+      expect(appPromptBridgeCall()).toBeDefined();
     } finally {
       clearTimeout(blocked);
+      for (const answer of release) answer();
+      if (answered)
+        webContents.debugger.sendCommand.mockImplementation(answered);
+    }
+  });
+
+  it('registers the page-model trackers behind Page.enable without waiting for its answer', async () => {
+    // Chromium holds renderer-bound commands until the first navigation
+    // starts a renderer, then runs them in order. Trackers sent only after
+    // Page.enable answered reached the renderer after that navigation's
+    // same-process child documents had started, so those documents were
+    // untracked and their ordinary inputs read as secret (H108).
+    const release: Array<() => void> = [];
+    const answered = webContents.debugger.sendCommand.getMockImplementation();
+    webContents.debugger.sendCommand.mockImplementation(
+      (method: string, params?: Record<string, unknown>) =>
+        method === 'Debugger.enable' || method === 'Page.enable'
+          ? new Promise<undefined>((resolve) => {
+              release.push(() => resolve(undefined));
+            })
+          : (answered?.(method, params) ?? Promise.resolve(undefined)),
+    );
+    const service = new BrowserService({ getWindow: mockWindow });
+    try {
+      await service.create({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        browserId: 'browser-1',
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      // Debugger.enable and Page.enable are still unanswered here.
+      expect(release).toHaveLength(2);
+      const calls = webContents.debugger.sendCommand.mock.calls;
+      const pageEnable = calls.findIndex(
+        ([method]) => method === 'Page.enable',
+      );
+      const trackers = calls.flatMap(([method, params], index) =>
+        method === 'Page.addScriptToEvaluateOnNewDocument' &&
+        String(params?.source).includes('__canopyPageModelTracker_')
+          ? [{ index, worldName: params?.worldName }]
+          : [],
+      );
+      expect(pageEnable).toBeGreaterThanOrEqual(0);
+      // The main-world tracker, then the isolated tracker's witness, both
+      // queued after Page.enable on the root session.
+      expect(trackers.map((tracker) => tracker.worldName)).toEqual([
+        undefined,
+        'CanopyPageModelTracker',
+      ]);
+      expect(trackers.every((tracker) => tracker.index > pageEnable)).toBe(
+        true,
+      );
+    } finally {
       for (const answer of release) answer();
       if (answered)
         webContents.debugger.sendCommand.mockImplementation(answered);
@@ -13465,7 +13563,10 @@ describe('BrowserService', () => {
               nativeGeometryUnavailable: scenario.unavailable,
             });
           }
-          expect(state.view.webContents.capturePage).toHaveBeenCalledTimes(1);
+          const browserContents = state.view.webContents;
+          if (!(browserContents instanceof MockWebContents))
+            throw new Error('Expected the browser view web contents.');
+          expect(browserContents.capturePage).toHaveBeenCalledTimes(1);
           expect(host.isDestroyed).toHaveBeenCalledTimes(2);
           expect(dependent).not.toHaveBeenCalled();
           expect(readContentView).not.toHaveBeenCalled();
@@ -14200,7 +14301,7 @@ describe('BrowserService', () => {
     await retirement;
   });
 
-  it('keeps window.open navigation on the originating browser', async () => {
+  it('opens window.open in a new tab and leaves every existing tab in place', async () => {
     const service = new BrowserService({ getWindow: mockWindow });
     await service.create({
       projectId: 'project-1',
@@ -14223,19 +14324,101 @@ describe('BrowserService', () => {
     if (!handler) throw new Error('Expected a window.open handler.');
     firstContents.loadURL.mockClear();
     secondContents.loadURL.mockClear();
+    jest.mocked(sendToWindow).mockClear();
 
+    // CAN-4831: a target="_blank" link must not replace the opener's page.
     expect(handler({ url: 'http://localhost/from-popup' })).toEqual({
       action: 'deny',
     });
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(firstContents.loadURL).toHaveBeenCalledWith(
-      'http://localhost/from-popup',
-    );
+    expect(firstContents.loadURL).not.toHaveBeenCalled();
     expect(secondContents.loadURL).not.toHaveBeenCalled();
+    const requests = jest
+      .mocked(sendToWindow)
+      .mock.calls.map((call) => call[2])
+      .filter(
+        (event) => isCDPRecord(event) && event.type === 'new-tab-requested',
+      );
+    expect(requests).toMatchObject([
+      {
+        browserId: 'browser-1',
+        url: 'http://localhost/from-popup',
+        snapshot: { projectId: 'project-1', worktreeId: 'worktree-1' },
+      },
+    ]);
+    const [request] = requests;
+    if (!isCDPRecord(request)) throw new Error('Missing new tab request.');
+    expect(typeof request.newBrowserId).toBe('string');
+    expect(request.newBrowserId).not.toBe('browser-1');
   });
 
-  it('keeps local window.open navigation in a local-file browser', async () => {
+  it.each([
+    ['a user', undefined, 'user'],
+    ['an agent action', 'click-1', 'agent'],
+  ] as const)(
+    'creates a popup tab from %s in the opener profile, also on Retry, as its actor',
+    async (_case, actionId, actor) => {
+      const authority = getBrowserProfileService();
+      const service = new BrowserService({
+        getWindow: mockWindow,
+        profileAuthority: authority,
+      });
+      await service.create({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        browserId: 'popup-opener',
+      });
+      const handler =
+        createdViews[0]?.webContents.setWindowOpenHandler.mock.calls[0]?.[0];
+      if (!handler) throw new Error('Expected a window.open handler.');
+      jest.spyOn(service.taskFiles, 'attributionFor').mockReturnValue(actionId);
+      jest.mocked(sendToWindow).mockClear();
+      handler({ url: 'https://example.com/' });
+      const request = jest
+        .mocked(sendToWindow)
+        .mock.calls.map((call) => call[2])
+        .find(
+          (event) => isCDPRecord(event) && event.type === 'new-tab-requested',
+        );
+      if (!isCDPRecord(request) || typeof request.newBrowserId !== 'string')
+        throw new Error('Missing new tab request.');
+      // An agent's popup opens behind the user's tab.
+      expect(request.presentation).toBe(
+        actor === 'agent' ? 'background' : undefined,
+      );
+      const opener = service
+        .listWorktreeBrowsers('project-1', 'worktree-1')
+        .find((browser) => browser.id === 'popup-opener');
+      const resolve = jest
+        .spyOn(authority, 'resolve')
+        .mockRejectedValueOnce(new Error('first create failed'));
+      const create = (): Promise<BrowserSessionSnapshot> =>
+        service.create({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          browserId:
+            typeof request.newBrowserId === 'string'
+              ? request.newBrowserId
+              : undefined,
+          url: 'https://example.com/',
+        });
+
+      await expect(create()).rejects.toThrow('first create failed');
+      await create();
+
+      // Retry keeps the opener's profile, and an agent's tab must be allowed
+      // by that profile (its allowEnable permission).
+      expect(resolve.mock.calls.map((call) => call[3])).toEqual([
+        { selection: opener?.profile?.selection, actor },
+        { selection: opener?.profile?.selection, actor },
+      ]);
+      expect(opener?.profile?.selection).toEqual({ kind: 'task' });
+      await service.shutdown();
+    },
+  );
+
+  it('opens local window.open targets of a local-file browser in a new tab', async () => {
     const service = new BrowserService({ getWindow: mockWindow });
     await service.create({
       projectId: 'project-1',
@@ -14248,6 +14431,7 @@ describe('BrowserService', () => {
     const handler = view.webContents.setWindowOpenHandler.mock.calls[0]?.[0];
     if (!handler) throw new Error('Expected a window.open handler.');
     view.webContents.loadURL.mockClear();
+    jest.mocked(sendToWindow).mockClear();
 
     expect(
       handler({
@@ -14257,9 +14441,47 @@ describe('BrowserService', () => {
     ).toEqual({ action: 'deny' });
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(view.webContents.loadURL).toHaveBeenCalledWith(
-      'file:///tmp/site/neighbour.html',
+    expect(view.webContents.loadURL).not.toHaveBeenCalled();
+    expect(jest.mocked(sendToWindow).mock.calls.map((call) => call[2])).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'new-tab-requested',
+          url: 'file:///tmp/site/neighbour.html',
+        }),
+      ]),
     );
+  });
+
+  it('keeps window.open navigation in a sign-in view, which has no tabs', async () => {
+    const service = new BrowserService({ getWindow: mockWindow });
+    await service.create({
+      projectId: 'app-oauth',
+      worktreeId: 'mcp',
+      browserId: 'browser-sign-in-popup',
+    });
+    const view = createdViews[0];
+    if (!view) throw new Error('Expected a browser view.');
+    const handler = view.webContents.setWindowOpenHandler.mock.calls[0]?.[0];
+    if (!handler) throw new Error('Expected a window.open handler.');
+    view.webContents.loadURL.mockClear();
+    jest.mocked(sendToWindow).mockClear();
+
+    expect(handler({ url: 'https://example.com/consent' })).toEqual({
+      action: 'deny',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(view.webContents.loadURL).toHaveBeenCalledWith(
+      'https://example.com/consent',
+    );
+    expect(
+      jest
+        .mocked(sendToWindow)
+        .mock.calls.some(
+          (call) =>
+            isCDPRecord(call[2]) && call[2].type === 'new-tab-requested',
+        ),
+    ).toBe(false);
   });
 
   it('blocks a remote iframe from driving its local-file top-level page', async () => {
@@ -14699,6 +14921,7 @@ describe('BrowserService', () => {
         worktreeId: 'worktree-1',
       },
     });
+    if (!browser.profile) throw new Error('Expected a profile binding.');
     jest.mocked(loadAndMigrateWorktreeBrowserState).mockResolvedValue({
       status: 'loaded',
       state: {
@@ -15536,6 +15759,101 @@ describe('BrowserService', () => {
           action: 'toggle-sidebar',
         }),
       ]);
+    });
+
+    // CAN-4616: the page keeps focus for the tab-cycle chords. A cycle that
+    // selects another tab hides this view, and hiding hands focus to the
+    // host; a single-tab group selects nothing and the page keeps typing.
+    it('forwards the tab-cycle chord to the renderer and keeps focus in the page', async () => {
+      await createShortcutSession();
+      jest.mocked(sendToWindow).mockClear();
+      mockHostWebContentsFocus.mockClear();
+
+      const isMac = process.platform === 'darwin';
+      const inputEvent = { preventDefault: jest.fn() };
+      webContents.emit('before-input-event', inputEvent, {
+        type: 'keyDown',
+        code: isMac ? 'BracketRight' : 'Tab',
+        alt: false,
+        control: !isMac,
+        meta: isMac,
+        shift: isMac,
+      });
+
+      expect(inputEvent.preventDefault).toHaveBeenCalledTimes(1);
+      expect(mockHostWebContentsFocus).not.toHaveBeenCalled();
+      const shortcutEvents = sentBrowserEvents().filter(
+        (event) => event.type === 'shortcut',
+      );
+      expect(shortcutEvents).toEqual([
+        expect.objectContaining({
+          type: 'shortcut',
+          browserId: 'browser-keys',
+          action: 'select-next-tab',
+        }),
+      ]);
+    });
+
+    it('hands keyboard focus to the host when it hides the focused page', async () => {
+      const service = await createShortcutSession();
+      service.setVisible('browser-keys', true);
+      mockHostWebContentsFocus.mockClear();
+
+      // An unfocused page hides without moving focus.
+      service.setVisible('browser-keys', false);
+      expect(mockHostWebContentsFocus).not.toHaveBeenCalled();
+
+      service.setVisible('browser-keys', true);
+      webContents.isFocused.mockReturnValue(true);
+      try {
+        service.setVisible('browser-keys', false);
+        expect(mockHostWebContentsFocus).toHaveBeenCalledTimes(1);
+
+        // Showing it again leaves focus where it is.
+        mockHostWebContentsFocus.mockClear();
+        service.setVisible('browser-keys', true);
+        expect(mockHostWebContentsFocus).not.toHaveBeenCalled();
+      } finally {
+        webContents.isFocused.mockReturnValue(false);
+      }
+    });
+
+    it('hands focus to the host when the next visibility change after a tab-cycle chord hides the page', async () => {
+      const service = await createShortcutSession();
+      service.setVisible('browser-keys', true);
+      const isMac = process.platform === 'darwin';
+      const cycleChord = {
+        type: 'keyDown',
+        code: isMac ? 'BracketRight' : 'Tab',
+        alt: false,
+        control: !isMac,
+        meta: isMac,
+        shift: isMac,
+      };
+
+      // A cycle that selects another tab hides the page: focus goes home,
+      // even though a window without OS focus reports the page unfocused.
+      webContents.emit(
+        'before-input-event',
+        { preventDefault: jest.fn() },
+        cycleChord,
+      );
+      mockHostWebContentsFocus.mockClear();
+      service.setVisible('browser-keys', false);
+      expect(mockHostWebContentsFocus).toHaveBeenCalledTimes(1);
+
+      // A cycle with nothing to select leaves the page shown; the next
+      // visibility change consumes the record, so a later hide stays put.
+      service.setVisible('browser-keys', true);
+      webContents.emit(
+        'before-input-event',
+        { preventDefault: jest.fn() },
+        cycleChord,
+      );
+      service.setVisible('browser-keys', true);
+      mockHostWebContentsFocus.mockClear();
+      service.setVisible('browser-keys', false);
+      expect(mockHostWebContentsFocus).not.toHaveBeenCalled();
     });
 
     it('forwards the find chord to the renderer and refocuses the host window (CAN-3048)', async () => {
@@ -16685,6 +17003,12 @@ describe('BrowserService', () => {
         },
         bounds: { x: 0, y: 0, width: 100, height: 100 },
         visible: false,
+        cornerRadii: {
+          topLeft: 0,
+          topRight: 0,
+          bottomRight: 0,
+          bottomLeft: 0,
+        },
       },
     ]);
     expect(service.captureProfileViews(tab.profile.resolvedProfileId)).toEqual(
@@ -16994,7 +17318,8 @@ describe('BrowserService', () => {
       browserId: 'ownerless-queued-close',
     };
     const first = service.create(request);
-    let settled = Promise.allSettled([first]);
+    let settled: Promise<PromiseSettledResult<Awaited<typeof first>>[]> =
+      Promise.allSettled([first]);
     try {
       await started;
       const queued = service.create(request);
@@ -17307,6 +17632,12 @@ describe('BrowserService', () => {
         snapshot: { ...snapshot, id: `resume-${i}` },
         bounds: { x: 0, y: 0, width: 100, height: 100 },
         visible: false,
+        cornerRadii: {
+          topLeft: 0,
+          topRight: 0,
+          bottomRight: 0,
+          bottomLeft: 0,
+        },
       })),
     );
     try {
@@ -17487,13 +17818,14 @@ describe('BrowserService', () => {
           invalid: true,
           validationMessage: 'Choose a value.',
         });
-        const command = {
-          ...example,
-          ...(example.kind === 'select_option'
-            ? { values: [...example.values] }
-            : {}),
-          actionId: 'form-once',
-        };
+        const command =
+          example.kind === 'select_option'
+            ? {
+                ...example,
+                values: [...example.values],
+                actionId: 'form-once',
+              }
+            : { ...example, actionId: 'form-once' };
         const first = await service.automation({
           browserId: `form-replay-${example.kind}`,
           command,
@@ -17920,7 +18252,7 @@ describe('BrowserService', () => {
           browserId,
           command: { kind: 'type', ref: 'r', text: '987654' },
         });
-        expect(JSON.stringify(service.getRecording(browserId))).not.toContain(
+        expect(recordingText(service.getRecording(browserId))).not.toContain(
           '987654',
         );
         await service.shutdown();
@@ -18034,7 +18366,7 @@ describe('BrowserService', () => {
           command: { kind: 'select_option', ref: 'r', indexes: [0] },
         });
 
-        const recorded = JSON.stringify(service.getRecording(browserId));
+        const recorded = recordingText(service.getRecording(browserId));
         expect(recorded).not.toContain('4111');
         expect(pageSteps(service, browserId)).toEqual([
           expect.objectContaining(OMITTED),
@@ -18124,7 +18456,7 @@ describe('BrowserService', () => {
           command: { kind: 'select_option', ref: 'r', indexes: [0] },
         });
 
-        expect(JSON.stringify(service.getRecording(browserId))).not.toContain(
+        expect(recordingText(service.getRecording(browserId))).not.toContain(
           '4111',
         );
         expect(pageSteps(service, browserId)).toEqual([
@@ -18156,7 +18488,7 @@ describe('BrowserService', () => {
           command: { kind: 'select_option', ref: 'r', indexes: [0] },
         });
 
-        expect(JSON.stringify(service.getRecording(browserId))).not.toContain(
+        expect(recordingText(service.getRecording(browserId))).not.toContain(
           '4111',
         );
         await service.shutdown();
@@ -18220,7 +18552,7 @@ describe('BrowserService', () => {
           timestamp: Date.now() + 60_000,
         });
 
-        expect(JSON.stringify(service.getRecording(browserId))).not.toContain(
+        expect(recordingText(service.getRecording(browserId))).not.toContain(
           '4111',
         );
         expect(pageSteps(service, browserId)).toEqual([
@@ -18846,7 +19178,7 @@ describe('BrowserService', () => {
           browserId: tab.id,
           command: { kind: 'click', locator: '#button' },
         });
-        expect(result.ok).toBe(true);
+        expect(result).toMatchObject({ ok: true });
         expect(host.key.actionSequence).toBe(before + 2);
         await service.shutdown();
       },
@@ -20894,7 +21226,7 @@ describe('BrowserService', () => {
       });
       expect(reported).toBe(true);
       const recording = service.getRecording('pv-secret-click');
-      expect(JSON.stringify(recording)).not.toContain('4111');
+      expect(recordingText(recording)).not.toContain('4111');
       expect(recording.steps.filter((step) => step.action !== 'goto')).toEqual([
         expect.objectContaining({
           action: 'click',

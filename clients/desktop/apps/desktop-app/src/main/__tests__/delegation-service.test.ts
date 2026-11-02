@@ -1,3 +1,5 @@
+import type * as NoticeAcksModule from '../agents/delegation/notice-acks';
+import { FixtureDelegationReadMetadata } from '@canopy/desktop-shared/node/delegation/testing/record-read-metadata-fixture';
 import type { SessionDiagnosticRecord } from '../observability/service';
 import type { AgentSessionOptions } from '../agents/types';
 import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
@@ -12,13 +14,14 @@ jest.mock('../observability', () => ({
 }));
 import type { CanopyCloudAccountEntry } from '../lib/canopy-cloud-account-store';
 import type {
-  AgentDelegationWorkspaceObservation,
   DelegationParentContext,
   ResolvedAgentRouteSnapshot,
 } from '@canopy/desktop-shared/node/delegation';
 import type {
+  AgentDelegationBroker,
   AgentDelegationBrokerOptions,
   StoredDelegation,
+  StoredDelegateOutput,
 } from '@canopy/desktop-shared/node/delegation/broker';
 import { createDelegationRunState } from '@canopy/desktop-shared/node/delegation/lifecycle';
 import type { DelegationDeliveryTransport } from '@canopy/desktop-shared/node/delegation/delivery';
@@ -36,6 +39,7 @@ import type {
 import { readLedgerContainerLiveDelegates } from '../ledger/delegate-owners';
 import {
   isAgentDelegationTranscript,
+  type AgentDelegationWorkspaceObservation,
   type AgentDelegationResult,
   type AgentDelegationSnapshot,
   type AgentDelegationSpawnRequest,
@@ -67,7 +71,12 @@ jest.mock('../lib/canopy-cloud-account-store', () => ({
   subscribeCanopyCloudAccountChanges: (
     callback: (entry: CanopyCloudAccountEntry | null) => void,
   ): (() => void) => {
-    accountChanged = callback;
+    // A module loaded later (an upward delivery) must not replace the service's listener.
+    const previous = accountChanged;
+    accountChanged = (entry): void => {
+      previous?.(entry);
+      callback(entry);
+    };
     return () => undefined;
   },
 }));
@@ -81,6 +90,7 @@ jest.mock('../portal/portal-event-bus', () => ({
 import path from 'node:path';
 import { FileDelegationStorage } from '@canopy/desktop-shared/node/delegation/storage';
 import {
+  configureManagedDelegationReaders,
   createManagedDelegationSession,
   deliverManagedDelegationWatcherToChild,
   shutdownManagedDelegations,
@@ -105,6 +115,30 @@ import {
 import { ManagedChildMessageInbox } from '../agents/delegation/child-messages';
 import { hasLiveDelegations } from '../agents/delegation/activity';
 import * as windowSend from '../lib/window-send';
+
+function routeRequest(description: string): AgentDelegationSpawnRequest {
+  return {
+    modelId: 'reviewer',
+    description,
+    prompt: description,
+    executionMode: 'background',
+    contextPolicy: 'task_only',
+    isolation: 'shared_worktree',
+  };
+}
+
+function routeSnapshotFixture(
+  overrides: Partial<ResolvedAgentRouteSnapshot>,
+): ResolvedAgentRouteSnapshot {
+  const snapshot = { ...routeFixture(overrides) };
+  delete snapshot.authAccountKey;
+  return snapshot;
+}
+
+// The broker is mocked; actor recovery still reads its empty storage catalog.
+const mockDelegationStorageLoad = jest
+  .spyOn(FileDelegationStorage.prototype, 'load')
+  .mockResolvedValue([]);
 
 const closeBroker = jest.fn(() => Promise.resolve());
 const initializeBroker = jest.fn(() => Promise.resolve());
@@ -141,10 +175,14 @@ let resolveBrokerHostParent: AgentDelegationBrokerOptions['resolveHostParent'];
 let manageBrokerWorkspace: AgentDelegationBrokerOptions['manageWorkspace'];
 let capturedAdmission: AgentDelegationBrokerOptions['admission'];
 let capturedPreflight: AgentDelegationBrokerOptions['preflight'];
+let capturedGenerationStore: AgentDelegationBrokerOptions['generationStore'];
 let capturedOnActivity: AgentDelegationBrokerOptions['onActivity'];
 let capturedIsParentActive: AgentDelegationBrokerOptions['isParentActive'];
 let capturedOnTranscript: AgentDelegationBrokerOptions['onTranscript'];
 let capturedDeliverUpward: AgentDelegationBrokerOptions['deliverUpward'];
+let capturedOnSettled: AgentDelegationBrokerOptions['onSettled'];
+let capturedBrokerStorage: AgentDelegationBrokerOptions['storage'];
+let mockNoticeRecords: (() => Promise<readonly StoredDelegation[]>) | undefined;
 const mockRevokeHarness = jest.fn<Promise<void>, [string]>(() =>
   Promise.resolve(),
 );
@@ -179,8 +217,73 @@ const mockRemoveDelegateWatchers = jest.fn<
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: (): {
     removeDelegateWatchersForChat: typeof mockRemoveDelegateWatchers;
-  } => ({ removeDelegateWatchersForChat: mockRemoveDelegateWatchers }),
+    listLegacyDelegateWatchers: typeof mockLegacyNotices;
+    removeLegacyDelegateWatchers: typeof mockRemoveLegacyNotices;
+  } => ({
+    removeDelegateWatchersForChat: mockRemoveDelegateWatchers,
+    listLegacyDelegateWatchers: mockLegacyNotices,
+    removeLegacyDelegateWatchers: mockRemoveLegacyNotices,
+  }),
 }));
+// The service owns lifecycle ordering; delivery behavior has its own real-store suite.
+const mockNoticeLoad = jest.fn(() => Promise.resolve({ baselined: true }));
+const mockNoticeFlush = jest.fn(() => Promise.resolve());
+const mockNoticeStart = jest.fn(() => Promise.resolve());
+const mockNoticeClose = jest.fn(() => Promise.resolve());
+const mockNoticeReplay = jest.fn(() => Promise.resolve());
+const mockNoticeCloseParent = jest.fn(() => Promise.resolve());
+const mockNoticeFenceChat = jest.fn(() => Promise.resolve());
+const mockNoticeRevokeParent = jest.fn(() => Promise.resolve());
+const mockNoticeSettled = jest.fn(() => Promise.resolve());
+const mockMigrateNotices = jest.fn<
+  Promise<{ owed: number; removed: number }>,
+  unknown[]
+>(() => Promise.resolve({ owed: 0, removed: 0 }));
+const mockLegacyNotices = jest.fn(() => Promise.resolve([]));
+const mockRemoveLegacyNotices = jest.fn(() => Promise.resolve());
+jest.mock('../agents/delegation/notice-acks', () => ({
+  ...jest.requireActual<typeof NoticeAcksModule>(
+    '../agents/delegation/notice-acks',
+  ),
+  DelegationNoticeAckStore: jest.fn(() => ({
+    load: mockNoticeLoad,
+    flush: mockNoticeFlush,
+    isBaselined: (): boolean => true,
+  })),
+}));
+jest.mock(
+  '../agents/delegation/notice-migration',
+  () => ({
+    migrateDelegateWatchersToNotices: (...args: unknown[]): unknown =>
+      mockMigrateNotices(...args),
+  }),
+  { virtual: true },
+);
+jest.mock(
+  '../agents/delegation/notice-delivery',
+  () => ({
+    delegationNoticeRootParentKey: (
+      projectId: string,
+      worktreeId: string,
+      chatId: string,
+    ): string => `root:${projectId}/${worktreeId}/${chatId}`,
+    DelegationNoticeDelivery: jest.fn(
+      (options: { records: () => Promise<readonly StoredDelegation[]> }) => {
+        mockNoticeRecords = options.records;
+        return {
+          start: mockNoticeStart,
+          settled: mockNoticeSettled,
+          close: mockNoticeClose,
+          replayForChat: mockNoticeReplay,
+          closeParent: mockNoticeCloseParent,
+          fenceChat: mockNoticeFenceChat,
+          revokeParent: mockNoticeRevokeParent,
+        };
+      },
+    ),
+  }),
+  { virtual: true },
+);
 const brokerActiveCount = jest.fn<number, [DelegationParentContext]>(() => 0);
 const brokerQueuedCount = jest.fn<number, [DelegationParentContext]>(() => 0);
 jest.mock('@canopy/desktop-shared/node/delegation/broker', () => ({
@@ -192,18 +295,43 @@ jest.mock('@canopy/desktop-shared/node/delegation/broker', () => ({
     manageBrokerWorkspace = options.manageWorkspace;
     capturedAdmission = options.admission;
     capturedPreflight = options.preflight;
+    capturedGenerationStore = options.generationStore;
     capturedOnActivity = options.onActivity;
     capturedIsParentActive = options.isParentActive;
     capturedOnTranscript = options.onTranscript;
     capturedDeliverUpward = options.deliverUpward;
+    capturedOnSettled = options.onSettled;
+    capturedBrokerStorage = options.storage;
     return {
       initialize: initializeBroker,
       parentCwd: (parent: DelegationParentContext): string =>
         options.resolveCwd?.(parent) ?? options.cwd,
       replayQueuedBackground,
       transcripts,
+      recordStore: (
+        parent: DelegationParentContext,
+        id: string,
+      ): 'legacy' | 'stream' =>
+        // The two stream-replay fixtures model stream records in this broker.
+        id === 'retained' &&
+        ['stream-live-project', 'stream-archived-project'].includes(
+          parent.projectId,
+        )
+          ? 'stream'
+          : 'legacy',
       deliver,
       inspect: (): { runGeneration: number } => ({ runGeneration: 1 }),
+      lifetimeSnapshot: (): ReturnType<
+        AgentDelegationBroker['lifetimeSnapshot']
+      > => ({
+        kind: 'available' as const,
+        occupied: 0,
+        retained: 0,
+        limit: 512,
+        cap: 512,
+        atLimit: false,
+        extension: 'at_cap' as const,
+      }),
       list: brokerList,
       activeCount: brokerActiveCount,
       queuedCount: brokerQueuedCount,
@@ -346,6 +474,10 @@ function commitChatState(
   };
   for (const listener of Array.from(mockChatStateListeners)) listener(event);
 }
+const generationStoreReadiness = jest.fn<
+  Promise<{ formatVersion: number; enableFormat4: boolean }>,
+  [{ projectId: string; worktreeId: string }]
+>(() => Promise.resolve({ formatVersion: 2, enableFormat4: false }));
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): {
     getCompatibilityTabs: typeof getCompatibilityTabs;
@@ -353,6 +485,7 @@ jest.mock('../services/chat-state-service', () => ({
     ingestProviderEvent: typeof ingestProviderEvent;
     ingestProviderEventWithOutcome: typeof ingestProviderEventWithOutcome;
     appendDelegationItems: typeof appendDelegationItems;
+    generationStoreReadiness: typeof generationStoreReadiness;
     subscribe: (listener: (event: ChatStateChangedEvent) => void) => () => void;
   } => ({
     getCompatibilityTabs,
@@ -360,6 +493,7 @@ jest.mock('../services/chat-state-service', () => ({
     ingestProviderEvent,
     ingestProviderEventWithOutcome,
     appendDelegationItems,
+    generationStoreReadiness,
     subscribe: (listener): (() => void) => {
       mockChatStateListeners.add(listener);
       return () => mockChatStateListeners.delete(listener);
@@ -476,7 +610,10 @@ jest.mock('../agents/delegation/opencode-runner', () => ({
 jest.mock('../opencode/connection', () => ({
   getOpenCodeConnectionGeneration: (): number => 1,
 }));
-const mockObserveDelegationWorkspace = jest.fn(() =>
+const mockObserveDelegationWorkspace = jest.fn<
+  Promise<AgentDelegationWorkspaceObservation>,
+  [string, AbortSignal]
+>(() =>
   Promise.resolve({
     consistency: 'live_shared_worktree' as const,
     headRevision: null,
@@ -501,6 +638,13 @@ jest.mock('../agents/session-manager', () => ({
   getSessionGlobalPluginDefaultsRevision: (): undefined => undefined,
   getGlobalPluginDefaultsRevision: (): number => 0,
   subscribeGlobalPluginDefaultsRevision: (): (() => void) => () => undefined,
+  subscribeChatSessionActivity: (): (() => void) => () => undefined,
+  subscribeLiveBackgroundTasks: (): (() => void) => () => undefined,
+  hasPendingCodexContinuation: (): boolean => false,
+  getChatSessionLiveness: (): { foreground: boolean; background: boolean } => ({
+    foreground: false,
+    background: false,
+  }),
 }));
 jest.mock('../agents/agent-model-store', () => ({
   listAgentModels: (): Promise<readonly never[]> => Promise.resolve([]),
@@ -574,6 +718,240 @@ it('does not install a lifecycle or subscribe to account changes merely by loadi
   expect(accountChanged).toBeUndefined();
 });
 
+it('serves notice records from durable broker commits without rereading the runs directory', async () => {
+  const options: AgentSessionOptions = {
+    projectId: 'notice-catalog-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    cwd: '/worktree',
+  };
+  const session = await createManagedDelegationSession({
+    harness: 'claude',
+    sessionKey: 'notice-catalog-project/worktree/chat',
+    currentOptions: () => options,
+    currentTurn: () => 'turn',
+    getWindow: () => null,
+  });
+  let release: () => void = () => undefined;
+  const committed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const commit = jest
+    .spyOn(FileDelegationStorage.prototype, 'commit')
+    .mockReturnValueOnce(committed);
+  try {
+    if (!mockNoticeRecords || !capturedBrokerStorage)
+      throw new Error('Missing actor catalog seam');
+    const parent = session.parent.context('catalog', 'catalog');
+    if (!parent) throw new Error('Missing parent fixture');
+    const child: StoredDelegation = {
+      version: 2,
+      parent,
+      callKey: 'catalog-child',
+      requestHash: 'catalog-child',
+      createdAt: 1,
+      task: {
+        modelId: 'model',
+        description: 'Catalog child',
+        prompt: 'Work',
+        executionMode: 'background',
+        contextPolicy: 'task_only',
+        isolation: 'shared_worktree',
+      },
+      state: createDelegationRunState('catalog-child', 1),
+      launch: {
+        version: 1,
+        delegationId: 'catalog-child',
+        launchKey: 'catalog-child',
+        runGeneration: 1,
+        phase: 'reserved',
+      },
+      delivery: { status: 'unclaimed' },
+    };
+    const restored: StoredDelegation = {
+      ...child,
+      state: createDelegationRunState('restored-child', 1),
+      task: { ...child.task, description: 'Restored child' },
+    };
+    mockDelegationStorageLoad.mockResolvedValueOnce([restored]);
+    await capturedBrokerStorage.load();
+    const loadsBefore = mockDelegationStorageLoad.mock.calls.length;
+    expect(await mockNoticeRecords()).toEqual([restored]);
+    expect(mockDelegationStorageLoad).toHaveBeenCalledTimes(loadsBefore);
+    const saving = capturedBrokerStorage.commit(child);
+    expect(await mockNoticeRecords()).toEqual([restored]);
+    release();
+    await saving;
+    expect(await mockNoticeRecords()).toEqual([restored, child]);
+    expect(mockDelegationStorageLoad).toHaveBeenCalledTimes(loadsBefore);
+
+    const failed: StoredDelegation = {
+      ...child,
+      task: { ...child.task, description: 'Uncommitted task' },
+    };
+    commit.mockRejectedValueOnce(new Error('Simulated durable commit failure'));
+    await expect(capturedBrokerStorage.commit(failed)).rejects.toThrow(
+      'Simulated durable commit failure',
+    );
+    expect(await mockNoticeRecords()).toEqual([restored, child]);
+  } finally {
+    release();
+    commit.mockRestore();
+    session.detach();
+    await closeDelegationScope({
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+    });
+  }
+});
+
+it('loads and migrates notice state on every actor start before replay, even when baselined', async () => {
+  const options: AgentSessionOptions = {
+    projectId: 'notice-start-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    cwd: '/worktree',
+    approvalMode: 'full-access',
+  };
+  const session = await createManagedDelegationSession({
+    harness: 'claude',
+    sessionKey: 'notice-start-project/worktree/chat',
+    currentOptions: () => options,
+    currentTurn: () => 'turn',
+    getWindow: () => null,
+  });
+  try {
+    expect(mockNoticeLoad).toHaveBeenCalled();
+    expect(mockMigrateNotices).toHaveBeenCalledWith(
+      expect.objectContaining<unknown>({ records: [] }),
+    );
+    expect(mockNoticeLoad.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      mockMigrateNotices.mock.invocationCallOrder.at(-1) ?? 0,
+    );
+    expect(mockMigrateNotices.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      mockNoticeStart.mock.invocationCallOrder.at(-1) ?? 0,
+    );
+  } finally {
+    session.detach();
+    await closeDelegationScope(options);
+  }
+});
+
+it('publishes the recovered actor before replay dispatch can reenter session startup', async () => {
+  let release: () => void = () => undefined;
+  const replay = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let signalStarted: () => void = () => undefined;
+  const replayStarted = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  mockNoticeStart.mockImplementationOnce(() => {
+    signalStarted();
+    return replay;
+  });
+  const options: AgentSessionOptions = {
+    projectId: 'notice-reentrant-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    cwd: '/worktree',
+  };
+  let attached = false;
+  const creating = createManagedDelegationSession({
+    harness: 'claude',
+    sessionKey: 'notice-reentrant-project/worktree/chat',
+    currentOptions: () => options,
+    currentTurn: () => 'turn',
+    getWindow: () => null,
+  }).then((session) => {
+    attached = true;
+    return session;
+  });
+  try {
+    await replayStarted;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(attached).toBe(true);
+  } finally {
+    release();
+    const session = await creating;
+    session.detach();
+    await closeDelegationScope(options);
+  }
+});
+
+it('replays pending nested batches once when the restored root attaches', async () => {
+  const options: AgentSessionOptions = {
+    projectId: 'notice-attach-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    cwd: '/worktree',
+  };
+  const before = mockNoticeReplay.mock.calls.length;
+  const session = await createManagedDelegationSession({
+    harness: 'claude',
+    sessionKey: 'notice-attach-project/worktree/chat',
+    currentOptions: () => options,
+    currentTurn: () => 'turn',
+    getWindow: () => null,
+  });
+  try {
+    expect(mockNoticeReplay).toHaveBeenCalledTimes(before + 1);
+    expect(mockNoticeReplay).toHaveBeenLastCalledWith({
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      chatId: options.chatId,
+    });
+  } finally {
+    session.detach();
+    await closeDelegationScope(options);
+  }
+});
+
+it('feeds an unwatched settled run to notices and retains the legacy inert callback', async () => {
+  const options: AgentSessionOptions = {
+    projectId: 'notice-settle-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    cwd: '/worktree',
+    approvalMode: 'full-access',
+  };
+  const session = await createManagedDelegationSession({
+    harness: 'claude',
+    sessionKey: 'notice-settle-project/worktree/chat',
+    currentOptions: () => options,
+    currentTurn: () => 'turn',
+    getWindow: () => null,
+  });
+  try {
+    const parent = session.parent.context('settled', 'settled');
+    expect(parent).toBeDefined();
+    if (!parent || !capturedOnSettled)
+      throw new Error('Missing settle fixture');
+    const result: StoredDelegateOutput = {
+      resultIndex: 1,
+      runGeneration: 1,
+      status: 'completed',
+      settledAt: 123,
+      outputTruncated: false,
+    };
+    await capturedOnSettled(parent, 'finished-child', result);
+    expect(mockNoticeSettled).toHaveBeenCalledWith(
+      parent,
+      'finished-child',
+      result,
+    );
+  } finally {
+    session.detach();
+    await closeDelegationScope(options);
+  }
+  await closeDelegationScope({
+    projectId: options.projectId,
+    worktreeId: options.worktreeId,
+  });
+  expect(mockNoticeClose).toHaveBeenCalled();
+  expect(mockNoticeFlush).toHaveBeenCalled();
+});
+
 it('lists changes only from the starting revision the delegation recorded', async () => {
   const recorded = 'a'.repeat(40);
   const loadOne = jest
@@ -611,6 +989,131 @@ it('lists changes only from the starting revision the delegation recorded', asyn
   } finally {
     loadOne.mockRestore();
   }
+});
+
+describe('repository-backed generation store selection', () => {
+  afterEach(() => {
+    generationStoreReadiness.mockReset();
+    generationStoreReadiness.mockResolvedValue({
+      formatVersion: 2,
+      enableFormat4: false,
+    });
+  });
+  async function fixture(name: string): Promise<{
+    record: StoredDelegation;
+    decide: NonNullable<AgentDelegationBrokerOptions['generationStore']>;
+    dispose: () => Promise<void>;
+  }> {
+    const options = {
+      projectId: `generation-store-${name}`,
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      cwd: '/root/worktree',
+    };
+    const session = await createManagedDelegationSession({
+      harness: 'claude',
+      sessionKey: `${options.projectId}/worktree/chat`,
+      currentOptions: () => options,
+      currentTurn: () => 'turn',
+      getWindow: () => null,
+    });
+    const parent = session.parent.context('turn', 'call');
+    if (!parent || !capturedGenerationStore)
+      throw new Error('Expected generation selection host port');
+    return {
+      decide: capturedGenerationStore,
+      record: {
+        version: 2,
+        parent,
+        callKey: 'generation-call',
+        requestHash: 'generation-hash',
+        createdAt: 1,
+        task: {
+          modelId: 'reviewer',
+          description: 'Review',
+          prompt: 'Exact prompt',
+          executionMode: 'background',
+          contextPolicy: 'task_only',
+          isolation: 'shared_worktree',
+        },
+        state: createDelegationRunState('generation-child', 1),
+        delivery: { status: 'unclaimed' },
+        launch: {
+          version: 1,
+          delegationId: 'generation-child',
+          launchKey: 'generation-call',
+          runGeneration: 1,
+          phase: 'reserved',
+        },
+      },
+      dispose: async (): Promise<void> => {
+        session.detach();
+        await closeDelegationScope(options);
+      },
+    };
+  }
+
+  it.each([
+    { formatVersion: 2, enableFormat4: false, expected: 'legacy' },
+    { formatVersion: 4, enableFormat4: false, expected: 'legacy' },
+    { formatVersion: 4, enableFormat4: true, expected: 'stream' },
+  ])(
+    'selects $expected from selected format $formatVersion / option $enableFormat4',
+    async ({ formatVersion, enableFormat4, expected }) => {
+      const f = await fixture(`${formatVersion}-${enableFormat4}`);
+      generationStoreReadiness.mockResolvedValue({
+        formatVersion,
+        enableFormat4,
+      });
+      try {
+        expect(await f.decide({ record: f.record, kind: 'launch' })).toBe(
+          expected,
+        );
+        expect(generationStoreReadiness).toHaveBeenLastCalledWith({
+          projectId: f.record.parent.projectId,
+          worktreeId: 'worktree',
+        });
+      } finally {
+        await f.dispose();
+      }
+    },
+  );
+
+  it('refuses an enabled scope whose selected manifest remains below format 4', async () => {
+    const f = await fixture('unpromotable');
+    generationStoreReadiness.mockResolvedValue({
+      formatVersion: 3,
+      enableFormat4: true,
+    });
+    try {
+      expect(await f.decide({ record: f.record, kind: 'launch' })).toEqual({
+        kind: 'refused',
+        message: 'Delegation storage is not ready. Try again.',
+      });
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it.each([false, true])(
+    'refuses a thrown readiness error, including with option %s',
+    async (enableFormat4) => {
+      const f = await fixture(`load-error-${enableFormat4}`);
+      // Repository readiness tests exercise the actual failed load with each
+      // option value; the host must never turn either rejection into legacy.
+      generationStoreReadiness.mockRejectedValue(
+        new Error('private storage path must not escape'),
+      );
+      try {
+        expect(await f.decide({ record: f.record, kind: 'launch' })).toEqual({
+          kind: 'refused',
+          message: 'Delegation storage is unavailable. Try again.',
+        });
+      } finally {
+        await f.dispose();
+      }
+    },
+  );
 });
 
 it('defers a delegate watcher notification while its recipient actor is unloaded', async () => {
@@ -924,8 +1427,8 @@ it('adopts an enabled policy whose update crosses session initialization', async
       (tool) => tool.name === session.parent.options.names.spawn,
     )?.description,
   ).toContain('proactively consult');
-  expect(session.systemPromptGuidance).toMatch(
-    /call mcp__\w+__WatchDelegates in the same turn/,
+  expect(session.systemPromptGuidance).toContain(
+    'a completion notice arrives here automatically',
   );
   session.updatePolicy('explicit-only');
   expect(session.applyPolicyGuidance('Continue parent work')).toContain(
@@ -965,7 +1468,7 @@ it('releases a route resolved after its parent dispatch was aborted', async () =
   );
   const resolving = resolveBrokerRoute(
     parent,
-    'Review this',
+    routeRequest('Review this'),
     controller.signal,
   );
   controller.abort();
@@ -1211,11 +1714,11 @@ it('replays only delegation transcripts still anchored in retained chat history'
       delegationId,
       status: 'completed',
       outputTruncated: false,
-      routeSnapshot: {
+      routeSnapshot: routeSnapshotFixture({
         selectedModelId: 'reviewer',
         runtimeModelId: 'runtime',
         harnessId: 'claude',
-      },
+      }),
     },
     transcript: [],
   });
@@ -1286,11 +1789,11 @@ it.each(['live', 'archived'] as const)(
         delegationId: 'retained',
         status: 'completed',
         outputTruncated: false,
-        routeSnapshot: {
+        routeSnapshot: routeSnapshotFixture({
           selectedModelId: 'reviewer',
           runtimeModelId: 'runtime',
           harnessId: 'codex',
-        },
+        }),
       },
       transcript: [],
     };
@@ -1372,6 +1875,135 @@ it.each(['live', 'archived'] as const)(
   },
 );
 
+it.each(['live', 'archived'] as const)(
+  'stream replay emits no event and leaves the saved %s parent unchanged',
+  async (location) => {
+    const options = {
+      projectId: `stream-${location}-project`,
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      cwd: '/worktree',
+    };
+    const retained: AgentDelegationTranscript = {
+      delegationId: 'retained',
+      runGeneration: 1,
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: 'retained-turn',
+      parentToolCallId: 'call-retained',
+      createdAt: 100,
+      task: {
+        description: 'Review',
+        prompt: 'Inspect source',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: 'retained',
+        status: 'completed',
+        outputTruncated: false,
+        routeSnapshot: routeSnapshotFixture({
+          selectedModelId: 'reviewer',
+          runtimeModelId: 'runtime',
+          harnessId: 'codex',
+        }),
+      },
+      transcript: [],
+    };
+    const tab: PersistedChatTab = {
+      id: 'chat',
+      title: 'Review',
+      createdAt: '2026-09-11T00:00:00.000Z',
+      messages: [
+        {
+          id: 'retained-turn',
+          role: 'user',
+          timestamp: 90,
+          blocks: [{ type: 'text', text: 'Review' }],
+        },
+        {
+          id: 'later-turn',
+          role: 'user',
+          timestamp: 200,
+          blocks: [{ type: 'text', text: 'Later work' }],
+        },
+      ],
+    };
+    const saved: StoredDelegation = {
+      version: 1,
+      depth: 1,
+      parent: {
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+        harnessId: 'claude',
+        sessionKey: 'stream-replay',
+        turnId: 'retained-turn',
+        toolCallId: 'call-retained',
+        runtimeGeneration: 1,
+        depth: 0,
+      },
+      task: {
+        modelId: 'reviewer',
+        ...retained.task,
+        contextPolicy: 'task_only',
+        // Missing isolation previously took the shared-worktree path.
+        isolation: 'shared_worktree',
+      },
+      callKey: 'stream-call',
+      requestHash: 'a'.repeat(64),
+      createdAt: 100,
+      state: createDelegationRunState('retained', 1),
+      launch: {
+        version: 1,
+        delegationId: 'retained',
+        launchKey: 'stream-call',
+        runGeneration: 1,
+        phase: 'settled',
+        terminalStatus: 'completed',
+      },
+      delivery: { status: 'unclaimed' },
+    };
+    const metadata = new FixtureDelegationReadMetadata();
+    metadata.stream('retained', { originAt: 100, lastActivityAt: 100 });
+    const restore = configureManagedDelegationReaders({
+      readMetadata: metadata.source,
+    });
+    const load = jest
+      .spyOn(FileDelegationStorage.prototype, 'load')
+      .mockResolvedValue([saved]);
+    const before = JSON.stringify(tab);
+    transcripts.mockResolvedValueOnce([retained]);
+    const published: AgentDelegationTranscript[] = [];
+
+    await createManagedDelegationSession({
+      harness: 'claude',
+      sessionKey: `stream-${location}-project/worktree/chat`,
+      currentOptions: () => options,
+      currentTurn: () => 'current-turn',
+      getWindow: () => null,
+      onTranscript: (transcript): void => {
+        published.push(transcript);
+      },
+    });
+
+    restore();
+    load.mockReset();
+    load.mockResolvedValue([]);
+    expect(published).toEqual([]);
+    expect(JSON.stringify(tab)).toBe(before);
+    const fullTranscriptReads = [
+      ...getCompatibilityTabs.mock.calls,
+      ...getCompatibilityArchives.mock.calls,
+    ].filter(
+      ([scope, selection]) =>
+        (scope as { projectId: string }).projectId === options.projectId &&
+        selection?.fullTranscript === true,
+    );
+    expect(fullTranscriptReads).toHaveLength(0);
+    await closeDelegationScope(options);
+  },
+);
+
 it('starts the parent session when retained delegation replay fails', async () => {
   const options = {
     projectId: 'replay-failure-project',
@@ -1398,11 +2030,11 @@ it('starts the parent session when retained delegation replay fails', async () =
         delegationId: 'retained',
         status: 'completed',
         outputTruncated: false,
-        routeSnapshot: {
+        routeSnapshot: routeSnapshotFixture({
           selectedModelId: 'reviewer',
           runtimeModelId: 'runtime',
           harnessId: 'claude',
-        },
+        }),
       },
       transcript: [],
     },
@@ -1430,7 +2062,7 @@ it('starts the parent session when retained delegation replay fails', async () =
   await closeDelegationScope(options);
 });
 
-it('does not install an automatic completion-delivery callback', async () => {
+it('does not dispatch a completion request merely by attaching a session', async () => {
   const options = {
     projectId: 'silent-completion-project',
     worktreeId: 'worktree',
@@ -1447,6 +2079,53 @@ it('does not install an automatic completion-delivery callback', async () => {
   expect(session.parent.context()).toBeDefined();
   expect(dispatchLocalWorktreeChatMessage).not.toHaveBeenCalled();
   await closeDelegationScope(options);
+});
+
+it('forwards an optional transcript message anchor and keeps legacy anchoring when omitted', async () => {
+  const anchoredOptions = {
+    projectId: 'message-anchor-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    cwd: '/worktree',
+  };
+  const anchoredSession = await createManagedDelegationSession({
+    harness: 'claude',
+    sessionKey: 'message-anchor-project/worktree/chat',
+    currentOptions: () => anchoredOptions,
+    currentTurn: () => 'authority-turn',
+    currentMessage: () => 'transcript-message',
+    getWindow: () => null,
+  });
+  try {
+    expect(anchoredSession.parent.context()).toMatchObject({
+      turnId: 'authority-turn',
+      userMessageId: 'transcript-message',
+    });
+  } finally {
+    await closeDelegationScope(anchoredOptions);
+  }
+
+  const legacyOptions = {
+    projectId: 'legacy-message-anchor-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    cwd: '/worktree',
+  };
+  const legacySession = await createManagedDelegationSession({
+    harness: 'claude',
+    sessionKey: 'legacy-message-anchor-project/worktree/chat',
+    currentOptions: () => legacyOptions,
+    currentTurn: () => 'legacy-turn',
+    getWindow: () => null,
+  });
+  try {
+    expect(legacySession.parent.context('native-turn')).toMatchObject({
+      turnId: 'native-turn',
+      userMessageId: 'legacy-turn',
+    });
+  } finally {
+    await closeDelegationScope(legacyOptions);
+  }
 });
 
 function authorityAccount(): CanopyCloudAccountEntry {
@@ -1780,9 +2459,9 @@ it('delivers an explicit hidden subordinate request without automatic result out
 
 // A direct steer leaves no durable input for its pickup: one that starts its
 // own provider turn then holds the chat queue with nothing to release it. The
-// chat queue steers instead, recording the message first.
+// request goes through the chat queue instead.
 it.each(['codex', 'claude'] as const)(
-  'delivers an explicit %s subordinate request through the chat queue while its root can steer',
+  'queues an explicit %s subordinate request through the chat queue while its root can steer',
   async (harness) => {
     dispatchLocalWorktreeChatMessage.mockClear();
     ingestProviderEvent.mockClear();
@@ -1810,6 +2489,7 @@ it.each(['codex', 'claude'] as const)(
       const admission = await session.deliverUpward(
         '<system_instruction>Subordinate request</system_instruction>',
         'request-steering',
+        { delegationId: 'delegation-1', description: 'Review <the> plan' },
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(steer).not.toHaveBeenCalled();
@@ -1837,6 +2517,42 @@ it.each(['codex', 'claude'] as const)(
       expect(isDelegationDeliveryActive(target, 'request-steering')).toBe(
         false,
       );
+
+      const queuedRequest = record(
+        dispatchLocalWorktreeChatMessage.mock.calls[0]?.[0],
+      );
+      const internalRow = record(queuedRequest?.internalRow);
+      expect(queuedRequest?.text).toBe(
+        '<system_instruction>Subordinate request</system_instruction>',
+      );
+      expect(queuedRequest?.managedDelegationDeliveryId).toBe(
+        'request-steering',
+      );
+      expect(internalRow?.kind).toBe('delegation-request');
+      expect(internalRow?.delegationId).toBe('delegation-1');
+      expect(internalRow?.displayLine).toBe('Delegate: Review the plan');
+      // The host records the delegate as the message's trusted sender from
+      // its own delegation record, never from the message text.
+      expect(queuedRequest?.agentSent).toEqual({
+        kind: 'managed_delegate',
+        delegationId: 'delegation-1',
+        title: 'Review the plan',
+      });
+
+      // With no known delegate the row is still internal by its delivery id,
+      // and the attempt id is never reported as a delegation id.
+      await session.deliverUpward(
+        '<system_instruction>Unattributed request</system_instruction>',
+        'request-without-source',
+      );
+      const unattributed = record(
+        dispatchLocalWorktreeChatMessage.mock.calls[1]?.[0],
+      );
+      expect(unattributed?.managedDelegationDeliveryId).toBe(
+        'request-without-source',
+      );
+      expect(unattributed?.internalRow).toBeUndefined();
+      expect(unattributed?.agentSent).toBeUndefined();
     } finally {
       mockGetSession.mockReturnValue(undefined);
       await closeDelegationScope(options);
@@ -1967,7 +2683,11 @@ it('resolves more than sixteen routes without the removed application capacity c
       };
       runtimeResolve.mockResolvedValueOnce({ ok: true, value: route });
       await expect(
-        resolveBrokerRoute(parent, 'Review this', new AbortController().signal),
+        resolveBrokerRoute(
+          parent,
+          routeRequest('Review this'),
+          new AbortController().signal,
+        ),
       ).resolves.toMatchObject({ ok: true, value: route });
     }
   } finally {
@@ -2159,7 +2879,7 @@ it('accepts a preflight check for an enabled model and rejects an unknown or dis
     chatId: 'chat',
     cwd: '/worktree',
   };
-  // Managed delegation runs only on macOS and Windows, so pin a supported
+  // Managed delegation runs on macOS, Windows, and Linux, so pin a supported
   // platform for the model checks to run on any CI host.
   const platform = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', {
@@ -2218,9 +2938,20 @@ it('accepts a preflight check for an enabled model and rejects an unknown or dis
       error: { code: 'capability_unavailable' },
     });
 
+    // Linux is now a supported managed-delegation host.
     Object.defineProperty(process, 'platform', {
       configurable: true,
       value: 'linux',
+    });
+    mockGetAuthoritativeConfiguredModel.mockReturnValueOnce({ enabled: true });
+    await expect(
+      capturedPreflight(parent, task, new AbortController().signal),
+    ).resolves.toEqual({ ok: true, value: undefined });
+
+    // A genuinely unsupported host stays unavailable.
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value: 'freebsd',
     });
     await expect(
       capturedPreflight(parent, task, new AbortController().signal),
@@ -3064,7 +3795,7 @@ describe('chat-owned delegation tree', () => {
       ingestProviderEvent.mockClear();
       const send = jest
         .spyOn(windowSend, 'sendToWindow')
-        .mockImplementation(() => undefined);
+        .mockImplementation(() => true);
       ingestProviderEventWithOutcome
         .mockResolvedValueOnce('activity-only')
         .mockResolvedValueOnce('not-applied');
@@ -3266,7 +3997,7 @@ describe('chat-owned delegation tree', () => {
       ingestProviderEvent.mockClear();
       const send = jest
         .spyOn(windowSend, 'sendToWindow')
-        .mockImplementation(() => undefined);
+        .mockImplementation(() => true);
       const liveFrames = (): AgentDelegationTranscript[] =>
         send.mock.calls.flatMap(([, , payload]) => {
           const data: unknown =
@@ -3335,7 +4066,7 @@ describe('chat-owned delegation tree', () => {
             parentDelegationId: 'child',
             parentRunGeneration: 1,
           },
-          'child',
+          { delegationId: 'child', description: 'Review the source' },
           '<system_instruction>Subordinate request</system_instruction>',
           'delivery-attempt',
         ),
@@ -3345,6 +4076,11 @@ describe('chat-owned delegation tree', () => {
           ...target,
           userMessageId: 'delivery-attempt',
           managedDelegationDeliveryId: 'delivery-attempt',
+          internalRow: {
+            kind: 'delegation-request',
+            delegationId: 'child',
+            displayLine: 'Delegate: Review the source',
+          },
           executionHarness: 'codex',
           approvalMode: 'full-access',
         }),
@@ -3352,6 +4088,12 @@ describe('chat-owned delegation tree', () => {
       // The queued delivery stays dispatchable until a new session claims it.
       expect(isDelegationDeliveryActive(target, 'delivery-attempt')).toBe(true);
       expect(claimDelegationDelivery(target, 'delivery-attempt')).toBe(true);
+      // The claim remains live-checkable until root revocation/retirement.
+      expect(isDelegationDeliveryActive(target, 'delivery-attempt')).toBe(true);
+      retireDelegationDelivery(target, 'delivery-attempt');
+      expect(isDelegationDeliveryActive(target, 'delivery-attempt')).toBe(
+        false,
+      );
     } finally {
       await closeDelegationScope(options);
     }
@@ -3624,6 +4366,8 @@ describe('chat-owned delegation tree', () => {
         ok: true,
         value: { stopped: 4 },
       });
+      // Stop all fences idle parents before it stops their children.
+      expect(mockNoticeFenceChat).toHaveBeenCalledWith(target);
       expect(
         brokerStop.mock.calls.map(([, id, reason]) => [id, reason]),
       ).toEqual([
@@ -3859,6 +4603,10 @@ describe('chat-owned delegation tree', () => {
       accountChanged?.(account);
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(stoppedChats(options.projectId)).toContain('policy_revoked');
+      expect(mockNoticeRevokeParent).toHaveBeenCalledWith(
+        `root:${options.projectId}/${options.worktreeId}/${options.chatId}`,
+        'policy_revoked',
+      );
       expect(previous.active).toBe(false);
       const next = treeParent(session.parent.context('turn', 'next'));
       expect(next.runtimeGeneration).not.toBe(spawnedUnder.runtimeGeneration);

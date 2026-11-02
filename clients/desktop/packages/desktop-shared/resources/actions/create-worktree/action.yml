@@ -1,15 +1,27 @@
 name: Create Worktree
-description: Create a workspace worktree and output its id for later worktree-scoped steps.
+description: Create a project worktree and output its id for later worktree-scoped steps.
 scope: [global, directory, worktree]
 inputs:
+  project_id:
+    description: Project id where the worktree should be created. Same as workspace_id; set either one.
+    required: false
   workspace_id:
-    description: Workspace id where the worktree should be created.
-    required: true
+    description: Workspace id where the worktree should be created. Same as project_id; set either one.
+    required: false
   branch:
     description: Optional branch name for the new worktree. Defaults to a generated worktree id.
     required: false
+  existing_branch:
+    description: Optional existing branch to check out in the new worktree. Desktop app only; can't be combined with branch, base_branch or a base task.
+    required: false
   base_branch:
     description: Optional branch, tag, or commit to use as the git worktree start point.
+    required: false
+  base_task_id:
+    description: Optional task in the same project to stack the new worktree on. Desktop app only. Same as base_worktree_id.
+    required: false
+  base_worktree_id:
+    description: Optional worktree in the same project to stack the new worktree on. Desktop app only. Same as base_task_id.
     required: false
   repair:
     description: For source-backed multi-repo workspaces, repair workspace root files when creation requires it.
@@ -18,17 +30,48 @@ inputs:
   restore_claude_md:
     description: For source-backed multi-repo workspace repair, restore CLAUDE.md from the workspace source repo.
     required: false
+  worktree_setup:
+    description: 'Setup scripts after creation: skip, run (start and continue), or run_and_wait (wait for results). Desktop app only for run and run_and_wait.'
+    required: false
+    default: skip
+  group:
+    description: Optional sidebar group name to put the new worktree in; created when missing. Desktop app only.
+    required: false
 outputs:
-  worktree_id:
-    description: Id of the created worktree.
+  project_id:
+    description: Project id where the worktree was created.
+  task_id:
+    description: Id of the created worktree. Same as worktree_id.
   workspace_id:
     description: Workspace id where the worktree was created.
+  worktree_id:
+    description: Id of the created worktree.
   path:
     description: Absolute path to the created worktree.
   branch_name:
     description: Branch name used for the created worktree.
   created_at:
     description: Creation timestamp recorded for the worktree.
+  setup_state:
+    description: "Setup result: skipped, started, succeeded, failed, timed_out or none_configured. Empty when setup wasn't reached."
+  setup_exit_code:
+    description: Exit code of the first setup script that didn't succeed, 0 when setup succeeded, empty when unknown.
+  setup_log_file:
+    description: Absolute path to a saved copy of the setup log, when one was saved.
+  setup_results_file:
+    description: Absolute path to a JSON file with every setup script's result, when any script started.
+  group_id:
+    description: Id of the sidebar group the worktree was put in.
+  group_created:
+    description: Whether the step created the group.
+  grouped:
+    description: Whether the worktree is in the requested group.
+  not_grouped_reason:
+    description: Why the worktree isn't in the requested group, when it isn't.
+  failure_reason:
+    description: Typed failure reason; empty when the step succeeded.
 runs:
-  using: node
-  main: index.js
+  using: host
+  fallback:
+    using: node
+    main: index.js

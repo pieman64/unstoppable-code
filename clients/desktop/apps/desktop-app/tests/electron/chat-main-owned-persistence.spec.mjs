@@ -211,6 +211,7 @@ async function chatTabIds(window) {
 async function createChatTab(window) {
   const before = new Set(await chatTabIds(window));
   await window.getByTestId('panel-add-tab-group-chat').click();
+  await window.getByTestId('panel-add-menu-item-new-chat').click();
   let created = null;
   await expect
     .poll(async () => {
@@ -272,7 +273,11 @@ test('an orphaned timer is settled with canonical runtime after app restart', as
       window.getByRole('button', { name: 'Stop generation' }),
     ).toHaveCount(0);
     await expect(panel.getByText(/Working…/)).toHaveCount(0);
-    await expect(panel.getByText(/Completed/).last()).toBeVisible();
+    await expect(
+      panel
+        .locator('[data-testid="turn-timer"][data-state="completed"]')
+        .last(),
+    ).toBeVisible();
 
     const composer = window.getByRole('textbox').first();
     await composer.fill('Follow-up after the interrupted turn');

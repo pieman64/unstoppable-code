@@ -35,10 +35,23 @@ jest.mock('../minimal-layout', () => ({
 }));
 
 let mockLayoutMode: 'minimal' | 'advanced' = 'minimal';
-jest.mock('@/stores/workspaceLayoutModeStore', () => ({
-  ...jest.requireActual<object>('@/stores/workspaceLayoutModeStore'),
-  getWorkspaceLayoutMode: (): 'minimal' | 'advanced' => mockLayoutMode,
-}));
+jest.mock('@/stores/workspaceLayoutModeStore', () => {
+  const actual = jest.requireActual<object>(
+    '@/stores/workspaceLayoutModeStore',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      getWorkspaceLayoutMode: {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: (): 'minimal' | 'advanced' => mockLayoutMode,
+      },
+    },
+  );
+});
 
 // A fresh layout per test: initializing an existing layout keeps it.
 let keyIndex = 0;

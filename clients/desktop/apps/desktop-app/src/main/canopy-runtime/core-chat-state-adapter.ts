@@ -8,6 +8,7 @@ import type {
   ChatStateSnapshot,
   ChatRuntimeStatus,
 } from '@canopy/desktop-shared/types';
+import { projectChatRuntime } from '../services/chat-state-projection';
 import {
   CanopyOperationError,
   canopyCapabilityUnavailableError,
@@ -53,12 +54,13 @@ function projectSnapshot(
   const runtimeByChatId: CoreChatSnapshotGetResult['runtimeByChatId'] = {};
   for (const [id, runtime] of Object.entries(snapshot.runtimeByChatId)) {
     if (chatId && id !== chatId) continue;
+    const projectedRuntime = projectChatRuntime(runtime);
     runtimeByChatId[id] = {
-      status: runtime.status,
-      queuedMessageIds: runtime.queuedMessageIds,
-      ...(runtime.lastActivityAt === undefined
+      status: projectedRuntime.status,
+      queuedMessageIds: projectedRuntime.queuedMessageIds,
+      ...(projectedRuntime.lastActivityAt === undefined
         ? {}
-        : { lastActivityAt: runtime.lastActivityAt }),
+        : { lastActivityAt: projectedRuntime.lastActivityAt }),
     };
   }
   return {

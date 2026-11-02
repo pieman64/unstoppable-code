@@ -38,18 +38,33 @@ function createRuntime(rootDir: string): ExecutionRuntime {
 }
 
 function baseState(): ExecutionState {
-  return {
+  const state: ExecutionState = {
     version: 5,
     id: 'e1',
     pipeline_id: 'p1',
-    pipeline_snapshot: { name: 'p', jobs: {} },
+    pipeline_snapshot: { name: 'p', scope: ['directory'], jobs: {} },
     status: 'paused',
     jobs: {},
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
     started_at: '2026-05-30T00:00:00.000Z',
     cwd: '/tmp',
     env: {},
     inputs: {},
   };
+  // This version-5 persistence fixture deliberately keeps the legacy serialized shape.
+  Reflect.set(state, 'pipeline_snapshot', { name: 'p', jobs: {} });
+  for (const key of [
+    'job_definitions',
+    'job_groups',
+    'pending_pauses',
+    'status_reasons',
+  ]) {
+    Reflect.deleteProperty(state, key);
+  }
+  return state;
 }
 
 function requestOutput(fieldsJson: string, title?: string): string {

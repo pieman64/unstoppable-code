@@ -1,6 +1,7 @@
 import {
   getMainWindowMaterialOptions,
   getNativeThemeSource,
+  getMainWindowStartupBackgroundColor,
 } from '../lib/window-material';
 
 describe('getMainWindowMaterialOptions', () => {
@@ -15,6 +16,20 @@ describe('getMainWindowMaterialOptions', () => {
     'keeps the existing opaque window on %s',
     (platform) => {
       expect(getMainWindowMaterialOptions(platform)).toEqual({});
+    },
+  );
+});
+
+describe('getMainWindowStartupBackgroundColor', () => {
+  it.each([
+    ['default', false, '#F2F2ED'],
+    ['default', true, '#0B0B0F'],
+    ['dusk', false, '#F5F5F0'],
+    ['dusk', true, '#131419'],
+  ] as const)(
+    'uses the %s recipe with effective dark mode %s',
+    (theme, dark, color) => {
+      expect(getMainWindowStartupBackgroundColor(theme, dark)).toBe(color);
     },
   );
 });

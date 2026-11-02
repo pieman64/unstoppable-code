@@ -1,11 +1,12 @@
 import { renderToString } from 'react-dom/server';
-import { CHAT_LABEL } from '@canopy/protocol';
+import { CHAT_LABEL, WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 import type { SharedAutomationDocument } from '@canopy/protocol/automations';
 import {
   AUTOMATION_PACKAGE_BUNDLED_NOTE,
   AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE,
 } from '../../lib/pipeline-package-display';
 import {
+  AUTOMATION_TARGET_NONE_LABEL,
   AUTOMATION_TARGET_UNVERIFIED_NOTE,
   AutomationDefinitionSummary,
   describeAutomationTargetRequirement,
@@ -35,7 +36,7 @@ describe('AutomationDefinitionSummary', (): void => {
     const html = renderToString(
       <AutomationDefinitionSummary automation={base} />,
     );
-    expect(html).toContain('Sends a prompt to App Advisor');
+    expect(html).toContain('Sends a prompt to Orchestrator');
     expect(html).toContain('Triage the inbox.');
     expect(html).toContain('commit-messages');
     expect(html).toContain('run condition');
@@ -82,7 +83,7 @@ describe('AutomationDefinitionSummary', (): void => {
         }}
       />,
     );
-    expect(html).toContain('Runs the Code Review pipeline');
+    expect(html).toContain('Runs the Code Review workflow');
     expect(html).toContain('branch');
     expect(html).toContain('ticket');
     expect(html).not.toContain('run condition');
@@ -105,7 +106,7 @@ describe('AutomationDefinitionSummary', (): void => {
         }}
       />,
     );
-    expect(html).toContain('Runs a pipeline');
+    expect(html).toContain('Runs a workflow');
     expect(html).not.toContain('code-review-internal-id');
   });
 
@@ -127,8 +128,8 @@ describe('AutomationDefinitionSummary', (): void => {
         }}
       />,
     );
-    expect(html).toContain('Runs a pipeline');
-    expect(html).not.toContain('Runs the  pipeline');
+    expect(html).toContain('Runs a workflow');
+    expect(html).not.toContain('Runs the  workflow');
   });
 
   it.each([true, false])(
@@ -226,7 +227,7 @@ describe('AutomationDefinitionSummary portable downgrades', (): void => {
         }}
       />,
     );
-    expect(html).toContain('Runs a pipeline you choose');
+    expect(html).toContain('Runs a workflow you choose');
     expect(html).toContain('Nightly review');
   });
 
@@ -245,8 +246,69 @@ describe('AutomationDefinitionSummary portable downgrades', (): void => {
         }}
       />,
     );
-    expect(html).toContain('Runs a pipeline you choose');
+    expect(html).toContain('Runs a workflow you choose');
     expect(html).not.toContain('Runs the ');
+  });
+
+  it('lists the pipelines a prompt automation carries in its package', (): void => {
+    const html = renderToString(
+      <AutomationDefinitionSummary
+        automation={{
+          ...base,
+          version: 5,
+          hasRunCondition: false,
+          action: {
+            type: 'standalone_prompt',
+            target: { kind: 'cowork' },
+            prompt: 'Run 3f2504e0-4f89-41d3-9a0c-0305e82c3301 today.',
+            plugins: [],
+            pipelineDependencies: [
+              {
+                key: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+                pipeline: {
+                  source: 'packaged',
+                  key: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+                  pipelineContentHash: 'a'.repeat(64),
+                  name: 'Journey specialist',
+                },
+                promptSpans: [
+                  {
+                    textStart: 4,
+                    text: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+                  },
+                ],
+              },
+            ],
+          },
+        }}
+      />,
+    );
+    expect(html).toContain('automation-summary-pipelines');
+    expect(html).toContain('Journey specialist');
+    expect(html).toContain('Pipelines included');
+  });
+
+  it('reads a packaged action pipeline as one that travels with the share', (): void => {
+    const html = renderToString(
+      <AutomationDefinitionSummary
+        automation={{
+          ...base,
+          version: 5,
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'workspace' },
+            pipeline: {
+              source: 'packaged',
+              key: 'action',
+              pipelineContentHash: 'b'.repeat(64),
+            },
+            inputKeys: [],
+          },
+        }}
+      />,
+    );
+    expect(html).toContain('Runs the workflow included in this share');
+    expect(html).toContain(AUTOMATION_PACKAGE_BUNDLED_NOTE);
   });
 
   it('names a curated pipeline by its catalog name', (): void => {
@@ -268,7 +330,7 @@ describe('AutomationDefinitionSummary portable downgrades', (): void => {
         }}
       />,
     );
-    expect(html).toContain('Runs the Review pipeline');
+    expect(html).toContain('Runs the Review workflow');
     expect(html).not.toContain('review/default');
   });
   describe('bundling disclosure (CAN-3135)', (): void => {
@@ -299,7 +361,7 @@ describe('AutomationDefinitionSummary portable downgrades', (): void => {
           })}
         />,
       );
-      expect(html).toContain('Runs the Nightly review pipeline');
+      expect(html).toContain('Runs the Nightly review workflow');
       expect(html).toContain(AUTOMATION_PACKAGE_BUNDLED_NOTE);
       expect(html).not.toContain(AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE);
     });
@@ -314,9 +376,9 @@ describe('AutomationDefinitionSummary portable downgrades', (): void => {
           })}
         />,
       );
-      expect(html).toContain('Runs the pipeline included in this share');
-      expect(html).not.toContain('Runs the  pipeline');
-      expect(html).not.toContain('Runs a shared pipeline');
+      expect(html).toContain('Runs the workflow included in this share');
+      expect(html).not.toContain('Runs the  workflow');
+      expect(html).not.toContain('Runs a shared workflow');
       expect(html).toContain(AUTOMATION_PACKAGE_BUNDLED_NOTE);
     });
 
@@ -505,6 +567,52 @@ describe('AutomationDefinitionSummary portable downgrades', (): void => {
         contexts: ['app_advisor'],
         verified: true,
       });
+    });
+  });
+
+  describe('pipeline destinations', (): void => {
+    const pipelineDocument = (
+      kind: 'workspace' | 'global' | 'new_worktree' | 'task' | 'project',
+    ): SharedAutomationDocument => ({
+      ...base,
+      version: kind === 'workspace' ? 1 : 5,
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind },
+        pipeline: { source: 'bundled', pipelineId: 'review', name: 'Review' },
+        inputKeys: [],
+      },
+    });
+
+    it.each([
+      ['global', 'Runs with no project.'],
+      [
+        'new_worktree',
+        `Creates a new ${WORKTREE_UNIT_LABEL.toLowerCase()} each run.`,
+      ],
+      ['task', 'Runs in an existing task.'],
+      ['project', 'Runs in the project folder.'],
+    ] as const)('names the %s destination', (kind, label): void => {
+      const html = renderToString(
+        <AutomationDefinitionSummary
+          automation={pipelineDocument(kind)}
+          resolvedTargetContexts={[]}
+        />,
+      );
+      expect(html).toContain(label);
+      expect(html).not.toContain(AUTOMATION_TARGET_NONE_LABEL);
+      expect(html).not.toContain('Runs in a code project');
+    });
+
+    it('keeps the Runs in contexts for the legacy workspace kind', (): void => {
+      const html = renderToString(
+        <AutomationDefinitionSummary
+          automation={pipelineDocument('workspace')}
+        />,
+      );
+      expect(html).toContain('Runs in');
+      expect(html).toContain(AUTOMATION_TARGET_UNVERIFIED_NOTE);
+      expect(html).not.toContain('automation-summary-destination');
     });
   });
 });

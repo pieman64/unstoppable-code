@@ -6,7 +6,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { PersistedArtifactReference } from '@canopy/agent-transcript/lib/visual-ref';
+import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
 import type { ChatStorageIndexes } from '../chat-storage-transactions';
 import { storedArtifactRefsOf } from '../chat-artifact-references';
 import { ChatTranscriptArtifacts } from '../chat-transcript-artifacts';
@@ -17,11 +17,17 @@ import {
   DELTA_CHECKPOINT_STAGED_SUFFIX,
   DELTA_JOURNAL_FILE_NAME,
   decodeDeltaJournalRecord,
-  effectMessages,
+  decodeDeltaJournalV2Record,
+  journalFileFor,
+  transcriptTargetKey,
+  effectRowsWithFinality,
   scanDeltaJournalFrames,
   type DeltaJournalCommitRecord,
   type DeltaJournalSegmentRecord,
   type DeltaJournalTornTail,
+  type DeltaJournalV2CommitRecord,
+  type DeltaJournalV2SegmentRecord,
+  type DeltaJournalTranscriptEffect,
 } from './format';
 import {
   applyChatIndexDelta,
@@ -40,10 +46,29 @@ export const DELTA_INDEX_FILE_NAMES = [
   'recovery-index.json',
 ] as const;
 
+export type JournalCommit =
+  | DeltaJournalCommitRecord
+  | DeltaJournalV2CommitRecord;
+export function primaryEffects(
+  record: JournalCommit,
+): DeltaJournalTranscriptEffect[] {
+  if (record.v === 1) return record.transcripts;
+  return record.transcripts.flatMap((effect) => {
+    if (
+      effect.kind === 'child-upsert' ||
+      effect.kind === 'child-settle' ||
+      effect.target.kind !== 'primary'
+    )
+      return [];
+    const { target, ...payload } = effect;
+    return [{ ...payload, chatId: target.chatId }];
+  });
+}
+
 export interface DeltaJournalContents {
-  segment: DeltaJournalSegmentRecord;
+  segment: DeltaJournalSegmentRecord | DeltaJournalV2SegmentRecord;
   /** Verified commit records, in file order. */
-  records: DeltaJournalCommitRecord[];
+  records: JournalCommit[];
   /** Digest of the last verified frame; the next record chains from it. */
   lastDigest: string;
   /** Revision after the last verified record. */
@@ -56,7 +81,7 @@ export interface DeltaJournalContents {
 }
 
 export interface DeltaCheckpointMarker {
-  v: 1;
+  v: 1 | 2;
   /**
    * `transcripts`: records after `fromRevision` are being applied to the
    * transcript files; `appliedThrough` is the last record fully applied.
@@ -67,6 +92,13 @@ export interface DeltaCheckpointMarker {
   fromRevision: number;
   targetRevision: number;
   appliedThrough: number;
+  /** Format-4 authoritative metadata staged before publication. */
+  metadata?: {
+    descriptors: { path: string; sha256: string }[];
+    registries: { path: string; sha256: string }[];
+    catalog?: { path: string; sha256: string };
+    removedParents: string[];
+  };
 }
 
 export interface DeltaCheckpointState {
@@ -107,20 +139,30 @@ async function readOptional(path: string): Promise<Buffer | undefined> {
 export async function readDeltaJournal(
   directory: string,
   scopeId: string,
+  manifest?: unknown,
 ): Promise<DeltaJournalContents> {
-  const bytes = await readOptional(join(directory, DELTA_JOURNAL_FILE_NAME));
+  const selected =
+    manifest === undefined ? DELTA_JOURNAL_FILE_NAME : journalFileFor(manifest);
+  if (!selected) return integrity('Scope has no selected delta journal');
+  const bytes = await readOptional(join(directory, selected));
   if (!bytes) return integrity('Delta journal is missing');
   const scan = scanDeltaJournalFrames(bytes);
   const [first, ...rest] = scan.frames;
   if (!first) return integrity('Delta journal has no segment header');
-  const segment = decodeDeltaJournalRecord(first);
+  const segment =
+    selected === DELTA_JOURNAL_FILE_NAME
+      ? decodeDeltaJournalRecord(first)
+      : decodeDeltaJournalV2Record(first);
   if (segment.type !== 'segment' || segment.scopeId !== scopeId)
     return integrity('Delta journal segment does not belong to this scope');
-  const records: DeltaJournalCommitRecord[] = [];
+  const records: JournalCommit[] = [];
   let digest = first.digest;
   let revision = segment.baseRevision;
   for (const frame of rest) {
-    const record = decodeDeltaJournalRecord(frame);
+    const record =
+      segment.v === 1
+        ? decodeDeltaJournalRecord(frame)
+        : decodeDeltaJournalV2Record(frame);
     if (record.type !== 'commit')
       return integrity('Delta journal has a second segment header');
     if (record.prev !== digest)
@@ -145,13 +187,19 @@ export async function readDeltaJournal(
 function isMarker(value: unknown): value is DeltaCheckpointMarker {
   return (
     isRecord(value) &&
-    value.v === 1 &&
+    (value.v === 1 || value.v === 2) &&
     (value.phase === 'transcripts' || value.phase === 'publishing') &&
     Number.isSafeInteger(value.fromRevision) &&
     Number.isSafeInteger(value.targetRevision) &&
     Number.isSafeInteger(value.appliedThrough) &&
     Number(value.fromRevision) <= Number(value.appliedThrough) &&
-    Number(value.appliedThrough) <= Number(value.targetRevision)
+    Number(value.appliedThrough) <= Number(value.targetRevision) &&
+    (value.v === 1 ||
+      value.metadata === undefined ||
+      (isRecord(value.metadata) &&
+        Array.isArray(value.metadata.descriptors) &&
+        Array.isArray(value.metadata.registries) &&
+        Array.isArray(value.metadata.removedParents)))
   );
 }
 
@@ -245,12 +293,12 @@ function chatIds(indexes: ChatStorageIndexes): Set<string> {
 }
 
 function assertRecordMembership(
-  record: DeltaJournalCommitRecord,
+  record: JournalCommit,
   previous: Set<string>,
   next: Set<string>,
 ): void {
   const affected = new Set<string>();
-  for (const effect of record.transcripts) {
+  for (const effect of primaryEffects(record)) {
     affected.add(effect.chatId);
     const deleting = effect.kind === 'delete';
     if (deleting === next.has(effect.chatId))
@@ -266,6 +314,15 @@ function assertRecordMembership(
   for (const id of Array.from(previous))
     if (!next.has(id) && !affected.has(id))
       integrity('Delta journal record removes a chat without deleting it');
+  if (record.v === 2) {
+    const registrations = new Set<string>();
+    for (const entry of record.streamRegistrations) {
+      const key = transcriptTargetKey(entry.target);
+      if (!next.has(entry.target.chatId) || registrations.has(key))
+        integrity('Invalid stream registration parent or duplicate target');
+      registrations.add(key);
+    }
+  }
 }
 
 function archivedTurnCounts(indexes: ChatStorageIndexes): Map<string, string> {
@@ -283,7 +340,7 @@ function archivedTurnCounts(indexes: ChatStorageIndexes): Map<string, string> {
  */
 export function applyRecordMetadata(
   current: ChatStorageIndexes,
-  record: DeltaJournalCommitRecord,
+  record: JournalCommit,
   assertIndexes: AssertChatStorageIndexes,
 ): ChatStorageIndexes {
   if (current.live.revision !== record.fromRevision)
@@ -319,13 +376,21 @@ export function applyRecordMetadata(
 /** Index metadata after `records`, starting from the checkpoint. */
 export function replayIndexMetadata(
   checkpoint: ChatStorageIndexes,
-  records: readonly DeltaJournalCommitRecord[],
+  records: readonly JournalCommit[],
   assertIndexes: AssertChatStorageIndexes,
 ): MetadataReplay {
   let indexes = checkpoint;
   const touched = new Set<string>();
   const turnCountFromDescriptor = new Set<string>();
+  const registered = new Set<string>();
   for (const record of records) {
+    if (record.v === 2)
+      for (const entry of record.streamRegistrations) {
+        const key = transcriptTargetKey(entry.target);
+        if (registered.has(key))
+          integrity('Duplicate stream registration across records');
+        registered.add(key);
+      }
     const next = applyRecordMetadata(indexes, record, assertIndexes);
     if (record.delta.archive && turnCountFromDescriptor.size) {
       const before = archivedTurnCounts(indexes);
@@ -337,7 +402,7 @@ export function replayIndexMetadata(
     const archived = new Set(
       next.archive.archived.map((entry) => entry.tab.id),
     );
-    for (const effect of record.transcripts) {
+    for (const effect of primaryEffects(record)) {
       if (effect.kind === 'delete') {
         touched.delete(effect.chatId);
         turnCountFromDescriptor.delete(effect.chatId);
@@ -357,49 +422,106 @@ export function replayIndexMetadata(
 export function recordsAfter(
   journal: DeltaJournalContents,
   revision: number,
-): DeltaJournalCommitRecord[] {
+): JournalCommit[] {
   return journal.records.filter((record) => record.toRevision > revision);
 }
 
-/** Every stored artifact reference the records' rows carry, by chat. */
-function artifactReferences(
-  records: readonly DeltaJournalCommitRecord[],
-): Array<{ chatId: string; reference: PersistedArtifactReference }> {
-  return records.flatMap((record) =>
-    record.transcripts.flatMap((effect) =>
-      effectMessages(effect).flatMap((message) =>
-        message.blocks.flatMap((block) =>
-          block.type === 'tool_result'
-            ? storedArtifactRefsOf(block).map((reference) => ({
-                chatId: effect.chatId,
-                reference,
-              }))
-            : [],
-        ),
+/** Every row the records carry, by owning chat, with its finality. */
+function recordRows(
+  records: readonly JournalCommit[],
+): Array<{ chatId: string; message: PersistedChatMessage; final: boolean }> {
+  // A checkpoint skips child rows of parents deleted in its window, so their artifacts may be gone.
+  const deleted = new Set(
+    records.flatMap((record) =>
+      primaryEffects(record).flatMap((effect) =>
+        effect.kind === 'delete' ? [effect.chatId] : [],
       ),
     ),
   );
+  return records.flatMap((record) => [
+    ...primaryEffects(record).flatMap((effect) =>
+      effectRowsWithFinality(effect).map((row) => ({
+        chatId: effect.chatId,
+        ...row,
+      })),
+    ),
+    ...(record.v === 2
+      ? record.transcripts.flatMap((effect) =>
+          (effect.kind === 'child-upsert' || effect.kind === 'child-settle') &&
+          !deleted.has(effect.target.chatId)
+            ? effect.rows.map((message) => ({
+                chatId: effect.target.chatId,
+                message,
+                final: message.final,
+              }))
+            : [],
+        )
+      : []),
+  ]);
 }
 
 /**
  * Every artifact a not-yet-applied record references must exist and match,
  * because the writer published it before the record. A missing one fails
- * closed instead of becoming a shorter transcript.
+ * closed instead of becoming a shorter transcript. A format 4 (version 2)
+ * record's rows were prepared by its writer, so they are also checked as
+ * prepared: a final row's large field without a reference is an integrity
+ * failure, never a new artifact.
  */
 export async function verifyRecordArtifacts(
   transcriptsRoot: string,
-  records: readonly DeltaJournalCommitRecord[],
+  records: readonly JournalCommit[],
 ): Promise<void> {
   const artifacts = new ChatTranscriptArtifacts(transcriptsRoot, true);
-  for (const { chatId, reference } of artifactReferences(records)) {
+  const v2 = records.some((record) => record.v === 2);
+  for (const record of records) {
+    if (record.v !== 2) continue;
+    for (const effect of record.registryEffects ?? []) {
+      if (
+        effect.kind !== 'delegation-result' ||
+        effect.entry.answer.kind !== 'body'
+      )
+        continue;
+      try {
+        await artifacts.verify(effect.target.chatId, effect.entry.answer.ref);
+      } catch (error) {
+        if (isErrnoException(error) && error.code !== 'ENOENT') throw error;
+        integrity(
+          `Delta journal result references a missing or damaged answer for ${effect.target.chatId}`,
+          error,
+        );
+      }
+    }
+  }
+  for (const { chatId, message, final } of recordRows(records)) {
     try {
-      await artifacts.verifyArtifact(chatId, reference);
+      for await (const reference of artifacts.referenceClosure(chatId, message))
+        await artifacts.verify(chatId, reference);
+      // The closure covers tool output; visuals live on the logical blocks.
+      const logical = await artifacts.expandBlocks(chatId, message);
+      for (const block of logical.blocks)
+        for (const ref of storedArtifactRefsOf(block))
+          if (ref.family === 'visual')
+            await artifacts.verifyArtifact(chatId, ref);
     } catch (error) {
       // Only absence or damage is an integrity failure; any other
       // operating-system error may clear and is retried.
       if (isErrnoException(error) && error.code !== 'ENOENT') throw error;
       integrity(
         `Delta journal record references a missing or damaged artifact for ${chatId}`,
+        error,
+      );
+    }
+    if (!v2) continue;
+    try {
+      await artifacts.externalize(chatId, message, undefined, {
+        kind: 'format4-verify',
+        final,
+      });
+    } catch (error) {
+      if (isErrnoException(error)) throw error;
+      integrity(
+        `Delta journal record holds an unprepared transcript row for ${chatId}`,
         error,
       );
     }

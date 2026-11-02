@@ -15,15 +15,27 @@ import type {
 
 const mockResolveChatTabsFilePath = jest.fn();
 const mockGetCompatibilityTabs = jest.fn();
+const mockScheduleKnown = jest.fn();
 
 jest.mock('../lib/resolve-worktree', () => ({
-  resolveChatTabsFilePath: mockResolveChatTabsFilePath,
+  get resolveChatTabsFilePath(): typeof mockResolveChatTabsFilePath {
+    return mockResolveChatTabsFilePath;
+  },
 }));
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): {
     getCompatibilityTabs: typeof mockGetCompatibilityTabs;
   } => ({
-    getCompatibilityTabs: mockGetCompatibilityTabs,
+    get getCompatibilityTabs(): typeof mockGetCompatibilityTabs {
+      return mockGetCompatibilityTabs;
+    },
+  }),
+}));
+jest.mock('../shared-containers/publish/scheduler', () => ({
+  getSharedContainerPublishScheduler: (): {
+    scheduleKnown: typeof mockScheduleKnown;
+  } => ({
+    scheduleKnown: mockScheduleKnown,
   }),
 }));
 
@@ -34,6 +46,7 @@ import {
   setChatTabsWriteObserver,
   writeChatTabsSnapshotForTests as writeChatTabsFile,
 } from '../lib/chat-tabs';
+import { createChatTabsAuxiliaryProjectionObserver } from '../lib/chat-tabs-auxiliary-projection';
 import {
   isChatTabsFile,
   isPersistedChatMessage,
@@ -42,6 +55,68 @@ import {
 } from '../lib/chat-tabs-reader';
 
 describe('writeChatTabsFile', () => {
+  it('does not nudge shared-container publishing after a projection becomes stale', async () => {
+    let releaseObserver: (() => void) | undefined;
+    const heldObserver = new Promise<void>((resolve) => {
+      releaseObserver = resolve;
+    });
+    let current = true;
+    setChatTabsWriteObserver(async () => {
+      await heldObserver;
+    });
+    mockScheduleKnown.mockClear();
+
+    const projection = notifyChatTabsMaterialized(
+      'workspace-1',
+      'worktree-1',
+      { version: 1, tabs: [], activeTabId: '' },
+      undefined,
+      1,
+      () => current,
+    );
+    current = false;
+    releaseObserver?.();
+    await projection;
+    await Promise.resolve();
+
+    expect(mockScheduleKnown).not.toHaveBeenCalled();
+  });
+
+  it('nudges shared-container publishing while a Work Entry summary fails', async () => {
+    const retry = setTimeout(() => undefined, 60_000);
+    setChatTabsWriteObserver(
+      createChatTabsAuxiliaryProjectionObserver({
+        indexSearch: () => undefined,
+        syncBadges: () => undefined,
+        syncWorkEntrySummary: () =>
+          Promise.reject(new Error('Work Entry registry unreadable')),
+        publishRuntimeStatus: () => undefined,
+        publishScope: () => undefined,
+        nudgeSummary: () => undefined,
+        logRetry: () => undefined,
+        schedule: () => retry,
+      }),
+    );
+    mockScheduleKnown.mockClear();
+
+    try {
+      await notifyChatTabsMaterialized(
+        'workspace-1',
+        'worktree-1',
+        { version: 1, tabs: [], activeTabId: '' },
+        undefined,
+        1,
+        () => true,
+      );
+    } finally {
+      clearTimeout(retry);
+    }
+    for (let turn = 0; turn < 5 && !mockScheduleKnown.mock.calls.length; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(mockScheduleKnown).toHaveBeenCalledWith('workspace-1', 'worktree-1');
+  });
+
   it('releases materialized transcripts after their consumers release them', async () => {
     // WeakRef tests run GC in a separate VM context so no production GC flags
     // or memory thresholds are needed. Waiting a turn drops WeakRef's keepalive.
@@ -132,6 +207,8 @@ describe('writeChatTabsFile', () => {
       'workspace-1',
       'worktree-1',
       data,
+      undefined,
+      0,
       undefined,
     );
   });

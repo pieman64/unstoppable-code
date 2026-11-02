@@ -8,9 +8,18 @@
 // This exercises the generic panel menu for ANY panel kind: it stacks the two
 // default-layout-available singleton kinds (file-explorer, browser) onto the
 // chat group, pins one, and drives the menu's close/enablement semantics.
+// A chat tab moved to a new window keeps the menu's "Mark as unread" /
+// "Mark as read" (CAN-4378); chat-tab-mark-unread.spec.mjs covers the main grid.
 
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { closeCanopy } from './launchCanopy.mjs';
+import { CanopyAppDriver } from './canopyApp.mjs';
+import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
+import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { readChatStorageIndexes } from './readChatStorage.mjs';
+import { seedWorktreeChat } from './seeders/index.mjs';
 import {
   collectLeaves,
   DEFAULT_GROUP_IDS,
@@ -28,7 +37,7 @@ async function chatGroupPanels(window) {
 }
 
 async function addPanelToChatGroup(window, kind) {
-  await window.getByTestId('panel-add-panel-group-chat').click();
+  await window.getByTestId('panel-add-tab-group-chat').click();
   const addMenu = window.getByTestId('panel-add-menu');
   await expect(addMenu).toBeVisible();
   await window.getByTestId(`panel-add-menu-item-${kind}`).click();
@@ -346,6 +355,84 @@ test('tab context menu Full screen selects the clicked tab and maximizes its gro
     await window.screenshot({
       path: testInfo.outputPath('worktree-panels-tabs-context-full-screen.png'),
     });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('tab context menu marks a chat in a new window unread and read again', async () => {
+  test.setTimeout(120_000);
+  const workspaceId = 'demo-ts-pnpm-vite';
+  const worktreeId = 'demo-main';
+  const poppedChat = 'popped-chat';
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-panels-aux-unread-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId,
+    worktreeId,
+    activeTabId: 'staying-chat',
+    tabs: [
+      { id: 'staying-chat', title: 'Staying' },
+      { id: poppedChat, title: 'Popped' },
+    ],
+  });
+  const durableTab = () =>
+    readChatStorageIndexes(
+      path.join(userDataDir, 'workspaces', workspaceId),
+      worktreeId,
+    ).live.tabs.find((tab) => tab.id === poppedChat);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(worktreeId);
+    const row = window.locator(
+      `[data-testid="worktree-row"][data-branch="${worktreeId}"]`,
+    );
+    const tabTestId = `panel-tab-panel-chat-${poppedChat}`;
+    await expect(window.getByTestId(tabTestId)).toBeVisible();
+
+    const auxWindowPromise = electronApp.waitForEvent('window');
+    await window.getByTestId(tabTestId).click({ button: 'right' });
+    await window.getByTestId('panel-tab-context-new-window').click();
+    const aux = await auxWindowPromise;
+    await expect(aux.getByTestId('panel-aux-window-root')).toBeVisible();
+    await expect(aux.getByTestId(tabTestId)).toBeVisible();
+
+    const menu = aux.getByTestId('panel-tab-context-menu');
+    await aux.getByTestId(tabTestId).click({ button: 'right' });
+    await expect(menu).toBeVisible();
+    await expect(aux.getByTestId('panel-tab-context-mark-read')).toHaveCount(0);
+    await aux.getByTestId('panel-tab-context-mark-unread').click();
+    await expect(menu).toBeHidden();
+
+    // The pop-out tab shows it, and so does the main window's sidebar.
+    await expect(
+      aux.getByTestId(`panel-tab-unread-${poppedChat}`),
+    ).toBeVisible();
+    await expect(row.getByTestId('worktree-row-unread')).toBeVisible();
+    await expect
+      .poll(durableTab)
+      .toMatchObject({ unread: true, unreadMarkedManually: true });
+
+    await aux.getByTestId(tabTestId).click({ button: 'right' });
+    await expect(menu).toBeVisible();
+    await expect(aux.getByTestId('panel-tab-context-mark-unread')).toHaveCount(
+      0,
+    );
+    await aux.getByTestId('panel-tab-context-mark-read').click();
+    await expect(menu).toBeHidden();
+
+    await expect(aux.getByTestId(`panel-tab-unread-${poppedChat}`)).toHaveCount(
+      0,
+    );
+    await expect(row.getByTestId('worktree-row-unread')).toHaveCount(0);
+    await expect.poll(() => durableTab()?.unread).toBe(false);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

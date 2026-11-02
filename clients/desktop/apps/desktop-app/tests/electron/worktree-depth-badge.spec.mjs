@@ -158,6 +158,14 @@ test.describe('worktree grouping controls', () => {
       await app.waitForShell({ timeout: 30_000 });
       await app.openMainPage();
 
+      const openWorktreeActions = async (row) => {
+        await row.getByTestId('worktree-actions-menu-button').click();
+        await expect(window.getByRole('menu').first()).toBeVisible();
+        const more = window.getByTestId('worktree-actions-menu-more');
+        // The rails can expose either the compact or the flat action menu.
+        if (await more.isVisible()) await more.click();
+      };
+
       const childRow = window.locator(
         '[data-testid="worktree-row"][data-branch="wt-child"]',
       );
@@ -244,15 +252,16 @@ test.describe('worktree grouping controls', () => {
         .poll(rowBranches)
         .toEqual(['wt-base', 'wt-child', 'wt-sibling', 'wt-grandchild']);
 
-      await childRow.getByTestId('worktree-actions-menu-button').click();
+      await openWorktreeActions(childRow);
       const childGrouping = window.getByTestId(
         'worktree-actions-menu-toggle-grouping',
       );
       await expect(childGrouping).toHaveText('Unstack from base');
       const unstackBaseGlyph = await childGrouping.locator('svg').innerHTML();
       await window.keyboard.press('Escape');
+      await window.keyboard.press('Escape');
       await baseRow.hover();
-      await baseRow.getByTestId('worktree-actions-menu-button').click();
+      await openWorktreeActions(baseRow);
       const toggleGrouping = window.getByTestId(
         'worktree-actions-menu-toggle-grouping',
       );
@@ -334,14 +343,15 @@ test.describe('worktree grouping controls', () => {
       await expect(
         childRow.getByTestId('worktree-actions-menu-button'),
       ).toBeVisible();
-      await childRow.getByTestId('worktree-actions-menu-button').click();
+      await openWorktreeActions(childRow);
       await expect(
         window.getByTestId('worktree-actions-menu-toggle-grouping').last(),
       ).toBeVisible();
       await window.keyboard.press('Escape');
+      await window.keyboard.press('Escape');
 
       await baseRow.hover();
-      await baseRow.getByTestId('worktree-actions-menu-button').click();
+      await openWorktreeActions(baseRow);
       const regroupAction = window
         .getByTestId('worktree-actions-menu-toggle-grouping')
         .last();
@@ -357,7 +367,7 @@ test.describe('worktree grouping controls', () => {
         .toEqual(['wt-base', 'wt-child', 'wt-sibling', 'wt-grandchild']);
 
       await baseRow.hover();
-      await baseRow.getByTestId('worktree-actions-menu-button').click();
+      await openWorktreeActions(baseRow);
       await window.getByTestId('worktree-actions-menu-toggle-hidden').click();
 
       await expect

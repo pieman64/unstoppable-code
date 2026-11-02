@@ -61,6 +61,24 @@ function readTypedMetadataFrontmatter(userDataDir) {
   return yaml.load(match[1]);
 }
 
+// CAN-4267: installed skills list as Customize rows; a custom skill's Edit
+// lives in the row's ⋯ menu.
+function installedSkillRow(window, name) {
+  return window
+    .getByTestId('customize-section-installed')
+    .getByTestId(`customize-row-skill:custom:app:${name}`);
+}
+
+async function editInstalledSkill(window, name) {
+  const menu = window
+    .getByTestId('customize-section-installed')
+    .getByTestId(`customize-row-menu-skill:custom:app:${name}`);
+  await menu.click();
+  await window
+    .getByTestId(`customize-row-menu-skill:custom:app:${name}-edit`)
+    .click();
+}
+
 function skillRow(dialog) {
   return dialog.getByRole('checkbox', {
     name: `Select ${SKILL_NAME}`,
@@ -124,7 +142,8 @@ test('creating a custom skill exposes it in the list, chat picker, and slash men
       fullPage: true,
     });
 
-    await window.getByRole('button', { name: 'Create skill' }).click();
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-skill-custom').click();
 
     const modal = window.locator('#create-skill-modal-title');
     await expect(modal).toBeVisible();
@@ -153,9 +172,7 @@ test('creating a custom skill exposes it in the list, chat picker, and slash men
     ).toBeVisible();
     // Footer
     await expect(window.getByRole('button', { name: 'Cancel' })).toBeVisible();
-    await expect(
-      window.getByRole('button', { name: 'Create skill', exact: true }),
-    ).toBeVisible();
+    await expect(window.getByTestId('skill-editor-save')).toBeVisible();
 
     await window.screenshot({
       path: testInfo.outputPath('skills-create-modal-empty.png'),
@@ -204,18 +221,21 @@ test('creating a custom skill exposes it in the list, chat picker, and slash men
       fullPage: true,
     });
 
-    await window
-      .getByRole('button', { name: 'Create skill', exact: true })
-      .click();
+    await window.getByTestId('skill-editor-save').click();
     await expect(modal).toBeHidden();
-    await expect(window.getByText(SKILL_NAME, { exact: true })).toBeVisible();
+    // Saving opens the new skill's detail; its row is on the list behind it.
+    await app.expectCreatedCustomizeDetail(skillTitle(SKILL_NAME));
+    await app.closeMarketplaceEntryDetail();
+    await expect(installedSkillRow(window, SKILL_NAME)).toContainText(
+      skillTitle(SKILL_NAME),
+    );
 
     // Reopening and saving the skill preserves the hyphenated directory and
     // frontmatter name on every platform supported by this Electron spec.
     // Editing opens the skill's edit page (CAN-3485), and saving lands on
     // the skill's details.
     const editorPage = window.getByTestId('skill-editor-page');
-    await window.getByRole('button', { name: 'Edit skill' }).click();
+    await editInstalledSkill(window, SKILL_NAME);
     await expect(editorPage).toBeVisible();
     await expect(nameInput).toHaveValue(SKILL_NAME);
     await window
@@ -305,12 +325,10 @@ test('editing a custom skill preserves untouched YAML metadata types and user-in
     await app.openPluginsTab('skills');
     await app.expectPluginsTab('skills');
     await expect(
-      window.getByText(TYPED_METADATA_SKILL_NAME, { exact: true }),
-    ).toBeVisible();
+      installedSkillRow(window, TYPED_METADATA_SKILL_NAME),
+    ).toContainText(skillTitle(TYPED_METADATA_SKILL_NAME));
 
-    await window
-      .getByTestId(`skill-edit-custom:app-${TYPED_METADATA_SKILL_NAME}`)
-      .click();
+    await editInstalledSkill(window, TYPED_METADATA_SKILL_NAME);
     const saveButton = window.getByTestId('skill-editor-save');
     await expect(saveButton).toBeVisible();
     await window

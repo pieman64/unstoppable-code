@@ -66,7 +66,7 @@ export function SidebarOverviewNavLink({
         // label under their titles. Both sizes take the rows' right inset, so
         // the count sits under their ages and the count beside the project
         // name.
-        className={`focus-ring flex pr-1.5 ${size === 'row' ? 'h-8 rounded-row' : 'h-7 rounded-md'} w-full items-center ${SIDEBAR_ROW_GRID_CLASSNAME} text-left text-xs transition ${
+        className={`focus-ring flex pr-1.5 ${size === 'row' ? 'h-8 rounded-row' : 'h-7 rounded-md'} w-full items-center ${SIDEBAR_ROW_GRID_CLASSNAME} text-left text-xs transition-colors ${
           selected
             ? 'bg-fg-primary/[0.08] fg-primary'
             : 'fg-secondary hover:bg-fg-primary/[0.04] hover:fg-primary'

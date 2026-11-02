@@ -8,8 +8,12 @@ const mockIpcMainRemoveHandler = jest.fn<void, [string]>();
 
 jest.mock('electron', () => ({
   ipcMain: {
-    handle: mockIpcMainHandle,
-    removeHandler: mockIpcMainRemoveHandler,
+    get handle(): typeof mockIpcMainHandle {
+      return mockIpcMainHandle;
+    },
+    get removeHandler(): typeof mockIpcMainRemoveHandler {
+      return mockIpcMainRemoveHandler;
+    },
   },
 }));
 

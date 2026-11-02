@@ -9,7 +9,7 @@ export interface PluginHarnessConnectionRow {
 
 /** Availability is per harness; the shared account connection is shown once. */
 interface PluginHarnessConnectionsProps {
-  rows: PluginHarnessConnectionRow[];
+  rows: readonly PluginHarnessConnectionRow[];
 }
 
 export function PluginHarnessConnections({

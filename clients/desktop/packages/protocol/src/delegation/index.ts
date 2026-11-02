@@ -9,6 +9,7 @@ import {
 } from './capabilities';
 export * from './capabilities';
 export * from './queues';
+export * from './lifetime';
 export * from './transcript';
 import { isThinkingLevel, type ThinkingLevel } from '../thinking';
 import type { ChatInputAdmission } from '../portal/input-delivery';
@@ -92,6 +93,8 @@ export type AgentDelegationErrorCode =
   | 'interaction_required'
   | 'policy_blocked'
   | 'capacity_exceeded'
+  /** New-identity admission only; never a persisted run or receipt outcome. */
+  | 'lifetime_limit_reached'
   | 'parent_unavailable'
   | 'launch_uncertain'
   | 'runtime_error'
@@ -188,12 +191,10 @@ export interface DelegationListFilter {
 export interface GetDelegateOutputRequest {
   readonly delegationId: string;
   readonly resultIndex?: number;
-}
-
-export interface WatchDelegatesRequest {
-  readonly delegationIds: readonly string[];
-  readonly mode: 'any' | 'all';
-  readonly timeoutMs: number;
+  /** Byte offset into the pinned result's body; nonzero requires `resultIndex`. */
+  readonly offset?: number;
+  /** Most bytes of the body to return, 4 to 65,536. */
+  readonly limit?: number;
 }
 
 export interface RequestSteeringRequest {
@@ -209,6 +210,36 @@ export interface DelegateOutput {
   readonly outputTruncated: boolean;
   readonly error?: AgentDelegationError;
   readonly usage?: AgentDelegationUsage;
+  /** One page of the chosen body; a paged reply carries it instead of `finalText` and `partialText`. */
+  readonly answer?: DelegateOutputAnswerPage;
+  /** The body could not be read; the result's execution metadata is still authoritative. */
+  readonly contentError?: DelegateOutputContentError;
+}
+
+export interface DelegateOutputAnswerPage {
+  readonly role: 'final' | 'partial';
+  readonly text: string;
+  /** The body's encoding, which `byteLength` and offsets count in. */
+  readonly encoding: 'utf8' | 'utf16le';
+  /** The whole body's length in `encoding`. */
+  readonly byteLength: number;
+  readonly offset: number;
+  /** Present only when more of the body remains. */
+  readonly nextOffset?: number;
+  /** Present only with `nextOffset`. */
+  readonly notice?: string;
+}
+
+export type DelegateOutputContentErrorCode =
+  | 'answer_unavailable'
+  | 'corruption'
+  | 'not_found'
+  | 'storage_failure';
+
+export interface DelegateOutputContentError {
+  readonly code: DelegateOutputContentErrorCode;
+  readonly message: string;
+  readonly retryable: boolean;
 }
 
 export interface GetDelegateOutputValue {
@@ -219,34 +250,6 @@ export interface GetDelegateOutputValue {
   readonly result: DelegateOutput | null;
   readonly currentPhase?: AgentDelegationPhase;
   readonly queue?: AgentDelegationQueueState;
-}
-
-export interface DelegateWatchTarget {
-  readonly delegationId: string;
-  readonly runGeneration: number;
-}
-
-export interface WatchDelegatesValue {
-  readonly watcherId: string;
-  readonly mode: 'any' | 'all';
-  readonly deadlineAt: number;
-  readonly targets: readonly DelegateWatchTarget[];
-}
-
-export interface DelegateWatchEvent {
-  readonly watcherId: string;
-  readonly outcome: 'completed' | 'timeout';
-  readonly mode: 'any' | 'all';
-  readonly deadlineAt: number;
-  readonly targets: readonly {
-    readonly delegationId: string;
-    readonly runGeneration: number;
-    readonly status: AgentDelegationStatus;
-    readonly resultIndex: number | null;
-    readonly phase?: AgentDelegationPhase;
-    /** Why a stopped run settled. A content-free code, never output. */
-    readonly exitReason?: DelegationStopReason;
-  }[];
 }
 
 export interface PersistedAgentOverlaySummary {
@@ -416,6 +419,19 @@ export interface AgentDelegationEvent {
       }
     | { readonly type: 'usage'; readonly usage: AgentDelegationUsage }
     | { readonly type: 'approval'; readonly pending: boolean }
+    | {
+        /** Durable admission of a stream-backed generation's child rows. */
+        readonly type: 'transcript_receipt';
+        readonly streamRevision: number;
+        readonly mutationKey: string;
+        /** The admission repeated an already durable mutation. */
+        readonly replayed: boolean;
+        readonly items: readonly {
+          readonly id: string;
+          readonly itemRevision: number;
+          readonly final: boolean;
+        }[];
+      }
     | {
         readonly type: 'terminal';
         readonly status: AgentDelegationTerminalStatus;
@@ -889,13 +905,29 @@ export function parseGetDelegateOutputRequest(
   if (
     !isRecord(input) ||
     Object.keys(input).some(
-      (key) => key !== 'delegationId' && key !== 'resultIndex',
+      (key) =>
+        key !== 'delegationId' &&
+        key !== 'resultIndex' &&
+        key !== 'offset' &&
+        key !== 'limit',
     ) ||
     !isId(input.delegationId) ||
     (input.resultIndex !== undefined &&
       (typeof input.resultIndex !== 'number' ||
         !Number.isSafeInteger(input.resultIndex) ||
-        input.resultIndex < 1))
+        input.resultIndex < 1)) ||
+    (input.offset !== undefined &&
+      (typeof input.offset !== 'number' ||
+        !Number.isSafeInteger(input.offset) ||
+        input.offset < 0)) ||
+    (input.limit !== undefined &&
+      (typeof input.limit !== 'number' ||
+        !Number.isSafeInteger(input.limit) ||
+        input.limit < 4 ||
+        input.limit > 65_536)) ||
+    (typeof input.offset === 'number' &&
+      input.offset > 0 &&
+      input.resultIndex === undefined)
   )
     return invalidRequest();
   return {
@@ -905,31 +937,10 @@ export function parseGetDelegateOutputRequest(
       ...(input.resultIndex !== undefined
         ? { resultIndex: input.resultIndex }
         : {}),
+      ...(input.offset !== undefined ? { offset: input.offset } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
     },
   };
-}
-
-export function parseWatchDelegatesRequest(
-  input: unknown,
-): AgentDelegationResult<WatchDelegatesRequest> {
-  if (
-    !isRecord(input) ||
-    Object.keys(input).some(
-      (key) => key !== 'delegationIds' && key !== 'mode' && key !== 'timeoutMs',
-    ) ||
-    (input.mode !== 'any' && input.mode !== 'all')
-  )
-    return invalidRequest();
-  const parsed = parseAgentDelegationWaitRequest({
-    delegationIds: input.delegationIds,
-    timeoutMs: input.timeoutMs,
-  });
-  return parsed.ok
-    ? {
-        ok: true,
-        value: { ...parsed.value, mode: input.mode },
-      }
-    : parsed;
 }
 
 export function parseRequestSteeringRequest(

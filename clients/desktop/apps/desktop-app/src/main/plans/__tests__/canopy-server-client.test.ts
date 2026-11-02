@@ -35,6 +35,7 @@ function makeDetail(
     canUpdate: true,
     canDelete: true,
     ...overrides,
+    commentThreads: overrides.commentThreads ?? [],
   };
 }
 

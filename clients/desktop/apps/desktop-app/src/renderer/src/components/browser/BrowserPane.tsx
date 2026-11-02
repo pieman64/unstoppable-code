@@ -1,5 +1,9 @@
+import { Button } from '@canopy/ui-shared';
 import { LoadingSpinner } from '@/components/shared/loading';
 import {
+  BROWSER_NATIVE_VIEW_COVER_CHANGED_EVENT,
+  BROWSER_NATIVE_VIEW_COVERED_ATTRIBUTE,
+  BROWSER_NATIVE_VIEW_FROZEN_ATTRIBUTE,
   hasBrowserNativeViewOverlay,
   subscribeBrowserOverlayTopology,
 } from '@/lib/browserNativeOverlay';
@@ -29,7 +33,8 @@ import { BrowserAuthRequestNotice } from './BrowserAuthRequestNotice';
 import { BrowserSignInDialog } from './BrowserSignInDialog';
 import { BrowserInspector } from './BrowserInspector';
 import { BrowserJavaScriptDialogModal } from './BrowserJavaScriptDialogModal';
-import { RefreshIcon } from './icons';
+import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { recordBrowserTabPreview } from '@/lib/panels/browser-tab-preview';
 
 interface BrowserPaneProps {
   projectId: string;
@@ -47,6 +52,81 @@ interface BrowserPaneProps {
 }
 
 const FREEZE_FRAME_CAPTURE_FALLBACK_MS = 250;
+/** A frame at most this old is not re-taken when a control is pressed. */
+const FREEZE_FRAME_FRESH_MS = 300;
+/**
+ * While the pointer moves over the app's controls, the freeze frame is kept
+ * at most this old, so a menu or tooltip opened there can cover the page at
+ * once instead of waiting on a capture round trip.
+ */
+const FREEZE_FRAME_PREFETCH_MS = 1_000;
+/**
+ * How long after a page finishes loading its first frame is taken, so the
+ * first overlay over it never has to wait for one.
+ */
+const FREEZE_FRAME_AFTER_LOAD_MS = 500;
+/** Controls whose hover suggests an overlay may open next. */
+const FREEZE_FRAME_PREFETCH_TARGETS =
+  'button, a[href], input, select, textarea, [role="button"], [role="tab"], [role="menuitem"], [aria-haspopup]';
+
+/**
+ * Whether the latest frame may no longer show the page. A frame taken while
+ * pointing at the control just pressed is current enough for the overlay it
+ * opens; otherwise the frame must be from within the hover window. The page
+ * can change (scrolling, typing) without the app seeing it, so a press alone
+ * never makes an old frame current.
+ */
+function freezeFrameStale(
+  pressedAt: number | null,
+  capturedAt: number | null,
+): boolean {
+  if (capturedAt === null) {
+    return true;
+  }
+  const now = performance.now();
+  if (
+    pressedAt !== null &&
+    now - pressedAt <= FREEZE_FRAME_FRESH_MS &&
+    pressedAt - capturedAt <= FREEZE_FRAME_PREFETCH_MS
+  ) {
+    return false;
+  }
+  return now - capturedAt > FREEZE_FRAME_PREFETCH_MS;
+}
+
+/** Whether a frame still lines up with the page area it would cover. */
+function freezeFrameFits(
+  frame: BrowserFreezeFrame,
+  element: HTMLElement | null,
+): boolean {
+  const rect = element?.getBoundingClientRect();
+  return (
+    rect === undefined ||
+    (Math.abs(rect.width - frame.width) <= 1 &&
+      Math.abs(rect.height - frame.height) <= 1)
+  );
+}
+
+/** Runs after two more frames, once a DOM change has reached the screen. */
+function afterNextPaint(callback: () => void): () => void {
+  let second: number | null = null;
+  const first = requestAnimationFrame(() => {
+    second = requestAnimationFrame(callback);
+  });
+  return (): void => {
+    cancelAnimationFrame(first);
+    if (second !== null) {
+      cancelAnimationFrame(second);
+    }
+  };
+}
+
+/** Decodes a captured frame ahead of use; a failed decode still resolves. */
+function decodeFreezeFrame(image: HTMLImageElement): Promise<void> {
+  return typeof image.decode === 'function'
+    ? image.decode().catch(() => undefined)
+    : Promise.resolve();
+}
 
 function roundRect(rect: DOMRect): {
   x: number;
@@ -79,12 +159,25 @@ function useBrowserNativeViewBlocked(
 
     const update = (): void => {
       frameId = null;
-      setBlocked(
-        hasBrowserNativeViewOverlay(
-          document,
-          targetRef.current?.getBoundingClientRect() ?? null,
-        ),
+      const target = targetRef.current;
+      const covered = hasBrowserNativeViewOverlay(
+        document,
+        target?.getBoundingClientRect() ?? null,
       );
+      setBlocked(covered);
+      // Published at once (not through React), so the above-browser mirror
+      // draws the overlay over the live page in this same frame, until a
+      // freeze frame stands in for the page.
+      const value = covered ? 'true' : 'false';
+      if (
+        target &&
+        target.getAttribute(BROWSER_NATIVE_VIEW_COVERED_ATTRIBUTE) !== value
+      ) {
+        target.setAttribute(BROWSER_NATIVE_VIEW_COVERED_ATTRIBUTE, value);
+        window.dispatchEvent(
+          new Event(BROWSER_NATIVE_VIEW_COVER_CHANGED_EVENT),
+        );
+      }
     };
 
     const scheduleUpdate = (): void => {
@@ -125,7 +218,13 @@ function useBrowserNativeViewBlocked(
 interface BrowserFreezeFrame {
   browserId: string;
   runtimeGeneration?: number;
-  sequence: number;
+  /** The page epoch (browser, URL and runtime) the frame was captured in. */
+  epoch: number;
+  /** `performance.now()` when the capture was requested. */
+  capturedAt: number;
+  /** The page area's CSS size when the capture was requested. */
+  width: number;
+  height: number;
   dataUrl: string;
 }
 
@@ -191,11 +290,39 @@ export function BrowserPane({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const lastVisibleNavigationRef = useRef<string | null>(null);
   const nativeViewBlocked = useBrowserNativeViewBlocked(contentRef);
-  const captureSequenceRef = useRef(0);
+  // Bumped when the page the frames show changes (browser, URL, runtime), so
+  // a capture from an earlier page never renders over the current one.
+  const freezeEpochRef = useRef(0);
+  // The capture running for a page epoch. A capture left over from an
+  // earlier page does not block one for the current page.
+  const captureInFlightRef = useRef<{
+    epoch: number;
+    done: Promise<void>;
+  } | null>(null);
+  const lastCaptureAtRef = useRef<number | null>(null);
+  // When the pointer last pressed something in the app: an overlay opened
+  // by that press covers the page with the frame taken while pointing.
+  const lastPointerPressAtRef = useRef<number | null>(null);
+  // A newer frame that landed while the current one covers the page. It is
+  // swapped in only once the native view is back on top, so the page never
+  // changes under an open overlay.
+  const pendingFreezeFrameRef = useRef<BrowserFreezeFrame | null>(null);
+  const freezeFrameElementRef = useRef<HTMLImageElement | null>(null);
+  // True from the frame covering the page until main has shown the native
+  // view again.
+  const freezeHoldRef = useRef(false);
   const [freezeFrame, setFreezeFrame] = useState<BrowserFreezeFrame | null>(
     null,
   );
+  // The frame known to be on screen under the native view.
+  const [paintedFreezeFrame, setPaintedFreezeFrame] =
+    useState<BrowserFreezeFrame | null>(null);
   const [freezeCaptureFailed, setFreezeCaptureFailed] = useState(false);
+  // The overlay currently over the page, and whether it is waiting for a
+  // newer frame before covering it.
+  const [freezeBlock, setFreezeBlock] = useState<{
+    awaitingFreshFrame: boolean;
+  } | null>(null);
   // Tracks whether this live view has ever committed a page, so a navigation
   // only shows the centered loading placeholder when the pane is truly blank
   // (nothing painted yet) rather than over previously-loaded content.
@@ -237,11 +364,40 @@ export function BrowserPane({
     freezeFrame !== null &&
     freezeFrame.browserId === browserId &&
     freezeFrame.runtimeGeneration === snapshot?.profile?.runtimeGeneration &&
-    freezeFrame.sequence === captureSequenceRef.current
+    freezeFrame.epoch === freezeEpochRef.current
       ? freezeFrame
       : null;
+  // An overlay the pointer did not just open (a toast, a shortcut) waits,
+  // briefly, for a newer frame than a stale one, since the page may have
+  // changed without the app seeing it. Until the page is frozen, the
+  // above-browser mirror draws the overlay over the live page (see
+  // `useBrowserNativeViewBlocked`), so it is never cut off. Decided in the
+  // render the overlay appears in, before the native view could be hidden.
+  const blockedWhileAvailable = nativeViewBlocked && nativeViewAvailable;
+  const blockStarting = blockedWhileAvailable && freezeBlock === null;
+  const awaitingFreshFrame = blockStarting
+    ? activeFreezeFrame !== null &&
+      freezeFrameStale(lastPointerPressAtRef.current, lastCaptureAtRef.current)
+    : freezeBlock?.awaitingFreshFrame === true;
+  if (blockStarting) {
+    setFreezeBlock({ awaitingFreshFrame });
+  } else if (!blockedWhileAvailable && freezeBlock !== null) {
+    setFreezeBlock(null);
+  }
   const nativeViewSuppressed =
-    nativeViewBlocked && (activeFreezeFrame !== null || freezeCaptureFailed);
+    nativeViewBlocked &&
+    ((activeFreezeFrame !== null &&
+      paintedFreezeFrame === activeFreezeFrame &&
+      !awaitingFreshFrame) ||
+      freezeCaptureFailed);
+  if (nativeViewSuppressed) {
+    freezeHoldRef.current = true;
+  }
+  useEffect(() => {
+    window.dispatchEvent(new Event(BROWSER_NATIVE_VIEW_COVER_CHANGED_EVENT));
+  }, [nativeViewSuppressed]);
+  const activeFreezeFrameRef = useRef<BrowserFreezeFrame | null>(null);
+  activeFreezeFrameRef.current = activeFreezeFrame;
   // The native view is shown only when the pane is visible, a live view
   // exists, and a real URL has been committed (a blank browser shows its
   // hint). It is hidden while app-level overlays intersect this pane because
@@ -288,7 +444,9 @@ export function BrowserPane({
   }, [browserId, live, snapshot?.profile?.runtimeGeneration]);
 
   useEffect(() => {
-    captureSequenceRef.current += 1;
+    freezeEpochRef.current += 1;
+    pendingFreezeFrameRef.current = null;
+    lastCaptureAtRef.current = null;
     setFreezeFrame(null);
     setFreezeCaptureFailed(false);
   }, [browserId, snapshot?.url, snapshot?.profile?.runtimeGeneration]);
@@ -305,83 +463,279 @@ export function BrowserPane({
     }
   }, [snapshot?.status, snapshot?.profile?.runtimeGeneration]);
 
-  // Freeze-frame capture on visible → blocked transitions. The capture is
-  // scoped to {browserId, sequence}: late results from an earlier browser,
-  // overlay episode, or mount can never render over the current content.
-  useEffect(() => {
-    if (!nativeViewBlocked || !nativeViewAvailable) {
-      captureSequenceRef.current += 1;
-      setFreezeCaptureFailed(false);
-      if (freezeFrame !== null) {
-        const frameId = requestAnimationFrame(() => {
-          setFreezeFrame(null);
-        });
-        return (): void => {
-          cancelAnimationFrame(frameId);
-        };
-      }
-      return undefined;
-    }
+  const runtimeGeneration = snapshot?.profile?.runtimeGeneration;
+  const pageUrlRef = useRef('');
+  pageUrlRef.current = snapshot?.url ?? '';
+  const pageLoadingRef = useRef(false);
+  pageLoadingRef.current = snapshot?.loading === true;
+  const nativeViewBlockedRef = useRef(false);
+  nativeViewBlockedRef.current = blockedWhileAvailable;
 
-    if (freezeFrame !== null || freezeCaptureFailed) {
-      return undefined;
+  // One capture at a time per page; the returned promise settles with the
+  // running one. The result is scoped to the page epoch it was requested in,
+  // not to an overlay: a frame that lands after its overlay closed is kept
+  // for the next one.
+  const captureFreezeFrame = useCallback((): Promise<void> => {
+    const inFlight = captureInFlightRef.current;
+    if (inFlight !== null && inFlight.epoch === freezeEpochRef.current) {
+      return inFlight.done;
     }
-
-    const sequence = ++captureSequenceRef.current;
-    const capturedBrowserId = browserId;
-    // Wait no more than the fallback window for the capture before hiding
-    // the native view without an image. The capture itself stays wanted: a
-    // frame that lands late still replaces the blank pane for as long as this
-    // same overlay episode lasts. The sequence, not this effect's lifetime,
-    // scopes the result — flipping `freezeCaptureFailed` re-runs the effect.
-    const timeoutId = window.setTimeout(() => {
-      if (captureSequenceRef.current === sequence) {
+    const area = contentRef.current?.getBoundingClientRect();
+    if (!area) {
+      return Promise.resolve();
+    }
+    const epoch = freezeEpochRef.current;
+    const capturedAt = performance.now();
+    // The page this frame shows: the epoch resets on navigation, so a frame
+    // that lands for this epoch is of this URL. While a page loads, the URL
+    // is already the new one but the screen can still show the old page, so
+    // such a frame is not kept as the tab preview.
+    const pageUrl = pageUrlRef.current;
+    const pageLoading = pageLoadingRef.current;
+    const failIfBlocked = (): void => {
+      if (freezeEpochRef.current === epoch && nativeViewBlockedRef.current) {
         setFreezeCaptureFailed(true);
       }
-    }, FREEZE_FRAME_CAPTURE_FALLBACK_MS);
-
-    void window.api.browser
+    };
+    const done = window.api.browser
       .screenshot({
-        browserId: capturedBrowserId,
+        browserId,
         purpose: 'freeze-frame',
-        ...(snapshot?.profile?.runtimeGeneration !== undefined
-          ? { expectedRuntimeGeneration: snapshot.profile.runtimeGeneration }
+        ...(runtimeGeneration !== undefined
+          ? { expectedRuntimeGeneration: runtimeGeneration }
           : {}),
       })
-      .then((result) => {
-        window.clearTimeout(timeoutId);
-        if (captureSequenceRef.current !== sequence) {
-          return;
-        }
+      .then(async (result) => {
         if (!result.dataUrl) {
-          setFreezeCaptureFailed(true);
+          failIfBlocked();
           return;
         }
-        setFreezeFrame({
-          browserId: capturedBrowserId,
-          runtimeGeneration: snapshot?.profile?.runtimeGeneration,
-          sequence,
+        const image = new Image();
+        image.src = result.dataUrl;
+        await decodeFreezeFrame(image);
+        if (freezeEpochRef.current !== epoch) {
+          return;
+        }
+        lastCaptureAtRef.current = capturedAt;
+        if (!pageLoading && !pageLoadingRef.current) {
+          recordBrowserTabPreview(browserId, pageUrl, image);
+        }
+        const frame: BrowserFreezeFrame = {
+          browserId,
+          runtimeGeneration,
+          epoch,
+          capturedAt,
+          width: Math.round(area.width),
+          height: Math.round(area.height),
           dataUrl: result.dataUrl,
+        };
+        setFreezeFrame((current) => {
+          if (current !== null && freezeHoldRef.current) {
+            pendingFreezeFrameRef.current = frame;
+            return current;
+          }
+          return frame;
         });
       })
-      .catch(() => {
-        window.clearTimeout(timeoutId);
-        if (captureSequenceRef.current === sequence) {
-          setFreezeCaptureFailed(true);
+      .catch(failIfBlocked)
+      .finally(() => {
+        if (captureInFlightRef.current?.epoch === epoch) {
+          captureInFlightRef.current = null;
         }
       });
+    captureInFlightRef.current = { epoch, done };
+    return done;
+  }, [browserId, runtimeGeneration]);
 
+  // An overlay over the page with no frame yet: capture one, and wait no
+  // more than the fallback window before hiding the native view without an
+  // image. A frame that lands late still fills the pane for as long as the
+  // overlay stays. Once a frame covers the page, nothing is re-taken until
+  // the overlay closes, so the page holds still under it.
+  const hasActiveFreezeFrame = activeFreezeFrame !== null;
+  useEffect(() => {
+    if (!blockedWhileAvailable) {
+      setFreezeCaptureFailed(false);
+      return undefined;
+    }
+    if (hasActiveFreezeFrame || freezeCaptureFailed) {
+      return undefined;
+    }
+    void captureFreezeFrame();
+    const timeoutId = window.setTimeout(() => {
+      setFreezeCaptureFailed(true);
+    }, FREEZE_FRAME_CAPTURE_FALLBACK_MS);
     return (): void => {
       window.clearTimeout(timeoutId);
     };
   }, [
-    browserId,
-    snapshot?.profile?.runtimeGeneration,
+    blockedWhileAvailable,
+    captureFreezeFrame,
     freezeCaptureFailed,
-    freezeFrame,
-    nativeViewAvailable,
-    nativeViewBlocked,
+    hasActiveFreezeFrame,
   ]);
+
+  // A stale frame under an overlay: take a newer one, waiting no more than
+  // the fallback window before covering the page with the one there is.
+  useEffect(() => {
+    if (!awaitingFreshFrame) {
+      return undefined;
+    }
+    let cancelled = false;
+    const stopWaiting = (): void => {
+      if (!cancelled) {
+        setFreezeBlock((block) =>
+          block === null ? block : { awaitingFreshFrame: false },
+        );
+      }
+    };
+    void captureFreezeFrame().then(stopWaiting);
+    const timeoutId = window.setTimeout(
+      stopWaiting,
+      FREEZE_FRAME_CAPTURE_FALLBACK_MS,
+    );
+    return (): void => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [awaitingFreshFrame, captureFreezeFrame]);
+
+  // A first frame once the page has loaded and settled.
+  const pageReady = snapshot?.status === 'ready';
+  useEffect(() => {
+    if (!viewVisible || !pageReady || hasActiveFreezeFrame) {
+      return undefined;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void captureFreezeFrame();
+    }, FREEZE_FRAME_AFTER_LOAD_MS);
+    return (): void => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [captureFreezeFrame, hasActiveFreezeFrame, pageReady, viewVisible]);
+
+  // Keep a recent frame while the pointer is on the app's controls, so the
+  // overlay they open does not wait on a capture.
+  useEffect(() => {
+    if (!viewVisible) {
+      return undefined;
+    }
+    const handleIntent = (event: Event): void => {
+      const pointerOver = event.type === 'pointerover';
+      if (
+        pointerOver &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest(FREEZE_FRAME_PREFETCH_TARGETS)
+        )
+      ) {
+        return;
+      }
+      const now = performance.now();
+      if (!pointerOver) {
+        lastPointerPressAtRef.current = now;
+      }
+      const capturedAt = lastCaptureAtRef.current;
+      const maxAge = pointerOver
+        ? FREEZE_FRAME_PREFETCH_MS
+        : FREEZE_FRAME_FRESH_MS;
+      if (capturedAt === null || now - capturedAt > maxAge) {
+        void captureFreezeFrame();
+      }
+    };
+    const options = { capture: true, passive: true };
+    window.addEventListener('pointerover', handleIntent, options);
+    window.addEventListener('pointerdown', handleIntent, options);
+    window.addEventListener('contextmenu', handleIntent, options);
+    return (): void => {
+      window.removeEventListener('pointerover', handleIntent, options);
+      window.removeEventListener('pointerdown', handleIntent, options);
+      window.removeEventListener('contextmenu', handleIntent, options);
+    };
+  }, [captureFreezeFrame, viewVisible]);
+
+  // A frame sized for another page area would not line up with the page;
+  // drop it when the area resizes while the frame is not covering the page
+  // (a resize under an overlay is checked once the native view is back).
+  useEffect(() => {
+    const element = contentRef.current;
+    if (
+      !element ||
+      activeFreezeFrame === null ||
+      typeof ResizeObserver === 'undefined'
+    ) {
+      return undefined;
+    }
+    const observer = new ResizeObserver(() => {
+      if (
+        !freezeHoldRef.current &&
+        !freezeFrameFits(activeFreezeFrame, element)
+      ) {
+        pendingFreezeFrameRef.current = null;
+        lastCaptureAtRef.current = null;
+        setFreezeFrame(null);
+      }
+    });
+    observer.observe(element);
+    return (): void => {
+      observer.disconnect();
+    };
+  }, [activeFreezeFrame]);
+
+  // The frame stays drawn under the live native view, so an overlay can hide
+  // the view at once. It counts as on screen two frames after it decoded.
+  const showFreezeFrame =
+    activeFreezeFrame !== null && nativeViewAvailable && !showInitialLoading;
+  useEffect(() => {
+    if (!showFreezeFrame || activeFreezeFrame === null) {
+      setPaintedFreezeFrame(null);
+      return undefined;
+    }
+    let cancelled = false;
+    let cancelPaint: (() => void) | null = null;
+    const element = freezeFrameElementRef.current;
+    void (element ? decodeFreezeFrame(element) : Promise.resolve()).then(() => {
+      if (cancelled) {
+        return;
+      }
+      cancelPaint = afterNextPaint(() => {
+        setPaintedFreezeFrame(activeFreezeFrame);
+      });
+    });
+    return (): void => {
+      cancelled = true;
+      cancelPaint?.();
+    };
+  }, [activeFreezeFrame, showFreezeFrame]);
+
+  // Called once main has shown the native view again: after it has reached
+  // the screen, a frame that landed meanwhile replaces the one under it, and
+  // a frame that no longer fits the page area (resized under the overlay) is
+  // dropped.
+  const nativeViewShownRef = useRef<() => void>(() => undefined);
+  nativeViewShownRef.current = (): void => {
+    afterNextPaint(() => {
+      if (nativeViewBlockedRef.current) {
+        return;
+      }
+      freezeHoldRef.current = false;
+      const pending = pendingFreezeFrameRef.current;
+      pendingFreezeFrameRef.current = null;
+      const next =
+        pending !== null && pending.epoch === freezeEpochRef.current
+          ? pending
+          : activeFreezeFrameRef.current;
+      if (next === null) {
+        return;
+      }
+      if (!freezeFrameFits(next, contentRef.current)) {
+        lastCaptureAtRef.current = null;
+        setFreezeFrame(null);
+      } else if (next === pending) {
+        setFreezeFrame(pending);
+      }
+    });
+  };
 
   const sendBounds = useCallback((): void => {
     const target = {
@@ -422,7 +776,8 @@ export function BrowserPane({
         // native view copies.
         cornerRadii: readCornerRadii(el),
       })
-      .catch(() => undefined);
+      .then(() => nativeViewShownRef.current())
+      .catch(() => nativeViewShownRef.current());
   }, [browserId, viewVisible, snapshot?.profile?.runtimeGeneration]);
 
   const handleRetry = useCallback((): void => {
@@ -635,7 +990,14 @@ export function BrowserPane({
           data-browser-native-view-available={
             nativeViewAvailable ? 'true' : 'false'
           }
-          className={`${POSTHOG_REPLAY_BLOCK_CLASS} relative min-h-0 min-w-0 flex-1 bg-base`}
+          // The freeze frame stands in for the live view. Until it does, the
+          // above-browser mirror draws overlays over the page.
+          {...{
+            [BROWSER_NATIVE_VIEW_FROZEN_ATTRIBUTE]: nativeViewSuppressed
+              ? 'true'
+              : 'false',
+          }}
+          className={`${POSTHOG_REPLAY_BLOCK_CLASS} relative min-h-0 min-w-0 flex-1 overflow-hidden bg-base`}
         >
           {showInitialLoading ? (
             <div
@@ -659,14 +1021,15 @@ export function BrowserPane({
               <div className="max-w-full break-words font-mono text-xs">
                 {snapshot.lastError ?? snapshot.url}
               </div>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="compact"
+                className="mt-1"
                 onClick={handleRetry}
-                className="mt-1 flex items-center gap-1 rounded border bg-base/50 px-2 py-1 text-xs fg-primary hover:bg-base"
               >
-                <RefreshIcon />
+                <RefreshIcon size={14} />
                 Retry
-              </button>
+              </Button>
             </div>
           ) : !hasUrl ? (
             <div
@@ -676,13 +1039,26 @@ export function BrowserPane({
               Enter a URL to start.
             </div>
           ) : null}
-          {nativeViewSuppressed && activeFreezeFrame && (
+          {showFreezeFrame && (
             <img
+              ref={freezeFrameElementRef}
               src={activeFreezeFrame.dataUrl}
               alt=""
               aria-hidden="true"
-              data-testid="browser-pane-freeze-frame"
-              className="pointer-events-none absolute inset-0 h-full w-full object-fill"
+              // Decoded with the frame it first paints in, so it is never
+              // drawn a frame late.
+              decoding="sync"
+              // The freeze frame only while it stands in for the page; ready
+              // (under the live view) otherwise.
+              data-testid={
+                nativeViewSuppressed
+                  ? 'browser-pane-freeze-frame'
+                  : 'browser-pane-freeze-frame-ready'
+              }
+              // Fills the page area from its top-left corner without
+              // stretching: if the area grows under an open overlay, the
+              // picture still covers all of it.
+              className="pointer-events-none absolute inset-0 h-full w-full object-cover object-left-top"
               draggable={false}
             />
           )}

@@ -1,3 +1,4 @@
+import { assertLegacyCombineAllowed } from './org-shared-multi-repo-legacy-guard';
 import { w5CompositionLocks } from './w5-composition-operation';
 import {
   runW5BoundaryOperation,
@@ -14,8 +15,8 @@ import {
   admitW5Composition,
   checkW5CompositionRevisions,
   commitW5BoundaryStep,
-  w5CombineOutcomeSchema,
-  w5CompositionWorkspaceSchema,
+  w5CombineOutcomeParser,
+  w5PromoteOutcomeParser,
   type W5CompositionOptions,
   type W5CombineOutcome,
   type W5PromoteOutcome,
@@ -645,6 +646,10 @@ async function combineWorktreeWithWorkspaceAdmitted(
     throw new Error('Cannot add a project to itself');
   }
 
+  await assertLegacyCombineAllowed([
+    request.sourceWorkspaceId,
+    ...joinWorkspaceIds,
+  ]);
   const existingDestination = await findExistingAdhocDestination(
     request.sourceWorkspaceId,
     request.sourceWorktreeId,
@@ -712,8 +717,10 @@ async function combineWorktreeWithWorkspaceAdmitted(
     request.sourceWorktreeId,
     {
       activeChats: 'Stop active chats before adding a repo to this worktree.',
+      runningScripts:
+        'Wait for running scripts, such as setup, to finish before adding a repo to this worktree.',
       runningPipelines:
-        'Wait for running pipeline executions to finish before adding a repo to this worktree.',
+        'Wait for running workflow executions to finish before adding a repo to this worktree.',
     },
   );
   const joinCandidates =
@@ -854,7 +861,7 @@ export function combineWorktreeWithWorkspace(
       },
       isPreEffectRefusal: (error) => error instanceof W5RevisionConflictError,
     },
-    (outcome) => decodeW5CompositionOutcome(w5CombineOutcomeSchema, outcome),
+    (outcome) => decodeW5CompositionOutcome(w5CombineOutcomeParser, outcome),
     async (commit, attempt) => {
       commit.expectedRevisions = expectedRevisions;
       await checkW5CompositionRevisions(commit);
@@ -891,8 +898,7 @@ export function promoteTemporaryWorkspace(
       },
       isPreEffectRefusal: (error) => error instanceof W5RevisionConflictError,
     },
-    (outcome) =>
-      decodeW5CompositionOutcome(w5CompositionWorkspaceSchema, outcome),
+    (outcome) => decodeW5CompositionOutcome(w5PromoteOutcomeParser, outcome),
     async (commit, attempt) => {
       commit.expectedRevisions = w5ExpectedRevision(
         { kind: 'workspace', workspaceId: request.workspaceId },

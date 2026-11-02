@@ -2,8 +2,11 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2021",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "types": ["node"]
+    "types": ["node"],
+    "incremental": true,
+    "tsBuildInfoFile": "../../../.cache/tsbuildinfo/ui-app-test.tsbuildinfo"
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "../../ui-shared/src/css.d.ts"]
 }

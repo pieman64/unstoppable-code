@@ -22,17 +22,22 @@ import {
   LoadingButton,
   Notice,
   PrivateMemoryCard,
+  PageSearchField,
+  PageSearchRow,
   SegmentedControl,
   SettingsListSkeleton,
   StatusPill,
   type ActionMenuItem,
 } from '@canopy/ui-shared/components';
-import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
+import { TeamPageHeaderActions } from './team-page-header-slot';
+import {
+  SETTINGS_GROUP_SURFACE_CLASS,
+  SettingsCard,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 import {
   ArchiveIcon,
   EyeIcon,
   EyeOffIcon,
-  FolderGit2,
   Github,
   MoreHorizontalIcon,
   PencilIcon,
@@ -78,7 +83,7 @@ import {
   refreshSummary,
   TeamProjectsRepositories,
 } from './team-projects-repositories';
-import { matchesProjectSearch, SearchField } from './team-projects-display';
+import { matchesProjectSearch } from './team-projects-display';
 import { openDesktopDeepLink } from './desktop-handoff';
 import { ProjectsSetupChecklist } from './team-projects-setup-checklist';
 import {
@@ -419,7 +424,7 @@ export function TeamProjectsHeaderActions({
       {addAvailable && (
         <Button
           size="compact"
-          variant="primary"
+          variant="secondary"
           data-testid="team-projects-create"
           onClick={onAdd}
         >
@@ -1108,7 +1113,6 @@ function ProjectList({
       )}
       {showChecklist && (
         <SettingsCard
-          icon={<FolderGit2 size={18} />}
           title="Get your organization's projects set up"
           subtitle="Add your team's repositories once and manage sharing. Everyone you share with finds them here and can set them up in one click, already connected to the organization."
           testId="team-projects-setup"
@@ -1152,13 +1156,31 @@ function ProjectList({
               </p>
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-3">
-            <SearchField
-              label="Search projects"
+          {/* Refresh from GitHub is a page action: the header holds it. */}
+          <TeamPageHeaderActions>
+            {repositoriesAvailable && (
+              <LoadingButton
+                size="compact"
+                variant="secondary"
+                data-testid="team-projects-refresh"
+                loading={refreshing}
+                disabled={listBusy}
+                onClick={(): void => {
+                  void refresh();
+                }}
+              >
+                Refresh from GitHub
+              </LoadingButton>
+            )}
+          </TeamPageHeaderActions>
+          <PageSearchRow>
+            <PageSearchField
+              aria-label="Search projects"
+              placeholder="Search projects"
               data-testid="team-projects-search"
               maxLength={ORG_PROJECT_LIMITS.nameLength}
               value={query}
-              onChange={setQuery}
+              onValueChange={setQuery}
             />
             {filters.length > 0 && (
               <SegmentedControl
@@ -1184,30 +1206,16 @@ function ProjectList({
                 ]}
               />
             )}
-            {repositoriesAvailable && (
-              <LoadingButton
-                size="compact"
-                variant="ghost"
-                data-testid="team-projects-refresh"
-                loading={refreshing}
-                disabled={listBusy}
-                onClick={(): void => {
-                  void refresh();
-                }}
-              >
-                Refresh from GitHub
-              </LoadingButton>
-            )}
-            <p className="ml-auto text-s fg-secondary">
-              <span
-                data-testid="team-projects-count"
-                className="tabular-nums fg-primary"
-              >
-                {memberCursor ? `${total}+` : total}
-              </span>{' '}
-              {total === 1 && !memberCursor ? 'project' : 'projects'}
-            </p>
-          </div>
+          </PageSearchRow>
+          <p className="text-s fg-secondary">
+            <span
+              data-testid="team-projects-count"
+              className="tabular-nums fg-primary"
+            >
+              {memberCursor ? `${total}+` : total}
+            </span>{' '}
+            {total === 1 && !memberCursor ? 'project' : 'projects'}
+          </p>
           {visibleRows.length === 0 ? (
             <p
               data-testid="team-projects-no-results"
@@ -1217,7 +1225,7 @@ function ProjectList({
             </p>
           ) : (
             <div
-              className={`${ORG_PROJECT_ROW_COLUMNS_CLASS} divide-y rounded-lg border px-3`}
+              className={`${ORG_PROJECT_ROW_COLUMNS_CLASS} divide-y ${SETTINGS_GROUP_SURFACE_CLASS}`}
             >
               {visibleRows.map((row): JSX.Element => {
                 const project = row.summary;
@@ -1680,6 +1688,9 @@ function ProjectEditor({
           <ErrorBanner error={error} />
           {stale && (
             <LoadingButton
+              variant="secondary"
+              size="compact"
+              className="self-start"
               loading={busy}
               onClick={(): void => {
                 void (async (): Promise<void> => {
@@ -1757,6 +1768,9 @@ function ProjectEditor({
             />
             <LoadingButton
               type="submit"
+              variant="secondary"
+              size="compact"
+              className="self-start"
               loading={busy}
               disabled={stale || !name.trim()}
             >
@@ -1801,6 +1815,9 @@ function ProjectEditor({
               growthDisabled={growthDisabled}
             />
             <LoadingButton
+              variant="secondary"
+              size="compact"
+              className="self-start"
               loading={busy}
               disabled={stale || (growthDisabled && hasExpansion)}
               onClick={(): void => {

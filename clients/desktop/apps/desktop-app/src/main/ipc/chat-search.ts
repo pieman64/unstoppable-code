@@ -1,5 +1,6 @@
 import {
   IPC_CHANNELS,
+  type ChatSearchCatalogRequest,
   type ChatSearchCatalogResponse,
   type ChatSearchQueryRequest,
   type ChatSearchQueryResponse,
@@ -8,6 +9,7 @@ import {
 import { getChatSearchService } from '../chat-search/service';
 import { addTrackedPlansWriteListener } from '../lib/plan-persistence';
 import { getWorkspaceScopingContext } from '../lib/workspace-context-service';
+import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 
 function linkedPersonalWorkspaceIds(
@@ -17,6 +19,24 @@ function linkedPersonalWorkspaceIds(
   return scope.linkedPersonalWorkspaceIds
     .filter((id): id is string => typeof id === 'string' && id.length > 0)
     .slice(0, 2_000);
+}
+
+function isValidChatId(id: unknown): id is string {
+  try {
+    validateId(id, 'chat ID');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The chats a catalog request asks for, or undefined for the newest page. */
+function requestedChatIds(
+  request: ChatSearchCatalogRequest | undefined,
+): string[] | undefined {
+  if (!Array.isArray(request?.chatIds)) return undefined;
+  // Ids that fail the shared validator can't name a chat; drop them.
+  return request.chatIds.filter(isValidChatId).slice(0, 500);
 }
 
 /**
@@ -34,7 +54,7 @@ function linkedPersonalWorkspaceIds(
  *   ranges.
  */
 export function registerChatSearchHandlers(): void {
-  registerIpcHandler<[ChatSearchScopeHint?], ChatSearchCatalogResponse>(
+  registerIpcHandler<[ChatSearchCatalogRequest?], ChatSearchCatalogResponse>(
     IPC_CHANNELS.chatSearchCatalog,
     async (_event, scope) => {
       const service = getChatSearchService();
@@ -46,6 +66,7 @@ export function registerChatSearchHandlers(): void {
           getWorkspaceScopingContext(),
           undefined,
           linkedPersonalWorkspaceIds(scope),
+          requestedChatIds(scope),
         ),
       };
     },

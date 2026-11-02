@@ -39,21 +39,17 @@ function chatWatcher(
     trigger: overrides.trigger ?? 'worktree_chat_completion',
     status: overrides.status ?? 'active',
     label: overrides.label ?? 'Chat watcher',
-    target:
-      overrides.target ??
-      ({
-        kind: 'worktree_chat',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-      } as AppAdvisorWatcherSummary['target']),
-    destination:
-      overrides.destination ??
-      ({
-        projectId: APP_ADVISOR_PROJECT_ID,
-        worktreeId: APP_ADVISOR_WORKTREE_ID,
-        chatId: 'advisor-chat',
-      } as AppAdvisorWatcherSummary['destination']),
+    target: overrides.target ?? {
+      kind: 'worktree_chat',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    },
+    destination: overrides.destination ?? {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: APP_ADVISOR_WORKTREE_ID,
+      chatId: 'advisor-chat',
+    },
     createdAt: overrides.createdAt ?? '2026-05-27T00:00:00.000Z',
   };
 }
@@ -127,11 +123,21 @@ describe('Chat watcher owner indicator placement', () => {
     };
     const githubTarget: AppAdvisorWatcherSummary['target'] = {
       kind: 'github_workflow_runs',
-      items: [{ kind: 'workflow_run', repository: 'acme/api', runId: '1' }],
-      notifyOn: { statuses: [], conclusions: ['failure', 'success'] },
+      items: [
+        {
+          kind: 'workflow_run',
+          repository: 'acme/api',
+          runId: '1',
+        },
+      ],
+      notifyOn: {
+        statuses: [],
+        conclusions: ['failure', 'success'],
+        jobConclusions: [],
+      },
       display: {
         repositories: ['acme/api'],
-        sample: [{ repository: 'acme/api', runId: '1' }],
+        sample: [{ repository: 'acme/api', runId: '1', runAttempt: 1 }],
       },
     };
     const githubWatcher: AppAdvisorWatcherSummary = {

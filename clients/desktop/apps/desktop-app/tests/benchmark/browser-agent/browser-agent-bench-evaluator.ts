@@ -8,6 +8,8 @@ export interface PageCheck {
   equals: unknown;
   /** Passes when no tab matches, for checks that something never happened. */
   passIfNoTab?: boolean;
+  /** How many tabs must match `url`, for checks that a link opened one tab. */
+  tabs?: number;
 }
 
 export interface ScenarioExpect {
@@ -36,7 +38,7 @@ export interface Scenario {
   /** Passes without the in-app browser: a guardrail may be declined outright. */
   allowWithoutBrowser?: boolean;
   setup?: {
-    /** Files written into the worktree before the turn, by relative path. */
+    /** Files written into the worktree, which a prompt names as `{worktree}`, by relative path. */
     workspaceFiles?: Record<string, string>;
     /**
      * Files written outside the workspace, under a scratch directory the
@@ -475,7 +477,7 @@ export function replyText(messages: PersistedMessage[]): string {
 export interface Observed {
   reply: string;
   /** One entry per `expect.page` check; `found` is false when no tab matched. */
-  page: Array<{ found: boolean; value?: unknown }>;
+  page: Array<{ found: boolean; value?: unknown; tabs?: number }>;
   /** One flag per `expect.files` entry. */
   files: boolean[];
   metrics: TurnMetrics;
@@ -538,6 +540,12 @@ export function evaluateScenario(
         ? `got ${clip(JSON.stringify(seen.value) ?? 'undefined', 120)}, want ${JSON.stringify(check.equals)}`
         : 'no tab matched',
     });
+    if (check.tabs !== undefined)
+      checks.push({
+        name: `${check.tabs} tab(s) at ${check.url}`,
+        ok: (seen.tabs ?? 0) === check.tabs,
+        detail: `got ${seen.tabs ?? 0}`,
+      });
   });
   (expect.files ?? []).forEach((file, index) =>
     checks.push({

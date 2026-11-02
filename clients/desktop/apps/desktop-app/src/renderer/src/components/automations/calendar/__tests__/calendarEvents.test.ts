@@ -1,6 +1,8 @@
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import {
   buildCalendarEvents,
+  calendarEventInteractionClasses,
+  calendarEventToneClasses,
   formatGroupCount,
   formatGroupTimeRange,
   groupCalendarEvents,
@@ -232,5 +234,52 @@ describe('buildCalendarEvents window coverage', () => {
     const lastDayGroups = groupCalendarEvents(onLastDay, 'day');
     expect(lastDayGroups).toHaveLength(1);
     expect(lastDayGroups[0]?.count).toBe(288);
+  });
+});
+
+describe('calendarEventInteractionClasses', () => {
+  const at = new Date(2026, 5, 25, 9, 0);
+
+  it('dims an enabled occurrence on hover', () => {
+    expect(calendarEventInteractionClasses(occurrence('a', at))).toBe(
+      'cursor-pointer hover:opacity-90',
+    );
+  });
+
+  it('dims a paused occurrence below its resting opacity instead of brightening it', () => {
+    const event = occurrence('a', at);
+    const paused: CalendarEvent = {
+      ...event,
+      activity: event.activity && { ...event.activity, enabled: false },
+    };
+
+    expect(calendarEventToneClasses(paused)).toContain('opacity-50');
+    expect(calendarEventInteractionClasses(paused)).toBe(
+      'cursor-pointer hover:opacity-40',
+    );
+    expect(calendarEventInteractionClasses(paused)).not.toContain(
+      'hover:opacity-90',
+    );
+  });
+
+  it('dims a past run of a paused automation from full opacity', () => {
+    const event = occurrence('a', at);
+    const run: CalendarEvent = {
+      ...event,
+      kind: 'run',
+      runStatus: 'success',
+      activity: event.activity && { ...event.activity, enabled: false },
+    };
+
+    expect(calendarEventToneClasses(run)).not.toContain('opacity-50');
+    expect(calendarEventInteractionClasses(run)).toBe(
+      'cursor-pointer hover:opacity-90',
+    );
+  });
+
+  it('leaves an event without an automation non-interactive', () => {
+    const orphan: CalendarEvent = { ...occurrence('a', at), activity: null };
+
+    expect(calendarEventInteractionClasses(orphan)).toBe('cursor-default');
   });
 });

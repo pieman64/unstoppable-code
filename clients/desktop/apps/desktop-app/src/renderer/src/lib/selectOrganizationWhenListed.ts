@@ -13,40 +13,74 @@ let cancelPending: (() => void) | null = null;
  * broadcast a moment after the settings write resolves, so the switch waits
  * for it. A later request replaces an earlier one; a request never listed
  * within the timeout is dropped.
+ *
+ * `onSettled`, when given, hears once whether the organization ended up
+ * selected: `false` for a timeout, a replacing request, or a refused switch.
  */
-export function selectOrganizationWhenListed(organizationId: string): void {
+export function selectOrganizationWhenListed(
+  organizationId: string,
+  onSettled?: (selected: boolean) => void,
+  signal?: AbortSignal,
+): void {
   cancelPending?.();
   const wanted = organizationId.trim().toLowerCase();
   const pending: {
     settled: boolean;
+    selecting: boolean;
     timeoutId: ReturnType<typeof setTimeout> | undefined;
     unsubscribe: () => void;
-  } = { settled: false, timeoutId: undefined, unsubscribe: (): void => {} };
-  const finish = (): void => {
-    if (pending.settled) return;
+  } = {
+    settled: false,
+    selecting: false,
+    timeoutId: undefined,
+    unsubscribe: (): void => {},
+  };
+  const finish = (): boolean => {
+    if (pending.settled) return false;
     pending.settled = true;
     clearTimeout(pending.timeoutId);
     pending.unsubscribe();
-    if (cancelPending === finish) cancelPending = null;
+    signal?.removeEventListener('abort', drop);
+    if (cancelPending === drop) cancelPending = null;
+    return true;
+  };
+  const drop = (): void => {
+    if (finish()) onSettled?.(false);
   };
   const attempt = (): void => {
     const { hydrated, state, setContext } = useWorkspaceContextStore.getState();
     const listed = state.organizations.find(
       (organization) => organization.id.toLowerCase() === wanted,
     );
-    if (pending.settled || !hydrated || listed === undefined) return;
-    finish();
-    setContext({ kind: 'organization', organizationId: listed.id }).catch(
+    if (
+      pending.settled ||
+      pending.selecting ||
+      !hydrated ||
+      listed === undefined
+    )
+      return;
+    pending.selecting = true;
+    setContext({ kind: 'organization', organizationId: listed.id }).then(
+      (next) => {
+        if (finish())
+          onSettled?.(
+            next.context.kind === 'organization' &&
+              next.context.organizationId === listed.id,
+          );
+      },
       (error: unknown) => {
         reportRendererConsoleError(
           'Failed to select an organization chosen in settings',
           { error },
         );
+        if (finish()) onSettled?.(false);
       },
     );
   };
-  cancelPending = finish;
-  pending.timeoutId = setTimeout(finish, LISTING_TIMEOUT_MS);
+  cancelPending = drop;
+  pending.timeoutId = setTimeout(drop, LISTING_TIMEOUT_MS);
   pending.unsubscribe = useWorkspaceContextStore.subscribe(attempt);
-  attempt();
+  signal?.addEventListener('abort', drop);
+  if (signal?.aborted) drop();
+  else attempt();
 }

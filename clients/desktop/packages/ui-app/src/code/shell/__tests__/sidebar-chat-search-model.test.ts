@@ -1,12 +1,13 @@
 import {
   buildSidebarChatSearchCandidates,
   filterSidebarChatSearchResults,
+  type SidebarChatSearchWorkspace,
   type SidebarChatSearchResult,
   type SidebarChatSearchStandaloneChat,
 } from '../sidebar-chat-search-model';
 
 describe('buildSidebarChatSearchCandidates', () => {
-  const workspaces = [
+  const workspaces: SidebarChatSearchWorkspace[] = [
     { localId: 'repo-b', name: 'Repo B', order: 1, type: 'single-repo' },
     { localId: 'repo-a', name: 'Repo A', order: 0, type: 'multi-repo' },
     { localId: 'cowork', name: 'Cowork', order: 2, type: 'cowork' },

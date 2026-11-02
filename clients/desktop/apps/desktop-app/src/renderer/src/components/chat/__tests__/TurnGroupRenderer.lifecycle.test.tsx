@@ -5,6 +5,7 @@ import type { PendingQuestion } from '@/stores/chatStore';
 import type { TurnGroup, TurnMessage } from '../types';
 import { TurnGroupRenderer } from '../TurnGroupRenderer';
 import type * as ChatRenderStoresTestUtils from '@/test-utils/chatRenderStores';
+import { ChatLookProvider } from '@canopy/ui-shared/components/chat-look';
 
 jest.mock('@/stores/chatStore', () => ({
   useChatStore: (select: (state: unknown) => unknown): unknown => select({}),
@@ -40,6 +41,11 @@ jest.mock('../TurnTimer', () => ({ TurnTimer: (): null => null }));
 jest.mock('../TurnFeedbackHosts', () => ({
   TurnFeedbackSlot: (): null => null,
 }));
+// jsdom has no CSS namespace; these fixture IDs need no escaping.
+Object.defineProperty(globalThis, 'CSS', {
+  configurable: true,
+  value: { escape: (value: string): string => value },
+});
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
   value: true,
@@ -112,12 +118,14 @@ it('keeps question input mounted across completion, toggles, and optimistic answ
   const render = (complete: boolean, pending = question): void => {
     act(() =>
       root.render(
-        <TurnGroupRenderer
-          group={{ ...group, isComplete: complete }}
-          chatPendingQuestions={[pending]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={{ ...group, isComplete: complete }}
+            chatPendingQuestions={[pending]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       ),
     );
   };
@@ -174,6 +182,12 @@ it('progressively mounts a large completed turn without deferring its final rows
   const frameCallbacks: FrameRequestCallback[] = [];
   const originalRequestAnimationFrame = window.requestAnimationFrame;
   const originalCancelAnimationFrame = window.cancelAnimationFrame;
+  const originalCSS = globalThis.CSS;
+  // jsdom omits CSS.escape; these fixture IDs already contain only safe characters.
+  Object.defineProperty(globalThis, 'CSS', {
+    configurable: true,
+    value: { escape: (value: string): string => value },
+  });
   Object.defineProperty(window, 'requestAnimationFrame', {
     configurable: true,
     value: (callback: FrameRequestCallback): number => {
@@ -225,12 +239,14 @@ it('progressively mounts a large completed turn without deferring its final rows
   try {
     act(() => {
       root.render(
-        <TurnGroupRenderer
-          group={largeGroup}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={largeGroup}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       );
     });
     const toggle = host.querySelector<HTMLButtonElement>(
@@ -243,9 +259,9 @@ it('progressively mounts a large completed turn without deferring its final rows
       '[data-message-id^="step-"]',
     ).length;
     expect(initialCount).toBeGreaterThan(0);
-    // Eight progressive rows plus the always-retained final response keeps
-    // each expansion quantum below the renderer's 100 ms responsiveness cap.
-    expect(initialCount).toBeLessThanOrEqual(9);
+    // Bound each expansion to sixteen new rows plus the retained final response.
+    // The performance suite separately measures responsiveness for real rows.
+    expect(initialCount).toBeLessThanOrEqual(17);
     expect(host.querySelector('[data-message-id="step-100"]')).toBeNull();
     const mountedStep = host.querySelector('[data-message-id="step-0"]');
     expect(mountedStep).not.toBeNull();
@@ -277,21 +293,23 @@ it('progressively mounts a large completed turn without deferring its final rows
     );
     act(() => {
       root.render(
-        <TurnGroupRenderer
-          group={{
-            ...largeGroup,
-            assistantMessages: [...prependedMessages, ...assistantMessages],
-          }}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={{
+              ...largeGroup,
+              assistantMessages: [...prependedMessages, ...assistantMessages],
+            }}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       );
     });
     expect(host.querySelector('[data-message-id="step-0"]')).toBe(mountedStep);
     expect(
       host.querySelectorAll('[data-message-id^="older-"]').length,
-    ).toBeLessThanOrEqual(8);
+    ).toBeLessThanOrEqual(16);
 
     while (frameCallbacks.length > 0) {
       const callback = frameCallbacks.shift();
@@ -305,29 +323,33 @@ it('progressively mounts a large completed turn without deferring its final rows
     const searchedStep = host.querySelector('[data-message-id="step-100"]');
     act(() => {
       root.render(
-        <TurnGroupRenderer
-          group={{
-            ...largeGroup,
-            assistantMessages: [...prependedMessages, ...assistantMessages],
-          }}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-          searchMessageId="step-100"
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={{
+              ...largeGroup,
+              assistantMessages: [...prependedMessages, ...assistantMessages],
+            }}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+            searchMessageId="step-100"
+          />
+        </ChatLookProvider>,
       );
     });
     act(() => {
       root.render(
-        <TurnGroupRenderer
-          group={{
-            ...largeGroup,
-            assistantMessages: [...prependedMessages, ...assistantMessages],
-          }}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={{
+              ...largeGroup,
+              assistantMessages: [...prependedMessages, ...assistantMessages],
+            }}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       );
     });
     expect(host.querySelectorAll('[data-message-id^="step-"]')).toHaveLength(
@@ -346,6 +368,10 @@ it('progressively mounts a large completed turn without deferring its final rows
     Object.defineProperty(window, 'cancelAnimationFrame', {
       configurable: true,
       value: originalCancelAnimationFrame,
+    });
+    Object.defineProperty(globalThis, 'CSS', {
+      configurable: true,
+      value: originalCSS,
     });
   }
 });
@@ -391,12 +417,14 @@ it('preserves mounted rows when an expanded completed turn crosses the progressi
   try {
     act(() => {
       root.render(
-        <TurnGroupRenderer
-          group={group}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={group}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       );
     });
     const toggle = host.querySelector<HTMLButtonElement>(
@@ -413,12 +441,14 @@ it('preserves mounted rows when an expanded completed turn crosses the progressi
 
     act(() => {
       root.render(
-        <TurnGroupRenderer
-          group={{ ...group, assistantMessages: messages }}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={{ ...group, assistantMessages: messages }}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       );
     });
     expect(

@@ -7,6 +7,7 @@ import {
   countSubagentsByFilter,
   formatSubagentReference,
   isLiveSubagentStatus,
+  liveSubagentNodes,
   managedSubagentInputFromBlock,
   matchesSubagentFilter,
   parseWorkflowAgentNodeId,
@@ -214,7 +215,7 @@ describe('subagent tree reduction', () => {
   it('is deterministic when managed transcript inputs are replayed backwards', () => {
     const inputs = [
       managed('a', undefined, 'running', { createdAt: 1 }),
-      managed('b', 'a', 'approval', {
+      managed('b', 'a', 'running', {
         createdAt: 2,
         snapshot: { approvalPending: true },
       }),
@@ -414,6 +415,48 @@ describe('subagent tree reduction', () => {
       title: 'Investigate the issue',
       status: 'starting',
       thinkingLevel: 'medium',
+    });
+  });
+
+  it("times a Codex node by its own thread's turns when they are known (CAN-5203)", () => {
+    const spawn = codexCall({
+      agentBlockId: 'spawn-block',
+      callId: 'spawn-call',
+      tool: 'spawnAgent',
+      senderThreadId: 'root-thread',
+      receiverThreadIds: ['thread-a', 'thread-b', 'thread-c'],
+      occurredAt: 10,
+      agentsStates: {
+        'thread-a': { status: 'completed' },
+        'thread-b': { status: 'running' },
+        'thread-c': { status: 'completed' },
+      },
+      receiverTimes: {
+        'thread-a': { startedAt: 12, settledAt: 40 },
+        'thread-b': { startedAt: 14 },
+      },
+    });
+    const result = buildSubagentTree({
+      root: { id: 'root-chat', title: 'Root chat' },
+      managed: [],
+      codexNative: [spawn],
+      codexRootThreadId: 'root-thread',
+    });
+    expect(node(result, 'thread-a')).toMatchObject({
+      createdAt: 10,
+      startedAt: 12,
+      settledAt: 40,
+    });
+    expect(node(result, 'thread-b')).toMatchObject({
+      createdAt: 10,
+      startedAt: 14,
+    });
+    expect(node(result, 'thread-b')).not.toHaveProperty('settledAt');
+    // Without times, a node keeps its spawn time as before.
+    expect(node(result, 'thread-c')).toMatchObject({
+      createdAt: 10,
+      startedAt: 10,
+      settledAt: 10,
     });
   });
 
@@ -885,6 +928,25 @@ describe('Claude Code workflow subagents', () => {
     ).toBe(false);
   });
 
+  it('lists the live subagents the Active count counts, never their groups', () => {
+    const result = tree([], {
+      workflowRuns: [
+        workflowRun('listed', {
+          phases: [{ title: 'Phase' }],
+          agents: [
+            workflowAgent('live', { phaseTitle: 'Phase' }),
+            workflowAgent('done', { phaseTitle: 'Phase', state: 'completed' }),
+          ],
+        }),
+      ],
+    });
+    const live = liveSubagentNodes(result);
+    expect(live.map((entry) => entry.id)).toEqual([
+      workflowAgentNodeId('listed', 'live'),
+    ]);
+    expect(live).toHaveLength(countSubagentsByFilter(result).active);
+  });
+
   it('projects failed agents through run and phase paths under Needs attention', () => {
     const result = tree([], {
       workflowRuns: [
@@ -1310,7 +1372,7 @@ describe('subagent chat and references', () => {
     const result = tree([
       managed('one', undefined, 'running', { createdAt: 1 }),
       managed('two', 'one', 'running', { createdAt: 2 }),
-      managed('three', 'two', 'approval', {
+      managed('three', 'two', 'running', {
         createdAt: 3,
         snapshot: { approvalPending: true },
       }),

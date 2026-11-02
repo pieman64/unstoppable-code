@@ -60,6 +60,13 @@ export function pendingApprovalRequests(
     .map((entry) => entry.event);
 }
 
+/** True while a tool-approval prompt for this session waits on the user. */
+export function hasPendingApprovalForSession(sessionKey: string): boolean {
+  return Array.from(pending.values()).some(
+    (entry) => entry.sessionKey === sessionKey,
+  );
+}
+
 export function createPendingApproval(
   requestId: string,
   sessionKey: string,
@@ -147,12 +154,34 @@ export function resolveApprovalFromMain(
   return true;
 }
 
+export function hasPendingApprovalsForSession(sessionKey: string): boolean {
+  for (const entry of Array.from(pending.values())) {
+    if (entry.sessionKey === sessionKey) return true;
+  }
+  return false;
+}
+
 export function rejectApproval(requestId: string, reason: string): void {
   const entry = pending.get(requestId);
   if (!entry) return;
   pending.delete(requestId);
   removeOwnerDestroyedListener(entry);
   entry.reject(new Error(reason));
+}
+
+/** Cancels one approval request and detaches its renderer card. */
+export function cancelApproval(requestId: string, reason: string): boolean {
+  const entry = pending.get(requestId);
+  if (!entry) return false;
+  pending.delete(requestId);
+  removeOwnerDestroyedListener(entry);
+  try {
+    entry.onDetached?.();
+  } catch {
+    // A renderer notification failure must not leave the request unsettled.
+  }
+  entry.reject(new Error(reason));
+  return true;
 }
 
 export function rejectAllApprovalsForSession(

@@ -13,7 +13,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { brandEnvName } from '@canopy/desktop-shared/brand/env';
 import { executeArchiveIoRequest } from '../archive/archive-io-engine';
 import {
@@ -29,6 +29,23 @@ import {
   resetArchiveDirectory,
 } from '../archive/archive-file-operations';
 import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
+import { WINDOWS_ARCHIVE_QUARANTINE_RETRY_DELAYS_MS } from '../lib/archive-quarantine';
+import * as registrationRemoval from '../lib/worktree-registration-removal';
+
+jest.mock('../lib/worktree-registration-removal', () => {
+  const actual = jest.requireActual<typeof registrationRemoval>(
+    '../lib/worktree-registration-removal',
+  );
+  return {
+    ...actual,
+    removeAbsentWorktreeRegistrations: jest.fn(
+      actual.removeAbsentWorktreeRegistrations,
+    ),
+  };
+});
+const actualRemoveAbsentWorktreeRegistrations = jest.requireActual<
+  typeof registrationRemoval
+>('../lib/worktree-registration-removal').removeAbsentWorktreeRegistrations;
 
 jest.mock('node:child_process', () => {
   const actual = jest.requireActual<typeof childProcess>('node:child_process');
@@ -42,6 +59,8 @@ jest.mock('node:fs/promises', () => {
     lstat: jest.fn(actual.lstat),
     rm: jest.fn(actual.rm),
     open: jest.fn(actual.open),
+    rename: jest.fn(actual.rename),
+    readdir: jest.fn(actual.readdir),
   };
 });
 
@@ -599,6 +618,48 @@ describe('archive I/O engine', () => {
       expect(existsSync(checkout)).toBe(false);
     },
   );
+
+  it('reports cancellation during the final registration cleanup', async () => {
+    const repository = await initializeRepository('cancelled-cleanup');
+    const checkout = join(root, '.container-1.archive-quarantine');
+    git(repository, 'worktree', 'add', '-q', '-b', 'feature/archive', checkout);
+    const controller = new AbortController();
+    // Aborts once the cleanup has started and passed its first check.
+    jest
+      .mocked(registrationRemoval.removeAbsentWorktreeRegistrations)
+      .mockImplementationOnce((...args) => {
+        const cleanup = actualRemoveAbsentWorktreeRegistrations(...args);
+        controller.abort();
+        return cleanup;
+      });
+    const request: Extract<
+      ArchiveIoOperationRequest,
+      { type: 'remove-worktree' }
+    > = {
+      ...IDENTITY,
+      type: 'remove-worktree',
+      input: {
+        git: { executable: 'git', env: commandEnvironment() },
+        referenceRepoPath: repository,
+        expectedRepositoryIdentity: await realpath(join(repository, '.git')),
+        worktreePath: checkout,
+      },
+    };
+    const hooks = {
+      progress: jest.fn(),
+      child: { started: jest.fn(), exited: jest.fn() },
+    };
+
+    await expect(
+      executeArchiveIoRequest(request, controller.signal, hooks),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(
+      executeArchiveIoRequest(request, new AbortController().signal, hooks),
+    ).resolves.toEqual({ removed: true });
+    expect(git(repository, 'worktree', 'list', '--porcelain')).not.toContain(
+      checkout,
+    );
+  });
 
   it.each(['locked', 'main', 'symlink', 'foreign-pointer'])(
     'preserves a %s checkout before bulk archive cleanup',
@@ -1416,6 +1477,747 @@ describe('archive I/O engine', () => {
     await expect(realpath(join(outside, 'nested-link'))).resolves.toBe(
       await realpath(nestedTarget),
     );
+  });
+
+  describe('identity-bound removal moves the directory aside first (CAN-5334)', () => {
+    const actualFs = jest.requireActual<typeof fsPromises>('node:fs/promises');
+
+    beforeEach(() => {
+      jest.mocked(fsPromises.rm).mockClear();
+      jest.mocked(fsPromises.rename).mockClear();
+    });
+
+    afterEach(() => {
+      jest.mocked(fsPromises.lstat).mockImplementation(actualFs.lstat);
+      jest.mocked(fsPromises.rm).mockImplementation(actualFs.rm);
+      jest.mocked(fsPromises.rename).mockImplementation(actualFs.rename);
+      jest.mocked(fsPromises.readdir).mockImplementation(actualFs.readdir);
+    });
+
+    async function boundTarget(name: string): Promise<{
+      allowedRoot: string;
+      target: string;
+      asidePath: string;
+      movedAway: string;
+      expectedIdentity: { dev: number; ino: number; birthtimeMs: number };
+      /** The target and aside as the worker sees them (canonical or not). */
+      isTarget: (path: unknown) => boolean;
+      isAside: (path: unknown) => boolean;
+    }> {
+      const allowedRoot = join(root, name);
+      const target = join(allowedRoot, 'checkout');
+      const asidePath = join(
+        allowedRoot,
+        '.checkout.discard-aside-live-checkout',
+      );
+      await mkdir(target, { recursive: true });
+      await writeFile(join(target, 'confirmed.txt'), 'confirmed');
+      const { dev, ino, birthtimeMs } = await actualFs.lstat(target);
+      const canonicalRoot = await realpath(allowedRoot);
+      const matches =
+        (...paths: string[]) =>
+        (path: unknown): boolean =>
+          paths.includes(String(path));
+      return {
+        allowedRoot,
+        target,
+        asidePath,
+        movedAway: join(allowedRoot, 'confirmed-moved-away'),
+        expectedIdentity: { dev, ino, birthtimeMs },
+        isTarget: matches(target, join(canonicalRoot, 'checkout')),
+        isAside: matches(asidePath, join(canonicalRoot, basename(asidePath))),
+      };
+    }
+
+    async function onPlatform<T>(
+      platform: 'host' | 'win32',
+      run: () => Promise<T>,
+    ): Promise<T> {
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+      if (platform === 'win32')
+        Object.defineProperty(process, 'platform', {
+          value: 'win32',
+          configurable: true,
+        });
+      try {
+        return await run();
+      } finally {
+        if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+      }
+    }
+
+    /** Another actor's directory at the target path, with a link Windows' pass would remove. */
+    async function occupy(target: string, linkTarget: string): Promise<void> {
+      await actualFs.mkdir(linkTarget, { recursive: true });
+      await actualFs.mkdir(target);
+      await actualFs.writeFile(join(target, 'replacement.txt'), 'new');
+      await actualFs.symlink(linkTarget, join(target, 'link'), 'junction');
+    }
+
+    async function expectOccupantKept(target: string): Promise<void> {
+      await expect(
+        readFile(join(target, 'replacement.txt'), 'utf8'),
+      ).resolves.toBe('new');
+      expect(
+        (await actualFs.lstat(join(target, 'link'))).isSymbolicLink(),
+      ).toBe(true);
+    }
+
+    it('removes the directory, and leaves no aside, only while it keeps the expected identity', async () => {
+      const bound = await boundTarget('bound-identity');
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: bound.asidePath,
+          expectedIdentity: {
+            ...bound.expectedIdentity,
+            ino: bound.expectedIdentity.ino + 1,
+          },
+        }),
+      ).rejects.toThrow('Archive removal path changed identity.');
+      await expect(
+        readFile(join(bound.target, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+      expect(existsSync(bound.asidePath)).toBe(false);
+
+      await removeArchiveDirectory({
+        path: bound.target,
+        allowedRoot: bound.allowedRoot,
+        asidePath: bound.asidePath,
+        expectedIdentity: bound.expectedIdentity,
+      });
+      expect(existsSync(bound.target)).toBe(false);
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
+
+    it('is done when neither the target nor its aside exists, even without its root', async () => {
+      const allowedRoot = join(root, 'bound-missing-root');
+      await expect(
+        removeArchiveDirectory({
+          path: join(allowedRoot, 'checkout'),
+          allowedRoot,
+          asidePath: join(allowedRoot, '.checkout.discard-aside-live-checkout'),
+          expectedIdentity: { dev: 1, ino: 2, birthtimeMs: 3 },
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('needs an aside beside the target to remove by identity', async () => {
+      const bound = await boundTarget('bound-arguments');
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      ).rejects.toThrow('needs both an expected identity and an aside path');
+      await mkdir(join(bound.allowedRoot, 'nested'));
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: join(bound.allowedRoot, 'nested', '.aside'),
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      ).rejects.toThrow('aside must be a sibling of its target');
+      await expect(
+        readFile(join(bound.target, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+    });
+
+    it.each(['host', 'win32'] as const)(
+      'keeps a directory swapped in after the identity check (%s)',
+      async (platform) => {
+        const bound = await boundTarget(`bound-swap-${platform}`);
+        let swapped = false;
+        jest.mocked(fsPromises.lstat).mockImplementation(async (path) => {
+          const stats = await actualFs.lstat(path);
+          if (!swapped && bound.isTarget(path)) {
+            // The identity check saw the confirmed directory; replace it now.
+            swapped = true;
+            await actualFs.rename(bound.target, bound.movedAway);
+            await occupy(bound.target, join(root, `link-target-${platform}`));
+          }
+          return stats;
+        });
+        await onPlatform(platform, () =>
+          expect(
+            removeArchiveDirectory({
+              path: bound.target,
+              allowedRoot: bound.allowedRoot,
+              asidePath: bound.asidePath,
+              expectedIdentity: bound.expectedIdentity,
+            }),
+          ).rejects.toThrow('Archive removal path changed identity.'),
+        );
+        expect(swapped).toBe(true);
+        await expectOccupantKept(bound.target);
+        await expect(
+          readFile(join(bound.movedAway, 'confirmed.txt'), 'utf8'),
+        ).resolves.toBe('confirmed');
+        expect(existsSync(bound.asidePath)).toBe(false);
+      },
+    );
+
+    it.each(['host', 'win32'] as const)(
+      'never reaches a directory that reoccupies the path during the removal walk (%s)',
+      async (platform) => {
+        const bound = await boundTarget(`bound-walk-${platform}`);
+        let raced = false;
+        // The first walk call (the Windows link pass's readdir, or rm) is
+        // where another actor moves the confirmed directory and takes its path.
+        const race = async (path: unknown): Promise<void> => {
+          if (raced || !(bound.isTarget(path) || bound.isAside(path))) return;
+          raced = true;
+          if (existsSync(bound.target))
+            await actualFs.rename(bound.target, bound.movedAway);
+          await occupy(
+            bound.target,
+            join(root, `walk-link-target-${platform}`),
+          );
+        };
+        jest.mocked(fsPromises.rm).mockImplementation(async (path, options) => {
+          await race(path);
+          return actualFs.rm(path, options);
+        });
+        jest
+          .mocked(fsPromises.readdir)
+          .mockImplementation(
+            async (...args: Parameters<typeof fsPromises.readdir>) => {
+              await race(args[0]);
+              return actualFs.readdir(...args);
+            },
+          );
+        await onPlatform(platform, () =>
+          removeArchiveDirectory({
+            path: bound.target,
+            allowedRoot: bound.allowedRoot,
+            asidePath: bound.asidePath,
+            expectedIdentity: bound.expectedIdentity,
+          }),
+        );
+        expect(raced).toBe(true);
+        await expectOccupantKept(bound.target);
+        expect(existsSync(bound.asidePath)).toBe(false);
+        expect(existsSync(bound.movedAway)).toBe(false);
+      },
+    );
+
+    it.each(['host', 'win32'] as const)(
+      'never retries a removal into a directory that replaced the aside after its last check (%s, review r4 finding 3)',
+      async (platform) => {
+        const bound = await boundTarget(`bound-aside-swap-${platform}`);
+        let swapped = false;
+        // The first pass over the aside hits a transient EBUSY while another
+        // actor swaps the aside itself. `rm`'s own retries, like Node's, start
+        // again from the pathname.
+        jest.mocked(fsPromises.rm).mockImplementation(async (path, options) => {
+          if (swapped || !bound.isAside(path))
+            return actualFs.rm(path, options);
+          swapped = true;
+          await actualFs.rename(bound.asidePath, bound.movedAway);
+          await occupy(
+            bound.asidePath,
+            join(root, `aside-swap-link-target-${platform}`),
+          );
+          if ((options?.maxRetries ?? 0) > 0)
+            return actualFs.rm(path, { ...options, maxRetries: 0 });
+          throw Object.assign(new Error('EBUSY: resource busy'), {
+            code: 'EBUSY',
+          });
+        });
+        jest.useFakeTimers({
+          advanceTimers: 1_000,
+          doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+        });
+        try {
+          await onPlatform(platform, () =>
+            expect(
+              removeArchiveDirectory({
+                path: bound.target,
+                allowedRoot: bound.allowedRoot,
+                asidePath: bound.asidePath,
+                expectedIdentity: bound.expectedIdentity,
+              }),
+            ).rejects.toThrow('Archive removal aside changed identity.'),
+          );
+        } finally {
+          jest.useRealTimers();
+        }
+        expect(swapped).toBe(true);
+        await expectOccupantKept(bound.asidePath);
+        await expect(
+          readFile(join(bound.movedAway, 'confirmed.txt'), 'utf8'),
+        ).resolves.toBe('confirmed');
+        expect(existsSync(bound.target)).toBe(false);
+      },
+    );
+
+    it('retries a transient removal failure of the confirmed aside until it is gone', async () => {
+      const bound = await boundTarget('bound-removal-retry');
+      jest.mocked(fsPromises.rm).mockImplementationOnce(() => {
+        throw Object.assign(new Error('EBUSY: resource busy'), {
+          code: 'EBUSY',
+        });
+      });
+      await removeArchiveDirectory({
+        path: bound.target,
+        allowedRoot: bound.allowedRoot,
+        asidePath: bound.asidePath,
+        expectedIdentity: bound.expectedIdentity,
+      });
+      expect(fsPromises.rm).toHaveBeenCalledTimes(2);
+      expect(existsSync(bound.target)).toBe(false);
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
+
+    it('is done when the aside is gone by the time a transient removal failure is retried', async () => {
+      const bound = await boundTarget('bound-removal-gone');
+      jest
+        .mocked(fsPromises.rm)
+        .mockImplementationOnce(async (path, options) => {
+          await actualFs.rm(path, options);
+          throw Object.assign(new Error('EBUSY: resource busy'), {
+            code: 'EBUSY',
+          });
+        });
+      await removeArchiveDirectory({
+        path: bound.target,
+        allowedRoot: bound.allowedRoot,
+        asidePath: bound.asidePath,
+        expectedIdentity: bound.expectedIdentity,
+      });
+      expect(fsPromises.rm).toHaveBeenCalledTimes(1);
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
+
+    /**
+     * Windows reports EPERM for a directory pending deletion, to `lstat` as
+     * well as to removal. Node's own `rm` retried that; the identity re-read
+     * before each retry must too (round 6, item 1).
+     */
+    function transientReread(
+      removed: (path: unknown) => boolean,
+      code: string,
+      times: number,
+    ): { rereadFailures: () => number } {
+      let removalFailed = false;
+      let failures = 0;
+      jest.mocked(fsPromises.rm).mockImplementationOnce(() => {
+        removalFailed = true;
+        throw Object.assign(new Error('EPERM: delete pending'), {
+          code: 'EPERM',
+        });
+      });
+      jest
+        .mocked(fsPromises.lstat)
+        .mockImplementation(async (path, options) => {
+          if (removalFailed && removed(path) && failures < times) {
+            failures += 1;
+            throw Object.assign(new Error(`${code}: operation not permitted`), {
+              code,
+              syscall: 'lstat',
+            });
+          }
+          return actualFs.lstat(path, options);
+        });
+      return { rereadFailures: () => failures };
+    }
+
+    async function withFastTimers<T>(run: () => Promise<T>): Promise<T> {
+      jest.useFakeTimers({
+        advanceTimers: 1_000,
+        doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+      });
+      try {
+        return await run();
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+
+    it.each([
+      ['bound', 'win32'],
+      ['unbound', 'win32'],
+      ['bound', 'host'],
+      ['unbound', 'host'],
+    ] as const)(
+      'finishes a %s removal whose identity re-read hits a transient EPERM once (%s)',
+      async (kind, platform) => {
+        const bound = await boundTarget(`reread-eperm-${kind}-${platform}`);
+        const reread = transientReread(
+          kind === 'bound' ? bound.isAside : bound.isTarget,
+          'EPERM',
+          1,
+        );
+        await withFastTimers(() =>
+          onPlatform(platform, () =>
+            removeArchiveDirectory(
+              kind === 'bound'
+                ? {
+                    path: bound.target,
+                    allowedRoot: bound.allowedRoot,
+                    asidePath: bound.asidePath,
+                    expectedIdentity: bound.expectedIdentity,
+                  }
+                : { path: bound.target, allowedRoot: bound.allowedRoot },
+            ),
+          ),
+        );
+        expect(reread.rereadFailures()).toBe(1);
+        expect(fsPromises.rm).toHaveBeenCalledTimes(2);
+        expect(existsSync(bound.target)).toBe(false);
+        expect(existsSync(bound.asidePath)).toBe(false);
+      },
+    );
+
+    it('stops at the retry budget when the identity re-read keeps failing transiently', async () => {
+      const bound = await boundTarget('reread-eperm-exhausted');
+      const reread = transientReread(bound.isAside, 'EPERM', Infinity);
+      await expect(
+        withFastTimers(() =>
+          removeArchiveDirectory({
+            path: bound.target,
+            allowedRoot: bound.allowedRoot,
+            asidePath: bound.asidePath,
+            expectedIdentity: bound.expectedIdentity,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'EPERM', syscall: 'lstat' });
+      // The host budget is 2 retries; each failed re-read spends one.
+      expect(reread.rereadFailures()).toBe(2);
+      expect(fsPromises.rm).toHaveBeenCalledTimes(1);
+      jest.mocked(fsPromises.lstat).mockImplementation(actualFs.lstat);
+      await expect(
+        readFile(join(bound.asidePath, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+    });
+
+    it('is done when the tree disappears during the identity re-read', async () => {
+      const bound = await boundTarget('reread-gone');
+      const payload = await realpath(bound.target);
+      jest.mocked(fsPromises.rm).mockImplementationOnce(() => {
+        throw Object.assign(new Error('EBUSY: resource busy'), {
+          code: 'EBUSY',
+        });
+      });
+      let checks = 0;
+      await withFastTimers(() =>
+        removeArchiveTree(
+          payload,
+          payload,
+          async () => {
+            checks += 1;
+            await actualFs.rm(payload, { recursive: true });
+            throw Object.assign(new Error('ENOENT: no such file'), {
+              code: 'ENOENT',
+            });
+          },
+          { maxRetries: 2 },
+        ),
+      );
+      expect(checks).toBe(1);
+      expect(fsPromises.rm).toHaveBeenCalledTimes(1);
+      expect(existsSync(payload)).toBe(false);
+    });
+
+    it('does not retry past a non-transient identity re-read failure', async () => {
+      const bound = await boundTarget('reread-eio');
+      const reread = transientReread(bound.isAside, 'EIO', 1);
+      await expect(
+        withFastTimers(() =>
+          removeArchiveDirectory({
+            path: bound.target,
+            allowedRoot: bound.allowedRoot,
+            asidePath: bound.asidePath,
+            expectedIdentity: bound.expectedIdentity,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'EIO' });
+      expect(reread.rereadFailures()).toBe(1);
+      expect(fsPromises.rm).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries an identity re-read that hits EACCES on Windows, where a pending delete can report it', async () => {
+      const bound = await boundTarget('reread-eacces-win32');
+      const reread = transientReread(bound.isAside, 'EACCES', 1);
+      await withFastTimers(() =>
+        onPlatform('win32', () =>
+          removeArchiveDirectory({
+            path: bound.target,
+            allowedRoot: bound.allowedRoot,
+            asidePath: bound.asidePath,
+            expectedIdentity: bound.expectedIdentity,
+          }),
+        ),
+      );
+      expect(reread.rereadFailures()).toBe(1);
+      expect(fsPromises.rm).toHaveBeenCalledTimes(2);
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
+
+    it('stops at an identity re-read that hits EACCES off Windows', async () => {
+      const bound = await boundTarget('reread-eacces-host');
+      const reread = transientReread(bound.isAside, 'EACCES', 1);
+      await expect(
+        withFastTimers(() =>
+          onPlatform('host', () =>
+            removeArchiveDirectory({
+              path: bound.target,
+              allowedRoot: bound.allowedRoot,
+              asidePath: bound.asidePath,
+              expectedIdentity: bound.expectedIdentity,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: 'EACCES', syscall: 'lstat' });
+      expect(reread.rereadFailures()).toBe(1);
+      expect(fsPromises.rm).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['host', 'win32'] as const)(
+      'still refuses a replaced aside found after a transient EPERM re-read (%s)',
+      async (platform) => {
+        const bound = await boundTarget(`reread-eperm-swap-${platform}`);
+        let failures = 0;
+        let removalFailed = false;
+        jest.mocked(fsPromises.rm).mockImplementationOnce(() => {
+          removalFailed = true;
+          throw Object.assign(new Error('EPERM: delete pending'), {
+            code: 'EPERM',
+          });
+        });
+        jest
+          .mocked(fsPromises.lstat)
+          .mockImplementation(async (path, options) => {
+            if (removalFailed && bound.isAside(path) && failures === 0) {
+              failures += 1;
+              // Another actor swaps the aside while the re-read is failing.
+              await actualFs.rename(bound.asidePath, bound.movedAway);
+              await occupy(
+                bound.asidePath,
+                join(root, `reread-swap-link-target-${platform}`),
+              );
+              throw Object.assign(new Error('EPERM: operation not permitted'), {
+                code: 'EPERM',
+                syscall: 'lstat',
+              });
+            }
+            return actualFs.lstat(path, options);
+          });
+        await withFastTimers(() =>
+          onPlatform(platform, () =>
+            expect(
+              removeArchiveDirectory({
+                path: bound.target,
+                allowedRoot: bound.allowedRoot,
+                asidePath: bound.asidePath,
+                expectedIdentity: bound.expectedIdentity,
+              }),
+            ).rejects.toThrow('Archive removal aside changed identity.'),
+          ),
+        );
+        expect(failures).toBe(1);
+        expect(fsPromises.rm).toHaveBeenCalledTimes(1);
+        await expectOccupantKept(bound.asidePath);
+        await expect(
+          readFile(join(bound.movedAway, 'confirmed.txt'), 'utf8'),
+        ).resolves.toBe('confirmed');
+      },
+    );
+
+    it('a removal interrupted after the move leaves the directory aside, and a retry finishes it there', async () => {
+      const bound = await boundTarget('bound-crash');
+      jest.mocked(fsPromises.rm).mockImplementationOnce(() => {
+        throw new Error('Crashed after the move');
+      });
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: bound.asidePath,
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      ).rejects.toThrow('Crashed after the move');
+      expect(existsSync(bound.target)).toBe(false);
+      await expect(
+        readFile(join(bound.asidePath, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+
+      // A new occupant of the path is not the confirmed directory.
+      await occupy(bound.target, join(root, 'crash-link-target'));
+      await removeArchiveDirectory({
+        path: bound.target,
+        allowedRoot: bound.allowedRoot,
+        asidePath: bound.asidePath,
+        expectedIdentity: bound.expectedIdentity,
+      });
+      expect(existsSync(bound.asidePath)).toBe(false);
+      await expectOccupantKept(bound.target);
+    });
+
+    it('a move that fails refuses without removing anything, never falling back to an in-place walk', async () => {
+      const bound = await boundTarget('bound-move-fails');
+      jest.mocked(fsPromises.rename).mockImplementation(() => {
+        throw Object.assign(new Error('EBUSY: resource busy'), {
+          code: 'EBUSY',
+        });
+      });
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: bound.asidePath,
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      ).rejects.toThrow(
+        'could not be moved aside for removal (EBUSY), so nothing was removed',
+      );
+      expect(fsPromises.rm).not.toHaveBeenCalled();
+      await expect(
+        readFile(join(bound.target, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
+
+    it('retries a transient Windows sharing violation on the move', async () => {
+      const bound = await boundTarget('bound-move-retry');
+      jest.mocked(fsPromises.rename).mockImplementationOnce(() => {
+        throw Object.assign(new Error('EBUSY: resource busy'), {
+          code: 'EBUSY',
+        });
+      });
+      await onPlatform('win32', () =>
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: bound.asidePath,
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      );
+      expect(fsPromises.rename).toHaveBeenCalledTimes(2);
+      expect(existsSync(bound.target)).toBe(false);
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
+
+    it('a Windows sharing violation that outlasts the quarantine move budget refuses without removing anything', async () => {
+      const bound = await boundTarget('bound-move-exhausted');
+      jest.mocked(fsPromises.rename).mockImplementation(() => {
+        throw Object.assign(new Error('EPERM: operation not permitted'), {
+          code: 'EPERM',
+        });
+      });
+      // Real I/O between attempts; only the retry delays run fast.
+      jest.useFakeTimers({
+        advanceTimers: 1_000,
+        doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+      });
+      try {
+        await onPlatform('win32', () =>
+          expect(
+            removeArchiveDirectory({
+              path: bound.target,
+              allowedRoot: bound.allowedRoot,
+              asidePath: bound.asidePath,
+              expectedIdentity: bound.expectedIdentity,
+            }),
+          ).rejects.toThrow(
+            'could not be moved aside for removal (EPERM), so nothing was removed',
+          ),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+      expect(fsPromises.rename).toHaveBeenCalledTimes(
+        WINDOWS_ARCHIVE_QUARANTINE_RETRY_DELAYS_MS.length + 1,
+      );
+      expect(fsPromises.rm).not.toHaveBeenCalled();
+      await expect(
+        readFile(join(bound.target, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
+
+    it('a move that took a swapped-in directory keeps it aside when the path is reoccupied again', async () => {
+      const bound = await boundTarget('bound-move-reoccupied');
+      let swapped = false;
+      jest.mocked(fsPromises.rename).mockImplementation(async (from, to) => {
+        if (swapped || !bound.isTarget(from)) return actualFs.rename(from, to);
+        swapped = true;
+        await actualFs.rename(bound.target, bound.movedAway);
+        await occupy(bound.target, join(root, 'reoccupied-link-target'));
+        await actualFs.rename(from, to);
+        // A third directory takes the path before the move can be undone.
+        await actualFs.mkdir(bound.target);
+        await actualFs.writeFile(join(bound.target, 'third.txt'), 'third');
+      });
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: bound.asidePath,
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      ).rejects.toThrow('Archive removal path changed identity.');
+      expect(fsPromises.rm).not.toHaveBeenCalled();
+      await expect(
+        readFile(join(bound.target, 'third.txt'), 'utf8'),
+      ).resolves.toBe('third');
+      await expectOccupantKept(bound.asidePath);
+      await expect(
+        readFile(join(bound.movedAway, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+    });
+
+    it('refuses, keeping both, when another directory occupies the aside', async () => {
+      const bound = await boundTarget('bound-aside-occupied');
+      await mkdir(bound.asidePath);
+      await writeFile(join(bound.asidePath, 'foreign.txt'), 'foreign');
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: bound.asidePath,
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      ).rejects.toThrow(
+        'Archive removal aside is occupied by another directory',
+      );
+      await expect(
+        readFile(join(bound.asidePath, 'foreign.txt'), 'utf8'),
+      ).resolves.toBe('foreign');
+      await expect(
+        readFile(join(bound.target, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+    });
+
+    it('a move that took a directory swapped in just before it puts that directory back and refuses', async () => {
+      const bound = await boundTarget('bound-move-captures');
+      let swapped = false;
+      jest.mocked(fsPromises.rename).mockImplementation(async (from, to) => {
+        if (!swapped && bound.isTarget(from)) {
+          swapped = true;
+          await actualFs.rename(bound.target, bound.movedAway);
+          await occupy(bound.target, join(root, 'capture-link-target'));
+        }
+        return actualFs.rename(from, to);
+      });
+      await expect(
+        removeArchiveDirectory({
+          path: bound.target,
+          allowedRoot: bound.allowedRoot,
+          asidePath: bound.asidePath,
+          expectedIdentity: bound.expectedIdentity,
+        }),
+      ).rejects.toThrow('Archive removal path changed identity.');
+      expect(swapped).toBe(true);
+      await expectOccupantKept(bound.target);
+      await expect(
+        readFile(join(bound.movedAway, 'confirmed.txt'), 'utf8'),
+      ).resolves.toBe('confirmed');
+      expect(existsSync(bound.asidePath)).toBe(false);
+    });
   });
 
   it('rejects removal through a symlinked approved root', async () => {

@@ -1,9 +1,13 @@
+import { mergeToolResults } from '../message-transforms';
 import type { DisplayBlock, DisplayMessage } from '../types';
 import {
+  cleanBlockRole,
+  describeCleanSteps,
   describeSteps,
   firstStepKind,
   isFoldableToolMessage,
   runningToolUse,
+  segmentCleanSteps,
   segmentToolSteps,
   summarizeToolSteps,
   TURN_COUNT_KINDS,
@@ -12,6 +16,7 @@ import {
 } from '../tool-step-groups';
 import type { TurnSummaryCounts } from '../types';
 import { SHOW_VISUAL_TOOL_ALIASES } from '@/lib/canopy-tool-aliases';
+import { safetyDeniedMessage } from '@canopy/protocol/approvals';
 
 type ToolUseBlock = Extract<DisplayBlock, { type: 'tool_use' }>;
 
@@ -290,5 +295,395 @@ describe('clean chat look step words', () => {
       firstStepKind([toolUse('Read', { file_path: 'a.ts' }), toolUse('Bash')]),
     ).toBe('read');
     expect(firstStepKind([])).toBeUndefined();
+  });
+});
+
+describe('clean chat look runs', () => {
+  it('counts an interrupted call once, never as an error (CAN-5178)', () => {
+    const interrupted = toolUse(
+      'Edit',
+      { file_path: '/repo/a.ts' },
+      {
+        output: 'Interrupted',
+        isError: true,
+        interruption: { reason: 'app_restart', at: 15_000 },
+      },
+    );
+    const [segment] = segmentCleanSteps([
+      message('m1', [
+        toolUse('Read', { file_path: '/repo/a.ts' }),
+        interrupted,
+      ]),
+    ]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(describeCleanSteps(segment)).toMatchObject({
+      failed: 0,
+      blocked: 0,
+      interrupted: 1,
+    });
+  });
+
+  it('counts a call without a result only once its turn settled with every result loaded', () => {
+    const [segment] = segmentCleanSteps([
+      message('m1', [toolUse('Read'), toolUse('Edit', {}, 'running')]),
+    ]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(describeCleanSteps(segment).interrupted).toBe(0);
+    expect(
+      describeCleanSteps(segment, undefined, {
+        settled: false,
+        resultsComplete: true,
+      }).interrupted,
+    ).toBe(0);
+    expect(
+      describeCleanSteps(segment, undefined, {
+        settled: true,
+        resultsComplete: false,
+      }).interrupted,
+    ).toBe(0);
+    expect(
+      describeCleanSteps(segment, undefined, {
+        settled: true,
+        resultsComplete: true,
+      }),
+    ).toMatchObject({ interrupted: 1, failed: 0 });
+  });
+
+  it.each<DisplayBlock>([
+    {
+      type: 'agent',
+      toolUseId: 'agent-resultless',
+      subagentType: 'general-purpose',
+      description: 'Inspect the changes',
+      prompt: 'Inspect',
+      runInBackground: false,
+      subBlocks: [],
+    },
+    {
+      type: 'workflow',
+      toolUseId: 'workflow-resultless',
+      workflowName: 'Inspect',
+      summary: 'Inspect the changes',
+    },
+  ])(
+    'counts a resultless $type as interrupted only with settled, complete evidence',
+    (block) => {
+      const [segment] = segmentCleanSteps([message('m1', [block])]);
+      if (segment?.kind !== 'steps') throw new Error('expected a run');
+      expect(describeCleanSteps(segment).interrupted).toBe(0);
+      expect(
+        describeCleanSteps(segment, undefined, {
+          settled: false,
+          resultsComplete: true,
+        }).interrupted,
+      ).toBe(0);
+      expect(
+        describeCleanSteps(segment, undefined, {
+          settled: true,
+          resultsComplete: false,
+        }).interrupted,
+      ).toBe(0);
+      expect(
+        describeCleanSteps(segment, undefined, {
+          settled: true,
+          resultsComplete: true,
+        }),
+      ).toMatchObject({ interrupted: 1, failed: 0, blocked: 0 });
+    },
+  );
+
+  it('keeps a blocked receipt ahead of interruption in clean run counts', () => {
+    const [segment] = segmentCleanSteps([
+      message('m1', [
+        toolUse(
+          'Bash',
+          {},
+          {
+            output: safetyDeniedMessage('force-push'),
+            isError: true,
+            interruption: { reason: 'app_restart', at: 14 },
+          },
+        ),
+        toolUse('Read'),
+      ]),
+    ]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(describeCleanSteps(segment)).toMatchObject({
+      blocked: 1,
+      failed: 0,
+      interrupted: 0,
+    });
+  });
+
+  it('promotes an interrupted result with non-denial text using the authoritative denial IDs', () => {
+    const call = toolUse(
+      'Edit',
+      {},
+      {
+        output: 'Interrupted by restart',
+        isError: true,
+        interruption: { reason: 'app_restart', at: 14 },
+      },
+    );
+    const [segment] = segmentCleanSteps([message('m1', [call])]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(
+      describeCleanSteps(
+        segment,
+        undefined,
+        undefined,
+        new Set([call.toolUseId]),
+      ),
+    ).toMatchObject({ blocked: 1, failed: 0, interrupted: 0 });
+  });
+
+  it('counts recognized denials as blocked, never as failed', () => {
+    const safety = toolUse(
+      'Bash',
+      { command: 'git push --force' },
+      {
+        output: `PreToolUse:Bash hook error: ${safetyDeniedMessage('force-push')}`,
+        isError: true,
+      },
+    );
+    const userDenied = toolUse(
+      'Bash',
+      { command: 'git reset --hard' },
+      {
+        output:
+          'PreToolUse:Bash hook error: The user denied this tool call: Not on this branch.',
+        isError: true,
+      },
+    );
+    const failed = toolUse(
+      'Bash',
+      {},
+      { output: 'no such file', isError: true },
+    );
+    const [segment] = segmentCleanSteps([
+      message('m1', [safety, userDenied, failed, toolUse('Read')]),
+    ]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(describeCleanSteps(segment)).toMatchObject({
+      blocked: 2,
+      failed: 1,
+    });
+    // Blocked calls stay visible outside classic folds, as errors do.
+    expect(isFoldableToolMessage(message('m2', [safety]))).toBe(false);
+  });
+
+  it('never counts a correlated safety receipt as another blocked call', () => {
+    const call = toolUse(
+      'Bash',
+      { command: 'git push --force' },
+      {
+        output: safetyDeniedMessage('force-push'),
+        isError: true,
+      },
+    );
+    const segments = segmentCleanSteps([
+      message('call', [call]),
+      message(
+        'receipt',
+        [
+          {
+            type: 'approval_safety_denied_info',
+            receiptId: 'receipt-1',
+            timestamp: 2,
+            reason: 'force-push',
+            command: 'git push --force',
+            mode: 'ask',
+            toolUseId: call.toolUseId,
+          },
+        ],
+        'system',
+      ),
+    ]);
+    const totals = segments.reduce(
+      (counts, segment) => {
+        if (segment.kind !== 'steps') return counts;
+        const described = describeCleanSteps(segment);
+        return {
+          blocked: counts.blocked + described.blocked,
+          failed: counts.failed + described.failed,
+        };
+      },
+      { blocked: 0, failed: 0 },
+    );
+    expect(totals).toEqual({ blocked: 1, failed: 0 });
+  });
+
+  it('reports zero blocked steps for an ordinary failure', () => {
+    const [segment] = segmentCleanSteps([
+      message('m1', [toolUse('Bash', {}, { output: 'boom', isError: true })]),
+    ]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(describeCleanSteps(segment)).toMatchObject({
+      blocked: 0,
+      failed: 1,
+    });
+  });
+
+  it.each(['Agent', 'Task'])(
+    'counts a denied %s through the real projection as blocked',
+    (toolName) => {
+      const projected = mergeToolResults([
+        {
+          id: 'agent-denied',
+          role: 'assistant',
+          timestamp: 1,
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: 'agent-1',
+              toolName,
+              input: JSON.stringify({
+                subagent_type: 'Explore',
+                prompt: 'Inspect',
+              }),
+            },
+            {
+              type: 'tool_result',
+              toolUseId: 'agent-1',
+              toolName,
+              output:
+                'PreToolUse:Agent hook error: The user denied this tool call: Keep this local.',
+              isError: true,
+            },
+          ],
+        },
+      ]);
+      expect(projected[0]?.blocks[0]?.type).toBe('agent');
+      const [segment] = segmentCleanSteps(projected);
+      if (segment?.kind !== 'steps') throw new Error('expected a run');
+      expect(describeCleanSteps(segment)).toMatchObject({
+        label: 'No tools ran',
+        blocked: 1,
+        failed: 0,
+      });
+    },
+  );
+
+  it('counts a background agent whose final output failed as a failure', () => {
+    const agent: DisplayBlock = {
+      type: 'agent',
+      toolUseId: 'agent-1',
+      subagentType: 'general-purpose',
+      description: 'Audit the toolbar',
+      prompt: 'Audit',
+      runInBackground: true,
+      result: { output: 'Async agent launched', isError: false },
+      taskOutputResult: { output: 'crashed', isError: true },
+      subBlocks: [],
+    };
+    const [segment] = segmentCleanSteps([message('m1', [agent])]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(describeCleanSteps(segment)).toMatchObject({ failed: 1 });
+  });
+
+  it('keeps an older MCP sign-in error on its own row', () => {
+    // No structured auth metadata, only the error text: the row still
+    // offers to reconnect, so it must not fold into a closed line.
+    const legacy = toolUse(
+      'mcp__linear__list_issues',
+      {},
+      {
+        output: 'MCP error -32001: MCP server authorization required',
+        isError: true,
+      },
+    );
+    expect(cleanBlockRole(legacy)).toBe('break');
+    expect(
+      cleanBlockRole(
+        toolUse('Bash', {}, { output: 'no such file', isError: true }),
+      ),
+    ).toBe('step');
+  });
+
+  it('counts a failed Codex helper as a failure', () => {
+    const codex: DisplayBlock = {
+      type: 'codex_agent',
+      agentBlockId: 'codex',
+      callId: 'spawn',
+      status: 'completed',
+      senderThreadId: 'parent',
+      receiverThreadIds: ['child'],
+      prompt: 'Review',
+      description: 'Review',
+      displayName: 'Reviewer',
+      agentsStates: { child: { status: 'errored' } },
+      subBlocks: [],
+    };
+    const [segment] = segmentCleanSteps([message('m1', [codex])]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    expect(describeCleanSteps(segment)).toMatchObject({ failed: 1 });
+  });
+});
+
+describe('plan-file writes in the clean chat look (CAN-5355)', () => {
+  const PLAN = { file_path: '/Users/test/.claude/plans/draft.md' };
+  const FAILED = { output: 'Write failed', isError: true };
+
+  function run(blocks: DisplayBlock[]): ReturnType<typeof describeCleanSteps> {
+    const [segment] = segmentCleanSteps([message('m1', blocks)]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    return describeCleanSteps(segment);
+  }
+
+  it('reads a plan-only write as wrote plan, with no edit count or error', () => {
+    expect(
+      run([toolUse('Grep', { pattern: 'x' }), toolUse('Write', PLAN)]),
+    ).toMatchObject({
+      label: 'Searched once, wrote plan',
+      failed: 0,
+      firstKind: 'search',
+    });
+    expect(describeSteps([toolUse('Write', PLAN)])).toBe('Wrote plan');
+    expect(summarizeToolSteps([toolUse('Write', PLAN)])).toBe('Wrote plan');
+  });
+
+  it('does not claim pending, interrupted or failed plan writes succeeded in compact or clean summaries', () => {
+    for (const [result, label] of [
+      ['running', 'Writing plan'],
+      [{ output: 'EACCES', isError: true }, "Couldn't write plan"],
+      [
+        {
+          output: '',
+          isError: true,
+          interruption: { reason: 'app_restart', at: 1 },
+        },
+        'Plan write interrupted',
+      ],
+    ] as const) {
+      const block = toolUse('Write', PLAN, result);
+      expect(run([block]).label).toBe(label);
+      expect(describeSteps([block])).toBe(label);
+      expect(summarizeToolSteps([block])).toBe(label);
+    }
+  });
+
+  it('counts only project writes as edits in a mixed run', () => {
+    expect(
+      run([
+        toolUse('Write', PLAN),
+        toolUse('Write', { file_path: 'docs/plans/draft.md' }),
+        toolUse('Edit', { file_path: 'src/index.ts' }),
+      ]).label,
+    ).toBe('Wrote plan, edited 2 files');
+  });
+
+  it('keeps real failures and never claims a failed plan write succeeded', () => {
+    expect(
+      run([toolUse('Grep', { pattern: 'x' }, FAILED), toolUse('Write', PLAN)]),
+    ).toMatchObject({ label: 'Searched once, wrote plan', failed: 1 });
+    expect(
+      run([
+        toolUse('Grep', { pattern: 'x' }, FAILED),
+        toolUse('Write', PLAN, FAILED),
+      ]),
+    ).toMatchObject({
+      label: "Searched once, couldn't write plan",
+      failed: 2,
+    });
   });
 });

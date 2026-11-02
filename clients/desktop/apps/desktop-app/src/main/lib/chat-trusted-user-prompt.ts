@@ -1,3 +1,7 @@
+import {
+  readAutoResumeMetadata,
+  type AutoResumeMetadata,
+} from '@canopy/protocol/portal';
 import { chatAgentSent } from '@canopy/protocol/portal/external-agent-sender';
 import {
   requireProviderForModel,
@@ -11,11 +15,13 @@ export function buildTrustedUserPromptEvent(request: ChatSendMessageRequest): {
   original_text: string;
   canopy_turn_user_message_id: string;
   canopy_resumes_interrupted_turn?: true;
+  canopy_resumes_user_message_id?: string;
   provider: AgentProviderType;
   canopy_persisted_messages: Array<{
     id: string;
     role: 'user';
-    userMessageSource?: 'agent';
+    userMessageSource?: 'agent' | 'auto_resume';
+    autoResume?: AutoResumeMetadata;
     agentSent?: NonNullable<ChatSendMessageRequest['agentSent']>;
     timestamp: number;
     blocks: Array<
@@ -29,10 +35,11 @@ export function buildTrustedUserPromptEvent(request: ChatSendMessageRequest): {
     attachmentPromptContexts?: NonNullable<
       ChatSendMessageRequest['attachmentPromptContexts']
     >;
-    inputMode: NonNullable<ChatSendMessageRequest['inputMode']>;
+    inputMode?: NonNullable<ChatSendMessageRequest['inputMode']>;
     watcherFired?: ChatWatcherFiredInfo;
   }>;
 } {
+  const autoResume = readAutoResumeMetadata(request.autoResume);
   const provider =
     request.providerType ??
     (request.model ? requireProviderForModel(request.model) : 'claude');
@@ -43,6 +50,9 @@ export function buildTrustedUserPromptEvent(request: ChatSendMessageRequest): {
     ...(request.resumesInterruptedTurn
       ? { canopy_resumes_interrupted_turn: true as const }
       : {}),
+    ...(autoResume?.resumesUserMessageId
+      ? { canopy_resumes_user_message_id: autoResume.resumesUserMessageId }
+      : {}),
     provider,
     canopy_persisted_messages: [
       {
@@ -51,9 +61,11 @@ export function buildTrustedUserPromptEvent(request: ChatSendMessageRequest): {
         // Ingestion replaces the already-persisted message with this id, so it
         // must carry the same agent-sent marking as buildPersistedUserMessage.
         // A message an external MCP agent sent stays the person's own.
-        ...(chatAgentSent(request.agentSent)
-          ? { userMessageSource: 'agent' as const }
-          : {}),
+        ...(autoResume
+          ? { userMessageSource: 'auto_resume' as const, autoResume }
+          : chatAgentSent(request.agentSent)
+            ? { userMessageSource: 'agent' as const }
+            : {}),
         ...(request.agentSent ? { agentSent: request.agentSent } : {}),
         timestamp: Date.now(),
         blocks: [
@@ -73,7 +85,9 @@ export function buildTrustedUserPromptEvent(request: ChatSendMessageRequest): {
         ...(request.attachmentPromptContexts?.length
           ? { attachmentPromptContexts: request.attachmentPromptContexts }
           : {}),
-        inputMode: request.inputMode ?? 'typed',
+        ...(autoResume && !autoResume.resendsUserMessage
+          ? {}
+          : { inputMode: request.inputMode ?? 'typed' }),
         ...(request.watcherFired ? { watcherFired: request.watcherFired } : {}),
       },
     ],

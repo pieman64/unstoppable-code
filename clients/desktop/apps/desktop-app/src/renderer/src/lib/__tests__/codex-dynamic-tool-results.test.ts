@@ -1,15 +1,15 @@
-import { flattenCodexDynamicToolContent } from '../codex-dynamic-tool-results';
+import { previewCodexDynamicToolContent } from '../codex-dynamic-tool-results';
 
-describe('flattenCodexDynamicToolContent', () => {
+describe('previewCodexDynamicToolContent', () => {
   it('returns "Done" when no content items and success is true', () => {
     expect(
-      flattenCodexDynamicToolContent({ contentItems: [], success: true }),
+      previewCodexDynamicToolContent({ contentItems: [], success: true }),
     ).toBe('Done');
     expect(
-      flattenCodexDynamicToolContent({ contentItems: null, success: true }),
+      previewCodexDynamicToolContent({ contentItems: null, success: true }),
     ).toBe('Done');
     expect(
-      flattenCodexDynamicToolContent({
+      previewCodexDynamicToolContent({
         contentItems: undefined,
         success: null,
       }),
@@ -18,15 +18,15 @@ describe('flattenCodexDynamicToolContent', () => {
 
   it('returns "Failed" when no content items and success is false', () => {
     expect(
-      flattenCodexDynamicToolContent({ contentItems: [], success: false }),
+      previewCodexDynamicToolContent({ contentItems: [], success: false }),
     ).toBe('Failed');
     expect(
-      flattenCodexDynamicToolContent({ contentItems: null, success: false }),
+      previewCodexDynamicToolContent({ contentItems: null, success: false }),
     ).toBe('Failed');
   });
 
   it('joins all inputText.text values with blank lines, preserving order', () => {
-    const text = flattenCodexDynamicToolContent({
+    const text = previewCodexDynamicToolContent({
       contentItems: [
         { type: 'inputText', text: 'first' },
         { type: 'inputText', text: 'second' },
@@ -39,7 +39,7 @@ describe('flattenCodexDynamicToolContent', () => {
   });
 
   it('flattens inputImage entries to a placeholder', () => {
-    const text = flattenCodexDynamicToolContent({
+    const text = previewCodexDynamicToolContent({
       contentItems: [
         { type: 'inputText', text: 'before' },
         { type: 'inputImage', url: 'data:image/png;base64,XXXX' },
@@ -53,14 +53,14 @@ describe('flattenCodexDynamicToolContent', () => {
 
   it('reports omitted unknown output rather than implying nothing was returned', () => {
     expect(
-      flattenCodexDynamicToolContent({
+      previewCodexDynamicToolContent({
         contentItems: [{ type: 'unknown' }, { type: 'other' }],
         success: true,
       }),
     ).toBe('[unsupported output omitted]\n\n[unsupported output omitted]');
 
     expect(
-      flattenCodexDynamicToolContent({
+      previewCodexDynamicToolContent({
         contentItems: [{ type: 'unknown' }],
         success: false,
       }),
@@ -68,7 +68,7 @@ describe('flattenCodexDynamicToolContent', () => {
   });
 
   it('returns empty-string placeholders when an inputText has no text field', () => {
-    const text = flattenCodexDynamicToolContent({
+    const text = previewCodexDynamicToolContent({
       contentItems: [
         { type: 'inputText' },
         { type: 'inputText', text: 'present' },
@@ -80,7 +80,7 @@ describe('flattenCodexDynamicToolContent', () => {
   });
 
   it('marks an individually oversized text item as truncated', () => {
-    const text = flattenCodexDynamicToolContent({
+    const text = previewCodexDynamicToolContent({
       contentItems: [{ type: 'inputText', text: 'x'.repeat(64 * 1024 + 1) }],
       success: true,
     });
@@ -90,7 +90,7 @@ describe('flattenCodexDynamicToolContent', () => {
   });
 
   it('reports content items omitted by the item-count limit', () => {
-    const text = flattenCodexDynamicToolContent({
+    const text = previewCodexDynamicToolContent({
       contentItems: Array.from({ length: 250 }, (_, index) => ({
         type: 'inputText',
         text: `item-${String(index)}`,

@@ -4,14 +4,15 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
   type JSX,
   type ReactNode,
+  type SetStateAction,
 } from 'react';
 import { useCapabilities } from '@canopy/app-state';
 import {
   availableWorkflowTriggerKinds,
   countLibraryFacets,
-  EMPTY_WORKFLOW_RUN_FILTERS,
   filterLibraryRows,
   pageLibraryRows,
   sortLibraryRows,
@@ -19,19 +20,32 @@ import {
   WorkflowsLibraryEmptyState,
   WorkflowsLibraryPagination,
   WorkflowsLibraryTable,
+  WorkflowsLibraryTableSkeleton,
   WorkflowsLibraryToolbar,
   type WorkflowLibraryAction,
   type WorkflowLibraryRow,
 } from '@canopy/ui-app/workflows';
-import { ConfirmDialog, Notice } from '@canopy/ui-shared/components';
+import {
+  ConfirmDialog,
+  DelayedLoadingPlaceholder,
+  ErrorBanner,
+  ErrorState,
+  Notice,
+  TRY_AGAIN_LABEL,
+  TRYING_AGAIN_LABEL,
+  useRetry,
+} from '@canopy/ui-shared/components';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { resolveSharedPipelineUrl } from '@/lib/share-links';
 import { pipelineShareLinkPath } from '@/lib/workflows/library-projection';
+import { openPipelineRuns } from '@/lib/workflows/open-pipeline-runs';
 import { automationLibraryKey } from '@/lib/workflows/run-feed';
+import { useAutomationsStore } from '@/stores/automationsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkflowsViewStore } from '@/stores/workflowsViewStore';
+import type { AutomationMutationResponse } from '@canopy/desktop-shared/types';
 import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
 import type { PipelinesPageListApi } from '../../pages/PipelinesPage';
 import type {
@@ -58,6 +72,86 @@ export interface WorkflowsLibraryTabProps {
 interface PendingDelete {
   readonly row: WorkflowLibraryRow;
   readonly target: WorkflowLibraryTarget;
+}
+
+/** What failed to load: the whole Library, or part of it. */
+interface LibraryLoadFailure {
+  readonly scope: 'place' | 'part';
+  readonly message: string;
+}
+
+const LIBRARY_LOAD_FAILED = "Couldn't load workflows.";
+const LIBRARY_SHARED_LOAD_FAILED =
+  "Couldn't load shared workflows. Yours are listed.";
+const LIBRARY_PART_LOAD_FAILED =
+  "Couldn't load some workflows. The rest are listed.";
+
+/**
+ * A row action that failed is raised as a toast with Try again, which runs
+ * the same action again. The headline names what failed; the reason follows.
+ */
+function raiseActionFailure(
+  title: string,
+  error: unknown,
+  retry: () => Promise<void>,
+): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  useGitHubStore
+    .getState()
+    .addToast(
+      reason.trim() === '' ? 'Something went wrong.' : reason,
+      'error',
+      undefined,
+      {
+        title,
+        action: {
+          label: TRY_AGAIN_LABEL,
+          busyLabel: TRYING_AGAIN_LABEL,
+          onClick: retry,
+        },
+        // Feedback to the click, with the app in front: always in the app, and
+        // never a native banner.
+        forceInApp: true,
+        suppressOsNotification: true,
+      },
+    );
+}
+
+/**
+ * Runs a row action with its row marked busy. A failure becomes a toast whose
+ * Try again runs the same action again, the same way.
+ */
+async function runRowAction(
+  setBusyKeys: Dispatch<SetStateAction<ReadonlySet<string>>>,
+  key: string,
+  failureTitle: string,
+  action: () => Promise<void>,
+): Promise<void> {
+  setBusyKeys((current) => new Set(current).add(key));
+  try {
+    await action();
+  } catch (error) {
+    raiseActionFailure(failureTitle, error, () =>
+      runRowAction(setBusyKeys, key, failureTitle, action),
+    );
+  } finally {
+    setBusyKeys((current) => {
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+  }
+}
+
+/**
+ * Turns an automation call's own result into a throw, so a failure becomes
+ * the action's toast. The store also keeps the error for its inline notices;
+ * the toast reports it here, so it is cleared.
+ */
+function throwIfAutomationFailed(result: AutomationMutationResponse): void {
+  if (result.ok) return;
+  useAutomationsStore.getState().clearMutationError();
+  throw new Error(result.error);
 }
 
 /**
@@ -90,7 +184,6 @@ export function WorkflowsLibraryTab({
   );
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -106,6 +199,46 @@ export function WorkflowsLibraryTab({
   }, []);
 
   const { rows, targets } = data;
+
+  // One container per scope: every local list failing with nothing to show
+  // is the whole place failing; any other failure is part of it, in one
+  // notice above what did load. Try again keeps the failure on screen, its
+  // capsule spinning, until the reload settles.
+  const reloadFailed = useCallback(async (): Promise<void> => {
+    await Promise.all([
+      automations.error !== null ? automations.reload() : undefined,
+      pipelines.error !== null ? pipelines.refresh() : undefined,
+      data.sharedLoadFailed ? data.refreshSharedAutomations() : undefined,
+      data.sharedLoadFailed ? pipelines.refreshSharedList() : undefined,
+    ]);
+  }, [automations, data, pipelines]);
+  const loadRetry = useRetry(reloadFailed);
+  const loadFailure = useMemo((): LibraryLoadFailure | null => {
+    const automationsFailed = automations.error !== null;
+    const pipelinesFailed = pipelines.error !== null;
+    if (automationsFailed && pipelinesFailed && rows.length === 0) {
+      return { scope: 'place', message: LIBRARY_LOAD_FAILED };
+    }
+    if (automationsFailed || pipelinesFailed) {
+      return { scope: 'part', message: LIBRARY_PART_LOAD_FAILED };
+    }
+    if (data.sharedLoadFailed) {
+      return { scope: 'part', message: LIBRARY_SHARED_LOAD_FAILED };
+    }
+    return null;
+  }, [automations.error, data.sharedLoadFailed, pipelines.error, rows.length]);
+  const [retriedFailure, setRetriedFailure] =
+    useState<LibraryLoadFailure | null>(null);
+  const shownFailure =
+    loadFailure ?? (loadRetry.retrying ? retriedFailure : null);
+  // Before the first rows arrive the list is a skeleton, and nothing that
+  // counts rows (the pagination's "0 of 0") shows under it.
+  const firstLoad =
+    shownFailure?.scope !== 'place' && data.loading && rows.length === 0;
+  const retryLoad = (): void => {
+    setRetriedFailure(shownFailure);
+    loadRetry.retry();
+  };
   const counts = useMemo(() => countLibraryFacets(rows), [rows]);
   const sorted = useMemo(
     () => sortLibraryRows(filterLibraryRows(rows, filters), sort),
@@ -200,21 +333,11 @@ export function WorkflowsLibraryTab({
   }, [revealedKey, revealedOnPage]);
 
   const withBusy = useCallback(
-    async (key: string, action: () => Promise<void>): Promise<void> => {
-      setActionError(null);
-      setBusyKeys((current) => new Set(current).add(key));
-      try {
-        await action();
-      } catch (error) {
-        setActionError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setBusyKeys((current) => {
-          const next = new Set(current);
-          next.delete(key);
-          return next;
-        });
-      }
-    },
+    (
+      key: string,
+      failureTitle: string,
+      action: () => Promise<void>,
+    ): Promise<void> => runRowAction(setBusyKeys, key, failureTitle, action),
     [],
   );
 
@@ -259,13 +382,7 @@ export function WorkflowsLibraryTab({
         automations.beginView(target.activity);
         return;
       }
-      // A pipeline's runs are the Runs feed narrowed to its name: executions
-      // carry no locator that tells same-named pipelines apart.
-      const view = useWorkflowsViewStore.getState();
-      view.setRunsScrollTop(0);
-      view.setRunsQuery(row.name);
-      view.setRunsFilters({ ...EMPTY_WORKFLOW_RUN_FILTERS, kind: 'pipeline' });
-      useNavigationStore.getState().navigate('workflows');
+      openPipelineRuns(row.name);
     },
     [automations],
   );
@@ -288,28 +405,47 @@ export function WorkflowsLibraryTab({
           return;
         case 'toggle':
           if (target.kind === 'automation') {
-            void withBusy(row.key, () =>
-              automations.toggleEnabled(target.activity),
+            void withBusy(
+              row.key,
+              row.enabled === false
+                ? `Couldn't turn on ${row.name}`
+                : `Couldn't turn off ${row.name}`,
+              async () => {
+                throwIfAutomationFailed(
+                  await automations.toggleEnabled(target.activity),
+                );
+              },
             );
           } else if (target.kind === 'pipeline') {
-            void withBusy(row.key, () =>
-              pipelines.setPipelineEnabled(
-                target.pipeline.id,
-                row.enabled === false,
-              ),
+            void withBusy(
+              row.key,
+              row.enabled === false
+                ? `Couldn't turn on ${row.name}`
+                : `Couldn't turn off ${row.name}`,
+              () =>
+                pipelines.setPipelineEnabled(
+                  target.pipeline.id,
+                  row.enabled === false,
+                ),
             );
           }
           return;
         case 'run':
           if (target.kind === 'automation') {
-            void withBusy(row.key, () => automations.runNow(target.activity));
+            void withBusy(row.key, `Couldn't start ${row.name}`, async () => {
+              throwIfAutomationFailed(
+                await automations.runNow(target.activity),
+              );
+            });
           } else if (target.kind === 'pipeline') {
             onRunPipeline?.(target.pipeline.id);
           }
           return;
         case 'duplicate':
           if (target.kind === 'pipeline') {
-            void withBusy(row.key, () => pipelines.duplicate(target.pipeline));
+            void withBusy(row.key, `Couldn't duplicate ${row.name}`, () =>
+              pipelines.duplicate(target.pipeline),
+            );
           }
           return;
         case 'share':
@@ -320,10 +456,10 @@ export function WorkflowsLibraryTab({
           if (target.kind !== 'pipeline') return;
           const sharePath = pipelineShareLinkPath(target.pipeline);
           if (sharePath === undefined) return;
-          void withBusy(row.key, async () => {
+          void withBusy(row.key, "Couldn't copy the share link", async () => {
             const url = await resolveSharedPipelineUrl(sharePath);
             if (!(await copyTextToClipboard(url ?? sharePath))) {
-              throw new Error('The share link could not be copied.');
+              throw new Error("The clipboard isn't available.");
             }
             useGitHubStore.getState().addToast('Share link copied.', 'success');
           });
@@ -384,27 +520,22 @@ export function WorkflowsLibraryTab({
       className="flex flex-col gap-4 pt-4"
       data-testid="workflows-library"
     >
-      {(pipelines.error !== null || automations.error !== null) && (
-        <Notice intent="destructive" data-testid="workflows-library-error">
-          {automations.error !== null && pipelines.error !== null
-            ? 'Automations and pipelines could not be loaded.'
-            : automations.error !== null
-              ? 'Automations could not be loaded. Pipelines are still listed.'
-              : 'Pipelines could not be loaded. Automations are still listed.'}
-        </Notice>
+      {shownFailure?.scope === 'part' && (
+        <div data-testid="workflows-library-load-error">
+          <ErrorBanner
+            className=""
+            error={shownFailure.message}
+            onRetry={retryLoad}
+            retrying={loadRetry.retrying}
+          />
+        </div>
       )}
-      {data.sharedLoadFailed && (
-        <Notice intent="attention" data-testid="workflows-library-shared-error">
-          Shared workflows could not be loaded. Yours are still listed.
-        </Notice>
-      )}
-      {(automations.mutationError ?? pipelines.shareError ?? actionError) !==
-        null && (
+      {pipelines.shareError !== null && (
         <Notice
           intent="destructive"
           data-testid="workflows-library-action-error"
         >
-          {automations.mutationError ?? pipelines.shareError ?? actionError}
+          {pipelines.shareError}
         </Notice>
       )}
       {automations.revealNotice}
@@ -420,10 +551,18 @@ export function WorkflowsLibraryTab({
         total={rows.length}
         matched={sorted.length}
       />
-      {data.loading && rows.length === 0 ? (
-        <p className="py-8 text-center text-s fg-secondary" role="status">
-          Loading workflows…
-        </p>
+      {shownFailure?.scope === 'place' ? (
+        <ErrorState
+          testId="workflows-library-load-failed"
+          retryTestId="workflows-library-retry"
+          message={shownFailure.message}
+          onRetry={retryLoad}
+          retrying={loadRetry.retrying}
+        />
+      ) : firstLoad ? (
+        <DelayedLoadingPlaceholder slowNote="Still loading workflows…">
+          <WorkflowsLibraryTableSkeleton compact={compact} />
+        </DelayedLoadingPlaceholder>
       ) : page.rows.length === 0 ? (
         <WorkflowsLibraryEmptyState
           filters={filters}
@@ -441,7 +580,9 @@ export function WorkflowsLibraryTab({
           compact={compact}
         />
       )}
-      <WorkflowsLibraryPagination page={page} onPageChange={setPage} />
+      {firstLoad ? null : (
+        <WorkflowsLibraryPagination page={page} onPageChange={setPage} />
+      )}
       {pendingDelete && (
         <ConfirmDialog
           title={`Delete "${pendingDelete.row.name}"?`}

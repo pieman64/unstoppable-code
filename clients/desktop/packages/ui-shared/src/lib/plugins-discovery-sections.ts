@@ -36,9 +36,8 @@ export type PluginsDiscoverySectionId =
 export interface PluginsDiscoverySection {
   id: PluginsDiscoverySectionId;
   /**
-   * Section heading. Pass `''` when the host already titles the surface (the
-   * management view's Installed section does), so the list does not stack a
-   * second heading on top of it.
+   * Section heading. Pass `''` when the host already titles the surface, so
+   * the list does not stack a second heading on top of it.
    */
   title: string;
   entries: UnifiedPluginEntry[];

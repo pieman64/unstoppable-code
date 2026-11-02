@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type JSX } from 'react';
-import { Notice } from '@canopy/ui-shared/components';
+import { Button, Notice } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { FormField } from '@/components/pipeline/shared/FormField';
 import { SelectField } from '@/components/pipeline/shared/SelectField';
@@ -472,24 +472,26 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
           [{child.index}/{total}]
         </span>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={() => onMoveUp(position)}
             disabled={position === 0}
             aria-label={`Move child ${child.index} up`}
-            className="focus-ring rounded p-1 fg-secondary hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-30"
           >
             &#8593;
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={() => onMoveDown(position)}
             disabled={position === total - 1}
             aria-label={`Move child ${child.index} down`}
-            className="focus-ring rounded p-1 fg-secondary hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-30"
           >
             &#8595;
-          </button>
+          </Button>
           <span className="ml-2 text-3xs fg-secondary">
             <span className="fg-success-strong">+{lineStats.additions}</span>{' '}
             <span className="fg-destructive">-{lineStats.deletions}</span>
@@ -580,7 +582,7 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
                   onClick={() => toggleDependsOn(depIndex)}
                   aria-pressed={selected}
                   data-testid={`split-plan-dependson-${child.index}-${depIndex}`}
-                  className={`rounded-md px-2 py-0.5 text-xs transition ${
+                  className={`rounded-md px-2 py-0.5 text-xs transition-colors ${
                     selected
                       ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
                       : 'bg-fg-primary/[0.06] fg-secondary hover:bg-fg-primary/[0.1]'
@@ -803,31 +805,29 @@ export function SplitPlanReviewPanel({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={onCancel}
           data-testid="split-plan-cancel"
-          className="rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
         >
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          size="compact"
           onClick={onRegenerate}
           data-testid="split-plan-regenerate"
-          className="rounded-lg border bg-popover px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-fg-primary/[0.08]"
         >
           Regenerate plan
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
+          size="compact"
           disabled={!validation.valid}
           onClick={() => onApprove(plan)}
           data-testid="split-plan-approve"
-          className="rounded-lg bg-accent-subtle px-4 py-1.5 text-s font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Approve &amp; split
-        </button>
+        </Button>
       </div>
     </div>
   );

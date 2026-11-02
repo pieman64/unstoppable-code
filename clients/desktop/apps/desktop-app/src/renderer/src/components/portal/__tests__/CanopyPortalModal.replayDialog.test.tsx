@@ -58,6 +58,8 @@ function buildState(overrides: Partial<CanopyPortalState>): CanopyPortalState {
     sessionId: null,
     pairingCode: null,
     pairingCodeExpiresAt: null,
+    machineName: null,
+    hostCode: null,
     activatedAt: null,
     lastSeenAt: null,
     lastErrorAt: null,

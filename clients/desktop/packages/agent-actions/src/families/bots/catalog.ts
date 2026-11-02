@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_AGENT_NAME } from '@canopy/protocol/ui-labels';
 import type {
   AgentActionCatalogEntry,
   AgentActionField,
@@ -80,12 +81,12 @@ const BOT_READ_ADDRESS_FIELDS: readonly AgentActionField[] = [
   ),
 ];
 const BOT_DISCOVERY_NOTES: readonly string[] = [
-  'Read-only bot task and chat discovery. Use the canonical botId returned by bots.list; only App Advisor is implemented on this surface today.',
+  'Read-only bot task and chat discovery. Use the canonical botId returned by bots.list; only Orchestrator is implemented on this surface today.',
   'Archived retention filters are unsupported and return unsupported_filter. Discovery lists retained active and done tasks and retained chats only.',
   'cursor_expired and cursor_context_changed require restarting from the first page without a cursor. Keep the bot, target, filters, sort, and order unchanged during continuation.',
 ];
 const BOT_LIST_NOTES: readonly string[] = [
-  'Read-only bot catalog. Only App Advisor is implemented on this surface today; use its canonical botId for task and chat discovery.',
+  `Read-only bot catalog. Only ${ORCHESTRATOR_AGENT_NAME} is implemented on this surface today; use its canonical botId for task and chat discovery.`,
   'cursor_expired and cursor_context_changed require restarting from the first page without a cursor. Keep filters, sort, and order unchanged during continuation.',
 ];
 const BOT_READ_NOTES: readonly string[] = [
@@ -151,7 +152,7 @@ export const BOT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
         'pinned',
         'boolean',
         false,
-        'Filter pinned App Advisor Work Entries.',
+        'Filter pinned Orchestrator Work Entries.',
       ),
     ],
     example: botsListTasksActionSchema.parse({
@@ -339,8 +340,8 @@ export const BOT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
       field(
         'initialMessage',
         'string',
-        true,
-        'Nonblank first message; original whitespace is preserved.',
+        false,
+        'Optional nonblank first message; original whitespace is preserved. Omit it to create the task with an empty founding chat.',
       ),
     ],
     example: botWriteActionSchema.parse({
@@ -353,7 +354,7 @@ export const BOT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
       'Returns CreatedTaskChatReceipt: address, taskCreated, chatCreated and input only when an initial message was accepted. Input proves acceptance, not completion.',
       'Initial messages use the trusted agent sender. No sender overrides, navigation or managed-delegate access.',
       'Always creates a new task and founding chat; taskCreated and chatCreated are true. Repeated calls are new creations, not retries.',
-      'initialMessage is required. Use the public botId app_advisor; project agents require the App Advisor access setting to allow their saved project owner.',
+      'initialMessage is optional; without it no provider session starts. Use the public botId app_advisor; project agents require the Orchestrator access setting to allow their saved project owner.',
       'After an error, discover any created task or chat before retrying: creation and initial-message acceptance are separate commits.',
     ],
   },
@@ -383,7 +384,7 @@ export const BOT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
       'Returns CreatedTaskChatReceipt: address, taskCreated, chatCreated and input only when an initial message was accepted. Input proves acceptance, not completion.',
       'Initial messages use the trusted agent sender. No sender overrides, navigation or managed-delegate access.',
       'May reuse the first eligible empty non-terminal chat, excluding file, read-only, stale-session and caller chats. Reuse keeps its settings and returns chatCreated:false; otherwise chatCreated:true. taskCreated is always false.',
-      'initialMessage is required. Use the public botId app_advisor; project agents require the App Advisor access setting to allow their saved project owner.',
+      'initialMessage is required. Use the public botId app_advisor; project agents require the Orchestrator access setting to allow their saved project owner.',
       'After an error, discover any created task or chat before retrying: creation and initial-message acceptance are separate commits.',
     ],
   },
@@ -427,8 +428,8 @@ export const BOT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
       'Sending starts or queues an input under shared tool approval and the target session policy; discovery is not permission to mutate.',
       'Returns AcceptedInputReceipt: canonical address, started with messageId or queued with queuedMessageId, acceptedAt, optional turnId, and watcherReceipts (created or deduplicated). Acceptance is not completion.',
       'No navigation or UI revision is required. Self-send is rejected. Sender context is captured by the host; do not supply sender or target settings.',
-      'Watchers are optional; sending alone creates none. Root chats and App Advisor only; managed delegates cannot discover or dispatch sends.',
-      'Caller App Advisor access is checked on every call; disabled access refuses the send.',
+      'Watchers are optional; sending alone creates none. Root chats and Orchestrator only; managed delegates cannot discover or dispatch sends.',
+      'Caller Orchestrator access is checked on every call; disabled access refuses the send.',
     ],
   },
 ];

@@ -80,6 +80,12 @@ interface CatalogEntry {
   models: CodexSpeedCatalogModel[];
   /** `null` when the list was empty: that says nothing usable to Auto. */
   ids: ReadonlySet<string> | null;
+  /**
+   * The ids of NON-HIDDEN entries only, for default-model eligibility
+   * (CAN-4716). `null` when no visible entry was listed, which callers treat
+   * as unknown. Auto keeps {@link ids}, hidden models included.
+   */
+  eligibleIds: ReadonlySet<string> | null;
 }
 
 interface CatalogFailure {
@@ -91,6 +97,7 @@ interface CatalogFailure {
 interface FetchResult {
   models: CodexSpeedCatalogModel[];
   ids: Set<string>;
+  eligibleIds: Set<string>;
   truncated: boolean;
 }
 
@@ -164,8 +171,12 @@ function collectPage(payload: unknown, result: FetchResult): string | null {
   }
   for (const item of payload.data) {
     if (!isRecord(item)) continue;
-    if (typeof item.model === 'string') result.ids.add(item.model);
-    if (typeof item.id === 'string') result.ids.add(item.id);
+    const visible = item.hidden !== true;
+    for (const id of [item.model, item.id]) {
+      if (typeof id !== 'string') continue;
+      result.ids.add(id);
+      if (visible) result.eligibleIds.add(id);
+    }
     const model = parseCodexSpeedCatalogModel(item);
     if (model) result.models.push(model);
   }
@@ -188,7 +199,12 @@ function releaseAccountSubscription(): void {
 }
 
 async function listAccountModels(): Promise<FetchResult> {
-  const result: FetchResult = { models: [], ids: new Set(), truncated: false };
+  const result: FetchResult = {
+    models: [],
+    ids: new Set(),
+    eligibleIds: new Set(),
+    truncated: false,
+  };
   if (__CANOPY_E2E__) {
     const mockOrigin = getMockLlmOrigin();
     if (!mockOrigin) throw new Error('E2E Codex model list has no mock origin');
@@ -449,6 +465,11 @@ function applySuccess(result: FetchResult): void {
     truncated: result.truncated,
     models: result.models,
     ids: result.ids.size > 0 ? result.ids : null,
+    // A partial list can't show a model is missing: unknown for eligibility.
+    eligibleIds:
+      !result.truncated && result.eligibleIds.size > 0
+        ? result.eligibleIds
+        : null,
   };
   lastFetchedAt = now;
   failure = null;
@@ -620,6 +641,20 @@ export async function readCodexAccountModelIds(): Promise<ReadonlySet<string> | 
     return currentEntry()?.ids ?? null;
   }
   return null;
+}
+
+/**
+ * The fresh cached ids of the account's NON-HIDDEN models, or `null` when
+ * nothing current is cached or every listed model is hidden. Never fetches or
+ * spawns anything, so the send path may consult it before any lazy auth probe.
+ * Feeds default-model eligibility (CAN-4716); hidden models never count
+ * toward it.
+ */
+export function peekCodexAccountModelIds(): ReadonlySet<string> | null {
+  const cached = currentEntry();
+  return cached?.eligibleIds && isFresh(cached, Date.now())
+    ? cached.eligibleIds
+    : null;
 }
 
 /** Drop the cached list so the next read asks the account again. */

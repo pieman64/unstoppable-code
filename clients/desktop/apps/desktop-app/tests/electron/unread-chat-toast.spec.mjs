@@ -93,8 +93,9 @@ test('dismissing an unread chat toast does not mark the chat read', async () => 
       .filter({ hasText: TOAST_MESSAGE });
     await expect(toast).toBeVisible({ timeout: 15_000 });
     await expect(toast).not.toContainText(`${WORKTREE_BRANCH}:`);
-    // A fixed 352px column, and the message stops at three lines.
-    expect((await toast.boundingBox())?.width ?? 0).toBeLessThanOrEqual(352);
+    // A fixed 344px column, the width of a macOS notification banner, and
+    // the message stops at three lines.
+    expect((await toast.boundingBox())?.width ?? 0).toBeCloseTo(344, 0);
     await expect(toast.locator('.line-clamp-3')).toHaveCount(1);
     const overviewCard = window.getByTestId('overview-unread-chat-card');
     await expect(overviewCard).toBeVisible();

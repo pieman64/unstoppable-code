@@ -33,6 +33,25 @@ const scopes = new AsyncLocalStorage<AdmissionScope>();
 const holds = new Map<GuardedStorageNamespace, number>();
 const changing = new Set<GuardedStorageNamespace>();
 let wakeWaiters: Array<() => void> = [];
+let routed: ReadonlySet<GuardedStorageNamespace> = new Set();
+
+/**
+ * TRANSITIONAL (CAN-5498, W6g): routes `namespaces` to the daemon authority
+ * that decides their writes. Admission keeps its holds and its report of
+ * unadmitted writes; the principal check moves to the authority, which checks
+ * `daemon`. Only the trusted daemon-backed composition calls this; with
+ * `legacy` rows the authority refuses, so a routed write fails closed.
+ * Returns the restore. Remove when the W5 rows move to `daemon` (W15).
+ */
+export function routeStorageAdmissionToAuthority(
+  namespaces: readonly GuardedStorageNamespace[],
+): () => void {
+  const previous = routed;
+  routed = new Set([...previous, ...namespaces]);
+  return (): void => {
+    routed = previous;
+  };
+}
 
 const keyOf = (target: StorageAdmissionTarget): string =>
   `${target.writer}:${target.namespace}`;
@@ -124,7 +143,8 @@ export async function withStorageAdmission<T>(
   };
   try {
     for (const { namespace, writer } of missing) {
-      assertStorageWriteAllowed(namespace, writer, STORAGE_OWNERSHIP);
+      if (!routed.has(namespace))
+        assertStorageWriteAllowed(namespace, writer, STORAGE_OWNERSHIP);
     }
     return await scopes.run(scope, operation);
   } finally {

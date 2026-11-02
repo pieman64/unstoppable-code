@@ -11,6 +11,7 @@ import {
 const raw = 'API Error: 400 messages.4.content: Invalid input';
 const code = 'claude_ai_credits_fallback_rejected';
 const options: TranscriptReducerOptions = {
+  childToolLiveness: { kind: 'unknown' },
   now: 1_700_000_000_000,
   createMessageId: () => 'failure-message',
 };

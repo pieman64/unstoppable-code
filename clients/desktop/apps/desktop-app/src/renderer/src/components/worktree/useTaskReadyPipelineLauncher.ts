@@ -15,7 +15,6 @@ import type {
   PipelinePluginCollectionRunContext,
 } from '@/components/activity/PipelineTriggerModal';
 import type { PipelineWatcherSelection } from '@/components/activity/usePipelineRunWatcher';
-import { notifyHomeTaskSent } from '@/components/home/onboarding-suggestions/sendEvents';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -289,7 +288,7 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
 
         if (!result.success) {
           setRunning(false);
-          setRunError(result.error ?? 'Pipeline execution failed');
+          setRunError(result.error ?? 'Workflow execution failed');
           return false;
         }
 
@@ -310,7 +309,6 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
         setWatcherSelection(null);
         // The Home onboarding suggestions module completes its
         // "Create a Task Plan" entry on any successful task_ready dispatch.
-        notifyHomeTaskSent({ kind: 'pipeline' });
         return true;
       } catch (err: unknown) {
         setRunning(false);
@@ -442,12 +440,11 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
         setWatcherSelection(null);
         // Deferred enqueue still counts as a dispatched task_ready run for
         // the Home onboarding suggestions module.
-        notifyHomeTaskSent({ kind: 'pipeline' });
         return true;
       } catch (err: unknown) {
         setRunning(false);
         setRunError(
-          err instanceof Error ? err.message : 'Failed to execute pipeline',
+          err instanceof Error ? err.message : 'Failed to execute workflow',
         );
         return false;
       }

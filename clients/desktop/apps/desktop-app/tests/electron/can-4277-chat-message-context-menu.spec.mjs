@@ -13,75 +13,68 @@ import {
   assertCopyActions,
   assertKeyboardAndNestedEditable,
   assertVisibleReplyCopy,
-  COPY_PROMPT,
   COPY_REPLY,
-  COPY_PLAIN,
   COPY_CHAT_ID,
   COPY_PAUSED_CHAT_ID,
   COPY_QUESTION_CHAT_ID,
   copyMessages,
   seedCopyChat,
+  selectRowText,
 } from './fixtures/chat-message-copy.mjs';
 
-for (const look of ['classic', 'clean']) {
-  test(`CAN-4704 ${look} historical replies keep Copy at rest and at narrow widths`, async () => {
-    test.setTimeout(180_000);
-    const userDataDir = mkdtempSync(
-      path.join(os.tmpdir(), 'canopy-copy-history-'),
-    );
-    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
-    seedCopyChat({ userDataDir, history: true, paused: true });
-    writeJson(path.join(userDataDir, 'labs-experiments', 'choices.json'), {
-      version: 1,
-      accounts: { local: { 'clean-chat': look === 'clean' } },
-    });
-    const { electronApp } = await launchCanopy({ userDataDir });
-    try {
-      const page = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(page);
-      await app.waitForShell();
-      await app.openMainPage();
-      await app.selectWorktree('demo-main');
-      const copies = page.getByTestId('turn-copy-message');
-      await expect(copies).toHaveCount(2);
-      await page.setViewportSize({ width: 900, height: 850 });
-      for (const [index, markdown] of [
-        COPY_REPLY,
-        'Second **answer**',
-      ].entries()) {
-        await assertVisibleReplyCopy(page, copies.nth(index), {
-          markdown,
-          readClipboard: () =>
-            electronApp.evaluate(({ clipboard }) => clipboard.readText()),
-          writeClipboard: (text) =>
-            electronApp.evaluate(
-              ({ clipboard }, value) => clipboard.writeText(value),
-              text,
-            ),
-        });
-        const box = await copies.nth(index).boundingBox();
-        expect(box).not.toBeNull();
-        expect(box.x).toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width).toBeLessThanOrEqual(900);
-      }
-      await page
-        .getByTestId(`panel-tab-panel-chat-${COPY_PAUSED_CHAT_ID}`)
-        .click();
-      const pausedPanel = page.locator(
-        `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${COPY_PAUSED_CHAT_ID}"]`,
-      );
-      await expect(pausedPanel.getByTestId('turn-timer')).toHaveAttribute(
-        'data-state',
-        'paused',
-      );
-      await expect(pausedPanel.getByTestId('turn-copy-message')).toHaveCount(0);
-    } finally {
-      await closeCanopy(electronApp, userDataDir);
+test('CAN-4704 historical replies keep Copy at rest and at narrow widths', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-copy-history-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedCopyChat({ userDataDir, history: true, paused: true });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const page = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(page);
+    await app.waitForShell();
+    await app.openMainPage();
+    await app.selectWorktree('demo-main');
+    const copies = page.getByTestId('turn-copy-message');
+    await expect(copies).toHaveCount(2);
+    await page.setViewportSize({ width: 900, height: 850 });
+    for (const [index, markdown] of [
+      COPY_REPLY,
+      'Second **answer**',
+    ].entries()) {
+      await assertVisibleReplyCopy(page, copies.nth(index), {
+        markdown,
+        readClipboard: () =>
+          electronApp.evaluate(({ clipboard }) => clipboard.readText()),
+        writeClipboard: (text) =>
+          electronApp.evaluate(
+            ({ clipboard }, value) => clipboard.writeText(value),
+            text,
+          ),
+      });
+      const box = await copies.nth(index).boundingBox();
+      expect(box).not.toBeNull();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(900);
     }
-  });
-}
+    await page
+      .getByTestId(`panel-tab-panel-chat-${COPY_PAUSED_CHAT_ID}`)
+      .click();
+    const pausedPanel = page.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${COPY_PAUSED_CHAT_ID}"]`,
+    );
+    await expect(pausedPanel.getByTestId('turn-timer')).toHaveAttribute(
+      'data-state',
+      'paused',
+    );
+    await expect(pausedPanel.getByTestId('turn-copy-message')).toHaveCount(0);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
 
-test('Code and pulled-out messages copy exact sources and retain nested editable menus', async () => {
+test('Code and pulled-out messages copy exact selections and retain nested editable menus', async () => {
   test.setTimeout(180_000);
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-can-4277-'));
   seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
@@ -91,10 +84,19 @@ test('Code and pulled-out messages copy exact sources and retain nested editable
     const page = await electronApp.firstWindow();
     const app = new CanopyAppDriver(page);
     await app.waitForShell();
+    // The visible question is its own row only at the Detailed level.
+    await page.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree('demo-main');
     const readClipboard = () =>
       electronApp.evaluate(({ clipboard }) => clipboard.readText());
+    const writeClipboard = (text) =>
+      electronApp.evaluate(
+        ({ clipboard }, value) => clipboard.writeText(value),
+        text,
+      );
     const menuCount = () =>
       electronApp.evaluate(
         () => globalThis.__CANOPY_E2E_EDITABLE_CONTEXT_MENU__?.count ?? 0,
@@ -122,34 +124,27 @@ test('Code and pulled-out messages copy exact sources and retain nested editable
           text,
         ),
     });
-    await assertCopyActions(page, assistant, {
-      markdown: COPY_REPLY,
-      plain: COPY_PLAIN,
-      readClipboard,
-    });
-    await assertCopyActions(page, user, {
-      markdown: COPY_PROMPT,
-      plain: 'Please copy this 🌲',
-      readClipboard,
-    });
-    const badge = user.getByRole('button', { name: 'Copy to clipboard' });
+    await assertCopyActions(page, assistant, { readClipboard, writeClipboard });
+    await assertCopyActions(page, user, { readClipboard, writeClipboard });
+    const badge = user.getByRole('button', { name: 'Copy your message' });
     await badge.focus();
     await page.keyboard.press('Shift+F10');
     await expect(page.getByTestId('chat-message-context-menu')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(badge).toBeFocused();
-    await assertKeyboardAndNestedEditable(page, assistant);
+    await assertKeyboardAndNestedEditable(page, assistant, { readClipboard });
     await expect.poll(menuCount).toBe(before + 1);
 
     await page
       .getByTestId(`panel-tab-panel-chat-${COPY_QUESTION_CHAT_ID}`)
       .click();
-    await page
-      .getByText('Which scope?', { exact: true })
-      .click({ button: 'right' });
+    const question = page.getByText('Which scope?', { exact: true });
+    const questionText = await selectRowText(question);
+    expect(questionText.text).toContain('Which scope?');
+    await page.mouse.click(questionText.x, questionText.y, { button: 'right' });
     await expect(page.getByTestId('chat-message-context-menu')).toBeVisible();
-    await page.getByTestId('chat-message-copy-markdown').click();
-    await expect.poll(readClipboard).toBe('Which **scope**?');
+    await page.getByTestId('chat-message-copy-selection').click();
+    await expect.poll(readClipboard).toBe(questionText.text);
     await page.getByTestId(`panel-tab-panel-chat-${COPY_CHAT_ID}`).click();
 
     const auxiliary = electronApp.waitForEvent('window');
@@ -180,11 +175,7 @@ test('Code and pulled-out messages copy exact sources and retain nested editable
           text,
         ),
     });
-    await assertCopyActions(aux, auxRow, {
-      markdown: COPY_REPLY,
-      plain: COPY_PLAIN,
-      readClipboard,
-    });
+    await assertCopyActions(aux, auxRow, { readClipboard, writeClipboard });
     // Force only the owning navigator API off; execCommand still copies for real.
     await aux.evaluate(() =>
       Object.defineProperty(navigator, 'clipboard', {
@@ -195,9 +186,11 @@ test('Code and pulled-out messages copy exact sources and retain nested editable
     await electronApp.evaluate(({ clipboard }) =>
       clipboard.writeText('fallback sentinel'),
     );
-    await auxRow.click({ button: 'right' });
-    await aux.getByTestId('chat-message-copy-markdown').click();
-    await expect.poll(readClipboard).toBe(COPY_REPLY);
+    const auxSelected = await selectRowText(auxRow);
+    expect(auxSelected.text.length).toBeGreaterThan(0);
+    await aux.mouse.click(auxSelected.x, auxSelected.y, { button: 'right' });
+    await aux.getByTestId('chat-message-copy-selection').click();
+    await expect.poll(readClipboard).toBe(auxSelected.text);
     await assertVisibleReplyCopy(aux, aux.getByTestId('turn-copy-message'), {
       markdown: COPY_REPLY,
       readClipboard,
@@ -267,15 +260,19 @@ test('App Advisor mounts the same copy menu for both message roles', async () =>
     await expect(assistant).toBeVisible();
     const readClipboard = () =>
       electronApp.evaluate(({ clipboard }) => clipboard.readText());
+    const writeClipboard = (text) =>
+      electronApp.evaluate(
+        ({ clipboard }, value) => clipboard.writeText(value),
+        text,
+      );
     await assertCopyActions(advisor, assistant, {
-      markdown: COPY_REPLY,
-      plain: COPY_PLAIN,
       readClipboard,
+      writeClipboard,
     });
     await assertCopyActions(
       advisor,
       advisor.locator('[data-role="user"]').first(),
-      { markdown: COPY_PROMPT, plain: 'Please copy this 🌲', readClipboard },
+      { readClipboard, writeClipboard },
     );
   } finally {
     await closeCanopy(electronApp, userDataDir);

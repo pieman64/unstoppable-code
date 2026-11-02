@@ -306,6 +306,7 @@ export function buildSubmittedMessageText(
     submittedText = [VOICE_SYSTEM_INSTRUCTION, '', submittedText].join('\n');
   }
 
+  // A managed delegate's message already carries the broker's own wrapper.
   if (options.agentSent && isExternalAgentSent(options.agentSent)) {
     submittedText = [
       externalAgentSystemInstruction(options.agentSent),

@@ -16,6 +16,7 @@ export function OrganizationListHeader({
 }): JSX.Element {
   return (
     <PageHeader
+      inset="none"
       reserveActions
       title="Organizations"
       description="Open an organization, answer an invitation, or start a new one."

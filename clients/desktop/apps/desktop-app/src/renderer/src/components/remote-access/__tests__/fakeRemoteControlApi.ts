@@ -84,18 +84,38 @@ export function createFakeRemoteControl(
     current: initial,
     mocks: {
       getState: jest.fn(() => Promise.resolve(fake.current)),
-      openMachine: jest.fn(() => Promise.resolve()),
+      openMachine: jest.fn<Promise<void>, [string | null]>(() =>
+        Promise.resolve(),
+      ),
       setAllowIncoming: jest.fn((allow: boolean) => {
         fake.current = { ...fake.current, allowIncoming: allow };
         return Promise.resolve(fake.current);
       }),
-      startPairing: jest.fn(() => Promise.resolve(fake.current)),
-      cancelPairing: jest.fn(() => Promise.resolve(fake.current)),
-      respondToPairing: jest.fn(() => Promise.resolve(fake.current)),
-      forgetDevice: jest.fn(() => Promise.resolve(fake.current)),
-      disconnectController: jest.fn(() => Promise.resolve(fake.current)),
-      resolvePathPicker: jest.fn(() => Promise.resolve()),
-      listDirectory: jest.fn(() =>
+      startPairing: jest.fn<Promise<RemoteControlState>, [string]>(() =>
+        Promise.resolve(fake.current),
+      ),
+      cancelPairing: jest.fn<Promise<RemoteControlState>, []>(() =>
+        Promise.resolve(fake.current),
+      ),
+      respondToPairing: jest.fn<
+        Promise<RemoteControlState>,
+        [{ pairingId: string; approve: boolean }]
+      >(() => Promise.resolve(fake.current)),
+      forgetDevice: jest.fn<
+        Promise<RemoteControlState>,
+        [{ deviceId: string; role: 'host' | 'controller' }]
+      >(() => Promise.resolve(fake.current)),
+      disconnectController: jest.fn<Promise<RemoteControlState>, [string]>(() =>
+        Promise.resolve(fake.current),
+      ),
+      resolvePathPicker: jest.fn<
+        Promise<void>,
+        [{ requestId: string; path: string | null }]
+      >(() => Promise.resolve()),
+      listDirectory: jest.fn<
+        Promise<RemoteDirectoryListing>,
+        [{ path: string | null }]
+      >(() =>
         Promise.resolve({ path: '/home/ada', parent: '/home', entries: [] }),
       ),
     },

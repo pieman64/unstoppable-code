@@ -1,0 +1,1088 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`home:list-branch-targets keeps identifier validation messages: "" 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "Invalid workspaceId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`home:list-branch-targets keeps identifier validation messages: "Bad" 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "Invalid workspaceId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`home:list-branch-targets keeps identifier validation messages: 7 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "Invalid workspaceId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`home:list-branch-targets lists the reference repository of a single-repo workspace 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "refs/remotes/origin/main",
+  "originHeadBefore": "refs/remotes/origin/main",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "feature-02",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "local-only",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "remote-only",
+        },
+      ],
+      "defaultBranch": "develop",
+      "supported": true,
+    },
+  },
+}
+`;
+
+exports[`home:list-branch-targets lists the source repository of a multi-repo workspace 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "refs/remotes/origin/main",
+  "originHeadBefore": "refs/remotes/origin/main",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+      "supported": true,
+    },
+  },
+}
+`;
+
+exports[`home:list-branch-targets reports unsupported workspaces without a reference repository: cowork-ws 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [],
+      "defaultBranch": null,
+      "supported": false,
+    },
+  },
+}
+`;
+
+exports[`home:list-branch-targets reports unsupported workspaces without a reference repository: ghost-ws 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [],
+      "defaultBranch": null,
+      "supported": false,
+    },
+  },
+}
+`;
+
+exports[`home:list-branch-targets reports unsupported workspaces without a reference repository: multi-no-source-ws 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [],
+      "defaultBranch": null,
+      "supported": false,
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches falls back offline to local origin/HEAD, a stale value, then conventional refs: conventional refs 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "(unset)",
+  "originHeadBefore": "(unset)",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches falls back offline to local origin/HEAD, a stale value, then conventional refs: local origin/HEAD 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "refs/remotes/origin/main",
+  "originHeadBefore": "refs/remotes/origin/main",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches falls back offline to local origin/HEAD, a stale value, then conventional refs: stale stored value 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "(unset)",
+  "originHeadBefore": "(unset)",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+      ],
+      "defaultBranch": "release",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches keeps identifier validation messages: {"projectId":"Bad","worktreeId":"feature-01"} 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches keeps identifier validation messages: {"projectId":"fresh-ws","worktreeId":""} 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches keeps identifier validation messages: {"projectId":"fresh-ws","worktreeId":"feature-01","repoId":"Bad"} 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "Invalid repoId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches keeps identifier validation messages: {"projectId":"fresh-ws","worktreeId":"feature-01","repoId":42} 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "Invalid repoId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches keeps the failures of non-repository and unknown scopes: cowork-ws 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "code": "ENOENT",
+      "message": "spawn <git> ENOENT",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches keeps the failures of non-repository and unknown scopes: ghost-ws 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "code": "ENOENT",
+      "message": "spawn <git> ENOENT",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches lists a repository without origin and no default branch 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "(unset)",
+  "originHeadBefore": "(unset)",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "topic",
+        },
+      ],
+      "defaultBranch": null,
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches lists a shared-container viewer run directory 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "shared-topic",
+        },
+      ],
+      "defaultBranch": null,
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches records a remote default without stored knowledge and repairs origin/HEAD 1`] = `
+{
+  "freshnessFileChanged": true,
+  "originHeadAfter": "refs/remotes/origin/main",
+  "originHeadBefore": "refs/remotes/origin/develop",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches resolves registry-backed chat scopes to the real worktree: code review 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "feature-02",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "local-only",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "remote-only",
+        },
+      ],
+      "defaultBranch": "develop",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches resolves registry-backed chat scopes to the real worktree: code review child repository 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "code": "ENOENT",
+      "message": "spawn <git> ENOENT",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches resolves registry-backed chat scopes to the real worktree: code review workspace root 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "feature-02",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "local-only",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "remote-only",
+        },
+      ],
+      "defaultBranch": "develop",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches resolves registry-backed chat scopes to the real worktree: plan explore 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches resolves registry-backed chat scopes to the real worktree: unregistered code review 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "No code-review target registered for scope unregistered--scope",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches resolves registry-backed chat scopes to the real worktree: unregistered plan explore 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "message": "No plan-explore target registered for plan unregistered-plan",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches revalidates a stale stored default, records it and repairs origin/HEAD 1`] = `
+{
+  "freshnessFileChanged": true,
+  "originHeadAfter": "refs/remotes/origin/main",
+  "originHeadBefore": "refs/remotes/origin/develop",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches revalidates a stale stored default, records it and repairs origin/HEAD: after the record 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "refs/remotes/origin/main",
+  "originHeadBefore": "refs/remotes/origin/main",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches revalidates a stale stored default, records it and repairs origin/HEAD: freshness after revalidation 1`] = `
+{
+  "entries": [
+    {
+      "commonDir": "<root>/clones/fresh-ws/.git",
+      "defaultBranch": "develop",
+      "keyMatchesCommonDir": true,
+      "originHashLength": 64,
+      "resolvedAt": "<time>",
+    },
+    {
+      "commonDir": "<root>/clones/offline-stale-ws/.git",
+      "defaultBranch": "release",
+      "keyMatchesCommonDir": true,
+      "originHashLength": 64,
+      "resolvedAt": "<time>",
+    },
+    {
+      "commonDir": "<root>/clones/stale-ws/.git",
+      "defaultBranch": "main",
+      "keyMatchesCommonDir": true,
+      "originHashLength": 64,
+      "resolvedAt": "<time>",
+    },
+  ],
+  "version": 2,
+}
+`;
+
+exports[`worktree:list-branches selects multi-repo checkouts by repository id: repoId __workspace_root__ 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches selects multi-repo checkouts by repository id: repoId absent 1`] = `
+{
+  "freshnessFileChanged": false,
+  "outcome": {
+    "error": {
+      "code": "ENOENT",
+      "message": "spawn <git> ENOENT",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches selects multi-repo checkouts by repository id: repoId member 1`] = `
+{
+  "freshnessFileChanged": true,
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches selects multi-repo checkouts by repository id: repoId undefined 1`] = `
+{
+  "freshnessFileChanged": true,
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+      ],
+      "defaultBranch": "main",
+    },
+  },
+}
+`;
+
+exports[`worktree:list-branches serves a fresh stored default without a remote lookup or write 1`] = `
+{
+  "freshnessFileChanged": false,
+  "originHeadAfter": "refs/remotes/origin/main",
+  "originHeadBefore": "refs/remotes/origin/main",
+  "outcome": {
+    "result": {
+      "branches": [
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": true,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "feature-01",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "develop",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "feature-02",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": false,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": false,
+          "name": "local-only",
+        },
+        {
+          "hasLocalRef": true,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": false,
+          "isUsedByWorktree": true,
+          "name": "main",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "release",
+        },
+        {
+          "hasLocalRef": false,
+          "hasRemoteRef": true,
+          "isCurrent": false,
+          "isRemote": true,
+          "isUsedByWorktree": false,
+          "name": "remote-only",
+        },
+      ],
+      "defaultBranch": "develop",
+    },
+  },
+}
+`;

@@ -55,12 +55,10 @@ function buildDetail(
 function renderShell(overrides: Partial<TeamPageProps> = {}): HTMLElement {
   const props: TeamPageProps = {
     initialDetail: buildDetail(),
-    organizations: [],
     viewerEmail: 'member@example.com',
     billingEnabled: false,
     memoryEnabled: false,
     projectsEnabled: false,
-    billingNeedsAttention: false,
     mobileBrowser: false,
     activeTab: 'feed',
     ...overrides,

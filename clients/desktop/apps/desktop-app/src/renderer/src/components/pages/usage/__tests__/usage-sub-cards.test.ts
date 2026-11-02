@@ -135,17 +135,22 @@ describe('buildSubCards', () => {
     ]);
   });
 
-  it('keeps the Claude Extra usage card unchanged when the summary also reports spend', () => {
+  it('keeps Claude Extra usage spend on the desktop card', () => {
     expect(
       buildSubCards('claude', [
         {
           limitId: 'extra_usage',
           limitName: 'Extra usage',
           primary: { usedPercent: 25 },
-          credits: { usedUsd: 25, totalUsd: 100, remainingUsd: 75 },
+          spend: { currency: 'USD', used: 12.5, limit: 50, isEnabled: true },
         },
-      ])[0]?.credits,
-    ).toStrictEqual({ totalUsd: 100, remainingUsd: 75 });
+      ])[0]?.spend,
+    ).toStrictEqual({
+      currency: 'USD',
+      used: 12.5,
+      limit: 50,
+      isEnabled: true,
+    });
   });
 
   it('expands Codex buckets into duration-titled primary and secondary cards', () => {

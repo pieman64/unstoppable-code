@@ -1,3 +1,8 @@
+import {
+  recordProviderConnectionFailure,
+  classifyConnectionFailure,
+  withProviderConnectionAttempt,
+} from '../lib/provider-connection-events';
 import type { BrowserWindow } from 'electron';
 import {
   IPC_CHANNELS,
@@ -20,22 +25,49 @@ import {
 async function refreshProviderAfterAuthTerminalExit(
   provider: AuthTerminalProvider,
   exitCode: number | null,
+  signal: string | null,
 ): Promise<void> {
+  const cancelled = exitCode === null || (signal !== null && signal !== '0');
+  const succeeded = exitCode === 0 && !cancelled;
   if (provider === 'opencode') {
-    if (exitCode === 0)
-      await (await import('../opencode/connection')).revokeOpenCodeRuntimes();
+    if (succeeded) {
+      const connection = await import('../opencode/connection');
+      await connection.revokeOpenCodeRuntimes();
+      // Discovery must not delay the exit event after the auth cutover.
+      void connection
+        .refreshOpenCodeAccounts(undefined, 'in_app')
+        .catch(() => undefined);
+    } else
+      recordProviderConnectionFailure(
+        'opencode',
+        'native_login',
+        cancelled ? 'cancelled' : 'authentication',
+      );
     return;
   }
   if (provider === 'claude') {
-    await checkClaudeAuthStatusObserved('auth-terminal-exit', {
-      forceAuthenticatedInvalidation: exitCode === 0,
+    if (!succeeded) {
+      recordProviderConnectionFailure(
+        'claude',
+        'native_login',
+        cancelled ? 'cancelled' : 'authentication',
+      );
+    }
+    const status = await checkClaudeAuthStatusObserved('auth-terminal-exit', {
+      forceAuthenticatedInvalidation: succeeded,
     });
+    if (succeeded && (!status.authenticated || status.probeFailed))
+      recordProviderConnectionFailure(
+        'claude',
+        'native_login',
+        status.probeFailed ? 'other' : 'authentication',
+      );
     return;
   }
   if (provider === 'codex') {
     await checkCodexAuthStatusObserved('auth-terminal-exit', {
-      forceAuthenticatedInvalidation: exitCode === 0,
-      prepareExplicitTransitionBeforeProbe: exitCode === 0,
+      forceAuthenticatedInvalidation: succeeded,
+      prepareExplicitTransitionBeforeProbe: succeeded,
     });
   }
 }
@@ -56,17 +88,23 @@ export function registerAuthTerminalHandlers(
           await refreshProviderAfterAuthTerminalExit(
             payload.provider,
             payload.exitCode,
+            payload.signal,
           );
         })()
           .catch(() => undefined)
           .finally(() => sendToWindow(getWindow(), channel, payload));
         return;
       }
-      if (payload.exitCode !== 0 || payload.provider !== 'codex') {
+      if (
+        payload.exitCode !== 0 ||
+        (payload.signal !== null && payload.signal !== '0') ||
+        payload.provider !== 'codex'
+      ) {
         sendToWindow(getWindow(), channel, payload);
         void refreshProviderAfterAuthTerminalExit(
           payload.provider,
           payload.exitCode,
+          payload.signal,
         ).catch(() => undefined);
         return;
       }
@@ -76,6 +114,7 @@ export function registerAuthTerminalHandlers(
       void refreshProviderAfterAuthTerminalExit(
         payload.provider,
         payload.exitCode,
+        payload.signal,
       )
         .catch(() => undefined)
         .finally(() => sendToWindow(getWindow(), channel, payload));
@@ -100,20 +139,34 @@ export function registerAuthTerminalHandlers(
       }
       if (provider === 'opencode') {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 60_000);
-        const runtime = await (async (): Promise<ManagedOpenCodeRuntime> => {
-          try {
-            return await (
-              await import('../opencode/connection')
-            ).openManagedOpenCodeRuntime({
-              signal: controller.signal,
-              requireEnabled: false,
-            });
-          } finally {
-            // Verification is bounded; interactive sign-in has no deadline.
-            clearTimeout(timeout);
-          }
-        })();
+        const timeout = setTimeout(
+          () =>
+            controller.abort(
+              new DOMException(
+                'OpenCode verification timed out.',
+                'TimeoutError',
+              ),
+            ),
+          60_000,
+        );
+        const runtime = await withProviderConnectionAttempt(
+          'opencode',
+          'native_login',
+          controller.signal,
+          async (): Promise<ManagedOpenCodeRuntime> => {
+            try {
+              return await (
+                await import('../opencode/connection')
+              ).openManagedOpenCodeRuntime({
+                signal: controller.signal,
+                requireEnabled: false,
+              });
+            } finally {
+              // Verification is bounded; interactive sign-in has no deadline.
+              clearTimeout(timeout);
+            }
+          },
+        );
         try {
           runtime.signal.throwIfAborted();
           const sessionId = manager.start(
@@ -134,15 +187,27 @@ export function registerAuthTerminalHandlers(
           else if (runtime.signal.aborted) stop();
           return { sessionId };
         } catch (error) {
+          recordProviderConnectionFailure(
+            'opencode',
+            'native_login',
+            classifyConnectionFailure(error, runtime.signal),
+          );
           await runtime.close();
           throw error;
         }
       }
-      const sessionId = manager.start(
-        request.provider,
-        request.cols,
-        request.rows,
-      );
+      const sessionId =
+        provider === 'claude'
+          ? await withProviderConnectionAttempt(
+              'claude',
+              'native_login',
+              undefined,
+              () =>
+                Promise.resolve(
+                  manager.start(request.provider, request.cols, request.rows),
+                ),
+            )
+          : manager.start(request.provider, request.cols, request.rows);
       return { sessionId };
     },
   );

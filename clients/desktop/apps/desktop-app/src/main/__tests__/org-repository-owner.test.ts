@@ -98,11 +98,13 @@ beforeEach(() => {
       organizationId in catalogs ? (catalogs[organizationId] ?? null) : [],
     ),
   );
-  readRemote = jest.fn(
-    (): Promise<string | null> => Promise.resolve(remoteUrl),
+  readRemote = jest.fn<Promise<string | null>, [string]>(() =>
+    Promise.resolve(remoteUrl),
   );
   placeable = true;
-  canPlace = jest.fn((): Promise<boolean> => Promise.resolve(placeable));
+  canPlace = jest.fn<Promise<boolean>, [string]>(() =>
+    Promise.resolve(placeable),
+  );
 });
 
 const ACME_OWNER = {

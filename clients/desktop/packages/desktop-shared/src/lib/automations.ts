@@ -32,10 +32,12 @@
 // by the scheduler, which dedupes downstream by
 // `${activity.id}:${scheduledFor}`.
 
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { validateSharedAutomationTargetRequirement } from '@canopy/protocol/automations';
 import type {
   AgentModelConfig,
   AutomationAction,
+  AutomationDependencies,
   AutomationIfCommandIdempotencyScope,
   AutomationTrigger,
   ParsedAutomationIfCommandOutput,
@@ -52,6 +54,10 @@ import {
   isChatAttachmentPromptKind,
 } from '../types';
 import { isShareablePluginRef } from '../plugin-refs';
+import {
+  automationPipelineTargetError,
+  resolveAutomationPipelineTarget,
+} from './automation-pipeline-target';
 import { isChatTabPluginSelections } from './plugin-selections-normalization';
 import { brandEnvCandidates } from '../brand/env';
 import { isApprovalMode } from './approval-engine';
@@ -62,6 +68,7 @@ import {
 import {
   isPipelineContentHash,
   isPipelinePackageDigest,
+  isPipelinePackageIdentifier,
   PIPELINE_PACKAGE_VERSION,
 } from '@canopy/protocol/pipelines';
 import { SIDEBAR_ITEM_GROUP_NAME_LIMIT } from '@canopy/protocol/sidebar';
@@ -647,25 +654,25 @@ export function validateAutomationAction(action: unknown): string | null {
   switch (action.type) {
     case 'app_advisor_prompt':
       if (!isNonEmptyString(action.prompt)) {
-        return 'App Advisor prompt action requires a non-empty prompt.';
+        return `${ORCHESTRATOR_LABEL} prompt action requires a non-empty prompt.`;
       }
       if (
         action.approvalMode !== undefined &&
         !isApprovalMode(action.approvalMode)
       ) {
-        return 'App Advisor prompt action approvalMode, when provided, must be a valid approval mode.';
+        return `${ORCHESTRATOR_LABEL} prompt action approvalMode, when provided, must be a valid approval mode.`;
       }
       if (action.planMode !== undefined && typeof action.planMode !== 'boolean')
-        return 'App Advisor prompt action planMode must be a boolean.';
+        return `${ORCHESTRATOR_LABEL} prompt action planMode must be a boolean.`;
       if (
         action.workEntryId !== undefined &&
         !isNonEmptyString(action.workEntryId)
       ) {
-        return 'App Advisor prompt action workEntryId, when provided, must be a non-empty string.';
+        return `${ORCHESTRATOR_LABEL} prompt action workEntryId, when provided, must be a non-empty string.`;
       }
       return validateAutomationPromptChatSettings(
         action,
-        'App Advisor prompt action',
+        `${ORCHESTRATOR_LABEL} prompt action`,
       );
     case 'standalone_prompt':
       if (!isNonEmptyString(action.chatProjectId)) {
@@ -850,10 +857,9 @@ export function validateAutomationAction(action: unknown): string | null {
         return 'Worktree Session prompt action chatTitle, when provided, must be a string.';
       }
       return null;
-    case 'worktree_pipeline':
-      if (!isNonEmptyString(action.workspaceId)) {
-        return 'Worktree pipeline action requires a workspaceId.';
-      }
+    case 'worktree_pipeline': {
+      const targetError = automationPipelineTargetError(action);
+      if (targetError) return targetError;
       if (!isNonEmptyString(action.pipelineId)) {
         return 'Worktree pipeline action requires a pipelineId.';
       }
@@ -944,6 +950,7 @@ export function validateAutomationAction(action: unknown): string | null {
         // reads, where rejecting would silently drop the stored automation.
       }
       return null;
+    }
     case 'pipeline_execution_resume':
       if (!isNonEmptyString(action.executionId)) {
         return 'Pipeline execution resume action requires an executionId.';
@@ -1116,7 +1123,7 @@ export function automationPipelineSpeedError(
   config: AgentModelConfig | undefined,
 ): string | null {
   return readCodexSpeedRecord(config) === 'ultrafast'
-    ? 'Pipeline automations do not support Ultra fast. Choose Regular or Fast.'
+    ? 'Workflow automations do not support Ultra fast. Choose Regular or Fast.'
     : null;
 }
 
@@ -1167,6 +1174,10 @@ const INSTALLED_FROM_REMOTE_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 // contract the web service enforces for savedFrom lineage).
 const INSTALLED_FROM_CONTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
 const INSTALLED_FROM_PIPELINE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** Most pipelines one automation may list as dependencies. */
+export const MAX_AUTOMATION_PIPELINE_DEPENDENCIES = 50;
+const MAX_AUTOMATION_PIPELINE_DEPENDENCY_ID_CHARS = 1024;
 
 function isParseableTimestamp(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -1256,6 +1267,10 @@ export function validateAutomationInstalledFrom(value: unknown): string | null {
   ) {
     return 'Automation installedFrom.bundledPipelineContentHash must be a 64-character hex hash.';
   }
+  const pipelineDependenciesError = validateInstalledPipelineDependencies(
+    value.pipelineDependencies,
+  );
+  if (pipelineDependenciesError) return pipelineDependenciesError;
   if (
     value.capabilityPackage !== undefined &&
     (!isPlainObject(value.capabilityPackage) ||
@@ -1283,6 +1298,93 @@ export function validateAutomationInstalledFrom(value: unknown): string | null {
   return null;
 }
 
+function validateInstalledPipelineDependencies(value: unknown): string | null {
+  if (value === undefined) return null;
+  const invalid =
+    'Automation installedFrom.pipelineDependencies must list { key, localPipelineId, pipelineContentHash } entries.';
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_AUTOMATION_PIPELINE_DEPENDENCIES
+  ) {
+    return invalid;
+  }
+  const entries: unknown[] = value;
+  const keys = new Set<string>();
+  for (const entry of entries) {
+    if (
+      !isPlainObject(entry) ||
+      !isPipelinePackageIdentifier(entry.key) ||
+      !isNonEmptyString(entry.localPipelineId) ||
+      !INSTALLED_FROM_PIPELINE_ID_PATTERN.test(entry.localPipelineId) ||
+      !isNonEmptyString(entry.pipelineContentHash) ||
+      !INSTALLED_FROM_CONTENT_HASH_PATTERN.test(entry.pipelineContentHash)
+    ) {
+      return invalid;
+    }
+    if (keys.has(entry.key)) {
+      return `Automation installedFrom.pipelineDependencies lists "${entry.key}" more than once.`;
+    }
+    keys.add(entry.key);
+  }
+  return null;
+}
+
+/**
+ * Shape check for {@link AutomationDependencies} on a write. `null` is
+ * accepted only when `allowNull` is set (an update clearing the list).
+ * Duplicates are allowed here and removed by
+ * {@link normalizeAutomationDependencies}.
+ */
+export function validateAutomationDependencies(
+  value: unknown,
+  options: { allowNull?: boolean } = {},
+): string | null {
+  if (value === undefined) return null;
+  if (value === null && options.allowNull === true) return null;
+  if (!isPlainObject(value) || !Array.isArray(value.pipelines)) {
+    return 'Automation dependencies must be an object with a pipelines list.';
+  }
+  const pipelines: unknown[] = value.pipelines;
+  if (pipelines.length > MAX_AUTOMATION_PIPELINE_DEPENDENCIES) {
+    return `An automation can list at most ${MAX_AUTOMATION_PIPELINE_DEPENDENCIES} pipelines.`;
+  }
+  for (const pipeline of pipelines) {
+    if (
+      !isPlainObject(pipeline) ||
+      !isNonEmptyString(pipeline.pipelineId) ||
+      pipeline.pipelineId.trim() !== pipeline.pipelineId ||
+      pipeline.pipelineId.length >
+        MAX_AUTOMATION_PIPELINE_DEPENDENCY_ID_CHARS ||
+      (pipeline.source !== 'user' && pipeline.source !== 'project')
+    ) {
+      return 'Each automation pipeline dependency needs a pipelineId and a source of user or project.';
+    }
+  }
+  return null;
+}
+
+/**
+ * Canonical stored form of validated dependencies: only the known fields, in
+ * first-seen order, deduplicated by `source` + `pipelineId`. Returns
+ * `undefined` for an empty list so the activity omits the field.
+ */
+export function normalizeAutomationDependencies(
+  value: AutomationDependencies,
+): AutomationDependencies | undefined {
+  const seen = new Set<string>();
+  const pipelines: AutomationDependencies['pipelines'] = [];
+  for (const pipeline of value.pipelines) {
+    const identity = `${pipeline.source}:${pipeline.pipelineId}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    pipelines.push({
+      pipelineId: pipeline.pipelineId,
+      source: pipeline.source,
+    });
+  }
+  return pipelines.length > 0 ? { pipelines } : undefined;
+}
+
 export function validateAutomationCreateRequest(input: unknown): string | null {
   if (!isPlainObject(input)) {
     return 'Automation request must be an object.';
@@ -1303,6 +1405,8 @@ export function validateAutomationCreateRequest(input: unknown): string | null {
     input.installedFrom,
   );
   if (installedFromError) return installedFromError;
+  const dependenciesError = validateAutomationDependencies(input.dependencies);
+  if (dependenciesError) return dependenciesError;
   // Main parses the owner and checks it against the account.
   if (
     input.executionContext !== undefined &&
@@ -1456,7 +1560,7 @@ export function describeAutomationAction(
 ): string {
   switch (action.type) {
     case 'app_advisor_prompt':
-      return `App Advisor prompt: ${truncatePrompt(action.prompt)}`;
+      return `${ORCHESTRATOR_LABEL} prompt: ${truncatePrompt(action.prompt)}`;
     case 'standalone_prompt': {
       const chatProjectName =
         nameResolver.standaloneChatProjectName?.(action.chatProjectId) ??
@@ -1491,13 +1595,27 @@ export function describeAutomationAction(
     }
     case 'worktree_pipeline': {
       const name = action.pipelineName ?? action.pipelineId;
+      const target = resolveAutomationPipelineTarget(action);
+      if (target?.kind === 'global') {
+        return `Run workflow "${name}" with no project`;
+      }
+      const workspaceId = target?.workspaceId ?? action.workspaceId ?? '';
       const workspaceName =
-        nameResolver.workspaceName?.(action.workspaceId) ?? action.workspaceId;
-      return `Run pipeline "${name}" on project ${workspaceName}`;
+        nameResolver.workspaceName?.(workspaceId) ?? workspaceId;
+      if (target?.kind === 'task') {
+        const taskName =
+          nameResolver.worktreeName?.(workspaceId, target.taskId) ??
+          target.taskId;
+        return `Run workflow "${name}" in ${taskName} on project ${workspaceName}`;
+      }
+      if (target?.kind === 'project') {
+        return `Run workflow "${name}" in the ${workspaceName} project folder`;
+      }
+      return `Run workflow "${name}" on project ${workspaceName}`;
     }
     case 'pipeline_execution_resume': {
       const provider = action.provider === 'claude' ? 'Claude' : 'Codex';
-      return `Resume pipeline "${action.pipelineName}" after ${provider} usage reset`;
+      return `Resume workflow "${action.pipelineName}" after ${provider} usage reset`;
     }
     default:
       return 'Unknown automation action';

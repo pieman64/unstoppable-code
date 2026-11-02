@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { StatusBadgeVariant } from '@canopy/ui-shared';
 
 /**
@@ -22,10 +23,10 @@ function titleCaseEnum(value: string): string {
 const EVENT_TYPE_LABELS: Readonly<Record<string, string>> = {
   WORKTREE_CHAT: 'Worktree chat',
   STANDALONE_CHAT: 'Standalone chat',
-  APP_ADVISOR: 'App Advisor',
-  PIPELINE_EDITOR: 'Pipeline editor',
-  PIPELINE_AGENT_TURN: 'Pipeline',
-  PIPELINE_ADVISOR: 'Pipeline Advisor',
+  APP_ADVISOR: ORCHESTRATOR_LABEL,
+  PIPELINE_EDITOR: 'Workflow editor',
+  PIPELINE_AGENT_TURN: 'Workflow',
+  PIPELINE_ADVISOR: 'Workflow Advisor',
   PR_GENERATION: 'PR generation',
   COMMIT_MESSAGE_GENERATION: 'Commit message',
   BRANCH_NAMING: 'Branch naming',

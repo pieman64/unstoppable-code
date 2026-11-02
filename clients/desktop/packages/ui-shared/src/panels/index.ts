@@ -18,7 +18,6 @@ export * from './grid';
 export * from './collapse-eligibility';
 export * from './grid-leaf-adapter';
 export * from './registry-types';
-export * from './tab-limit';
 
 export {
   Sash,

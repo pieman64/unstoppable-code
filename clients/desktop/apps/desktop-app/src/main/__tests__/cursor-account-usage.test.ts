@@ -5,19 +5,29 @@ const mockCommand = jest.fn();
 const mockToken = jest.fn();
 const mockEnabled = jest.fn(() => true);
 jest.mock('../cursor/runtime-status', () => ({
-  cursorConnectionStatus: mockStatus,
+  get cursorConnectionStatus(): typeof mockStatus {
+    return mockStatus;
+  },
 }));
 jest.mock('../cursor/connection', () => ({
-  getManagedCursorRuntime: mockManaged,
+  get getManagedCursorRuntime(): typeof mockManaged {
+    return mockManaged;
+  },
 }));
 jest.mock('@canopy/desktop-shared/node/cursor/runtime-process', () => ({
-  runCursorRuntimeCommand: mockCommand,
+  get runCursorRuntimeCommand(): typeof mockCommand {
+    return mockCommand;
+  },
 }));
 jest.mock('../cursor/account-credentials', () => ({
-  readCursorAccessToken: mockToken,
+  get readCursorAccessToken(): typeof mockToken {
+    return mockToken;
+  },
 }));
 jest.mock('../cursor/feature-flag', () => ({
-  isCursorHarnessEnabled: mockEnabled,
+  get isCursorHarnessEnabled(): typeof mockEnabled {
+    return mockEnabled;
+  },
 }));
 jest.mock('../lib/e2e-mock-control-plane', () => ({
   getMockLlmOrigin: (): null => null,

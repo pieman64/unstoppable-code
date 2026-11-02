@@ -141,6 +141,35 @@ describe('ComposerEditor keys', () => {
     act(() => root.unmount());
   });
 
+  it('does not submit on an Enter that confirms an IME composition', () => {
+    const onSubmit = jest.fn();
+    const ref = createRef<ComposerEditorHandle>();
+    const { container, root } = mount(
+      <ComposerEditor ref={ref} dataTestId="editable" onSubmit={onSubmit} />,
+    );
+    act(() => {
+      ref.current?.replaceDraft('にほんご');
+    });
+    const editable = container.querySelector<HTMLElement>(
+      '[data-testid="editable"]',
+    );
+    let notPrevented = true;
+    act(() => {
+      notPrevented =
+        editable?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            isComposing: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        ) ?? true;
+    });
+    expect(notPrevented).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
   it('does not submit when the host already consumed the key', () => {
     const onSubmit = jest.fn();
     const { container, root } = mount(
@@ -218,6 +247,106 @@ describe('ComposerEditor keys', () => {
     expect(onSubmit).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
+
+  it.each(['pointer', 'Enter'])(
+    'does not prepare a command on Tab over hovered Show all before %s expansion',
+    async (expansion) => {
+      Element.prototype.scrollIntoView = jest.fn();
+      const editor = createChatEditor();
+      const query = '/ud-code-review';
+      editor.children = [{ type: 'paragraph', children: [{ text: query }] }];
+      Transforms.select(editor, { path: [0, 0], offset: query.length });
+      const commands: SlashCommandOption[] = Array.from(
+        { length: 7 },
+        (_, index) => ({
+          name: `review-${index}`,
+          namespace: 'ud-code-review',
+          description: `Review ${index}`,
+          section: 'available',
+          insertText: `/review-${index} `,
+        }),
+      );
+      const prepare = jest.fn(() => Promise.resolve(true));
+      const { container, root } = mount(
+        <ComposerEditor
+          dataTestId="editable"
+          editor={editor}
+          value={editor.children}
+          onChange={(): void => {}}
+          fetchSlashCommands={(): Promise<SlashCommandOption[]> =>
+            Promise.resolve(commands)
+          }
+          onSelectSlashCommand={prepare}
+        />,
+      );
+      try {
+        await act(async () => {
+          await Promise.resolve();
+        });
+        const showAll = container.querySelector<HTMLElement>(
+          '[data-testid="slash-command-show-all"]',
+        );
+        expect(showAll?.textContent).toBe('Show all 7');
+        act(() => {
+          showAll?.dispatchEvent(
+            new MouseEvent('mousemove', {
+              bubbles: true,
+              clientX: 20,
+              clientY: 30,
+            }),
+          );
+        });
+        await act(async () => {
+          expect(pressKey(container, 'Tab')).toBe(true);
+          await Promise.resolve();
+        });
+        expect(prepare).not.toHaveBeenCalled();
+        expect(serializeEditorValue(editor.children).text).toBe(query);
+        expect(
+          container.querySelectorAll(
+            '[data-testid="slash-command-option-available"]',
+          ),
+        ).toHaveLength(5);
+        if (expansion === 'pointer') {
+          act(() => {
+            showAll?.click();
+          });
+        } else {
+          expect(pressEnter(container)).toBe(true);
+        }
+        expect(prepare).not.toHaveBeenCalled();
+        expect(serializeEditorValue(editor.children).text).toBe(query);
+        const rows = container.querySelectorAll<HTMLElement>(
+          '[data-testid="slash-command-option-available"]',
+        );
+        expect(rows).toHaveLength(7);
+        expect(Array.from(rows, (row) => row.textContent)).toEqual(
+          commands.map(
+            (command) =>
+              `/${command.name}${command.description}Available · enable`,
+          ),
+        );
+        act(() => {
+          rows[2]?.dispatchEvent(
+            new MouseEvent('mousemove', {
+              bubbles: true,
+              clientX: 20,
+              clientY: 10,
+            }),
+          );
+        });
+        await act(async () => {
+          expect(pressKey(container, 'Tab')).toBe(true);
+          await Promise.resolve();
+        });
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect(prepare).toHaveBeenCalledWith(commands[2]);
+        expect(serializeEditorValue(editor.children).text).toBe('/review-2 ');
+      } finally {
+        act(() => root.unmount());
+      }
+    },
+  );
 
   it('inserts the highlighted @ file on Tab without submitting', async () => {
     const editor = createChatEditor();

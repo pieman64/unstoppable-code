@@ -12,7 +12,7 @@ jest.mock('../agents/claude-process-host-runner', () => ({
   spawnClaudeCodeProcessOffMain: jest.fn(),
 }));
 
-const mockRunEphemeralTurn = jest.fn<unknown, [unknown]>();
+const mockRunEphemeralTurn = jest.fn<Promise<unknown>, [unknown]>();
 const mockDeleteThread = jest.fn(() => Promise.resolve());
 const mockStartThread = jest.fn((request: Record<string, unknown>) =>
   Promise.resolve({

@@ -37,6 +37,7 @@ import {
   isBotAccessAllowed,
 } from '../project-discovery/bots';
 import type { ProjectDiscoveryCaller } from '../project-discovery';
+import { requireBotAccess } from '../project-discovery/bots/target';
 
 jest.mock('../lib/project-owner');
 jest.mock('../lib/cowork-work-entries');
@@ -539,6 +540,76 @@ describe('App Advisor bot access gate', () => {
     expect(mockedResolveProjectSavedOwner).not.toHaveBeenCalled();
   });
 
+  test('gates a pipeline caller only by the agent that started its run', async () => {
+    setAccess('disabled');
+    const userRun = {
+      kind: 'pipeline',
+      owner: ORGANIZATION_A,
+    } satisfies ProjectDiscoveryCaller;
+    await expect(isBotAccessAllowed(userRun)).resolves.toBe(true);
+    expect(mockedResolveProjectSavedOwner).not.toHaveBeenCalled();
+    const userResponse = await dispatch(
+      { type: 'bots.list', pageSize: 1 },
+      userRun,
+    );
+    expect(resultOf(userResponse).items).toHaveLength(1);
+
+    const agentRun = {
+      kind: 'pipeline',
+      owner: PERSONAL_OWNER,
+      agentOrigin: {
+        projectId: projectCaller.projectId,
+        worktreeId: projectCaller.worktreeId,
+        chatId: projectCaller.chatId,
+      },
+    } satisfies ProjectDiscoveryCaller;
+    await expect(isBotAccessAllowed(agentRun)).resolves.toBe(false);
+    expectErrorCode(
+      await dispatch({ type: 'bots.list', pageSize: 1 }, agentRun),
+      'advisor_access_disabled',
+    );
+
+    setAccess('enabled');
+    await expect(isBotAccessAllowed(agentRun)).resolves.toBe(true);
+    expect(mockedResolveProjectSavedOwner).toHaveBeenCalledWith({
+      projectId: projectCaller.projectId,
+      worktreeId: projectCaller.worktreeId,
+    });
+  });
+
+  test('allows a pipeline caller without an origin without evaluating the setting', async () => {
+    setAccess('disabled');
+
+    await expect(
+      isBotAccessAllowed({ kind: 'pipeline', owner: PERSONAL_OWNER }),
+    ).resolves.toBe(true);
+    expect(mockedResolveProjectSavedOwner).not.toHaveBeenCalled();
+  });
+
+  test("decides an agent-originated pipeline by its origin agent's setting", async () => {
+    const pipelineCaller = {
+      kind: 'pipeline',
+      owner: PERSONAL_OWNER,
+      agentOrigin: {
+        projectId: projectCaller.projectId,
+        worktreeId: projectCaller.worktreeId,
+        chatId: projectCaller.chatId,
+      },
+    } satisfies ProjectDiscoveryCaller;
+    setAccess('enabled');
+    await expect(isBotAccessAllowed(pipelineCaller)).resolves.toBe(true);
+    expect(mockedResolveProjectSavedOwner).toHaveBeenCalledWith({
+      projectId: projectCaller.projectId,
+      worktreeId: projectCaller.worktreeId,
+    });
+
+    setAccess('disabled');
+    await expect(isBotAccessAllowed(pipelineCaller)).resolves.toBe(false);
+    await expect(requireBotAccess(pipelineCaller)).rejects.toMatchObject({
+      code: 'advisor_access_disabled',
+    });
+  });
+
   test('re-evaluates the latest setting on every call', async () => {
     setAccess('enabled');
     await expect(isBotAccessAllowed(projectCaller)).resolves.toBe(true);
@@ -839,6 +910,27 @@ describe('bot registry and task discovery', () => {
     expect(mockedReadWorkEntriesFileStrict).toHaveBeenCalledWith(
       APP_ADVISOR_PROJECT_ID,
     );
+  });
+
+  test('names the bot Orchestrator and still matches its former name', async () => {
+    setWorkEntries([workEntry(TASK_ONE)]);
+    const listed = resultOf(await dispatch({ type: 'bots.list' }));
+    expect(listed.items).toEqual([
+      expect.objectContaining({ botId: BOT_ID, name: 'Orchestrator' }),
+    ]);
+
+    for (const name of ['App Advisor', 'orchestrator', ' ORCHESTRATOR ']) {
+      const page = resultOf(await dispatch({ type: 'bots.list', name }));
+      expect(page.items).toEqual([expect.objectContaining({ botId: BOT_ID })]);
+    }
+    for (const query of ['app advisor', 'orch']) {
+      const page = resultOf(await dispatch({ type: 'bots.list', query }));
+      expect(page.items).toEqual([expect.objectContaining({ botId: BOT_ID })]);
+    }
+    const other = resultOf(
+      await dispatch({ type: 'bots.list', name: 'Pipeline Advisor' }),
+    );
+    expect(other.items).toEqual([]);
   });
 
   test('keeps the one-bot catalog on a terminal page and rejects unissued list cursors', async () => {

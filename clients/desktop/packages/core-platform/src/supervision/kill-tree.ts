@@ -3,8 +3,8 @@ import type {
   PlatformKillTreeResult,
   PlatformOperatingSystem,
 } from '@canopy/core-runtime';
+import { signalProcessGroup } from './process-group';
 import {
-  errorCode,
   processPresent,
   type SupervisionOperations,
   validatePid,
@@ -25,12 +25,12 @@ export async function killProcessTree(
     throw new Error('Invalid stop mode');
   signal?.throwIfAborted();
   if (os === 'win32') return killWindowsTree(pid, ops, signal);
-  try {
-    ops.kill(-pid, mode === 'graceful' ? 'SIGTERM' : 'SIGKILL');
-    return { kind: 'signaled', mode };
-  } catch (error) {
-    if (errorCode(error) !== 'ESRCH') throw error;
-  }
+  const sent = signalProcessGroup(
+    pid,
+    mode === 'graceful' ? 'SIGTERM' : 'SIGKILL',
+    ops,
+  );
+  if (sent === 'sent') return { kind: 'signaled', mode };
   if (processPresent(pid, ops))
     throw new Error(`PID ${pid} is not a process group leader`);
   return { kind: 'absent' };

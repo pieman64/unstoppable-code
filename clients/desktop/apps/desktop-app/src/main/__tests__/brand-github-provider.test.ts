@@ -1,4 +1,4 @@
-import type { RequestOptions } from 'node:http';
+import type { OutgoingHttpHeaders, RequestOptions } from 'node:http';
 import {
   BrandedPrivateGitHubProvider,
   getBrandUpdateChannelFilename,
@@ -7,6 +7,12 @@ import {
 
 function requestPath(options: RequestOptions): string {
   return String(options.path ?? '');
+}
+
+function isOutgoingHttpHeaders(
+  headers: RequestOptions['headers'],
+): headers is OutgoingHttpHeaders {
+  return headers !== undefined && !Array.isArray(headers);
 }
 
 function createProvider(
@@ -121,7 +127,8 @@ describe('branded private GitHub updater provider', () => {
     expect(
       request.mock.calls.some(
         ([options]) =>
-          options.headers?.authorization === 'token ghp_test_token_123',
+          isOutgoingHttpHeaders(options.headers) &&
+          options.headers.authorization === 'token ghp_test_token_123',
       ),
     ).toBe(true);
   });
@@ -522,7 +529,7 @@ describe('branded private GitHub updater provider', () => {
   });
 
   it('fails clearly when the release is missing the branded channel file', async () => {
-    const request = jest.fn(
+    const request = jest.fn<Promise<string | null>, [RequestOptions]>(
       (): Promise<string | null> =>
         Promise.resolve(
           JSON.stringify({

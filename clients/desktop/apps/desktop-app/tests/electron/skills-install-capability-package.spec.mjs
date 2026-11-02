@@ -14,7 +14,12 @@ import { writeJson } from './seeders/index.mjs';
 // CAN-3710: every Marketplace install goes through the shared install review.
 // Its one Install writes, then the review closes and lands on the installed
 // skill with a short notice.
-async function showMarketplaceSkill(window, app, skill) {
+async function showMarketplaceSkill(
+  window,
+  app,
+  skill,
+  { installed = false } = {},
+) {
   // A finished install lands on the installed skill's page; its breadcrumb
   // leads back to the Marketplace.
   const root = window.getByTestId('plugins-entry-detail-breadcrumb-root');
@@ -23,9 +28,17 @@ async function showMarketplaceSkill(window, app, skill) {
   await window.getByTestId('plugins-type-tab-skill').click();
   await window.getByTestId('plugins-search').fill(skill.name);
   const entry = window.getByTestId(
-    `plugins-entry-public-share:skill:${skill.externalId}`,
+    installed
+      ? `customize-row-public-share:skill:${skill.externalId}`
+      : `plugins-entry-public-share:skill:${skill.externalId}`,
   );
   await expect(entry).toBeVisible();
+  if (installed)
+    await expect(
+      window.getByTestId(
+        `plugins-entry-public-share:skill:${skill.externalId}`,
+      ),
+    ).toHaveCount(0);
   return entry;
 }
 
@@ -65,14 +78,16 @@ test('desktop Marketplace Skills discovers and explicitly installs both publishe
       expect(existsSync(skillDir)).toBe(false);
       await entry.click();
       const detail = window.getByTestId('plugins-entry-detail');
-      // One title, owned by the content, showing the same display name as
-      // the row rather than the raw skill identifier.
-      await expect(detail.locator('#plugin-detail-title')).toHaveCount(1);
+      // One title, on the shared detail header, showing the same display
+      // name as the row rather than the raw skill identifier.
+      await expect(detail.locator('#plugins-entry-detail-title')).toHaveCount(
+        1,
+      );
       await expect(detail).toHaveAttribute(
         'aria-labelledby',
-        'plugin-detail-title',
+        'plugins-entry-detail-title',
       );
-      await expect(detail.locator('#plugin-detail-title')).toHaveText(
+      await expect(detail.locator('#plugins-entry-detail-title')).toHaveText(
         skill.displayName,
       );
       await expect(
@@ -93,7 +108,9 @@ test('desktop Marketplace Skills discovers and explicitly installs both publishe
           file.body,
         );
       // Back on the Marketplace, the page knows the skill is installed.
-      const again = await showMarketplaceSkill(window, app, skill);
+      const again = await showMarketplaceSkill(window, app, skill, {
+        installed: true,
+      });
       await again.click();
       await expect(
         window
@@ -156,10 +173,12 @@ test('desktop Marketplace Skills installs a publisher skill with context enforce
     // The Marketplace page for the installed skill keeps its actions on the
     // title's row: the page scrolls as a whole and a publisher README can run
     // to many screens.
-    const entry = await showMarketplaceSkill(window, app, skill);
+    const entry = await showMarketplaceSkill(window, app, skill, {
+      installed: true,
+    });
     await entry.click();
     const detail = window.getByTestId('plugins-entry-detail');
-    await expect(detail.locator('#plugin-detail-title')).toHaveText(
+    await expect(detail.locator('#plugins-entry-detail-title')).toHaveText(
       skill.displayName,
     );
     const installedStatus = detail.getByTestId(
@@ -237,7 +256,9 @@ test('desktop Marketplace Skills keeps the skill actions on the page beside the 
       window,
       path.join(userDataDir, 'skills', 'custom:app', skill.name),
     );
-    const entry = await showMarketplaceSkill(window, app, skill);
+    const entry = await showMarketplaceSkill(window, app, skill, {
+      installed: true,
+    });
     await entry.click();
     const detail = window.getByTestId('plugins-entry-detail');
     const installedStatus = detail.getByTestId(

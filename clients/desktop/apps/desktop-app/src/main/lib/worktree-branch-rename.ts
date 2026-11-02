@@ -1,9 +1,8 @@
-import { z } from 'zod';
+import { decodeW5WorktreeBranchRenameOutcome } from '@canopy/core-runtime/node/w5/worktree-outcome';
 import {
   checkW5ExpectedRevision,
   runW5BoundaryOperation,
   w5ExpectedRevision,
-  w5WorktreeOutcomeSchema,
   type W5BoundaryOptions,
 } from './w5-boundary-operation';
 import {
@@ -14,7 +13,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
-import { isBranchNameAvailable, renameBranch, validateBranchName } from './git';
+import { isBranchNameAvailable, validateBranchName } from './git';
 import {
   getWorkspaceWorktreesFilePath,
   getWorkspaceWorktreeRepoDir,
@@ -23,8 +22,8 @@ import { isWritableScope, READ_ONLY_SCOPE_ERROR } from './read-only-scope';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import { validateId } from './validation';
 import { WORKTREE_LIST_STORAGE, withStorageAdmission } from './w5-storage';
-import { updateWorkspaceWorktree } from './workspace-persistence';
-import { applyWorktreeBranchChange } from './worktree-git-observations';
+import { applyWorktreeBranchRenameDecision } from './worktree-branch-rename-decision-port';
+import type { WorktreeBranchRenameDecision } from './worktree-record-decisions';
 
 /**
  * The caller of a branch rename: the desktop renderer's branch dialogs today.
@@ -42,6 +41,20 @@ export interface WorktreeBranchRenameRequest extends W5BoundaryOptions {
    */
   repoId?: string;
   newBranchName: string;
+}
+
+/**
+ * The rename's one Git effect, injected so the command never runs Git
+ * itself: `worker.git.branch.rename` on the desktop dispatcher today, and
+ * the binding W5's daemon composition supplies later. It renames the current
+ * branch of the checkout the ids name; a started rename is never aborted.
+ */
+export interface WorktreeBranchRenameGit {
+  renameCheckoutBranch(
+    this: void,
+    target: { workspaceId: string; worktreeId: string; repoId?: string },
+    newBranchName: string,
+  ): Promise<void>;
 }
 
 export interface WorktreeBranchRenameOutcome {
@@ -89,15 +102,20 @@ function resolveRenameCheckout(request: WorktreeBranchRenameRequest): string {
  * `core.worktree.branch.rename` (CAN-3820), the typed in-process command
  * behind `worktree:rename-branch`. Admission (ids, the read-only
  * shared-container scope, the repository id) runs before any Git work; the
- * branch name is checked and the checkout's branch renamed through the
- * existing Git helpers, unchanged; then the row is recorded under the
- * worktree list lock in one write: a root or single-repository rename
+ * branch name is checked through the existing Git helpers, unchanged, and the
+ * checkout's branch renamed through the injected `git` port
+ * (`worker.git.branch.rename`, CAN-5516); then the row is recorded under the
+ * worktree list lock in one write, as a `worktree.branch.rename` decision
+ * through the record decision port (W6f1): a root or single-repository rename
  * stores the sidebar `branchName`, and any rename clears the PR status, which
  * belonged to the old name. Optional keyed attempts reserve before Git and
  * save only the final outcome; repository locks cover metadata publication.
+ * A failure after Git, including a missing row, keeps the rename and leaves a
+ * keyed attempt recovery-required.
  */
 export async function renameWorktreeBranch(
   request: WorktreeBranchRenameRequest,
+  git: WorktreeBranchRenameGit,
 ): Promise<WorktreeBranchRenameOutcome> {
   return withStorageAdmission([WORKTREE_LIST_STORAGE], async () => {
     const { workspaceId, worktreeId, repoId, newBranchName } = request;
@@ -121,13 +139,7 @@ export async function renameWorktreeBranch(
           error instanceof WorktreeBranchRenameRefusedError ||
           error instanceof W5RevisionConflictError,
       },
-      (outcome) =>
-        z
-          .object({
-            branchName: z.string(),
-            worktree: w5WorktreeOutcomeSchema.nullable(),
-          })
-          .parse(outcome),
+      decodeW5WorktreeBranchRenameOutcome,
       async (options, attempt) => {
         await checkW5ExpectedRevision(
           { kind: 'worktree', workspaceId, worktreeId },
@@ -147,27 +159,26 @@ export async function renameWorktreeBranch(
           );
         }
         attempt?.beforeEffects();
-        await renameBranch(checkout, newBranchName);
-        async function stageRenamedWorktree(): Promise<WorktreeBranchRenameOutcome> {
-          const updatesSidebarBranch =
-            repoId === undefined || repoId === WORKSPACE_ROOT_REPO_ID;
-          const recorded: { worktree: WorktreeData | null } = {
-            worktree: null,
-          };
-          const found = await updateWorkspaceWorktree(
+        await git.renameCheckoutBranch(
+          {
             workspaceId,
             worktreeId,
-            (current) => {
-              const next = applyWorktreeBranchChange(
-                current,
-                newBranchName,
-                updatesSidebarBranch,
-              );
-              recorded.worktree = next;
-              return next;
-            },
+            ...(repoId === undefined ? {} : { repoId }),
+          },
+          newBranchName,
+        );
+        async function stageRenamedWorktree(): Promise<WorktreeBranchRenameOutcome> {
+          const decision: WorktreeBranchRenameDecision = {
+            kind: 'worktree.branch.rename',
+            branchName: newBranchName,
+            updatesSidebarBranch:
+              repoId === undefined || repoId === WORKSPACE_ROOT_REPO_ID,
+          };
+          const recorded = await applyWorktreeBranchRenameDecision(
+            { workspaceId, worktreeId },
+            decision,
           );
-          if (!found) {
+          if (recorded.status === 'not-found') {
             refuse(
               'not-found',
               `Worktree metadata not found for ${workspaceId}/${worktreeId}`,

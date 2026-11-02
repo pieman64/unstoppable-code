@@ -7,6 +7,7 @@ import {
   type ReactElement,
 } from 'react';
 import {
+  CAPABILITY_TILE_CELL_CLASS,
   CapabilityTile,
   capabilityTileModel,
   RichHoverTooltip,
@@ -99,7 +100,9 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
     (trigger: ReactElement<TooltipTriggerProps>): JSX.Element => (
       <RichHoverTooltip
         content={<AgentArtifactTooltip receipt={receipt} />}
-        triggerWrapperClassName="w-full"
+        // CAPABILITY_TILE_CELL_CLASS, spelled out: this prop takes only a
+        // static class string.
+        triggerWrapperClassName="h-full w-full supports-[grid-template-rows:subgrid]:row-span-2 supports-[grid-template-rows:subgrid]:grid supports-[grid-template-rows:subgrid]:grid-rows-subgrid"
       >
         {trigger}
       </RichHoverTooltip>
@@ -107,7 +110,9 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
     [receipt],
   );
   return (
-    <div ref={wrapperRef}>
+    // Fills the Agent activity grid cell and passes its rows through, so
+    // cards in a row share a height and a footer line.
+    <div ref={wrapperRef} className={CAPABILITY_TILE_CELL_CLASS}>
       <CapabilityTile
         model={model}
         action={action}

@@ -6,7 +6,6 @@ import {
   getArchivedContainerStateLabel,
   isArchivedContainerDiskUsageComplete,
 } from '@/lib/archivedContainerDisplay';
-import { formatByteSize } from '@/lib/format';
 
 describe('archived container state helpers', () => {
   it('maps a lock timestamp to Archived and its absence to Deleted', () => {
@@ -59,22 +58,5 @@ describe('archived container state helpers', () => {
         diskUsage: { ...summary.diskUsage, gitBytesComplete: true },
       }),
     ).toBe(true);
-  });
-});
-
-describe('formatByteSize', () => {
-  it('formats bytes with a unit that keeps small sizes legible', () => {
-    expect(formatByteSize(0)).toBe('0 B');
-    expect(formatByteSize(512)).toBe('512 B');
-    expect(formatByteSize(1024)).toBe('1 KB');
-    expect(formatByteSize(1536)).toBe('1.5 KB');
-    expect(formatByteSize(10 * 1024 + 700)).toBe('11 KB');
-    expect(formatByteSize(3 * 1024 * 1024)).toBe('3 MB');
-    expect(formatByteSize(2.25 * 1024 ** 3)).toBe('2.3 GB');
-  });
-
-  it('treats invalid input as empty', () => {
-    expect(formatByteSize(-5)).toBe('0 B');
-    expect(formatByteSize(Number.NaN)).toBe('0 B');
   });
 });

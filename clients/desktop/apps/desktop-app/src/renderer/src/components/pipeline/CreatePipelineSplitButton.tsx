@@ -40,7 +40,7 @@ export function CreatePipelineSplitButton({
   return (
     <div
       ref={clusterRef}
-      className="inline-flex items-stretch rounded-lg bg-accent fg-emphasis"
+      className="inline-flex h-7 items-stretch rounded-full bg-accent fg-emphasis"
       data-testid={`${testIdPrefix}-split`}
     >
       <button
@@ -52,22 +52,22 @@ export function CreatePipelineSplitButton({
         disabled={interviewPending}
         aria-busy={interviewPending}
         data-testid={testIdPrefix}
-        className="rounded-l-lg px-4 py-2 text-s font-medium transition-opacity hover:opacity-90 focus-ring disabled:cursor-default disabled:opacity-70"
+        className="rounded-l-full pl-3 pr-2.5 text-xs font-medium transition-colors hover:opacity-90 focus-ring disabled:cursor-default disabled:opacity-70"
       >
-        New pipeline
+        New workflow
       </button>
-      <span aria-hidden="true" className="my-2 w-px bg-current opacity-30" />
+      <span aria-hidden="true" className="my-1.5 w-px bg-current opacity-30" />
       <button
         ref={chevronRef}
         type="button"
         onClick={() => setMenuOpen((open) => !open)}
-        aria-label="More ways to create a pipeline"
+        aria-label="More ways to create a workflow"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-controls={menuOpen ? menuId : undefined}
         disabled={interviewPending}
         data-testid={`${testIdPrefix}-menu`}
-        className="flex items-center rounded-r-lg px-2 transition-opacity hover:opacity-90 focus-ring disabled:cursor-default disabled:opacity-70"
+        className="flex items-center rounded-r-full pl-1.5 pr-2 transition-colors hover:opacity-90 focus-ring disabled:cursor-default disabled:opacity-70"
       >
         <ChevronDownIcon width={16} height={16} aria-hidden="true" />
       </button>
@@ -80,7 +80,7 @@ export function CreatePipelineSplitButton({
         outsidePressBoundaryRef={clusterRef}
         placement="bottom-right"
         role="menu"
-        aria-label="Create pipeline options"
+        aria-label="Create workflow options"
         data-testid={`${testIdPrefix}-options`}
         className="w-48"
       >

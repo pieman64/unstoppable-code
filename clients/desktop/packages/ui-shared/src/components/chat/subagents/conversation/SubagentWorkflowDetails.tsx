@@ -104,7 +104,7 @@ export function SubagentWorkflowDetails({
         <div>
           <Button
             variant="secondary"
-            size="control"
+            size="compact"
             data-testid="subagent-chat-open-workflow"
             onClick={(): void => onOpenWorkflow(runId)}
           >

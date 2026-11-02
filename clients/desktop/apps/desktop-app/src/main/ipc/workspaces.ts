@@ -92,9 +92,9 @@ import {
 } from '../lib/git';
 import { getWorktreeDataDir, getWorkspaceWorktreeRepoDir } from '../lib/paths';
 import {
-  loadWorkspaceClaudeMd,
-  saveWorkspaceClaudeMd,
-} from '../lib/workspace-claude-md';
+  getWorkspaceInstructions,
+  updateWorkspaceInstructions,
+} from '../canopy-runtime/workspace-instructions-dispatch';
 import { validateId } from '../lib/validation';
 import { getCloneJobs } from '../services/clone-jobs-host';
 import {
@@ -122,7 +122,8 @@ import { sendToAllWindows } from '../lib/window-send';
 import { deleteWorkspaceById } from '../lib/workspace-deletion';
 import { registerIpcHandler } from './register';
 import { archiveWorktree } from '../lib/worktree-archive';
-import { readWorkspaceScriptCommands } from '../lib/workspace-script-config';
+import { withTypedArchiveRefusal } from '../lib/worktree-discard';
+import { readWorkspaceScriptCommands } from '../lib/script-source-info';
 import { updateWorkspaceScripts } from '../lib/workspace-script-hook-settings';
 import { triggerDiscovery } from './worktree-discovery';
 import { readPreferencesFile } from './preferences';
@@ -346,7 +347,10 @@ async function createInitialWorktreeForTemporaryWorkspaceResponse(
 export function registerWorkspaceHandlers(
   getWindow: () => BrowserWindow | null,
   runtime: {
-    dispatcher: Pick<DesktopCanopyDispatcher, 'queryWorktreeListForLegacyIpc'>;
+    dispatcher: Pick<
+      DesktopCanopyDispatcher,
+      'queryWorktreeListForLegacyIpc' | 'query' | 'instruction'
+    >;
     resolveCaller: DesktopIpcCallerResolver;
   },
 ): void {
@@ -1573,21 +1577,25 @@ export function registerWorkspaceHandlers(
         }
       }
 
-      const response = await archiveWorktree({
-        workspaceId: request.workspaceId,
-        worktreeId: request.worktreeId,
-        source: 'multi_repo',
-        expectedKind: 'multi-repo',
-        expectedCreatedAt: request.expectedCreatedAt,
-        expectedBranchName: request.expectedBranchName,
-        deleteBranch: request.deleteBranch,
-        lockAfterArchive: request.lockAfterArchive,
-        deleteWithoutRetentionIfMissing:
-          request.deleteWithoutRetentionIfMissing,
-        remainingWorktreeOrder: request.remainingWorktreeOrder,
-        expectedRemainingWorktreeOrder: request.expectedRemainingWorktreeOrder,
-      });
-      removeCachedWorktreeDiffStats(request.workspaceId, request.worktreeId);
+      const response = await withTypedArchiveRefusal(request, () =>
+        archiveWorktree({
+          workspaceId: request.workspaceId,
+          worktreeId: request.worktreeId,
+          source: 'multi_repo',
+          expectedKind: 'multi-repo',
+          expectedCreatedAt: request.expectedCreatedAt,
+          expectedBranchName: request.expectedBranchName,
+          deleteBranch: request.deleteBranch,
+          lockAfterArchive: request.lockAfterArchive,
+          deleteWithoutRetentionIfMissing:
+            request.deleteWithoutRetentionIfMissing,
+          remainingWorktreeOrder: request.remainingWorktreeOrder,
+          expectedRemainingWorktreeOrder:
+            request.expectedRemainingWorktreeOrder,
+        }),
+      );
+      if (!response.refusal)
+        removeCachedWorktreeDiffStats(request.workspaceId, request.worktreeId);
       return response;
     },
   );
@@ -1596,33 +1604,47 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceDelete,
     async (_event, request: DeleteWorkspaceRequest): Promise<void> => {
+      if (request.supersedeInterruptedDeletion !== undefined)
+        validateId(
+          request.supersedeInterruptedDeletion,
+          'supersedeInterruptedDeletion',
+        );
       // Shared with the browser Remote Control portal adapter
       // (`portal.workspace.delete`) so the two surfaces tear a workspace down
       // identically (cowork detach/delete vs. persisted-dir removal).
       await deleteWorkspaceById(
         request.workspaceId,
         'multi_repo_workspace_delete',
+        { supersedeInterruptedDeletion: request.supersedeInterruptedDeletion },
       );
       removeCachedWorkspaceDiffStats(request.workspaceId);
     },
   );
 
-  // ---- Load CLAUDE.md ----
+  // ---- Load CLAUDE.md (core.workspace.instructions.get) ----
   registerIpcHandler(
     IPC_CHANNELS.workspaceLoadClaudeMd,
-    async (_event, request: WorkspaceClaudeMdRequest): Promise<string> => {
-      return loadWorkspaceClaudeMd(request.workspaceId);
+    async (event, request: WorkspaceClaudeMdRequest): Promise<string> => {
+      // Read the field first so a missing payload keeps its legacy TypeError.
+      const workspaceId = request.workspaceId;
+      return getWorkspaceInstructions(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        workspaceId,
+      );
     },
   );
 
-  // ---- Save CLAUDE.md ----
+  // ---- Save CLAUDE.md (core.workspace.instructions.update) ----
   registerIpcHandler(
     IPC_CHANNELS.workspaceSaveClaudeMd,
-    async (_event, request: SaveWorkspaceClaudeMdRequest): Promise<void> => {
-      await saveWorkspaceClaudeMd(
-        request.workspaceId,
+    async (event, request: SaveWorkspaceClaudeMdRequest): Promise<void> => {
+      const workspaceId = request.workspaceId;
+      await updateWorkspaceInstructions(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        workspaceId,
         request.content,
-        'claude_md',
       );
     },
   );
@@ -1630,12 +1652,14 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceReadScripts,
     async (
-      _event,
+      event,
       request: ReadWorkspaceScriptsRequest,
-    ): Promise<Record<string, string>> => {
-      validateId(request.workspaceId, 'workspaceId');
-      return readWorkspaceScriptCommands(request.workspaceId);
-    },
+    ): Promise<Record<string, string>> =>
+      readWorkspaceScriptCommands(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request.workspaceId,
+      ),
   );
   registerIpcHandler(
     IPC_CHANNELS.workspaceMergeScripts,

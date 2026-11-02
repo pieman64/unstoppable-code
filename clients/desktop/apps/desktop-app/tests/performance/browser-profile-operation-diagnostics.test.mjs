@@ -1538,13 +1538,15 @@ async function runRegisteredPendingDialogInitialSetup(
     true,
     ts.ScriptKind.JS,
   );
+  const pendingName = source.includes(
+    'async function runGraduatedPendingSourceDialogCase(',
+  )
+    ? 'runGraduatedPendingSourceDialogCase'
+    : 'runPendingSourceDialogCase';
   let pendingFunction;
   let registeredCallback;
   const visit = (node) => {
-    if (
-      ts.isFunctionDeclaration(node) &&
-      node.name?.text === 'runPendingSourceDialogCase'
-    )
+    if (ts.isFunctionDeclaration(node) && node.name?.text === pendingName)
       pendingFunction = node;
     if (
       ts.isCallExpression(node) &&
@@ -1583,13 +1585,13 @@ async function runRegisteredPendingDialogInitialSetup(
     0,
     exerciseEvidence ? 3 : 2,
   );
-  const fixtureSource = `async function runPendingSourceDialogCase({ controlledLaterHide = false } = {}) {
+  const fixtureSource = `async function ${pendingName}({ controlledLaterHide = false } = {}) {
     ${[...declarations, ...setupStatements]
       .map((statement) => statement.getText(parsed))
       .join('\n')}
     globalThis.__selectedBoundary = launchBoundary;
   }
-  globalThis.runPendingSourceDialogCase = runPendingSourceDialogCase;
+  globalThis.${pendingName} = ${pendingName};
   globalThis.__registeredCallback = ${registeredCallback.getText(parsed)};`;
   const compiled = ts.transpileModule(fixtureSource, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -8043,6 +8045,8 @@ async function runActualTwoPanelScreenshotBody(options = {}) {
   const locator = (name = '') => ({
     click: async () => {},
     hover: async () => {},
+    focus: async () => {},
+    blur: async () => {},
     locator: (child) => locator(`${name}/${child}`),
     getByTestId: (child) => locator(`${name}/${child}`),
     getAttribute: async (attribute) =>
@@ -13501,6 +13505,7 @@ async function runQueuedFillSource({
     toMatchObject: (expected) => partial(actual, expected),
     toBeGreaterThan: (expected) => assert(actual > expected),
     toHaveCount() {},
+    toBeHidden() {},
     toContainText() {},
   });
   expect.poll = (operation) => ({
@@ -13530,13 +13535,15 @@ async function runQueuedFillSource({
   };
   const electronApp = { evaluate: async (fn, value) => fn(main, value) };
   const window = {
+    keyboard: { press: async () => {} },
     getByTestId: (id) => ({
       click: async () => {
-        if (id === 'browser-profile-replace') switched = true;
+        if (id === 'browser-profile-option-replacement') switched = true;
       },
       fill: async () => {},
       press: async () => {},
       selectOption: async () => {},
+      hover: async () => {},
     }),
     api: {
       browser: {
@@ -13607,6 +13614,12 @@ async function runQueuedFillSource({
       )
     : body;
   if (broadGate) assert.notEqual(fixtureSource, body);
+  for (const name of ['chooseBrowserProfile', 'expectBrowserProfile']) {
+    const helperStart = source.indexOf(`async function ${name}(`);
+    const helperEnd = source.indexOf('\n}', helperStart) + 2;
+    assert(helperStart >= 0 && helperEnd > helperStart);
+    vm.runInContext(source.slice(helperStart, helperEnd), context);
+  }
   vm.runInContext(fixtureSource, context);
   let error;
   try {

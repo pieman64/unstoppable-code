@@ -497,12 +497,12 @@ describe('PlanDocumentPanel teammate comments', () => {
     );
     expect(youBadges.length).toBe(1);
 
-    // Exactly one pending chip: the un-submitted remote comment. The
+    // Exactly one "Not sent" chip: the un-submitted remote comment. The
     // submitted remote comment and the (non-staged) user comment get none.
-    const pendingChips = Array.from(card.querySelectorAll('span')).filter(
-      (el) => el.textContent === 'pending',
+    const notSentChips = Array.from(card.querySelectorAll('span')).filter(
+      (el) => el.textContent === 'Not sent',
     );
-    expect(pendingChips.length).toBe(1);
+    expect(notSentChips.length).toBe(1);
 
     // Remote comments are never staged, so no edit/delete actions render
     // for their ids.

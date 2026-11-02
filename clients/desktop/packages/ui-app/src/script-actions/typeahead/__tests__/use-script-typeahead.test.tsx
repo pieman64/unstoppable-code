@@ -133,6 +133,8 @@ function Harness({
 }): JSX.Element {
   const [draft, setDraft] = useState(initialDraft);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
   useScriptActionsReviewRequests(onReview);
   const typeahead = useScriptTypeahead({
     available: true,
@@ -175,12 +177,25 @@ function Harness({
   });
   handle = { typeahead, terminal, draft, setDraft };
   return (
-    <>
+    <div ref={composerRef} data-testid="composer">
       <span ref={anchorRef} />
+      <div ref={editorRef} data-testid="editor" />
+      <button
+        type="button"
+        data-testid="run"
+        onClick={() => void terminal.send()}
+      >
+        Run
+      </button>
       {typeahead.enabled ? (
-        <ScriptTypeaheadMenu typeahead={typeahead} anchorRef={anchorRef} />
+        <ScriptTypeaheadMenu
+          typeahead={typeahead}
+          anchorRef={anchorRef}
+          boundaryRef={editorRef}
+          composerRef={composerRef}
+        />
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -539,6 +554,41 @@ describe('useScriptTypeahead', () => {
     await type('!de');
     expect(handle.typeahead.open).toBe(true);
     await type('!d');
+    expect(handle.typeahead.open).toBe(true);
+  });
+
+  /** A real mouse press: pointerdown, mouseup, then the click it completes. */
+  async function pressWithMouse(testId: string): Promise<void> {
+    const target = document.querySelector(`[data-testid="${testId}"]`);
+    if (!target) throw new Error(`${testId} missing`);
+    act(() => {
+      target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      target.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      );
+    });
+    await flush();
+  }
+
+  it('runs a draft from a composer button clicked while the menu is open', async () => {
+    const view = await mount([scriptSnapshot([dev, pending])]);
+    await type('!ls -la');
+    expect(handle.typeahead.open).toBe(true);
+    await pressWithMouse('run');
+    expect(view.commands).toEqual([
+      {
+        name: 'terminal.spawn',
+        args: { projectId: 'p1', worktreeId: 'w1', cols: 80, rows: 24 },
+      },
+      { name: 'terminal.write', args: { terminalId: 't1', data: 'ls -la\n' } },
+    ]);
+    expect(handle.draft).toBe('');
+  });
+
+  it('keeps the menu open for presses in the editor', async () => {
+    await mount([scriptSnapshot([dev, build])]);
+    await pressWithMouse('editor');
     expect(handle.typeahead.open).toBe(true);
   });
 

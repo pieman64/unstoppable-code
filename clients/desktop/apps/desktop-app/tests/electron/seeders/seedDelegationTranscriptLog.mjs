@@ -131,6 +131,30 @@ function card(logged) {
 }
 
 /**
+ * A completed legacy delegation (its card and one child text row) for another
+ * chat, keyed by `delegationId`, so a spec can seed a real child target.
+ */
+export function legacyDelegationMessages({ delegationId, childText }) {
+  const agentBlockId = `delegated-agent-${delegationId}`;
+  return [
+    {
+      id: agentBlockId,
+      role: 'assistant',
+      timestamp: CREATED_AT,
+      blocks: [{ ...card(false), agentBlockId, delegationId }],
+    },
+    {
+      id: `${delegationId}-finding`,
+      role: 'assistant',
+      timestamp: CREATED_AT + 300,
+      parentBlockId: agentBlockId,
+      delegationSequence: 1,
+      blocks: [{ type: 'text', text: childText }],
+    },
+  ];
+}
+
+/**
  * Seeds the parent chat before launch. `logged` stores the children in the
  * delegate log (write it with {@link writeDelegationLog} once the chat has
  * loaded); otherwise as child rows.

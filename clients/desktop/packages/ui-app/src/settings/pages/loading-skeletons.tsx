@@ -45,6 +45,7 @@ export const HOSTED_SETTINGS_PAGE_SKELETONS: {
   'account.billing': 'cards',
   'account.invoice': 'table',
   'account.labs': 'form',
+  'account.appearance': 'form',
   'organization.list': 'list',
   'organization.feed': 'list',
   'organization.feedItem': 'spinner',
@@ -99,12 +100,16 @@ function skeletonBody(
   }
 }
 
+/** Said below a settings page's skeleton once its load runs long. */
+export const SETTINGS_PAGE_SLOW_LOAD_NOTE = 'Still loading settings…';
+
 /**
  * The loading body for a settings page of `kind`: its skeleton (or the
  * centered spinner), in a box reserved from the first render and shown only
- * once loading takes noticeably long. `rows` sets the row count of list,
- * form and table skeletons. `delayMs` overrides the delay, for example `0`
- * when the previous page already held the screen for it.
+ * once loading takes noticeably long, with one quiet line below it if the
+ * load runs long. `rows` sets the row count of list, form and table
+ * skeletons. `delayMs` overrides the delay, for example `0` when the
+ * previous page already held the screen for it.
  */
 export function settingsPageSkeleton(
   kind: SettingsPageDataKind,
@@ -112,7 +117,10 @@ export function settingsPageSkeleton(
   delayMs?: number,
 ): JSX.Element {
   return (
-    <DelayedLoadingPlaceholder delayMs={delayMs}>
+    <DelayedLoadingPlaceholder
+      delayMs={delayMs}
+      slowNote={SETTINGS_PAGE_SLOW_LOAD_NOTE}
+    >
       {skeletonBody(kind, rows)}
     </DelayedLoadingPlaceholder>
   );

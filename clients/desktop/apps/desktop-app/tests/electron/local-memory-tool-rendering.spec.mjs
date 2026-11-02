@@ -203,12 +203,8 @@ async function assertMemoryToolCards(panel, saveToolName, searchToolName) {
   await expect(searchCard).toHaveCount(1);
   await expect(saveCard).toHaveAttribute('data-tool-status', 'success');
   await expect(searchCard).toHaveAttribute('data-tool-status', 'success');
-  await expect(
-    saveCard.locator('button[data-tool-family="canopy"]'),
-  ).toBeVisible();
-  await expect(
-    searchCard.locator('button[data-tool-family="canopy"]'),
-  ).toBeVisible();
+  await expect(saveCard.locator('button[data-step-row]')).toBeVisible();
+  await expect(searchCard.locator('button[data-step-row]')).toBeVisible();
   await expect(
     saveCard.getByTestId('chat-tool-call-save-memory-label'),
   ).toHaveText('Save user memory');
@@ -220,7 +216,6 @@ async function assertMemoryToolCards(panel, saveToolName, searchToolName) {
   await expect(saveResult).toBeHidden();
   await saveCard.getByRole('button').first().click();
   await expect(saveResult).toBeVisible();
-  await expect(saveCard).toContainText('Result');
   await saveCard.getByRole('button').first().click();
   await expect(saveResult).toBeHidden();
 
@@ -243,6 +238,10 @@ test('renders a completed ReadMemory tool call with scope and file key', async (
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    // Individual-step assertions use the Detailed preference.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
     await expect(window.getByTestId('panel-content-chat')).toBeVisible();
@@ -270,6 +269,10 @@ test('renders successful SaveMemory and SearchMemory cards for Claude and Codex'
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    // Individual-step assertions use the Detailed preference.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 

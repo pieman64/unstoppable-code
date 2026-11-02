@@ -250,8 +250,10 @@ export type RemoteConnection = z.infer<typeof remoteConnectionSchema>;
 
 export const remoteSummarySchema = z.strictObject({
   remoteId: UUID,
-  name: z.string().min(1).max(120),
-  hostname: z.string().max(255).nullable(),
+  /** Omitted unless the person lets this agent see device names. */
+  name: z.string().min(1).max(120).optional(),
+  /** Omitted unless the person lets this agent see device names. */
+  hostname: z.string().max(255).nullable().optional(),
   appVersion: z.string().max(64).nullable(),
   connection: remoteConnectionSchema,
   observedAt: IsoDateTime.nullable(),

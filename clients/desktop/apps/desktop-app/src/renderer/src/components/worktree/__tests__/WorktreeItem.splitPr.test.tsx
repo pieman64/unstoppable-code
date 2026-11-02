@@ -16,13 +16,14 @@ import {
   WorktreeIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { createRoot, type Root } from 'react-dom/client';
-import type { ChatTab, WorktreeChatState } from '@/stores/chatStore';
+import type { ChatTab } from '@/stores/chatStore';
 import { useChatStore } from '@/stores/chatStore';
 import type {
   PrStatusData,
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types/github';
 import type { WorktreeData } from '@canopy/desktop-shared/types';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
@@ -95,7 +96,7 @@ function makeChatTab(id: string, overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     ...overrides,
   };
@@ -163,7 +164,7 @@ beforeEach(() => {
   });
   useScriptsStore.setState({ runs: {} });
   useChatStore.setState({
-    worktreeChats: {} as Record<string, WorktreeChatState>,
+    worktreeChats: {},
   });
   useActivityStore.setState({ splitPreflight: null });
   useCodeGraphBuildStore.setState({ building: {} });
@@ -285,7 +286,7 @@ function setRunningLaunchScript(): void {
           scriptName: 'launch',
           lifecycle: 'launch',
           command: 'npm run dev',
-          target: 'worktree',
+          target: 'project',
           status: 'running',
           outputLines: [],
           exitCode: null,
@@ -957,33 +958,32 @@ describe('WorktreeItem removal branch choice', () => {
     });
   }
 
-  it('offers Cancel, Preserve local, and Delete local as the removal actions', async () => {
+  it('offers Cancel and one removal action, with the branch kept by a switch', async () => {
     const onArchive = jest.fn();
     await render({ onArchive });
     await openRemovalConfirmation();
 
-    expect(document.body.textContent).toContain(
-      'Choose whether to keep the local Git branch.',
-    );
+    expect(document.body.textContent).toContain('Keep the local branch');
     expect(document.body.textContent).not.toContain(
       'will still be deleted if it is fully merged',
     );
 
     const dialog = document.querySelector('[role="dialog"]');
     const actions = Array.from(dialog?.querySelectorAll('button') ?? [])
-      .map((button) => button.textContent)
+      // A label without the key chip drawn after it.
+      .map((button) => button.firstChild?.textContent ?? '')
       .filter((label) => label !== '');
-    expect(actions).toEqual(['Cancel', 'Preserve local', 'Delete local']);
-    // Delete local carries the destructive role (DESIGN.md: never style a
-    // destructive action with the accent role); Preserve local stays the
-    // quieter outline alternative so the two choices are not equally
-    // prominent.
-    const deleteBranch = requireElement('worktree-removal-delete-branch');
-    expect(deleteBranch.className).toContain('bg-destructive');
-    expect(deleteBranch.className).not.toContain('bg-accent');
+    expect(actions).toEqual(['Cancel', 'Delete worktree']);
+    // Delete carries the destructive role (DESIGN.md: never style a
+    // destructive action with the accent role).
     const preserveBranch = requireElement('worktree-removal-preserve-branch');
+    expect(preserveBranch.className).toContain('bg-destructive');
     expect(preserveBranch.className).not.toContain('bg-accent');
-    expect(preserveBranch.className).not.toContain('bg-destructive');
+    expect(
+      requireElement('worktree-removal-keep-branch').getAttribute(
+        'aria-checked',
+      ),
+    ).toBe('true');
     expect(query('worktree-removal-branch-choice-menu')).toBeNull();
 
     await act(async () => {
@@ -1004,7 +1004,9 @@ describe('WorktreeItem removal branch choice', () => {
     await render({ onArchive });
     await openRemovalConfirmation('delete');
 
-    expect(document.body.textContent).toContain('Delete worktree?');
+    expect(document.body.textContent).toContain(
+      'Delete worktree “feature/big-change”?',
+    );
     expect(document.body.textContent).toContain('for 7 days');
     // The old lock toggle is gone: state is chosen by the menu item.
     expect(query('worktree-removal-lock-toggle')).toBeNull();
@@ -1027,7 +1029,9 @@ describe('WorktreeItem removal branch choice', () => {
     await render({ onArchive });
     await openRemovalConfirmation('archive');
 
-    expect(document.body.textContent).toContain('Archive worktree?');
+    expect(document.body.textContent).toContain(
+      'Archive worktree “feature/big-change”?',
+    );
     expect(document.body.textContent).toContain('until you delete the archive');
     expect(document.body.textContent).not.toContain('for 7 days');
 
@@ -1051,7 +1055,9 @@ describe('WorktreeItem removal branch choice', () => {
     await openRemovalConfirmation('archive');
 
     expect(onArchive).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain('Archive worktree?');
+    expect(document.body.textContent).toContain(
+      'Archive worktree “feature/big-change”?',
+    );
     expect(document.body.textContent).toContain('until you delete the archive');
   });
 
@@ -1068,14 +1074,11 @@ describe('WorktreeItem removal branch choice', () => {
       await Promise.resolve();
     });
 
-    expect(query('worktree-removal-target-identity')?.textContent).toContain(
-      'Projecttest-project',
+    expect(document.body.textContent).toContain(
+      'Delete worktree “feature/big-change”?',
     );
     expect(query('worktree-removal-target-identity')?.textContent).toContain(
-      'Worktreefeature/big-change wt-1',
-    );
-    expect(query('worktree-removal-target-identity')?.textContent).toContain(
-      'Branchfeature/big-change',
+      'feature/big-change is deleted from test-project.',
     );
 
     await render({
@@ -1094,7 +1097,7 @@ describe('WorktreeItem removal branch choice', () => {
     expect(onArchive).not.toHaveBeenCalled();
   });
 
-  it('opens an App Advisor request in its mode with the requested branch choice marked', async () => {
+  it('opens an App Advisor request in its mode with the switch set to the requested branch choice', async () => {
     await render();
 
     await act(async () => {
@@ -1107,16 +1110,17 @@ describe('WorktreeItem removal branch choice', () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain('Archive worktree?');
     expect(document.body.textContent).toContain(
-      'Advisor suggested Preserve local.',
+      'Archive worktree “feature/big-change”?',
+    );
+    expect(document.body.textContent).toContain(
+      `${ORCHESTRATOR_LABEL} suggested keeping it.`,
     );
     expect(
-      query('worktree-removal-preserve-branch')?.getAttribute('data-requested'),
+      query('worktree-removal-keep-branch')?.getAttribute('aria-checked'),
     ).toBe('true');
-    expect(
-      query('worktree-removal-delete-branch')?.hasAttribute('data-requested'),
-    ).toBe(false);
+    expect(query('worktree-removal-preserve-branch')).not.toBeNull();
+    expect(query('worktree-removal-delete-branch')).toBeNull();
   });
 
   it('names a worktree on its generated default branch "New worktree"', async () => {
@@ -1130,9 +1134,7 @@ describe('WorktreeItem removal branch choice', () => {
     const onArchive = jest.fn();
     await render({ onArchive, worktree: { label: 'New Task' } });
     await openRemovalConfirmation('archive');
-    expect(query('worktree-removal-target-identity')?.textContent).toContain(
-      'WorktreeNew Task wt-1',
-    );
+    expect(document.body.textContent).toContain('Archive worktree “New Task”?');
 
     await render({ onArchive, worktree: { label: 'Multiple branches' } });
     const choice = requireElement('worktree-removal-preserve-branch');
@@ -1173,6 +1175,12 @@ describe('WorktreeItem removal branch choice', () => {
     const onArchive = jest.fn();
     await render({ onArchive });
     await openRemovalConfirmation();
+    await act(async () => {
+      requireElement('worktree-removal-keep-branch').dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+      await Promise.resolve();
+    });
     await act(async () => {
       requireElement('worktree-removal-delete-branch').dispatchEvent(
         new MouseEvent('click', { bubbles: true }),

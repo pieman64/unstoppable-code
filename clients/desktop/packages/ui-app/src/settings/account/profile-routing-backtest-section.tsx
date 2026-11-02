@@ -1,6 +1,6 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
+import { SettingsSelect } from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import { RoutingBacktestCard } from '../organization/statistics/RoutingBacktestCard';
 
@@ -34,17 +34,15 @@ export function ProfileRoutingBacktestSection(): JSX.Element {
         controls={
           <label className="flex items-center gap-2 text-xs fg-secondary">
             Range
-            <SettingsControlSelect
+            <SettingsSelect
               value={String(rangeMs)}
-              onChange={(event) => setRangeMs(Number(event.target.value))}
+              onValueChange={(value) => setRangeMs(Number(value))}
               data-testid="profile-routing-backtest-range"
-            >
-              {RANGE_OPTIONS.map((option) => (
-                <option key={option.ms} value={String(option.ms)}>
-                  {option.label}
-                </option>
-              ))}
-            </SettingsControlSelect>
+              options={RANGE_OPTIONS.map((option) => ({
+                value: String(option.ms),
+                label: option.label,
+              }))}
+            />
           </label>
         }
       />

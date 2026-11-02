@@ -8,6 +8,85 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
 });
 
+describe('OpenCode connection placement', () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        opencodeConnection: {
+          status: () =>
+            Promise.resolve({
+              supported: true,
+              installed: true,
+              enabled: true,
+              phase: 'idle',
+              version: 'test',
+            }),
+          onProgress: (): (() => void) => (): void => undefined,
+          cancel: () => Promise.resolve(),
+        },
+        loadPreferences: () => Promise.resolve({}),
+      },
+    });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  async function renderConnection(
+    placement?: 'row' | 'section',
+  ): Promise<HTMLElement> {
+    await act(async () => {
+      root.render(
+        placement ? (
+          <OpenCodeConnection placement={placement} />
+        ) : (
+          <OpenCodeConnection />
+        ),
+      );
+      await Promise.resolve();
+    });
+    const row = container.querySelector<HTMLElement>(
+      '[data-testid="opencode-connection"]',
+    );
+    if (!row) throw new Error('Missing OpenCode row');
+    return row;
+  }
+
+  it('is one provider row, named in its label, when placed beside other providers', async () => {
+    const row = await renderConnection('row');
+    // The caller's provider group owns the box; the row adds no section or
+    // heading of its own.
+    expect(container.firstElementChild).toBe(row);
+    expect(container.querySelector('section')).toBeNull();
+    expect(container.querySelector('h2')).toBeNull();
+    expect(
+      row.querySelector('[data-settings-row-label]')?.textContent?.trim(),
+    ).toBe('OpenCode');
+    expect(
+      row.querySelector('[data-testid="opencode-connection-status"]')
+        ?.textContent,
+    ).toBe('OpenCode connected');
+  });
+
+  it('keeps its own untitled section in Labs', async () => {
+    const row = await renderConnection();
+    const section = container.firstElementChild;
+    expect(section?.tagName).toBe('SECTION');
+    expect(section?.contains(row)).toBe(true);
+    // The row names OpenCode, so a heading would repeat it.
+    expect(container.querySelector('h2')).toBeNull();
+  });
+});
+
 describe('OpenCode connection errors', () => {
   it.each(['connect', 'disconnect'])(
     'removes the IPC wrapper from a failed %s',
@@ -62,6 +141,59 @@ describe('OpenCode connection errors', () => {
           container.querySelector('[data-testid="opencode-connection-error"]')
             ?.textContent,
         ).toBe(message);
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+      }
+    },
+  );
+});
+
+describe('OpenCode provider action', () => {
+  it.each([
+    { installed: false, enabled: false, label: null },
+    { installed: true, enabled: false, label: 'Sign in to a provider' },
+    { installed: true, enabled: true, label: 'Manage providers' },
+  ])(
+    'matches setup state $installed/$enabled',
+    async ({ installed, enabled, label }) => {
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        value: {
+          opencodeConnection: {
+            status: () =>
+              Promise.resolve({
+                supported: true,
+                installed,
+                enabled,
+                phase: 'idle',
+                version: 'test',
+              }),
+            onProgress: (): (() => void) => (): void => undefined,
+          },
+        },
+      });
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      try {
+        await act((): Promise<void> => {
+          root.render(<OpenCodeConnection />);
+          return Promise.resolve();
+        });
+        const providerAction = container.querySelector(
+          '[data-testid="opencode-provider-login"]',
+        );
+        if (label === null) {
+          expect(providerAction).toBeNull();
+        } else {
+          expect(providerAction?.textContent).toBe(label);
+          // Provider management uses the same compact control group as connection.
+          expect(providerAction?.parentElement).toBe(
+            container.querySelector('[data-testid="opencode-connect"]')
+              ?.parentElement,
+          );
+        }
       } finally {
         act(() => root.unmount());
         container.remove();

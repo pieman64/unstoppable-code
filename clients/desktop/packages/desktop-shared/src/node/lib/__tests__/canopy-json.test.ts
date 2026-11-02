@@ -4,7 +4,14 @@ import {
   MAX_SCRIPT_DEV_SERVER_PATTERNS,
   MAX_SCRIPT_TIMEOUT_SECONDS,
 } from '../../../scripts';
-import { validateCanopyJson } from '../canopy-json';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  readCanopyJson,
+  validateCanopyJson,
+  writeCanopyJson,
+} from '../canopy-json';
 
 describe('dev-server autoOpen', () => {
   it.each([true, false])(
@@ -277,8 +284,8 @@ describe('desktop-shared node canopy-json script timeoutSeconds', () => {
       'shell.windows must be "cmd", "powershell", or "bash"',
     ],
     [{ mac: 'powershell' }, 'shell.mac must be "zsh" or "bash"'],
-    [{ linux: 'bash' }, 'shell contains unsupported key "linux"'],
-    [{}, 'shell must configure windows or mac'],
+    [{ solaris: 'bash' }, 'shell contains unsupported key "solaris"'],
+    [{}, 'shell must configure windows, mac, or linux'],
     ['zsh', 'shell must be an object'],
   ])('rejects invalid script shell value %#', (shell, message) => {
     expect(() =>
@@ -1158,8 +1165,8 @@ describe('desktop-shared node canopy-json shared desktop behavior', () => {
       'shell.windows must be "cmd", "powershell", or "bash"',
     ],
     [{ mac: 'powershell' }, 'shell.mac must be "zsh" or "bash"'],
-    [{ linux: 'bash' }, 'shell contains unsupported key "linux"'],
-    [{}, 'shell must configure windows or mac'],
+    [{ solaris: 'bash' }, 'shell contains unsupported key "solaris"'],
+    [{}, 'shell must configure windows, mac, or linux'],
     ['zsh', 'shell must be an object'],
   ])('rejects invalid command hook shell value %#', (shell, message) => {
     expect(() =>
@@ -1459,4 +1466,102 @@ describe('desktop-shared node canopy-json approvals', () => {
       ).toThrow('plugins');
     },
   );
+});
+
+describe('Linux script and hook shells', () => {
+  function manifest(linux: unknown): unknown {
+    const script = { command: 'echo script', shell: { linux } };
+    const hook = { type: 'command', command: 'echo hook', shell: { linux } };
+    return {
+      version: 1,
+      scripts: { setup: script },
+      hooks: { 'pr:create': [hook] },
+      repos: [
+        {
+          id: 'web',
+          name: 'Web',
+          url: 'https://example.com/web.git',
+          scripts: { setup: script },
+          hooks: { 'pr:create': [hook] },
+        },
+      ],
+    };
+  }
+
+  it.each(['bash', 'zsh'])(
+    'accepts Linux %s at project and repo scope',
+    (linux) => {
+      const config = manifest(linux);
+      expect(validateCanopyJson(config, '/tmp/canopy.json')).toEqual(config);
+    },
+  );
+
+  it.each(['fish', 'cmd', 'powershell', '', null, 1, {}, []])(
+    'rejects unsupported Linux shell %j for scripts and hooks',
+    (linux) => {
+      const shell = { linux };
+      const script = { command: 'echo script', shell };
+      const hook = { type: 'command', command: 'echo hook', shell };
+      for (const config of [
+        { version: 1, scripts: { setup: script } },
+        { version: 1, hooks: { 'pr:create': [hook] } },
+        {
+          version: 1,
+          repos: [
+            {
+              id: 'web',
+              name: 'Web',
+              url: 'https://example.com/web.git',
+              scripts: { setup: script },
+            },
+          ],
+        },
+        {
+          version: 1,
+          repos: [
+            {
+              id: 'web',
+              name: 'Web',
+              url: 'https://example.com/web.git',
+              hooks: { 'pr:create': [hook] },
+            },
+          ],
+        },
+      ]) {
+        expect(() => validateCanopyJson(config, '/tmp/canopy.json')).toThrow(
+          'shell.linux must be "bash" or "zsh"',
+        );
+      }
+    },
+  );
+
+  it('preserves the existing macOS and Windows overrides alongside Linux', () => {
+    const shell = { windows: 'cmd', mac: 'zsh', linux: 'bash' };
+    const script = { command: 'echo script', shell };
+    const hook = { type: 'command', command: 'echo hook', shell };
+    const config = {
+      version: 1,
+      scripts: { setup: script },
+      hooks: { 'pr:create': [hook] },
+    };
+    expect(validateCanopyJson(config, '/tmp/canopy.json')).toEqual(config);
+  });
+
+  it('reads and writes the legacy config fixture byte-for-byte without adding Linux defaults', async () => {
+    const original = await readFile(
+      join(__dirname, 'fixtures', 'legacy-shell-config.json'),
+    );
+    const repoPath = await mkdtemp(join(tmpdir(), 'canopy-linux-shell-'));
+    try {
+      const configPath = join(repoPath, 'canopy.json');
+      await writeFile(configPath, original);
+      const config = await readCanopyJson(repoPath);
+      expect(config).not.toBeNull();
+      if (config === null) throw new Error('Expected legacy config fixture');
+      await writeCanopyJson(repoPath, config);
+      expect(await readFile(configPath)).toEqual(original);
+    } finally {
+      await rm(repoPath, { recursive: true, force: true });
+    }
+  });
 });

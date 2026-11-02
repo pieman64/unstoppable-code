@@ -1,4 +1,7 @@
 import type { JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 import { CHAT_UNIT_LABEL, CHAT_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import { PlusIcon as AppCatalogPlusIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -28,7 +31,9 @@ export function StandaloneColdStartEmptyState({
     >
       {/* Preserve a draggable title-bar strip — the conversation header (which
           normally owns it) is not rendered in the cold-start view. */}
-      <div className="electron-drag h-10 shrink-0" />
+      {!usesNativeWindowFrame(localPlatform()) && (
+        <div className="electron-drag h-10 shrink-0" />
+      )}
       <div className="flex flex-1 flex-col items-center justify-center p-8">
         <div className="max-w-md text-center">
           <h2 className="text-lg font-medium fg-primary">
@@ -37,15 +42,15 @@ export function StandaloneColdStartEmptyState({
           <p className="mt-1 text-s fg-secondary">
             Start a new {CHAT_UNIT_LABEL.toLowerCase()} to get started.
           </p>
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={onNewChat}
             data-testid="empty-new-chat"
-            className="focus-ring mt-5 inline-flex items-center gap-2 rounded-md border border-line-accent bg-transparent px-3.5 py-2 text-s font-medium fg-accent transition-colors hover:bg-accent-subtle"
+            className="mt-5"
           >
             <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
             New {CHAT_UNIT_LABEL}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

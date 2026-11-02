@@ -1,20 +1,34 @@
+import {
+  aiCreditsConfirmationBalanceLoader,
+  personalBalanceReading,
+  readAiCreditsConfirmationBalance,
+  type PersonalBalanceReading,
+} from '@/lib/aiCreditsConfirmationBalance';
 import { useCallback } from 'react';
 import type {
   AiCreditsScopeRequest,
   NativeAiCreditsAvailability,
 } from '@canopy/desktop-shared/types';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
-import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
+import {
+  cloudAccountIdentityKey,
+  isGuestAccount,
+} from '@canopy/desktop-shared/lib/guest-account';
+import { settingsPaymentHandoffResultSchema } from '@canopy/protocol/settings/payment-handoff';
+import { settingsActionErrorCopy } from '@canopy/ui-app/settings/errors';
+import { useGitHubStore } from '@/stores/githubStore';
 import {
   buildBillingTopUpIntentPath,
   isBillingIntentIdentifier,
   resolveCreditsBillingTarget,
+  type ModelLibraryUnlockSource,
 } from '@canopy/protocol/billing';
 import { MODEL_LIBRARY_UNLOCK_COPY } from '@canopy/ui-shared/components';
 import { hostedSettingsOpenable } from '@/components/settings/hosted/hosted-settings-availability';
-import { invalidateAiCreditsAvailabilityCache } from '@/hooks/useAiCreditsAvailability';
+import { announceAiCreditsChanged } from '@/lib/aiCreditsChanged';
 import { brandText } from '@/lib/brand';
-import { announceCanopyCloudAccountChanged } from '@/lib/canopyCloudAccountChange';
+import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
+import { openAuthenticatedCloudPageReported } from '@/lib/openAuthenticatedCloudPage';
 import {
   aiCreditsScopeKey,
   readNavigationScopeKey,
@@ -84,17 +98,8 @@ export interface AiCreditsCoverage {
   lapsedOrgNames: string[];
 }
 
-/**
- * Tell the rest of the app that a fresh read confirmed usable credits, so the
- * billing toggle, banners, and subscription status converge in the same tick.
- *
- * A credits change, never an identity change: every caller follows an
- * availability read, and sign-in or sign-out announce themselves.
- */
-export function announceAiCreditsChanged(): void {
-  invalidateAiCreditsAvailabilityCache();
-  announceCanopyCloudAccountChanged('same-account-refresh');
-}
+// Compatibility re-export; new callers import `@/lib/aiCreditsChanged`.
+export { announceAiCreditsChanged };
 
 /**
  * The single in-flight availability read, shared by everyone who asks at once.
@@ -432,10 +437,56 @@ export function resetSettingsCloseRereadForTests(): void {
 }
 
 /**
- * Open the credits billing page (CAN-4691): inside Settings when hosted
- * settings are openable in this window (never a Remote Control window, never
- * with the rollout flag off), otherwise the web page already signed in, and
- * only when that hand-off opened nothing the plain pricing page.
+ * Where a Get AI Credits click may open billing (CAN-5159). `'auto'`: Settings
+ * → Billing in-app when hosted settings are openable, otherwise the browser.
+ * `'browser'`: always the browser, for inline chat banners that must keep the
+ * purchase hand-off (waiting state, Check again, arrival) in the chat.
+ */
+export type BillingDestination = 'auto' | 'browser';
+
+export interface OpenBillingPageOptions {
+  /** Defaults to `'auto'`. */
+  destination?: BillingDestination;
+  /**
+   * Appends the `topUp=1&reason=credits&source=<topUpSource>` intent to the
+   * signed-in billing path, so the web page opens its top-up. Never sent to
+   * the unauthenticated pricing fallback.
+   */
+  topUpSource?: ModelLibraryUnlockSource;
+}
+
+/**
+ * The owner billing path with the credits top-up intent appended. A path the
+ * intent builder rejects falls back to the plain owner path: a bad intent
+ * must never stop billing from opening.
+ */
+function withCreditsTopUpIntent(
+  path: string,
+  source: ModelLibraryUnlockSource,
+): string {
+  try {
+    return buildBillingTopUpIntentPath(path, { reason: 'credits', source });
+  } catch {
+    return path;
+  }
+}
+
+/** The signed-in web billing page, skipping Settings (CAN-5159). */
+async function openBillingInBrowser(
+  path: string,
+): Promise<BillingPageOpenResult> {
+  return (await openAuthenticatedCloudPageReported(path)) ? 'web' : 'failed';
+}
+
+/**
+ * Open the credits billing page (CAN-4691). With the default `'auto'`
+ * destination: inside Settings when hosted settings are openable in this
+ * window (never a Remote Control window, never with the rollout flag off),
+ * otherwise the web page already signed in. With `'browser'` (CAN-5159): the
+ * signed-in web page even when Settings could open, so the caller's
+ * "finish this in your browser" state survives; it never answers
+ * `'settings'` and never arms the Settings-close re-read. Either way, only
+ * when the signed-in hand-off opened nothing, the plain pricing page.
  *
  * The answer is load-bearing for callers that render a "finish this in your
  * browser" state. `'settings'` means there is no browser to return from, so
@@ -448,10 +499,16 @@ export function resetSettingsCloseRereadForTests(): void {
 export async function openBillingPage(
   availability: NativeAiCreditsAvailability | null,
   scope?: AiCreditsScopeRequest,
+  options: OpenBillingPageOptions = {},
 ): Promise<BillingPageOpenResult> {
-  const result = await openSettingsPathOrWebReported(
-    creditsBillingPath(availability, scope),
-  );
+  const ownerPath = creditsBillingPath(availability, scope);
+  const path = options.topUpSource
+    ? withCreditsTopUpIntent(ownerPath, options.topUpSource)
+    : ownerPath;
+  const result =
+    options.destination === 'browser'
+      ? await openBillingInBrowser(path)
+      : await openSettingsPathOrWebReported(path);
   if (result === 'settings') rereadAiCreditsWhenSettingsCloses();
   if (result !== 'failed') return result;
   return (await openUnauthenticatedPricingPage(availability))
@@ -463,13 +520,18 @@ export async function openBillingPage(
  * The connect-gate context for every Get AI Credits click (CAN-4691). The
  * gate shows the toast as it closes, before the billing page opens, so it
  * names where that page will open. Call it at click time: whether hosted
- * settings are openable can change between render and click.
+ * settings are openable can change between render and click. A `'browser'`
+ * destination always names the web billing page.
  */
-export function getAiCreditsConnectContext(): CloudConnectGateContext {
+export function getAiCreditsConnectContext(
+  options: { destination?: BillingDestination } = {},
+): CloudConnectGateContext {
+  const opensSettings =
+    options.destination !== 'browser' && hostedSettingsOpenable();
   return {
     title: 'Get AI Credits',
     subtitle: `Connect your ${brandText.appName} account to add AI Credits.`,
-    toastMessage: hostedSettingsOpenable()
+    toastMessage: opensSettings
       ? "You're connected. Opening Billing in Settings so you can add AI Credits."
       : "You're connected. Opening your billing page so you can add AI Credits.",
   };
@@ -524,13 +586,26 @@ function billingOwnerKey(
  * The billing owner of `scope` right now, or null when the read could not
  * establish one. Uses the shared episode read, so it agrees with every other
  * surface asking about the same work.
+ *
+ * A read that a new episode retracted asks the current episode once
+ * (CAN-5030). Confirming an unlock announces the credits change while its
+ * owner check is in flight; with no recent answer to join (a Check now after
+ * the poll timed out), that check was retracted and the purchased model was
+ * never applied. A retraction means "ask again", not "no owner". A second
+ * retraction, or a failed read, still resolves null.
+ * After a real account switch the retry answers for the new account; callers
+ * compare the key with the owner they expect, so that still fails closed.
  */
 export async function readBillingOwnerKey(
   scope?: AiCreditsScopeRequest,
 ): Promise<string | null> {
-  return billingOwnerKey(
-    await readSharedAiCreditsAvailability(scope ? { scope } : {}),
-  );
+  const options = scope ? { scope } : {};
+  const epoch = currentAccountEpoch;
+  const availability = await readSharedAiCreditsAvailability(options);
+  if (availability === null && epoch !== currentAccountEpoch) {
+    return billingOwnerKey(await readSharedAiCreditsAvailability(options));
+  }
+  return billingOwnerKey(availability);
 }
 
 /**
@@ -565,6 +640,12 @@ export interface UnlockModelsRequest {
   /** Applies {@link modelId} once the unlock is confirmed. */
   readonly apply?: ModelUnlockIntentHandlers['apply'];
   readonly isStillWanted?: ModelUnlockIntentHandlers['isStillWanted'];
+  /**
+   * Reports the checkout attempt that follows a guest's sign-in, so the
+   * surface that asked can narrate it. Called only after a `sign-in` outcome,
+   * once a real account exists.
+   */
+  readonly onResumed?: (result: UnlockModelsResult) => void;
 }
 
 /**
@@ -578,7 +659,7 @@ export interface UnlockModelsRequest {
  *   checkout was opened.
  * - `contact-admin`: the work belongs to an organization this user cannot
  *   fund. Show {@link CONTACT_ORG_ADMIN_COPY}.
- * - `failed`: no browser page opened.
+ * - `failed`: an authenticated opening could not be confirmed.
  */
 export type UnlockModelsResult =
   | { readonly outcome: 'opened'; readonly requestId?: string }
@@ -587,99 +668,181 @@ export type UnlockModelsResult =
   | { readonly outcome: 'contact-admin' }
   | { readonly outcome: 'failed' };
 
+/**
+ * Start reading the personal balance now; `current()` is the reading if it
+ * has already finished, else `null` for good.
+ */
+function readStartingBalance(scope: AiCreditsScopeRequest | undefined): {
+  readonly current: () => PersonalBalanceReading | null;
+} {
+  const load = aiCreditsConfirmationBalanceLoader();
+  if (load === null || scope === undefined) return { current: () => null };
+  let reading: PersonalBalanceReading | null = null;
+  let closed = false;
+  void readAiCreditsConfirmationBalance(load, scope).then((read): void => {
+    if (!closed) reading = personalBalanceReading(read.response);
+  });
+  return {
+    current: (): PersonalBalanceReading | null => {
+      closed = true;
+      return reading;
+    },
+  };
+}
+
 async function openUnlockCheckout(
   scope: AiCreditsScopeRequest | undefined,
   request: UnlockModelsRequest,
+  {
+    joinCurrentEpisode = false,
+  }: { readonly joinCurrentEpisode?: boolean } = {},
 ): Promise<UnlockModelsResult> {
+  const scopeKey = aiCreditsScopeKey(scope, readNavigationScopeKey());
+  const epochBeforeAccount = currentAccountEpoch;
+  let account;
+  try {
+    account = await window.api.loadCanopyCloudAccount();
+  } catch {
+    return { outcome: 'failed' };
+  }
+  const accountId = account?.account?.id;
+  const accountKey = cloudAccountIdentityKey(account);
+  if (
+    !account?.hasApiKey ||
+    isGuestAccount(account) ||
+    !accountId ||
+    !accountKey ||
+    epochBeforeAccount !== currentAccountEpoch ||
+    scopeKey !== aiCreditsScopeKey(scope, readNavigationScopeKey())
+  ) {
+    return { outcome: 'failed' };
+  }
   // Fresh: the owner decides which billing page opens and whose purchase this
   // is, and a retained answer could name a pool the work no longer belongs to.
-  const availability = await readSharedAiCreditsAvailability({
-    fresh: true,
+  // Starting a fresh shared read advances the episode synchronously. Fence
+  // subsequent asynchronous reads against that episode, including overlaps.
+  //
+  // After a sign-in the gate's close has already opened a new episode, and the
+  // recovery modal is reading in it. Joining that read gives both the same
+  // current answer; forcing another would retract the modal's to `null`.
+  const pendingAvailability = readSharedAiCreditsAvailability({
+    fresh: !joinCurrentEpisode,
     ...(scope ? { scope } : {}),
   });
-  if (!availability || availability.inconclusive === true)
+  // The balance before checkout opens, so the confirmation can name the
+  // credits added (CAN-5160). Only a reading that finished before the open
+  // counts: one that lands after could already include the purchase.
+  const startingBalance = readStartingBalance(scope);
+  const epoch = currentAccountEpoch;
+  const isCurrent = (expectedEpoch: number): boolean =>
+    expectedEpoch === currentAccountEpoch &&
+    scopeKey === aiCreditsScopeKey(scope, readNavigationScopeKey());
+  const sameAccount = async (): Promise<boolean> => {
+    const current = await window.api.loadCanopyCloudAccount();
+    return (
+      current.hasApiKey &&
+      !isGuestAccount(current) &&
+      current.account?.id === accountId &&
+      cloudAccountIdentityKey(current) === accountKey
+    );
+  };
+  const availability = await pendingAvailability;
+  if (!availability || availability.inconclusive === true || !isCurrent(epoch))
     return { outcome: 'failed' };
   const ownerOrganization = availability.ownerOrganization;
-  // An organization's access comes from ITS purchases or seat coverage. A
-  // member's personal purchase cannot unlock the organization's work, so a
-  // member who cannot fund the owner is told who can instead of being sold
-  // something that would not help.
-  if (ownerOrganization && !canFundOrganization(ownerOrganization.id)) {
+  if (ownerOrganization && !canFundOrganization(ownerOrganization.id))
     return { outcome: 'contact-admin' };
-  }
-  const read = await refreshWorkModelLibraryAccess(scope);
   const owner = billingOwnerKey(availability);
+  const read = await refreshWorkModelLibraryAccess(scope);
+  // A missing read cannot confirm access or track a purchase. A known
+  // conflicting account/owner must not authorize even opening checkout.
   if (
-    read?.ownerKey === owner &&
-    read?.authoritative === true &&
-    read.access === 'unlocked'
-  ) {
-    // Signing in joined an account that already qualifies, or the purchase
-    // landed since the lock was drawn. Checkout would sell it twice.
-    return { outcome: 'unlocked' };
-  }
-  const requestId = crypto.randomUUID();
-  let path: string;
+    read !== null &&
+    (read.accountKey !== accountKey || read.ownerKey !== owner)
+  )
+    return { outcome: 'failed' };
   try {
-    path = buildBillingTopUpIntentPath(
-      creditsBillingPath(availability, scope),
-      {
-        reason: 'unlock_models',
-        source: request.source,
-        // Ids that do not fit the link's shape are left out rather than
-        // failing the purchase: they only pre-fill attribution, and the
-        // pending intent below keeps the real values.
-        ...(isBillingIntentIdentifier(request.modelId)
-          ? { modelId: request.modelId }
-          : {}),
-        ...(isBillingIntentIdentifier(request.chatId)
-          ? { chatId: request.chatId }
-          : {}),
-        requestId,
-      },
-    );
+    if (!(await sameAccount()) || !isCurrent(epoch))
+      return { outcome: 'failed' };
+    if (read?.authoritative === true && read.access === 'unlocked')
+      return { outcome: 'unlocked' };
+    if (ownerOrganization && !canFundOrganization(ownerOrganization.id))
+      return { outcome: 'contact-admin' };
   } catch {
     return { outcome: 'failed' };
   }
-  let opened = false;
+  let requestId: string | undefined;
+  const startingBalanceAtOpen = startingBalance.current();
   try {
-    // The browser, always. Card entry never happens inside the desktop app,
-    // and there is no unauthenticated fallback: a pricing page is not a
-    // checkout, and "finish in your browser" must be true when it is shown.
-    opened = await window.api.openAuthenticatedPortalPage(path);
+    const result = settingsPaymentHandoffResultSchema.safeParse(
+      await window.api.accountOrganizationSettings.paymentHandoff({
+        accountId,
+        owner: ownerOrganization
+          ? { kind: 'organization', organizationId: ownerOrganization.id }
+          : { kind: 'personal' },
+        intent: {
+          kind: 'top-up',
+          reason: 'unlock_models',
+          source: request.source,
+          ...(isBillingIntentIdentifier(request.modelId)
+            ? { modelId: request.modelId }
+            : {}),
+          ...(isBillingIntentIdentifier(request.chatId)
+            ? { chatId: request.chatId }
+            : {}),
+        },
+      }),
+    );
+    if (!result.success || !result.data.ok) return { outcome: 'failed' };
+    requestId = result.data.requestId;
   } catch {
-    opened = false;
+    // Transport rejection may follow a launch: no retry or fallback.
+    return { outcome: 'failed' };
   }
-  if (!opened) return { outcome: 'failed' };
-  // Follow only the account and owner validated by the scoped server read.
-  if (
-    read === null ||
-    read.ownerKey !== owner ||
-    read.accountKey === null ||
-    read.accountKey === undefined
-  ) {
+  // Browser success stands even when tracking cannot be established afterwards.
+  if (!requestId || !read || read.access === undefined || !isCurrent(epoch))
+    return { outcome: 'opened' };
+  try {
+    const pendingOwner = readSharedAiCreditsAvailability({
+      fresh: true,
+      ...(scope ? { scope } : {}),
+    });
+    const trackingEpoch = currentAccountEpoch;
+    const freshOwner = billingOwnerKey(await pendingOwner);
+    if (
+      freshOwner === null ||
+      freshOwner !== owner ||
+      !(await sameAccount()) ||
+      !isCurrent(trackingEpoch)
+    )
+      return { outcome: 'opened' };
+    beginModelUnlockIntent(
+      {
+        requestId,
+        accountId: accountKey,
+        owner: freshOwner,
+        chatId: request.chatId ?? null,
+        ...(scope?.kind === 'work' ? { scope } : {}),
+        modelId: request.modelId ?? null,
+        startedAt: Date.now(),
+        source: request.source,
+        ...(startingBalanceAtOpen !== null
+          ? { startingBalance: startingBalanceAtOpen }
+          : {}),
+      },
+      {
+        ...(request.apply ? { apply: request.apply } : {}),
+        ...(request.isStillWanted
+          ? { isStillWanted: request.isStillWanted }
+          : {}),
+        resolveOwner: () => readBillingOwnerKey(scope),
+        refreshAccess: () => refreshWorkModelLibraryAccess(scope),
+      },
+    );
+    return { outcome: 'opened', requestId };
+  } catch {
     return { outcome: 'opened' };
   }
-  beginModelUnlockIntent(
-    {
-      requestId,
-      accountId: read.accountKey,
-      owner,
-      chatId: request.chatId ?? null,
-      modelId: request.modelId ?? null,
-      startedAt: Date.now(),
-      source: request.source,
-    },
-    {
-      ...(request.apply ? { apply: request.apply } : {}),
-      ...(request.isStillWanted
-        ? { isStillWanted: request.isStillWanted }
-        : {}),
-      resolveOwner: () => readBillingOwnerKey(scope),
-      refreshAccess: () => refreshWorkModelLibraryAccess(scope),
-    },
-  );
-  return { outcome: 'opened', requestId };
 }
 
 /**
@@ -701,15 +864,16 @@ export async function unlockModels(
   scope: AiCreditsScopeRequest | undefined,
   request: UnlockModelsRequest,
 ): Promise<UnlockModelsResult> {
-  let guest = false;
+  let needsAccount = false;
   try {
-    guest = isGuestAccount(await window.api.loadCanopyCloudAccount());
+    // A guest credential cannot buy anything, and neither can no credential
+    // at all: both sign in first.
+    const account = await window.api.loadCanopyCloudAccount();
+    needsAccount = !isCanopyCloudConnected(account) || isGuestAccount(account);
   } catch {
-    // Unreadable account: let the checkout attempt decide. It fails closed on
-    // its own when no authenticated page can be opened.
-    guest = false;
+    return { outcome: 'failed' };
   }
-  if (!guest) return openUnlockCheckout(scope, request);
+  if (!needsAccount) return openUnlockCheckout(scope, request);
   useCloudConnectGateStore.getState().requestConnect(
     {
       title: MODEL_LIBRARY_UNLOCK_COPY.title,
@@ -719,7 +883,30 @@ export async function unlockModels(
       // Runs only after a real account exists. `openUnlockCheckout` re-reads
       // access first, so an account that already qualifies is never sent to
       // checkout.
-      void openUnlockCheckout(scope, request);
+      //
+      // A surface that asked to hear the outcome narrates it itself; anyone
+      // else gets a toast, so a failure after sign-in is never silent.
+      const report = (result: UnlockModelsResult): void => {
+        if (request.onResumed) {
+          request.onResumed(result);
+          return;
+        }
+        if (result.outcome === 'failed' || result.outcome === 'contact-admin') {
+          useGitHubStore.getState().addToast(
+            result.outcome === 'contact-admin'
+              ? CONTACT_ORG_ADMIN_COPY
+              : settingsActionErrorCopy(null, {
+                  action: 'open this payment page',
+                }),
+            'error',
+            undefined,
+            { forceInApp: true },
+          );
+        }
+      };
+      void openUnlockCheckout(scope, request, {
+        joinCurrentEpisode: true,
+      }).then(report, (): void => report({ outcome: 'failed' }));
     },
   );
   return { outcome: 'sign-in' };

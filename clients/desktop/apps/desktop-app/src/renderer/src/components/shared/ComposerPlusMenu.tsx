@@ -8,7 +8,11 @@ import {
 } from './pluginSelectorScope';
 import type { ComposerMenuController } from '@/hooks/useComposerMenu';
 import type { FileMentionOption } from '@canopy/ui-rich/types';
-import { searchSlashCommands } from '@canopy/ui-rich/plugins';
+import {
+  limitSlashResults,
+  normalizeSearchText,
+  searchSlashCommands,
+} from '@canopy/ui-rich/plugins';
 import type { ComposerCommand } from '@/lib/composerCommands';
 import {
   useCallback,
@@ -23,10 +27,8 @@ import {
   type RefObject,
 } from 'react';
 import {
-  ComposerActionList,
+  ComposerPlusMenuPresentation,
   type ComposerActionRow,
-  FloatingMenu,
-  Tooltip,
 } from '@canopy/ui-shared';
 import {
   CommandIcon,
@@ -34,10 +36,8 @@ import {
   SkillIcon,
   FileIcon,
   LinearIcon,
-  PlusLargeIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { useLinearAvailability } from '@/hooks/useLinearStatus';
-import { ComposerIconButton } from '@/components/shared/ComposerIconButton';
 import { useSettingsLocationLabel } from '@/lib/navigation/settings-destinations';
 
 export interface ComposerPlusMenuItem {
@@ -384,7 +384,14 @@ function ComposerPlusMenuContent({
     () => searchSlashCommands(catalog, query),
     [catalog, query],
   );
-  const commandRows: ComposerActionRow[] = rankedCommands.map(
+  // Typed searches show a capped first view; Show all expands it for this
+  // query only, so editing the query or closing the menu collapses it.
+  const isTypedSearch = normalizeSearchText(query).length > 0;
+  const [expandedQuery, setExpandedQuery] = useState<string | null>(null);
+  useEffect(() => {
+    setExpandedQuery(null);
+  }, [isOpen, query]);
+  const allCommandRows: ComposerActionRow[] = rankedCommands.map(
     (command, index) => {
       const toggle = command.composerAction === 'plan' ? planToggle : undefined;
       return {
@@ -392,6 +399,7 @@ function ComposerPlusMenuContent({
         label: command.displayName ?? command.name,
         description:
           toggle?.description ?? command.disabledReason ?? command.description,
+        available: command.section === 'available',
         ariaChecked: toggle?.ariaChecked,
         value: toggle?.value,
         icon:
@@ -504,6 +512,41 @@ function ComposerPlusMenuContent({
             }),
         )
       : [];
+  const { visible: commandRows, hiddenCount } =
+    isTypedSearch && expandedQuery !== query
+      ? limitSlashResults(allCommandRows, (row) => row.group)
+      : { visible: allCommandRows, hiddenCount: 0 };
+  const firstHiddenRowId =
+    hiddenCount > 0
+      ? allCommandRows.find((row) => !commandRows.includes(row))?.id
+      : undefined;
+  const pendingHighlightRef = useRef<string | null>(null);
+  useEffect(() => {
+    // After Show all, highlight the first previously hidden row; focus stays
+    // in the composer.
+    const rowId = pendingHighlightRef.current;
+    if (rowId === null || expandedQuery !== query) return;
+    pendingHighlightRef.current = null;
+    const button = Array.from(
+      controller?.menuRef.current?.querySelectorAll<HTMLElement>(
+        '[data-row-id]',
+      ) ?? [],
+    ).find((row) => row.dataset.rowId === rowId);
+    if (!button) return;
+    controller?.setActiveId(button.id);
+    button.scrollIntoView({ block: 'nearest' });
+  }, [expandedQuery, query, controller]);
+  const showAll =
+    hiddenCount > 0
+      ? {
+          label: `Show all ${allCommandRows.length}`,
+          dataTestId: `${dataTestIdPrefix}-show-all`,
+          onSelect: (): void => {
+            pendingHighlightRef.current = firstHiddenRowId ?? null;
+            setExpandedQuery(query);
+          },
+        }
+      : undefined;
   const rows = [...visibleActions, ...pluginRows, ...commandRows, ...fileRows];
 
   const handleTriggerKeyDown = (
@@ -516,106 +559,38 @@ function ComposerPlusMenuContent({
   };
 
   return (
-    <>
-      <Tooltip
-        // Typing @ in the draft opens this same menu, so the tooltip teaches
-        // the shortcut beside what the button does.
-        label={
-          controller ? COMPOSER_PLUS_MENU_TOOLTIP : COMPOSER_PLUS_MENU_LABEL
-        }
-        {...(controller ? { shortcut: '@' } : {})}
-        suppressed={isOpen}
-      >
-        {capsuleTrigger ? (
-          // The capsule trigger (the chat and Home composers): send-button
-          // geometry (32px circle, 16px glyph) on a flat subtle fill that
-          // steps up to muted on hover, written as one explicit class list
-          // so no variant background can override it.
-          <button
-            ref={setTriggerRef}
-            type="button"
-            onClick={() => setIsOpen(!isOpen)}
-            onKeyDown={handleTriggerKeyDown}
-            disabled={disabled}
-            className={`focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition enabled:active:scale-97 disabled:cursor-not-allowed disabled:fg-tertiary disabled:opacity-100 ${
-              active
-                ? 'bg-warning-subtle fg-warning enabled:hover:bg-warning-subtle'
-                : // A one-device-pixel inset rim in the quiet line role
-                  // keeps the + defined against the composer's surface.
-                  'bg-subtle fg-primary ring-[length:var(--border-hairline)] ring-inset ring-line-tertiary enabled:hover:bg-muted'
-            }`}
-            data-testid={`${dataTestIdPrefix}-plus-button`}
-            data-active={active ? 'true' : undefined}
-            aria-label={triggerAriaLabel}
-            aria-haspopup="dialog"
-            aria-expanded={isOpen}
-            aria-controls={isOpen ? menuId : undefined}
-          >
-            {/* The large plus: its ink matches the send arrow, the microphone
-              and stop beside it (the medium plus read a size smaller). */}
-            <PlusLargeIcon size={16} />
-          </button>
-        ) : (
-          <ComposerIconButton
-            ref={setTriggerRef}
-            onClick={() => setIsOpen(!isOpen)}
-            onKeyDown={handleTriggerKeyDown}
-            disabled={disabled}
-            tone={active ? 'warning' : 'default'}
-            active={active}
-            data-testid={`${dataTestIdPrefix}-plus-button`}
-            data-active={active ? 'true' : undefined}
-            aria-label={triggerAriaLabel}
-            aria-haspopup="dialog"
-            aria-expanded={isOpen}
-            aria-controls={isOpen ? menuId : undefined}
-          >
-            <PlusLargeIcon width={16} height={16} />
-          </ComposerIconButton>
-        )}
-      </Tooltip>
-
-      <FloatingMenu
-        id={menuId}
-        open={isOpen}
-        onOpenChange={setIsOpen}
-        anchorRef={controller?.anchorRef ?? composerAnchorRef ?? buttonRef}
-        {...(gap !== undefined ? { gap } : {})}
-        placement={placement}
-        allowFlip={allowFlip}
-        interaction="manual"
-        outsidePressBoundaryRef={controller?.editorRef}
-        returnFocusRef={controller?.editorRef ?? buttonRef}
-        role="dialog"
-        aria-label="Composer actions"
-        data-testid={`${dataTestIdPrefix}-plus-menu`}
-        data-menu-variant={variant}
-        data-chat-cancel-shortcut-ignore
-        motion="none"
-        className={`flex flex-col overflow-hidden ${
-          controller || composerAnchorRef
-            ? 'w-[var(--floating-menu-anchor-width)]'
-            : 'w-[min(42rem,calc(100vw-2rem))]'
-        }`}
-        // This composer-attached surface matches the composer’s 20px corners.
-        style={{ borderRadius: 'var(--radius-2xl)', paddingBlock: 0 }}
-        heightLimit={280}
-      >
-        <ComposerActionList
-          rows={rows}
-          menuRef={controller?.menuRef}
-          activeId={controller?.activeId}
-          onActiveIdChange={controller?.setActiveId}
-          onHoveredIdChange={controller?.setHoveredId}
-          loading={isRefreshing}
-          dataTestIdPrefix={dataTestIdPrefix}
-          // Session replay records each group's rows as a placeholder: the
-          // menu lists the whole skill/plugin/command catalog unwindowed, so
-          // opening it would otherwise serialize thousands of elements.
-          blockRowsFromReplay
-        />
-      </FloatingMenu>
-    </>
+    <ComposerPlusMenuPresentation
+      isOpen={isOpen}
+      setIsOpen={setIsOpen}
+      rows={rows}
+      triggerRef={setTriggerRef}
+      onTriggerKeyDown={handleTriggerKeyDown}
+      disabled={disabled}
+      capsuleTrigger={capsuleTrigger}
+      active={active}
+      triggerAriaLabel={triggerAriaLabel}
+      tooltipLabel={
+        controller ? COMPOSER_PLUS_MENU_TOOLTIP : COMPOSER_PLUS_MENU_LABEL
+      }
+      shortcut={controller ? '@' : undefined}
+      menuId={menuId}
+      anchorRef={controller?.anchorRef ?? composerAnchorRef ?? buttonRef}
+      gap={gap}
+      placement={placement}
+      allowFlip={allowFlip}
+      outsidePressBoundaryRef={controller?.editorRef}
+      returnFocusRef={controller?.editorRef ?? buttonRef}
+      dataTestIdPrefix={dataTestIdPrefix}
+      variant={variant}
+      fullWidth={!!(controller || composerAnchorRef)}
+      menuRef={controller?.menuRef}
+      activeId={controller?.activeId}
+      onActiveIdChange={controller?.setActiveId}
+      onHoveredIdChange={controller?.setHoveredId}
+      loading={isRefreshing}
+      flat={isTypedSearch && !isAddMenu}
+      showAll={showAll}
+    />
   );
 }
 

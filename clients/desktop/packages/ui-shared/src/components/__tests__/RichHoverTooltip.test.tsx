@@ -350,6 +350,25 @@ describe('RichHoverTooltip below-start placement', () => {
     });
   });
 
+  it('uses a visible anchor when the trigger wrapper has no layout box', () => {
+    Object.defineProperty(HTMLSpanElement.prototype, 'checkVisibility', {
+      configurable: true,
+      value: () => false,
+    });
+    Object.defineProperty(anchor, 'checkVisibility', {
+      configurable: true,
+      value: () => true,
+    });
+    try {
+      expect(openAt({ x: 100, y: 40, width: 160, height: 32 })).toEqual({
+        top: '80px',
+        left: '100px',
+      });
+    } finally {
+      Reflect.deleteProperty(HTMLSpanElement.prototype, 'checkVisibility');
+    }
+  });
+
   it('lines up with the anchor’s right edge near the right window edge', () => {
     // Left-aligned it would end at 1180px; the anchor ends at 1000px.
     expect(openAt({ x: 900, y: 40, width: 100, height: 32 })).toEqual({
@@ -829,5 +848,50 @@ describe.each([false, true])('adopted tooltip (deferred=%s)', (deferred) => {
     });
     expect(child.document.activeElement).toBe(trigger);
     expect(child.document.querySelector('[role="tooltip"]')).toBeNull();
+  });
+});
+
+describe('RichHoverTooltip above the browser page', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    document.body.replaceChildren();
+  });
+  function render(props: {
+    aboveBrowser?: boolean;
+    interactive?: boolean;
+  }): void {
+    act(() =>
+      root.render(
+        <RichHoverTooltip content="Detail" open {...props}>
+          <button>Trigger</button>
+        </RichHoverTooltip>,
+      ),
+    );
+  }
+  const attribute = (): string | null | undefined =>
+    document
+      .querySelector('[role="tooltip"]')
+      ?.getAttribute('data-canopy-above-browser');
+
+  it('marks the surface to draw over the live page when asked', () => {
+    render({ aboveBrowser: true });
+    expect(attribute()).toBe('true');
+  });
+
+  it('leaves the surface unmarked by default', () => {
+    render({});
+    expect(attribute()).toBeNull();
+  });
+
+  it('never marks an interactive surface, which the page copy cannot click', () => {
+    render({ aboveBrowser: true, interactive: true });
+    expect(attribute()).toBeNull();
   });
 });

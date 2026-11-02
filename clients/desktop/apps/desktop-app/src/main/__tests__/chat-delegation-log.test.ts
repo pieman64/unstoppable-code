@@ -1,4 +1,11 @@
-import { appendFile, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentDelegationTranscriptItem } from '@canopy/protocol/delegation';
@@ -7,7 +14,10 @@ import type {
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import { delegationTranscriptMessages } from '@canopy/agent-transcript';
+import { projectAgentRoute } from '@canopy/desktop-shared/node/delegation';
+import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
 import { ChatDelegationLogs } from '../lib/chat-delegation-log';
+import { ChatTranscriptLog } from '../lib/chat-transcript-log';
 import { fsyncDirectory } from '../lib/fsync-directory';
 import type * as FsyncDirectoryModule from '../lib/fsync-directory';
 import { CreatedArtifacts } from '../lib/chat-transcript-artifacts';
@@ -68,11 +78,13 @@ function cardMessage(): PersistedChatMessage {
       status: 'completed',
       outputTruncated: false,
       finalText: 'Done',
-      routeSnapshot: {
-        selectedModelId: 'model',
-        runtimeModelId: 'model',
-        harnessId: 'claude',
-      },
+      routeSnapshot: projectAgentRoute(
+        routeFixture({
+          selectedModelId: 'model',
+          runtimeModelId: 'model',
+          harnessId: 'claude',
+        }),
+      ),
     },
     transcript: [],
     transcriptStore: 'chat-log-v1',
@@ -282,7 +294,7 @@ describe('delegate logs in chat storage', () => {
       { run: RUN, items: [text('a', 1, 'x')] },
     ]);
     const removal: ChatCoreMutation = { type: 'tab.removed', tabId: 'chat' };
-    await backend.transact(() => [removal], { source: 'command' });
+    await backend.transact(() => [removal], { source: 'renderer-command' });
     await expect(
       stat(join(store.directory, 'transcripts', 'delegations', 'chat')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
@@ -323,7 +335,7 @@ describe('delegate logs in chat storage', () => {
       tab: { ...structuredClone(source), id: 'fork', title: 'Fork' },
       transcriptSourceChatId: 'chat',
     };
-    await backend.transact(() => [fork], { source: 'command' });
+    await backend.transact(() => [fork], { source: 'renderer-command' });
     expect(await backend.readDelegationItems('fork', RUN)).toEqual([
       text('a', 1, 'x'),
     ]);
@@ -426,7 +438,7 @@ describe('delegate log appends and the scope lease', () => {
           },
         },
       ],
-      { source: 'command' },
+      { source: 'renderer-command' },
     );
   });
 
@@ -456,5 +468,22 @@ describe('delegate log appends and the scope lease', () => {
     release();
     await append;
     expect(outcome).toBe('read');
+  });
+});
+
+describe('deleting a chat that owns format-4 streams', () => {
+  it('fences later appends while the checkpoint keeps the tree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'chat-delegation-fence-'));
+    try {
+      const log = new ChatTranscriptLog(root);
+      const chat = join(root, 'delegations', 'chat');
+      await mkdir(join(chat, 'v2'), { recursive: true });
+      await log.remove('chat');
+      await log.delegations.append('chat', RUN, [text('a', 1, 'late')]);
+      // The tree stays for the checkpoint to remove; no legacy log appears.
+      await expect(readdir(chat)).resolves.toEqual(['v2']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

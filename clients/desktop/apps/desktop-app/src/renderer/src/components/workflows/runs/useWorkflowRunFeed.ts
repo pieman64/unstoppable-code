@@ -7,6 +7,11 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import {
+  isSameWorkspaceContext,
+  parseWorkspaceContext,
+  type WorkspaceContext,
+} from '@canopy/protocol/workspace-context';
+import {
   countActiveWorkflowRuns,
   type WorkflowRunAction,
   type WorkflowRunRow,
@@ -87,6 +92,22 @@ export function useChatTabTitles(): Readonly<Record<string, string>> {
   );
 }
 
+/**
+ * Whether a run with no live project belongs to the selected context. Its
+ * recorded owner decides; a run that recorded none stays in Personal, and one
+ * whose recorded owner cannot be read belongs to no context.
+ */
+export function unprojectedExecutionInContext(
+  executionContext: string | undefined,
+  context: WorkspaceContext | undefined,
+  parse: (value: string) => WorkspaceContext | null = parseWorkspaceContext,
+): boolean {
+  if (context === undefined) return true;
+  if (executionContext === undefined) return context.kind === 'personal';
+  const owner = parse(executionContext);
+  return owner !== null && isSameWorkspaceContext(owner, context);
+}
+
 /** Actions the existing execution handlers allow for one run. */
 export function executionRunActions(
   execution: ExecutionSummary,
@@ -161,6 +182,15 @@ export function useWorkflowRunFeed({
     // Whatever belongs to no project stays in Personal.
     const unownedInScope =
       scope.context === undefined || scope.context.kind === 'personal';
+    // Each recorded owner string is parsed once per build of the rows.
+    const parsedOwners = new Map<string, WorkspaceContext | null>();
+    const parseOwner = (value: string): WorkspaceContext | null => {
+      const cached = parsedOwners.get(value);
+      if (cached !== undefined) return cached;
+      const parsed = parseWorkspaceContext(value);
+      parsedOwners.set(value, parsed);
+      return parsed;
+    };
     const chatTitle = (
       projectId: string,
       worktreeId: string,
@@ -175,12 +205,16 @@ export function useWorkflowRunFeed({
       watchers,
       activityInScope: scope.inContext,
       orphanRunInScope: () => unownedInScope,
-      // A run whose project is gone has no organization, so it stays in
-      // Personal with the runs that never had a project.
+      // A run with no live project is filed by the owner it recorded; one
+      // that recorded none stays in Personal.
       executionInScope: (execution) =>
         execution.project_id === undefined ||
         !projectsById.has(execution.project_id)
-          ? unownedInScope
+          ? unprojectedExecutionInContext(
+              execution.execution_context,
+              scope.context,
+              parseOwner,
+            )
           : scope.context === undefined ||
             projectIdsInContext.has(execution.project_id),
       watcherInScope: scope.watcherInContext,
@@ -190,6 +224,14 @@ export function useWorkflowRunFeed({
         return destination.kind === 'none'
           ? { available: false, reason: destination.reason }
           : { available: true };
+      },
+      automationRunOpensChat: (run) => {
+        const { kind } = resolveAutomationRunDestination(run);
+        return (
+          kind === 'app-advisor-chat' ||
+          kind === 'cowork-chat' ||
+          kind === 'worktree-chat'
+        );
       },
       names: {
         project: (projectId) => {

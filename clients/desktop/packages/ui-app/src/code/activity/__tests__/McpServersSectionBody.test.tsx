@@ -3,7 +3,10 @@ import { act, type JSX } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MCP_ROW_ACTION_CLASS_NAME } from '@canopy/ui-shared/lib';
-import { ActivityItemDensityContext } from '@canopy/ui-shared/components';
+import {
+  ActivityItemDensityContext,
+  buttonClassName,
+} from '@canopy/ui-shared/components';
 import {
   McpServersSectionBody,
   type McpServersSectionItem,
@@ -94,21 +97,21 @@ describe('McpServersSectionBody', () => {
       testId: string,
     ): T | null => container.querySelector<T>(`[data-testid="${testId}"]`);
     const pill = byTestId('mcp-servers-card-badge');
-    expect(pill?.textContent).toBe('Waiting…');
+    expect(pill?.textContent).toBe('Waiting for sign-in');
     expect(pill?.getAttribute('role')).toBe('status');
     expect(byTestId('mcp-servers-card-connect')).toBeNull();
     const reopen = byTestId<HTMLAnchorElement>(
       'mcp-servers-card-sign-in-reopen',
     );
     expect(reopen?.textContent).toBe('Reopen');
-    expect(reopen?.getAttribute('aria-label')).toBe('Reopen sign-in');
+    expect(reopen?.getAttribute('aria-label')).toBe('Reopen GitHub sign-in');
     expect(reopen?.href).toBe('https://auth.example/authorize');
     expect(reopen?.target).toBe('_blank');
     expect(reopen?.rel).toBe('noopener noreferrer');
     // Reopen has the row actions' size and shape, beside its cancel.
     expect(reopen?.className).toContain(MCP_ROW_ACTION_CLASS_NAME);
     const cancel = byTestId('mcp-servers-card-sign-in-cancel');
-    expect(cancel?.getAttribute('aria-label')).toBe('Cancel sign-in');
+    expect(cancel?.getAttribute('aria-label')).toBe('Cancel GitHub sign-in');
     expect(reopen?.parentElement?.contains(cancel ?? null)).toBe(true);
     act(() => cancel?.click());
     expect(onCancelSignIn).toHaveBeenCalledWith(waiting);
@@ -358,7 +361,7 @@ describe('McpServersSectionBody', () => {
     const toggle = container.querySelector<HTMLButtonElement>(
       '[data-testid="mcp-servers-card-proxy-toggle"]',
     );
-    expect(connect?.textContent).toBe('Connecting…');
+    expect(connect?.textContent).toBe('Opening sign-in…');
     expect(connect?.disabled).toBe(true);
     expect(toggle?.disabled).toBe(true);
     expect(toggle?.getAttribute('aria-pressed')).toBe('false');
@@ -450,11 +453,11 @@ describe('McpServersSectionBody', () => {
     );
     expect(disconnect?.textContent).toBe('Disconnect');
     expect(disconnect?.disabled).toBe(false);
-    // `border-*` colors are inert under the unlayered base border rule
-    // (CAN-2734); the outline has to be the ring pattern the Connect button's
-    // siblings use.
-    expect(disconnect?.className).toContain('ring-1 ring-inset ring-line-base');
-    expect(disconnect?.className).not.toContain('border-border');
+    // The shared secondary Button: `border-*` colors are inert under the
+    // unlayered base border rule (CAN-2734), so it outlines with a ring.
+    expect(disconnect?.className).toContain(
+      buttonClassName({ variant: 'secondary', size: 'compact' }).trim(),
+    );
     expect(disconnect?.className).not.toMatch(/(^|\s)border(\s|$)/);
     act(() => disconnect?.click());
     expect(onDisconnect).toHaveBeenCalledWith(server);
@@ -493,9 +496,9 @@ describe('McpServersSectionBody', () => {
     );
     expect(buttons).toHaveLength(3);
     expect(buttons?.[0]).toContain('disabled=""');
-    expect(buttons?.[0]).toMatch(/>Connecting…$/);
+    expect(buttons?.[0]).toMatch(/>Opening sign-in…$/);
     expect(buttons?.[1]).toContain('disabled=""');
-    expect(buttons?.[1]).toMatch(/>Connecting…$/);
+    expect(buttons?.[1]).toMatch(/>Opening sign-in…$/);
     expect(buttons?.[2]).not.toContain('disabled=""');
     expect(buttons?.[2]).toMatch(/>Sign in$/);
     // `connectingKey` still marks a single row for one-at-a-time hosts.
@@ -512,7 +515,7 @@ describe('McpServersSectionBody', () => {
         onConnect={jest.fn()}
       />,
     );
-    expect(keyed).toContain('Connecting…');
+    expect(keyed).toContain('Opening sign-in…');
   });
 
   it('disables Reconnect on a row while its disconnect is pending', () => {
@@ -542,10 +545,10 @@ describe('McpServersSectionBody', () => {
     const connectButton = (html: string): string =>
       html.match(/<button[^>]*mcp-servers-card-connect[^>]*>[^<]*/)?.[0] ?? '';
     const pending = connectButton(render('server-key'));
-    expect(pending).toMatch(/>Reconnect$/);
+    expect(pending).toMatch(/>Sign in$/);
     expect(pending).toContain('disabled=""');
     const settled = connectButton(render(null));
-    expect(settled).toMatch(/>Reconnect$/);
+    expect(settled).toMatch(/>Sign in$/);
     expect(settled).not.toContain('disabled=""');
   });
 
@@ -646,8 +649,51 @@ describe('McpServersSectionBody', () => {
     const badge = rows[1]?.querySelector(
       '[data-testid="mcp-servers-card-badge"]',
     );
-    expect(badge?.textContent).toBe('Needs auth');
+    expect(badge?.textContent).toBe('Sign-in needed');
     expect(badge?.className).toContain('fg-warning');
     expect(badge?.className).not.toContain('rounded-full');
+  });
+  it('renders native detail/settings links and keeps the surrounding row and badge passive', () => {
+    const host = document.createElement('div');
+    host.innerHTML = renderToStaticMarkup(
+      <McpServersSectionBody
+        servers={[makeServer()]}
+        warnings={[]}
+        loading={false}
+        error={null}
+        connectingKey={null}
+        brandAppName=""
+        proxyLogo={null}
+        getRowNavigation={() => ({ kind: 'link', href: '/plugin/exact' })}
+        getRowSettings={() => ({
+          kind: 'link',
+          href: '/settings/exact?config=work',
+        })}
+        onConnect={jest.fn()}
+      />,
+    );
+    const name = host.querySelector<HTMLAnchorElement>(
+      '[data-testid="mcp-servers-card-name"]',
+    );
+    expect(name?.tagName).toBe('A');
+    expect(name?.getAttribute('href')).toBe('/plugin/exact');
+    expect(name?.target).toBe('_blank');
+    expect(name?.rel).toBe('noopener');
+    expect(name?.getAttribute('aria-label')).toContain('opens in a new tab');
+    const settings = host.querySelector<HTMLAnchorElement>(
+      '[data-testid="mcp-servers-card-settings"]',
+    );
+    expect(settings?.getAttribute('href')).toBe('/settings/exact?config=work');
+    const row = host.querySelector('[data-testid="mcp-servers-card-row"]');
+    const badge = host.querySelector('[data-testid="mcp-servers-card-badge"]');
+    expect(row?.getAttribute('role')).toBeNull();
+    expect(row?.getAttribute('tabindex')).toBeNull();
+    expect(badge?.getAttribute('tabindex')).toBeNull();
+    expect(badge?.closest('button,a')).toBeNull();
+    expect(
+      host
+        .querySelector('[data-testid="mcp-servers-card-connect"]')
+        ?.getAttribute('aria-label'),
+    ).toBe('Sign in to GitHub');
   });
 });

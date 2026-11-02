@@ -39,6 +39,9 @@ export function getDisplayBlockKey(
       return `rebase:${block.timestamp}:${block.kind}:${block.repoName}`;
     case 'builtin_gh_chat_info':
       return `builtin-gh:${block.timestamp}:${block.kind}`;
+    // Main writes one receipt per denied invocation under a stable ID.
+    case 'approval_safety_denied_info':
+      return `approval-safety-denied:${block.receiptId}`;
     case 'approval_resolution_info':
       // Two mode changes in the same millisecond would otherwise collide, so
       // fold in the index the way the other timestamp-keyed markers do.

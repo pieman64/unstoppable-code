@@ -5,6 +5,7 @@
     "outDir": "out",
     "rootDir": "../.."
   },
+  "files": ["src/preload/index.d.ts"],
   "include": [
     "electron.vite.config.ts",
     "src/main/**/*.ts",

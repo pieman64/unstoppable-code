@@ -1,4 +1,5 @@
 import type { WorktreeMenuContext } from '../worktree-menu-items';
+import { WORKTREE_BATCH_UNIT } from '@canopy/ui-shared/components';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   ArchiveIcon,
@@ -138,15 +139,15 @@ describe('deriveWorktreeMenuItems — sentence case', () => {
     ).items.find((item) => item.key === 'dispatch-pipeline')?.label;
 
   it('reads Dispatch Pipeline by default', () => {
-    expect(dispatchLabel({})).toBe('Dispatch pipeline');
+    expect(dispatchLabel({})).toBe('Dispatch workflow');
     expect(dispatchLabel({ sentenceCaseLabels: false })).toBe(
-      'Dispatch pipeline',
+      'Dispatch workflow',
     );
   });
 
   it('reads Dispatch pipeline when the host asks for sentence case', () => {
     expect(dispatchLabel({ sentenceCaseLabels: true })).toBe(
-      'Dispatch pipeline',
+      'Dispatch workflow',
     );
   });
 });
@@ -158,7 +159,7 @@ describe('deriveWorktreeMenuItems', () => {
     ['closed PR', { prState: 'closed' }, false],
     ['below threshold', { prAdditions: 10 }, false],
     ['multi repo', { isSingleRepo: false }, false],
-  ])('derives split eligibility for %s', (_name, patch, expected) => {
+  ] as const)('derives split eligibility for %s', (_name, patch, expected) => {
     expect(
       isSplitPrEligible({
         prState: 'open',
@@ -274,7 +275,7 @@ describe('deriveWorktreeMenuItems', () => {
       capabilities,
       callbacks,
     ).items;
-    expect(items.some((item) => item.key === 'auto-archive-lock')).toBe(false);
+    expect(items.map((item) => item.key)).not.toContain('auto-archive-lock');
     expect(items.map((item) => item.label)).not.toEqual(
       expect.arrayContaining(['Lock', 'Unlock']),
     );
@@ -967,16 +968,22 @@ describe('worktreeRemovalBlockedReason', () => {
 describe('batchActionAvailability', () => {
   it('enables both actions when every row offers Archive and Delete', () => {
     expect(
-      batchActionAvailability([
-        { removal: 'archive', retention: 'archive-or-delete' },
-        { removal: 'delete', retention: 'archive-or-delete' },
-      ]),
+      batchActionAvailability(
+        [
+          { removal: 'archive', retention: 'archive-or-delete' },
+          { removal: 'delete', retention: 'archive-or-delete' },
+        ],
+        WORKTREE_BATCH_UNIT,
+      ),
     ).toEqual({ archive: { enabled: true }, delete: { enabled: true } });
   });
 
   it('enables only Archive, and offers no Delete, when every row offers only Archive', () => {
     expect(
-      batchActionAvailability([{ removal: 'archive' }, { removal: 'archive' }]),
+      batchActionAvailability(
+        [{ removal: 'archive' }, { removal: 'archive' }],
+        WORKTREE_BATCH_UNIT,
+      ),
     ).toEqual({
       archive: { enabled: true },
       delete: {
@@ -988,10 +995,10 @@ describe('batchActionAvailability', () => {
   });
 
   it('disables both for mixed archive and delete capabilities', () => {
-    const availability = batchActionAvailability([
-      { removal: 'archive' },
-      { removal: 'delete' },
-    ]);
+    const availability = batchActionAvailability(
+      [{ removal: 'archive' }, { removal: 'delete' }],
+      WORKTREE_BATCH_UNIT,
+    );
     expect(availability.archive).toEqual({
       enabled: false,
       disabledReason: "Some selected worktrees can't be archived",
@@ -1003,10 +1010,13 @@ describe('batchActionAvailability', () => {
   });
 
   it('disables Delete when retention support is mixed', () => {
-    const availability = batchActionAvailability([
-      { removal: 'archive', retention: 'archive-or-delete' },
-      { removal: 'archive' },
-    ]);
+    const availability = batchActionAvailability(
+      [
+        { removal: 'archive', retention: 'archive-or-delete' },
+        { removal: 'archive' },
+      ],
+      WORKTREE_BATCH_UNIT,
+    );
     expect(availability.archive.enabled).toBe(true);
     expect(availability.delete).toEqual({
       enabled: false,
@@ -1016,19 +1026,25 @@ describe('batchActionAvailability', () => {
 
   it('disables both when a row has no removal or its workspace is gated', () => {
     expect(
-      batchActionAvailability([
-        { removal: 'archive', retention: 'archive-or-delete' },
-        { removal: false },
-      ]).archive.enabled,
+      batchActionAvailability(
+        [
+          { removal: 'archive', retention: 'archive-or-delete' },
+          { removal: false },
+        ],
+        WORKTREE_BATCH_UNIT,
+      ).archive.enabled,
     ).toBe(false);
-    const gated = batchActionAvailability([
-      { removal: 'archive', retention: 'archive-or-delete' },
-      {
-        removal: 'archive',
-        retention: 'archive-or-delete',
-        commandsDisabled: true,
-      },
-    ]);
+    const gated = batchActionAvailability(
+      [
+        { removal: 'archive', retention: 'archive-or-delete' },
+        {
+          removal: 'archive',
+          retention: 'archive-or-delete',
+          commandsDisabled: true,
+        },
+      ],
+      WORKTREE_BATCH_UNIT,
+    );
     expect(gated.archive).toEqual({
       enabled: false,
       disabledReason: "Some selected worktrees can't be changed right now",
@@ -1037,7 +1053,7 @@ describe('batchActionAvailability', () => {
   });
 
   it('enables nothing for an empty selection', () => {
-    expect(batchActionAvailability([])).toEqual({
+    expect(batchActionAvailability([], WORKTREE_BATCH_UNIT)).toEqual({
       archive: { enabled: false },
       delete: { enabled: false },
     });
@@ -1045,6 +1061,40 @@ describe('batchActionAvailability', () => {
 });
 
 describe('deriveWorktreeMenuItems — bulk selection (CAN-3975)', () => {
+  it('the selection menu carries its state actions', () => {
+    const onBulkStateActionRequested = jest.fn();
+    const { items } = deriveWorktreeMenuItems(
+      {
+        ...context,
+        multiSelected: true,
+        bulkSelection: {
+          count: 2,
+          unitLabel: WORKTREE_BATCH_UNIT,
+          availability: {
+            archive: { enabled: true },
+            delete: { enabled: false, offered: false },
+          },
+          stateActions: { pin: { pinned: false }, hide: true },
+        },
+      },
+      capabilities,
+      {
+        ...callbacks,
+        onBulkRemovalRequested: jest.fn(),
+        onBulkStateActionRequested,
+        testIds: { bulkHide: 'hide-id' },
+      },
+    );
+    expect(items.map((item) => item.label)).toEqual([
+      'Unpin 2 worktrees',
+      'Hide 2 worktrees',
+      'Archive 2 worktrees',
+    ]);
+    expect(items[1]?.testId).toBe('hide-id');
+    items[1]?.onSelect?.();
+    expect(onBulkStateActionRequested).toHaveBeenCalledWith({ kind: 'hide' });
+  });
+
   it('offers Select, or Deselect for a selected row, only when the host wires it', () => {
     const plain = deriveWorktreeMenuItems(context, capabilities, callbacks);
     expect(plain.items.some((item) => item.key === 'toggle-selection')).toBe(
@@ -1080,7 +1130,7 @@ describe('deriveWorktreeMenuItems — bulk selection (CAN-3975)', () => {
         }).items.find((entry) => entry.key === 'toggle-selection')?.shortcut;
       };
       expect(shortcutOn('MacIntel')).toBe('⌘ Click');
-      expect(shortcutOn('Win32')).toBe('Ctrl+Click');
+      expect(shortcutOn('Win32')).toBe('Ctrl Click');
     } finally {
       platform.mockRestore();
     }
@@ -1096,6 +1146,7 @@ describe('deriveWorktreeMenuItems — bulk selection (CAN-3975)', () => {
         multiSelected: true,
         bulkSelection: {
           count: 3,
+          unitLabel: WORKTREE_BATCH_UNIT,
           availability: {
             archive: { enabled: true },
             delete: {
@@ -1136,6 +1187,7 @@ describe('deriveWorktreeMenuItems — bulk selection (CAN-3975)', () => {
         multiSelected: true,
         bulkSelection: {
           count: 2,
+          unitLabel: WORKTREE_BATCH_UNIT,
           availability: {
             archive: { enabled: true },
             delete: { enabled: false, offered: false },
@@ -1162,6 +1214,7 @@ describe('deriveWorktreeMenuItems — bulk selection (CAN-3975)', () => {
         multiSelected: true,
         bulkSelection: {
           count: 1,
+          unitLabel: WORKTREE_BATCH_UNIT,
           availability: {
             archive: { enabled: true },
             delete: { enabled: true },

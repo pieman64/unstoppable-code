@@ -10,7 +10,6 @@ import { parseFileLinkLineSuffix } from '@canopy/ui-shared/lib/file-link-line-su
 import { useChatStore } from '@/stores/chatStore';
 import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationStore';
 import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-sync';
-import { initialFileTabViewMode } from '@/lib/file-viewer/initial-view-mode';
 import {
   isBrowserRenderedFile,
   openFileInBrowserPanel,
@@ -122,15 +121,9 @@ export function ChatMarkdownLink({
         if (browserId === null) throw new Error('Browser unavailable');
         return;
       }
-      // A link in chat points at something to read: a file type with a
-      // rendered view opens rendered, unless it is already open elsewhere.
-      const tabId = useChatStore.getState().openFileTab(
-        {
-          ...resolved,
-          initialViewMode: initialFileTabViewMode(resolved.filename),
-        },
-        target,
-      );
+      // The store picks the view: a remembered choice, else the file kind's
+      // default, unless the file is already open elsewhere.
+      const tabId = useChatStore.getState().openFileTab(resolved, target);
       if (!tabId) throw new Error('File panel unavailable');
       useAgentFilePresentationStore.getState().present(tabId, location ?? {});
       if (originChatTabId)

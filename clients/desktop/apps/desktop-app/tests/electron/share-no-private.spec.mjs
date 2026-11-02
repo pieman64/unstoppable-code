@@ -209,23 +209,34 @@ test('an account with no organization sees only the Public disclosure, or organi
   });
   try {
     // Agents offer Public, and it is the only scope this account can use.
-    // A single usable scope is not a choice, so the selector hides: no
-    // legend, no pills, no setup or upgrade hint — only the Public
-    // disclosure. Public is already selected, so Share works without a click.
+    // Every scope still shows: Team and Organization are disabled, with the
+    // setup step in their tooltip, and Public is preselected so it is clear
+    // Share publishes publicly. Share works without a click.
     await app.openMarketplaceAgents();
     await app.openLocalAgentShare(AGENT_ID);
     const agentModal = window.getByTestId('share-agent-modal');
     await expect(
       agentModal.getByTestId('share-agent-scope-description'),
     ).toBeVisible({ timeout: 30_000 });
-    await expect(agentModal.getByTestId('share-agent-scope')).toHaveCount(0);
-    await expect(agentModal.locator('[role="radio"]')).toHaveCount(0);
+    await expect(
+      agentModal.getByTestId('share-agent-scope-team'),
+    ).toBeDisabled();
+    await expect(
+      agentModal.getByTestId('share-agent-scope-organization'),
+    ).toBeDisabled();
+    await expect(
+      agentModal.getByTestId('share-agent-scope-public'),
+    ).toHaveAttribute('aria-checked', 'true');
     await expect(
       agentModal.getByTestId('share-agent-organization-hint'),
     ).toHaveCount(0);
     await expect(
       agentModal.getByTestId('share-agent-set-up-organization'),
     ).toHaveCount(0);
+    await agentModal.getByTestId('share-agent-scope-team').hover();
+    await expect(
+      window.getByTestId('share-agent-scope-team-reason'),
+    ).toHaveText('Team and organization sharing start with an organization.');
     await expect(agentModal.getByTestId('share-agent-submit')).toBeEnabled();
     await agentModal
       .getByRole('button', { name: 'Close', exact: true })
@@ -326,7 +337,7 @@ test('an organization member with no team falls back to Organization', async () 
   }
 });
 
-test('Remove public link asks first, unpublishes, and takes the agent out of shared lists', async () => {
+test('Remove public link (the trash icon in the published notice) asks first, unpublishes, and takes the agent out of shared lists', async () => {
   test.setTimeout(180_000);
   const apiKey = 'csk_share_no_private_remove_e2e';
   await registerShareMembership(apiKey, {
@@ -367,14 +378,21 @@ test('Remove public link asks first, unpublishes, and takes the agent out of sha
     const modal = window.getByTestId('share-agent-modal');
     await modal.getByTestId('share-agent-scope-public').click();
     await modal.getByTestId('share-agent-submit').click();
-    await expect(modal).toHaveCount(0);
-    const publicToast = window
-      .getByTestId('toast-card')
-      .filter({ hasText: 'Agent is now public' });
-    await publicToast.getByTestId('toast-copy-link').click();
+    // The dialog stays open on its published state with the link; no toast.
+    await expect(modal.getByTestId('share-agent-success')).toContainText(
+      'Agent is now public',
+    );
+    await expect(window.getByTestId('toast-card')).toHaveCount(0);
+    // Removal is offered right on the published state, as on reopen.
+    await expect(
+      modal.getByTestId('share-agent-remove-public-link'),
+    ).toBeVisible();
+    await modal.getByTestId('share-agent-copy-link').click();
     await expect
       .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
       .toMatch(new RegExp(`/portal/plugins/agents/${PUBLIC_SHARE_ID}$`));
+    await modal.getByTestId('share-agent-done').click();
+    await expect(modal).toHaveCount(0);
 
     await app.openLocalAgentShare(AGENT_ID);
     await expect(modal.getByTestId('share-agent-scope-public')).toHaveAttribute(
@@ -382,8 +400,21 @@ test('Remove public link asks first, unpublishes, and takes the agent out of sha
       'true',
       { timeout: 30_000 },
     );
-    const remove = modal.getByTestId('share-agent-remove-public-link');
+    // Reopened on an item that was already public: no "now".
+    const notice = modal.getByTestId('share-agent-success');
+    await expect(notice).toContainText('Agent is public');
+    await expect(notice).not.toContainText('now public');
+    // Remove public link is the trash icon on the notice's link line, not a
+    // standalone text button.
+    const remove = notice.getByRole('button', { name: 'Remove public link' });
     await expect(remove).toBeVisible();
+    await expect(remove).toHaveAttribute(
+      'data-testid',
+      'share-agent-remove-public-link',
+    );
+    await expect(
+      modal.getByRole('button', { name: 'Remove public link', exact: true }),
+    ).toHaveCount(1);
 
     // Cancel keeps the link.
     await remove.click();
@@ -404,14 +435,21 @@ test('Remove public link asks first, unpublishes, and takes the agent out of sha
       .getByTestId('share-agent-remove-public-link-confirm-action')
       .click();
     await expect(confirm).toHaveCount(0);
-    await expect(modal).toHaveCount(0);
     await expect(
       window
         .getByTestId('toast-card')
         .filter({ hasText: 'Public link removed' }),
     ).toBeVisible();
+    // The dialog stays open on the unshared state.
+    await expect(modal.getByTestId('share-agent-success')).toHaveCount(0);
+    await expect(remove).toHaveCount(0);
+    await expect(modal.getByTestId('share-agent-submit')).toHaveText('Share');
+    await modal.getByRole('button', { name: 'Close' }).click();
+    await expect(modal).toHaveCount(0);
 
     // Without its link the agent is private-only, so it leaves shared lists.
+    // Leave the agent's detail first: the Customize heading is only on the list.
+    await app.closeMarketplaceEntryDetail();
     await app.openMarketplaceAgents();
     await expect
       .poll(() =>
@@ -427,6 +465,20 @@ test('Remove public link asks first, unpublishes, and takes the agent out of sha
     await expect(
       window.getByTestId(`plugins-entry-agent:shared:${AGENT_SHARE_ID}`),
     ).toHaveCount(0, { timeout: 30_000 });
+
+    // Publishing again lands on the full published state at once: its link,
+    // Copy link and Remove public link, with no reopen needed.
+    await app.openLocalAgentShare(AGENT_ID);
+    await modal.getByTestId('share-agent-scope-public').click();
+    await modal.getByTestId('share-agent-submit').click();
+    await expect(modal.getByTestId('share-agent-success')).toContainText(
+      'Agent is now public',
+    );
+    await expect(modal.getByTestId('share-agent-link')).toBeVisible();
+    await expect(modal.getByTestId('share-agent-copy-link')).toBeVisible();
+    await expect(
+      modal.getByTestId('share-agent-remove-public-link'),
+    ).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

@@ -4,8 +4,10 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
+  AgentUsageOverview,
   AgentProviderType,
   ChatTabUsage,
+  ModelHarness,
 } from '@canopy/desktop-shared/types';
 import {
   initAgentModels,
@@ -51,6 +53,11 @@ const BASE_USAGE: ChatTabUsage = {
   model: 'gpt-6-sol',
 };
 
+const EMPTY_USAGE_OVERVIEW: AgentUsageOverview = {
+  updatedAt: '2026-09-17T00:00:00Z',
+  providers: [],
+};
+
 describe('UsageIndicator', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -64,12 +71,15 @@ describe('UsageIndicator', () => {
     ]);
   });
 
-  const refreshProviderUsageDetails = jest.fn<Promise<void>, [string]>();
+  const refreshProviderUsageDetails = jest.fn<
+    Promise<AgentUsageOverview>,
+    [provider: AgentProviderType]
+  >((): Promise<AgentUsageOverview> => Promise.resolve(EMPTY_USAGE_OVERVIEW));
 
   beforeEach(() => {
     resetUsageRefreshOnOpen();
     refreshProviderUsageDetails.mockReset();
-    refreshProviderUsageDetails.mockResolvedValue(undefined);
+    refreshProviderUsageDetails.mockResolvedValue(EMPTY_USAGE_OVERVIEW);
     useObservabilityStore.setState({
       initialized: true,
       usage: { updatedAt: '2026-09-17T00:00:00Z', providers: [] },
@@ -103,6 +113,7 @@ describe('UsageIndicator', () => {
     model?: string,
     isCursor?: boolean,
     providerType?: AgentProviderType,
+    executionHarness?: ModelHarness,
   ): Promise<void> {
     act(() => {
       root.render(
@@ -112,6 +123,7 @@ describe('UsageIndicator', () => {
           model={model}
           isCursor={isCursor}
           providerType={providerType}
+          executionHarness={executionHarness}
         />,
       );
     });
@@ -152,6 +164,37 @@ describe('UsageIndicator', () => {
       },
     ],
   };
+
+  it('uses OpenCode usage and omits native plan data for a shared model identity', async () => {
+    useObservabilityStore.setState({ usage: CLAUDE_PROVIDER_USAGE });
+    await renderAndOpen(
+      {
+        ...BASE_USAGE,
+        model: 'claude-sonnet-4-6',
+        opencodeReportedUsage: {
+          turn: {
+            inputTokens: 120,
+            outputTokens: 30,
+            reasoningTokens: 0,
+            cacheReadTokens: 20,
+            cacheWriteTokens: 0,
+          },
+        },
+      },
+      false,
+      'claude-sonnet-4-6',
+      false,
+      'claude',
+      'opencode',
+    );
+    expect(
+      document.querySelector('[data-testid="usage-indicator-account"]'),
+    ).toBeNull();
+    expect(document.body.textContent).not.toContain('Claude Max');
+    expect(document.body.textContent).toContain('Latest reported turn');
+    expect(document.body.textContent).toContain('Output30');
+    expect(refreshProviderUsageDetails).not.toHaveBeenCalled();
+  });
 
   it('names the model that answered, even when it is the one selected', async () => {
     // The usage ring no longer sits beside the model picker, so the popover
@@ -613,6 +656,37 @@ describe('UsageIndicator', () => {
       'Connect Copilot to see account usage.',
     );
   });
+
+  it.each([
+    { released: false, section: 'experiments' },
+    { released: true, section: 'account' },
+  ])(
+    'opens Copilot setup in $section from the popup when released=$released',
+    async ({ released, section }) => {
+      const snapshot = useFeatureFlagsStore.getState().snapshot;
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...snapshot,
+          values: {
+            ...snapshot.values,
+            [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]:
+              released,
+          },
+        },
+      });
+      useNavigationStore.setState({ settingsOpen: false });
+      await renderAndOpen({ ...BASE_USAGE, model: 'copilot:gpt-5' }, false);
+      const manage = document.querySelector<HTMLButtonElement>(
+        '[aria-label="Manage GitHub Copilot"]',
+      );
+      if (!manage) throw new Error('Expected the Copilot Manage action');
+      act(() => manage.click());
+      expect(useNavigationStore.getState().settingsInitialSection).toBe(
+        section,
+      );
+      expect(useNavigationStore.getState().settingsOpen).toBe(true);
+    },
+  );
 
   it('keeps unreported Copilot cost and context absent before the first turn', async () => {
     await renderAndOpen(undefined, false, 'copilot:gpt-5');

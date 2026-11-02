@@ -40,12 +40,24 @@ windowsTest(
     const original = actual.execFile;
     const started: childProcess.ChildProcess[] = [];
     const spy = jest.spyOn(actual, 'execFile');
+    const invokeOriginal = (
+      executable: Parameters<typeof childProcess.execFile>[0],
+      args: Parameters<typeof childProcess.execFile>[1],
+      options: Parameters<typeof childProcess.execFile>[2],
+      callback: unknown,
+    ): ReturnType<typeof childProcess.execFile> =>
+      original(
+        executable,
+        args,
+        options,
+        callback as Parameters<typeof childProcess.execFile>[3],
+      );
     // Replace only the signature command with a deterministic reader. Preserve
     // the production launch options, deadline and actual taskkill /T cleanup.
-    spy.mockImplementation(((executable, args, options, callback) => {
+    spy.mockImplementation((executable, args, options, callback) => {
       if (executable !== 'powershell.exe')
-        return original(executable, args, options, callback);
-      const child = original(
+        return invokeOriginal(executable, args, options, callback);
+      const child = invokeOriginal(
         executable,
         [
           '-NoProfile',
@@ -58,7 +70,7 @@ windowsTest(
       );
       started.push(child);
       return child;
-    }) as typeof childProcess.execFile);
+    });
     try {
       await expect(
         createWindowsUpdateVerifier({ timeoutMs: 5_000 })(['unused'], file),

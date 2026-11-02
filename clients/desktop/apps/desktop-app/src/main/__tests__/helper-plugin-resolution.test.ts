@@ -133,13 +133,14 @@ describe('withResolvedHelperPlugins', () => {
       sdkPlugins: [{ type: 'local', path: '/plugins/helper' }],
       skillPluginDir: '/plugins/helper',
       selectedCapabilityRoots: [],
-      codexProcessEnv: {},
       codexMcpServers: {
         helper: { command: 'helper-mcp', args: [] },
       },
-      codexMcpEnvKeys: ['HELPER_MCP_TOKEN'],
       mcpServers: {},
+      mcpServerBindings: {},
       warnings: [],
+      cursorNotices: [],
+      cursorCapabilities: { skills: [], commands: [] },
     });
     mockedCleanupChatSkillPluginDir.mockImplementationOnce((): void => {
       throw new Error('cleanup failed');
@@ -176,10 +177,12 @@ describe('withResolvedHelperPlugins', () => {
       sdkPlugins: [],
       skillPluginDir: null,
       selectedCapabilityRoots: [],
-      codexProcessEnv: {},
       codexMcpServers: {},
       mcpServers: {},
+      mcpServerBindings: {},
       warnings: [],
+      cursorNotices: [],
+      cursorCapabilities: { skills: [], commands: [] },
     });
 
     await withResolvedHelperPlugins(
@@ -211,13 +214,15 @@ describe('withResolvedHelperPlugins', () => {
       sdkPlugins: [],
       skillPluginDir: null,
       selectedCapabilityRoots: [],
-      codexProcessEnv: {},
       codexMcpServers: {},
       mcpServers: {
         safe: { type: 'stdio', command: 'safe-mcp' },
         ['__proto__']: { type: 'stdio', command: 'unsafe-mcp' },
       },
+      mcpServerBindings: {},
       warnings: [],
+      cursorNotices: [],
+      cursorCapabilities: { skills: [], commands: [] },
     });
 
     await withResolvedHelperPlugins(

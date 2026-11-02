@@ -311,3 +311,46 @@ it('fences cached late replies after owner loss while preserving another rendere
   }
   expect(core.leases.size).toBe(1);
 });
+it('lets an observer ride each resolved session without opening one', async () => {
+  const observed: [unknown, string][] = [];
+  const observing = makeService({
+    onSession: (session, observedCaller) =>
+      void observed.push([session, observedCaller.clientInstanceId]),
+  });
+  const signal = owner();
+  const first = await observing.get(caller, signal);
+  const again = await observing.get(caller, signal);
+  expect(again).toBe(first);
+  expect(observed).toEqual([
+    [first, 'renderer-1'],
+    [first, 'renderer-1'],
+  ]);
+  expect(core.servers).toHaveLength(1);
+  const off = makeService({
+    enabled: false,
+    onSession: () => observed.push([null, 'never']),
+  });
+  await expect(off.get(caller, owner())).rejects.toMatchObject({
+    payload: { kind: 'capability_unavailable' },
+  });
+  expect(observed).toHaveLength(2);
+  await Promise.all([observing.dispose(), off.dispose()]);
+});
+it("observes the id each session's lease holds, which the daemon attributes its commits to", async () => {
+  // W5e: the daemon's caller is the lease's client instance, so the id the
+  // observer records as own is the `publishedBy` of that session's commits.
+  const observed: string[] = [];
+  const observing = makeService({
+    onSession: (_session, observedCaller) =>
+      void observed.push(observedCaller.clientInstanceId),
+  });
+  await observing.get(caller, owner());
+  await observing.get({ ...caller, clientInstanceId: 'renderer-2' }, owner());
+  expect(
+    core
+      .callsOf('core.client.lease.acquire')
+      .map(({ params }) => params.clientInstanceId),
+  ).toEqual(observed);
+  expect(observed).toEqual(['renderer-1', 'renderer-2']);
+  await observing.dispose();
+});

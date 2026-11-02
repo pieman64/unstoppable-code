@@ -33,7 +33,7 @@ export function nodeExecutableProbe(
  * separator. On POSIX, the name. Joined literally, as libuv and execvp do:
  * normalizing `..` could pass a different file.
  */
-function candidatesIn(
+export function candidatesIn(
   os: PlatformOperatingSystem,
   directory: string,
   name: string,

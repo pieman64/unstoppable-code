@@ -1,3 +1,4 @@
+import { noteChatCreationOutcomeInSession } from './created-in-session';
 import type { ChatCommandDisposition } from './revisioned-commands';
 
 export interface PendingTabCreationDetails {
@@ -22,6 +23,15 @@ export function registerPendingTabCreation(
   creation: Promise<ChatCommandDisposition>,
   getRevision: () => number | undefined = () => undefined,
 ): void {
+  noteChatCreationOutcomeInSession({
+    projectId,
+    worktreeId,
+    chatId,
+    confirmation: creation.then(
+      (disposition) => disposition === 'accepted',
+      () => false,
+    ),
+  });
   const key = pendingTabCreationKey(projectId, worktreeId, chatId);
   const details = { promise: creation, getRevision };
   pendingTabCreations.set(key, details);

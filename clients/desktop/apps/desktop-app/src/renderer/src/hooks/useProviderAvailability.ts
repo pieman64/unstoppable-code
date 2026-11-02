@@ -32,8 +32,24 @@ export interface ProviderModelAvailability {
   creditsEligible: boolean;
   /** True while the underlying auth/credits reads are still resolving. */
   loading: boolean;
+  /**
+   * The provider's own auth probe is still loading or failed, so a negative
+   * `nativeAuth` is not a confirmed sign-out. Unlike `loading`, a credits
+   * refresh never sets it (CAN-5349). Omitted means fall back to `loading`.
+   */
+  nativeAuthInconclusive?: boolean;
   /** True only while AI Credits eligibility is still resolving. */
   creditsLoading?: boolean;
+  /**
+   * The credits read failed or its cached answer is stale during refresh.
+   * Selection stays optimistic; a picker cue treats this as unknown (CAN-5213).
+   */
+  creditsInconclusive?: boolean;
+  /**
+   * The free daily credits preference from the same read; `undefined` is
+   * unknown. Only an explicit `false` may offer turning them on.
+   */
+  dailyCreditsEnabled?: boolean;
 }
 
 export type ProviderAvailability = Record<
@@ -70,16 +86,21 @@ export function useProviderAvailability(
       authLoading: boolean,
       probeFailed: boolean,
     ): ProviderModelAvailability => {
-      // A failed auth probe is inconclusive, not a confirmed logout — treat it
-      // as `loading` so the billing toggle hides (via the HIDDEN-on-loading path
-      // in resolveChatBillingFramework) instead of asserting `nativeAuth: false`
-      // and locking the user out of their subscription.
-      const loading = authLoading || probeFailed || credits.loading;
+      // A failed auth probe is inconclusive, not a confirmed logout. Keep
+      // model rows optimistic; the billing resolver retains a native choice
+      // while the next probe can settle.
+      const nativeAuthInconclusive = authLoading || probeFailed;
+      const loading = nativeAuthInconclusive || credits.loading;
       return {
         nativeAuth: authenticated,
         creditsEligible,
         loading,
+        nativeAuthInconclusive,
         creditsLoading: credits.loading,
+        creditsInconclusive: credits.inconclusive || credits.stale === true,
+        ...(credits.dailyDripEnabled === undefined
+          ? {}
+          : { dailyCreditsEnabled: credits.dailyDripEnabled }),
         selectable: authenticated || creditsEligible || loading,
       };
     };
@@ -104,12 +125,16 @@ export function useProviderAvailability(
         selectable: true,
       },
       claude: gated(
-        claudeAuth?.authenticated === true || claudeProxyReady,
+        claudeAuth?.authenticated === true ||
+          claudeAuth?.userSuppliedCredential === true ||
+          claudeProxyReady,
         claudeAuth === null,
         claudeAuth?.probeFailed === true,
       ),
       codex: gated(
-        codexAuth?.authenticated === true || codexProxyReady,
+        codexAuth?.authenticated === true ||
+          codexAuth?.userSuppliedCredential === true ||
+          codexProxyReady,
         codexAuth === null,
         codexAuth?.probeFailed === true,
       ),
@@ -133,5 +158,8 @@ export function useProviderAvailability(
     codexProxyReady,
     credits.eligible,
     credits.loading,
+    credits.inconclusive,
+    credits.stale,
+    credits.dailyDripEnabled,
   ]);
 }

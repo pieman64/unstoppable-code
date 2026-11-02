@@ -180,6 +180,93 @@ describe('EnvironmentVariableEditor', () => {
     container.remove();
   });
 
+  it('switches views with the shared Settings segmented tabs and draws its buttons and fields from the shared kit', () => {
+    const onUiModeChange = jest.fn();
+    const { container, root } = render(
+      <EnvironmentVariableEditor
+        variables={[{ key: 'FOO', value: 'bar' }]}
+        uiMode="key-value"
+        encryptionAvailable={true}
+        onVariablesChange={(): void => {}}
+        onUiModeChange={onUiModeChange}
+      />,
+    );
+
+    const tabs = container.querySelector<HTMLElement>(
+      '[data-testid="environment-editor-mode"]',
+    );
+    expect(tabs).toBeInstanceOf(HTMLElement);
+    expect(tabs?.getAttribute('role')).toBe('tablist');
+    // The shared track: the sunk well at the 208px control width, capsule.
+    expect(tabs?.className).toContain('bg-depth');
+    expect(tabs?.className).toContain('min-w-52');
+    expect(tabs?.className).toContain('rounded-full');
+    const keyValue = container.querySelector<HTMLButtonElement>(
+      '[data-testid="environment-editor-mode-key-value"]',
+    );
+    const bulk = container.querySelector<HTMLButtonElement>(
+      '[data-testid="environment-editor-mode-bulk"]',
+    );
+    expect(keyValue?.getAttribute('role')).toBe('tab');
+    expect(keyValue?.getAttribute('aria-selected')).toBe('true');
+    expect(bulk?.getAttribute('aria-selected')).toBe('false');
+    // Neutral selection: no accent ink or fill on either tab.
+    expect(tabs?.innerHTML).not.toMatch(/fg-accent|bg-accent/);
+
+    act(() => bulk?.click());
+    expect(onUiModeChange).toHaveBeenCalledWith('bulk');
+
+    // Add variable and Remove are the shared compact secondary capsule.
+    for (const testId of [
+      'environment-editor-add-row',
+      'environment-editor-remove-',
+    ]) {
+      const button = container.querySelector<HTMLButtonElement>(
+        `button[data-testid^="${testId}"]`,
+      );
+      expect(button).toBeInstanceOf(HTMLButtonElement);
+      expect(button?.className).toContain('h-7');
+      expect(button?.className).toContain('rounded-full');
+      expect(button?.className).not.toMatch(/hover:bg-(accent|destructive)/);
+    }
+    // The key field is the shared Settings text field.
+    expect(
+      container.querySelector<HTMLInputElement>(
+        'input[data-testid^="environment-editor-key-"]',
+      )?.className,
+    ).toContain('shadow-field');
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('keeps the other tab visible but unavailable while the current view has an error', () => {
+    const onUiModeChange = jest.fn();
+    const { container, root } = render(
+      <EnvironmentVariableEditor
+        variables={[{ key: 'lower case', value: 'bar' }]}
+        uiMode="key-value"
+        encryptionAvailable={true}
+        onVariablesChange={(): void => {}}
+        onUiModeChange={onUiModeChange}
+      />,
+    );
+    const bulk = container.querySelector<HTMLButtonElement>(
+      '[data-testid="environment-editor-mode-bulk"]',
+    );
+    expect(bulk).toBeInstanceOf(HTMLButtonElement);
+    expect(bulk?.getAttribute('aria-disabled')).toBe('true');
+    act(() => bulk?.click());
+    expect(onUiModeChange).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it.each(['key-value', 'bulk'] as const)(
     'records the %s editor in session replay (the recorder masks input values)',
     (uiMode) => {

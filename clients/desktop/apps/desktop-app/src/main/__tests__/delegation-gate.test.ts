@@ -122,22 +122,26 @@ it('preserves explicit Off even when the retired variable is set', () => {
   ).toBe(false);
 });
 
-it('enables managed delegation on macOS and Windows only', () => {
-  Object.defineProperty(process, 'platform', {
-    configurable: true,
-    value: 'win32',
-  });
-  expect(
-    managedDelegationEnabled({
-      ...options,
-      managedDelegationSurface: 'worktree-chat',
-      managedDelegationMode: 'explicit-only',
-    }),
-  ).toBe(true);
+it('enables managed delegation on every supported host, including Linux', () => {
+  for (const value of ['darwin', 'win32', 'linux'] as const) {
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value,
+    });
+    expect(
+      managedDelegationEnabled({
+        ...options,
+        managedDelegationSurface: 'worktree-chat',
+        managedDelegationMode: 'explicit-only',
+      }),
+    ).toBe(true);
+  }
+});
 
+it('keeps managed delegation off on an unsupported host', () => {
   Object.defineProperty(process, 'platform', {
     configurable: true,
-    value: 'linux',
+    value: 'freebsd',
   });
   expect(
     managedDelegationEnabled({

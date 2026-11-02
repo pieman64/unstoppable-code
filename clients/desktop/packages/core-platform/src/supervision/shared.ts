@@ -76,3 +76,22 @@ export function windowsExecutable(root: string, name: string): string {
     throw new Error('SystemRoot is not absolute');
   return path.win32.join(root, 'System32', name);
 }
+
+/**
+ * libuv v1.51 `src/win/process.c` `required_vars`: a Windows child whose
+ * block lacks one of these gets the host's value, so callers that hand over
+ * a complete environment add each missing one empty.
+ */
+export const LIBUV_REQUIRED_KEYS = [
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'LOGONSERVER',
+  'PATH',
+  'SYSTEMDRIVE',
+  'SYSTEMROOT',
+  'TEMP',
+  'USERDOMAIN',
+  'USERNAME',
+  'USERPROFILE',
+  'WINDIR',
+] as const;

@@ -13,12 +13,16 @@ jest.mock('../lib/workspace-registry', () => ({
 jest.mock('../lib/git', () => ({
   fetchOrigin: jest.fn(() => Promise.resolve()),
   getChangedFilesList: jest.fn(),
-  getCommittedFilesList: jest.fn(),
   getFileDiffUncommitted: jest.fn(),
   getFileDiffCommitted: jest.fn(),
   getFileDiffCombined: jest.fn(),
   getFileDiffBetweenTrees: jest.fn(),
   revertUncommittedFile: jest.fn(),
+}));
+
+jest.mock('../canopy-runtime/worker-git-dispatch', () => ({
+  listUncommittedChangedFiles: jest.fn(),
+  listCommittedChangedFiles: jest.fn(),
 }));
 
 jest.mock('../lib/worktree-base-branches', () => ({
@@ -38,23 +42,60 @@ jest.mock('../lib/workspace-persistence', () => ({
 }));
 
 const mockGetLiveBackgroundTaskSnapshot = jest.fn();
+const mockGetLiveBackgroundTasksForChat = jest.fn();
+const mockLiveBackgroundTaskListeners = new Set<(sessionKey: string) => void>();
+const mockUnsubscribeLiveBackgroundTasks = jest.fn();
+const mockSubscribeLiveBackgroundTasks = jest.fn(
+  (listener: (sessionKey: string) => void) => {
+    mockLiveBackgroundTaskListeners.add(listener);
+    return (): void => {
+      mockLiveBackgroundTaskListeners.delete(listener);
+      mockUnsubscribeLiveBackgroundTasks();
+    };
+  },
+);
 jest.mock('../agents/session-manager', () => ({
   stopTaskForSession: jest.fn(),
-  getLiveBackgroundTaskSnapshot: mockGetLiveBackgroundTaskSnapshot,
+  get getLiveBackgroundTaskSnapshot(): typeof mockGetLiveBackgroundTaskSnapshot {
+    return mockGetLiveBackgroundTaskSnapshot;
+  },
+  get getLiveBackgroundTasksForChat(): typeof mockGetLiveBackgroundTasksForChat {
+    return mockGetLiveBackgroundTasksForChat;
+  },
+  get subscribeLiveBackgroundTasks(): typeof mockSubscribeLiveBackgroundTasks {
+    return mockSubscribeLiveBackgroundTasks;
+  },
   isSessionUnavailableForTaskStopError: (error: unknown): boolean =>
     error instanceof Error &&
     error.name === 'SessionUnavailableForTaskStopError',
 }));
 
+const mockSendToAllWindows = jest.fn();
+jest.mock('../lib/window-send', () => ({
+  get sendToAllWindows(): typeof mockSendToAllWindows {
+    return mockSendToAllWindows;
+  },
+}));
+
+const mockLogMainProcessError = jest.fn();
+jest.mock('../lib/main-process-logging', () => ({
+  get logMainProcessError(): typeof mockLogMainProcessError {
+    return mockLogMainProcessError;
+  },
+}));
+
 const mockRecordBackgroundProcessChatEvent = jest.fn();
 jest.mock('../portal/background-process-tracker', () => ({
-  recordBackgroundProcessChatEvent: mockRecordBackgroundProcessChatEvent,
+  get recordBackgroundProcessChatEvent(): typeof mockRecordBackgroundProcessChatEvent {
+    return mockRecordBackgroundProcessChatEvent;
+  },
 }));
 
 const mockEmitSessionEndedBackgroundTaskNotification = jest.fn();
 jest.mock('../lib/session-ended-background-tasks', () => ({
-  emitSessionEndedBackgroundTaskNotification:
-    mockEmitSessionEndedBackgroundTaskNotification,
+  get emitSessionEndedBackgroundTaskNotification(): typeof mockEmitSessionEndedBackgroundTaskNotification {
+    return mockEmitSessionEndedBackgroundTaskNotification;
+  },
 }));
 
 import type { BrowserWindow } from 'electron';
@@ -66,10 +107,15 @@ import { registerIpcHandler } from '../ipc/register';
 import { registerActivityPanelHandlers } from '../ipc/activity-panel';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { isMultiRepoWorkspace } from '../lib/workspace-registry';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import {
+  listCommittedChangedFiles,
+  listUncommittedChangedFiles,
+} from '../canopy-runtime/worker-git-dispatch';
+import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
 import {
   fetchOrigin,
   getChangedFilesList,
-  getCommittedFilesList,
   getFileDiffCombined,
   getFileDiffCommitted,
   revertUncommittedFile,
@@ -85,7 +131,22 @@ const mockedResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
 const mockedIsMultiRepoWorkspace = jest.mocked(isMultiRepoWorkspace);
 const mockedFetchOrigin = jest.mocked(fetchOrigin);
 const mockedGetChangedFilesList = jest.mocked(getChangedFilesList);
-const mockedGetCommittedFilesList = jest.mocked(getCommittedFilesList);
+const mockedListUncommittedChangedFiles = jest.mocked(
+  listUncommittedChangedFiles,
+);
+const mockedListCommittedChangedFiles = jest.mocked(listCommittedChangedFiles);
+const dispatcher: WorkerGitDispatcher = { query: jest.fn() };
+const caller: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'test',
+  authorityId: 'local-desktop',
+  interfaceKind: 'desktop',
+  grants: [],
+};
+const runtime = {
+  dispatcher,
+  resolveCaller: (): CanopyCallerDescriptor => caller,
+};
 const mockedGetFileDiffCommitted = jest.mocked(getFileDiffCommitted);
 const mockedGetFileDiffCombined = jest.mocked(getFileDiffCombined);
 const mockedRevertUncommittedFile = jest.mocked(revertUncommittedFile);
@@ -118,13 +179,20 @@ function getHandler<TArgs extends unknown[], TResult>(
     );
 }
 
+function notifyLiveBackgroundTaskListeners(sessionKey: string): void {
+  for (const listener of Array.from(mockLiveBackgroundTaskListeners)) {
+    listener(sessionKey);
+  }
+}
+
 describe('activity panel handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     const getWindow = (): BrowserWindow | null => null;
-    registerActivityPanelHandlers(getWindow);
+    registerActivityPanelHandlers(getWindow, runtime);
     mockedGetChangedFilesList.mockResolvedValue([]);
-    mockedGetCommittedFilesList.mockResolvedValue([]);
+    mockedListUncommittedChangedFiles.mockResolvedValue([]);
+    mockedListCommittedChangedFiles.mockResolvedValue([]);
     mockedResolveEffectiveBaseBranchForRepo.mockResolvedValue({
       branch: 'develop',
       existsLocally: true,
@@ -161,8 +229,21 @@ describe('activity panel handlers', () => {
       ttlMs: 300_000,
       backgroundPriority: true,
     });
-    expect(mockedGetCommittedFilesList).toHaveBeenCalledWith(
-      '/repo/worktree',
+    const target = {
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      repoId: '__workspace_root__',
+      repoPath: '/repo/worktree',
+    };
+    expect(mockedListUncommittedChangedFiles).toHaveBeenCalledWith(
+      dispatcher,
+      caller,
+      target,
+    );
+    expect(mockedListCommittedChangedFiles).toHaveBeenCalledWith(
+      dispatcher,
+      caller,
+      target,
       'develop',
     );
     // The remote default branch is still revalidated, without being awaited.
@@ -199,8 +280,8 @@ describe('activity panel handlers', () => {
     ).resolves.toEqual({ uncommitted: [], committed: [] });
     expect(mockedResolveWorktreeCwd).not.toHaveBeenCalled();
     expect(mockedFetchOrigin).not.toHaveBeenCalled();
-    expect(mockedGetChangedFilesList).not.toHaveBeenCalled();
-    expect(mockedGetCommittedFilesList).not.toHaveBeenCalled();
+    expect(mockedListUncommittedChangedFiles).not.toHaveBeenCalled();
+    expect(mockedListCommittedChangedFiles).not.toHaveBeenCalled();
   });
 
   it('uses per-repo tracked base branches for multi-repo changed files', async () => {
@@ -245,14 +326,28 @@ describe('activity panel handlers', () => {
       worktreeId: 'wt-1',
     });
 
-    expect(mockedGetCommittedFilesList).toHaveBeenNthCalledWith(
+    expect(mockedListCommittedChangedFiles).toHaveBeenNthCalledWith(
       1,
-      '/workspace/wt/repos/repo-a',
+      dispatcher,
+      caller,
+      {
+        projectId: 'workspace-1',
+        worktreeId: 'wt-1',
+        repoId: 'repo-a',
+        repoPath: '/workspace/wt/repos/repo-a',
+      },
       'develop',
     );
-    expect(mockedGetCommittedFilesList).toHaveBeenNthCalledWith(
+    expect(mockedListCommittedChangedFiles).toHaveBeenNthCalledWith(
       2,
-      '/workspace/wt/repos/repo-b',
+      dispatcher,
+      caller,
+      {
+        projectId: 'workspace-1',
+        worktreeId: 'wt-1',
+        repoId: 'repo-b',
+        repoPath: '/workspace/wt/repos/repo-b',
+      },
       'release/1.2',
     );
     expect(mockedFetchOrigin).toHaveBeenCalledWith(
@@ -284,7 +379,7 @@ describe('activity panel handlers', () => {
         ]);
         // `git fetch` waiting on a credential helper that never answers.
         mockedFetchOrigin.mockReturnValue(new Promise<void>(() => {}));
-        mockedGetChangedFilesList.mockResolvedValue([
+        mockedListUncommittedChangedFiles.mockResolvedValue([
           {
             path: 'src/local.ts',
             status: 'modified',
@@ -660,10 +755,106 @@ describe('activity panel handlers', () => {
 describe('activity live background task handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSendToAllWindows.mockReset();
     const getWindow = (): BrowserWindow | null => null;
-    registerActivityPanelHandlers(getWindow);
+    registerActivityPanelHandlers(getWindow, runtime);
     mockGetLiveBackgroundTaskSnapshot.mockReturnValue({});
+    mockGetLiveBackgroundTasksForChat.mockReturnValue(undefined);
     mockedStopTaskForSession.mockResolvedValue('stopped');
+  });
+
+  it('coalesces same-chat updates and reads the live task set at flush time', async () => {
+    mockGetLiveBackgroundTasksForChat.mockReturnValue([
+      { taskId: 'stale-task' },
+    ]);
+
+    notifyLiveBackgroundTaskListeners('project-1/wt-1/chat-1');
+    notifyLiveBackgroundTaskListeners('project-1/wt-1/chat-1');
+
+    const tasksAtFlush = [{ taskId: 'current-task' }];
+    mockGetLiveBackgroundTasksForChat.mockReturnValue(tasksAtFlush);
+    await Promise.resolve();
+
+    expect(mockGetLiveBackgroundTasksForChat).toHaveBeenCalledTimes(1);
+    expect(mockGetLiveBackgroundTasksForChat).toHaveBeenCalledWith(
+      'project-1',
+      'wt-1',
+      'chat-1',
+    );
+    expect(mockSendToAllWindows).toHaveBeenCalledTimes(1);
+    expect(mockSendToAllWindows).toHaveBeenCalledWith(
+      IPC_CHANNELS.activityLiveBgTasksChanged,
+      {
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+        sessionActive: true,
+        liveTasks: tasksAtFlush,
+      },
+    );
+  });
+
+  it('broadcasts an inactive empty state when the chat has no live session', async () => {
+    notifyLiveBackgroundTaskListeners('project-1/wt-1/chat-1');
+    await Promise.resolve();
+
+    expect(mockSendToAllWindows).toHaveBeenCalledWith(
+      IPC_CHANNELS.activityLiveBgTasksChanged,
+      {
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+        sessionActive: false,
+        liveTasks: [],
+      },
+    );
+  });
+
+  it('ignores keys that do not parse as a chat session key', async () => {
+    notifyLiveBackgroundTaskListeners('not-a-chat-session-key');
+    await Promise.resolve();
+
+    expect(mockGetLiveBackgroundTasksForChat).not.toHaveBeenCalled();
+    expect(mockSendToAllWindows).not.toHaveBeenCalled();
+  });
+
+  it('replaces its live task subscription when handlers are registered again', async () => {
+    const getWindow = (): BrowserWindow | null => null;
+    mockUnsubscribeLiveBackgroundTasks.mockClear();
+    registerActivityPanelHandlers(getWindow, runtime);
+
+    expect(mockUnsubscribeLiveBackgroundTasks).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeLiveBackgroundTasks).toHaveBeenCalledTimes(2);
+    expect(mockLiveBackgroundTaskListeners.size).toBe(1);
+
+    notifyLiveBackgroundTaskListeners('project-1/wt-1/chat-1');
+    await Promise.resolve();
+
+    expect(mockSendToAllWindows).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues broadcasting after a renderer send fails for another chat', async () => {
+    mockSendToAllWindows.mockImplementationOnce(() => {
+      throw new Error('window send failed');
+    });
+
+    notifyLiveBackgroundTaskListeners('project-1/wt-1/chat-1');
+    notifyLiveBackgroundTaskListeners('project-1/wt-1/chat-2');
+    await Promise.resolve();
+
+    expect(mockSendToAllWindows).toHaveBeenCalledTimes(2);
+    expect(mockSendToAllWindows).toHaveBeenNthCalledWith(
+      2,
+      IPC_CHANNELS.activityLiveBgTasksChanged,
+      {
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        chatId: 'chat-2',
+        sessionActive: false,
+        liveTasks: [],
+      },
+    );
+    expect(mockLogMainProcessError).toHaveBeenCalledTimes(1);
   });
 
   it('returns the main-process live background task snapshot', async () => {
@@ -706,7 +897,7 @@ describe('activity live background task handlers', () => {
     expect(mockGetLiveBackgroundTaskSnapshot).not.toHaveBeenCalled();
   });
 
-  it('records a stopped background process when the provider stops the task', async () => {
+  it('waits for the provider notification when the provider stops the task', async () => {
     const handler = getHandler<
       [
         {
@@ -728,7 +919,7 @@ describe('activity live background task handlers', () => {
       }),
     ).resolves.toBe('stopped');
 
-    expect(mockRecordBackgroundProcessChatEvent).toHaveBeenCalledTimes(1);
+    expect(mockRecordBackgroundProcessChatEvent).not.toHaveBeenCalled();
     expect(
       mockEmitSessionEndedBackgroundTaskNotification,
     ).not.toHaveBeenCalled();

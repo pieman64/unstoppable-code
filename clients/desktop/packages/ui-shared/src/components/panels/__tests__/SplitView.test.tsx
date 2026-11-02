@@ -34,7 +34,7 @@ class ResizeObserverStub {
     const entry = {
       contentRect: { width, height },
     } as unknown as ResizeObserverEntry;
-    this.callback([entry], this as unknown as ResizeObserver);
+    this.callback([entry], this);
   }
 }
 

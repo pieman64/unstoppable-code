@@ -7,6 +7,13 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy } from './launchCanopy.mjs';
 import { launchCanopyWithLabsPagesOffered } from './helpers/labsPages.mjs';
 import {
+  dragSidebarReorderRow,
+  installSidebarReorderBarriers,
+  releaseSidebarReorderBarriers,
+  seedSidebarReorderWorkspace,
+  sidebarReorderRows,
+} from './sidebarReorderFixture.mjs';
+import {
   ENTRY_ID,
   WORKSPACE_ID,
   seedDeliveryCoworkWorkspace,
@@ -23,6 +30,407 @@ function defaultSidebarGroupName(otherGroups = []) {
     if (!usedNames.has(candidate.toLocaleLowerCase())) return candidate;
   }
 }
+
+function primaryReorderRows(window) {
+  return sidebarReorderRows(window).and(
+    window.locator('[data-standalone-chat-id]'),
+  );
+}
+
+for (const active of [false, true])
+  for (const held of [false, true]) {
+    test(`Cowork reorder ${active ? 'active' : 'inactive'} ${held ? 'paints before held save and refresh' : 'persists after renderer reload'}`, async () => {
+      test.setTimeout(120_000);
+      const userDataDir = mkdtempSync(
+        path.join(os.tmpdir(), 'canopy-sidebar-order-'),
+      );
+      const { workspaceId, ids } = seedSidebarReorderWorkspace(userDataDir);
+      let { electronApp } = await launchCanopyWithLabsPagesOffered({
+        userDataDir,
+      });
+      try {
+        const window = await electronApp.firstWindow();
+        const app = new CanopyAppDriver(window);
+        await app.waitForShell();
+        await expandCoworkWorkspace(window, workspaceId);
+        await expect(primaryReorderRows(window)).toHaveCount(11);
+        if (active) {
+          await window
+            .getByTestId(`sidebar-work-entry-${ids[0]}`)
+            .locator('p')
+            .first()
+            .click();
+          await expect(
+            window.getByTestId(`sidebar-work-entry-${ids[0]}`),
+          ).toHaveAttribute('data-sidebar-selected-item', '');
+        }
+        let expected = [
+          ids[0],
+          ids[4],
+          ids[1],
+          ids[2],
+          ids[3],
+          ...ids.slice(5),
+        ].map((id) => `sidebar-work-entry-${id}`);
+        if (held) await installSidebarReorderBarriers(electronApp);
+        await dragSidebarReorderRow(window, ids[4], ids[1]);
+        if (held) {
+          await expect
+            .poll(
+              () =>
+                primaryReorderRows(window).evaluateAll((rows) =>
+                  rows.map((row) => row.dataset.testid),
+                ),
+              { timeout: 1000 },
+            )
+            .toEqual(expected);
+          expect(
+            await electronApp.evaluate(
+              () => globalThis.__sidebarReorderBarriers.saves,
+            ),
+          ).toBe(1);
+          await dragSidebarReorderRow(window, ids[2], ids[4]);
+          expected = [
+            ids[0],
+            ids[2],
+            ids[4],
+            ids[1],
+            ids[3],
+            ...ids.slice(5),
+          ].map((id) => `sidebar-work-entry-${id}`);
+          await expect
+            .poll(
+              () =>
+                primaryReorderRows(window).evaluateAll((rows) =>
+                  rows.map((row) => row.dataset.testid),
+                ),
+              { timeout: 1000 },
+            )
+            .toEqual(expected);
+          await electronApp.evaluate(() =>
+            globalThis.__sidebarReorderBarriers.releaseSave(),
+          );
+          await expect
+            .poll(() =>
+              electronApp.evaluate(
+                () => globalThis.__sidebarReorderBarriers.saves,
+              ),
+            )
+            .toBe(2);
+          await releaseSidebarReorderBarriers(electronApp);
+        }
+        await expect
+          .poll(async () =>
+            window.evaluate(
+              async (projectId) =>
+                (await window.api.workEntries.list({ projectId })).entries.map(
+                  (entry) => `sidebar-work-entry-${entry.id}`,
+                ),
+              workspaceId,
+            ),
+          )
+          .toEqual(expected);
+        await window.reload();
+        await app.waitForShell();
+        await expect
+          .poll(() =>
+            primaryReorderRows(window).evaluateAll((rows) =>
+              rows.map((row) => row.dataset.testid),
+            ),
+          )
+          .toEqual(expected);
+        await expect(
+          window.getByTestId('sidebar-item-group-drag-overlay'),
+        ).toHaveCount(0);
+        expect(
+          new Set(
+            await primaryReorderRows(window).evaluateAll((rows) =>
+              rows.map((row) => row.dataset.testid),
+            ),
+          ).size,
+        ).toBe(11);
+        await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+        ({ electronApp } = await launchCanopyWithLabsPagesOffered({
+          userDataDir,
+        }));
+        const reopened = await electronApp.firstWindow();
+        await new CanopyAppDriver(reopened).waitForShell();
+        await expandCoworkWorkspace(reopened, workspaceId);
+        await expect
+          .poll(() =>
+            primaryReorderRows(reopened).evaluateAll((rows) =>
+              rows.map((row) => row.dataset.testid),
+            ),
+          )
+          .toEqual(expected);
+      } finally {
+        if (held)
+          await releaseSidebarReorderBarriers(electronApp).catch(
+            () => undefined,
+          );
+        await closeCanopy(electronApp, userDataDir);
+      }
+    });
+  }
+
+for (const active of [false, true]) {
+  test(`a pre-drop entry refresh cannot undo reconciled ${active ? 'active' : 'inactive'} Cowork order`, async () => {
+    test.setTimeout(120000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-sidebar-stale-'),
+    );
+    const { workspaceId, ids } = seedSidebarReorderWorkspace(userDataDir);
+    const { electronApp } = await launchCanopyWithLabsPagesOffered({
+      userDataDir,
+    });
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell();
+      await expandCoworkWorkspace(window, workspaceId);
+      await expect(primaryReorderRows(window)).toHaveCount(11);
+      if (active)
+        await window
+          .getByTestId(`sidebar-work-entry-${ids[0]}`)
+          .locator('p')
+          .first()
+          .click();
+      await electronApp.evaluate(({ ipcMain }, projectId) => {
+        const original = ipcMain._invokeHandlers.get('work-entries:list');
+        const state = {
+          held: false,
+          freshReturned: false,
+          released: false,
+          release: () => {},
+          restore: () => {},
+        };
+        const barrier = new Promise((resolve) => {
+          state.release = resolve;
+        });
+        ipcMain.removeHandler('work-entries:list');
+        ipcMain.handle('work-entries:list', async (...args) => {
+          const response = await original(...args);
+          if (args[1]?.projectId === projectId) {
+            if (!state.held) {
+              state.held = true;
+              await barrier;
+              state.released = true;
+            } else state.freshReturned = true;
+          }
+          return response;
+        });
+        state.restore = () => {
+          state.release();
+          ipcMain.removeHandler('work-entries:list');
+          ipcMain.handle('work-entries:list', original);
+        };
+        globalThis.__sidebarStaleRead = state;
+      }, workspaceId);
+      // Rename is a real UI action whose ordinary entry-list refresh starts
+      // before the drop. Its response contains the old order and is held back.
+      await openWorkEntryMenu(window, ids[0]);
+      await window
+        .getByRole('menuitem', { name: 'Rename', exact: true })
+        .click();
+      const input = window.getByTestId(
+        `sidebar-work-entry-${ids[0]}-rename-input`,
+      );
+      await input.fill('Renamed before drop');
+      await input.press('Enter');
+      await expect
+        .poll(() =>
+          electronApp.evaluate(() => globalThis.__sidebarStaleRead.held),
+        )
+        .toBe(true);
+      await dragSidebarReorderRow(window, ids[4], ids[1]);
+      const expected = [
+        ids[0],
+        ids[4],
+        ids[1],
+        ids[2],
+        ids[3],
+        ...ids.slice(5),
+      ].map((id) => `sidebar-work-entry-${id}`);
+      const order = () =>
+        primaryReorderRows(window).evaluateAll((rows) =>
+          rows.map((row) => row.dataset.testid),
+        );
+      await expect.poll(order).toEqual(expected);
+      await expect
+        .poll(() =>
+          electronApp.evaluate(
+            () => globalThis.__sidebarStaleRead.freshReturned,
+          ),
+        )
+        .toBe(true);
+      const paint = () =>
+        window.evaluate(
+          () =>
+            new Promise((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            ),
+        );
+      await paint();
+      await electronApp.evaluate(() => globalThis.__sidebarStaleRead.release());
+      await expect
+        .poll(() =>
+          electronApp.evaluate(() => globalThis.__sidebarStaleRead.released),
+        )
+        .toBe(true);
+      await paint();
+      expect(await order()).toEqual(expected);
+      await expect(
+        window.getByTestId(`sidebar-work-entry-${ids[0]}`),
+      ).toContainText('Renamed before drop');
+    } finally {
+      await electronApp
+        .evaluate(() => globalThis.__sidebarStaleRead?.restore())
+        .catch(() => undefined);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
+
+test('an older-first inactive refresh preserves the newer renamed title and subsequent pointer order', async () => {
+  test.setTimeout(120000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-sidebar-read-order-'),
+  );
+  const { workspaceId, ids } = seedSidebarReorderWorkspace(userDataDir);
+  const { electronApp } = await launchCanopyWithLabsPagesOffered({
+    userDataDir,
+  });
+  try {
+    const window = await electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell();
+    await expandCoworkWorkspace(window, workspaceId);
+    await expect(primaryReorderRows(window)).toHaveCount(11);
+    await electronApp.evaluate(({ ipcMain }, projectId) => {
+      const originals = new Map(
+        ['work-entries:list', 'work-entries:update'].map((channel) => [
+          channel,
+          ipcMain._invokeHandlers.get(channel),
+        ]),
+      );
+      const state = {
+        reads: 0,
+        updates: 0,
+        releasedOld: false,
+        releasedNew: false,
+        releaseOld: () => {},
+        releaseNew: () => {},
+        restore: () => {},
+      };
+      const oldGate = new Promise((resolve) => {
+        state.releaseOld = resolve;
+      });
+      const newGate = new Promise((resolve) => {
+        state.releaseNew = resolve;
+      });
+      for (const [channel, original] of originals) {
+        ipcMain.removeHandler(channel);
+        ipcMain.handle(channel, async (...args) => {
+          if (channel === 'work-entries:update') {
+            const response = await original(...args);
+            state.updates += 1;
+            return response;
+          }
+          if (args[1]?.projectId !== projectId) return original(...args);
+          state.reads += 1;
+          if (state.reads === 1) {
+            const response = await original(...args);
+            await oldGate;
+            state.releasedOld = true;
+            return response;
+          }
+          await newGate;
+          const response = await original(...args);
+          state.releasedNew = true;
+          return response;
+        });
+      }
+      state.restore = () => {
+        state.releaseOld();
+        state.releaseNew();
+        for (const [channel, original] of originals) {
+          ipcMain.removeHandler(channel);
+          ipcMain.handle(channel, original);
+        }
+      };
+      globalThis.__sidebarOrderedReads = state;
+    }, workspaceId);
+    const rename = async (id, title) => {
+      await openWorkEntryMenu(window, id);
+      await window
+        .getByRole('menuitem', { name: 'Rename', exact: true })
+        .click();
+      const input = window.getByTestId(`sidebar-work-entry-${id}-rename-input`);
+      await input.fill(title);
+      await input.press('Enter');
+    };
+    await rename(ids[0], 'First rename');
+    await expect
+      .poll(() =>
+        electronApp.evaluate(() => globalThis.__sidebarOrderedReads.reads),
+      )
+      .toBeGreaterThan(0);
+    await rename(ids[1], 'Latest rename');
+    await expect
+      .poll(() =>
+        electronApp.evaluate(() => globalThis.__sidebarOrderedReads.updates),
+      )
+      .toBe(2);
+    await window.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    await electronApp.evaluate(() =>
+      globalThis.__sidebarOrderedReads.releaseOld(),
+    );
+    await expect
+      .poll(() =>
+        electronApp.evaluate(() => globalThis.__sidebarOrderedReads.reads),
+      )
+      .toBeGreaterThan(1);
+    await electronApp.evaluate(() =>
+      globalThis.__sidebarOrderedReads.releaseNew(),
+    );
+    await expect
+      .poll(() =>
+        electronApp.evaluate(
+          () => globalThis.__sidebarOrderedReads.releasedNew,
+        ),
+      )
+      .toBe(true);
+    await window.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    await expect(
+      window.getByTestId(`sidebar-work-entry-${ids[1]}`),
+    ).toContainText('Latest rename');
+    await dragSidebarReorderRow(window, ids[4], ids[1]);
+    await expect
+      .poll(() =>
+        primaryReorderRows(window).evaluateAll((rows) =>
+          rows.map((row) => row.dataset.testid),
+        ),
+      )
+      .toEqual(
+        [ids[0], ids[4], ids[1], ids[2], ids[3], ...ids.slice(5)].map(
+          (id) => `sidebar-work-entry-${id}`,
+        ),
+      );
+  } finally {
+    await electronApp
+      .evaluate(() => globalThis.__sidebarOrderedReads?.restore())
+      .catch(() => undefined);
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
 
 test('creates a Cowork group through its row menu and keeps its selected chat when collapsed', async () => {
   test.setTimeout(120_000);
@@ -49,7 +457,9 @@ test('creates a Cowork group through its row menu and keeps its selected chat wh
     await expect(name).toBeVisible();
     await name.fill('Support work');
     await name.press('Enter');
-    await window.keyboard.press('Escape');
+    await expect(window.getByTestId('sidebar-item-group-editor')).toHaveCount(
+      0,
+    );
     const groups = await window.evaluate(
       (workspaceLocalId) =>
         window.api.sidebarItemGroups.list({ workspaceLocalId }),

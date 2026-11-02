@@ -2,7 +2,9 @@ import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type {
   ApprovalPromptDecision,
   ApprovalRequestEvent,
+  ChatTabsFile,
 } from '@canopy/desktop-shared/types';
+import { approvalCheckForClaudeTool } from '../agents/claude-approval-adapter';
 import type { WindowSendResult } from '../lib/window-send';
 import type { SendableBrowserWindow } from '../lib/window-send';
 
@@ -43,6 +45,8 @@ import {
   resolveApproval,
   resolveApprovalFromMain,
   rejectAllApprovalsForSession,
+  createPendingApproval,
+  cancelApproval,
 } from '../approvals/pending-approvals';
 import { EventEmitter } from 'node:events';
 
@@ -79,6 +83,101 @@ describe('requestApprovalFromRenderer', () => {
     attentionMark.mockClear();
     attentionClear.mockClear();
   });
+
+  it.each([
+    [
+      'Edit',
+      { old_string: 'before\r\n', new_string: 'after\n', replace_all: true },
+      {
+        kind: 'edit',
+        oldText: 'before\r\n',
+        newText: 'after\n',
+        replaceAll: true,
+      },
+    ],
+    [
+      'Write',
+      { content: 'x'.repeat(20_001) },
+      { kind: 'write', content: 'x'.repeat(20_000), truncated: true },
+    ],
+    [
+      'Edit',
+      {
+        old_string: 'x'.repeat(20_000) + 'old',
+        new_string: 'x'.repeat(20_000) + 'new',
+      },
+      {
+        kind: 'edit',
+        oldText: 'x'.repeat(20_000),
+        newText: 'x'.repeat(20_000),
+        truncated: true,
+      },
+    ],
+    ['Write', {}, undefined],
+  ])(
+    'preserves %s adapter details through delivery, pending snapshots and persisted-event serialization',
+    async (tool, input, change) => {
+      const normalized = approvalCheckForClaudeTool(
+        tool,
+        { file_path: '/repo/a', ...input },
+        '/repo',
+      );
+      const pending = requestApprovalFromRenderer({
+        sessionKey: 'file-preview',
+        event: {
+          ...baseEvent(),
+          details: normalized.details,
+          suggestedTarget: normalized.suggestedTarget,
+        },
+        getWindow: () => ownerWindow,
+      });
+      try {
+        const [, , payload] = sendDetailed.mock.calls[0];
+        expect(payload.details).toEqual({
+          kind: 'file-write',
+          path: '/repo/a',
+          displayPath: 'a',
+          ...(change ? { change } : {}),
+        });
+        const snapshot = pendingApprovalRequests(ownerWebContents);
+        expect(structuredClone(snapshot)).toEqual([payload]);
+        const legacy: ApprovalRequestEvent = {
+          ...baseEvent(),
+          requestId: 'legacy',
+          details: { kind: 'file-write', path: '/repo/legacy' },
+        };
+        const file: ChatTabsFile = {
+          version: 1,
+          tabs: [],
+          activeTabId: 'c',
+          pendingApprovals: [...snapshot, legacy].map((event) => ({
+            requestId: event.requestId,
+            chatId: event.chatId,
+            event,
+          })),
+        };
+        const restored: unknown = JSON.parse(JSON.stringify(file));
+        expect(restored).toEqual(file);
+        const decision: ApprovalPromptDecision = {
+          behavior: 'deny',
+          scope: 'once',
+        };
+        expect(
+          resolveApproval(payload.requestId, decision, ownerWebContents, {
+            projectId: 'p',
+            worktreeId: 'w',
+            chatId: 'c',
+          }),
+        ).toBe(true);
+        await expect(pending).resolves.toEqual(decision);
+        // Persisted display records alone never restore live approval authority.
+        expect(pendingApprovalRequests(ownerWebContents)).toEqual([]);
+      } finally {
+        rejectAllApprovalsForSession('file-preview', 'test_cleanup');
+        await pending.catch(() => undefined);
+      }
+    },
+  );
 
   it('resolves the promise with the decision payload when approvalRespond resolves the pending request', async () => {
     const promise = requestApprovalFromRenderer({
@@ -162,6 +261,34 @@ describe('requestApprovalFromRenderer', () => {
     ];
     expect(channel).toBe(IPC_CHANNELS.approvalCancelled);
     expect(typeof payload.requestId).toBe('string');
+  });
+
+  it('cancels one registered request and detaches its owner exactly once', async () => {
+    const onDetached = jest.fn();
+    const requestId = 'cancel-one-request';
+    const pending = createPendingApproval(
+      requestId,
+      's-cancel-one',
+      ownerWebContents,
+      { projectId: 'p', worktreeId: 'w', chatId: 'c' },
+      { ...baseEvent(), requestId },
+      onDetached,
+    );
+
+    try {
+      expect(cancelApproval(requestId, 'approval_request_resolved')).toBe(true);
+      expect(cancelApproval(requestId, 'approval_request_resolved')).toBe(
+        false,
+      );
+
+      await expect(pending).rejects.toThrow('approval_request_resolved');
+      expect(onDetached).toHaveBeenCalledTimes(1);
+      expect(pendingApprovalRequests(ownerWebContents)).toEqual([]);
+      expect(ownerWebContents.listenerCount('destroyed')).toBe(0);
+    } finally {
+      rejectAllApprovalsForSession('s-cancel-one', 'test_cleanup');
+      await pending.catch(() => undefined);
+    }
   });
 
   it('rejects and cleans up when the owning renderer is destroyed', async () => {

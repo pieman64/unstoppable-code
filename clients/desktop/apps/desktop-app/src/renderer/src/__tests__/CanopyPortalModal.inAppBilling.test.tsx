@@ -62,7 +62,7 @@ jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
   useCurrentUiStateReporter: (): void => undefined,
 }));
 
-const openAuthenticatedPortalPage = jest.fn<Promise<boolean>, [string]>();
+const openAuthenticatedPortalPage = jest.fn();
 
 function account(): CanopyCloudAccountPublicState {
   return {
@@ -95,6 +95,7 @@ function disabledPortal(): CanopyPortalState {
     pairingCode: null,
     pairingCodeExpiresAt: null,
     machineName: null,
+    hostCode: null,
     activatedAt: null,
     lastSeenAt: null,
     lastErrorAt: null,
@@ -116,6 +117,9 @@ describe('CanopyPortalModal lapsed-org billing (CAN-4445)', () => {
         getState: () => Promise.resolve(disabledPortal()),
         start: () => Promise.resolve({ state: disabledPortal() }),
         stop: () => Promise.resolve({ state: disabledPortal() }),
+        regeneratePairingCode: () =>
+          Promise.resolve({ state: disabledPortal() }),
+        cancelPairingCode: () => Promise.resolve({ state: disabledPortal() }),
         onStateChanged: (): (() => void) => () => undefined,
       },
     };

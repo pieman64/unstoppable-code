@@ -3,7 +3,15 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type { TryItAccountState } from '@/hooks/useCanopyCloudConnected';
 import type { WorkspaceAttachmentItem } from '@canopy/desktop-shared/types';
+let mockAccountStatus: 'loading' | 'guest' | 'signed-in' = 'signed-in';
+jest.mock('@/hooks/useCanopyCloudConnected', () => ({
+  useTryItAccount: (): TryItAccountState => ({
+    status: mockAccountStatus,
+    accountId: mockAccountStatus === 'signed-in' ? 'account:1' : null,
+  }),
+}));
 
 jest.mock('@/components/shared/AttachmentPreviewPopover', () => ({
   AttachmentPreviewPopover: ({
@@ -25,11 +33,16 @@ jest.mock('@/components/shared/AttachmentPreviewPopover', () => ({
 
 import { useWorkspaceItemsStore } from '@/stores/workspaceItemsStore';
 import { useGitHubStore } from '@/stores/githubStore';
+import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
+import { ATTACHMENT_SIGN_IN_COPY } from '@canopy/ui-app/guest-files';
 import {
   ActivitySectionChromeContext,
   type ActivitySectionChrome,
 } from '@/components/shared/panel-section';
-import { AttachmentsSection } from '../AttachmentsSection';
+import {
+  AttachmentsSection,
+  useAttachmentsHeaderChrome,
+} from '../AttachmentsSection';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
@@ -62,6 +75,8 @@ describe('AttachmentsSection', () => {
   );
 
   beforeEach(() => {
+    mockAccountStatus = 'signed-in';
+    useCloudConnectGateStore.setState({ pending: null });
     jest.useFakeTimers();
     container = document.createElement('div');
     document.body.append(container);
@@ -108,6 +123,63 @@ describe('AttachmentsSection', () => {
     });
   }
 
+  it.each(['guest', 'loading', 'signed-in'] as const)(
+    'only counts cached attachments as rail content for a signed-in account (%s)',
+    (status) => {
+      mockAccountStatus = status;
+      function ChromeProbe(): JSX.Element {
+        const chrome = useAttachmentsHeaderChrome({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+        });
+        return <span>{JSON.stringify(chrome)}</span>;
+      }
+      act(() => root.render(<ChromeProbe />));
+      expect(JSON.parse(container.textContent ?? '{}')).toEqual({
+        hasContent: status === 'signed-in',
+        ...(status === 'signed-in' ? { subtitle: '1 file' } : {}),
+        collapsedIconColor: status === 'signed-in' ? 'amber' : 'muted',
+      });
+    },
+  );
+
+  it('does not refresh attachments when a pending panel import finishes after sign-out', async () => {
+    useWorkspaceItemsStore.setState({
+      loadAttachments: initialState.loadAttachments,
+      importAttachments: initialState.importAttachments,
+    });
+    let finish: ((value: { attachments: [] }) => void) | undefined;
+    workspaceItemsApi.importAttachments.mockImplementation(
+      () =>
+        new Promise<{ attachments: [] }>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderSection();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    workspaceItemsApi.listAttachments.mockClear();
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="workspace-attachments-import"]',
+        )
+        ?.click(),
+    );
+    expect(workspaceItemsApi.importAttachments).toHaveBeenCalledTimes(1);
+    mockAccountStatus = 'guest';
+    renderSection();
+    await act(async () => {
+      finish?.({ attachments: [] });
+      await Promise.resolve();
+    });
+    expect(workspaceItemsApi.listAttachments).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('[data-testid="guest-files-state"]'),
+    ).not.toBeNull();
+  });
+
   function dispatchFileDrag(
     target: HTMLElement,
     type: 'dragenter' | 'dragover' | 'drop',
@@ -120,6 +192,66 @@ describe('AttachmentsSection', () => {
     target.dispatchEvent(event);
     return event;
   }
+
+  it('gates guest header and file drop before resolving paths or importing', async () => {
+    mockAccountStatus = 'guest';
+    renderSection();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="workspace-attachments-import"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(useCloudConnectGateStore.getState().pending?.context).toMatchObject({
+      title: ATTACHMENT_SIGN_IN_COPY.title,
+      description: ATTACHMENT_SIGN_IN_COPY.body,
+      subtitle: null,
+    });
+    useCloudConnectGateStore.setState({ pending: null });
+    const zone = container.querySelector(
+      '[data-testid="workspace-attachments-dropzone"]',
+    );
+    if (!(zone instanceof HTMLElement))
+      throw new Error('Missing guest drop boundary');
+    let dropEvent: Event | undefined;
+    await act(async () => {
+      dropEvent = dispatchFileDrag(zone, 'drop', [
+        new File(['x'], 'guest.txt'),
+      ]);
+      await Promise.resolve();
+    });
+    expect(dropEvent?.defaultPrevented).toBe(true);
+    expect(
+      useCloudConnectGateStore.getState().pending?.context.description,
+    ).toBe(ATTACHMENT_SIGN_IN_COPY.body);
+    expect(getPathForFile).not.toHaveBeenCalled();
+    expect(importAttachments).not.toHaveBeenCalled();
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it.each(['guest', 'loading'] as const)(
+    'suppresses cached rows and reads while %s',
+    (status) => {
+      mockAccountStatus = status;
+      renderSection();
+      expect(
+        useWorkspaceItemsStore.getState().loadAttachments,
+      ).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain('design.png');
+      expect(container.textContent).not.toContain('1 file');
+      expect(
+        container.querySelector(
+          '[data-testid="workspace-attachments-empty-dropzone"]',
+        ),
+      ).toBeNull();
+      if (status === 'guest')
+        expect(container.textContent).toContain(
+          'Attachments and workspace files need an account.',
+        );
+    },
+  );
 
   it('opens the file preview popover when an attachment row is hovered', () => {
     renderSection();
@@ -215,14 +347,17 @@ describe('AttachmentsSection', () => {
       });
 
       expect(dropEvent?.defaultPrevented).toBe(true);
-      expect(importAttachments).toHaveBeenCalledWith({
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        filePaths: [
-          '/Users/example/Desktop/design.fig',
-          'C:\\Users\\example\\Desktop\\notes.txt',
-        ],
-      });
+      expect(importAttachments).toHaveBeenCalledWith(
+        {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          filePaths: [
+            '/Users/example/Desktop/design.fig',
+            'C:\\Users\\example\\Desktop\\notes.txt',
+          ],
+        },
+        expect.any(Function),
+      );
     },
   );
 

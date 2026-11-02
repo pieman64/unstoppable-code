@@ -1,3 +1,11 @@
+jest.mock('../../lib/desktop-telemetry', () => ({
+  recordGitCommitTelemetry: jest.fn(),
+  recordPullRequestOpenedTelemetry: jest.fn(),
+}));
+import {
+  recordGitCommitTelemetry,
+  recordPullRequestOpenedTelemetry,
+} from '../../lib/desktop-telemetry';
 import { GitHubBrokerError } from '../../lib/github-broker/errors';
 import { listWorkspaceWorktreeRepoEntries } from '../../lib/worktree-repo-entries';
 import { registerWorktreePrActions } from '../pr-worktree-actions';
@@ -64,16 +72,29 @@ jest.mock('../pr-merge-progress', () => ({
   getPrMergeProgressFeed: jest.fn(() => undefined),
 }));
 
-import { createPrForRepo, fetchPrStatusForWorktree } from '../../lib/github-pr';
+import {
+  createPrForRepo,
+  fetchPrStatusForWorktree,
+  updatePrBaseBranchForRepo,
+} from '../../lib/github-pr';
 import { resolveFreshDefaultBranch } from '../../lib/git-default-branch';
 import { resolveWorktreeCwd } from '../../lib/resolve-worktree';
 import {
   commitWithMessage,
+  getCurrentBranch,
   hasUncommittedChanges,
+  pullBranchRebase,
   pushBranch,
   getPushRemoteUrlStrict,
   stageAllChanges,
 } from '../../lib/git';
+import {
+  beginGitActionCancellationScope,
+  finishGitActionCancellationScope,
+  isGitActionActive,
+  resetGitActionCancellationsForTests,
+} from '../../ipc/git-action-cancellation';
+import { acquireSplitLock, releaseSplitLock } from '../split-lock-service';
 import { readAllSidebarItems } from '../../lib/sidebar-items';
 import { triggerWorktreePrecommitFailureHook } from '../../lib/worktree-precommit-failure-hook';
 import { refreshNow } from '../../lib/github-poller';
@@ -137,6 +158,12 @@ describe('createPullRequest', () => {
       }),
     ).resolves.toMatchObject({ baseBranch: 'develop' });
 
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledWith({
+      projectId: 'workspace-1',
+      source: 'manual',
+      flow: 'portal',
+      repoCount: 1,
+    });
     expect(mockedResolveFreshDefaultBranch).toHaveBeenCalledWith(process.cwd());
     expect(mockedCreatePrForRepo).toHaveBeenCalledWith(
       process.cwd(),
@@ -630,17 +657,44 @@ describe('pr-service portal projection', () => {
     expect(mockedRefreshNow).not.toHaveBeenCalled();
   });
 
+  it('records a Portal commit even when its push fails', async () => {
+    mockedReadAllSidebarItems.mockResolvedValue({ version: 1, items: [] });
+    mockedHasUncommittedChanges.mockResolvedValue(true);
+    jest.mocked(commitWithMessage).mockResolvedValue('commit-sha');
+    mockedPushBranch.mockRejectedValueOnce(new Error('push failed'));
+    await expect(
+      runPrAction({
+        action: 'commit_and_push',
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'worktree-1',
+        commitMessage: 'Commit',
+      }),
+    ).rejects.toThrow('push failed');
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(1);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith({
+      projectId: 'workspace-1',
+      source: 'manual',
+      flow: 'portal',
+      repoCount: 1,
+    });
+  });
+
   it('refreshes desktop PR status after a portal git mutation', async () => {
     mockedReadAllSidebarItems.mockResolvedValue({
+      version: 1,
       items: [
         {
           id: 'workspace-1',
           name: 'Workspace 1',
-          type: 'project',
+          repoPath: '/tmp/workspace-1',
+          color: 'blue',
+          collapsed: false,
+          order: 0,
+          type: 'single-repo',
           worktrees: [],
         },
       ],
-    } as Awaited<ReturnType<typeof readAllSidebarItems>>);
+    });
     mockedPushBranch.mockResolvedValue(undefined);
     mockedFetchPrStatus.mockResolvedValue(null);
 
@@ -657,27 +711,38 @@ describe('pr-service portal projection', () => {
     'schedules shared-container publication after a portal %s action',
     async (action) => {
       mockedReadAllSidebarItems.mockResolvedValue({
+        version: 1,
         items: [
           {
             id: 'workspace-1',
             name: 'Workspace 1',
-            type: 'project',
+            repoPath: '/tmp/workspace-1',
+            color: 'blue',
+            collapsed: false,
+            order: 0,
+            type: 'single-repo',
             worktrees: [],
           },
         ],
-      } as Awaited<ReturnType<typeof readAllSidebarItems>>);
+      });
       mockedPushBranch.mockResolvedValue(undefined);
       mockedHasUncommittedChanges.mockResolvedValue(false);
       mockedFetchPrStatus.mockResolvedValue(null);
 
-      await runPrAction({
-        action,
-        workspaceLocalId: 'workspace-1',
-        worktreeLocalId: 'worktree-1',
-        ...(action === 'commit_and_push'
-          ? { commitMessage: 'Publish the current branch' }
-          : {}),
-      });
+      if (action === 'commit_and_push') {
+        await runPrAction({
+          action,
+          workspaceLocalId: 'workspace-1',
+          worktreeLocalId: 'worktree-1',
+          commitMessage: 'Publish the current branch',
+        });
+      } else {
+        await runPrAction({
+          action,
+          workspaceLocalId: 'workspace-1',
+          worktreeLocalId: 'worktree-1',
+        });
+      }
 
       expect(mockScheduleKnown).toHaveBeenCalledWith(
         'workspace-1',
@@ -692,15 +757,20 @@ describe('pr-service portal projection', () => {
     });
     const getWindow = jest.fn(() => null);
     mockedReadAllSidebarItems.mockResolvedValue({
+      version: 1,
       items: [
         {
           id: 'workspace-1',
           name: 'Workspace 1',
-          type: 'project',
+          repoPath: '/tmp/workspace-1',
+          color: 'blue',
+          collapsed: false,
+          order: 0,
+          type: 'single-repo',
           worktrees: [],
         },
       ],
-    } as Awaited<ReturnType<typeof readAllSidebarItems>>);
+    });
     mockedHasUncommittedChanges.mockResolvedValue(true);
     mockedStageAllChanges.mockResolvedValue(undefined);
     mockedCommitWithMessage.mockRejectedValue(error);
@@ -809,7 +879,7 @@ describe('GitHub authentication errors for remote callers', () => {
     mockedResolveFreshDefaultBranch.mockResolvedValue('main');
     jest
       .mocked(readAllSidebarItems)
-      .mockResolvedValue({ items: [], errors: [] });
+      .mockResolvedValue({ version: 1, items: [] });
     jest
       .mocked(getPushRemoteUrlStrict)
       .mockResolvedValue('https://github.com/acme/repo.git');
@@ -860,6 +930,47 @@ describe('GitHub authentication errors for remote callers', () => {
     ).rejects.toMatchObject({ code: 'github_not_connected' });
   });
 
+  // CAN-4109 golden: the Portal update_base_branch action keeps the direct
+  // library call while the IPC channel moves to core.pullRequest.update.
+  it('retargets each tracked PR through the library directly for update_base_branch', async () => {
+    mockedResolveWorktreeCwd.mockReturnValue('/tmp/workspace');
+    mockedReadAllSidebarItems.mockResolvedValue({
+      version: 1,
+      items: [
+        {
+          id: 'ws-1',
+          name: 'Workspace 1',
+          type: 'single-repo',
+          color: 'blue',
+          repos: [],
+          worktrees: [],
+          collapsed: false,
+          order: 0,
+        },
+      ],
+    } as never);
+    mockedFetchPrStatus.mockResolvedValue({
+      repos: [{ repoId: 'ws-1', status: { prNumber: 355 } }],
+    } as never);
+    jest.mocked(updatePrBaseBranchForRepo).mockResolvedValue({
+      prUrl: 'https://github.com/acme/repo/pull/355',
+    });
+
+    await runPrAction({
+      action: 'update_base_branch',
+      workspaceLocalId: 'ws-1',
+      worktreeLocalId: 'wt-1',
+      baseBranch: 'release/2026-04',
+    } as never);
+
+    expect(updatePrBaseBranchForRepo).toHaveBeenCalledTimes(1);
+    expect(updatePrBaseBranchForRepo).toHaveBeenCalledWith(
+      '/tmp/workspace',
+      355,
+      'release/2026-04',
+    );
+  });
+
   it('keeps permission errors ordinary', async () => {
     jest
       .mocked(pushBranch)
@@ -880,8 +991,19 @@ describe('GitHub authentication errors for remote callers', () => {
     'preserves successful pushes and unrelated failures even if status refresh fails: %s',
     async (refreshFails) => {
       jest.mocked(readAllSidebarItems).mockResolvedValue({
-        items: [{ id: 'ws-1', type: 'multi-repo' }],
-        errors: [],
+        version: 1,
+        items: [
+          {
+            id: 'ws-1',
+            name: 'Workspace 1',
+            type: 'multi-repo',
+            color: 'blue',
+            repos: [],
+            worktrees: [],
+            collapsed: false,
+            order: 0,
+          },
+        ],
       });
       jest.mocked(listWorkspaceWorktreeRepoEntries).mockResolvedValue([
         { repoId: 'repo-a', repoName: 'A', repoPath: '/tmp/a' },
@@ -988,5 +1110,157 @@ describe('GitHub authentication errors for remote callers', () => {
         },
       ],
     });
+  });
+});
+
+// Portal commit, push and pull mutate the same checkout the desktop Git
+// actions do, so they take the same worktree lock, Split check and read-only
+// refusal (CAN-4108 PR0).
+describe('Portal Git mutations share the desktop Git-action guards', () => {
+  const singleRepoSidebar = {
+    version: 1 as const,
+    items: [
+      {
+        id: 'workspace-1',
+        name: 'Workspace 1',
+        repoPath: '/tmp/workspace-1',
+        color: 'blue',
+        collapsed: false,
+        order: 0,
+        type: 'single-repo' as const,
+        worktrees: [],
+      },
+    ],
+  };
+  const target = { projectId: 'workspace-1', worktreeId: 'worktree-1' };
+  const SPLIT_LOCK_MESSAGE: unknown = expect.stringContaining(
+    'running a Git action',
+  );
+  type MutationAction = 'push' | 'commit_and_push' | 'pull';
+  const request = (
+    action: MutationAction,
+    workspaceLocalId = 'workspace-1',
+  ): Parameters<typeof runPrAction>[0] =>
+    action === 'commit_and_push'
+      ? {
+          action,
+          workspaceLocalId,
+          worktreeLocalId: 'worktree-1',
+          commitMessage: 'Commit',
+        }
+      : { action, workspaceLocalId, worktreeLocalId: 'worktree-1' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetGitActionCancellationsForTests();
+    mockedReadAllSidebarItems.mockResolvedValue(singleRepoSidebar);
+    mockedHasUncommittedChanges.mockResolvedValue(true);
+    mockedCommitWithMessage.mockResolvedValue('sha');
+    mockedPushBranch.mockResolvedValue(undefined);
+    jest.mocked(getCurrentBranch).mockResolvedValue('feature');
+    jest.mocked(pullBranchRebase).mockResolvedValue(undefined);
+    mockedFetchPrStatus.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    resetGitActionCancellationsForTests();
+    releaseSplitLock(target.projectId, target.worktreeId);
+  });
+
+  function expectNoGitMutation(): void {
+    expect(mockedStageAllChanges).not.toHaveBeenCalled();
+    expect(mockedCommitWithMessage).not.toHaveBeenCalled();
+    expect(mockedPushBranch).not.toHaveBeenCalled();
+    expect(pullBranchRebase).not.toHaveBeenCalled();
+  }
+
+  it.each(['push', 'commit_and_push', 'pull'] as const)(
+    'refuses %s while a desktop Git action holds the worktree',
+    async (action) => {
+      const scope = beginGitActionCancellationScope(target);
+      try {
+        await expect(runPrAction(request(action))).rejects.toMatchObject({
+          code: 'execution_failed',
+          message: 'A Git action is already active for this worktree',
+        });
+      } finally {
+        finishGitActionCancellationScope(target, scope);
+      }
+      expectNoGitMutation();
+    },
+  );
+
+  it.each(['push', 'commit_and_push', 'pull'] as const)(
+    'refuses %s while a Split PR locks the worktree',
+    async (action) => {
+      acquireSplitLock(target.projectId, target.worktreeId);
+      await expect(runPrAction(request(action))).rejects.toMatchObject({
+        code: 'execution_failed',
+        message: SPLIT_LOCK_MESSAGE,
+      });
+      expectNoGitMutation();
+    },
+  );
+
+  it.each(['push', 'commit_and_push', 'pull'] as const)(
+    'refuses %s in a read-only shared-container scope',
+    async (action) => {
+      await expect(
+        runPrAction(request(action, 'shared-container-viewer')),
+      ).rejects.toMatchObject({
+        code: 'execution_failed',
+        message: 'Shared-container recipient workspaces are read-only',
+      });
+      expectNoGitMutation();
+    },
+  );
+
+  it.each(['push', 'commit_and_push', 'pull'] as const)(
+    'holds the worktree Git-action lock while %s runs, then releases it',
+    async (action) => {
+      const observed: boolean[] = [];
+      const record = (): void => {
+        observed.push(isGitActionActive(target));
+      };
+      mockedPushBranch.mockImplementation(() => {
+        record();
+        return Promise.resolve();
+      });
+      jest.mocked(pullBranchRebase).mockImplementation(() => {
+        record();
+        return Promise.resolve();
+      });
+
+      await runPrAction(request(action));
+
+      expect(observed).toEqual([true]);
+      expect(isGitActionActive(target)).toBe(false);
+    },
+  );
+
+  it.each(['push', 'commit_and_push', 'pull'] as const)(
+    'reads the PR status for %s only after releasing the lock',
+    async (action) => {
+      const observed: boolean[] = [];
+      mockedFetchPrStatus.mockImplementation(() => {
+        observed.push(isGitActionActive(target));
+        return Promise.resolve(null);
+      });
+      mockedRefreshNow.mockImplementation(() => {
+        observed.push(isGitActionActive(target));
+        return Promise.resolve(null);
+      });
+
+      await runPrAction(request(action));
+
+      expect(observed.length).toBeGreaterThan(0);
+      expect(observed.every((active) => !active)).toBe(true);
+    },
+  );
+
+  it('releases the lock after a failed Portal push', async () => {
+    mockedPushBranch.mockRejectedValue(new Error('push failed'));
+    await expect(runPrAction(request('push'))).rejects.toThrow('push failed');
+    expect(isGitActionActive(target)).toBe(false);
   });
 });

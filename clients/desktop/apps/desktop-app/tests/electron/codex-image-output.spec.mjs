@@ -72,6 +72,10 @@ async function openChat(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
+  // Inspect individual steps while retaining the Clean chat look.
+  await window.evaluate(() =>
+    window.api.savePreferences({ chatDetail: 'detailed' }),
+  );
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_ID);
   await window.getByTestId(`panel-tab-panel-chat-${CHAT_ID}`).click();
@@ -303,9 +307,11 @@ test('Codex report links open local files and mixed tool output stays visible', 
       '[data-testid="chat-tool-call"][data-tool-name="mcp__evidence__bounded-output"]',
     );
     await boundedOutputCard.getByRole('button').click();
+    // #5296 stores the full approved MCP result; the old 100-item cut is gone.
+    await expect(boundedOutputCard).toContainText('Evidence output');
     await expect(
-      window.getByText('[50 additional content items omitted]'),
-    ).toBeVisible();
+      window.getByText(/additional content items omitted/),
+    ).toHaveCount(0);
     await expect(window.getByTestId('chat-verbatim-text')).toContainText(
       '![Untrusted tool image](https://attacker.invalid/tool-output)',
     );
@@ -375,8 +381,13 @@ test('Codex report links open local files and mixed tool output stays visible', 
       .getByRole('button')
       .click();
     await expect(
-      window.getByText('[50 additional content items omitted]'),
-    ).toBeVisible();
+      window.locator(
+        '[data-testid="chat-tool-call"][data-tool-name="mcp__evidence__bounded-output"]',
+      ),
+    ).toContainText('Evidence output');
+    await expect(
+      window.getByText(/additional content items omitted/),
+    ).toHaveCount(0);
     await expect(window.getByTestId('chat-verbatim-text')).toContainText(
       '![Untrusted tool image](https://attacker.invalid/tool-output)',
     );
@@ -654,9 +665,12 @@ for (const idle of [false, true]) {
           .soft(
             window
               .getByTestId('chat-tool-call')
-              .filter({ hasText: 'User questions' }),
+              .filter({ hasText: 'Asked you' }),
           )
-          .toHaveCount(1);
+          .toHaveCount(0);
+        await expect
+          .soft(window.getByTestId('answered-questions'))
+          .toContainText('Full');
         await expect
           .soft(
             window
@@ -722,12 +736,15 @@ for (const idle of [false, true]) {
   });
 }
 
-test('Codex async answer retries reuse one provider deduplication identity', async () => {
+test('a Codex async answer whose steer fails ambiguously is kept once and never resent', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-async-question-retry-'),
   );
   seedChat(userDataDir);
+  // The app-server answers the first steer with an error that does not prove
+  // the input was refused. Main records the delivery as uncertain and does not
+  // send the answer again, because the provider may already have it.
   const fixture = createFixture('async-question-retry', 'Answer received.');
   const launched = await launchCanopy({ userDataDir, env: fixture.env });
   try {
@@ -738,28 +755,54 @@ test('Codex async answer retries reuse one provider deduplication identity', asy
     const card = window.getByTestId('chat-question-prompt');
     await expect(card).toBeVisible();
     await card.getByRole('button', { name: 'Full', exact: true }).click();
-    await expect(card.getByRole('alert')).toContainText(
-      "Couldn't send your answer",
-    );
-    await card.getByTestId('chat-question-retry').click();
     await expect(card).toHaveCount(0);
 
+    const answerSteers = () =>
+      conversationRequests(fixture.logPath).filter(
+        (request) =>
+          request.method === 'turn/steer' &&
+          JSON.stringify(request.params.input).includes('Q: Which scope?'),
+      );
+    await expect.poll(() => answerSteers().length).toBe(1);
+    const readState = () =>
+      window.evaluate(
+        ({ projectId, worktreeId }) =>
+          window.api.chat.getState({ projectId, worktreeId }),
+        { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+      );
     await expect
-      .poll(() =>
-        conversationRequests(fixture.logPath)
-          .filter((request) => request.method === 'turn/steer')
-          .map((request) => request.params.clientUserMessageId),
-      )
-      .toEqual([
-        expect.stringMatching(/^answer-codex-async-/),
-        expect.stringMatching(/^answer-codex-async-/),
-      ]);
-    const steerRequests = conversationRequests(fixture.logPath).filter(
-      (request) => request.method === 'turn/steer',
-    );
-    expect(steerRequests[0]?.params.clientUserMessageId).toBe(
-      steerRequests[1]?.params.clientUserMessageId,
-    );
+      .poll(async () => {
+        const tab = (await readState()).tabsFile.tabs.find(
+          (candidate) => candidate.id === CHAT_ID,
+        );
+        return tab?.inputDelivery?.rows.map((row) => row.state);
+      })
+      .toEqual(['uncertain']);
+    await expect(
+      window
+        .getByTestId('input-delivery-row')
+        .filter({ hasText: 'Delivery uncertain' }),
+    ).toHaveCount(1);
+
+    // The question stays answered, and nothing sends the answer again.
+    const snapshot = await readState();
+    expect(
+      snapshot.tabsFile.pendingQuestions.filter(
+        (question) =>
+          question.chatId === CHAT_ID &&
+          question.delivery === 'async' &&
+          question.answeredAt !== undefined,
+      ),
+    ).toHaveLength(1);
+    await window.waitForTimeout(2_000);
+    expect(answerSteers()).toHaveLength(1);
+    expect(
+      conversationRequests(fixture.logPath).filter(
+        (request) =>
+          request.method === 'turn/start' &&
+          JSON.stringify(request.params.input).includes('Q: Which scope?'),
+      ),
+    ).toHaveLength(0);
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }
@@ -785,7 +828,11 @@ test('canceling or editing a queued async answer reopens its question', async ()
     let bubble = window.getByTestId('queued-message-bubble');
     await expect(bubble).toHaveCount(1);
     await expect(card).toHaveCount(0);
-    await bubble.getByTestId('queued-message-cancel').click();
+    await bubble.getByTestId('queued-message-more').click();
+    await window
+      .getByTestId('queued-message-more-menu')
+      .getByTestId('queued-message-cancel')
+      .click();
     await expect(bubble).toHaveCount(0);
     await expect(
       card.getByRole('button', { name: 'Full', exact: true }),
@@ -794,7 +841,11 @@ test('canceling or editing a queued async answer reopens its question', async ()
     await card.getByRole('button', { name: 'Full', exact: true }).click();
     bubble = window.getByTestId('queued-message-bubble');
     await expect(bubble).toHaveCount(1);
-    await bubble.getByTestId('queued-message-edit').click();
+    await bubble.getByTestId('queued-message-more').click();
+    await window
+      .getByTestId('queued-message-more-menu')
+      .getByTestId('queued-message-edit')
+      .click();
     const editor = window.getByTestId('queued-message-editor');
     const editTextBox = editor.getByRole('textbox');
     // Re-deliver the host snapshot mid-edit. It contains the same entry ID
@@ -840,7 +891,16 @@ test('canceling or editing a queued async answer reopens its question', async ()
     // controlled value is still from the previous render, so this pins both
     // halves of the race: saved text and file-reference metadata must come
     // from the same live snapshot.
-    await bubble.getByTestId('queued-message-edit').click();
+    await bubble.getByTestId('queued-message-more').click();
+    await window
+      .getByTestId('queued-message-more-menu')
+      .getByTestId('queued-message-edit')
+      .click();
+    // Edit opens the editor after the More menu closes, so wait for it to
+    // mount. The insert and save below still run in one browser task.
+    await expect(
+      window.getByTestId('queued-message-editor').getByRole('textbox'),
+    ).toBeVisible();
     const raceFilePath = path.join(userDataDir, 'queued-race-file.txt');
     await window.evaluate(
       ({ absolutePath }) => {
@@ -860,7 +920,11 @@ test('canceling or editing a queued async answer reopens its question', async ()
     );
     await expect(bubble).toContainText('queued-race-file.txt');
 
-    await bubble.getByTestId('queued-message-edit').click();
+    await bubble.getByTestId('queued-message-more').click();
+    await window
+      .getByTestId('queued-message-more-menu')
+      .getByTestId('queued-message-edit')
+      .click();
     await expect(
       window
         .getByTestId('queued-message-editor')
@@ -1016,7 +1080,9 @@ test('reverting a turn removes its durable async pending question', async () => 
     // the event to the renderer. Wait for that second phase before using the
     // newly enabled Revert action.
     await expect(
-      window.getByText('1 file changed', { exact: true }),
+      window
+        .locator('[data-turn-files-title]')
+        .filter({ hasText: 'async-question-reset.txt' }),
     ).toBeVisible();
 
     const resetButton = window.getByTestId('reset-to-point-button');
@@ -1071,6 +1137,10 @@ for (const action of ['answer', 'dismiss']) {
       const steps = window
         .getByRole('button', { name: /^Agent steps:/ })
         .last();
+      // Clean keeps the live turn open on completion; explicitly fold it to
+      // exercise the unanswered-question protection.
+      if ((await steps.getAttribute('aria-expanded')) === 'true')
+        await steps.click();
       await expect(steps).toHaveAttribute('aria-expanded', 'false');
       await expect(card).toBeVisible();
       await expect(card).toHaveCount(1);

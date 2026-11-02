@@ -10,6 +10,7 @@ import { AgentProviderIcon } from '@/lib/providerUi';
 import { getArchivedChatDisplayLabel } from '@/components/standalone-chat/chat-label';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { Button } from '@canopy/ui-shared/components';
 
 export interface ArchivedChatRowProps {
   summary: ArchivedChatSummary;
@@ -26,9 +27,6 @@ export interface ArchivedChatRowProps {
   /** Stable testid hook for automation on the outer wrapper. */
   dataTestId?: string;
 }
-
-const actionBaseClass =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50';
 
 /**
  * One archived-chat list row, shared by the hover popover and the full modal.
@@ -69,7 +67,17 @@ export function ArchivedChatRow({
       data-archived-chat-id={summary.chatId}
       role="button"
       tabIndex={0}
-      onClick={onOpen}
+      onClick={(e): void => {
+        // A disabled action passes its click through to whatever is beneath
+        // it, so a press anywhere in the action cluster never opens the row.
+        if (
+          e.target instanceof Element &&
+          e.target.closest('[data-archived-chat-actions]') !== null
+        ) {
+          return;
+        }
+        onOpen();
+      }}
       onKeyDown={(e): void => {
         if (e.currentTarget !== e.target) {
           return;
@@ -79,7 +87,7 @@ export function ArchivedChatRow({
           onOpen();
         }
       }}
-      className="group flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm fg-secondary transition hover:bg-fg-primary/[0.04] focus:outline-none focus-visible:ring-1 focus-visible:ring-line-focus"
+      className="group flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm fg-secondary transition-colors hover:bg-fg-primary/[0.04] focus:outline-none focus-visible:ring-1 focus-visible:ring-line-focus"
     >
       <span
         data-unread={summary.unread ? 'true' : undefined}
@@ -109,38 +117,45 @@ export function ArchivedChatRow({
         </p>
         {subLine && <p className="truncate text-3xs fg-secondary">{subLine}</p>}
       </div>
-      {summary.restorable && (
-        <Tooltip label={`Restore ${CHAT_UNIT_LABEL}`}>
-          <button
-            type="button"
+      <div
+        data-archived-chat-actions=""
+        className="flex shrink-0 items-center gap-2"
+      >
+        {summary.restorable && (
+          <Tooltip label={`Restore ${CHAT_UNIT_LABEL}`}>
+            <Button
+              variant="ghost-quiet"
+              size="compact"
+              iconOnly
+              onClick={(e): void => {
+                e.stopPropagation();
+                onRestore();
+              }}
+              disabled={busy}
+              aria-label={`Restore ${CHAT_UNIT_LABEL}`}
+              data-testid="archived-chat-restore"
+            >
+              {restoring ? <LoadingSpinner /> : <UnarchiveIcon size={16} />}
+            </Button>
+          </Tooltip>
+        )}
+        <Tooltip label="Summarize">
+          <Button
+            variant="ghost-quiet"
+            size="compact"
+            iconOnly
             onClick={(e): void => {
               e.stopPropagation();
-              onRestore();
+              onSummarize();
             }}
             disabled={busy}
-            aria-label={`Restore ${CHAT_UNIT_LABEL}`}
-            data-testid="archived-chat-restore"
-            className={`${actionBaseClass} fg-accent enabled:hover:bg-accent-subtle`}
+            aria-label="Summarize"
+            data-testid="archived-chat-summarize"
           >
-            {restoring ? <LoadingSpinner /> : <UnarchiveIcon size={16} />}
-          </button>
+            {summarizing ? <LoadingSpinner /> : <SummaryIcon size={16} />}
+          </Button>
         </Tooltip>
-      )}
-      <Tooltip label="Summarize">
-        <button
-          type="button"
-          onClick={(e): void => {
-            e.stopPropagation();
-            onSummarize();
-          }}
-          disabled={busy}
-          aria-label="Summarize"
-          data-testid="archived-chat-summarize"
-          className={`${actionBaseClass} fg-secondary enabled:hover:bg-subtle enabled:hover:fg-primary`}
-        >
-          {summarizing ? <LoadingSpinner /> : <SummaryIcon size={16} />}
-        </button>
-      </Tooltip>
+      </div>
     </div>
   );
 }

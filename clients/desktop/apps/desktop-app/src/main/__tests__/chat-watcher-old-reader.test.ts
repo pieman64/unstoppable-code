@@ -20,10 +20,7 @@ import {
 import { fsyncDirectory } from '../lib/fsync-directory';
 import { stat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import {
-  type DelegateWatchEvent,
-  isDelegationStopReason,
-} from '@canopy/protocol/delegation';
+import { isDelegationStopReason } from '@canopy/protocol/delegation';
 import {
   type AppAdvisorWatcher,
   APP_ADVISOR_PROJECT_ID,
@@ -65,6 +62,13 @@ let mockDirectory: string;
 jest.mock('../lib/paths', () => ({
   getAppAdvisorWatchersFilePath: (): string => mockLegacyPath,
   getDataDir: (): string => mockDirectory,
+}));
+// A slow watcher mutation records a chat-wait diagnostic; keep it from
+// starting the real observability flush against the tiny paths mock above.
+jest.mock('../observability', () => ({
+  getObservabilityService: (): object => ({
+    recordSessionDiagnostic: jest.fn(),
+  }),
 }));
 jest.mock('../agents/session-manager', () => ({}));
 jest.mock('../pipelines/pipeline-service', () => ({}));
@@ -236,7 +240,7 @@ function isKnownWatcherStatus(
 
 function isKnownWatcherTrigger(
   value: unknown,
-): value is AppAdvisorWatcher['trigger'] {
+): value is AppAdvisorWatcher['trigger'] | 'managed_delegation_completion' {
   return (
     value === 'worktree_chat_completion' ||
     value === 'standalone_chat_completion' ||
@@ -738,7 +742,7 @@ function isLocalWatcherEvent(value: unknown): value is LocalWatcherEvent {
   );
 }
 
-function isDelegateWatchEvent(value: unknown): value is DelegateWatchEvent {
+function isDelegateWatchEvent(value: unknown): boolean {
   return (
     isRecord(value) &&
     nonBlank(value.watcherId) &&
@@ -1590,9 +1594,10 @@ describe('canonical watcher sidecar and frozen pre-phase downgrade', () => {
       'file-sync',
       'file-close',
       'rename',
-      ...(process.platform === 'win32'
-        ? []
-        : ['directory-open', 'directory-sync', 'directory-close']),
+      // CAN-5151 D1: Windows flushes the folder too.
+      'directory-open',
+      'directory-sync',
+      'directory-close',
     ]);
   });
 
@@ -1644,13 +1649,13 @@ describe('canonical watcher sidecar and frozen pre-phase downgrade', () => {
   );
 
   test('directory sync failure rejects acknowledgement even though rename has committed', async () => {
-    if (process.platform === 'win32') return;
     const realOpen = fs.open;
     jest
       .spyOn(fs, 'open')
       .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
         const handle = await realOpen(...args);
-        if (args[1] === 'r')
+        // The folder flush opens the directory itself, on every platform.
+        if (args[0] === directory)
           jest
             .spyOn(handle, 'sync')
             .mockRejectedValue(new Error('injected directory-sync failure'));

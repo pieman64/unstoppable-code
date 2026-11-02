@@ -1,11 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import {
-  LIVE_DELEGATES_CHAT_REFUSAL,
-  LiveDelegationsError,
-  chatHasLiveDelegations,
-} from '../agents/delegation/activity';
-import {
   hasDelegationLifecycle,
   closeDelegationScope,
 } from '../agents/delegation/lifecycle';
@@ -50,16 +45,14 @@ import { isPersistedChatTab } from '../lib/chat-tabs-reader';
 import { normalizeWorkspaceChatsForInheritedPluginDefaults } from '../lib/inherited-plugin-defaults-normalization';
 import { setBeforeProjectPluginDefaultsChangeHandler } from '../lib/workspace-persistence';
 import { outsideW5CommitScope } from '../lib/w5-commit-scope';
+import { outsideStorageAdmission } from '@canopy/desktop-shared/node/lib/storage-admission';
+import { settlePersistedInterruptedMessages } from '../lib/persisted-chat-settle';
 import {
-  closeOpenPersistedToolUses,
-  closeOpenPersistedTurnTimers,
-} from '../lib/persisted-chat-settle';
-import {
-  projectAppAdvisorChatSummaries,
+  projectAppAdvisorChatSummariesStrict,
   projectAppAdvisorChatSummaryRemovals,
-  projectWorktreeChatSummaries,
+  projectWorktreeChatSummariesStrict,
   projectWorktreeChatSummaryRemovals,
-  projectWorktreeChatTodos,
+  projectWorktreeChatTodosStrict,
   projectWorktreeChatTodoRemovals,
 } from '../services/chat-service';
 import { logMainProcessError } from '../lib/main-process-logging';
@@ -67,11 +60,14 @@ import { projectWorktreeMcpServersForChat } from '../portal/adapters/mcp-adapter
 import { isCanopyPortalActive } from '../portal/portal-event-bus';
 import { getPipelineRunChatLinks } from '../services/pipeline-run-chat-links';
 import {
+  buildSessionKey,
   destroySession,
   getActiveChatIds,
   markChatSessionIdle,
+  markSessionTeardownCause,
 } from '../agents/session-manager';
 import { cancelChatTurn } from '../lib/chat-turn-cancel';
+import { releaseArchivedChatSessionWhenIdle } from '../lib/archived-chat-session-release';
 import { sendToWindow, sendToWindowDetailed } from '../lib/window-send';
 import { registerIpcHandler } from './register';
 import {
@@ -136,6 +132,16 @@ function scheduleCoworkMetaNudge(
   }, delay);
 }
 
+/** Cowork sidebar re-list; other workspaces have no Work Entry rows to refresh. */
+export function nudgeCoworkWorkEntrySidebar(
+  getWindow: () => BrowserWindow | null,
+  projectId: string,
+): void {
+  if (isCoworkWorkspace(projectId)) {
+    scheduleCoworkMetaNudge(projectId, getWindow);
+  }
+}
+
 /**
  * Portal chat-summary/todo/MCP projection throttle. Canonical materialization
  * fires on every committed provider batch (~25 ms during streaming); the full
@@ -143,45 +149,67 @@ function scheduleCoworkMetaNudge(
  * portal stays live without re-serializing summaries on every batch.
  */
 const PORTAL_PROJECTION_INTERVAL_MS = 1_000;
+
+interface ProjectionFailure {
+  error: unknown;
+}
+
+/** Called once, with the failure when the projection run rejected. */
+type PortalProjectionWaiter = (failure: ProjectionFailure | undefined) => void;
+
+function rethrowProjectionFailure(
+  failure: ProjectionFailure | undefined,
+): void {
+  if (failure) throw failure.error;
+}
+
 const portalProjectionThrottles = new Map<
   string,
-  { timer: NodeJS.Timeout | null; lastRunMs: number; latest: ChatTabsFile }
+  {
+    timer: NodeJS.Timeout | null;
+    lastRunMs: number;
+    latest: ChatTabsFile;
+    /** Materializations the next run covers; it projects the latest one. */
+    waiters: PortalProjectionWaiter[];
+  }
 >();
 
+/** Rejects, after logging, when either projection fails. */
 function runPortalChatProjection(
   projectId: string,
   worktreeId: string,
   data: ChatTabsFile,
-): void {
+): Promise<void> {
   // Publish pipeline_run chat-turn link changes from this commit burst
   // (CAN-3619). Only scopes with an index (built on first Portal run
   // projection) do work; failures never reach the committed chat.
-  getPipelineRunChatLinks()
+  const links = getPipelineRunChatLinks()
     .refresh({ projectId, worktreeId })
     .catch((error: unknown) => {
       logMainProcessError(
         'Pipeline run chat link projection failed on chat materialization',
         error,
       );
+      throw error;
     });
-  void (async (): Promise<void> => {
+  const summaries = (async (): Promise<void> => {
     if (isCoworkWorkspace(projectId)) {
       // Keep the large standalone-chat service graph off Electron startup;
       // routine chat persistence does not need it until cowork projection runs.
-      const { emitStandaloneWorkEntrySummary } =
+      const { emitStandaloneWorkEntrySummaryStrict } =
         await import('../services/standalone-chat-service');
-      await emitStandaloneWorkEntrySummary(projectId, worktreeId, data);
+      await emitStandaloneWorkEntrySummaryStrict(projectId, worktreeId, data);
       return;
     }
     if (projectId === APP_ADVISOR_PROJECT_ID) {
-      await projectAppAdvisorChatSummaries(worktreeId);
+      await projectAppAdvisorChatSummariesStrict(worktreeId);
       return;
     }
-    await projectWorktreeChatSummaries({
+    await projectWorktreeChatSummariesStrict({
       workspaceId: projectId,
       worktreeId,
     });
-    await projectWorktreeChatTodos({
+    await projectWorktreeChatTodosStrict({
       workspaceId: projectId,
       worktreeId,
     });
@@ -200,14 +228,18 @@ function runPortalChatProjection(
       'Portal projection failed on chat materialization',
       error,
     );
+    throw error;
   });
+  return Promise.all([links, summaries]).then(() => undefined);
 }
 
 /**
  * Post-commit projection of a canonical chat materialization to the Portal
  * and cowork sidebar surfaces. Installed as part of the chat-tabs write
  * observer in `index.ts`; before the cutover these side effects ran inside
- * the renderer-driven `chat:save-tabs` choke point.
+ * the renderer-driven `chat:save-tabs` choke point. Resolves once the Portal
+ * removals and the throttled run covering `data` land, or at once with no
+ * Portal session; rejects when either fails, so the observer can retry.
  */
 export function projectChatTabsMaterialization(
   getWindow: () => BrowserWindow | null,
@@ -215,14 +247,13 @@ export function projectChatTabsMaterialization(
   worktreeId: string,
   data: ChatTabsFile,
   delta: ChatTabsWriteDelta | undefined,
-): void {
-  if (isCoworkWorkspace(projectId)) {
-    // Cowork: work-entry list metadata (title/unread/streaming badges)
-    // derives from the materialized tabs, so nudge the sidebar to re-list.
-    scheduleCoworkMetaNudge(projectId, getWindow);
-  }
+): Promise<void> {
+  // Cowork: work-entry list metadata (title/unread/streaming badges)
+  // derives from the materialized tabs, so nudge the sidebar to re-list.
+  nudgeCoworkWorkEntrySidebar(getWindow, projectId);
   // Mark changed chats for derived pipeline_run chat links even while no
   // portal is attached, so an index built earlier never serves stale links.
+  let invalidationFailure: ProjectionFailure | undefined;
   try {
     getPipelineRunChatLinks().noteChatsMaterialized(
       { projectId, worktreeId },
@@ -230,25 +261,31 @@ export function projectChatTabsMaterialization(
     );
   } catch (error) {
     logMainProcessError('Pipeline run chat link invalidation failed', error);
+    invalidationFailure = { error };
   }
+  const invalidation = Promise.resolve(invalidationFailure).then(
+    rethrowProjectionFailure,
+  );
   if (!isCanopyPortalActive()) {
-    return;
+    return invalidation;
   }
   // Closed tabs must reach the portal promptly and unconditionally — the
   // projection layer is upsert-only, so a bare re-projection would never
   // evict a closed tab. Removals are rare and never throttled.
   const removedChatIds = delta?.removedTabIds ?? [];
+  let removals = Promise.resolve();
   if (removedChatIds.length > 0) {
     if (isCoworkWorkspace(projectId)) {
       // Keep the large standalone-chat service graph off Electron startup;
       // routine chat persistence does not need it until cowork removal runs.
-      void import('../services/standalone-chat-service')
+      removals = import('../services/standalone-chat-service')
         .then(({ emitStandaloneChatRemovals }) => {
           emitStandaloneChatRemovals(projectId, removedChatIds);
         })
-        .catch((error: unknown) =>
-          logMainProcessError('Portal cowork removal failed', error),
-        );
+        .catch((error: unknown) => {
+          logMainProcessError('Portal cowork removal failed', error);
+          throw error;
+        });
     } else if (projectId === APP_ADVISOR_PROJECT_ID) {
       projectAppAdvisorChatSummaryRemovals({
         removedChatIds: [...removedChatIds],
@@ -269,15 +306,21 @@ export function projectChatTabsMaterialization(
   const key = `${projectId}/${worktreeId}`;
   let state = portalProjectionThrottles.get(key);
   if (!state) {
-    state = { timer: null, lastRunMs: 0, latest: data };
+    state = { timer: null, lastRunMs: 0, latest: data, waiters: [] };
     portalProjectionThrottles.set(key, state);
   } else {
     state.latest = data;
   }
-  if (state.timer) {
-    return;
-  }
   const throttle = state;
+  const projected = new Promise<ProjectionFailure | undefined>((waiter) => {
+    throttle.waiters.push(waiter);
+  }).then(rethrowProjectionFailure);
+  const settled = Promise.all([invalidation, removals, projected]).then(
+    () => undefined,
+  );
+  if (throttle.timer) {
+    return settled;
+  }
   const delay = Math.max(
     0,
     PORTAL_PROJECTION_INTERVAL_MS - (Date.now() - throttle.lastRunMs),
@@ -285,9 +328,17 @@ export function projectChatTabsMaterialization(
   throttle.timer = setTimeout(() => {
     throttle.timer = null;
     throttle.lastRunMs = Date.now();
-    runPortalChatProjection(projectId, worktreeId, throttle.latest);
+    const waiters = throttle.waiters.splice(0);
+    // A synchronous throw rejects `run` too.
+    const run = (async (): Promise<void> =>
+      runPortalChatProjection(projectId, worktreeId, throttle.latest))();
+    void run.then(
+      () => waiters.forEach((waiter) => waiter(undefined)),
+      (error: unknown) => waiters.forEach((waiter) => waiter({ error })),
+    );
   }, delay);
   throttle.timer.unref?.();
+  return settled;
 }
 
 /** Tabs reach pickers with account MCP refs in the shared server key shape. */
@@ -327,15 +378,19 @@ export function registerChatPersistenceHandlers(
   getWindow: () => BrowserWindow | null = () => null,
   runtime?: DesktopCanopyRuntimeAccessors,
 ): void {
-  // A keyed defaults change normalizes inside its commit scope; the chat
-  // writes precede that decision and are not part of it (CAN-4409).
+  // A defaults change normalizes inside its commit scope and its manifest
+  // admission; the chat writes precede that decision and are not part of it
+  // (CAN-4409), so their observers' writes admit at their own sinks
+  // (CAN-4418).
   setBeforeProjectPluginDefaultsChangeHandler(
     (workspaceId, previousDefaults, previousProjectTombstones) =>
-      outsideW5CommitScope(() =>
-        normalizeWorkspaceChatsForInheritedPluginDefaults(
-          workspaceId,
-          previousDefaults,
-          previousProjectTombstones,
+      outsideStorageAdmission(() =>
+        outsideW5CommitScope(() =>
+          normalizeWorkspaceChatsForInheritedPluginDefaults(
+            workspaceId,
+            previousDefaults,
+            previousProjectTombstones,
+          ),
         ),
       ),
   );
@@ -455,11 +510,23 @@ export function registerChatPersistenceHandlers(
       assertWritableScope(req.projectId);
       validateId(req.tabId, 'chatId');
 
-      // A root chat with queued, starting or running delegates stays open:
-      // closing it would end the delegation tree. Auto-archive (keepSession)
-      // retries once they settle; a user close is refused with the reason.
-      if (chatHasLiveDelegations(req.projectId, req.worktreeId, req.tabId)) {
-        throw new LiveDelegationsError(LIVE_DELEGATES_CHAT_REFUSAL);
+      // Keep the chat open while delegates, provider agents, or workflows
+      // need it. Auto-archive retries after they settle; user close surfaces
+      // the specific blocking reason before any teardown or persistence.
+      const { assertChatCanClose } = await import('../agents/background-work');
+      assertChatCanClose(req.projectId, req.worktreeId, req.tabId);
+      // Auto-archive also waits for a send being dispatched, such as an async
+      // answer sent as the chat completes: archiving would reset its turn
+      // state and strand the admitted send. It retries at the next completion.
+      if (
+        req.keepSession === true &&
+        getChatStateService().isDispatchInFlight({
+          projectId: req.projectId,
+          worktreeId: req.worktreeId,
+          chatId: req.tabId,
+        })
+      ) {
+        throw new Error('A message to this chat is still being sent.');
       }
       if (req.keepSession !== true && hasDelegationLifecycle()) {
         await closeDelegationScope({
@@ -471,7 +538,8 @@ export function registerChatPersistenceHandlers(
 
       // Archive the canonical tab — the renderer names it by id and can no
       // longer supply (and therefore never stale-overwrite) its snapshot.
-      const live = await getChatStateService().getCompatibilityTabs(
+      const chatState = getChatStateService();
+      const live = await chatState.getCompatibilityTabs(
         { projectId: req.projectId, worktreeId: req.worktreeId },
         { chatIds: [req.tabId] },
       );
@@ -494,7 +562,7 @@ export function registerChatPersistenceHandlers(
       const turnCount = groupIntoTurns(turnMessages).filter(
         (entry) => entry.kind === 'turn-group',
       ).length;
-      const updated = await getChatStateService().archiveCompatibilityTab(
+      const updated = await chatState.archiveCompatibilityTab(
         { projectId: req.projectId, worktreeId: req.worktreeId },
         {
           tab: tabToArchive,
@@ -512,15 +580,32 @@ export function registerChatPersistenceHandlers(
       // Auto-archive keeps the session alive (`keepSession`) so a resumed turn
       // can still stream events and un-archive the chat. It must still clear
       // the active-turn gate; otherwise hook chats that wait for active chats
-      // can remain queued behind an archived tab.
+      // can remain queued behind an archived tab. The session is released
+      // once it cannot start a turn by itself.
       if (req.keepSession === true) {
         markChatSessionIdle(req.projectId, req.worktreeId, req.tabId);
+        releaseArchivedChatSessionWhenIdle(
+          {
+            projectId: req.projectId,
+            worktreeId: req.worktreeId,
+            chatId: req.tabId,
+          },
+          chatState,
+        );
       } else {
         const scope = {
           projectId: req.projectId,
           worktreeId: req.worktreeId,
           chatId: req.tabId,
         };
+        try {
+          markSessionTeardownCause(
+            buildSessionKey(req.projectId, req.worktreeId, req.tabId),
+            'archive',
+          );
+        } catch {
+          // Session-cause bookkeeping must never block chat archival.
+        }
         deferredToolsReloadCoordinator.cancelActiveReload(
           scope,
           'Deferred-tools reload was cancelled because the chat was archived.',
@@ -762,12 +847,8 @@ function finalizeInterruptedArchiveTab(
   tab: PersistedChatTab,
 ): PersistedChatTab {
   const completedAt = Date.now();
-  const closedTimerMessages = closeOpenPersistedTurnTimers(
+  const closedMessages = settlePersistedInterruptedMessages(
     tab.messages,
-    completedAt,
-  );
-  const closedMessages = closeOpenPersistedToolUses(
-    closedTimerMessages,
     completedAt,
   );
   return closedMessages === tab.messages

@@ -44,7 +44,7 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 //   ask-user `tool_use` display block, but that block is never surfaced to the
 //   renderer transcript on this path: across an automated turn the persisted
 //   transcript contains only the user `text` block and a `system` `turn_timer`
-//   block — no ask-user `tool_use`, no `tool_result`, no "User questions" row.
+//   block — no ask-user `tool_use`, no `tool_result`, no "Asked you" row.
 //   Polling the DOM every 250ms for ~60s never observes either the
 //   `ask-user-question-card` testid or the transient "Preparing question…"
 //   state (`maxCard=0`, `maxPreparing=0`), and the loop still advances to the

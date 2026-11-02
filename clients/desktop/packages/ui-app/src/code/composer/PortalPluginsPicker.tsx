@@ -9,8 +9,10 @@ import {
   useState,
   type ComponentType,
   type JSX,
+  type RefObject,
 } from 'react';
 import {
+  Button,
   ExternalTextLink,
   SecurityAuditSummary,
 } from '@canopy/ui-shared/components';
@@ -115,6 +117,12 @@ export interface AccountMcpSeam {
 }
 
 export interface PortalPluginsPickerProps {
+  /** Controlled ownership is fixed on mount. Omit to keep the standalone trigger. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  hideTrigger?: boolean;
+  returnFocusRef?: RefObject<HTMLElement | null>;
+  canRestoreFocus?: () => boolean;
   installedItems?: InstalledItemSnapshot;
   /** Stable target identity, available before deferred-policy hydration. */
   scopeKey?: string;
@@ -706,10 +714,24 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
   onApplied,
   deferredTools,
   installedItems,
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+  returnFocusRef,
+  canRestoreFocus,
 }: PortalPluginsPickerProps): JSX.Element {
   const refreshCatalog =
     accountMcp?.onCatalogRefresh ?? addMarketplace?.onCatalogRefresh ?? onOpen;
-  const [open, setOpen] = useState(false);
+  const controlled = useRef(controlledOpen !== undefined).current;
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlled ? controlledOpen === true : localOpen;
+  const setOpen = useCallback(
+    (next: boolean): void => {
+      if (!controlled) setLocalOpen(next);
+      onOpenChange?.(next);
+    },
+    [controlled, onOpenChange],
+  );
   const [confirmedSelections, setConfirmedSelections] = useState<{
     before: string;
     value: PortalChatTabPluginSelections;
@@ -788,7 +810,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     ],
   );
 
-  const handleOpen = useCallback((): void => {
+  const initializeDraft = useCallback((): void => {
     generation.current += 1;
     savingRef.current = false;
     setSaving(false);
@@ -812,9 +834,25 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
         ),
       ),
     });
-    setOpen(true);
     onOpen?.();
   }, [onOpen, selections]);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open === wasOpen.current) return;
+    wasOpen.current = open;
+    if (open) {
+      initializeDraft();
+    } else {
+      generation.current += 1;
+      savingRef.current = false;
+      setSaving(false);
+      setDraft(null);
+      setDetailEntry(null);
+      setMarketplaceDialogOpen(false);
+      setMarketplaceAdded(null);
+    }
+  }, [open, initializeDraft]);
+  const handleOpen = useCallback((): void => setOpen(true), [setOpen]);
   const handleClose = useCallback((): void => {
     if (savingRef.current) return;
     generation.current += 1;
@@ -823,7 +861,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     setDetailEntry(null);
     setMarketplaceDialogOpen(false);
     setMarketplaceAdded(null);
-  }, []);
+  }, [setOpen]);
   const toggle = useCallback(
     (key: string): void => {
       if (savingRef.current) return;
@@ -1006,51 +1044,56 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
 
   return (
     <div className="relative shrink-0">
-      <ChatComposerToolbarChip
-        variant="capsule"
-        icon={<PluginsIcon width={16} height={16} />}
-        label="Plugins"
-        labelClassName="hidden lg:inline"
-        trailing={
-          countPortalPluginSelections(selections) > 0 ? (
-            <span
-              data-testid="portal-plugins-count"
-              className="ml-0.5 inline-flex min-w-4.5 items-center justify-center rounded-full bg-fg-primary/10 px-1 text-3xs font-medium"
-            >
-              {countPortalPluginSelections(selections)}
-            </span>
-          ) : undefined
-        }
-        active={countPortalPluginSelections(selections) > 0}
-        activeStyle={{
-          backgroundColor: 'var(--bg-info-subtle)',
-          color: 'var(--fg-info)',
-        }}
-        ariaLabel="Plugins"
-        ariaHasPopup="dialog"
-        ariaExpanded={open}
-        title="Plugins"
-        dataTestId="portal-chat-plugins-button"
-        onClick={handleOpen}
-      />
+      {hideTrigger ? null : (
+        <ChatComposerToolbarChip
+          variant="capsule"
+          icon={<PluginsIcon width={16} height={16} />}
+          label="Plugins"
+          labelClassName="hidden lg:inline"
+          trailing={
+            countPortalPluginSelections(selections) > 0 ? (
+              <span
+                data-testid="portal-plugins-count"
+                className="ml-0.5 inline-flex min-w-4.5 items-center justify-center rounded-full bg-fg-primary/10 px-1 text-3xs font-medium"
+              >
+                {countPortalPluginSelections(selections)}
+              </span>
+            ) : undefined
+          }
+          active={countPortalPluginSelections(selections) > 0}
+          activeStyle={{
+            backgroundColor: 'var(--bg-info-subtle)',
+            color: 'var(--fg-info)',
+          }}
+          ariaLabel="Plugins"
+          ariaHasPopup="dialog"
+          ariaExpanded={open}
+          title="Plugins"
+          dataTestId="portal-chat-plugins-button"
+          onClick={handleOpen}
+        />
+      )}
       {open && draft && (
         <DialogModal
           onClose={handleClose}
+          trapFocus={hideTrigger}
+          restoreFocusRef={returnFocusRef}
+          restoreFocusWhen={canRestoreFocus}
           title="Plugins"
           titleId="portal-plugins-dialog-title"
           subtitle={`${String(selectedCount)} selected`}
           maxWidth="5xl"
           dataTestId="portal-plugins-modal"
           topRightActions={
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={handleSave}
               disabled={saving}
               data-testid="portal-plugins-save"
-              className="focus-ring inline-flex min-h-11 items-center rounded-md bg-accent px-4 text-s font-medium fg-emphasis hover:bg-accent/90 lg:min-h-0 lg:py-1"
             >
               Save
-            </button>
+            </Button>
           }
         >
           <div className="flex min-h-96 flex-1 flex-col p-5 pt-4">
@@ -1094,17 +1137,16 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
             )}
             {cloudScope && marketplacesEnabled && addMarketplace && (
               <div className="mt-3 flex justify-start border-t pt-3">
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={() => {
                     setMarketplaceAdded(null);
                     setMarketplaceDialogOpen(true);
                   }}
                   data-testid="portal-plugins-add-marketplace"
-                  className="focus-ring inline-flex min-h-11 items-center rounded-md border px-3 text-s font-medium fg-primary hover:bg-secondary/50 lg:min-h-0 lg:py-1.5"
                 >
                   Add marketplace
-                </button>
+                </Button>
               </div>
             )}
             {deferredTools && (

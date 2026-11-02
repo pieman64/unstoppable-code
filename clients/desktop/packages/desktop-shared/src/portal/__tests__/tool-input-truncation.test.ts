@@ -83,7 +83,7 @@ describe('Portal tool input truncation', () => {
     });
     for (const input of [
       inputOf(persisted[0]),
-      inputOf(live?.parts.find((part) => part.kind === 'tool_use')),
+      inputOf(live?.parts?.find((part) => part.kind === 'tool_use')),
     ]) {
       expect(getToolRowInput('mcp__canopy__ShowVisual', input)).toBe(
         'Revenue chart',
@@ -128,7 +128,7 @@ it('bounds aggregate live receipt metadata across Claude result blocks', () => {
       },
     },
   });
-  const metadata = projected?.parts.map((part) => {
+  const metadata = projected?.parts?.map((part) => {
     const data = part.data;
     return data && typeof data === 'object' && 'agentArtifacts' in data
       ? data.agentArtifacts

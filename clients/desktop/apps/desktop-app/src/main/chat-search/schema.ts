@@ -15,9 +15,11 @@ import { isSqliteRow } from './sqlite-rows';
  * derived data, so every mismatch is rebuilt rather than migrated in place.
  * Nullable columns that existing rows can leave empty are the exception:
  * `addMissingColumns` adds them in place, because a rebuild re-reads every
- * transcript in the background after an upgrade.
+ * transcript in the background after an upgrade. Version 9 adds explicit
+ * child-document ownership so parent deletion and retained-set reconciliation
+ * do not rely on doc-id prefixes.
  */
-export const CHAT_SEARCH_SCHEMA_VERSION = 8;
+export const CHAT_SEARCH_SCHEMA_VERSION = 9;
 
 const REQUIRED_TABLES = [
   'search_meta',
@@ -48,10 +50,14 @@ const CREATE_SCHEMA_STATEMENTS: readonly string[] = [
     review_status TEXT,
     transcript_fingerprint TEXT,
     committed_fingerprint TEXT,
-    active_fts_rowid INTEGER
+    active_fts_rowid INTEGER,
+    parent_doc_id TEXT,
+    delegation_id TEXT,
+    run_generation INTEGER
   )`,
   `CREATE INDEX idx_chat_docs_scope ON chat_docs(project_id, worktree_id)`,
   `CREATE INDEX idx_chat_docs_updated ON chat_docs(updated_at DESC)`,
+  `CREATE INDEX idx_chat_docs_parent ON chat_docs(parent_doc_id, document_kind)`,
   `CREATE TABLE source_files (
     file_key TEXT PRIMARY KEY,
     mtime_ms INTEGER NOT NULL,
@@ -75,6 +81,9 @@ const CREATE_SCHEMA_STATEMENTS: readonly string[] = [
 const ADDITIVE_CHAT_DOC_COLUMNS: ReadonlyArray<readonly [string, string]> = [
   ['committed_fingerprint', 'TEXT'],
   ['active_fts_rowid', 'INTEGER'],
+  ['parent_doc_id', 'TEXT'],
+  ['delegation_id', 'TEXT'],
+  ['run_generation', 'INTEGER'],
 ];
 
 function addMissingColumns(db: DatabaseSync): void {

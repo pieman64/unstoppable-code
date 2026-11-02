@@ -304,32 +304,23 @@ export function titlebarCornerWidthAtZoomPx(
   );
 }
 
-/**
- * The sidebar's minimum width in CSS px at `zoomFactor`.
- *
- * The expanded sidebar's titlebar row is the corner spacer plus the status
- * area, and the status area must keep the one-button budget asserted in
- * `sidebar-layout.test.ts`. Since the corner's traffic-light reserve is
- * physical, below 100% it eats extra CSS px out of that row, so the floor
- * grows by exactly that extra. Above 100% the extra is negative and the
- * floor stays at `SIDEBAR_MIN_WIDTH` — the status area simply gets roomier.
- */
+/** Keep the traffic-light reserve physical as the interface scales. */
 export function sidebarMinWidthPx(
   reserveTrafficLights: boolean,
   zoomFactor: number,
 ): number {
   if (!reserveTrafficLights) return SIDEBAR_MIN_WIDTH;
-  const extraReserve =
-    TRAFFIC_LIGHT_RESERVE_PX / zoomFactor - TRAFFIC_LIGHT_RESERVE_PX;
-  return SIDEBAR_MIN_WIDTH + Math.max(0, extraReserve);
+  return Math.max(
+    SIDEBAR_MIN_WIDTH,
+    SIDEBAR_MIN_WIDTH +
+      TRAFFIC_LIGHT_RESERVE_PX / zoomFactor -
+      TRAFFIC_LIGHT_RESERVE_PX,
+  );
 }
 
-/**
- * The CSS length form of {@link sidebarMinWidthPx}, for the rendered floor.
- * `max()` keeps a zoom above 100% (where the extra is negative) from pulling
- * the sidebar below `SIDEBAR_MIN_WIDTH`.
- */
+/** The same zoom-aware minimum for layout, including persisted widths. */
 export function sidebarMinWidthCss(reserveTrafficLights: boolean): string {
   if (!reserveTrafficLights) return `${SIDEBAR_MIN_WIDTH}px`;
-  return `max(${SIDEBAR_MIN_WIDTH}px, calc(${SIDEBAR_MIN_WIDTH}px + ${TRAFFIC_LIGHT_RESERVE_PX}px / var(--ui-zoom, 1) - ${TRAFFIC_LIGHT_RESERVE_PX}px))`;
+  const scaledWidth = SIDEBAR_MIN_WIDTH - TRAFFIC_LIGHT_RESERVE_PX;
+  return `max(${SIDEBAR_MIN_WIDTH}px, ${withTrafficLightReserveCss(true, scaledWidth)})`;
 }

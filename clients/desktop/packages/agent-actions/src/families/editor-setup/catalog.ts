@@ -35,7 +35,7 @@ export const editorSetupActionCatalog: readonly AgentActionCatalogEntry<
       'migrate from cursor',
     ],
     notes: [
-      'Opens the review only. The member consents to the scan and chooses which rules to use; App Advisor cannot scan, preview, or apply rules.',
+      'Opens the review only. The member consents to the scan and chooses which rules to use; Orchestrator cannot scan, preview, or apply rules.',
       'Cowork projects do not use Cursor rules; pass a code project id or omit workspaceId.',
     ],
   },

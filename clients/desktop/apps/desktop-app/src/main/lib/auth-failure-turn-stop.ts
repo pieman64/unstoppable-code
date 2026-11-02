@@ -246,7 +246,9 @@ export async function stopTurnForAuthFailure(
   // redundant and at worst races the teardown of a session the first call
   // already tore down.
   if (!merging) {
-    await cancelChatTurn(input.target, { preserveAuthRecovery: true });
+    await cancelChatTurn(input.target, 'teardown', undefined, {
+      preserveAuthRecovery: true,
+    });
   }
   // The caller clears the active-turn marker on `stopped: true` — see the
   // wiring in `worktree-chat-turn.ts`. Deliberately NOT done here: reaching

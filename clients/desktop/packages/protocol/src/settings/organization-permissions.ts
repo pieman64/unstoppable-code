@@ -1,4 +1,5 @@
 import type { OrganizationRole } from './organization';
+import type { OrganizationSettingsSubtab } from './routes';
 
 /**
  * Typed error for the team service layer. Mirrors `InviteServiceError`:
@@ -121,4 +122,61 @@ export function assertNotLastOwner(params: {
       'An organization must always have at least one owner',
     );
   }
+}
+
+/** What decides which organization Settings pages a viewer gets. */
+export interface OrganizationSettingsSubtabAccess {
+  readonly viewerRole: OrganizationRole;
+  /** The organization lost its `teams` capability (CAN-2311). */
+  readonly lapsed: boolean;
+  /** The billing flag is on for this viewer. */
+  readonly billingEnabled: boolean;
+  /** The viewer meets the organization's statistics role threshold. */
+  readonly canViewUsageStats: boolean;
+  /**
+   * The GitHub App is connected, or `null` when the caller does not know.
+   * While the organization is lapsed, Integrations stays only to disconnect:
+   * it shows when connected or unknown, so a connection is never stranded.
+   */
+  readonly githubConnected: boolean | null;
+  /**
+   * The viewer manages members' outside agents here (the host supplies the
+   * card, the viewer is an OWNER, the organization is not Personal).
+   */
+  readonly externalAgentsPolicy: boolean;
+}
+
+/**
+ * The organization Settings pages (General, Policies, Integrations, Usage,
+ * Billing) the viewer can open, in rail order. Each page shows only when at
+ * least one of its sections renders for this viewer, so neither the settings
+ * rail nor the page offers an empty page. The page and the rail share this
+ * one rule; the server stays the enforcement boundary.
+ *
+ * - Billing is reachable while lapsed: it is the one page that undoes a lapse.
+ * - Integrations stays while lapsed only to disconnect an existing connection,
+ *   since connecting is refused.
+ * - Policies stays while lapsed only for the outside-agents card.
+ */
+export function visibleOrganizationSettingsSubtabs(
+  access: OrganizationSettingsSubtabAccess,
+): OrganizationSettingsSubtab[] {
+  const canEdit = canEditOrg(access.viewerRole);
+  const healthy = !access.lapsed;
+  const visible: OrganizationSettingsSubtab[] = [];
+  if (canEdit) visible.push('general');
+  if (
+    (healthy && canEditOrgEnforcedSettings(access.viewerRole)) ||
+    access.externalAgentsPolicy
+  )
+    visible.push('policies');
+  if (canEdit && (healthy || access.githubConnected !== false))
+    visible.push('integrations');
+  if (
+    (healthy && canEditUsageStatsConfig(access.viewerRole)) ||
+    access.canViewUsageStats
+  )
+    visible.push('usage');
+  if (access.billingEnabled && canEdit) visible.push('billing');
+  return visible;
 }

@@ -1,8 +1,7 @@
 /** @jest-environment jsdom */
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { CanopyApi } from '@canopy/desktop-shared/types';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { getBrandMobileApps } from '@/lib/brand';
 import { useMobileActivation } from '../useMobileActivation';
@@ -50,7 +49,7 @@ describe('useMobileActivation', () => {
       configurable: true,
       value: {
         loadCanopyCloudMobileActivation: load,
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 

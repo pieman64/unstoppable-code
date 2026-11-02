@@ -34,7 +34,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import {
   resolvePersistedChatExecutionHarness,
   type ArchivedContainerManifest,
@@ -109,6 +109,7 @@ import {
   listCheckedOutBranches,
 } from './git';
 import { resolveWorktreeCwd } from './resolve-worktree';
+import { relocateExecutionCheckout } from '../pipelines/execution-checkout-location';
 import {
   findCodexRolloutFiles,
   resolveCodexHomeForTab,
@@ -1092,19 +1093,45 @@ function rewriteExecutionState(
   cwd: string,
 ): Record<string, unknown> {
   if (!isRecord(value)) throw new Error('Invalid archived execution state');
+  const sourceRoot = resolveWorktreeCwd(manifest.projectId, manifest.id);
   const next: Record<string, unknown> = {
-    ...value,
+    ...relocateExecutionCheckout(value, {
+      sourceWorkspaceId: manifest.projectId,
+      sourceWorktreeId: manifest.id,
+      destinationWorkspaceId: manifest.projectId,
+      destinationWorktreeId: destinationId,
+      rewrites: [
+        {
+          fromRoot: sourceRoot,
+          toRoot: cwd,
+        },
+      ],
+    }),
     project_id: manifest.projectId,
     worktree_id: destinationId,
-    cwd,
   };
-  if (isRecord(value.target) && value.target.scope === 'worktree') {
-    next.target = {
-      ...value.target,
-      workspace_id: manifest.projectId,
-      worktree_id: destinationId,
-      path: cwd,
+  const target = value.target;
+  if (
+    (isRecord(target) &&
+      target.scope === 'worktree' &&
+      target.workspace_id === manifest.projectId &&
+      target.worktree_id === manifest.id) ||
+    (target === undefined &&
+      value.project_id === manifest.projectId &&
+      value.worktree_id === manifest.id)
+  ) {
+    const unmapped = (candidate: unknown): boolean => {
+      if (typeof candidate !== 'string') return false;
+      const suffix = relative(sourceRoot, candidate);
+      return (
+        suffix === '..' || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)
+      );
     };
+    // Preserve archive-owned execution compatibility without inventing a
+    // replacement for an unmatched retained instruction boundary.
+    if (unmapped(value.cwd)) next.cwd = cwd;
+    if (isRecord(target) && isRecord(next.target) && unmapped(target.path))
+      next.target = { ...next.target, path: cwd };
   }
   return next;
 }
@@ -1343,7 +1370,7 @@ async function restoreWorktree(
         executionRestorePending: true,
       });
       warnings.push(
-        `Pipeline executions still awaiting restore: ${failed.join(', ')}.`,
+        `Workflow executions still awaiting restore: ${failed.join(', ')}.`,
       );
       return {
         kind: 'worktree',
@@ -1471,7 +1498,7 @@ async function restoreWorktree(
       ),
     );
     warnings.push(
-      `Pipeline executions failed to restore: ${failed.join(', ')}.`,
+      `Workflow executions failed to restore: ${failed.join(', ')}.`,
     );
     return {
       kind: 'worktree',

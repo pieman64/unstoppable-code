@@ -19,6 +19,10 @@ import {
   type PipelineRunCostView,
 } from '@canopy/protocol/cost-view';
 import { normalizeAuditEntry } from '../observability/audit-entry-parser';
+import {
+  sameAuditDayFileIdentity,
+  type AuditDayFileIdentity,
+} from '../observability/audit-stream-hooks';
 import { BillingEvidencePass } from './billing-evidence';
 import { emitCostUpdated } from './events';
 import {
@@ -281,14 +285,23 @@ function sealedRunActivityField(
   return latest === undefined ? {} : { sealedRunsLastActivityAt: latest };
 }
 
+/** Some filesystems report 0 for every file; that is no identity at all. */
+function knownInode(value: unknown): number | undefined {
+  return typeof value === 'number' && value !== 0 ? value : undefined;
+}
+
 function fileIdentityMatches(
   cursor: CostIndexCheckpoint['audit'][string] | undefined,
   inode: number | undefined,
 ): boolean {
   if (cursor === undefined) return false;
-  if (cursor.ino !== undefined && inode !== undefined)
-    return cursor.ino === inode;
-  return cursor.ino === undefined || inode === undefined;
+  const cursorInode = knownInode(cursor.ino);
+  const fileInode = knownInode(inode);
+  return (
+    cursorInode === undefined ||
+    fileInode === undefined ||
+    cursorInode === fileInode
+  );
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
@@ -442,7 +455,7 @@ export class CostIndexStore {
         (candidate) => candidate.chatId === request.chatId,
       );
       if (chatRead.corrupt) {
-        this.scheduleReplay();
+        this.replayForCorrupt(request.scope);
       } else if (chatRead.value === null) {
         this.replayForMissing(request.scope);
       }
@@ -484,7 +497,7 @@ export class CostIndexStore {
         isCostUnattachedFile,
       );
       if (unattachedRead.corrupt) {
-        this.scheduleReplay();
+        this.replayForCorrupt(request.scope);
       } else if (unattachedRead.value === null) {
         this.replayForMissing(request.scope);
       }
@@ -497,7 +510,7 @@ export class CostIndexStore {
         await this.host.readPipelineRun(request.scope, request.executionId),
       );
       if (projected === null)
-        return resultError('NOT_FOUND', 'Pipeline run cost was not found');
+        return resultError('NOT_FOUND', 'Workflow run cost was not found');
       return resultOk(
         pipelineRunViewNamesProxyAccounts(projected)
           ? labelPipelineRunView(projected, await this.readProxyAccountLabels())
@@ -678,10 +691,16 @@ export class CostIndexStore {
     return first[1];
   }
 
-  /** Called by audit retention before unlinking a day file; this never flushes observability. */
-  public async catchUpAndSealDay(dayFilename: string): Promise<boolean> {
+  /**
+   * Called by audit retention before unlinking a day file; this never flushes
+   * observability. Resolves with the identity of the file it consumed
+   * completely, or null when the file may still hold unread lines.
+   */
+  public async catchUpAndSealDay(
+    dayFilename: string,
+  ): Promise<AuditDayFileIdentity | null> {
     const day = parseDayFilename(dayFilename);
-    if (day === null) return false;
+    if (day === null) return null;
     try {
       await this.refreshInternal('idle');
       await this.waitForIdle();
@@ -691,8 +710,7 @@ export class CostIndexStore {
         const fileStats = await stat(filePath);
         const checkpoint = await this.readCheckpoint();
         const cursor = checkpoint?.audit[dayFilename];
-        const inode =
-          typeof fileStats.ino === 'number' ? fileStats.ino : undefined;
+        const inode = knownInode(fileStats.ino);
         if (
           cursor === undefined ||
           cursor.offset < fileStats.size ||
@@ -705,7 +723,7 @@ export class CostIndexStore {
           ...(inode === undefined ? {} : { ino: inode }),
         };
       });
-      if (before === null) return false;
+      if (before === null) return null;
       const targets = await this.scopesMentionedInDay(
         filePath,
         before.size,
@@ -714,25 +732,25 @@ export class CostIndexStore {
       for (const location of targets) await this.sealDayInScope(location, day);
       return this.withWriterLock(async () => {
         const after = await stat(filePath);
-        const inode = typeof after.ino === 'number' ? after.ino : undefined;
+        const inode = knownInode(after.ino);
         if (
-          after.size !== before.size ||
-          after.mtimeMs !== before.mtimeMs ||
-          (before.ino !== undefined &&
-            inode !== undefined &&
-            before.ino !== inode)
+          !sameAuditDayFileIdentity(before, {
+            size: after.size,
+            mtimeMs: after.mtimeMs,
+            ...(inode === undefined ? {} : { ino: inode }),
+          })
         )
-          return false;
+          return null;
         const checkpoint = await this.readCheckpoint();
         const cursor = checkpoint?.audit[dayFilename];
-        return (
-          cursor !== undefined &&
+        return cursor !== undefined &&
           cursor.offset >= after.size &&
           fileIdentityMatches(cursor, inode)
-        );
+          ? before
+          : null;
       });
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -1081,7 +1099,7 @@ export class CostIndexStore {
       existingSummary.incarnation !== location.incarnation ||
       existingSummary.projectId !== scope.projectId ||
       existingSummary.scopeId !== scopeId(scope);
-    const files = await this.listAuditFiles(
+    const { files } = await this.listAuditFiles(
       needsReplay ? { ...checkpoint, audit: {} } : checkpoint,
     );
     const states = new Map<string, ScopeState>();
@@ -1166,10 +1184,16 @@ export class CostIndexStore {
   private async runRefreshPass(
     currentCheckpoint: CostIndexCheckpoint,
   ): Promise<RefreshPassResult> {
-    const fileRecords = await this.listAuditFiles(currentCheckpoint);
-    const audit: Record<string, CostIndexCheckpoint['audit'][string]> = {
-      ...currentCheckpoint.audit,
-    };
+    const { files: fileRecords, present } =
+      await this.listAuditFiles(currentCheckpoint);
+    // A cursor for a day file that is gone (retention deleted it) has nothing
+    // left to resume; keeping it would grow the checkpoint forever.
+    const audit: Record<string, CostIndexCheckpoint['audit'][string]> =
+      Object.fromEntries(
+        Object.entries(currentCheckpoint.audit).filter(([filename]) =>
+          present.has(filename),
+        ),
+      );
     const scopeStates = new Map<string, ScopeState>();
     const resolved = new Map<string, Promise<CostScopeLocation | null>>();
     let forceReplay = false;
@@ -1275,15 +1299,18 @@ export class CostIndexStore {
     return { checkpoint, changed, linesRead, forceReplay };
   }
 
-  private async listAuditFiles(
-    checkpoint: CostIndexCheckpoint,
-  ): Promise<AuditFile[]> {
+  /** The day files to read, and the names of every day file that exists. */
+  private async listAuditFiles(checkpoint: CostIndexCheckpoint): Promise<{
+    readonly files: AuditFile[];
+    readonly present: ReadonlySet<string>;
+  }> {
     const directory = this.host.auditDirectory();
+    const present = new Set<string>();
     let filenames: string[];
     try {
       filenames = await readdir(directory);
     } catch (error) {
-      if (isMissing(error)) return [];
+      if (isMissing(error)) return { files: [], present };
       throw error;
     }
     const files: AuditFile[] = [];
@@ -1297,8 +1324,8 @@ export class CostIndexStore {
         if (isMissing(error)) continue;
         throw error;
       }
-      const inode =
-        typeof fileStats.ino === 'number' ? fileStats.ino : undefined;
+      present.add(filename);
+      const inode = knownInode(fileStats.ino);
       const cursor = checkpoint.audit[filename];
       const reset =
         cursor !== undefined &&
@@ -1325,7 +1352,7 @@ export class CostIndexStore {
         reset,
       });
     }
-    return files;
+    return { files, present };
   }
 
   private async readAuditLines(
@@ -2083,7 +2110,8 @@ export class CostIndexStore {
   }
 
   private async loadOrCreateCheckpoint(): Promise<CostIndexCheckpoint> {
-    const loaded = await this.readCheckpoint();
+    const read = await readCheckpointFile(this.host.checkpointPath());
+    const loaded = read.value;
     if (loaded !== null && loaded.generation === CURRENT_GENERATION)
       return loaded;
     if (loaded !== null) {
@@ -2093,17 +2121,27 @@ export class CostIndexStore {
         audit: {},
       };
     }
-    const filenames = await this.auditFilenames();
-    const now = this.now();
+    // A later release wrote this one. Its cursors mean nothing here, so every
+    // remaining day file is read again, but the history it built is kept.
+    const preserved = read.newer?.preserved;
     return {
       version: 1,
       generation: CURRENT_GENERATION,
-      firstBuild: {
-        at: now.toISOString(),
-        coverageStart:
-          filenames[0]?.slice(0, 10) ?? now.toISOString().slice(0, 10),
-      },
+      firstBuild: preserved?.firstBuild ?? (await this.newFirstBuild()),
+      ...(preserved?.retainedFillComplete === undefined
+        ? {}
+        : { retainedFillComplete: preserved.retainedFillComplete }),
       audit: {},
+    };
+  }
+
+  private async newFirstBuild(): Promise<CostIndexCheckpoint['firstBuild']> {
+    const filenames = await this.auditFilenames();
+    const now = this.now();
+    return {
+      at: now.toISOString(),
+      coverageStart:
+        filenames[0]?.slice(0, 10) ?? now.toISOString().slice(0, 10),
     };
   }
 
@@ -2117,7 +2155,7 @@ export class CostIndexStore {
   ): Promise<CostSummaryFile | null> {
     const read = await readSummaryFile(location.directory);
     const summary = read.value;
-    if (read.corrupt) this.scheduleReplay();
+    if (read.corrupt) this.replayForCorrupt(location.scope);
     else if (summary === null) this.replayForMissing(location.scope);
     if (
       summary !== null &&
@@ -2145,7 +2183,7 @@ export class CostIndexStore {
           discarded = true;
         }
       });
-      if (discarded) this.scheduleReplay();
+      if (discarded) this.replayForCorrupt(location.scope);
       return null;
     }
     return summary;
@@ -2155,7 +2193,15 @@ export class CostIndexStore {
   private replayForMissing(scope: CostScopeRef): void {
     if (this.fullScanCompleted) return;
     this.scopesAwaitingFullScan.set(costScopeKey(scope), scope);
-    this.scheduleReplay();
+    if (scope.kind !== 'retained') this.scheduleReplay();
+  }
+
+  /**
+   * A retained scope is sealed: a replay never writes it, so its unreadable
+   * file is kept aside (once) and read as missing without any audit work.
+   */
+  private replayForCorrupt(scope: CostScopeRef): void {
+    if (scope.kind !== 'retained') this.scheduleReplay();
   }
 
   /** Returns the scopes whose views should reload now that the scan is done. */

@@ -3,6 +3,7 @@
 import { memo, useMemo, type JSX, type ReactNode } from 'react';
 import {
   DagProgressBar,
+  type DagJobMeta,
   type DagJobStatus,
 } from '@canopy/ui-shared/components';
 import {
@@ -194,6 +195,34 @@ export function githubWorkflowRunRowTitle(
   return run.runAttempt > 1 ? `${lead} · attempt ${run.runAttempt}` : lead;
 }
 
+/**
+ * A run's jobs as the DAG progress bar draws them: tiers from its declared
+ * job graph when known, else inferred from when GitHub created each job.
+ */
+export function githubWorkflowRunDag(
+  run: Pick<GitHubWorkflowRunRowData, 'definition' | 'jobs'>,
+): { tiers: string[][]; jobs: Record<string, DagJobMeta> } {
+  const observed = run.jobs ?? [];
+  if (run.definition && run.definition.jobs.length > 0) {
+    return githubWorkflowDefinitionTiers(run.definition, observed);
+  }
+  return {
+    tiers: githubWorkflowJobTiers(observed),
+    jobs: Object.fromEntries(
+      observed.map((job) => [
+        job.jobId,
+        {
+          jobId: job.jobId,
+          name: job.name,
+          status: githubWorkflowJobDagStatus(job),
+          ...(job.startedAt ? { startedAt: job.startedAt } : {}),
+          ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+        },
+      ]),
+    ),
+  };
+}
+
 export interface GitHubWorkflowRunRowProps {
   run: GitHubWorkflowRunRowData;
   /** Opens the run on GitHub; the whole card is the affordance. */
@@ -223,35 +252,18 @@ export const GitHubWorkflowRunRow = memo(function GitHubWorkflowRunRow({
   const status = githubWorkflowRunRowStatus(run.state);
   const jobs = run.jobs ?? [];
   const jobsById = Object.fromEntries(jobs.map((job) => [job.jobId, job]));
-  const layout = useMemo(() => {
-    const observed = run.jobs ?? [];
-    if (run.definition && run.definition.jobs.length > 0) {
-      return githubWorkflowDefinitionTiers(run.definition, observed);
-    }
-    return {
-      tiers: githubWorkflowJobTiers(observed),
-      jobs: Object.fromEntries(
-        observed.map((job) => [
-          job.jobId,
-          {
-            jobId: job.jobId,
-            name: job.name,
-            status: githubWorkflowJobDagStatus(job),
-            ...(job.startedAt ? { startedAt: job.startedAt } : {}),
-            ...(job.completedAt ? { completedAt: job.completedAt } : {}),
-          },
-        ]),
-      ),
-    };
-  }, [run.definition, run.jobs]);
+  const layout = useMemo(
+    () => githubWorkflowRunDag({ definition: run.definition, jobs: run.jobs }),
+    [run.definition, run.jobs],
+  );
   return (
     <div
       data-testid={dataTestId ?? `github-workflow-run-card-${run.runId}`}
       data-run-status={status.label}
       className={
         status.active
-          ? 'relative rounded-lg ring-1 ring-line-base bg-fg-primary/[0.03] px-3 py-3 transition hover:ring-line-base hover:bg-fg-primary/[0.05]'
-          : 'relative rounded-lg ring-1 ring-line-base/40 bg-fg-primary/[0.015] px-3 py-2.5 transition hover:ring-line-base hover:bg-fg-primary/[0.03]'
+          ? 'relative rounded-lg ring-1 ring-line-base bg-fg-primary/[0.03] px-3 py-3 transition-colors hover:ring-line-base hover:bg-fg-primary/[0.05]'
+          : 'relative rounded-lg ring-1 ring-line-base/40 bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:ring-line-base hover:bg-fg-primary/[0.03]'
       }
     >
       <button

@@ -1,0 +1,479 @@
+import { assertStorageWriteAllowed, STORAGE_OWNERSHIP } from '../../storage';
+// Explicit commit-log modules only: the commit-log index loads node:sqlite,
+// which only the worker opens.
+import type {
+  W5CaptureRequest,
+  W5CaptureResult,
+} from './commit-log/capture-contract';
+import type {
+  W5CommitRequest,
+  W5ReceiptLookup,
+  W5Reservation,
+  W5ReservationFailureDiagnostics,
+  W5Resource,
+} from './commit-log/commit-log';
+import { W5CommitRefusedError } from './commit-log/errors';
+import { fingerprintW5File } from './commit-log/fingerprint';
+import {
+  workspaceCreationDiagnosticsSchema,
+  type WorkspaceCreationDiagnostics,
+} from './commit-log/reservation-diagnostics';
+import type {
+  W5CommitOutcome,
+  W5HostRecoveryReport,
+} from './commit-log/worker-contract';
+import {
+  currentW5CommitScope,
+  runW5Commit,
+  type W5CommitOptions,
+  type W5ObservedFile,
+} from './commit-scope';
+import {
+  createSerialQueue,
+  type W5FileRead,
+  type W5FileStore,
+} from './file-store';
+import type { W5StorageAdmission } from './storage-binding';
+import type { W5StorageTarget } from './storage-target';
+
+/** Refused before the durable decision: the repository's read is stale. */
+export class W5FileWriteRefusedError extends Error {
+  readonly reason = 'fingerprint-conflict';
+  constructor(readonly path: string) {
+    super('This was changed since it was read. Reload and try again.');
+    this.name = 'W5FileWriteRefusedError';
+  }
+}
+
+/** A caller precondition refused by SQLite, distinct from a file conflict. */
+export class W5RevisionConflictError extends Error {
+  readonly reason = 'revision-conflict';
+  constructor(
+    readonly resource: string,
+    readonly expected: number,
+    readonly actual: number,
+  ) {
+    super('This was changed since it was read. Reload and try again.');
+    this.name = 'W5RevisionConflictError';
+  }
+}
+
+export interface W5ReservationInput {
+  reservationId: string;
+  operation: string;
+  receipt?: NonNullable<W5CommitRequest['receipt']>;
+  diagnostics?: unknown;
+}
+
+/**
+ * The commit-log host calls the store makes. Hosts keep worker construction,
+ * startup, shutdown and root selection; this only names the calls.
+ */
+export interface W5CommitLogHostPort {
+  /** The W5 data root the host captures and writes under. */
+  readonly root: string;
+  /**
+   * Views of one host (W5e attributed ports) name the host here, so every
+   * store over any of them shares its final-decision queue. Default: itself.
+   */
+  readonly commitQueueKey?: object;
+  recoveryReport(): Promise<W5HostRecoveryReport>;
+  commit(request: W5CommitRequest): Promise<W5CommitOutcome>;
+  lookupReceipt(
+    receipt: NonNullable<W5CommitRequest['receipt']>,
+  ): Promise<W5ReceiptLookup>;
+  reserve(input: W5ReservationInput): Promise<void>;
+  updateReservationDiagnostics(
+    reservationId: string,
+    diagnostics: WorkspaceCreationDiagnostics,
+  ): Promise<void>;
+  releaseReservation(reservationId: string): Promise<void>;
+  markReservationRecoveryRequired(
+    reservationId: string,
+    diagnostics: W5ReservationFailureDiagnostics,
+  ): Promise<void>;
+  revision(resource: W5Resource): Promise<number>;
+  capture(request: W5CaptureRequest): Promise<W5CaptureResult>;
+}
+
+/** The host's late admission of one checked write its operation did not admit. */
+export type W5StorageWriteAdmission = <T>(
+  target: W5StorageTarget,
+  write: () => Promise<T>,
+) => Promise<T>;
+
+export interface W5CommitLogFileStoreBindings {
+  /**
+   * Resolved once per recovery attempt. Return the same object for the same
+   * host: stores sharing a host share its final-decision queue by identity.
+   */
+  getHost: () => W5CommitLogHostPort | Promise<W5CommitLogHostPort>;
+  warn: (message: string, context: Record<string, unknown>) => void;
+  /** Reads files directly, outside the commit log. */
+  readFile: (filePath: string) => Promise<W5FileRead>;
+  /** Admits every target a scope staged before its decision. */
+  admit: W5StorageAdmission;
+  /** Admits an unscoped replace its operation did not admit. */
+  admitWrite: W5StorageWriteAdmission;
+  /**
+   * The per-write ownership check; defaults to the target writer's. A
+   * daemon-backed store leaves it to its authority, which checks `daemon`.
+   */
+  assertWrite?: (target: W5StorageTarget) => void;
+}
+
+export interface W5CommitLogFileStore extends W5FileStore {
+  withCommit<T>(options: W5CommitOptions, work: () => Promise<T>): Promise<T>;
+  lookupReceipt(
+    receipt: NonNullable<W5CommitRequest['receipt']>,
+  ): Promise<W5ReceiptLookup>;
+  reserve(input: W5ReservationInput): Promise<void>;
+  readReservations(): Promise<W5Reservation[]>;
+  updateReservationDiagnostics(
+    reservationId: string,
+    diagnostics: WorkspaceCreationDiagnostics,
+  ): Promise<void>;
+  releaseReservation(reservationId: string): Promise<void>;
+  markReservationRecoveryRequired(
+    reservationId: string,
+    diagnostics: W5ReservationFailureDiagnostics,
+  ): Promise<void>;
+  readRevisions(
+    resources: readonly W5Resource[],
+  ): Promise<NonNullable<W5CommitRequest['expectedRevisions']>>;
+  /** One serialized capture after launch recovery, with the root it is under. */
+  capture?(
+    request: W5CaptureRequest,
+  ): Promise<{ capture: W5CaptureResult; root: string }>;
+}
+
+export function w5ResourceKey(resource: W5Resource): string {
+  // Matches the commit log's key without loading its node:sqlite runtime.
+  switch (resource.kind) {
+    case 'workspaces':
+      return 'workspaces';
+    case 'workspace':
+      return `workspace:${resource.workspaceId}`;
+    case 'worktrees':
+      return `worktrees:${resource.workspaceId}`;
+    case 'worktree':
+      return `worktree:${resource.workspaceId}/${resource.worktreeId}`;
+  }
+}
+
+// All stores using a host share its final decision queue. The worker itself
+// serializes requests; this also keeps the host's preflight in the same order.
+const commitQueues = new WeakMap<
+  object,
+  ReturnType<typeof createSerialQueue>
+>();
+function commitQueue(
+  host: W5CommitLogHostPort,
+): ReturnType<typeof createSerialQueue> {
+  const key = host.commitQueueKey ?? host;
+  const existing = commitQueues.get(key);
+  if (existing) return existing;
+  const queue = createSerialQueue();
+  commitQueues.set(key, queue);
+  return queue;
+}
+
+/** Runs `task` in `host`'s final-decision queue, which every store on it shares. */
+export function runInW5CommitQueue<T>(
+  host: W5CommitLogHostPort,
+  task: () => Promise<T>,
+): Promise<T> {
+  return commitQueue(host)(task);
+}
+
+/** The queued fingerprint preflight: refuses before any decision. */
+export async function preflightW5Files(
+  readFile: (filePath: string) => Promise<W5FileRead>,
+  files: readonly { path: string; previousFingerprint: string | null }[],
+): Promise<void> {
+  for (const file of files) {
+    const current = await readFile(file.path);
+    if (
+      current.state === 'unreadable' ||
+      fingerprintW5File(current.state === 'present' ? current.raw : null) !==
+        file.previousFingerprint
+    ) {
+      throw new W5FileWriteRefusedError(file.path);
+    }
+  }
+}
+
+/** One launch barrier shared by all three repositories using this store. */
+export function createW5CommitLogFileStore(
+  bindings: W5CommitLogFileStoreBindings,
+): W5CommitLogFileStore {
+  const { warn, readFile, admit, admitWrite } = bindings;
+  const assertWrite =
+    bindings.assertWrite ??
+    ((target: W5StorageTarget): void =>
+      assertStorageWriteAllowed(
+        target.namespace,
+        target.writer,
+        STORAGE_OWNERSHIP,
+      ));
+  let ready: Promise<W5CommitLogHostPort> | undefined;
+  function recover(): Promise<W5CommitLogHostPort> {
+    if (ready) return ready;
+    const attempt = (async (): Promise<W5CommitLogHostPort> => {
+      const host = await bindings.getHost();
+      const report = await host.recoveryReport();
+      for (const commitId of report.recoveryRequired) {
+        const detail = report.recoveryRequiredDetails?.find(
+          (entry) => entry.commitId === commitId,
+        );
+        warn('W5 commit requires recovery', {
+          commitId,
+          reason: 'file-apply-incomplete',
+          ...(detail
+            ? {
+                diagnostics: {
+                  conflictCount: detail.conflictCount,
+                  writtenFileCount: detail.writtenFileCount,
+                  unexpectedFailure: detail.unexpectedFailure,
+                },
+              }
+            : {}),
+        });
+      }
+      for (const reservationId of report.recoveryRequiredReservations ?? []) {
+        const diagnostic = workspaceCreationDiagnosticsSchema.safeParse(
+          report.reservations?.find(
+            (entry) => entry.reservationId === reservationId,
+          )?.diagnostics,
+        );
+        warn('W5 reservation requires recovery', {
+          reservationId,
+          reason: 'interrupted-operation',
+          ...(diagnostic.success ? { diagnostics: diagnostic.data } : {}),
+        });
+      }
+      return host;
+    })();
+    ready = attempt;
+    // Share each attempt, retaining only successful recovery. A later call
+    // can ask the host's replacement worker to recover after startup fails.
+    void attempt.catch((): void => {
+      if (ready === attempt) ready = undefined;
+    });
+    return attempt;
+  }
+
+  // Only final preflight/decision/application is serialized. This queue
+  // never acquires repository locks and is never held while work runs.
+  async function commitFiles(
+    options: W5CommitOptions,
+    files: readonly W5ObservedFile[],
+    advance: readonly W5Resource[],
+  ): Promise<void> {
+    if (
+      !files.length &&
+      !options.expectedRevisions?.length &&
+      !options.receipt &&
+      !options.reservationId
+    )
+      return;
+    const queuedHost = await recover();
+    await commitQueue(queuedHost)(async (): Promise<void> => {
+      // A preceding queued commit can invalidate recovery while this scope
+      // waits. Finish the replacement worker's recovery before preflight.
+      const host = await recover();
+      const changes = files.map(({ path, contents, previousRaw }) => ({
+        path,
+        contents,
+        previousFingerprint: fingerprintW5File(previousRaw),
+      }));
+      await preflightW5Files(readFile, changes);
+      let outcome: W5CommitOutcome;
+      try {
+        options.beforeDecision?.();
+        outcome = await host.commit({
+          operation: options.operation,
+          receipt: options.receipt,
+          reservationId: options.reservationId,
+          expectedRevisions: options.expectedRevisions,
+          advance,
+          files: changes,
+          outcome: options.outcome ?? null,
+        });
+      } catch (error) {
+        // A failed worker call may have left a durable, unapplied decision.
+        // The next read/queued preflight must await recovery again.
+        ready = undefined;
+        if (
+          error instanceof W5CommitRefusedError &&
+          error.reason === 'revision-conflict'
+        ) {
+          const { resource, expected, actual } = error.details;
+          if (
+            typeof resource === 'string' &&
+            typeof expected === 'number' &&
+            typeof actual === 'number'
+          ) {
+            throw new W5RevisionConflictError(resource, expected, actual);
+          }
+        }
+        throw error;
+      }
+      // Returned, not thrown: the worker answered, so recovery stays valid.
+      if (outcome.status === 'recovery-required') {
+        throw new W5CommitRefusedError(
+          'recovery-required',
+          'This change was saved but did not finish and needs recovery.',
+          { commitId: outcome.commitId },
+        );
+      }
+    });
+  }
+
+  async function fenceLockedFiles(options: W5CommitOptions): Promise<void> {
+    if (!options.fenceLockedFiles) return;
+    const scope = currentW5CommitScope();
+    if (!scope) throw new Error('Missing W5 commit scope');
+    for (const { path } of options.locks ?? []) {
+      // Nested scopes retain the first observation or staged preimage.
+      if (scope.observed.has(path) || scope.files.has(path)) continue;
+      const read = await store.read(path);
+      if (read.state === 'unreadable') throw new W5FileWriteRefusedError(path);
+      const raw = read.state === 'present' ? read.raw : null;
+      if (!scope.observed.has(path))
+        scope.observed.set(path, { path, contents: raw, previousRaw: raw });
+    }
+  }
+
+  const store: W5CommitLogFileStore = {
+    withCommit: (options, work) =>
+      runW5Commit(
+        store,
+        options,
+        async () => {
+          await fenceLockedFiles(options);
+          return work();
+        },
+        (scope) => {
+          const files = new Map<string, W5ObservedFile>(scope.observed);
+          for (const [path, observed] of Array.from(scope.observed)) {
+            const staged = scope.files.get(path);
+            if (
+              staged &&
+              fingerprintW5File(staged.previousRaw) !==
+                fingerprintW5File(observed.previousRaw)
+            )
+              throw new W5FileWriteRefusedError(path);
+          }
+          scope.files.forEach((file, path) => files.set(path, file));
+          return admit(Array.from(scope.storage.values()), () =>
+            commitFiles(
+              scope.options,
+              Array.from(files.values()),
+              Array.from(scope.advance.values()),
+            ),
+          );
+        },
+      ),
+    async lookupReceipt(receipt) {
+      return (await recover()).lookupReceipt(receipt);
+    },
+    async readReservations() {
+      return (await (await recover()).recoveryReport()).reservations ?? [];
+    },
+    async reserve(input) {
+      await (await recover()).reserve(input);
+    },
+    async updateReservationDiagnostics(reservationId, diagnostics) {
+      await (
+        await recover()
+      ).updateReservationDiagnostics(reservationId, diagnostics);
+    },
+    async releaseReservation(reservationId) {
+      await (await recover()).releaseReservation(reservationId);
+    },
+    async markReservationRecoveryRequired(reservationId, diagnostics) {
+      await (
+        await recover()
+      ).markReservationRecoveryRequired(reservationId, diagnostics);
+    },
+    async readRevisions(resources) {
+      const host = await recover();
+      return Promise.all(
+        resources.map(async (resource) => ({
+          resource,
+          revision: await host.revision(resource),
+        })),
+      );
+    },
+    async capture(request) {
+      const host = await recover();
+      return { capture: await host.capture(request), root: host.root };
+    },
+    async read(filePath): Promise<W5FileRead> {
+      const scope = currentW5CommitScope();
+      if (scope && scope.store !== store)
+        throw new Error('A W5 scope cannot span stores');
+      const staged = scope?.files.get(filePath);
+      if (staged) return { state: 'present', raw: staged.contents };
+      try {
+        await recover();
+      } catch (error) {
+        return {
+          state: 'unreadable',
+          ...(error instanceof Error ? { error } : {}),
+        };
+      }
+      return readFile(filePath);
+    },
+    async replace(filePath, contents, storage, replacement): Promise<void> {
+      assertWrite(storage);
+      await admitWrite(storage, async (): Promise<void> => {
+        await recover();
+        const files = [
+          { path: filePath, contents, previousRaw: replacement.previousRaw },
+          ...(replacement.backup ? [replacement.backup] : []),
+        ];
+        const scope = currentW5CommitScope();
+        if (!scope) {
+          await commitFiles(
+            { operation: replacement.operation },
+            files,
+            replacement.advance,
+          );
+          return;
+        }
+        if (scope.store !== store)
+          throw new Error('A W5 scope cannot span stores');
+        scope.storage.set(storage.namespace, storage);
+        // Preserve the fingerprint of the first read, while subsequent writes
+        // read their own staged image. Keep the original rolling backup.
+        for (const file of files) {
+          const staged = scope.files.get(file.path);
+          if (
+            staged &&
+            fingerprintW5File(staged.contents) !==
+              fingerprintW5File(file.previousRaw)
+          ) {
+            throw new W5FileWriteRefusedError(file.path);
+          }
+        }
+        for (const file of files) {
+          const staged = scope.files.get(file.path);
+          if (file.path !== filePath) {
+            const main = scope.files.get(filePath);
+            if (staged || main?.previousRaw === null) continue;
+            if (main) file.contents = main.previousRaw ?? file.contents;
+          }
+          scope.files.set(file.path, {
+            ...file,
+            previousRaw: staged ? staged.previousRaw : file.previousRaw,
+          });
+        }
+        for (const resource of replacement.advance)
+          scope.advance.set(w5ResourceKey(resource), resource);
+      });
+    },
+  };
+  return store;
+}

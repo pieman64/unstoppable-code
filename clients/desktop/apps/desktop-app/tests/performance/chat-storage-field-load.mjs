@@ -34,14 +34,23 @@
  * replay can be read against the capture's own field medians. Plain Node
  * stands in for Electron main; times are E2E-relative, not release evidence.
  */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { percentile } from './field-load-capture.mjs';
+import { createD11Replay, D11_LIFECYCLE_SCHEDULE } from './d11-card-replay.mjs';
 
 const DEFAULT_CAPTURE = new URL(
   './field-loads/2026-10-06-orchestrator-storm.json',
@@ -139,6 +148,8 @@ export function fieldLoadReplayPlan(capture, profile) {
       // replay window it is not patched.
       patchShare:
         profile.cardPolicy === 'persisted-projection' ||
+        profile.cardPolicy === 'stream-descriptor' ||
+        profile.cardPolicy === 'd11-cards' ||
         cardByteFractions.length === 0 ||
         fieldCommitsPerMinute === 0
           ? 0
@@ -169,9 +180,13 @@ export function fieldLoadReplayPlan(capture, profile) {
     durationMs: profile.durationMs,
     byteScale: profile.byteScale,
     cardPolicy: profile.cardPolicy ?? 'legacy',
+    streamCount: profile.streamCount,
     frameBytes,
     owners,
     pooledOwners: pooled.map((owner) => `${owner.scope}/${String(owner.chat)}`),
+    ...(profile.cardPolicy === 'd11-cards'
+      ? { cardSeeding: 'broker', lifecycleSchedule: D11_LIFECYCLE_SCHEDULE }
+      : {}),
   };
 }
 
@@ -262,6 +277,9 @@ async function loadRuntime() {
     ...(await load(
       '../../../../packages/agent-transcript/src/lib/delegation-transcript.ts',
     )),
+    ...(await load(
+      '../../../../packages/desktop-shared/src/node/work-counters.ts',
+    )),
   };
 }
 
@@ -296,8 +314,16 @@ async function* seedMessages(runtime, owner, chatId, seeded) {
 }
 
 /** Seeds one scope with its owners' chats and opens a turn on each. */
-async function seedScope(runtime, root, scope, owners) {
-  const store = new runtime.ChatStorageV2(root, scope);
+export function storageFormatOption(value = 'v2') {
+  if (!['v2', 'v3', 'v4'].includes(value))
+    throw new Error(`Unknown storage format: ${value}`);
+  return value;
+}
+
+async function seedScope(runtime, root, scope, owners, storageFormat, d11) {
+  const store = new runtime.ChatStorageV2(root, scope, undefined, {
+    maxManifestVersion: storageFormat === 'v4' ? 4 : 3,
+  });
   const chats = owners.map((owner) => ({
     owner,
     chatId: `chat-${String(owner.chat)}`,
@@ -327,13 +353,32 @@ async function seedScope(runtime, root, scope, owners) {
               // republishes.
               globalInstructionsSnapshot: filler('index', owner.tabIndexBytes),
             },
-            messages: seedMessages(runtime, owner, chatId, seeded),
+            messages: d11
+              ? d11.seedMessages(owner, chatId, seeded)
+              : seedMessages(runtime, owner, chatId, seeded),
           });
         }
       })(),
     }),
   );
-  const backend = new runtime.ChatStateV2Backend(store);
+  const backend = new runtime.ChatStateV2Backend(
+    store,
+    storageFormat === 'v2'
+      ? {}
+      : {
+          deltaJournal: {},
+          ...(storageFormat === 'v4' ? { enableFormat4: true } : {}),
+        },
+  );
+  if (storageFormat !== 'v2') await backend.promoteToDeltaJournal();
+  if (storageFormat === 'v4') await backend.promoteToFormat4();
+  let d11Scope;
+  if (d11) {
+    await backend.flush();
+    backend.releaseJournal();
+    await backend.disposeArtifactMaintenance();
+    d11Scope = await d11.attachScope(scope, owners, chats, store);
+  }
   runtime.registerChatStorageScope(store.directory, {
     projectId: 'field-load',
     worktreeId: scope,
@@ -342,10 +387,12 @@ async function seedScope(runtime, root, scope, owners) {
   const states = [];
   for (const { owner, chatId, seeded } of chats) {
     const commit = (mutations) =>
-      backend.transact(() => mutations, {
-        source: 'provider',
-        chatIds: [chatId],
-      });
+      d11Scope
+        ? d11Scope.commit(chatId, mutations)
+        : backend.transact(() => mutations, {
+            source: 'provider',
+            chatIds: [chatId],
+          });
     const turnStartedAt = seeded.rows + 1;
     // Open the turn the way a prompt does: a committed user row plus an open
     // timer in the active tail.
@@ -428,18 +475,25 @@ async function seedScope(runtime, root, scope, owners) {
       ]);
       state.appendMs.push(performance.now() - startedAt);
     };
+    if (d11) state.next = d11.wrapForeground(owner, state.next);
     states.push(state);
   }
   return { backend, owners: states };
 }
 
 /** Runs the plan and returns the report artifact. */
-export async function runFieldLoadReplay(plan, { root }) {
+export async function runFieldLoadReplay(plan, { root, storageFormat = 'v2' }) {
+  if (plan.cardPolicy === 'd11-cards' && storageFormat !== 'v4')
+    throw new Error('d11-cards policy requires --storage-format v4');
   const runtime = await loadRuntime();
   const rewrites = [];
+  let d11;
   let diagnosticClock = 0;
   runtime.setChatTranscriptRewriteDiagnosticsForTests({
-    sink: (record) => rewrites.push(record),
+    sink: (record) => {
+      rewrites.push(record);
+      d11?.observeRewrite(record);
+    },
     // One record per rewrite: step past the per-chat rate limit each time.
     now: () =>
       (diagnosticClock +=
@@ -448,14 +502,358 @@ export async function runFieldLoadReplay(plan, { root }) {
 
   const backends = [];
   try {
-    return await replay(runtime, plan, root, backends, rewrites);
+    if (plan.cardPolicy === 'd11-cards')
+      d11 = await createD11Replay(plan, root);
+    const result = await replay(
+      runtime,
+      plan,
+      root,
+      backends,
+      rewrites,
+      storageFormat,
+      d11,
+    );
+    if (plan.cardPolicy !== 'stream-descriptor') return result;
+    if (storageFormat !== 'v4')
+      throw new Error('stream-descriptor policy requires --storage-format v4');
+    return {
+      ...result,
+      childStreams: await runChildDescriptorScenario(
+        runtime,
+        root,
+        plan,
+        backends,
+        rewrites,
+      ),
+    };
   } finally {
-    runtime.setChatTranscriptRewriteDiagnosticsForTests();
-    for (const backend of backends) await backend.disposeArtifactMaintenance();
+    try {
+      await d11?.close();
+    } finally {
+      runtime.setChatTranscriptRewriteDiagnosticsForTests();
+      for (const backend of backends)
+        await backend.disposeArtifactMaintenance();
+    }
   }
 }
 
-async function replay(runtime, plan, root, backends, rewrites) {
+async function runChildDescriptorScenario(
+  runtime,
+  root,
+  plan,
+  backends,
+  rewrites,
+) {
+  const streamCount = plan.streamCount ?? 26;
+  const threshold = plan.byteScale < 1 ? 256 * 1024 : 4 * 1024 * 1024;
+  const scenarioRoot = path.join(root, 'child-streams');
+  const store = new runtime.ChatStorageV2(
+    scenarioRoot,
+    'child-scope',
+    undefined,
+    {
+      maxManifestVersion: 4,
+    },
+  );
+  const parent = 'child-parent';
+  const unrelated = 'unrelated';
+  const parentSeedBytes =
+    plan.byteScale < 1 ? 2 * 1024 * 1024 : 32 * 1024 * 1024;
+  await store.migrate(() =>
+    Promise.resolve({
+      revision: 0,
+      index: { activeTabId: parent, runtimeByChatId: {} },
+      recovery: {
+        receipts: [],
+        mutationIds: [],
+        removedTabIds: [],
+        removedArchiveEntryIds: [],
+        removedMessageIds: [],
+      },
+      chats: (async function* () {
+        for (const id of [parent, unrelated])
+          yield {
+            metadata: { id, title: id, createdAt: '2026-10-06' },
+            messages: (async function* () {
+              const count =
+                id === parent ? Math.ceil(parentSeedBytes / 4096) : 1;
+              for (let index = 0; index < count; index++) {
+                yield textRow(`${id}-seed-${index}`, index + 1, 4096);
+                if (index % 256 === 255)
+                  await new Promise((resolve) => setImmediate(resolve));
+              }
+            })(),
+          };
+      })(),
+    }),
+  );
+  const backend = new runtime.ChatStateV2Backend(store, {
+    deltaJournal: { checkpointJournalBytes: threshold },
+    enableFormat4: true,
+  });
+  backends.push(backend);
+  await backend.promoteToDeltaJournal();
+  await backend.promoteToFormat4();
+  runtime.resetWorkCounters();
+  const targets = Array.from({ length: streamCount }, (_, index) => ({
+    kind: 'delegation',
+    chatId: parent,
+    delegationId: `child-${index}`,
+    runGeneration: 0,
+  }));
+  const registrationStartedAt = performance.now();
+  for (const target of targets) await backend.registerTranscriptStream(target);
+  const registrationCounters = runtime.snapshotWorkCounters();
+  if ((registrationCounters.chatStorage['deltaJournal.checkpoints'] ?? 0) !== 0)
+    throw new Error('Registration-only child events caused a checkpoint');
+  await backend.flush();
+  const registrationMs = performance.now() - registrationStartedAt;
+  runtime.resetWorkCounters();
+  const childOnlyStart = runtime.snapshotWorkCounters();
+  const beforeRewrites = rewrites.length;
+  const checkpoints = [];
+  const finalIds = new Map(targets.map((target) => [target.delegationId, []]));
+  const item = (target, sequence, final, bytes) => ({
+    id: `${target.delegationId}:item-${sequence}`,
+    role: 'assistant',
+    timestamp: sequence + 2,
+    parentBlockId: target.delegationId,
+    delegationSequence: sequence,
+    itemRevision: 0,
+    final,
+    blocks: [{ type: 'text', text: filler(target.delegationId, bytes) }],
+  });
+  // One long-open item remains present through every size-triggered cycle.
+  await backend.commitChildStream(targets[0], 'long-open', [
+    item(targets[0], 0, false, 8_192),
+  ]);
+  const minimumJournalBytes = threshold * 10;
+  let producedBytes = 0;
+  let sequence = 1;
+  let unrelatedCommits = 0;
+  const unrelatedCommitMs = [];
+  while (producedBytes < minimumJournalBytes) {
+    const target = targets[sequence % targets.length];
+    const row = item(target, sequence, true, 96 * 1024);
+    const before = runtime.snapshotWorkCounters();
+    await backend.commitChildStream(target, `child-final-${sequence}`, [row]);
+    finalIds.get(target.delegationId).push(row.id);
+    producedBytes += Buffer.byteLength(JSON.stringify(row));
+    const afterEvent = runtime.snapshotWorkCounters();
+    if (
+      (afterEvent.chatStorage['deltaJournal.checkpoints'] ?? 0) !==
+      (before.chatStorage['deltaJournal.checkpoints'] ?? 0)
+    )
+      throw new Error('One child event caused a checkpoint');
+    if (backend.pendingPrimaryRecordCount() !== 0)
+      throw new Error('Child-only record was classified as primary');
+    if (backend.journalCheckpointDue()) {
+      const cycleBefore = runtime.snapshotWorkCounters();
+      await backend.checkpointPendingJournal();
+      const cycleAfter = runtime.snapshotWorkCounters();
+      checkpoints.push({
+        trigger: 'size',
+        sequence,
+        before: cycleBefore.chatStorage,
+        after: cycleAfter.chatStorage,
+      });
+    }
+    if (sequence % 10 === 0) {
+      const started = performance.now();
+      await backend.transact(
+        () => [
+          {
+            type: 'message.upserted',
+            chatId: unrelated,
+            message: textRow(`unrelated-${sequence}`, sequence + 2, 512),
+          },
+        ],
+        { source: 'provider', chatIds: [unrelated] },
+      );
+      unrelatedCommitMs.push(performance.now() - started);
+      unrelatedCommits += 1;
+    }
+    sequence += 1;
+  }
+  if (backend.pendingJournalRecords() > 0) {
+    const cycleBefore = runtime.snapshotWorkCounters();
+    await backend.checkpointPendingJournal();
+    checkpoints.push({
+      trigger: 'explicit-flush',
+      sequence,
+      before: cycleBefore.chatStorage,
+      after: runtime.snapshotWorkCounters().chatStorage,
+    });
+  }
+  const snapshot = runtime.snapshotWorkCounters();
+  const counted = snapshot.chatStorage;
+  const journalBytes = counted['written.deltaJournal.bytes'] ?? 0;
+  const childRewriteBytes =
+    (counted['written.childActiveSidecar.bytes'] ?? 0) +
+    (counted['written.childStreamMetadata.bytes'] ?? 0);
+  if (checkpoints.filter((cycle) => cycle.trigger === 'size').length < 2)
+    throw new Error('Child-only workload did not span complete size cycles');
+  const rewriteBoundPassed = childRewriteBytes <= journalBytes / 8;
+  if (rewrites.length !== beforeRewrites)
+    throw new Error('Child progress rewrote the parent transcript');
+  const directory = path.join(
+    store.directory,
+    'transcripts',
+    'delegations',
+    parent,
+    'v2',
+  );
+  const seen = new Map();
+  for (const name of await readdir(directory)) {
+    if (!/^[a-f0-9]{64}$/.test(name)) continue;
+    const log = await readFile(
+      path.join(directory, name, 'transcript.jsonl'),
+      'utf8',
+    );
+    for (const line of log.split('\n').filter(Boolean)) {
+      const row = JSON.parse(line);
+      seen.set(row.id, (seen.get(row.id) ?? 0) + 1);
+    }
+  }
+  for (const ids of finalIds.values())
+    for (const id of ids)
+      if (seen.get(id) !== 1)
+        throw new Error(`Final child row not appended exactly once: ${id}`);
+  if (unrelatedCommits === 0)
+    throw new Error('Unrelated chat made no progress');
+  runtime.resetWorkCounters();
+  const settleTarget = targets[1];
+  const streamKey = createHash('sha256')
+    .update(
+      JSON.stringify(['delegation', parent, settleTarget.delegationId, 0]),
+    )
+    .digest('hex');
+  const descriptor = JSON.parse(
+    await readFile(path.join(directory, streamKey, 'descriptor.json'), 'utf8'),
+  );
+  const settleRevision = (await backend.revision()) + 1;
+  await backend.commitChildStream(settleTarget, 'settlement-only', [], {
+    key: 'settlement-only',
+    descriptorUpdate: {
+      version: 1,
+      target: settleTarget,
+      expectedStreamRevision: descriptor.streamRevision,
+      nextStreamRevision: descriptor.streamRevision + 1,
+      status: 'settled',
+      settleReceipt: {
+        mutationId: 'settlement-only',
+        scopeRevision: settleRevision,
+        streamRevision: descriptor.streamRevision + 1,
+        committedRowCount: descriptor.committedRowCount,
+        committedByteLength: descriptor.committedByteLength,
+        committedSha256: descriptor.committedSha256,
+      },
+    },
+  });
+  const settlementCounters = runtime.snapshotWorkCounters();
+  if ((settlementCounters.chatStorage['deltaJournal.checkpoints'] ?? 0) !== 0)
+    throw new Error('Settlement-only child event caused a checkpoint');
+  const fault = {
+    enospcAttributed: false,
+    retryRecovered: false,
+    pendingCaptureRejected: false,
+    checkpointedCaptureRecovered: false,
+    lateEventRejected: false,
+  };
+  if (streamCount === 26) {
+    const artifacts = backend.storage.transcripts.artifacts;
+    const originalPut = artifacts.put.bind(artifacts);
+    artifacts.put = async () => {
+      throw Object.assign(new Error('injected disk exhaustion'), {
+        code: 'ENOSPC',
+      });
+    };
+    const faultRow = {
+      ...item(targets[0], sequence, true, 0),
+      blocks: [
+        {
+          type: 'tool_result',
+          toolName: 'shell',
+          toolUseId: 'fault-tool',
+          output: 'disk-bound '.repeat(20_000),
+          isError: false,
+        },
+      ],
+    };
+    try {
+      await backend.commitChildStream(targets[0], 'fault-retry', [faultRow]);
+    } catch (error) {
+      fault.enospcAttributed = error?.code === 'ENOSPC';
+    } finally {
+      artifacts.put = originalPut;
+    }
+    if (!fault.enospcAttributed) throw new Error('ENOSPC was not attributed');
+    fault.retryRecovered = (
+      await backend.commitChildStream(targets[0], 'fault-retry', [faultRow])
+    ).applied;
+    const captured = new runtime.ChatStorageV2(
+      scenarioRoot,
+      'concurrent-capture',
+      undefined,
+      { maxManifestVersion: 4 },
+    );
+    try {
+      await store.copyTo(captured);
+    } catch (error) {
+      fault.pendingCaptureRejected = /checkpointed/.test(String(error));
+    }
+    if (!fault.pendingCaptureRejected)
+      throw new Error('Pending capture was not rejected');
+    await backend.flush();
+    await store.copyTo(captured);
+    fault.checkpointedCaptureRecovered = (await captured.authority()) === 'v2';
+    await backend.storage.transcripts.childDeleteFence.retire(parent);
+    try {
+      await backend.commitChildStream(targets[0], 'late-after-cancel', []);
+    } catch (error) {
+      fault.lateEventRejected = /deleted/.test(String(error));
+    }
+    if (!fault.lateEventRejected)
+      throw new Error('Late completion was not cancelled');
+  }
+  return {
+    streamCount,
+    threshold,
+    parentSeedBytes,
+    registrationMs: Math.round(registrationMs),
+    registrationOnly: registrationCounters,
+    settlementOnly: settlementCounters,
+    fault,
+    parentFullRewrites: rewrites.length - beforeRewrites,
+    producedBytes,
+    journalBytes,
+    childRewriteBytes,
+    rewriteBoundPassed,
+    ...(streamCount === 500 && !rewriteBoundPassed
+      ? { deferred: 'incremental-stream-metadata-staging' }
+      : {}),
+    checkpointCycles: checkpoints,
+    unrelatedCommits,
+    unrelatedCommitLatency: latency(unrelatedCommitMs),
+    finalRows: Array.from(finalIds.values()).reduce(
+      (sum, ids) => sum + ids.length,
+      0,
+    ),
+    rssBytes: process.memoryUsage().rss,
+    heapUsedBytes: process.memoryUsage().heapUsed,
+    counters: { before: childOnlyStart, after: snapshot },
+  };
+}
+
+async function replay(
+  runtime,
+  plan,
+  root,
+  backends,
+  rewrites,
+  storageFormat,
+  d11,
+) {
   const seedStartedAt = performance.now();
   const byScope = new Map();
   for (const owner of plan.owners) {
@@ -464,10 +862,18 @@ async function replay(runtime, plan, root, backends, rewrites) {
   }
   const owners = [];
   for (const [scope, scopeOwners] of byScope) {
-    const seeded = await seedScope(runtime, root, scope, scopeOwners);
+    const seeded = await seedScope(
+      runtime,
+      root,
+      scope,
+      scopeOwners,
+      storageFormat,
+      d11,
+    );
     backends.push(seeded.backend);
     owners.push(...seeded.owners);
   }
+  await d11?.prepareMeasurement();
   const seedMs = performance.now() - seedStartedAt;
   runtime.takeChatStorageActivity();
   rewrites.length = 0;
@@ -515,6 +921,7 @@ async function replay(runtime, plan, root, backends, rewrites) {
   const utilizationStart = performance.eventLoopUtilization();
   const startedAt = performance.now();
   const deadline = startedAt + plan.durationMs;
+  d11?.begin(startedAt, deadline);
   const inFlight = new Set();
   const track = (promise) => {
     inFlight.add(promise);
@@ -598,6 +1005,8 @@ async function replay(runtime, plan, root, backends, rewrites) {
       owner.starvedMs += performance.now() - owner.starvedAt;
   lanes.discardAll();
   await Promise.allSettled(Array.from(inFlight));
+  const foregroundDrainedMs = performance.now() - startedAt;
+  await d11?.drain();
   const elapsedMs = performance.now() - startedAt;
   loopDelay.disable();
   const utilization = performance.eventLoopUtilization(utilizationStart);
@@ -605,6 +1014,8 @@ async function replay(runtime, plan, root, backends, rewrites) {
   // Thrown only now, with every admitted commit settled: the caller removes
   // the fixture directory next.
   if (failures.length > 0) throw failures[0];
+  // The correctness oracle reads outside the measured window and counters.
+  const d11Cards = d11 ? await d11.verify({ foregroundDrainedMs }) : undefined;
 
   const scopeActivity = new Map(
     (activity?.scopes ?? []).map((scope) => [
@@ -626,6 +1037,7 @@ async function replay(runtime, plan, root, backends, rewrites) {
     byteScale: plan.byteScale,
     durationMs: Math.round(elapsedMs),
     seedMs: Math.round(seedMs),
+    ...(d11Cards ? { d11Cards, resolvedPlan: plan } : {}),
     perMinute: {
       commits: perMinute(total?.commits ?? 0, elapsedMs),
       mutations: perMinute(total?.mutations ?? 0, elapsedMs),
@@ -682,17 +1094,27 @@ async function main() {
   const { values } = parseArgs({
     options: {
       profile: { type: 'string', default: 'smoke' },
+      'storage-format': { type: 'string', default: 'v2' },
       capture: { type: 'string' },
       'duration-ms': { type: 'string' },
       'byte-scale': { type: 'string' },
       'card-policy': { type: 'string', default: 'legacy' },
+      'stream-count': { type: 'string' },
       output: { type: 'string' },
     },
   });
-  if (!['legacy', 'persisted-projection'].includes(values['card-policy']))
+  if (
+    ![
+      'legacy',
+      'persisted-projection',
+      'stream-descriptor',
+      'd11-cards',
+    ].includes(values['card-policy'])
+  )
     throw new Error(`Unknown card policy: ${values['card-policy']}`);
   const base = FIELD_LOAD_PROFILES[values.profile];
   if (!base) throw new Error(`Unknown profile: ${values.profile}`);
+  const storageFormat = storageFormatOption(values['storage-format']);
   const profile = {
     ...base,
     ...(values['duration-ms']
@@ -702,6 +1124,9 @@ async function main() {
       ? { byteScale: Number(values['byte-scale']) }
       : {}),
     cardPolicy: values['card-policy'],
+    ...(values['stream-count']
+      ? { streamCount: Number(values['stream-count']) }
+      : {}),
   };
   const capturePath = values.capture
     ? path.resolve(values.capture)
@@ -714,7 +1139,8 @@ async function main() {
   try {
     const replay = {
       profile: values.profile,
-      ...(await runFieldLoadReplay(plan, { root })),
+      storageFormat,
+      ...(await runFieldLoadReplay(plan, { root, storageFormat })),
     };
     const output = path.resolve(
       values.output ??
@@ -737,6 +1163,18 @@ async function main() {
       )}\n`,
     );
     process.stdout.write(`${JSON.stringify(replay, null, 2)}\n`);
+    if (replay.d11Cards && !replay.d11Cards.correctness.passed)
+      throw new Error(
+        `D11 correctness failed: ${replay.d11Cards.correctness.violations.join('; ')}`,
+      );
+    if (
+      replay.childStreams &&
+      !replay.childStreams.rewriteBoundPassed &&
+      replay.childStreams.streamCount !== 500
+    )
+      throw new Error(
+        'Child sidecar and metadata rewrite bytes exceeded journal bytes / 8',
+      );
   } finally {
     await rm(root, {
       recursive: true,

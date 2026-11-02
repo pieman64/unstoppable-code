@@ -1,5 +1,5 @@
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import type { CanopyOrgEnforcedSettings } from '@canopy/desktop-shared/types';
+import type { CanopyOrgEnforcedSettings } from '@canopy/protocol/canopy-server';
 
 jest.mock('node:fs/promises', () => ({
   mkdir: jest.fn((): Promise<void> => Promise.resolve()),
@@ -234,7 +234,12 @@ it('refuses another org route and substitutes helpers only from the owner org', 
     [ORG_A, ORG_B].map((organizationId) => ({
       id: `${organizationId}-model`,
       label: 'Org model',
+      family: 'custom',
+      recommendedHarness: 'claude',
+      contextWindow: 100_000,
+      supportsPromptCaching: true,
       supportedThinkingLevels: [],
+      toolSchemaProfile: 'standard',
     })),
     [ORG_A, ORG_B].map((organizationId) => ({
       modelId: `${organizationId}-model`,

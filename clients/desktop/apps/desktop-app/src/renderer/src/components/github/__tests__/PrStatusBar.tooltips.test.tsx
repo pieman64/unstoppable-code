@@ -14,7 +14,10 @@ import type {
   PrStatusData,
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types/github';
-import type { SidebarItem } from '@canopy/desktop-shared/types';
+import type {
+  SidebarItem,
+  SingleRepoSidebarItem,
+} from '@canopy/desktop-shared/types';
 import { getDefaultFeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { makeDefaultWorktreeBranchName } from '@canopy/desktop-shared/lib/default-worktree-branch';
@@ -87,7 +90,7 @@ function makeWorktreePrStatus(status: PrStatusData): WorktreePrStatus {
 
 function makeSingleRepoProject(
   trackedBaseBranchByWorktreeId: Record<string, string> = {},
-): SidebarItem {
+): SingleRepoSidebarItem {
   return {
     type: 'single-repo',
     id: PROJECT_ID,
@@ -2108,7 +2111,9 @@ describe('PrStatusBar rich top-bar tooltips', () => {
               repoName: 'app',
               status: makePrStatus({
                 checkStatus: 'failing',
-                checkDetails: [{ name: 'app-build', status: 'failing' }],
+                checkDetails: [
+                  { name: 'app-build', status: 'failing', detailsUrl: null },
+                ],
               }),
             },
             {
@@ -2309,6 +2314,7 @@ describe('PrStatusBar archived-chats control', () => {
             archivedAt: '2026-07-01T00:00:00.000Z',
             createdAt: '2026-06-30T00:00:00.000Z',
             restorable: true,
+            unread: false,
             providerType: 'claude',
           },
         ],
@@ -2358,6 +2364,7 @@ describe('PrStatusBar archived-chats control', () => {
             archivedAt: '2026-07-01T00:00:00.000Z',
             createdAt: '2026-06-30T00:00:00.000Z',
             restorable: true,
+            unread: false,
             providerType: 'claude',
           },
         ],

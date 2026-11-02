@@ -5,6 +5,7 @@
     "@agentclientprotocol/sdk": "1.4.0",
     "@canopy/agent-actions": "workspace:*",
     "@canopy/artifact-crypto": "workspace:*",
+    "@canopy/code-graph": "workspace:*",
     "@canopy/core-platform": "workspace:*",
     "@canopy/core-runtime": "workspace:*",
     "@canopy/pipeline-interop": "workspace:*",

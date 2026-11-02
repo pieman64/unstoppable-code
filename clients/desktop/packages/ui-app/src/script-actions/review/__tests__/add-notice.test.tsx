@@ -246,6 +246,35 @@ describe('useScriptActionsAddNotices', () => {
     expect(polls).toBe(1);
   });
 
+  it('keeps tracking through a new client for the same scope', async () => {
+    const { onNotice, fake } = setup([receipt({ status: 'scanning' })]);
+    act(() =>
+      track?.({ projectId: 'proj', operationId: 'op-1', targetName: 'api' }),
+    );
+    // The Portal rebuilds its client when capabilities or the event cursor
+    // settle; a scan that finishes meanwhile must still notify.
+    const next = createFakeScriptActionsClient(snapshotOf([]), {
+      scriptActions: true,
+    });
+    next.handlers.set('scriptActions.receipt', () =>
+      Promise.resolve(receipt()),
+    );
+    act(() => {
+      root.render(
+        <Harness client={next.client} scopeKey="a" onNotice={onNotice} />,
+      );
+    });
+    await advance(5_000);
+    expect(onNotice).toHaveBeenCalledTimes(1);
+    expect(onNotice).toHaveBeenCalledWith({
+      receipt: receipt(),
+      targetName: 'api',
+    });
+    expect(
+      fake.calls.filter((call) => call.name === 'scriptActions.receipt'),
+    ).toHaveLength(1);
+  });
+
   it('does not poll without the capability', async () => {
     const { onNotice, fake } = setup([receipt()], { scriptActions: false });
     act(() =>

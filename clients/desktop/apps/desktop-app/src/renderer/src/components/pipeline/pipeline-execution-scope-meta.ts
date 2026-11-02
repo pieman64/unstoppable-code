@@ -23,7 +23,7 @@ export const PIPELINE_EXECUTION_SCOPE_META: Record<
   directory: {
     label: PIPELINE_EXECUTION_SCOPE_LABELS.directory,
     description:
-      'Runs from a filesystem directory. Legacy pipelines default here.',
+      'Runs from a filesystem directory. Legacy workflows default here.',
   },
   worktree: {
     label: PIPELINE_EXECUTION_SCOPE_LABELS.worktree,

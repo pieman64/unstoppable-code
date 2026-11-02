@@ -19,36 +19,6 @@ export function PanelAddTabButton({
   addTab,
 }: PanelAddTabButtonProps): JSX.Element {
   const direct = addTab.addChat;
-  const fullNote = addTab.fullNote;
-  if (fullNote !== undefined) {
-    // A full row: the same buttons, disabled, with the reason on hover.
-    return (
-      <div className="canopy-panel-add-tab-root">
-        {!addTab.hidePrimary ? (
-          <TitlebarIconButton
-            tooltipLabel={fullNote}
-            surface="panelTabStrip"
-            data-testid={`panel-add-tab-${groupId}`}
-            icon={PlusMediumIcon}
-            aria-label={direct?.label ?? addTab.label}
-            aria-description={fullNote}
-            disabled
-          />
-        ) : null}
-        {addTab.quickAdd ? (
-          <TitlebarIconButton
-            tooltipLabel={fullNote}
-            surface="panelTabStrip"
-            data-testid={`panel-quick-add-${groupId}`}
-            icon={SquarePlusIcon}
-            aria-label={addTab.quickAdd.label}
-            aria-description={fullNote}
-            disabled
-          />
-        ) : null}
-      </div>
-    );
-  }
   return (
     <div className="canopy-panel-add-tab-root">
       {/* Same shared 28px icon-button as the header's ••• / resource controls;

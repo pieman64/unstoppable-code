@@ -9,10 +9,14 @@
 // Repository logos are bound in AppIcons.tsx through `adaptLogo` instead:
 //   claudeai → ClaudeLogo
 //   cursor → CursorLogo
+//   hermesAgent → HermesLogo
 //   linear → LinearLogo
 //   linkedin → LinkedInLogo
+//   metaMuse → MuseLogo
 //   ollama → OllamaLogo
 //   openai → CodexLogo
+//   openclaw → OpenClawLogo
+//   opencode → OpenCodeLogo
 import React, { type JSX } from 'react';
 import { AppIconBase, type AppIconBaseProps } from './AppIconBase';
 import { IconShimmer } from './CanopyGlyphs';
@@ -247,6 +251,29 @@ const LucideArrowUp = /* @__PURE__ */ React.memo(function LucideArrowUp(
     >
       <path d="m5 12 7-7 7 7" />
       <path d="M12 19V5" />
+    </AppIconBase>
+  );
+});
+
+const LucideArrowUpDown = /* @__PURE__ */ React.memo(function LucideArrowUpDown(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="arrow-up-down"
+    >
+      <path d="m21 16-4 4-4-4" />
+      <path d="M17 20V4" />
+      <path d="m3 8 4-4 4 4" />
+      <path d="M7 4v16" />
     </AppIconBase>
   );
 });
@@ -881,6 +908,28 @@ const LucideCircleHelp = /* @__PURE__ */ React.memo(function LucideCircleHelp(
       <circle cx="12" cy="12" r="10" />
       <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
       <path d="M12 17h.01" />
+    </AppIconBase>
+  );
+});
+
+const LucideCirclePause = /* @__PURE__ */ React.memo(function LucideCirclePause(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="circle-pause"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="10" x2="10" y1="15" y2="9" />
+      <line x1="14" x2="14" y1="15" y2="9" />
     </AppIconBase>
   );
 });
@@ -2302,6 +2351,30 @@ const LucideListPlus = /* @__PURE__ */ React.memo(function LucideListPlus(
   );
 });
 
+const LucideListStart = /* @__PURE__ */ React.memo(function LucideListStart(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="list-start"
+    >
+      <path d="M3 5h6" />
+      <path d="M3 12h13" />
+      <path d="M3 19h13" />
+      <path d="m16 8-3-3 3-3" />
+      <path d="M21 19V7a2 2 0 0 0-2-2h-6" />
+    </AppIconBase>
+  );
+});
+
 const LucideLoaderCircle = /* @__PURE__ */ React.memo(
   function LucideLoaderCircle(props: AppIconBaseProps): JSX.Element {
     return (
@@ -2513,6 +2586,33 @@ const LucideMessageCircle = /* @__PURE__ */ React.memo(
         data-glyph="message-circle"
       >
         <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />
+      </AppIconBase>
+    );
+  },
+);
+
+const LucideMessageCircleDashed = /* @__PURE__ */ React.memo(
+  function LucideMessageCircleDashed(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase
+        {...props}
+        viewBox="0 0 24 24"
+        artworkFamily="lucide"
+        fill={props.fill ?? 'none'}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        data-glyph="message-circle-dashed"
+      >
+        <path d="M10.1 2.182a10 10 0 0 1 3.8 0" />
+        <path d="M13.9 21.818a10 10 0 0 1-3.8 0" />
+        <path d="M17.609 3.72a10 10 0 0 1 2.69 2.7" />
+        <path d="M2.182 13.9a10 10 0 0 1 0-3.8" />
+        <path d="M20.28 17.61a10 10 0 0 1-2.7 2.69" />
+        <path d="M21.818 10.1a10 10 0 0 1 0 3.8" />
+        <path d="M3.721 6.391a10 10 0 0 1 2.7-2.69" />
+        <path d="m6.163 21.117-2.906.85a1 1 0 0 1-1.236-1.169l.965-2.98" />
       </AppIconBase>
     );
   },
@@ -2757,6 +2857,30 @@ const LucideNetwork = /* @__PURE__ */ React.memo(function LucideNetwork(
       <rect x="9" y="2" width="6" height="6" rx="1" />
       <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
       <path d="M12 12V8" />
+    </AppIconBase>
+  );
+});
+
+const LucideOrbit = /* @__PURE__ */ React.memo(function LucideOrbit(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="orbit"
+    >
+      <path d="M20.341 6.484A10 10 0 0 1 10.266 21.85" />
+      <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152" />
+      <circle cx="12" cy="12" r="3" />
+      <circle cx="19" cy="5" r="2" />
+      <circle cx="5" cy="19" r="2" />
     </AppIconBase>
   );
 });
@@ -3165,6 +3289,29 @@ const LucideSearch = /* @__PURE__ */ React.memo(function LucideSearch(
     >
       <path d="m21 21-4.34-4.34" />
       <circle cx="11" cy="11" r="8" />
+    </AppIconBase>
+  );
+});
+
+const LucideSearchX = /* @__PURE__ */ React.memo(function LucideSearchX(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="search-x"
+    >
+      <path d="m13.5 8.5-5 5" />
+      <path d="m8.5 8.5 5 5" />
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
     </AppIconBase>
   );
 });
@@ -4299,6 +4446,7 @@ export const IconArrowRotateRightLeft: AppGlyph = LucideRotateCcw;
 export const IconArrowSplitRight: AppGlyph = LucideGitFork;
 export const IconArrowSplitUp: AppGlyph = LucideGitFork;
 export const IconArrowUp: AppGlyph = LucideArrowUp;
+export const IconArrowUpDown: AppGlyph = LucideArrowUpDown;
 export const IconArrowUpRight: AppGlyph = LucideArrowUpRight;
 export const IconAutoAwesome: AppGlyph = LucideSparkles;
 export const IconAutoplay: AppGlyph = LucideCirclePlay;
@@ -4340,6 +4488,7 @@ export const IconChipSimple: AppGlyph = LucideCpu;
 export const IconCircleCheck: AppGlyph = LucideCircleCheck;
 export const IconCircleDashed: AppGlyph = LucideCircleDashed;
 export const IconCircleInfo: AppGlyph = LucideInfo;
+export const IconCirclePause: AppGlyph = LucideCirclePause;
 export const IconCircleQuestionmark: AppGlyph = LucideCircleHelp;
 export const IconCircleStop: AppGlyph = LucideCircleStop;
 export const IconCircleX: AppGlyph = LucideCircleX;
@@ -4422,6 +4571,7 @@ export const IconLinkOff: AppGlyph = LucideLink2Off;
 export const IconListAdd: AppGlyph = LucideListPlus;
 export const IconListBullets: AppGlyph = LucideList;
 export const IconListFilter: AppGlyph = LucideListFilter;
+export const IconListStart: AppGlyph = LucideListStart;
 export const IconLoader: AppGlyph = LucideLoaderCircle;
 export const IconLock: AppGlyph = LucideLockKeyhole;
 export const IconMacbook: AppGlyph = LucideLaptop;
@@ -4433,6 +4583,7 @@ export const IconMergeConflictSimple: AppGlyph = OcticonsAlertInset0p5;
 export const IconMerged: AppGlyph = OcticonsGitMergeInset0p5;
 export const IconMergedSimple: AppGlyph = OcticonsGitMergeInset0p5;
 export const IconMergeQueue: AppGlyph = OcticonsGitMergeQueueInset0p5;
+export const IconMessageCircleDashed: AppGlyph = LucideMessageCircleDashed;
 export const IconMicrophone: AppGlyph = LucideMic;
 export const IconMinimax: AppGlyph = SimpleIconsMinimaxInset2;
 export const IconMinimize45: AppGlyph = LucideMinimize2;
@@ -4440,6 +4591,7 @@ export const IconMinusSmall: AppGlyph = LucideMinus;
 export const IconMonitorDown: AppGlyph = LucideMonitorDown;
 export const IconMoon: AppGlyph = LucideMoon;
 export const IconNoteText: AppGlyph = LucideStickyNote;
+export const IconOrbit: AppGlyph = LucideOrbit;
 export const IconPackage: AppGlyph = LucidePackage;
 export const IconPageAttachment: AppGlyph = LucidePaperclip;
 export const IconPageSearch: AppGlyph = LucideFileSearch;
@@ -4475,6 +4627,7 @@ export const IconRobot: AppGlyph = LucideBot;
 export const IconRobot2: AppGlyph = LucideBot;
 export const IconRocket: AppGlyph = LucideRocket;
 export const IconRunShortcut: AppGlyph = LucideCommand;
+export const IconSearchX: AppGlyph = LucideSearchX;
 export const IconServer: AppGlyph = LucideDatabase;
 export const IconServer2: AppGlyph = LucideDatabase;
 export const IconSettingsGear2: AppGlyph = LucideSettings;

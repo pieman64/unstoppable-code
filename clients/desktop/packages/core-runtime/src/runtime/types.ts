@@ -1,6 +1,7 @@
 import type {
   CanopyCallerDescriptor,
   CanopyErrorPayload,
+  CanopyHostExecution,
   CanopyInstructionDefinitionMap,
   CanopyQueryDefinitionMap,
   CanopyQueryRequestMetadata,
@@ -19,6 +20,12 @@ export interface CanopyHandlerContext {
   caller: CanopyCallerDescriptor;
   metadata: CanopyRequestMetadata;
   signal: AbortSignal;
+  /**
+   * Host execution input for this request only (CAN-5496): present only on
+   * operations that accept it and only when the caller supplied it. Never
+   * stored, logged or forwarded beyond the same-host local worker.
+   */
+  execution?: CanopyHostExecution;
 }
 
 export type CanopyDispatcherQueryName<D extends CanopyQueryDefinitionMap> =
@@ -124,11 +131,15 @@ export interface CanopyQueryOptions {
   caller: CanopyCallerDescriptor;
   metadata?: CanopyQueryRequestMetadata;
   signal?: AbortSignal;
+  /** Refused unless the operation accepts host execution (CAN-5496). */
+  execution?: CanopyHostExecution;
 }
 export interface CanopyInstructionOptions {
   caller: CanopyCallerDescriptor;
   metadata?: CanopyRequestMetadata;
   signal?: AbortSignal;
+  /** Refused unless the operation accepts host execution (CAN-5496). */
+  execution?: CanopyHostExecution;
 }
 export interface CanopyStreamOptions<
   Frame = CanopyStreamFrame<unknown, unknown>,

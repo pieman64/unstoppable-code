@@ -16,7 +16,7 @@ function record(value: unknown): value is Record<string, unknown> {
 
 const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-/** electron-builder names Debian packages with dpkg architecture words. */
+/** Read compatibility for older electron-builder Debian package names. */
 function debianArchitecture(architecture: LinuxPackageArchitecture): string {
   return architecture === 'x64' ? 'amd64' : 'arm64';
 }
@@ -49,12 +49,19 @@ export function verifiedLinuxMetadata(
   )
     return null;
   const version = value.version;
-  const name = `${BRAND.release.artifactPrefix}-${version}-linux-${debianArchitecture(architecture)}.deb`;
-  const url = `${baseUrl.replace(/\/+$/, '')}/desktop/${BRAND.release.artifactPrefix}/${version}/${encodeURIComponent(name)}`;
+  const packages = Array.from(
+    new Set([architecture, debianArchitecture(architecture)]),
+  ).map((arch) => {
+    const name = `${BRAND.release.artifactPrefix}-${version}-linux-${arch}.deb`;
+    return {
+      name,
+      url: `${baseUrl.replace(/\/+$/, '')}/desktop/${BRAND.release.artifactPrefix}/${version}/${encodeURIComponent(name)}`,
+    };
+  });
   const files = value.files.filter(
     (file: unknown) =>
       record(file) &&
-      (file.url === name || file.url === url) &&
+      packages.some(({ name, url }) => file.url === name || file.url === url) &&
       typeof file.sha512 === 'string' &&
       /^[A-Za-z0-9+/]{86}==$/.test(file.sha512),
   );
@@ -66,10 +73,14 @@ export function verifiedLinuxMetadata(
     Buffer.from(file.sha512, 'base64').toString('base64') !== file.sha512
   )
     return null;
+  const selected = packages.find(
+    ({ name, url }) => file.url === name || file.url === url,
+  );
+  if (!selected) return null;
   return {
     version,
     architecture,
-    url,
+    url: selected.url,
     checksum: Buffer.from(file.sha512, 'base64').toString('hex'),
     algorithm: 'SHA-512',
   };
@@ -102,12 +113,14 @@ export function verifiedLinuxRelease(
     flavor === 'internal'
       ? `9999.0.0-internal.${tag.slice('internal-'.length)}`
       : version;
+  const packageName = `${BRAND.release.artifactPrefix}-${flavor === 'internal' ? 'internal' : version}-linux-${architecture}.deb`;
   const legacyName =
     flavor === 'internal'
       ? `${BRAND.release.artifactPrefix}-internal-linux-${debianArchitecture(architecture)}.deb`
       : `${BRAND.release.artifactPrefix}-${assetVersion}-linux-${debianArchitecture(architecture)}.deb`;
   const stampedPrefix = `desktop--${BRAND.id}--${assetVersion}--${flavor}--linux-${architecture}--`;
   const validName = (name: string): boolean =>
+    name === packageName ||
     name === legacyName ||
     (name.startsWith(stampedPrefix) &&
       /^[a-f0-9]{40}\.deb$/.test(name.slice(stampedPrefix.length)));

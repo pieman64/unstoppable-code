@@ -1001,7 +1001,6 @@ jest.mock('../lib/git', () => ({
   getRemoteUrlStrict: jest.fn().mockResolvedValue(null),
 }));
 
-import { mkdir, writeFile } from 'node:fs/promises';
 import { getFeatureFlagService } from '../feature-flags';
 import {
   getCanopyCloudCredentials,
@@ -1013,6 +1012,7 @@ import {
   readPreferencesFile,
   readPreferencesFileDetailed,
 } from '../lib/preferences-store';
+import type * as PreferencesStore from '../lib/preferences-store';
 import { getDataDir, getWorkspaceConfigPath } from '../lib/paths';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import {
@@ -1026,6 +1026,24 @@ import {
   refreshPersonalCatalogSync,
   personalCatalogPreferenceChanged,
 } from '../services/personal-catalog-sync-host';
+
+function preferenceFixture(
+  overrides: Partial<Awaited<ReturnType<typeof readPreferencesFile>>> = {},
+): Awaited<ReturnType<typeof readPreferencesFile>> {
+  return {
+    ...jest.requireActual<typeof PreferencesStore>('../lib/preferences-store')
+      .DEFAULT_PREFERENCES,
+    ...overrides,
+  };
+}
+
+function withoutAccount(
+  credentials: Awaited<ReturnType<typeof getCanopyCloudCredentials>>,
+): Awaited<ReturnType<typeof getCanopyCloudCredentials>> {
+  const signedOut = { ...credentials, capabilities: [] };
+  delete signedOut.account;
+  return signedOut;
+}
 
 describe('Personal catalog workspace enrollment', (): void => {
   let directory: string;
@@ -1044,10 +1062,11 @@ describe('Personal catalog workspace enrollment', (): void => {
         join(directory, id, 'workspace.json'),
       );
     jest.spyOn(getFeatureFlagService(), 'isEnabled').mockReturnValue(true);
-    jest.mocked(readPreferencesFile).mockResolvedValue({
-      version: 1,
-      personalWorkspaceCatalogSync: 'private',
-    });
+    jest.mocked(readPreferencesFile).mockResolvedValue(
+      preferenceFixture({
+        personalWorkspaceCatalogSync: 'private',
+      }),
+    );
     jest.mocked(readPreferencesFileDetailed).mockImplementation(
       async (): ReturnType<typeof readPreferencesFileDetailed> => ({
         preferences: await readPreferencesFile(),
@@ -1064,6 +1083,7 @@ describe('Personal catalog workspace enrollment', (): void => {
         role: 'DEVELOPER',
       },
       capabilities: ['org-projects-v1'],
+      memorySearchOrganizationExternalIds: [],
     });
     jest.mocked(readAllSidebarItems).mockResolvedValue({
       version: 1,
@@ -1121,8 +1141,10 @@ describe('Personal catalog workspace enrollment', (): void => {
         Promise.resolve({
           authority: 'ok',
           ownerMalformed: false,
+          memoryMalformed: false,
           config: {
             ...config,
+            repos: [...config.repos],
             temporary: id.startsWith('temporary-'),
             personalCatalogId: payload.personalCatalogId,
           },
@@ -1157,12 +1179,15 @@ describe('Personal catalog workspace enrollment', (): void => {
         async (): ReturnType<typeof readPreferencesFileDetailed> => {
           await blocked;
           if (outcome === 'reject') throw new Error('Read failed');
-          return { authority: 'unreadable', preferences: { version: 1 } };
+          return {
+            authority: 'unreadable',
+            preferences: preferenceFixture(),
+          };
         },
       );
       detail.mockResolvedValue({
         authority: 'unreadable',
-        preferences: { version: 1 },
+        preferences: preferenceFixture(),
       });
       void refreshPersonalCatalogSync();
       void refreshPersonalCatalogSync();
@@ -1180,7 +1205,7 @@ describe('Personal catalog workspace enrollment', (): void => {
   describe('detached refresh tracking', (): void => {
     const unreadable = {
       authority: 'unreadable',
-      preferences: { version: 1 },
+      preferences: preferenceFixture(),
     } satisfies Awaited<ReturnType<typeof readPreferencesFileDetailed>>;
     let onAccountChange: (() => void) | undefined;
     let onInterval: (() => void) | undefined;
@@ -1307,19 +1332,23 @@ describe('Personal catalog workspace enrollment', (): void => {
         async (): ReturnType<typeof readPreferencesFile> => {
           entered?.();
           await blocked;
-          return { version: 1, personalWorkspaceCatalogSync: 'private' };
+          return preferenceFixture({
+            personalWorkspaceCatalogSync: 'private',
+          });
         },
       );
     const credentials = await getCanopyCloudCredentials();
     jest
       .mocked(getCanopyCloudCredentials)
-      .mockResolvedValue({ ...credentials, account: null, capabilities: [] });
+      .mockResolvedValue(withoutAccount(credentials));
     jest.mocked(getCanopyCloudCredentials).mockClear();
     const first = personalCatalogPreferenceChanged();
     await started;
     jest
       .mocked(readPreferencesFile)
-      .mockResolvedValue({ version: 1, personalWorkspaceCatalogSync: 'off' });
+      .mockResolvedValue(
+        preferenceFixture({ personalWorkspaceCatalogSync: 'off' }),
+      );
     const latest = personalCatalogPreferenceChanged();
     release?.();
     await Promise.all([first, latest]);
@@ -1342,10 +1371,9 @@ describe('Personal catalog workspace enrollment', (): void => {
         'restore-pending.json',
       ];
       for (const file of files) await writeFile(join(outboxRoot, file), file);
-      const preferences = {
-        version: 1,
+      const preferences = preferenceFixture({
         personalWorkspaceCatalogSync: 'off',
-      } satisfies Awaited<ReturnType<typeof readPreferencesFile>>;
+      });
       jest.mocked(readPreferencesFile).mockResolvedValue(preferences);
       jest
         .mocked(readPreferencesFileDetailed)
@@ -1378,10 +1406,11 @@ describe('Personal catalog workspace enrollment', (): void => {
       const before = await readFile(file, 'utf8');
       const invalidate = (): void => {
         if (invalidation === 'preference') {
-          jest.mocked(readPreferencesFile).mockResolvedValue({
-            version: 1,
-            personalWorkspaceCatalogSync: 'off',
-          });
+          jest.mocked(readPreferencesFile).mockResolvedValue(
+            preferenceFixture({
+              personalWorkspaceCatalogSync: 'off',
+            }),
+          );
         } else if (invalidation === 'epoch') {
           stopPersonalCatalogSync();
         } else {
@@ -1464,7 +1493,9 @@ describe('Personal catalog workspace enrollment', (): void => {
       });
     jest
       .mocked(updatePreferencesFile)
-      .mockResolvedValue({ personalCatalogNotice: 'removed' });
+      .mockResolvedValue(
+        preferenceFixture({ personalCatalogNotice: 'removed' }),
+      );
     try {
       await personalCatalogSyncHostTestExports.sync();
       expect(broadcastPreferencesSynced).toHaveBeenCalledWith(
@@ -1485,7 +1516,7 @@ describe('Personal catalog workspace enrollment', (): void => {
     });
     jest
       .mocked(getCanopyCloudCredentials)
-      .mockResolvedValue({ ...credentials, account: null, capabilities: [] });
+      .mockResolvedValue(withoutAccount(credentials));
     await personalCatalogPreferenceChanged();
     await new Promise<void>((resolve): void => {
       setImmediate(resolve);
@@ -1511,7 +1542,10 @@ describe('Personal catalog workspace enrollment', (): void => {
     try {
       await personalCatalogSyncHostTestExports.sync();
       const put = request.mock.calls.find((call) => call[1]?.method === 'PUT');
-      expect(JSON.parse(put?.[1]?.body ?? '{}')).toMatchObject({
+      const body = put?.[1]?.body;
+      if (typeof body !== 'string')
+        throw new Error('Expected a JSON string request body');
+      expect(JSON.parse(body)).toMatchObject({
         registrations: [{ restorePersonalCatalog: true }],
       });
     } finally {
@@ -1522,7 +1556,7 @@ describe('Personal catalog workspace enrollment', (): void => {
     const credentials = await getCanopyCloudCredentials();
     jest
       .mocked(getCanopyCloudCredentials)
-      .mockResolvedValue({ ...credentials, account: null, capabilities: [] });
+      .mockResolvedValue(withoutAccount(credentials));
     await personalCatalogPreferenceChanged();
     const file = join(
       directory,
@@ -1535,7 +1569,9 @@ describe('Personal catalog workspace enrollment', (): void => {
     });
     jest
       .mocked(readPreferencesFile)
-      .mockResolvedValue({ version: 1, personalWorkspaceCatalogSync: 'off' });
+      .mockResolvedValue(
+        preferenceFixture({ personalWorkspaceCatalogSync: 'off' }),
+      );
     await personalCatalogPreferenceChanged();
     await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
     await new Promise<void>((resolve): void => {
@@ -1575,6 +1611,7 @@ describe('Personal catalog workspace enrollment', (): void => {
         role: 'DEVELOPER',
       },
       capabilities: ['org-projects-v1'],
+      memorySearchOrganizationExternalIds: [],
     });
     const request = jest
       .spyOn(cloudClient, 'requestCanopyCloudJson')
@@ -1598,7 +1635,7 @@ describe('Personal catalog workspace enrollment', (): void => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('forwards cancellation to a pending host generation request', async (): Promise<void> => {
-    let observed: AbortSignal | undefined;
+    let observed: AbortSignal | null | undefined;
     let entered: (() => void) | undefined;
     let finish: (() => void) | undefined;
     const started = new Promise<void>((resolve): void => {
@@ -1674,10 +1711,11 @@ describe('Personal catalog workspace enrollment', (): void => {
     'does not write an ID with flag=$flag and preference=$preference',
     async ({ flag, preference }): Promise<void> => {
       jest.spyOn(getFeatureFlagService(), 'isEnabled').mockReturnValue(flag);
-      jest.mocked(readPreferencesFile).mockResolvedValue({
-        version: 1,
-        personalWorkspaceCatalogSync: preference,
-      });
+      jest
+        .mocked(readPreferencesFile)
+        .mockResolvedValue(
+          preferenceFixture({ personalWorkspaceCatalogSync: preference }),
+        );
       await writeWorkspaceConfig('personal', { ...config, repos: [] });
       const before = await readFile(getWorkspaceConfigPath('personal'), 'utf8');
       expect(JSON.parse(before)).not.toHaveProperty('personalCatalogId');

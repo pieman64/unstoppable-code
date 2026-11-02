@@ -22,14 +22,20 @@ jest.mock('../lib/sidebar-items', () => {
   const actual: typeof SidebarItems = jest.requireActual(
     '../lib/sidebar-items',
   );
-  return {
-    ...actual,
-    // Stands in for a projection stuck on a remote git call.
-    readAllSidebarItems: (): Promise<never> => {
-      readAllSidebarItemsCalls.count += 1;
-      return new Promise<never>(() => undefined);
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      // Stands in for a projection stuck on a remote git call.
+      readAllSidebarItems: {
+        value: (): Promise<never> => {
+          readAllSidebarItemsCalls.count += 1;
+          return new Promise<never>(() => undefined);
+        },
+        enumerable: true,
+      },
     },
-  };
+  );
 });
 
 let tempDataDir = '';

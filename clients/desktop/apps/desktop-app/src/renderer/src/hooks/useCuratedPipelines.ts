@@ -125,7 +125,7 @@ export function useCuratedPipelines({
           if (listSequence.current !== sequence) return;
           if (!result.success || !result.data)
             throw new Error(
-              result.error ?? 'Unable to load curated pipelines.',
+              result.error ?? 'Unable to load curated workflows.',
             );
           pages.push(...result.data.data);
           pageIsStale ||= result.data.stale;
@@ -135,7 +135,7 @@ export function useCuratedPipelines({
             continue;
           }
           if (seenCursors.has(nextPageCursor))
-            throw new Error('Invalid curated pipeline pagination response.');
+            throw new Error('Invalid curated workflow pagination response.');
           seenCursors.add(nextPageCursor);
           requestCursor = nextPageCursor;
         }
@@ -193,7 +193,7 @@ export function useCuratedPipelines({
         const result = await window.pipelines.getCurated(key);
         if (detailSequence.current !== sequence) return;
         if (!result.success || !result.data)
-          throw new Error(result.error ?? 'Unable to preview this pipeline.');
+          throw new Error(result.error ?? 'Unable to preview this workflow.');
         setDetail(result.data);
       } catch (failure) {
         if (detailSequence.current === sequence)
@@ -221,7 +221,7 @@ export function useCuratedPipelines({
       if (result.success && result.data) onImported?.();
       if (importSequence.current !== sequence) return;
       if (!result.success || !result.data)
-        throw new Error(result.error ?? 'Unable to add this pipeline.');
+        throw new Error(result.error ?? 'Unable to add this workflow.');
       setImportedPipelineId(result.data.id);
     } catch (failure) {
       if (importSequence.current === sequence)

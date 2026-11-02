@@ -11,6 +11,7 @@ const mockLoadTabsForTarget = jest.fn();
 const mockPresent = jest.fn();
 const mockRequestPlacement = jest.fn();
 const mockPlaceBesideChat = jest.fn();
+const mockCancelPlacement = jest.fn();
 const mockAppendAnnotations = jest.fn();
 const mockReadFileContent = jest.fn();
 const mockGetFileTreeRoots = jest.fn();
@@ -55,20 +56,30 @@ jest.mock('@/stores/agentFilePresentationStore', () => ({
 }));
 
 jest.mock('@/lib/panels/chat-panel-sync', () => ({
-  requestFilePanelPlacementBesideChat: mockRequestPlacement,
-  placeFilePanelsBesideChat: mockPlaceBesideChat,
+  get requestFilePanelPlacementBesideChat(): typeof mockRequestPlacement {
+    return mockRequestPlacement;
+  },
+  get placeFilePanelsBesideChat(): typeof mockPlaceBesideChat {
+    return mockPlaceBesideChat;
+  },
+  settleFilePanelOpen: jest.fn(() => true),
 }));
 
 jest.mock('@/lib/openFileInBrowserPanel', () => ({
-  openFileInBrowserPanel: mockOpenFileInBrowserPanel,
+  get openFileInBrowserPanel(): typeof mockOpenFileInBrowserPanel {
+    return mockOpenFileInBrowserPanel;
+  },
 }));
 
 jest.mock('@/lib/browserPanelActivation', () => ({
-  requestBrowserPanel: mockRequestBrowserPanel,
+  get requestBrowserPanel(): typeof mockRequestBrowserPanel {
+    return mockRequestBrowserPanel;
+  },
 }));
 
 import { showFilesInRenderer } from '../show-files';
 import { useBrowserStore } from '@/stores/browserStore';
+import { registerPendingTabCreation } from '@/stores/chat/pending-tab-creation';
 
 function file(
   kind: 'markdown' | 'text' | 'unsupported' | 'html',
@@ -241,6 +252,53 @@ describe('showFilesInRenderer', () => {
     );
   });
 
+  it('opens previewable binary files such as videos as file tabs (CAN-3995)', async () => {
+    mockOpenFileTab.mockReset().mockReturnValueOnce('tab-reel');
+    mockReadFileContent
+      .mockReset()
+      .mockResolvedValueOnce(file('unsupported', 'reel.mp4', ''));
+
+    const result = await showFilesInRenderer(
+      {
+        target: { projectId: 'project-1', worktreeId: 'worktree-1' },
+        origin: {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatTabId: 'chat-1',
+        },
+        files: [
+          {
+            path: 'out/reel.mp4',
+            line: 1,
+            annotations: [{ startLine: 1, title: 'Not a text file' }],
+          },
+        ],
+      },
+      'main',
+    );
+
+    expect(result).toMatchObject({
+      opened: 1,
+      failed: 0,
+      files: [{ path: 'out/reel.mp4', ok: true, tabId: 'tab-reel' }],
+    });
+    expect(mockOpenFileTab).toHaveBeenCalledWith(
+      { absolutePath: '/workspace/out/reel.mp4', filename: 'reel.mp4' },
+      { projectId: 'project-1', worktreeId: 'worktree-1' },
+      expect.anything(),
+    );
+    // Lines and annotations address text; a video has none.
+    expect(mockPresent).toHaveBeenCalledWith('tab-reel', {
+      origin: {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatTabId: 'chat-1',
+      },
+    });
+    expect(mockAppendAnnotations).not.toHaveBeenCalled();
+    expect(mockOpenFileInBrowserPanel).not.toHaveBeenCalled();
+  });
+
   it('opens a file in a background cowork work entry without changing the visible selection', async () => {
     mockReadFileContent
       .mockReset()
@@ -309,6 +367,83 @@ describe('showFilesInRenderer', () => {
       APP_ADVISOR_PROJECT_ID,
       'entry-background',
     );
+  });
+
+  it('requests placement beside chat before awaiting the tab creation acknowledgement', async () => {
+    mockReadFileContent
+      .mockReset()
+      .mockResolvedValueOnce(file('markdown', 'README.md', '# Title'));
+    let acknowledge: (disposition: 'accepted') => void = () => undefined;
+    mockRequestPlacement.mockReset().mockReturnValue(mockCancelPlacement);
+    mockOpenFileTab.mockReset().mockImplementation(() => {
+      registerPendingTabCreation(
+        'project-1',
+        'worktree-1',
+        'tab-readme',
+        new Promise((resolve) => {
+          acknowledge = resolve;
+        }),
+      );
+      return 'tab-readme';
+    });
+
+    const resultPromise = showFilesInRenderer(
+      {
+        intent: 'user',
+        target: { projectId: 'project-1', worktreeId: 'worktree-1' },
+        origin: {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatTabId: 'chat-1',
+        },
+        files: [{ path: 'README.md' }],
+      },
+      'main',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The panel sweep materializes the optimistic tab in a microtask; without
+    // the hint it lands in the chat's own group and unmounts the chat.
+    expect(mockOpenFileTab).toHaveBeenCalledTimes(1);
+    expect(mockRequestPlacement).toHaveBeenCalledWith('tab-readme', 'chat-1', {
+      activate: true,
+    });
+    acknowledge('accepted');
+    await expect(resultPromise).resolves.toMatchObject({ opened: 1 });
+    expect(mockCancelPlacement).not.toHaveBeenCalled();
+  });
+
+  it('drops the placement hint when the tab creation is not accepted', async () => {
+    mockReadFileContent
+      .mockReset()
+      .mockResolvedValueOnce(file('markdown', 'README.md', '# Title'));
+    mockRequestPlacement.mockReset().mockReturnValue(mockCancelPlacement);
+    mockOpenFileTab.mockReset().mockImplementation(() => {
+      registerPendingTabCreation(
+        'project-1',
+        'worktree-1',
+        'tab-readme',
+        Promise.resolve('rejected'),
+      );
+      return 'tab-readme';
+    });
+
+    const result = await showFilesInRenderer(
+      {
+        intent: 'user',
+        target: { projectId: 'project-1', worktreeId: 'worktree-1' },
+        origin: {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatTabId: 'chat-1',
+        },
+        files: [{ path: 'README.md' }],
+      },
+      'main',
+    );
+
+    expect(result.files[0]).toMatchObject({ ok: false });
+    expect(mockCancelPlacement).toHaveBeenCalledTimes(1);
   });
 
   it('reactivates an already-open file without waiting for an animation frame', async () => {

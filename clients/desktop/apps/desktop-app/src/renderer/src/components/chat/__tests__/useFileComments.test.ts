@@ -687,3 +687,389 @@ describe('useFileComments submission', () => {
     act(() => root.unmount());
   });
 });
+
+describe('useFileComments revisions (CAN-4104)', () => {
+  const FILE = '/workspace/file.ts';
+  const thread = (
+    id: string,
+    status: 'open' | 'resolved' = 'open',
+  ): FileAnnotationDocument['commentThreads'][number] => ({
+    id,
+    status,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    anchorState: 'matched',
+    anchor: { source: 'code', filePath: FILE, quote: '', unanchored: true },
+    comments: [
+      {
+        id: `${id}-comment`,
+        author: 'user',
+        body: `Body ${id}`,
+        createdAt: '2026-10-01T00:00:00.000Z',
+        staged: false,
+      },
+    ],
+  });
+
+  interface SaveRequest {
+    document: FileAnnotationDocument;
+    baseCommentThreadIds: string[];
+    expectedRevision?: number;
+  }
+
+  interface UpdatedEvent {
+    projectId: string;
+    worktreeId: string;
+    document: FileAnnotationDocument;
+  }
+
+  interface FakeMain {
+    api: {
+      get: jest.Mock<Promise<FileAnnotationDocument>, []>;
+      save: jest.Mock<Promise<FileAnnotationDocument>, [SaveRequest]>;
+      dismiss: jest.Mock;
+      onUpdated: jest.Mock<() => void, [(event: UpdatedEvent) => void]>;
+    };
+    saves: SaveRequest[];
+    stored(): FileAnnotationDocument;
+    /** Another window or an agent tool writes; its event is not delivered yet. */
+    writeElsewhere(
+      update: (current: FileAnnotationDocument) => FileAnnotationDocument,
+    ): FileAnnotationDocument;
+    emit(document: FileAnnotationDocument): void;
+    /** Holds saves until the returned release runs. */
+    hold(): () => void;
+  }
+
+  const nextRevision = (
+    document: FileAnnotationDocument,
+  ): number | undefined =>
+    document.revision === undefined ? undefined : document.revision + 1;
+
+  /** A main process that refuses stale saves, like core.annotation.document.save. */
+  function fakeMain(initial: FileAnnotationDocument): FakeMain {
+    let stored = initial;
+    const listeners = new Set<(event: UpdatedEvent) => void>();
+    const saves: SaveRequest[] = [];
+    let gate: Promise<void> = Promise.resolve();
+    const emit = (document: FileAnnotationDocument): void => {
+      listeners.forEach((listener) =>
+        listener({ projectId: 'project', worktreeId: 'worktree', document }),
+      );
+    };
+    const api: FakeMain['api'] = {
+      get: jest.fn(() => Promise.resolve(stored)),
+      save: jest.fn(async (request: SaveRequest) => {
+        saves.push(request);
+        await gate;
+        if (
+          request.expectedRevision !== undefined &&
+          request.expectedRevision !== stored.revision
+        ) {
+          throw new Error('The file annotations changed.');
+        }
+        stored = { ...request.document, revision: nextRevision(stored) };
+        emit(stored);
+        return stored;
+      }),
+      dismiss: jest.fn(),
+      onUpdated: jest.fn((listener: (event: UpdatedEvent) => void) => {
+        listeners.add(listener);
+        return (): void => {
+          listeners.delete(listener);
+        };
+      }),
+    };
+    return {
+      api,
+      saves,
+      stored: (): FileAnnotationDocument => stored,
+      writeElsewhere(update): FileAnnotationDocument {
+        stored = { ...update(stored), revision: nextRevision(stored) };
+        return stored;
+      },
+      emit,
+      hold(): () => void {
+        let release = (): void => undefined;
+        gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return (): void => {
+          release();
+          gate = Promise.resolve();
+        };
+      },
+    };
+  }
+
+  async function mount(main: FakeMain): Promise<{
+    state: { current?: ReturnType<typeof useFileComments> };
+    unmount: () => void;
+  }> {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: { fileAnnotations: main.api },
+    });
+    const state: { current?: ReturnType<typeof useFileComments> } = {};
+    function Harness(): null {
+      state.current = useFileComments('project', 'worktree', FILE);
+      return null;
+    }
+    const root = createRoot(document.createElement('div'));
+    await act(async () => {
+      root.render(createElement(Harness));
+      await Promise.resolve();
+    });
+    return {
+      state,
+      unmount: (): void => act(() => root.unmount()),
+    };
+  }
+
+  const settle = async (): Promise<void> => {
+    await act(async () => {
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    });
+  };
+
+  it('saves against the acknowledged revision, one save at a time', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 2,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    const release = main.hold();
+    act(() => {
+      view.state.current?.addReply('t1', 'First');
+      view.state.current?.addReply('t1', 'Second');
+    });
+    expect(main.saves).toHaveLength(1);
+    expect(main.saves[0]?.expectedRevision).toBe(2);
+    release();
+    await settle();
+    expect(main.saves.map((save) => save.expectedRevision)).toEqual([2, 3]);
+    expect(
+      main.stored().commentThreads[0]?.comments.map((comment) => comment.body),
+    ).toEqual(['Body t1', 'First', 'Second']);
+    expect(main.stored().revision).toBe(4);
+    view.unmount();
+  });
+
+  it('replays a refused edit on the latest document and keeps the other write', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 1,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    // An agent reply lands; its update event has not reached this window.
+    main.writeElsewhere((current) => ({
+      ...current,
+      commentThreads: [thread('agent-thread'), ...current.commentThreads],
+    }));
+    act(() => {
+      view.state.current?.addComment(
+        { source: 'code', filePath: FILE, quote: '', unanchored: true },
+        'Mine',
+      );
+    });
+    await settle();
+    expect(main.saves.map((save) => save.expectedRevision)).toEqual([1, 2]);
+    expect(main.stored().commentThreads.map((entry) => entry.id)).toEqual([
+      'agent-thread',
+      't1',
+      expect.any(String),
+    ]);
+    expect(main.stored().commentThreads[2]?.comments[0]?.body).toBe('Mine');
+    expect(view.state.current?.document.commentThreads).toHaveLength(3);
+    view.unmount();
+  });
+
+  it('applies an edit once when its own update event arrives first', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 1,
+      annotations: [],
+      commentThreads: [],
+    });
+    const view = await mount(main);
+    act(() => {
+      view.state.current?.addComment(
+        { source: 'code', filePath: FILE, quote: '', unanchored: true },
+        'Once',
+      );
+    });
+    await settle();
+    expect(view.state.current?.document.commentThreads).toHaveLength(1);
+    expect(main.stored().commentThreads).toHaveLength(1);
+    view.unmount();
+  });
+
+  it('keeps the chosen status when a refused toggle is replayed', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 1,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    main.writeElsewhere((current) => ({
+      ...current,
+      commentThreads: current.commentThreads.map((entry) => ({
+        ...entry,
+        comments: [
+          ...entry.comments,
+          {
+            id: 'agent-reply',
+            author: 'agent',
+            body: 'Done.',
+            createdAt: '2026-10-01T00:00:00.000Z',
+            staged: false,
+          },
+        ],
+      })),
+    }));
+    act(() => view.state.current?.toggleResolved('t1'));
+    await settle();
+    expect(main.stored().commentThreads[0]).toMatchObject({
+      status: 'resolved',
+      comments: [{ id: 't1-comment' }, { id: 'agent-reply' }],
+    });
+    view.unmount();
+  });
+
+  it('ignores an update event older than the acknowledged document', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 5,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    act(() =>
+      main.emit({
+        filePath: FILE,
+        revision: 4,
+        annotations: [],
+        commentThreads: [],
+      }),
+    );
+    expect(view.state.current?.document.commentThreads).toHaveLength(1);
+    view.unmount();
+  });
+
+  it('drops a retired edit’s optimistic state when its save response is older than the acknowledged document', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 1,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    const save: { finish?: (saved: FileAnnotationDocument) => void } = {};
+    main.api.save.mockImplementationOnce((request: SaveRequest) => {
+      main.saves.push(request);
+      return new Promise<FileAnnotationDocument>((resolve) => {
+        save.finish = resolve;
+      });
+    });
+    act(() => view.state.current?.toggleResolved('t1'));
+    expect(view.state.current?.document.commentThreads[0]?.status).toBe(
+      'resolved',
+    );
+    // The resolve committed as revision 2, then another window reopened the
+    // thread as revision 3; that event arrives before the save response.
+    act(() =>
+      main.emit({
+        filePath: FILE,
+        revision: 3,
+        annotations: [],
+        commentThreads: [thread('t1', 'open')],
+      }),
+    );
+    await act(async () => {
+      save.finish?.({
+        filePath: FILE,
+        revision: 2,
+        annotations: [],
+        commentThreads: [thread('t1', 'resolved')],
+      });
+      await Promise.resolve();
+    });
+    await settle();
+    expect(main.saves).toHaveLength(1);
+    expect(view.state.current?.document.commentThreads).toEqual([
+      expect.objectContaining({ id: 't1', status: 'open' }),
+    ]);
+    view.unmount();
+  });
+
+  it('sends no expected revision to a host that reports none', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    act(() => view.state.current?.toggleResolved('t1'));
+    await settle();
+    expect(main.saves).toHaveLength(1);
+    expect(main.saves[0]).not.toHaveProperty('expectedRevision');
+    view.unmount();
+  });
+
+  it('stops replaying after repeated refusals and keeps the edit for the next save', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 1,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    let refusals = 0;
+    main.api.save.mockImplementation((request: SaveRequest) => {
+      main.saves.push(request);
+      refusals += 1;
+      main.writeElsewhere((current) => current);
+      return Promise.reject(new Error('The file annotations changed.'));
+    });
+    act(() => view.state.current?.toggleResolved('t1'));
+    await settle();
+    expect(refusals).toBe(4);
+    expect(view.state.current?.document.commentThreads[0]?.status).toBe(
+      'resolved',
+    );
+    view.unmount();
+  });
+
+  it('saves an edit queued while the previous save is finishing', async () => {
+    const main = fakeMain({
+      filePath: FILE,
+      revision: 1,
+      annotations: [],
+      commentThreads: [thread('t1')],
+    });
+    const view = await mount(main);
+    const save = main.api.save.getMockImplementation();
+    if (!save) throw new Error('Missing save implementation.');
+    main.api.save.mockImplementationOnce((request: SaveRequest) => {
+      const result = save(request);
+      // Runs after the save loop drained but before its cleanup ran.
+      void result.then(() =>
+        Promise.resolve().then(() =>
+          view.state.current?.addReply('t1', 'Late'),
+        ),
+      );
+      return result;
+    });
+    act(() => view.state.current?.addReply('t1', 'First'));
+    await settle();
+    expect(main.saves.map((entry) => entry.expectedRevision)).toEqual([1, 2]);
+    expect(
+      main.stored().commentThreads[0]?.comments.map((comment) => comment.body),
+    ).toEqual(['Body t1', 'First', 'Late']);
+    view.unmount();
+  });
+});

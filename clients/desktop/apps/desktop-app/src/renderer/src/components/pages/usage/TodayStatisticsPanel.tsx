@@ -1,4 +1,4 @@
-import { type JSX, useEffect, useMemo, useState } from 'react';
+import { type JSX, useEffect, useMemo, useRef, useState } from 'react';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import type {
   AgentAuditHistoryResponse,
@@ -7,7 +7,12 @@ import type {
 import { brandText } from '@/lib/brand';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
-import { Notice } from '@canopy/ui-shared/components';
+import {
+  Notice,
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
+import { useFlipBox } from '@canopy/ui-shared/lib';
 import { formatDurationMs, formatNumber } from './format';
 import { buildTodayData, type TodayData } from './today-statistics-data';
 
@@ -24,11 +29,11 @@ interface TodayHistoryLoadResult {
   truncated: boolean;
 }
 
-const DETAIL_MODES: ReadonlyArray<{ value: DetailMode; label: string }> = [
+const DETAIL_MODES: readonly SegmentedControlOption<DetailMode>[] = [
   { value: 'repos', label: 'PRs' },
   { value: 'providers', label: 'Turns' },
   { value: 'tools', label: 'Tools' },
-  { value: 'pipelines', label: 'Pipelines' },
+  { value: 'pipelines', label: 'Workflows' },
 ];
 
 const SEGMENT_COLORS = {
@@ -130,6 +135,12 @@ function StatTile({
   );
 }
 
+/** A bar's fill: a compositor stretch on the Tailwind default curve. */
+const BAR_FILL = {
+  durationMs: 150,
+  easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+} as const;
+
 function ActivityBar({
   label,
   value,
@@ -142,6 +153,8 @@ function ActivityBar({
   color: string;
 }): JSX.Element {
   const width = max > 0 ? Math.max(6, Math.round((value / max) * 100)) : 0;
+  const barRef = useRef<HTMLDivElement>(null);
+  useFlipBox(barRef, BAR_FILL);
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-3 text-xs">
@@ -152,7 +165,8 @@ function ActivityBar({
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-secondary">
         <div
-          className="h-full rounded-full transition-all"
+          ref={barRef}
+          className="h-full origin-top-left rounded-full"
           style={{ width: `${width}%`, backgroundColor: color }}
         />
       </div>
@@ -285,7 +299,7 @@ export function TodayStatisticsPanel(): JSX.Element {
             },
             { label: 'PRs', value: data.stats.prs, color: SEGMENT_COLORS.prs },
             {
-              label: 'Pipelines',
+              label: 'Workflows',
               value: data.stats.pipelines,
               color: SEGMENT_COLORS.pipelines,
             },
@@ -368,7 +382,7 @@ export function TodayStatisticsPanel(): JSX.Element {
               accent={SEGMENT_COLORS.chats}
             />
             <StatTile
-              label="Pipelines run"
+              label="Workflows run"
               value={formatNumber(data.stats.pipelines)}
               detail={`${formatDurationMs(data.stats.durationMs)} agent time`}
               accent={SEGMENT_COLORS.pipelines}
@@ -416,22 +430,14 @@ export function TodayStatisticsPanel(): JSX.Element {
                 <h3 className="text-s font-semibold fg-primary">
                   Detail Explorer
                 </h3>
-                <div className="inline-flex rounded-full border bg-base p-0.5">
-                  {DETAIL_MODES.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={`rounded-full px-2.5 py-1 text-xs transition-colors focus-ring ${
-                        mode === option.value
-                          ? 'bg-secondary fg-primary'
-                          : 'fg-secondary hover:fg-primary'
-                      }`}
-                      onClick={(): void => setMode(option.value)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
+                <SegmentedControl<DetailMode>
+                  label="Detail explorer view"
+                  value={mode}
+                  width="content"
+                  shape="capsule"
+                  options={DETAIL_MODES}
+                  onChange={setMode}
+                />
               </div>
               <div className="mt-4 space-y-3">
                 {activeRows.length === 0 ? (

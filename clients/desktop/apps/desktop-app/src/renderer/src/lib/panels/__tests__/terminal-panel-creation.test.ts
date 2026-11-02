@@ -22,10 +22,6 @@ jest.mock('@/stores/terminalStore', () => ({
   },
 }));
 
-jest.mock('../tab-row-limit', () => ({
-  refuseFullTabRow: (): boolean => false,
-}));
-
 import { createTerminalPanel } from '../panel-creation-actions';
 
 const spawn = jest.fn();
@@ -42,7 +38,9 @@ describe('createTerminalPanel with a shell that cannot start', () => {
   });
 
   afterEach(() => {
-    delete (window as typeof window & { api?: unknown }).api;
+    const windowWithOptionalApi: Omit<Window, 'api'> & { api?: unknown } =
+      window;
+    delete windowWithOptionalApi.api;
   });
 
   it('reports the reason once and opens no terminal or fallback shell', async () => {

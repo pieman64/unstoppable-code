@@ -6,6 +6,7 @@ Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useChatStore } from '@/stores/chatStore';
 import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
 import { FileSearchPalette } from '../FileSearchPalette';
@@ -48,6 +49,49 @@ function scrollContainer(): HTMLElement | null {
 }
 
 describe('FileSearchPalette session-replay privacy', () => {
+  it('masks the Cowork project subtitle and opens files using the unchanged path', () => {
+    const openFileTab = jest.fn();
+    useChatStore.setState({
+      selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      openFileTab,
+    });
+    useFileListStore.setState({
+      indexCache: {
+        [getWorktreeCacheKey(PROJECT_ID, WORKTREE_ID)]: {
+          fetchedAt: Date.now(),
+          data: {
+            repos: [
+              {
+                repoId: 'workspace',
+                repoName: 'Vendor Spend Q3',
+                absolutePath: '/vendor',
+                rootKind: 'standalone',
+                files: [
+                  {
+                    relativePath: 'spend.csv',
+                    filename: 'spend.csv',
+                    absolutePath: '/vendor/spend.csv',
+                    isIgnored: false,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    });
+    render();
+    const result = container.querySelector<HTMLButtonElement>(
+      '[data-testid="file-search-palette-result"]',
+    );
+    expect(result?.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent).toBe(
+      'Vendor Spend Q3',
+    );
+    act(() => result?.click());
+    expect(openFileTab).toHaveBeenCalledWith(
+      expect.objectContaining({ absolutePath: '/vendor/spend.csv' }),
+    );
+  });
   it('records the results container in session replay', () => {
     render();
 

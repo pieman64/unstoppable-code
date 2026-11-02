@@ -9,6 +9,7 @@ import type {
   ChatStateChange,
   PersistedChatMessage,
   PersistedChatTab,
+  HostQueuedMessageView,
 } from '@canopy/desktop-shared/types';
 import {
   initClaudeModels,
@@ -21,6 +22,15 @@ import {
   preserveRendererOnlyTabFields,
   type CanonicalScopeProjection,
 } from '../canonical-changes';
+import {
+  computeTurnSummary,
+  groupIntoTurns,
+} from '@canopy/desktop-shared/lib/turn-utils';
+import {
+  mergeToolResults,
+  reorderMessagesForDisplay,
+} from '@canopy/desktop-shared/lib/message-transforms';
+import { installTranscriptPage } from '../transcript-pages';
 import { beginLocalCodexSpeedWrite } from '../codex-speed';
 import { fromPersistedTab, toPersistedTab } from '../persisted-tabs';
 import {
@@ -29,6 +39,11 @@ import {
   restoreDispatchedQueueRow,
 } from '../optimistic-presentation';
 import type { ChatTab, QueuedChatMessage } from '../types';
+import {
+  attachHostQueueMirror,
+  hostQueueViewsToQueuedMessages,
+  queuedRowForceAction,
+} from '../queue-mirror';
 
 it('reconciles identical pending queue submissions one-to-one across successive snapshots', () => {
   const pending: ChatTab['pendingQueueMessages'] = ['first', 'second'].map(
@@ -143,6 +158,201 @@ function apply(
 }
 
 describe('applyCanonicalChanges', () => {
+  it('keeps a rank-safe reset window equal to reloading the same logical rows', () => {
+    const projection = baseProjection();
+    const tab = projection.chatState.tabs[0];
+    tab.messages = [
+      message('first', 'first'),
+      message('removed', 'removed'),
+      message('last', 'last'),
+    ];
+    tab.transcriptLoaded = true;
+    tab.transcriptWindow = {
+      view: 'turns',
+      turns: [],
+      before: 10,
+      messageOrdinals: { first: 10, removed: 11, last: 12 },
+      totalMessages: 13,
+      transcriptRevision: 1,
+    };
+    const transcript = {
+      format: 'complete-message-jsonl-v1' as const,
+      committedMessageCount: 13,
+      committedByteLength: 100,
+      transcriptRevision: 2,
+      hasActiveSidecar: false,
+    };
+    const shortcut = apply(
+      projection,
+      {
+        type: 'message.upserted',
+        chatId: 'a',
+        message: message('inserted', 'inserted'),
+        afterMessageId: 'first',
+      },
+      { type: 'message.removed', chatId: 'a', messageId: 'removed' },
+      { type: 'transcript.updated', chatId: 'a', transcript, reset: true },
+    ).chatState.tabs[0];
+    const reloaded = installTranscriptPage(
+      { ...tab, transcript },
+      {
+        view: 'turns',
+        turns: [],
+        before: 10,
+        messages: [
+          message('first', 'first'),
+          message('inserted', 'inserted'),
+          message('last', 'last'),
+        ],
+        messageOrdinals: { first: 10, inserted: 11, last: 12 },
+        totalMessages: 13,
+        transcriptRevision: 2,
+      },
+      false,
+    );
+    expect(shortcut.transcriptLoaded).toBe(true);
+    expect(shortcut.messages).toEqual(reloaded.messages);
+    expect(shortcut.transcriptWindow).toEqual(reloaded.transcriptWindow);
+  });
+
+  it.each([
+    'replacement',
+    'unloaded-predecessor',
+    'unpositioned-insert',
+    'unloaded-removal',
+    'pending-reset',
+    'no-evidence',
+    'unranked-predecessor',
+    'root-turn-change',
+    'removed-predecessor',
+    'new-predecessor',
+  ] as const)('reloads a reset conservatively for %s', (reason) => {
+    const projection = baseProjection();
+    const tab = projection.chatState.tabs[0];
+    tab.transcriptLoaded = reason !== 'pending-reset';
+    tab.transcriptWindow = {
+      view: 'turns',
+      turns: [],
+      before: 10,
+      messageOrdinals: { 'a-m1': 10 },
+      totalMessages: 11,
+      transcriptRevision: 1,
+    };
+    if (reason === 'unranked-predecessor')
+      tab.transcriptWindow.messageOrdinals = {};
+    if (reason === 'root-turn-change')
+      tab.transcriptWindow.turns = [
+        {
+          id: 'a-m1',
+          start: 10,
+          end: 11,
+          complete: true,
+          summary: computeTurnSummary([]),
+          finalMessageIds: [],
+        },
+      ];
+    const mutations: ChatStateChange[] =
+      reason === 'replacement'
+        ? [
+            {
+              type: 'messages.replaced',
+              chatId: 'a',
+              messages: tab.messages,
+              removedMessageIds: [],
+            },
+          ]
+        : reason === 'unloaded-removal'
+          ? [{ type: 'message.removed', chatId: 'a', messageId: 'not-loaded' }]
+          : reason === 'no-evidence'
+            ? []
+            : [
+                {
+                  type: 'message.upserted',
+                  chatId: 'a',
+                  message: message('new', 'new'),
+                  ...(reason === 'unpositioned-insert'
+                    ? {}
+                    : {
+                        afterMessageId:
+                          reason === 'unloaded-predecessor'
+                            ? 'not-loaded'
+                            : 'a-m1',
+                      }),
+                },
+              ];
+    if (reason === 'removed-predecessor')
+      mutations.unshift({
+        type: 'message.removed',
+        chatId: 'a',
+        messageId: 'a-m1',
+      });
+    if (reason === 'new-predecessor')
+      mutations.push({
+        type: 'message.upserted',
+        chatId: 'a',
+        message: message('second-new', 'second-new'),
+        afterMessageId: 'new',
+      });
+    const result = apply(projection, ...mutations, {
+      type: 'transcript.updated',
+      chatId: 'a',
+      reset: true,
+      transcript: {
+        format: 'complete-message-jsonl-v1',
+        committedMessageCount: 12,
+        committedByteLength: 100,
+        transcriptRevision: 2,
+        hasActiveSidecar: false,
+      },
+    });
+    expect(result.chatState.tabs[0].transcriptLoaded).toBe(false);
+    expect(result.chatState.tabs[0].transcriptWindow).toBeDefined();
+  });
+
+  it('retains the visible transcript window and advances its reset token on repeated resets', () => {
+    const projection = baseProjection();
+    const tab = projection.chatState.tabs[0];
+    const transcript = {
+      format: 'complete-message-jsonl-v1' as const,
+      committedMessageCount: 2,
+      committedByteLength: 120,
+      transcriptRevision: 10,
+      hasActiveSidecar: false,
+    };
+    tab.transcript = transcript;
+    tab.transcriptLoaded = true;
+    tab.transcriptWindow = {
+      view: 'turns',
+      turns: [],
+      before: 0,
+      messageOrdinals: { 'a-m1': 1 },
+      totalMessages: 2,
+      transcriptRevision: 10,
+    };
+
+    const firstReset = apply(projection, {
+      type: 'transcript.updated',
+      chatId: 'a',
+      transcript: { ...transcript, transcriptRevision: 11 },
+      reset: true,
+    });
+    const repeatedReset = apply(firstReset, {
+      type: 'transcript.updated',
+      chatId: 'a',
+      transcript: { ...transcript, transcriptRevision: 12 },
+      reset: true,
+    });
+
+    expect(repeatedReset.chatState.tabs[0].messages).toBe(tab.messages);
+    expect(repeatedReset.chatState.tabs[0].transcriptLoaded).toBe(false);
+    expect(repeatedReset.chatState.tabs[0].transcriptWindow).toMatchObject({
+      view: 'turns',
+      before: 0,
+      messageOrdinals: { 'a-m1': 1 },
+      transcriptRevision: 12,
+    });
+  });
+
   it('inserts a new delegation run after its visible anchor', () => {
     const projection = baseProjection();
     projection.chatState.tabs[0].messages.push(message('later', 'later turn'));
@@ -216,6 +426,154 @@ describe('applyCanonicalChanges', () => {
       });
     }
   });
+
+  it.each(['desktop', 'portal'] as const)(
+    'reuses the refused original through funded Retry and reconciliation for %s-origin queue rows',
+    (origin) => {
+      const projection = baseProjection();
+      const original = message('original-user', 'saved original');
+      projection.chatState.tabs[0].messages = [original];
+      const held: HostQueuedMessageView = {
+        id: 'credit-retry',
+        text: 'saved original',
+        origin,
+        enqueuedAtMs: 1,
+        supersedesUserMessageId: original.id,
+        retryable: true,
+        retryBlockedReason: 'insufficient_credits',
+        turnPhase: 'idle',
+      };
+      const hydrateQueue = (row: HostQueuedMessageView): void => {
+        projection.chatState.tabs = attachHostQueueMirror(
+          projection.chatState.tabs,
+          new Map([['a', hostQueueViewsToQueuedMessages([row])]]),
+        );
+      };
+      projection.runtimeByChatId.a = {
+        status: 'completed',
+        queuedMessageIds: [held.id],
+      };
+      hydrateQueue(held);
+      expect(
+        queuedRowForceAction(
+          projection.chatState.tabs[0].queuedMessages[0],
+          'idle',
+        ),
+      ).toBe('retry');
+      expect(
+        projection.chatState.tabs[0].queuedMessages[0].retryBlockedReason,
+      ).toBe('insufficient_credits');
+      hydrateQueue({ ...held, retryBlockedReason: undefined });
+      // Funding republishes the row; only explicit host Retry dequeues it.
+      expect(projection.chatState.tabs[0].messages).toEqual([original]);
+      expect(projection.chatState.tabs[0].queuedMessages).toHaveLength(1);
+      const retried = apply(projection, {
+        type: 'runtime.patched',
+        chatId: 'a',
+        runtime: {
+          status: 'starting',
+          queuedMessageIds: [],
+          lastActivityAt: 20,
+        },
+      });
+      expect(retried.chatState.tabs[0].queuedMessages).toEqual([]);
+      expect(retried.chatState.tabs[0].messages).toEqual([original]);
+      expect(retried.chatState.tabs[0].pendingQueueDispatch).toBeUndefined();
+      const reconciled = apply(
+        retried,
+        { type: 'message.upserted', chatId: 'a', message: original },
+        {
+          type: 'runtime.patched',
+          chatId: 'a',
+          runtime: { status: 'completed', queuedMessageIds: [] },
+        },
+      );
+      expect(reconciled.chatState.tabs[0].messages).toEqual([original]);
+      expect(reconciled.chatState.tabs[0].pendingUserMessages).toBeUndefined();
+      // Same text is valid for another prompt; identity is the oracle.
+      const distinct = apply(reconciled, {
+        type: 'message.upserted',
+        chatId: 'a',
+        message: message('distinct-user', 'saved original'),
+      });
+      expect(distinct.chatState.tabs[0].messages.map((row) => row.id)).toEqual([
+        'original-user',
+        'distinct-user',
+      ]);
+    },
+  );
+
+  it.each(['delta', 'hydration'] as const)(
+    'reconciles a delayed credit-retry original by identity through %s, ignoring identical text with a different ID',
+    (delivery) => {
+      const projection = baseProjection();
+      projection.chatState.tabs[0].messages = [];
+      projection.chatState.tabs = attachHostQueueMirror(
+        projection.chatState.tabs,
+        new Map([
+          [
+            'a',
+            hostQueueViewsToQueuedMessages([
+              {
+                id: 'credit-retry',
+                text: 'saved original',
+                origin: 'desktop',
+                enqueuedAtMs: 1,
+                supersedesUserMessageId: 'original-user',
+                retryable: true,
+                turnPhase: 'idle',
+              },
+            ]),
+          ],
+        ]),
+      );
+      projection.runtimeByChatId.a = {
+        status: 'completed',
+        queuedMessageIds: ['credit-retry'],
+      };
+      const dequeued = apply(projection, {
+        type: 'runtime.patched',
+        chatId: 'a',
+        runtime: {
+          status: 'starting',
+          queuedMessageIds: [],
+          lastActivityAt: 20,
+        },
+      });
+      const unrelated = message('distinct-user', 'saved original');
+      const intermediate = apply(dequeued, {
+        type: 'message.upserted',
+        chatId: 'a',
+        message: unrelated,
+      });
+      expect(intermediate.chatState.tabs[0].pendingQueueDispatch).toBeDefined();
+      expect(
+        intermediate.chatState.tabs[0].messages.filter(
+          (row) => row.role === 'user',
+        ),
+      ).toHaveLength(2);
+      // Canonical content can differ from the retained queue preview.
+      const original = message('original-user', 'canonical original');
+      const accepted =
+        delivery === 'delta'
+          ? apply(intermediate, {
+              type: 'message.upserted',
+              chatId: 'a',
+              message: original,
+            })
+          : apply(intermediate, {
+              type: 'tab.upserted',
+              tab: { ...persistedTab('a'), messages: [unrelated, original] },
+            });
+      expect(
+        accepted.chatState.tabs[0].messages
+          .filter((row) => row.role === 'user')
+          .map((row) => row.id),
+      ).toEqual(['distinct-user', 'original-user']);
+      expect(accepted.chatState.tabs[0].pendingQueueDispatch).toBeUndefined();
+      expect(accepted.chatState.tabs[0].pendingUserMessages ?? []).toEqual([]);
+    },
+  );
 
   it('bridges a dequeued prompt into the transcript until its canonical user and timer arrive', () => {
     const projection = baseProjection();
@@ -304,6 +662,73 @@ describe('applyCanonicalChanges', () => {
     expect(dispatched.chatState.tabs[0].messages).toEqual(
       projection.chatState.tabs[0].messages,
     );
+  });
+
+  it('keeps no turn live after a sent prompt is cancelled from the host queue', () => {
+    const projection = baseProjection();
+    const tab = projection.chatState.tabs[0];
+    const prompt = message('queued-user', 'later');
+    const localTimer: ChatTab['messages'][number] = {
+      id: 'local-timer',
+      role: 'system',
+      timestamp: 10,
+      blocks: [{ type: 'turn_timer', startedAt: 10, completedAt: null }],
+    };
+    tab.messages = [...tab.messages, prompt, localTimer];
+    tab.pendingTurn = {
+      userMessageId: 'queued-user',
+      timerMessage: localTimer,
+    };
+    tab.pendingUserMessages = [prompt];
+
+    const cancelled = apply(projection, {
+      type: 'message.removed',
+      chatId: 'a',
+      messageId: 'queued-user',
+    });
+    // A later watcher turn runs to completion after the cancellation.
+    const later = apply(
+      cancelled,
+      {
+        type: 'message.upserted',
+        chatId: 'a',
+        message: message('watcher-user', 'event'),
+        afterMessageId: 'a-m1',
+      },
+      {
+        type: 'message.upserted',
+        chatId: 'a',
+        message: {
+          id: 'turn-2:timer',
+          role: 'system',
+          timestamp: 21,
+          blocks: [
+            {
+              type: 'turn_timer',
+              turnId: 'turn-2',
+              userMessageId: 'watcher-user',
+              startedAt: 20,
+              completedAt: 22,
+            },
+          ],
+        },
+        afterMessageId: 'watcher-user',
+      },
+    );
+
+    const groups = groupIntoTurns(
+      mergeToolResults(
+        reorderMessagesForDisplay(presentedMessages(later.chatState.tabs[0])),
+        undefined,
+      ),
+    );
+    expect(
+      groups.filter(
+        (group) => group.kind === 'turn-group' && !group.isComplete,
+      ),
+    ).toEqual([]);
+    expect(later.chatState.tabs[0].pendingTurn).toBeUndefined();
+    expect(later.chatState.tabs[0].pendingUserMessages).toBeUndefined();
   });
 
   it('does not present cancelled queue removals as sent', () => {
@@ -558,9 +983,24 @@ describe('applyCanonicalChanges', () => {
         agentArtifactCarryByTurn: {
           'a-m1': [
             {
+              version: 1,
+              kind: 'pipeline_run',
+              operation: 'pipeline.run',
               executionId: 'execution-1',
               dedupeKey: 'dedupe-1',
               createdAt: '2026-08-10T00:00:00.000Z',
+              pipelineId: 'pipeline-1',
+              pipelineName: 'Build',
+              initialStatus: 'pending',
+              queuedAt: '2026-08-10T00:00:00.000Z',
+              projectId: 'proj',
+              worktreeId: 'wt',
+              navigationTarget: {
+                kind: 'pipeline_execution',
+                executionId: 'execution-1',
+                projectId: 'proj',
+                worktreeId: 'wt',
+              },
             },
           ],
         },
@@ -1205,7 +1645,7 @@ describe('preserveRendererOnlyTabFields', () => {
     });
   });
 
-  it('preserves the setup queue marker and its transient intro message', () => {
+  it('preserves the setup queue marker without re-adding a dropped setup annotation', () => {
     const previous = fromPersistedTab(persistedTab('setup'));
     const next = fromPersistedTab(persistedTab('setup'));
     const intro = {
@@ -1230,7 +1670,31 @@ describe('preserveRendererOnlyTabFields', () => {
       { text: 'queued while cloning' },
     ]);
     expect(preserved.queuedForSetup).toBe(true);
-    expect(preserved.messages).toEqual([intro, ...next.messages]);
+    expect(preserved.messages).toEqual(next.messages);
+  });
+
+  it('keeps a legacy setup annotation that the canonical transcript still contains', () => {
+    const previous = fromPersistedTab(persistedTab('legacy-setup'));
+    const next = fromPersistedTab(persistedTab('legacy-setup'));
+    const legacyIntro = {
+      id: 'legacy-setup-intro',
+      role: 'system' as const,
+      blocks: [
+        {
+          id: 'legacy-setup-intro-block',
+          type: 'pending_setup_info' as const,
+          timestamp: 1,
+        },
+      ],
+      timestamp: 1,
+    };
+    next.messages = [legacyIntro, ...next.messages];
+
+    const preserved = preserveRendererOnlyTabFields(previous, next);
+
+    // Hiding legacy annotations is a display responsibility; the canonical
+    // transcript is accepted unchanged.
+    expect(preserved.messages).toEqual(next.messages);
   });
 
   it('preserves the queued hook placeholder marker during canonical persistence', () => {
@@ -1399,6 +1863,69 @@ describe('canonical Codex speed changes', () => {
     });
     expect(cleared.chatState.tabs[0]).not.toHaveProperty('retainedCodexSpeed');
   });
+});
+
+it('rebases delegate insert ranks and turn gap cursors exactly as a replacement page', () => {
+  const projection = baseProjection();
+  const tab = projection.chatState.tabs[0];
+  tab.messages = [message('first', 'first'), message('final', 'final')];
+  tab.transcriptLoaded = true;
+  const summary = {
+    id: 'first',
+    start: 10,
+    end: 15,
+    before: 14,
+    complete: true,
+    summary: {},
+    finalMessageIds: ['final'],
+  };
+  // Use the real summary shape without conflating a nested child with a root row.
+  const turn = { ...summary, summary: computeTurnSummary([]) };
+  tab.transcriptWindow = {
+    view: 'turns',
+    turns: [turn],
+    before: 10,
+    messageOrdinals: { first: 10, final: 14 },
+    totalMessages: 15,
+    transcriptRevision: 1,
+  };
+  const child = {
+    ...message('child', 'child'),
+    parentBlockId: 'delegate-tool',
+  };
+  const transcript = {
+    format: 'complete-message-jsonl-v1' as const,
+    committedMessageCount: 16,
+    committedByteLength: 100,
+    transcriptRevision: 2,
+    hasActiveSidecar: false,
+  };
+  const applied = apply(
+    projection,
+    {
+      type: 'message.upserted',
+      chatId: 'a',
+      message: child,
+      afterMessageId: 'first',
+    },
+    { type: 'transcript.updated', chatId: 'a', transcript, reset: true },
+  ).chatState.tabs[0];
+  const replacement = installTranscriptPage(
+    tab,
+    {
+      view: 'turns',
+      turns: [{ ...turn, end: 16, before: 15 }],
+      before: 10,
+      messages: [message('first', 'first'), child, message('final', 'final')],
+      messageOrdinals: { first: 10, child: 11, final: 15 },
+      totalMessages: 16,
+      transcriptRevision: 2,
+    },
+    false,
+  );
+  expect(applied.transcriptLoaded).toBe(true);
+  expect(applied.messages).toEqual(replacement.messages);
+  expect(applied.transcriptWindow).toEqual(replacement.transcriptWindow);
 });
 
 it('marks omitted bodies stale, preserves stale through metadata, and never serializes it', () => {

@@ -7,7 +7,9 @@ const sendToAllWindows = jest.fn<void, [string, unknown]>();
 const mockStat = jest.fn<ReturnType<PollerStat>, Parameters<PollerStat>>();
 
 jest.mock('../lib/window-send', () => ({
-  sendToAllWindows,
+  get sendToAllWindows(): typeof sendToAllWindows {
+    return sendToAllWindows;
+  },
 }));
 jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');

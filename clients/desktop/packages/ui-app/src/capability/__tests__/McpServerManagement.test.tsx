@@ -122,6 +122,65 @@ describe('McpServerHealthSection', () => {
     );
   });
 
+  it('titles the default presentation with a Health heading', () => {
+    renderHealth();
+    const section = byTestId('mcp-health-section');
+    const heading = section?.querySelector('h3');
+    expect(heading?.textContent).toBe('Health');
+    expect(section?.getAttribute('aria-labelledby')).toBe(heading?.id);
+    expect(section?.hasAttribute('aria-label')).toBe(false);
+  });
+
+  it('inline presentation omits the Health heading and keeps badge, last-checked and test ids (CAN-4842)', async () => {
+    const run = jest.fn().mockResolvedValue({
+      success: true,
+      message: 'ok',
+    } satisfies McpTestConnectionOutcome);
+    const onTested = jest.fn();
+    renderHealth({
+      presentation: 'inline',
+      configs: [CONFIGS[0]],
+      status: {
+        connectionStatus: 'connected',
+        reachability: 'reachable',
+        lastCheckedAt: '2026-10-01T10:00:00.000Z',
+        configs: [{ configId: 'personal', authStatus: 'connected' }],
+      },
+      testConnection: { available: true, run },
+      onTested,
+    });
+    const section = byTestId('mcp-health-section');
+    expect(section?.querySelector('h3')).toBeNull();
+    // One per server row: a group, not a repeated "Health" landmark.
+    expect(section?.tagName).toBe('DIV');
+    expect(section?.getAttribute('role')).toBe('group');
+    expect(section?.getAttribute('aria-label')).toBe('Health');
+    expect(section?.hasAttribute('aria-labelledby')).toBe(false);
+    expect(byTestId('mcp-health-badge')?.textContent).toBe('Connected');
+    expect(byTestId('mcp-health-last-checked')?.textContent).toBe(
+      'Last checked at 2026-10-01T10:00:00.000Z',
+    );
+    expect(byTestId('mcp-health-auth-personal')).not.toBeNull();
+    click('mcp-health-test');
+    await flush();
+    expect(run).toHaveBeenCalledWith('personal');
+    expect(onTested).toHaveBeenCalledTimes(1);
+    expect(byTestId('mcp-health-result')).not.toBeNull();
+  });
+
+  it('inline presentation explains an unavailable test', () => {
+    renderHealth({
+      presentation: 'inline',
+      testConnection: { available: false, reason: 'Not here.' },
+    });
+    const button = byTestId('mcp-health-test');
+    expect(button?.hasAttribute('disabled')).toBe(true);
+    expect(byTestId('mcp-health-test-reason')?.textContent).toBe('Not here.');
+    expect(button?.getAttribute('aria-describedby')).toBe(
+      byTestId('mcp-health-test-reason')?.id,
+    );
+  });
+
   it('uses the account fallback without cached status', () => {
     renderHealth({ accountConnectionStatus: 'CONNECTED' });
     expect(byTestId('mcp-health-badge')?.textContent).toBe('Connected');

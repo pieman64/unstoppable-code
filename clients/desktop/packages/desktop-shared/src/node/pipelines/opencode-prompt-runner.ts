@@ -1,3 +1,4 @@
+import { prepareOpenCodeInferenceRoute } from '../opencode/inference-route';
 import {
   clampThinkingLevelToDeclared,
   type ThinkingLevel,
@@ -74,8 +75,13 @@ export interface OpenCodePromptHost {
       | 'providerConfig'
       | 'signal'
       | 'runtimeIdentity'
+      | 'inferenceRoute'
     > & {
       supportedThinkingLevels?: readonly ThinkingLevel[];
+      failureError?: (
+        fallback?: unknown,
+        requestRejected?: boolean,
+      ) => Error & { api_error_status?: number };
       close(): Promise<void>;
     }
   >;
@@ -142,6 +148,14 @@ export async function runOpenCodePipelinePrompt(
   let ownedProfile: string | undefined;
   let runtime: Awaited<ReturnType<OpenCodePromptHost['open']>> | undefined;
   let capabilities: OpenCodePipelineCapabilities | undefined;
+  let failureError:
+    | ((
+        fallback?: unknown,
+        requestRejected?: boolean,
+      ) => Error & { api_error_status?: number })
+    | undefined;
+  let requestRejected = false;
+  let accountScope: 'native' | 'ai_credits' = 'native';
   const emit = (event: Record<string, unknown>): void => {
     const line = redactSerializedJsonLine(
       JSON.stringify({ ...event, provider: 'opencode' }),
@@ -159,7 +173,7 @@ export async function runOpenCodePipelinePrompt(
   try {
     signal.throwIfAborted();
     const model = getRawOpenCodeModelId(request.model);
-    if (!model) throw new Error('Choose an OpenCode model for this step.');
+
     const cwd = resolve(request.cwd);
     const root = getPipelineExecutionOpenCodeSessionsDir(
       request.executionsDir,
@@ -193,7 +207,7 @@ export async function runOpenCodePipelinePrompt(
     );
     if (hasSelections && !host.prepareCapabilities)
       throw new Error(
-        'This OpenCode host cannot deliver the selected pipeline capabilities.',
+        'This OpenCode host cannot deliver the selected workflow capabilities.',
       );
     const systemPrompt = [
       buildPipelineGlobalInstructionsBlock(
@@ -223,7 +237,13 @@ export async function runOpenCodePipelinePrompt(
         })
         .catch(() => undefined);
       runtime = await bounded(opening);
-      if (hasSelections && !capabilities && host.prepareCapabilities) {
+      failureError = runtime.failureError;
+      accountScope = runtime.inferenceRoute ? 'ai_credits' : 'native';
+      const rawModel = runtime.inferenceRoute
+        ? prepareOpenCodeInferenceRoute(runtime.inferenceRoute).rawModelId
+        : model;
+      if (!rawModel) throw new Error('Choose an OpenCode model for this step.');
+      if (hasSelections && host.prepareCapabilities) {
         const preparing = host.prepareCapabilities(profile, signal);
         // The resolver can settle after cancellation. Its routes still belong
         // to this step and must be withdrawn even if no prompt was started.
@@ -235,10 +255,12 @@ export async function runOpenCodePipelinePrompt(
         capabilities = await bounded(preparing);
         for (const message of capabilities.warnings ?? [])
           emit({ type: 'warning', message });
-        prompt = appendCodexSchemaInstruction(
-          capabilities.expandPrompt?.(request.prompt) ?? request.prompt,
-          request.schema,
-        );
+        if (attempt === 0) {
+          prompt = appendCodexSchemaInstruction(
+            capabilities.expandPrompt?.(request.prompt) ?? request.prompt,
+            request.schema,
+          );
+        }
       }
       signal.throwIfAborted();
       const result = await runOpenCodeTurn(
@@ -260,12 +282,11 @@ export async function runOpenCodePipelinePrompt(
             systemPrompt,
             selected: capabilities?.capabilityContext,
             permissionPreset: request.permissionPreset,
-            providerSettingsSources: [
-              'managed-provider-config',
-              'native-opencode-auth',
-            ],
+            providerSettingsSources: runtime.inferenceRoute
+              ? ['host-inference']
+              : ['managed-provider-config', 'native-opencode-auth'],
           },
-          rawModelId: model,
+          rawModelId: rawModel,
           model: request.model,
           sessionId,
           prompt,
@@ -382,11 +403,20 @@ export async function runOpenCodePipelinePrompt(
         cache_read_input_tokens: usage.cacheReadInputTokens,
         cache_creation_input_tokens: usage.cacheCreationInputTokens,
       };
+      requestRejected = result.requestRejected === true;
       const completedRuntime = runtime;
+      const completedCapabilities = capabilities;
       runtime = undefined;
+      capabilities = undefined;
       let closeFailed = true;
       try {
-        await completedRuntime.close();
+        // Selected routes belong to this attempt's runtime and approval lease.
+        // A schema retry must prepare a fresh set before opening its next turn.
+        try {
+          await completedCapabilities?.dispose();
+        } finally {
+          await completedRuntime.close();
+        }
         closeFailed = false;
       } finally {
         // Even a failed or withdrawn attempt can consume tokens. Cleanup may
@@ -456,11 +486,15 @@ export async function runOpenCodePipelinePrompt(
       };
     }
     throw new Error('OpenCode did not complete this step.');
-  } catch (error) {
+  } catch (caught) {
+    const error =
+      !signal.aborted && failureError
+        ? failureError(caught, requestRejected)
+        : caught;
     const cancelled = withdrawal.reason === 'cancelled';
     const classification = classifyAgentFailure({
       provider: 'opencode',
-      accountScope: 'native',
+      accountScope,
       model: request.model,
       error,
     });
@@ -476,12 +510,12 @@ export async function runOpenCodePipelinePrompt(
         had_agent_activity: hadActivity,
         message: mask(
           cancelled
-            ? 'OpenCode pipeline turn was cancelled.'
+            ? 'OpenCode workflow turn was cancelled.'
             : withdrawal.reason === 'timeout'
               ? stepTimedOutMessage(request.totalTimeoutMs)
               : error instanceof Error
                 ? error.message
-                : 'OpenCode pipeline turn failed.',
+                : 'OpenCode workflow turn failed.',
         ),
       },
     };

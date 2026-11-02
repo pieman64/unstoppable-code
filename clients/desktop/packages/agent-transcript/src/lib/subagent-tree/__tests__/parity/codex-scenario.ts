@@ -691,7 +691,7 @@ export function codexCloudRecording(scenario: CodexScenario): CloudRecording {
       outputTail: null,
       error:
         status === 'failed' && agent.outcome.status === 'failed'
-          ? { code: 'turn_failed', message: agent.outcome.error }
+          ? { code: 'codex_turn_failed', message: agent.outcome.error }
           : null,
       createdAt,
       startedAt,
@@ -771,6 +771,40 @@ export function codexCloudRecording(scenario: CodexScenario): CloudRecording {
         });
         break;
       case 'root-end': {
+        // Core posts each task's message when the root turn's stream closes.
+        for (const [taskId, blocks] of Array.from(childBlocks.entries())) {
+          if (blocks.length === 0) continue;
+          const agent = scenario.steps
+            .flatMap((step) => (step.kind === 'run' ? [step.agent] : []))
+            .find((candidate) => candidate.taskId === taskId);
+          if (agent === undefined) continue;
+          const content = blocks
+            .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+            .join('\n\n');
+          const messageId = `core-msg-${taskKey(agent)}`;
+          messages.push({
+            id: messageId,
+            turnId: scenario.coreTurnId,
+            taskId,
+            role: 'ASSISTANT',
+            sourceKey: taskKey(agent),
+            content,
+            contentBlocks: blocks,
+            createdAt: isoAt(at),
+          });
+          emit(
+            at,
+            'message.finish',
+            {
+              taskId,
+              sourceKey: taskKey(agent),
+              turnSourceKey: turnKey,
+              finalMessage: { content, contentBlocks: blocks },
+              messageId,
+            },
+            taskId,
+          );
+        }
         const text = rootBlocks
           .flatMap((block) => (block.type === 'text' ? [block.text] : []))
           .join('\n\n');
@@ -826,16 +860,6 @@ export function codexCloudRecording(scenario: CodexScenario): CloudRecording {
       case 'child-start':
         upsert(at, event.agent, 'running');
         childBlocks.set(event.agent.taskId, []);
-        emit(
-          at,
-          'message.start',
-          {
-            taskId: event.agent.taskId,
-            sourceKey: taskKey(event.agent),
-            role: 'assistant',
-          },
-          event.agent.taskId,
-        );
         break;
       case 'child-command-start':
         childBlocks.get(event.agent.taskId)?.push({
@@ -890,32 +914,21 @@ export function codexCloudRecording(scenario: CodexScenario): CloudRecording {
         );
         break;
       case 'child-end': {
-        const blocks = childBlocks.get(event.agent.taskId) ?? [];
-        const text = blocks
-          .flatMap((block) => (block.type === 'text' ? [block.text] : []))
-          .join('\n\n');
-        messages.push({
-          id: `core-msg-${taskKey(event.agent)}`,
-          turnId: scenario.coreTurnId,
-          taskId: event.agent.taskId,
-          role: 'ASSISTANT',
-          sourceKey: taskKey(event.agent),
-          content: text,
-          contentBlocks: blocks,
-          createdAt: isoAt(at),
-        });
-        emit(
-          at,
-          'message.finish',
-          {
-            taskId: event.agent.taskId,
-            sourceKey: taskKey(event.agent),
-            ...(text.length > 0 ? { finalMessage: { content: text } } : {}),
-          },
-          event.agent.taskId,
-        );
         settled.add(event.agent.threadId);
         upsert(at, event.agent, event.agent.outcome.status);
+        if (event.agent.outcome.status === 'failed')
+          emit(
+            at,
+            'harness.event',
+            {
+              kind: 'task_error',
+              taskId: event.agent.taskId,
+              sourceKey: taskKey(event.agent),
+              errorCode: 'codex_turn_failed',
+              errorMessage: event.agent.outcome.error,
+            },
+            event.agent.taskId,
+          );
         break;
       }
       case 'wait':

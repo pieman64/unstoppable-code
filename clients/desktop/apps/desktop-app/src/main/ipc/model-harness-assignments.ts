@@ -111,10 +111,15 @@ function readSetInput(value: unknown): SetModelHarnessAssignmentInput {
     );
   }
   const harness = value.harness;
-  if (harness !== 'claude' && harness !== 'codex' && harness !== 'cursor') {
+  if (
+    harness !== 'claude' &&
+    harness !== 'codex' &&
+    harness !== 'cursor' &&
+    harness !== 'opencode'
+  ) {
     throw new ModelHarnessAssignmentIpcError(
       'INVALID_HARNESS',
-      'harness must be "claude", "codex", or "cursor"',
+      'harness must be "claude", "codex", "cursor", or "opencode"',
     );
   }
   return { modelId, harness };

@@ -72,6 +72,12 @@ async function scheduleMessage(
       'Expected projects.schedule_message.',
     );
   const action = parsed.action;
+  // A run sends now or not at all; scheduling stays an agent action.
+  if (trustedCaller.kind === 'pipeline')
+    throw new AgentChatSendError(
+      'unsupported_action',
+      'A pipeline cannot schedule a message.',
+    );
   const source = await canonicalSource(trustedCaller.source);
   if (
     (trustedCaller.kind === 'app_advisor') !==

@@ -8,8 +8,10 @@ import {
   type LedgerAcknowledgeOutboxInput,
   type LedgerActorRecord,
   type LedgerAddEntryInput,
+  type LedgerBindGlobalScopeInput,
   type LedgerBindScopeInput,
   type LedgerBindScopeResult,
+  type LedgerFindGlobalScopeInput,
   type LedgerFindScopeInput,
   type LedgerListChangesInput,
   type LedgerListReceiptKeysInput,
@@ -184,6 +186,22 @@ export class InProcessLedgerStoreClient implements LedgerStorageClient {
 
   findScope(input: LedgerFindScopeInput): Promise<LedgerScopeRecord | null> {
     return this.run('findScope', () => this.repository.findScope(input));
+  }
+
+  bindGlobalScope(
+    input: LedgerBindGlobalScopeInput,
+  ): Promise<LedgerBindScopeResult> {
+    return this.run('bindGlobalScope', () =>
+      this.repository.bindGlobalScope(input),
+    );
+  }
+
+  findGlobalScope(
+    input: LedgerFindGlobalScopeInput,
+  ): Promise<LedgerScopeRecord | null> {
+    return this.run('findGlobalScope', () =>
+      this.repository.findGlobalScope(input),
+    );
   }
 
   getScope(ledgerId: string): Promise<LedgerScopeRecord | null> {
@@ -402,7 +420,17 @@ export interface LedgerStoreFixtureOptions extends InProcessLedgerStoreClientOpt
 export function createLedgerStoreFixture(
   options: LedgerStoreFixtureOptions = {},
 ): LedgerStoreFixture {
-  const directory = mkdtempSync(join(tmpdir(), 'canopy-ledger-service-'));
+  return openLedgerStoreFixture(
+    mkdtempSync(join(tmpdir(), 'canopy-ledger-service-')),
+    options,
+  );
+}
+
+/** The Ledger database in `directory`, laid out as under the data directory. */
+function openLedgerStoreFixture(
+  directory: string,
+  options: LedgerStoreFixtureOptions,
+): LedgerStoreFixture {
   const databasePath = join(directory, 'ledger', 'ledger.sqlite');
   const repository = LedgerRepository.open({
     databasePath,
@@ -523,7 +551,32 @@ export interface LedgerServiceHarnessOptions {
 export function createLedgerServiceHarness(
   options: LedgerServiceHarnessOptions = {},
 ): LedgerServiceHarness {
-  const store = createLedgerStoreFixture(options.store);
+  return createServiceHarnessOver(
+    createLedgerStoreFixture(options.store),
+    options,
+  );
+}
+
+/**
+ * Closes `previous`'s database and opens a new harness on the same file, as a
+ * relaunch does: only what is on disk survives. The new harness owns the
+ * directory, so dispose it instead of `previous`.
+ */
+export function reopenLedgerServiceHarness(
+  previous: LedgerServiceHarness,
+  options: LedgerServiceHarnessOptions = {},
+): LedgerServiceHarness {
+  if (previous.store.repository.isOpen) previous.store.repository.close();
+  return createServiceHarnessOver(
+    openLedgerStoreFixture(previous.store.directory, options.store ?? {}),
+    options,
+  );
+}
+
+function createServiceHarnessOver(
+  store: LedgerStoreFixture,
+  options: LedgerServiceHarnessOptions,
+): LedgerServiceHarness {
   const bindings = new LedgerCallerBindingRegistry();
   const clock = createTestClock();
   const eligibility =

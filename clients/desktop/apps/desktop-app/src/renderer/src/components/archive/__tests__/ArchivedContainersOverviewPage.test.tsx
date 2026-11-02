@@ -22,10 +22,15 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const WORKSPACE_ID = 'code-ws-1';
 
+type ArchivedContainerSummaryV1 = Extract<
+  ArchivedContainerSummary,
+  { version: 1 }
+>;
+
 function makeSummary(
   id: string,
-  overrides: Partial<ArchivedContainerSummary> = {},
-): ArchivedContainerSummary {
+  overrides: Partial<Omit<ArchivedContainerSummaryV1, 'version'>> = {},
+): ArchivedContainerSummaryV1 {
   return {
     version: 1,
     id,
@@ -99,6 +104,7 @@ describe('ArchivedContainersOverviewPage', () => {
           name: 'Acme',
           type: 'single-repo',
           repoPath: '/repos/acme',
+          color: '#123456',
           worktrees: [],
           collapsed: false,
           order: 0,
@@ -610,7 +616,7 @@ describe('ArchivedContainersOverviewPage', () => {
     });
     render({ workspaceId: APP_ADVISOR_PROJECT_ID, surface: 'app-advisor' });
     expect(requireElement('archived-overview-workspace-name').textContent).toBe(
-      'App Advisor',
+      'Orchestrator',
     );
     act(() => {
       requireElement('archived-overview-legacy-row-legacy-advisor').click();

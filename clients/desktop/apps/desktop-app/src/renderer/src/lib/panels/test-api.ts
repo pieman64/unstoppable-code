@@ -112,7 +112,7 @@ interface CanopyPanelTestApi {
   holdChatCommandsAsRejected(commandType: ChatCommand['type']): void;
   releaseRejectedChatCommands(): void;
   /** Test-only: hold renderer chat sends until released, then send them. */
-  holdChatSends(): void;
+  holdChatSends(afterDispatch?: boolean): void;
   releaseHeldChatSends(): void;
   /** Creates through preload and registers its real result for this worktree. */
   createBrowser(request: BrowserCreateRequest): Promise<BrowserSessionSnapshot>;
@@ -492,14 +492,21 @@ export function installPanelTestApi(
         dispatchChatCommand: originalDispatchChatCommand,
       });
     },
-    holdChatSends: (): void => {
+    holdChatSends: (afterDispatch = false): void => {
       useChatStore.setState({
-        sendMessage: (...args) =>
-          new Promise((resolve, reject) => {
+        sendMessage: (...args) => {
+          if (afterDispatch) {
+            const released = new Promise<void>((resolve) => {
+              heldChatSendReleases.push(resolve);
+            });
+            return originalSendMessage(...args).then(() => released);
+          }
+          return new Promise((resolve, reject) => {
             heldChatSendReleases.push(() => {
               originalSendMessage(...args).then(resolve, reject);
             });
-          }),
+          });
+        },
       });
     },
     releaseHeldChatSends: (): void => {

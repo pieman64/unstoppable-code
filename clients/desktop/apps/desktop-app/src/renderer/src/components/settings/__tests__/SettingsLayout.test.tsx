@@ -78,6 +78,9 @@ describe('SettingsPage drill-in back control', () => {
     const title = container.querySelector('h1');
     if (!back || !title) throw new Error('Missing back control or title');
     expect(back.textContent).toBe('Environments');
+    // The Settings rail's quiet Back row, not a filled capsule.
+    expect(back.hasAttribute('data-sidebar-nav-row')).toBe(true);
+    expect(back.className).not.toContain('rounded-full');
     expect(
       back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

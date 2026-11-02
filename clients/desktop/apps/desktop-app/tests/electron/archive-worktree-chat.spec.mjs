@@ -268,9 +268,16 @@ test('archives a worktree chat on close and restores it from the archive modal',
     await expect(chatPanel.getByText(USER_MESSAGE).first()).toBeVisible({
       timeout: 30_000,
     });
-    await expect(chatPanel.getByText(/Completed in/).first()).toBeVisible({
-      timeout: 30_000,
-    });
+    await expect(
+      chatPanel.getByTestId('turn-timer-relative').last(),
+    ).toHaveText('just now', { timeout: 30_000 });
+    await expect(chatPanel.getByTestId('turn-timer').last()).toHaveAttribute(
+      'data-state',
+      'completed',
+      {
+        timeout: 30_000,
+      },
+    );
 
     // Close the sent chat → it is archived (not hard-deleted) and the archive
     // control appears in the worktree HEADER's action cluster (not a panel

@@ -9,6 +9,13 @@ import type {
 } from '../services/chat-state-contracts';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { ChatTranscriptLog } from '../lib/chat-transcript-log';
+import { ChatStorageTransactions } from '../lib/chat-storage-transactions';
+import { ChatArtifactMaintenance } from '../lib/chat-artifact-maintenance';
+import { delegationTranscriptMessages } from '@canopy/agent-transcript';
+import { projectAgentRoute } from '@canopy/desktop-shared/node/delegation';
+import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
+import { message, scopeSource } from './helpers/chat-delta-journal-harness';
+import type { ActiveRowAnchor } from '../lib/chat-transcript-live-positions';
 
 /**
  * Artifact maintenance shares eight reference-hint slots across every scope.
@@ -99,6 +106,103 @@ describe('artifact maintenance beyond the shared slot budget', () => {
     for (let index = 0; index < 10; index++)
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
   };
+
+  it('keeps anchored output reachable through maintenance and capture after parent settle', async () => {
+    const store = new ChatStorageV2(root, 'anchored');
+    const parent = message('parent', 'Parent', 'user');
+    await store.migrate(scopeSource([{ id: 'chat', messages: [parent] }]));
+    const storage = new ChatStorageTransactions(store);
+    const log = storage.transcripts;
+    const card = delegationTranscriptMessages({
+      delegationId: 'maintenance-run',
+      runGeneration: 1,
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: parent.id,
+      parentToolCallId: 'delegate-call',
+      createdAt: 2,
+      task: {
+        description: 'Read',
+        prompt: 'Read',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: 'maintenance-run',
+        runGeneration: 1,
+        status: 'running',
+        outputTruncated: false,
+        requestedModelId: 'test-model',
+        routeSnapshot: projectAgentRoute(
+          routeFixture({
+            selectedModelId: 'test-model',
+            runtimeModelId: 'test-model',
+            harnessId: 'claude',
+          }),
+        ),
+      },
+      transcript: [],
+    })[0];
+    if (!card) throw new Error('Missing delegated card');
+    const child: PersistedChatMessage = {
+      ...toolMessage('anchored', 'Kept anchored output\n'.repeat(6000)),
+      parentBlockId: card.id,
+    };
+    const ordinary = message('ordinary', 'Parent result');
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [card.id, { version: 1, runId: card.id, after: parent.id, tie: 0 }],
+      [child.id, { version: 1, runId: card.id, after: card.id, tie: 0 }],
+    ]);
+    await log.writeActive('chat', [card, child, ordinary], anchors);
+    await log.append('chat', [ordinary, card, child], anchors, 2);
+    expect((await log.activeMessages('chat')).map((row) => row.id)).toEqual([
+      card.id,
+      child.id,
+    ]);
+    const block = (await log.activeMessages('chat'))[1]?.blocks[0];
+    if (block?.type !== 'tool_result' || !block.fullOutputRef)
+      throw new Error('Missing active output reference');
+    const orphan = await log.artifacts.put(
+      'chat',
+      'Orphan output\n'.repeat(6000),
+    );
+    const maintenance = new ChatArtifactMaintenance(
+      storage,
+      join(store.directory, 'transcripts'),
+    );
+    try {
+      let complete = false;
+      for (let attempt = 0; attempt < 20 && !complete; attempt++)
+        complete = (
+          await maintenance.maintain(
+            'chat',
+            1024 * 1024,
+            await log.descriptor('chat'),
+          )
+        ).complete;
+      expect(complete).toBe(true);
+      await log.artifacts.verify('chat', block.fullOutputRef);
+      await expect(log.artifacts.verify('chat', orphan)).rejects.toThrow();
+      const captured = await log.capturePreview(
+        'chat',
+        await log.descriptor('chat'),
+      );
+      try {
+        const rows = [];
+        for await (const row of captured.messages()) rows.push(row);
+        expect(rows.map((row) => row.id)).toEqual([
+          parent.id,
+          ordinary.id,
+          card.id,
+          child.id,
+        ]);
+      } finally {
+        await captured.close();
+      }
+      expect(await log.activeRowAnchors('chat')).toEqual(anchors);
+    } finally {
+      await maintenance.dispose();
+    }
+  });
 
   it('reclaims every scope without reporting slot waits as failures', async () => {
     const diagnostics: ChatStateStorageDiagnostic[] = [];

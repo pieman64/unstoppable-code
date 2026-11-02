@@ -1,0 +1,285 @@
+[
+  {
+    "delegationId": "v1-inline",
+    "runGeneration": 1,
+    "sequence": 2,
+    "parentHarnessId": "codex",
+    "parentTurnId": "turn",
+    "parentToolCallId": "call-v1-inline",
+    "createdAt": 102,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "v1-inline",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "v1 terminal text"
+    },
+    "transcript": [
+      {
+        "id": "v1-text",
+        "sequence": 1,
+        "occurredAt": 1,
+        "type": "text",
+        "text": "v1 child line"
+      }
+    ]
+  },
+  {
+    "delegationId": "v2-inline",
+    "runGeneration": 1,
+    "sequence": 3,
+    "parentHarnessId": "codex",
+    "parentTurnId": "turn",
+    "parentToolCallId": "call-v2-inline",
+    "createdAt": 103,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "v2-inline",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "v2 terminal text"
+    },
+    "transcript": [
+      {
+        "id": "v2-text",
+        "sequence": 1,
+        "occurredAt": 1,
+        "type": "text",
+        "text": "v2 child line"
+      },
+      {
+        "id": "v2-tool",
+        "sequence": 2,
+        "occurredAt": 2,
+        "type": "tool",
+        "toolName": "Bash",
+        "input": "git status --short",
+        "output": "ok"
+      }
+    ]
+  },
+  {
+    "delegationId": "mixed-run",
+    "runGeneration": 1,
+    "sequence": 4,
+    "parentHarnessId": "codex",
+    "parentTurnId": "turn",
+    "parentToolCallId": "call-mixed-run",
+    "createdAt": 104,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "mixed-run",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "first generation"
+    },
+    "transcript": [
+      {
+        "id": "mixed-g1",
+        "sequence": 1,
+        "occurredAt": 1,
+        "type": "text",
+        "text": "first generation child"
+      }
+    ]
+  },
+  {
+    "delegationId": "mixed-run",
+    "runGeneration": 2,
+    "sequence": 6,
+    "parentHarnessId": "codex",
+    "parentTurnId": "turn",
+    "parentToolCallId": "call-mixed-run",
+    "createdAt": 106,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "mixed-run",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "second generation"
+    },
+    "transcript": [
+      {
+        "id": "mixed-g2",
+        "sequence": 2,
+        "occurredAt": 2,
+        "type": "text",
+        "text": "second generation child"
+      }
+    ]
+  },
+  {
+    "delegationId": "mixed-run",
+    "runGeneration": 3,
+    "sequence": 8,
+    "parentHarnessId": "codex",
+    "parentTurnId": "turn",
+    "parentToolCallId": "call-mixed-run",
+    "createdAt": 108,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "mixed-run",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "third generation"
+    },
+    "transcript": [],
+    "transcriptStore": "chat-log-v1",
+    "transcriptMode": "patch"
+  },
+  {
+    "delegationId": "empty-task",
+    "runGeneration": 1,
+    "sequence": 9,
+    "parentHarnessId": "codex",
+    "parentTurnId": "turn",
+    "parentToolCallId": "call-empty-task",
+    "createdAt": 109,
+    "task": {
+      "description": "",
+      "prompt": "",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "empty-task",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": ""
+    },
+    "transcript": []
+  }
+]

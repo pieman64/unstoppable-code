@@ -6,7 +6,6 @@ import {
   ErrorBanner,
   SettingsFormSkeleton,
 } from '@canopy/ui-shared/components';
-import { BellIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   SETTINGS_CARD_ROW_CLASS,
   SettingsCard,
@@ -111,7 +110,6 @@ export function PushPreferencesSection(): JSX.Element {
     // but had no icon and would drift the moment the shared card changed. The
     // sibling Work Digests card on this same tab already uses it.
     <SettingsCard
-      icon={<BellIcon size={18} />}
       title="Push notifications"
       subtitle="Send alerts to devices where you are signed in, such as when an agent needs your input."
       testId="account-push-preferences"

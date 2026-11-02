@@ -136,6 +136,7 @@ describe('Ollama model helpers', () => {
           {
             modelId: 'gateway-legacy',
             gatewayId: 'vendor/gateway-legacy',
+            family: 'anthropic',
             recommendedHarness: 'claude',
             gatewayOnly: true,
             contextWindow: 100_000,
@@ -319,6 +320,7 @@ describe('Ollama model helpers', () => {
             {
               modelId: 'gateway-routed',
               gatewayId: 'vendor/gateway-routed',
+              family: 'anthropic',
               recommendedHarness: 'claude',
               gatewayOnly: true,
               contextWindow: 100_000,
@@ -392,6 +394,7 @@ describe('Ollama model helpers', () => {
             {
               modelId: 'gateway-routed',
               gatewayId: 'vendor/gateway-routed',
+              family: 'openai',
               recommendedHarness: 'codex',
               gatewayOnly: true,
               contextWindow: 100_000,

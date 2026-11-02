@@ -3,7 +3,7 @@
  *
  * Phase F4 Step 2: the settings model preference rows are helper-only surfaces
  * whose execution paths do NOT resolve custom Agent models, so Agent models
- * (`agent_model_*`) are intentionally EXCLUDED from their <select> option list.
+ * (`agent_model_*`) are intentionally EXCLUDED from their dropdown options.
  * This test pins that exclusion.
  */
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
@@ -19,6 +19,10 @@ import {
   initClaudeModels,
 } from '@canopy/desktop-shared/types';
 import type { AgentModelRegistryEntry } from '@canopy/desktop-shared/types/agent-models';
+import {
+  settingsSelectOptionValues,
+  settingsSelectTrigger,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 import { ModelThinkingPreferenceRow } from '../ModelThinkingPreferenceRow';
 
 const BASE_MODEL = 'claude-settings-test';
@@ -56,7 +60,9 @@ it('excludes custom Agent models from the settings model select', () => {
   initAgentModels([agentEntry()]);
   expect(AGENT_MODELS).toContain(AGENT_ID);
 
-  root = createRoot(document.body);
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  root = createRoot(host);
   act(() => {
     root?.render(
       createElement(ModelThinkingPreferenceRow, {
@@ -72,14 +78,12 @@ it('excludes custom Agent models from the settings model select', () => {
     );
   });
 
-  // The real base model is offered…
-  expect(
-    document.querySelector(`option[value="${BASE_MODEL}"]`),
-  ).not.toBeNull();
-  // …but no Agent model appears as an option.
-  expect(document.querySelector(`option[value="${AGENT_ID}"]`)).toBeNull();
-  const options = Array.from(document.querySelectorAll('option')).map(
-    (o) => o.value,
+  const options = settingsSelectOptionValues(
+    settingsSelectTrigger(host, '[data-testid="agents-exclusion-model"]'),
   );
+  // The real base model is offered…
+  expect(options).toContain(BASE_MODEL);
+  // …but no Agent model appears as an option.
+  expect(options).not.toContain(AGENT_ID);
   expect(options.some((value) => value.startsWith('agent_model_'))).toBe(false);
 });

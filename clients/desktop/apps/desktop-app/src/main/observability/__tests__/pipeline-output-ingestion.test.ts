@@ -1,10 +1,6 @@
 const mockReadFile = jest.fn<Promise<string>, [string, string?]>();
-const mockReaddir = jest.fn<Promise<string[]>, [string]>();
 const mockAppendFile = jest.fn<Promise<void>, [string, string]>();
 const mockMkdir = jest.fn<Promise<void>, [string, { recursive?: boolean }?]>();
-const mockRename = jest.fn<Promise<void>, [string, string]>();
-const mockRm = jest.fn<Promise<void>, [string, { recursive?: boolean }?]>();
-const mockUnlink = jest.fn<Promise<void>, [string]>();
 const mockStat = jest.fn<Promise<{ size: number }>, [string]>();
 const mockWriteFile = jest.fn<Promise<void>, [string, string]>();
 const mockReadPreferencesFile = jest.fn();
@@ -19,15 +15,25 @@ const mockCodexOnAccountUpdated = jest.fn(() => (): void => undefined);
 const mockCodexOnRateLimitsUpdated = jest.fn(() => (): void => undefined);
 
 jest.mock('node:fs/promises', () => ({
-  appendFile: mockAppendFile,
-  mkdir: mockMkdir,
-  readFile: mockReadFile,
-  readdir: mockReaddir,
-  rename: mockRename,
-  rm: mockRm,
-  unlink: mockUnlink,
-  stat: mockStat,
-  writeFile: mockWriteFile,
+  get appendFile(): typeof mockAppendFile {
+    return mockAppendFile;
+  },
+  get mkdir(): typeof mockMkdir {
+    return mockMkdir;
+  },
+  get readFile(): typeof mockReadFile {
+    return mockReadFile;
+  },
+  readdir: jest.fn(),
+  rename: jest.fn(),
+  rm: jest.fn(),
+  unlink: jest.fn(),
+  get stat(): typeof mockStat {
+    return mockStat;
+  },
+  get writeFile(): typeof mockWriteFile {
+    return mockWriteFile;
+  },
 }));
 
 jest.mock('../../lib/paths', () => ({
@@ -55,7 +61,9 @@ jest.mock('../../lib/paths', () => ({
 }));
 
 jest.mock('../../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
 jest.mock('../../lib/atomic-file', () => ({
@@ -63,10 +71,18 @@ jest.mock('../../lib/atomic-file', () => ({
 }));
 
 jest.mock('../../auth/provider-auth-state', () => ({
-  checkClaudeAuthStatusObserved: mockCheckClaudeAuthStatusObserved,
-  peekProviderAccountIdentity: mockPeekProviderAccountIdentity,
-  peekProviderBillingAccountKind: mockPeekProviderBillingAccountKind,
-  warmProviderAccountIdentity: mockWarmProviderAccountIdentity,
+  get checkClaudeAuthStatusObserved(): typeof mockCheckClaudeAuthStatusObserved {
+    return mockCheckClaudeAuthStatusObserved;
+  },
+  get peekProviderAccountIdentity(): typeof mockPeekProviderAccountIdentity {
+    return mockPeekProviderAccountIdentity;
+  },
+  get peekProviderBillingAccountKind(): typeof mockPeekProviderBillingAccountKind {
+    return mockPeekProviderBillingAccountKind;
+  },
+  get warmProviderAccountIdentity(): typeof mockWarmProviderAccountIdentity {
+    return mockWarmProviderAccountIdentity;
+  },
 }));
 
 jest.mock('../../feature-flags', () => ({
@@ -98,9 +114,15 @@ jest.mock('../../codex/runtime-service', () => ({
     };
   } => ({
     admin: () => ({
-      request: mockCodexRequest,
-      onAccountUpdated: mockCodexOnAccountUpdated,
-      onRateLimitsUpdated: mockCodexOnRateLimitsUpdated,
+      get request(): typeof mockCodexRequest {
+        return mockCodexRequest;
+      },
+      get onAccountUpdated(): typeof mockCodexOnAccountUpdated {
+        return mockCodexOnAccountUpdated;
+      },
+      get onRateLimitsUpdated(): typeof mockCodexOnRateLimitsUpdated {
+        return mockCodexOnRateLimitsUpdated;
+      },
     }),
   }),
 }));
@@ -119,14 +141,56 @@ jest.mock('../../openai-pricing/pricing-client', () => ({
 }));
 
 import type { AgentAuditEntry } from '@canopy/desktop-shared/types';
+import {
+  readdir as readdirModuleMock,
+  rename as renameModuleMock,
+  rm as rmModuleMock,
+  unlink as unlinkModuleMock,
+} from 'node:fs/promises';
 import type { StepResult } from '@canopy/desktop-shared/types/pipeline';
 import {
   ObservabilityService,
   type PipelineExecutionStateSyncInput,
 } from '../service';
 
+const mockReaddir = jest.mocked(readdirModuleMock);
+const mockRename = jest.mocked(renameModuleMock);
+const mockRm = jest.mocked(rmModuleMock);
+const mockUnlink = jest.mocked(unlinkModuleMock);
+
 const STARTED_AT = '2026-10-13T03:48:55.778Z';
 const PERSISTED_STARTED_AT = '2026-10-13T03:48:55.824Z';
+const ZERO_TOOL_COUNTS: AgentAuditEntry['toolCounts'] = {
+  thinking: 0,
+  bash: 0,
+  read: 0,
+  readLines: 0,
+  writeEdit: 0,
+  plan: 0,
+  fileEdit: 0,
+  fileAdd: 0,
+  fileDelete: 0,
+  search: 0,
+  grep: 0,
+  web: 0,
+  agent: 0,
+  workflow: 0,
+  tasks: 0,
+  taskStop: 0,
+  skills: 0,
+  monitor: 0,
+  claude: 0,
+  scheduleWakeup: 0,
+  askUser: 0,
+  scriptOutput: 0,
+  watcher: 0,
+  canopy: 0,
+  graph: 0,
+  appAdvisor: 0,
+  pipelineEditor: 0,
+  mcp: 0,
+  other: 0,
+};
 const ITERATION_TWO_STARTED_AT = '2026-10-13T03:49:10.000Z';
 
 function pipelineState(
@@ -211,7 +275,7 @@ function persistedPipelineEntry(): AgentAuditEntry {
     toolUseCount: 0,
     subAgentCount: 0,
     hasTranscript: true,
-    toolCounts: {},
+    toolCounts: ZERO_TOOL_COUNTS,
     projectId: 'proj',
     worktreeId: 'wt',
     pipelineId: 'pipeline-1',
@@ -320,6 +384,63 @@ describe('pipeline output ingestion', () => {
       hasTranscript: true,
       tokens: previousEntry.tokens,
     });
+  });
+
+  it('keeps the explicit step provider when a row recorded as Claude replays after restart', async () => {
+    // Earlier versions recorded agent-hinted Copilot steps as Claude, and
+    // shutdown stamped the interrupted row with the Claude account.
+    const previousEntry = persistedPipelineEntry();
+    persistedSnapshot = JSON.stringify({
+      version: 1,
+      recentEntries: [
+        {
+          ...previousEntry,
+          status: 'interrupted',
+          error: 'Application shutdown',
+          provider: 'claude',
+          providerAccountKey: 'claude:native@example.com',
+          providerAccountEmail: 'native@example.com',
+          providerPlanType: 'max',
+        },
+      ],
+      usage: {},
+    });
+
+    const service = new ObservabilityService();
+    services.push(service);
+    await service.start();
+    mockPeekProviderAccountIdentity.mockClear();
+
+    service.syncPipelineExecutionState(
+      pipelineState('exec-1', {
+        job1: {
+          status: 'running',
+          outputs: {},
+          steps: {
+            step1: {
+              ...agentStep('claude', PERSISTED_STARTED_AT),
+              agent_provider: 'copilot',
+              agent_harness: 'copilot',
+              agent_model: 'copilot:fixture-model',
+            },
+          },
+        },
+      }),
+    );
+
+    const matchingEntries = service
+      .loadSnapshot()
+      .recentEntries.filter((entry) => entry.stepId === 'step1');
+    expect(matchingEntries).toHaveLength(1);
+    expect(matchingEntries[0]).toMatchObject({
+      id: previousEntry.id,
+      status: 'running',
+      provider: 'copilot',
+    });
+    expect(matchingEntries[0]).not.toHaveProperty('providerAccountKey');
+    expect(matchingEntries[0]).not.toHaveProperty('providerAccountEmail');
+    expect(matchingEntries[0]).not.toHaveProperty('providerPlanType');
+    expect(mockPeekProviderAccountIdentity).not.toHaveBeenCalled();
   });
 
   it('re-prices a resumed Codex step and keeps its recorded subagents', async () => {

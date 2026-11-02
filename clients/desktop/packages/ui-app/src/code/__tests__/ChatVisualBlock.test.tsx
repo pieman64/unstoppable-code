@@ -415,17 +415,28 @@ it('defers each read until its block nears the viewport, holding its height', as
     ).toBe('400px');
     const second = observed.find((entry) => entry.element === blocks[1]);
     if (!second) throw new Error('Block was not observed');
-    act(() =>
-      second.callback(
-        [
-          {
-            target: blocks[1],
-            isIntersecting: true,
-          } as IntersectionObserverEntry,
-        ],
-        {} as IntersectionObserver,
-      ),
-    );
+    const target = blocks.item(1);
+    const bounds = DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+    const entry: IntersectionObserverEntry = {
+      boundingClientRect: bounds,
+      intersectionRatio: 1,
+      intersectionRect: bounds,
+      isIntersecting: true,
+      rootBounds: null,
+      target,
+      time: 0,
+    };
+    const observer: IntersectionObserver = {
+      root: null,
+      rootMargin: '',
+      scrollMargin: '',
+      thresholds: [],
+      disconnect: (): void => {},
+      observe: (): void => {},
+      takeRecords: (): IntersectionObserverEntry[] => [],
+      unobserve: (): void => {},
+    };
+    act(() => second.callback([entry], observer));
     await flush();
     expect(read).toHaveBeenCalled();
     expect(

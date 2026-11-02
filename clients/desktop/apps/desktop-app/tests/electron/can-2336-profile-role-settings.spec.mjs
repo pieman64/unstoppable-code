@@ -1,3 +1,4 @@
+import { selectProfileRoles } from './settingsProfileRoles.mjs';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,19 +20,7 @@ import {
 // Started. The editor stages changes until Save, then writes both the full
 // list and its canonical primary role through real preferences IPC.
 
-/** Skips AI providers and repo setup to the tools step's category row. */
-async function openCategoryRow(window) {
-  // Home is active here, so the sidebar card is not mounted: step the queue
-  // with the Home card's own forward arrows.
-  const app = new CanopyAppDriver(window);
-  for (const entry of ['agent-connections', 'add-repo']) {
-    await expect(app.homeChecklistRow(entry)).toBeVisible();
-    await app.homeChecklistForward(entry).click();
-  }
-  await expect(window.getByTestId('home-onboarding-categorys')).toBeVisible();
-}
-
-test('clearing every saved role reopens the tools step that asks for them without resetting other progress', async () => {
+test('clearing saved roles leaves unrelated preferences and hosted synchronization intact', async () => {
   const apiKey = 'csk_clear_onboarding_roles_e2e';
   await registerScenario(DEFAULT_MOCK_BASE_URL, apiKey, {});
   const launch = await launchCanopy({
@@ -62,9 +51,6 @@ test('clearing every saved role reopens the tools step that asks for them withou
     const after = await window.evaluate(() => window.api.loadPreferences());
     expect(after.profileRole).toBeUndefined();
     expect(after.profileRoles).toEqual([]);
-    const preservedEntries = { ...before.homeOnboardingSuggestions.entries };
-    delete preservedEntries.github;
-    expect(after.homeOnboardingSuggestions.entries).toEqual(preservedEntries);
     expect(after.globalPluginSelections).toEqual(before.globalPluginSelections);
     await expect
       .poll(
@@ -75,20 +61,15 @@ test('clearing every saved role reopens the tools step that asks for them withou
       )
       .toBeGreaterThan(0);
     await app.closeSettings();
-    await expect(window.getByTestId('home-onboarding-categorys')).toBeVisible();
-    await expect(app.homeChecklistRow('github')).toBeVisible();
+    await expect(window.getByTestId('home-onboarding-suggestions')).toHaveCount(
+      0,
+    );
     await window.reload();
     await app.waitForShell();
-    await window.getByTestId('sidebar-create-task').click();
-    await expect(window.getByTestId('home-onboarding-categorys')).toBeVisible();
     expect(
       (await window.evaluate(() => window.api.loadPreferences())).profileRoles,
     ).toEqual([]);
-    // A pick saves at once; the step stays so more can be picked.
-    await window.getByTestId('home-onboarding-category-marketing').click();
-    await expect(
-      window.getByTestId('home-onboarding-category-marketing'),
-    ).toHaveAttribute('aria-pressed', 'true');
+    await selectProfileRoles(window, ['marketing']);
     await expect
       .poll(
         async () =>
@@ -115,13 +96,7 @@ test('Marketing and Sales can be selected together and edited independently', as
     await app.waitForShell();
     await connectMockCloudAccount(window, apiKey);
     await window.getByTestId('sidebar-create-task').click();
-    await openCategoryRow(window);
-    await expect(
-      window.getByTestId('home-onboarding-category-marketing-sales'),
-    ).toHaveCount(0);
-    await window.getByTestId('home-onboarding-category-marketing').click();
-    // Sales is not one of the five categories on the tools step; Settings
-    // adds it alongside Marketing.
+    await selectProfileRoles(window, ['marketing']);
     await app.openSettings();
     await app.openSettingsSection('canopy');
     await window.getByTestId('settings-profile-role-edit').click();
@@ -275,10 +250,10 @@ test('Settings shows all saved roles and edits them in a modal', async () => {
     await edit.click();
     await expect(
       modal.getByTestId('settings-profile-role-option-designer'),
-    ).toHaveAttribute('aria-pressed', 'true');
+    ).toBeChecked();
     await expect(
       modal.getByTestId('settings-profile-role-option-founder'),
-    ).toHaveAttribute('aria-pressed', 'true');
+    ).toBeChecked();
     await modal.getByTestId('settings-profile-role-option-other').click();
     await modal
       .getByTestId('settings-profile-role-detail-input')
@@ -321,7 +296,7 @@ test('Settings shows all saved roles and edits them in a modal', async () => {
   }
 });
 
-test('editing one role keeps the others and updates the live Home queue', async () => {
+test('editing one role keeps the others after reopening Settings', async () => {
   const launch = await launchCanopy({
     userDataDir: seedWelcomeChecklist({ fresh: true }),
     freshOnboardingChecklist: true,
@@ -331,11 +306,7 @@ test('editing one role keeps the others and updates the live Home queue', async 
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
     await window.getByTestId('sidebar-create-task').click();
-    await openCategoryRow(window);
-    await window
-      .getByTestId('home-onboarding-category-software-engineer')
-      .click();
-    await window.getByTestId('home-onboarding-category-designer').click();
+    await selectProfileRoles(window, ['software-engineer', 'designer']);
     await expect
       .poll(
         async () =>
@@ -363,17 +334,6 @@ test('editing one role keeps the others and updates the live Home queue', async 
     // The tools step stays for a nontechnical role (it carries the category
     // row), that row reflects the edit, and the steps already resolved
     // before it stay resolved.
-    const tools = window.getByTestId('home-onboarding-suggestion-github');
-    await expect(tools).toBeVisible();
-    await expect(
-      tools.getByTestId('home-onboarding-category-designer'),
-    ).toHaveAttribute('aria-pressed', 'true');
-    await expect(
-      tools.getByTestId('home-onboarding-category-software-engineer'),
-    ).toHaveAttribute('aria-pressed', 'false');
-    await expect(
-      window.getByTestId('home-onboarding-suggestion-add-repo'),
-    ).toHaveCount(0);
     expect(
       (await window.evaluate(() => window.api.loadPreferences())).profileRoles,
     ).toEqual(['designer']);
@@ -388,12 +348,6 @@ test('editing one role keeps the others and updates the live Home queue', async 
     await expect(modal).toHaveCount(0);
     await app.closeSettings();
     // Re-adding the technical role shows on the same row at once.
-    await expect(
-      tools.getByTestId('home-onboarding-category-software-engineer'),
-    ).toHaveAttribute('aria-pressed', 'true');
-    await expect(
-      tools.getByTestId('home-onboarding-category-designer'),
-    ).toHaveAttribute('aria-pressed', 'true');
     expect(
       (await window.evaluate(() => window.api.loadPreferences())).profileRoles,
     ).toEqual(['designer', 'software-engineer']);

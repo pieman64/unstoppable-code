@@ -210,7 +210,7 @@ async function clickAsync(element: HTMLElement): Promise<void> {
 
 describe('GitHubCloudConnectionCard', () => {
   describe('card chrome', () => {
-    it('renders one Settings card with the app integration icon and the brand name', () => {
+    it('renders one Settings section with a text-only heading and the brand name', () => {
       render(makeController({ connection: DISCONNECTED }));
 
       expect(findAll('github-cloud-card')).toHaveLength(1);
@@ -218,7 +218,8 @@ describe('GitHubCloudConnectionCard', () => {
       expect(card.querySelector('h2')?.textContent).toBe(
         'GitHub for cloud work',
       );
-      expect(card.querySelector('svg[data-app-icon="true"]')).not.toBeNull();
+      // No icon medallion beside the heading.
+      expect(card.querySelector('.bg-accent-subtle')).toBeNull();
       expect(cardText()).toContain(
         `Connect GitHub so cloud projects in ${canopyBrand.displayName} can use your repositories.`,
       );

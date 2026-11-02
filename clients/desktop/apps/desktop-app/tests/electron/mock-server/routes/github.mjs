@@ -145,6 +145,105 @@ function grantFor(key) {
   };
 }
 
+// Opt-in rotation controls leave the default device-flow fixture stateless.
+// Retirement happens on arrival, so killing a held response models I1b rather
+// than pretending GitHub undid the rotation when the client disappeared.
+const refreshControls = new Map(); // scenario key -> rotation state
+const refreshTokens = new Map(); // issued refresh token -> rotation state
+
+async function handleRefreshControl(request, response, url) {
+  const match = /^\/__mock\/github\/refresh\/(.+)$/.exec(url.pathname);
+  if (!match) return false;
+  const key = decodeURIComponent(match[1]);
+  let state = refreshControls.get(key);
+  if (request.method === 'POST') {
+    const body = (await readJsonBody(request)) ?? {};
+    if (typeof body.held !== 'boolean') {
+      jsonResponse(response, 400, { error: '`held` must be a boolean' });
+      return true;
+    }
+    if (!state) {
+      state = {
+        key,
+        held: false,
+        current: `ghr_e2e_${key}`,
+        presentations: [],
+        delivered: 0,
+        waiters: new Set(),
+        observers: new Set(),
+      };
+      refreshControls.set(key, state);
+      refreshTokens.set(state.current, state);
+    }
+    state.held = body.held;
+    if (!state.held) for (const release of state.waiters) release();
+    jsonResponse(response, 200, { ok: true });
+    return true;
+  }
+  if (request.method !== 'GET') return false;
+  if (!state) {
+    jsonResponse(response, 404, { error: 'unknown refresh control' });
+    return true;
+  }
+  const expected = Number(url.searchParams.get('presentations') ?? 0);
+  if (state.presentations.length < expected) {
+    const current = state;
+    await new Promise((resolve) => {
+      const changed = () => {
+        if (current.presentations.length >= expected || response.destroyed) {
+          current.observers.delete(changed);
+          response.off('close', changed);
+          resolve();
+        }
+      };
+      current.observers.add(changed);
+      response.once('close', changed);
+    });
+  }
+  if (!response.destroyed)
+    jsonResponse(response, 200, {
+      held: state.held,
+      waiting: state.waiters.size,
+      presentations: state.presentations,
+      delivered: state.delivered,
+    });
+  return true;
+}
+
+async function controlledRefresh(response, token, state) {
+  state.presentations.push(token);
+  const accepted = token === state.current;
+  const successor = `ghr_e2e_${state.key}_${randomBytes(16).toString('hex')}`;
+  if (accepted) {
+    state.current = successor;
+    refreshTokens.set(successor, state);
+  }
+  let pending;
+  if (accepted && state.held) {
+    pending = new Promise((resolve) => {
+      const release = () => {
+        state.waiters.delete(release);
+        response.off('close', release);
+        resolve();
+      };
+      state.waiters.add(release);
+      response.once('close', release);
+    });
+  }
+  for (const changed of state.observers) changed();
+  await pending;
+  if (response.destroyed) return;
+  if (!accepted) {
+    jsonResponse(response, 200, { error: 'bad_refresh_token' });
+    return;
+  }
+  response.once('finish', () => state.delivered++);
+  jsonResponse(response, 200, {
+    ...grantFor(state.key),
+    refresh_token: successor,
+  });
+}
+
 async function handleDeviceFlow(request, response, url) {
   const { pathname } = url;
   const base = `http://${request.headers.host}`;
@@ -182,6 +281,11 @@ async function handleDeviceFlow(request, response, url) {
     const form = await readFormBody(request);
     if (form.get('grant_type') === 'refresh_token') {
       const refreshToken = form.get('refresh_token') ?? '';
+      const controlled = refreshTokens.get(refreshToken);
+      if (controlled) {
+        await controlledRefresh(response, refreshToken, controlled);
+        return true;
+      }
       if (!refreshToken.startsWith('ghr_e2e_')) {
         jsonResponse(response, 200, { error: 'bad_refresh_token' });
         return true;
@@ -854,6 +958,7 @@ export async function handleGithubRequest(request, response, url) {
   const { pathname } = url;
   const method = request.method;
 
+  if (await handleRefreshControl(request, response, url)) return true;
   if (await handleDeviceFlow(request, response, url)) {
     return true;
   }

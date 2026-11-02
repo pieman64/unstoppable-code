@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { HeaderActionButton } from '../../../HeaderActionButton';
+import { ExecutionActionButton } from '../../../ExecutionActionButton';
 import { SubagentIcon } from './SubagentIcon';
 
 export const SUBAGENT_VIEW_TREE_LABEL = 'View tree';
@@ -7,13 +8,27 @@ export const SUBAGENT_VIEW_TREE_LABEL = 'View tree';
 export interface SubagentViewTreeActionProps {
   readonly onClick: () => void;
   readonly dataTestId?: string;
+  readonly appearance?: 'default' | 'section';
 }
 
 /** Shared chat-header action for opening the current chat's subagent tree. */
 export function SubagentViewTreeAction({
   onClick,
   dataTestId = 'agent-activity-view-tree',
+  appearance = 'default',
 }: SubagentViewTreeActionProps): JSX.Element {
+  if (appearance === 'section') {
+    return (
+      <ExecutionActionButton
+        variant="text"
+        label={SUBAGENT_VIEW_TREE_LABEL}
+        ariaLabel={SUBAGENT_VIEW_TREE_LABEL}
+        dataTestId={dataTestId}
+        stopKeyDownPropagation={false}
+        onClick={onClick}
+      />
+    );
+  }
   return (
     <HeaderActionButton
       tone="neutral"

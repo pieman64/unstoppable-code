@@ -15,6 +15,8 @@ import {
   type WorkflowLibraryRow,
 } from '@canopy/ui-app/workflows';
 import type { AutomationScope } from '@/hooks/useAutomationScope';
+import { useAutomationsStore } from '@/stores/automationsStore';
+import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkflowsViewStore } from '@/stores/workflowsViewStore';
 import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
@@ -114,6 +116,7 @@ const SCOPE: AutomationScope = {
   watcherInContext: () => true,
   shareInContext: () => true,
   contextLabel: null,
+  ownerLabel: () => 'Personal',
   runsInLabel: () => null,
   labelForWorkspace: () => 'Personal',
   memberOfWorkspace: () => true,
@@ -135,14 +138,15 @@ describe('WorkflowsLibraryTab', () => {
       recentRuns: [],
       loading: false,
       error: null,
+      reload: jest.fn(() => Promise.resolve()),
       mutationError: null,
       scope: SCOPE,
       describeAction: () => 'Ask Advisor',
       beginCreate: jest.fn(),
       beginEdit: jest.fn(),
       beginView: jest.fn(),
-      runNow: jest.fn(() => Promise.resolve()),
-      toggleEnabled: jest.fn(() => Promise.resolve()),
+      runNow: jest.fn(() => Promise.resolve({ ok: true as const })),
+      toggleEnabled: jest.fn(() => Promise.resolve({ ok: true as const })),
       share: jest.fn(),
       remove: jest.fn(() => Promise.resolve()),
       runningActivityId: null,
@@ -509,16 +513,151 @@ describe('WorkflowsLibraryTab', () => {
     );
   });
 
-  it('keeps local rows and says so when a share list failed to load', () => {
-    render({ data: data({ sharedLoadFailed: true }) });
+  it('keeps local rows and says so in one notice with Try again when a share list failed to load', async () => {
+    const shared = data({ sharedLoadFailed: true });
+    const { pipelines } = render({ data: shared });
 
-    expect(
-      container.querySelector('[data-testid="workflows-library-shared-error"]')
-        ?.textContent,
-    ).toContain('Shared workflows could not be loaded');
+    const notice = container.querySelector(
+      '[data-testid="workflows-library-load-error"]',
+    );
+    expect(notice?.textContent).toContain("Couldn't load shared workflows.");
+    expect(notice?.textContent).toContain('Yours are listed.');
     expect(
       container.querySelectorAll('[data-testid="workflows-library-row"]'),
     ).toHaveLength(2);
+
+    const retry = notice?.querySelector('button');
+    expect(retry?.textContent).toBe('Try again');
+    click(retry);
+    expect(shared.refreshSharedAutomations).toHaveBeenCalledTimes(1);
+    expect(pipelines.refreshSharedList).toHaveBeenCalledTimes(1);
+    expect(pipelines.refresh).not.toHaveBeenCalled();
+    await settle();
+  });
+
+  it('shows the failed place with one Try again when every local list failed, keeping the toolbar', async () => {
+    let finish: () => void = () => undefined;
+    const reload = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const failed = {
+      data: data({ rows: [], targets: new Map() }),
+      automations: automationsApi({ error: 'IPC failed', reload }),
+      pipelines: pipelinesApi({ error: 'IPC failed' }),
+    };
+    render(failed);
+
+    const place = container.querySelector(
+      '[data-testid="workflows-library-load-failed"]',
+    );
+    expect(place?.textContent).toContain("Couldn't load workflows.");
+    expect(
+      container.querySelector('[data-testid="workflows-library-empty"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="workflows-library-load-error"]'),
+    ).toBeNull();
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="workflows-library-retry"]',
+    );
+    click(retry);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(failed.pipelines.refresh).toHaveBeenCalledTimes(1);
+
+    // The reload clears both errors while it runs; the failed place stays,
+    // its capsule spinning, instead of blanking to a loading line.
+    render({
+      ...failed,
+      automations: { ...failed.automations, error: null },
+      pipelines: { ...failed.pipelines, error: null, loading: true },
+      data: data({ rows: [], targets: new Map(), loading: true }),
+    });
+    expect(
+      container.querySelector('[data-testid="workflows-library-load-failed"]'),
+    ).toBeInstanceOf(HTMLElement);
+    const spinning = container.querySelector<HTMLButtonElement>(
+      '[data-testid="workflows-library-retry"]',
+    );
+    expect(spinning?.textContent).toBe('Trying again…');
+    expect(spinning?.getAttribute('aria-busy')).toBe('true');
+
+    await act(async () => {
+      finish();
+      await Promise.resolve();
+    });
+    render({
+      data: data(),
+      automations: { ...failed.automations, error: null },
+      pipelines: { ...failed.pipelines, error: null },
+    });
+    expect(
+      container.querySelector('[data-testid="workflows-library-load-failed"]'),
+    ).toBeNull();
+    expect(
+      container.querySelectorAll('[data-testid="workflows-library-row"]'),
+    ).toHaveLength(2);
+  });
+
+  it('raises a failed run as a toast whose Try again runs it again', async () => {
+    useGitHubStore.setState({ toasts: [], notifications: [] });
+    useAutomationsStore.setState({ mutationError: null });
+    const runNow = jest.fn(() => {
+      const error = "The canopy project didn't answer in time.";
+      // The store also keeps the error, as runMutation does.
+      useAutomationsStore.setState({ mutationError: error });
+      return Promise.resolve({ ok: false as const, error });
+    });
+    render({ automations: automationsApi({ runNow }) });
+
+    click(
+      row('automation:a-1').querySelector(
+        '[data-testid="workflows-library-run"]',
+      ),
+    );
+    await settle();
+
+    const [toast, ...others] = useGitHubStore.getState().toasts;
+    expect(others).toEqual([]);
+    expect(toast?.type).toBe('error');
+    expect(toast?.meta?.title).toBe("Couldn't start Standup notes");
+    expect(toast?.message).toBe("The canopy project didn't answer in time.");
+    expect(toast?.meta?.action?.label).toBe('Try again');
+    expect(toast?.meta?.suppressOsNotification).toBe(true);
+    // The failure is the toast's to report, not an inline notice's.
+    expect(useAutomationsStore.getState().mutationError).toBeNull();
+    expect(
+      container.querySelector('[data-testid="workflows-library-action-error"]'),
+    ).toBeNull();
+
+    await act(async () => {
+      await Promise.resolve(toast?.meta?.action?.onClick());
+    });
+    expect(runNow).toHaveBeenCalledTimes(2);
+    expect(useGitHubStore.getState().toasts).toHaveLength(2);
+  });
+
+  it('raises nothing for a run that opens its review, even with an old store error', async () => {
+    useGitHubStore.setState({ toasts: [], notifications: [] });
+    // An earlier failure the store still holds, such as a failed delete.
+    useAutomationsStore.setState({
+      mutationError: "Couldn't delete the automation.",
+    });
+    // A shared workflow that changed opens its review instead of running.
+    const runNow = jest.fn(() => Promise.resolve({ ok: true as const }));
+    render({ automations: automationsApi({ runNow }) });
+
+    click(
+      row('automation:a-1').querySelector(
+        '[data-testid="workflows-library-run"]',
+      ),
+    );
+    await settle();
+
+    expect(runNow).toHaveBeenCalledTimes(1);
+    expect(useGitHubStore.getState().toasts).toEqual([]);
   });
 
   /** One share listed in the Library that is not added yet. */

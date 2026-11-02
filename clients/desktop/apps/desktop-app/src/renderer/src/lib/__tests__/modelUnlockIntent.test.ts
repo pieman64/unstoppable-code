@@ -1,7 +1,13 @@
 /**
  * @jest-environment jsdom
  */
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import { readCanopyCloudAccountChangeReason } from '@/lib/canopyCloudAccountChange';
 import { resetModelLibraryAccessForTests } from '../modelLibraryAccess';
+import {
+  invalidateSharedAiCreditsRead,
+  readBillingOwnerKey,
+} from '../openBillingPage';
 import { succeedClientOperation } from '@canopy/desktop-instrumentation/client';
 jest.mock('@canopy/desktop-instrumentation/client', () => ({
   succeedClientOperation: jest.fn(),
@@ -65,13 +71,16 @@ function intent(
 
 function handlers(
   overrides: ModelUnlockIntentHandlers = {},
-): Required<Pick<ModelUnlockIntentHandlers, 'apply'>> &
-  ModelUnlockIntentHandlers & { apply: jest.Mock<Promise<boolean>, []> } {
+): ModelUnlockIntentHandlers & { apply: jest.Mock<Promise<boolean>, []> } {
   return {
-    apply: jest.fn<Promise<boolean>, []>().mockResolvedValue(true),
-    isStillWanted: () => true,
-    resolveOwner: () => Promise.resolve('personal'),
     ...overrides,
+    apply: jest.fn<Promise<boolean>, []>(
+      overrides.apply ?? ((): Promise<boolean> => Promise.resolve(true)),
+    ),
+    isStillWanted: overrides.isStillWanted ?? ((): boolean => true),
+    resolveOwner:
+      overrides.resolveOwner ??
+      ((): Promise<string | null> => Promise.resolve('personal')),
   };
 }
 
@@ -176,6 +185,35 @@ describe('confirming an unlock', () => {
     await checkModelUnlockNow();
 
     expect(bound.apply).toHaveBeenCalledTimes(1);
+    expect(confirmed).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands the confirmed intent to the listener before the model lands', async () => {
+    // CAN-5027: the in-chat confirmation needs to know which request, account,
+    // owner, chat, and model it confirms, and appears while the model is
+    // still being applied.
+    let resolveApply: (landed: boolean) => void = () => {};
+    const bound = handlers({
+      apply: jest.fn<Promise<boolean>, []>(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveApply = resolve;
+          }),
+      ),
+    });
+    const confirmed = jest.fn();
+    setModelUnlockConfirmedListener(confirmed);
+    const pending = intent();
+    beginModelUnlockIntent(pending, bound);
+    serverSays('unlocked');
+
+    const check = checkModelUnlockNow();
+    for (let index = 0; index < 20; index++) await Promise.resolve();
+    expect(confirmed).toHaveBeenCalledTimes(1);
+    expect(confirmed).toHaveBeenCalledWith(pending);
+    expect(phase()).toBe('applying');
+    resolveApply(true);
+    await check;
     expect(confirmed).toHaveBeenCalledTimes(1);
   });
 
@@ -534,5 +572,327 @@ describe('the poll loop', () => {
     // the app root; this one must not keep running beside it.)
     expect(loadCanopyCloudEntitlements).toHaveBeenCalledTimes(1);
     stop();
+  });
+});
+
+describe('announcing the AI Credits change on confirmation (CAN-5026)', () => {
+  /** Real announcements, counted where every subscriber hears them. */
+  let announcements: string[] = [];
+  const record = (event: Event): void => {
+    announcements.push(readCanopyCloudAccountChangeReason(event));
+  };
+
+  beforeEach(() => {
+    announcements = [];
+    window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, record);
+  });
+
+  afterEach(() => {
+    window.removeEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, record);
+  });
+
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 30; index++) await Promise.resolve();
+  }
+
+  it('announces nothing while access still requires purchase', async () => {
+    beginModelUnlockIntent(intent(), handlers());
+    await checkModelUnlockNow();
+    expect(announcements).toEqual([]);
+  });
+
+  it('announces exactly once on a fresh confirmation, with no presentation listener', async () => {
+    const bound = handlers();
+    beginModelUnlockIntent(intent(), bound);
+    serverSays('unlocked');
+    await checkModelUnlockNow();
+    expect(announcements).toEqual(['same-account-refresh']);
+    expect(bound.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('announces before the presentation listener and before the model lands', async () => {
+    const order: string[] = [];
+    window.addEventListener(
+      CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
+      () => order.push('announced'),
+      { once: true },
+    );
+    setModelUnlockConfirmedListener(() => order.push('toast'));
+    beginModelUnlockIntent(
+      intent(),
+      handlers({
+        apply: jest.fn<Promise<boolean>, []>(() => {
+          order.push('apply');
+          return Promise.resolve(true);
+        }),
+      }),
+    );
+    serverSays('unlocked');
+    await checkModelUnlockNow();
+    expect(order).toEqual(['announced', 'toast', 'apply']);
+  });
+
+  it('announces once across overlapping and repeated triggers', async () => {
+    beginModelUnlockIntent(intent(), handlers());
+    serverSays('unlocked');
+    handleBillingReturnLink({ requestId: 'req-1' });
+    await Promise.all([checkModelUnlockNow(), checkModelUnlockNow()]);
+    await checkModelUnlockNow();
+    handleBillingReturnLink({ requestId: 'req-1' });
+    await settle();
+    expect(announcements).toEqual(['same-account-refresh']);
+  });
+
+  it('announces once for a return-link confirmation', async () => {
+    beginModelUnlockIntent(intent(), handlers());
+    serverSays('unlocked');
+    handleBillingReturnLink({ requestId: 'req-1' });
+    await settle();
+    expect(announcements).toEqual(['same-account-refresh']);
+    expect(phase()).toBe('unlocked');
+  });
+
+  it('announces once for Check again after the poll timed out', async () => {
+    jest.useFakeTimers();
+    beginModelUnlockIntent(intent(), handlers());
+    const stop = runModelUnlockPolling('req-1');
+    await jest.advanceTimersByTimeAsync(
+      MODEL_UNLOCK_POLL_MAX_MS + MODEL_UNLOCK_POLL_INTERVAL_MS,
+    );
+    expect(phase()).toBe('timed-out');
+    expect(announcements).toEqual([]);
+
+    serverSays('unlocked');
+    await checkModelUnlockNow();
+    expect(announcements).toEqual(['same-account-refresh']);
+    stop();
+  });
+
+  it('announces once when the poll loop confirms', async () => {
+    jest.useFakeTimers();
+    beginModelUnlockIntent(intent(), handlers());
+    const stop = runModelUnlockPolling('req-1');
+    await jest.advanceTimersByTimeAsync(MODEL_UNLOCK_POLL_INTERVAL_MS);
+    expect(announcements).toEqual([]);
+    serverSays('unlocked');
+    await jest.advanceTimersByTimeAsync(MODEL_UNLOCK_POLL_INTERVAL_MS * 5);
+    expect(announcements).toEqual(['same-account-refresh']);
+    stop();
+  });
+
+  it('announces again for a later, independent intent', async () => {
+    beginModelUnlockIntent(intent(), handlers());
+    serverSays('unlocked');
+    await checkModelUnlockNow();
+    beginModelUnlockIntent(intent({ requestId: 'req-2' }), handlers());
+    await checkModelUnlockNow();
+    expect(announcements).toEqual([
+      'same-account-refresh',
+      'same-account-refresh',
+    ]);
+  });
+
+  it.each([
+    [
+      'a retained read',
+      (): void => serverSays('unlocked', { status: 'retained' }),
+    ],
+    [
+      'a failed read',
+      (): void => {
+        loadCanopyCloudEntitlements.mockRejectedValue(new Error('offline'));
+      },
+    ],
+    [
+      'a read for another account',
+      (): void => serverSays('unlocked', { accountKey: 'account:other' }),
+    ],
+  ])('does not announce on %s', async (_label, arrange) => {
+    beginModelUnlockIntent(intent(), handlers());
+    arrange();
+    await checkModelUnlockNow();
+    expect(announcements).toEqual([]);
+  });
+
+  it('does not announce for a read that lands after cancellation', async () => {
+    let release: (value: unknown) => void = () => {};
+    loadCanopyCloudEntitlements.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    beginModelUnlockIntent(intent(), handlers());
+    const pending = checkModelUnlockNow();
+    clearModelUnlockIntent('req-1');
+    release({
+      resolved: true,
+      modelLibrary: { status: 'reported', access: 'unlocked' },
+      modelLibraryAccountKey: ACCOUNT_KEY,
+    });
+    await expect(pending).resolves.toBe('pending');
+    expect(announcements).toEqual([]);
+  });
+
+  it('does not announce for a superseded intent whose read lands late', async () => {
+    let release: (value: unknown) => void = () => {};
+    loadCanopyCloudEntitlements.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    beginModelUnlockIntent(intent(), handlers());
+    const pending = checkModelUnlockNow();
+    beginModelUnlockIntent(intent({ requestId: 'req-2' }), handlers());
+    release({
+      resolved: true,
+      modelLibrary: { status: 'reported', access: 'unlocked' },
+      modelLibraryAccountKey: ACCOUNT_KEY,
+    });
+    await expect(pending).resolves.toBe('pending');
+    expect(announcements).toEqual([]);
+    expect(phase()).toBe('waiting');
+  });
+
+  it('does not announce again when a failed application is retried', async () => {
+    const bound = handlers();
+    bound.apply.mockResolvedValueOnce(false);
+    beginModelUnlockIntent(intent(), bound);
+    serverSays('unlocked');
+    await checkModelUnlockNow();
+    expect(phase()).toBe('apply-failed');
+    expect(announcements).toEqual(['same-account-refresh']);
+
+    await expect(retryModelUnlockApply()).resolves.toBe(true);
+    expect(announcements).toEqual(['same-account-refresh']);
+  });
+
+  it('settles model application before propagating a presentation observer error', async () => {
+    const observerError = new Error('toast observer failed');
+    setModelUnlockConfirmedListener(() => {
+      throw observerError;
+    });
+    let release: (applied: boolean) => void = () => {};
+    const bound = handlers();
+    bound.apply.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        release = resolve;
+      }),
+    );
+    beginModelUnlockIntent(intent(), bound);
+    serverSays('unlocked');
+    let settled = false;
+    const checking = checkModelUnlockNow().catch((error: unknown) => {
+      settled = true;
+      return error;
+    });
+    await settle();
+    expect(bound.apply).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    expect(phase()).toBe('applying');
+    release(false);
+    expect(await checking).toBe(observerError);
+    expect(phase()).toBe('apply-failed');
+    expect(announcements).toEqual(['same-account-refresh']);
+    await expect(retryModelUnlockApply()).resolves.toBe(true);
+    expect(announcements).toEqual(['same-account-refresh']);
+  });
+
+  it('survives same-account reconciliation on its own event without re-confirming', async () => {
+    // What the app root does on this event: reconcile, then re-check.
+    const reconcile = (): void => {
+      reconcileModelUnlockIntentAccount(ACCOUNT_KEY);
+      void checkModelUnlockNow();
+    };
+    window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, reconcile);
+    try {
+      const bound = handlers();
+      beginModelUnlockIntent(intent(), bound);
+      serverSays('unlocked');
+      await checkModelUnlockNow();
+      await settle();
+      expect(bound.apply).toHaveBeenCalledTimes(1);
+      expect(phase()).toBe('unlocked');
+      expect(useModelUnlockIntentStore.getState().intent?.requestId).toBe(
+        'req-1',
+      );
+      expect(announcements).toEqual(['same-account-refresh']);
+    } finally {
+      window.removeEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, reconcile);
+    }
+  });
+
+  it('drops the intent without applying when the event reveals another identity', async () => {
+    const reconcile = (): void => {
+      reconcileModelUnlockIntentAccount('account:someone-else');
+    };
+    window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, reconcile);
+    try {
+      const bound = handlers();
+      beginModelUnlockIntent(intent(), bound);
+      serverSays('unlocked');
+      await checkModelUnlockNow();
+      expect(bound.apply).not.toHaveBeenCalled();
+      expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+      expect(announcements).toEqual(['same-account-refresh']);
+    } finally {
+      window.removeEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, reconcile);
+    }
+  });
+});
+
+describe('the production owner check (CAN-5030)', () => {
+  const loadNativeAiCreditsAvailability = jest.fn();
+
+  beforeEach(() => {
+    // No retained availability answer: the state a Check now meets once the
+    // poll has timed out, minutes after the last read.
+    invalidateSharedAiCreditsRead();
+    loadNativeAiCreditsAvailability.mockResolvedValue({
+      personalEligible: true,
+      orgSpendable: false,
+      ownerOrganization: null,
+    });
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: { loadCanopyCloudEntitlements, loadNativeAiCreditsAvailability },
+    });
+  });
+
+  it('applies the model when the owner read is not already retained', async () => {
+    // The surface binds `readBillingOwnerKey`, whose shared read is retracted
+    // by any account-change announcement. The confirmation's own announcement
+    // must not retract the owner check that guards its application.
+    const bound = handlers({ resolveOwner: () => readBillingOwnerKey() });
+    beginModelUnlockIntent(intent(), bound);
+    serverSays('unlocked');
+
+    await expect(checkModelUnlockNow()).resolves.toBe('unlocked');
+    expect(bound.apply).toHaveBeenCalledTimes(1);
+    expect(phase()).toBe('unlocked');
+  });
+
+  it('still fails closed when the retried owner read is retracted too', async () => {
+    // Every read is retracted while in flight, so neither the first read nor
+    // its one retry can establish an owner.
+    loadNativeAiCreditsAvailability.mockImplementation(async () => {
+      // After the read has started, as an announcement would land.
+      await Promise.resolve();
+      invalidateSharedAiCreditsRead();
+      return {
+        personalEligible: true,
+        orgSpendable: false,
+        ownerOrganization: null,
+      };
+    });
+    await expect(readBillingOwnerKey()).resolves.toBeNull();
+    expect(loadNativeAiCreditsAvailability).toHaveBeenCalledTimes(2);
+
+    const bound = handlers({ resolveOwner: () => readBillingOwnerKey() });
+    beginModelUnlockIntent(intent(), bound);
+    serverSays('unlocked');
+    await checkModelUnlockNow();
+    expect(bound.apply).not.toHaveBeenCalled();
   });
 });

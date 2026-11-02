@@ -128,7 +128,10 @@ async function render(
     readonly initialRoute?: SettingsRoute | null;
   } = {},
 ): Promise<void> {
-  const { host } = createTestSettingsHost({ client });
+  const { host } = createTestSettingsHost({
+    client,
+    privacy: { blockClassName: 'ph-no-capture', maskClassName: 'ph-mask' },
+  });
   act(() => {
     root.render(
       <TestSettingsHost host={host}>
@@ -195,7 +198,6 @@ const ROWS_WITH_BILLING_AND_DIGESTS = [
   'settings-nav-account-integrations',
   'settings-nav-account-security',
   'settings-nav-account-billing',
-  'settings-nav-organizations-list',
 ];
 
 const ROWS_WITHOUT_FLAGGED = [
@@ -204,7 +206,6 @@ const ROWS_WITHOUT_FLAGGED = [
   'settings-nav-account-notifications',
   'settings-nav-account-integrations',
   'settings-nav-account-security',
-  'settings-nav-organizations-list',
 ];
 
 function selectedRows(): string[] {
@@ -239,14 +240,35 @@ afterEach(() => {
 });
 
 describe('HostedSettingsNav', () => {
-  it('renders the app group, then Account, then Organizations, then the trailing groups', async () => {
+  it('renders the scope picker and its account rows, then the app group, then the trailing groups', async () => {
     await render();
     expect(railOrder()).toEqual([
-      'app-group',
       'settings-nav-group-account',
-      'settings-nav-group-organizations',
+      'app-group',
       'trailing-groups',
     ]);
+    const picker = container.querySelector(
+      '[data-testid="settings-nav-scope-picker"]',
+    );
+    expect(picker).toBeInstanceOf(HTMLElement);
+    expect(
+      picker?.compareDocumentPosition(
+        container.querySelector('[data-testid="settings-nav-group-account"]') ??
+          document,
+      ),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      container.querySelector('[data-testid="settings-nav-scope-title"]')
+        ?.textContent,
+    ).toBe('Viewer');
+    // The account scope shows a person's name: replay blocks it, and no
+    // title attribute repeats it.
+    const title = container.querySelector(
+      '[data-testid="settings-nav-scope-title"]',
+    );
+    expect(title?.classList.contains('ph-no-capture')).toBe(true);
+    expect(title?.classList.contains('ph-mask')).toBe(false);
+    expect(title?.hasAttribute('title')).toBe(false);
   });
 
   it('fetches the bootstrap once for both group lists', async () => {
@@ -273,12 +295,12 @@ describe('HostedSettingsNav', () => {
     expect(selectedRows()).toEqual(['settings-nav-account-security']);
   });
 
-  it('selects the current row in the Organizations group', async () => {
+  it('selects no row on the Organizations list, which the scope menu opens', async () => {
     useNavigationStore
       .getState()
       .openAccountOrganizationSettings({ scope: 'organizations' });
     await render();
-    expect(selectedRows()).toEqual(['settings-nav-organizations-list']);
+    expect(selectedRows()).toEqual([]);
   });
 
   it('fetches nothing while signed out', async () => {
@@ -286,11 +308,14 @@ describe('HostedSettingsNav', () => {
     await render();
     expect(client.calls).toEqual([]);
     expect(railOrder()).toEqual([
-      'app-group',
       'settings-nav-group-account',
-      'settings-nav-group-organizations',
+      'app-group',
       'trailing-groups',
     ]);
+    // No account or organization to switch between.
+    expect(
+      container.querySelector('[data-testid="settings-nav-scope-picker"]'),
+    ).toBeNull();
   });
 
   describe('before the bootstrap resolves', () => {
@@ -406,15 +431,18 @@ describe('HostedSettingsNav', () => {
       };
       useNavigationStore.getState().openAccountOrganizationSettings(route);
       await render({ initialRoute: route });
+      // The organization scope: its Settings pages split around Members,
+      // then its activity.
       const organizationRows = [
-        'settings-nav-organization-feed',
+        'settings-nav-organization-settings-general',
         'settings-nav-organization-members',
-        'settings-nav-organization-settings',
+        'settings-nav-organization-settings-policies',
+        'settings-nav-organization-settings-integrations',
+        'settings-nav-organization-settings-usage',
+        'settings-nav-organization-settings-billing',
+        'settings-nav-organization-feed',
       ];
-      expect(hostedRowIds()).toEqual([
-        ...ROWS_WITH_BILLING_AND_DIGESTS,
-        ...organizationRows,
-      ]);
+      expect(hostedRowIds()).toEqual(organizationRows);
       expect(
         client.calls
           .filter((call) => call.operation === 'settings.bootstrap')
@@ -426,15 +454,48 @@ describe('HostedSettingsNav', () => {
         );
         await Promise.resolve();
       });
-      expect(hostedRowIds()).toEqual([
-        ...ROWS_WITH_BILLING_AND_DIGESTS,
-        ...organizationRows,
-      ]);
+      expect(hostedRowIds()).toEqual(organizationRows);
+      const title = container.querySelector(
+        '[data-testid="settings-nav-scope-title"]',
+      );
+      expect(title?.textContent).toBe('Northwind');
+      // Organization names are user-authored: replay masks them.
+      expect(title?.classList.contains('ph-mask')).toBe(true);
+      expect(title?.classList.contains('ph-no-capture')).toBe(false);
+    });
+
+    it('shows app-wide settings only in Personal', async () => {
+      client = createFakeSettingsClient({
+        'settings.bootstrap': () =>
+          Promise.resolve(
+            bootstrap({}, organizationBootstrap(['members', 'settings'])),
+          ),
+      });
+      const route: SettingsRoute = {
+        scope: 'organization',
+        organizationId: OWNER_ORG,
+        page: 'members',
+      };
+      useNavigationStore.getState().openAccountOrganizationSettings(route);
+      await render({ initialRoute: route });
+      expect(container.querySelector('[data-testid="app-group"]')).toBeNull();
       expect(
-        container.querySelector(
-          '[data-testid="settings-nav-group-organization"]',
-        )?.textContent,
-      ).toContain('Northwind');
+        container.querySelector('[data-testid="trailing-groups"]'),
+      ).toBeNull();
+      act(() => useNavigationStore.getState().openSettings('display'));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(
+        container.querySelector('[data-testid="app-group"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="trailing-groups"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="settings-nav-scope-picker"]')
+          ?.textContent,
+      ).not.toContain('Northwind');
     });
 
     it('shows no organization group on a plain open', async () => {

@@ -14,6 +14,7 @@ import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -301,14 +302,9 @@ function CollectionItem({
                 Defaults
               </label>
               {!readonly && (
-                <button
-                  type="button"
-                  onClick={() => setPickerOpen(true)}
-                  className="text-xs font-medium fg-secondary hover:fg-primary
-                    px-2 py-1 border rounded-md hover:bg-secondary transition-colors"
-                >
+                <Button size="compact" onClick={() => setPickerOpen(true)}>
                   Pick plugins
-                </button>
+                </Button>
               )}
             </div>
             {defaultEntries.length === 0 ? (
@@ -350,14 +346,15 @@ function CollectionItem({
                       </label>
                       {!readonly && (
                         <Tooltip label="Remove default">
-                          <button
-                            type="button"
+                          <Button
+                            variant="ghost-quiet"
+                            size="compact"
+                            iconOnly
                             onClick={() => removeDefault(entry.key)}
                             aria-label="Remove default"
-                            className="p-1 fg-secondary hover:fg-destructive transition-colors rounded"
                           >
                             <AppCatalogCloseIcon width="12" height="12" />
-                          </button>
+                          </Button>
                         </Tooltip>
                       )}
                     </li>
@@ -372,7 +369,7 @@ function CollectionItem({
       {pickerOpen && (
         <HookChatPluginSelectorModal
           mode="portable"
-          title="Select portable pipeline defaults"
+          title="Select portable workflow defaults"
           initial={currentRefs}
           onSave={handlePickerSave}
           onClose={() => setPickerOpen(false)}

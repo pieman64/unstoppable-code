@@ -284,6 +284,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
       baseUrl: 'https://canopy.example.test',
       apiKey: 'secret-key',
       capabilities: ['skills-crud-v1', 'collections-crud-v1'],
+      memorySearchOrganizationExternalIds: [],
     });
     mockedMergeCanopyCloudAccountCapabilities.mockResolvedValue(null);
     Object.defineProperty(globalThis, 'fetch', {
@@ -878,12 +879,14 @@ describe('Canopy Cloud desktop REST client helpers', () => {
   });
 
   it('keeps pipeline sharing requests on the common REST helper path', async () => {
-    await listSharedPipelines({
+    const query: Parameters<typeof listSharedPipelines>[0] = {
       q: 'build',
       limit: 5,
-      triggerType: 'manual',
       createdBy: 'me',
-    });
+    };
+    // Keep exercising the legacy wire value although it is no longer in the typed request union.
+    Reflect.set(query, 'triggerType', 'manual');
+    await listSharedPipelines(query);
 
     const firstCall = fetchMock.mock.calls[0];
     expect(firstCall?.[0]).toBe(
@@ -2066,7 +2069,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
     ]);
     await expect(
       createSharedPipeline({ rawPipeline: 'installed yaml' }),
-    ).rejects.toThrow('Pipeline unavailable (context-mismatch)');
+    ).rejects.toThrow('Workflow unavailable (context-mismatch)');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -2168,7 +2171,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
             return Promise.resolve('stored source');
           },
         ),
-      ).rejects.toThrow('Pipeline unavailable (context-mismatch)');
+      ).rejects.toThrow('Workflow unavailable (context-mismatch)');
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
@@ -2188,7 +2191,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
           return Promise.resolve('name: Renamed');
         },
       ),
-    ).rejects.toThrow('Pipeline unavailable (access-removed)');
+    ).rejects.toThrow('Workflow unavailable (access-removed)');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -2357,7 +2360,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
       }),
     );
     await expect(getSharedPipeline('org-b-pipeline')).rejects.toThrow(
-      'Pipeline unavailable',
+      'Workflow unavailable',
     );
   });
 
@@ -2514,7 +2517,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
         });
       try {
         await expect(invoke()).rejects.toThrow(
-          'Pipeline unavailable (context-mismatch)',
+          'Workflow unavailable (context-mismatch)',
         );
         expect(fetchMock).toHaveBeenCalledTimes(1);
       } finally {
@@ -2851,6 +2854,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
       baseUrl: 'https://canopy.example.test',
       apiKey: 'secret-key',
       capabilities: ['account-v1'],
+      memorySearchOrganizationExternalIds: [],
     });
     const capabilities = ['account-v1', 'plans-crud-v1'];
     fetchMock
@@ -2937,6 +2941,7 @@ describe('Canopy Cloud desktop REST client helpers', () => {
       baseUrl: 'https://canopy.example.test',
       apiKey: 'secret-key',
       capabilities: ['runs-crud-v1'],
+      memorySearchOrganizationExternalIds: [],
     };
 
     it('DELETEs the run and returns the server unshare result', async () => {

@@ -129,7 +129,9 @@ export async function withResumedCodexTimers(verify) {
     app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
     await app.openUsagePage();
-    await window.getByTestId('usage-provider-codex-resume').click();
+    // The Usage page's one interrupted-sessions notice opens the same review
+    // as Home's Continue row, for every interrupted session in context.
+    await window.getByTestId('usage-interrupted-sessions-resume').click();
     const modal = window.getByTestId('usage-limit-resume-modal');
     await expect(modal).toBeVisible();
     await expect(
@@ -137,27 +139,30 @@ export async function withResumedCodexTimers(verify) {
     ).toBeChecked();
     await window.getByTestId('usage-limit-resume-confirm').click();
     await expect(modal).toBeHidden({ timeout: 30_000 });
-    await window
-      .getByTestId('resume-queue-modal')
-      .getByRole('button', { name: 'Close', exact: true })
-      .click();
-    await app.openMainPage();
-    await app.selectWorktree(WORKTREE_ID);
+    // One confirmed chat opens directly, without the queue, while it streams.
+    await expect(window.getByTestId('resume-queue-modal')).toBeHidden();
     const panel = window.getByTestId('panel-content-chat');
     await expect(panel).toHaveAttribute(
       'data-panel-id',
       `panel-chat-${CHAT_ID}`,
     );
-    await expect(panel.getByText('Continue', { exact: true })).toBeVisible();
+    const marker = panel.getByTestId('auto-resume-marker');
+    await expect(marker).toHaveCount(1);
+    await expect(marker).toContainText('Sent automatically: Continue');
+    await expect(marker).toHaveAttribute(
+      'data-auto-resume-reason',
+      'usage_limit',
+    );
     // Settled turns use the existing collapsed agent-steps presentation.
-    // Expand those details to verify the unchanged automation banner too.
+    // The shared marker replaces the old nudge bubble and generic banner.
+    // A turn with no step chips is named a bare "Agent steps" (CAN-4810).
     const collapsedSteps = panel
-      .getByRole('button', { name: /^Agent steps:/, expanded: false })
+      .getByRole('button', { name: /^Agent steps(?::|$)/, expanded: false })
       .first();
     if (await collapsedSteps.count()) await collapsedSteps.click();
     await expect(
       panel.getByText('Chat initiated by automation', { exact: false }),
-    ).toBeVisible();
+    ).toHaveCount(0);
     await expect(panel.getByTestId('chat-stop-generation')).toBeVisible({
       timeout: 30_000,
     });
@@ -242,8 +247,22 @@ export async function withAccountChangedCodexResumes(verify) {
       ).toBeChecked();
     await window.getByTestId('usage-limit-resume-confirm').click();
     await expect(modal).toBeHidden({ timeout: 30_000 });
+    // An active batch keeps its pacing and controls in the footer; the
+    // header ✕ is the only close control.
+    const queue = window.getByTestId('resume-queue-modal');
+    const footer = queue.getByTestId('resume-queue-footer');
+    await expect(footer).toContainText('Saved automatically');
+    await expect(
+      footer.getByRole('button', { name: 'Close', exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      footer.getByRole('button', { name: 'Stop remaining', exact: true }),
+    ).toBeVisible();
+    await expect(
+      queue.getByRole('button', { name: 'Open chat', exact: true }),
+    ).toHaveCount(chatIds.length);
     await window
-      .getByTestId('resume-queue-modal')
+      .getByRole('dialog', { name: 'Resume queue' })
       .getByRole('button', { name: 'Close', exact: true })
       .click();
     const readTabs = () => readChatStorageTabs(workspaceRoot, WORKTREE_ID).tabs;
@@ -325,7 +344,7 @@ export async function withAccountChangedCodexResumes(verify) {
     await window.getByTestId('usage-limit-resume-confirm').click();
     await expect(modal).toBeHidden({ timeout: 30_000 });
     await window
-      .getByTestId('resume-queue-modal')
+      .getByRole('dialog', { name: 'Resume queue' })
       .getByRole('button', { name: 'Close', exact: true })
       .click();
     // The picker now returns after durable enqueue. Wait for the gradual queue

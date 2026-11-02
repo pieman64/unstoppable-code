@@ -1,4 +1,8 @@
-import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
+import { resolveHostRepositoryPolicy } from '../lib/repository-policy';
+import {
+  clampThinkingLevelToDeclared,
+  type ThinkingLevel,
+} from '@canopy/protocol/thinking';
 import { runRtkRewrite } from '../rtk/rewrite';
 import {
   getBundledRtkBinaryPath,
@@ -10,10 +14,7 @@ import { hasAnySelections } from '../../types';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import {
-  getRawCopilotModelId,
-  copilotModelsFromSdk,
-} from '../../lib/copilot-models';
+import { getRawCopilotModelId } from '../../lib/copilot-models';
 import {
   redactNormalizedPreservingFormat,
   redactSerializedJsonLine,
@@ -37,13 +38,12 @@ import {
 import { COPILOT_RUNTIME_VERSION } from '../copilot/runtime-metadata';
 import { COPILOT_NATIVE_TOOLS } from '../copilot/session-policy';
 import { sameCopilotAccount } from '../copilot/auth';
-import { runCopilotTurn } from '../copilot/turn-driver';
+import { handleCopilotTurnCleanupError } from '../copilot/turn-cleanup';
 import {
   assertCopilotMcpServersConnected,
   collectCopilotMcpSecretValues,
 } from '../copilot/tool-snapshot';
-import type { CopilotRuntimeAuth } from '../copilot/runtime-auth';
-import type { OwnedCopilotRuntime } from '../copilot/runtime';
+import type { CopilotRecipientHandle } from '../copilot/recipient-handle';
 import type {
   CopilotSessionPolicy,
   CopilotToolDecision,
@@ -63,13 +63,8 @@ import type {
 } from './executor/types';
 
 export interface CopilotPromptHost {
-  open(signal: AbortSignal): Promise<
-    OwnedCopilotRuntime & {
-      account: CopilotAccount | null;
-      /** The host-held identity every session and catalog read must use. */
-      auth: CopilotRuntimeAuth;
-    }
-  >;
+  /** The host's admitted recipient; it holds the identity for every read. */
+  open(signal: AbortSignal): Promise<CopilotRecipientHandle>;
   /** Recheck the host's live rollout, account and owner authority at each tool. */
   authorize(): void | Promise<void>;
   /** Desktop-owned projection and proxy lifetime; never ambient SDK discovery. */
@@ -162,9 +157,11 @@ export async function runCopilotPipelinePrompt(
   const transcript: string[] = [];
   let sessionId = request.resumeSessionId;
   let hadActivity = false;
+  let policyPreparationFailed = false;
   let ownedProfile: string | undefined;
   let runtime: Awaited<ReturnType<CopilotPromptHost['open']>> | undefined;
   let capabilities: CopilotPipelineCapabilities | undefined;
+  let stepFailed = false;
   const emit = (event: Record<string, unknown>): void => {
     const line = redactSerializedJsonLine(
       JSON.stringify({ ...event, provider: 'copilot' }),
@@ -184,6 +181,41 @@ export async function runCopilotPipelinePrompt(
     const model = getRawCopilotModelId(request.model);
     if (!model) throw new Error('Choose a GitHub Copilot model for this step.');
     const cwd = resolve(request.cwd);
+    // This invocation owns the snapshot, including every structured-output retry.
+    // It is discarded on settlement; a cold resume is a new owner.
+    const repositoryPolicy = await bounded(
+      resolveHostRepositoryPolicy(request.repositoryPolicyScope, cwd, {
+        signal,
+      }),
+    );
+    const repositoryPolicyBlock =
+      repositoryPolicy.status === 'delivered'
+        ? mask(repositoryPolicy.block)
+        : '';
+    emit({
+      type: 'repository_policy',
+      entrypoint: 'copilot-pipeline',
+      checkpoint: 'before-runtime-open',
+      mode: 'host-text',
+      root:
+        request.repositoryPolicyScope?.kind === 'checkout'
+          ? request.repositoryPolicyScope.root
+          : undefined,
+      cwd,
+      runtimeVersion: COPILOT_RUNTIME_VERSION,
+      status: repositoryPolicy.status,
+      entries: repositoryPolicy.entries,
+      ...(repositoryPolicy.status === 'delivered'
+        ? { blockHash: digest(repositoryPolicyBlock) }
+        : {}),
+    });
+    if (
+      repositoryPolicy.status !== 'delivered' &&
+      repositoryPolicy.status !== 'absent'
+    ) {
+      policyPreparationFailed = true;
+      throw new Error(repositoryPolicy.message);
+    }
     const root = getPipelineExecutionCopilotSessionsDir(
       request.executionsDir,
       request.executionId,
@@ -280,19 +312,13 @@ export async function runCopilotPipelinePrompt(
           request.schema,
         );
       }
-      const declared =
-        request.thinkingLevel === undefined
-          ? []
-          : (copilotModelsFromSdk(
-              (
-                await bounded(
-                  runtime.client.rpc.models.list({
-                    gitHubToken: await bounded(runtime.auth.token(signal)),
-                  }),
-                )
-              ).models,
-            ).find((entry) => entry.id === request.model)
-              ?.supportedThinkingLevels ?? []);
+      let declared: ThinkingLevel[] = [];
+      if (request.thinkingLevel !== undefined) {
+        const listed = await bounded(runtime.listModels(signal));
+        declared =
+          listed.find((entry) => entry.id === request.model)
+            ?.supportedThinkingLevels ?? [];
+      }
       const level =
         request.thinkingLevel !== undefined && declared.length
           ? clampThinkingLevelToDeclared(request.thinkingLevel, declared)
@@ -323,9 +349,7 @@ export async function runCopilotPipelinePrompt(
         );
       let nativeToolSnapshot: CopilotCapabilitySnapshot | undefined;
       const correlation = new CopilotToolCorrelation();
-      const result = await runCopilotTurn({
-        runtime,
-        gitHubTokenProvider: runtime.auth.tokenProvider,
+      const result = await runtime.runTurn({
         workingDirectory: cwd,
         configDirectory: profile,
         reasoningEffort:
@@ -334,7 +358,15 @@ export async function runCopilotPipelinePrompt(
         sessionId,
         turnId: `${request.executionId}:${request.jobId}:${request.stepId}:${request.attempt}:${attempt}`,
         prompt,
-        systemPrompt,
+        systemPrompt: [
+          systemPrompt,
+          request.repositoryPolicyScope?.kind === 'checkout'
+            ? 'Repository instructions apply within their directories; more specific instructions take precedence. Before editing other files, read their applicable AGENTS.md/CLAUDE.md files within the selected checkout.'
+            : '',
+          repositoryPolicyBlock,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
         skillDirectories: capabilities?.skillDirectories,
         mcpServers: capabilities?.mcpServers,
         onEvent: (event) => correlation.observe(event),
@@ -508,13 +540,16 @@ export async function runCopilotPipelinePrompt(
     }
     throw new Error('Copilot did not complete this step.');
   } catch (error) {
+    stepFailed = true;
     const cancelled = withdrawal.reason === 'cancelled';
-    const classification = classifyAgentFailure({
-      provider: 'copilot',
-      accountScope: 'native',
-      model: request.model,
-      error,
-    });
+    const classification = policyPreparationFailed
+      ? undefined
+      : classifyAgentFailure({
+          provider: 'copilot',
+          accountScope: 'native',
+          model: request.model,
+          error,
+        });
     return {
       status: cancelled ? 'cancelled' : 'failure',
       transcript: transcript.length ? `${transcript.join('\n')}\n` : '',
@@ -527,12 +562,12 @@ export async function runCopilotPipelinePrompt(
         had_agent_activity: hadActivity,
         message: mask(
           cancelled
-            ? 'Copilot pipeline turn was cancelled.'
+            ? 'Copilot workflow turn was cancelled.'
             : withdrawal.reason === 'timeout'
               ? stepTimedOutMessage(request.totalTimeoutMs)
               : error instanceof Error
                 ? error.message
-                : 'Copilot pipeline turn failed.',
+                : 'Copilot workflow turn failed.',
         ),
       },
     };
@@ -540,6 +575,8 @@ export async function runCopilotPipelinePrompt(
     withdrawal.release();
     try {
       await runtime?.close();
+    } catch (error) {
+      handleCopilotTurnCleanupError(error, stepFailed);
     } finally {
       try {
         await capabilities?.dispose();

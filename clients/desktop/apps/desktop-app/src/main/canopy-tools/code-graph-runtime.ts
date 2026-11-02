@@ -12,14 +12,11 @@ import type {
   CodeGraphFlowRecord,
   CodeGraphRepositoryInput,
 } from '@canopy/desktop-shared/types/code-graph';
-import type { CodeGraphSymbolDegreeSummary } from '@canopy/desktop-shared/node/code-graph/store/graph-store';
+import type { CodeGraphSymbolDegreeSummary } from '@canopy/code-graph/store/graph-store';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
-import {
-  getMergeBase,
-  isSafeGitRef,
-} from '@canopy/desktop-shared/node/code-graph/git/diff';
-import { type ChangedSymbol } from '@canopy/desktop-shared/node/code-graph/impact/changed-symbols';
-import type { ChangeImpactHit } from '@canopy/desktop-shared/node/code-graph/impact/change-impact';
+import { getMergeBase, isSafeGitRef } from '@canopy/code-graph/git/diff';
+import { type ChangedSymbol } from '@canopy/code-graph/impact/changed-symbols';
+import type { ChangeImpactHit } from '@canopy/code-graph/impact/change-impact';
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { isRecord } from '../lib/type-guards';
 import {
@@ -1242,6 +1239,9 @@ export async function buildOrUpdateCodeGraph(
       parseFailures: result.parseFailures,
       durationMs: result.durationMs,
     };
+    if (result.lastBuildAt !== undefined) {
+      buildResult.lastBuildAt = result.lastBuildAt;
+    }
     if (result.customLanguages !== null) {
       buildResult.customLanguageWarnings =
         result.customLanguages.diagnostics.map((diagnostic) =>

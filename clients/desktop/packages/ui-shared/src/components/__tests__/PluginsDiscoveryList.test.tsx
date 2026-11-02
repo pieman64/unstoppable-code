@@ -356,7 +356,7 @@ describe('PluginsDiscoveryList', () => {
     expect(document.activeElement).toBe(first);
   });
 
-  it('keeps discovery cards to title and description without a metadata line', () => {
+  it('shows the catalog source on metadata, outside the title (CAN-5050)', () => {
     renderList({
       sections: [
         {
@@ -364,6 +364,7 @@ describe('PluginsDiscoveryList', () => {
           title: 'Curated',
           entries: [
             makeEntry({
+              origin: 'marketplace',
               typeLabel: 'Plugin',
               sourceLabel: 'Codex official',
               ownershipLabel: 'OpenAI',
@@ -380,14 +381,140 @@ describe('PluginsDiscoveryList', () => {
     );
     expect(card.textContent).toContain('Alpha');
     expect(card.textContent).toContain('An alpha plugin.');
-    expect(card.textContent).not.toContain('Codex official');
+    const source = requireElement(
+      container.querySelector(
+        '[data-testid="plugins-card-source-curated:alpha"]',
+      ),
+      'source label',
+    );
+    expect(source.textContent).toBe('Codex official');
+    expect(source.className).toContain('fg-tertiary');
+    expect(
+      source.closest('[data-testid="plugins-card-meta-curated:alpha"]'),
+    ).not.toBeNull();
+    expect(
+      source.closest('[data-testid="plugins-card-title-curated:alpha"]'),
+    ).toBeNull();
     expect(card.textContent).not.toContain('OpenAI');
     expect(card.textContent).not.toContain('Available');
     expect(card.className).toContain('gap-4');
     expect(card.className).not.toContain('gap-3');
   });
 
-  it('uses concise card subtitles without shortening detail copy', () => {
+  describe('CAN-3653 — plugin provenance on cards', () => {
+    const catalogCard = makeEntry({
+      id: 'mcp-catalog:slack',
+      kind: 'app',
+      name: 'Slack',
+      typeLabel: 'MCP server',
+      sourceLabel: 'Curated',
+      ref: { type: 'curated-mcp', key: 'slack' },
+      installedVia: { entryId: 'mkt:openai-curated/slack', name: 'Slack' },
+    });
+    const bundledRow = makeEntry({
+      id: 'mcp-local:slack',
+      kind: 'app',
+      origin: 'installed-standalone',
+      name: 'Slack',
+      description: 'Team chat',
+      sourceLabel: 'Local',
+      state: 'installed',
+      ref: { type: 'local-mcp', serverId: 'slack' },
+      bundledBy: { entryId: 'mkt:openai-curated/slack', name: 'Slack' },
+    });
+    const section = (
+      entries: UnifiedPluginEntry[],
+    ): PluginsDiscoverySection[] => [
+      { id: 'apps', title: 'MCP servers', entries },
+    ];
+
+    it('renders no source label on curated plugins', () => {
+      renderList({
+        sections: section([
+          makeEntry({ typeLabel: 'Plugin', sourceLabel: 'Curated' }),
+        ]),
+      });
+      expect(
+        container.querySelector('[data-testid^="plugins-card-source-"]'),
+      ).toBeNull();
+    });
+
+    it('renders no source label on MCP rows', () => {
+      renderList({ sections: section([catalogCard, bundledRow]) });
+      expect(
+        container.querySelector('[data-testid^="plugins-card-source-"]'),
+      ).toBeNull();
+    });
+
+    it('replaces Add with Installed via <plugin> and opens the plugin', () => {
+      const onOpenEntryId = jest.fn<void, [string]>();
+      const onAddEntry = jest.fn<void, [UnifiedPluginEntry]>();
+      renderList({
+        sections: section([catalogCard]),
+        onOpenEntryId,
+        onAddEntry,
+      });
+      expect(
+        container.querySelector(
+          '[data-testid="plugins-entry-add-mcp-catalog:slack"]',
+        ),
+      ).toBeNull();
+      const via = requireElement(
+        container.querySelector<HTMLButtonElement>(
+          '[data-testid="plugins-entry-installed-via-mcp-catalog:slack"]',
+        ),
+        'Installed via',
+      );
+      expect(via.textContent).toBe('Installed via Slack');
+      expect(via.getAttribute('aria-label')).toBe(
+        'Installed via Slack. Open the Slack plugin',
+      );
+      act(() => {
+        via.click();
+      });
+      expect(onOpenEntryId).toHaveBeenCalledWith('mkt:openai-curated/slack');
+      expect(onAddEntry).not.toHaveBeenCalled();
+    });
+
+    it('disables Installed via without onOpenEntryId', () => {
+      renderList({ sections: section([catalogCard]) });
+      const via = container.querySelector<HTMLButtonElement>(
+        '[data-testid="plugins-entry-installed-via-mcp-catalog:slack"]',
+      );
+      expect(via?.disabled).toBe(true);
+    });
+
+    it('reads From the <plugin> plugin as text and offers Open the <plugin> plugin in the actions slot', () => {
+      const onOpenEntryId = jest.fn<void, [string]>();
+      renderList({
+        sections: section([bundledRow]),
+        onOpenEntryId,
+        hrefForEntry: (entry) => `/entries/${entry.id}`,
+      });
+      const from = requireElement(
+        container.querySelector(
+          '[data-testid="plugins-card-from-plugin-mcp-local:slack"]',
+        ),
+        'From the plugin',
+      );
+      expect(from.tagName).toBe('SPAN');
+      expect(from.textContent).toBe('From the Slack plugin');
+      const open = requireElement(
+        container.querySelector<HTMLButtonElement>(
+          '[data-testid="plugins-entry-open-plugin-mcp-local:slack"]',
+        ),
+        'Open the plugin',
+      );
+      expect(open.textContent).toBe('Open the Slack plugin');
+      act(() => {
+        open.click();
+      });
+      expect(onOpenEntryId).toHaveBeenCalledWith('mkt:openai-curated/slack');
+      expect(container.querySelector('a button')).toBeNull();
+    });
+  });
+
+  it('uses edited known-product subtitles and leaves other copy to CSS truncation', () => {
     renderList({
       sections: [
         {
@@ -435,9 +562,16 @@ describe('PluginsDiscoveryList', () => {
     );
     expect(githubCopy.textContent).not.toContain('Inspect repositories');
     expect(genericCopy.textContent).toContain(
-      'Search company documents and prepare polished reports',
+      'Search company documents and prepare polished reports for busy operations teams.',
     );
-    expect(genericCopy.textContent).not.toContain('busy operations teams');
+    const subtitle = requireElement(
+      genericCopy.querySelector(
+        '[data-testid="plugins-card-subtitle-curated:long-copy"]',
+      ),
+      'generic subtitle',
+    );
+    expect(subtitle.classList.contains('block')).toBe(true);
+    expect(subtitle.classList.contains('truncate')).toBe(true);
   });
 
   it('omits the card subtitle when the description has no visible text', () => {
@@ -748,6 +882,78 @@ describe('PluginsDiscoveryList', () => {
       'Installed Tool card',
     );
     expect(selected).toEqual(['curated:installed']);
+  });
+
+  it('labels the add action Install on shared cards only (CAN-5223)', () => {
+    const added: string[] = [];
+    const sharedSkill = makeEntry({
+      id: 'skill:shared:s1',
+      kind: 'skill',
+      origin: 'shared',
+      name: 'Review Helper',
+      ref: { type: 'shared-skill', skillId: 's1' },
+    });
+    const sharedAgent = makeEntry({
+      id: 'agent:shared:a1',
+      kind: 'agent',
+      origin: 'shared',
+      name: 'Triage Agent',
+      ref: { type: 'shared-agent', agentId: 'a1' },
+    });
+    const installedShare = makeEntry({
+      id: 'skill:shared:s2',
+      kind: 'skill',
+      origin: 'shared',
+      name: 'Installed Helper',
+      state: 'installed',
+      ref: { type: 'shared-skill', skillId: 's2' },
+    });
+    renderList({
+      sections: [
+        {
+          id: 'search-results',
+          title: '',
+          entries: [sharedSkill, sharedAgent, makeEntry(), installedShare],
+        },
+      ],
+      entryShareStates: new Map([[sharedSkill.id, { status: 'shareable' }]]),
+      onShareEntry: () => {},
+      onAddEntry: (entry): void => {
+        added.push(entry.id);
+      },
+    });
+
+    const action = (id: string): HTMLElement | null =>
+      container.querySelector(`[data-testid="plugins-entry-add-${id}"]`);
+    for (const [entry, verb] of [
+      [sharedSkill, 'Install'],
+      [sharedAgent, 'Install'],
+      [makeEntry(), 'Add'],
+    ] as const) {
+      const button = requireElement(action(entry.id), `${entry.name} action`);
+      expect(button.textContent).toBe(verb);
+      expect(button.getAttribute('aria-label')).toBe(`${verb} ${entry.name}`);
+    }
+    press(action(sharedSkill.id), 'Review Helper action');
+    expect(added).toEqual(['skill:shared:s1']);
+    expect(action(installedShare.id)).toBeNull();
+    const share = requireElement(
+      container.querySelector(
+        '[data-testid="plugins-entry-share-skill:shared:s1"]',
+      ),
+      'shared skill Share action',
+    );
+    expect(share.getAttribute('aria-label')).toBe('Share Review Helper');
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+      );
+      share.focus();
+    });
+    expect(document.activeElement).toBe(share);
+    const tooltip = document.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toBe('Share');
+    expect(share.getAttribute('aria-describedby')).toBe(tooltip?.id);
   });
 
   it('shows an icon share action only for entries with a share state', () => {
@@ -1159,6 +1365,7 @@ describe('PluginsDiscoveryList', () => {
             id: `pipeline-${index}`,
             name: `Workflow ${index}`,
             kind: 'pipeline',
+            origin: sourceLabel === 'Curated' ? 'curated' : 'shared',
             sourceLabel,
           }),
         ),
@@ -1177,7 +1384,7 @@ describe('PluginsDiscoveryList', () => {
       container.querySelectorAll('[data-testid^="plugins-pipeline-source-"]'),
     ).toHaveLength(0);
   });
-  it('labels where an MCP entry runs next to its state badge', () => {
+  it('labels where an MCP entry runs on the title line, not as a pill', () => {
     renderList({
       sections: [
         {
@@ -1198,9 +1405,38 @@ describe('PluginsDiscoveryList', () => {
     expect(badge('desktop')).toBe('Desktop only');
     expect(badge('plain')).toBeUndefined();
     expect(
-      container.querySelector('[data-testid="plugins-surface-cloud"]')
-        ?.previousElementSibling?.textContent,
-    ).toBe('Needs attention');
+      container
+        .querySelector('[data-testid="plugins-surface-cloud"]')
+        ?.closest('[data-testid="plugins-card-title-cloud"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="plugins-card-meta-cloud"]')
+        ?.textContent,
+    ).toContain('Needs attention');
+    expect(
+      container
+        .querySelector('[data-testid="plugins-surface-desktop"]')
+        ?.querySelector('svg'),
+    ).not.toBeNull();
+  });
+
+  it('hides connection health that was never checked (CAN-4840)', () => {
+    renderList({
+      sections: [
+        {
+          id: 'apps',
+          title: 'Apps',
+          entries: [
+            makeEntry({ id: 'unchecked', connection: { status: 'unknown' } }),
+          ],
+        },
+      ],
+    });
+    expect(
+      container.querySelector(
+        '[data-testid="plugins-connection-status-unchecked"]',
+      ),
+    ).toBeNull();
   });
 
   it("shows an MCP entry's connection status in place of the state badge (CAN-4265)", () => {
@@ -1356,6 +1592,117 @@ describe('PluginsDiscoveryList', () => {
     ).toBeNull();
   });
 
+  // CAN-4261 QA: every Browse card reads name and type, then its
+  // description, then one meta line for where it comes from and who it is
+  // shared with.
+  it('keeps the title line to the name and type and moves source tags to a meta line', () => {
+    const entry = makeEntry({
+      id: 'pipeline:curated:review',
+      kind: 'pipeline',
+      origin: 'curated',
+      name: 'Review workflow',
+      typeLabel: 'Pipeline',
+      sourceLabel: 'Curated',
+      recommended: true,
+      sharedWith: { audience: 'team', name: 'E2E Team' },
+      ref: { type: 'curated-pipeline', key: 'review' },
+    });
+    renderList({
+      showPipelineSources: true,
+      sections: [
+        { id: 'workflows', title: '', entries: [entry], showEntryTypes: true },
+      ],
+    });
+
+    const title = requireElement(
+      container.querySelector(`[data-testid="plugins-card-title-${entry.id}"]`),
+      'title line',
+    );
+    expect(title.textContent).toBe('Review workflowPipeline');
+    expect(title.textContent).not.toContain('Recommended');
+    const meta = requireElement(
+      container.querySelector(`[data-testid="plugins-card-meta-${entry.id}"]`),
+      'meta line',
+    );
+    expect(meta.textContent).toContain('Curated');
+    expect(meta.textContent).toContain('E2E Team');
+    const curatedMark = requireElement(
+      container.querySelector(
+        `[data-testid="plugins-card-curated-mark-${entry.id}"]`,
+      ),
+      'curated mark',
+    );
+    expect(curatedMark.getAttribute('role')).toBe('img');
+    expect(curatedMark.getAttribute('aria-label')).toBe(
+      'Curated by Unstoppable Domains',
+    );
+    expect(curatedMark.querySelector('svg')).not.toBeNull();
+    expect(curatedMark.classList.contains('fg-primary')).toBe(true);
+    expect(curatedMark.innerHTML.match(/fill="currentColor"/g)).toHaveLength(2);
+    jest.useFakeTimers();
+    try {
+      act(() => {
+        curatedMark.dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+      });
+      act(() => jest.advanceTimersByTime(1_000));
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+        'Curated by Unstoppable Domains',
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+    // The meta line follows the description.
+    const subtitle = requireElement(
+      container.querySelector(
+        `[data-testid="plugins-card-subtitle-${entry.id}"]`,
+      ),
+      'subtitle',
+    );
+    expect(
+      subtitle.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('marks a recommended entry with a star icon named Recommended, not a pill', () => {
+    const entry = makeEntry({ recommended: true });
+    renderList({ sections: [{ id: 'curated', title: '', entries: [entry] }] });
+
+    const star = requireElement(
+      container.querySelector(
+        `[data-testid="plugins-card-recommended-${entry.id}"]`,
+      ),
+      'recommended star',
+    );
+    expect(star.querySelector('svg')).not.toBeNull();
+    expect(star.getAttribute('aria-label')).toBe('Recommended');
+    expect(star.className).not.toMatch(/\b(bg-|rounded-full)/);
+    expect(star.className).not.toMatch(/\b(fg-accent|fg-kind-)/);
+    expect(container.textContent).not.toContain('Recommended');
+  });
+
+  it('shows a team audience as a team icon and the team name', () => {
+    const entry = makeEntry({
+      id: 'skill:shared:one',
+      kind: 'skill',
+      origin: 'shared',
+      sharedWith: { audience: 'team', name: 'E2E Team' },
+    });
+    renderList({ sections: [{ id: 'skills', title: '', entries: [entry] }] });
+
+    const team = requireElement(
+      container.querySelector(
+        '[data-testid="plugins-card-shared-with-skill:shared:one"]',
+      ),
+      'team label',
+    );
+    expect(team.querySelector('svg')).not.toBeNull();
+    // Screen readers still hear the audience; sighted users see the icon.
+    expect(team.textContent).toBe('Team: E2E Team');
+    expect(team.querySelector('.sr-only')?.textContent).toBe('Team: ');
+  });
+
   it('names an entry type only in a section that mixes kinds', () => {
     const entries = [
       makeEntry({ id: 'skill:one', kind: 'skill', typeLabel: 'Skill' }),
@@ -1366,14 +1713,22 @@ describe('PluginsDiscoveryList', () => {
         { id: 'search-results', title: '', entries, showEntryTypes: true },
       ],
     });
-    expect(
-      container.querySelector('[data-testid="plugins-card-type-skill:one"]')
-        ?.textContent,
-    ).toBe('Skill');
-    expect(
-      container.querySelector('[data-testid="plugins-card-type-agent:one"]')
-        ?.textContent,
-    ).toBe('Agent');
+    const skillType = requireElement(
+      container.querySelector('[data-testid="plugins-card-type-skill:one"]'),
+      'skill type',
+    );
+    expect(skillType.textContent).toBe('Skill');
+    expect(skillType.className).toContain('fg-tertiary');
+    expect(skillType.className).not.toMatch(/\b(fg-accent|fg-kind-)/);
+    expect(skillType.querySelector('svg')).not.toBeNull();
+    const agentType = requireElement(
+      container.querySelector('[data-testid="plugins-card-type-agent:one"]'),
+      'agent type',
+    );
+    expect(agentType.textContent).toBe('Agent');
+    expect(agentType.className).toContain('fg-tertiary');
+    expect(agentType.className).not.toMatch(/\b(fg-accent|fg-kind-)/);
+    expect(agentType.querySelector('svg')).not.toBeNull();
 
     renderList({ sections: [{ id: 'skills', title: 'Skills', entries }] });
     expect(

@@ -4,7 +4,9 @@ const mockReportRendererConsoleError = jest.fn<
 >();
 
 jest.mock('../../lib/renderer-error-logging', () => ({
-  reportRendererConsoleError: mockReportRendererConsoleError,
+  get reportRendererConsoleError(): typeof mockReportRendererConsoleError {
+    return mockReportRendererConsoleError;
+  },
 }));
 
 import { CODEX_SPEED_CATALOG_TTL_MS } from '@canopy/desktop-shared/lib/codex-speed-availability';
@@ -13,6 +15,7 @@ import type {
   CodexSpeedCatalog,
   CodexSpeedCatalogModel,
   CodexSpeedReadCapabilitiesOptions,
+  ReadCodexSpeedRouteRequest,
   CodexSpeedSetActiveRequest,
 } from '@canopy/desktop-shared/types/codex-speed-capabilities';
 import {
@@ -22,6 +25,8 @@ import {
   useCodexSpeedStore,
   type CodexSpeedStoreState,
 } from '../codexSpeedStore';
+
+type CodexSpeedRouteFacts = Awaited<ReturnType<CodexSpeedApi['readRoute']>>;
 
 const READ_FAILURE = "Couldn't check Codex speed availability. Try again.";
 const FETCHED_AT = Date.parse('2026-09-30T12:00:00.000Z');
@@ -87,6 +92,13 @@ function setWindow(value: unknown): void {
 function installBridge(): BridgeStub {
   const listeners = new Set<(next: CodexSpeedCatalog) => void>();
   const dispose = jest.fn<void, []>();
+  const routeFacts: CodexSpeedRouteFacts = {
+    modelSelection: 'explicit',
+    runtimeModel: null,
+    modelSource: null,
+    harness: null,
+    routeProfile: 'unknown',
+  };
   const bridge: BridgeStub = {
     readCapabilities: jest.fn<
       Promise<CodexSpeedCatalog>,
@@ -111,6 +123,10 @@ function installBridge(): BridgeStub {
     listenerCount: (): number => listeners.size,
   };
   const codexSpeed: CodexSpeedApi = {
+    readRoute: jest.fn<
+      Promise<CodexSpeedRouteFacts>,
+      [ReadCodexSpeedRouteRequest]
+    >(() => Promise.resolve(routeFacts)),
     readCapabilities: bridge.readCapabilities,
     setActive: bridge.setActive,
     onChanged: bridge.onChanged,

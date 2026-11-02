@@ -98,7 +98,6 @@ export type CanopyInjectedToolKey =
   | 'search_ledger_entries'
   | 'update_ledger_entry'
   | 'delegate_task'
-  | 'watch_delegates'
   | 'get_delegate_output'
   | 'inspect_delegate'
   | 'list_delegates'
@@ -131,14 +130,13 @@ const CODE_GRAPH_INJECTED_TOOL_KEY_SET: ReadonlySet<CanopyInjectedToolKey> =
   new Set(CODE_GRAPH_INJECTED_TOOL_KEYS);
 
 /**
- * Managed delegation tools that list, read, watch, message or stop delegates
+ * Managed delegation tools that list, read, message or stop delegates
  * a spawn already started. They are app plumbing rather than agent work, so
  * turn summaries count them with the other app tools; the spawn itself
  * (`delegate_task`) counts as agent work, and every row shows the app logo.
  */
 export const MANAGED_DELEGATION_APP_TOOL_KEYS: readonly CanopyInjectedToolKey[] =
   [
-    'watch_delegates',
     'get_delegate_output',
     'inspect_delegate',
     'list_delegates',
@@ -229,7 +227,6 @@ export type CanopyInjectedToolDisplayName =
   | 'SearchFeedEntries'
   | 'UpdateFeedEntry'
   | 'DelegateTask'
-  | 'WatchDelegates'
   | 'GetDelegateOutput'
   | 'InspectDelegate'
   | 'ListDelegates'
@@ -405,11 +402,6 @@ const HISTORICAL_CANOPY_NAMES: Readonly<
     `${BRAND.tools.namespace}: UpdateLedgerEntry`,
   ],
   delegate_task: ['DelegateTask'],
-  watch_delegates: [
-    legacyMcpToolName('WaitDelegates'),
-    legacyCodexToolName('wait_delegates'),
-    'WaitDelegates',
-  ],
   get_delegate_output: [],
   inspect_delegate: ['InspectDelegate'],
   list_delegates: ['ListDelegates'],
@@ -610,11 +602,6 @@ function liveToolNamesFor(key: CanopyInjectedToolKey): readonly string[] {
         BRANDED_TOOL_NAMES.claude.delegateTask,
         BRANDED_TOOL_NAMES.codex.delegateTask,
       ];
-    case 'watch_delegates':
-      return [
-        BRANDED_TOOL_NAMES.claude.watchDelegates,
-        BRANDED_TOOL_NAMES.codex.watchDelegates,
-      ];
     case 'get_delegate_output':
       return [
         BRANDED_TOOL_NAMES.claude.getDelegateOutput,
@@ -734,7 +721,6 @@ const CANOPY_INJECTED_TOOL_DISPLAY_NAMES: Readonly<
   search_ledger_entries: 'SearchFeedEntries',
   update_ledger_entry: 'UpdateFeedEntry',
   delegate_task: 'DelegateTask',
-  watch_delegates: 'WatchDelegates',
   get_delegate_output: 'GetDelegateOutput',
   inspect_delegate: 'InspectDelegate',
   list_delegates: 'ListDelegates',
@@ -1044,14 +1030,6 @@ export const CANOPY_INJECTED_TOOL_REGISTRY: Record<
     codexToolName: BRANDED_TOOL_NAMES.codex.delegateTask,
     legacyToolNames: legacyAliasesFor('delegate_task'),
   },
-  watch_delegates: {
-    canonicalKey: 'watch_delegates',
-    displayName: 'WatchDelegates',
-    cursorToolName: cursorMcpToolTitle('WatchDelegates'),
-    claudeToolName: BRANDED_TOOL_NAMES.claude.watchDelegates,
-    codexToolName: BRANDED_TOOL_NAMES.codex.watchDelegates,
-    legacyToolNames: legacyAliasesFor('watch_delegates'),
-  },
   get_delegate_output: {
     canonicalKey: 'get_delegate_output',
     displayName: 'GetDelegateOutput',
@@ -1186,7 +1164,6 @@ export const CANOPY_INJECTED_TOOL_ENTRIES: readonly CanopyInjectedToolExposure[]
     CANOPY_INJECTED_TOOL_REGISTRY.search_ledger_entries,
     CANOPY_INJECTED_TOOL_REGISTRY.update_ledger_entry,
     CANOPY_INJECTED_TOOL_REGISTRY.delegate_task,
-    CANOPY_INJECTED_TOOL_REGISTRY.watch_delegates,
     CANOPY_INJECTED_TOOL_REGISTRY.get_delegate_output,
     CANOPY_INJECTED_TOOL_REGISTRY.inspect_delegate,
     CANOPY_INJECTED_TOOL_REGISTRY.list_delegates,
@@ -1253,11 +1230,9 @@ const BRANDED_CODEX_SUFFIX_TO_KEY: ReadonlyMap<string, CanopyInjectedToolKey> =
     ['search_ledger_entries', 'search_ledger_entries'],
     ['update_ledger_entry', 'update_ledger_entry'],
     ['spawn_delegate', 'delegate_task'],
-    ['watch_delegates', 'watch_delegates'],
     ['get_delegate_output', 'get_delegate_output'],
     // Historical suffixes are display aliases only; live catalogs use the
-    // explicit messaging/watching names above.
-    ['wait_delegates', 'watch_delegates'],
+    // explicit messaging names above.
     ['inspect_delegate', 'inspect_delegate'],
     ['list_delegates', 'list_delegates'],
     ['stop_delegate', 'stop_delegate'],
@@ -1273,7 +1248,6 @@ function getBrandedAppToolKey(toolName: string): CanopyInjectedToolKey | null {
     const namespace = mcpMatch[1];
     if (!namespace.endsWith('_app_advisor')) {
       if (mcpMatch[2] === 'ArchiveChat') return 'set_auto_archive';
-      if (mcpMatch[2] === 'WaitDelegates') return 'watch_delegates';
       if (mcpMatch[2] === 'ManageDelegate') return 'manage_delegate_worktree';
       if (mcpMatch[2] === 'AddLedgerEntry') return 'add_ledger_entry';
       if (mcpMatch[2] === 'SearchLedgerEntries') return 'search_ledger_entries';
@@ -1283,7 +1257,7 @@ function getBrandedAppToolKey(toolName: string): CanopyInjectedToolKey | null {
   }
 
   const codexMatch = toolName.match(
-    /^(.+?)_(ask_user_question|get_script_output|get_git_preferences|save_memory|search_memory|read_memory|read_pipeline_yaml|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|set_auto_archive|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|search_deferred_tools|load_deferred_tools|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry|spawn_delegate|watch_delegates|get_delegate_output|wait_delegates|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate)$/,
+    /^(.+?)_(ask_user_question|get_script_output|get_git_preferences|save_memory|search_memory|read_memory|read_pipeline_yaml|show_files|show_capabilities|show_visual|preview_visual|get_file_comments|respond_to_file_comment|search_actions|dispatch_action|search_watchers|setup_watchers|watch_github_items|get_github_pull_request_status|watch_command|schedule_wakeup|delete_watchers|set_auto_archive|set_base_branch|start_forked_agent|start_branched_agent|archive_chat|get_code_graph_context|build_or_update_code_graph|query_code_graph|search_code_graph|explain_code_symbol|get_impact_radius|detect_changed_symbols|compare_change_impact|get_review_context|search_deferred_tools|load_deferred_tools|add_feed_entry|search_feed_entries|update_feed_entry|add_ledger_entry|search_ledger_entries|update_ledger_entry|spawn_delegate|get_delegate_output|inspect_delegate|list_delegates|stop_delegate|manage_delegate_worktree|message_delegate|request_steering|manage_delegate)$/,
   );
   if (codexMatch) {
     const namespace = codexMatch[1];
@@ -1840,4 +1814,11 @@ export function getCanopyInjectedAliases(
     exposure.cursorToolName,
     ...exposure.legacyToolNames,
   ];
+}
+
+/** Retired names recognized only for historical transcript classification. */
+export function isHistoricalDelegateWatchToolName(name: string): boolean {
+  return /^(?:WatchDelegates|WaitDelegates|(?:mcp__.+__)(?:WatchDelegates|WaitDelegates)|.+_(?:watch_delegates|wait_delegates))$/.test(
+    name,
+  );
 }

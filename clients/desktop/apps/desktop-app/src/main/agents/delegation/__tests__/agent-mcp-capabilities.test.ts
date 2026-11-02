@@ -6,6 +6,7 @@ import { buildManagedMcpServerName } from '@canopy/desktop-shared/node/plugins/m
 import type { AgentCapabilitySnapshot } from '@canopy/desktop-shared/node/delegation/agent-artifacts';
 import type { McpHttpAuthPreference } from '@canopy/desktop-shared/types';
 import type { McpStdioBrokerForResolver } from '../../../plugins/plugin-resolver';
+import type * as PluginResolver from '../../../plugins/plugin-resolver';
 import os from 'node:os';
 import {
   accountMcpTransportDigest,
@@ -21,9 +22,16 @@ const loadMarketplacesCacheOnly = jest.fn();
 const resolvePluginInfoPath = jest.fn();
 const loadPluginManifest = jest.fn();
 const readPluginMcpConfigObjects = jest.fn();
+type ResolvePluginOptions = NonNullable<
+  Parameters<typeof PluginResolver.resolvePlugins>[4]
+>;
+type HttpProxyRoute = Parameters<
+  NonNullable<ResolvePluginOptions['mcpHttpProxyService']>['registerRoute']
+>[0];
+
 const resolvePlugins = jest.fn<
   Promise<unknown>,
-  [unknown, unknown, unknown, unknown, unknown]
+  Parameters<typeof PluginResolver.resolvePlugins>
 >();
 
 const loadAccountMcpRefConnections = jest.fn();
@@ -48,8 +56,33 @@ jest.mock('../../../plugins/plugin-resolver', () => ({
     loadPluginManifest(...args),
   readPluginMcpConfigObjects: (...args: unknown[]): unknown =>
     readPluginMcpConfigObjects(...args),
-  resolvePlugins: (...args: unknown[]): unknown => resolvePlugins(...args),
+  resolvePlugins: (
+    ...args: Parameters<typeof PluginResolver.resolvePlugins>
+  ): Promise<unknown> => resolvePlugins(...args),
 }));
+
+function proxyRoute(upstreamUrl: string, sessionId: string): HttpProxyRoute {
+  return {
+    sessionId,
+    serverId: 'test-server',
+    configId: 'test-config',
+    displayName: 'Test server',
+    upstreamUrl,
+    headers: {},
+    oauthEnabled: false,
+  };
+}
+
+function httpProxyContext(options: ResolvePluginOptions): {
+  mcpHttpProxyService: NonNullable<ResolvePluginOptions['mcpHttpProxyService']>;
+  sessionId: string;
+} {
+  const mcpHttpProxyService = options.mcpHttpProxyService;
+  const sessionId = options.sessionId;
+  if (!mcpHttpProxyService || !sessionId)
+    throw new Error('Expected the HTTP proxy resolver context');
+  return { mcpHttpProxyService, sessionId };
+}
 
 const pluginName = buildManagedMcpServerName({
   kind: 'plugin',
@@ -311,12 +344,12 @@ describe('delegated MCP pinning', () => {
         _project: unknown,
         _worktree: unknown,
         _chat: unknown,
-        options: { mcpHttpProxyService: typeof proxy; sessionId: string },
+        options: ResolvePluginOptions = {},
       ) => {
-        await options.mcpHttpProxyService.registerRoute({
-          sessionId: options.sessionId,
-          upstreamUrl: 'https://claude.test/mcp',
-        });
+        const { mcpHttpProxyService, sessionId } = httpProxyContext(options);
+        await mcpHttpProxyService.registerRoute(
+          proxyRoute('https://claude.test/mcp', sessionId),
+        );
         return {
           warnings: [],
           mcpServers: {
@@ -374,12 +407,12 @@ describe('delegated MCP pinning', () => {
         _project: unknown,
         _worktree: unknown,
         _chat: unknown,
-        options: { mcpHttpProxyService: typeof proxy; sessionId: string },
+        options: ResolvePluginOptions = {},
       ) => {
-        await options.mcpHttpProxyService.registerRoute({
-          sessionId: options.sessionId,
-          upstreamUrl: 'https://claude.test/mcp',
-        });
+        const { mcpHttpProxyService, sessionId } = httpProxyContext(options);
+        await mcpHttpProxyService.registerRoute(
+          proxyRoute('https://claude.test/mcp', sessionId),
+        );
         return {
           warnings: [],
           mcpServers: {
@@ -456,12 +489,12 @@ describe('delegated MCP pinning', () => {
           _project: unknown,
           _worktree: unknown,
           _chat: unknown,
-          options: { mcpHttpProxyService: typeof proxy; sessionId: string },
+          options: ResolvePluginOptions = {},
         ) => {
-          await options.mcpHttpProxyService.registerRoute({
-            sessionId: options.sessionId,
-            upstreamUrl,
-          });
+          const { mcpHttpProxyService, sessionId } = httpProxyContext(options);
+          await mcpHttpProxyService.registerRoute(
+            proxyRoute(upstreamUrl, sessionId),
+          );
           return {
             warnings: [],
             mcpServers: {
@@ -536,7 +569,9 @@ describe('delegated MCP pinning', () => {
     const controller = new AbortController();
     const proxy = {
       ...stubHttpProxy(),
-      registerRoute: jest.fn(() => waiting),
+      registerRoute: jest.fn<Promise<string>, [route: { upstreamUrl: string }]>(
+        () => waiting,
+      ),
       getProxyUrl: jest.fn(() => 'http://127.0.0.1:7777/proxy/late'),
     };
     resolvePlugins.mockImplementation(
@@ -545,12 +580,12 @@ describe('delegated MCP pinning', () => {
         _project: unknown,
         _worktree: unknown,
         _chat: unknown,
-        options: { mcpHttpProxyService: typeof proxy; sessionId: string },
+        options: ResolvePluginOptions = {},
       ) => {
-        await options.mcpHttpProxyService.registerRoute({
-          sessionId: options.sessionId,
-          upstreamUrl: 'https://codex.test/mcp',
-        });
+        const { mcpHttpProxyService, sessionId } = httpProxyContext(options);
+        await mcpHttpProxyService.registerRoute(
+          proxyRoute('https://codex.test/mcp', sessionId),
+        );
         return {
           warnings: [],
           mcpServers: {},
@@ -619,11 +654,7 @@ describe('delegated MCP pinning', () => {
           _project: unknown,
           _worktree: unknown,
           _chat: unknown,
-          options: {
-            mcpStdioBroker?: {
-              registerStdioMcpRoute: typeof registerStdioMcpRoute;
-            };
-          },
+          options: ResolvePluginOptions = {},
         ) => {
           if (options.mcpStdioBroker) {
             await options.mcpStdioBroker.registerStdioMcpRoute({
@@ -702,11 +733,7 @@ describe('delegated MCP pinning', () => {
           _project: unknown,
           _worktree: unknown,
           _chat: unknown,
-          options: {
-            mcpStdioBroker?: {
-              registerStdioMcpRoute: typeof registerStdioMcpRoute;
-            };
-          },
+          options: ResolvePluginOptions = {},
         ) => {
           if (options.mcpStdioBroker) {
             await options.mcpStdioBroker.registerStdioMcpRoute({
@@ -888,7 +915,7 @@ describe('delegated MCP pinning', () => {
           _project: unknown,
           _worktree: unknown,
           _chat: unknown,
-          options: { mcpStdioBroker?: typeof broker },
+          options: ResolvePluginOptions = {},
         ) => {
           if (options.mcpStdioBroker)
             await options.mcpStdioBroker.registerStdioMcpRoute({
@@ -977,7 +1004,7 @@ describe('delegated MCP pinning', () => {
           _project: unknown,
           _worktree: unknown,
           _chat: unknown,
-          options: { mcpStdioBroker?: typeof broker },
+          options: ResolvePluginOptions = {},
         ) => {
           if (options.mcpStdioBroker)
             await options.mcpStdioBroker.registerStdioMcpRoute({
@@ -1395,12 +1422,12 @@ describe('delegated MCP pinning', () => {
         _project: unknown,
         _worktree: unknown,
         _chat: unknown,
-        options: { mcpHttpProxyService: typeof proxy; sessionId: string },
+        options: ResolvePluginOptions = {},
       ) => {
-        await options.mcpHttpProxyService.registerRoute({
-          sessionId: options.sessionId,
-          upstreamUrl: 'https://claude.test/mcp',
-        });
+        const { mcpHttpProxyService, sessionId } = httpProxyContext(options);
+        await mcpHttpProxyService.registerRoute(
+          proxyRoute('https://claude.test/mcp', sessionId),
+        );
         return {
           warnings: [],
           mcpServers: {
@@ -1490,12 +1517,12 @@ describe('delegated MCP pinning', () => {
         _project: unknown,
         _worktree: unknown,
         _chat: unknown,
-        options: { mcpHttpProxyService: typeof proxy; sessionId: string },
+        options: ResolvePluginOptions = {},
       ) => {
-        await options.mcpHttpProxyService.registerRoute({
-          sessionId: options.sessionId,
-          upstreamUrl: 'https://account-connection.upstream.test/mcp',
-        });
+        const { mcpHttpProxyService, sessionId } = httpProxyContext(options);
+        await mcpHttpProxyService.registerRoute(
+          proxyRoute('https://account-connection.upstream.test/mcp', sessionId),
+        );
         return {
           warnings: [],
           mcpServers: {
@@ -1569,12 +1596,12 @@ describe('delegated MCP pinning', () => {
         _project: unknown,
         _worktree: unknown,
         _chat: unknown,
-        options: { mcpHttpProxyService: typeof proxy; sessionId: string },
+        options: ResolvePluginOptions = {},
       ) => {
-        await options.mcpHttpProxyService.registerRoute({
-          sessionId: options.sessionId,
-          upstreamUrl: 'https://account-connection.upstream.test/mcp',
-        });
+        const { mcpHttpProxyService, sessionId } = httpProxyContext(options);
+        await mcpHttpProxyService.registerRoute(
+          proxyRoute('https://account-connection.upstream.test/mcp', sessionId),
+        );
         return {
           warnings: [],
           mcpServers: {

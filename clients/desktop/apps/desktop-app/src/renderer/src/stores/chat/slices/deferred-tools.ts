@@ -28,6 +28,12 @@ import {
 } from '../surface';
 import type { ChatTab, WorktreeChatState } from '../types';
 import type { ChatDeferredToolsSlice, ChatState } from '../state';
+import { tagStatusWrite } from '../runtime-divergence';
+import { isScopeRevisionedLive } from './revisioned';
+import {
+  selectChildToolLiveness,
+  useLiveBackgroundTaskStore,
+} from '../../liveBackgroundTaskStore';
 
 function deferredReloadKey(scope: DeferredToolsReloadScopeKey): string {
   return `${scope.projectId}/${scope.worktreeId}`;
@@ -108,6 +114,16 @@ export const createDeferredToolsSlice: StateCreator<
         interfaceMode: tab.interfaceMode,
         userMessageId,
       };
+      // Main keeps canonical runtime active across the reload's session gap
+      // (it drops the internal interrupt's terminal before persistence), so a
+      // revisioned scope already projects `streaming`. Only legacy scopes
+      // hold the tab streaming locally.
+      const holdStreaming = !isScopeRevisionedLive(
+        get(),
+        scope.projectId,
+        scope.worktreeId,
+      );
+      if (holdStreaming) tagStatusWrite(scope.chatId, 'deferred-tools-reload');
       set((state) => {
         const current = state.worktreeChats[key];
         if (!current) return state;
@@ -115,7 +131,7 @@ export const createDeferredToolsSlice: StateCreator<
           candidate.id === scope.chatId
             ? {
                 ...candidate,
-                status: 'streaming' as const,
+                ...(holdStreaming ? { status: 'streaming' as const } : {}),
                 deferredToolsReload: {
                   requestId: event.requestId,
                   toolCallId: event.toolCallId,
@@ -215,6 +231,7 @@ export const createDeferredToolsSlice: StateCreator<
         scope.projectId,
         scope.worktreeId,
       );
+      tagStatusWrite(scope.chatId, 'deferred-tools-reload');
       set((state) => {
         const wc = state.worktreeChats[key];
         if (!wc) return state;
@@ -235,6 +252,15 @@ export const createDeferredToolsSlice: StateCreator<
               : [
                   ...closeOpenToolUseBlocks(
                     completeTurnTimer(tab.messages, failedAt),
+                    {
+                      liveness: selectChildToolLiveness(
+                        useLiveBackgroundTaskStore.getState(),
+                        scope.projectId,
+                        scope.worktreeId,
+                        scope.chatId,
+                      ),
+                      codexRootThreadId: tab.sdkSessionId,
+                    },
                   ),
                   {
                     id: nextMsgId(),

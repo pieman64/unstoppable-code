@@ -29,8 +29,11 @@ export const COPILOT_NATIVE_TOOLS = [
 ] as const;
 
 /**
- * The runtime configures these from the session's GitHub identity even when
- * started with `--disable-builtin-mcps`, so each session disables them too.
+ * Built-in servers the runtime configures from the session's GitHub identity
+ * even when started with `--disable-builtin-mcps`, so each session disables
+ * them by name. `github-mcp-server` is the name the runtime and its bundled
+ * agent definitions use (`github-mcp-server/<tool>`). Hosts leave out any
+ * selected server that shares one of these names.
  */
 export const COPILOT_BUILTIN_MCP_SERVERS = ['github-mcp-server'] as const;
 
@@ -121,9 +124,7 @@ export function createCopilotSessionConfig(
     ],
     tools: policy.tools ?? [],
     mcpServers,
-    disabledMcpServers: COPILOT_BUILTIN_MCP_SERVERS.filter(
-      (name) => !(name in mcpServers),
-    ),
+    disabledMcpServers: [...COPILOT_BUILTIN_MCP_SERVERS],
     systemMessage: policy.systemPrompt
       ? { mode: 'append', content: policy.systemPrompt }
       : undefined,

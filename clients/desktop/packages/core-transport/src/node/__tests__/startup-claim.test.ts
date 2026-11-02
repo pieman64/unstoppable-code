@@ -38,9 +38,9 @@ async function acquire(target = port()): Promise<object> {
   if (result.kind !== 'acquired') throw new Error('Expected acquisition');
   return result.handle;
 }
-function serialize(handle: object): object {
+function serialize(handle: object): Record<string, unknown> {
   const value: unknown = JSON.parse(JSON.stringify(handle));
-  return z.object({}).passthrough().parse(value);
+  return z.record(z.string(), z.unknown()).parse(value);
 }
 function claim(handle: object): { dataRoot: string; claimId: string } {
   return z.object({ dataRoot: z.string(), claimId: z.string() }).parse(handle);

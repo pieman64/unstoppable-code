@@ -91,14 +91,29 @@ function diffStatsResult(
   return { insertions, deletions, refreshedAt: 1, generation: 0 };
 }
 
+type PreferencesFixture = Awaited<ReturnType<typeof readPreferencesFile>>;
+
+function partialPreferences(
+  preferences: Partial<PreferencesFixture>,
+): PreferencesFixture {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as PreferencesFixture;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 describe('project portal service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     resetWorkspaceTargetExclusionsForTests();
     mockedGetWorktreeRuntimeStatuses.mockResolvedValue(new Map());
-    mockedReadPreferencesFile.mockResolvedValue({
-      branchDisplayMappings: [],
-    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    mockedReadPreferencesFile.mockResolvedValue(
+      partialPreferences({
+        branchDisplayMappings: [],
+      }),
+    );
     // Default: no line changes. Individual tests override per worktree.
     mockedGetCachedWorktreeDiffStats.mockReturnValue(diffStatsResult(0, 0));
   });
@@ -175,7 +190,7 @@ describe('project portal service', () => {
   );
 
   it('projects the registered notification space id for web and mobile', () => {
-    const worktree = {
+    const worktree: WorktreeData = {
       id: 'wt-1',
       branchName: 'feature/notify',
       createdAt: '2026-09-05T00:00:00Z',
@@ -219,6 +234,7 @@ describe('project portal service', () => {
         type: 'single-repo',
         id: 'workspace-lock',
         name: 'Workspace',
+        color: '#000000',
         repoPath: '/repo',
         collapsed: false,
         order: 0,
@@ -361,6 +377,7 @@ describe('project portal service', () => {
         type: 'single-repo',
         id: 'workspace-1',
         name: 'Workspace',
+        color: '#000000',
         repoPath: '/repo',
         collapsed: false,
         order: 0,
@@ -368,13 +385,19 @@ describe('project portal service', () => {
           {
             id: 'child',
             branchName: 'feature/child',
-            displayName: 'Child task',
+            label: 'Child task',
             createdAt: '2026-07-30T00:00:00.000Z',
             status: 'active',
             hidden: true,
             setupPhase: 'git-pending',
             branchGroupingParentWorktreeId: 'parent',
-            healthIssue: { status: 'broken', reason: 'missing checkout' },
+            healthIssue: {
+              status: 'broken',
+              code: 'missing-worktree-path',
+              message: 'missing checkout',
+              checkedAt: '2026-07-30T00:00:00.000Z',
+              worktreePath: '/worktrees/child',
+            },
             lastKnownPrStatus: {
               repos: [{ repoId: 'repo-1', repoName: 'Repo', status: null }],
               lastCheckedAt: '2026-07-30T00:00:00.000Z',
@@ -438,21 +461,23 @@ describe('project portal service', () => {
   });
 
   it('projects worktree branchName as the portal branch without falling back to the animal id label', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      branchDisplayMappings: [
-        {
-          id: 'builtin-branch-type',
-          label: 'Strip branch type',
-          matcher: '',
-          result: '',
-          settings: { replaceHyphens: true, capitalize: true },
-          enabled: true,
-          builtin: true,
-          examples: [],
-          readonlyExampleCount: 0,
-        },
-      ],
-    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    mockedReadPreferencesFile.mockResolvedValue(
+      partialPreferences({
+        branchDisplayMappings: [
+          {
+            id: 'builtin-branch-type',
+            label: 'Strip branch type',
+            matcher: '',
+            result: '',
+            settings: { replaceHyphens: true, capitalize: true },
+            enabled: true,
+            builtin: true,
+            examples: [],
+            readonlyExampleCount: 0,
+          },
+        ],
+      }),
+    );
 
     const items: SidebarItem[] = [
       {
@@ -499,7 +524,9 @@ describe('project portal service', () => {
     // The desktop sidebar maps branches through the (builtin + user)
     // branch-display rules; the portal entity now carries the same
     // human-friendly label so the web rail matches the desktop.
-    expect((worktree?.payload as { label?: string }).label).toBe('Portal Sync');
+    expect((worktree?.payload as { label?: string } | undefined)?.label).toBe(
+      'Portal Sync',
+    );
   });
 
   it('projects the persisted done lifecycle status used by the desktop sidebar', async () => {
@@ -545,6 +572,7 @@ describe('project portal service', () => {
         type: 'multi-repo',
         id: 'workspace-multi',
         name: 'Multi Workspace',
+        color: '#000000',
         collapsed: false,
         order: 0,
         repos: [
@@ -893,6 +921,7 @@ describe('project portal service', () => {
         type: 'single-repo',
         id: 'workspace-1',
         name: 'Workspace',
+        color: '#000000',
         repoPath: '/repo',
         collapsed: false,
         order: 0,
@@ -1075,6 +1104,7 @@ describe('project portal service', () => {
         type: 'single-repo',
         id: 'canopy',
         name: 'canopy',
+        color: '#000000',
         repoPath: '/repos/canopy',
         collapsed: false,
         order: 0,
@@ -1084,6 +1114,7 @@ describe('project portal service', () => {
         type: 'single-repo',
         id: 'gitlab-project',
         name: 'GitLab project',
+        color: '#000000',
         repoPath: '/repos/gitlab-project',
         collapsed: false,
         order: 1,
@@ -1093,6 +1124,7 @@ describe('project portal service', () => {
         type: 'multi-repo',
         id: 'suite',
         name: 'Suite',
+        color: '#000000',
         collapsed: false,
         order: 2,
         repos: [{ id: 'repo-1', name: 'canopy', repoPath: '/repos/canopy' }],
@@ -1102,6 +1134,7 @@ describe('project portal service', () => {
         type: 'cowork',
         id: 'notes',
         name: 'Notes',
+        color: '#000000',
         collapsed: false,
         order: 3,
       },
@@ -1109,7 +1142,7 @@ describe('project portal service', () => {
     mockedReadAllSidebarItems.mockResolvedValue({ version: 1, items });
 
     const entities = await listWorkspacePortalEntities();
-    const payloadOf = (localId: string): Record<string, unknown> | undefined =>
+    const payloadOf = (localId: string): unknown =>
       entities.find(
         (entity) =>
           entity.entityType === 'workspace' && entity.localId === localId,
@@ -1131,6 +1164,7 @@ describe('project portal service', () => {
         type: 'single-repo',
         id: 'canopy',
         name: 'canopy',
+        color: '#000000',
         repoPath: '/repos/canopy',
         collapsed: false,
         order: 0,
@@ -1140,6 +1174,7 @@ describe('project portal service', () => {
         type: 'single-repo',
         id: 'site',
         name: 'Site',
+        color: '#000000',
         repoPath: '/repos/site',
         collapsed: false,
         order: 1,
@@ -1149,6 +1184,7 @@ describe('project portal service', () => {
         type: 'cowork',
         id: 'notes',
         name: 'Notes',
+        color: '#000000',
         collapsed: false,
         order: 2,
       },
@@ -1243,10 +1279,12 @@ describe('project portal service', () => {
   });
 
   it('projects cowork projects without local paths or worktree entities', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      branchDisplayMappings: [],
-      worktreeFilterHiddenWorkspaceIds: ['cowork-hidden'],
-    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    mockedReadPreferencesFile.mockResolvedValue(
+      partialPreferences({
+        branchDisplayMappings: [],
+        worktreeFilterHiddenWorkspaceIds: ['cowork-hidden'],
+      }),
+    );
 
     const items: SidebarItem[] = [
       {
@@ -1294,10 +1332,10 @@ describe('project portal service', () => {
   // A row that reaches the browser without it falls back on the legacy default,
   // which is right for desktop but leaves the field carrying no real signal.
   it('stamps the layout axis on every project kind', async () => {
-    const preferences: Awaited<ReturnType<typeof readPreferencesFile>> = {
+    const preferences = partialPreferences({
       branchDisplayMappings: [],
       worktreeFilterHiddenWorkspaceIds: [],
-    };
+    });
     mockedReadPreferencesFile.mockResolvedValue(preferences);
 
     const items: SidebarItem[] = [
@@ -1347,10 +1385,10 @@ describe('project portal service', () => {
   // CAN-3053: the child-row ordering mode drives the portal's worktree and
   // Work Entry (Chats section) order. Desktop resolves its manual default before projection.
   it('projects desktop manual defaults and explicit recency', async () => {
-    const preferences: Awaited<ReturnType<typeof readPreferencesFile>> = {
+    const preferences = partialPreferences({
       branchDisplayMappings: [],
       worktreeFilterHiddenWorkspaceIds: [],
-    };
+    });
     mockedReadPreferencesFile.mockResolvedValue(preferences);
 
     const items: SidebarItem[] = [
@@ -1507,10 +1545,12 @@ describe('project portal service', () => {
   });
 
   it('omits hidden from a cowork project absent from the hidden-ids set', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      branchDisplayMappings: [],
-      worktreeFilterHiddenWorkspaceIds: ['some-other-workspace'],
-    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    mockedReadPreferencesFile.mockResolvedValue(
+      partialPreferences({
+        branchDisplayMappings: [],
+        worktreeFilterHiddenWorkspaceIds: ['some-other-workspace'],
+      }),
+    );
 
     const items: SidebarItem[] = [
       {
@@ -1549,10 +1589,12 @@ describe('project portal service', () => {
   });
 
   it('projects the desktop sidebar visibility model (hidden + alwaysShow)', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      branchDisplayMappings: [],
-      worktreeFilterHiddenWorkspaceIds: ['workspace-hidden'],
-    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    mockedReadPreferencesFile.mockResolvedValue(
+      partialPreferences({
+        branchDisplayMappings: [],
+        worktreeFilterHiddenWorkspaceIds: ['workspace-hidden'],
+      }),
+    );
 
     const items: SidebarItem[] = [
       {
@@ -1616,13 +1658,15 @@ describe('project portal service', () => {
       { ...retired, id: 'workspace-absent', alwaysShow: undefined },
       { ...retired, id: 'workspace-kept-hidden', alwaysShow: true },
     );
-    mockedReadPreferencesFile.mockResolvedValue({
-      branchDisplayMappings: [],
-      worktreeFilterHiddenWorkspaceIds: [
-        'workspace-hidden',
-        'workspace-kept-hidden',
-      ],
-    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    mockedReadPreferencesFile.mockResolvedValue(
+      partialPreferences({
+        branchDisplayMappings: [],
+        worktreeFilterHiddenWorkspaceIds: [
+          'workspace-hidden',
+          'workspace-kept-hidden',
+        ],
+      }),
+    );
     mockedReadAllSidebarItems.mockResolvedValue({ version: 1, items });
 
     const entities = await listWorkspacePortalEntities();
@@ -1679,6 +1723,7 @@ describe('project portal service', () => {
               type,
               id: 'workspace-1',
               name: 'Workspace',
+              color: '#000000',
               repoPath: '/repo',
               collapsed: false,
               order: 0,
@@ -1688,6 +1733,7 @@ describe('project portal service', () => {
               type,
               id: 'workspace-1',
               name: 'Workspace',
+              color: '#000000',
               collapsed: false,
               order: 0,
               repos: [],
@@ -1705,7 +1751,14 @@ describe('project portal service', () => {
       return new Map(
         entities
           .filter((entity) => entity.entityType === 'worktree')
-          .map((entity) => [entity.localId, entity.payload]),
+          .map((entity): [string, Record<string, unknown>] => {
+            if (!isRecord(entity.payload)) {
+              throw new Error(
+                'Expected worktree portal payload to be a record.',
+              );
+            }
+            return [entity.localId, entity.payload];
+          }),
       );
     }
 
@@ -1749,7 +1802,10 @@ describe('project portal service', () => {
           worktreeId,
           {},
         );
-        expect(entity?.payload.order).toBe(payloads.get(worktreeId)?.order);
+        if (!isRecord(entity?.payload)) {
+          throw new Error('Expected worktree portal payload to be a record.');
+        }
+        expect(entity.payload.order).toBe(payloads.get(worktreeId)?.order);
         expect(entity?.payload).not.toHaveProperty(
           'branchGroupingParentWorktreeId',
         );
@@ -1815,6 +1871,7 @@ describe('project portal service', () => {
           type: 'multi-repo',
           id: 'workspace-temp',
           name: 'Temporary',
+          color: '#000000',
           temporary: true,
           collapsed: false,
           order: 0,
@@ -1852,7 +1909,10 @@ it('projects optional per-workspace membership on the canonical workspace entity
         id: 'workspace-a',
         name: 'Code',
         type: 'single-repo',
+        color: '#000000',
         repoPath: '/repo',
+        collapsed: false,
+        order: 0,
         worktrees: [
           {
             id: 'wt-1',

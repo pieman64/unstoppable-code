@@ -1,3 +1,9 @@
+import {
+  ASK_USER_HTTP_TIMEOUT_MS,
+  CANOPY_MCP_TOOL_TIMEOUT_MS,
+  isCanopyAskUserToolName,
+} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { getCanonicalAppAdvisorToolKey } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-multi-agent';
 import { clampCodexCommandOutput } from './command-output-clamp';
 import { normalizeEpochMs } from '@canopy/desktop-shared/ai-credits-routing-state';
@@ -6,6 +12,15 @@ import type {
   ChatInputAdmission,
   ChatSteeringCapabilities,
 } from '@canopy/protocol/portal';
+import type { ChatInputSubmitResult, SteeringTarget } from '../agents/types';
+import type { CodexTurnLifecycleObservation } from '../agents/codex-turn-lifecycle';
+import type { CodexContractGuard } from '../agents/provider-contract-guard';
+import {
+  chatInputDeliveryFailure,
+  chatInputRefusal,
+  type ChatInputDeliveryFailure,
+  type ChatInputRefusal,
+} from '@canopy/protocol/portal/input-delivery';
 import type { AiGatewayToolSchemaProfile } from '@canopy/protocol/ai-gateway-models';
 import {
   type AgentModelConfig,
@@ -38,7 +53,12 @@ import type {
   ApprovalOutcome,
   ApprovalSessionHandle,
 } from '../approvals/approval-service';
+import { APPROVAL_REQUEST_RESOLVED } from '../approvals/approval-service';
 import type { SendableBrowserWindow } from '../lib/window-send';
+import {
+  logMainProcessError,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 import {
   codexApprovalPolicyFor,
   codexSandboxModeFor,
@@ -75,6 +95,11 @@ import { immediateTurnRestartCodexToolName } from './canopy-dynamic-tools';
 import type { CodexErrorInfo } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/CodexErrorInfo';
 import type { CollaborationMode } from '@canopy/desktop-shared/node/codex-runtime/generated/CollaborationMode';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
+import type {
+  CodexIngestionLagChange,
+  CodexIngestionLagSample,
+  CodexIngestionLagSnapshot,
+} from '@canopy/desktop-shared/node/codex-runtime/runtime-service';
 import {
   type CodexCapabilityLeaseStore,
   type CodexCapabilityLeaseFile,
@@ -88,6 +113,7 @@ import {
   type CodexRecoverableProcessExitError,
   type CodexSpawnProfileRequest,
   type CodexThreadSeedLoad,
+  classifyCodexSteerError,
   CodexUnsafeRecoveryError,
   createCodexCapabilitySnapshotId,
   extractApprovalThreadId,
@@ -102,17 +128,111 @@ import {
   projectCodexThreadItem,
   sanitizeSeedItemsForRouteChange,
   waitForCodexMcpServers,
+  createCodexBackgroundWorkRegistry,
+  readAllCodexBackgroundTerminalPages,
+  type CodexBackgroundSnapshot,
+  type CodexBackgroundReconciliationToken,
+  type CodexBackgroundWorkRegistry,
+  type CodexNativeBackgroundWork,
   readCodexMcpToolEvidence,
   type CodexMcpToolEvidence,
 } from '@canopy/desktop-shared/node/codex-runtime';
 import { getCodexRuntimeService } from './runtime-service';
+import type { ChatEventDrop } from '../lib/chat-event-drop-diagnostics';
+import {
+  attachProviderRunEvent,
+  classifyProviderRunEvent,
+  createProviderRunGeneration,
+  observeProviderRunItem,
+  pinProviderRun,
+  registerProviderRun,
+  retireProviderRunGeneration,
+  settleProviderRun,
+  unpinProviderRun,
+  type ProviderRunGeneration,
+  type ProviderRunHandle,
+} from '../lib/provider-run-reconciliation';
 
 export type DynamicToolCallHandler = (
   params: DynamicToolCallParams,
   options?: { signal?: AbortSignal },
 ) => Promise<DynamicToolCallResponse>;
 
+type ProviderEventDrop = Omit<
+  ChatEventDrop,
+  'projectId' | 'worktreeId' | 'chatId'
+>;
+
+type CodexLateSteerResponse =
+  | { kind: 'success'; value: unknown }
+  | { kind: 'error'; error: Error };
+
+interface SteeringInputCorrelation {
+  threadId: string;
+  turnId: string;
+  pickedUp: boolean;
+  submissionId?: string;
+  userMessageId?: string;
+  softTimedOut?: boolean;
+  onLateResponse?: (outcome: CodexLateSteerResponse) => void;
+}
+
 type JsonRpcId = number | string;
+
+const MAX_RETAINED_ROOT_EXECUTION_ANCHORS = 512;
+const retainedRootExecutionAnchors = new Map<string, string>();
+
+function retainedRootExecutionAnchorKey(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  threadId: string,
+  turnId: string,
+): string {
+  return JSON.stringify([projectId, worktreeId, chatId, threadId, turnId]);
+}
+
+function rememberRootExecutionAnchor(
+  key: string,
+  executionUserMessageId: string,
+): void {
+  retainedRootExecutionAnchors.delete(key);
+  retainedRootExecutionAnchors.set(key, executionUserMessageId);
+  while (
+    retainedRootExecutionAnchors.size > MAX_RETAINED_ROOT_EXECUTION_ANCHORS
+  ) {
+    const oldestKey = retainedRootExecutionAnchors.keys().next().value;
+    if (oldestKey === undefined) break;
+    retainedRootExecutionAnchors.delete(oldestKey);
+  }
+}
+
+function getRetainedRootExecutionAnchor(key: string): string | undefined {
+  const executionUserMessageId = retainedRootExecutionAnchors.get(key);
+  if (!executionUserMessageId) return undefined;
+  // Reads refresh the bounded map's insertion-ordered eviction policy.
+  retainedRootExecutionAnchors.delete(key);
+  retainedRootExecutionAnchors.set(key, executionUserMessageId);
+  return executionUserMessageId;
+}
+
+function forgetRetainedRootExecutionAnchor(key: string): void {
+  retainedRootExecutionAnchors.delete(key);
+}
+
+function nativeTurnExecutionUserMessageId(
+  turn: Record<string, unknown>,
+): string | undefined {
+  const firstUserMessage = readArray(turn, 'items')
+    .filter(isRecord)
+    .find((item) => readString(item, 'type') === 'userMessage');
+  const clientId = firstUserMessage
+    ? readString(firstUserMessage, 'clientId')
+    : undefined;
+  // Continuation messages are synthetic recovery instructions, not local
+  // transcript messages. Their client ids must never become execution anchors.
+  return clientId?.startsWith('codex-recovery:') ? undefined : clientId;
+}
 
 interface CodexTurnUsage {
   input_tokens?: number;
@@ -151,6 +271,12 @@ interface StartTurnOptions {
   onAdmission?: () => void;
   text: string;
   cwd: string;
+  /** Admitted Canopy message that owns this native execution. */
+  executionUserMessageId?: string;
+  submissionId?: string;
+  /** Local transcript message id, distinct from the wire id used for retry. */
+  userMessageId?: string;
+  clientUserMessageId?: string;
   model?: ChatModel;
   /** Local catalog ID used for capability checks when `model` is a gateway ID. */
   capabilityModel?: ChatModel;
@@ -200,6 +326,36 @@ interface CodexTurnState {
   hostOwnsAdmission?: boolean;
   rootThreadId: string;
   turnId: string;
+  executionUserMessageId?: string;
+  submissionId?: string;
+  userMessageId?: string;
+  clientUserMessageId?: string;
+  lifecycleOrigin?: 'user' | 'autonomous' | 'restart';
+  allowResumeMerge?: boolean;
+  lifecycleStartedTurnIds?: Set<string>;
+  lifecycleBindingKeys?: Set<string>;
+  unresolvedMergeTurnIds?: Set<string>;
+  mergedResumeAnchor?: string;
+  fatalRootError?: {
+    threadId: string;
+    turnId: string;
+    message: string;
+    codexErrorInfo?: CodexErrorInfo;
+  };
+  pendingRootTerminals?: Array<{
+    method: string;
+    notification: Record<string, unknown>;
+    transcriptDrain?: Promise<void>;
+  }>;
+  providerRun?: ProviderRunHandle;
+  providerOwned?: boolean;
+  /** Native turn whose root start was emitted; recovery reuses this state for a new native turn. */
+  rootStartEmittedTurnId?: string;
+  dispatchResponseObserved?: boolean;
+  providerOwnedCompletion?: Promise<void>;
+  providerOwnedCompletionResolve?: () => void;
+  /** Read-time lifecycle, separate from transcript finalization/admission. */
+  controlPhase?: 'completed' | 'failed';
   resolve: (result: CodexTurnResult) => void;
   reject: (error: Error) => void;
   items: Map<string, Record<string, unknown>>;
@@ -254,6 +410,14 @@ interface ImmediateTurnRestartRequest {
   turn: CodexTurnState;
   threadId: string;
   turnId: string;
+}
+
+interface ProviderRunState {
+  readonly run: ProviderRunHandle;
+  settled: boolean;
+  startEmitted: boolean;
+  lifecycleStartEmitted?: boolean;
+  mergedBindingEmitted?: boolean;
 }
 
 function readCodexTurnUsage(
@@ -363,7 +527,7 @@ const DEFERRED_TOOLS_CODE_MODE_DRAIN_MS = 250;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_INTERVAL_MS = 100;
 const CODEX_COMMAND_OUTPUT_UPDATE_MIN_CHARS = 16 * 1024;
 const CODEX_PROCESS_RECOVERY_MAX_ATTEMPTS = 3;
-const CODEX_PROCESS_RECOVERY_RETRY_DELAYS_MS = [0, 250, 750] as const;
+const CODEX_PROCESS_RECOVERY_RETRY_DELAYS_MS: readonly number[] = [0, 250, 750];
 
 function recoveryDelay(ms: number): Promise<void> {
   if (ms <= 0) {
@@ -476,6 +640,14 @@ function combineDeveloperInstructions(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isExpectedPromptCancellation(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === APPROVAL_REQUEST_RESOLVED ||
+      error.message === 'ask_user_cancelled')
+  );
 }
 
 function isCodexAppServerRequestTimeout(error: unknown): boolean {
@@ -708,6 +880,34 @@ function extractTurnId(result: unknown): string | null {
   }
   const turn = readRecord(result, 'turn');
   return turn ? (readString(turn, 'id') ?? null) : null;
+}
+
+function extractNativeTurn(result: unknown): Record<string, unknown> | null {
+  if (!isRecord(result)) {
+    return null;
+  }
+  return readRecord(result, 'turn');
+}
+
+function readNativeTurnStartedAtMs(
+  turn: Record<string, unknown>,
+): number | undefined {
+  const startedAtSeconds = readNumber(turn, 'startedAt');
+  return startedAtSeconds === undefined ? undefined : startedAtSeconds * 1000;
+}
+
+function readNativeTurnCompletionTiming(turn: Record<string, unknown>): {
+  completedAtMs?: number;
+  durationMs?: number;
+} {
+  const completedAtSeconds = readNumber(turn, 'completedAt');
+  const durationMs = readNumber(turn, 'durationMs');
+  return {
+    ...(completedAtSeconds === undefined
+      ? {}
+      : { completedAtMs: completedAtSeconds * 1000 }),
+    ...(durationMs === undefined ? {} : { durationMs }),
+  };
 }
 
 function extractThreadTurns(result: unknown): Record<string, unknown>[] {
@@ -2185,10 +2385,7 @@ function emitPendingDeferredCompletions(
 
 export class CodexAppServerClient implements CodexInteractiveOwner {
   private readonly inputGeneration = randomUUID();
-  private readonly steeringInputs = new Map<
-    string,
-    { threadId: string; turnId: string; pickedUp: boolean }
-  >();
+  private readonly steeringInputs = new Map<string, SteeringInputCorrelation>();
   private readonly cwd: string;
   private readonly onEvent: ChatEventEmitter;
   private notificationAdmissions: Promise<void>[] | null = null;
@@ -2249,6 +2446,18 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private readonly approvalSession?: ApprovalSessionHandle;
   private approvalMode: ApprovalMode;
   private readonly onAwaitingUser?: () => void;
+  private readonly onSteeringEligibilityChanged?: () => void;
+  private readonly onTurnLifecycleObservation?: (
+    observation: CodexTurnLifecycleObservation,
+  ) => void;
+  private readonly onIngestionLagChange?: (
+    change: CodexIngestionLagChange,
+  ) => void | Promise<void>;
+  private readonly onIngestionLagSample?: (
+    sample: CodexIngestionLagSample,
+  ) => void | Promise<void>;
+  private readonly onProviderEventDropped?: (drop: ProviderEventDrop) => void;
+  private readonly providerContractGuard?: CodexContractGuard;
   private readonly onProcessStarted?: (pid: number) => void;
   private readonly onProcessExit?: (details: {
     code: number | null;
@@ -2271,6 +2480,31 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     error?: string;
   }) => void;
   private readonly connection: CodexInteractiveTransport;
+  private providerRunGeneration: ProviderRunGeneration | null;
+  private readonly providerRuns = new Map<string, ProviderRunState>();
+  private readonly settledProviderRunKeys: string[] = [];
+  private readonly backgroundWorkRegistry: CodexBackgroundWorkRegistry;
+  private readonly backgroundWorkUnsubscribe: () => void;
+  private backgroundSnapshot: CodexBackgroundSnapshot;
+  private readonly backgroundPinnedProviderRuns = new Map<
+    string,
+    ProviderRunHandle
+  >();
+  private readonly backgroundReconciliationThreads = new Map<
+    string,
+    CodexBackgroundReconciliationToken
+  >();
+  private readonly backgroundWorkOwners = new Map<string, ProviderRunHandle>();
+  private readonly observedBackgroundFrames = new WeakSet<
+    Record<string, unknown>
+  >();
+  private backgroundNotificationDepth = 0;
+  private readonly resumedLiveRootAnchors = new Map<
+    string,
+    string | undefined
+  >();
+  private readonly completedResumeTurnKeys = new Set<string>();
+  private lastExecutionUserMessageId?: string;
   private readonly mcpStartupStates = new Map<
     string,
     Map<
@@ -2297,6 +2531,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private readonly outsideNotificationAdmissions = new Set<{
     owner: CodexAppServerClient | null;
     turn: CodexTurnState | null;
+    rejectTurn: ((error: Error) => void) | null;
     generation: number;
   }>();
   /**
@@ -2344,6 +2579,96 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private readonly hydratedSubagentThreadIds = new Set<string>();
   private readonly registeredSubagentThreadIds = new Set<string>();
   private readonly pendingRecoveryAbortControllers = new Set<AbortController>();
+  private readonly dynamicToolCalls = new Map<
+    JsonRpcId,
+    { params: DynamicToolCallParams; controller: AbortController }
+  >();
+  // Only terminal turns lacking a native completion need an open-row fallback.
+  private readonly stoppedDynamicToolCalls = new Map<
+    string,
+    { params: DynamicToolCallParams; text: string; synthetic: boolean }
+  >();
+
+  private dynamicToolKey(
+    threadId: string,
+    turnId: string,
+    callId: string,
+  ): string {
+    return JSON.stringify([threadId, turnId, callId]);
+  }
+
+  private rememberStoppedDynamicToolCall(
+    params: DynamicToolCallParams,
+    text: string,
+  ): void {
+    this.stoppedDynamicToolCalls.set(
+      this.dynamicToolKey(params.threadId, params.turnId, params.callId),
+      { params, text, synthetic: false },
+    );
+  }
+
+  private abortDynamicToolCalls(threadId?: string, turnId?: string): void {
+    for (const call of Array.from(this.dynamicToolCalls.values())) {
+      if (threadId !== undefined && call.params.threadId !== threadId) continue;
+      if (turnId !== undefined && call.params.turnId !== turnId) continue;
+      call.controller.abort();
+    }
+  }
+
+  private closeStoppedDynamicToolRows(
+    threadId?: string,
+    turnId?: string,
+  ): void {
+    for (const stopped of Array.from(this.stoppedDynamicToolCalls.values())) {
+      const { params } = stopped;
+      if (
+        stopped.synthetic ||
+        (threadId !== undefined && params.threadId !== threadId) ||
+        (turnId !== undefined && params.turnId !== turnId)
+      )
+        continue;
+      const item = this.activeTurn?.items.get(params.callId);
+      // Never rewrite a completed row. Earlier item frames have drained before
+      // this terminal fallback, so a provider completion always wins normally.
+      if (
+        !item ||
+        readString(item, 'type') !== 'dynamic_tool_call' ||
+        readString(item, 'status') === 'completed' ||
+        readString(item, 'status') === 'failed'
+      )
+        continue;
+      stopped.synthetic = true;
+      this.emitSyntheticCompleted(
+        params.callId,
+        {
+          ...item,
+          status: 'failed',
+          success: false,
+          content_items: [{ type: 'inputText', text: stopped.text }],
+        },
+        { thread_id: params.threadId, turn_id: params.turnId },
+      );
+    }
+  }
+
+  private hasSyntheticDynamicToolFailure(
+    params: Record<string, unknown>,
+    item: Record<string, unknown>,
+  ): boolean {
+    const threadId = readString(params, 'threadId');
+    const turnId = readString(params, 'turnId');
+    const callId = readString(item, 'id');
+    return Boolean(
+      threadId &&
+      turnId &&
+      callId &&
+      readString(item, 'type') === 'dynamicToolCall' &&
+      this.stoppedDynamicToolCalls.get(
+        this.dynamicToolKey(threadId, turnId, callId),
+      )?.synthetic,
+    );
+  }
+
   private readonly pendingDeferredToolResultIds = new Set<string>();
   private readonly pendingImmediateTurnRestartResultIds = new Set<string>();
   private immediateTurnRestartArmedTurnId?: string;
@@ -2365,6 +2690,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     chatId: string;
     sessionKey: string;
     initialThreadId?: string;
+    initialExecutionUserMessageId?: string;
     onEvent: ChatEventEmitter;
     getWindow: () => SendableBrowserWindow | null;
     extraEnv?: Record<string, string>;
@@ -2432,6 +2758,20 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     approvalSession?: ApprovalSessionHandle;
     approvalMode?: ApprovalMode;
     onAwaitingUser?: () => void;
+    /** Reports changes to steering inputs; the owner schedules any reaction. */
+    onSteeringEligibilityChanged?: () => void;
+    onTurnLifecycleObservation?: (
+      observation: CodexTurnLifecycleObservation,
+    ) => void;
+    onIngestionLagChange?: (
+      change: CodexIngestionLagChange,
+    ) => void | Promise<void>;
+    onIngestionLagSample?: (
+      sample: CodexIngestionLagSample,
+    ) => void | Promise<void>;
+    onProviderEventDropped?: (drop: ProviderEventDrop) => void;
+    /** Turn-state phase 43b: reports notifications the lifecycle table lacks. */
+    providerContractGuard?: CodexContractGuard;
     onProcessStarted?: (pid: number) => void;
     onProcessExit?: (details: {
       code: number | null;
@@ -2458,11 +2798,26 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     this.sessionKey = opts.sessionKey;
     this.initialThreadId = opts.initialThreadId;
     this.threadId = opts.initialThreadId;
+    this.backgroundWorkRegistry = createCodexBackgroundWorkRegistry({
+      rootThreadId: () => this.threadId,
+    });
+    this.backgroundSnapshot = this.backgroundWorkRegistry.snapshot();
+    this.backgroundWorkUnsubscribe = this.backgroundWorkRegistry.subscribe(
+      (snapshot) => this.observeBackgroundSnapshot(snapshot),
+    );
+    this.lastExecutionUserMessageId = opts.initialExecutionUserMessageId;
+    this.providerRunGeneration = createProviderRunGeneration({
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+    });
     this.hasUnknownPlanCollaborationMode = Boolean(opts.initialThreadId);
     this.onEvent = (data): void | Promise<void> => {
       const turnAtEmission = this.activeTurn;
       const generationAtEmission = this.turnStartGeneration;
-      const admission = opts.onEvent(data);
+      const providerEvent = this.attachProviderRunProvenance(data);
+      if (!providerEvent) return;
+      const admission = opts.onEvent(providerEvent);
       if (
         admission !== null &&
         typeof admission === 'object' &&
@@ -2477,21 +2832,38 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           const token: {
             owner: CodexAppServerClient | null;
             turn: CodexTurnState | null;
+            rejectTurn: ((error: Error) => void) | null;
             generation: number;
           } = {
             owner: this,
             turn: turnAtEmission,
+            rejectTurn: turnAtEmission?.reject ?? null,
             generation: generationAtEmission,
           };
           this.outsideNotificationAdmissions.add(token);
           void admission.then(
-            () => token.owner?.settleOutsideNotificationAdmission(token, false),
-            (error: unknown) =>
-              token.owner?.settleOutsideNotificationAdmission(
-                token,
-                true,
-                error,
-              ),
+            () => {
+              if (token.owner) {
+                token.owner.settleOutsideNotificationAdmission(token, false);
+              } else {
+                token.rejectTurn = null;
+              }
+            },
+            (error: unknown) => {
+              if (token.owner) {
+                token.owner.settleOutsideNotificationAdmission(
+                  token,
+                  true,
+                  error,
+                );
+              } else {
+                const rejectTurn = token.rejectTurn;
+                token.rejectTurn = null;
+                rejectTurn?.(
+                  error instanceof Error ? error : new Error(String(error)),
+                );
+              }
+            },
           );
         }
         return admission;
@@ -2543,6 +2915,12 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     this.approvalSession = opts.approvalSession;
     this.approvalMode = opts.approvalMode ?? 'ask';
     this.onAwaitingUser = opts.onAwaitingUser;
+    this.onSteeringEligibilityChanged = opts.onSteeringEligibilityChanged;
+    this.onTurnLifecycleObservation = opts.onTurnLifecycleObservation;
+    this.onIngestionLagChange = opts.onIngestionLagChange;
+    this.onIngestionLagSample = opts.onIngestionLagSample;
+    this.onProviderEventDropped = opts.onProviderEventDropped;
+    this.providerContractGuard = opts.providerContractGuard;
     this.onProcessStarted = opts.onProcessStarted;
     this.onProcessExit = opts.onProcessExit;
     this.onProcessError = opts.onProcessError;
@@ -2560,6 +2938,705 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         onProcessRecovery: this.onProcessRecovery,
       },
     });
+  }
+
+  private recordProviderEventDropped(drop: ProviderEventDrop): void {
+    try {
+      this.onProviderEventDropped?.(drop);
+    } catch {
+      // Diagnostics must never change app-server event delivery decisions.
+    }
+  }
+
+  private providerRunKey(threadId: string, turnId: string): string {
+    return JSON.stringify([threadId, turnId]);
+  }
+
+  private retainedRootExecutionAnchorKey(
+    threadId: string,
+    turnId: string,
+  ): string {
+    return retainedRootExecutionAnchorKey(
+      this.projectId,
+      this.worktreeId,
+      this.chatId,
+      threadId,
+      turnId,
+    );
+  }
+
+  private ensureProviderRunGeneration(): ProviderRunGeneration {
+    if (!this.providerRunGeneration) {
+      this.providerRunGeneration = createProviderRunGeneration({
+        projectId: this.projectId,
+        worktreeId: this.worktreeId,
+        chatId: this.chatId,
+      });
+    }
+    return this.providerRunGeneration;
+  }
+
+  private retireProviderRunGeneration(
+    replace: boolean,
+    clearExecutionAnchor = false,
+  ): void {
+    for (const run of Array.from(this.backgroundPinnedProviderRuns.values())) {
+      unpinProviderRun(run);
+    }
+    this.backgroundPinnedProviderRuns.clear();
+    this.backgroundWorkOwners.clear();
+    if (this.providerRunGeneration) {
+      retireProviderRunGeneration(this.providerRunGeneration);
+    }
+    this.providerRunGeneration = replace
+      ? createProviderRunGeneration({
+          projectId: this.projectId,
+          worktreeId: this.worktreeId,
+          chatId: this.chatId,
+        })
+      : null;
+    this.providerRuns.clear();
+    this.settledProviderRunKeys.length = 0;
+    this.resumedLiveRootAnchors.clear();
+    this.completedResumeTurnKeys.clear();
+    if (this.activeTurn) this.activeTurn.providerRun = undefined;
+    if (clearExecutionAnchor) this.lastExecutionUserMessageId = undefined;
+  }
+
+  private emitTurnLifecycleObservation(
+    observation: CodexTurnLifecycleObservation,
+  ): void {
+    try {
+      this.onTurnLifecycleObservation?.(observation);
+    } catch {
+      // Shadow tracking is observational only and must never gate provider work.
+    }
+  }
+
+  private bindStartIdentity(turn: CodexTurnState, turnId: string): void {
+    turn.turnId = turnId;
+    const key = this.providerRunKey(turn.rootThreadId, turnId);
+    if (turn.allowResumeMerge === false) return;
+    if (this.completedResumeTurnKeys.has(key)) return;
+    if (!this.resumedLiveRootAnchors.has(key)) return;
+    const anchor = this.resumedLiveRootAnchors.get(key);
+    if (!anchor) {
+      turn.unresolvedMergeTurnIds ??= new Set();
+      if (!turn.unresolvedMergeTurnIds.has(turnId)) {
+        turn.unresolvedMergeTurnIds.add(turnId);
+        logMainProcessWarn('Codex resumed start merge unresolved', {
+          code: 'codex_start_merge_unresolved',
+          threadId: turn.rootThreadId,
+          turnId,
+        });
+      }
+      return;
+    }
+    // A known-live resumed native turn can accept another prompt even when it
+    // happens to share the submitted message's existing execution anchor.
+    // The marker still matters: the tracker can dedupe an already-known
+    // binding while recognizing that this start joined provider-owned work.
+    // The merge is recorded for the shadow binding only. Events keep the
+    // dispatched anchor that the host's turn owns; re-anchoring canonical
+    // turn membership to the joined turn is the reducer's job (phase 35).
+    turn.mergedResumeAnchor = anchor;
+  }
+
+  private acceptStartResponse(
+    turn: CodexTurnState,
+    turnId: string,
+    nativeTurn?: Record<string, unknown>,
+  ): void {
+    this.bindStartIdentity(turn, turnId);
+    const runState = this.registerProviderRunForTurn(
+      turn,
+      turnId,
+      turn.providerOwned ? 'provider_owned' : 'dispatched',
+    );
+    this.observeTurnStarted(turn, turnId, runState, nativeTurn);
+    this.processPendingRootTerminals(turn);
+  }
+
+  private observeTurnStarted(
+    turn: CodexTurnState,
+    turnId: string,
+    runState: ProviderRunState | undefined,
+    nativeTurn?: Record<string, unknown>,
+  ): void {
+    const merged =
+      turn.mergedResumeAnchor !== undefined &&
+      turn.allowResumeMerge !== false &&
+      turn.lifecycleOrigin !== 'restart' &&
+      Boolean(turn.submissionId || turn.clientUserMessageId);
+    turn.lifecycleStartedTurnIds ??= new Set();
+    turn.lifecycleBindingKeys ??= new Set();
+    const bindingKey = `${turnId}:${turn.submissionId ?? ''}:${turn.clientUserMessageId ?? ''}`;
+    const startedAtMs = nativeTurn
+      ? readNativeTurnStartedAtMs(nativeTurn)
+      : undefined;
+    const nativeTiming = startedAtMs === undefined ? {} : { startedAtMs };
+    if (turn.lifecycleStartedTurnIds.has(turnId)) {
+      if (merged && !turn.lifecycleBindingKeys.has(bindingKey)) {
+        turn.lifecycleBindingKeys.add(bindingKey);
+        if (runState) runState.mergedBindingEmitted = true;
+        this.emitTurnLifecycleObservation({
+          type: 'turn-started',
+          threadId: turn.rootThreadId,
+          turnId,
+          origin: 'user',
+          ...(turn.submissionId ? { submissionId: turn.submissionId } : {}),
+          ...(turn.userMessageId ? { userMessageId: turn.userMessageId } : {}),
+          ...nativeTiming,
+          merged: true,
+        });
+      }
+      return;
+    }
+    turn.lifecycleStartedTurnIds.add(turnId);
+    if (runState) runState.lifecycleStartEmitted = true;
+    const origin = merged
+      ? 'user'
+      : (turn.lifecycleOrigin ?? (turn.providerOwned ? 'autonomous' : 'user'));
+    this.emitTurnLifecycleObservation({
+      type: 'turn-started',
+      threadId: turn.rootThreadId,
+      turnId,
+      origin,
+      ...(origin === 'user' && turn.submissionId
+        ? { submissionId: turn.submissionId }
+        : {}),
+      ...(origin === 'user' && turn.userMessageId
+        ? { userMessageId: turn.userMessageId }
+        : {}),
+      ...nativeTiming,
+      ...(merged ? { merged: true } : {}),
+    });
+    if (merged) {
+      turn.lifecycleBindingKeys.add(bindingKey);
+      if (runState) runState.mergedBindingEmitted = true;
+    }
+  }
+
+  private processPendingRootTerminals(turn: CodexTurnState): void {
+    const pending = turn.pendingRootTerminals;
+    if (!pending || !turn.turnId) return;
+    turn.pendingRootTerminals = [];
+    for (const entry of pending) {
+      const params = readRecord(entry.notification, 'params');
+      const completed = params ? readRecord(params, 'turn') : undefined;
+      const eventTurnId = completed
+        ? readString(completed, 'id')
+        : params
+          ? readString(params, 'turnId')
+          : undefined;
+      const threadId = params ? readString(params, 'threadId') : undefined;
+      if (
+        (threadId === undefined || threadId === turn.rootThreadId) &&
+        eventTurnId === turn.turnId
+      ) {
+        const apply = async (): Promise<void> => {
+          if (this.activeTurn === turn) {
+            await this.handleConnectionNotification(
+              entry.method,
+              entry.notification,
+            );
+          }
+        };
+        const rejectDrain = (error: unknown): void => {
+          if (this.activeTurn === turn) {
+            this.rejectActiveTurn(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          }
+        };
+        if (entry.transcriptDrain) {
+          void entry.transcriptDrain.then(apply).catch(rejectDrain);
+        } else {
+          void apply().catch(rejectDrain);
+        }
+      } else {
+        this.recordRootRunDrop(
+          entry.method,
+          'turn_id_mismatch',
+          threadId,
+          eventTurnId,
+        );
+      }
+    }
+  }
+
+  private registerProviderRunForTurn(
+    turn: CodexTurnState,
+    turnId: string,
+    origin: ProviderRunHandle['origin'],
+  ): ProviderRunState | undefined {
+    if (!turn.rootThreadId || !turnId) return undefined;
+    const key = this.providerRunKey(turn.rootThreadId, turnId);
+    const existing = this.providerRuns.get(key);
+    if (existing) {
+      if (!existing.settled && turn.providerRun === existing.run) {
+        return existing;
+      }
+      return undefined;
+    }
+    const executionUserMessageId = turn.executionUserMessageId;
+    if (!executionUserMessageId) return undefined;
+    const run = registerProviderRun(this.ensureProviderRunGeneration(), {
+      threadId: turn.rootThreadId,
+      turnId,
+      executionUserMessageId,
+      origin,
+    });
+    const state: ProviderRunState = {
+      run,
+      settled: false,
+      startEmitted: turn.rootStartEmittedTurnId === turnId,
+    };
+    turn.turnId = turnId;
+    turn.providerRun = run;
+    this.providerRuns.set(key, state);
+    this.observeBackgroundSnapshot(this.backgroundWorkRegistry.snapshot());
+    // Items can precede the asynchronous start-response continuation. Bind
+    // their observed identities too, without retaining any extra output.
+    for (const item of Array.from(turn.items.values())) {
+      const itemId = readString(item, 'id');
+      const itemType = readString(item, 'type');
+      if (itemId && itemType) observeProviderRunItem(run, itemId, itemType);
+    }
+    this.lastExecutionUserMessageId = executionUserMessageId;
+    if (!turn.unresolvedMergeTurnIds?.has(turnId)) {
+      rememberRootExecutionAnchor(
+        this.retainedRootExecutionAnchorKey(turn.rootThreadId, turnId),
+        executionUserMessageId,
+      );
+    }
+    return state;
+  }
+
+  private settleProviderRunForTurn(turn: CodexTurnState): void {
+    turn.providerOwnedCompletionResolve?.();
+    turn.providerOwnedCompletionResolve = undefined;
+    const run = turn.providerRun;
+    if (!run) return;
+    const key = this.providerRunKey(run.threadId, run.turnId);
+    const state = this.providerRuns.get(key);
+    if (!state || state.run !== run || state.settled) return;
+    state.settled = true;
+    settleProviderRun(run);
+    this.settledProviderRunKeys.push(key);
+    this.pruneSettledProviderRunCache();
+  }
+
+  private pruneSettledProviderRunCache(): void {
+    const countUnpinned = (): number =>
+      this.settledProviderRunKeys.filter(
+        (key) => !this.backgroundPinnedProviderRuns.has(key),
+      ).length;
+    while (countUnpinned() > 64) {
+      const evictIndex = this.settledProviderRunKeys.findIndex(
+        (key) => !this.backgroundPinnedProviderRuns.has(key),
+      );
+      if (evictIndex < 0) return;
+      const [evictedKey] = this.settledProviderRunKeys.splice(evictIndex, 1);
+      if (evictedKey) this.providerRuns.delete(evictedKey);
+    }
+  }
+
+  private backgroundOwnerRun(
+    work: CodexNativeBackgroundWork,
+    snapshot: CodexBackgroundSnapshot,
+  ): ProviderRunHandle | undefined {
+    let threadId = work.kind === 'child' ? work.parentThreadId : work.threadId;
+    let turnId = work.spawnedByTurnId;
+    const visited = new Set<string>();
+    const children = new Map(
+      snapshot.work
+        .filter(
+          (
+            entry,
+          ): entry is Extract<CodexNativeBackgroundWork, { kind: 'child' }> =>
+            entry.kind === 'child',
+        )
+        .map((entry) => [entry.threadId, entry]),
+    );
+
+    while (threadId !== snapshot.rootThreadId) {
+      if (visited.has(threadId)) return undefined;
+      visited.add(threadId);
+      const parent = children.get(threadId);
+      if (!parent) return undefined;
+      turnId = parent.spawnedByTurnId;
+      threadId = parent.parentThreadId;
+    }
+    if (!turnId) return undefined;
+    return this.providerRuns.get(
+      this.providerRunKey(snapshot.rootThreadId, turnId),
+    )?.run;
+  }
+
+  private observeBackgroundSnapshot(snapshot: CodexBackgroundSnapshot): void {
+    this.backgroundSnapshot = snapshot;
+    const desired = new Map<string, ProviderRunHandle>();
+    const liveWorkIds = new Set<string>();
+    for (const work of snapshot.work) {
+      liveWorkIds.add(work.id);
+      const resolvedRun = this.backgroundOwnerRun(work, snapshot);
+      if (resolvedRun) this.backgroundWorkOwners.set(work.id, resolvedRun);
+      const run = resolvedRun ?? this.backgroundWorkOwners.get(work.id);
+      if (!run || run.generation !== this.providerRunGeneration) continue;
+      const key = this.providerRunKey(run.threadId, run.turnId);
+      desired.set(key, run);
+    }
+    for (const workId of Array.from(this.backgroundWorkOwners.keys())) {
+      if (!liveWorkIds.has(workId)) this.backgroundWorkOwners.delete(workId);
+    }
+
+    for (const [key, run] of Array.from(desired)) {
+      if (this.backgroundPinnedProviderRuns.has(key)) continue;
+      pinProviderRun(run);
+      this.backgroundPinnedProviderRuns.set(key, run);
+    }
+
+    if (snapshot.reconciling || this.backgroundNotificationDepth > 0) return;
+    this.releaseUnneededBackgroundRunPins(desired);
+  }
+
+  private releaseUnneededBackgroundRunPins(
+    desired: ReadonlyMap<string, ProviderRunHandle>,
+  ): void {
+    for (const [key, run] of Array.from(this.backgroundPinnedProviderRuns)) {
+      if (desired.has(key)) continue;
+      unpinProviderRun(run);
+      this.backgroundPinnedProviderRuns.delete(key);
+    }
+    this.pruneSettledProviderRunCache();
+  }
+
+  private flushBackgroundRunPins(): void {
+    const snapshot = this.backgroundSnapshot;
+    if (snapshot.reconciling) return;
+    const desired = new Map<string, ProviderRunHandle>();
+    const liveWorkIds = new Set<string>();
+    for (const work of snapshot.work) {
+      liveWorkIds.add(work.id);
+      const resolvedRun = this.backgroundOwnerRun(work, snapshot);
+      if (resolvedRun) this.backgroundWorkOwners.set(work.id, resolvedRun);
+      const run = resolvedRun ?? this.backgroundWorkOwners.get(work.id);
+      if (!run || run.generation !== this.providerRunGeneration) continue;
+      desired.set(this.providerRunKey(run.threadId, run.turnId), run);
+    }
+    for (const workId of Array.from(this.backgroundWorkOwners.keys())) {
+      if (!liveWorkIds.has(workId)) this.backgroundWorkOwners.delete(workId);
+    }
+    this.releaseUnneededBackgroundRunPins(desired);
+  }
+
+  private beginBackgroundNotificationFrame(): void {
+    this.backgroundNotificationDepth += 1;
+  }
+
+  private finishBackgroundNotificationFrame(
+    notification: Record<string, unknown>,
+  ): void {
+    this.observedBackgroundFrames.delete(notification);
+    this.backgroundNotificationDepth = Math.max(
+      0,
+      this.backgroundNotificationDepth - 1,
+    );
+    if (this.backgroundNotificationDepth === 0) this.flushBackgroundRunPins();
+  }
+
+  private retireBackgroundWorkEpoch(): void {
+    const snapshot = this.backgroundWorkRegistry.snapshot();
+    if (snapshot.work.length > 0 || snapshot.reconciling) {
+      logMainProcessWarn('Codex background work abandoned', {
+        code: 'codex_background_work_abandoned',
+        childCount: snapshot.work.filter((work) => work.kind === 'child')
+          .length,
+        terminalCount: snapshot.work.filter((work) => work.kind === 'terminal')
+          .length,
+        reconciliationPending: snapshot.reconciling,
+      });
+    }
+    for (const run of Array.from(this.backgroundPinnedProviderRuns.values())) {
+      unpinProviderRun(run);
+    }
+    this.backgroundPinnedProviderRuns.clear();
+    this.backgroundWorkOwners.clear();
+    this.backgroundReconciliationThreads.clear();
+    this.backgroundWorkRegistry.retireEpoch();
+  }
+
+  private async reconcileBackgroundThread(threadId: string): Promise<void> {
+    if (this.disposed || this.backgroundReconciliationThreads.has(threadId))
+      return;
+    const token = this.backgroundWorkRegistry.beginReconciliation(threadId);
+    this.backgroundReconciliationThreads.set(threadId, token);
+    try {
+      const records = await readAllCodexBackgroundTerminalPages(
+        (params) => this.request('thread/backgroundTerminals/list', params),
+        threadId,
+      );
+      this.backgroundWorkRegistry.commitTerminalPages(token, records);
+    } catch {
+      this.backgroundWorkRegistry.failReconciliation(token);
+      logMainProcessWarn('Codex background terminal reconciliation failed', {
+        code: 'codex_background_terminal_reconciliation_failed',
+        threadId,
+      });
+    } finally {
+      if (this.backgroundReconciliationThreads.get(threadId) === token) {
+        this.backgroundReconciliationThreads.delete(threadId);
+      }
+    }
+  }
+
+  private reconcileTerminalEvidence(snapshot: CodexBackgroundSnapshot): void {
+    const liveChildThreadIds = new Set(
+      snapshot.work
+        .filter(
+          (
+            work,
+          ): work is Extract<CodexNativeBackgroundWork, { kind: 'child' }> =>
+            work.kind === 'child',
+        )
+        .map((work) => work.threadId),
+    );
+    const evidenceThreadIds = new Set<string>();
+    for (const work of snapshot.work) {
+      if (
+        work.kind !== 'terminal' ||
+        !work.processId ||
+        (work.threadId !== snapshot.rootThreadId &&
+          !liveChildThreadIds.has(work.threadId))
+      ) {
+        continue;
+      }
+      evidenceThreadIds.add(work.threadId);
+    }
+    for (const threadId of Array.from(evidenceThreadIds)) {
+      void this.reconcileBackgroundThread(threadId);
+    }
+  }
+
+  private observeResumedBackgroundTerminalItems(
+    threadId: string,
+    response: unknown,
+  ): void {
+    const finishedStatuses = new Set([
+      'completed',
+      'failed',
+      'declined',
+      'interrupted',
+      'canceled',
+      'cancelled',
+      'stopped',
+      'killed',
+    ]);
+    for (const turn of extractThreadTurns(response)) {
+      const turnId = readString(turn, 'id');
+      if (!turnId) continue;
+      if (readString(turn, 'status') !== 'inProgress') {
+        // A command still running from a closed turn already outlived that
+        // turn, so the registry must not replay it as foreground.
+        this.backgroundWorkRegistry.observe('turn/completed', {
+          threadId,
+          turn: { id: turnId },
+        });
+      }
+      for (const item of readArray(turn, 'items').filter(isRecord)) {
+        const itemType = readString(item, 'type')
+          ?.replace(/[_-]/g, '')
+          .toLowerCase();
+        const processId =
+          readString(item, 'processId') ?? readString(item, 'process_id');
+        const status = readString(item, 'status')
+          ?.replace(/[_-]/g, '')
+          .toLowerCase();
+        if (
+          itemType !== 'commandexecution' ||
+          !processId ||
+          (status !== undefined && finishedStatuses.has(status))
+        ) {
+          continue;
+        }
+        this.backgroundWorkRegistry.observe('item/started', {
+          threadId,
+          turnId,
+          item,
+        });
+      }
+    }
+  }
+
+  private reconcileResumedBackgroundWork(threadId: string): void {
+    const snapshot = this.backgroundWorkRegistry.snapshot();
+    const children = snapshot.work.filter(
+      (work): work is Extract<CodexNativeBackgroundWork, { kind: 'child' }> =>
+        work.kind === 'child',
+    );
+    const relevantThreadIds = new Set([threadId]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const child of children) {
+        if (
+          relevantThreadIds.has(child.parentThreadId) &&
+          !relevantThreadIds.has(child.threadId)
+        ) {
+          relevantThreadIds.add(child.threadId);
+          expanded = true;
+        }
+      }
+    }
+
+    for (const work of snapshot.work) {
+      if (
+        work.kind === 'terminal' &&
+        this.backgroundWorkOwners.get(work.id)?.threadId === threadId
+      ) {
+        relevantThreadIds.add(work.threadId);
+      }
+    }
+    const hasRelevantWork = snapshot.work.some((work) =>
+      relevantThreadIds.has(work.threadId),
+    );
+    if (!hasRelevantWork) return;
+
+    for (const candidateThreadId of Array.from(relevantThreadIds)) {
+      void this.reconcileBackgroundThread(candidateThreadId);
+    }
+  }
+
+  private isRootTerminalFrame(
+    method: string,
+    notification: Record<string, unknown>,
+  ): boolean {
+    if (method !== 'turn/completed') return false;
+    const params = readRecord(notification, 'params');
+    if (!params) return false;
+    const threadId = readString(params, 'threadId') ?? this.threadId;
+    if (!threadId || threadId !== this.threadId) return false;
+    return Boolean(readRecord(params, 'turn'));
+  }
+
+  private handleRawBackgroundNotification(
+    method: string,
+    notification: Record<string, unknown>,
+  ): boolean {
+    if (this.observedBackgroundFrames.has(notification)) return false;
+    this.observedBackgroundFrames.add(notification);
+    this.beginBackgroundNotificationFrame();
+    const params = readRecord(notification, 'params');
+    this.backgroundWorkRegistry.observe(method, params);
+    if (this.isRootTerminalFrame(method, notification)) {
+      this.reconcileTerminalEvidence(this.backgroundWorkRegistry.snapshot());
+    }
+    return true;
+  }
+
+  private recordRootRunDrop(
+    method: string,
+    reason: string,
+    threadId: string | undefined,
+    turnId: string | undefined,
+    itemId?: string,
+  ): void {
+    const isOutput = method.startsWith('item/') || method.startsWith('item.');
+    const params = {
+      ...(threadId ? { threadId } : {}),
+      ...(turnId ? { turnId } : {}),
+      ...(itemId ? { itemId } : {}),
+    };
+    this.recordProviderEventDropped({
+      providerType: 'codex',
+      gate: isOutput
+        ? 'codex_root_output_stale'
+        : 'codex_root_completion_stale',
+      reason,
+      data: { method, params },
+      ...(threadId ? { providerThreadId: threadId } : {}),
+      ...(turnId ? { providerTurnId: turnId } : {}),
+    });
+  }
+
+  private attachProviderRunProvenance(data: unknown): unknown {
+    if (!isRecord(data) || data.type !== 'codex' || !isRecord(data.event)) {
+      return data;
+    }
+    const event = data.event;
+    const threadId = readString(event, 'thread_id');
+    const turnId = readString(event, 'turn_id');
+    if (!threadId || !turnId) return data;
+    const key = this.providerRunKey(threadId, turnId);
+    const state = this.providerRuns.get(key);
+    if (!state) {
+      // Runs without a currently registered tuple retain the legacy ordinary
+      // provider path. Only a known settled tuple receives bounded late-event
+      // authority; unknown work has no trusted provenance to filter here.
+      return data;
+    }
+    if (state.run.generation !== this.providerRunGeneration) {
+      if (!state.settled) {
+        attachProviderRunEvent(data, state.run, 'running');
+        return data;
+      }
+      this.recordRootRunDrop(
+        typeof event.type === 'string' ? event.type : 'turn/completed',
+        'retired_generation',
+        threadId,
+        turnId,
+        isRecord(event.item) ? readString(event.item, 'id') : undefined,
+      );
+      return null;
+    }
+
+    if (state.settled) {
+      if (event.type !== 'item.completed' || !isRecord(event.item)) {
+        this.recordRootRunDrop(
+          typeof event.type === 'string' ? event.type : 'turn/completed',
+          'run_already_settled',
+          threadId,
+          turnId,
+          isRecord(event.item) ? readString(event.item, 'id') : undefined,
+        );
+        return null;
+      }
+      attachProviderRunEvent(data, state.run, 'late');
+      const classification = classifyProviderRunEvent(data, {
+        projectId: this.projectId,
+        worktreeId: this.worktreeId,
+        chatId: this.chatId,
+      });
+      if (classification.kind !== 'transcript_only') {
+        this.recordRootRunDrop(
+          'item/completed',
+          classification.kind === 'reject'
+            ? classification.reason
+            : 'unsupported_late_event',
+          threadId,
+          turnId,
+          readString(event.item, 'id'),
+        );
+        return null;
+      }
+      return data;
+    }
+
+    if (
+      (event.type === 'item.started' ||
+        event.type === 'item.updated' ||
+        event.type === 'item.completed') &&
+      isRecord(event.item)
+    ) {
+      const itemId = readString(event.item, 'id');
+      const itemType = readString(event.item, 'type');
+      if (itemId && itemType) {
+        observeProviderRunItem(state.run, itemId, itemType);
+      }
+    }
+    attachProviderRunEvent(data, state.run, 'running');
+    return data;
   }
 
   async startTurn(
@@ -2589,12 +3666,20 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         );
       }
       this.assertTurnStartNotCancelled(turnStartGeneration);
+      await this.waitForTurnSlot(
+        turnStartGeneration,
+        turnStartAbortController.signal,
+      );
       await this.ensureThread(
         opts,
         turnStartGeneration,
         turnStartAbortController.signal,
       );
       this.assertTurnStartNotCancelled(turnStartGeneration);
+      await this.waitForTurnSlot(
+        turnStartGeneration,
+        turnStartAbortController.signal,
+      );
     } catch (error) {
       if (this.turnStartCancellation?.generation === turnStartGeneration) {
         throw this.turnStartCancellation.error;
@@ -2650,6 +3735,21 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         hostOwnsAdmission: opts.beforeAdmission !== undefined,
         rootThreadId: threadId,
         turnId: '',
+        ...(opts.executionUserMessageId
+          ? { executionUserMessageId: opts.executionUserMessageId }
+          : {}),
+        ...(opts.submissionId ? { submissionId: opts.submissionId } : {}),
+        ...(opts.userMessageId
+          ? { userMessageId: opts.userMessageId }
+          : opts.clientUserMessageId &&
+              opts.clientUserMessageId !== opts.submissionId
+            ? { userMessageId: opts.clientUserMessageId }
+            : {}),
+        ...(opts.clientUserMessageId
+          ? { clientUserMessageId: opts.clientUserMessageId }
+          : {}),
+        lifecycleOrigin: 'user',
+        allowResumeMerge: true,
         resolve,
         reject,
         items: new Map(),
@@ -2664,6 +3764,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
     this.settledTurnItems = null;
     this.activeTurn = active;
+    this.onSteeringEligibilityChanged?.();
     void result.catch(() => {}); // prevent floating rejection on async process failure
 
     const reasoningModel =
@@ -2718,6 +3819,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       const startParams: AppServerRequestParams<'turn/start'> = {
         threadId,
         input: [{ type: 'text', text: opts.text, text_elements: [] }],
+        ...(opts.clientUserMessageId
+          ? { clientUserMessageId: opts.clientUserMessageId }
+          : {}),
         cwd: opts.cwd,
         approvalPolicy: codexApprovalPolicyFor(approvalMode),
         sandboxPolicy: codexSandboxPolicyFor(approvalMode, opts.cwd),
@@ -2737,6 +3841,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       this.assertNotDisposed();
       const response = await this.request('turn/start', startParams);
       this.recordAppliedCollaborationMode(startParams);
+      const nativeTurn = extractNativeTurn(response);
       const turnId = extractTurnId(response);
       if (this.disposed) {
         throw new Error('session_destroyed');
@@ -2745,8 +3850,10 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         throw new Error('Codex app-server returned a turn without an id');
       }
       opts.onAdmission?.();
-      if (this.activeTurn) {
-        this.activeTurn.turnId = turnId;
+      if (this.activeTurn === active) {
+        active.dispatchResponseObserved = true;
+        this.acceptStartResponse(active, turnId, nativeTurn ?? undefined);
+        this.onSteeringEligibilityChanged?.();
       }
       let restartRequest: ImmediateTurnRestartRequest | null = null;
       let turnResult: CodexTurnResult;
@@ -2831,6 +3938,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       }
       if (this.activeTurn === active) {
         this.activeTurn = null;
+        this.onSteeringEligibilityChanged?.();
       }
       throw error instanceof Error ? error : new Error(String(error));
     }
@@ -2854,6 +3962,28 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
   getThreadId(): string | undefined {
     return this.threadId;
+  }
+
+  getIngestionLag(): CodexIngestionLagSnapshot | undefined {
+    return this.connection.ingestionLag();
+  }
+
+  handleIngestionLagChange(change: CodexIngestionLagChange): void {
+    try {
+      const report = this.onIngestionLagChange?.(change);
+      if (report) void report.catch(() => undefined);
+    } catch {
+      // Diagnostics must never affect app-server notification admission.
+    }
+  }
+
+  handleIngestionLagSample(sample: CodexIngestionLagSample): void {
+    try {
+      const report = this.onIngestionLagSample?.(sample);
+      if (report) void report.catch(() => undefined);
+    } catch {
+      // Observational samples must never affect app-server notification admission.
+    }
   }
 
   async reloadMcpServers(): Promise<void> {
@@ -2886,10 +4016,45 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     text: string,
     clientUserMessageId?: string,
   ): Promise<boolean> {
-    this.assertNotDisposed();
+    const outcome = await this.steerActiveTurnOutcome(
+      text,
+      clientUserMessageId,
+    );
+    if (outcome.kind === 'failed') throw outcome.error;
+    return outcome.kind === 'steered';
+  }
+
+  private async steerActiveTurnOutcome(
+    text: string,
+    clientUserMessageId?: string,
+    softTimeout?: { onLateResponse: (outcome: CodexLateSteerResponse) => void },
+    target?: SteeringTarget,
+    shadowBinding?: { submissionId?: string; userMessageId?: string },
+  ): Promise<
+    | { kind: 'steered' }
+    | { kind: 'refused'; refusal: ChatInputRefusal }
+    | { kind: 'pending' }
+    | { kind: 'failed'; error: unknown; failure: ChatInputDeliveryFailure }
+  > {
     const threadId = this.threadId;
-    const turnId = this.activeTurn?.turnId;
-    if (!threadId || !turnId) return false;
+    const turnId = this.activeTurn?.controlPhase
+      ? undefined
+      : this.activeTurn?.turnId;
+    if (
+      target &&
+      (this.disposed ||
+        !threadId ||
+        !turnId ||
+        target.sessionId !== threadId ||
+        target.turnId !== turnId)
+    )
+      return {
+        kind: 'refused',
+        refusal: chatInputRefusal('no-active-turn'),
+      };
+    this.assertNotDisposed();
+    if (!threadId || !turnId)
+      return { kind: 'refused', refusal: chatInputRefusal('not-steerable') };
     if (clientUserMessageId && this.steeringInputs.size >= 1024) {
       for (const [id, input] of Array.from(this.steeringInputs)) {
         if (input.pickedUp) {
@@ -2899,13 +4064,24 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       }
       // Retain unresolved correlations. A rejected admission can stay in the
       // host queue without risking a second delivery of an uncertain input.
-      if (this.steeringInputs.size >= 1024) return false;
+      if (this.steeringInputs.size >= 1024)
+        return {
+          kind: 'refused',
+          refusal: chatInputRefusal('delivery-backlog'),
+        };
     }
     if (clientUserMessageId)
       this.steeringInputs.set(clientUserMessageId, {
         threadId,
         turnId,
         pickedUp: false,
+        ...(shadowBinding?.submissionId
+          ? { submissionId: shadowBinding.submissionId }
+          : {}),
+        ...(shadowBinding?.userMessageId
+          ? { userMessageId: shadowBinding.userMessageId }
+          : {}),
+        ...(softTimeout ? { onLateResponse: softTimeout.onLateResponse } : {}),
       });
     let expectedTurnId = turnId;
     if (__CANOPY_E2E__) {
@@ -2913,70 +4089,107 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       if (staleTurnId) expectedTurnId = staleTurnId;
     }
     try {
-      await this.request('turn/steer', {
-        threadId,
-        expectedTurnId,
-        ...(clientUserMessageId ? { clientUserMessageId } : {}),
-        input: [{ type: 'text', text, text_elements: [] }],
-      });
+      await this.request(
+        'turn/steer',
+        {
+          threadId,
+          expectedTurnId,
+          ...(clientUserMessageId ? { clientUserMessageId } : {}),
+          input: [{ type: 'text', text, text_elements: [] }],
+        },
+        softTimeout && clientUserMessageId ? { softTimeout } : undefined,
+      );
     } catch (error) {
-      // v0.153.0 reports these admission rejections as English JSON-RPC
-      // errors (turn_processor.rs). They prove no input was submitted, so
-      // the ordinary send queue can safely retry after the turn settles.
-      // Transport/unknown errors do not prove rejection and must propagate.
+      // Internal (uncorrelated) steers keep propagating every error.
+      if (!clientUserMessageId) throw error;
       if (
-        clientUserMessageId &&
+        softTimeout &&
         error instanceof Error &&
-        (error.message === 'no active turn to steer' ||
-          /^expected active turn id `[^`]+` but found `[^`]+`$/.test(
-            error.message,
-          ) ||
-          error.message === 'cannot steer a compact turn' ||
-          error.message === 'cannot steer a review turn')
+        error.name === 'CodexAppServerRequestTimeoutError'
       ) {
-        this.steeringInputs.delete(clientUserMessageId);
-        return false;
+        const attempt = this.steeringInputs.get(clientUserMessageId);
+        if (attempt) {
+          attempt.softTimedOut = true;
+          if (attempt.pickedUp) {
+            delete attempt.onLateResponse;
+            softTimeout.onLateResponse({ kind: 'success', value: undefined });
+          }
+        }
+        return { kind: 'pending' };
       }
-      throw error;
+      // A proven refusal means no input was submitted, so the ordinary send
+      // queue can safely retry after the turn settles. Anything else may have
+      // been accepted and keeps its correlation for a late pickup.
+      const classified = classifyCodexSteerError(error);
+      const attempt = this.steeringInputs.get(clientUserMessageId);
+      if (attempt) delete attempt.onLateResponse;
+      if (classified.kind === 'failure')
+        return { kind: 'failed', error, failure: classified.failure };
+      this.steeringInputs.delete(clientUserMessageId);
+      return { kind: 'refused', refusal: classified.refusal };
     }
     // An acknowledged user message was accepted even if completion raced its
-    // response. Returning false here would deliver it again via turn/start.
+    // response. Refusing here would deliver it again via turn/start.
     // User input must not arm the internal MCP-refresh restart capability.
-    if (clientUserMessageId) return true;
-    if (this.activeTurn?.turnId !== turnId) return false;
+    if (clientUserMessageId) {
+      const attempt = this.steeringInputs.get(clientUserMessageId);
+      if (attempt) delete attempt.onLateResponse;
+      return { kind: 'steered' };
+    }
+    if (this.activeTurn?.turnId !== turnId)
+      return { kind: 'refused', refusal: chatInputRefusal('not-steerable') };
     this.immediateTurnRestartArmedTurnId = turnId;
-    return true;
+    return { kind: 'steered' };
   }
 
   getSteeringCapabilities(): ChatSteeringCapabilities {
     return {
       provider: 'codex',
       generation: this.inputGeneration,
-      steer: !this.disposed && Boolean(this.activeTurn?.turnId),
+      steer:
+        !this.disposed &&
+        !this.activeTurn?.controlPhase &&
+        Boolean(this.activeTurn?.turnId),
       withdraw: false,
       interrupt: !this.disposed,
     };
   }
 
+  getSteeringTarget(): SteeringTarget | undefined {
+    const threadId = this.threadId;
+    const turnId = this.activeTurn?.controlPhase
+      ? undefined
+      : this.activeTurn?.turnId;
+    if (this.disposed || !threadId || !turnId) return undefined;
+    return { sessionId: threadId, turnId };
+  }
+
   async submitSteeringInput(
     text: string,
     attemptId: string,
-  ): Promise<ChatInputAdmission> {
+    target?: SteeringTarget,
+    userMessageId?: string,
+  ): Promise<ChatInputSubmitResult> {
+    // No event: the identity belongs to an attempt that is still in flight.
     if (this.steeringInputs.has(attemptId))
       return {
         kind: 'unknown',
         attemptId,
         reason: 'This submission identity was already used',
+        failure: chatInputDeliveryFailure('duplicate-attempt'),
       };
     const providerTurnId = this.activeTurn?.turnId;
-    try {
-      if (!(await this.steerActiveTurn(text, attemptId)))
-        return {
-          kind: 'rejected',
-          attemptId,
-          reason: 'The active turn no longer accepts steering',
-          fallback: 'ordinary',
-        };
+    let settleSettlement: (admission: ChatInputAdmission) => void = () => {};
+    let settlementIsResolved = false;
+    const settlement = new Promise<ChatInputAdmission>((resolve) => {
+      settleSettlement = resolve;
+    });
+    const settleOnce = (admission: ChatInputAdmission): void => {
+      if (settlementIsResolved) return;
+      settlementIsResolved = true;
+      settleSettlement(admission);
+    };
+    const acceptedAdmission = (): ChatInputAdmission => {
       void this.onEvent({
         type: 'canopy_input_delivery',
         provider: 'codex',
@@ -2986,7 +4199,10 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         providerTurnId,
       });
       return { kind: 'accepted', attemptId, providerTurnId };
-    } catch {
+    };
+    const unknownAdmission = (
+      failure: ChatInputDeliveryFailure,
+    ): ChatInputAdmission => {
       void this.onEvent({
         type: 'canopy_input_delivery',
         provider: 'codex',
@@ -2994,13 +4210,65 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         attemptId,
         phase: 'unknown',
         providerTurnId,
+        failure,
       });
       return {
         kind: 'unknown',
         attemptId,
         reason:
           'Delivery was not confirmed. This message will not be resent automatically.',
+        failure,
       };
+    };
+    const onLateResponse = (response: CodexLateSteerResponse): void => {
+      if (settlementIsResolved) return;
+      const attempt = this.steeringInputs.get(attemptId);
+      if (attempt) delete attempt.onLateResponse;
+      if (response.kind === 'success') {
+        settleOnce(acceptedAdmission());
+        return;
+      }
+      const classified = classifyCodexSteerError(response.error);
+      if (classified.kind === 'refusal') {
+        this.steeringInputs.delete(attemptId);
+        settleOnce({
+          kind: 'rejected',
+          attemptId,
+          reason: 'The active turn no longer accepts steering',
+          fallback: 'ordinary',
+          refusal: classified.refusal,
+        });
+        return;
+      }
+      settleOnce(unknownAdmission(classified.failure));
+    };
+    try {
+      const outcome = await this.steerActiveTurnOutcome(
+        text,
+        attemptId,
+        { onLateResponse },
+        target,
+        {
+          submissionId: attemptId,
+          ...(userMessageId ? { userMessageId } : {}),
+        },
+      );
+      if (outcome.kind === 'refused')
+        return {
+          kind: 'rejected',
+          attemptId,
+          reason: 'The active turn no longer accepts steering',
+          fallback: 'ordinary',
+          refusal: outcome.refusal,
+        };
+      if (outcome.kind === 'pending')
+        return { kind: 'pending', attemptId, settlement };
+      if (outcome.kind === 'steered') {
+        return acceptedAdmission();
+      }
+      return unknownAdmission(outcome.failure);
+    } catch {
+      return unknownAdmission(chatInputDeliveryFailure('transport-error'));
     }
   }
 
@@ -3013,6 +4281,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (this.disposed) {
       return;
     }
+    this.abortDynamicToolCalls();
     const pendingRestart = this.pendingImmediateTurnRestartAbort;
     if (options.userInitiated !== false && pendingRestart) {
       pendingRestart.request.turn.userInterruptAcknowledged = true;
@@ -3059,6 +4328,16 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       return;
     }
     this.disposed = true;
+    this.retireBackgroundWorkEpoch();
+    this.backgroundWorkUnsubscribe();
+    this.retireProviderRunGeneration(false, true);
+    this.onSteeringEligibilityChanged?.();
+    const isLastClient = this.connection.isOnlyOwner();
+    // Preserve the existing best-effort disposal failure before cancelling
+    // execution; a provider-resolved call is already absent from this set.
+    this.connection.flushPendingServerRequests(!isLastClient);
+    this.abortDynamicToolCalls();
+    this.closeStoppedDynamicToolRows();
     this.closing = true;
     this.pendingNativeDynamicResults.clear();
     this.pendingDeferredToolResultIds.clear();
@@ -3069,7 +4348,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       new Error('session_destroyed'),
     );
     this.pendingImmediateTurnRestartAbort = null;
-    const isLastClient = this.connection.isOnlyOwner();
     const target = this.getActiveTurnInterruptTarget();
     if (
       this.connection.isInitialized() &&
@@ -3100,14 +4378,15 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
 
     const turn = this.activeTurn;
+    if (turn) this.settleProviderRunForTurn(turn);
     this.activeTurn = null;
+    this.onSteeringEligibilityChanged?.();
     this.settledTurnItems = null;
     this.rejectPendingTerminalSettlements(new Error('session_destroyed'));
     this.detachOutsideNotificationAdmissions();
     if (turn) {
       turn.reject(new Error('session_destroyed'));
     }
-    this.connection.flushPendingServerRequests(!isLastClient);
     this.connection.rejectPendingRequests(new Error('session_destroyed'));
     if (isLastClient) {
       this.connection.rejectAllPendingRequests(new Error('session_destroyed'));
@@ -3135,6 +4414,25 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private assertTurnStartNotCancelled(generation: number): void {
     if (this.turnStartCancellation?.generation === generation) {
       throw this.turnStartCancellation.error;
+    }
+  }
+
+  private async waitForTurnSlot(
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    while (this.activeTurn?.providerOwned) {
+      const adoptedTurn = this.activeTurn;
+      const completion = adoptedTurn.providerOwnedCompletion;
+      if (!completion) {
+        throw new Error('Codex provider-owned turn cannot be safely replaced');
+      }
+      await waitForBestEffortPromiseOrAbort(completion, signal);
+      this.assertNotDisposed();
+      this.assertTurnStartNotCancelled(generation);
+    }
+    if (this.activeTurn) {
+      throw new Error('Codex app-server already owns an active turn');
     }
   }
 
@@ -3315,6 +4613,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     // confirms the bundled app-server accepts it and emits `item/tool/call`
     // requests for the injected Canopy tool names.
     let response: unknown;
+    let resumedResponse = false;
     // Hoisted out of the resume branch so the latch can be consumed at the
     // commit site below, once `this.threadId` actually points at the rebuilt
     // thread.
@@ -3384,6 +4683,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
                 ? { developerInstructions: this.developerInstructions }
                 : {}),
             });
+            resumedResponse = true;
           } catch (error) {
             if (
               !isUnavailablePersistedThreadError(error) &&
@@ -3517,9 +4817,46 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     } finally {
       this.mcpStartupStates.delete(threadId);
     }
+    if (this.threadId && this.threadId !== threadId) {
+      this.retireProviderRunGeneration(true);
+    }
+    if (resumedResponse && threadId === resumeThreadId) {
+      this.resumedLiveRootAnchors.clear();
+      this.completedResumeTurnKeys.clear();
+      for (const resumedTurn of extractThreadTurns(response)) {
+        const turnId = readString(resumedTurn, 'id');
+        const status = readString(resumedTurn, 'status');
+        if (!turnId) continue;
+        const key = this.providerRunKey(threadId, turnId);
+        if (status === 'inProgress') {
+          const nativeExecutionUserMessageId =
+            nativeTurnExecutionUserMessageId(resumedTurn);
+          const retainedExecutionUserMessageId = getRetainedRootExecutionAnchor(
+            this.retainedRootExecutionAnchorKey(threadId, turnId),
+          );
+          this.resumedLiveRootAnchors.set(
+            key,
+            nativeExecutionUserMessageId ?? retainedExecutionUserMessageId,
+          );
+        } else if (
+          status === 'completed' ||
+          status === 'failed' ||
+          status === 'interrupted'
+        ) {
+          forgetRetainedRootExecutionAnchor(
+            this.retainedRootExecutionAnchorKey(threadId, turnId),
+          );
+          this.completedResumeTurnKeys.add(key);
+        }
+      }
+    }
     this.threadId = threadId;
     this.threadReady = true;
     this.connection.markThreadReady(threadId);
+    if (resumedResponse && threadId === resumeThreadId) {
+      this.observeResumedBackgroundTerminalItems(threadId, response);
+      this.reconcileResumedBackgroundWork(threadId);
+    }
     // Consume the latch only once the rebuilt thread is committed. `ensureThread`
     // re-runs on this same client whenever the shared process is suspended or
     // restarted (`markProcessSuspended`/`markProcessFailed` clear
@@ -3809,7 +5146,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   async handleRequestUserInput(
     requestId: JsonRpcId,
     request: Record<string, unknown>,
+    requestSignal?: AbortSignal,
   ): Promise<void> {
+    if (requestSignal?.aborted) {
+      return;
+    }
     const params = readRecord(request, 'params');
     const parsedQuestions = params ? parseUserInputQuestions(params) : null;
     if (!params || !parsedQuestions) {
@@ -3869,6 +5210,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
 
     const recoveryAbortController = new AbortController();
+    const signal = AbortSignal.any(
+      requestSignal
+        ? [requestSignal, recoveryAbortController.signal]
+        : [recoveryAbortController.signal],
+    );
     this.pendingRecoveryAbortControllers.add(recoveryAbortController);
     try {
       const cancellationGeneration =
@@ -3883,9 +5229,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         toolUseId,
         providerType: 'codex',
         onAwaitingUser: this.onAwaitingUser,
-        signal: recoveryAbortController.signal,
+        signal,
       });
-      if (recoveryAbortController.signal.aborted) {
+      if (signal.aborted) {
         throw new Error('ask_user_cancelled');
       }
       if (this.disposed) {
@@ -3928,7 +5274,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         this.emitSyntheticCompleted(itemId, completedItem, syntheticRouting);
       }
     } catch (error) {
-      if (this.disposed) {
+      if (this.disposed || requestSignal?.aborted) {
         return;
       }
       const message =
@@ -3975,26 +5321,34 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
   /**
    * Runs a policy-engine check with an always-resolves guarantee. Approval
-   * handlers must reply to the app-server no matter what, so both the
-   * missing-handle case (one-shot helper clients that never drive a turn)
-   * and a rejected `check()` (e.g. rule-file read or grant-persistence
-   * failures surfacing through the handle's promise) collapse to a deny
-   * outcome that each caller turns into its method's fail-closed reply.
+   * handlers fail closed when the session is unavailable or a check fails,
+   * including rule-file and grant-persistence errors. A provider-resolved
+   * prompt returns undefined so callers leave its already-completed request
+   * alone rather than sending a second reply.
    */
   private async checkApproval(
     approvalCheck: ApprovalCheck,
     display: ApprovalCheckDisplay,
     subagentId?: string,
-  ): Promise<ApprovalOutcome> {
+    signal?: AbortSignal,
+  ): Promise<ApprovalOutcome | undefined> {
+    if (signal?.aborted) {
+      return undefined;
+    }
     if (this.approvalChecksCancelled || !this.approvalSession) {
       return { decision: 'deny' };
     }
     try {
-      return await this.approvalSession.check(approvalCheck, {
+      const outcome = await this.approvalSession.check(approvalCheck, {
         ...display,
+        ...(signal !== undefined ? { signal } : {}),
         ...(subagentId !== undefined ? { subagentId } : {}),
       });
-    } catch {
+      return signal?.aborted ? undefined : outcome;
+    } catch (error) {
+      if (signal?.aborted || isExpectedPromptCancellation(error)) {
+        return undefined;
+      }
       return { decision: 'deny' };
     }
   }
@@ -4002,13 +5356,18 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private async checkApprovalRequirements(
     requirements: readonly CodexApprovalRequirement[],
     subagentId?: string,
-  ): Promise<ApprovalOutcome> {
+    signal?: AbortSignal,
+  ): Promise<ApprovalOutcome | undefined> {
     for (const requirement of requirements) {
       const outcome = await this.checkApproval(
         requirement.check,
         requirement.display,
         subagentId,
+        signal,
       );
+      if (!outcome) {
+        return undefined;
+      }
       if (outcome.decision !== 'allow') {
         return outcome;
       }
@@ -4054,7 +5413,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     method: string,
     request: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<void> {
+    if (signal?.aborted) {
+      return;
+    }
     // Every approval-shaped request carries its originating thread under
     // `threadId` (v2 methods, `item/tool/requestUserInput`) or the legacy
     // `conversationId` (`execCommandApproval` / `applyPatchApproval`) —
@@ -4071,29 +5434,56 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           requestId,
           request,
           subagentId,
+          signal,
         );
         return;
       case 'item/fileChange/requestApproval':
-        await this.handleFileChangeApproval(requestId, request, subagentId);
+        await this.handleFileChangeApproval(
+          requestId,
+          request,
+          subagentId,
+          signal,
+        );
         return;
       case 'item/permissions/requestApproval':
-        await this.handlePermissionsApproval(requestId, request, subagentId);
+        await this.handlePermissionsApproval(
+          requestId,
+          request,
+          subagentId,
+          signal,
+        );
         return;
       case 'execCommandApproval':
-        await this.handleLegacyExecApproval(requestId, request, subagentId);
+        await this.handleLegacyExecApproval(
+          requestId,
+          request,
+          subagentId,
+          signal,
+        );
         return;
       case 'applyPatchApproval':
         await this.handleLegacyApplyPatchApproval(
           requestId,
           request,
           subagentId,
+          signal,
         );
         return;
       case 'mcpServer/elicitation/request':
-        await this.handleMcpElicitationRequest(requestId, request, subagentId);
+        await this.handleMcpElicitationRequest(
+          requestId,
+          request,
+          subagentId,
+          signal,
+        );
         return;
       case 'item/tool/requestUserInput':
-        await this.handleFallbackMcpApproval(requestId, request, subagentId);
+        await this.handleFallbackMcpApproval(
+          requestId,
+          request,
+          subagentId,
+          signal,
+        );
         return;
       default:
         this.completeApprovalRequest(requestId, { decision: 'decline' });
@@ -4104,6 +5494,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     subagentId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const params = readRecord(request, 'params') ?? {};
     const approvalKind = readString(params, 'kind') ?? 'command';
@@ -4129,7 +5520,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           toolUseId: codexToolUseId(approvalId),
         },
         subagentId,
+        signal,
       );
+      if (!outcome) return;
       if (this.disposed) {
         return;
       }
@@ -4226,7 +5619,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const outcome = await this.checkApprovalRequirements(
       requirements,
       subagentId,
+      signal,
     );
+    if (!outcome) return;
     if (this.disposed) {
       return;
     }
@@ -4245,6 +5640,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     subagentId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const params = readRecord(request, 'params') ?? {};
     const itemId = readString(params, 'itemId');
@@ -4298,7 +5694,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const outcome = await this.checkApprovalRequirements(
       requirements,
       subagentId,
+      signal,
     );
+    if (!outcome) return;
     if (this.disposed) {
       return;
     }
@@ -4317,6 +5715,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     subagentId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const params = readRecord(request, 'params') ?? {};
     const itemId = readString(params, 'itemId');
@@ -4334,12 +5733,14 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       reason,
       codexToolUseId(itemId),
     );
-    const outcome = parsedPermissions
+    const outcome: ApprovalOutcome | undefined = parsedPermissions
       ? await this.checkApprovalRequirements(
           parsedPermissions.requirements,
           subagentId,
+          signal,
         )
-      : { decision: 'deny' as const };
+      : { decision: 'deny' };
+    if (!outcome) return;
     if (this.disposed) {
       return;
     }
@@ -4363,6 +5764,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     subagentId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const params = readRecord(request, 'params') ?? {};
     const commandArgs = readStringArray(params, 'command');
@@ -4393,7 +5795,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         },
       },
       subagentId,
+      signal,
     );
+    if (!outcome) return;
     if (this.disposed) {
       return;
     }
@@ -4411,6 +5815,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     subagentId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const params = readRecord(request, 'params') ?? {};
     const callId = readString(params, 'callId');
@@ -4460,7 +5865,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const outcome = await this.checkApprovalRequirements(
       requirements,
       subagentId,
+      signal,
     );
+    if (!outcome) return;
     if (this.disposed) {
       return;
     }
@@ -4484,6 +5891,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     subagentId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const params = readRecord(request, 'params');
     const questions = params ? parseUserInputQuestions(params) : null;
@@ -4504,7 +5912,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         ? readString(item, 'tool')
         : undefined;
 
-    let outcome: ApprovalOutcome = { decision: 'deny' };
+    let outcome: ApprovalOutcome | undefined = { decision: 'deny' };
     if (approvalQuestionIds.length > 0 && server && tool) {
       outcome = await this.checkApproval(
         { kind: 'mcp', server, tool },
@@ -4519,8 +5927,10 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           toolUseId: codexToolUseId(itemId),
         },
         subagentId,
+        signal,
       );
     }
+    if (!outcome) return;
     if (this.disposed) {
       return;
     }
@@ -4553,7 +5963,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     subagentId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    if (signal?.aborted) {
+      return;
+    }
     const params = readRecord(request, 'params') ?? {};
     const serverName = readString(params, 'serverName') ?? '';
     const mode = readString(params, 'mode');
@@ -4586,7 +6000,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           suggestedTarget: { kind: 'mcp', server: serverName, tool },
         },
         subagentId,
+        signal,
       );
+      if (!outcome) return;
       if (this.disposed) {
         return;
       }
@@ -4639,6 +6055,13 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       return;
     }
 
+    const recoveryAbortController = new AbortController();
+    const questionSignal = AbortSignal.any(
+      signal
+        ? [signal, recoveryAbortController.signal]
+        : [recoveryAbortController.signal],
+    );
+    this.pendingRecoveryAbortControllers.add(recoveryAbortController);
     try {
       const cancellationGeneration =
         this.rendererQuestionCancellationGeneration;
@@ -4651,7 +6074,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         getWindow: this.getWindow,
         providerType: 'codex',
         onAwaitingUser: this.onAwaitingUser,
+        signal: questionSignal,
       });
+      if (questionSignal.aborted) {
+        throw new Error('ask_user_cancelled');
+      }
       if (this.disposed) {
         return;
       }
@@ -4667,7 +6094,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         _meta: null,
       });
     } catch {
-      if (this.disposed) {
+      if (this.disposed || signal?.aborted) {
         return;
       }
       this.completeApprovalRequest(requestId, {
@@ -4675,6 +6102,8 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         content: null,
         _meta: null,
       });
+    } finally {
+      this.pendingRecoveryAbortControllers.delete(recoveryAbortController);
     }
   }
 
@@ -4749,13 +6178,55 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       return;
     }
 
+    const controller = new AbortController();
     const recoveryAbortController = new AbortController();
+    const signal = AbortSignal.any([
+      controller.signal,
+      recoveryAbortController.signal,
+    ]);
     this.pendingRecoveryAbortControllers.add(recoveryAbortController);
+    this.dynamicToolCalls.set(requestId, { params: parsed, controller });
+    const timeoutText =
+      'The dynamic tool call was stopped at its time limit; its effects may be incomplete.';
+    let deadlineReached = false;
+    const onAbort = (): void => {
+      clearTimeout(deadline);
+      if (deadlineReached) return;
+      this.connection.completePendingServerRequest(requestId);
+      this.rememberStoppedDynamicToolCall(
+        parsed,
+        'The dynamic tool call was cancelled; its effects may be incomplete.',
+      );
+    };
+    const deadline = setTimeout(
+      () => {
+        deadlineReached = true;
+        this.rememberStoppedDynamicToolCall(parsed, timeoutText);
+        controller.abort();
+        if (
+          this.disposed ||
+          !this.connection.completePendingServerRequest(requestId)
+        )
+          return;
+        this.connection.send({
+          id: requestId,
+          result: {
+            contentItems: [{ type: 'inputText', text: timeoutText }],
+            success: false,
+          } satisfies DynamicToolCallResponse,
+        });
+      },
+      isCanopyAskUserToolName(parsed.tool) ||
+        getCanonicalAppAdvisorToolKey(parsed.tool) === 'ask_user_question'
+        ? ASK_USER_HTTP_TIMEOUT_MS
+        : CANOPY_MCP_TOOL_TIMEOUT_MS,
+    );
+    signal.addEventListener('abort', onAbort, { once: true });
     try {
       const response = await this.dynamicToolCallHandler(parsed, {
-        signal: recoveryAbortController.signal,
+        signal,
       });
-      if (this.disposed) {
+      if (this.disposed || signal.aborted) {
         return;
       }
       if (!this.connection.completePendingServerRequest(requestId)) {
@@ -4796,19 +6267,13 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         this.pendingDeferredToolResultIds.add(parsed.callId);
       }
     } catch (error) {
-      if (this.disposed) {
+      if (this.disposed || signal.aborted) {
         return;
       }
+      // Error text can carry paths and workspace ids, so it goes to the log, never to the model.
+      logMainProcessError('Codex dynamic tool call failed', error);
       const response: DynamicToolCallResponse = {
-        contentItems: [
-          {
-            type: 'inputText',
-            text:
-              error instanceof Error
-                ? error.message
-                : 'Dynamic tool call failed',
-          },
-        ],
+        contentItems: [{ type: 'inputText', text: 'Dynamic tool call failed' }],
         success: false,
       };
       if (!this.connection.completePendingServerRequest(requestId)) {
@@ -4816,6 +6281,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       }
       this.connection.send({ id: requestId, result: response });
     } finally {
+      clearTimeout(deadline);
+      signal.removeEventListener('abort', onAbort);
+      this.dynamicToolCalls.delete(requestId);
       this.pendingRecoveryAbortControllers.delete(recoveryAbortController);
     }
   }
@@ -4825,7 +6293,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     request: Record<string, unknown>,
     toolCall: CodexMcpToolCallContext,
     approvalKind: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    if (signal?.aborted) {
+      return;
+    }
     if (approvalKind !== 'mcp_tool_call') {
       this.completeApprovalRequest(requestId, {
         action: 'decline',
@@ -4860,7 +6332,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         },
       },
       this.resolveSubagentId(extractApprovalThreadId(params)),
+      signal,
     );
+    if (!outcome) return;
     if (this.disposed) {
       return;
     }
@@ -5056,6 +6530,17 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     )
       return;
     attempt.pickedUp = true;
+    if (threadId === this.threadId && turnId === this.activeTurn?.turnId) {
+      this.emitTurnLifecycleObservation({
+        type: 'input-bound',
+        threadId: attempt.threadId,
+        turnId: attempt.turnId,
+        ...(attempt.submissionId ? { submissionId: attempt.submissionId } : {}),
+        ...(attempt.userMessageId
+          ? { userMessageId: attempt.userMessageId }
+          : {}),
+      });
+    }
     void this.onEvent({
       type: 'canopy_input_delivery',
       provider: 'codex',
@@ -5065,6 +6550,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       providerTurnId: attempt.turnId,
       ...(itemId ? { itemId } : {}),
     });
+    if (attempt.softTimedOut && attempt.onLateResponse) {
+      const onLateResponse = attempt.onLateResponse;
+      delete attempt.onLateResponse;
+      onLateResponse({ kind: 'success', value: undefined });
+    }
   }
 
   private handleNotification(
@@ -5090,6 +6580,10 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     switch (method) {
       case 'thread/started': {
         this.handleThreadStartedNotification(params);
+        return;
+      }
+      case 'thread/status/changed': {
+        this.handleThreadStatusChangedNotification(params);
         return;
       }
       case 'turn/started': {
@@ -5166,16 +6660,170 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
   }
 
+  private handleThreadStatusChangedNotification(
+    params: Record<string, unknown>,
+  ): void {
+    const threadId = readString(params, 'threadId');
+    const status = readRecord(params, 'status');
+    if (!threadId || threadId !== this.threadId || !status) return;
+    const statusType = readString(status, 'type');
+    let state: 'running' | 'requires_action' | 'idle' | undefined;
+    if (statusType === 'active') {
+      const activeFlags = Array.isArray(status.activeFlags)
+        ? status.activeFlags
+        : [];
+      state = activeFlags.some(
+        (flag) => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput',
+      )
+        ? 'requires_action'
+        : 'running';
+    } else if (statusType === 'idle') {
+      state = 'idle';
+    }
+    if (state) {
+      this.emitTurnLifecycleObservation({
+        type: 'session-state',
+        threadId,
+        ...(this.activeTurn?.rootThreadId === threadId && this.activeTurn.turnId
+          ? { turnId: this.activeTurn.turnId }
+          : {}),
+        state,
+      });
+    }
+  }
+
   private handleTurnStartedNotification(params: Record<string, unknown>): void {
     const turnRecord = readRecord(params, 'turn');
     const turnId = turnRecord ? readString(turnRecord, 'id') : undefined;
     const eventThreadId = readString(params, 'threadId');
     if (
-      this.activeTurn &&
-      !this.activeTurn.turnId &&
+      turnId &&
+      typeof eventThreadId === 'string' &&
       eventThreadId === this.threadId
     ) {
-      this.activeTurn.turnId = turnId ?? '';
+      let turn = this.activeTurn;
+      let runState: ProviderRunState | undefined;
+      if (turn) {
+        if (turn.turnId && turn.turnId !== turnId) {
+          this.recordRootRunDrop(
+            'turn/started',
+            'root_run_overlap',
+            eventThreadId,
+            turnId,
+          );
+          return;
+        }
+        this.bindStartIdentity(turn, turnId);
+        runState = this.registerProviderRunForTurn(
+          turn,
+          turnId,
+          turn.providerOwned ? 'provider_owned' : 'dispatched',
+        );
+        this.observeTurnStarted(
+          turn,
+          turnId,
+          runState,
+          turnRecord ?? undefined,
+        );
+        this.processPendingRootTerminals(turn);
+      } else {
+        const key = this.providerRunKey(eventThreadId, turnId);
+        const existing = this.providerRuns.get(key);
+        if (existing) {
+          this.recordRootRunDrop(
+            'turn/started',
+            existing.settled
+              ? 'duplicate_settled_root_start'
+              : 'duplicate_root_start',
+            eventThreadId,
+            turnId,
+          );
+          return;
+        }
+        // A provider-started run binds to its own evidence first, else to
+        // the last execution anchor actually bound (never a queued prompt).
+        const executionUserMessageId =
+          (turnRecord
+            ? nativeTurnExecutionUserMessageId(turnRecord)
+            : undefined) ??
+          getRetainedRootExecutionAnchor(
+            this.retainedRootExecutionAnchorKey(eventThreadId, turnId),
+          ) ??
+          this.lastExecutionUserMessageId;
+        if (!executionUserMessageId || !this.providerRunGeneration) {
+          this.recordRootRunDrop(
+            'turn/started',
+            'no_execution_anchor',
+            eventThreadId,
+            turnId,
+          );
+        } else {
+          let resolveProviderOwnedCompletion: (() => void) | undefined;
+          const providerOwnedCompletion = new Promise<void>((resolve) => {
+            resolveProviderOwnedCompletion = (): void => resolve();
+          });
+          const adoptedTurn: CodexTurnState = {
+            rootThreadId: eventThreadId,
+            turnId,
+            executionUserMessageId,
+            providerOwned: true,
+            lifecycleOrigin: 'autonomous',
+            providerOwnedCompletion,
+            providerOwnedCompletionResolve: () =>
+              resolveProviderOwnedCompletion?.(),
+            resolve: (): void => undefined,
+            reject: (): void => undefined,
+            items: new Map(),
+            itemRoutings: new Map(),
+            completedItemIds: new Set(),
+            commandOutputEmissions: new Map(),
+            previousTurnId: this.lastKnownTurnId,
+          };
+          const adoptedRunState = this.registerProviderRunForTurn(
+            adoptedTurn,
+            turnId,
+            'provider_owned',
+          );
+          if (!adoptedRunState) {
+            this.recordRootRunDrop(
+              'turn/started',
+              'no_execution_anchor',
+              eventThreadId,
+              turnId,
+            );
+          } else {
+            this.settledTurnItems = null;
+            this.activeTurn = adoptedTurn;
+            turn = adoptedTurn;
+            runState = adoptedRunState;
+            this.observeTurnStarted(
+              adoptedTurn,
+              turnId,
+              adoptedRunState,
+              turnRecord ?? undefined,
+            );
+            this.processPendingRootTerminals(adoptedTurn);
+          }
+        }
+      }
+      const legacyDispatchedRun =
+        turn !== null && !turn.providerOwned && !turn.executionUserMessageId;
+      if (turn && !runState && !legacyDispatchedRun) {
+        this.recordRootRunDrop(
+          'turn/started',
+          'no_execution_anchor',
+          eventThreadId,
+          turnId,
+        );
+      }
+      if (
+        turn &&
+        (turn.rootStartEmittedTurnId === turnId || runState?.startEmitted)
+      )
+        return;
+      if (turn) turn.rootStartEmittedTurnId = turnId;
+      if (runState) runState.startEmitted = true;
+      if (turn) this.onSteeringEligibilityChanged?.();
     }
     void this.onEvent({
       type: 'codex',
@@ -5201,6 +6849,8 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (!item) {
       return;
     }
+
+    if (this.hasSyntheticDynamicToolFailure(params, item)) return;
 
     const mapped = mapThreadItem(item);
     if (!mapped) {
@@ -5361,6 +7011,49 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       return;
     }
 
+    const completedThreadId = readString(params, 'threadId');
+    const completedTurnId = readString(params, 'turnId');
+    const isRootCompletion =
+      completedThreadId === this.threadId || !completedThreadId;
+    const oldRun =
+      isRootCompletion && completedThreadId && completedTurnId
+        ? this.providerRuns.get(
+            this.providerRunKey(completedThreadId, completedTurnId),
+          )
+        : undefined;
+    if (oldRun?.settled) {
+      // Known settled roots reconcile without touching a newer active buffer.
+      // Unregistered tuples retain the descriptorless baseline path below.
+      const mappedLateItem = mapThreadItem(item);
+      if (mappedLateItem) {
+        void this.onEvent({
+          type: 'codex',
+          event: withRouting(
+            { type: 'item.completed', item: mappedLateItem },
+            this.buildRouting(completedThreadId, completedTurnId),
+          ),
+        });
+      }
+      return;
+    }
+
+    if (this.hasSyntheticDynamicToolFailure(params, item)) return;
+    const completedCallId = readString(item, 'id');
+    if (
+      completedThreadId &&
+      completedTurnId &&
+      completedCallId &&
+      readString(item, 'type') === 'dynamicToolCall'
+    ) {
+      this.stoppedDynamicToolCalls.delete(
+        this.dynamicToolKey(
+          completedThreadId,
+          completedTurnId,
+          completedCallId,
+        ),
+      );
+    }
+
     const mappedItem = mapThreadItem(item);
     const nativeCallId = readString(item, 'id');
     const pendingReceipt = nativeCallId
@@ -5401,7 +7094,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       turn.items.set(itemId, mapped);
       captureItemRouting(turn, itemId, eventThreadId, eventTurnId);
     }
-    const isRootCompletion = eventThreadId === this.threadId || !eventThreadId;
     const itemForEmission = isDeferredChatItem(mapped)
       ? normalizedDeferredCompletionItem(mapped)
       : mapped;
@@ -5510,9 +7202,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     params: Record<string, unknown>,
   ): void {
     const turn = this.activeTurn;
-    if (!turn) {
-      return;
-    }
     const eventThreadId = readString(params, 'threadId');
     const turnId = readString(params, 'turnId');
     const itemId = readString(params, 'itemId');
@@ -5522,7 +7211,26 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
 
     const isRootEvent = !eventThreadId || eventThreadId === this.threadId;
+    if (!turn) {
+      if (isRootEvent) {
+        this.recordRootRunDrop(
+          'item/commandExecution/outputDelta',
+          'no_active_turn',
+          eventThreadId ?? this.threadId,
+          turnId,
+          itemId,
+        );
+      }
+      return;
+    }
     if (isRootEvent && turn.turnId && turnId !== turn.turnId) {
+      this.recordRootRunDrop(
+        'item/commandExecution/outputDelta',
+        'turn_id_mismatch',
+        eventThreadId ?? this.threadId,
+        turnId,
+        itemId,
+      );
       return;
     }
 
@@ -5840,6 +7548,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
   private handleRootTurnCompletedNotification(
     turn: CodexTurnState,
+    completedTurn: Record<string, unknown>,
     eventThreadId: string | undefined,
     completedTurnId: string | undefined,
     status: string,
@@ -5848,6 +7557,36 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   ): void {
     if (completedTurnId) {
       this.lastKnownTurnId = completedTurnId;
+      const completedKey = this.providerRunKey(
+        turn.rootThreadId,
+        completedTurnId,
+      );
+      this.resumedLiveRootAnchors.delete(completedKey);
+      this.completedResumeTurnKeys.add(completedKey);
+      forgetRetainedRootExecutionAnchor(
+        this.retainedRootExecutionAnchorKey(turn.rootThreadId, completedTurnId),
+      );
+    }
+    if (
+      completedTurnId &&
+      (eventThreadId === undefined || eventThreadId === turn.rootThreadId)
+    ) {
+      const lifecycleStatus =
+        status === 'failed'
+          ? 'failed'
+          : status === 'interrupted'
+            ? 'interrupted'
+            : 'completed';
+      this.emitTurnLifecycleObservation({
+        type: 'turn-completed',
+        threadId: turn.rootThreadId,
+        turnId: completedTurnId,
+        status: lifecycleStatus,
+        ...readNativeTurnCompletionTiming(completedTurn),
+        ...(lifecycleStatus === 'failed' && errorMessage
+          ? { error: errorMessage }
+          : {}),
+      });
     }
     if (status === 'completed') {
       emitPendingDeferredCompletions(this.onEvent, turn);
@@ -5855,6 +7594,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
     this.settledTurnItems = retainCodexTurnItems(turn);
     this.activeTurn = null;
+    this.onSteeringEligibilityChanged?.();
     const rootRouting = this.buildRouting(eventThreadId, completedTurnId);
 
     if (status === 'failed') {
@@ -5972,6 +7712,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     token: {
       owner: CodexAppServerClient | null;
       turn: CodexTurnState | null;
+      rejectTurn: ((error: Error) => void) | null;
       generation: number;
     },
     failed: boolean,
@@ -5981,9 +7722,18 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const { turn, generation } = token;
     token.owner = null;
     token.turn = null;
-    if (!failed || this.turnStartGeneration !== generation) return;
-    if (turn && this.activeTurn !== turn) return;
+    const rejectTurn = token.rejectTurn;
+    token.rejectTurn = null;
+    if (!failed) return;
     const failure = error instanceof Error ? error : new Error(String(error));
+    if (turn && this.activeTurn !== turn) {
+      rejectTurn?.(failure);
+      return;
+    }
+    if (this.turnStartGeneration !== generation) {
+      rejectTurn?.(failure);
+      return;
+    }
     if (this.pendingTurnStartGeneration === generation) {
       this.cancelPendingTurnStart(failure);
     } else if (this.activeTurn) {
@@ -6019,8 +7769,8 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const eventThreadId = readString(params, 'threadId');
     const status = readString(completedTurn, 'status') ?? 'completed';
     const error = readRecord(completedTurn, 'error');
-    const errorMessage = error ? readString(error, 'message') : undefined;
-    const codexErrorInfo = error
+    let errorMessage = error ? readString(error, 'message') : undefined;
+    let codexErrorInfo = error
       ? parseCodexErrorInfo(error.codexErrorInfo)
       : undefined;
     const turn = this.activeTurn;
@@ -6052,10 +7802,88 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
 
     if (!turn) {
+      this.recordRootRunDrop(
+        'turn/completed',
+        'no_active_turn',
+        eventThreadId ?? this.threadId,
+        completedTurnId,
+      );
       return;
     }
 
-    if (turn.turnId && completedTurnId !== turn.turnId) {
+    if (
+      !completedTurnId &&
+      !(status === 'interrupted' && turn.userInterruptAcknowledged)
+    ) {
+      this.recordRootRunDrop(
+        'turn/completed',
+        'unobserved_root_terminal',
+        eventThreadId ?? this.threadId,
+        completedTurnId,
+      );
+      return;
+    }
+
+    const completedRun = completedTurnId
+      ? this.providerRuns.get(
+          this.providerRunKey(
+            eventThreadId ?? turn.rootThreadId,
+            completedTurnId,
+          ),
+        )
+      : undefined;
+    if (completedRun?.settled) {
+      this.recordRootRunDrop(
+        'turn/completed',
+        'run_already_settled',
+        eventThreadId ?? turn.rootThreadId,
+        completedTurnId,
+      );
+      return;
+    }
+    // A dispatched request already owns this slot. Its start response and
+    // terminal can arrive in one read before the response continuation runs;
+    // preserve baseline acceptance and bind that terminal's native ID. A
+    // provider-owned run, unlike a dispatch, requires its observed start.
+    if (
+      (turn.turnId && completedTurnId !== turn.turnId) ||
+      (turn.providerOwned &&
+        (!turn.turnId ||
+          !completedTurnId ||
+          eventThreadId !== turn.rootThreadId))
+    ) {
+      this.recordRootRunDrop(
+        'turn/completed',
+        !turn.turnId || !completedTurnId
+          ? 'unobserved_root_terminal'
+          : 'turn_id_mismatch',
+        eventThreadId ?? this.threadId,
+        completedTurnId,
+      );
+      return;
+    }
+    if (!turn.providerOwned && !turn.turnId && completedTurnId) {
+      this.bindStartIdentity(turn, completedTurnId);
+      this.registerProviderRunForTurn(turn, completedTurnId, 'dispatched');
+    }
+    if (
+      status === 'failed' &&
+      turn.fatalRootError?.threadId === turn.rootThreadId &&
+      turn.fatalRootError.turnId === completedTurnId
+    ) {
+      errorMessage = turn.fatalRootError.message;
+      codexErrorInfo = turn.fatalRootError.codexErrorInfo ?? codexErrorInfo;
+    }
+    const runState = this.providerRuns.get(
+      this.providerRunKey(turn.rootThreadId, turn.turnId),
+    );
+    if (runState?.settled) {
+      this.recordRootRunDrop(
+        'turn/completed',
+        'run_already_settled',
+        eventThreadId,
+        completedTurnId,
+      );
       return;
     }
 
@@ -6071,12 +7899,14 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
     this.handleRootTurnCompletedNotification(
       turn,
+      completedTurn,
       eventThreadId,
       completedTurnId,
       status,
       errorMessage,
       codexErrorInfo,
     );
+    this.settleProviderRunForTurn(turn);
   }
 
   private handleErrorNotification(params: Record<string, unknown>): void {
@@ -6095,15 +7925,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
     const eventTurnId = readString(params, 'turnId');
     const eventThreadId = readString(params, 'threadId');
-    const turn = this.activeTurn;
     const isRootError = !eventThreadId || eventThreadId === this.threadId;
-    const shouldFinishActiveTurn =
-      turn &&
-      isRootError &&
-      (!turn.turnId || !eventTurnId || eventTurnId === turn.turnId);
-
-    if (turn && shouldFinishActiveTurn) {
-      emitPendingCodexCommandOutputUpdates(this.onEvent, turn);
+    if (isRootError) {
+      // Root errors are provisional control evidence. The connection-frame
+      // handler captures matching details and waits for turn/completed.
+      return;
     }
 
     void this.onEvent({
@@ -6120,20 +7946,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           : undefined,
       ),
     });
-    if (turn && shouldFinishActiveTurn) {
-      const failedTurnId = eventTurnId ?? turn.turnId;
-      if (failedTurnId) {
-        this.lastKnownTurnId = failedTurnId;
-      }
-      this.settledTurnItems = retainCodexTurnItems(turn);
-      this.activeTurn = null;
-      turn.resolve({
-        status: 'failed',
-        usage: turn.usage,
-        error: message,
-        ...(codexErrorInfo ? { codexErrorInfo } : {}),
-      });
-    }
   }
 
   private handleAccountUpdatedNotification(
@@ -6249,8 +8061,37 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     return { ...error, resetsAt };
   }
 
+  // A turn whose terminal frame was read (`controlPhase`) stays active here
+  // until its transcript is finalized. The connection reads these to decide
+  // when it may suspend, evict or restart the shared worker, which would drop
+  // the transcript frames still waiting for admission. Only steering closes
+  // at the terminal read.
   hasActiveTurn(): boolean {
     return this.activeTurn !== null || this.pendingTurnStartGeneration !== null;
+  }
+
+  hasLiveBackgroundWork(): boolean {
+    return this.backgroundWorkRegistry.hasLiveWork();
+  }
+
+  getBackgroundSnapshot(): CodexBackgroundSnapshot {
+    return this.backgroundWorkRegistry.snapshot();
+  }
+
+  subscribeBackgroundWork(
+    listener: (snapshot: CodexBackgroundSnapshot) => void,
+  ): () => void {
+    return this.backgroundWorkRegistry.subscribe(listener);
+  }
+
+  getExecutionUserMessageId(): string | undefined {
+    return (
+      this.activeTurn?.executionUserMessageId ?? this.lastExecutionUserMessageId
+    );
+  }
+
+  hasProviderOwnedTurn(): boolean {
+    return this.activeTurn?.providerOwned === true;
   }
 
   hasDispatchedTurn(): boolean {
@@ -6283,8 +8124,12 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (expectedRecovery && turn?.recoveryPromise !== expectedRecovery) {
       return;
     }
+    this.abortDynamicToolCalls();
+    this.closeStoppedDynamicToolRows();
+    if (turn) this.settleProviderRunForTurn(turn);
     if (!expectedRecovery) this.rejectPendingTerminalSettlements(error);
     this.activeTurn = null;
+    this.onSteeringEligibilityChanged?.();
     if (turn) {
       turn.reject(error);
     }
@@ -6310,9 +8155,13 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     this.threadSetupGeneration += 1;
     this.threadReady = false;
     this.mcpStartupStates.clear();
+    this.retireProviderRunGeneration(true);
   }
 
   markProcessFailed(): void {
+    this.abortDynamicToolCalls();
+    this.closeStoppedDynamicToolRows();
+    this.retireBackgroundWorkEpoch();
     this.rejectPendingTerminalSettlements(
       new Error('Codex app-server exited before terminal event admission'),
     );
@@ -6334,7 +8183,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (!active) {
       return this.connection
         .ensureInitialized()
-        .then(() => ({ strategy: 'restarted' as const }));
+        .then((): CodexProcessRecoveryResult => ({ strategy: 'restarted' }));
     }
     if (active.hostOwnsAdmission) {
       this.rejectActiveTurn(processError);
@@ -6377,6 +8226,13 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
       try {
         await this.connection.ensureInitialized();
+        if (this.activeTurn === active && active.turnId) {
+          this.registerProviderRunForTurn(
+            active,
+            active.turnId,
+            active.providerOwned ? 'provider_owned' : 'dispatched',
+          );
+        }
         const setupGeneration = this.threadSetupGeneration;
         this.connection.registerRootThread(active.rootThreadId);
         const resumeConfig = buildThreadConfig(
@@ -6434,6 +8290,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         });
         if (recoveredTurnId) {
           active.turnId = recoveredTurnId;
+          this.onSteeringEligibilityChanged?.();
           this.lastKnownTurnId = recoveredTurnId;
         }
         if (recoveredTurn && recoveredTurnStatus === 'completed') {
@@ -6528,10 +8385,17 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           return { strategy: 'reconciled' };
         }
         emptyResumeConfirmations = 0;
+        active.previousTurnId = active.turnId;
+        active.turnId = '';
+        active.lifecycleOrigin = 'restart';
+        active.allowResumeMerge = false;
+        active.submissionId = undefined;
+        active.clientUserMessageId = undefined;
         const replayResponse = await this.request(
           'turn/start',
           active.startParams,
         );
+        const replayedTurn = extractNativeTurn(replayResponse);
         const replayedTurnId = extractTurnId(replayResponse);
         if (!replayedTurnId) {
           throw new Error('Codex replay returned a turn without an id');
@@ -6539,7 +8403,13 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         if (this.recoveredTurnStartAlreadySettled(active, replayedTurnId)) {
           return { strategy: 'replayed' };
         }
-        active.turnId = replayedTurnId;
+        active.controlPhase = undefined;
+        this.acceptStartResponse(
+          active,
+          replayedTurnId,
+          replayedTurn ?? undefined,
+        );
+        this.onSteeringEligibilityChanged?.();
         this.lastKnownTurnId = replayedTurnId;
         this.recordAppliedCollaborationMode(active.startParams);
         return { strategy: 'replayed' };
@@ -6618,8 +8488,18 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
     active.previousTurnId = active.turnId;
     active.turnId = '';
+    active.lifecycleOrigin = 'restart';
+    active.allowResumeMerge = false;
+    active.submissionId = undefined;
+    active.clientUserMessageId = undefined;
+    active.userMessageId = undefined;
+    // The continuation is a new running turn: a terminal frame read for the
+    // lost turn must not keep its steering closed.
+    active.controlPhase = undefined;
+    this.onSteeringEligibilityChanged?.();
     const continuationParams: AppServerRequestParams<'turn/start'> = {
       ...active.startParams,
+      clientUserMessageId: `codex-recovery:${randomUUID()}`,
       input: [
         {
           type: 'text',
@@ -6633,6 +8513,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       'turn/start',
       continuationParams,
     );
+    const continuedTurn = extractNativeTurn(continuationResponse);
     const continuedTurnId = extractTurnId(continuationResponse);
     if (!continuedTurnId) {
       throw new Error('Codex continuation returned a turn without an id');
@@ -6640,7 +8521,12 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (this.recoveredTurnStartAlreadySettled(active, continuedTurnId)) {
       return { strategy: 'continued' };
     }
-    active.turnId = continuedTurnId;
+    this.acceptStartResponse(
+      active,
+      continuedTurnId,
+      continuedTurn ?? undefined,
+    );
+    this.onSteeringEligibilityChanged?.();
     this.lastKnownTurnId = continuedTurnId;
     this.recordAppliedCollaborationMode(continuationParams);
     return { strategy: 'continued' };
@@ -6649,9 +8535,230 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   handleConnectionNotification(
     method: string,
     notification: Record<string, unknown>,
+    transcriptDrain?: Promise<void>,
+  ): void | Promise<void> {
+    if (this.disposed) return;
+    this.providerContractGuard?.observe(
+      method,
+      this.connection.harnessUserAgent(),
+    );
+    const observedRawFrame = this.handleRawBackgroundNotification(
+      method,
+      notification,
+    );
+    let result: void | Promise<void>;
+    try {
+      result = this.handleConnectionNotificationAfterBackground(
+        method,
+        notification,
+        transcriptDrain,
+      );
+    } catch (error) {
+      if (observedRawFrame) {
+        this.finishBackgroundNotificationFrame(notification);
+      }
+      throw error;
+    }
+    if (!observedRawFrame) return result;
+    if (result !== undefined) {
+      return result.finally(() => {
+        this.finishBackgroundNotificationFrame(notification);
+      });
+    }
+    this.finishBackgroundNotificationFrame(notification);
+  }
+
+  handleUnroutedUnknownNotification(method: string): void {
+    if (this.disposed) return;
+    this.providerContractGuard?.observe(
+      method,
+      this.connection.harnessUserAgent(),
+    );
+  }
+
+  private handleConnectionNotificationAfterBackground(
+    method: string,
+    notification: Record<string, unknown>,
+    transcriptDrain?: Promise<void>,
   ): void | Promise<void> {
     if (this.disposed) {
       return;
+    }
+    if (method === 'serverRequest/resolved') {
+      const params = readRecord(notification, 'params');
+      const requestId = params?.requestId;
+      if (typeof requestId === 'number' || typeof requestId === 'string') {
+        const call = this.dynamicToolCalls.get(requestId);
+        if (
+          call &&
+          params &&
+          call.params.threadId === readString(params, 'threadId')
+        )
+          call.controller.abort();
+      }
+      return;
+    }
+    let stoppedDynamicToolScope: {
+      threadId: string | undefined;
+      turnId: string | undefined;
+    } | null = null;
+    if (method === 'turn/completed' || method === 'error') {
+      const params = readRecord(notification, 'params');
+      const completedTurn = params ? readRecord(params, 'turn') : undefined;
+      const turnId = completedTurn
+        ? readString(completedTurn, 'id')
+        : params
+          ? readString(params, 'turnId')
+          : undefined;
+      const threadId = params ? readString(params, 'threadId') : undefined;
+      const rootFrame = !threadId || threadId === this.threadId;
+      const turn = this.activeTurn;
+      const retrying =
+        method === 'error' && readBoolean(params ?? {}, 'willRetry') === true;
+      const terminal =
+        method === 'turn/completed'
+          ? Boolean(completedTurn)
+          : Boolean(params && readRecord(params, 'error') && !retrying);
+      const exactRootTurn = Boolean(
+        turn &&
+        rootFrame &&
+        turn.rootThreadId === (threadId ?? this.threadId) &&
+        turn.turnId &&
+        turn.turnId === turnId,
+      );
+      if (method === 'error' && terminal && rootFrame && turnId) {
+        // Tool ownership is scoped by the native tuple, so a fatal frame can
+        // abort that tool immediately even while turn identity is still
+        // awaiting the matching start response/notification.
+        this.abortDynamicToolCalls(threadId ?? this.threadId, turnId);
+      }
+      if (terminal && rootFrame && turn && !turn.turnId && turnId) {
+        turn.pendingRootTerminals ??= [];
+        if (turn.pendingRootTerminals.length < 8) {
+          turn.pendingRootTerminals.push({
+            method,
+            notification,
+            ...(transcriptDrain ? { transcriptDrain } : {}),
+          });
+        }
+        return;
+      }
+      if (method === 'error' && rootFrame) {
+        if (retrying) {
+          if (exactRootTurn && turn) {
+            this.emitTurnLifecycleObservation({
+              type: 'session-state',
+              threadId: turn.rootThreadId,
+              turnId: turn.turnId,
+              state: 'reconnecting',
+            });
+          }
+          return;
+        }
+        if (!terminal || !turn || !exactRootTurn || !turnId) {
+          if (turn && turn.turnId && turnId && turn.turnId !== turnId) {
+            this.recordRootRunDrop(
+              method,
+              'turn_id_mismatch',
+              threadId,
+              turnId,
+            );
+          } else if (!turn) {
+            this.recordRootRunDrop(method, 'no_active_turn', threadId, turnId);
+          }
+          return;
+        }
+        const error = readRecord(params ?? {}, 'error');
+        const message = error ? buildTurnErrorMessage(error) : undefined;
+        if (!message) return;
+        const codexErrorInfo = error
+          ? parseCodexErrorInfo(error.codexErrorInfo)
+          : undefined;
+        // Held evidence belongs to one native turn: a recovery continuation
+        // reuses this state, and the lost turn's error must not mask its own.
+        if (
+          turn.fatalRootError?.threadId !== turn.rootThreadId ||
+          turn.fatalRootError.turnId !== turn.turnId
+        ) {
+          turn.fatalRootError = {
+            threadId: turn.rootThreadId,
+            turnId: turn.turnId,
+            message,
+            ...(codexErrorInfo ? { codexErrorInfo } : {}),
+          };
+          emitPendingCodexCommandOutputUpdates(this.onEvent, turn);
+          this.abortDynamicToolCalls(turn.rootThreadId, turn.turnId);
+          this.closeStoppedDynamicToolRows(turn.rootThreadId, turn.turnId);
+          turn.controlPhase = 'failed';
+          this.onSteeringEligibilityChanged?.();
+        }
+        // The error is provisional control evidence only. The matching
+        // turn/completed frame is the sole owner of terminal settlement and
+        // the public turn.failed event.
+        return;
+      }
+      if (retrying) {
+        if (exactRootTurn && turn) {
+          this.emitTurnLifecycleObservation({
+            type: 'session-state',
+            threadId: turn.rootThreadId,
+            turnId: turn.turnId,
+            state: 'reconnecting',
+          });
+        }
+      } else if (!rootFrame || exactRootTurn) {
+        if (terminal) {
+          const terminalThreadId = threadId ?? this.threadId;
+          const terminalTurnId = turnId;
+          stoppedDynamicToolScope = {
+            threadId: terminalThreadId,
+            turnId: terminalTurnId,
+          };
+          this.abortDynamicToolCalls(terminalThreadId, terminalTurnId);
+        }
+      }
+      const knownSettledRoot =
+        exactRootTurn && turnId && (threadId ?? this.threadId)
+          ? this.providerRuns.get(
+              this.providerRunKey(threadId ?? this.threadId ?? '', turnId),
+            )?.settled === true
+          : false;
+      if (terminal && exactRootTurn && turn && !knownSettledRoot) {
+        // Control state and steering close now, even though accepted transcript
+        // deltas may not yet have reached this reducer. Keep the item buffer
+        // alive until that drain, then finalize content/terminal receipts in
+        // order. The control frame is never retained in an admission lane.
+        const terminalStatus = completedTurn
+          ? readString(completedTurn, 'status')
+          : undefined;
+        turn.controlPhase =
+          method === 'error' || terminalStatus === 'failed'
+            ? 'failed'
+            : 'completed';
+        this.onSteeringEligibilityChanged?.();
+      }
+      if (
+        (method === 'turn/completed' || method === 'error') &&
+        rootFrame &&
+        turn &&
+        turn.turnId &&
+        turnId &&
+        turn.turnId !== turnId
+      ) {
+        this.recordRootRunDrop(method, 'turn_id_mismatch', threadId, turnId);
+        return;
+      }
+      if (transcriptDrain) {
+        // Only a root frame belongs to the turn active when it was read. A
+        // subagent's completion is still delivered after the drain when the
+        // root turn has been finalized meanwhile, as it was in the lane.
+        const rootTurn = rootFrame ? turn : null;
+        return transcriptDrain.then(() => {
+          if (this.disposed || (rootTurn && this.activeTurn !== rootTurn))
+            return;
+          return this.handleConnectionNotification(method, notification);
+        });
+      }
     }
     if (method === 'thread/closed') {
       const params = readRecord(notification, 'params');
@@ -6700,6 +8807,12 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const admissions: Promise<void>[] = [];
     this.notificationAdmissions = admissions;
     try {
+      if (stoppedDynamicToolScope) {
+        this.closeStoppedDynamicToolRows(
+          stoppedDynamicToolScope.threadId,
+          stoppedDynamicToolScope.turnId,
+        );
+      }
       this.handleNotification(method, notification);
     } catch (error) {
       // Preserve the synchronous reducer failure while observing admissions
@@ -6721,16 +8834,21 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private request<TMethod extends AppServerRequestMethod>(
     method: TMethod,
     params: AppServerRequestParams<TMethod>,
+    options?: {
+      softTimeout?: {
+        onLateResponse: (outcome: CodexLateSteerResponse) => void;
+      };
+    },
   ): Promise<AppServerRequestResponse<TMethod>> {
     if (this.pendingTurnStartGeneration !== null) {
       this.dispatchedTurnStartGeneration = this.pendingTurnStartGeneration;
     }
-    return this.connection.request(
-      method,
-      params,
-      this.pendingTurnStartAbort
+    const requestOptions = {
+      ...options,
+      ...(this.pendingTurnStartAbort
         ? { signal: this.pendingTurnStartAbort.controller.signal }
-        : undefined,
-    );
+        : {}),
+    };
+    return this.connection.request(method, params, requestOptions);
   }
 }

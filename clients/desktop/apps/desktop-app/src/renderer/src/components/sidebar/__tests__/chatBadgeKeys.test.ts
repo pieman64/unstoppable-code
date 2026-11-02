@@ -230,7 +230,7 @@ describe('deriveChatBadgeKeys with live managed delegates', () => {
     );
   }
 
-  it('shows an idle chat with live delegates as working and active', () => {
+  it('shows an idle chat with live delegates as background work, and active', () => {
     const keys = deriveChatBadgeKeys(
       source({
         worktreeChats: {
@@ -240,7 +240,10 @@ describe('deriveChatBadgeKeys with live managed delegates', () => {
       delegates([{ projectId: 'p1', worktreeId: 'w1', chatId: 'c1' }]),
     );
 
-    expect(keys.streaming).toBe('p1/w1');
+    // A running turn draws the working spinner; delegates alone draw the
+    // background one (turn-state D15).
+    expect(keys.streaming).toBe('');
+    expect(keys.background).toBe('p1/w1=1');
     // `active` drives `hasActiveSession`, which disables Archive and Delete.
     expect(keys.active).toBe('p1/w1');
   });
@@ -255,7 +258,8 @@ describe('deriveChatBadgeKeys with live managed delegates', () => {
       ]),
     );
 
-    expect(keys.streaming).toBe('cowork/entry-1,p2/w2');
+    expect(keys.streaming).toBe('');
+    expect(keys.background).toBe('cowork/entry-1=1,p2/w2=2');
     expect(keys.active).toBe('cowork/entry-1,p2/w2');
   });
 
@@ -296,8 +300,9 @@ describe('deriveChatBadgeKeys with live managed delegates', () => {
     );
 
     // A delegate approval surfaces as the root chat's pending approval; the
-    // needs-input dot wins over the working spinner.
+    // needs-input dot shows beside the background spinner.
     expect(keys.streaming).toBe('');
+    expect(keys.background).toBe('p1/w1=1,p2/w2=1,p3/w3=1');
     // The live delegates still block Archive and Delete while waiting.
     expect(keys.active).toBe('p1/w1,p2/w2,p3/w3');
     expect(keys.toolApproval).toBe('p1/w1');
@@ -314,6 +319,110 @@ describe('deriveChatBadgeKeys with live managed delegates', () => {
     );
 
     expect(keys.streaming).toBe('p1/w1');
+    expect(keys.background).toBe('p1/w1=1');
     expect(keys.active).toBe('p1/w1');
+  });
+});
+
+describe('deriveChatBadgeKeys with live provider background tasks', () => {
+  function liveTasks(
+    entries: Array<{
+      projectId: string;
+      worktreeId: string;
+      chatId: string;
+      taskTypes: Array<string | undefined>;
+    }>,
+  ): Parameters<typeof deriveChatBadgeKeys>[2] {
+    return Object.fromEntries(
+      entries.map((entry) => [
+        `${entry.projectId}/${entry.worktreeId}/${entry.chatId}`,
+        {
+          projectId: entry.projectId,
+          worktreeId: entry.worktreeId,
+          chatId: entry.chatId,
+          liveTasks: entry.taskTypes.map((taskType, index) => ({
+            taskId: `t${index}`,
+            ...(taskType === undefined ? {} : { taskType }),
+          })),
+        },
+      ]),
+    );
+  }
+
+  it('marks provider agents and workflows active and background, without a working spinner', () => {
+    const keys = deriveChatBadgeKeys(
+      source({
+        worktreeChats: { 'p1/w1': { tabs: [{ id: 'c1', status: 'idle' }] } },
+      }),
+      {},
+      liveTasks([
+        {
+          projectId: 'p1',
+          worktreeId: 'w1',
+          chatId: 'c1',
+          taskTypes: ['local_agent'],
+        },
+        // Not hydrated: the mirror still blocks removal.
+        {
+          projectId: 'cowork',
+          worktreeId: 'entry-1',
+          chatId: 'c9',
+          taskTypes: ['local_bash', 'local_workflow'],
+        },
+      ]),
+    );
+
+    // `active` drives `hasActiveSession`, which disables Archive and Delete.
+    expect(keys.active).toBe('cowork/entry-1,p1/w1');
+    expect(keys.streaming).toBe('');
+    expect(keys.background).toBe('cowork/entry-1=2,p1/w1=1');
+  });
+
+  it('counts shells, MCP tasks and untyped tasks as background work without blocking close', () => {
+    const keys = deriveChatBadgeKeys(
+      source(),
+      {},
+      liveTasks([
+        {
+          projectId: 'p1',
+          worktreeId: 'w1',
+          chatId: 'c1',
+          taskTypes: ['local_bash', 'mcp_task', undefined],
+        },
+      ]),
+    );
+
+    expect(keys.active).toBe('');
+    expect(keys.streaming).toBe('');
+    expect(keys.background).toBe('p1/w1=3');
+  });
+
+  it('keeps a worktree active while a chat waits on the user', () => {
+    const keys = deriveChatBadgeKeys(
+      source({
+        pendingQuestions: {
+          q1: {
+            requestId: 'q1',
+            projectId: 'p2',
+            worktreeId: 'w2',
+            chatId: 'c2',
+            questions: [],
+          },
+        },
+      }),
+      {},
+      liveTasks([
+        {
+          projectId: 'p2',
+          worktreeId: 'w2',
+          chatId: 'c2',
+          taskTypes: ['remote_agent'],
+        },
+      ]),
+    );
+
+    expect(keys.active).toBe('p2/w2');
+    expect(keys.question).toBe('p2/w2');
+    expect(keys.streaming).toBe('');
   });
 });

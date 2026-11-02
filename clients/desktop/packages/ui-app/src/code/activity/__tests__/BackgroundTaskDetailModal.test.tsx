@@ -3,6 +3,17 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type {
+  BackgroundTaskStopOutcome,
+  BackgroundTaskStopRequest,
+  CanopyClient,
+  CommandMap,
+  CommandName,
+  QueryMap,
+  QueryName,
+  Unsubscribe,
+} from '@canopy/app-core';
+import { CanopyClientProvider } from '@canopy/app-state';
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';
 import type {
   BackgroundTaskHostActions,
@@ -43,12 +54,72 @@ function makeTask(overrides: Partial<BackgroundTask> = {}): BackgroundTask {
   };
 }
 
+function createStopClient(
+  stopCommands: CommandMap['activity.stopBackgroundTask']['args'][],
+): CanopyClient {
+  function command<K extends CommandName>(
+    name: K,
+    args: CommandMap[K]['args'],
+  ): Promise<CommandMap[K]['result']>;
+  function command(
+    name: CommandName,
+    args: CommandMap[CommandName]['args'],
+  ): Promise<unknown> {
+    if (
+      name === 'activity.stopBackgroundTask' &&
+      'projectId' in args &&
+      'worktreeId' in args &&
+      'chatId' in args &&
+      'taskId' in args &&
+      typeof args.projectId === 'string' &&
+      typeof args.worktreeId === 'string' &&
+      typeof args.chatId === 'string' &&
+      typeof args.taskId === 'string'
+    ) {
+      stopCommands.push({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        chatId: args.chatId,
+        taskId: args.taskId,
+      });
+      return Promise.resolve<BackgroundTaskStopOutcome>('stopped');
+    }
+    return Promise.reject(new Error(`Unexpected command: ${name}`));
+  }
+  return {
+    capabilities: {
+      localExecution: true,
+      terminalPty: true,
+      fileSystemAccess: 'read-write',
+      voice: false,
+      settingsScope: 'full',
+      pipelines: 'execute',
+      routing: 'in-memory',
+      overviewNotifications: true,
+      backgroundTaskStop: true,
+    },
+    query<K extends QueryName>(
+      name: K,
+      args: QueryMap[K]['args'],
+    ): Promise<QueryMap[K]['result']> {
+      void args;
+      return Promise.reject(new Error(`Unexpected query: ${name}`));
+    },
+    command,
+    subscribe(): Unsubscribe {
+      return (): void => {};
+    },
+  };
+}
+
 describe('BackgroundTaskDetailModal', () => {
   let container: HTMLDivElement;
   let root: Root;
   let readFullOutput: jest.Mock;
   let actions: BackgroundTaskHostActions;
   let detail: BackgroundTaskDetail;
+  let stopCommands: CommandMap['activity.stopBackgroundTask']['args'][];
+  let client: CanopyClient;
   let unsubscribeOutput: jest.Mock;
   let listeners: OutputListener[];
 
@@ -58,6 +129,8 @@ describe('BackgroundTaskDetailModal', () => {
     readFullOutput = jest.fn(() =>
       Promise.resolve({ lines: [], truncated: false }),
     );
+    stopCommands = [];
+    client = createStopClient(stopCommands);
     detail = {
       providerTaskId: 'task-1',
       toolName: 'Bash',
@@ -101,14 +174,19 @@ describe('BackgroundTaskDetailModal', () => {
     });
   }
 
-  async function renderModal(task: BackgroundTask): Promise<void> {
+  async function renderModal(
+    task: BackgroundTask,
+    onClose: () => void = (): void => {},
+  ): Promise<void> {
     act(() => {
       root.render(
-        <BackgroundTaskDetailModal
-          task={task}
-          actions={actions}
-          onClose={(): void => {}}
-        />,
+        <CanopyClientProvider client={client}>
+          <BackgroundTaskDetailModal
+            task={task}
+            actions={actions}
+            onClose={onClose}
+          />
+        </CanopyClientProvider>,
       );
     });
     await flushReads();
@@ -144,6 +222,18 @@ describe('BackgroundTaskDetailModal', () => {
     expect(modalText()).toContain('second');
   });
 
+  it('shows the output file row, "not set" without one, and omits it when the host has none', async () => {
+    await renderModal(makeTask());
+    expect(modalText()).toContain(`Output file${OUTPUT_FILE}`);
+    detail = { providerTaskId: 'task-1' };
+    await renderModal(makeTask());
+    expect(modalText()).toContain('Output filenot set');
+    detail = { providerTaskId: 'task-1', outputLocationLabel: null };
+    await renderModal(makeTask());
+    expect(modalText()).not.toContain('Output file');
+    expect(modalText()).toContain('task-1');
+  });
+
   it('keeps live subscription output when the task output changes', async () => {
     readFullOutput.mockResolvedValue({
       lines: ['from file'],
@@ -172,6 +262,75 @@ describe('BackgroundTaskDetailModal', () => {
     await renderModal(makeTask({ status: 'completed' }));
     emitOutput(['flushed after completion']);
     expect(modalText()).toContain('flushed after completion');
+  });
+
+  it('uses the shared task stop action with the host stop target', async () => {
+    actions = {
+      ...actions,
+      stopTarget: (): BackgroundTaskStopRequest => ({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        taskId: 'task-1',
+      }),
+    };
+    await renderModal(makeTask());
+
+    const stop = document.querySelector<HTMLButtonElement>(
+      '[data-testid="bg-process-detail-stop"]',
+    );
+    expect(stop?.getAttribute('aria-label')).toBe('Stop shell command');
+    if (!stop) throw new Error('Expected a task stop button');
+
+    await act(async () => {
+      stop.click();
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    });
+
+    expect(stopCommands).toEqual([
+      {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        taskId: 'task-1',
+      },
+    ]);
+  });
+
+  it('offers no Stop when the host has no stop target for the task', async () => {
+    actions = { ...actions, stopTarget: (): null => null };
+    await renderModal(makeTask());
+
+    expect(
+      document.querySelector('[data-testid="bg-process-detail-stop"]'),
+    ).toBeNull();
+  });
+
+  it('closes on Escape while its Stop button has focus', async () => {
+    const onClose = jest.fn();
+    actions = {
+      ...actions,
+      stopTarget: (): BackgroundTaskStopRequest => ({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        taskId: 'task-1',
+      }),
+    };
+    await renderModal(makeTask(), onClose);
+    const stop = document.querySelector<HTMLButtonElement>(
+      '[data-testid="bg-process-detail-stop"]',
+    );
+    if (!stop) throw new Error('Expected a task stop button');
+
+    act(() => {
+      stop.focus();
+      stop.dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }),
+      );
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('re-reads the finished output file once the flush window closes', async () => {

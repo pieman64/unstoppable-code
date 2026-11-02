@@ -10,6 +10,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   ChatTabsFile,
+  PersistedChatTab,
   StandaloneChatMetaUpdatedEvent,
 } from '@canopy/desktop-shared/types';
 import { initClaudeModels } from '@canopy/desktop-shared/types';
@@ -22,7 +23,7 @@ const ENTRY_ID = 'entry-1';
 const KEY = `${WORKSPACE_ID}/${ENTRY_ID}`;
 const CHAT_ID = 'chat-1';
 
-function makeChatTab(overrides?: Partial<ChatTab>): ChatTab {
+function makeChatTab(overrides: Partial<ChatTab> = {}): ChatTab {
   return {
     id: CHAT_ID,
     title: 'Cowork chat',
@@ -37,6 +38,26 @@ function makeChatTab(overrides?: Partial<ChatTab>): ChatTab {
     model: 'gpt-5.1-codex',
     providerType: 'codex',
     ...overrides,
+    modelConfig: overrides.modelConfig ?? {
+      thinkingLevel: 'high',
+      speed: 'standard',
+      fastMode: false,
+    },
+    fastModeExplicit: overrides.fastModeExplicit ?? false,
+  };
+}
+
+function persistedTab(
+  model: NonNullable<PersistedChatTab['model']>,
+  providerType: NonNullable<PersistedChatTab['providerType']>,
+): PersistedChatTab {
+  return {
+    id: CHAT_ID,
+    title: 'Cowork chat',
+    messages: [],
+    createdAt: '2026-09-19T00:00:00.000Z',
+    model,
+    providerType,
   };
 }
 
@@ -129,9 +150,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
     loadTabs.mockResolvedValue({
       version: 1,
       activeTabId: CHAT_ID,
-      tabs: [
-        { id: CHAT_ID, model: 'claude-sonnet-4-6', providerType: 'claude' },
-      ],
+      tabs: [persistedTab('claude-sonnet-4-6', 'claude')],
     });
 
     await emit({ projectId: WORKSPACE_ID, chatId: CHAT_ID });
@@ -156,7 +175,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
     loadTabs.mockResolvedValue({
       version: 1,
       activeTabId: CHAT_ID,
-      tabs: [{ id: CHAT_ID, model: 'gpt-5.1-codex', providerType: 'codex' }],
+      tabs: [persistedTab('gpt-5.1-codex', 'codex')],
     });
 
     await emit({ projectId: WORKSPACE_ID, chatId: CHAT_ID });
@@ -181,7 +200,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
     loadTabs.mockResolvedValue({
       version: 1,
       activeTabId: CHAT_ID,
-      tabs: [{ id: CHAT_ID, model: 'gpt-5.1-codex', providerType: 'codex' }],
+      tabs: [persistedTab('gpt-5.1-codex', 'codex')],
     });
 
     await emit({ projectId: WORKSPACE_ID, chatId: CHAT_ID });
@@ -201,9 +220,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
       .mockResolvedValueOnce({
         version: 1,
         activeTabId: CHAT_ID,
-        tabs: [
-          { id: CHAT_ID, model: 'claude-sonnet-4-6', providerType: 'claude' },
-        ],
+        tabs: [persistedTab('claude-sonnet-4-6', 'claude')],
       });
 
     const older = useChatStore
@@ -217,7 +234,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
     resolveOlder({
       version: 1,
       activeTabId: CHAT_ID,
-      tabs: [{ id: CHAT_ID, model: 'gpt-5.1-codex', providerType: 'codex' }],
+      tabs: [persistedTab('gpt-5.1-codex', 'codex')],
     });
 
     await expect(older).resolves.toBe(false);
@@ -249,7 +266,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
     resolvePortalRead({
       version: 1,
       activeTabId: CHAT_ID,
-      tabs: [{ id: CHAT_ID, model: 'gpt-5.1-codex', providerType: 'codex' }],
+      tabs: [persistedTab('gpt-5.1-codex', 'codex')],
     });
 
     await expect(portalSync).resolves.toBe(false);
@@ -281,9 +298,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
     resolvePortalRead({
       version: 1,
       activeTabId: CHAT_ID,
-      tabs: [
-        { id: CHAT_ID, model: 'claude-sonnet-4-6', providerType: 'claude' },
-      ],
+      tabs: [persistedTab('claude-sonnet-4-6', 'claude')],
     });
 
     await expect(portalSync).resolves.toBe(true);
@@ -295,9 +310,7 @@ describe('useStandaloneChatEventSubscriptions model sync (CAN-1305)', () => {
     loadTabs.mockResolvedValue({
       version: 1,
       activeTabId: CHAT_ID,
-      tabs: [
-        { id: CHAT_ID, model: 'claude-sonnet-4-6', providerType: 'claude' },
-      ],
+      tabs: [persistedTab('claude-sonnet-4-6', 'claude')],
     });
 
     await emit({ projectId: WORKSPACE_ID, chatId: CHAT_ID });

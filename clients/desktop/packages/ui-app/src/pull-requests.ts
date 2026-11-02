@@ -70,6 +70,7 @@ export {
   portalPullRequestActionPayload,
   portalPullRequestActionsFacts,
   portalPullRequestActivity,
+  portalPullRequestMergeRepo,
   portalPullRequestProgress,
   type PortalPullRequestActionsRow,
   type PortalPullRequestStep,

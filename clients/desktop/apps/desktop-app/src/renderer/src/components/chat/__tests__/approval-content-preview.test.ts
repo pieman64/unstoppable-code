@@ -2,9 +2,11 @@ import {
   APPROVAL_CONTENT_PREVIEW_MAX_CHARS,
   APPROVAL_CONTENT_PREVIEW_MAX_LINES,
   APPROVAL_MENU_TARGET_MAX_CHARS,
+  approvalAnnouncementText,
   previewApprovalContent,
   previewApprovalTargetLabel,
 } from '../approval-content-preview';
+import type { ApprovalRequestEvent } from '@canopy/desktop-shared/types';
 
 describe('previewApprovalContent', () => {
   it('returns short content untouched', () => {
@@ -65,5 +67,56 @@ describe('previewApprovalTargetLabel', () => {
     const result = previewApprovalTargetLabel(label);
     expect(result.truncated).toBe(true);
     expect(result.text).toHaveLength(APPROVAL_MENU_TARGET_MAX_CHARS);
+  });
+});
+
+describe('approvalAnnouncementText', () => {
+  function pending(
+    details: ApprovalRequestEvent['details'],
+    title = 'Run command',
+  ): ApprovalRequestEvent {
+    return {
+      requestId: 'req-1',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      provider: 'claude',
+      title,
+      details,
+    };
+  }
+
+  it('names the title and the command on one bounded line', () => {
+    const text = approvalAnnouncementText(
+      pending({ kind: 'command', command: `${'x'.repeat(200)}\nsecond line` }),
+    );
+    expect(text).toBe(
+      `Approval needed: Run command. ${'x'.repeat(APPROVAL_MENU_TARGET_MAX_CHARS)}…`,
+    );
+  });
+
+  it('bounds a multiline or oversized title as well as its context', () => {
+    const text = approvalAnnouncementText(
+      pending({ kind: 'tool', toolName: 'Read' }, `${'t'.repeat(200)}\nsecret`),
+    );
+    expect(text).toBe(
+      `Approval needed: ${'t'.repeat(APPROVAL_MENU_TARGET_MAX_CHARS)}…. Read`,
+    );
+    expect(text).not.toContain('secret');
+  });
+
+  it('prefers the projected path for a file write', () => {
+    expect(
+      approvalAnnouncementText(
+        pending(
+          {
+            kind: 'file-write',
+            path: '/repo/src/index.ts',
+            displayPath: 'src/index.ts',
+          },
+          'Edit file',
+        ),
+      ),
+    ).toBe('Approval needed: Edit file. src/index.ts');
   });
 });

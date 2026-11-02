@@ -19,7 +19,12 @@ function account(
     authMode: 'api_key',
     credentialSource: 'manual',
     capabilities: [],
-    account: { email: 'dev@example.com' },
+    account: {
+      id: 'account-1',
+      name: 'Developer',
+      email: 'dev@example.com',
+      role: 'DEVELOPER',
+    },
     storageAvailable: true,
     ...overrides,
   };

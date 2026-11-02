@@ -30,6 +30,7 @@ import {
   SidebarItemGroupEditor,
   SidebarItemGroupHeader,
   SIDEBAR_ROW_TEXT_INSET_CLASSNAME,
+  sidebarItemGroupBulkMenu,
   sidebarItemGroupColor,
   sidebarItemGroupRowMenu,
   WorktreeRowDragCursorProvider,
@@ -389,6 +390,7 @@ export function CodeSidebarItemGroups({
   onError,
   canDragRow,
   isItemSelected,
+  selectionCount,
   renderStatus,
   rowGap = 'none',
   itemGap = 'none',
@@ -434,6 +436,11 @@ export function CodeSidebarItemGroups({
    * row carries every selected row that can move with it.
    */
   isItemSelected?: (id: string) => boolean;
+  /**
+   * How many rows the rail's whole selection holds, across every list. A
+   * selected row's menu moves the selection only when all of it is here.
+   */
+  selectionCount?: number;
   renderStatus: (block: SidebarItemGroupBlock) => ReactNode;
 }): JSX.Element {
   const [localCollapse, setLocalCollapse] = useState<
@@ -697,41 +704,102 @@ export function CodeSidebarItemGroups({
   const navGroups = [...groups].sort(
     (left, right) => navIndex(left.id) - navIndex(right.id),
   );
+  // Every selected row in this list, movable or not.
+  const selectedUnits =
+    isItemSelected === undefined
+      ? []
+      : blocks.flatMap((block) =>
+          block.units
+            .filter((unit) => isItemSelected(unit.rootId))
+            .map((unit) => ({ unit, block })),
+        );
+  const bulkMenuFor = (
+    groupCommands: CodeSidebarItemGroupCommands,
+  ): WorktreeMenuItem[] => {
+    // Groups belong to one project: a selection reaching past this list
+    // has no group every row can join, so it offers none.
+    if (selectedUnits.length !== selectionCount) return [];
+    // Pinned rows keep their own order and never join groups, and a row its
+    // host holds back from drag stays put, as for drag.
+    const movable = selectedUnits.filter(
+      ({ unit }) =>
+        unit.pinned !== true && unit.hidden !== true && canDragRow(unit.rootId),
+    );
+    const movableIds = movable.map(({ unit }) => unit.rootId);
+    const membershipOnly = mode !== 'manual';
+    // Rows already in the target stay where they are.
+    const moveAll = (groupId: string | null): void => {
+      const moving = movable
+        .filter(({ block }) => (block.group?.id ?? null) !== groupId)
+        .map(({ unit }) => unit.rootId);
+      for (const move of sidebarItemGroupMultiMoves(blocks, moving, {
+        groupId,
+        membershipOnly,
+      }))
+        groupCommands.moveItem(move.itemId, move.drop);
+    };
+    return sidebarItemGroupBulkMenu({
+      groups: navGroups,
+      currentGroupIds: movable.map(({ block }) => block.group?.id),
+      onNewGroup: (): void => {
+        const [first, ...rest] = movableIds;
+        if (first === undefined) return;
+        void groupCommands
+          .create(first)
+          .then((group): void => {
+            // The rest follow the first row into the new group, in order.
+            for (const move of sidebarItemGroupMultiMoves(blocks, rest, {
+              groupId: group.id,
+              ...(membershipOnly ? {} : { after: first }),
+              membershipOnly,
+            }))
+              groupCommands.moveItem(move.itemId, move.drop);
+            // On a row in the new group: the right-clicked one may be pinned.
+            edit(group.id, first);
+          })
+          .catch(onError);
+      },
+      onMove: moveAll,
+      onRemove: (): void => moveAll(null),
+    });
+  };
   const menuFor = (
     block: SidebarItemGroupBlock,
     id: string,
   ): WorktreeMenuItem[] =>
     commands === undefined
       ? []
-      : sidebarItemGroupRowMenu({
-          groups: navGroups,
-          currentGroupId: block.group?.id,
-          unitLabel,
-          eligible:
-            block.units.find((unit) => unit.rootId === id)?.pinned !== true,
-          onNewGroup: (): void => {
-            void commands
-              .create(id)
-              .then((group): void => edit(group.id, id))
-              .catch(onError);
-          },
-          onMove: (groupId): void =>
-            commands?.moveItem(id, {
-              groupId,
-              membershipOnly: mode !== 'manual',
-            }),
-          onEdit: (groupId): void => edit(groupId, id),
-          onToggle: (groupId): void => {
-            const group = groups.find((group) => group.id === groupId);
-            if (group)
-              void commands?.update(groupId, { collapsed: !group.collapsed });
-          },
-          onRemove: (): void =>
-            commands?.moveItem(id, {
-              groupId: null,
-              membershipOnly: mode !== 'manual',
-            }),
-        });
+      : isItemSelected?.(id) === true && (selectionCount ?? 0) >= 2
+        ? bulkMenuFor(commands)
+        : sidebarItemGroupRowMenu({
+            groups: navGroups,
+            currentGroupId: block.group?.id,
+            unitLabel,
+            eligible:
+              block.units.find((unit) => unit.rootId === id)?.pinned !== true,
+            onNewGroup: (): void => {
+              void commands
+                .create(id)
+                .then((group): void => edit(group.id, id))
+                .catch(onError);
+            },
+            onMove: (groupId): void =>
+              commands?.moveItem(id, {
+                groupId,
+                membershipOnly: mode !== 'manual',
+              }),
+            onEdit: (groupId): void => edit(groupId, id),
+            onToggle: (groupId): void => {
+              const group = groups.find((group) => group.id === groupId);
+              if (group)
+                void commands?.update(groupId, { collapsed: !group.collapsed });
+            },
+            onRemove: (): void =>
+              commands?.moveItem(id, {
+                groupId: null,
+                membershipOnly: mode !== 'manual',
+              }),
+          });
   const renderUnit = (
     block: SidebarItemGroupBlock,
     unit: SidebarItemGroupBlock['units'][number],

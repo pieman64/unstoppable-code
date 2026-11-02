@@ -21,7 +21,7 @@ export function McpConnectionStatusBadge({
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
       <span
-        className={`rounded-full px-2 py-0.5 text-3xs font-medium ${mcpConnectionStatusBadgeClass(badge.status)}`}
+        className={mcpConnectionStatusBadgeClass(badge.status)}
         data-testid={dataTestId}
         data-status={badge.status}
       >

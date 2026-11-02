@@ -43,10 +43,11 @@ const summary: ExecutionSummary = {
   pipeline_id: 'pipeline-1',
   pipeline_name: 'Private pipeline name',
   status: 'success',
+  status_reasons: [],
   started_at: '2026-05-19T00:00:00.000Z',
   completed_at: '2026-05-19T00:01:00.000Z',
   cwd: '/repo',
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };
@@ -56,8 +57,8 @@ const state: ExecutionState = {
   id: 'execution-1',
   pipeline_id: 'pipeline-1',
   pipeline_snapshot: {
-    id: 'pipeline-1',
     name: 'Private pipeline name',
+    scope: ['directory'],
     jobs: {},
   },
   status: 'success',
@@ -71,7 +72,7 @@ const state: ExecutionState = {
   cwd: '/repo',
   env: {},
   inputs: {},
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };
@@ -99,7 +100,6 @@ beforeEach(() => {
     summaries: [summary],
     statesById: { 'execution-1': state },
     advisorSnapshotsByExecutionId: {},
-    stepOutputBuffer: {},
     loadExecutionDetails: jest.fn<Promise<ExecutionState | null>, [string]>(
       () => Promise.resolve(state),
     ),

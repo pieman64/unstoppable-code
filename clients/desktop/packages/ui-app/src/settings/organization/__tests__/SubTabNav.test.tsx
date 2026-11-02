@@ -18,7 +18,7 @@ function renderNav(variant?: Variant): HTMLElement {
       tabs={TABS}
       activeTab="general"
       onSelect={(): void => {}}
-      testIdPrefix="team-settings"
+      testIdPrefix="memory-views"
       ariaLabel="Organization settings"
       variant={variant}
     />,
@@ -34,7 +34,7 @@ function classesOf(container: HTMLElement, testId: string): string[] {
 
 /** The scroll frame is the strip wrapper that carries the border. */
 function frameClasses(container: HTMLElement): string[] {
-  const nav = container.querySelector('[data-testid="team-settings-tabs"]');
+  const nav = container.querySelector('[data-testid="memory-views-tabs"]');
   const classes: string[] = [];
   for (let el = nav?.parentElement; el; el = el.parentElement) {
     classes.push(...(el.getAttribute('class') ?? '').split(/\s+/));
@@ -49,10 +49,10 @@ describe('SubTabNav', () => {
     expect(frameClasses(container)).toEqual(
       expect.arrayContaining(['rounded-md', 'border', 'p-0.5']),
     );
-    expect(classesOf(container, 'team-settings-tab-general')).toEqual(
+    expect(classesOf(container, 'memory-views-tab-general')).toEqual(
       expect.arrayContaining(['bg-accent', 'fg-emphasis']),
     );
-    expect(classesOf(container, 'team-settings-tab-billing')).not.toContain(
+    expect(classesOf(container, 'memory-views-tab-billing')).not.toContain(
       'border-b-2',
     );
   });
@@ -65,7 +65,7 @@ describe('SubTabNav', () => {
     expect(frame).not.toContain('rounded-md');
     expect(frame).not.toContain('p-0.5');
 
-    const active = classesOf(container, 'team-settings-tab-general');
+    const active = classesOf(container, 'memory-views-tab-general');
     expect(active).toEqual(
       expect.arrayContaining([
         '-mb-px',
@@ -88,7 +88,7 @@ describe('SubTabNav', () => {
       ]),
     );
 
-    const inactive = classesOf(container, 'team-settings-tab-billing');
+    const inactive = classesOf(container, 'memory-views-tab-billing');
     expect(inactive).toEqual(
       expect.arrayContaining([
         '-mb-px',
@@ -105,13 +105,13 @@ describe('SubTabNav', () => {
     (variant) => {
       const container = renderNav(variant);
 
-      const nav = container.querySelector('[data-testid="team-settings-tabs"]');
+      const nav = container.querySelector('[data-testid="memory-views-tabs"]');
       expect(nav?.getAttribute('aria-label')).toBe('Organization settings');
       const general = container.querySelector(
-        '[data-testid="team-settings-tab-general"]',
+        '[data-testid="memory-views-tab-general"]',
       );
       const billing = container.querySelector(
-        '[data-testid="team-settings-tab-billing"]',
+        '[data-testid="memory-views-tab-billing"]',
       );
       expect(general?.tagName).toBe('BUTTON');
       expect(general?.getAttribute('aria-pressed')).toBe('true');
@@ -119,7 +119,7 @@ describe('SubTabNav', () => {
       expect(
         billing
           ?.querySelector(
-            '[data-testid="team-settings-tab-billing-attention-dot"]',
+            '[data-testid="memory-views-tab-billing-attention-dot"]',
           )
           ?.getAttribute('aria-label'),
       ).toBe('Billing needs attention');

@@ -19,6 +19,7 @@ import type { LabsAvailabilityState } from '../../feature-flags/labs-availabilit
 import {
   labsContextIdentity,
   resolveLabsAvailability,
+  createDesktopLabsAvailabilityFallback,
 } from '../../feature-flags/labs-availability';
 import {
   EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS,
@@ -79,6 +80,7 @@ function harness(
   const deps: LabsExperimentsDependencies = {
     choicesPath: 'choices',
     availabilityPath: 'availability',
+    pendingSyncPath: 'pending',
     read: (path) => (path === 'choices' ? cache : null),
     write: jest.fn((path, data): Promise<void> => {
       files.set(path, data);
@@ -122,6 +124,355 @@ function harness(
     },
   };
 }
+describe('offline signed-in choices', () => {
+  const offline = (): Promise<never> =>
+    Promise.reject(new Error('server unreachable'));
+  const persisted = (
+    h: ReturnType<typeof harness>,
+  ): LabsExperimentsDependencies['read'] => {
+    return (path): unknown =>
+      h.files.has(path) ? JSON.parse(h.files.get(path) ?? '') : undefined;
+  };
+  it('commits a signed-in choice locally while the server is unreachable', async () => {
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    expect(h.service.getSnapshot()).toMatchObject({
+      choicesReady: true,
+      earlyAccessEnabled: true,
+    });
+    await h.service.flush();
+    expect(JSON.parse(h.files.get('choices') ?? '{}')).toMatchObject({
+      accounts: { [account.scope]: { 'early-access': true } },
+    });
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: { [account.scope]: ['early-access'] },
+    });
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+  });
+  it('never waits on a server that does not answer', async () => {
+    const never = deferred<unknown>();
+    const h = harness(null, account, {
+      putChoice: jest.fn(() => never.promise),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+    expect(h.deps.putChoice).toHaveBeenCalledTimes(1);
+  });
+  it('restarts offline with the local choice, then syncs it before the next GET', async () => {
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    await h.service.flush();
+    h.deps.read = persisted(h);
+
+    const offlineRestart = new LabsExperimentsService(h.deps, account);
+    expect(offlineRestart.getSnapshot()).toMatchObject({
+      choicesReady: true,
+      earlyAccessEnabled: true,
+    });
+    await offlineRestart.refreshChoices();
+    await offlineRestart.flush();
+    expect(offlineRestart.getSnapshot().earlyAccessEnabled).toBe(true);
+
+    // The account still holds the older choice from another device.
+    const server: Record<string, boolean> = { 'early-access': false };
+    const put = jest.fn(
+      (
+        _session: LabsAccountSession,
+        request: { experimentId: string; enabled: boolean },
+      ): Promise<unknown> => {
+        server[request.experimentId] = request.enabled;
+        return Promise.resolve({
+          ...request,
+          updatedAt: new Date().toISOString(),
+        });
+      },
+    );
+    h.deps.putChoice = put;
+    h.deps.fetchChoices = jest.fn(
+      (): Promise<unknown> => Promise.resolve({ choices: { ...server } }),
+    );
+    const online = new LabsExperimentsService(h.deps, account);
+    await online.refreshChoices();
+    await online.flush();
+    expect(online.getSnapshot().earlyAccessEnabled).toBe(true);
+    expect(put).toHaveBeenCalledWith(account, {
+      experimentId: 'early-access',
+      enabled: true,
+    });
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: {},
+    });
+    expect(JSON.parse(h.files.get('choices') ?? '{}')).toMatchObject({
+      accounts: { [account.scope]: { 'early-access': true } },
+    });
+  });
+  it('retries pending choices on demand and keeps them after another failure', async () => {
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    await h.service.retryPendingSync();
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: { [account.scope]: ['early-access'] },
+    });
+    h.deps.putChoice = jest.fn(
+      (_session, request): Promise<unknown> =>
+        Promise.resolve({ ...request, updatedAt: new Date().toISOString() }),
+    );
+    await h.service.retryPendingSync();
+    await h.service.flush();
+    expect(h.deps.putChoice).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: {},
+    });
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+  });
+  it('keeps an unsynced choice over a GET while the save cannot be sent', async () => {
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    h.deps.fetchChoices = jest.fn(
+      (): Promise<unknown> =>
+        Promise.resolve({ choices: { 'early-access': false, sidebar: true } }),
+    );
+    await h.service.refreshChoices();
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+    expect(
+      h.service
+        .getSnapshot()
+        .experiments.find((entry) => entry.id === 'sidebar'),
+    ).toMatchObject({ choice: true });
+  });
+  it('marks a choice pending before it lands and fails the save if it cannot', async () => {
+    const order: string[] = [];
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+    });
+    h.deps.write = jest.fn((path: string, data: string): Promise<void> => {
+      order.push(path);
+      h.files.set(path, data);
+      return Promise.resolve();
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    expect(order.filter((path) => path !== 'availability')).toEqual([
+      'pending',
+      'choices',
+    ]);
+    h.deps.write = jest.fn(
+      (path: string): Promise<void> =>
+        path === 'pending'
+          ? Promise.reject(new Error('disk full'))
+          : Promise.resolve(),
+    );
+    await expect(
+      h.service.setChoice({ experimentId: 'sidebar', enabled: true }),
+    ).rejects.toThrow('disk full');
+    expect(
+      h.service
+        .getSnapshot()
+        .experiments.find((entry) => entry.id === 'sidebar'),
+    ).toMatchObject({ choice: null });
+  });
+  it('drops the pending id again when the choice itself cannot be saved', async () => {
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+    });
+    h.deps.write = jest.fn((path: string, data: string): Promise<void> => {
+      if (path === 'choices') return Promise.reject(new Error('disk full'));
+      h.files.set(path, data);
+      return Promise.resolve();
+    });
+    await expect(
+      h.service.setChoice({ experimentId: 'early-access', enabled: true }),
+    ).rejects.toThrow('disk full');
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: {},
+    });
+    expect(h.deps.putChoice).not.toHaveBeenCalled();
+  });
+  it('reports an unreadable pending-sync file instead of dropping it silently', () => {
+    const diagnostic = jest.fn();
+    harness(null, account, {
+      diagnostic,
+      read: (path): unknown =>
+        path === 'pending' ? { version: 1, accounts: { x: 'bad' } } : undefined,
+    });
+    expect(diagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('pending-sync') as unknown,
+      }),
+    );
+    const missing = jest.fn();
+    harness(null, account, { diagnostic: missing, read: () => undefined });
+    expect(missing).not.toHaveBeenCalled();
+  });
+  it('flushes without waiting on the network and queues one sync pass at a time', async () => {
+    const never = deferred<unknown>();
+    const h = harness(null, account, {
+      putChoice: jest.fn(() => never.promise),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    await h.service.setChoice({ experimentId: 'sidebar', enabled: true });
+    await h.service.setChoice({ experimentId: 'kanban-page', enabled: true });
+    await h.service.flush();
+    expect(h.deps.putChoice).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: { [account.scope]: ['early-access', 'sidebar', 'kanban-page'] },
+    });
+  });
+  it('drops a permanently refused choice and keeps syncing the rest', async () => {
+    const refusal = new Error('choice limit');
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+      isPermanentRejection: (error) => error === refusal,
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    await h.service.setChoice({ experimentId: 'sidebar', enabled: true });
+    const put = jest.fn(
+      (
+        _session: LabsAccountSession,
+        request: { experimentId: string; enabled: boolean },
+      ): Promise<unknown> =>
+        request.experimentId === 'early-access'
+          ? Promise.reject(refusal)
+          : Promise.resolve({
+              ...request,
+              updatedAt: new Date().toISOString(),
+            }),
+    );
+    h.deps.putChoice = put;
+    await h.service.retryPendingSync();
+    await h.service.flush();
+    expect(put.mock.calls.map(([, request]) => request.experimentId)).toEqual([
+      'early-access',
+      'sidebar',
+    ]);
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: {},
+    });
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+  });
+  it('sends a newer change made while the previous PUT is in flight', async () => {
+    const first = deferred<unknown>();
+    const sent: boolean[] = [];
+    const h = harness(null, account, {
+      putChoice: jest.fn(
+        (
+          _session: LabsAccountSession,
+          request: { experimentId: string; enabled: boolean },
+        ): Promise<unknown> => {
+          sent.push(request.enabled);
+          return sent.length === 1
+            ? first.promise
+            : Promise.resolve({
+                ...request,
+                updatedAt: new Date().toISOString(),
+              });
+        },
+      ),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: false });
+    first.resolve({
+      experimentId: 'early-access',
+      enabled: true,
+      updatedAt: new Date().toISOString(),
+    });
+    await h.service.retryPendingSync();
+    await h.service.flush();
+    expect(sent).toEqual([true, false]);
+    expect(h.service.getSnapshot().experiments[0].choice).toBe(false);
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: {},
+    });
+  });
+  it('keeps a newer change pending when the previous PUT lands during its commit', async () => {
+    const first = deferred<unknown>();
+    const sent: boolean[] = [];
+    const h = harness(null, account, {
+      putChoice: jest.fn(
+        (
+          _session: LabsAccountSession,
+          request: { experimentId: string; enabled: boolean },
+        ): Promise<unknown> => {
+          sent.push(request.enabled);
+          return sent.length === 1
+            ? first.promise
+            : Promise.resolve({
+                ...request,
+                updatedAt: new Date().toISOString(),
+              });
+        },
+      ),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    const gate = deferred<void>();
+    const choicesStarted = deferred<void>();
+    h.deps.write = jest.fn(
+      async (path: string, data: string): Promise<void> => {
+        if (path === 'choices') {
+          choicesStarted.resolve();
+          await gate.promise;
+        }
+        h.files.set(path, data);
+      },
+    );
+    const second = h.service.setChoice({
+      experimentId: 'early-access',
+      enabled: false,
+    });
+    await choicesStarted.promise;
+    first.resolve({
+      experimentId: 'early-access',
+      enabled: true,
+      updatedAt: new Date().toISOString(),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    gate.resolve();
+    await second;
+    await h.service.retryPendingSync();
+    await h.service.flush();
+    expect(sent).toEqual([true, false]);
+    expect(h.service.getSnapshot().experiments[0].choice).toBe(false);
+    expect(JSON.parse(h.files.get('pending') ?? '{}')).toEqual({
+      version: 1,
+      accounts: {},
+    });
+  });
+  it('keeps a pending choice with its own account across account switches', async () => {
+    const h = harness(null, account, {
+      putChoice: jest.fn(offline),
+      fetchChoices: jest.fn(offline),
+    });
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    await h.service.activate({ ...account, scope: 'server/account-b' });
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(false);
+    await h.service.activate(local);
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(false);
+    await h.service.activate(account);
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+  });
+});
 describe('authoritative Labs state', () => {
   it('starts offered off and synchronously mirrors cached choices', () => {
     const first = harness();
@@ -260,14 +611,16 @@ describe('authoritative Labs state', () => {
       h.service.setChoice({ experimentId: 'kanban-page', enabled: true }),
     ).rejects.toMatchObject({ code: 'missing_capability' });
   });
-  it('retains server-confirmed state if the cache fails', async () => {
+  it('refuses a signed-in save whose local commit fails, without contacting the server', async () => {
     const h = harness(null, account);
     h.deps.write = jest.fn(
       (): Promise<never> => Promise.reject(new Error('disk full')),
     );
-    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
-    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
-    expect(h.deps.diagnostic).toHaveBeenCalled();
+    await expect(
+      h.service.setChoice({ experimentId: 'early-access', enabled: true }),
+    ).rejects.toThrow('disk full');
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(false);
+    expect(h.deps.putChoice).not.toHaveBeenCalled();
   });
   it('replaces the complete account cache with GET, retaining it on failure', async () => {
     const h = harness(
@@ -352,7 +705,7 @@ describe('authoritative Labs state', () => {
     expect(h.service.getSnapshot().scope).toBe('local');
     expect(h.service.getSnapshot().earlyAccessEnabled).toBe(false);
   });
-  it('ignores previous-account PUT completion', async () => {
+  it('refuses a save still committing when the account changes', async () => {
     const h = harness(null, account);
     const put = deferred<unknown>();
     h.deps.putChoice = jest.fn(() => put.promise);
@@ -371,32 +724,28 @@ describe('authoritative Labs state', () => {
     await expect(write).rejects.toMatchObject({ code: 'surface_unavailable' });
     expect(h.service.getSnapshot().earlyAccessEnabled).toBe(false);
   });
-  it('reconciles response loss using a complete GET', async () => {
+  it('keeps a choice whose PUT response was lost and replays it idempotently', async () => {
     const h = harness(null, account);
     h.deps.putChoice = jest.fn(
       (): Promise<never> => Promise.reject(new Error('response lost')),
     );
-    h.deps.fetchChoices = jest.fn(
-      (): Promise<unknown> =>
+    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
+    await h.service.flush();
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+    h.deps.putChoice = jest.fn(
+      (_session, request): Promise<unknown> =>
         Promise.resolve({
+          ...request,
+          updatedAt: new Date().toISOString(),
           choices: { 'early-access': true, retired: false },
         }),
     );
-    await h.service.setChoice({ experimentId: 'early-access', enabled: true });
-    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
-  });
-  it('leaves committed choice unchanged when PUT and reconciliation fail', async () => {
-    const h = harness(null, account);
-    h.deps.putChoice = jest.fn(
-      (): Promise<never> => Promise.reject(new Error('network')),
-    );
-    h.deps.fetchChoices = jest.fn(
-      (): Promise<never> => Promise.reject(new Error('offline')),
-    );
-    await expect(
-      h.service.setChoice({ experimentId: 'early-access', enabled: true }),
-    ).rejects.toThrow('network');
-    expect(h.service.getSnapshot().experiments[0].choice).toBe(null);
+    await h.service.retryPendingSync();
+    expect(h.deps.putChoice).toHaveBeenCalledWith(account, {
+      experimentId: 'early-access',
+      enabled: true,
+    });
+    expect(h.service.getSnapshot().experiments[0].choice).toBe(true);
   });
   it('a live kill switch during save wins without deleting the stored choice', async () => {
     const h = harness(null, account);
@@ -768,7 +1117,7 @@ describe('injected Labs availability fallback', () => {
             listed: availability !== 'hidden',
             enabled: availability === 'on' && choice !== false,
           });
-          expect(raw.values[metadata.flagKey]).toBe('offered');
+          expect(Reflect.get(raw.values, metadata.flagKey)).toBe('offered');
         }
         expect(labsExperimentsSnapshotSchema.safeParse(snapshot).success).toBe(
           true,
@@ -787,14 +1136,8 @@ describe('injected Labs availability fallback', () => {
           entry.id === 'kanban-page' ? 'on' : undefined,
       });
       const pending = deferred<never>();
-      if (session.signedIn) {
-        h.deps.putChoice = jest.fn(() => pending.promise);
-        h.deps.fetchChoices = jest.fn(
-          (): Promise<never> => Promise.reject(new Error('offline')),
-        );
-      } else {
-        h.deps.write = jest.fn(() => pending.promise);
-      }
+      // Every scope commits locally; only a failed local write fails a save.
+      h.deps.write = jest.fn(() => pending.promise);
       const before = h.service.getSnapshot();
       const write = h.service.setChoice({
         experimentId: 'kanban-page',
@@ -811,6 +1154,7 @@ describe('injected Labs availability fallback', () => {
           .getSnapshot()
           .experiments.find((entry) => entry.id === 'kanban-page'),
       ).toMatchObject({ availability: 'on', choice: null, enabled: true });
+      expect(h.deps.putChoice).not.toHaveBeenCalled();
     },
   );
 
@@ -1017,4 +1361,205 @@ describe('Labs availability resolution precedence', () => {
       ).toBe(status === 'not_configured' ? 'on' : 'offered');
     },
   );
+});
+
+describe('Files experiment defaults and durability', () => {
+  const id = 'daemon-files-reads';
+  const flag = 'canopy-desktop-labs-daemon-files-reads';
+  const context = 'a'.repeat(64);
+  const filesEntry = (
+    h: ReturnType<typeof harness>,
+  ): LabsExperimentsSnapshot['experiments'][number] | undefined =>
+    h.service.getSnapshot().experiments.find((entry) => entry.id === id);
+  const setup = (
+    brand: string,
+    cache: unknown = null,
+    session = local,
+  ): ReturnType<typeof harness> =>
+    harness(cache, session, {
+      availabilityFallback: createDesktopLabsAvailabilityFallback(brand),
+    });
+  for (const brand of ['canopy', 'unstoppable-code', 'unknown']) {
+    for (const status of ['not_configured', 'error'] as const) {
+      it.each([null, true, false])(
+        `${brand} / ${status} / saved %p`,
+        (choice) => {
+          const h = setup(brand, {
+            version: 1,
+            // Files never inherits Early access: `choice` stays as saved.
+            accounts: {
+              local: {
+                'early-access': true,
+                ...(choice === null ? {} : { [id]: choice }),
+              },
+            },
+          });
+          h.setState({
+            snapshot: getDefaultFeatureFlagSnapshot(status),
+            contextIdentity: context,
+            liveValues: {},
+          });
+          expect(filesEntry(h)).toMatchObject({
+            availability: brand === 'canopy' ? 'on' : 'offered',
+            availabilitySource: 'policy_fallback',
+            choice,
+            enabled: brand === 'canopy' ? choice !== false : choice === true,
+            listed: true,
+          });
+          expect(h.service.getSnapshot().earlyAccessEnabled).toBe(true);
+          expect(
+            labsExperimentsSnapshotSchema.safeParse(h.service.getSnapshot())
+              .success,
+          ).toBe(true);
+        },
+      );
+    }
+  }
+  it('keeps valid live/cache ahead of defaults, recovers hidden, fences context and never caches fallback', async () => {
+    const h = setup('canopy');
+    const live = (value: unknown, identity = context): void =>
+      h.setState({
+        snapshot: getDefaultFeatureFlagSnapshot('error'),
+        contextIdentity: identity,
+        liveValues: { [flag]: value },
+      });
+    live(undefined);
+    await h.service.flush();
+    expect(h.files.has('availability')).toBe(false);
+    expect(filesEntry(h)).toMatchObject({
+      availability: 'on',
+      availabilitySource: 'policy_fallback',
+    });
+    await h.service.setChoice({ experimentId: id, enabled: true });
+    live('hidden');
+    expect(filesEntry(h)).toMatchObject({
+      availability: 'hidden',
+      availabilitySource: 'live',
+      choice: true,
+      listed: false,
+      enabled: false,
+    });
+    live('invalid');
+    expect(filesEntry(h)).toMatchObject({
+      availability: 'hidden',
+      availabilitySource: 'cache',
+      choice: true,
+      enabled: false,
+    });
+    live('offered');
+    expect(filesEntry(h)).toMatchObject({
+      availability: 'offered',
+      availabilitySource: 'live',
+      enabled: true,
+    });
+    live(undefined, 'b'.repeat(64));
+    expect(filesEntry(h)).toMatchObject({
+      availability: 'on',
+      availabilitySource: 'policy_fallback',
+    });
+    live(undefined);
+    expect(filesEntry(h)).toMatchObject({
+      availability: 'offered',
+      availabilitySource: 'cache',
+    });
+    await h.service.flush();
+    expect(JSON.parse(h.files.get('availability') ?? '{}')).toEqual({
+      version: 1,
+      contexts: { [context]: { [flag]: 'offered' } },
+    });
+    h.setState({
+      snapshot: getDefaultFeatureFlagSnapshot('not_configured'),
+      contextIdentity: context,
+      liveValues: { [flag]: 'hidden' },
+    });
+    expect(filesEntry(h)).toMatchObject({
+      availability: 'on',
+      availabilitySource: 'policy_fallback',
+      enabled: true,
+    });
+  });
+  it('publishes local opt-out only after durability and retains the committed choice after a failed save', async () => {
+    const h = setup('canopy');
+    const pending = deferred<void>();
+    h.deps.write = jest.fn(async (path, data): Promise<void> => {
+      await pending.promise;
+      h.files.set(path, data);
+    });
+    const save = h.service.setChoice({ experimentId: id, enabled: false });
+    await Promise.resolve();
+    expect(filesEntry(h)).toMatchObject({ choice: null, enabled: true });
+    pending.resolve();
+    await save;
+    expect(filesEntry(h)).toMatchObject({ choice: false, enabled: false });
+    h.deps.write = jest.fn(() => Promise.reject(new Error('disk full')));
+    await expect(
+      h.service.setChoice({ experimentId: id, enabled: true }),
+    ).rejects.toThrow('disk full');
+    expect(filesEntry(h)).toMatchObject({ choice: false, enabled: false });
+    const restarted = setup(
+      'canopy',
+      JSON.parse(h.files.get('choices') ?? '{}'),
+    );
+    expect(filesEntry(restarted)).toMatchObject({
+      choice: false,
+      enabled: false,
+    });
+  });
+  it('uses cached account choice before GET settles, retains failed GET and never transfers local choices', async () => {
+    const h = setup(
+      'canopy',
+      {
+        version: 1,
+        accounts: { local: { [id]: true }, [account.scope]: { [id]: false } },
+      },
+      account,
+    );
+    const pending = deferred<unknown>();
+    h.deps.fetchChoices = jest.fn(() => pending.promise);
+    const refresh = h.service.refreshChoices();
+    // The cached account choices are usable before the server answers.
+    expect(h.service.getSnapshot()).toMatchObject({
+      ready: true,
+      choicesReady: true,
+    });
+    expect(filesEntry(h)).toMatchObject({ choice: false, enabled: false });
+    pending.reject(new Error('offline'));
+    await refresh;
+    expect(filesEntry(h)).toMatchObject({ choice: false, enabled: false });
+    await h.service.activate({ ...account, scope: 'server/account-b' });
+    expect(filesEntry(h)).toMatchObject({ choice: null, enabled: true });
+    await h.service.activate(local);
+    expect(filesEntry(h)).toMatchObject({ choice: true, enabled: true });
+  });
+  it('saves the account choice offline and keeps a late sync with its own account', async () => {
+    const h = setup(
+      'canopy',
+      { version: 1, accounts: { [account.scope]: { [id]: false } } },
+      account,
+    );
+    h.deps.putChoice = jest.fn(() => Promise.reject(new Error('offline')));
+    h.deps.fetchChoices = jest.fn(() => Promise.reject(new Error('offline')));
+    await h.service.setChoice({ experimentId: id, enabled: true });
+    expect(filesEntry(h)).toMatchObject({ choice: true, enabled: true });
+    const pending = deferred<unknown>();
+    const started = deferred<void>();
+    h.deps.putChoice = jest.fn(() => {
+      started.resolve();
+      return pending.promise;
+    });
+    const sync = h.service.retryPendingSync();
+    await started.promise;
+    await h.service.activate({ ...account, scope: 'server/account-b' });
+    pending.resolve({
+      experimentId: id,
+      enabled: true,
+      updatedAt: new Date().toISOString(),
+      choices: { [id]: true, 'early-access': true },
+    });
+    await sync;
+    expect(filesEntry(h)).toMatchObject({ choice: null, enabled: true });
+    expect(h.service.getSnapshot().earlyAccessEnabled).toBe(false);
+    await h.service.activate(account);
+    expect(filesEntry(h)).toMatchObject({ choice: true, enabled: true });
+  });
 });

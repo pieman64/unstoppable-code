@@ -13,6 +13,7 @@ const GROUPS: readonly SettingsNavGroup<string>[] = [
   {
     id: 'account',
     label: 'Account',
+    ariaLabel: 'Account',
     rows: [
       {
         key: 'account-profile',

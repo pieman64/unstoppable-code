@@ -36,6 +36,14 @@ import {
 import { startChatStorageActivityDiagnostics } from '../lib/chat-storage-activity-diagnostics';
 import { buildMainEventLoopStallDiagnostic } from '../lib/main-event-loop-stall-diagnostic';
 import { WakeLockService } from '../power/wake-lock-service';
+import {
+  CHAT_INPUT_DELIVERY_FAILURES,
+  CHAT_INPUT_REFUSALS,
+} from '@canopy/protocol/portal/input-delivery';
+import {
+  recordChatInputDeliveryOutcome,
+  type ChatInputDeliveryOutcomeFacts,
+} from '../lib/chat-input-delivery-diagnostics';
 
 const MAIN_ROOT = path.resolve(__dirname, '..');
 const SERVICE_PATH = path.join(MAIN_ROOT, 'observability', 'service.ts');
@@ -534,11 +542,13 @@ describe('app-events privacy', () => {
       const window: ChatStorageActivityWindow = {
         scopes: [
           {
+            scopeKey: 'opaque-scope-key',
             identity: { projectId: WORKSPACE, worktreeId: WORKTREE },
             activity: {
               commits: 1,
               mutations: 1,
               bytesWritten: 10,
+              transcriptBytesWritten: 10,
               fileSyncs: 1,
               directorySyncs: 1,
               commitMsTotal: 5,
@@ -551,6 +561,7 @@ describe('app-events privacy', () => {
           commits: 1,
           mutations: 1,
           bytesWritten: 10,
+          transcriptBytesWritten: 10,
           fileSyncs: 1,
           directorySyncs: 1,
           commitMsTotal: 5,
@@ -584,5 +595,112 @@ describe('app-events privacy', () => {
       },
     );
     expect(Object.keys(stall).filter(isAppDiagnosticIdentifierKey)).toEqual([]);
+  });
+
+  it('keeps payload, provider and error text out of input delivery outcomes, which reach session diagnostics only', async () => {
+    const PAYLOAD = 'payload-sentinel-5f2';
+    // What a careless producer could spread from an attempt or request.
+    const attemptLike = {
+      submittedText: PAYLOAD,
+      displayText: PAYLOAD,
+      payloadSnapshot: { text: PAYLOAD },
+      text: PAYLOAD,
+    };
+    const base: ChatInputDeliveryOutcomeFacts = {
+      ...attemptLike,
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      provider: 'codex',
+      attemptId: 'attempt',
+      generation: 'generation',
+      origin: 'typed',
+      outcome: 'picked-up',
+      createdAt: 0,
+      pickedUpAt: 5,
+      nowMs: 0,
+    };
+    const error = new Error(PAYLOAD, { cause: PAYLOAD });
+    error.name = PAYLOAD;
+    error.stack = PAYLOAD;
+    const cases: ChatInputDeliveryOutcomeFacts[] = [
+      { ...base, refusal: error, failure: error },
+      { ...base, outcome: 'rejected-requeued', refusal: error },
+      {
+        ...base,
+        outcome: 'rejected-final',
+        refusal: { code: 'no-active-turn', summary: PAYLOAD },
+      },
+      { ...base, outcome: 'unknown-transport', failure: error },
+      {
+        ...base,
+        outcome: 'unknown-timeout',
+        failure: {
+          code: 'delivery-deadline',
+          class: 'timeout',
+          summary: PAYLOAD,
+        },
+      },
+    ];
+
+    const records: SessionDiagnosticRecord[] = [];
+    for (const facts of cases) {
+      recordChatInputDeliveryOutcome(facts, (record) => records.push(record));
+    }
+
+    expect(records).toHaveLength(cases.length);
+    for (const record of records) {
+      expect(JSON.stringify(record)).not.toContain(PAYLOAD);
+    }
+    expect(
+      records.map((record) => [
+        record.inputErrorClass,
+        record.inputErrorCode,
+        record.inputErrorSummary,
+      ]),
+    ).toEqual([
+      [undefined, undefined, undefined],
+      ['refusal', undefined, undefined],
+      ['refusal', 'no-active-turn', CHAT_INPUT_REFUSALS['no-active-turn']],
+      [
+        'transport',
+        'transport-error',
+        CHAT_INPUT_DELIVERY_FAILURES['transport-error'].summary,
+      ],
+      [
+        'timeout',
+        'delivery-deadline',
+        CHAT_INPUT_DELIVERY_FAILURES['delivery-deadline'].summary,
+      ],
+    ]);
+
+    const service = {
+      recordSessionDiagnostic: jest.fn(),
+      recordAppDiagnostic: jest.fn(),
+      recordUsageMetricEvent: jest.fn(),
+    };
+    // Scoped to this case: the default sink imports observability lazily,
+    // so registering the mock now leaves earlier static imports untouched.
+    jest.doMock('../observability', () => ({
+      getObservabilityService: (): typeof service => service,
+    }));
+    try {
+      recordChatInputDeliveryOutcome(cases[4]);
+      await new Promise(setImmediate);
+    } finally {
+      jest.dontMock('../observability');
+    }
+
+    expect(service.recordSessionDiagnostic).toHaveBeenCalledTimes(1);
+    expect(service.recordSessionDiagnostic).toHaveBeenCalledWith(records[4]);
+    expect(service.recordAppDiagnostic).not.toHaveBeenCalled();
+    expect(service.recordUsageMetricEvent).not.toHaveBeenCalled();
+    // PostHog and app events have no path from this module.
+    expect(
+      readFileSync(
+        path.join(MAIN_ROOT, 'lib', 'chat-input-delivery-diagnostics.ts'),
+        'utf8',
+      ),
+    ).not.toMatch(/posthog|recordAppDiagnostic|recordMainProcessError/i);
   });
 });

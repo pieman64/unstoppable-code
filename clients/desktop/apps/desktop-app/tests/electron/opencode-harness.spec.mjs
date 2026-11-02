@@ -1,3 +1,5 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
+import { seedWorktreeChat } from './seeders/index.mjs';
 import { seedCoworkWorkspace } from './seeders/seedCoworkWorkspace.mjs';
 import { openWorkspaceAndRun } from './codexPipelineRuntime.mjs';
 import { seedStoredPipeline } from './seeders/seedStoredPipeline.mjs';
@@ -14,6 +16,52 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { expect, test } from '@playwright/test';
 import { launchOpenCodeSelectionFixture } from './fixtures/opencode-selection.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
+
+test('OpenCode release moves setup live from Labs to Accounts and keeps the connection', async () => {
+  const f = await launchOpenCodeSelectionFixture({
+    env: {
+      CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+        'canopy-desktop-opencode-harness': true,
+        'canopy-desktop-opencode-harness-released': false,
+      }),
+    },
+  });
+  try {
+    const setReleased = async (released) => {
+      await f.app.evaluate((_, value) => {
+        const flags = JSON.parse(process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS);
+        flags['canopy-desktop-opencode-harness-released'] = value;
+        process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS = JSON.stringify(flags);
+      }, released);
+      await f.window.evaluate(() => window.api.featureFlags.refreshContext());
+    };
+    await f.driver.openSettings();
+    await f.driver.openSettingsSection('experiments');
+    await expect(f.window.getByTestId('opencode-connection')).toBeVisible();
+
+    await setReleased(true);
+    await expect(f.window.getByTestId('opencode-connection')).toHaveCount(0);
+    await f.driver.openSettingsSection('account');
+    // A provider row beside Claude and Codex, named by its label.
+    const row = f.window.getByTestId('opencode-connection');
+    await expect(row).toContainText('OpenCode');
+    await row.getByTestId('opencode-connect').click();
+    await expect(row.getByTestId('opencode-connection-status')).toHaveText(
+      'OpenCode connected',
+    );
+
+    // Turning the release off returns setup to Labs, still connected.
+    await setReleased(false);
+    await expect(f.window.getByTestId('opencode-connection')).toHaveCount(0);
+    await f.driver.openSettingsSection('experiments');
+    await expect(f.window.getByTestId('opencode-connection-status')).toHaveText(
+      'OpenCode connected',
+    );
+  } finally {
+    await f.close();
+  }
+});
 
 test('OpenCode managed setup, discovered model, streaming and resume survive reload', async () => {
   const f = await launchOpenCodeSelectionFixture();
@@ -42,6 +90,43 @@ test('OpenCode managed setup, discovered model, streaming and resume survive rel
       f.panel.getByText('OpenCode fixture reply 2.', { exact: true }),
     ).toBeVisible();
     expect((await f.tab()).sdkSessionId).toBe(before.sdkSessionId);
+  } finally {
+    await f.close();
+  }
+});
+
+test('an empty terminal chat can choose OpenCode before its first turn', async () => {
+  const f = await launchOpenCodeSelectionFixture({
+    seedBeforeLaunch: ({ userDataDir }) =>
+      seedWorktreeChat({
+        userDataDir,
+        workspaceId: 'demo-ts-pnpm-vite',
+        worktreeId: 'demo-main',
+        providerType: 'claude',
+        tabs: [
+          {
+            id: 'opencode-selection',
+            title: 'Empty terminal chat',
+            model: 'sonnet',
+            executionHarness: 'claude',
+            interfaceMode: 'auto',
+            sdkSessionId: '12345678-1234-4234-8234-123456789abc',
+            claudeTerminal: { turnState: 'idle' },
+            messages: [],
+          },
+        ],
+      }),
+  });
+  try {
+    await f.connect();
+    await f.openChat();
+    expect((await f.tab()).messages).toEqual([]);
+    await f.select();
+    expect((await f.tab()).sdkSessionId).toBeUndefined();
+    await f.send('Hello from an empty terminal chat');
+    await expect(
+      f.panel.getByText('OpenCode fixture reply 1.', { exact: true }),
+    ).toBeVisible();
   } finally {
     await f.close();
   }
@@ -143,6 +228,9 @@ test('OpenCode disconnect removes models and refuses new turns', async () => {
     await expect(f.window.getByTestId('opencode-connection-status')).toHaveText(
       'Ready to connect',
     );
+    await expect(f.window.getByTestId('opencode-provider-login')).toHaveText(
+      'Sign in to a provider',
+    );
     expect(
       await f.window.evaluate(() => window.api.opencodeConnection.listModels()),
     ).toEqual([]);
@@ -185,9 +273,10 @@ test('OpenCode delegates to a managed OpenCode child and integrates its result a
     await f.connect();
     await f.driver.openSettings();
     await f.driver.openSettingsSection('experiments');
-    await f.window
-      .getByTestId('settings-managed-delegation-mode')
-      .selectOption('explicit-only');
+    await chooseSettingsOption(
+      f.window.getByTestId('settings-managed-delegation-mode'),
+      'explicit-only',
+    );
     await f.driver.closeSettings();
     await f.select();
     writeFileSync(
@@ -211,6 +300,15 @@ test('OpenCode delegates to a managed OpenCode child and integrates its result a
       parentTurn.getByTestId('chat-delegated-agent').first(),
     ).toBeVisible();
     await expect(f.panel.getByTestId('chat-stop-generation')).toBeHidden();
+    // Completed turns collapse their tool cards behind the Agent steps summary.
+    const steps = f.panel.getByRole('button', {
+      name: /^Agent steps:/,
+      expanded: false,
+    });
+    if (await steps.count()) await steps.first().click();
+    await expect(
+      f.panel.getByTestId('chat-delegated-agent').first(),
+    ).toBeVisible();
   } finally {
     await f.close();
   }
@@ -351,6 +449,12 @@ for (const scenario of ['plain', 'image', 'action-contract'])
         },
       });
       try {
+        if (scenario === 'image') {
+          await connectMockCloudAccount(
+            f.window,
+            'csk_opencode_attachments_e2e',
+          );
+        }
         await f.connect();
         await f.window.getByTestId('sidebar-create-task').click();
         const home = f.window.getByTestId('page-home');
@@ -450,7 +554,17 @@ test('OpenCode provider sign-in uses the managed runtime terminal', async () => 
     await f.connect();
     await f.driver.openSettings();
     await f.driver.openSettingsSection('experiments');
-    await f.window.getByTestId('opencode-provider-login').click();
+    const providerAction = f.window.getByTestId('opencode-provider-login');
+    await expect(providerAction).toHaveText('Manage providers');
+    const actionBounds = await providerAction.boundingBox();
+    const connectionBounds = await f.window
+      .getByTestId('opencode-connect')
+      .boundingBox();
+    expect(actionBounds).not.toBeNull();
+    expect(connectionBounds).not.toBeNull();
+    expect(Math.abs(actionBounds.y - connectionBounds.y)).toBeLessThan(1);
+    expect(actionBounds.height).toBe(connectionBounds.height);
+    await providerAction.click();
     await expect(f.window.getByTestId('auth-login-status')).toContainText(
       'Choose a provider',
     );
@@ -463,6 +577,7 @@ test('OpenCode provider sign-in uses the managed runtime terminal', async () => 
     await expect(terminal).toContainText('continue');
     await f.window.keyboard.press('Enter');
     await expect(f.window.locator('.xterm')).toBeHidden();
+    await expect(providerAction).toHaveText('Manage providers');
   } finally {
     await f.close();
   }

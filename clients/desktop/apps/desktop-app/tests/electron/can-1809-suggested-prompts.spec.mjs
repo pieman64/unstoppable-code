@@ -142,56 +142,26 @@ async function launchWithState(options) {
 }
 
 test.describe('CAN-1809 suggested prompt chips', () => {
-  test('blank code chat shows the shared onboarding checklist instead of prompt chips', async () => {
-    test.setTimeout(120_000);
+  test('legacy setup state leaves ordinary Home suggestions available and Code chat clear', async () => {
     const { electronApp, window, app, userDataDir } = await launchWithState({
       withCuratedServer: true,
       withOnboarding: true,
     });
     try {
-      await window.setViewportSize({ width: 1600, height: 1000 });
       await window.getByTestId('sidebar-create-task').click();
-      const home = window.getByTestId('page-home');
-      const homeSuggestions = home.getByTestId('home-onboarding-suggestions');
-      await expect(homeSuggestions).toBeVisible();
-      const homeEditorBox = await home
-        .getByTestId('home-composer-shell')
-        .boundingBox();
-      const homeSuggestionsBox = await homeSuggestions.boundingBox();
-      expect(homeSuggestionsBox.y).toBeGreaterThan(
-        homeEditorBox.y + homeEditorBox.height,
-      );
+      await expect(
+        window.getByTestId('home-composer-editor').locator('visible=true'),
+      ).toBeVisible();
+      await expect(
+        window.getByTestId('home-onboarding-suggestions'),
+      ).toHaveCount(0);
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
       await expect(window.getByTestId('panel-content-chat')).toBeVisible();
-      const host = window.getByTestId('chat-onboarding-checklist-host');
-      await expect(host).toBeVisible();
       await expect(
-        host.getByTestId('home-onboarding-suggestion-agent-connections'),
-      ).toBeVisible();
+        window.getByTestId('chat-onboarding-checklist-host'),
+      ).toHaveCount(0);
       await expect(window.getByTestId('suggested-prompt-chips')).toHaveCount(0);
-      const composer = window.locator('[data-chat-composer-root]:visible');
-      const assertWidth = async () => {
-        const hostBox = await host.boundingBox();
-        const composerBox = await composer.boundingBox();
-        const gap = composerBox.y - hostBox.y - hostBox.height;
-        expect(gap).toBeGreaterThanOrEqual(0);
-        expect(gap).toBeLessThanOrEqual(24);
-        // The transcript reserves a scrollbar gutter; allow that small inset.
-        expect(
-          Math.abs(hostBox.width - (composerBox.width - 32)),
-        ).toBeLessThanOrEqual(16);
-        expect(Math.abs(hostBox.x - composerBox.x - 16)).toBeLessThanOrEqual(
-          16,
-        );
-      };
-      await expect(assertWidth).toPass({ timeout: 5_000 });
-      await window.getByTestId('worktree-top-save-layout-default').click();
-      await window.getByTestId('workspace-chat-width-full').click();
-      await window.keyboard.press('Escape');
-      await expect(assertWidth).toPass({ timeout: 5_000 });
-      await window.setViewportSize({ width: 1100, height: 900 });
-      await expect(assertWidth).toPass({ timeout: 5_000 });
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

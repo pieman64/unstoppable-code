@@ -46,7 +46,7 @@ const PROFILE_TABS: ReadonlyArray<{
   { key: 'digests', label: 'Digests', icon: Newspaper },
   { key: 'runs', label: 'Sessions', icon: Bot },
   { key: 'plans', label: 'Plans', icon: FileText },
-  { key: 'pipelines', label: 'Pipelines', icon: Workflow },
+  { key: 'pipelines', label: 'Workflows', icon: Workflow },
 ];
 
 function isProfileTab(value: string | null): value is ProfileTab {
@@ -186,9 +186,9 @@ export function MemberProfilePage({
   );
 
   return (
-    // The shared settings column; the back link leads the page in place of
-    // a page header.
-    <SettingsPageColumn>
+    // The shared settings column, wide because a member's profile holds
+    // activity charts; the back link leads the page in place of a header.
+    <SettingsPageColumn width="wide">
       <div className="flex flex-col gap-6" data-testid="member-profile-page">
         <SettingsLink
           href={`/organization/${org.id}/members`}
@@ -245,6 +245,7 @@ export function MemberProfilePage({
                     <button
                       key={tab.key}
                       type="button"
+                      data-settings-control="chip"
                       onClick={() => selectTab(tab.key)}
                       data-testid={`profile-tab-${tab.key}`}
                       aria-current={isActive ? 'page' : undefined}

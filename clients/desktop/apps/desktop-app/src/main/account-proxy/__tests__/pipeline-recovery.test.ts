@@ -36,6 +36,9 @@ function state(dir: string): ExecutionState {
     bundledActionsDir: dir,
     getProjectActionsDir: (cwd): string => cwd,
     getProjectPipelinesDir: (cwd): string => cwd,
+    // This fixture does not exercise organization model-policy decisions.
+    isModelBlockedByOrgPolicy: (): Promise<boolean> => Promise.resolve(false),
+    isOrgModelPolicyActive: (): Promise<boolean> => Promise.resolve(false),
   };
   const pipeline = normalizePipeline({
     name: 'Automation',
@@ -138,6 +141,15 @@ it('recovers a pipeline after restart while preserving completed steps and the p
       routeCodex: true,
       keepChatOnOneAccount: true,
       refreshedAt: 2000,
+      local: {
+        phase: 'not-installed',
+        version: null,
+        install: null,
+        port: null,
+        startWithApp: true,
+        message: null,
+      },
+      signIn: null,
     };
     const queue = new ResumeQueueService({
       now: (): number => 2000,
@@ -200,7 +212,7 @@ it('resolves automatic pipeline labels from the host project lookup', async () =
     expect(
       (await readAccountProxyPipelineInterruptions(dir, resolveName))[0]?.item
         .workspaceName,
-    ).toBe('Local pipelines');
+    ).toBe('Local workflows');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -210,7 +222,7 @@ it('labels local pipeline recovery with the existing local group name', () => {
   expect(
     projectAccountProxyPipelineInterruptions(state('/tmp/executions'))[0]?.item
       .workspaceName,
-  ).toBe('Local pipelines');
+  ).toBe('Local workflows');
 });
 
 it('does not automatically resume hidden, cancelled, native, suppressed, or unsafe pipeline work', () => {
@@ -266,6 +278,15 @@ it('keeps a ready harness in a mixed pipeline independent of another exhausted h
     routeCodex: true,
     keepChatOnOneAccount: true,
     refreshedAt: 2000,
+    local: {
+      phase: 'not-installed',
+      version: null,
+      install: null,
+      port: null,
+      startWithApp: true,
+      message: null,
+    },
+    signIn: null,
     accounts: [
       {
         authIndex: 'added',

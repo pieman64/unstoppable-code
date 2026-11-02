@@ -31,7 +31,6 @@ import type { PluginListResponse } from './generated/v2/PluginListResponse';
 import type { PluginReadResponse } from './generated/v2/PluginReadResponse';
 import type { SkillsListResponse } from './generated/v2/SkillsListResponse';
 import type { PluginSkillReadResponse } from './generated/v2/PluginSkillReadResponse';
-import type { InitializeResponse } from './generated/InitializeResponse';
 import type { ThreadForkResponse } from './generated/v2/ThreadForkResponse';
 import type { ThreadResumeResponse } from './generated/v2/ThreadResumeResponse';
 import type { ThreadStartResponse } from './generated/v2/ThreadStartResponse';
@@ -46,19 +45,34 @@ import {
 import {
   DEFAULT_LONG_STDOUT_HOLD_THRESHOLD_MS,
   DEFAULT_OWNER_LANE_HIGH_WATER_BYTES,
+  DEFAULT_OWNER_LANE_HARD_LIMIT_BYTES,
   DEFAULT_OWNER_LANE_LOW_WATER_BYTES,
   OwnerAdmissionLanes,
+  TranscriptAdmissionDiscardedError,
+  type CodexIngestionLagChange,
+  type CodexIngestionLagSample,
+  type CodexIngestionLagSnapshot,
   type OwnerInFlightBudget,
   type StdoutHoldReport,
 } from './owner-admission-lanes';
+export type {
+  CodexIngestionLagChange,
+  CodexIngestionLagSample,
+  CodexIngestionLagSnapshot,
+  CodexIngestionLagSource,
+} from './owner-admission-lanes';
+export { DEFAULT_INGESTION_LAG_THRESHOLD_MS } from './owner-admission-lanes';
 import { RequestDeadline } from './request-deadline';
 import { isJsonValue } from './rollout-seed';
 import type { CodexMcpToolCallContext } from './thread-handle';
 import type { CodexResolvedSpawnProfile } from './profile';
+import { CODEX_LIFECYCLE } from '../harness-contract/codex-lifecycle';
 
 type JsonRpcId = number | string;
 
 const CODEX_PROCESS_RECOVERY_HANDLER_QUIESCENCE_TIMEOUT_MS = 30_000;
+const MAX_RETAINED_RESPONSES = 32;
+const RETAINED_RESPONSE_TIMEOUT_MS = 10 * 60_000;
 export const CODEX_APP_SERVER_MIN_LIFETIME_BEFORE_PRESSURE_SUSPEND_MS = 120_000;
 /**
  * Codex keeps each loaded thread, with the MCP subprocesses it started, after
@@ -137,6 +151,11 @@ export type AppServerRequestResponse<TMethod extends AppServerRequestMethod> =
 export interface CodexAppServerConnectionOwner {
   hasActiveTurn(): boolean;
   /**
+   * Reports live owner work that is not an active top-level Codex turn.
+   * Owners that do not track background work may omit this hook.
+   */
+  hasLiveBackgroundWork?(): boolean;
+  /**
    * Distinguishes work already sent toward the shared worker from a turn that
    * is only preparing to dispatch. Owners without a preparation phase can
    * rely on `hasActiveTurn()`.
@@ -167,10 +186,27 @@ export interface CodexAppServerConnectionOwner {
   handleConnectionNotification(
     method: string,
     notification: Record<string, unknown>,
+    /** Controls arrive now; transcript finalization may await this drain. */
+    transcriptDrain?: Promise<void>,
+  ): void | Promise<void>;
+  /**
+   * A notification method the lifecycle table lacks that no owner claims
+   * (turn-state phase 43b). Every attached owner hears it, so drift on a
+   * shared process is still reported per session.
+   */
+  handleUnroutedUnknownNotification?(method: string): void;
+  /** Receives content-free admission lag transitions without delaying admission. */
+  handleIngestionLagChange?(
+    change: CodexIngestionLagChange,
+  ): void | Promise<void>;
+  /** Receives periodic content-free ingestion lag samples without delaying admission. */
+  handleIngestionLagSample?(
+    sample: CodexIngestionLagSample,
   ): void | Promise<void>;
   handleRequestUserInput(
     requestId: JsonRpcId,
     request: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<void>;
   handleDynamicToolCall(
     requestId: JsonRpcId,
@@ -180,12 +216,14 @@ export interface CodexAppServerConnectionOwner {
     requestId: JsonRpcId,
     method: string,
     request: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<void>;
   handleMcpElicitation(
     requestId: JsonRpcId,
     request: Record<string, unknown>,
     toolCall: CodexMcpToolCallContext,
     approvalKind: string,
+    signal?: AbortSignal,
   ): Promise<void>;
 }
 
@@ -296,14 +334,24 @@ interface PendingResponse {
   owner?: CodexAppServerConnectionOwner;
   rejectOnOwnerFailure: boolean;
   /**
-   * Set once the response frame has been read from stdout. Delivery may still
-   * be queued behind the owner's earlier admissions; the deadline is already
-   * cancelled and routing no longer treats the request as pending.
+   * Set once the response frame is read, before immediate delivery. The
+   * deadline is cancelled and routing no longer treats the RPC as pending.
    */
   responseReceived: boolean;
   deadline: RequestDeadline | null;
+  timeoutMs: number | undefined;
+  softTimeout?: SoftRequestTimeout;
+  retainedTimer: ReturnType<typeof setTimeout> | null;
   /** `thread/resume` only: the thread it will subscribe this connection to. */
   resumeThreadId?: string;
+}
+
+export type CodexAppServerLateResponse =
+  | { kind: 'success'; value: unknown }
+  | { kind: 'error'; error: Error };
+
+interface SoftRequestTimeout {
+  onLateResponse: (outcome: CodexAppServerLateResponse) => void;
 }
 
 interface QuarantinedOwner {
@@ -320,15 +368,33 @@ interface PendingDisposedTurnInterrupt {
   cancelTerminalDeadline: (() => void) | null;
 }
 
+interface PendingPromptRequestFields {
+  threadId: string;
+  controller: AbortController;
+}
+
+type PendingUserInputServerRequest = PendingPromptRequestFields & {
+  kind: 'requestUserInput';
+};
+
+type PendingApprovalServerRequest = PendingPromptRequestFields & {
+  kind: 'approval';
+  method: string;
+  failClosedResult: Record<string, unknown>;
+};
+
+type PendingMcpElicitationServerRequest = PendingPromptRequestFields & {
+  kind: 'mcpElicitation';
+};
+
+type PendingPromptServerRequest =
+  | PendingUserInputServerRequest
+  | PendingApprovalServerRequest
+  | PendingMcpElicitationServerRequest;
+
 type PendingServerRequest =
-  | { kind: 'requestUserInput' }
-  | { kind: 'dynamicToolCall' }
-  | {
-      kind: 'approval';
-      method: string;
-      failClosedResult: Record<string, unknown>;
-    }
-  | { kind: 'mcpElicitation' };
+  | PendingPromptServerRequest
+  | { kind: 'dynamicToolCall' };
 
 const INITIALIZE_REQUEST_TIMEOUT_MS = 30_000;
 const INTERRUPT_REQUEST_TIMEOUT_MS = 5_000;
@@ -453,7 +519,8 @@ async function awaitAllTerminations(
   const errors: unknown[] = [];
   for (const result of results) {
     if (result.status === 'rejected') {
-      errors.push(result.reason as unknown);
+      const reason: unknown = result.reason;
+      errors.push(reason);
     }
   }
   if (errors.length === 1) {
@@ -773,10 +840,12 @@ interface CodexAppServerConnectionOptions {
   includeCanopySecrets?: boolean;
   environmentPolicy?: CodexSpawnEnvironmentPolicy;
   externalAuthTransitionBarrier?: () => Promise<unknown> | null;
-  /** Retained owner-lane bytes above which stdout pauses (tests override). */
+  /** Per-owner soft cap: begin snapshot coalescing (tests override). */
   stdoutQueueHighWaterBytes?: number;
-  /** Retained owner-lane bytes at or below which stdout resumes. */
+  /** Per-owner low water: stop coalescing/resume a hard-limit hold. */
   stdoutQueueLowWaterBytes?: number;
+  /** Last-resort per-owner shared-pipe OOM guard, after coalescing. */
+  stdoutOwnerHardLimitBytes?: number;
   /** Duration at which an admission hold or stdout pause is reported. */
   longStdoutHoldThresholdMs?: number;
   /**
@@ -869,6 +938,12 @@ export class CodexAppServerConnection {
   private readonly ownerLanes: OwnerAdmissionLanes<CodexAppServerConnectionOwner>;
   private nextId = 1;
   private initialized = false;
+  /**
+   * The user agent the current process reported to `initialize`. Each
+   * initialize replaces it; no notification arrives between an exit and the
+   * next initialize.
+   */
+  private userAgent: string | undefined;
   private initializePromise: Promise<void> | null = null;
   private recoveryQuiescencePromise: Promise<void> | null = null;
   private closing = false;
@@ -889,6 +964,7 @@ export class CodexAppServerConnection {
     PendingDisposedTurnInterrupt
   >();
   private pendingResponses = new Map<JsonRpcId, PendingResponse>();
+  private readonly retainedResponses = new Map<JsonRpcId, PendingResponse>();
   private readonly clients = new Set<CodexAppServerConnectionOwner>();
   private readonly processCallbacks = new Map<
     CodexAppServerConnectionOwner,
@@ -990,6 +1066,26 @@ export class CodexAppServerConnection {
           // eslint-disable-next-line no-console
           console.warn('[codex-app-server]', message);
         },
+        onIngestionLagChange: (owner, change): void => {
+          queueMicrotask(() => {
+            try {
+              const report = owner.handleIngestionLagChange?.(change);
+              if (report) void report.catch(() => undefined);
+            } catch {
+              // Lag reporting is observational and must not interrupt admission.
+            }
+          });
+        },
+        onIngestionLagSample: (owner, sample): void => {
+          queueMicrotask(() => {
+            try {
+              const report = owner.handleIngestionLagSample?.(sample);
+              if (report) void report.catch(() => undefined);
+            } catch {
+              // Lag samples are observational and must not interrupt admission.
+            }
+          });
+        },
       },
       {
         highWaterBytes:
@@ -998,6 +1094,11 @@ export class CodexAppServerConnection {
         lowWaterBytes:
           options.stdoutQueueLowWaterBytes ??
           DEFAULT_OWNER_LANE_LOW_WATER_BYTES,
+        perOwnerRetention: {
+          hardLimitBytes:
+            options.stdoutOwnerHardLimitBytes ??
+            DEFAULT_OWNER_LANE_HARD_LIMIT_BYTES,
+        },
         longHoldThresholdMs:
           options.longStdoutHoldThresholdMs ??
           DEFAULT_LONG_STDOUT_HOLD_THRESHOLD_MS,
@@ -1018,6 +1119,16 @@ export class CodexAppServerConnection {
     this.markActivity();
     this.updateResourceRegistration();
     this.tryCompleteExternalAuthTransition();
+  }
+
+  ingestionLag(
+    owner: CodexAppServerConnectionOwner,
+  ): CodexIngestionLagSnapshot | undefined {
+    return this.ownerLanes.ingestionLag(owner);
+  }
+
+  harnessUserAgent(): string | undefined {
+    return this.userAgent;
   }
 
   clientCount(): number {
@@ -1066,6 +1177,7 @@ export class CodexAppServerConnection {
     return (
       this.isOnlyOwner(owner) &&
       !owner.hasActiveTurn() &&
+      !owner.hasLiveBackgroundWork?.() &&
       this.initializePromise === null &&
       this.pendingResponses.size === 0 &&
       !this.pendingSharedRestartOwner &&
@@ -1234,7 +1346,10 @@ export class CodexAppServerConnection {
 
   private hasWorkInFlight(): boolean {
     return (
-      Array.from(this.clients).some((client) => client.hasActiveTurn()) ||
+      Array.from(this.clients).some(
+        (client) =>
+          client.hasActiveTurn() || client.hasLiveBackgroundWork?.() === true,
+      ) ||
       this.pendingResponses.size > 0 ||
       this.pendingSharedRestartOwner !== null ||
       this.hasPendingServerRequests()
@@ -1280,7 +1395,10 @@ export class CodexAppServerConnection {
       this.pendingDisposedTurnInterrupts.size > 0 ||
       this.pendingResponses.size > 0 ||
       this.hasPendingServerRequests() ||
-      Array.from(this.clients).some((client) => client.hasActiveTurn())
+      Array.from(this.clients).some(
+        (client) =>
+          client.hasActiveTurn() || client.hasLiveBackgroundWork?.() === true,
+      )
     ) {
       return 'holder-busy';
     }
@@ -1445,6 +1563,7 @@ export class CodexAppServerConnection {
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
       signal?: AbortSignal;
+      softTimeout?: SoftRequestTimeout;
     },
   ): Promise<AppServerRequestResponse<TMethod>>;
   async request<TMethod extends AppServerRequestMethod>(
@@ -1455,6 +1574,7 @@ export class CodexAppServerConnection {
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
       signal?: AbortSignal;
+      softTimeout?: SoftRequestTimeout;
     } = {},
   ): Promise<unknown> {
     if (method !== 'thread/resume') {
@@ -1696,6 +1816,7 @@ export class CodexAppServerConnection {
       pending.reject(error);
     }
     this.pendingResponses.clear();
+    this.settleAllRetainedResponses(error);
   }
 
   private sendRequest<TMethod extends AppServerRequestMethod>(
@@ -1705,6 +1826,7 @@ export class CodexAppServerConnection {
       owner?: CodexAppServerConnectionOwner;
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
+      softTimeout?: SoftRequestTimeout;
     },
   ): Promise<unknown> {
     this.markActivity();
@@ -1727,6 +1849,9 @@ export class CodexAppServerConnection {
         rejectOnOwnerFailure: opts.rejectOnOwnerFailure !== false,
         responseReceived: false,
         deadline: null,
+        timeoutMs,
+        softTimeout: opts.softTimeout,
+        retainedTimer: null,
       };
       if (method === 'thread/resume' && isRecord(params)) {
         const resumeThreadId = readString(params, 'threadId');
@@ -1743,21 +1868,21 @@ export class CodexAppServerConnection {
           this.pendingResponses.get(id) === pending
         ) {
           // The deadline measures app-server responsiveness: it is cancelled
-          // as soon as the response frame is read (even if delivery waits
-          // behind the owner's admission) and suspended while stdout is
-          // paused at the retained-frame byte cap.
+          // as soon as the response frame is read, independent of transcript
+          // admission, and suspended during a last-resort hard-limit pause.
           const deadline = new RequestDeadline(timeoutMs, (): void => {
             if (this.pendingResponses.get(id) !== pending) {
               return;
             }
-            this.pendingResponses.delete(id);
             if (isThreadMutationMethod(method)) {
               this.rememberTimedOutThreadRequest(id, method);
             }
-            this.recordRequestTimeout(method, timeoutMs, opts.owner);
-            pending.reject(
+            this.retainTimedOutResponse(
+              id,
+              pending,
               new CodexAppServerRequestTimeoutError(method, timeoutMs),
             );
+            this.recordRequestTimeout(method, timeoutMs, opts.owner);
           });
           pending.deadline = deadline;
           deadline.start(this.ownerLanes.isSourcePaused());
@@ -1769,6 +1894,67 @@ export class CodexAppServerConnection {
         );
       }
     });
+  }
+
+  private retainTimedOutResponse(
+    id: JsonRpcId,
+    pending: PendingResponse,
+    error: CodexAppServerRequestTimeoutError,
+  ): void {
+    if (this.pendingResponses.get(id) !== pending) return;
+    this.pendingResponses.delete(id);
+    pending.reject(error);
+    if (!pending.softTimeout) return;
+
+    while (this.retainedResponses.size >= MAX_RETAINED_RESPONSES) {
+      const oldest = this.retainedResponses.entries().next().value;
+      if (!oldest) break;
+      const [oldestId, oldestPending] = oldest;
+      this.settleRetainedResponse(oldestId, oldestPending, {
+        kind: 'error',
+        error: new CodexAppServerRequestTimeoutError(
+          oldestPending.method,
+          oldestPending.timeoutMs ?? 0,
+        ),
+      });
+    }
+
+    this.retainedResponses.set(id, pending);
+    const timer = setTimeout(() => {
+      this.settleRetainedResponse(id, pending, {
+        kind: 'error',
+        error: new CodexAppServerRequestTimeoutError(
+          pending.method,
+          pending.timeoutMs ?? 0,
+        ),
+      });
+    }, RETAINED_RESPONSE_TIMEOUT_MS);
+    pending.retainedTimer = timer;
+    timer.unref?.();
+  }
+
+  private settleRetainedResponse(
+    id: JsonRpcId,
+    pending: PendingResponse,
+    outcome: CodexAppServerLateResponse,
+  ): void {
+    if (this.retainedResponses.get(id) !== pending) return;
+    this.retainedResponses.delete(id);
+    if (pending.retainedTimer !== null) {
+      clearTimeout(pending.retainedTimer);
+      pending.retainedTimer = null;
+    }
+    try {
+      pending.softTimeout?.onLateResponse(outcome);
+    } catch {
+      // A consumer callback must not break response routing for other owners.
+    }
+  }
+
+  private settleAllRetainedResponses(error: Error): void {
+    for (const [id, pending] of Array.from(this.retainedResponses.entries())) {
+      this.settleRetainedResponse(id, pending, { kind: 'error', error });
+    }
   }
 
   private setRequestDeadlinesSuspended(suspended: boolean): void {
@@ -2005,13 +2191,18 @@ export class CodexAppServerConnection {
     });
 
     try {
-      const response = (await Promise.race([
-        initializeRequest,
-        timeout,
-      ])) as InitializeResponse;
+      const response = await Promise.race([initializeRequest, timeout]);
+      this.userAgent = isRecord(response)
+        ? readString(response, 'userAgent')
+        : undefined;
       if (this.poolKey.startsWith('profile:')) {
         try {
-          observeCanonicalCodexHome(response.codexHome);
+          const codexHome = isRecord(response)
+            ? readString(response, 'codexHome')
+            : undefined;
+          if (!codexHome)
+            throw new Error('Codex initialize reply omitted codexHome');
+          observeCanonicalCodexHome(codexHome);
         } catch (error) {
           if (proc && this.process === proc) {
             this.terminateProcess(proc, 'SIGTERM');
@@ -2113,6 +2304,11 @@ export class CodexAppServerConnection {
       if (pending.owner === owner && pending.rejectOnOwnerFailure) {
         pending.reject(error);
         this.pendingResponses.delete(id);
+      }
+    }
+    for (const [id, pending] of Array.from(this.retainedResponses.entries())) {
+      if (pending.owner === owner && pending.rejectOnOwnerFailure) {
+        this.settleRetainedResponse(id, pending, { kind: 'error', error });
       }
     }
   }
@@ -2397,6 +2593,15 @@ export class CodexAppServerConnection {
       | 'thread-budget',
   ): void {
     this.clearIdleTimer();
+    this.settleAllRetainedResponses(
+      new CodexRecoverableProcessExitError(
+        this.buildProcessFailureError(
+          'Codex app-server exited',
+          proc.exitCode,
+          proc.signalCode,
+        ).message,
+      ),
+    );
     this.timedOutThreadRequests.clear();
     this.idleRetainedThreads.clear();
     // Frames retained for held owners belong to the worker being suspended;
@@ -2654,7 +2859,9 @@ export class CodexAppServerConnection {
       }
     };
     for (const client of Array.from(this.clients)) {
-      if (client.hasActiveTurn()) protect(client);
+      if (client.hasActiveTurn() || client.hasLiveBackgroundWork?.() === true) {
+        protect(client);
+      }
     }
     for (const pending of Array.from(this.pendingResponses.values())) {
       protect(pending.owner);
@@ -3056,6 +3263,14 @@ export class CodexAppServerConnection {
           signal,
           this.hasRecoverableSharedRestartPeer(this.pendingSharedRestartOwner),
         );
+        const processExitError = this.buildProcessFailureError(
+          'Codex app-server exited',
+          code,
+          signal,
+        );
+        this.settleAllRetainedResponses(
+          new CodexRecoverableProcessExitError(processExitError.message),
+        );
         this.failAllForSharedRestart(
           this.pendingSharedRestartOwner,
           this.pendingSharedRestartOwnerError ?? new Error('turn_cancelled'),
@@ -3086,6 +3301,9 @@ export class CodexAppServerConnection {
         this.recoverAfterUnexpectedExit(processFailureError);
         return;
       }
+      this.settleAllRetainedResponses(
+        new CodexRecoverableProcessExitError(processFailureError.message),
+      );
       this.failAll(processFailureError);
     });
     proc.stdout.on('close', () => {
@@ -3145,12 +3363,12 @@ export class CodexAppServerConnection {
     const method = readString(parsed, 'method');
 
     if (typeof id !== 'undefined' && !method) {
-      this.handleResponse(parsed, line);
+      this.handleResponse(parsed);
       return;
     }
 
     if (typeof id !== 'undefined' && typeof method === 'string') {
-      this.routeServerRequest(id, method, parsed, line);
+      this.routeServerRequest(id, method, parsed);
       return;
     }
 
@@ -3163,7 +3381,6 @@ export class CodexAppServerConnection {
     requestId: JsonRpcId,
     method: string,
     request: Record<string, unknown>,
-    line: string,
   ): void {
     // Server requests can await user approval or tool work, including RPCs
     // whose responses arrive on this same shared stream. Track their failures
@@ -3176,61 +3393,10 @@ export class CodexAppServerConnection {
           ),
       );
     };
-    const owner = this.resolveServerRequestOwner(method, request);
-    if (!owner) {
-      handle();
-      return;
-    }
-    if (this.ownerLanes.isBusy(owner)) {
-      // Delivery re-resolves the owner (failing closed if it is gone), but
-      // item routing for notifications read meanwhile must already know it.
-      const params = readRecord(request, 'params');
-      if (method === 'item/tool/requestUserInput') {
-        this.trackItemOwner(
-          params ? readString(params, 'itemId') : undefined,
-          owner,
-        );
-      } else if (method === 'item/tool/call') {
-        this.trackItemOwner(
-          params ? readString(params, 'callId') : undefined,
-          owner,
-        );
-      }
-    }
-    this.ownerLanes.dispatch(owner, {
-      kind: 'server-request',
-      measureBytes: (): number => Buffer.byteLength(line, 'utf8'),
-      deliver: handle,
-    });
+    handle();
   }
 
-  private resolveServerRequestOwner(
-    method: string,
-    request: Record<string, unknown>,
-  ): CodexAppServerConnectionOwner | null {
-    const params = readRecord(request, 'params');
-    switch (method) {
-      case 'item/tool/requestUserInput':
-      case 'item/tool/call':
-      case 'mcpServer/elicitation/request':
-        return this.resolveOwnerForThread(
-          params ? readString(params, 'threadId') : undefined,
-        );
-      case 'item/commandExecution/requestApproval':
-      case 'item/fileChange/requestApproval':
-      case 'item/permissions/requestApproval':
-      case 'applyPatchApproval':
-      case 'execCommandApproval':
-        return this.resolveOwnerForThread(extractApprovalThreadId(params));
-      default:
-        return null;
-    }
-  }
-
-  private handleResponse(
-    response: Record<string, unknown>,
-    line: string,
-  ): void {
+  private handleResponse(response: Record<string, unknown>): void {
     const responseId = readJsonRpcId(response, 'id');
     if (typeof responseId === 'undefined') {
       return;
@@ -3238,7 +3404,33 @@ export class CodexAppServerConnection {
 
     const pending = this.pendingResponses.get(responseId);
     if (!pending) {
-      this.reapLateThreadResponse(responseId, response);
+      const retained = this.retainedResponses.get(responseId);
+      if (!retained) {
+        this.reapLateThreadResponse(responseId, response);
+        return;
+      }
+      const error = readRecord(response, 'error');
+      const owner = retained.owner;
+      if (owner && !error && isThreadMutationMethod(retained.method)) {
+        const result = readRecord(response, 'result');
+        const thread = result ? readRecord(result, 'thread') : undefined;
+        const threadId = thread ? readString(thread, 'id') : undefined;
+        if (threadId) this.registerRootThread(threadId, owner);
+      }
+      retained.responseReceived = true;
+      this.settleRetainedResponse(
+        responseId,
+        retained,
+        error
+          ? {
+              kind: 'error',
+              error: new Error(
+                readString(error, 'message') ?? 'JSON-RPC error',
+              ),
+            }
+          : { kind: 'success', value: response.result },
+      );
+      this.clearOrphanedMcpStartupNotifications();
       return;
     }
     if (pending.responseReceived) return;
@@ -3268,21 +3460,12 @@ export class CodexAppServerConnection {
       if (threadId) {
         // Thread-scoped notifications can be emitted in the same stdout batch
         // as the mutating response. Route them as soon as the response is
-        // read, before resolving the promise (which may wait behind the
-        // owner's admission); the durable thread handle replaces this
+        // read, before resolving the promise; the durable thread handle replaces this
         // provisional owner.
         this.registerRootThread(threadId, owner);
       }
     }
-    if (!owner) {
-      this.deliverResponse(responseId, pending, response);
-      return;
-    }
-    this.ownerLanes.dispatch(owner, {
-      kind: 'response',
-      measureBytes: (): number => Buffer.byteLength(line, 'utf8'),
-      deliver: (): void => this.deliverResponse(responseId, pending, response),
-    });
+    this.deliverResponse(responseId, pending, response);
     this.clearOrphanedMcpStartupNotifications();
   }
 
@@ -3291,8 +3474,7 @@ export class CodexAppServerConnection {
     pending: PendingResponse,
     response: Record<string, unknown>,
   ): void {
-    // A failure, cancellation, or restart may already have rejected the
-    // request while its response waited behind the owner's admission.
+    // Thread registration callbacks may have cancelled or rejected this RPC.
     if (this.pendingResponses.get(responseId) !== pending) return;
     this.pendingResponses.delete(responseId);
 
@@ -3366,7 +3548,7 @@ export class CodexAppServerConnection {
     const threadId = params ? readString(params, 'threadId') : undefined;
     const itemId = params ? readString(params, 'itemId') : undefined;
     const owner = this.resolveOwnerForThread(threadId);
-    if (!owner) {
+    if (!owner || typeof threadId !== 'string') {
       this.trackItemOwner(itemId, null);
       this.send({
         id: requestId,
@@ -3392,27 +3574,41 @@ export class CodexAppServerConnection {
 
     this.trackItemOwner(itemId, owner);
     if (isFallbackMcpApprovalRequest(request)) {
-      this.trackPendingServerRequest(owner, requestId, {
+      const pending: PendingApprovalServerRequest = {
         kind: 'approval',
         method: 'item/tool/requestUserInput',
         failClosedResult: failClosedFallbackMcpApprovalResult(request),
-      });
+        threadId,
+        controller: new AbortController(),
+      };
+      this.trackPendingServerRequest(owner, requestId, pending);
+      // The fallback approval looks up its MCP item, like a file change.
       await this.trackPendingServerRequestHandler(
         owner,
-        owner.handleApprovalRequest(
-          requestId,
-          'item/tool/requestUserInput',
-          request,
+        this.afterOwnerTranscript(owner, requestId, pending, () =>
+          owner.handleApprovalRequest(
+            requestId,
+            'item/tool/requestUserInput',
+            request,
+            pending.controller.signal,
+          ),
         ),
       );
       return;
     }
-    this.trackPendingServerRequest(owner, requestId, {
+    const pending: PendingUserInputServerRequest = {
       kind: 'requestUserInput',
-    });
+      threadId,
+      controller: new AbortController(),
+    };
+    this.trackPendingServerRequest(owner, requestId, pending);
     await this.trackPendingServerRequestHandler(
       owner,
-      owner.handleRequestUserInput(requestId, request),
+      owner.handleRequestUserInput(
+        requestId,
+        request,
+        pending.controller.signal,
+      ),
     );
   }
 
@@ -3438,19 +3634,70 @@ export class CodexAppServerConnection {
     // instead of always failing closed for those two methods.
     const threadId = extractApprovalThreadId(params);
     const owner = this.resolveOwnerForThread(threadId);
-    if (!owner || this.isOwnerCancelling(owner)) {
+    if (
+      !owner ||
+      typeof threadId !== 'string' ||
+      this.isOwnerCancelling(owner)
+    ) {
       this.send({ id: requestId, result: failClosedApprovalResult(method) });
       return;
     }
 
-    this.trackPendingServerRequest(owner, requestId, {
+    const pending: PendingApprovalServerRequest = {
       kind: 'approval',
       method,
       failClosedResult: failClosedApprovalResult(method),
-    });
+      threadId,
+      controller: new AbortController(),
+    };
+    this.trackPendingServerRequest(owner, requestId, pending);
+    // A file-change approval names its item, whose changed paths arrive on
+    // that item's frames.
     await this.trackPendingServerRequestHandler(
       owner,
-      owner.handleApprovalRequest(requestId, method, request),
+      method === 'item/fileChange/requestApproval'
+        ? this.afterOwnerTranscript(owner, requestId, pending, () =>
+            owner.handleApprovalRequest(
+              requestId,
+              method,
+              request,
+              pending.controller.signal,
+            ),
+          )
+        : owner.handleApprovalRequest(
+            requestId,
+            method,
+            request,
+            pending.controller.signal,
+          ),
+    );
+  }
+
+  /**
+   * Runs `decide` once the transcript read before this request is admitted.
+   * For approvals that look up their item, whose frames may still be waiting
+   * for admission when the request is read. If the worker goes away first,
+   * the worker-loss path answers or drops the request.
+   */
+  private afterOwnerTranscript(
+    owner: CodexAppServerConnectionOwner,
+    requestId: JsonRpcId,
+    pending: PendingPromptServerRequest,
+    decide: () => Promise<void>,
+  ): Promise<void> {
+    const transcript = this.ownerLanes.whenDrained(owner);
+    if (!transcript) {
+      return this.isPendingServerRequest(owner, requestId, pending)
+        ? decide()
+        : Promise.resolve();
+    }
+    return transcript.then(
+      () =>
+        this.clients.has(owner) &&
+        this.isPendingServerRequest(owner, requestId, pending)
+          ? decide()
+          : undefined,
+      () => undefined,
     );
   }
 
@@ -3547,7 +3794,11 @@ export class CodexAppServerConnection {
       // never time out by default. The owner's `handleMcpElicitationRequest`
       // bridges `form` mode to the ask-user UI and declines `url` /
       // `openai/form` modes.
-      if (!owner || this.isOwnerCancelling(owner)) {
+      if (
+        !owner ||
+        typeof threadId !== 'string' ||
+        this.isOwnerCancelling(owner)
+      ) {
         const result: McpServerElicitationRequestResponse = {
           action: 'decline',
           content: null,
@@ -3556,15 +3807,19 @@ export class CodexAppServerConnection {
         this.send({ id: requestId, result });
         return;
       }
-      this.trackPendingServerRequest(owner, requestId, {
+      const pending: PendingMcpElicitationServerRequest = {
         kind: 'mcpElicitation',
-      });
+        threadId,
+        controller: new AbortController(),
+      };
+      this.trackPendingServerRequest(owner, requestId, pending);
       await this.trackPendingServerRequestHandler(
         owner,
         owner.handleApprovalRequest(
           requestId,
           'mcpServer/elicitation/request',
           request,
+          pending.controller.signal,
         ),
       );
       return;
@@ -3595,6 +3850,7 @@ export class CodexAppServerConnection {
     if (
       !owner ||
       this.isOwnerCancelling(owner) ||
+      typeof threadId !== 'string' ||
       !serverName ||
       (suppliedToolName && !toolName) ||
       !toolCall ||
@@ -3616,15 +3872,24 @@ export class CodexAppServerConnection {
       return;
     }
 
-    this.trackPendingServerRequest(owner, requestId, {
+    const pending: PendingMcpElicitationServerRequest = {
       kind: 'mcpElicitation',
-    });
+      threadId,
+      controller: new AbortController(),
+    };
+    this.trackPendingServerRequest(owner, requestId, pending);
     // Interactive approval prompts are user-paced. Owner/session disposal
     // remains responsible for declining and closing them; a fixed connection
     // timeout would detach a still-visible prompt from its provider request.
     await this.trackPendingServerRequestHandler(
       owner,
-      owner.handleMcpElicitation(requestId, request, toolCall, approvalKind),
+      owner.handleMcpElicitation(
+        requestId,
+        request,
+        toolCall,
+        approvalKind,
+        pending.controller.signal,
+      ),
     );
   }
 
@@ -3648,6 +3913,45 @@ export class CodexAppServerConnection {
       new Map<JsonRpcId, PendingServerRequest>();
     requests.set(requestId, pending);
     this.pendingServerRequestsByOwner.set(owner, requests);
+    this.markActivity();
+    this.updateResourceRegistration();
+  }
+
+  private isPendingServerRequest(
+    owner: CodexAppServerConnectionOwner,
+    requestId: JsonRpcId,
+    pending: PendingServerRequest,
+  ): boolean {
+    return (
+      this.pendingServerRequestsByOwner.get(owner)?.get(requestId) === pending
+    );
+  }
+
+  private cancelResolvedPromptRequest(params: Record<string, unknown>): void {
+    const threadId = readString(params, 'threadId');
+    const requestId = readJsonRpcId(params, 'requestId');
+    if (typeof threadId !== 'string' || typeof requestId === 'undefined') {
+      return;
+    }
+
+    const owner = this.resolveOwnerForThread(threadId);
+    if (!owner) return;
+    const requests = this.pendingServerRequestsByOwner.get(owner);
+    const pending = requests?.get(requestId);
+    if (
+      !requests ||
+      !pending ||
+      !('controller' in pending) ||
+      pending.threadId !== threadId
+    ) {
+      return;
+    }
+
+    if (!requests.delete(requestId)) return;
+    if (requests.size === 0) {
+      this.pendingServerRequestsByOwner.delete(owner);
+    }
+    pending.controller.abort();
     this.markActivity();
     this.updateResourceRegistration();
   }
@@ -3703,6 +4007,23 @@ export class CodexAppServerConnection {
     return { settlement, withinRecoveryDeadline };
   }
 
+  private reportUnroutedUnknownNotification(method: string): void {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        CODEX_LIFECYCLE.notificationMethods,
+        method,
+      )
+    )
+      return;
+    for (const client of Array.from(this.clients)) {
+      try {
+        client.handleUnroutedUnknownNotification?.(method);
+      } catch {
+        // Diagnostics must never change notification routing.
+      }
+    }
+  }
+
   private handleNotification(
     method: string,
     notification: Record<string, unknown>,
@@ -3710,7 +4031,13 @@ export class CodexAppServerConnection {
   ): void {
     const params = readRecord(notification, 'params');
     if (!params) {
+      this.reportUnroutedUnknownNotification(method);
       return;
+    }
+
+    if (method === 'serverRequest/resolved') {
+      // Apply prompt cancellation before this control frame reaches its owner.
+      this.cancelResolvedPromptRequest(params);
     }
 
     if (
@@ -3719,7 +4046,7 @@ export class CodexAppServerConnection {
     ) {
       this.markActivity();
       this.updateResourceRegistration();
-      this.fanOutAccountNotification(method, notification, line);
+      this.fanOutAccountNotification(method, notification);
       return;
     }
 
@@ -3753,6 +4080,7 @@ export class CodexAppServerConnection {
       ) {
         return;
       }
+      this.reportUnroutedUnknownNotification(method);
       const threadId = this.extractNotificationThreadId(method, params);
       if (threadId && !this.disposedThreadTombstones.has(threadId)) {
         this.emitUnroutedNotificationWarning(threadId);
@@ -3796,8 +4124,35 @@ export class CodexAppServerConnection {
     } else {
       this.trackItemOwner(itemId, owner);
     }
+    // Protocol control must never wait on transcript persistence. Observe a
+    // returned routing receipt independently rather than holding this lane.
+    if (!this.isTranscriptNotification(method)) {
+      const admission = this.deliverNotification(
+        owner,
+        method,
+        params,
+        notification,
+        method === 'turn/completed' || method === 'error'
+          ? this.ownerLanes.whenDrained(owner)
+          : undefined,
+      );
+      this.observeControlAdmission(owner, admission);
+      return;
+    }
     this.ownerLanes.dispatch(owner, {
       kind: 'notification',
+      producedAtMs: this.extractNotificationProducedAtMs(method, params),
+      // `turn/diff/updated` resends the turn's whole aggregated diff on every
+      // file change: it is the protocol's repeated full snapshot. Over the
+      // owner's soft cap only the newest diff of each turn is kept. Deltas,
+      // items and output are never coalesced.
+      coalesceKey:
+        method === 'turn/diff/updated'
+          ? JSON.stringify([
+              this.extractNotificationThreadId(method, params),
+              readString(params, 'turnId'),
+            ])
+          : undefined,
       // Streamed item notifications are the volume of a turn and carry no
       // turn or thread boundary: under a host budget they may be delivered
       // while the owner's earlier admissions are pending.
@@ -3806,6 +4161,51 @@ export class CodexAppServerConnection {
       deliver: (): void | Promise<void> =>
         this.deliverNotification(owner, method, params, notification),
     });
+  }
+
+  private extractNotificationProducedAtMs(
+    method: string,
+    params: Record<string, unknown>,
+  ): number | undefined {
+    const timestampField =
+      method === 'item/started'
+        ? 'startedAtMs'
+        : method === 'item/completed'
+          ? 'completedAtMs'
+          : undefined;
+    if (!timestampField) return undefined;
+    const timestamp = params[timestampField];
+    return typeof timestamp === 'number' &&
+      Number.isFinite(timestamp) &&
+      timestamp > 0
+      ? timestamp
+      : undefined;
+  }
+
+  private isTranscriptNotification(method: string): boolean {
+    return (
+      method.startsWith('item/') ||
+      method === 'thread/tokenUsage/updated' ||
+      method === 'turn/plan/updated' ||
+      method === 'turn/diff/updated'
+    );
+  }
+
+  private observeControlAdmission(
+    owner: CodexAppServerConnectionOwner,
+    admission: void | Promise<void>,
+  ): void {
+    const proc = this.process;
+    if (admission)
+      void admission.catch((error: unknown) => {
+        // A drain the connection discarded with its worker is not a new
+        // failure: the restart or recovery that discarded it settles turns.
+        if (error instanceof TranscriptAdmissionDiscardedError) return;
+        if (this.process === proc && this.clients.has(owner))
+          this.failAll(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+      });
   }
 
   /**
@@ -3817,6 +4217,7 @@ export class CodexAppServerConnection {
     method: string,
     params: Record<string, unknown>,
     notification: Record<string, unknown>,
+    transcriptDrain?: Promise<void>,
   ): void | Promise<void> {
     const quarantine = this.quarantinedOwners.get(owner);
     const pendingDisposal = this.pendingDisposedTurnInterrupts.get(owner);
@@ -3861,7 +4262,13 @@ export class CodexAppServerConnection {
       this.tryCompleteExternalAuthTransition();
       return;
     }
-    const admission = owner.handleConnectionNotification(method, notification);
+    // Owners that do not finalize transcript content may ignore the drain;
+    // the lanes observe its rejection, so an owner never has to.
+    const admission = owner.handleConnectionNotification(
+      method,
+      notification,
+      transcriptDrain,
+    );
     this.markActivity();
     this.updateResourceRegistration();
     this.tryCompleteExternalAuthTransition();
@@ -3910,32 +4317,19 @@ export class CodexAppServerConnection {
     }
     this.pendingMcpStartupNotifications.delete(threadId);
     for (const notification of Array.from(notifications.values())) {
-      // These frames were read before the frame that registered the thread,
-      // so they keep the owner's lane order, but never hold the lane.
-      this.ownerLanes.dispatch(owner, {
-        kind: 'notification',
-        measureBytes: (): number =>
-          Buffer.byteLength(JSON.stringify(notification), 'utf8'),
-        deliver: (): void => {
-          const admission = owner.handleConnectionNotification(
-            'mcpServer/startupStatus/updated',
-            notification,
+      // Startup status is control, not transcript admission. Preserve the
+      // attempt-scoped failure observer without retaining this frame.
+      const admission = owner.handleConnectionNotification(
+        'mcpServer/startupStatus/updated',
+        notification,
+      );
+      if (admission)
+        void admission.catch(() => {
+          process.emitWarning(
+            `Codex MCP startup notification admission failed for thread ${threadId}`,
+            { type: 'CanopyCodexNotificationWarning' },
           );
-          if (admission && typeof admission.then === 'function') {
-            // This buffered notification is flushed during thread
-            // registration. Waiting here could hold the thread RPC response
-            // behind its own notification. The owner handles attempt-scoped
-            // rejection; this observer reports a failure without retaining or
-            // mutating that owner after a later turn may have started.
-            void Promise.resolve(admission).catch(() => {
-              process.emitWarning(
-                `Codex MCP startup notification admission failed for thread ${threadId}`,
-                { type: 'CanopyCodexNotificationWarning' },
-              );
-            });
-          }
-        },
-      });
+        });
     }
     this.markActivity();
     this.updateResourceRegistration();
@@ -3980,23 +4374,12 @@ export class CodexAppServerConnection {
   private fanOutAccountNotification(
     method: string,
     notification: Record<string, unknown>,
-    line: string,
   ): void {
-    // Each recipient receives the frame at its own position in its lane.
     for (const owner of Array.from(this.clients)) {
-      this.ownerLanes.dispatch(owner, {
-        kind: 'notification',
-        measureBytes: (): number => Buffer.byteLength(line, 'utf8'),
-        deliver: (): void | Promise<void> => {
-          const admission = owner.handleConnectionNotification(
-            method,
-            notification,
-          );
-          return admission && typeof admission.then === 'function'
-            ? admission
-            : undefined;
-        },
-      });
+      this.observeControlAdmission(
+        owner,
+        owner.handleConnectionNotification(method, notification),
+      );
     }
   }
 
@@ -4221,6 +4604,8 @@ export class CodexAppServerConnection {
     const recoverableError =
       this.buildRecoverableExitError(processFailureError);
 
+    this.settleAllRetainedResponses(recoverableError);
+
     for (const pending of Array.from(this.pendingResponses.values())) {
       pending.reject(recoverableError);
     }
@@ -4335,10 +4720,7 @@ export class CodexAppServerConnection {
   }
 
   private failAll(error: Error): void {
-    for (const pending of Array.from(this.pendingResponses.values())) {
-      pending.reject(error);
-    }
-    this.pendingResponses.clear();
+    this.rejectAllPendingRequests(error);
     for (const client of Array.from(this.clients)) {
       client.rejectActiveTurn(error);
       client.markProcessFailed();
@@ -4411,6 +4793,14 @@ export class CodexAppServerConnection {
       );
     }
     this.pendingResponses.clear();
+    for (const [id, pending] of Array.from(this.retainedResponses.entries())) {
+      this.settleRetainedResponse(id, pending, {
+        kind: 'error',
+        error: this.canRecoverAfterSharedRestart(owner, pending.owner)
+          ? recoverableError
+          : failureFor(pending.owner),
+      });
+    }
 
     const recoveringOwners: CodexAppServerConnectionOwner[] = [];
     let failedPeerCount = 0;
@@ -4499,10 +4889,16 @@ export class CodexAppServerConnection {
     signal?: NodeJS.Signals | null,
   ): void {
     this.detachStdoutAdmission();
+    const processExitError = this.buildProcessFailureError(
+      'Codex app-server exited',
+      code,
+      signal,
+    );
+    this.settleAllRetainedResponses(
+      new CodexRecoverableProcessExitError(processExitError.message),
+    );
     for (const pending of Array.from(this.pendingResponses.values())) {
-      pending.reject(
-        this.buildProcessFailureError('Codex app-server exited', code, signal),
-      );
+      pending.reject(processExitError);
     }
     this.pendingResponses.clear();
     this.stdout = null;

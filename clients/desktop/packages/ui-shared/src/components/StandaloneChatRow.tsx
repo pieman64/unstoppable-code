@@ -38,8 +38,9 @@ export interface StandaloneChatRowProps {
 
 /**
  * Standalone chat list row. Renders the provider icon, the title and an
- * optional model label, and a hover-revealed archive trash button. Pure
- * display: hosts wire up selection, archive, and provider icon dispatch.
+ * optional model label, and an archive button revealed on hover and always
+ * visible on coarse pointers. Pure display: hosts wire up selection, archive,
+ * and provider icon dispatch.
  */
 export function StandaloneChatRow({
   title,
@@ -113,7 +114,7 @@ export function StandaloneChatRow({
             e.stopPropagation();
             onArchive();
           }}
-          className="shrink-0 rounded-md p-0.5 fg-secondary opacity-0 transition-[color,opacity] hover:fg-warning group-hover:opacity-100"
+          className="shrink-0 rounded-md p-0.5 fg-secondary opacity-0 transition-[color,opacity] hover:fg-warning group-hover:opacity-100 pointer-coarse:opacity-100"
           aria-label="Archive chat"
           data-testid="standalone-chat-row-archive"
         >

@@ -8,6 +8,7 @@ import {
   markdownTableCellProps,
   TRANSCRIPT_MARKDOWN_OPTIONS,
   isNavigableTranscriptHref,
+  setSingleDollarMathEnabled,
   withSoftLineBreaks,
   type MarkdownOverrides,
 } from '../Markdown';
@@ -887,6 +888,213 @@ describe('Markdown', () => {
     expect(prepared.markdown).toContain('`\\(literal\\)`');
     expect(prepared.markdown).toContain('\\[literal-fence\\]');
     expect(prepared.markdown).toContain('``` Math\n\\sum_i i\n```');
+  });
+
+  describe('single-dollar inline math', () => {
+    describe('when turned off (CAN-5124)', () => {
+      afterEach(() => setSingleDollarMathEnabled(true));
+
+      it('leaves $...$ as text but still renders the other delimiters', () => {
+        const markdown = 'Cost $x$ and \\(y\\) and $$z$$ remain.';
+        const prepared = prepareMarkdownMath(markdown, { singleDollar: false });
+
+        expect([...prepared.originalSources.values()]).toEqual([
+          '\\(y\\)',
+          '$$z$$',
+        ]);
+        setSingleDollarMathEnabled(false);
+        const html = renderToStaticMarkup(<Markdown>{markdown}</Markdown>);
+        expect(html).toContain('$x$');
+        expect(html.match(/canopy-markdown-math-loading/g)).toHaveLength(2);
+      });
+
+      it('re-renders mounted Markdown when the setting changes', () => {
+        Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+        const host = document.createElement('div');
+        document.body.append(host);
+        const root = createRoot(host);
+        try {
+          act(() => {
+            root.render(<Markdown>{'Area is $x^2$.'}</Markdown>);
+          });
+          expect(
+            host.querySelectorAll('.canopy-markdown-math-container'),
+          ).toHaveLength(1);
+
+          act(() => setSingleDollarMathEnabled(false));
+          expect(
+            host.querySelectorAll('.canopy-markdown-math-container'),
+          ).toHaveLength(0);
+          expect(host.textContent).toContain('$x^2$');
+
+          act(() => setSingleDollarMathEnabled(true));
+          expect(
+            host.querySelectorAll('.canopy-markdown-math-container'),
+          ).toHaveLength(1);
+        } finally {
+          act(() => root.unmount());
+          host.remove();
+        }
+      });
+    });
+
+    it('renders a formula and preserves its complete source delimiter', () => {
+      const markdown = 'The bound is $\\binom{n}{2}$ edges.';
+      const prepared = prepareMarkdownMath(markdown);
+      const html = renderToStaticMarkup(<Markdown>{markdown}</Markdown>);
+
+      expect([...prepared.expressions.values()]).toEqual([
+        { source: '\\binom{n}{2}', display: false },
+      ]);
+      expect([...prepared.originalSources.values()]).toEqual([
+        '$\\binom{n}{2}$',
+      ]);
+      expect(html.match(/canopy-markdown-math-loading/g)).toHaveLength(1);
+    });
+
+    it.each([
+      'costs $5 or $10',
+      '$HOME and $PATH',
+      '$ x$',
+      '$x $',
+      '$x$5',
+      String.raw`\$x$`,
+    ])('does not interpret invalid single-dollar math: %s', (markdown) => {
+      expect(prepareMarkdownMath(markdown).expressions.size).toBe(0);
+      expect(
+        renderToStaticMarkup(<Markdown>{markdown}</Markdown>),
+      ).not.toContain('canopy-markdown-math-loading');
+    });
+
+    it('allows a digit immediately after the opening dollar', () => {
+      expect([...prepareMarkdownMath('$5$').expressions.values()]).toEqual([
+        { source: '5', display: false },
+      ]);
+      expect(
+        renderToStaticMarkup(<Markdown>{'$5$'}</Markdown>).match(
+          /canopy-markdown-math-loading/g,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('skips code and destinations while allowing math in a link label', () => {
+      const markdown = [
+        '`$x$`',
+        '```text',
+        '$x$',
+        '```',
+        '[$x$](https://example.com/$x$)',
+        '<https://example.com/$x$>',
+        '[reference]: https://example.com/$x$',
+        '    $x$',
+        '$y$',
+      ].join('\n');
+      const prepared = prepareMarkdownMath(markdown);
+
+      expect([...prepared.expressions.values()]).toEqual([
+        { source: 'x', display: false },
+        { source: 'y', display: false },
+      ]);
+      expect([...prepared.originalSources.values()]).toEqual(['$x$', '$y$']);
+      expect(prepared.markdown).toContain('`$x$`');
+      expect(prepared.markdown).toContain('```text\n$x$\n```');
+      expect(prepared.markdown).toContain('https://example.com/$x$');
+      expect(prepared.markdown).toContain('<https://example.com/$x$>');
+      expect(prepared.markdown).toContain('    $x$');
+    });
+
+    it('keeps display math priority and supports multiple inline formulas', () => {
+      const display = prepareMarkdownMath('$$x$$');
+      const displayHtml = renderToStaticMarkup(<Markdown>{'$$x$$'}</Markdown>);
+      expect([...display.expressions.values()]).toEqual([
+        { source: 'x', display: true },
+      ]);
+      expect([...display.originalSources.values()]).toEqual(['$$x$$']);
+      expect(displayHtml).toContain('data-math-display="true"');
+      expect(prepareMarkdownMath('$$x$').expressions.size).toBe(0);
+
+      const inline = prepareMarkdownMath('$a$ and $b$');
+      expect([...inline.expressions.values()]).toEqual([
+        { source: 'a', display: false },
+        { source: 'b', display: false },
+      ]);
+      expect([...inline.originalSources.values()]).toEqual(['$a$', '$b$']);
+      expect(
+        renderToStaticMarkup(<Markdown>{'$a$ and $b$'}</Markdown>).match(
+          /canopy-markdown-math-loading/g,
+        ),
+      ).toHaveLength(2);
+    });
+
+    it('does not treat a price as math when followed by a valid formula', () => {
+      const markdown = 'It costs $5, and $x^2$ is the area.';
+      const prepared = prepareMarkdownMath(markdown);
+      const html = renderToStaticMarkup(<Markdown>{markdown}</Markdown>);
+
+      expect([...prepared.expressions.values()]).toEqual([
+        { source: 'x^2', display: false },
+      ]);
+      expect(html.match(/canopy-markdown-math-loading/g)).toHaveLength(1);
+    });
+
+    it('keeps Pandoc-compatible ambiguous path prose as math', () => {
+      // A per-project opt-out is tracked separately (CAN-5124).
+      expect([
+        ...prepareMarkdownMath('$HOME/$PATH').expressions.values(),
+      ]).toEqual([{ source: 'HOME/', display: false }]);
+      expect(
+        renderToStaticMarkup(<Markdown>{'$HOME/$PATH'}</Markdown>).match(
+          /canopy-markdown-math-loading/g,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('does not pair an unclosed dollar across a paragraph break', () => {
+      expect(prepareMarkdownMath('$x\n\ny$').expressions.size).toBe(0);
+      expect(
+        renderToStaticMarkup(<Markdown>{'$x\n\ny$'}</Markdown>),
+      ).not.toContain('canopy-markdown-math-loading');
+    });
+
+    it('scans repeated unmatched dollar patterns in linear time', () => {
+      const markdown = '$a '.repeat(6_666) + '$a';
+      expect(markdown).toHaveLength(20_000);
+
+      const startedAt = performance.now();
+      const prepared = prepareMarkdownMath(markdown);
+      const elapsed = performance.now() - startedAt;
+
+      expect(prepared.expressions.size).toBe(0);
+      expect(elapsed).toBeLessThan(200);
+    });
+
+    it.each([
+      [
+        'one unmatched opener per line',
+        (n: number): string => '$a\n'.repeat(n),
+      ],
+      ['a price table', (n: number): string => '| x | $5 | $10 |\n'.repeat(n)],
+    ])(
+      'scans multi-line paragraphs with %s in linear time',
+      (_label, build) => {
+        // Compare scaling, not wall time, so a loaded machine cannot fail it:
+        // quadrupling the input grows linear work about 4x but quadratic
+        // work about 16x.
+        const fastest = (markdown: string): number => {
+          let best = Number.POSITIVE_INFINITY;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const startedAt = performance.now();
+            const prepared = prepareMarkdownMath(markdown);
+            best = Math.min(best, performance.now() - startedAt);
+            expect(prepared.expressions.size).toBe(0);
+          }
+          return Math.max(best, 0.5);
+        };
+        const small = fastest(build(8_000));
+        const large = fastest(build(32_000));
+        expect(large / small).toBeLessThan(8);
+      },
+    );
   });
 
   it('keeps escaped, unclosed, oversized, and excessive math readable', () => {

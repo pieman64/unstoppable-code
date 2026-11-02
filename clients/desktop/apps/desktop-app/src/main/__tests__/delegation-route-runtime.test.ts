@@ -1,8 +1,47 @@
+import type { CopilotAccount } from '@canopy/desktop-shared/types';
 import type { HelperInvocation } from '../ollama/helper-invocation';
+const mockOpenCodeAdmission = jest.fn<
+  Promise<{
+    kind: 'gateway';
+    funding: 'ai-credits' | 'org-gateway';
+    inferenceBindingKey: string;
+    supportedThinkingLevels: never[];
+  }>,
+  [unknown]
+>(() =>
+  Promise.resolve({
+    kind: 'gateway',
+    funding: 'ai-credits',
+    inferenceBindingKey: 'b'.repeat(64),
+    supportedThinkingLevels: [],
+  }),
+);
+jest.mock('../opencode/selection', (): unknown => ({
+  assertOpenCodeSelectionAvailable: (options: unknown) =>
+    mockOpenCodeAdmission(options),
+}));
+jest.mock('../opencode/connection', (): unknown => ({
+  assertOpenCodeModelAvailable: () =>
+    Promise.reject(new Error('Choose a native OpenCode model.')),
+}));
 import type * as MainLogModule from '../lib/main-process-logging';
 const mockCursorAccount = jest.fn(() =>
   Promise.resolve({ email: 'cursor@example.test' }),
 );
+const mockReadCopilotAccount = jest.fn<Promise<CopilotAccount | null>, []>();
+const mockOpenManagedCopilotRuntime = jest.fn();
+let mockCopilotEnabled = true;
+let mockCopilotRollout = true;
+let mockCopilotGeneration = 1;
+jest.mock('../copilot/connection', () => ({
+  readCopilotAccount: (): Promise<CopilotAccount | null> =>
+    mockReadCopilotAccount(),
+  openManagedCopilotRuntime: (...args: unknown[]): unknown =>
+    mockOpenManagedCopilotRuntime(...args),
+}));
+jest.mock('../copilot/feature-flag', () => ({
+  isCopilotHarnessEnabled: (): boolean => mockCopilotRollout,
+}));
 let mockCursorEnabled = true;
 jest.mock('../cursor/connection', () => ({
   readCursorAccount: (): ReturnType<typeof mockCursorAccount> =>
@@ -12,8 +51,16 @@ jest.mock('../cursor/feature-flag', () => ({
   assertCursorHarnessEnabled: (): void => undefined,
 }));
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: (): Promise<{ cursorEnabled: boolean }> =>
-    Promise.resolve({ cursorEnabled: mockCursorEnabled }),
+  readPreferencesFile: (): Promise<{
+    cursorEnabled: boolean;
+    copilotEnabled: boolean;
+    opencodeEnabled: boolean;
+  }> =>
+    Promise.resolve({
+      cursorEnabled: mockCursorEnabled,
+      copilotEnabled: mockCopilotEnabled,
+      opencodeEnabled: true,
+    }),
 }));
 import { buildChatSessionKey } from '../agents/session-key';
 import type * as FsPromises from 'node:fs/promises';
@@ -185,7 +232,8 @@ jest.mock('../lib/model-config', () => ({
   } => ({
     id: modelId === 'cursor-default' ? modelId : 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
-    modelSource: 'codex-managed',
+    modelSource:
+      mockChildHarness === 'opencode' ? 'ai-gateway' : 'codex-managed',
     defaultHarness: 'codex',
     enabled: true,
     selectable: true,
@@ -208,7 +256,8 @@ jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
 jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => ({
   getLoginShellPath: (): string => mockGetLoginShellPath(),
 }));
-let mockChildHarness: 'claude' | 'codex' | 'cursor' = 'codex';
+let mockChildHarness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' =
+  'codex';
 let mockProviderAccountKey = 'account';
 let mockNativelyAuthenticated = true;
 let mockNativeBillingAccountKind = 'subscription';
@@ -257,7 +306,10 @@ jest.mock('../agents/agent-model-runtime', () => ({
   resolveAgentModelRuntime: (options: { model: string }): Promise<unknown> =>
     mockResolveAgentModelRuntime(options),
 }));
-const mockMaterializeDelegationCapabilities = jest.fn(() =>
+const mockMaterializeDelegationCapabilities = jest.fn<
+  Promise<MaterializedDelegationCapabilities>,
+  Parameters<typeof materializeDelegationCapabilities>
+>(() =>
   Promise.resolve({
     files: {
       'plugins/selected/.codex-plugin/plugin.json': '{"name":"review"}',
@@ -284,7 +336,7 @@ const mockMaterializeDelegationCapabilities = jest.fn(() =>
 );
 jest.mock('../agents/delegation/agent-projection', () => ({
   materializeDelegationCapabilities: (
-    ...args: unknown[]
+    ...args: Parameters<typeof materializeDelegationCapabilities>
   ): ReturnType<typeof mockMaterializeDelegationCapabilities> =>
     mockMaterializeDelegationCapabilities(...args),
 }));
@@ -294,11 +346,22 @@ jest.mock('../ollama/helper-invocation', () => ({
   ): ReturnType<typeof mockResolveHelperInvocation> =>
     mockResolveHelperInvocation(...args),
 }));
+const mockDelegationBoundaryAvailable = jest.fn(() => Promise.resolve(true));
 jest.mock('../agents/delegation/file-process', () => ({
+  DELEGATION_FILE_HELPER_MISSING_MESSAGE:
+    'The bundled delegated file helper is missing or invalid. Reinstall the app to restore it.',
   delegationFileBoundaryAvailable: (): Promise<boolean> =>
-    Promise.resolve(true),
+    mockDelegationBoundaryAvailable(),
   openDelegationFiles: (): ReturnType<typeof mockOpenDelegationFiles> =>
     mockOpenDelegationFiles(),
+}));
+const mockRuntimeUnavailable = jest.fn<Promise<string | undefined>, [string]>(
+  () => Promise.resolve(undefined),
+);
+jest.mock('../agents/delegation/runtime-support', () => ({
+  delegationRuntimeUnavailableReason: (
+    harness: string,
+  ): Promise<string | undefined> => mockRuntimeUnavailable(harness),
 }));
 jest.mock('../auth/provider-auth-state', () => ({
   isProviderNativelyAuthenticatedForRouting: (): Promise<boolean> =>
@@ -415,7 +478,10 @@ import {
   prepareDelegationCapabilities,
   type DelegationCallerCapabilities,
 } from '../agents/delegation/capability-grant';
-import type { MaterializedDelegationCapabilities } from '../agents/delegation/agent-projection';
+import type {
+  MaterializedDelegationCapabilities,
+  materializeDelegationCapabilities,
+} from '../agents/delegation/agent-projection';
 import type { SessionDiagnosticRecord } from '../observability/service';
 import { reportDelegationError } from '../agents/delegation/report-error';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -483,7 +549,21 @@ afterAll(() => {
   Object.defineProperty(process, 'platform', platformDescriptor);
 });
 beforeEach(() => {
+  mockOpenCodeAdmission.mockClear();
   mockChildHarness = 'codex';
+  mockCopilotEnabled = true;
+  mockCopilotRollout = true;
+  mockCopilotGeneration = 1;
+  mockReadCopilotAccount.mockReset().mockResolvedValue({
+    host: 'https://github.com',
+    login: 'copilot-user',
+  });
+  mockOpenManagedCopilotRuntime.mockReset().mockResolvedValue({
+    account: { host: 'https://github.com', login: 'copilot-user' },
+    close: jest.fn(() => Promise.resolve()),
+  });
+  mockDelegationBoundaryAvailable.mockReset().mockResolvedValue(true);
+  mockRuntimeUnavailable.mockReset().mockResolvedValue(undefined);
   mockCursorEnabled = true;
   mockCursorAccount
     .mockReset()
@@ -513,8 +593,9 @@ it('keeps Agent instructions unchanged when no retained files exist', () => {
   expect(
     delegationProjectionInstructions(
       {
+        version: 2,
         agentDefinitionId: 'agent_model_reviewer',
-        agentDefinitionRevision: 1,
+        agentDefinitionRevision: '1',
         agentDefinitionHash: 'hash',
         systemPromptAppend: 'Read @agent/reference.md',
         pluginFiles: {},
@@ -569,7 +650,8 @@ function runtime(
     directory: '/tmp/delegation-route-runtime-test',
     owner: () => owner,
     getWindow: () => null,
-    authGeneration: () => 1,
+    authGeneration: (harness) =>
+      harness === 'copilot' ? mockCopilotGeneration : 1,
   });
 }
 
@@ -628,7 +710,6 @@ function prepareContext(
     },
     signal,
     emit: (): Promise<void> => Promise.resolve(),
-    accepted: (): Promise<void> => Promise.resolve(),
     retain: (close): void => {
       retained.push(close);
     },
@@ -804,6 +885,45 @@ it.each(['edited', 'deleted'] as const)(
       if (priorLstat) mockedLstat.mockImplementation(priorLstat);
       await rm(directory, { recursive: true, force: true });
     }
+  },
+);
+
+it.each(['ai-credits', 'org-gateway'] as const)(
+  'captures OpenCode funding before queued launch: %s',
+  async (funding) => {
+    mockChildHarness = 'opencode';
+    mockOpenCodeAdmission.mockResolvedValueOnce({
+      kind: 'gateway',
+      funding,
+      inferenceBindingKey: 'b'.repeat(64),
+      supportedThinkingLevels: [],
+    });
+    const routeRuntime = runtime();
+    const resolved = await routeRuntime.resolve(
+      parent,
+      task,
+      new AbortController().signal,
+    );
+    expect(resolved).toMatchObject({
+      ok: true,
+      value: {
+        harnessId: 'opencode',
+        modelSource: 'ai-gateway',
+        billingAuthority: funding,
+        aiCreditsRouted: funding === 'ai-credits',
+        authAccountKey: 'b'.repeat(64),
+        supportedThinkingLevels: [],
+      },
+    });
+    expect(mockOpenCodeAdmission.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      session: {
+        projectId: parent.projectId,
+        worktreeId: parent.worktreeId,
+        chatId: parent.chatId,
+      },
+    });
+    expect(mockResolveHelperInvocation).not.toHaveBeenCalled();
   },
 );
 
@@ -1420,12 +1540,106 @@ it('captures a Windows Codex route without a Codex sandbox', async () => {
   }
 });
 
-it('keeps unsupported native targets unavailable', async () => {
+it('captures a Linux Codex route through the off-main helper host', async () => {
   const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
   if (!descriptor) throw new Error('Expected the platform property');
   Object.defineProperty(process, 'platform', {
     ...descriptor,
     value: 'linux',
+  });
+  try {
+    mockResolveHelperInvocation.mockClear();
+    const routeRuntime = runtime();
+    const resolved = await routeRuntime.resolve(
+      parent,
+      task,
+      new AbortController().signal,
+    );
+    expect(resolved.ok).toBe(true);
+    expect(mockResolveHelperInvocation).toHaveBeenCalledTimes(1);
+    if (resolved.ok) routeRuntime.release(resolved.value);
+  } finally {
+    Object.defineProperty(process, 'platform', descriptor);
+  }
+});
+
+it('rejects a direct spawn with the actionable copy when the staged file helper is missing', async () => {
+  mockDelegationBoundaryAvailable.mockResolvedValueOnce(false);
+  mockResolveHelperInvocation.mockClear();
+  await expect(
+    runtime().resolve(parent, task, new AbortController().signal),
+  ).resolves.toMatchObject({
+    ok: false,
+    error: {
+      code: 'capability_unavailable',
+      message:
+        'The bundled delegated file helper is missing or invalid. Reinstall the app to restore it.',
+    },
+  });
+  // The missing helper is caught before any provider route is captured.
+  expect(mockResolveHelperInvocation).not.toHaveBeenCalled();
+});
+
+it.each([
+  [
+    'cursor',
+    'cursor-default',
+    'This provider has no pinned managed runtime for Linux. Choose another provider.',
+  ],
+  [
+    'codex',
+    'gpt-5.6-sol',
+    'The bundled Linux sandbox helper for the managed runtime is missing or invalid. Reinstall the app to restore it.',
+  ],
+] as const)(
+  'rejects %s with the runtime-support reason before any provider auth or billing probe',
+  async (harness, modelId, reason) => {
+    mockChildHarness = harness;
+    mockRuntimeUnavailable.mockResolvedValueOnce(reason);
+    mockResolveHelperInvocation.mockClear();
+    await expect(
+      runtime().resolve(
+        parent,
+        { ...task, modelId },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'capability_unavailable', message: reason },
+    });
+    expect(mockRuntimeUnavailable).toHaveBeenCalledWith(harness);
+    // Rejected before any provider auth or billing probe.
+    expect(mockResolveHelperInvocation).not.toHaveBeenCalled();
+  },
+);
+
+it('keeps macOS and Windows provider routes available regardless of the Linux pin gap', async () => {
+  for (const value of ['darwin', 'win32'] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (!descriptor) throw new Error('Expected the platform property');
+    Object.defineProperty(process, 'platform', { ...descriptor, value });
+    mockChildHarness = 'cursor';
+    try {
+      const routeRuntime = runtime();
+      const resolved = await routeRuntime.resolve(
+        parent,
+        { ...task, modelId: 'cursor-default' },
+        new AbortController().signal,
+      );
+      expect(resolved.ok).toBe(true);
+      if (resolved.ok) routeRuntime.release(resolved.value);
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor);
+    }
+  }
+});
+
+it('keeps unsupported native targets unavailable', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  if (!descriptor) throw new Error('Expected the platform property');
+  Object.defineProperty(process, 'platform', {
+    ...descriptor,
+    value: 'freebsd',
   });
   try {
     mockResolveHelperInvocation.mockClear();
@@ -1500,7 +1714,6 @@ async function prepareSharedWriter(
     },
     signal: controller.signal,
     emit: (): Promise<void> => Promise.resolve(),
-    accepted: (): Promise<void> => Promise.resolve(),
     retain: (close): void => {
       retained.push(close);
     },
@@ -1517,11 +1730,12 @@ async function prepareSharedWriter(
   };
 }
 
-const allowWrites = {
+const allowWrites: ApprovalRule = {
   id: 'allow-writes',
-  description: 'Allow writes for this chat',
-  toolPattern: '*',
-  action: 'allow' as const,
+  behavior: 'allow',
+  target: { kind: 'tool', toolName: 'Write' },
+  createdAt: '2026-10-24T00:00:00.000Z',
+  origin: 'prompt',
 };
 
 it('keeps delegated approvals when the root chat adds a session rule', async () => {
@@ -1610,7 +1824,10 @@ it('applies a narrowed session rule from the root chat', async () => {
       'write-with-rule',
     ),
   ).resolves.toBe(true);
-  const narrowed = { ...allowWrites, toolPattern: 'Read' };
+  const narrowed: ApprovalRule = {
+    ...allowWrites,
+    target: { kind: 'tool', toolName: 'Read' },
+  };
   owner.sessionApprovalRules = [narrowed];
 
   await expect(
@@ -1831,7 +2048,6 @@ it('revokes an in-flight delegated write when the parent approval mode changes',
     },
     signal: controller.signal,
     emit: (): Promise<void> => Promise.resolve(),
-    accepted: (): Promise<void> => Promise.resolve(),
     retain: (close): void => {
       retained.push(close);
     },
@@ -1894,7 +2110,6 @@ it('rechecks parent policy for each native write after persisted approval rules 
     },
     signal: controller.signal,
     emit: (): Promise<void> => Promise.resolve(),
-    accepted: (): Promise<void> => Promise.resolve(),
     retain: (close): void => {
       retained.push(close);
     },
@@ -2375,19 +2590,13 @@ function buildReloadGrant(discovery: boolean): DelegationCapabilityGrant {
   };
 }
 
-/**
- * A resolved route may carry a one-shot `capabilityGrant` (recordable spawn
- * discovery/explicit/inherited state). "The broker moves the grant onto the
- * new record; routes never retain it" (route-runtime.ts) — a real caller
- * persists it separately and never feeds it back into `context.request.route`
- * for launch/prepare. `capabilityGrant: undefined` drops the key entirely
- * because `JSON.stringify` omits `undefined` values, matching the captured
- * route's own fingerprint.
- */
+/** Keep the historical undefined grant key at the test boundary for hashing. */
 function launchRoute(
   route: ResolvedAgentRouteSnapshot,
 ): ResolvedAgentRouteSnapshot {
-  return { ...route, capabilityGrant: undefined };
+  const launchSnapshot = { ...route };
+  Reflect.set(launchSnapshot, 'capabilityGrant', undefined);
+  return launchSnapshot;
 }
 
 const RELOAD_INITIAL_ITEM_ID = `deferred:v1:${'a'.repeat(43)}`;
@@ -3951,7 +4160,7 @@ it('keeps a proxy-served Claude delegate on the same account key across resoluti
   mockNativelyAuthenticated = false;
   // Every resolution registers a new loopback route; the proxy connection is
   // the same, so a follow-up must still match the child's stored key.
-  const proxyInvocation = (route: string): unknown => ({
+  const proxyInvocation = (route: string): HelperInvocation => ({
     providerType: 'claude',
     source: 'claude-managed',
     harness: 'claude',
@@ -4028,6 +4237,142 @@ it('keeps a native Codex API-key route bound to the provider account', async () 
     mockNativeBillingAccountKind = 'subscription';
     mockProviderAccountKey = 'account';
   }
+});
+
+describe('Copilot route admission', () => {
+  beforeEach(() => {
+    mockChildHarness = 'copilot';
+  });
+
+  it('reads the authority account without opening a runtime or presenting a token (T11)', async () => {
+    const routeRuntime = runtime();
+    const abort = new AbortController();
+    const retained: Array<() => Promise<void>> = [];
+    const selected = await routeRuntime.resolve(parent, task, abort.signal);
+    try {
+      expect(selected).toMatchObject({
+        ok: true,
+        value: {
+          harnessId: 'copilot',
+          runtimeKind: 'copilot-sdk',
+          runnerRegistrationId: 'local-delegation-copilot-v1',
+          billingAuthority: 'native',
+          aiCreditsRouted: false,
+        },
+      });
+      expect(mockReadCopilotAccount).toHaveBeenCalledTimes(1);
+      expect(mockOpenManagedCopilotRuntime).not.toHaveBeenCalled();
+      expect(mockResolveHelperInvocation).not.toHaveBeenCalled();
+      if (!selected.ok) throw new Error('Expected Copilot route');
+      expect(selected.value.authAccountKey).toMatch(/^[a-f0-9]{64}$/);
+      await expect(
+        routeRuntime.authorize(parent, selected.value, abort.signal),
+      ).resolves.toEqual({ ok: true, value: undefined });
+      const prepared = await routeRuntime.prepareCopilot(
+        prepareContext(selected.value, abort.signal, retained),
+      );
+      expect(prepared.profileDir).toContain('copilot-sessions');
+    } finally {
+      abort.abort();
+      if (selected.ok) routeRuntime.release(selected.value);
+      for (const close of retained.reverse()) await close();
+    }
+  });
+
+  it('requires an authority account', async () => {
+    mockReadCopilotAccount.mockResolvedValue(null);
+    await expect(
+      runtime().resolve(parent, task, new AbortController().signal),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'auth_required' } });
+    expect(mockOpenManagedCopilotRuntime).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to a runtime when the account read fails', async () => {
+    mockReadCopilotAccount.mockRejectedValue(new Error('Account unreadable'));
+    await expect(
+      runtime().resolve(parent, task, new AbortController().signal),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'route_unavailable', retryable: false },
+    });
+    expect(mockOpenManagedCopilotRuntime).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported hosts before reading the account', async () => {
+    mockRuntimeUnavailable.mockResolvedValue('Unsupported host');
+    await expect(
+      runtime().resolve(parent, task, new AbortController().signal),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'capability_unavailable' },
+    });
+    expect(mockReadCopilotAccount).not.toHaveBeenCalled();
+    expect(mockOpenManagedCopilotRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each(['disabled', 'rollout-off', 'revoked'] as const)(
+    'fails closed when %s after admission and before run (T11)',
+    async (change) => {
+      const routeRuntime = runtime();
+      const selected = await routeRuntime.resolve(
+        parent,
+        task,
+        new AbortController().signal,
+      );
+      if (!selected.ok) throw new Error('Expected Copilot route');
+      if (change === 'disabled') mockCopilotEnabled = false;
+      if (change === 'rollout-off') mockCopilotRollout = false;
+      if (change === 'revoked') mockCopilotGeneration++;
+      const retained: Array<() => Promise<void>> = [];
+      try {
+        await expect(
+          routeRuntime.authorize(
+            parent,
+            selected.value,
+            new AbortController().signal,
+          ),
+        ).resolves.toMatchObject({ ok: false });
+        await expect(
+          routeRuntime.prepareCopilot(
+            prepareContext(
+              selected.value,
+              new AbortController().signal,
+              retained,
+            ),
+          ),
+        ).rejects.toThrow(
+          'The captured child route lost its authority before launch.',
+        );
+        expect(mockOpenDelegationFiles).not.toHaveBeenCalled();
+        expect(mockOpenManagedCopilotRuntime).not.toHaveBeenCalled();
+      } finally {
+        routeRuntime.release(selected.value);
+        for (const close of retained.reverse()) await close();
+      }
+    },
+  );
+
+  it.each(['cancelled', 'revoked', 'disabled', 'rollout-off'] as const)(
+    'rejects an account read delivered after the route was %s',
+    async (change) => {
+      const abort = new AbortController();
+      mockReadCopilotAccount.mockImplementationOnce(() => {
+        if (change === 'cancelled') abort.abort();
+        if (change === 'revoked') mockCopilotGeneration++;
+        if (change === 'disabled') mockCopilotEnabled = false;
+        if (change === 'rollout-off') mockCopilotRollout = false;
+        return Promise.resolve({
+          host: 'https://github.com',
+          login: 'copilot-user',
+        });
+      });
+      await expect(
+        runtime().resolve(parent, task, abort.signal),
+      ).resolves.toMatchObject({ ok: false });
+      expect(mockReadCopilotAccount).toHaveBeenCalledTimes(1);
+      expect(mockOpenManagedCopilotRuntime).not.toHaveBeenCalled();
+    },
+  );
 });
 
 it('captures native Cursor billing without a credits route and revokes it on disconnect', async () => {

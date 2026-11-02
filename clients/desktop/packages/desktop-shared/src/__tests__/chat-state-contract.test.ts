@@ -21,6 +21,7 @@ function commandType(command: ChatCommand): string {
   switch (command.type) {
     case 'chat.create_tab':
     case 'chat.create_file_tab':
+    case 'chat.close_tabs':
     case 'chat.activate_tab':
     case 'chat.reorder_tabs':
     case 'chat.close_tab':
@@ -42,6 +43,12 @@ function commandType(command: ChatCommand): string {
     case 'chat.reset_to_point':
     case 'chat.import_session':
     case 'chat.set_scheduled_send_draft':
+    case 'chat.commit_terminal_initial_prompt':
+    case 'chat.set_model':
+    case 'chat.set_approval_mode':
+    case 'chat.move_queued_message':
+    case 'chat.steer_queued_message':
+    case 'chat.input_delivery_action':
       return command.type;
     default:
       return assertNever(command);
@@ -72,6 +79,8 @@ function mutationType(mutation: ChatCoreMutation): string {
 
 function changeType(change: ChatStateChange): string {
   switch (change.type) {
+    case 'delegation.card_state_updated':
+    case 'transcript.updated':
     case 'tab.upserted':
     case 'tab.removed':
     case 'tab.metadata_patched':
@@ -80,6 +89,7 @@ function changeType(change: ChatStateChange): string {
     case 'message.upserted':
     case 'message.removed':
     case 'messages.replaced':
+    case 'messages.omitted':
     case 'pending_question.upserted':
     case 'pending_question.removed':
     case 'runtime.patched':
@@ -204,18 +214,47 @@ describe('revisioned chat state transport contracts', () => {
     },
   );
 
-  it('does not permit main-derived send routing fields', () => {
-    const authoritativeFields: Array<keyof typeof command> = [
-      // @ts-expect-error provider selection is canonical state, not send input
+  it('allows user-selected routing fields but excludes main-owned fields', () => {
+    const userSelectableFields: Array<keyof typeof command> = [
       'providerType',
-      // @ts-expect-error model selection is canonical state, not send input
       'model',
+    ];
+    const authoritativeFields: Array<keyof typeof command> = [
       // @ts-expect-error session identity is canonical state, not send input
       'sdkSessionId',
       // @ts-expect-error transcript snapshots are never renderer input
       'messages',
     ];
-    expect(authoritativeFields).toHaveLength(4);
+    expect(userSelectableFields).toHaveLength(2);
+    expect(authoritativeFields).toHaveLength(2);
+  });
+
+  it('marks a chat unread manually only with a literal true flag', () => {
+    const manual: ChatCommand = {
+      type: 'chat.mark_unread',
+      chatId: 'chat-1',
+      manual: true,
+    };
+    const automatic: ChatCommand = {
+      type: 'chat.mark_unread',
+      chatId: 'chat-1',
+    };
+    const notManual: ChatCommand = {
+      type: 'chat.mark_unread',
+      chatId: 'chat-1',
+      // @ts-expect-error an automatic mark omits the flag rather than sending false
+      manual: false,
+    };
+    const readWithFlag: ChatCommand = {
+      type: 'chat.mark_read',
+      chatId: 'chat-1',
+      // @ts-expect-error only chat.mark_unread carries the manual flag
+      manual: true,
+    };
+    expect(commandType(manual)).toBe('chat.mark_unread');
+    expect(jsonRoundTrip(manual)).toEqual(manual);
+    expect(jsonRoundTrip(automatic)).toEqual(automatic);
+    expect([notManual, readWithFlag]).toHaveLength(2);
   });
 });
 

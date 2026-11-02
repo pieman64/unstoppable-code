@@ -338,7 +338,7 @@ describe('adding a repository to source control in settings (CAN-3546)', (): voi
         'acme-platform',
         {
           workspaceId: 'acme-platform',
-          target: { mode: 'new' },
+          target: { mode: 'new', existingWorktreeIds: [] },
           repoAdds: [
             {
               repoName: 'web3swift',
@@ -364,7 +364,7 @@ describe('adding a repository to source control in settings (CAN-3546)', (): voi
         'acme-platform',
         {
           workspaceId: 'acme-platform',
-          target: { mode: 'new' },
+          target: { mode: 'new', existingWorktreeIds: [] },
           repoAdds: [
             {
               repoName: 'billing',
@@ -399,7 +399,7 @@ describe('adding a repository to source control in settings (CAN-3546)', (): voi
         'acme-platform',
         {
           workspaceId: 'acme-platform',
-          target: { mode: 'new' },
+          target: { mode: 'new', existingWorktreeIds: [] },
           repoAdds: [
             {
               repoName: 'billing',
@@ -532,7 +532,7 @@ describe('automatically converted mixed projects', () => {
         'mixed',
         {
           workspaceId: 'mixed',
-          target: { mode: 'new' },
+          target: { mode: 'new', existingWorktreeIds: [] },
           repoAdds: [
             {
               repoName: 'existing',
@@ -567,7 +567,7 @@ describe('automatically converted mixed projects', () => {
         'mixed',
         {
           workspaceId: 'mixed',
-          target: { mode: 'new' },
+          target: { mode: 'new', existingWorktreeIds: [] },
           repoAdds: [
             {
               repoName: 'web3swift',
@@ -594,7 +594,7 @@ describe('automatically converted mixed projects', () => {
     const apply = jest.fn(() => Promise.resolve('applied'));
     const request = {
       workspaceId: 'mixed',
-      target: { mode: 'new' as const },
+      target: { mode: 'new' as const, existingWorktreeIds: [] },
       repoAdds: [
         { repoName: 'notes', repoPath: '/repos/notes', remoteUrl: remote },
       ],

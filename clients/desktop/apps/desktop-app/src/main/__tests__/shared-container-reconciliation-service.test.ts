@@ -11,15 +11,23 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
+import type { CanopyCloudCredentialContext } from '../canopy-cloud/client';
 import { SharedContainerReconciliationService } from '../shared-containers/reconciliation-service';
 import { SharedContainerReplicaManager } from '../shared-containers/replica/manager';
-import type { SharedContainerReplicaBroadcast } from '@canopy/desktop-shared/types';
+import type {
+  SharedContainerReplicaBroadcast,
+  SharedContainerReplicaState,
+} from '@canopy/desktop-shared/types';
 import { getObservabilityService } from '../observability';
 import {
   buildSharedContainerReplicaFixture as buildFixture,
   fetchForSharedContainerFixture as fetchFor,
   transportForSharedContainerFixture as transportFor,
 } from './fixtures/shared-container-replica-fixture';
+
+function responseForBody(body: Buffer | undefined): Response {
+  return new Response(body ? new Uint8Array(body) : undefined);
+}
 
 function availableState(): {
   status: 'available';
@@ -43,7 +51,7 @@ function availableState(): {
   };
 }
 
-const dismissalCredentials = {
+const dismissalCredentials: CanopyCloudCredentialContext = {
   baseUrl: 'https://cloud.example.test',
   apiKey: 'account-a-key',
   capabilities: ['shared-containers-v1'],
@@ -584,15 +592,12 @@ describe('shared-container reconciliation service', () => {
         nextCursor: 'page-2',
       })
       .mockResolvedValueOnce({ containers: [], nextCursor: null });
-    const service = new SharedContainerReconciliationService(
-      manager as never,
-      {
-        listSharedWithMe,
-        resolveLatest: jest.fn(),
-        fetchRevision: jest.fn(),
-        requestDownloadUrls: jest.fn(),
-      } as never,
-    );
+    const service = new SharedContainerReconciliationService(manager as never, {
+      listSharedWithMe,
+      resolveLatest: jest.fn(),
+      fetchRevision: jest.fn(),
+      requestDownloadUrls: jest.fn(),
+    });
 
     await service.listSharedWithMe({ organizationId: 'org-1', limit: 20 });
 
@@ -645,15 +650,12 @@ describe('shared-container reconciliation service', () => {
             resolveNewer = resolve;
           }),
       );
-    const service = new SharedContainerReconciliationService(
-      manager as never,
-      {
-        listSharedWithMe,
-        resolveLatest: jest.fn(),
-        fetchRevision: jest.fn(),
-        requestDownloadUrls: jest.fn(),
-      } as never,
-    );
+    const service = new SharedContainerReconciliationService(manager as never, {
+      listSharedWithMe,
+      resolveLatest: jest.fn(),
+      fetchRevision: jest.fn(),
+      requestDownloadUrls: jest.fn(),
+    });
 
     const older = service.listSharedWithMe({ organizationId: 'org-1' });
     const newer = service.listSharedWithMe({ organizationId: 'org-1' });
@@ -750,7 +752,7 @@ describe('shared-container reconciliation service', () => {
           listingCalls === 1
             ? { containers: [], nextCursor: null }
             : {
-                containers: [{ id: 'container-1' }],
+                containers: [fixture.detail],
                 nextCursor: null,
               },
         );
@@ -983,7 +985,7 @@ describe('shared-container reconciliation service', () => {
     const manager = new SharedContainerReplicaManager({
       rootDir,
       transport,
-      fetchImpl: ((input, init) => {
+      fetchImpl: (input, init): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
@@ -991,7 +993,7 @@ describe('shared-container reconciliation service', () => {
               ? input.href
               : input.url;
         const response = (): Response =>
-          new Response(fixture.responses.get(url));
+          responseForBody(fixture.responses.get(url));
         if (!pauseFirstDownload) return Promise.resolve(response());
         pauseFirstDownload = false;
         markDownloadStarted();
@@ -1010,7 +1012,7 @@ describe('shared-container reconciliation service', () => {
             resolve(response());
           };
         });
-      }) as typeof fetch,
+      },
     });
     const service = new SharedContainerReconciliationService(
       manager,
@@ -1073,7 +1075,7 @@ describe('shared-container reconciliation service', () => {
       const manager = new SharedContainerReplicaManager({
         rootDir,
         transport,
-        fetchImpl: ((input, init) => {
+        fetchImpl: (input, init): Promise<Response> => {
           const url =
             typeof input === 'string'
               ? input
@@ -1081,7 +1083,7 @@ describe('shared-container reconciliation service', () => {
                 ? input.href
                 : input.url;
           if (!pauseFirstDownload) {
-            return Promise.resolve(new Response(fixture.responses.get(url)));
+            return Promise.resolve(responseForBody(fixture.responses.get(url)));
           }
           pauseFirstDownload = false;
           markDownloadStarted();
@@ -1098,10 +1100,10 @@ describe('shared-container reconciliation service', () => {
               if (settled) return;
               settled = true;
               init?.signal?.removeEventListener('abort', onAbort);
-              resolve(new Response(fixture.responses.get(url)));
+              resolve(responseForBody(fixture.responses.get(url)));
             };
           });
-        }) as typeof fetch,
+        },
       });
       const service = new SharedContainerReconciliationService(
         manager,
@@ -1155,7 +1157,10 @@ describe('shared-container reconciliation service', () => {
       store: { readIndex: jest.fn() },
     };
     const dismissRemote = jest
-      .fn<Promise<void>, [string, string, typeof dismissalCredentials]>()
+      .fn<
+        Promise<void>,
+        [string, string | undefined, typeof dismissalCredentials]
+      >()
       .mockResolvedValueOnce()
       .mockRejectedValueOnce(validatedServerError('grant not found', 404));
     const service = new SharedContainerReconciliationService(
@@ -1383,7 +1388,7 @@ describe('shared-container reconciliation service', () => {
       };
       const service = new SharedContainerReconciliationService(
         manager as never,
-        transport as never,
+        transport,
       );
 
       await expect(service.open('container-1', 'org-1')).rejects.toThrow(
@@ -1428,7 +1433,7 @@ describe('shared-container reconciliation service', () => {
       };
       const service = new SharedContainerReconciliationService(
         manager as never,
-        transport as never,
+        transport,
       );
 
       await expect(service.open('container-1', 'org-1')).rejects.toThrow(
@@ -1557,7 +1562,7 @@ describe('shared-container reconciliation service', () => {
     };
     const service = new SharedContainerReconciliationService(
       manager as never,
-      transport as never,
+      transport,
     );
 
     const opening = service.open('container-1', 'org-1');
@@ -1690,7 +1695,7 @@ describe('shared-container reconciliation service', () => {
     };
     const service = new SharedContainerReconciliationService(
       manager as never,
-      transport as never,
+      transport,
     );
 
     const listing = service.listSharedWithMe({ organizationId: 'org-1' });
@@ -1860,8 +1865,10 @@ describe('shared-container reconciliation service', () => {
 
   it('does not let an older same-container open close the newer owner', async () => {
     const state = availableState();
-    let resolveSync!: (state: typeof state) => void;
-    const sync = new Promise<typeof state>((resolve) => {
+    let resolveSync!: (
+      resolvedState: ReturnType<typeof availableState>,
+    ) => void;
+    const sync = new Promise<ReturnType<typeof availableState>>((resolve) => {
       resolveSync = resolve;
     });
     const manager = {
@@ -1991,8 +1998,8 @@ describe('shared-container reconciliation service', () => {
     const fixtureTransport = transportFor(fixture);
     const firstStop = jest.fn();
     const secondStop = jest.fn();
-    const subscribe = jest.fn(
-      (options: { organizationId: string }): { stop(): void } => ({
+    const subscribe = jest.fn<{ stop(): void }, [{ organizationId?: string }]>(
+      (options) => ({
         stop: options.organizationId === 'org-1' ? firstStop : secondStop,
       }),
     );
@@ -2271,9 +2278,7 @@ describe('shared-container reconciliation service', () => {
       const changed = jest.fn<void, [SharedContainerReplicaBroadcast]>();
       service.onChanged(changed);
 
-      manager.sync.mockRejectedValue(
-        validatedServerError('forbidden', 403) as never,
-      );
+      manager.sync.mockRejectedValue(validatedServerError('forbidden', 403));
       onAccessDenied?.();
       await new Promise((resolve) => setImmediate(resolve));
 

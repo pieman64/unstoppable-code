@@ -10,6 +10,7 @@ import type {
   LedgerViewEntry,
   LedgerViewEntryRequest,
   LedgerViewResult,
+  LedgerTaskViewScope,
   LedgerViewScope,
   LedgerViewSearchRequest,
 } from '@canopy/protocol/ledger-view';
@@ -19,7 +20,10 @@ import {
   ledgerViewSearchParams,
 } from '../create-ledger-view-store';
 
-const SCOPE: LedgerViewScope = { projectId: 'project-1', worktreeId: 'wt-1' };
+const SCOPE: LedgerTaskViewScope = {
+  projectId: 'project-1',
+  worktreeId: 'wt-1',
+};
 const ACTOR: LedgerActorRef = {
   actorId: '00000000-0000-4000-8000-0000000000a1',
   kind: 'chat',
@@ -188,6 +192,12 @@ function scriptedClient(): {
         reads.push({ request, answer });
         return answer.promise;
       },
+      addEntry: () =>
+        Promise.resolve({ status: 'unavailable', reason: 'disabled' }),
+      updateEntry: () =>
+        Promise.resolve({ status: 'unavailable', reason: 'disabled' }),
+      listOwners: () =>
+        Promise.resolve({ status: 'unavailable', reason: 'disabled' }),
       subscribeChanges: (handler) => {
         handlers.add(handler);
         return (): void => {
@@ -406,6 +416,38 @@ describe('createLedgerViewStore', () => {
         title: row.title,
       },
     );
+  });
+
+  it('takes changes only of its own global (workflow) Ledger', async () => {
+    const scripted = scriptedClient();
+    const globalScope: LedgerViewScope = {
+      kind: 'global',
+      owner: { kind: 'personal' },
+      ledgerId: 'ledger-1',
+    };
+    const store = createLedgerViewStore(scripted.client, globalScope);
+    const loading = store.getState().load();
+    scripted.searches[0]?.answer.resolve(page([item(1)]));
+    await loading;
+
+    // Another incarnation of the same owner's Ledger, and a task, are not it.
+    store.getState().applyChanges({
+      changes: [
+        {
+          scope: { ...globalScope, ledgerId: 'ledger-2' },
+          entryId: 'a',
+          revision: 1,
+        },
+        { scope: SCOPE, entryId: 'b', revision: 1 },
+      ],
+    });
+    expect(scripted.searches).toHaveLength(1);
+
+    store.getState().applyChanges({
+      changes: [{ scope: { ...globalScope }, entryId: 'c', revision: 1 }],
+    });
+    expect(scripted.searches).toHaveLength(2);
+    expect(scripted.searches[1]?.request.scope).toEqual(globalScope);
   });
 
   it('quietly re-reads an open entry on a same-revision change', async () => {

@@ -1,7 +1,7 @@
 import type * as ReadRunner from '../code-graph/read-runner';
 /** PRIVATE CANDIDATE: unrun. Public DTO deliberately remains aggregate-wide. */
 import { IPC_CHANNELS, type SidebarItem } from '@canopy/desktop-shared/types';
-import type { CodeGraphSummaryProjectionV1 } from '@canopy/desktop-shared/node/code-graph/summary-projection';
+import type { CodeGraphSummaryProjectionV1 } from '@canopy/code-graph/summary-projection';
 import type { CodeGraphWorkerReadResponse } from '../code-graph/read-runner';
 const handlers = new Map<
   string,

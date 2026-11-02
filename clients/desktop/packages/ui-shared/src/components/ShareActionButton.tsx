@@ -1,10 +1,7 @@
-import type { JSX } from 'react';
+import type { JSX, MouseEvent } from 'react';
 import { ShareIcon } from '../icons/AppIcons';
-import {
-  SECONDARY_ACTION_BUTTON_CLASS,
-  SECONDARY_ICON_BUTTON_CLASS,
-} from '../lib/row-chips';
 import type { MarketplaceShareAction } from '../lib/marketplace-share';
+import { Button, type ButtonVariant } from './Button';
 import { Tooltip } from './Tooltip';
 
 /**
@@ -29,12 +26,17 @@ export interface ShareActionButtonProps {
   ariaLabel: string;
   onClick: () => void;
   /**
-   * `row` is the quiet square at the end of a list row; `header` is the
-   * secondary square that sits with a detail header's other actions;
+   * `row` is the quiet circle at the end of a list row; `header` is the
+   * secondary circle that sits with a detail header's other actions;
    * `detail` is the labeled secondary button at the top right of a
    * Marketplace detail's Back row or dialog title bar.
    */
   placement: 'row' | 'header' | 'detail';
+  /**
+   * The `header` and `detail` buttons' size: `compact`, the 28px capsule a
+   * page header's actions use. The deprecated `control` rectangle is gone.
+   */
+  size?: 'compact';
   disabled?: boolean;
   disabledReason?: string;
   dataTestId?: string;
@@ -43,53 +45,58 @@ export interface ShareActionButtonProps {
 /** The label every Share action shows. */
 export const SHARE_ACTION_LABEL = 'Share';
 
-const DISABLED_CLASS =
-  'aria-disabled:cursor-not-allowed aria-disabled:opacity-40';
-
-const ROW_CLASS = `focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-subtle hover:fg-primary pointer-coarse:h-11 pointer-coarse:w-11 ${DISABLED_CLASS}`;
-
-const HEADER_CLASS = `${SECONDARY_ICON_BUTTON_CLASS} ${DISABLED_CLASS}`;
-
-const DETAIL_CLASS = `${SECONDARY_ACTION_BUTTON_CLASS} gap-1.5 ${DISABLED_CLASS}`;
-
-const PLACEMENT_CLASS: Record<ShareActionButtonProps['placement'], string> = {
-  row: ROW_CLASS,
-  header: HEADER_CLASS,
-  detail: DETAIL_CLASS,
+const PLACEMENT_VARIANT: Record<
+  ShareActionButtonProps['placement'],
+  ButtonVariant
+> = {
+  // The row placement sits on a list row's hover surface.
+  row: 'ghost-overlay',
+  header: 'secondary',
+  detail: 'secondary',
 };
 
 export function ShareActionButton({
   ariaLabel,
   onClick,
   placement,
+  size = 'compact',
   disabled = false,
   disabledReason,
   dataTestId,
 }: ShareActionButtonProps): JSX.Element {
   const labeled = placement === 'detail';
-  const button = (
-    <button
-      type="button"
-      data-testid={dataTestId}
-      aria-label={ariaLabel}
-      aria-disabled={disabled ? true : undefined}
-      aria-description={disabled ? disabledReason : undefined}
-      onClick={(event) => {
-        if (disabled) {
-          event.preventDefault();
-          return;
-        }
-        onClick();
-      }}
-      className={PLACEMENT_CLASS[placement]}
-    >
-      <ShareIcon
-        width={labeled ? 14 : 16}
-        height={labeled ? 14 : 16}
-        aria-hidden
-      />
-      {labeled && SHARE_ACTION_LABEL}
-    </button>
+  const icon = (
+    <ShareIcon
+      width={labeled ? 14 : 16}
+      height={labeled ? 14 : 16}
+      aria-hidden
+    />
+  );
+  const shared = {
+    variant: PLACEMENT_VARIANT[placement],
+    'data-testid': dataTestId,
+    'aria-label': ariaLabel,
+    'aria-disabled': disabled ? true : undefined,
+    'aria-description': disabled ? disabledReason : undefined,
+    onClick: (event: MouseEvent<HTMLButtonElement>): void => {
+      if (disabled) {
+        event.preventDefault();
+        return;
+      }
+      onClick();
+    },
+  };
+  const button = labeled ? (
+    <Button {...shared} size={size}>
+      {icon}
+      {SHARE_ACTION_LABEL}
+    </Button>
+  ) : (
+    // The square placements keep the 28px frame of the header's other
+    // actions: the deprecated rectangle by default, the capsule on request.
+    <Button {...shared} size={size} iconOnly>
+      {icon}
+    </Button>
   );
   if (disabled && disabledReason) {
     return <Tooltip label={disabledReason}>{button}</Tooltip>;

@@ -35,6 +35,7 @@ export const ACCOUNT_PAGE_DATA_KINDS = [
   'account.billing',
   'account.invoice',
   'account.labs',
+  'account.appearance',
 ] as const;
 
 export type AccountPageDataKind = (typeof ACCOUNT_PAGE_DATA_KINDS)[number];
@@ -176,6 +177,15 @@ export const accountLabsPageDataSchema = z.looseObject({
   data: z.looseObject({}),
 });
 
+/**
+ * `/account/appearance`. The page loads the saved chat detail level
+ * client-side through `account.appearance.read`.
+ */
+export const accountAppearancePageDataSchema = z.looseObject({
+  kind: z.literal('account.appearance'),
+  data: z.looseObject({}),
+});
+
 /** `/account/integrations` → `GitHubCloudSettings` props. */
 export const accountIntegrationsPageDataSchema = z.looseObject({
   kind: z.literal('account.integrations'),
@@ -267,6 +277,7 @@ export const accountPageDataSchema = z.discriminatedUnion('kind', [
   accountBillingPageDataSchema,
   accountInvoicePageDataSchema,
   accountLabsPageDataSchema,
+  accountAppearancePageDataSchema,
 ]);
 
 export type AccountAccountPageData = z.infer<
@@ -295,6 +306,9 @@ export type AccountInvoicePageData = z.infer<
   typeof accountInvoicePageDataSchema
 >;
 export type AccountLabsPageData = z.infer<typeof accountLabsPageDataSchema>;
+export type AccountAppearancePageData = z.infer<
+  typeof accountAppearancePageDataSchema
+>;
 export type AccountPageData = z.infer<typeof accountPageDataSchema>;
 
 /**
@@ -327,6 +341,8 @@ export function accountPageDataKindForRoute(
         : 'account.invoice';
     case 'labs':
       return 'account.labs';
+    case 'appearance':
+      return 'account.appearance';
   }
 }
 

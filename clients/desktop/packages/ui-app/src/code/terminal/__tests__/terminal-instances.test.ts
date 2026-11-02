@@ -1,5 +1,7 @@
 /** @jest-environment jsdom */
 
+import { Terminal } from '@xterm/xterm';
+
 type KeyHandler = (event: KeyboardEvent) => boolean;
 
 const mockKeyHandlers: KeyHandler[] = [];
@@ -58,6 +60,18 @@ describe('getOrCreateInstance', () => {
     mockInput.mockClear();
     mockLoadAddon.mockClear();
     jest.restoreAllMocks();
+  });
+
+  it('uses the dark muted surface for active and inactive selection without replacing ANSI text colors', () => {
+    getOrCreateInstance(TERMINAL_ID);
+    const options = jest.mocked(Terminal).mock.calls.at(-1)?.[0];
+    expect(options?.theme?.selectionBackground).toBe(
+      'rgba(255, 255, 255, 0.105)',
+    );
+    expect(options?.theme?.selectionInactiveBackground).toBe(
+      'rgba(255, 255, 255, 0.105)',
+    );
+    expect(options?.theme?.selectionForeground).toBeUndefined();
   });
 
   it('loads the search addon and starts with the find chord unclaimed', () => {
@@ -123,6 +137,50 @@ describe('getOrCreateInstance', () => {
 
     expect(handler(keyEvent('keydown', 'f', { ctrlKey: true }))).toBe(true);
     expect(handler(keyEvent('keydown', 'f', { metaKey: true }))).toBe(false);
+  });
+
+  // CAN-4616: xterm turns Ctrl+Tab and Ctrl+PageDown into shell input and
+  // stops their propagation, so the handler declines the tab-cycle chords
+  // and they reach the window's panel shortcut handler.
+  it.each([
+    ['Tab', false],
+    ['Tab', true],
+    ['PageDown', false],
+    ['PageUp', false],
+  ])(
+    'declines Ctrl+%s (shift: %s) on Windows so tab cycling leaves the terminal',
+    (key, shiftKey) => {
+      mockPlatform('Win32');
+      getOrCreateInstance(TERMINAL_ID);
+      const handler = latestHandler();
+
+      for (const type of ['keydown', 'keypress', 'keyup'] as const) {
+        const event = keyEvent(type, key, { ctrlKey: true, shiftKey });
+        expect(handler(event)).toBe(false);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(mockInput).not.toHaveBeenCalled();
+    },
+  );
+
+  it('declines ⌘⇧] on macOS and keeps Ctrl+Tab and readline chords for xterm', () => {
+    mockPlatform('MacIntel');
+    getOrCreateInstance(TERMINAL_ID);
+    const handler = latestHandler();
+
+    expect(
+      handler(
+        new KeyboardEvent('keydown', {
+          key: '}',
+          code: 'BracketRight',
+          metaKey: true,
+          shiftKey: true,
+          cancelable: true,
+        }),
+      ),
+    ).toBe(false);
+    expect(handler(keyEvent('keydown', 'Tab', { ctrlKey: true }))).toBe(true);
+    expect(handler(keyEvent('keydown', 'r', { ctrlKey: true }))).toBe(true);
   });
 
   it('still sends Escape + carriage return for Shift+Enter', () => {

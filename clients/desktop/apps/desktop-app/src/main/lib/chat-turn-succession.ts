@@ -21,6 +21,7 @@ export function succeedInterruptedTurns(
   turns: InterruptedTurns | undefined,
   userMessageId: string,
   resumes: boolean,
+  resumesUserMessageId?: string,
 ): { turns: InterruptedTurns | undefined; abandoned: string[] } {
   if (!turns) return { turns, abandoned: [] };
   const abandoned: string[] = [];
@@ -28,7 +29,8 @@ export function succeedInterruptedTurns(
   for (const [id, turn] of Object.entries(turns)) {
     if (id === userMessageId || turn.resumedBy || turn.abandoned) continue;
     next ??= { ...turns };
-    if (resumes) next[id] = { resumedBy: userMessageId };
+    if (resumes && (!resumesUserMessageId || resumesUserMessageId === id))
+      next[id] = { resumedBy: userMessageId };
     else {
       next[id] = { abandoned: true };
       abandoned.push(id);

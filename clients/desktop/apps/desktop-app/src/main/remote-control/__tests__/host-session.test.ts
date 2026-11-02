@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import {
   IPC_CHANNELS,
   type ChatStateChangedEvent,
+  type UsageLimitedChatItem,
+  type ListUsageLimitedIdleChatsResponse,
 } from '@canopy/desktop-shared/types';
 import {
   ChatStateDelivery,
@@ -326,6 +328,43 @@ describe('RemoteHostSession', () => {
     ).resolves.toEqual({ echoed: TUNNEL_CHANNEL, args: [{ text: 'hi' }] });
     expect(harness.bridges).toHaveLength(1);
   });
+
+  it.each([true, false, undefined])(
+    'forwards optional last-step completion %s and legacy DTOs without stripping fields',
+    async (finished) => {
+      const harness = await createHarness();
+      const chat: UsageLimitedChatItem = {
+        projectId: 'workspace',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        provider: 'claude',
+        chatTitle: 'Chat',
+        worktreeName: 'main',
+        detectedAt: 1,
+        lastStep: {
+          toolName: 'Edit',
+          ...(finished === undefined ? {} : { finished }),
+        },
+      };
+      const response: ListUsageLimitedIdleChatsResponse = [
+        {
+          workspaceId: 'workspace',
+          workspaceName: 'Workspace',
+          workspaceType: 'single-repo',
+          chats: [chat],
+        },
+      ];
+      await harness.host.start();
+      harness.bridges[0].handler = (): Promise<unknown> =>
+        Promise.resolve(response);
+      await expect(
+        harness.controller.request(REMOTE_METHODS.invoke, {
+          channel: IPC_CHANNELS.listUsageLimitedIdleChats,
+          args: [{ provider: 'claude', includeResumePreview: true }],
+        }),
+      ).resolves.toEqual(response);
+    },
+  );
 
   it('refuses channels that are not tunneled, before any bridge runs them', async () => {
     const harness = await createHarness();

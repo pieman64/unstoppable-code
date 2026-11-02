@@ -40,6 +40,7 @@ import {
   PIPELINE_PACKAGE_MAX_FILE_BYTES,
   isPipelineContentHash,
   isPipelinePackageDigest,
+  isPipelinePackageIdentifier,
   type PipelinePackageRef,
   type PipelineShareInstallPin,
 } from '../pipelines/package';
@@ -103,10 +104,42 @@ export const SHARED_AUTOMATION_RUN_CONDITION_API_VERSION = 4;
 export const SHARED_AUTOMATION_RUN_CONDITION_CAPABILITY =
   'automations-run-condition-v4';
 /**
+ * Readers must accept `packaged` pipeline refs and prompt-action
+ * `pipelineDependencies` whose YAML travels in the capability package.
+ */
+export const SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION = 5;
+export const SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY =
+  'automations-pipeline-dependencies-v5';
+/** Key of a `worktree_pipeline` action's own packaged pipeline. */
+export const SHARED_AUTOMATION_ACTION_PIPELINE_KEY = 'action';
+/**
  * Mirrors desktop-shared `MAX_AUTOMATION_IF_COMMAND_CHARS`; protocol cannot
  * import desktop-shared, so a desktop-shared test pins the two together.
  */
 export const MAX_SHARED_AUTOMATION_RUN_CONDITION_CHARS = 20_000;
+/**
+ * Readers must retain pipeline destination kinds other than `workspace`, and
+ * accept everything version 5 does.
+ */
+export const SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION = 6;
+export const SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY =
+  'automations-pipeline-targets-v6';
+
+/** Where a pipeline automation runs; local and portable forms share these kinds. */
+export const AUTOMATION_PIPELINE_TARGET_KINDS = [
+  'global',
+  'new_worktree',
+  'task',
+  'project',
+] as const;
+export type AutomationPipelineTargetKind =
+  (typeof AUTOMATION_PIPELINE_TARGET_KINDS)[number];
+
+export function isAutomationPipelineTargetKind(
+  value: unknown,
+): value is AutomationPipelineTargetKind {
+  return AUTOMATION_PIPELINE_TARGET_KINDS.some((kind) => kind === value);
+}
 
 export const TARGET_CONTEXTS = ['cowork', 'worktree', 'app_advisor'] as const;
 export type TargetContext = (typeof TARGET_CONTEXTS)[number];
@@ -330,11 +363,20 @@ export interface SharedAutomationModelConfig {
  * Portable pipeline reference. Newly shared pipelines carry an immutable
  * install pin, while legacy v1 documents without one remain readable and fail
  * closed when installation is attempted. Curated pipelines use their stable
- * catalog key, and machine-local pipelines are represented as unresolved so
- * the recipient can rebind them.
+ * catalog key, and machine-local pipelines travel either inline (older
+ * shares) or, from version 5, as a `packaged` reference to an
+ * `automation_pipeline` resource in the document's capability package.
+ * Unresolved refs let the recipient rebind one of their own pipelines.
  */
 export type SharedAutomationPipelineRef =
   | { source: 'bundled'; pipelineId: string; name?: string }
+  | {
+      source: 'packaged';
+      /** `pipelineKey` of the `automation_pipeline` package resource. */
+      key: string;
+      pipelineContentHash: string;
+      name?: string;
+    }
   | {
       source: 'inline';
       name?: string;
@@ -369,6 +411,48 @@ export interface SharedAutomationCoworkTarget {
 }
 
 /**
+ * Portable pipeline destination. `workspace` keeps the legacy behavior (a new
+ * worktree on a code project, the project folder on a cowork project); the
+ * other kinds need version 6. No kind carries local project or task ids.
+ */
+export type SharedAutomationPipelineTarget =
+  | SharedAutomationWorkspaceTarget
+  | { kind: AutomationPipelineTargetKind };
+
+/**
+ * Where a packaged pipeline's local id appears in the prompt. `textStart` is
+ * a UTF-16 code-unit offset into the canonical prompt
+ * ({@link canonicalizeSharedAutomationPrompt}); `text` is the exact slice the
+ * installer replaces with the recipient's local pipeline id.
+ */
+export interface SharedAutomationPromptSpan {
+  textStart: number;
+  text: string;
+}
+
+/**
+ * A pipeline a prompt action uses. A `packaged` pipeline's key equals the
+ * dependency key; bundled, curated, and shared pipelines are plain references
+ * and carry no prompt spans.
+ */
+export interface SharedAutomationPipelineDependency {
+  key: string;
+  pipeline: SharedAutomationPipelineRef;
+  promptSpans: SharedAutomationPromptSpan[];
+}
+
+/**
+ * The one prompt normalization the share builder and every reader apply
+ * before prompt spans are computed or validated. Prompts travel verbatim
+ * (no trimming, no line-ending rewrite) so existing `promptReferences`
+ * offsets and stored document hashes stay valid; keeping the rule in one
+ * function lets both sides change it together if that ever changes.
+ */
+export function canonicalizeSharedAutomationPrompt(prompt: string): string {
+  return prompt;
+}
+
+/**
  * Portable action snapshot. Five of the six local `AutomationAction` variants
  * are shareable in v1. Machine-bound session prompts are downgraded to an
  * abstract workspace prompt before reaching this wire contract, while Cowork
@@ -384,6 +468,8 @@ export type SharedAutomationAction =
       type: 'app_advisor_prompt';
       prompt: string;
       promptReferences?: ConfiguredPromptReference[];
+      /** Version 5 only. */
+      pipelineDependencies?: SharedAutomationPipelineDependency[];
       modelConfig?: SharedAutomationModelConfig;
       plugins: ShareablePluginRef[];
     }
@@ -392,6 +478,8 @@ export type SharedAutomationAction =
       target: SharedAutomationCoworkTarget;
       prompt: string;
       promptReferences?: ConfiguredPromptReference[];
+      /** Version 5 only. */
+      pipelineDependencies?: SharedAutomationPipelineDependency[];
       modelConfig?: SharedAutomationModelConfig;
       plugins: ShareablePluginRef[];
     }
@@ -406,6 +494,8 @@ export type SharedAutomationAction =
       existingBranch?: string;
       prompt: string;
       promptReferences?: ConfiguredPromptReference[];
+      /** Version 5 only. */
+      pipelineDependencies?: SharedAutomationPipelineDependency[];
       modelConfig?: SharedAutomationModelConfig;
       plugins: ShareablePluginRef[];
       planMode?: boolean;
@@ -413,7 +503,7 @@ export type SharedAutomationAction =
     }
   | {
       type: 'worktree_pipeline';
-      target: SharedAutomationWorkspaceTarget;
+      target: SharedAutomationPipelineTarget;
       pipeline: SharedAutomationPipelineRef;
       /**
        * Names of the pipeline inputs the author had configured, sorted and
@@ -431,7 +521,7 @@ export interface SharedAutomationRunCondition {
 }
 
 export interface SharedAutomationDocument {
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5 | 6;
   targetRequirement?: SharedAutomationTargetRequirement;
   name: string;
   /** Authored in the share flow; may be empty. */
@@ -445,9 +535,9 @@ export interface SharedAutomationDocument {
    */
   hasRunCondition: boolean;
   /**
-   * The source's run-condition command. Present only on version 4, only when
+   * The source's run-condition command. Present only on version 4 or later, only when
    * the author chose to include it, and only when `hasRunCondition` is true.
-   * A version 4 document without it is valid (the author declined). Install
+   * A version 4 or later document without it is valid (the author declined). Install
    * code never stores it directly: a recipient must review and approve it.
    */
   runCondition?: SharedAutomationRunCondition;
@@ -853,6 +943,38 @@ function validateWorkspaceTarget(
   return { ok: true, value: { kind: 'workspace' } };
 }
 
+function validatePipelineTarget(
+  value: unknown,
+  version: SharedAutomationDocument['version'],
+): PartResult<SharedAutomationPipelineTarget> {
+  const target = asRecord(value);
+  if (target?.kind === 'workspace') {
+    return validateWorkspaceTarget(value);
+  }
+  if (
+    !target ||
+    version < SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION ||
+    !isAutomationPipelineTargetKind(target.kind)
+  ) {
+    return {
+      ok: false,
+      error:
+        version < SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION
+          ? 'Automation action target must be { kind: "workspace" }.'
+          : 'Automation pipeline target kind must be workspace, global, new_worktree, task, or project.',
+    };
+  }
+  const unexpected = unexpectedFieldError(
+    target,
+    ['kind'],
+    'the automation action target',
+  );
+  if (unexpected) {
+    return { ok: false, error: unexpected };
+  }
+  return { ok: true, value: { kind: target.kind } };
+}
+
 function validateCoworkTarget(
   value: unknown,
 ): PartResult<SharedAutomationCoworkTarget> {
@@ -912,8 +1034,15 @@ function validatePlugins(value: unknown): PartResult<ShareablePluginRef[]> {
   return { ok: true, value: plugins };
 }
 
+/** Document facts a nested validator needs before the document is rebuilt. */
+interface SharedAutomationValidationContext {
+  version: SharedAutomationDocument['version'];
+  hasCapabilityPackage: boolean;
+}
+
 function validatePipelineRef(
   value: unknown,
+  context: SharedAutomationValidationContext,
 ): PartResult<SharedAutomationPipelineRef> {
   const ref = asRecord(value);
   if (!ref) {
@@ -923,11 +1052,55 @@ function validatePipelineRef(
     return {
       ok: false,
       error:
-        'Local pipelines cannot travel with a shared automation. Share the pipeline to your team first, then share the automation.',
+        'A local pipeline must travel inside the shared automation, as an inline or packaged pipeline, not as a local reference.',
     };
   }
   if (ref.name !== undefined && typeof ref.name !== 'string') {
     return { ok: false, error: 'Automation pipeline name must be a string.' };
+  }
+  if (ref.source === 'packaged') {
+    if (context.version < SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION) {
+      return {
+        ok: false,
+        error: `Automation packaged pipeline refs require version ${SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION}.`,
+      };
+    }
+    if (!context.hasCapabilityPackage) {
+      return {
+        ok: false,
+        error:
+          'Automation packaged pipeline refs require the document to carry a capability package.',
+      };
+    }
+    const unexpected = unexpectedFieldError(
+      ref,
+      ['source', 'key', 'pipelineContentHash', 'name'],
+      'the automation pipeline ref',
+    );
+    if (unexpected) {
+      return { ok: false, error: unexpected };
+    }
+    if (!isPipelinePackageIdentifier(ref.key)) {
+      return {
+        ok: false,
+        error: 'Automation packaged pipeline ref has an invalid key.',
+      };
+    }
+    if (!isPipelineContentHash(ref.pipelineContentHash)) {
+      return {
+        ok: false,
+        error: 'Automation packaged pipeline ref has an invalid content hash.',
+      };
+    }
+    const value_: SharedAutomationPipelineRef = {
+      source: 'packaged',
+      key: ref.key,
+      pipelineContentHash: ref.pipelineContentHash,
+    };
+    if (typeof ref.name === 'string') {
+      value_.name = ref.name;
+    }
+    return { ok: true, value: value_ };
   }
   if (ref.source === 'bundled') {
     const unexpected = unexpectedFieldError(
@@ -1112,6 +1285,174 @@ function validatePipelineRef(
   return { ok: false, error: 'Unknown automation pipeline ref source.' };
 }
 
+/**
+ * Semantic check of `pipelineDependencies` prompt spans against the canonical
+ * prompt ({@link canonicalizeSharedAutomationPrompt}). Every span must lie
+ * inside the prompt, match its slice exactly, and not overlap any other span
+ * of any dependency; only `packaged` dependencies carry spans. Readers that
+ * re-canonicalize a document run this again after canonicalizing the prompt
+ * and reject on a mismatch rather than shifting offsets.
+ */
+export function sharedAutomationPromptSpansError(
+  canonicalPrompt: string,
+  dependencies: readonly SharedAutomationPipelineDependency[],
+): string | null {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const dependency of dependencies) {
+    if (
+      dependency.pipeline.source !== 'packaged' &&
+      dependency.promptSpans.length > 0
+    ) {
+      return 'Only packaged automation pipeline dependencies may carry prompt spans.';
+    }
+    for (const span of dependency.promptSpans) {
+      const end = span.textStart + span.text.length;
+      if (
+        !Number.isSafeInteger(span.textStart) ||
+        span.textStart < 0 ||
+        span.text.length === 0 ||
+        end > canonicalPrompt.length
+      ) {
+        return 'Automation pipeline dependency prompt span is outside the prompt.';
+      }
+      if (canonicalPrompt.slice(span.textStart, end) !== span.text) {
+        return 'Automation pipeline dependency prompt span text does not match the prompt.';
+      }
+      ranges.push({ start: span.textStart, end });
+    }
+  }
+  ranges.sort((left, right) => left.start - right.start);
+  for (let index = 1; index < ranges.length; index++) {
+    if (ranges[index].start < ranges[index - 1].end) {
+      return 'Automation pipeline dependency prompt spans must not overlap.';
+    }
+  }
+  return null;
+}
+
+function validatePromptSpans(
+  value: unknown,
+): PartResult<SharedAutomationPromptSpan[]> {
+  const invalid: PartResult<SharedAutomationPromptSpan[]> = {
+    ok: false,
+    error:
+      'Automation pipeline dependency promptSpans must be { textStart, text } objects.',
+  };
+  if (!Array.isArray(value)) {
+    return invalid;
+  }
+  const rawSpans: unknown[] = value;
+  const spans: SharedAutomationPromptSpan[] = [];
+  for (const rawSpan of rawSpans) {
+    const span = asRecord(rawSpan);
+    if (!span) {
+      return invalid;
+    }
+    const unexpected = unexpectedFieldError(
+      span,
+      ['textStart', 'text'],
+      'the automation pipeline dependency prompt span',
+    );
+    if (unexpected) {
+      return { ok: false, error: unexpected };
+    }
+    if (typeof span.textStart !== 'number' || typeof span.text !== 'string') {
+      return invalid;
+    }
+    spans.push({ textStart: span.textStart, text: span.text });
+  }
+  return { ok: true, value: spans };
+}
+
+function validatePipelineDependencies(
+  value: unknown,
+  prompt: string,
+  context: SharedAutomationValidationContext,
+): PartResult<SharedAutomationPipelineDependency[]> {
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      error: 'Automation pipelineDependencies must be an array.',
+    };
+  }
+  const rawDependencies: unknown[] = value;
+  const dependencies: SharedAutomationPipelineDependency[] = [];
+  const keys = new Set<string>();
+  for (const rawDependency of rawDependencies) {
+    const dependency = asRecord(rawDependency);
+    if (!dependency) {
+      return {
+        ok: false,
+        error: 'Automation pipeline dependency must be an object.',
+      };
+    }
+    const unexpected = unexpectedFieldError(
+      dependency,
+      ['key', 'pipeline', 'promptSpans'],
+      'the automation pipeline dependency',
+    );
+    if (unexpected) {
+      return { ok: false, error: unexpected };
+    }
+    if (
+      !isPipelinePackageIdentifier(dependency.key) ||
+      dependency.key === SHARED_AUTOMATION_ACTION_PIPELINE_KEY
+    ) {
+      return {
+        ok: false,
+        error: 'Automation pipeline dependency has an invalid key.',
+      };
+    }
+    if (keys.has(dependency.key)) {
+      return {
+        ok: false,
+        error: `Duplicate automation pipeline dependency key: ${dependency.key}.`,
+      };
+    }
+    keys.add(dependency.key);
+    const pipeline = validatePipelineRef(dependency.pipeline, context);
+    if (!pipeline.ok) {
+      return pipeline;
+    }
+    if (pipeline.value.source === 'packaged') {
+      if (pipeline.value.key !== dependency.key) {
+        return {
+          ok: false,
+          error:
+            'Automation packaged pipeline dependency key must equal its pipeline key.',
+        };
+      }
+    } else if (
+      pipeline.value.source !== 'bundled' &&
+      pipeline.value.source !== 'curated' &&
+      pipeline.value.source !== 'shared'
+    ) {
+      return {
+        ok: false,
+        error:
+          'Automation pipeline dependencies must be packaged, bundled, curated, or shared pipelines.',
+      };
+    }
+    const promptSpans = validatePromptSpans(dependency.promptSpans);
+    if (!promptSpans.ok) {
+      return promptSpans;
+    }
+    dependencies.push({
+      key: dependency.key,
+      pipeline: pipeline.value,
+      promptSpans: promptSpans.value,
+    });
+  }
+  const spansError = sharedAutomationPromptSpansError(
+    canonicalizeSharedAutomationPrompt(prompt),
+    dependencies,
+  );
+  if (spansError) {
+    return { ok: false, error: spansError };
+  }
+  return { ok: true, value: dependencies };
+}
+
 function validatePipelineInstallPin(
   value: unknown,
 ): PartResult<PipelineShareInstallPin> {
@@ -1263,10 +1604,30 @@ function validateRunCondition(
   return { ok: true, value: { command: record.command } };
 }
 
+function validateOptionalPipelineDependencies(
+  value: unknown,
+  prompt: string,
+  context: SharedAutomationValidationContext,
+): PartResult<SharedAutomationPipelineDependency[] | undefined> {
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+  return validatePipelineDependencies(value, prompt, context);
+}
+
 function validateAction(
   value: unknown,
-  version: SharedAutomationDocument['version'],
+  context: SharedAutomationValidationContext,
 ): PartResult<SharedAutomationAction> {
+  const { version } = context;
+  const promptActionVersionedKeys = [
+    ...(version >= SHARED_AUTOMATION_REFERENCES_API_VERSION
+      ? ['promptReferences']
+      : []),
+    ...(version >= SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION
+      ? ['pipelineDependencies']
+      : []),
+  ];
   const action = asRecord(value);
   if (!action || typeof action.type !== 'string') {
     return { ok: false, error: 'Automation action must be an object.' };
@@ -1289,7 +1650,7 @@ function validateAction(
         'prompt',
         'modelConfig',
         'plugins',
-        ...(version >= 2 ? ['promptReferences'] : []),
+        ...promptActionVersionedKeys,
       ],
       'the automation action',
     );
@@ -1322,6 +1683,15 @@ function validateAction(
       if (!references.ok) return references;
       result.promptReferences = references.value;
     }
+    const pipelineDependencies = validateOptionalPipelineDependencies(
+      action.pipelineDependencies,
+      prompt.value,
+      context,
+    );
+    if (!pipelineDependencies.ok) return pipelineDependencies;
+    if (pipelineDependencies.value !== undefined) {
+      result.pipelineDependencies = pipelineDependencies.value;
+    }
     if (modelConfig.value !== undefined) {
       result.modelConfig = modelConfig.value;
     }
@@ -1336,7 +1706,7 @@ function validateAction(
         'prompt',
         'modelConfig',
         'plugins',
-        ...(version >= 2 ? ['promptReferences'] : []),
+        ...promptActionVersionedKeys,
       ],
       'the automation action',
     );
@@ -1374,6 +1744,15 @@ function validateAction(
       if (!references.ok) return references;
       result.promptReferences = references.value;
     }
+    const pipelineDependencies = validateOptionalPipelineDependencies(
+      action.pipelineDependencies,
+      prompt.value,
+      context,
+    );
+    if (!pipelineDependencies.ok) return pipelineDependencies;
+    if (pipelineDependencies.value !== undefined) {
+      result.pipelineDependencies = pipelineDependencies.value;
+    }
     if (modelConfig.value !== undefined) {
       result.modelConfig = modelConfig.value;
     }
@@ -1391,7 +1770,7 @@ function validateAction(
         'plugins',
         'planMode',
         'interfaceMode',
-        ...(version >= 2 ? ['promptReferences'] : []),
+        ...promptActionVersionedKeys,
       ],
       'the automation action',
     );
@@ -1454,6 +1833,15 @@ function validateAction(
       if (!references.ok) return references;
       result.promptReferences = references.value;
     }
+    const pipelineDependencies = validateOptionalPipelineDependencies(
+      action.pipelineDependencies,
+      prompt.value,
+      context,
+    );
+    if (!pipelineDependencies.ok) return pipelineDependencies;
+    if (pipelineDependencies.value !== undefined) {
+      result.pipelineDependencies = pipelineDependencies.value;
+    }
     if (typeof action.existingBranch === 'string') {
       result.existingBranch = action.existingBranch;
     }
@@ -1477,13 +1865,22 @@ function validateAction(
     if (unexpected) {
       return { ok: false, error: unexpected };
     }
-    const target = validateWorkspaceTarget(action.target);
+    const target = validatePipelineTarget(action.target, version);
     if (!target.ok) {
       return target;
     }
-    const pipeline = validatePipelineRef(action.pipeline);
+    const pipeline = validatePipelineRef(action.pipeline, context);
     if (!pipeline.ok) {
       return pipeline;
+    }
+    if (
+      pipeline.value.source === 'packaged' &&
+      pipeline.value.key !== SHARED_AUTOMATION_ACTION_PIPELINE_KEY
+    ) {
+      return {
+        ok: false,
+        error: `Automation packaged action pipeline must use the key "${SHARED_AUTOMATION_ACTION_PIPELINE_KEY}".`,
+      };
     }
     if (!Array.isArray(action.inputKeys)) {
       return {
@@ -1533,11 +1930,13 @@ export function validateSharedAutomationDocument(
     doc.version !== SHARED_AUTOMATION_API_VERSION &&
     doc.version !== SHARED_AUTOMATION_REFERENCES_API_VERSION &&
     doc.version !== SHARED_AUTOMATION_TARGET_REQUIREMENT_API_VERSION &&
-    doc.version !== SHARED_AUTOMATION_RUN_CONDITION_API_VERSION
+    doc.version !== SHARED_AUTOMATION_RUN_CONDITION_API_VERSION &&
+    doc.version !== SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION &&
+    doc.version !== SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION
   ) {
     return {
       ok: false,
-      error: `Unsupported shared Automation version; expected ${SHARED_AUTOMATION_API_VERSION}.`,
+      error: `Unsupported shared Automation version; expected ${SHARED_AUTOMATION_API_VERSION} through ${SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION}.`,
     };
   }
   const unexpected = unexpectedFieldError(
@@ -1550,8 +1949,12 @@ export function validateSharedAutomationDocument(
       'action',
       'capabilityPackage',
       'hasRunCondition',
-      ...(doc.version >= 3 ? ['targetRequirement'] : []),
-      ...(doc.version === 4 ? ['runCondition'] : []),
+      ...(doc.version >= SHARED_AUTOMATION_TARGET_REQUIREMENT_API_VERSION
+        ? ['targetRequirement']
+        : []),
+      ...(doc.version >= SHARED_AUTOMATION_RUN_CONDITION_API_VERSION
+        ? ['runCondition']
+        : []),
     ],
     'the automation document',
   );
@@ -1582,7 +1985,10 @@ export function validateSharedAutomationDocument(
   if (!trigger.ok) {
     return trigger;
   }
-  const action = validateAction(doc.action, doc.version);
+  const action = validateAction(doc.action, {
+    version: doc.version,
+    hasCapabilityPackage: doc.capabilityPackage !== undefined,
+  });
   if (!action.ok) {
     return action;
   }
@@ -1594,6 +2000,17 @@ export function validateSharedAutomationDocument(
           action.value.type,
         );
   if (targetRequirement && !targetRequirement.ok) return targetRequirement;
+  if (
+    targetRequirement &&
+    action.value.type === 'worktree_pipeline' &&
+    action.value.target.kind === 'global'
+  ) {
+    return {
+      ok: false,
+      error:
+        'A pipeline automation with no project cannot declare targetRequirement.',
+    };
+  }
   const capabilityPackage = validateCapabilityPackageRef(doc.capabilityPackage);
   if (!capabilityPackage.ok) {
     return capabilityPackage;

@@ -3,16 +3,13 @@ import {
   markWorkspaceCreationEffectsStarted,
   withLocalWorkspaceCreation,
   pendingWorkspaceCreationIds,
-  workspaceCreationPathOccupied,
 } from './w5-workspace-creation-commit';
 import { afterW5Commit } from './w5-commit-scope';
-import { rm } from 'node:fs/promises';
 import {
   CHAT_UNIT_LABEL_PLURAL,
   validateWorkspaceTemplateStarterPrompts,
 } from '@canopy/protocol';
 import { isProjectStartPage } from '@canopy/protocol/start-page';
-import { PROJECT_COLORS } from '@canopy/desktop-shared/constants/project-colors';
 import type {
   CoworkSidebarItem,
   CoworkWorkspaceSettings,
@@ -22,18 +19,15 @@ import type {
   ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
-import { ensureCoworkHomeScaffold } from './chat-project-utils';
 import { getWorkspaceDir } from './paths';
 import {
   getWorkspaceIndexRepository,
   readAllSidebarItems,
 } from './sidebar-items';
-import { slugify, uniqueId } from './string-utils';
 import { IdentifierValidationError, validateId } from './validation';
 import { PROJECT_W5_STORAGE, withStorageAdmission } from './w5-storage';
 import {
   updateWorkspaceConfig,
-  readWorkspaceConfigDetailed,
   getWorkspaceManifestRepository,
   WorkspaceConfigUnreadableError,
 } from './workspace-persistence';
@@ -51,21 +45,24 @@ import {
   type WorkspaceIndexChange,
 } from './workspace-index-repository';
 import {
+  applyCoworkCreationAllocation,
+  applyCoworkCreationDecision,
+  applyCoworkCreationManifestDecision,
+  applyCoworkDiscardDecision,
   applyCoworkIndexDecision,
   applyCoworkManifestDecision,
+  applyCoworkMetadataDecision,
   applyCoworkProvisionDecision,
+  applyCoworkPublishDecision,
+  applyCoworkStageDecision,
 } from './cowork-record-decision-port';
 import {
   admitCoworkIndex,
-  COWORK_FIELDS,
-  coworkConfigFor as configFor,
-  coworkEntryFor as entryFor,
   CoworkWorkspaceRecordRefusedError,
-  projectedCoworkItem as projected,
-  sameCoworkOwner as sameOwner,
   withUnknownCoworkFields,
   type CoworkWorkspaceRecordRefusal,
 } from './worktree-record-decision-apply';
+import type { CoworkMetadataDecision } from './worktree-record-decisions';
 
 export {
   CoworkWorkspaceRecordRefusedError,
@@ -120,9 +117,6 @@ async function indexWork<T>(
       );
     throw error;
   }
-}
-function color(count: number): string {
-  return PROJECT_COLORS[count % PROJECT_COLORS.length];
 }
 async function afterCommit(): Promise<void> {
   await afterW5Commit(async (): Promise<void> => {
@@ -289,12 +283,62 @@ async function stampAutoDeleteBaseline(workspaceId: string): Promise<void> {
   }
 }
 
-/** Applies only this call's Cowork fields to the manifest read in its queue. */
+/** The decision of a non-settings change, with only the fields it reads. */
+function coworkMetadataDecision(
+  workspaceId: string,
+  change: Exclude<CoworkMetadataChange, { kind: 'settings' }>,
+): CoworkMetadataDecision {
+  switch (change.kind) {
+    case 'import': {
+      // The bundle import passes its whole manifest, whose name renames the entry.
+      const presentation: { name?: string; color?: string } = change;
+      return {
+        kind: 'cowork.metadata.import',
+        workspaceId,
+        ...(presentation.name !== undefined ? { name: presentation.name } : {}),
+        ...(presentation.color !== undefined
+          ? { color: presentation.color }
+          : {}),
+        ...(change.cowork !== undefined ? { cowork: change.cowork } : {}),
+        ...(change.defaultPluginSelections !== undefined
+          ? { defaultPluginSelections: change.defaultPluginSelections }
+          : {}),
+      };
+    }
+    case 'install':
+      return {
+        kind: 'cowork.metadata.install',
+        workspaceId,
+        externalId: change.externalId,
+        contentHash: change.contentHash,
+      };
+    case 'blueprint':
+      return {
+        kind: 'cowork.metadata.blueprint',
+        workspaceId,
+        externalId: change.externalId,
+      };
+  }
+}
+
+/**
+ * Applies only this call's Cowork fields to the manifest read in its queue.
+ * Import, install and blueprint changes go through the record decision port
+ * (W6a2); settings stay on their own path.
+ */
 export async function recordCoworkWorkspaceMetadata(
   record: CoworkMetadataRecord,
 ): Promise<void> {
   admitId(record.workspaceId);
-  if (record.change.kind === 'settings') admitSettings(record.change.request);
+  const change = record.change;
+  if (change.kind !== 'settings') {
+    const decision = coworkMetadataDecision(record.workspaceId, change);
+    await indexWork(() => applyCoworkMetadataDecision(decision));
+    await afterCommit();
+    return;
+  }
+  const req = change.request;
+  admitSettings(req);
   await inIndex(async (snapshot): Promise<WorkspaceIndexChange<void>> => {
     authoritative(snapshot);
     const entry = snapshot.entries.find(
@@ -302,13 +346,6 @@ export async function recordCoworkWorkspaceMetadata(
         candidate.id === record.workspaceId && candidate.type === 'cowork',
     );
     if (!entry) refuse('not-found', 'Chat project not found');
-    const change = record.change;
-    const presentation: { name?: string; color?: string } =
-      change.kind === 'settings'
-        ? change.request
-        : change.kind === 'import'
-          ? change
-          : {};
     await updateWorkspaceConfig(
       record.workspaceId,
       async (config, read): Promise<void> => {
@@ -316,89 +353,57 @@ export async function recordCoworkWorkspaceMetadata(
           refuse('not-found', 'Chat project not found');
         // Keep unknown nested Cowork fields as well as the fields normalized by this version.
         const settings = await preserveCoworkFields(record.workspaceId, config);
-        switch (change.kind) {
-          case 'settings': {
-            const req = change.request;
-            const next: CoworkWorkspaceSettings = { ...settings };
-            if (req.description !== undefined)
-              next.description = req.description;
-            if (req.defaultModel !== undefined)
-              next.defaultModel = req.defaultModel;
-            if (req.defaultPresetId !== undefined)
-              next.defaultPresetId = req.defaultPresetId;
-            if (req.presets !== undefined) next.presets = req.presets;
-            if (req.archiveRetentionDays !== undefined)
-              next.archiveRetentionDays = req.archiveRetentionDays;
-            if (req.autoArchiveDays !== undefined)
-              next.autoArchiveDays = req.autoArchiveDays;
-            if (req.starterPrompts !== undefined)
-              next.starterPrompts = req.starterPrompts;
-            if (req.startPage === null) delete next.startPage;
-            else if (req.startPage !== undefined)
-              next.startPage = req.startPage;
-            const preset = next.presets?.find(
-              (candidate) => candidate.id === next.defaultPresetId,
-            );
-            config.defaultPluginSelections =
-              preset?.pluginSelections ??
-              req.defaultPluginSelections ??
-              config.defaultPluginSelections;
-            if (req.alwaysShow !== undefined)
-              config.alwaysShow = req.alwaysShow;
-            if (
-              resolveAutoArchiveDays(
-                'cowork',
-                settings.archiveRetentionDays,
-                settings.autoArchiveDays,
-              ) === null &&
-              resolveAutoArchiveDays(
-                'cowork',
-                next.archiveRetentionDays,
-                next.autoArchiveDays,
-              ) !== null
-            )
-              await stampAutoDeleteBaseline(record.workspaceId);
-            config.cowork = next;
-            break;
-          }
-          case 'import':
-            if (change.cowork !== undefined) {
-              const next = { ...settings, ...change.cowork };
-              for (const key of COWORK_FIELDS) {
-                if (change.cowork[key] === undefined) delete next[key];
-              }
-              config.cowork = next;
-            }
-            if (change.defaultPluginSelections !== undefined)
-              config.defaultPluginSelections = change.defaultPluginSelections;
-            break;
-          case 'install':
-            config.installedFromTemplateExternalId = change.externalId;
-            config.installedFromTemplateContentHash = change.contentHash;
-            break;
-          case 'blueprint':
-            config.seededFromBlueprintExternalId = change.externalId;
-            break;
-        }
-        // A non-settings change must not clear fields hidden from the sidebar projection.
-        if (change.kind !== 'settings' && change.kind !== 'import')
-          config.cowork = settings;
+        const next: CoworkWorkspaceSettings = { ...settings };
+        if (req.description !== undefined) next.description = req.description;
+        if (req.defaultModel !== undefined)
+          next.defaultModel = req.defaultModel;
+        if (req.defaultPresetId !== undefined)
+          next.defaultPresetId = req.defaultPresetId;
+        if (req.presets !== undefined) next.presets = req.presets;
+        if (req.archiveRetentionDays !== undefined)
+          next.archiveRetentionDays = req.archiveRetentionDays;
+        if (req.autoArchiveDays !== undefined)
+          next.autoArchiveDays = req.autoArchiveDays;
+        if (req.starterPrompts !== undefined)
+          next.starterPrompts = req.starterPrompts;
+        if (req.startPage === null) delete next.startPage;
+        else if (req.startPage !== undefined) next.startPage = req.startPage;
+        const preset = next.presets?.find(
+          (candidate) => candidate.id === next.defaultPresetId,
+        );
+        config.defaultPluginSelections =
+          preset?.pluginSelections ??
+          req.defaultPluginSelections ??
+          config.defaultPluginSelections;
+        if (req.alwaysShow !== undefined) config.alwaysShow = req.alwaysShow;
+        if (
+          resolveAutoArchiveDays(
+            'cowork',
+            settings.archiveRetentionDays,
+            settings.autoArchiveDays,
+          ) === null &&
+          resolveAutoArchiveDays(
+            'cowork',
+            next.archiveRetentionDays,
+            next.autoArchiveDays,
+          ) !== null
+        )
+          await stampAutoDeleteBaseline(record.workspaceId);
+        config.cowork = next;
       },
     );
     return {
       result: undefined,
-      ...(presentation.name !== undefined || presentation.color !== undefined
+      ...(req.name !== undefined || req.color !== undefined
         ? {
             entries: snapshot.entries.map((candidate) =>
               candidate === entry
                 ? {
                     ...entry,
-                    ...(presentation.name !== undefined
-                      ? { name: presentation.name.trim() }
+                    ...(req.name !== undefined
+                      ? { name: req.name.trim() }
                       : {}),
-                    ...(presentation.color !== undefined
-                      ? { color: presentation.color }
-                      : {}),
+                    ...(req.color !== undefined ? { color: req.color } : {}),
                   }
                 : candidate,
             ),
@@ -459,97 +464,70 @@ export interface CoworkCreationRecord {
   installedFromTemplateExternalId?: string;
   owner?: WorkspaceOwnerBinding;
 }
-/** Select under the index queue, reserve durably, then publish both canonical files. */
+/**
+ * Select under the index queue, reserve durably, then publish both canonical
+ * files, through the record decision port (W6a2).
+ */
 export async function recordNewCoworkWorkspace(
   request: CoworkCreationRecord,
 ): Promise<CoworkSidebarItem> {
   return serializeWorkspaceMutation(async () => {
-    if (!request.name.trim())
-      refuse('invalid-request', 'Project name is required');
+    const name = request.name.trim();
+    if (!name) refuse('invalid-request', 'Project name is required');
     const pendingIds = await pendingWorkspaceCreationIds();
-    const item = await inIndex(
-      async (snapshot): Promise<WorkspaceIndexChange<CoworkSidebarItem>> => {
-        authoritative(snapshot);
-        const taken = new Set([
-          ...snapshot.entries.map((entry) => entry.id),
-          ...pendingIds,
-        ]);
-        const base = slugify(request.name) || 'workspace';
-        let id = uniqueId(base, taken);
-        while (await workspaceCreationPathOccupied(getWorkspaceDir(id))) {
-          taken.add(id);
-          id = uniqueId(base, taken);
-        }
-        admitId(id);
-        return {
-          result: {
-            id,
-            name: request.name.trim(),
-            type: 'cowork',
-            color: color(snapshot.entries.length),
-            collapsed: false,
-            order: snapshot.entries.length,
-            externalPath: request.externalPath,
-            installedFromTemplateExternalId:
-              request.installedFromTemplateExternalId,
-            cowork: { createdAt: request.createdAt, archiveRetentionDays: 7 },
-            ...(request.owner ? { owner: request.owner } : {}),
-          },
-        };
-      },
+    const item = await indexWork(() =>
+      applyCoworkCreationAllocation(
+        {
+          kind: 'cowork.create.allocate',
+          name,
+          createdAt: request.createdAt,
+          ...(request.externalPath === undefined
+            ? {}
+            : { externalPath: request.externalPath }),
+          ...(request.installedFromTemplateExternalId === undefined
+            ? {}
+            : {
+                installedFromTemplateExternalId:
+                  request.installedFromTemplateExternalId,
+              }),
+          ...(request.owner ? { owner: request.owner } : {}),
+          pendingIds,
+        },
+        admitId,
+      ),
     );
     return withLocalWorkspaceCreation(item.id, [getWorkspaceDir(item.id)], () =>
-      commitWorkspaceCreation(
-        () => stageNewCoworkWorkspace(item, request),
-        [item.id],
-      ),
+      commitWorkspaceCreation(() => stageNewCoworkWorkspace(item), [item.id]),
     );
   });
 }
 
 async function stageNewCoworkWorkspace(
   item: CoworkSidebarItem,
-  request: CoworkCreationRecord,
 ): Promise<CoworkSidebarItem> {
-  await inIndex(async (snapshot): Promise<WorkspaceIndexChange<void>> => {
-    authoritative(snapshot);
-    if (snapshot.entries.some((entry) => entry.id === item.id))
-      refuse('identity-changed', 'The local workspace id is already in use');
-    if (request.owner) await recordNewCoworkConfig(item, true);
-    if (!request.externalPath) {
-      markWorkspaceCreationEffectsStarted();
-      await ensureCoworkHomeScaffold(item.id);
-    }
-    return {
-      result: undefined,
-      entries: [...snapshot.entries, entryFor(item)],
-    };
-  });
-  if (!request.owner) await recordNewCoworkConfig(item, false);
+  await indexWork(() =>
+    applyCoworkCreationDecision(
+      { kind: 'cowork.create', item },
+      markWorkspaceCreationEffectsStarted,
+    ),
+  );
+  if (!item.owner)
+    await applyCoworkCreationManifestDecision(item.id, {
+      kind: 'cowork.create.manifest',
+      item,
+    });
   await afterCommit();
   return item;
-}
-
-async function recordNewCoworkConfig(
-  item: CoworkSidebarItem,
-  replaceOwnership: boolean,
-): Promise<void> {
-  await updateWorkspaceConfig(
-    item.id,
-    (config, read): void => {
-      if (read.authority !== 'absent')
-        refuse('identity-changed', 'The local workspace id is already in use');
-      Object.assign(config, configFor(item));
-    },
-    replaceOwnership ? { ownership: 'replace' } : undefined,
-  );
 }
 
 export interface CoworkStageRecord {
   source: 'org_cowork_stage';
   item: CoworkSidebarItem;
 }
-/** Stores or refreshes only the staged workspace's owner and initial manifest. */
+/**
+ * Stores or refreshes only the staged workspace's owner and initial manifest,
+ * through the record decision port (W6a2).
+ */
 export async function recordStagedCoworkWorkspace(
   record: CoworkStageRecord,
 ): Promise<boolean> {
@@ -558,44 +536,8 @@ export async function recordStagedCoworkWorkspace(
   if (!item.owner)
     refuse('identity-changed', 'The local workspace id is already in use');
   const owner = item.owner;
-  return inIndex(
-    async (snapshot): Promise<WorkspaceIndexChange<boolean>> => {
-      authoritative(snapshot);
-      const indexed = snapshot.entries.find((entry) => entry.id === item.id);
-      if (indexed && indexed.type !== 'cowork')
-        refuse('identity-changed', 'The local workspace id is already in use');
-      const created = await updateWorkspaceConfig(
-        item.id,
-        async (config, read): Promise<boolean> => {
-          if (read.authority !== 'absent') {
-            if (
-              config.type !== 'cowork' ||
-              read.ownerMalformed ||
-              !sameOwner(config.owner, owner)
-            )
-              refuse(
-                'identity-changed',
-                'The local workspace id is already in use',
-              );
-            await preserveCoworkFields(item.id, config);
-            config.owner = owner;
-            return false;
-          }
-          // An indexed workspace without a manifest has no owner to prove it
-          // belongs to this organization project; never claim it.
-          if (indexed)
-            refuse(
-              'identity-changed',
-              'The local workspace id is already in use',
-            );
-          Object.assign(config, configFor(item));
-          config.ownershipTransfer = undefined;
-          return true;
-        },
-        { ownership: 'replace' },
-      );
-      return { result: created };
-    },
+  return indexWork(
+    () => applyCoworkStageDecision({ kind: 'cowork.stage', item, owner }),
     {
       reason: 'identity-changed',
       message: 'The local workspace id is already in use',
@@ -610,83 +552,25 @@ export interface CoworkPublishRecord {
   owner: WorkspaceOwnerBinding;
   precheck?: () => Promise<void>;
 }
-/** Publishes a staged manifest, keeping other index entries and manifest fields. */
+/**
+ * Publishes a staged manifest, keeping other index entries and manifest
+ * fields, through the record decision port (W6a2).
+ */
 export async function publishCoworkWorkspaceRecord(
   record: CoworkPublishRecord,
 ): Promise<CoworkSidebarItem> {
   admitId(record.workspaceId);
-  const outcome = await inIndex(
-    async (
-      snapshot,
-    ): Promise<
-      WorkspaceIndexChange<{ item: CoworkSidebarItem; changed: boolean }>
-    > => {
-      authoritative(snapshot);
-      await record.precheck?.();
-      const entry = snapshot.entries.find(
-        (candidate) => candidate.id === record.workspaceId,
-      );
-      if (entry && entry.type !== 'cowork')
-        refuse('identity-changed', 'The local workspace id is already in use');
-      const outcome = await updateWorkspaceConfig(
-        record.workspaceId,
-        async (
-          config,
-          read,
-        ): Promise<{ item: CoworkSidebarItem; changed: boolean }> => {
-          if (
-            read.authority === 'absent' ||
-            config.type !== 'cowork' ||
-            read.ownerMalformed ||
-            !sameOwner(config.owner, record.owner)
-          )
-            refuse(
-              'configuration-unavailable',
-              'The staged Cowork workspace is unavailable',
-            );
-          await preserveCoworkFields(record.workspaceId, config);
-          const alreadyPublished =
-            entry?.name === record.name.trim() &&
-            config.owner?.type === 'organization' &&
-            record.owner.type === 'organization' &&
-            config.owner.instanceId === record.owner.instanceId &&
-            config.owner.bindingGeneration === record.owner.bindingGeneration;
-          const next = projected(
-            entry ?? {
-              id: record.workspaceId,
-              name: record.name.trim(),
-              type: 'cowork',
-              color: color(snapshot.entries.length),
-              collapsed: false,
-              order: snapshot.entries.length,
-            },
-            config,
-          );
-          next.name = record.name.trim();
-          next.owner = record.owner;
-          if (!alreadyPublished) {
-            config.owner = record.owner;
-            config.ownershipTransfer = undefined;
-          }
-          return { item: next, changed: !alreadyPublished };
+  const outcome = await indexWork(
+    () =>
+      applyCoworkPublishDecision(
+        {
+          kind: 'cowork.publish',
+          workspaceId: record.workspaceId,
+          name: record.name.trim(),
+          owner: record.owner,
         },
-        { ownership: 'replace', shouldWrite: (outcome) => outcome.changed },
-      );
-      return {
-        result: outcome,
-        ...(outcome.changed
-          ? {
-              entries: entry
-                ? snapshot.entries.map((candidate) =>
-                    candidate === entry
-                      ? { ...entry, name: outcome.item.name }
-                      : candidate,
-                  )
-                : [...snapshot.entries, entryFor(outcome.item)],
-            }
-          : {}),
-      };
-    },
+        record.precheck,
+      ),
     {
       reason: 'configuration-unavailable',
       message: 'The staged Cowork workspace is unavailable',
@@ -701,34 +585,21 @@ export interface CoworkDiscardRecord {
   workspaceId: string;
   projectId: string;
 }
-/** Keeps published or rebound workspaces; removes only this unpublished metadata directory. */
+/**
+ * Keeps published or rebound workspaces; removes only this unpublished
+ * metadata directory, through the record decision port (W6a2).
+ */
 export async function discardCoworkWorkspaceRecord(
   record: CoworkDiscardRecord,
 ): Promise<void> {
   admitId(record.workspaceId);
-  await inIndex(async (snapshot): Promise<WorkspaceIndexChange<void>> => {
-    if (snapshot.authority !== 'ok' && snapshot.authority !== 'absent')
-      return { result: undefined };
-    if (snapshot.entries.some((entry) => entry.id === record.workspaceId))
-      return { result: undefined };
-    const manifests = getWorkspaceManifestRepository();
-    await manifests.serialize(record.workspaceId, async (): Promise<void> => {
-      const read = await readWorkspaceConfigDetailed(record.workspaceId);
-      if (
-        read.authority !== 'ok' ||
-        read.ownerMalformed ||
-        read.config.type !== 'cowork' ||
-        read.config.owner?.type !== 'organization' ||
-        read.config.owner.projectId !== record.projectId
-      )
-        return;
-      await rm(getWorkspaceDir(record.workspaceId), {
-        recursive: true,
-        force: true,
-      });
-    });
-    return { result: undefined };
-  });
+  await indexWork(() =>
+    applyCoworkDiscardDecision({
+      kind: 'cowork.discard',
+      workspaceId: record.workspaceId,
+      projectId: record.projectId,
+    }),
+  );
 }
 
 export interface CoworkProvisionRecord {

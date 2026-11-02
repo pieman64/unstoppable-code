@@ -5,3 +5,5 @@
  */
 export * from './org-projects/OrgProjectCatalogList';
 export * from './org-projects/orgProjectCatalogAvailability';
+export * from './org-projects/OrgSharedMultiRepoSetup';
+export * from './org-projects/OrgSharedMultiRepoSettings';

@@ -4,7 +4,7 @@ import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { ChatIcon } from '@canopy/ui-shared/icons';
 import { useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserConsoleEntry } from '@/lib/browserChatStaging';
-import { Tooltip } from '@canopy/ui-shared';
+import { Button, SegmentedControl, Tooltip } from '@canopy/ui-shared';
 
 interface BrowserConsolePanelProps {
   browserId: string;
@@ -56,28 +56,27 @@ export function BrowserConsolePanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1 border-b px-2 py-1">
-        <FilterButton
-          active={filter === 'all'}
-          onClick={(): void => setFilter('all')}
-        >
-          All
-        </FilterButton>
-        <FilterButton
-          active={filter === 'errors'}
-          onClick={(): void => setFilter('errors')}
-        >
-          Errors
-        </FilterButton>
+        <SegmentedControl<ConsoleFilter>
+          value={filter}
+          onChange={setFilter}
+          label="Filter"
+          width="content"
+          shape="capsule"
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'errors', label: 'Errors' },
+          ]}
+        />
         <div className="flex-1" />
         <Tooltip label="Clear console">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
             onClick={(): void => clearConsole(browserId)}
             aria-label="Clear console"
-            className="rounded px-2 py-0.5 text-2xs fg-secondary hover:bg-muted/40 hover:fg-primary"
           >
             Clear
-          </button>
+          </Button>
         </Tooltip>
       </div>
       <div className="min-h-0 flex-1 overflow-auto font-mono text-2xs">
@@ -105,16 +104,16 @@ export function BrowserConsolePanel({
                         <span className="ml-2 fg-secondary/70">{location}</span>
                       )}
                     </div>
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost-quiet"
+                      size="compact"
                       onClick={(): void => {
                         void stageBrowserConsoleEntry(entry);
                       }}
-                      className="inline-flex shrink-0 items-center gap-1 rounded border bg-base/50 px-1.5 py-0.5 text-2xs fg-primary/80 hover:bg-base"
                     >
                       <ChatIcon width={12} height={12} />
                       <span>{CHAT_UNIT_LABEL}</span>
-                    </button>
+                    </Button>
                   </div>
                 </li>
               );
@@ -123,29 +122,5 @@ export function BrowserConsolePanel({
         )}
       </div>
     </div>
-  );
-}
-
-interface FilterButtonProps {
-  active: boolean;
-  onClick: () => void;
-  children: string;
-}
-
-function FilterButton({
-  active,
-  onClick,
-  children,
-}: FilterButtonProps): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded px-2 py-0.5 text-2xs transition ${
-        active ? 'bg-muted/60 fg-primary' : 'fg-secondary hover:fg-primary'
-      }`}
-    >
-      {children}
-    </button>
   );
 }

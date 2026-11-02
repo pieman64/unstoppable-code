@@ -47,22 +47,23 @@ describe('StatusBadge', () => {
     expect(html).toContain('fg-destructive-strong');
   });
 
-  it('applies the warning palette', () => {
+  it('paints the warning variant in the warning tone, not the unread blue', () => {
     const html = renderToString(
       <StatusBadge variant="warning" label="pending" />,
     );
-    expect(html).toContain('bg-info-subtle');
-    expect(html).toContain('fg-info');
+    expect(html).toContain('bg-warning-subtle');
+    expect(html).toContain('fg-warning-strong');
+    expect(html).not.toContain('fg-info');
   });
 
   it('falls back to neutral muted styling for the muted variant', () => {
     const html = renderToString(<StatusBadge variant="muted" label="paused" />);
-    expect(html).toContain('bg-fg-secondary/16');
+    expect(html).toContain('bg-muted');
     expect(html).toContain('fg-secondary');
-    // Shared pipeline-row status badge geometry, ring instead of border.
-    expect(html).toContain('h-5');
-    expect(html).toContain('ring-[length:var(--border-hairline)]');
-    expect(html).toContain('ring-fg-secondary/20');
+    // The shared 18px Badge capsule: no ring, no border.
+    expect(html).toContain('h-4.5');
+    expect(html).not.toContain('ring-');
+    expect(html).not.toContain('border');
   });
 
   it('emits dimmer muted colors when the muted prop is set', () => {

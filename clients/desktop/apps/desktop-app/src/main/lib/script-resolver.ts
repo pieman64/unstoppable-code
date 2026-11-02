@@ -1,11 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import {
-  isProjectLifecycleScriptName,
-  normalizeScriptDefinition,
-  normalizeScriptInputMap,
-  PROJECT_LIFECYCLE_SCRIPT_NAMES,
-} from '@canopy/desktop-shared/scripts';
+import { normalizeScriptInputMap } from '@canopy/desktop-shared/scripts';
 import { BRAND } from '@canopy/brand/current';
 import type {
   ScriptDefinition,
@@ -18,16 +13,27 @@ import type {
   ScriptSourceLayer,
   WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
+import type { CoreScriptSourceLayer } from '@canopy/protocol/canopy-core';
+import {
+  collectProjectScriptLayers as collectProjectCoreScriptLayers,
+  collectWorkspaceRepoScriptLayers as collectWorkspaceRepoCoreScriptLayers,
+  collectWorkspaceRootScriptLayers as collectWorkspaceRootCoreScriptLayers,
+  resolveProjectScriptMap,
+  resolveWorkspaceRepoScriptMap,
+  resolveWorkspaceRootScriptMap,
+  type ConductorScriptsReader,
+  type ResolvedScriptField,
+  type ResolvedScriptMap,
+  type ScriptConfigFile,
+} from '@canopy/core-runtime/node/script/definitions';
 import {
   getManifestRepoById,
   getProjectConfigFileCandidates,
   readCanopyJson,
   validateCanopyJson,
 } from './canopy-json';
-import { readConductorJson, type ConductorJsonScripts } from './conductor-json';
+import { readConductorJson } from './conductor-json';
 import {
-  assignEffectiveSourceLayerStatus,
-  buildScriptSourceLayer,
   readWorkspaceCanopyManifest,
   readWorkspaceRepoLayerContext,
 } from './source-layer-resolution';
@@ -35,23 +41,16 @@ import { isMissingFileError } from './fs-utils';
 import { getBaselineReadPath } from './repo-shadow';
 import { readWorkspaceConfig } from './workspace-persistence';
 
-export interface ResolvedScriptField {
-  definition?: ScriptDefinition;
-  value?: string;
-  source:
-    | 'local-override'
-    | 'local-disabled'
-    | 'repo-conductor'
-    | 'repo-canopy'
-    | 'workspace-conductor'
-    | 'workspace-manifest'
-    | 'workspace-manifest-disabled'
-    | 'workspace-hook'
-    | 'workspace-hook-disabled'
-    | 'none';
-}
+/*
+ * The desktop host of script source precedence. Source precedence is
+ * core's (`@canopy/core-runtime/node/script/definitions`, CAN-4153); this
+ * module only reads the sources it ranks: local settings, the workspace
+ * manifest, `canopy.json` candidates and `conductor.json`. A workspace
+ * root reads its checkout through the `repo_shadows` baseline
+ * (`getBaselineReadPath`), whose Git writer moves with CAN-4108.
+ */
 
-export type ResolvedScriptMap = Record<string, ResolvedScriptField>;
+export type { ResolvedScriptField, ResolvedScriptMap };
 
 export interface WorkspaceScriptResolutionPaths {
   workspaceRootPath?: string;
@@ -59,24 +58,34 @@ export interface WorkspaceScriptResolutionPaths {
   localConfig?: WorkspaceConfigFile;
 }
 
+function conductorReader(path: string): ConductorScriptsReader {
+  return () => readConductorJson(path);
+}
+
+/** The workspace root checkout, through the `repo_shadows` baseline. */
+async function workspaceRootReadPath(
+  localConfig: Pick<WorkspaceConfigFile, 'sourceRepoPath'>,
+  paths: WorkspaceScriptResolutionPaths | undefined,
+): Promise<string | undefined> {
+  return (
+    paths?.workspaceRootPath ??
+    (localConfig.sourceRepoPath
+      ? await getBaselineReadPath(localConfig.sourceRepoPath)
+      : undefined)
+  );
+}
+
 export async function resolveProjectScripts(
   project: Pick<ProjectData, 'repoPath' | 'scripts'>,
   repoPathOverride?: string,
 ): Promise<ResolvedScriptMap> {
-  const resolved: ResolvedScriptMap = {};
   const repoPath = repoPathOverride ?? project.repoPath;
   const repoManifest = await readCanopyJson(repoPath);
-
-  applyScriptDefinitions(resolved, repoManifest?.scripts, 'repo-canopy');
-  applyOverrideScripts(
-    resolved,
-    project.scripts,
-    'local-override',
-    'local-disabled',
-  );
-  await applyConductorFallbackScripts(resolved, repoPath, 'repo-conductor');
-
-  return resolved;
+  return resolveProjectScriptMap({
+    repoScripts: repoManifest?.scripts,
+    localScripts: project.scripts,
+    readConductor: conductorReader(repoPath),
+  });
 }
 
 export async function resolveWorkspaceRepoScripts(
@@ -86,24 +95,12 @@ export async function resolveWorkspaceRepoScripts(
 ): Promise<ResolvedScriptMap> {
   const { repo, repoPath, repoManifest, workspaceManifestRepo } =
     await readWorkspaceRepoLayerContext(workspaceId, repoId, paths);
-
-  const resolved: ResolvedScriptMap = {};
-  applyScriptDefinitions(resolved, repoManifest?.scripts, 'repo-canopy');
-  applyOverrideScripts(
-    resolved,
-    workspaceManifestRepo?.scripts,
-    'workspace-manifest',
-    'workspace-manifest-disabled',
-  );
-  applyOverrideScripts(
-    resolved,
-    repo.scripts,
-    'local-override',
-    'local-disabled',
-  );
-  await applyConductorFallbackScripts(resolved, repoPath, 'repo-conductor');
-
-  return resolved;
+  return resolveWorkspaceRepoScriptMap({
+    repoScripts: repoManifest?.scripts,
+    workspaceManifestScripts: workspaceManifestRepo?.scripts,
+    localScripts: repo.scripts,
+    readConductor: conductorReader(repoPath),
+  });
 }
 
 export async function resolveWorkspaceRootScripts(
@@ -116,33 +113,14 @@ export async function resolveWorkspaceRootScripts(
     localConfig,
     paths?.workspaceRootPath,
   );
-  const resolved: ResolvedScriptMap = {};
-
-  applyScriptDefinitions(
-    resolved,
-    workspaceManifest?.scripts,
-    'workspace-hook',
-  );
-  applyOverrideScripts(
-    resolved,
-    localConfig.scripts,
-    'local-override',
-    'local-disabled',
-  );
-  const workspaceRootPath =
-    paths?.workspaceRootPath ??
-    (localConfig.sourceRepoPath
-      ? await getBaselineReadPath(localConfig.sourceRepoPath)
-      : undefined);
-  if (workspaceRootPath) {
-    await applyConductorFallbackScripts(
-      resolved,
-      workspaceRootPath,
-      'workspace-conductor',
-    );
-  }
-
-  return resolved;
+  const workspaceRootPath = await workspaceRootReadPath(localConfig, paths);
+  return resolveWorkspaceRootScriptMap({
+    workspaceManifestScripts: workspaceManifest?.scripts,
+    localScripts: localConfig.scripts,
+    readConductor: workspaceRootPath
+      ? conductorReader(workspaceRootPath)
+      : undefined,
+  });
 }
 
 export function getResolvedScriptCommand(
@@ -165,6 +143,7 @@ export function getResolvedScriptTimeoutSeconds(
 ): number | null | undefined {
   return getResolvedScriptDefinition(resolved, scriptName)?.timeoutSeconds;
 }
+
 export function toScriptOverrides(
   resolved: ResolvedScriptMap,
 ): ScriptOverrides | undefined {
@@ -188,136 +167,19 @@ export function toScriptOverrides(
   return normalizeScriptInputMap(overrides);
 }
 
-function applyScriptDefinitions(
-  resolved: ResolvedScriptMap,
-  scripts: Record<string, string | ScriptDefinition> | undefined,
-  source: ResolvedScriptField['source'],
-): void {
-  if (!scripts) {
-    return;
-  }
-
-  for (const [scriptName, value] of Object.entries(scripts)) {
-    const definition = normalizeScriptDefinition(value);
-    if (!definition) {
-      continue;
-    }
-    resolved[scriptName] = {
-      definition,
-      value: definition.command,
-      source,
-    };
-  }
-}
-
-function applyOverrideScripts(
-  resolved: ResolvedScriptMap,
-  scripts: Record<string, ScriptValue> | undefined,
-  enabledSource: ResolvedScriptField['source'],
-  disabledSource: ResolvedScriptField['source'],
-): void {
-  if (!scripts) {
-    return;
-  }
-
-  for (const [scriptName, value] of Object.entries(scripts)) {
-    if (value === null) {
-      resolved[scriptName] = { source: disabledSource };
-      continue;
-    }
-    const definition = normalizeScriptDefinition(value);
-    if (!definition) {
-      continue;
-    }
-    resolved[scriptName] = {
-      definition,
-      value: definition.command,
-      source: enabledSource,
-    };
-  }
-}
-
-async function applyConductorFallbackScripts(
-  resolved: ResolvedScriptMap,
-  repoPath: string,
-  source: ResolvedScriptField['source'],
-): Promise<void> {
-  if (!hasMissingConductorLifecycleScripts(resolved)) {
-    return;
-  }
-
-  const conductorScripts = await readConductorJson(repoPath);
-  applyMissingStringScripts(resolved, conductorScripts ?? undefined, source);
-}
-
-function hasMissingConductorLifecycleScripts(
-  resolved: ResolvedScriptMap,
-): boolean {
-  return PROJECT_LIFECYCLE_SCRIPT_NAMES.some(
-    (scriptName) => resolved[scriptName] === undefined,
-  );
-}
-
-function applyMissingStringScripts(
-  resolved: ResolvedScriptMap,
-  scripts:
-    | Record<string, ScriptValue | undefined>
-    | ConductorJsonScripts
-    | undefined,
-  source: ResolvedScriptField['source'],
-): void {
-  if (!scripts) {
-    return;
-  }
-
-  for (const [scriptName, value] of Object.entries(scripts)) {
-    if (typeof value !== 'string') {
-      continue;
-    }
-    if (resolved[scriptName] !== undefined) {
-      continue;
-    }
-
-    resolved[scriptName] = {
-      definition: { command: value },
-      value,
-      source,
-    };
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Layer collection — returns all sources for a given script without collapsing
+// Source layers: every source for a given script, without collapsing.
 // ---------------------------------------------------------------------------
 
-function buildConductorLayer(
-  sourceKey: string,
-  sourceLabel: string,
-  scripts: ConductorJsonScripts | null | undefined,
-  scriptName: string,
-): ScriptSourceLayer | null {
-  if (!scripts) {
-    return null;
-  }
-
-  const conductorKey = scriptName as keyof ConductorJsonScripts;
-  const value = scripts[conductorKey];
-  if (typeof value === 'string') {
-    return { sourceKey, sourceLabel, command: value, status: 'active' };
-  }
-
-  return null;
-}
-
-interface ConfigCandidateLayerSource {
+interface ConfigCandidateSource {
   fileName: string;
   manifest: CanopyJsonFile | null;
 }
 
-async function readConfigCandidateLayerSources(
+async function readConfigCandidateSources(
   repoPath: string,
-): Promise<ConfigCandidateLayerSource[]> {
-  const candidates: ConfigCandidateLayerSource[] = [];
+): Promise<ConfigCandidateSource[]> {
+  const candidates: ConfigCandidateSource[] = [];
 
   for (const filePath of getProjectConfigFileCandidates(repoPath)) {
     try {
@@ -329,10 +191,7 @@ async function readConfigCandidateLayerSources(
       });
     } catch (error) {
       if (isMissingFileError(error)) {
-        candidates.push({
-          fileName: basename(filePath),
-          manifest: null,
-        });
+        candidates.push({ fileName: basename(filePath), manifest: null });
         continue;
       }
       throw error;
@@ -342,97 +201,134 @@ async function readConfigCandidateLayerSources(
   return candidates;
 }
 
-function buildConfigScriptLayers({
-  sourceKeyPrefix,
-  sourceLabelSuffix,
-  candidates,
-  scriptName,
-  getScripts,
-}: {
-  sourceKeyPrefix: string;
-  sourceLabelSuffix?: string;
-  candidates: ConfigCandidateLayerSource[];
-  scriptName: string;
-  getScripts: (
-    manifest: CanopyJsonFile,
-  ) => Record<string, ScriptValue | undefined> | undefined;
-}): ScriptSourceLayer[] {
-  const selectedIndex = candidates.findIndex(
-    (candidate) => candidate.manifest !== null,
-  );
-  const layers: ScriptSourceLayer[] = [];
-  const candidateLayers = candidates.map((candidate, index) => {
-    if (!candidate.manifest) {
-      return null;
-    }
-    const label = buildConfigSourceLabel(candidate.fileName, sourceLabelSuffix);
-    const layer = buildScriptSourceLayer(
-      `${sourceKeyPrefix}:${candidate.fileName}`,
-      label,
-      getScripts(candidate.manifest),
-      scriptName,
-    );
-    if (layer && selectedIndex >= 0 && index > selectedIndex) {
-      layer.status = 'overridden';
-      layer.sourceLabel = `${label} (overridden fallback)`;
-    }
-    return layer;
-  });
-  const hasAnyConfigLayer = candidateLayers.some((layer) => layer !== null);
-
-  for (let index = 0; index < candidates.length; index += 1) {
-    const candidate = candidates[index];
-    if (!candidate) {
-      continue;
-    }
-    const layer = candidateLayers[index];
-    if (layer) {
-      layers.push(layer);
-      continue;
-    }
-
-    if (
-      selectedIndex > index &&
-      hasAnyConfigLayer &&
-      candidate.manifest === null
-    ) {
-      layers.push({
-        sourceKey: `${sourceKeyPrefix}:${candidate.fileName}`,
-        sourceLabel: `${buildConfigSourceLabel(
-          candidate.fileName,
-          sourceLabelSuffix,
-        )} (not found)`,
-        command: null,
-        status: 'absent',
-      });
-      continue;
-    }
-
-    if (
-      selectedIndex === index &&
-      hasAnyConfigLayer &&
-      candidate.manifest !== null
-    ) {
-      layers.push({
-        sourceKey: `${sourceKeyPrefix}:${candidate.fileName}`,
-        sourceLabel: `${buildConfigSourceLabel(
-          candidate.fileName,
-          sourceLabelSuffix,
-        )} (used config)`,
-        command: null,
-        status: 'absent',
-      });
-    }
-  }
-
-  return layers;
+function configFiles(
+  candidates: readonly ConfigCandidateSource[],
+  getScripts: (manifest: CanopyJsonFile) => ScriptConfigFile['scripts'],
+): ScriptConfigFile[] {
+  return candidates.map(({ fileName, manifest }) => ({
+    fileName,
+    present: manifest !== null,
+    scripts: manifest ? getScripts(manifest) : undefined,
+  }));
 }
 
-function buildConfigSourceLabel(
-  fileName: string,
-  suffix: string | undefined,
-): string {
-  return suffix ? `${fileName} ${suffix}` : fileName;
+const CONFIG_LABEL_SUFFIX: Partial<
+  Record<CoreScriptSourceLayer['source'], string>
+> = {
+  'workspace-hook': '(project)',
+  'workspace-manifest': '(project manifest)',
+};
+
+const UNFILED_LABEL: Partial<Record<CoreScriptSourceLayer['source'], string>> =
+  {
+    'workspace-hook': 'Project config',
+    'workspace-manifest': 'Project manifest',
+  };
+
+const NOTE_SUFFIX: Record<
+  NonNullable<CoreScriptSourceLayer['note']>,
+  string
+> = {
+  'overridden-fallback': ' (overridden fallback)',
+  'not-found': ' (not found)',
+  'used-config': ' (used config)',
+};
+
+/** The desktop's label for a core source layer. */
+export function scriptSourceLayerLabel(layer: CoreScriptSourceLayer): string {
+  if (layer.source === 'local-override') {
+    return `${BRAND.displayName} Local Override`;
+  }
+  if (!layer.file) {
+    return UNFILED_LABEL[layer.source] ?? layer.sourceKey;
+  }
+  const suffix = CONFIG_LABEL_SUFFIX[layer.source];
+  const label = suffix ? `${layer.file} ${suffix}` : layer.file;
+  return layer.note ? `${label}${NOTE_SUFFIX[layer.note]}` : label;
+}
+
+export function toScriptSourceLayer(
+  layer: CoreScriptSourceLayer,
+): ScriptSourceLayer {
+  return {
+    sourceKey: layer.sourceKey,
+    sourceLabel: scriptSourceLayerLabel(layer),
+    command: layer.command,
+    status: layer.status,
+  };
+}
+
+export async function collectProjectScriptSourceLayers(
+  project: Pick<ProjectData, 'repoPath' | 'scripts'>,
+  scriptName: string,
+  repoPathOverride?: string,
+): Promise<CoreScriptSourceLayer[]> {
+  const repoPath = repoPathOverride ?? project.repoPath;
+  const candidates = await readConfigCandidateSources(repoPath);
+  return collectProjectCoreScriptLayers({
+    scriptName,
+    localScripts: project.scripts,
+    repoConfigFiles: configFiles(candidates, (manifest) => manifest.scripts),
+    readConductor: conductorReader(repoPath),
+  });
+}
+
+export async function collectWorkspaceRootScriptSourceLayers(
+  workspaceId: string,
+  scriptName: string,
+  paths?: WorkspaceScriptResolutionPaths,
+): Promise<CoreScriptSourceLayer[]> {
+  const localConfig = await readWorkspaceConfig(workspaceId);
+  const workspaceManifest = await readWorkspaceCanopyManifest(
+    localConfig,
+    paths?.workspaceRootPath,
+  );
+  const workspaceRootPath = await workspaceRootReadPath(localConfig, paths);
+  const workspaceCandidates = workspaceRootPath
+    ? await readConfigCandidateSources(workspaceRootPath)
+    : undefined;
+  return collectWorkspaceRootCoreScriptLayers({
+    scriptName,
+    localScripts: localConfig.scripts,
+    workspaceConfigFiles:
+      workspaceCandidates &&
+      configFiles(workspaceCandidates, (manifest) => manifest.scripts),
+    workspaceManifestScripts: workspaceManifest?.scripts,
+    readConductor: workspaceRootPath
+      ? conductorReader(workspaceRootPath)
+      : undefined,
+  });
+}
+
+export async function collectWorkspaceRepoScriptSourceLayers(
+  workspaceId: string,
+  repoId: string,
+  scriptName: string,
+  paths?: WorkspaceScriptResolutionPaths,
+): Promise<CoreScriptSourceLayer[]> {
+  const { localConfig, repo, repoPath, workspaceManifestRepo } =
+    await readWorkspaceRepoLayerContext(workspaceId, repoId, paths);
+  const workspaceRootPath = await workspaceRootReadPath(localConfig, paths);
+  const workspaceCandidates = workspaceRootPath
+    ? await readConfigCandidateSources(workspaceRootPath)
+    : undefined;
+  const repoCandidates = await readConfigCandidateSources(repoPath);
+  return collectWorkspaceRepoCoreScriptLayers({
+    scriptName,
+    localScripts: repo.scripts,
+    workspaceConfigFiles:
+      workspaceCandidates &&
+      configFiles(
+        workspaceCandidates,
+        (manifest) => getManifestRepoById(manifest, repoId)?.scripts,
+      ),
+    workspaceManifestScripts: workspaceManifestRepo?.scripts,
+    repoConfigFiles: configFiles(
+      repoCandidates,
+      (manifest) => manifest.scripts,
+    ),
+    readConductor: conductorReader(repoPath),
+  });
 }
 
 export async function collectProjectScriptLayers(
@@ -440,46 +336,13 @@ export async function collectProjectScriptLayers(
   scriptName: string,
   repoPathOverride?: string,
 ): Promise<ScriptSourceLayer[]> {
-  const effectiveRepoPath = repoPathOverride ?? project.repoPath;
-  const repoConfigCandidates =
-    await readConfigCandidateLayerSources(effectiveRepoPath);
-
-  const layers: ScriptSourceLayer[] = [];
-
-  const localLayer = buildScriptSourceLayer(
-    'local-override',
-    `${BRAND.displayName} Local Override`,
-    project.scripts,
-    scriptName,
-  );
-  if (localLayer) {
-    layers.push(localLayer);
-  }
-
-  layers.push(
-    ...buildConfigScriptLayers({
-      sourceKeyPrefix: 'repo-canopy',
-      candidates: repoConfigCandidates,
+  return (
+    await collectProjectScriptSourceLayers(
+      project,
       scriptName,
-      getScripts: (manifest) => manifest.scripts,
-    }),
-  );
-
-  if (isProjectLifecycleScriptName(scriptName)) {
-    const conductorScripts = await readConductorJson(effectiveRepoPath);
-    const conductorLayer = buildConductorLayer(
-      'repo-conductor',
-      'conductor.json',
-      conductorScripts,
-      scriptName,
-    );
-    if (conductorLayer) {
-      layers.push(conductorLayer);
-    }
-  }
-
-  assignEffectiveSourceLayerStatus(layers);
-  return layers;
+      repoPathOverride,
+    )
+  ).map(toScriptSourceLayer);
 }
 
 export async function collectWorkspaceRootScriptLayers(
@@ -487,69 +350,9 @@ export async function collectWorkspaceRootScriptLayers(
   scriptName: string,
   paths?: WorkspaceScriptResolutionPaths,
 ): Promise<ScriptSourceLayer[]> {
-  const localConfig = await readWorkspaceConfig(workspaceId);
-  const workspaceManifest = await readWorkspaceCanopyManifest(
-    localConfig,
-    paths?.workspaceRootPath,
-  );
-
-  const layers: ScriptSourceLayer[] = [];
-
-  const localLayer = buildScriptSourceLayer(
-    'local-override',
-    `${BRAND.displayName} Local Override`,
-    localConfig.scripts,
-    scriptName,
-  );
-  if (localLayer) {
-    layers.push(localLayer);
-  }
-
-  const workspaceRootPath =
-    paths?.workspaceRootPath ??
-    (localConfig.sourceRepoPath
-      ? await getBaselineReadPath(localConfig.sourceRepoPath)
-      : undefined);
-
-  if (workspaceRootPath) {
-    const workspaceConfigCandidates =
-      await readConfigCandidateLayerSources(workspaceRootPath);
-    layers.push(
-      ...buildConfigScriptLayers({
-        sourceKeyPrefix: 'workspace-hook',
-        sourceLabelSuffix: '(project)',
-        candidates: workspaceConfigCandidates,
-        scriptName,
-        getScripts: (manifest) => manifest.scripts,
-      }),
-    );
-  } else {
-    const hookLayer = buildScriptSourceLayer(
-      'workspace-hook',
-      'Project config',
-      workspaceManifest?.scripts,
-      scriptName,
-    );
-    if (hookLayer) {
-      layers.push(hookLayer);
-    }
-  }
-
-  if (isProjectLifecycleScriptName(scriptName) && workspaceRootPath) {
-    const conductorScripts = await readConductorJson(workspaceRootPath);
-    const conductorLayer = buildConductorLayer(
-      'workspace-conductor',
-      'conductor.json',
-      conductorScripts,
-      scriptName,
-    );
-    if (conductorLayer) {
-      layers.push(conductorLayer);
-    }
-  }
-
-  assignEffectiveSourceLayerStatus(layers);
-  return layers;
+  return (
+    await collectWorkspaceRootScriptSourceLayers(workspaceId, scriptName, paths)
+  ).map(toScriptSourceLayer);
 }
 
 export async function collectWorkspaceRepoScriptLayers(
@@ -558,74 +361,12 @@ export async function collectWorkspaceRepoScriptLayers(
   scriptName: string,
   paths?: WorkspaceScriptResolutionPaths,
 ): Promise<ScriptSourceLayer[]> {
-  const { localConfig, repo, repoPath, workspaceManifestRepo } =
-    await readWorkspaceRepoLayerContext(workspaceId, repoId, paths);
-
-  const layers: ScriptSourceLayer[] = [];
-
-  const localLayer = buildScriptSourceLayer(
-    'local-override',
-    `${BRAND.displayName} Local Override`,
-    repo.scripts,
-    scriptName,
-  );
-  if (localLayer) {
-    layers.push(localLayer);
-  }
-
-  const workspaceRootPath =
-    paths?.workspaceRootPath ??
-    (localConfig.sourceRepoPath
-      ? await getBaselineReadPath(localConfig.sourceRepoPath)
-      : undefined);
-  if (workspaceRootPath) {
-    const workspaceConfigCandidates =
-      await readConfigCandidateLayerSources(workspaceRootPath);
-    layers.push(
-      ...buildConfigScriptLayers({
-        sourceKeyPrefix: 'workspace-manifest',
-        sourceLabelSuffix: '(project manifest)',
-        candidates: workspaceConfigCandidates,
-        scriptName,
-        getScripts: (manifest) =>
-          getManifestRepoById(manifest, repoId)?.scripts,
-      }),
-    );
-  } else {
-    const manifestLayer = buildScriptSourceLayer(
-      'workspace-manifest',
-      'Project manifest',
-      workspaceManifestRepo?.scripts,
+  return (
+    await collectWorkspaceRepoScriptSourceLayers(
+      workspaceId,
+      repoId,
       scriptName,
-    );
-    if (manifestLayer) {
-      layers.push(manifestLayer);
-    }
-  }
-
-  const repoConfigCandidates = await readConfigCandidateLayerSources(repoPath);
-  layers.push(
-    ...buildConfigScriptLayers({
-      sourceKeyPrefix: 'repo-canopy',
-      candidates: repoConfigCandidates,
-      scriptName,
-      getScripts: (manifest) => manifest.scripts,
-    }),
-  );
-
-  if (isProjectLifecycleScriptName(scriptName)) {
-    const conductorScripts = await readConductorJson(repoPath);
-    const conductorLayer = buildConductorLayer(
-      'repo-conductor',
-      'conductor.json',
-      conductorScripts,
-      scriptName,
-    );
-    if (conductorLayer) {
-      layers.push(conductorLayer);
-    }
-  }
-
-  assignEffectiveSourceLayerStatus(layers);
-  return layers;
+      paths,
+    )
+  ).map(toScriptSourceLayer);
 }

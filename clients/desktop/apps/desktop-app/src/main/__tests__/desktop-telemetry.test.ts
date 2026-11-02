@@ -142,6 +142,7 @@ describe('desktop telemetry helpers', () => {
           messages: [],
         },
       ],
+      activeTabId: 'chat-1',
     });
     mockedLoadHistoryIndex.mockResolvedValue([
       {
@@ -170,9 +171,30 @@ describe('desktop telemetry helpers', () => {
         },
       ],
     });
-    mockedListNotes.mockResolvedValue(['note-1']);
-    mockedListPrompts.mockResolvedValue(['prompt-1']);
-    mockedListAttachments.mockResolvedValue(['attachment-1']);
+    mockedListNotes.mockResolvedValue([
+      {
+        id: 'note-1',
+        title: 'Note 1',
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      },
+    ]);
+    mockedListPrompts.mockResolvedValue([
+      {
+        id: 'prompt-1',
+        title: 'Prompt 1',
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      },
+    ]);
+    mockedListAttachments.mockResolvedValue([
+      {
+        id: 'attachment-1',
+        filename: 'attachment-1.txt',
+        absolutePath: '/workspace/attachment-1.txt',
+        createdAt: new Date(0).toISOString(),
+      },
+    ]);
   });
 
   afterEach(() => {
@@ -220,30 +242,6 @@ describe('desktop telemetry helpers', () => {
       },
     });
     expect(mockedSucceedDesktopOperation).toHaveBeenCalledTimes(2);
-  });
-
-  it('keys getting started sequence outcomes by campaign and item id', async () => {
-    recordActivationCampaignTelemetry({
-      campaignId: 'getting-started-sequence',
-      itemId: 'start-chat',
-      outcome: 'delivered',
-      destination: 'home',
-    });
-    await flushTelemetry();
-
-    const [name, options] = mockedStartDesktopOperation.mock.calls[0] ?? [];
-    expect(name).toBe('canopy.activation_campaign');
-    expect(options?.operationKey).toMatch(
-      /^operation:canopy\.activation_campaign:getting-started-sequence:start-chat:delivered:\d+$/,
-    );
-    expect(options).toMatchObject({
-      context: {
-        campaign_id: 'getting-started-sequence',
-        item_id: 'start-chat',
-        outcome: 'delivered',
-        destination: 'home',
-      },
-    });
   });
 
   it('leaves the pre-existing campaign event shape unchanged without an item id', async () => {

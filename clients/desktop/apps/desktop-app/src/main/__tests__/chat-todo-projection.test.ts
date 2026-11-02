@@ -22,8 +22,11 @@ import {
 import {
   listWorktreeTodoEntities,
   projectChatTodoFromMessages,
+  projectWorktreeChatSummaries,
+  projectWorktreeChatSummariesStrict,
   projectWorktreeChatTodoRemovals,
   projectWorktreeChatTodos,
+  projectWorktreeChatTodosStrict,
 } from '../services/chat-service';
 import { portalChatTabsCache } from '../services/portal-chat-tabs-cache';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
@@ -198,5 +201,53 @@ describe('worktree chat TODO projection', () => {
 
     expect(mockedPortalChatTabsCache.read.mock.calls).toHaveLength(0);
     expect(mockedEnqueuePortalEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['TODO', projectWorktreeChatTodos, projectWorktreeChatTodosStrict],
+    [
+      'summary',
+      projectWorktreeChatSummaries,
+      projectWorktreeChatSummariesStrict,
+    ],
+  ])(
+    'rejects a failed %s read only for the post-commit projection',
+    async (_label, bestEffort, strict) => {
+      const failure = new Error('chat tabs unreadable');
+      const target = { workspaceId: 'workspace-4', worktreeId: 'tree-4' };
+      mockedPortalChatTabsCache.read.mockRejectedValueOnce(failure);
+      await expect(bestEffort(target)).resolves.toBeUndefined();
+      mockedPortalChatTabsCache.read.mockRejectedValueOnce(failure);
+      await expect(strict(target)).rejects.toBe(failure);
+      expect(mockedEnqueuePortalEvent).not.toHaveBeenCalled();
+    },
+  );
+
+  it('re-emits a TODO on retry after its emit failed', async () => {
+    const target = { workspaceId: 'workspace-5', worktreeId: 'tree-5' };
+    mockedPortalChatTabsCache.read.mockResolvedValue({
+      version: 1,
+      activeTabId: 'chat-retry',
+      tabs: [
+        {
+          id: 'chat-retry',
+          title: 'Retry',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          messages: [todoMessage('retry', 'Retried TODO')],
+        },
+      ],
+    });
+    const failure = new Error('Portal sink failed');
+    mockedEnqueuePortalEvent.mockImplementationOnce(() => {
+      throw failure;
+    });
+    await expect(projectWorktreeChatTodosStrict(target)).rejects.toBe(failure);
+    await expect(
+      projectWorktreeChatTodosStrict(target),
+    ).resolves.toBeUndefined();
+    expect(mockedEnqueuePortalEvent).toHaveBeenCalledTimes(2);
+    expect(mockedEnqueuePortalEvent.mock.calls[1]?.[0]).toMatchObject({
+      payload: { target: { chatLocalId: 'chat-retry' } },
+    });
   });
 });

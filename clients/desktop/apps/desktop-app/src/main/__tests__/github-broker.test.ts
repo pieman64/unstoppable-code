@@ -12,6 +12,7 @@ jest.mock('../lib/github-octokit-loader', () => ({
 import {
   getGitHubBroker,
   type GitHubBrokerError,
+  type GitHubRawResponse,
   resetGitHubBrokerForTests,
 } from '../lib/github-broker';
 import {
@@ -931,10 +932,10 @@ describe('GitHubBroker', () => {
     const order: string[] = [];
     const read = (
       label: string,
-    ): jest.Mock<Promise<{ status: number; headers: object; data: string }>> =>
-      jest.fn(async () => {
+    ): jest.Mock<Promise<GitHubRawResponse<string>>, []> =>
+      jest.fn<Promise<GitHubRawResponse<string>>, []>(() => {
         order.push(label);
-        return { status: 200, headers: {}, data: label };
+        return Promise.resolve({ status: 200, headers: {}, data: label });
       });
     const options = {
       operation: 'read' as const,

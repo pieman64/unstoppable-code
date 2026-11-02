@@ -11,7 +11,6 @@ function row(
     description: '',
     type: 'http',
     configs: [],
-    createdAt: '2026-09-21T00:00:00.000Z',
     updatedAt: '2026-09-21T00:00:00.000Z',
     ...overrides,
   };

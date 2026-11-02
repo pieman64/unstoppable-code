@@ -1,15 +1,13 @@
 import type { JSX } from 'react';
+import { updateMenuLabel } from '../lib/customize-row-copy';
+import { updateMarkerLabel } from '../lib/display-version';
 import { Tooltip } from './Tooltip';
 
-/** Normalizes a version for display, never inventing one that is absent. */
-export function displayVersion(version: string | undefined): string | null {
-  const trimmed = version?.trim().replace(/^v/i, '') ?? '';
-  return trimmed === '' ? null : `v${trimmed}`;
-}
+export { displayVersion, updateMarkerLabel } from '../lib/display-version';
 
-export function updateMarkerLabel(latestVersion?: string): string {
-  const latest = displayVersion(latestVersion);
-  return latest ? `Update available: ${latest}` : 'Update available';
+/** The shared update action, retaining the optional-version API. */
+export function updateActionLabel(latestVersion?: string): string {
+  return updateMenuLabel(latestVersion);
 }
 
 export interface UpdateMarkerProps {

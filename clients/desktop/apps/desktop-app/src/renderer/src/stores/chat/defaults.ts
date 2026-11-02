@@ -3,6 +3,7 @@ import {
   AI_GATEWAY_MODELS,
   APP_ADVISOR_PROJECT_ID,
   CLAUDE_MODELS,
+  CODEX_ACCOUNT_MODELS,
   CODEX_MODELS,
   DEFAULT_APP_ADVISOR_MODEL,
   DEFAULT_MODEL,
@@ -29,6 +30,7 @@ import {
   isModelBlockedTriState,
 } from '@canopy/desktop-shared/lib/model-policy';
 import {
+  isCodexModelAvailableToAccount,
   isGuestAllowedCreditsModel,
   repairLaneDefaults,
   resolveDefaultModelLane,
@@ -56,6 +58,7 @@ import {
 } from '../modelPolicyRuntime';
 import {
   getRendererBillingLaneAvailability,
+  getRendererCodexAccountModels,
   getRendererGuestPrincipal,
   getRendererLastResolvedLane,
 } from '../billingLaneRuntime';
@@ -116,6 +119,24 @@ function isModelRunnableOnLane(lane: BillingLane, model: ChatModel): boolean {
 }
 
 /**
+ * {@link isModelRunnableOnLane}, also excluding a Codex model the signed-in
+ * ChatGPT account cannot run (CAN-4716). Feeds the default repair and the
+ * dispatchable walk only, never an explicit pick: an explicit pick still
+ * sends, and the account model notice is its recovery. An unknown account
+ * list filters nothing.
+ */
+function isModelRunnableForAccountOnLane(
+  lane: BillingLane,
+  model: ChatModel,
+): boolean {
+  return (
+    isModelRunnableOnLane(lane, model) &&
+    (lane !== 'codex-native' ||
+      isCodexModelAvailableToAccount(model, getRendererCodexAccountModels()))
+  );
+}
+
+/**
  * Lane precedence order used when walking the catalog for a fallback.
  * Ollama is included ONLY when explicitly pinned — reaching a local model
  * through an implicit fallback contradicts the never-auto-select rule and
@@ -164,7 +185,10 @@ function orgGatewayLane(): EnforcedOrgGatewayLane | undefined {
 
 function laneCatalog(lane: BillingLane): readonly ChatModel[] {
   if (lane === 'claude-native') return CLAUDE_MODELS;
-  if (lane === 'codex-native') return CODEX_MODELS;
+  // Catalog order first, then the account's own models (its default first),
+  // matching main's resolver.
+  if (lane === 'codex-native')
+    return [...CODEX_MODELS, ...CODEX_ACCOUNT_MODELS];
   if (lane === 'ollama') return OLLAMA_MODELS;
   return AI_GATEWAY_MODELS;
 }
@@ -187,7 +211,7 @@ function firstDispatchableModel(
     for (const candidate of laneCatalog(lane)) {
       if (isModelBlocked(candidate, policy)) continue;
       if (isOrgGatewayExcluded(candidate)) continue;
-      if (!isModelRunnableOnLane(lane, candidate)) continue;
+      if (!isModelRunnableForAccountOnLane(lane, candidate)) continue;
       return candidate;
     }
   }
@@ -280,7 +304,7 @@ function laneDefaultsFor(
         lane === 'ai-credits'
           ? hasHydratedGatewayCatalog()
           : hasHydratedModelRegistry(),
-      isRunnableOnLane: isModelRunnableOnLane,
+      isRunnableOnLane: isModelRunnableForAccountOnLane,
       clampThinkingLevel: clampThinkingLevelForModel,
     },
   );
@@ -376,6 +400,7 @@ export function resolveLaneForTarget(
     isModelInRegistry,
     gatewayRoutesHydrated: hasHydratedGatewayCatalog(),
     ollamaPinned: preferredProvider === 'ollama',
+    codexAccountModels: getRendererCodexAccountModels(),
     ...(orgGateway ? { orgGateway } : {}),
     guestPrincipal: getRendererGuestPrincipal(),
     // Synthesized credits candidates carry a nominal `'high'`; clamp it against

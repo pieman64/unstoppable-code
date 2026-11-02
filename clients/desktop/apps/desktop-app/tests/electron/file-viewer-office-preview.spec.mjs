@@ -406,12 +406,15 @@ test('renders DOCX and XLSX previews inline with inert content, keyboard sheet t
       };
     });
     const openOriginal = panel.getByTestId('file-viewer-open-original');
-    await expect(openOriginal).toHaveText(
+    await expect(openOriginal).toHaveAccessibleName(
       /^Open in (Finder|File Explorer|Files|file manager)$/,
     );
-    expect(
-      await openOriginal.evaluate((node) => getComputedStyle(node).boxShadow),
-    ).not.toBe('none');
+    // The quiet icon-only toolbar control every file header action shares.
+    await expect(openOriginal).toHaveAttribute(
+      'data-header-action-button',
+      'true',
+    );
+    await expect(openOriginal).toHaveText('');
     await openOriginal.click();
     await expect
       .poll(() => electronApp.evaluate(() => globalThis.__reg2944Reveals))
@@ -543,7 +546,7 @@ test('keeps corrupt, macro-enabled, and oversized Office files actionable and re
         globalThis.__reg2944Reveals.push(filePath);
       };
     });
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-item-new-file').click();
 
     let panel = await openFromPanelTree(window, 'corrupt.docx');
@@ -768,7 +771,7 @@ test('keeps the renderer main thread responsive while a 10 MiB workbook parses a
   try {
     const window = await electronApp.firstWindow();
     await openSeededWorkspace(window);
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-item-new-file').click();
     await window.evaluate(() => {
       window.__reg2944Heartbeat = {
@@ -1451,7 +1454,9 @@ test('renders PPTX slides inline with inherited styling, images, notes, and reco
       'Chart not shown in preview',
     );
     await expect(second).toContainText(ooxml.PPTX_GROUP_TEXT);
-    await expect(panel.getByTestId('file-viewer-open-original')).toHaveText(
+    await expect(
+      panel.getByTestId('file-viewer-open-original'),
+    ).toHaveAccessibleName(
       /^Open in (Finder|File Explorer|Files|file manager)$/,
     );
 

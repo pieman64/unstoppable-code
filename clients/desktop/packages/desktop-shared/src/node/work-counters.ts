@@ -15,9 +15,9 @@ import {
  * handler invocations and main → renderer deliveries, canonical chat-storage
  * writes, provider event ingestion, and the backend each routed read used.
  * Nothing here changes what the instrumented code does, in what order, or
- * with which payloads. The two costly parts stay out of production: IPC byte
- * estimation runs only in an E2E build (`__CANOPY_E2E__`) whose harness asked
- * for it, and the snapshot and reset query is installed only in E2E builds.
+ * with which payloads. Costly byte estimation runs only in an E2E build
+ * (`__CANOPY_E2E__`) whose harness asked for it, and the snapshot and reset
+ * query is installed only in E2E builds.
  *
  * The module has no Electron dependency so a future core daemon can host it.
  * See `docs/desktop-app-performance.md` ("Work counters and the local
@@ -48,6 +48,11 @@ export interface WorkCountersResetOptions {
    * in E2E builds; production builds compile the estimator out.
    */
   estimateIpcBytes?: boolean;
+  /**
+   * Estimate UTF-8 JSON bytes for delegation snapshots. Honoured only in E2E
+   * builds; production builds never serialize these snapshots for counting.
+   */
+  estimateDelegationBytes?: boolean;
 }
 
 export interface WorkCountersQuery {
@@ -86,6 +91,11 @@ export type ChatStorageFileClass =
   | 'artifact'
   /** A delegated agent's transcript log (`transcripts/delegations/`). */
   | 'delegationLog'
+  | 'childTranscript'
+  | 'childActiveSidecar'
+  | 'childAppendStaging'
+  | 'childStreamMetadata'
+  | 'childMessageIndex'
   | 'manifest'
   | 'other';
 
@@ -125,6 +135,7 @@ const counters: Record<WorkCounterSource, BoundedCounters> = {
 };
 let generation = 0;
 let estimateIpcBytes = false;
+let estimateDelegationBytes = false;
 
 function isE2eBuild(): boolean {
   return typeof __CANOPY_E2E__ !== 'undefined' && __CANOPY_E2E__;
@@ -150,6 +161,7 @@ export function resetWorkCounters(
   counters.route.clear();
   generation += 1;
   estimateIpcBytes = options.estimateIpcBytes === true;
+  estimateDelegationBytes = options.estimateDelegationBytes === true;
   return snapshotWorkCounters();
 }
 
@@ -206,6 +218,32 @@ function classifyTranscriptFile(name: string): ChatStorageFileClass {
   return 'other';
 }
 
+function classifyDelegationFile(path: readonly string[]): ChatStorageFileClass {
+  const v2 = path.indexOf('v2');
+  const name = path[path.length - 1] ?? '';
+  const published = publishedName(name).replace(/\.checkpoint$/, '');
+  if (published === 'stream-catalog.json' && path.length === 1)
+    return 'childStreamMetadata';
+  if (v2 < 0) return 'delegationLog';
+  if (
+    published === 'descriptor.json' ||
+    published === 'registry.jsonl' ||
+    published === 'registry.index.json'
+  )
+    return 'childStreamMetadata';
+  if (
+    path.includes('message-index') ||
+    published.includes('sequence-index') ||
+    published.endsWith('.index.json') ||
+    published.endsWith('.turns.json')
+  )
+    return 'childMessageIndex';
+  if (name.endsWith('.append.tmp')) return 'childAppendStaging';
+  if (published.endsWith('.active.json')) return 'childActiveSidecar';
+  if (published.endsWith('.jsonl')) return 'childTranscript';
+  return 'delegationLog';
+}
+
 /**
  * The role a file plays in canonical chat storage
  * (`chat-storage-v2/<scope>/…` and its authority manifests), or `undefined`
@@ -223,13 +261,15 @@ export function classifyChatStorageFile(
   if (area === undefined) return 'other';
   if (area.startsWith('metadata-journal.jsonl')) return 'journal';
   if (area.startsWith('delta-journal.log')) return 'deltaJournal';
+  if (area.startsWith('delta-journal-v2.log')) return 'deltaJournal';
   if (area.startsWith('live-index.json')) return 'liveIndex';
   if (area.startsWith('archive-index.json')) return 'archiveIndex';
   if (area.startsWith('recovery-index.json')) return 'recoveryIndex';
   if (area === 'pending-transcripts') return 'payload';
   if (area !== 'transcripts' || entry === undefined) return 'other';
   if (entry === 'tool-output' || entry === 'visuals') return 'artifact';
-  if (entry === 'delegations') return 'delegationLog';
+  if (entry === 'delegations')
+    return classifyDelegationFile(segments.slice(root + 4));
   if (entry === 'message-index') return 'messageIndex';
   return classifyTranscriptFile(entry);
 }
@@ -257,7 +297,11 @@ export function recordChatStorageFileWrite(
   if (serialized)
     counters.chatStorage.add(`serialized.${fileClass}.bytes`, bytes);
   counters.chatStorage.add(`written.${fileClass}.bytes`, bytes);
-  recordChatStorageScopeWrite(path, bytes);
+  recordChatStorageScopeWrite(
+    path,
+    bytes,
+    fileClass === 'transcript' || fileClass === 'appendStaging',
+  );
 }
 
 export function recordChatStorageFileSync(path: string): void {
@@ -347,7 +391,38 @@ export function recordProviderEventApplied(): void {
   counters.provider.add('eventsApplied', 1);
 }
 
-export type FilesRouteOperation = 'roots' | 'directory';
+/** One delegation snapshot at an offer, publication, or canonical admission. */
+export function recordDelegationSnapshot(
+  stage: 'offered' | 'published' | 'admitted',
+  transcript: unknown,
+): void {
+  const key = `delegationSnapshots.${stage}`;
+  try {
+    counters.provider.add(key, 1);
+    if (!isE2eBuild() || !estimateDelegationBytes) return;
+    const serialized = JSON.stringify(transcript);
+    if (typeof serialized !== 'string') return;
+    counters.provider.add(
+      `${key}.bytes`,
+      Buffer.byteLength(serialized, 'utf8'),
+    );
+  } catch {
+    // Counting and optional size estimates must never change the measured path.
+  }
+}
+
+/**
+ * Files IPC reads the route observes. `file` (scoped `file:read-content`),
+ * `search` (one `file-index:get` search page) and `link`
+ * (`file-reference:resolve`, CAN-5038) are always served directly before
+ * CAN-4729, so they only count `direct`.
+ */
+export type FilesRouteOperation =
+  | 'roots'
+  | 'directory'
+  | 'file'
+  | 'search'
+  | 'link';
 
 /**
  * One Files IPC read and the backend it was routed to (`direct` or `daemon`).
@@ -400,14 +475,35 @@ export function installWorkCountersQuery(): boolean {
 export interface FilesWorkCountersSnapshot {
   generation: number;
   overflow: number;
-  invocations: { roots: number; directory: number };
+  /**
+   * `file` counts every `file:read-content` call, including the unscoped,
+   * Codex image and sealed-viewer ones the route never sees, so it can
+   * exceed `files.file.direct`. `search` counts `file-index:get` calls; one
+   * call searches each root once per page, and a call that joins a walk in
+   * progress searches nothing, so `files.search.direct` can differ from it
+   * either way. `link` counts every `file-reference:resolve` call, including
+   * the sealed-viewer ones the route never sees.
+   */
+  invocations: {
+    roots: number;
+    directory: number;
+    file: number;
+    search: number;
+    link: number;
+  };
   route: Record<string, number>;
 }
 
 export function snapshotFilesWorkCounters(): FilesWorkCountersSnapshot {
   const ipc = counters.ipc.snapshot();
   const route = counters.route.snapshot();
-  const operations = ['roots', 'directory'];
+  const operations: FilesRouteOperation[] = [
+    'roots',
+    'directory',
+    'file',
+    'search',
+    'link',
+  ];
   const outcomes = [
     'direct',
     'daemon',
@@ -425,6 +521,9 @@ export function snapshotFilesWorkCounters(): FilesWorkCountersSnapshot {
     invocations: {
       roots: ipc['invoke.file-tree:roots'] ?? 0,
       directory: ipc['invoke.file-tree:directory'] ?? 0,
+      file: ipc['invoke.file:read-content'] ?? 0,
+      search: ipc['invoke.file-index:get'] ?? 0,
+      link: ipc['invoke.file-reference:resolve'] ?? 0,
     },
     route: Object.fromEntries(
       operations.flatMap((operation) =>

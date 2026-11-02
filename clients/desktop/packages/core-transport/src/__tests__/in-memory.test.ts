@@ -759,7 +759,7 @@ describe('in-memory framed pair', () => {
     write(encodeCanopyJsonFrame({ type: 'channel.opened', channelId, caps }));
     const channel = await opening;
     await channel.write(Uint8Array.of(1));
-    expect((await next()).type).toBe('channel.data');
+    expect(await next()).toMatchObject({ type: 'channel.data' });
     const waitingWrite = channel.write(Uint8Array.of(2));
     write(
       encodeCanopyJsonFrame({
@@ -776,7 +776,7 @@ describe('in-memory framed pair', () => {
     );
     expect(await client.receive()).toMatchObject({ params: { n: 1 } });
     await waitingWrite;
-    expect((await next()).type).toBe('channel.data');
+    expect(await next()).toMatchObject({ type: 'channel.data' });
     expect(client.signal.aborted).toBe(false);
     client.close();
   });

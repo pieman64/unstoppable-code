@@ -184,7 +184,11 @@ describe('agent action tool surface golden', () => {
   it.each(['worktree', 'cowork'] as const)(
     'freezes the Codex %s dynamic tools',
     (mode) => {
-      expect(freeze(buildCanopyDynamicToolSpecs({ mode }))).toMatchSnapshot();
+      expect(
+        freeze(
+          buildCanopyDynamicToolSpecs({ includeChatVisuals: false, mode }),
+        ),
+      ).toMatchSnapshot();
     },
   );
 });

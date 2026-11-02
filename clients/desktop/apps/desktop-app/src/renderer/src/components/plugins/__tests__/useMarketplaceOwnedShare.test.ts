@@ -27,7 +27,10 @@ function skill(overrides: Partial<InstalledSkillInfo>): InstalledSkillInfo {
     name: 'helper',
     sourceId: 'custom:app',
     description: '',
+    source: 'Custom',
     installedAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
+    updateAvailable: false,
     ...overrides,
   };
 }
@@ -53,8 +56,11 @@ function pipeline(overrides: Partial<PipelineInfo>): PipelineInfo {
     name: 'Release',
     description: '',
     icon: '',
-    version: '1',
+    filename: 'release.yml',
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
     source: 'user',
+    readonly: false,
     ...overrides,
   };
 }
@@ -307,6 +313,10 @@ describe('ownedShareTargetForEntry', () => {
                 action: {
                   type: 'pipeline_execution_resume',
                   executionId: 'run-1',
+                  statusReasonIds: ['limit-1'],
+                  provider: 'codex',
+                  purpose: 'usage_limit_resume',
+                  pipelineName: 'Release',
                 },
               }),
             ],

@@ -236,9 +236,9 @@ describe('ActivityCardChatLayout', () => {
     expect(slot()?.className).toContain('absolute');
     // The chat keeps its full width, so its column stays centered.
     expect(chat()?.style.paddingRight).toBe('0px');
-    // Its scrollbar moves out from under the card.
+    // Its scrollbar stays on the pane's right edge.
     expect(chat()?.style.getPropertyValue('--chat-scrollbar-inset')).toBe(
-      '272px',
+      '0px',
     );
     const card = host.querySelector<HTMLElement>(
       '[data-testid="activity-card"]',
@@ -247,6 +247,12 @@ describe('ActivityCardChatLayout', () => {
     expect(
       host.querySelector('[data-testid="activity-card-surface"]'),
     ).toBeNull();
+    // The chat's scrollbar runs under the card's 4px edge padding, so only
+    // the rows (8px in, clear of the thumb) take the pointer.
+    expect(card?.className).toContain('pointer-events-none');
+    expect(
+      card?.querySelector('[data-overlay-scroll-area]')?.className,
+    ).toContain('pointer-events-auto');
   });
 
   it('moves the column left only as far as it must to clear the card', () => {
@@ -258,9 +264,9 @@ describe('ActivityCardChatLayout', () => {
     act(() => useActivityCardStore.getState().toggle(WORKTREE_KEY));
     expect(slot()?.dataset.placement).toBe('beside');
     expect(chat()?.style.paddingRight).toBe('194px');
-    // The scrollbar sits at the card's left edge.
+    // The scrollbar stays on the pane's right edge, past the chat's inset.
     expect(chat()?.style.getPropertyValue('--chat-scrollbar-inset')).toBe(
-      '78px',
+      '-194px',
     );
 
     // Narrower still, the chat gives up no more than the card's width.
@@ -541,6 +547,11 @@ describe('ActivityCardToggle', () => {
     expect(pressed?.getAttribute('aria-label')).toBe('Hide activity');
     // The open state wears the hover look, like the Side Panel toggle.
     expect(pressed?.className).toContain('aria-expanded:bg-subtle');
+    // It is one of the tab row's chrome controls, so the row's nested
+    // corner radius (panels.css) reaches it like the `+` and ⌄.
+    expect(pressed?.classList.contains('canopy-panel-chrome-button')).toBe(
+      true,
+    );
 
     expect(renderToggle({ groupId: 'group-extras' })).toBeNull();
     expect(renderToggle({ worktreeId: 'other-worktree' })).toBeNull();

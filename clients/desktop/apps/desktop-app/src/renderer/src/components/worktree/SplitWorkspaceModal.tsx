@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -217,7 +218,7 @@ function SelectionToggleButton({
         aria-pressed={selected}
         aria-label={tooltipTitle}
         onClick={onSelect}
-        className={`focus-ring rounded-md p-1.5 transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        className={`focus-ring rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
           selected ? selectedClassName : 'fg-secondary hover:fg-primary'
         }`}
         data-testid={testId}
@@ -546,7 +547,7 @@ export function SplitWorkspaceModal({
       >
         <p className="text-xs fg-secondary">
           Splitting moves each kept repo&apos;s checkout — along with its chats,
-          pipeline runs and plans — into a new worktree in that repo&apos;s own
+          workflow runs and plans — into a new worktree in that repo&apos;s own
           single-repo project. Repos you don&apos;t keep are archived or
           deleted, following each destination project&apos;s archive settings.
           This temporary project disappears once its last worktree is gone.
@@ -580,7 +581,7 @@ export function SplitWorkspaceModal({
                       />
                       <ItemCounter
                         icon={<PipelineIcon className="h-3.5 w-3.5" />}
-                        heading="Pipeline runs"
+                        heading="Workflow runs"
                         summary={root.pipelines}
                         testId="split-workspace-modal-root-pipelines"
                       />
@@ -668,7 +669,7 @@ export function SplitWorkspaceModal({
                           />
                           <ItemCounter
                             icon={<PipelineIcon className="h-3.5 w-3.5" />}
-                            heading="Pipeline runs"
+                            heading="Workflow runs"
                             summary={repoPreview.pipelines}
                             testId={`split-workspace-modal-repo-${repo.id}-pipelines`}
                           />
@@ -743,32 +744,27 @@ export function SplitWorkspaceModal({
               Loading destination projects…
             </span>
           )}
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onClose}
-            className="focus-ring rounded-lg border px-3 py-1.5 text-xs fg-secondary hover:bg-secondary hover:fg-primary disabled:opacity-60"
             data-testid="split-workspace-modal-cancel"
           >
             Cancel
-          </button>
+          </Button>
           <Tooltip
             label="Waiting for destination projects to load"
             suppressed={previewLoaded || previewError !== null}
           >
-            <button
-              type="button"
+            <Button
+              variant={deleteCount > 0 ? 'destructive' : 'primary'}
+              size="compact"
               onClick={handleConfirm}
               disabled={confirmDisabled}
-              className={`focus-ring rounded-lg px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60 ${
-                deleteCount > 0
-                  ? 'bg-destructive hover:bg-destructive/90'
-                  : 'bg-accent'
-              }`}
               data-testid="split-workspace-modal-confirm"
               data-danger={deleteCount > 0 ? 'true' : 'false'}
             >
               {confirmLabel}
-            </button>
+            </Button>
           </Tooltip>
         </div>
 

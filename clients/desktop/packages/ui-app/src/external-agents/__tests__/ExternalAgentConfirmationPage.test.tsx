@@ -34,6 +34,7 @@ const CAPABILITIES: CanopyCapabilities = {
   settingsScope: 'api-keys-only',
   pipelines: 'crud-only',
   routing: 'url',
+  overviewNotifications: false,
   externalAgents: true,
 };
 
@@ -48,6 +49,17 @@ function failure<T>(
   error: 'not_found' | 'conflict' | 'expired' | 'unavailable',
 ): ExternalAgentsResult<T> {
   return { ok: false, error };
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = (): void => {};
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
 }
 
 function toolResult(
@@ -114,6 +126,7 @@ function connectionDetail(
       destructive: [],
       organizations: null,
       desktops: null,
+      managed: null,
     },
     revision: 4,
     from: null,
@@ -125,7 +138,11 @@ function connectionDetail(
       disabledTools: [],
       enabledDefaultOff: [],
       organizations: { mode: 'selected', organizationIds: [] },
-      remotes: { mode: 'selected', remoteIds: [] },
+      hosts: {
+        managed: false,
+        connected: { mode: 'selected', remoteIds: [] },
+        exposeNames: false,
+      },
     },
     organizations: [],
     remoteControlEnabled: false,
@@ -142,6 +159,7 @@ function connectionDetail(
       pipeline: 'act',
     },
     waiting: [],
+    textContentCompatibility: false,
     ...overrides,
   };
 }
@@ -423,15 +441,9 @@ describe('ExternalAgentConfirmationPage', () => {
 
   it('disables both decisions while one is being sent', async () => {
     const client = fakeExternalAgentsClient();
-    let resolveDecision:
-      | ((value: ExternalAgentsResult<ExternalAgentPendingAction>) => void)
-      | null = null;
-    client.decidePendingAction.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveDecision = resolve;
-        }),
-    );
+    const decision =
+      deferred<ExternalAgentsResult<ExternalAgentPendingAction>>();
+    client.decidePendingAction.mockReturnValueOnce(decision.promise);
     await renderPage(client);
     await screen.findByTestId('external-agent-confirmation');
 
@@ -445,11 +457,8 @@ describe('ExternalAgentConfirmationPage', () => {
       screen.getByTestId('external-agent-confirmation-decline'),
     ).toBeDisabled();
 
-    const finish = resolveDecision;
-    if (finish === null)
-      throw new Error('Expected the decision request to start');
     await act(async (): Promise<void> => {
-      finish(
+      decision.resolve(
         success(
           pendingAction({
             status: 'executed',
@@ -457,6 +466,7 @@ describe('ExternalAgentConfirmationPage', () => {
           }),
         ),
       );
+      await decision.promise;
       await Promise.resolve();
     });
     expect(
@@ -616,15 +626,9 @@ describe('ExternalAgentConfirmationPage', () => {
 
   it('declines, offers to pause, and pauses using the current connection revision', async () => {
     const client = fakeExternalAgentsClient();
-    let resolveConnection:
-      | ((value: ExternalAgentsResult<ExternalAgentConnectionDetail>) => void)
-      | null = null;
-    client.getConnection.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveConnection = resolve;
-        }),
-    );
+    const connection =
+      deferred<ExternalAgentsResult<ExternalAgentConnectionDetail>>();
+    client.getConnection.mockReturnValueOnce(connection.promise);
     client.decidePendingAction.mockResolvedValueOnce(
       success(pendingAction({ status: 'declined' })),
     );
@@ -651,12 +655,9 @@ describe('ExternalAgentConfirmationPage', () => {
     const pause = screen.getByTestId('external-agent-confirmation-pause');
     await fireEvent.click(pause);
     expect(pause).toBeDisabled();
-    const finishConnection = resolveConnection;
-    if (finishConnection === null) {
-      throw new Error('Expected the connection request to start');
-    }
     await act(async (): Promise<void> => {
-      finishConnection(success(connectionDetail()));
+      connection.resolve(success(connectionDetail()));
+      await connection.promise;
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -877,25 +878,16 @@ describe('ExternalAgentConfirmationPage', () => {
 
   it('shows a skeleton while loading', async () => {
     const client = fakeExternalAgentsClient();
-    let resolveAction:
-      | ((value: ExternalAgentsResult<ExternalAgentPendingAction>) => void)
-      | null = null;
-    client.getPendingAction.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveAction = resolve;
-        }),
-    );
+    const action = deferred<ExternalAgentsResult<ExternalAgentPendingAction>>();
+    client.getPendingAction.mockReturnValueOnce(action.promise);
     await renderPage(client);
     expect(
       screen.getByTestId('external-agent-confirmation-loading'),
     ).toHaveAttribute('role', 'status');
 
-    const finish = resolveAction;
-    if (finish === null)
-      throw new Error('Expected the action request to start');
     await act(async (): Promise<void> => {
-      finish(success(pendingAction()));
+      action.resolve(success(pendingAction()));
+      await action.promise;
       await Promise.resolve();
     });
     expect(

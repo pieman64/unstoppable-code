@@ -33,7 +33,7 @@ describe('terminal shell profile cache', () => {
   });
 
   afterEach(() => {
-    delete (window as typeof window & { api?: unknown }).api;
+    Reflect.deleteProperty(window, 'api');
   });
 
   it('exposes nothing synchronously until the first load resolves', async () => {

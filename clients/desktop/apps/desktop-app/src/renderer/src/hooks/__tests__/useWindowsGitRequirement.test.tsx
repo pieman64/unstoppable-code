@@ -183,12 +183,52 @@ describe('useWindowsGitRequirement', () => {
     };
   }
 
-  it('never gates and performs no IPC on Linux builds', async () => {
+  it('blocks Linux until a recheck or Browse validates Git, without launching an installer', async () => {
     setPlatform('linux');
+    getGitExecutableStatus.mockResolvedValue(makeStatus({ platform: 'linux' }));
+    redetectGitExecutable.mockResolvedValue(
+      makeStatus({
+        platform: 'linux',
+        error: 'Selected Git executable cannot be used.',
+      }),
+    );
+    browseGitExecutable.mockResolvedValue(
+      makeStatus({ platform: 'linux', ready: true, path: '/opt/git/bin/git' }),
+    );
     const { cleanup } = await mount();
     try {
+      expect(latest?.state.kind).toBe('required');
+      await act(async () => {
+        await latest?.autoInstall();
+      });
+      expect(installGitWithWinget).not.toHaveBeenCalled();
+      expect(installGitWithXcode).not.toHaveBeenCalled();
+      await act(async () => {
+        await latest?.recheck();
+      });
+      expect(latest?.state.kind).toBe('required');
+      await act(async () => {
+        await latest?.browse();
+      });
+      expect(latest?.state.kind).toBe('detected');
+      act(() => {
+        latest?.dismiss();
+      });
       expect(latest?.state.kind).toBe('not-required');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not probe Linux before required authentication completes', async () => {
+    setPlatform('linux');
+    getGitExecutableStatus.mockResolvedValue(makeStatus({ platform: 'linux' }));
+    const { cleanup, render } = await mount({ enabled: false });
+    try {
       expect(getGitExecutableStatus).not.toHaveBeenCalled();
+      await render({ enabled: true });
+      expect(getGitExecutableStatus).toHaveBeenCalledTimes(1);
+      expect(latest?.state.kind).toBe('required');
     } finally {
       cleanup();
     }

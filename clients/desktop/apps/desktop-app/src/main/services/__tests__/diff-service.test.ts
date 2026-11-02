@@ -48,6 +48,7 @@ import { estimateUntrackedChanges } from '../../lib/untracked-line-estimate';
 import {
   getNullDiffSourceForPlatform,
   listChangedFileSets,
+  normalizeStatus,
   readDiff,
 } from '../diff-service';
 
@@ -118,6 +119,120 @@ describe('Portal diff service', () => {
     mockedListWorkspaceWorktreeRepoEntries.mockResolvedValue([]);
   });
 
+  it.each([
+    ['DD', 'unmerged'],
+    ['AU', 'unmerged'],
+    ['UD', 'unmerged'],
+    ['UA', 'unmerged'],
+    ['DU', 'unmerged'],
+    ['AA', 'unmerged'],
+    ['UU', 'unmerged'],
+    ['U', 'unmerged'],
+    ['A', 'added'],
+    ['M', 'modified'],
+    ['D', 'deleted'],
+    ['R100', 'renamed'],
+    ['C100', 'modified'],
+    ['T', 'modified'],
+    ['X', 'modified'],
+    ['B', 'modified'],
+    ['??', 'untracked'],
+  ] as const)(
+    'normalizes Git status %s to %s without changing name-status mappings',
+    (status, expected) => {
+      expect(normalizeStatus(status)).toBe(expected);
+    },
+  );
+
+  it.each(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'] as const)(
+    'projects porcelain conflict status %s as unmerged in the changed-file set',
+    async (status) => {
+      mockGit({
+        'status --porcelain=v1 --untracked-files=all': `${status} src/conflict.ts\n`,
+        'diff --numstat HEAD': '',
+        'rev-parse --abbrev-ref @{upstream}': '',
+      });
+
+      const result = await listChangedFileSets('ws-1', 'wt-1');
+
+      expect(result.uncommitted).toEqual([
+        expect.objectContaining({
+          filePath: 'src/conflict.ts',
+          status: 'unmerged',
+        }),
+      ]);
+    },
+  );
+
+  it('reports real UU and AA merge conflicts as unmerged files', async () => {
+    const actual =
+      jest.requireActual<typeof ChildProcess>('node:child_process');
+    const cwd = mkdtempSync(join(tmpdir(), 'portal-diff-merge-conflict-'));
+    const run = (...args: string[]): void => {
+      actual.execFileSync('git', args, { cwd, stdio: 'pipe' });
+    };
+    try {
+      run('init', '-b', 'main');
+      run('config', 'user.email', 'diff-test@example.invalid');
+      run('config', 'user.name', 'Diff test');
+      run('config', 'commit.gpgsign', 'false');
+      writeFileSync(join(cwd, 'uu.txt'), 'base\n');
+      run('add', '.');
+      run('commit', '-m', 'base');
+      run('checkout', '-b', 'feature');
+      writeFileSync(join(cwd, 'uu.txt'), 'feature side\n');
+      writeFileSync(join(cwd, 'aa.txt'), 'feature addition\n');
+      run('add', '.');
+      run('commit', '-m', 'feature changes');
+      run('checkout', 'main');
+      writeFileSync(join(cwd, 'uu.txt'), 'main side\n');
+      writeFileSync(join(cwd, 'aa.txt'), 'main addition\n');
+      run('add', '.');
+      run('commit', '-m', 'main changes');
+      expect(() => run('merge', 'feature')).toThrow();
+
+      const status = actual.execFileSync('git', ['status', '--porcelain=v1'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+      expect(status).toContain('UU uu.txt');
+      expect(status).toContain('AA aa.txt');
+
+      mockedResolveWorktreeCwd.mockReturnValue(cwd);
+      mockedExecFile.mockImplementation(
+        ((
+          cmd: string,
+          args: string[],
+          options: ChildProcess.ExecFileOptions,
+          callback: ExecFileCallback | null | undefined,
+        ): ChildProcess.ChildProcess =>
+          actual.execFile(cmd, args, options, (error, stdout, stderr) =>
+            callback?.(
+              error
+                ? Object.assign(error, {
+                    stdout: String(stdout),
+                    stderr: String(stderr),
+                  })
+                : null,
+              { stdout: String(stdout), stderr: String(stderr) },
+            ),
+          )) as typeof execFile,
+      );
+
+      const result = await listChangedFileSets('ws-1', 'wt-1');
+
+      expect(result.uncommitted).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ filePath: 'uu.txt', status: 'unmerged' }),
+          expect.objectContaining({ filePath: 'aa.txt', status: 'unmerged' }),
+        ]),
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves real Git patches and rosters across sources and child repositories', async () => {
     const actual =
       jest.requireActual<typeof ChildProcess>('node:child_process');
@@ -163,18 +278,24 @@ describe('Portal diff service', () => {
         existsLocally: true,
         existsInRemote: false,
       });
-      mockedExecFile.mockImplementation((cmd, args, opts, cb) =>
-        actual.execFile(cmd, args, opts, (error, stdout, stderr) =>
-          cb(
-            error
-              ? Object.assign(error, {
-                  stdout: String(stdout),
-                  stderr: String(stderr),
-                })
-              : null,
-            { stdout: String(stdout), stderr: String(stderr) },
-          ),
-        ),
+      mockedExecFile.mockImplementation(
+        ((
+          cmd: string,
+          args: string[],
+          opts: ChildProcess.ExecFileOptions,
+          cb: ExecFileCallback | null | undefined,
+        ): ChildProcess.ChildProcess =>
+          actual.execFile(cmd, args, opts, (error, stdout, stderr) =>
+            cb?.(
+              error
+                ? Object.assign(error, {
+                    stdout: String(stdout),
+                    stderr: String(stderr),
+                  })
+                : null,
+              { stdout: String(stdout), stderr: String(stderr) },
+            ),
+          )) as typeof execFile,
       );
       const scenarios = [
         {
@@ -416,9 +537,19 @@ describe('Portal diff service', () => {
     );
     const held: Array<() => void> = [];
     let released = false;
-    mockedExecFile.mockImplementation((_cmd, args, options, callback) => {
+    mockedExecFile.mockImplementation(((
+      _cmd: string,
+      args: string[],
+      options: ChildProcess.ExecFileOptions | null | undefined,
+      callback: ExecFileCallback | null | undefined,
+    ): void => {
       if (!callback) throw new Error('Missing exec callback');
-      const cwd = typeof options === 'object' ? options.cwd : undefined;
+      const cwd =
+        options !== null &&
+        typeof options === 'object' &&
+        typeof options.cwd === 'string'
+          ? options.cwd
+          : '';
       const finish = (): void => {
         callback(null, {
           stdout: args.join(' ') === 'rev-parse --show-toplevel' ? cwd : '',
@@ -427,7 +558,7 @@ describe('Portal diff service', () => {
       };
       if (!released) held.push(finish);
       else finish();
-    });
+    }) as typeof execFile);
     const request = listChangedFileSets('ws-1', 'wt-1');
     await new Promise<void>((resolve) => setImmediate(resolve));
     try {
@@ -451,33 +582,47 @@ describe('Portal diff service', () => {
         repoPath: '/workspace/repos/payloads',
       },
     ]);
-    mockedExecFile.mockImplementation((_cmd, args, options, callback) => {
+    mockedExecFile.mockImplementation(((
+      _cmd: string,
+      args: string[],
+      options: ChildProcess.ExecFileOptions | null | undefined,
+      callback: ExecFileCallback | null | undefined,
+    ): void => {
       if (!callback) throw new Error('Missing exec callback');
       const key = args.join(' ');
-      const cwd = typeof options === 'object' ? options.cwd : undefined;
+      const cwd =
+        options !== null &&
+        typeof options === 'object' &&
+        typeof options.cwd === 'string'
+          ? options.cwd
+          : '';
       const stdout =
         key === 'rev-parse --show-toplevel'
           ? cwd === '/workspace/repos/payloads'
             ? '/workspace'
             : cwd
           : key.endsWith('status --porcelain=v1 --untracked-files=all')
-            ? ' M src/index.ts\n'
+            ? cwd === '/workspace/repos/api'
+              ? 'UU src/index.ts\n'
+              : 'AA src/index.ts\n'
             : key === 'diff --numstat HEAD'
               ? '1\t0\tsrc/index.ts\n'
               : '';
       callback(null, { stdout, stderr: '' });
-    });
+    }) as typeof execFile);
 
     const result = await listChangedFileSets('ws-1', 'wt-1');
 
     expect(result.uncommitted).toEqual([
       expect.objectContaining({
         filePath: 'src/index.ts',
+        status: 'unmerged',
         repoId: 'api',
         repoName: 'API',
       }),
       expect.objectContaining({
         filePath: 'src/index.ts',
+        status: 'unmerged',
         repoId: 'web',
         repoName: 'Web',
       }),
@@ -560,6 +705,36 @@ describe('Portal diff service', () => {
     expect(result.patch).toContain('src/committed.ts');
     expect(result.patch).toContain('src/local.ts');
   });
+
+  it.each(['uncommitted', 'combined'] as const)(
+    'includes an unmerged conflict in the %s diff roster',
+    async (source) => {
+      mockGit({
+        'status --porcelain=v1 --untracked-files=all': 'UU src/conflict.ts\n',
+        'diff --numstat HEAD': '1\t1\tsrc/conflict.ts\n',
+        'rev-parse --abbrev-ref @{upstream}': 'origin/main\n',
+        'merge-base origin/main HEAD': 'abc1234567890\n',
+        'diff --name-status abc1234567890..HEAD': '',
+        'diff --numstat abc1234567890..HEAD': '',
+        'diff HEAD --': 'diff --git a/src/conflict.ts b/src/conflict.ts\n',
+        'diff abc1234567890 --':
+          'diff --git a/src/conflict.ts b/src/conflict.ts\n',
+      });
+
+      const result = await readDiff({
+        workspaceId: 'ws-1',
+        worktreeId: 'wt-1',
+        source,
+      });
+
+      expect(result.files).toEqual([
+        expect.objectContaining({
+          filePath: 'src/conflict.ts',
+          status: 'unmerged',
+        }),
+      ]);
+    },
+  );
 
   it('projects estimated line counts for untracked files, which numstat omits', async () => {
     jest
@@ -799,14 +974,24 @@ describe('Portal diff service', () => {
       { repoId: 'api', repoName: 'API', repoPath: '/workspace/repos/api' },
       { repoId: 'web', repoName: 'Web', repoPath: '/workspace/repos/web' },
     ]);
-    mockedExecFile.mockImplementation((_cmd, args, options, callback) => {
+    mockedExecFile.mockImplementation(((
+      _cmd: string,
+      args: string[],
+      options: ChildProcess.ExecFileOptions | null | undefined,
+      callback: ExecFileCallback | null | undefined,
+    ): void => {
       if (!callback) throw new Error('Missing exec callback');
-      const cwd = typeof options === 'object' ? options.cwd : undefined;
+      const cwd =
+        options !== null &&
+        typeof options === 'object' &&
+        typeof options.cwd === 'string'
+          ? options.cwd
+          : '';
       callback(null, {
         stdout: args.join(' ') === 'rev-parse --show-toplevel' ? cwd : '',
         stderr: '',
       });
-    });
+    }) as typeof execFile);
 
     await listChangedFileSets('ws-1', 'wt-1');
     mockedResolveWorktreeCwd.mockReturnValue('/workspace/repos/api');

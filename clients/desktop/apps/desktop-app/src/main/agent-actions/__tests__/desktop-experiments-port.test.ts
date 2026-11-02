@@ -36,6 +36,7 @@ beforeEach(() => {
   deps = {
     choicesPath: 'choices',
     availabilityPath: 'availability',
+    pendingSyncPath: 'pending',
     read: (): unknown => null,
     write: jest.fn((): Promise<void> => Promise.resolve()),
     availability: (): LabsAvailabilityState => ({
@@ -136,4 +137,34 @@ it('enables a page experiment while Early access is off', async () => {
     listedAtCommit: true,
   });
   expect(mockService.getSnapshot().earlyAccessEnabled).toBe(false);
+});
+
+it('delivers the Files switch through the existing shared action family and desktop port', async () => {
+  const family = createExperimentsActionFamily({
+    port: desktopExperimentsPort,
+    receipts: createInMemoryAgentActionReceipts<CanopyInjectedToolRuntime>(),
+    limits: null,
+  });
+  for (const enabled of [true, false]) {
+    const parsed = family.parse({
+      type: 'experiments.set_enabled',
+      experimentId: 'daemon-files-reads',
+      enabled,
+    });
+    if (!parsed?.ok) throw new Error('Invalid Files action');
+    const output = await parsed.dispatch({
+      ...call,
+      toolUseId: `files-${enabled}`,
+    });
+    const result: unknown = 'text' in output ? JSON.parse(output.text) : output;
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        storedChoice: enabled,
+        effectiveEnabledAtCommit: enabled,
+        listedAtCommit: true,
+      },
+    });
+    expect(mockService.getSnapshot().earlyAccessEnabled).toBe(false);
+  }
 });

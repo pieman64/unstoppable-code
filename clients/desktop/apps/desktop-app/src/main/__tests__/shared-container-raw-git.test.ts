@@ -236,7 +236,7 @@ describe('raw shared-container Git materialization', () => {
       'already local',
     );
     expect(
-      mockedExecFile.mock.calls.filter(([, args]) => args.includes('fetch')),
+      mockedExecFile.mock.calls.filter(([, args]) => args?.includes('fetch')),
     ).toHaveLength(0);
   });
 

@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { create } from 'zustand';
 import type { SidebarItemGroupCreationOptions } from '@canopy/protocol/sidebar';
 import { useSidebarItemGroupsStore } from './sidebarItemGroupsStore';
@@ -95,7 +96,8 @@ export function currentDefaultCoworkWorkspaceId(): string {
  */
 export class OrgDefaultChatsUnavailableError extends Error {
   readonly workspaceId: string;
-  readonly cause?: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
 
   constructor(workspaceId: string, options?: { cause?: unknown }) {
     super('This organization’s chats aren’t ready yet. Try again.');
@@ -218,7 +220,8 @@ function unreadChatsEqual(
       ref.chatId === other.chatId &&
       ref.title === other.title &&
       ref.providerType === other.providerType &&
-      ref.preview === other.preview
+      ref.preview === other.preview &&
+      ref.markedUnread === other.markedUnread
     );
   });
 }
@@ -282,6 +285,7 @@ function buildActiveArchiveData(
 interface PreferredWorkEntry {
   projectId: string;
   entryId: string;
+  attentionLanding?: boolean;
 }
 
 interface StandaloneChatRecovery {
@@ -366,6 +370,10 @@ interface StandaloneChatState {
   /** Refresh scoped App Advisor defaults after a preference broadcast. */
   applyScopedPreferences: (preferences: PreferencesData) => void;
   loadChatProjects: () => Promise<void>;
+  applyWorkEntriesSnapshot: (
+    projectId: string,
+    entries: CoworkWorkEntryMeta[],
+  ) => void;
   refreshWorkEntries: (
     projectId?: string,
     commitIf?: () => boolean,
@@ -374,6 +382,7 @@ interface StandaloneChatState {
   switchChatProject: (
     projectId: string,
     preferredEntryId?: string,
+    options?: { attentionLanding?: boolean },
   ) => Promise<boolean>;
   createChatProject: (name: string) => Promise<ChatProjectData>;
   /**
@@ -414,6 +423,7 @@ interface StandaloneChatState {
   selectWorkEntry: (
     entryId: string,
     destinationRequestId?: number,
+    options?: { attentionLanding?: boolean },
   ) => Promise<boolean>;
   /**
    * Creates a new Work Entry in the active workspace (the main-process create
@@ -704,6 +714,11 @@ const workEntryRefreshCoordinators = new Map<
   string,
   WorkEntryRefreshCoordinator
 >();
+/** A placement reconciliation supersedes ordinary reads already in flight. */
+const workEntrySnapshotRevisions = new Map<string, number>();
+export function getWorkEntrySnapshotRevision(projectId: string): number {
+  return workEntrySnapshotRevisions.get(projectId) ?? 0;
+}
 
 export const useStandaloneChatStore = create<StandaloneChatState>(
   (set, get) => ({
@@ -742,7 +757,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       // appAdvisor* preferences.
       let synthesized: ChatProjectData = {
         id: workspaceId,
-        name: 'App Advisor',
+        name: ORCHESTRATOR_LABEL,
         createdAt: new Date(0).toISOString(),
       };
       if (workspaceId === APP_ADVISOR_PROJECT_ID) {
@@ -915,7 +930,13 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
             entryId,
             activeProject?.defaultPluginSelections,
           );
-          chatStore.selectWorktree(activeProjectId, entryId);
+          if (preferredWorkEntry?.attentionLanding === true) {
+            chatStore.selectWorktree(activeProjectId, entryId, {
+              attentionLanding: true,
+            });
+          } else {
+            chatStore.selectWorktree(activeProjectId, entryId);
+          }
           await chatStore.loadTabs();
           if (hasNewerPreferredWorkEntry()) continue;
           await chatStore.syncActiveEmptyTabToDefaults();
@@ -1006,6 +1027,29 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       });
     },
 
+    applyWorkEntriesSnapshot: (projectId, entries): void => {
+      workEntrySnapshotRevisions.set(
+        projectId,
+        (workEntrySnapshotRevisions.get(projectId) ?? 0) + 1,
+      );
+      syncCoworkWorkEntryCount(projectId, entries.length);
+      set((state) => {
+        if (state.activeChatProjectId === projectId) {
+          return workEntryMetaListEqual(state.workEntries, entries)
+            ? state
+            : { workEntries: entries };
+        }
+        const previous = state.sidebarEntriesByProject[projectId];
+        return previous && workEntryMetaListEqual(previous, entries)
+          ? state
+          : {
+              sidebarEntriesByProject: {
+                ...state.sidebarEntriesByProject,
+                [projectId]: entries,
+              },
+            };
+      });
+    },
     refreshWorkEntries: async (
       projectId?: string,
       commitIf?: () => boolean,
@@ -1015,27 +1059,24 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         generationCommitIf?: () => boolean,
         generationIsCurrent?: () => boolean,
       ): Promise<boolean> => {
+        const revision = workEntrySnapshotRevisions.get(resolvedProjectId) ?? 0;
         const response = await window.api.workEntries.list({
           projectId: resolvedProjectId,
         });
         if (generationIsCurrent !== undefined && !generationIsCurrent()) {
           return false;
         }
+        if (
+          revision !== (workEntrySnapshotRevisions.get(resolvedProjectId) ?? 0)
+        )
+          return false;
         syncCoworkWorkEntryCount(resolvedProjectId, response.entries.length);
 
-        if (
-          get().activeChatProjectId !== resolvedProjectId ||
-          (generationCommitIf !== undefined && !generationCommitIf())
-        ) {
+        if (generationCommitIf !== undefined && !generationCommitIf()) {
           return true;
         }
 
-        set((state) => {
-          if (workEntryMetaListEqual(state.workEntries, response.entries)) {
-            return state;
-          }
-          return { workEntries: response.entries };
-        });
+        get().applyWorkEntriesSnapshot(resolvedProjectId, response.entries);
         return true;
       };
       const existing = workEntryRefreshCoordinators.get(resolvedProjectId);
@@ -1129,6 +1170,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
     switchChatProject: async (
       projectId: string,
       preferredEntryId?: string,
+      options?: { attentionLanding?: boolean },
     ): Promise<boolean> => {
       if (get().scopedWorkspaceId !== null) {
         // Scoped renderers own exactly one workspace; switching would tear
@@ -1273,7 +1315,13 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         entryId,
         project.defaultPluginSelections,
       );
-      chatStore.selectWorktree(projectId, entryId);
+      if (options?.attentionLanding === true) {
+        chatStore.selectWorktree(projectId, entryId, {
+          attentionLanding: true,
+        });
+      } else {
+        chatStore.selectWorktree(projectId, entryId);
+      }
       await chatStore.loadTabs();
       await chatStore.syncActiveEmptyTabToDefaults();
       if (!stillOwnsSwitch()) {
@@ -1539,6 +1587,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
     selectWorkEntry: async (
       entryId: string,
       requestedDestinationId?: number,
+      options?: { attentionLanding?: boolean },
     ): Promise<boolean> => {
       const destinationRequestId =
         requestedDestinationId ?? ++coworkDestinationRequestId;
@@ -1607,7 +1656,12 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         project?.defaultPluginSelections,
       );
       coworkTransientSelectionRequestId = destinationRequestId;
-      chatStore.selectWorktree(workspaceId, entryId, { deferTabLoad: true });
+      chatStore.selectWorktree(workspaceId, entryId, {
+        deferTabLoad: true,
+        ...(options?.attentionLanding === true
+          ? { attentionLanding: true }
+          : {}),
+      });
       await chatStore.loadTabs();
       const selectionAfterLoad = useChatStore.getState().selectedWorktree;
       if (
@@ -2490,29 +2544,23 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       if (projectId === get().activeChatProjectId) {
         return;
       }
+      const revision = workEntrySnapshotRevisions.get(projectId) ?? 0;
       const response = await window.api.workEntries.list({ projectId });
-      syncCoworkWorkEntryCount(projectId, response.entries.length);
+      if (revision !== (workEntrySnapshotRevisions.get(projectId) ?? 0)) {
+        await get().refreshWorkEntries(
+          projectId,
+          () => get().activeChatProjectId !== projectId,
+        );
+        return;
+      }
       // Guard against a project switch that happened while the IPC was in
       // flight: if this project became active, drop the result and let the
       // derived path own it.
       if (get().activeChatProjectId === projectId) {
+        syncCoworkWorkEntryCount(projectId, response.entries.length);
         return;
       }
-      set((state) => {
-        // Streaming cowork chats nudge a re-list on every persisted write;
-        // keep the stable reference when nothing actually changed so sidebar
-        // rows don't re-render.
-        const existing = state.sidebarEntriesByProject[projectId];
-        if (existing && workEntryMetaListEqual(existing, response.entries)) {
-          return state;
-        }
-        return {
-          sidebarEntriesByProject: {
-            ...state.sidebarEntriesByProject,
-            [projectId]: response.entries,
-          },
-        };
-      });
+      get().applyWorkEntriesSnapshot(projectId, response.entries);
     },
 
     loadLegacyArchivedChats: async (projectId: string): Promise<void> => {
@@ -2551,7 +2599,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         // Name the target so a cold init (racing the page mount's own
         // initialize call) selects this entry directly instead of the most
         // recent one.
-        await get().initialize({ projectId, entryId });
+        await get().initialize({ projectId, entryId, attentionLanding: true });
         // Cold initialization commits its own target before the request-id guards.
         // Release that target if cancellation or newer navigation superseded this open.
         if (coworkDestinationRequestId !== navigationRequestId) {
@@ -2572,7 +2620,9 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
         }
       }
       if (get().activeChatProjectId !== projectId) {
-        const switched = await get().switchChatProject(projectId, entryId);
+        const switched = await get().switchChatProject(projectId, entryId, {
+          attentionLanding: true,
+        });
         if (!switched) return;
       }
       const switchRequestId = switchChatProjectRequestId;
@@ -2597,7 +2647,9 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       ) {
         return;
       }
-      await get().selectWorkEntry(entryId);
+      await get().selectWorkEntry(entryId, undefined, {
+        attentionLanding: true,
+      });
     },
 
     openArchivedChatFromSidebar: async (

@@ -1,4 +1,5 @@
 import { CanopyOperationError } from '@canopy/core-runtime';
+import { DESKTOP_FILE_IMAGE_SAVE_SUPPORT } from '@canopy/protocol/file-image-save';
 import { filesystemScopeError } from '@canopy/core-runtime/node';
 import type {
   CanopyCallerDescriptor,
@@ -27,11 +28,6 @@ jest.mock('../register', () => ({
   registerIpcHandler: (channel: string, handler: Handler): void => {
     handlers.set(channel, handler);
   },
-}));
-jest.mock('../../services/file-tree-watch-service', () => ({
-  startFileTreeWatch: jest.fn(),
-  stopAllFileTreeWatches: jest.fn(),
-  stopFileTreeWatch: jest.fn(),
 }));
 
 const ROOTS: FileTreeRootsResponse = {
@@ -116,6 +112,10 @@ function recordingRoute(
           })),
         });
       },
+      file: (_params, _context, _request, run) => run.direct(),
+      searchWalk: () => ({ backend: 'direct', lane: null }),
+      search: (_params, _context, _request, run) => run.direct(),
+      link: (_params, _context, _request, run) => run.direct(),
       dispose: () => undefined,
     },
   };
@@ -179,7 +179,10 @@ describe('file-tree IPC daemon route plumbing', () => {
       const sender = { id: 7, prefix };
       await expect(
         roots({ sender }, { projectId: 'single', worktreeId: 'task' }),
-      ).resolves.toEqual(ROOTS);
+      ).resolves.toEqual({
+        ...ROOTS,
+        imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
+      });
       await expect(
         directory(
           { sender },

@@ -16,6 +16,7 @@ import {
   isWorkspaceIdInContext,
   isWorkspaceIdInScopingContext,
   openInWorkspaceContext,
+  openInWorkspaceContextAsync,
   scopeWorkspacesToContext,
   switchContextForWorkspace,
 } from '../contextScope';
@@ -68,10 +69,14 @@ const WORKSPACES: SidebarItem[] = [
 ];
 
 function setScoping(enabled: boolean, context: WorkspaceContext): void {
+  const defaultSnapshot = getDefaultFeatureFlagSnapshot();
   useFeatureFlagsStore.setState({
     snapshot: {
-      ...getDefaultFeatureFlagSnapshot(),
-      values: { [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: enabled },
+      ...defaultSnapshot,
+      values: {
+        ...defaultSnapshot.values,
+        [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: enabled,
+      },
     },
   });
   useWorkspaceContextStore.setState({
@@ -211,6 +216,44 @@ describe('switchContextForWorkspace (CAN-3461)', () => {
     setScoping(true, ORG_B_CONTEXT);
     await expect(switchContextForWorkspace('personal')).resolves.toBe(true);
     expect(setContext).toHaveBeenCalledWith({ kind: 'personal' });
+  });
+
+  it('settles the awaitable open only after the switch and the open finish (CAN-5006)', async () => {
+    setScoping(true, ORG_A_CONTEXT);
+    let finishOpen: () => void = () => undefined;
+    const open = jest.fn(
+      (): Promise<void> =>
+        new Promise<void>((resolve) => {
+          finishOpen = resolve;
+        }),
+    );
+    let settled = false;
+    const opening = openInWorkspaceContextAsync('org-b', open).then(() => {
+      settled = true;
+    });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    finishOpen();
+    await opening;
+    expect(settled).toBe(true);
+  });
+
+  it('opens an in-context entry synchronously through the awaitable open', async () => {
+    setScoping(true, ORG_A_CONTEXT);
+    const open = jest.fn();
+    const opening = openInWorkspaceContextAsync('org-a', open);
+    expect(open).toHaveBeenCalledTimes(1);
+    await opening;
+    expect(setContext).not.toHaveBeenCalled();
+  });
+
+  it('settles the awaitable open without opening when the switch is rejected', async () => {
+    setScoping(true, ORG_A_CONTEXT);
+    setContext.mockRejectedValueOnce(new Error('stale revision'));
+    const open = jest.fn();
+    await openInWorkspaceContextAsync('org-b', open);
+    expect(open).not.toHaveBeenCalled();
   });
 
   it('opens nothing when the switch is rejected', async () => {

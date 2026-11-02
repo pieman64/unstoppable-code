@@ -5,7 +5,7 @@
  * mount. Phone-tier sizing is covered server-rendered in
  * `CollapsedTurnSummary.test.tsx`.
  */
-import { act, createRef, type ComponentProps } from 'react';
+import { act, createRef, type ComponentProps, type MouseEvent } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { CollapsedTurnSummaryRow } from '../CollapsedTurnSummary';
 
@@ -36,13 +36,21 @@ function renderRow(
         dataTestId="chat-turn-summary"
         {...props}
       >
-        <span data-tool-chip="bash">2</span>
+        <span data-turn-step-count="2">2 steps</span>
       </CollapsedTurnSummaryRow>,
     ),
   );
-  const button = host.querySelector('button');
+  const button = host.querySelector<HTMLButtonElement>(
+    '[data-testid="chat-turn-summary"]',
+  );
   if (!button) throw new Error('Missing summary row button');
   return button;
+}
+
+function rowOf(button: HTMLElement): HTMLElement {
+  const row = button.closest<HTMLElement>('[data-turn-summary-row]');
+  if (!row) throw new Error('Missing summary row wrapper');
+  return row;
 }
 
 describe('CollapsedTurnSummaryRow', () => {
@@ -61,11 +69,16 @@ describe('CollapsedTurnSummaryRow', () => {
     );
   });
 
-  it('forwards its ref to the button', () => {
-    const ref = createRef<HTMLButtonElement>();
+  /**
+   * The desktop banner takes its user bubble's width through this ref, so it
+   * must be the whole row (toggle, outcome and chips), not the toggle alone.
+   */
+  it('forwards its ref to the row wrapper around the toggle', () => {
+    const ref = createRef<HTMLDivElement>();
     const button = renderRow({ ref });
 
-    expect(ref.current).toBe(button);
+    expect(ref.current).toBe(rowOf(button));
+    expect(ref.current?.contains(button)).toBe(true);
   });
 
   it('calls the click handler once per activation', () => {
@@ -100,11 +113,61 @@ describe('CollapsedTurnSummaryRow', () => {
 
   it('renders host children after a decorative chevron', () => {
     const button = renderRow();
-    const [chevron, chip] = Array.from(button.children);
+    const [chevron, words] = Array.from(button.children);
 
     expect(chevron?.getAttribute('aria-hidden')).toBe('true');
     expect(chevron?.querySelector('svg')).not.toBeNull();
-    expect(chip?.getAttribute('data-tool-chip')).toBe('bash');
+    expect(words?.getAttribute('data-turn-step-count')).toBe('2');
+  });
+
+  it('renders the outcome and trailing slots beside the toggle, not in it', () => {
+    const button = renderRow({
+      outcome: <button type="button" data-testid="outcome" />,
+      trailing: <span data-tool-chip="bash">2</span>,
+    });
+    const row = rowOf(button);
+
+    expect(button.querySelector('[data-testid="outcome"]')).toBeNull();
+    expect(button.querySelector('[data-tool-chip]')).toBeNull();
+    expect(row.querySelector('[data-testid="outcome"]')).not.toBeNull();
+    expect(row.querySelector('[data-tool-chip="bash"]')).not.toBeNull();
+  });
+
+  it('toggles from a chip click, which keeps its own title', () => {
+    const targets: EventTarget[] = [];
+    const onClick = jest.fn((event: MouseEvent<HTMLButtonElement>) => {
+      targets.push(event.currentTarget);
+    });
+    const button = renderRow({
+      onClick,
+      trailing: (
+        <span data-tool-chip="bash" title="bash">
+          2
+        </span>
+      ),
+    });
+    const chip = rowOf(button).querySelector<HTMLElement>('[data-tool-chip]');
+
+    act(() => chip?.click());
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(targets).toEqual([button]);
+  });
+
+  it('never toggles from a click on the outcome slot', () => {
+    const onClick = jest.fn();
+    const button = renderRow({
+      onClick,
+      outcome: <button type="button" data-testid="outcome" />,
+    });
+
+    act(() =>
+      rowOf(button)
+        .querySelector<HTMLElement>('[data-testid="outcome"]')
+        ?.click(),
+    );
+
+    expect(onClick).not.toHaveBeenCalled();
   });
 
   /**
@@ -113,19 +176,28 @@ describe('CollapsedTurnSummaryRow', () => {
    * shell's own classes so a surface cannot creep back in unnoticed.
    */
   it('has no surface of its own, only a hover foreground and focus ring', () => {
-    const classes = renderRow().className.split(/\s+/);
+    const button = renderRow();
+    const buttonClasses = button.className.split(/\s+/);
+    const rowClasses = rowOf(button).className.split(/\s+/);
 
-    expect(classes).toContain('focus-ring');
-    expect(classes).toContain('hover:fg-primary');
+    // The ring outlines the row through the toggle's stretched `::before`.
+    expect(buttonClasses).toContain('focus-ring');
+    expect(buttonClasses).toContain('focus-ring-stretched');
+    expect(buttonClasses).toContain('before:absolute');
+    expect(buttonClasses).toContain('before:inset-0');
+    expect(rowClasses).toContain('relative');
+    expect(rowClasses).toContain('hover:fg-primary');
     expect(
-      classes.filter((name) =>
+      [...buttonClasses, ...rowClasses].filter((name) =>
         /^(hover:)?(bg-|border|rounded|shadow)/.test(name),
       ),
     ).toEqual([]);
   });
 
   it('appends host classes to the shell layout', () => {
-    const classes = renderRow({ className: 'ml-auto' }).className.split(/\s+/);
+    const classes = rowOf(renderRow({ className: 'ml-auto' })).className.split(
+      /\s+/,
+    );
 
     expect(classes).toContain('ml-auto');
     expect(classes).toContain('w-full');

@@ -19,26 +19,36 @@ function makeEvent(
   status: ExecutionState['status'],
   marker: string,
 ): ExecutionEvent {
+  const state: ExecutionState = {
+    version: 7,
+    id: executionId,
+    pipeline_id: `pipeline-${marker}`,
+    pipeline_snapshot: {
+      name: 'Renderer event coalescing',
+      scope: ['directory'],
+      jobs: {},
+    },
+    status,
+    jobs: {},
+    job_definitions: {},
+    job_groups: {},
+    started_at: '2026-07-29T00:00:00.000Z',
+    cwd: '/tmp',
+    env: {},
+    inputs: {},
+    pending_pauses: [],
+    status_reasons: [],
+  };
+  // Version-7 persisted events predate materialized jobs and pause checkpoints.
+  Reflect.deleteProperty(state, 'job_definitions');
+  Reflect.deleteProperty(state, 'job_groups');
+  Reflect.deleteProperty(state, 'pending_pauses');
+
   return {
     executionId,
     type,
     timestamp: `2026-07-29T00:00:00.${marker}Z`,
-    state: {
-      version: 7,
-      id: executionId,
-      pipeline_id: `pipeline-${marker}`,
-      pipeline_snapshot: {
-        name: 'Renderer event coalescing',
-        jobs: {},
-      },
-      status,
-      jobs: {},
-      started_at: '2026-07-29T00:00:00.000Z',
-      cwd: '/tmp',
-      env: {},
-      inputs: {},
-      status_reasons: [],
-    },
+    state,
   };
 }
 
@@ -212,11 +222,13 @@ describe('PipelineExecutionEventBroadcaster', () => {
         id: '00000000-0000-4000-8000-000000000001',
         kind: 'input_required',
         code: 'input_requested',
-        message: 'Decision required',
+        diagnostic_message: 'Decision required',
         detected_at: '2026-07-29T00:00:00.001Z',
         source: {
           job_id: 'process',
           step_id: 'approval',
+          attempt: 1,
+          iteration: 1,
         },
       },
     ];

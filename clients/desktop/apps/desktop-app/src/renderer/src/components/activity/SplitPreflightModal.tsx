@@ -1,6 +1,6 @@
 import { type JSX } from 'react';
 import { createPortal } from 'react-dom';
-import { Notice } from '@canopy/ui-shared/components';
+import { Button, Notice } from '@canopy/ui-shared/components';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { useActivityStore } from '@/stores/activityStore';
 import { useTerminalStore } from '@/stores/terminalStore';
@@ -121,7 +121,7 @@ export function SplitPreflightModal({
           data-testid="split-preflight-lock-notice"
         >
           This worktree will be locked while the split runs to keep it clean —
-          no chats, pipelines, scripts, terminals, or hooks until it finishes.
+          no chats, workflows, scripts, terminals, or hooks until it finishes.
         </Notice>
 
         {hasRunningResources && (
@@ -154,23 +154,22 @@ export function SplitPreflightModal({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={onCancel}
           data-testid="split-preflight-cancel"
-          className="rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
         >
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
+          size="compact"
           disabled={blocked}
           onClick={onStart}
           data-testid="split-preflight-start"
-          className="rounded-lg bg-accent-subtle px-4 py-1.5 text-s font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Start
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );
@@ -199,7 +198,7 @@ function useLiveBrowserCount(projectId: string, worktreeId: string): number {
   return useBrowserStore((state) => {
     const bucket = state.worktrees[key];
     if (!bucket) return 0;
-    return Object.values(bucket.live).filter(Boolean).length;
+    return bucket.live.size;
   });
 }
 

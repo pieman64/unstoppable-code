@@ -65,6 +65,10 @@ interface SlotState {
 }
 
 const CLOSE_POLL_INTERVAL_MS = 500;
+const OVERLAY_LAYER_TITLES: Record<OverlayLayerSlot, string> = {
+  notifications: 'Notifications',
+  'above-browser': 'Above browser',
+};
 const MAX_CONSECUTIVE_EARLY_LOSSES = 3;
 const slotStates = new Map<OverlayLayerSlot, SlotState>();
 
@@ -282,7 +286,7 @@ export function openOverlayLayer(slot: OverlayLayerSlot): OverlayLayer | null {
     transparentStyle.textContent =
       'html, body { background: transparent !important; overflow: hidden !important; }';
     childDocument.head.appendChild(transparentStyle);
-    childDocument.title = 'Notifications';
+    childDocument.title = OVERLAY_LAYER_TITLES[slot];
 
     // Containers rendered by the opener must be created in this realm, then
     // adopted into the child body's document.

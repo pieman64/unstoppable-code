@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 // Doc 3 supplemental gaps G8 (Notifications), G9 (Files), and G11 (Dictation).
 // These are pure settings UI + local-preference persistence surfaces, so they
@@ -52,9 +53,8 @@ test('activation settings stay hidden while the journey flag is dark', async () 
 });
 
 test('promotional master and child toggles persist across relaunch', async () => {
-  // CAN-3013: one master with two children. Switching the master off must
-  // disable both children WITHOUT rewriting them, so switching it back on
-  // restores exactly what the user had chosen.
+  // Switching the master off disables the remaining category without
+  // rewriting it; the retired Getting started category stays absent.
   let { electronApp, userDataDir } = await launchCanopy({
     env: ACTIVATION_FLAG_ENV,
   });
@@ -70,29 +70,24 @@ test('promotional master and child toggles persist across relaunch', async () =>
     const master = window.getByTestId(
       'notifications-toggle-promotional-master',
     );
-    const gettingStarted = window.getByTestId(
-      'notifications-toggle-promotional-getting-started',
-    );
     const arbitrary = window.getByTestId(
       'notifications-toggle-promotional-arbitrary',
     );
 
     // Everything ships on.
     await expect(master).toBeChecked();
-    await expect(gettingStarted).toBeChecked();
+    await expect(
+      window.getByTestId('notifications-toggle-promotional-getting-started'),
+    ).toHaveCount(0);
     await expect(arbitrary).toBeChecked();
 
-    // The user keeps Getting Started and drops the rest.
+    // The user's category choice survives disabling the master.
     await arbitrary.uncheck();
     await expect(arbitrary).not.toBeChecked();
 
-    // Master off: both children stay visible and keep their values, but can
-    // no longer be changed.
+    // Master off: the category keeps its value and cannot be changed.
     await master.uncheck();
     await expect(master).not.toBeChecked();
-    await expect(gettingStarted).toBeVisible();
-    await expect(gettingStarted).toBeChecked();
-    await expect(gettingStarted).toBeDisabled();
     await expect(arbitrary).not.toBeChecked();
     await expect(arbitrary).toBeDisabled();
 
@@ -118,9 +113,9 @@ test('promotional master and child toggles persist across relaunch', async () =>
     await masterAfter.check();
     await expect(
       window.getByTestId('notifications-toggle-promotional-getting-started'),
-    ).toBeChecked();
+    ).toHaveCount(0);
     await expect(
-      window.getByTestId('notifications-toggle-promotional-getting-started'),
+      window.getByTestId('notifications-toggle-promotional-arbitrary'),
     ).toBeEnabled();
     await expect(
       window.getByTestId('notifications-toggle-promotional-arbitrary'),
@@ -154,8 +149,8 @@ test('activation quiet hours + close-to-tray persist across relaunch', async () 
 
     const start = window.getByTestId('notifications-quiet-hours-start');
     const end = window.getByTestId('notifications-quiet-hours-end');
-    await expect(start).toHaveValue('22');
-    await expect(end).toHaveValue('8');
+    await expect(start).toHaveAttribute('data-value', '22');
+    await expect(end).toHaveAttribute('data-value', '8');
 
     await quietToggle.uncheck();
     await expect(quietToggle).not.toBeChecked();
@@ -167,16 +162,16 @@ test('activation quiet hours + close-to-tray persist across relaunch', async () 
     await expect(start).toBeVisible();
     await expect(end).toBeVisible();
 
-    await start.selectOption('23');
-    await end.selectOption('7');
-    await expect(start).toHaveValue('23');
-    await expect(end).toHaveValue('7');
+    await chooseSettingsOption(start, '23');
+    await chooseSettingsOption(end, '7');
+    await expect(start).toHaveAttribute('data-value', '23');
+    await expect(end).toHaveAttribute('data-value', '7');
 
     // Equal start/end means "no quiet time", which is easy to set by accident,
     // so the UI has to say so rather than silently doing nothing.
-    await end.selectOption('23');
+    await chooseSettingsOption(end, '23');
     await expect(window.getByText(/Start and end are the same/i)).toBeVisible();
-    await end.selectOption('7');
+    await chooseSettingsOption(end, '7');
 
     const closeToTray = window.getByTestId(
       'notifications-toggle-close-to-tray',
@@ -212,10 +207,10 @@ test('activation quiet hours + close-to-tray persist across relaunch', async () 
     ).toBeChecked();
     await expect(
       window.getByTestId('notifications-quiet-hours-start'),
-    ).toHaveValue('23');
+    ).toHaveAttribute('data-value', '23');
     await expect(
       window.getByTestId('notifications-quiet-hours-end'),
-    ).toHaveValue('7');
+    ).toHaveAttribute('data-value', '7');
     if (isWindows) {
       await expect(
         window.getByTestId('notifications-toggle-close-to-tray'),

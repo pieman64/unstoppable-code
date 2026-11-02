@@ -48,8 +48,15 @@ export async function openOllamaModelDetails() {
     await app.openMainPage();
     await app.openSettings();
     await app.openSettingsSection('ollama');
-    const details = window.getByTestId('ollama-model-list').locator('details');
-    await details.locator('summary').click();
+    // The model's shared Details disclosure: its root holds the toggle and,
+    // once open, the facts.
+    const details = window
+      .getByTestId('ollama-model-list')
+      .locator(
+        '[data-testid^="ollama-model-details-"]:not([data-testid$="-toggle"]):not([data-testid$="-body"])',
+      )
+      .first();
+    await details.locator('button[aria-expanded]').first().click();
     return { ...launched, window, details };
   } catch (error) {
     await closeCanopy(launched.electronApp, launched.userDataDir);

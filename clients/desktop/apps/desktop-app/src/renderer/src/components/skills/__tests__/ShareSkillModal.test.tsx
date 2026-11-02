@@ -20,10 +20,24 @@ jest.mock('@/lib/share-toast', () => ({
 import { ShareSkillModal } from '../ShareSkillModal';
 import { ResourceContextProvider } from '@canopy/ui-app/capability';
 
+/** A landed share stays open on its success notice and posts no toast. */
+function expectShareSuccess(message: string, link: string): void {
+  expect(mockPostShareToast).not.toHaveBeenCalled();
+  expect(
+    document.querySelector('[data-testid="share-skill-success"]')?.textContent,
+  ).toContain(message);
+  expect(
+    document.querySelector('[data-testid="share-skill-link"]')?.textContent,
+  ).toBe(link);
+}
+
 describe('ShareSkillModal', () => {
   let container: HTMLElement;
   let root: Root;
-  const createShared = jest.fn(() => Promise.resolve({ id: 'shared-skill' }));
+  const createShared = jest.fn<
+    Promise<unknown>,
+    Parameters<typeof window.skills.createShared>
+  >((): Promise<unknown> => Promise.resolve({ id: 'shared-skill' }));
   const publishPublicShare = jest.fn(() =>
     Promise.resolve({
       sharePath: '/s/skills/public-skill',
@@ -105,12 +119,19 @@ describe('ShareSkillModal', () => {
     };
   }
 
-  // This account has only Public available, so the dialog selects it and
-  // displays its disclosure without a selector.
+  // This account has only Public available, so the dialog preselects it and
+  // keeps Team and Organization visible but disabled.
   function expectSolePublicAudience(): void {
     expect(
-      document.querySelector('[data-testid="share-skill-scope"]'),
-    ).toBeNull();
+      document
+        .querySelector('[data-testid="share-skill-scope-public"]')
+        ?.getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(
+      document
+        .querySelector('[data-testid="share-skill-scope-team"]')
+        ?.getAttribute('aria-disabled'),
+    ).toBe('true');
     expect(
       document.querySelector('[data-testid="share-skill-scope-description"]')
         ?.textContent,
@@ -235,7 +256,7 @@ describe('ShareSkillModal', () => {
       description: '',
       contentHash: 'server-hash',
       shareScope: 'private',
-      owner: { type: 'user', id: 'acct-1' },
+      owner: { type: 'user', id: 'acct-1', name: 'Alice' },
       createdBy: { id: 'acct-1', name: 'Alice', email: 'alice@example.com' },
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:00.000Z',
@@ -857,16 +878,56 @@ describe('ShareSkillModal', () => {
     expect(
       document.querySelector('[data-testid="share-skill-dependencies"]'),
     ).not.toBeNull();
+    // The details sit behind the help icon after the summary.
     act(() => {
       document
-        .querySelector<HTMLButtonElement>(
-          '[data-testid="share-skill-dependencies-toggle"]',
-        )
-        ?.click();
+        .querySelector('[data-testid="share-skill-dependencies-help"]')
+        ?.dispatchEvent(
+          new MouseEvent('mouseover', {
+            bubbles: true,
+            relatedTarget: document.body,
+          }),
+        );
     });
     expect(
-      document.querySelector('[data-testid="share-skill-dependencies-empty"]'),
-    ).not.toBeNull();
+      document.querySelector(
+        '[data-testid="share-skill-dependencies-help-details"]',
+      )?.textContent,
+    ).toContain('Only the skill definition is shared.');
+  });
+
+  it('surfaces the existing organization-origin Personal re-share refusal', async () => {
+    createShared.mockRejectedValueOnce(
+      new Error('Skill unavailable (unsupported-target)'),
+    );
+    const onShared = jest.fn();
+    await act(async () => {
+      root.render(
+        <ShareSkillModal
+          skill={{ sourceId: 'custom:app', name: 'organization-copy' }}
+          onClose={() => {}}
+          onOpenAccountSettings={onOpenAccountSettings}
+          onShared={onShared}
+        />,
+      );
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+    });
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>('[data-testid="share-skill-submit"]')
+        ?.click();
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+    });
+    expect(createShared).toHaveBeenCalledWith(
+      expect.objectContaining({ shareScope: 'private' }),
+    );
+    expect(
+      document.querySelector('[data-testid="share-skill-error"]')?.textContent,
+    ).toBe(
+      "Failed to share skill. This share can't be moved to that destination.",
+    );
+    expect(onShared).not.toHaveBeenCalled();
+    expect(publishPublicShare).not.toHaveBeenCalled();
   });
 
   afterEach(() => {
@@ -905,7 +966,7 @@ describe('ShareSkillModal', () => {
       }),
     );
     expect(createShared).toHaveBeenCalledTimes(1);
-    const payload = createShared.mock.calls[0]?.[0] as Record<string, unknown>;
+    const payload = createShared.mock.calls[0]?.[0];
     expect(payload).not.toHaveProperty('serverId');
   });
 
@@ -970,12 +1031,13 @@ describe('ShareSkillModal', () => {
 
   it('keeps the local custom skill after sharing it', async () => {
     const onShared = jest.fn();
+    const onClose = jest.fn();
 
     await act(async () => {
       root.render(
         <ShareSkillModal
           skill={{ sourceId: 'custom:app', name: 'helper' }}
-          onClose={() => {}}
+          onClose={onClose}
           onOpenAccountSettings={onOpenAccountSettings}
           onShared={onShared}
         />,
@@ -993,12 +1055,24 @@ describe('ShareSkillModal', () => {
     });
 
     expect(removeSkill).not.toHaveBeenCalled();
-    expect(mockPostShareToast).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill is now public',
-      link: 'https://cloud.example.test/s/skills/public-skill',
+    expectShareSuccess(
+      'Skill is now public',
+      'https://cloud.example.test/s/skills/public-skill',
+    );
+    expect(onShared).toHaveBeenCalledWith({
+      id: 'shared-skill',
+      publicShare: { sharePath: '/s/skills/public-skill' },
     });
-    expect(onShared).toHaveBeenCalledWith({ id: 'shared-skill' });
+    // The dialog stays open on its success notice until Done.
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>('[data-testid="share-skill-done"]')
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(removeSkill).not.toHaveBeenCalled();
   });
 
   it('publishes a private-owned skill and renders its public copy link', async () => {
@@ -1040,12 +1114,61 @@ describe('ShareSkillModal', () => {
       sourceSkillId: 'custom:app/helper',
     });
     expect(publishPublicShare).toHaveBeenCalledWith('shared-skill');
-    expect(mockPostShareToast).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill is now public',
-      link: 'https://cloud.example.test/s/skills/public-skill',
+    expectShareSuccess(
+      'Skill is now public',
+      'https://cloud.example.test/s/skills/public-skill',
+    );
+    expect(onShared).toHaveBeenCalledWith({
+      id: 'shared-skill',
+      publicShare: { sharePath: '/s/skills/public-skill' },
     });
-    expect(onShared).toHaveBeenCalledWith({ id: 'shared-skill' });
+  });
+
+  it('removes the public link it just published from the success notice', async () => {
+    const revokePublicShare = jest.fn().mockResolvedValue(undefined);
+    Object.assign(window.skills, { revokePublicShare });
+    await act(async () => {
+      root.render(
+        <ShareSkillModal
+          skill={{ sourceId: 'custom:app', name: 'helper' }}
+          onClose={() => {}}
+          onOpenAccountSettings={onOpenAccountSettings}
+          onShared={jest.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>('[data-testid="share-skill-submit"]')
+        ?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expectShareSuccess(
+      'Skill is now public',
+      'https://cloud.example.test/s/skills/public-skill',
+    );
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="share-skill-remove-public-link"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="share-skill-remove-public-link-confirm-action"]',
+        )
+        ?.click();
+      for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    });
+
+    expect(revokePublicShare).toHaveBeenCalledWith('shared-skill');
   });
 
   it('renders a copyable member-only link after sharing with a team', async () => {
@@ -1109,11 +1232,10 @@ describe('ShareSkillModal', () => {
         teamId: '11111111-1111-4111-8111-111111111111',
       }),
     );
-    expect(mockPostShareToast).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill shared with Platform',
-      link: 'https://cloud.example.test/portal/plugins/skills/shared/shared-skill',
-    });
+    expectShareSuccess(
+      'Skill shared with Platform',
+      'https://cloud.example.test/portal/plugins/skills/shared/shared-skill',
+    );
     expect(onShared).toHaveBeenCalledWith({ id: 'shared-skill' });
   });
 
@@ -1368,7 +1490,7 @@ describe('ShareSkillModal', () => {
       description: '',
       contentHash: 'server-hash',
       shareScope: 'private',
-      owner: { type: 'user', id: 'acct-1' },
+      owner: { type: 'user', id: 'acct-1', name: 'Alice' },
       createdBy: { id: 'acct-1', name: 'Alice', email: 'alice@example.com' },
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:00.000Z',
@@ -1533,11 +1655,10 @@ describe('ShareSkillModal', () => {
       expect.objectContaining({ skillId: detail.id, shareScope: 'private' }),
     );
     expect(publishPublicShare).toHaveBeenCalledWith(detail.id);
-    expect(mockPostShareToast).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Skill is now public',
-      link: 'https://cloud.example.test/s/skills/public-skill',
-    });
+    expectShareSuccess(
+      'Skill is now public',
+      'https://cloud.example.test/s/skills/public-skill',
+    );
   });
 
   // CAN-3009: a team share that also has a public link reads as Public. An
@@ -1570,7 +1691,7 @@ describe('ShareSkillModal', () => {
       });
       const updateShared = jest
         .fn<
-          ReturnType<typeof window.skills.updateShared>,
+          Promise<SharedSkillDetail>,
           Parameters<typeof window.skills.updateShared>
         >()
         .mockResolvedValue(detail);

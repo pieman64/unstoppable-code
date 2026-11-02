@@ -1,7 +1,25 @@
 'use client';
 
+import type { McpServersSectionBodyProps } from '../code/activity/McpServersSectionBody';
+
 import { useId, useState, type JSX, type ReactNode } from 'react';
-import { mcpAuthConnectLabel } from '@canopy/ui-shared/lib';
+import {
+  ComposerDrawer,
+  ComposerDrawerSection,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
+import {
+  mcpAuthConnectLabel,
+  mcpSignInSummary,
+  mcpSignInStatusLabel,
+  mcpServerNameList,
+} from '@canopy/ui-shared/lib';
+export {
+  mcpServerNameList,
+  mcpSignInSummary,
+  mcpSignInStatusLabel,
+} from '@canopy/ui-shared/lib';
 import {
   McpServersSectionBody,
   type McpServersSectionItem,
@@ -17,35 +35,6 @@ export function mcpServersNeedingSignIn<T extends McpServersSectionItem>(
     (server) =>
       mcpAuthConnectLabel(server.authStatus, server.canRefresh) !== undefined,
   );
-}
-
-/** "Linear and Slack", "Linear, Slack, and 2 more": server names in strip copy. */
-export function mcpServerNameList(names: readonly string[]): string {
-  return names.length <= 2
-    ? names.join(' and ')
-    : names.length === 3
-      ? `${names[0]}, ${names[1]}, and ${names[2]}`
-      : `${names[0]}, ${names[1]}, and ${names.length - 2} more`;
-}
-
-/** "Linear and Slack need sign-in": the strip's one line of copy. */
-export function mcpSignInSummary(names: readonly string[]): string {
-  const verb = names.length === 1 ? 'needs' : 'need';
-  return `${mcpServerNameList(names)} ${verb} sign-in`;
-}
-
-/**
- * The row badge, in the sign-in words the picker and Marketplace use. A row
- * whose host relabels its action (a server that needs no sign-in) keeps the
- * host's own badge.
- */
-export function mcpSignInStatusLabel(server: McpServersSectionItem): string {
-  if (server.connectActionLabel !== undefined) return server.authStatusLabel;
-  if (server.authStatus === 'connected') return 'Signed in';
-  const action = mcpAuthConnectLabel(server.authStatus, server.canRefresh);
-  if (action === 'Reconnect') return 'Needs reconnecting';
-  if (action === 'Connect') return 'Not signed in';
-  return server.authStatusLabel;
 }
 
 function sameKeys(
@@ -89,11 +78,26 @@ export function useMcpSignInStripRows<T extends McpServersSectionItem>(
   };
 }
 
+function selectedSummary(pending: readonly McpServersSectionItem[]): string {
+  const signIn = pending.filter(
+    (server) =>
+      server.connectActionLabel !== 'Enable' &&
+      server.connectActionLabel !== 'Turn on',
+  );
+  if (signIn.length > 0)
+    return mcpSignInSummary(signIn.map((server) => server.displayName));
+  return `${mcpServerNameList(pending.map((server) => server.displayName))} ${pending.length === 1 ? 'isn’t' : 'aren’t'} enabled`;
+}
+
 function stripRow(server: McpServersSectionItem): McpServersSectionItem {
   const signedIn = server.authStatus === 'connected';
   return {
     ...server,
     authStatusLabel: mcpSignInStatusLabel(server),
+    ...(server.connectActionLabel === undefined &&
+    (server.authStatus === 'not_connected' || server.authStatus === 'expired')
+      ? { connectActionLabel: 'Sign in' }
+      : {}),
     canConnect: !signedIn && server.canConnect,
     canDisconnect: false,
     canToggleCanopyProxy: false,
@@ -119,6 +123,11 @@ export interface McpSignInStripProps {
    * to {@link mcpSignInSummary} of their names.
    */
   readonly summary?: (pending: readonly McpServersSectionItem[]) => string;
+  readonly getRowNavigation?: McpServersSectionBodyProps['getRowNavigation'];
+  readonly getRowSettings?: McpServersSectionBodyProps['getRowSettings'];
+  readonly loading?: boolean;
+  readonly selectionKey?: string;
+  readonly onRetryInventory?: () => void;
   readonly dataTestId?: string;
 }
 
@@ -138,41 +147,90 @@ export function McpSignInStrip({
   renderRowExtra,
   notice,
   summary,
+  getRowNavigation,
+  getRowSettings,
+  loading = false,
+  selectionKey,
+  onRetryInventory,
   dataTestId = 'mcp-sign-in-strip',
 }: McpSignInStripProps): JSX.Element | null {
   const summaryId = useId();
   const { rows, pending } = useMcpSignInStripRows(servers);
-  if (pending.length === 0) return null;
+  const [observed, setObserved] = useState<{
+    selection: string | undefined;
+    keys: ReadonlySet<string>;
+    gap: boolean;
+  }>({ selection: selectionKey, keys: EMPTY_KEYS, gap: false });
+  let gap = observed.gap;
+  let keys = observed.keys;
+  if (observed.selection !== selectionKey) {
+    gap = false;
+    keys = loading ? EMPTY_KEYS : new Set(pending.map((server) => server.key));
+  } else if (selectionKey !== undefined && !loading && notice === undefined) {
+    gap = Array.from(observed.keys).some(
+      (key) => !servers.some((server) => server.key === key),
+    );
+    keys = gap ? observed.keys : new Set(pending.map((server) => server.key));
+  }
+  if (
+    observed.selection !== selectionKey ||
+    observed.gap !== gap ||
+    !sameKeys(observed.keys, keys)
+  )
+    setObserved({ selection: selectionKey, keys, gap });
+  if (pending.length === 0 && !notice && !loading && !gap) return null;
   return (
-    <section
+    <ComposerDrawer
+      edge="bottom"
+      as="section"
       aria-labelledby={summaryId}
       data-testid={dataTestId}
-      className="relative mx-4 rounded-b-2xl bg-depth p-1 shadow-2xs"
     >
-      <p
-        id={summaryId}
-        aria-live="polite"
-        data-testid={`${dataTestId}-summary`}
-        className="px-2 py-1.5 text-xs fg-secondary"
-      >
-        {summary === undefined
-          ? mcpSignInSummary(pending.map((server) => server.displayName))
-          : summary(pending)}
-      </p>
-      {notice}
-      <McpServersSectionBody
-        servers={rows.map(stripRow)}
-        warnings={[]}
-        loading={false}
-        error={null}
-        connectingKey={connectingKey}
-        showProxyToggle={false}
-        brandAppName=""
-        proxyLogo={null}
-        onConnect={onConnect}
-        onCancelSignIn={onCancelSignIn}
-        renderRowExtra={renderRowExtra}
-      />
-    </section>
+      <ComposerDrawerSection>
+        <p
+          id={summaryId}
+          aria-live="polite"
+          data-testid={`${dataTestId}-summary`}
+          className="px-2 py-1.5 text-xs fg-secondary"
+        >
+          {pending.length === 0
+            ? 'Checking MCP sign-in details…'
+            : summary === undefined
+              ? selectedSummary(pending)
+              : summary(pending)}
+        </p>
+        {notice}
+        {gap && notice === undefined && (
+          <Notice
+            intent="destructive"
+            role="status"
+            actions={
+              onRetryInventory ? (
+                <NoticeButton onClick={onRetryInventory}>
+                  Try again
+                </NoticeButton>
+              ) : undefined
+            }
+          >
+            This MCP server is no longer available
+          </Notice>
+        )}
+        <McpServersSectionBody
+          servers={rows.map(stripRow)}
+          warnings={[]}
+          loading={loading}
+          error={null}
+          connectingKey={connectingKey}
+          showProxyToggle={false}
+          brandAppName=""
+          proxyLogo={null}
+          getRowNavigation={getRowNavigation}
+          getRowSettings={getRowSettings}
+          onConnect={onConnect}
+          onCancelSignIn={onCancelSignIn}
+          renderRowExtra={renderRowExtra}
+        />
+      </ComposerDrawerSection>
+    </ComposerDrawer>
   );
 }

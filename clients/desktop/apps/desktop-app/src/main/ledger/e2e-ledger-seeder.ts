@@ -5,9 +5,11 @@ import {
   LedgerUpdateEntryParamsSchema,
   type CanopyCallerDescriptor,
   type LedgerAuthorDetails,
+  type LedgerContainer,
   type LedgerEntry,
+  type LedgerGlobalOwner,
 } from '@canopy/protocol/canopy-core';
-import type { LedgerViewScope } from '@canopy/protocol/ledger-view';
+import type { LedgerTaskViewScope } from '@canopy/protocol/ledger-view';
 import { DESKTOP_LEDGER_TOOLS_HOST } from '../canopy-tools/ledger-tools-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { LEDGER_USER_ACTOR_DISPLAY_NAME } from './actor-directory';
@@ -16,6 +18,7 @@ import {
   type LedgerCallerBindingRegistration,
 } from './caller-bindings';
 import { withLedgerChangesWithheldForE2e } from './change-events';
+import { resolveDesktopGlobalLedgerScope } from './core-ledger-adapter';
 import {
   getLedgerPipelineAgentOwners,
   retireLedgerPipelineExecution,
@@ -30,6 +33,14 @@ import { ledgerContainerForViewScope } from './view-scope';
  * store directly.
  * Installed only in the E2E build (`__CANOPY_E2E__`).
  */
+
+/**
+ * Where a seeded entry goes: a task, or an owner's global (workflow) Ledger
+ * for the signed-in account, which seeding binds as a pipeline run does.
+ */
+export type E2eLedgerScope =
+  | LedgerTaskViewScope
+  | { readonly kind: 'global'; readonly owner: LedgerGlobalOwner };
 
 /** Who writes a seeded entry. */
 export type E2eLedgerAuthor =
@@ -57,13 +68,13 @@ export type E2eLedgerAuthor =
     };
 
 export interface E2eLedgerAddRequest {
-  readonly scope: LedgerViewScope;
+  readonly scope: E2eLedgerScope;
   readonly author: E2eLedgerAuthor;
   readonly params: unknown;
 }
 
 export interface E2eLedgerUpdateRequest {
-  readonly scope: LedgerViewScope;
+  readonly scope: E2eLedgerScope;
   readonly author: E2eLedgerAuthor;
   readonly params: unknown;
   /**
@@ -99,16 +110,32 @@ const USER_AUTHOR_DETAILS: LedgerAuthorDetails = {
   unavailableReason: 'not_applicable',
 };
 
-async function bindingFor(
-  scope: LedgerViewScope,
-  author: E2eLedgerAuthor,
-): Promise<LedgerCallerBindingRegistration> {
+/** The container incarnation a seeded entry goes to. */
+async function incarnationFor(scope: E2eLedgerScope): Promise<{
+  readonly container: LedgerContainer;
+  readonly containerCreatedAt: string;
+}> {
+  if ('kind' in scope) {
+    const bound = await resolveDesktopGlobalLedgerScope(scope.owner);
+    return {
+      container: bound.container,
+      containerCreatedAt: bound.containerCreatedAt,
+    };
+  }
   const container = ledgerContainerForViewScope(scope);
   if (container === null) throw new Error('The scope has no Ledger.');
   const containerCreatedAt = await resolveLedgerContainerCreatedAt(container);
   if (containerCreatedAt === null) {
     throw new Error('The scope no longer exists.');
   }
+  return { container, containerCreatedAt };
+}
+
+async function bindingFor(
+  scope: E2eLedgerScope,
+  author: E2eLedgerAuthor,
+): Promise<LedgerCallerBindingRegistration> {
+  const { container, containerCreatedAt } = await incarnationFor(scope);
   switch (author.kind) {
     case 'user':
       return {
@@ -201,7 +228,7 @@ async function bindingFor(
 }
 
 async function runAs<Result>(
-  scope: LedgerViewScope,
+  scope: E2eLedgerScope,
   author: E2eLedgerAuthor,
   command: (
     dispatcher: NonNullable<
@@ -271,7 +298,7 @@ export async function updateLedgerEntryForE2e(
 }
 
 export interface E2ePausedPipelineAgent {
-  readonly scope: LedgerViewScope;
+  readonly scope: E2eLedgerScope;
   readonly executionId: string;
   readonly jobId: string;
   readonly stepId: string;
@@ -284,7 +311,10 @@ export interface E2ePausedPipelineAgent {
  * host does when a real agent attempt pauses, so owner pickers offer it.
  */
 export function pausePipelineAgentForE2e(agent: E2ePausedPipelineAgent): void {
-  const container = ledgerContainerForViewScope(agent.scope);
+  const container: LedgerContainer | null =
+    'kind' in agent.scope
+      ? { kind: 'global', owner: agent.scope.owner }
+      : ledgerContainerForViewScope(agent.scope);
   if (container === null) throw new Error('The scope has no Ledger.');
   getLedgerPipelineAgentOwners().notePaused({
     agentSessionId: e2ePipelineAgentSessionId(

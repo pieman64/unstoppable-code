@@ -7,10 +7,6 @@ import {
   UNSTOPPABLE_DOMAINS_OAUTH_SCOPE,
 } from '../unstoppable-domains/config';
 
-declare global {
-  var __CANOPY_UD_OAUTH_ENV__: string | undefined;
-}
-
 describe('unstoppable-domains config', () => {
   describe('getUnstoppableDomainsEnvironment', () => {
     it('defaults to staging (jest build constant) when no runtime override', () => {
@@ -35,10 +31,10 @@ describe('unstoppable-domains config', () => {
     it('uses the per-build __CANOPY_UD_OAUTH_ENV__ default when no runtime override', () => {
       // jest.config bakes this to 'staging'; flip to production for this case.
       try {
-        globalThis.__CANOPY_UD_OAUTH_ENV__ = 'production';
+        Reflect.set(globalThis, '__CANOPY_UD_OAUTH_ENV__', 'production');
         expect(getUnstoppableDomainsEnvironment({})).toBe('production');
       } finally {
-        globalThis.__CANOPY_UD_OAUTH_ENV__ = 'staging';
+        Reflect.set(globalThis, '__CANOPY_UD_OAUTH_ENV__', 'staging');
       }
     });
   });

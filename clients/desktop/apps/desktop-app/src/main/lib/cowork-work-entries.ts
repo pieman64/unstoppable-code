@@ -4,7 +4,6 @@ import {
   type SidebarGroupRegistryReconciliation,
 } from './sidebar-item-groups';
 import { ChatStorageV2 } from './chat-storage-v2';
-import { DELTA_JOURNAL_FILE_NAME } from './chat-delta-journal/format';
 /**
  * Work Entry registry — the worktree-like multi-chat containers a Work Entry
  * workspace's left-nav lists. Each entry occupies the `worktreeId`
@@ -242,9 +241,14 @@ async function writeWorkEntriesFile(
     assertAdmitted();
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(tempPath, JSON.stringify(data, null, 2), 'utf8');
-    assertAdmitted();
-    options?.assertCanCommit?.();
-    await renameWithRetry(tempPath, filePath);
+    const assertCanInstall = (): void => {
+      assertAdmitted();
+      options?.assertCanCommit?.();
+    };
+    assertCanInstall();
+    await renameWithRetry(tempPath, filePath, {
+      beforeRetry: assertCanInstall,
+    });
     installed = true;
     assertAdmitted();
   } catch (error) {
@@ -433,9 +437,11 @@ async function summarySource(
   // journal changes on every commit and is replaced by every checkpoint, so
   // its modification time tracks the committed state; a checkpoint carries a
   // current summary's stamp to the replacement (refreshWorkEntrySummaryStamp).
-  return format === 'v3'
-    ? { path: join(store.directory, DELTA_JOURNAL_FILE_NAME), indexed: true }
-    : format === 'v2'
+  const journalFile =
+    format === 'v3' || format === 'v4' ? await store.journalFile() : undefined;
+  return journalFile
+    ? { path: join(store.directory, journalFile), indexed: true }
+    : format !== 'v1'
       ? { path: join(store.directory, 'live-index.json'), indexed: true }
       : { path: legacy, indexed: false };
 }
@@ -802,14 +808,52 @@ async function entriesNeedSummaryHydration(
 }
 
 /**
- * Chat-tabs write observer: update the in-memory projection immediately and
- * persist it under the registry lock. Failures are diagnostic-only and never
- * make a successful chat save fail.
+ * UI-automation-only stand-in for registry lock contention: when the E2E build
+ * names an owned directory in `CANOPY_E2E_WORK_ENTRY_SUMMARY_GATE_DIR`, a
+ * summary write holds the registry lock while `hold` exists there, after
+ * writing `entered`, and writes `left` once it lets go (release or timeout).
+ * Release builds compile `__CANOPY_E2E__` to `false`.
+ */
+async function waitForE2eWorkEntrySummaryGate(): Promise<void> {
+  if (typeof __CANOPY_E2E__ === 'undefined' || !__CANOPY_E2E__) return;
+  const directory = process.env.CANOPY_E2E_WORK_ENTRY_SUMMARY_GATE_DIR;
+  if (!directory) return;
+  const hold = join(directory, 'hold');
+  const deadline = Date.now() + 120_000;
+  let observed = false;
+  try {
+    for (;;) {
+      try {
+        await stat(hold);
+      } catch (error) {
+        if (isErrnoException(error) && error.code === 'ENOENT') return;
+        throw error;
+      }
+      if (!observed) {
+        await writeFile(join(directory, 'entered'), '1', 'utf8');
+        observed = true;
+      }
+      if (Date.now() >= deadline)
+        throw new Error('Work Entry summary test gate timed out');
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+  } finally {
+    if (observed)
+      await writeFile(join(directory, 'left'), '1', 'utf8').catch(
+        () => undefined,
+      );
+  }
+}
+
+/**
+ * Update the in-memory projection and persist it under the registry lock.
+ * The caller retries failures after the already-durable chat commit.
  */
 export async function syncWorkEntrySummaryFromWrite(
   projectId: string,
   entryId: string,
   data: ChatTabsFile,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   if (!isWorkEntryWorkspace(projectId)) return;
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
@@ -835,15 +879,19 @@ export async function syncWorkEntrySummaryFromWrite(
         entryId,
         error: error instanceof Error ? error.message : String(error),
       });
-      return;
+      throw error;
     }
   }
+  if (!isCurrent()) return;
   const summary = deriveWorkEntrySummary(data, sourceMtimeNs);
   const cacheKey = summaryCacheKey(workspaceId, entryId);
   liveSummaries.set(cacheKey, summary);
   try {
     await withRegistryLock(workspaceId, async () => {
+      await waitForE2eWorkEntrySummaryGate();
+      if (!isCurrent()) return;
       const file = await readWorkEntriesFileStrict(workspaceId);
+      if (!isCurrent()) return;
       const index = file.entries.findIndex((entry) => entry.id === entryId);
       if (
         index < 0 ||
@@ -853,7 +901,22 @@ export async function syncWorkEntrySummaryFromWrite(
       }
       const entries = file.entries.slice();
       entries[index] = { ...entries[index], summary };
-      await writeWorkEntriesFile(workspaceId, { version: 1, entries });
+      const superseded = new Error('Work Entry summary superseded');
+      try {
+        // Rechecked before each rename attempt: a newer revision can publish
+        // mid-write or during a sharing-violation backoff.
+        await writeWorkEntriesFile(
+          workspaceId,
+          { version: 1, entries },
+          {
+            assertCanCommit: () => {
+              if (!isCurrent()) throw superseded;
+            },
+          },
+        );
+      } catch (error) {
+        if (error !== superseded) throw error;
+      }
     });
     if (liveSummaries.get(cacheKey) === summary) {
       liveSummaries.delete(cacheKey);
@@ -864,6 +927,7 @@ export async function syncWorkEntrySummaryFromWrite(
       entryId,
       error: error instanceof Error ? error.message : String(error),
     });
+    throw error;
   }
 }
 
@@ -977,10 +1041,18 @@ function entryRecencyMs(meta: CoworkWorkEntryMeta): number {
 /** Derived work-entry list for the sidebar/pickers in persisted manual order. */
 export async function listWorkEntries(
   projectId: string,
-  options?: ListWorkEntriesOptions,
+  options?: ListWorkEntriesOptions & {
+    /**
+     * Reject an unreadable registry instead of reading it as empty, for
+     * retried projections. A missing registry still reads as empty.
+     */
+    strictRead?: boolean;
+  },
 ): Promise<CoworkWorkEntryMeta[]> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  let file = await readWorkEntriesFile(workspaceId);
+  let file = await readWorkEntriesFile(workspaceId, {
+    strict: options?.strictRead === true,
+  });
   if (await entriesNeedSummaryHydration(workspaceId, file)) {
     file = await backfillMissingSummaries(workspaceId);
   }
@@ -1023,10 +1095,17 @@ export interface WorkEntryChatSummaryListItem {
 /** Compact live-chat metadata for desktop/Portal shell snapshots. */
 export async function listWorkEntryChatSummaries(
   projectId: string,
-  options?: { strict?: boolean },
+  options?: {
+    /** Reject an unreadable registry or any entry without a summary. */
+    strict?: boolean;
+    /** Reject only an unreadable registry, for retried projections. */
+    strictRead?: boolean;
+  },
 ): Promise<WorkEntryChatSummaryListItem[]> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  let file = await readWorkEntriesFile(workspaceId, options);
+  let file = await readWorkEntriesFile(workspaceId, {
+    strict: options?.strict === true || options?.strictRead === true,
+  });
   if (await entriesNeedSummaryHydration(workspaceId, file)) {
     file = await backfillMissingSummaries(workspaceId);
   }

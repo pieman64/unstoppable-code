@@ -10,6 +10,7 @@ export {
   THINKING_UI_LEVELS,
   advanceThinkingLevel,
   clampThinkingLevel,
+  clampModelThinkingLevel,
   encodeThinkingSetting,
   isThinkingSetting,
   isThinkingLevel,

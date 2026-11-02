@@ -1,4 +1,5 @@
-import type { fingerprintCustomLanguageInputs } from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+import type * as CodeGraphEagerSeedModule from '../lib/code-graph-eager-seed';
+import type { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
 import type { runCodeGraphWorkerEagerSeed } from '../code-graph/build-runner';
 import type { withCodeGraphBaseVariantLeases } from '../lib/code-graph-base-store';
 import type { readWorkspaceConfig } from '../lib/workspace-persistence';
@@ -23,17 +24,18 @@ const mockIsE2eBuild = jest.fn();
 const mockResolveWorktreeCwd = jest.fn();
 
 jest.mock('../code-graph/build-runner', () => ({
-  runCodeGraphWorkerEagerSeed: mockRunCodeGraphWorkerEagerSeed,
+  get runCodeGraphWorkerEagerSeed(): typeof mockRunCodeGraphWorkerEagerSeed {
+    return mockRunCodeGraphWorkerEagerSeed;
+  },
 }));
 jest.mock('../lib/code-graph-base-store', () => ({
-  withCodeGraphBaseVariantLeases: mockWithCodeGraphBaseVariantLeases,
+  get withCodeGraphBaseVariantLeases(): typeof mockWithCodeGraphBaseVariantLeases {
+    return mockWithCodeGraphBaseVariantLeases;
+  },
 }));
-jest.mock(
-  '@canopy/desktop-shared/node/code-graph/languages/custom-config',
-  () => ({
-    fingerprintCustomLanguageInputs: mockFingerprintCustomLanguageInputs,
-  }),
-);
+jest.mock('@canopy/code-graph/languages/custom-config', () => ({
+  fingerprintCustomLanguageInputs: mockFingerprintCustomLanguageInputs,
+}));
 jest.mock('@canopy/desktop-shared/node/code-graph/worktree-paths', () => ({
   getWorktreeCodeGraphDbPath: (
     workspaceId: string,
@@ -52,14 +54,19 @@ jest.mock('../lib/resolve-worktree', () => ({
     String(mockResolveWorktreeCwd(...args)),
 }));
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceConfig: mockReadWorkspaceConfig,
+  get readWorkspaceConfig(): typeof mockReadWorkspaceConfig {
+    return mockReadWorkspaceConfig;
+  },
 }));
 jest.mock('../lib/worktree-repo-entries', () => ({
-  resolveWorktreeCodeGraphRepositories:
-    mockResolveWorktreeCodeGraphRepositories,
+  get resolveWorktreeCodeGraphRepositories(): typeof mockResolveWorktreeCodeGraphRepositories {
+    return mockResolveWorktreeCodeGraphRepositories;
+  },
 }));
 
-import { eagerSeedNewWorktreeCodeGraph } from '../lib/code-graph-eager-seed';
+const { eagerSeedNewWorktreeCodeGraph } = jest.requireActual<
+  typeof CodeGraphEagerSeedModule
+>('../lib/code-graph-eager-seed');
 
 describe('eagerSeedNewWorktreeCodeGraph', () => {
   beforeEach(() => {

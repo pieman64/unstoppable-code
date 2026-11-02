@@ -51,6 +51,11 @@ import {
 import { nodeW5FileStore } from '../w5-file-store';
 import { diagnoseW5State } from '../w5-maintenance-diagnosis';
 import {
+  projectW5ReorderOutcome,
+  projectW5WorktreeUpdateOutcome,
+  w5StoredOutcomeForm,
+} from '@canopy/core-runtime/node/w5/stored-outcome-projection';
+import {
   moveWorktree,
   updateWorktree,
   type WorktreeMoveRequest,
@@ -746,7 +751,7 @@ describe('core.worktree.reorder excludes group membership', () => {
       expectedRevision: undefined,
       idempotencyKey: 'key',
     });
-    expect(reserve.mock.calls[0]?.[0].receipt.fingerprint).toBe(
+    expect(reserve.mock.calls[0]?.[0]?.receipt?.fingerprint).toBe(
       createHash('sha256')
         .update(
           JSON.stringify({
@@ -1155,3 +1160,52 @@ describe('unkeyed byte parity', () => {
     },
   );
 });
+
+/**
+ * CAN-5428 (W5a3, RR4): a first keyed response and a replay project the same
+ * saved receipt, never current state. Reorders acknowledge (A17(a)).
+ */
+const projectors: Record<string, (stored: unknown) => unknown> = {
+  'core.workspace.reorder': (stored) =>
+    projectW5ReorderOutcome('core.workspace.reorder', stored),
+  'core.worktree.update': (stored) =>
+    projectW5WorktreeUpdateOutcome(stored, { workspaceId: 'a' }),
+  'core.worktree.reorder': (stored) =>
+    projectW5ReorderOutcome('core.worktree.reorder', stored),
+};
+const PROJECTED_KEYED_ROW: unknown = expect.objectContaining({
+  worktreeId: 'one',
+  name: 'keyed',
+});
+const projected: Record<string, unknown> = {
+  'core.workspace.reorder': { acknowledged: true },
+  'core.worktree.update': { worktree: PROJECTED_KEYED_ROW, changed: true },
+  'core.worktree.reorder': { acknowledged: true },
+};
+it.each(Object.keys(projectors))(
+  '%s: the first response and a replay after a later write and restart project the saved receipt',
+  async (operation) => {
+    const project = projectors[operation];
+    if (!project) throw new Error(`Unknown projector ${operation}`);
+    const testCase = boundary(operation);
+    const commits = jest.spyOn(host, 'commit');
+    const first = await testCase.run({ idempotencyKey: 'key' });
+    const [decision] = commits.mock.calls[0] ?? [];
+    if (!decision?.receipt) throw new Error('Expected a keyed decision');
+    const firstResult = project(w5StoredOutcomeForm(first));
+    expect(firstResult).toEqual(projected[operation]);
+    expect(project(w5StoredOutcomeForm(decision.outcome))).toStrictEqual(
+      firstResult,
+    );
+
+    await testCase.intervene();
+    const intervened = images();
+    await restartHost();
+    const lookup = await host.lookupReceipt(decision.receipt);
+    if (lookup.status !== 'replay') throw new Error('Expected a saved receipt');
+    expect(project(lookup.outcome)).toStrictEqual(firstResult);
+    expect(JSON.stringify(project(lookup.outcome))).not.toContain(dir);
+    expect(await testCase.run({ idempotencyKey: 'key' })).toEqual(first);
+    expect(images()).toEqual(intervened);
+  },
+);

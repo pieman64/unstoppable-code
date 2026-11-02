@@ -10,6 +10,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FileTypeaheadMenu } from '../editor/FileTypeaheadMenu';
 import type { FileMentionOption } from '../types';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 const file = (
   repoId: string,
@@ -92,5 +93,18 @@ describe('FileTypeaheadMenu', () => {
 
     render(files, true);
     expect(sectionHeaders()).toEqual(['Workspace']);
+  });
+
+  it('masks project titles in mention section headers while retaining file identity', () => {
+    render([file('workspace', 'Vendor Spend Q3', 'spend.csv')], true);
+    const header = container.querySelector(
+      '[data-testid="file-typeahead-section-header"]',
+    );
+    expect(header?.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent).toBe(
+      'Vendor Spend Q3',
+    );
+    expect(container.querySelector('[role="option"]')?.textContent).toContain(
+      'spend.csv',
+    );
   });
 });

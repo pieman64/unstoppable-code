@@ -8,7 +8,7 @@ import path from 'node:path';
  * Early access inset layout: the worktree page's left panel card sits flush
  * against the sidebar edge, where the main area and the worktree section clip
  * their content. A plain clip there cuts that card's edge line and shadow on
- * its left side only (its other sides have a 4px gap), so those two clip with
+ * its left side only (its other sides have the layout's gap), so those two clip with
  * a margin instead. jsdom does no layout, so this pins the rule itself.
  */
 const GLOBALS = readFileSync(
@@ -45,10 +45,12 @@ describe('inset window layout', () => {
 
   it('draws Settings as the same inset card', () => {
     const rule = ruleFor(
-      ".settings-page-overlay[data-settings-layout='inset']\n  [data-testid='settings-content']",
+      ".settings-page-overlay[data-settings-layout='inset'] [data-settings-card]",
     );
     // One hairline of room on the left, so the nav does not clip the edge.
-    expect(rule).toContain('margin: 0 4px 4px var(--border-hairline);');
+    expect(rule).toContain(
+      'margin: 0 var(--inset-card-gap) var(--inset-card-gap) var(--border-hairline);',
+    );
     expect(rule).toContain('border-radius: var(--inset-card-radius);');
     // The shared inset card shadow (the value only: the theme token check
     // reads a full shadow declaration here as a custom shadow).

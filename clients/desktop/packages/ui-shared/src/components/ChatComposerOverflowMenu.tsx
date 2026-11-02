@@ -10,6 +10,7 @@ import {
   type RefObject,
 } from 'react';
 import { CheckIcon, MoreHorizontalIcon } from '../icons/AppIcons';
+import { focusMenuRow } from '../lib/input-modality';
 import { DropdownMenuSurface } from './DropdownMenu';
 import { Tooltip } from './Tooltip';
 import { useOverlayEscape } from './useOverlayEscape';
@@ -98,7 +99,7 @@ export interface ChatComposerOverflowMenuProps {
 }
 
 const DEFAULT_TRIGGER_CLASS =
-  'focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-lg fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary lg:h-7 lg:w-7';
+  'focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-lg fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary lg:h-7 lg:w-7';
 
 /** Index of the next enabled item at/after `from`, wrapping; -1 if none. */
 function nextEnabledIndex(
@@ -190,9 +191,11 @@ export function ChatComposerOverflowMenu({
   }, []);
 
   // Focus the active item whenever the menu opens or the active row changes.
+  // A click open leaves it unpainted until the first arrow; see `focusMenuRow`.
   useEffect(() => {
     if (!open) return;
-    itemRefs.current[activeIndex]?.focus();
+    const item = itemRefs.current[activeIndex];
+    if (item) focusMenuRow(item);
   }, [open, activeIndex]);
 
   // Outside pointer-down dismisses the menu (no focus return — the pointer is
@@ -379,7 +382,7 @@ export function ChatComposerOverflowMenu({
               tabIndex={index === activeIndex ? 0 : -1}
               data-testid={item.dataTestId}
               onClick={() => selectItem(item)}
-              className={`flex min-h-11 w-full items-center gap-2.5 px-3 text-left text-s transition hover:bg-muted/60 focus:bg-muted/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+              className={`flex min-h-11 w-full items-center gap-2.5 px-3 text-left text-s transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
                 item.active ? 'fg-primary' : 'fg-secondary'
               }`}
             >

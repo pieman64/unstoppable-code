@@ -1,6 +1,8 @@
 import {
   CanopyCallerDescriptorSchema,
+  CanopyHostExecutionSchema,
   CanopyStreamCursorSchema,
+  canopyOperationAcceptsHostExecution,
   CanopyQueryRequestMetadataSchema,
   CanopyRequestMetadataSchema,
   safeParseCanopySchema,
@@ -11,6 +13,7 @@ import {
   type CanopyStreamDefinitionMap,
   type CanopyStreamDefinition,
   type CanopyErrorPayload,
+  type CanopyHostExecution,
   type CanopyRetryDirective,
   type CanopyStreamCursor,
 } from '@canopy/protocol/canopy-core';
@@ -100,6 +103,26 @@ function validateRuntimeMaps(
     if (!Object.prototype.hasOwnProperty.call(definitions, name))
       throw new Error(`Canopy handler has no definition: ${name}`);
 }
+/**
+ * The request's host execution, validated and frozen; refused on an operation
+ * that does not accept it. Messages never carry a value (CAN-5496).
+ */
+function hostExecutionFor(
+  name: string,
+  execution: unknown,
+): CanopyHostExecution | undefined {
+  if (execution === undefined) return undefined;
+  if (!canopyOperationAcceptsHostExecution(name))
+    throw canopyInvalidArgumentError(
+      'This operation does not accept host execution.',
+    );
+  const parsed = CanopyHostExecutionSchema.safeParse(execution);
+  if (!parsed.success)
+    throw canopyInvalidArgumentError('Invalid host execution.');
+  return Object.freeze({
+    childEnvironment: Object.freeze({ ...parsed.data.childEnvironment }),
+  });
+}
 function retryForDefinition(
   definition: Definition | undefined,
 ): CanopyRetryDirective {
@@ -115,6 +138,37 @@ function abortError(
   return source === 'deadline'
     ? canopyDeadlineExceededError(undefined, retryForDefinition(definition))
     : canopyCancelledError();
+}
+/**
+ * The error a handler failure is answered with: a keyed instruction's
+ * transport-class retry becomes `same_idempotency_key`, and an error outside
+ * the definition's schema becomes an internal error. Shared with the worker
+ * executor receipts, which record the same answer the dispatcher sends.
+ */
+export function translateCanopyHandlerError(
+  definition: Definition,
+  error: unknown,
+): CanopyOperationError {
+  if (error instanceof CanopyOperationError) {
+    const normalized =
+      'idempotency' in definition &&
+      definition.idempotency === 'keyed' &&
+      (error.payload.kind === 'deadline_exceeded' ||
+        error.payload.kind === 'unavailable') &&
+      error.payload.retry.kind === 'same_request'
+        ? new CanopyOperationError(
+            {
+              ...error.payload,
+              retry: { ...error.payload.retry, kind: 'same_idempotency_key' },
+            },
+            error.runtimeCause,
+          )
+        : error;
+    return definition.error.safeParse(normalized.payload).success
+      ? normalized
+      : canopyInternalError('The operation returned an invalid error.');
+  }
+  return canopyInternalError('The operation failed.', error);
 }
 function isDefinitionBundle(
   value:
@@ -214,6 +268,7 @@ export function createCanopyDispatcher(
   });
 
   const prepareCall = (
+    name: string,
     definition: Definition | undefined,
     params: unknown,
     callOptions: CallOptions,
@@ -244,6 +299,7 @@ export function createCanopyDispatcher(
       'idempotencyKey' in metadata.data
     )
       throw canopyInvalidArgumentError('An idempotency key is not allowed.');
+    const execution = hostExecutionFor(name, callOptions.execution);
     const parsedParams = safeParseCanopySchema(definition.params, params);
     if (!parsedParams.success)
       throw canopyInvalidArgumentError('Invalid operation parameters.');
@@ -304,6 +360,7 @@ export function createCanopyDispatcher(
       caller,
       metadata: metadata.data,
       signal: controller.signal,
+      ...(execution === undefined ? {} : { execution }),
     };
     return {
       params: parsedParams.data,
@@ -324,32 +381,8 @@ export function createCanopyDispatcher(
       },
     };
   };
-  const translateError = (
-    definition: Definition,
-    error: unknown,
-  ): CanopyOperationError => {
-    if (error instanceof CanopyOperationError) {
-      const normalized =
-        'idempotency' in definition &&
-        definition.idempotency === 'keyed' &&
-        (error.payload.kind === 'deadline_exceeded' ||
-          error.payload.kind === 'unavailable') &&
-        error.payload.retry.kind === 'same_request'
-          ? new CanopyOperationError(
-              {
-                ...error.payload,
-                retry: { ...error.payload.retry, kind: 'same_idempotency_key' },
-              },
-              error.runtimeCause,
-            )
-          : error;
-      return definition.error.safeParse(normalized.payload).success
-        ? normalized
-        : canopyInternalError('The operation returned an invalid error.');
-    }
-    return canopyInternalError('The operation failed.', error);
-  };
   const invoke = async (
+    name: string,
     definition: Definition | undefined,
     params: unknown,
     callOptions: CallOptions,
@@ -363,7 +396,7 @@ export function createCanopyDispatcher(
     });
     let call: PreparedCall | undefined;
     try {
-      call = prepareCall(definition, params, callOptions, rejectAbort);
+      call = prepareCall(name, definition, params, callOptions, rejectAbort);
       const preparedCall = call;
       if (!handler) throw canopyCapabilityUnavailableError();
       const raw = await Promise.race([
@@ -384,7 +417,7 @@ export function createCanopyDispatcher(
       return result.data;
     } catch (error) {
       throw definition
-        ? translateError(definition, error)
+        ? translateCanopyHandlerError(definition, error)
         : error instanceof CanopyOperationError
           ? error
           : canopyCapabilityUnavailableError();
@@ -398,6 +431,7 @@ export function createCanopyDispatcher(
     callOptions: CanopyQueryOptions,
   ): Promise<unknown> =>
     invoke(
+      name,
       Object.prototype.hasOwnProperty.call(definitions.queries, name)
         ? definitions.queries[name]
         : undefined,
@@ -411,6 +445,7 @@ export function createCanopyDispatcher(
     callOptions: CanopyInstructionOptions,
   ): Promise<unknown> =>
     invoke(
+      name,
       Object.prototype.hasOwnProperty.call(definitions.instructions, name)
         ? definitions.instructions[name]
         : undefined,
@@ -528,7 +563,7 @@ export function createCanopyDispatcher(
       finish();
       runCleanup();
     };
-    const call = prepareCall(definition, params, callOptions, (error) =>
+    const call = prepareCall(name, definition, params, callOptions, (error) =>
       end(
         error.payload.kind === 'deadline_exceeded' ? 'error' : 'cancelled',
         error.payload,
@@ -606,7 +641,7 @@ export function createCanopyDispatcher(
         outcome: 'completed' | 'cancelled' | 'error',
         error?: CanopyErrorPayload,
       ): void {
-        // Mirrors translateError: handler errors must match the operation's declared error schema.
+        // Mirrors translateCanopyHandlerError: handler errors must match the operation's declared error schema.
         const declared =
           !error || !definition || definition.error.safeParse(error).success;
         end(
@@ -623,7 +658,7 @@ export function createCanopyDispatcher(
       end(
         'error',
         definition
-          ? translateError(definition, error).payload
+          ? translateCanopyHandlerError(definition, error).payload
           : canopyCapabilityUnavailableError().payload,
       );
       cleanupReady = true;

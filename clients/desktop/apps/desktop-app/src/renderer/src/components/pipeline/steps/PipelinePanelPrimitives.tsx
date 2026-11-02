@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import {
   DragHandleIcon as AppCatalogDragHandleIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -21,12 +22,15 @@ export function PipelineDetailPanelShell({
     <div className="h-full flex flex-col bg-card">
       <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
         <span className="text-s font-medium fg-primary truncate">{title}</span>
-        <button
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onClose}
-          className="p-1 fg-secondary hover:fg-primary transition-colors rounded"
+          aria-label="Close"
         >
           <AppCatalogCloseIcon width="16" height="16" />
-        </button>
+        </Button>
       </div>
 
       <div className="flex-1 overflow-auto px-4 py-4 space-y-5">{children}</div>

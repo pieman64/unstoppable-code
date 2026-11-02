@@ -11,6 +11,20 @@ jest.mock('../plugins/plugin-cleanup', () => ({
 jest.mock('../observability/worktree-cleanup', () => ({
   purgePersistedWorktreeObservabilityData: jest.fn(() => Promise.resolve()),
 }));
+// Cleanup's chat-state scope deletion records a fire-and-forget session
+// diagnostic, which would start the real observability service. Its debounced
+// flush then writes `agent-observability/snapshot.json` into the temp data dir
+// without being awaited, racing the `afterEach` removal (ENOTEMPTY). The stub
+// must cover what the cleanup path calls on the service: chat-state's lazy
+// callers swallow a missing method instead of failing the test.
+jest.mock('../observability', () => ({
+  getObservabilityService: jest.fn(() => ({
+    recordSessionDiagnostic: jest.fn(),
+    recordAppDiagnostic: jest.fn(),
+    flush: jest.fn(() => Promise.resolve()),
+  })),
+  peekObservabilityService: jest.fn(() => null),
+}));
 jest.mock('../browser/browser-service-registry', () => ({
   getBrowserService: jest.fn(() => null),
 }));
@@ -50,7 +64,10 @@ import {
   getWorktreePanelLayoutFilePath,
 } from '../lib/paths';
 import { cleanupPersistedWorktreeData } from '../lib/worktree-data-cleanup';
-import { PanelLayoutPersistenceStore } from '../panels/persistence';
+import {
+  PanelLayoutPersistenceStore,
+  panelLayoutPersistenceStore,
+} from '../panels/persistence';
 
 const PROJECT_ID = 'project-1';
 const WORKTREE_ID = 'wt-1';
@@ -98,6 +115,9 @@ describe('PanelLayoutPersistenceStore', () => {
   });
 
   afterEach(() => {
+    // The cleanup test saves through the shared store; drop any write it left
+    // pending before the temporary data dir is removed.
+    panelLayoutPersistenceStore.cancelPendingWrite(PROJECT_ID, WORKTREE_ID);
     jest.useRealTimers();
     if (originalCanopyDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
@@ -257,6 +277,25 @@ describe('PanelLayoutPersistenceStore', () => {
     expect(store.loadWorktreeLayout(PROJECT_ID, WORKTREE_ID)).toBeNull();
   });
 
+  it('cancelPendingWrite drops a pending write and keeps the persisted file', () => {
+    jest.useFakeTimers();
+    const store = new PanelLayoutPersistenceStore();
+    const filePath = getWorktreePanelLayoutFilePath(PROJECT_ID, WORKTREE_ID);
+    store.saveWorktreeLayout(PROJECT_ID, WORKTREE_ID, makeLayoutFile());
+    store.flushAllSync();
+    const persisted = readFileSync(filePath, 'utf8');
+
+    const changed: SerializablePanelLayoutFile = {
+      ...makeLayoutFile(),
+      activeGroupId: 'group-activity',
+    };
+    store.saveWorktreeLayout(PROJECT_ID, WORKTREE_ID, changed);
+    store.cancelPendingWrite(PROJECT_ID, WORKTREE_ID);
+    jest.advanceTimersByTime(1000);
+
+    expect(readFileSync(filePath, 'utf8')).toBe(persisted);
+  });
+
   it('worktree-data cleanup removes the persisted panel layout and mode', async () => {
     const store = new PanelLayoutPersistenceStore();
     store.saveWorktreeLayout(PROJECT_ID, WORKTREE_ID, makeLayoutFile());
@@ -287,5 +326,30 @@ describe('PanelLayoutPersistenceStore', () => {
     expect(existsSync(filePath)).toBe(false);
     expect(existsSync(modeFilePath)).toBe(false);
     expect(store.loadWorktreeLayout(PROJECT_ID, WORKTREE_ID)).toBeNull();
+  });
+
+  it('worktree-data cleanup cancels a pending layout write', async () => {
+    jest.useFakeTimers();
+    const filePath = getWorktreePanelLayoutFilePath(PROJECT_ID, WORKTREE_ID);
+    mkdirSync(getWorktreeDataDir(PROJECT_ID, WORKTREE_ID), { recursive: true });
+    // A save inside the debounce window before removal must not recreate the
+    // layout under the removed worktree's data directory.
+    panelLayoutPersistenceStore.saveWorktreeLayout(
+      PROJECT_ID,
+      WORKTREE_ID,
+      makeLayoutFile(),
+    );
+
+    const warnings = await cleanupPersistedWorktreeData(
+      PROJECT_ID,
+      WORKTREE_ID,
+    );
+    jest.advanceTimersByTime(1000);
+
+    expect(warnings).toEqual([]);
+    expect(existsSync(filePath)).toBe(false);
+    expect(
+      panelLayoutPersistenceStore.loadWorktreeLayout(PROJECT_ID, WORKTREE_ID),
+    ).toBeNull();
   });
 });

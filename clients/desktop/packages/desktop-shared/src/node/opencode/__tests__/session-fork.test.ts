@@ -11,6 +11,7 @@ import type * as fileSystem from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  openCodeCapabilityDigest,
   saveOpenCodeCapabilitySnapshot,
   readOpenCodeCapabilityBinding,
 } from '../capability-snapshot';
@@ -53,67 +54,84 @@ const mockManage = jest.fn((id: string, operation: string): Promise<void> => {
   }
   return Promise.resolve();
 });
-const mockStart = jest.fn((options: { signal: AbortSignal }) => {
-  const cleanup = mockRuntimeStarts++ > 0;
-  return Promise.resolve({
-    client: {
-      loadSession: mockLoad,
-      forkSession: jest.fn(async (_params: unknown, signal?: AbortSignal) => {
-        if (mockReused) return { sessionId: 'source' };
-        const source = mockSessions.get('source');
-        if (!source) throw new Error('missing source');
-        const fork = structuredClone(source);
-        fork.info = {
-          ...fork.info,
-          id: 'fork',
-          time: { created: Date.now() },
-          fork: { sessionID: 'source' },
-        };
-        fork.messages = fork.messages
-          .filter(
-            (message) =>
-              message.type !== 'assistant' ||
-              (message.time &&
-                typeof message.time === 'object' &&
-                'completed' in message.time),
-          )
-          .map((message) => ({ ...message, id: `fork-${String(message.id)}` }));
-        if (mockCorrupt) fork.messages[0].text = 'lost context';
-        mockSessions.set('fork', fork);
-        await mockAfterFork?.();
-        // The real owner closes on abort, and ACP rejects cancelled responses.
+const mockStart = jest.fn(
+  (options: {
+    signal: AbortSignal;
+    inferenceRoute?: OpenCodeInferenceRoute;
+  }) => {
+    const cleanup = mockRuntimeStarts++ > 0;
+    return Promise.resolve({
+      client: {
+        loadSession: mockLoad,
+        forkSession: jest.fn(async (_params: unknown, signal?: AbortSignal) => {
+          if (mockReused) return { sessionId: 'source' };
+          const source = mockSessions.get('source');
+          if (!source) throw new Error('missing source');
+          const fork = structuredClone(source);
+          fork.info = {
+            ...fork.info,
+            id: 'fork',
+            time: { created: Date.now() },
+            fork: { sessionID: 'source' },
+          };
+          fork.messages = fork.messages
+            .filter(
+              (message) =>
+                message.type !== 'assistant' ||
+                (message.time &&
+                  typeof message.time === 'object' &&
+                  'completed' in message.time),
+            )
+            .map((message) => ({
+              ...message,
+              id: `fork-${String(message.id)}`,
+            }));
+          if (mockCorrupt) fork.messages[0].text = 'lost context';
+          mockSessions.set('fork', fork);
+          await mockAfterFork?.();
+          // The real owner closes on abort, and ACP rejects cancelled responses.
+          options.signal.throwIfAborted();
+          signal?.throwIfAborted();
+          return { sessionId: 'fork' };
+        }),
+      },
+      readMetadata: (pathname: string): Promise<unknown> => {
         options.signal.throwIfAborted();
-        signal?.throwIfAborted();
-        return { sessionId: 'fork' };
-      }),
-    },
-    readMetadata: (pathname: string): Promise<unknown> => {
-      options.signal.throwIfAborted();
-      if (cleanup && mockCleanupMetadataError) throw mockCleanupMetadataError;
-      if (pathname === '/sessions/fork' && mockMetadataError) {
-        const error = mockMetadataError;
-        mockMetadataError = undefined;
-        throw error;
-      }
-      const id = decodeURIComponent(pathname.split('/')[2]);
-      const snapshot = mockSessions.get(id);
-      return Promise.resolve(
-        structuredClone(
-          pathname.endsWith('/context')
-            ? { data: snapshot?.messages }
-            : snapshot?.info,
-        ),
-      );
-    },
-    manageFork: mockManage,
-    close: mockClose,
-  });
-});
-jest.mock('../runtime', () => ({ startOpenCodeRuntime: mockStart }));
+        if (cleanup && mockCleanupMetadataError) throw mockCleanupMetadataError;
+        if (pathname === '/sessions/fork' && mockMetadataError) {
+          const error = mockMetadataError;
+          mockMetadataError = undefined;
+          throw error;
+        }
+        const id = decodeURIComponent(pathname.split('/')[2]);
+        const snapshot = mockSessions.get(id);
+        return Promise.resolve(
+          structuredClone(
+            pathname.endsWith('/context')
+              ? { data: snapshot?.messages }
+              : snapshot?.info,
+          ),
+        );
+      },
+      manageFork: mockManage,
+      close: mockClose,
+    });
+  },
+);
+jest.mock('../runtime', () => ({
+  get startOpenCodeRuntime(): typeof mockStart {
+    return mockStart;
+  },
+}));
 import {
   forkOpenCodeSession,
   discardOpenCodeSessionFork,
 } from '../session-fork';
+import {
+  prepareOpenCodeInferenceRoute,
+  type OpenCodeInferenceRoute,
+} from '../inference-route';
+
 let root: string;
 let sourceProfile: string;
 let destinationProfile: string;
@@ -467,6 +485,148 @@ it('bounds cancellation while the native fork response is missing', async () => 
     jest.useRealTimers();
   }
 });
+
+function managedRoute(
+  protocol: OpenCodeInferenceRoute['protocol'] = 'openai-responses',
+): OpenCodeInferenceRoute {
+  return {
+    bindingKey: 'a'.repeat(64),
+    protocol,
+    baseUrl: `http://127.0.0.1:54321/codex-gateway/${'b'.repeat(48)}`,
+    model: {
+      id: 'provider/model',
+      contextWindow: 128000,
+      outputLimit: 16384,
+      supportsVision: false,
+    },
+  };
+}
+async function bindManagedSource(route: OpenCodeInferenceRoute): Promise<void> {
+  await saveOpenCodeCapabilitySnapshot(
+    sourceProfile,
+    'source',
+    {
+      version: 1,
+      runtime: {},
+      files: {},
+      mcp: [],
+      contextDigest: 'original',
+      providerSettingsDigest: 'original',
+      inferenceRouteDigest: prepareOpenCodeInferenceRoute(route).identityDigest,
+    },
+    undefined,
+    AbortSignal.timeout(5000),
+  );
+}
+it.each<OpenCodeInferenceRoute['protocol']>([
+  'anthropic-messages',
+  'openai-responses',
+])(
+  'retains %s managed context through a rotated broker lease',
+  async (protocol) => {
+    const original = managedRoute(protocol);
+    await bindManagedSource(original);
+    const inferenceRoute = {
+      ...original,
+      baseUrl: `http://127.0.0.1:54322/codex-gateway/${'c'.repeat(48)}`,
+    };
+    const request = { ...options(), inferenceRoute };
+    const forked = await forkOpenCodeSession(request);
+    expect(forked.binding).toMatchObject({
+      version: 2,
+      inferenceRouteDigest:
+        prepareOpenCodeInferenceRoute(original).identityDigest,
+    });
+    for (const [runtime] of mockStart.mock.calls)
+      expect(runtime.inferenceRoute).toEqual({
+        ...inferenceRoute,
+        headers: {},
+      });
+    expect(mockSessions.get('fork')?.messages[0]).toMatchObject({
+      text: 'HIDDEN CONTEXT',
+    });
+    expect(mockSessions.get('source')?.messages[0]).toMatchObject({
+      text: 'HIDDEN CONTEXT',
+    });
+    expect(mockStart).toHaveBeenCalledTimes(1);
+  },
+);
+it.each(['missing', 'changed', 'native-source'])(
+  'rejects %s inference identity before reading native context or reserving the destination',
+  async (kind) => {
+    const original = managedRoute();
+    if (kind !== 'native-source') await bindManagedSource(original);
+    const inferenceRoute =
+      kind === 'missing'
+        ? undefined
+        : {
+            ...original,
+            bindingKey:
+              kind === 'changed' ? 'd'.repeat(64) : original.bindingKey,
+          };
+    const request = { ...options(), inferenceRoute };
+    await expect(forkOpenCodeSession(request)).rejects.toThrow(
+      'inference route',
+    );
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(await readdir(root)).not.toContain('destination-profile');
+  },
+);
+
+it.each(['funding', 'model', 'missing'])(
+  'refuses changed %s selection authority before a managed fork',
+  async (change) => {
+    const original = {
+      ...managedRoute(),
+      selection: { modelId: 'logical-model', fundingKey: 'f'.repeat(64) },
+    };
+    const snapshot = {
+      version: 1 as const,
+      runtime: {},
+      files: {},
+      mcp: [],
+      contextDigest: 'original',
+      providerSettingsDigest: 'original',
+      inferenceRouteDigest:
+        prepareOpenCodeInferenceRoute(original).identityDigest,
+      inferenceSelection: {
+        modelId: original.selection.modelId,
+        fundingDigest: openCodeCapabilityDigest({
+          version: 1,
+          fundingKey: original.selection.fundingKey,
+        }),
+      },
+    };
+    await saveOpenCodeCapabilitySnapshot(
+      sourceProfile,
+      'source',
+      snapshot,
+      undefined,
+      AbortSignal.timeout(5000),
+    );
+    const inferenceRoute = {
+      ...original,
+      selection:
+        change === 'missing'
+          ? undefined
+          : {
+              modelId:
+                change === 'model'
+                  ? 'different-logical-model'
+                  : original.selection.modelId,
+              fundingKey:
+                change === 'funding'
+                  ? 'd'.repeat(64)
+                  : original.selection.fundingKey,
+            },
+    };
+    await expect(
+      forkOpenCodeSession({ ...options(), inferenceRoute }),
+    ).rejects.toThrow('inference route');
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(await readdir(root)).not.toContain('destination-profile');
+  },
+);
 
 it.each([
   { boundary: 'native-return', cancelled: false },

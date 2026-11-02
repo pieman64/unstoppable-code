@@ -9,6 +9,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   isInstallReceipt,
+  normalizeInstallReceiptDisplayNames,
   type InstallReceipt,
 } from '@canopy/desktop-shared/lib/resource-context-policy';
 import { isSameWorkspaceContext } from '@canopy/protocol/workspace-context';
@@ -25,6 +26,11 @@ function normalizeReceipt(receipt: InstallReceipt): InstallReceipt {
     ...(receipt.localResourceIds
       ? { localResourceIds: Array.from(new Set(receipt.localResourceIds)) }
       : {}),
+    ...(receipt.uninstalledLocalResourceIds
+      ? {
+          uninstalledLocalResourceIds: [...receipt.uninstalledLocalResourceIds],
+        }
+      : {}),
     family: receipt.family,
     remoteId: receipt.remoteId,
     ...(receipt.sourceKind ? { sourceKind: receipt.sourceKind } : {}),
@@ -38,7 +44,32 @@ function normalizeReceipt(receipt: InstallReceipt): InstallReceipt {
           },
     hash: receipt.hash,
     authorizedAt: receipt.authorizedAt,
+    ...(receipt.localContentHashes
+      ? { localContentHashes: { ...receipt.localContentHashes } }
+      : {}),
+    ...(receipt.localResourceRoles
+      ? { localResourceRoles: { ...receipt.localResourceRoles } }
+      : {}),
+    ...normalizeInstallReceiptDisplayNames(receipt),
   };
+}
+
+function mergedUninstalledIds(
+  previous: InstallReceipt[],
+  receipt: InstallReceipt,
+): string[] | undefined {
+  const touched = new Set(receipt.localResourceIds ?? []);
+  const removed = new Set(
+    previous
+      .flatMap((row) => row.uninstalledLocalResourceIds ?? [])
+      .filter((id) => !touched.has(id)),
+  );
+  for (const id of receipt.uninstalledLocalResourceIds ?? []) removed.add(id);
+  return removed.size ||
+    receipt.uninstalledLocalResourceIds !== undefined ||
+    previous.some((row) => row.uninstalledLocalResourceIds !== undefined)
+    ? Array.from(removed)
+    : undefined;
 }
 
 async function readReceipts(
@@ -103,8 +134,12 @@ export function createResourceInstallReceiptsStore(
     receipt: InstallReceipt,
     previous: InstallReceipt | undefined,
   ): Promise<void>;
-  find(family: string, remoteId: string): Promise<InstallReceipt | undefined>;
-  listForAccount(): Promise<InstallReceipt[]>;
+  find(
+    family: string,
+    remoteId: string,
+    strict?: boolean,
+  ): Promise<InstallReceipt | undefined>;
+  listForAccount(strict?: boolean): Promise<InstallReceipt[]>;
   listOrganizationContentOwners(
     family: string,
     hash: string,
@@ -117,9 +152,15 @@ export function createResourceInstallReceiptsStore(
   if (!accountId.trim())
     throw new Error('An account is required for install receipts');
   const file = join(dataDir, 'resource-install-receipts.json');
-  async function listForAccount(): Promise<InstallReceipt[]> {
+  async function listForAccount(strict = false): Promise<InstallReceipt[]> {
     await writes.get(file);
-    const state = await readReceipts(file);
+    const state = await readReceipts(file, strict);
+    if (
+      strict &&
+      Object.prototype.hasOwnProperty.call(state.byAccount, accountId) &&
+      state.byAccount[accountId].some((row) => !isInstallReceipt(row))
+    )
+      throw new Error('Invalid resource install receipt');
     return Object.prototype.hasOwnProperty.call(state.byAccount, accountId)
       ? state.byAccount[accountId]
           .filter(isInstallReceipt)
@@ -130,7 +171,7 @@ export function createResourceInstallReceiptsStore(
     record(receipt): Promise<void> {
       if (!isInstallReceipt(receipt))
         return Promise.reject(new Error('Invalid resource install receipt'));
-      const normalized = normalizeReceipt(receipt);
+      let normalized = normalizeReceipt(receipt);
       const run = (writes.get(file) ?? Promise.resolve()).then(
         async (): Promise<void> => {
           const state = await readReceipts(file, true);
@@ -159,13 +200,58 @@ export function createResourceInstallReceiptsStore(
           ) {
             throw new Error('Resource install origin cannot be replaced');
           }
+          if (
+            normalized.uninstalledLocalResourceIds?.length &&
+            previous.length
+          ) {
+            // A removal records only lifecycle state. It cannot advance or
+            // rewind source metadata captured before this queued mutation.
+            const latest = previous[previous.length - 1];
+            normalized = {
+              ...normalizeReceipt(latest),
+              localResourceIds: normalized.localResourceIds,
+              uninstalledLocalResourceIds:
+                normalized.uninstalledLocalResourceIds,
+            };
+          }
           const aliases = Array.from(
             new Set([
               ...previous.flatMap((row) => row.localResourceIds ?? []),
               ...(normalized.localResourceIds ?? []),
             ]),
           );
+          const removed = mergedUninstalledIds(previous, normalized);
+          if (removed !== undefined)
+            normalized.uninstalledLocalResourceIds = removed;
           if (aliases.length) normalized.localResourceIds = aliases;
+          const previousHashes: Record<string, string> = {};
+          const previousRoles: NonNullable<
+            InstallReceipt['localResourceRoles']
+          > = {};
+          for (const row of previous) {
+            Object.assign(previousRoles, row.localResourceRoles);
+            for (const [id, hash] of Object.entries(
+              row.localContentHashes ?? {},
+            ))
+              previousHashes[id] = hash;
+          }
+          // Older writers cannot justify a new baseline for existing copies.
+          if (
+            normalized.localContentHashes ||
+            Object.keys(previousHashes).length
+          )
+            normalized.localContentHashes = {
+              ...previousHashes,
+              ...normalized.localContentHashes,
+            };
+          if (
+            normalized.localResourceRoles ||
+            Object.keys(previousRoles).length
+          )
+            normalized.localResourceRoles = {
+              ...previousRoles,
+              ...normalized.localResourceRoles,
+            };
           for (const [ownerAccount, receipts] of Object.entries(
             state.byAccount,
           )) {
@@ -242,7 +328,67 @@ export function createResourceInstallReceiptsStore(
             const aliases = (row.localResourceIds ?? []).filter(
               (id) => !added.includes(id),
             );
-            return { ...row, localResourceIds: aliases };
+            // A failed skill replacement must not advance its installed hash
+            // or attribution. Compare the whole attempted snapshot so rollback
+            // cannot erase a later update; aliases are reconciled separately.
+            if (
+              row.family === 'skills' &&
+              previous &&
+              JSON.stringify(
+                normalizeReceipt({ ...row, localResourceIds: [] }),
+              ) ===
+                JSON.stringify(
+                  normalizeReceipt({
+                    ...receipt,
+                    localResourceIds: [],
+                    uninstalledLocalResourceIds: mergedUninstalledIds(
+                      [previous],
+                      receipt,
+                    ),
+                    localContentHashes:
+                      receipt.localContentHashes || previous.localContentHashes
+                        ? {
+                            ...previous.localContentHashes,
+                            ...receipt.localContentHashes,
+                          }
+                        : undefined,
+                    localResourceRoles:
+                      receipt.localResourceRoles || previous.localResourceRoles
+                        ? {
+                            ...previous.localResourceRoles,
+                            ...receipt.localResourceRoles,
+                          }
+                        : undefined,
+                  }),
+                )
+            ) {
+              return {
+                ...normalizeReceipt(previous),
+                localResourceIds: aliases,
+              };
+            }
+            return {
+              ...row,
+              localResourceIds: aliases,
+              ...(row.localContentHashes
+                ? {
+                    localContentHashes: Object.fromEntries(
+                      Object.entries(row.localContentHashes).filter(([id]) =>
+                        aliases.includes(id),
+                      ),
+                    ),
+                  }
+                : {}),
+              ...(row.localResourceRoles
+                ? {
+                    localResourceRoles: Object.fromEntries(
+                      Object.entries(row.localResourceRoles).filter(([id]) =>
+                        aliases.includes(id),
+                      ),
+                    ),
+                  }
+                : {}),
+            };
           });
           state.byAccount[accountId] = next;
           await mkdir(dataDir, { recursive: true });
@@ -263,8 +409,12 @@ export function createResourceInstallReceiptsStore(
       });
       return run;
     },
-    async find(family, remoteId): Promise<InstallReceipt | undefined> {
-      return (await listForAccount()).find(
+    async find(
+      family,
+      remoteId,
+      strict = false,
+    ): Promise<InstallReceipt | undefined> {
+      return (await listForAccount(strict)).find(
         (row) => row.family === family && row.remoteId === remoteId,
       );
     },
@@ -281,7 +431,11 @@ export function createResourceInstallReceiptsStore(
             (row) =>
               row.family === family && row.localResourceIds?.includes(localId),
           );
-        if (receipt) return { accountId: ownerAccount, receipt };
+        if (receipt)
+          return {
+            accountId: ownerAccount,
+            receipt: normalizeReceipt(receipt),
+          };
       }
       return undefined;
     },

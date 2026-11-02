@@ -2,20 +2,24 @@ import { desktopBrowserPort } from './desktop-browser-port';
 import { desktopExperimentsPort } from './desktop-experiments-port';
 import { desktopInstalledItemsPort } from './desktop-installed-items-port';
 import { desktopSettingsPort } from './desktop-settings-port';
+import { desktopPipelinesPort } from './desktop-pipelines-port';
 import { desktopCapabilityPackagePort } from './desktop-capability-package-port';
 import {
   createBotActionFamily,
   createBrowserActionFamily,
   createEnvironmentActionFamily,
+  createTranscriptReadActionFamily,
   createProjectActionFamily,
   createExperimentsActionFamily,
   createInstalledItemsActionFamily,
   type AgentInstalledItemsPort,
   createSettingsActionFamily,
   createCapabilityPackageActionFamily,
+  createPipelinesActionFamily,
   type AgentBrowserPort,
   type AgentCapabilityPackagePort,
   type AgentExperimentsPort,
+  type AgentPipelinesPort,
   type AgentSettingsPort,
   defineAgentActionHost,
   type AgentActionFamily,
@@ -25,6 +29,7 @@ import {
   type AgentActionSplitPort,
   type AgentChatWatcherPort,
   type AgentEnvironmentPort,
+  type AgentTranscriptReadPort,
   type AgentProjectBotPort,
 } from '@canopy/agent-actions';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
@@ -43,6 +48,7 @@ import {
 } from './desktop-split-port';
 import { desktopProjectBotPort } from './desktop-project-bot-port';
 import { desktopChatWatcherPort } from './desktop-watcher-port';
+import { createDesktopTranscriptReadPort } from './desktop-transcript-read-port';
 
 /**
  * The desktop agent action host: its families in surface order, the chat
@@ -56,12 +62,14 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
   // desktop-editor-setup-port; scoped chat surfaces keep their current families.
   families: [
     'environment',
+    'transcript-read',
     'projects',
     'bots',
     'experiments',
     'installed-items',
     'settings',
     'capability-package',
+    'pipelines',
     'browser',
     'desktop-legacy',
     'editor-setup',
@@ -72,6 +80,21 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
       chatCreatePlacements: ['current', 'new_worktree'],
     },
     cowork: { executionScope: 'directory', chatCreatePlacements: ['current'] },
+  },
+  transcriptReadPort: {
+    authorizeOwner: {
+      via: 'retained',
+      uses: [
+        'core.workspace.get',
+        'core.worktree.list',
+        'core.chat.list',
+        'cowork-work-entries:listWorkEntryChatSummaries',
+        'standalone-chat-service:resolveStandaloneChatTarget',
+      ],
+    },
+    page: { via: 'dispatcher', uses: ['core.chat.transcript.page'] },
+    content: { via: 'dispatcher', uses: ['core.chat.content.read'] },
+    blocks: { via: 'dispatcher', uses: ['core.chat.transcript.blocks.page'] },
   },
   environmentPort: {
     query: {
@@ -136,7 +159,10 @@ export interface DesktopAgentActionPorts {
   experiments?: AgentExperimentsPort<CanopyInjectedToolRuntime>;
   /** Opens hosted account and organization settings in the main window. */
   settings?: AgentSettingsPort<CanopyInjectedToolRuntime>;
+  /** Starts pipeline runs through the main-process start path. */
+  pipelines?: AgentPipelinesPort<CanopyInjectedToolRuntime>;
   environment: AgentEnvironmentPort<CanopyInjectedToolRuntime>;
+  transcriptRead: AgentTranscriptReadPort<CanopyInjectedToolRuntime>;
   /** Explicit-target project and bot reads through project discovery. */
   projectBot?: AgentProjectBotPort<CanopyInjectedToolRuntime>;
   limits: AgentActionLimitsPort;
@@ -154,6 +180,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
     const receipts = desktopAgentActionReceipts;
     defaultPorts = {
       environment: createDesktopEnvironmentPort(desktopEnvironmentPortDeps()),
+      transcriptRead: createDesktopTranscriptReadPort(),
       limits: desktopAgentActionLimits,
       chatWatchers: desktopChatWatcherPort,
       split: createDesktopSplitPort({
@@ -164,6 +191,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
       experiments: desktopExperimentsPort,
       settings: desktopSettingsPort,
       capabilityPackage: desktopCapabilityPackagePort,
+      pipelines: desktopPipelinesPort,
       browser: desktopBrowserPort,
     };
   }
@@ -187,6 +215,7 @@ export function desktopAgentActionFamilies(
         : null,
       receipts: ports.receipts,
     }),
+    createTranscriptReadActionFamily({ port: ports.transcriptRead }),
     createProjectActionFamily(ports.projectBot ?? desktopProjectBotPort),
     createBotActionFamily(ports.projectBot ?? desktopProjectBotPort),
     createInstalledItemsActionFamily({
@@ -204,6 +233,10 @@ export function desktopAgentActionFamilies(
     }),
     createCapabilityPackageActionFamily({
       port: ports.capabilityPackage ?? desktopCapabilityPackagePort,
+    }),
+    createPipelinesActionFamily({
+      port: ports.pipelines ?? desktopPipelinesPort,
+      receipts: ports.receipts,
     }),
     createBrowserActionFamily({
       port: ports.browser ?? desktopBrowserPort,

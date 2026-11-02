@@ -6,7 +6,7 @@ import type {
   SerializablePanelLayoutFile,
 } from '@canopy/protocol';
 import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
-import { earlyAccessMinimalFor } from './early-access-minimal';
+import { usesSimplifiedMinimalDefaults } from './minimal-layout-defaults';
 import {
   DEFAULT_ACTIVITY_GROUP_ID,
   DEFAULT_ACTIVITY_PANEL_ID,
@@ -655,7 +655,7 @@ export function ensureMinimalDestination(
   if (leaves(current.grid.root).some((entry) => entry.groupId === groupId))
     return groupId;
   const repaired = repairMinimalLayout(current, [], {
-    seedSidePanels: !earlyAccessMinimalFor(worktreeKey),
+    seedSidePanels: !usesSimplifiedMinimalDefaults(worktreeKey),
   });
   if (!store.restoreLayout(worktreeKey, repaired)) return null;
   return leaves(repaired.grid.root).some((entry) => entry.groupId === groupId)

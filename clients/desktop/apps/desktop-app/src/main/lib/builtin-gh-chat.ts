@@ -17,6 +17,7 @@ import {
 import { BUILTIN_PLUGIN_MARKETPLACE_ID } from '@canopy/desktop-shared/types/plugins';
 import { sendToWindow } from './window-send';
 import { dispatchWorktreeChatTurn } from './worktree-chat-turn';
+import { runAdmittedDirectDispatch } from '../services/chat-queue-service';
 import {
   commitProviderChatEvent,
   completePersistedChatTabTurn,
@@ -154,12 +155,6 @@ function buildInitialMessages(args: {
       blocks: [{ type: 'text', text: args.promptText }],
       timestamp,
     },
-    {
-      id: nextGeneratedId('msg', args.idPrefix),
-      role: 'system',
-      blocks: [{ type: 'turn_timer', startedAt: timestamp, completedAt: null }],
-      timestamp,
-    },
   ];
 }
 
@@ -275,79 +270,92 @@ async function launchBuiltinGhChatWithScopeLease(
     ...(args.selectedRepoId ? { selectedRepoId: args.selectedRepoId } : {}),
   };
 
-  await upsertPersistedChatTab({
-    projectId: args.projectId,
-    worktreeId: args.worktreeId,
-    tab,
-    activateTab: true,
-  });
+  // Ordinary admission precedes the prompt's first effect (contracts §6).
+  await runAdmittedDirectDispatch(
+    { projectId: args.projectId, worktreeId: args.worktreeId, chatId },
+    userMessageId,
+    async (authorization): Promise<boolean> => {
+      await upsertPersistedChatTab({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        tab,
+        activateTab: true,
+      });
 
-  const delivered = sendToWindow(
-    args.getWindow(),
-    IPC_CHANNELS.chatHookTabStarted,
-    {
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-      tab,
-      activateTab: true,
-    },
-  );
-  if (!delivered) {
-    await removePersistedChatTab({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-    });
-    throw new Error(
-      'This chat requires an active renderer window before it can start.',
-    );
-  }
+      const delivered = sendToWindow(
+        args.getWindow(),
+        IPC_CHANNELS.chatHookTabStarted,
+        {
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          chatId,
+          tab,
+          activateTab: true,
+        },
+      );
+      if (!delivered) {
+        await removePersistedChatTab({
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          chatId,
+        });
+        throw new Error(
+          'This chat requires an active renderer window before it can start.',
+        );
+      }
 
-  try {
-    await dispatchWorktreeChatTurn({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-      userMessageId,
-      text: promptText,
-      planMode: false,
-      thinkingLevel,
-      model,
-      providerType,
-      executionHarness,
-      approvalMode,
-      pluginSelections,
-      initiationSource: 'hook',
-      ...(args.selectedRepoId ? { selectedRepoId: args.selectedRepoId } : {}),
-      getWindow: args.getWindow,
-      skipBranchNaming: true,
-      onBeforeChatEvent: (event) =>
-        commitProviderChatEvent({
+      try {
+        await dispatchWorktreeChatTurn({
+          ...(authorization ? { authorization } : {}),
           projectId: args.projectId,
           worktreeId: args.worktreeId,
           chatId,
           userMessageId,
+          text: promptText,
+          planMode: false,
+          thinkingLevel,
+          model,
           providerType,
-          event,
-        }),
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await completePersistedChatTabTurn({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-    });
-    await emitChatDispatchFailure({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-      errorMessage,
-      getWindow: args.getWindow,
-    });
-    throw error;
-  }
+          executionHarness,
+          approvalMode,
+          pluginSelections,
+          initiationSource: 'hook',
+          ...(args.selectedRepoId
+            ? { selectedRepoId: args.selectedRepoId }
+            : {}),
+          getWindow: args.getWindow,
+          skipBranchNaming: true,
+          onBeforeChatEvent: (event) =>
+            commitProviderChatEvent({
+              projectId: args.projectId,
+              worktreeId: args.worktreeId,
+              chatId,
+              userMessageId,
+              providerType,
+              event,
+            }),
+        });
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        await completePersistedChatTabTurn({
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          chatId,
+        });
+        await emitChatDispatchFailure({
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          chatId,
+          errorMessage,
+          getWindow: args.getWindow,
+        });
+        throw error;
+      }
+
+      return true;
+    },
+  );
 
   return { chatId };
 }

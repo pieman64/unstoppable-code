@@ -8,6 +8,7 @@ import {
   getScenarioActivity,
   registerScenario,
 } from './seeders/index.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 const DIGEST_API_KEY = 'csk_digest_preferences_e2e';
 
@@ -79,12 +80,12 @@ test('connected cloud Work Digest settings load and save through the server mirr
     // The weekly anchor: the cadence copy must be derived from it, not the
     // hardcoded "Every Monday" this surface used to carry.
     const weeklyAnchor = window.getByTestId('cloud-digest-anchor-weekly');
-    await expect(weeklyAnchor).toHaveValue('1');
+    await expect(weeklyAnchor).toHaveAttribute('data-value', '1');
     await expect(section).toContainText(
       'Every Monday, covering the previous week.',
     );
 
-    await weeklyAnchor.selectOption('5');
+    await chooseSettingsOption(weeklyAnchor, '5');
     await expect(section).toContainText(
       'Every Friday, covering the previous week.',
     );
@@ -105,9 +106,9 @@ test('connected cloud Work Digest settings load and save through the server mirr
     await app.openSettingsSection('notifications');
     await app.expectSettingsSection('notifications');
 
-    await expect(window.getByTestId('cloud-digest-anchor-weekly')).toHaveValue(
-      '5',
-    );
+    await expect(
+      window.getByTestId('cloud-digest-anchor-weekly'),
+    ).toHaveAttribute('data-value', '5');
     await expect(window.getByTestId('settings-cloud-digests')).toContainText(
       'Every Friday, covering the previous week.',
     );

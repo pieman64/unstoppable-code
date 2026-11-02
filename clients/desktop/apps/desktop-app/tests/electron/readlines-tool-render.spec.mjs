@@ -133,6 +133,10 @@ test('renders ReadLines last-line labels in the desktop chat transcript', async 
     const app = new CanopyAppDriver(window);
 
     await app.waitForShell();
+    // This fixture asserts the individual ReadLines step.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openChatPage();
 
     const page = window.getByTestId('page-chat');

@@ -43,6 +43,7 @@ function entry(overrides: Partial<AgentAuditEntry> = {}): AgentAuditEntry {
       read: 0,
       readLines: 0,
       writeEdit: 0,
+      plan: 0,
       fileEdit: 0,
       fileAdd: 0,
       fileDelete: 0,
@@ -61,7 +62,9 @@ function entry(overrides: Partial<AgentAuditEntry> = {}): AgentAuditEntry {
       scriptOutput: 0,
       watcher: 0,
       canopy: 0,
+      graph: 0,
       appAdvisor: 0,
+      pipelineEditor: 0,
       mcp: 0,
       other: 0,
     },
@@ -245,7 +248,7 @@ describe('buildTodayData', () => {
     const data = buildTodayData(
       [
         entry({
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineExecutionId: 'execution-1234567890',
         }),
       ],
@@ -256,7 +259,7 @@ describe('buildTodayData', () => {
     expect(data.pipelineRows).toEqual([
       {
         key: 'untitled-pipeline',
-        label: 'Untitled pipeline',
+        label: 'Untitled workflow',
         count: 1,
       },
     ]);
@@ -267,13 +270,13 @@ describe('buildTodayData', () => {
       [
         entry({
           id: 'entry-1',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineId: 'project--deploy.yaml',
           pipelineExecutionId: 'execution-1234567890',
         }),
         entry({
           id: 'entry-2',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineId: 'project--deploy.yaml',
           pipelineName: 'Deploy to Staging',
           pipelineExecutionId: 'execution-0987654321',
@@ -297,7 +300,7 @@ describe('buildTodayData', () => {
       [
         entry({
           id: 'entry-1',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineId: 'project--deploy.yaml',
           pipelineName: 'Deploy to Staging',
           pipelineExecutionId: 'execution-1234567890',
@@ -306,7 +309,7 @@ describe('buildTodayData', () => {
         }),
         entry({
           id: 'entry-2',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineId: 'project--deploy.yaml',
           pipelineName: 'Deploy to Staging',
           pipelineExecutionId: 'execution-1234567890',
@@ -333,12 +336,12 @@ describe('buildTodayData', () => {
       [
         entry({
           id: 'entry-1',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineExecutionId: 'execution-1234567890',
         }),
         entry({
           id: 'entry-2',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineId: 'project--deploy.yaml',
           pipelineName: 'Deploy to Staging',
           pipelineExecutionId: 'execution-1234567890',
@@ -362,12 +365,12 @@ describe('buildTodayData', () => {
       [
         entry({
           id: 'entry-1',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineExecutionId: 'execution-a',
         }),
         entry({
           id: 'entry-2',
-          eventType: 'pipeline_step',
+          eventType: 'pipeline_agent_turn',
           pipelineExecutionId: 'execution-b',
         }),
       ],
@@ -379,7 +382,7 @@ describe('buildTodayData', () => {
     expect(data.pipelineRows).toEqual([
       {
         key: 'untitled-pipeline',
-        label: 'Untitled pipeline',
+        label: 'Untitled workflow',
         count: 2,
       },
     ]);

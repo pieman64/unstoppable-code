@@ -11,7 +11,8 @@ export type TerminalRunStage = 'hydrate' | 'spawn' | 'reveal' | 'write';
 export class TerminalRunError extends Error {
   readonly stage: TerminalRunStage;
   readonly session: TerminalSession | null;
-  readonly cause: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause: unknown;
 
   constructor(
     stage: TerminalRunStage,

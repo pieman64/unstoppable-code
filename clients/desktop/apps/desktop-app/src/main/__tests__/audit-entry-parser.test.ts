@@ -70,6 +70,24 @@ describe('audit-entry-parser', () => {
     });
   });
 
+  it.each(['Pipeline Editor', 'Workflow Editor'])(
+    'keeps the stored %s audit label',
+    (label) => {
+      const entry = normalizeAuditEntry({
+        id: `entry-${label}`,
+        eventType: 'pipeline_editor',
+        status: 'success',
+        provider: 'codex',
+        label,
+        startedAt: '2026-06-24T12:00:00.000Z',
+        tokens: {},
+        toolCounts: {},
+      });
+
+      expect(entry).toMatchObject({ eventType: 'pipeline_editor', label });
+    },
+  );
+
   it('round-trips subscription attribution and aiCreditsRouted', () => {
     const entry = normalizeAuditEntry({
       id: 'entry-3',

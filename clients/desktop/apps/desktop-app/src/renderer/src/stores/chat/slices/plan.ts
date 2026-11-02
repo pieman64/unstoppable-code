@@ -1,3 +1,4 @@
+import { isScopeRevisionedLive } from './revisioned';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { worktreeKey } from '../utils';
@@ -30,6 +31,7 @@ import {
   type UnreadChatToastOptions,
 } from '../notifications';
 import { useActivityStore } from '../../activityStore';
+import { reconcileExecutedPlan } from '@/lib/plans/reconcile-tracked-plans';
 import {
   getActiveWorktreeChatContext,
   updateCapturedChatTab,
@@ -45,6 +47,11 @@ import {
 import { type WorktreeChatState } from '../types';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatPlanSlice } from '../state';
+
+const pendingPlanMutationsByStore = new WeakMap<
+  () => ChatState,
+  Map<string, symbol>
+>();
 
 // Retain the canonical identity until projection finishes, including plan-file
 // preparation. Revisions arriving meanwhile must update this same plan.
@@ -115,37 +122,155 @@ function commitPlanExitResolution(
     });
 }
 
+const planApprovalsInFlight = new Map<string, Promise<void>>();
+
+async function approveResolvedPlanExit(
+  target: PlanExitTarget,
+  get: () => ChatState,
+  set: (fn: (state: ChatState) => Partial<ChatState>) => void,
+): Promise<void> {
+  const source =
+    target.pending?.source ??
+    target.tab.pendingPlanExit?.source ??
+    target.tab.trackedPlanSource ??
+    'claude';
+  // Cursor cannot consume its proposal until implementation admission is
+  // coordinated with the durable review resolution.
+  if (source === 'cursor') return;
+
+  if (source === 'opencode') {
+    const requestId =
+      target.pending?.requestId ?? target.tab.pendingPlanExitRequestId;
+    const planId = target.tab.trackedPlanId;
+    const revisionNumber = target.tab.latestRevisionNumber;
+    if (!requestId || !planId || revisionNumber === undefined) return;
+    // The canonical send atomically validates this proposal and persists
+    // its approval before starting implementation. Do not clear it first.
+    const disposition = await get().dispatchChatCommand(
+      { projectId: target.projectId, worktreeId: target.worktreeId },
+      {
+        type: 'chat.send_message',
+        chatId: target.targetChatId,
+        userMessageId: `plan-implementation-${crypto.randomUUID()}`,
+        text: 'Approved. Implement the plan.',
+        planReviewApproval: { requestId, planId, revisionNumber },
+      },
+    );
+    if (disposition !== 'accepted') return;
+    set((state) => {
+      const pendingPlanExits = { ...state.pendingPlanExits };
+      delete pendingPlanExits[requestId];
+      return { pendingPlanExits };
+    });
+    await reconcileExecutedPlan(
+      {
+        projectId: target.projectId,
+        worktreeId: target.worktreeId,
+        chatId: target.targetChatId,
+      },
+      planId,
+    );
+    return;
+  }
+  const proposal = isPlanProposal({
+    reviewMode: (target.pending?.toolInput ?? target.tab.pendingPlanExit)
+      ?.reviewMode,
+    source,
+  });
+  const applied = await commitPlanExitResolution(
+    get,
+    {
+      ...target,
+      expectedPendingPlanExitRequestId:
+        target.pending?.requestId ?? target.tab.pendingPlanExitRequestId,
+    },
+    false,
+    target.tab.trackedPlanId ? 'approved' : undefined,
+  );
+  if (!applied) return;
+  // The chat decision is committed. Synchronize the tracked plan alongside
+  // the implementation send; a failed sync is reported, never replayed here.
+  const reviewSync = updateTrackedPlanReview(target, 'approved');
+
+  set((state) =>
+    applyPlanExitTabReviewState(state, target, applyApprovedTrackedPlanToTab),
+  );
+  scheduleIdleChatUnload();
+
+  void get().sendMessage(
+    proposal ? 'Approved. Implement the plan.' : 'Approved',
+    undefined,
+    {
+      projectId: target.projectId,
+      worktreeId: target.worktreeId,
+      chatId: target.targetChatId,
+    },
+  );
+  await reviewSync;
+}
+
 export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
   set,
   get,
 ) => ({
   pendingPlanExits: {},
 
-  togglePlanMode: (target): void => {
+  togglePlanMode: (target, onActivated): void => {
     const sel = target
       ? { projectId: target.projectId, worktreeId: target.worktreeId }
       : get().selectedWorktree;
-    if (!sel) return;
-    if (isCoworkChatTarget(sel.projectId)) return;
+    if (!sel) {
+      onActivated?.(false);
+      return;
+    }
+    if (isCoworkChatTarget(sel.projectId)) {
+      onActivated?.(false);
+      return;
+    }
 
     const key = worktreeKey(sel);
     const wc = get().worktreeChats[key];
-    if (!wc) return;
+    if (!wc) {
+      onActivated?.(false);
+      return;
+    }
 
     const chatId = target ? target.chatId : wc.activeTabId;
     const tab = wc.tabs.find((t) => t.id === chatId);
-    if (!tab) return;
-    if (tab.kind === 'file') return;
+    if (!tab) {
+      onActivated?.(false);
+      return;
+    }
+    if (tab.kind === 'file') {
+      onActivated?.(false);
+      return;
+    }
 
+    // An acknowledged hint request means enable, including after waiting for
+    // eager creation. Another control may already have enabled this target.
+    if (onActivated && tab.planMode) {
+      onActivated(true);
+      return;
+    }
     const capturedTarget = { ...sel, chatId };
     const eagerCreation = pendingEagerChatCreation(capturedTarget);
     if (eagerCreation) {
       void eagerCreation.then((ready) => {
-        if (ready) get().togglePlanMode(capturedTarget);
+        if (ready) get().togglePlanMode(capturedTarget, onActivated);
+        else onActivated?.(false);
       });
       return;
     }
     const enabled = !tab.planMode;
+    let pendingPlanMutations = pendingPlanMutationsByStore.get(get);
+    if (!pendingPlanMutations) {
+      pendingPlanMutations = new Map();
+      pendingPlanMutationsByStore.set(get, pendingPlanMutations);
+    }
+    const mutations = pendingPlanMutations;
+    const mutationKey = `${key}/${chatId}`;
+    const mutation = Symbol();
+    mutations.set(mutationKey, mutation);
 
     if (!enabled && (tab.pendingPlanExit || hasPendingTrackedPlanReview(tab))) {
       const requestId = findPendingPlanExitRequestIdForChat(
@@ -154,7 +279,7 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
         sel.worktreeId,
         chatId,
       );
-      get().denyPlanExit(requestId ?? '');
+      void get().denyPlanExit(requestId ?? '');
     } else {
       set((state) => {
         const currentWc = state.worktreeChats[key];
@@ -169,12 +294,45 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
       });
     }
 
-    void window.api.chat.togglePlanMode({
-      projectId: sel.projectId,
-      worktreeId: sel.worktreeId,
-      chatId,
-      enabled,
-    });
+    void window.api.chat
+      .togglePlanMode({
+        projectId: sel.projectId,
+        worktreeId: sel.worktreeId,
+        chatId,
+        enabled,
+      })
+      .then(
+        () => onActivated?.(enabled),
+        () => {
+          if (onActivated) {
+            // Only the hint requests acknowledgement. A failed activation restores
+            // that same target; normal plan controls retain their existing behavior.
+            set((state) => {
+              const current = state.worktreeChats[key];
+              if (!current || mutations.get(mutationKey) !== mutation)
+                return state;
+              return {
+                worktreeChats: {
+                  ...state.worktreeChats,
+                  [key]: {
+                    ...current,
+                    tabs: current.tabs.map((candidate) =>
+                      candidate.id === chatId
+                        ? { ...candidate, planMode: tab.planMode }
+                        : candidate,
+                    ),
+                  },
+                },
+              };
+            });
+            onActivated(false);
+          }
+        },
+      )
+      .finally(() => {
+        if (mutations.get(mutationKey) === mutation)
+          mutations.delete(mutationKey);
+      });
     // A live managed terminal only honors the new permission mode after a
     // relaunch with fresh CLI args.
     void restartClaudeTerminalForSettingsChange(sel, chatId).catch(
@@ -195,6 +353,19 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
     const key = `${event.projectId}/${event.worktreeId}`;
     if (!canReceiveWorktreeChatActivity(event.projectId, event.worktreeId)) {
       return;
+    }
+
+    // Canonical deltas own review identity in revisioned scopes. A delayed
+    // notification cannot restore a retired request or replace its successor.
+    if (isScopeRevisionedLive(get(), event.projectId, event.worktreeId)) {
+      const tab = get().worktreeChats[key]?.tabs.find(
+        (entry) => entry.id === event.chatId,
+      );
+      if (
+        !tab?.pendingPlanExit ||
+        tab.pendingPlanExitRequestId !== event.requestId
+      )
+        return;
     }
 
     if (!recovering) recordWorktreeChatTouch(key);
@@ -474,169 +645,107 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
     }
   },
 
-  approvePlanExit: (requestId): void => {
+  approvePlanExit: (requestId): Promise<void> => {
+    const target = getPlanExitTarget(requestId, get());
+    if (!target) return Promise.resolve();
+    if (
+      !target.pending &&
+      !target.tab.pendingPlanExit &&
+      !hasPendingTrackedPlanReview(target.tab)
+    ) {
+      return Promise.resolve();
+    }
+
+    // A repeated approval for the same request while one is settling joins it
+    // instead of sending the implementation request again.
+    const approvalId =
+      target.pending?.requestId ??
+      target.tab.pendingPlanExitRequestId ??
+      `${target.tab.trackedPlanId ?? ''}/${target.tab.latestRevisionNumber ?? ''}`;
+    const inFlightKey = `${target.key}/${target.targetChatId}/${approvalId}`;
+    const inFlight = planApprovalsInFlight.get(inFlightKey);
+    if (inFlight) return inFlight;
+
+    const approval = approveResolvedPlanExit(target, get, set).finally(() => {
+      planApprovalsInFlight.delete(inFlightKey);
+    });
+    planApprovalsInFlight.set(inFlightKey, approval);
+    return approval;
+  },
+
+  denyPlanExit: async (requestId): Promise<void> => {
     const target = getPlanExitTarget(requestId, get());
     if (!target) return;
 
-    const source =
-      target.pending?.source ??
-      target.tab.pendingPlanExit?.source ??
-      target.tab.trackedPlanSource ??
-      'claude';
-    // Cursor cannot consume its proposal until implementation admission is
-    // coordinated with the durable review resolution.
-    if (source === 'cursor') return;
+    const applied = await commitPlanExitResolution(
+      get,
+      {
+        ...target,
+        expectedPendingPlanExitRequestId:
+          target.pending?.requestId ?? target.tab.pendingPlanExitRequestId,
+      },
+      false,
+      target.tab.trackedPlanId ? 'dismissed' : undefined,
+    );
+    if (!applied) return;
 
-    if (source === 'opencode') {
-      const requestId =
-        target.pending?.requestId ?? target.tab.pendingPlanExitRequestId;
-      const planId = target.tab.trackedPlanId;
-      const revisionNumber = target.tab.latestRevisionNumber;
-      if (!requestId || !planId || revisionNumber === undefined) return;
-      // The canonical send atomically validates this proposal and persists
-      // its approval before starting implementation. Do not clear it first.
-      void get()
-        .dispatchChatCommand(
-          { projectId: target.projectId, worktreeId: target.worktreeId },
-          {
-            type: 'chat.send_message',
-            chatId: target.targetChatId,
-            userMessageId: `plan-implementation-${crypto.randomUUID()}`,
-            text: 'Approved. Implement the plan.',
-            planReviewApproval: { requestId, planId, revisionNumber },
-          },
-        )
-        .then((disposition) => {
-          if (disposition !== 'accepted') return;
-          set((state) => {
-            const pendingPlanExits = { ...state.pendingPlanExits };
-            delete pendingPlanExits[requestId];
-            return { pendingPlanExits };
-          });
-          void useActivityStore
-            .getState()
-            .loadTrackedPlans(target.projectId, target.worktreeId);
-        });
-      return;
+    let reviewSync: Promise<unknown> | undefined;
+    if (target.tab.trackedPlanId) {
+      reviewSync = updateTrackedPlanReview(target, 'dismissed');
+    } else if (requestId) {
+      void window.api.chat.denyPlanExit({ requestId });
     }
-    const proposal = isPlanProposal({
-      reviewMode: (target.pending?.toolInput ?? target.tab.pendingPlanExit)
-        ?.reviewMode,
-      source,
-    });
-    void (async (): Promise<void> => {
-      const applied = await commitPlanExitResolution(
-        get,
+
+    set((state) =>
+      applyPlanExitTabReviewState(
+        state,
+        target,
+        applyDismissedTrackedPlanToTab,
+      ),
+    );
+    scheduleIdleChatUnload();
+    await reviewSync;
+  },
+
+  dismissPlanForPipeline: async (requestId): Promise<void> => {
+    const target = getPlanExitTarget(requestId, get());
+    if (!target) return;
+
+    const applied = await commitPlanExitResolution(
+      get,
+      {
+        ...target,
+        expectedPendingPlanExitRequestId:
+          target.pending?.requestId ?? target.tab.pendingPlanExitRequestId,
+      },
+      false,
+      target.tab.trackedPlanId ? 'approved' : undefined,
+    );
+    if (!applied) return;
+
+    // Implicit plan approval is performed authoritatively in the main process
+    // (`startPipelineExecutionFromMain`) for every `plan_ready` run, so we no
+    // longer emit a duplicate approval here. Refetch that authoritative plan.
+    set((state) =>
+      applyPlanExitTabReviewState(state, target, applyApprovedTrackedPlanToTab),
+    );
+    notifyPlanModeDisabled(
+      target.projectId,
+      target.worktreeId,
+      target.targetChatId,
+    );
+    scheduleIdleChatUnload();
+    if (target.tab.trackedPlanId) {
+      // The workflow already launched; a failed refresh must not relaunch it.
+      await reconcileExecutedPlan(
         {
-          ...target,
-          expectedPendingPlanExitRequestId:
-            target.pending?.requestId ?? target.tab.pendingPlanExitRequestId,
-        },
-        false,
-        target.tab.trackedPlanId ? 'approved' : undefined,
-      );
-      if (!applied) return;
-      updateTrackedPlanReview(target, 'approved');
-
-      set((state) =>
-        applyPlanExitTabReviewState(
-          state,
-          target,
-          applyApprovedTrackedPlanToTab,
-        ),
-      );
-      scheduleIdleChatUnload();
-
-      if (proposal) {
-        void get().sendMessage('Approved. Implement the plan.', undefined, {
           projectId: target.projectId,
           worktreeId: target.worktreeId,
           chatId: target.targetChatId,
-        });
-        return;
-      }
-
-      void get().sendMessage('Approved', undefined, {
-        projectId: target.projectId,
-        worktreeId: target.worktreeId,
-        chatId: target.targetChatId,
-      });
-    })();
-  },
-
-  denyPlanExit: (requestId): void => {
-    const target = getPlanExitTarget(requestId, get());
-    if (!target) return;
-
-    void (async (): Promise<void> => {
-      const applied = await commitPlanExitResolution(
-        get,
-        {
-          ...target,
-          expectedPendingPlanExitRequestId:
-            target.pending?.requestId ?? target.tab.pendingPlanExitRequestId,
         },
-        false,
-        target.tab.trackedPlanId ? 'dismissed' : undefined,
+        target.tab.trackedPlanId,
       );
-      if (!applied) return;
-
-      if (target.tab.trackedPlanId) {
-        updateTrackedPlanReview(target, 'dismissed');
-      } else if (requestId) {
-        void window.api.chat.denyPlanExit({ requestId });
-      }
-
-      set((state) =>
-        applyPlanExitTabReviewState(
-          state,
-          target,
-          applyDismissedTrackedPlanToTab,
-        ),
-      );
-      scheduleIdleChatUnload();
-    })();
-  },
-
-  dismissPlanForPipeline: (requestId): void => {
-    const target = getPlanExitTarget(requestId, get());
-    if (!target) return;
-
-    void (async (): Promise<void> => {
-      const applied = await commitPlanExitResolution(
-        get,
-        {
-          ...target,
-          expectedPendingPlanExitRequestId:
-            target.pending?.requestId ?? target.tab.pendingPlanExitRequestId,
-        },
-        false,
-        target.tab.trackedPlanId ? 'approved' : undefined,
-      );
-      if (!applied) return;
-
-      // Implicit plan approval is performed authoritatively in the main process
-      // (`startPipelineExecutionFromMain`) for every `plan_ready` run, so we no
-      // longer emit a duplicate approval here. Refetch that authoritative plan.
-      set((state) =>
-        applyPlanExitTabReviewState(
-          state,
-          target,
-          applyApprovedTrackedPlanToTab,
-        ),
-      );
-      if (target.tab.trackedPlanId) {
-        void useActivityStore
-          .getState()
-          .loadTrackedPlans(target.projectId, target.worktreeId);
-      }
-      notifyPlanModeDisabled(
-        target.projectId,
-        target.worktreeId,
-        target.targetChatId,
-      );
-      scheduleIdleChatUnload();
-    })();
+    }
   },
 
   markTrackedPlanExecuted: ({ projectId, worktreeId, planId }): void => {
@@ -710,7 +819,7 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
     if (!context) return;
     const { activeTab: tab } = context;
     if (tab?.trackedPlanId) {
-      get().denyPlanExit('');
+      void get().denyPlanExit('');
       return;
     }
 

@@ -1,6 +1,7 @@
 import {
   CHAT_LABEL,
   CHAT_UNIT_LABEL_PLURAL,
+  ORCHESTRATOR_LABEL,
   WORKTREE_LABEL,
 } from '@canopy/protocol';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
@@ -34,15 +35,15 @@ export const MULTI_AGENT_ROW_DESCRIPTORS: readonly MultiAgentRowDescriptor[] = [
   },
   {
     field: 'codexMultiAgentAppAdvisorEnabled',
-    title: 'App Advisor',
-    helperText: 'Applies to Codex-backed App Advisor chats.',
+    title: ORCHESTRATOR_LABEL,
+    helperText: `Applies to Codex-backed ${ORCHESTRATOR_LABEL} chats.`,
     testId: 'settings-codex-multi-agent-app-advisor',
   },
   {
     field: 'codexMultiAgentPipelinesEnabled',
-    title: 'Pipelines',
+    title: 'Workflows',
     helperText:
-      'Applies to Codex-backed pipeline actions such as Agent Prompt and Agent Resume.',
+      'Applies to Codex-backed workflow actions such as Agent Prompt and Agent Resume.',
     testId: 'settings-codex-multi-agent-pipelines',
   },
 ] as const;

@@ -4,6 +4,7 @@ import type {
   LedgerEntriesSearchParams,
   LedgerEntriesSearchResult,
   LedgerEntrySearchItem,
+  LedgerGlobalOwner,
 } from '@canopy/protocol/canopy-core';
 import type {
   LedgerMirrorAudience,
@@ -13,12 +14,13 @@ import type {
   LedgerMirrorSearchResponse,
   LedgerMirrorSource,
 } from '@canopy/protocol/ledger-sync';
-import type {
-  LedgerFeedFilters,
-  LedgerFeedPage,
-  LedgerFeedRequest,
-  LedgerViewResult,
-  LedgerViewScope,
+import {
+  ledgerViewScopeKey,
+  type LedgerFeedFilters,
+  type LedgerFeedPage,
+  type LedgerFeedRequest,
+  type LedgerViewResult,
+  type LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
 import type {
   LedgerMirrorReadResult,
@@ -100,16 +102,29 @@ function worktree(id: string): LedgerContainer {
   return { kind: 'code_worktree', workspaceId: 'workspace-1', worktreeId: id };
 }
 
-function viewScope(container: LedgerContainer): LedgerViewScope {
-  return container.kind === 'advisor_entry'
-    ? { projectId: container.appWorkspaceId, worktreeId: container.entryId }
-    : {
-        projectId: container.workspaceId,
-        worktreeId:
-          container.kind === 'code_worktree'
-            ? container.worktreeId
-            : container.entryId,
+function viewScope(
+  container: LedgerContainer,
+  ledgerId: string,
+): LedgerViewScope {
+  switch (container.kind) {
+    case 'advisor_entry':
+      return {
+        projectId: container.appWorkspaceId,
+        worktreeId: container.entryId,
       };
+    case 'global':
+      return { kind: 'global', owner: container.owner, ledgerId };
+    case 'code_worktree':
+      return {
+        projectId: container.workspaceId,
+        worktreeId: container.worktreeId,
+      };
+    case 'cowork_entry':
+      return {
+        projectId: container.workspaceId,
+        worktreeId: container.entryId,
+      };
+  }
 }
 
 function newestFirst(
@@ -131,6 +146,28 @@ interface LocalScope {
 class FakeLocalLedger {
   readonly scopes: LocalScope[] = [];
   readonly searches: Array<{ worktreeId: string; cursor?: string }> = [];
+
+  /** A global (workflow) Ledger of this device. */
+  addGlobal(
+    id: string,
+    owner: LedgerGlobalOwner,
+    entries: LedgerEntrySearchItem[],
+    options: { accountId?: string | null } = {},
+  ): string {
+    const ledgerId = `00000000-0000-4000-8000-${id.padStart(12, 'f')}`;
+    this.scopes.push({
+      scope: {
+        ledgerId,
+        accountId:
+          options.accountId === undefined ? ACCOUNT_ID : options.accountId,
+        container: { kind: 'global', owner },
+        containerCreatedAt: `2026-09-01T00:00:0${String(this.scopes.length)}.000Z`,
+        archived: false,
+      },
+      entries: [...entries].sort(newestFirst),
+    });
+    return ledgerId;
+  }
   readonly incarnations: LedgerFeedScopeIncarnation[] = [];
   failNext: LedgerViewResult<never> | null = null;
 
@@ -161,7 +198,7 @@ class FakeLocalLedger {
   ): Promise<LedgerViewResult<LedgerEntriesSearchResult>> => {
     this.incarnations.push(incarnation);
     this.searches.push({
-      worktreeId: scope.worktreeId,
+      worktreeId: 'kind' in scope ? scope.ledgerId : scope.worktreeId,
       ...(params.cursor === undefined ? {} : { cursor: params.cursor }),
     });
     if (this.failNext !== null) {
@@ -171,7 +208,9 @@ class FakeLocalLedger {
     }
     const local = this.scopes.find(
       (candidate) =>
-        viewScope(candidate.scope.container).worktreeId === scope.worktreeId,
+        ledgerViewScopeKey(
+          viewScope(candidate.scope.container, candidate.scope.ledgerId),
+        ) === ledgerViewScopeKey(scope),
     );
     if (local === undefined) {
       return Promise.resolve({ status: 'unavailable', reason: 'no_scope' });
@@ -483,6 +522,57 @@ describe('LedgerFeedService', () => {
       const device = okPage(await harness.search({ audience: 'this_device' }));
       expect(titles(device)).toEqual([own.title]);
       expect(harness.mirror.requests).toEqual([]);
+    });
+
+    it('merges global (workflow) rows, labeled by owner, without duplicates', async () => {
+      const ORG_ID = '00000000-0000-4000-8000-0000000000b1';
+      const own = item(50);
+      const mirroredHere = item(60);
+      const teammate = item(40);
+      const otherAccount = item(30);
+      const ledgerId = harness.local.addGlobal('g-1', { kind: 'personal' }, [
+        own,
+      ]);
+      // Another account's global Ledger on this installation stays its own.
+      harness.local.addGlobal('g-2', { kind: 'personal' }, [otherAccount], {
+        accountId: OTHER_ACCOUNT_ID,
+      });
+      harness.mirror.rows.mine.push({
+        // This device's own global entry, as the mirror holds it.
+        ...mirrorEntry(mirroredHere, OTHER_DEVICE, ledgerId),
+        scopeKind: 'global',
+        globalOwner: { kind: 'personal' },
+      });
+      harness.mirror.rows.teammates.push({
+        ...mirrorEntry(
+          teammate,
+          TEAMMATE,
+          '00000000-0000-4000-8000-ffffffffff99',
+        ),
+        scopeKind: 'global',
+        globalOwner: { kind: 'organization', organizationId: ORG_ID },
+        organizationName: 'Acme',
+      });
+
+      const page = okPage(await harness.search({ audience: 'teammates' }));
+
+      expect(titles(page)).toEqual([own.title, teammate.title]);
+      expect(page.rows[0]).toMatchObject({
+        ledgerId,
+        scopeKind: 'global',
+        origin: {
+          kind: 'this_device',
+          scope: { kind: 'global', owner: { kind: 'personal' }, ledgerId },
+        },
+      });
+      expect(page.rows[1]).toMatchObject({
+        scopeKind: 'global',
+        origin: { kind: 'teammate', teammateName: 'Ada' },
+        global: {
+          owner: { kind: 'organization', organizationId: ORG_ID },
+          organizationName: 'Acme',
+        },
+      });
     });
 
     it('passes the same filters to every stream', async () => {

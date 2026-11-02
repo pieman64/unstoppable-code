@@ -195,10 +195,18 @@ describe('HookActionEditor helpers', () => {
       expect(get).not.toHaveBeenCalledWith(
         expect.objectContaining({ source: 'curated' }),
       );
-      const filter = Array.from(container.querySelectorAll('button')).find(
-        (button) => button.textContent === 'Curated',
+      const sourceFilter = container.querySelector<HTMLElement>(
+        '[data-testid="hook-workflow-source-filter"]',
       );
-      expect(filter).toBeDefined();
+      expect(sourceFilter).not.toBeNull();
+      await act(async () => {
+        sourceFilter?.click();
+        await Promise.resolve();
+      });
+      const filter = document.querySelector<HTMLElement>(
+        '[data-testid="hook-workflow-source-curated"]',
+      );
+      expect(filter).not.toBeNull();
       await act(async () => {
         filter?.click();
         await Promise.resolve();
@@ -483,14 +491,19 @@ describe('HookActionEditor helpers', () => {
   });
 
   it('preserves interactive command state across edits and trimming', () => {
-    const action = buildCommandAction(
+    const builtAction = buildCommandAction(
       ' read name ',
       'command-action',
       undefined,
       true,
     );
+    if (builtAction.type !== 'command') {
+      throw new Error('Expected buildCommandAction to return a command action');
+    }
 
-    expect(updateCommandAction(action, { command: 'read answer' })).toEqual({
+    expect(
+      updateCommandAction(builtAction, { command: 'read answer' }),
+    ).toEqual({
       uiId: 'command-action',
       type: 'command',
       command: 'read answer',

@@ -34,6 +34,14 @@ const QUEUED_MESSAGE_EDITOR_SOURCE = readFileSync(
   join(__dirname, '..', 'QueuedMessageEditor.tsx'),
   'utf-8',
 );
+const QUEUED_MESSAGE_COMPOSER_EDITOR_SOURCE = readFileSync(
+  join(__dirname, '..', 'useQueuedMessageComposerEditor.tsx'),
+  'utf-8',
+);
+const SCHEDULED_AS_QUEUED_SOURCE = readFileSync(
+  join(__dirname, '..', 'scheduledMessageAsQueuedMessage.ts'),
+  'utf-8',
+);
 const COMPOSER_LAYOUT_SOURCE = readFileSync(
   join(__dirname, '..', 'ComposerLayout.tsx'),
   'utf-8',
@@ -61,11 +69,9 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     // The banner markup lives in the shared AiCreditsUsageLimitBanner so every
     // chat surface renders it; ChatInput wires session scheduling independently
     // from the still-code-worktree-only "just this time" affordance (CAN-838).
+    expect(USAGE_LIMIT_BANNER_SOURCE).toContain('<UsageLimitNotice');
     expect(USAGE_LIMIT_BANNER_SOURCE).toContain(
-      'title={`${providerName} usage limit reached`}',
-    );
-    expect(USAGE_LIMIT_BANNER_SOURCE).toContain(
-      'Continue on ${brandText.appName} credits or wait for your quota to reset',
+      'Do you want to use ${creditsNoun} to keep going?',
     );
     // Schedule Resume remains available alongside immediate AI Credits
     // recovery options when the persisted chat surface supports scheduling.
@@ -78,18 +84,19 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     expect(USAGE_LIMIT_BANNER_SOURCE).toContain(
       'dismissTestId="chat-input-usage-limit-dismiss"',
     );
-    // Text-only action labels that name the resource and timing.
-    expect(USAGE_LIMIT_BANNER_SOURCE).toContain('Use credits now');
-    expect(USAGE_LIMIT_BANNER_SOURCE).toContain('Always use credits');
+    // Short text-only labels that answer the message's question.
+    expect(USAGE_LIMIT_BANNER_SOURCE).toContain('Just this chat');
+    expect(USAGE_LIMIT_BANNER_SOURCE).toContain('Always');
     expect(USAGE_LIMIT_BANNER_SOURCE).not.toMatch(
       /<(TimeFlies|Autoplay|Schedule)Icon\b/,
     );
-    // Three actions drop to their own row under the message.
-    expect(USAGE_LIMIT_BANNER_SOURCE).toContain(
-      "const actionsPlacement = actionCount >= 3 ? 'below' : 'trailing';",
+    // Answers to the question, the switch to the credits model (CAN-4900),
+    // and three or more actions drop to their own row under the message.
+    expect(USAGE_LIMIT_BANNER_SOURCE).toMatch(
+      /asksToUseCredits\s*\|\|\s*showModelSwitch\s*\|\|\s*visibleHandoff !== null\s*\|\|\s*actionCount >= 3/,
     );
     // The live-region role and surface come from the shared `Notice`.
-    expect(USAGE_LIMIT_BANNER_SOURCE).toMatch(/<Notice\s+intent="attention"/);
+    expect(USAGE_LIMIT_BANNER_SOURCE).toMatch(/<UsageLimitNotice\s+provider=/);
     // Provider and interface-mode decisions: composer-workflow-gates.test.ts.
     expect(CHAT_INPUT_SOURCE).toContain(
       'const supportsScheduledSends = workflowGates.scheduledSends;',
@@ -103,14 +110,22 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     expect(CHAT_INPUT_SOURCE).toContain('tab?.llmProviderUsageLimitBanner');
     expect(CHAT_INPUT_SOURCE).toContain('setUsageLimitBanner(bannerTarget');
     expect(CHAT_INPUT_SOURCE).toContain('selectProviderUsageLimitResumeAt(');
-    // The immediate (no reset time) resume dispatches the computed resume
-    // prompt: the user's last message when that turn only hit the usage limit,
-    // otherwise the plain "Continue" nudge.
+    // The immediate (no reset time) resume goes through the trusted resume
+    // entry, which derives the prompt and records it as sent automatically
+    // (CAN-4897); the composer send path never carries resume provenance.
+    expect(CHAT_INPUT_SOURCE).toContain(
+      'await window.api.resumeUsageLimitedChats({',
+    );
+    expect(CHAT_INPUT_SOURCE).toContain(
+      'clearResumedChatUsageLimitBanner(target);',
+    );
+    // A scheduled resume still stores the computed prompt; main revalidates
+    // the interruption and re-derives it when the job runs.
     expect(CHAT_INPUT_SOURCE).toContain('computeUsageLimitResumePrompt(');
-    expect(CHAT_INPUT_SOURCE).toContain('await sendMessage(');
-    expect(CHAT_INPUT_SOURCE).toContain('resumePrompt.text,');
-    expect(CHAT_INPUT_SOURCE).toContain('resumePrompt.fileReferences,');
-    expect(CHAT_INPUT_SOURCE).toContain("resumePrompt.inputMode ?? 'typed',");
+    expect(CHAT_INPUT_SOURCE).toContain('prompt: resumePrompt.text,');
+    expect(CHAT_INPUT_SOURCE).toContain(
+      "inputMode: resumePrompt.inputMode ?? 'typed',",
+    );
     expect(CHAT_INPUT_SOURCE).toContain('resumePrompt.attachmentPaths');
     expect(CHAT_INPUT_SOURCE).toContain(
       'resumePrompt.attachmentPromptContexts',
@@ -270,6 +285,36 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     );
   });
 
+  it('reports only accepted new turns to onboarding tips (CAN-5005)', () => {
+    const handleSend = CHAT_INPUT_SOURCE.slice(
+      CHAT_INPUT_SOURCE.indexOf('const handleSend = useCallback'),
+    );
+    const acceptSend = handleSend.slice(
+      handleSend.indexOf('const acceptSend = (): void => {'),
+      handleSend.indexOf('};', handleSend.indexOf('const acceptSend')),
+    );
+    // Reported once, from the acceptance callback both send paths share.
+    expect(acceptSend).toContain(
+      'noteOnboardingTurnSent({ worktreeChat: worktreeChatTarget !== null });',
+    );
+    expect(CHAT_INPUT_SOURCE.split('noteOnboardingTurnSent(').length - 1).toBe(
+      1,
+    );
+    expect(handleSend).toContain('onDispatchAccepted: acceptNativeSend');
+    // Question answers, queued-message saves, terminal commands and
+    // scheduled sends return before a turn is accepted.
+    const reported = handleSend.indexOf('noteOnboardingTurnSent(');
+    for (const earlyReturn of [
+      'questionPrompt.prompt.send(text);',
+      'editingState.onSave(',
+      'void handleSendTerminalCommand();',
+      'await handleScheduledSend(',
+    ]) {
+      expect(handleSend.indexOf(earlyReturn)).toBeGreaterThan(-1);
+      expect(handleSend.indexOf(earlyReturn)).toBeLessThan(reported);
+    }
+  });
+
   it('keeps schedule controls ordered and validates the one-time schedule modal defaults', () => {
     // Attachments lead the box above the text; the scheduled send is a chip
     // beside +, after Plan and before the watchers.
@@ -361,7 +406,8 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     expect(CHAT_MESSAGE_LIST_SOURCE).toContain(
       'editingScheduledMessageId === scheduled.automationId',
     );
-    expect(CHAT_MESSAGE_LIST_SOURCE).toMatch(
+    // The scheduled message being edited opens in the composer's place.
+    expect(QUEUED_MESSAGE_COMPOSER_EDITOR_SOURCE).toMatch(
       /<QueuedMessageEditor\s+key=\{`scheduled-editor-\$\{scheduled\.automationId\}`\}/,
     );
     expect(CHAT_INPUT_SOURCE).toContain('editingScheduledSendDraft');
@@ -391,7 +437,7 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     expect(QUEUED_MESSAGE_EDITOR_SOURCE).toContain(
       'scheduledSendDraft: message.scheduledSendDraft',
     );
-    expect(CHAT_MESSAGE_LIST_SOURCE).toContain(
+    expect(SCHEDULED_AS_QUEUED_SOURCE).toContain(
       'scheduledSendDraft: { runAt: scheduled.scheduledAt }',
     );
   });
@@ -408,7 +454,7 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
       'scheduledMessages={scheduledMessages}',
     );
     expect(CHAT_PANEL_SOURCE).toContain(
-      'onSaveEditScheduledMessage={handleSaveScheduledMessage}',
+      'onSaveEditScheduledMessage: handleSaveScheduledMessage',
     );
     expect(CHAT_PANEL_SOURCE).toContain('queuedMessageSchedulingEnabled');
   });

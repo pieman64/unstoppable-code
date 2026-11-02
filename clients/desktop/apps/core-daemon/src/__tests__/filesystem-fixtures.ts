@@ -10,9 +10,18 @@ import {
   createDirectoryReadPreferenceSource,
   createReadOnlyDirectoryInputs,
   type GitIgnoreCheckRequest,
+  type GitIgnoredListingRequest,
   type GitIgnoreHostPort,
   type ReadOnlyDirectoryInputs,
 } from '@canopy/core-runtime/node';
+import {
+  createRecordedWorkerGitHosts,
+  GitRepositoryReadError,
+  type GitRepositoryReader,
+  type GitRepositoryWritePort,
+  type RecordedWorkerGitHosts,
+} from '@canopy/core-runtime/node/git';
+import { CANOPY_IN_PROCESS_WORKER_TARGET_ID } from '@canopy/protocol/canopy-core';
 
 export const TEAM_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 export const TEAM_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -169,19 +178,28 @@ export async function initGitRepository(dataRoot: string): Promise<string> {
 
 export type FakeGit = GitIgnoreHostPort & {
   readonly requests: GitIgnoreCheckRequest[];
+  readonly listings: GitIgnoredListingRequest[];
 };
 
 /** A Git ignore port for tests only; production composes the real host. */
 export function fakeGit(
   behavior: (request: GitIgnoreCheckRequest) => Promise<Set<string>> = () =>
     Promise.resolve(new Set(['dist'])),
+  listing: (request: GitIgnoredListingRequest) => Promise<string[]> = () =>
+    Promise.resolve(['dist/']),
 ): FakeGit {
   const requests: GitIgnoreCheckRequest[] = [];
+  const listings: GitIgnoredListingRequest[] = [];
   return {
     requests,
+    listings,
     checkIgnoredPaths: (request): Promise<Set<string>> => {
       requests.push(request);
       return behavior(request);
+    },
+    listIgnoredPathEntries: (request): Promise<string[]> => {
+      listings.push(request);
+      return listing(request);
     },
   };
 }
@@ -209,5 +227,30 @@ export function untilAborted(request: GitIgnoreCheckRequest): Promise<never> {
     };
     if (request.signal.aborted) abort();
     else request.signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+/** A repository reader for graphs whose tests run no Git query. */
+export const UNAVAILABLE_GIT_READER: GitRepositoryReader = {
+  read: () => Promise.reject(new GitRepositoryReadError('git_unavailable')),
+  selectExecutable: () =>
+    Promise.reject(new GitRepositoryReadError('git_unavailable')),
+};
+
+/** The daemon's recorded `worker.git` hosts over `dataRoot`'s records. */
+export function gitHostsFor(
+  dataRoot: string,
+  authorityId: string,
+  git: GitRepositoryReader = UNAVAILABLE_GIT_READER,
+  writes?: GitRepositoryWritePort,
+): RecordedWorkerGitHosts {
+  return createRecordedWorkerGitHosts({
+    dataRoot,
+    authorityId,
+    recordsTargetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+    os: process.platform,
+    arch: process.arch,
+    git,
+    ...(writes && { writes }),
   });
 }

@@ -30,7 +30,10 @@ test('retired environment variable does not control the delegation setting', asy
     await app.openSettingsSection(stage === 'before' ? 'chat' : 'experiments');
     await expect(
       window.getByTestId('settings-managed-delegation-mode'),
-    ).toHaveValue(stage === 'before' ? 'explicit-only' : 'off');
+    ).toHaveAttribute(
+      'data-value',
+      stage === 'before' ? 'explicit-only' : 'off',
+    );
     mkdirSync(captureDir, { recursive: true });
     const settings = window.getByTestId('managed-delegation-settings');
     await settings.screenshot({

@@ -100,11 +100,17 @@ describe('shared project and worktree dialogs', () => {
       document.querySelectorAll('button'),
     ).find((candidate) => candidate.textContent?.trim() === 'Instructions');
     act(() => instructionsTab?.click());
-    expect(document.body.textContent).toContain(
+    // The tab names the page; there is no subtitle over the editor.
+    expect(document.body.textContent).not.toContain(
       'Extra instructions for agents in this project.',
     );
+    expect(
+      document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Instructions"]',
+      )?.value,
+    ).toBe('Initial instructions');
     const detailsTab = Array.from(document.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.trim() === 'Details',
+      (candidate) => candidate.textContent?.trim() === 'General',
     );
     act(() => detailsTab?.click());
     expect(
@@ -218,9 +224,9 @@ describe('shared project and worktree dialogs', () => {
       );
       act(() => button?.click());
     };
-    clickText('Delete project…');
+    clickText('Delete…');
     await act(async () => {
-      clickText('Confirm delete');
+      clickText('Delete');
       await Promise.resolve();
     });
     expect(document.querySelector('[data-testid="settings"]')).not.toBeNull();

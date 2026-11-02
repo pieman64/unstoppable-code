@@ -7,20 +7,28 @@ const logMainProcessError = jest.fn();
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    appendFinalizedChatTranscriptRecord,
+    get appendFinalizedChatTranscriptRecord(): typeof appendFinalizedChatTranscriptRecord {
+      return appendFinalizedChatTranscriptRecord;
+    },
   })),
 }));
 
 jest.mock('../portal/background-process-tracker', () => ({
-  recordBackgroundProcessChatEvent,
+  get recordBackgroundProcessChatEvent(): typeof recordBackgroundProcessChatEvent {
+    return recordBackgroundProcessChatEvent;
+  },
 }));
 
 jest.mock('../lib/window-send', () => ({
-  sendToAllWindows,
+  get sendToAllWindows(): typeof sendToAllWindows {
+    return sendToAllWindows;
+  },
 }));
 
 jest.mock('../lib/main-process-logging', () => ({
-  logMainProcessError,
+  get logMainProcessError(): typeof logMainProcessError {
+    return logMainProcessError;
+  },
 }));
 
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
@@ -47,9 +55,30 @@ describe('buildSessionEndedTaskNotification', () => {
       status: 'stopped',
       reason: SESSION_ENDED_TASK_NOTIFICATION_REASON,
       summary: SESSION_ENDED_TASK_NOTIFICATION_SUMMARY,
+      canopy_stop_cause: 'session_ended',
       canopy_synthetic: true,
     });
   });
+
+  it.each([
+    ['stop', 'Stopped when the chat was stopped'],
+    ['recycle', 'Stopped when the provider session was recycled'],
+    ['archive', 'Stopped when the chat was archived'],
+    ['crash', 'Stopped when the provider process crashed'],
+    ['external_signal', 'Stopped when the provider process exited'],
+    ['session_ended', 'Stopped when the chat session ended'],
+  ] as const)(
+    'records the %s stop cause and uses a matching summary',
+    (cause, summary) => {
+      const task = { taskId: 'task-1', stopCause: cause };
+      expect(buildSessionEndedTaskNotification(task)).toMatchObject({
+        reason: 'session_ended',
+        summary,
+        canopy_stop_cause: cause,
+        canopy_synthetic: true,
+      });
+    },
+  );
 
   it('carries the correlated tool use and description when they are known', () => {
     expect(

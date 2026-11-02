@@ -1,7 +1,11 @@
 import { LABS_EXPERIMENTS_VERSION_HEADER } from '@canopy/protocol/experiments';
+import { BRAND } from '@canopy/brand/current';
+import { createDesktopLabsAvailabilityFallback } from '../feature-flags/labs-availability';
 import type { LabsAvailabilityState } from '../feature-flags/labs-availability';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
+  CanopyCloudClientError,
+  isTransientCanopyCloudFailure,
   requestCanopyCloudJson,
   type CanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
@@ -81,6 +85,7 @@ export function getLabsExperimentsService(): LabsExperimentsService {
   const instance = new LabsExperimentsService(
     {
       ...labsExperimentStorageDependencies(),
+      availabilityFallback: createDesktopLabsAvailabilityFallback(BRAND.id),
       availability: (): LabsAvailabilityState =>
         flags.getLabsAvailabilityState(),
       fetchChoices: (session): Promise<unknown> =>
@@ -98,6 +103,11 @@ export function getLabsExperimentsService(): LabsExperimentsService {
             credentialContext: credential(session),
           },
         ),
+      // Validated refusals of the request itself; auth failures stay pending.
+      isPermanentRejection: (error): boolean =>
+        error instanceof CanopyCloudClientError &&
+        !isTransientCanopyCloudFailure(error) &&
+        (error.status === 400 || error.status === 409 || error.status === 413),
       diagnostic: (error): void =>
         logMainProcessWarn(
           '[labs-experiments] Experiment cache or synchronization failed.',
@@ -130,9 +140,11 @@ export function getLabsExperimentsService(): LabsExperimentsService {
       void flags.refreshContext();
     }),
     // GitHub, Claude, and Codex targeting is probed live; a confirmed but
-    // unchanged account is its periodic refresh.
+    // unchanged account is its periodic refresh. A confirmation also means
+    // the server answered, so push any Labs choices saved while offline.
     subscribeCanopyCloudAccountConfirmations(() => {
       void flags.refreshContext();
+      void instance.retryPendingSync();
     }),
   ];
   instance.availabilityChanged();
@@ -144,6 +156,8 @@ export async function initializeLabsExperimentsService(): Promise<void> {
 export async function disposeLabsExperimentsService(): Promise<void> {
   for (const dispose of disposers) dispose();
   disposers = [];
+  // A background sync pass may still settle after this; its writes are atomic
+  // and at worst leave a spare pending id, which re-sends the same value.
   await service?.flush();
   service = null;
 }

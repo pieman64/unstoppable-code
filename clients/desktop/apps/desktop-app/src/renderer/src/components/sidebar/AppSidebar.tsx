@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   lazy,
   Suspense,
@@ -50,7 +51,10 @@ import { useDesktopWorkspaceContextAvailability } from '@/hooks/useDesktopWorksp
 import { DesktopSidebarContextSwitcher } from './DesktopSidebarContextSwitcher';
 import { SidebarFooterBanner } from './SidebarFooterBanner';
 import { SidebarNavRow } from './SidebarNavRow';
-import { SidebarScrollArea } from '@canopy/ui-app/sidebar';
+import {
+  activateSidebarNavItem,
+  SidebarScrollArea,
+} from '@canopy/ui-app/sidebar';
 import {
   SidebarWorkspacesSection,
   MoreStickyLead,
@@ -65,6 +69,7 @@ import {
 } from '@/stores/labsExperimentsStore';
 import { useSidebarStore } from '@/stores/sidebarStore';
 import {
+  Badge,
   TitlebarIconButton,
   useOverlayEscape,
 } from '@canopy/ui-shared/components';
@@ -120,6 +125,7 @@ import {
   isChatsContentOccluded,
 } from '@canopy/ui-app/sidebar';
 import { prefersReducedMotion } from '@canopy/ui-shared/lib';
+import { formatShortcut as formatShortcutHint } from '@canopy/ui-shared/lib/shortcuts';
 import { shouldShowProjectsPin } from '@canopy/ui-app/sidebar';
 import {
   PROJECTS_HEADER_SELECTOR,
@@ -155,6 +161,11 @@ const DesktopSharedSidebarHost = lazy(() =>
 export interface AppSidebarProps {
   activePage: NavigationPage;
   onNavigate: (page: NavigationPage) => void;
+  /**
+   * A click on the current row: returns its section to the root, asking
+   * about unsaved changes first.
+   */
+  onReturnToSectionRoot: (page: NavigationPage) => void;
   onSettingsClick: () => void;
   settingsOpen: boolean;
   /** Opens the Remote Control dialog from the account menu. */
@@ -191,6 +202,9 @@ export interface AppSidebarProps {
   workersActive: boolean;
 }
 
+// Shortcut hints read from the one registry (`formatShortcut(id)`).
+const SEARCH_SHORTCUT = formatShortcutHint('open-command-palette');
+const NEW_TASK_SHORTCUT = formatShortcutHint('new-task');
 const STICKY_CONTROLS_TOP_PX = 1;
 const NEW_TASK_MASK_EDGE_PX = 12;
 const DEFAULT_WHEEL_LINE_HEIGHT_PX = 16;
@@ -2283,15 +2297,6 @@ function isNavKeySelected(
 }
 
 /**
- * Whether a nav row click should navigate. The Workflows row stands for all
- * three of its tabs, so on any of them it stays put, as every row does on its
- * own page; otherwise it would drop an open pipeline editor for Automations.
- */
-function navKeyNavigates(key: string, activePage: NavigationPage): boolean {
-  return !(key === 'workflows' && WORKFLOWS_PAGES.has(activePage));
-}
-
-/**
  * More-menu keys that carried an onboarding anchor in the original hardcoded
  * markup. Preserved so onboarding tour targeting is unchanged.
  */
@@ -2316,6 +2321,7 @@ const SIDEBAR_OVERLAY_RELEASE_MS = 320;
 export function AppSidebar({
   activePage,
   onNavigate,
+  onReturnToSectionRoot,
   onSettingsClick,
   settingsOpen,
   onCanopyPortalClick,
@@ -2579,10 +2585,10 @@ export function AppSidebar({
     (state) => state.initialize,
   );
   const appAdvisorButtonLabel = appAdvisorThinking
-    ? 'Advisor: thinking'
+    ? `${ORCHESTRATOR_LABEL}: thinking`
     : appAdvisorUnread
-      ? 'Advisor: unread'
-      : 'Advisor';
+      ? `${ORCHESTRATOR_LABEL}: unread`
+      : ORCHESTRATOR_LABEL;
   const workersButtonLabel = workersActive
     ? 'Claude workers: active'
     : 'Claude workers';
@@ -2768,6 +2774,15 @@ export function AppSidebar({
   // `aria-label` announcing the active state, and pulsing indicator dots while
   // a worker is queued/starting/running. Only padding, testid, onboarding
   // anchor, and the click wrapper differ between the main nav and the More menu.
+  // The shared row rule: a row enters its page, and the current row returns
+  // its section to the root (the Workflows row is current on all its tabs).
+  const activateNavPage = (page: NavigationPage, current: boolean): void =>
+    activateSidebarNavItem({
+      active: current,
+      onSelect: () => onNavigate(page),
+      onReturnToRoot: () => onReturnToSectionRoot(page),
+    });
+
   const renderWorkersButton = (
     def: SidebarNavItemDef,
     region: 'main' | 'more',
@@ -2780,7 +2795,9 @@ export function AppSidebar({
       return (
         <DropdownMenuItem
           key={def.key}
-          onClick={(): void => handleMoreItemClick(() => onNavigate(page))}
+          onClick={(): void =>
+            handleMoreItemClick(() => activateNavPage(page, isCurrentPage))
+          }
           data-testid={`sidebar-more-item-${def.key}`}
           data-onboarding-anchor={
             MORE_ONBOARDING_ANCHOR_KEYS.has(def.key)
@@ -2812,7 +2829,7 @@ export function AppSidebar({
     return (
       <SidebarNavRow
         key={def.key}
-        onClick={(): void => onNavigate(page)}
+        onClick={(): void => activateNavPage(page, isCurrentPage)}
         data-testid={`sidebar-nav-${def.key}`}
         data-onboarding-anchor={`sidebar-${def.key}`}
         aria-label={workersButtonLabel}
@@ -2851,9 +2868,9 @@ export function AppSidebar({
     return (
       <SidebarNavRow
         key={def.key}
-        onClick={(): void => {
-          if (navKeyNavigates(key, activePage)) onNavigate(page);
-        }}
+        onClick={(): void =>
+          activateNavPage(page, isNavKeySelected(key, page, activePage))
+        }
         data-testid={`sidebar-nav-${def.key}`}
         data-onboarding-anchor={`sidebar-${def.key}`}
         selected={isNavKeySelected(key, page, activePage)}
@@ -2878,9 +2895,9 @@ export function AppSidebar({
       <DropdownMenuItem
         key={def.key}
         onClick={(): void =>
-          handleMoreItemClick(() => {
-            if (navKeyNavigates(key, activePage)) onNavigate(page);
-          })
+          handleMoreItemClick(() =>
+            activateNavPage(page, isNavKeySelected(key, page, activePage)),
+          )
         }
         data-testid={`sidebar-more-item-${def.key}`}
         data-onboarding-anchor={
@@ -3219,37 +3236,8 @@ export function AppSidebar({
                         statusBar
                         compactLabel
                       />
-                      {sharedSidebarEnabled &&
-                        !contextAvailability.available && (
-                          <Suspense fallback={null}>
-                            <DesktopSidebarActivityToggle />
-                          </Suspense>
-                        )}
                     </div>
                   )}
-                  {!showDiagnosticsPill &&
-                    sharedSidebarEnabled &&
-                    !contextAvailability.available && (
-                      // The pill's controls group, without the pill: the bell
-                      // keeps the same trailing seat and fade.
-                      <div
-                        className={`sidebar-page-stationary-control electron-no-drag ml-auto flex h-7 min-w-0 flex-1 items-center justify-end pr-2 ${
-                          overlayPresented ? 'sidebar-preview-delayed-fade' : ''
-                        } ${
-                          previewOverlayActive && !previewSlidIn
-                            ? 'sidebar-preview-instant'
-                            : ''
-                        }`}
-                        data-preview-visible={
-                          overlayPresented && previewSlidIn ? 'true' : undefined
-                        }
-                        data-testid="sidebar-titlebar-controls"
-                      >
-                        <Suspense fallback={null}>
-                          <DesktopSidebarActivityToggle />
-                        </Suspense>
-                      </div>
-                    )}
                 </div>
 
                 <div className="electron-no-drag flex flex-1 flex-col overflow-hidden">
@@ -3270,6 +3258,7 @@ export function AppSidebar({
                           data-testid="sidebar-search"
                           data-onboarding-anchor="sidebar-search"
                           aria-label="Search"
+                          tooltipShortcut={SEARCH_SHORTCUT}
                         />
                       </>
                     }
@@ -3289,19 +3278,29 @@ export function AppSidebar({
                       aria-current={activePage === 'home' ? 'page' : undefined}
                       selected={activePage === 'home'}
                       icon={<EditBigIcon size={16} />}
+                      shortcut={NEW_TASK_SHORTCUT}
                     >
                       New task
                     </SidebarNavRow>
                     {!contextAvailability.available && (
-                      <SidebarNavRow
-                        onClick={() => openCommandPalette()}
-                        data-testid="sidebar-search"
-                        data-onboarding-anchor="sidebar-search"
-                        aria-label="Search"
-                        icon={<SearchIcon size={16} aria-hidden="true" />}
-                      >
-                        Search
-                      </SidebarNavRow>
+                      <div className="flex items-center gap-0.5">
+                        <SidebarNavRow
+                          className="min-w-0 flex-1"
+                          onClick={() => openCommandPalette()}
+                          data-testid="sidebar-search"
+                          data-onboarding-anchor="sidebar-search"
+                          aria-label="Search"
+                          icon={<SearchIcon size={16} aria-hidden="true" />}
+                          shortcut={SEARCH_SHORTCUT}
+                        >
+                          Search
+                        </SidebarNavRow>
+                        {sharedSidebarEnabled && (
+                          <Suspense fallback={null}>
+                            <DesktopSidebarActivityToggle foreground="top-bar" />
+                          </Suspense>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -3694,6 +3693,15 @@ export function AppSidebar({
                   />
                 </button>
 
+                {/* The shared surface portals its footer callout (the bulk
+              removal notice) here, so it stays on screen while the rows
+              scroll. Empty, and so zero height, until it does. With the
+              callout's own 6px inset, it lines up with the rows' 8px gutter. */}
+                <div
+                  className="electron-no-drag shrink-0 px-0.5"
+                  data-sidebar-footer-callout-host=""
+                />
+
                 {/* Development context and account controls remain anchored to
               the sidebar bottom, outside the workspace scroll area. */}
                 <div
@@ -3726,18 +3734,20 @@ export function AppSidebar({
                               <span className="min-w-0 flex-1 truncate">
                                 {window.devInfo.branch ?? 'Development build'}
                               </span>
-                              <span
-                                // Nested corner: the 20px badge sits the same
-                                // inset from the `rounded-row` banner's top,
-                                // bottom, and trailing edge, so its radius is
-                                // the row's 10px less that inset: 4px in the
-                                // 28px banner (`-mr-1`), 6px in early access's
-                                // 32px one (`-mr-0.5`).
-                                className={`${simplifiedSidebar ? '-mr-0.5 rounded-[calc(var(--radius-row)-6px)]' : '-mr-1 rounded-[calc(var(--radius-row)-4px)]'} inline-flex h-5 shrink-0 items-center bg-warning px-1.5 text-3xs font-medium fg-emphasis`}
+                              <Badge
+                                tone="warning"
+                                // The 18px capsule sits the same inset from
+                                // the banner's top, bottom and trailing edge:
+                                // 5px in the 28px banner (`-mr-0.75` against
+                                // its 8px padding), 7px in early access's
+                                // 32px one (`-mr-px`).
+                                className={
+                                  simplifiedSidebar ? '-mr-px' : '-mr-0.75'
+                                }
                                 data-testid="sidebar-dev-badge"
                               >
-                                DEV
-                              </span>
+                                Dev build
+                              </Badge>
                             </SidebarFooterBanner>
                           </div>
                         )}

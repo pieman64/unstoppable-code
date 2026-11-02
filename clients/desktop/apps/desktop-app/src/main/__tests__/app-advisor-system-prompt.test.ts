@@ -63,6 +63,9 @@ describe('APP_ADVISOR_SYSTEM_PROMPT', () => {
       `Use ${names.search_actions.claudeToolName} / ${names.search_actions.codexToolName} with actionType: "automation.create" for the exact payload`,
       'Set input.schedule to { kind: "cron", expression, timezone: "local" } for recurrence or { kind: "one_time", runAt, timezone: "local" } for a single future run; runAt is an ISO timestamp',
       'Choose the action variant for the requested work and destination',
+      // CAN-4551 7c: a chat automation may be stored as its own workflow.
+      'A chat prompt automation may be stored, and read back by automation.list / automation.get, as a worktree_pipeline with target { kind: "global" } that runs a workflow it owns',
+      'edit that workflow with pipeline.update only for what the chat action cannot express',
       'Honor an explicit request for a provider/harness-native scheduler',
       '"use Claude\'s built-in schedule feature" or an explicitly invoked scheduling tool/skill',
       'merely choosing Claude/Codex as the model is not an override',
@@ -127,7 +130,7 @@ describe('APP_ADVISOR_SYSTEM_PROMPT', () => {
 
   it('directs the assistant to act through branded tools by default', () => {
     expect(APP_ADVISOR_SYSTEM_PROMPT).toContain(
-      `they are asking you to interact with ${BRAND.displayName} via App Advisor tools and actions`,
+      `they are asking you to interact with ${BRAND.displayName} via Orchestrator tools and actions`,
     );
     expect(APP_ADVISOR_SYSTEM_PROMPT).toContain(
       'Do not merely describe manual steps',
@@ -304,7 +307,7 @@ describe('APP_ADVISOR_SYSTEM_PROMPT', () => {
       'use the same explicit workspace target used with ShowFiles',
     );
     expect(APP_ADVISOR_SYSTEM_PROMPT).toContain(
-      'omit projectId/worktreeId to manage the browser belonging to this App Advisor Work Entry',
+      'omit projectId/worktreeId to manage the browser belonging to this Orchestrator Work Entry',
     );
   });
 
@@ -332,11 +335,21 @@ describe('APP_ADVISOR_SYSTEM_PROMPT', () => {
       'Watchers are not action dispatches',
     );
     expect(APP_ADVISOR_SYSTEM_PROMPT).toContain(
-      'Do not pass the destination App Advisor chat',
+      'Do not pass the destination Orchestrator chat',
     );
     expect(APP_ADVISOR_SYSTEM_PROMPT).toContain(
       'automation.create or automation.run_now',
     );
     expect(APP_ADVISOR_SYSTEM_PROMPT).toContain('active-watchers icon');
+  });
+
+  it('introduces itself as Orchestrator with its former name exactly once', () => {
+    expect(APP_ADVISOR_SYSTEM_PROMPT).toContain(
+      'You are Orchestrator (formerly App Advisor), an assistant embedded inside',
+    );
+    expect(
+      APP_ADVISOR_SYSTEM_PROMPT.split('formerly App Advisor').length - 1,
+    ).toBe(1);
+    expect(APP_ADVISOR_SYSTEM_PROMPT).not.toMatch(/App Advisor(?! *\))/);
   });
 });

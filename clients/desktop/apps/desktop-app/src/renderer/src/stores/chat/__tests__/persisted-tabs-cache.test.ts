@@ -3,12 +3,13 @@ import {
   toPersistedMessage,
 } from '../persisted-tabs';
 import { toPersistedPendingQuestions } from '../pending-questions';
-import { emptyWorktreeChat } from '../tab-utils';
+import { createEmptyTab, emptyWorktreeChat } from '../tab-utils';
 import type { ChatTab, PendingQuestion, WorktreeChatState } from '../types';
 import type { PersistedChatTab } from '@canopy/desktop-shared/types';
 
 function makeTab(overrides?: Partial<ChatTab>): ChatTab {
   return {
+    ...createEmptyTab(),
     id: 'chat',
     title: 'Chat',
     messages: [],

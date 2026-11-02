@@ -101,7 +101,7 @@ export const ComposerIconButton = forwardRef<
       ref={ref}
       type={type}
       data-composer-icon-button="true"
-      className={`focus-ring flex items-center justify-center transition disabled:cursor-not-allowed disabled:opacity-40 ${toneClassName} ${geometryClassName} ${className}`}
+      className={`focus-ring flex items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40 ${toneClassName} ${geometryClassName} ${className}`}
       {...props}
     >
       {children}

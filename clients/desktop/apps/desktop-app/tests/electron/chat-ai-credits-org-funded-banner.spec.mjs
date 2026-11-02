@@ -6,7 +6,10 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
+  clearScenario,
+  DEFAULT_MOCK_BASE_URL,
   markWorkspaceOrganizationOwned,
+  registerScenario,
   seedWorktreeChat,
 } from './seeders/index.mjs';
 
@@ -49,7 +52,16 @@ test('an org-pool-funded session names the covering org instead of showing 0 cre
     ],
   });
 
-  const { electronApp } = await launchCanopy({ userDataDir });
+  // No usage read confirms restored allowance, which would end the seeded
+  // session routing before its card shows (CAN-4272).
+  const usageKey = 'ai-credits-org-funded-unauthenticated';
+  await registerScenario(DEFAULT_MOCK_BASE_URL, usageKey, {
+    authUsage: { scenario: 'unauthenticated' },
+  });
+  const { electronApp } = await launchCanopy({
+    userDataDir,
+    env: { CANOPY_MOCK_API_KEY: usageKey },
+  });
 
   try {
     const window = await electronApp.firstWindow();
@@ -87,6 +99,10 @@ test('an org-pool-funded session names the covering org instead of showing 0 cre
     ).toHaveCount(0);
     await expect(routingBanner).not.toContainText(/0 credits/);
   } finally {
-    await closeCanopy(electronApp, userDataDir);
+    try {
+      await closeCanopy(electronApp, userDataDir);
+    } finally {
+      await clearScenario(DEFAULT_MOCK_BASE_URL, usageKey);
+    }
   }
 });

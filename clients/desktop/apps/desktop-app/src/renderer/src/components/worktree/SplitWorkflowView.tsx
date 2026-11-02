@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useGitHubStore, worktreeKey } from '@/stores/githubStore';
@@ -219,14 +220,13 @@ export function SplitWorkflowView({
                   UX. Any plan that later resolves ok is dropped by the store
                   (see startSplitWorkflow's splitLockedWorktrees guard) since
                   the lock is no longer held. */}
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => void exitSplitWorkflow(projectId, worktreeId)}
                 data-testid="split-workflow-plan-cancel"
-                className="focus-ring rounded-md border px-2.5 py-1 text-xs fg-primary/80 transition hover:bg-fg-primary/[0.06] hover:fg-primary"
               >
                 Cancel
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -247,14 +247,13 @@ export function SplitWorkflowView({
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
           <SplitProgressChecklist view={splitProgressView} />
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={() => void cancelSplitPr(projectId, worktreeId)}
               data-testid="split-workflow-cancel"
-              className="focus-ring rounded-md border px-2.5 py-1 text-xs fg-primary/80 transition hover:bg-fg-primary/[0.06] hover:fg-primary"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -293,14 +292,14 @@ export function SplitWorkflowView({
             )}
 
             <div className="flex justify-end">
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={() => closeSplitWorkflowSession(projectId, worktreeId)}
                 data-testid="split-workflow-done"
-                className="focus-ring rounded-lg bg-accent-subtle px-4 py-1.5 text-s font-medium fg-accent transition hover:bg-accent-subtle/80"
               >
                 Done
-              </button>
+              </Button>
             </div>
           </div>
         </div>

@@ -4,17 +4,19 @@ import type {
   AccountProxyRoutingStrategy,
   AccountProxyStatus,
 } from '@canopy/desktop-shared/types/account-proxy';
+import {
+  SettingsSelect,
+  type SettingsSelectOption,
+} from '@canopy/ui-shared/components';
 import { useAccountProxyStore } from '@/stores/accountProxyStore';
-import { SettingsRow, SettingsSelect } from '../SettingsLayout';
+import { SettingsRow } from '../SettingsLayout';
 
-const STRATEGY_OPTIONS: readonly {
-  readonly value: AccountProxyRoutingStrategy;
-  readonly label: string;
-}[] = [
-  { value: 'round-robin', label: 'Round robin' },
-  { value: 'weighted-round-robin', label: 'Weighted round robin' },
-  { value: 'fill-first', label: 'Fill first' },
-];
+const STRATEGY_OPTIONS: readonly SettingsSelectOption<AccountProxyRoutingStrategy>[] =
+  [
+    { value: 'round-robin', label: 'Round robin' },
+    { value: 'weighted-round-robin', label: 'Weighted round robin' },
+    { value: 'fill-first', label: 'Fill first' },
+  ];
 
 const STRATEGY_DESCRIPTION =
   "Round robin sends each request to the next ready account. Weighted round robin spreads requests by each account's weight. Fill first uses one account until it reaches a limit.";
@@ -82,19 +84,13 @@ export function AccountProxyStrategyRow({
         <SettingsSelect
           id={selectId}
           data-testid="account-proxy-strategy-select"
+          options={STRATEGY_OPTIONS}
           value={saving ?? routing.strategy}
           disabled={saving !== null || blockedReason !== null}
-          onChange={(event): void => {
-            const next = event.target.value;
+          onValueChange={(next): void => {
             if (isAccountProxyRoutingStrategy(next)) void change(next);
           }}
-        >
-          {STRATEGY_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </SettingsSelect>
+        />
       }
     />
   );

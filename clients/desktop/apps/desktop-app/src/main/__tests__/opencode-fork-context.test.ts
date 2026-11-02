@@ -109,6 +109,7 @@ test('rejects missing anchors and oversized encoded text without truncating', ()
 });
 test('reads only the canonical destination and never resolves the source profile', async () => {
   jest.mocked(readChatTabsFile).mockResolvedValue({
+    version: 1,
     tabs: [
       {
         id: 'destination',

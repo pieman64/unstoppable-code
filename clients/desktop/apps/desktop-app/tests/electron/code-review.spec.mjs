@@ -257,11 +257,11 @@ test('Change Diagram opens from Changed Files, deduplicates, and acknowledges a 
   const { electronApp } = await launchCanopy({ userDataDir });
   try {
     const { window, changed } = await selectWorktree(electronApp);
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(
       window
         .getByTestId('panel-add-menu-item-change-diagram')
-        .locator('svg[data-glyph="wand-sparkles"]'),
+        .locator('svg[data-glyph="network"]'),
     ).toHaveCount(1);
     await window.keyboard.press('Escape');
     const { fingerprint } = await window.evaluate(
@@ -304,7 +304,7 @@ test('Change Diagram opens from Changed Files, deduplicates, and acknowledges a 
     await expect(
       changed
         .getByTestId('view-change-diagram-button')
-        .locator('svg[data-glyph="wand-sparkles"]'),
+        .locator('svg[data-glyph="network"]'),
     ).toHaveCount(1);
     await changed.getByTestId('view-change-diagram-button').click();
     const diagram = window.getByTestId('change-diagram-panel');
@@ -325,9 +325,7 @@ test('Change Diagram opens from Changed Files, deduplicates, and acknowledges a 
     await findInput.fill('Read');
     await expect(findBar).toContainText('1 of 1');
     // Another diagram re-runs the open query against it.
-    await diagram
-      .getByRole('button', { name: 'Data model', exact: true })
-      .click();
+    await diagram.getByRole('tab', { name: 'Data model', exact: true }).click();
     await expect(findBar).toContainText('0 of 0');
     await findInput.press('Escape');
     await expect(findBar).toHaveCount(0);
@@ -335,7 +333,7 @@ test('Change Diagram opens from Changed Files, deduplicates, and acknowledges a 
       window
         .locator('[data-testid^="panel-tab-"]')
         .filter({ hasText: 'Change Diagram' })
-        .locator('svg[data-glyph="wand-sparkles"]'),
+        .locator('svg[data-glyph="network"]'),
     ).toHaveCount(1);
     await diagram.getByTestId('change-diagram-refresh').click();
     await expect(diagram.getByRole('status')).toHaveText(
@@ -383,7 +381,7 @@ test('Change Diagram opens from Changed Files, deduplicates, and acknowledges a 
       ),
     ).toBe(false);
 
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(
       window.getByTestId('panel-add-menu-item-change-diagram'),
     ).toHaveCount(0);
@@ -1069,7 +1067,7 @@ for (const diagramCount of [0, 1, 2]) {
         await expect(panel).toContainText('No diagram content available.');
         await expect(refresh).toHaveCount(0);
         await expect(
-          panel.getByRole('button', { name: 'Logic', exact: true }),
+          panel.getByRole('tab', { name: 'Logic', exact: true }),
         ).toHaveCount(0);
       } else {
         await expect(refresh).toHaveText('');
@@ -1087,7 +1085,7 @@ for (const diagramCount of [0, 1, 2]) {
           rowBox.x + rowBox.width - buttonBox.x - buttonBox.width,
         ).toBeLessThan(16);
         await expect(
-          panel.getByRole('button', { name: 'Logic', exact: true }),
+          panel.getByRole('tab', { name: 'Logic', exact: true }),
         ).toHaveCount(diagramCount === 2 ? 1 : 0);
         await panel
           .getByRole('button', { name: 'Before', exact: true })

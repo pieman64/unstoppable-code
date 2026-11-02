@@ -8,11 +8,11 @@ import type {
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { InlinePipelineYamlPreview } from './InlinePipelineYamlPreview';
 
-export const SHARED_PIPELINE_REVIEW_TITLE = 'Review pipeline update';
+export const SHARED_PIPELINE_REVIEW_TITLE = 'Review workflow update';
 export const SHARED_PIPELINE_REVIEW_EXPLANATION =
-  'This pipeline was updated. Take a look and approve it to keep your automation running.';
+  'This workflow was updated. Take a look and approve it to keep your automation running.';
 export const SHARED_PIPELINE_REVIEW_NEEDED_MESSAGE =
-  'This pipeline was updated, so take a look before it runs again.';
+  'This workflow was updated, so take a look before it runs again.';
 
 type ResolveState =
   | { status: 'loading' }
@@ -46,7 +46,7 @@ function pipelineDisplayName(activity: ScheduledActivity): string {
   return (
     activity.sharedPipelineReview?.pipelineName ??
     fromAction ??
-    'Shared pipeline'
+    'Shared workflow'
   );
 }
 
@@ -77,7 +77,7 @@ export function ReviewSharedPipelineChangeModal({
     if (!remoteId) {
       setResolveState({
         status: 'error',
-        message: 'This automation does not use a shared pipeline.',
+        message: 'This automation does not use a shared workflow.',
       });
       return (): void => {
         cancelled = true;
@@ -96,7 +96,7 @@ export function ReviewSharedPipelineChangeModal({
           message:
             cause instanceof Error && cause.message
               ? cause.message
-              : 'Could not load this pipeline. Try again.',
+              : 'Could not load this workflow. Try again.',
         });
       });
     return (): void => {
@@ -123,7 +123,7 @@ export function ReviewSharedPipelineChangeModal({
     onApproved?.(result.activity);
     if (result.runError) {
       setApprovedRunError(
-        `Pipeline approved, but the automation could not run: ${result.runError}`,
+        `Workflow approved, but the automation could not run: ${result.runError}`,
       );
       return;
     }
@@ -156,7 +156,7 @@ export function ReviewSharedPipelineChangeModal({
         </div>
 
         {resolveState.status === 'loading' && (
-          <LoadingPlaceholder label="Loading pipeline…" showSpinner />
+          <LoadingPlaceholder label="Loading workflow…" showSpinner />
         )}
 
         {resolveState.status === 'error' && (

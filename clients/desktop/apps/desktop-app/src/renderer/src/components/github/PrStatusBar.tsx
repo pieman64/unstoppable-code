@@ -15,7 +15,6 @@ import {
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
 import { useGitHubStore } from '@/stores/githubStore';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -70,10 +69,10 @@ import { useMergeQueueAgentHandling } from '@/hooks/useMergeQueueAgentHandling';
 import { resolvePrMergeRoute, type PrMergeRoute } from './mergeButtonRoute';
 import {
   ActionMenuRowStyle,
+  Button,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
-  RunningSubagentsButton,
   Tooltip,
   type WorktreeRowPrStatus,
   LoadingIndicator,
@@ -91,8 +90,7 @@ import { mergeQueueBadgeFields } from '@/components/worktree/worktreePrBadge';
 import { MergeQueueStatusControl } from './MergeQueueStatusControl';
 import type { QueuedPullRequest } from './mergeQueueStatusModel';
 import { ArchivedChatsControl } from '@/components/chat/ArchivedChatsControl';
-import { useRunningSubagentCount } from '@/components/subagents/useRunningSubagentCount';
-import { openSubagentsInSidePanel } from '@/lib/panels/subagents-side-panel-open';
+
 import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { useTopBarLeadingInsetClassName } from '@/components/panels/useTopBarLeadingInsetClassName';
 import { useClipboardCopy } from '@/hooks/useClipboardCopy';
@@ -707,20 +705,12 @@ function UpdatePrBaseConfirmation({
           base branch to <strong>{newBaseBranch}</strong>?
         </p>
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onDecline}
-            className="focus-ring rounded-md border px-3 py-1.5 text-xs font-medium fg-primary/80 transition hover:bg-fg-primary/5"
-          >
+          <Button variant="secondary" size="compact" onClick={onDecline}>
             No, just locally
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90"
-          >
+          </Button>
+          <Button variant="primary" size="compact" onClick={onConfirm}>
             Yes, update PR
-          </button>
+          </Button>
         </div>
       </div>
     </div>,
@@ -2060,17 +2050,6 @@ export const PrStatusBar = memo(function PrStatusBar({
     projectName,
   ]);
 
-  // The Subagents view experiment adds the running count to the top bar.
-  const subagentsView = useLabsExperimentEnabled('subagents-view');
-  const runningSubagents = useRunningSubagentCount(
-    projectId,
-    worktreeId,
-    subagentsView,
-  );
-  const handleShowSubagents = useCallback((): void => {
-    openSubagentsInSidePanel({ projectId, worktreeId });
-  }, [projectId, worktreeId]);
-
   const handleFixCiChecksClick = useCallback((): void => {
     if (startingCiFix) return;
     setStartingCiFix(true);
@@ -2406,8 +2385,10 @@ export const PrStatusBar = memo(function PrStatusBar({
               <span className={POSTHOG_REPLAY_MASK_CLASS}>{projectName}</span>
             }
           >
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               data-testid="pr-status-bar-project-button"
               onClick={(): void => {
                 useNavigationStore
@@ -2422,7 +2403,6 @@ export const PrStatusBar = memo(function PrStatusBar({
                   });
               }}
               aria-label={`${projectName} project settings`}
-              className="electron-no-drag focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-subtle"
             >
               <ProjectIcon
                 kind={projectType ?? 'single-repo'}
@@ -2430,7 +2410,7 @@ export const PrStatusBar = memo(function PrStatusBar({
                 temporary={projectTemporary}
                 repoPath={projectRepoPath}
               />
-            </button>
+            </Button>
           </Tooltip>
 
           {/* Current branch: click opens the branch actions menu;
@@ -2498,19 +2478,19 @@ export const PrStatusBar = memo(function PrStatusBar({
                     and any associated PRs will still exist.
                   </p>
                   <div className="mt-2 flex justify-end gap-1.5">
-                    <button
-                      type="button"
-                      className="focus-ring rounded-md border px-2 py-1 fg-secondary hover:bg-secondary hover:fg-primary"
+                    <Button
+                      variant="secondary"
+                      size="compact"
                       onClick={(): void => {
                         setBranchRenameRemoteConfirm(null);
                         setBranchEditValue(null);
                       }}
                     >
                       Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="focus-ring rounded-md bg-accent px-2 py-1 font-medium fg-emphasis hover:bg-accent/90"
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="compact"
                       onClick={(): void => {
                         // Belt and braces with the input's readOnly freeze:
                         // commit whatever the input SHOWS, never a stale
@@ -2524,7 +2504,7 @@ export const PrStatusBar = memo(function PrStatusBar({
                       }}
                     >
                       Rename anyway
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}
@@ -2847,18 +2827,6 @@ export const PrStatusBar = memo(function PrStatusBar({
             the breadcrumb, which truncates, and then on the priority tiers,
             which drop controls outright. */}
         <div className="ml-1 flex shrink-0 items-center gap-2 electron-no-drag">
-          {/* Subagents at work anywhere in the worktree, beside the PR's CI
-              checks: shows the Subagents panel in the right sidebar. Renders
-              nothing (and takes no gap) while none runs. */}
-          {subagentsView ? (
-            <RunningSubagentsButton
-              count={runningSubagents}
-              onClick={handleShowSubagents}
-              // Its own tier, between `HEADER_PRIORITY.archive` (560px) and
-              // `createPr` (480px): it leaves after the archive control.
-              className="hidden @[520px]/topbar:flex"
-            />
-          ) : null}
           {/* Archived chats: a worktree-level action, so it rides the header
               cluster rather than a single panel group's tab strip (which
               also made it move around as groups were split or popped out).

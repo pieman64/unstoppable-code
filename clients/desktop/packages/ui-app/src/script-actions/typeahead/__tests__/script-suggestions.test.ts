@@ -44,9 +44,11 @@ describe('buildScriptSuggestions', () => {
     expect(
       buildScriptSuggestions(actions, 'vite').map((row) => row.action.id),
     ).toEqual(['serve']);
-    expect(
-      buildScriptSuggestions(actions, 'api').map((row) => row.action.id),
-    ).toContain('docs');
+    for (const query of ['api', 'ap']) {
+      expect(
+        buildScriptSuggestions(actions, query).map((row) => row.action.id),
+      ).toContain('docs');
+    }
     expect(
       buildScriptSuggestions(actions, 'apps/ui').map((row) => row.action.id),
     ).toEqual(['storybook']);

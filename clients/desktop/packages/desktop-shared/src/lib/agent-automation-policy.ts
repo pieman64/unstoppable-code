@@ -3,6 +3,7 @@ import type {
   AutomationCreateRequest,
   AutomationUpdateRequest,
 } from '../types';
+import { resolveAutomationPipelineTarget } from './automation-pipeline-target';
 
 export const WORKTREE_SESSION_PROMPT_CREATE_POLICY_ERROR =
   'Worktree session prompts cannot be created through agent automation actions. Use projects.schedule_message, the chat composer, or the usage-limit banner.';
@@ -213,12 +214,14 @@ export function validateAgentAutomationRunPolicy(
 /**
  * The project an automation action targets, for the code and cowork agent
  * owner rule. App Advisor prompts have no owner and follow the App Advisor
- * access setting instead. An action without a usable project ID is unknown,
- * and callers treat it as not disclosed.
+ * access setting instead. A pipeline with no project (`global`) is owned by
+ * its saved `executionContext`, not by a project. An action without a usable
+ * project ID is unknown, and callers treat it as not disclosed.
  */
 export type AgentAutomationTargetProject =
   | { kind: 'project'; projectId: string; worktreeId?: string }
   | { kind: 'app_advisor' }
+  | { kind: 'global' }
   | { kind: 'unknown' };
 
 function projectTarget(
@@ -242,8 +245,15 @@ export function agentAutomationTargetProject(
     case 'standalone_prompt':
       return projectTarget(action.chatProjectId);
     case 'worktree_prompt':
-    case 'worktree_pipeline':
       return projectTarget(action.workspaceId);
+    case 'worktree_pipeline': {
+      const target = resolveAutomationPipelineTarget(action);
+      if (!target) return { kind: 'unknown' };
+      if (target.kind === 'global') return { kind: 'global' };
+      return target.kind === 'task'
+        ? projectTarget(target.workspaceId, target.taskId)
+        : projectTarget(target.workspaceId);
+    }
     case 'worktree_session_prompt':
       return projectTarget(action.workspaceId, action.worktreeId);
     case 'pipeline_execution_resume':

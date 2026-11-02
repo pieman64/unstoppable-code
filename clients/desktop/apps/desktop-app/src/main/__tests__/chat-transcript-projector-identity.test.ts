@@ -7,6 +7,18 @@ import type {
   PortalChatMessage,
 } from '@canopy/desktop-shared/types';
 
+function legacyToolUseBlock(): PersistedChatMessage['blocks'][number] {
+  const block: PersistedChatMessage['blocks'][number] = {
+    type: 'tool_use',
+    toolUseId: 't1',
+    toolName: 'Bash',
+    input: '{}',
+  };
+  // Legacy persisted rows carry decoded JSON tool input; preserve that runtime shape.
+  Reflect.set(block, 'input', {});
+  return block;
+}
+
 // Realistic Claude Agent SDK event sequence for a single turn:
 //   assistant(text A) → assistant(tool_use) → user(tool_result)
 //   → assistant(text B) → result
@@ -156,8 +168,14 @@ describe('persistedMessageToPortalMessage (unchanged contract)', () => {
       timestamp: 1000,
       blocks: [
         { type: 'text', text: 'Hello' },
-        { type: 'tool_use', toolUseId: 't1', toolName: 'Bash', input: {} },
-        { type: 'tool_result', toolUseId: 't1', output: 'ok', isError: false },
+        legacyToolUseBlock(),
+        {
+          type: 'tool_result',
+          toolUseId: 't1',
+          toolName: 'Bash',
+          output: 'ok',
+          isError: false,
+        },
       ],
     };
     const portal = persistedMessageToPortalMessage({

@@ -1,4 +1,5 @@
 import type { TranscriptTurnFile } from '@canopy/agent-transcript/transcript-storage';
+import { reconcileTurnFileRecords } from '@canopy/protocol/turn-files';
 import type {
   FileTreeRoot,
   ShowFilesWorkspaceTarget,
@@ -119,7 +120,14 @@ function existsAsFile(
 }
 
 type Located =
-  | { location: TurnFileLocation }
+  | {
+      location: TurnFileLocation;
+      file: TranscriptTurnFile;
+      identity: string;
+      sourceIdentities: string[];
+      available: boolean;
+      failed?: boolean;
+    }
   | { location?: undefined; failed: boolean };
 
 async function locateExistingTurnFile(
@@ -134,20 +142,45 @@ async function locateExistingTurnFile(
   }
   const location = locateTurnFile(file.path, roots);
   if (!location) return { failed: false };
-  try {
-    if (!(await existsAsFile(target, location.absolutePath)))
-      return { failed: false };
-  } catch {
-    return { failed: true };
+  const identity = (entry: TurnFileLocation): string => {
+    const path = /^(?:[a-z]:\/|\/\/)/i.test(entry.absolutePath)
+      ? entry.absolutePath.toLowerCase()
+      : entry.absolutePath;
+    return `${target.projectId}/${target.worktreeId}:${path}`;
+  };
+  const sourceIdentities = (file.movedFrom ?? []).flatMap((path) => {
+    const source = locateTurnFile(path, roots);
+    return source ? [identity(source)] : [];
+  });
+  let available = false;
+  let failed = false;
+  if (file.state === 'ready' && !file.removed) {
+    try {
+      available = await existsAsFile(target, location.absolutePath);
+    } catch {
+      failed = true;
+    }
   }
   return {
-    location: file.target ? { ...location, target: file.target } : location,
+    location,
+    file,
+    identity: identity(location),
+    sourceIdentities,
+    available,
+    failed,
   };
 }
 
 export interface TurnFileLocationsResolution {
   /** Files that exist as regular files inside a root, in transcript order. */
   located: TurnFileLocation[];
+  /** Canonically deduplicated mutations still in flight; never actionable. */
+  pending: TranscriptTurnFile[];
+  /** Source paths joined to each displayed pending path by scoped host identity. */
+  pendingPathAliases: readonly (readonly [
+    sourcePath: string,
+    pendingPath: string,
+  ])[];
   /**
    * True when a host check could not be completed for at least one file, as
    * opposed to the file being absent. Callers should not treat that as a
@@ -167,13 +200,16 @@ export async function resolveTurnFileLocations(
   files: readonly TranscriptTurnFile[],
   options: { fresh?: boolean } = {},
 ): Promise<TurnFileLocationsResolution> {
-  if (options.fresh) {
+  if (
+    options.fresh ||
+    files.some((file) => file.removed || file.movedFrom?.length)
+  ) {
     // Drop what this pass would otherwise reuse, once, so the files of one
     // turn still share a single roots read and one existence check each.
     for (const file of files) {
       const scope = file.target ?? target;
       const prefix = `${scope.projectId}/${scope.worktreeId}`;
-      rootsCache.delete(prefix);
+      if (options.fresh) rootsCache.delete(prefix);
       existenceCache.forEach((_entry, key) => {
         if (key.startsWith(`${prefix}|`)) existenceCache.delete(key);
       });
@@ -182,10 +218,39 @@ export async function resolveTurnFileLocations(
   const results = await mapWithConcurrency(files, CHECK_CONCURRENCY, (file) =>
     locateExistingTurnFile(file.target ?? target, file),
   );
+  const located = reconcileTurnFileRecords(
+    results.flatMap((result) => (result.location ? [result] : [])),
+  );
+  const pendingByIdentity = new Map(
+    located
+      .filter((entry) => entry.file.state === 'creating')
+      .map((entry) => [entry.identity, entry.file.path]),
+  );
   return {
-    located: results.flatMap((result) =>
-      result.location ? [result.location] : [],
-    ),
-    failed: results.some((result) => !result.location && result.failed),
+    pendingPathAliases: results.flatMap((result) => {
+      if (!result.location || result.file.state !== 'creating') return [];
+      const pendingPath = pendingByIdentity.get(result.identity);
+      return pendingPath ? [[result.file.path, pendingPath] as const] : [];
+    }),
+    located: located
+      .filter((entry) => entry.file.state === 'ready' && entry.available)
+      .map(({ location, file }) => ({
+        ...location,
+        ...(file.target ? { target: file.target } : {}),
+        ...(file.change ? { change: file.change } : {}),
+        ...(file.saved ? { saved: true } : {}),
+      })),
+    pending: [
+      ...located
+        .filter((entry) => entry.file.state === 'creating')
+        .map((entry) => entry.file),
+      ...results.flatMap((result, index) => {
+        const file = files[index];
+        return !result.location && result.failed && file?.state === 'creating'
+          ? [file]
+          : [];
+      }),
+    ],
+    failed: results.some((result) => result.failed === true),
   };
 }

@@ -9,6 +9,11 @@ import { buildCurrentUiStateSnapshot } from '../buildCurrentUiStateSnapshot';
 const TARGET = { projectId: 'project-1', worktreeId: 'worktree-1' };
 
 function codexTab(overrides: Partial<ChatTab> = {}): ChatTab {
+  const defaultModelConfig: ChatTab['modelConfig'] = {
+    thinkingLevel: 'high',
+    speed: 'ultrafast',
+    fastMode: false,
+  };
   return {
     id: 'chat-1',
     title: 'Codex chat',
@@ -22,8 +27,9 @@ function codexTab(overrides: Partial<ChatTab> = {}): ChatTab {
     thinkingLevel: 'high',
     providerType: 'codex',
     model: 'gpt-6-astra',
-    modelConfig: { thinkingLevel: 'high', speed: 'ultrafast', fastMode: false },
     ...overrides,
+    modelConfig: overrides.modelConfig ?? defaultModelConfig,
+    fastModeExplicit: overrides.fastModeExplicit ?? false,
   };
 }
 

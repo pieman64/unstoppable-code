@@ -158,7 +158,6 @@ describe('remote Code New Task settings', () => {
     service = new ChatStateService({
       repository,
       dispatch,
-      steer: (): Promise<boolean> => Promise.resolve(false),
       cleanupSession: (): Promise<void> => Promise.resolve(),
       onInputPickup: (): Promise<void> => Promise.resolve(),
       authorizeSend: (): Promise<void> => Promise.resolve(),

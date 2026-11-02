@@ -85,6 +85,33 @@ export function isLinearIssuePreviewRequest(
   );
 }
 
+/** Bounds a ticket-search query from the renderer, in UTF-16 code units after trimming. */
+export const LINEAR_ISSUE_SEARCH_QUERY_MAX_LENGTH = 256;
+
+/**
+ * The trimmed ticket-search query, or `null` when the value is not a string,
+ * is empty, contains control characters, or exceeds the length bound.
+ */
+export function parseLinearIssueSearchQuery(value: unknown): string | null {
+  // Bound the raw value too, so padding cannot make trimming the expensive part.
+  if (
+    typeof value !== 'string' ||
+    value.length > LINEAR_ISSUE_SEARCH_QUERY_MAX_LENGTH * 4
+  ) {
+    return null;
+  }
+  const query = value.trim();
+  if (
+    query.length === 0 ||
+    query.length > LINEAR_ISSUE_SEARCH_QUERY_MAX_LENGTH ||
+    // eslint-disable-next-line no-control-regex -- matching these is the point
+    /[\u0000-\u001F\u007F-\u009F]/.test(query)
+  ) {
+    return null;
+  }
+  return query;
+}
+
 /** Bounds a provider issue title for display and transport, in code points. */
 export const LINEAR_ISSUE_TITLE_MAX_CODE_POINTS = 512;
 

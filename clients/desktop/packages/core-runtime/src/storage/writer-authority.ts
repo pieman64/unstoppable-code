@@ -30,6 +30,12 @@ export interface StorageOwnershipRow<Id extends string = string> {
   readonly workPackage?: string;
   readonly backupShape?: StorageBackupShape;
   readonly plane?: 'core' | 'worker';
+  /**
+   * The only source modules that may write the row (abbreviated as in the
+   * manifest). Enforced by the ownership census, the admitted-writers lint
+   * and, for writes through the shared writer, `evaluateAdmittedWriter`.
+   */
+  readonly admittedWriters?: readonly string[];
 }
 
 export type StorageWriteRefusalReason =
@@ -39,6 +45,7 @@ export type StorageWriteRefusalReason =
   | 'daemon_owned'
   | 'offline'
   | 'unlisted_writer'
+  | 'unadmitted_writer'
   | 'invalid_row';
 
 export type StorageWriteDecision =
@@ -109,4 +116,39 @@ export function assertStorageWriteAllowed<Id extends string>(
   const decision = evaluateStorageWrite(namespaceId, writer, rows);
   if (!decision.allowed)
     throw new StorageWriteRefusedError(namespaceId, writer, decision.reason);
+}
+
+/**
+ * The principal decision plus, for a row that names `admittedWriters`, the
+ * writer module. `module` is self-declared, like the principal: it refuses
+ * an accidental writer, not code that forges another module's name.
+ */
+export function evaluateAdmittedWriter<Id extends string>(
+  namespaceId: NoInfer<Id>,
+  writer: StorageWriterPrincipal,
+  module: string | undefined,
+  rows: readonly StorageOwnershipRow<Id>[],
+): StorageWriteDecision {
+  const decision = evaluateStorageWrite(namespaceId, writer, rows);
+  if (!decision.allowed) return decision;
+  const admitted = rows.find((row) => row.id === namespaceId)?.admittedWriters;
+  if (admitted === undefined) return ALLOWED;
+  return module !== undefined && admitted.includes(module)
+    ? ALLOWED
+    : refuse('unadmitted_writer');
+}
+
+export function assertAdmittedWriter<Id extends string>(
+  namespaceId: NoInfer<Id>,
+  writer: StorageWriterPrincipal,
+  module: string | undefined,
+  rows: readonly StorageOwnershipRow<Id>[],
+): void {
+  const decision = evaluateAdmittedWriter(namespaceId, writer, module, rows);
+  if (!decision.allowed)
+    throw new StorageWriteRefusedError(
+      namespaceId,
+      module === undefined ? writer : `${writer} (${module})`,
+      decision.reason,
+    );
 }

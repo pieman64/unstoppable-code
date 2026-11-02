@@ -17,6 +17,7 @@ import {
   registerEnrichment,
   seedEnrichment,
 } from './chat-enrichment-fixture.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 async function githubReads() {
   const { activity } = await getScenarioActivity(
@@ -27,9 +28,10 @@ async function githubReads() {
 }
 
 async function selectMode(window, provider, mode) {
-  await window
-    .getByRole('combobox', { name: `${provider} chat enrichment` })
-    .selectOption(mode.toLowerCase());
+  await chooseSettingsOption(
+    window.getByRole('combobox', { name: `${provider} chat enrichment` }),
+    mode.toLowerCase(),
+  );
 }
 
 test('all provider modes preserve prose across cowork, worktree and reload', async () => {
@@ -47,16 +49,16 @@ test('all provider modes preserve prose across cowork, worktree and reload', asy
     await app.openSettingsSection('display');
     await expect(
       window.getByRole('combobox', { name: 'Linear chat enrichment' }),
-    ).toHaveValue('replace');
+    ).toHaveAttribute('data-value', 'replace');
     await expect(
       window.getByRole('combobox', { name: 'GitHub chat enrichment' }),
-    ).toHaveValue('hover');
+    ).toHaveAttribute('data-value', 'hover');
     await selectMode(window, 'Linear', 'Hover');
     await app.openSettingsSection('terminal');
     await app.openSettingsSection('display');
     await expect(
       window.getByRole('combobox', { name: 'Linear chat enrichment' }),
-    ).toHaveValue('hover');
+    ).toHaveAttribute('data-value', 'hover');
     await app.closeSettings();
     await connectEnrichment(window);
     let chat = await openEnrichmentChat(window);

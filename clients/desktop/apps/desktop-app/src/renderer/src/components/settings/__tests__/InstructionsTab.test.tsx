@@ -6,9 +6,12 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { createEmptyGlobalInstructionsConfig } from '@canopy/desktop-shared/types';
+import {
+  createEmptyGlobalInstructionsConfig,
+  type PreferencesSaveResult,
+} from '@canopy/desktop-shared/types';
 import { makeTestPreferences } from '@/test-utils/preferences';
 import { InstructionsTab } from '../InstructionsTab';
 
@@ -45,7 +48,7 @@ describe('InstructionsTab', () => {
   type SavePreferences = typeof window.api.savePreferences;
   const savePreferences = jest
     .fn<ReturnType<SavePreferences>, Parameters<SavePreferences>>()
-    .mockResolvedValue(undefined);
+    .mockResolvedValue(makeTestPreferences() satisfies PreferencesSaveResult);
   let container: HTMLDivElement;
   let root: Root;
 
@@ -99,7 +102,11 @@ describe('InstructionsTab', () => {
     if (!savedPreferences) {
       throw new Error('Expected the Instructions settings to be saved');
     }
-    expect(savedPreferences.globalInstructions.chats).toEqual({
+    const globalInstructions = savedPreferences.globalInstructions;
+    if (!globalInstructions) {
+      throw new Error('Expected global instructions in the save payload');
+    }
+    expect(globalInstructions.chats).toEqual({
       overall: 'Updated instructions.',
       scoped: [],
     });

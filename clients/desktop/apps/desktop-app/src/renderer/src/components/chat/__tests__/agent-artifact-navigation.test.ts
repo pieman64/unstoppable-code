@@ -16,9 +16,10 @@ const detectChatStoreSurface = jest.fn(() => 'main');
 const addToast = jest.fn();
 const openLink = jest.fn(() => Promise.resolve());
 
-const openPipelineExecutionFromUi = jest.fn(() =>
-  Promise.resolve({ status: 'applied' }),
-);
+const openPipelineExecutionFromUi = jest.fn<
+  Promise<unknown>,
+  [request: unknown]
+>(() => Promise.resolve({ status: 'applied' }));
 
 jest.mock('@/stores/chat/surface', () => ({
   detectChatStoreSurface: (): string => detectChatStoreSurface(),
@@ -238,7 +239,7 @@ describe('openAgentArtifactNavigation', () => {
     });
 
     expect(addToast).toHaveBeenCalledWith(
-      'Project pipeline project--missing.yaml not found.',
+      'Project workflow project--missing.yaml not found.',
       'error',
     );
   });

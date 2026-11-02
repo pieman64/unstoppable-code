@@ -1,3 +1,5 @@
+import { openOpenCodeExecutionRuntime } from '../opencode/execution-runtime';
+import { resolveRoutingOverrideAttribution } from '../agents/ai-credits-routing';
 import { randomUUID } from 'node:crypto';
 import type { ApprovalRule } from '@canopy/desktop-shared/types';
 import { runOpenCodePipelinePrompt } from '@canopy/desktop-shared/node/pipelines/opencode-prompt-runner';
@@ -5,11 +7,7 @@ import type {
   OpenCodePromptRunnerRequest,
   OpenCodePromptRunnerResult,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
-import {
-  openManagedOpenCodeRuntime,
-  assertOpenCodeRuntimeModelAvailable,
-  assertOpenCodeConnectionGeneration,
-} from '../opencode/connection';
+import { assertOpenCodeConnectionGeneration } from '../opencode/connection';
 import {
   createApprovalSession,
   type ApprovalSessionHandle,
@@ -26,9 +24,22 @@ export async function runDesktopOpenCodePipelinePrompt(
         signal: AbortSignal;
       }
     | undefined;
+  const attributionOptions = {
+    workspaceId: request.projectId,
+    worktreeId: request.worktreeId,
+    executionContext: request.executionContext,
+    environmentRuntime: 'pipeline' as const,
+  };
   return runOpenCodePipelinePrompt(request, {
     open: async (signal) => {
-      const runtime = await openManagedOpenCodeRuntime({
+      const sessionKey = `opencode-pipeline:${request.executionId}:${randomUUID()}`;
+      const runtime = await openOpenCodeExecutionRuntime({
+        model: request.model,
+        sessionId: sessionKey,
+        cwd: request.cwd,
+        scopedModelDiscovery: true,
+        attribution: () =>
+          resolveRoutingOverrideAttribution(attributionOptions),
         signal,
         workspaceId: request.projectId,
         executionKind: 'pipeline',
@@ -37,14 +48,7 @@ export async function runDesktopOpenCodePipelinePrompt(
       try {
         const runtimeSignal = AbortSignal.any([signal, runtime.signal]);
         runtimeSignal.throwIfAborted();
-        const model = await assertOpenCodeRuntimeModelAvailable(
-          request.model,
-          runtime,
-          request.cwd,
-        );
-        runtimeSignal.throwIfAborted();
         assertOpenCodeConnectionGeneration(runtime.generation);
-        const sessionKey = `opencode-pipeline:${request.executionId}:${randomUUID()}`;
         const approval = createApprovalSession({
           sessionKey,
           projectId: request.projectId ?? 'pipeline',
@@ -87,7 +91,6 @@ export async function runDesktopOpenCodePipelinePrompt(
         let closing: Promise<void> | undefined;
         return {
           ...runtime,
-          supportedThinkingLevels: model.supportedThinkingLevels ?? [],
           close: (): Promise<void> =>
             (closing ??= (async (): Promise<void> => {
               if (active === context) active = undefined;

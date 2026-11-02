@@ -172,6 +172,12 @@ test('renders the workflow card with a receipt folded from a later message', asy
     const app = new CanopyAppDriver(window);
 
     await app.waitForShell();
+
+    // Individual-step assertions use the Detailed preference.
+
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openChatPage();
 
     // Exactly one workflow card, with the receipt fields merged in: the name

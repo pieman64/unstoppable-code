@@ -1,14 +1,23 @@
-import { useEffect, useRef } from 'react';
-import type {
-  AgentProviderAuthStatus,
-  AiCreditsScopeRequest,
+import { useEffect, useRef, useState } from 'react';
+import {
+  clearCodexAccountModels,
+  setCodexAccountModels,
+  type AgentProviderAuthStatus,
+  type AiCreditsScopeRequest,
 } from '@canopy/desktop-shared/types';
 import type { BillingLaneAvailability } from '@canopy/desktop-shared/lib/default-model-lane';
+import type { CodexSpeedCatalog } from '@canopy/desktop-shared/types/codex-speed-capabilities';
 import {
   setRendererBillingLaneAvailability,
+  getRendererCodexAccountModelsKey,
+  setRendererCodexAccountModels,
   setRendererGuestPrincipal,
 } from '@/stores/billingLaneRuntime';
 import { useChatStore } from '@/stores/chatStore';
+import {
+  retainCodexSpeedSubscription,
+  useCodexSpeedStore,
+} from '@/stores/codexSpeedStore';
 import { useClaudeAuthStatus } from './useClaudeAuthStatus';
 import { useCodexAuthStatus } from './useCodexAuthStatus';
 import { useAiCreditsAvailability } from './useAiCreditsAvailability';
@@ -65,6 +74,24 @@ function creditsTriState(
 }
 
 /**
+ * The ids of the signed-in ChatGPT account's non-hidden Codex models (`id` and
+ * `model` of each entry), or `null` when the list is unknown, truncated, or
+ * lists nothing usable. Hidden models never count toward default eligibility (CAN-4716).
+ */
+export function codexAccountModelIdsFromCatalog(
+  catalog: CodexSpeedCatalog | null,
+): ReadonlySet<string> | null {
+  if (catalog?.status !== 'ready' || catalog.truncated) return null;
+  const ids = new Set<string>();
+  for (const entry of catalog.models) {
+    if (entry.hidden === true) continue;
+    if (entry.id) ids.add(entry.id);
+    if (entry.model) ids.add(entry.model);
+  }
+  return ids.size > 0 ? ids : null;
+}
+
+/**
  * Push live billing-lane facts into `billingLaneRuntime` and re-stamp pristine
  * chat tabs once those facts settle.
  *
@@ -112,11 +139,75 @@ export function useBillingLaneRuntimeSync(
   );
   const codexProxyReady = isAccountProxyReadyForHarness(accountProxy, 'codex');
   const lastSignatureRef = useRef<string | undefined>(undefined);
+  const codexNativeAuth = codexProxyReady || nativeAuthTriState(codexAuth);
+  const codexSignedIn = codexNativeAuth === true;
+  // CAN-4716: the account's own Codex model list narrows the Codex default to
+  // models it can run. Fetch it once per confirmed sign-in (again after a
+  // sign-out/sign-in cycle) and follow main's pushes while signed in. Never
+  // read while the Codex lane is unknown or signed out.
+  const codexCatalog = useCodexSpeedStore((state) => state.catalog);
+  // A catalog mirrored before this sign-in may be another account's (its
+  // invalidation can arrive while unsubscribed), so the mirror counts only
+  // once this sign-in's own read has settled.
+  const [codexSignInReadSettled, setCodexSignInReadSettled] = useState(false);
+  useEffect(() => {
+    if (!codexSignedIn) return undefined;
+    const release = retainCodexSpeedSubscription();
+    let current = true;
+    void useCodexSpeedStore
+      .getState()
+      .read()
+      .finally(() => {
+        if (current) setCodexSignInReadSettled(true);
+      });
+    return (): void => {
+      current = false;
+      setCodexSignInReadSettled(false);
+      release();
+    };
+  }, [codexSignedIn]);
+  // Main invalidates its catalog in session (account updated, runtime
+  // replaced) and only refetches while a speed surface is open, so read once
+  // more for each newer generation that arrives `unknown`.
+  const lastSeenCatalogGenerationRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!codexSignedIn) {
+      lastSeenCatalogGenerationRef.current = null;
+      return;
+    }
+    if (!codexCatalog) return;
+    const seen = lastSeenCatalogGenerationRef.current;
+    lastSeenCatalogGenerationRef.current = codexCatalog.generation;
+    if (
+      seen !== null &&
+      codexCatalog.generation > seen &&
+      codexCatalog.status === 'unknown'
+    ) {
+      void useCodexSpeedStore.getState().read();
+    }
+  }, [codexSignedIn, codexCatalog]);
+  const lastRegisteredCatalogRef = useRef<CodexSpeedCatalog | null>(null);
 
   useEffect(() => {
+    const accountCatalog =
+      codexSignedIn && codexSignInReadSettled ? codexCatalog : null;
+    // Register the account-only models before the eligibility set below, so
+    // the re-stamp sees them; the same mapping main applies to its registry.
+    if (lastRegisteredCatalogRef.current !== accountCatalog) {
+      lastRegisteredCatalogRef.current = accountCatalog;
+      if (accountCatalog?.status === 'ready' && !accountCatalog.truncated) {
+        setCodexAccountModels(accountCatalog.models);
+      } else {
+        clearCodexAccountModels();
+      }
+    }
+    setRendererCodexAccountModels(
+      codexAccountModelIdsFromCatalog(accountCatalog),
+    );
+
     const next: BillingLaneAvailability = {
       claudeNativeAuth: claudeProxyReady || nativeAuthTriState(claudeAuth),
-      codexNativeAuth: codexProxyReady || nativeAuthTriState(codexAuth),
+      codexNativeAuth,
       creditsEligible: creditsTriState(
         credits.eligible,
         credits.loading,
@@ -131,15 +222,19 @@ export function useBillingLaneRuntimeSync(
     // pristine guards before touching anything.
     const signature = `${String(next.claudeNativeAuth)}|${String(
       next.codexNativeAuth,
-    )}|${String(next.creditsEligible)}|${String(allowlistOnly)}`;
+    )}|${String(next.creditsEligible)}|${String(
+      allowlistOnly,
+    )}|${getRendererCodexAccountModelsKey()}`;
     if (lastSignatureRef.current === signature) return;
     lastSignatureRef.current = signature;
     void useChatStore.getState().syncActiveEmptyTabToDefaults();
   }, [
     claudeAuth,
-    codexAuth,
+    codexNativeAuth,
+    codexSignedIn,
+    codexSignInReadSettled,
+    codexCatalog,
     claudeProxyReady,
-    codexProxyReady,
     credits.eligible,
     credits.loading,
     credits.inconclusive,

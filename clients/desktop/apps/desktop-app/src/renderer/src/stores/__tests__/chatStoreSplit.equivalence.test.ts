@@ -31,6 +31,7 @@ import type {
 } from '@canopy/agent-transcript/transcript-storage';
 import type * as ChatStoreModule from '../chatStore';
 import type * as ChatSidebarStoreModule from '../chatSidebarStore';
+import type * as HydrationModule from '../chat/hydration';
 import type * as RenderCadenceModule from '../chat/render-cadence';
 import type * as RenderStoresModule from '../chat/render-stores';
 import type * as TranscriptPagesModule from '../chat/transcript-pages';
@@ -65,7 +66,17 @@ interface Loaded {
   badgeKeys: typeof BadgeKeysModule;
 }
 
+let loadedHydration: typeof HydrationModule | null = null;
+
+// A pending idle-unload timer closes over its module instance, so it keeps a
+// `jest.resetModules()` copy of the whole store graph alive until it fires.
+function releaseLoadedChatStore(): void {
+  loadedHydration?.clearIdleChatUnloadTimer();
+  loadedHydration = null;
+}
+
 function load(): Loaded {
+  releaseLoadedChatStore();
   jest.resetModules();
   Object.defineProperty(global, 'window', {
     configurable: true,
@@ -104,8 +115,11 @@ function load(): Loaded {
       },
     },
   });
+  const chatStore = jest.requireActual<typeof ChatStoreModule>('../chatStore');
+  loadedHydration =
+    jest.requireActual<typeof HydrationModule>('../chat/hydration');
   return {
-    chatStore: jest.requireActual<typeof ChatStoreModule>('../chatStore'),
+    chatStore,
     sidebar: jest.requireActual<typeof ChatSidebarStoreModule>(
       '../chatSidebarStore',
     ),
@@ -318,7 +332,7 @@ function steps(): Step[] {
               projectId: PROJECT,
               worktreeId: WT1,
               chatId: 'a1',
-              messageId: 'a1-a1',
+              atMessageId: 'a1-a1',
             },
           }),
         },
@@ -341,7 +355,7 @@ function steps(): Step[] {
               {
                 question: 'Continue?',
                 header: 'Continue',
-                options: [{ label: 'Yes', description: 'Go on' }],
+                options: ['Yes'],
                 multiSelect: false,
               },
             ],
@@ -368,7 +382,9 @@ function steps(): Step[] {
             title: 'Fork of a1',
             archivedAt: '2026-10-01T00:00:00.000Z',
             createdAt: '2026-10-01T00:00:00.000Z',
-            messageCount: 2,
+            turnCount: 1,
+            restorable: true,
+            unread: false,
           },
         },
         { type: 'tab.removed', tabId: 'a4' },
@@ -377,7 +393,11 @@ function steps(): Step[] {
     {
       kind: 'event',
       event: event(WT1, 15, [
-        { type: 'archive.removed', chatId: 'a4' },
+        {
+          type: 'archive.removed',
+          archiveEntryId: 'archive-a4',
+          chatId: 'a4',
+        },
         { type: 'tab.upserted', tab: persistedTab('a4', { title: 'Fork' }) },
       ]),
     },
@@ -389,6 +409,7 @@ function steps(): Step[] {
           type: 'messages.replaced',
           chatId: 'a2',
           messages: [message('a2-u1', 'user', 'hello a2', 1)],
+          removedMessageIds: ['a2-u1', 'a2-a1'],
         },
         {
           type: 'transcript.updated',
@@ -539,7 +560,6 @@ async function run(
                   chatId: 'b1',
                   live: step.live,
                   queued: 0,
-                  delegates: [],
                 },
               }
             : {},
@@ -635,6 +655,10 @@ beforeAll(() => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+});
+
+afterEach(() => {
+  releaseLoadedChatStore();
 });
 
 describe('chat store split equivalence', () => {
@@ -802,7 +826,9 @@ describe('chat store split equivalence', () => {
             title: 'Tab a2',
             archivedAt: '2026-10-01T00:00:00.000Z',
             createdAt: '2026-10-01T00:00:00.000Z',
-            messageCount: 2,
+            turnCount: 1,
+            restorable: true,
+            unread: false,
           },
         },
         { type: 'tab.removed', tabId: 'a2' },

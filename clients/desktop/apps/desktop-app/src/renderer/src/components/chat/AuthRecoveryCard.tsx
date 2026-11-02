@@ -7,7 +7,7 @@ import {
   type AuthFailureClass,
   type AuthSettingsTarget,
 } from '@canopy/protocol/auth-recovery';
-import { CopyButton } from '@canopy/ui-shared/components';
+import { Button, CopyButton } from '@canopy/ui-shared/components';
 import { CheckIcon, WarningIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type {
   AuthTerminalProvider,
@@ -275,8 +275,6 @@ function openAuthSettings(destination: AuthSettingsDestination): void {
 
 const FRAME_CLASS =
   'mt-1 flex flex-col gap-2 rounded-lg border border-line-attention/40 bg-warning-subtle px-3 py-2 text-xs fg-primary';
-const BUTTON_CLASS =
-  'focus-ring shrink-0 rounded-md border border-line-attention/40 px-2 py-1 font-medium fg-warning transition hover:bg-warning-subtle disabled:opacity-60';
 
 /**
  * Stable automation hook for the action button.
@@ -433,15 +431,14 @@ const AuthRecoveryRow = memo(function AuthRecoveryRow({
           )}
         </span>
         {actionLabel !== null && action ? (
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid={ctaTestId(failure, action)}
             disabled={busy}
             onClick={onAction}
-            className={BUTTON_CLASS}
           >
             {actionLabel}
-          </button>
+          </Button>
         ) : null}
       </div>
       {failure.detail && !connected ? (
@@ -584,17 +581,17 @@ export const AuthRecoveryCard = memo(function AuthRecoveryCard({
         />
       ))}
       {ready && sourceMessageId ? (
-        <button
-          type="button"
+        <Button
+          size="compact"
+          className="self-start"
           data-testid="auth-recovery-resume"
-          className={`${BUTTON_CLASS} self-start`}
           disabled={!recovery.canResume || recovery.resuming}
           onClick={(): void => {
             void resume();
           }}
         >
           {recovery.resuming ? 'Resuming…' : 'Resume'}
-        </button>
+        </Button>
       ) : null}
       {recovery.error ? (
         <p role="status" className="fg-secondary">

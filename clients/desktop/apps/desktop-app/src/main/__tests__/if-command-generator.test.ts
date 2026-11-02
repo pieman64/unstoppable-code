@@ -19,7 +19,9 @@ jest.mock('@canopy/desktop-shared/lib/structured-helper-query', () => ({
 
 const mockSpawnClaudeCodeProcessOffMain = jest.fn();
 jest.mock('../agents/claude-process-host-runner', () => ({
-  spawnClaudeCodeProcessOffMain: mockSpawnClaudeCodeProcessOffMain,
+  get spawnClaudeCodeProcessOffMain(): typeof mockSpawnClaudeCodeProcessOffMain {
+    return mockSpawnClaudeCodeProcessOffMain;
+  },
 }));
 
 const mockFinalizeObservedTask = jest.fn();

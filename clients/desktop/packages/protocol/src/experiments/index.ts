@@ -9,6 +9,15 @@ export const LABS_EXPERIMENT_AVAILABILITIES = [
 ] as const;
 export type LabsExperimentAvailability =
   (typeof LABS_EXPERIMENT_AVAILABILITIES)[number];
+export const LABS_EXPERIMENT_AVAILABILITY_SOURCES = [
+  'fixture',
+  'live',
+  'cache',
+  'policy_fallback',
+  'registered_fallback',
+] as const;
+export type LabsExperimentAvailabilitySource =
+  (typeof LABS_EXPERIMENT_AVAILABILITY_SOURCES)[number];
 export const LABS_EXPERIMENT_HIDDEN = 'hidden';
 export const LABS_EXPERIMENT_OFFERED = 'offered';
 export const LABS_EXPERIMENT_ON = 'on';
@@ -139,22 +148,29 @@ export interface SharedLabsExperiment {
   readonly flagKey: ClientFeatureFlagKey;
 }
 
-export const CLEAN_CHAT_EXPERIMENT: SharedLabsExperiment = {
-  id: 'clean-chat',
-  name: 'Clean chat',
+export const COMPACT_QUEUE_EXPERIMENT: SharedLabsExperiment = {
+  id: 'compact-queue',
+  name: 'Compact queue',
   description:
-    'A quieter chat with plain steps, shimmer instead of spinners and tidy message actions.',
-  // `CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat.key`, checked in tests.
-  flagKey: 'canopy-desktop-labs-clean-chat',
+    'Show queued messages as a short list above the composer that you can reorder.',
+  // `CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.key`, checked in tests.
+  flagKey: 'canopy-desktop-labs-compact-queue',
+};
+
+export const SMOOTH_STREAMING_EXPERIMENT: SharedLabsExperiment = {
+  id: 'smooth-streaming',
+  name: 'Smooth streaming',
+  description:
+    'Replies appear word by word at a steady pace as they stream in.',
+  // `CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key`, checked in tests.
+  flagKey: 'canopy-desktop-labs-smooth-streaming',
 };
 
 /**
  * The experiments web lists under account Labs: the ones that change
  * something on web. Desktop lists its whole registry, which includes these.
  */
-export const WEB_LABS_EXPERIMENTS: readonly SharedLabsExperiment[] = [
-  CLEAN_CHAT_EXPERIMENT,
-];
+export const WEB_LABS_EXPERIMENTS: readonly SharedLabsExperiment[] = [];
 
 /** One experiment account Labs lists, as the server resolved it. */
 export const accountLabsExperimentSchema = z.strictObject({

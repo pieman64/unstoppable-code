@@ -1,3 +1,4 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 /**
  * Full archived-container LIFECYCLE coverage (Archive & Retention), one test
  * per container kind:
@@ -234,8 +235,9 @@ async function chatTabIds(window) {
 /** Creates a new chat tab via the chat group's "+" menu; returns its id. */
 async function createChatTab(window) {
   const before = new Set(await chatTabIds(window));
-  // The `+` creates the chat directly now — no menu step.
+  // The tab-strip + opens the Add menu; choose New chat explicitly.
   await window.getByTestId('panel-add-tab-group-chat').click();
+  await window.getByTestId('panel-add-menu-item-new-chat').click();
   let created = null;
   await expect
     .poll(async () => {
@@ -431,7 +433,7 @@ test.describe('archived container lifecycle', () => {
       await row.getByTestId('worktree-actions-menu-button').click();
       await window.getByTestId('worktree-actions-menu-archive').click();
       const dialog = window.getByRole('dialog', {
-        name: 'Archive worktree?',
+        name: /^Archive worktree/,
       });
       await expect(dialog).toBeVisible();
 
@@ -521,7 +523,7 @@ test.describe('archived container lifecycle', () => {
       await row.getByTestId('worktree-actions-menu-button').click();
       await window.getByTestId('worktree-actions-menu-archive').click();
       const confirmDialog = window.getByRole('dialog', {
-        name: 'Archive worktree?',
+        name: /^Archive worktree/,
       });
       await expect(confirmDialog).toBeVisible();
       await confirmDialog
@@ -615,7 +617,7 @@ test.describe('archived container lifecycle', () => {
       await row.getByTestId('worktree-actions-menu-button').click();
       await window.getByTestId('worktree-actions-menu-archive').click();
       const confirmDialog = window.getByRole('dialog', {
-        name: 'Archive worktree?',
+        name: /^Archive worktree/,
       });
       await confirmDialog
         .getByTestId('worktree-removal-preserve-branch')
@@ -720,7 +722,7 @@ test.describe('archived container lifecycle', () => {
           await row.getByTestId('worktree-actions-menu-button').click();
           await window.getByTestId('worktree-actions-menu-archive').click();
           const dialog = window.getByRole('dialog', {
-            name: 'Archive worktree?',
+            name: /^Archive worktree/,
           });
           await expect(dialog).toBeVisible();
           const choice = dialog.getByTestId('worktree-removal-preserve-branch');
@@ -741,8 +743,9 @@ test.describe('archived container lifecycle', () => {
             .getByTestId('toast-card')
             .filter({ hasText: 'Recovered remaining files' })
             .first();
-          await expect(warning.getByTestId('toast-meta-title')).toContainText(
-            'Worktree',
+          // The warning names the live project; its worktree is gone by now.
+          await expect(warning.getByTestId('toast-meta-title')).toHaveText(
+            'TypeScript pnpm Vite',
           );
         }
         if (damage === 'restored-setup') {
@@ -892,6 +895,10 @@ test.describe('archived container lifecycle', () => {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell({ timeout: 30_000 });
+      await connectMockCloudAccount(
+        window,
+        'csk_archived_containers_lifecycle_attachments_e2e',
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_BRANCH);
 
@@ -932,7 +939,7 @@ test.describe('archived container lifecycle', () => {
       // Archive is its own menu item; no lock toggle inside the dialog.
       await window.getByTestId('worktree-actions-menu-archive').click();
       const confirmDialog = window.getByRole('dialog', {
-        name: 'Archive worktree?',
+        name: /^Archive worktree/,
       });
       await expect(confirmDialog).toBeVisible();
       await expect(
@@ -981,7 +988,7 @@ test.describe('archived container lifecycle', () => {
       ).toContainText('Chats (3)');
       await expect(
         viewer.getByTestId('archived-container-tab-pipelines'),
-      ).toContainText('Pipelines (1)');
+      ).toContainText('Workflows (1)');
       await expect(
         viewer.getByTestId('archived-container-tab-attachments'),
       ).toContainText('Attachments (1)');
@@ -1312,7 +1319,7 @@ test.describe('archived container lifecycle', () => {
       // require confirmation because it is a durable state choice.
       await window.getByTestId('worktree-actions-menu-archive').click();
       const archiveDialog = window.getByRole('dialog', {
-        name: 'Archive worktree?',
+        name: /^Archive worktree/,
       });
       await expect(archiveDialog).toBeVisible();
       await expect(archiveDialog).toContainText('until you delete the archive');
@@ -1503,7 +1510,7 @@ test.describe('archived container lifecycle', () => {
         await window.getByTestId('worktree-actions-menu-button').click();
         await window.getByTestId('worktree-actions-menu-archive').click();
         const confirmDialog = window.getByRole('dialog', {
-          name: 'Archive worktree?',
+          name: /^Archive worktree/,
         });
         await expect(confirmDialog).toBeVisible();
         const branchChoice = confirmDialog.getByTestId(

@@ -793,7 +793,7 @@ describe('delegation broker queued admission', () => {
       expect(followUp.value.runGeneration).toBe(2);
       expect(followUp.value.phase).toBe('queued');
 
-      const watched = broker.watchTargetStates([
+      const watched = await broker.watchTargetStates([
         { delegationId: first.value.delegationId, runGeneration: 2 },
       ]);
       expect(watched).toEqual([
@@ -1183,7 +1183,7 @@ describe('delegation broker queued admission', () => {
         .list(parent)
         .find((entry) => entry.delegationId === queued.value.delegationId);
       expect(listed?.queue).toMatchObject({ position: 1, waitingFor: 'queue' });
-      const output = broker.getOutput(parent, {
+      const output = await broker.getOutput(parent, {
         delegationId: queued.value.delegationId,
       });
       expect(output).toMatchObject({

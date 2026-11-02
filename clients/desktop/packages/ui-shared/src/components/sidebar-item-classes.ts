@@ -53,6 +53,15 @@ export const SIDEBAR_ROW_TRAILING_CELL_CLASSNAME =
   'ml-auto inline-flex h-5 w-6 shrink-0 items-center justify-end whitespace-nowrap pr-1 text-2xs fg-quaternary';
 
 /**
+ * Where a nav row's trailing shortcut hint ends, so New task's `⌘N` lines up
+ * with the ages and counts of the list rows below. A list row is inset 6px on
+ * the right and its trailing cell sets text 4px inside that (10px in all); a
+ * nav row is inset 8px (`px-2` in `SIDEBAR_LIST_ITEM_CLASSNAME`), so the hint
+ * adds the 2px difference. Change these together.
+ */
+export const SIDEBAR_NAV_ROW_TRAILING_INSET_CLASSNAME = 'pr-0.5';
+
+/**
  * The row grid: where a list row's title starts.
  *
  * Every row under a section header (project names, worktrees, chats, shared

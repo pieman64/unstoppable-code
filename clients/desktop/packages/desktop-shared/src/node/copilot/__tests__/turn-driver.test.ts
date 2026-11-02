@@ -1,5 +1,6 @@
 import type {
   CurrentToolMetadata,
+  GitHubTokenProvider,
   SessionConfig,
   SessionEvent,
 } from '@github/copilot-sdk';
@@ -103,6 +104,75 @@ function fixture(): {
     );
   return { options, runtime, session, event, authorize };
 }
+
+test.each([undefined, 'native-session'])(
+  'binds the recipient before create/resume (%s)',
+  async (sessionId) => {
+    const f = fixture();
+    const provider: GitHubTokenProvider = (): ReturnType<GitHubTokenProvider> =>
+      Promise.resolve({
+        kind: 'token',
+        accessToken: 'synthetic',
+        expiresIn: 7200,
+      });
+    const bind = jest.fn(() => provider);
+    f.session.send.mockImplementation((): Promise<string> => {
+      f.event({ type: 'session.idle', data: {} });
+      return Promise.resolve('send-id');
+    });
+    await runCopilotTurn({
+      ...f.options,
+      sessionId,
+      runtime: { ...f.runtime, tokenProviderForSession: bind },
+    });
+    expect(bind).toHaveBeenCalledWith(sessionId);
+    const config = sessionId
+      ? f.runtime.client.resumeSession.mock.calls[0]?.[1]
+      : f.runtime.client.createSession.mock.calls[0]?.[0];
+    expect(config?.gitHubTokenProvider).toBe(provider);
+  },
+);
+
+test('missing-session recovery mints a new create lease rather than relaxing the resume audience', async () => {
+  const f = fixture();
+  const resumeProvider: GitHubTokenProvider =
+    (): ReturnType<GitHubTokenProvider> =>
+      Promise.resolve({
+        kind: 'token',
+        accessToken: 'resume',
+        expiresIn: 7200,
+      });
+  const createProvider: GitHubTokenProvider =
+    (): ReturnType<GitHubTokenProvider> =>
+      Promise.resolve({
+        kind: 'token',
+        accessToken: 'create',
+        expiresIn: 7200,
+      });
+  const bind = jest.fn((sessionId?: string) =>
+    sessionId ? resumeProvider : createProvider,
+  );
+  f.runtime.client.resumeSession.mockRejectedValue(
+    new Error('Missing conversation'),
+  );
+  f.session.send.mockImplementation((): Promise<string> => {
+    f.event({ type: 'session.idle', data: {} });
+    return Promise.resolve('send-id');
+  });
+  await runCopilotTurn({
+    ...f.options,
+    sessionId: 'lost',
+    onSessionUnavailable: (): Promise<void> => Promise.resolve(),
+    runtime: { ...f.runtime, tokenProviderForSession: bind },
+  });
+  expect(bind.mock.calls).toEqual([['lost'], []]);
+  expect(
+    f.runtime.client.resumeSession.mock.calls[0]?.[1].gitHubTokenProvider,
+  ).toBe(resumeProvider);
+  expect(
+    f.runtime.client.createSession.mock.calls[0]?.[0].gitHubTokenProvider,
+  ).toBe(createProvider);
+});
 
 test('interactive turns have no implicit one-hour deadline', async () => {
   jest.useFakeTimers();

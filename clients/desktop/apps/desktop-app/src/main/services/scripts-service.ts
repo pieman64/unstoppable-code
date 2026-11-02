@@ -19,11 +19,9 @@ import type {
   ScriptSourceInfoRequest,
   ScriptSourceInfoResponse,
   ScriptStopRequest,
-  SingleRepoSidebarItem,
 } from '@canopy/desktop-shared/types';
 import {
   type CommandShellDefinition,
-  getScriptDisplayName,
   normalizeScriptName,
   resolveEffectiveScriptInteractive,
   resolveEffectiveScriptTimeoutSeconds,
@@ -54,9 +52,6 @@ function classifyScriptLifecycle(
 }
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import {
-  collectProjectScriptLayers,
-  collectWorkspaceRepoScriptLayers,
-  collectWorkspaceRootScriptLayers,
   getResolvedScriptDefinition,
   resolveProjectScripts,
   resolveWorkspaceRepoScripts,
@@ -83,6 +78,14 @@ import { validateId } from '../lib/validation';
 import { cancelWorkspaceTargetRuntimePreparation } from '../lib/workspace-target-exclusion';
 import { assertNotSplitLocked } from './split-lock-service';
 import { PortalServiceError } from './portal-service-error';
+import { readSingleRepoProject } from '../lib/script-definition-host';
+import { readScriptSourceInfo } from '../lib/script-source-info';
+import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import {
+  CORE_SCRIPT_GRANTS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
 import {
   appendScriptRunLogLines,
   completeScriptRunLog,
@@ -124,6 +127,15 @@ import {
   settleEach,
   trackDetachedWork,
 } from '@canopy/desktop-shared/node/lib/detached-work';
+
+// Script actions read source info as the trusted main process.
+const SCRIPT_SOURCE_INFO_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-main-script-actions',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: [CORE_SCRIPT_GRANTS.read],
+};
 
 const NOOP_SUCCESS: ScriptRunResponse = {
   success: true,
@@ -194,20 +206,6 @@ function notifyScriptRunUpdate(
 ): void {
   options.onRunUpdate?.(run);
   emitScriptRun(run, options.portalCommandId);
-}
-
-async function readSingleRepoProject(
-  projectId: string,
-): Promise<SingleRepoSidebarItem> {
-  const { items } = await readAllSidebarItems();
-  const project = items.find(
-    (item): item is SingleRepoSidebarItem =>
-      item.type === 'single-repo' && item.id === projectId,
-  );
-  if (!project) {
-    throw new PortalServiceError('not_found', 'Project not found.');
-  }
-  return project;
 }
 
 async function resolveScriptExecution(
@@ -1006,67 +1004,18 @@ function trimUtf8Tail(value: string, maxBytes: number): string {
   return bytes.subarray(start).toString('utf8');
 }
 
+/**
+ * Source info for the script actions host, through
+ * `core.script.definition.get` with the trusted main-process caller.
+ */
 export async function getScriptSourceInfo(
   request: ScriptSourceInfoRequest,
 ): Promise<ScriptSourceInfoResponse> {
-  const scriptName = normalizeScriptName(request.scriptName);
-  if (!scriptName) {
-    throw new PortalServiceError('invalid_payload', 'scriptName is required.');
-  }
-  let layers: ScriptSourceInfoResponse['layers'];
-  if (request.target === 'project') {
-    validateId(request.projectId, 'projectId');
-    const project = await readSingleRepoProject(request.projectId);
-    layers = await collectProjectScriptLayers(
-      project,
-      scriptName,
-      request.worktreeId
-        ? getWorktreeDir(request.projectId, request.worktreeId)
-        : undefined,
-    );
-  } else if (request.target === 'workspace-root') {
-    validateId(request.workspaceId, 'workspaceId');
-    layers = await collectWorkspaceRootScriptLayers(
-      request.workspaceId,
-      scriptName,
-      request.worktreeId
-        ? {
-            workspaceRootPath: getWorkspaceWorktreeRootRepoDir(
-              request.workspaceId,
-              request.worktreeId,
-            ),
-          }
-        : undefined,
-    );
-  } else {
-    validateId(request.workspaceId, 'workspaceId');
-    validateId(request.repoId, 'repoId');
-    layers = await collectWorkspaceRepoScriptLayers(
-      request.workspaceId,
-      request.repoId,
-      scriptName,
-      request.worktreeId
-        ? {
-            workspaceRootPath: getWorkspaceWorktreeRootRepoDir(
-              request.workspaceId,
-              request.worktreeId,
-            ),
-            repoPath: getWorkspaceWorktreeRepoDir(
-              request.workspaceId,
-              request.worktreeId,
-              request.repoId,
-            ),
-          }
-        : undefined,
-    );
-  }
-  const activeLayer = layers.find((layer) => layer.status === 'active');
-  return {
-    scriptName,
-    scriptDisplayName: getScriptDisplayName(scriptName),
-    layers,
-    effectiveCommand: activeLayer?.command ?? null,
-  };
+  return readScriptSourceInfo(
+    getActiveDesktopRuntime(),
+    SCRIPT_SOURCE_INFO_CALLER,
+    request,
+  );
 }
 
 export async function listScripts(input?: {

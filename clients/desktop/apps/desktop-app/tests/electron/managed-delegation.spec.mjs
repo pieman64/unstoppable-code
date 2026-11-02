@@ -15,16 +15,22 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import { createServer } from 'node:http';
 import { expect as baseExpect, test } from '@playwright/test';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 
 // Windows qualification runs x64 Electron and the provider binaries under ARM
 // emulation, where Codex-parent turns and main-to-renderer updates take
 // several times longer than on macOS. Scale every wait there; passing cases
 // still finish as soon as their condition holds.
-const TIMEOUT_SCALE = process.platform === 'win32' ? 3 : 1;
+const hostPlatform = hostOperatingSystem();
+const TIMEOUT_SCALE = hostPlatform === 'win32' ? 3 : 1;
 const scaled = (ms) => ms * TIMEOUT_SCALE;
 const expect = baseExpect.configure({ timeout: scaled(15_000) });
+import { openBackgroundDrawer } from './backgroundDrawer.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { readChatStorageMessages } from './readChatStorage.mjs';
+import {
+  readChatStorageIndexes,
+  readChatStorageMessages,
+} from './readChatStorage.mjs';
 import { selectModelOption } from './model-selection-fixture.mjs';
 import { seedCodexFixtureModelCatalog } from './seeders/seedCodexFixtureModelCatalog.mjs';
 import {
@@ -44,19 +50,21 @@ import {
   removeTestDataDir,
 } from './launchCanopy.mjs';
 import {
+  isFileBroker as isFileBrokerProcess,
+  parsePosixProcessTable,
+  selectNativeDescendants,
+  windowsImageName,
+} from './native-delegation-processes.mjs';
+import {
   TOOL_NAMESPACE,
   claudeToolName,
   codexToolName,
   createDelegationInference,
   delegationAgentSkillPath,
 } from './delegationRuntime.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
-test.skip(
-  !['darwin', 'win32'].includes(process.platform),
-  'Managed delegation requires the macOS or Windows confined file boundary.',
-);
-
-const PALETTE_SHORTCUT = process.platform === 'darwin' ? 'Meta+K' : 'Control+K';
+const PALETTE_SHORTCUT = hostPlatform === 'darwin' ? 'Meta+K' : 'Control+K';
 
 // Delegated Codex workers run without an OS sandbox on Windows, so the Codex
 // fixtures' POSIX commands and sandbox-enforced denials do not apply there.
@@ -64,7 +72,7 @@ const PALETTE_SHORTCUT = process.platform === 'darwin' ? 'Meta+K' : 'Control+K';
 // child or grandchild on Windows. Nested grandchildren use the root parent's
 // harness (see delegationRuntime.mjs), so a Codex parent with a nested action
 // spawns a Codex grandchild.
-const delegatedCodexUnavailable = process.platform === 'win32';
+const delegatedCodexUnavailable = hostPlatform === 'win32';
 function spawnsDelegatedCodex({ parent, child, action }) {
   return (
     child === 'codex' ||
@@ -76,7 +84,7 @@ function spawnsDelegatedCodex({ parent, child, action }) {
 // packages/desktop-shared/src/node/skills/paths.ts: Windows escapes the
 // characters its file names reserve, such as the colon in `custom:app`.
 function skillSourceDirectoryName(sourceId) {
-  if (process.platform !== 'win32') return sourceId;
+  if (hostPlatform !== 'win32') return sourceId;
   const hex = (character) =>
     `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
   return Array.from(sourceId, (character) =>
@@ -536,6 +544,44 @@ function retainedTimers(userDataDir) {
   }
 }
 
+/**
+ * Owners of the open pauses on the parent chat's current turn, read from the
+ * canonical turn state in the durable chat index. Main writes a persisted
+ * timer block's `pauseOwnerIds` only from turn-end effects, so pause
+ * ownership during a turn is asserted here instead. Undefined until the
+ * scope has migrated to chat storage.
+ */
+function openPauseOwnerIds(userDataDir) {
+  const pauses = parentTurnState(userDataDir)?.current?.pauses;
+  return pauses
+    ?.filter((pause) => pause.endedAtMs == null)
+    .map((pause) => pause.ownerId);
+}
+
+/** The parent chat's last settled canonical turn record. */
+function endedTurnRecord(userDataDir) {
+  return parentTurnState(userDataDir)?.lastEnded;
+}
+
+/**
+ * The parent chat's canonical turn state from the durable chat index, or
+ * undefined until the scope has migrated to chat storage.
+ */
+function parentTurnState(userDataDir) {
+  const workspaceRoot = path.join(userDataDir, 'workspaces', workspaceId);
+  if (
+    !existsSync(
+      path.join(workspaceRoot, 'chat-storage-manifests', `${worktreeId}.json`),
+    )
+  )
+    return undefined;
+  return (
+    readChatStorageIndexes(workspaceRoot, worktreeId).live.runtimeByChatId[
+      'delegating-parent'
+    ]?.turn ?? { current: undefined, lastEnded: undefined }
+  );
+}
+
 function retainedMetrics(userDataDir) {
   const directory = path.join(
     userDataDir,
@@ -576,49 +622,25 @@ function listWindowsProcesses() {
     command: row.ExecutablePath || row.Name || '',
   }));
 }
-// Case-insensitive Windows image name without its directory or `.exe`.
-function windowsImageName(command) {
-  return command
-    .split(/[\\/]/)
-    .at(-1)
-    .replace(/\.exe$/i, '')
-    .toLowerCase();
-}
-function isNativeDelegationProcess(command) {
-  return process.platform === 'win32'
-    ? ['claude', 'codex', 'canopy-file-broker'].includes(
-        windowsImageName(command),
-      )
-    : /(?:^|\/)(?:claude|codex|canopy-file-broker)$/.test(command);
-}
 function isFileBroker(entry) {
-  return process.platform === 'win32'
-    ? windowsImageName(entry.command) === 'canopy-file-broker'
-    : entry.command.endsWith('/canopy-file-broker');
+  return isFileBrokerProcess(entry, hostPlatform);
 }
 function nativeDescendants(rootPid) {
   const rows =
-    process.platform === 'win32'
+    hostPlatform === 'win32'
       ? listWindowsProcesses()
-      : execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,comm='], {
-          encoding: 'utf8',
-        })
-          .split('\n')
-          .map((row) => row.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/))
-          .filter(Boolean)
-          .map((row) => ({
-            pid: Number(row[1]),
-            parent: Number(row[2]),
-            command: row[3],
-          }));
-  const owned = new Set([rootPid]);
-  for (let size = 0; size !== owned.size; ) {
-    size = owned.size;
-    for (const row of rows) if (owned.has(row.parent)) owned.add(row.pid);
-  }
-  return rows.filter(
-    (row) => owned.has(row.pid) && isNativeDelegationProcess(row.command),
-  );
+      : parsePosixProcessTable(
+          execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,comm='], {
+            encoding: 'utf8',
+          }),
+        );
+  // Linux `ps comm` is truncated and has no directory, so the helper resolves
+  // owned descendants to their absolute /proc/<pid>/exe.
+  return selectNativeDescendants({
+    rows,
+    rootPid,
+    platform: hostPlatform,
+  });
 }
 function alive(pid) {
   try {
@@ -634,7 +656,7 @@ function alive(pid) {
 }
 // Windows reuses PIDs quickly, so a match must also keep its image name.
 function runningNativeProcesses(entries) {
-  if (process.platform !== 'win32')
+  if (hostPlatform !== 'win32')
     return entries.filter((entry) => alive(entry.pid));
   const current = listWindowsProcesses();
   return entries.filter((entry) =>
@@ -689,6 +711,17 @@ function delegatedCard(surface, delegationId) {
   return surface.locator(
     `[data-testid="chat-delegated-agent"][data-delegation-id="${delegationId}"]`,
   );
+}
+// A background delegate's row in the composer's background drawer, which
+// lists the chat's live background delegates (background drawer D2). Opens
+// the drawer first.
+async function drawerDelegateRow(surface, delegationId) {
+  const tray = await openBackgroundDrawer(surface, {
+    timeout: scaled(30_000),
+  });
+  return delegationId === undefined
+    ? tray.getByTestId('background-tray-agent').first()
+    : tray.locator(`[data-tray-row="agent:managed:${delegationId}"]`);
 }
 // The first delegated-task Stop in the chat, expanding completed turns whose
 // steps collapsed behind their "Agent steps" summary.
@@ -1026,7 +1059,7 @@ for (const {
     // timer completed instead of paused. This is the parent chat's approval
     // timing, not delegation; phase 10 investigates it.
     test.fixme(
-      process.platform === 'win32' &&
+      hostPlatform === 'win32' &&
         parent === 'codex' &&
         action === 'continuation-approval',
       'Codex parent turn timer does not pause for a pending patch approval on Windows (phase 10)',
@@ -1346,6 +1379,7 @@ for (const {
       JSON.stringify({
         version: 1,
         preferences: {
+          chatDetail: 'detailed',
           managedDelegationMode:
             action === 'proactive' ? 'proactive' : 'explicit-only',
           ...(action?.startsWith('nested')
@@ -1510,9 +1544,7 @@ for (const {
         await expect(agentModal).toContainText(agentMcpServerId);
         await expect(agentModal).toContainText(agentPluginName);
         await agentModal.getByTestId('agent-model-submit').click();
-        await expect(
-          window.getByTestId(`customize-row-agent:local:${configuredAgentId}`),
-        ).toBeVisible();
+        await app.expectCreatedLocalAgentDetail(configuredAgentId);
         expect(
           JSON.parse(
             readFileSync(path.join(userDataDir, 'agent-models.json'), 'utf8'),
@@ -1551,9 +1583,10 @@ for (const {
       if (action === 'capacity-custom') {
         await app.openSettings();
         await app.openSettingsSection('experiments');
-        await window
-          .getByTestId('settings-managed-delegation-concurrency')
-          .selectOption('2');
+        await chooseSettingsOption(
+          window.getByTestId('settings-managed-delegation-concurrency'),
+          '2',
+        );
         await expect
           .poll(() =>
             window.evaluate(
@@ -1649,7 +1682,7 @@ for (const {
           if (action === 'nested-cancel') {
             // The composer's Stop ends only the root turn. The tree belongs
             // to the chat: the grandchild keeps running with its approval
-            // pending and stays listed in the pinned Agent activity section.
+            // pending and stays listed in the composer's background drawer.
             // (Its parent delegate already ended its own run after spawning
             // it in the background; that never stops a child.)
             await window.getByTestId('chat-stop-generation').click();
@@ -1665,17 +1698,21 @@ for (const {
               approvalPending: true,
             });
             await expect(approval).toBeVisible();
-            const pinned = window.getByTestId('agent-activity-active');
-            const pinnedCard = delegatedCard(
-              pinned,
+            const drawerRow = await drawerDelegateRow(
+              window,
               nested.state.delegationId,
-            ).first();
-            await expect(pinnedCard).toBeVisible();
+            );
+            await expect(drawerRow).toBeVisible();
+            // Its live snapshot's pending approval counts it as needing
+            // input; the parent's saved card does not carry it.
+            await expect(
+              window
+                .getByTestId('composer-work-drawer')
+                .getByTestId('composer-work-drawer-toggle'),
+            ).toContainText('Needs you 1', { timeout: scaled(30_000) });
             // The row Stop acts at once; the user's stop settles it
             // `Cancelled` and withdraws its pending approval.
-            const rowStop = pinnedCard
-              .getByTestId('delegated-agent-stop')
-              .first();
+            const rowStop = drawerRow.getByTestId('background-tray-agent-stop');
             await expect(rowStop).toHaveAccessibleName('Stop delegation');
             await rowStop.click();
             await expect
@@ -1694,8 +1731,8 @@ for (const {
               stoppedBy: { kind: 'user' },
             });
             await expect(approval).toHaveCount(0);
-            // Nothing live remains, so the pinned section goes.
-            await expect(pinned).toHaveCount(0);
+            // It leaves the drawer.
+            await expect(drawerRow).toHaveCount(0);
             const nestedCard = delegatedCard(
               panel.getByTestId('chat-message-list-content'),
               nested.state.delegationId,
@@ -1777,7 +1814,9 @@ for (const {
           );
           await window.getByRole('button', { name: 'Send message' }).click();
           await expect(
-            panel.getByText(`${fixture.integrated} resumed`, { exact: true }),
+            panel
+              .getByText(`${fixture.integrated} resumed`, { exact: true })
+              .first(),
           ).toBeVisible({ timeout: scaled(60_000) });
           await expect
             .poll(
@@ -1837,14 +1876,33 @@ for (const {
           ).toContain(`FOLLOWED_UP_NESTED_EVIDENCE_${caseId}`);
         }
         if (action === 'nested-depth-lowered') {
+          // The delegate finished before its child, so it wakes for the
+          // child's completion notice. Let that run settle first, so the
+          // resume below is the only new generation.
+          await expect
+            .poll(() =>
+              fixture.requests.some(
+                (request) =>
+                  request.role === 'child' && request.hasDelegateNotice,
+              ),
+            )
+            .toBe(true);
+          await expect
+            .poll(
+              () =>
+                retainedRuns(userDataDir).find((run) => run.depth === 1)?.state
+                  .status,
+            )
+            .toBe('completed');
           const childRequestCount = fixture.requests.filter(
             (request) => request.role === 'child',
           ).length;
           await app.openSettings();
           await app.openSettingsSection('experiments');
-          await window
-            .getByTestId('settings-managed-delegation-depth')
-            .selectOption('1');
+          await chooseSettingsOption(
+            window.getByTestId('settings-managed-delegation-depth'),
+            '1',
+          );
           await expect
             .poll(() =>
               window.evaluate(
@@ -1855,12 +1913,17 @@ for (const {
             )
             .toBe(1);
           await app.closeSettings();
+          const generationBeforeResume = retainedRuns(userDataDir).find(
+            (run) => run.depth === 1,
+          ).state.runGeneration;
           await composer.fill(
             `[${fixture.parentMarker}] NESTED_DEPTH_LOWERED_RESUME ${first.state.delegationId}`,
           );
           await window.getByRole('button', { name: 'Send message' }).click();
           await expect(
-            panel.getByText(`${fixture.integrated} resumed`, { exact: true }),
+            panel
+              .getByText(`${fixture.integrated} resumed`, { exact: true })
+              .first(),
           ).toBeVisible({ timeout: scaled(60_000) });
           await expect
             .poll(
@@ -1868,12 +1931,12 @@ for (const {
                 retainedRuns(userDataDir).find((run) => run.depth === 1)?.state
                   .runGeneration,
             )
-            .toBe(2);
+            .toBe(generationBeforeResume + 1);
           const resumedChildTools = JSON.stringify(
             fixture.requests
               .filter((request) => request.role === 'child')
               .slice(childRequestCount)
-              .map((request) => request.tools),
+              .map((request) => request.toolNames),
           );
           expect(resumedChildTools).not.toMatch(/DelegateTask|spawn_delegate/);
         }
@@ -1896,15 +1959,44 @@ for (const {
         for (let index = 0; index < stepCount; index++)
           await collapsedSteps.first().click();
         const cards = panel.getByTestId('chat-delegated-agent');
-        await expect(cards).toHaveCount(
-          [
-            'nested-resume',
-            'nested-follow-up',
-            'nested-depth-lowered',
-          ].includes(action)
-            ? 3
-            : 2,
-        );
+        // One card per run generation. A depth-1 delegate that finished before
+        // its child wakes for the child's completion notice in a new
+        // generation; one still running takes the notice as a steer instead.
+        await expect
+          .poll(async () => {
+            const generations = retainedRuns(userDataDir).reduce(
+              (sum, run) => sum + run.state.runGeneration,
+              0,
+            );
+            return (await cards.count()) === generations ? generations : -1;
+          })
+          .toBeGreaterThanOrEqual(
+            [
+              'nested-resume',
+              'nested-follow-up',
+              'nested-depth-lowered',
+            ].includes(action)
+              ? 3
+              : 2,
+          );
+        // The grandchild's completion notice must reach the depth-1 delegate,
+        // which relays on up: the root chat later receives that delegate's
+        // own completion notice.
+        const firstChildNotice = () =>
+          fixture.requests.findIndex(
+            (request) => request.role === 'child' && request.hasDelegateNotice,
+          );
+        await expect.poll(firstChildNotice).toBeGreaterThanOrEqual(0);
+        await expect
+          .poll(() =>
+            fixture.requests
+              .slice(firstChildNotice() + 1)
+              .some(
+                (request) =>
+                  request.role === 'parent' && request.hasDelegateNotice,
+              ),
+          )
+          .toBe(true);
         const nestedCard = cards.filter({ hasText: 'Depth 2' }).last();
         await expect(nestedCard).toContainText('Parent:');
         await expect
@@ -2097,7 +2189,8 @@ for (const {
         // The fired message went to the delegate, never to the root chat.
         expect(
           fixture.requests.some(
-            (request) => request.role === 'parent' && request.hasWatcherEvent,
+            (request) =>
+              request.role === 'parent' && request.hasCommandWatcherEvent,
           ),
         ).toBe(false);
         await expect(panel.getByText(/watcher fired/i)).toHaveCount(0);
@@ -2216,9 +2309,15 @@ for (const {
             { timeout: scaled(120_000) },
           )
           .toBe(true);
-        nativeProcesses = nativeDescendants(electronApp.process().pid).filter(
-          isFileBroker,
-        );
+        // Require the child's real native inference connection, held after
+        // reading the canary. Parent CLIs can exit on parent Stop; the shared
+        // Codex app server can outlive a cancelled child thread.
+        await expect
+          .poll(() => fixture.childConnections.length, {
+            timeout: scaled(30_000),
+          })
+          .toBeGreaterThan(0);
+        const childConnections = [...fixture.childConnections];
         // The composer's Stop ends only the parent turn; the delegate keeps
         // running, with its confined native processes, until the user stops
         // it.
@@ -2232,22 +2331,26 @@ for (const {
             (run) => run.state.status,
           ),
         ).toEqual(['running']);
-        expect(runningNativeProcesses(nativeProcesses)).toHaveLength(
-          nativeProcesses.length,
+        expect(childConnections.every((connection) => !connection.closed)).toBe(
+          true,
         );
-        // A background delegate stays listed in the pinned Agent activity
-        // section; a foreground one keeps its Stop on the transcript card.
-        if (mode === 'background')
-          await expect(
-            window
-              .getByTestId('agent-activity-active')
-              .getByTestId('chat-delegated-agent'),
-          ).toBeVisible();
+        if (child === 'claude') {
+          // Parent-owned discovery probes may exit with the parent turn.
+          // Capture the surviving child CLI, then require its cleanup when
+          // that child is stopped below.
+          nativeProcesses = nativeDescendants(electronApp.process().pid).filter(
+            (entry) => windowsImageName(entry.command) === 'claude',
+          );
+          expect(nativeProcesses.length).toBeGreaterThan(0);
+        }
+        // A background delegate is listed in the composer's background
+        // drawer, with its Stop; a foreground one keeps its Stop on the
+        // transcript card.
         const rowStop =
           mode === 'background'
-            ? window
-                .getByTestId('agent-activity-active')
-                .getByTestId('delegated-agent-stop')
+            ? (await drawerDelegateRow(panel)).getByTestId(
+                'background-tray-agent-stop',
+              )
             : await revealDelegatedStop(panel);
         await expect(rowStop).toHaveAccessibleName('Stop delegation');
         await rowStop.click();
@@ -2260,8 +2363,12 @@ for (const {
           stoppedBy: { kind: 'user' },
         });
         await expect
-          .poll(() => runningNativeProcesses(nativeProcesses))
-          .toEqual([]);
+          .poll(() => childConnections.every((connection) => connection.closed))
+          .toBe(true);
+        if (child === 'claude')
+          await expect
+            .poll(() => runningNativeProcesses(nativeProcesses))
+            .toEqual([]);
         expect(retainedRuns(userDataDir)[0]?.delivery.status).toBe(
           'suppressed',
         );
@@ -2349,14 +2456,13 @@ for (const {
             .getByRole('button', { name: /^Agent steps:/, expanded: false })
             .all())
             await summary.click();
-          const pinned = panel
-            .getByTestId('agent-activity-active')
-            .getByTestId('chat-delegated-agent');
-          await expect(pinned).toBeVisible();
+          await expect(await drawerDelegateRow(panel)).toBeVisible();
           const delegated = panel.getByTestId('chat-delegated-agent').first();
           await expect(delegated).toBeVisible();
           await expect(
-            delegated.getByLabel('Thinking', { exact: true }),
+            delegated.locator(
+              '[data-step-row-words].canopy-text-shimmer-strong',
+            ),
           ).toBeVisible();
           await expect(delegated).toContainText(child);
         }
@@ -2409,9 +2515,10 @@ for (const {
           if (action === 'setting-off') {
             await app.openSettings();
             await app.openSettingsSection('experiments');
-            await window
-              .getByTestId('settings-managed-delegation-mode')
-              .selectOption('off');
+            await chooseSettingsOption(
+              window.getByTestId('settings-managed-delegation-mode'),
+              'off',
+            );
             await expect
               .poll(() =>
                 window.evaluate(
@@ -2527,14 +2634,17 @@ for (const {
             .filter((request) => request.role === 'parent')
             .map((request) => request.results)
             .join('\n');
-          expect(results).toContain('watcherId');
+          // Fresh tool lists omit Watch Delegates, so the harness refuses a
+          // stale call before Canopy sees it; the completion notice still
+          // wakes the parent (checked with the integrated result below).
+          expect(results).toMatch(
+            parent === 'claude'
+              ? /No such tool available: \S*WatchDelegates/
+              : /unsupported call: \S*watch_delegates/,
+          );
+          expect(results).not.toContain('watcherId');
           expect(results).toContain('currentRunGeneration');
           expect(results).not.toContain('timedOut');
-          // The watch was registered with the 30-minute maximum deadline.
-          const deadlineAt = Number(
-            results.match(/deadlineAt[^0-9]{1,8}(\d{12,})/)?.[1],
-          );
-          expect(deadlineAt).toBeGreaterThan(Date.now() + 25 * 60_000);
         }
         if (action === 'model-change') {
           await panel.getByTestId('chat-model-picker').click();
@@ -2577,16 +2687,12 @@ for (const {
           [originalTimer] = retainedTimers(userDataDir);
         }
         if (action === 'continuation-approval') {
-          const watchApproval = window
-            .getByTestId('tool-approval-card')
-            .filter({
-              hasText:
-                parent === 'claude'
-                  ? 'WatchDelegates'
-                  : codexToolName('watch_delegates'),
-            });
-          await expect(watchApproval).toBeVisible({ timeout: scaled(30_000) });
-          await watchApproval.getByTestId('tool-approval-allow').click();
+          // Completion needs no tool call or approval before ending the turn.
+          await expect(
+            window
+              .getByTestId('tool-approval-card')
+              .filter({ hasText: 'WatchDelegates' }),
+          ).toHaveCount(0);
           await expect.poll(() => retainedTimers(userDataDir).length).toBe(1);
         }
         fixture.releaseChild();
@@ -2615,6 +2721,7 @@ for (const {
         await outputApproval.getByTestId('tool-approval-allow').click();
         await expect.poll(() => retainedTimers(userDataDir).length).toBe(2);
         originalTimer = retainedTimers(userDataDir).at(-1);
+        const releasedOwnerIds = [];
         for (const step of [1, 2]) {
           const card = window.getByTestId('tool-approval-card');
           await expect(card).toBeVisible({ timeout: scaled(60_000) });
@@ -2625,21 +2732,21 @@ for (const {
             'data-state',
             'paused',
           );
-          // The second prompt must not retain the already-released first owner.
+          // The canonical turn holds exactly this prompt's pause: the second
+          // prompt must not retain the already-released first owner.
           await expect
-            .poll(
-              () => retainedTimers(userDataDir).at(-1)?.pauseOwnerIds?.length,
-            )
+            .poll(() => openPauseOwnerIds(userDataDir)?.length)
             .toBe(1);
+          const [ownerId] = openPauseOwnerIds(userDataDir);
+          expect(releasedOwnerIds).not.toContain(ownerId);
+          releasedOwnerIds.push(ownerId);
           await card.getByTestId('tool-approval-allow').click();
         }
         await expect(panel.getByTestId('turn-timer').last()).toHaveAttribute(
           'data-state',
           'live',
         );
-        await expect
-          .poll(() => retainedTimers(userDataDir).at(-1)?.pauseOwnerIds ?? [])
-          .toEqual([]);
+        await expect.poll(() => openPauseOwnerIds(userDataDir)).toEqual([]);
         fixture.releaseContinuation();
         await expect(
           panel.getByText(fixture.integrated, { exact: true }),
@@ -2653,14 +2760,51 @@ for (const {
           .toBe(true);
         const completed = retainedTimers(userDataDir);
         expect(completed).toHaveLength(2);
-        expect(completed.at(-1)).toMatchObject({
-          id: originalTimer.id,
-          startedAt: originalTimer.startedAt,
-        });
-        expect(
-          completed.at(-1).accumulatedPausedDurationMs,
-        ).toBeGreaterThanOrEqual(
+        // The continuation completes the same timer rather than a new one.
+        const finalTimer = completed.at(-1);
+        expect(finalTimer.id).toBe(originalTimer.id);
+        expect(finalTimer.accumulatedPausedDurationMs).toBeGreaterThanOrEqual(
           originalTimer.accumulatedPausedDurationMs ?? 0,
+        );
+        // Turn-end effects write the completed timer with no pause owners.
+        expect(finalTimer.pauseOwnerIds ?? []).toEqual([]);
+        // The approval waits are counted once. A turn that waited on the user
+        // keeps its original start when it completes (CAN-4996), so the
+        // timer's elapsed time is its own span less the same pauses the turn
+        // recorded; it never includes them again.
+        const endedTurn = endedTurnRecord(userDataDir);
+        expect(endedTurn?.id).toBe(finalTimer.turnId);
+        // Pauses count only within the turn: Codex reports its end at whole
+        // seconds, so the last approval can close after the recorded end.
+        let pausedMs = 0;
+        let coveredUntil = endedTurn.startedAtMs;
+        for (const pause of [...endedTurn.pauses].sort(
+          (left, right) => left.startedAtMs - right.startedAtMs,
+        )) {
+          const from = Math.max(pause.startedAtMs, coveredUntil);
+          const to = Math.min(pause.endedAtMs, endedTurn.endedAtMs);
+          if (to > from) pausedMs += to - from;
+          coveredUntil = Math.max(coveredUntil, to);
+        }
+        expect(finalTimer.accumulatedPausedDurationMs).toBe(pausedMs);
+        expect(finalTimer.startedAt).toBe(originalTimer.startedAt);
+        // Net of the waits, the timer's span is the host-measured active time
+        // since its start: including a wait again would exceed it by that
+        // wait, and the provider may report its end at whole seconds.
+        const timerActiveMs =
+          finalTimer.completedAt -
+          finalTimer.startedAt -
+          finalTimer.accumulatedPausedDurationMs;
+        expect(timerActiveMs).toBeGreaterThanOrEqual(0);
+        expect(timerActiveMs).toBeLessThanOrEqual(
+          endedTurn.endedAtMs - finalTimer.startedAt - pausedMs + 2_000,
+        );
+        // A provider measures from its own start and may report its end at
+        // whole seconds, so allow two seconds beyond the host-measured active
+        // time; a duration that still included the waits would exceed it by
+        // the whole paused total.
+        expect(endedTurn.durationMs).toBeLessThanOrEqual(
+          endedTurn.endedAtMs - endedTurn.startedAtMs - pausedMs + 2_000,
         );
         await window.reload();
         await app.waitForShell();
@@ -2976,6 +3120,25 @@ for (const {
           timeout: scaled(30_000),
         })
         .toBe('suppressed');
+      if (!action && !policy && !autoArchive) {
+        // The finished delegate notifies its parent without a watch: the
+        // parent gets the notice and the chat shows its row.
+        await expect
+          .poll(
+            () =>
+              fixture.requests.some(
+                (request) =>
+                  request.role === 'parent' && request.hasDelegateNotice,
+              ),
+            { timeout: scaled(30_000) },
+          )
+          .toBe(true);
+        await expect(
+          panel.getByText(/delegate finished watcher has fired/i),
+        ).toBeVisible({
+          timeout: scaled(30_000),
+        });
+      }
       if (action === 'session-reuse') {
         const parentRequestsBefore = fixture.requests.filter(
           (request) => request.role === 'parent',
@@ -3134,7 +3297,6 @@ for (const {
             .locator('[data-tool-name="Bash"]')
             .filter({ hasText: 'DENIED_COMMAND_CANARY' });
           await expect(denied).toHaveAttribute('data-tool-status', 'error');
-          await expect(denied.locator('.fg-destructive').first()).toBeVisible();
           await denied.getByRole('button').first().click();
           await expect(denied).toContainText(
             child === 'claude'
@@ -3150,17 +3312,13 @@ for (const {
       }
 
       if (!action && !policy && !autoArchive) {
-        await expect(
-          panel
-            .getByTestId('agent-activity-active')
-            .getByTestId('chat-delegated-agent'),
-        ).toHaveCount(0);
+        await expect(panel.getByTestId('background-tray-agent')).toHaveCount(0);
         await expect(
           panel.getByText(/A delegated task has finished/),
         ).toHaveCount(0);
         const delegated = await revealDelegatedAgent(panel);
         await expect(
-          delegated.getByLabel('Thinking', { exact: true }),
+          delegated.locator('[data-step-row-words].canopy-text-shimmer-strong'),
         ).toHaveCount(0);
         await expect(
           delegated.getByText('Completed', { exact: true }),
@@ -3175,7 +3333,7 @@ for (const {
           delegated.getByText(fixture.finding, { exact: true }),
         ).toHaveCount(1);
         await expect(delegated).toContainText(
-          child === 'claude' ? 'Read' : 'Bash',
+          child === 'claude' ? 'Read' : 'Ran',
         );
         await expect(delegated).toContainText('high');
         await window.reload();
@@ -3190,7 +3348,7 @@ for (const {
         ).toHaveCount(0);
         const restored = await revealDelegatedAgent(window);
         await expect(
-          restored.getByLabel('Thinking', { exact: true }),
+          restored.locator('[data-step-row-words].canopy-text-shimmer-strong'),
         ).toHaveCount(0);
         await restored
           .getByRole('button', { name: 'Expand delegated task' })
@@ -3202,7 +3360,7 @@ for (const {
           restored.getByText(fixture.finding, { exact: true }),
         ).toHaveCount(1);
         await expect(restored).toContainText(
-          child === 'claude' ? 'Read' : 'Bash',
+          child === 'claude' ? 'Read' : 'Ran',
         );
         expect(retainedRuns(userDataDir)[0].delivery).toEqual(runs[0].delivery);
         if (mode === 'foreground') {
@@ -3221,7 +3379,9 @@ for (const {
           ).toHaveCount(0);
           const coldCard = await revealDelegatedAgent(coldWindow);
           await expect(
-            coldCard.getByLabel('Thinking', { exact: true }),
+            coldCard.locator(
+              '[data-step-row-words].canopy-text-shimmer-strong',
+            ),
           ).toHaveCount(0);
           await coldCard
             .getByRole('button', { name: 'Expand delegated task' })
@@ -3236,7 +3396,7 @@ for (const {
             coldWindow.getByText(/A delegated task has finished/),
           ).toHaveCount(0);
           await expect(coldCard).toContainText(
-            child === 'claude' ? 'Read' : 'Bash',
+            child === 'claude' ? 'Read' : 'Ran',
           );
           expect(retainedRuns(userDataDir)[0].delivery).toEqual(
             runs[0].delivery,
@@ -3431,11 +3591,7 @@ for (const {
       for (const request of fixture.requests.filter(
         (entry) => entry.role === 'child',
       )) {
-        const names = (request.tools ?? []).flatMap((tool) =>
-          tool.type === 'namespace'
-            ? (tool.tools ?? []).map((nested) => nested.name)
-            : [tool.name],
-        );
+        const names = request.toolNames.map((name) => name.split('.').at(-1));
         expect(
           names.some((name) =>
             /delegation_(read|search|write)/.test(name ?? ''),
@@ -3464,6 +3620,9 @@ for (const {
                   'Bash',
                   'TaskStop',
                   'Skill',
+                  // Claude Code 2.1.310+ keeps deferred tool loading active
+                  // with this never-callable placeholder.
+                  'DeferredToolPlaceholder',
                 ].includes(name) &&
                 !/(?:^|__)RequestSteering$/.test(name ?? '') &&
                 !delegateAppToolName.test(name ?? ''),
@@ -3653,7 +3812,7 @@ for (const {
       // closeCanopy only calls reapTree on Windows when Playwright's close
       // fails, so Windows verifies the quit after close instead. It keeps the
       // user data until then.
-      const deferQuitCleanup = verifyQuit && process.platform === 'win32';
+      const deferQuitCleanup = verifyQuit && hostPlatform === 'win32';
       let quitVerified = false;
       await closeCanopy(electronApp, userDataDir, {
         keepUserData: keepFailureData || deferQuitCleanup,
@@ -3824,7 +3983,7 @@ for (const parent of ['claude', 'codex']) {
       );
       expect(requests.length).toBeGreaterThan(0);
       const advertised = JSON.stringify(
-        requests.map((request) => request.tools),
+        requests.map((request) => request.toolNames),
       );
       expect(advertised).not.toContain(codexToolName('spawn_delegate'));
       expect(advertised).not.toContain(claudeToolName('DelegateTask'));

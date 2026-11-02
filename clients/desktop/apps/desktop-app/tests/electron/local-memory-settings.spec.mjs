@@ -12,11 +12,33 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { DEFAULT_MOCK_BASE_URL, registerScenario } from './seeders/index.mjs';
+import { memoryRowSelector } from './memoryRows.mjs';
 
-// Row actions live in a hover-revealed tray, so hover the row first.
-async function clickMemoryAction(row, action) {
-  await row.hover();
-  await row.getByTestId(`memory-item-${action}`).click();
+function memoryRow(panel, fileKey) {
+  return panel.locator(memoryRowSelector(fileKey));
+}
+
+/** Opens a memory's detail view from its row. */
+async function openMemory(panel, fileKey) {
+  await memoryRow(panel, fileKey).getByTestId('memory-row-open').click();
+  await expect(panel.getByTestId('memory-detail')).toBeVisible();
+}
+
+/** Opens the editor of the memory whose detail view is showing. */
+async function editMemory(panel) {
+  await panel.getByTestId('memory-detail-edit').click();
+  await expect(panel.getByTestId('memory-item-editor')).toBeVisible();
+}
+
+async function backToMemories(panel) {
+  await panel.getByTestId('memory-detail-back').click();
+  await expect(panel.getByTestId('memory-detail')).toHaveCount(0);
+}
+
+/** Runs an item of the panel's "…" menu. */
+async function runPanelAction(window, panel, name) {
+  await panel.getByTestId('memory-panel-menu').click();
+  await window.getByRole('menuitem', { name }).click();
 }
 
 async function openLocalMemorySettings(electronApp) {
@@ -83,7 +105,8 @@ for (const [label, summaryModelSetByUser, expectedModel, expectedChosen] of [
     try {
       await openLocalMemorySettings(electronApp);
       const window = await electronApp.firstWindow();
-      await expect(window.getByTestId('local-memory-model')).toHaveValue(
+      await expect(window.getByTestId('local-memory-model')).toHaveAttribute(
+        'data-value',
         expectedModel,
       );
       const preferences = JSON.parse(
@@ -99,18 +122,29 @@ for (const [label, summaryModelSetByUser, expectedModel, expectedChosen] of [
   });
 }
 
-test('loaded hoisted memory titles normalize closing hashes without changing editable headings', async () => {
+test('memory titles normalize closing hashes and edit as heading text', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'memory-heading-titles-'),
   );
   const memoryDir = path.join(userDataDir, 'memory');
   mkdirSync(path.join(memoryDir, 'topics'), { recursive: true });
+  // [file, heading, row title, editor title]
   const cases = [
-    ['MEMORY.md', '# Personal preferences ##', 'Personal preferences'],
-    ['topics/empty.md', '# #', 'empty.md'],
-    ['topics/hashes.md', '# C# and issue #3005', 'C# and issue #3005'],
-    ['topics/literal-hashes.md', '# Title ##\u00a0', 'Title ##'],
-    ['topics/literal-hash.md', '# \u00a0#', '#'],
+    [
+      'MEMORY.md',
+      '# Personal preferences ##',
+      'Personal preferences',
+      'Personal preferences',
+    ],
+    ['topics/empty.md', '# #', 'empty.md', ''],
+    [
+      'topics/hashes.md',
+      '# C# and issue #3005',
+      'C# and issue #3005',
+      'C# and issue #3005',
+    ],
+    ['topics/literal-hashes.md', '# Title ## ', 'Title ##', 'Title ## '],
+    ['topics/literal-hash.md', '#  #', '#', ' #'],
   ];
   for (const [fileKey, heading] of cases) {
     writeFileSync(
@@ -122,63 +156,52 @@ test('loaded hoisted memory titles normalize closing hashes without changing edi
   try {
     await openLocalMemorySettings(electronApp);
     const window = await electronApp.firstWindow();
-    const explorer = window.getByTestId('memory-explorer-user');
-    for (const [fileKey, heading, title] of cases) {
-      const row = explorer.locator(
-        `[data-testid="memory-file"][data-file-key="${fileKey}"]`,
+    const panel = window.getByTestId('memory-explorer-user');
+    for (const [fileKey, heading, rowTitle, editorTitle] of cases) {
+      await expect(
+        memoryRow(panel, fileKey).getByTestId('memory-row-title'),
+      ).toHaveText(rowTitle);
+      await openMemory(panel, fileKey);
+      await expect(panel.getByTestId('memory-detail-body')).toContainText(
+        'Keep this child memory.',
       );
-      const section = row.locator('..');
-      if (!(await section.evaluate((element) => element.open)))
-        await row.click();
-      await expect(row.getByTestId('memory-item-edit')).toHaveAttribute(
-        'aria-label',
-        'Edit title',
+      await editMemory(panel);
+      await expect(panel.getByTestId('memory-item-title')).toHaveValue(
+        editorTitle,
       );
-      await expect(row.getByTestId('memory-row-title')).toHaveText(title);
-      await expect(section.getByTestId('memory-heading')).toHaveCount(1);
-      await expect(section).toContainText('Keep this child memory.');
-      await clickMemoryAction(row, 'edit');
-      await expect(explorer.getByTestId('memory-item-draft')).toHaveValue(
-        heading,
+      await expect(panel.getByTestId('memory-item-draft')).toHaveValue(
+        '## Writing\n\nKeep this child memory.',
       );
-      await explorer.getByTestId('memory-item-cancel').click();
+      await panel.getByTestId('memory-item-cancel').click();
+      await backToMemories(panel);
       expect(readFileSync(path.join(memoryDir, fileKey), 'utf8')).toContain(
         heading,
       );
     }
-    const row = explorer.locator(
-      '[data-testid="memory-file"][data-file-key="MEMORY.md"]',
+    await openMemory(panel, 'MEMORY.md');
+    await editMemory(panel);
+    await panel.getByTestId('memory-item-title').fill('');
+    await expect(panel.getByText('Add a title.')).toBeVisible();
+    await expect(panel.getByTestId('memory-item-save')).toBeDisabled();
+    await panel.getByTestId('memory-item-title').fill('Updated C# preferences');
+    await panel.getByTestId('memory-item-save').click();
+    await expect(panel.getByTestId('memory-item-editor')).toHaveCount(0);
+    await expect(panel.getByTestId('memory-detail-title')).toHaveText(
+      'Updated C# preferences',
     );
-    for (const [heading, title] of [
-      ['# Updated C# preferences ##', 'Updated C# preferences'],
-      ['# Updated ##\u00a0', 'Updated ##'],
-      ['# #', 'MEMORY.md'],
-    ]) {
-      await clickMemoryAction(row, 'edit');
-      await explorer.getByTestId('memory-item-draft').fill(heading);
-      await explorer.getByTestId('memory-item-save').click();
-      await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-      await expect(row.getByTestId('memory-row-title')).toHaveText(title);
-      expect(readFileSync(path.join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(
-        `${heading}\n\n## Writing\n\nKeep this child memory.\n`,
-      );
-    }
-    await window.reload();
-    await openLocalMemorySettings(electronApp);
+    expect(readFileSync(path.join(memoryDir, 'MEMORY.md'), 'utf8')).toBe(
+      '# Updated C# preferences\n\n## Writing\n\nKeep this child memory.\n',
+    );
+    await backToMemories(panel);
     await expect(
-      explorer
-        .locator('[data-file-key="MEMORY.md"]')
-        .getByTestId('memory-row-title'),
-    ).toHaveText('MEMORY.md');
-    await expect(explorer.getByTestId('memory-items')).toContainText(
-      'Keep this child memory.',
-    );
+      memoryRow(panel, 'MEMORY.md').getByTestId('memory-row-title'),
+    ).toHaveText('Updated C# preferences');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('user memories show parsed items and preserve other notes through edit, delete, and conflicts', async () => {
+test('user memories open as details with links, save edits and keep a draft through conflicts', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'memory-explorer-e2e-'),
   );
@@ -189,10 +212,8 @@ test('user memories show parsed items and preserve other notes through edit, del
     file,
     '# Personal preferences\n\n## Writing\n\n- Prefer short replies.\n  - Keep technical detail when needed.\n- Use plain words.\n```sh\nprintf preserved\n```\n\n## Tools\n\nUse TypeScript.\n\n[Travel preferences](topics/travel.md)\n',
   );
-  writeFileSync(
-    path.join(memoryDir, 'topics', 'travel.md'),
-    '# Travel\n\nPrefer a window seat.\n',
-  );
+  const travel = path.join(memoryDir, 'topics', 'travel.md');
+  writeFileSync(travel, '# Travel\n\nPrefer a window seat.\n');
   const workspaceMemory = path.join(
     userDataDir,
     'workspaces',
@@ -208,131 +229,126 @@ test('user memories show parsed items and preserve other notes through edit, del
   try {
     await openLocalMemorySettings(electronApp);
     const window = await electronApp.firstWindow();
-    const explorer = window.getByTestId('memory-explorer-user');
-    await expect(explorer).toBeVisible();
-    await expect(explorer.getByTestId('memory-file')).toHaveCount(2);
+    const panel = window.getByTestId('memory-explorer-user');
+    await expect(panel).toBeVisible();
+    await expect(panel.getByTestId('memory-row')).toHaveCount(2);
+    await expect(panel).not.toContainText('Secret project knowledge');
     await expect(
-      explorer.locator('summary').filter({ hasText: /^Writing$/ }),
-    ).toBeVisible();
-    await expect(explorer).not.toContainText('Secret project knowledge');
+      memoryRow(panel, 'topics/travel.md').getByTestId('memory-row-meta'),
+    ).toHaveText('Everywhere');
+
+    // A link to another memory opens it in place.
     const originalUrl = window.url();
-    await explorer.getByRole('link', { name: 'Travel preferences' }).click();
-    await expect(explorer.getByTestId('memory-items')).toContainText(
-      'Prefer a window seat.',
-    );
-    expect(window.url()).toBe(originalUrl);
-    // Row titles live in their own span: the summary's action tray swaps to
-    // an inline delete confirm, so match the title rather than the row text.
-    const summaryTitled = (title) =>
-      explorer.locator('summary').filter({
-        has: window.getByTestId('memory-row-title').filter({ hasText: title }),
-      });
-    const writing = summaryTitled(/^Writing$/);
-    const writingSection = writing.locator('..');
-    const personal = summaryTitled(/^Personal preferences$/);
-    for (const mode of ['edit', 'delete']) {
-      if (await writingSection.evaluate((element) => element.open))
-        await writing.click();
-      await clickMemoryAction(writing, mode);
-      await expect(explorer.getByTestId('memory-item-editor')).toBeVisible();
-      await writing.click();
-      await expect(explorer.getByTestId('memory-item-editor')).toBeVisible();
-      await personal.click();
-      await expect(explorer.getByTestId('memory-item-editor')).toBeVisible();
-      await explorer.getByTestId('memory-item-cancel').click();
-      await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-      await expect(explorer.getByTestId('memory-file').first()).toBeEnabled();
-    }
-    // Expanded-first: row actions sit inside <summary>, and Chromium does not
-    // toggle the <details> when the click target is a button inside it, so an
-    // open heading (or the hoisted file row) must stay open through
-    // edit/delete. This is the native behaviour the outline relies on.
-    if (!(await writingSection.evaluate((element) => element.open)))
-      await writing.click();
-    const personalSection = personal.locator('..');
-    for (const mode of ['edit', 'delete']) {
-      await expect(writingSection).toHaveJSProperty('open', true);
-      await clickMemoryAction(writing, mode);
-      await expect(explorer.getByTestId('memory-item-editor')).toBeVisible();
-      await expect(writingSection).toHaveJSProperty('open', true);
-      await explorer.getByTestId('memory-item-cancel').click();
-      await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-      await expect(writingSection).toHaveJSProperty('open', true);
-    }
-    await expect(personalSection).toHaveJSProperty('open', true);
-    await personal.hover();
-    await personal.getByRole('button', { name: 'Edit title' }).click();
-    await expect(explorer.getByTestId('memory-item-editor')).toBeVisible();
-    await expect(explorer.getByTestId('memory-item-draft')).toHaveValue(
-      '# Personal preferences',
-    );
-    await expect(personalSection).toHaveJSProperty('open', true);
-    await explorer.getByTestId('memory-item-cancel').click();
-    await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-    await expect(personalSection).toHaveJSProperty('open', true);
-    const note = explorer
-      .getByTestId('memory-item')
-      .filter({ hasText: 'Prefer short replies.' });
-    await clickMemoryAction(note, 'edit');
-    await explorer
-      .getByTestId('memory-item-draft')
-      .fill(
-        '- Prefer concise replies.\n  - Keep technical detail when needed.',
-      );
-    await explorer.getByTestId('memory-item-save').click();
-    await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-    await expect(explorer).toContainText('Prefer concise replies.');
-    expect(readFileSync(file, 'utf8')).toContain('- Use plain words.');
-    expect(readFileSync(file, 'utf8')).toContain(
-      '  - Keep technical detail when needed.',
-    );
-    await clickMemoryAction(
-      explorer
-        .getByTestId('memory-item')
-        .filter({ hasText: 'Use plain words.' }),
-      'delete',
-    );
-    await explorer.getByTestId('memory-item-save').click();
-    await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-    expect(readFileSync(file, 'utf8')).not.toContain('Use plain words.');
-    expect(readFileSync(file, 'utf8')).toContain(
-      '```sh\nprintf preserved\n```',
-    );
-    expect(readFileSync(file, 'utf8')).toContain('Use TypeScript.');
-    await clickMemoryAction(
-      explorer
-        .getByTestId('memory-item')
-        .filter({ hasText: 'Use TypeScript.' }),
-      'edit',
-    );
-    await explorer.getByTestId('memory-item-draft').fill('Use Rust.');
-    writeFileSync(
-      file,
-      readFileSync(file, 'utf8') + '\nAn agent added this note.\n',
-    );
-    await explorer.getByTestId('memory-item-save').click();
-    await expect(explorer.getByRole('alert')).toContainText(
-      "Couldn't save this memory because the file changed.",
-    );
-    await expect(explorer.getByTestId('memory-item-draft')).toHaveValue(
-      'Use Rust.',
-    );
-    expect(readFileSync(file, 'utf8')).toContain('An agent added this note.');
-    expect(readFileSync(file, 'utf8')).toContain('Use TypeScript.');
-    await explorer.getByTestId('memory-item-cancel').click();
-    await explorer.getByTestId('memory-refresh').click();
-    await expect(explorer).toContainText('An agent added this note.');
-    await explorer.getByTestId('memory-search').fill('TypeScript');
-    await expect(explorer.getByTestId('memory-items')).toContainText(
+    await openMemory(panel, 'MEMORY.md');
+    await expect(panel.getByTestId('memory-detail-body')).toContainText(
       'Use TypeScript.',
     );
-    await expect(explorer.getByTestId('memory-items')).not.toContainText(
-      'Prefer concise replies.',
+    await expect(panel.getByTestId('memory-detail-facts')).toContainText(
+      'Every project',
     );
+    await expect(panel.getByTestId('memory-detail-facts')).toContainText(
+      'Index',
+    );
+    await expect(panel.getByTestId('memory-detail-delete')).toHaveCount(0);
+    await panel.getByRole('link', { name: 'Travel preferences' }).click();
+    await expect(panel.getByTestId('memory-detail-title')).toHaveText('Travel');
+    expect(window.url()).toBe(originalUrl);
+
+    // Edit the title and body; the keyboard saves.
+    await editMemory(panel);
+    await expect(panel.getByTestId('memory-item-title')).toHaveValue('Travel');
+    await expect(panel.getByTestId('memory-item-draft')).toHaveValue(
+      'Prefer a window seat.',
+    );
+    await panel.getByTestId('memory-item-title').fill('Travel and seats');
+    await panel
+      .getByTestId('memory-item-draft')
+      .fill('Prefer a window seat on long flights.');
+    await panel
+      .getByTestId('memory-item-draft')
+      .press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter');
+    await expect(panel.getByTestId('memory-item-editor')).toHaveCount(0);
+    await expect(panel.getByTestId('memory-detail-title')).toHaveText(
+      'Travel and seats',
+    );
+    expect(readFileSync(travel, 'utf8')).toBe(
+      '# Travel and seats\n\nPrefer a window seat on long flights.\n',
+    );
+
+    // A file changed on disk while editing keeps the draft and says why.
+    await editMemory(panel);
+    await panel.getByTestId('memory-item-draft').fill('Prefer an aisle.');
+    writeFileSync(travel, `${readFileSync(travel, 'utf8')}\nAn agent note.\n`);
+    await panel.getByTestId('memory-item-save').click();
+    await expect(panel.getByRole('alert')).toContainText(
+      "Couldn't save because this memory changed.",
+    );
+    await expect(panel.getByTestId('memory-item-draft')).toHaveValue(
+      'Prefer an aisle.',
+    );
+    expect(readFileSync(travel, 'utf8')).toContain('An agent note.');
+    await panel.getByTestId('memory-item-cancel').click();
+    await expect(panel.getByTestId('memory-detail-body')).toContainText(
+      'An agent note.',
+    );
+    await backToMemories(panel);
+
+    // Search covers titles and the line under them.
+    await panel.getByTestId('memory-search').fill('travel');
+    await expect(panel.getByTestId('memory-row')).toHaveCount(1);
+    await panel.getByTestId('memory-search').fill('nothing like this');
+    // The search text stays out of the message, which session replay records.
+    await expect(panel.getByTestId('memory-empty-search')).toContainText(
+      'No memories match your search.',
+    );
+    await panel.getByRole('button', { name: 'Clear search' }).first().click();
+    await expect(panel.getByTestId('memory-row')).toHaveCount(2);
+
     const app = new CanopyAppDriver(window);
     await app.openSettingsSection('experiments');
     await expect(window.getByTestId('local-memory-settings')).toHaveCount(0);
     await expect(window.getByTestId('org-memory-settings')).toHaveCount(0);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('a deleted memory comes back with Undo and is deleted when Settings closes', async () => {
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'memory-delete-e2e-'));
+  const memoryDir = path.join(userDataDir, 'memory');
+  mkdirSync(path.join(memoryDir, 'topics'), { recursive: true });
+  const seat = path.join(memoryDir, 'topics', 'seat.md');
+  writeFileSync(seat, '# Window seat\n\nPrefer a window seat.\n');
+  writeFileSync(
+    path.join(memoryDir, 'topics', 'units.md'),
+    '# Units\n\nUse metric units.\n',
+  );
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    await openLocalMemorySettings(electronApp);
+    const window = await electronApp.firstWindow();
+    const panel = window.getByTestId('memory-explorer-user');
+    const row = memoryRow(panel, 'topics/seat.md');
+    await row.getByTestId('memory-row-menu').click();
+    await window.getByRole('menuitem', { name: 'Delete' }).click();
+    await expect(row).toHaveCount(0);
+    await expect(
+      window.getByTestId('toast-stack-host').getByText('Deleted “Window seat”'),
+    ).toBeVisible();
+    await window
+      .getByTestId('toast-action')
+      .filter({ hasText: 'Undo' })
+      .click();
+    await expect(row).toBeVisible();
+    expect(existsSync(seat)).toBe(true);
+
+    await openMemory(panel, 'topics/seat.md');
+    await panel.getByTestId('memory-detail-delete').click();
+    await expect(row).toHaveCount(0);
+    expect(existsSync(seat)).toBe(true);
+    await new CanopyAppDriver(window).closeSettings();
+    await expect.poll(() => existsSync(seat)).toBe(false);
+    expect(existsSync(path.join(memoryDir, 'topics', 'units.md'))).toBe(true);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -388,7 +404,7 @@ test('the explorer picks up notes written on disk and consolidates them on deman
     );
     await expect(
       explorer.locator(
-        '[data-file-key="inbox/2026-09-10T10-00-00-000Z-window-seat.md"]',
+        memoryRowSelector('inbox/2026-09-10T10-00-00-000Z-window-seat.md'),
       ),
     ).toBeVisible();
     const status = explorer.getByTestId('memory-consolidation-status');
@@ -580,7 +596,7 @@ test('rebuilds memories from archived notes with the memory model after confirma
     const explorer = window.getByTestId('memory-explorer-user');
     await expect(explorer).toContainText('Stale');
 
-    await explorer.getByTestId('memory-rebuild').click();
+    await runPanelAction(window, explorer, 'Rebuild memories…');
     const dialog = window.getByTestId('memory-rebuild-dialog');
     await expect(dialog).toContainText('Your memories are rebuilt');
     await window.getByTestId('memory-rebuild-confirm').click();
@@ -601,7 +617,6 @@ test('rebuilds memories from archived notes with the memory model after confirma
       )
       .toBe('success');
     await expect(explorer).toContainText('Rebuilt from notes.');
-    await expect(explorer.getByTestId('memory-rebuild')).toBeEnabled();
     expect(readdirSync(topicDir)).toEqual(['travel.md']);
     expect(readdirSync(archiveDir).sort()).toEqual(
       [archivedNote, 'topic-retired.md'].sort(),
@@ -674,7 +689,7 @@ test('an unavailable chosen memory model skips consolidation and rebuild with a 
     expect(state.lastResult).toBe('skipped');
     expect(state.lastReason).toBe(unavailableMessage);
 
-    await explorer.getByTestId('memory-rebuild').click();
+    await runPanelAction(window, explorer, 'Rebuild memories…');
     await window.getByTestId('memory-rebuild-confirm').click();
     await expect(status).toContainText(unavailableMessage);
 
@@ -771,7 +786,7 @@ for (const scenario of [
   });
 }
 
-test('editing and deleting a memory list item preserves adjacent thematic breaks and paragraphs', async () => {
+test('editing a memory body preserves thematic breaks and the paragraphs around them', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'memory-block-boundaries-'),
   );
@@ -788,42 +803,28 @@ test('editing and deleting a memory list item preserves adjacent thematic breaks
   try {
     await openLocalMemorySettings(electronApp);
     const window = await electronApp.firstWindow();
-    const explorer = window.getByTestId('memory-explorer-user');
+    const panel = window.getByTestId('memory-explorer-user');
     for (const [index, separator] of separators.entries()) {
-      const fileRow = explorer.locator(
-        `[data-file-key="topics/separator-${index}.md"]`,
+      await openMemory(panel, `topics/separator-${index}.md`);
+      await editMemory(panel);
+      const draft = panel.getByTestId('memory-item-draft');
+      await expect(draft).toHaveValue(
+        `- Preference to change\n${separator}\nKeep this separate paragraph.`,
       );
-      if (!(await fileRow.locator('..').evaluate((element) => element.open)))
-        await fileRow.click();
-      await clickMemoryAction(
-        explorer
-          .getByTestId('memory-item')
-          .filter({ hasText: 'Preference to change' }),
-        'edit',
+      await draft.fill(
+        `- Updated preference\n${separator}\nKeep this separate paragraph.`,
       );
-      await explorer
-        .getByTestId('memory-item-draft')
-        .fill('- Updated preference');
-      await explorer.getByTestId('memory-item-save').click();
-      await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-      const file = path.join(memoryDir, `separator-${index}.md`);
-      expect(readFileSync(file, 'utf8')).toBe(
+      await panel.getByTestId('memory-item-save').click();
+      await expect(panel.getByTestId('memory-item-editor')).toHaveCount(0);
+      expect(
+        readFileSync(path.join(memoryDir, `separator-${index}.md`), 'utf8'),
+      ).toBe(
         `- Updated preference\n${separator}\nKeep this separate paragraph.\n`,
       );
-      await clickMemoryAction(
-        explorer
-          .getByTestId('memory-item')
-          .filter({ hasText: 'Updated preference' }),
-        'delete',
-      );
-      await explorer.getByTestId('memory-item-save').click();
-      await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-      expect(readFileSync(file, 'utf8')).toBe(
-        `\n${separator}\nKeep this separate paragraph.\n`,
-      );
-      await expect(explorer.getByTestId('memory-items')).toContainText(
+      await expect(panel.getByTestId('memory-detail-body')).toContainText(
         'Keep this separate paragraph.',
       );
+      await backToMemories(panel);
     }
   } finally {
     await closeCanopy(electronApp, userDataDir);
@@ -843,13 +844,23 @@ test('memory reading and editing uses disposable background workers', async () =
   );
   const { electronApp } = await launchCanopy({ userDataDir });
   try {
-    await electronApp.evaluate(async () => {
+    await electronApp.evaluate(async (_electron, memoryFile) => {
       const { createHook } = process.getBuiltinModule('node:async_hooks');
-      const observed = { started: 0, progressed: 0, active: new Set() };
+      const { readFileSync: readNow } = process.getBuiltinModule('node:fs');
+      const observed = {
+        started: 0,
+        // Workers started while the file still held the original text: the
+        // save's parse runs before its write, the read after Save after it.
+        startedBeforeWrite: 0,
+        progressed: 0,
+        active: new Set(),
+      };
       const hook = createHook({
         init(id, type) {
           if (type === 'WORKER') {
             observed.started += 1;
+            if (readNow(memoryFile, 'utf8').includes('- Original preference'))
+              observed.startedBeforeWrite += 1;
             observed.active.add(id);
             setImmediate(() => {
               if (observed.active.has(id)) observed.progressed += 1;
@@ -862,14 +873,14 @@ test('memory reading and editing uses disposable background workers', async () =
       });
       hook.enable();
       globalThis.memoryWorkerObservation = { observed, hook };
-    });
+    }, file);
     await openLocalMemorySettings(electronApp);
     const window = await electronApp.firstWindow();
-    const explorer = window.getByTestId('memory-explorer-user');
-    const item = explorer
-      .getByTestId('memory-item')
-      .filter({ hasText: 'Original preference' });
-    await expect(item).toBeVisible();
+    const panel = window.getByTestId('memory-explorer-user');
+    await openMemory(panel, 'MEMORY.md');
+    await expect(panel.getByTestId('memory-detail-body')).toContainText(
+      'Original preference',
+    );
     await expect
       .poll(() =>
         electronApp.evaluate(
@@ -877,20 +888,24 @@ test('memory reading and editing uses disposable background workers', async () =
         ),
       )
       .toBeGreaterThan(0);
-    await clickMemoryAction(item, 'edit');
-    await explorer
-      .getByTestId('memory-item-draft')
-      .fill('- Updated preference');
-    await explorer.getByTestId('memory-item-save').click();
-    await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
+    await editMemory(panel);
+    const draft = panel.getByTestId('memory-item-draft');
+    const original = await draft.inputValue();
+    await draft.fill(
+      original.replace('- Original preference', '- Updated preference'),
+    );
+    const beforeSave = await electronApp.evaluate(
+      () => globalThis.memoryWorkerObservation.observed.startedBeforeWrite,
+    );
+    await panel.getByTestId('memory-item-save').click();
+    await expect(panel.getByTestId('memory-item-editor')).toHaveCount(0);
     expect(readFileSync(file, 'utf8')).toContain('- Updated preference');
-    await expect
-      .poll(() =>
-        electronApp.evaluate(
-          () => globalThis.memoryWorkerObservation.observed.started,
-        ),
-      )
-      .toBeGreaterThanOrEqual(3);
+    // The save parsed its new text in a worker before writing the file.
+    expect(
+      await electronApp.evaluate(
+        () => globalThis.memoryWorkerObservation.observed.startedBeforeWrite,
+      ),
+    ).toBeGreaterThan(beforeSave);
     await expect
       .poll(() =>
         electronApp.evaluate(
@@ -902,7 +917,7 @@ test('memory reading and editing uses disposable background workers', async () =
       await electronApp.evaluate(
         () => globalThis.memoryWorkerObservation.observed.progressed,
       ),
-    ).toBeGreaterThanOrEqual(3);
+    ).toBeGreaterThanOrEqual(2);
   } finally {
     await electronApp.evaluate(() =>
       globalThis.memoryWorkerObservation?.hook.disable(),
@@ -915,52 +930,48 @@ for (const [label, newline] of [
   ['LF', '\n'],
   ['CRLF', '\r\n'],
 ]) {
-  test(`saving unchanged memory preserves Markdown indentation and hard breaks (${label})`, async () => {
+  test(`editing memory preserves Markdown indentation and hard breaks (${label})`, async () => {
     const userDataDir = mkdtempSync(
       path.join(os.tmpdir(), 'memory-whitespace-e2e-'),
     );
     const memoryDir = path.join(userDataDir, 'memory');
     mkdirSync(memoryDir, { recursive: true });
     const file = path.join(memoryDir, 'MEMORY.md');
-    const content =
-      '    const x = 1;\n    const y = 2;  \n\nFirst line  \nSecond line  \n\n- Keep this memory\n'.replace(
-        /\n/g,
-        newline,
-      );
+    const body =
+      '    const x = 1;\n    const y = 2;  \n\nFirst line  \nSecond line  \n\n- Keep this memory';
+    const content = `${body}\n`.replace(/\n/g, newline);
     writeFileSync(file, content);
     const { electronApp } = await launchCanopy({ userDataDir });
     try {
       await openLocalMemorySettings(electronApp);
       const window = await electronApp.firstWindow();
-      const explorer = window.getByTestId('memory-explorer-user');
-      for (const text of ['const x = 1;', 'First line']) {
-        const item = explorer
-          .getByTestId('memory-item')
-          .filter({ hasText: text });
-        await clickMemoryAction(item, 'edit');
-        const draft = explorer.getByTestId('memory-item-draft');
-        if (text === 'const x = 1;') {
-          await expect(draft).toHaveValue(
-            '    const x = 1;\n    const y = 2;  ',
-          );
-        } else {
-          await expect(draft).toHaveValue('First line  \nSecond line  ');
-        }
-        await explorer.getByTestId('memory-item-save').click();
-        await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
-        expect(readFileSync(file, 'utf8')).toBe(content);
-      }
+      const panel = window.getByTestId('memory-explorer-user');
+      await openMemory(panel, 'MEMORY.md');
+      // Saving without a change leaves the file as it was.
+      await editMemory(panel);
+      const draft = panel.getByTestId('memory-item-draft');
+      await expect(draft).toHaveValue(body);
+      await panel.getByTestId('memory-item-save').click();
+      await expect(panel.getByTestId('memory-item-editor')).toHaveCount(0);
+      expect(readFileSync(file, 'utf8')).toBe(content);
+      await editMemory(panel);
+      await draft.fill(body.replace('Keep this memory', 'Keep this one'));
+      await panel.getByTestId('memory-item-save').click();
+      await expect(panel.getByTestId('memory-item-editor')).toHaveCount(0);
+      expect(readFileSync(file, 'utf8')).toBe(
+        content.replace('Keep this memory', 'Keep this one'),
+      );
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
   });
 }
 
-for (const [operation, prefix, newline] of [
-  ['edit', '\uFEFF---\r\ncreated: today\r\n---\r\n', '\r\n'],
-  ['delete', '\uFEFF', '\n'],
+for (const [label, prefix, newline] of [
+  ['front matter', '﻿---\r\ncreated: today\r\n---\r\n', '\r\n'],
+  ['a byte order mark', '﻿', '\n'],
 ]) {
-  test(`memory ${operation} preserves BOM and adjacent content`, async () => {
+  test(`editing memory preserves ${label} and adjacent content`, async () => {
     const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'memory-bom-e2e-'));
     const memoryDir = path.join(userDataDir, 'memory');
     mkdirSync(memoryDir, { recursive: true });
@@ -972,25 +983,18 @@ for (const [operation, prefix, newline] of [
     try {
       await openLocalMemorySettings(electronApp);
       const window = await electronApp.firstWindow();
-      const explorer = window.getByTestId('memory-explorer-user');
-      const item = explorer
-        .getByTestId('memory-item')
-        .filter({ hasText: 'First memor' })
-        .last();
-      await clickMemoryAction(item, operation);
-      if (operation === 'edit')
-        await explorer
-          .getByTestId('memory-item-draft')
-          .fill('- Updated memory');
-      await explorer.getByTestId('memory-item-save').click();
-      await expect(explorer.getByTestId('memory-item-editor')).toHaveCount(0);
+      const panel = window.getByTestId('memory-explorer-user');
+      await openMemory(panel, 'MEMORY.md');
+      await editMemory(panel);
+      await panel
+        .getByTestId('memory-item-draft')
+        .fill('- Updated memory\n- Keep memory');
+      await panel.getByTestId('memory-item-save').click();
+      await expect(panel.getByTestId('memory-item-editor')).toHaveCount(0);
       expect(readFileSync(file, 'utf8')).toBe(
-        content.replace(
-          '- First memory',
-          operation === 'edit' ? '- Updated memory' : '',
-        ),
+        content.replace('- First memory', '- Updated memory'),
       );
-      await expect(explorer.getByTestId('memory-items')).toContainText(
+      await expect(panel.getByTestId('memory-detail-body')).toContainText(
         'Keep memory',
       );
     } finally {

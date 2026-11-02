@@ -13,10 +13,13 @@ import {
   type OverviewState,
 } from '@canopy/app-state';
 import type { PortalPipelineRunProjection } from '@canopy/protocol/portal';
-import { LoadingSpinner } from '@canopy/ui-shared/components';
+import { LoadingSpinner, PageHeader } from '@canopy/ui-shared/components';
 import { PlanModeIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { OverviewCard } from './OverviewCard';
+
+const OVERVIEW_DESCRIPTION =
+  'What needs your attention across every project and worktree.';
 
 /**
  * The write-once home / overview dashboard — "what needs your attention across
@@ -190,20 +193,18 @@ export function Overview({
 
   return (
     <div className={rootClass} data-testid="overview">
-      <header className={layout === 'page' ? 'mb-6 space-y-2 pt-12' : 'mb-4'}>
-        <h1
-          className={`${layout === 'page' ? 'text-xl' : 'text-lg'} font-semibold fg-primary`}
-        >
-          Overview
-        </h1>
-        <p
-          className={
-            layout === 'page' ? 'text-s fg-secondary' : 'text-xs fg-secondary'
-          }
-        >
-          What needs your attention across every project and worktree.
-        </p>
-      </header>
+      {layout === 'page' ? (
+        <PageHeader
+          className="mb-6"
+          title="Overview"
+          description={OVERVIEW_DESCRIPTION}
+        />
+      ) : (
+        <header className="mb-4">
+          <h1 className="text-lg font-semibold fg-primary">Overview</h1>
+          <p className="text-xs fg-secondary">{OVERVIEW_DESCRIPTION}</p>
+        </header>
+      )}
 
       <div className="grid min-w-0 grid-cols-1 gap-6 md:grid-cols-2">
         <Section
@@ -350,9 +351,9 @@ export function Overview({
         </Section>
 
         <Section
-          title="Running pipelines"
+          title="Running workflows"
           count={pipelines.length}
-          emptyLabel="No pipelines running."
+          emptyLabel="No workflows running."
           dataTestId="overview-pipelines"
         >
           {pipelines.map((run, i) => {
@@ -395,9 +396,9 @@ export function Overview({
         </Section>
 
         <Section
-          title="Unread pipelines"
+          title="Unread workflows"
           count={unreadPipelines.length}
-          emptyLabel="No pipelines to review."
+          emptyLabel="No workflows to review."
           dataTestId="overview-unread-pipelines"
         >
           {unreadPipelines.map((run, i) => {
@@ -434,7 +435,7 @@ export function Overview({
                     ? (): void => onDismissPipelineRun(run)
                     : undefined
                 }
-                dismissLabel="Mark pipeline activity as seen"
+                dismissLabel="Mark workflow activity as seen"
                 dataTestId="overview-unread-pipeline-card"
               >
                 {renderPipelineRunDetails?.(run, true)}

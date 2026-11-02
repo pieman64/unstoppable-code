@@ -1,0 +1,182 @@
+{
+  "v1": {
+    "ok": true,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000020",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 1,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "completed",
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "Final result 00000000-0000-4000-8000-000000000020",
+      "outputTruncated": false,
+      "phase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default"
+      }
+    },
+    "runGeneration": 1,
+    "revision": 3,
+    "items": [
+      {
+        "id": "first-two",
+        "sequence": 2,
+        "occurredAt": 2,
+        "type": "text",
+        "text": "first page item two"
+      },
+      {
+        "id": "first-three",
+        "sequence": 3,
+        "occurredAt": 3,
+        "type": "tool",
+        "toolName": "Bash",
+        "input": "git status --short",
+        "output": "first tool output"
+      }
+    ],
+    "hasMore": true
+  },
+  "priorGeneration": {
+    "ok": true,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000021",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "prior result"
+    },
+    "runGeneration": 1,
+    "revision": 5,
+    "items": [
+      {
+        "id": "prior-two",
+        "sequence": 3,
+        "occurredAt": 3,
+        "type": "text",
+        "text": "prior item two"
+      },
+      {
+        "id": "prior-three",
+        "sequence": 5,
+        "occurredAt": 5,
+        "type": "text",
+        "text": "prior item three"
+      }
+    ],
+    "hasMore": true
+  },
+  "currentGeneration": {
+    "ok": true,
+    "task": {
+      "description": "Review",
+      "prompt": "Inspect retained evidence",
+      "executionMode": "background"
+    },
+    "snapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000021",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 2,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "completed",
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "Final result 00000000-0000-4000-8000-000000000021",
+      "outputTruncated": false,
+      "phase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default"
+      }
+    },
+    "runGeneration": 2,
+    "revision": 9,
+    "items": [
+      {
+        "id": "current-two",
+        "sequence": 4,
+        "occurredAt": 4,
+        "type": "text",
+        "text": "current item two"
+      },
+      {
+        "id": "current-three",
+        "sequence": 8,
+        "occurredAt": 8,
+        "type": "text",
+        "text": "current item three"
+      }
+    ],
+    "hasMore": true
+  }
+}

@@ -19,8 +19,9 @@ import type { PersistedChatMessage } from '../types';
 import {
   buildPipelineRunArtifactReceipt,
   buildSkillArtifactReceipt,
+  collapseAgentArtifactsByItem,
   serializeAgentArtifactReceipts,
-  mergeLatestAgentArtifacts as mergeLatest,
+  mergeAgentArtifactsByPrecedence,
 } from './agent-artifacts';
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
@@ -534,11 +535,20 @@ export function projectAgentArtifacts(
   return projectAgentArtifactsWithCarry(messages);
 }
 
+/**
+ * One turn's receipts: carry merged over the projected ones, then collapsed
+ * so each item shows once (run > created/updated > recommended > found).
+ */
 export function mergeAgentArtifactTurn(
   projected: readonly AgentArtifactReceiptV1[] | undefined,
   carried: readonly AgentArtifactCarryReceiptV1[] | undefined,
 ): AgentArtifactReceiptV1[] {
-  return mergeLatest(projected ?? [], carried ?? []);
+  const merged = mergeAgentArtifactsByPrecedence(
+    projected ?? [],
+    carried ?? [],
+  );
+  const collapsed = collapseAgentArtifactsByItem(merged);
+  return collapsed === merged ? merged : [...collapsed];
 }
 
 /**
@@ -623,7 +633,10 @@ export function projectAgentArtifactsWithCarry(
       cached && cached.carry === carry && partsMatch(cached.parts, parts)
         ? cached.merged
         : mergeAgentArtifactTurn(
-            parts.reduce<AgentArtifactReceiptV1[]>(mergeLatest, []),
+            parts.reduce<AgentArtifactReceiptV1[]>(
+              mergeAgentArtifactsByPrecedence,
+              [],
+            ),
             carry,
           );
     nextTurns.set(id, { parts, carry, merged });

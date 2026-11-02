@@ -1,0 +1,525 @@
+{
+  "guards": {
+    "continuationCandidates": {
+      "baseline": [
+        {
+          "delegationId": "00000000-0000-4000-8000-000000000408",
+          "runGeneration": 1,
+          "description": "Review the supplied task",
+          "chatId": "chat",
+          "createdAt": 1760000000000
+        }
+      ],
+      "historyAt16": [],
+      "controlsAt64": [],
+      "baselineHistoryCount": 0,
+      "historyAt16Count": 16,
+      "baselineControlsCount": 0,
+      "controlsAt64Count": 64,
+      "baselineCandidatePresent": true,
+      "historyCapCandidateAbsent": true,
+      "controlsCapCandidateAbsent": true
+    },
+    "materializeAtHistory16": {
+      "belowCapHistoryCount": 15,
+      "belowCapReply": {
+        "ok": true,
+        "value": {
+          "delegationId": "00000000-0000-4000-8000-000000000084",
+          "depth": 1,
+          "nestedDelegation": "not_enabled",
+          "runGeneration": 17,
+          "permissions": {
+            "writePaths": []
+          },
+          "status": "pending",
+          "control": {
+            "operationId": "00000000-0000-4000-8000-000000070001",
+            "operation": "follow_up",
+            "status": "completed"
+          },
+          "routeSnapshot": {
+            "selectedModelId": "logical-review-model",
+            "runtimeModelId": "native-model",
+            "harnessId": "third-harness",
+            "runtimeKind": "local-sdk",
+            "runnerRegistrationId": "third-local",
+            "runtimeVersion": "1.0",
+            "adapterVersion": "1",
+            "modelSource": "test",
+            "providerType": "test-inference",
+            "assignmentRevision": "assignment-1",
+            "billingAuthority": "native",
+            "aiCreditsRouted": false,
+            "capabilities": ["read", "progress", "resume"],
+            "supportedThinkingLevels": ["low", "high"],
+            "capabilitySnapshotHash": "capability-1",
+            "capabilityGeneration": 1,
+            "policyRevision": "read-only-1"
+          },
+          "outputTruncated": false,
+          "phase": "starting",
+          "queue": {
+            "id": "default",
+            "name": "Default",
+            "running": 1,
+            "waiting": 0,
+            "limit": 8
+          }
+        }
+      },
+      "belowCapCausalErrors": [],
+      "belowCapLaunchedRunCount": 1,
+      "inputControlCounts": 15,
+      "inputHistoryCount": 16,
+      "reply": {
+        "ok": false,
+        "error": {
+          "code": "runtime_error",
+          "message": "The continuation could not be durably materialized.",
+          "retryable": false
+        }
+      },
+      "causalErrors": ["Native child cannot continue"],
+      "storedControl": {
+        "operationId": "00000000-0000-4000-8000-000000070002",
+        "key": "b525903b5687c635fcea70b91628e7bfbfa83d98f2d163f4db6240ee1f9aa0a6",
+        "requestHash": "4d0178f9248520c6f53e4354f6e8d80252ec1e81e68faba156456e0aba6533ea",
+        "occurredAt": 1760000000000,
+        "operation": "follow_up",
+        "message": "Continue at the retained-history boundary.",
+        "status": "failed",
+        "sender": {
+          "kind": "user"
+        },
+        "firstError": {
+          "code": "runtime_error",
+          "message": "The continuation could not be durably materialized.",
+          "retryable": false
+        },
+        "error": "The child command could not complete. Retained work is available for inspection."
+      },
+      "launchedRunCount": 0
+    },
+    "hostMessageControlsAt64": {
+      "belowCapReply": {
+        "ok": true,
+        "value": {
+          "attemptId": "00000000-0000-4000-8000-000000071001",
+          "status": "accepted"
+        }
+      },
+      "atCapReply": {
+        "ok": false,
+        "error": {
+          "code": "capacity_exceeded",
+          "message": "The direct parent cannot accept another retained turn.",
+          "retryable": false
+        }
+      },
+      "historyCount": 0,
+      "controlsAfterAtCapAttempt": 64,
+      "promptAfterAtCapAttempt": "Read src/index.ts and identify missing error handling."
+    }
+  },
+  "replays": {
+    "userFirstAcknowledgement": {
+      "ok": true,
+      "value": {
+        "delegationId": "00000000-0000-4000-8000-000000000408",
+        "depth": 1,
+        "nestedDelegation": "not_enabled",
+        "runGeneration": 2,
+        "permissions": {
+          "writePaths": []
+        },
+        "status": "pending",
+        "control": {
+          "operationId": "00000000-0000-4000-8000-000000072001",
+          "operation": "follow_up",
+          "status": "completed"
+        },
+        "routeSnapshot": {
+          "selectedModelId": "logical-review-model",
+          "runtimeModelId": "native-model",
+          "harnessId": "third-harness",
+          "runtimeKind": "local-sdk",
+          "runnerRegistrationId": "third-local",
+          "runtimeVersion": "1.0",
+          "adapterVersion": "1",
+          "modelSource": "test",
+          "providerType": "test-inference",
+          "assignmentRevision": "assignment-1",
+          "billingAuthority": "native",
+          "aiCreditsRouted": false,
+          "capabilities": ["read", "progress", "resume"],
+          "supportedThinkingLevels": ["low", "high"],
+          "capabilitySnapshotHash": "capability-1",
+          "capabilityGeneration": 1,
+          "policyRevision": "read-only-1"
+        },
+        "outputTruncated": false,
+        "phase": "starting",
+        "queue": {
+          "id": "default",
+          "name": "Default",
+          "running": 1,
+          "waiting": 0,
+          "limit": 8
+        }
+      }
+    },
+    "userAcknowledgementReplay": {
+      "ok": true,
+      "value": {
+        "delegationId": "00000000-0000-4000-8000-000000000408",
+        "depth": 1,
+        "nestedDelegation": "not_enabled",
+        "runGeneration": 2,
+        "permissions": {
+          "writePaths": []
+        },
+        "status": "pending",
+        "control": {
+          "operationId": "00000000-0000-4000-8000-000000072001",
+          "operation": "follow_up",
+          "status": "completed"
+        },
+        "routeSnapshot": {
+          "selectedModelId": "logical-review-model",
+          "runtimeModelId": "native-model",
+          "harnessId": "third-harness",
+          "runtimeKind": "local-sdk",
+          "runnerRegistrationId": "third-local",
+          "runtimeVersion": "1.0",
+          "adapterVersion": "1",
+          "modelSource": "test",
+          "providerType": "test-inference",
+          "assignmentRevision": "assignment-1",
+          "billingAuthority": "native",
+          "aiCreditsRouted": false,
+          "capabilities": ["read", "progress", "resume"],
+          "supportedThinkingLevels": ["low", "high"],
+          "capabilitySnapshotHash": "capability-1",
+          "capabilityGeneration": 1,
+          "policyRevision": "read-only-1"
+        },
+        "outputTruncated": false,
+        "phase": "starting",
+        "queue": {
+          "id": "default",
+          "name": "Default",
+          "running": 1,
+          "waiting": 0,
+          "limit": 8
+        }
+      }
+    },
+    "userAcknowledgementAfterRestart": {
+      "ok": true,
+      "value": {
+        "delegationId": "00000000-0000-4000-8000-000000000408",
+        "depth": 1,
+        "nestedDelegation": "not_enabled",
+        "runGeneration": 2,
+        "permissions": {
+          "writePaths": []
+        },
+        "status": "pending",
+        "control": {
+          "operationId": "00000000-0000-4000-8000-000000072001",
+          "operation": "follow_up",
+          "status": "completed"
+        },
+        "routeSnapshot": {
+          "selectedModelId": "logical-review-model",
+          "runtimeModelId": "native-model",
+          "harnessId": "third-harness",
+          "runtimeKind": "local-sdk",
+          "runnerRegistrationId": "third-local",
+          "runtimeVersion": "1.0",
+          "adapterVersion": "1",
+          "modelSource": "test",
+          "providerType": "test-inference",
+          "assignmentRevision": "assignment-1",
+          "billingAuthority": "native",
+          "aiCreditsRouted": false,
+          "capabilities": ["read", "progress", "resume"],
+          "supportedThinkingLevels": ["low", "high"],
+          "capabilitySnapshotHash": "capability-1",
+          "capabilityGeneration": 1,
+          "policyRevision": "read-only-1"
+        },
+        "outputTruncated": false,
+        "phase": "starting",
+        "queue": {
+          "id": "default",
+          "name": "Default",
+          "running": 1,
+          "waiting": 0,
+          "limit": 8
+        }
+      }
+    },
+    "userFirstError": {
+      "ok": false,
+      "error": {
+        "code": "runtime_error",
+        "message": "The continuation could not be durably materialized.",
+        "retryable": false
+      }
+    },
+    "userErrorReplay": {
+      "ok": false,
+      "error": {
+        "code": "runtime_error",
+        "message": "The continuation could not be durably materialized.",
+        "retryable": false
+      }
+    },
+    "userErrorAfterRestart": {
+      "ok": false,
+      "error": {
+        "code": "runtime_error",
+        "message": "The continuation could not be durably materialized.",
+        "retryable": false
+      }
+    },
+    "applyFailed": {
+      "acceptedControl": {
+        "operationId": "00000000-0000-4000-8000-000000000483",
+        "operation": "apply",
+        "status": "accepted"
+      },
+      "firstReply": {
+        "ok": true,
+        "value": {
+          "delegationId": "00000000-0000-4000-8000-000000000475",
+          "depth": 1,
+          "nestedDelegation": "not_enabled",
+          "runGeneration": 1,
+          "resultIndex": 1,
+          "permissions": {
+            "writePaths": ["src"]
+          },
+          "status": "completed",
+          "control": {
+            "operationId": "00000000-0000-4000-8000-000000000483",
+            "operation": "apply",
+            "status": "accepted"
+          },
+          "isolatedWorkspace": {
+            "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "dirtyParentChangesIncluded": false
+          },
+          "routeSnapshot": {
+            "selectedModelId": "logical-review-model",
+            "runtimeModelId": "native-model",
+            "harnessId": "third-harness",
+            "runtimeKind": "local-sdk",
+            "runnerRegistrationId": "third-local",
+            "runtimeVersion": "1.0",
+            "adapterVersion": "1",
+            "modelSource": "test",
+            "providerType": "test-inference",
+            "assignmentRevision": "assignment-1",
+            "billingAuthority": "native",
+            "aiCreditsRouted": false,
+            "capabilities": ["read", "write", "worktree", "resume"],
+            "supportedThinkingLevels": ["low", "high"],
+            "capabilitySnapshotHash": "capability-1",
+            "capabilityGeneration": 1,
+            "policyRevision": "read-only-1"
+          },
+          "finalText": "Ready to apply.",
+          "outputTruncated": false,
+          "approvalPending": false,
+          "phase": "idle",
+          "queue": {
+            "id": "default",
+            "name": "Default",
+            "running": 0,
+            "waiting": 0,
+            "limit": 8
+          }
+        }
+      },
+      "inProcessReplay": {
+        "ok": true,
+        "value": {
+          "delegationId": "00000000-0000-4000-8000-000000000475",
+          "depth": 1,
+          "nestedDelegation": "not_enabled",
+          "runGeneration": 1,
+          "resultIndex": 1,
+          "permissions": {
+            "writePaths": ["src"]
+          },
+          "status": "completed",
+          "control": {
+            "operationId": "00000000-0000-4000-8000-000000000483",
+            "operation": "apply",
+            "status": "accepted"
+          },
+          "isolatedWorkspace": {
+            "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "dirtyParentChangesIncluded": false
+          },
+          "routeSnapshot": {
+            "selectedModelId": "logical-review-model",
+            "runtimeModelId": "native-model",
+            "harnessId": "third-harness",
+            "runtimeKind": "local-sdk",
+            "runnerRegistrationId": "third-local",
+            "runtimeVersion": "1.0",
+            "adapterVersion": "1",
+            "modelSource": "test",
+            "providerType": "test-inference",
+            "assignmentRevision": "assignment-1",
+            "billingAuthority": "native",
+            "aiCreditsRouted": false,
+            "capabilities": ["read", "write", "worktree", "resume"],
+            "supportedThinkingLevels": ["low", "high"],
+            "capabilitySnapshotHash": "capability-1",
+            "capabilityGeneration": 1,
+            "policyRevision": "read-only-1"
+          },
+          "finalText": "Ready to apply.",
+          "outputTruncated": false,
+          "approvalPending": false,
+          "phase": "idle",
+          "queue": {
+            "id": "default",
+            "name": "Default",
+            "running": 0,
+            "waiting": 0,
+            "limit": 8
+          }
+        }
+      },
+      "restartReplay": {
+        "ok": false,
+        "error": {
+          "code": "apply_failed",
+          "message": "Nothing was applied: src/a.ts changed after the delegate copied it.",
+          "retryable": false,
+          "apply": {
+            "reason": "conflict",
+            "issues": [
+              {
+                "path": "src/a.ts",
+                "reason": "parent_changed",
+                "parentDiff": "--- delegate/src/a.ts\n+++ parent/src/a.ts\n"
+              }
+            ],
+            "guidance": "Send the delegate a follow_up, then apply again."
+          }
+        }
+      },
+      "persistedControl": {
+        "operationId": "00000000-0000-4000-8000-000000000483",
+        "key": "d3c6191191009ce3b1dde480e27ca143fd3cd889a5257d8f76781661a8a1e690",
+        "requestHash": "99523b9a7f2f8cc56b47877ed10ea270fc78c34cf8295b0000070c8b81c39495",
+        "occurredAt": 1760000000000,
+        "operation": "apply",
+        "status": "failed",
+        "sender": {
+          "kind": "agent",
+          "depth": 0
+        },
+        "error": "Nothing was applied: src/a.ts changed after the delegate copied it.",
+        "applyFailure": {
+          "reason": "conflict",
+          "issues": [
+            {
+              "path": "src/a.ts",
+              "reason": "parent_changed",
+              "parentDiff": "--- delegate/src/a.ts\n+++ parent/src/a.ts\n"
+            }
+          ],
+          "guidance": "Send the delegate a follow_up, then apply again."
+        }
+      },
+      "causalErrors": [
+        "Nothing was applied: src/a.ts changed after the delegate copied it."
+      ]
+    }
+  },
+  "v1Normalization": {
+    "rawV1Bytes": "{\"version\":1,\"depth\":1,\"resumeSessionId\":\"history-results-native\",\"history\":[{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":1,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-cap-spawn\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":1,\"resultIndex\":1,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000092\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 1 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":2,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-1\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 1.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":2,\"resultIndex\":2,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000102\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 2 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000092\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 1.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":3,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-2\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 2.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":3,\"resultIndex\":3,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000112\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 3 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000102\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 2.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":4,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-3\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 3.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":4,\"resultIndex\":4,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000122\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 4 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000112\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 3.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":5,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-4\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 4.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":5,\"resultIndex\":5,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000132\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 5 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000122\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 4.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":6,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-5\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 5.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":6,\"resultIndex\":6,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000142\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 6 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000132\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 5.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":7,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-6\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 6.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":7,\"resultIndex\":7,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000152\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 7 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000142\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 6.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":8,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-7\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 7.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":8,\"resultIndex\":8,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000162\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 8 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000152\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 7.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":9,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-8\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 8.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":9,\"resultIndex\":9,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000172\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 9 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000162\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 8.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":10,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-9\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 9.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":10,\"resultIndex\":10,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000182\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 10 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000172\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 9.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":11,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-10\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 10.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":11,\"resultIndex\":11,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000192\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 11 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000182\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 10.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":12,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-11\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 11.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":12,\"resultIndex\":12,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000202\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 12 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000192\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 11.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":13,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-12\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 12.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":13,\"resultIndex\":13,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000212\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 13 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000202\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 12.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":14,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-13\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 13.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":14,\"resultIndex\":14,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000222\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 14 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000212\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 13.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":15,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-14\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 14.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":15,\"resultIndex\":15,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000232\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 15 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000222\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 14.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":16,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-15\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 15.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":16,\"resultIndex\":16,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000242\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 16 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000232\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 15.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]}],\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"history-results-follow-16\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 16.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"f4892eb006ba7550dd7a1aa284433af57950ebab24ebf217d29e3e6614942334\",\"requestHash\":\"cbc41a04fbed10c936ca120c5fce8a33db728943d69dd0e58540eae8d20d5e20\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":17,\"sequence\":2,\"status\":\"completed\",\"nativeSessionId\":\"history-results-native\",\"startedAt\":1760000000000,\"finishedAt\":1760000000000,\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000242\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 16.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}],\"finalText\":\"generation 17 result\",\"outputTruncated\":false,\"approvalPending\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"launchKey\":\"f4892eb006ba7550dd7a1aa284433af57950ebab24ebf217d29e3e6614942334\",\"runGeneration\":17,\"phase\":\"settled\",\"nativeSessionId\":\"history-results-native\",\"terminalStatus\":\"completed\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "rawVersion": 1,
+    "hadResultsField": false,
+    "historyCount": 16,
+    "resultCount": 17,
+    "historyResult": {
+      "ok": true,
+      "value": {
+        "delegationId": "00000000-0000-4000-8000-000000000084",
+        "currentRunGeneration": 17,
+        "currentStatus": "completed",
+        "latestResultIndex": 17,
+        "result": {
+          "resultIndex": 1,
+          "runGeneration": 1,
+          "status": "completed",
+          "finalText": "generation 1 result",
+          "outputTruncated": false
+        },
+        "currentPhase": "idle",
+        "queue": {
+          "id": "default",
+          "name": "Default",
+          "running": 0,
+          "waiting": 0,
+          "limit": 8
+        }
+      }
+    },
+    "currentStateResult": {
+      "ok": true,
+      "value": {
+        "delegationId": "00000000-0000-4000-8000-000000000084",
+        "currentRunGeneration": 17,
+        "currentStatus": "completed",
+        "latestResultIndex": 17,
+        "result": {
+          "resultIndex": 17,
+          "runGeneration": 17,
+          "status": "completed",
+          "finalText": "generation 17 result",
+          "outputTruncated": false
+        },
+        "currentPhase": "idle",
+        "queue": {
+          "id": "default",
+          "name": "Default",
+          "running": 0,
+          "waiting": 0,
+          "limit": 8
+        }
+      }
+    }
+  },
+  "storageRejections": [
+    {
+      "case": "unknown_fields",
+      "code": "unrecognized_keys",
+      "message": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"unknownLegacyGoldenField\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"unknownLegacyGoldenField\\\"\"\n  }\n]"
+    },
+    {
+      "case": "history_over_16",
+      "code": "too_big",
+      "message": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 16,\n    \"inclusive\": true,\n    \"path\": [\n      \"history\"\n    ],\n    \"message\": \"Too big: expected array to have <=16 items\"\n  }\n]"
+    },
+    {
+      "case": "results_over_17",
+      "code": "too_big",
+      "message": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 17,\n    \"inclusive\": true,\n    \"path\": [\n      \"results\"\n    ],\n    \"message\": \"Too big: expected array to have <=17 items\"\n  }\n]"
+    },
+    {
+      "case": "out_of_order_result_indexes",
+      "code": "custom",
+      "message": "[\n  {\n    \"code\": \"custom\",\n    \"path\": [\n      \"results\"\n    ],\n    \"message\": \"Delegation results must have stable ordered indices\"\n  }\n]"
+    }
+  ]
+}

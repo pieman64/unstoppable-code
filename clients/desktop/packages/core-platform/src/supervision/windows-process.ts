@@ -5,7 +5,10 @@ import {
 } from 'node:child_process';
 import { open } from 'node:fs/promises';
 import path from 'node:path';
-import { LocalAuthorityIdentityError } from '../local-authority';
+import {
+  isCanonicalWindowsSid,
+  LocalAuthorityIdentityError,
+} from '../local-authority';
 import { observeWindowsClosure } from './windows-closure';
 
 export const WINDOWS_PROCESS_FILE = 'canopy-process-identity.exe';
@@ -228,22 +231,14 @@ const WINDOWS_PRINCIPAL_RECEIPT_MAX =
   'canopy-principal-v1 '.length + WINDOWS_SID_MAX + 2;
 
 /**
- * Pinned receipt `canopy-principal-v1 <sid>` + LF or CRLF, exactly once. The
- * SID is revision 1 with an unsigned decimal 48-bit identifier authority and
- * 0..15 unsigned decimal 32-bit subauthorities, without leading zeroes.
+ * Pinned receipt `canopy-principal-v1 <sid>` + LF or CRLF, exactly once, with
+ * the canonical SID text the authority digest encodes (`isCanonicalWindowsSid`).
  * Returns null for anything else; structure alone never makes a SID trusted.
  */
 export function windowsPrincipalSid(text: string): string | null {
   if (text.length > WINDOWS_PRINCIPAL_RECEIPT_MAX) return null;
-  const row =
-    /^canopy-principal-v1 S-1-(0|[1-9]\d{0,14})((?:-(?:0|[1-9]\d{0,9})){0,15})\r?\n$/.exec(
-      text,
-    );
-  if (!row || row[1] === undefined || row[2] === undefined) return null;
-  if (Number(row[1]) > 0xffffffffffff) return null;
-  const parts = row[2].split('-').slice(1);
-  if (parts.some((part) => Number(part) > 0xffffffff)) return null;
-  return `S-1-${row[1]}${row[2]}`;
+  const sid = /^canopy-principal-v1 (S-[-0-9]*)\r?\n$/.exec(text)?.[1];
+  return sid !== undefined && isCanonicalWindowsSid(sid) ? sid : null;
 }
 
 /** FILETIME remains an integer until whole seconds are safely representable. */

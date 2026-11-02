@@ -46,6 +46,8 @@ import {
   type SidebarWorkspaceFilterOption,
 } from './sidebarWorkspacesDerivation';
 import { useChatBadgeKeys } from './useChatBadgeKeys';
+import { parseBackgroundTaskCounts } from './chatBadgeKeys';
+import { useLiveTaskSnapshots } from '@/hooks/useBackgroundTaskCounts';
 import { addPlanExploreOriginWorktreeKeys } from '@/lib/planExploreWorktreeKeys';
 import { refreshPrivateMemoryRows } from '@/lib/privateMemory';
 
@@ -116,6 +118,8 @@ export interface SidebarWorkspacesModel {
   discoveryLoading: Set<string>;
   selectedWorktreeKey: string | null;
   streamingWorktreeKeys: Set<string>;
+  /** Live background tasks by row, for the background spinner (D15). */
+  backgroundTaskCounts: ReadonlyMap<string, number>;
   activeSessionWorktreeKeys: Set<string>;
   awaitingApprovalKeys: Set<string>;
   pendingQuestionWorktreeKeys: Set<string>;
@@ -410,6 +414,10 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
       : [];
     return addPlanExploreOriginWorktreeKeys(streamingKeys, trackedPlans);
   }, [badgeKeys.streaming, trackedPlans]);
+  const backgroundTaskCounts = useMemo(
+    () => parseBackgroundTaskCounts(badgeKeys.background),
+    [badgeKeys.background],
+  );
 
   const activeSessionWorktreeKeys = useMemo(() => {
     const activeKeys = badgeKeys.active ? badgeKeys.active.split(',') : [];
@@ -546,6 +554,18 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
     [sortedProjects],
   );
 
+  // Rows count background work that started before this renderer subscribed.
+  useLiveTaskSnapshots(
+    visibleProjects.flatMap((project) =>
+      project.type === 'cowork'
+        ? []
+        : project.worktrees.map((worktree) => ({
+            projectId: project.id,
+            worktreeId: worktree.id,
+          })),
+    ),
+  );
+
   const worktreeStatusMap = useMemo(
     () =>
       buildWorktreeStatusMap([...visibleProjects, ...hiddenProjects], {
@@ -576,7 +596,9 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
       // archived viewer (programmatic activations must not, so this lives on
       // the click handler rather than the selectWorktree funnel).
       dismissPageLikeViewers();
-      selectWorktree(projectId, worktreeId);
+      // A row click is an implicit entry, so it opens on the tab that needs
+      // the user rather than the one last read.
+      selectWorktree(projectId, worktreeId, { attentionLanding: true });
     },
     [selectWorktree],
   );
@@ -709,7 +731,7 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
   // Routes through the shared navigation-store request seam instead of
   // archiving directly. `WorktreeManager` (always mounted) consumes the
   // request and runs its own `requestArchiveWorktree`, which surfaces the
-  // richer retry/force-delete `TeardownFailureDialog` on teardown failure
+  // richer retry/without-teardown `TeardownFailureDialog` on teardown failure
   // instead of a toast-only fallback.
   const onArchiveWorktree = useCallback(
     (
@@ -840,6 +862,7 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
     discoveryLoading,
     selectedWorktreeKey: visibleSelectedWorktreeKey,
     streamingWorktreeKeys,
+    backgroundTaskCounts,
     activeSessionWorktreeKeys,
     awaitingApprovalKeys,
     pendingQuestionWorktreeKeys,

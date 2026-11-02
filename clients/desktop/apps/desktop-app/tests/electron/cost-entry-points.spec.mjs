@@ -204,6 +204,7 @@ test('a subagent chat shows Cost in Details instead of the Usage row in Setup', 
 test('Early access off has no Activity card, and a subagent chat still shows Cost in Details', async () => {
   const { userDataDir, launched, window, cost } = await launchWorktree({
     earlyAccess: false,
+    mode: 'advanced',
   });
   try {
     // The Activity card itself is part of Early access; cost is not.
@@ -214,8 +215,8 @@ test('Early access off has no Activity card, and a subagent chat still shows Cos
       0,
     );
     await openRootChat(window, cost);
-    // With Early access off, the add-panel control opens the add-tab menu.
-    await window.locator('[data-testid^="panel-add-panel-"]').first().click();
+    // Advanced exposes the graduated Add menu even with Early access off.
+    await window.getByTestId('panel-add-tab-group-chat').click();
     const menu = window.getByTestId('panel-add-menu');
     await expect(menu).toBeVisible();
     await expect(menu.getByTestId('panel-add-menu-item-cost')).toBeVisible();

@@ -10,13 +10,19 @@ import type { ChatTab, PendingQuestion } from './types';
 import { hasPendingQuestionForChat } from './pending-questions';
 import { hasPendingApprovalForChat } from './pending-approvals';
 import {
-  closeOpenToolUseBlocks,
-  closeOpenTurnTimers,
+  settleRestoredInterruptedMessages,
   hasOpenTurnTimer,
   hasPausedTurnTimer,
   hasRecoverableStreamingState,
+  hasUnresolvedToolUse,
   isRestoreTerminalSessionEvent,
 } from './event-transforms';
+import type { ChildToolLiveness } from '@canopy/agent-transcript';
+import {
+  selectChildToolLiveness,
+  useLiveBackgroundTaskStore,
+} from '../liveBackgroundTaskStore';
+import { chatStoreApi } from './store-ref';
 
 /**
  * Apply the shared "mark old tab read-only, append replacement tab, schedule
@@ -231,6 +237,7 @@ export function restoreStreamingTabs(
     (active.sessions ?? []).map((s) => [s.chatId, s]),
   );
   let preservedAnyOnRestore = false;
+  const awaitingLiveTasks: string[] = [];
   const nextTabs = tabs.map((tab): ChatTab => {
     if (activeSet.has(tab.id)) {
       if (hasPausedTurnTimer(tab.messages) && !hasOpenTurnTimer(tab.messages)) {
@@ -255,11 +262,109 @@ export function restoreStreamingTabs(
       return { ...tab, status: 'idle' as const, lastEventAt: hydratedAt };
     }
     // Close any stale turn_timer / tool_use blocks for tabs that are no longer
-    // streaming (e.g. the app reloaded while an agent was running).
-    return {
-      ...tab,
-      messages: closeOpenToolUseBlocks(closeOpenTurnTimers(tab.messages)),
-    };
+    // streaming (e.g. the app reloaded while an agent was running). Background
+    // children may outlive the turn: the live-task mirror decides.
+    const liveness: ChildToolLiveness = pendingAskUser
+      ? selectChildToolLiveness(
+          useLiveBackgroundTaskStore.getState(),
+          pendingAskUser.projectId,
+          pendingAskUser.worktreeId,
+          tab.id,
+        )
+      : { kind: 'unknown' };
+    // A projection of main's restart settlement: settle at the turn's last
+    // recorded activity, never at relaunch time, so repeated restores agree.
+    const messages = settleRestoredInterruptedMessages(
+      tab.messages,
+      hydratedAt,
+      {
+        liveness,
+        codexRootThreadId: tab.sdkSessionId,
+      },
+    );
+    if (liveness.kind === 'unknown' && hasUnresolvedToolUse(messages)) {
+      awaitingLiveTasks.push(tab.id);
+    }
+    return { ...tab, messages };
   });
+  if (pendingAskUser && awaitingLiveTasks.length > 0) {
+    closeRestoredChildToolsOnceHydrated(
+      pendingAskUser.projectId,
+      pendingAskUser.worktreeId,
+      awaitingLiveTasks,
+    );
+  }
   return { tabs: nextTabs, preservedAnyOnRestore };
+}
+
+/**
+ * A restore that ran before the worktree's live-task snapshot kept every
+ * child tool call open, which is right after a renderer reload. After an app
+ * restart nothing is live, and no provider event will ever settle them, so
+ * close them once the snapshot proves the chat has no live session.
+ */
+function closeRestoredChildToolsOnceHydrated(
+  projectId: string,
+  worktreeId: string,
+  chatIds: readonly string[],
+): void {
+  void useLiveBackgroundTaskStore
+    .getState()
+    .ensureWorktreesHydrated([{ projectId, worktreeId }])
+    .then((): void => {
+      let store: ReturnType<typeof chatStoreApi>;
+      try {
+        store = chatStoreApi();
+      } catch {
+        return;
+      }
+      const liveTasks = useLiveBackgroundTaskStore.getState();
+      const key = `${projectId}/${worktreeId}`;
+      store.setState((state) => {
+        const wc = state.worktreeChats[key];
+        if (!wc) return state;
+        let changed = false;
+        const nextTabs = wc.tabs.map((tab): ChatTab => {
+          if (!chatIds.includes(tab.id) || tab.status === 'streaming') {
+            return tab;
+          }
+          const liveness = selectChildToolLiveness(
+            liveTasks,
+            projectId,
+            worktreeId,
+            tab.id,
+          );
+          // Main settles the children of a live session as they end.
+          if (liveness.kind !== 'no-live-session') return tab;
+          if (
+            hasPendingPromptForLiveTab(tab, {
+              projectId,
+              worktreeId,
+              pendingQuestions: state.pendingQuestions,
+              pendingApprovals: state.pendingApprovals,
+            })
+          ) {
+            return tab;
+          }
+          const messages = settleRestoredInterruptedMessages(
+            tab.messages,
+            Date.now(),
+            {
+              liveness,
+              codexRootThreadId: tab.sdkSessionId,
+            },
+          );
+          if (messages === tab.messages) return tab;
+          changed = true;
+          return { ...tab, messages };
+        });
+        if (!changed) return state;
+        return {
+          worktreeChats: {
+            ...state.worktreeChats,
+            [key]: { ...wc, tabs: nextTabs },
+          },
+        };
+      });
+    });
 }

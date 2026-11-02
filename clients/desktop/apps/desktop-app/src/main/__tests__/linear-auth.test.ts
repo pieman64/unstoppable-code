@@ -10,19 +10,18 @@ jest.mock('../lib/paths', () => ({
     () => '/mock/legacy/secure/linear-token.enc',
   ),
 }));
-const mockNativeStorage = {
-  isEncryptionAvailable: jest.fn(() => true),
-  encryptString: jest.fn((value: string) =>
-    Buffer.from(`internal:${value}`, 'utf8'),
-  ),
-  decryptString: jest.fn((encrypted: Buffer) =>
-    encrypted.toString('utf8').replace(/^legacy:/, ''),
-  ),
-  getSelectedStorageBackend: jest.fn(() => 'gnome_libsecret'),
-};
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
-  safeStorage: mockNativeStorage,
+  safeStorage: {
+    isEncryptionAvailable: jest.fn(() => true),
+    encryptString: jest.fn((value: string) =>
+      Buffer.from(`internal:${value}`, 'utf8'),
+    ),
+    decryptString: jest.fn((encrypted: Buffer) =>
+      encrypted.toString('utf8').replace(/^legacy:/, ''),
+    ),
+    getSelectedStorageBackend: jest.fn(() => 'gnome_libsecret'),
+  },
 }));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): string => 'linux',
@@ -42,6 +41,15 @@ const internalLegacyPathMock = jest.mocked(
   getInternalLegacySharedLinearTokenFilePath,
 );
 const atomicWriteMock = jest.mocked(writeFileAtomically);
+const mockNativeStorage = jest.requireMock<{
+  safeStorage: Record<
+    | 'isEncryptionAvailable'
+    | 'encryptString'
+    | 'decryptString'
+    | 'getSelectedStorageBackend',
+    jest.Mock
+  >;
+}>('electron').safeStorage;
 
 function missingFileError(): Error & { code: 'ENOENT' } {
   return Object.assign(new Error('missing'), { code: 'ENOENT' as const });

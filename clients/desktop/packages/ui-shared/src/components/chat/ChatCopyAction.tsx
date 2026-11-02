@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useState,
-  type JSX,
-  type MouseEvent,
-} from 'react';
+import { useCallback, type JSX, type MouseEvent } from 'react';
 import { CheckIcon } from '../../icons/CheckIcon';
 import { CopyIcon } from '../../icons/CopyIcon';
 import { stripOpaqueAgentCitationMarkers } from '../../lib/agent-citations';
@@ -13,7 +7,7 @@ import {
   CLEAN_FOOTER_ICON_BUTTON_CLASS,
   useCleanChatLook,
 } from '../chat-look';
-import { useCopyToClipboard } from '../copy-to-clipboard';
+import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
 import { Tooltip } from '../Tooltip';
 
 /**
@@ -23,7 +17,9 @@ import { Tooltip } from '../Tooltip';
  *
  * A visually hidden polite status beside the button announces `Copied`, so
  * the confirmation reaches screen readers without moving focus or folding
- * into the button's own name.
+ * into the button's own name. The wrapper positions that status: an
+ * unpositioned `sr-only` span escapes the transcript's scroller and grows the
+ * nearest positioned ancestor by the reply's offset instead.
  */
 interface ChatCopyActionProps {
   /** What to copy. */
@@ -45,20 +41,7 @@ function ChatCopyActionControl({
   dataTestId,
 }: ChatCopyActionProps): JSX.Element {
   const clean = useCleanChatLook();
-  const [successCount, setSuccessCount] = useState(0);
-  const [announced, setAnnounced] = useState(false);
-  const handleCopied = useCallback((): void => {
-    setSuccessCount((previous) => previous + 1);
-  }, []);
-  const { copied, copy } = useCopyToClipboard({ onCopy: handleCopied });
-  useEffect((): (() => void) | undefined => {
-    setAnnounced(false);
-    if (!copied) return undefined;
-    // Empty and refill the mounted region in separate updates, including
-    // repeat copies; changing invisible whitespace is not an announcement.
-    const timer = setTimeout((): void => setAnnounced(true), 100);
-    return (): void => clearTimeout(timer);
-  }, [copied, successCount]);
+  const { copied, announcement, copy } = useAnnouncedCopy();
   const handleClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>): void => {
       event.stopPropagation();
@@ -73,7 +56,7 @@ function ChatCopyActionControl({
   const name = copied ? 'Copied' : label;
   const iconSize = clean ? '14' : '13';
   return (
-    <>
+    <span className="relative inline-flex shrink-0">
       <Tooltip label={name}>
         <button
           type="button"
@@ -94,15 +77,12 @@ function ChatCopyActionControl({
           )}
         </button>
       </Tooltip>
-      <span
-        role="status"
-        className="sr-only"
-        data-testid={
-          dataTestId === undefined ? undefined : `${dataTestId}-status`
-        }
-      >
-        {copied && announced ? 'Copied' : ''}
-      </span>
-    </>
+      <CopyStatusRegion
+        announcement={announcement}
+        {...(dataTestId === undefined
+          ? {}
+          : { dataTestId: `${dataTestId}-status` })}
+      />
+    </span>
   );
 }

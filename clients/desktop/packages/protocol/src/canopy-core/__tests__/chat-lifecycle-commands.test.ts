@@ -17,6 +17,38 @@ const envelope = {
 };
 
 describe('chat lifecycle instruction contracts', () => {
+  it.each([null, 'raw', 'preview', 'table', 'diff'])(
+    'accepts an explicit file view mode or removal: %s',
+    (fileViewMode) => {
+      expect(
+        CoreChatUpdateParamsSchema.safeParse({
+          ...envelope,
+          action: {
+            type: 'chat.patch_tab_settings',
+            tabId: 'file',
+            patch: { fileViewMode },
+          },
+        }).success,
+      ).toBe(true);
+    },
+  );
+
+  it.each(['source', '', 42, false, {}, []])(
+    'rejects an unsupported file view mode: %s',
+    (fileViewMode) => {
+      expect(
+        CoreChatUpdateParamsSchema.safeParse({
+          ...envelope,
+          action: {
+            type: 'chat.patch_tab_settings',
+            tabId: 'file',
+            patch: { fileViewMode },
+          },
+        }).success,
+      ).toBe(false);
+    },
+  );
+
   it.each([null, 'My chat', 'x'.repeat(256), '😀'.repeat(128)])(
     'accepts a normalized custom title: %s',
     (customTitle) => {
@@ -178,6 +210,55 @@ describe('chat lifecycle instruction contracts', () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it('changes approval mode only through its dedicated action', () => {
+    const parse = (action: unknown): boolean =>
+      CoreChatUpdateParamsSchema.safeParse({ ...envelope, action }).success;
+    expect(
+      parse({
+        type: 'chat.patch_tab_settings',
+        tabId: 'tab',
+        patch: { approvalMode: 'full-access' },
+      }),
+    ).toBe(false);
+    for (const approvalMode of ['ask', 'auto', 'full-access']) {
+      expect(
+        parse({ type: 'chat.set_approval_mode', tabId: 'tab', approvalMode }),
+      ).toBe(true);
+    }
+    expect(
+      parse({ type: 'chat.set_approval_mode', tabId: 'tab', approvalMode: '' }),
+    ).toBe(false);
+    expect(
+      parse({
+        type: 'chat.set_approval_mode',
+        tabId: 'tab',
+        approvalMode: 'ask',
+        patch: { title: 'Extra' },
+      }),
+    ).toBe(false);
+    expect(parse({ type: 'chat.set_approval_mode', tabId: 'tab' })).toBe(false);
+  });
+
+  it('marks a chat unread manually only with a literal true flag', () => {
+    const parse = (action: unknown): boolean =>
+      CoreChatUpdateParamsSchema.safeParse({ ...envelope, action }).success;
+    expect(
+      parse({ type: 'chat.mark_unread', chatId: 'tab', manual: true }),
+    ).toBe(true);
+    expect(
+      parse({ type: 'chat.mark_unread', chatId: 'tab', manual: false }),
+    ).toBe(false);
+    expect(
+      parse({ type: 'chat.mark_unread', chatId: 'tab', manual: 'yes' }),
+    ).toBe(false);
+    expect(
+      parse({ type: 'chat.mark_unread', chatId: 'tab', extra: true }),
+    ).toBe(false);
+    expect(parse({ type: 'chat.mark_read', chatId: 'tab', manual: true })).toBe(
+      false,
+    );
   });
 
   it.each([

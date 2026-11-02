@@ -1,13 +1,13 @@
 export {
-  ChatScopeLifecycle,
-  ChatScopeKey,
-  ChatStateCommit,
-  ChatMutationOptions,
+  type ChatScopeLifecycle,
+  type ChatScopeKey,
+  type ChatStateCommit,
+  type ChatMutationOptions,
   ChatStateRevisionConflictError,
-  ScopePaths,
-  ChatStateRepositoryOptions,
-  ChatStateStorageDiagnostic,
-  ChatStateTransactionContext,
+  type ScopePaths,
+  type ChatStateRepositoryOptions,
+  type ChatStateStorageDiagnostic,
+  type ChatStateTransactionContext,
   ChatStateRepositoryLoadError,
 } from './chat-state-contracts';
 import {
@@ -31,7 +31,7 @@ import type {
   ChatCoreMutation,
   ChatJournalRecord,
   ChatRuntimeState,
-  ChatTabSettingsPatch,
+  ChatTabMetadataPatch,
   ChatTabsFile,
   PersistedChatTab,
   PersistedCommandReceipt,
@@ -218,13 +218,13 @@ function addBounded(set: Set<string>, value: string, limit: number): void {
 function compatibilityMetadataPatch(
   current: PersistedChatTab,
   next: PersistedChatTab,
-): ChatTabSettingsPatch | undefined {
+): ChatTabMetadataPatch | undefined {
   if (!isDeepStrictEqual(current.messages, next.messages)) return undefined;
   const currentRest: Record<string, unknown> = { ...current };
   const nextRest: Record<string, unknown> = { ...next };
   Reflect.deleteProperty(currentRest, 'messages');
   Reflect.deleteProperty(nextRest, 'messages');
-  const patch: ChatTabSettingsPatch = {};
+  const patch: ChatTabMetadataPatch = {};
   let changed = false;
   for (const key of CHAT_TAB_SETTINGS_PATCH_KEYS) {
     const currentValue = currentRest[key];

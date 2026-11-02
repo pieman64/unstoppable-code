@@ -12,7 +12,9 @@
 // (desktop's clone folder): desktop sets the project up on this computer, the
 // portal hands it to the paired desktop. A host that can also run a
 // single-repository Code project in the cloud passes `cloud` (REG-3091), and
-// its rows offer Add to Cloud, or Open once that copy exists.
+// its rows offer Add to Cloud, or Open once that copy exists. Beside it Add
+// reads Add to desktop; a host with nowhere to set a project up right now
+// passes `addOffered={false}`, leaving Add to Cloud the row's one action.
 // ---------------------------------------------------------------------------
 
 import { useState, type JSX, type ReactNode } from 'react';
@@ -136,6 +138,7 @@ export function isOrgProjectCloudAddSupported(
 ): boolean {
   return (
     project.kind === 'CODE' &&
+    project.topology !== 'multi-repo' &&
     project.repository !== null &&
     isOrgProjectCatalogSetupSupported(project)
   );
@@ -174,8 +177,14 @@ export interface OrgProjectCatalogListProps {
   readonly error?: string;
   /** Projects the host already has; their rows show a disabled Added. */
   readonly addedProjectIds: ReadonlySet<string>;
-  /** False while the host cannot take an Add (one in flight, links unknown). */
-  readonly addAvailable: boolean;
+  /** Host readiness, optionally per project when setup capabilities differ. */
+  readonly addAvailable: boolean | ((project: OrgProjectSummary) => boolean);
+  /**
+   * False hides Add and Added: the host has nowhere to set a project up
+   * right now (the portal with no paired desktop but with `cloud`). Rows the
+   * cloud cannot take then say Desktop only. Defaults to true.
+   */
+  readonly addOffered?: boolean;
   /** A setup the host is running for this project, shown in place of Add. */
   readonly setupMessage?: (projectId: string) => string | null;
   /** Host slot on the sticky header under the search (desktop: clone folder). */
@@ -203,6 +212,7 @@ export function OrgProjectCatalogList({
   error = '',
   addedProjectIds,
   addAvailable,
+  addOffered = true,
   setupMessage,
   destination,
   management,
@@ -233,6 +243,9 @@ export function OrgProjectCatalogList({
     ),
   ];
   const organizationLabel = organizationName ?? 'your organization';
+  // Beside Add to Cloud, Add names where it sets the project up.
+  const addLabel = cloud === undefined ? 'Add' : 'Add to desktop';
+  const addedLabel = cloud === undefined ? 'Added' : 'On desktop';
   return (
     <div data-testid="add-workspace-org-catalog" className="space-y-4">
       {error && <Notice>{error}</Notice>}
@@ -306,7 +319,11 @@ export function OrgProjectCatalogList({
                 const setup = setupMessage?.(project.id) ?? null;
                 const settingUp = setup !== null;
                 const canAdd =
-                  addAvailable && isOrgProjectAddAllowed(project, stale);
+                  (typeof addAvailable === 'function'
+                    ? addAvailable(project)
+                    : addAvailable) && isOrgProjectAddAllowed(project, stale);
+                const cloudAction =
+                  cloud !== undefined && isOrgProjectCloudAddSupported(project);
                 const status = added
                   ? null
                   : settingUp
@@ -323,12 +340,11 @@ export function OrgProjectCatalogList({
                     // project the host has shows a disabled Added button.
                     status={status}
                     actions={
-                      // One Add per row, so none is the accent action: a
-                      // list of equally prominent primaries reads as noise
-                      // (CAN-3909). Added steps back further.
+                      // Never an accent action: a list of equally prominent
+                      // primaries reads as noise (CAN-3909). Added steps back.
                       <>
                         {cloud !== undefined &&
-                          isOrgProjectCloudAddSupported(project) &&
+                          cloudAction &&
                           (cloud.copies.has(project.id) ? (
                             <Button
                               size="sm"
@@ -349,26 +365,36 @@ export function OrgProjectCatalogList({
                               Add to Cloud
                             </Button>
                           ))}
-                        {added === false && settingUp === false && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={canAdd === false}
-                            data-testid={`add-workspace-org-catalog-add-${project.id}`}
-                            onClick={(): void => onAdd(project, state)}
-                          >
-                            Add
-                          </Button>
-                        )}
-                        {added && (
+                        {addOffered &&
+                          added === false &&
+                          settingUp === false && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              disabled={canAdd === false}
+                              data-testid={`add-workspace-org-catalog-add-${project.id}`}
+                              onClick={(): void => onAdd(project, state)}
+                            >
+                              {addLabel}
+                            </Button>
+                          )}
+                        {addOffered && added && (
                           <Button
                             size="sm"
                             variant="ghost"
                             disabled
                             data-testid={`add-workspace-org-catalog-added-${project.id}`}
                           >
-                            Added
+                            {addedLabel}
                           </Button>
+                        )}
+                        {addOffered === false && cloudAction === false && (
+                          <span
+                            data-testid={`add-workspace-org-catalog-desktop-only-${project.id}`}
+                            className="text-xs fg-secondary"
+                          >
+                            Desktop only
+                          </span>
                         )}
                       </>
                     }

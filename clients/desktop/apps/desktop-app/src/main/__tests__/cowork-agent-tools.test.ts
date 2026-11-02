@@ -39,14 +39,27 @@ import { pinOrgProjectsFlagOff } from './helpers/org-projects-flag';
 import {
   createAgentActionSurface,
   createBrowserActionFamily,
+  createInMemoryAgentActionReceipts,
+  createPipelinesActionFamily,
+  type AgentPipelineRunResult,
+  type PipelineRunAction,
 } from '@canopy/agent-actions';
 import { desktopCapabilities } from '../agent-actions/desktop-capabilities';
+import { desktopPipelinesPort } from '../agent-actions/desktop-pipelines-port';
+import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 
 // This suite covers the legacy (context-free) resource paths.
 beforeEach(() => {
   pinOrgProjectsFlagOff();
 });
 
+jest.mock(
+  '../canopy-runtime/pipeline-definition-dispatch',
+  (): object =>
+    jest.requireActual<{ pipelineWriteDispatchFake: object }>(
+      './helpers/pipeline-write-dispatch-fake',
+    ).pipelineWriteDispatchFake,
+);
 jest.mock('../pipelines/pipeline-service', () => ({
   getPipeline: jest.fn(),
   listPipelines: jest.fn(),
@@ -76,6 +89,21 @@ jest.mock('../pipelines/execution-runtime', () => ({
 jest.mock('../pipelines/pipeline-handlers', () => ({
   retryPipelineExecutionFromMain: jest.fn(),
   startPipelineExecutionFromMain: jest.fn(),
+}));
+
+// Importing worktree-actions loads pipeline-install-context, which reaches
+// canopy-tools/core -> desktop-surface -> desktop-host -> desktop-pipelines-port
+// -> desktop-legacy-family -> worktree-actions. The legacy family constructs a
+// Set from DESKTOP_LEGACY_ACTION_TYPES during module initialization, while
+// worktree-actions is still evaluating; SWC's live export getter therefore
+// throws before the constant initializes. This is a live-binding cycle, not a
+// requireActual spread in this test mock, so descriptor-safe copying cannot
+// fix it. Stub only the unrelated legacy family: the suite tests worktree
+// search/dispatch and pipeline.run actions without watchers, so neither the
+// family nor inlineWatcherSetupJson is exercised.
+jest.mock('../agent-actions/desktop-legacy-family', () => ({
+  desktopLegacyActionFamily: {},
+  inlineWatcherSetupJson: (): undefined => undefined,
 }));
 
 jest.mock('../browser/browser-service-registry', () => ({
@@ -130,6 +158,9 @@ function pipelineData(scopes?: PipelineExecutionScope[]): PipelineData {
       id: 'pipe-1',
       name: 'Test pipeline',
       description: '',
+      icon: 'build',
+      createdAt: '2026-07-14T00:00:00.000Z',
+      updatedAt: '2026-07-14T00:00:00.000Z',
       filename: 'test.yml',
       source: 'user',
       readonly: false,
@@ -146,6 +177,7 @@ function pipelineData(scopes?: PipelineExecutionScope[]): PipelineData {
 const coworkRuntime: WorktreeActionRuntime = {
   projectId: 'cowork-ws-1',
   worktreeId: 'home',
+  chatId: 'cowork-chat',
   cwd: '/tmp/cowork-home',
   executionScope: 'directory',
   getWindow: () => null,
@@ -154,6 +186,7 @@ const coworkRuntime: WorktreeActionRuntime = {
 const legacyCoworkRuntime: WorktreeActionRuntime = {
   projectId: STANDALONE_CHAT_PROJECT_ID,
   worktreeId: 'legacy-ws-1',
+  chatId: 'legacy-chat',
   cwd: '/tmp/legacy-cowork-home',
   executionScope: 'directory',
   getWindow: () => null,
@@ -162,6 +195,7 @@ const legacyCoworkRuntime: WorktreeActionRuntime = {
 const worktreeRuntime: WorktreeActionRuntime = {
   projectId: 'project-1',
   worktreeId: 'worktree-1',
+  chatId: 'chat-1',
   cwd: '/tmp/worktree',
   getWindow: () => null,
 };
@@ -203,13 +237,29 @@ describe('per-surface action catalog', () => {
     );
     expect(planResult.actions).toEqual([]);
 
-    const pipelineResult = searchWorktreeActions(
+    // pipeline.run is a shared family, so Cowork finds it through the agent
+    // action surface rather than the legacy catalog.
+    const pipelineResult = await createAgentActionSurface<null>({
+      brand: { displayName: 'TestBrand', toolNamespace: 'testbrand' },
+      capabilities: desktopCapabilities({ executionScope: 'directory' }),
+      families: [
+        createPipelinesActionFamily<null>({
+          port: { run: () => Promise.reject(new Error('unused')) },
+          receipts: createInMemoryAgentActionReceipts<null>(),
+        }),
+      ],
+    }).execute(
+      'search_actions',
       { query: 'run pipeline', category: 'pipeline' },
-      { executionScope: 'directory' },
+      {
+        host: null,
+        scope: { workspaceId: 'w', worktreeId: 't', chatId: 'c' },
+        actorKey: 'a',
+        turnKey: 'turn',
+        toolUseId: 'tool',
+      },
     );
-    expect(pipelineResult.actions.map((action) => action.type)).toContain(
-      'pipeline.run',
-    );
+    expect(pipelineResult.text).toContain('"pipeline.run"');
 
     // Browser actions are a shared family, so Cowork finds them through the
     // agent action surface rather than the legacy catalog.
@@ -301,6 +351,19 @@ describe('per-surface action catalog', () => {
   });
 });
 
+/** Starts pipeline.run through the desktop pipelines port. */
+function runPipeline(
+  action: PipelineRunAction,
+  runtime: WorktreeActionRuntime,
+): Promise<AgentPipelineRunResult> {
+  const host: CanopyInjectedToolRuntime = {
+    requestUserAnswers: () => Promise.resolve([]),
+    loadScriptOutput: () => Promise.reject(new Error('unused')),
+    worktreeActionRuntime: runtime,
+  };
+  return desktopPipelinesPort.run(action, { host, actorKey: 'test' });
+}
+
 describe('directory-scoped dispatch', () => {
   it('rejects worktree-only actions with invalid_target', async () => {
     const result = await dispatchWorktreeAction(
@@ -309,7 +372,7 @@ describe('directory-scoped dispatch', () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe('invalid_target');
+      expect(result.error?.code).toBe('invalid_target');
     }
   });
 
@@ -318,24 +381,33 @@ describe('directory-scoped dispatch', () => {
       version: 5,
       id: 'exec-1',
       pipeline_id: 'pipe-1',
-      pipeline_snapshot: { name: 'Test pipeline', description: '', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Test pipeline',
+        description: '',
+        scope: ['directory'],
+        jobs: {},
+      },
       status: 'running',
       started_at: '2026-07-14T00:00:00.000Z',
       cwd: '/tmp/cowork-home',
       env: {},
       inputs: {},
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
+      pending_pauses: [],
+      status_reasons: [],
     };
     startPipelineExecutionFromMainMock.mockResolvedValue({
       success: true,
       data: execution,
     });
 
-    const result = await dispatchWorktreeAction(
-      { action: { type: 'pipeline.run', pipelineId: 'pipe-1' } },
+    const result = await runPipeline(
+      { type: 'pipeline.run', pipelineId: 'pipe-1' },
       coworkRuntime,
     );
-    expect(result.ok).toBe(true);
+    expect(result.status).toBe('started');
     expect(startPipelineExecutionFromMainMock).toHaveBeenCalledTimes(1);
     const { options } = startPipelineExecutionFromMainMock.mock.calls[0][0];
     expect(options.scope).toBe('directory');
@@ -386,14 +458,14 @@ describe('directory-scoped dispatch', () => {
       success: true,
       data: pipelineData(['worktree']),
     });
-    const result = await dispatchWorktreeAction(
-      { action: { type: 'pipeline.run', pipelineId: 'pipe-1' } },
+    const result = await runPipeline(
+      { type: 'pipeline.run', pipelineId: 'pipe-1' },
       coworkRuntime,
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe('invalid_target');
-      expect(result.error.message).toContain('worktree');
+    expect(result.status).toBe('rejected');
+    if (result.status === 'rejected') {
+      expect(result.reason).toBe('unsupported_scope');
+      expect(result.message).toContain('worktree');
     }
     expect(startPipelineExecutionFromMainMock).not.toHaveBeenCalled();
   });
@@ -403,8 +475,8 @@ describe('directory-scoped dispatch', () => {
       success: false,
       error: 'not relevant',
     });
-    await dispatchWorktreeAction(
-      { action: { type: 'pipeline.run', pipelineId: 'pipe-1' } },
+    await runPipeline(
+      { type: 'pipeline.run', pipelineId: 'pipe-1' },
       worktreeRuntime,
     );
     const { options } = startPipelineExecutionFromMainMock.mock.calls[0][0];
@@ -481,7 +553,12 @@ describe('directory-scoped dispatch', () => {
       version: 5,
       id: 'exec-other-entry',
       pipeline_id: 'pipe-1',
-      pipeline_snapshot: { name: 'Test pipeline', description: '', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Test pipeline',
+        description: '',
+        scope: ['directory'],
+        jobs: {},
+      },
       status: 'failure',
       started_at: '2026-07-14T00:00:00.000Z',
       completed_at: '2026-07-14T00:01:00.000Z',
@@ -492,6 +569,10 @@ describe('directory-scoped dispatch', () => {
       env: {},
       inputs: {},
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
+      pending_pauses: [],
+      status_reasons: [],
     };
     listExecutionSummariesMock.mockResolvedValue([
       {
@@ -583,7 +664,12 @@ describe('directory-scoped dispatch', () => {
       version: 5,
       id: 'exec-other-entry',
       pipeline_id: 'pipe-1',
-      pipeline_snapshot: { name: 'Test pipeline', description: '', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Test pipeline',
+        description: '',
+        scope: ['directory'],
+        jobs: {},
+      },
       status: 'failure',
       started_at: '2026-07-14T00:00:00.000Z',
       completed_at: '2026-07-14T00:01:00.000Z',
@@ -594,6 +680,10 @@ describe('directory-scoped dispatch', () => {
       env: {},
       inputs: {},
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
+      pending_pauses: [],
+      status_reasons: [],
     };
     const retryingState = {
       ...failedState,
@@ -631,7 +721,12 @@ describe('directory-scoped dispatch', () => {
       version: 5,
       id: 'exec-other-legacy-workspace',
       pipeline_id: 'pipe-1',
-      pipeline_snapshot: { name: 'Test pipeline', description: '', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Test pipeline',
+        description: '',
+        scope: ['directory'],
+        jobs: {},
+      },
       status: 'failure',
       started_at: '2026-07-14T00:00:00.000Z',
       completed_at: '2026-07-14T00:01:00.000Z',
@@ -642,6 +737,10 @@ describe('directory-scoped dispatch', () => {
       env: {},
       inputs: {},
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
+      pending_pauses: [],
+      status_reasons: [],
     };
     loadExecutionStateMock.mockResolvedValue(failedState);
 
@@ -672,7 +771,12 @@ describe('directory-scoped dispatch', () => {
       version: 5,
       id: 'exec-other-entry',
       pipeline_id: 'pipe-1',
-      pipeline_snapshot: { name: 'Test pipeline', description: '', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Test pipeline',
+        description: '',
+        scope: ['directory'],
+        jobs: {},
+      },
       status: 'success',
       started_at: '2026-07-14T00:00:00.000Z',
       completed_at: '2026-07-14T00:01:00.000Z',
@@ -689,6 +793,10 @@ describe('directory-scoped dispatch', () => {
       env: {},
       inputs: {},
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
+      pending_pauses: [],
+      status_reasons: [],
     };
     loadExecutionStateMock.mockResolvedValue(sourceState);
     getPipelineMock.mockReturnValue({
@@ -743,7 +851,12 @@ describe('directory-scoped dispatch', () => {
       version: 5,
       id: 'exec-other-workspace',
       pipeline_id: 'pipe-1',
-      pipeline_snapshot: { name: 'Test pipeline', description: '', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Test pipeline',
+        description: '',
+        scope: ['directory'],
+        jobs: {},
+      },
       status: 'failure',
       started_at: '2026-07-14T00:00:00.000Z',
       cwd: '/tmp/other-cowork-home',
@@ -753,6 +866,10 @@ describe('directory-scoped dispatch', () => {
       env: {},
       inputs: {},
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
+      pending_pauses: [],
+      status_reasons: [],
     });
 
     const result = await dispatchWorktreeAction(

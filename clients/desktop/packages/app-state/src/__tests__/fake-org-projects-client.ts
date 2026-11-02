@@ -33,6 +33,16 @@ export function createFakeClient(): FakeClient {
   const unsubscribed: DomainEventName[] = [];
   const handlers: HandlerSets = {};
 
+  function handlersFor<K extends DomainEventName>(
+    name: K,
+  ): Set<(event: DomainEventMap[K]) => void> {
+    const current = handlers[name];
+    if (current) return current;
+    const created = new Set<(event: DomainEventMap[K]) => void>();
+    Reflect.set(handlers, name, created);
+    return created;
+  }
+
   const client: CanopyClient = {
     capabilities: {
       localExecution: false,
@@ -43,6 +53,7 @@ export function createFakeClient(): FakeClient {
       pipelines: 'crud-only',
       routing: 'url',
       orgProjects: true,
+      overviewNotifications: false,
     },
     query,
     command,
@@ -51,10 +62,8 @@ export function createFakeClient(): FakeClient {
       handler: (event: DomainEventMap[K]) => void,
     ): Unsubscribe {
       subscribed.push(name);
-      const set =
-        handlers[name] ?? new Set<(event: DomainEventMap[K]) => void>();
+      const set = handlersFor(name);
       set.add(handler);
-      handlers[name] = set;
       return (): void => {
         set.delete(handler);
         unsubscribed.push(name);

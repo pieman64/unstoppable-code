@@ -195,9 +195,8 @@ function seedCommittedHistory(repoRoot, files, remoteUrl, links = []) {
     writeFileSync(path.join(repoRoot, file.path), file.base, 'utf8');
   }
   // A committed symlink is ordinary repository content — Canopy's own tree has
-  // `.agents/skills/triage-ui-automation-ci` — and it is git mode 120000, so
-  // checking the base commit out materializes a real link the fork has to
-  // carry across (CAN-2552).
+  // `.claude/skills` — and it is git mode 120000, so checking the base commit
+  // out materializes a real link the fork has to carry across (CAN-2552).
   for (const link of links) {
     mkdirSync(path.dirname(path.join(repoRoot, link.path)), {
       recursive: true,
@@ -673,7 +672,9 @@ export function seedSharedContainerRecipientCoworkRevision(
   mkdirSync(path.join(root, 'content', 'prompts'), { recursive: true });
   writeFileSync(
     path.join(root, 'content', 'notes', 'cowork-note.md'),
-    '# Follow-up note\n\nCall the customer on Friday.\n',
+    includeRevisionTwoContent
+      ? '# Revision two follow-up\n\nCall the customer on Friday. Ada added a scheduling detail.\n'
+      : '# Follow-up note\n\nCall the customer on Friday.\n',
     'utf8',
   );
   writeFileSync(

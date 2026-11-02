@@ -110,7 +110,13 @@ describe('githubRequestKnownPrFastRefresh handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    registerGitHubHandlers(() => mockWindow as any, {
+      // These tests reach no projected pull request read.
+      dispatcher: {} as never,
+      resolveCaller: () => {
+        throw new Error('No projected pull request read in this test.');
+      },
+    });
     handler = getKnownPrFastRefreshHandler();
   });
 

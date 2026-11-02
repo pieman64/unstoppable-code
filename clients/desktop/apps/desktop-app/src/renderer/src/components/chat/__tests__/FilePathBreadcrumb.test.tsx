@@ -10,6 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { FileTreeEntry, FileTreeRoot } from '@canopy/desktop-shared/types';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { FilePathBreadcrumb } from '../FilePathBreadcrumb';
 
 function entry(
@@ -30,6 +31,7 @@ function entry(
 }
 
 const mockFileListState = {
+  rootsCache: {} as Record<string, { data: { roots: FileTreeRoot[] } }>,
   directoryCache: {
     'root-dir': {
       data: {
@@ -47,6 +49,7 @@ const mockFileListState = {
 };
 
 jest.mock('@/stores/fileListStore', () => ({
+  getWorktreeCacheKey: (): string => 'project-1/worktree-1',
   getDirectoryCacheKey: (): string => 'root-dir',
   isFileTreeCacheStale: (): boolean => false,
   useFileListStore: (
@@ -72,6 +75,7 @@ describe('FilePathBreadcrumb', () => {
   let reactRoot: Root;
 
   beforeEach(() => {
+    mockFileListState.rootsCache = {};
     container = document.createElement('div');
     document.body.append(container);
     reactRoot = createRoot(container);
@@ -111,5 +115,87 @@ describe('FilePathBreadcrumb', () => {
     const file = names.find((node) => node.textContent === 'secret-notes.md');
     expect(folder).toBeDefined();
     expect(file).toBeDefined();
+  });
+
+  it.each([['Vendor Spend Q3'], ['支出 / 🌳 '.repeat(20).trim()]])(
+    'names and masks the Cowork project root %j',
+    (projectName) => {
+      act(() => {
+        reactRoot.render(
+          <FilePathBreadcrumb
+            projectId="project-1"
+            worktreeId="worktree-1"
+            root={{
+              repoId: 'workspace',
+              repoName: projectName,
+              absolutePath: '/Users/priya/vendor',
+              rootKind: 'standalone',
+            }}
+            relativePath="vendor-spend-cleaned.csv"
+          />,
+        );
+      });
+
+      const segment = container.querySelector<HTMLButtonElement>(
+        '[data-testid="file-breadcrumb-segment-root"]',
+      );
+      expect(segment?.textContent).toBe(projectName);
+      expect(segment?.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent).toBe(
+        projectName,
+      );
+    },
+  );
+
+  it('updates an open breadcrumb after roots refresh without reopening the file', () => {
+    const coworkRoot: FileTreeRoot = {
+      ...root,
+      repoId: 'workspace',
+      rootKind: 'standalone',
+      repoName: 'Vendor Spend Q3',
+    };
+    const render = (): void =>
+      act(() =>
+        reactRoot.render(
+          <FilePathBreadcrumb
+            projectId="project-1"
+            worktreeId="worktree-1"
+            root={coworkRoot}
+            relativePath="spend.csv"
+          />,
+        ),
+      );
+    render();
+    mockFileListState.rootsCache['project-1/worktree-1'] = {
+      data: { roots: [{ ...coworkRoot, repoName: 'Renamed Q4' }] },
+    };
+    render();
+    expect(
+      container.querySelector('[data-testid="file-breadcrumb-segment-root"]')
+        ?.textContent,
+    ).toBe('Renamed Q4');
+    expect(
+      container
+        .querySelector('[data-testid="file-breadcrumb-segment-root"]')
+        ?.getAttribute('title'),
+    ).toBeNull();
+  });
+
+  it('leaves repository root names unmasked', () => {
+    act(() => {
+      reactRoot.render(
+        <FilePathBreadcrumb
+          projectId="project-1"
+          worktreeId="worktree-1"
+          root={root}
+          relativePath="README.md"
+        />,
+      );
+    });
+
+    const segment = container.querySelector(
+      '[data-testid="file-breadcrumb-segment-root"]',
+    );
+    expect(segment?.textContent).toBe('repo');
+    expect(segment?.querySelector(`.${REPLAY_MASK_CLASS}`)).toBeNull();
   });
 });

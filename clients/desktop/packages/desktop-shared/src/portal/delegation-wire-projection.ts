@@ -126,7 +126,9 @@ const TOOL_FAMILIES = [
   'computer-use',
   'unknown',
 ] as const satisfies readonly PortalChatToolFamily[];
+const TRANSCRIPT_STORES = ['chat-log-v1', 'chat-stream-v2'] as const;
 const ENUM_FIELDS = new Set([
+  'transcriptStore',
   'type',
   'status',
   'executionMode',
@@ -932,11 +934,15 @@ function projectDelegationCard(
   ]) {
     copyLabel(source, key, card, 512, context);
   }
+  if (isMemberOf(TRANSCRIPT_STORES, source.transcriptStore)) {
+    card.transcriptStore = source.transcriptStore;
+  }
   if (source.type === 'delegated_agent_call') card.type = source.type;
   if (isPositiveSafeInteger(source.runGeneration)) {
     card.runGeneration = source.runGeneration;
   }
   copySafeCount(source, 'sequence', card);
+  copySafeCount(source, 'streamRevision', card);
   copySafeCount(source, 'createdAt', card);
 
   copySafeCount(source, 'depth', card, 1);
@@ -1242,6 +1248,41 @@ function projectChildren(
   return { parts: retained, omitted };
 }
 
+/** Count suppressed children without visiting stale stream-backed payloads. */
+function omittedChildren(data: Record<string, unknown>): ProjectedChildren {
+  return {
+    parts: [],
+    omitted: Math.min(
+      Number.MAX_SAFE_INTEGER,
+      inheritedOmittedCount(data) +
+        (Array.isArray(data.subBlocks) ? data.subBlocks.length : 0),
+    ),
+  };
+}
+
+/** No actionable identity survives a card that cannot be represented safely. */
+function unavailableDelegationPart(
+  data: Record<string, unknown>,
+  source: Record<string, unknown>,
+): PortalChatPart {
+  const delegation: Record<string, unknown> = {};
+  if (isMemberOf(TRANSCRIPT_STORES, source.transcriptStore)) {
+    delegation.transcriptStore = source.transcriptStore;
+  }
+  const result: PortalChatPart = {
+    kind: 'agent',
+    data: {
+      delegation,
+      subBlocks: [],
+      snapshotTruncated: true,
+      subBlocksTruncated: true,
+      omittedSubBlocks: omittedChildren(data).omitted,
+    },
+  };
+  freezeDeep(result);
+  return result;
+}
+
 function projectPortalDelegationPartAtDepth(
   value: unknown,
   context: ProjectionContext,
@@ -1252,24 +1293,31 @@ function projectPortalDelegationPartAtDepth(
   }
   const data = value.data;
   if (!isRecord(data.delegation)) return null;
-  const cardContext: ProjectionContext = { truncated: false };
-  const card = projectDelegationCard(data.delegation, cardContext);
-  if (card === null) return null;
+  const source = data.delegation;
+  const cardContext: ProjectionContext = {
+    truncated:
+      source.transcriptStore !== undefined &&
+      !isMemberOf(TRANSCRIPT_STORES, source.transcriptStore),
+  };
+  const card = projectDelegationCard(source, cardContext);
+  if (card === null) return unavailableDelegationPart(data, source);
   shrinkCardForSnapshotBudget(card, cardContext);
   const sanitizedCard = sanitizeStorableJson(card);
   if (
     serializedBytes(sanitizedCard) > PORTAL_DELEGATION_SNAPSHOT_MAX_BYTES ||
-    !isAgentDelegationCardData(sanitizedCard)
+    !isAgentDelegationCardData(sanitizedCard) ||
+    (source.transcriptStore === 'chat-stream-v2' &&
+      (sanitizedCard.delegationId !== source.delegationId ||
+        sanitizedCard.agentBlockId !== source.agentBlockId))
   ) {
-    return null;
+    return unavailableDelegationPart(data, source);
   }
 
-  const children = projectChildren(
-    data.subBlocks,
-    data,
-    context,
-    delegationDepth,
-  );
+  const children =
+    source.transcriptStore !== undefined &&
+    source.transcriptStore !== 'chat-log-v1'
+      ? omittedChildren(data)
+      : projectChildren(data.subBlocks, data, context, delegationDepth);
   const resultData: Record<string, unknown> = {
     delegation: sanitizedCard,
     subBlocks: children.parts,
@@ -1288,7 +1336,7 @@ function projectPortalDelegationPartAtDepth(
   const result: PortalChatPart = { kind: 'agent', data: resultData };
   const sanitizedResult = sanitizeStorableJson(result);
   if (serializedBytes(sanitizedResult) > PORTAL_DELEGATION_PART_MAX_BYTES) {
-    return null;
+    return unavailableDelegationPart(data, source);
   }
   freezeDeep(sanitizedResult);
   return sanitizedResult;
@@ -1296,7 +1344,9 @@ function projectPortalDelegationPartAtDepth(
 
 /**
  * Project only a managed delegation card to a bounded browser-safe Portal
- * part. Non-managed agent parts and invalid delegation cards return `null`.
+ * part. Only non-managed parts return `null`; invalid managed cards return
+ * bounded omission-only data without a usable read identity. Unknown markers
+ * retain the validated card, but never inline children.
  */
 export function projectPortalDelegationPart(
   part: unknown,

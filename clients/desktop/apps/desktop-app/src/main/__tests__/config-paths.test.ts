@@ -38,6 +38,8 @@ import {
   getLoginShellPath,
   prewarmLoginShellPath,
   resetLoginShellPathCache,
+  setLoginShellProbe,
+  type LoginShellProbe,
 } from '@canopy/desktop-shared/pipelines/config-paths';
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
@@ -308,6 +310,46 @@ describe('getLoginShellPath', () => {
     expect(getLoginShellPath()).toBe(exportedPath);
   });
 
+  it('runs lookups through an installed probe instead of execFile', async () => {
+    process.env.SHELL = '/bin/zsh';
+    process.env.PATH = '/usr/bin:/bin';
+    const probe = jest.fn<
+      ReturnType<LoginShellProbe>,
+      Parameters<LoginShellProbe>
+    >(() => Promise.resolve('motd\n/probed/bin:/usr/bin\n'));
+    setLoginShellProbe(probe);
+    try {
+      await prewarmLoginShellPath();
+    } finally {
+      setLoginShellProbe(undefined);
+    }
+
+    expect(getLoginShellPath()).toBe('/probed/bin:/usr/bin');
+    expect(mockExecFile).not.toHaveBeenCalled();
+    const [request] = probe.mock.calls[0] ?? [];
+    expect(request).toMatchObject({
+      file: '/bin/zsh',
+      args: ['-lic', 'exec /usr/bin/printf \'%s\\n\' "$PATH"'],
+      timeoutMs: 10_000,
+      maxBuffer: 1024 * 1024,
+    });
+    expect(request?.env.PATH).toBe('/usr/bin:/bin');
+    expect(request?.env.SHELL).toBe('/bin/zsh');
+  });
+
+  it('keeps the fallback when an installed probe fails', async () => {
+    process.env.PATH = '/inherited/bin';
+    setLoginShellProbe(() => Promise.resolve(undefined));
+    try {
+      await prewarmLoginShellPath();
+    } finally {
+      setLoginShellProbe(undefined);
+    }
+
+    expect(getLoginShellPath()).toBe('/inherited/bin');
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
   it('defaults to /bin/zsh when SHELL is not set', async () => {
     delete process.env.SHELL;
     mockShellResolution('/usr/bin:/bin\n');
@@ -323,7 +365,7 @@ describe('getLoginShellPath', () => {
   });
 });
 
-describe('Linux login-shell PATH', () => {
+describe.each(['x64', 'arm64'])('Linux %s login-shell PATH', (arch) => {
   type ProbeCallback = (
     error: Error | null,
     stdout: string,
@@ -390,7 +432,7 @@ describe('Linux login-shell PATH', () => {
     process.env = { ...originalEnv, SHELL: '/bin/bash', PATH: '/usr/bin:/bin' };
     setPlatform('linux');
     Object.defineProperty(process, 'arch', {
-      value: 'x64',
+      value: arch,
       configurable: true,
     });
     Object.defineProperty(process, 'getuid', {
@@ -411,7 +453,37 @@ describe('Linux login-shell PATH', () => {
     process.env = { ...originalEnv };
   });
 
-  it.each(['darwin', 'win32', 'linux'])(
+  it('runs the account and shell lookups through an installed probe', async () => {
+    delete process.env.SHELL;
+    const probe = jest.fn<
+      ReturnType<LoginShellProbe>,
+      Parameters<LoginShellProbe>
+    >((request) =>
+      Promise.resolve(
+        request.file === '/usr/bin/getent'
+          ? 'user:x:1001:1001::/home/user:/bin/bash\n'
+          : `noise${marked()}`,
+      ),
+    );
+    setLoginShellProbe(probe);
+    try {
+      await prewarmLoginShellPath();
+    } finally {
+      setLoginShellProbe(undefined);
+    }
+
+    expect(getLoginShellPath()).toBe(resolvedPath);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(probe.mock.calls.map(([request]) => request.file)).toEqual([
+      '/usr/bin/getent',
+      '/bin/bash',
+    ]);
+    expect(probe).toHaveBeenLastCalledWith(
+      expect.objectContaining({ timeoutMs: 10_000, maxBuffer: 64 * 1024 }),
+    );
+  });
+
+  it.each(['darwin', 'win32'])(
     'does no executable validation on unsupported resolver route %s',
     async (platform) => {
       setPlatform(platform);
@@ -865,7 +937,7 @@ describe('Linux login-shell PATH', () => {
 
     it.each([
       ['win32', 'x64'],
-      ['linux', 'arm64'],
+      ['linux', 's390x'],
     ])('stays a no-op on %s %s', async (platform, arch) => {
       setPlatform(platform);
       Object.defineProperty(process, 'arch', {

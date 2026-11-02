@@ -297,7 +297,6 @@ describe('workspace ownership records (real fs)', () => {
           'worktree:created': [
             {
               type: 'chat',
-              id: 'review',
               prompt: 'Review',
               executionContext: 'personal',
             },

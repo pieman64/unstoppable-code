@@ -5,22 +5,35 @@ const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const mockAnalyzeSubjectCapabilityPackage: jest.MockedFunction<
   (input: unknown) => Promise<PipelinePackageAnalysisSummary>
 > = jest.fn();
-const mockCloud = {
-  // The capability assertion moved into the Cloud client module (CAN-2829);
-  // it still funnels through the mocked capability check these cases assert.
-  assertSharedPluginsSupported: jest.fn(async (): Promise<void> => {
-    const { assertCanopyCloudCapability: assertCapability } = jest.requireMock<{
-      assertCanopyCloudCapability: () => Promise<void>;
-    }>('../canopy-cloud/client');
-    await assertCapability('plugins-crud-v1');
-  }),
-  listSharedPlugins: jest.fn(),
-  getSharedPlugin: jest.fn(),
-  createSharedPlugin: jest.fn(),
-  deleteSharedPlugin: jest.fn(),
-  publishPluginPublicShare: jest.fn(),
-  revokePluginPublicShare: jest.fn(),
-};
+interface MockCloud {
+  assertSharedPluginsSupported: jest.Mock<Promise<void>, []>;
+  listSharedPlugins: jest.Mock;
+  getSharedPlugin: jest.Mock;
+  createSharedPlugin: jest.Mock;
+  deleteSharedPlugin: jest.Mock;
+  publishPluginPublicShare: jest.Mock;
+  revokePluginPublicShare: jest.Mock;
+}
+
+function createMockCloud(): MockCloud {
+  return {
+    // The capability assertion moved into the Cloud client module (CAN-2829);
+    // it still funnels through the mocked capability check these cases assert.
+    assertSharedPluginsSupported: jest.fn(async (): Promise<void> => {
+      const { assertCanopyCloudCapability: assertCapability } =
+        jest.requireMock<{
+          assertCanopyCloudCapability: (capability: string) => Promise<void>;
+        }>('../canopy-cloud/client');
+      await assertCapability('plugins-crud-v1');
+    }),
+    listSharedPlugins: jest.fn(),
+    getSharedPlugin: jest.fn(),
+    createSharedPlugin: jest.fn(),
+    deleteSharedPlugin: jest.fn(),
+    publishPluginPublicShare: jest.fn(),
+    revokePluginPublicShare: jest.fn(),
+  };
+}
 
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (
@@ -48,7 +61,7 @@ jest.mock('../plugins/shareable-plugin-resolution', () => ({
   resolveShareablePluginRefs: jest.fn(),
 }));
 
-jest.mock('../plugins/canopy-server-client', () => mockCloud);
+jest.mock('../plugins/canopy-server-client', () => createMockCloud());
 jest.mock('../pipelines/pipeline-package-service', () => ({
   analyzeSubjectCapabilityPackage: (
     input: unknown,
@@ -62,6 +75,10 @@ import {
   loadShareablePluginCatalog,
   resolveShareablePluginRefs,
 } from '../plugins/shareable-plugin-resolution';
+
+const mockCloud = jest.requireMock<MockCloud>(
+  '../plugins/canopy-server-client',
+);
 
 const UUID = '2f0c9a1e-4b3d-4f6a-8c2e-1d5b7a9e0c4f';
 const request = {
@@ -232,7 +249,7 @@ describe('shared plugin IPC handlers', () => {
     };
     jest
       .mocked(loadShareablePluginCatalog)
-      .mockResolvedValue({ skills: [], marketplaces: [] } as never);
+      .mockResolvedValue({ skills: [], marketplaces: [] });
     jest.mocked(resolveShareablePluginRefs).mockReturnValue([
       {
         ref,
@@ -275,7 +292,7 @@ describe('shared plugin IPC handlers', () => {
   it('analyzes plugin setup as a reference without packaging files', async () => {
     jest
       .mocked(loadShareablePluginCatalog)
-      .mockResolvedValue({ skills: [], marketplaces: [] } as never);
+      .mockResolvedValue({ skills: [], marketplaces: [] });
     jest.mocked(resolveShareablePluginRefs).mockReturnValue([
       {
         ref: request.ref,

@@ -18,10 +18,11 @@
 // `framework === 'ai-credits'`. This is a display/UX correctness concern only:
 // session-spawn routing already force-routes gateway-only models regardless.
 
-import type {
-  AgentProviderType,
-  ChatBillingFramework,
-  ChatModel,
+import {
+  hasHydratedGatewayCatalog,
+  type AgentProviderType,
+  type ChatBillingFramework,
+  type ChatModel,
 } from '@canopy/desktop-shared/types';
 import {
   isGatewayOnlyModel,
@@ -29,7 +30,7 @@ import {
   resolveGatewayModelEntry,
 } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import type { ProviderModelAvailability } from '@/hooks/useProviderAvailability';
-import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
+import { getProviderLabel } from '@/lib/providerLabels';
 
 /**
  * Renderer alias for the shared {@link ChatBillingFramework} wire union so the
@@ -58,9 +59,9 @@ export interface ResolveChatBillingInput {
 export interface ChatBillingResolution {
   /**
    * Effective billing framework, or `null` when billing does not apply (no
-   * model, non-billable provider, availability missing/loading, or neither
-   * framework is possible). This is the billing truth; it is *not* on its own
-   * the banner condition — see {@link ChatBillingResolution.aiCreditsBannerVisible}.
+   * model, non-billable provider, unavailable gateway-only model, or missing
+   * availability). This is the billing truth; it is *not* on its own the banner
+   * condition — see {@link ChatBillingResolution.aiCreditsBannerVisible}.
    */
   framework: BillingFramework | null;
   /** Whether the picker should render the billing toggle at all. */
@@ -80,52 +81,37 @@ export interface ChatBillingResolution {
     | 'model-not-routable'
     | 'no-credits';
   /**
-   * Whether the AI Credits session banner should render. True only when the
-   * chat bills to AI Credits AND the account has a native login for the
-   * provider — telling a user whose only option is credits that they are
-   * spending credits is not actionable, it just reads as a warning about a
-   * choice they never made. The picker's locked toggle still explains the
-   * billing state for those users.
-   *
-   * Derivation is uniform at every return site because every non-`HIDDEN`
-   * return runs through one local helper (`withBannerVisibility`):
-   * `framework === 'ai-credits' && availability.nativeAuth`.
-   *
-   * Known limitation: this also hides the banner's balance readout
-   * (`chat-input-ai-credits-balance`) and org-payer chip
-   * (`chat-input-ai-credits-covered-by`), because both live inside the banner
-   * and are gated on the same flag. A credits-only user therefore has no
-   * running balance in the composer, and an org-funded credits-only member
-   * loses the "Covered by {org}" disclosure. That is accepted here — the
-   * sentence is what reads as an unactionable warning, and the picker's locked
-   * toggle still explains the billing state — but splitting the copy from the
-   * chip so credits-only users keep the balance is a reasonable follow-up.
-   *
-   * Known limitation: `useProviderAvailability` sets `nativeAuth` from
-   * `status.authenticated` alone and does not fold in
-   * `status.userSuppliedCredential` (unlike `nativeAuthTriState` in
-   * `hooks/useBillingLaneRuntimeSync.ts`). A user whose only "native"
-   * credential is an `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` supplied through
-   * Canopy Environments therefore reads as `nativeAuth: false` and will not
-   * see the banner. This is the same false-negative family
-   * `NoBillingSourceBanner` already documents. Main-process routing softens it
-   * but does not eliminate it: the `hasUserSuppliedProviderCredential` drop in
-   * `agents/ai-credits-routing.ts` is scoped to
-   * `attempt.reason === 'no-native-auth'`, so only the *implicit* fallback
-   * falls through to native for those users. Explicit routing — an
-   * `aiCreditsRoutingMode` of `on`/`on-quota`, a per-session override, or
-   * selecting a gateway-only model, which all three call sites force-route via
-   * `if (!attempt && !gatewayOnly) return null` regardless of the dropped
-   * attempt — still spends credits, and now does so without a banner. The
-   * gateway-only case is the most actionable of the three, since switching to
-   * a native-capable model would use their own credential. Folding
-   * `status.userSuppliedCredential` into this gate the way `nativeAuthTriState`
-   * does is the complete fix, but it requires `useProviderAvailability` to
-   * surface that field first (`ProviderModelAvailability` carries only
-   * `nativeAuth` and `creditsEligible` today), so it is deliberately out of
-   * scope here.
+   * Whether the AI Credits session banner should render. A native-capable
+   * model keeps the banner even when native auth is negative or inconclusive;
+   * whether it offers a switch follows `toggleDisabled`. A gateway-only model
+   * cannot offer that escape; its existing disclosure depends on a confirmed
+   * native path.
    */
   aiCreditsBannerVisible: boolean;
+}
+
+/**
+ * Whether a model can carry an AI Credits offer. `'unknown'` covers the cold
+ * gateway catalog and a missing model; callers treat it as "offer nothing",
+ * so saved routing never claims a route the catalog has not confirmed.
+ */
+export type CreditsModelRoutability = 'routable' | 'not-routable' | 'unknown';
+
+/**
+ * Resolve whether `model` can bill to AI Credits through the gateway. The
+ * usage-limit banner, its click handlers, the model switch, and stale-routing
+ * cleanup all consume this one answer.
+ *
+ * Reads module-level catalog state, so React callers must re-derive it when the
+ * model facts version changes. Agent models resolve through their base model.
+ */
+export function resolveCreditsModelRoutability(
+  model: ChatModel | undefined,
+): CreditsModelRoutability {
+  if (!model || !hasHydratedGatewayCatalog()) {
+    return 'unknown';
+  }
+  return isGatewayRoutableModel(model) ? 'routable' : 'not-routable';
 }
 
 const HIDDEN: ChatBillingResolution = {
@@ -138,9 +124,11 @@ const HIDDEN: ChatBillingResolution = {
 /**
  * Resolve the effective billing framework and toggle state for a chat.
  *
- * See the decision table in the plan: locked-ON for gateway-only capability or
- * a credits-only account, locked-OFF for a non-routable model or a native-only
- * account, and interactive only when both frameworks are genuinely available.
+ * Gateway-only capability is locked to credits. A native-capable model keeps
+ * subscription selection reachable while an auth probe is inconclusive; main
+ * owns the eventual attempt and its real recovery outcome. A confirmed
+ * sign-out with available credits and no explicit subscription override locks
+ * to credits until the user signs in (CAN-5349).
  */
 export function resolveChatBillingFramework(
   input: ResolveChatBillingInput,
@@ -170,7 +158,7 @@ export function resolveChatBillingFramework(
   if (resolveGatewayModelEntry(model)?.origin === 'org-gateway') {
     return HIDDEN;
   }
-  if (!availability || availability.loading) {
+  if (!availability) {
     return HIDDEN;
   }
 
@@ -183,41 +171,61 @@ export function resolveChatBillingFramework(
   ): ChatBillingResolution => ({
     ...resolution,
     aiCreditsBannerVisible:
-      resolution.framework === 'ai-credits' && availability.nativeAuth,
+      resolution.framework === 'ai-credits' &&
+      (availability.nativeAuth || !isGatewayOnlyModel(model)),
   });
 
+  // Preserve an active credits route even if the balance read is pending or
+  // exhausted. Only confirmed eligibility offers credits as a *new* choice.
+  // An explicit subscription override supersedes stale routing signals unless
+  // the model is gateway-only, where no native route exists.
+  const routedCreditsChoice =
+    (!subscriptionBillingOverride || isGatewayOnlyModel(model)) &&
+    (aiCreditsRoutingActive || routingActiveForChat);
   const creditsAvailable =
-    isGatewayRoutableModel(model) && availability.creditsEligible;
+    isGatewayRoutableModel(model) &&
+    (availability.creditsEligible || routedCreditsChoice);
+  // A loading or failed auth probe is not a sign-out (CAN-4272). Availability
+  // that predates the auth-only signal falls back to aggregate `loading`.
+  const nativeAuthInconclusive =
+    availability.nativeAuthInconclusive ?? availability.loading;
+  const signedOutConfirmed =
+    availability.nativeAuth === false && !nativeAuthInconclusive;
+  // CAN-5349 narrows CAN-4272: a confirmed sign-out with available credits and
+  // no explicit subscription override cannot newly select subscription. An
+  // existing override stays honored until the user picks credits again.
   const subscriptionAvailable =
-    !isGatewayOnlyModel(model) && availability.nativeAuth;
+    !isGatewayOnlyModel(model) &&
+    !(signedOutConfirmed && creditsAvailable && !subscriptionBillingOverride);
 
   // Neither path is possible — nothing to bill, so hide the toggle entirely.
   if (!creditsAvailable && !subscriptionAvailable) {
     return HIDDEN;
   }
 
-  // Only AI Credits can pay for this model+account: locked ON.
+  // Only AI Credits can pay for this model: locked ON.
   if (creditsAvailable && !subscriptionAvailable) {
-    const gatewayOnlyModel = isGatewayOnlyModel(model);
+    if (isGatewayOnlyModel(model)) {
+      return withBannerVisibility({
+        framework: 'ai-credits',
+        toggleVisible: true,
+        toggleDisabled: true,
+        lockKind: 'gateway-only-model',
+        lockedReason: 'This model is only available with AI Credits',
+      });
+    }
+    // Confirmed sign-out: signing in to this provider is the only unlock, so
+    // the picker offers that remedy and the credits card shows no switch.
     return withBannerVisibility({
       framework: 'ai-credits',
       toggleVisible: true,
       toggleDisabled: true,
-      lockKind: gatewayOnlyModel ? 'gateway-only-model' : 'no-native-login',
-      lockedReason: gatewayOnlyModel
-        ? 'This model is only available with AI Credits'
-        : `You're not signed in to ${getModelCatalogProviderLabel(provider)}, so this chat bills to your AI Credits. Sign in to bill your subscription.`,
-      // The derived flag reduces to `availability.nativeAuth` here, because
-      // `framework` is always 'ai-credits' on this branch. Both sub-cases still
-      // land correctly: `no-native-login` has `nativeAuth: false` and hides the
-      // banner, while `gateway-only-model` hides it too unless the user has a
-      // native login the gateway-only model simply cannot bill to. Note this
-      // does not run the other way — a gateway-only model does NOT imply
-      // `nativeAuth: true`; that combination reaches here and stays hidden.
+      lockKind: 'no-native-login',
+      lockedReason: `You're not signed in to ${getProviderLabel(provider)}, so this chat bills to your AI Credits. Sign in to bill your subscription.`,
     });
   }
 
-  // Only the subscription can pay for this model+account: locked OFF.
+  // Only a native attempt can pay for this model+account: locked OFF.
   if (subscriptionAvailable && !creditsAvailable) {
     const notRoutable = !isGatewayRoutableModel(model);
     return withBannerVisibility({
@@ -227,25 +235,27 @@ export function resolveChatBillingFramework(
       lockKind: notRoutable ? 'model-not-routable' : 'no-credits',
       lockedReason: notRoutable
         ? "This model can't bill to AI Credits"
-        : 'No AI Credits available, so this chat bills to your subscription',
+        : availability.nativeAuth
+          ? 'No AI Credits available, so this chat bills to your subscription'
+          : 'No AI Credits available. This chat will try your subscription.',
       // Framework is 'subscription' on this path, so the derived flag is false.
     });
   }
 
-  // Both frameworks are available — interactive. Value follows the existing
-  // precedence: explicit AI Credits pref, then explicit subscription pref, then
-  // the live routing signal, defaulting to subscription.
-  const framework: BillingFramework = aiCreditsRoutingActive
-    ? 'ai-credits'
-    : subscriptionBillingOverride
-      ? 'subscription'
+  // Both frameworks are selectable. A confirmed sign-out reaches this branch
+  // only with an explicit subscription override, which it cannot override. An
+  // inconclusive probe defaults to a native attempt, never an assumed
+  // paid-credits fallback.
+  const framework: BillingFramework = subscriptionBillingOverride
+    ? 'subscription'
+    : aiCreditsRoutingActive
+      ? 'ai-credits'
       : routingActiveForChat
         ? 'ai-credits'
-        : 'subscription';
+        : availability.nativeAuth || nativeAuthInconclusive
+          ? 'subscription'
+          : 'ai-credits';
 
-  // `availability.nativeAuth` is true by construction on this path
-  // (`subscriptionAvailable` is required to reach it), so the derived flag
-  // reduces to `framework === 'ai-credits'`.
   return withBannerVisibility({
     framework,
     toggleVisible: true,

@@ -1,3 +1,15 @@
+import type {
+  DelegationRegistryWriter,
+  DelegationRegistryChildWrite,
+  DelegationRegistryCheckpoint,
+  DelegationRegistryCheckpointReader,
+  DelegationRegistryCheckpointWriter,
+  DelegationRegistryGenerationMutation,
+  DelegationRegistryGenerationResult,
+  DelegationRegistryJournalEffect,
+  DelegationRegistryReceiptMutation,
+  DelegationRegistrySettleMutation,
+} from './delegation-registry-api';
 /**
  * Delta-journal writer: commits append one framed, checksummed, hash-chained
  * record and sync the journal once; the version 2 index and transcript files
@@ -41,10 +53,25 @@
  * between progress markers, after every open run is written. Each run write
  * is absolute, so a resumed checkpoint may repeat it.
  */
-import { randomUUID } from 'node:crypto';
-import { open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  canonicalCardState,
+  chooseSettlementCardDraft,
+} from '@canopy/desktop-shared/node/delegation/card-state-rules';
+import { CardStateV2Schema } from '@canopy/protocol/canopy-core';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { TranscriptDescriptor } from '@canopy/agent-transcript/transcript-storage';
+import type { DelegationChildRow } from '@canopy/agent-transcript';
 import type {
   PersistedChatMessage,
   PersistedCommandReceipt,
@@ -57,6 +84,10 @@ import {
   recordChatStorageIndexSerializations,
 } from '@canopy/desktop-shared/node/work-counters';
 import {
+  artifactRelativePath,
+  storedArtifactRefsOf,
+} from '../chat-artifact-references';
+import {
   assertChatStorageIndexes,
   type ChatStorageV2,
 } from '../chat-storage-v2';
@@ -68,8 +99,14 @@ import {
 import {
   assertTranscriptRowWithinLimit,
   ChatTranscriptLog,
+  TranscriptStreamStore,
+  isDelegationChildRow,
+  prepareRowsWithActiveTail,
+  transcriptFieldPolicy,
   type TranscriptActiveProjection,
+  type TranscriptFieldMode,
 } from '../chat-transcript-log';
+import type { ActiveRowAnchor } from '../chat-transcript-live-positions';
 import {
   iterateAsync,
   writeBufferFully,
@@ -77,27 +114,100 @@ import {
 } from '../cooperative-json';
 import type { FileHandle } from 'node:fs/promises';
 import { fsyncDirectory } from '../fsync-directory';
+import { isPathInside } from '../path-safety';
 import { isErrnoException, isRecord } from '../type-guards';
 import {
+  assertNoNewerChatStorageManifest,
   ChatDeltaJournalIntegrityError,
   DELTA_CHECKPOINT_MARKER_NAME,
   DELTA_CHECKPOINT_STAGED_SUFFIX,
   DELTA_CHECKPOINT_WORK_DIRECTORY,
   DELTA_JOURNAL_FILE_NAME,
+  DELTA_JOURNAL_V2_FILE_NAME,
+  DELTA_JOURNAL_V2_FORMAT,
+  DELTA_JOURNAL_V2_GENESIS_DIGEST,
   DELTA_JOURNAL_FORMAT,
   DELTA_JOURNAL_GENESIS_DIGEST,
   DELTA_JOURNAL_MANIFEST_VERSION,
   DELTA_JOURNAL_QUARANTINE_PREFIX,
   FRAME_HEADER_BYTES,
   decodeDeltaJournalRecord,
+  decodeDeltaJournalV2Record,
   encodeDeltaJournalFrame,
   isActiveEffect,
   isDeltaJournalStorageManifest,
-  type DeltaJournalCommitRecord,
+  journalFileFor,
+  parseChatStorageManifest,
+  transcriptTargetKey,
   type DeltaJournalStorageManifest,
   type DeltaJournalTailReason,
   type DeltaJournalTranscriptEffect,
+  type DeltaJournalV2TranscriptEffect,
+  type Format4StorageManifest,
 } from './format';
+import type {
+  TranscriptStreamDescriptor,
+  TranscriptStreamDescriptorUpdate,
+  TranscriptStreamRegistration,
+  TranscriptTarget,
+} from '@canopy/protocol/canopy-core';
+import {
+  canonicalDelegationJson,
+  delegationTranscriptSettlementDigest,
+} from '@canopy/desktop-shared/node/delegation/settlement-identity';
+import { validateDelegationReceiptEntry } from '@canopy/desktop-shared/node/delegation/receipt-reply';
+import {
+  type DelegationTranscriptGeneration,
+  type DelegationTranscriptGenerationEntry,
+  type DelegationTranscriptGenerationRequest,
+  type DelegationTranscriptRegistryIdentity,
+  type DelegationTranscriptResultAnswerRequest,
+  type DelegationTranscriptResultEntry,
+  type DelegationTranscriptReceiptAppendResult,
+  type DelegationTranscriptReceiptEntry,
+  type DelegationTranscriptReceiptIdentity,
+  type DelegationTranscriptResultRequest,
+  type DelegationTranscriptResultsPage,
+  type DelegationTranscriptGenerationsPage,
+  type DelegationTranscriptRegistryPageRequest,
+  type DelegationTranscriptTarget,
+  type DelegationTranscriptContentRange,
+  type DelegationTranscriptSettleRequest,
+  type DelegationTranscriptSettleResult,
+  DELEGATION_REGISTRY_MAX_ENTRY_BYTES,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
+import { DelegationRegistryOperationError } from './delegation-registry-error';
+import { createDelegationRegistryReader } from './delegation-registry-reader';
+import { DelegationRegistryStore } from './delegation-registry-store';
+import {
+  registryEffectIdentity,
+  registryOwner,
+  registryOwnerKey,
+  type RegistryIdentity,
+} from './delegation-registry-owner';
+import {
+  delegationStreamKey,
+  delegationTranscriptPaths,
+} from '../transcript-stream-paths';
+import {
+  createEmptyStreamDescriptor,
+  encodeStreamRegistry,
+  loadStreamCatalog,
+  loadStreamRegistry,
+  parseStreamRegistry,
+  parseStreamCatalog,
+  parseStreamDescriptor,
+  applyStreamDescriptorUpdate,
+  stageStreamMetadata,
+  streamCatalogPath,
+  streamRegistryPaths,
+  validateStreamClosure,
+} from './stream-registry';
+import {
+  checkpointAnchorCapturePath,
+  encodeCheckpointAnchorCapture,
+  readCheckpointAnchorCapture,
+} from './checkpoint-anchors';
 import {
   activeTurnDelta,
   journalCheckpointDue,
@@ -118,6 +228,8 @@ import {
   recordsAfter,
   replayIndexMetadata,
   verifyRecordArtifacts,
+  primaryEffects,
+  type JournalCommit,
   type DeltaCheckpointMarker,
   type DeltaCheckpointState,
   type DeltaJournalContents,
@@ -127,6 +239,12 @@ import {
   upsertActiveMessages,
   type TranscriptOverlayBase,
 } from './transcript-overlay';
+import {
+  ChildJournalOverlay,
+  readMergedChildStreamPage,
+  type ChildStreamCompatibilitySource,
+  type ChildStreamPageOptions,
+} from './child-overlay';
 
 /** The commit recreates a chat whose deletion a checkpoint must apply first. */
 export class DeltaJournalCheckpointRequiredError extends Error {
@@ -164,7 +282,7 @@ function isQuarantineTemporary(name: string): boolean {
  * its atomic rename never happened, so nothing selects it.
  */
 function isJournalTemporary(name: string): boolean {
-  return /^(?:delta-journal\.log|delta-checkpoint\.json)\.[0-9a-f-]{36}\.tmp$/i.test(
+  return /^(?:delta-journal(?:-v2)?\.log|delta-checkpoint\.json)\.[0-9a-f-]{36}\.tmp$/i.test(
     name,
   );
 }
@@ -194,6 +312,7 @@ export const DELTA_JOURNAL_MUTATION_ID_WINDOW = 4096;
 export type DeltaJournalWrite =
   | {
       chatId: string;
+      target?: TranscriptTarget;
       kind:
         | 'append'
         | 'active'
@@ -208,6 +327,7 @@ export type DeltaJournalWrite =
     }
   | {
       chatId: string;
+      target?: TranscriptTarget;
       kind: 'patch';
       patches: readonly PersistedChatMessage[];
       removedMessageIds: readonly string[];
@@ -222,6 +342,20 @@ export interface DeltaJournalCommitInput {
   writes: readonly DeltaJournalWrite[];
   /** Identities this commit adds to `next.recovery.mutationIds`. */
   mutationIds: readonly string[];
+  /** Empty-stream registrations; format 4 only. */
+  streamRegistrations?: readonly {
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>;
+    streamKey: string;
+    openedAt?: number;
+  }[];
+  /** Card-only descriptor revisions for registered delegation streams. */
+  streamDescriptorUpdates?: readonly {
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>;
+    update: TranscriptStreamDescriptorUpdate;
+  }[];
+  childWrites?: readonly DelegationRegistryChildWrite[];
+  /** Registry effects joined to the same durable journal record. */
+  registryEffects?: readonly DelegationRegistryJournalEffect[];
   /** Artifacts the caller externalized; reclaimed only if nothing is written. */
   created?: CreatedArtifacts;
   /** Refreshes asynchronous authorization inputs before the record is written. */
@@ -270,13 +404,56 @@ export type DeltaJournalBoundary =
   | 'record-synced'
   | 'tail-quarantined'
   | 'tail-truncated'
-  | 'marker-removed';
+  | 'catalog-temp-written'
+  | 'catalog-temp-synced'
+  | 'segment-temp-written'
+  | 'segment-temp-synced'
+  | 'segment-renamed'
+  | 'segment-directory-synced'
+  | 'manifest-published'
+  | 'manifest-temp-written'
+  | 'manifest-temp-synced'
+  | 'manifest-directory-synced'
+  | 'writer-reopened'
+  | 'checkpoint-transcripts-applied'
+  | 'checkpoint-child-append-prepared'
+  | 'checkpoint-metadata-staged'
+  | 'checkpoint-publishing-marked'
+  | 'checkpoint-descriptors-published'
+  | 'checkpoint-registries-published'
+  | 'checkpoint-catalog-published'
+  | 'checkpoint-indexes-published'
+  | 'checkpoint-journal-rotated'
+  | 'checkpoint-removed-parents'
+  | 'marker-removed'
+  /** Answer body is durable but the settlement record is not yet admitted. */
+  | 'registry-answer-published'
+  /** The durable settlement record and in-memory registry overlay are visible. */
+  | 'registry-settle-admitted'
+  /** Final-row artifact preparation has completed, before journal admission. */
+  | 'finalize-artifact'
+  /** A finalize journal record is about to be admitted. */
+  | 'finalize-journal'
+  /** A finalize record's transcript rows have been materialized by checkpoint. */
+  | 'finalize-checkpoint'
+  /** A receipt effect is about to be admitted to the journal. */
+  | 'receipt-effect';
 
 export interface ChatDeltaJournalWriterOptions {
   /** Test seam: runs after each write/sync step the counters do not cover. */
   onBoundary?: (boundary: DeltaJournalBoundary) => Promise<void>;
   onDiagnostic?: (diagnostic: DeltaJournalDiagnostic) => void;
   checkpointJournalBytes?: number;
+  /** Test evidence for the two intentional committed-log hash passes on settle. */
+  onChildLogTotals?: (metrics: {
+    readonly committedBytesRead: number;
+    readonly committedRowCount: number;
+    readonly appendedRowCount: number;
+    readonly committedLogSegmentsRead: number;
+    readonly hashBufferAllocationCount: number;
+    readonly hashBufferBytesPerAllocation: number;
+  }) => void;
+  maxManifestVersion?: 3 | 4;
   /**
    * The log a checkpoint writes the transcripts through. The chat state
    * backend passes the log its read paths use, so their derived caches see
@@ -298,11 +475,14 @@ interface ActiveRun {
 /** A record framed and admitted against the in-memory view, not written. */
 interface PreparedRecord {
   /** The record without a batch offset, to frame again if its batch changes. */
-  base: DeltaJournalCommitRecord;
+  base: JournalCommit;
   encoded: { frame: Buffer; digest: string };
-  record: DeltaJournalCommitRecord;
+  record: JournalCommit;
   indexes: ChatStorageIndexes;
   admitted: Map<string, ChatTranscriptOverlay>;
+  admittedChildren: Map<string, ChildJournalOverlay>;
+  admittedDescriptors: Map<string, TranscriptStreamDescriptor>;
+  primaryRecord: boolean;
 }
 
 interface WriterState {
@@ -311,11 +491,25 @@ interface WriterState {
   /** Metadata after every record; descriptors of touched chats are stale. */
   indexes: ChatStorageIndexes;
   /** Records after the checkpoint, in order. */
-  records: DeltaJournalCommitRecord[];
+  records: JournalCommit[];
   overlays: Map<string, ChatTranscriptOverlay>;
+  childOverlays: Map<string, ChildJournalOverlay>;
+  descriptorOverlays: Map<string, TranscriptStreamDescriptor>;
   lastDigest: string;
   journalBytes: number;
   mutationIds: Set<string>;
+  registeredTargets: TranscriptTarget[];
+  primaryRecordCount: number;
+}
+
+function nonRevisionIndexState(indexes: ChatStorageIndexes): string {
+  const { revision: _liveRevision, ...live } = indexes.live;
+  const { revision: _archiveRevision, ...archive } = indexes.archive;
+  const { mutationIds: _mutationIds, ...recovery } = indexes.recovery;
+  void _liveRevision;
+  void _archiveRevision;
+  void _mutationIds;
+  return JSON.stringify({ live, archive, recovery });
 }
 
 function chatIds(indexes: ChatStorageIndexes): Set<string> {
@@ -361,15 +555,47 @@ function assertUniqueIds(messages: readonly PersistedChatMessage[]): void {
   }
 }
 
-async function writeAtomicJson(path: string, value: unknown): Promise<void> {
+async function writeAtomicJson(
+  path: string,
+  value: unknown,
+  boundary?: (point: DeltaJournalBoundary) => Promise<void>,
+  boundaryPoints: {
+    written: DeltaJournalBoundary;
+    synced: DeltaJournalBoundary;
+    published?: DeltaJournalBoundary;
+    directorySynced?: DeltaJournalBoundary;
+  } = {
+    written: 'manifest-temp-written',
+    synced: 'manifest-temp-synced',
+    published: 'manifest-published',
+    directorySynced: 'manifest-directory-synced',
+  },
+): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   let renamed = false;
   try {
-    await writeJsonValuesCooperatively(temporary, [value], { pretty: false });
+    if (boundary) {
+      const bytes = Buffer.from(JSON.stringify(value));
+      const handle = await open(temporary, 'wx', 0o600);
+      try {
+        await writeAt(handle, bytes, 0);
+        recordChatStorageFileWrite(temporary, bytes.length, true);
+        await boundary(boundaryPoints.written);
+        await handle.sync();
+        recordChatStorageFileSync(temporary);
+        await boundary(boundaryPoints.synced);
+      } finally {
+        await handle.close();
+      }
+    } else
+      await writeJsonValuesCooperatively(temporary, [value], { pretty: false });
     await rename(temporary, path);
     renamed = true;
     recordChatStorageAtomicReplacement(path);
+    if (boundaryPoints.published) await boundary?.(boundaryPoints.published);
     await fsyncDirectory(dirname(path));
+    if (boundaryPoints.directorySynced)
+      await boundary?.(boundaryPoints.directorySynced);
   } finally {
     if (!renamed) await rm(temporary, { force: true });
   }
@@ -385,11 +611,16 @@ async function writeJournalSegment(
   baseRevision: number,
   prev: string,
   syncDirectory = true,
+  version: 1 | 2 = 1,
+  boundary?: (point: DeltaJournalBoundary) => Promise<void>,
 ): Promise<{ digest: string; bytes: number }> {
-  const path = join(directory, DELTA_JOURNAL_FILE_NAME);
+  const path = join(
+    directory,
+    version === 1 ? DELTA_JOURNAL_FILE_NAME : DELTA_JOURNAL_V2_FILE_NAME,
+  );
   const { frame, digest } = encodeDeltaJournalFrame({
     type: 'segment',
-    v: 1,
+    v: version,
     scopeId,
     baseRevision,
     prev,
@@ -401,48 +632,1021 @@ async function writeJournalSegment(
     try {
       await writeAt(handle, frame, 0);
       recordChatStorageFileWrite(temporary, frame.length, true);
+      await boundary?.('segment-temp-written');
       await handle.sync();
       recordChatStorageFileSync(temporary);
+      await boundary?.('segment-temp-synced');
     } finally {
       await handle.close();
     }
     await rename(temporary, path);
     renamed = true;
     recordChatStorageAtomicReplacement(path);
+    await boundary?.('segment-renamed');
     if (syncDirectory) await fsyncDirectory(directory);
+    if (syncDirectory) await boundary?.('segment-directory-synced');
   } finally {
     if (!renamed) await rm(temporary, { force: true });
   }
   return { digest, bytes: frame.length };
 }
 
+interface ChildLogTotals {
+  committedRowCount: number;
+  committedByteLength: number;
+  committedSha256: string;
+}
+
+type ChildAdmissionEffect = Extract<
+  DelegationRegistryJournalEffect,
+  { kind: 'child-admission' }
+>;
+
+/**
+ * Split one write's admission items into effects that each fit the registry
+ * entry bound, in item order, so a large batch never exceeds it.
+ */
+function childAdmissionEffects(
+  target: ChildAdmissionEffect['target'],
+  items: ChildAdmissionEffect['items'],
+): ChildAdmissionEffect[] {
+  const envelope = Buffer.byteLength(
+    canonicalDelegationJson({ kind: 'child-admission', target, items: [] }),
+    'utf8',
+  );
+  const effects: ChildAdmissionEffect[] = [];
+  let chunk: ChildAdmissionEffect['items'][number][] = [];
+  let bytes = envelope;
+  for (const item of items) {
+    // One byte for the separating comma.
+    const size = Buffer.byteLength(canonicalDelegationJson(item), 'utf8') + 1;
+    if (
+      chunk.length > 0 &&
+      bytes + size > DELEGATION_REGISTRY_MAX_ENTRY_BYTES
+    ) {
+      effects.push({ kind: 'child-admission', target, items: chunk });
+      chunk = [];
+      bytes = envelope;
+    }
+    chunk.push(item);
+    bytes += size;
+  }
+  if (chunk.length > 0)
+    effects.push({ kind: 'child-admission', target, items: chunk });
+  return effects;
+}
+
+function receiptMatches(
+  receipt: ChildLogTotals,
+  totals: ChildLogTotals,
+): boolean {
+  return (
+    receipt.committedRowCount === totals.committedRowCount &&
+    receipt.committedByteLength === totals.committedByteLength &&
+    receipt.committedSha256 === totals.committedSha256
+  );
+}
+
+function registryError(
+  code:
+    | 'invalid_request'
+    | 'not_found'
+    | 'conflict'
+    | 'corruption'
+    | 'answer_unavailable'
+    | 'unsupported_format'
+    | 'stale_identity',
+  message: string,
+  extra: {
+    storedLastResultIndex?: number;
+    storedItemRevision?: number;
+  } = {},
+): never {
+  throw new DelegationRegistryOperationError({
+    code,
+    message,
+    retryable: false,
+    ...extra,
+  });
+}
+
+function registryIdentityKey(identity: RegistryIdentity): string {
+  return registryOwnerKey(identity);
+}
+
+function registryIdentityFor(
+  target: DelegationTranscriptTarget,
+): DelegationTranscriptRegistryIdentity {
+  return { chatId: target.chatId, delegationId: target.delegationId };
+}
+
+function validRegistryId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256;
+}
+
+function maximumRowTimestamp(
+  existing: number | null,
+  rows: readonly DelegationChildRow[],
+): number | null {
+  let latest = existing;
+  for (const row of rows)
+    if (latest === null || row.timestamp > latest) latest = row.timestamp;
+  return latest;
+}
+
 export class ChatDeltaJournalWriter {
+  public result(
+    input: DelegationTranscriptResultRequest,
+  ): Promise<DelegationTranscriptResultEntry | undefined> {
+    this.assertRegistryIdentity(input);
+    return this.withRegistryRead(() => this.registryReader.result(input));
+  }
+
+  public appendDelegationReceipt(
+    input: DelegationRegistryReceiptMutation,
+  ): Promise<DelegationTranscriptReceiptAppendResult> {
+    return this.appendRegistryReceipt(input);
+  }
+
+  public receipt(commandId: string): PersistedCommandReceipt | undefined;
+  public receipt(
+    input: DelegationTranscriptReceiptIdentity,
+  ): Promise<DelegationTranscriptReceiptEntry | undefined>;
+  public receipt(
+    input: string | DelegationTranscriptReceiptIdentity,
+  ):
+    | PersistedCommandReceipt
+    | undefined
+    | Promise<DelegationTranscriptReceiptEntry | undefined> {
+    if (typeof input === 'string')
+      return this.current().indexes.recovery.receipts.find(
+        (receipt) => receipt.commandId === input,
+      );
+    if (this.journalVersion !== 2)
+      return registryError(
+        'unsupported_format',
+        'Delegation receipts require a format 4 journal.',
+      );
+    this.assertRegistryChat(input.chatId);
+    return this.withRegistryRead(() => this.registry.receipt(input));
+  }
+
+  private async appendRegistryReceipt(
+    input: DelegationRegistryReceiptMutation,
+  ): Promise<DelegationTranscriptReceiptAppendResult> {
+    if (this.journalVersion !== 2)
+      registryError(
+        'unsupported_format',
+        'Delegation receipts require a format 4 journal.',
+      );
+    if (!validRegistryId(input.mutationId))
+      registryError(
+        'invalid_request',
+        'The receipt mutation identity is invalid.',
+      );
+    const validated = validateDelegationReceiptEntry(input.entry);
+    if (!validated.ok) registryError('invalid_request', validated.reason);
+    const entry = validated.entry;
+    this.assertRegistryChat(entry.chatId);
+    const identity: DelegationTranscriptReceiptIdentity = {
+      chatId: entry.chatId,
+      receiptKind: entry.receiptKind,
+      key: entry.key,
+    };
+    const existing = await this.withRegistryRead(() =>
+      this.registry.receipt(identity),
+    );
+    if (existing !== undefined) {
+      if (canonicalDelegationJson(existing) !== canonicalDelegationJson(entry))
+        registryError(
+          'conflict',
+          'Receipt identity conflicts with stored entry.',
+        );
+      return { entry: existing, replayed: true };
+    }
+
+    const owner = registryOwner({
+      kind: 'chat_receipts',
+      chatId: entry.chatId,
+    });
+    if (owner.kind !== 'chat_receipts')
+      registryError('corruption', 'Invalid receipt registry owner.');
+    const effect: DelegationRegistryJournalEffect = {
+      kind: 'delegation-receipt',
+      owner,
+      entry,
+    };
+    const applied = await this.writeRegistryMutation(input.mutationId, [
+      effect,
+    ]);
+    if (applied) return { entry, replayed: false };
+
+    const replayedEntry = await this.withRegistryRead(() =>
+      this.registry.receipt(identity),
+    );
+    if (replayedEntry === undefined)
+      registryError('corruption', 'The committed receipt is missing.');
+    if (
+      canonicalDelegationJson(replayedEntry) !== canonicalDelegationJson(entry)
+    )
+      registryError(
+        'conflict',
+        'Receipt identity conflicts with stored entry.',
+      );
+    return { entry: replayedEntry, replayed: true };
+  }
+
+  public resultBySettlementKey(
+    input: Parameters<DelegationRegistryWriter['resultBySettlementKey']>[0],
+  ): Promise<DelegationTranscriptResultEntry | undefined> {
+    this.assertRegistryIdentity(input);
+    if (!validRegistryId(input.settlementKey))
+      return Promise.reject(
+        new DelegationRegistryOperationError({
+          code: 'invalid_request',
+          message: 'The settlement key is invalid.',
+          retryable: false,
+        }),
+      );
+    return this.withRegistryRead(() =>
+      this.registryReader.resultBySettlementKey(input),
+    );
+  }
+
+  public resultByGeneration(
+    input: DelegationTranscriptGenerationRequest,
+  ): Promise<DelegationTranscriptResultEntry | undefined> {
+    this.assertRegistryIdentity(input);
+    return this.withRegistryRead(() =>
+      this.registryReader.resultByGeneration(input),
+    );
+  }
+
+  public generation(
+    input: DelegationTranscriptGenerationRequest,
+  ): Promise<DelegationTranscriptGeneration | undefined> {
+    this.assertRegistryIdentity(input);
+    return this.withRegistryRead(() => this.registryReader.generation(input));
+  }
+
+  public resultsPage(
+    input: DelegationTranscriptRegistryPageRequest,
+    context: Parameters<DelegationRegistryWriter['resultsPage']>[1],
+  ): Promise<DelegationTranscriptResultsPage> {
+    this.assertRegistryIdentity(input);
+    return this.withRegistryRead(() =>
+      this.registryReader.resultsPage(input, context),
+    );
+  }
+
+  public generationsPage(
+    input: DelegationTranscriptRegistryPageRequest,
+    context: Parameters<DelegationRegistryWriter['generationsPage']>[1],
+  ): Promise<DelegationTranscriptGenerationsPage> {
+    this.assertRegistryIdentity(input);
+    return this.withRegistryRead(() =>
+      this.registryReader.generationsPage(input, context),
+    );
+  }
+
+  public resultAnswerRange(
+    input: DelegationTranscriptResultAnswerRequest,
+    signal?: AbortSignal,
+  ): Promise<DelegationTranscriptContentRange> {
+    this.assertRegistryIdentity(input);
+    return this.withRegistryRead(() =>
+      this.registryReader.resultAnswerRange(input, signal),
+    );
+  }
+
+  public itemAdmission(
+    input: Parameters<DelegationRegistryWriter['itemAdmission']>[0],
+  ): Promise<Awaited<ReturnType<DelegationRegistryWriter['itemAdmission']>>> {
+    this.assertRegistryIdentity({
+      chatId: input.target.chatId,
+      delegationId: input.target.delegationId,
+      runGeneration: input.target.runGeneration,
+    });
+    return this.withRegistryRead(() =>
+      this.registryReader.itemAdmission(input),
+    );
+  }
+
+  public async registerGeneration(
+    input: DelegationRegistryGenerationMutation,
+  ): Promise<DelegationRegistryGenerationResult> {
+    const registration = input.registration;
+    const identity = {
+      chatId: registration.chatId,
+      delegationId: registration.delegationId,
+    };
+    this.assertRegistryIdentity({
+      ...identity,
+      runGeneration: registration.runGeneration,
+    });
+    if (!validRegistryId(input.mutationId))
+      registryError(
+        'invalid_request',
+        'The generation mutation identity is invalid.',
+      );
+    const entry: DelegationTranscriptGenerationEntry = {
+      version: 1,
+      kind: 'generation',
+      chatId: registration.chatId,
+      delegationId: registration.delegationId,
+      runGeneration: registration.runGeneration,
+      createdAt: registration.createdAt,
+      store: registration.store,
+      origin: {
+        kind: registration.origin.kind,
+        ...(registration.origin.anchorMessageId === undefined
+          ? {}
+          : { anchorMessageId: registration.origin.anchorMessageId }),
+        ...(registration.origin.authoredItemId === undefined
+          ? {}
+          : { authoredItemId: registration.origin.authoredItemId }),
+      },
+      executionMode: registration.executionMode,
+    };
+    const effect: DelegationRegistryJournalEffect = {
+      kind: 'delegation-generation',
+      identity,
+      entry,
+    };
+    const existing = await this.withRegistryRead(() =>
+      this.registry.generationEntry({
+        ...identity,
+        runGeneration: entry.runGeneration,
+      }),
+    );
+    if (existing !== undefined) {
+      if (canonicalDelegationJson(existing) !== canonicalDelegationJson(entry))
+        registryError(
+          'conflict',
+          'Generation registration conflicts with the stored entry.',
+        );
+      return { entry: existing, replayed: true };
+    }
+
+    const applied = await this.writeRegistryMutation(input.mutationId, [
+      effect,
+    ]);
+    if (applied) return { entry, replayed: false };
+    const replayedEntry = await this.withRegistryRead(() =>
+      this.registry.generationEntry({
+        ...identity,
+        runGeneration: entry.runGeneration,
+      }),
+    );
+    if (
+      replayedEntry === undefined ||
+      canonicalDelegationJson(replayedEntry) !== canonicalDelegationJson(entry)
+    )
+      registryError(
+        'conflict',
+        'Generation registration conflicts with the stored entry.',
+      );
+    return { entry: replayedEntry, replayed: true };
+  }
+
+  public settleDelegationResult(
+    input: DelegationRegistrySettleMutation,
+  ): Promise<DelegationTranscriptSettleResult> {
+    return this.settleRegistryMutation(input);
+  }
+
+  private assertRegistryIdentity(
+    identity: DelegationTranscriptRegistryIdentity & {
+      readonly runGeneration?: number;
+    },
+  ): void {
+    if (
+      !validRegistryId(identity.chatId) ||
+      !validRegistryId(identity.delegationId) ||
+      (identity.runGeneration !== undefined &&
+        (!Number.isSafeInteger(identity.runGeneration) ||
+          identity.runGeneration < 0))
+    )
+      registryError(
+        'invalid_request',
+        'The delegation registry identity is invalid.',
+      );
+    this.assertRegistryChat(identity.chatId);
+  }
+
+  private assertRegistryChat(chatId: string): void {
+    if (!validRegistryId(chatId))
+      registryError(
+        'invalid_request',
+        'The delegation registry identity is invalid.',
+      );
+    try {
+      assertTranscriptIdentity(chatId);
+    } catch {
+      registryError(
+        'invalid_request',
+        'The delegation registry identity is invalid.',
+      );
+    }
+    if (!chatIds(this.current().indexes).has(chatId))
+      registryError('not_found', 'The parent chat was not found.');
+  }
+
+  private async withRegistryRead<T>(read: () => Promise<T>): Promise<T> {
+    return this.serial(async () => {
+      await this.drainGroupCommit();
+      await this.registryTail;
+      this.current();
+      return read();
+    });
+  }
+
+  private async appendRegistryEffects(
+    record: JournalCommit,
+    notifySettlement = true,
+  ): Promise<void> {
+    if (record.v !== 2 || !record.registryEffects?.length) return;
+    const effectsByChat = new Map<string, DelegationRegistryJournalEffect[]>();
+    for (const effect of record.registryEffects) {
+      const chatId = registryEffectIdentity(effect).chatId;
+      const effects = effectsByChat.get(chatId) ?? [];
+      effects.push(effect);
+      effectsByChat.set(chatId, effects);
+    }
+    const publication = this.registryTail.then(async () => {
+      for (const [chatId, effects] of Array.from(effectsByChat.entries()))
+        await this.registry.append(chatId, effects);
+    });
+    this.registryTail = publication.then(
+      () => undefined,
+      () => undefined,
+    );
+    await publication;
+    if (
+      notifySettlement &&
+      record.registryEffects.some(
+        (effect) => effect.kind === 'delegation-result',
+      )
+    )
+      await this.boundary('registry-settle-admitted');
+  }
+
+  private async readRegistryAnswerRange(
+    input: DelegationTranscriptResultAnswerRequest,
+    signal?: AbortSignal,
+  ): Promise<DelegationTranscriptContentRange> {
+    this.assertRegistryIdentity(input);
+    if (
+      !Number.isSafeInteger(input.offset) ||
+      input.offset < 0 ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 4 ||
+      input.limit > 65_536
+    )
+      registryError('invalid_request', 'The result answer range is invalid.');
+    signal?.throwIfAborted();
+    const result = await this.registry.result({
+      chatId: input.chatId,
+      delegationId: input.delegationId,
+      resultIndex: input.resultIndex,
+    });
+    if (!result) registryError('not_found', 'The result was not found.');
+    if (result.answer.kind === 'none')
+      registryError('not_found', 'The result has no answer.');
+    if (result.answer.kind === 'lost')
+      registryError('answer_unavailable', 'The result answer is unavailable.');
+    if (result.answer.kind === 'empty') {
+      if (input.offset !== 0)
+        registryError('invalid_request', 'The result answer range is invalid.');
+      return { text: '', byteLength: 0, encoding: 'utf8' };
+    }
+    try {
+      const range = await this.log.artifacts.readRange(
+        input.chatId,
+        result.answer.ref,
+        input.offset,
+        input.limit,
+        signal,
+      );
+      return { ...range, encoding: result.answer.encoding };
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT')
+        registryError('corruption', 'The result answer body is missing.');
+      throw error;
+    }
+  }
+
+  private nextRegistryIndexes(mutationId: string): {
+    expectedRevision: number;
+    next: ChatStorageIndexes;
+  } {
+    const state = this.current();
+    if (!Number.isSafeInteger(state.indexes.live.revision + 1))
+      registryError(
+        'invalid_request',
+        'The parent chat revision is exhausted.',
+      );
+    const next = structuredClone(state.indexes);
+    next.live.revision += 1;
+    next.archive.revision = next.live.revision;
+    const retained = next.recovery.mutationIds.filter(
+      (candidate) => candidate !== mutationId,
+    );
+    next.recovery.mutationIds = [...retained, mutationId].slice(
+      -DELTA_JOURNAL_MUTATION_ID_WINDOW,
+    );
+    return { expectedRevision: state.indexes.live.revision, next };
+  }
+
+  private async writeRegistryMutation(
+    mutationId: string,
+    registryEffects: readonly DelegationRegistryJournalEffect[],
+    created?: CreatedArtifacts,
+    childWrites?: readonly DelegationRegistryChildWrite[],
+    preparePublish?: () => Promise<void>,
+  ): Promise<boolean> {
+    const { expectedRevision, next } = this.nextRegistryIndexes(mutationId);
+    const result = await this.commit({
+      expectedRevision,
+      next,
+      writes: [],
+      mutationIds: [mutationId],
+      registryEffects,
+      ...(childWrites === undefined ? {} : { childWrites }),
+      ...(created === undefined ? {} : { created }),
+      ...(preparePublish === undefined ? {} : { preparePublish }),
+    });
+    return result.applied;
+  }
+
+  private async settleRegistryMutation(
+    input: DelegationRegistrySettleMutation,
+  ): Promise<DelegationTranscriptSettleResult> {
+    const { target } = input;
+    const identity = registryIdentityFor(target);
+    this.assertRegistryIdentity({
+      ...identity,
+      runGeneration: target.runGeneration,
+    });
+    if (
+      this.journalVersion !== 2 ||
+      !validRegistryId(input.mutationId) ||
+      !validRegistryId(input.mutationKey) ||
+      !validRegistryId(input.resultEntry.settlementKey) ||
+      !Number.isSafeInteger(input.resultEntry.resultIndex) ||
+      input.resultEntry.resultIndex < 1 ||
+      input.resultEntry.runGeneration !== target.runGeneration ||
+      !/^[a-f0-9]{64}$/.test(input.resultEntry.settlementDigest)
+    )
+      registryError(
+        'invalid_request',
+        'The delegation settlement metadata is invalid.',
+      );
+    const request: DelegationTranscriptSettleRequest = {
+      target,
+      settlementKey: input.resultEntry.settlementKey,
+      resultIndex: input.resultEntry.resultIndex,
+      outcome: input.resultEntry.outcome,
+      finalChanges: input.finalRows.map((row) => ({ row })),
+      answer: input.answerBody,
+      openRows: input.openRows ?? 'reject',
+    };
+    let digest: string;
+    try {
+      digest = delegationTranscriptSettlementDigest(request);
+    } catch {
+      registryError(
+        'invalid_request',
+        'The delegation settlement content is invalid.',
+      );
+    }
+    if (digest !== input.resultEntry.settlementDigest)
+      registryError(
+        'invalid_request',
+        'The delegation settlement digest does not match its content.',
+      );
+
+    // A keyed replay is decided before stream/card state and before publishing
+    // any new artifact. The digest is the complete logical operation identity.
+    const existing = await this.registry.resultBySettlementKey({
+      ...identity,
+      settlementKey: input.resultEntry.settlementKey,
+    });
+    if (existing) {
+      if (existing.settlementDigest !== digest)
+        registryError(
+          'conflict',
+          'The settlement key already names different content.',
+        );
+      return {
+        settlement: {
+          target,
+          settlementKey: existing.settlementKey,
+          streamRevision: existing.settlement.streamRevision,
+          contentRevision: existing.settlement.contentRevision,
+          finalItemCount: existing.settlement.finalItemCount,
+          replayed: true,
+        },
+        result: existing,
+      };
+    }
+
+    const resultForGeneration = await this.registry.resultByGeneration({
+      ...identity,
+      runGeneration: target.runGeneration,
+    });
+    if (resultForGeneration)
+      registryError(
+        'conflict',
+        'The delegation generation already has a result.',
+      );
+    const lastResultIndex = await this.registry.lastResultIndex(identity);
+    if (
+      lastResultIndex !== undefined &&
+      (lastResultIndex === Number.MAX_SAFE_INTEGER ||
+        input.resultEntry.resultIndex !== lastResultIndex + 1)
+    )
+      registryError('conflict', 'The result index is not consecutive.', {
+        storedLastResultIndex: lastResultIndex,
+      });
+
+    const state = this.current();
+    if (
+      !state.registeredTargets.some(
+        (candidate) =>
+          transcriptTargetKey(candidate) === transcriptTargetKey(target),
+      )
+    )
+      registryError('not_found', 'The delegation stream was not registered.');
+    const descriptor = await this.streamDescriptorFor(
+      state.descriptorOverlays,
+      target,
+    );
+    if (descriptor.status === 'settled')
+      registryError('conflict', 'The delegation stream is already settled.');
+    if (
+      descriptor.streamRevision !==
+      input.descriptorSettle.expectedStreamRevision
+    )
+      registryError(
+        'stale_identity',
+        'The delegation stream revision changed.',
+      );
+    if (!Number.isSafeInteger(descriptor.streamRevision + 1))
+      registryError(
+        'invalid_request',
+        'The delegation stream revision is exhausted.',
+      );
+
+    const created = new CreatedArtifacts();
+    let handedOff = false;
+    try {
+      const validationOverlay = (
+        await this.childOverlayFor(state.childOverlays, target)
+      ).clone();
+      const validationRows: DelegationChildRow[] = [];
+      for (const row of input.finalRows) {
+        if (!isDelegationChildRow(row) || !row.final)
+          registryError(
+            'invalid_request',
+            'Settlement rows must be final delegation rows.',
+          );
+        const validated =
+          this.fieldMode === 'format4'
+            ? await this.log.artifacts.externalize(
+                target.chatId,
+                row,
+                undefined,
+                { kind: 'format4', final: true, dryRun: true },
+              )
+            : await this.log.artifacts.externalize(
+                target.chatId,
+                row,
+                undefined,
+                transcriptFieldPolicy(this.fieldMode, true),
+              );
+        if (!isDelegationChildRow(validated) || !validated.final)
+          registryError(
+            'invalid_request',
+            'Settlement rows must be final delegation rows.',
+          );
+        assertTranscriptRowWithinLimit(validated);
+        validationRows.push(validated);
+      }
+      await validationOverlay.apply(validationRows);
+
+      const sourceRows = [...input.finalRows];
+      if (input.openRows === 'finalize') {
+        // Synthesize only from the pending overlay's open set. Committed
+        // history stays in the streaming totals pass, not a history-sized map.
+        for (const row of validationOverlay.openRows) {
+          if (!Number.isSafeInteger(row.itemRevision + 1))
+            registryError(
+              'invalid_request',
+              'A child item revision is exhausted.',
+            );
+          sourceRows.push({
+            ...row,
+            itemRevision: row.itemRevision + 1,
+            final: true,
+          });
+        }
+      } else if (validationOverlay.openRows.length > 0)
+        registryError('conflict', 'A delegation with open rows cannot settle.');
+
+      let answer: DelegationTranscriptResultEntry['answer'];
+      if (input.answerBody === null) answer = { kind: 'none' };
+      else if ('lost' in input.answerBody)
+        answer = {
+          kind: 'lost',
+          role: input.answerBody.role,
+          sha256: input.answerBody.lost.sha256,
+          length: input.answerBody.lost.length,
+        };
+      else if (input.answerBody.text.length === 0)
+        answer = { kind: 'empty', role: input.answerBody.role };
+      else {
+        const ref = await this.log.artifacts.put(
+          target.chatId,
+          input.answerBody.text,
+          created,
+        );
+        await this.boundary('registry-answer-published');
+        answer = {
+          kind: 'body',
+          role: input.answerBody.role,
+          byteLength: ref.byteLength,
+          encoding: ref.encoding === 'utf-8' ? 'utf8' : 'utf16le',
+          sha256: ref.sha256,
+          ref,
+        };
+      }
+
+      const storedRows: DelegationChildRow[] = [];
+      for (const row of sourceRows) {
+        const stored = await this.log.artifacts.externalize(
+          target.chatId,
+          row,
+          created,
+          transcriptFieldPolicy(this.fieldMode, true),
+        );
+        if (!isDelegationChildRow(stored) || !stored.final)
+          registryError(
+            'invalid_request',
+            'Settlement rows must be final delegation rows.',
+          );
+        assertTranscriptRowWithinLimit(stored);
+        storedRows.push(stored);
+      }
+      if (input.openRows === 'finalize')
+        await this.boundary('finalize-artifact');
+
+      const childOverlay = (
+        await this.childOverlayFor(state.childOverlays, target)
+      ).clone();
+      const changedRows = await childOverlay.apply(storedRows);
+      if (childOverlay.openRows.length > 0)
+        registryError('conflict', 'A delegation with open rows cannot settle.');
+      const totals = await this.childLogTotals(
+        target,
+        childOverlay.newlyFinalRows,
+        true,
+      );
+      const scopeRevision = state.indexes.live.revision + 1;
+      const streamRevision = descriptor.streamRevision + 1;
+      const latestRowTimestamp = maximumRowTimestamp(
+        descriptor.latestRowTimestamp,
+        changedRows,
+      );
+      const settlement = {
+        streamRevision,
+        contentRevision: streamRevision,
+        finalItemCount: totals.committedRowCount,
+        finalItemsDigest: totals.committedSha256,
+      };
+      const result: DelegationTranscriptResultEntry = {
+        ...input.resultEntry,
+        answer,
+        settlement,
+      };
+      const receipt = {
+        mutationId: input.resultEntry.settlementKey,
+        scopeRevision,
+        streamRevision,
+        committedRowCount: totals.committedRowCount,
+        committedByteLength: totals.committedByteLength,
+        committedSha256: totals.committedSha256,
+      };
+      const descriptorUpdate: TranscriptStreamDescriptorUpdate = {
+        version: 1,
+        target,
+        expectedStreamRevision: descriptor.streamRevision,
+        nextStreamRevision: streamRevision,
+        status: 'settled',
+        latestRowTimestamp,
+        settleReceipt: receipt,
+        cardState: ((): NonNullable<
+          TranscriptStreamDescriptor['cardState']
+        > => {
+          const chosen = chooseSettlementCardDraft(descriptor.cardState, input);
+          if (!chosen.ok)
+            registryError('invalid_request', chosen.error.message);
+          const card = CardStateV2Schema.safeParse({
+            ...chosen.value,
+            canonical: canonicalCardState(
+              {
+                outcome: input.resultEntry.outcome,
+                resultIndex: input.resultEntry.resultIndex,
+                answer: input.answerBody,
+              },
+              answer,
+            ),
+          });
+          if (!card.success)
+            registryError(
+              'invalid_request',
+              'The canonical card state exceeds its bound.',
+            );
+          return card.data;
+        })(),
+      };
+      const registryEffect: DelegationRegistryJournalEffect = {
+        kind: 'delegation-result',
+        target,
+        entry: result,
+      };
+      handedOff = true;
+      const applied = await this.writeRegistryMutation(
+        input.mutationId,
+        [registryEffect],
+        created,
+        [
+          {
+            target,
+            rows: storedRows,
+            mutationKey: input.mutationKey,
+            settle: {
+              key: input.resultEntry.settlementKey,
+              descriptorUpdate,
+            },
+          },
+        ],
+        input.openRows === 'finalize'
+          ? (): Promise<void> => this.boundary('finalize-journal')
+          : undefined,
+      );
+      if (!applied) {
+        const replay = await this.registry.resultBySettlementKey({
+          ...identity,
+          settlementKey: result.settlementKey,
+        });
+        if (replay && replay.settlementDigest === digest)
+          return {
+            settlement: {
+              target,
+              settlementKey: replay.settlementKey,
+              streamRevision: replay.settlement.streamRevision,
+              contentRevision: replay.settlement.contentRevision,
+              finalItemCount: replay.settlement.finalItemCount,
+              replayed: true,
+            },
+            result: replay,
+          };
+        registryError(
+          'corruption',
+          'The applied settlement result is missing.',
+        );
+      }
+      const committed = await this.registry.resultBySettlementKey({
+        ...identity,
+        settlementKey: result.settlementKey,
+      });
+      if (!committed)
+        registryError(
+          'corruption',
+          'The committed settlement result is missing.',
+        );
+      return {
+        settlement: {
+          target,
+          settlementKey: committed.settlementKey,
+          streamRevision: committed.settlement.streamRevision,
+          contentRevision: committed.settlement.contentRevision,
+          finalItemCount: committed.settlement.finalItemCount,
+          replayed: false,
+        },
+        result: committed,
+      };
+    } catch (error) {
+      if (!handedOff) await created.discard();
+      throw error;
+    }
+  }
+
+  public highWater(
+    input: DelegationRegistryCheckpoint['identity'],
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryCheckpointReader['highWater']>>
+  > {
+    if ('delegationId' in input) this.assertRegistryIdentity(input);
+    else {
+      if (this.journalVersion !== 2)
+        registryError(
+          'unsupported_format',
+          'Receipt-owner checkpoints require a format 4 journal.',
+        );
+      this.assertRegistryChat(input.chatId);
+    }
+    return this.withRegistryRead(() => this.registry.highWater(input));
+  }
+
+  public answerReferences(
+    chatId: string,
+  ): ReturnType<DelegationRegistryCheckpointReader['answerReferences']> {
+    this.assertRegistryIdentity({ chatId, delegationId: 'registry-scope' });
+    return this.registry.answerReferences(chatId);
+  }
+
+  public checkpointDelegationRegistry(
+    input: Parameters<
+      DelegationRegistryCheckpointWriter['checkpointDelegationRegistry']
+    >[0],
+  ): Promise<
+    Awaited<
+      ReturnType<
+        DelegationRegistryCheckpointWriter['checkpointDelegationRegistry']
+      >
+    >
+  > {
+    if ('delegationId' in input.identity)
+      this.assertRegistryIdentity(input.identity);
+    else {
+      if (this.journalVersion !== 2)
+        registryError(
+          'unsupported_format',
+          'Receipt-owner checkpoints require a format 4 journal.',
+        );
+      this.assertRegistryChat(input.identity.chatId);
+    }
+    return this.withRegistryRead(() => this.registry.checkpoint(input));
+  }
+
   private readonly directory: string;
   private readonly scopeId: string;
   private readonly transcriptsRoot: string;
   private readonly journalPath: string;
+  private readonly journalVersion: 1 | 2;
+  private readonly manifest:
+    | DeltaJournalStorageManifest
+    | Format4StorageManifest;
   private readonly log: ChatTranscriptLog;
   private readonly base: TranscriptOverlayBase;
+  private readonly registry: DelegationRegistryStore;
+  private readonly registryReader: DelegationRegistryCheckpointReader;
   private state?: WriterState;
   private poisoned?: Error;
   private tail: Promise<unknown> = Promise.resolve();
+  private registryTail: Promise<void> = Promise.resolve();
   /** Records admitted for group commit that are not durable yet. */
   private readonly groupCommit: GroupCommitQueue;
   /** True while a checkpoint or recovery reads and writes the files. */
   private materializing = false;
   /** {@link manifestGenerations} when this writer opened. */
-  private readonly generation: number;
+  private readonly manifestGenerationAtOpen: number;
 
   private constructor(
     store: ChatStorageV2,
+    manifest: DeltaJournalStorageManifest | Format4StorageManifest,
     private readonly options: ChatDeltaJournalWriterOptions,
   ) {
     this.directory = store.directory;
-    this.generation = manifestGeneration(store.directory);
+    this.manifestGenerationAtOpen = manifestGeneration(store.directory);
     this.scopeId = store.descriptor().scopeId;
     this.transcriptsRoot = join(store.directory, 'transcripts');
-    this.journalPath = join(store.directory, DELTA_JOURNAL_FILE_NAME);
+    this.manifest = manifest;
+    this.journalVersion = manifest.version === 4 ? 2 : 1;
+    this.journalPath = join(
+      store.directory,
+      journalFileFor(manifest) ?? DELTA_JOURNAL_FILE_NAME,
+    );
     this.log = options.log ?? new ChatTranscriptLog(this.transcriptsRoot);
+    this.registry = new DelegationRegistryStore(this.transcriptsRoot);
+    this.registryReader = createDelegationRegistryReader({
+      store: this.registry,
+      readDescriptor: async (target) => {
+        const state = this.current();
+        if (
+          !state.registeredTargets.some(
+            (candidate) =>
+              transcriptTargetKey(candidate) === transcriptTargetKey(target),
+          )
+        )
+          return undefined;
+        return this.streamDescriptorFor(state.descriptorOverlays, target);
+      },
+      readAnswerRange: async (input, signal) =>
+        this.readRegistryAnswerRange(input, signal),
+    });
     this.groupCommit = new GroupCommitQueue(
       (batch) => this.writeBatch(batch),
       (error): void => {
@@ -475,6 +1679,10 @@ export class ChatDeltaJournalWriter {
       ): Promise<boolean> => log.hasCommittedMessage(chatId, messageId),
       activeMessages: (chatId: string): Promise<PersistedChatMessage[]> =>
         log.activeMessages(chatId),
+      activeSnapshot: (
+        chatId: string,
+      ): ReturnType<ChatTranscriptLog['activeSnapshot']> =>
+        log.activeSnapshot(chatId),
       iterate: (chatId: string): AsyncIterable<PersistedChatMessage> =>
         log.iterate(chatId),
       transcriptRevision: async (chatId: string): Promise<number> =>
@@ -494,12 +1702,22 @@ export class ChatDeltaJournalWriter {
     const manifest: unknown = JSON.parse(
       await readFile(store.manifestPath, 'utf8'),
     );
+    assertNoNewerChatStorageManifest(
+      manifest,
+      store.descriptor().scopeId,
+      options.maxManifestVersion ?? store.maxManifestVersion,
+    );
     if (
-      !isDeltaJournalStorageManifest(manifest) ||
+      !journalFileFor(manifest) ||
+      !isRecord(manifest) ||
       manifest.scopeId !== store.descriptor().scopeId
     )
       throw new Error('Scope does not use the delta journal');
-    const writer = new ChatDeltaJournalWriter(store, options);
+    const writer = new ChatDeltaJournalWriter(
+      store,
+      parseChatStorageManifest(manifest),
+      options,
+    );
     writer.materializing = true;
     try {
       await writer.recover();
@@ -514,14 +1732,28 @@ export class ChatDeltaJournalWriter {
   }
 
   private current(): WriterState {
-    if (manifestGeneration(this.directory) !== this.generation)
-      throw new Error('Delta journal writer is closed: its scope is version 2');
+    if (manifestGeneration(this.directory) !== this.manifestGenerationAtOpen)
+      throw new Error('Delta journal writer is closed: its authority changed');
     if (this.poisoned)
       throw Object.assign(new Error('Delta journal writer must be reopened'), {
         cause: this.poisoned,
       });
     if (!this.state) throw new Error('Delta journal writer is not open');
     return this.state;
+  }
+
+  private registeredChildState(
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+  ): WriterState {
+    const state = this.current();
+    const identity = transcriptTargetKey(target);
+    if (
+      !state.registeredTargets.some(
+        (candidate) => transcriptTargetKey(candidate) === identity,
+      )
+    )
+      throw new Error('Unknown child stream');
+    return state;
   }
 
   private async serial<T>(work: () => Promise<T>): Promise<T> {
@@ -535,7 +1767,7 @@ export class ChatDeltaJournalWriter {
     return (
       this.state !== undefined &&
       this.poisoned === undefined &&
-      manifestGeneration(this.directory) === this.generation
+      manifestGeneration(this.directory) === this.manifestGenerationAtOpen
     );
   }
 
@@ -564,6 +1796,225 @@ export class ChatDeltaJournalWriter {
     return this.current().records.length;
   }
 
+  /** Pending records that change primary content or non-revision indexes. */
+  public pendingPrimaryRecordCount(): number {
+    return this.current().primaryRecordCount;
+  }
+
+  /** Registered child targets, including registrations still in the journal. */
+  public childTargets(): Iterable<TranscriptTarget> {
+    return this.current().registeredTargets.values();
+  }
+
+  /** Cheap guard for primary-only overlays that need no child-stream work. */
+  public hasChildStreams(): boolean {
+    return this.current().registeredTargets.length > 0;
+  }
+
+  /**
+   * The registered stream descriptor after replaying all admitted journal
+   * updates, including a pending card-state update.
+   */
+  public async childDescriptor(
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+  ): Promise<TranscriptStreamDescriptor> {
+    return this.serial(async () => {
+      const state = this.registeredChildState(target);
+      const descriptor = await this.streamDescriptorFor(
+        state.descriptorOverlays,
+        target,
+      );
+      if (
+        transcriptTargetKey(descriptor.target) !== transcriptTargetKey(target)
+      )
+        throw new ChatDeltaJournalIntegrityError(
+          'Child descriptor target mismatch',
+        );
+      return descriptor;
+    });
+  }
+
+  /**
+   * Read a bounded page from the registered stream, overlaid with open and
+   * journal-pending rows in the same sequence order as replay readers.
+   */
+  public async childPage(
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+    options: ChildStreamPageOptions = {},
+  ): Promise<{ rows: readonly DelegationChildRow[]; nextBefore?: number }> {
+    return this.serial(async () => {
+      const state = this.registeredChildState(target);
+      const descriptor = await this.streamDescriptorFor(
+        state.descriptorOverlays,
+        target,
+      );
+      if (
+        transcriptTargetKey(descriptor.target) !== transcriptTargetKey(target)
+      )
+        throw new ChatDeltaJournalIntegrityError(
+          'Child descriptor target mismatch',
+        );
+      const overlay = await this.childOverlayFor(state.childOverlays, target);
+      const streamKey = delegationStreamKey(target);
+      const child = this.childStore(target, true);
+      return readMergedChildStreamPage(
+        descriptor.committedRowCount,
+        overlay.pendingRows,
+        (pageOptions) => child.readChildStreamPage(streamKey, pageOptions),
+        options,
+      );
+    });
+  }
+
+  /** Sequence metadata plus uncommitted rows for a compatibility reader. */
+  public async childCompatibilitySnapshot(
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+  ): Promise<ChildStreamCompatibilitySource> {
+    return this.serial(async () => {
+      const state = this.registeredChildState(target);
+      const descriptor = await this.streamDescriptorFor(
+        state.descriptorOverlays,
+        target,
+      );
+      if (
+        transcriptTargetKey(descriptor.target) !== transcriptTargetKey(target)
+      )
+        throw new ChatDeltaJournalIntegrityError(
+          'Child descriptor target mismatch',
+        );
+      const overlay = await this.childOverlayFor(state.childOverlays, target);
+      const streamKey = delegationStreamKey(target);
+      const store = this.childStore(target, true);
+      return {
+        committedEntries: await store.childStreamSequenceEntries(streamKey),
+        ...overlay.compatibilityRows(),
+        readCommittedRow: (entry) =>
+          store.readChildStreamSequenceEntry(streamKey, entry),
+      };
+    });
+  }
+
+  /** Resolve a row from the pending overlay first, then the committed index. */
+  public async childRow(
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+    id: string,
+  ): Promise<DelegationChildRow | undefined> {
+    return this.serial(async () => {
+      const state = this.registeredChildState(target);
+      const overlay = await this.childOverlayFor(state.childOverlays, target);
+      const pending = overlay.pendingRows.find((row) => row.id === id);
+      if (pending) return pending;
+
+      const paths = streamRegistryPaths(
+        this.transcriptsRoot,
+        target.chatId,
+        delegationStreamKey(target),
+      );
+      try {
+        await stat(paths.log);
+      } catch (error) {
+        if (isErrnoException(error) && error.code === 'ENOENT')
+          return undefined;
+        throw error;
+      }
+      return this.childStore(target, true).childStreamRowById(
+        delegationStreamKey(target),
+        id,
+      );
+    });
+  }
+
+  /** Child open rows are measured separately from primary active turns. */
+  public childOpenBytes(): number {
+    let bytes = 0;
+    for (const overlay of Array.from(this.current().childOverlays.values()))
+      bytes += overlay.openBytes;
+    return bytes;
+  }
+
+  /**
+   * How this writer's rows store body fields, from the manifest it captured
+   * at open: format 4 (journal version 2) prepares them; older is legacy.
+   */
+  public get fieldMode(): TranscriptFieldMode {
+    return this.journalVersion === 2 ? 'format4' : 'legacy';
+  }
+
+  /** Checkpoint and recovery re-apply prepared rows: verify, never publish. */
+  private get materializeFieldMode(): TranscriptFieldMode {
+    return this.journalVersion === 2 ? 'format4-verify' : 'legacy';
+  }
+
+  /** Child-only artifact references awaiting checkpoint publication. */
+  public async *pendingChildArtifactRefs(): AsyncGenerator<{
+    parentChatId: string;
+    path: string;
+  }> {
+    for (const overlay of Array.from(this.current().childOverlays.values()))
+      for (const row of overlay.pendingRows) {
+        const parentChatId = overlay.target.chatId;
+        for await (const reference of this.log.artifacts.referenceClosure(
+          parentChatId,
+          row,
+        ))
+          yield {
+            parentChatId,
+            path: artifactRelativePath(parentChatId, {
+              family: 'tool-output',
+              reference,
+            }),
+          };
+        // The closure covers tool output; visuals live on the logical blocks.
+        const logical = await this.log.artifacts.expandBlocks(
+          parentChatId,
+          row,
+        );
+        for (const block of logical.blocks)
+          for (const ref of storedArtifactRefsOf(block))
+            if (ref.family === 'visual')
+              yield {
+                parentChatId,
+                path: artifactRelativePath(parentChatId, ref),
+              };
+      }
+    const state = this.current();
+    const answerRefs = new Set<string>();
+    for (const record of state.records) {
+      if (record.v !== 2) continue;
+      for (const effect of record.registryEffects ?? []) {
+        if (
+          effect.kind !== 'delegation-result' ||
+          effect.entry.answer.kind !== 'body'
+        )
+          continue;
+        const reference = effect.entry.answer.ref;
+        const path = join(
+          'transcripts',
+          'tool-output',
+          effect.target.chatId,
+          `${reference.artifactId}.txt`,
+        );
+        const key = `${effect.target.chatId}\0${path}`;
+        if (answerRefs.has(key)) continue;
+        answerRefs.add(key);
+        yield { parentChatId: effect.target.chatId, path };
+      }
+    }
+    for (const chatId of Array.from(chatIds(state.indexes)))
+      for await (const reference of this.registry.answerReferences(chatId)) {
+        const path = join(
+          'transcripts',
+          'tool-output',
+          chatId,
+          `${reference.artifactId}.txt`,
+        );
+        const key = `${chatId}\0${path}`;
+        if (answerRefs.has(key)) continue;
+        answerRefs.add(key);
+        yield { parentChatId: chatId, path };
+      }
+  }
+
   /**
    * The size trigger (P1 §A). While a turn's active rows are journaled, the
    * journal may grow to a multiple of them first (`active-turn.ts`).
@@ -572,7 +2023,7 @@ export class ChatDeltaJournalWriter {
     return journalCheckpointDue(
       this.current().journalBytes,
       this.options.checkpointJournalBytes ?? DELTA_JOURNAL_CHECKPOINT_BYTES,
-      this.activeTurnBytes(),
+      this.activeTurnBytes() + this.childOpenBytes(),
     );
   }
 
@@ -596,7 +2047,9 @@ export class ChatDeltaJournalWriter {
    * acknowledged; the size trigger still applies.
    */
   public holdsActiveTurn(): boolean {
-    return this.activeTurnBytes() > 0;
+    for (const overlay of Array.from(this.current().overlays.values()))
+      if (overlay.hasOrdinaryActiveRows) return true;
+    return false;
   }
 
   public hasMutation(mutationId: string): boolean {
@@ -658,12 +2111,6 @@ export class ChatDeltaJournalWriter {
     );
   }
 
-  public receipt(commandId: string): PersistedCommandReceipt | undefined {
-    return this.current().indexes.recovery.receipts.find(
-      (receipt) => receipt.commandId === commandId,
-    );
-  }
-
   /** Committed rows in log order, including records not checkpointed yet. */
   public async committedMessages(
     chatId: string,
@@ -693,7 +2140,11 @@ export class ChatDeltaJournalWriter {
   private async recover(): Promise<void> {
     await this.removeQuarantineTemporaries();
     await removeJournalTemporaries(this.directory);
-    let journal = await readDeltaJournal(this.directory, this.scopeId);
+    let journal = await readDeltaJournal(
+      this.directory,
+      this.scopeId,
+      this.manifest,
+    );
     const torn = journal.tornTail;
     if (torn) {
       // An append that was never synced was never acknowledged. Remove it
@@ -728,25 +2179,88 @@ export class ChatDeltaJournalWriter {
       assertChatStorageIndexes,
     );
     assertJournalCovers(journal, checkpoint);
+    const resumedCheckpoint = checkpoint.marker !== undefined;
     if (checkpoint.marker) {
       await this.resumeCheckpoint(journal, checkpoint, checkpoint.marker);
-      journal = await readDeltaJournal(this.directory, this.scopeId);
+      journal = await readDeltaJournal(
+        this.directory,
+        this.scopeId,
+        this.manifest,
+      );
       checkpoint = await readCheckpointState(
         this.directory,
         assertChatStorageIndexes,
       );
       assertJournalCovers(journal, checkpoint);
     }
+    if (!checkpoint.marker)
+      await rm(join(this.directory, DELTA_CHECKPOINT_WORK_DIRECTORY), {
+        recursive: true,
+        force: true,
+      });
+    const checkpointedTargets: TranscriptTarget[] = [];
+    if (this.journalVersion === 2) {
+      if (
+        (await loadStreamCatalog(this.transcriptsRoot)).checkpointRevision <
+        checkpoint.revision
+      )
+        await this.restampStreamMetadata(checkpoint.indexes);
+      await validateStreamClosure(
+        this.transcriptsRoot,
+        await loadStreamCatalog(this.transcriptsRoot),
+        { deep: resumedCheckpoint },
+      );
+      const catalog = await loadStreamCatalog(this.transcriptsRoot);
+      for (const parent of Object.keys(catalog.parents))
+        for (const entry of (
+          await loadStreamRegistry(this.transcriptsRoot, parent)
+        ).entries)
+          checkpointedTargets.push(entry.target);
+    }
     const records = recordsAfter(journal, checkpoint.revision);
     await verifyRecordArtifacts(this.transcriptsRoot, records);
+    for (const record of records)
+      await this.appendRegistryEffects(record, false);
     const metadata = replayIndexMetadata(
       checkpoint.indexes,
       records,
       assertChatStorageIndexes,
     );
+    const registeredTargetsByKey = new Map<string, TranscriptTarget>();
+    for (const target of checkpointedTargets)
+      registeredTargetsByKey.set(transcriptTargetKey(target), target);
+    for (const record of records)
+      if (record.v === 2)
+        for (const registration of record.streamRegistrations)
+          registeredTargetsByKey.set(
+            transcriptTargetKey(registration.target),
+            registration.target,
+          );
+    const presentChats = chatIds(metadata.indexes);
+    const registeredTargets = Array.from(
+      registeredTargetsByKey.values(),
+    ).filter((target) => presentChats.has(target.chatId));
+    let primaryRecordCount = 0;
+    let priorIndexes = checkpoint.indexes;
+    for (const record of records) {
+      const nextIndexes = applyRecordMetadata(
+        priorIndexes,
+        record,
+        assertChatStorageIndexes,
+      );
+      // Every format 3 record is primary; only format 4 has child-only records.
+      if (
+        record.v === 1 ||
+        primaryEffects(record).length ||
+        nonRevisionIndexState(priorIndexes) !==
+          nonRevisionIndexState(nextIndexes)
+      )
+        primaryRecordCount += 1;
+      priorIndexes = nextIndexes;
+    }
     const overlays = new Map<string, ChatTranscriptOverlay>();
     for (const record of records)
-      for (const effect of record.transcripts) {
+      for (const effect of primaryEffects(record)) {
         const overlay = await this.overlayFor(overlays, effect);
         try {
           await overlay.apply(effect, record.toRevision);
@@ -765,14 +2279,66 @@ export class ChatDeltaJournalWriter {
         }
         overlays.set(effect.chatId, overlay);
       }
+    const childOverlays = new Map<string, ChildJournalOverlay>();
+    const descriptorOverlays = new Map<string, TranscriptStreamDescriptor>();
+    // Replay validates journal history, so a stream whose parent a later
+    // record deleted still counts as registered for its earlier effects.
+    const knownTargets = new Set(checkpointedTargets.map(transcriptTargetKey));
+    for (const record of records) {
+      if (record.v !== 2) continue;
+      for (const registration of record.streamRegistrations) {
+        const key = transcriptTargetKey(registration.target);
+        knownTargets.add(transcriptTargetKey(registration.target));
+        if (!descriptorOverlays.has(key))
+          descriptorOverlays.set(
+            key,
+            createEmptyStreamDescriptor(
+              registration,
+              checkpoint.indexes.live.revision,
+            ),
+          );
+      }
+      for (const effect of record.transcripts) {
+        if (effect.kind !== 'child-upsert' && effect.kind !== 'child-settle')
+          continue;
+        const key = transcriptTargetKey(effect.target);
+        if (!knownTargets.has(key))
+          throw new ChatDeltaJournalIntegrityError('Unregistered child target');
+        const overlay = await this.childOverlayFor(
+          childOverlays,
+          effect.target,
+        );
+        await overlay.apply(effect.rows);
+        childOverlays.set(key, overlay);
+      }
+      for (const update of record.descriptorUpdates) {
+        const key = transcriptTargetKey(update.target);
+        if (!knownTargets.has(key))
+          throw new ChatDeltaJournalIntegrityError(
+            'Unregistered descriptor target',
+          );
+        const descriptor = await this.streamDescriptorFor(
+          descriptorOverlays,
+          update.target,
+        );
+        descriptorOverlays.set(
+          key,
+          applyStreamDescriptorUpdate(descriptor, update),
+        );
+      }
+    }
     this.state = {
       checkpointIndexes: checkpoint.indexes,
       indexes: metadata.indexes,
       records,
       overlays,
+      childOverlays,
+      descriptorOverlays,
       lastDigest: journal.lastDigest,
       journalBytes: journal.validEnd,
       mutationIds: new Set(metadata.indexes.recovery.mutationIds),
+      registeredTargets,
+      primaryRecordCount,
     };
   }
 
@@ -880,28 +2446,233 @@ export class ChatDeltaJournalWriter {
     );
   }
 
-  /** Prepare one write: externalize, bound rows, and shape the effect. */
+  private childStore(
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+    readOnly = false,
+    checkpointAppend = false,
+  ): TranscriptStreamStore {
+    return new TranscriptStreamStore(
+      delegationTranscriptPaths(this.transcriptsRoot, target),
+      this.log.artifacts,
+      (point) =>
+        checkpointAppend && point === 'prepared'
+          ? this.boundary('checkpoint-child-append-prepared')
+          : Promise.resolve(),
+      { childMode: true, readOnly },
+    );
+  }
+
+  /**
+   * The child log's totals once `appended` finals follow its committed rows.
+   * `published` is the last checkpoint's prefix, verified before it is re-signed.
+   */
+  private async childLogTotals(
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+    appended: readonly DelegationChildRow[],
+    readOnly: boolean,
+    published?: Pick<
+      TranscriptStreamDescriptor,
+      'committedByteLength' | 'committedSha256'
+    >,
+  ): Promise<ChildLogTotals> {
+    const streamKey = delegationStreamKey(target);
+    const logPath = streamRegistryPaths(
+      this.transcriptsRoot,
+      target.chatId,
+      streamKey,
+    ).log;
+    const hash = createHash('sha256');
+    let committedRowCount = 0;
+    let committedByteLength = 0;
+    let committedBytesRead = 0;
+    let hashBufferAllocationCount = 0;
+    let hashBufferBytesPerAllocation = 0;
+    let exists = true;
+    try {
+      await stat(logPath);
+    } catch (error) {
+      // A stream registered since the last checkpoint has no log yet.
+      if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      exists = false;
+    }
+    if (exists) {
+      const committed = await this.childStore(target, readOnly).descriptor(
+        streamKey,
+      );
+      committedRowCount = committed.committedMessageCount;
+      committedByteLength = committed.committedByteLength;
+      if (published && published.committedByteLength > committedByteLength)
+        throw new ChatDeltaJournalIntegrityError('Child log truncated');
+      const handle = await open(logPath, 'r');
+      try {
+        const chunk = Buffer.alloc(64 * 1024);
+        hashBufferAllocationCount += 1;
+        hashBufferBytesPerAllocation = chunk.length;
+        for (let offset = 0; offset < committedByteLength; ) {
+          // Stop at the published prefix so its digest can be checked.
+          const end =
+            published && offset < published.committedByteLength
+              ? published.committedByteLength
+              : committedByteLength;
+          const { bytesRead } = await handle.read(
+            chunk,
+            0,
+            Math.min(chunk.length, end - offset),
+            offset,
+          );
+          if (bytesRead === 0)
+            throw new ChatDeltaJournalIntegrityError('Child log truncated');
+          committedBytesRead += bytesRead;
+          hash.update(chunk.subarray(0, bytesRead));
+          offset += bytesRead;
+          if (
+            published &&
+            offset === published.committedByteLength &&
+            hash.copy().digest('hex') !== published.committedSha256
+          )
+            throw new ChatDeltaJournalIntegrityError(
+              'Committed child log changed since its checkpoint',
+            );
+        }
+      } finally {
+        await handle.close();
+      }
+    }
+    if (
+      published &&
+      published.committedByteLength === 0 &&
+      published.committedSha256 !== createHash('sha256').digest('hex')
+    )
+      throw new ChatDeltaJournalIntegrityError(
+        'Committed child log changed since its checkpoint',
+      );
+    this.options.onChildLogTotals?.({
+      committedBytesRead,
+      committedRowCount,
+      appendedRowCount: appended.length,
+      committedLogSegmentsRead:
+        committedByteLength > 0 && committedBytesRead > 0 ? 1 : 0,
+      hashBufferAllocationCount,
+      hashBufferBytesPerAllocation,
+    });
+    // Checkpoint appends write each final row as one JSON line.
+    for (const row of appended) {
+      const line = Buffer.from(`${JSON.stringify(row)}\n`, 'utf8');
+      hash.update(line);
+      committedRowCount += 1;
+      committedByteLength += line.length;
+    }
+    return {
+      committedRowCount,
+      committedByteLength,
+      committedSha256: hash.digest('hex'),
+    };
+  }
+
+  private async childOverlayFor(
+    overlays: ReadonlyMap<string, ChildJournalOverlay>,
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+    writable = false,
+  ): Promise<ChildJournalOverlay> {
+    const existing = overlays.get(transcriptTargetKey(target));
+    if (existing) return existing.clone();
+    const key = delegationStreamKey(target);
+    const paths = streamRegistryPaths(this.transcriptsRoot, target.chatId, key);
+    try {
+      await stat(paths.log);
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT')
+        return new ChildJournalOverlay(
+          target,
+          () => Promise.resolve(undefined),
+          [],
+        );
+      throw error;
+    }
+    const stream = this.childStore(target, !writable);
+    const openRows = await stream.activeMessages(key);
+    const open: DelegationChildRow[] = [];
+    for (const row of openRows) {
+      if (!isDelegationChildRow(row))
+        throw new ChatDeltaJournalIntegrityError('Invalid open child row');
+      open.push(row);
+    }
+    return new ChildJournalOverlay(
+      target,
+      (id) => stream.childStreamRowById(key, id),
+      open,
+    );
+  }
+
+  private async streamDescriptorFor(
+    descriptors: ReadonlyMap<string, TranscriptStreamDescriptor>,
+    target: Extract<TranscriptTarget, { kind: 'delegation' }>,
+  ): Promise<TranscriptStreamDescriptor> {
+    const key = transcriptTargetKey(target);
+    const pending = descriptors.get(key);
+    if (pending) return pending;
+    const streamKey = delegationStreamKey(target);
+    const paths = streamRegistryPaths(
+      this.transcriptsRoot,
+      target.chatId,
+      streamKey,
+    );
+    try {
+      return parseStreamDescriptor(await readFile(paths.descriptor));
+    } catch (error) {
+      if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      return createEmptyStreamDescriptor(
+        {
+          type: 'stream',
+          version: 1,
+          target,
+          streamKey,
+          registeredAtRevision: 0,
+        },
+        0,
+      );
+    }
+  }
+
+  /**
+   * Prepare one write: externalize under this writer's field mode, bound
+   * rows, and shape the effect. A row's finality is where the effect puts
+   * it: committed rows are final, active rows and an active suffix open. A
+   * row the caller already prepared under the same mode is only verified.
+   */
   private async prepareEffect(
     write: DeltaJournalWrite,
     create: boolean,
     next: ChatStorageIndexes,
     created: CreatedArtifacts,
   ): Promise<DeltaJournalTranscriptEffect> {
+    const fields = this.fieldMode;
+    const prepare = async (
+      message: PersistedChatMessage,
+      final: boolean,
+    ): Promise<PersistedChatMessage> => {
+      const value = await this.log.artifacts.externalize(
+        write.chatId,
+        message,
+        created,
+        transcriptFieldPolicy(fields, final),
+      );
+      assertTranscriptRowWithinLimit(value);
+      return value;
+    };
     const externalize = async (
       messages:
         | Iterable<PersistedChatMessage>
         | AsyncIterable<PersistedChatMessage>,
+      activeTailCount: number,
     ): Promise<PersistedChatMessage[]> => {
       const stored: PersistedChatMessage[] = [];
-      for await (const message of iterateAsync(messages)) {
-        const value = await this.log.artifacts.externalize(
-          write.chatId,
-          message,
-          created,
-        );
-        assertTranscriptRowWithinLimit(value);
-        stored.push(value);
-      }
+      for await (const message of prepareRowsWithActiveTail(
+        messages,
+        activeTailCount,
+        prepare,
+      ))
+        stored.push(message);
       assertUniqueIds(stored);
       return stored;
     };
@@ -910,8 +2681,8 @@ export class ChatDeltaJournalWriter {
       throw new Error('Invalid replacement active suffix');
     if (write.kind === 'patch') {
       if (create) throw new Error('A patch requires an existing transcript');
-      const patches = await externalize(write.patches);
-      const tail = await externalize(write.tail);
+      const patches = await externalize(write.patches, 0);
+      const tail = await externalize(write.tail, activeTailCount);
       if (activeTailCount > tail.length)
         throw new Error('Invalid replacement active suffix');
       return {
@@ -931,7 +2702,14 @@ export class ChatDeltaJournalWriter {
       }
       return { chatId: write.chatId, kind: 'delete' };
     }
-    const messages = await externalize(write.messages ?? []);
+    const messages = await externalize(
+      write.messages ?? [],
+      write.kind === 'replace'
+        ? activeTailCount
+        : write.kind === 'append'
+          ? 0
+          : Number.POSITIVE_INFINITY,
+    );
     if (write.kind === 'replace') {
       if (activeTailCount > messages.length)
         throw new Error('Invalid replacement active suffix');
@@ -979,26 +2757,102 @@ export class ChatDeltaJournalWriter {
     });
     const changed = new Set<string>();
     for (const write of input.writes) {
-      assertTranscriptIdentity(write.chatId);
-      if (changed.has(write.chatId))
+      if (
+        write.target &&
+        (write.target.kind !== 'primary' ||
+          write.target.chatId !== write.chatId)
+      )
         throw new Error(
-          'Only one transcript effect per chat is allowed in a scope transaction',
+          'Delegation transcript content is not supported in format 4 phase 05',
         );
-      changed.add(write.chatId);
+      assertTranscriptIdentity(write.chatId);
+      const identity = transcriptTargetKey({
+        kind: 'primary',
+        chatId: write.chatId,
+      });
+      if (changed.has(identity))
+        throw new Error(
+          'Only one transcript effect per target is allowed in a scope transaction',
+        );
+      changed.add(identity);
       if ((write.kind === 'delete') === remaining.has(write.chatId))
         throw new Error(
           'Transcript effect disagrees with target index membership',
         );
     }
     for (const id of Array.from(remaining))
-      if (!existing.has(id) && !changed.has(id))
+      if (
+        !existing.has(id) &&
+        !changed.has(transcriptTargetKey({ kind: 'primary', chatId: id }))
+      )
         throw new Error(
           'New chat must initialize a transcript in the same transaction',
         );
     for (const id of Array.from(existing))
-      if (!remaining.has(id) && !changed.has(id))
+      if (
+        !remaining.has(id) &&
+        !changed.has(transcriptTargetKey({ kind: 'primary', chatId: id }))
+      )
         throw new Error('Removed chat must declare its transcript deletion');
     return { existing, remaining };
+  }
+
+  private async prepareRegistrations(
+    input: DeltaJournalCommitInput,
+    state: WriterState,
+  ): Promise<TranscriptStreamRegistration[]> {
+    const requested = input.streamRegistrations ?? [];
+    if (requested.length && this.journalVersion !== 2)
+      throw new Error('Stream registration requires format 4');
+    const parents = chatIds(input.next);
+    const seen = new Set<string>();
+    const existing = new Set<string>();
+    for (const record of state.records)
+      if (record.v === 2)
+        for (const entry of record.streamRegistrations)
+          existing.add(transcriptTargetKey(entry.target));
+    const entries: TranscriptStreamRegistration[] = [];
+    for (const item of requested) {
+      assertTranscriptIdentity(item.target.chatId);
+      if (!parents.has(item.target.chatId))
+        throw new Error(
+          'Stream registration requires a parent chat in resulting indexes',
+        );
+      const key = transcriptTargetKey(item.target);
+      if (seen.has(key) || existing.has(key))
+        throw new Error('Duplicate stream registration');
+      seen.add(key);
+      if (delegationStreamKey(item.target) !== item.streamKey)
+        throw new Error('Stream registration key mismatch');
+      const path = streamRegistryPaths(
+        this.transcriptsRoot,
+        item.target.chatId,
+        item.streamKey,
+      );
+      try {
+        const registry = parseStreamRegistry(
+          await readFile(path.registry),
+          item.target.chatId,
+        );
+        if (
+          registry.entries.some(
+            (entry) => transcriptTargetKey(entry.target) === key,
+          )
+        )
+          throw new Error('Duplicate stream registration');
+      } catch (error) {
+        if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      }
+      entries.push({
+        type: 'stream',
+        version: 1,
+        target: item.target,
+        streamKey: item.streamKey,
+        registeredAtRevision: input.expectedRevision + 1,
+        ...(item.openedAt === undefined ? {} : { openedAt: item.openedAt }),
+      });
+    }
+    return entries;
   }
 
   /**
@@ -1006,31 +2860,277 @@ export class ChatDeltaJournalWriter {
    * (a synced record whose acknowledgement was lost, or a record admitted
    * ahead of it).
    */
-  private isAppliedRetry(
+  private async isAppliedRetry(
     state: WriterState,
     input: DeltaJournalCommitInput,
-  ): boolean {
+    childIdentical: boolean,
+  ): Promise<boolean> {
     if (
       input.mutationIds.length > 0 &&
       input.mutationIds.every((id) => state.mutationIds.has(id))
-    )
+    ) {
+      // A retry repeats its child content; different content would be dropped.
+      if (!childIdentical)
+        throw new Error(
+          'Commit reuses an applied mutation with different child content or registry effects',
+        );
+      const matchingRecords = state.records.filter((record) =>
+        record.mutationIds.some((id) => input.mutationIds.includes(id)),
+      );
+      if (matchingRecords.length > 0) {
+        const expectedEffects = matchingRecords.flatMap((record) =>
+          record.v === 2 ? (record.registryEffects ?? []) : [],
+        );
+        const expectedExplicitEffects = expectedEffects.filter(
+          (effect) => effect.kind !== 'child-admission',
+        );
+        const expectedAdmissions = expectedEffects.filter(
+          (effect) => effect.kind === 'child-admission',
+        );
+        const actualEffects = input.registryEffects ?? [];
+        if (
+          expectedExplicitEffects.length !== actualEffects.length ||
+          expectedExplicitEffects.some(
+            (effect, index) => !isDeepStrictEqual(effect, actualEffects[index]),
+          )
+        )
+          throw new Error(
+            'Commit reuses an applied mutation with different registry effects',
+          );
+        const actualAdmissions: DelegationRegistryJournalEffect[] = [];
+        for (const write of input.childWrites ?? []) {
+          if (write.mutationKey === undefined) continue;
+          const items = [];
+          for (const row of write.rows) {
+            const item = await this.registry.itemAdmission({
+              target: write.target,
+              messageId: row.id,
+              itemRevision: row.itemRevision,
+            });
+            if (item && item.mutationKey === write.mutationKey)
+              items.push(item);
+          }
+          actualAdmissions.push(...childAdmissionEffects(write.target, items));
+        }
+        if (
+          expectedAdmissions.length !== actualAdmissions.length ||
+          expectedAdmissions.some(
+            (effect, index) =>
+              !isDeepStrictEqual(effect, actualAdmissions[index]),
+          )
+        )
+          throw new Error(
+            'Commit reuses an applied mutation with different child admissions',
+          );
+      }
       return true;
+    }
     if (input.mutationIds.some((id) => state.mutationIds.has(id)))
       throw new Error('Commit repeats part of an applied mutation');
     return false;
   }
 
+  /**
+   * Durable child row state, not the bounded mutation window, decides replay.
+   * `identical`: the child rows and settlements match what is stored.
+   */
+  private async childReplay(
+    state: WriterState,
+    input: DeltaJournalCommitInput,
+    created: CreatedArtifacts,
+  ): Promise<{ replay: boolean; identical: boolean }> {
+    // Only durable child, registry or descriptor state can make a commit a
+    // replay; a commit with none of them (index or mutation-window only) is
+    // never one.
+    if (
+      !input.childWrites?.length &&
+      !input.registryEffects?.length &&
+      !input.streamDescriptorUpdates?.length
+    )
+      return { replay: false, identical: true };
+    let identical = true;
+    for (const write of input.childWrites ?? []) {
+      const overlay = await this.childOverlayFor(
+        state.childOverlays,
+        write.target,
+      );
+      const stored: DelegationChildRow[] = [];
+      for (const row of write.rows) {
+        if (!isDelegationChildRow(row)) throw new Error('Invalid child row');
+        // Compare the prepared row: a replay matches only the stored form.
+        const externalized = await this.log.artifacts.externalize(
+          write.target.chatId,
+          row,
+          created,
+          transcriptFieldPolicy(this.fieldMode, row.final),
+        );
+        if (!isDelegationChildRow(externalized))
+          throw new Error('Invalid externalized child row');
+        stored.push(externalized);
+      }
+      if (!(await overlay.matches(stored))) identical = false;
+      await overlay.apply(stored);
+      if (write.settle) {
+        const descriptor = await this.streamDescriptorFor(
+          state.descriptorOverlays,
+          write.target,
+        );
+        const update = write.settle.descriptorUpdate;
+        // A reused settlement key is a replay only with the same settlement.
+        if (
+          descriptor.status !== 'settled' ||
+          descriptor.settleReceipt?.mutationId !== write.settle.key ||
+          !isDeepStrictEqual(descriptor.settleReceipt, update.settleReceipt) ||
+          descriptor.streamRevision !== update.nextStreamRevision ||
+          (update.cardState !== undefined &&
+            !isDeepStrictEqual(descriptor.cardState, update.cardState))
+        )
+          identical = false;
+      }
+      if (write.mutationKey !== undefined) {
+        for (const row of stored) {
+          const admission = await this.registry.itemAdmission({
+            target: write.target,
+            messageId: row.id,
+            itemRevision: row.itemRevision,
+          });
+          // An identical current revision replays under any mutation key and
+          // keeps its original admission (P8); only inconsistent metadata
+          // conflicts.
+          if (
+            (admission && admission.id !== row.id) ||
+            (admission !== undefined &&
+              (admission.itemRevision !== row.itemRevision ||
+                !Number.isSafeInteger(admission.admittingStreamRevision) ||
+                admission.admittingStreamRevision < 1))
+          )
+            registryError(
+              'conflict',
+              'Child item admission conflicts with the stored revision.',
+            );
+          if (!admission) identical = false;
+        }
+      }
+    }
+    for (const effect of input.registryEffects ?? [])
+      if (!(await this.registryEffectMatches(effect))) identical = false;
+    for (const descriptorInput of input.streamDescriptorUpdates ?? []) {
+      const descriptor = await this.streamDescriptorFor(
+        state.descriptorOverlays,
+        descriptorInput.target,
+      );
+      if (
+        descriptor.streamRevision !==
+          descriptorInput.update.nextStreamRevision ||
+        !isDeepStrictEqual(
+          descriptor.cardState,
+          descriptorInput.update.cardState ?? null,
+        )
+      )
+        identical = false;
+    }
+    return {
+      identical,
+      replay:
+        identical &&
+        input.writes.length === 0 &&
+        (input.streamRegistrations?.length ?? 0) === 0 &&
+        nonRevisionIndexState(state.indexes) ===
+          nonRevisionIndexState(input.next),
+    };
+  }
+
+  private async registryEffectMatches(
+    effect: DelegationRegistryJournalEffect,
+  ): Promise<boolean> {
+    if (effect.kind === 'delegation-receipt') {
+      const stored = await this.registry.receipt({
+        chatId: effect.entry.chatId,
+        receiptKind: effect.entry.receiptKind,
+        key: effect.entry.key,
+      });
+      if (stored === undefined) return false;
+      if (
+        canonicalDelegationJson(stored) !==
+        canonicalDelegationJson(effect.entry)
+      )
+        registryError(
+          'conflict',
+          'Receipt identity conflicts with stored entry.',
+        );
+      return true;
+    }
+    if (effect.kind === 'delegation-generation') {
+      const stored = await this.registry.generationEntry({
+        ...effect.identity,
+        runGeneration: effect.entry.runGeneration,
+      });
+      if (stored === undefined) return false;
+      if (
+        canonicalDelegationJson(stored) !==
+        canonicalDelegationJson(effect.entry)
+      )
+        registryError(
+          'conflict',
+          'Generation registration conflicts with the stored entry.',
+        );
+      return true;
+    }
+    if (effect.kind === 'delegation-result') {
+      const stored = await this.registry.resultBySettlementKey({
+        chatId: effect.target.chatId,
+        delegationId: effect.target.delegationId,
+        settlementKey: effect.entry.settlementKey,
+      });
+      const byGeneration = await this.registry.resultByGeneration({
+        chatId: effect.target.chatId,
+        delegationId: effect.target.delegationId,
+        runGeneration: effect.target.runGeneration,
+      });
+      if (stored === undefined && byGeneration === undefined) return false;
+      if (
+        !stored ||
+        !byGeneration ||
+        !isDeepStrictEqual(stored, effect.entry) ||
+        !isDeepStrictEqual(byGeneration, effect.entry)
+      )
+        registryError(
+          'conflict',
+          'Delegation result conflicts with the stored entry.',
+        );
+      return true;
+    }
+    for (const item of effect.items) {
+      const stored = await this.registry.itemAdmission({
+        target: effect.target,
+        messageId: item.id,
+        itemRevision: item.itemRevision,
+      });
+      if (stored === undefined) return false;
+      if (!isDeepStrictEqual(stored, item))
+        registryError(
+          'conflict',
+          'Child admission conflicts with the stored revision.',
+        );
+    }
+    return true;
+  }
+
   /** Frame a record and decode exactly the bytes that will be written. */
   private encodeRecord(
     state: WriterState,
-    base: DeltaJournalCommitRecord,
+    base: JournalCommit,
     batchStart: number | undefined,
   ): Pick<PreparedRecord, 'encoded' | 'record'> {
     const encoded = encodeDeltaJournalFrame(
       batchStart === undefined ? base : { ...base, batchStart },
     );
     // Apply exactly the bytes being written, as recovery will.
-    const record = decodeDeltaJournalRecord({
+    const decode =
+      this.journalVersion === 1
+        ? decodeDeltaJournalRecord
+        : decodeDeltaJournalV2Record;
+    const record = decode({
       offset: state.journalBytes,
       end: state.journalBytes + encoded.frame.length,
       digest: encoded.digest,
@@ -1074,16 +3174,225 @@ export class ChatDeltaJournalWriter {
             (await this.base.transcriptRevision(effect.chatId))) + 1;
       effects.push(effect);
     }
-    const base: DeltaJournalCommitRecord = {
-      type: 'commit',
-      v: 1,
+    const common = {
+      type: 'commit' as const,
       prev: state.lastDigest,
       fromRevision: input.expectedRevision,
       toRevision: input.expectedRevision + 1,
       mutationIds: [...input.mutationIds],
       delta: diffChatIndexes(state.indexes, input.next),
-      transcripts: effects,
     };
+    const streamRegistrations = await this.prepareRegistrations(input, state);
+    if (
+      this.journalVersion !== 2 &&
+      (input.childWrites?.length ||
+        input.registryEffects?.length ||
+        input.streamDescriptorUpdates?.length)
+    )
+      throw new Error('Child writes require format 4');
+    const knownTargets = new Set(
+      Array.from(this.childTargets(), transcriptTargetKey),
+    );
+    for (const registration of streamRegistrations)
+      knownTargets.add(transcriptTargetKey(registration.target));
+    const childEffects: DeltaJournalV2TranscriptEffect[] = [];
+    const admittedChildren = new Map<string, ChildJournalOverlay>();
+    const admittedDescriptors = new Map<string, TranscriptStreamDescriptor>();
+    const descriptorUpdates: TranscriptStreamDescriptorUpdate[] = [];
+    for (const registration of streamRegistrations)
+      admittedDescriptors.set(
+        transcriptTargetKey(registration.target),
+        createEmptyStreamDescriptor(
+          registration,
+          state.checkpointIndexes.live.revision,
+        ),
+      );
+    const registryEffects: DelegationRegistryJournalEffect[] = [];
+    for (const effect of input.registryEffects ?? []) {
+      if (effect.kind === 'child-admission')
+        throw new Error('Child admission metadata is writer-generated');
+      registryEffects.push(effect);
+    }
+    for (const write of input.childWrites ?? []) {
+      const key = transcriptTargetKey(write.target);
+      if (!knownTargets.has(key))
+        throw new Error('Child target is not registered');
+      if (admittedChildren.has(key))
+        throw new Error(
+          'Only one transcript effect per target is allowed in a scope transaction',
+        );
+      const rows: DelegationChildRow[] = [];
+      for (const row of write.rows) {
+        if (!isDelegationChildRow(row)) throw new Error('Invalid child row');
+        const stored = await this.log.artifacts.externalize(
+          write.target.chatId,
+          row,
+          created,
+          transcriptFieldPolicy(this.fieldMode, row.final),
+        );
+        if (!isDelegationChildRow(stored))
+          throw new Error('Invalid externalized child row');
+        assertTranscriptRowWithinLimit(stored);
+        rows.push(stored);
+      }
+      const overlay = await this.childOverlayFor(
+        state.childOverlays,
+        write.target,
+      );
+      const changedRows = await overlay.apply(rows);
+      admittedChildren.set(key, overlay);
+      const descriptor =
+        admittedDescriptors.get(key) ??
+        (await this.streamDescriptorFor(
+          state.descriptorOverlays,
+          write.target,
+        ));
+      if (descriptor.status === 'settled')
+        throw new Error('Settled child stream is immutable');
+      const latestRowTimestamp = maximumRowTimestamp(
+        descriptor.latestRowTimestamp,
+        changedRows,
+      );
+      const settleUpdate = write.settle?.descriptorUpdate;
+      // The writer derives the timestamp from the rows; a caller that states
+      // one must agree with it.
+      if (
+        settleUpdate?.latestRowTimestamp !== undefined &&
+        settleUpdate.latestRowTimestamp !== latestRowTimestamp
+      )
+        throw new Error(
+          'Child settlement latest row timestamp disagrees with its rows',
+        );
+      const update: TranscriptStreamDescriptorUpdate = settleUpdate
+        ? { ...settleUpdate, latestRowTimestamp }
+        : {
+            version: 1,
+            target: write.target,
+            expectedStreamRevision: descriptor.streamRevision,
+            nextStreamRevision: descriptor.streamRevision + 1,
+            latestRowTimestamp,
+          };
+      if (transcriptTargetKey(update.target) !== key)
+        throw new Error('Child descriptor target mismatch');
+      admittedDescriptors.set(
+        key,
+        applyStreamDescriptorUpdate(descriptor, update),
+      );
+      descriptorUpdates.push(update);
+      if (write.settle) {
+        if (
+          write.settle.descriptorUpdate.target.kind !== 'delegation' ||
+          transcriptTargetKey(write.settle.descriptorUpdate.target) !== key
+        )
+          throw new Error('Child settlement descriptor target mismatch');
+        const receipt = write.settle.descriptorUpdate.settleReceipt;
+        if (
+          write.settle.key.length === 0 ||
+          rows.some((row) => !row.final) ||
+          // A settled stream is immutable, so no admitted row may stay open.
+          overlay.openRows.length > 0 ||
+          write.settle.descriptorUpdate.status !== 'settled' ||
+          receipt?.mutationId !== write.settle.key ||
+          receipt.scopeRevision !== input.expectedRevision + 1
+        )
+          throw new Error('Invalid child settlement');
+        // The checkpoint verifies the same totals; reject now rather than journal a receipt it cannot publish.
+        if (
+          !receiptMatches(
+            receipt,
+            await this.childLogTotals(
+              write.target,
+              overlay.newlyFinalRows,
+              true,
+            ),
+          )
+        )
+          throw new Error('Child settlement receipt disagrees with its stream');
+        childEffects.push({
+          kind: 'child-settle',
+          target: write.target,
+          rows: changedRows,
+          settlementKey: write.settle.key,
+        });
+      } else
+        childEffects.push({
+          kind: 'child-upsert',
+          target: write.target,
+          rows: changedRows,
+        });
+      if (write.mutationKey !== undefined) {
+        if (!validRegistryId(write.mutationKey))
+          throw new Error('Invalid child mutation key');
+        const mutationKey = write.mutationKey;
+        const admissions = changedRows.map((row) => ({
+          id: row.id,
+          itemRevision: row.itemRevision,
+          admittingStreamRevision: update.nextStreamRevision,
+          mutationKey,
+        }));
+        registryEffects.push(
+          ...childAdmissionEffects(write.target, admissions),
+        );
+      }
+    }
+    for (const descriptorInput of input.streamDescriptorUpdates ?? []) {
+      const { target, update } = descriptorInput;
+      const key = transcriptTargetKey(target);
+      if (!knownTargets.has(key))
+        throw new Error('Descriptor target is not registered');
+      if (admittedDescriptors.has(key))
+        throw new Error(
+          'Only one descriptor update per target is allowed in a scope transaction',
+        );
+      const allowedKeys = new Set([
+        'version',
+        'target',
+        'expectedStreamRevision',
+        'nextStreamRevision',
+        'cardState',
+      ]);
+      if (
+        transcriptTargetKey(update.target) !== key ||
+        Object.keys(update).some((field) => !allowedKeys.has(field))
+      )
+        throw new Error(
+          'Card-only descriptor update contains unsupported fields',
+        );
+      const descriptor = await this.streamDescriptorFor(
+        state.descriptorOverlays,
+        target,
+      );
+      if (
+        descriptor.streamRevision !== update.expectedStreamRevision ||
+        update.nextStreamRevision !== update.expectedStreamRevision + 1
+      )
+        throw new Error('Card-only descriptor update revision is stale');
+      admittedDescriptors.set(
+        key,
+        applyStreamDescriptorUpdate(descriptor, update),
+      );
+      descriptorUpdates.push(update);
+    }
+    const base: JournalCommit =
+      this.journalVersion === 1
+        ? { ...common, v: 1, transcripts: effects }
+        : {
+            ...common,
+            v: 2,
+            transcripts: [
+              ...effects.map((effect) => {
+                const { chatId, ...payload } = effect;
+                return {
+                  ...payload,
+                  target: { kind: 'primary' as const, chatId },
+                };
+              }),
+              ...childEffects,
+            ],
+            streamRegistrations,
+            descriptorUpdates,
+            ...(registryEffects.length === 0 ? {} : { registryEffects }),
+          };
     const { encoded, record } = this.encodeRecord(state, base, batchStart);
     const indexes = applyRecordMetadata(
       state.indexes,
@@ -1091,7 +3400,7 @@ export class ChatDeltaJournalWriter {
       assertChatStorageIndexes,
     );
     const admitted = new Map<string, ChatTranscriptOverlay>();
-    for (const effect of record.transcripts) {
+    for (const effect of primaryEffects(record)) {
       const overlay = await this.overlayFor(state.overlays, effect);
       await overlay.apply(effect, record.toRevision);
       if (
@@ -1101,11 +3410,50 @@ export class ChatDeltaJournalWriter {
         throw new Error('Active update revision disagrees with its log');
       admitted.set(effect.chatId, overlay);
     }
-    return { base, encoded, record, indexes, admitted };
+    return {
+      base,
+      encoded,
+      record,
+      indexes,
+      admitted,
+      admittedChildren,
+      admittedDescriptors,
+      primaryRecord:
+        record.v === 1 ||
+        primaryEffects(record).length > 0 ||
+        nonRevisionIndexState(state.indexes) !== nonRevisionIndexState(indexes),
+    };
   }
 
   /** The in-memory state once `prepared` follows `state`. */
   private advanced(state: WriterState, prepared: PreparedRecord): WriterState {
+    const registrations =
+      prepared.record.v === 2 ? prepared.record.streamRegistrations : [];
+    const deletedParents =
+      registrations.length > 0 || state.registeredTargets.length > 0
+        ? new Set(
+            primaryEffects(prepared.record)
+              .filter((effect) => effect.kind === 'delete')
+              .map((effect) => effect.chatId),
+          )
+        : new Set<string>();
+    const registeredTargets =
+      registrations.length === 0 && deletedParents.size === 0
+        ? state.registeredTargets
+        : Array.from(
+            new Map([
+              ...state.registeredTargets.map(
+                (target) => [transcriptTargetKey(target), target] as const,
+              ),
+              ...registrations.map(
+                (registration) =>
+                  [
+                    transcriptTargetKey(registration.target),
+                    registration.target,
+                  ] as const,
+              ),
+            ]).values(),
+          ).filter((target) => !deletedParents.has(target.chatId));
     return {
       ...state,
       indexes: prepared.indexes,
@@ -1114,9 +3462,20 @@ export class ChatDeltaJournalWriter {
         ...Array.from(state.overlays),
         ...Array.from(prepared.admitted),
       ]),
+      childOverlays: new Map([
+        ...Array.from(state.childOverlays),
+        ...Array.from(prepared.admittedChildren),
+      ]),
+      descriptorOverlays: new Map([
+        ...Array.from(state.descriptorOverlays),
+        ...Array.from(prepared.admittedDescriptors),
+      ]),
       lastDigest: prepared.encoded.digest,
       journalBytes: state.journalBytes + prepared.encoded.frame.length,
       mutationIds: new Set(prepared.indexes.recovery.mutationIds),
+      registeredTargets,
+      primaryRecordCount:
+        state.primaryRecordCount + (prepared.primaryRecord ? 1 : 0),
     };
   }
 
@@ -1138,7 +3497,12 @@ export class ChatDeltaJournalWriter {
         // left the writer unusable. Nothing of this commit was written, so
         // its artifacts are discarded below.
         const state = this.current();
-        if (this.isAppliedRetry(state, input)) {
+        const child = await this.childReplay(state, input, created);
+        if (child.replay) {
+          await created.discard();
+          return { applied: false, revision: state.indexes.live.revision };
+        }
+        if (await this.isAppliedRetry(state, input, child.identical)) {
           // Files the caller created for this retry are referenced by
           // nothing: the applied record found its own artifacts in place.
           await created.discard();
@@ -1154,6 +3518,13 @@ export class ChatDeltaJournalWriter {
         await input.preparePublish?.();
         const handle = await open(this.journalPath, 'r+');
         try {
+          if (
+            prepared.record.v === 2 &&
+            prepared.record.registryEffects?.some(
+              (effect) => effect.kind === 'delegation-receipt',
+            )
+          )
+            await this.boundary('receipt-effect');
           // Keep the authorization decision at the exact publication
           // boundary, as version 2 transactions do before their rename.
           input.beforePublish?.();
@@ -1168,6 +3539,7 @@ export class ChatDeltaJournalWriter {
           await handle.close();
         }
         this.state = this.advanced(state, prepared);
+        await this.appendRegistryEffects(prepared.record);
         return {
           applied: true,
           revision: prepared.indexes.live.revision,
@@ -1218,7 +3590,15 @@ export class ChatDeltaJournalWriter {
         // being built left the writer unusable. A record that was never
         // queued cannot be durable, so its artifacts are discarded below.
         const state = this.current();
-        if (this.isAppliedRetry(state, input)) {
+        const child = await this.childReplay(state, input, created);
+        if (child.replay) {
+          await created.discard();
+          return {
+            result: { applied: false, revision: state.indexes.live.revision },
+            durable: this.groupCommit.settled(),
+          };
+        }
+        if (await this.isAppliedRetry(state, input, child.identical)) {
           await created.discard();
           return {
             result: { applied: false, revision: state.indexes.live.revision },
@@ -1251,11 +3631,20 @@ export class ChatDeltaJournalWriter {
             ...this.encodeRecord(state, prepared.base, undefined),
           };
         }
-        const durable = this.groupCommit.add(
-          state.journalBytes,
-          prepared.encoded.frame,
-          joined,
-        );
+        const durable = this.groupCommit
+          .add(state.journalBytes, prepared.encoded.frame, joined)
+          .then(async () => {
+            try {
+              await this.appendRegistryEffects(prepared.record);
+            } catch (error) {
+              this.poisoned ??=
+                error instanceof Error ? error : new Error(String(error));
+              throw error;
+            }
+          });
+        // As the queue's own promise: a dropped one must not turn a failed
+        // batch into an unhandled rejection.
+        durable.catch(() => undefined);
         queued = true;
         this.state = this.advanced(state, prepared);
         return {
@@ -1277,7 +3666,7 @@ export class ChatDeltaJournalWriter {
   private async writeBatch(batch: GroupCommitBatch): Promise<void> {
     // A demotion retired this writer: nothing may reach the journal a
     // version 2 load ignores.
-    if (manifestGeneration(this.directory) !== this.generation)
+    if (manifestGeneration(this.directory) !== this.manifestGenerationAtOpen)
       throw new Error('Delta journal writer is closed: its scope is version 2');
     const bytes =
       batch.frames.length === 1
@@ -1344,14 +3733,21 @@ export class ChatDeltaJournalWriter {
         state.lastDigest,
         false,
       );
+      const presentChats = chatIds(result.indexes);
       this.state = {
         checkpointIndexes: result.indexes,
         indexes: result.indexes,
         records: [],
         overlays: new Map(),
+        childOverlays: new Map(),
+        descriptorOverlays: new Map(),
         lastDigest: result.digest,
         journalBytes: result.journalBytes,
         mutationIds: new Set(result.indexes.recovery.mutationIds),
+        registeredTargets: state.registeredTargets.filter((target) =>
+          presentChats.has(target.chatId),
+        ),
+        primaryRecordCount: 0,
       };
       return result.indexes;
     } catch (error) {
@@ -1370,13 +3766,57 @@ export class ChatDeltaJournalWriter {
   }
 
   /**
+   * Save sidecar-owned anchors before a checkpoint rewrite removes the
+   * active sidecar. The synced capture is reusable after an interrupted
+   * rewrite; format-3 effects deliberately remain anchor-free.
+   */
+  private async checkpointAnchors(
+    workDirectory: string,
+    checkpointFromRevision: number,
+    checkpointTargetRevision: number,
+    record: JournalCommit,
+    effect: DeltaJournalTranscriptEffect,
+    effectIndex: number,
+  ): Promise<ReadonlyMap<string, ActiveRowAnchor>> {
+    const identity = {
+      checkpointFromRevision,
+      checkpointTargetRevision,
+      record,
+      effectIndex,
+      effect,
+    };
+    const existing = await readCheckpointAnchorCapture(workDirectory, identity);
+    if (existing) return existing;
+
+    let anchors = new Map<string, ActiveRowAnchor>();
+    if (await this.base.exists(effect.chatId)) {
+      const snapshot = this.base.activeSnapshot
+        ? await this.base.activeSnapshot(effect.chatId)
+        : undefined;
+      anchors = snapshot?.anchors ?? anchors;
+    }
+    const createdDirectory = await mkdir(workDirectory, { recursive: true });
+    if (createdDirectory) await fsyncDirectory(this.directory);
+    await writeAtomicJson(
+      checkpointAnchorCapturePath(
+        workDirectory,
+        record,
+        effectIndex,
+        effect.chatId,
+      ),
+      encodeCheckpointAnchorCapture(identity, anchors),
+    );
+    return anchors;
+  }
+
+  /**
    * Apply records after `appliedThrough` to the transcript files. A
    * progress marker is on disk before the first file changes (`markerOnDisk`
    * when a resumed checkpoint already has one); it advances only around
    * records that are not runs of revisioned active updates.
    */
   private async applyTranscriptRecords(
-    records: readonly DeltaJournalCommitRecord[],
+    records: readonly JournalCommit[],
     fromRevision: number,
     targetRevision: number,
     appliedThrough: number,
@@ -1387,7 +3827,7 @@ export class ChatDeltaJournalWriter {
     const mark = async (through: number): Promise<void> => {
       if (marked === through) return;
       await this.writeMarker({
-        v: 1,
+        v: this.journalVersion,
         phase: 'transcripts',
         fromRevision,
         targetRevision,
@@ -1424,6 +3864,8 @@ export class ChatDeltaJournalWriter {
         chatId,
         run.messages,
         run.transcriptRevision,
+        undefined,
+        this.materializeFieldMode,
       );
     };
     const writeRuns = async (): Promise<void> => {
@@ -1450,12 +3892,15 @@ export class ChatDeltaJournalWriter {
     const last = records[records.length - 1];
     for (const record of records) {
       if (record.toRevision <= appliedThrough) continue;
-      const coalesced = record.transcripts.every(
-        (effect) =>
-          isActiveEffect(effect) && effect.transcriptRevision !== undefined,
-      );
+      const effects = primaryEffects(record);
+      const coalesced =
+        effects.length > 0 &&
+        effects.every(
+          (effect) =>
+            isActiveEffect(effect) && effect.transcriptRevision !== undefined,
+        );
       if (coalesced) {
-        for (const effect of record.transcripts)
+        for (const effect of effects)
           if (isActiveEffect(effect) && effect.transcriptRevision !== undefined)
             foldRun(effect, effect.transcriptRevision);
         continue;
@@ -1464,7 +3909,7 @@ export class ChatDeltaJournalWriter {
       // this record's own append finalizes (a turn end): its rows reach the
       // log through that append, never through a sidecar rewrite.
       const finalizing = new Set(
-        record.transcripts
+        effects
           .filter(
             (effect) =>
               effect.kind === 'append' &&
@@ -1480,7 +3925,15 @@ export class ChatDeltaJournalWriter {
       // the records after the marker, and the append is idempotent.
       if (marked !== undefined && finalizing.size === 0)
         await mark(record.fromRevision);
-      for (const effect of record.transcripts) {
+      // Anchor captures are keyed by the effect's index among the primary
+      // effects, as materialization reads them back.
+      for (
+        let effectIndex = 0;
+        effectIndex < effects.length;
+        effectIndex += 1
+      ) {
+        const effect = effects[effectIndex];
+        if (!effect) throw new Error('Missing transcript effect');
         await beforeWrite();
         const run =
           effect.kind === 'append' && finalizing.has(effect.chatId)
@@ -1492,6 +3945,8 @@ export class ChatDeltaJournalWriter {
             effect.messages,
             run.messages,
             run.transcriptRevision,
+            undefined,
+            this.materializeFieldMode,
           );
         else if (
           isActiveEffect(effect) &&
@@ -1499,14 +3954,28 @@ export class ChatDeltaJournalWriter {
         ) {
           foldRun(effect, effect.transcriptRevision);
           await writeRun(effect.chatId);
-        } else
+        } else {
+          const anchors =
+            effect.kind === 'replace' || effect.kind === 'patch'
+              ? await this.checkpointAnchors(
+                  workDirectory,
+                  fromRevision,
+                  targetRevision,
+                  record,
+                  effect,
+                  effectIndex,
+                )
+              : undefined;
           await applyTranscriptEffect(
             this.log,
             this.transcriptsRoot,
             effect,
             record.toRevision,
             workDirectory,
+            this.materializeFieldMode,
+            anchors,
           );
+        }
       }
       // After the last record the `publishing` marker follows; until it is
       // written, recovery re-applies this record, which converges.
@@ -1514,11 +3983,294 @@ export class ChatDeltaJournalWriter {
         await mark(record.toRevision);
     }
     await writeRuns();
+    if (this.journalVersion === 2) {
+      const removedParents = new Set(
+        records.flatMap((record) =>
+          primaryEffects(record)
+            .filter((effect) => effect.kind === 'delete')
+            .map((effect) => effect.chatId),
+        ),
+      );
+      for (const record of records)
+        if (record.v === 2)
+          for (const registration of record.streamRegistrations) {
+            if (removedParents.has(registration.target.chatId)) continue;
+            const paths = streamRegistryPaths(
+              this.transcriptsRoot,
+              registration.target.chatId,
+              registration.streamKey,
+            );
+            await beforeWrite();
+            await mkdir(paths.streamDirectory, { recursive: true });
+            const log = await open(paths.log, 'a');
+            try {
+              await log.sync();
+            } finally {
+              await log.close();
+            }
+          }
+      const children = new Map<string, ChildJournalOverlay>();
+      const changed = new Set<string>();
+      for (const record of records) {
+        if (record.v !== 2) continue;
+        for (const effect of record.transcripts) {
+          if (effect.kind !== 'child-upsert' && effect.kind !== 'child-settle')
+            continue;
+          if (removedParents.has(effect.target.chatId)) continue;
+          const key = transcriptTargetKey(effect.target);
+          const overlay = await this.childOverlayFor(
+            children,
+            effect.target,
+            true,
+          );
+          await overlay.apply(effect.rows, true);
+          children.set(key, overlay);
+          changed.add(key);
+        }
+      }
+      for (const key of Array.from(changed)) {
+        const overlay = children.get(key);
+        if (!overlay?.hasChanges) continue;
+        await beforeWrite();
+        const store = this.childStore(overlay.target, false, true);
+        const streamKey = delegationStreamKey(overlay.target);
+        if (overlay.newlyFinalRows.length)
+          await store.appendChildFinalRows(
+            streamKey,
+            overlay.newlyFinalRows,
+            overlay.openRows,
+            targetRevision,
+            this.materializeFieldMode,
+          );
+        else
+          await store.writeChildOpenRows(
+            streamKey,
+            overlay.openRows,
+            targetRevision,
+            this.materializeFieldMode,
+          );
+      }
+    }
+  }
+
+  private async stageCheckpointStreamMetadata(
+    records: readonly JournalCommit[],
+    indexes: ChatStorageIndexes,
+  ): Promise<NonNullable<DeltaCheckpointMarker['metadata']>> {
+    const removedParents = new Set<string>();
+    const registrations = new Map<string, TranscriptStreamRegistration[]>();
+    const childTimestamps = new Map<string, number>();
+    const updates = new Map<string, TranscriptStreamDescriptorUpdate[]>();
+    for (const record of records) {
+      for (const effect of primaryEffects(record))
+        if (effect.kind === 'delete') removedParents.add(effect.chatId);
+      if (record.v === 2) {
+        for (const entry of record.streamRegistrations) {
+          const list = registrations.get(entry.target.chatId) ?? [];
+          list.push(entry);
+          registrations.set(entry.target.chatId, list);
+        }
+        for (const effect of record.transcripts)
+          if (
+            effect.kind === 'child-upsert' ||
+            effect.kind === 'child-settle'
+          ) {
+            const key = transcriptTargetKey(effect.target);
+            for (const row of effect.rows)
+              childTimestamps.set(
+                key,
+                Math.max(
+                  childTimestamps.get(key) ?? row.timestamp,
+                  row.timestamp,
+                ),
+              );
+          }
+        for (const update of record.descriptorUpdates) {
+          const key = transcriptTargetKey(update.target);
+          const list = updates.get(key) ?? [];
+          list.push(update);
+          updates.set(key, list);
+        }
+      }
+    }
+    const digest = (bytes: Buffer): string =>
+      createHash('sha256').update(bytes).digest('hex');
+    const stage = async (path: string, bytes: Buffer): Promise<void> => {
+      await stageStreamMetadata(path, bytes);
+      await fsyncDirectory(dirname(path));
+    };
+    const childDescriptor = async (
+      entry: TranscriptStreamRegistration,
+      prior: ReturnType<typeof createEmptyStreamDescriptor>,
+    ): Promise<ReturnType<typeof createEmptyStreamDescriptor>> => {
+      const key = transcriptTargetKey(entry.target);
+      let descriptor = prior;
+      for (const update of updates.get(key) ?? [])
+        descriptor = applyStreamDescriptorUpdate(descriptor, update);
+      const totals = await this.childLogTotals(entry.target, [], false, prior);
+      const windowLatest = childTimestamps.get(key);
+      const next: TranscriptStreamDescriptor = {
+        ...descriptor,
+        checkpointRevision: indexes.live.revision,
+        committedRowCount: totals.committedRowCount,
+        committedByteLength: totals.committedByteLength,
+        committedSha256: totals.committedSha256,
+        // Revisions keep their row's original time; never move backwards.
+        latestRowTimestamp:
+          windowLatest === undefined
+            ? descriptor.latestRowTimestamp
+            : Math.max(
+                windowLatest,
+                descriptor.latestRowTimestamp ?? windowLatest,
+              ),
+      };
+      if (next.settleReceipt && !receiptMatches(next.settleReceipt, totals))
+        throw new ChatDeltaJournalIntegrityError(
+          'Child settlement receipt disagrees with committed stream',
+        );
+      return next;
+    };
+    const descriptors: { path: string; sha256: string }[] = [];
+    const registries: { path: string; sha256: string }[] = [];
+    const catalogPath = streamCatalogPath(this.transcriptsRoot);
+    const parents: Record<
+      string,
+      { entryCount: number; registrySha256: string; registryBytes: number }
+    > = { ...parseStreamCatalog(await readFile(catalogPath)).parents };
+    const present = chatIds(indexes);
+    // A parent removed outside the journal (a compatibility transaction)
+    // leaves the catalog like one deleted in these records.
+    for (const parent of Object.keys(parents))
+      if (!present.has(parent)) removedParents.add(parent);
+    for (const parent of Array.from(removedParents)) delete parents[parent];
+    const catalogued = new Set(Object.keys(parents));
+    for (const parent of Array.from(
+      new Set([...Object.keys(parents), ...Array.from(registrations.keys())]),
+    )) {
+      const entries = registrations.get(parent) ?? [];
+      if (removedParents.has(parent) || !present.has(parent)) continue;
+      const first = entries[0];
+      const paths = streamRegistryPaths(
+        this.transcriptsRoot,
+        parent,
+        first?.streamKey ?? '0'.repeat(64),
+      );
+      let prior: TranscriptStreamRegistration[] = [];
+      try {
+        prior = parseStreamRegistry(
+          await readFile(paths.registry),
+          parent,
+        ).entries;
+      } catch (error) {
+        if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+        // Only a first registration has no registry; a catalogued one is lost.
+        if (catalogued.has(parent))
+          throw new ChatDeltaJournalIntegrityError(
+            'Missing known stream registry',
+          );
+      }
+      const identities = new Set(
+        prior.map((entry) => transcriptTargetKey(entry.target)),
+      );
+      for (const entry of prior) {
+        const entryPaths = streamRegistryPaths(
+          this.transcriptsRoot,
+          parent,
+          entry.streamKey,
+        );
+        const existing = parseStreamDescriptor(
+          await readFile(entryPaths.descriptor),
+        );
+        if (
+          transcriptTargetKey(existing.target) !==
+            transcriptTargetKey(entry.target) ||
+          existing.streamKey !== entry.streamKey
+        )
+          throw new ChatDeltaJournalIntegrityError(
+            'Known descriptor disagrees with registry',
+          );
+        const bytes = Buffer.from(
+          JSON.stringify(await childDescriptor(entry, existing)),
+        );
+        await stage(entryPaths.descriptor, bytes);
+        descriptors.push({
+          path: entryPaths.descriptor,
+          sha256: digest(bytes),
+        });
+      }
+      for (const entry of entries) {
+        const identity = transcriptTargetKey(entry.target);
+        if (identities.has(identity))
+          throw new ChatDeltaJournalIntegrityError(
+            'Duplicate stream registration at checkpoint',
+          );
+        identities.add(identity);
+        const entryPaths = streamRegistryPaths(
+          this.transcriptsRoot,
+          parent,
+          entry.streamKey,
+        );
+        await mkdir(entryPaths.streamDirectory, { recursive: true });
+        // Every directory mkdir may have created: v2, the parent, delegations,
+        // and the transcripts root that holds delegations.
+        const chatDirectory = dirname(entryPaths.parentDirectory);
+        for (const directory of [
+          entryPaths.parentDirectory,
+          chatDirectory,
+          dirname(chatDirectory),
+          dirname(dirname(chatDirectory)),
+        ])
+          await fsyncDirectory(directory);
+        const log = await open(entryPaths.log, 'a');
+        try {
+          await log.sync();
+        } finally {
+          await log.close();
+        }
+        await fsyncDirectory(entryPaths.streamDirectory);
+        const descriptor = Buffer.from(
+          JSON.stringify(
+            await childDescriptor(
+              entry,
+              createEmptyStreamDescriptor(entry, indexes.live.revision),
+            ),
+          ),
+        );
+        await stage(entryPaths.descriptor, descriptor);
+        descriptors.push({
+          path: entryPaths.descriptor,
+          sha256: digest(descriptor),
+        });
+        prior.push(entry);
+      }
+      const bytes = encodeStreamRegistry(parent, indexes.live.revision, prior);
+      await stage(paths.registry, bytes);
+      registries.push({ path: paths.registry, sha256: digest(bytes) });
+      parents[parent] = {
+        entryCount: prior.length,
+        registrySha256: digest(bytes),
+        registryBytes: bytes.length,
+      };
+    }
+    const catalogBytes = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        checkpointRevision: indexes.live.revision,
+        parents,
+      }),
+    );
+    await stage(catalogPath, catalogBytes);
+    return {
+      descriptors,
+      registries,
+      catalog: { path: catalogPath, sha256: digest(catalogBytes) },
+      removedParents: Array.from(removedParents),
+    };
   }
 
   private async runCheckpoint(
     base: ChatStorageIndexes,
-    records: readonly DeltaJournalCommitRecord[],
+    records: readonly JournalCommit[],
     appliedThrough: number,
     lastDigest: string,
     markerOnDisk: boolean,
@@ -1531,6 +4283,7 @@ export class ChatDeltaJournalWriter {
     const targetRevision =
       records[records.length - 1]?.toRevision ?? fromRevision;
     const workDirectory = join(this.directory, DELTA_CHECKPOINT_WORK_DIRECTORY);
+    await this.checkpointRegistryRecords(records);
     await this.applyTranscriptRecords(
       records,
       fromRevision,
@@ -1539,6 +4292,15 @@ export class ChatDeltaJournalWriter {
       markerOnDisk,
       workDirectory,
     );
+    if (
+      records.some(
+        (record) =>
+          record.v === 2 &&
+          record.transcripts.some((effect) => effect.kind === 'child-settle'),
+      )
+    )
+      await this.boundary('finalize-checkpoint');
+    await this.boundary('checkpoint-transcripts-applied');
     const metadata = replayIndexMetadata(
       base,
       records,
@@ -1566,22 +4328,105 @@ export class ChatDeltaJournalWriter {
       );
       recordChatStorageIndexSerializations(1);
     }
+    const streamMetadata =
+      this.journalVersion === 2
+        ? await this.stageCheckpointStreamMetadata(records, indexes)
+        : undefined;
+    await this.boundary('checkpoint-metadata-staged');
     await fsyncDirectory(this.directory);
     await this.writeMarker({
-      v: 1,
+      v: this.journalVersion,
       phase: 'publishing',
       fromRevision,
       targetRevision,
       appliedThrough: targetRevision,
+      ...(streamMetadata ? { metadata: streamMetadata } : {}),
     });
+    await this.boundary('checkpoint-publishing-marked');
     const rotated = await this.finishPublication(
       targetRevision,
       lastDigest,
       false,
+      streamMetadata,
     );
     recordChatStorageDeltaJournalCheckpoint();
     await rm(workDirectory, { recursive: true, force: true });
     return { indexes, ...rotated };
+  }
+
+  private async checkpointRegistryRecords(
+    records: readonly JournalCommit[],
+  ): Promise<void> {
+    const identities = new Map<string, RegistryIdentity>();
+    for (const record of records) {
+      if (record.v !== 2) continue;
+      for (const effect of record.registryEffects ?? []) {
+        const identity = registryEffectIdentity(effect);
+        identities.set(registryIdentityKey(identity), identity);
+      }
+    }
+    for (const identity of Array.from(identities.values())) {
+      const highWater = await this.registry.highWater(identity);
+      await this.registry.checkpoint(highWater);
+    }
+  }
+
+  /** Publish one staged stream metadata file, verifying its digest. */
+  private async publishStagedStreamItem(item: {
+    path: string;
+    sha256: string;
+  }): Promise<void> {
+    if (
+      item.path === this.transcriptsRoot ||
+      !isPathInside(this.transcriptsRoot, item.path) ||
+      !/^[a-f0-9]{64}$/.test(item.sha256)
+    )
+      throw new ChatDeltaJournalIntegrityError(
+        'Invalid checkpoint metadata path or digest',
+      );
+    const staged = `${item.path}.checkpoint`;
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(staged);
+    } catch (error) {
+      if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      bytes = await readFile(item.path);
+    }
+    if (createHash('sha256').update(bytes).digest('hex') !== item.sha256)
+      throw new ChatDeltaJournalIntegrityError(
+        'Staged stream metadata digest mismatch',
+      );
+    if (await exists(staged)) {
+      await rename(staged, item.path);
+      await fsyncDirectory(dirname(item.path));
+    }
+  }
+
+  /**
+   * A compatibility transaction on checkpointed format 4 advances the indexes
+   * without touching stream metadata. Re-stamp it at the checkpoint revision;
+   * the catalog publishes last, so an interrupted run repeats on next open.
+   */
+  private async restampStreamMetadata(
+    indexes: ChatStorageIndexes,
+  ): Promise<void> {
+    const metadata = await this.stageCheckpointStreamMetadata([], indexes);
+    // The indexes already exclude these parents, so their trees go before the
+    // catalog stops naming them; a crash in between repeats the removal.
+    for (const parent of metadata.removedParents) {
+      assertTranscriptIdentity(parent);
+      await rm(join(this.transcriptsRoot, 'delegations', parent), {
+        recursive: true,
+        force: true,
+      });
+      this.registry.forgetChat(parent);
+    }
+    for (const item of [
+      ...metadata.descriptors,
+      ...metadata.registries,
+      ...(metadata.catalog ? [metadata.catalog] : []),
+    ])
+      await this.publishStagedStreamItem(item);
   }
 
   /** Publish staged indexes, rotate the journal, then clear the marker. */
@@ -1589,7 +4434,18 @@ export class ChatDeltaJournalWriter {
     targetRevision: number,
     lastDigest: string,
     alreadyRotated: boolean,
+    metadata?: DeltaCheckpointMarker['metadata'],
   ): Promise<{ digest: string; journalBytes: number }> {
+    const publish = (item: { path: string; sha256: string }): Promise<void> =>
+      this.publishStagedStreamItem(item);
+    if (metadata) {
+      for (const item of metadata.descriptors) await publish(item);
+      await this.boundary('checkpoint-descriptors-published');
+      for (const item of metadata.registries) await publish(item);
+      await this.boundary('checkpoint-registries-published');
+      if (metadata.catalog) await publish(metadata.catalog);
+      await this.boundary('checkpoint-catalog-published');
+    }
     for (const name of DELTA_INDEX_FILE_NAMES) {
       const staged = join(
         this.directory,
@@ -1604,6 +4460,7 @@ export class ChatDeltaJournalWriter {
       recordChatStorageAtomicReplacement(join(this.directory, name));
     }
     await fsyncDirectory(this.directory);
+    await this.boundary('checkpoint-indexes-published');
     // One directory sync makes the rotation and the marker's removal durable.
     // Recovery accepts either surviving alone: a rotated journal under a
     // `publishing` marker finishes publication, and an unrotated journal
@@ -1616,14 +4473,32 @@ export class ChatDeltaJournalWriter {
           targetRevision,
           lastDigest,
           false,
+          this.journalVersion,
         );
+    await this.boundary('checkpoint-journal-rotated');
+    if (metadata) {
+      for (const parent of metadata.removedParents)
+        assertTranscriptIdentity(parent);
+      for (const parent of metadata.removedParents) {
+        await rm(join(this.transcriptsRoot, 'delegations', parent), {
+          recursive: true,
+          force: true,
+        });
+        this.registry.forgetChat(parent);
+      }
+      await this.boundary('checkpoint-removed-parents');
+    }
     await rm(join(this.directory, DELTA_CHECKPOINT_MARKER_NAME), {
       force: true,
     });
     await fsyncDirectory(this.directory);
     await this.boundary('marker-removed');
     if (rotated) return { digest: rotated.digest, journalBytes: rotated.bytes };
-    const journal = await readDeltaJournal(this.directory, this.scopeId);
+    const journal = await readDeltaJournal(
+      this.directory,
+      this.scopeId,
+      this.manifest,
+    );
     return { digest: journal.lastDigest, journalBytes: journal.validEnd };
   }
 
@@ -1645,7 +4520,12 @@ export class ChatDeltaJournalWriter {
         marker.targetRevision,
         journal.lastDigest,
         rotated,
+        marker.metadata,
       );
+      await rm(join(this.directory, DELTA_CHECKPOINT_WORK_DIRECTORY), {
+        recursive: true,
+        force: true,
+      });
       return;
     }
     const records = recordsAfter(journal, checkpoint.revision);
@@ -1689,6 +4569,20 @@ function isPromotableManifest(
  * and the journal file is ignored. The version 3 manifest keeps the version
  * 2 manifest verbatim (`demotesTo`), so demotion restores its exact bytes.
  */
+/** Leftovers of an earlier delta-journal life must not be resumed. */
+async function clearCheckpointLeftovers(directory: string): Promise<void> {
+  await rm(join(directory, DELTA_CHECKPOINT_MARKER_NAME), { force: true });
+  await rm(join(directory, DELTA_CHECKPOINT_WORK_DIRECTORY), {
+    recursive: true,
+    force: true,
+  });
+  for (const name of DELTA_INDEX_FILE_NAMES)
+    await rm(join(directory, `${name}${DELTA_CHECKPOINT_STAGED_SUFFIX}`), {
+      force: true,
+    });
+  await fsyncDirectory(directory);
+}
+
 export async function promoteToDeltaJournal(
   store: ChatStorageV2,
 ): Promise<void> {
@@ -1696,27 +4590,43 @@ export async function promoteToDeltaJournal(
   const manifest: unknown = JSON.parse(
     await readFile(store.manifestPath, 'utf8'),
   );
+  assertNoNewerChatStorageManifest(manifest, scopeId, store.maxManifestVersion);
+  if (
+    isRecord(manifest) &&
+    manifest.version === 4 &&
+    store.maxManifestVersion === 4
+  ) {
+    if (journalFileFor(manifest)) return;
+    const checkpointed = parseChatStorageManifest(manifest);
+    if (checkpointed.version !== 4) throw new Error('Expected format 4');
+    if (
+      (await stat(join(store.directory, 'metadata-journal.jsonl'))).size !== 0
+    )
+      throw new Error('Flush the version 2 journal before promotion');
+    const indexes = await store.indexes();
+    await clearCheckpointLeftovers(store.directory);
+    await writeJournalSegment(
+      store.directory,
+      scopeId,
+      indexes.live.revision,
+      DELTA_JOURNAL_V2_GENESIS_DIGEST,
+      true,
+      2,
+    );
+    await writeAtomicJson(store.manifestPath, {
+      ...checkpointed,
+      migrationId: randomUUID(),
+      sourceRevision: indexes.live.revision,
+      journal: DELTA_JOURNAL_V2_FORMAT,
+    });
+    return;
+  }
   if (!isPromotableManifest(manifest, scopeId))
     throw new Error('Only a cleaned-up version 2 scope can be promoted');
   if ((await stat(join(store.directory, 'metadata-journal.jsonl'))).size !== 0)
     throw new Error('Flush the version 2 journal before promotion');
   const indexes = await store.indexes();
-  // Leftovers of an earlier delta-journal life must not be resumed.
-  await rm(join(store.directory, DELTA_CHECKPOINT_MARKER_NAME), {
-    force: true,
-  });
-  await rm(join(store.directory, DELTA_CHECKPOINT_WORK_DIRECTORY), {
-    recursive: true,
-    force: true,
-  });
-  for (const name of DELTA_INDEX_FILE_NAMES)
-    await rm(
-      join(store.directory, `${name}${DELTA_CHECKPOINT_STAGED_SUFFIX}`),
-      {
-        force: true,
-      },
-    );
-  await fsyncDirectory(store.directory);
+  await clearCheckpointLeftovers(store.directory);
   await writeJournalSegment(
     store.directory,
     scopeId,
@@ -1734,6 +4644,127 @@ export async function promoteToDeltaJournal(
     demotesTo: manifest,
   };
   await writeAtomicJson(store.manifestPath, promoted);
+}
+
+/** Explicit, opt-in format-3 to format-4 authority transition. */
+export async function promoteToFormat4Journal(
+  store: ChatStorageV2,
+  options: DeltaJournalDemotionOptions = {},
+): Promise<ChatDeltaJournalWriter> {
+  if (store.maxManifestVersion !== 4)
+    throw new Error('Format 4 promotion requires a ceiling-4 store');
+  const scopeId = store.descriptor().scopeId;
+  const raw: unknown = JSON.parse(await readFile(store.manifestPath, 'utf8'));
+  assertNoNewerChatStorageManifest(raw, scopeId, 4);
+  if (isRecord(raw) && raw.version === 4) {
+    const current = parseChatStorageManifest(raw);
+    if (current.version !== 4 || !current.journal)
+      throw new Error('Format 4 scope is not journaled');
+    return ChatDeltaJournalWriter.open(store, options);
+  }
+  if (!isDeltaJournalStorageManifest(raw) || raw.scopeId !== scopeId)
+    throw new Error('Only a settled format 3 scope can be promoted');
+  const { writer: provided, ...writerOptions } = options;
+  const writer =
+    provided ?? (await ChatDeltaJournalWriter.open(store, writerOptions));
+  await writer.checkpoint();
+  const revision = writer.revision;
+  manifestGenerations.set(
+    store.directory,
+    manifestGeneration(store.directory) + 1,
+  );
+  const v1 = await readDeltaJournal(store.directory, scopeId, raw);
+  if (v1.records.length || v1.tornTail || v1.segment.baseRevision !== revision)
+    throw new Error('Format 3 promotion requires a verified empty journal');
+  const catalog = streamCatalogPath(join(store.directory, 'transcripts'));
+  await mkdir(dirname(catalog), { recursive: true });
+  await fsyncDirectory(join(store.directory, 'transcripts'));
+  await writeAtomicJson(
+    catalog,
+    {
+      version: 1,
+      checkpointRevision: revision,
+      parents: {},
+    },
+    options.onBoundary,
+    {
+      written: 'catalog-temp-written',
+      synced: 'catalog-temp-synced',
+    },
+  );
+  await writeJournalSegment(
+    store.directory,
+    scopeId,
+    revision,
+    DELTA_JOURNAL_V2_GENESIS_DIGEST,
+    true,
+    2,
+    options.onBoundary,
+  );
+  const next: Format4StorageManifest = {
+    version: 4,
+    scopeId,
+    migrationId: randomUUID(),
+    sourceRevision: revision,
+    sourceDigest: raw.sourceDigest,
+    cleanupComplete: true,
+    journal: DELTA_JOURNAL_V2_FORMAT,
+  };
+  await writeAtomicJson(store.manifestPath, next, options.onBoundary);
+  try {
+    await rm(join(store.directory, DELTA_JOURNAL_FILE_NAME), { force: true });
+    await fsyncDirectory(store.directory);
+  } catch {
+    /* An unselected empty v1 segment is harmless. */
+  }
+  const opened = await ChatDeltaJournalWriter.open(store, writerOptions);
+  await options.onBoundary?.('writer-reopened');
+  return opened;
+}
+
+/** Retire a journaled format-4 writer and retain format-4 checkpoint authority. */
+export async function transitionFormat4ToCheckpointed(
+  store: ChatStorageV2,
+  options: DeltaJournalDemotionOptions = {},
+): Promise<boolean> {
+  if (store.maxManifestVersion !== 4)
+    throw new Error('Format 4 transition requires a ceiling-4 store');
+  const raw: unknown = JSON.parse(await readFile(store.manifestPath, 'utf8'));
+  assertNoNewerChatStorageManifest(raw, store.descriptor().scopeId, 4);
+  const manifest = parseChatStorageManifest(raw);
+  if (manifest.version !== 4 || !manifest.journal) return false;
+  const { writer: provided, ...writerOptions } = options;
+  const writer =
+    provided ?? (await ChatDeltaJournalWriter.open(store, writerOptions));
+  await writer.checkpoint();
+  const revision = writer.revision;
+  manifestGenerations.set(
+    store.directory,
+    manifestGeneration(store.directory) + 1,
+  );
+  const journal = await readDeltaJournal(
+    store.directory,
+    manifest.scopeId,
+    manifest,
+  );
+  if (
+    journal.records.length ||
+    journal.tornTail ||
+    journal.segment.baseRevision !== revision
+  )
+    throw new Error('Format 4 transition requires a verified empty journal');
+  const { journal: ignored, ...checkpointed } = manifest;
+  void ignored;
+  await writeAtomicJson(store.manifestPath, checkpointed, options.onBoundary);
+  try {
+    await rm(join(store.directory, DELTA_JOURNAL_V2_FILE_NAME), {
+      force: true,
+    });
+    await fsyncDirectory(store.directory);
+  } catch {
+    /* The unselected segment can be removed on a later load. */
+  }
+  return true;
 }
 
 /** The version 2 manifest a demoted scope returns to. */
@@ -1784,24 +4815,59 @@ export async function removeStrayDeltaJournal(
     if (isErrnoException(error) && error.code === 'ENOENT') return 'absent';
     throw error;
   }
-  if (!isRecord(manifest) || manifest.version !== 2) return 'absent';
-  const leftovers = [
-    join(store.directory, DELTA_CHECKPOINT_MARKER_NAME),
-    join(store.directory, DELTA_CHECKPOINT_WORK_DIRECTORY),
-    ...DELTA_INDEX_FILE_NAMES.map((name) =>
-      join(store.directory, `${name}${DELTA_CHECKPOINT_STAGED_SUFFIX}`),
-    ),
-  ];
-  const journalPath = join(store.directory, DELTA_JOURNAL_FILE_NAME);
-  const journalExists = await exists(journalPath);
+  assertNoNewerChatStorageManifest(manifest, scopeId, store.maxManifestVersion);
+  if (
+    !isRecord(manifest) ||
+    (manifest.version !== 2 && manifest.version !== 3 && manifest.version !== 4)
+  )
+    return 'absent';
+  const selected = journalFileFor(manifest);
+  const candidates = [
+    DELTA_JOURNAL_FILE_NAME,
+    DELTA_JOURNAL_V2_FILE_NAME,
+  ].filter((name) => name !== selected);
+  const leftovers = selected
+    ? []
+    : [
+        join(store.directory, DELTA_CHECKPOINT_MARKER_NAME),
+        join(store.directory, DELTA_CHECKPOINT_WORK_DIRECTORY),
+        ...DELTA_INDEX_FILE_NAMES.map((name) =>
+          join(store.directory, `${name}${DELTA_CHECKPOINT_STAGED_SUFFIX}`),
+        ),
+      ];
   let present = await removeJournalTemporaries(store.directory);
-  if (journalExists) present = true;
+  for (const name of candidates)
+    if (await exists(join(store.directory, name))) present = true;
   for (const path of leftovers) if (await exists(path)) present = true;
   if (!present) return 'absent';
-  if (journalExists) {
+  for (const name of candidates) {
+    const journalPath = join(store.directory, name);
+    if (!(await exists(journalPath))) continue;
     let empty = false;
     try {
-      const journal = await readDeltaJournal(store.directory, scopeId);
+      const journal = await readDeltaJournal(
+        store.directory,
+        scopeId,
+        name === DELTA_JOURNAL_FILE_NAME
+          ? {
+              version: 3,
+              scopeId,
+              migrationId: 'stray',
+              sourceRevision: 0,
+              sourceDigest: '0'.repeat(64),
+              cleanupComplete: true,
+              journal: DELTA_JOURNAL_FORMAT,
+            }
+          : {
+              version: 4,
+              scopeId,
+              migrationId: 'stray',
+              sourceRevision: 0,
+              sourceDigest: '0'.repeat(64),
+              cleanupComplete: true,
+              journal: DELTA_JOURNAL_V2_FORMAT,
+            },
+      );
       empty = journal.records.length === 0 && !journal.tornTail;
     } catch {
       empty = false;
@@ -1844,6 +4910,13 @@ export async function demoteFromDeltaJournal(
   const manifest: unknown = JSON.parse(
     await readFile(store.manifestPath, 'utf8'),
   );
+  assertNoNewerChatStorageManifest(manifest, scopeId, store.maxManifestVersion);
+  if (
+    isRecord(manifest) &&
+    manifest.version === 4 &&
+    store.maxManifestVersion === 4
+  )
+    return transitionFormat4ToCheckpointed(store, options);
   if (
     !isDeltaJournalStorageManifest(manifest) ||
     manifest.scopeId !== scopeId

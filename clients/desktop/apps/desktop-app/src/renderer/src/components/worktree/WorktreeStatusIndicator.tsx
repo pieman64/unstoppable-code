@@ -4,9 +4,8 @@ import {
   WORKTREE_STATUS_META,
 } from '@/lib/worktree-status';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
-import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
-import { CheckIcon as AppCatalogCheckIcon } from '@canopy/ui-shared/icons/AppIcons';
+import type { StatusGlyphState } from '@canopy/ui-shared/lib';
+import { AgentStateGlyph, StatusGlyph } from '@canopy/ui-shared/components';
 
 interface WorktreeStatusIndicatorProps {
   uiStatus: WorktreeUiStatus;
@@ -14,10 +13,17 @@ interface WorktreeStatusIndicatorProps {
   isTearingDown: boolean;
   isPendingGitSetup: boolean;
   isStreaming: boolean;
+  /** Live background tasks: the background spinner while nothing streams. */
+  backgroundTasks?: number;
   fadeStatusOnHover?: boolean;
   layout?: 'inline' | 'stacked';
   showPrimaryIndicator?: boolean;
   doneLabel?: string;
+  /**
+   * A done worktree whose pull request merged: it draws the shared Merged
+   * glyph instead of the finished check.
+   */
+  merged?: boolean;
 }
 
 function getStatusTitle(props: WorktreeStatusIndicatorProps): string | null {
@@ -33,6 +39,16 @@ function getStatusTitle(props: WorktreeStatusIndicatorProps): string | null {
   return null;
 }
 
+/** A worktree's status on the shared status glyph map; idle draws none. */
+const WORKTREE_GLYPH: Readonly<
+  Record<Exclude<WorktreeUiStatus, 'idle'>, StatusGlyphState>
+> = {
+  planning: 'needs-you',
+  working: 'running',
+  unread: 'ready',
+  done: 'done',
+};
+
 function renderPrimaryIndicator(
   props: WorktreeStatusIndicatorProps,
 ): JSX.Element {
@@ -44,26 +60,18 @@ function renderPrimaryIndicator(
         title={statusTitle}
         aria-label={statusTitle}
       >
-        <LoadingSpinner tone="active" className="-translate-y-px" />
+        <LoadingSpinner tone="secondary" className="-translate-y-px" />
       </span>
     );
   }
 
-  if (props.uiStatus === 'done') {
-    const doneLabel = props.doneLabel ?? 'Done';
-    const hoverClass = props.fadeStatusOnHover ? 'group-hover:opacity-0' : '';
-    return (
-      <span
-        className={`inline-flex h-3 w-3 items-center justify-center transition-opacity ${OPERATIONAL_STATUS_COLORS.merged.foreground} ${hoverClass}`}
-        title={doneLabel}
-        aria-label={doneLabel}
-      >
-        <AppCatalogCheckIcon width="12" height="12" />
-      </span>
-    );
-  }
-
-  if (props.uiStatus === 'idle') {
+  // Idle is empty space. A working worktree that is streaming is empty too:
+  // the agent spinner beside it already says it is running, so the row never
+  // shows two spinners.
+  if (
+    props.uiStatus === 'idle' ||
+    (props.uiStatus === 'working' && props.isStreaming)
+  ) {
     return (
       <span
         className="inline-flex h-3 w-3"
@@ -73,14 +81,26 @@ function renderPrimaryIndicator(
     );
   }
 
-  const statusMeta = WORKTREE_STATUS_META[props.uiStatus];
+  const label =
+    props.uiStatus === 'done'
+      ? (props.doneLabel ?? 'Done')
+      : WORKTREE_STATUS_META[props.uiStatus].label;
   const hoverClass = props.fadeStatusOnHover ? 'group-hover:opacity-0' : '';
   return (
     <span
-      className={`inline-flex h-3 w-3 rounded-full border transition-opacity ${hoverClass} ${statusMeta.dotClass}`}
-      title={statusMeta.label}
-      aria-label={statusMeta.label}
-    />
+      className={`inline-flex h-3 w-3 items-center justify-center transition-opacity ${hoverClass}`}
+      title={label}
+      aria-label={label}
+    >
+      <StatusGlyph
+        state={
+          props.uiStatus === 'done' && props.merged === true
+            ? 'merged'
+            : WORKTREE_GLYPH[props.uiStatus]
+        }
+        size={12}
+      />
+    </span>
   );
 }
 
@@ -92,7 +112,12 @@ export function WorktreeStatusIndicator({
   const primaryIndicator = showPrimaryIndicator
     ? renderPrimaryIndicator(props)
     : null;
-  const spinner = props.isStreaming ? <ThinkingSpinner tone="active" /> : null;
+  const backgroundTasks = props.backgroundTasks ?? 0;
+  const spinner = props.isStreaming ? (
+    <AgentStateGlyph state="working" slot="inline" />
+  ) : backgroundTasks > 0 ? (
+    <AgentStateGlyph state="background" backgroundTasks={backgroundTasks} />
+  ) : null;
 
   if (layout === 'stacked') {
     return (

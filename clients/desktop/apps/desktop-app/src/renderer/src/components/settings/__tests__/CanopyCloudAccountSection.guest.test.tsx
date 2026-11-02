@@ -7,10 +7,7 @@
 
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type {
-  CanopyApi,
-  CanopyCloudAccountPublicState,
-} from '@canopy/desktop-shared/types';
+import type { CanopyCloudAccountPublicState } from '@canopy/desktop-shared/types';
 import { makeTestPreferences } from '@/test-utils/preferences';
 import { useGitHubStore, type Toast } from '@/stores/githubStore';
 import {
@@ -114,7 +111,7 @@ describe('CanopyCloudAccountSection — guest identity', () => {
         savePreferences: jest.fn().mockResolvedValue(undefined),
         startCanopyCloudOAuthLogin,
         cancelCanopyCloudOAuthLogin: jest.fn().mockResolvedValue(undefined),
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 

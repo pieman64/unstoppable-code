@@ -217,6 +217,7 @@ function organizationDetailOf(
     case 'account.billing':
     case 'account.invoice':
     case 'account.labs':
+    case 'account.appearance':
       return null;
   }
 }

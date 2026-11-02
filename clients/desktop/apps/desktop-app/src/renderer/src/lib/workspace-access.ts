@@ -12,6 +12,8 @@
  * React context flows through the panel grid's portals, so every panel content
  * subtree below the provider sees the value. The recipient host disables
  * pop-out, so no auxiliary window renders viewer content outside it.
+ * Retained transcript viewers use the same presentation gates with the
+ * `retained-chat` reason, without restoring an execution host.
  */
 import { createContext, useContext } from 'react';
 
@@ -23,7 +25,7 @@ export type WorkspaceAccess =
   | { readonly mode: 'read-write' }
   | {
       readonly mode: 'read-only';
-      readonly reason: 'shared-container';
+      readonly reason: 'shared-container' | 'retained-chat';
       readonly containerType: SharedContainerAccessContainerType;
       /**
        * Whether this device granted the share permission to run code. Unlocks

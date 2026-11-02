@@ -1,7 +1,14 @@
 import type { WorktreeData } from '@canopy/desktop-shared/types';
+import {
+  applyArchiveRestoreRecordDecision,
+  applyArchiveRestoreRemovalDecision,
+} from './archived-container-restore-decision-port';
 import { IdentifierValidationError, validateId } from './validation';
-import { updateWorkspaceWorktrees } from './workspace-persistence';
 import { WorktreeRegistryUnreadableError } from './worktree-list-repository';
+import type {
+  ArchiveRestoreRecordDecision,
+  ArchiveRestoreRecordOutcome,
+} from './worktree-record-decisions';
 import type { W5CommitOptions } from './w5-commit-scope';
 import {
   commitW5BoundaryStep,
@@ -23,6 +30,7 @@ import {
  * never removes a row a later incarnation now owns. The unregistered restore
  * command owns caller revisions and receipts (CAN-3805); its row publication
  * joins a record-only transition, while rollback keeps its original path.
+ * Both apply as decisions through the record decision port (W6e1).
  */
 
 /** The caller of a restore record. */
@@ -159,31 +167,16 @@ async function stageRestoredWorktree(
   record: RestoredWorktreeRecord,
 ): Promise<RestoredWorktreeRecordOutcome> {
   admitRecord(record);
-  const row = toRow(record);
-  const { id, createdAt } = row;
-  // Set by the updater, which runs under the list lock.
-  const decided: { outcome?: RestoredWorktreeRecordOutcome } = {};
-  let persisted: WorktreeData[];
+  const decision: ArchiveRestoreRecordDecision = {
+    kind: 'archive.container.restore.record',
+    worktree: toRow(record),
+  };
+  const { id, createdAt } = decision.worktree;
+  let applied: ArchiveRestoreRecordOutcome;
   try {
-    persisted = await updateWorkspaceWorktrees(
+    applied = await applyArchiveRestoreRecordDecision(
       record.workspaceId,
-      (worktrees) => {
-        const existing = worktrees.find((worktree) => worktree.id === id);
-        if (existing) {
-          if (existing.createdAt !== createdAt) {
-            throw refuse(
-              'identity-changed',
-              `Staged recovery worktree ${id} no longer matches its destination identity; the archived container was preserved.`,
-            );
-          }
-          decided.outcome = { status: 'already-recorded', worktree: existing };
-          return worktrees;
-        }
-        decided.outcome = { status: 'recorded', worktree: row };
-        return [...worktrees, row];
-      },
-      // Proving the staged id is absent needs every row (CAN-3803).
-      { requireAuthoritativeRead: true },
+      decision,
     );
   } catch (error) {
     if (error instanceof WorktreeRegistryUnreadableError) {
@@ -194,16 +187,23 @@ async function stageRestoredWorktree(
     }
     throw error;
   }
-  const committed = persisted.find(
+  const { decided } = applied;
+  if (decided?.status === 'identity-changed') {
+    throw refuse(
+      'identity-changed',
+      `Staged recovery worktree ${id} no longer matches its destination identity; the archived container was preserved.`,
+    );
+  }
+  const committed = applied.worktrees.find(
     (worktree) => worktree.id === id && worktree.createdAt === createdAt,
   );
-  if (!decided.outcome || !committed) {
+  if (!decided || !committed) {
     throw refuse(
       'destination-removed',
       `Staged recovery worktree ${id} was removed before it could be recorded; the archived container was preserved.`,
     );
   }
-  return decided.outcome;
+  return { status: decided.status, worktree: decided.worktree };
 }
 
 export function recordRestoredWorktree(
@@ -251,19 +251,8 @@ export async function removeRestoredWorktreeRecord(
       'A restored worktree removal needs the recorded createdAt',
     );
   }
-  // Set by the updater, which runs under the list lock.
-  const decided: { status: RestoredWorktreeRemovalStatus } = {
-    status: 'not-found',
-  };
-  await updateWorkspaceWorktrees(removal.workspaceId, (worktrees) => {
-    const destination = worktrees.find(
-      (worktree) => worktree.id === removal.worktreeId,
-    );
-    if (!destination || destination.createdAt !== removal.createdAt) {
-      return worktrees;
-    }
-    decided.status = 'removed';
-    return worktrees.filter((worktree) => worktree !== destination);
+  return applyArchiveRestoreRemovalDecision(removal.workspaceId, {
+    kind: 'archive.container.restore.remove',
+    worktree: { id: removal.worktreeId, createdAt: removal.createdAt },
   });
-  return { status: decided.status };
 }

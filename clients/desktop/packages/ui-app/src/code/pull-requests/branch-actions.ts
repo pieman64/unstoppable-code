@@ -87,7 +87,7 @@ export function repoCanMergeLocalBranch(
   );
 }
 
-function repoRequiresPullCommitAndPush(
+export function repoRequiresPullCommitAndPush(
   branch?: PullRequestBranchFacts,
 ): boolean {
   return (
@@ -107,7 +107,7 @@ export function repoRequiresCommitAndPush(
   );
 }
 
-function repoRequiresPull(branch?: PullRequestBranchFacts): boolean {
+export function repoRequiresPull(branch?: PullRequestBranchFacts): boolean {
   return (
     branch?.hasRemoteTrackingBranch === true &&
     branch.hasUncommittedChanges !== true &&

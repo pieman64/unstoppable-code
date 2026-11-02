@@ -69,6 +69,33 @@ describe('subordinate steering request in the root chat', () => {
     expect(html).toContain('bg-info-subtle');
   });
 
+  it('names a delegate by its trusted sender, not by the request text', () => {
+    // The host records the sender from its delegation record; the title the
+    // wrapper's text names is never used.
+    const message: DisplayMessage = {
+      id: 'user-3',
+      role: 'user',
+      blocks: [{ type: 'text', text: STEERING_REQUEST }],
+      timestamp: 1,
+      agentSent: {
+        kind: 'managed_delegate',
+        delegationId: 'delegation-1',
+        title: 'Port handlers',
+      },
+    };
+    const html = renderToStaticMarkup(<UserBubble message={message} />);
+
+    expect(html).toContain('data-testid="agent-sent-marker"');
+    expect(html).toMatch(/Sent by <span[^>]*>Port handlers<\/span>/);
+    expect(html).not.toContain('steering-request-title');
+    expect(html).not.toContain('Implement browser hover');
+    expect(html).not.toContain('Unverified app');
+    expect(html).toContain('Slice B passes 301 tests &lt;ok&gt;. Report-B');
+    expect(html).not.toContain('system_instruction');
+    expect(html).not.toContain('A managed subordinate');
+    expect(html).toContain('bg-info-subtle');
+  });
+
   it('leaves typed messages unchanged', () => {
     const html = renderToStaticMarkup(
       <UserBubble

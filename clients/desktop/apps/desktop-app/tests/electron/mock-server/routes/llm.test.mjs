@@ -412,6 +412,74 @@ test('a proxied Anthropic turn is served and tagged llmProxy:anthropic', async (
   }
 });
 
+test('a session-title helper carrying the chat marker gets no scripted chat step', async () => {
+  resetAll();
+  registerScenario('Canopy-CTEST', {
+    llm: {
+      steps: [{ text: 'Unscripted turn finished.', stopReason: 'end_turn' }],
+      stepsByRequestTag: {
+        fresh: [
+          {
+            toolCalls: [{ name: 'Bash', input: { command: 'grep -rl x .' } }],
+            stopReason: 'tool_use',
+          },
+          { text: 'Turn fresh finished.', stopReason: 'end_turn' },
+        ],
+      },
+    },
+  });
+  const { server, base } = await startServer();
+  const turn = `${MARKER} [Canopy-Mock-Request:fresh] Run turn fresh.`;
+  try {
+    // The production Claude Agent SDK title helper, captured from a
+    // release-like run: it wraps the chat's own message.
+    const title = await postSse(
+      base,
+      '/api/v1/llm-proxy/anthropic/v1/messages',
+      {
+        model: 'anthropic/claude-haiku-5.5',
+        stream: true,
+        system:
+          "You are a Claude agent, built on Anthropic's Claude Agent SDK.\nYou are naming a coding session so the user can pick it out of a long list of sessions.",
+        messages: [{ role: 'user', content: `<session>\n${turn}\n</session>` }],
+      },
+    );
+    assert.equal(title.status, 200);
+    assert.ok(
+      !title.events.some((event) => event.content_block?.type === 'tool_use'),
+    );
+    assert.equal(
+      getScenarioActivity('Canopy-CTEST')['llmRequests:fresh'],
+      undefined,
+    );
+    assert.equal(
+      getScenarioActivity('Canopy-CTEST')['helperRequests:session-title'],
+      1,
+    );
+
+    const chat = await postSse(
+      base,
+      '/api/v1/llm-proxy/anthropic/v1/messages',
+      {
+        model: 'anthropic/claude-opus-5.5',
+        stream: true,
+        system: "You are Claude Code, Anthropic's official CLI for Claude.",
+        messages: [{ role: 'user', content: turn }],
+      },
+    );
+    assert.ok(
+      chat.events.some(
+        (event) =>
+          event.content_block?.type === 'tool_use' &&
+          event.content_block.name === 'Bash',
+      ),
+    );
+    assert.equal(getScenarioActivity('Canopy-CTEST')['llmRequests:fresh'], 1);
+  } finally {
+    server.close();
+  }
+});
+
 test('a proxied OpenAI responses turn is served and tagged llmProxy:openai', async () => {
   resetAll();
   registerScenario('CTEST', { llm: { conversations: { CTEST: SCRIPT } } });
@@ -1305,8 +1373,9 @@ test('request observers distinguish current tools and the last matching instruct
   }
 });
 
-// Codex 0.159+ moves tool definitions into an `additional_tools` input item.
-test('tool observers read the latest additional_tools input item', async () => {
+// Codex 0.164 `incremental_tools`: declarations accumulate across
+// `additional_tools` items and removals arrive as developer notices.
+test('tool observers fold incremental additional_tools updates and removals', async () => {
   resetAll();
   registerScenario('CTEST', {
     llm: {
@@ -1316,42 +1385,68 @@ test('tool observers read the latest additional_tools input item', async () => {
       ],
     },
   });
-  const additionalTools = (names) => ({
+  const declare = (namespaces) => ({
     type: 'additional_tools',
     role: 'developer',
-    tools: [
-      {
-        type: 'namespace',
-        name: 'functions',
-        tools: names.map((name) => ({ type: 'function', name })),
-      },
-    ],
+    tools: Object.entries(namespaces).map(([name, members]) => ({
+      type: 'namespace',
+      name,
+      tools: members.map((member) => ({ type: 'function', name: member })),
+    })),
   });
+  const developer = (text) => ({
+    type: 'message',
+    role: 'developer',
+    content: [{ type: 'input_text', text }],
+  });
+  const user = (text) => ({ role: 'user', content: `${MARKER} ${text}` });
+  const initial = declare({
+    functions: ['exec_command'],
+    multi_agent_v1: ['spawn_agent', 'wait_agent'],
+  });
+  const namespaceRemoved = developer(
+    'The following namespaces are no longer available. Do not call tools in them unless those tools are declared in a later update:\n- multi_agent_v1',
+  );
+  const memberRemoved = developer(
+    'The following tools are no longer available. Do not call them:\n- multi_agent_v1.spawn_agent',
+  );
+  const observed = () =>
+    getScenarioActivity('Canopy-CTEST')['llmObserved:spawn'] ?? 0;
   const { server, base } = await startServer();
+  const send = async (input) => {
+    const response = await postSse(base, '/v1/responses', {
+      model: 'gpt-mock',
+      stream: true,
+      input,
+    });
+    assert.equal(response.status, 200);
+  };
   try {
-    const enabled = await postSse(base, '/v1/responses', {
-      model: 'gpt-mock',
-      stream: true,
-      input: [
-        additionalTools(['spawn_agent', 'send_input']),
-        { role: 'user', content: `${MARKER} enabled` },
-      ],
-    });
-    assert.equal(enabled.status, 200);
-    assert.equal(getScenarioActivity('Canopy-CTEST')['llmObserved:spawn'], 1);
-
-    const disabled = await postSse(base, '/v1/responses', {
-      model: 'gpt-mock',
-      stream: true,
-      input: [
-        additionalTools(['spawn_agent']),
-        { role: 'user', content: `${MARKER} earlier` },
-        additionalTools(['shell']),
-        { role: 'user', content: `${MARKER} disabled` },
-      ],
-    });
-    assert.equal(disabled.status, 200);
-    assert.equal(getScenarioActivity('Canopy-CTEST')['llmObserved:spawn'], 1);
+    await send([initial, user('enabled')]);
+    assert.equal(observed(), 1);
+    // A delta-only update keeps earlier declarations.
+    await send([
+      initial,
+      user('a'),
+      declare({ functions: ['update_plan'] }),
+      user('delta'),
+    ]);
+    assert.equal(observed(), 2);
+    // Disabling multi-agent keeps the cached prefix and removes the namespace.
+    await send([initial, user('a'), namespaceRemoved, user('disabled')]);
+    assert.equal(observed(), 2);
+    await send([initial, user('a'), memberRemoved, user('member removed')]);
+    assert.equal(observed(), 2);
+    // Re-enabling declares the namespace again.
+    await send([
+      initial,
+      user('a'),
+      namespaceRemoved,
+      user('b'),
+      declare({ multi_agent_v1: ['spawn_agent'] }),
+      user('restored'),
+    ]);
+    assert.equal(observed(), 3);
   } finally {
     server.close();
   }

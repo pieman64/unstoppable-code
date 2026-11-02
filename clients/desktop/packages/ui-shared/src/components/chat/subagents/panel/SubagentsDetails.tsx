@@ -19,8 +19,7 @@ import {
   SUBAGENTS_INSPECTOR_PHASES,
   SUBAGENTS_INSPECTOR_RUN,
   SUBAGENTS_INSPECTOR_STARTED,
-  SUBAGENTS_INSPECTOR_STARTED_NONE,
-  SUBAGENTS_INSPECTOR_STARTED_TASKS,
+  SUBAGENTS_INSPECTOR_STARTED_NONE_CLASSIC,
   SUBAGENTS_INSPECTOR_TIME,
   SUBAGENTS_INSPECTOR_USAGE,
   SUBAGENTS_INSPECTOR_WORKSPACE,
@@ -34,17 +33,19 @@ import {
 } from '../subagent-copy';
 import {
   DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL,
-  DELEGATED_AGENT_STOP_LABEL,
   DELEGATED_AGENT_STOPPING_LABEL,
 } from '../../delegated-agent-copy';
+import { TASK_STOP_LABEL } from '../../TaskStopButton';
 import type { SubagentChangeTotals } from '../types';
 import {
   ArrowUpRightIcon,
   ChatIcon,
   CloseIcon,
+  StopIcon,
 } from '../../../../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
 import { Button } from '../../../Button';
+import { ExecutionActionButton } from '../../../ExecutionActionButton';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';
 import {
@@ -57,13 +58,10 @@ import {
   formatSubagentDuration,
   formatSubagentElapsed,
 } from '../common/subagent-format';
-import { SubagentStatusGlyph } from '../common/SubagentStatusGlyph';
-import { formatRelativeTime } from '../../../../lib/format-relative-time';
-import { useSubagentsView } from '../subagents-view';
 import {
-  SubagentsDrawer as ClassicSubagentsDrawer,
-  SubagentsInspector as ClassicSubagentsInspector,
-} from './SubagentsDetailsClassic';
+  SubagentStatusGlyph,
+  subagentStatusInk,
+} from '../common/SubagentStatusGlyph';
 
 /** Shared callback and content props for the inspector and bottom drawer. */
 export interface SubagentsDetailsProps {
@@ -101,13 +99,6 @@ export interface SubagentsDetailsProps {
   readonly onClose: () => void;
 }
 
-/**
- * The key/value list: one text size, a fixed label column so every value
- * starts on the same line, and quiet tertiary labels.
- */
-const INSPECTOR_LIST_CLASS =
-  'grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-2.5 text-xs';
-
 function InspectorRow({
   label,
   children,
@@ -117,29 +108,9 @@ function InspectorRow({
 }): JSX.Element {
   return (
     <>
-      <dt className="truncate fg-tertiary">{label}</dt>
+      <dt className="fg-tertiary">{label}</dt>
       <dd className="min-w-0 fg-primary">{children}</dd>
     </>
-  );
-}
-
-/** The details card's close control, shared by every details body. */
-function CloseDetailsButton({
-  onClose,
-}: {
-  readonly onClose: () => void;
-}): JSX.Element {
-  return (
-    <Button
-      variant="ghost"
-      size="control"
-      iconOnly
-      aria-label={SUBAGENTS_CLOSE_DETAILS_LABEL}
-      data-testid="subagents-inspector-close"
-      onClick={onClose}
-    >
-      <CloseIcon size={14} aria-hidden />
-    </Button>
   );
 }
 
@@ -154,7 +125,6 @@ function SubagentsTaskDetailsBody({
   onStop,
   stopping = false,
   stopError,
-  now,
   onClose,
 }: SubagentsDetailsProps): JSX.Element {
   const ancestors = [...subagentAncestors(tree, node.id)].reverse();
@@ -163,44 +133,37 @@ function SubagentsTaskDetailsBody({
     return child ? [child.title] : [];
   });
   const workspace = subagentWorkspaceLabel(node);
-  // A running task says so by shimmering its title; any other status gets one
-  // neutral line under it. Never both.
-  const running = node.status === 'running' || node.status === 'starting';
-  const startedAt = node.startedAt ?? node.createdAt;
 
   return (
     <>
-      <div className="flex flex-col gap-0.5">
+      <div className="flex flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
+          <SubagentStatusGlyph status={node.status} size={14} />
           <h4
-            data-testid="subagents-inspector-title"
-            className={`min-w-0 flex-1 truncate text-s font-medium ${running ? 'fg-secondary' : 'fg-primary'}`}
+            className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate text-s font-medium fg-primary`}
           >
-            <span
-              className={`${REPLAY_MASK_CLASS}${running ? ' canopy-text-shimmer' : ''}`}
-            >
-              {node.title}
-            </span>
-            {running ? (
-              <span className="sr-only">, {subagentStatusDetail(node)}</span>
-            ) : null}
+            {node.title}
           </h4>
-          <CloseDetailsButton onClose={onClose} />
-        </div>
-        {running ? null : (
-          <span
-            data-testid="subagents-inspector-status"
-            className="text-xs fg-secondary"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
+            aria-label={SUBAGENTS_CLOSE_DETAILS_LABEL}
+            data-testid="subagents-inspector-close"
+            onClick={onClose}
           >
-            {subagentStatusDetail(node)}
-          </span>
-        )}
+            <CloseIcon size={14} aria-hidden />
+          </Button>
+        </div>
+        <span className={`text-xs ${subagentStatusInk(node.status)}`}>
+          {subagentStatusDetail(node)}
+        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <Button
-          variant="secondary"
-          size="control"
+          variant="primary"
+          size="compact"
           data-testid="subagents-inspector-open-chat"
           onClick={(): void => onOpenChat(node)}
         >
@@ -210,7 +173,7 @@ function SubagentsTaskDetailsBody({
         {onFocus ? (
           <Button
             variant="secondary"
-            size="control"
+            size="compact"
             data-testid="subagents-inspector-focus"
             onClick={(): void => onFocus(node)}
           >
@@ -220,7 +183,7 @@ function SubagentsTaskDetailsBody({
         {onShowChanges ? (
           <Button
             variant="secondary"
-            size="control"
+            size="compact"
             data-testid="subagents-inspector-show-changes"
             onClick={(): void => onShowChanges(node)}
           >
@@ -228,18 +191,16 @@ function SubagentsTaskDetailsBody({
           </Button>
         ) : null}
         {onStop ? (
-          <Button
-            variant="ghost"
-            size="control"
-            aria-label={DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL}
+          <ExecutionActionButton
+            label={stopping ? DELEGATED_AGENT_STOPPING_LABEL : TASK_STOP_LABEL}
+            ariaLabel={DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL}
+            icon={<StopIcon size={14} aria-hidden />}
+            variant="destructive"
             disabled={stopping}
-            data-testid="subagents-inspector-stop"
+            dataTestId="subagents-inspector-stop"
             onClick={(): void => onStop(node)}
-          >
-            {stopping
-              ? DELEGATED_AGENT_STOPPING_LABEL
-              : DELEGATED_AGENT_STOP_LABEL}
-          </Button>
+            stopKeyDownPropagation={false}
+          />
         ) : null}
       </div>
 
@@ -249,13 +210,13 @@ function SubagentsTaskDetailsBody({
         </p>
       ) : null}
 
-      <dl className={INSPECTOR_LIST_CLASS}>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
         <InspectorRow label={SUBAGENTS_INSPECTOR_MODEL}>
           <span className="flex min-w-0 items-center gap-1.5">
             <SubagentHarnessMark harnessId={node.harnessId} />
             <span className="truncate">{node.modelLabel ?? ''}</span>
             {node.thinkingLevel ? (
-              <span className="shrink-0 fg-secondary">
+              <span className="shrink-0 fg-tertiary">
                 · {node.thinkingLevel}
               </span>
             ) : null}
@@ -273,48 +234,31 @@ function SubagentsTaskDetailsBody({
                 additions={changeTotals.additions}
                 deletions={changeTotals.deletions}
               />
-              <span className="fg-secondary">
+              <span className="fg-tertiary">
                 {subagentFilesCountLabel(changeTotals.filesChanged)}
               </span>
             </span>
           </InspectorRow>
         ) : null}
         <InspectorRow label={SUBAGENTS_INSPECTOR_LINEAGE}>
-          <span className="flex min-w-0 flex-col gap-1">
-            {[tree.root, ...ancestors].map((entry) => (
-              <span key={entry.id} className={`${REPLAY_MASK_CLASS} truncate`}>
-                {entry.title}
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className={`${REPLAY_MASK_CLASS} truncate fg-tertiary`}>
+              {tree.root.title}
+            </span>
+            {ancestors.map((ancestor) => (
+              <span
+                key={ancestor.id}
+                className={`${REPLAY_MASK_CLASS} truncate fg-secondary`}
+              >
+                {ancestor.title}
               </span>
             ))}
           </span>
         </InspectorRow>
-        {startedAt !== undefined ? (
-          <InspectorRow label={SUBAGENTS_INSPECTOR_STARTED}>
-            <span data-testid="subagents-inspector-started">
-              {formatRelativeTime(startedAt, now)}
-            </span>
-          </InspectorRow>
-        ) : null}
-        <InspectorRow label={SUBAGENTS_INSPECTOR_STARTED_TASKS}>
-          <span
-            data-testid="subagents-inspector-started-tasks"
-            className="flex min-w-0 flex-col gap-1"
-          >
-            {children.length > 0 ? (
-              children.map((title, index) => (
-                <span
-                  key={`${index}:${title}`}
-                  className={`${REPLAY_MASK_CLASS} truncate`}
-                >
-                  {title}
-                </span>
-              ))
-            ) : (
-              <span className="fg-secondary">
-                {SUBAGENTS_INSPECTOR_STARTED_NONE}
-              </span>
-            )}
-          </span>
+        <InspectorRow label={SUBAGENTS_INSPECTOR_STARTED}>
+          {children.length > 0
+            ? children.join(', ')
+            : SUBAGENTS_INSPECTOR_STARTED_NONE_CLASSIC}
         </InspectorRow>
       </dl>
     </>
@@ -355,7 +299,16 @@ function SubagentsWorkflowRunDetailsBody({
           >
             {run.title}
           </h4>
-          <CloseDetailsButton onClose={onClose} />
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
+            aria-label={SUBAGENTS_CLOSE_DETAILS_LABEL}
+            data-testid="subagents-inspector-close"
+            onClick={onClose}
+          >
+            <CloseIcon size={14} aria-hidden />
+          </Button>
         </div>
         <span className="text-xs">
           <SubagentWorkflowRunStatusText tree={tree} run={run} />
@@ -366,8 +319,8 @@ function SubagentsWorkflowRunDetailsBody({
         <div className="flex flex-wrap items-center gap-2">
           {onOpenWorkflow ? (
             <Button
-              variant="secondary"
-              size="control"
+              variant="primary"
+              size="compact"
               data-testid="subagents-inspector-open-workflow"
               onClick={(): void => onOpenWorkflow(run)}
             >
@@ -378,7 +331,7 @@ function SubagentsWorkflowRunDetailsBody({
           {onFocus ? (
             <Button
               variant="secondary"
-              size="control"
+              size="compact"
               data-testid="subagents-inspector-focus"
               onClick={(): void => onFocus(run)}
             >
@@ -386,18 +339,20 @@ function SubagentsWorkflowRunDetailsBody({
             </Button>
           ) : null}
           {onStopWorkflow ? (
-            <Button
-              variant="ghost"
-              size="control"
-              aria-label={SUBAGENT_STOP_WORKFLOW_LABEL}
+            <ExecutionActionButton
+              label={
+                stoppingWorkflow
+                  ? SUBAGENT_STOPPING_WORKFLOW_LABEL
+                  : SUBAGENT_STOP_WORKFLOW_LABEL
+              }
+              ariaLabel={SUBAGENT_STOP_WORKFLOW_LABEL}
+              icon={<StopIcon size={14} aria-hidden />}
+              variant="destructive"
               disabled={stoppingWorkflow}
-              data-testid="subagents-inspector-stop-workflow"
+              dataTestId="subagents-inspector-stop-workflow"
               onClick={(): void => onStopWorkflow(run)}
-            >
-              {stoppingWorkflow
-                ? SUBAGENT_STOPPING_WORKFLOW_LABEL
-                : SUBAGENT_STOP_WORKFLOW_LABEL}
-            </Button>
+              stopKeyDownPropagation={false}
+            />
           ) : null}
         </div>
       ) : null}
@@ -409,7 +364,7 @@ function SubagentsWorkflowRunDetailsBody({
         </p>
       ) : null}
 
-      <dl className={INSPECTOR_LIST_CLASS}>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
         <InspectorRow label={SUBAGENTS_INSPECTOR_CHAT}>
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="inline-flex shrink-0 fg-secondary">
@@ -485,7 +440,16 @@ function SubagentsWorkflowPhaseDetailsBody({
         >
           {node.title}
         </h4>
-        <CloseDetailsButton onClose={onClose} />
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
+          aria-label={SUBAGENTS_CLOSE_DETAILS_LABEL}
+          data-testid="subagents-inspector-close"
+          onClick={onClose}
+        >
+          <CloseIcon size={14} aria-hidden />
+        </Button>
       </div>
     </div>
   );
@@ -500,7 +464,7 @@ function SubagentsDetailsBody(props: SubagentsDetailsProps): JSX.Element {
 }
 
 /** Wide-panel detail column displayed beside the tree or list. */
-function SubagentsViewInspector(props: SubagentsDetailsProps): JSX.Element {
+export function SubagentsInspector(props: SubagentsDetailsProps): JSX.Element {
   return (
     <aside
       data-testid="subagents-inspector"
@@ -512,7 +476,7 @@ function SubagentsViewInspector(props: SubagentsDetailsProps): JSX.Element {
 }
 
 /** Narrow-panel detail drawer; canvas mode clears its zoom controls. */
-function SubagentsViewDrawer({
+export function SubagentsDrawer({
   over,
   ...props
 }: SubagentsDetailsProps & { readonly over: 'canvas' | 'list' }): JSX.Element {
@@ -523,28 +487,5 @@ function SubagentsViewDrawer({
     >
       <SubagentsDetailsBody {...props} />
     </aside>
-  );
-}
-
-/**
- * Wide-panel details: the simplified card under the Subagents view
- * experiment, the classic card otherwise.
- */
-export function SubagentsInspector(props: SubagentsDetailsProps): JSX.Element {
-  return useSubagentsView() ? (
-    <SubagentsViewInspector {...props} />
-  ) : (
-    <ClassicSubagentsInspector {...props} />
-  );
-}
-
-/** Narrow-panel details drawer, chosen the same way as the inspector. */
-export function SubagentsDrawer(
-  props: SubagentsDetailsProps & { readonly over: 'canvas' | 'list' },
-): JSX.Element {
-  return useSubagentsView() ? (
-    <SubagentsViewDrawer {...props} />
-  ) : (
-    <ClassicSubagentsDrawer {...props} />
   );
 }

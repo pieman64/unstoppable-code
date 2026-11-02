@@ -21,6 +21,26 @@ import {
 
 const LOCAL_COLLECTION_ID = 'c3310000-0000-4000-8000-000000000001';
 const LOCAL_SKILL_SOURCE_ID = 'local:release-fixture';
+const LOCAL_ENTRY_ID = `collection:local:${LOCAL_COLLECTION_ID}`;
+
+// CAN-4267: the Collections list table was deleted; a local collection is a
+// row of the Collections tab's Added section, and Share is an item of that
+// row's menu.
+function localCollectionRow(window) {
+  return window
+    .getByTestId('customize-section-installed')
+    .getByTestId(`customize-row-${LOCAL_ENTRY_ID}`);
+}
+
+async function openLocalShareItem(window) {
+  const menu = window
+    .getByTestId('customize-section-installed')
+    .getByTestId(`customize-row-menu-${LOCAL_ENTRY_ID}`);
+  await menu.click();
+  const item = window.getByTestId(`customize-row-menu-${LOCAL_ENTRY_ID}-share`);
+  await expect(item).toBeVisible();
+  return item;
+}
 
 function writeJson(filePath, value) {
   mkdirSync(path.dirname(filePath), { recursive: true });
@@ -171,18 +191,19 @@ test('recreates, previews, and installs a packaged Collection in one action', as
 
     await app.openPluginsPage();
     await app.openPluginsTab('collections');
-    const localRow = window
-      .getByText('Release Readiness Collection', { exact: true })
-      .locator('xpath=ancestor::tr');
-    await localRow.getByRole('button', { name: 'Share collection' }).click();
+    const localRow = localCollectionRow(window);
+    await expect(localRow).toBeVisible();
+    await (await openLocalShareItem(window)).click();
     const share = window.getByTestId('share-collection-modal');
     const dependencies = share.getByTestId('share-collection-dependencies');
     await expect(dependencies).toHaveAttribute('data-state', 'ready', {
       timeout: 60_000,
     });
-    // The packaged files are listed once the collapsed review is expanded.
-    await share.getByTestId('share-collection-dependencies-toggle').click();
-    await expect(dependencies).toContainText('/release-notes');
+    // The packaged files are named in the tooltip of the summary's help icon.
+    await share.getByTestId('share-collection-dependencies-help').hover();
+    await expect(
+      window.getByTestId('share-collection-dependencies-help-details'),
+    ).toContainText('/release-notes');
     await expect(
       share.getByTestId('share-collection-scope-team'),
     ).toHaveAttribute('aria-checked', 'true');
@@ -202,12 +223,16 @@ test('recreates, previews, and installs a packaged Collection in one action', as
     );
     await expect(share.getByTestId('share-collection-submit')).toBeEnabled();
     await share.getByTestId('share-collection-submit').click();
-    await expect(share).toHaveCount(0, {
-      timeout: 60_000,
-    });
+    // The dialog stays open on its success notice; no toast is raised.
+    await expect(share.getByTestId('share-collection-success')).toContainText(
+      'Collection shared',
+      { timeout: 60_000 },
+    );
     await expect(
       window.getByTestId('toast-card').filter({ hasText: 'Collection shared' }),
-    ).toBeVisible();
+    ).toHaveCount(0);
+    await share.getByTestId('share-collection-done').click();
+    await expect(share).toHaveCount(0);
     await expect(localRow).toBeVisible();
     rmSync(authorSkillDir, { recursive: true, force: true });
     rmSync(path.join(userDataDir, 'mcp-servers'), {
@@ -215,16 +240,19 @@ test('recreates, previews, and installs a packaged Collection in one action', as
       force: true,
     });
 
-    await window.getByTestId('collections-view-tab-shared').click();
-    await expect(
-      window.getByTestId('shared-collections-section'),
-    ).not.toContainText('Collection shared successfully.');
+    // CAN-4267: the Shared tab, its inline success flash and its Import
+    // button were deleted. The viewer's share is a "Shared by me" row; its
+    // detail's Add opens the same install review.
+    await expect(window.getByTestId('page-plugins')).not.toContainText(
+      'Collection shared successfully.',
+    );
     const row = window
-      .getByTestId('shared-collections-section')
-      .locator('tbody tr')
+      .getByTestId('customize-section-shared-by-me')
+      .locator('[data-testid^="customize-row-collection:shared:"]')
       .filter({ hasText: 'Release Readiness Collection' });
-    await expect(row).toBeVisible();
-    await row.getByRole('button', { name: 'Import collection' }).click();
+    await expect(row).toBeVisible({ timeout: 20_000 });
+    await row.click();
+    await window.getByTestId('shared-collection-detail-add').click();
 
     // The shared install review (CAN-3710): one click installs and closes it.
     const review = window.getByTestId('deep-link-share-landing');
@@ -293,17 +321,15 @@ test('MCP-backed collections show a disabled Share action and reject alternate m
     );
     await app.openPluginsPage();
     await app.openPluginsTab('collections');
-    const row = window
-      .getByText('Release Readiness Collection', { exact: true })
-      .locator('xpath=ancestor::tr');
-    const share = row.getByRole('button', { name: 'Share collection' });
-    await expect(share).toBeDisabled();
-    await share.hover({ force: true });
-    await expect(
-      window.getByText('Collections containing MCP servers cannot be shared.', {
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expect(localCollectionRow(window)).toBeVisible();
+    // The row menu's Share stays visible but unavailable, and names why.
+    const share = await openLocalShareItem(window);
+    await expect(share).toHaveAttribute('aria-disabled', 'true');
+    await expect(share).toHaveAccessibleName(
+      'Share…: Collections with MCP server configs cannot be shared. Remove MCP servers before sharing.',
+    );
+    await share.click({ force: true });
+    await expect(window.getByTestId('share-collection-modal')).toHaveCount(0);
     const result = await window.evaluate(async (id) => {
       // Share handlers resolve a `ShareOperationResult` envelope.
       const outcome = await window.collections.createShared({
@@ -392,10 +418,8 @@ test('a failed public-link revoke preserves the collection audience', async () =
     });
     await app.openPluginsPage();
     await app.openPluginsTab('collections');
-    const row = window
-      .getByText('Release Readiness Collection', { exact: true })
-      .locator('xpath=ancestor::tr');
-    await row.getByRole('button', { name: 'Share collection' }).click();
+    await expect(localCollectionRow(window)).toBeVisible();
+    await (await openLocalShareItem(window)).click();
     const share = window.getByTestId('share-collection-modal');
     await expect(
       share.getByTestId('share-collection-dependencies'),
@@ -418,7 +442,7 @@ test('a failed public-link revoke preserves the collection audience', async () =
   }
 });
 
-test('offers Public collection sharing from Personal list, card, and detail', async () => {
+test('offers Public collection sharing from the Personal list row and detail', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can3009-personal-'));
   seedAuthor(userDataDir);
@@ -457,11 +481,8 @@ test('offers Public collection sharing from Personal list, card, and detail', as
     expect(context.context).toEqual({ kind: 'personal' });
     await app.openPluginsPage();
     await app.openPluginsTab('collections');
-    const row = window
-      .getByText('Release Readiness Collection', { exact: true })
-      .locator('xpath=ancestor::tr');
-    const listShare = row.getByRole('button', { name: 'Share collection' });
-    await expect(listShare).toBeVisible({ timeout: 5_000 });
+    await expect(localCollectionRow(window)).toBeVisible();
+    const listShare = await openLocalShareItem(window);
     await listShare.click();
     const modal = window.getByTestId('share-collection-modal');
     await expect(modal).toBeVisible();
@@ -470,19 +491,9 @@ test('offers Public collection sharing from Personal list, card, and detail', as
     ).toContainText('Anyone can view');
     await window.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
-    await window.getByTestId('plugins-management-back').click();
-    await window.getByTestId('plugins-type-tab-collection').click();
-    const entryId = `collection:local:${LOCAL_COLLECTION_ID}`;
-    const cardShare = window.getByTestId(`plugins-entry-share-${entryId}`);
-    await expect(cardShare).toBeVisible();
-    await cardShare.click();
-    await expect(modal).toBeVisible();
-    await expect(
-      modal.getByTestId('share-collection-scope-description'),
-    ).toContainText('Anyone can view');
-    await window.keyboard.press('Escape');
-    await expect(modal).toHaveCount(0);
-    await window.getByTestId(`plugins-entry-${entryId}`).click();
+    // A local collection has no Browse card (CAN-4261); its Added row above
+    // opens the detail.
+    await localCollectionRow(window).click();
     const detailShare = window.getByTestId('plugins-entry-detail-share');
     await expect(detailShare).toBeVisible();
     await detailShare.click();

@@ -32,11 +32,11 @@ export type ModelExecutionLane = 'provider_subscription' | 'ai_credits';
  * the standard, non-regional per-token values published by the Vercel AI
  * Gateway `/v1/models` catalog on 2026-10-07. OpenAI models the gateway does
  * not list use the OpenAI API Standard rates served by the web OpenAI pricing
- * payload, fetched 2026-09-29. Updating rates must change this revision so
+ * payload, fetched 2026-10-27. Updating rates must change this revision so
  * persisted estimates retain their historical basis.
  */
 export const MODEL_ROUTING_PRICING_REVISION =
-  'vercel-ai-gateway:2026-10-07+openai-api:2026-09-29' as const;
+  'vercel-ai-gateway:2026-10-07+openai-api:2026-10-27' as const;
 
 export interface ModelRoutingUsage {
   input: number;
@@ -171,11 +171,31 @@ const MODEL_ROUTING_STANDARD_TOKEN_RATES: Readonly<
       cacheCreationMultiplier: 2,
     },
   },
+  'openai/gpt-6.1-terra': {
+    input: 0.000001,
+    output: 0.000005,
+    cacheReadInput: 0.00000005,
+    cacheCreationInput: 0.00000125,
+    longContext: {
+      thresholdExclusive: 272_000,
+      inputMultiplier: 2,
+      outputMultiplier: 1.5,
+      cacheReadMultiplier: 2,
+      cacheCreationMultiplier: 2,
+    },
+  },
   'openai/gpt-6-sol': {
     input: 0.000002,
     output: 0.00001,
     cacheReadInput: 0.0000002,
     cacheCreationInput: 0.0000025,
+    longContext: {
+      thresholdExclusive: 272_000,
+      inputMultiplier: 2,
+      outputMultiplier: 1.5,
+      cacheReadMultiplier: 2,
+      cacheCreationMultiplier: 2,
+    },
   },
   'openai/gpt-6-luna': {
     input: 0.0000001,
@@ -279,6 +299,7 @@ const MODEL_ROUTING_PRICING_ALIASES: Readonly<Record<string, string>> = {
   'claude-opus-4.6': 'anthropic/claude-opus-4.6',
   'gpt-6-astra': 'openai/gpt-6-astra',
   'gpt-6.1-sol': 'openai/gpt-6.1-sol',
+  'gpt-6.1-terra': 'openai/gpt-6.1-terra',
   'gpt-6-sol': 'openai/gpt-6-sol',
   'gpt-6-luna': 'openai/gpt-6-luna',
   'gpt-5.6-sol': 'openai/gpt-5.6-sol',

@@ -5,6 +5,12 @@ const RENAME_RETRY_DELAYS_MS = [50, 100, 150, 200, 250] as const;
 export interface RenameWithRetryOptions {
   /** Delays before each retry after a transient sharing violation. */
   retryDelaysMs?: readonly number[];
+  /**
+   * Runs after each retry delay, before the next attempt. A throw aborts
+   * without renaming, so a commit fence checked before the first attempt
+   * also holds across the backoff.
+   */
+  beforeRetry?: () => void;
 }
 
 /** Retry transient sharing violations without ever deleting the destination. */
@@ -31,6 +37,7 @@ export async function renameWithRetry(
         throw error;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      options?.beforeRetry?.();
     }
   }
 }

@@ -35,6 +35,8 @@ import { getWorkspaceConfigPath } from '../lib/paths';
 import { writeCoworkMigrationMap } from '../lib/cowork-migration-map';
 import {
   projectPluginDefaultsWritten,
+  projectPluginLayerSettled,
+  projectPluginLayerUnsettled,
   readThroughProjectPluginDefaults,
   reconcileProjectPluginDefaults,
   type ProjectPluginDefaults,
@@ -753,6 +755,51 @@ describe('reconciling the cached layer after a write that may have landed withou
       expect(await session).toEqual({ stamp: 0, layer: layerA });
       await reconcile(loaded(layerB));
       expect(revision()).toBe(1);
+    });
+  });
+
+  describe('while a write outcome is unknown (CAN-4417)', () => {
+    const readFresh = (
+      defaults: ProjectPluginDefaults,
+      cacheable = true,
+    ): Promise<ProjectPluginDefaults> =>
+      readThroughProjectPluginDefaults(path, loaded(defaults, cacheable));
+
+    afterEach(() => {
+      projectPluginLayerSettled(path);
+    });
+
+    it('reads skip the cache and request a reconcile only for a layer other than the one served', async () => {
+      const requested = jest.fn();
+      await read(layerA);
+      projectPluginLayerUnsettled(path, requested);
+      expect(await readFresh(layerA)).toEqual(layerA);
+      expect(requested).not.toHaveBeenCalled();
+      expect(await readFresh(layerB)).toEqual(layerB);
+      expect(requested).toHaveBeenCalledTimes(1);
+      await reconcile(loaded(layerB));
+      expect(revision()).toBe(1);
+      // Nothing served since the advance differs from the file.
+      expect(await readFresh(layerB)).toEqual(layerB);
+      expect(await readFresh(layerB)).toEqual(layerB);
+      expect(requested).toHaveBeenCalledTimes(1);
+      await reconcile(loaded(layerB));
+      expect(revision()).toBe(1);
+      projectPluginLayerSettled(path);
+      expect(await readFresh(layerB)).toEqual(layerB);
+      // Cached again.
+      expect(await readFresh(layerA)).toEqual(layerB);
+      expect(requested).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops the cached layer when marked, and an unreadable read requests nothing', async () => {
+      const requested = jest.fn();
+      await read(layerA);
+      projectPluginLayerUnsettled(path, requested);
+      expect(await readFresh(layerB, false)).toEqual(layerB);
+      expect(requested).not.toHaveBeenCalled();
+      projectPluginLayerSettled(path);
+      expect(await readFresh(layerB)).toEqual(layerB);
     });
   });
 });

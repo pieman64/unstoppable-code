@@ -18,6 +18,7 @@ function execution(
     started_at: '2026-10-12T10:00:00.000Z',
     cwd: '/tmp',
     ...overrides,
+    status_reasons: overrides.status_reasons ?? [],
   };
 }
 
@@ -60,6 +61,12 @@ describe('patchExecution', () => {
     expect(patchExecution(list, execution('a', { has_report: true }))).not.toBe(
       list,
     );
+  });
+
+  it('notices a recorded owner change', () => {
+    const list = [execution('a')];
+    const next = execution('a', { execution_context: 'personal' });
+    expect(patchExecution(list, next)).toEqual([next]);
   });
 
   it('patches one entry of a 1,000-execution list without re-sorting it', () => {

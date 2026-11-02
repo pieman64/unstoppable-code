@@ -254,7 +254,7 @@ async function runClaudeAdvisorTurn(
             )
           : [];
         throw new PipelineAdvisorTurnError(
-          errors.join('\n') || 'Pipeline Advisor Claude turn failed.',
+          errors.join('\n') || 'Workflow Advisor Claude turn failed.',
           sdkSessionId,
           usage,
         );
@@ -280,11 +280,11 @@ async function runClaudeAdvisorTurn(
   const report = structuredOutput ?? parseStructuredJsonResult(rawText);
   if (!sdkSessionId) {
     throw new Error(
-      'Pipeline Advisor Claude turn did not return a session id.',
+      'Workflow Advisor Claude turn did not return a session id.',
     );
   }
   if (report === null || report === undefined) {
-    throw new Error('Pipeline Advisor Claude turn did not return JSON.');
+    throw new Error('Workflow Advisor Claude turn did not return JSON.');
   }
   return { report, rawText, sdkSessionId, usage };
 }
@@ -398,10 +398,10 @@ async function runCodexAdvisorTurn(
       }
       prompt = buildCodexStructuredOutputRetryPrompt(
         input,
-        'Pipeline Advisor Codex turn did not return JSON.',
+        'Workflow Advisor Codex turn did not return JSON.',
       );
     }
-    throw new Error('Pipeline Advisor Codex turn did not return JSON.');
+    throw new Error('Workflow Advisor Codex turn did not return JSON.');
   } finally {
     await thread.unsubscribe().catch(() => {});
   }
@@ -437,7 +437,7 @@ async function runCodexStreamedAttempt(
       message: outcome.error,
     });
     const detail = outcome.error ?? `turn ${outcome.status}`;
-    const message = `Pipeline Advisor Codex turn failed: ${detail}`;
+    const message = `Workflow Advisor Codex turn failed: ${detail}`;
     throw new PipelineAdvisorCodexTurnError(
       message,
       args.thread.threadId,

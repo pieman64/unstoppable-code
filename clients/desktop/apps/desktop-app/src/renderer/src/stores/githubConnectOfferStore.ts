@@ -13,6 +13,9 @@ export type GitHubConnectOfferKind =
 export interface GitHubActionContinuation {
   operationId: string;
   kind: 'push' | 'pr';
+  /** Preserve original analytics attribution across the one login continuation. */
+  source?: 'manual' | 'chat';
+  telemetryRepoCount?: number;
   projectId: string;
   worktreeId: string;
   /**

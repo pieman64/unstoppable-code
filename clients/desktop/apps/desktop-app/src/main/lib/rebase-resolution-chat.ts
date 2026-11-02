@@ -14,6 +14,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { sendToWindow } from './window-send';
 import { dispatchWorktreeChatTurn } from './worktree-chat-turn';
+import { runAdmittedDirectDispatch } from '../services/chat-queue-service';
 import {
   commitProviderChatEvent,
   completePersistedChatTabTurn,
@@ -137,12 +138,6 @@ function buildInitialMessages(args: {
       id: args.userMessageId,
       role: 'user',
       blocks: [{ type: 'text', text: args.promptText }],
-      timestamp,
-    },
-    {
-      id: nextGeneratedId('msg'),
-      role: 'system',
-      blocks: [{ type: 'turn_timer', startedAt: timestamp, completedAt: null }],
       timestamp,
     },
   ];
@@ -309,74 +304,87 @@ async function launchRebaseResolutionChatWithScopeLease(
     ...newChatPluginDefaultsStamp(args.projectId),
   };
 
-  await persistTab({
-    projectId: args.projectId,
-    worktreeId: args.worktreeId,
-    tab,
-  });
+  // Ordinary admission precedes the prompt's first effect (contracts §6).
+  await runAdmittedDirectDispatch(
+    { projectId: args.projectId, worktreeId: args.worktreeId, chatId },
+    userMessageId,
+    async (authorization): Promise<boolean> => {
+      await persistTab({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        tab,
+      });
 
-  const delivered = sendToWindow(
-    args.getWindow(),
-    IPC_CHANNELS.chatHookTabStarted,
-    {
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-      tab,
-      activateTab: true,
-    },
-  );
-  if (!delivered) {
-    await rollbackTab({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-    });
-    throw new Error(
-      'Rebase resolution chat requires an active renderer window before it can start.',
-    );
-  }
+      const delivered = sendToWindow(
+        args.getWindow(),
+        IPC_CHANNELS.chatHookTabStarted,
+        {
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          chatId,
+          tab,
+          activateTab: true,
+        },
+      );
+      if (!delivered) {
+        await rollbackTab({
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          chatId,
+        });
+        throw new Error(
+          'Rebase resolution chat requires an active renderer window before it can start.',
+        );
+      }
 
-  try {
-    await dispatchWorktreeChatTurn({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-      userMessageId,
-      text: promptText,
-      planMode: false,
-      thinkingLevel,
-      model,
-      providerType,
-      executionHarness,
-      approvalMode,
-      getWindow: args.getWindow,
-      // Launched synchronously from the user's own Commit/Pull request, so it
-      // runs in the context the user is working in (org memory may follow
-      // the live sidebar context for a tab with none captured, CAN-3457).
-      initiationSource: 'user',
-      skipBranchNaming: true,
-      onBeforeChatEvent: (event) =>
-        commitProviderChatEvent({
+      try {
+        await dispatchWorktreeChatTurn({
+          ...(authorization ? { authorization } : {}),
           projectId: args.projectId,
           worktreeId: args.worktreeId,
           chatId,
           userMessageId,
+          text: promptText,
+          planMode: false,
+          thinkingLevel,
+          model,
           providerType,
-          event,
-        }),
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await markDispatchFailed({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      chatId,
-      errorMessage,
-      getWindow: args.getWindow,
-    });
-    throw error;
-  }
+          executionHarness,
+          approvalMode,
+          getWindow: args.getWindow,
+          // Launched synchronously from the user's own Commit/Pull request, so it
+          // runs in the context the user is working in (org memory may follow
+          // the live sidebar context for a tab with none captured, CAN-3457).
+          initiationSource: 'user',
+          // Nobody typed this prompt, so analytics count it with automation.
+          turnTrigger: 'automation',
+          skipBranchNaming: true,
+          onBeforeChatEvent: (event) =>
+            commitProviderChatEvent({
+              projectId: args.projectId,
+              worktreeId: args.worktreeId,
+              chatId,
+              userMessageId,
+              providerType,
+              event,
+            }),
+        });
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        await markDispatchFailed({
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          chatId,
+          errorMessage,
+          getWindow: args.getWindow,
+        });
+        throw error;
+      }
+
+      return true;
+    },
+  );
 
   return { chatId };
 }

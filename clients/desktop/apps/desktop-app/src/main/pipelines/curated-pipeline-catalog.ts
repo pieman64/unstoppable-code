@@ -72,6 +72,9 @@ const PREFIX = `/api/v1/${BRAND.web.apiNamespace}/pipelines/curated`;
 const PACKAGE_PREFIX = '/api/v1/curated-pipelines';
 export const CURATED_PIPELINE_CACHE_TTL_MS = 5 * 60_000;
 class InvalidCatalogResponseError extends Error {}
+
+/** The catalog no longer advertises the requested curated workflow. */
+export class CuratedPipelineMissingError extends InvalidCatalogResponseError {}
 let manifestQueue: Promise<unknown> = Promise.resolve();
 const imports = new Map<string, Promise<PipelineInfo>>();
 
@@ -187,7 +190,7 @@ export async function listCuratedPipelines(
     });
     if (!isCuratedPipelineListResponse(raw))
       throw new InvalidCatalogResponseError(
-        'Invalid curated pipeline catalog response.',
+        'Invalid curated workflow catalog response.',
       );
     const response: CuratedPipelineListResponse = {
       version: 1,
@@ -231,14 +234,14 @@ async function fetchDetailUncached(
   );
   await assertCurrentCredentials(context);
   if (!isCuratedPipelineDetail(raw) || raw.key !== key)
-    throw new Error('Invalid curated pipeline content.');
+    throw new Error('Invalid curated workflow content.');
   const bytes = Buffer.from(raw.rawPipeline, 'utf8');
   if (
     bytes.length !== raw.contentSizeBytes ||
     createHash('sha256').update(bytes).digest('hex') !== raw.contentHash
   ) {
     throw new Error(
-      'Curated pipeline content failed verification. Refresh the catalog and try again.',
+      'Curated workflow content failed verification. Refresh the catalog and try again.',
     );
   }
   return {
@@ -302,7 +305,7 @@ async function installCuratedPipelinePackage(
       hashPipelinePackageYaml(rawPipeline)
     ) {
       throw new Error(
-        'Curated pipeline package does not match its managed revision.',
+        'Curated workflow package does not match its managed revision.',
       );
     }
     return {
@@ -325,7 +328,7 @@ async function installCuratedPipelinePackage(
       hashPipelinePackageYaml(rawPipeline)
   ) {
     throw new Error(
-      'Curated pipeline package does not match its managed revision.',
+      'Curated workflow package does not match its managed revision.',
     );
   }
   const installedPackagePath = await installPipelinePackageAtomically({
@@ -384,7 +387,7 @@ export async function importCuratedPipeline(
     const detail = await fetchDetail(input.key, context);
     if (detail.contentHash !== input.expectedContentHash)
       throw new Error(
-        'This curated pipeline changed. Refresh its preview before adding it.',
+        'This curated workflow changed. Refresh its preview before adding it.',
       );
     const packageRef = detail.package
       ? { version: detail.package.version, digest: detail.package.digest }
@@ -413,7 +416,7 @@ export async function importCuratedPipeline(
       },
     });
     if (!result.success || !result.data)
-      throw new Error(result.error ?? 'Failed to add curated pipeline.');
+      throw new Error(result.error ?? 'Failed to add curated workflow.');
     if (pipelinePackage) {
       try {
         await upsertPipelinePackageInstall(
@@ -473,7 +476,13 @@ export function curatedPipelineInfo(row: CuratedPipelineSummary): PipelineInfo {
   };
 }
 
-const managedReads = new Map<string, Promise<ManagedCuratedPipelineData>>();
+/** A managed read with the reviewed revision's exact bytes. */
+export interface ManagedCuratedPipelineRead {
+  data: ManagedCuratedPipelineData;
+  rawPipeline: string;
+}
+
+const managedReads = new Map<string, Promise<ManagedCuratedPipelineRead>>();
 let syncTimer: ReturnType<typeof setInterval> | undefined;
 let syncing: Promise<void> | undefined;
 
@@ -503,7 +512,7 @@ function verifyManagedContent(
     createHash('sha256').update(bytes).digest('hex') !== row.contentHash
   ) {
     throw new Error(
-      'Curated pipeline content failed verification. Refresh the catalog and try again.',
+      'Curated workflow content failed verification. Refresh the catalog and try again.',
     );
   }
   // Same rule the server applied at publication: packaged `project/` actions
@@ -571,7 +580,7 @@ export async function listManagedCuratedPipelines(): Promise<PipelineInfo[]> {
       cursor = page.nextCursor ?? undefined;
       if (cursor && cursors.has(cursor))
         throw new InvalidCatalogResponseError(
-          'Invalid repeated curated pipeline page.',
+          'Invalid repeated curated workflow page.',
         );
       if (cursor) cursors.add(cursor);
     } while (cursor);
@@ -713,8 +722,8 @@ async function currentSummary(
         page.stale &&
         (await rememberedManagedSummary(key, context)) === null
       ) {
-        throw new InvalidCatalogResponseError(
-          'This curated pipeline is no longer available. Refresh the pipeline list.',
+        throw new CuratedPipelineMissingError(
+          'This curated workflow is no longer available. Refresh the workflow list.',
         );
       }
       const row = page.data.find((entry) => entry.key === key);
@@ -725,13 +734,13 @@ async function currentSummary(
       cursor = page.nextCursor ?? undefined;
       if (cursor && cursors.has(cursor))
         throw new InvalidCatalogResponseError(
-          'Invalid repeated curated pipeline page.',
+          'Invalid repeated curated workflow page.',
         );
       if (cursor) cursors.add(cursor);
     } while (cursor);
     await rememberManagedSummary(key, null, context);
-    throw new InvalidCatalogResponseError(
-      'This curated pipeline is no longer available. Refresh the pipeline list.',
+    throw new CuratedPipelineMissingError(
+      'This curated workflow is no longer available. Refresh the workflow list.',
     );
   } catch (error) {
     await assertCurrentCredentials(context);
@@ -752,7 +761,7 @@ async function currentSummary(
     if (remembered) return remembered;
     if (remembered === null)
       throw new Error(
-        'This curated pipeline is no longer available. Refresh the pipeline list.',
+        'This curated workflow is no longer available. Refresh the workflow list.',
       );
     throw error;
   }
@@ -762,6 +771,13 @@ async function currentSummary(
 export async function getManagedCuratedPipeline(
   id: string,
 ): Promise<ManagedCuratedPipelineData> {
+  return (await readManagedCuratedPipeline(id)).data;
+}
+
+/** {@link getManagedCuratedPipeline}, with the bytes its content hash covers. */
+export async function readManagedCuratedPipeline(
+  id: string,
+): Promise<ManagedCuratedPipelineRead> {
   if (!id.startsWith('curated:'))
     throw new Error('Invalid curated pipeline id.');
   const key = id.slice('curated:'.length);
@@ -770,7 +786,7 @@ export async function getManagedCuratedPipeline(
   const identity = `${credentialIdentity(context)}:${key}`;
   const pending = managedReads.get(identity);
   if (pending) return pending;
-  const operation = (async (): Promise<ManagedCuratedPipelineData> => {
+  const operation = (async (): Promise<ManagedCuratedPipelineRead> => {
     let row = await currentSummary(key, context);
     await assertCurrentCredentials(context);
     const remembered = await rememberedManagedSummary(key, context);
@@ -798,7 +814,7 @@ export async function getManagedCuratedPipeline(
           row.contentSizeBytes !== detail.contentSizeBytes
         ) {
           throw new Error(
-            'This curated pipeline changed while downloading. Try again.',
+            'This curated workflow changed while downloading. Try again.',
           );
         }
       }
@@ -825,12 +841,15 @@ export async function getManagedCuratedPipeline(
     await assertCurrentCredentials(context);
     startManagedCuratedPipelineSync();
     return {
-      info: {
-        ...curatedPipelineInfo(row),
-        filePath: managedPath(row, context),
+      data: {
+        info: {
+          ...curatedPipelineInfo(row),
+          filePath: managedPath(row, context),
+        },
+        content: parsePipelineText(rawPipeline),
+        ...(pipelinePackage ? { pipelinePackage } : {}),
       },
-      content: parsePipelineText(rawPipeline),
-      ...(pipelinePackage ? { pipelinePackage } : {}),
+      rawPipeline,
     };
   })();
   managedReads.set(identity, operation);

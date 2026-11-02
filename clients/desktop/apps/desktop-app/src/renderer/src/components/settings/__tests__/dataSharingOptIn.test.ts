@@ -1,5 +1,6 @@
 import type {
   CanopyCloudAccountPublicState,
+  CanopyOrganizationSummary,
   TelemetrySharingPreferences,
 } from '@canopy/desktop-shared/types';
 import type { TelemetryEnforcedScopeMap } from '@canopy/protocol';
@@ -13,6 +14,15 @@ import {
 
 const ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+function organization(id: string, name: string): CanopyOrganizationSummary {
+  return {
+    id,
+    name,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+}
 
 const PRIVATE: TelemetrySharingPreferences = {
   metadata: 'private',
@@ -30,16 +40,14 @@ function account(
     authMode: 'oauth',
     credentialSource: null,
     capabilities: [],
+    storageAvailable: true,
     account: {
       id: 'user-1',
       name: 'Ada',
       email: 'ada@example.test',
       role: 'DEVELOPER',
     },
-    organizations: [
-      { id: ORG, name: 'Acme' },
-      { id: OTHER, name: 'Other' },
-    ],
+    organizations: [organization(ORG, 'Acme'), organization(OTHER, 'Other')],
     enforcedSettings: [],
     ...overrides,
   };
@@ -53,7 +61,23 @@ function policy(
   return {
     organizationId,
     organizationName: organizationId === ORG ? 'Acme' : 'Other',
-    policies: [{ kind: 'telemetry-sync', scopes, prohibitedScopes }],
+    policies: [
+      {
+        kind: 'telemetry-sync',
+        scopes: {
+          transcripts: false,
+          plans: false,
+          metadata: false,
+          ...scopes,
+        },
+        prohibitedScopes: {
+          transcripts: false,
+          plans: false,
+          metadata: false,
+          ...prohibitedScopes,
+        },
+      },
+    ],
   };
 }
 

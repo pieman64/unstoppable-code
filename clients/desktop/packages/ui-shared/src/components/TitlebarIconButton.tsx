@@ -51,6 +51,11 @@ export interface TitlebarIconButtonProps extends Omit<
    */
   tooltipLabel?: ReactNode;
   /**
+   * Keys that perform the same action, drawn as caps after the tooltip
+   * label (`formatShortcut(id)`).
+   */
+  tooltipShortcut?: string;
+  /**
    * Keep the hover look (subtle surface, primary ink) while `aria-expanded`
    * is true, for a toggle whose card or panel is open beside it.
    */
@@ -78,6 +83,7 @@ export const TitlebarIconButton = forwardRef<
     foreground = 'top-bar',
     surface = 'titlebar',
     tooltipLabel,
+    tooltipShortcut,
     holdHoverWhenExpanded = false,
     title,
     'aria-label': ariaLabel,
@@ -93,6 +99,7 @@ export const TitlebarIconButton = forwardRef<
   return (
     <Tooltip
       label={resolvedTooltipLabel}
+      shortcut={tooltipShortcut}
       disabled={resolvedTooltipLabel == null || resolvedTooltipLabel === ''}
     >
       <button

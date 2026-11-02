@@ -24,7 +24,10 @@ const WIN32_FULLY_QUALIFIED =
 const WIN32_INVALID_LEAF =
   /[<>"|?*]|[. ]$|^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i;
 
-function isFullyQualified(os: PlatformOperatingSystem, value: string): boolean {
+export function isFullyQualified(
+  os: PlatformOperatingSystem,
+  value: string,
+): boolean {
   if (value.includes('\0')) return false;
   return os === 'win32'
     ? WIN32_FULLY_QUALIFIED.test(value)

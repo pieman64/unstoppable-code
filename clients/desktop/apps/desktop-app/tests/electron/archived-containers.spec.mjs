@@ -314,7 +314,7 @@ async function deleteWorktreeWithOptionalConfirmation(window, row) {
   await row.getByTestId('worktree-actions-menu-button').click();
   await window.getByTestId('worktree-actions-menu-delete').click();
   // A clean worktree can skip the confirmation once Git stats have loaded.
-  const dialog = window.getByRole('dialog', { name: 'Delete worktree?' });
+  const dialog = window.getByRole('dialog', { name: /^Delete worktree/ });
   const needsConfirmation = await dialog
     .waitFor({ state: 'visible', timeout: 2_000 })
     .then(() => true)
@@ -322,6 +322,22 @@ async function deleteWorktreeWithOptionalConfirmation(window, row) {
   if (needsConfirmation) {
     await dialog.getByTestId('worktree-removal-preserve-branch').click();
   }
+}
+
+async function restoreWithoutToastObstruction(page, viewer) {
+  // Archive notifications remain visible until dismissed and can cover the
+  // viewer's top-right Restore action. Dismiss them through their real UI.
+  const dismiss = page.locator('[data-testid="toast-dismiss"]:visible');
+  while ((await dismiss.count()) > 0) {
+    try {
+      await dismiss.first().click({ timeout: 2_000 });
+    } catch (error) {
+      // A toast may expire while Playwright waits for its exit animation.
+      // Only accept that race when every possible obstruction has disappeared.
+      if ((await dismiss.count()) > 0) throw error;
+    }
+  }
+  await viewer.getByTestId('archived-restore').click();
 }
 
 test.describe('archived containers', () => {
@@ -861,11 +877,11 @@ require(${JSON.stringify(modulePath)});
 
       const viewer = window.getByTestId('archived-container-view');
       await expect(viewer.getByTestId('archived-restore')).toHaveText(
-        'Retry pipeline import',
+        'Retry workflow import',
       );
       await expect(
         viewer.getByTestId('archived-partial-restore-banner'),
-      ).toHaveText('Partially restored — pipeline runs pending');
+      ).toHaveText('Partially restored — workflow runs pending');
       await expect(
         viewer.getByTestId('archived-file-recovery-banner'),
       ).toContainText('Git registration cleanup is still pending');
@@ -1047,8 +1063,16 @@ require(${JSON.stringify(modulePath)});
         await page.getByTestId('archived-overview-open-restore-entry').click();
         const viewer = page.getByTestId('archived-container-view');
         await expect(viewer).toContainText('restore-entry');
-        await viewer.getByTestId('archived-restore').click();
+        await restoreWithoutToastObstruction(page, viewer);
         await expect(viewer).toHaveCount(0, { timeout: 30_000 });
+        if (surface === 'app-advisor') {
+          // Restoring an Advisor entry opens its floating chat. Continue the
+          // full-workspace assertions through the same user-facing control.
+          await page
+            .getByTestId('app-advisor-floating')
+            .getByRole('button', { name: 'Open full window' })
+            .click();
+        }
         await expect(page.getByTestId('panel-content-chat')).toContainText(
           'Retained transcript for restore-entry',
         );
@@ -1159,6 +1183,7 @@ require(${JSON.stringify(modulePath)});
         const panel = chatPanelLocator(window);
         await expect(panel).toBeVisible();
         await window.getByTestId('panel-add-tab-group-chat').click();
+        await window.getByTestId('panel-add-menu-item-new-chat').click();
         await panel
           .getByRole('textbox')
           .first()
@@ -1309,6 +1334,8 @@ require(${JSON.stringify(modulePath)});
       await assertArchivePending();
 
       await window.getByTestId('panel-add-tab-group-chat').click();
+
+      await window.getByTestId('panel-add-menu-item-new-chat').click();
       const composer = panel.getByRole('textbox').first();
       await composer.fill(`[${marker}] Start while archival remains blocked.`);
       await panel
@@ -1463,6 +1490,7 @@ require(${JSON.stringify(modulePath)});
         await app.selectWorktree(otherId);
         await expect(chatPanelLocator(window)).toBeVisible();
         await window.getByTestId('panel-add-tab-group-chat').click();
+        await window.getByTestId('panel-add-menu-item-new-chat').click();
         const panel = chatPanelLocator(window);
         const picker = panel.getByTestId('chat-model-picker');
         await picker.click();
@@ -1768,7 +1796,7 @@ require(${JSON.stringify(modulePath)});
       // removal); Archive is a separate menu item that locks the container.
       await window.getByTestId('worktree-actions-menu-delete').click();
       const confirmDialog = window.getByRole('dialog', {
-        name: 'Delete worktree?',
+        name: /^Delete worktree/,
       });
       await expect(confirmDialog).toBeVisible();
       await confirmDialog
@@ -1884,7 +1912,7 @@ require(${JSON.stringify(modulePath)});
         viewer.getByTestId('archived-container-tab-chats'),
       ).toBeVisible();
       await viewer.getByTestId('archived-container-tab-pipelines').click();
-      await expect(viewer).toContainText('No pipeline runs were retained');
+      await expect(viewer).toContainText('No workflow runs were retained');
 
       await viewer.getByTestId('archived-container-tab-changes').click();
       await expect(
@@ -2430,7 +2458,7 @@ require(${JSON.stringify(modulePath)});
       await expect(
         composer.click({ trial: true, timeout: 1_000 }),
       ).rejects.toThrow();
-      await overlay.getByTestId('archived-restore').click();
+      await restoreWithoutToastObstruction(window, overlay);
       await expect(overlay).toHaveCount(0, { timeout: 30_000 });
       const restoredEntry = JSON.parse(
         readFileSync(path.join(workspaceDir, 'work-entries.json'), 'utf8'),
@@ -2535,7 +2563,11 @@ require(${JSON.stringify(modulePath)});
       await advisor.getByTestId('app-advisor-nav-archived-link').click();
       await advisor.getByTestId('archived-overview-open-advisor-entry').click();
       await expect(viewer).toContainText('Advisor retained entry');
-      await viewer.getByTestId('archived-restore').click();
+      await restoreWithoutToastObstruction(advisor, viewer);
+      await advisor
+        .getByTestId('app-advisor-floating')
+        .getByRole('button', { name: 'Open full window' })
+        .click();
       await expect(
         advisor.getByTestId('archived-overview-open-advisor-entry'),
       ).toHaveCount(0, { timeout: 15_000 });

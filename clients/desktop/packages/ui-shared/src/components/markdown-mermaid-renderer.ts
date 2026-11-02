@@ -4,8 +4,7 @@ import DOMPurify from 'dompurify';
 import {
   canonicalizeMermaidEscapes,
   hasMermaidExternalCssResource,
-  mermaidSourceIssue,
-  prepareMermaidSource,
+  planMermaidRender,
 } from './markdown-mermaid-policy';
 
 const MAX_SVG_LENGTH = 1_000_000;
@@ -98,7 +97,7 @@ export function renderMermaid(
   element: HTMLElement,
   isCurrent: () => boolean,
 ): Promise<string> {
-  const issue = mermaidSourceIssue(source);
+  const { issue, prepared } = planMermaidRender(source);
   if (issue) return Promise.reject(new Error(issue));
   if (pendingRenders >= MAX_PENDING_RENDERS)
     return Promise.reject(new Error('Diagram queue full'));
@@ -184,7 +183,7 @@ export function renderMermaid(
       try {
         const { svg } = await mermaid.render(
           `markdown-diagram-${++nextDiagramId}`,
-          prepareMermaidSource(source),
+          prepared,
           staging,
         );
         if (!isCurrent()) throw new Error('Diagram superseded');

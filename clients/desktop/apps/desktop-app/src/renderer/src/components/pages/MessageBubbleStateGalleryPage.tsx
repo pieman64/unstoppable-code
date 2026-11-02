@@ -4,6 +4,10 @@ import { PageTitlebar } from '../shared/PageTitlebar';
 import { ChatMessageItem } from '../chat/ChatMessageItem';
 import { QueuedMessageBubble } from '../chat/QueuedMessageBubble';
 import type { ScheduledMessageBubbleDescriptor } from '../chat/QueuedMessageBubble';
+import {
+  queuedRowForceAction,
+  queuedRowTurnPhase,
+} from '@/stores/chat/queue-mirror';
 import { ScheduledAutomationsNoticeView } from '../chat/ScheduledAutomationsNotice';
 import type { AutomationMutationResponse } from '@canopy/desktop-shared/types';
 import {
@@ -72,6 +76,10 @@ function QueuedStateRow({ state }: QueuedStateRowProps): JSX.Element {
           onInterrupt: noop,
         }
       : undefined;
+  // Same mapping as the live transcript; gallery rows never sit behind a
+  // running turn, and a local row shows the failed-launch Retry.
+  const forceAction = queuedRowForceAction(state.message, 'recoverable');
+  const turnPhase = queuedRowTurnPhase(state.message, 'recoverable');
   return (
     <div data-testid={`bubble-gallery-row-${state.id}`} className="min-w-0">
       <p className="text-xs font-medium fg-primary">{state.title}</p>
@@ -82,10 +90,17 @@ function QueuedStateRow({ state }: QueuedStateRowProps): JSX.Element {
         message={state.message}
         index={0}
         onClear={noop}
-        onForce={noop}
+        turnPhase={turnPhase}
+        onForce={forceAction === 'interrupt' ? noop : undefined}
+        onRetry={forceAction === 'retry' ? noop : undefined}
+        onRunNow={forceAction === 'run-now' ? noop : undefined}
+        onSteer={state.steerable ? noop : undefined}
+        steeringSupported={state.steerable}
+        settingsHeld={state.message.restartHeldChanges}
         onEdit={noop}
         canForce={state.canForce}
-        queuedForSetup={state.queuedForSetup}
+        setupWait={state.setupWait}
+        clockNowMs={GALLERY_FIXED_NOW}
         scheduled={scheduled}
       />
     </div>

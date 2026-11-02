@@ -18,9 +18,11 @@ import {
 } from '../memory/local/change-events';
 import { readLocalMemoryConsolidationStatus } from '../memory/local/consolidation-status';
 import {
+  deleteLocalMemoryFile,
   listLocalMemoryFiles,
   mutateLocalMemoryItem,
   readLocalMemoryDocument,
+  updateLocalMemoryFile,
 } from '../memory/local/explorer';
 import {
   restoreManualLocalMemorySnapshot,
@@ -28,6 +30,7 @@ import {
   runManualLocalMemoryRebuild,
 } from '../memory/local/manual-consolidation-trigger';
 import { listLocalMemorySnapshots } from '../memory/local/snapshots';
+import { readUsage, usageEntryFor } from '../memory/local/usage';
 import { registerIpcHandler } from './register';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -64,11 +67,28 @@ function field(request: Record<string, unknown>, key: string): string {
   return request[key];
 }
 
+/**
+ * The scope's files with each one's usage count. Usage is advisory: while
+ * tracking is unknown for the scope, or reading it fails, files carry none.
+ */
+async function listWithUsage(
+  scopeDir: string,
+): Promise<LocalMemoryFileSummary[]> {
+  const [files, usage] = await Promise.all([
+    listLocalMemoryFiles(scopeDir),
+    readUsage(scopeDir).catch(() => null),
+  ]);
+  if (!usage || usage.trackingSince === null) return files;
+  return files.map((file) => {
+    const entry = usageEntryFor(usage.entries, file.fileKey);
+    return { ...file, usageCount: entry?.usageCount ?? 0 };
+  });
+}
+
 export function registerLocalMemoryHandlers(): void {
   registerIpcHandler<[unknown], LocalMemoryFileSummary[]>(
     IPC_CHANNELS.localMemoryList,
-    async (_event, value) =>
-      listLocalMemoryFiles(directory(scopeRequest(value))),
+    async (_event, value) => listWithUsage(directory(scopeRequest(value))),
   );
   registerIpcHandler<[unknown], LocalMemoryDocument>(
     IPC_CHANNELS.localMemoryRead,
@@ -98,6 +118,35 @@ export function registerLocalMemoryHandlers(): void {
       },
     );
   }
+  registerIpcHandler<[unknown], LocalMemoryDocument>(
+    IPC_CHANNELS.localMemoryUpdateFile,
+    async (_event, value) => {
+      const scope = scopeRequest(value);
+      const request = record(value);
+      const result = await updateLocalMemoryFile(directory(scope), {
+        fileKey: field(request, 'fileKey'),
+        revision: field(request, 'revision'),
+        body: field(request, 'body'),
+        ...(request.title === undefined
+          ? {}
+          : { title: field(request, 'title') }),
+      });
+      broadcastLocalMemoryChanged(scope);
+      return result;
+    },
+  );
+  registerIpcHandler<[unknown], void>(
+    IPC_CHANNELS.localMemoryDeleteFile,
+    async (_event, value) => {
+      const scope = scopeRequest(value);
+      const request = record(value);
+      await deleteLocalMemoryFile(directory(scope), {
+        fileKey: field(request, 'fileKey'),
+        revision: field(request, 'revision'),
+      });
+      broadcastLocalMemoryChanged(scope);
+    },
+  );
   registerIpcHandler<[unknown], LocalMemoryConsolidationStatus>(
     IPC_CHANNELS.localMemoryConsolidationStatus,
     async (_event, value) =>

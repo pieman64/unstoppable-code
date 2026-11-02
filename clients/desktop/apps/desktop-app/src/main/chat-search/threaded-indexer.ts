@@ -67,6 +67,12 @@ export function createThreadedChatSearchIndexer(
       return value;
     },
     deleteSourceFile: (...args) => runVoid('deleteSourceFile', args),
+    getMetadata: async (...args) => {
+      const value = await runner.run('getMetadata', args);
+      if (value !== null && typeof value !== 'string')
+        throw new Error('Invalid search index metadata response');
+      return value;
+    },
     setMetadata: (...args) => runVoid('setMetadata', args),
     getIndexedBodiesIfTranscriptUnchanged: async (...args) => {
       const value = await runner.run(
@@ -110,6 +116,27 @@ export function createThreadedChatSearchIndexer(
     stageScopeDoc: (...args) => runVoid('stageScopeDoc', args),
     commitStagedScope: (...args) => runVoid('commitStagedScope', args),
     discardStagedScope: (...args) => runVoid('discardStagedScope', args),
+    beginChildDocumentStage: async (...args) => {
+      const value = await runner.run('beginChildDocumentStage', args);
+      if (typeof value !== 'string')
+        throw new Error('Invalid child-document staging response');
+      return value;
+    },
+    reuseChildDocument: async (...args) => {
+      const value = await runner.run('reuseChildDocument', args);
+      if (typeof value !== 'boolean')
+        throw new Error('Invalid child-document reuse response');
+      return value;
+    },
+    stageChildDocument: (...args) => runVoid('stageChildDocument', args),
+    commitChildDocumentStage: async (...args) => {
+      const value = await runner.run('commitChildDocumentStage', args);
+      if (typeof value !== 'boolean')
+        throw new Error('Invalid child-document commit response');
+      return value;
+    },
+    discardChildDocumentStage: (...args) =>
+      runVoid('discardChildDocumentStage', args),
   };
   return {
     ...methods,

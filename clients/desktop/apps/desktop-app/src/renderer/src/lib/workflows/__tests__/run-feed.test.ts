@@ -156,8 +156,8 @@ describe('automation rows', () => {
     {
       name: 'app_advisor_prompt',
       action: { type: 'app_advisor_prompt', prompt: 'Standup notes' },
-      detail: 'Asked App Advisor',
-      where: 'App Advisor',
+      detail: 'Asked Orchestrator',
+      where: 'Orchestrator',
     },
     {
       name: 'standalone_prompt',
@@ -194,18 +194,66 @@ describe('automation rows', () => {
     {
       name: 'worktree_pipeline',
       action: PIPELINE_ACTION,
-      detail: 'Pipeline Dependency check finished',
+      detail: 'Workflow Dependency check finished',
       where: 'storefront · new worktree',
+    },
+    {
+      name: 'worktree_pipeline with no project',
+      action: {
+        ...PIPELINE_ACTION,
+        target: { kind: 'global' },
+        workspaceId: 'storefront',
+      },
+      detail: 'Workflow Dependency check finished',
+      where: 'No project',
+    },
+    {
+      name: 'worktree_pipeline in an existing task',
+      action: {
+        ...PIPELINE_ACTION,
+        target: { kind: 'task', taskId: 'left-rail' },
+      },
+      detail: 'Workflow Dependency check finished',
+      where: 'storefront · left-rail',
+    },
+    {
+      name: 'worktree_pipeline in a task with no known name',
+      action: {
+        ...PIPELINE_ACTION,
+        target: { kind: 'task', taskId: 'work-entry-1' },
+      },
+      detail: 'Workflow Dependency check finished',
+      where: 'storefront · existing task',
+    },
+    {
+      name: 'worktree_pipeline in the project folder',
+      action: { ...PIPELINE_ACTION, target: { kind: 'project' } },
+      detail: 'Workflow Dependency check finished',
+      where: 'storefront',
+    },
+    {
+      name: 'worktree_pipeline with an unavailable destination',
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'project' },
+        pipelineId: 'dependency-check',
+        pipelineName: 'Dependency check',
+      },
+      detail: 'Workflow Dependency check finished',
+      where: 'Unavailable destination',
     },
     {
       name: 'pipeline_execution_resume',
       action: {
         type: 'pipeline_execution_resume',
         executionId: 'exec-elsewhere',
+        statusReasonIds: [],
+        provider: 'claude',
+        purpose: 'usage_limit_resume',
         pipelineName: 'Release',
         projectId: 'canopy',
       },
-      detail: 'Resumed pipeline Release',
+      detail: 'Resumed workflow Release',
       where: 'canopy',
     },
   ];
@@ -281,7 +329,7 @@ describe('automation rows', () => {
       }),
     );
     expect(row.detail).toBe(
-      'If command passed · Pipeline Dependency check failed: npm test failed, 3 tests in apps/web',
+      'If command passed · Workflow Dependency check failed: npm test failed, 3 tests in apps/web',
     );
   });
 
@@ -338,7 +386,7 @@ describe('automation rows', () => {
     expect(row.name).toBe('Weekly lint sweep');
     expect(row.libraryRowKey).toBeUndefined();
     expect(row.actions).not.toContain('open-library');
-    expect(row.detail).toBe('Asked App Advisor');
+    expect(row.detail).toBe('Asked Orchestrator');
   });
 
   it('passes through why a destination no longer opens', () => {
@@ -395,7 +443,7 @@ describe('execution ownership', () => {
       }),
     );
     expect(row.status).toBe('failure');
-    expect(row.detail).toBe('Pipeline Dependency check failed');
+    expect(row.detail).toBe('Workflow Dependency check failed');
     expect(row.actions).toEqual(['retry', 'rerun', 'open-library']);
   });
 
@@ -412,12 +460,42 @@ describe('execution ownership', () => {
     expect(row.actions).toEqual(['rerun', 'open-library']);
   });
 
+  // CAN-5381: opening the row still opens the execution; the chat its
+  // pipeline sent to is one action away.
+  it('offers Go to chat on an automation row whose pipeline sent to a chat', () => {
+    const rows = (opensChat: boolean): WorkflowRunRow =>
+      only(
+        feed({
+          activities: [activity('a', PIPELINE_ACTION)],
+          runs: [
+            run('r', 'a', {
+              result: {
+                pipelineExecutionId: 'exec-1',
+                projectId: 'storefront',
+                worktreeId: 'left-rail',
+                chatId: 'chat-1',
+              },
+            }),
+          ],
+          executions: [execution('exec-1', { status: 'success' })],
+          automationRunOpensChat: () => opensChat,
+        }),
+      );
+    const sent = rows(true);
+    expect(sent.actions).toEqual(['rerun', 'go-to-chat', 'open-library']);
+    expect(sent.kind === 'automation' && sent.linkedExecutionId).toBe('exec-1');
+    expect(rows(false).actions).toEqual(['rerun', 'open-library']);
+  });
+
   it('leaves a resumed execution as its own Pipeline row', () => {
     const rows = feed({
       activities: [
         activity('a', {
           type: 'pipeline_execution_resume',
           executionId: 'exec-1',
+          statusReasonIds: [],
+          provider: 'claude',
+          purpose: 'usage_limit_resume',
           pipelineName: 'Release',
         }),
       ],
@@ -479,7 +557,7 @@ describe('execution ownership', () => {
     );
     expect(row.status).toBe('success');
     expect(row.detail).toBe(
-      'Pipeline Dependency check finished · The run output is no longer kept',
+      'Workflow Dependency check finished · The run output is no longer kept',
     );
     expect(row.result).toEqual({
       available: false,
@@ -525,7 +603,11 @@ describe('pipeline rows', () => {
         execution('hook', {
           trigger_source: {
             kind: 'hook',
+            hook_key: 'project:pr:create',
             hook_label: 'post-merge',
+            trigger_name: 'pr:create',
+            target: 'project',
+            action_index: 0,
             triggered_at: '2026-10-12T01:00:00.000Z',
           },
         }),
@@ -769,6 +851,9 @@ describe('runsForAutomation', () => {
         activity('a', {
           type: 'pipeline_execution_resume',
           executionId: 'exec-1',
+          statusReasonIds: [],
+          provider: 'claude',
+          purpose: 'usage_limit_resume',
           pipelineName: 'Release',
         }),
       ],

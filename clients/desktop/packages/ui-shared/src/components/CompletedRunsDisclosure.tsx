@@ -31,7 +31,7 @@ export function CompletedRunsDisclosure({
         onClick={onToggle}
         aria-expanded={expanded}
         data-testid={dataTestId}
-        className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition hover:fg-secondary"
+        className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition-colors hover:fg-secondary"
       >
         <ChevronRightIcon
           width={14}

@@ -421,6 +421,7 @@ function decodeLayout(
   strings: readonly string[],
   nodeCount: number,
   styleNames: readonly string[],
+  layoutZoom: number,
 ): Map<number, DecodedLayoutItem> | undefined {
   const layout = new Map<number, DecodedLayoutItem>();
   if (value === undefined) return layout;
@@ -464,7 +465,12 @@ function decodeLayout(
         ? undefined
         : decodeRectangle(usableClientRects[offset]);
     layout.set(nodeIndex, {
-      bounds: rectangle,
+      bounds: {
+        x: rectangle.x / layoutZoom,
+        y: rectangle.y / layoutZoom,
+        width: rectangle.width / layoutZoom,
+        height: rectangle.height / layoutZoom,
+      },
       ...(clientRect === undefined ? {} : { clientRect }),
       computedStyles,
     });
@@ -553,6 +559,7 @@ function decodeSnapshotDocument(
   nodes: Map<number, SnapshotNodeInfo>,
   styleNames: readonly string[],
   whitespaceTexts: SnapshotWhitespaceText[],
+  layoutZoom: number,
 ): SnapshotDocumentInfo | undefined {
   if (!isRecord(value) || !isRecord(value.nodes)) return undefined;
   const rawNodes = value.nodes;
@@ -571,7 +578,13 @@ function decodeSnapshotDocument(
   const textValues = decodeRareStrings(rawNodes.textValue, strings, nodeCount);
   const checked = decodeRareBooleans(rawNodes.inputChecked, nodeCount);
   const selected = decodeRareBooleans(rawNodes.optionSelected, nodeCount);
-  const layout = decodeLayout(value.layout, strings, nodeCount, styleNames);
+  const layout = decodeLayout(
+    value.layout,
+    strings,
+    nodeCount,
+    styleNames,
+    layoutZoom,
+  );
   if (!inputValues || !textValues || !checked || !selected || !layout) {
     return undefined;
   }
@@ -626,29 +639,37 @@ function decodeSnapshotDocument(
   ) {
     return undefined;
   }
-  const finiteOrZero = (entry: unknown): number =>
-    isFiniteNumber(entry) ? entry : 0;
+  const cssOrZero = (entry: unknown): number =>
+    isFiniteNumber(entry) ? entry / layoutZoom : 0;
   return {
     documentIndex,
     frameId,
     documentURL,
     title,
     ...(rootBackendNodeId === undefined ? {} : { rootBackendNodeId }),
-    scrollOffsetX: finiteOrZero(value.scrollOffsetX),
-    scrollOffsetY: finiteOrZero(value.scrollOffsetY),
-    contentWidth: finiteOrZero(value.contentWidth),
-    contentHeight: finiteOrZero(value.contentHeight),
+    scrollOffsetX: cssOrZero(value.scrollOffsetX),
+    scrollOffsetY: cssOrZero(value.scrollOffsetY),
+    contentWidth: cssOrZero(value.contentWidth),
+    contentHeight: cssOrZero(value.contentHeight),
   };
 }
 
 /**
  * Decodes `DOMSnapshot.captureSnapshot` into a lookup by backend node ID.
  * `styleNames` must be the `computedStyles` list the snapshot was taken with.
+ *
+ * Chromium reports layout `bounds`, document scroll offsets and content
+ * sizes in layout units: CSS pixels times the device scale factor and page
+ * zoom (`layoutZoom`, see `decodeLayoutZoom`). They are divided back to CSS
+ * pixels here, the space of `clientRects`, computed styles, `DOM.getBoxModel`
+ * and the `css*` layout metrics.
  */
 export function decodeDOMSnapshot(
   value: unknown,
   styleNames: readonly string[] = PAGE_MODEL_COMPUTED_STYLES,
+  layoutZoom = 1,
 ): DecodedDOMSnapshot | undefined {
+  if (!isFiniteNumber(layoutZoom) || layoutZoom <= 0) return undefined;
   if (!isRecord(value)) return undefined;
   const rawStrings = arrayValue(value.strings);
   const rawDocuments = arrayValue(value.documents);
@@ -669,6 +690,7 @@ export function decodeDOMSnapshot(
       nodes,
       styleNames,
       whitespaceTexts,
+      layoutZoom,
     );
     if (!document) return undefined;
     documents.push(document);
@@ -743,6 +765,41 @@ export function decodeLayoutViewport(
     return undefined;
   }
   return { width, height };
+}
+
+/**
+ * Layout units per CSS pixel in a session (device scale factor times page
+ * zoom), from `Page.getLayoutMetrics`: its deprecated `contentSize` and
+ * `layoutViewport` are in layout units, their `css*` twins in CSS pixels.
+ * Uses the largest pair, as the sizes are whole layout units. Undefined
+ * when no pair is usable.
+ */
+export function decodeLayoutZoom(value: unknown): number | undefined {
+  if (!isRecord(value)) return undefined;
+  const pairs: Array<[unknown, unknown]> = [];
+  const { contentSize, cssContentSize, layoutViewport, cssLayoutViewport } =
+    value;
+  if (isRecord(contentSize) && isRecord(cssContentSize)) {
+    pairs.push([contentSize.width, cssContentSize.width]);
+    pairs.push([contentSize.height, cssContentSize.height]);
+  }
+  if (isRecord(layoutViewport) && isRecord(cssLayoutViewport)) {
+    pairs.push([layoutViewport.clientWidth, cssLayoutViewport.clientWidth]);
+    pairs.push([layoutViewport.clientHeight, cssLayoutViewport.clientHeight]);
+  }
+  let best: { layout: number; css: number } | undefined;
+  for (const [layout, css] of pairs) {
+    if (
+      isFiniteNumber(layout) &&
+      isFiniteNumber(css) &&
+      layout > 0 &&
+      css > 0 &&
+      (best === undefined || css > best.css)
+    ) {
+      best = { layout, css };
+    }
+  }
+  return best === undefined ? undefined : best.layout / best.css;
 }
 
 /** A document's scroll offset, from `Page.getLayoutMetrics` in its session. */

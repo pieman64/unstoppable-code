@@ -136,6 +136,7 @@ export async function serveFramedRuntime(
             kind: 'invalid_argument',
             message:
               error instanceof Error ? error.message : 'Invalid request.',
+            retry: { kind: 'never' },
           }),
         });
       }

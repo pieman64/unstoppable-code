@@ -15,7 +15,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   ChatSearchQueryResponse,
-  SidebarItem,
+  SingleRepoSidebarItem,
 } from '@canopy/desktop-shared/types';
 import {
   CLIENT_FEATURE_FLAGS,
@@ -141,7 +141,7 @@ function installChatSearchApi(): void {
   };
 }
 
-const projects: SidebarItem[] = [
+const projects: SingleRepoSidebarItem[] = [
   {
     type: 'single-repo',
     id: 'proj-1',
@@ -360,8 +360,11 @@ describe('CommandPalette rendering', () => {
     expect(input?.placeholder).toBe(
       'Search chats, workspaces, plugins, settings, and more',
     );
-    expect(input?.classList.contains('text-s')).toBe(true);
-    expect(input?.classList.contains('text-m')).toBe(false);
+    // The shared lg SearchField header carries the 14px type.
+    const field = input?.closest('[data-search-field]');
+    expect(field?.getAttribute('data-search-field')).toBe('lg');
+    expect(field?.classList.contains('text-s')).toBe(true);
+    expect(field?.classList.contains('text-m')).toBe(false);
   });
 
   it('shows the commands hint for an empty query', async () => {
@@ -374,6 +377,20 @@ describe('CommandPalette rendering', () => {
     expect(hint?.textContent).toBe('Type > for commands');
     expect(hint?.getAttribute('data-mode')).toBe('all');
     expect(hint?.getAttribute('aria-live')).toBe('polite');
+    // The prefix is a borderless key cap, not a pill around the whole hint.
+    const cap = hint?.querySelector('kbd');
+    expect(cap?.textContent).toBe('>');
+    expect(cap?.className).toContain('bg-muted');
+    expect(hint?.className).not.toContain('bg-secondary');
+  });
+
+  it('ends with the key legend as caps, not words', async () => {
+    render();
+    await flushMicrotasks();
+
+    const footer = document.querySelector('[data-testid="key-hint-footer"]');
+    expect(footer?.textContent).toMatch(/^↑↓move(↵|Enter)open(esc|Esc)close$/);
+    expect(footer?.querySelectorAll('kbd')).toHaveLength(4);
   });
 
   it('updates the hint when entering and leaving commands-only mode', async () => {
@@ -727,6 +744,129 @@ describe('CommandPalette rendering', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('hands no results to the search empty state, with Clear search', async () => {
+    render();
+    await flushMicrotasks();
+    setQuery('zzqxv-no-such-thing');
+
+    const empty = document.querySelector(
+      '[data-testid="command-palette-empty"]',
+    );
+    expect(empty?.textContent).toContain('Nothing matches your search.');
+    const clear = document.querySelector<HTMLButtonElement>(
+      '[data-testid="command-palette-empty-clear"]',
+    );
+    expect(clear?.textContent).toBe('Clear search');
+    act(() => {
+      clear?.click();
+    });
+    const input = document.querySelector<HTMLInputElement>(
+      '[data-testid="command-palette-input"]',
+    );
+    expect(input?.value).toBe('');
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('lets Enter press a focused Clear button instead of opening a result', async () => {
+    const onClose = jest.fn();
+    render(onClose);
+    await flushMicrotasks();
+    setQuery('demo');
+    const input = document.querySelector<HTMLInputElement>(
+      '[data-testid="command-palette-input"]',
+    );
+    const clear = document.querySelector<HTMLButtonElement>(
+      '[data-testid="command-palette-clear"]',
+    );
+    expect(clear).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      clear?.focus();
+    });
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      clear?.dispatchEvent(enter);
+    });
+    // The palette leaves the key to the button: no result opens.
+    expect(enter.defaultPrevented).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(input?.value).toBe('demo');
+
+    // The empty state's action, likewise.
+    setQuery('zzqxv-no-such-thing');
+    const emptyClear = document.querySelector<HTMLButtonElement>(
+      '[data-testid="command-palette-empty-clear"]',
+    );
+    expect(emptyClear).toBeInstanceOf(HTMLButtonElement);
+    const enterOnEmpty = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      emptyClear?.dispatchEvent(enterOnEmpty);
+    });
+    expect(enterOnEmpty.defaultPrevented).toBe(false);
+  });
+
+  it('opens the highlighted result on Enter from a focused result row', async () => {
+    render();
+    await flushMicrotasks();
+    setQuery('login');
+    const row = document.querySelector<HTMLElement>(
+      '[role="listbox"] [role="option"]',
+    );
+    expect(row).toBeInstanceOf(HTMLElement);
+    act(() => {
+      row?.focus();
+    });
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      row?.dispatchEvent(enter);
+    });
+    // The palette's handler still owns Enter inside the results.
+    expect(enter.defaultPrevented).toBe(true);
+  });
+
+  it('clears from the nested button and still closes on one Escape', async () => {
+    const onClose = jest.fn();
+    render(onClose);
+    await flushMicrotasks();
+    setQuery('demo');
+
+    const clear = document.querySelector<HTMLButtonElement>(
+      '[data-testid="command-palette-clear"]',
+    );
+    expect(clear?.getAttribute('aria-label')).toBe('Clear search');
+    act(() => {
+      clear?.click();
+    });
+    expect(
+      document.querySelector<HTMLInputElement>(
+        '[data-testid="command-palette-input"]',
+      )?.value,
+    ).toBe('');
+
+    // Escape typed into the field with a query still closes the palette.
+    setQuery('demo');
+    const input = document.querySelector(
+      '[data-testid="command-palette-input"]',
+    );
+    act(() => {
+      input?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('closes only once when Escape starts inside the palette', async () => {
     const onClose = jest.fn();
     render(onClose);
@@ -862,7 +1002,7 @@ describe('CommandPalette rendering', () => {
     expect(labels).not.toContain('Worktrees');
   });
 
-  it('right-aligns available action shortcuts with the tertiary foreground', async () => {
+  it('right-aligns available action shortcuts in the quietest foreground', async () => {
     render();
     await flushMicrotasks();
     setQuery('>');
@@ -872,7 +1012,7 @@ describe('CommandPalette rendering', () => {
     );
     expect(shortcuts.length).toBeGreaterThan(0);
     shortcuts.forEach((shortcut) => {
-      expect(shortcut.className).toContain('fg-tertiary');
+      expect(shortcut.className).toContain('fg-quaternary');
       expect(shortcut.parentElement?.className).toContain('shrink-0');
     });
   });
@@ -1397,7 +1537,11 @@ describe('CommandPalette automation context scoping (CAN-3448)', () => {
     const base = {
       version: 1 as const,
       enabled: true,
-      schedule: { kind: 'cron' as const, expression: '0 9 * * *' },
+      schedule: {
+        kind: 'cron' as const,
+        expression: '0 9 * * *',
+        timezone: 'local' as const,
+      },
       createdAt: '2026-09-01T00:00:00.000Z',
       updatedAt: '2026-09-01T00:00:00.000Z',
       failureCount: 0,

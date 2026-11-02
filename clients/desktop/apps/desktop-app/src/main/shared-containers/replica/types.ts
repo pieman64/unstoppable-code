@@ -24,3 +24,17 @@ export interface SharedContainerReplicaIndex {
   /** Container -> durable id of the promotion committed with its index state. */
   promotionCommits: Record<string, string>;
 }
+
+/** Metadata captured under the same mutation lock as the revision root. */
+export interface SharedContainerReplicaRevisionSnapshot {
+  revisionId: string;
+  revisionCreatedAt: string;
+}
+
+/** Only an explicit state mismatch is an expected availability refusal. */
+export class SharedContainerReplicaRevisionUnavailableError extends Error {
+  constructor(readonly reason: 'superseded' | 'unavailable') {
+    super('Shared-container revision is not available');
+    this.name = 'SharedContainerReplicaRevisionUnavailableError';
+  }
+}

@@ -78,7 +78,13 @@ jest.mock('../../worktree/RecommendedPluginsSettingsPanel', () => ({
 import { ChatPluginsModal } from '../ChatPluginsModal';
 
 function emptySelections(): ChatTabPluginSelections {
-  return { bundleIds: [], skillRefs: [], pluginRefs: [], mcpServerRefs: [] };
+  return {
+    collectionIds: [],
+    bundleIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+    mcpServerRefs: [],
+  };
 }
 
 describe('ChatPluginsModal provider scope wiring', () => {
@@ -253,6 +259,7 @@ describe('ChatPluginsModal provider scope wiring', () => {
 
   it('saves provider-sanitized selections instead of stale raw selections', () => {
     const initial: ChatTabPluginSelections = {
+      collectionIds: [],
       bundleIds: [],
       skillRefs: [],
       pluginRefs: [{ marketplaceId: 'mkt', pluginName: 'codex-only' }],
@@ -325,6 +332,56 @@ describe('ChatPluginsModal provider scope wiring', () => {
     });
 
     expect(onSave).toHaveBeenCalledWith(selected, true);
+  });
+
+  it('keeps the accepted sign-in route when the picker saves rebuilt selections', () => {
+    const route = {
+      target: {
+        kind: 'plugin' as const,
+        marketplaceId: 'curated/cloud',
+        pluginName: 'repo-search',
+        serverName: 'repo-search',
+      },
+      handler: 'canopy' as const,
+    };
+    const initial: ChatTabPluginSelections = {
+      collectionIds: [],
+      skillRefs: [],
+      pluginRefs: [
+        { marketplaceId: 'curated/cloud', pluginName: 'repo-search' },
+      ],
+      mcpServerRefs: [],
+      mcpHttpAuthPreferences: [route],
+    };
+    const onSave = jest.fn();
+    act(() => {
+      root.render(
+        <ChatPluginsModal
+          initial={initial}
+          onSave={onSave}
+          onClose={() => undefined}
+        />,
+      );
+    });
+    // The picker rebuilds selections from its checkboxes, without routes.
+    act(() => {
+      capturedOnChange?.(emptySelections());
+      capturedOnSanitizedChange?.(emptySelections());
+    });
+    const saveButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Save',
+    );
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error('Save button not found');
+    }
+    act(() => {
+      saveButton.click();
+    });
+
+    expect(onSave).toHaveBeenCalledWith(
+      { ...emptySelections(), mcpHttpAuthPreferences: [route] },
+      true,
+    );
   });
 
   it('shows and saves the per-chat deferred-tools permission', () => {

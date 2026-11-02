@@ -1,4 +1,5 @@
 import * as installContext from '../pipeline-install-context';
+import { AUTOMATION_SHARE_BLOCK_MESSAGES } from '@canopy/desktop-shared/lib/automation-sharing';
 import * as pipelinePaths from '@canopy/desktop-shared/pipelines/config-paths';
 import {
   saveStoredPipeline,
@@ -6,6 +7,7 @@ import {
   getStoredPipelinePath,
   listStoredPipelines,
 } from '@canopy/desktop-shared/pipelines/store';
+import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { createResourceInstallReceiptsStore } from '../../lib/resource-install-receipts';
 jest.mock('../../canopy-cloud/shared-item-subscriptions', () => ({
   recordSharedItemInstall: jest.fn(),
@@ -23,7 +25,7 @@ jest.mock('../resource-lanes', () => ({
   ),
   assertPipelineContextSnapshot: jest.fn((snapshot: string) =>
     snapshot !== mockInstallContextRevision
-      ? Promise.reject(new Error('Pipeline unavailable (context-mismatch)'))
+      ? Promise.reject(new Error('Workflow unavailable (context-mismatch)'))
       : Promise.resolve(),
   ),
 }));
@@ -91,7 +93,9 @@ jest.mock('../pipeline-service', () => ({
 jest.mock('../pipeline-package-install-store', () => ({
   findCapabilityPackageInstallByOwner: jest.fn(),
   findPipelinePackageInstall: jest.fn(),
+  listCapabilityPackageInstalls: jest.fn(() => Promise.resolve([])),
   listPipelinePackageInstalls: jest.fn(),
+  removeCapabilityPackageInstall: jest.fn(),
   removePipelinePackageInstall: jest.fn(),
   upsertCapabilityPackageInstall: jest.fn(),
   upsertPipelinePackageInstall: jest.fn(),
@@ -165,7 +169,10 @@ import {
   installPipelinePackageAtomically,
   verifyCachedPipelinePackage,
 } from '@canopy/desktop-shared/node';
-import type { PipelinePackageEnvironmentRequirement } from '@canopy/protocol/pipelines';
+import type {
+  PipelinePackageEnvironmentRequirement,
+  PipelinePackageManifestV1,
+} from '@canopy/protocol/pipelines';
 import { getPublicPipelineShareSnapshot } from '../../canopy-cloud/public-share-client';
 import {
   commitPipelinePackageUpload,
@@ -210,6 +217,7 @@ import {
   analyzeSkillCapabilityPackage,
   analyzeSubjectCapabilityPackage,
   createPackagedAutomationCapabilityPackage,
+  createContainerInstalledPipeline,
   createPackagedSharedPipeline,
   evaluatePipelinePackageRequirements,
   getPackageReadiness,
@@ -217,8 +225,10 @@ import {
   getSharedPipelineAutomationInstallPin,
   installAutomationCapabilityPackage,
   installPublicPackageShare,
+  removeContainerInstalledPipeline,
   resolveInstalledAutomationPackageOverlay,
   resolveInstalledAutomationPipelinePackage,
+  resolveInstalledPipelinePackageForExecution,
   resolvePipelinePackageProviderByStep,
   selectPipelinePackageManifest,
   SHARED_PACKAGE_REVIEW_REQUIRED_MESSAGE,
@@ -276,6 +286,24 @@ describe('pipeline package analysis requests', () => {
     };
   };
 
+  function makeLegacyInventory(
+    entries: unknown[] = [],
+  ): Awaited<
+    ReturnType<typeof loadPipelinePackageInventorySources>
+  >['inventory'] {
+    const inventory: Awaited<
+      ReturnType<typeof loadPipelinePackageInventorySources>
+    >['inventory'] = {
+      version: 5,
+      builtAt: new Date().toISOString(),
+      entries: [],
+    };
+    // Keep the v2 standalone-skill records used by compatibility coverage.
+    Reflect.set(inventory, 'version', 2);
+    Reflect.set(inventory, 'entries', entries);
+    return inventory;
+  }
+
   afterEach((): void => {
     jest.restoreAllMocks();
   });
@@ -285,7 +313,7 @@ describe('pipeline package analysis requests', () => {
     mockInstallContextEnabled = false;
     jest.mocked(authorizeSharedPipelineCreate).mockReset();
     jest.mocked(loadPipelinePackageInventorySources).mockResolvedValue({
-      inventory: { version: 2, builtAt: new Date().toISOString(), entries: [] },
+      inventory: makeLegacyInventory(),
       sources: {},
     });
     jest.mocked(resolveWorktreeCwd).mockReturnValue('/tmp/project');
@@ -301,10 +329,15 @@ describe('pipeline package analysis requests', () => {
     });
     jest.mocked(listPipelinePackageDismissals).mockResolvedValue([]);
     jest.mocked(replacePipelinePackageDismissals).mockResolvedValue();
+    jest.mocked(listPipelinePackageInstalls).mockResolvedValue([]);
+    jest
+      .mocked(localPipelineService.listPipelines)
+      .mockReturnValue({ success: true, data: [] });
     jest
       .mocked(resolveEffectivePluginSelectionRefs)
       .mockImplementation((selections) =>
         Promise.resolve({
+          disabledRefs: [],
           skillRefs: selections.skillRefs,
           pluginRefs: selections.pluginRefs,
           mcpServerRefs: selections.mcpServerRefs ?? [],
@@ -390,25 +423,21 @@ describe('pipeline package analysis requests', () => {
 
   it('packages a skill as a whole-share subject and scans its body', async () => {
     jest.mocked(loadPipelinePackageInventorySources).mockResolvedValue({
-      inventory: {
-        version: 2,
-        builtAt: new Date().toISOString(),
-        entries: [
-          {
-            id: 'entry-skill',
-            provider: 'claude',
-            kind: 'standalone_skill',
-            invocationKey: '/campaign-brief',
-            displayName: 'Campaign brief',
-            sourceLabel: 'custom:app',
-            enableRef: {
-              kind: 'skill',
-              sourceId: 'custom:app',
-              skillName: 'campaign-brief',
-            },
+      inventory: makeLegacyInventory([
+        {
+          id: 'entry-skill',
+          provider: 'claude',
+          kind: 'standalone_skill',
+          invocationKey: '/campaign-brief',
+          displayName: 'Campaign brief',
+          sourceLabel: 'custom:app',
+          enableRef: {
+            kind: 'skill',
+            sourceId: 'custom:app',
+            skillName: 'campaign-brief',
           },
-        ],
-      },
+        },
+      ]),
       sources: {},
     });
     jest
@@ -520,6 +549,7 @@ describe('pipeline package analysis requests', () => {
 
   it('expands collection selections before producing automation capability requests', async () => {
     jest.mocked(resolveEffectivePluginSelectionRefs).mockResolvedValueOnce({
+      disabledRefs: [],
       skillRefs: [{ sourceId: 'collection-source', skillName: 'review' }],
       pluginRefs: [
         { marketplaceId: 'collection-marketplace', pluginName: 'release' },
@@ -613,6 +643,8 @@ describe('pipeline package analysis requests', () => {
         stepId: 'action',
         provider: 'claude',
         text: 'Say hello with /invalid-skill name',
+        // Only the automation's own prompt is scanned for pipeline references.
+        pipelineReferences: true,
       },
     ]);
     expect(request?.dismissedInvocations).toEqual([
@@ -890,6 +922,266 @@ describe('pipeline package analysis requests', () => {
     }
   });
 
+  describe('child pipelines written as expressions', () => {
+    const workerYaml = [
+      'name: Worker',
+      'on: dispatch',
+      'jobs:',
+      '  work:',
+      '    steps:',
+      '      - run: echo worker',
+      '',
+    ].join('\n');
+    const workerId = '5b0f4c3e-2a1d-4e6f-9c8b-7a6d5e4f3a2b';
+    const envParent = (id: string): string =>
+      [
+        'name: Parent',
+        'on: dispatch',
+        'env:',
+        `  WORKER_PIPELINE: ${id}`,
+        'jobs:',
+        '  run:',
+        '    steps:',
+        '      - id: child',
+        '        uses: builtin/run-pipeline',
+        '        with:',
+        "          pipeline: '${{ env.WORKER_PIPELINE }}'",
+        '',
+      ].join('\n');
+    const useUserPipelineStore = (directory: string): void => {
+      jest
+        .spyOn(pipelinePaths, 'getUserPipelinesDir')
+        .mockReturnValue(directory);
+      jest
+        .spyOn(pipelinePaths, 'getUserPipelineIndexPath')
+        .mockReturnValue(join(directory, 'index.json'));
+    };
+    beforeEach(() => {
+      // Earlier tests stub the analyzer; these run the real one.
+      jest
+        .mocked(analyzePipelinePackage)
+        .mockImplementation(
+          jest.requireActual<typeof DesktopSharedNodeModule>(
+            '@canopy/desktop-shared/node',
+          ).analyzePipelinePackage,
+        );
+    });
+    const saveUserPipeline = (name: string): string => {
+      const saved = saveStoredPipeline({
+        name,
+        description: '',
+        icon: '',
+        content: {
+          name,
+          on: 'dispatch',
+          jobs: { work: { steps: [{ run: `echo ${name}` }] } },
+        },
+      });
+      if (!saved.success || !saved.data) throw new Error(saved.error);
+      return saved.data.id;
+    };
+
+    it('bundles an env-expression child under its raw and evaluated keys', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'pipeline-package-env-child-'));
+      try {
+        await writeFile(join(root, `${workerId}.yaml`), workerYaml, 'utf8');
+        jest.mocked(localPipelineService.getPipelinePath).mockReturnValue({
+          success: true,
+          data: join(root, 'parent.yaml'),
+        });
+
+        const result = await analyzePackageRequest({
+          pipelineId: 'parent',
+          rawPipeline: envParent(workerId),
+        });
+
+        expect(result.blockers).toEqual([]);
+        expect(result.state).toBe('ready');
+        const child = result.manifest?.resources.find(
+          (resource) => resource.kind === 'child_pipeline',
+        );
+        // The share UI and save-time repackaging match on the authored ref;
+        // a run matches on the interpolated one.
+        expect(child?.displayName).toBe('${{ env.WORKER_PIPELINE }}');
+        expect(child?.invocationKeys).toEqual([
+          '${{ env.WORKER_PIPELINE }}',
+          workerId,
+        ]);
+        expect(child?.trees[0]?.entries.map((entry) => entry.path)).toEqual([
+          `${workerId}.yaml`,
+        ]);
+        expect(result.manifest?.bindings).toContainEqual({
+          jobId: 'run',
+          stepId: 'child',
+          resourceIds: [child?.id],
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('blocks a step-output child ref until it is dismissed, then shares without it', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'pipeline-package-step-ref-'));
+      const rawRef = '${{ steps.pick.outputs.pipeline }}';
+      const parent = [
+        'name: Parent',
+        'on: dispatch',
+        'jobs:',
+        '  run:',
+        '    steps:',
+        '      - id: pick',
+        '        run: echo pick',
+        '      - id: child',
+        '        uses: builtin/run-pipeline',
+        '        with:',
+        `          pipeline: '${rawRef}'`,
+        '',
+      ].join('\n');
+      try {
+        jest.mocked(localPipelineService.getPipelinePath).mockReturnValue({
+          success: true,
+          data: join(root, 'parent.yaml'),
+        });
+
+        const blocked = await analyzePackageRequest({
+          pipelineId: 'parent',
+          rawPipeline: parent,
+        });
+
+        expect(blocked.state).toBe('blocked');
+        expect(blocked.blockers).toEqual([
+          expect.objectContaining({
+            code: 'UNRESOLVED_CHILD_PIPELINE_REF',
+            subject: rawRef,
+            occurrences: [{ jobId: 'run', stepId: 'child' }],
+            referenceDismissal: { kind: 'child_pipeline_ref', token: rawRef },
+          }),
+        ]);
+        const [blocker] = blocked.blockers;
+        expect(blocker?.message).toContain('run.child');
+        expect(blocker?.message).toContain(rawRef);
+        expect(blocker?.message).toContain('env');
+
+        const dismissed = await analyzePackageRequest({
+          pipelineId: 'parent',
+          rawPipeline: parent,
+          dismissedReferences: [{ kind: 'child_pipeline_ref', token: rawRef }],
+        });
+
+        expect(dismissed.state).toBe('ready');
+        expect(dismissed.blockers).toEqual([]);
+        expect(
+          dismissed.manifest?.resources.filter(
+            (resource) => resource.kind === 'child_pipeline',
+          ),
+        ).toEqual([]);
+        expect(dismissed.dismissedReferences).toEqual([
+          { kind: 'child_pipeline_ref', token: rawRef },
+        ]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('resolves a user pipeline id child from a project-scoped parent', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'pipeline-package-project-'));
+      const store = join(root, 'store');
+      const repo = join(root, 'repo');
+      try {
+        await mkdir(repo, { recursive: true });
+        useUserPipelineStore(store);
+        const childId = saveUserPipeline('Worker');
+        jest.mocked(resolveWorktreeCwd).mockReturnValue(repo);
+        jest
+          .mocked(discoverProjectInvocableSources)
+          .mockResolvedValue({ entries: [], scannedDirectories: [] });
+
+        const result = await analyzePackageRequest({
+          rawPipeline: [
+            'name: Project parent',
+            'on: dispatch',
+            'jobs:',
+            '  run:',
+            '    steps:',
+            '      - id: child',
+            '        uses: builtin/run-pipeline',
+            '        with:',
+            `          pipeline: ${childId}`,
+            '',
+          ].join('\n'),
+          worktree: { projectId: 'project-1', worktreeId: 'worktree-1' },
+        });
+
+        expect(result.blockers).toEqual([]);
+        expect(result.manifest?.resources).toContainEqual(
+          expect.objectContaining({
+            kind: 'child_pipeline',
+            displayName: childId,
+            invocationKeys: [childId],
+            trees: [
+              expect.objectContaining({
+                entries: [expect.objectContaining({ path: `${childId}.yaml` })],
+              }),
+            ],
+          }),
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('bundles an env-expression child of a packaged child', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'pipeline-package-nested-'));
+      try {
+        await writeFile(
+          join(root, 'middle.yaml'),
+          envParent(workerId).replace('name: Parent', 'name: Middle'),
+          'utf8',
+        );
+        await writeFile(join(root, `${workerId}.yaml`), workerYaml, 'utf8');
+        jest.mocked(localPipelineService.getPipelinePath).mockReturnValue({
+          success: true,
+          data: join(root, 'parent.yaml'),
+        });
+
+        const result = await analyzePackageRequest({
+          pipelineId: 'parent',
+          rawPipeline: [
+            'name: Parent',
+            'on: dispatch',
+            'jobs:',
+            '  run:',
+            '    steps:',
+            '      - id: middle',
+            '        uses: builtin/run-pipeline',
+            '        with:',
+            '          pipeline: middle.yaml',
+            '',
+          ].join('\n'),
+        });
+
+        expect(result.blockers).toEqual([]);
+        const children = result.manifest?.resources.filter(
+          (resource) => resource.kind === 'child_pipeline',
+        );
+        expect(children?.map((resource) => resource.invocationKeys)).toEqual([
+          ['middle.yaml'],
+          ['${{ env.WORKER_PIPELINE }}', workerId],
+        ]);
+        // Both run under the root step that starts the chain.
+        expect(result.manifest?.bindings).toEqual([
+          {
+            jobId: 'run',
+            stepId: 'middle',
+            resourceIds: children?.map((resource) => resource.id),
+          },
+        ]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('packages a repo-local automation command only with worktree context', async () => {
     const root = await mkdtemp(join(tmpdir(), 'canopy-automation-repo-'));
     const commandPath = join(root, '.claude', 'commands', 'repair-diffs.md');
@@ -916,6 +1208,9 @@ describe('pipeline package analysis requests', () => {
         },
       });
       expect(withContext.state).toBe('ready');
+      if (withContext.manifest === undefined) {
+        throw new Error('Expected a ready automation package manifest');
+      }
       expect(withContext.manifest.resources).toEqual([
         expect.objectContaining({ kind: 'plugin_command' }),
       ]);
@@ -972,6 +1267,9 @@ describe('pipeline package analysis requests', () => {
       });
 
       expect(result.state).toBe('ready');
+      if (result.manifest === undefined) {
+        throw new Error('Expected a ready automation package manifest');
+      }
       expect(result.manifest.bindings).toEqual([
         expect.objectContaining({ jobId: 'review', stepId: 'run' }),
       ]);
@@ -1223,7 +1521,7 @@ describe('pipeline package analysis requests', () => {
       .mocked(authorizeSharedPipelineCreate)
       .mockResolvedValueOnce(rawPipeline)
       .mockRejectedValueOnce(
-        new Error('Pipeline unavailable (access-removed)'),
+        new Error('Workflow unavailable (access-removed)'),
       );
     await expect(
       createPackagedSharedPipeline({
@@ -1260,7 +1558,7 @@ describe('pipeline package analysis requests', () => {
       jest
         .mocked(authorizeSharedPipelineCreate)
         .mockRejectedValueOnce(
-          new Error('Pipeline unavailable (context-mismatch)'),
+          new Error('Workflow unavailable (context-mismatch)'),
         );
       const request: Parameters<typeof createPackagedSharedPipeline>[0] = {
         rawPipeline,
@@ -1385,6 +1683,453 @@ describe('pipeline package analysis requests', () => {
     );
   });
 
+  it('refuses to re-upload an installed automation package that carries pipelines or files', async () => {
+    const pipelineContentHash = 'a'.repeat(64);
+    const manifest = {
+      version: 1 as const,
+      pipelineContentHash,
+      resources: [
+        {
+          id: 'automation-pipeline-action',
+          kind: 'automation_pipeline' as const,
+          displayName: 'Journey entry',
+          sourceLabel: 'action',
+          sourceVisibility: 'local' as const,
+          invocationKeys: [],
+          dependencyResourceIds: [],
+          pipelineKey: 'action',
+          pipelineContentHash,
+          trees: [],
+        },
+      ],
+      bindings: [],
+      environmentRequirements: [],
+      totalFiles: 0,
+      totalBytes: 0,
+    };
+    const digest = computePipelinePackageDigestSync(manifest);
+    jest.mocked(findCapabilityPackageInstallByOwner).mockResolvedValue({
+      owner: { kind: 'automation', localAutomationId: 'local-automation' },
+      originExternalId: 'source-share',
+      pipelineContentHash,
+      packageDigest: digest,
+      installedAt: '2026-09-18T12:00:00.000Z',
+    });
+    jest.mocked(verifyCachedPipelinePackage).mockResolvedValue(manifest);
+
+    await expect(
+      createPackagedAutomationCapabilityPackage({
+        localAutomationId: 'local-automation',
+        packageRef: { version: 1, digest },
+      }),
+    ).rejects.toThrow(
+      AUTOMATION_SHARE_BLOCK_MESSAGES.installed_pipeline_dependencies,
+    );
+    expect(preparePipelinePackageUpload).not.toHaveBeenCalled();
+  });
+
+  describe('automation shares with pipeline dependencies', () => {
+    const LITERAL_TOKEN = ['gh', 'p_', 'A1b2C3d4'.repeat(5)].join('');
+    const noSelections = {
+      collectionIds: [],
+      skillRefs: [],
+      pluginRefs: [],
+      mcpServerRefs: [],
+    };
+    let root = '';
+    let home = '';
+    const pipelinesDir = (): string => join(root, 'pipelines');
+
+    beforeEach(async () => {
+      root = await mkdtemp(join(tmpdir(), 'automation-share-deps-'));
+      home = join(root, 'home');
+      await mkdir(home, { recursive: true });
+      jest
+        .spyOn(pipelinePaths, 'getUserPipelinesDir')
+        .mockReturnValue(pipelinesDir());
+      jest
+        .spyOn(pipelinePaths, 'getUserPipelineIndexPath')
+        .mockReturnValue(join(pipelinesDir(), 'index.json'));
+      jest
+        .mocked(localPipelineService.listPipelines)
+        .mockImplementation(listStoredPipelines);
+      jest
+        .mocked(localPipelineService.getPipelinePath)
+        .mockImplementation(getStoredPipelinePath);
+      // Earlier tests stub the analyzer; these run the real one.
+      jest
+        .mocked(analyzeCapabilityPackage)
+        .mockImplementation(
+          jest.requireActual<typeof DesktopSharedNodeModule>(
+            '@canopy/desktop-shared/node',
+          ).analyzeCapabilityPackage,
+        );
+      jest
+        .mocked(analyzePipelinePackage)
+        .mockImplementation(
+          jest.requireActual<typeof DesktopSharedNodeModule>(
+            '@canopy/desktop-shared/node',
+          ).analyzePipelinePackage,
+        );
+    });
+
+    afterEach(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    /** Save exact YAML bytes as a stored user pipeline. */
+    const saveYaml = (name: string, rawContent: string): string => {
+      const saved = saveStoredPipeline({
+        name,
+        description: '',
+        icon: '',
+        content: parsePipelineText(rawContent),
+        rawContent,
+      });
+      if (!saved.success || !saved.data) throw new Error(saved.error);
+      return saved.data.id;
+    };
+
+    const workerYaml = (extra: string[] = []): string =>
+      [
+        'name: Journey worker',
+        'on: dispatch',
+        ...extra,
+        'jobs:',
+        '  work:',
+        '    steps:',
+        '      - run: echo worker',
+        '',
+      ].join('\n');
+
+    const entryYaml = (
+      workerId: string,
+      options: { assets?: boolean; env?: string[]; padding?: string } = {},
+    ): string =>
+      [
+        'name: Journey entry',
+        'on: dispatch',
+        ...(options.padding ? [options.padding] : []),
+        'dependencies:',
+        '  - id: gcloud',
+        '    kind: local_runtime',
+        '    runtime: gcloud',
+        ...(options.assets === false
+          ? []
+          : [
+              'assets:',
+              '  - id: specialists',
+              '    path: ~/journey/specialists',
+              'local_state:',
+              '  - ~/journey/state.db',
+            ]),
+        'env:',
+        `  WORKER_PIPELINE: ${workerId}`,
+        ...(options.env ?? []),
+        'jobs:',
+        '  run:',
+        '    steps:',
+        '      - id: worker',
+        '        uses: builtin/run-pipeline',
+        '        with:',
+        "          pipeline: '${{ env.WORKER_PIPELINE }}'",
+        '',
+      ].join('\n');
+
+    const writeSpecialists = async (): Promise<void> => {
+      const dir = join(home, 'journey', 'specialists');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'researcher.json'), '{"role":"r"}\n', 'utf8');
+      await writeFile(join(dir, '.env'), 'TOKEN=local-only\n', 'utf8');
+    };
+
+    const analyzeStandalonePrompt = (
+      prompt: string,
+      extra: Partial<
+        Parameters<typeof analyzeAutomationCapabilityPackage>[0]
+      > = {},
+    ): ReturnType<typeof analyzeAutomationCapabilityPackage> =>
+      analyzeAutomationCapabilityPackage(
+        {
+          rawContent: JSON.stringify({ prompt }),
+          promptText: prompt,
+          selections: noSelections,
+          ...extra,
+        },
+        { homedir: home },
+      );
+
+    it('packages a prompt dependency with its env child and its asset, withholding a .env', async () => {
+      const workerId = saveYaml('Journey worker', workerYaml());
+      const raw = entryYaml(workerId);
+      const entryId = saveYaml('Journey entry', raw);
+      await writeSpecialists();
+      // Leading whitespace stays: spans index into the untrimmed prompt.
+      const prompt = `  Run ${entryId} every morning.`;
+
+      const result = await analyzeStandalonePrompt(prompt, {
+        audience: 'organization',
+      });
+
+      expect(result.blockers).toEqual([]);
+      expect(result.state).toBe('ready');
+      const resources = result.manifest?.resources ?? [];
+      expect(resources).toContainEqual(
+        expect.objectContaining({
+          id: `automation-pipeline-${entryId}`,
+          kind: 'automation_pipeline',
+          pipelineKey: entryId,
+          pipelineContentHash: hashPipelinePackageYaml(raw),
+          dependencyResourceIds: [`file-asset-${entryId}-specialists`],
+        }),
+      );
+      const child = resources.find(
+        (resource) => resource.kind === 'child_pipeline',
+      );
+      expect(child?.invocationKeys).toEqual([
+        '${{ env.WORKER_PIPELINE }}',
+        workerId,
+      ]);
+      const asset = resources.find(
+        (resource) => resource.kind === 'file_asset',
+      );
+      expect(asset?.trees[0]?.entries.map((entry) => entry.path)).toEqual([
+        'researcher.json',
+      ]);
+      expect(result.withheldFiles).toEqual([
+        expect.objectContaining({
+          assetId: 'specialists',
+          relativePath: '.env',
+        }),
+      ]);
+      // The packaged pipeline is bound to the action; its child keeps the
+      // pipeline's own step binding.
+      expect(result.manifest?.bindings).toEqual(
+        expect.arrayContaining([
+          {
+            jobId: 'automation',
+            stepId: 'action',
+            resourceIds: [`automation-pipeline-${entryId}`],
+          },
+          { jobId: 'run', stepId: 'worker', resourceIds: [child?.id] },
+        ]),
+      );
+      expect(result.packagedPipelines).toEqual([
+        expect.objectContaining({
+          key: entryId,
+          isActionPipeline: false,
+          optional: false,
+          promptSpans: [{ textStart: 6, text: entryId }],
+        }),
+      ]);
+      // Declared CLI dependencies surface as setup requirements.
+      expect(result.manifest?.environmentRequirements).toContainEqual(
+        expect.objectContaining({ id: 'gcloud', kind: 'runtime' }),
+      );
+    });
+
+    it('blocks a Public share whose packaged pipeline declares assets', async () => {
+      const workerId = saveYaml('Journey worker', workerYaml());
+      const entryId = saveYaml('Journey entry', entryYaml(workerId));
+      await writeSpecialists();
+
+      const result = await analyzeStandalonePrompt(`Run ${entryId}.`, {
+        audience: 'public',
+      });
+
+      expect(result.state).toBe('blocked');
+      expect(result.blockers).toEqual([
+        expect.objectContaining({
+          code: 'ASSETS_NOT_ALLOWED_FOR_PUBLIC',
+          subject: 'Journey entry',
+        }),
+      ]);
+      expect(
+        result.manifest?.resources.some(
+          (resource) => resource.kind === 'file_asset',
+        ),
+      ).toBe(false);
+    });
+
+    it('blocks a packaged child that declares its own assets', async () => {
+      const workerId = saveYaml(
+        'Journey worker',
+        workerYaml(['assets:', '  - id: notes', '    path: ~/journey/notes']),
+      );
+      const entryId = saveYaml(
+        'Journey entry',
+        entryYaml(workerId, { assets: false }),
+      );
+
+      const result = await analyzeStandalonePrompt(`Run ${entryId}.`);
+
+      expect(result.blockers).toEqual([
+        expect.objectContaining({
+          code: 'ASSETS_ON_PACKAGED_CHILD',
+          subject: '${{ env.WORKER_PIPELINE }}',
+        }),
+      ]);
+    });
+
+    it('blocks a literal secret in a packaged pipeline and allows a secrets reference', async () => {
+      const workerId = saveYaml('Journey worker', workerYaml());
+      const literalId = saveYaml(
+        'Literal',
+        entryYaml(workerId, {
+          assets: false,
+          env: [`  API_TOKEN: ${LITERAL_TOKEN}`],
+        }),
+      );
+      const referenceId = saveYaml(
+        'Reference',
+        entryYaml(workerId, {
+          assets: false,
+          env: ['  API_TOKEN: ${{ secrets.API_TOKEN }}'],
+        }),
+      );
+
+      const literal = await analyzeStandalonePrompt(`Run ${literalId}.`);
+      const reference = await analyzeStandalonePrompt(`Run ${referenceId}.`);
+
+      expect(literal.blockers).toEqual([
+        expect.objectContaining({
+          code: 'SUSPECTED_SECRET',
+          subject: 'Literal',
+        }),
+      ]);
+      expect(reference.blockers).toEqual([]);
+      expect(reference.state).toBe('ready');
+    });
+
+    it('shares pipelines totalling more than 256 KiB, since only the package carries them', async () => {
+      const workerId = saveYaml('Journey worker', workerYaml());
+      const padding = `description: "${'x'.repeat(300 * 1024)}"`;
+      const entryId = saveYaml(
+        'Journey entry',
+        entryYaml(workerId, { assets: false, padding }),
+      );
+
+      const result = await analyzeStandalonePrompt(`Run ${entryId}.`);
+
+      expect(result.blockers).toEqual([]);
+      expect(result.state).toBe('ready');
+      expect(result.manifest?.totalBytes).toBeGreaterThan(256 * 1024);
+    });
+
+    it('packages a stored worktree_pipeline action pipeline under the action key with its child', async () => {
+      const workerId = saveYaml('Journey worker', workerYaml());
+      const raw = entryYaml(workerId, { assets: false });
+      const actionId = saveYaml('Journey entry', raw);
+
+      const result = await analyzeAutomationCapabilityPackage(
+        {
+          rawContent: '{"version":1}',
+          pipelineContent: raw,
+          selections: noSelections,
+        },
+        {
+          actionPipeline: { source: 'user', pipelineId: actionId },
+          homedir: home,
+        },
+      );
+
+      expect(result.blockers).toEqual([]);
+      // The manifest stays keyed to the action pipeline's YAML.
+      expect(result.pipelineContentHash).toBe(hashPipelinePackageYaml(raw));
+      expect(result.manifest?.resources).toContainEqual(
+        expect.objectContaining({
+          id: 'automation-pipeline-action',
+          pipelineKey: 'action',
+        }),
+      );
+      expect(result.manifest?.resources).toContainEqual(
+        expect.objectContaining({
+          kind: 'child_pipeline',
+          invocationKeys: ['${{ env.WORKER_PIPELINE }}', workerId],
+        }),
+      );
+      expect(result.packagedPipelines).toEqual([
+        expect.objectContaining({ key: 'action', isActionPipeline: true }),
+      ]);
+    });
+
+    it('keeps the children of two dependencies with the same step layout apart', async () => {
+      const firstWorkerId = saveYaml('First worker', workerYaml());
+      const secondWorkerId = saveYaml(
+        'Second worker',
+        workerYaml(['description: second']),
+      );
+      const firstId = saveYaml(
+        'First entry',
+        entryYaml(firstWorkerId, { assets: false }),
+      );
+      const secondId = saveYaml(
+        'Second entry',
+        entryYaml(secondWorkerId, { assets: false }),
+      );
+
+      const result = await analyzeStandalonePrompt(
+        `Run ${firstId}, then ${secondId}.`,
+      );
+
+      expect(result.blockers).toEqual([]);
+      expect(result.state).toBe('ready');
+      const children = (result.manifest?.resources ?? []).filter(
+        (resource) => resource.kind === 'child_pipeline',
+      );
+      expect(children.map((child) => child.invocationKeys)).toEqual(
+        expect.arrayContaining([
+          ['${{ env.WORKER_PIPELINE }}', firstWorkerId],
+          ['${{ env.WORKER_PIPELINE }}', secondWorkerId],
+        ]),
+      );
+      expect(new Set(children.map((child) => child.id)).size).toBe(
+        children.length,
+      );
+    });
+
+    it('packages no pipeline when the server cannot publish v5 documents', async () => {
+      const workerId = saveYaml('Journey worker', workerYaml());
+      const raw = entryYaml(workerId, { assets: false });
+      const actionId = saveYaml('Journey entry', raw);
+
+      const result = await analyzeAutomationCapabilityPackage(
+        {
+          rawContent: '{"version":1}',
+          pipelineContent: raw,
+          promptText: `Also run ${workerId}.`,
+          pipelineDependencies: [{ pipelineId: workerId, source: 'user' }],
+          selections: noSelections,
+          packagePipelines: false,
+        },
+        {
+          actionPipeline: { source: 'user', pipelineId: actionId },
+          homedir: home,
+        },
+      );
+
+      expect(result.blockers).toEqual([]);
+      expect(
+        (result.manifest?.resources ?? []).filter(
+          (resource) => resource.kind === 'automation_pipeline',
+        ),
+      ).toEqual([]);
+      expect(result.packagedPipelines ?? []).toEqual([]);
+    });
+
+    it('blocks a plain pipeline share whose pipeline declares assets', async () => {
+      const workerId = saveYaml('Journey worker', workerYaml());
+      const raw = entryYaml(workerId);
+
+      const result = await analyzePackageRequest({ rawPipeline: raw });
+
+      expect(result.blockers).toContainEqual(
+        expect.objectContaining({ code: 'ASSETS_REQUIRE_AUTOMATION_SHARE' }),
+      );
+      expect(result.state).toBe('blocked');
+    });
+  });
+
   describe('package request recovery', () => {
     const pipelineContentHash = 'a'.repeat(64);
     const manifest = {
@@ -1402,7 +2147,7 @@ describe('pipeline package analysis requests', () => {
       digest,
       package: {
         digest,
-        version: 1,
+        version: 1 as const,
         resources: [],
         environmentRequirements: [],
         totalFiles: 0,
@@ -1976,7 +2721,7 @@ describe('pipeline package analysis requests', () => {
             selectedOptionalResourceIds: [],
             shareScope: 'private',
           }),
-        ).rejects.toThrow('Pipeline unavailable (unknown-provenance)');
+        ).rejects.toThrow('Workflow unavailable (unknown-provenance)');
         expect(preparePipelinePackageUpload).not.toHaveBeenCalled();
         expect(commitPipelinePackageUpload).not.toHaveBeenCalled();
         expect(createSharedPipeline).not.toHaveBeenCalled();
@@ -2113,42 +2858,46 @@ describe('pipeline package analysis requests', () => {
     const sharedDetail = (
       distributionMode: 'package' | 'definition_only',
       previousResourceIds: string[] = [],
-    ): Awaited<ReturnType<typeof getSharedPipeline>> => ({
-      id: 'remote-shared',
-      name: 'Example',
-      description: '',
-      icon: '',
-      version: '1.0.0',
-      triggerTypes: ['dispatch'],
-      scopes: ['directory'],
-      createdBy: { id: 'user-1', name: 'Alice' },
-      createdAt: '2026-08-30T12:00:00.000Z',
-      updatedAt: '2026-08-30T12:00:00.000Z',
-      canUpdate: true,
-      canDelete: true,
-      rawPipeline: 'name: Example\non: dispatch\njobs: {}\n',
-      distributionMode,
-      ...(distributionMode === 'package'
-        ? {
-            package: {
-              digest: packageDigest,
-              version: 1 as const,
-              resources: previousResourceIds.map((id) => ({
-                id,
-                displayName: id,
-                kind: 'plugin_command' as const,
-                sourceLabel: 'project',
-                fileCount: 1,
-                totalBytes: 10,
-                affectedSteps: [{ jobId: 'review', stepId: 'run' }],
-              })),
-              environmentRequirements: [],
-              totalFiles: previousResourceIds.length,
-              totalBytes: previousResourceIds.length * 10,
-            },
-          }
-        : {}),
-    });
+    ): Awaited<ReturnType<typeof getSharedPipeline>> => {
+      const rawPipeline = 'name: Example\non: dispatch\njobs: {}\n';
+      return {
+        id: 'remote-shared',
+        name: 'Example',
+        description: '',
+        icon: '',
+        version: '1.0.0',
+        triggerTypes: ['dispatch'],
+        scopes: ['directory'],
+        createdBy: { id: 'user-1', name: 'Alice' },
+        createdAt: '2026-08-30T12:00:00.000Z',
+        updatedAt: '2026-08-30T12:00:00.000Z',
+        canUpdate: true,
+        canDelete: true,
+        rawPipeline,
+        contentHash: hashPipelinePackageYaml(rawPipeline),
+        distributionMode,
+        ...(distributionMode === 'package'
+          ? {
+              package: {
+                digest: packageDigest,
+                version: 1 as const,
+                resources: previousResourceIds.map((id) => ({
+                  id,
+                  displayName: id,
+                  kind: 'plugin_command' as const,
+                  sourceLabel: 'project',
+                  fileCount: 1,
+                  totalBytes: 10,
+                  affectedSteps: [{ jobId: 'review', stepId: 'run' }],
+                })),
+                environmentRequirements: [],
+                totalFiles: previousResourceIds.length,
+                totalBytes: previousResourceIds.length * 10,
+              },
+            }
+          : {}),
+      };
+    };
     const analysisWithLocalCommand = (
       analysisId: string,
     ): DesktopSharedNodeModule.PipelinePackageAnalysisInternal => {
@@ -2277,7 +3026,7 @@ describe('pipeline package analysis requests', () => {
       try {
         await expect(
           updateSharedPipelinePreservingPackage('remote-shared', rawPipeline),
-        ).rejects.toThrow('Pipeline unavailable (context-mismatch)');
+        ).rejects.toThrow('Workflow unavailable (context-mismatch)');
         expect(commitPipelinePackageUpload).not.toHaveBeenCalled();
         expect(updateSharedPipeline).not.toHaveBeenCalled();
       } finally {
@@ -2426,6 +3175,73 @@ describe('pipeline package analysis requests', () => {
       ).rejects.toThrow(SHARED_PACKAGE_REVIEW_REQUIRED_MESSAGE);
       expect(preparePipelinePackageUpload).not.toHaveBeenCalled();
       expect(updateSharedPipeline).not.toHaveBeenCalled();
+    });
+
+    it('treats an env-expression child as bound when re-packaging an edit', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'pipeline-package-env-save-'));
+      jest
+        .mocked(analyzePipelinePackage)
+        .mockImplementation(
+          jest.requireActual<typeof DesktopSharedNodeModule>(
+            '@canopy/desktop-shared/node',
+          ).analyzePipelinePackage,
+        );
+      try {
+        jest.spyOn(pipelinePaths, 'getUserPipelinesDir').mockReturnValue(root);
+        jest
+          .spyOn(pipelinePaths, 'getUserPipelineIndexPath')
+          .mockReturnValue(join(root, 'index.json'));
+        const saved = saveStoredPipeline({
+          name: 'Worker',
+          description: '',
+          icon: '',
+          content: {
+            name: 'Worker',
+            on: 'dispatch',
+            jobs: { work: { steps: [{ run: 'echo worker' }] } },
+          },
+        });
+        if (!saved.success || !saved.data) throw new Error(saved.error);
+        const editedPipeline = [
+          'name: Example',
+          'on: dispatch',
+          'env:',
+          `  WORKER_PIPELINE: ${saved.data.id}`,
+          'jobs:',
+          '  review:',
+          '    steps:',
+          '      - id: run',
+          '        uses: builtin/run-pipeline',
+          '        with:',
+          "          pipeline: '${{ env.WORKER_PIPELINE }}'",
+          '',
+        ].join('\n');
+        // The previous package already carried the child, so the edit needs
+        // no new consent.
+        const previous = await analyzePackageRequest({
+          rawPipeline: editedPipeline,
+        });
+        const childResource = previous.manifest?.resources.find(
+          (resource) => resource.kind === 'child_pipeline',
+        );
+        if (!childResource) throw new Error('Expected a packaged child');
+        jest
+          .mocked(getSharedPipeline)
+          .mockResolvedValue(sharedDetail('package', [childResource.id]));
+
+        await updateSharedPipelinePreservingPackage(
+          'remote-shared',
+          editedPipeline,
+        );
+
+        expect(updateSharedPipeline).toHaveBeenCalledWith(
+          'remote-shared',
+          editedPipeline,
+          expect.objectContaining({ distributionMode: 'package' }),
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     });
 
     it('refuses a blocked edit instead of demoting the share', async () => {
@@ -2953,7 +3769,7 @@ describe('pipeline package readiness', () => {
       const authorize = jest
         .spyOn(installContext, 'authorizeProjectPipelineRequest')
         .mockRejectedValue(
-          new Error('Pipeline unavailable (unknown-provenance)'),
+          new Error('Workflow unavailable (unknown-provenance)'),
         );
       try {
         await expect(
@@ -3039,6 +3855,9 @@ describe('pipeline package readiness', () => {
       canUpdate: false,
       canDelete: false,
       rawPipeline: 'name: Definition only\non: dispatch\njobs: {}\n',
+      contentHash: hashPipelinePackageYaml(
+        'name: Definition only\non: dispatch\njobs: {}\n',
+      ),
       distributionMode: 'definition_only',
     });
 
@@ -3087,7 +3906,7 @@ describe('pipeline package readiness', () => {
     mockInstallContextEnabled = true;
     const authorize = jest
       .spyOn(installContext, 'assertStoredPipelineContext')
-      .mockRejectedValue(new Error('Pipeline unavailable (context-mismatch)'));
+      .mockRejectedValue(new Error('Workflow unavailable (context-mismatch)'));
     jest.mocked(listPipelinePackageInstalls).mockResolvedValue([
       {
         localPipelineId: 'org-b-installed',
@@ -3104,7 +3923,7 @@ describe('pipeline package readiness', () => {
     try {
       await expect(
         getPackageReadiness({ pipeline: 'org-b-installed' }),
-      ).rejects.toThrow('Pipeline unavailable (context-mismatch)');
+      ).rejects.toThrow('Workflow unavailable (context-mismatch)');
       expect(listPipelinePackageInstalls).not.toHaveBeenCalled();
       expect(localPipelineService.getPipelineText).not.toHaveBeenCalled();
       expect(removePipelinePackageInstall).not.toHaveBeenCalled();
@@ -3215,6 +4034,9 @@ describe('pipeline package readiness', () => {
       canUpdate: false,
       canDelete: false,
       rawPipeline: 'name: Packaged pipeline\non: dispatch\njobs: {}\n',
+      contentHash: hashPipelinePackageYaml(
+        'name: Packaged pipeline\non: dispatch\njobs: {}\n',
+      ),
       distributionMode: 'package',
       package: {
         digest: `pp:v1:${'C'.repeat(43)}`,
@@ -3322,6 +4144,9 @@ describe('pipeline package readiness', () => {
       canUpdate: false,
       canDelete: false,
       rawPipeline: 'name: Packaged pipeline\non: dispatch\njobs: {}\n',
+      contentHash: hashPipelinePackageYaml(
+        'name: Packaged pipeline\non: dispatch\njobs: {}\n',
+      ),
       distributionMode: 'package',
       package: {
         digest: `pp:v1:${'C'.repeat(43)}`,
@@ -3344,6 +4169,7 @@ describe('pipeline package readiness', () => {
           {
             id: 'cursor-default',
             status: 'missing',
+            detail: 'Connect Cursor in Settings to run this workflow.',
           },
         ],
       });
@@ -3384,6 +4210,9 @@ describe('pipeline package readiness', () => {
       canUpdate: false,
       canDelete: false,
       rawPipeline: 'name: Packaged pipeline\non: dispatch\njobs: {}\n',
+      contentHash: hashPipelinePackageYaml(
+        'name: Packaged pipeline\non: dispatch\njobs: {}\n',
+      ),
       distributionMode: 'package',
       package: {
         digest: `pp:v1:${'C'.repeat(43)}`,
@@ -3420,7 +4249,7 @@ describe('pipeline package readiness', () => {
 describe('automation capability package installation', () => {
   const digest = `pp:v1:${'A'.repeat(43)}`;
   const pipelineContentHash = 'a'.repeat(64);
-  const manifest = {
+  const manifest: PipelinePackageManifestV1 = {
     version: 1 as const,
     pipelineContentHash,
     resources: [
@@ -3435,6 +4264,7 @@ describe('automation capability package installation', () => {
         trees: [
           {
             provider: 'codex' as const,
+            runtimeKind: 'standalone_skill' as const,
             rootName: 'skills',
             entries: [],
           },
@@ -3461,7 +4291,7 @@ describe('automation capability package installation', () => {
 
   it('materializes and records a package under its automation owner', async () => {
     jest.mocked(getAutomationPackage).mockResolvedValue({ digest, manifest });
-    jest.mocked(installPipelinePackageAtomically).mockResolvedValue();
+    jest.mocked(installPipelinePackageAtomically).mockResolvedValue('/tmp/p');
     const localContentHash = 'b'.repeat(64);
 
     await installAutomationCapabilityPackage({
@@ -3497,7 +4327,7 @@ describe('automation capability package installation', () => {
     jest
       .mocked(getCuratedAutomationPackage)
       .mockResolvedValue({ digest, manifest });
-    jest.mocked(installPipelinePackageAtomically).mockResolvedValue();
+    jest.mocked(installPipelinePackageAtomically).mockResolvedValue('/tmp/p');
 
     await installAutomationCapabilityPackage({
       remoteId: 'daily-review',
@@ -3555,7 +4385,7 @@ describe('automation capability package installation', () => {
       digest: reboundDigest,
       manifest: reboundManifest,
     });
-    jest.mocked(installPipelinePackageAtomically).mockResolvedValue();
+    jest.mocked(installPipelinePackageAtomically).mockResolvedValue('/tmp/p');
     jest.mocked(verifyCachedPipelinePackage).mockResolvedValue(reboundManifest);
     jest.mocked(preparePipelinePackageUpload).mockResolvedValue({
       uploadId: 'upload-installed',
@@ -3568,7 +4398,37 @@ describe('automation capability package installation', () => {
       package: {
         digest: reboundDigest,
         version: 1,
-        resources: reboundManifest.resources,
+        resources: reboundManifest.resources.map((resource) => ({
+          id: resource.id,
+          displayName: resource.displayName,
+          kind: resource.kind,
+          sourceLabel: resource.sourceLabel,
+          fileCount: resource.trees.reduce(
+            (count, tree) => count + tree.entries.length,
+            0,
+          ),
+          totalBytes: resource.trees.reduce(
+            (resourceTotal, tree) =>
+              resourceTotal +
+              tree.entries.reduce(
+                (treeTotal, entry) => treeTotal + entry.size,
+                0,
+              ),
+            0,
+          ),
+          affectedSteps: reboundManifest.bindings.flatMap(
+            (binding): Array<{ jobId: string; stepId: string }> => {
+              if (
+                !('jobId' in binding) ||
+                !('stepId' in binding) ||
+                !binding.resourceIds.includes(resource.id)
+              ) {
+                return [];
+              }
+              return [{ jobId: binding.jobId, stepId: binding.stepId }];
+            },
+          ),
+        })),
         environmentRequirements: reboundManifest.environmentRequirements,
         totalFiles: reboundManifest.totalFiles,
         totalBytes: reboundManifest.totalBytes,
@@ -3606,7 +4466,7 @@ describe('automation capability package installation', () => {
       digest,
       manifest: pipelineBoundManifest,
     });
-    jest.mocked(installPipelinePackageAtomically).mockResolvedValue();
+    jest.mocked(installPipelinePackageAtomically).mockResolvedValue('/tmp/p');
 
     await expect(
       installAutomationCapabilityPackage({
@@ -3801,6 +4661,7 @@ describe('automation capability package installation', () => {
       canUpdate: false,
       canDelete: false,
       rawPipeline,
+      contentHash: hashPipelinePackageYaml(rawPipeline),
       distributionMode: 'definition_only',
     });
 
@@ -3845,6 +4706,7 @@ describe('automation capability package installation', () => {
       canUpdate: false,
       canDelete: false,
       rawPipeline,
+      contentHash: hashPipelinePackageYaml(rawPipeline),
     });
 
     await expect(
@@ -3871,6 +4733,7 @@ describe('automation capability package installation', () => {
       canUpdate: false,
       canDelete: false,
       rawPipeline,
+      contentHash: hashPipelinePackageYaml(rawPipeline),
       distributionMode: 'definition_only',
     });
 
@@ -3883,6 +4746,203 @@ describe('automation capability package installation', () => {
       },
       rawPipeline,
     });
+  });
+});
+
+describe('automation package dependency pipelines at run time', () => {
+  const dependencyYaml = 'name: Dependency\non: dispatch\njobs: {}\n';
+  const dependencyHash = hashPipelinePackageYaml(dependencyYaml);
+  const automationHash = 'a'.repeat(64);
+  const digest = `pp:v1:${'B'.repeat(43)}`;
+  const pipelineEntry = {
+    path: 'pipeline.yaml',
+    sha256: dependencyHash,
+    size: dependencyYaml.length,
+    mode: 'read' as const,
+  };
+  // A prompt automation whose package holds only pipelines: the dependency
+  // (bound to the action), its asset (listed by the pipeline, not bound) and
+  // its child (bound to the dependency's own step).
+  const manifest = {
+    version: 1 as const,
+    pipelineContentHash: automationHash,
+    resources: [
+      {
+        id: 'automation-pipeline-dep',
+        kind: 'automation_pipeline' as const,
+        displayName: 'Dependency',
+        sourceLabel: 'Your pipelines',
+        sourceVisibility: 'local' as const,
+        invocationKeys: [],
+        dependencyResourceIds: ['file-asset-dep-notes'],
+        pipelineKey: 'dep',
+        pipelineContentHash: dependencyHash,
+        trees: [
+          {
+            provider: 'claude' as const,
+            runtimeKind: 'automation_pipeline' as const,
+            rootName: 'dep',
+            entries: [pipelineEntry],
+          },
+        ],
+      },
+      {
+        id: 'file-asset-dep-notes',
+        kind: 'file_asset' as const,
+        displayName: 'notes',
+        sourceLabel: 'Pipeline files',
+        sourceVisibility: 'local' as const,
+        invocationKeys: [],
+        dependencyResourceIds: [],
+        pipelineKey: 'dep',
+        assetId: 'notes',
+        installMode: 'seed' as const,
+        required: true,
+        trees: [
+          {
+            provider: 'claude' as const,
+            runtimeKind: 'pipeline_asset' as const,
+            rootName: 'notes',
+            entries: [{ ...pipelineEntry, path: 'notes.md' }],
+          },
+        ],
+      },
+      {
+        id: 'child-1',
+        kind: 'child_pipeline' as const,
+        displayName: 'worker.yaml',
+        sourceLabel: 'pipelines',
+        sourceVisibility: 'local' as const,
+        invocationKeys: ['worker.yaml'],
+        dependencyResourceIds: [],
+        trees: [
+          {
+            provider: 'claude' as const,
+            runtimeKind: 'plugin_fragment' as const,
+            rootName: 'pipelines-1',
+            entries: [{ ...pipelineEntry, path: 'worker.yaml' }],
+          },
+        ],
+      },
+    ],
+    bindings: [
+      {
+        jobId: 'automation',
+        stepId: 'action',
+        resourceIds: ['automation-pipeline-dep'],
+      },
+      { jobId: 'run', stepId: 'worker', resourceIds: ['child-1'] },
+    ],
+    environmentRequirements: [],
+    totalFiles: 3,
+    totalBytes: dependencyYaml.length * 3,
+  };
+  let root = '';
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    root = await mkdtemp(join(tmpdir(), 'automation-dependency-runtime-'));
+    await writeFile(join(root, 'dep.yaml'), dependencyYaml, 'utf8');
+    jest.mocked(localPipelineService.getPipelinePath).mockReturnValue({
+      success: true,
+      data: join(root, 'dep.yaml'),
+    });
+    jest.mocked(listPipelinePackageInstalls).mockResolvedValue([
+      {
+        localPipelineId: 'local-dep',
+        pipelineContentHash: dependencyHash,
+        distributionMode: 'package',
+        packageDigest: digest,
+        installedAt: '2026-10-23T00:00:00.000Z',
+      },
+    ]);
+    jest.mocked(verifyCachedPipelinePackage).mockResolvedValue(manifest);
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('runs a dependency pipeline under the automation package that carries it', async () => {
+    await expect(
+      resolveInstalledPipelinePackageForExecution('local-dep'),
+    ).resolves.toMatchObject({
+      digest,
+      rawPipeline: dependencyYaml,
+      manifest,
+    });
+    expect(removePipelinePackageInstall).not.toHaveBeenCalled();
+  });
+
+  it('still unlinks a dependency pipeline edited locally', async () => {
+    await writeFile(
+      join(root, 'dep.yaml'),
+      `${dependencyYaml}# local edit\n`,
+      'utf8',
+    );
+
+    await expect(
+      resolveInstalledPipelinePackageForExecution('local-dep'),
+    ).resolves.toBeUndefined();
+    expect(removePipelinePackageInstall).toHaveBeenCalledWith(
+      '/tmp/install-store.json',
+      'local-dep',
+    );
+  });
+
+  it('still refuses a package that carries neither the pipeline nor its hash', async () => {
+    jest.mocked(verifyCachedPipelinePackage).mockResolvedValue({
+      ...manifest,
+      resources: manifest.resources.filter(
+        (resource) => resource.kind !== 'automation_pipeline',
+      ),
+    });
+
+    await expect(
+      resolveInstalledPipelinePackageForExecution('local-dep'),
+    ).rejects.toThrow('missing or invalid');
+  });
+
+  it('keeps a dependency pipeline ready on the Pipelines page', async () => {
+    jest.mocked(localPipelineService.getPipelineText).mockReturnValue({
+      success: true,
+      data: dependencyYaml,
+    });
+
+    await expect(
+      getPackageReadiness({ pipeline: 'local-dep' }),
+    ).resolves.toEqual(
+      expect.objectContaining({ distributionMode: 'package' }),
+    );
+    expect(removePipelinePackageInstall).not.toHaveBeenCalled();
+  });
+
+  it('accepts a prompt automation package that holds only pipelines', async () => {
+    jest.mocked(getAutomationPackage).mockResolvedValue({ digest, manifest });
+    jest.mocked(installPipelinePackageAtomically).mockResolvedValue('/tmp/p');
+    jest.mocked(findCapabilityPackageInstallByOwner).mockResolvedValue(null);
+
+    await expect(
+      installAutomationCapabilityPackage({
+        remoteId: 'remote-automation',
+        localAutomationId: 'local-automation',
+        packageRef: { version: 1, digest },
+      }),
+    ).resolves.toBeUndefined();
+
+    jest.mocked(findCapabilityPackageInstallByOwner).mockResolvedValue({
+      owner: { kind: 'automation', localAutomationId: 'local-automation' },
+      pipelineContentHash: automationHash,
+      packageDigest: digest,
+      installedAt: '2026-10-23T00:00:00.000Z',
+    });
+    // Nothing for the prompt's agent, and no missing-binding failure.
+    await expect(
+      resolveInstalledAutomationPackageOverlay('local-automation', {
+        version: 1,
+        digest,
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -3922,7 +4982,9 @@ describe('public package installation transaction', () => {
     jest.mocked(authorizeSharedPipelineCreate).mockReset();
     root = await mkdtemp(join(tmpdir(), 'pipeline-package-install-'));
     mockReceiptDataDir = root;
-    jest.mocked(getPublicPipelineShareSnapshot).mockResolvedValue({
+    const publicShareSnapshot: Awaited<
+      ReturnType<typeof getPublicPipelineShareSnapshot>
+    > = {
       entity: 'pipeline',
       externalId,
       name: 'Shared package',
@@ -3938,10 +5000,14 @@ describe('public package installation transaction', () => {
         totalFiles: 0,
         totalBytes: 0,
       },
-      dependencies: [],
       authorUsername: null,
       updatedAt: '2026-08-30T12:00:00.000Z',
-    });
+    };
+    // Preserve the legacy field carried by this public-share response fixture.
+    Reflect.set(publicShareSnapshot, 'dependencies', []);
+    jest
+      .mocked(getPublicPipelineShareSnapshot)
+      .mockResolvedValue(publicShareSnapshot);
     jest.mocked(getPublicPipelinePackage).mockResolvedValue({
       digest,
       manifest,
@@ -4039,10 +5105,15 @@ describe('public package installation transaction', () => {
       });
       jest.mocked(getPipelinePackage).mockResolvedValue({ digest, manifest });
       try {
-        const operation = installPublicPackageShare({
-          ...request,
-          expectedDistributionMode: distributionMode,
-        });
+        const operation =
+          distributionMode === 'package'
+            ? installPublicPackageShare(request)
+            : installPublicPackageShare({
+                externalId: request.externalId,
+                expectedPipelineContentHash:
+                  request.expectedPipelineContentHash,
+                expectedDistributionMode: 'definition_only',
+              });
         if (failure !== 'none') {
           await expect(operation).rejects.toThrow(
             failure === 'create' ? 'create failed' : 'install record failed',
@@ -4133,6 +5204,7 @@ describe('public package installation transaction', () => {
         canUpdate: true,
         canDelete: true,
         rawPipeline,
+        contentHash: hashPipelinePackageYaml(rawPipeline),
         shareScope: 'organization',
         owner: {
           type: 'organization',
@@ -4162,7 +5234,7 @@ describe('public package installation transaction', () => {
         await expect(installPublicPackageShare(request)).rejects.toThrow(
           deleteFails
             ? 'delete failed'
-            : 'Pipeline unavailable (context-mismatch)',
+            : 'Workflow unavailable (context-mismatch)',
         );
         expect(localPipelineService.deletePipeline).toHaveBeenCalledWith(
           expect.any(String),
@@ -4208,7 +5280,7 @@ describe('public package installation transaction', () => {
     });
     try {
       await expect(installPublicPackageShare(request)).rejects.toThrow(
-        'Pipeline unavailable (context-mismatch)',
+        'Workflow unavailable (context-mismatch)',
       );
       expect(localPipelineService.savePipeline).not.toHaveBeenCalled();
       expect(upsertPipelinePackageInstall).not.toHaveBeenCalled();
@@ -4421,6 +5493,8 @@ describe('public package installation transaction', () => {
       rawPipeline,
       contentHash,
       distributionMode: 'definition_only',
+      authorUsername: null,
+      updatedAt: '2026-08-30T12:00:00.000Z',
     });
 
     await expect(
@@ -4458,6 +5532,8 @@ describe('public package installation transaction', () => {
       rawPipeline,
       contentHash,
       distributionMode: 'definition_only',
+      authorUsername: null,
+      updatedAt: '2026-08-30T12:00:00.000Z',
     });
     jest
       .mocked(selectedOwnerContext)
@@ -4486,6 +5562,8 @@ describe('public package installation transaction', () => {
       rawPipeline,
       contentHash,
       distributionMode: 'definition_only',
+      authorUsername: null,
+      updatedAt: '2026-08-30T12:00:00.000Z',
     });
     jest.mocked(listPipelinePackageInstalls).mockResolvedValue([
       {
@@ -4544,6 +5622,8 @@ describe('public package installation transaction', () => {
       rawPipeline,
       contentHash,
       distributionMode: 'definition_only',
+      authorUsername: null,
+      updatedAt: '2026-08-30T12:00:00.000Z',
     });
     jest.mocked(listPipelinePackageInstalls).mockResolvedValue([
       {
@@ -4623,6 +5703,8 @@ describe('public package installation transaction', () => {
       rawPipeline,
       contentHash,
       distributionMode: 'definition_only',
+      authorUsername: null,
+      updatedAt: '2026-08-30T12:00:00.000Z',
     });
     jest.mocked(listPipelinePackageInstalls).mockResolvedValue([
       {
@@ -4925,5 +6007,147 @@ describe('public package installation transaction', () => {
       icon: 'workflow',
       content: previousContent,
     });
+  });
+});
+
+// CAN-4655: user pipelines installed from a shared container's package.
+describe('container-installed pipelines', () => {
+  const rawPipeline = 'name: Review\non: dispatch\njobs: {}\n';
+
+  beforeEach(() => {
+    jest.mocked(localPipelineService.savePipeline).mockReset();
+    jest.mocked(localPipelineService.deletePipeline).mockReset();
+    jest.mocked(localPipelineService.getPipelineText).mockReset();
+    jest.mocked(installPipelinePackageAtomically).mockReset();
+    jest.mocked(upsertPipelinePackageInstall).mockReset();
+    jest.mocked(removePipelinePackageInstall).mockReset();
+    jest.mocked(deleteUserPipelineLocalMetadata).mockReset();
+  });
+
+  it('stores the packaged YAML verbatim under the chosen id and binds its overlay', async () => {
+    jest.mocked(localPipelineService.savePipeline).mockReturnValue({
+      success: true,
+      data: { id: 'local-1' },
+    } as never);
+    const contentHash = hashPipelinePackageYaml(rawPipeline);
+    const manifest = {
+      version: 1 as const,
+      pipelineContentHash: contentHash,
+      resources: [],
+      bindings: [],
+      environmentRequirements: [],
+      totalFiles: 0,
+      totalBytes: 0,
+    };
+    const digest = computePipelinePackageDigestSync(manifest);
+
+    await expect(
+      createContainerInstalledPipeline({
+        localPipelineId: 'local-1',
+        name: 'Review (2)',
+        rawPipeline,
+        overlay: {
+          digest,
+          manifest,
+          sourcePackageDigest: `pp:v1:${'A'.repeat(43)}`,
+        },
+      }),
+    ).resolves.toEqual({ localPipelineId: 'local-1', contentHash });
+
+    expect(localPipelineService.savePipeline).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Review (2)', rawContent: rawPipeline }),
+      { id: 'local-1' },
+    );
+    expect(installPipelinePackageAtomically).toHaveBeenCalledWith(
+      expect.objectContaining({ digest, manifest }),
+    );
+    expect(upsertPipelinePackageInstall).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        localPipelineId: 'local-1',
+        pipelineContentHash: contentHash,
+        packageDigest: digest,
+      }),
+    );
+    // Provenance lives in the shared-container install ledger and journal.
+    // An origin here would read as a Public pipeline share, and the shared
+    // item backfill would register a subscription to the container's id.
+    expect(
+      jest.mocked(upsertPipelinePackageInstall).mock.calls[0]?.[1],
+    ).not.toHaveProperty('originExternalId');
+    expect(recordUserPipelineOwner).toHaveBeenCalledWith('local-1', 'personal');
+  });
+
+  it('removes its own pipeline when the overlay cannot be installed', async () => {
+    jest.mocked(localPipelineService.savePipeline).mockReturnValue({
+      success: true,
+      data: { id: 'local-1' },
+    } as never);
+    jest.mocked(localPipelineService.getPipelineText).mockReturnValue({
+      success: true,
+      data: rawPipeline,
+    });
+    jest.mocked(localPipelineService.deletePipeline).mockReturnValue({
+      success: true,
+    });
+    jest
+      .mocked(installPipelinePackageAtomically)
+      .mockRejectedValue(new Error('blob missing'));
+    const manifest = {
+      version: 1 as const,
+      pipelineContentHash: hashPipelinePackageYaml(rawPipeline),
+      resources: [],
+      bindings: [],
+      environmentRequirements: [],
+      totalFiles: 0,
+      totalBytes: 0,
+    };
+
+    await expect(
+      createContainerInstalledPipeline({
+        localPipelineId: 'local-1',
+        name: 'Review',
+        rawPipeline,
+        overlay: {
+          digest: computePipelinePackageDigestSync(manifest),
+          manifest,
+          sourcePackageDigest: `pp:v1:${'A'.repeat(43)}`,
+        },
+      }),
+    ).rejects.toThrow('blob missing');
+    expect(localPipelineService.deletePipeline).toHaveBeenCalledWith('local-1');
+  });
+
+  it('keeps a pipeline the user edited since the install', async () => {
+    jest.mocked(localPipelineService.getPipelineText).mockReturnValue({
+      success: true,
+      data: `${rawPipeline}# edited\n`,
+    });
+    await expect(
+      removeContainerInstalledPipeline(
+        'local-1',
+        hashPipelinePackageYaml(rawPipeline),
+      ),
+    ).resolves.toBe('kept');
+    expect(localPipelineService.deletePipeline).not.toHaveBeenCalled();
+
+    jest.mocked(localPipelineService.getPipelineText).mockReturnValue({
+      success: true,
+      data: rawPipeline,
+    });
+    jest.mocked(localPipelineService.deletePipeline).mockReturnValue({
+      success: true,
+    });
+    await expect(
+      removeContainerInstalledPipeline(
+        'local-1',
+        hashPipelinePackageYaml(rawPipeline),
+      ),
+    ).resolves.toBe('removed');
+    expect(removePipelinePackageInstall).toHaveBeenCalledWith(
+      expect.any(String),
+      'local-1',
+    );
+    expect(deleteUserPipelineLocalMetadata).toHaveBeenCalledWith('local-1');
   });
 });

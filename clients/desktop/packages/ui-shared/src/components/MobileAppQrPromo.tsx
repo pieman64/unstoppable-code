@@ -7,6 +7,7 @@ import {
   type MobileAppStoreLink,
   type StoreBadgeActivation,
 } from './StoreBadgeLink';
+import { SegmentedControl } from './SegmentedControl';
 import {
   DEFAULT_MOBILE_APP_PROMO_DESCRIPTION,
   defaultMobileAppPromoHeading,
@@ -91,36 +92,24 @@ export function MobileAppQrPromo({
         </p>
       </div>
 
-      {/* A pair of mutually-exclusive toggle buttons, deliberately NOT the ARIA
-          tabs pattern. Tabs would owe a `role="tabpanel"` and roving `tabIndex`
-          plus arrow-key navigation, and their `aria-controls` would dangle
-          whenever generation failed and the tile below is not rendered.
-          `aria-pressed` describes what this control actually is and owes
-          none of that. */}
+      {/* The shared SegmentedControl in its default toggle semantics (a
+          labelled group of `aria-pressed` buttons), deliberately NOT
+          `semantics="tabs"`. Tabs would owe a `role="tabpanel"` and roving
+          `tabIndex` plus arrow-key navigation, and their `aria-controls`
+          would dangle whenever generation failed and the tile below is not
+          rendered. */}
       {links.length > 1 && (
-        <div
-          role="group"
-          aria-label="Choose a store"
-          className="inline-flex rounded-lg bg-subtle p-0.5"
-        >
-          {links.map((link) => {
-            const isSelected = link.store === selected.store;
-            return (
-              <button
-                key={link.store}
-                type="button"
-                aria-pressed={isSelected}
-                data-testid={`mobile-app-qr-tab-${STORE_TAB_SLUG[link.store]}`}
-                onClick={() => setSelectedStore(link.store)}
-                className={`focus-ring rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                  isSelected ? 'bg-accent fg-emphasis' : 'fg-secondary'
-                }`}
-              >
-                {STORE_DISPLAY_NAME[link.store]}
-              </button>
-            );
-          })}
-        </div>
+        <SegmentedControl
+          label="Choose a store"
+          width="content"
+          value={selected.store}
+          options={links.map((link) => ({
+            value: link.store,
+            label: STORE_DISPLAY_NAME[link.store],
+            dataTestId: `mobile-app-qr-tab-${STORE_TAB_SLUG[link.store]}`,
+          }))}
+          onChange={setSelectedStore}
+        />
       )}
 
       {/* White tile regardless of color mode: a QR inverted by a dark surface

@@ -7,6 +7,7 @@ import {
   TRY_AGAIN_LABEL,
 } from './shareCopy';
 import type { ShareBudgetPush } from './useSharePreview';
+import { Button } from '@/components/shared/Button';
 
 export interface ShareBudgetPushActionProps {
   budgetPush: ShareBudgetPush;
@@ -46,9 +47,9 @@ export function ShareBudgetPushAction({
         </p>
       )}
       {budgetPush.state !== 'push-blocked' && (
-        <button
-          type="button"
-          className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:opacity-90 disabled:opacity-50"
+        <Button
+          variant="primary"
+          size="compact"
           data-testid={dataTestId}
           disabled={pushing}
           onClick={budgetPush.push}
@@ -58,7 +59,7 @@ export function ShareBudgetPushAction({
             : budgetPush.state === 'push-error'
               ? TRY_AGAIN_LABEL
               : PUSH_TO_GITHUB_LABEL}
-        </button>
+        </Button>
       )}
     </div>
   );

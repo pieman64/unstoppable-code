@@ -64,9 +64,9 @@ function PipelineRunWatcherButton({
   return (
     <WatcherManagementButton
       watchers={pipelineWatchers}
-      modalTitle="Pipeline watchers"
-      modalEmptyMessage="No active watchers for this pipeline."
-      ariaLabel="Manage pipeline watchers"
+      modalTitle="Workflow watchers"
+      modalEmptyMessage="No active watchers for this workflow."
+      ariaLabel="Manage workflow watchers"
       dataTestId={`pipeline-run-watchers-${summary.id}`}
     />
   );
@@ -122,7 +122,7 @@ export function usePipelineRunsHeaderChrome(scope?: {
           ? `${failureCount} failed`
           : queuedTotal > 0
             ? `${queuedTotal} queued`
-            : 'No pipeline runs'
+            : 'No workflow runs'
         : `${activeCount} active, ${visible.length - activeCount} completed${hiddenCount > 0 ? `, ${hiddenCount} hidden` : ''}`,
     collapsedIconColor:
       activeCount > 0 || failureCount > 0
@@ -147,12 +147,12 @@ export function PipelineRunsSection({
   useEffect(() => retainAppAdvisorWatchersBridge(), []);
   const selectedWorktree = useChatStore((s) => s.selectedWorktree);
   const summaries = usePipelineRunsStore((s) => s.summaries);
-  const statesById = usePipelineRunsStore((s) => s.statesById);
+  const rowStatesById = usePipelineRunsStore((s) => s.rowStatesById);
   const advisorSnapshotsByExecutionId = usePipelineRunsStore(
     (s) => s.advisorSnapshotsByExecutionId,
   );
-  const loadExecutionDetails = usePipelineRunsStore(
-    (s) => s.loadExecutionDetails,
+  const loadExecutionRowState = usePipelineRunsStore(
+    (s) => s.loadExecutionRowState,
   );
   const setExecutionHidden = usePipelineRunsStore((s) => s.setExecutionHidden);
   const cancelPendingExecution = usePipelineRunsStore(
@@ -310,32 +310,32 @@ export function PipelineRunsSection({
     () => collectVisibleExecutionTreeNodes(hiddenRoots, expandedIds),
     [expandedIds, hiddenRoots],
   );
-  const prefetchMissingDetails = useCallback(
+  const prefetchMissingRows = useCallback(
     (nodes: ExecutionTreeNode[]): void => {
       for (const node of nodes) {
         const id = node.summary.id;
-        if (!statesById[id] && !inFlightIdsRef.current.has(id)) {
+        if (!rowStatesById[id] && !inFlightIdsRef.current.has(id)) {
           inFlightIdsRef.current.add(id);
-          void loadExecutionDetails(id).finally(() => {
+          void loadExecutionRowState(id).finally(() => {
             inFlightIdsRef.current.delete(id);
           });
         }
       }
     },
-    [loadExecutionDetails, statesById],
+    [loadExecutionRowState, rowStatesById],
   );
 
-  // Auto-load full execution details for visible runs so the DAG progress bar
-  // and rerun/retry affordances render immediately (loadExecutions only
-  // fetches lightweight summaries).
+  // Auto-load row projections for visible runs so the DAG progress bar and
+  // row affordances render immediately. Actions still resolve full detail on
+  // demand through the shared execution-action controller.
   useEffect(() => {
-    prefetchMissingDetails(visibleNodes);
-  }, [prefetchMissingDetails, visibleNodes]);
+    prefetchMissingRows(visibleNodes);
+  }, [prefetchMissingRows, visibleNodes]);
 
   useEffect(() => {
     if (!hiddenExpanded) return;
-    prefetchMissingDetails(visibleHiddenNodes);
-  }, [hiddenExpanded, prefetchMissingDetails, visibleHiddenNodes]);
+    prefetchMissingRows(visibleHiddenNodes);
+  }, [hiddenExpanded, prefetchMissingRows, visibleHiddenNodes]);
 
   const handleToggleHidden = useCallback(
     async (executionId: string, hidden: boolean): Promise<void> => {
@@ -351,7 +351,7 @@ export function PipelineRunsSection({
     <HeaderActionButton
       iconOnly
       data-testid="pipeline-dispatch-open"
-      aria-label="Dispatch pipeline"
+      aria-label="Dispatch workflow"
       onClick={(): void => {
         if (!selectedWorktree) return;
         onDispatchPipeline(selectedWorktree);
@@ -368,14 +368,14 @@ export function PipelineRunsSection({
     <>
       <ActivitySection
         icon={<PipelineIcon />}
-        title="Pipeline runs"
+        title="Workflow runs"
         subtitle={headerChrome.subtitle}
         headerAction={dispatchButton}
         collapsedIconColor={headerChrome.collapsedIconColor}
         hasExpandableContent={headerChrome.hasContent}
         actionOnlyCard
         showBodyWithActionCard={hiddenRoots.length > 0}
-        actionOnlyLabel="Dispatch pipeline"
+        actionOnlyLabel="Dispatch workflow"
         framelessBody={frameless ? 'flex' : undefined}
       >
         <span ref={dialogAnchorRef} hidden />
@@ -398,7 +398,7 @@ export function PipelineRunsSection({
           runRowProps={{
             expandedIds,
             onToggleExpand: handleToggleExpand,
-            statesById,
+            statesById: rowStatesById,
             cancellingId: actions.cancellingId,
             resumingId: actions.resumingId,
             onOpenDetail: (rootId, viewStack, jobId) =>

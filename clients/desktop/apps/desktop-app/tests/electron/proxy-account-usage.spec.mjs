@@ -72,7 +72,7 @@ test('opening a cold composer usage popover fetches scoped proxy quotas', async 
   }
 });
 
-test('Labs: Proxy account cards group the popover accounts under one foldable row', async () => {
+test('Proxy account cards group the popover accounts under one foldable row', async () => {
   test.setTimeout(180_000);
   const proxy = await startFakeAccountProxy({
     state: proxyAccountUsageState(),
@@ -96,22 +96,7 @@ test('Labs: Proxy account cards group the popover accounts under one foldable ro
     await window.evaluate(() =>
       window.api.savePreferences({ accountProxyEnabled: true }),
     );
-    await window.evaluate(() =>
-      window.api.experiments.setChoice({
-        experimentId: 'proxy-account-cards',
-        enabled: true,
-      }),
-    );
-    await expect
-      .poll(() =>
-        window.evaluate(async () => {
-          const snapshot = await window.api.experiments.getSnapshot();
-          return snapshot.experiments.find(
-            (entry) => entry.id === 'proxy-account-cards',
-          )?.enabled;
-        }),
-      )
-      .toBe(true);
+
     const connected = await window.evaluate(
       ({ url, key }) =>
         window.api.accountProxy.connect({ url, managementKey: key }),

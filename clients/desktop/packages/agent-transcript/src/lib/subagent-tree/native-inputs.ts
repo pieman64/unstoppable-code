@@ -8,15 +8,21 @@
  */
 import type { BackgroundTaskStatus } from '@canopy/protocol/background-tasks';
 import type { DisplayBlock, ToolResult } from '../../message-display';
-import type { PersistedChatBlock, PersistedChatMessage } from '../../types';
+import type {
+  AgentUsage,
+  PersistedChatBlock,
+  PersistedChatMessage,
+} from '../../types';
 import { isClaudeAgentRunning } from '../agent-block-state';
 import { mergeToolResults } from '../message-transforms';
+import { getModelDisplayName } from '../model-resolver';
 import {
   managedSubagentInputFromBlock,
   type ClaudeNativeSubagentInput,
   type CodexNativeCallInput,
   type ManagedSubagentInput,
 } from './index';
+import { claudeLaunchedAgentId, isPendingTaskOutput } from '../claude-agent-id';
 
 export interface LoadedSubagentInputs {
   readonly managed: readonly ManagedSubagentInput[];
@@ -140,6 +146,9 @@ function codexInput(
     ...(block.receiverAgents !== undefined
       ? { receiverAgents: block.receiverAgents }
       : {}),
+    ...(block.receiverTimes !== undefined
+      ? { receiverTimes: block.receiverTimes }
+      : {}),
     occurredAt: message.timestamp,
   };
 }
@@ -174,7 +183,7 @@ function taskOutputResultsForMessages(
   return taskOutputResults;
 }
 
-/** The answered TaskOutput call that read each Claude agent, by agent tool-use id. */
+/** The newest finished TaskOutput read of each Claude agent, by agent tool-use id. */
 function taskOutputCallsForMessages(
   messages: readonly PersistedChatMessage[],
   results: ReadonlyMap<string, ToolResult>,
@@ -190,9 +199,9 @@ function taskOutputCallsForMessages(
       }
       taskIdToToolUseId.set(block.toolUseId, block.toolUseId);
       const result = results.get(block.toolUseId);
-      const launchedAgentId = result?.output.match(
-        /agentId:\s*([a-f0-9-]+)/i,
-      )?.[1];
+      const launchedAgentId = result
+        ? claudeLaunchedAgentId(result.output)
+        : undefined;
       if (launchedAgentId) {
         taskIdToToolUseId.set(launchedAgentId, block.toolUseId);
       }
@@ -208,7 +217,8 @@ function taskOutputCallsForMessages(
       const taskId = parsed ? stringProperty(parsed, 'task_id') : undefined;
       if (!taskId) continue;
       const agentToolUseId = taskIdToToolUseId.get(taskId);
-      if (agentToolUseId && results.has(block.toolUseId)) {
+      const result = results.get(block.toolUseId);
+      if (agentToolUseId && result && !isPendingTaskOutput(result.output)) {
         taskOutputCalls.set(agentToolUseId, block.toolUseId);
       }
     }
@@ -238,8 +248,8 @@ function rawClaudeDisplayAgent(
 
 /**
  * One Claude Task call projected like a display `agent` block, with its result
- * and any later TaskOutput result. Nested Tasks stay raw `tool_use` blocks in
- * the display transform, so the tree and transcript both read them here.
+ * and any later TaskOutput result, for a Task the display transform could not
+ * place under a card (its parent rows are not loaded).
  */
 export function claudeNativeDisplayAgentFor(
   messages: readonly PersistedChatMessage[],
@@ -265,6 +275,21 @@ export function claudeNativeDisplayAgentFor(
   return null;
 }
 
+/**
+ * The model a Claude agent ran on, as the host labels it: the model its own
+ * replies reported, else the model its Agent call requested.
+ */
+function claudeAgentModelLabel(
+  block: Extract<PersistedChatBlock, { type: 'tool_use' }>,
+  usage: AgentUsage | undefined,
+): string | undefined {
+  const parsed = parseObject(block.input);
+  const model =
+    usage?.model.trim() ||
+    (parsed ? stringProperty(parsed, 'model')?.trim() : undefined);
+  return model ? getModelDisplayName(model) : undefined;
+}
+
 function stringProperty(
   value: Record<string, unknown>,
   key: string,
@@ -286,6 +311,8 @@ export function collectLoadedSubagentInputs(
      * TaskOutput call reads its result.
      */
     readonly backgroundSettledAtFor?: (toolUseId: string) => number | undefined;
+    /** The chat's per-agent usage, keyed by the agent's tool-use id. */
+    readonly agentUsage?: Readonly<Record<string, AgentUsage>>;
   } = {},
 ): LoadedSubagentInputs {
   const managedBlocks: {
@@ -373,9 +400,9 @@ export function collectLoadedSubagentInputs(
       ) {
         continue;
       }
-      // The display transform wraps root-flow Tasks in `agent` blocks. A Task
-      // inside another provider's subagent group remains a raw tool_use, so
-      // provide the same small display projection for that nested case.
+      // The display transform wraps every Task it can place under a card in
+      // an `agent` block. One in rows whose parent is not loaded gets the same
+      // small display projection here.
       const display =
         displayAgentById.get(block.toolUseId) ??
         rawClaudeDisplayAgent(
@@ -384,14 +411,14 @@ export function collectLoadedSubagentInputs(
           taskOutputResults.get(block.toolUseId),
         );
       if (!display) continue;
+      const taskOutputResult =
+        display.taskOutputResult ?? taskOutputResults.get(block.toolUseId);
       const running = isClaudeAgentRunning(
         display.runInBackground,
         display.result,
-        display.taskOutputResult,
+        taskOutputResult,
         options.backgroundStatusFor?.(block.toolUseId),
       );
-      const taskOutputResult =
-        display.taskOutputResult ?? taskOutputResults.get(block.toolUseId);
       const result = taskOutputResult ?? display.result;
       const state = running
         ? 'running'
@@ -411,6 +438,10 @@ export function collectLoadedSubagentInputs(
       const startedAt = toolUseTimes.get(block.toolUseId);
       const errorMessage =
         state === 'failed' ? result?.output.trim() : undefined;
+      const modelLabel = claudeAgentModelLabel(
+        block,
+        options.agentUsage?.[block.toolUseId],
+      );
       claudeNative.push({
         toolUseId: block.toolUseId,
         parentId: parent?.id ?? null,
@@ -420,6 +451,7 @@ export function collectLoadedSubagentInputs(
         state,
         ...(errorMessage ? { errorMessage } : {}),
         runInBackground: display.runInBackground,
+        ...(modelLabel ? { modelLabel } : {}),
         ...(startedAt !== undefined ? { startedAt } : {}),
         ...(!running && settledAt !== undefined ? { settledAt } : {}),
       });

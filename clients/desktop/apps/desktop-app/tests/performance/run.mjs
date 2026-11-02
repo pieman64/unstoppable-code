@@ -22,6 +22,7 @@ import {
   parsePerformanceArgs,
   performanceUsage,
 } from './profiles.mjs';
+import { quitSummaryLines } from './quit-latency.mjs';
 import { finalizeResult, performanceRunSucceeded } from './results.mjs';
 import { roundMetric } from './statistics.mjs';
 import { formatScalingRatioLines } from './scaling-ratios.mjs';
@@ -207,6 +208,10 @@ function printScenarioSummary(scenario) {
   }
   for (const error of scenario.startupJourney?.errors ?? []) {
     console.error(`[perf]   startup journey: ${error}`);
+  }
+  for (const line of quitSummaryLines(scenario.quit)) {
+    if (line.error) console.error(line.text);
+    else console.log(line.text);
   }
 }
 

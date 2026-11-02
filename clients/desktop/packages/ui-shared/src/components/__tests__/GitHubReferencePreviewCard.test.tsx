@@ -366,6 +366,85 @@ describe('GitHubReferencePreviewCard status layout', () => {
     expect(status.getAttribute('data-status')).toBe(kind);
   });
 
+  it("holds the loaded card's shape while a pull request loads", () => {
+    act(() => {
+      root.render(
+        <GitHubReferencePreviewCard
+          label="#1234"
+          layout="status"
+          itemNumber={1234}
+          view={{ status: 'loading' }}
+        />,
+      );
+    });
+    const skeleton = byTestId('github-reference-preview-skeleton');
+    expect(skeleton.getAttribute('role')).toBe('status');
+    // No visible copy: the number in its place, and the label for readers.
+    expect(container.textContent).not.toContain('Loading preview…');
+    expect(skeleton.querySelector('.sr-only')?.textContent).toBe(
+      'Loading preview',
+    );
+    // The loaded card's box and rows: header, two title lines, author row.
+    renderStatus(STATUS_PULL);
+    const loadedClass = card().className;
+    const loadedRows = Array.from(card().children, (row) => row.className);
+    act(() => {
+      root.render(
+        <GitHubReferencePreviewCard
+          label="#1234"
+          layout="status"
+          itemNumber={1234}
+          view={{ status: 'loading' }}
+        />,
+      );
+    });
+    const shape = byTestId('github-reference-preview-skeleton');
+    expect(shape.className).toBe(loadedClass);
+    const rows = Array.from(shape.children).filter(
+      (row) => !row.classList.contains('sr-only'),
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.className).toBe(loadedRows[0]);
+    expect(rows[0]?.textContent).toBe('#1234');
+    expect(rows[1]?.children).toHaveLength(2);
+    expect(rows[2]?.className).toContain('h-5');
+    // Shared skeleton fill, still under reduced motion.
+    const bones = shape.querySelectorAll('[aria-hidden="true"].bg-muted');
+    expect(bones.length).toBeGreaterThan(0);
+    for (const bone of Array.from(bones)) {
+      expect(bone.className).toContain('animate-pulse');
+      expect(bone.className).toContain('motion-reduce:animate-none');
+    }
+  });
+
+  it('keeps the text loading state without an item number or the status layout', () => {
+    act(() => {
+      root.render(
+        <GitHubReferencePreviewCard
+          label="acme/tower"
+          layout="status"
+          view={{ status: 'loading' }}
+        />,
+      );
+    });
+    expect(
+      container.querySelector(
+        '[data-testid="github-reference-preview-skeleton"]',
+      ),
+    ).toBeNull();
+    expect(container.textContent).toContain('Loading preview…');
+    act(() => {
+      root.render(
+        <GitHubReferencePreviewCard
+          label="#1234"
+          itemNumber={1234}
+          view={{ status: 'loading' }}
+        />,
+      );
+    });
+    expect(container.textContent).toContain('Loading preview…');
+  });
+
   it('draws every status with a different glyph', () => {
     const glyphs = new Set<string>();
     const cases: [Partial<GitHubItemPreview>, Partial<typeof FACTS>][] = [

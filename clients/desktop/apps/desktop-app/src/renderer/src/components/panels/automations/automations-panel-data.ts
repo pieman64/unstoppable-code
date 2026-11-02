@@ -14,6 +14,10 @@ import {
   enumerateAutomationOccurrences,
   getNextAutomationTriggerRun,
 } from '@canopy/desktop-shared/lib/automations';
+import {
+  pipelineAutomationTaskId,
+  pipelineAutomationWorkspaceId,
+} from '@canopy/desktop-shared/lib/automation-pipeline-target';
 
 /** Scope the panel filters by: the owning workspace and (optionally) worktree. */
 export interface AutomationsPanelScope {
@@ -51,8 +55,11 @@ export function automationActionWorkspaceId(
   switch (action.type) {
     case 'worktree_prompt':
     case 'worktree_session_prompt':
-    case 'worktree_pipeline':
       return action.workspaceId;
+    case 'worktree_pipeline':
+      // A pipeline with no project has no workspace scope; its inert
+      // `workspaceId` is never read.
+      return pipelineAutomationWorkspaceId(action);
     case 'standalone_prompt':
       return action.chatProjectId;
     case 'pipeline_execution_resume':
@@ -78,9 +85,10 @@ export function automationActionWorktreeId(
     case 'worktree_session_prompt':
       return action.worktreeId;
     case 'worktree_pipeline':
-      // Pipeline automations provision a fresh worktree; `baseWorktreeId` is
-      // only its source and must not match the worktree-only toggle.
-      return undefined;
+      // An existing-task destination targets that task. Otherwise the run
+      // provisions a fresh worktree or uses the project folder;
+      // `baseWorktreeId` is only a source and must not match the toggle.
+      return pipelineAutomationTaskId(action);
     case 'pipeline_execution_resume':
       return action.worktreeId;
     case 'app_advisor_prompt':

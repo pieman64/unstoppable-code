@@ -319,6 +319,7 @@ for (const archiveFirst of [false, true]) {
         }
       }
       await window.getByTestId('panel-add-tab-group-chat').click();
+      await window.getByTestId('panel-add-menu-item-new-chat').click();
       const newTab = window
         .locator('[data-testid^="panel-tab-panel-chat-"]')
         .filter({ hasNotText: 'Previous chat' });
@@ -389,6 +390,7 @@ test('a delayed pre-creation selection cannot steal focus after archiving chats'
       window.__canopyPanelTestApi.holdChatCommandsAsRejected('chat.create_tab');
     });
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const newTab = window
       .locator('[data-testid^="panel-tab-panel-chat-"]')
       .filter({ hasNotText: 'Previous chat' });

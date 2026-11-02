@@ -225,7 +225,7 @@ describe('useWorkflowEditGuard', () => {
     render({ dirty: true });
     const request = requestClose();
 
-    click('[data-testid="workflows-unsaved-dialog"] [aria-label="Close"]');
+    click('[data-testid="workflows-unsaved-cancel"]');
     await flush();
 
     expect(dialog()).toBeNull();

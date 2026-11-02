@@ -1,12 +1,24 @@
 import { AuthLoginModal } from './AuthLoginModal';
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { Fragment, useEffect, useRef, useState, type JSX } from 'react';
 import { Button, Notice } from '@canopy/ui-shared/components';
+import { ModelProviderIcon } from '@canopy/ui-shared';
 import type { OpenCodeConnectionStatus } from '@canopy/desktop-shared/types/opencode-connection';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 
-export function OpenCodeConnection(): JSX.Element | null {
+interface OpenCodeConnectionProps {
+  /**
+   * `row`: one provider row inside the caller's group, as on Accounts beside
+   * Claude and Codex. `section` (default): its own untitled section and box,
+   * as on Labs.
+   */
+  readonly placement?: 'row' | 'section';
+}
+
+export function OpenCodeConnection({
+  placement = 'section',
+}: OpenCodeConnectionProps = {}): JSX.Element | null {
   const [status, setStatus] = useState<OpenCodeConnectionStatus>();
   const [login, setLogin] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -75,12 +87,26 @@ export function OpenCodeConnection(): JSX.Element | null {
           : status.phase === 'verifying'
             ? 'Verifying download…'
             : 'Preparing OpenCode…';
+  // As a row, the caller's provider group supplies the section and box.
+  const Section = placement === 'row' ? Fragment : SettingsSection;
+  const Group = placement === 'row' ? Fragment : SettingsGroup;
   return (
-    <SettingsSection title="OpenCode">
-      <SettingsGroup>
+    // Untitled: the row itself names OpenCode, so a heading would repeat it.
+    <Section>
+      <Group>
         <SettingsRow
           dataTestId="opencode-connection"
-          label="Use OpenCode"
+          label={
+            <span className="inline-flex items-center gap-2">
+              <ModelProviderIcon
+                provider="opencode"
+                size={16}
+                className="shrink-0 fg-primary"
+                aria-hidden
+              />
+              OpenCode
+            </span>
+          }
           description="Connect your configured OpenCode providers. Their billing and usage limits apply."
           control={
             <>
@@ -95,6 +121,17 @@ export function OpenCodeConnection(): JSX.Element | null {
               >
                 {connected ? 'Disconnect' : 'Connect OpenCode'}
               </Button>
+              {status?.installed && (
+                <Button
+                  size="compact"
+                  variant="secondary"
+                  disabled={busy}
+                  data-testid="opencode-provider-login"
+                  onClick={() => setLogin(true)}
+                >
+                  {connected ? 'Manage providers' : 'Sign in to a provider'}
+                </Button>
+              )}
               {busy && (
                 <Button
                   size="compact"
@@ -129,17 +166,6 @@ export function OpenCodeConnection(): JSX.Element | null {
               .
             </p>
           )}
-          {status?.installed && (
-            <Button
-              size="compact"
-              variant="secondary"
-              disabled={busy}
-              data-testid="opencode-provider-login"
-              onClick={() => setLogin(true)}
-            >
-              Sign in to a provider
-            </Button>
-          )}
           {error && (
             <Notice
               intent="destructive"
@@ -149,7 +175,7 @@ export function OpenCodeConnection(): JSX.Element | null {
             </Notice>
           )}
         </SettingsRow>
-      </SettingsGroup>
+      </Group>
       {login && (
         <AuthLoginModal
           provider="opencode"
@@ -161,6 +187,6 @@ export function OpenCodeConnection(): JSX.Element | null {
           }}
         />
       )}
-    </SettingsSection>
+    </Section>
   );
 }

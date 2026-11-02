@@ -7,8 +7,17 @@ import {
   rm,
   symlink,
   writeFile,
+  utimes,
+  readdir,
 } from 'node:fs/promises';
 import io from 'node:fs/promises';
+import fileSystem from 'node:fs';
+import { ZipFile } from 'yazl';
+import { submitFeedback } from '../feedback/feedback-submit';
+import { requestCanopyCloudJson } from '../canopy-cloud/client';
+jest.mock('../canopy-cloud/client', () => ({
+  requestCanopyCloudJson: jest.fn(),
+}));
 import { tmpdir, EOL } from 'node:os';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
@@ -44,6 +53,8 @@ import { COWORK_HOME_WORKTREE_ID } from '@canopy/desktop-shared/types';
 import {
   MAX_FILE_BYTES,
   prepareFeedbackBundle,
+  cleanupStaleTemporaryFeedbackBundles,
+  releaseTemporaryFeedbackBundle,
 } from '../feedback/feedback-bundle';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import { ChatStorageV2, type ChatMigrationEntry } from '../lib/chat-storage-v2';
@@ -51,6 +62,7 @@ import { ChatStateV2Repository } from '../services/chat-state-v2-repository';
 
 jest.mock('../lib/main-process-logging', () => ({
   flushMainProcessLogging: jest.fn(),
+  logMainProcessWarn: jest.fn(),
 }));
 const mockFlushMainProcessLogging = jest.mocked(flushMainProcessLogging);
 
@@ -120,6 +132,655 @@ describe('prepareFeedbackBundle', () => {
     if (tempRootCreated) {
       await rm(tempRoot, { force: true, recursive: true });
     }
+  });
+
+  it.each([
+    ['growth', 'original', 'original plus new bytes', 'original'],
+    ['shrink', 'original', 'tiny', 'tiny'],
+    ['truncate', 'original', '', ''],
+    ['initially empty', '', 'later bytes', ''],
+  ])(
+    'captures %s within the collection-time range',
+    async (_case, initial, changed, expected) => {
+      await seedDefaultDiagnostics();
+      const source = join(
+        getDataDir(),
+        'agent-observability',
+        'diagnostics',
+        'app-events',
+        '2026-05-05.jsonl',
+      );
+      await writeFile(source, initial);
+      const realLstat = io.lstat;
+      let mutated = false;
+      jest.spyOn(io, 'lstat').mockImplementation(async (...args) => {
+        const result = await realLstat(...args);
+        if (args[0] === source && !mutated) {
+          mutated = true;
+          await writeFile(source, changed);
+        }
+        return result;
+      });
+      const response = await prepareFeedbackBundle({
+        description: 'mutable log',
+        area: 'overview',
+      });
+      const zip = await readZip(response.absolutePath);
+      expect(
+        zip
+          .get('agent-observability/diagnostics/app-events/2026-05-05.jsonl')
+          ?.toString(),
+      ).toBe(expected);
+      const manifest = readManifest(zip);
+      const zipPath =
+        'agent-observability/diagnostics/app-events/2026-05-05.jsonl';
+      expect(getManifestValue(manifest, 'includedFiles')).toContain(zipPath);
+      expect(getManifestValue(manifest, 'skippedFiles')).not.toContainEqual(
+        expect.objectContaining({ path: zipPath }),
+      );
+    },
+  );
+
+  it.each(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'])(
+    'records deferred %s as a skipped placeholder',
+    async (code) => {
+      await seedDefaultDiagnostics();
+      const source = join(
+        getDataDir(),
+        'agent-observability',
+        'diagnostics',
+        'app-events',
+        '2026-05-05.jsonl',
+      );
+      const realOpen = io.open;
+      jest.spyOn(io, 'open').mockImplementation(async (...args) => {
+        if (args[0] === source)
+          throw Object.assign(new Error('deferred failure'), { code });
+        return realOpen(...args);
+      });
+      const result = await prepareFeedbackBundle({
+        description: 'late skip',
+        area: 'overview',
+      });
+      const zip = await readZip(result.absolutePath);
+      const zipPath =
+        'agent-observability/diagnostics/app-events/2026-05-05.jsonl';
+      expect(zip.get(zipPath)?.byteLength).toBe(0);
+      const manifest = readManifest(zip);
+      expect(getManifestValue(manifest, 'includedFiles')).not.toContain(
+        zipPath,
+      );
+      expect(getManifestValue(manifest, 'skippedFiles')).toContainEqual({
+        path: zipPath,
+        reason:
+          code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'inaccessible',
+      });
+      expect(getManifestValue(manifest, 'includedFiles')).toContain(
+        'preferences.json',
+      );
+    },
+  );
+
+  it.each(['EIO', 'EMFILE'])(
+    'rejects deferred %s and removes its archive',
+    async (code) => {
+      await seedDefaultDiagnostics();
+      const realOpen = io.open;
+      jest.spyOn(io, 'open').mockImplementation(async (...args) => {
+        if (String(args[0]).endsWith('2026-05-05.jsonl'))
+          throw Object.assign(new Error('source open failed'), { code });
+        return realOpen(...args);
+      });
+      await expect(
+        prepareFeedbackBundle({
+          description: 'open failure',
+          area: 'overview',
+        }),
+      ).rejects.toThrow('source open failed');
+      expect(await readdir(downloadsDir)).toEqual([]);
+    },
+  );
+
+  it.each(['symlink', 'directory', 'parent symlink'])(
+    'does not read a deferred %s replacement',
+    async (replacement) => {
+      await seedDefaultDiagnostics();
+      const source = join(
+        getDataDir(),
+        'agent-observability',
+        'diagnostics',
+        'app-events',
+        '2026-05-05.jsonl',
+      );
+      const secret = join(tempRoot, 'secret');
+      await writeFile(secret, 'must never appear');
+      const realLstat = io.lstat;
+      let replaced = false;
+      jest.spyOn(io, 'lstat').mockImplementation(async (...args) => {
+        const stats = await realLstat(...args);
+        if (args[0] === source && !replaced) {
+          replaced = true;
+          if (replacement === 'parent symlink') {
+            await rm(dirname(source), { recursive: true });
+            await mkdir(join(tempRoot, 'outside'));
+            await writeFile(
+              join(tempRoot, 'outside', '2026-05-05.jsonl'),
+              'must never appear',
+            );
+            await symlink(join(tempRoot, 'outside'), dirname(source), 'dir');
+          } else {
+            await rm(source);
+            if (replacement === 'directory') await mkdir(source);
+            else await symlink(secret, source);
+          }
+        }
+        return stats;
+      });
+      const preparation = prepareFeedbackBundle({
+        description: 'replacement',
+        area: 'overview',
+      });
+      if (replacement === 'directory') {
+        await expect(preparation).rejects.toThrow();
+        expect(await readdir(downloadsDir)).toEqual([]);
+      } else {
+        const result = await preparation;
+        const zip = await readZip(result.absolutePath);
+        const zipPath =
+          'agent-observability/diagnostics/app-events/2026-05-05.jsonl';
+        expect(zip.get(zipPath)?.byteLength).toBe(0);
+        expect(
+          getManifestValue(readManifest(zip), 'skippedFiles'),
+        ).toContainEqual({ path: zipPath, reason: 'symlink' });
+      }
+    },
+  );
+
+  it('removes an owned output when final metadata fails and preserves the primary failure', async () => {
+    await seedDefaultDiagnostics();
+    const realStat = io.stat;
+    jest.spyOn(io, 'stat').mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith('.zip'))
+        throw new Error('final metadata failure');
+      return realStat(...args);
+    });
+    await expect(
+      prepareFeedbackBundle({ description: 'stat failure', area: 'overview' }),
+    ).rejects.toThrow('final metadata failure');
+    expect(await readdir(downloadsDir)).toEqual([]);
+  });
+
+  it('handles synchronous lazy registration failure without leaving an archive', async () => {
+    await seedDefaultDiagnostics();
+    jest
+      .spyOn(ZipFile.prototype, 'addReadStreamLazy')
+      .mockImplementationOnce(() => {
+        throw new Error('registration failure');
+      });
+    await expect(
+      prepareFeedbackBundle({
+        description: 'registration failure',
+        area: 'overview',
+      }),
+    ).rejects.toThrow('registration failure');
+    expect(await readdir(downloadsDir)).toEqual([]);
+  });
+
+  it.each([
+    'source',
+    'zip',
+    'destination',
+    'manifest',
+    'source construction',
+    'destination construction',
+  ])('handles %s failure and deletes the owned archive', async (failure) => {
+    await seedDefaultDiagnostics();
+    const realOpen = io.open;
+    const openedHandles: Awaited<ReturnType<typeof open>>[] = [];
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- invoked with apply and its original ZipFile receiver
+    const realEnd = ZipFile.prototype.end;
+    const realStringify = JSON.stringify;
+    if (failure === 'manifest') {
+      jest.spyOn(JSON, 'stringify').mockImplementation((value, ...args) => {
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'includedFiles' in value
+        )
+          throw new Error('manifest failure');
+        return realStringify(value, ...args);
+      });
+    }
+    if (failure === 'zip') {
+      jest.spyOn(ZipFile.prototype, 'end').mockImplementation(function (
+        this: ZipFile,
+        ...args
+      ) {
+        realEnd.apply(this, args);
+        this.emit('error', new Error('zip failure'));
+        this.emit('error', new Error('secondary zip failure'));
+      });
+    }
+    jest.spyOn(io, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...args);
+      openedHandles.push(handle);
+      if (failure === 'destination construction' && args[1] === 'wx') {
+        jest.spyOn(handle, 'createWriteStream').mockImplementation(() => {
+          throw new Error('destination construction failure');
+        });
+      }
+      if (failure === 'source construction' && args[1] !== 'wx') {
+        jest.spyOn(handle, 'createReadStream').mockImplementation(() => {
+          throw new Error('source construction failure');
+        });
+      }
+      if (failure === 'destination' && args[1] === 'wx') {
+        const realCreate = handle.createWriteStream.bind(handle);
+        jest
+          .spyOn(handle, 'createWriteStream')
+          .mockImplementation((options) => {
+            const stream = realCreate(options);
+            queueMicrotask(() =>
+              stream.destroy(new Error('destination failure')),
+            );
+            return stream;
+          });
+      }
+      if (failure === 'source' && args[1] !== 'wx') {
+        const realCreate = handle.createReadStream.bind(handle);
+        jest.spyOn(handle, 'createReadStream').mockImplementation((options) => {
+          const stream = realCreate(options);
+          stream.once('data', () => {
+            stream.destroy(new Error('source failure'));
+            queueMicrotask(() =>
+              stream.emit('error', new Error('secondary source failure')),
+            );
+          });
+          return stream;
+        });
+      }
+      return handle;
+    });
+    await expect(
+      prepareFeedbackBundle({ description: 'lifecycle', area: 'overview' }),
+    ).rejects.toThrow(`${failure} failure`);
+    expect(await readdir(downloadsDir)).toEqual([]);
+    expect(openedHandles.length).toBeGreaterThan(0);
+    for (const handle of openedHandles) {
+      await expect(handle.stat()).rejects.toThrow();
+    }
+  });
+
+  it('waits for an outstanding open after failure and closes it without starting a reader', async () => {
+    await seedDefaultDiagnostics();
+    const realOpen = io.open;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- invoked with apply and its original ZipFile receiver
+    const realEnd = ZipFile.prototype.end;
+    let failArchive: (() => void) | undefined;
+    let releaseOpen: () => void = () => {};
+    let notifyOpen: () => void = () => {};
+    const openStarted = new Promise<void>((resolve) => {
+      notifyOpen = resolve;
+    });
+    const openGate = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    let heldHandle: Awaited<ReturnType<typeof open>> | undefined;
+    const readerStarted = jest.fn();
+    jest.spyOn(ZipFile.prototype, 'end').mockImplementation(function (
+      this: ZipFile,
+      ...args
+    ) {
+      failArchive = (): void => {
+        this.emit('error', new Error('primary failure'));
+        this.emit('error', new Error('secondary failure'));
+      };
+      realEnd.apply(this, args);
+    });
+    jest.spyOn(io, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...args);
+      if (args[1] !== 'wx') {
+        heldHandle = handle;
+        const realCreate = handle.createReadStream.bind(handle);
+        jest.spyOn(handle, 'createReadStream').mockImplementation((options) => {
+          readerStarted();
+          return realCreate(options);
+        });
+        notifyOpen();
+        await openGate;
+      }
+      return handle;
+    });
+    const preparation = prepareFeedbackBundle({
+      description: 'pending open',
+      area: 'overview',
+    });
+    const rejected = expect(preparation).rejects.toThrow('primary failure');
+    await openStarted;
+    try {
+      if (failArchive === undefined) throw new Error('archive not started');
+      failArchive();
+    } finally {
+      releaseOpen();
+    }
+    await rejected;
+    expect(readerStarted).not.toHaveBeenCalled();
+    expect(heldHandle).toBeDefined();
+    await expect(heldHandle?.stat()).rejects.toThrow();
+    expect(await readdir(downloadsDir)).toEqual([]);
+  });
+
+  it.each(['success', 'read failure'])(
+    'bounds source descriptors until asynchronous close on %s',
+    async (outcome) => {
+      await seedDefaultDiagnostics();
+      for (let index = 0; index < 12; index++) {
+        await writeText(
+          join(
+            getDataDir(),
+            'agent-observability',
+            'diagnostics',
+            'app-events',
+            `extra-${index}.jsonl`,
+          ),
+          'record',
+        );
+      }
+      const realOpen = io.open;
+      let live = 0;
+      let peak = 0;
+      let sourceOpens = 0;
+      jest.spyOn(io, 'open').mockImplementation(async (...args) => {
+        const handle = await realOpen(...args);
+        if (args[1] !== 'wx') {
+          live++;
+          sourceOpens++;
+          peak = Math.max(peak, live);
+          const failThisSource =
+            outcome === 'read failure' && sourceOpens === 4;
+          const realCreate = handle.createReadStream.bind(handle);
+          jest
+            .spyOn(handle, 'createReadStream')
+            .mockImplementation((options) => {
+              const stream = realCreate(options);
+              stream.once('close', () => live--);
+              if (failThisSource) {
+                stream.once('data', () => {
+                  stream.destroy(new Error('bounded read failure'));
+                });
+              }
+              return stream;
+            });
+        }
+        return handle;
+      });
+      const preparation = prepareFeedbackBundle({
+        description: 'many files',
+        area: 'overview',
+      });
+      if (outcome === 'success') {
+        const result = await preparation;
+        expect((await readZip(result.absolutePath)).size).toBeGreaterThan(12);
+      } else {
+        await expect(preparation).rejects.toThrow('bounded read failure');
+        expect(await readdir(downloadsDir)).toEqual([]);
+        expect(sourceOpens).toBe(4);
+      }
+      expect(peak).toBe(1);
+      expect(live).toBe(0);
+    },
+  );
+
+  it('does not mask a primary failure when archive removal fails', async () => {
+    await seedDefaultDiagnostics();
+    jest.spyOn(ZipFile.prototype, 'end').mockImplementation(() => {
+      throw new Error('primary failure');
+    });
+    const realRm = io.rm;
+    jest.spyOn(io, 'rm').mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith('.zip')) throw new Error('cleanup failure');
+      return realRm(...args);
+    });
+    await expect(
+      prepareFeedbackBundle({ description: 'cleanup', area: 'overview' }),
+    ).rejects.toThrow('primary failure');
+  });
+
+  it('sweeps only old regular temporary bundles and preserves active outputs until release', async () => {
+    const tempDir = join(tempRoot, 'temporary');
+    await mkdir(tempDir);
+    const originalGetPath = mockGetPath.getMockImplementation();
+    mockGetPath.mockImplementation((name) =>
+      name === 'temp' ? tempDir : (originalGetPath?.(name) ?? downloadsDir),
+    );
+    const now = Date.now();
+    const old = new Date(now - 3600001);
+    const eligible = 'canopy-feedback-20260505T120000000Z-99.zip';
+    const boundary = 'canopy-feedback-20260505T120000001Z.zip';
+    const fresh = 'canopy-feedback-20260505T120000002Z.zip';
+    const directory = 'canopy-feedback-20260505T120000003Z.zip';
+    const link = 'canopy-feedback-20260505T120000004Z.zip';
+    for (const name of [eligible, boundary, fresh, 'unrelated.zip']) {
+      await writeFile(join(tempDir, name), 'keep');
+      await utimes(join(tempDir, name), old, old);
+    }
+    await utimes(
+      join(tempDir, boundary),
+      new Date(now - 3600000),
+      new Date(now - 3600000),
+    );
+    await utimes(join(tempDir, fresh), new Date(now), new Date(now));
+    await mkdir(join(tempDir, directory));
+    await symlink(join(tempDir, eligible), join(tempDir, link));
+    await writeFile(join(downloadsDir, eligible), 'export');
+    await utimes(join(downloadsDir, eligible), old, old);
+    await seedDefaultDiagnostics();
+    const active = await prepareFeedbackBundle(
+      { description: 'active upload', area: 'overview' },
+      { destination: 'temp' },
+    );
+    await utimes(active.absolutePath, old, old);
+    jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(
+        (await io.lstat(join(tempDir, boundary))).mtimeMs + 3600000,
+      );
+    await cleanupStaleTemporaryFeedbackBundles();
+    expect(await readdir(tempDir)).toEqual(
+      expect.arrayContaining([
+        active.filename,
+        boundary,
+        fresh,
+        directory,
+        link,
+        'unrelated.zip',
+      ]),
+    );
+    expect(await readdir(tempDir)).not.toContain(eligible);
+    expect(await readFile(join(downloadsDir, eligible), 'utf8')).toBe('export');
+    releaseTemporaryFeedbackBundle(active.absolutePath);
+    await cleanupStaleTemporaryFeedbackBundles();
+    expect(await readdir(tempDir)).not.toContain(active.filename);
+  });
+
+  it.each(['enumeration', 'metadata', 'removal'])(
+    'tolerates stale cleanup %s failure',
+    async (failure) => {
+      const tempDir = join(tempRoot, 'temporary');
+      await mkdir(tempDir);
+      const originalGetPath = mockGetPath.getMockImplementation();
+      mockGetPath.mockImplementation((name) =>
+        name === 'temp' ? tempDir : (originalGetPath?.(name) ?? downloadsDir),
+      );
+      const path = join(tempDir, 'canopy-feedback-20260505T120000000Z.zip');
+      await writeFile(path, 'old');
+      await utimes(path, new Date(0), new Date(0));
+      if (failure === 'enumeration')
+        jest
+          .spyOn(io, 'readdir')
+          .mockRejectedValueOnce(new Error('enumeration failed'));
+      if (failure === 'metadata')
+        jest
+          .spyOn(io, 'lstat')
+          .mockRejectedValueOnce(new Error('metadata failed'));
+      if (failure === 'removal')
+        jest.spyOn(io, 'rm').mockRejectedValueOnce(new Error('removal failed'));
+      await expect(
+        cleanupStaleTemporaryFeedbackBundles(),
+      ).resolves.toBeUndefined();
+      expect(await readFile(path, 'utf8')).toBe('old');
+    },
+  );
+
+  it.each(['open', 'read'])(
+    'continues after an audit source %s error and closes the source',
+    async (failure) => {
+      await seedDefaultDiagnostics();
+      const audit = join(
+        getDataDir(),
+        'agent-observability',
+        'audit',
+        '2026-05-05.jsonl',
+      );
+      await writeFile(audit, '{"event":"audit"}\n');
+      const realCreate = fileSystem.createReadStream;
+      let auditSource: ReturnType<typeof realCreate> | undefined;
+      jest
+        .spyOn(fileSystem, 'createReadStream')
+        .mockImplementation((path, options) => {
+          const source = realCreate(path, options);
+          if (path === audit) {
+            auditSource = source;
+            if (failure === 'open')
+              queueMicrotask(() => source.destroy(new Error('open failed')));
+            else
+              source.once('data', () =>
+                source.destroy(new Error('read failed')),
+              );
+          }
+          return source;
+        });
+      const result = await prepareFeedbackBundle({
+        description: 'audit best effort',
+        area: 'worktrees',
+        workspaceSelections: [
+          { workspaceId: 'workspace-a', worktreeIds: ['worktree-a'] },
+        ],
+        includeChatDetails: true,
+      });
+      expect((await readZip(result.absolutePath)).has('feedback.json')).toBe(
+        true,
+      );
+      expect(auditSource?.closed).toBe(true);
+    },
+  );
+
+  it('protects an uploading archive while another submission sweeps temporary files', async () => {
+    await seedDefaultDiagnostics();
+    const tempDir = join(tempRoot, 'temporary');
+    await mkdir(tempDir);
+    const originalGetPath = mockGetPath.getMockImplementation();
+    mockGetPath.mockImplementation((name) =>
+      name === 'temp' ? tempDir : (originalGetPath?.(name) ?? downloadsDir),
+    );
+    jest.mocked(requestCanopyCloudJson).mockResolvedValue({
+      reportId: 'report',
+      uploadUrl: 'https://upload.example',
+      filePath: 'feedback.zip',
+    });
+    let notifyUpload: () => void = () => {};
+    let releaseUpload: () => void = () => {};
+    const uploadStarted = new Promise<void>((resolve) => {
+      notifyUpload = resolve;
+    });
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const originalFetch = global.fetch;
+    const fetchMock: jest.MockedFunction<typeof fetch> = jest.fn();
+    fetchMock.mockImplementationOnce(async () => {
+      notifyUpload();
+      await uploadGate;
+      return new Response(null, { status: 200 });
+    });
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    global.fetch = fetchMock;
+    const request = {
+      type: 'bug',
+      description: 'concurrent upload',
+      includeDiagnostics: true,
+      context: { activePage: 'main' },
+    } satisfies Parameters<typeof submitFeedback>[0];
+    const first = submitFeedback(request);
+    try {
+      await uploadStarted;
+      const [filename] = await readdir(tempDir);
+      const firstPath = join(tempDir, filename);
+      await utimes(firstPath, new Date(0), new Date(0));
+      await expect(submitFeedback(request)).resolves.toEqual({
+        submitted: true,
+      });
+      expect((await readFile(firstPath)).byteLength).toBeGreaterThan(0);
+      expect(await readdir(tempDir)).toEqual([filename]);
+    } finally {
+      releaseUpload();
+      try {
+        await first;
+      } finally {
+        global.fetch = originalFetch;
+      }
+    }
+    expect(await readdir(tempDir)).toEqual([]);
+  });
+
+  it.each(['write', 'reservation'])(
+    'preserves a collision candidate on %s failure',
+    async (failure) => {
+      await seedDefaultDiagnostics();
+      jest
+        .spyOn(Date.prototype, 'toISOString')
+        .mockReturnValue('2026-05-05T18:15:23.456Z');
+      const existing = join(
+        downloadsDir,
+        'canopy-feedback-20260505T181523456Z.zip',
+      );
+      await writeFile(existing, 'existing export');
+      if (failure === 'write') {
+        jest.spyOn(ZipFile.prototype, 'end').mockImplementation(() => {
+          throw new Error('write failed');
+        });
+      } else {
+        const realOpen = io.open;
+        jest.spyOn(io, 'open').mockImplementation(async (...args) => {
+          if (String(args[0]).endsWith('-1.zip'))
+            throw new Error('reservation failed');
+          return realOpen(...args);
+        });
+      }
+      await expect(
+        prepareFeedbackBundle({
+          description: 'collision failure',
+          area: 'overview',
+        }),
+      ).rejects.toThrow(
+        failure === 'write' ? 'write failed' : 'reservation failed',
+      );
+      expect(await readFile(existing, 'utf8')).toBe('existing export');
+      expect(await readdir(downloadsDir)).toEqual([
+        'canopy-feedback-20260505T181523456Z.zip',
+      ]);
+    },
+  );
+
+  it('does not sweep a temp projection that aliases Downloads', async () => {
+    const exportPath = join(
+      downloadsDir,
+      'canopy-feedback-20260505T120000000Z.zip',
+    );
+    await writeFile(exportPath, 'offline export');
+    await utimes(exportPath, new Date(0), new Date(0));
+    await cleanupStaleTemporaryFeedbackBundles();
+    expect(await readFile(exportPath, 'utf8')).toBe('offline export');
   });
 
   it('rejects empty descriptions', async () => {
@@ -765,6 +1426,7 @@ describe('prepareFeedbackBundle', () => {
                 title: 'Private chat title',
                 providerType: 'claude',
                 preview: 'Private assistant response',
+                markedUnread: true,
               },
             ],
             approvalChats: [
@@ -793,6 +1455,7 @@ describe('prepareFeedbackBundle', () => {
     const redactedJson = JSON.stringify(redactedWorktrees);
     expect(redactedJson).toContain('chat-a');
     expect(redactedJson).toContain('claude');
+    expect(redactedJson).toContain('"markedUnread":true');
     expect(redactedJson).not.toContain('Private chat title');
     expect(redactedJson).not.toContain('Private assistant response');
     expect(redactedJson).not.toContain('Private approval title');
@@ -1914,6 +2577,8 @@ async function readZip(path: string): Promise<Map<string, Buffer>> {
       compressedSize,
       compressionMethod,
     );
+    expect(entries.has(name)).toBe(false);
+    expect(contents.byteLength).toBe(buffer.readUInt32LE(cursor + 24));
     entries.set(name, contents);
     cursor += 46 + filenameLength + extraLength + commentLength;
   }

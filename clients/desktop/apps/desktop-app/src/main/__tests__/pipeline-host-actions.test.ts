@@ -49,6 +49,9 @@ import {
   SidebarItemGroupRefusalError,
 } from '../services/sidebar-item-groups-service';
 import { createDesktopPipelineHostActions } from '../pipelines/host-actions';
+import { emptyCreateWorktreeOutputs } from '@canopy/desktop-shared/pipelines/host-create-worktree';
+import { emptySendAgentMessageOutputs } from '@canopy/desktop-shared/pipelines/host-send-agent-message';
+import { emptyWaitForAgentReplyOutputs } from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
 
 const readConfig = jest.mocked(readWorkspaceConfigDetailed);
 const readEntries = jest.mocked(readWorkEntriesFileStrict);
@@ -80,8 +83,11 @@ function group(overrides: Partial<SidebarItemGroup> = {}): SidebarItemGroup {
 function config(
   type: WorkspaceConfigFile['type'],
 ): Awaited<ReturnType<typeof readWorkspaceConfigDetailed>> {
+  const workspaceConfig: WorkspaceConfigFile = { version: 1, type, repos: [] };
+  // Preserve the intentionally sparse legacy config fixture without repos.
+  Reflect.deleteProperty(workspaceConfig, 'repos');
   return {
-    config: { version: 1, type } satisfies WorkspaceConfigFile,
+    config: workspaceConfig,
     authority: 'ok',
     ownerMalformed: false,
     memoryMalformed: false,
@@ -111,9 +117,11 @@ function projectInputs(
   return { task: { kind: 'project', projectId, taskId }, target };
 }
 
+const allowOwner = (): Promise<void> => Promise.resolve();
+
 function run(
   inputs: MoveToGroupInputs,
-  port = createDesktopPipelineHostActions(),
+  port = createDesktopPipelineHostActions({ assertTargetOwner: allowOwner }),
 ): Promise<PipelineHostActionResult> {
   return port.run(
     { action: 'move-to-group', inputs },
@@ -486,7 +494,7 @@ describe('createDesktopPipelineHostActions move-to-group', () => {
     controller.abort();
 
     await expect(
-      createDesktopPipelineHostActions().run(
+      createDesktopPipelineHostActions({ assertTargetOwner: allowOwner }).run(
         {
           action: 'move-to-group',
           inputs: projectInputs({ kind: 'name', name: 'Reviews' }),
@@ -564,5 +572,167 @@ describe('createDesktopPipelineHostActions move-to-group', () => {
     expect(service.assignItemToNamedGroup.mock.calls[0]).toEqual(
       service.assignItemToNamedGroup.mock.calls[1],
     );
+  });
+});
+
+describe('createDesktopPipelineHostActions create-worktree', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resolveCowork.mockImplementation((id) => id);
+  });
+
+  it('returns every create output on a refusal', async () => {
+    readConfig.mockResolvedValue({
+      ...config('single-repo'),
+      authority: 'absent',
+    });
+
+    const result = await createDesktopPipelineHostActions({
+      assertTargetOwner: allowOwner,
+    }).run(
+      {
+        action: 'create-worktree',
+        inputs: {
+          projectId: 'ws-missing',
+          branch: { kind: 'default' },
+          repair: false,
+          setup: 'skip',
+        },
+      },
+      caller,
+      new AbortController().signal,
+      {
+        deadlineAt: Date.now() + 60_000,
+        artifactsDir: '/nonexistent/artifacts',
+        registerTimeoutFinalizer: () => undefined,
+      },
+    );
+
+    expect(result).toEqual({
+      status: 'failure',
+      failureReason: 'not_found',
+      error: "Project `ws-missing` isn't available to this pipeline",
+      outputs: emptyCreateWorktreeOutputs(),
+    });
+  });
+});
+
+describe('createDesktopPipelineHostActions send-agent-message', () => {
+  it('returns the shared empty send outputs on a refusal', async () => {
+    const result = await createDesktopPipelineHostActions({
+      assertTargetOwner: allowOwner,
+    }).run(
+      {
+        action: 'send-agent-message',
+        inputs: {
+          target: { kind: 'bot', botId: 'unknown_bot', taskId: 't-1' },
+          text: 'hi',
+          mode: 'queue',
+          settings: {},
+        },
+      },
+      caller,
+      new AbortController().signal,
+      {
+        deadlineAt: Date.now() + 60_000,
+        artifactsDir: '/nonexistent/artifacts',
+        registerTimeoutFinalizer: () => undefined,
+      },
+    );
+
+    expect(result).toEqual({
+      status: 'failure',
+      failureReason: 'not_found',
+      error: "Bot `unknown_bot` isn't available to this pipeline",
+      outputs: emptySendAgentMessageOutputs(),
+    });
+  });
+});
+
+describe('createDesktopPipelineHostActions wait-for-agent-reply', () => {
+  const controls = {
+    deadlineAt: Date.now() + 60_000,
+    artifactsDir: '/nonexistent/artifacts',
+    registerTimeoutFinalizer: (): void => undefined,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resolveCowork.mockImplementation((id) => id);
+  });
+
+  it('routes to the adapter and keeps every output on a refusal before the wait', async () => {
+    readConfig.mockResolvedValue({
+      ...config('single-repo'),
+      authority: 'absent',
+    });
+
+    const result = await createDesktopPipelineHostActions({
+      assertTargetOwner: allowOwner,
+    }).run(
+      {
+        action: 'wait-for-agent-reply',
+        inputs: {
+          chat: {
+            kind: 'project',
+            projectId: 'ws-missing',
+            taskId: 'wt-1',
+            chatId: 'chat-1',
+          },
+          replyTimeoutMinutes: 60,
+        },
+      },
+      caller,
+      new AbortController().signal,
+      controls,
+    );
+
+    expect(result).toEqual({
+      status: 'failure',
+      failureReason: 'not_found',
+      error: "Project `ws-missing` isn't available to this pipeline",
+      outputs: emptyWaitForAgentReplyOutputs(),
+    });
+  });
+
+  it('keeps every output when the owner check refuses', async () => {
+    readConfig.mockResolvedValue(config('single-repo'));
+    readWorktrees.mockResolvedValue({
+      worktrees: [worktree('wt-1')],
+      authority: 'ok',
+    });
+
+    const result = await createDesktopPipelineHostActions({
+      assertTargetOwner: () =>
+        Promise.reject(
+          new PipelineHostRefusal(
+            'not_found',
+            "Project `ws-1` isn't available to this pipeline",
+          ),
+        ),
+    }).run(
+      {
+        action: 'wait-for-agent-reply',
+        inputs: {
+          chat: {
+            kind: 'project',
+            projectId: 'ws-1',
+            taskId: 'wt-1',
+            chatId: 'chat-1',
+          },
+          replyTimeoutMinutes: 60,
+        },
+      },
+      caller,
+      new AbortController().signal,
+      controls,
+    );
+
+    expect(result).toEqual({
+      status: 'failure',
+      failureReason: 'not_found',
+      error: "Project `ws-1` isn't available to this pipeline",
+      outputs: emptyWaitForAgentReplyOutputs(),
+    });
   });
 });

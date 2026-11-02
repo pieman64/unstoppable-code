@@ -65,6 +65,9 @@ it('lists no catalog project the member has not set up, only setups they started
       name: `Catalog ${index}`,
       description: null,
       kind: 'CODE' as const,
+      purpose: 'project' as const,
+      visibility: 'organization' as const,
+      memberOwned: false,
       location: 'LOCAL' as const,
       repository: {
         provider: 'github' as const,
@@ -208,6 +211,9 @@ it('loads only the active organization and keeps placeholders outside real proje
       name: id,
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: {
         provider: 'github',
@@ -233,18 +239,19 @@ it('loads only the active organization and keeps placeholders outside real proje
   let model: ReturnType<typeof useSidebarWorkspaces> | undefined;
   function Probe(): JSX.Element {
     catalogStore = useOrgProjectsStore((store): OrgProjectsStoreState => store);
-    model = useSidebarWorkspaces();
+    const sidebar = useSidebarWorkspaces();
+    model = sidebar;
     return (
       <div>
         <button data-testid="sidebar-context-row">Acme</button>
         <button data-testid="sidebar-account-row">Account</button>
-        {model.setupDialog}
-        {model.placeholderRows.map((row) => (
+        {sidebar.setupDialog}
+        {sidebar.placeholderRows.map((row) => (
           <OrgProjectPlaceholderRow
             key={row.project.id}
             {...row}
-            onSetup={model.startPlaceholderSetup}
-            onCancel={model.cancelPlaceholderSetup}
+            onSetup={sidebar.startPlaceholderSetup}
+            onCancel={sidebar.cancelPlaceholderSetup}
           />
         ))}
       </div>
@@ -453,6 +460,7 @@ it('loads only the active organization and keeps placeholders outside real proje
       });
       fake.emit('org-projects.changed', {
         context: { kind: 'organization', organizationId: 'org-a' },
+        reason: 'instance',
         occurredAt: 'ready-instance',
       });
     });
@@ -476,6 +484,7 @@ it('loads only the active organization and keeps placeholders outside real proje
       fake.query.mockResolvedValue(snapshot);
       fake.emit('org-projects.changed', {
         context: { kind: 'organization', organizationId: 'org-a' },
+        reason: 'catalog',
         occurredAt: 'placeholder-restored',
       });
     });
@@ -523,6 +532,7 @@ it('loads only the active organization and keeps placeholders outside real proje
         fake.query.mockResolvedValue({ ...snapshot, error });
         fake.emit('org-projects.changed', {
           context: { kind: 'organization', organizationId: 'org-a' },
+          reason: 'catalog',
           occurredAt: error ?? 'restored',
         });
       });
@@ -550,6 +560,7 @@ it('loads only the active organization and keeps placeholders outside real proje
         });
         fake.emit('org-projects.changed', {
           context: { kind: 'organization', organizationId: 'org-a' },
+          reason: 'preference',
           occurredAt: `listed-${listed}`,
         });
       });
@@ -628,6 +639,7 @@ it('loads only the active organization and keeps placeholders outside real proje
       });
       fake.emit('org-projects.changed', {
         context: { kind: 'organization', organizationId: 'org-a' },
+        reason: 'preference',
         occurredAt: 'dismissed-during-setup',
       });
     });
@@ -682,6 +694,7 @@ it('loads only the active organization and keeps placeholders outside real proje
       fake.query.mockResolvedValue(snapshot);
       fake.emit('org-projects.changed', {
         context: { kind: 'organization', organizationId: 'org-a' },
+        reason: 'preference',
         occurredAt: 'relisted-after-setup',
       });
     });
@@ -989,6 +1002,9 @@ it('keeps the row of a bound project whose setup never finished', async (): Prom
     name: 'Catalog',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: {
       provider: 'github',
@@ -1089,6 +1105,7 @@ it('keeps the row of a bound project whose setup never finished', async (): Prom
       fake.emit('org-projects.changed', {
         occurredAt: 'dismissed',
         context: { kind: 'organization', organizationId: 'org-a' },
+        reason: 'preference',
       });
     });
     expect(model?.placeholderRows.map((row) => row.project.id)).toEqual([
@@ -1106,6 +1123,7 @@ it('keeps the row of a bound project whose setup never finished', async (): Prom
       fake.emit('org-projects.changed', {
         occurredAt: '2026-09-18T00:00:01.000Z',
         context: { kind: 'organization', organizationId: 'org-a' },
+        reason: 'instance',
       });
       await Promise.resolve();
       await Promise.resolve();
@@ -1143,6 +1161,9 @@ it('does not re-match Personal repositories when a poll returns the same project
     name: 'Catalog',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: {
       provider: 'github',
@@ -1270,6 +1291,7 @@ it('does not re-match Personal repositories when a poll returns the same project
         fake.query.mockResolvedValue(blockedSnapshot);
         fake.emit('org-projects.changed', {
           context: { kind: 'organization', organizationId: 'org-a' },
+          reason: 'catalog',
           occurredAt: 'blocked',
         });
         await Promise.resolve();
@@ -1291,6 +1313,7 @@ it('does not re-match Personal repositories when a poll returns the same project
         fake.query.mockResolvedValue({ ...blockedSnapshot, error: null });
         fake.emit('org-projects.changed', {
           context: { kind: 'organization', organizationId: 'org-a' },
+          reason: 'catalog',
           occurredAt: 'recovered',
         });
         await Promise.resolve();
@@ -1334,6 +1357,9 @@ it('reloads the catalog when the account changes under the same organization', a
         name: 'Catalog',
         description: null,
         kind: 'CODE',
+        purpose: 'project',
+        visibility: 'organization',
+        memberOwned: false,
         location: 'LOCAL',
         repository: {
           provider: 'github',
@@ -1425,6 +1451,9 @@ it('renders labelled setup and retry links on the status line without a row menu
     name: 'Catalog',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: null,
     state: 'ACTIVE',
@@ -1581,6 +1610,9 @@ it('offers no action for a bound project whose setup never finished', async (): 
     name: 'Catalog',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: null,
     state: 'ACTIVE',
@@ -1637,6 +1669,9 @@ it('offers no retry for an offline completion, and Retry for a lapsed claim (CAN
     name: 'Catalog',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: null,
     state: 'ACTIVE',
@@ -1745,6 +1780,9 @@ it.each(['needs-credentials', 'github-not-authenticated'])(
       name: 'Catalog',
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: null,
       state: 'ACTIVE',
@@ -1816,6 +1854,9 @@ it('keeps setup unstarted when picking is cancelled or saving fails', async (): 
     name: 'Catalog',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: {
       provider: 'github',
@@ -1909,6 +1950,9 @@ it('shows the project, repository, branch, destination, and save error in the se
     name: 'Private Project',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: {
       provider: 'github',
@@ -2001,6 +2045,9 @@ it.each(['offline', 'unusable'])(
       name: 'Catalog',
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: {
         provider: 'github',
@@ -2395,6 +2442,9 @@ describe('setup dialog live state regressions', (): void => {
         name: id,
         description: null,
         kind: 'CODE',
+        purpose: 'project',
+        visibility: 'organization',
+        memberOwned: false,
         location: 'LOCAL',
         repository: {
           provider: 'github',
@@ -2518,6 +2568,7 @@ describe('setup dialog live state regressions', (): void => {
           await Promise.resolve();
           fake.emit('org-projects.changed', {
             context: { kind: 'organization', organizationId: 'org-a' },
+            reason: 'catalog',
             occurredAt: 'later',
           });
         });
@@ -2563,6 +2614,7 @@ describe('setup dialog live state regressions', (): void => {
           await Promise.resolve();
           fake.emit('org-projects.changed', {
             context: { kind: 'organization', organizationId: 'org-a' },
+            reason: 'preference',
             occurredAt: 'dismissed',
           });
         });
@@ -2636,6 +2688,7 @@ describe('setup dialog live state regressions', (): void => {
           await Promise.resolve();
           fake.emit('org-projects.changed', {
             context: { kind: 'organization', organizationId: 'org-a' },
+            reason: 'catalog',
             occurredAt: 'later',
           });
         });
@@ -2647,6 +2700,7 @@ describe('setup dialog live state regressions', (): void => {
           await Promise.resolve();
           fake.emit('org-projects.changed', {
             context: { kind: 'organization', organizationId: 'org-a' },
+            reason: 'catalog',
             occurredAt: 'latest',
           });
         });
@@ -2869,6 +2923,9 @@ it('keeps the last resolved links through unknown answers and retries with bound
     name: id,
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: withRepository
       ? {
@@ -3173,6 +3230,9 @@ it('lists a repository once in the organization when several Personal checkouts 
     name: id,
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: {
       provider: 'github',

@@ -33,11 +33,11 @@ const approve = jest.fn<
 
 const PIN_V2 = {
   pipelineContentHash: 'b'.repeat(64),
-  distributionMode: 'self_contained' as const,
+  distributionMode: 'package' as const,
 };
 const PIN_V3 = {
   pipelineContentHash: 'c'.repeat(64),
-  distributionMode: 'self_contained' as const,
+  distributionMode: 'package' as const,
 };
 
 let root: Root | null = null;
@@ -60,7 +60,7 @@ function activityFixture(): ScheduledActivity {
         remoteId: 'remote-1',
         installPin: {
           pipelineContentHash: 'a'.repeat(64),
-          distributionMode: 'self_contained',
+          distributionMode: 'package',
         },
       },
     },
@@ -162,7 +162,7 @@ describe('ReviewSharedPipelineChangeModal', () => {
     );
     const modalText = byTestId('shared-pipeline-review-modal')?.textContent;
     expect(modalText).toContain(
-      'This pipeline was updated. Take a look and approve it to keep your automation running.',
+      'This workflow was updated. Take a look and approve it to keep your automation running.',
     );
     expect(modalText).not.toMatch(/pin|hash|could not be verified/i);
     expect(byTestId('shared-pipeline-review-yaml')?.textContent).toContain(
@@ -218,7 +218,7 @@ describe('ReviewSharedPipelineChangeModal', () => {
     expect(
       byTestId('shared-pipeline-review-approved-run-error')?.textContent,
     ).toBe(
-      'Pipeline approved, but the automation could not run: Target is busy.',
+      'Workflow approved, but the automation could not run: Target is busy.',
     );
     expect(byTestId('shared-pipeline-review-approve-run')).toBeNull();
     await click(byTestId('shared-pipeline-review-close'));

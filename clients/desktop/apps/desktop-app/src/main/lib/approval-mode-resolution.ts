@@ -11,14 +11,14 @@ import {
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import { readWorkspaceApprovals } from './approvals-persistence';
-import {
-  peekPreferencesLoadError,
-  readPreferencesFile,
-} from './preferences-store';
+import { readPreferencesFileDetailed } from './preferences-store';
 import { isCoworkWorkspace } from './workspace-registry';
 import { readWorkspaceApprovalsManifest } from './workspace-approvals-manifest';
 import { resolveWorktreeTargetIds } from './resolve-worktree';
-import { markApprovalDefaultsChanged } from '../approvals/rule-revisions';
+import {
+  markApprovalDefaultsChanged,
+  readPreferencesApprovalAuthority,
+} from '../approvals/rule-revisions';
 
 /**
  * The three chat contexts that carry independent approval-mode defaults.
@@ -85,11 +85,9 @@ const DEGRADED_READ_APPROVAL_DEFAULTS: ApprovalDefaults = {
 
 /**
  * Selects the approval defaults to resolve against, failing closed when the
- * preferences read that produced `preferences` was degraded.
- *
- * A genuinely fresh install (no preferences file and no last-known-good file)
- * leaves no pending load error, so it correctly keeps the Full Access product
- * default. Only an actual read/parse/version failure downgrades to Ask.
+ * authority read was degraded (represented by null), independently of whether
+ * a recovery notification has been acknowledged. A genuinely absent profile
+ * retains product defaults.
  *
  * Every main-process caller that resolves an approval mode from persisted
  * preferences must route through this rather than reading `approvalDefaults`
@@ -98,7 +96,7 @@ const DEGRADED_READ_APPROVAL_DEFAULTS: ApprovalDefaults = {
 export function approvalDefaultsFromPreferences(
   preferences: { approvalDefaults: ApprovalDefaults } | null | undefined,
 ): ApprovalDefaults {
-  if (!preferences || peekPreferencesLoadError() !== null) {
+  if (!preferences) {
     return DEGRADED_READ_APPROVAL_DEFAULTS;
   }
   return preferences.approvalDefaults;
@@ -222,6 +220,9 @@ export function waitForPendingApprovalDefaultWrites(
  * Drains every same-surface write that joins before the committed read starts.
  * The defaults are derived as soon as that read completes so acknowledging a
  * recovery notification cannot retroactively make a degraded result trusted.
+ * Only the defaults fail closed; launch settings keep the served last-good.
+ * After an unconfirmed preferences save, each default is the less permissive
+ * of the file's and the last confirmed one.
  */
 export function readApprovalPreferencesForSurface(
   surface: ApprovalSurface,
@@ -233,10 +234,31 @@ export function readApprovalPreferencesForSurface(
       readApprovalPreferencesForSurface(surface),
     );
   }
-  return readPreferencesFile().then((preferences) => ({
-    preferences,
-    defaults: approvalDefaultsFromPreferences(preferences),
-  }));
+  return readPreferencesApprovalAuthority(() =>
+    readPreferencesFileDetailed({ includeServed: true }),
+  ).then(({ value: { preferences, authority, served }, confirmed }) => {
+    const defaults = approvalDefaultsFromPreferences(
+      authority === 'unreadable' ? null : preferences,
+    );
+    return {
+      preferences: served ?? preferences,
+      defaults:
+        confirmed === undefined
+          ? defaults
+          : leastPermissiveDefaults(defaults, confirmed.approvalDefaults),
+    };
+  });
+}
+
+function leastPermissiveDefaults(
+  first: ApprovalDefaults,
+  second: ApprovalDefaults,
+): ApprovalDefaults {
+  return {
+    worktree: lessPermissiveApprovalMode(first.worktree, second.worktree),
+    cowork: lessPermissiveApprovalMode(first.cowork, second.cowork),
+    appAdvisor: lessPermissiveApprovalMode(first.appAdvisor, second.appAdvisor),
+  };
 }
 
 /**

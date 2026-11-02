@@ -1,3 +1,4 @@
+import type * as WorkspacePersistenceModule from '../lib/workspace-persistence';
 import {
   chmod,
   link,
@@ -94,6 +95,26 @@ import { migratePanelLayout } from '@canopy/protocol/panels';
 import { panelLayoutPersistenceStore } from '../panels/persistence';
 import type { ChatStateService } from '../services/chat-state-service';
 
+jest.mock('../lib/workspace-persistence', () => {
+  const actual = jest.requireActual<typeof WorkspacePersistenceModule>(
+    '../lib/workspace-persistence',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      readWorkspaceOwnership: {
+        value: jest.fn(() =>
+          Promise.resolve({
+            authority: 'ok',
+            type: 'single-repo',
+          }),
+        ),
+        enumerable: true,
+      },
+    },
+  );
+});
 jest.mock('../lib/git', () => {
   // The symlink helpers are pure path/decoding logic with no process or
   // filesystem access, and the copy under test classifies links with the same
@@ -239,8 +260,7 @@ describe('shared-container fork scaffolding', () => {
    * A committed symlink is ordinary repository content, not an attack.
    * Publish classifies it and ships it as a `120000` entry, and materialize
    * recreates it on disk; a fork that refused every link could not copy any
-   * repository containing one — including Canopy's own
-   * `.agents/skills/triage-ui-automation-ci`.
+   * repository containing one — including Canopy's own `.claude/skills`.
    */
   it('recreates an in-repository symbolic link', async () => {
     const source = join(tempPath, 'inrepo-symlink-source');
@@ -353,21 +373,61 @@ describe('shared-container fork scaffolding', () => {
     );
   }, 300_000);
 
-  it('round trips validated provenance', async () => {
-    const filePath = join(tempPath, 'metadata', 'fork-provenance.json');
-    const provenance = {
-      sourceContainerId: 'container-1',
-      sourceRevisionId: 'revision-1',
-      sourceOwnerDisplayName: 'Ada',
-      organizationId: 'organization-1',
-      forkedAt: '2026-09-09T12:00:00.000Z',
-    };
+  it.each([undefined, '2026-09-08T10:00:00.000Z'])(
+    'round trips validated provenance with source time %s',
+    async (sourceRevisionCreatedAt) => {
+      const filePath = join(tempPath, 'metadata', 'fork-provenance.json');
+      const provenance = {
+        sourceContainerId: 'container-1',
+        sourceRevisionId: 'revision-1',
+        sourceOwnerDisplayName: 'Ada',
+        ...(sourceRevisionCreatedAt === undefined
+          ? {}
+          : { sourceRevisionCreatedAt }),
+        organizationId: 'organization-1',
+        forkedAt: '2026-09-09T12:00:00.000Z',
+      };
 
-    await writeSharedContainerForkProvenance(filePath, provenance);
-    await expect(readSharedContainerForkProvenance(filePath)).resolves.toEqual(
-      provenance,
-    );
+      await writeSharedContainerForkProvenance(filePath, provenance);
+      await expect(
+        readSharedContainerForkProvenance(filePath),
+      ).resolves.toEqual(provenance);
+    },
+  );
+
+  it('refuses invalid publication time before persisting provenance', async () => {
+    const filePath = join(tempPath, 'invalid-provenance.json');
+    await expect(
+      writeSharedContainerForkProvenance(filePath, {
+        sourceContainerId: 'container-1',
+        sourceRevisionId: 'revision-2',
+        sourceOwnerDisplayName: 'Ada',
+        sourceRevisionCreatedAt: 'later',
+        forkedAt: '2026-09-09T12:00:00.000Z',
+      }),
+    ).rejects.toThrow('Invalid shared-container fork provenance');
+    await expect(lstat(filePath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it.each(['later', 42, null])(
+    'rejects malformed persisted publication time %j',
+    async (sourceRevisionCreatedAt) => {
+      const filePath = join(tempPath, 'invalid-provenance.json');
+      await writeFile(
+        filePath,
+        JSON.stringify({
+          sourceContainerId: 'container-1',
+          sourceRevisionId: 'revision-2',
+          sourceOwnerDisplayName: 'Ada',
+          sourceRevisionCreatedAt,
+          forkedAt: '2026-09-09T12:00:00.000Z',
+        }),
+      );
+      await expect(readSharedContainerForkProvenance(filePath)).rejects.toThrow(
+        'Invalid shared-container fork provenance',
+      );
+    },
+  );
 
   it('rolls back completed stages in reverse order', async () => {
     const events: string[] = [];
@@ -848,7 +908,10 @@ describe('shared-container fork scaffolding', () => {
         },
       ],
     });
-    jest.mocked(archiveMultiRepoWorktree).mockResolvedValue({ success: true });
+    jest.mocked(archiveMultiRepoWorktree).mockResolvedValue({
+      success: true,
+      warnings: [],
+    });
     jest.mocked(resolveRefSha).mockResolvedValue('c'.repeat(40));
     jest.mocked(deleteBranchIfMatches).mockResolvedValue(undefined);
     const layout = {
@@ -883,6 +946,7 @@ describe('shared-container fork scaffolding', () => {
 
     await expect(
       forkSharedCodeContainer({
+        owner: { kind: 'personal' },
         request: {
           containerId: 'container-1',
           revisionId: 'revision-1',
@@ -953,11 +1017,16 @@ describe('shared-container fork scaffolding', () => {
     jest.mocked(createSingleRepoWorktree).mockResolvedValue({
       id: 'failed-worktree',
       branchName: 'canopy/fork-failed',
+      createdAt: '2026-10-15T00:00:00.000Z',
     });
-    jest.mocked(archiveSingleRepoWorktree).mockResolvedValue({ success: true });
+    jest.mocked(archiveSingleRepoWorktree).mockResolvedValue({
+      success: true,
+      warnings: [],
+    });
 
     await expect(
       forkSharedCodeContainer({
+        owner: { kind: 'personal' },
         request: {
           containerId: 'container-1',
           revisionId: 'revision-1',
@@ -1056,6 +1125,7 @@ describe('shared-container fork scaffolding', () => {
 
     await expect(
       forkSharedCoworkContainer({
+        owner: { kind: 'personal' },
         request: {
           containerId: 'container-1',
           revisionId: 'revision-1',

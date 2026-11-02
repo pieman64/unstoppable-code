@@ -1,3 +1,9 @@
+import {
+  observeProviderConnection,
+  withProviderConnectionAttempt,
+  recordProviderConnectionFailure,
+  classifyConnectionFailure,
+} from '../lib/provider-connection-events';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -52,7 +58,8 @@ export const OLLAMA_UNSUPPORTED_PLATFORM_MESSAGE =
 
 export class OllamaServerUnavailableError extends Error {
   public readonly code = OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE;
-  public readonly cause: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare public readonly cause: unknown;
 
   public constructor(message: string, cause?: unknown) {
     super(message);
@@ -576,6 +583,7 @@ export function buildClaudeCompatibleOllamaEnv(
 
 class OllamaServiceImpl implements OllamaService {
   private initialized = false;
+  private initializationPromise: Promise<void> | null = null;
   private state: OllamaState = {
     port: DEFAULT_OLLAMA_SERVER_PORT,
     status: 'stopped',
@@ -594,8 +602,60 @@ class OllamaServiceImpl implements OllamaService {
   private broadcasts: OllamaBroadcastHandlers = {};
   private managedStderr = '';
   private serverVersion: string | undefined;
+  private connectionBaselineEstablished = false;
+  private connectionConfigurationGeneration = 0;
+  private pendingInAppConnection = false;
+  private pendingConfigurationChange: Promise<void> | null = null;
+  private configurationMutationActive = false;
+
+  private withConfigurationChange<T>(run: () => Promise<T>): Promise<T> {
+    const previous = this.pendingConfigurationChange ?? Promise.resolve();
+    const result = previous.then(async (): Promise<T> => {
+      try {
+        return await run();
+      } finally {
+        if (this.configurationMutationActive) {
+          this.connectionConfigurationGeneration += 1;
+          this.configurationMutationActive = false;
+        }
+      }
+    });
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.pendingConfigurationChange = settled;
+    void settled.then((): void => {
+      if (this.pendingConfigurationChange === settled)
+        this.pendingConfigurationChange = null;
+    });
+    return result;
+  }
+
+  private beginConfigurationMutation(): void {
+    this.configurationMutationActive = true;
+    this.connectionConfigurationGeneration += 1;
+  }
+
+  private async waitForConfigurationChange(): Promise<void> {
+    while (this.pendingConfigurationChange)
+      await this.pendingConfigurationChange;
+  }
 
   async initialize(): Promise<void> {
+    if (this.initialized) return;
+    if (!this.initializationPromise) {
+      const pending = this.initializeImpl();
+      this.initializationPromise = pending;
+      void pending.catch((): void => {
+        if (this.initializationPromise === pending)
+          this.initializationPromise = null;
+      });
+    }
+    return this.initializationPromise;
+  }
+
+  private async initializeImpl(): Promise<void> {
     if (this.initialized) {
       return;
     }
@@ -641,7 +701,11 @@ class OllamaServiceImpl implements OllamaService {
     });
     this.configureClient(preferences.port);
     initOllamaModels(this.state.models);
-    if (installation.ready && installation.path) {
+    if (
+      installation.ready &&
+      installation.path &&
+      installation.path !== preferences.executablePath
+    ) {
       await writeOllamaConfigurationPreference({
         executablePath: installation.path,
       });
@@ -662,10 +726,57 @@ class OllamaServiceImpl implements OllamaService {
   }
 
   async refreshModels(opts?: { allowStart?: boolean }): Promise<OllamaState> {
+    await this.waitForConfigurationChange();
+    if (opts?.allowStart)
+      return this.withConnectionAttempt(() => this.refreshModelsImpl(opts));
+    return this.refreshModelsImpl(opts);
+  }
+
+  private async withConnectionAttempt<T>(run: () => Promise<T>): Promise<T> {
+    const generation = this.connectionConfigurationGeneration;
+    try {
+      return await run();
+    } catch (error) {
+      if (
+        generation === this.connectionConfigurationGeneration &&
+        !this.configurationMutationActive
+      ) {
+        try {
+          recordProviderConnectionFailure(
+            'ollama',
+            'local',
+            classifyConnectionFailure(
+              error instanceof OllamaServerUnavailableError && error.cause
+                ? error.cause
+                : error,
+            ),
+          );
+        } catch {
+          // Observation must preserve the original provider failure.
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async refreshModelsImpl(opts?: {
+    allowStart?: boolean;
+  }): Promise<OllamaState> {
+    const generation = this.connectionConfigurationGeneration;
     assertOllamaEnabled();
     await this.initialize();
+    await this.waitForConfigurationChange();
+    if (generation !== this.connectionConfigurationGeneration)
+      return this.getState();
     const allowStart = opts?.allowStart === true;
+    const port = this.state.port;
+    const client = this.client;
     const reachable = await this.probeConfiguredServer();
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      return this.getState();
 
     if (!reachable && !allowStart) {
       if (
@@ -686,11 +797,21 @@ class OllamaServiceImpl implements OllamaService {
     } else {
       this.markReachableState();
     }
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      return this.getState();
 
     const refreshedAt = new Date().toISOString();
-    const list = await this.client.list();
+    const list = await client.list();
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      return this.getState();
     const previousShowByModel = new Map(
-      (this.cacheByPort.get(this.state.port)?.models ?? [])
+      (this.cacheByPort.get(port)?.models ?? [])
         .filter(
           (
             model,
@@ -710,13 +831,23 @@ class OllamaServiceImpl implements OllamaService {
         ),
     );
     const showByModel = await loadShowMetadata(
-      this.client,
+      client,
       list.models,
       previousShowByModel,
     );
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      return this.getState();
     const cacheEntry = mergeShowMetadata(list, refreshedAt, showByModel);
-    this.cacheByPort.set(this.state.port, cacheEntry);
+    this.cacheByPort.set(port, cacheEntry);
     await this.writeCacheFile();
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      return this.getState();
     this.updateState({
       status:
         this.ownership === 'managed' ? 'running-managed' : 'running-external',
@@ -724,6 +855,7 @@ class OllamaServiceImpl implements OllamaService {
       refreshedAt: cacheEntry.refreshedAt,
       error: undefined,
     });
+    this.observeConfirmedConnection(port, allowStart ? 'in_app' : 'read');
     initOllamaModels(cacheEntry.models);
     this.broadcastModelRegistryUpdated();
     return this.getState();
@@ -734,7 +866,8 @@ class OllamaServiceImpl implements OllamaService {
     await this.initialize();
     const model = normalizeModelName(rawModelId);
 
-    await this.ensureServerRunning('pull');
+    await this.waitForConfigurationChange();
+    await this.withConnectionAttempt(() => this.ensureServerRunning('pull'));
 
     let lastProgress: ProgressResponse = {
       status: 'pulling',
@@ -769,16 +902,28 @@ class OllamaServiceImpl implements OllamaService {
     await this.initialize();
     const model = normalizeModelName(rawModelId);
 
-    await this.ensureServerRunning('delete');
+    await this.waitForConfigurationChange();
+    await this.withConnectionAttempt(() => this.ensureServerRunning('delete'));
     await this.client.delete({ model });
     return this.refreshModels({ allowStart: false });
   }
 
   async setPort(port: number): Promise<OllamaState> {
-    return this.setConfiguration({ mode: this.state.mode, port });
+    return this.withConfigurationChange(async (): Promise<OllamaState> => {
+      await this.initialize();
+      return this.setConfigurationImpl({ mode: this.state.mode, port });
+    });
   }
 
   async setConfiguration(
+    update: OllamaConfigurationUpdate,
+  ): Promise<OllamaState> {
+    return this.withConfigurationChange(() =>
+      this.setConfigurationImpl(update),
+    );
+  }
+
+  private async setConfigurationImpl(
     update: OllamaConfigurationUpdate,
   ): Promise<OllamaState> {
     assertOllamaEnabled();
@@ -789,6 +934,7 @@ class OllamaServiceImpl implements OllamaService {
       return this.getState();
     }
 
+    this.beginConfigurationMutation();
     await this.shutdown('port-changed');
     await writeOllamaConfigurationPreference({ mode, port });
     const installation =
@@ -799,8 +945,9 @@ class OllamaServiceImpl implements OllamaService {
           })
         : this.state.installation;
     this.configureClient(port);
-    this.ownership = 'none';
     this.state = this.buildStateFromCache(port, { mode, installation });
+    this.markConnectionSetupChanged();
+    this.ownership = 'none';
     initOllamaModels(this.state.models);
     this.broadcastStatus();
     this.broadcastModelRegistryUpdated();
@@ -808,6 +955,14 @@ class OllamaServiceImpl implements OllamaService {
   }
 
   async redetectInstallation(options?: {
+    force?: boolean;
+  }): Promise<OllamaState> {
+    return this.withConfigurationChange(() =>
+      this.redetectInstallationImpl(options),
+    );
+  }
+
+  private async redetectInstallationImpl(options?: {
     force?: boolean;
   }): Promise<OllamaState> {
     assertOllamaEnabled();
@@ -821,6 +976,7 @@ class OllamaServiceImpl implements OllamaService {
       status,
     );
     if (runtimeChanged) {
+      this.beginConfigurationMutation();
       await this.shutdown('port-changed');
       this.serverVersion = undefined;
     }
@@ -832,18 +988,27 @@ class OllamaServiceImpl implements OllamaService {
         : {}),
     });
     if (runtimeChanged) {
+      if (status.ready) this.markConnectionSetupChanged(true);
       this.broadcastModelRegistryUpdated();
     }
     return this.getState();
   }
 
   async setExecutablePath(path: string): Promise<OllamaState> {
+    return this.withConfigurationChange(() => this.setExecutablePathImpl(path));
+  }
+
+  private async setExecutablePathImpl(path: string): Promise<OllamaState> {
     assertOllamaEnabled();
     await this.initialize();
     const status = await validateOllamaExecutable(path, 'browse');
     if (status.ready && status.path) {
+      this.beginConfigurationMutation();
       await this.shutdown('port-changed');
       await writeOllamaConfigurationPreference({ executablePath: status.path });
+      if (installationRuntimeChanged(this.state.installation, status)) {
+        this.markConnectionSetupChanged(true);
+      }
       this.serverVersion = undefined;
       this.updateState({
         installation: status,
@@ -863,6 +1028,14 @@ class OllamaServiceImpl implements OllamaService {
   async install(
     onProgress?: Parameters<typeof installOllama>[0],
   ): Promise<OllamaState> {
+    return withProviderConnectionAttempt('ollama', 'local', undefined, () =>
+      this.withConfigurationChange(() => this.installImpl(onProgress)),
+    );
+  }
+
+  private async installImpl(
+    onProgress?: Parameters<typeof installOllama>[0],
+  ): Promise<OllamaState> {
     assertOllamaEnabled();
     await this.initialize();
     if (this.state.mode === 'manual') {
@@ -873,10 +1046,14 @@ class OllamaServiceImpl implements OllamaService {
     if (this.state.installation.ready) {
       return this.getState();
     }
+    this.beginConfigurationMutation();
     await this.shutdown('port-changed');
     const status = await installOllama(onProgress);
+    if (!status.ready)
+      recordProviderConnectionFailure('ollama', 'local', 'runtime_unavailable');
     if (status.ready && status.path) {
       await writeOllamaConfigurationPreference({ executablePath: status.path });
+      this.markConnectionSetupChanged(true);
     }
     this.updateState({
       installation: status,
@@ -889,11 +1066,39 @@ class OllamaServiceImpl implements OllamaService {
   }
 
   async testConnection(port?: number): Promise<OllamaConnectionTestResult> {
+    await this.waitForConfigurationChange();
+    return this.withConnectionAttempt(() => this.testConnectionImpl(port));
+  }
+
+  private async testConnectionImpl(
+    port?: number,
+  ): Promise<OllamaConnectionTestResult> {
     assertOllamaEnabled();
+    const generation = this.connectionConfigurationGeneration;
     const targetPort = await this.resolveConnectionTestPort(port);
     const startedAt = Date.now();
     const result = await this.probeServerVersionForPort(targetPort);
     const latencyMs = Math.max(0, Date.now() - startedAt);
+    const connected = result.reachable && result.version !== undefined;
+    const matchesConfiguration =
+      targetPort === (await this.resolveConnectionTestPort()) &&
+      generation === this.connectionConfigurationGeneration &&
+      !this.configurationMutationActive;
+    if (matchesConfiguration) {
+      this.establishConnectionBaseline(connected ? String(targetPort) : null);
+    }
+    if (connected) {
+      if (matchesConfiguration)
+        this.observeConfirmedConnection(targetPort, 'in_app');
+    } else if (
+      generation === this.connectionConfigurationGeneration &&
+      !this.configurationMutationActive
+    )
+      recordProviderConnectionFailure(
+        'ollama',
+        'local',
+        result.reachable ? 'other' : 'network',
+      );
     return {
       ok: result.reachable && result.version !== undefined,
       host: '127.0.0.1',
@@ -925,10 +1130,17 @@ class OllamaServiceImpl implements OllamaService {
   }
 
   async handleUserEnvironmentChanged(): Promise<void> {
+    return this.withConfigurationChange(() =>
+      this.handleUserEnvironmentChangedImpl(),
+    );
+  }
+
+  private async handleUserEnvironmentChangedImpl(): Promise<void> {
     if (!isOllamaSupportedOnPlatform()) {
       return;
     }
     await this.initialize();
+    this.beginConfigurationMutation();
 
     if (this.startPromise) {
       this.startupController?.abort();
@@ -962,11 +1174,25 @@ class OllamaServiceImpl implements OllamaService {
       | 'delete',
   ): Promise<void> {
     assertOllamaEnabled();
-    void reason;
     await this.initialize();
+    await this.waitForConfigurationChange();
+    const generation = this.connectionConfigurationGeneration;
+    const port = this.state.port;
+    const via =
+      reason === 'chat' || reason === 'helper' || reason === 'pipeline'
+        ? 'read'
+        : 'in_app';
 
-    if (await this.probeConfiguredServer()) {
+    const reachable = await this.probeConfiguredServer();
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    ) {
+      throw new OllamaServerUnavailableError('Ollama startup canceled.');
+    }
+    if (reachable) {
       this.markReachableState();
+      this.observeConfirmedConnection(port, via);
       return;
     }
 
@@ -992,6 +1218,9 @@ class OllamaServiceImpl implements OllamaService {
     this.startPromise = this.startManagedServer(
       this.state.installation.path,
       startupController.signal,
+      generation,
+      port,
+      via,
     ).catch((error: unknown) => {
       if (error instanceof OllamaServerUnavailableError) throw error;
       const message =
@@ -1127,9 +1356,16 @@ class OllamaServiceImpl implements OllamaService {
   async assertAnthropicCompatibleApi(): Promise<void> {
     assertOllamaEnabled();
     await this.initialize();
+    await this.waitForConfigurationChange();
+    const generation = this.connectionConfigurationGeneration;
 
     const version =
       this.serverVersion ?? (await this.readConfiguredServerVersion());
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      throw new OllamaServerUnavailableError('Ollama startup canceled.');
     if (!version) {
       return;
     }
@@ -1146,8 +1382,15 @@ class OllamaServiceImpl implements OllamaService {
   async assertResponsesCompatibleApi(): Promise<void> {
     assertOllamaEnabled();
     await this.initialize();
+    await this.waitForConfigurationChange();
+    const generation = this.connectionConfigurationGeneration;
     const version =
       this.serverVersion ?? (await this.readConfiguredServerVersion());
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      throw new OllamaServerUnavailableError('Ollama startup canceled.');
     if (!version) {
       // The version endpoint is the reachability probe: an unreadable version
       // means no server answered, not that the server refused something.
@@ -1193,19 +1436,83 @@ class OllamaServiceImpl implements OllamaService {
   }
 
   private async probeConfiguredServer(signal?: AbortSignal): Promise<boolean> {
-    const result = await this.probeServerVersionForPort(
-      this.state.port,
-      signal,
-    );
+    if (this.configurationMutationActive) return false;
+    const generation = this.connectionConfigurationGeneration;
+    const port = this.state.port;
+    const result = await this.probeServerVersionForPort(port, signal);
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive ||
+      signal?.aborted
+    )
+      return false;
     this.serverVersion = result.version;
     if (result.version) {
       this.updateState({ serverVersion: result.version });
     }
-    return result.reachable && result.version !== undefined;
+    const connected = result.reachable && result.version !== undefined;
+    this.establishConnectionBaseline(connected ? String(port) : null);
+    return connected;
+  }
+
+  private markConnectionSetupChanged(resetFingerprint = false): void {
+    this.pendingInAppConnection = true;
+    if (resetFingerprint || !this.connectionBaselineEstablished) {
+      // A changed executable is setup even when the endpoint stays the same.
+      this.connectionBaselineEstablished = true;
+      observeProviderConnection({
+        provider: 'ollama',
+        connectionMethod: 'local',
+        fingerprint: null,
+        via: 'read',
+      });
+    }
+  }
+
+  private observeConfirmedConnection(
+    port: number,
+    via: 'read' | 'in_app',
+    startupBaseline = false,
+  ): void {
+    if (this.configurationMutationActive) return;
+    const pendingSetup = this.pendingInAppConnection;
+    this.pendingInAppConnection = false;
+    observeProviderConnection({
+      provider: 'ollama',
+      connectionMethod: 'local',
+      fingerprint: String(port),
+      via: pendingSetup ? 'in_app' : via,
+      baselineOnly: startupBaseline && !pendingSetup,
+    });
+  }
+
+  private establishConnectionBaseline(fingerprint: string | null): void {
+    if (
+      this.connectionBaselineEstablished ||
+      this.configurationMutationActive
+    ) {
+      return;
+    }
+    // Reuse the first existing probe, not a new startup request. Committed
+    // setup changes seed null first so their eventual connection stays in-app.
+    this.connectionBaselineEstablished = true;
+    observeProviderConnection({
+      provider: 'ollama',
+      connectionMethod: 'local',
+      fingerprint,
+      via: 'read',
+    });
   }
 
   private async readConfiguredServerVersion(): Promise<string | undefined> {
+    if (this.configurationMutationActive) return undefined;
+    const generation = this.connectionConfigurationGeneration;
     const result = await this.probeServerVersionForPort(this.state.port);
+    if (
+      generation !== this.connectionConfigurationGeneration ||
+      this.configurationMutationActive
+    )
+      return undefined;
     this.serverVersion = result.version;
     return result.version;
   }
@@ -1284,6 +1591,9 @@ class OllamaServiceImpl implements OllamaService {
   private async startManagedServer(
     executablePath: string,
     signal: AbortSignal,
+    generation: number,
+    port: number,
+    via: 'read' | 'in_app',
   ): Promise<void> {
     this.updateState({
       status: 'starting',
@@ -1294,7 +1604,7 @@ class OllamaServiceImpl implements OllamaService {
     const child = spawn(executablePath, ['serve'], {
       env: {
         ...getEnhancedEnv({ environment: { runtime: 'canopy' } }),
-        OLLAMA_HOST: `127.0.0.1:${String(this.state.port)}`,
+        OLLAMA_HOST: `127.0.0.1:${String(port)}`,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: process.platform === 'win32',
@@ -1337,18 +1647,40 @@ class OllamaServiceImpl implements OllamaService {
 
     const deadline = Date.now() + OLLAMA_STARTUP_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      if (signal.aborted) {
+      if (
+        signal.aborted ||
+        generation !== this.connectionConfigurationGeneration ||
+        this.configurationMutationActive ||
+        port !== this.state.port
+      ) {
+        if (this.childProcess === child) await this.terminateManagedChild();
         throw new Error('Ollama startup canceled.');
       }
       if (await this.probeConfiguredServer(signal)) {
+        if (
+          signal.aborted ||
+          generation !== this.connectionConfigurationGeneration ||
+          this.configurationMutationActive ||
+          port !== this.state.port
+        ) {
+          if (this.childProcess === child) await this.terminateManagedChild();
+          throw new Error('Ollama startup canceled.');
+        }
         this.ownership = 'managed';
         this.updateState({
           status: 'running-managed',
           error: undefined,
         });
+        this.observeConfirmedConnection(port, via, via === 'read');
         return;
       }
-      if (signal.aborted) {
+      if (
+        signal.aborted ||
+        generation !== this.connectionConfigurationGeneration ||
+        this.configurationMutationActive ||
+        port !== this.state.port
+      ) {
+        if (this.childProcess === child) await this.terminateManagedChild();
         throw new Error('Ollama startup canceled.');
       }
       const failure = ((): Error | null => startupFailure)();

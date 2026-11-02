@@ -158,7 +158,7 @@ describe('PipelineTableRow actions', () => {
   it('folds the enabled toggle into the action group, naming the next action', async () => {
     const handlers = renderRow(makePipelineInfo(), { enabled: true });
     const toggle = byTestId('pipeline-toggle-enabled-pipeline-1');
-    expect(toggle?.getAttribute('aria-label')).toBe('Disable pipeline');
+    expect(toggle?.getAttribute('aria-label')).toBe('Disable workflow');
     // The name already flips to describe the next action, so `aria-pressed`
     // must NOT also be set — together they announce "Disable pipeline, toggle
     // button, pressed", which contradicts itself.
@@ -171,7 +171,7 @@ describe('PipelineTableRow actions', () => {
 
     renderRow(makePipelineInfo(), { enabled: false });
     const offToggle = byTestId('pipeline-toggle-enabled-pipeline-1');
-    expect(offToggle?.getAttribute('aria-label')).toBe('Enable pipeline');
+    expect(offToggle?.getAttribute('aria-label')).toBe('Enable workflow');
     expect(offToggle?.getAttribute('aria-pressed')).toBeNull();
   });
 

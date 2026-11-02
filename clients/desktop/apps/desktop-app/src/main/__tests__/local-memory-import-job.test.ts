@@ -29,19 +29,27 @@ jest.mock('node:fs/promises', () => ({
 }));
 
 jest.mock('../lib/preferences-store', () => ({
-  readLocalMemoryEnabledPreference: mockReadLocalMemoryEnabledPreference,
+  get readLocalMemoryEnabledPreference(): typeof mockReadLocalMemoryEnabledPreference {
+    return mockReadLocalMemoryEnabledPreference;
+  },
 }));
 
 jest.mock('../lib/sidebar-items', () => ({
-  readAllSidebarItems: mockReadAllSidebarItems,
+  get readAllSidebarItems(): typeof mockReadAllSidebarItems {
+    return mockReadAllSidebarItems;
+  },
 }));
 
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceConfig: mockReadWorkspaceConfig,
+  get readWorkspaceConfig(): typeof mockReadWorkspaceConfig {
+    return mockReadWorkspaceConfig;
+  },
 }));
 
 jest.mock('../memory/local/consolidation-scheduler', () => ({
-  requestLocalMemoryConsolidation: mockRequestLocalMemoryConsolidation,
+  get requestLocalMemoryConsolidation(): typeof mockRequestLocalMemoryConsolidation {
+    return mockRequestLocalMemoryConsolidation;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({
@@ -56,21 +64,33 @@ jest.mock('../lib/paths', () => ({
 }));
 
 jest.mock('../memory/local/import/discovery', () => ({
-  discoverClaudeMemoryFiles: mockDiscoverClaudeMemoryFiles,
-  discoverCodexMemoryFiles: mockDiscoverCodexMemoryFiles,
+  get discoverClaudeMemoryFiles(): typeof mockDiscoverClaudeMemoryFiles {
+    return mockDiscoverClaudeMemoryFiles;
+  },
+  get discoverCodexMemoryFiles(): typeof mockDiscoverCodexMemoryFiles {
+    return mockDiscoverCodexMemoryFiles;
+  },
 }));
 
 jest.mock('../memory/local/import/ledger', () => ({
-  readImportState: mockReadImportState,
+  get readImportState(): typeof mockReadImportState {
+    return mockReadImportState;
+  },
 }));
 
 jest.mock('../memory/local/import/import-runner', () => ({
-  runClaudeMemoryImport: mockRunClaudeMemoryImport,
-  runCodexMemoryImport: mockRunCodexMemoryImport,
+  get runClaudeMemoryImport(): typeof mockRunClaudeMemoryImport {
+    return mockRunClaudeMemoryImport;
+  },
+  get runCodexMemoryImport(): typeof mockRunCodexMemoryImport {
+    return mockRunCodexMemoryImport;
+  },
 }));
 
 jest.mock('../memory/local/policy', () => ({
-  resolveLocalMemoryPolicy: mockResolveLocalMemoryPolicy,
+  get resolveLocalMemoryPolicy(): typeof mockResolveLocalMemoryPolicy {
+    return mockResolveLocalMemoryPolicy;
+  },
 }));
 
 import { backgroundHelperQueueTestExports } from '../lib/background-helper-queue';

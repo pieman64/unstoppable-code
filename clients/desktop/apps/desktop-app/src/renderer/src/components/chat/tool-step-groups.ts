@@ -10,18 +10,30 @@
  * turn is still adding to shows only its newest steps under the summary row.
  */
 import {
+  describeCleanRun,
   describeStepCounts,
   describeStepKinds,
   getToolFamilyFromName,
-  type PortalChatToolFamily,
+  groupCleanSteps,
+  stepKindOfToolCall,
+  type CleanRunStep,
+  type CleanUnitRole,
   type StepKind,
   type ToolDisplayScope,
+  toolCallResultFrom,
 } from '@canopy/ui-shared/components';
+import {
+  classifyTurnStepOutcome,
+  type TurnOutcomeEvidence,
+} from '@canopy/protocol/portal';
+import { codexAgentState } from './agent-block-state';
 import type { TurnSummaryCounts } from '@canopy/desktop-shared/lib/turn-utils';
 import {
   isAskUserQuestionToolName,
   SHOW_VISUAL_TOOL_ALIASES,
 } from '@/lib/canopy-tool-aliases';
+import { parseAnsweredQuestions } from './answered-questions';
+import { readToolAuthRecoveryFailures } from './tool-auth-recovery';
 import type { DisplayBlock, DisplayMessage } from './types';
 
 type ToolUseBlock = Extract<DisplayBlock, { type: 'tool_use' }>;
@@ -159,6 +171,19 @@ function isThinkingStep(block: DisplayBlock): block is ThinkingBlock {
   return block.type === 'thinking' && block.text.trim().length > 0;
 }
 
+/**
+ * A step the live window counts: a tool call, a thought with text, or
+ * anything else the clean look draws as a step (a helper agent, a workflow,
+ * a question waiting for an answer), so a running one is never left out.
+ */
+function isWindowStep(block: DisplayBlock): boolean {
+  return (
+    block.type === 'tool_use' ||
+    isThinkingStep(block) ||
+    cleanBlockRole(block) === 'step'
+  );
+}
+
 function stepsOf(messages: readonly DisplayMessage[]): ToolStepBlock[] {
   return messages.flatMap((message) =>
     message.blocks.filter(
@@ -231,6 +256,271 @@ export function segmentToolSteps(
   return segments;
 }
 
+// ---------------------------------------------------------------------------
+// Clean chat look: every step between two replies is one line
+// ---------------------------------------------------------------------------
+
+/**
+ * What a block is to the clean chat look (see `groupCleanSteps`). A step is
+ * work: a tool call (failed ones too), a thought, a helper agent, a question
+ * still waiting for its answer. A break is something the person reads or
+ * acts on: a reply, an answered question, a plan, a visual, an app notice, a
+ * sign-in recovery.
+ */
+export function cleanBlockRole(block: DisplayBlock): CleanUnitRole {
+  if (block.isSystemMessage === true) return 'break';
+  switch (block.type) {
+    case 'thinking':
+      return block.text.trim() === '' ? 'silent' : 'step';
+    case 'text':
+      if (block.asyncQuestionAnswer) return 'break';
+      if (block.asyncQuestion) return 'step';
+      return block.text.trim() === '' ? 'silent' : 'break';
+    case 'file_references':
+    case 'mcp_activation':
+      return 'silent';
+    case 'agent':
+    case 'codex_agent':
+    case 'workflow':
+      return 'step';
+    case 'tool_use': {
+      if (
+        STANDALONE_TOOL_NAMES.has(block.toolName) &&
+        block.toolName !== 'Skill'
+      ) {
+        return 'break';
+      }
+      if (
+        block.result?.visualRef ||
+        SHOW_VISUAL_TOOL_ALIASES.includes(block.toolName)
+      ) {
+        return 'break';
+      }
+      // A sign-in recovery card (structured, or read from an older MCP
+      // error's text) stays in view on its own row.
+      if (
+        readToolAuthRecoveryFailures(block.toolName, block.result).length > 0
+      ) {
+        return 'break';
+      }
+      if (isAskUserQuestionToolName(block.toolName)) {
+        return isAnsweredQuestion(block) ? 'break' : 'step';
+      }
+      return 'step';
+    }
+    default:
+      return 'break';
+  }
+}
+
+/** An AskUserQuestion call with answers to show (its answer card). */
+function isAnsweredQuestion(block: ToolUseBlock): boolean {
+  if (!block.result || block.result.isError) return false;
+  return (
+    (parseAnsweredQuestions(block.input, block.result.output)?.length ?? 0) > 0
+  );
+}
+
+function messageRole(message: DisplayMessage): CleanUnitRole {
+  if (message.role !== 'assistant') return 'break';
+  let role: CleanUnitRole = 'silent';
+  for (const block of message.blocks) {
+    const blockRole = cleanBlockRole(block);
+    if (blockRole === 'break') return 'break';
+    if (blockRole === 'step') role = 'step';
+  }
+  return role;
+}
+
+const cleanSplitMessages = new WeakMap<DisplayMessage, DisplayMessage[]>();
+
+/**
+ * Splits a message with replies between its steps (a Claude event's content
+ * array, an OpenCode patch stream) at block boundaries, so its steps can
+ * join the runs around them. Pieces keep the message's id through
+ * `stepPieceOf`, as the live step window's do.
+ */
+function splitAtBreaks(message: DisplayMessage): DisplayMessage[] {
+  if (message.role !== 'assistant') return [message];
+  const cached = cleanSplitMessages.get(message);
+  if (cached) return cached;
+  const isBreak = (block: DisplayBlock): boolean =>
+    cleanBlockRole(block) === 'break';
+  const starts: number[] = [];
+  message.blocks.forEach((block, index) => {
+    if (index === 0 || isBreak(block) !== isBreak(message.blocks[index - 1])) {
+      starts.push(index);
+    }
+  });
+  const pieces =
+    starts.length < 2
+      ? [message]
+      : starts.map((start, index) => {
+          const end = starts[index + 1] ?? message.blocks.length;
+          const piece = {
+            ...message,
+            blocks: message.blocks.slice(start, end),
+          };
+          stepPieces.set(piece, {
+            source: message,
+            key: start === 0 ? message.id : `${message.id}#${String(start)}`,
+            endsSource: end === message.blocks.length,
+            blockOffset: start,
+          });
+          return piece;
+        });
+  cleanSplitMessages.set(message, pieces);
+  return pieces;
+}
+
+export type CleanStepSegment =
+  | { kind: 'message'; message: DisplayMessage }
+  | {
+      kind: 'steps';
+      /** Stable while the run grows: the render key of its first row. */
+      key: string;
+      messages: readonly DisplayMessage[];
+      /** The run's steps, in order (empty thinking shells left out). */
+      steps: ToolStepBlock[];
+      /** Helper agents and workflows the run started. */
+      agents: CleanAgentBlock[];
+    };
+
+type CleanAgentBlock = Extract<
+  DisplayBlock,
+  { type: 'agent' } | { type: 'codex_agent' } | { type: 'workflow' }
+>;
+
+/**
+ * The clean chat look's turn: replies and other breaks as they are, and
+ * every run of steps between them as one segment, however short.
+ */
+export function segmentCleanSteps(
+  messages: readonly DisplayMessage[],
+): CleanStepSegment[] {
+  return groupCleanSteps(
+    messages.flatMap(splitAtBreaks),
+    messageRole,
+    (message) => stepPieceOf(message).key,
+  ).map((segment) =>
+    segment.kind === 'item'
+      ? { kind: 'message', message: segment.item }
+      : {
+          kind: 'steps',
+          key: segment.key,
+          messages: segment.items,
+          steps: stepsOf(segment.items),
+          agents: segment.items.flatMap((message) =>
+            message.blocks.filter(
+              (block): block is CleanAgentBlock =>
+                block.type === 'agent' ||
+                block.type === 'codex_agent' ||
+                block.type === 'workflow',
+            ),
+          ),
+        },
+  );
+}
+
+/**
+ * What a clean run did, counted: "Ran 4 commands, read 2 files", and how
+ * many of its steps failed, were blocked or were interrupted. A recognized
+ * approval denial is blocked, not failed, read the same way the tool card
+ * reads it. Interruption metadata outranks the error flag, and a call
+ * without a result is interrupted only with `evidence` that its turn settled
+ * with every result loaded, the same rule the turn's outcome counts use.
+ */
+export function describeCleanSteps(
+  segment: Extract<CleanStepSegment, { kind: 'steps' }>,
+  scope?: ToolDisplayScope,
+  evidence?: TurnOutcomeEvidence,
+  deniedToolUseIds?: ReadonlySet<string>,
+): {
+  label: string;
+  failed: number;
+  blocked: number;
+  interrupted: number;
+  firstKind: StepKind | undefined;
+} {
+  const steps: CleanRunStep[] = [];
+  for (const message of segment.messages) {
+    for (const block of message.blocks) {
+      if (block.type === 'tool_use') {
+        steps.push({
+          kind: isAskUserQuestionToolName(block.toolName)
+            ? 'question'
+            : stepKindOfBlock(block, scope),
+          ...toolStepOutcome(
+            block.result,
+            evidence,
+            deniedToolUseIds?.has(block.toolUseId),
+          ),
+        });
+      } else if (isThinkingStep(block)) {
+        steps.push({ kind: 'thinking' });
+      } else if (
+        block.type === 'agent' ||
+        block.type === 'codex_agent' ||
+        block.type === 'workflow'
+      ) {
+        steps.push({
+          kind: 'agent',
+          // Codex helpers fail through their status, not a result.
+          ...(block.type === 'codex_agent'
+            ? { failed: codexAgentState(block).error }
+            : toolStepOutcome(
+                block.type === 'agent'
+                  ? (block.taskOutputResult ?? block.result)
+                  : block.result,
+                evidence,
+                deniedToolUseIds?.has(block.toolUseId),
+              )),
+        });
+      } else if (block.type === 'text' && block.asyncQuestion) {
+        steps.push({ kind: 'question' });
+      }
+    }
+  }
+  const { label, failed, blocked, interrupted, kind } = describeCleanRun(steps);
+  return { label, failed, blocked, interrupted, firstKind: kind };
+}
+
+/**
+ * Whether a tool call failed, was blocked before it ran, or was interrupted,
+ * at most one of them.
+ */
+function toolStepOutcome(
+  result: ToolUseBlock['result'],
+  evidence?: TurnOutcomeEvidence,
+  blockedByReceipt = false,
+): {
+  failed: boolean;
+  blocked: boolean;
+  pending?: boolean;
+  interrupted?: boolean;
+} {
+  if (blockedByReceipt) return { failed: false, blocked: true };
+  if (result === undefined || result === null) {
+    return {
+      failed: false,
+      blocked: false,
+      pending: true,
+      interrupted:
+        classifyTurnStepOutcome(undefined, false, evidence) === 'interrupted',
+    };
+  }
+  const blocked =
+    result.isError === true &&
+    toolCallResultFrom({ output: result.output, isError: true }).kind ===
+      'blocked';
+  if (blocked) return { failed: false, blocked: true };
+  if (result.interruption) {
+    return { failed: false, blocked: false, interrupted: true };
+  }
+  if (result.isError !== true) return { failed: false, blocked: false };
+  return { failed: !blocked, blocked };
+}
+
 /** A message trimmed to its tail, cached so unchanged rows keep their identity. */
 const trimmedMessages = new WeakMap<
   DisplayMessage,
@@ -267,9 +557,7 @@ export function liveStepWindow(
     const message = messages[index];
     for (let block = message.blocks.length - 1; block >= 0; block -= 1) {
       const candidate = message.blocks[block];
-      if (candidate.type !== 'tool_use' && !isThinkingStep(candidate)) {
-        continue;
-      }
+      if (!isWindowStep(candidate)) continue;
       remaining -= 1;
       if (remaining === 0) {
         return [
@@ -282,35 +570,37 @@ export function liveStepWindow(
   return messages.filter(hasStep);
 }
 
-/** False for a message that is only an empty thinking shell so far. */
-function hasStep(message: DisplayMessage): boolean {
-  return message.blocks.some(
-    (block) => block.type === 'tool_use' || isThinkingStep(block),
-  );
+/**
+ * What `liveStepWindow` leaves out: the messages before its cut, with a
+ * message that straddles the cut keeping only its blocks before the oldest
+ * shown step. Empty when the window holds every step. The run's closed line
+ * counts these, so the shown steps are not said twice.
+ */
+export function stepsBeforeLiveWindow(
+  messages: readonly DisplayMessage[],
+  size: number = LIVE_STEP_WINDOW_SIZE,
+): DisplayMessage[] {
+  let remaining = size;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    for (let block = message.blocks.length - 1; block >= 0; block -= 1) {
+      const candidate = message.blocks[block];
+      if (!isWindowStep(candidate)) continue;
+      remaining -= 1;
+      if (remaining === 0) {
+        const before = messages.slice(0, index);
+        return block === 0
+          ? before
+          : [...before, { ...message, blocks: message.blocks.slice(0, block) }];
+      }
+    }
+  }
+  return [];
 }
 
-function stepKindOf(family: PortalChatToolFamily): StepKind {
-  switch (family) {
-    case 'grep':
-    case 'glob':
-      return 'search';
-    case 'read':
-      return 'read';
-    case 'edit':
-    case 'write':
-      return 'edit';
-    case 'bash':
-    case 'script-output':
-      return 'command';
-    case 'graph':
-      return 'graph';
-    case 'web':
-      return 'web';
-    case 'todo':
-      return 'tasks';
-    default:
-      return 'other';
-  }
+/** False for a message that is only an empty thinking shell so far. */
+function hasStep(message: DisplayMessage): boolean {
+  return message.blocks.some(isWindowStep);
 }
 
 /**
@@ -323,7 +613,10 @@ export function summarizeSteps(
   scope?: ToolDisplayScope,
 ): string {
   return describeStepCounts(
-    steps.map((block) => [stepKindOfBlock(block, scope), 1] as const),
+    steps.map(
+      (block) =>
+        [stepKindOfBlock(block, scope), 1, planWriteStatusOf(block)] as const,
+    ),
   );
 }
 
@@ -336,8 +629,20 @@ export function describeSteps(
   scope?: ToolDisplayScope,
 ): string {
   return describeStepKinds(
-    steps.map((block) => [stepKindOfBlock(block, scope), 1] as const),
+    steps.map(
+      (block) =>
+        [stepKindOfBlock(block, scope), 1, planWriteStatusOf(block)] as const,
+    ),
   );
+}
+
+function planWriteStatusOf(
+  block: ToolStepBlock,
+): 'pending' | 'failed' | 'interrupted' | undefined {
+  if (block.type !== 'tool_use') return undefined;
+  if (!block.result) return 'pending';
+  if (block.result.interruption) return 'interrupted';
+  return block.result.isError ? 'failed' : undefined;
 }
 
 function stepKindOfBlock(
@@ -346,7 +651,11 @@ function stepKindOfBlock(
 ): StepKind {
   return block.type === 'thinking'
     ? 'thinking'
-    : stepKindOf(getToolFamilyFromName(block.toolName, scope, block.input));
+    : stepKindOfToolCall({
+        toolName: block.toolName,
+        family: getToolFamilyFromName(block.toolName, scope, block.input),
+        input: block.input,
+      });
 }
 
 /** The kind of a run's first step, which its row leads with. */

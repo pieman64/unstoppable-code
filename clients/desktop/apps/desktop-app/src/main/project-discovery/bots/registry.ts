@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   APP_ADVISOR_BOT_ID,
   type BotRow,
@@ -15,7 +16,7 @@ export interface RegisteredBot {
 const advisor: RegisteredBot = {
   botId: APP_ADVISOR_BOT_ID,
   projectId: APP_ADVISOR_PROJECT_ID,
-  name: 'App Advisor',
+  name: ORCHESTRATOR_LABEL,
   capabilities: {
     listTasks: true,
     readChats: true,

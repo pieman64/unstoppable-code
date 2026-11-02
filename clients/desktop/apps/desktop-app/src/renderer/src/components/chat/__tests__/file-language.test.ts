@@ -27,6 +27,22 @@ describe('getMonacoLanguage', () => {
     expect(getMonacoLanguage('a.mdx')).toBe('mdx');
   });
 
+  it('maps LaTeX, BibTeX, and Lean extensions to their Monaco languages', () => {
+    expect(getMonacoLanguage('paper.tex')).toBe('latex');
+    expect(getMonacoLanguage('style.sty')).toBe('latex');
+    expect(getMonacoLanguage('class.cls')).toBe('latex');
+    expect(getMonacoLanguage('legacy.ltx')).toBe('latex');
+    expect(getMonacoLanguage('references.bbl')).toBe('latex');
+    expect(getMonacoLanguage('references.bib')).toBe('bibtex');
+    expect(getMonacoLanguage('Main.lean')).toBe('lean');
+  });
+
+  it('prefers math language mappings over extension hints', () => {
+    expect(getMonacoLanguage('paper.tex', 'tex')).toBe('latex');
+    expect(getMonacoLanguage('references.bib', 'bib')).toBe('bibtex');
+    expect(getMonacoLanguage('Main.lean', 'lean')).toBe('lean');
+  });
+
   it('handles assorted server / scripting languages', () => {
     expect(getMonacoLanguage('a.yaml')).toBe('yaml');
     expect(getMonacoLanguage('a.yml')).toBe('yaml');
@@ -93,5 +109,18 @@ describe('getMonacoLanguage', () => {
   it('is case-insensitive', () => {
     expect(getMonacoLanguage('FOO.TS')).toBe('typescript');
     expect(getMonacoLanguage('FILE.MD')).toBe('markdown');
+    expect(getMonacoLanguage('PAPER.TEX')).toBe('latex');
+    expect(getMonacoLanguage('STYLE.STY')).toBe('latex');
+    expect(getMonacoLanguage('CLASS.CLS')).toBe('latex');
+    expect(getMonacoLanguage('LEGACY.LTX')).toBe('latex');
+    expect(getMonacoLanguage('REFERENCES.BBL')).toBe('latex');
+    expect(getMonacoLanguage('REFERENCES.BIB')).toBe('bibtex');
+    expect(getMonacoLanguage('MAIN.LEAN')).toBe('lean');
+  });
+
+  it('maps math extensions when paths include directories', () => {
+    expect(getMonacoLanguage('/repo/papers/paper.tex')).toBe('latex');
+    expect(getMonacoLanguage('refs\\references.bib')).toBe('bibtex');
+    expect(getMonacoLanguage('/repo/src/Main.lean')).toBe('lean');
   });
 });

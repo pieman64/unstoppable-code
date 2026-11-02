@@ -108,14 +108,23 @@ const interval = setInterval(() => {
       if (setupGate) {
         expect(existsSync(setupGate + '-timed-out')).toBe(false);
         expect(existsSync(setupGate + '-finished')).toBe(false);
-        // The setup annotation is renderer-only, outside the canonical transcript.
+        // While setup is held, the loaded child chat shows its transcript
+        // and no setup annotation (CAN-4981).
+        const childHost = f.window.locator(
+          `[data-panel-content-host="panel-chat-${receipt.chatId}"]`,
+        );
         await expect(
-          f.window
-            .locator(`[data-panel-content-host="panel-chat-${receipt.chatId}"]`)
-            .getByText('Chat initiated before project setup at', {
+          childHost
+            .getByText('OpenCode child retained native-only context.', {
               exact: false,
-            }),
+            })
+            .first(),
         ).toBeVisible();
+        await expect(
+          childHost.getByText('Chat initiated before project setup', {
+            exact: false,
+          }),
+        ).toHaveCount(0);
         writeFileSync(setupGate + '-release', 'continue');
         await expect.poll(() => existsSync(setupGate + '-finished')).toBe(true);
       }

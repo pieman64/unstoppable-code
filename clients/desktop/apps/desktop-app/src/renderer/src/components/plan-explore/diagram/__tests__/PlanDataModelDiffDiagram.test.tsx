@@ -1,7 +1,13 @@
 /**
  * @jest-environment jsdom
  */
-import { act, createRef, type MouseEvent, type ReactNode } from 'react';
+import {
+  act,
+  createRef,
+  type JSX,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type * as ReactModule from 'react';
 import type {
@@ -376,7 +382,7 @@ describe('PlanDataModelDiffDiagram comments', () => {
     // presentation guaranteed to contain every entity
     // (`buildUnifiedDataModelGraph` unions both by id) — before trying to
     // center.
-    expect(getButtonByText('Diff').className).toContain('bg-fg-primary/[0.08]');
+    expect(getButtonByText('Diff').getAttribute('aria-pressed')).toBe('true');
     expect(container.textContent).toContain('Organization');
   });
 });

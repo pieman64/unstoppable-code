@@ -1,5 +1,3 @@
-import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import type {
   HookDescriptor,
   HookRunRequest,
@@ -17,7 +15,6 @@ import type {
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
-import { getHookTriggerDisplayName } from '@canopy/desktop-shared/types';
 import { validateId } from '../lib/validation';
 import { assertNotSplitLocked } from './split-lock-service';
 import {
@@ -27,10 +24,8 @@ import {
 } from '../lib/hook-runner';
 import { PortalServiceError } from './portal-service-error';
 import {
-  collectProjectHookLayers,
-  collectWorkspaceRepoHookLayers,
-  collectWorkspaceRootHookLayers,
   getResolvedHookActions,
+  type ResolvedHookMap,
   resolveProjectHooks,
   resolveWorkspaceRepoHooks,
   resolveWorkspaceRootHooks,
@@ -60,14 +55,24 @@ import {
 } from '../lib/github-pr-hook-state';
 import {
   getWorktreeDir,
-  getHookInvocationsDir,
   getWorkspaceWorktreeRepoDir,
   getWorkspaceWorktreeRootRepoDir,
 } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';
+import type {
+  CanopyCallerDescriptor,
+  CoreHookSourceTarget,
+} from '@canopy/protocol/canopy-core';
+import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
+import {
+  getHookSourceInfoThroughCore,
+  HOOK_SOURCE_HOST_CALLER,
+  listHookSourcesThroughCore,
+} from '../canopy-runtime/hook-source-dispatch';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import type { HookRunLogRef } from '../lib/hook-log-store';
 import {
+  listHookRunLogTails,
   listLatestHookRunLogTails,
   readHookRunLogTail,
 } from '../lib/hook-log-store';
@@ -611,6 +616,22 @@ function trimUtf8Tail(value: string, maxBytes: number): string {
   return bytes.subarray(start).toString('utf8');
 }
 
+// The Portal hook list reads each target through core.initiatedWork.source.list;
+// an unreadable target lists no hooks, as before.
+async function listTargetHookSources(
+  target: CoreHookSourceTarget,
+): Promise<ResolvedHookMap> {
+  try {
+    return await listHookSourcesThroughCore(
+      getDesktopCanopyRuntime(),
+      HOOK_SOURCE_HOST_CALLER,
+      target,
+    );
+  } catch {
+    return {};
+  }
+}
+
 export async function listHooks(input?: {
   workspaceLocalId?: string;
   worktreeLocalId?: string;
@@ -631,19 +652,11 @@ export async function listHooks(input?: {
   );
   const pausedHookKeys = new Set(worktree?.pausedHookKeys ?? []);
   if (item.type === 'single-repo') {
-    const config = await readWorkspaceConfig(workspaceLocalId).catch(
-      () => null,
-    );
-    const cwd = getWorktreeDir(workspaceLocalId, worktreeLocalId);
-    const hooks = await resolveProjectHooks(
-      {
-        id: workspaceLocalId,
-        owner: config?.owner,
-        repoPath: config?.repoPath ?? cwd,
-        hooks: config?.hooks,
-      },
-      cwd,
-    ).catch(() => ({}));
+    const hooks = await listTargetHookSources({
+      kind: 'project',
+      workspaceId: workspaceLocalId,
+      worktreeId: worktreeLocalId,
+    });
     const rows = Object.entries(hooks).flatMap(([triggerName, field]) => {
       const actions = field.actions;
       if (!actions || actions.length === 0) return [];
@@ -677,13 +690,11 @@ export async function listHooks(input?: {
       })),
     );
   }
-  const rootPath = getWorkspaceWorktreeRootRepoDir(
-    workspaceLocalId,
-    worktreeLocalId,
-  );
-  const rootHooks = await resolveWorkspaceRootHooks(workspaceLocalId, {
-    workspaceRootPath: rootPath,
-  }).catch(() => ({}));
+  const rootHooks = await listTargetHookSources({
+    kind: 'workspace-root',
+    workspaceId: workspaceLocalId,
+    worktreeId: worktreeLocalId,
+  });
   const rootRows = Object.entries(rootHooks).flatMap(([triggerName, field]) => {
     const actions = field.actions;
     if (!actions || actions.length === 0) return [];
@@ -707,15 +718,12 @@ export async function listHooks(input?: {
   });
   const repoRows = await settleAll(
     item.repos.map(async (repo) => {
-      const repoPath = getWorkspaceWorktreeRepoDir(
-        workspaceLocalId,
-        worktreeLocalId,
-        repo.id,
-      );
-      const hooks = await resolveWorkspaceRepoHooks(workspaceLocalId, repo.id, {
-        workspaceRootPath: rootPath,
-        repoPath,
-      }).catch(() => ({}));
+      const hooks = await listTargetHookSources({
+        kind: 'workspace-repo',
+        workspaceId: workspaceLocalId,
+        repoId: repo.id,
+        worktreeId: worktreeLocalId,
+      });
       return Object.entries(hooks).flatMap(([triggerName, field]) => {
         const actions = field.actions;
         if (!actions || actions.length === 0) return [];
@@ -769,153 +777,43 @@ export async function listHookRuns(input?: {
     input?.workspaceLocalId ?? input?.workspaceId ?? input?.projectId;
   const worktreeLocalId = input?.worktreeLocalId ?? input?.worktreeId;
   if (!workspaceLocalId || !worktreeLocalId) return [];
-  const dir = getHookInvocationsDir(workspaceLocalId, worktreeLocalId);
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-  const runs = await settleAll(
-    entries
-      .filter((entry) => entry.isDirectory())
-      .map(async (entry): Promise<PortalHookRun | null> => {
-        const runDir = join(dir, entry.name);
-        const meta = await readHookRunMeta(join(runDir, 'meta.json'));
-        if (!meta) return null;
-        const outputTail = await readFile(join(runDir, 'output.log'), 'utf8')
-          .then((raw) => raw.split(/\r?\n/).slice(-80).join('\n'))
-          .catch(() => '');
-        return {
-          workspaceLocalId,
-          worktreeLocalId,
-          localId: meta.runId,
-          runId: meta.runId,
-          hookId: meta.hook.hookKey,
-          // Transport plan §1.3 canonical fields.
-          hookKey: meta.hook.hookKey,
-          name: meta.hook.label,
-          triggerName: meta.hook.triggerName,
-          target: meta.hook.target,
-          repoId: meta.hook.repoId,
-          repoName: meta.hook.repoName,
-          status: meta.timedOut ? 'timed_out' : meta.status,
-          startedAt: meta.startedAt,
-          finishedAt: meta.completedAt,
-          outputTail,
-        };
-      }),
+  const runs = await listHookRunLogTails({
+    projectId: workspaceLocalId,
+    worktreeId: worktreeLocalId,
+    maxLines: 80,
+  });
+  return runs.map(
+    ({ meta, lines }): PortalHookRun => ({
+      workspaceLocalId,
+      worktreeLocalId,
+      localId: meta.runId,
+      runId: meta.runId,
+      hookId: meta.hook.hookKey,
+      // Transport plan §1.3 canonical fields.
+      hookKey: meta.hook.hookKey,
+      name: meta.hook.label,
+      triggerName: meta.hook.triggerName,
+      target: meta.hook.target,
+      repoId: meta.hook.repoId,
+      repoName: meta.hook.repoName,
+      status: meta.timedOut ? 'timed_out' : meta.status,
+      startedAt: meta.startedAt,
+      finishedAt: meta.completedAt,
+      outputTail: lines.join('\n'),
+    }),
   );
-  return runs.flatMap((run) => (run ? [run] : []));
 }
 
-async function readHookRunMeta(pathValue: string): Promise<{
-  runId: string;
-  hook: HookDescriptor;
-  status: 'running' | 'success' | 'failed' | 'cancelled';
-  startedAt: string;
-  completedAt?: string;
-  timedOut: boolean;
-} | null> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(pathValue, 'utf8'));
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      !('runId' in parsed) ||
-      !('hook' in parsed) ||
-      !('status' in parsed)
-    ) {
-      return null;
-    }
-    const record = parsed as {
-      runId?: unknown;
-      hook?: unknown;
-      status?: unknown;
-      startedAt?: unknown;
-      completedAt?: unknown;
-      timedOut?: unknown;
-    };
-    const hook = record.hook as HookDescriptor;
-    if (
-      typeof record.runId !== 'string' ||
-      typeof hook?.hookKey !== 'string' ||
-      typeof hook.label !== 'string' ||
-      typeof hook.triggerName !== 'string' ||
-      (record.status !== 'running' &&
-        record.status !== 'success' &&
-        record.status !== 'failed' &&
-        record.status !== 'cancelled') ||
-      typeof record.startedAt !== 'string'
-    ) {
-      return null;
-    }
-    return {
-      runId: record.runId,
-      hook,
-      status: record.status,
-      startedAt: record.startedAt,
-      ...(typeof record.completedAt === 'string'
-        ? { completedAt: record.completedAt }
-        : {}),
-      timedOut: record.timedOut === true,
-    };
-  } catch {
-    return null;
-  }
-}
-
+/** `core.initiatedWork.source.get` for one hook trigger of a target. */
 export async function getHookSourceInfo(
   request: HookSourceInfoRequest,
+  caller: CanopyCallerDescriptor = HOOK_SOURCE_HOST_CALLER,
 ): Promise<HookSourceInfoResponse> {
-  if (request.target === 'project') {
-    validateId(request.projectId, 'projectId');
-    const config = await readWorkspaceConfig(request.projectId);
-    const layers = await collectProjectHookLayers(
-      {
-        repoPath:
-          config.repoPath ??
-          (request.worktreeId
-            ? getWorktreeDir(request.projectId, request.worktreeId)
-            : ''),
-        hooks: config.hooks,
-      },
-      request.triggerName,
-      request.worktreeId
-        ? getWorktreeDir(request.projectId, request.worktreeId)
-        : undefined,
-    );
-    return hookSourceInfoResponse(request.triggerName, layers);
-  }
-  validateId(request.workspaceId, 'workspaceId');
-  const layers =
-    request.target === 'workspace-root'
-      ? await collectWorkspaceRootHookLayers(
-          request.workspaceId,
-          request.triggerName,
-          request.worktreeId
-            ? {
-                workspaceRootPath: getWorkspaceWorktreeRootRepoDir(
-                  request.workspaceId,
-                  request.worktreeId,
-                ),
-              }
-            : undefined,
-        )
-      : await collectWorkspaceRepoHookLayers(
-          request.workspaceId,
-          request.repoId,
-          request.triggerName,
-          request.worktreeId
-            ? {
-                workspaceRootPath: getWorkspaceWorktreeRootRepoDir(
-                  request.workspaceId,
-                  request.worktreeId,
-                ),
-                repoPath: getWorkspaceWorktreeRepoDir(
-                  request.workspaceId,
-                  request.worktreeId,
-                  request.repoId,
-                ),
-              }
-            : undefined,
-        );
-  return hookSourceInfoResponse(request.triggerName, layers);
+  return getHookSourceInfoThroughCore(
+    getDesktopCanopyRuntime(),
+    caller,
+    request,
+  );
 }
 
 /**
@@ -964,21 +862,6 @@ export async function saveWorkspaceRepoHooksFromService(
     }
     throw error;
   }
-}
-
-function hookSourceInfoResponse(
-  triggerName: HookSourceInfoRequest['triggerName'],
-  layers: HookSourceInfoResponse['layers'],
-): HookSourceInfoResponse {
-  return {
-    triggerName,
-    triggerDisplayName: getHookTriggerDisplayName(triggerName),
-    effectiveActions:
-      layers.find(
-        (layer) => layer.status === 'active' || layer.status === 'disabled',
-      )?.actions ?? null,
-    layers,
-  };
 }
 
 export function hookToPortalEntity(

@@ -268,7 +268,7 @@ export function ArchivedChatsPopover({
               type="button"
               onClick={onOpenModal}
               data-testid="chat-tab-archive-more"
-              className="w-full rounded-md px-3 py-2 text-left text-xs font-medium fg-secondary transition hover:bg-fg-primary/[0.04] hover:fg-primary"
+              className="w-full rounded-md px-3 py-2 text-left text-xs font-medium fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-primary"
             >
               {overflow} more…
             </button>

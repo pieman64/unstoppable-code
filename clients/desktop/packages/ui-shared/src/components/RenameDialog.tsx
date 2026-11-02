@@ -10,12 +10,16 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from 'react';
+import {
+  DIALOG_CONFIRM_CHORD,
+  DISMISS_CHORD,
+  formatChord,
+} from '../lib/shortcut-platform';
 import { Button } from './Button';
 import { DialogModal } from './DialogModal';
+import { FieldError, TextInput } from './Field';
 
 export interface RenameDialogProps {
-  /** Preserve the existing inset form presentation where it is already used. */
-  readonly variant?: 'default' | 'inset';
   readonly title: string;
   readonly label: string;
   /** Read once on mount; remount (or change `key`) to reopen with a fresh value. */
@@ -23,9 +27,17 @@ export interface RenameDialogProps {
   readonly placeholder?: string;
   readonly helperText?: string;
   readonly maxLength?: number;
+  /** Repeats the title's verb. Defaults to `Rename`. */
   readonly submitLabel?: string;
-  /** Disables Save and dismissal while the host persists the value. */
+  /** Disables the action and dismissal while the host persists the value. */
   readonly busy?: boolean;
+  /**
+   * Why the submitted value can't be saved (`A workflow named “Bug fix”
+   * already exists.`). It shows under the field only after a submit: the
+   * dialog stays open with the person's text, and editing the field clears
+   * the message until the next submit. The host sets it from `onSubmit`.
+   */
+  readonly error?: string | null;
   /**
    * Receives the raw draft. Normalization, empty-value semantics and whether
    * an unchanged value is a no-op belong to the host.
@@ -42,17 +54,22 @@ export interface RenameDialogProps {
   readonly cancelTestId?: string;
 }
 
-/** Single-field rename dialog shared by desktop and web hosts. */
+/**
+ * Single-field rename dialog shared by desktop and web hosts. It takes the
+ * compact confirmation shape: the field focuses to the neutral halo with its
+ * value selected, Enter submits, and Cancel or Escape closes it. Both keys
+ * sit inside their buttons, as in {@link ConfirmDialog}.
+ */
 export function RenameDialog({
-  variant = 'default',
   title,
   label,
   initialValue,
   placeholder,
   helperText,
   maxLength,
-  submitLabel = 'Save',
+  submitLabel = 'Rename',
   busy = false,
+  error = null,
   onSubmit,
   onClose,
   ownerDocument,
@@ -64,12 +81,21 @@ export function RenameDialog({
   submitTestId,
   cancelTestId,
 }: RenameDialogProps): JSX.Element {
-  const inset = variant === 'inset';
   const [draft, setDraft] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement>(null);
   const generatedId = useId();
   const fieldId = inputId ?? `${generatedId}-input`;
   const helperId = `${fieldId}-helper`;
+  const errorId = `${fieldId}-error`;
+  // An error is about the last submit, so it shows only until the person
+  // edits the field again.
+  const [submittedSinceEdit, setSubmittedSinceEdit] = useState(false);
+  const visibleError =
+    error !== null && error !== '' && submittedSinceEdit ? error : null;
+  const describedBy =
+    [helperText ? helperId : null, visibleError !== null ? errorId : null]
+      .filter((id): id is string => id !== null)
+      .join(' ') || undefined;
 
   useEffect(() => {
     inputRef.current?.select();
@@ -80,6 +106,7 @@ export function RenameDialog({
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     if (busy) return;
+    setSubmittedSinceEdit(true);
     onSubmit(draft);
   };
 
@@ -90,84 +117,79 @@ export function RenameDialog({
     }
   };
 
-  const field = (
-    <input
-      ref={inputRef}
-      id={fieldId}
-      type="text"
-      value={draft}
-      placeholder={placeholder}
-      maxLength={maxLength}
-      onChange={(event) => setDraft(event.target.value)}
-      onKeyDown={handleKeyDown}
-      aria-describedby={helperText ? helperId : undefined}
-      data-testid={inputTestId}
-      className={
-        inset
-          ? 'mt-2 w-full rounded-md inset-ring inset-ring-line-base bg-base px-3 py-2 text-s fg-primary focus-ring'
-          : 'focus-ring h-9 w-full rounded-lg border bg-secondary px-3 text-s fg-primary outline-none'
-      }
-      autoComplete={inset ? undefined : 'off'}
-      spellCheck={inset ? undefined : false}
-    />
-  );
-
   return (
     <DialogModal
+      variant="confirm"
       onClose={close}
       closeOnBackdrop={!busy}
       closeOnEscape={!busy}
       title={title}
       titleId={titleId}
-      maxWidth="sm"
-      headerBorder={inset}
       dataTestId={dataTestId}
       ownerDocument={ownerDocument}
       trapFocus
       initialFocusRef={inputRef}
       restoreFocusRef={restoreFocusRef}
     >
-      <form
-        className={inset ? undefined : 'space-y-4 px-5 pb-5'}
-        onSubmit={handleSubmit}
-      >
+      <form className="flex flex-col px-5 pb-4" onSubmit={handleSubmit}>
         <label
-          className={
-            inset
-              ? 'block text-s fg-secondary'
-              : 'block space-y-1.5 text-s fg-secondary'
-          }
+          className="mt-3 mb-1.5 block text-xs fg-secondary"
           htmlFor={fieldId}
         >
-          <span>{label}</span>
-          {!inset && field}
+          {label}
         </label>
-        {inset && field}
+        <TextInput
+          ref={inputRef}
+          id={fieldId}
+          density="settings"
+          value={draft}
+          placeholder={placeholder}
+          maxLength={maxLength}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            // Editing makes the last submit's error stale.
+            setSubmittedSinceEdit(false);
+          }}
+          onKeyDown={handleKeyDown}
+          aria-describedby={describedBy}
+          aria-invalid={visibleError !== null ? true : undefined}
+          data-testid={inputTestId}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {visibleError !== null ? (
+          <div className="mt-1.5">
+            <FieldError
+              id={errorId}
+              data-testid={inputTestId ? `${inputTestId}-error` : undefined}
+            >
+              {visibleError}
+            </FieldError>
+          </div>
+        ) : null}
         {helperText ? (
-          <p id={helperId} className="text-xs fg-tertiary">
+          <p id={helperId} className="mt-1.5 text-xs text-pretty fg-tertiary">
             {helperText}
           </p>
         ) : null}
-        <div
-          className={
-            inset ? 'mt-4 flex justify-end gap-2' : 'flex justify-end gap-2'
-          }
-        >
+        <div className="mt-4.5 flex items-center justify-end gap-2">
           <Button
-            size={inset ? undefined : 'sm'}
-            variant={inset ? 'outline' : 'secondary'}
+            variant="secondary"
+            size="compact"
             onClick={close}
             disabled={busy}
+            shortcut={formatChord(DISMISS_CHORD)}
             data-testid={cancelTestId}
           >
             Cancel
           </Button>
           <Button
             type="submit"
-            size={inset ? undefined : 'sm'}
-            variant={inset ? 'secondary' : 'primary'}
+            variant="primary"
+            size="compact"
             disabled={busy}
             aria-busy={busy}
+            shortcut={busy ? undefined : formatChord(DIALOG_CONFIRM_CHORD)}
             data-testid={submitTestId}
           >
             {submitLabel}

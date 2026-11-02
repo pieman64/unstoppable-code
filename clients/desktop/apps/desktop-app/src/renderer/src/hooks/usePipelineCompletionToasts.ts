@@ -4,6 +4,7 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { getToastType } from '@canopy/desktop-shared/pipelines/get-toast-type';
 import { getPipelineNotificationClass } from '@canopy/desktop-shared/pipelines/get-notification-class';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 
 /**
  * Completed, failed, and paused root runs raise a toast (and, through the
@@ -24,10 +25,10 @@ export function usePipelineCompletionToasts(): void {
       const { pipeline_snapshot, project_id, worktree_id } = event.state;
       const message =
         toastType === 'success'
-          ? `Pipeline "${pipeline_snapshot.name}" completed`
+          ? `${WORKFLOW_ITEM_LABEL} "${pipeline_snapshot.name}" completed`
           : toastType === 'warning'
-            ? `Pipeline "${pipeline_snapshot.name}" paused`
-            : `Pipeline "${pipeline_snapshot.name}" failed`;
+            ? `${WORKFLOW_ITEM_LABEL} "${pipeline_snapshot.name}" paused`
+            : `${WORKFLOW_ITEM_LABEL} "${pipeline_snapshot.name}" failed`;
       const executionId = event.executionId;
       const onClick = (): void => {
         void openPipelineExecutionFromUi({

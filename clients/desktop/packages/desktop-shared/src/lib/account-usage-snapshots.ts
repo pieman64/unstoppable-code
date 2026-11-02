@@ -3,6 +3,7 @@ import type {
   ProviderCreditsSnapshot,
   ProviderRateLimitSnapshot,
   ProviderRateLimitWindow,
+  ProviderSpendSnapshot,
   RetainedAccountUsageSnapshot,
 } from '../types/observability';
 
@@ -151,8 +152,52 @@ function normalizeCredits(
   };
 }
 
+function normalizeSpend(value: Record<string, unknown>): ProviderSpendSnapshot {
+  const currency = optionalString(value.currency);
+  const used = optionalNumber(value.used);
+  const limit = optionalNumber(value.limit);
+  return {
+    ...(currency !== undefined &&
+    /^[A-Z]{3}$/.test(currency) &&
+    new Intl.DisplayNames('en', { type: 'currency', fallback: 'none' }).of(
+      currency,
+    ) !== undefined
+      ? { currency }
+      : {}),
+    ...(used !== undefined && used >= 0 ? { used } : {}),
+    ...(value.limit === null
+      ? { limit: null }
+      : limit !== undefined && limit >= 0
+        ? { limit }
+        : {}),
+    ...(typeof value.isEnabled === 'boolean'
+      ? { isEnabled: value.isEnabled }
+      : {}),
+  };
+}
+
+function normalizeScope(
+  value: Record<string, unknown>,
+): ProviderRateLimitSnapshot['scope'] {
+  const model = isRecord(value.model) ? value.model : undefined;
+  return {
+    ...(model
+      ? {
+          model: {
+            id: optionalString(model.id) ?? null,
+            displayName: optionalString(model.displayName) ?? null,
+          },
+        }
+      : {}),
+    ...(value.surface === null || typeof value.surface === 'string'
+      ? { surface: value.surface }
+      : {}),
+  };
+}
+
 function normalizeRateLimit(
   entry: Record<string, unknown>,
+  provider: AgentProviderType,
 ): ProviderRateLimitSnapshot {
   return {
     limitId: optionalString(entry.limitId),
@@ -164,9 +209,14 @@ function normalizeRateLimit(
     secondary: isRecord(entry.secondary)
       ? normalizeWindow(entry.secondary)
       : undefined,
-    credits: isRecord(entry.credits)
-      ? normalizeCredits(entry.credits)
-      : undefined,
+    // Old Claude overage credits had ambiguous units and no currency metadata.
+    credits:
+      !(provider === 'claude' && entry.limitId === 'extra_usage') &&
+      isRecord(entry.credits)
+        ? normalizeCredits(entry.credits)
+        : undefined,
+    spend: isRecord(entry.spend) ? normalizeSpend(entry.spend) : undefined,
+    scope: isRecord(entry.scope) ? normalizeScope(entry.scope) : undefined,
   };
 }
 
@@ -179,6 +229,7 @@ export function normalizeRetainedAccountSnapshot(
   if (!isAgentProviderType(value.provider)) {
     return null;
   }
+  const provider = value.provider;
   if (typeof value.accountKey !== 'string' || value.accountKey.length === 0) {
     return null;
   }
@@ -188,7 +239,9 @@ export function normalizeRetainedAccountSnapshot(
   const rateLimits: ProviderRateLimitSnapshot[] | undefined = Array.isArray(
     value.rateLimits,
   )
-    ? value.rateLimits.filter(isRecord).map(normalizeRateLimit)
+    ? value.rateLimits
+        .filter(isRecord)
+        .map((entry) => normalizeRateLimit(entry, provider))
     : undefined;
   return {
     provider: value.provider,

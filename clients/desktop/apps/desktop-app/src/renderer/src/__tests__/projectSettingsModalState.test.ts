@@ -1,4 +1,5 @@
 import {
+  projectSettingsPageForTab,
   canSubmitProjectSourceDraft,
   hasProjectSourceDraft,
   hasProjectSourceHookDraft,
@@ -290,5 +291,20 @@ describe('hasProjectSourceHookDraft', () => {
     expect(
       hasProjectSourceHookDraft({}, createWorkspaceSettingsDataResponse()),
     ).toBe(false);
+  });
+});
+
+describe('projectSettingsPageForTab', () => {
+  it('opens each old tab on the page that now holds it', () => {
+    expect(projectSettingsPageForTab(undefined)).toBe('general');
+    expect(projectSettingsPageForTab('details')).toBe('general');
+    expect(projectSettingsPageForTab('danger')).toBe('general');
+    expect(projectSettingsPageForTab('scripts')).toBe('scripts');
+    expect(projectSettingsPageForTab('hooks')).toBe('scripts');
+    expect(projectSettingsPageForTab('plan-detection')).toBe('plans');
+    expect(projectSettingsPageForTab('plugins')).toBe('plugins');
+    expect(projectSettingsPageForTab('environment')).toBe('environment');
+    expect(projectSettingsPageForTab('code-graph')).toBe('code-graph');
+    expect(projectSettingsPageForTab('start-page')).toBe('start-page');
   });
 });

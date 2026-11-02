@@ -1,6 +1,7 @@
+import { totalmem } from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { utilityProcess, type UtilityProcess } from 'electron';
+import type { ExecutionHostProcess } from '@canopy/desktop-shared/node/execution-host/port';
 import type {
   CodeGraphGenerationQueueSnapshot,
   CodeGraphIpcError,
@@ -9,110 +10,50 @@ import type {
   CodeGraphReorderGenerationQueueRequest,
   CodeGraphReorderGenerationQueueResponse,
 } from '@canopy/desktop-shared/types';
-import type {
-  CodeGraphBuildOptions,
-  CodeGraphBuildPrelude,
-  CodeGraphBuildResult,
-  CodeGraphDerivedRepoStats,
-  CodeGraphRepositoryInput,
-} from '@canopy/desktop-shared/types/code-graph';
-import type {
-  CodeGraphBaseIdentity,
-  CodeGraphSeedOutcome,
-  CodeGraphSeedSource,
-} from '@canopy/desktop-shared/node/code-graph/base-graph';
+import type { CodeGraphBuildOptions } from '@canopy/desktop-shared/types/code-graph';
 import { getCodeGraphWorktreeService } from '@canopy/desktop-shared/node/code-graph/service';
 import type { CodeGraphBuildState } from '@canopy/desktop-shared/types/code-graph-tools';
 import type {
   BackfillCodeGraphSummaryProjectionResult,
   ReadCodeGraphSummaryProjectionResult,
-} from '@canopy/desktop-shared/node/code-graph/summary-projection';
+} from '@canopy/code-graph/summary-projection';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import {
   getCodeGraphGenerationTimeoutMs,
   isCodeGraphAvailableForWorkspace,
 } from '../lib/code-graph-availability';
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { getExecutionAccounting } from '../execution-accounting';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { resolveWorktreeCodeGraphRepositories } from '../lib/worktree-repo-entries';
 import {
   leaveBackgroundProcessPolicy,
   lowerSpawnedProcessPriority,
 } from '../lib/background-process';
+import { getExecutionHostPort } from '../execution-host/utility-process-host';
+import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
+import type {
+  CodeGraphWorkerBuildRequest,
+  CodeGraphWorkerSummaryRepairRequest,
+  CodeGraphWorkerSummaryRepairResponse,
+  CodeGraphWorkerEagerSeedRequest,
+  CodeGraphWorkerBuildResponse,
+  CodeGraphWorkerEagerSeedResponse,
+} from '@canopy/code-graph/host/build-protocol';
 
 // --- Protocol -------------------------------------------------------------
 //
-// The single request/response pair exchanged with a code-graph build worker.
-// Every field is absolute/resolved by the MAIN process before forking — the
-// worker derives nothing from `cwd`, `process.env`, or the app's data-dir
-// helpers. This keeps the worker a thin, deterministic adapter around
-// `CodeGraphEngine`.
+// The build host protocol lives with the host in `@canopy/code-graph/host`.
 
-export interface CodeGraphWorkerBuildRequest {
-  operation?: 'build';
-  /** Absolute path to the worktree's `graph.db` (main resolves it via
-   * `getWorktreeCodeGraphDbPath`). */
-  dbPath: string;
-  /** Absolute worktree checkout root — enables the per-build custom-language
-   * config lookup. Always provided (main resolves it) even though the engine
-   * treats it as optional. */
-  worktreeRootPath: string;
-  /** Optional immutable root for custom-language config/assets. Base builds
-   * use a snapshot while scanning a different repo-shadow checkout. */
-  customLanguagesRootPath?: string;
-  /** Absolute bundled `code-graph` resources dir (grammar wasm + tags),
-   * resolved by main via `getBundledCodeGraphDir()`. */
-  resourcesDir: string;
-  /** Every repository the graph covers, with absolute `rootPath`s. */
-  repositories: readonly CodeGraphRepositoryInput[];
-  /** Build options (e.g. `computeDerived`) forwarded verbatim to the engine. */
-  options: CodeGraphBuildOptions;
-  preparation?: {
-    seedSources: readonly CodeGraphSeedSource[];
-    coldFallbacks: readonly { repoId: string; reason: string }[];
-    customLanguagesFingerprint: string;
-    seedStagingDir: string;
-  };
-  /**
-   * Default-branch base builds finalize their private staging database in the
-   * worker (metadata, WAL truncation, sync, and full integrity check) so main
-   * only renames it into place. Worktree builds omit this.
-   */
-  baseFinalization?: {
-    identity: CodeGraphBaseIdentity;
-    gitHead: string | null;
-    /** Repair only the private staging generation before it is sealed. */
-    repairSummaryProjection?: true;
-  };
-  /**
-   * Timings main measured before the worker ran. The runner adds the queue
-   * wait when it starts the worker; the worker persists them with the build.
-   * A request without this field is posted unchanged.
-   */
-  timings?: CodeGraphBuildPrelude;
-  /**
-   * Worktree builds: answer as soon as the graph is published and finish
-   * derived analysis afterwards in the same worker (`derivedPending`, then a
-   * `derived-complete` message). Ignored with `baseFinalization`, whose
-   * published base must carry its derived analysis.
-   */
-  deferDerived?: boolean;
-}
-
-export interface CodeGraphWorkerSummaryRepairRequest {
-  operation: 'summary-repair';
-  /** Absolute worktree graph path resolved by the trusted main-process caller. */
-  dbPath: string;
-  /** Trusted source roots resolved from the owning project/worktree. */
-  worktreeRootPath: string;
-  customLanguagesRootPath: string;
-  resourcesDir: string;
-  repositories: readonly CodeGraphRepositoryInput[];
-}
-
-export type CodeGraphWorkerSummaryRepairResponse =
-  | { ok: true; result: BackfillCodeGraphSummaryProjectionResult }
-  | { ok: false; message: string };
+export type {
+  CodeGraphWorkerBuildRequest,
+  CodeGraphWorkerSummaryRepairRequest,
+  CodeGraphWorkerSummaryRepairResponse,
+  CodeGraphWorkerEagerSeedRequest,
+  CodeGraphWorkerBuildResponse,
+  CodeGraphWorkerDerivedCompletion,
+  CodeGraphWorkerEagerSeedResponse,
+} from '@canopy/code-graph/host/build-protocol';
 
 export type CodeGraphSummaryRepairResult =
   | {
@@ -148,60 +89,6 @@ export interface CodeGraphSummaryRepairRequest {
   worktreeId: string;
   dbPath: string;
 }
-
-export type CodeGraphWorkerEagerSeedRequest = {
-  operation: 'eager-seed';
-  targetDbPath: string;
-  repositories: readonly CodeGraphRepositoryInput[];
-  source:
-    | { kind: 'base-worktree'; dbPath: string }
-    | {
-        kind: 'workspace-shadow';
-        bases: readonly {
-          variantDir: string;
-          identity: CodeGraphBaseIdentity;
-          destinationRootPath: string;
-        }[];
-      };
-};
-
-export type CodeGraphWorkerBuildResponse =
-  | {
-      ok: true;
-      result: CodeGraphBuildResult;
-      seedOutcomes?: CodeGraphSeedOutcome[];
-      fusionDurationMs?: number;
-      /** Present when the request asked for base finalization and it passed. */
-      baseFinalized?: true;
-      /**
-       * The graph is published; the worker is still running derived
-       * analysis and reports it with a {@link CodeGraphWorkerDerivedCompletion}.
-       */
-      derivedPending?: true;
-    }
-  | { ok: false; message: string };
-
-/** The worker's second message after a `derivedPending` response. */
-export type CodeGraphWorkerDerivedCompletion =
-  | {
-      kind: 'derived-complete';
-      ok: true;
-      /** False when nothing was pending (already current). */
-      ran: boolean;
-      derived: CodeGraphDerivedRepoStats[];
-      derivedMs: number;
-      diagnosticsMs: number;
-    }
-  | { kind: 'derived-complete'; ok: false; message: string };
-
-export type CodeGraphWorkerEagerSeedResponse =
-  | {
-      ok: true;
-      status: 'seeded' | 'existing' | 'no-compatible-source';
-      source?: 'base-worktree' | 'workspace-shadow';
-      durationMs: number;
-    }
-  | { ok: false; message: string };
 
 type CodeGraphWorkerRequest =
   | CodeGraphWorkerBuildRequest
@@ -315,7 +202,7 @@ interface BuildRecord {
   promise: Promise<CodeGraphWorkerResponse>;
   resolve: (response: CodeGraphWorkerResponse) => void;
   reject: (error: CodeGraphWorkerBuildError) => void;
-  child: UtilityProcess | undefined;
+  child: ExecutionHostProcess | undefined;
   watchdog: NodeJS.Timeout | undefined;
   started: boolean;
   settled: boolean;
@@ -802,17 +689,6 @@ function setRecordBuildStatus(
   }
   record.lastBuildStatus = status;
   emitBuildStatus(record.key, status);
-}
-
-/**
- * The built worker script sits beside the main bundle in `out/main/` (dev) and
- * `app.asar/out/main/` (packaged). Resolve it relative to THIS module's
- * location, never `process.cwd()` — the app's working directory is arbitrary
- * at runtime. `__dirname` here is the main bundle's directory because
- * `build-runner.ts` is inlined into `out/main/index.js`.
- */
-function getWorkerEntryPath(): string {
-  return path.join(__dirname, WORKER_ENTRY_FILENAME);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1569,7 +1445,9 @@ const CHILD_EXIT_WAIT_MS = 5_000;
  * worker that refuses to die. Resolves immediately when there is no child
  * (queued-only record). Never rejects.
  */
-function waitForChildExit(child: UtilityProcess | undefined): Promise<void> {
+function waitForChildExit(
+  child: ExecutionHostProcess | undefined,
+): Promise<void> {
   if (child === undefined) {
     return Promise.resolve();
   }
@@ -1607,14 +1485,15 @@ const pendingExitWaits = new Map<string, Promise<void>>();
 // authority to admit a new repair writer into this owner/key.
 const unconfirmedWriterExits = new Map<
   string,
-  Map<UtilityProcess, Promise<void>>
+  Map<ExecutionHostProcess, Promise<void>>
 >();
 function registerActualWriterExit(
   key: string,
-  child: UtilityProcess,
+  child: ExecutionHostProcess,
 ): Promise<void> {
   const writers =
-    unconfirmedWriterExits.get(key) ?? new Map<UtilityProcess, Promise<void>>();
+    unconfirmedWriterExits.get(key) ??
+    new Map<ExecutionHostProcess, Promise<void>>();
   const existing = writers.get(child);
   if (existing !== undefined) return existing;
   const exit = new Promise<void>((resolve) => {
@@ -1645,7 +1524,10 @@ async function waitForActualWriterExits(key: string): Promise<void> {
  * is folded in, so the stored entry always covers every killed-but-live
  * worker for the key.
  */
-function registerExitWait(key: string, child: UtilityProcess): Promise<void> {
+function registerExitWait(
+  key: string,
+  child: ExecutionHostProcess,
+): Promise<void> {
   void registerActualWriterExit(key, child);
   const previous = pendingExitWaits.get(key);
   const exitWait =
@@ -2363,11 +2245,15 @@ function startBuild(record: BuildRecord): void {
 }
 
 function forkBuild(record: BuildRecord, executionTimeoutMs: number): void {
-  let child: UtilityProcess;
+  let child: ExecutionHostProcess;
   try {
     // Repair cancellation retains the record and slots through actual exit.
-    child = utilityProcess.fork(getWorkerEntryPath(), [], {
+    child = getExecutionHostPort().launch({
+      entry: WORKER_ENTRY_FILENAME,
       serviceName: WORKER_SERVICE_NAME,
+      budget: codeGraphHostBudget('build', {
+        totalMemoryBytes: totalmem(),
+      }),
     });
   } catch (error) {
     rejectRecord(
@@ -2381,7 +2267,15 @@ function forkBuild(record: BuildRecord, executionTimeoutMs: number): void {
   }
   record.child = child;
   void registerActualWriterExit(record.key, child);
-  // `UtilityProcess.pid` stays undefined until Electron emits `spawn`, so the
+  // Core accounting counts the build until its worker exits, however it ends.
+  getExecutionAccounting()
+    .track('codeGraph', record.id)
+    .releaseWhenSettled(
+      new Promise<void>((resolve) => {
+        child.once('exit', () => resolve());
+      }),
+    );
+  // `ExecutionHostProcess.pid` stays undefined until Electron emits `spawn`, so the
   // priority is applied from that event. Background generation enters the
   // Darwin background band (lowest CPU priority and throttled disk I/O);
   // agent-requested builds and eager creation seeds have a waiting caller and
@@ -2666,7 +2560,7 @@ function finalize(record: BuildRecord): void {
   pumpQueue();
 }
 
-function killChild(child: UtilityProcess | undefined): void {
+function killChild(child: ExecutionHostProcess | undefined): void {
   if (child === undefined) {
     return;
   }

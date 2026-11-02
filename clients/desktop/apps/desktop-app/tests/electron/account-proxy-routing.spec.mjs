@@ -145,7 +145,7 @@ test('a Claude chat runs through the proxy and records the account that served i
     await expect(accounts).toContainText('sam@example.com', {
       timeout: 30_000,
     });
-    await expect(accounts).toContainText('Via account proxy · 100% of turns');
+    await expect(accounts).toContainText('100% of turns');
     await window.keyboard.press('Escape');
 
     // The route main reported for the chat's session outranks the route new
@@ -154,7 +154,7 @@ test('a Claude chat runs through the proxy and records the account that served i
     await window.evaluate(() => window.api.accountProxy.disconnect());
     await panel.getByTestId('usage-indicator').click();
     await expect(window.getByTestId('usage-indicator-popover')).toBeVisible();
-    await expect(accounts).toContainText('Via account proxy · 100% of turns');
+    await expect(accounts).toContainText('100% of turns');
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await proxy.close();
@@ -289,8 +289,10 @@ test('usage surfaces leave the proxy out of OpenCode chats and AI Credits on', a
     );
     await app.openUsagePage();
     const claudeCard = window.getByTestId('usage-provider-card-claude');
+    // A proxied group's heading reads `Claude · Account proxy`.
+    const claudeHeading = claudeCard.locator('h2').first();
     await expect(claudeCard).toBeVisible({ timeout: 30_000 });
-    await expect(claudeCard).not.toContainText('via account proxy');
+    await expect(claudeHeading).not.toContainText('Account proxy');
     await expect(
       window.getByTestId('usage-provider-claude-account-proxy'),
     ).toHaveCount(0);
@@ -304,7 +306,7 @@ test('usage surfaces leave the proxy out of OpenCode chats and AI Credits on', a
     await expect(
       window.getByTestId('usage-provider-claude-account-proxy'),
     ).toContainText('sam@example.com', { timeout: 30_000 });
-    await expect(claudeCard).toContainText('via account proxy');
+    await expect(claudeHeading).toHaveText('Claude · Account proxy');
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await proxy.close();

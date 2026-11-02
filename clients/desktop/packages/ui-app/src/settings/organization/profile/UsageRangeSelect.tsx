@@ -1,6 +1,6 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
+import { SettingsSelect } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import { USAGE_RANGE_OPTIONS } from './useMemberUsage';
 
@@ -20,18 +20,15 @@ export function UsageRangeSelect({
     <label className="flex flex-col gap-1 text-xs font-medium fg-secondary">
       Range
       <div className="relative inline-flex">
-        <SettingsControlSelect
+        <SettingsSelect
           value={String(rangeMs)}
-          onChange={(event) => onChange(Number(event.target.value))}
+          onValueChange={(value) => onChange(Number(value))}
           data-testid={testId}
-          fill
-        >
-          {USAGE_RANGE_OPTIONS.map((option) => (
-            <option key={option.ms} value={String(option.ms)}>
-              {option.label}
-            </option>
-          ))}
-        </SettingsControlSelect>
+          options={USAGE_RANGE_OPTIONS.map((option) => ({
+            value: String(option.ms),
+            label: option.label,
+          }))}
+        />
       </div>
     </label>
   );

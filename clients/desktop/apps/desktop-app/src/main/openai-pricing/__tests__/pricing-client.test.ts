@@ -4,13 +4,21 @@ const mkdirMock = jest.fn();
 const requestPublicJsonMock = jest.fn();
 
 jest.mock('node:fs/promises', () => ({
-  readFile: readFileMock,
-  writeFile: writeFileMock,
-  mkdir: mkdirMock,
+  get readFile(): typeof readFileMock {
+    return readFileMock;
+  },
+  get writeFile(): typeof writeFileMock {
+    return writeFileMock;
+  },
+  get mkdir(): typeof mkdirMock {
+    return mkdirMock;
+  },
 }));
 
 jest.mock('../../canopy-cloud/client', () => ({
-  requestCanopyCloudPublicJson: requestPublicJsonMock,
+  get requestCanopyCloudPublicJson(): typeof requestPublicJsonMock {
+    return requestPublicJsonMock;
+  },
 }));
 
 jest.mock('../../lib/paths', () => ({

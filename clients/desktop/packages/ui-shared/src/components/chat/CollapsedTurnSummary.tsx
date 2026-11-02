@@ -1,6 +1,10 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   forwardRef,
+  useRef,
+  useState,
   type JSX,
+  type KeyboardEvent,
   type MouseEventHandler,
   type ReactNode,
 } from 'react';
@@ -23,14 +27,31 @@ import {
   AgentIcon,
   QuestionMarkIcon,
   TaskIcon,
-  ThinkingIcon,
   WrenchIcon,
+  StopIcon,
 } from '../../icons';
-import { DocumentPencilIcon, PickIcon } from '../../icons/AppIcons';
+import {
+  DocumentPencilIcon,
+  LightbulbIcon,
+  PickIcon,
+  ShieldIcon,
+  WarningIcon,
+} from '../../icons/AppIcons';
+import type {
+  TurnOutcomeCounts,
+  TurnOutcomeStepDetail,
+} from '@canopy/protocol/portal';
 import { formatDuration } from '../../lib/format-usage';
+import { RichHoverTooltip } from '../RichHoverTooltip';
 import { useIsPhone } from '../useMediaQuery';
 import { useCleanChatLook } from '../chat-look';
 import { describeStepCounts, type StepKind } from './step-words';
+import { TurnOutcomeTooltip } from './TurnOutcomeTooltip';
+import {
+  formatTurnOutcomeLabel,
+  TURN_OUTCOME_ORDER,
+} from './turn-outcome-label';
+import type { TurnCompletionStatus } from './turn-completion-status';
 import { TurnWorkHeader } from './TurnWorkHeader';
 
 /**
@@ -91,25 +112,52 @@ export interface CollapsedTurnSummaryProps {
    */
   elapsedMs?: number;
   /**
-   * How the turn ended. The clean chat look's header says "Failed after …" or
-   * "Stopped after …" instead of "Worked for …". Defaults to complete.
+   * How the turn ended. The clean chat look's header says "Failed after …",
+   * "Stopped after …" or "Interrupted after …" instead of "Worked for …".
+   * Defaults to complete.
    */
-  completionStatus?: 'complete' | 'failed' | 'cancelled';
+  completionStatus?: TurnCompletionStatus;
   /** Hide the visible step-count label while preserving its automation data. */
   hideLeadingLabel?: boolean;
+  /**
+   * How many counted steps a safety check blocked, ran into an error, or
+   * were interrupted. Omit when the host has no outcome metadata; that is unknown, not
+   * zero.
+   */
+  outcomes?: TurnOutcomeCounts;
+  /**
+   * The blocked, errored and interrupted steps behind `outcomes`, from loaded rows, for
+   * the outcome tooltip. Omit when the rows aren't loaded; the tooltip then
+   * says the counts only.
+   */
+  outcomeSteps?: readonly TurnOutcomeStepDetail[];
+  /**
+   * Bring an outcome step into view: the given one, or the first
+   * affected step when `undefined`. Omit when the host can't reveal rows; the
+   * outcome then only describes them.
+   */
+  onJumpToOutcome?: (toolUseId?: string) => void;
   /** Test ID hook for automation. */
   dataTestId?: string;
 }
 
-interface ChipEntry {
-  key: keyof TurnSummary;
+/**
+ * One count chip of a collapsed turn summary. Hosts with their own tool
+ * vocabulary (the desktop transcript) build these themselves; the key lands
+ * on `data-tool-chip`.
+ */
+export interface TurnSummaryChip {
+  key: string;
   icon: ReactNode;
   label: string;
   count: number;
 }
 
-function buildChips(summary: TurnSummary, appIcon?: ReactNode): ChipEntry[] {
-  const chips: ChipEntry[] = [];
+function buildChips(
+  summary: TurnSummary,
+  appIcon?: ReactNode,
+): TurnSummaryChip[] {
+  const chips: TurnSummaryChip[] = [];
   const push = (
     key: keyof TurnSummary,
     icon: ReactNode,
@@ -122,7 +170,7 @@ function buildChips(summary: TurnSummary, appIcon?: ReactNode): ChipEntry[] {
   };
 
   push('messages', <MessageIcon />, 'messages');
-  push('thinking', <ThinkingIcon />, 'thinking');
+  push('thinking', <LightbulbIcon />, 'thinking');
   push('bash', <TerminalIcon />, 'bash');
   push('read', <DocumentIcon />, 'read');
   push('edit', <DocumentPencilIcon />, 'edit');
@@ -139,8 +187,8 @@ function buildChips(summary: TurnSummary, appIcon?: ReactNode): ChipEntry[] {
   push('watcher', <AppAdvisorWatcherIcon />, 'watcher');
   push('canopy', appIcon ?? <WrenchIcon />, 'app');
   push('graph', <GraphIcon />, 'code graph');
-  push('appAdvisor', <AppAdvisorIcon />, 'app advisor');
-  push('pipelineEditor', <PipelineIcon />, 'pipeline');
+  push('appAdvisor', <AppAdvisorIcon />, ORCHESTRATOR_LABEL.toLowerCase());
+  push('pipelineEditor', <PipelineIcon />, 'workflow');
   push('computerUse', <PickIcon />, 'computer use');
   push('other', <WrenchIcon />, 'other');
 
@@ -218,7 +266,7 @@ export function turnSummaryStepCounts(
  * localisation layer in this package to defer to, and inventing one for a
  * single word would be worse than the honest limitation.
  */
-function formatStepCount(total: number): string {
+export function formatStepCount(total: number): string {
   if (total === 0) {
     return 'Agent steps';
   }
@@ -241,6 +289,330 @@ function formatElapsedLabel(elapsedMs: number | undefined): string | null {
   return elapsedMs < 1000 ? '<1s' : formatDuration(elapsedMs);
 }
 
+/** The nonzero outcomes in reading order: blocked, errored, interrupted. */
+function outcomeEntries(
+  outcomes: TurnOutcomeCounts | undefined,
+): { key: keyof TurnOutcomeCounts; count: number }[] {
+  if (!outcomes) return [];
+  return TURN_OUTCOME_ORDER.flatMap((key) =>
+    outcomes[key] > 0 ? [{ key, count: outcomes[key] }] : [],
+  );
+}
+
+/** The glyph beside one outcome's words. */
+function TurnOutcomeGlyph({
+  outcome,
+}: {
+  outcome: keyof TurnOutcomeCounts;
+}): JSX.Element {
+  if (outcome === 'blocked') return <ShieldIcon />;
+  if (outcome === 'interrupted') return <StopIcon />;
+  return <WarningIcon />;
+}
+
+/** Whether a turn has any blocked, errored or interrupted step to report. */
+export function hasTurnOutcomes(
+  outcomes: TurnOutcomeCounts | undefined,
+): boolean {
+  return outcomeEntries(outcomes).length > 0;
+}
+
+/** Shared and desktop chip keys with a plain-language step equivalent. */
+const CHIP_STEP_KINDS: Partial<Record<string, StepKind>> = {
+  ...SUMMARY_STEP_KINDS,
+  agent: 'agent',
+  askUser: 'question',
+  writeEdit: 'edit',
+  fileEdit: 'edit',
+  fileAdd: 'edit',
+  search: 'search',
+  tasks: 'tasks',
+};
+
+function describeTurnSummaryChip(chip: TurnSummaryChip): string {
+  const kind = CHIP_STEP_KINDS[chip.key];
+  return kind
+    ? describeStepCounts([[kind, chip.count]])
+    : `${chip.count} ${chip.label}`;
+}
+
+/** The nonzero outcomes in words, blocked first: `1 blocked, 2 errors, 1 interrupted`. */
+function formatTurnOutcomeWords(
+  outcomes: TurnOutcomeCounts | undefined,
+): string {
+  return outcomeEntries(outcomes)
+    .map((entry) => formatTurnOutcomeLabel(entry.key, entry.count))
+    .join(', ');
+}
+
+/**
+ * The summary control's accessible name:
+ * `Agent steps: Ran 4 commands, 1 blocked, 2 errors`. Outcomes follow the chips,
+ * blocked first. With neither, the name is the bare `Agent steps`, never a
+ * dangling colon.
+ */
+export function formatTurnSummaryAriaLabel(
+  chips: readonly TurnSummaryChip[],
+  outcomes?: TurnOutcomeCounts,
+): string {
+  const detail = [
+    ...chips.map(describeTurnSummaryChip),
+    ...outcomeEntries(outcomes).map((entry) =>
+      formatTurnOutcomeLabel(entry.key, entry.count),
+    ),
+  ].join(', ');
+  return detail === '' ? 'Agent steps' : `Agent steps: ${detail}`;
+}
+
+/** Each nonzero outcome's glyph and words, `·`-separated after the first. */
+function TurnOutcomeWords({
+  entries,
+}: {
+  entries: readonly { key: keyof TurnOutcomeCounts; count: number }[];
+}): JSX.Element {
+  return (
+    <>
+      {entries.map((entry, index) => (
+        <span key={entry.key} className="inline-flex items-center gap-1.5">
+          {index > 0 && (
+            <span className="font-normal fg-tertiary" aria-hidden="true">
+              ·
+            </span>
+          )}
+          <span
+            // An interruption is not a fault: neutral ink, not warning ink.
+            className={`inline-flex items-center gap-1 ${
+              entry.key === 'interrupted' ? 'fg-secondary' : 'fg-warning-strong'
+            }`}
+            data-turn-outcome={entry.key}
+          >
+            <span
+              className="inline-flex flex-shrink-0 [&_svg]:size-3.5"
+              aria-hidden="true"
+            >
+              <TurnOutcomeGlyph outcome={entry.key} />
+            </span>
+            {formatTurnOutcomeLabel(entry.key, entry.count)}
+          </span>
+        </span>
+      ))}
+    </>
+  );
+}
+
+function OutcomeSeparator(): JSX.Element {
+  return (
+    <span className="flex-shrink-0 font-normal fg-tertiary" aria-hidden="true">
+      ·
+    </span>
+  );
+}
+
+const OUTCOME_WORDS_CLASS =
+  'inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap font-medium';
+
+export interface TurnOutcomeControlProps {
+  outcomes?: TurnOutcomeCounts;
+  /** Start with a `·` separator, for words that follow other words. */
+  leadingSeparator?: boolean;
+  /** The steps behind the counts, for the tooltip; omit when not loaded. */
+  outcomeSteps?: readonly TurnOutcomeStepDetail[];
+  /**
+   * Bring a step into view: the given one, or the first affected step. When
+   * omitted the control only describes the steps.
+   */
+  onJumpToOutcome?: (toolUseId?: string) => void;
+}
+
+/** Keys that move focus from the outcome button into its tooltip's entries. */
+const OUTCOME_TOOLTIP_OPEN_KEYS: readonly string[] = ['ArrowDown'];
+
+/**
+ * "· 1 blocked · 2 errors · 1 interrupted": what went wrong in a finished
+ * turn, said in words with a shield, warning or stop glyph beside each count,
+ * so neither color nor icon carries the meaning alone. Blocked and errored
+ * counts take the attention role's strong ink; interrupted stays neutral.
+ *
+ * The words are a control of their own beside the turn's
+ * toggle, never inside it. Hover or keyboard focus shows
+ * {@link TurnOutcomeTooltip}: which steps were blocked or ran into an error
+ * and why. With `onJumpToOutcome` the words are a button that brings the
+ * first affected step into view, and each tooltip entry brings its own;
+ * ArrowDown moves into the entries. Without it the words are a focusable
+ * span, so the tooltip stays reachable and nothing promises a jump.
+ *
+ * Jumping (or Escape) closes the tooltip until the pointer, focus or ArrowDown
+ * brings it back, so focus is on the document before the host lands on the
+ * row. Renders
+ * nothing when the turn has no outcome to report.
+ */
+export function TurnOutcomeControl({
+  outcomes,
+  outcomeSteps,
+  onJumpToOutcome,
+  leadingSeparator = true,
+}: TurnOutcomeControlProps): JSX.Element | null {
+  const [dismissed, setDismissed] = useState(false);
+  const shownRef = useRef(false);
+  const entries = outcomeEntries(outcomes);
+  if (entries.length === 0) return null;
+
+  const words = formatTurnOutcomeWords(outcomes);
+  const jump = (toolUseId?: string): void => {
+    setDismissed(true);
+    onJumpToOutcome?.(toolUseId);
+  };
+  const reopen = (): void => setDismissed(false);
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    // The open keys reopen a surface Escape closed; the tooltip then opens
+    // it and moves focus in.
+    if (OUTCOME_TOOLTIP_OPEN_KEYS.includes(event.key)) {
+      reopen();
+      return;
+    }
+    // An interactive surface only handles Escape while focus is inside it;
+    // from the trigger, close it here and keep focus where it is. Once
+    // closed, Escape belongs to whoever handles it next.
+    if (event.key !== 'Escape' || dismissed || !shownRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDismissed(true);
+  };
+  const triggerProps = {
+    className: `focus-ring rounded-sm ${OUTCOME_WORDS_CLASS}`,
+    'data-turn-outcomes': '',
+    'data-turn-blocked': outcomes?.blocked || undefined,
+    'data-turn-failed': outcomes?.failed || undefined,
+    'data-turn-interrupted': outcomes?.interrupted || undefined,
+    'data-testid': 'turn-outcome-control',
+    // The pointer coming back or focus arriving again reopens it; leaving
+    // doesn't, or the surface would flash during its close grace period.
+    onMouseEnter: reopen,
+    onFocus: reopen,
+    onKeyDown,
+  };
+  const trigger = onJumpToOutcome ? (
+    <button
+      type="button"
+      {...triggerProps}
+      aria-label={`${words}, show steps`}
+      onClick={(event): void => {
+        event.stopPropagation();
+        jump(undefined);
+      }}
+    >
+      <TurnOutcomeWords entries={entries} />
+    </button>
+  ) : (
+    <span tabIndex={0} {...triggerProps}>
+      <TurnOutcomeWords entries={entries} />
+    </span>
+  );
+
+  return (
+    <span className="inline-flex flex-shrink-0 items-center gap-1.5">
+      {leadingSeparator && <OutcomeSeparator />}
+      <RichHoverTooltip
+        content={
+          <TurnOutcomeTooltip
+            outcomes={outcomes}
+            steps={outcomeSteps}
+            onSelectStep={onJumpToOutcome ? jump : undefined}
+          />
+        }
+        deferUntilInteraction
+        // Without a jump the entries are plain rows, and without loaded steps
+        // there are only count sentences: a description to read, not a
+        // surface to move into.
+        interactive={
+          onJumpToOutcome !== undefined && (outcomeSteps?.length ?? 0) > 0
+        }
+        containEvents
+        open={dismissed ? false : undefined}
+        onOpenChange={(open): void => {
+          shownRef.current = open;
+        }}
+        triggerOpenKeys={OUTCOME_TOOLTIP_OPEN_KEYS}
+        surfaceClassName="w-max min-w-45 max-w-80"
+        triggerWrapperClassName="z-10 flex-shrink-0"
+        dataTestId="turn-outcome-tooltip-surface"
+      >
+        {trigger}
+      </RichHoverTooltip>
+    </span>
+  );
+}
+
+export interface CollapsedTurnSummaryContentProps {
+  chips: readonly TurnSummaryChip[];
+  /** Elapsed time after the step count, already formatted. */
+  elapsedLabel?: string | null;
+  /** Hide the visible step-count label while preserving its automation data. */
+  hideLeadingLabel?: boolean;
+}
+
+/**
+ * The words inside {@link CollapsedTurnSummaryRow}'s toggle: "4 steps" and
+ * an optional elapsed time. The outcome control and the count chips
+ * ({@link CollapsedTurnSummaryChips}) sit beside the toggle, in the row's
+ * `outcome` and `trailing` slots.
+ */
+export function CollapsedTurnSummaryContent({
+  chips,
+  elapsedLabel = null,
+  hideLeadingLabel = false,
+}: CollapsedTurnSummaryContentProps): JSX.Element {
+  const totalSteps = chips.reduce(
+    (total: number, chip: TurnSummaryChip): number => total + chip.count,
+    0,
+  );
+  return (
+    <span
+      className={`${
+        hideLeadingLabel ? 'hidden' : 'flex'
+      } flex-shrink-0 items-center gap-1.5 whitespace-nowrap font-medium`}
+      data-turn-step-count={totalSteps}
+    >
+      {!hideLeadingLabel && (
+        <>
+          {formatStepCount(totalSteps)}
+          {elapsedLabel !== null && (
+            <span
+              className="font-normal fg-tertiary"
+              data-turn-elapsed={elapsedLabel}
+            >
+              · {elapsedLabel}
+            </span>
+          )}
+        </>
+      )}
+    </span>
+  );
+}
+
+/** The per-family count chips at the end of a collapsed turn summary. */
+export function CollapsedTurnSummaryChips({
+  chips,
+}: {
+  chips: readonly TurnSummaryChip[];
+}): JSX.Element {
+  return (
+    <>
+      {chips.map((chip) => (
+        <span
+          key={chip.key}
+          className="flex items-center gap-1"
+          title={describeTurnSummaryChip(chip)}
+          data-tool-chip={chip.key}
+        >
+          <span className="flex-shrink-0">{chip.icon}</span>
+          <span className="text-2xs font-medium">{chip.count}</span>
+        </span>
+      ))}
+    </>
+  );
+}
+
 export interface CollapsedTurnSummaryRowProps {
   /** Whether the parent currently shows the expanded intermediate region. */
   isExpanded: boolean;
@@ -248,7 +620,7 @@ export interface CollapsedTurnSummaryRowProps {
   onClick?: MouseEventHandler<HTMLButtonElement>;
   /** Accessible name, conventionally `Agent steps: …`. */
   ariaLabel: string;
-  /** Test ID hook for automation. */
+  /** Test ID hook for automation, on the toggle button. */
   dataTestId?: string;
   /**
    * Positioning classes only, such as `ml-auto`. The row has no surface of
@@ -260,22 +632,38 @@ export interface CollapsedTurnSummaryRowProps {
    * `true`; the desktop transcript opts out to keep its existing geometry.
    */
   phoneTouchTarget?: boolean;
-  /** Row content after the chevron: labels and count chips. */
+  /** The toggle's content after the chevron: the step-count words. */
   children: ReactNode;
+  /**
+   * A control of its own after the toggle, such as
+   * {@link TurnOutcomeControl}. It sits above the toggle's stretched hit
+   * area, so its clicks never toggle the turn.
+   */
+  outcome?: ReactNode;
+  /** Content at the row's end, such as the count chips; clicks toggle. */
+  trailing?: ReactNode;
 }
 
 /**
  * The clickable shell of a collapsed turn summary: the toggle button, its
- * chevron, and the common row layout. Hosts supply the accessible name and
- * the row content, so desktop and shared chip vocabularies can differ while
- * the control itself is defined once.
+ * chevron, and the common row layout, with an optional outcome control and
+ * trailing chips beside the toggle. Hosts supply the accessible name and the
+ * content, so desktop and shared chip vocabularies can differ while the
+ * control itself is defined once.
+ *
+ * WHY THE TOGGLE IS NOT THE ROW. The outcome is a control of its own (a
+ * click jumps to the errored step), and interactive content can't nest in a
+ * button. So the row is a wrapper: the toggle's `::before` stretches its hit
+ * area and focus ring over the whole row, the outcome sits above it, and the
+ * chips (which keep their `title`s) pass their clicks to the toggle. The
+ * forwarded ref is the wrapper, the element whose width the row takes.
  *
  * The row sits directly on the chat background: no fill, border, radius, or
  * shadow, at rest, hovered, or expanded. Hover lifts the foreground instead,
  * and keyboard focus draws the shared `focus-ring` outline.
  */
 export const CollapsedTurnSummaryRow = forwardRef<
-  HTMLButtonElement,
+  HTMLDivElement,
   CollapsedTurnSummaryRowProps
 >(function CollapsedTurnSummaryRow(
   {
@@ -286,6 +674,8 @@ export const CollapsedTurnSummaryRow = forwardRef<
     className = '',
     phoneTouchTarget = true,
     children,
+    outcome,
+    trailing,
   },
   ref,
 ): JSX.Element {
@@ -302,24 +692,43 @@ export const CollapsedTurnSummaryRow = forwardRef<
   // to `APP_ADVISOR_MIN_WIDTH = 360`, where the larger target is wanted for the
   // same thumb-reach reason. See the matching note in `UserBubble`.
   const isPhone = useIsPhone();
+  const toggleRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <button
+    <div
       ref={ref}
-      type="button"
-      onClick={onClick}
-      aria-expanded={isExpanded}
-      aria-label={ariaLabel}
-      data-testid={dataTestId}
-      className={`focus-ring flex w-full items-center gap-3 px-3 py-2 text-xs fg-secondary transition hover:fg-primary${
+      data-turn-summary-row=""
+      className={`relative flex w-full items-center gap-3 px-3 py-2 text-xs fg-secondary transition-colors hover:fg-primary${
         className === '' ? '' : ` ${className}`
       }${phoneTouchTarget && isPhone ? ' min-h-11' : ''}`}
     >
-      <span className="flex-shrink-0 fg-secondary" aria-hidden="true">
-        {isExpanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
-      </span>
-      {children}
-    </button>
+      <button
+        ref={toggleRef}
+        type="button"
+        onClick={onClick}
+        aria-expanded={isExpanded}
+        aria-label={ariaLabel}
+        data-testid={dataTestId}
+        className="focus-ring focus-ring-stretched flex flex-shrink-0 items-center gap-3 text-left before:absolute before:inset-0 before:content-['']"
+      >
+        <span className="flex-shrink-0 fg-secondary" aria-hidden="true">
+          {isExpanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
+        </span>
+        {children}
+      </button>
+      {outcome}
+      {trailing != null && (
+        // Pointer clicks on the chips toggle the turn; keyboard and screen
+        // readers use the toggle itself, so this span needs no role or keys.
+        <span
+          className="relative flex items-center gap-3"
+          data-turn-summary-trailing=""
+          onClick={(): void => toggleRef.current?.click()}
+        >
+          {trailing}
+        </span>
+      )}
+    </div>
   );
 });
 
@@ -346,21 +755,13 @@ export function CollapsedTurnSummary({
   elapsedMs,
   completionStatus = 'complete',
   hideLeadingLabel = false,
+  outcomes,
+  outcomeSteps,
+  onJumpToOutcome,
   dataTestId,
 }: CollapsedTurnSummaryProps): JSX.Element {
   const chips = buildChips(summary, appIcon);
-  // An empty summary produces no chips, and `Agent steps: ` with a trailing
-  // colon and nothing after it is worse than no detail at all for a screen
-  // reader.
-  const ariaDetail = chips
-    .map((chip) => `${chip.count} ${chip.label}`)
-    .join(', ');
-  const ariaLabel =
-    ariaDetail === '' ? 'Agent steps' : `Agent steps: ${ariaDetail}`;
-  const totalSteps = chips.reduce(
-    (total: number, chip: ChipEntry): number => total + chip.count,
-    0,
-  );
+  const ariaLabel = formatTurnSummaryAriaLabel(chips, outcomes);
   const elapsedLabel = formatElapsedLabel(elapsedMs);
   const clean = useCleanChatLook();
 
@@ -377,7 +778,17 @@ export function CollapsedTurnSummary({
         onToggle={onToggle}
         ariaLabel={ariaLabel}
         title={describeStepCounts(turnSummaryStepCounts(summary)) || undefined}
-        dataTestId={dataTestId}
+        stepCount={chips.reduce((total, chip) => total + chip.count, 0)}
+        outcome={
+          hasTurnOutcomes(outcomes) ? (
+            <TurnOutcomeControl
+              outcomes={outcomes}
+              outcomeSteps={outcomeSteps}
+              onJumpToOutcome={onJumpToOutcome}
+            />
+          ) : undefined
+        }
+        dataTestId="turn-work-header"
       />
     );
   }
@@ -388,38 +799,25 @@ export function CollapsedTurnSummary({
       onClick={onToggle}
       ariaLabel={ariaLabel}
       dataTestId={dataTestId}
+      outcome={
+        hasTurnOutcomes(outcomes) ? (
+          <TurnOutcomeControl
+            outcomes={outcomes}
+            outcomeSteps={outcomeSteps}
+            onJumpToOutcome={onJumpToOutcome}
+            leadingSeparator={!hideLeadingLabel}
+          />
+        ) : undefined
+      }
+      trailing={
+        chips.length > 0 ? <CollapsedTurnSummaryChips chips={chips} /> : null
+      }
     >
-      <span
-        className={`${
-          hideLeadingLabel ? 'hidden' : 'flex'
-        } flex-shrink-0 items-center gap-1.5 whitespace-nowrap font-medium`}
-        data-turn-step-count={totalSteps}
-      >
-        {!hideLeadingLabel && (
-          <>
-            {formatStepCount(totalSteps)}
-            {elapsedLabel !== null && (
-              <span
-                className="font-normal fg-tertiary"
-                data-turn-elapsed={elapsedLabel}
-              >
-                · {elapsedLabel}
-              </span>
-            )}
-          </>
-        )}
-      </span>
-      {chips.map((chip) => (
-        <span
-          key={chip.key}
-          className="flex items-center gap-1"
-          title={chip.label}
-          data-tool-chip={chip.key}
-        >
-          <span className="flex-shrink-0">{chip.icon}</span>
-          <span className="text-2xs font-medium">{chip.count}</span>
-        </span>
-      ))}
+      <CollapsedTurnSummaryContent
+        chips={chips}
+        elapsedLabel={elapsedLabel}
+        hideLeadingLabel={hideLeadingLabel}
+      />
     </CollapsedTurnSummaryRow>
   );
 }

@@ -31,6 +31,7 @@ import {
 } from '../SharedResourceMarketplaceDetail';
 import {
   sharedAgentDetailHeader,
+  sharedBlueprintDetailHeader,
   sharedPluginDetailHeader,
 } from '../sharedResourceDetailHeaders';
 
@@ -162,6 +163,96 @@ describe('shared resource Marketplace details', () => {
     },
   );
 
+  /** The header's facts in document order, by test id suffix. */
+  function provenanceFacts(kind: string): (string | null)[] {
+    const prefix = `shared-${kind}-detail-audience`;
+    return [`${prefix}-author`, `${prefix}-organization`, prefix].map(
+      (id) => byTestId(id)?.textContent ?? null,
+    );
+  }
+
+  it('names a team agent’s parent organization between author and audience', () => {
+    renderPage(
+      agent.name,
+      sharedAgentDetailHeader(agent, null),
+      <SharedAgentMarketplaceDetail agent={agent} />,
+    );
+    expect(provenanceFacts('agent')).toEqual([
+      'By Aaron',
+      'Acme',
+      'Team: Growth',
+    ]);
+    const meta = byTestId('plugins-entry-detail-header-meta');
+    const ids = Array.from(meta?.querySelectorAll('[data-testid]') ?? [])
+      .map((node) => node.getAttribute('data-testid'))
+      .filter((id) => id?.startsWith('shared-agent-detail-audience'));
+    expect(ids).toEqual([
+      'shared-agent-detail-audience-author',
+      'shared-agent-detail-audience-organization',
+      'shared-agent-detail-audience',
+    ]);
+  });
+
+  it('names an organization plugin’s owner, not the navigation context', () => {
+    const subject: SharedPluginSummary = {
+      ...plugin,
+      owner: { type: 'organization', id: 'org-2', name: 'Other Org' },
+    };
+    renderPage(
+      subject.name,
+      sharedPluginDetailHeader(subject, PERSONAL_ORG_ID),
+      <SharedPluginMarketplaceDetail plugin={subject} />,
+    );
+    expect(provenanceFacts('plugin')).toEqual([
+      'By Aaron',
+      'Other Org',
+      'Organization',
+    ]);
+  });
+
+  it('names a team project template’s parent organization', () => {
+    const blueprint: WorkspaceTemplateShareSummary = {
+      externalId: 'blueprint-1',
+      sharePath: '/portal/plugins/blueprints/shared/blueprint-1',
+      name: 'Release train',
+      description: 'A project for shipping.',
+      audience: 'TEAM',
+      pinnedContentHash: 'b'.repeat(64),
+      owner: {
+        type: 'team',
+        id: 'team-1',
+        name: 'Growth',
+        organization: { id: 'org-1', name: 'Acme' },
+      },
+      createdBy: { id: 'user-1', name: 'Aaron' },
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    };
+    renderPage(
+      blueprint.name,
+      sharedBlueprintDetailHeader(blueprint, null),
+      null,
+    );
+    expect(provenanceFacts('blueprint')).toEqual([
+      'By Aaron',
+      'Acme',
+      'Team: Growth',
+    ]);
+  });
+
+  it('omits the organization for a Personal owner without a dangling fact', () => {
+    const subject: SharedPluginSummary = {
+      ...plugin,
+      owner: { type: 'organization', id: PERSONAL_ORG_ID, name: 'Acme' },
+    };
+    renderPage(
+      subject.name,
+      sharedPluginDetailHeader(subject, PERSONAL_ORG_ID),
+      null,
+    );
+    expect(provenanceFacts('plugin')).toEqual(['By Aaron', null, 'Personal']);
+  });
+
   describe('SharedAgentMarketplaceDetail', () => {
     function render(
       subject: SharedAgentSummary = agent,
@@ -240,6 +331,7 @@ describe('shared resource Marketplace details', () => {
     const unshareItem: DetailMoreMenuItem = {
       id: 'unshare',
       label: 'Unshare',
+      icon: null,
       testId: 'host-unshare',
       onSelect: () => undefined,
       destructive: true,

@@ -37,6 +37,7 @@ export function AccountPageHeader({
   );
   return (
     <PageHeader
+      inset="none"
       headingLevel="h1"
       reserveActions
       title={item.label}
@@ -45,7 +46,10 @@ export function AccountPageHeader({
         pathname === '/account/digests' ? (
           <SettingsLink
             href="/account/notifications"
-            className={buttonClassName({ variant: 'secondary' })}
+            className={buttonClassName({
+              variant: 'secondary',
+              size: 'compact',
+            })}
             data-testid="account-digest-settings-link"
           >
             Digest settings

@@ -3,7 +3,10 @@
 // with the real commit-log worker and filesystem. The server move stays
 // unkeyed; the marketplace prune is keyed per workspace only with its
 // fan-out's request ID (CAN-4717).
-import { createW5BoundaryFixture } from './fixtures/w5-boundary-fixture';
+import {
+  createW5BoundaryFixture,
+  isW5FinalPreflightRead,
+} from './fixtures/w5-boundary-fixture';
 import { W5CommitLog } from '@canopy/desktop-shared/node/w5-commit-log';
 import { withStorageOwnershipChange } from '@canopy/desktop-shared/node/lib/storage-admission';
 import type {
@@ -79,7 +82,10 @@ jest.mock('../chat-storage-discovery', () => ({
     Promise.reject(new Error('index unreadable')),
 }));
 
-import { W5CommitLogHost } from '../../w5-commit-log/commit-log-host';
+import {
+  W5CommitLogHost,
+  W5CommitLogHostError,
+} from '../../w5-commit-log/commit-log-host';
 import {
   createW5CommitLogFileStore,
   __setDesktopW5FileStoreForTests,
@@ -297,7 +303,7 @@ function armPreflightForeignWrite(): {
     if (
       fired === 0 &&
       path === manifestPath() &&
-      /w5-commit-log-file-store\.ts:182:/.test(new Error().stack ?? '')
+      isW5FinalPreflightRead(new Error().stack ?? '')
     ) {
       fired += 1;
       writeFileSync(
@@ -2249,18 +2255,18 @@ describe('fan-out kinds without a fan-out request ID stay unkeyed on their own p
 
   it('types a key or revision only for the user changes', () => {
     const typeOnly = (): void => {
-      // @ts-expect-error The prune takes no key.
       void updateWorkspacePlugins({
         workspaceId: 'a',
         change: { kind: 'pruneMarketplace', marketplaceId: 'm' },
         source: 'marketplace_removal',
+        // @ts-expect-error The prune takes no key.
         idempotencyKey: 'key',
       });
-      // @ts-expect-error The server move takes no revision.
       void updateWorkspacePlugins({
         workspaceId: 'a',
         change: { kind: 'replaceMcpServerRefs', from: [], to: cloud },
         source: 'mcp_server_move',
+        // @ts-expect-error The server move takes no revision.
         expectedRevision: 1,
       });
       void updateWorkspacePlugins({
@@ -2297,6 +2303,687 @@ describe('fan-out kinds without a fan-out request ID stay unkeyed on their own p
       });
     };
     expect(typeof typeOnly).toBe('function');
+  });
+});
+
+describe('unkeyed changes whose response is lost reconcile once the outcome is known (CAN-4417)', () => {
+  const device = { serverId: 'dev-1', configId: 'cfg-1' };
+  const cloud = { serverId: 'custom:abc', configId: 'default' };
+  const SERVER_MOVE: WorkspacePluginsChange = {
+    kind: 'replaceMcpServerRefs',
+    from: [{ serverId: 'dev-1' }],
+    to: cloud,
+  };
+
+  // The reconciles run in the background; none may outlive its fixture.
+  afterEach(async () => {
+    await settleDetachedWork();
+  });
+
+  function moveServer(): Promise<WorkspacePluginsUpdateOutcome> {
+    return updateWorkspacePlugins({
+      workspaceId: 'a',
+      change: SERVER_MOVE,
+      source: 'mcp_server_move',
+    });
+  }
+
+  /**
+   * The next decision's response is lost before the worker runs it; `apply`
+   * runs it later, after the failed attempt has returned.
+   */
+  function applyNextDecisionLater(): {
+    lost: () => Parameters<W5CommitLogHost['commit']>[0];
+    apply: () => Promise<void>;
+  } {
+    const commit = host.commit.bind(host);
+    let request: Parameters<W5CommitLogHost['commit']>[0] | undefined;
+    jest.spyOn(host, 'commit').mockImplementationOnce((input) => {
+      request = input;
+      return Promise.reject(
+        new W5CommitLogHostError(
+          'outcome-unknown',
+          'The W5 commit log did not answer',
+        ),
+      );
+    });
+    const lost = (): Parameters<W5CommitLogHost['commit']>[0] => {
+      if (!request) throw new Error('Expected a lost decision');
+      return request;
+    };
+    return {
+      lost,
+      apply: async (): Promise<void> => {
+        await commit(lost());
+      },
+    };
+  }
+
+  it('setDefaults: a retry after the late application serves the committed defaults and advances the session revision once', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const late = applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    expect(late.lost()).toMatchObject({
+      operation: 'w5.workspace_manifest.write',
+      receipt: undefined,
+      expectedRevisions: undefined,
+    });
+    await settleDetachedWork();
+    // A chat turn before the late application reads the old layer.
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const stale = sessionRevision();
+    await late.apply();
+    expect(manifest().defaultPluginSelections).toEqual(persisted(NEW_DEFAULTS));
+    const applied = images();
+
+    const commits = jest.spyOn(host, 'commit').mockClear();
+    for (let retry = 0; retry < 3; retry += 1) {
+      await expect(setDefaults(NEW_DEFAULTS)).resolves.toMatchObject({
+        written: true,
+      });
+      expect(await cachedDefaults()).toEqual(
+        normalizePluginSelections(NEW_DEFAULTS),
+      );
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+    // The retries are the plain manifest write, which found nothing to write.
+    expect(commits).not.toHaveBeenCalled();
+    expect(images()).toEqual(applied);
+  });
+
+  it('replaceMcpServerRefs: a retry that finds the refs moved still serves the committed layer and advances the session revision once', async () => {
+    await updateWorkspaceConfig('a', (config): void => {
+      config.defaultPluginSelections = selections({ mcpServerRefs: [device] });
+    });
+    expect((await cachedDefaults()).mcpServerRefs).toEqual([device]);
+    const late = applyNextDecisionLater();
+    await expect(moveServer()).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    expect(late.lost()).toMatchObject({
+      operation: 'w5.workspace_manifest.write',
+      receipt: undefined,
+    });
+    await settleDetachedWork();
+    expect((await cachedDefaults()).mcpServerRefs).toEqual([device]);
+    const stale = sessionRevision();
+    await late.apply();
+    const applied = images();
+
+    const commits = jest.spyOn(host, 'commit').mockClear();
+    for (let retry = 0; retry < 3; retry += 1) {
+      await expect(moveServer()).resolves.toMatchObject({ written: false });
+      expect((await cachedDefaults()).mcpServerRefs).toEqual([cloud]);
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+    expect(commits).not.toHaveBeenCalled();
+    expect(images()).toEqual(applied);
+  });
+
+  it('a decision applied after the refresh but before the failed attempt returns is served without a retry, with one advance', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const late = applyNextDecisionLater();
+    let stale = -1;
+    jest
+      .spyOn(pluginDefaultsCache, 'projectPluginDefaultsWritten')
+      .mockImplementationOnce(async (write) => {
+        projectPluginDefaultsWrittenActual(write);
+        // A chat turn after the writer's refresh caches the old layer, then
+        // the decision applies, as a recovering worker would apply it.
+        expect(await cachedDefaults()).toEqual(
+          normalizePluginSelections(OLD_DEFAULTS),
+        );
+        stale = sessionRevision();
+        await late.apply();
+      });
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+    await setDefaults(NEW_DEFAULTS);
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+  });
+
+  it('a later change of another kind reconciles the late application too', async () => {
+    await updateWorkspaceConfig('a', (config): void => {
+      config.defaultPluginSelections = selections({ mcpServerRefs: [device] });
+    });
+    expect((await cachedDefaults()).mcpServerRefs).toEqual([device]);
+    const late = applyNextDecisionLater();
+    await expect(moveServer()).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    expect((await cachedDefaults()).mcpServerRefs).toEqual([device]);
+    const stale = sessionRevision();
+    await late.apply();
+    // Removes nothing that is a default: no write.
+    await expect(
+      updateWorkspacePlugins({
+        workspaceId: 'a',
+        change: {
+          kind: 'removeSelections',
+          selections: [{ kind: 'skill', sourceId: 'none', skillName: 'none' }],
+        },
+        source: 'shared_container_fork',
+      }),
+    ).resolves.toMatchObject({ written: false });
+    expect((await cachedDefaults()).mcpServerRefs).toEqual([cloud]);
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+  });
+
+  it('a response lost after the decision applied advances the session revision once; retries add none', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const initial = sessionRevision();
+    loseNextResponse();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow('response lost');
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 1);
+    for (let retry = 0; retry < 3; retry += 1) {
+      await setDefaults(NEW_DEFAULTS);
+      expect(await cachedDefaults()).toEqual(
+        normalizePluginSelections(NEW_DEFAULTS),
+      );
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(initial + 1);
+    }
+  });
+
+  it('a decision that never applies leaves the layer as served; the retry applies it once', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    expect(manifest().defaultPluginSelections).toEqual(persisted(OLD_DEFAULTS));
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const failed = sessionRevision();
+    const commits = jest.spyOn(host, 'commit').mockClear();
+    await setDefaults(NEW_DEFAULTS);
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(failed + 1);
+    await setDefaults(NEW_DEFAULTS);
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(failed + 1);
+  });
+
+  it('inside another commit scope leaves the reconcile to the scope owner', async () => {
+    await seedDefaults();
+    applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    const reconcile = jest.spyOn(
+      pluginDefaultsCache,
+      'reconcileProjectPluginDefaults',
+    );
+    // Reconciling would wait for the manifest queue this scope holds.
+    await withW5Commit(
+      {
+        operation: 'w5.workspace_manifest.write',
+        locks: [{ kind: 'manifest', path: getWorkspaceConfigPath('a') }],
+      },
+      () => selectRecommended(),
+    );
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(manifest().defaultPluginSelections).toMatchObject({
+      skillRefs: RECOMMENDED_SKILL_REFS,
+    });
+    await settleDetachedWork();
+    expect(reconcile).not.toHaveBeenCalled();
+    // The next change outside a scope still reconciles.
+    await selectRecommended();
+    await settleDetachedWork();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves unkeyed changes that did not fail, and typed refusals, unreconciled', async () => {
+    await seedDefaults();
+    const reconcile = jest.spyOn(
+      pluginDefaultsCache,
+      'reconcileProjectPluginDefaults',
+    );
+    await setDefaults(NEW_DEFAULTS);
+    await moveServer();
+    await expect(
+      updateWorkspacePlugins({
+        workspaceId: 'missing',
+        change: SERVER_MOVE,
+        source: 'mcp_server_move',
+      }),
+    ).rejects.toMatchObject({ reason: 'not-found' });
+    const armed = armPreflightForeignWrite();
+    await expect(setDefaults(OLD_DEFAULTS)).rejects.toBeInstanceOf(
+      W5FileWriteRefusedError,
+    );
+    armed.restore();
+    await setDefaults(OLD_DEFAULTS);
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, WorkspacePluginsChange]>([
+    ['pruneMarketplace', { kind: 'pruneMarketplace', marketplaceId: 'm' }],
+    [
+      'pruneInstalledItem',
+      {
+        kind: 'pruneInstalledItem',
+        ref: { kind: 'plugin', marketplaceId: 'm', pluginName: 'old' },
+      },
+    ],
+  ])(
+    '%s: a retry that finds the refs pruned serves the committed layer with one advance',
+    async (_name, change) => {
+      await seedDefaults();
+      expect((await cachedDefaults()).pluginRefs).toEqual(
+        OLD_DEFAULTS.pluginRefs,
+      );
+      const prune = (): Promise<WorkspacePluginsUpdateOutcome> =>
+        updateWorkspacePlugins({
+          workspaceId: 'a',
+          change,
+          source: 'marketplace_removal',
+        });
+      const late = applyNextDecisionLater();
+      await expect(prune()).rejects.toThrow('The W5 commit log did not answer');
+      expect(late.lost()).toMatchObject({
+        operation: 'w5.workspace_manifest.write',
+        receipt: undefined,
+      });
+      await settleDetachedWork();
+      expect((await cachedDefaults()).pluginRefs).toEqual(
+        OLD_DEFAULTS.pluginRefs,
+      );
+      const stale = sessionRevision();
+      await late.apply();
+      const applied = images();
+
+      const commits = jest.spyOn(host, 'commit').mockClear();
+      for (let retry = 0; retry < 3; retry += 1) {
+        await expect(prune()).resolves.toMatchObject({ written: false });
+        expect((await cachedDefaults()).pluginRefs).toEqual([]);
+        await settleDetachedWork();
+        expect(sessionRevision()).toBe(stale + 1);
+      }
+      expect(commits).not.toHaveBeenCalled();
+      expect(images()).toEqual(applied);
+    },
+  );
+
+  it('a failure whose reconcile cannot read the manifest is reconciled by the next change', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const late = applyNextDecisionLater();
+    jest
+      .spyOn(workspacePersistence, 'readWorkspaceConfigDetailed')
+      .mockRejectedValueOnce(new Error('read failed'));
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const stale = sessionRevision();
+    await late.apply();
+    await expect(moveServer()).resolves.toMatchObject({ written: false });
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+  });
+
+  it('the reconcile that settles the outcome clears it: later changes reconcile nothing', async () => {
+    await seedDefaults();
+    const late = applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    await late.apply();
+    const reconcile = jest.spyOn(
+      pluginDefaultsCache,
+      'reconcileProjectPluginDefaults',
+    );
+    await setDefaults(NEW_DEFAULTS);
+    await settleDetachedWork();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    await setDefaults(OLD_DEFAULTS);
+    await moveServer();
+    await settleDetachedWork();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('a keyed change and its replays after an unkeyed failure advance the session revision once', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const late = applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const stale = sessionRevision();
+    await late.apply();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+      expect(await cachedDefaults()).toEqual(
+        normalizePluginSelections(NEW_DEFAULTS),
+      );
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+  });
+
+  it('a late application with no later change is served on the next chat read, with one advance', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const late = applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    // A chat turn before the late application reads the old layer.
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const stale = sessionRevision();
+    await late.apply();
+    const commits = jest.spyOn(host, 'commit').mockClear();
+    for (let read = 0; read < 3; read += 1) {
+      expect(await cachedDefaults()).toEqual(
+        normalizePluginSelections(NEW_DEFAULTS),
+      );
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+    // The next change settles the outcome without another advance.
+    await setDefaults(NEW_DEFAULTS);
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    expect(sessionRevision()).toBe(stale + 1);
+    expect(commits).not.toHaveBeenCalled();
+  });
+
+  /** Another W5 commit of the manifest whose post-commit refresh is held. */
+  async function otherCommitSettling(): Promise<{
+    release: () => Promise<void>;
+  }> {
+    const refresh = holdNextRefresh();
+    const other = withW5Commit(
+      {
+        operation: 'test.manifest',
+        locks: [{ kind: 'manifest', path: manifestPath() }],
+      },
+      () =>
+        updateWorkspaceConfig('a', (config): void => {
+          config.defaultPluginSelections = NEW_DEFAULTS;
+        }),
+    );
+    await refresh.reached;
+    return {
+      release: async (): Promise<void> => {
+        refresh.release();
+        await other;
+      },
+    };
+  }
+
+  it('a failure returns while another commit of the manifest still runs its post-commit work', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const initial = sessionRevision();
+    const other = await otherCommitSettling();
+    const late = applyNextDecisionLater();
+    // Settles while the other commit's work is held.
+    await expect(setDefaults(OLD_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await late.apply();
+    await other.release();
+    await settleDetachedWork();
+    expect(manifest().defaultPluginSelections).toEqual(persisted(OLD_DEFAULTS));
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    // One advance for each writer's own refresh, none for the reconcile.
+    expect(sessionRevision()).toBe(initial + 2);
+    for (let read = 0; read < 3; read += 1) {
+      await cachedDefaults();
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(initial + 2);
+    }
+    await setDefaults(OLD_DEFAULTS);
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 2);
+  });
+
+  it('the change after a failure returns while another commit of the manifest still runs its post-commit work', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    // A lost decision that never applies marks the workspace.
+    applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    const reconcile = jest.spyOn(
+      pluginDefaultsCache,
+      'reconcileProjectPluginDefaults',
+    );
+    const other = await otherCommitSettling();
+    // Settles while the other commit's work is held.
+    await expect(selectRecommended()).resolves.toMatchObject({
+      written: true,
+    });
+    await other.release();
+    await settleDetachedWork();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    const served = await cachedDefaults();
+    expect(served).toEqual(
+      normalizePluginSelections(manifest().defaultPluginSelections),
+    );
+    expect(served.skillRefs).toEqual(RECOMMENDED_SKILL_REFS);
+    const settled = sessionRevision();
+    // The outcome is settled: reads are cached and later changes reconcile
+    // nothing.
+    const reads = jest.spyOn(manifestRepository, 'read');
+    for (let read = 0; read < 3; read += 1) await cachedDefaults();
+    expect(reads).not.toHaveBeenCalled();
+    await moveServer();
+    await settleDetachedWork();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(sessionRevision()).toBe(settled);
+  });
+
+  it('a failure inside the post-commit work of a manifest commit lets that commit settle', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    let failure: unknown;
+    await withW5Commit(
+      {
+        operation: 'test.manifest',
+        locks: [{ kind: 'manifest', path: manifestPath() }],
+      },
+      async () => {
+        await updateWorkspaceConfig('a', (config): void => {
+          config.defaultPluginSelections = NEW_DEFAULTS;
+        });
+        await afterW5Commit(async () => {
+          applyNextDecisionLater();
+          failure = await setDefaults(OLD_DEFAULTS).catch(
+            (error: unknown) => error,
+          );
+        });
+      },
+    );
+    expect(failure).toBeInstanceOf(W5CommitLogHostError);
+    const initial = sessionRevision();
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial);
+    await setDefaults(NEW_DEFAULTS);
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial);
+  });
+
+  it('a chat read that fails while marked leads to one advance; later reads add none', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    const failed = sessionRevision();
+    jest
+      .spyOn(manifestRepository, 'read')
+      .mockRejectedValueOnce(new Error('read failed'));
+    await expect(readProjectPluginDefaults('a')).rejects.toThrow('read failed');
+    for (let read = 0; read < 3; read += 1) {
+      await cachedDefaults();
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(failed + 1);
+    }
+  });
+
+  it('a chat read while marked and another writer refreshes adds no advance of its own', async () => {
+    await seedDefaults();
+    applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(OLD_DEFAULTS),
+    );
+    const stale = sessionRevision();
+    const other = await otherCommitSettling();
+    // Finds the other writer's layer before its refresh, and asks to reconcile.
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    await other.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+    for (let read = 0; read < 3; read += 1) {
+      await cachedDefaults();
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+  });
+
+  it('a failure while the next change still reconciles keeps the workspace marked', async () => {
+    await seedDefaults();
+    applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    // Holds the success's reconcile until the newer failure has returned.
+    const other = await otherCommitSettling();
+    await selectRecommended();
+    const late = applyNextDecisionLater();
+    await expect(setDefaults(OLD_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await other.release();
+    await settleDetachedWork();
+    expect((await cachedDefaults()).skillRefs).toEqual(RECOMMENDED_SKILL_REFS);
+    const stale = sessionRevision();
+    await late.apply();
+    for (let read = 0; read < 3; read += 1) {
+      expect(await cachedDefaults()).toEqual(
+        normalizePluginSelections(OLD_DEFAULTS),
+      );
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+  });
+
+  it('a background reconcile that throws leaves later changes able to settle the outcome', async () => {
+    await seedDefaults();
+    applyNextDecisionLater();
+    await expect(setDefaults(NEW_DEFAULTS)).rejects.toThrow(
+      'The W5 commit log did not answer',
+    );
+    await settleDetachedWork();
+    jest
+      .spyOn(pluginDefaultsCache, 'reconcileProjectPluginDefaults')
+      .mockRejectedValueOnce(new Error('reconcile failed'));
+    // The writer's own refresh, then the failed reconcile's drop throws.
+    jest
+      .spyOn(pluginDefaultsCache, 'projectPluginDefaultsWritten')
+      .mockImplementationOnce(projectPluginDefaultsWrittenActual)
+      .mockImplementationOnce((): void => {
+        throw new Error('drop failed');
+      });
+    await selectRecommended();
+    await settleDetachedWork();
+    await setDefaults(NEW_DEFAULTS);
+    await settleDetachedWork();
+    await cachedDefaults();
+    const reads = jest.spyOn(manifestRepository, 'read');
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(NEW_DEFAULTS),
+    );
+    expect(reads).not.toHaveBeenCalled();
   });
 });
 
@@ -2573,10 +3260,12 @@ describe('marketplace prune keyed per workspace from one fan-out request (CAN-47
     expect(first[2]).toEqual(outcomes[2]);
     expect(commits).toHaveBeenCalledTimes(1);
     expect(readFileSync(pathOf('a'), 'utf8')).toBe('{"vers');
-    for (const [{ receipt }] of reserve.mock.calls.slice(0, 2))
-      expect(await host.lookupReceipt(receipt)).toMatchObject({
+    for (const [reservation] of reserve.mock.calls.slice(0, 2)) {
+      if (!reservation.receipt) throw new Error('reservation has no receipt');
+      expect(await host.lookupReceipt(reservation.receipt)).toMatchObject({
         status: 'none',
       });
+    }
 
     writeFileSync(pathOf('a'), originalA);
     writeFileSync(pathOf('b'), originalB);

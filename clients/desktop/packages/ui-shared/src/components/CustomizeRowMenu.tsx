@@ -1,4 +1,5 @@
 import { type JSX, Fragment, useRef, useState } from 'react';
+import { Button } from './Button';
 import { DropdownMenuDivider, DropdownMenuItem } from './DropdownMenu';
 import { FloatingMenu } from './FloatingMenu';
 import { isMenuOpenBodyFlagSet } from '../lib/menu-open-body-flag';
@@ -39,9 +40,11 @@ export function CustomizeRowMenu({
   const menuId = `${idPrefix}-menu`;
   return (
     <div className="relative shrink-0">
-      <button
+      <Button
         ref={triggerRef}
-        type="button"
+        variant="ghost-quiet"
+        size="compact"
+        iconOnly
         id={`${idPrefix}-menu-trigger`}
         data-testid={testId}
         aria-haspopup="menu"
@@ -52,10 +55,9 @@ export function CustomizeRowMenu({
           if (!open && isMenuOpenBodyFlagSet(document)) setOpen(true);
         }}
         onClick={() => setOpen((value) => !value)}
-        className="focus-ring flex h-7 w-7 items-center justify-center rounded-lg fg-tertiary transition-colors hover:bg-subtle hover:fg-primary pointer-coarse:h-11 pointer-coarse:w-11"
       >
         <MoreHorizontalIcon width={16} height={16} aria-hidden />
-      </button>
+      </Button>
       <FloatingMenu
         id={menuId}
         open={open}
@@ -73,7 +75,7 @@ export function CustomizeRowMenu({
                 key={item.id}
                 data-testid={testId ? `${testId}-${item.id}` : undefined}
                 tone={item.destructive ? 'destructive' : 'default'}
-                disabled={item.disabled && !item.disabledReason}
+                disabled={item.disabled}
                 aria-disabled={item.disabled || undefined}
                 title={item.disabledReason}
                 aria-description={item.disabledReason}

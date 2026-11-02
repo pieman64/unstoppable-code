@@ -169,6 +169,40 @@ function withEffectiveDiffState(
   };
 }
 
+type DocumentUpdate = (
+  current: FileAnnotationDocument,
+) => FileAnnotationDocument;
+
+/** Refreshes and retries before leaving a refused edit for the next one. */
+const MAX_SAVE_REBASES = 3;
+
+/**
+ * One file's comment state against main: the last document main acknowledged
+ * and the edits not yet saved on top of it. Saves run one at a time, each
+ * against the acknowledged revision; a refused save is replayed on a fresh
+ * document, so no acknowledged change from another window or agent is lost.
+ * Edits are idempotent so replaying one over a document that has it is a no-op.
+ */
+interface CommentSession {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly filePath: string;
+  acknowledged: FileAnnotationDocument;
+  pending: DocumentUpdate[];
+  flushing: Promise<void> | null;
+}
+
+function isOlderRevision(
+  next: FileAnnotationDocument,
+  current: FileAnnotationDocument,
+): boolean {
+  return (
+    next.revision !== undefined &&
+    current.revision !== undefined &&
+    next.revision < current.revision
+  );
+}
+
 export function useFileComments(
   projectId: string,
   worktreeId: string,
@@ -182,19 +216,109 @@ export function useFileComments(
   );
   const documentRef = useRef(document);
   const submitInFlightRef = useRef(false);
+  const sessionRef = useRef<CommentSession | null>(null);
   const replaceDocument = useCallback((next: FileAnnotationDocument): void => {
     documentRef.current = next;
     setDocument(next);
   }, []);
 
+  /**
+   * Shows the acknowledged document with the session's unsaved edits on top.
+   * A stale document is discarded, but the view is still rebuilt: the save
+   * that returned it retired its edit, whose optimistic state must go too.
+   */
+  const acknowledge = useCallback(
+    (
+      session: CommentSession,
+      next: FileAnnotationDocument,
+      authoritative = false,
+    ): void => {
+      if (authoritative || !isOlderRevision(next, session.acknowledged))
+        session.acknowledged = next;
+      if (sessionRef.current !== session) return;
+      replaceDocument(
+        session.pending.reduce(
+          (current, update) => update(current),
+          session.acknowledged,
+        ),
+      );
+    },
+    [replaceDocument],
+  );
+
+  const flush = useCallback(
+    (session: CommentSession): Promise<void> => {
+      if (session.flushing) return session.flushing;
+      // A run must reach its first save before it can end, or it would stay
+      // registered after it finished.
+      if (session.pending.length === 0) return Promise.resolve();
+      const run = (async (): Promise<void> => {
+        let rebases = 0;
+        try {
+          for (;;) {
+            const update = session.pending[0];
+            if (!update) return;
+            const base = session.acknowledged;
+            try {
+              const saved = await window.api.fileAnnotations.save({
+                projectId: session.projectId,
+                worktreeId: session.worktreeId,
+                document: update(base),
+                baseCommentThreadIds: base.commentThreads.map(
+                  (thread) => thread.id,
+                ),
+                ...(base.revision !== undefined
+                  ? { expectedRevision: base.revision }
+                  : {}),
+              });
+              session.pending.shift();
+              rebases = 0;
+              acknowledge(session, saved);
+            } catch {
+              // A refused save means another write landed first: replay the
+              // edit on the latest document. Any other failure keeps the
+              // edits pending, and the next edit retries them.
+              let latest: FileAnnotationDocument;
+              try {
+                latest = await window.api.fileAnnotations.get({
+                  projectId: session.projectId,
+                  worktreeId: session.worktreeId,
+                  filePath: session.filePath,
+                });
+              } catch {
+                return;
+              }
+              const moved = latest.revision !== base.revision;
+              acknowledge(session, latest, true);
+              if (!moved || ++rebases > MAX_SAVE_REBASES) return;
+            }
+          }
+        } finally {
+          // Cleared in the same step the run ends, so an edit queued after it
+          // starts a new run instead of joining this finished one.
+          session.flushing = null;
+        }
+      })();
+      session.flushing = run;
+      return run;
+    },
+    [acknowledge],
+  );
+
   useEffect(() => {
-    let cancelled = false;
+    const session: CommentSession = {
+      projectId,
+      worktreeId,
+      filePath,
+      acknowledged: emptyDocument(filePath),
+      pending: [],
+      flushing: null,
+    };
+    sessionRef.current = session;
     replaceDocument(emptyDocument(filePath));
     void window.api.fileAnnotations
       .get({ projectId, worktreeId, filePath })
-      .then((next) => {
-        if (!cancelled) replaceDocument(next);
-      })
+      .then((next) => acknowledge(session, next, true))
       .catch(() => {
         // Keep the empty local document when persisted annotations cannot be
         // loaded. A later update event can still restore the shared state.
@@ -205,37 +329,25 @@ export function useFileComments(
         event.worktreeId === worktreeId &&
         event.document.filePath === filePath
       ) {
-        replaceDocument(event.document);
+        acknowledge(session, event.document);
       }
     });
     return (): void => {
-      cancelled = true;
+      // Edits already queued still save; the view stops following them.
+      if (sessionRef.current === session) sessionRef.current = null;
       unsubscribe();
     };
-  }, [filePath, projectId, replaceDocument, worktreeId]);
+  }, [acknowledge, filePath, projectId, replaceDocument, worktreeId]);
 
   const persist = useCallback(
-    (update: (current: FileAnnotationDocument) => FileAnnotationDocument) => {
-      setDocument((current) => {
-        const next = update(current);
-        documentRef.current = next;
-        void window.api.fileAnnotations
-          .save({
-            projectId,
-            worktreeId,
-            document: next,
-            baseCommentThreadIds: current.commentThreads.map(
-              (thread) => thread.id,
-            ),
-          })
-          .catch(() => {
-            // Preserve the optimistic local draft. The next successful edit or
-            // update event will reconcile it with persisted state.
-          });
-        return next;
-      });
+    (update: DocumentUpdate): Promise<void> => {
+      const session = sessionRef.current;
+      if (!session) return Promise.resolve();
+      session.pending.push(update);
+      replaceDocument(update(documentRef.current));
+      return flush(session);
     },
-    [projectId, worktreeId],
+    [flush, replaceDocument],
   );
 
   const addComment = useCallback(
@@ -266,10 +378,11 @@ export function useFileComments(
           },
         ],
       };
-      persist((current) => ({
-        ...current,
-        commentThreads: [...current.commentThreads, thread],
-      }));
+      void persist((current) =>
+        current.commentThreads.some((entry) => entry.id === thread.id)
+          ? current
+          : { ...current, commentThreads: [...current.commentThreads, thread] },
+      );
     },
     [persist, view, diff],
   );
@@ -304,10 +417,11 @@ export function useFileComments(
         createdAt: new Date().toISOString(),
         staged: true,
       };
-      persist((current) => ({
+      void persist((current) => ({
         ...current,
         commentThreads: current.commentThreads.map((thread) =>
-          thread.id === threadId
+          thread.id === threadId &&
+          !thread.comments.some((entry) => entry.id === comment.id)
             ? { ...thread, comments: [...thread.comments, comment] }
             : thread,
         ),
@@ -320,7 +434,7 @@ export function useFileComments(
     (threadId: string, commentId: string, body: string): void => {
       const trimmed = body.trim();
       if (!trimmed) return;
-      persist((current) => ({
+      void persist((current) => ({
         ...current,
         commentThreads: current.commentThreads.map((thread) =>
           thread.id === threadId
@@ -341,7 +455,7 @@ export function useFileComments(
 
   const deleteStagedComment = useCallback(
     (threadId: string, commentId: string): void => {
-      persist((current) => ({
+      void persist((current) => ({
         ...current,
         commentThreads: current.commentThreads.flatMap((thread) => {
           if (thread.id !== threadId) return [thread];
@@ -357,15 +471,16 @@ export function useFileComments(
 
   const toggleResolved = useCallback(
     (threadId: string): void => {
-      persist((current) => ({
+      const target = documentRef.current.commentThreads.find(
+        (thread) => thread.id === threadId,
+      );
+      if (!target) return;
+      // The status is chosen now, so replaying the edit cannot flip it back.
+      const status = target.status === 'open' ? 'resolved' : 'open';
+      void persist((current) => ({
         ...current,
         commentThreads: current.commentThreads.map((thread) =>
-          thread.id === threadId
-            ? {
-                ...thread,
-                status: thread.status === 'open' ? 'resolved' : 'open',
-              }
-            : thread,
+          thread.id === threadId ? { ...thread, status } : thread,
         ),
       }));
     },
@@ -374,15 +489,17 @@ export function useFileComments(
 
   const dismissAnnotation = useCallback(
     (annotationId: string): void => {
+      const session = sessionRef.current;
+      if (!session) return;
       void window.api.fileAnnotations
         .dismiss({ projectId, worktreeId, filePath, annotationId })
-        .then(replaceDocument)
+        .then((next) => acknowledge(session, next))
         .catch(() => {
           // Leave the annotation visible when persistence rejects the
           // dismissal so the UI never implies it was successfully cleared.
         });
     },
-    [filePath, projectId, replaceDocument, worktreeId],
+    [acknowledge, filePath, projectId, worktreeId],
   );
 
   const submit = useCallback(
@@ -407,30 +524,16 @@ export function useFileComments(
         }
         if (!sent) return;
 
-        const latest = documentRef.current;
-        const submitted = markFileCommentsSubmitted(latest, submittedComments);
-        replaceDocument(submitted);
-        try {
-          const saved = await window.api.fileAnnotations.save({
-            projectId,
-            worktreeId,
-            document: submitted,
-            baseCommentThreadIds: latest.commentThreads.map(
-              (thread) => thread.id,
-            ),
-          });
-          if (documentRef.current === submitted) {
-            replaceDocument(saved);
-          }
-        } catch {
-          // Dispatch was accepted, so keep the local comments submitted even
-          // if persistence fails. A later edit will retry persistence.
-        }
+        // Dispatch was accepted, so the comments stay submitted locally even
+        // if persistence fails; the edit stays queued for the next save.
+        await persist((current) =>
+          markFileCommentsSubmitted(current, submittedComments),
+        );
       } finally {
         submitInFlightRef.current = false;
       }
     },
-    [diff, projectId, replaceDocument, worktreeId],
+    [diff, persist],
   );
 
   // The drawer and header must agree about which threads are active. A retained

@@ -100,10 +100,20 @@ function toInventoryCommand(
   entry: InvocableInventoryEntry,
   section: 'discovered' | 'available',
 ): SlashInventoryCommand {
+  // Claude command metadata uses a bare invocation. Qualify only its menu
+  // label; insertion and selection resolution retain the provider's token.
+  const displayName =
+    entry.kind === 'plugin_command' &&
+    entry.enableRef.kind === 'plugin' &&
+    (entry.provider === 'claude' || entry.provider === 'ollama') &&
+    !entry.name.includes(':') &&
+    entry.displayName === `/${entry.name}`
+      ? `/${entry.enableRef.pluginName}:${entry.name}`
+      : entry.displayName;
   const command: SlashInventoryCommand = {
     name: entry.name,
     description: entry.description,
-    displayName: entry.displayName,
+    displayName,
     insertText: entry.insertText,
     section,
     inventoryEntry: entry,
@@ -135,6 +145,23 @@ function normalizedSyntheticSelectedSkillToken(
   return token.slice(separator + 1) || null;
 }
 
+/** Owner-scoped identity; never infer ownership by stripping an arbitrary namespace. */
+function pluginMemberIdentity(entry: InvocableInventoryEntry): string | null {
+  const ref = entry.enableRef;
+  if (
+    ref.kind !== 'plugin' ||
+    (entry.kind !== 'plugin_skill' && entry.kind !== 'plugin_command')
+  )
+    return null;
+  const owner = ref.pluginName.toLowerCase();
+  const token = normalizedCommandToken(entry.name);
+  if (!token) return null;
+  const member = token.startsWith(`${owner}:`)
+    ? token.slice(owner.length + 1)
+    : token;
+  return JSON.stringify([ref.marketplaceId, owner, member]);
+}
+
 /**
  * Merge cached inventory entries with the agent-discovered slash commands into
  * the two row lists the menu needs.
@@ -146,8 +173,9 @@ function normalizedSyntheticSelectedSkillToken(
  *   discovery has not already reported the same command.
  * - Agent-discovered rows are canonical: an entry colliding with a discovered
  *   row (by name or insert text) is hidden.
- * - Remaining entries are de-duped by `invocationKey`, `name`, and `insertText`
- *   after a stable marketplace/plugin/name sort.
+ * - Plugin skills and commands use owner/member identity, preserving ambiguous
+ *   marketplace aliases. Other entries retain invocation/name/insert collision rules.
+ * - Remaining entries keep the stable marketplace/plugin/name sort.
  */
 export function buildSlashInventoryCommands(
   params: BuildSlashInventoryCommandsParams,
@@ -181,6 +209,47 @@ export function buildSlashInventoryCommands(
   }
   for (const ref of collectionRefs?.pluginRefs ?? []) {
     enabledPluginKeys.add(pluginRefKey(ref));
+  }
+
+  // A bare inventory member and its owner-qualified SDK token are one member.
+  // Only claim aliases with a unique owner/member identity: discovery lacks a
+  // marketplace id, so equal plugin names across marketplaces stay ambiguous.
+  const pluginAliasOwners = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const identity = pluginMemberIdentity(entry);
+    const ref = entry.enableRef;
+    if (!identity || ref.kind !== 'plugin') continue;
+    for (const value of [
+      entry.name,
+      entry.displayName,
+      entry.insertText,
+      entry.invocationKey,
+    ]) {
+      const token = normalizedCommandToken(value);
+      if (!token) continue;
+      const aliases = token.includes(':')
+        ? [token]
+        : [`${ref.pluginName.toLowerCase()}:${token}`];
+      for (const alias of aliases) {
+        const owners = pluginAliasOwners.get(alias) ?? new Set<string>();
+        owners.add(identity);
+        pluginAliasOwners.set(alias, owners);
+      }
+    }
+  }
+  const claimedPluginMembers = new Set<string>();
+  for (const command of discoveredCommands) {
+    const tokens = [command.name, command.displayName, command.insertText]
+      .map(normalizedCommandToken)
+      .filter((token): token is string => token !== null);
+    for (const token of tokens) {
+      const owners = pluginAliasOwners.get(token);
+      if (owners?.size === 1) {
+        owners.forEach((identity) => {
+          claimedPluginMembers.add(identity);
+        });
+      }
+    }
   }
 
   const discoveredKeys = new Set<string>();
@@ -246,7 +315,12 @@ export function buildSlashInventoryCommands(
 
     // Agent-discovered rows, and rows promoted before this one, win on
     // collision.
-    if (claimKeys.some((key) => discoveredKeys.has(key))) {
+    const pluginIdentity = pluginMemberIdentity(entry);
+    if (
+      pluginIdentity
+        ? claimedPluginMembers.has(pluginIdentity)
+        : claimKeys.some((key) => discoveredKeys.has(key))
+    ) {
       continue;
     }
 
@@ -255,6 +329,7 @@ export function buildSlashInventoryCommands(
     // mislabels it under "Available to enable" when the provider reports a
     // differently-prefixed form of the same command.
     promotedInventoryCommands.push(toInventoryCommand(entry, 'discovered'));
+    if (pluginIdentity) claimedPluginMembers.add(pluginIdentity);
     for (const key of claimKeys) {
       discoveredKeys.add(key);
     }
@@ -272,19 +347,26 @@ export function buildSlashInventoryCommands(
     ].filter((key): key is string => key !== null);
 
     // Agent-discovered and promoted enabled rows win on collision.
-    if (entryKeys.some((key) => discoveredKeys.has(key))) {
-      continue;
-    }
-
-    // De-dupe across remaining available rows (e.g. two disabled plugins that
-    // expose the same Claude command name resolve to the same insertion).
+    const pluginIdentity = pluginMemberIdentity(entry);
     if (
-      seenInvocationKeys.has(entry.invocationKey) ||
-      seenNames.has(entry.name.toLowerCase()) ||
-      seenInserts.has(entry.insertText.trim())
+      pluginIdentity
+        ? claimedPluginMembers.has(pluginIdentity)
+        : entryKeys.some((key) => discoveredKeys.has(key))
     ) {
       continue;
     }
+
+    // Plugin members claim only their owner/member identity. Other rows retain
+    // their existing invocation collision policy.
+    if (
+      !pluginIdentity &&
+      (seenInvocationKeys.has(entry.invocationKey) ||
+        seenNames.has(entry.name.toLowerCase()) ||
+        seenInserts.has(entry.insertText.trim()))
+    ) {
+      continue;
+    }
+    if (pluginIdentity) claimedPluginMembers.add(pluginIdentity);
     seenInvocationKeys.add(entry.invocationKey);
     seenNames.add(entry.name.toLowerCase());
     seenInserts.add(entry.insertText.trim());

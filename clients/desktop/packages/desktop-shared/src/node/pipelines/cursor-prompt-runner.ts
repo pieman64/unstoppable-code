@@ -468,7 +468,7 @@ async function withExclusiveProfile<T>(
   }
 }
 
-const CURSOR_STEP_CANCELLED_MESSAGE = 'Cursor pipeline turn was cancelled.';
+const CURSOR_STEP_CANCELLED_MESSAGE = 'Cursor workflow turn was cancelled.';
 
 export async function runCursorPromptWithDriver(
   request: CursorPromptRunnerRequest,
@@ -887,7 +887,7 @@ export async function runCursorPromptWithDriver(
         throw new Error(
           isAcpDeadlineMessage(outcome.message)
             ? stepTimedOutMessage(request.totalTimeoutMs)
-            : outcome.message || 'Cursor pipeline turn failed.',
+            : outcome.message || 'Cursor workflow turn failed.',
         );
       try {
         const structured = request.schema
@@ -928,7 +928,7 @@ export async function runCursorPromptWithDriver(
         throw lastError;
       }
     }
-    throw lastError ?? new Error('Cursor pipeline turn failed.');
+    throw lastError ?? new Error('Cursor workflow turn failed.');
   } catch (error) {
     endSetup();
     const message = error instanceof Error ? error.message : String(error);

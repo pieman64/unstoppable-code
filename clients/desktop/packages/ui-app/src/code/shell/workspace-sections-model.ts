@@ -92,6 +92,7 @@ export type WorktreeRuntimeProjection = Pick<
   WorktreeRowProps,
   | 'uiStatus'
   | 'isStreaming'
+  | 'backgroundTasks'
   | 'isRunningRun'
   | 'isDiscovering'
   | 'pipelineStatus'
@@ -250,16 +251,47 @@ export function isWorktreeDone(worktree: SnapshotWorktree): boolean {
 /** Row state rolled up from other snapshot collections (chat summaries). */
 export interface WorktreeRuntimeRollups {
   readonly hasPendingQuestion?: boolean;
+  /**
+   * The row's space is muted (`isSpaceNotificationMuted`): its blue-dot
+   * sources, unread chats and an unseen pipeline success, are masked before
+   * anything derives from them. Orange and red states and live work still show.
+   */
+  readonly spaceMuted?: boolean;
+}
+
+/**
+ * Drops a muted space's blue-dot sources; the snapshot itself is untouched.
+ * A host's live row overrides get the same mask in `WorkspacesSidebarSections`
+ * (`maskMutedWorktreeRowOverrides`); a new blue-dot source needs both.
+ */
+function maskMutedSpace(
+  worktree: SnapshotWorktree,
+  spaceMuted: boolean,
+): SnapshotWorktree {
+  if (!spaceMuted) return worktree;
+  return {
+    ...worktree,
+    hasUnread: undefined,
+    pipelineStatus:
+      worktree.pipelineStatus === 'unseen'
+        ? undefined
+        : worktree.pipelineStatus,
+  };
 }
 
 export function projectWorktreeRuntime(
-  worktree: SnapshotWorktree,
+  snapshotWorktree: SnapshotWorktree,
   rollups: WorktreeRuntimeRollups = {},
 ): WorktreeRuntimeProjection {
+  const worktree = maskMutedSpace(
+    snapshotWorktree,
+    rollups.spaceMuted === true,
+  );
   const done = isWorktreeDone(worktree);
   return {
     uiStatus: done ? 'done' : deriveWorktreeUiStatus(worktree),
     isStreaming: worktree.isStreaming,
+    backgroundTasks: worktree.backgroundTasks,
     isRunningRun: worktree.isRunningRun ?? worktree.busy,
     isDiscovering: worktree.isDiscovering,
     pipelineStatus: worktree.pipelineStatus,

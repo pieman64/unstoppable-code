@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, type JSX } from 'react';
-import { DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  SETTINGS_CARD_GROUP_CLASS,
+  SETTINGS_CARD_ROW_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { useSettingsClient } from '../host';
 import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
@@ -23,7 +27,8 @@ interface TeamDangerZoneProps {
 }
 
 /**
- * OWNER-only panel at the bottom of the team page for deleting the organization.
+ * OWNER-only row at the bottom of General for deleting the organization, in
+ * a box of its own with no heading.
  * Returns `null` for non-owners so the destructive action is never rendered
  * for members or admins.
  */
@@ -64,26 +69,35 @@ export function TeamDangerZone({
 
   return (
     <section
-      className="rounded-xl border border-line-destructive/40 bg-destructive/5 p-8"
+      className={SETTINGS_CARD_GROUP_CLASS}
+      aria-label="Delete organization"
       data-testid="team-danger-zone"
     >
-      <ErrorBanner className="mb-4" error={error} />
-
-      <h2 className="text-xl font-semibold fg-primary">Danger zone</h2>
-      <p className="mt-1 text-s fg-secondary">
-        Deleting this organization removes access for everyone in it, along with
-        its teams, pending invites, and settings. Billing and usage history is
-        kept for your records. If the organization has an active subscription,
-        cancel it first. You cannot get the organization back.
-      </p>
-      <button
-        type="button"
-        onClick={() => setConfirmingDelete(true)}
-        data-testid="team-delete"
-        className="mt-4 rounded-md border border-line-destructive px-3 py-2 text-s font-medium fg-destructive transition-colors hover:bg-destructive hover:fg-emphasis"
-      >
-        Delete organization
-      </button>
+      <div className={SETTINGS_CARD_ROW_CLASS}>
+        <div className="min-w-0">
+          <div className="text-s font-medium fg-primary">
+            Delete organization
+          </div>
+          <p className="text-xs text-pretty fg-secondary">
+            Removes it for everyone in it, with its teams, pending invites and
+            settings. Billing and usage history is kept. Cancel an active
+            subscription first. This can&apos;t be undone.
+          </p>
+        </div>
+        <Button
+          size="compact"
+          variant="ghost-destructive"
+          onClick={() => setConfirmingDelete(true)}
+          data-testid="team-delete"
+        >
+          Delete…
+        </Button>
+      </div>
+      {error ? (
+        <div className="pb-3">
+          <ErrorBanner error={error} />
+        </div>
+      ) : null}
 
       {confirmingDelete && (
         <DialogModal
@@ -94,23 +108,23 @@ export function TeamDangerZone({
           dataTestId="team-delete-dialog"
         >
           <div className="flex items-center justify-end gap-2 px-5 pb-5 pt-4">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={() => setConfirmingDelete(false)}
               disabled={deleting}
-              className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="destructive"
+              size="compact"
               onClick={() => void handleDelete()}
               disabled={deleting}
               data-testid="team-delete-confirm"
-              className="rounded-md bg-destructive px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {deleting ? 'Deleting…' : 'Delete organization'}
-            </button>
+            </Button>
           </div>
         </DialogModal>
       )}

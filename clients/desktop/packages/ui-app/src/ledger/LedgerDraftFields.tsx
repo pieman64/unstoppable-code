@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { LedgerFilePicker } from '@canopy/app-core';
 import type { LedgerViewDraft, LedgerViewOwnersState } from '@canopy/app-state';
-import type {
-  LedgerViewFileCandidate,
-  LedgerViewScope,
+import {
+  ledgerViewScopeKey,
+  type LedgerTaskViewScope,
+  type LedgerViewFileCandidate,
 } from '@canopy/protocol/ledger-view';
 import {
   LedgerFileSearch,
@@ -18,8 +19,8 @@ const FILE_SEARCH_LIMIT = 20;
 
 export interface LedgerDraftFileSearchProps {
   readonly files: LedgerFilePicker;
-  /** The scope whose files are found. */
-  readonly scope: LedgerViewScope;
+  /** The task whose files are found; a global scope has none. */
+  readonly scope: LedgerTaskViewScope;
   readonly draft: LedgerViewDraft;
   readonly saving: boolean;
   readonly onChange: (patch: Partial<LedgerViewDraft>) => void;
@@ -29,10 +30,6 @@ export interface LedgerDraftFileSearchProps {
 interface FoundFiles {
   readonly scopeKey: string;
   readonly files: readonly LedgerViewFileCandidate[];
-}
-
-function scopeKeyOf(scope: LedgerViewScope): string {
-  return `${scope.projectId}/${scope.worktreeId}`;
 }
 
 /**
@@ -48,7 +45,7 @@ export function LedgerDraftFileSearch({
   onChange,
 }: LedgerDraftFileSearchProps): JSX.Element {
   const [query, setQuery] = useState('');
-  const scopeKey = scopeKeyOf(scope);
+  const scopeKey = ledgerViewScopeKey(scope);
   const [found, setFound] = useState<FoundFiles>({ scopeKey, files: [] });
   const [searching, setSearching] = useState(false);
   const searchGeneration = useRef(0);
@@ -56,7 +53,7 @@ export function LedgerDraftFileSearch({
 
   useEffect(() => {
     const trimmed = query.trim();
-    const searched = scopeKeyOf(scope);
+    const searched = ledgerViewScopeKey(scope);
     const generation = ++searchGeneration.current;
     if (trimmed.length === 0) {
       setFound({ scopeKey: searched, files: [] });

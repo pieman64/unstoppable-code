@@ -316,7 +316,7 @@ describe('collectSharedItemInstallsForBackfill', () => {
     ]);
   });
 
-  it('collects public pipeline installs and skips curated and team package records', async () => {
+  it('collects public pipeline installs and skips curated, team and shared-container package records', async () => {
     mockListPackageInstalls.mockResolvedValue([
       {
         localPipelineId: 'public-pipeline',
@@ -336,6 +336,15 @@ describe('collectSharedItemInstallsForBackfill', () => {
         localPipelineId: 'team-package',
         pipelineContentHash: 'team-hash',
         packageDigest: `pp:v1:${'B'.repeat(43)}`,
+        installedAt: '2026-10-01T00:00:00.000Z',
+      },
+      // A pipeline installed from a shared container's package: its
+      // provenance is the container install ledger, never a share origin.
+      {
+        localPipelineId: 'container-pipeline',
+        pipelineContentHash: 'container-hash',
+        distributionMode: 'package',
+        packageDigest: `pp:v1:${'C'.repeat(43)}`,
         installedAt: '2026-10-01T00:00:00.000Z',
       },
     ]);

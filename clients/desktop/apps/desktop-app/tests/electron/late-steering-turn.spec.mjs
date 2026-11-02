@@ -6,9 +6,16 @@
 // Determinism: Claude holds an admitted async message until the query's next
 // input boundary. With a single streamed text response and no tool calls,
 // that boundary is the end of the root turn, so the pickup is reliably late.
-import { mkdtempSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import {
@@ -27,6 +34,18 @@ const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
 const CHAT_ID = 't1';
 const MARKER = 'Canopy-CLATESTEER';
+const SCORPION_SESSION_ID = `${WORKSPACE_ID}/${WORKTREE_ID}/${CHAT_ID}`;
+const SCORPION_FIXTURE = fileURLToPath(
+  new URL('./fixtures/fake-claude-scorpion-cli.mjs', import.meta.url),
+);
+
+function readScorpionLog(logPath) {
+  if (!existsSync(logPath)) return [];
+  return readFileSync(logPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
 
 async function send(window, text) {
   const composer = window.getByRole('textbox').last();
@@ -111,7 +130,7 @@ test('a steering pickup after the turn ended renders as its own turn', async () 
       .getByRole('button', { name: 'Steer', exact: true })
       .click();
     await expect(panel.getByTestId('input-delivery-row')).toContainText(
-      'Pending',
+      'Sending…',
     );
 
     const tabState = () =>
@@ -276,6 +295,109 @@ test('a persisted legacy pickup timer reopens inside its turn', async () => {
         }),
       )
       .toBe(true);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+    cleanupDemoWorkspaces(demo);
+  }
+});
+
+test('scorpion: Steer delivers a queued message into the parent turn while two subagents run', async () => {
+  test.setTimeout(120_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-scorpion-steer-'),
+  );
+  const fakeCliPath = path.join(userDataDir, 'fake-claude-scorpion-cli.mjs');
+  const logPath = path.join(userDataDir, 'fake-claude-scorpion.log');
+  copyFileSync(SCORPION_FIXTURE, fakeCliPath);
+  chmodSync(fakeCliPath, 0o755);
+  const demo = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    activeTabId: CHAT_ID,
+    tabs: [{ id: CHAT_ID, title: 'Scorpion chat', providerType: 'claude' }],
+  });
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({
+      userDataDir,
+      env: {
+        CLAUDE_CODE_EXECUTABLE: fakeCliPath,
+        CANOPY_CLAUDE_SCORPION_LOG: logPath,
+        // The parent turn stays running until the steered message arrives.
+        CANOPY_CLAUDE_SCORPION_HOLD_ROOT: '1',
+      },
+    }),
+  );
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const panel = window
+      .locator('[data-testid="panel-content-chat"]:visible')
+      .first();
+    await expect(panel).toBeVisible();
+
+    await send(window, 'scorpion root request');
+    await expect(
+      panel.getByText('scorpion root reply', { exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(
+        () => {
+          const entries = readScorpionLog(logPath);
+          return (
+            entries.some((entry) => entry.type === 'subagents_started') &&
+            entries.some((entry) => entry.type === 'root_held')
+          );
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+
+    // Foreground: the parent turn is still running with its subagents.
+    const steer = 'scorpion steer request';
+    await send(window, steer);
+    const bubble = panel.getByTestId('queued-message-bubble');
+    await expect(bubble).toHaveCount(1, { timeout: 15_000 });
+    await bubble.getByTestId('queued-message-more').click();
+    await expect(
+      window
+        .getByTestId('queued-message-more-menu')
+        .getByTestId('queued-message-interrupt'),
+    ).toBeVisible({
+      timeout: 15_000,
+    });
+    await window.keyboard.press('Escape');
+    const steerButton = bubble.getByTestId('queued-message-steer');
+    await expect(steerButton).toBeVisible({ timeout: 15_000 });
+    await steerButton.click();
+
+    // The fake provider receives the message inside the running parent turn.
+    await expect
+      .poll(
+        () =>
+          readScorpionLog(logPath).filter(
+            (entry) =>
+              entry.type === 'user' &&
+              entry.sessionId === SCORPION_SESSION_ID &&
+              entry.text.includes(steer),
+          ),
+        { timeout: 30_000 },
+      )
+      .toEqual([expect.objectContaining({ rootTurnRunning: true })]);
+    await expect(
+      panel.getByText(`scorpion steer reply: ${steer}`, { exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    expect(
+      readScorpionLog(logPath).filter(
+        (entry) =>
+          entry.type === 'control_request' && entry.subtype === 'interrupt',
+      ),
+    ).toHaveLength(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
     cleanupDemoWorkspaces(demo);

@@ -427,6 +427,93 @@ describe('ClaudeTab', () => {
     }
   });
 
+  describe('idle timeout', () => {
+    function idleInput(container: HTMLElement): HTMLInputElement {
+      const input = container.querySelector<HTMLInputElement>(
+        '[data-testid="settings-claude-idle-timeout-minutes"]',
+      );
+      if (!input) throw new Error('Missing Claude idle timeout input');
+      return input;
+    }
+
+    async function enter(
+      input: HTMLInputElement,
+      value: string,
+    ): Promise<void> {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.bind(input);
+      if (!setValue) throw new Error('Missing value setter');
+      act(() => {
+        setValue(value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => {
+        input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+        for (let index = 0; index < 5; index += 1) await Promise.resolve();
+      });
+    }
+
+    it('shows the Claude-only idle timeout and saves a clamped value', async () => {
+      const initial = makeTestPreferences();
+      loadPreferencesMock.mockResolvedValue(initial);
+      savePreferencesMock.mockImplementation((patch) =>
+        Promise.resolve({ ...initial, ...patch }),
+      );
+      const rendered = await renderTab();
+      try {
+        const input = idleInput(rendered.container);
+        expect(input.value).toBe('10');
+        expect(input.min).toBe('1');
+        expect(input.max).toBe('120');
+        expect(rendered.container.textContent).toContain('Idle chats');
+        expect(rendered.container.textContent).toContain(
+          'Stop the Claude process of an idle chat after this long. Applies to Claude chats and to Ollama chats that run on Claude. Your next message resumes the chat. Chats that run on Codex use the Codex setting.',
+        );
+
+        await enter(input, '500');
+
+        expect(savePreferencesMock).toHaveBeenCalledWith({
+          claudeSessionIdleTimeoutMinutes: 120,
+        });
+        expect(input.value).toBe('120');
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it('restores the saved timeout when saving fails or the entry is not a number', async () => {
+      loadPreferencesMock.mockResolvedValue(
+        makeTestPreferences({ claudeSessionIdleTimeoutMinutes: 25 }),
+      );
+      savePreferencesMock.mockRejectedValue(new Error('disk'));
+      const rendered = await renderTab();
+      try {
+        const input = idleInput(rendered.container);
+        expect(input.value).toBe('25');
+
+        await enter(input, '0');
+        expect(savePreferencesMock).toHaveBeenCalledWith({
+          claudeSessionIdleTimeoutMinutes: 1,
+        });
+        expect(input.value).toBe('25');
+        expect(
+          rendered.container.querySelector(
+            '[data-testid="settings-claude-save-error"]',
+          ),
+        ).not.toBeNull();
+
+        savePreferencesMock.mockClear();
+        await enter(input, '');
+        expect(input.value).toBe('25');
+        expect(savePreferencesMock).not.toHaveBeenCalled();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  });
+
   it('persists preventClaudeNativeCaffeinate on macOS', async () => {
     const initial = makeTestPreferences({
       preventClaudeNativeCaffeinate: true,
@@ -502,16 +589,17 @@ describe('ClaudeTab', () => {
       expect(nativeCaffeinate).not.toBeNull();
       expect(defaultChatMode).not.toBeNull();
       expect(workersSection).not.toBeNull();
-      expect(nativeCaffeinate?.className).not.toContain('border-t');
-      expect(nativeCaffeinate?.className).not.toContain('pt-8');
-      expect(
-        nativeCaffeinate?.compareDocumentPosition(defaultChatMode) ??
-          Node.DOCUMENT_POSITION_PRECEDING,
-      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-      expect(
-        nativeCaffeinate?.compareDocumentPosition(workersSection) ??
-          Node.DOCUMENT_POSITION_PRECEDING,
-      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      if (!nativeCaffeinate || !defaultChatMode || !workersSection) {
+        throw new Error('Expected the Claude settings sections to be rendered');
+      }
+      expect(nativeCaffeinate.className).not.toContain('border-t');
+      expect(nativeCaffeinate.className).not.toContain('pt-8');
+      expect(nativeCaffeinate.compareDocumentPosition(defaultChatMode)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(nativeCaffeinate.compareDocumentPosition(workersSection)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
     } finally {
       rendered.cleanup();
     }

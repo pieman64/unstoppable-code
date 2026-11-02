@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import type { PanelLayoutSurface } from '@canopy/desktop-shared/types';
+import type { SerializablePanelLayoutFile } from '@canopy/protocol/panels';
 
 jest.mock('node:fs', () => ({
   readFileSync: jest.fn(),
@@ -35,7 +36,7 @@ function isVersionedLayoutWriteForTest(
   return 'activeGroupId' in layout && typeof layout.activeGroupId === 'string';
 }
 
-const VALID_LAYOUT = {
+const VALID_LAYOUT: SerializablePanelLayoutFile = {
   version: 1,
   grid: {
     root: {
@@ -167,11 +168,15 @@ describe('defaultPanelLayoutStore', () => {
   });
 
   it('drops an invalid layout on save (never clobbers)', () => {
-    defaultPanelLayoutStore.saveDefaultLayout(
-      'code',
-      // Structurally invalid: missing grid.
-      { version: 1, activeGroupId: 'x', mostRecentActiveGroupIds: [] },
-    );
+    const invalidLayout: SerializablePanelLayoutFile = {
+      version: 1,
+      grid: VALID_LAYOUT.grid,
+      activeGroupId: 'x',
+      mostRecentActiveGroupIds: [],
+    };
+    // Preserve this malformed input: save receives no grid at runtime.
+    Reflect.deleteProperty(invalidLayout, 'grid');
+    defaultPanelLayoutStore.saveDefaultLayout('code', invalidLayout);
     expect(mockWrite).not.toHaveBeenCalled();
   });
 });

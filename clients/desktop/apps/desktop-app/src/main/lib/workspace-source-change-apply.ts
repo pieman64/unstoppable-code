@@ -1,4 +1,5 @@
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { applyProjectInstructionsChange } from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import { dirname, join } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { isProjectStartPage } from '@canopy/protocol/start-page';
@@ -53,11 +54,27 @@ import {
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
-  removeWorkspaceWorktrees,
-  updateWorkspaceConfig,
-  updateWorkspaceWorktrees,
 } from './workspace-persistence';
+import {
+  applyWorkspaceManifestDecision,
+  applyWorktreeListRemoval,
+  applyWorktreeListUpdate,
+} from './workspace-record-decision-port';
+import { syncSourceChangeRepoBindings } from './worktree-record-decision-apply';
+import type {
+  SourceChangeBindingsDecision,
+  WorktreeListUpdateOutcome,
+} from './worktree-record-decisions';
 import { WorkspaceSourceChangesRefusedError } from './workspace-source-change-refusal';
+import type { SourceChangesTransition } from './workspace-source-changes';
+import {
+  commitW5BoundaryStep,
+  w5CompositionLocks,
+} from './w5-composition-operation';
+import {
+  W5FileWriteRefusedError,
+  W5RevisionConflictError,
+} from './w5-commit-log-file-store';
 import { remoteUrlsMatch } from './repo-url-matcher';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
 import {
@@ -436,20 +453,16 @@ async function applyClaudeMdChange(
     return;
   }
 
-  const target = await resolveOptionalProjectInstructionFile(
-    getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId),
+  await applyProjectInstructionsChange(
+    await resolveOptionalProjectInstructionFile(
+      getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId),
+    ),
+    claudeMd,
+    {
+      readText: (path) => readFile(path, 'utf8'),
+      write: writeProjectInstructionFile,
+    },
   );
-  if (!target) {
-    return;
-  }
-  const existingContent = target.exists
-    ? await readFile(target.filePath, 'utf8')
-    : '';
-  if (existingContent === claudeMd) {
-    return;
-  }
-
-  await writeProjectInstructionFile(target, claudeMd);
 }
 
 function applyWorkspaceScriptChanges(
@@ -715,76 +728,36 @@ async function removeRepoWorktrees(params: {
   }
 }
 
-function syncLocalRepoBindings(params: {
-  config: WorkspaceConfigFile;
-  manifest: CanopyJsonFile;
-  request: NormalizedWorkspaceApplySourceChangesRequest;
-}): {
+function sourceChangeBindingsDecision(
+  manifest: CanopyJsonFile,
+  request: NormalizedWorkspaceApplySourceChangesRequest,
+): SourceChangeBindingsDecision {
+  return {
+    kind: 'workspace.sourceChanges.bindings',
+    manifestRepositories: (manifest.repos ?? []).map(({ id, name, url }) => ({
+      id,
+      name,
+      url,
+    })),
+    repositoryAdds: (request.repoAdds ?? []).map(({ repoId, repoPath }) => ({
+      repoId,
+      repoPath,
+    })),
+    repositoryRemovals: [...(request.repoRemovals ?? [])],
+  };
+}
+
+function syncLocalRepoBindings(
+  config: WorkspaceConfigFile,
+  bindings: SourceChangeBindingsDecision,
+): {
   config: WorkspaceConfigFile;
   updated: boolean;
 } {
-  const manifestRepos = new Map(
-    (params.manifest.repos ?? []).map((repo) => [repo.id, repo]),
-  );
-  const requestedAddsById = new Map(
-    (params.request.repoAdds ?? []).map((repo) => [repo.repoId, repo]),
-  );
-  const requestedRemovals = new Set(params.request.repoRemovals ?? []);
-  const nextRepos: WorkspaceRepoData[] = params.config.repos.map(
-    (repo): WorkspaceRepoData => {
-      if (requestedRemovals.has(repo.id)) {
-        return {
-          ...repo,
-          source: 'local',
-          hooks: undefined,
-        };
-      }
-
-      const manifestRepo = manifestRepos.get(repo.id);
-      if (!manifestRepo) {
-        return repo;
-      }
-
-      return {
-        ...repo,
-        name: manifestRepo.name,
-        source: 'manifest',
-        manifestUrl: manifestRepo.url,
-      };
-    },
-  );
-
-  for (const manifestRepo of Array.from(manifestRepos.values())) {
-    if (nextRepos.some((repo) => repo.id === manifestRepo.id)) {
-      continue;
-    }
-
-    const requestedAdd = requestedAddsById.get(manifestRepo.id);
-    const repoPath = requestedAdd?.repoPath;
-    if (!repoPath) {
-      continue;
-    }
-
-    nextRepos.push({
-      id: manifestRepo.id,
-      name: manifestRepo.name,
-      repoPath,
-      source: 'manifest',
-      manifestUrl: manifestRepo.url,
-    });
-  }
-
-  const updated =
-    JSON.stringify(nextRepos) !== JSON.stringify(params.config.repos);
-
+  const synced = syncSourceChangeRepoBindings(config.repos, bindings);
   return {
-    config: updated
-      ? {
-          ...params.config,
-          repos: nextRepos,
-        }
-      : params.config,
-    updated,
+    config: synced.updated ? { ...config, repos: synced.repos } : config,
+    updated: synced.updated,
   };
 }
 
@@ -795,35 +768,19 @@ function syncLocalRepoBindings(params: {
  * a repository or setting changed since is kept (CAN-3819). A missing
  * manifest is not created.
  */
-function syncLocalRepoBindingsInBackground(params: {
-  workspaceId: string;
-  config: WorkspaceConfigFile;
-  manifest: CanopyJsonFile;
-  request: NormalizedWorkspaceApplySourceChangesRequest;
-}): { config: WorkspaceConfigFile; updated: boolean } {
-  const syncedBindings = syncLocalRepoBindings(params);
-  if (!syncedBindings.updated) {
-    return syncedBindings;
-  }
+function syncLocalRepoBindingsInBackground(
+  workspaceId: string,
+  config: WorkspaceConfigFile,
+  bindings: SourceChangeBindingsDecision,
+): void {
+  if (!syncLocalRepoBindings(config, bindings).updated) return;
 
   trackDetachedWork(() =>
-    updateWorkspaceConfig(
-      params.workspaceId,
-      (config, read): boolean => {
-        if (read.authority === 'absent') return false;
-        const current = syncLocalRepoBindings({ ...params, config });
-        if (!current.updated) return false;
-        config.repos = current.config.repos;
-        return true;
-      },
-      { shouldWrite: (updated): boolean => updated },
-    ).catch((error) => {
+    applyWorkspaceManifestDecision(workspaceId, bindings).catch((error) => {
       // eslint-disable-next-line no-console
       console.error('Failed to sync workspace repo bindings:', error);
     }),
   );
-
-  return syncedBindings;
 }
 
 async function rollbackCreatedWorktree(
@@ -855,10 +812,14 @@ async function rollbackCreatedWorktree(
 async function ensureTargetWorkspaceWorktree(
   request: WorkspaceApplySourceChangesRequest,
   referenceRepoPath: string,
+  transition?: SourceChangesTransition<WorkspaceApplySourceChangesResponse>,
 ): Promise<TargetWorkspaceContext> {
   if (request.target.mode === 'existing') {
     const existingTarget = request.target;
-    const worktrees = await readWorkspaceWorktrees(request.workspaceId);
+    const worktrees = await readWorkspaceWorktrees(
+      request.workspaceId,
+      transition ? { persistRemovalCleanup: false } : undefined,
+    );
     const worktree = worktrees.find(
       (entry) => entry.id === existingTarget.worktreeId,
     );
@@ -877,7 +838,10 @@ async function ensureTargetWorkspaceWorktree(
     };
   }
 
-  const worktrees = await readWorkspaceWorktrees(request.workspaceId);
+  const worktrees = await readWorkspaceWorktrees(
+    request.workspaceId,
+    transition ? { persistRemovalCleanup: false } : undefined,
+  );
   const existingIds = new Set<string>(request.target.existingWorktreeIds);
   for (const worktree of worktrees) {
     existingIds.add(worktree.id);
@@ -888,6 +852,7 @@ async function ensureTargetWorkspaceWorktree(
     worktreeId,
   );
 
+  transition?.beforeEffects?.();
   await mkdir(dirname(worktreeRootPath), { recursive: true });
   await mkdir(getWorktreeDataDir(request.workspaceId, worktreeId), {
     recursive: true,
@@ -926,12 +891,17 @@ async function ensureTargetWorkspaceWorktree(
     branchName,
     createdAt: new Date().toISOString(),
   };
-  await updateWorkspaceWorktrees(request.workspaceId, (current) => {
-    if (current.some((worktree) => worktree.id === row.id)) {
-      throw new Error(`Project worktree ${row.id} already exists`);
-    }
-    return [...current, row];
-  });
+  const stageTargetWorktree = (): Promise<WorktreeListUpdateOutcome> =>
+    applyWorktreeListUpdate(
+      request.workspaceId,
+      { kind: 'workspace.sourceChanges.target.record', worktree: row },
+      {},
+    );
+  await commitW5BoundaryStep(
+    transition?.commit,
+    transition ? w5CompositionLocks({ lists: [request.workspaceId] }) : [],
+    stageTargetWorktree,
+  );
 
   return targetContext;
 }
@@ -953,6 +923,7 @@ async function applyAdmittedWorkspaceSourceChanges(
   request: WorkspaceApplySourceChangesRequest,
   getWindow: () => BrowserWindow | null,
   onApplied?: (event: WorkspaceSourceChangesAppliedEvent) => void,
+  transition?: SourceChangesTransition<WorkspaceApplySourceChangesResponse>,
 ): Promise<WorkspaceApplySourceChangesResponse> {
   const config = await readWorkspaceConfig(request.workspaceId);
   if (!config.sourceRepoPath) {
@@ -968,7 +939,9 @@ async function applyAdmittedWorkspaceSourceChanges(
   const targetContext = await ensureTargetWorkspaceWorktree(
     request,
     referenceRepoPath,
+    transition,
   );
+  transition?.beforeEffects?.();
   await mkdir(
     getWorktreeDataDir(request.workspaceId, targetContext.worktreeId),
     {
@@ -987,6 +960,7 @@ async function applyAdmittedWorkspaceSourceChanges(
     request,
   });
 
+  let acceptanceStarted = false;
   try {
     await applyClaudeMdChange(
       normalizedRequest.workspaceId,
@@ -1036,12 +1010,26 @@ async function applyAdmittedWorkspaceSourceChanges(
       createdWorktree: targetContext.createdWorktree,
     });
 
-    const syncedBindings = syncLocalRepoBindingsInBackground({
-      workspaceId: normalizedRequest.workspaceId,
+    const bindings = sourceChangeBindingsDecision(
+      targetManifest,
+      normalizedRequest,
+    );
+    const syncedBindings = syncLocalRepoBindings(config, bindings);
+
+    const result: WorkspaceApplySourceChangesResponse = {
+      worktreeId: targetContext.worktreeId,
+      branchName: targetContext.branchName,
+      createdWorktree: targetContext.createdWorktree,
+      localRepoBindingsUpdated: syncedBindings.updated,
+      referenceRepoPath,
+    };
+    acceptanceStarted = transition !== undefined;
+    const accepted = transition ? await transition.complete(result) : result;
+    syncLocalRepoBindingsInBackground(
+      normalizedRequest.workspaceId,
       config,
-      manifest: targetManifest,
-      request: normalizedRequest,
-    });
+      bindings,
+    );
 
     // Tracked, so it stays admitted after the apply returns.
     trackDetachedWork(() =>
@@ -1092,23 +1080,29 @@ async function applyAdmittedWorkspaceSourceChanges(
       })(),
     );
 
-    return {
-      worktreeId: targetContext.worktreeId,
-      branchName: targetContext.branchName,
-      createdWorktree: targetContext.createdWorktree,
-      localRepoBindingsUpdated: syncedBindings.updated,
-      referenceRepoPath,
-    };
+    return accepted;
   } catch (error) {
-    if (targetContext.createdWorktree) {
+    if (
+      targetContext.createdWorktree &&
+      !acceptanceStarted &&
+      (!transition ||
+        !(
+          error instanceof W5RevisionConflictError ||
+          error instanceof W5FileWriteRefusedError
+        ))
+    ) {
       await rollbackCreatedWorktree(
         normalizedRequest.workspaceId,
         targetContext,
         [],
       );
-      await removeWorkspaceWorktrees(
+      await applyWorktreeListRemoval(
         normalizedRequest.workspaceId,
-        (worktree) => worktree.id === targetContext.worktreeId,
+        {
+          kind: 'workspace.sourceChanges.target.remove',
+          worktreeId: targetContext.worktreeId,
+        },
+        {},
       );
     }
     throw error instanceof Error ? error : new Error(String(error));

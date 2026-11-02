@@ -12,6 +12,7 @@ import {
 import { useOrgCreditPoolBalance } from '@/hooks/useOrgCreditPoolBalance';
 import { useSubscriptionStatus } from '@/hooks/useSubscriptionStatus';
 import { openSettingsPathOrWeb } from '@/lib/navigation/settings-destinations';
+import { useDesktopPendingInvitations } from './useDesktopPendingInvitations';
 import { useDesktopTeamDialogs } from './useDesktopTeamDialogs';
 
 /**
@@ -79,6 +80,7 @@ function AvailableContextSwitcher({
       : { kind: 'organization', organizationId: creditsOrganizationId },
     accountId,
   );
+  const invitations = useDesktopPendingInvitations(accountId);
 
   return (
     <>
@@ -88,6 +90,8 @@ function AvailableContextSwitcher({
           organizations={switcher.organizations}
           disabled={switcher.switching}
           contextsWithUpdates={switcher.contextsWithUpdates}
+          pendingSharesByContext={switcher.pendingSharesByContext}
+          invitations={invitations}
           menuInstantInteractions
           onSelect={switcher.select}
           placement="top"

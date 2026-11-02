@@ -251,7 +251,7 @@ describe('useAutomationChatTargetAvailability (CAN-2937)', () => {
         workspaceName: undefined,
         worktreeName: undefined,
         chatTitle: undefined,
-      } as Partial<ScheduledActivity['action']>),
+      }),
     );
     await settle();
 
@@ -311,7 +311,7 @@ describe('useAutomationChatTargetAvailability (CAN-2937)', () => {
         workspaceName: undefined,
         worktreeName: undefined,
         chatTitle: 'Checklist',
-      } as Partial<ScheduledActivity['action']>),
+      }),
     );
     await settle();
 

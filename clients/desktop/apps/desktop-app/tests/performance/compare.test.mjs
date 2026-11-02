@@ -496,6 +496,7 @@ test('combining refuses sample artifacts that mix kinds, builds or workloads', (
       /measured builds/,
     ],
     [{ config: { startupSettleMs: 15000 } }, /configuration: startupSettleMs/],
+    [{ treatment: { arm: 'on' } }, /mix treatments/],
   ])
     assert.throws(
       () => combineSampleArtifacts([run(0), run(1, fields)], combineOptions),

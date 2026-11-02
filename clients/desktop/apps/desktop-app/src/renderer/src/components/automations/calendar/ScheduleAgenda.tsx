@@ -117,7 +117,7 @@ export function ScheduleAgenda({
                     : undefined
                 }
                 disabled={!clickable}
-                className={`flex items-center gap-3 rounded-md px-2 py-1.5 text-left text-xs transition ${
+                className={`flex items-center gap-3 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
                   clickable
                     ? 'cursor-pointer hover:bg-fg-primary/[0.04]'
                     : 'cursor-default'

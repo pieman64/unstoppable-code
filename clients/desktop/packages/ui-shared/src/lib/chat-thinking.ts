@@ -1,21 +1,18 @@
-// Permanent legacy-host fallback for chat composers whose model catalog does
-// not declare supported thinking levels. Model-aware controls consume the
-// protocol helpers directly.
+// Shared effort-control helpers and permanent provider-only legacy fallbacks.
+// Model-aware callers resolve canonical levels through the protocol clamp.
 
 import {
+  THINKING_LEVEL_LABELS,
   advanceThinkingLevel,
   normalizeThinkingForUi,
   providerFallbackThinkingLevels,
+  type ThinkingLevel,
   type ThinkingUiLevel,
 } from '@canopy/protocol/thinking';
 
 /**
- * UI-selectable thinking levels (canonical `low` is hidden from the UI).
- * `ultra` is a per-model tier configured in the desktop model registry; it
- * can appear in projected desktop state but is not part of the provider-level
- * portal cycles below (the portal has no per-model support data, so cycling
- * from an `ultra` value falls back to the first cycle entry — the same
- * behavior a Codex-persisted `max` has always had).
+ * Legacy provider-only UI level type. Model-aware callers use ThinkingLevel
+ * and the model's canonical capability set, including a declared Low tier.
  */
 export type { ThinkingUiLevel as ChatThinkingUiLevel };
 
@@ -57,4 +54,39 @@ export function advanceChatThinkingLevel(
   return normalizeThinkingForUi(
     advanceThinkingLevel(current, providerFallbackThinkingLevels(providerType)),
   );
+}
+
+// Shared by the desktop panel, Portal capsule and compact overflow cycle.
+export function thinkingLevelLabel(
+  level: ThinkingLevel | undefined,
+  includeLow: boolean,
+): string {
+  return level === undefined
+    ? 'Default'
+    : level === 'low' && includeLow
+      ? 'Low'
+      : THINKING_LEVEL_LABELS[normalizeThinkingForUi(level)];
+}
+
+export function thinkingControlLevels(
+  supportedLevels: readonly ThinkingLevel[],
+  includeLow: boolean,
+): readonly ThinkingLevel[] {
+  return includeLow
+    ? supportedLevels
+    : supportedLevels.filter(
+        (level): level is ThinkingUiLevel => level !== 'low',
+      );
+}
+
+export function advanceThinkingControlLevel(
+  value: ThinkingLevel,
+  supportedLevels: readonly ThinkingLevel[],
+  includeLow: boolean,
+): ThinkingLevel {
+  if (!includeLow) return advanceThinkingLevel(value, supportedLevels);
+  const index = supportedLevels.indexOf(value);
+  if (supportedLevels.length === 0) return 'off';
+  if (index < 0) return supportedLevels[0] ?? 'off';
+  return supportedLevels[(index + 1) % supportedLevels.length] ?? 'off';
 }

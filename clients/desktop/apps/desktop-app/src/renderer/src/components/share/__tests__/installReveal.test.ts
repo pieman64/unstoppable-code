@@ -42,7 +42,7 @@ describe('installRevealNotice', () => {
   it('names the entity and the outcome', () => {
     expect(installRevealNotice('skill', 'installed')).toBe('Skill installed.');
     expect(installRevealNotice('pipeline', 'updated')).toBe(
-      'Pipeline updated.',
+      'Workflow updated.',
     );
     expect(installRevealNotice('workspace', 'installed')).toBe(
       'Project added.',
@@ -129,7 +129,7 @@ describe('openInstallReveal', () => {
     expect(localCollectionEntryId('col-1')).toBe('collection:local:col-1');
   });
 
-  it('marks a pipeline on Workflows → Library', () => {
+  it('marks a workflow on Workflows → Library', () => {
     openInstallReveal({
       target: { entity: 'pipeline', pipelineId: 'pipe-1' },
       outcome: 'updated',
@@ -137,7 +137,7 @@ describe('openInstallReveal', () => {
     const state = useNavigationStore.getState();
     expect(state.activePage).toBe('workflows-library');
     expect(state.pendingPipelineReveal).toEqual({ pipelineId: 'pipe-1' });
-    expect(mockAddToast).toHaveBeenCalledWith('Pipeline updated.', 'success');
+    expect(mockAddToast).toHaveBeenCalledWith('Workflow updated.', 'success');
   });
 
   it('opens an agent on its Marketplace detail rather than its editor', () => {

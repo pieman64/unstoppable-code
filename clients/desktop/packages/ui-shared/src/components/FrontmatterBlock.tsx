@@ -49,6 +49,7 @@ export function FrontmatterBlock({
 
   return (
     <div
+      data-selectable
       className={`rounded-lg border bg-secondary/30 px-4 py-3${
         className ? ` ${className}` : ''
       }`}

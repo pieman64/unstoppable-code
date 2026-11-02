@@ -4,6 +4,7 @@ import type {
   ChatCommandResult,
   SharedRunMetadata,
 } from '@canopy/desktop-shared/types';
+import { createEmptyTab } from '../chat/tab-utils';
 import type * as ChatStoreModule from '../chatStore';
 
 // Durable chat persistence is main-owned now; the renderer store only mutates
@@ -54,6 +55,7 @@ function seedTab(useChatStore: typeof ChatStoreModule.useChatStore): void {
         activeTabId: 'chat-1',
         tabs: [
           {
+            ...createEmptyTab({ model: 'claude-sonnet-4-6' }),
             id: 'chat-1',
             title: 'Chat',
             messages: [],

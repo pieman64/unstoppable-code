@@ -146,6 +146,43 @@ describe('isAutomationInContext', () => {
     ).toBe(true);
   });
 
+  it('files a pipeline with no project under its saved owner', () => {
+    const globalPipeline = {
+      type: 'worktree_pipeline' as const,
+      target: { kind: 'global' as const },
+      // Inert: a Personal project never files an organization's automation.
+      workspaceId: 'personal',
+      pipelineId: 'review',
+    };
+    const orgOwned = {
+      action: globalPipeline,
+      executionContext: `org:${ORG_A}`,
+    };
+    expect(isAutomationInContext(orgOwned, byId, ORG_A_CONTEXT, noLinks)).toBe(
+      true,
+    );
+    expect(isAutomationInContext(orgOwned, byId, PERSONAL, noLinks)).toBe(
+      false,
+    );
+    // An absent owner reads as Personal, not "show everywhere".
+    expect(
+      isAutomationInContext(
+        { action: globalPipeline },
+        byId,
+        ORG_A_CONTEXT,
+        noLinks,
+      ),
+    ).toBe(false);
+    expect(
+      isAutomationInContext(
+        { action: globalPipeline },
+        byId,
+        PERSONAL,
+        noLinks,
+      ),
+    ).toBe(true);
+  });
+
   it('does not scope while the context is unavailable', () => {
     expect(
       isAutomationInContext(

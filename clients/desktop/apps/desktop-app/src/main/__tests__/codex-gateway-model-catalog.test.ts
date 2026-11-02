@@ -53,15 +53,21 @@ function registerGatewayRoutes(
             {
               modelId: 'gpt-5.6-luna',
               gatewayId: 'openai/gpt-5.6-luna',
+              family: 'gpt',
               ...gatewayConfig,
+              supportedThinkingLevels: [
+                ...gatewayConfig.supportedThinkingLevels,
+              ],
             },
           ]
         : []),
       {
         modelId: 'deepseek-v4-pro',
         gatewayId: 'deepseek/deepseek-v4-pro',
+        family: 'deepseek',
         ...gatewayConfig,
         gatewayOnly: true,
+        supportedThinkingLevels: [...gatewayConfig.supportedThinkingLevels],
       },
     ],
   );
@@ -202,7 +208,9 @@ describe('Codex AI Gateway model catalog', () => {
         {
           modelId: 'gpt-5.6-luna',
           gatewayId: 'openai/gpt-5.6-luna-v2',
+          family: 'gpt',
           ...gatewayConfig,
+          supportedThinkingLevels: [...gatewayConfig.supportedThinkingLevels],
         },
       ],
     );

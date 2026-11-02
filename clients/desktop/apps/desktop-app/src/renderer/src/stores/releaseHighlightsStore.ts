@@ -55,6 +55,32 @@ export type ReleaseHighlightsAutomaticStatus =
   | 'cancelled'
   | 'settled';
 
+/**
+ * Interaction history for the automatic decision (CAN-5006). Kept in the
+ * store rather than the host so effect replay and remounts never reset it.
+ */
+export interface ReleaseHighlightsAutomaticGate {
+  /** The user interacted after tracking began, so presentation needs a milestone. */
+  readonly deferred: boolean;
+  readonly trackingStarted: boolean;
+  /** A return to Home or an accepted send arrived after the deferral. */
+  readonly milestoneArmed: boolean;
+  readonly lastInteractionAt: number | null;
+  readonly lastPointer: { readonly x: number; readonly y: number } | null;
+  readonly acceptedTurnObserved: boolean;
+  readonly composing: boolean;
+}
+
+export const INITIAL_AUTOMATIC_GATE: ReleaseHighlightsAutomaticGate = {
+  deferred: false,
+  trackingStarted: false,
+  milestoneArmed: false,
+  lastInteractionAt: null,
+  lastPointer: null,
+  acceptedTurnObserved: false,
+  composing: false,
+};
+
 interface ReleaseHighlightsStore {
   entries: readonly ReleaseNotesEntry[];
   loadEntries: (
@@ -62,6 +88,8 @@ interface ReleaseHighlightsStore {
   ) => Promise<readonly ReleaseNotesEntry[] | null>;
   initialSnapshot: ReleaseHighlightsInitialSnapshot | null;
   automaticStatus: ReleaseHighlightsAutomaticStatus;
+  automaticGate: ReleaseHighlightsAutomaticGate;
+  automaticGeneration: number;
   queued: QueuedAutomaticPresentation | null;
   presentation: ReleaseHighlightsPresentation | null;
   manuallyPresentedVersions: readonly string[];
@@ -74,11 +102,20 @@ interface ReleaseHighlightsStore {
   startAutomaticDecision: () => Promise<void>;
   /** Presents the queued dialog; the mounted host records it as seen. */
   presentQueuedAutomatic: () => void;
+  /** The user interacted while the automatic decision is still pending. */
+  noteAutomaticInteraction: (
+    at: number,
+    pointer?: { readonly x: number; readonly y: number },
+  ) => void;
+  /** Consume the first live worktree turn, including one before deferral. */
+  noteAutomaticAcceptedTurn: () => void;
+  noteAutomaticComposition: (composing: boolean) => void;
+  noteAutomaticTrackingStarted: () => void;
+  /** An idle milestone; it only counts once an interaction has deferred. */
+  noteAutomaticMilestone: () => void;
   /**
-   * Settings "What's new". Leaves automatic history alone, except when it
-   * pre-empts the automatic presentation of the same release: the user has
-   * seen those highlights, so the release is recorded instead of popping up
-   * again on the next launch.
+   * Settings "What's new" cancels the pending automatic attempt. When it
+   * shows the same queued release, record that release as seen as well.
    */
   openManual: (entry: ReleaseNotesEntry) => void;
   close: () => void;
@@ -90,6 +127,13 @@ function isEnabled(): boolean {
   return useFeatureFlagsStore
     .getState()
     .isEnabled(CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key);
+}
+
+/** Whether the automatic decision can still present this session. */
+export function isAutomaticPending(
+  status: ReleaseHighlightsAutomaticStatus,
+): boolean {
+  return status === 'idle' || status === 'deciding' || status === 'queued';
 }
 
 async function readAppVersion(): Promise<string | null> {
@@ -116,6 +160,8 @@ export const useReleaseHighlightsStore = create<ReleaseHighlightsStore>(
     },
     initialSnapshot: null,
     automaticStatus: 'idle',
+    automaticGate: INITIAL_AUTOMATIC_GATE,
+    automaticGeneration: 0,
     queued: null,
     presentation: null,
     manuallyPresentedVersions: [],
@@ -174,13 +220,13 @@ export const useReleaseHighlightsStore = create<ReleaseHighlightsStore>(
         set({ automaticStatus: 'settled' });
         return;
       }
-      if (get().automaticStatus !== 'deciding') return;
       if (get().manuallyPresentedVersions.includes(decision.entry.version)) {
         // Already shown from Settings while the version was loading.
         set({ automaticStatus: 'cancelled' });
         await recordReleaseHighlightsVersion(decision.version);
         return;
       }
+      if (get().automaticStatus !== 'deciding') return;
       const entry = brandReleaseNotesEntry(decision.entry);
       set({
         automaticStatus: 'queued',
@@ -188,7 +234,12 @@ export const useReleaseHighlightsStore = create<ReleaseHighlightsStore>(
       });
       // The origin never gates the dialog; it only adds the notes action.
       const fullNotesUrl = await resolveReleaseNotesUrl(entry);
-      if (fullNotesUrl === null) return;
+      if (
+        fullNotesUrl === null ||
+        !isEnabled() ||
+        generation !== rolloutGeneration
+      )
+        return;
       const { queued, presentation } = get();
       if (queued?.entry.version === entry.version) {
         set({ queued: { ...queued, fullNotesUrl } });
@@ -224,6 +275,64 @@ export const useReleaseHighlightsStore = create<ReleaseHighlightsStore>(
       });
     },
 
+    noteAutomaticInteraction: (at, pointer): void => {
+      const { automaticGate, automaticStatus } = get();
+      if (!isAutomaticPending(automaticStatus)) return;
+      set({
+        automaticGate: {
+          ...automaticGate,
+          deferred: true,
+          lastInteractionAt: at,
+          ...(pointer ? { lastPointer: pointer } : {}),
+        },
+      });
+    },
+
+    noteAutomaticTrackingStarted: (): void => {
+      const { automaticGate, automaticStatus } = get();
+      if (!isAutomaticPending(automaticStatus) || automaticGate.trackingStarted)
+        return;
+      set({ automaticGate: { ...automaticGate, trackingStarted: true } });
+    },
+
+    noteAutomaticComposition: (composing): void => {
+      const { automaticGate, automaticStatus } = get();
+      if (
+        !isAutomaticPending(automaticStatus) ||
+        automaticGate.composing === composing
+      )
+        return;
+      set({ automaticGate: { ...automaticGate, composing } });
+    },
+
+    noteAutomaticAcceptedTurn: (): void => {
+      const { automaticGate, automaticStatus } = get();
+      if (
+        !isAutomaticPending(automaticStatus) ||
+        automaticGate.acceptedTurnObserved
+      )
+        return;
+      set({
+        automaticGate: {
+          ...automaticGate,
+          acceptedTurnObserved: true,
+          milestoneArmed:
+            automaticGate.milestoneArmed || automaticGate.deferred,
+        },
+      });
+    },
+
+    noteAutomaticMilestone: (): void => {
+      const { automaticGate } = get();
+      if (
+        !isAutomaticPending(get().automaticStatus) ||
+        !automaticGate.deferred ||
+        automaticGate.milestoneArmed
+      )
+        return;
+      set({ automaticGate: { ...automaticGate, milestoneArmed: true } });
+    },
+
     recordAutomaticPresentation: (id): void => {
       const { presentation, automaticallyPresentedVersions } = get();
       if (
@@ -250,7 +359,8 @@ export const useReleaseHighlightsStore = create<ReleaseHighlightsStore>(
       const entry = brandReleaseNotesEntry(rawEntry);
       nextPresentationId += 1;
       const id = nextPresentationId;
-      const { queued } = get();
+      const { queued, automaticStatus } = get();
+      const cancelsAutomatic = isAutomaticPending(automaticStatus);
       const cancelsQueued =
         queued !== null && queued.entry.version === entry.version;
       if (cancelsQueued) {
@@ -271,8 +381,13 @@ export const useReleaseHighlightsStore = create<ReleaseHighlightsStore>(
           ...get().manuallyPresentedVersions,
           entry.version,
         ],
-        ...(cancelsQueued
-          ? { queued: null, automaticStatus: 'cancelled' as const }
+        ...(cancelsAutomatic
+          ? {
+              queued: null,
+              automaticStatus: 'cancelled' as const,
+              automaticGate: INITIAL_AUTOMATIC_GATE,
+              automaticGeneration: get().automaticGeneration + 1,
+            }
           : {}),
       });
       void resolveReleaseNotesUrl(entry).then((fullNotesUrl): void => {
@@ -307,5 +422,9 @@ useFeatureFlagsStore.subscribe((state, previous) => {
     queued: null,
     presentation: null,
     automaticStatus: 'idle',
+    // A re-enabled rollout starts a fresh decision with fresh history.
+    automaticGate: INITIAL_AUTOMATIC_GATE,
+    automaticGeneration:
+      useReleaseHighlightsStore.getState().automaticGeneration + 1,
   });
 });

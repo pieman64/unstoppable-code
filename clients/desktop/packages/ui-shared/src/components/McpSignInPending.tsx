@@ -9,8 +9,6 @@ import { Tooltip } from './Tooltip';
 
 /** The status of an MCP sign-in that waits in another tab. */
 export const MCP_SIGN_IN_WAITING_LABEL = 'Waiting for sign-in';
-/** {@link MCP_SIGN_IN_WAITING_LABEL} where a row's status pill has to fit it. */
-export const MCP_SIGN_IN_WAITING_SHORT_LABEL = 'Waiting…';
 export const MCP_SIGN_IN_REOPEN_LABEL = 'Reopen sign-in';
 export const MCP_SIGN_IN_CANCEL_LABEL = 'Cancel sign-in';
 
@@ -19,34 +17,39 @@ export const MCP_SIGN_IN_CANCEL_LABEL = 'Cancel sign-in';
 const WAITING_PILL_CLASS_NAME = `${OPERATIONAL_STATUS_COLORS.active.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.active.foreground}`;
 
 interface McpSignInPendingStatusProps {
-  /**
-   * `pill` is a server row's status pill (**Waiting…**); `inline` is a
-   * detail line or dialog field (**Waiting for sign-in**).
-   */
+  /** `pill` is a server row's status pill; `inline` is a detail line or dialog field. */
   variant?: 'inline' | 'pill';
+  /** Named for assistive technology only: the row already shows the name. */
+  serviceName?: string;
   dataTestId?: string;
 }
 
 /** Announces that an MCP sign-in is waiting on its tab. */
 export function McpSignInPendingStatus({
   variant = 'inline',
+  serviceName,
   dataTestId,
 }: McpSignInPendingStatusProps): JSX.Element {
+  const accessibleLabel = serviceName
+    ? `Waiting for ${serviceName} sign-in`
+    : undefined;
   if (variant === 'pill')
     return (
       <span
         role="status"
         className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-3xs font-medium ${WAITING_PILL_CLASS_NAME}`}
+        aria-label={accessibleLabel}
         data-testid={dataTestId}
       >
         <LoadingSpinner decorative />
-        {MCP_SIGN_IN_WAITING_SHORT_LABEL}
+        {MCP_SIGN_IN_WAITING_LABEL}
       </span>
     );
   return (
     <span
       role="status"
       className="flex items-center gap-2"
+      aria-label={accessibleLabel}
       data-testid={dataTestId}
     >
       <LoadingSpinner decorative tone="active" />
@@ -58,6 +61,7 @@ export function McpSignInPendingStatus({
 interface McpSignInPendingActionsProps {
   /** The sign-in page; Reopen opens it in a new tab. */
   authorizationUrl: string;
+  serviceName?: string;
   /** Stops waiting. Without it, a compact row offers only Reopen. */
   onCancel?: () => void;
   /**
@@ -76,6 +80,7 @@ interface McpSignInPendingActionsProps {
 /** Reopens a waiting MCP sign-in, or stops waiting on it. */
 export function McpSignInPendingActions({
   authorizationUrl,
+  serviceName,
   onCancel,
   variant = 'full',
   reopenVariant = 'primary',
@@ -90,7 +95,11 @@ export function McpSignInPendingActions({
           href={authorizationUrl}
           target="_blank"
           rel="noopener noreferrer"
-          aria-label={MCP_SIGN_IN_REOPEN_LABEL}
+          aria-label={
+            serviceName
+              ? `Reopen ${serviceName} sign-in`
+              : MCP_SIGN_IN_REOPEN_LABEL
+          }
           data-testid={`${dataTestId}-reopen`}
         >
           Reopen
@@ -100,7 +109,11 @@ export function McpSignInPendingActions({
             <button
               type="button"
               className="focus-ring inline-flex h-5 w-5 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
-              aria-label={MCP_SIGN_IN_CANCEL_LABEL}
+              aria-label={
+                serviceName
+                  ? `Cancel ${serviceName} sign-in`
+                  : MCP_SIGN_IN_CANCEL_LABEL
+              }
               onClick={onCancel}
               data-testid={`${dataTestId}-cancel`}
             >

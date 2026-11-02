@@ -21,6 +21,14 @@ import type {
   CreateSharedContainerLinkResult,
 } from '@canopy/protocol/shared-containers';
 import { ciphertextLengthFor } from '@canopy/artifact-crypto';
+import { createHash } from 'node:crypto';
+import {
+  CAPABILITY_PACKAGE_MAX_FILE_BYTES,
+  isCapabilityPackageDigest,
+  isCapabilityPackageManifest,
+  isPipelineContentHash,
+} from '@canopy/protocol/pipelines';
+import { computePipelinePackageDigestSync } from '@canopy/desktop-shared/node';
 import type {
   ListDismissedSharedContainersRequest,
   ListSharedContainerRecipientsRequest,
@@ -32,10 +40,16 @@ import {
   assertCanopyCloudCapability,
   CanopyCloudClientError,
   requestCanopyCloudJson,
+  requestCanopyCloudBinary,
   requestCanopyCloudNoContent,
   resolveCanopyCloudCredentialContext,
   type CanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
+import {
+  withPackageVersionNegotiation,
+  type PipelinePackageDownload,
+} from '../pipelines/canopy-server-client';
+import { isRecord } from '../lib/type-guards';
 
 // CAN-2544 mounted these routes at the unbranded `api/v1/**` root
 // (`apps/web/src/app/api/v1/shared-containers/**`), not under the legacy
@@ -216,8 +230,11 @@ async function listSharedContainers(
     query.set('worktreeId', request.worktreeId);
   }
   appendPagination(query, request);
-  return requestCanopyCloudJson<ListSharedContainersResponse>(
-    withQuery(`${API_PREFIX}/${route}`, query),
+  return withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudJson<ListSharedContainersResponse>(
+      withQuery(`${API_PREFIX}/${route}`, query),
+      { headers },
+    ),
   );
 }
 
@@ -237,8 +254,11 @@ export async function listSharedContainersWithMe(
   // email or from outside their organizations.
   const query = organizationQuery(request.organizationId);
   appendPagination(query, request);
-  return requestCanopyCloudJson<ListSharedContainersResponse>(
-    withQuery(`${API_PREFIX}/shared-with-me`, query),
+  return withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudJson<ListSharedContainersResponse>(
+      withQuery(`${API_PREFIX}/shared-with-me`, query),
+      { headers },
+    ),
   );
 }
 
@@ -300,12 +320,14 @@ export async function fetchLatestSharedContainerRevision(
   signal?: AbortSignal,
 ): Promise<SharedContainerDetail> {
   await assertSupported(signal);
-  return requestCanopyCloudJson<SharedContainerDetail>(
-    withQuery(
-      `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/latest`,
-      organizationQuery(organizationId),
+  return withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudJson<SharedContainerDetail>(
+      withQuery(
+        `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/latest`,
+        organizationQuery(organizationId),
+      ),
+      { headers, signal },
     ),
-    { signal },
   );
 }
 
@@ -316,13 +338,91 @@ export async function fetchSharedContainerRevision(
   signal?: AbortSignal,
 ): Promise<SharedContainerFetchRevisionResponse> {
   await assertSupported(signal);
-  return requestCanopyCloudJson<SharedContainerFetchRevisionResponse>(
-    withQuery(
-      `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/${encodeURIComponent(revisionId)}`,
-      organizationQuery(organizationId),
+  return withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudJson<SharedContainerFetchRevisionResponse>(
+      withQuery(
+        `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/${encodeURIComponent(revisionId)}`,
+        organizationQuery(organizationId),
+      ),
+      { headers, signal },
     ),
-    { signal },
   );
+}
+
+function revisionPackagePath(containerId: string, revisionId: string): string {
+  return `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/${encodeURIComponent(revisionId)}/package`;
+}
+
+function revisionPackageQuery(
+  organizationId: string | undefined,
+  expectedPackageDigest: string,
+): URLSearchParams {
+  if (!isCapabilityPackageDigest(expectedPackageDigest)) {
+    throw new Error('Invalid shared-container package digest');
+  }
+  const query = organizationQuery(organizationId);
+  query.set('expectedPackageDigest', expectedPackageDigest);
+  return query;
+}
+
+/** Authenticated, revision-pinned reads; never resolve through a link or latest. */
+export async function getSharedContainerRevisionPackage(
+  containerId: string,
+  revisionId: string,
+  organizationId: string | undefined,
+  expectedPackageDigest: string,
+  signal?: AbortSignal,
+): Promise<PipelinePackageDownload> {
+  const query = revisionPackageQuery(organizationId, expectedPackageDigest);
+  await assertSupported(signal);
+  const download = await withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudJson<unknown>(
+      withQuery(revisionPackagePath(containerId, revisionId), query),
+      { headers, signal },
+    ),
+  );
+  if (!isRecord(download) || !isCapabilityPackageManifest(download.manifest)) {
+    throw new Error('Shared-container package manifest is invalid');
+  }
+  if (
+    download.digest !== expectedPackageDigest ||
+    computePipelinePackageDigestSync(download.manifest) !==
+      expectedPackageDigest
+  ) {
+    throw new Error('Shared-container package digest mismatch');
+  }
+  return { digest: expectedPackageDigest, manifest: download.manifest };
+}
+
+export async function getSharedContainerRevisionPackageBlob(
+  containerId: string,
+  revisionId: string,
+  organizationId: string | undefined,
+  expectedPackageDigest: string,
+  sha256: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const query = revisionPackageQuery(organizationId, expectedPackageDigest);
+  if (!isPipelineContentHash(sha256)) {
+    throw new Error('Invalid shared-container package blob hash');
+  }
+  await assertSupported(signal);
+  const bytes = await withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudBinary(
+      withQuery(
+        `${revisionPackagePath(containerId, revisionId)}/blobs/${encodeURIComponent(sha256)}`,
+        query,
+      ),
+      { headers, signal },
+    ),
+  );
+  if (
+    bytes.byteLength > CAPABILITY_PACKAGE_MAX_FILE_BYTES ||
+    createHash('sha256').update(bytes).digest('hex') !== sha256
+  ) {
+    throw new Error('Shared-container package blob hash or size mismatch');
+  }
+  return new Uint8Array(bytes);
 }
 
 export async function requestSharedContainerArtifactDownloadUrls(
@@ -352,9 +452,11 @@ export async function stageSharedContainerRevision(
   signal?: AbortSignal,
 ): Promise<SharedContainerStageRevisionResponse> {
   await assertSupported(signal);
-  return requestCanopyCloudJson<SharedContainerStageRevisionResponse>(
-    `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/stage`,
-    { method: 'POST', body: JSON.stringify(request), signal },
+  return withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudJson<SharedContainerStageRevisionResponse>(
+      `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/stage`,
+      { method: 'POST', body: JSON.stringify(request), headers, signal },
+    ),
   );
 }
 
@@ -365,16 +467,19 @@ export async function commitSharedContainerRevision(
   signal?: AbortSignal,
 ): Promise<SharedContainerCommitRevisionResponse> {
   await assertSupported(signal);
-  return requestCanopyCloudJson<SharedContainerCommitRevisionResponse>(
-    withQuery(
-      `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/commit`,
-      organizationQuery(organizationId),
+  return withPackageVersionNegotiation((headers) =>
+    requestCanopyCloudJson<SharedContainerCommitRevisionResponse>(
+      withQuery(
+        `${API_PREFIX}/${encodeURIComponent(containerId)}/revisions/commit`,
+        organizationQuery(organizationId),
+      ),
+      {
+        method: 'POST',
+        body: JSON.stringify({ stagingSessionId }),
+        headers,
+        signal,
+      },
     ),
-    {
-      method: 'POST',
-      body: JSON.stringify({ stagingSessionId }),
-      signal,
-    },
   );
 }
 

@@ -183,9 +183,11 @@ beforeEach(() => {
       truncated: false,
     };
   });
-  jest
-    .mocked(listPortalMarketplaces)
-    .mockResolvedValue({ marketplaces: [], truncated: false });
+  jest.mocked(listPortalMarketplaces).mockResolvedValue({
+    marketplaces: [],
+    lastRefreshed: '',
+    truncated: false,
+  });
   cache([]);
 });
 afterEach(() => jest.useRealTimers());
@@ -250,11 +252,17 @@ it.each([
   { cachePath: '/cache' },
   {
     cachePath: undefined,
-    globalInstallStatus: { claude: { available: true, installed: true } },
+    globalInstallStatus: {
+      claude: { available: true, installed: true },
+      checkedAt: '2026-08-27T00:00:00.000Z',
+    },
   },
   {
     cachePath: undefined,
-    globalInstallStatus: { codex: { available: true, installed: true } },
+    globalInstallStatus: {
+      codex: { available: true, installed: true },
+      checkedAt: '2026-08-27T00:00:00.000Z',
+    },
   },
 ] satisfies Partial<PluginInfo>[])(
   'accepts each installation signal: %j',
@@ -406,9 +414,11 @@ it.each([2000, 2001])('bounds plugin source rows at %s', async (count) => {
   expect((await readCapabilityInventory('skill')).items).toHaveLength(2000);
 });
 it('propagates mixed-state marketplace truncation to both tiers', async () => {
-  jest
-    .mocked(listPortalMarketplaces)
-    .mockResolvedValue({ marketplaces: [], truncated: true });
+  jest.mocked(listPortalMarketplaces).mockResolvedValue({
+    marketplaces: [],
+    lastRefreshed: '',
+    truncated: true,
+  });
   expect(await readCapabilityInventory('plugin')).toMatchObject({
     unavailable: true,
     partialTiers: ['installed', 'available'],

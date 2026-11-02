@@ -4,6 +4,7 @@ import {
 } from '@canopy/agent-transcript/lib/subagent-tree/native-inputs';
 import {
   buildSubagentTree,
+  type AgentUsage,
   type SubagentTree,
   type WorkflowRunSubagentInput,
 } from '@canopy/agent-transcript';
@@ -67,6 +68,7 @@ interface MutableTreeRecord {
   rootChatOpen: boolean;
   rootTitle: string;
   messages: readonly ChatMessage[] | null;
+  agentUsage: Readonly<Record<string, AgentUsage>> | undefined;
   workflowLocations: readonly WorkflowRunLocation[];
   workflowInputs: readonly WorkflowRunSubagentInput[];
   workflowCacheEntries: ReadonlyMap<string, WorkflowRunCacheEntry>;
@@ -215,6 +217,7 @@ function ensureRecord(
     rootChatOpen: false,
     rootTitle: rootChatId,
     messages: null,
+    agentUsage: undefined,
     workflowLocations: [],
     workflowInputs: [],
     workflowCacheEntries: new Map(),
@@ -346,6 +349,7 @@ function updateLoadedInputs(record: MutableTreeRecord): void {
       record.backgroundStatuses.get(toolUseId)?.status,
     backgroundSettledAtFor: (toolUseId) =>
       record.backgroundStatuses.get(toolUseId)?.settledAt,
+    ...(record.agentUsage ? { agentUsage: record.agentUsage } : {}),
   });
 }
 
@@ -584,6 +588,7 @@ export function acquireSubagentTree(
     record.unsubscribeBackgroundActivity = null;
     unsubscribeWorkflowRuns(record);
     record.messages = null;
+    record.agentUsage = undefined;
     record.workflowLocations = [];
     record.workflowInputs = [];
     record.workflowReadsSettledOnce = false;
@@ -601,11 +606,14 @@ export function updateSubagentTreeRootChat(
     readonly rootChatOpen: boolean;
     readonly title: string;
     readonly messages: readonly ChatMessage[] | null;
+    readonly agentUsage?: Readonly<Record<string, AgentUsage>>;
   },
 ): void {
   const record = ensureRecord(scope, rootChatId);
   const nextMessages = input.rootChatOpen ? input.messages : null;
+  const nextAgentUsage = input.rootChatOpen ? input.agentUsage : undefined;
   const messageChanged = record.messages !== nextMessages;
+  const agentUsageChanged = record.agentUsage !== nextAgentUsage;
   const rootChanged =
     record.rootChatOpen !== input.rootChatOpen ||
     record.hydrated !== input.hydrated ||
@@ -613,6 +621,8 @@ export function updateSubagentTreeRootChat(
   record.hydrated = input.hydrated;
   record.rootChatOpen = input.rootChatOpen;
   record.rootTitle = input.title;
+  record.agentUsage = nextAgentUsage;
+  if (agentUsageChanged && !messageChanged) updateLoadedInputs(record);
   if (messageChanged) {
     record.messages = nextMessages;
     const worktreeKey = `${scope.projectId}/${scope.worktreeId}`;
@@ -626,7 +636,7 @@ export function updateSubagentTreeRootChat(
       nextMessages === null ? [] : collectWorkflowRunLocations(nextMessages),
     );
   }
-  if (rootChanged || messageChanged) {
+  if (rootChanged || messageChanged || agentUsageChanged) {
     buildTree(record);
     publish(record);
   }

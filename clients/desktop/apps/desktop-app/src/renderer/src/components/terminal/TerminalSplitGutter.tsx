@@ -49,7 +49,6 @@ export function TerminalSplitGutter({
     <ResizeHandle
       orientation="horizontal"
       className="w-1.5 items-stretch"
-      indicatorClassName="my-1"
       onDrag={updateFromPointer}
       onCommit={onCommit}
       ariaLabel={`Resize terminal split ${index + 1} of ${paneCount - 1}`}

@@ -1,7 +1,5 @@
-import type {
-  CopilotConnectionStatus,
-  CopilotAccountUsage,
-} from '@canopy/desktop-shared/types';
+import type { CopilotConnectionStatus } from '@canopy/desktop-shared/types';
+import type { CopilotAccountUsage } from '@canopy/desktop-shared/types/copilot-connection';
 const mockStatus = jest.fn<Promise<CopilotConnectionStatus>, []>();
 const mockReadUsage = jest.fn<Promise<CopilotAccountUsage>, [AbortSignal]>();
 jest.mock('../copilot/connection', () => ({

@@ -1,3 +1,7 @@
+import {
+  MODEL_LIBRARY_PROTOCOL_HEADER,
+  MODEL_LIBRARY_PROTOCOL_VERSION,
+} from '@canopy/protocol/models';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   createServer,
@@ -11,9 +15,25 @@ import {
   AI_CREDITS_GATEWAY_DELIVERY,
   AI_CREDITS_PROXY_ERROR_MARKER,
   parseCanopyProxyError,
+  type CanopyProxyError,
 } from '@canopy/protocol';
+import {
+  AI_CREDITS_ATTRIBUTION_WORKSPACE_HEADER,
+  AI_CREDITS_ATTRIBUTION_WORKTREE_HEADER,
+  AI_CREDITS_ORG_PROJECT_HEADER,
+  AI_CREDITS_WORK_OWNER_HEADER,
+} from '@canopy/protocol/llm-gateway';
+import { isSyntacticallyValidModelId } from '@canopy/desktop-shared/lib/model-id';
 import { recordSessionProxyFailure } from './ai-credits-quota-state';
 
+const MAX_INFERENCE_REQUESTS_PER_LEASE = 1024;
+const INFERENCE_ATTRIBUTION_HEADERS = new Set<string>([
+  MODEL_LIBRARY_PROTOCOL_HEADER,
+  AI_CREDITS_ATTRIBUTION_WORKSPACE_HEADER,
+  AI_CREDITS_ATTRIBUTION_WORKTREE_HEADER,
+  AI_CREDITS_ORG_PROJECT_HEADER,
+  AI_CREDITS_WORK_OWNER_HEADER,
+]);
 export const CODEX_PROXY_ROUTE_UNAVAILABLE_MESSAGE =
   'AI Credits proxy route is no longer available.';
 
@@ -134,7 +154,8 @@ type UpstreamAttemptOutcome =
       attempts: number;
       elapsedMs: number;
     }
-  | { kind: 'client-gone'; attempts: number; elapsedMs: number };
+  | { kind: 'client-gone'; attempts: number; elapsedMs: number }
+  | { kind: 'route-revoked' };
 
 export interface CodexGatewayProxyDiagnosticRecord {
   version: 1;
@@ -147,7 +168,7 @@ export interface CodexGatewayProxyDiagnosticRecord {
   projectId: string;
   worktreeId: string;
   chatId: string;
-  providerType: 'codex';
+  providerType: 'codex' | 'opencode';
   elapsedMs?: number;
   codexGatewayAttemptCount?: number;
   codexGatewayUpstreamStatus?: number;
@@ -183,12 +204,15 @@ export function setCodexGatewayProxyDiagnosticSink(
   diagnosticSink = sink;
 }
 
-export function deriveProxyDiagnosticIdentity(sessionId: string): {
+export function deriveProxyDiagnosticIdentity(
+  sessionId: string,
+  providerType: 'codex' | 'opencode' = 'codex',
+): {
   sessionKey: string;
   projectId: string;
   worktreeId: string;
   chatId: string;
-  providerType: 'codex';
+  providerType: 'codex' | 'opencode';
 } {
   if (sessionId.startsWith('pipeline:')) {
     const executionId = sessionId.split(':')[1];
@@ -197,7 +221,7 @@ export function deriveProxyDiagnosticIdentity(sessionId: string): {
       projectId: '',
       worktreeId: '',
       chatId: executionId ? `pipeline:${executionId}` : '',
-      providerType: 'codex',
+      providerType,
     };
   }
   const parts = sessionId.split('/');
@@ -208,7 +232,7 @@ export function deriveProxyDiagnosticIdentity(sessionId: string): {
       projectId,
       worktreeId,
       chatId,
-      providerType: 'codex',
+      providerType,
     };
   }
   return {
@@ -216,8 +240,37 @@ export function deriveProxyDiagnosticIdentity(sessionId: string): {
     projectId: '',
     worktreeId: '',
     chatId: '',
-    providerType: 'codex',
+    providerType,
   };
+}
+
+/** Trusted host policy for an explicit managed OpenCode turn. */
+interface OpenCodeGatewayInferencePolicy {
+  providerType: 'opencode';
+  modelId: string;
+  headers: Readonly<Record<string, string>>;
+}
+
+function snapshotInferencePolicy(
+  policy: OpenCodeGatewayInferencePolicy | undefined,
+): OpenCodeGatewayInferencePolicy | undefined {
+  if (!policy) return undefined;
+  const headers = { ...policy.headers };
+  if (
+    policy.providerType !== 'opencode' ||
+    !isSyntacticallyValidModelId(policy.modelId) ||
+    Object.entries(headers).some(
+      ([name, value]) =>
+        !INFERENCE_ATTRIBUTION_HEADERS.has(name) ||
+        typeof value !== 'string' ||
+        (name === MODEL_LIBRARY_PROTOCOL_HEADER &&
+          value !== String(MODEL_LIBRARY_PROTOCOL_VERSION)) ||
+        value.length > 2048 ||
+        /[^\x20-\x7e]/.test(value),
+    )
+  )
+    throw new Error('Invalid OpenCode inference lease policy');
+  return { providerType: 'opencode', modelId: policy.modelId, headers };
 }
 
 interface CodexGatewayRoute {
@@ -235,6 +288,9 @@ interface CodexGatewayRoute {
   /** Whether `x-canopy-*` request headers reach the upstream. */
   forwardCanopyHeaders: boolean;
   extraHeaders: Readonly<Record<string, string>>;
+  inferencePolicy?: OpenCodeGatewayInferencePolicy;
+  submittedBodies?: Set<string>;
+  inferenceFailure?: OpenCodeGatewayInferenceFailure;
   onCredentialRejected?: (
     status: 401 | 403,
     credentialVersion?: string,
@@ -437,12 +493,19 @@ function hasDotPathSegment(requestTarget: string): boolean {
     .some((segment) => segment === '.' || segment === '..');
 }
 
+interface OpenCodeGatewayInferenceFailure {
+  status?: number;
+  proxyFailure?: CanopyProxyError;
+}
+
 export interface CodexGatewayRouteLease {
   routeId: string;
   baseUrl: string;
+  /** Host-only evidence retained after revocation; absent for native broker routes. */
+  readInferenceFailure?: () => OpenCodeGatewayInferenceFailure | undefined;
 }
 
-function readBody(request: IncomingMessage): Promise<Buffer> {
+function readBody(request: IncomingMessage): Promise<Buffer<ArrayBuffer>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -533,6 +596,7 @@ export class CodexGatewayProxyService {
     /** Headers this route adds to every upstream request. */
     extraHeaders?: Readonly<Record<string, string>>;
     waitForQuotaRecovery?: (signal: AbortSignal) => Promise<void>;
+    inferencePolicy?: OpenCodeGatewayInferencePolicy;
     onCredentialRejected?: (
       status: 401 | 403,
       credentialVersion?: string,
@@ -547,22 +611,26 @@ export class CodexGatewayProxyService {
       readonly headers: Headers;
     }) => void;
   }): Promise<CodexGatewayRouteLease> {
-    await this.ensureStarted();
-    const routeId = randomBytes(24).toString('hex');
-    this.routes.set(routeId, {
+    const inferencePolicy = snapshotInferencePolicy(options.inferencePolicy);
+    const route: CodexGatewayRoute = {
       ...options,
       expiryHolds: 0,
       ...(options.waitForQuotaRecovery
         ? { quotaWaitController: new AbortController() }
         : {}),
-      allowedPaths: options.allowedPaths ?? ['/'],
-      allowedQueries: options.allowedQueries ?? [],
-      forwardHeaders: options.forwardHeaders ?? [],
-      stripCacheControl: options.stripCacheControl ?? false,
       forwardCanopyHeaders: options.forwardCanopyHeaders ?? true,
       extraHeaders: options.extraHeaders ?? {},
-    });
-    if (options.sessionId.startsWith('ephemeral:')) {
+      allowedPaths: [...(options.allowedPaths ?? ['/'])],
+      allowedQueries: [...(options.allowedQueries ?? [])],
+      forwardHeaders: [...(options.forwardHeaders ?? [])],
+      stripCacheControl: options.stripCacheControl ?? false,
+      inferencePolicy,
+      ...(inferencePolicy ? { submittedBodies: new Set<string>() } : {}),
+    };
+    await this.ensureStarted();
+    const routeId = randomBytes(24).toString('hex');
+    this.routes.set(routeId, route);
+    if (route.sessionId.startsWith('ephemeral:')) {
       const timer = setTimeout(
         () => this.removeRoute(routeId),
         EPHEMERAL_ROUTE_TTL_MS,
@@ -572,6 +640,23 @@ export class CodexGatewayProxyService {
     }
     return {
       routeId,
+      ...(inferencePolicy
+        ? {
+            readInferenceFailure: ():
+              | OpenCodeGatewayInferenceFailure
+              | undefined => {
+              const failure = route.inferenceFailure;
+              return failure
+                ? {
+                    ...failure,
+                    ...(failure.proxyFailure
+                      ? { proxyFailure: { ...failure.proxyFailure } }
+                      : {}),
+                  }
+                : undefined;
+            },
+          }
+        : {}),
       baseUrl: `http://127.0.0.1:${String(this.port)}/codex-gateway/${routeId}`,
     };
   }
@@ -621,6 +706,11 @@ export class CodexGatewayProxyService {
     }
   }
 
+  /** Release one host-owned turn without revoking another turn's lease. */
+  unregisterRoute(routeId: string): void {
+    this.removeRoute(routeId);
+  }
+
   async shutdown(): Promise<void> {
     for (const route of Array.from(this.routes.values()))
       route.quotaWaitController?.abort();
@@ -647,7 +737,7 @@ export class CodexGatewayProxyService {
 
   private emitDiagnostic(
     routeId: string,
-    sessionId: string,
+    route: CodexGatewayRoute,
     record: Omit<
       CodexGatewayProxyDiagnosticRecord,
       | 'version'
@@ -664,7 +754,10 @@ export class CodexGatewayProxyService {
       diagnosticSink?.({
         version: 1,
         timestamp: new Date().toISOString(),
-        ...deriveProxyDiagnosticIdentity(sessionId),
+        ...deriveProxyDiagnosticIdentity(
+          route.sessionId,
+          route.inferencePolicy?.providerType,
+        ),
         codexGatewayRouteRef: createHash('sha256')
           .update(routeId)
           .digest('hex')
@@ -726,12 +819,13 @@ export class CodexGatewayProxyService {
   private async fetchUpstreamWithRetry(options: {
     upstreamUrl: URL;
     headers: Headers;
-    body: Buffer;
+    body: Buffer<ArrayBuffer>;
     signal: AbortSignal;
     clientGone: () => boolean;
     budgetExpired: () => boolean;
     /** Sees every upstream response, retried ones included. */
     onResponse?: (response: Response) => void;
+    inferenceRouteActive?: () => boolean;
   }): Promise<UpstreamAttemptOutcome> {
     const startedAt = this.now();
     const maxAttempts = this.retryDelaysMs.length + 1;
@@ -740,6 +834,8 @@ export class CodexGatewayProxyService {
     let lastErrorCode: string | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (options.inferenceRouteActive && !options.inferenceRouteActive())
+        return { kind: 'route-revoked' };
       // Re-check the deadline immediately before every attempt after the first.
       // The pre-sleep checks below are PREDICTIVE (`elapsedMs + delayMs`), and
       // since the budget timer is deliberately passive nothing interrupts a
@@ -769,6 +865,7 @@ export class CodexGatewayProxyService {
           headers: options.headers,
           body: options.body,
           signal: options.signal,
+          redirect: options.inferenceRouteActive ? 'error' : 'follow',
         });
         try {
           options.onResponse?.(upstream);
@@ -779,7 +876,10 @@ export class CodexGatewayProxyService {
         const retryable =
           RETRYABLE_HTTP_STATUSES.has(upstream.status) &&
           !isConcurrencyGuard(upstream) &&
-          !hasAmbiguousDelivery(upstream);
+          !hasAmbiguousDelivery(upstream) &&
+          (!options.inferenceRouteActive ||
+            upstream.headers.get(AI_CREDITS_GATEWAY_DELIVERY.header) ===
+              AI_CREDITS_GATEWAY_DELIVERY.notSent);
         if (
           !retryable ||
           attempt === maxAttempts ||
@@ -1024,7 +1124,7 @@ export class CodexGatewayProxyService {
       !route.allowedPaths.includes(apiPath)
     ) {
       const correlationId = randomUUID();
-      this.emitDiagnostic(routeId, route.sessionId, {
+      this.emitDiagnostic(routeId, route, {
         kind: 'codex_gateway_proxy_failed',
         codexGatewayAttemptCount: 0,
         codexGatewayFailureCode: 'invalid_request',
@@ -1040,10 +1140,54 @@ export class CodexGatewayProxyService {
       return;
     }
     const upstreamSignal = route.upstreamSignal?.();
-    const resolvedToken = await route.resolveToken();
-    if (!resolvedToken || upstreamSignal?.aborted) {
+    const refuseInferenceRequest = (
+      status: number,
+      message: string,
+      reason: string,
+    ): void => {
+      if (route.inferencePolicy) route.inferenceFailure ??= { status };
       const correlationId = randomUUID();
-      this.emitDiagnostic(routeId, route.sessionId, {
+      this.emitDiagnostic(routeId, route, {
+        kind: 'codex_gateway_proxy_failed',
+        codexGatewayFailureCode: 'invalid_request',
+        codexGatewayCorrelationId: correlationId,
+        codexGatewayRetryReason: reason,
+      });
+      writeProxyError(response, status, 'invalid_request', message, {
+        correlationId,
+      });
+    };
+    const inferenceRouteActive = route.inferencePolicy
+      ? (): boolean => this.routes.get(routeId) === route
+      : undefined;
+    const rejectRevokedInferenceRoute = (): boolean => {
+      if (!inferenceRouteActive) return false;
+      if (inferenceRouteActive() && !request.aborted && !response.destroyed)
+        return false;
+      this.removeRoute(routeId);
+      if (!response.destroyed)
+        refuseInferenceRequest(
+          404,
+          'AI Credits proxy route is no longer available.',
+          'opencode_route_revoked',
+        );
+      return true;
+    };
+    let resolvedToken: CodexGatewayResolvedToken | string | null;
+    try {
+      resolvedToken = await route.resolveToken();
+    } catch (error) {
+      if (!inferenceRouteActive) throw error;
+      resolvedToken = null;
+    }
+    if (rejectRevokedInferenceRoute()) return;
+    if (!resolvedToken || upstreamSignal?.aborted) {
+      if (inferenceRouteActive) {
+        route.inferenceFailure ??= { status: 401 };
+        this.removeRoute(routeId);
+      }
+      const correlationId = randomUUID();
+      this.emitDiagnostic(routeId, route, {
         kind: 'codex_gateway_proxy_failed',
         codexGatewayAttemptCount: 0,
         codexGatewayFailureCode: 'credentials_unavailable',
@@ -1064,13 +1208,13 @@ export class CodexGatewayProxyService {
       typeof resolvedToken === 'string'
         ? undefined
         : resolvedToken.credentialVersion;
-    let body: Buffer;
+    let body: Buffer<ArrayBuffer>;
     try {
       body = await readBody(request);
     } catch (error) {
       if (error instanceof RangeError) {
         const correlationId = randomUUID();
-        this.emitDiagnostic(routeId, route.sessionId, {
+        this.emitDiagnostic(routeId, route, {
           kind: 'codex_gateway_proxy_failed',
           codexGatewayAttemptCount: 0,
           codexGatewayFailureCode: 'invalid_request',
@@ -1086,6 +1230,28 @@ export class CodexGatewayProxyService {
         return;
       }
       throw error;
+    }
+    if (rejectRevokedInferenceRoute()) return;
+    if (route.inferencePolicy) {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(body.toString('utf8'));
+      } catch {
+        payload = undefined;
+      }
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        Array.isArray(payload) ||
+        Reflect.get(payload, 'model') !== route.inferencePolicy.modelId
+      ) {
+        refuseInferenceRequest(
+          400,
+          'AI Credits request does not match the selected model.',
+          'opencode_model_mismatch',
+        );
+        return;
+      }
     }
     if (route.stripCacheControl) {
       try {
@@ -1106,11 +1272,38 @@ export class CodexGatewayProxyService {
         // Invalid JSON is relayed unchanged and rejected by the upstream.
       }
     }
+    if (route.submittedBodies) {
+      // Native retries can follow an HTTP 200 containing a stream error. Keep
+      // only hashes, bounded to this lease; never retain prompt bytes here.
+      const digest = createHash('sha256').update(body).digest('hex');
+      if (
+        route.submittedBodies.has(digest) ||
+        route.submittedBodies.size >= MAX_INFERENCE_REQUESTS_PER_LEASE
+      ) {
+        this.removeRoute(routeId);
+        refuseInferenceRequest(
+          404,
+          'OpenCode stopped this request. Send a new message to continue.',
+          route.submittedBodies.has(digest)
+            ? 'opencode_request_replay'
+            : 'opencode_lease_request_limit',
+        );
+        return;
+      }
+      route.submittedBodies.add(digest);
+    }
     const headers = new Headers();
     headers.set('authorization', `Bearer ${token}`);
     headers.set('content-type', contentType);
     for (const [name, value] of Object.entries(request.headers)) {
       const normalizedName = name.toLowerCase();
+      if (
+        route.inferencePolicy &&
+        (normalizedName.startsWith('x-canopy-') ||
+          normalizedName === 'authorization' ||
+          normalizedName === 'x-api-key')
+      )
+        continue;
       if (
         typeof value === 'string' &&
         ((route.forwardCanopyHeaders &&
@@ -1121,7 +1314,10 @@ export class CodexGatewayProxyService {
         headers.set(name, value);
       }
     }
-    for (const [name, value] of Object.entries(route.extraHeaders)) {
+    for (const [name, value] of Object.entries({
+      ...route.extraHeaders,
+      ...(route.inferencePolicy?.headers ?? {}),
+    })) {
       headers.set(name, value);
     }
     const abortController = new AbortController();
@@ -1182,6 +1378,7 @@ export class CodexGatewayProxyService {
           signal: abortController.signal,
           clientGone: () => clientGone,
           budgetExpired: () => budgetExpired,
+          inferenceRouteActive,
           // Every attempt is reported, so an account that answered a request
           // that was then retried is still counted for the chat.
           onResponse: (attempt) =>
@@ -1238,11 +1435,24 @@ export class CodexGatewayProxyService {
       // Downstream-disconnect cancellation stays wired through `abortUpstream`.
       clearTimeout(retryBudgetTimer);
       if (outcome.kind === 'client-gone') return;
+      if (outcome.kind === 'route-revoked') {
+        completed = true;
+        refuseInferenceRequest(
+          404,
+          'AI Credits proxy route is no longer available.',
+          'opencode_route_revoked',
+        );
+        return;
+      }
 
       if (outcome.kind === 'exhausted') {
+        if (inferenceRouteActive) {
+          route.inferenceFailure ??= { status: 502 };
+          this.removeRoute(routeId);
+        }
         const correlationId = randomUUID();
         if (outcome.attempts > 1) {
-          this.emitDiagnostic(routeId, route.sessionId, {
+          this.emitDiagnostic(routeId, route, {
             kind: 'codex_gateway_proxy_retry',
             elapsedMs: outcome.elapsedMs,
             codexGatewayAttemptCount: outcome.attempts,
@@ -1253,7 +1463,7 @@ export class CodexGatewayProxyService {
             codexGatewayCorrelationId: correlationId,
           });
         }
-        this.emitDiagnostic(routeId, route.sessionId, {
+        this.emitDiagnostic(routeId, route, {
           kind: 'codex_gateway_proxy_failed',
           elapsedMs: outcome.elapsedMs,
           codexGatewayAttemptCount: outcome.attempts,
@@ -1280,13 +1490,23 @@ export class CodexGatewayProxyService {
       }
 
       const upstream = outcome.response;
+      const upstreamInferenceFailure:
+        | OpenCodeGatewayInferenceFailure
+        | undefined =
+        inferenceRouteActive && upstream.status >= 400
+          ? { status: upstream.status }
+          : undefined;
+      if (upstreamInferenceFailure) {
+        route.inferenceFailure ??= upstreamInferenceFailure;
+        this.removeRoute(routeId);
+      }
       if (upstream.status === 401 || upstream.status === 403) {
         await route.onCredentialRejected?.(upstream.status, credentialVersion);
       }
       const correlationId =
         upstream.headers.get(AI_CREDITS_CORRELATION_HEADER) ?? undefined;
       if (outcome.attempts > 1) {
-        this.emitDiagnostic(routeId, route.sessionId, {
+        this.emitDiagnostic(routeId, route, {
           kind: 'codex_gateway_proxy_retry',
           elapsedMs: outcome.elapsedMs,
           codexGatewayAttemptCount: outcome.attempts,
@@ -1308,7 +1528,7 @@ export class CodexGatewayProxyService {
         RETRYABLE_HTTP_STATUSES.has(upstream.status) &&
         !isConcurrencyGuard(upstream)
       ) {
-        this.emitDiagnostic(routeId, route.sessionId, {
+        this.emitDiagnostic(routeId, route, {
           kind: 'codex_gateway_proxy_failed',
           elapsedMs: outcome.elapsedMs,
           codexGatewayAttemptCount: outcome.attempts,
@@ -1379,14 +1599,16 @@ export class CodexGatewayProxyService {
             (upstream.status !== NO_BILLING_SOURCE_STATUS ||
               parsed.code === 'no_billing_source');
           if (parsed !== null && recorded) {
-            recordSessionProxyFailure(route.sessionId, parsed);
+            if (upstreamInferenceFailure)
+              upstreamInferenceFailure.proxyFailure = parsed;
+            else recordSessionProxyFailure(route.sessionId, parsed);
           }
           if (upstream.status === NO_BILLING_SOURCE_STATUS) {
             // Emitted for BOTH outcomes. The record carries the route's own
             // session id, so triage can tell a body that never classified
             // apart from a verdict filed against a session key the failing
             // chat does not share.
-            this.emitDiagnostic(routeId, route.sessionId, {
+            this.emitDiagnostic(routeId, route, {
               kind: 'codex_gateway_no_billing_source',
               elapsedMs: outcome.elapsedMs,
               codexGatewayAttemptCount: outcome.attempts,
@@ -1426,6 +1648,10 @@ export class CodexGatewayProxyService {
       response.off('close', abortOnPrematureClose);
       upstreamSignal?.removeEventListener('abort', abortWithdrawn);
       if (!completed) {
+        if (inferenceRouteActive) {
+          route.inferenceFailure ??= {};
+          this.removeRoute(routeId);
+        }
         abortController.abort();
         await reader?.cancel().catch(() => {});
       }

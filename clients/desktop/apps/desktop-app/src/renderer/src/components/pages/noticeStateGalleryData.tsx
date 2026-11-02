@@ -5,12 +5,15 @@ import type {
   NoticeIntent,
 } from '@canopy/ui-shared/components';
 import { NoticeList, NoticeListItem, RetryCountdown } from '@canopy/ui-shared';
+import { LIFETIME_LIMIT_NOTICE_COPY } from '@canopy/ui-shared/components/chat/subagents/panel/LifetimeLimitNoticeDisplay';
 import {
   AgentAssistantIcon,
+  CoinsIcon,
   DocumentIcon,
   PluginsIcon,
   RevertIcon,
   SkillIcon,
+  TimeslotIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   DATA_SHARING_OPT_IN_PERSONAL_COPY,
@@ -20,6 +23,17 @@ import {
   dataSharingOptInErrorText,
   dataSharingOptInHeadline,
 } from '@canopy/ui-shared/components/DataSharingOptInCta';
+import {
+  FIRST_SEND_FAILED_CHOOSE_MODEL_LABEL,
+  FIRST_SEND_FAILED_RETRY_LABEL,
+  usageLimitModelSwitchActionLabel,
+  usageLimitModelSwitchFailureDetail,
+  usageLimitModelSwitchMessage,
+} from '@canopy/ui-shared/components';
+import {
+  FIRST_SEND_FAILED_TITLE,
+  homeModelFailureMessage,
+} from '@/components/home/homeModelFailureCopy';
 import { SPLIT_PR_BLOCKER_COPY } from '@/lib/splitPrEligibilityInputs';
 import { brandText } from '@/lib/brand';
 import { SKILL_SHARE_NUDGE_COPY } from '@/components/chat/SkillShareNudgeBanner';
@@ -84,7 +98,7 @@ export interface NoticeGalleryEntry {
   message: ReactNode;
   detail?: ReactNode;
   actions?: readonly NoticeGalleryAction[];
-  /** Plain trailing content in the actions slot (a live value, not a button). */
+  /** Plain trailing content in the actions slot (a live value, not a button), ahead of any buttons. */
   aside?: ReactNode;
   actionsPlacement?: NoticeActionsPlacement;
   dismissible?: boolean;
@@ -104,21 +118,160 @@ const lower = (copy: string): string =>
 
 export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
   {
+    id: 'delegation-lifetime-limit',
+    title: 'Managed-delegate lifetime limit',
+    note: 'Shared panel and refused-chat notices. The capability gate is static; unavailable storage never claims the worktree is full.',
+    entries: [
+      {
+        id: 'lifetime-limit-full',
+        title: 'Full: extension available',
+        intent: 'attention',
+        heading: LIFETIME_LIMIT_NOTICE_COPY.fullTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.fullMessage,
+        actions: [
+          { label: LIFETIME_LIMIT_NOTICE_COPY.extend, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'lifetime-limit-at-cap',
+        title: 'Full: build maximum',
+        intent: 'attention',
+        heading: LIFETIME_LIMIT_NOTICE_COPY.fullTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.atCapMessage,
+      },
+      {
+        id: 'lifetime-limit-read-only',
+        title: 'Full: extension unavailable',
+        intent: 'attention',
+        heading: LIFETIME_LIMIT_NOTICE_COPY.fullTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.readOnlyMessage,
+      },
+      {
+        id: 'lifetime-limit-unavailable',
+        title: 'Status unavailable',
+        intent: 'neutral',
+        heading: LIFETIME_LIMIT_NOTICE_COPY.unavailableTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.unavailableMessage,
+      },
+      {
+        id: 'lifetime-limit-gated',
+        title: 'Capability gated',
+        intent: 'neutral',
+        live: false,
+        heading: LIFETIME_LIMIT_NOTICE_COPY.gatedTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.gatedMessage,
+      },
+      {
+        id: 'lifetime-limit-pending',
+        title: 'Extension pending',
+        intent: 'attention',
+        heading: LIFETIME_LIMIT_NOTICE_COPY.fullTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.fullMessage,
+        actions: [
+          {
+            label: LIFETIME_LIMIT_NOTICE_COPY.extend,
+            variant: 'primary',
+            disabled: true,
+          },
+        ],
+      },
+      {
+        id: 'lifetime-limit-failed',
+        title: 'Extension failed',
+        intent: 'attention',
+        heading: LIFETIME_LIMIT_NOTICE_COPY.fullTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.fullMessage,
+        detail: LIFETIME_LIMIT_NOTICE_COPY.failed,
+        actions: [
+          { label: LIFETIME_LIMIT_NOTICE_COPY.extend, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'lifetime-limit-uncertain',
+        title: 'Extension uncertain',
+        intent: 'attention',
+        heading: LIFETIME_LIMIT_NOTICE_COPY.fullTitle,
+        message: LIFETIME_LIMIT_NOTICE_COPY.fullMessage,
+        detail: LIFETIME_LIMIT_NOTICE_COPY.uncertain,
+        actions: [
+          { label: LIFETIME_LIMIT_NOTICE_COPY.extend, variant: 'primary' },
+        ],
+      },
+    ],
+  },
+  {
     id: 'composer',
     title: 'Composer',
     note: 'Stacked above the chat input in one column that collapses when nothing is up. Every one is a short title for the state, then the choice or next step on the same line.',
     entries: [
       {
+        id: 'plan-mode-suggestion',
+        title: 'Multi-step draft: plan mode suggestion',
+        intent: 'neutral',
+        heading: 'Plan first?',
+        message:
+          'This looks like a multi-step task. Plan mode works out the approach before making changes.',
+        actions: [{ label: 'Plan first', variant: 'primary' }],
+        dismissible: true,
+      },
+      {
         id: 'usage-limit-offer',
         title: 'Usage limit reached: credits available',
-        note: 'Three actions drop to their own row; the accent action is last.',
+        note: 'Shown only when no purchase from this chat was recorded. The message ends with a question and the buttons answer it on their own row; the accent action is last. The per-chat action is the accent; the global action is never the accent.',
         intent: 'attention',
         heading: 'Claude usage limit reached',
-        message: `Continue on ${brand} credits or wait for your quota to reset around 6:00 PM.`,
+        message:
+          'Your quota resets around 6:00 PM. Do you want to use AI Credits to keep going?',
         actions: [
-          { label: 'Use credits now' },
-          { label: 'Resume at 6:00 PM' },
-          { label: 'Always use credits', variant: 'primary' },
+          { label: 'No, resume at 6:00 PM' },
+          { label: 'Always' },
+          { label: 'Just this chat', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-model-not-routable',
+        title: 'Usage limit reached: model cannot use credits',
+        note: "The chat's model has no AI Credits route, so no credits are offered. The accent action moves this chat onto the credits model and routes it through credits until the limit resets. Worktree chats only; other surfaces show the message without the button.",
+        intent: 'attention',
+        heading: 'Codex usage limit reached',
+        message: usageLimitModelSwitchMessage({
+          modelLabel: 'GPT 6 Sol',
+          targetModelLabel: 'GPT 6 Luna',
+          resetsLabel: '8:14 PM',
+        }),
+        actions: [
+          { label: 'Resume at 8:14 PM' },
+          {
+            label: usageLimitModelSwitchActionLabel('GPT 6 Luna'),
+            variant: 'primary',
+          },
+        ],
+        actionsPlacement: 'below',
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-model-switch-failed',
+        title: 'Usage limit reached: model switch failed',
+        note: 'The switch was rejected, so routing is untouched and the notice keeps focus.',
+        intent: 'attention',
+        heading: 'Codex usage limit reached',
+        message: usageLimitModelSwitchMessage({
+          modelLabel: 'GPT 6 Sol',
+          targetModelLabel: 'GPT 6 Luna',
+          resetsLabel: '8:14 PM',
+        }),
+        detail: usageLimitModelSwitchFailureDetail({
+          targetModelLabel: 'GPT 6 Luna',
+          resetsLabel: '8:14 PM',
+        }),
+        actions: [
+          { label: 'Resume at 8:14 PM' },
+          {
+            label: usageLimitModelSwitchActionLabel('GPT 6 Luna'),
+            variant: 'primary',
+          },
         ],
         actionsPlacement: 'below',
         dismissible: true,
@@ -129,8 +282,35 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         note: 'Coverage is still loading or routing is already on; the accent action routes this chat through credits.',
         intent: 'attention',
         heading: 'Claude usage limit reached',
-        message: `Continue on ${brand} credits or wait for your quota to reset.`,
+        message: 'Do you want to use AI Credits until your quota resets?',
         actions: [{ label: 'Use AI Credits', variant: 'primary' }],
+        actionsPlacement: 'below',
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-arrival-routed',
+        title: 'Credits bought: using AI Credits',
+        note: "Get AI Credits routed this chat once the purchase landed. The purchase is the card's state until the first credits turn starts, so no balance repeats it; the reset time sits beside the secondary switch it explains.",
+        intent: 'positive',
+        heading: '16 AI Credits added.',
+        message: 'Ready to use in this chat.',
+        aside: (
+          <span className="mr-1 shrink-0 whitespace-nowrap tabular-nums fg-tertiary">
+            Claude resets 5:30 PM
+          </span>
+        ),
+        actions: [{ label: 'Switch to subscription' }],
+      },
+      {
+        id: 'usage-limit-arrival-fallback',
+        title: 'Credits bought: no per-chat choice',
+        note: 'The billing toggle is hidden or locked, so the chat cannot be routed and there is no per-chat action to take the accent. Both actions are secondary: a global action never takes the accent.',
+        intent: 'positive',
+        heading: '16 AI Credits added.',
+        message:
+          'Your quota resets around 6:00 PM. Do you want to use your credits to keep going?',
+        actions: [{ label: 'No, resume at 6:00 PM' }, { label: 'Always' }],
+        actionsPlacement: 'below',
         dismissible: true,
       },
       {
@@ -147,14 +327,16 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'usage-limit-scheduled',
         title: 'Usage limit reached: resume scheduled',
-        note: 'After "Resume at …" the message states the outcome and the used button is gone.',
+        note: 'After "No, resume at …" the message states the outcome and the used button is gone.',
         intent: 'attention',
         heading: 'Codex usage limit reached',
-        message: `This chat resumes automatically at Tue 9:00 AM, or continue on ${brand} credits now.`,
+        message:
+          'This chat resumes automatically at Tue 9:00 AM. Do you want to use AI Credits to keep going now?',
         actions: [
-          { label: 'Use credits now' },
-          { label: 'Always use credits', variant: 'primary' },
+          { label: 'Always' },
+          { label: 'Just this chat', variant: 'primary' },
         ],
+        actionsPlacement: 'below',
         dismissible: true,
       },
       {
@@ -163,12 +345,13 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         note: 'Post-action feedback is the only thing that ever appears under the line.',
         intent: 'attention',
         heading: 'Codex usage limit reached',
-        message: `Continue on ${brand} credits or wait for your quota to reset around 6:00 PM.`,
+        message:
+          'Your quota resets around 6:00 PM. Do you want to use AI Credits to keep going?',
         detail: "Couldn't schedule the resume. Try again.",
         actions: [
-          { label: 'Use credits now' },
-          { label: 'Resume at 6:00 PM' },
-          { label: 'Always use credits', variant: 'primary' },
+          { label: 'No, resume at 6:00 PM' },
+          { label: 'Always' },
+          { label: 'Just this chat', variant: 'primary' },
         ],
         actionsPlacement: 'below',
         dismissible: true,
@@ -176,13 +359,31 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'usage-limit-pricing',
         title: 'Usage limit reached: no credits to spend',
+        note: 'Names the credits its button gets, never a plan upgrade.',
         intent: 'attention',
         heading: 'Claude usage limit reached',
-        message: `Upgrade your ${brand} plan to keep working when you hit your provider limits.`,
+        message:
+          'Get AI Credits to keep going now, or wait for your quota to reset around 6:00 PM.',
         actions: [
           { label: 'Resume at reset' },
-          { label: 'Get credits', variant: 'primary' },
+          { label: 'Get AI Credits', variant: 'primary' },
         ],
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-pricing-handoff',
+        title: 'Usage limit reached: finishing checkout',
+        note: 'After Get AI Credits opens the browser, the checkout step replaces the limit, as on every purchase path. Waiting is not a warning.',
+        intent: 'neutral',
+        icon: <TimeslotIcon size={16} aria-hidden="true" />,
+        heading: 'Finish checkout in your browser',
+        message: 'Your credits show up here once the payment goes through.',
+        actions: [
+          { label: 'Resume at reset' },
+          { label: 'Reopen billing' },
+          { label: 'Check again', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
         dismissible: true,
       },
       {
@@ -224,6 +425,66 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
           "Your organization's model policy doesn't allow any model you can run right now, so ask your organization admin to allow a model you can use.",
       },
       {
+        id: 'no-billing-source-handoff',
+        title: 'No billing source: finishing checkout',
+        note: 'After Get AI Credits opens the browser, the title and message name the step. Waiting is not a warning, and every action is a button on its own row.',
+        intent: 'neutral',
+        icon: <TimeslotIcon size={16} aria-hidden="true" />,
+        heading: 'Finish checkout in your browser',
+        message: 'Your credits show up here once the payment goes through.',
+        actions: [
+          { label: 'Sign in to Claude instead' },
+          { label: 'Reopen billing' },
+          { label: 'Check again', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+      },
+      {
+        id: 'no-billing-source-handoff-uncovered',
+        title: 'No billing source: Check again found nothing yet',
+        note: 'The verdict becomes the title instead of a footnote.',
+        intent: 'neutral',
+        icon: <TimeslotIcon size={16} aria-hidden="true" />,
+        heading: 'No credits yet',
+        message: "If you've paid, they can take a minute to arrive.",
+        actions: [
+          { label: 'Sign in to Claude instead' },
+          { label: 'Reopen billing' },
+          { label: 'Check again', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+      },
+      {
+        id: 'no-billing-source-handoff-failed',
+        title: 'No billing source: Check again failed',
+        note: 'Says nothing about the balance; Check again is the retry.',
+        intent: 'attention',
+        heading: "Couldn't check your balance",
+        message: 'Try again in a moment.',
+        actions: [
+          { label: 'Sign in to Claude instead' },
+          { label: 'Check again', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+      },
+      {
+        id: 'no-billing-source-arrival-card',
+        title: 'No billing source: credits bought',
+        note: 'The Using AI Credits card confirms the purchase, with no second notice and no switch back to a subscription that could not pay. Clears on the next send.',
+        intent: 'positive',
+        heading: '16 AI Credits added.',
+        message: 'Ready to use in this chat.',
+      },
+      {
+        id: 'no-billing-source-arrival-notice',
+        title: 'No billing source: credits bought, no card',
+        note: 'Only for a chat that has no Using AI Credits card, such as a credits-only model without a provider sign-in.',
+        intent: 'positive',
+        heading: '16 AI Credits added.',
+        message: 'You can send it now.',
+        dismissible: true,
+      },
+      {
         id: 'no-billing-source-recovered',
         title: 'No billing source: credits arrived',
         intent: 'attention',
@@ -255,6 +516,29 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: orgWithoutPlanTitle('Acme'),
         message: askOwnerToChoosePlanCopy('Acme'),
         actions: [{ label: 'Back to Personal' }],
+      },
+      {
+        id: 'home-first-send-model-refused',
+        title: 'Home: selected model refused before sending',
+        note: 'CAN-5021. Home keeps the whole draft; the action opens the Home model picker and takes focus.',
+        intent: 'destructive',
+        heading: FIRST_SEND_FAILED_TITLE,
+        message: homeModelFailureMessage('not-routable', 'Sonnet 4.5'),
+        actions: [
+          { label: FIRST_SEND_FAILED_CHOOSE_MODEL_LABEL, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'chat-first-send-model-refused',
+        title: 'Chat: first send kept after its model was refused',
+        note: 'CAN-5021. The prompt stays above; nothing sends until Try again.',
+        intent: 'destructive',
+        heading: FIRST_SEND_FAILED_TITLE,
+        message: homeModelFailureMessage('model-rejected', 'Sonnet 4.5'),
+        actions: [
+          { label: FIRST_SEND_FAILED_RETRY_LABEL },
+          { label: FIRST_SEND_FAILED_CHOOSE_MODEL_LABEL, variant: 'primary' },
+        ],
       },
       {
         id: 'transient-retry-counting',
@@ -338,9 +622,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         title: 'Plan document detected',
         intent: 'neutral',
         icon: <DocumentIcon size={16} aria-hidden="true" />,
-        heading: 'Plan detected',
-        message: 'Found a plan document in this conversation.',
-        actions: [{ label: 'Import', variant: 'primary' }],
+        heading: 'Track rollout-plan.md as a plan?',
+        message:
+          'Review and comment on it in Plans, then implement it from there.',
+        actions: [{ label: 'Track plan', variant: 'primary' }],
         dismissible: true,
       },
       {
@@ -394,20 +679,23 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'routing-status-personal',
         title: 'AI Credits routing: personal balance',
-        note: 'The live value rides in the trailing slot, 20px from the edge: 12px deeper than a button.',
+        note: 'One line at the composer width: the balance rides in the sentence, and the trailing slot keeps the reset time beside the secondary switch.',
         intent: 'neutral',
+        icon: <CoinsIcon size={16} aria-hidden="true" />,
         heading: 'Using AI Credits',
-        message: 'This session is paid from your credits.',
+        message: '1,240 credits left.',
         aside: (
-          <span className="shrink-0 pr-3 font-medium tabular-nums">
-            1,240 credits
+          <span className="mr-1 shrink-0 whitespace-nowrap tabular-nums fg-tertiary">
+            Claude resets 5:30 PM
           </span>
         ),
+        actions: [{ label: 'Switch to subscription' }],
       },
       {
         id: 'routing-status-org',
         title: 'AI Credits routing: org pool',
         intent: 'neutral',
+        icon: <CoinsIcon size={16} aria-hidden="true" />,
         heading: 'Using AI Credits',
         message: "Acme's shared credit pool is covering this session.",
         aside: (
@@ -441,6 +729,21 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         message: 'The agent might be stuck.',
         actions: [{ label: 'Check status' }],
       },
+      {
+        id: 'stuck-agent-checked',
+        title: 'Stuck agent: checked state',
+        intent: 'attention',
+        heading: 'No response for 6 minutes',
+        message: 'The agent is still working.',
+      },
+      {
+        id: 'catching-up',
+        title: 'Catching up',
+        note: 'Main is behind the agent. Replaces the stuck warning and offers no action; the minutes follow the lag.',
+        intent: 'neutral',
+        heading: 'Catching up',
+        message: 'Updates are about 2 minutes behind the agent.',
+      },
     ],
   },
   {
@@ -465,26 +768,6 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
           </>
         ),
         actions: [{ label: 'Copy id' }, { label: 'Retry', variant: 'primary' }],
-      },
-      {
-        id: 'proxy-error-credits',
-        title: 'Proxy error: message needed credits',
-        intent: 'attention',
-        heading: 'This message needed AI Credits',
-        message: (
-          <>
-            Your {brand} AI Credits didn&apos;t cover this message. Add credits,
-            then send it again.{' '}
-            <span className="whitespace-nowrap">
-              Error id{' '}
-              <span className="font-mono select-all">req_8f3a2c9e1b</span>
-            </span>
-          </>
-        ),
-        actions: [
-          { label: 'Copy id' },
-          { label: 'Get AI Credits', variant: 'primary' },
-        ],
       },
       {
         id: 'chat-state-refreshing',
@@ -543,7 +826,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
   },
   {
     id: 'pipelines',
-    title: 'Pipelines',
+    title: 'Workflows',
     note: 'Run detail and the editor.',
     entries: [
       {
@@ -590,10 +873,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       },
       {
         id: 'editor-read-only',
-        title: 'Read-only pipeline',
+        title: 'Read-only workflow',
         intent: 'attention',
-        heading: 'Read-only pipeline',
-        message: 'Duplicate this shared pipeline to make local changes.',
+        heading: 'Read-only workflow',
+        message: 'Duplicate this shared workflow to make local changes.',
         live: false,
       },
       {
@@ -619,6 +902,36 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
     title: 'Settings and pages',
     note: 'The same primitive on settings tabs, panels, and dialogs.',
     entries: [
+      {
+        id: 'file-readonly-hint-edit',
+        title: 'Read-only preview: typing in a Cowork Markdown file',
+        note: 'File viewer. Raised by a typing attempt in an editable rendered view; Cowork names the raw view Edit. Escape or dismiss returns focus to the preview.',
+        intent: 'neutral',
+        heading: 'Formatted view is read-only.',
+        message: 'Switch to Edit to change the text.',
+        actions: [{ label: 'Switch to Edit', variant: 'primary' }],
+        dismissible: true,
+      },
+      {
+        id: 'file-readonly-hint-source',
+        title: 'Read-only preview: typing in a Code project table',
+        note: 'File viewer. Code projects keep the Source label.',
+        intent: 'neutral',
+        heading: 'Table view is read-only.',
+        message: 'Switch to Source to change the text.',
+        actions: [{ label: 'Switch to Source', variant: 'primary' }],
+        dismissible: true,
+      },
+      {
+        id: 'file-readonly-hint-html',
+        title: 'Read-only preview: editable HTML',
+        note: 'File viewer. The HTML frame keeps its own keys, so the hint stays in place while the rendered view is shown. Not dismissible.',
+        intent: 'neutral',
+        heading: 'Formatted view is read-only.',
+        message: 'Switch to Edit to change the text.',
+        actions: [{ label: 'Switch to Edit', variant: 'primary' }],
+        live: false,
+      },
       {
         id: 'data-sharing-opt-in-offer',
         title: 'Data-sharing opt-in: offer',
@@ -930,13 +1243,13 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'share-install-skill',
         title: 'Install review: skill installed',
-        note: 'Toast after the install review closes and the skill opens under Installed › Skills (CAN-3710). Plugin, pipeline and agent read the same way.',
+        note: 'Toast after the install review closes and the skill opens under Installed › Skills (CAN-3710). Plugin, workflow and agent read the same way.',
         intent: 'positive',
         message: installRevealNotice('skill', 'installed'),
       },
       {
         id: 'share-install-pipeline-updated',
-        title: 'Install review: pipeline updated',
+        title: 'Install review: workflow updated',
         note: 'An update lands on the same Library row, marked.',
         intent: 'positive',
         message: installRevealNotice('pipeline', 'updated'),

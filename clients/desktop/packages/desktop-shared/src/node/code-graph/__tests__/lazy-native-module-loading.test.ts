@@ -9,7 +9,7 @@
 // web-tree-sitter WASM runtime at boot. They are now loaded lazily on first
 // engine use. This test locks that in: importing the service module must NOT
 // load either native module, and building a graph must.
-import type * as PackagedModuleLoader from '../../lib/packaged-module-loader';
+import type * as NodeModuleLoader from '@canopy/code-graph/node-module-loader';
 import type * as TsModule from 'typescript';
 
 const mockLoadedModuleIds: string[] = [];
@@ -21,9 +21,9 @@ jest.mock('typescript', () => {
   return jest.requireActual<typeof TsModule>('typescript');
 });
 
-jest.mock('../../lib/packaged-module-loader', () => {
-  const actual = jest.requireActual<typeof PackagedModuleLoader>(
-    '../../lib/packaged-module-loader',
+jest.mock('@canopy/code-graph/node-module-loader', () => {
+  const actual = jest.requireActual<typeof NodeModuleLoader>(
+    '@canopy/code-graph/node-module-loader',
   );
   return {
     ...actual,

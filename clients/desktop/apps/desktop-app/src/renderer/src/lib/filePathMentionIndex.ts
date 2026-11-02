@@ -12,7 +12,17 @@ export interface FilePathMentionTarget {
 }
 
 export interface FilePathMentionIndex {
+  /**
+   * One entry per file, keyed by its display path with `/` separators.
+   * Lookup maps `./`, absolute and backslash spellings onto these keys, so a
+   * large repository does not pay for every spelling up front.
+   */
   aliases: Map<string, FilePathMentionTarget>;
+  /**
+   * The cwd as the files' absolute paths spell it, with `/` separators and a
+   * trailing `/`. An absolute mention drops it before lookup.
+   */
+  absolutePrefixes?: readonly string[];
   /** Literal delimiter names, longest first, keyed by their undecorated prefix. */
   delimiterAliasesByPrefix?: Map<string, string[]>;
   /**
@@ -40,18 +50,8 @@ const filePathMentionIndexCache = new WeakMap<
   Map<string, FilePathMentionIndex | null>
 >();
 
-function addAlias(
-  aliases: Map<string, FilePathMentionTarget>,
-  alias: string,
-  target: FilePathMentionTarget,
-): void {
-  const trimmed = alias.trim();
-  if (!trimmed) return;
-  if (!aliases.has(trimmed)) aliases.set(trimmed, target);
-  const slashVariant = trimmed.split('\\').join('/');
-  if (!aliases.has(slashVariant)) aliases.set(slashVariant, target);
-  const backslashVariant = trimmed.split('/').join('\\');
-  if (!aliases.has(backslashVariant)) aliases.set(backslashVariant, target);
+function toSlashes(value: string): string {
+  return value.includes('\\') ? value.split('\\').join('/') : value;
 }
 
 export function buildFilePathMentionIndex(
@@ -61,19 +61,26 @@ export function buildFilePathMentionIndex(
   if (!cwd || repos.length === 0) return null;
 
   const aliases = new Map<string, FilePathMentionTarget>();
+  const absolutePrefixes = new Set<string>();
   for (const repo of repos) {
     for (const file of repo.files) {
-      const displayPath = formatFileReferencePath(file.absolutePath, cwd);
-      if (displayPath === file.absolutePath) continue;
+      const { absolutePath } = file;
+      const formatted = formatFileReferencePath(absolutePath, cwd);
+      if (formatted === absolutePath) continue;
 
+      const prefixLength = absolutePath.length - formatted.length;
+      const isTail = prefixLength > 0 && absolutePath.endsWith(formatted);
+      if (isTail) {
+        absolutePrefixes.add(toSlashes(absolutePath.slice(0, prefixLength)));
+      }
       const target: FilePathMentionTarget = {
-        absolutePath: file.absolutePath,
-        displayPath,
+        absolutePath,
+        // A slice of the indexed path shares its characters.
+        displayPath: isTail ? absolutePath.slice(prefixLength) : formatted,
         filename: file.filename,
       };
-      addAlias(aliases, displayPath, target);
-      addAlias(aliases, `./${displayPath}`, target);
-      addAlias(aliases, file.absolutePath, target);
+      const alias = toSlashes(target.displayPath.trim());
+      if (alias && !aliases.has(alias)) aliases.set(alias, target);
     }
   }
 
@@ -105,7 +112,29 @@ export function buildFilePathMentionIndex(
   delimiterAliasesByPrefix.forEach((names) => {
     names.sort((left, right) => right.length - left.length);
   });
-  return { aliases, bareAliasLengthsByFirstCode, delimiterAliasesByPrefix };
+  return {
+    aliases,
+    absolutePrefixes: Array.from(absolutePrefixes),
+    bareAliasLengthsByFirstCode,
+    delimiterAliasesByPrefix,
+  };
+}
+
+/** How many leading characters (`./` or the cwd) a candidate drops before lookup. */
+function aliasPrefixLength(
+  candidate: string,
+  index: FilePathMentionIndex,
+): number {
+  if (candidate.startsWith('./') || candidate.startsWith('.\\')) return 2;
+  for (const prefix of index.absolutePrefixes ?? []) {
+    if (
+      candidate.length > prefix.length &&
+      toSlashes(candidate.slice(0, prefix.length)) === prefix
+    ) {
+      return prefix.length;
+    }
+  }
+  return 0;
 }
 
 export function getFilePathMentionIndex(
@@ -257,7 +286,11 @@ export function splitTextByFilePathMentions(
   while (
     (candidateRange = findNextCandidate(text, searchIndex, index)) !== null
   ) {
-    const candidate = text.slice(candidateRange.start, candidateRange.end);
+    const spelled = text.slice(candidateRange.start, candidateRange.end);
+    // Matching runs on the alias spelling. Replacing a backslash keeps
+    // offsets, so only the dropped prefix shifts them back into `text`.
+    const skipped = aliasPrefixLength(spelled, index);
+    const candidate = toSlashes(skipped > 0 ? spelled.slice(skipped) : spelled);
     // Exact inventory names win over suffix syntax, including literal : and #.
     const delimiter = firstLocationDelimiter(candidate);
     const prefix = delimiter > 0 ? candidate.slice(0, delimiter) : candidate;
@@ -281,7 +314,7 @@ export function splitTextByFilePathMentions(
         text: text.slice(lastIndex, candidateRange.start),
       });
     }
-    const pathEnd = candidateRange.start + resolved.text.length;
+    const pathEnd = candidateRange.start + skipped + resolved.text.length;
     // Bound the slice to this token plus boundary lookahead. Never copy or
     // parse the entire remaining transcript for each resolved mention.
     const suffix = matchLeadingLineSuffix(

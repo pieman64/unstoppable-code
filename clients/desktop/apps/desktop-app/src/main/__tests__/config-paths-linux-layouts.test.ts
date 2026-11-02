@@ -252,10 +252,11 @@ describeOnPosix.each(['x64', 'arm64'])(
       });
 
       expectEveryMemberRunsFrom(configPaths, binDir);
+      // Both supported Linux architectures recover a safe system PATH when
+      // the inherited PATH is empty and the login-shell probe is unavailable.
+      // Tool execution above still uses PATH: '' to rule out host fallback.
       expect(configPaths.getEnhancedEnv().PATH).toBe(
-        arch === 'x64'
-          ? `${binDir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
-          : binDir,
+        `${binDir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       );
     });
 

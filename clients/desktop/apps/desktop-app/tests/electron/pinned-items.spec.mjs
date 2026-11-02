@@ -237,12 +237,16 @@ test('App Advisor entries pin to the top from their menu and persist', async () 
         'advisor-entry-2',
       ]);
     await expect(
-      advisor.getByTestId(
-        `app-advisor-nav-entry-${PINNED_ITEMS_PINNED_ADVISOR_ENTRY_ID}-pinned`,
-      ),
+      advisor
+        .getByTestId(
+          `app-advisor-nav-entry-${PINNED_ITEMS_PINNED_ADVISOR_ENTRY_ID}`,
+        )
+        .getByTestId('worktree-row-pinned-badge'),
     ).toBeVisible();
     await expect(
-      advisor.getByTestId('app-advisor-nav-entry-advisor-entry-2-pinned'),
+      advisor
+        .getByTestId('app-advisor-nav-entry-advisor-entry-2')
+        .getByTestId('worktree-row-pinned-badge'),
     ).toHaveCount(0);
 
     // Pin to top leads the row menu and moves the entry into the pinned
@@ -271,7 +275,9 @@ test('App Advisor entries pin to the top from their menu and persist', async () 
         'advisor-entry-1',
       ]);
     await expect(
-      advisor.getByTestId('app-advisor-nav-entry-advisor-entry-2-pinned'),
+      advisor
+        .getByTestId('app-advisor-nav-entry-advisor-entry-2')
+        .getByTestId('worktree-row-pinned-badge'),
     ).toBeAttached();
     await expect
       .poll(() => readAdvisorPins(userDataDir).sort())
@@ -300,9 +306,11 @@ test('App Advisor entries pin to the top from their menu and persist', async () 
         PINNED_ITEMS_PINNED_ADVISOR_ENTRY_ID,
       ]);
     await expect(
-      advisor.getByTestId(
-        `app-advisor-nav-entry-${PINNED_ITEMS_PINNED_ADVISOR_ENTRY_ID}-pinned`,
-      ),
+      advisor
+        .getByTestId(
+          `app-advisor-nav-entry-${PINNED_ITEMS_PINNED_ADVISOR_ENTRY_ID}`,
+        )
+        .getByTestId('worktree-row-pinned-badge'),
     ).toHaveCount(0);
     await expect
       .poll(() => readAdvisorPins(userDataDir))
@@ -351,6 +359,13 @@ test('coarse pointers show Cowork actions without painting the pin underneath', 
     await expect(header).toBeVisible({ timeout: 30_000 });
     await header.click({ button: 'right' });
     await window.getByTestId('workspace-toggle-pin-menu-item').click();
+    // Menu selection restores focus to the header. Leave that keyboard
+    // interaction before asserting the fine-pointer mark at rest.
+    await header.evaluate((element) => {
+      if (element.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    });
     await window.mouse.move(880, 980);
     await expect(coworkProjectPin(window)).toHaveCSS('opacity', '1');
     const cdp = await window.context().newCDPSession(window);

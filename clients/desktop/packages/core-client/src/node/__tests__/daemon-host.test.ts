@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -7,17 +8,30 @@ import {
   createPlatformEndpointServices,
   createOwnedChildServices,
   createPlatformServices,
+  WINDOWS_PROCESS_FILE,
 } from '@canopy/core-platform';
 import { CanopyClientError } from '../../errors';
 import {
   createCanopyDaemonHostLaunch,
   type CanopyDaemonHostLaunch,
   type CanopyDaemonHostLaunchOptions,
+  type CanopyDaemonMigrationLaunch,
 } from '../index';
 
-// Real files; native child ownership is available only on Darwin.
-const os = process.platform === 'darwin' ? 'darwin' : 'linux';
-const native = createPlatformServices(os, createPlatformEndpointServices(os));
+// Real files; native child ownership exists on Darwin and Windows. Windows
+// uses the prebuilt addon (CANOPY_OWNED_CHILD_ADDON, else the build:owned-child
+// default) and the identity helper: a loaded addon stays mapped, so it is never
+// built into a deleted temp directory.
+const windows = process.platform === 'win32';
+const os =
+  process.platform === 'darwin' ? 'darwin' : windows ? 'win32' : 'linux';
+const ROOT = resolve(__dirname, '../../../../..');
+const HELPER = join(ROOT, '.cache/bin/win32-x64', WINDOWS_PROCESS_FILE);
+const native = createPlatformServices(
+  os,
+  createPlatformEndpointServices(os),
+  windows ? { windowsProcessPath: HELPER } : {},
+);
 const signal = new AbortController().signal;
 const SECRET = 'a'.repeat(64);
 const node = process.execPath;
@@ -25,7 +39,85 @@ let nativePath = '';
 let nativeDirectory = '';
 let root = '';
 let runtime = '';
-let endpoint = { kind: 'socket' as const, path: '' };
+let endpoint: { kind: 'socket' | 'pipe'; path: string } = {
+  kind: 'socket',
+  path: '',
+};
+
+/** The prebuilt Windows addon, building the default output only when absent. */
+function windowsAddon(): string {
+  const configured = process.env.CANOPY_OWNED_CHILD_ADDON;
+  const addon = configured
+    ? resolve(ROOT, configured)
+    : join(ROOT, '.cache/native-owned-child/win32-x64/core-owned-child.node');
+  if (!existsSync(addon)) {
+    if (configured) throw new Error(`Missing owned-child addon ${addon}`);
+    execFileSync(
+      process.execPath,
+      [join(ROOT, 'scripts/build-owned-child.mjs')],
+      {
+        cwd: ROOT,
+        windowsHide: true,
+      },
+    );
+  }
+  if (!existsSync(HELPER))
+    execFileSync(
+      process.execPath,
+      [join(ROOT, 'scripts/build-windows-process-identity.mjs')],
+      { cwd: ROOT, windowsHide: true },
+    );
+  return addon;
+}
+
+/** The start identity of a live process, for exit checks that survive PID reuse. */
+async function identityOf(pid: number): Promise<string> {
+  const observed = await native.supervision.inspectProcess({ pid });
+  if (observed.state !== 'running')
+    throw new Error(`process ${pid} is ${observed.state}`);
+  return observed.startIdentity;
+}
+
+/** Gone: no process, or another one, under the PID; polls up to `ms`. */
+async function goneWithin(
+  pid: number,
+  startIdentity: string,
+  ms = 5_000,
+): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const observed = await native.supervision.inspectProcess({ pid });
+    if (
+      observed.state === 'absent' ||
+      (observed.state === 'running' && observed.startIdentity !== startIdentity)
+    )
+      return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((done) => setTimeout(done, 50));
+  }
+}
+
+/** Polls for a PID file a fixture writes once it is ready. */
+async function pidFrom(file: string, ms = 20_000): Promise<number> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const pid = Number(await fs.readFile(file, 'utf8').catch(() => ''));
+    if (Number.isSafeInteger(pid) && pid > 0) return pid;
+    if (Date.now() > deadline) throw new Error(`no PID in ${file}`);
+    await new Promise((done) => setTimeout(done, 25));
+  }
+}
+
+/**
+ * Root source spawning a detached Node leaf. libuv's kill-on-close job takes
+ * only attached children, so the leaf sits in the owned job alone and outlives
+ * its parent: only owned-job cleanup ends it. It writes its PID once its stop
+ * watch runs and ends itself on the stop file or after a minute.
+ */
+const detachedLeaf = (pidFile: string, stopFile: string): string => {
+  const leaf = `const fs=require('fs');setInterval(()=>{if(fs.existsSync(${JSON.stringify(stopFile)}))process.exit(0)},25);setTimeout(()=>process.exit(70),60000);fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid))`;
+  return `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(leaf)}],{stdio:'ignore',detached:true,windowsHide:true});`;
+};
 
 const host = (
   overrides: Partial<CanopyDaemonHostLaunchOptions> = {},
@@ -57,8 +149,12 @@ const publish = async (
   return { raw, tokenRef };
 };
 
-(process.platform === 'win32' ? describe.skip : describe)('daemon host', () => {
+describe('daemon host', () => {
   beforeAll(async () => {
+    if (windows) {
+      nativePath = windowsAddon();
+      return;
+    }
     nativeDirectory = await fs.realpath(
       await fs.mkdtemp(join(tmpdir(), 'daemon-host-native-')),
     );
@@ -68,14 +164,23 @@ const publish = async (
       '--out',
       nativePath,
     ]);
+  }, 600_000);
+  afterAll(async () => {
+    if (nativeDirectory)
+      await fs.rm(nativeDirectory, { recursive: true, force: true });
   });
-  afterAll(() => fs.rm(nativeDirectory, { recursive: true, force: true }));
   beforeEach(async () => {
     root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'daemon-host-')));
     runtime = join(root, 'runtime');
-    endpoint = { kind: 'socket', path: join(runtime, 'core.sock') };
+    endpoint = windows
+      ? { kind: 'pipe', path: `\\\\.\\pipe\\daemon-host-${randomUUID()}` }
+      : { kind: 'socket', path: join(runtime, 'core.sock') };
   });
-  afterEach(() => fs.rm(root, { recursive: true, force: true }));
+  afterEach(() =>
+    fs.rm(root, { recursive: true, force: true, maxRetries: 10 }),
+  );
+  // Directory links need no privilege on Windows as junctions.
+  const directoryLink = windows ? 'junction' : 'dir';
 
   it('prepares the runtime before reading, and reports only absence as null', async () => {
     const { dataRootHash, ports } = host();
@@ -159,7 +264,7 @@ const publish = async (
       );
       const swap = async (): Promise<void> => {
         await fs.rename(runtime, join(root, 'original-runtime'));
-        await fs.symlink(replacement, runtime, 'dir');
+        await fs.symlink(replacement, runtime, directoryLink);
       };
       const { descriptor } = host({
         verifyPrivateFile: async (file) => {
@@ -180,7 +285,15 @@ const publish = async (
     },
   );
 
-  (process.platform === 'darwin' ? it : it.skip)(
+  // Windows registers its own variants of the Darwin native cases (below), so
+  // neither OS reports the other's cases as skipped.
+  const darwinIt = windows
+    ? undefined
+    : process.platform === 'darwin'
+      ? it
+      : it.skip;
+
+  darwinIt?.(
     'hands the claim to a real child over stdin, never argv or env',
     async () => {
       const out = join(root, 'child.txt');
@@ -205,17 +318,17 @@ const publish = async (
   );
 
   it('rejects before any child exists for missing or foreign executables and oversized handles', async () => {
-    const missing = join(root, 'missing-daemon');
+    const missing = join(
+      root,
+      windows ? 'missing-daemon.exe' : 'missing-daemon',
+    );
     const command = { executable: node, args: [], signal };
     const { supervisor } = host({ executable: missing }).ports;
     await expect(
       supervisor.spawnDaemon({ ...command, executable: missing }),
     ).rejects.toMatchObject({
       payload: {
-        kind:
-          process.platform === 'darwin'
-            ? 'failed_precondition'
-            : 'capability_unavailable',
+        kind: os === 'linux' ? 'capability_unavailable' : 'failed_precondition',
       },
     });
     await expect(supervisor.spawnDaemon(command)).rejects.toThrow(
@@ -229,7 +342,7 @@ const publish = async (
     ).rejects.toThrow(CanopyClientError);
   });
 
-  (process.platform === 'darwin' ? it : it.skip)(
+  darwinIt?.(
     'stops a child whose startup is cancelled after spawn resolves',
     async () => {
       const controller = new AbortController();
@@ -260,7 +373,7 @@ const publish = async (
     },
   );
 
-  (process.platform === 'darwin' ? it : it.skip).each([
+  darwinIt?.each([
     ['obeys', 'setInterval(()=>{},1e3)'],
     ['ignores', ''],
   ])(
@@ -352,7 +465,7 @@ const publish = async (
     });
   });
 
-  (process.platform === 'darwin' ? it : it.skip)(
+  darwinIt?.(
     'cleans a native root that exits before its handle is delivered to the host',
     async () => {
       const pidFile = join(root, 'delayed-child.pid');
@@ -389,6 +502,212 @@ const publish = async (
         await fs.writeFile(stopFile, '');
         await supervisor.terminateDaemon(child, signal);
       }
+    },
+  );
+  it('hands only the private per-launch bearer to the Electron migration adapter on stdin', async () => {
+    const child = {
+      pid: 123,
+      exited: new Promise<{ code: number | null; signal: string | null }>(
+        () => undefined,
+      ),
+      commit: jest.fn(),
+      terminate: jest.fn(() => Promise.resolve()),
+    };
+    const spawn = jest.fn<
+      ReturnType<CanopyDaemonMigrationLaunch['spawn']>,
+      Parameters<CanopyDaemonMigrationLaunch['spawn']>
+    >(() => Promise.resolve(child));
+    const ordinarySpawn = jest.fn(() => Promise.resolve(child));
+    const launch = host({
+      ownedChildren: { spawn: ordinarySpawn },
+      migration: { spawn },
+    });
+    expect(launch.daemon.migrationChannel).toBe(true);
+    const claimHandle = { opaque: 'private-claim' };
+    const daemon = await launch.ports.supervisor.spawnDaemon({
+      executable: node,
+      args: ['--migration-channel'],
+      claimHandle,
+      signal,
+    });
+    expect(ordinarySpawn).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [request, auth, forwardedSignal] = spawn.mock.calls[0];
+    expect(forwardedSignal).toBe(signal);
+    expect(auth.secret).toMatch(/^[0-9a-f]{64}$/);
+    expect(auth.dataRootHash).toBe(launch.dataRootHash);
+    expect(request.environment.CANOPY_DAEMON_CLAIM_HANDOFF).toBe(
+      'stdin-migration-v1',
+    );
+    expect(JSON.parse(request.stdin ?? '')).toEqual({
+      claim: claimHandle,
+      auth,
+    });
+    expect(JSON.stringify(request.args)).not.toContain(auth.secret);
+    expect(JSON.stringify(request.environment)).not.toContain(auth.secret);
+    await launch.ports.supervisor.terminateDaemon(daemon, signal);
+  });
+
+  // Windows variants of the Darwin native cases. Each descendant is detached,
+  // so libuv's kill-on-close job cannot end it and hide a regression.
+  const windowsIt = windows ? it : undefined;
+
+  windowsIt?.(
+    'refuses a startup claim handoff, which Windows never passes to a child',
+    async () => {
+      const { supervisor } = host().ports;
+      await expect(
+        supervisor.spawnDaemon({
+          executable: node,
+          args: ['-e', ''],
+          claimHandle: { claimId: 'bearer-claim-secret' },
+          signal,
+        }),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'failed_precondition',
+          message: 'Core executable could not be started.',
+        },
+      });
+    },
+  );
+
+  windowsIt?.(
+    'stops a cancelled child and its detached descendant after spawn resolves',
+    async () => {
+      const pidFile = join(root, 'leaf.pid');
+      const stopFile = join(root, 'leaf.stop');
+      const controller = new AbortController();
+      const { supervisor } = host().ports;
+      const child = await supervisor.spawnDaemon({
+        executable: node,
+        args: [
+          '-e',
+          `${detachedLeaf(pidFile, stopFile)}setInterval(()=>{},1e3)`,
+        ],
+        signal: controller.signal,
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const leaf = await pidFrom(pidFile);
+        const leafIdentity = await identityOf(leaf);
+        controller.abort();
+        await expect(
+          Promise.race([
+            child.exited,
+            new Promise((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('cancelled child survived')),
+                4000,
+              );
+            }),
+          ]),
+        ).resolves.toEqual({ code: null, signal: 'SIGKILL' });
+        expect(await goneWithin(leaf, leafIdentity)).toBe(true);
+      } finally {
+        clearTimeout(timer);
+        await fs.writeFile(stopFile, '');
+        await supervisor.terminateDaemon(child, new AbortController().signal);
+      }
+    },
+    30_000,
+  );
+
+  windowsIt?.(
+    'stops the owned tree, including a detached grandchild, within a bound',
+    async () => {
+      const pidFile = join(root, 'grandchild.pid');
+      const stopFile = join(root, 'grandchild.stop');
+      const { supervisor } = host().ports;
+      const child = await supervisor.spawnDaemon({
+        executable: node,
+        args: [
+          '-e',
+          `${detachedLeaf(pidFile, stopFile)}setInterval(()=>{},1e3)`,
+        ],
+        signal,
+      });
+      try {
+        const grandchild = await pidFrom(pidFile);
+        const identity = await identityOf(grandchild);
+        const started = performance.now();
+        await supervisor.terminateDaemon(child, signal);
+        await expect(child.exited).resolves.toEqual({
+          code: null,
+          signal: 'SIGKILL',
+        });
+        expect(performance.now() - started).toBeLessThan(5_000);
+        expect(await goneWithin(grandchild, identity)).toBe(true);
+      } finally {
+        await fs.writeFile(stopFile, '');
+      }
+    },
+    30_000,
+  );
+
+  windowsIt?.(
+    'cleans the detached descendant of a native root that exits before its handle is delivered',
+    async () => {
+      const pidFile = join(root, 'delayed-leaf.pid');
+      const stopFile = join(root, 'private-stop');
+      // The root exits once its leaf has reported, leaving the leaf behind.
+      const script = `${detachedLeaf(pidFile, stopFile)}setInterval(()=>{if(require('fs').existsSync(${JSON.stringify(pidFile)}))process.exit(17)},25);`;
+      const services = createOwnedChildServices({ os, nativePath });
+      const supervisor = host({
+        ownedChildren: {
+          spawn: async (request) => {
+            const child = await services.spawn(request);
+            await child.exited;
+            return child;
+          },
+        },
+      }).ports.supervisor;
+      const child = await supervisor.spawnDaemon({
+        executable: node,
+        args: ['-e', script],
+        signal,
+      });
+      try {
+        const leaf = await pidFrom(pidFile);
+        const identity = await identityOf(leaf);
+        expect(() => supervisor.commitDaemon?.(child, signal)).toThrow();
+        await supervisor.terminateDaemon(child, signal);
+        await supervisor.terminateDaemon(child, signal);
+        expect(await goneWithin(leaf, identity)).toBe(true);
+      } finally {
+        await fs.writeFile(stopFile, '');
+        await supervisor.terminateDaemon(child, signal);
+      }
+    },
+    30_000,
+  );
+
+  windowsIt?.(
+    'maps a job-assignment failure to a typed start failure without a Node spawn fallback (mapping, not induced)',
+    async () => {
+      // The addon reports a root it could not place in its job as a failed
+      // start (ERR_OWNED_CHILD_SPAWN); no hook can make the kernel refuse.
+      const spawn = jest.fn(() =>
+        Promise.reject(
+          Object.assign(new Error('private native detail'), {
+            code: 'failed_precondition',
+          }),
+        ),
+      );
+      const supervisor = host({ ownedChildren: { spawn } }).ports.supervisor;
+      const failure = supervisor.spawnDaemon({
+        executable: node,
+        args: [],
+        signal,
+      });
+      await expect(failure).rejects.toMatchObject({
+        payload: {
+          kind: 'failed_precondition',
+          message: 'Core executable could not be started.',
+        },
+      });
+      await expect(failure).rejects.not.toHaveProperty('cleanupUnconfirmed');
+      expect(spawn).toHaveBeenCalledTimes(1);
     },
   );
 });

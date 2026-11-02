@@ -43,10 +43,51 @@ export const INSTALLED_ITEM_STATUS_COPY: Record<
   active: { label: 'Active', description: 'Added to every new chat' },
   available: {
     label: 'Available',
-    description: 'You can call it manually with /',
+    description: 'Type / and the plugin name to use its skills',
   },
   disabled: { label: 'Disabled', description: 'Installed, but turned off' },
 };
+
+/**
+ * Status description for a known item kind (CAN-5271). Available says how
+ * that kind is reached: a standalone skill by its own name, collections and
+ * MCP servers on demand. Other statuses, and an unknown kind, keep the
+ * shared copy.
+ */
+export function installedItemStatusDescription(
+  status: InstalledItemStatus,
+  targetKind?: InstalledItemTarget['kind'],
+): string {
+  if (status === 'available' && targetKind !== undefined) {
+    if (targetKind === 'skill') return 'Type / and the skill name to use it';
+    if (targetKind !== 'plugin') return 'Loads when you or an agent need it';
+  }
+  return INSTALLED_ITEM_STATUS_COPY[status].description;
+}
+
+/**
+ * Customize status filter copy (CAN-4838). The dropdown's status rows reuse
+ * the picker descriptions above unchanged; these add the Any status option,
+ * the Installed description line and the filtered-empty sentence.
+ */
+export const INSTALLED_STATUS_FILTER_ANY_LABEL = 'Any status';
+
+export const INSTALLED_ITEM_STATUS_DESCRIPTION_LINE =
+  'Active items are added to every new chat. Available ones load when you or an agent need them. Disabled ones stay installed but are hidden.';
+
+export function installedStatusFilterEmptyText(
+  status: InstalledItemStatus,
+): string {
+  return `Nothing is ${INSTALLED_ITEM_STATUS_COPY[status].label.toLowerCase()}.`;
+}
+
+export function installedStatusFilterLabel(
+  status: InstalledItemStatus | null,
+): string {
+  return status === null
+    ? INSTALLED_STATUS_FILTER_ANY_LABEL
+    : INSTALLED_ITEM_STATUS_COPY[status].label;
+}
 
 /** Stable key for any status target, including server-wide MCP rows. */
 export function installedItemTargetKey(target: InstalledItemTarget): string {
@@ -94,6 +135,12 @@ export type InstalledItemSnapshotState =
 export type InstalledEntryStatusState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'read-only'; readonly reason: string }
+  /** A status the catalog row proves on its own and nothing here changes. */
+  | {
+      readonly kind: 'fixed';
+      readonly status: InstalledItemStatus;
+      readonly reason: string;
+    }
   | {
       readonly kind: 'ready';
       readonly item: InstalledItemSnapshotEntry;
@@ -129,6 +176,30 @@ export function alwaysAvailableReason(
   return entry.ref.type === 'pipeline' && entry.ref.source === 'bundled'
     ? BUILT_IN_WORKFLOW_STATUS_REASON
     : undefined;
+}
+
+export const PROVIDER_CONNECTED_STATUS_REASON =
+  'Active in chats through your connected provider account.';
+
+/**
+ * Whether every connection of a curated MCP card is an established provider
+ * account link (CAN-5272). Such a card is active in that provider's chats
+ * whatever the device snapshot says; a mix with device or account rows keeps
+ * the snapshot's status.
+ */
+function providerConnected(
+  ref: UnifiedEntryRef,
+  connections: readonly UnifiedEntryConnection[] | undefined,
+): boolean {
+  return (
+    ref.type === 'curated-mcp' &&
+    connections !== undefined &&
+    connections.length > 0 &&
+    connections.every(
+      (connection) =>
+        connection.binding === 'provider' && connection.state === 'installed',
+    )
+  );
 }
 
 /** Whether a catalog row names an installed item that carries a status. */
@@ -167,6 +238,12 @@ export function installedEntryStatusStates(
       entry.integration?.connections,
     );
   }
+  // Catalog aliases follow the exact installed identity resolved by the shared
+  // projection, including author-side shares whose names differ from the copy.
+  for (const entry of entries) {
+    const installed = entry.installedEntryId && result[entry.installedEntryId];
+    if (installed) result[entry.id] = installed;
+  }
   return result;
 }
 
@@ -175,6 +252,12 @@ export function installedEntryStatusState(
   state: InstalledItemSnapshotState,
   connections?: readonly UnifiedEntryConnection[],
 ): InstalledEntryStatusState {
+  if (providerConnected(ref, connections))
+    return {
+      kind: 'fixed',
+      status: 'active',
+      reason: PROVIDER_CONNECTED_STATUS_REASON,
+    };
   if (state.kind === 'loading') return { kind: 'loading' };
   if (state.kind === 'error')
     return { kind: 'read-only', reason: state.message };

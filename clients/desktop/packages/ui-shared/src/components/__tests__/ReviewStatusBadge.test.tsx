@@ -20,4 +20,16 @@ describe('ReviewStatusBadge', () => {
     expect(html).toContain('fg-secondary');
     expect(html).not.toContain('fg-success');
   });
+
+  it('renders each state on the shared badge capsule', () => {
+    const changes = renderToString(
+      <ReviewStatusBadge status="changes-requested" />,
+    );
+    expect(changes).toContain('Changes requested');
+    expect(changes).toContain('bg-warning-subtle fg-warning-strong');
+    expect(changes).toContain('h-4.5');
+    expect(renderToString(<ReviewStatusBadge status="none" />)).toContain(
+      'bg-muted fg-secondary',
+    );
+  });
 });

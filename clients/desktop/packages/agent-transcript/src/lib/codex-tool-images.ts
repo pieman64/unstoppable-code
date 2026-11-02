@@ -26,8 +26,8 @@ function imageSource(item: Record<string, unknown>): unknown {
 export function withCodexImagePreviewNotices(content: unknown): unknown {
   if (!Array.isArray(content)) return content;
   let displayed = 0;
-  return content.map((value: unknown) => {
-    if (!isRecord(value)) return value;
+  return content.map((value: unknown, index: number) => {
+    if (index >= 100 || !isRecord(value)) return value;
     const item = value;
     if (displayed < MAX_IMAGES && isSafeCodexInlineImage(imageSource(item))) {
       displayed++;

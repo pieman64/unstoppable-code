@@ -3,10 +3,12 @@ import type {
   LedgerOrigin,
   LedgerSourceAvailability,
 } from '@canopy/protocol/canopy-core';
-import type {
-  LedgerViewScope,
-  LedgerViewSource,
-  LedgerViewSummarySnapshot,
+import {
+  isLedgerTaskViewScope,
+  type LedgerTaskViewScope,
+  type LedgerViewScope,
+  type LedgerViewSource,
+  type LedgerViewSummarySnapshot,
 } from '@canopy/protocol/ledger-view';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import { readChatArchivesFile } from '../lib/chat-archives';
@@ -26,10 +28,13 @@ import { ledgerViewScopeForContainer } from './view-scope';
 /** Whether a chat is a live tab, an archived chat, or gone. */
 export type LedgerChatPresence = 'live' | 'archived' | 'missing';
 
-/** A pipeline execution this device still keeps, and where it ran. */
+/**
+ * A pipeline execution this device still keeps, and where it ran: a global
+ * or directory run has no worktree, and a global one no project either.
+ */
 export interface LedgerKeptExecution {
-  readonly projectId: string;
-  readonly worktreeId: string;
+  readonly projectId?: string;
+  readonly worktreeId?: string;
 }
 
 /** What resolution reads; tests substitute their own. */
@@ -40,7 +45,7 @@ export interface LedgerSourceHost {
    */
   readonly forPage?: () => LedgerSourceHost;
   readonly chatPresence: (
-    scope: LedgerViewScope,
+    scope: LedgerTaskViewScope,
     chatId: string,
   ) => Promise<LedgerChatPresence>;
   /** Null when the execution is no longer kept. */
@@ -49,7 +54,7 @@ export interface LedgerSourceHost {
   ) => Promise<LedgerKeptExecution | null>;
   /** Null when the scope's summary history no longer holds the snapshot. */
   readonly summarySnapshot: (
-    scope: LedgerViewScope,
+    scope: LedgerTaskViewScope,
     snapshotId: string,
   ) => Promise<LedgerViewSummarySnapshot | null>;
 }
@@ -64,7 +69,7 @@ interface ChatPresenceIndex {
 }
 
 async function readLiveChatIds(
-  scope: LedgerViewScope,
+  scope: LedgerTaskViewScope,
 ): Promise<ReadonlySet<string>> {
   // Metadata only: no transcript is selected.
   const tabs = await readChatTabsFile(scope.projectId, scope.worktreeId);
@@ -74,7 +79,7 @@ async function readLiveChatIds(
 }
 
 async function readArchivedChatIds(
-  scope: LedgerViewScope,
+  scope: LedgerTaskViewScope,
 ): Promise<ReadonlySet<string>> {
   const archives = await readChatArchivesFile(
     scope.projectId,
@@ -103,7 +108,7 @@ function createChatPresenceReader(): LedgerSourceHost['chatPresence'] {
 }
 
 function readChatPresence(
-  scope: LedgerViewScope,
+  scope: LedgerTaskViewScope,
   chatId: string,
 ): Promise<LedgerChatPresence> {
   return createChatPresenceReader()(scope, chatId);
@@ -117,18 +122,17 @@ async function readKeptExecution(
     executionId,
     join(getDataDir(), 'pipeline-executions'),
   );
-  if (
-    state === null ||
-    state.project_id === undefined ||
-    state.worktree_id === undefined
-  ) {
-    return null;
-  }
-  return { projectId: state.project_id, worktreeId: state.worktree_id };
+  if (state === null) return null;
+  return {
+    ...(state.project_id === undefined ? {} : { projectId: state.project_id }),
+    ...(state.worktree_id === undefined
+      ? {}
+      : { worktreeId: state.worktree_id }),
+  };
 }
 
 async function readSummarySnapshot(
-  scope: LedgerViewScope,
+  scope: LedgerTaskViewScope,
   snapshotId: string,
 ): Promise<LedgerViewSummarySnapshot | null> {
   const file = await readWorktreeSummaryFile(scope.projectId, scope.worktreeId);
@@ -156,7 +160,7 @@ export const DESKTOP_LEDGER_SOURCE_HOST: LedgerSourceHost = {
 };
 
 async function chatSource(
-  scope: LedgerViewScope,
+  scope: LedgerTaskViewScope,
   chatId: string,
   delegationId: string | undefined,
   host: LedgerSourceHost,
@@ -192,8 +196,8 @@ async function pipelineSource(
     availability: 'available',
     target: {
       kind: 'pipeline',
-      projectId: kept.projectId,
-      worktreeId: kept.worktreeId,
+      ...(kept.projectId === undefined ? {} : { projectId: kept.projectId }),
+      ...(kept.worktreeId === undefined ? {} : { worktreeId: kept.worktreeId }),
       executionId,
       ...(attempt === null ? {} : attempt),
     },
@@ -203,22 +207,29 @@ async function pipelineSource(
 /**
  * Where an entry's source opens from this scope, read now. A user's entry has
  * no source to open; a Summary entry opens the snapshot it recorded, never the
- * latest summary. Rejects when the stores cannot be read.
+ * latest summary. A global (workflow) Ledger has no chats or summaries, so
+ * only its pipeline runs open. Rejects when the stores cannot be read.
  */
 export async function resolveLedgerViewSource(
   scope: LedgerViewScope,
   origin: LedgerOrigin,
   host: LedgerSourceHost = DESKTOP_LEDGER_SOURCE_HOST,
 ): Promise<LedgerViewSource> {
+  const task = isLedgerTaskViewScope(scope) ? scope : null;
   switch (origin.kind) {
     case 'user':
       return { availability: 'available', target: null };
     case 'chat':
-      return chatSource(scope, origin.chatId, undefined, host);
+      return task === null
+        ? { availability: 'deleted', target: null }
+        : chatSource(task, origin.chatId, undefined, host);
     case 'managed_delegation':
-      return origin.root.kind === 'chat'
-        ? chatSource(scope, origin.root.chatId, origin.delegationId, host)
-        : pipelineSource(origin.root.executionId, null, host);
+      if (origin.root.kind !== 'chat') {
+        return pipelineSource(origin.root.executionId, null, host);
+      }
+      return task === null
+        ? { availability: 'deleted', target: null }
+        : chatSource(task, origin.root.chatId, origin.delegationId, host);
     case 'pipeline_agent':
       return pipelineSource(
         origin.executionId,
@@ -230,7 +241,8 @@ export async function resolveLedgerViewSource(
         host,
       );
     case 'summary': {
-      const snapshot = await host.summarySnapshot(scope, origin.snapshotId);
+      if (task === null) return { availability: 'expired', target: null };
+      const snapshot = await host.summarySnapshot(task, origin.snapshotId);
       return snapshot === null
         ? { availability: 'expired', target: null }
         : { availability: 'available', target: { kind: 'summary', snapshot } };
@@ -284,7 +296,10 @@ export async function resolveDesktopLedgerSourceAvailability(
   request: LedgerSourceAvailabilityRequest,
   host: LedgerSourceHost = DESKTOP_LEDGER_SOURCE_HOST,
 ): Promise<LedgerSourceAvailability> {
-  const scope = ledgerViewScopeForContainer(request.scope.container);
+  const scope = ledgerViewScopeForContainer(
+    request.scope.container,
+    request.scope.ledgerId,
+  );
   try {
     if (request.subject.kind === 'entry') {
       const source = await resolveLedgerViewSource(
@@ -295,7 +310,9 @@ export async function resolveDesktopLedgerSourceAvailability(
       return source.availability;
     }
     const chatId = sourceChatIdOfOrigin(request.subject.origin);
-    if (chatId === null) return request.stored;
+    if (chatId === null || !isLedgerTaskViewScope(scope)) {
+      return request.stored;
+    }
     const presence = await pageHostFor(request.page, host).chatPresence(
       scope,
       chatId,

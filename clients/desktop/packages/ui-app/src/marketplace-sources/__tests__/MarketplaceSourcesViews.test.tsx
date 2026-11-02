@@ -161,9 +161,11 @@ describe('MarketplaceSourcesList', () => {
     );
     click(byTestId('marketplace-source-remove')[0]);
     expect(byTestId('marketplace-source-remove-dialog')).toHaveLength(1);
-    const cancel = Array.from(
-      document.body.querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent === 'Cancel');
+    // The shared confirmation's Cancel (its esc chip is part of its text).
+    const cancel =
+      document.body.querySelector<HTMLButtonElement>(
+        '[data-testid="confirm-dialog-cancel"]',
+      ) ?? undefined;
     click(cancel);
     expect(state.remove).not.toHaveBeenCalled();
 

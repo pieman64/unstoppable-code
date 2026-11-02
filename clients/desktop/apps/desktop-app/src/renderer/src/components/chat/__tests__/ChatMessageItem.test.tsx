@@ -1,7 +1,23 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { JSX } from 'react';
+import type { ComponentProps, JSX } from 'react';
+import type * as UiSharedComponents from '@canopy/ui-shared/components';
 import { ChatMessageItem } from '../ChatMessageItem';
 import type { DisplayMessage } from '../types';
+
+const mockWakeProps: Array<
+  ComponentProps<typeof UiSharedComponents.WakeTurnBoundary>
+> = [];
+jest.mock('@canopy/ui-shared/components', () => ({
+  ...jest.requireActual<typeof UiSharedComponents>(
+    '@canopy/ui-shared/components',
+  ),
+  WakeTurnBoundary: (
+    props: ComponentProps<typeof UiSharedComponents.WakeTurnBoundary>,
+  ): null => {
+    mockWakeProps.push(props);
+    return null;
+  },
+}));
 
 jest.mock('../ChatBlockRenderer', () => ({
   ChatBlockRenderer: ({
@@ -187,5 +203,61 @@ describe('ChatMessageItem approval_resolution_info', () => {
     expect(html).toBe(
       '<span data-system-message="true" data-progressive-markdown="false">Answer</span>',
     );
+  });
+});
+
+describe('ChatMessageItem wake boundary', () => {
+  it('passes the event flag and links to the call that started the task', () => {
+    const message: DisplayMessage = {
+      id: 'wake:timer:wake',
+      role: 'system',
+      timestamp: 5,
+      blocks: [
+        {
+          type: 'wake_boundary',
+          turnId: 'wake',
+          taskLabel: 'build errors',
+          spawningUserMessageId: 'user-1',
+          spawningToolUseId: 'tool-1',
+          taskEvent: true,
+        },
+      ],
+    };
+    const onShowSpawningCall = jest.fn();
+    mockWakeProps.length = 0;
+
+    renderToStaticMarkup(
+      <ChatMessageItem
+        message={message}
+        chatPendingQuestions={[]}
+        onShowSpawningCall={onShowSpawningCall}
+      />,
+    );
+
+    const props = mockWakeProps.at(-1);
+    expect(props).toMatchObject({ taskLabel: 'build errors', event: true });
+    props?.onShowSpawningTurn?.();
+    expect(onShowSpawningCall).toHaveBeenCalledWith({
+      toolUseId: 'tool-1',
+      userMessageId: 'user-1',
+    });
+  });
+
+  it('offers no link when the transcript holds neither the call nor its prompt', () => {
+    mockWakeProps.length = 0;
+    renderToStaticMarkup(
+      <ChatMessageItem
+        message={{
+          id: 'wake:timer:wake',
+          role: 'system',
+          timestamp: 5,
+          blocks: [{ type: 'wake_boundary', turnId: 'wake' }],
+        }}
+        chatPendingQuestions={[]}
+        onShowSpawningCall={jest.fn()}
+      />,
+    );
+    expect(mockWakeProps.at(-1)).toMatchObject({ event: false });
+    expect(mockWakeProps.at(-1)?.onShowSpawningTurn).toBeUndefined();
   });
 });

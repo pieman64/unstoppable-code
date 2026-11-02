@@ -6,35 +6,30 @@ import {
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type { AccountMcpConnectionSummary } from '@canopy/desktop-shared/types/mcp-servers';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
-import type { TryItContinueChatRequest } from './tryItChat';
 import {
   readTryItContinuation,
   readTryItContinuationRaw,
   updateTryItContinuation,
   withoutTryItFailure,
-  settleTryItContinuationReceipt,
-  type DesktopTryItContinuation,
 } from './tryItContinuation';
-import type {
-  TryItSendReceiptRead,
-  TryItSendReceiptRequest,
-} from './tryItSendReceipt';
+import type { DesktopTryItContinuation } from './tryItContinuation';
 
+/**
+ * Resolves a Try it capability after sign-in (CAN-4396, CAN-5218). The
+ * starter prompt is already an unsent draft in the chat's composer, so a
+ * continuation only replaces the unresolved capability with its account
+ * connection. It never sends, and never rewrites the draft: the user's
+ * explicit Send starts the turn.
+ */
 export interface DesktopTryItRunnerPorts {
   accountKey: () => Promise<string | null>;
   selections: () => ChatTabPluginSelections | null;
   connections: () => Promise<AccountMcpConnectionSummary[]>;
   updateSelections: (
-    selections: ChatTabPluginSelections,
+    resolve: (selections: ChatTabPluginSelections) => ChatTabPluginSelections,
     canContinue: () => Promise<boolean>,
   ) => Promise<void>;
-  continueChat: (request: TryItContinueChatRequest) => Promise<void>;
   rebind: (record: DesktopTryItContinuation, accountKey: string) => void;
-  /**
-   * Main's durable receipt for this continuation's command (CAN-4404), read
-   * at the same location the continuation dispatches to.
-   */
-  receipt: (request: TryItSendReceiptRequest) => Promise<TryItSendReceiptRead>;
 }
 
 const running = new Map<
@@ -42,17 +37,26 @@ const running = new Map<
   { promise: Promise<void>; signal: AbortSignal }
 >();
 
-/**
- * Only states whose transition proves dispatch never began. Every other
- * eligible state, including a broad `send-failed`, may have reached main.
- */
-function knownNotDispatched(record: DesktopTryItContinuation): boolean {
-  return (
-    record.status === 'pending' ||
-    (record.status === 'failed' &&
-      (record.failure === 'authentication-cancelled' ||
-        record.failure === 'authentication-failed'))
-  );
+const selectionWrites = new Map<string, Promise<unknown>>();
+
+/** Serialize authorization and composer picker intents for one captured chat. */
+export function queueDesktopTryItSelectionUpdate<Result>(
+  target: { projectId: string; worktreeId: string; chatId: string },
+  write: () => Promise<Result>,
+): Promise<Result> {
+  const key = JSON.stringify([
+    target.projectId,
+    target.worktreeId,
+    target.chatId,
+  ]);
+  const previous = selectionWrites.get(key) ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(write);
+  selectionWrites.set(key, result);
+  const clear = (): void => {
+    if (selectionWrites.get(key) === result) selectionWrites.delete(key);
+  };
+  void result.then(clear, clear);
+  return result;
 }
 
 /** All composer actions and account/mount recovery enter this one guarded routine. */
@@ -126,12 +130,7 @@ async function run(
   });
   if (!record?.host || record.destinationAccountKey !== accountKey) return;
   const recordCapability = record.capability;
-  // The receipt read and any replay share exactly this scope.
-  const location = {
-    projectId: record.host.projectId,
-    worktreeId: record.host.worktreeId,
-  };
-  let expectedRaw = JSON.stringify(record);
+  const expectedRaw = JSON.stringify(record);
   const current = async (): Promise<boolean> => {
     if (signal.aborted || (await ports.accountKey()) !== accountKey)
       return false;
@@ -148,49 +147,16 @@ async function run(
       ports.selections() !== null
     );
   };
-  const possiblyDispatched = !knownNotDispatched(record);
   // Settle only for the account this run bound, never one observed later.
   const settle = (): void => {
-    settleTryItContinuationReceipt({ accountKey, chatId, requestId });
+    updateTryItContinuation(chatId, requestId, (saved) => ({
+      ...withoutTryItFailure(saved),
+      status: 'completed',
+      selectionResolution: { accountKey, chatId, requestId },
+    }));
   };
-  const fail = (failure: 'send-failed' | 'acceptance-uncertain'): void => {
-    updateTryItContinuation(chatId, requestId, (saved) =>
-      saved.status === 'completed'
-        ? saved
-        : { ...saved, status: 'failed', failure },
-    );
-  };
-  const readReceipt = async (): Promise<TryItSendReceiptRead> => {
-    try {
-      return await ports.receipt({ location, chatId, requestId });
-    } catch {
-      return 'unknown';
-    }
-  };
-  let dispatchStarted = false;
   try {
     ports.rebind(record, accountKey);
-    // Durable acceptance is checked before any connection lookup or send, so
-    // a lost response followed by a refresh resolves without another turn.
-    const receipt = await readReceipt();
-    if (!(await current())) return;
-    if (receipt === 'accepted') {
-      settle();
-      return;
-    }
-    // A conflicting or non-accepting receipt cannot confirm this turn, and
-    // never licenses a send under another ID.
-    if (receipt === 'not-accepted') {
-      fail('send-failed');
-      return;
-    }
-    if (receipt === 'unknown' && possiblyDispatched) {
-      fail('acceptance-uncertain');
-      return;
-    }
-    // `missing` is only an observation: a replay reuses the exact scope,
-    // command and request IDs, so main's in-flight join and durable dedupe
-    // absorb a send that commits after the read.
     const connections = await ports.connections();
     if (!(await current())) return;
     const ref = tryItAccountMcpSelection(recordCapability, connections);
@@ -202,67 +168,33 @@ async function run(
       );
       return;
     }
-    // Read the latest selections after the asynchronous account check above,
-    // so an edit made during that check cannot be overwritten by this target.
-    const selections = ports.selections();
-    if (!selections) return;
-    const next: ChatTabPluginSelections = {
-      ...selections,
-      unresolvedCapabilities: (selections.unresolvedCapabilities ?? []).filter(
-        (capability) => !sameTryItCapability(capability, recordCapability),
-      ),
-      mcpServerRefs: [
-        ...(selections.mcpServerRefs ?? []).filter(
-          (entry) => entry.serverId !== ref.serverId,
+    // The host applies this resolution to its latest selections at the write
+    // boundary, including edits made while an earlier write was pending.
+    await ports.updateSelections(
+      (selections): ChatTabPluginSelections => ({
+        ...selections,
+        unresolvedCapabilities: (
+          selections.unresolvedCapabilities ?? []
+        ).filter(
+          (capability) => !sameTryItCapability(capability, recordCapability),
         ),
-        ref,
-      ],
-    };
-    await ports.updateSelections(next, current);
+        mcpServerRefs: [
+          ...(selections.mcpServerRefs ?? []).filter(
+            (entry) => entry.serverId !== ref.serverId,
+          ),
+          ref,
+        ],
+      }),
+      current,
+    );
     if (!(await current())) return;
-    const sending = updateTryItContinuation(chatId, requestId, (saved) => ({
-      ...withoutTryItFailure(saved),
-      status: 'sending',
-    }));
-    if (!sending?.host) return;
-    expectedRaw = JSON.stringify(sending);
-    if (!(await current())) return;
-    dispatchStarted = true;
-    await ports.continueChat({
-      location,
-      chatId,
-      requestId,
-      message: sending.prompt,
-      pluginSelections: next,
-      ...(sending.host.model ? { model: sending.host.model } : {}),
-      canContinue: current,
-    });
-    if (!(await current())) return;
-    settleTryItContinuationReceipt({ accountKey, chatId, requestId });
+    settle();
   } catch {
     if (!(await current())) return;
-    if (dispatchStarted) {
-      // The send may have committed before its response was lost. Settle
-      // only on durable evidence; anything else stays uncertain.
-      const after = await readReceipt();
-      if (!(await current())) return;
-      if (after === 'accepted') {
-        settle();
-        return;
-      }
-    }
     updateTryItContinuation(chatId, requestId, (saved) =>
       saved.status === 'completed'
         ? saved
-        : {
-            ...saved,
-            status: 'failed',
-            failure:
-              saved.status === 'sending' ||
-              saved.failure === 'acceptance-uncertain'
-                ? 'acceptance-uncertain'
-                : 'send-failed',
-          },
+        : { ...saved, status: 'failed', failure: 'send-failed' },
     );
   }
 }

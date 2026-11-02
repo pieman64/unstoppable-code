@@ -28,6 +28,14 @@ import {
   applyCodeGraphFixtureEdit,
   bracketWork,
   buildCodeGraphFixtureSource,
+  assertNonBuildGraphWrite,
+  claudeGraphOrientationTurns,
+  claudeGraphOrientationViolations,
+  assertClaudeGraphMainEntry,
+  claudeGraphChatRequestErrors,
+  claudeGraphSearchResultCountErrors,
+  writeClaudeGraphNonBuildChange,
+  classifyClaudeGraphSearchOutcomes,
   clearComposerDraft,
   TOOL_ACTIVE_TURN_BATCH,
   buildMultiChatClaudeConversation,
@@ -38,6 +46,7 @@ import {
   codeGraphBuildTimings,
   codeGraphBuildWork,
   costIndexCheckpointSummary,
+  createFreshChatTab,
   diskAccuracyCheck,
   directoryFileBytes,
   managedDelegationDescriptors,
@@ -72,6 +81,7 @@ import {
   nextPaint,
   panelIdFromTabTestId,
   performanceElectronArgs,
+  performanceWindowEnv,
   parseBrowserPartitionHandles,
   pluginPickerDomRowCount,
   providerRequestWaitTimeoutMs,
@@ -94,6 +104,7 @@ import {
   ledgerUnavailableReason,
   performanceDataRootParent,
   scenarioClientFeatureFlags,
+  scenarioMeasuresQuit,
   runLoadedUi,
   scenarioWorkCounters,
   seedWorkspace,
@@ -103,6 +114,12 @@ import {
   waitForCodeGraphQueueDrain,
   waitUntil,
   FatalWaitError,
+  gateHoldTimings,
+  gitReadyAfterResumeMs,
+  recordGitReadyAfterRelease,
+  priorSetupDrainStatus,
+  priorSetupsDrained,
+  waitForPriorSetupsToFinish,
   worktreeGitPendingError,
   worktreeSetupSelectionTimeoutMs,
 } from './scenarios.mjs';
@@ -201,6 +218,45 @@ test('loaded UI navigation uses its seeded activity layout without the E2E rail 
     ['select_worktree', 'switch_loaded_chat', 'navigate_page'],
   );
 });
+
+for (const classic of [false, true]) {
+  test(`fresh performance chats use the ${classic ? 'classic' : 'standard'} add menu`, async () => {
+    const ids = ['existing'];
+    let menuOpen = false;
+    const page = {
+      locator: () => ({
+        evaluateAll: async (read) =>
+          read(
+            ids.map((id) => ({
+              getAttribute: () => `panel-tab-panel-chat-${id}`,
+            })),
+          ),
+      }),
+      getByTestId: (id) => ({
+        isVisible: async () => id === 'panel-add-panel-group-chat' && classic,
+        click: async () => {
+          if (id === 'panel-add-menu-item-new-chat') {
+            assert.ok(menuOpen, 'New Chat must be selected from the open menu');
+            ids.push('created');
+            menuOpen = false;
+          } else if (
+            id ===
+            (classic
+              ? 'panel-add-panel-group-chat'
+              : 'panel-add-tab-group-chat')
+          ) {
+            menuOpen = true;
+          } else {
+            throw new Error(`Unavailable panel control: ${id}`);
+          }
+        },
+      }),
+    };
+    assert.equal(await createFreshChatTab(page), 'created');
+    assert.equal(menuOpen, false);
+    assert.deepEqual(ids, ['existing', 'created']);
+  });
+}
 
 test('a composer clear that leaves the previous draft is retried until it is gone', async () => {
   // Under concurrent streaming the first `fill('')` can leave the Slate
@@ -1082,6 +1138,62 @@ test('transient item draining waits for a stable empty interval', async () => {
   assert.ok(nowMs >= 200);
 });
 
+test('transient items can disappear while dismissal waits for actionability', async () => {
+  let present = true;
+  let nowMs = 0;
+  const result = await drainTransientItems({
+    count: async () => Number(present),
+    dismissFirst: async () => {
+      present = false;
+      const error = new Error(
+        'Toast detached while waiting for a stable button',
+      );
+      error.name = 'TimeoutError';
+      throw error;
+    },
+    now: () => nowMs,
+    pause: async (delayMs) => {
+      nowMs += delayMs;
+    },
+    stableEmptyMs: 200,
+  });
+  assert.equal(result, 0);
+  assert.equal(present, false);
+});
+
+test('transient dismissal timeouts still fail at the overall deadline', async () => {
+  let nowMs = 0;
+  await assert.rejects(
+    drainTransientItems({
+      count: async () => 1,
+      dismissFirst: async () => {
+        const error = new Error('Button never became stable');
+        error.name = 'TimeoutError';
+        throw error;
+      },
+      now: () => nowMs,
+      pause: async (delayMs) => {
+        nowMs += delayMs;
+      },
+      timeoutMs: 300,
+    }),
+    /Timed out after 300ms waiting for transient items to remain empty/,
+  );
+});
+
+test('transient dismissal propagates unexpected errors', async () => {
+  const error = new Error('Unexpected page failure');
+  await assert.rejects(
+    drainTransientItems({
+      count: async () => 1,
+      dismissFirst: async () => {
+        throw error;
+      },
+    }),
+    (received) => received === error,
+  );
+});
+
 test('a completed provider request proves a fast later turn activated', () => {
   assert.equal(
     laterTurnActivationObserved({
@@ -1836,6 +1948,275 @@ test('worktree Git-pending errors distinguish the start and end of the typing pr
     ),
     null,
   );
+  assert.equal(
+    worktreeGitPendingError(ready, 'otter', 'held'),
+    'Worktree otter Git setup completed while the performance gate held it',
+  );
+});
+
+test('a timed worktree release waits until every earlier setup finished', () => {
+  const state = (completionResults, activeIds = []) => ({
+    activeIds,
+    completionResults,
+  });
+  const ok = { success: true, exitCode: 0 };
+
+  // The previous worktree's setup still runs: not drained.
+  let status = priorSetupDrainStatus(state({ heron: ok }, ['wren']), [
+    'heron',
+    'wren',
+  ]);
+  assert.deepEqual(status, {
+    pending: ['wren'],
+    failed: [],
+    activeIds: ['wren'],
+  });
+  assert.equal(priorSetupsDrained(status), false);
+
+  // A setup that has not started yet is pending too, not finished.
+  status = priorSetupDrainStatus(state({ heron: ok }), ['heron', 'wren']);
+  assert.deepEqual(status.pending, ['wren']);
+  assert.equal(priorSetupsDrained(status), false);
+
+  // Every earlier setup finished, but another automatic setup is active.
+  status = priorSetupDrainStatus(state({ heron: ok, wren: ok }, ['main']), [
+    'heron',
+    'wren',
+  ]);
+  assert.equal(priorSetupsDrained(status), false);
+
+  status = priorSetupDrainStatus(state({ heron: ok, wren: ok }), [
+    'heron',
+    'wren',
+  ]);
+  assert.equal(priorSetupsDrained(status), true);
+
+  // The first worktree has no earlier setups.
+  assert.equal(priorSetupsDrained(priorSetupDrainStatus(state({}), [])), true);
+
+  // A failed setup is reported, not waited for.
+  status = priorSetupDrainStatus(
+    state({ heron: { success: false, exitCode: 1 }, wren: ok }),
+    ['heron', 'wren'],
+  );
+  assert.deepEqual(status.failed, ['heron']);
+
+  // Before the tracker exists nothing counts as finished.
+  status = priorSetupDrainStatus(null, ['heron']);
+  assert.deepEqual(status, { pending: ['heron'], failed: [], activeIds: [] });
+  assert.equal(priorSetupsDrained(status), false);
+});
+
+test('the prior-setup wait releases on drain and fails explicitly otherwise', async () => {
+  const ok = { success: true, exitCode: 0 };
+  const trackerPage = (states) => {
+    let reads = 0;
+    return {
+      evaluate: async () => states[Math.min(reads++, states.length - 1)],
+    };
+  };
+  const tracker = (overrides = {}) => ({
+    activeIds: [],
+    completionResults: {},
+    gitReadyIds: [],
+    gitFailed: {},
+    ...overrides,
+  });
+  const wait = (states, timeoutMs = 2_000) =>
+    waitForPriorSetupsToFinish(trackerPage(states), {
+      worktreeId: 'wren',
+      priorIds: ['heron'],
+      timeoutMs,
+    });
+
+  const drained = await wait([
+    tracker({ activeIds: ['heron'] }),
+    tracker({ completionResults: { heron: ok } }),
+  ]);
+  assert.deepEqual(drained.state.activeIds, []);
+  assert.ok(drained.drainMs >= 0);
+
+  await assert.rejects(
+    wait([tracker({ completionResults: { heron: { success: false } } })]),
+    (error) =>
+      error instanceof FatalWaitError &&
+      /^Setup failed for heron before worktree wren was released/.test(
+        error.message,
+      ),
+  );
+  await assert.rejects(
+    wait([tracker({ activeIds: ['heron'], gitReadyIds: ['heron', 'wren'] })]),
+    (error) =>
+      error instanceof FatalWaitError &&
+      /wren Git setup completed while the performance gate held it/.test(
+        error.message,
+      ),
+  );
+  await assert.rejects(
+    wait([tracker({ activeIds: ['heron'] })], 100),
+    /Timed out waiting for earlier setup scripts \[heron\] to finish before releasing worktree wren; tracker=\{"activeIds":\["heron"\]/,
+  );
+});
+
+test('gate hold timings keep the release poll apart from the Git and app shares', () => {
+  const gate = {
+    heldMs: () => 30_000,
+    resumedAfterReleaseMs: () => 229,
+    resumedAtMs: () => 8_500,
+    checkoutWrittenAfterResumeMs: () => 1_500,
+    writtenAtMs: () => 10_000,
+    gatePassThroughMs: () => 4,
+    tailPassThroughMs: () => 3,
+  };
+  assert.deepEqual(
+    gateHoldTimings(gate, 'wren', {
+      tailWrittenLast: true,
+      gitReadyAtMs: 10_040,
+    }),
+    {
+      heldMs: 30_000,
+      gateResumedAfterReleaseMs: 229,
+      // Git's 1,500 ms plus the app's 40 ms; the 229 ms poll is not in it.
+      gitReadyAfterResumeMs: 1_540,
+      checkoutWrittenAfterResumeMs: 1_500,
+      gitReadyAfterCheckoutWrittenMs: 40,
+      gatePassThroughMs: 4,
+      tailPassThroughMs: 3,
+    },
+  );
+  // Parallel checkout writes the tail early, so neither split is reported.
+  assert.deepEqual(
+    gateHoldTimings(gate, 'wren', {
+      tailWrittenLast: false,
+      gitReadyAtMs: 10_040,
+    }),
+    {
+      heldMs: 30_000,
+      gateResumedAfterReleaseMs: 229,
+      gitReadyAfterResumeMs: 1_540,
+      checkoutWrittenAfterResumeMs: undefined,
+      gitReadyAfterCheckoutWrittenMs: undefined,
+      gatePassThroughMs: 4,
+      tailPassThroughMs: 3,
+    },
+  );
+  const withoutReady = gateHoldTimings(gate, 'wren', {
+    tailWrittenLast: true,
+    gitReadyAtMs: undefined,
+  });
+  assert.equal(withoutReady.gitReadyAfterResumeMs, undefined);
+  assert.equal(withoutReady.gitReadyAfterCheckoutWrittenMs, undefined);
+  assert.equal(
+    gateHoldTimings({ ...gate, resumedAtMs: () => undefined }, 'wren', {
+      tailWrittenLast: true,
+      gitReadyAtMs: 10_040,
+    }).gitReadyAfterResumeMs,
+    undefined,
+  );
+});
+
+test('the timed creation runs from the gate resume to the renderer Git ready', () => {
+  const gate = (overrides = {}) => ({
+    holdExpired: () => false,
+    resumedAtMs: () => 8_500.25,
+    ...overrides,
+  });
+  // The release poll's latency is absent whatever it was.
+  assert.equal(gitReadyAfterResumeMs(gate(), 'wren', 10_040), 1_539.75);
+  assert.equal(gitReadyAfterResumeMs(gate(), 'wren', 8_500.25), 0);
+
+  assert.throws(
+    () =>
+      gitReadyAfterResumeMs(gate({ holdExpired: () => true }), 'wren', 10_040),
+    /^Error: The performance Git gate expired before worktree wren was released/,
+  );
+  assert.throws(
+    () =>
+      gitReadyAfterResumeMs(
+        gate({ resumedAtMs: () => undefined }),
+        'wren',
+        10_040,
+      ),
+    /wren reported Git ready without the performance gate resuming its checkout/,
+  );
+  assert.throws(
+    () => gitReadyAfterResumeMs(gate(), 'wren', undefined),
+    /wren Git ready has no renderer timestamp/,
+  );
+  assert.throws(
+    () => gitReadyAfterResumeMs(gate(), 'wren', 8_490.25),
+    /wren reported Git ready 10ms before the performance gate resumed/,
+  );
+});
+
+test('the recorded creation task times the gate resume, not the release poll', async () => {
+  const resumedAtMs = Date.now() + 5_000;
+  const gate = (overrides = {}) => ({
+    holdExpired: () => false,
+    resumedAtMs: () => resumedAtMs,
+    ...overrides,
+  });
+  const record = (tasks, gitGate, waitForGitReadyAt, harnessTiming = {}) =>
+    recordGitReadyAfterRelease(tasks, {
+      gitGate,
+      worktreeId: 'wren',
+      release: () => {
+        tasks.released = true;
+      },
+      waitForGitReadyAt,
+      harnessTiming,
+      metadata: { worktree: 3, concurrentSetupScripts: 0 },
+    });
+
+  // A 60 ms release-to-observed window around a 1,540 ms stamped creation.
+  const tasks = [];
+  const harnessTiming = {};
+  assert.equal(
+    await record(
+      tasks,
+      gate(),
+      async () => {
+        assert.equal(tasks.released, true);
+        await delay(60);
+        return resumedAtMs + 1_540;
+      },
+      harnessTiming,
+    ),
+    1_540,
+  );
+  assert.equal(tasks.length, 1);
+  const [task] = tasks;
+  assert.equal(task.kind, 'worktree_git_ready_after_release');
+  assert.equal(task.status, 'ok');
+  assert.equal(task.durationMs, 1_540);
+  assert.ok(task.harnessWallMs >= 55 && task.harnessWallMs < 1_000);
+  assert.equal(task.worktree, 3);
+  assert.equal(task.concurrentSetupScripts, 0);
+  assert.equal(typeof harnessTiming.gitReadyObservedAfterReadyMs, 'number');
+
+  // A stamp the creation cannot be timed from fails the task explicitly.
+  const expired = [];
+  await assert.rejects(
+    record(
+      expired,
+      gate({ holdExpired: () => true }),
+      async () => resumedAtMs + 1_540,
+    ),
+    /gate expired before worktree wren was released/,
+  );
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].status, 'error');
+  assert.match(expired[0].error, /gate expired/);
+  assert.equal('harnessWallMs' in expired[0], false);
+
+  const failed = [];
+  await assert.rejects(
+    record(failed, gate(), async () => {
+      throw new FatalWaitError('Worktree wren Git setup failed: boom');
+    }),
+    /Git setup failed: boom/,
+  );
+  assert.equal(failed[0].status, 'error');
 });
 
 test('waitUntil stops at a FatalWaitError instead of retrying until the deadline', async () => {
@@ -2116,6 +2497,46 @@ test('the mock LLM keeps scripted tool-use ids and defaults the rest', async (t)
     )
     .map((event) => event.content_block.id);
   assert.deepEqual(started, ['toolu_perf_turn_0', 'toolu_mock_1']);
+});
+
+test('the mock LLM never reuses a default tool-use id within a conversation', async (t) => {
+  const marker = 'Canopy-CTOOLSEQ';
+  registerMockScenario(marker, {
+    llm: {
+      steps: [
+        { toolCalls: [{ name: 'Bash', input: {} }], stopReason: 'tool_use' },
+        { toolCalls: [{ name: 'Read', input: {} }], stopReason: 'tool_use' },
+        { text: 'done' },
+      ],
+    },
+  });
+  t.after(() => clearScenario(marker));
+  const user = { role: 'user', content: `[${marker}] Run the tools.` };
+
+  const first = JSON.parse(
+    await mockAnthropicMessage({ model: 'claude-test', messages: [user] }),
+  );
+  const firstId = first.content.find((block) => block.type === 'tool_use').id;
+  assert.equal(firstId, 'toolu_mock_0');
+
+  const second = JSON.parse(
+    await mockAnthropicMessage({
+      model: 'claude-test',
+      messages: [
+        user,
+        { role: 'assistant', content: first.content },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: firstId, content: '' }],
+        },
+      ],
+    }),
+  );
+  const secondId = second.content.find(
+    (block) => block.type === 'tool_use',
+  )?.id;
+  assert.ok(secondId, 'the second step should call a tool');
+  assert.notEqual(secondId, firstId);
 });
 
 test('a Codex streaming chat replays a deterministic script around one long streamed command', () => {
@@ -2562,6 +2983,13 @@ test('code-graph edits are deterministic and build counts come from metadata and
   );
 });
 
+test('only startup-settle times the app quit', () => {
+  assert.equal(scenarioMeasuresQuit('startup-settle'), true);
+  assert.equal(scenarioMeasuresQuit('startup-realistic'), false);
+  assert.equal(scenarioMeasuresQuit('loaded-ui'), false);
+  assert.equal(scenarioMeasuresQuit('no-such-scenario'), false);
+});
+
 test('the startup trace records V8 compile events as JSON for a bounded window', () => {
   assert.deepEqual(startupTraceElectronArgs('/tmp/trace.json'), [
     '--trace-startup=v8,devtools.timeline',
@@ -2881,6 +3309,38 @@ test('release-like launches isolate Chromium storage before the product takes it
   ]);
 });
 
+test('only hidden Windows runs render their window offscreen', () => {
+  const hidden = { showWindow: false };
+  assert.deepEqual(performanceWindowEnv(hidden, 'win32'), {
+    CANOPY_E2E_OFFSCREEN_WINDOW: '1',
+  });
+  for (const platform of ['darwin', 'linux'])
+    assert.deepEqual(performanceWindowEnv(hidden, platform), {});
+  for (const options of [
+    { showWindow: true },
+    { showWindow: false, studyWindowMode: 'hidden-native' },
+    { showWindow: false, studyViewportPreset: 'study' },
+  ])
+    assert.deepEqual(performanceWindowEnv(options, 'win32'), {});
+});
+
+test('managed-delegation load uses current catalog IDs for Codex delegates', () => {
+  const catalog = JSON.parse(
+    readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'),
+  );
+  const modelIds = new Set(catalog.codex.models.map((model) => model.id));
+  for (const parent of managedDelegationDescriptors()) {
+    for (const delegate of parent.delegates) {
+      if (delegate.harness === 'codex') {
+        assert.ok(
+          modelIds.has(delegate.model),
+          `Codex load delegate must use a current catalog ID: ${delegate.model}`,
+        );
+      }
+    }
+  }
+});
+
 test('managed-delegation-concurrency scripts two Claude and two Codex parents with three background delegates each', () => {
   const config = {
     managedDelegationChildSteps: 3,
@@ -2994,4 +3454,281 @@ test('the cost index scenario runs release-like: it needs no E2E-only hook', () 
   assert.doesNotThrow(() =>
     assertReleaseLikeScenarioSupported('cost-index-first-build', true),
   );
+});
+
+test('the Claude graph orientation journey scripts every gated phase in order', () => {
+  const turns = claudeGraphOrientationTurns({
+    claudeGraphOrientationLaterTurns: 2,
+    claudeGraphOrientationSearchesPerTurn: 3,
+  });
+  assert.deepEqual(
+    turns.map((turn) => turn.tag),
+    [
+      'settle',
+      'fresh',
+      'artifact',
+      'artifact-file',
+      'artifact-selector',
+      'orient',
+      'later-1',
+      'later-2',
+      'non-build-write',
+      'rebuilt',
+      'reorient',
+      'after-reorient',
+    ],
+  );
+  const orient = turns.find((turn) => turn.tag === 'orient');
+  assert.equal(
+    orient.steps[0].toolCalls[0].name,
+    'mcp__canopy__GetCodeGraphContext',
+  );
+  assert.equal(orient.steps[1].toolCalls.length, 3);
+  assert.equal(orient.steps[1].toolCalls[0].name, 'Bash');
+  assert.match(orient.steps[1].toolCalls[0].input.command, /^grep -rl /);
+  assert.ok(turns.every((turn) => turn.steps.at(-1).stopReason === 'end_turn'));
+  assert.equal(turns.find((turn) => turn.tag === 'rebuilt').before, 'rebuild');
+  // A literal log outside every artifact directory reaches the steering stat.
+  assert.equal(
+    turns.find((turn) => turn.tag === 'artifact-file').steps[0].toolCalls[0]
+      .input.command,
+    'grep fn0_0 claude-graph-notes.log',
+  );
+  // A dot-less directory behind a `.log` selector reaches the directory stat.
+  assert.equal(
+    turns.find((turn) => turn.tag === 'artifact-selector').steps[0].toolCalls[0]
+      .input.command,
+    "grep -r --include='*.log' fn0_0 claude-graph-logs",
+  );
+});
+
+test('Claude graph search outcomes are classified per scripted turn', () => {
+  const user = (tag) => ({
+    role: 'user',
+    blocks: [{ type: 'text', text: `[Canopy-Mock-Request:${tag}] go` }],
+  });
+  const call = (id, toolName = 'Bash') => ({
+    role: 'assistant',
+    blocks: [{ type: 'tool_use', toolUseId: id, toolName, input: '{}' }],
+  });
+  // Results arrive as system-role blocks without a tool name.
+  const result = (id, isError, output) => ({
+    role: 'system',
+    blocks: [{ type: 'tool_result', toolUseId: id, isError, output }],
+  });
+  const outcomes = classifyClaudeGraphSearchOutcomes([
+    user('fresh'),
+    call('a'),
+    result('a', true, 'A code graph exists for this worktree. Call it.'),
+    call('b'),
+    result('b', true, 'grep: no such directory'),
+    user('later-1'),
+    // A later graph call reuses an earlier search's id.
+    call('a', 'mcp__canopy__GetCodeGraphContext'),
+    result('a', false, '{}'),
+    call('c'),
+    result('c', false, 'graph-fixture/mod0.ts'),
+  ]);
+  assert.deepEqual(outcomes, {
+    fresh: { allowed: 0, denied: 1, failed: 1 },
+    'later-1': { allowed: 1, denied: 0, failed: 0 },
+  });
+});
+
+test('Claude graph orientation violations name every unexpected outcome', () => {
+  const turns = claudeGraphOrientationTurns({
+    claudeGraphOrientationLaterTurns: 1,
+    claudeGraphOrientationSearchesPerTurn: 2,
+  });
+  const expected = {
+    settle: { allowed: 0, denied: 0, failed: 0 },
+    fresh: { allowed: 0, denied: 2, failed: 0 },
+    artifact: { allowed: 1, denied: 0, failed: 0 },
+    'artifact-file': { allowed: 1, denied: 0, failed: 0 },
+    'artifact-selector': { allowed: 1, denied: 0, failed: 0 },
+    orient: { allowed: 2, denied: 0, failed: 0 },
+    'later-1': { allowed: 2, denied: 0, failed: 0 },
+    'non-build-write': { allowed: 2, denied: 0, failed: 0 },
+    rebuilt: { allowed: 0, denied: 2, failed: 0 },
+    reorient: { allowed: 2, denied: 0, failed: 0 },
+    'after-reorient': { allowed: 2, denied: 0, failed: 0 },
+  };
+  assert.deepEqual(claudeGraphOrientationViolations(turns, expected), []);
+  assert.deepEqual(
+    claudeGraphOrientationViolations(turns, {
+      ...expected,
+      'later-1': { allowed: 0, denied: 2, failed: 0 },
+      rebuilt: { allowed: 1, denied: 0, failed: 1 },
+    }),
+    [
+      'later-1: expected 2 allowed, got {"allowed":0,"denied":2,"failed":0}',
+      'rebuilt: expected 2 denied, got {"allowed":1,"denied":0,"failed":1}',
+    ],
+  );
+});
+
+test('a non-build graph write must change the files and keep the build stamp', () => {
+  const before = { identity: 'db:1/wal:1', lastBuildAt: 100 };
+  assert.doesNotThrow(() =>
+    assertNonBuildGraphWrite({
+      before,
+      after: { identity: 'db:1/wal:2', lastBuildAt: 100 },
+      rowsChanged: 1,
+    }),
+  );
+  assert.throws(
+    () => assertNonBuildGraphWrite({ before, after: before, rowsChanged: 1 }),
+    /unchanged/,
+  );
+  assert.throws(
+    () =>
+      assertNonBuildGraphWrite({
+        before,
+        after: { identity: 'db:2/wal:2', lastBuildAt: 101 },
+        rowsChanged: 1,
+      }),
+    /changed last_build_at/,
+  );
+  assert.throws(
+    () =>
+      assertNonBuildGraphWrite({
+        before,
+        after: { identity: 'db:1/wal:2', lastBuildAt: 100 },
+        rowsChanged: 0,
+      }),
+    /no metadata row/,
+  );
+});
+
+test('the non-build graph write changes a real WAL database without a new stamp', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'claude-graph-write-'));
+  try {
+    const dbPath = path.join(directory, 'graph.db');
+    const database = new DatabaseSync(dbPath);
+    database.exec(
+      "PRAGMA journal_mode = WAL; CREATE TABLE graph_metadata (key TEXT PRIMARY KEY, value TEXT); INSERT INTO graph_metadata VALUES ('extractor_version', '7'), ('last_build_at', '1700000000000');",
+    );
+    // An open reader keeps the WAL, as the app's read worker does. A second
+    // write must change the files too, not repeat identical content.
+    const first = writeClaudeGraphNonBuildChange(dbPath);
+    const second = writeClaudeGraphNonBuildChange(dbPath);
+    database.close();
+    assert.notEqual(first.before.identity, first.after.identity);
+    assert.notEqual(second.before.identity, second.after.identity);
+    assert.equal(second.after.lastBuildAt, 1_700_000_000_000);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a release-like Claude graph sample must identify its main entry', () => {
+  assertClaudeGraphMainEntry(['index.jsc']);
+  assertClaudeGraphMainEntry(['_index.js']);
+  for (const entries of [
+    [],
+    null,
+    ['index.jsc', '_index.js'],
+    ['unavailable: Error'],
+  ]) {
+    assert.throws(
+      () => assertClaudeGraphMainEntry(entries),
+      /could not identify the loaded main entry/,
+    );
+  }
+});
+
+test('Claude graph chat requests must match every scripted step exactly', () => {
+  const turns = claudeGraphOrientationTurns({
+    claudeGraphOrientationLaterTurns: 1,
+    claudeGraphOrientationSearchesPerTurn: 2,
+  });
+  const complete = Object.fromEntries(
+    turns.map((entry) => [entry.tag, entry.steps.length]),
+  );
+  assert.deepEqual(claudeGraphChatRequestErrors(turns, complete), []);
+  const fresh = complete.fresh;
+  assert.deepEqual(
+    claudeGraphChatRequestErrors(turns, {
+      ...complete,
+      fresh: fresh + 1,
+      orient: 0,
+      helper: 1,
+    }),
+    [
+      `fresh: ${fresh + 1} of ${fresh}`,
+      `orient: 0 of ${complete.orient}`,
+      'helper: unscripted turn',
+    ],
+  );
+});
+
+test('Claude graph search result counts must match every scripted turn exactly', () => {
+  const turns = claudeGraphOrientationTurns({
+    claudeGraphOrientationLaterTurns: 1,
+    claudeGraphOrientationSearchesPerTurn: 2,
+  });
+  const complete = {
+    fresh: { allowed: 0, denied: 2, failed: 0 },
+    artifact: { allowed: 1, denied: 0, failed: 0 },
+    'artifact-file': { allowed: 1, denied: 0, failed: 0 },
+    'artifact-selector': { allowed: 1, denied: 0, failed: 0 },
+    orient: { allowed: 2, denied: 0, failed: 0 },
+    'later-1': { allowed: 2, denied: 0, failed: 0 },
+    'non-build-write': { allowed: 2, denied: 0, failed: 0 },
+    rebuilt: { allowed: 0, denied: 2, failed: 0 },
+    reorient: { allowed: 2, denied: 0, failed: 0 },
+    'after-reorient': { allowed: 2, denied: 0, failed: 0 },
+  };
+  assert.deepEqual(claudeGraphSearchResultCountErrors(turns, complete), []);
+  // A baseline's denials are complete results, not count errors.
+  assert.deepEqual(
+    claudeGraphSearchResultCountErrors(turns, {
+      ...complete,
+      'later-1': { allowed: 0, denied: 2, failed: 0 },
+    }),
+    [],
+  );
+  const withoutLater = Object.fromEntries(
+    Object.entries(complete).filter(([tag]) => tag !== 'later-1'),
+  );
+  assert.deepEqual(claudeGraphSearchResultCountErrors(turns, withoutLater), [
+    'later-1: 0 of 2',
+  ]);
+  assert.deepEqual(
+    claudeGraphSearchResultCountErrors(turns, {
+      ...complete,
+      orient: { allowed: 1, denied: 0, failed: 0 },
+      rebuilt: { allowed: 0, denied: 3, failed: 0 },
+      stray: { allowed: 1, denied: 0, failed: 0 },
+    }),
+    ['orient: 1 of 2', 'rebuilt: 3 of 2', 'stray: unscripted turn'],
+  );
+});
+
+test('a duplicated search result is counted, so the run can reject it', () => {
+  const outcomes = classifyClaudeGraphSearchOutcomes([
+    {
+      role: 'user',
+      blocks: [{ type: 'text', text: '[Canopy-Mock-Request:orient] go' }],
+    },
+    {
+      role: 'assistant',
+      blocks: [
+        { type: 'tool_use', toolUseId: 'a', toolName: 'Bash', input: '{}' },
+      ],
+    },
+    {
+      role: 'system',
+      blocks: [
+        { type: 'tool_result', toolUseId: 'a', isError: false, output: 'x' },
+      ],
+    },
+    {
+      role: 'system',
+      blocks: [
+        { type: 'tool_result', toolUseId: 'a', isError: false, output: 'x' },
+      ],
+    },
+  ]);
+  assert.deepEqual(outcomes, { orient: { allowed: 2, denied: 0, failed: 0 } });
 });

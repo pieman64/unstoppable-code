@@ -1,5 +1,4 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import { useRef, useState, type JSX } from 'react';
 import type {
@@ -12,6 +11,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsTableSkeleton,
+  SettingsSelect,
 } from '@canopy/ui-shared/components';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsClient, useSettingsPrivacy } from '../host';
@@ -108,24 +108,23 @@ export function OpsView({
                 Attempts, worker heartbeat, and terminal errors.
               </p>
             </div>
-            <SettingsControlSelect
+            <SettingsSelect
               value={status}
-              onChange={(event) => {
-                const value = event.target.value;
+              onValueChange={(value) => {
                 if (value === 'ALL' || isJobStatus(value)) {
                   selectStatus(value);
                 }
               }}
-              fill
+              width="fill"
               aria-label="Filter ingest jobs"
-            >
-              <option value="ALL">All jobs</option>
-              {STATUSES.map((item) => (
-                <option key={item} value={item}>
-                  {item} ({counts[item]})
-                </option>
-              ))}
-            </SettingsControlSelect>
+              options={[
+                { value: 'ALL', label: 'All jobs' },
+                ...STATUSES.map((item) => ({
+                  value: item,
+                  label: `${item} (${counts[item]})`,
+                })),
+              ]}
+            />
           </div>
           {jobsLoading && jobsError === null && visibleJobs.length === 0 ? (
             <div className="p-4">

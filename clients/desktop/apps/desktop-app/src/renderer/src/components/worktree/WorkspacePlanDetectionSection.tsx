@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   PlanDetectionPreferences,
   PlanDetectionRule,
@@ -9,7 +9,10 @@ import {
   getWorkspaceInheritedRows,
   makeRuleId,
 } from '@/components/settings/planDetectionTabState';
-import { LoadingIndicator } from '@canopy/ui-shared/components';
+import {
+  LoadingIndicator,
+  type SettingsSaveState,
+} from '@canopy/ui-shared/components';
 
 interface LoadedState {
   globalPrefs: PlanDetectionPreferences;
@@ -19,11 +22,19 @@ interface LoadedState {
 
 export interface WorkspacePlanDetectionSectionProps {
   workspaceId: string;
+  /** Show the explanation above the rules; a page that already says it hides it. */
+  showIntro?: boolean;
+  /** Reports each save, for a page that shows one save line. */
+  onSaveStateChange?: (state: SettingsSaveState) => void;
 }
 
 export function WorkspacePlanDetectionSection({
   workspaceId,
+  showIntro = true,
+  onSaveStateChange,
 }: WorkspacePlanDetectionSectionProps): JSX.Element {
+  const onSaveStateChangeRef = useRef(onSaveStateChange);
+  onSaveStateChangeRef.current = onSaveStateChange;
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(
     'loading',
   );
@@ -60,10 +71,13 @@ export function WorkspacePlanDetectionSection({
   const persist = useCallback(
     async (next: WorkspacePlanDetectionConfig): Promise<void> => {
       setData((prev) => (prev ? { ...prev, local: next } : prev));
+      onSaveStateChangeRef.current?.('saving');
       await window.api
         .saveWorkspacePlanDetection({ workspaceId, planDetection: next })
+        .then(() => onSaveStateChangeRef.current?.('saved'))
         .catch(() => {
           // Non-fatal: optimistic UI persists for this session.
+          onSaveStateChangeRef.current?.('error');
         });
     },
     [workspaceId],
@@ -86,11 +100,13 @@ export function WorkspacePlanDetectionSection({
 
   return (
     <div className="space-y-4" data-testid="workspace-plan-detection">
-      <p className="text-s fg-secondary">
-        Detect plan documents in agent chats. Inherited rules come from your
-        global settings and this project&apos;s canopy.json; disable any you
-        don&apos;t want here, or add project-only rules.
-      </p>
+      {showIntro && (
+        <p className="text-s fg-secondary">
+          Detect plan documents in agent chats. Inherited rules come from your
+          global settings and this project&apos;s canopy.json; disable any you
+          don&apos;t want here, or add project-only rules.
+        </p>
+      )}
       <PlanDetectionRulesEditor
         dataTestIdPrefix="workspace-plan-detection"
         inherited={getWorkspaceInheritedRows({

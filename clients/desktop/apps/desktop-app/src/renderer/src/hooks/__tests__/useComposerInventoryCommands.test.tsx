@@ -50,7 +50,6 @@ function makeEntry(
     id: overrides.id ?? `id:${name}`,
     provider: overrides.provider ?? 'cursor',
     kind: overrides.kind ?? 'skill',
-    name,
     displayName: overrides.displayName ?? `/${name}`,
     description: overrides.description ?? `${name} description`,
     insertText: overrides.insertText ?? `/${name} `,

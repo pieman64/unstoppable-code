@@ -13,6 +13,30 @@ import {
   type SidebarItemGroupUnitLabel,
 } from './SidebarItemGroup';
 
+/** One Move-to row per group, skipping the one the rows are already in. */
+function groupDestinations(
+  groups: readonly SidebarItemGroup[],
+  excludeId: string | undefined,
+  onMove: (groupId: string) => void,
+): WorktreeMenuItem[] {
+  return groups
+    .filter((group) => group.id !== excludeId)
+    .map(
+      (group): WorktreeMenuItem => ({
+        key: `sidebar-group-${group.id}`,
+        label: group.name,
+        icon: (
+          <span
+            aria-hidden="true"
+            className="h-2 w-2 rounded-full"
+            style={{ backgroundColor: sidebarItemGroupColor(group.color) }}
+          />
+        ),
+        onSelect: (): void => onMove(group.id),
+      }),
+    );
+}
+
 /** Hosts insert this one organizing entry immediately after their Pin action. */
 export function sidebarItemGroupRowMenu({
   groups,
@@ -43,22 +67,7 @@ export function sidebarItemGroupRowMenu({
     icon: <FolderPlusIcon />,
     onSelect: onNewGroup,
   };
-  const destinations = groups
-    .filter((group) => group.id !== current?.id)
-    .map(
-      (group): WorktreeMenuItem => ({
-        key: `sidebar-group-${group.id}`,
-        label: group.name,
-        icon: (
-          <span
-            aria-hidden="true"
-            className="h-2 w-2 rounded-full"
-            style={{ backgroundColor: sidebarItemGroupColor(group.color) }}
-          />
-        ),
-        onSelect: (): void => onMove(group.id),
-      }),
-    );
+  const destinations = groupDestinations(groups, current?.id, onMove);
   if (!current && groups.length === 0)
     return [{ ...create, label: 'Add to new group' }];
   const submenu: WorktreeMenuItem[] = current
@@ -123,6 +132,64 @@ export function sidebarItemGroupRowMenu({
         <FolderIcon />
       ),
       submenu,
+    },
+  ];
+}
+
+/**
+ * A selection's group entry: moves every movable selected row together. Only
+ * the moves apply to many rows; Edit and Collapse act on one group and stay
+ * on the single row's menu. Keeps the single row's `sidebar-group-organize`
+ * key so its trigger and flyout carry the same test ids.
+ */
+export function sidebarItemGroupBulkMenu({
+  groups,
+  currentGroupIds,
+  onNewGroup,
+  onMove,
+  onRemove,
+}: {
+  groups: readonly SidebarItemGroup[];
+  /** Each movable selected row's group, `undefined` when ungrouped. */
+  currentGroupIds: readonly (string | undefined)[];
+  onNewGroup: () => void;
+  onMove: (groupId: string) => void;
+  onRemove: () => void;
+}): WorktreeMenuItem[] {
+  if (currentGroupIds.length === 0) return [];
+  const [first] = currentGroupIds;
+  // Rows that already share a group don't list it as a destination.
+  const shared =
+    first !== undefined && currentGroupIds.every((id) => id === first)
+      ? first
+      : undefined;
+  const anyGrouped = currentGroupIds.some((id) => id !== undefined);
+  const create: WorktreeMenuItem = {
+    key: 'sidebar-group-new',
+    label: 'New group',
+    icon: <FolderPlusIcon />,
+    onSelect: onNewGroup,
+  };
+  if (groups.length === 0 && !anyGrouped) {
+    return [{ ...create, label: 'Add to new group' }];
+  }
+  const destinations = groupDestinations(groups, shared, onMove).map(
+    (item, index) => ({ ...item, separatorBefore: index === 0 }),
+  );
+  const remove: WorktreeMenuItem = {
+    key: 'sidebar-group-remove',
+    label: 'Remove from group',
+    icon: <MinusIcon />,
+    onSelect: onRemove,
+    separatorBefore: true,
+  };
+  return [
+    {
+      key: 'sidebar-group-organize',
+      kind: 'submenu',
+      label: 'Move to group',
+      icon: <FolderIcon />,
+      submenu: [create, ...destinations, ...(anyGrouped ? [remove] : [])],
     },
   ];
 }

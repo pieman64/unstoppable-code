@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { storedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { AdvancedDisclosure, Notice } from '@canopy/ui-shared';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -26,10 +27,18 @@ import {
   detectRunConditionShareWarnings,
   type BuildSharedAutomationDocumentOptions,
 } from '@canopy/desktop-shared/lib/automation-sharing';
-import type { ScheduledActivity } from '@canopy/desktop-shared/types';
+import type {
+  AutomationPipelineDependency,
+  ScheduledActivity,
+} from '@canopy/desktop-shared/types';
+import { actionTypeTakesPipelineDependencies } from './form/automationFormState';
 import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
 import { hasAnySelections } from '@canopy/desktop-shared/types';
 import {
+  SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY,
+  SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
   SHARED_AUTOMATION_RUN_CONDITION_API_VERSION,
   SHARED_AUTOMATION_RUN_CONDITION_CAPABILITY,
   sharedRunConditionHasHiddenCharacters,
@@ -42,6 +51,7 @@ import {
 } from '@canopy/protocol/automations';
 import type {
   PipelinePackageAnalysisSummary,
+  PipelinePackagePackagedPipeline,
   PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -52,8 +62,10 @@ import {
   deriveExistingShare,
   existingShareLoadFailure,
   shareOwnerFields,
+  type CapabilityPackageAddablePipeline,
   type CapabilityPackageSharePort,
   type ShareDialogLink,
+  type ShareResourceDialogState,
   type ShareResourceExtraOptionsContext,
   type ShareResourceOutcome,
   type ShareResourceScope,
@@ -127,6 +139,19 @@ interface ShareAutomationModalProps {
   onShared: (detail: SharedAutomationDetail) => void;
 }
 
+/**
+ * The packaged pipelines that ship: the analysis also lists name-matched
+ * suggestions the author left out, which are not in the manifest.
+ */
+function shippedPackagedPipelines(
+  analysis: PipelinePackageAnalysisSummary | null | undefined,
+): PipelinePackagePackagedPipeline[] {
+  const resources = analysis?.manifest?.resources ?? [];
+  return (analysis?.packagedPipelines ?? []).filter((pipeline) =>
+    resources.some((resource) => resource.id === pipeline.resourceId),
+  );
+}
+
 function isReferenceOnlyBuiltIn(ref: ShareablePluginRef): boolean {
   const source = ref.type === 'skill' ? ref.source : ref.marketplace;
   return source.type === 'builtin' || source.type === 'codex-builtin';
@@ -134,11 +159,13 @@ function isReferenceOnlyBuiltIn(ref: ShareablePluginRef): boolean {
 
 /** Automation snapshot/package binding around the common share dialog. */
 export function ShareAutomationModal({
-  activity,
+  activity: listed,
   onClose,
   onOpenAccountSettings,
   onShared,
 }: ShareAutomationModalProps): JSX.Element {
+  // A converted chat automation shares the workflow it runs (CAN-4551).
+  const activity = useMemo(() => storedAutomationActivity(listed), [listed]);
   useCurrentUiStateReporter('sharing.automationDialog', {
     open: true,
     activityId: activity.id,
@@ -170,6 +197,15 @@ export function ShareAutomationModal({
   );
   const includesRunCondition =
     includeRunCondition && serverAcceptsRunCondition && runConditionShareable;
+  // Pipelines travel only in v5 documents. A server whose account read shows
+  // it can't publish them gets the pre-v5 shape instead: the action pipeline
+  // inline and no prompt dependencies. Until a conclusive read, pipelines are
+  // analyzed as usual.
+  const serverRejectsPipelineDependencies =
+    cloudAccount !== null &&
+    !cloudAccount.capabilities.includes(
+      SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY,
+    );
   const [remoteDetail, setRemoteDetail] =
     useState<SharedAutomationDetail | null>(null);
   const [remoteLink, setRemoteLink] = useState<ShareDialogLink | null>(null);
@@ -246,6 +282,93 @@ export function ShareAutomationModal({
   const [declaredTargetContexts, setDeclaredTargetContexts] = useState<
     TargetContext[] | undefined
   >(activity.targetRequirement?.contexts);
+  // Public shares carry no file assets, so the analysis must know when the
+  // author picks Public. Only that distinction re-runs it.
+  const [publicAudience, setPublicAudience] = useState(false);
+  const handleDialogStateChange = useCallback(
+    (state: ShareResourceDialogState): void => {
+      setPublicAudience(state.audience === 'public');
+    },
+    [],
+  );
+  // The last analysis main returned, so the document version (and the
+  // capability the server needs for it) follows its packaged pipelines.
+  const [latestAnalysis, setLatestAnalysis] =
+    useState<PipelinePackageAnalysisSummary | null>(null);
+  // The stored pipeline list plus pipelines added from this dialog, which
+  // are saved with the automation before the analysis runs again.
+  const storedPipelineDependencies = activity.dependencies?.pipelines;
+  const [addedPipelineDependencies, setAddedPipelineDependencies] = useState<
+    AutomationPipelineDependency[]
+  >([]);
+  const pipelineDependencies = useMemo(() => {
+    const merged = [...(storedPipelineDependencies ?? [])];
+    for (const added of addedPipelineDependencies) {
+      if (
+        !merged.some(
+          (entry) =>
+            entry.pipelineId === added.pipelineId &&
+            entry.source === added.source,
+        )
+      )
+        merged.push(added);
+    }
+    return merged;
+  }, [addedPipelineDependencies, storedPipelineDependencies]);
+  const offersPipelineAdd =
+    installedCapabilityPackage === undefined &&
+    !serverRejectsPipelineDependencies &&
+    actionTypeTakesPipelineDependencies(activity.action.type);
+  const [addablePipelines, setAddablePipelines] = useState<
+    CapabilityPackageAddablePipeline[]
+  >([]);
+  useEffect(() => {
+    const listPipelines = window.pipelines?.list?.bind(window.pipelines);
+    if (!offersPipelineAdd || !listPipelines) return undefined;
+    let cancelled = false;
+    void listPipelines()
+      .then((result) => {
+        if (cancelled) return;
+        // A user pipeline's package key is its id.
+        setAddablePipelines(
+          (result.data ?? [])
+            .filter((pipeline) => pipeline.source === 'user')
+            .map((pipeline) => ({
+              id: pipeline.id,
+              key: pipeline.id,
+              name: pipeline.name,
+            })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setAddablePipelines([]);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [offersPipelineAdd]);
+  const addPipelineDependency = useCallback(
+    async (pipelineId: string): Promise<void> => {
+      const added: AutomationPipelineDependency = {
+        pipelineId,
+        source: 'user',
+      };
+      const persisted = await api.update({
+        id: activity.id,
+        dependencies: { pipelines: [...pipelineDependencies, added] },
+      });
+      if (!persisted.ok) throw new Error(persisted.error);
+      setAddedPipelineDependencies((previous) => [...previous, added]);
+    },
+    [activity.id, api, pipelineDependencies],
+  );
+  const pipelineAdd = useMemo(
+    () =>
+      offersPipelineAdd
+        ? { options: addablePipelines, onAdd: addPipelineDependency }
+        : undefined,
+    [addPipelineDependency, addablePipelines, offersPipelineAdd],
+  );
 
   const loadExistingShare = useCallback(async () => {
     if (!activity.remote) {
@@ -341,7 +464,7 @@ export function ShareAutomationModal({
         setSharedPipelinePinError(
           error instanceof Error
             ? error.message
-            : 'The shared pipeline version could not be pinned.',
+            : 'The shared workflow version could not be pinned.',
         );
       })
       .finally(() => {
@@ -423,10 +546,12 @@ export function ShareAutomationModal({
     const resolution = bundledPipeline
       ? pipelineResolutionFromRaw(bundledPipeline.rawPipeline)
       : pipelineScopes;
+    // Checked against the action's destination, as the shared document is.
     const resolved = resolveAutomationTargetRequirement(
       'worktree_pipeline',
       activity.installedFrom ? activity.targetRequirement : undefined,
       resolution,
+      pipelineAction.target?.kind,
     );
     return resolved.status === 'resolved' ? resolved.contexts : undefined;
   }, [
@@ -449,7 +574,7 @@ export function ShareAutomationModal({
     if (activity.action.type !== 'worktree_pipeline') return undefined;
     return (
       resolvedPipelineWorktree ??
-      (activity.action.baseWorktreeId
+      (activity.action.baseWorktreeId && activity.action.workspaceId
         ? {
             projectId: activity.action.workspaceId,
             worktreeId: activity.action.baseWorktreeId,
@@ -578,8 +703,12 @@ export function ShareAutomationModal({
       return { analyze: () => Promise.resolve(installedAnalysis) };
     }
     return {
-      analyze: ({ dismissedInvocations }) =>
-        api.analyzeCapabilityPackage({
+      analyze: async ({
+        dismissedInvocations,
+        dismissedReferences,
+        pipelineSelections,
+      }): Promise<PipelinePackageAnalysisSummary> => {
+        const summary = await api.analyzeCapabilityPackage({
           rawContent: packageContentKey,
           activityId: activity.id,
           selections: pluginSelections ?? emptyPluginSelections(),
@@ -591,7 +720,23 @@ export function ShareAutomationModal({
           ...(dismissedInvocations !== undefined
             ? { dismissedInvocations: [...dismissedInvocations] }
             : {}),
-        }),
+          ...(dismissedReferences !== undefined
+            ? { dismissedReferences: [...dismissedReferences] }
+            : {}),
+          ...(pipelineSelections !== undefined
+            ? { pipelineSelections: [...pipelineSelections] }
+            : {}),
+          ...(pipelineDependencies.length > 0
+            ? { pipelineDependencies: [...pipelineDependencies] }
+            : {}),
+          ...(publicAudience ? { audience: 'public' as const } : {}),
+          ...(serverRejectsPipelineDependencies
+            ? { packagePipelines: false }
+            : {}),
+        });
+        setLatestAnalysis(summary);
+        return summary;
+      },
       cancel: (analysisId) => api.cancelCapabilityPackageAnalysis(analysisId),
     };
   }, [
@@ -601,10 +746,16 @@ export function ShareAutomationModal({
     installedCapabilityPackage,
     packageContentKey,
     packageWorktree,
+    pipelineDependencies,
     pluginSelections,
     promptText,
+    publicAudience,
+    serverRejectsPipelineDependencies,
     waitingOnData,
   ]);
+  const usesPackagedPipelines =
+    installedCapabilityPackage === undefined &&
+    shippedPackagedPipelines(latestAnalysis).length > 0;
 
   const share = useCallback(
     async (input: ShareResourceShareInput): Promise<ShareResourceOutcome> => {
@@ -644,6 +795,9 @@ export function ShareAutomationModal({
           ),
         );
         committedPackageUploadId = committed.committedPackageUploadId;
+        const packagedPipelines = installedCapabilityPackage
+          ? []
+          : shippedPackagedPipelines(selection.analysis);
         const rebuilt = buildSharedAutomationDocument(activity, {
           ...baseBuildOptions,
           ...(baseBuildOptions.resolvedPlugins
@@ -660,9 +814,14 @@ export function ShareAutomationModal({
               }
             : {}),
           capabilityPackage: committed.capabilityPackage,
+          ...(packagedPipelines.length > 0 ? { packagedPipelines } : {}),
         });
         if (!rebuilt.ok) {
-          throw new Error('The packaged automation could not be prepared.');
+          throw new Error(
+            rebuilt.reasons.includes('pipeline_dependencies_stale')
+              ? AUTOMATION_SHARE_BLOCK_MESSAGES.pipeline_dependencies_stale
+              : 'The packaged automation could not be prepared.',
+          );
         }
         outgoing = rebuilt.document;
       }
@@ -921,18 +1080,44 @@ export function ShareAutomationModal({
                     : {})}
                 />
               )}
-            {buildResult.ok && buildResult.notices.length > 0 && (
-              <Notice intent="attention" data-testid="share-automation-notices">
-                <p>Kept private when sharing:</p>
-                <ul className="list-disc pl-5">
-                  {buildResult.notices.map((notice) => (
-                    <li key={notice}>
-                      {AUTOMATION_SHARE_NOTICE_MESSAGES[notice]}
+            {buildResult.ok &&
+              buildResult.notices.includes('pipeline_definition_bundled') && (
+                <Notice
+                  intent="neutral"
+                  data-testid="share-automation-included-notices"
+                >
+                  <p>Included with this automation:</p>
+                  <ul className="list-disc pl-5">
+                    <li>
+                      {
+                        AUTOMATION_SHARE_NOTICE_MESSAGES.pipeline_definition_bundled
+                      }
                     </li>
-                  ))}
-                </ul>
-              </Notice>
-            )}
+                  </ul>
+                </Notice>
+              )}
+            {buildResult.ok &&
+              buildResult.notices.some(
+                (notice) => notice !== 'pipeline_definition_bundled',
+              ) && (
+                <Notice
+                  intent="attention"
+                  data-testid="share-automation-notices"
+                >
+                  <p>Kept private when sharing:</p>
+                  <ul className="list-disc pl-5">
+                    {buildResult.notices
+                      .filter(
+                        (notice) => notice !== 'pipeline_definition_bundled',
+                      )
+                      .map((notice) => (
+                        <li key={notice}>
+                          {AUTOMATION_SHARE_NOTICE_MESSAGES[notice]}
+                        </li>
+                      ))}
+                  </ul>
+                </Notice>
+              )}
             {buildResult.ok && (resolvedPlugins?.dropped.length ?? 0) > 0 && (
               <Notice intent="attention">
                 <p>Local capabilities kept private:</p>
@@ -1070,12 +1255,19 @@ export function ShareAutomationModal({
         !buildResult.ok
           ? AUTOMATIONS_CRUD_CAPABILITY
           : buildResult.document.version ===
-              SHARED_AUTOMATION_RUN_CONDITION_API_VERSION
-            ? SHARED_AUTOMATION_RUN_CONDITION_CAPABILITY
-            : buildResult.document.version ===
-                SHARED_AUTOMATION_TARGET_REQUIREMENT_API_VERSION
-              ? SHARED_AUTOMATION_TARGET_REQUIREMENT_CAPABILITY
-              : AUTOMATIONS_CRUD_CAPABILITY
+              SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION
+            ? SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY
+            : usesPackagedPipelines ||
+                buildResult.document.version ===
+                  SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION
+              ? SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY
+              : buildResult.document.version ===
+                  SHARED_AUTOMATION_RUN_CONDITION_API_VERSION
+                ? SHARED_AUTOMATION_RUN_CONDITION_CAPABILITY
+                : buildResult.document.version ===
+                    SHARED_AUTOMATION_TARGET_REQUIREMENT_API_VERSION
+                  ? SHARED_AUTOMATION_TARGET_REQUIREMENT_CAPABILITY
+                  : AUTOMATIONS_CRUD_CAPABILITY
       }
       scopes={SHARE_SCOPES}
       subtitle={activity.name}
@@ -1086,7 +1278,11 @@ export function ShareAutomationModal({
         sharedPipelinePinError !== null ||
         !buildResult.ok
       }
-      capabilityPackage={{ port: packagePort, placement: 'host' }}
+      capabilityPackage={{
+        port: packagePort,
+        placement: 'host',
+        ...(pipelineAdd ? { pipelineAdd } : {}),
+      }}
       preflight={loadExistingShare}
       {...(existingShare ? { existingShare } : {})}
       keepsOrganizationOwnership
@@ -1097,6 +1293,7 @@ export function ShareAutomationModal({
       onClose={onClose}
       onOpenAccountSettings={onOpenAccountSettings}
       onCompleted={handleCompleted}
+      onStateChange={handleDialogStateChange}
     />
   );
 }

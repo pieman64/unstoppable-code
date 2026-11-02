@@ -1,8 +1,25 @@
-import { PORTAL_CAPABILITY_SCRIPT_ACTIONS } from '@canopy/protocol/portal';
+import type {
+  PairingTelemetryAttempt,
+  PairingTelemetryOutcome,
+} from '@canopy/desktop-instrumentation/pairing';
+import { beginPairingTelemetry } from '../lib/pairing-telemetry';
+import { startRemotePairingTelemetry } from '../lib/desktop-telemetry';
+import { clearPortalWatcherProjection } from './adapters/watchers-adapter';
+import {
+  PORTAL_CAPABILITY_CHAT_WATCHERS,
+  PORTAL_CAPABILITY_LIFECYCLE_JOURNAL_QUARANTINE,
+} from '@canopy/protocol/portal';
+import {
+  PORTAL_CAPABILITY_ONBOARDING_TIPS,
+  PORTAL_CAPABILITY_SCRIPT_ACTIONS,
+  readAutoResumeMetadata,
+  readToolInterruption,
+} from '@canopy/protocol/portal';
 import {
   serializeAgentArtifactReceipts,
   MAX_AGENT_ARTIFACT_METADATA_BYTES,
 } from '@canopy/protocol/agent-artifacts';
+import { readCodexAccountModelAccessFailure } from '@canopy/protocol/auth-recovery';
 import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
 import { portalSnapshotWorkBudget } from './portal-snapshot-work-budget';
 import { portalFileReferences } from './portal-file-references';
@@ -11,7 +28,9 @@ import {
   PORTAL_CAPABILITY_ITEM_GROUPING,
   PORTAL_CAPABILITY_QUEUE_EDIT_LOCK_OWNERSHIP,
   PORTAL_CAPABILITY_CHAT_MARK_READ,
+  PORTAL_CAPABILITY_CHAT_SET_UNREAD,
   PORTAL_CAPABILITY_PR_WORKTREE_ACTIONS,
+  PORTAL_CAPABILITY_PR_STATUS_PUSH,
   PORTAL_CAPABILITY_COMMAND_ORIGIN,
   PORTAL_CAPABILITY_CHAT_CANCEL_TURN,
 } from '@canopy/protocol/portal';
@@ -44,11 +63,15 @@ import {
   PORTAL_CAPABILITY_APP_ADVISOR,
   PORTAL_CAPABILITY_CHAT_ATTACHMENTS,
   PORTAL_CAPABILITY_CHAT_ASSETS,
+  PORTAL_CAPABILITY_TRANSCRIPT_READS,
+  PORTAL_CAPABILITY_TRANSCRIPT_READS_V2,
   PORTAL_CAPABILITY_CHAT_CREATE_TAB_SETTINGS,
   PORTAL_CAPABILITY_CHAT_PLAN_REVIEW,
   PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE,
   PORTAL_CAPABILITY_PLUGIN_MUTATIONS,
   PORTAL_CAPABILITY_INSTALLED_ITEMS,
+  PORTAL_CAPABILITY_WORKTREE_DISCARD,
+  PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD,
   PORTAL_CAPABILITY_MCP_MANAGEMENT,
   PORTAL_CAPABILITY_CURATED_PIPELINE_IMPORT,
   PORTAL_CAPABILITY_WORKSPACE_ITEMS,
@@ -56,6 +79,7 @@ import {
   PORTAL_CAPABILITY_WORKTREE_CHAT_SUMMARIES_SCOPE,
   PORTAL_CAPABILITY_SIDEBAR_ACTIVITY_INVENTORY,
   PORTAL_CAPABILITY_PIPELINE_CHAT_FOLLOW_UP,
+  PORTAL_CAPABILITY_PIPELINE_CONTENT,
   PORTAL_CAPABILITY_PIPELINE_DISPATCH,
   PORTAL_CAPABILITY_PIPELINE_RUN_CHAT_LINKS,
   PORTAL_CAPABILITY_PROVIDER_USAGE,
@@ -63,10 +87,13 @@ import {
   PORTAL_CAPABILITY_DEFERRED_PLUGIN_POLICY,
   PORTAL_CAPABILITY_WORKTREE_RETENTION,
   PORTAL_CAPABILITY_FOREGROUND_WORKTREE_CHAT,
+  type PortalChatPart,
   PORTAL_CAPABILITY_CHAT_VISUALS,
   parseChatWatcherFiredInfo,
   readPortalChatPartVisual,
   sanitizePortalEventEnvelope,
+  readPortalToolOccurrence,
+  readPortalToolOutputLocator,
   type ChatWatcherFiredInfo,
 } from '@canopy/protocol/portal';
 import {
@@ -74,7 +101,21 @@ import {
   PORTAL_CHAT_TEXT_MAX_CHARS,
 } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { projectPortalDelegationPart } from '@canopy/desktop-shared/portal/delegation-wire-projection';
-import { loadCanopyCloudAccount } from '../lib/canopy-cloud-account-store';
+import {
+  hasCanopyCloudIdentityChanged,
+  loadCanopyCloudAccount,
+  subscribeCanopyCloudAccountChanges,
+  type CanopyCloudAccountEntry,
+} from '../lib/canopy-cloud-account-store';
+import { isCoworkWorkspace } from '../lib/workspace-registry';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  STANDALONE_CHAT_PROJECT_ID,
+} from '@canopy/desktop-shared/types';
+import {
+  subscribePortalDelegationCardEvents,
+  type PortalCardEventAdapter,
+} from './portal-delegation-card-events';
 import { getFeatureFlagService } from '../feature-flags';
 import { getObservabilityService } from '../observability';
 import {
@@ -87,6 +128,10 @@ import {
   sendPortalEvents,
   sendPortalHeartbeat,
 } from './canopy-portal-client';
+import {
+  isPortalHostCode,
+  resolvePortalClientPlatform,
+} from './portal-client-platform';
 import {
   runPortalCommandSseTransport,
   type PortalCommandSseDeps,
@@ -105,6 +150,9 @@ import {
 import type { PollPortalCommandsResponse } from '@canopy/desktop-shared/types';
 import { subscribeTerminalPortalEvents } from '../services/terminal-service';
 import { subscribePortalProviderUsage } from './provider-usage-projection';
+import { subscribePortalCanonicalTurnTimers } from './canonical-turn-timer-projection';
+import { subscribePortalCanonicalTurnSummaries } from './canonical-turn-summary-projection';
+import { logMainProcessError } from '../lib/main-process-logging';
 import {
   startWorktreeRuntimeStatusService,
   stopWorktreeRuntimeStatusService,
@@ -123,6 +171,7 @@ import {
   createCommandFailedPayload,
   createPortalCommandEvent,
   setCanopyPortalEventSink,
+  invalidatePortalEmissionContexts,
 } from './portal-event-bus';
 import { clearWorktreeSummaryPortalFingerprints } from '../lib/worktree-summary-persistence';
 import { clearPortalMcpServerFingerprints } from './adapters/mcp-adapter';
@@ -172,13 +221,18 @@ const portalDisplayName = REMOTE_CONTROL_LABEL;
 const portalDisplayNameInline = REMOTE_CONTROL_LABEL.toLowerCase();
 const cloudDisplayName = `${BRAND.displayName} Cloud`;
 const PORTAL_SESSION_CAPABILITIES = {
+  [PORTAL_CAPABILITY_CHAT_WATCHERS]: true,
+  [PORTAL_CAPABILITY_LIFECYCLE_JOURNAL_QUARANTINE]: true,
   [MODEL_LIBRARY_PORTAL_CAPABILITY]: true,
   personal_organization_projects: true,
+  'org-shared-multi-repo-setup-v1': true,
   [PORTAL_CAPABILITY_ITEM_GROUPING]: true,
   [PORTAL_CAPABILITY_QUEUE_EDIT_LOCK_OWNERSHIP]: true,
   [PORTAL_CAPABILITY_PR_WORKTREE_ACTIONS]: true,
+  [PORTAL_CAPABILITY_PR_STATUS_PUSH]: true,
   'portal-v1': true,
   [PORTAL_CAPABILITY_CHAT_MARK_READ]: true,
+  [PORTAL_CAPABILITY_CHAT_SET_UNREAD]: true,
   [PORTAL_CAPABILITY_WORKTREE_ACTIONS_SCOPE]: true,
   [PORTAL_CAPABILITY_WORKTREE_CHAT_SUMMARIES_SCOPE]: true,
   // Strict `includeChatSummaries` inventory for sidebar Activity (CAN-390).
@@ -187,12 +241,16 @@ const PORTAL_SESSION_CAPABILITIES = {
   [PORTAL_CAPABILITY_APP_ADVISOR]: true,
   [PORTAL_CAPABILITY_PLUGIN_MUTATIONS]: true,
   [PORTAL_CAPABILITY_INSTALLED_ITEMS]: true,
+  [PORTAL_CAPABILITY_WORKTREE_DISCARD]: true,
+  [PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD]: true,
   [PORTAL_CAPABILITY_MCP_MANAGEMENT]: true,
   [PORTAL_CAPABILITY_CURATED_PIPELINE_IMPORT]: true,
   [PORTAL_CAPABILITY_WORKSPACE_ITEMS]: true,
   [PORTAL_CAPABILITY_CHAT_ATTACHMENTS]: true,
   [PORTAL_CAPABILITY_CHAT_VISUALS]: true,
   [PORTAL_CAPABILITY_CHAT_ASSETS]: true,
+  [PORTAL_CAPABILITY_TRANSCRIPT_READS]: true,
+  [PORTAL_CAPABILITY_TRANSCRIPT_READS_V2]: true,
   // Announced with `portal.standalone_chat.create` (standalone-chat-adapter).
   [PORTAL_CAPABILITY_STANDALONE_CHAT_CREATE]: true,
   // `portal.chat.create_tab` applies a remote New Task's model, provider and
@@ -207,10 +265,15 @@ const PORTAL_SESSION_CAPABILITIES = {
   // Every projected pipeline_run carries saved-output availability, and the
   // prepare command resolves the review prompt (`pipelines-service`).
   [PORTAL_CAPABILITY_PIPELINE_CHAT_FOLLOW_UP]: true,
+  // `portal.pipeline.content.read` serves complete step output and the saved
+  // report (`pipelines-service` readPipelineContent).
+  [PORTAL_CAPABILITY_PIPELINE_CONTENT]: true,
   [PORTAL_CAPABILITY_PROVIDER_USAGE]: true,
   // List/resolve inventory and standalone plugin selections (CAN-3923).
   [PORTAL_CAPABILITY_INVOCABLE_INVENTORY]: true,
   [PORTAL_CAPABILITY_SCRIPT_ACTIONS]: true,
+  // `portal.onboarding_tips.get` / `.update` (onboarding-tips-adapter).
+  [PORTAL_CAPABILITY_ONBOARDING_TIPS]: true,
   [PORTAL_CAPABILITY_COMMAND_ORIGIN]: true,
   [PORTAL_CAPABILITY_CHAT_CANCEL_TURN]: true,
   [PORTAL_CAPABILITY_DEFERRED_PLUGIN_POLICY]: true,
@@ -281,6 +344,7 @@ let state: CanopyPortalState = {
   status: 'disabled',
   connectionStatus: 'inactive',
   sessionId: null,
+  hostCode: null,
   pairingCode: null,
   pairingCodeExpiresAt: null,
   machineName: resolvePortalMachineName(),
@@ -357,8 +421,74 @@ export function nextSseCommandRetryAfter(
 let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 let pollStallTimer: ReturnType<typeof setInterval> | null = null;
 let codeExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+let phonePairingGeneration = 0;
+let phonePairingTelemetry:
+  | { code: string; attempt: PairingTelemetryAttempt }
+  | undefined;
+
+function finishPhonePairingTelemetry(outcome: PairingTelemetryOutcome): void {
+  phonePairingGeneration += 1;
+  const tracking = phonePairingTelemetry;
+  phonePairingTelemetry = undefined;
+  tracking?.attempt.end(outcome);
+}
+
+function armPhonePairingTelemetry(code: string, additional: boolean): void {
+  finishPhonePairingTelemetry('cancelled');
+  const attempt = beginPairingTelemetry(startRemotePairingTelemetry, {
+    pairing_kind: 'phone_code',
+    pairing_entry: 'portal_modal',
+    peer_platform: 'unknown',
+    is_additional_device: additional,
+  });
+  if (attempt) phonePairingTelemetry = { code, attempt };
+}
+
+let cardEventGeneration = 0;
+// Only this exact account-produced fence may clean up an in-flight operation.
+// A later start/stop advances the generation again and owns the state instead.
+let accountInvalidation:
+  | { readonly generation: number; readonly operationGeneration: number }
+  | undefined;
+// Teardown must not disable a newer installed identity, but account-only
+// invalidation must still let teardown finish for the same installed session.
+let portalSessionIdentityGeneration = 0;
+let cardEventAdapter: PortalCardEventAdapter | undefined;
+function invalidateCardEvents(): void {
+  invalidatePortalEmissionContexts();
+  cardEventGeneration++;
+  cardEventAdapter?.dispose();
+  cardEventAdapter = undefined;
+}
+// The account entry the Portal last loaded or was told about; undefined until
+// the first one, so an unknown predecessor is never treated as a change.
+let knownAccount: CanopyCloudAccountEntry | null | undefined;
+// An identity change (or sign-out) fences card events and an in-flight
+// start/resume. A save that keeps the identity, such as the periodic
+// enforced-settings re-probe, leaves them alone.
+subscribeCanopyCloudAccountChanges((entry): void => {
+  const previous = knownAccount;
+  knownAccount = entry;
+  if (
+    entry !== null &&
+    (previous === undefined ||
+      (previous !== null && !hasCanopyCloudIdentityChanged(previous, entry)))
+  )
+    return;
+  const operationGeneration =
+    accountInvalidation?.generation === cardEventGeneration
+      ? accountInvalidation.operationGeneration
+      : cardEventGeneration;
+  invalidateCardEvents();
+  accountInvalidation = {
+    generation: cardEventGeneration,
+    operationGeneration,
+  };
+});
 let unsubscribeFeatureEvents: (() => void) | null = null;
 let unsubscribeProviderUsage: (() => void) | null = null;
+let unsubscribeCanonicalTurnTimers: (() => void) | null = null;
+let unsubscribeCanonicalTurnSummaries: (() => void) | null = null;
 let getWindowForPortalCommands: () => BrowserWindow | null = getNullWindow;
 let chatCommandDispatcher: DesktopCanopyDispatcher | undefined;
 let outboxFlush: Promise<void> | null = null;
@@ -403,6 +533,7 @@ export function onCanopyPortalStateChanged(
 }
 
 function setState(patch: Partial<CanopyPortalState>): void {
+  if (patch.sessionId !== undefined) portalSessionIdentityGeneration++;
   if (
     state.sessionId &&
     ((patch.sessionId !== undefined && patch.sessionId !== state.sessionId) ||
@@ -608,10 +739,9 @@ function compactPortalChatMessage(message: unknown): unknown {
 }
 
 /**
- * Keep ordinary part compaction byte-for-byte compatible with its original
- * depth-one traversal. The managed Delegate task result is the narrow
- * exception: Portal's tool renderer and delegation-card selector both need
- * its validated `{ output, isError }` shape to remain structural.
+ * Compact previews while retaining validated locators, artifact receipts and
+ * managed delegation cards. Inline tool results stay structured so their
+ * error flags and read metadata survive preview truncation.
  */
 function compactPortalChatParts(parts: unknown[]): unknown[] {
   const receiptBudget = { remaining: MAX_AGENT_ARTIFACT_METADATA_BYTES };
@@ -656,28 +786,99 @@ function compactPortalChatParts(parts: unknown[]): unknown[] {
   return compacted;
 }
 
+type PortalOutputLocator = NonNullable<PortalChatPart['outputLocator']>;
+
+function parsePortalOutputLocator(value: unknown): PortalOutputLocator | null {
+  return readPortalToolOutputLocator(value) ?? null;
+}
+
 function compactPortalChatPart(
   part: unknown,
   receiptBudget = { remaining: MAX_AGENT_ARTIFACT_METADATA_BYTES },
 ): unknown {
   const delegationPart = projectPortalDelegationPart(part);
-  if (delegationPart !== null) {
+  if (
+    delegationPart !== null ||
+    (isRecord(part) &&
+      part.kind === 'agent' &&
+      isRecord(part.data) &&
+      isRecord(part.data.delegation))
+  ) {
+    // A managed card must never enter generic compaction, even on failure.
     return delegationPart;
   }
 
-  const compactedPart = compactPortalJson(part, 1);
+  const occurrence = isRecord(part)
+    ? readPortalToolOccurrence(part.occurrence)
+    : undefined;
+  const damagedOccurrence =
+    isRecord(part) && part.occurrence !== undefined && !occurrence;
+  const standaloneOutputLocator =
+    isRecord(part) && part.kind === 'tool_result'
+      ? damagedOccurrence
+        ? null
+        : parsePortalOutputLocator(part.outputLocator)
+      : null;
+  const generic = compactPortalJson(part, 1);
+  // Rebuild read metadata, never retain an unvalidated generic copy.
+  const compactedPart =
+    isRecord(generic) &&
+    isRecord(part) &&
+    (part.kind === 'tool_use' || part.kind === 'tool_result')
+      ? ((): Record<string, unknown> => {
+          const preview = { ...generic };
+          delete preview.occurrence;
+          delete preview.outputLocator;
+          return {
+            ...preview,
+            ...(occurrence ? { occurrence } : {}),
+            ...(standaloneOutputLocator
+              ? { outputLocator: standaloneOutputLocator }
+              : {}),
+          };
+        })()
+      : generic;
   if (
     isRecord(part) &&
     part.kind === 'prompt_source' &&
     isRecord(part.data) &&
-    part.data.watcherFired !== undefined &&
+    (part.data.watcherFired !== undefined ||
+      part.data.autoResume !== undefined) &&
     isRecord(compactedPart) &&
     isRecord(compactedPart.data)
   ) {
     const data = { ...compactedPart.data };
-    const watcherFired = compactWatcherFired(part.data.watcherFired);
-    if (watcherFired) data.watcherFired = watcherFired;
-    else delete data.watcherFired;
+    if (part.data.watcherFired !== undefined) {
+      const watcherFired = compactWatcherFired(part.data.watcherFired);
+      if (watcherFired) data.watcherFired = watcherFired;
+      else delete data.watcherFired;
+    }
+    // Resume provenance sits past the depth limit; keep it validated and
+    // structured so cached Portal history still renders the resume marker.
+    if (part.data.autoResume !== undefined) {
+      const autoResume = readAutoResumeMetadata(part.data.autoResume);
+      if (autoResume) data.autoResume = autoResume;
+      else delete data.autoResume;
+    }
+    return { ...compactedPart, data };
+  }
+  if (
+    isRecord(part) &&
+    part.kind === 'text' &&
+    isRecord(part.data) &&
+    part.data.modelAccessFailure !== undefined &&
+    isRecord(compactedPart) &&
+    isRecord(compactedPart.data)
+  ) {
+    // The Codex account model notice's carrier (CAN-4716) sits past the
+    // depth limit; keep it validated and structured so the Portal renders
+    // the notice instead of the raw provider error.
+    const data = { ...compactedPart.data };
+    const modelAccessFailure = readCodexAccountModelAccessFailure(
+      part.data.modelAccessFailure,
+    );
+    if (modelAccessFailure) data.modelAccessFailure = modelAccessFailure;
+    else delete data.modelAccessFailure;
     return { ...compactedPart, data };
   }
   if (
@@ -708,13 +909,29 @@ function compactPortalChatPart(
       ).byteLength;
       const accepted = bytes <= receiptBudget.remaining ? receipts : [];
       if (accepted.length) receiptBudget.remaining -= bytes;
+      const outputLocator =
+        part.kind === 'tool_use' && !damagedOccurrence
+          ? parsePortalOutputLocator(source.outputLocator)
+          : null;
+      const interruption = readToolInterruption(source.interruption);
+      const isDelegateTask =
+        part.kind === 'tool_use' &&
+        typeof part.data.toolName === 'string' &&
+        getCanonicalCanopyToolKey(part.data.toolName) === 'delegate_task';
       const result = {
         output:
-          typeof source.output === 'string'
-            ? truncatePortalString(source.output, PORTAL_OUTBOX_JSON_MAX_CHARS)
-            : '',
+          isDelegateTask || outputLocator
+            ? compactPortalJson(source.output, 3)
+            : typeof source.output === 'string'
+              ? truncatePortalString(
+                  source.output,
+                  PORTAL_OUTBOX_JSON_MAX_CHARS,
+                )
+              : '',
         isError: source.isError === true,
+        ...(interruption ? { interruption } : {}),
         ...(accepted.length ? { agentArtifacts: accepted } : {}),
+        ...(outputLocator ? { outputLocator } : {}),
       };
       if (part.kind === 'tool_use')
         return { ...compactedPart, data: { ...compactedPart.data, result } };
@@ -728,37 +945,17 @@ function compactPortalChatPart(
         },
       };
     }
+    // Interruption metadata also sits past the depth limit on a standalone
+    // result; keep it validated so the Portal renders Interrupted, not Error.
+    if (source && part.kind === 'tool_result' && 'interruption' in source) {
+      const data = { ...compactedPart.data };
+      const interruption = readToolInterruption(source.interruption);
+      if (interruption) data.interruption = interruption;
+      else delete data.interruption;
+      return { ...compactedPart, data };
+    }
   }
-  if (
-    !isRecord(part) ||
-    part.kind !== 'tool_use' ||
-    !isRecord(part.data) ||
-    typeof part.data.toolName !== 'string' ||
-    getCanonicalCanopyToolKey(part.data.toolName) !== 'delegate_task' ||
-    !isRecord(part.data.result)
-  ) {
-    return compactedPart;
-  }
-
-  const compactedRecord = isRecord(compactedPart) ? compactedPart : null;
-  const compactedData =
-    compactedRecord && isRecord(compactedRecord.data)
-      ? compactedRecord.data
-      : null;
-  if (!compactedRecord || !compactedData) {
-    return compactedPart;
-  }
-
-  return {
-    ...compactedRecord,
-    data: {
-      ...compactedData,
-      result: {
-        output: compactPortalJson(part.data.result.output, 3),
-        isError: part.data.result.isError === true,
-      },
-    },
-  };
+  return compactedPart;
 }
 
 export function compactPortalEvent(
@@ -819,8 +1016,9 @@ function enqueueEvent(event: PortalEventEnvelope): PortalEventEnvelope | null {
   // batch the outbox retried forever. Sanitize once here, on the single path
   // every queued event takes, rather than on each flush. The server sanitizes
   // too and stays authoritative for desktop versions that predate this.
+  const sanitized = sanitizePortalEventEnvelope(resolved);
   const compactedEvent = stampPortalEventRouting(
-    compactPortalEvent(sanitizePortalEventEnvelope(resolved)),
+    compactPortalEvent(sanitized),
     routingSequenceCounters,
   );
   outboxEnqueuedAt.set(compactedEvent, Date.now());
@@ -900,9 +1098,10 @@ function isTerminalCommandEvent(event: PortalEventEnvelope): boolean {
 
 export async function enqueuePortalEventForTest(
   event: PortalEventEnvelope,
-): Promise<void> {
-  enqueueEvent(event);
+): Promise<PortalEventEnvelope | null> {
+  const enqueuedEvent = enqueueEvent(event);
   if (outboxFlush) await outboxFlush;
+  return enqueuedEvent;
 }
 
 function stampRestoredOutboxEvents(events: PortalEventEnvelope[]): void {
@@ -1646,10 +1845,12 @@ async function sendHeartbeatNow(
     return 'unavailable';
   }
   try {
+    const clientPlatform = resolvePortalClientPlatform();
     const response = await sendPortalHeartbeat({
       sessionId,
       capabilities: portalSessionCapabilities(),
       clientVersion: app.getVersion(),
+      ...(clientPlatform === undefined ? {} : { clientPlatform }),
     });
     if (pollAbort || state.sessionId !== sessionId) {
       return 'unavailable';
@@ -1657,7 +1858,11 @@ async function sendHeartbeatNow(
     if (response.status === 'inactive') {
       return 'inactive';
     }
-    markNetworkSuccess();
+    markNetworkSuccess(
+      isPortalHostCode(response.hostCode)
+        ? { hostCode: response.hostCode }
+        : {},
+    );
     return 'active';
   } catch (error) {
     if (pollAbort || state.sessionId !== sessionId) {
@@ -1810,6 +2015,8 @@ export async function handlePortalPowerResumeForTest(): Promise<void> {
 }
 
 async function transitionInactiveFromServer(): Promise<void> {
+  finishPhonePairingTelemetry('failed');
+  invalidateCardEvents();
   if (state.sessionId) portalFileReferences.clearSession(state.sessionId);
   closePortalAssetTransfers();
   pollAbort = true;
@@ -1817,6 +2024,7 @@ async function transitionInactiveFromServer(): Promise<void> {
   snapshotLane.reset();
   setCanopyPortalEventSink(null);
   unsubscribeFeatureEventSinks();
+  const sessionGeneration = portalSessionIdentityGeneration;
   eventOutbox = [];
   routingSequenceCounters = new Map();
   resetCommandDeliveryTracking();
@@ -1828,10 +2036,12 @@ async function transitionInactiveFromServer(): Promise<void> {
     ),
     clearActivePortalSession('server_disconnect').catch(() => undefined),
   ]);
+  if (sessionGeneration !== portalSessionIdentityGeneration) return;
   setState({
     status: 'inactive',
     connectionStatus: 'inactive',
     sessionId: null,
+    hostCode: null,
     pairingCode: null,
     pairingCodeExpiresAt: null,
     activatedAt: null,
@@ -2046,17 +2256,28 @@ async function applyPollResponse(
       }
     };
 
+    const canReadSession = (): boolean =>
+      state.status === 'active' &&
+      state.sessionId === commandSessionId &&
+      !pollAbort;
+    const pairingAtCommand = phonePairingTelemetry;
     await handlePortalCommand(command, {
       sessionId: commandSessionId ?? undefined,
       chatDispatcher: chatCommandDispatcher,
-      canReadAssets: () =>
-        state.status === 'active' &&
-        state.sessionId === commandSessionId &&
-        !pollAbort,
+      canReadAssets: canReadSession,
+      canReadTranscripts: canReadSession,
       pairingCode: state.pairingCode,
       getWindow: getWindowForPortalCommands,
       enqueueEvent: enqueueCommandEvent,
       markAuthenticated: () => {
+        if (
+          command.type === 'portal.auth.validate_code' &&
+          pairingAtCommand !== undefined &&
+          pairingAtCommand === phonePairingTelemetry &&
+          state.pairingCode === pairingAtCommand.code
+        ) {
+          finishPhonePairingTelemetry('approved');
+        }
         clearCodeExpiryTimer();
         if (state.status === 'active') {
           // CAN-2981: an additional device redeemed a re-armed code on the
@@ -2378,30 +2599,37 @@ function scheduleHeartbeat(): void {
   }
   heartbeatTimer = setTimeout(() => {
     heartbeatTimer = null;
-    if (pollAbort || !state.sessionId) {
+    const sessionId = state.sessionId;
+    if (pollAbort || !sessionId) {
       return;
     }
 
     const controller = new AbortController();
     heartbeatAbortController = controller;
+    const clientPlatform = resolvePortalClientPlatform();
     void sendPortalHeartbeat({
-      sessionId: state.sessionId,
+      sessionId,
       signal: controller.signal,
       capabilities: portalSessionCapabilities(),
       clientVersion: app.getVersion(),
+      ...(clientPlatform === undefined ? {} : { clientPlatform }),
     })
       .then((response) => {
-        if (pollAbort) {
+        if (pollAbort || state.sessionId !== sessionId) {
           return;
         }
         if (response.status === 'inactive') {
           void transitionInactiveFromServer();
           return;
         }
-        markNetworkSuccess();
+        markNetworkSuccess(
+          isPortalHostCode(response.hostCode)
+            ? { hostCode: response.hostCode }
+            : {},
+        );
       })
       .catch((error) => {
-        if (pollAbort) {
+        if (pollAbort || state.sessionId !== sessionId) {
           return;
         }
         if (isInactiveSessionResponse(error)) {
@@ -2419,7 +2647,7 @@ function scheduleHeartbeat(): void {
         if (heartbeatAbortController === controller) {
           heartbeatAbortController = null;
         }
-        if (!pollAbort) {
+        if (!pollAbort && state.sessionId === sessionId) {
           scheduleHeartbeat();
         }
       });
@@ -2500,24 +2728,107 @@ function clearTimers(): void {
   clearCodeExpiryTimer();
 }
 
-function subscribeFeatureEvents(): void {
-  unsubscribeFeatureEvents?.();
-  unsubscribeFeatureEvents = subscribeTerminalPortalEvents(enqueueEvent);
-  unsubscribeProviderUsage?.();
-  unsubscribeProviderUsage = subscribePortalProviderUsage(enqueueEvent);
-  // The worktree runtime-status aggregator only needs to observe session/
-  // chat activity while a portal session can consume its deltas; tying its
-  // lifecycle to the feature-event sinks covers every start/resume/stop/
-  // error transition in this file.
-  startWorktreeRuntimeStatusService();
-  startPortalBackgroundProcessProjection();
+async function subscribeFeatureEvents(
+  sessionId: string,
+  generation: number,
+): Promise<void> {
+  // Chat-state construction lazily reaches chat-service and the Portal event bus.
+  // Keep that graph out of module initialization and recheck the session after import.
+  try {
+    const { getChatStateService } =
+      await import('../services/chat-state-service');
+    if (generation !== cardEventGeneration || state.sessionId !== sessionId)
+      return;
+    const service = getChatStateService();
+    cardEventAdapter = subscribePortalDelegationCardEvents(
+      {
+        subscribe: (listener) => service.subscribe(listener),
+        generation: (scope, target) => service.generation(scope, target),
+        readStoredParentMessage: (scope, chatId, messageId) =>
+          service.readStoredParentMessage(scope, chatId, messageId),
+        resolveOwner: (scope) => {
+          // Committed events already carry the canonical owner scope, never navigation.
+          // Match chat-service's persisted source mapping, including legacy cowork aliases.
+          const projectId = scope.projectId;
+          const worktreeId = scope.worktreeId;
+          const source =
+            projectId === APP_ADVISOR_PROJECT_ID
+              ? { scope: 'app_advisor' as const }
+              : isCoworkWorkspace(projectId)
+                ? {
+                    scope: 'standalone' as const,
+                    projectLocalId:
+                      projectId === STANDALONE_CHAT_PROJECT_ID
+                        ? worktreeId
+                        : projectId,
+                    projectId:
+                      projectId === STANDALONE_CHAT_PROJECT_ID
+                        ? worktreeId
+                        : projectId,
+                    workEntryId: worktreeId,
+                  }
+                : {
+                    scope: 'worktree' as const,
+                    workspaceLocalId: projectId,
+                    worktreeLocalId: worktreeId,
+                  };
+          return Promise.resolve({ scope, source });
+        },
+      },
+      enqueueEvent,
+      () => generation === cardEventGeneration && state.sessionId === sessionId,
+    );
+
+    unsubscribeFeatureEvents?.();
+    unsubscribeFeatureEvents = subscribeTerminalPortalEvents(enqueueEvent);
+    unsubscribeProviderUsage?.();
+    unsubscribeProviderUsage = subscribePortalProviderUsage(enqueueEvent);
+    unsubscribeCanonicalTurnTimers?.();
+    unsubscribeCanonicalTurnTimers =
+      subscribePortalCanonicalTurnTimers(enqueueEvent);
+    unsubscribeCanonicalTurnSummaries?.();
+    unsubscribeCanonicalTurnSummaries = subscribePortalCanonicalTurnSummaries(
+      (scope): void => {
+        // Deferred, as chat-service's own deferred imports, to keep the main
+        // service graph free of an import cycle.
+        void import('../services/chat-service')
+          .then(({ emitLatestTargetChatSummary }) =>
+            emitLatestTargetChatSummary({
+              workspaceId: scope.projectId,
+              worktreeId: scope.worktreeId,
+              chatId: scope.chatId,
+            }),
+          )
+          .catch((error: unknown) =>
+            logMainProcessError('Portal canonical turn summary failed', error),
+          );
+      },
+    );
+    // The worktree runtime-status aggregator only needs to observe session/
+    // chat activity while a portal session can consume its deltas; tying its
+    // lifecycle to the feature-event sinks covers every start/resume/stop/
+    // error transition in this file.
+    startWorktreeRuntimeStatusService();
+    startPortalBackgroundProcessProjection();
+  } catch (error) {
+    if (generation === cardEventGeneration) {
+      unsubscribeFeatureEventSinks();
+      setCanopyPortalEventSink(null);
+    }
+    throw error;
+  }
 }
 
 function unsubscribeFeatureEventSinks(): void {
+  invalidateCardEvents();
   unsubscribeFeatureEvents?.();
   unsubscribeFeatureEvents = null;
   unsubscribeProviderUsage?.();
   unsubscribeProviderUsage = null;
+  unsubscribeCanonicalTurnTimers?.();
+  unsubscribeCanonicalTurnTimers = null;
+  unsubscribeCanonicalTurnSummaries?.();
+  unsubscribeCanonicalTurnSummaries = null;
   stopWorktreeRuntimeStatusService();
 }
 
@@ -2531,7 +2842,32 @@ export async function startCanopyPortal(): Promise<StartCanopyPortalResponse> {
   return startingPortal;
 }
 
+function isPortalOperationAccountFenced(generation: number): boolean {
+  return (
+    accountInvalidation?.generation === cardEventGeneration &&
+    accountInvalidation.operationGeneration === generation
+  );
+}
+
+async function cleanupAccountFencedPortalOperation(
+  generation: number,
+  createdSessionId?: string,
+): Promise<void> {
+  if (!isPortalOperationAccountFenced(generation)) return;
+
+  const installedSessionId = state.sessionId;
+  // Stop fences and clears local work synchronously before its first await.
+  // A create response may not yet be installed, so stop cannot end it itself.
+  await Promise.all([
+    stopCanopyPortal('replaced'),
+    createdSessionId && createdSessionId !== installedSessionId
+      ? endPortalSession({ sessionId: createdSessionId }).catch(() => undefined)
+      : undefined,
+  ]);
+}
+
 async function startCanopyPortalImpl(): Promise<StartCanopyPortalResponse> {
+  invalidateCardEvents();
   if (
     !getFeatureFlagService().isEnabled(
       CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key,
@@ -2540,11 +2876,20 @@ async function startCanopyPortalImpl(): Promise<StartCanopyPortalResponse> {
     throw new Error(`${portalDisplayName} is not available.`);
   }
 
-  if (state.status !== 'disabled') {
-    await stopCanopyPortal('replaced');
+  const replacement =
+    state.status !== 'disabled' ? stopCanopyPortal('replaced') : undefined;
+  const generation = cardEventGeneration;
+  if (replacement) await replacement;
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation);
+    return { state: getCanopyPortalState() };
   }
-
   const account = await loadCanopyCloudAccount();
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation);
+    return { state: getCanopyPortalState() };
+  }
+  knownAccount = account;
   if (!account || !account.apiKey.trim()) {
     throw new Error(
       `Connect ${cloudDisplayName} in Settings before enabling ${portalDisplayNameInline}.`,
@@ -2563,11 +2908,14 @@ async function startCanopyPortalImpl(): Promise<StartCanopyPortalResponse> {
   // while the app stays open).
   const machineName = resolvePortalMachineName();
   lastTargetedPortalWorktreeKey = null;
+  armPhonePairingTelemetry(pairingCode, false);
+  const pairingGeneration = phonePairingGeneration;
 
   setState({
     status: 'starting',
     connectionStatus: 'inactive',
     sessionId: null,
+    hostCode: null,
     pairingCode,
     pairingCodeExpiresAt: expiresAt.toISOString(),
     machineName,
@@ -2580,14 +2928,30 @@ async function startCanopyPortalImpl(): Promise<StartCanopyPortalResponse> {
   let session: Awaited<ReturnType<typeof createPortalSession>> | null = null;
   try {
     await assertLiveCanopyPortalSupport();
+    if (generation !== cardEventGeneration) {
+      await cleanupAccountFencedPortalOperation(generation);
+      return { state: getCanopyPortalState() };
+    }
+    const persisted = await readPortalStateStore();
+    if (generation !== cardEventGeneration) {
+      await cleanupAccountFencedPortalOperation(generation);
+      return { state: getCanopyPortalState() };
+    }
+    const clientPlatform = resolvePortalClientPlatform();
     session = await createPortalSession({
-      clientDeviceId: (await readPortalStateStore()).clientDeviceId,
+      clientDeviceId: persisted.clientDeviceId,
       clientName: machineName,
       clientHostname: hostname(),
       capabilities: portalSessionCapabilities(),
       clientVersion: app.getVersion(),
+      ...(clientPlatform === undefined ? {} : { clientPlatform }),
     });
   } catch (error) {
+    if (generation !== cardEventGeneration) {
+      await cleanupAccountFencedPortalOperation(generation, session?.sessionId);
+      return { state: getCanopyPortalState() };
+    }
+    finishPhonePairingTelemetry('failed');
     clearTimers();
     pollAbort = true;
     setCanopyPortalEventSink(null);
@@ -2596,6 +2960,7 @@ async function startCanopyPortalImpl(): Promise<StartCanopyPortalResponse> {
       status: 'error',
       connectionStatus: 'inactive',
       sessionId: null,
+      hostCode: null,
       pairingCode: null,
       pairingCodeExpiresAt: null,
       activatedAt: null,
@@ -2606,6 +2971,10 @@ async function startCanopyPortalImpl(): Promise<StartCanopyPortalResponse> {
     throw error;
   }
 
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation, session?.sessionId);
+    return { state: getCanopyPortalState() };
+  }
   if (!session) {
     throw new Error(`Failed to start ${portalDisplayNameInline} session.`);
   }
@@ -2620,17 +2989,37 @@ async function startCanopyPortalImpl(): Promise<StartCanopyPortalResponse> {
   sseCommandsRetryAfterMs = 0;
   sseCommandFallbackStreak = 0;
   lastPollProgressAt = Date.now();
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation, session.sessionId);
+    return { state: getCanopyPortalState() };
+  }
   setCanopyPortalEventSink(enqueueEvent);
-  subscribeFeatureEvents();
   setState({
     status: 'pending_auth',
     sessionId: session.sessionId,
+    hostCode: null,
     pairingCode,
     pairingCodeExpiresAt: session.pendingExpiresAt,
   });
+  try {
+    await subscribeFeatureEvents(session.sessionId, generation);
+  } catch (error) {
+    if (!isPortalOperationAccountFenced(generation)) throw error;
+    await cleanupAccountFencedPortalOperation(generation, session.sessionId);
+    return { state: getCanopyPortalState() };
+  }
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation, session.sessionId);
+    return { state: getCanopyPortalState() };
+  }
 
   codeExpiryTimer = setTimeout(() => {
-    if (state.status === 'pending_auth') {
+    if (
+      phonePairingGeneration === pairingGeneration &&
+      state.status === 'pending_auth' &&
+      state.pairingCode === pairingCode
+    ) {
+      finishPhonePairingTelemetry('expired');
       void stopCanopyPortal('local_disconnect').then(() => {
         // Say why pairing stopped, unless a new attempt already started.
         if (state.status === 'disabled') {
@@ -2665,13 +3054,17 @@ export function regenerateCanopyPortalPairingCode(): RegenerateCanopyPortalPairi
   }
   clearCodeExpiryTimer();
   const pairingCode = generatePairingCode();
+  armPhonePairingTelemetry(pairingCode, true);
+  const pairingGeneration = phonePairingGeneration;
   const expiresAt = new Date(Date.now() + PAIRING_CODE_TTL_MS);
   setState({ pairingCode, pairingCodeExpiresAt: expiresAt.toISOString() });
   codeExpiryTimer = setTimeout(() => {
+    if (phonePairingGeneration !== pairingGeneration) return;
     codeExpiryTimer = null;
     // Identity-guarded only: a transient `reconnecting` hop must not let the
     // code outlive its TTL, and a newer code is never cleared by an old timer.
     if (state.pairingCode === pairingCode) {
+      finishPhonePairingTelemetry('expired');
       setState({ pairingCode: null, pairingCodeExpiresAt: null });
     }
   }, PAIRING_CODE_TTL_MS);
@@ -2686,6 +3079,7 @@ export function regenerateCanopyPortalPairingCode(): RegenerateCanopyPortalPairi
  */
 export function cancelCanopyPortalPairingCode(): CancelCanopyPortalPairingCodeResponse {
   if (state.status === 'active' && state.pairingCode !== null) {
+    finishPhonePairingTelemetry('cancelled');
     clearCodeExpiryTimer();
     setState({ pairingCode: null, pairingCodeExpiresAt: null });
   }
@@ -2695,6 +3089,9 @@ export function cancelCanopyPortalPairingCode(): CancelCanopyPortalPairingCodeRe
 export async function stopCanopyPortal(
   reason: 'local_disconnect' | 'replaced' | 'app_shutdown' = 'local_disconnect',
 ): Promise<StopCanopyPortalResponse> {
+  finishPhonePairingTelemetry('cancelled');
+  unsubscribeFeatureEventSinks();
+  const sessionGeneration = portalSessionIdentityGeneration;
   const sessionId = state.sessionId;
 
   if (sessionId) portalFileReferences.clearSession(sessionId);
@@ -2710,10 +3107,16 @@ export async function stopCanopyPortal(
   // must not leak into a later session's outbox.
   snapshotLane.reset();
   await persistPortalStopReason(reason).catch(() => undefined);
+  if (sessionGeneration !== portalSessionIdentityGeneration)
+    return { state: getCanopyPortalState() };
 
   if (sessionId && reason !== 'app_shutdown') {
     await flushOutbox().catch(() => undefined);
+    if (sessionGeneration !== portalSessionIdentityGeneration)
+      return { state: getCanopyPortalState() };
     await endPortalSession({ sessionId }).catch(() => undefined);
+    if (sessionGeneration !== portalSessionIdentityGeneration)
+      return { state: getCanopyPortalState() };
   }
 
   if (reason === 'app_shutdown') {
@@ -2727,18 +3130,23 @@ export async function stopCanopyPortal(
       () => undefined,
     );
   }
+  if (sessionGeneration !== portalSessionIdentityGeneration)
+    return { state: getCanopyPortalState() };
   setCanopyPortalEventSink(null);
   clearWorktreeSummaryPortalFingerprints();
   clearPortalMcpServerFingerprints();
   clearPortalBackgroundProcessFingerprints();
-  unsubscribeFeatureEventSinks();
+  clearPortalWatcherProjection();
   if (reason !== 'app_shutdown') {
     await clearActivePortalSession(reason).catch(() => undefined);
+    if (sessionGeneration !== portalSessionIdentityGeneration)
+      return { state: getCanopyPortalState() };
   }
   setState({
     status: 'disabled',
     connectionStatus: 'inactive',
     sessionId: null,
+    hostCode: null,
     pairingCode: null,
     pairingCodeExpiresAt: null,
     activatedAt: null,
@@ -2762,7 +3170,13 @@ export async function resumeCanopyPortalIfPossible(): Promise<void> {
     return;
   }
 
+  invalidateCardEvents();
+  const generation = cardEventGeneration;
   const persisted = await readPortalStateStore();
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation);
+    return;
+  }
   if (
     !persisted.activeSession ||
     (persisted.lastStopReason && persisted.lastStopReason !== 'app_shutdown')
@@ -2776,6 +3190,11 @@ export async function resumeCanopyPortalIfPossible(): Promise<void> {
   }
 
   const account = await loadCanopyCloudAccount();
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation);
+    return;
+  }
+  knownAccount = account;
   if (!account || !account.apiKey.trim()) {
     await clearActivePortalSession('replaced').catch(() => undefined);
     return;
@@ -2808,11 +3227,11 @@ export async function resumeCanopyPortalIfPossible(): Promise<void> {
   sseCommandFallbackStreak = 0;
   lastPollProgressAt = Date.now();
   setCanopyPortalEventSink(enqueueEvent);
-  subscribeFeatureEvents();
   setState({
     status: 'reconnecting',
     connectionStatus: 'reconnecting',
     sessionId: persisted.activeSession.sessionId,
+    hostCode: null,
     pairingCode: null,
     pairingCodeExpiresAt: null,
     activatedAt: persisted.activeSession.activatedAt,
@@ -2821,6 +3240,17 @@ export async function resumeCanopyPortalIfPossible(): Promise<void> {
     error: null,
   });
 
+  try {
+    await subscribeFeatureEvents(persisted.activeSession.sessionId, generation);
+  } catch (error) {
+    if (!isPortalOperationAccountFenced(generation)) throw error;
+    await cleanupAccountFencedPortalOperation(generation);
+    return;
+  }
+  if (generation !== cardEventGeneration) {
+    await cleanupAccountFencedPortalOperation(generation);
+    return;
+  }
   startHeartbeat();
   startPollStallWatchdog();
   armPowerResumeListener();

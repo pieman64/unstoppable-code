@@ -302,10 +302,12 @@ describe('InviteTeammateDialog', () => {
     renderDialog();
     await settle();
 
+    // The shared compact capsule extends its hit area to 44px on a coarse
+    // pointer, so the 28px visible control still meets the touch target.
     expect(
       document
         .querySelector('[data-testid="invite-teammate-submit"]')
-        ?.classList.contains('min-h-11'),
+        ?.classList.contains('pointer-coarse:before:-inset-y-2'),
     ).toBe(true);
   });
 

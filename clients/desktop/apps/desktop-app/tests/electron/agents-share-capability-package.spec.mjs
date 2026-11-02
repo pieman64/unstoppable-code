@@ -139,11 +139,14 @@ test('reviews and installs an Agent capability package in one action', async () 
     await expect(dependencies).toHaveAttribute('data-state', 'ready', {
       timeout: 60_000,
     });
-    // The packaged files and recipient setup are listed once the collapsed
-    // review is expanded.
-    await share.getByTestId('share-agent-dependencies-toggle').click();
-    await expect(dependencies).toContainText('/release-notes');
-    await expect(dependencies).toContainText('Slack');
+    // The packaged files and recipient setup are named in the tooltip of the
+    // help icon after the summary.
+    await share.getByTestId('share-agent-dependencies-help').hover();
+    const included = window.getByTestId(
+      'share-agent-dependencies-help-details',
+    );
+    await expect(included).toContainText('/release-notes');
+    await expect(included).toContainText('Recipients set up: slack');
     await expect(share.getByTestId('share-agent-scope-team')).toHaveAttribute(
       'aria-checked',
       'true',
@@ -155,12 +158,18 @@ test('reviews and installs an Agent capability package in one action', async () 
     await expect(share.getByTestId('share-agent-consent')).toHaveCount(0);
     await expect(share.getByTestId('share-agent-submit')).toBeEnabled();
     await share.getByTestId('share-agent-submit').click();
-    await expect(share).toHaveCount(0, { timeout: 60_000 });
+    // The dialog stays open on its success notice; no toast is raised.
+    await expect(share.getByTestId('share-agent-success')).toContainText(
+      `Agent shared with ${SHARE_MEMBERSHIP_TEAM.name}`,
+      { timeout: 60_000 },
+    );
     await expect(
       window
         .getByTestId('toast-card')
         .filter({ hasText: `Agent shared with ${SHARE_MEMBERSHIP_TEAM.name}` }),
-    ).toBeVisible();
+    ).toHaveCount(0);
+    await share.getByTestId('share-agent-done').click();
+    await expect(share).toHaveCount(0);
 
     await app.deleteMarketplaceAgent(LOCAL_AGENT_ID);
     await window.getByRole('button', { name: 'Delete agent' }).click();

@@ -36,7 +36,7 @@ async function expectEmptySplitGroup(window, leaf) {
   expect(leaf.panels).toHaveLength(0);
   expect(leaf.activePanelId).toBeNull();
   await expect(
-    window.getByTestId(`panel-add-panel-${leaf.groupId}`),
+    window.getByTestId(`panel-add-tab-${leaf.groupId}`),
   ).toBeVisible();
   await expect(
     window.getByTestId(`panel-empty-group-${leaf.groupId}`),

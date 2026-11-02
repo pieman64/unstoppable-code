@@ -12,6 +12,7 @@ import type {
 } from './details/pipelineDetailTypes';
 import type { PipelineExecutionActions } from './usePipelineExecutionActions';
 import { PIPELINE_DETAIL_MODAL_UI_STATE_KEY } from '@/lib/current-ui-state/pipelineDetailUiState';
+import { Button } from '@canopy/ui-shared/components';
 
 /** The current-UI slice the compatibility modal reports under. */
 export { PIPELINE_DETAIL_MODAL_UI_STATE_KEY };
@@ -153,14 +154,14 @@ export function PipelineExecutionDetailModal({
                 <span className="truncate">{title}</span>
               </h2>
               <div className="electron-no-drag absolute right-2 top-1/2 -translate-y-1/2">
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  iconOnly
                   onClick={onClose}
-                  className="focus-ring rounded-md p-1 fg-secondary hover:bg-secondary hover:fg-primary"
                   aria-label="Close"
                 >
                   <AppCatalogCloseIcon width="20" height="20" />
-                </button>
+                </Button>
               </div>
             </div>
           )}

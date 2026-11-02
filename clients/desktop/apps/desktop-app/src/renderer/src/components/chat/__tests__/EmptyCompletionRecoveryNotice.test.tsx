@@ -9,7 +9,7 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
 });
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { EmptyCompletionRecoveryNotice } from '../EmptyCompletionRecoveryNotice';
 import type { EmptyCompletionRecoveryView } from '@/stores/chat/empty-completion';

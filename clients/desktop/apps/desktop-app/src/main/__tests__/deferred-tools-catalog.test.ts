@@ -52,6 +52,7 @@ import type {
   MarketplaceInfo,
   PluginDetails,
   PluginInfo,
+  PluginsCache,
 } from '@canopy/desktop-shared/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import { loadSkills } from '../skills/skill-service';
@@ -183,11 +184,27 @@ function marketplace(plugins: PluginInfo[]): MarketplaceInfo {
     pluginCount: plugins.length,
     plugins,
     providerStatus: {
-      claude: { state: 'valid' },
-      codex: { state: 'valid' },
+      claude: {
+        provider: 'claude',
+        state: 'valid',
+        accepted: true,
+        pluginCount: plugins.length,
+        lastCheckedAt: '2026-10-27T00:00:00.000Z',
+      },
+      codex: {
+        provider: 'codex',
+        state: 'valid',
+        accepted: true,
+        pluginCount: plugins.length,
+        lastCheckedAt: '2026-10-27T00:00:00.000Z',
+      },
     },
     validProviders: ['claude', 'codex'],
   };
+}
+
+function makePluginsCache(marketplaces: MarketplaceInfo[]): PluginsCache {
+  return { version: 2, lastRefreshed: '', marketplaces };
 }
 
 function schemaPatternAt(schema: unknown, path: string[]): string | undefined {
@@ -201,7 +218,8 @@ function schemaPatternAt(schema: unknown, path: string[]): string | undefined {
     ) {
       return undefined;
     }
-    current = current[segment];
+    const next: unknown = Reflect.get(current, segment);
+    current = next;
   }
   return typeof current === 'string' ? current : undefined;
 }
@@ -223,9 +241,10 @@ function setupCatalogMocks(): void {
   loadSkillsMock.mockReturnValue({ success: true, data: [] });
   loadMarketplacesCacheOnlyMock.mockResolvedValue({
     success: true,
-    data: { marketplaces: [] },
+    data: makePluginsCache([]),
   });
   resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+    disabledRefs: [],
     skillRefs: [],
     pluginRefs: [],
     mcpServerRefs: [],
@@ -342,30 +361,28 @@ describe('deferred tools catalog helpers', () => {
     });
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: {
-        marketplaces: [
-          marketplace([
-            plugin(
-              'superpowers',
-              { claude: 'native', codex: 'compat' },
-              pluginDetails({
-                skills: [
-                  {
-                    name: 'brainstorming',
-                    description: 'Explore an idea before implementation',
-                  },
-                ],
-                commands: [
-                  {
-                    name: 'brainstorm',
-                    description: 'Deprecated brainstorming command',
-                  },
-                ],
-              }),
-            ),
-          ]),
-        ],
-      },
+      data: makePluginsCache([
+        marketplace([
+          plugin(
+            'superpowers',
+            { claude: 'native', codex: 'compat' },
+            pluginDetails({
+              skills: [
+                {
+                  name: 'brainstorming',
+                  description: 'Explore an idea before implementation',
+                },
+              ],
+              commands: [
+                {
+                  name: 'brainstorm',
+                  description: 'Deprecated brainstorming command',
+                },
+              ],
+            }),
+          ),
+        ]),
+      ]),
     });
 
     const built = await buildDeferredToolsCatalog({
@@ -407,22 +424,20 @@ describe('deferred tools catalog helpers', () => {
     });
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: {
-        marketplaces: [
-          marketplace([
-            plugin(
-              'superpowers',
-              { claude: 'native', codex: 'compat' },
-              brainstormingDetails,
-            ),
-            plugin(
-              'superpowers-lab',
-              { claude: 'native', codex: 'compat' },
-              brainstormingDetails,
-            ),
-          ]),
-        ],
-      },
+      data: makePluginsCache([
+        marketplace([
+          plugin(
+            'superpowers',
+            { claude: 'native', codex: 'compat' },
+            brainstormingDetails,
+          ),
+          plugin(
+            'superpowers-lab',
+            { claude: 'native', codex: 'compat' },
+            brainstormingDetails,
+          ),
+        ]),
+      ]),
     });
 
     const built = await buildDeferredToolsCatalog({
@@ -479,16 +494,15 @@ describe('deferred tools catalog helpers', () => {
     });
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: {
-        marketplaces: [
-          marketplace([
-            plugin('Native Plugin', { claude: 'native', codex: 'compat' }),
-            plugin('Codex Only', { claude: 'none', codex: 'native' }),
-          ]),
-        ],
-      },
+      data: makePluginsCache([
+        marketplace([
+          plugin('Native Plugin', { claude: 'native', codex: 'compat' }),
+          plugin('Codex Only', { claude: 'none', codex: 'native' }),
+        ]),
+      ]),
     });
     resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [{ sourceId: 'source-a', skillName: 'collection-skill' }],
       pluginRefs: [],
       mcpServerRefs: [{ serverId: 'mcp-server', configId: 'enabled-config' }],
@@ -541,13 +555,11 @@ describe('deferred tools catalog helpers', () => {
   it('filters plugin compatibility by active provider', async () => {
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: {
-        marketplaces: [
-          marketplace([
-            plugin('Codex Only', { claude: 'none', codex: 'native' }),
-          ]),
-        ],
-      },
+      data: makePluginsCache([
+        marketplace([
+          plugin('Codex Only', { claude: 'none', codex: 'native' }),
+        ]),
+      ]),
     });
 
     const codexCatalog = await buildDeferredToolsCatalog({
@@ -575,7 +587,7 @@ describe('deferred tools catalog helpers', () => {
     disabledPlugin.codexCompatDisabled = true;
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: { marketplaces: [marketplace([disabledPlugin])] },
+      data: makePluginsCache([marketplace([disabledPlugin])]),
     });
 
     const built = await buildDeferredToolsCatalog({
@@ -609,7 +621,7 @@ describe('deferred tools catalog helpers', () => {
     existsSyncMock.mockReturnValue(false);
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: { marketplaces: [marketplace([external])] },
+      data: makePluginsCache([marketplace([external])]),
     });
 
     const built = await buildDeferredToolsCatalog({
@@ -629,11 +641,9 @@ describe('deferred tools catalog helpers', () => {
     });
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: {
-        marketplaces: [
-          marketplace([plugin('Alpha', { claude: 'none', codex: 'native' })]),
-        ],
-      },
+      data: makePluginsCache([
+        marketplace([plugin('Alpha', { claude: 'none', codex: 'native' })]),
+      ]),
     });
 
     const built = await buildDeferredToolsCatalog({
@@ -774,7 +784,7 @@ describe('Copilot installed deferred plugin catalog', () => {
   async function build(value: PluginInfo): Promise<DeferredCatalog> {
     loadMarketplacesCacheOnlyMock.mockResolvedValue({
       success: true,
-      data: { marketplaces: [marketplace([value])] },
+      data: makePluginsCache([marketplace([value])]),
     });
     return buildDeferredToolsCatalog({
       provider: 'copilot',

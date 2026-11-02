@@ -13,8 +13,7 @@
 //
 // Testids exercised:
 //   - `share-pipeline-dependencies`              -> section root + data-state
-//   - `share-pipeline-dependencies-toggle`       -> expands the collapsed review
-//   - `share-pipeline-dependencies-list`         -> what resolved
+//   - `share-pipeline-dependencies-help`         -> names what resolved
 //   - `share-pipeline-dependencies-error-reason` -> must NOT render
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
@@ -72,9 +71,9 @@ test('sharing a pipeline with an expression-valued model analyzes its dependenci
     await expect(
       window.getByTestId('share-pipeline-dependencies-error-reason'),
     ).toHaveCount(0);
-    await window.getByTestId('share-pipeline-dependencies-toggle').click();
+    await window.getByTestId('share-pipeline-dependencies-help').hover();
     await expect(
-      window.getByTestId('share-pipeline-dependencies-list'),
+      window.getByTestId('share-pipeline-dependencies-help-details'),
     ).toContainText('/open-pr');
   } finally {
     await closeCanopy(electronApp, userDataDir);

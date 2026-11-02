@@ -28,7 +28,11 @@ jest.mock('../../deferred-tools/reload-coordinator', () => ({
 }));
 const mockCancelRetry = jest.fn();
 const mockSubscribeRetry = jest.fn();
-const mockCancelTurn = jest.fn((): Promise<void> => Promise.resolve());
+// Stop reads the cancel outcome (turn-state phase 43e).
+const mockCancelTurn = jest.fn(
+  (): Promise<{ outcome: 'interrupted' }> =>
+    Promise.resolve({ outcome: 'interrupted' }),
+);
 const mockTerminal = jest.fn();
 const mockQueueCancel = jest.fn(
   (): Promise<string> => Promise.resolve('applied'),
@@ -44,7 +48,14 @@ jest.mock('../../lib/transient-error-retry-service', () => ({
     mockCancelRetry(...args),
 }));
 jest.mock('../../lib/chat-turn-cancel', () => ({
-  cancelChatTurn: (): Promise<void> => mockCancelTurn(),
+  cancelChatTurn: (): Promise<{ outcome: 'interrupted' }> => mockCancelTurn(),
+  captureChatTurnStop: (
+    target: unknown,
+  ): { target: unknown; session: undefined; fence: undefined } => ({
+    target,
+    session: undefined,
+    fence: undefined,
+  }),
 }));
 jest.mock('../chat-queue-service', () => ({
   getChatQueueService: (): object => ({
@@ -106,6 +117,7 @@ let mockContextListener:
 const authoritativeOrg = {
   config: {
     version: 1 as const,
+    type: 'multi-repo' as const,
     repos: [],
     owner: {
       type: 'organization' as const,
@@ -117,6 +129,7 @@ const authoritativeOrg = {
   },
   authority: 'ok' as const,
   ownerMalformed: false,
+  memoryMalformed: false,
 };
 const mockReadConfig = jest.fn<
   ReturnType<typeof readWorkspaceConfigDetailed>,
@@ -756,6 +769,23 @@ describe('foreign activity carryover service', (): void => {
     });
   });
 
+  it.each([
+    { label: 'anchored only', ordinary: false, completed: true },
+    { label: 'ordinary tail', ordinary: true, completed: false },
+    { label: 'legacy active sidecar', ordinary: undefined, completed: false },
+  ])(
+    'restores a parent with $label rows truthfully',
+    async ({ ordinary, completed }): Promise<void> => {
+      await restartWithTranscript(2, true, false, false, true, ordinary);
+      expect(service.get().groups[0]?.workspaces[0]).toMatchObject({
+        running: 0,
+        unread: completed ? 1 : 0,
+        interrupted: !completed,
+        ...(completed ? { latestTarget: { resultToken: 'turn:2' } } : {}),
+      });
+    },
+  );
+
   it.each(['absent', 'malformed', 'unretained', 'unreadable'] as const)(
     'validates restored workspace ownership during hydration: %s',
     async (authority): Promise<void> => {
@@ -775,9 +805,10 @@ describe('foreign activity carryover service', (): void => {
               },
             }
           : {
-              config: { version: 1, repos: [] },
+              config: { version: 1, type: 'multi-repo', repos: [] },
               authority: authority === 'malformed' ? 'ok' : authority,
               ownerMalformed: authority === 'malformed',
+              memoryMalformed: false,
             },
       );
       mockReadAccount.mockResolvedValue({
@@ -827,6 +858,8 @@ describe('foreign activity carryover service', (): void => {
     unread: boolean,
     unavailable = false,
     completed = false,
+    hasActiveSidecar = false,
+    hasOrdinaryActiveRows?: boolean,
   ): Promise<void> {
     await service.whenIdle();
     service.dispose();
@@ -843,7 +876,10 @@ describe('foreign activity carryover service', (): void => {
           committedMessageCount: 2,
           committedByteLength: 100,
           transcriptRevision: revision,
-          hasActiveSidecar: false,
+          hasActiveSidecar,
+          ...(hasOrdinaryActiveRows === undefined
+            ? {}
+            : { hasOrdinaryActiveRows }),
         },
       },
     ];
@@ -912,9 +948,10 @@ describe('foreign activity carryover service', (): void => {
         Promise.resolve(
           workspaceId === 'personal-workspace'
             ? {
-                config: { version: 1, repos: [] },
+                config: { version: 1, type: 'multi-repo', repos: [] },
                 authority: 'ok',
                 ownerMalformed: false,
+                memoryMalformed: false,
               }
             : authoritativeOrg,
         ),
@@ -1329,9 +1366,10 @@ describe('foreign activity carryover service', (): void => {
       broadcast('switch');
       await service.whenIdle();
       mockReadConfig.mockResolvedValue({
-        config: { version: 1, repos: [] },
+        config: { version: 1, type: 'multi-repo', repos: [] },
         authority,
         ownerMalformed: false,
+        memoryMalformed: false,
       });
       publish('untrusted-run');
       await service.whenIdle();
@@ -1347,9 +1385,10 @@ describe('foreign activity carryover service', (): void => {
     broadcast('switch');
     await service.whenIdle();
     mockReadConfig.mockResolvedValue({
-      config: { version: 1, repos: [] },
+      config: { version: 1, type: 'multi-repo', repos: [] },
       authority: 'ok',
       ownerMalformed: true,
+      memoryMalformed: false,
     });
     publish('malformed-run');
     await service.whenIdle();
@@ -1364,9 +1403,10 @@ describe('foreign activity carryover service', (): void => {
       organizationId: 'org-a',
     });
     mockReadConfig.mockResolvedValue({
-      config: { version: 1, repos: [] },
+      config: { version: 1, type: 'multi-repo', repos: [] },
       authority: 'ok',
       ownerMalformed: false,
+      memoryMalformed: false,
     });
     mockState = {
       ...mockState,

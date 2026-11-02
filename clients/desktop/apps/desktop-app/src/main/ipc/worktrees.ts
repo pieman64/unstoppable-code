@@ -3,6 +3,8 @@ import {
   IPC_CHANNELS,
   type ArchiveWorktreeResponse,
   type ArchiveWorktreeRequest,
+  type CheckWorktreeRemovalAdmissionRequest,
+  type CheckWorktreeRemovalAdmissionResponse,
   type CreateWorktreeResponse,
   type CreateWorktreeRequest,
   type DiffStats,
@@ -28,20 +30,29 @@ import {
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
 import {
-  checkoutBranch,
-  createBranchAndCheckout,
-  getDiffStats,
-  listBranches,
-} from '../lib/git';
-import { getWorkspaceWorktreeRepoDir } from '../lib/paths';
-import { resolveFreshDefaultBranch } from '../lib/git-default-branch';
+  checkWorktreeHealth,
+  createLegacyDiffStatsReader,
+  createWorktreeBranch,
+  listWorktreeBranches,
+  switchWorktreeBranch,
+  worktreeBranchRenameGit,
+} from '../canopy-runtime/worker-git-dispatch';
+import type {
+  WorkerGitDispatcher,
+  WorkerGitWriteDispatcher,
+} from '../canopy-runtime/worker-git-adapter';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { isMultiRepoWorkspace } from '../lib/workspace-registry';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { scheduleBranchNaming } from '../lib/worktree-chat-turn';
 import { validateAbsolutePath, validateId } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
 import { registerIpcHandler } from './register';
-import { archiveWorktree } from '../lib/worktree-archive';
+import {
+  archiveWorktree,
+  checkWorktreeRemovalAdmission,
+} from '../lib/worktree-archive';
+import { withTypedArchiveRefusal } from '../lib/worktree-discard';
 import { assertMutuallyExclusiveWorktreeBaseSources } from './worktree-create-validation';
 import { resolveEffectiveBaseBranchForRepo } from '../lib/worktree-base-branches';
 import {
@@ -51,7 +62,6 @@ import {
 import { createWorktreeFromSelection } from '../lib/worktree-creation';
 import { resolveWorktreeCreationSelection } from '../lib/worktree-creation-selection';
 import { mapWithConcurrency } from '../lib/concurrency';
-import { retryWorktreeHealthCheck } from '../lib/worktree-health';
 import { startProjectWorktreePostCreateSetup } from '../lib/project-worktree-runtime';
 import { sendToWindow } from '../lib/window-send';
 import {
@@ -130,28 +140,12 @@ function validateWorktreeOrder(
 // of children in one main-process turn and starve IPC heartbeats.
 const DIFF_STATS_BATCH_CONCURRENCY = 1;
 
-function resolveWorktreeRepoPath(request: {
-  projectId: string;
-  worktreeId: string;
-  repoId?: string;
-}): string {
-  if (request.repoId === WORKSPACE_ROOT_REPO_ID) {
-    return resolveWorktreeCwd(request.projectId, request.worktreeId);
-  }
-
-  if (request.repoId) {
-    return getWorkspaceWorktreeRepoDir(
-      request.projectId,
-      request.worktreeId,
-      request.repoId,
-    );
-  }
-
-  return resolveWorktreeCwd(request.projectId, request.worktreeId);
-}
-
 export function registerWorktreeHandlers(
   getWindow: () => BrowserWindow | null,
+  runtime: {
+    dispatcher: WorkerGitDispatcher & WorkerGitWriteDispatcher;
+    resolveCaller: DesktopIpcCallerResolver;
+  },
 ): void {
   registerIpcHandler(
     IPC_CHANNELS.worktreeCreate,
@@ -337,29 +331,65 @@ export function registerWorktreeHandlers(
         'expectedRemainingWorktreeOrder',
       );
 
-      const response = await archiveWorktree({
-        workspaceId: request.projectId,
-        worktreeId: request.worktreeId,
-        source: 'single_repo',
-        expectedKind: 'single-repo',
-        expectedCreatedAt: request.expectedCreatedAt,
-        expectedBranchName: request.expectedBranchName,
-        deleteBranch: request.deleteBranch,
-        lockAfterArchive: request.lockAfterArchive,
-        deleteWithoutRetentionIfMissing:
-          request.deleteWithoutRetentionIfMissing,
-        remainingWorktreeOrder: request.remainingWorktreeOrder,
-        expectedRemainingWorktreeOrder: request.expectedRemainingWorktreeOrder,
-        repoPath: request.repoPath,
-      });
-      removeCachedWorktreeDiffStats(request.projectId, request.worktreeId);
+      const response = await withTypedArchiveRefusal(
+        {
+          typedRefusal: request.typedRefusal,
+          workspaceId: request.projectId,
+          worktreeId: request.worktreeId,
+        },
+        () =>
+          archiveWorktree({
+            workspaceId: request.projectId,
+            worktreeId: request.worktreeId,
+            source: 'single_repo',
+            expectedKind: 'single-repo',
+            expectedCreatedAt: request.expectedCreatedAt,
+            expectedBranchName: request.expectedBranchName,
+            deleteBranch: request.deleteBranch,
+            lockAfterArchive: request.lockAfterArchive,
+            deleteWithoutRetentionIfMissing:
+              request.deleteWithoutRetentionIfMissing,
+            remainingWorktreeOrder: request.remainingWorktreeOrder,
+            expectedRemainingWorktreeOrder:
+              request.expectedRemainingWorktreeOrder,
+            repoPath: request.repoPath,
+          }),
+      );
+      if (!response.refusal)
+        removeCachedWorktreeDiffStats(request.projectId, request.worktreeId);
       return response;
+    },
+  );
+
+  // Read-only: no scope, lease or reservation; the archive admits again.
+  registerIpcHandler(
+    IPC_CHANNELS.worktreeCheckRemovalAdmission,
+    (
+      _event,
+      request: CheckWorktreeRemovalAdmissionRequest,
+    ): Promise<CheckWorktreeRemovalAdmissionResponse> => {
+      if (!Array.isArray(request.worktreeIds)) {
+        throw new Error('worktreeIds must be an array');
+      }
+      const { expectedKind } = request;
+      if (
+        expectedKind !== undefined &&
+        expectedKind !== 'single-repo' &&
+        expectedKind !== 'multi-repo'
+      ) {
+        throw new Error('Invalid expectedKind');
+      }
+      return checkWorktreeRemovalAdmission({
+        workspaceId: request.workspaceId,
+        worktreeIds: request.worktreeIds,
+        ...(expectedKind === undefined ? {} : { expectedKind }),
+      });
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeDiffStats,
-    async (_event, request: DiffStatsRequest): Promise<DiffStats> => {
+    async (event, request: DiffStatsRequest): Promise<DiffStats> => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
 
@@ -367,12 +397,20 @@ export function registerWorktreeHandlers(
         request.projectId,
         request.worktreeId,
       );
+      // worker.git.diff.get computes the stats; fetching, base selection and
+      // the code-graph nudge stay here (CAN-4103).
+      const readDiffStats = createLegacyDiffStatsReader(
+        runtime.dispatcher,
+        () => runtime.resolveCaller(event),
+        request,
+      );
 
       if (isMultiRepoWorkspace(request.projectId)) {
         const result = await aggregateMultiRepoDiffStatsService(
           request.projectId,
           request.worktreeId,
           worktreePath,
+          { readDiffStats },
         );
         nudgeCodeGraphRefreshAfterDiffStats(
           request.projectId,
@@ -386,8 +424,8 @@ export function registerWorktreeHandlers(
         worktreeId: request.worktreeId,
         repoPath: worktreePath,
       });
-      const stats = await getDiffStats(
-        worktreePath,
+      const stats = await readDiffStats(
+        { repoId: WORKSPACE_ROOT_REPO_ID, repoPath: worktreePath },
         effectiveBaseBranch.branch ?? undefined,
       );
       nudgeCodeGraphRefreshAfterDiffStats(
@@ -401,7 +439,7 @@ export function registerWorktreeHandlers(
   registerIpcHandler(
     IPC_CHANNELS.worktreeDiffStatsBatch,
     async (
-      _event,
+      event,
       request: DiffStatsBatchRequest,
     ): Promise<DiffStatsBatchResponseItem[]> => {
       const results = await mapWithConcurrency(
@@ -411,10 +449,18 @@ export function registerWorktreeHandlers(
           try {
             validateId(worktree.projectId, 'projectId');
             validateId(worktree.worktreeId, 'worktreeId');
+            // Computations this row starts read through worker.git.diff.get;
+            // cache priming, health writes and nudges stay here (CAN-4103).
+            const readDiffStats = createLegacyDiffStatsReader(
+              runtime.dispatcher,
+              () => runtime.resolveCaller(event),
+              worktree,
+            );
             if (worktree.mode === 'diff_only') {
               const cached = await refreshWorktreeDiffStats(
                 worktree.projectId,
                 worktree.worktreeId,
+                readDiffStats,
               );
               return {
                 projectId: worktree.projectId,
@@ -430,6 +476,7 @@ export function registerWorktreeHandlers(
               {
                 skipFetch: request.skipFetch,
                 source: request.source ?? 'user-explicit',
+                readDiffStats,
               },
             );
             primeWorktreeDiffStats(worktree.projectId, worktree.worktreeId, {
@@ -466,34 +513,42 @@ export function registerWorktreeHandlers(
     },
   );
 
+  // ---- Worktree health (worker.git.worktree.health.get) ----
   registerIpcHandler(
     IPC_CHANNELS.worktreeHealthCheck,
     async (
-      _event,
+      event,
       request: WorktreeHealthCheckRequest,
-    ): Promise<WorktreeHealthCheckResponse> => {
-      validateId(request.projectId, 'projectId');
-      assertWritableScope(request.projectId);
-      validateId(request.worktreeId, 'worktreeId');
-      return retryWorktreeHealthCheck(request.projectId, request.worktreeId);
-    },
+    ): Promise<WorktreeHealthCheckResponse> =>
+      checkWorktreeHealth(
+        runtime.dispatcher,
+        () => runtime.resolveCaller(event),
+        request,
+      ),
   );
 
+  // ---- Rename branch (core.worktree.branch.rename; Git effect through
+  // worker.git.branch.rename) ----
   registerIpcHandler(
     IPC_CHANNELS.worktreeRenameBranch,
     async (
-      _event,
+      event,
       request: RenameBranchRequest,
     ): Promise<RenameBranchResponse> => {
       validateId(request.projectId, 'projectId');
       try {
-        await renameWorktreeBranch({
-          source: 'desktop',
-          workspaceId: request.projectId,
-          worktreeId: request.worktreeId,
-          ...(request.repoId !== undefined ? { repoId: request.repoId } : {}),
-          newBranchName: request.newBranchName,
-        });
+        await renameWorktreeBranch(
+          {
+            source: 'desktop',
+            workspaceId: request.projectId,
+            worktreeId: request.worktreeId,
+            ...(request.repoId !== undefined ? { repoId: request.repoId } : {}),
+            newBranchName: request.newBranchName,
+          },
+          worktreeBranchRenameGit(runtime.dispatcher, () =>
+            runtime.resolveCaller(event),
+          ),
+        );
       } catch (error) {
         // The checkout's branch was renamed even when its row is gone.
         if (
@@ -510,75 +565,51 @@ export function registerWorktreeHandlers(
     },
   );
 
+  // ---- List branches (worker.git.branch.list) ----
   registerIpcHandler(
     IPC_CHANNELS.worktreeListBranches,
     async (
-      _event,
+      event,
       request: ListBranchesRequest,
-    ): Promise<ListBranchesResponse> => {
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      validateOptionalRepoId(request.repoId);
-
-      return listBranches(resolveWorktreeRepoPath(request), {
-        resolveDefaultBranch: resolveFreshDefaultBranch,
-      });
-    },
+    ): Promise<ListBranchesResponse> =>
+      listWorktreeBranches(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
 
+  // ---- Switch branch (worker.git.checkout) ----
   registerIpcHandler(
     IPC_CHANNELS.worktreeSwitchBranch,
     async (
-      _event,
+      event,
       request: SwitchBranchRequest,
     ): Promise<SwitchBranchResponse> => {
-      validateId(request.projectId, 'projectId');
-      assertWritableScope(request.projectId);
-      validateId(request.worktreeId, 'worktreeId');
-      validateOptionalRepoId(request.repoId);
-
-      await checkoutBranch(
-        resolveWorktreeRepoPath(request),
-        request.branchName,
+      const response = await switchWorktreeBranch(
+        runtime.dispatcher,
+        () => runtime.resolveCaller(event),
+        request,
       );
       refreshCachedDiffStats(request.projectId, request.worktreeId);
-
-      return { success: true, branchName: request.branchName };
+      return response;
     },
   );
 
+  // ---- Create branch (worker.git.branch.create) ----
   registerIpcHandler(
     IPC_CHANNELS.worktreeCreateBranch,
     async (
-      _event,
+      event,
       request: CreateBranchRequest,
     ): Promise<CreateBranchResponse> => {
-      validateId(request.projectId, 'projectId');
-      assertWritableScope(request.projectId);
-      validateId(request.worktreeId, 'worktreeId');
-      validateOptionalRepoId(request.repoId);
-
-      const newBranchName = request.newBranchName.trim();
-      if (!newBranchName || newBranchName.startsWith('-')) {
-        throw new Error('Invalid new branch name');
-      }
-
-      const baseBranch = (request.baseBranch ?? '').trim();
-      if (!baseBranch || baseBranch.startsWith('-')) {
-        throw new Error('Invalid base branch');
-      }
-
-      const startPoint = request.baseBranchIsRemote
-        ? `origin/${baseBranch}`
-        : baseBranch;
-      const branchName = await createBranchAndCheckout(
-        resolveWorktreeRepoPath(request),
-        newBranchName,
-        startPoint,
+      const response = await createWorktreeBranch(
+        runtime.dispatcher,
+        () => runtime.resolveCaller(event),
+        request,
       );
       refreshCachedDiffStats(request.projectId, request.worktreeId);
-
-      return { success: true, branchName };
+      return response;
     },
   );
 }

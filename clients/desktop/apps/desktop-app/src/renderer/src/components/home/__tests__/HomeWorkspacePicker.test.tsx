@@ -6,7 +6,7 @@ declare global {
 }
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-import { act, createElement } from 'react';
+import { act, createElement, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { create as createZustand } from 'zustand';
 import type { SidebarItem } from '@canopy/desktop-shared/types';

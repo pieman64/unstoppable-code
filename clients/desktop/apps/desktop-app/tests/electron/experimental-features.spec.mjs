@@ -70,7 +70,7 @@ test('remote access is on by default and follows its own switch', async () => {
     await expect(remoteAccess).toBeVisible();
     await expect(
       window.getByTestId('labs-experiment-toggle-activity-card'),
-    ).toHaveAttribute('aria-checked', 'false');
+    ).toHaveCount(0);
     const toggle = window.getByTestId('remote-control-opt-in-toggle');
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
 
@@ -80,17 +80,6 @@ test('remote access is on by default and follows its own switch', async () => {
     await expect(remoteAccess).toHaveCount(0);
     await expect.poll(available).toBe(false);
     await expect.poll(saved).toBe(false);
-
-    // An independent Labs feature does not bring Remote access back.
-    const activityCard = window.getByTestId(
-      'labs-experiment-toggle-activity-card',
-    );
-    await activityCard.click();
-    await expect(activityCard).toHaveAttribute('aria-checked', 'true');
-    await expect(remoteAccess).toHaveCount(0);
-    expect(await available()).toBe(false);
-    await activityCard.click();
-    await expect(activityCard).toHaveAttribute('aria-checked', 'false');
 
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
@@ -277,7 +266,7 @@ function compactToolCallsTranscript() {
   ];
 }
 
-test('Tool calls show one row each until Group tool calls is on', async () => {
+test('Tool calls show one row each until Chat detail is Compact', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-compact-tool-calls-'),
@@ -309,21 +298,28 @@ test('Tool calls show one row each until Group tool calls is on', async () => {
     );
     await expect(chatPanel).toBeVisible();
 
+    // Chat detail "Detailed" keeps every tool call its own row.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     // Open the finished turn so its steps show.
-    await chatPanel.getByRole('button', { name: /^Agent steps:/ }).click();
+    const turnSteps = chatPanel.getByRole('button', { name: /^Agent steps:/ });
+    await expect(turnSteps).toBeVisible();
+    if ((await turnSteps.getAttribute('aria-expanded')) !== 'true') {
+      await turnSteps.click();
+    }
     const toolRows = chatPanel.getByTestId('chat-tool-call');
     const group = chatPanel.getByTestId('chat-tool-step-group');
-    // By default every tool call is its own row.
     await expect(toolRows).toHaveCount(3);
     await expect(group).toHaveCount(0);
 
-    // "Group tool calls" folds back-to-back calls into one row.
+    // Compact folds the calls between two replies into one line.
     await window.evaluate(() =>
-      window.api.savePreferences({ chatGroupToolCallsEnabled: true }),
+      window.api.savePreferences({ chatDetail: 'compact' }),
     );
     await expect(group).toHaveCount(1);
     await expect(group.getByTestId('chat-tool-step-summary')).toHaveText(
-      'Searched 1 time, read 2 files',
+      'Searched once, read 2 files',
     );
     await expect(toolRows).toHaveCount(0);
     // Agent text around the calls stays visible.
@@ -335,7 +331,7 @@ test('Tool calls show one row each until Group tool calls is on', async () => {
     ).toBeVisible();
 
     const summaryButton = group.getByRole('button', {
-      name: 'Searched 1 time, read 2 files',
+      name: 'Searched once, read 2 files',
     });
     await expect(summaryButton).toHaveAttribute('aria-expanded', 'false');
     await summaryButton.click();

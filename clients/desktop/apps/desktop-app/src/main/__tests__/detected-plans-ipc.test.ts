@@ -37,6 +37,7 @@ jest.mock('node:crypto', () => ({
 }));
 
 import { randomUUID } from 'node:crypto';
+import type { IpcMainInvokeEvent } from 'electron';
 import type { ResolvedPlanDetectionRules } from '@canopy/desktop-shared/plan-detection';
 import {
   WORKSPACE_ROOT_REPO_ID,
@@ -272,16 +273,15 @@ describe('scanDetectedPlans', () => {
     )?.[1];
     expect(updateHandler).toBeDefined();
 
-    await updateHandler?.(
-      {},
-      {
-        projectId: 'proj-1',
-        worktreeId: 'worktree-1',
-        entryId: 'entry-1',
-        status: 'imported',
-        importedPlanId: 'plan-1',
-      },
-    );
+    // This handler validates only the request; the synthetic event is unused.
+    const event = {} as IpcMainInvokeEvent;
+    await updateHandler?.(event, {
+      projectId: 'proj-1',
+      worktreeId: 'worktree-1',
+      entryId: 'entry-1',
+      status: 'imported',
+      importedPlanId: 'plan-1',
+    });
 
     expect(mockedValidateId).toHaveBeenCalledWith('proj-1', 'projectId');
     expect(mockedValidateId).toHaveBeenCalledWith('worktree-1', 'worktreeId');

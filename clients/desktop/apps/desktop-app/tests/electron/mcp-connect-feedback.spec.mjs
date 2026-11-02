@@ -7,13 +7,19 @@ import { writeJson } from './seeders/fsHelpers.mjs';
 import { seedMcpServers } from './seeders/seedMcpServers.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
-// REG-3034: Plugins → MCP Servers explains a connect that can't start here.
+// REG-3034: the MCP servers table explains a connect that can't start here.
 //
 // 1. Adding a provider connector (Gmail) from Browse used to open the device
 //    dialog with no sign-in and no explanation. That modal dialog now says
 //    which agent provider account to connect first.
 // 2. Connect on a row whose valid token already exists finishes without a
 //    browser. The tab now says the server is already connected.
+//
+// CAN-4267 deleted the Plugins management overlay that hosted this table. Its
+// Browse, Connect and notice now live only in Settings > MCP servers >
+// Account connections, shown with the shared account connections flag. On
+// Customize a provider-only card has no device editor at all; its provider
+// route is covered by provider-connectors.spec.mjs.
 //
 // Deterministic and offline: the curated catalog cache is seeded fresh so
 // startup keeps it, the status read is pinned to `auth_required` so the row
@@ -30,13 +36,22 @@ function seedCatalog(userDataDir, servers) {
   });
 }
 
+// The table renders in Settings only with this flag; the user stays signed
+// out, so every add and connect below stays on this device as before.
+const ACCOUNT_PANEL_ENV = {
+  CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+    'canopy-shared-mcp-account-connections': true,
+  }),
+};
+
 async function openMcpTab(window) {
   const app = new CanopyAppDriver(window);
   await app.waitForShell();
-  await app.openPluginsPage();
-  await app.openPluginsTab('mcp');
-  await app.expectPluginsTab('mcp');
-  return window.getByTestId('plugins-management-section-mcp');
+  await app.openSettings();
+  await app.openSettingsSection('mcp');
+  const panel = window.getByTestId('settings-mcp-account-connections');
+  await expect(panel).toBeVisible();
+  return panel;
 }
 
 test('adding a provider connector says inside its dialog which account to connect first', async () => {
@@ -58,7 +73,10 @@ test('adding a provider connector says inside its dialog which account to connec
       providerConnector: { providers: ['claude', 'codex'] },
     },
   ]);
-  const { electronApp } = await launchCanopy({ userDataDir });
+  const { electronApp } = await launchCanopy({
+    userDataDir,
+    env: ACCOUNT_PANEL_ENV,
+  });
   try {
     const window = await electronApp.firstWindow();
     const panel = await openMcpTab(window);
@@ -126,7 +144,10 @@ test('Connect with a valid token says the server is already connected', async ()
       },
     ],
   });
-  const { electronApp } = await launchCanopy({ userDataDir });
+  const { electronApp } = await launchCanopy({
+    userDataDir,
+    env: ACCOUNT_PANEL_ENV,
+  });
   try {
     const encrypted = await electronApp.evaluate(({ safeStorage }) =>
       safeStorage.encryptString('fixture-access-token').toString('base64'),
@@ -163,6 +184,8 @@ test('Connect with a valid token says the server is already connected', async ()
     });
 
     const window = await electronApp.firstWindow();
+    // The REG-3034 "already connected" notice belongs to the MCP servers table,
+    // which now lives only in Settings > MCP servers > Account connections.
     const panel = await openMcpTab(window);
     const row = panel.getByTestId('mcp-server-row-aabbcc');
     await row.getByRole('button', { name: 'Connect', exact: true }).click();

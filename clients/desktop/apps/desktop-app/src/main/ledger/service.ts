@@ -174,6 +174,11 @@ export interface LedgerServiceOptions {
   readonly isEnabled: () => boolean;
   /** Signed-in account recorded when a ledger is minted. */
   readonly getAccountId: () => string | null | Promise<string | null>;
+  /**
+   * The account a global (workflow) Ledger belongs to; throws when it cannot
+   * be read. Defaults to `getAccountId`.
+   */
+  readonly getGlobalAccountId?: () => Promise<string | null>;
   readonly liveChats: LedgerChatLivenessSource;
   /** Retained managed delegates offered as owners; none when omitted. */
   readonly liveDelegates?: LedgerDelegateLivenessSource;
@@ -322,6 +327,9 @@ export class LedgerCoreService implements LedgerService {
     this.scopes = new LedgerScopeBindings({
       store: options.store,
       getAccountId: options.getAccountId,
+      ...(options.getGlobalAccountId === undefined
+        ? {}
+        : { getGlobalAccountId: options.getGlobalAccountId }),
     });
     this.actors = new LedgerActorDirectory({
       store: options.store,
@@ -699,6 +707,7 @@ export class LedgerCoreService implements LedgerService {
       try {
         this.options.onEntryChanged?.({
           container: scope.container,
+          ledgerId: scope.ledgerId,
           entryId: receipt.entry.entryId,
           revision: receipt.entry.revision,
         });
@@ -745,6 +754,7 @@ export class LedgerCoreService implements LedgerService {
         binding.container,
         binding.containerCreatedAt,
       );
+      await this.assertGlobalAccount(scope, site);
       const record = await this.actors.ensureCaller(scope, binding.actor);
       return { binding, scope, actor: record.actor };
     } catch (error) {
@@ -764,7 +774,28 @@ export class LedgerCoreService implements LedgerService {
           ? null
           : await this.actors.findCaller(scope, binding.actor);
       if (scope === null || record === null) throw error;
+      await this.assertGlobalAccount(scope, site);
       return { binding, scope, actor: record.actor };
+    }
+  }
+
+  /**
+   * A global (workflow) Ledger serves only the account it was bound under,
+   * or the signed-out one while signed out: after an account switch, a
+   * binding opened before it fails closed rather than writing to, or
+   * reading, another account's Ledger.
+   */
+  private async assertGlobalAccount(
+    scope: LedgerBoundScope,
+    site: LedgerErrorSite,
+  ): Promise<void> {
+    if (scope.container.kind !== 'global') return;
+    // An account that cannot be read is no account's: it fails closed.
+    const accountId = await this.scopes
+      .readGlobalAccountId()
+      .catch((): undefined => undefined);
+    if (scope.accountId !== accountId) {
+      throw ledgerOperationError('FORBIDDEN', site, { field: 'ledgerId' });
     }
   }
 

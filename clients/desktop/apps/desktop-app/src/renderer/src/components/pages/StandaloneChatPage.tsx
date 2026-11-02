@@ -46,10 +46,17 @@ import { isCoworkChatTarget } from '@/lib/cowork';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { ForkedContainerNotice } from '@/components/shared-containers/ForkedContainerNotice';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import { draftHasContent } from '@/lib/chat-draft-content';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+/** Where a forked Work Entry's focus request lands (CAN-4782). */
+const COWORK_FORK_FOCUS_TARGET = {
+  page: 'chat',
+  headerTestId: 'cowork-top-bar',
+} as const;
 
 /** Minimum spacing between chat-event-driven work-entry meta refreshes. */
 const CHAT_EVENT_REFRESH_THROTTLE_MS = 1000;
@@ -200,8 +207,14 @@ export function StandaloneChatPage(): JSX.Element {
   );
   const startNewChat = useStandaloneChatStore((s) => s.startNewChat);
   const dismissColdStart = useStandaloneChatStore((s) => s.dismissColdStart);
+  const activeDraftPresent = useChatStore(
+    (state) =>
+      activeEntryActiveTabId !== undefined &&
+      draftHasContent(state.tabDrafts[activeEntryActiveTabId] ?? []),
+  );
   const isColdStart =
     !coldStartDismissed &&
+    !activeDraftPresent &&
     initialized &&
     chatProjectsLoaded &&
     archiveActivityLoaded &&
@@ -393,6 +406,7 @@ export function StandaloneChatPage(): JSX.Element {
           <ForkedContainerNotice
             projectId={activeChatProjectId}
             worktreeId={activeWorkEntryId}
+            focusTarget={COWORK_FORK_FOCUS_TARGET}
           />
         </>
       )}

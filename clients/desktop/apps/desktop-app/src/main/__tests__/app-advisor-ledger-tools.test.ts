@@ -324,6 +324,7 @@ describe('App Advisor Codex Ledger dynamic tools', () => {
       isPlanExplore: false,
       isCodeReview: false,
       includeCodeGraph: true,
+      includeChatVisuals: false,
       toolSchemaProfile: 'standard' as const,
     };
 

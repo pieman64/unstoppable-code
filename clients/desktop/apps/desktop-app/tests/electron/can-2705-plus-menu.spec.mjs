@@ -1,3 +1,4 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 // CAN-2705 — the "+" menu on the New Task screen.
 //
 // Three reported defects, all reachable from the same control:
@@ -209,6 +210,10 @@ test('Open on a New Task attachment hands the file to the system default applica
 
   try {
     const window = await electronApp.firstWindow();
+    await connectMockCloudAccount(
+      window,
+      'csk_can_2705_plus_menu_attachments_e2e',
+    );
     const homePage = await openNewTaskScreen(window);
 
     // Stage an attachment the way a user does without a native picker: paste
@@ -917,8 +922,9 @@ test('sending a message re-enables a mentioned plugin that was removed from the 
     await editor.click();
     await editor.press('End');
     await editor.press('Enter');
-    await expect(window.getByTestId('chat-message-list-content')).toContainText(
-      'Completed in',
+    await expect(window.getByTestId('turn-timer')).toHaveAttribute(
+      'data-state',
+      'completed',
       { timeout: 60_000 },
     );
     await window.getByTestId('chat-input-plus-button').click();

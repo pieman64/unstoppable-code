@@ -8,7 +8,10 @@ import {
   registerScenario,
   resetAll,
 } from '../control-plane.mjs';
-import { handleSharedContainersRequest } from './shared-containers.mjs';
+import {
+  handleSharedContainersRequest,
+  sharedContainerPackageMetadata,
+} from './shared-containers.mjs';
 
 function startServer() {
   const server = createServer(async (request, response) => {
@@ -997,4 +1000,331 @@ test('models capability links: set, narrow, reset, claim, and turn off', async (
     server.close();
     clearScenario(key);
   }
+});
+
+test('pins capability packages across stage replay, parent retirement and commit', async () => {
+  resetAll();
+  const key = 'csk_shared_containers_e2e_worker-packages';
+  const digest = `pp:v1:${'A'.repeat(43)}`;
+  const hash = 'a'.repeat(64);
+  const upload = {
+    state: 'COMMITTED',
+    expiresAt: '2099-01-01T00:00:00Z',
+    digest,
+    manifest: {
+      version: 1,
+      pipelineContentHash: hash,
+      totalFiles: 1,
+      totalBytes: 2,
+      resources: [
+        {
+          id: 'agent',
+          kind: 'agent_definition',
+          displayName: 'Reviewer',
+          sourceLabel: 'private',
+          sourceVisibility: 'private',
+          dependencyResourceIds: [],
+          invocationKeys: [],
+          trees: [
+            {
+              provider: 'claude',
+              runtimeKind: 'plugin_fragment',
+              rootName: 'agent',
+              entries: [
+                { path: 'agent.json', sha256: hash, size: 2, mode: 'read' },
+              ],
+            },
+          ],
+        },
+      ],
+      bindings: [{ target: 'subject', resourceIds: ['agent'] }],
+      environmentRequirements: [],
+    },
+    blobs: {
+      [hash]: Buffer.from('{}').toString('base64'),
+      ['b'.repeat(64)]: Buffer.from('secret').toString('base64'),
+    },
+  };
+  const state = {
+    containers: [
+      {
+        id: 'container',
+        title: 'Share',
+        revision: 0,
+        owner: {
+          userId: '99999999-9999-4999-8999-999999999999',
+          name: 'Owner',
+        },
+      },
+    ],
+    grants: [],
+    stagedRevisions: [],
+    revisions: [],
+    nextRevision: 1,
+  };
+  registerScenario(key, {
+    sharedContainers: { packageUploads: { upload } },
+    sharedContainersState: state,
+  });
+  const { server, base } = await startServer();
+  const call = (path, body, version = '5') =>
+    fetch(`${base}/api/v1/shared-containers/container/revisions/${path}`, {
+      method: body ? 'POST' : 'GET',
+      headers: {
+        authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        'X-Pipeline-Package-Version': version,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  const stageBody = {
+    idempotencyKey: 'stage',
+    title: 'Share',
+    sourceDeviceId: 'device',
+    schemaVersion: 5,
+    artifacts: [],
+    capabilityPackage: { version: 1, digest },
+    committedPackageUploadId: 'upload',
+  };
+  try {
+    assert.equal(
+      (await call('stage', { ...stageBody, carryParentPackage: true })).status,
+      400,
+    );
+    const staged = await (await call('stage', stageBody)).json();
+    upload.expiresAt = '2000-01-01T00:00:00Z';
+    assert.deepEqual(await (await call('stage', stageBody)).json(), staged);
+    assert.equal(
+      (
+        await (
+          await call('stage', { ...stageBody, idempotencyKey: 'expired' })
+        ).json()
+      ).code,
+      'shared_container_package_upload_expired',
+    );
+    assert.equal(
+      (
+        await call('stage', {
+          ...stageBody,
+          capabilityPackage: undefined,
+          committedPackageUploadId: undefined,
+        })
+      ).status,
+      409,
+    );
+    const committed = await (
+      await call('commit', { stagingSessionId: 'stage' })
+    ).json();
+    assert.equal(committed.revision.package.digest, digest);
+    assert.equal(committed.revision.package.counts.agents, 1);
+    assert.deepEqual(
+      await (await call('commit', { stagingSessionId: 'stage' })).json(),
+      committed,
+    );
+    assert.equal(
+      (await (await call(staged.revisionId, undefined, '4')).json()).revision
+        .package,
+      undefined,
+    );
+    const read = `${staged.revisionId}/package?expectedPackageDigest=${encodeURIComponent(digest)}`;
+    const old = await call(read, undefined, '4');
+    assert.equal(old.status, 426);
+    assert.equal(old.headers.get('Cache-Control'), 'no-store');
+    assert.equal((await call(read)).status, 200);
+    assert.equal(
+      (
+        await call(
+          `${staged.revisionId}/package/blobs/${'b'.repeat(64)}?expectedPackageDigest=${encodeURIComponent(digest)}`,
+        )
+      ).status,
+      404,
+    );
+    const blob = await call(
+      `${staged.revisionId}/package/blobs/${hash}?expectedPackageDigest=${encodeURIComponent(digest)}`,
+    );
+    assert.equal(await blob.text(), '{}');
+    const carry = {
+      ...stageBody,
+      idempotencyKey: 'carry',
+      capabilityPackage: undefined,
+      committedPackageUploadId: undefined,
+      carryParentPackage: true,
+      parentRevisionId: staged.revisionId,
+    };
+    assert.equal((await call('stage', carry)).status, 200);
+    state.revisions[0].retired = true;
+    state.revisions[0].packageDownload = undefined;
+    assert.equal((await call('stage', carry)).status, 200);
+    assert.equal((await call(read)).status, 404);
+    const carried = await (
+      await call('commit', { stagingSessionId: 'carry' })
+    ).json();
+    assert.equal(carried.revision.package.digest, digest);
+    assert.equal(
+      state.stagedRevisions.every(
+        (entry) => entry.packageDownload === undefined,
+      ),
+      true,
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('serves an organization share package to members and only the pinned digest', async () => {
+  // CAN-4655 fork flow: a recipient of an organization share holds no grant,
+  // yet installs the package its fork disclosed. Direct shares still need one.
+  resetAll();
+  const key = 'csk_shared_containers_e2e_worker-org-package';
+  const digest = `pp:v1:${'B'.repeat(43)}`;
+  const hash = 'c'.repeat(64);
+  const packageDownload = {
+    digest,
+    manifest: {
+      version: 1,
+      pipelineContentHash: hash,
+      totalFiles: 1,
+      totalBytes: 2,
+      resources: [
+        {
+          id: 'skill',
+          kind: 'standalone_skill',
+          displayName: 'helper',
+          sourceLabel: 'local',
+          sourceVisibility: 'local',
+          dependencyResourceIds: [],
+          invocationKeys: ['/helper'],
+          trees: [
+            {
+              provider: 'claude',
+              runtimeKind: 'standalone_skill',
+              rootName: 'helper',
+              entries: [
+                { path: 'run.sh', sha256: hash, size: 2, mode: 'execute' },
+              ],
+            },
+          ],
+        },
+      ],
+      bindings: [{ target: 'subject', resourceIds: ['skill'] }],
+      environmentRequirements: [],
+    },
+    blobs: { [hash]: Buffer.from('{}').toString('base64') },
+  };
+  const container = (id, access) => ({
+    id,
+    organizationId: '77777777-7777-4777-8777-777777777777',
+    ownerUserId: '11111111-1111-4111-8111-111111111111',
+    title: 'Share',
+    revision: 1,
+    ...(access ? { access } : {}),
+  });
+  registerScenario(key, {
+    sharedContainersState: {
+      containers: [container('org-share'), container('direct-share', 'direct')],
+      grants: [],
+      stagedRevisions: [],
+      revisions: [
+        { containerId: 'org-share', revision: { id: 'r1' }, packageDownload },
+        {
+          containerId: 'direct-share',
+          revision: { id: 'r1' },
+          packageDownload,
+        },
+      ],
+    },
+  });
+  const { server, base } = await startServer();
+  const read = (containerId, suffix = '', expected = digest) =>
+    fetch(
+      `${base}/api/v1/shared-containers/${containerId}/revisions/r1/package${suffix}?expectedPackageDigest=${encodeURIComponent(expected)}&organizationId=77777777-7777-4777-8777-777777777777`,
+      {
+        headers: {
+          authorization: `Bearer ${key}`,
+          'X-Pipeline-Package-Version': '5',
+        },
+      },
+    );
+  try {
+    const manifest = await read('org-share');
+    assert.equal(manifest.status, 200);
+    assert.equal((await manifest.json()).digest, digest);
+    const blob = await read('org-share', `/blobs/${hash}`);
+    assert.equal(await blob.text(), '{}');
+    assert.equal(
+      (await read('org-share', '', `pp:v1:${'C'.repeat(43)}`)).status,
+      409,
+    );
+    assert.equal((await read('direct-share')).status, 404);
+    assert.deepEqual(sharedContainerPackageMetadata(packageDownload), {
+      digest,
+      counts: { skills: 1, pipelines: 0, agents: 0, automations: 0, hooks: 0 },
+      executableFiles: ['helper/run.sh'],
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    clearScenario(key);
+  }
+});
+
+test('summarizes only what a copy installs, leaving plugin members out', () => {
+  const kinds = [
+    'standalone_skill',
+    'plugin_skill',
+    'plugin_command',
+    'plugin_agent',
+    'agent_definition',
+    'child_pipeline',
+    'pipeline_definition',
+    'automation_definition',
+    'hook_definition',
+    'pipeline_action',
+  ];
+  const digest = `pp:v1:${'A'.repeat(43)}`;
+  const resources = kinds.map((kind) => ({
+    id: kind,
+    kind,
+    displayName: kind,
+    sourceLabel: 'source',
+    sourceVisibility: 'private',
+    invocationKeys: [],
+    dependencyResourceIds: [],
+    trees: [
+      {
+        provider: 'claude',
+        runtimeKind: 'plugin_fragment',
+        rootName: kind,
+        entries: [
+          { path: 'file', mode: 'execute', sha256: 'a'.repeat(64), size: 1 },
+        ],
+      },
+    ],
+  }));
+  assert.deepEqual(
+    sharedContainerPackageMetadata({
+      digest,
+      manifest: {
+        version: 1,
+        pipelineContentHash: 'a'.repeat(64),
+        resources,
+        bindings: [],
+        environmentRequirements: [],
+        totalFiles: resources.length,
+        totalBytes: resources.length,
+      },
+    }),
+    {
+      digest,
+      counts: { skills: 1, pipelines: 1, agents: 1, automations: 1, hooks: 1 },
+      executableFiles: [
+        'agent_definition/file',
+        'automation_definition/file',
+        'child_pipeline/file',
+        'hook_definition/file',
+        'pipeline_action/file',
+        'pipeline_definition/file',
+        'standalone_skill/file',
+      ],
+    },
+  );
 });

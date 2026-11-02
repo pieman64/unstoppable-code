@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { type JSX, type ReactNode } from 'react';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
 import {
@@ -186,7 +187,7 @@ const ALL_NAV_ITEMS: NavItem[] = [
   },
   {
     key: 'app-advisor',
-    label: 'App Advisor',
+    label: ORCHESTRATOR_LABEL,
     icon: <AppAdvisorIcon width={16} height={16} />,
   },
   {

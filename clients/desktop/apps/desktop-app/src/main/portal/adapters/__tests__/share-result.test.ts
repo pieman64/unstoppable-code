@@ -59,8 +59,11 @@ describe('withPortalShareUrl', () => {
 
   it('leaves results without a share path unchanged', () => {
     mockGetBaseUrl.mockReturnValue('https://cloud.example.test');
+    const pendingResult: { sharePath?: string; message: string } = {
+      message: 'Pending',
+    };
 
-    expect(withPortalShareUrl({ message: 'Pending' })).toEqual({
+    expect(withPortalShareUrl(pendingResult)).toEqual({
       message: 'Pending',
     });
   });

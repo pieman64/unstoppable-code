@@ -12,10 +12,10 @@ import { resetCodeGraphWorktreeServiceForTests } from '@canopy/desktop-shared/no
 import {
   openCodeGraphDatabase,
   type CodeGraphDatabase,
-} from '@canopy/desktop-shared/node/code-graph/store/database';
-import { runCodeGraphMigrations } from '@canopy/desktop-shared/node/code-graph/store/migrations';
-import { CodeGraphStore } from '@canopy/desktop-shared/node/code-graph/store/graph-store';
-import { publishCodeGraphSummaryProjection } from '@canopy/desktop-shared/node/code-graph/summary-projection';
+} from '@canopy/code-graph/store/database';
+import { runCodeGraphMigrations } from '@canopy/code-graph/store/migrations';
+import { CodeGraphStore } from '@canopy/code-graph/store/graph-store';
+import { publishCodeGraphSummaryProjection } from '@canopy/code-graph/summary-projection';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { fingerprintCodeGraphWorktree } from '../lib/code-graph-worktree-fingerprint-core';
@@ -32,9 +32,8 @@ import type {
   CodeGraphWorkerReadResponse,
 } from '../code-graph/read-runner';
 
-const mockResolveWorktreeCwd = jest.fn();
 jest.mock('../lib/resolve-worktree', () => ({
-  resolveWorktreeCwd: mockResolveWorktreeCwd,
+  resolveWorktreeCwd: jest.fn(),
 }));
 
 interface MockWorktreeRepoEntry {
@@ -62,9 +61,12 @@ const mockResolveWorktreeCodeGraphRepositories = jest.fn<
       }));
 });
 jest.mock('../lib/worktree-repo-entries', () => ({
-  listWorkspaceWorktreeRepoEntries: mockListWorkspaceWorktreeRepoEntries,
-  resolveWorktreeCodeGraphRepositories:
-    mockResolveWorktreeCodeGraphRepositories,
+  get listWorkspaceWorktreeRepoEntries(): typeof mockListWorkspaceWorktreeRepoEntries {
+    return mockListWorkspaceWorktreeRepoEntries;
+  },
+  get resolveWorktreeCodeGraphRepositories(): typeof mockResolveWorktreeCodeGraphRepositories {
+    return mockResolveWorktreeCodeGraphRepositories;
+  },
 }));
 
 // Mocks `runCodeGraphWorkerBuild` only (every other export — notably the real
@@ -150,7 +152,9 @@ jest.mock('../code-graph/read-runner', () => {
 const mockIsEnabled = jest.fn();
 jest.mock('../feature-flags', (): unknown => ({
   getFeatureFlagService: () => ({
-    isEnabled: mockIsEnabled,
+    get isEnabled(): typeof mockIsEnabled {
+      return mockIsEnabled;
+    },
   }),
 }));
 
@@ -167,6 +171,7 @@ import {
   searchCodeGraph,
   type CodeGraphToolRuntime,
 } from '../canopy-tools/code-graph-runtime';
+import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { CodeGraphWorkerBuildError } from '../code-graph/build-runner';
 import { codeGraphGenerationFailureReason } from '../lib/code-graph-telemetry';
 import { CodeGraphWorkerReadError } from '../code-graph/read-runner';
@@ -175,6 +180,8 @@ import {
   executeDeferredCodeGraphDerived,
 } from '../code-graph/build-worker';
 import { executeCodeGraphRead } from '../code-graph/read-worker';
+
+const mockResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
 
 const LIB = `export function doWork(): number {
   return 42;
@@ -532,6 +539,8 @@ describe('code-graph-runtime', () => {
     expect(context.fileCount).toBe(3);
     expect(context.symbolCount).toBeGreaterThanOrEqual(6);
     expect(context.lastBuildAt).not.toBeNull();
+    // The build reports the stamp it wrote, which is what the graph holds.
+    expect(build.lastBuildAt).toBe(context.lastBuildAt);
     expect(context.repositories).toEqual([{ repoId: 'fixture', fileCount: 3 }]);
   });
 

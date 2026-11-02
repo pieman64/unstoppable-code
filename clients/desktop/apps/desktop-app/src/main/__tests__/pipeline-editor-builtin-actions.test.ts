@@ -25,6 +25,8 @@ jest.mock('../pipelines/action-resolver', () => ({
   }),
 }));
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   getBuiltinActionDefinition,
   listBuiltinActionSummaries,
@@ -41,6 +43,32 @@ describe('pipeline editor system prompt', () => {
     expect(prompt).toContain(
       'never search for or load a skill, plugin, MCP server, or command that is already available',
     );
+  });
+});
+
+// CAN-4551 7d: host steps and global pipelines.
+describe('pipeline editor host-step guidance', () => {
+  it('says host steps need the desktop app and a global pipeline names its IDs', () => {
+    const prompt = getPipelineEditorSystemPrompt();
+    expect(prompt).toContain('Host steps');
+    expect(prompt).toContain('need the desktop app');
+    // create-worktree runs its Node fallback on the CLI.
+    expect(prompt).toContain('except `builtin/create-worktree`');
+    expect(prompt).toContain('scope: global');
+    expect(prompt).toContain('explicit IDs');
+  });
+
+  it('describes create-worktree as creating a project worktree', () => {
+    const manifest = readFileSync(
+      join(
+        __dirname,
+        '../../../../../packages/desktop-shared/resources/actions/create-worktree/action.yml',
+      ),
+      'utf8',
+    );
+    const description = /^description: (.*)$/m.exec(manifest)?.[1] ?? '';
+    expect(description).toContain('project');
+    expect(description).not.toContain('workspace');
   });
 });
 

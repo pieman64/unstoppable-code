@@ -9,7 +9,7 @@ import type {
 import {
   delegationExitReason,
   type AgentDelegationBroker,
-  type StoredDelegation,
+  type StoredDelegationLegacy,
 } from '../broker';
 import { createDelegationProjection } from '../projections';
 import { FileDelegationStorage } from '../storage';
@@ -140,7 +140,7 @@ describe('who stopped a delegation', () => {
       });
       expect(snapshot.stoppedBy).toEqual({ kind: 'agent', depth: 0 });
       expect(
-        broker.getOutput(rootParent, { delegationId: child }),
+        await broker.getOutput(rootParent, { delegationId: child }),
       ).toMatchObject({
         ok: true,
         value: {
@@ -404,11 +404,12 @@ describe('persisted stop attribution', () => {
     const records = await new FileDelegationStorage(
       path.join(directory, 'runs'),
     ).load();
-    const byId = (id: string): StoredDelegation => {
+    const byId = (id: string): StoredDelegationLegacy => {
       const record = records.find(
         (candidate) => candidate.state.delegationId === id,
       );
       if (!record) throw new Error(`Expected a persisted record for ${id}`);
+      if (record.version === 3) throw new Error();
       return record;
     };
     const stoppedBy = {
@@ -448,7 +449,9 @@ describe('persisted stop attribution', () => {
           "Stopped because its ancestor 'Audit the parser' was stopped.",
         ),
       });
-      const output = restored.broker.getOutput(rootParent, { delegationId: b });
+      const output = await restored.broker.getOutput(rootParent, {
+        delegationId: b,
+      });
       // The retained exit reason stays private to the host.
       expect(output.ok && output.value.result).not.toHaveProperty('stopReason');
     } finally {
@@ -466,9 +469,10 @@ describe('persisted stop attribution', () => {
     await harness.broker.close();
     const [record] = await storage.load();
     if (!record) throw new Error('Expected a persisted record');
+    if (record.version === 3) throw new Error();
     const { stoppedBy: _stoppedBy, ...legacyState } = record.state;
     void _stoppedBy;
-    const legacy: StoredDelegation = {
+    const legacy: StoredDelegationLegacy = {
       ...record,
       state: legacyState,
       results: record.results?.map(({ stopReason: _reason, ...result }) => {
@@ -478,6 +482,7 @@ describe('persisted stop attribution', () => {
     };
     await storage.commit(legacy);
     const [loaded] = await storage.load();
+    if (loaded?.version === 3) throw new Error();
     expect(loaded?.state.stopReason).toBe('parent_cancelled');
     expect(loaded?.results?.[0]).not.toHaveProperty('stopReason');
     // The exit reason falls back to the current generation's state.

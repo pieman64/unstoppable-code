@@ -12,6 +12,7 @@ import {
   findFilesystemRoot,
   hasVisibleRootEntries,
   readRootVisibility,
+  resolveCoworkWorkspaceRootName,
   type FilesystemRootCatalog,
 } from '../root-catalog';
 
@@ -157,5 +158,18 @@ describe('root catalog layouts', () => {
       '/h/.c/prompts',
       '/h/.c/attachments',
     ]);
+  });
+});
+
+describe('Cowork workspace root display name', () => {
+  it.each([
+    [undefined, 'attached', 'attached'],
+    ['', 'home', 'home'],
+    [' \t ', '/', '/'],
+    ['  Vendor Spend Q3  ', 'different-folder', 'Vendor Spend Q3'],
+    ['支出 / 🌳 \\ archive', 'folder', '支出 / 🌳 \\ archive'],
+    ['x'.repeat(1000), 'folder', 'x'.repeat(1000)],
+  ])('resolves %j using host fallback %j', (name, fallback, expected) => {
+    expect(resolveCoworkWorkspaceRootName(name, fallback)).toBe(expected);
   });
 });

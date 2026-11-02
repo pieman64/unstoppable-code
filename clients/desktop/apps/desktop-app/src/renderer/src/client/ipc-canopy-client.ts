@@ -1,3 +1,8 @@
+import {
+  normalizeOnboardingTipDismissals,
+  type OnboardingTipDismissals,
+} from '@canopy/protocol/onboarding-tips';
+import { ipcTranscriptReadClient } from './ipc-transcript-read-client';
 import { isVoiceDictationPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import {
@@ -35,7 +40,8 @@ import {
 import { isRecord } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { isCoworkChatTarget } from '@/lib/cowork';
-import { extractIpcErrorMessage } from '@/lib/errors';
+import { extractIpcErrorMessage, extractIpcErrorName } from '@/lib/errors';
+import { FileSaveConflictError } from '@canopy/app-core';
 import { organizationOperationReply } from '@/lib/personal-organization-upgrade-port';
 import {
   OrganizationInviteResultSchema,
@@ -84,6 +90,23 @@ import {
 import { registerHostedSettingsCanopyClient } from './hosted-settings-client-registry';
 
 /**
+ * The stored tip dismissals. A preferences file that failed to load rejects,
+ * so the shared tips stay hidden instead of reappearing over defaults. So
+ * does a host built before tips existed, which sends no dismissals field and
+ * could never save one.
+ */
+async function loadOnboardingTipDismissals(): Promise<OnboardingTipDismissals> {
+  const preferences = await window.api.loadPreferences();
+  if (preferences.__error) {
+    throw new Error('Preferences could not be loaded.');
+  }
+  if (!('onboardingTipsDismissed' in preferences)) {
+    throw new Error('This host does not store onboarding tip dismissals.');
+  }
+  return normalizeOnboardingTipDismissals(preferences.onboardingTipsDismissed);
+}
+
+/**
  * Build the desktop capability set for a given platform. Desktop runs the full
  * local-first app, so everything is enabled except voice dictation, which is
  * macOS-only (`canopy-dictate` is not shipped on Windows). The web adapter
@@ -101,6 +124,8 @@ import { registerHostedSettingsCanopyClient } from './hosted-settings-client-reg
  * own account shares through `createdBy=me` reads (CAN-4263).
  * `marketplaceSharedCollectionEdit` is `true`: the shared collection editor
  * picks members from the local catalog (CAN-4263).
+ * `customSkillEdit` is `true`: a custom skill's Customize row opens the local
+ * skill editor (CAN-4844).
  * `automations` and `watchers` are `true`: both run on the desktop, so the
  * Workflows page shows their rows, the Schedule tab and their actions
  * (CAN-3981).
@@ -116,6 +141,7 @@ export function createDesktopCapabilities(
   hostedSettings: Pick<CanopyCapabilities, 'accountOrganizationSettings'> = {},
 ): CanopyCapabilities {
   return {
+    sharedMultiRepo: true,
     githubConnection: true,
     localExecution: true,
     // Try it setup may open account OAuth in the in-app pane; the host also
@@ -123,10 +149,13 @@ export function createDesktopCapabilities(
     embeddedOAuthBrowser: true,
     repoRulesImport: true,
     scriptActions: true,
+    // Tip dismissals live in the desktop preferences (CAN-4904).
+    onboardingTips: true,
     // Source list/detail and plugin installs run over `window.plugins`; the
     // shared gate still requires the wired `marketplaceSources` member.
     marketplaceSources: true,
     marketplaceSourcePluginInstall: true,
+    marketplaceSourceAdd: true,
     // Payment forms stay in the browser; hosted settings hand off to it.
     inlineCheckout: false,
     // Hosted account and organization settings run through main's settings
@@ -143,14 +172,18 @@ export function createDesktopCapabilities(
     sidebarActivityMode: true,
     chatDrafts: true,
     chatVisuals: true,
+    // Main grants sanitized writes only to trusted application documents.
+    imageClipboard: true,
     nativeWorktreeOpen: true,
     // Fix, Resolve conflicts and Triage start agent chats from the header.
     worktreePrAgentHelpers: true,
     marketplaceOwnedAutomationShares: true,
     marketplaceOwnedShares: true,
     marketplaceSharedCollectionEdit: true,
+    customSkillEdit: true,
     automations: true,
     watchers: true,
+    workflowManagement: true,
     // Main owns plan proposals, deferred reloads, and split startup. The
     // shared derivation still applies each provider's own limits.
     chatWorkflows: {
@@ -158,6 +191,8 @@ export function createDesktopCapabilities(
       planReview: true,
       deferredCapabilities: true,
       independentFork: true,
+      // `resumeUsageLimitedChats` resumes an app-closed turn in place.
+      interruptedTurnResume: true,
     },
     panelLayoutControls: false,
     itemGrouping: false,
@@ -176,11 +211,26 @@ export function createDesktopCapabilities(
     // messaging a managed delegate, and interrupting a native subagent all
     // run through the local managed-delegation and native-subagent IPC.
     delegationStop: true,
+    delegationTranscriptReads: true,
+    delegationBlockReads: true,
+    delegationLifetimeStatusReads: true,
+    delegationLifetimeLimitExtension: true,
+    primaryContentReads: true,
     delegationWorktreeDetails: true,
     delegationMessaging: true,
     nativeSubagentInterrupt: true,
     ledger: true,
+    // The Feed merges this device's Ledger with the mirror, and its own
+    // entries change here.
+    ledgerFeed: true,
+    ledgerLocal: true,
     referencePreviews: true,
+    backgroundTaskStop: true,
+    lifecycleJournalQuarantine: true,
+    // `worktree:discard-describe` / `worktree:discard` (CAN-5334).
+    worktreeDiscard: true,
+    // `workspace:delete-discard-describe` and the supersede field (CAN-5337).
+    projectDeletionDiscard: true,
     // Observed cost reads over the `cost:*` IPC.
     costInsights: true,
     providerQuotas: true,
@@ -371,6 +421,12 @@ function joinRootPath(rootAbsolutePath: string, relativePath: string): string {
   if (!relativePath) {
     return rootAbsolutePath;
   }
+  const root = rootAbsolutePath.replace(/[\\/]+$/, '');
+  return `${root}/${rootRelativeSegments(relativePath).join('/')}`;
+}
+
+/** The path's segments as `joinRootPath` joins them; `..` is rejected. */
+function rootRelativeSegments(relativePath: string): string[] {
   const segments = relativePath
     .split(/[\\/]+/)
     .filter((segment) => segment.length > 0 && segment !== '.');
@@ -379,8 +435,7 @@ function joinRootPath(rootAbsolutePath: string, relativePath: string): string {
       `Relative path "${relativePath}" escapes the file root and was rejected.`,
     );
   }
-  const root = rootAbsolutePath.replace(/[\\/]+$/, '');
-  return `${root}/${segments.join('/')}`;
+  return segments;
 }
 
 const localFileRootOverrides = new Map<string, FileTreeRoot>();
@@ -577,6 +632,39 @@ function toPortalPlanDetail(plan: TrackedPlanData): PortalPlanDetail {
 }
 
 /**
+ * Mirror of the plans-service `toRequestedPlanDetail`: a pinned
+ * `revisionNumber` returns that revision's Markdown or `null`, never the
+ * latest in its place (CAN-5354).
+ */
+function toRequestedPortalPlanDetail(
+  plan: TrackedPlanData,
+  revisionNumber: number | undefined,
+): PortalPlanDetail | null {
+  const detail = toPortalPlanDetail(plan);
+  if (
+    revisionNumber === undefined ||
+    revisionNumber === plan.latestRevisionNumber
+  ) {
+    return detail;
+  }
+  const revision = plan.revisions.find(
+    (candidate) => candidate.revisionNumber === revisionNumber,
+  );
+  if (!revision) return null;
+  return {
+    ...detail,
+    content: revision.content,
+    body: revision.content,
+    revisionNumber: revision.revisionNumber,
+    source: revision.source,
+    status: revision.reviewStatus,
+    reviewStatus: revision.reviewStatus,
+    approvedAt: revision.approvedAt ?? null,
+    dismissedAt: revision.dismissedAt ?? null,
+  };
+}
+
+/**
  * Narrow the wire `plan.update` payload onto the desktop
  * `UpdateTrackedPlanRequest`. The wire keeps `source`/`reviewStatus` as
  * plain strings; unknown values fail loudly instead of corrupting the
@@ -628,12 +716,20 @@ async function readFilePreview(
     args.fileRootLocalId ?? args.repoId,
   );
   const absolutePath = joinRootPath(root.absolutePath, args.relativePath);
+  const segments = rootRelativeSegments(args.relativePath);
+  // A renderer-owned root (archived attachments) is not a catalog root.
+  const catalogRoot = localFileRootOverrides.get(root.repoId) !== root;
   const response = await window.api.readFileContent({
+    // Kept for hosts that predate `file` (remote control); newer ones read `file`.
     absolutePath,
     workspaceTarget: {
       projectId: args.projectId,
       worktreeId: args.worktreeId,
     },
+    ...(catalogRoot &&
+      segments.length > 0 && {
+        file: { fileRootId: root.repoId, relativePath: segments.join('/') },
+      }),
   });
   if (response.kind === 'missing') {
     throw new Error(`File not found: ${args.relativePath}`);
@@ -641,6 +737,23 @@ async function readFilePreview(
   if (response.kind === 'image' || response.kind === 'unsupported') {
     throw new Error('Binary files cannot be read.');
   }
+  const canonical = response.canonical;
+  if (canonical) {
+    return {
+      workspaceLocalId: args.projectId,
+      worktreeLocalId: args.worktreeId,
+      fileRootLocalId: canonical.fileRootId,
+      path: args.relativePath,
+      content: response.content,
+      language: languageForPath(args.relativePath),
+      size: canonical.sizeBytes,
+      version: canonical.version,
+      truncated: canonical.truncated,
+      modifiedAt: canonical.modifiedAt,
+    };
+  }
+  // A host without the canonical read: renderer-owned roots, the sealed
+  // viewer, or a remote-control host from before CAN-4099.
   return {
     workspaceLocalId: args.projectId,
     worktreeLocalId: args.worktreeId,
@@ -748,6 +861,27 @@ function resolveChatTabsRouting(
  * owning slice lands (see per-handler comments).
  */
 export class IpcCanopyClient implements CanopyClient {
+  openExternalUrl(url: string): void {
+    void window.api.browser.openExternal({ url });
+  }
+
+  readonly transcripts = ipcTranscriptReadClient;
+  readonly sharedMultiRepo: NonNullable<CanopyClient['sharedMultiRepo']> = {
+    prepare: (params) => window.api.orgProjects.sharedMultiRepo.prepare(params),
+    create: (params) => window.api.orgProjects.sharedMultiRepo.create(params),
+    resume: (creationKey) =>
+      window.api.orgProjects.sharedMultiRepo.create({ creationKey }),
+    getCreation: (key) =>
+      window.api.orgProjects.sharedMultiRepo.getCreation(key),
+    listCreations: () => window.api.orgProjects.sharedMultiRepo.listCreations(),
+    catalog: (organizationId) =>
+      window.api.orgProjects.refresh({
+        context: { kind: 'organization', organizationId },
+      }),
+    cancelSetup: async (_organizationId, projectId) => {
+      await window.api.orgProjects.setupCancel({ projectId });
+    },
+  };
   readonly capabilities: CanopyCapabilities;
 
   /**
@@ -802,6 +936,8 @@ export class IpcCanopyClient implements CanopyClient {
   >();
 
   private readonly queryHandlers: QueryHandlers = {
+    'delegation.lifetimeStatus': (args) =>
+      window.api.managedDelegation.getLifetimeStatus(args),
     // The bridge preserves typed error codes, so these skip unwrapIpcError.
     'scriptActions.list': (args) => window.api.scriptActions.list(args),
     'scriptActions.receipt': (args) => window.api.scriptActions.receipt(args),
@@ -853,15 +989,25 @@ export class IpcCanopyClient implements CanopyClient {
       window.api.referencePreview.github(args),
     'session.snapshot': (args) => window.api.getDesktopSessionSnapshot(args),
     'file.read': (args) => readFilePreview(args),
-    // Transcript links in the local desktop surface use its existing
-    // renderer-owned file-link resolver. This query exists for browser Portal
-    // relay clients, where the host filesystem is available only in main.
-    'file.resolveLink': () =>
-      Promise.reject(
-        new Error(
-          'file.resolveLink is available only through a paired browser Portal session.',
-        ),
-      ),
+    // A projection over `worker.filesystem.link.resolve` in transcript mode
+    // (CAN-5038), through `file-reference:resolve`. Local desktop chat links
+    // keep their own renderer-owned resolver; an older host answers `null`.
+    'file.resolveLink': async (args) => {
+      const resolved = await window.api.resolveFileReference({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        baseFilePath: '',
+        href: args.href,
+        mode: 'transcript',
+      });
+      const canonical = resolved?.canonical;
+      return canonical?.kind === 'file'
+        ? {
+            fileRootLocalId: canonical.fileRootId,
+            relativePath: canonical.relativePath,
+          }
+        : null;
+    },
     // Deferred: the desktop diff IPC (`activity.getFileDiff`) returns
     // old/new value pairs for a side-by-side renderer, not the unified
     // `patch` + changed-file summary `PortalDiffPayload` requires, and there
@@ -928,10 +1074,13 @@ export class IpcCanopyClient implements CanopyClient {
         worktreeId: args.worktreeId,
         planId: args.planId,
       });
-      if (!plan) {
+      const detail = plan
+        ? toRequestedPortalPlanDetail(plan, args.revisionNumber)
+        : null;
+      if (!detail) {
         throw new Error('Plan not found.');
       }
-      return toPortalPlanDetail(plan);
+      return detail;
     },
     // The query args carry only `chatId`, so the persisted worktree
     // `ChatTabsFile` cannot be located on disk here (it is keyed by
@@ -960,9 +1109,14 @@ export class IpcCanopyClient implements CanopyClient {
     // Rejects when there is no real value, so the row shows a locked state.
     'account.installUpdateEmails.get': () =>
       window.api.loadInstallUpdateEmailPreference(),
+    'onboardingTips.get': async () => ({
+      dismissed: await loadOnboardingTipDismissals(),
+    }),
   };
 
   private readonly commandHandlers: CommandHandlers = {
+    'delegation.extendLifetimeLimit': (args) =>
+      window.api.managedDelegation.extendLifetimeLimit(args),
     'providerUsage.refresh': async ({ provider }) => {
       await window.api.observability.refreshUsage(provider);
     },
@@ -1223,7 +1377,11 @@ export class IpcCanopyClient implements CanopyClient {
         });
       } catch (error) {
         // Electron decorates invoke failures with the channel and error class.
-        // Keep transport details out of the shared session's user-facing error.
+        // Restore the typed stale-version refusal so the store can recover;
+        // keep transport details out of every other user-facing error.
+        if (extractIpcErrorName(error) === 'FileSaveConflictError') {
+          throw new FileSaveConflictError(extractIpcErrorMessage(error));
+        }
         throw new Error(extractIpcErrorMessage(error));
       }
       return {
@@ -1253,6 +1411,13 @@ export class IpcCanopyClient implements CanopyClient {
       );
       await window.api.saveProjects(items);
     },
+    'activity.stopBackgroundTask': (args) =>
+      window.api.activity.stopBgProcess({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        chatId: args.chatId,
+        taskId: args.taskId,
+      }),
     'workspace.create': async (args) => {
       const destinationDir = await window.api.getDefaultCloneDirectory();
       const workspace = await window.api.addWorkspaceFromRemote({
@@ -1272,14 +1437,43 @@ export class IpcCanopyClient implements CanopyClient {
     },
     'workspace.delete': async (args) => {
       const item = await loadDesktopWorkspace(args.workspaceId);
+      // CAN-5337: the interrupted deletion the person confirmed superseding.
+      const superseded =
+        args.supersedeInterruptedDeletion !== undefined
+          ? { supersedeInterruptedDeletion: args.supersedeInterruptedDeletion }
+          : {};
       if (item.type === 'single-repo') {
-        await window.api.deleteProject({ projectId: args.workspaceId });
+        await window.api.deleteProject({
+          projectId: args.workspaceId,
+          ...superseded,
+        });
       } else {
         // Multi-repo and cowork workspaces share the workspace deletion path.
-        await window.api.deleteWorkspace({ workspaceId: args.workspaceId });
+        await window.api.deleteWorkspace({
+          workspaceId: args.workspaceId,
+          ...superseded,
+        });
       }
       await window.api.invalidateDesktopSessionSnapshot();
     },
+    'lifecycleJournal.inspect': () => window.api.inspectLifecycleJournal(),
+    'lifecycleJournal.quarantine': (args) =>
+      window.api.quarantineLifecycleJournalEntry(args),
+    'worktree.discard.describe': (args) =>
+      window.api.describeWorktreeDiscard({
+        projectId: args.workspaceId,
+        worktreeId: args.worktreeId,
+      }),
+    'worktree.discard': (args) =>
+      window.api.discardWorktree({
+        projectId: args.workspaceId,
+        worktreeId: args.worktreeId,
+        confirmation: args.confirmation,
+      }),
+    'workspace.delete.discard.describe': (args) =>
+      window.api.describeProjectDeletionDiscard({
+        workspaceId: args.workspaceId,
+      }),
     'workspace.reorder': async (args) => {
       await window.api.reorderWorkspaces(args);
       await window.api.invalidateDesktopSessionSnapshot();
@@ -1644,6 +1838,10 @@ export class IpcCanopyClient implements CanopyClient {
     },
     'account.installUpdateEmails.set': (args) =>
       window.api.saveInstallUpdateEmailPreference({ enabled: args.enabled }),
+    // Main applies the update to the latest stored record inside the
+    // serialized preferences write, so a Portal dismissal is never dropped.
+    'onboardingTips.update': (update) =>
+      window.api.updateOnboardingTips(update),
     'turnFeedback.detail': async (args) => {
       await window.api.submitTurnFeedbackDetail({
         clientUserMessageId: args.clientUserMessageId,
@@ -1656,6 +1854,18 @@ export class IpcCanopyClient implements CanopyClient {
 
   private readonly subscribeHandlers: SubscribeHandlers = {
     ...ipcTerminalSubscribeHandlers,
+    'delegation.lifetimeChanged': (handler, filter) =>
+      window.api.managedDelegation.onLifetimeChanged((event) => {
+        if (
+          (filter?.projectId !== undefined &&
+            filter.projectId !== event.projectId) ||
+          (filter?.worktreeId !== undefined &&
+            filter.worktreeId !== event.worktreeId)
+        ) {
+          return;
+        }
+        handler({ ...event, occurredAt: new Date().toISOString() });
+      }),
     'workspace-context.changed': (handler) =>
       window.api.workspaceContext.onChanged((broadcast) => {
         const { reason, ...state } = broadcast;

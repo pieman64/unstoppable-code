@@ -44,7 +44,7 @@ export async function assertPipelineContextSnapshot(
   snapshot: string,
 ): Promise<void> {
   if (snapshot !== (await pipelineContextSnapshot()))
-    throw new Error('Pipeline unavailable (context-mismatch)');
+    throw new Error('Workflow unavailable (context-mismatch)');
 }
 
 export async function pipelineContextAllowed(
@@ -63,6 +63,14 @@ export async function pipelineContextAllowed(
   return decision.allow;
 }
 
+/** A resource-context refusal, as `assertPipelineContext` and its callers raise them. */
+export function isPipelineContextDenial(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    /^Workflow unavailable \([a-z-]+\)$/.test(error.message)
+  );
+}
+
 export async function assertPipelineContext(
   resource: ResourceContextInput['resource'],
   projectId?: string,
@@ -70,13 +78,13 @@ export async function assertPipelineContext(
 ): Promise<void> {
   if (!pipelineResourceContextEnabled()) return;
   if (classifyResourceOwner(resource.owner, { strict: true }) === 'unknown')
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const parsedExecutionContext =
     executionContext === undefined
       ? undefined
       : parseWorkspaceContext(executionContext);
   if (executionContext !== undefined && parsedExecutionContext === null)
-    throw new Error('Pipeline unavailable (unsupported-target)');
+    throw new Error('Workflow unavailable (unsupported-target)');
   const context =
     parsedExecutionContext ?? getWorkspaceContextService().getState().context;
   let target: ResourceContextInput['target'];
@@ -104,9 +112,9 @@ export async function assertPipelineContext(
       });
     } catch (error) {
       if (error instanceof WorkspaceTargetResolutionError)
-        throw new Error(`Pipeline unavailable (${error.reason})`);
+        throw new Error(`Workflow unavailable (${error.reason})`);
       if (executionContext !== undefined)
-        throw new Error('Pipeline unavailable (unknown-provenance)');
+        throw new Error('Workflow unavailable (unknown-provenance)');
       throw error;
     }
   }
@@ -123,7 +131,7 @@ export async function assertPipelineContext(
           },
   });
   if (!decision.allow)
-    throw new Error(`Pipeline unavailable (${decision.reason})`);
+    throw new Error(`Workflow unavailable (${decision.reason})`);
 }
 
 interface Page {
@@ -154,7 +162,7 @@ function decodeCursor(value: string, snapshot: string, query: string): Cursor {
     parsed.lanes === null ||
     Array.isArray(parsed.lanes)
   )
-    throw new Error('Pipeline unavailable (context-mismatch)');
+    throw new Error('Workflow unavailable (context-mismatch)');
   const lanes: Record<string, LanePagePosition> = {};
   const entries: [string, unknown][] = Object.entries(parsed.lanes);
   for (const [key, cursor] of entries) {

@@ -91,5 +91,14 @@
     height: 14px !important;
   }
 
+  /* Clean chat look: small glyphs that sit in a line of text (step rows,
+ * reply-row actions) draw a 1.5px stroke on screen, like the text beside
+ * them. Lucide's 2px stroke on its 24px grid draws only ~1.17px at 14px;
+ * 2.57 user units is 1.5px at 14px. A scoped, design-owner-requested
+ * exception to the 2px catalog stroke. */
+  :root .canopy-small-icon-stroke svg[data-icon-family='lucide'] {
+    stroke-width: 2.57px;
+  }
+
   /* Keep this in the same layer as Tailwind important menu descendant utilities. */
 }

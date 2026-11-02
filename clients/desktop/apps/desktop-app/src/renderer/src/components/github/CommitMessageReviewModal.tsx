@@ -1,6 +1,7 @@
 import { memo, useState, useCallback, useEffect, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { useGitHubStore } from '@/stores/githubStore';
+import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 
 interface CommitMessageReviewModalProps {
@@ -106,21 +107,17 @@ export const CommitMessageReviewModal = memo(function CommitMessageReviewModal({
         ))}
       </div>
       <div className="flex items-center justify-end gap-2 border-t p-4">
-        <button
-          type="button"
-          onClick={handleCancel}
-          className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary/80"
-        >
+        <Button variant="secondary" size="compact" onClick={handleCancel}>
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
+          size="compact"
           onClick={handleConfirm}
           disabled={!allMessagesValid}
-          className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90 disabled:opacity-60"
         >
           {actionLabel}
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );

@@ -1,5 +1,7 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type { ProviderConnectionEvent } from '../lib/provider-connection-events';
 import type { AuthTerminalEventSender } from '../auth-terminal/manager';
+import type { refreshOpenCodeAccounts } from '../opencode/connection';
 
 const mockSetEventSender = jest.fn<void, [AuthTerminalEventSender]>();
 const mockStart = jest.fn();
@@ -17,11 +19,20 @@ let mockRuntimeAbort = new AbortController();
 const mockRuntimeClose = jest.fn(() => Promise.resolve());
 const mockOpenManaged = jest.fn();
 const mockRevokeOpenCode = jest.fn(() => Promise.resolve());
+const mockRefreshOpenCodeAccounts = jest.fn<
+  ReturnType<typeof refreshOpenCodeAccounts>,
+  Parameters<typeof refreshOpenCodeAccounts>
+>();
 const mockGetActiveSessionId = jest.fn();
 
 jest.mock('../opencode/connection', () => ({
-  openManagedOpenCodeRuntime: mockOpenManaged,
-  revokeOpenCodeRuntimes: mockRevokeOpenCode,
+  get openManagedOpenCodeRuntime(): typeof mockOpenManaged {
+    return mockOpenManaged;
+  },
+  get revokeOpenCodeRuntimes(): typeof mockRevokeOpenCode {
+    return mockRevokeOpenCode;
+  },
+  refreshOpenCodeAccounts: mockRefreshOpenCodeAccounts,
 }));
 
 jest.mock('../auth-terminal/manager', () => ({
@@ -36,16 +47,24 @@ jest.mock('../auth-terminal/manager', () => ({
 }));
 
 jest.mock('../lib/window-send', () => ({
-  sendToWindow: mockSendToWindow,
+  get sendToWindow(): typeof mockSendToWindow {
+    return mockSendToWindow;
+  },
 }));
 
 jest.mock('../ipc/register', () => ({
-  registerIpcHandler: mockRegisterIpcHandler,
+  get registerIpcHandler(): typeof mockRegisterIpcHandler {
+    return mockRegisterIpcHandler;
+  },
 }));
 
 jest.mock('../auth/provider-auth-state', () => ({
-  checkClaudeAuthStatusObserved: mockCheckClaudeAuthStatusObserved,
-  checkCodexAuthStatusObserved: mockCheckCodexAuthStatusObserved,
+  get checkClaudeAuthStatusObserved(): typeof mockCheckClaudeAuthStatusObserved {
+    return mockCheckClaudeAuthStatusObserved;
+  },
+  get checkCodexAuthStatusObserved(): typeof mockCheckCodexAuthStatusObserved {
+    return mockCheckCodexAuthStatusObserved;
+  },
 }));
 
 import { registerAuthTerminalHandlers } from '../ipc/auth-terminal';
@@ -68,10 +87,13 @@ async function flushPromises(): Promise<void> {
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason: Error) => void;
 } {
   let resolve: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((nextResolve) => {
+  let reject: ((reason: Error) => void) | undefined;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
   return {
     promise,
@@ -81,6 +103,12 @@ function deferred<T>(): {
       }
       resolve(value);
     },
+    reject(reason: Error): void {
+      if (!reject) {
+        throw new Error('Deferred rejecter was not initialized');
+      }
+      reject(reason);
+    },
   };
 }
 
@@ -89,6 +117,7 @@ beforeEach(() => {
   mockRuntimeAbort = new AbortController();
   mockRuntimeClose.mockReset().mockResolvedValue(undefined);
   mockRevokeOpenCode.mockReset().mockResolvedValue(undefined);
+  mockRefreshOpenCodeAccounts.mockReset().mockResolvedValue(undefined);
   mockStart.mockReset().mockReturnValue('opencode-login');
   mockGetActiveSessionId.mockReturnValue('opencode-login');
   mockOpenManaged.mockReset().mockResolvedValue({
@@ -183,33 +212,76 @@ it('refuses a login revoked before the PTY starts', async () => {
   expect(mockRuntimeClose).toHaveBeenCalledTimes(1);
 });
 
-it('releases the login lease before successful-auth revocation and notification', async () => {
-  const sender = registerAndGetSender();
-  const closed = deferred<void>();
-  await startOpenCodeLogin();
-  mockRuntimeClose.mockReturnValue(closed.promise);
-  sender(IPC_CHANNELS.authTerminalExit, {
-    sessionId: 'opencode-login',
-    provider: 'opencode',
-    exitCode: 0,
-    signal: null,
-  });
-  expect(mockRevokeOpenCode).not.toHaveBeenCalled();
-  expect(mockSendToWindow).not.toHaveBeenCalled();
-  closed.resolve();
-  await flushPromises();
-  await flushPromises();
-  expect(mockRevokeOpenCode).toHaveBeenCalledTimes(1);
-  expect(mockSendToWindow).toHaveBeenCalled();
-});
+it.each(['resolve', 'reject'] as const)(
+  'waits for login release and revocation, but not account discovery, before notifying (%s)',
+  async (outcome) => {
+    const sender = registerAndGetSender();
+    const closed = deferred<void>();
+    const revoked = deferred<void>();
+    const refresh = deferred<void>();
+    await startOpenCodeLogin();
+    mockRuntimeClose.mockReturnValue(closed.promise);
+    mockRevokeOpenCode.mockReturnValueOnce(revoked.promise);
+    mockRefreshOpenCodeAccounts.mockReturnValueOnce(refresh.promise);
+    const payload = {
+      sessionId: 'opencode-login',
+      provider: 'opencode' as const,
+      exitCode: 0,
+      signal: null,
+    };
+    sender(IPC_CHANNELS.authTerminalExit, payload);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockRuntimeClose).toHaveBeenCalledTimes(1);
+    expect(mockRevokeOpenCode).not.toHaveBeenCalled();
+    expect(mockRefreshOpenCodeAccounts).not.toHaveBeenCalled();
+    expect(mockSendToWindow).not.toHaveBeenCalled();
+    closed.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockRevokeOpenCode).toHaveBeenCalledTimes(1);
+    expect(mockRefreshOpenCodeAccounts).not.toHaveBeenCalled();
+    expect(mockSendToWindow).not.toHaveBeenCalled();
+    revoked.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockRefreshOpenCodeAccounts).toHaveBeenCalledTimes(1);
+    expect(mockRefreshOpenCodeAccounts).toHaveBeenCalledWith(
+      undefined,
+      'in_app',
+    );
+    // Discovery is still pending: it must not hold the modal's exit event.
+    try {
+      expect(mockSendToWindow).toHaveBeenCalledTimes(1);
+      expect(mockSendToWindow).toHaveBeenCalledWith(
+        null,
+        IPC_CHANNELS.authTerminalExit,
+        payload,
+      );
+    } finally {
+      if (outcome === 'reject') refresh.reject(new Error('discovery failed'));
+      else refresh.resolve();
+      // Let rejection handling run; an unhandled rejection must fail this test.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(mockSendToWindow).toHaveBeenCalledTimes(1);
+  },
+);
 
 it('releases the login lease if terminal creation fails', async () => {
+  const events = await import('../lib/provider-connection-events');
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
   registerAndGetSender();
   mockStart.mockImplementationOnce(() => {
     throw new Error('spawn failed');
   });
   await expect(startOpenCodeLogin()).rejects.toThrow('spawn failed');
   expect(mockRuntimeClose).toHaveBeenCalledTimes(1);
+  expect(connection).toHaveBeenCalledWith({
+    provider: 'opencode',
+    connectionMethod: 'native_login',
+    connectSource: 'in_app',
+    failureReason: 'other',
+  });
+  stop();
 });
 
 describe('registerAuthTerminalHandlers event sender', () => {
@@ -324,3 +396,87 @@ describe('registerAuthTerminalHandlers event sender', () => {
     expect(mockSendToWindow).toHaveBeenCalled();
   });
 });
+
+it('reports the verification deadline as timeout rather than cancellation', async () => {
+  jest.useFakeTimers();
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  try {
+    registerAndGetSender();
+    mockOpenManaged.mockImplementationOnce(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(new Error('verification aborted')),
+            {
+              once: true,
+            },
+          );
+        }),
+    );
+    const result = expect(startOpenCodeLogin()).rejects.toThrow();
+    await jest.advanceTimersByTimeAsync(60_000);
+    await result;
+    expect(connection).toHaveBeenCalledTimes(1);
+    expect(connection).toHaveBeenCalledWith({
+      provider: 'opencode',
+      connectionMethod: 'native_login',
+      connectSource: 'in_app',
+      failureReason: 'timeout',
+    });
+    expect(mockStart).not.toHaveBeenCalled();
+  } finally {
+    stop();
+    events.resetProviderConnectionEventsForTests();
+    jest.useRealTimers();
+  }
+});
+
+it.each(['claude', 'opencode'] as const)(
+  'reports a modal-close SIGTERM with exit code zero once as cancelled for %s',
+  async (provider) => {
+    const events = await import('../lib/provider-connection-events');
+    events.resetProviderConnectionEventsForTests();
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const unsubscribe = events.subscribeProviderConnections(connection);
+    try {
+      const sender = registerAndGetSender();
+      if (provider === 'opencode') await startOpenCodeLogin();
+      const stopHandler = mockRegisterIpcHandler.mock.calls.find(
+        ([channel]) => channel === IPC_CHANNELS.authTerminalStop,
+      )?.[1];
+      if (!stopHandler) throw new Error('Missing stop handler');
+      stopHandler({}, { sessionId: 'opencode-login' });
+      sender(IPC_CHANNELS.authTerminalExit, {
+        sessionId: 'opencode-login',
+        provider,
+        exitCode: 0,
+        signal: '15',
+      });
+      await flushPromises();
+      await flushPromises();
+      expect(connection.mock.calls.map(([event]) => event)).toEqual([
+        {
+          provider,
+          connectionMethod: 'native_login',
+          connectSource: 'in_app',
+          failureReason: 'cancelled',
+        },
+      ]);
+      expect(mockRevokeOpenCode).not.toHaveBeenCalled();
+      if (provider === 'claude') {
+        expect(mockCheckClaudeAuthStatusObserved).toHaveBeenCalledWith(
+          'auth-terminal-exit',
+          { forceAuthenticatedInvalidation: false },
+        );
+      } else expect(mockRuntimeClose).toHaveBeenCalledTimes(1);
+      expect(mockSendToWindow).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+      events.resetProviderConnectionEventsForTests();
+    }
+  },
+);

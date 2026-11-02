@@ -252,16 +252,13 @@ test('open palette refreshes after first scan and navigates exact skill, agent, 
       .locator('[data-palette-section="plugins"]')
       .getByRole('option')
       .click();
+    // CAN-4267: a plugin opens its Customize detail page, not a dialog.
     await expect(window.getByTestId('page-plugins')).toBeVisible();
+    const pluginDetail = window.getByTestId('plugins-entry-detail-page');
     await expect(
-      window
-        .getByRole('dialog')
+      pluginDetail
+        .getByTestId('plugin-detail-host')
         .getByRole('heading', { name: 'Alpha Tool', exact: true }),
-    ).toBeVisible();
-    await expect(
-      window
-        .getByRole('dialog')
-        .getByText('alpha-tool (external)', { exact: true }),
     ).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);

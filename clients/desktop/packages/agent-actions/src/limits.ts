@@ -18,7 +18,9 @@ export type AgentActionLimitKind =
   | 'chat.create'
   | 'chat.send_message'
   | 'fork'
-  | 'experiments.set_enabled';
+  | 'experiments.set_enabled'
+  /** Keys pipeline.run receipts; its family takes no limits reservation. */
+  | 'pipeline.run';
 
 export type AgentActionLimitReason = 'per_turn' | 'per_hour' | 'depth';
 

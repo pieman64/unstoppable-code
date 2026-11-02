@@ -414,19 +414,35 @@ export async function hasRemoteTrackingBranch(
 export async function hasBranchBeenPushedToRemote(
   repoPath: string,
 ): Promise<boolean> {
+  return (await readBranchPublication(repoPath)) === true;
+}
+
+/** Null means the probe failed, rather than a confirmed missing remote ref. */
+export async function readBranchPublication(
+  repoPath: string,
+): Promise<boolean | null> {
   try {
     const branch = await runGit(
       ['rev-parse', '--abbrev-ref', 'HEAD'],
       repoPath,
     );
-    if (!branch || branch === 'HEAD') return false;
-    await runGit(
-      ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`],
-      repoPath,
-    );
-    return true;
+    if (!branch || branch === 'HEAD') return null;
+    try {
+      await runGit(
+        ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`],
+        repoPath,
+      );
+      return true;
+    } catch (error) {
+      return typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 1
+        ? false
+        : null;
+    }
   } catch {
-    return false;
+    return null;
   }
 }
 

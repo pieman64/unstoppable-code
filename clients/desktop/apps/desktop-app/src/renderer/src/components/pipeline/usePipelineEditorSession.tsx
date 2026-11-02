@@ -39,9 +39,9 @@ import { toPipelineDefinitionViewModel } from './pipeline-read-detail-adapter';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 
 export const SHARED_PIPELINE_SAVE_IMPACT_MESSAGE =
-  'People using this pipeline in their automations will need to approve your changes before they run again.';
+  'People using this workflow in their automations will need to approve your changes before they run again.';
 
-const SAVE_FAILED_MESSAGE = 'The pipeline could not be saved.';
+const SAVE_FAILED_MESSAGE = 'The workflow could not be saved.';
 
 /** What the editor is pointed at. A share that moves the pipeline swaps it. */
 export interface PipelineEditorTarget {
@@ -730,10 +730,8 @@ export function usePipelineEditorSession(
           {...(editorTarget.cwd && worktree ? { worktree } : {})}
           onClose={(): void => setShareOpen(false)}
           onOpenAccountSettings={openAccountSettings}
-          onShared={(): void => {
-            setShareOpen(false);
-            onSharedPipelineCreated?.();
-          }}
+          // The dialog stays open on its success notice until Done.
+          onShared={(): void => onSharedPipelineCreated?.()}
           onPublicLinkRemoved={(): void => onSharedPipelineCreated?.()}
         />
       ) : (
@@ -744,11 +742,9 @@ export function usePipelineEditorSession(
           onClose={() => setShareOpen(false)}
           onOpenAccountSettings={openAccountSettings}
           onPublicLinkRemoved={(): void => onSharedPipelineCreated?.()}
-          onShared={() => {
-            // Sharing keeps the local pipeline, so the editor stays on it.
-            setShareOpen(false);
-            onSharedPipelineCreated?.();
-          }}
+          // Sharing keeps the local pipeline, so the editor stays on it, and
+          // the dialog stays open on its success notice until Done.
+          onShared={(): void => onSharedPipelineCreated?.()}
         />
       )
     ) : null;

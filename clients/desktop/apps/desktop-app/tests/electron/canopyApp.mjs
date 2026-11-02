@@ -413,6 +413,70 @@ export class CanopyAppDriver {
     await this.window.getByTestId('workflows-library-search').fill(query);
   }
 
+  /**
+   * Sets one Library facet from the Filter button nested in the search
+   * field: `facet` is `trigger`, `status`, `project` or `source`, and
+   * `value` is an option value or `any`. The menu stays open while values
+   * are picked, so this closes it again.
+   */
+  async chooseWorkflowsLibraryFilter(facet, value) {
+    // The Filter menu lists one row per filter; each opens its values.
+    const menu = this.window.getByTestId('workflows-library-filter-menu');
+    await this.window.getByTestId('workflows-library-filter').click();
+    await expect(menu).toBeVisible();
+    await menu.getByTestId(`workflows-library-filter-${facet}`).click();
+    const submenu = this.window.getByTestId(
+      `workflows-library-filter-${facet}-menu`,
+    );
+    await expect(submenu).toBeVisible();
+    await submenu
+      .getByTestId(
+        value === 'any'
+          ? `workflows-library-filter-${facet}-any`
+          : `workflows-library-filter-${facet}-option-${value}`,
+      )
+      .click();
+    for (let attempt = 0; attempt < 3 && (await menu.isVisible()); attempt += 1)
+      await this.window.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+  }
+
+  /**
+   * Picks an Audit trail filter value (`all` for its any row). Three filters
+   * sit inline after the search; with a selected context there are four,
+   * behind one Filter dropdown.
+   */
+  async chooseAuditTrailFilter(filter, value) {
+    const testId = `audit-trail-${filter}-filter`;
+    const optionId =
+      value === 'all' ? `${testId}-any` : `${testId}-option-${value}`;
+    const option = this.window.getByTestId(optionId);
+    const filterMenu = this.window.getByTestId('audit-trail-filter');
+    if (await filterMenu.isVisible()) {
+      // One row per filter in the Filter menu; each opens its values.
+      const menu = this.window.getByTestId('audit-trail-filter-menu');
+      await filterMenu.click();
+      await expect(menu).toBeVisible();
+      await menu.getByTestId(testId).click();
+      await this.window
+        .getByTestId(`${testId}-menu`)
+        .getByTestId(optionId)
+        .click();
+      for (
+        let attempt = 0;
+        attempt < 3 && (await menu.isVisible());
+        attempt += 1
+      )
+        await this.window.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+      return;
+    }
+    await this.window.getByTestId(testId).click();
+    await expect(this.window.getByTestId(`${testId}-menu`)).toBeVisible();
+    await option.click();
+    await expect(this.window.getByTestId(`${testId}-menu`)).toBeHidden();
+  }
+
   /** Opens a Library row: the automation form, or the pipeline editor. */
   async openWorkflowsLibraryRow(row) {
     await row.getByTestId('workflows-library-name').click();
@@ -503,14 +567,13 @@ export class CanopyAppDriver {
   /**
    * Opens Marketplace › Agents (CAN-4266: local agents moved here when the
    * Agents page retired). Requires the `canopy-shared-custom-agents` flag.
+   * From an open detail too: the current Customize row returns to its root.
    */
   async openMarketplaceAgents() {
     await this.openPluginsPage();
-    if (
-      await this.window.getByTestId('plugins-entry-detail-page').isVisible()
-    ) {
-      await this.closeMarketplaceEntryDetail();
-    }
+    await expect(
+      this.window.getByTestId('plugins-entry-detail-page'),
+    ).toHaveCount(0);
     await this.window.getByTestId('plugins-type-tab-agent').click();
     await this.expectMarketplaceAgents();
   }
@@ -534,6 +597,23 @@ export class CanopyAppDriver {
     if (!(await detail.isVisible())) await this.openLocalAgentDetail(agentId);
     await expect(detail).toContainText(agentId);
     await this.window.getByTestId('local-agent-detail-delete').click();
+  }
+
+  /** An agent created from Add custom lands on its own detail. */
+  async expectCreatedLocalAgentDetail(agentId) {
+    const detail = this.window.getByTestId('local-agent-marketplace-detail');
+    await expect(detail).toContainText(agentId);
+    return detail;
+  }
+
+  /**
+   * Any item created from Add custom (skill, collection, MCP server) lands on
+   * its own Customize detail, the page a click on its row opens.
+   */
+  async expectCreatedCustomizeDetail(name) {
+    const detail = this.window.getByTestId('plugins-entry-detail-page');
+    await expect(detail).toContainText(name);
+    return detail;
   }
 
   /** Opens a local agent's Marketplace detail from the Agents tab. */
@@ -599,23 +679,42 @@ export class CanopyAppDriver {
   }
 
   /**
-   * Opens the App Advisor, which renders in a SECOND BrowserWindow. Clicks the
-   * sidebar App Advisor nav button, waits for the new window, and returns its
+   * Opens App Advisor and expands its floating native view into the full
+   * workspace window. Clicks the sidebar App Advisor nav button and returns its
    * page once the cowork-style workspace surface has finished its scoped
    * bootstrap (`app-advisor-workspace-surface` visible with the loading gate
    * gone). Requires the `electronApp` handle.
    */
   async openAppAdvisorWindow(electronApp) {
-    const newWindowPromise = electronApp.waitForEvent('window');
     await this.window.getByTestId('sidebar-nav-app-advisor').click();
-    const advisor = await newWindowPromise;
-    await advisor.waitForLoadState('domcontentloaded');
-    await expect(
-      advisor.getByTestId('app-advisor-workspace-surface'),
-    ).toBeVisible();
+    let advisor;
+    await expect
+      .poll(
+        async () => {
+          for (const page of electronApp.windows()) {
+            if (!page.url().includes('app-advisor')) continue;
+            if (
+              await page.getByTestId('app-advisor-workspace-surface').count()
+            ) {
+              advisor = page;
+              return true;
+            }
+          }
+          return false;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
     await expect(
       advisor.getByTestId('app-advisor-workspace-loading'),
     ).toHaveCount(0, { timeout: 30_000 });
+    // The standard entry point is a floating native view. Callers of this
+    // helper exercise the full workspace, so expand that same page first.
+    const floating = advisor.getByTestId('app-advisor-floating');
+    await expect(floating).toBeVisible();
+    await floating.getByRole('button', { name: 'Open full window' }).click();
+    // Full layout mounts navigation even when its saved state is collapsed.
+    await expect(advisor.getByTestId('app-advisor-nav')).toBeAttached();
     return advisor;
   }
 
@@ -706,74 +805,6 @@ export class CanopyAppDriver {
       .filter({ has: this.window.getByText(name, { exact: true }) });
   }
 
-  /**
-   * Getting Started on Home. The sidebar card is absent while Home shows the
-   * full card, so specs that step the queue on Home use these controls.
-   */
-  homeChecklistRow(entryId) {
-    return this.window.getByTestId(`home-onboarding-suggestion-${entryId}`);
-  }
-
-  /**
-   * The row's forward arrow. Steps that relabel it Next (tool examples, and
-   * agents or tools once connected) give it their own test id, which the
-   * sidebar card never did, so match that arrow too.
-   */
-  homeChecklistForward(entryId) {
-    return this.window
-      .getByTestId(`home-onboarding-suggestion-dismiss-${entryId}`)
-      .or(
-        this.homeChecklistRow(entryId).locator('[data-checklist-next="true"]'),
-      );
-  }
-
-  homeChecklistBack(entryId) {
-    return this.window.getByTestId(
-      `home-onboarding-suggestion-dismiss-${entryId}-previous`,
-    );
-  }
-
-  /**
-   * Entry id of the first Home checklist row, once one is visible. It matches
-   * the sidebar card's entry only while a setup step leads: the sidebar skips
-   * `advanced-*` rows.
-   */
-  async currentHomeChecklistEntry() {
-    const row = this.window
-      .getByTestId('home-onboarding-suggestions')
-      .locator('li[data-step][data-testid^="home-onboarding-suggestion-"]')
-      .first();
-    await expect(row).toBeVisible();
-    const testId = await row.getAttribute('data-testid');
-    return testId.slice('home-onboarding-suggestion-'.length);
-  }
-
-  /**
-   * Steps past whichever Home checklist row leads, as the sidebar card's
-   * arrow did, and returns its entry id. The read and the click happen in
-   * one task: a settling probe (connected-tool examples) can put a new row
-   * ahead between a separate read and click, unmounting the row that was read.
-   */
-  async advanceHomeChecklist() {
-    const row = this.window
-      .getByTestId('home-onboarding-suggestions')
-      .locator('li[data-step][data-testid^="home-onboarding-suggestion-"]')
-      .first();
-    await expect(row).toBeVisible();
-    const { testId, clicked } = await row.evaluate((element) => {
-      const forward = element.querySelector(
-        'button[data-checklist-navigation="true"]:not([data-testid$="-previous"])',
-      );
-      const enabled = forward !== null && !forward.disabled;
-      if (enabled) forward.click();
-      return { testId: element.dataset.testid, clicked: enabled };
-    });
-    expect(clicked, `${testId} has no enabled forward arrow`).toBe(true);
-    const entryId = testId.slice('home-onboarding-suggestion-'.length);
-    await expect(this.homeChecklistRow(entryId)).toHaveCount(0);
-    return entryId;
-  }
-
   workspaceHeaderLabel(name) {
     return this.workspaceHeader(name).getByText(name, { exact: true });
   }
@@ -853,21 +884,22 @@ export class CanopyAppDriver {
     }
   }
 
-  /** Open the retained management deep link without depending on catalog rows. */
+  /** Exercise the compatibility entry point and wait for canonical Customize UI. */
   async openPluginsTab(tab) {
-    const section = tab === 'marketplace' ? 'marketplaces' : tab;
-    const managementView = this.window.getByTestId('plugins-management-view');
-    if (!(await managementView.isVisible().catch(() => false))) {
-      await this.window.evaluate((deepLinkSection) => {
-        window.dispatchEvent(
-          new CustomEvent('canopy:plugins-open-management', {
-            detail: { section: deepLinkSection },
-          }),
-        );
-      }, section);
-      await expect(managementView).toBeVisible();
-    }
-    await this.window.getByTestId(`plugins-management-nav-${section}`).click();
+    await this.window.evaluate((target) => {
+      const management = target === 'installed' || target === 'marketplaces';
+      window.dispatchEvent(
+        new CustomEvent(
+          management
+            ? 'canopy:plugins-open-management'
+            : 'canopy:plugins-open-tab',
+          {
+            detail: management ? { section: target } : { tab: target },
+          },
+        ),
+      );
+    }, tab);
+    await this.expectPluginsTab(tab);
   }
 
   async expectMainPage() {
@@ -936,11 +968,29 @@ export class CanopyAppDriver {
     ).toBeVisible();
   }
 
-  /** Assert the management view is open and showing the given section. */
+  /** Legacy type names normalize to Customize tabs and their Installed section. */
   async expectPluginsTab(tab) {
-    const section = tab === 'marketplace' ? 'marketplaces' : tab;
+    const targets = {
+      installed: 'all',
+      marketplace: 'sources',
+      marketplaces: 'sources',
+      skills: 'skill',
+      mcp: 'app',
+      collections: 'collection',
+      bundles: 'collection',
+    };
+    const target = targets[tab];
+    if (!target) throw new Error(`Unknown Customize tab: ${tab}`);
+    await this.expectPluginsPage();
     await expect(
-      this.window.getByTestId(`plugins-management-section-${section}`),
+      this.window.getByTestId(`plugins-type-tab-${target}`),
+    ).toHaveAttribute('aria-selected', 'true');
+    await expect(
+      this.window.getByTestId(
+        target === 'sources'
+          ? 'marketplace-sources'
+          : 'customize-section-installed',
+      ),
     ).toBeVisible();
   }
 

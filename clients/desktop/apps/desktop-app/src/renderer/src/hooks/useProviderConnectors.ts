@@ -15,6 +15,8 @@ interface UseProviderConnectorsReturn {
   results: ProviderConnectorListResult[] | undefined;
   /** True while a read is in flight, so callers can say so. */
   loading: boolean;
+  /** A failed read is unknown, never evidence that the account is unconnected. */
+  error: string | null;
   refresh: () => void;
 }
 
@@ -114,6 +116,7 @@ export function useProviderConnectors(
     ProviderConnectorListResult[] | undefined
   >(undefined);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   // A refresh that arrived while a read was outstanding. Dropping it means the
   // user asked to check again and nothing happened — and the window it lands
@@ -125,6 +128,7 @@ export function useProviderConnectors(
   const read = useCallback(
     (options: { allowCache?: boolean } = {}): void => {
       if (!enabled) return;
+      setError(null);
       // A recent result serves immediately, so a remounted picker is correct on
       // first paint instead of rendering unlinked and ticking itself later.
       // Never on focus: returning to the window is the "I just linked it" signal,
@@ -161,7 +165,10 @@ export function useProviderConnectors(
       setLoading(true);
       void readProviderConnectorsShared()
         .then(setResults)
-        .catch(() => {
+        .catch((err: unknown) => {
+          setError(
+            err instanceof Error ? err.message : 'Could not read connectors.',
+          );
           // A later failure keeps whatever was already read — a stale answer
           // beats an empty one. Only the *first* read has nothing to keep, and
           // leaving it empty is indistinguishable from "the catalog advertises
@@ -224,5 +231,5 @@ export function useProviderConnectors(
     read({ allowCache: false });
   }, [read]);
 
-  return { results, loading, refresh };
+  return { results, loading, refresh, error };
 }

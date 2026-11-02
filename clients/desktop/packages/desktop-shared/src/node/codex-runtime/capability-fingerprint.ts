@@ -68,7 +68,7 @@ function normalizeCapabilityValue(
   }
   if (typeof value !== 'object' || value === null) return value;
   const result: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+  for (const key of Object.keys(value).sort()) {
     const child = (value as Record<string, unknown>)[key];
     const childIsMcpServer =
       typeof child === 'object' &&

@@ -1,3 +1,8 @@
+import { listAdvertisedProviderConnectors } from '../mcp/provider-connectors';
+import {
+  McpConfigNotFoundError,
+  McpConfigStateError,
+} from '../mcp/config-repository-format';
 import {
   projectPortalMcpStatus,
   isPortalMcpTestConnectionResult,
@@ -17,6 +22,7 @@ import {
 import { skillResourceContextEnabled } from '../skills/resource-lanes';
 import {
   assertStoredSkillContext,
+  annotateSharedSkillInstalls,
   filterPersonalStoredSkills,
   filterStoredSkillContexts,
 } from '../skills/skill-install-context';
@@ -30,6 +36,8 @@ import type {
   PortalCatalogMarkdownContent,
   PortalCollectionsGetResult,
   PortalCollectionsListResult,
+  PortalMarketplacePluginMcpServer,
+  PortalMarketplacePluginSkill,
   PortalMarketplacePluginRow,
   PortalMarketplaceProviderStatusRow,
   PortalMarketplaceRow,
@@ -100,6 +108,10 @@ import { loadSkills } from '../skills/skill-service';
 import { loadMarketplaces } from '../plugins/plugin-service';
 import { getMcpServersIndexFilePath } from '../lib/paths';
 import { isErrnoException } from '../lib/type-guards';
+import { offeredPluginHarnesses } from '@canopy/plugin-interop/harness-support';
+import { isCursorHarnessEnabled } from '../cursor/feature-flag';
+import { isCopilotHarnessEnabled } from '../copilot/feature-flag';
+import { isOpenCodeHarnessEnabled } from '../opencode/feature-flag';
 import {
   preserveOrganizationPublicLink,
   requirePortalShareAccountId,
@@ -404,6 +416,50 @@ function toPluginRow(
     // The desktop decides shareability (CAN-2829) so the browser shows the
     // same Share affordances the desktop Marketplace shows.
     ...shareFields(plugin, marketplace, shareResolver),
+    // CAN-3653: provenance the browser needs to join a plugin to the MCP
+    // server it bundles and to name the plugin's publisher.
+    ...provenanceFields(plugin, installed),
+  };
+}
+
+/**
+ * Credential-free provenance for a plugin row: the sanitized http(s) package
+ * source URL (never a `file:` host path), the bundled MCP servers, and the
+ * bundled skills. Command servers cross without `command`, `args`, or env; an
+ * http server whose URL does not sanitize is dropped. Skills cross as name and
+ * description only, never their `path`, and only for an installed plugin: the
+ * browser lists them under the installed plugin alone (CAN-4844).
+ */
+function provenanceFields(
+  plugin: PluginInfo,
+  installed: boolean,
+): Pick<
+  PortalMarketplacePluginRow,
+  'externalSourceUrl' | 'mcpServers' | 'skills'
+> {
+  const sourceUrl = sanitizePortalUrl(plugin.externalSource?.url);
+  const externalSourceUrl =
+    sourceUrl !== undefined && /^https?:\/\//i.test(sourceUrl)
+      ? sourceUrl
+      : undefined;
+  const mcpServers: PortalMarketplacePluginMcpServer[] = [];
+  for (const server of plugin.details?.mcpServers ?? []) {
+    if (server.type === 'command') {
+      mcpServers.push({ name: server.name, type: 'command' });
+      continue;
+    }
+    const url = sanitizePortalUrl(server.url);
+    if (url !== undefined) {
+      mcpServers.push({ name: server.name, type: 'http', url });
+    }
+  }
+  const skills: PortalMarketplacePluginSkill[] = (
+    installed ? (plugin.details?.skills ?? []) : []
+  ).map((skill) => ({ name: skill.name, description: skill.description }));
+  return {
+    ...(externalSourceUrl !== undefined ? { externalSourceUrl } : {}),
+    ...(mcpServers.length > 0 ? { mcpServers } : {}),
+    ...(skills.length > 0 ? { skills } : {}),
   };
 }
 
@@ -702,6 +758,25 @@ export async function getPortalPluginDetail(
     plugin: toPluginRow(plugin, marketplace, shareResolver),
     details: sanitizePluginDetails(details),
     readme,
+    // The Portal lists the same harness rows as this desktop (CAN-4842).
+    harnesses: offeredPluginHarnesses({
+      cursor: isCursorHarnessEnabled(),
+      copilot: isCopilotHarnessEnabled(),
+      opencode: isOpenCodeHarnessEnabled(),
+    }),
+    // Per-provider install state and the Codex compatibility setting, read
+    // the way the desktop plugin page reads them.
+    ...(plugin.globalInstallStatus
+      ? {
+          harnessInstallation: {
+            claude: plugin.globalInstallStatus.claude?.installed ?? false,
+            codex: plugin.globalInstallStatus.codex?.installed ?? false,
+          },
+        }
+      : {}),
+    ...(plugin.codexCompatDisabled === true
+      ? { codexCompatDisabled: true }
+      : {}),
     ...(homepage !== undefined ? { homepage } : {}),
   };
   // Deterministic degrade ladder: shrink the README body (by SERIALIZED
@@ -861,6 +936,7 @@ function canSharePortalSkill(skill: {
 
 async function buildPortalSkillsList(
   filter: typeof filterStoredSkillContexts,
+  includeInstallOrigin = false,
 ): Promise<PortalSkillsListResult> {
   const { loadSkills: loadInstalledSkills } =
     await import('../skills/skill-service');
@@ -869,6 +945,10 @@ async function buildPortalSkillsList(
   if (!result.success || !result.data) {
     throw new Error(result.error || 'Failed to load installed skills.');
   }
+  // Paired-device display may read receipt names. Personal catalog sync uses
+  // this builder too and must never annotate or publish those local snapshots.
+  if (includeInstallOrigin)
+    result.data = await annotateSharedSkillInstalls(result.data);
   const identityCounts = new Map<string, number>();
   for (const skill of result.data) {
     const key = JSON.stringify([skill.sourceId, skill.name]);
@@ -905,6 +985,9 @@ async function buildPortalSkillsList(
         updateAvailable: skill.updateAvailable,
         ...(skill.builtIn !== undefined ? { builtIn: skill.builtIn } : {}),
         ...(skill.custom !== undefined ? { custom: skill.custom } : {}),
+        ...(includeInstallOrigin && skill.installedFromShare
+          ? { installedFromShare: skill.installedFromShare }
+          : {}),
       };
     }),
     (rows, truncated) => ({
@@ -915,7 +998,7 @@ async function buildPortalSkillsList(
 }
 
 export async function listPortalSkills(): Promise<PortalSkillsListResult> {
-  return buildPortalSkillsList(filterStoredSkillContexts);
+  return buildPortalSkillsList(filterStoredSkillContexts, true);
 }
 
 export async function listPersonalPortalSkills(): Promise<PortalSkillsListResult> {
@@ -1004,7 +1087,8 @@ function selectPortalMcpStatus(
 
 /**
  * Build `portal.mcp.list_servers` from the persisted device index and the
- * existing account inventory cache. Never triggers MCP health checks or OAuth.
+ * existing account inventory cache, plus the existing advertised provider read.
+ * Optional provider discovery gets only a short wait; it never starts OAuth.
  *
  * Like {@link listPortalSkills}, a read or parse failure FAILS the command
  * (it must not collapse to an empty list): the web client renders a genuinely
@@ -1116,6 +1200,18 @@ export async function listPortalMcpServers(): Promise<PortalMcpListServersResult
         : {}),
     });
   }
+  // Reuse the desktop's provider read without holding cached inventory behind
+  // its CLI health checks. Only completed link facts cross the boundary;
+  // CLI diagnostics, install URLs and host paths stay local.
+  const providerConnectors = (await readPortalProviderConnectors()).map(
+    ({ provider, connectors }) => ({
+      provider,
+      connectors: connectors.map(({ displayName, connected }) => ({
+        displayName,
+        connected,
+      })),
+    }),
+  );
   const statuses = servers.length ? await readPortalMcpStatuses() : [];
   const shareResolver = servers.some(
     (server) => server.curatedKey !== undefined,
@@ -1136,9 +1232,37 @@ export async function listPortalMcpServers(): Promise<PortalMcpListServersResult
     })),
     (rows, truncated) => ({
       servers: rows,
+      ...(providerConnectors.length ? { providerConnectors } : {}),
       ...(truncated ? { truncated: true } : {}),
     }),
   );
+}
+
+// A timed-out Portal read must not start another CLI discovery while the first
+// is still pending. Keep only that request, not a stale provider-status cache.
+let portalProviderDiscovery:
+  | ReturnType<typeof listAdvertisedProviderConnectors>
+  | undefined;
+
+async function readPortalProviderConnectors(): Promise<
+  Awaited<ReturnType<typeof listAdvertisedProviderConnectors>>
+> {
+  const request = (portalProviderDiscovery ??=
+    listAdvertisedProviderConnectors()
+      .catch(() => [])
+      .finally(() => {
+        portalProviderDiscovery = undefined;
+      }));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<[]>((resolve): void => {
+    timer = setTimeout((): void => resolve([]), 250);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Failed inventory reads cannot establish standalone MCP status for a curated entry. */
@@ -2148,10 +2272,11 @@ export async function startPortalMarketplacesRefresh(): Promise<void> {
  * `portal.mcp.get_server`.
  *
  * Deliberately NARROW: the browser names ids and a boolean only. The desktop
- * re-reads its own stored `McpServerData` and saves through `saveMcpServer` —
- * the EXACT validation/save path the renderer's save uses (including the
- * trailing portal MCP projection refresh) — because the browser's copy of the
- * server is redacted and must never round-trip back.
+ * re-reads its own stored `McpServerData` inside the queued
+ * `setInstalledMcpConfigEnabled`, which saves through the renderer's
+ * validation/save path (including the trailing portal MCP projection
+ * refresh), because the browser's copy of the server is redacted and must
+ * never round-trip back.
  */
 export async function setPortalMcpConfigEnabled(
   serverId: string,
@@ -2167,28 +2292,29 @@ export async function setPortalMcpConfigEnabled(
       'Account MCP servers are managed in your account.',
     );
   if (isCustomAccountMcpServerKey(serverId)) throw accountManaged();
-  const { readServer, setInstalledMcpConfigEnabled } =
-    await import('../ipc/mcp-servers');
-  let file;
+  // Same fallback as `getPortalMcpServer`: a curated key with no device
+  // file is served from the account, so it is refused the same way.
+  const missingServer = async (): Promise<Error> =>
+    (await findPortalAccountMcpConnections(serverId)).length > 0
+      ? accountManaged()
+      : codedError('not_found', `MCP server "${serverId}" not found.`);
+  // Device ids only; the queued setter decides a no-op from current state.
+  if (!/^[a-f0-9-]+$/.test(serverId)) throw await missingServer();
+  const { setInstalledMcpConfigEnabled } = await import('../ipc/mcp-servers');
   try {
-    file = await readServer(serverId);
-  } catch {
-    // Same fallback as `getPortalMcpServer`: a curated key with no device
-    // file is served from the account, so it is refused the same way.
-    if ((await findPortalAccountMcpConnections(serverId)).length > 0)
-      throw accountManaged();
-    throw codedError('not_found', `MCP server "${serverId}" not found.`);
-  }
-  const { configs } = file.server;
-  const target = configs.find((config) => config.id === configId);
-  if (!target) {
-    throw codedError(
-      'not_found',
-      `Config "${configId}" not found on MCP server "${serverId}".`,
-    );
-  }
-  if (target.enabled !== enabled) {
     await setInstalledMcpConfigEnabled(serverId, configId, enabled);
+  } catch (error) {
+    if (error instanceof McpConfigNotFoundError) {
+      throw error.target === 'server'
+        ? await missingServer()
+        : codedError(
+            'not_found',
+            `Config "${configId}" not found on MCP server "${serverId}".`,
+          );
+    }
+    if (error instanceof McpConfigStateError)
+      throw codedError('execution_failed', error.message);
+    throw error;
   }
   const detail = await getPortalMcpServer(serverId);
   return {

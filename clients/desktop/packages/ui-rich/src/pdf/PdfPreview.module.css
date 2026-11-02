@@ -23,17 +23,12 @@
   font-size: 0.75rem;
 }
 
-.toolbar button,
 .toolbar input {
   border: 0.5px solid var(--line-primary);
   border-radius: 0.375rem;
   background: transparent;
   padding: 0.2rem 0.45rem;
   color: inherit;
-}
-
-.toolbar button:disabled {
-  opacity: 0.45;
 }
 
 .fileName {
@@ -148,8 +143,10 @@
   user-select: none;
 }
 
-.textLayer ::selection {
-  background: var(--bg-accent-muted);
+@media (forced-colors: none) {
+  .textLayer ::selection {
+    background: var(--bg-selection-paper);
+  }
 }
 
 .textLayer br::selection {

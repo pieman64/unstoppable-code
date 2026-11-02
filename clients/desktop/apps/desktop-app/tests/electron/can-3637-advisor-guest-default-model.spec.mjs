@@ -303,7 +303,10 @@ test('Advisor picker sign-in recovery cancels without a model request or selecti
     await expect(advisor.getByTestId('model-recovery-get-credits')).toHaveCount(
       0,
     );
-    await advisor.getByTestId('model-recovery-cancel').click();
+    await advisor
+      .getByTestId('model-recovery-modal')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click();
     await expect(picker).toHaveText(before);
     expect(await calls(electronApp)).toEqual(beforeCalls);
     expect((await activity(marker)).llmRequests).toBe(beforeRequests);

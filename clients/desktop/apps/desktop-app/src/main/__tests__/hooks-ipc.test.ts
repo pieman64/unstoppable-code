@@ -1,6 +1,8 @@
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import {
   IPC_CHANNELS,
   type HookRunRequest,
+  type HookSourceInfoRequest,
   type SaveProjectHooksRequest,
   type SaveWorkspaceHooksRequest,
   type SaveWorkspaceRepoHooksRequest,
@@ -8,6 +10,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { registerHookHandlers } from '../ipc/hooks';
 import { registerIpcHandler } from '../ipc/register';
+import { getHookSourceInfoThroughCore } from '../canopy-runtime/hook-source-dispatch';
 import {
   runHookCommand,
   saveProjectHooksFromService,
@@ -17,9 +20,11 @@ import {
 } from '../services/hooks-service';
 
 jest.mock('../ipc/register', () => ({ registerIpcHandler: jest.fn() }));
+jest.mock('../canopy-runtime/hook-source-dispatch', () => ({
+  getHookSourceInfoThroughCore: jest.fn(),
+}));
 jest.mock('../services/hooks-service', () => ({
   cancelHook: jest.fn(),
-  getHookSourceInfo: jest.fn(),
   loadWorktreeHookRuns: jest.fn(),
   runHookCommand: jest.fn(),
   saveProjectHooksFromService: jest.fn(),
@@ -29,6 +34,18 @@ jest.mock('../services/hooks-service', () => ({
 }));
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+const mockedGetHookSourceInfo = jest.mocked(getHookSourceInfoThroughCore);
+const ipcCaller: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: 'local-desktop',
+  interfaceKind: 'desktop',
+  grants: ['core.workspace.read'],
+};
+const runtime = {
+  dispatcher: { query: jest.fn() },
+  resolveCaller: jest.fn(() => ipcCaller),
+};
 const mockedSetWorktreePausedHookKeys = jest.mocked(setWorktreePausedHookKeys);
 const mockedRunHookCommand = jest.mocked(runHookCommand);
 const mockedSaveProjectHooks = jest.mocked(saveProjectHooksFromService);
@@ -56,7 +73,7 @@ describe('hooks IPC', () => {
   });
 
   it('rejects hook configuration writes and execution for the recipient scope', async () => {
-    registerHookHandlers(() => null);
+    registerHookHandlers(() => null, runtime);
     const projectSave = registeredHandler(IPC_CHANNELS.projectSaveHooks);
     const workspaceSave = registeredHandler(IPC_CHANNELS.workspaceSaveHooks);
     const workspaceRepoSave = registeredHandler(
@@ -101,7 +118,7 @@ describe('hooks IPC', () => {
   });
 
   it('delegates the existing renderer request to the shared hooks service', async () => {
-    registerHookHandlers(() => null);
+    registerHookHandlers(() => null, runtime);
     const registration = mockedRegisterIpcHandler.mock.calls.find(
       ([channel]) => channel === IPC_CHANNELS.worktreeSetPausedHooks,
     );
@@ -119,5 +136,33 @@ describe('hooks IPC', () => {
     await handler({}, request);
 
     expect(mockedSetWorktreePausedHookKeys).toHaveBeenCalledWith(request);
+  });
+
+  it('serves hook:source-info through core.initiatedWork.source.get with the sender caller', async () => {
+    registerHookHandlers(() => null, runtime);
+    const handler = registeredHandler(IPC_CHANNELS.hookSourceInfo);
+    const request: HookSourceInfoRequest = {
+      target: 'workspace-repo',
+      workspaceId: 'ws-1',
+      repoId: 'repo-a',
+      worktreeId: 'wt-1',
+      triggerName: 'pr:merged',
+    };
+    const response = {
+      triggerName: 'pr:merged',
+      triggerDisplayName: 'PR Merged',
+      effectiveActions: null,
+      layers: [],
+    };
+    mockedGetHookSourceInfo.mockResolvedValueOnce(response);
+    const event = { sender: { id: 1 } };
+
+    await expect(handler(event, request)).resolves.toBe(response);
+    expect(runtime.resolveCaller).toHaveBeenCalledWith(event);
+    expect(mockedGetHookSourceInfo).toHaveBeenCalledWith(
+      runtime.dispatcher,
+      ipcCaller,
+      request,
+    );
   });
 });

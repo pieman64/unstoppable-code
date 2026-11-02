@@ -43,6 +43,7 @@ import {
 } from './pipeline-shell-options';
 import { brand } from '@/lib/brand';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 interface PipelineSettingsPanelProps {
@@ -109,7 +110,7 @@ const TRIGGER_OPTIONS: TriggerOption[] = [
   {
     type: 'plan_ready',
     label: 'Plan ready',
-    hint: 'Triggered when an agent plan is ready to run through a pipeline',
+    hint: 'Triggered when an agent plan is ready to run through a workflow',
   },
   {
     type: 'task_ready',
@@ -191,17 +192,18 @@ export function PipelineSettingsPanel({
   return (
     <div className="h-full flex flex-col bg-card">
       <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
-        <h2 className="text-s font-semibold fg-primary">Pipeline settings</h2>
+        <h2 className="text-s font-semibold fg-primary">Workflow settings</h2>
         {onClose && (
           <Tooltip label="Close settings">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={onClose}
               aria-label="Close settings"
-              className="p-1.5 fg-secondary hover:fg-primary transition-colors rounded-md hover:bg-secondary"
             >
               <AppCatalogCloseIcon width="14" height="14" />
-            </button>
+            </Button>
           </Tooltip>
         )}
       </div>
@@ -216,7 +218,7 @@ export function PipelineSettingsPanel({
                 <TextField
                   value={pipeline.name}
                   onChange={(e) => onUpdateField('name', e.target.value)}
-                  placeholder="Pipeline name"
+                  placeholder="Workflow name"
                   disabled={readonly}
                 />
               </FormField>
@@ -232,7 +234,7 @@ export function PipelineSettingsPanel({
                 <TextAreaField
                   value={pipeline.description || ''}
                   onChange={(e) => onUpdateField('description', e.target.value)}
-                  placeholder="Describe what this pipeline does…"
+                  placeholder="Describe what this workflow does…"
                   rows={3}
                   disabled={readonly}
                 />
@@ -295,7 +297,7 @@ export function PipelineSettingsPanel({
               Execution scope
             </h3>
             <p className="text-xs fg-secondary mb-4">
-              Controls where this pipeline can be shown and run.
+              Controls where this workflow can be shown and run.
             </p>
             <div className="space-y-2">
               {EXECUTION_SCOPE_OPTIONS.map((option) => {
@@ -342,7 +344,7 @@ export function PipelineSettingsPanel({
                 Trigger inputs
               </h3>
               <p className="text-xs fg-secondary mb-4">
-                Inputs are collected from the user when the pipeline is
+                Inputs are collected from the user when the workflow is
                 triggered and made available to steps as{' '}
                 <code>{brand.internalName}.inputs.&lt;name&gt;</code>.
               </p>
@@ -383,7 +385,7 @@ export function PipelineSettingsPanel({
             </h3>
             <p className="text-xs fg-secondary mb-4">
               Named model choices that agent steps can use via{' '}
-              <code>with.model</code>. Aliases can provide pipeline defaults,
+              <code>with.model</code>. Aliases can provide workflow defaults,
               point to a local agent, or require configuration at dispatch.
             </p>
             <ModelAliasesEditor

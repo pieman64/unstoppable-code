@@ -44,7 +44,7 @@ export function PipelineModelAliasesSection({
     >
       <label className="text-xs font-medium fg-secondary ">Model aliases</label>
       <p className="text-xs fg-secondary">
-        Choose the model alias values agent steps will use. Pipeline defaults
+        Choose the model alias values agent steps will use. Workflow defaults
         are used as the baseline when available.
       </p>
 

@@ -162,7 +162,7 @@ describe('CostActivityPreview', () => {
         '[data-testid="cost-activity-scroll-cap"]',
       ),
     ).toBeNull();
-    expect(renderer.container.textContent).not.toContain('Pipeline runs');
+    expect(renderer.container.textContent).not.toContain('Workflow runs');
 
     renderer.render(
       <CostActivityPreview
@@ -185,6 +185,6 @@ describe('CostActivityPreview', () => {
     expect(byTestId(renderer.container, 'cost-unattached-row').tagName).toBe(
       'DIV',
     );
-    expect(renderer.container.textContent).not.toContain('Pipeline runs');
+    expect(renderer.container.textContent).not.toContain('Workflow runs');
   });
 });

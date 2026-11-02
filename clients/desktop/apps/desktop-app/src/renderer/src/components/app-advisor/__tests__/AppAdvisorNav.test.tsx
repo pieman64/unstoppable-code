@@ -7,6 +7,7 @@ import type {
   ArchivedContainerSummary,
   CoworkWorkEntryMeta,
 } from '@canopy/desktop-shared/types';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
   AppAdvisorNav,
   isAppAdvisorSettingsSavedDetail,
@@ -14,6 +15,10 @@ import {
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useSidebarItemGroupsStore } from '@/stores/sidebarItemGroupsStore';
+import {
+  resetDelegationActivityStoreForTests,
+  useDelegationActivityStore,
+} from '@/stores/delegationActivityStore';
 import { setNativeInputValue } from '@/test-utils/dom';
 
 declare global {
@@ -35,7 +40,7 @@ function entry(id: string, title: string): CoworkWorkEntryMeta {
     createdAt: '2026-01-01T00:00:00.000Z',
     providerType: 'claude',
     chatCount: 1,
-  } as CoworkWorkEntryMeta;
+  };
 }
 
 function containerSummary(id: string, name: string): ArchivedContainerSummary {
@@ -127,7 +132,9 @@ describe('AppAdvisorNav', () => {
         archivedContainers: { list: archivedListMock },
       },
     });
+    // The surface scopes the store to App Advisor before the nav mounts.
     useStandaloneChatStore.setState({
+      activeChatProjectId: APP_ADVISOR_PROJECT_ID,
       workEntries: [entry('entry-1', 'First'), entry('entry-2', 'Second')],
       activeWorkEntryId: 'entry-1',
       archiveOverlayChatId: null,
@@ -238,11 +245,22 @@ describe('AppAdvisorNav', () => {
       setNativeInputValue(input, 'Renamed');
     });
     act(() => {
-      input.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
-      );
+      input.form?.requestSubmit();
     });
     expect(renameWorkEntryMock).toHaveBeenCalledWith('entry-1', 'Renamed');
+    expect(
+      document.querySelector(
+        '[data-testid="app-advisor-nav-entry-entry-1-rename-input"]',
+      ),
+    ).toBeNull();
+  });
+
+  it('renders each entry as the shared Work Entry row', async () => {
+    await render();
+    expect(byTestId('app-advisor-nav-entry-entry-1').getAttribute('role')).toBe(
+      'button',
+    );
+    expect(byTestId('app-advisor-nav-entry-entry-1-leading-slot')).toBeTruthy();
   });
 
   it('offers Pin to top as the first row-menu item and pins in App Advisor', async () => {
@@ -280,13 +298,13 @@ describe('AppAdvisorNav', () => {
     );
     expect(rowIds).toEqual(['entry-2', 'entry-1', 'entry-3']);
     expect(
-      byTestId('app-advisor-nav-entry-entry-2-pinned').getAttribute(
-        'aria-label',
-      ),
+      byTestId('app-advisor-nav-entry-entry-2')
+        .querySelector('[data-testid="worktree-row-pinned-badge"]')
+        ?.getAttribute('aria-label'),
     ).toBe('Pinned');
     expect(
-      document.querySelector(
-        '[data-testid="app-advisor-nav-entry-entry-1-pinned"]',
+      byTestId('app-advisor-nav-entry-entry-1').querySelector(
+        '[data-testid="worktree-row-pinned-badge"]',
       ),
     ).toBeNull();
 
@@ -301,16 +319,15 @@ describe('AppAdvisorNav', () => {
     );
   });
 
-  it('deletes entries only after the two-step confirm and keeps the container unlocked', async () => {
+  it('deletes entries only after the confirm and keeps the container unlocked', async () => {
     await render();
     click(byTestId('app-advisor-nav-entry-entry-2-menu'));
     click(byTestId('app-advisor-nav-entry-entry-2-delete'));
     expect(deleteWorkEntryMock).not.toHaveBeenCalled();
-    const confirm = Array.from(
-      byTestId('app-advisor-nav-entry-entry-2').querySelectorAll('button'),
-    ).find((button) => button.textContent?.trim() === 'Delete?');
-    if (!confirm) throw new Error('Inline delete confirm not found');
-    click(confirm);
+    expect(
+      byTestId('app-advisor-nav-entry-entry-2-delete-dialog').textContent,
+    ).toContain('Delete “Second”?');
+    click(byTestId('app-advisor-nav-entry-entry-2-confirm-delete'));
     expect(deleteWorkEntryMock).toHaveBeenCalledWith('entry-2', undefined, {
       lockAfterArchive: false,
     });
@@ -320,11 +337,8 @@ describe('AppAdvisorNav', () => {
     await render();
     click(byTestId('app-advisor-nav-entry-entry-2-menu'));
     click(byTestId('app-advisor-nav-entry-entry-2-archive'));
-    const confirm = Array.from(
-      byTestId('app-advisor-nav-entry-entry-2').querySelectorAll('button'),
-    ).find((button) => button.textContent?.trim() === 'Archive?');
-    if (!confirm) throw new Error('Inline archive confirm not found');
-    click(confirm);
+    expect(deleteWorkEntryMock).not.toHaveBeenCalled();
+    click(byTestId('app-advisor-nav-entry-entry-2-confirm-delete'));
     expect(deleteWorkEntryMock).toHaveBeenCalledWith('entry-2', undefined, {
       lockAfterArchive: true,
     });
@@ -462,6 +476,31 @@ describe('AppAdvisorNav', () => {
     });
     expect(dispatchBrowserViewBoundsInvalidated).toHaveBeenCalledTimes(1);
   });
+  it('shows an entry whose chat has only background work with the background spinner', async () => {
+    useDelegationActivityStore.getState().applyActivity({
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: 'entry-1',
+      chatId: 'chat-1',
+      live: 1,
+      queued: 1,
+    });
+    try {
+      await render();
+      expect(
+        byTestId('app-advisor-nav-entry-entry-1-background').getAttribute(
+          'aria-label',
+        ),
+      ).toBe('2 background tasks running');
+      expect(
+        document.querySelector(
+          '[data-testid="app-advisor-nav-entry-entry-1-thinking"]',
+        ),
+      ).toBeNull();
+    } finally {
+      resetDelegationActivityStoreForTests();
+    }
+  });
+
   it('renders the Advisor group and retains its selected member when collapsed', async () => {
     useSidebarItemGroupsStore.setState({
       byScope: {
@@ -484,5 +523,164 @@ describe('AppAdvisorNav', () => {
     expect(
       document.querySelector('[data-testid="app-advisor-nav-entry-entry-2"]'),
     ).toBeNull();
+  });
+
+  describe('bulk selection (CAN-3975)', () => {
+    async function flush(): Promise<void> {
+      for (let index = 0; index < 4; index += 1) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+    }
+
+    /** Cmd-click on macOS, Ctrl-click elsewhere: both set, either platform. */
+    function toggle(entryId: string): void {
+      act(() => {
+        byTestId(`app-advisor-nav-entry-${entryId}`).dispatchEvent(
+          new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            metaKey: true,
+            ctrlKey: true,
+          }),
+        );
+      });
+    }
+
+    function selected(entryId: string): boolean {
+      return (
+        document
+          .querySelector(`[data-testid="app-advisor-nav-entry-${entryId}"]`)
+          ?.getAttribute('data-multiselected') === 'true'
+      );
+    }
+
+    async function bulkArchive(entryId: string): Promise<void> {
+      act(() => {
+        byTestId(`app-advisor-nav-entry-${entryId}`).dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+        );
+      });
+      click(byTestId(`app-advisor-nav-entry-${entryId}-bulk-archive`));
+      await flush();
+    }
+
+    interface Deferred {
+      readonly promise: Promise<void>;
+      readonly resolve: () => void;
+    }
+
+    function deferred(): Deferred {
+      let resolve: () => void = () => undefined;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    }
+
+    it('Cmd-click selects two entries and the selection menu archives both, the open entry last', async () => {
+      await render();
+      toggle('entry-1');
+      toggle('entry-2');
+      expect(selected('entry-1')).toBe(true);
+      expect(selected('entry-2')).toBe(true);
+      await bulkArchive('entry-1');
+      expect(
+        byTestId('app-advisor-batch-removal-dialog').textContent,
+      ).toContain('Archive 2 chats?');
+      click(byTestId('app-advisor-batch-removal-dialog-confirm'));
+      await flush();
+      // entry-1 is the open entry, so it goes last.
+      expect(deleteWorkEntryMock.mock.calls).toEqual([
+        ['entry-2', APP_ADVISOR_PROJECT_ID, { lockAfterArchive: true }],
+        ['entry-1', APP_ADVISOR_PROJECT_ID, { lockAfterArchive: true }],
+      ]);
+    });
+
+    it('a batch keeps removing App Advisor entries after the active project changes', async () => {
+      const pending = [deferred(), deferred()];
+      deleteWorkEntryMock.mockImplementation(
+        () => pending[deleteWorkEntryMock.mock.calls.length - 1]?.promise,
+      );
+      await render();
+      toggle('entry-1');
+      toggle('entry-2');
+      await bulkArchive('entry-2');
+      click(byTestId('app-advisor-batch-removal-dialog-confirm'));
+      await flush();
+      expect(deleteWorkEntryMock).toHaveBeenCalledTimes(1);
+      // Another project becomes active mid-batch; App Advisor's entries move
+      // to the per-project cache.
+      const entries = useStandaloneChatStore.getState().workEntries;
+      act(() => {
+        useStandaloneChatStore.setState({
+          activeChatProjectId: 'other-project',
+          sidebarEntriesByProject: { [APP_ADVISOR_PROJECT_ID]: entries },
+        });
+      });
+      await act(async () => {
+        pending[0]?.resolve();
+        await Promise.resolve();
+      });
+      await flush();
+      expect(deleteWorkEntryMock.mock.calls).toEqual([
+        ['entry-2', APP_ADVISOR_PROJECT_ID, { lockAfterArchive: true }],
+        ['entry-1', APP_ADVISOR_PROJECT_ID, { lockAfterArchive: true }],
+      ]);
+      await act(async () => {
+        pending[1]?.resolve();
+        await Promise.resolve();
+      });
+    });
+
+    it('a plain click opens the entry and ends the selection', async () => {
+      await render();
+      toggle('entry-1');
+      click(byTestId('app-advisor-nav-entry-entry-2'));
+      expect(selected('entry-1')).toBe(false);
+      expect(selectWorkEntryMock).toHaveBeenCalledWith('entry-2');
+    });
+
+    it('runs a confirmed batch in the background, through a collapse, to the end', async () => {
+      const pending = [deferred(), deferred()];
+      deleteWorkEntryMock.mockImplementation(
+        () => pending[deleteWorkEntryMock.mock.calls.length - 1]?.promise,
+      );
+      await render();
+      toggle('entry-1');
+      toggle('entry-2');
+      await bulkArchive('entry-2');
+      click(byTestId('app-advisor-batch-removal-dialog-confirm'));
+      await flush();
+      // The confirm closes at once; the nav shows the queue's progress.
+      expect(
+        document.body.querySelector(
+          '[data-testid="app-advisor-batch-removal-dialog"]',
+        ),
+      ).toBeNull();
+      expect(byTestId('app-advisor-nav-footer-callout')?.textContent).toContain(
+        'Archiving chats',
+      );
+      expect(deleteWorkEntryMock).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        pending[0]?.resolve();
+        await Promise.resolve();
+      });
+      await render(true);
+      await flush();
+      expect(deleteWorkEntryMock).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        pending[1]?.resolve();
+        await Promise.resolve();
+      });
+      await flush();
+      await render();
+      expect(
+        document.body.querySelector(
+          '[data-testid="app-advisor-nav-footer-callout"]',
+        ),
+      ).toBeNull();
+    });
   });
 });

@@ -9,7 +9,6 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { PreferencesFile } from '@canopy/desktop-shared/types';
-import * as sharedTypes from '@canopy/desktop-shared/types';
 import {
   DEFAULT_SIDEBAR_NAV_LAYOUT,
   LEGACY_DEFAULT_SIDEBAR_NAV_LAYOUT,
@@ -62,6 +61,7 @@ import {
   migrateSidebarRemoteControlVisible,
 } from '../lib/preferences-migrations';
 import {
+  flushPreferencesWrites,
   normalizePreferences,
   readPreferencesFile,
   readPreferencesFileForRenderer,
@@ -87,9 +87,7 @@ async function writeFixture(filePath: string, content: string): Promise<void> {
   await writeFile(filePath, content, 'utf8');
 }
 
-function preferencesFile(
-  preferences: Partial<PreferencesFile['preferences']>,
-): string {
+function preferencesFile(preferences: object): string {
   return `${JSON.stringify({ version: 1, preferences }, null, 2)}\n`;
 }
 
@@ -114,6 +112,7 @@ describe('preference migrations', () => {
   });
 
   afterEach(async () => {
+    await flushPreferencesWrites();
     await rm(tempDir, { recursive: true, force: true });
     mockGetCanopyDataDir.mockReset();
   });
@@ -184,27 +183,14 @@ describe('preference migrations', () => {
       ).toBe(later);
     });
 
-    it('preserves retired notification history after the live id is removed', () => {
-      const liveIds = sharedTypes.HOME_ONBOARDING_SUGGESTION_ENTRY_IDS.filter(
-        (id) => id !== 'notifications',
-      );
-      const replacement = jest.replaceProperty(
-        sharedTypes,
-        'HOME_ONBOARDING_SUGGESTION_ENTRY_IDS',
-        liveIds,
-      );
-      try {
-        expect(
-          normalizePreferences({
-            homeOnboardingSuggestions: {
-              startedAt: earlier,
-              entries: { notifications: { dismissedAt: earlier } },
-            },
-          }).homeOnboardingSuggestions?.entries.notifications,
-        ).toEqual({ dismissedAt: earlier });
-      } finally {
-        replacement.restore();
-      }
+    it('converts retired notification history without retaining checklist progress', () => {
+      const normalized = normalizePreferences({
+        homeOnboardingSuggestions: {
+          entries: { notifications: { dismissedAt: earlier } },
+        },
+      });
+      expect(normalized.osNotificationOfferAnsweredAt).toBe(earlier);
+      expect(normalized.homeOnboardingSuggestions).toBeUndefined();
     });
 
     it('derives without writing and persists on an unrelated ordinary save', async () => {
@@ -253,7 +239,7 @@ describe('preference migrations', () => {
       ).toBe(earlier);
       expect(
         (await readPreferences(tempDir)).homeOnboardingSuggestions?.entries,
-      ).toEqual({});
+      ).toBeUndefined();
     });
 
     it('migrates already-enabled profiles durably on renderer load', async () => {
@@ -1476,6 +1462,29 @@ describe('preference migrations', () => {
       appAdvisor: 'full-access',
     });
     expect(migrated.approvalsUpgradeNoticeDismissed).toBe(true);
+    await expect(
+      readFile(join(tempDir, 'migrations.json'), 'utf8'),
+    ).resolves.toContain(
+      `"${APPROVAL_DEFAULTS_FULL_ACCESS_MIGRATION_KEY}": true`,
+    );
+  });
+
+  it('writes no preferences when the posture is already Full Access, and still records the migration', async () => {
+    const preferencesPath = join(tempDir, 'preferences.json');
+    const fixture = preferencesFile({
+      approvalDefaults: {
+        worktree: 'full-access',
+        cowork: 'full-access',
+        appAdvisor: 'full-access',
+      },
+    });
+    await writeFixture(preferencesPath, fixture);
+
+    await migrateApprovalDefaultsToFullAccess(true);
+
+    // A write would re-serialize the normalized file.
+    await expect(readFile(preferencesPath, 'utf8')).resolves.toBe(fixture);
+    await expectMissing(join(tempDir, 'preferences.last-good.json'));
     await expect(
       readFile(join(tempDir, 'migrations.json'), 'utf8'),
     ).resolves.toContain(

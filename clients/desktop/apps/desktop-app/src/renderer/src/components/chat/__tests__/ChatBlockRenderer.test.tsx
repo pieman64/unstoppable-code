@@ -8,15 +8,22 @@ import {
   useDelegationTranscriptStore,
 } from '@/stores/delegationTranscriptStore';
 import { createRoot } from 'react-dom/client';
+import { CanopyClientProvider } from '@canopy/app-state';
+import { createFakeClient } from '@canopy/app-state/__tests__/fake-org-projects-client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type MarkdownToJsx from 'markdown-to-jsx';
+import type { PersistedAgentRouteSnapshot } from '@canopy/protocol/delegation';
 import type * as FilePathMentionIndexModule from '@/lib/filePathMentionIndex';
 import { TrashIcon } from '@canopy/ui-shared/icons';
-import { ChatLookProvider } from '@canopy/ui-shared/components';
+import {
+  ChatLookProvider,
+  preloadSmoothMarkdown,
+  SmoothStreamingProvider,
+} from '@canopy/ui-shared/components';
 import type { NativeAiCreditsAvailability } from '@canopy/desktop-shared/types';
 
 const mockMarkdownRender = jest.fn(
-  ({ children }: { children?: ReactNode }): JSX.Element => <>{children}</>,
+  ({ children }: { children?: string | null }): JSX.Element => <>{children}</>,
 );
 let mockUseRealMarkdownRenderer = false;
 
@@ -30,7 +37,7 @@ jest.mock('markdown-to-jsx', () => {
   return {
     __esModule: true,
     ...actual,
-    default: (props: { children?: ReactNode }): JSX.Element => {
+    default: (props: { children?: string | null }): JSX.Element => {
       mockMarkdownRender(props);
       return mockUseRealMarkdownRenderer ? (
         <ActualMarkdown {...props} />
@@ -80,7 +87,10 @@ jest.mock('@/lib/filePathMentionIndex', () => {
   };
 });
 
-import { ChatBlockRenderer } from '../ChatBlockRenderer';
+import {
+  ChatBlockRenderer,
+  WaitingDelegationsContext,
+} from '../ChatBlockRenderer';
 import { invalidateSharedAiCreditsRead } from '@/lib/openBillingPage';
 import { resetModelLibraryAccessForTests } from '@/lib/modelLibraryAccess';
 import {
@@ -112,6 +122,26 @@ import {
   type PendingQuestion,
 } from '@/stores/chatStore';
 
+const persistedClaudeRouteSnapshot: PersistedAgentRouteSnapshot = {
+  selectedModelId: 'sonnet',
+  runtimeModelId: 'sonnet',
+  harnessId: 'claude',
+  runtimeKind: 'local-sdk',
+  runnerRegistrationId: 'third-local',
+  runtimeVersion: '1.0',
+  adapterVersion: '1',
+  modelSource: 'test',
+  providerType: 'test-inference',
+  assignmentRevision: 'assignment-1',
+  billingAuthority: 'native',
+  aiCreditsRouted: false,
+  capabilities: ['read', 'progress'],
+  supportedThinkingLevels: ['low', 'high'],
+  capabilitySnapshotHash: 'capability-1',
+  capabilityGeneration: 1,
+  policyRevision: 'read-only-1',
+};
+
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -123,12 +153,14 @@ function render(
   isSystemMessage = false,
 ): string {
   return renderToStaticMarkup(
-    <ChatBlockRenderer
-      block={block}
-      chatPendingQuestions={chatPendingQuestions}
-      stripAgentCitations={stripAgentCitations}
-      isSystemMessage={isSystemMessage}
-    />,
+    <ChatLookProvider value="classic">
+      <ChatBlockRenderer
+        block={block}
+        chatPendingQuestions={chatPendingQuestions}
+        stripAgentCitations={stripAgentCitations}
+        isSystemMessage={isSystemMessage}
+      />
+    </ChatLookProvider>,
   );
 }
 
@@ -194,6 +226,20 @@ describe('ChatBlockRenderer banner spacing', () => {
     const host = document.createElement('div');
     host.innerHTML = render(block);
     expect(host.textContent).toContain(expected);
+  });
+});
+
+describe('ChatBlockRenderer legacy pending_setup_info', () => {
+  // CAN-4981: older transcripts still hold this block; it no longer renders.
+  it('renders nothing for a persisted setup annotation', () => {
+    expect(
+      render(
+        { type: 'pending_setup_info', timestamp: Date.now() },
+        undefined,
+        false,
+        true,
+      ),
+    ).toBe('');
   });
 });
 
@@ -482,6 +528,7 @@ describe('ChatBlockRenderer plain text fast path', () => {
     '+',
     '1.',
     '   ',
+    'The bound is $n$ edges.',
     '**strong text**',
     '$$E = mc^2$$',
     '[Open docs](https://example.com)',
@@ -506,17 +553,19 @@ describe('ChatBlockRenderer plain text fast path', () => {
   ])('keeps a custom local Markdown label interactive: %s', (href) => {
     mockUseRealMarkdownRenderer = true;
     const html = renderToStaticMarkup(
-      <ChatMarkdownFileTargetContext.Provider
-        value={{ projectId: 'project', worktreeId: 'worktree' }}
-      >
-        <ChatBlockRenderer
-          block={{
-            type: 'text',
-            text: `[Fixes, evidence, and remaining checks](${href})`,
-          }}
-          settled={false}
-        />
-      </ChatMarkdownFileTargetContext.Provider>,
+      <ChatLookProvider value="classic">
+        <ChatMarkdownFileTargetContext.Provider
+          value={{ projectId: 'project', worktreeId: 'worktree' }}
+        >
+          <ChatBlockRenderer
+            block={{
+              type: 'text',
+              text: `[Fixes, evidence, and remaining checks](${href})`,
+            }}
+            settled={false}
+          />
+        </ChatMarkdownFileTargetContext.Provider>
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-testid="chat-local-file-link"');
     expect(html).toContain('Fixes, evidence, and remaining checks');
@@ -531,14 +580,16 @@ describe('ChatBlockRenderer plain text fast path', () => {
     };
 
     const html = renderToStaticMarkup(
-      <ChatMarkdownFileTargetContext.Provider value={target}>
-        <ChatBlockRenderer
-          block={{
-            type: 'text',
-            text: '![Tracking pixel](https://attacker.example/open/token)',
-          }}
-        />
-      </ChatMarkdownFileTargetContext.Provider>,
+      <ChatLookProvider value="classic">
+        <ChatMarkdownFileTargetContext.Provider value={target}>
+          <ChatBlockRenderer
+            block={{
+              type: 'text',
+              text: '![Tracking pixel](https://attacker.example/open/token)',
+            }}
+          />
+        </ChatMarkdownFileTargetContext.Provider>
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('<img');
@@ -555,14 +606,16 @@ describe('ChatBlockRenderer plain text fast path', () => {
     };
 
     const html = renderToStaticMarkup(
-      <ChatMarkdownFileTargetContext.Provider value={target}>
-        <ChatBlockRenderer
-          block={{
-            type: 'text',
-            text: String.raw`![Backslash tracking pixel](https:\\attacker.example\open)`,
-          }}
-        />
-      </ChatMarkdownFileTargetContext.Provider>,
+      <ChatLookProvider value="classic">
+        <ChatMarkdownFileTargetContext.Provider value={target}>
+          <ChatBlockRenderer
+            block={{
+              type: 'text',
+              text: String.raw`![Backslash tracking pixel](https:\\attacker.example\open)`,
+            }}
+          />
+        </ChatMarkdownFileTargetContext.Provider>
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('<img');
@@ -611,11 +664,13 @@ describe('ChatBlockRenderer mention decoration', () => {
     try {
       act(() =>
         root.render(
-          <ChatBlockRenderer
-            block={{ type: 'text', text }}
-            filePathMentionIndex={null}
-            originChatTabId="chat-1"
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={{ type: 'text', text }}
+              filePathMentionIndex={null}
+              originChatTabId="chat-1"
+            />
+          </ChatLookProvider>,
         ),
       );
       const heading = container.querySelector('h3');
@@ -628,11 +683,13 @@ describe('ChatBlockRenderer mention decoration', () => {
       // message; the existing elements are decorated instead.
       act(() =>
         root.render(
-          <ChatBlockRenderer
-            block={{ type: 'text', text }}
-            filePathMentionIndex={filePathMentionIndex}
-            originChatTabId="chat-1"
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={{ type: 'text', text }}
+              filePathMentionIndex={filePathMentionIndex}
+              originChatTabId="chat-1"
+            />
+          </ChatLookProvider>,
         ),
       );
 
@@ -681,11 +738,13 @@ describe('ChatBlockRenderer mention decoration', () => {
       scans.mockClear();
       act(() =>
         root.render(
-          <ChatBlockRenderer
-            block={{ type: 'text', text }}
-            filePathMentionIndex={filePathMentionIndex}
-            originChatTabId="chat-1"
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={{ type: 'text', text }}
+              filePathMentionIndex={filePathMentionIndex}
+              originChatTabId="chat-1"
+            />
+          </ChatLookProvider>,
         ),
       );
 
@@ -722,13 +781,15 @@ describe('ChatBlockRenderer image blocks', () => {
       await act(() =>
         Promise.resolve(
           root.render(
-            <ChatMarkdownFileTargetContext.Provider
-              value={{ projectId: 'project', worktreeId: 'worktree' }}
-            >
-              <ChatMarkdownLink href="/workspace/report.md:12">
-                Evidence
-              </ChatMarkdownLink>
-            </ChatMarkdownFileTargetContext.Provider>,
+            <ChatLookProvider value="classic">
+              <ChatMarkdownFileTargetContext.Provider
+                value={{ projectId: 'project', worktreeId: 'worktree' }}
+              >
+                <ChatMarkdownLink href="/workspace/report.md:12">
+                  Evidence
+                </ChatMarkdownLink>
+              </ChatMarkdownFileTargetContext.Provider>
+            </ChatLookProvider>,
           ),
         ),
       );
@@ -741,13 +802,10 @@ describe('ChatBlockRenderer image blocks', () => {
         baseFilePath: '/workspace/report.md',
         href: '/workspace/report.md',
       });
-      expect(openFileTab).toHaveBeenCalledWith(
-        { ...resolved, initialViewMode: 'preview' },
-        {
-          projectId: 'project',
-          worktreeId: 'worktree',
-        },
-      );
+      expect(openFileTab).toHaveBeenCalledWith(resolved, {
+        projectId: 'project',
+        worktreeId: 'worktree',
+      });
       expect(
         useAgentFilePresentationStore.getState().byTabId['file-report'].line,
       ).toBe(12);
@@ -760,12 +818,12 @@ describe('ChatBlockRenderer image blocks', () => {
   });
 
   it.each([
-    ['/workspace/rows.csv', 'rows.csv', 'table'],
-    ['/workspace/page.html:3', 'page.html', 'preview'],
-    ['/workspace/src/index.ts', 'index.ts', undefined],
+    ['/workspace/rows.csv', 'rows.csv'],
+    ['/workspace/page.html:3', 'page.html'],
+    ['/workspace/src/index.ts', 'index.ts'],
   ])(
-    'opens %s in its rendered view when the file type has one',
-    async (absolutePath, filename, initialViewMode) => {
+    'opens %s without a caller view default so the store resolves it',
+    async (absolutePath, filename) => {
       const originalApi = Object.getOwnPropertyDescriptor(window, 'api');
       const resolved = { absolutePath, filename };
       Object.defineProperty(window, 'api', {
@@ -781,23 +839,25 @@ describe('ChatBlockRenderer image blocks', () => {
         await act(() =>
           Promise.resolve(
             root.render(
-              <ChatMarkdownFileTargetContext.Provider
-                value={{ projectId: 'project', worktreeId: 'worktree' }}
-              >
-                <ChatMarkdownLink href={absolutePath}>
-                  Evidence
-                </ChatMarkdownLink>
-              </ChatMarkdownFileTargetContext.Provider>,
+              <ChatLookProvider value="classic">
+                <ChatMarkdownFileTargetContext.Provider
+                  value={{ projectId: 'project', worktreeId: 'worktree' }}
+                >
+                  <ChatMarkdownLink href={absolutePath}>
+                    Evidence
+                  </ChatMarkdownLink>
+                </ChatMarkdownFileTargetContext.Provider>
+              </ChatLookProvider>,
             ),
           ),
         );
         await act(() =>
           Promise.resolve(container.querySelector('button')?.click()),
         );
-        expect(openFileTab).toHaveBeenCalledWith(
-          { ...resolved, initialViewMode },
-          { projectId: 'project', worktreeId: 'worktree' },
-        );
+        expect(openFileTab).toHaveBeenCalledWith(resolved, {
+          projectId: 'project',
+          worktreeId: 'worktree',
+        });
       } finally {
         act(() => root.unmount());
         openFileTab.mockRestore();
@@ -837,13 +897,15 @@ describe('ChatBlockRenderer image blocks', () => {
         await act(() =>
           Promise.resolve(
             root.render(
-              <ChatMarkdownFileTargetContext.Provider
-                value={{ projectId: 'project', worktreeId: 'worktree' }}
-              >
-                <ChatMarkdownLink href={href} originChatTabId="chat-1">
-                  The page
-                </ChatMarkdownLink>
-              </ChatMarkdownFileTargetContext.Provider>,
+              <ChatLookProvider value="classic">
+                <ChatMarkdownFileTargetContext.Provider
+                  value={{ projectId: 'project', worktreeId: 'worktree' }}
+                >
+                  <ChatMarkdownLink href={href} originChatTabId="chat-1">
+                    The page
+                  </ChatMarkdownLink>
+                </ChatMarkdownFileTargetContext.Provider>
+              </ChatLookProvider>,
             ),
           ),
         );
@@ -885,13 +947,15 @@ describe('ChatBlockRenderer image blocks', () => {
       await act(() =>
         Promise.resolve(
           root.render(
-            <ChatMarkdownFileTargetContext.Provider
-              value={{ projectId: 'project', worktreeId: 'worktree' }}
-            >
-              <ChatMarkdownLink href="/workspace/index.html">
-                The page
-              </ChatMarkdownLink>
-            </ChatMarkdownFileTargetContext.Provider>,
+            <ChatLookProvider value="classic">
+              <ChatMarkdownFileTargetContext.Provider
+                value={{ projectId: 'project', worktreeId: 'worktree' }}
+              >
+                <ChatMarkdownLink href="/workspace/index.html">
+                  The page
+                </ChatMarkdownLink>
+              </ChatMarkdownFileTargetContext.Provider>
+            </ChatLookProvider>,
           ),
         ),
       );
@@ -937,15 +1001,17 @@ describe('ChatBlockRenderer image blocks', () => {
       await act(() =>
         Promise.resolve(
           root.render(
-            <ChatMarkdownFileTargetContext.Provider
-              value={{ projectId: 'project', worktreeId: 'worktree' }}
-            >
-              <ChatBlockRenderer
-                block={{ type: 'text', text: 'see site/index.html' }}
-                filePathMentionIndex={filePathMentionIndex}
-                originChatTabId="chat-1"
-              />
-            </ChatMarkdownFileTargetContext.Provider>,
+            <ChatLookProvider value="classic">
+              <ChatMarkdownFileTargetContext.Provider
+                value={{ projectId: 'project', worktreeId: 'worktree' }}
+              >
+                <ChatBlockRenderer
+                  block={{ type: 'text', text: 'see site/index.html' }}
+                  filePathMentionIndex={filePathMentionIndex}
+                  originChatTabId="chat-1"
+                />
+              </ChatMarkdownFileTargetContext.Provider>
+            </ChatLookProvider>,
           ),
         ),
       );
@@ -996,10 +1062,12 @@ describe('ChatBlockRenderer image blocks', () => {
       await act(() =>
         Promise.resolve(
           root.render(
-            <ChatBlockRenderer
-              block={{ type: 'text', text: 'see docs/report.md' }}
-              filePathMentionIndex={filePathMentionIndex}
-            />,
+            <ChatLookProvider value="classic">
+              <ChatBlockRenderer
+                block={{ type: 'text', text: 'see docs/report.md' }}
+                filePathMentionIndex={filePathMentionIndex}
+              />
+            </ChatLookProvider>,
           ),
         ),
       );
@@ -1011,7 +1079,6 @@ describe('ChatBlockRenderer image blocks', () => {
       expect(openFileTab).toHaveBeenCalledWith({
         absolutePath: '/workspace/repo/docs/report.md',
         filename: 'report.md',
-        initialViewMode: 'preview',
       });
     } finally {
       act(() => root.unmount());
@@ -1030,11 +1097,13 @@ describe('ChatBlockRenderer image blocks', () => {
   ])('does not turn unsafe local link %s into a file action', (href) => {
     expect(
       renderToStaticMarkup(
-        <ChatMarkdownFileTargetContext.Provider
-          value={{ projectId: 'project', worktreeId: 'worktree' }}
-        >
-          <ChatMarkdownLink href={href}>Evidence</ChatMarkdownLink>
-        </ChatMarkdownFileTargetContext.Provider>,
+        <ChatLookProvider value="classic">
+          <ChatMarkdownFileTargetContext.Provider
+            value={{ projectId: 'project', worktreeId: 'worktree' }}
+          >
+            <ChatMarkdownLink href={href}>Evidence</ChatMarkdownLink>
+          </ChatMarkdownFileTargetContext.Provider>
+        </ChatLookProvider>,
       ),
     ).not.toContain('<button');
   });
@@ -1046,14 +1115,16 @@ describe('ChatBlockRenderer image blocks', () => {
       await act(() =>
         Promise.resolve(
           root.render(
-            <ChatBlockRenderer
-              block={{
-                type: 'image',
-                path: '',
-                dataUrl: 'data:image/png;base64,aGVsbG8=',
-                alt: 'Preview',
-              }}
-            />,
+            <ChatLookProvider value="classic">
+              <ChatBlockRenderer
+                block={{
+                  type: 'image',
+                  path: '',
+                  dataUrl: 'data:image/png;base64,aGVsbG8=',
+                  alt: 'Preview',
+                }}
+              />
+            </ChatLookProvider>,
           ),
         ),
       );
@@ -1086,13 +1157,15 @@ describe('ChatBlockRenderer image blocks', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={{
-              type: 'image',
-              path: '/Users/example/.codex/generated_images/art.png',
-              alt: 'Generated artwork',
-            }}
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={{
+                type: 'image',
+                path: '/Users/example/.codex/generated_images/art.png',
+                alt: 'Generated artwork',
+              }}
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
         await Promise.resolve();
@@ -1133,13 +1206,15 @@ describe('ChatBlockRenderer image blocks', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={{
-              type: 'image',
-              path: '\\\\attacker.example\\share\\image.png',
-              alt: 'Generated artwork',
-            }}
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={{
+                type: 'image',
+                path: '\\\\attacker.example\\share\\image.png',
+                alt: 'Generated artwork',
+              }}
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
@@ -1289,10 +1364,12 @@ describe('ChatBlockRenderer soft line breaks (CAN-2811)', () => {
 
   it('renders single newlines as line breaks when asked to preserve them', () => {
     const html = renderToStaticMarkup(
-      <ChatBlockRenderer
-        block={{ type: 'text', text: 'line one\nline two\nline three' }}
-        preserveLineBreaks
-      />,
+      <ChatLookProvider value="classic">
+        <ChatBlockRenderer
+          block={{ type: 'text', text: 'line one\nline two\nline three' }}
+          preserveLineBreaks
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('<p>line one<br/>line two<br/>line three</p>');
@@ -1329,11 +1406,13 @@ describe('ChatBlockRenderer soft line breaks (CAN-2811)', () => {
     );
 
     const html = renderToStaticMarkup(
-      <ChatBlockRenderer
-        block={{ type: 'text', text: 'first line\nthen open src/app.ts' }}
-        filePathMentionIndex={filePathMentionIndex}
-        preserveLineBreaks
-      />,
+      <ChatLookProvider value="classic">
+        <ChatBlockRenderer
+          block={{ type: 'text', text: 'first line\nthen open src/app.ts' }}
+          filePathMentionIndex={filePathMentionIndex}
+          preserveLineBreaks
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('first line<br/>');
@@ -1381,7 +1460,24 @@ describe('ChatBlockRenderer answered AskUserQuestion', () => {
     expect(html).not.toContain('Preparing question');
   });
 
-  it('renders an async submission once with the existing User Questions result presentation', () => {
+  it('keeps display-redacted async answers hidden in the label and body', () => {
+    const html = render({
+      type: 'text',
+      text: 'Q: Token?\nA: \nAdditional: [hidden]',
+      asyncQuestionAnswer: {
+        requestId: 'async-secret',
+        startsTurn: false,
+        answers: [
+          { question: 'Token?', selectedOptions: [], freeformText: '[hidden]' },
+        ],
+      },
+    });
+    expect(html).toContain('· [hidden]');
+    expect(html).toContain('data-testid="answered-questions"');
+    expect(html).not.toContain('data-tool-status="pending"');
+  });
+
+  it('renders an async submission once with the answered ask-user row', () => {
     const block: DisplayBlock = {
       type: 'text',
       text: 'Q: Which scope?\nA: Full',
@@ -1394,7 +1490,8 @@ describe('ChatBlockRenderer answered AskUserQuestion', () => {
       },
     };
     const html = render(block);
-    expect(html).toContain('User questions');
+    expect(html).toContain('Asked you 1 question');
+    expect(html).toContain('· Full');
     expect(html).toContain('data-testid="answered-questions"');
     expect(html).not.toContain('Q: Which scope?');
   });
@@ -1438,14 +1535,15 @@ describe('ChatBlockRenderer answered AskUserQuestion', () => {
 
     const html = render(block);
 
-    // Previous collapsed tool block is preserved...
-    expect(html).toContain('User questions');
+    // Previous collapsed tool block is preserved, naming the answer...
+    expect(html).toContain('Asked you 1 question');
+    expect(html).toContain('· Blue');
     // ...and the new answer bubbles render after it.
     expect(html).toContain('data-testid="answered-questions"');
     expect(html).toContain('Which color?');
     expect(html).toContain('Blue');
     // The tool row appears before the answer bubbles in the DOM.
-    expect(html.indexOf('User questions')).toBeLessThan(
+    expect(html.indexOf('Asked you 1 question')).toBeLessThan(
       html.indexOf('data-testid="answered-questions"'),
     );
   });
@@ -1506,7 +1604,203 @@ describe('ChatBlockRenderer answered AskUserQuestion', () => {
     const html = render(block);
 
     expect(html).not.toContain('data-testid="answered-questions"');
-    expect(html).toContain('User questions');
+    expect(html).toContain('Asked you 1 question');
+    expect(html).toContain('data-tool-status="error"');
+  });
+});
+
+describe('ChatBlockRenderer restored AskUserQuestion (CAN-4959)', () => {
+  const input = JSON.stringify({
+    questions: [
+      {
+        question: 'Which rounding?',
+        options: ["Half-even (banker's rounding)", 'Half-up'],
+      },
+    ],
+  });
+  const askBlock = (result?: {
+    output: string;
+    isError: boolean;
+  }): DisplayBlock => ({
+    type: 'tool_use',
+    toolUseId: 'toolu_restored',
+    toolName: 'mcp__canopy__AskUserQuestion',
+    input,
+    ...(result ? { result } : {}),
+  });
+  const unanswered: PendingQuestion = {
+    requestId: 'restored',
+    projectId: 'project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    questions: [
+      {
+        question: 'Which rounding?',
+        options: ["Half-even (banker's rounding)", 'Half-up'],
+      },
+    ],
+  };
+  const answeredRecord: PendingQuestion = {
+    ...unanswered,
+    answeredAt: 1_000,
+    answers: [
+      {
+        question: 'Which rounding?',
+        selectedOptions: ["Half-even (banker's rounding)"],
+      },
+    ],
+  };
+
+  function expectSettledAnswer(container: HTMLElement, answer: string): void {
+    expect(
+      container.querySelector('[data-testid="ask-user-question-preparing"]'),
+    ).toBeNull();
+    const row = container.querySelector('[data-testid="chat-tool-call"]');
+    expect(row?.getAttribute('data-tool-status')).toBe('success');
+    expect(row?.textContent).toContain(`Asked you 1 question · ${answer}`);
+    expect(
+      container.querySelector('[data-testid="answered-questions"]')
+        ?.textContent,
+    ).toContain(answer);
+  }
+
+  it('shows the answer immediately when the record is answered and no result exists', () => {
+    const html = render(askBlock(), [answeredRecord]);
+
+    expect(html).not.toContain('Preparing question');
+    expect(html).not.toContain('data-tool-status="pending"');
+    expect(html).toContain('data-tool-status="success"');
+    expect(html).toContain('data-testid="answered-questions"');
+  });
+
+  it('shows the recorded answer over a synthetic Cancelled result', () => {
+    const html = render(askBlock({ output: 'Cancelled', isError: false }), [
+      answeredRecord,
+    ]);
+
+    expect(html).toContain('data-testid="answered-questions"');
+    expect(html).toContain('Asked you 1 question');
+    expect(html).not.toContain('Preparing question');
+  });
+
+  it('prefers answers parsed from the result over the record', () => {
+    const html = render(
+      askBlock({ output: 'Q: Which rounding?\nA: Half-up', isError: false }),
+      [answeredRecord],
+    );
+
+    expect(html).toContain('· Half-up');
+    expect(html).not.toContain('· Half-even');
+  });
+
+  it('keeps an error result visible even with an answered record', () => {
+    const html = render(
+      askBlock({ output: 'The question window closed.', isError: true }),
+      [answeredRecord],
+    );
+
+    expect(html).toContain('data-tool-status="error"');
+    expect(html).not.toContain('data-testid="answered-questions"');
+  });
+
+  it('settles a dismissed record without a spinner', () => {
+    const html = render(askBlock(), [{ ...unanswered, dismissedAt: 2_000 }]);
+
+    expect(html).not.toContain('Preparing question');
+    expect(html).toContain('data-tool-status="success"');
+    expect(html).not.toContain('data-testid="answered-questions"');
+  });
+
+  it('settles an answered record with no display answers using the base label', () => {
+    const html = render(askBlock(), [{ ...answeredRecord, answers: [] }]);
+
+    expect(html).not.toContain('Preparing question');
+    expect(html).toContain('data-tool-status="success"');
+    expect(html).toContain('Asked you 1 question');
+    expect(html).not.toContain('Asked you 1 question ·');
+    expect(html).not.toContain('data-testid="answered-questions"');
+  });
+
+  it('keeps the preparing fallback when nothing has arrived', () => {
+    expect(render(askBlock(), [])).toContain(
+      'data-testid="ask-user-question-preparing"',
+    );
+  });
+
+  it('keeps the answer shown in the clean chat look without the tool row', () => {
+    const html = renderToStaticMarkup(
+      <ChatLookProvider value="clean">
+        <ChatBlockRenderer
+          block={askBlock()}
+          chatPendingQuestions={[answeredRecord]}
+        />
+      </ChatLookProvider>,
+    );
+
+    expect(html).toContain('data-testid="answered-questions"');
+    expect(html).not.toContain('data-testid="chat-tool-call"');
+    expect(html).not.toContain('Preparing question');
+  });
+
+  it('settles across answer, synthetic cancellation, and the real result', () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const answer = "Half-even (banker's rounding)";
+    try {
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={askBlock()}
+              chatPendingQuestions={[unanswered]}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      // The composer owns the unanswered prompt.
+      expect(container.innerHTML).toBe('');
+
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={askBlock()}
+              chatPendingQuestions={[answeredRecord]}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      expectSettledAnswer(container, answer);
+
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={askBlock({ output: 'Cancelled', isError: false })}
+              chatPendingQuestions={[answeredRecord]}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      expectSettledAnswer(container, answer);
+
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={askBlock({
+                output: `Q: Which rounding?\nA: ${answer}`,
+                isError: false,
+              })}
+              chatPendingQuestions={[answeredRecord]}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      expectSettledAnswer(container, answer);
+    } finally {
+      act(() => root.unmount());
+    }
   });
 });
 
@@ -1524,7 +1818,13 @@ describe('ChatBlockRenderer tool icons', () => {
 
     expect(html).toContain('Delete');
     expect(html).toContain('old-file.ts');
-    expect(html).toContain(renderToStaticMarkup(<TrashIcon />));
+    expect(html).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <TrashIcon />
+        </ChatLookProvider>,
+      ),
+    );
   });
 });
 
@@ -1721,8 +2021,10 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
 
   // CAN-2413: the reported failure. A marked 402 used to fall through to the
   // raw Markdown renderer, so the user saw `{"error":"no_billing_source"}` and
-  // a loopback URL with no way to act on either.
-  it('offers the credits CTA and no Retry for a spent credit balance', () => {
+  // a loopback URL with no way to act on either. CAN-5160: the composer's No
+  // billing source banner is the one place to choose how to pay, so the
+  // transcript only says why the chat stopped, with no second panel or CTA.
+  it('says the chat stopped for a payment choice, with no panel of its own', () => {
     const html = render(
       systemBlock('no_billing_source'),
       undefined,
@@ -1730,13 +2032,13 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       true,
     );
 
-    expect(html).toContain('data-testid="chat-canopy-proxy-error"');
-    expect(html).toContain('data-testid="chat-canopy-proxy-error-get-credits"');
-    expect(html).toContain('Get AI Credits');
-    expect(html).toContain('This message needed AI Credits');
-    // Retry would fail identically until credits exist, and each click bills a
-    // fresh non-idempotent turn against the same wall.
-    expect(html).not.toContain('data-testid="chat-canopy-proxy-error-retry"');
+    expect(html).toContain('data-testid="chat-ai-credits-stop-line"');
+    expect(html).toContain(
+      'Chat stopped. Choose how to pay for this message to keep going.',
+    );
+    expect(html).not.toContain('data-testid="chat-canopy-proxy-error"');
+    expect(html).not.toContain('Get AI Credits');
+    expect(html).not.toContain('<button');
     expect(html).not.toContain('CANOPY_AI_CREDITS_PROXY');
     expect(html).not.toContain('no_billing_source');
     expect(html).not.toContain('402');
@@ -1753,7 +2055,7 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       'Purchase AI Credits to unlock advanced models, then send your message again.',
     );
     expect(html).toContain('data-testid="chat-canopy-proxy-error-unlock"');
-    expect(html).toContain('Purchase AI Credits');
+    expect(html).toContain('Get AI Credits');
     expect(html).not.toContain('data-testid="chat-canopy-proxy-error-retry"');
     // Not the coverage flow: that one reports success on any spendable credit.
     expect(html).not.toContain(
@@ -1780,6 +2082,10 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       .fn<Promise<boolean>, [string]>()
       .mockResolvedValue(true);
     const openExternal = jest.fn().mockResolvedValue(undefined);
+    // CAN-4693: main opens the authenticated payment handoff and returns the
+    // request id that correlates the purchase.
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const paymentHandoff = jest.fn().mockResolvedValue({ ok: true, requestId });
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
@@ -1798,6 +2104,7 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
           workModelLibrary: { status: 'reported', access: 'needs_purchase' },
         }),
         openAuthenticatedPortalPage,
+        accountOrganizationSettings: { paymentHandoff },
         browser: { openExternal },
       },
     });
@@ -1814,17 +2121,19 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={systemBlock('model_locked')}
-            isSystemMessage
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={systemBlock('model_locked')}
+              isSystemMessage
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
 
       // Like the billing branch, nothing is read until the user asks.
       expect(loadNativeAiCreditsAvailability).not.toHaveBeenCalled();
-      expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+      expect(paymentHandoff).not.toHaveBeenCalled();
 
       await act(async () => {
         query('chat-canopy-proxy-error-unlock')?.click();
@@ -1833,27 +2142,25 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
         }
       });
 
-      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
-      const url = new URL(
-        openAuthenticatedPortalPage.mock.calls[0][0],
-        'https://billing.invalid',
-      );
-      expect(url.pathname).toBe('/account/billing');
-      expect(url.searchParams.get('topUp')).toBe('1');
-      expect(url.searchParams.get('reason')).toBe('unlock_models');
-      expect(url.searchParams.get('source')).toBe('desktop');
+      expect(paymentHandoff).toHaveBeenCalledTimes(1);
       // The chat is already on the refused model, so none is named to apply.
-      expect(url.searchParams.has('modelId')).toBe(false);
+      expect(paymentHandoff).toHaveBeenCalledWith({
+        accountId: 'acct_1',
+        owner: { kind: 'personal' },
+        intent: { kind: 'top-up', reason: 'unlock_models', source: 'desktop' },
+      });
+      // No signed-out or renderer-built fallback page.
+      expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
       expect(openExternal).not.toHaveBeenCalled();
 
       expect(query('chat-canopy-proxy-error-unlock-waiting')?.textContent).toBe(
-        "Finish in your browser. We'll check when your payment completes.",
+        "Finish checkout in your browser. We'll check when the payment goes through.",
       );
       expect(query('chat-canopy-proxy-error-credits-recovered')).toBeNull();
 
       // Confirmed by the app root's poll for this purchase.
       expect(useModelUnlockIntentStore.getState().intent).toMatchObject({
-        requestId: url.searchParams.get('requestId'),
+        requestId,
         accountId: 'account:acct_1',
         owner: 'personal',
       });
@@ -1880,115 +2187,38 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     }
   });
 
-  // CAN-2413 review: the hosted `billed: null` behind this 402 fires for an org
-  // member whose eligible pool is empty just as much as for an uncovered
-  // individual, and those members cannot buy credits. The notice used to offer
-  // an unconditional "Get AI Credits", marching them into a billing flow they
-  // have no way to finish — while the composer banner, which does read
-  // coverage, correctly told them to contact their admin. The two surfaces
-  // disagreed about the same failure. The read is lazy (on click, not on
-  // render) so a long transcript full of historical notices still fires no IPC.
-  it('routes an org member to their admin instead of a billing flow', async () => {
+  // CAN-2413 review / CAN-5160: whether the user can buy, must ask an org
+  // admin, or is covered again is the composer banner's to say; it reads
+  // coverage for the chat's owner. The stop line reads nothing and offers
+  // nothing, so a long transcript of old stops fires no IPC and can never
+  // disagree with the banner.
+  it('leaves every payment decision to the composer banner', async () => {
     const originalApi = Object.getOwnPropertyDescriptor(window, 'api');
-    const loadNativeAiCreditsAvailability = jest.fn().mockResolvedValue({
-      personalEligible: false,
-      inOrg: true,
-      orgCreditPoolCovered: true,
-      orgSpendable: false,
-      pricingUrl: 'https://cloud.example.com/pricing',
-    });
-    const openAuthenticatedPortalPage = jest.fn().mockResolvedValue(undefined);
-    const openExternal = jest.fn().mockResolvedValue(undefined);
+    const loadNativeAiCreditsAvailability = jest.fn();
+    const openAuthenticatedPortalPage = jest.fn();
     Object.defineProperty(window, 'api', {
       configurable: true,
-      value: {
-        loadNativeAiCreditsAvailability,
-        openAuthenticatedPortalPage,
-        browser: { openExternal },
-      },
+      value: { loadNativeAiCreditsAvailability, openAuthenticatedPortalPage },
     });
-
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
-
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={systemBlock('no_billing_source')}
-            isSystemMessage
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={systemBlock('no_billing_source')}
+              isSystemMessage
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
-
-      // Nothing is read until the user actually asks for credits.
+      expect(container.querySelector('button')).toBeNull();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
       expect(loadNativeAiCreditsAvailability).not.toHaveBeenCalled();
-
-      await act(async () => {
-        container
-          .querySelector<HTMLButtonElement>(
-            '[data-testid="chat-canopy-proxy-error-get-credits"]',
-          )
-          ?.click();
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(loadNativeAiCreditsAvailability).toHaveBeenCalledTimes(1);
-      expect(
-        container.querySelector(
-          '[data-testid="chat-canopy-proxy-error-contact-admin"]',
-        )?.textContent,
-      ).toContain('Contact your org admin');
-      expect(
-        container.querySelector(
-          '[data-testid="chat-canopy-proxy-error-get-credits"]',
-        ),
-      ).toBeNull();
-
-      // The admin copy must keep a live action beside it. Replacing the button
-      // outright made the state a one-way latch for the life of the mounted
-      // block, so a member whose admin had since raised the quota had no way
-      // back to a usable action. "Check again" re-runs the same read.
-      loadNativeAiCreditsAvailability.mockResolvedValue({
-        personalEligible: true,
-        inOrg: true,
-        orgCreditPoolCovered: true,
-        orgSpendable: false,
-        pricingUrl: 'https://cloud.example.com/pricing',
-      });
-      await act(async () => {
-        container
-          .querySelector<HTMLButtonElement>(
-            '[data-testid="chat-canopy-proxy-error-recheck-credits"]',
-          )
-          ?.click();
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(loadNativeAiCreditsAvailability).toHaveBeenCalledTimes(2);
-      expect(
-        container.querySelector(
-          '[data-testid="chat-canopy-proxy-error-contact-admin"]',
-        ),
-      ).toBeNull();
-
-      // Coverage came back spendable, so the recheck must report recovery —
-      // NOT fall through and open billing. `canSpendCredits: true` leaves both
-      // `showPurchase` and `showContactAdmin` false, the same shape as an
-      // inconclusive read, so it has to be checked explicitly.
-      expect(
-        container.querySelector(
-          '[data-testid="chat-canopy-proxy-error-credits-recovered"]',
-        )?.textContent,
-      ).toContain('available again');
       expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
-      expect(openExternal).not.toHaveBeenCalled();
     } finally {
       act(() => root.unmount());
       container.remove();
@@ -2032,10 +2262,12 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={systemBlock('no_billing_source')}
-            isSystemMessage
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={systemBlock('no_billing_source')}
+              isSystemMessage
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
@@ -2125,7 +2357,11 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
       model: 'gpt-6-sol',
       providerType: 'codex',
@@ -2143,11 +2379,13 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={systemBlock('upstream_unavailable')}
-            isSystemMessage
-            originChatTabId={tab.id}
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={systemBlock('upstream_unavailable')}
+              isSystemMessage
+              originChatTabId={tab.id}
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
@@ -2205,7 +2443,11 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
       model: 'gpt-6-sol',
       providerType: 'codex',
@@ -2223,11 +2465,13 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={systemBlock('upstream_unavailable')}
-            isSystemMessage
-            originChatTabId={tab.id}
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={systemBlock('upstream_unavailable')}
+              isSystemMessage
+              originChatTabId={tab.id}
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
@@ -2306,7 +2550,11 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
       model: 'gpt-6-sol',
       providerType: 'codex',
@@ -2324,11 +2572,13 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={systemBlock('upstream_unavailable')}
-            isSystemMessage
-            originChatTabId={tab.id}
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={systemBlock('upstream_unavailable')}
+              isSystemMessage
+              originChatTabId={tab.id}
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
@@ -2407,7 +2657,11 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
       model: 'gpt-6-sol',
       providerType: 'codex',
@@ -2425,11 +2679,13 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={truncatedBlock}
-            isSystemMessage
-            originChatTabId={tab.id}
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={truncatedBlock}
+              isSystemMessage
+              originChatTabId={tab.id}
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
@@ -2491,7 +2747,11 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
       model: 'gpt-6-sol',
       providerType: 'codex',
@@ -2509,11 +2769,13 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
     try {
       await act(async () => {
         root.render(
-          <ChatBlockRenderer
-            block={truncatedBlock}
-            isSystemMessage
-            originChatTabId={tab.id}
-          />,
+          <ChatLookProvider value="classic">
+            <ChatBlockRenderer
+              block={truncatedBlock}
+              isSystemMessage
+              originChatTabId={tab.id}
+            />
+          </ChatLookProvider>,
         );
         await Promise.resolve();
       });
@@ -2587,6 +2849,29 @@ describe('ChatBlockRenderer plan mode', () => {
         input,
       }),
     ).toBe('');
+  });
+});
+
+describe('ChatBlockRenderer approval_safety_denied_info', () => {
+  // CAN-4811: a safety rule denied the call; the notice explains why no
+  // approval card appeared.
+  it('renders the force-push notice with its command as text', () => {
+    const html = render({
+      type: 'approval_safety_denied_info',
+      receiptId: 'approval-safety-1',
+      timestamp: Date.parse('2026-10-23T15:42:00Z'),
+      reason: 'force-push',
+      command: 'git push --force origin HEAD <b>x</b>',
+      mode: 'ask',
+      toolUseId: 'call-1',
+    });
+
+    expect(html).toContain('data-testid="approval-safety-denied-notice"');
+    expect(html).toContain('data-safety-reason="force-push"');
+    expect(html).toContain('Force-push blocked by a safety rule.');
+    expect(html).toContain('This call cannot be approved from a prompt.');
+    expect(html).toContain('git push --force origin HEAD &lt;b&gt;x&lt;/b&gt;');
+    expect(html).not.toContain('<b>x</b>');
   });
 });
 
@@ -2694,18 +2979,36 @@ describe('ChatBlockRenderer delegated task Stop', () => {
   function renderBlock(
     block: DisplayBlock,
     withLiveDescendants: readonly string[] | null = [],
+    waitingDelegationIds?: ReadonlySet<string>,
   ): void {
     act(() => {
       root.render(
-        <ManagedDelegationStopContext.Provider
-          value={
-            withLiveDescendants
-              ? { target, withLiveDescendants: new Set(withLiveDescendants) }
-              : null
-          }
-        >
-          <ChatBlockRenderer block={block} originChatTabId="chat-1" />
-        </ManagedDelegationStopContext.Provider>,
+        waitingDelegationIds ? (
+          <WaitingDelegationsContext.Provider value={waitingDelegationIds}>
+            <ManagedDelegationStopContext.Provider
+              value={
+                withLiveDescendants
+                  ? {
+                      target,
+                      withLiveDescendants: new Set(withLiveDescendants),
+                    }
+                  : null
+              }
+            >
+              <ChatBlockRenderer block={block} originChatTabId="chat-1" />
+            </ManagedDelegationStopContext.Provider>
+          </WaitingDelegationsContext.Provider>
+        ) : (
+          <ManagedDelegationStopContext.Provider
+            value={
+              withLiveDescendants
+                ? { target, withLiveDescendants: new Set(withLiveDescendants) }
+                : null
+            }
+          >
+            <ChatBlockRenderer block={block} originChatTabId="chat-1" />
+          </ManagedDelegationStopContext.Provider>
+        ),
       );
     });
   }
@@ -2748,6 +3051,19 @@ describe('ChatBlockRenderer delegated task Stop', () => {
     expect(stop).toHaveBeenCalledWith({ ...target, delegationId: 'child' });
     expect(stopButton()?.textContent).toBe('Stopping…');
     expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it('shows the parent-waiting status only for delegation ids in context', () => {
+    renderBlock(delegatedBlock('running'));
+    expect(
+      host.querySelector('[data-testid="delegated-agent-waiting-on-parent"]'),
+    ).toBeNull();
+
+    renderBlock(delegatedBlock('running'), [], new Set(['child']));
+    expect(
+      host.querySelector('[data-testid="delegated-agent-waiting-on-parent"]')
+        ?.textContent,
+    ).toBe('Waiting for the parent');
   });
 
   it('reports a failed stop and offers Stop again', async () => {
@@ -2818,20 +3134,18 @@ describe('ChatBlockRenderer logged delegated task transcript', () => {
     runGeneration: 1,
     outputTruncated: false,
     transcriptStore: 'chat-log-v1',
-    routeSnapshot: {
-      selectedModelId: 'sonnet',
-      runtimeModelId: 'sonnet',
-      harnessId: 'claude',
-    },
+    routeSnapshot: persistedClaudeRouteSnapshot,
     subBlocks: [],
   };
 
   async function renderLogged(): Promise<void> {
     await act(async () => {
       root.render(
-        <DelegationTranscriptSourceContext.Provider value={source}>
-          <ChatBlockRenderer block={loggedBlock} originChatTabId="chat-1" />
-        </DelegationTranscriptSourceContext.Provider>,
+        <ChatLookProvider value="classic">
+          <DelegationTranscriptSourceContext.Provider value={source}>
+            <ChatBlockRenderer block={loggedBlock} originChatTabId="chat-1" />
+          </DelegationTranscriptSourceContext.Provider>
+        </ChatLookProvider>,
       );
       await Promise.resolve();
       await Promise.resolve();
@@ -2925,11 +3239,7 @@ describe('ChatBlockRenderer logged delegated task transcript', () => {
           delegationId: 'child',
           status: 'running',
           outputTruncated: false,
-          routeSnapshot: {
-            selectedModelId: 'sonnet',
-            runtimeModelId: 'sonnet',
-            harnessId: 'claude',
-          },
+          routeSnapshot: persistedClaudeRouteSnapshot,
         },
         transcript: [
           {
@@ -2991,12 +3301,14 @@ describe('CAN-4275 located links', () => {
       try {
         act(() =>
           root.render(
-            <ChatMarkdownFileTargetContext.Provider value={scope}>
-              <ChatBlockRenderer
-                block={{ type: 'text', text }}
-                filePathMentionIndex={index}
-              />
-            </ChatMarkdownFileTargetContext.Provider>,
+            <ChatLookProvider value="classic">
+              <ChatMarkdownFileTargetContext.Provider value={scope}>
+                <ChatBlockRenderer
+                  block={{ type: 'text', text }}
+                  filePathMentionIndex={index}
+                />
+              </ChatMarkdownFileTargetContext.Provider>
+            </ChatLookProvider>,
           ),
         );
         const button = rootElement.querySelector('button');
@@ -3043,9 +3355,11 @@ describe('CAN-4275 located links', () => {
       const render = (link: string): void =>
         act(() =>
           root.render(
-            <ChatMarkdownFileTargetContext.Provider value={scope}>
-              <ChatMarkdownLink href={link}>Authored label</ChatMarkdownLink>
-            </ChatMarkdownFileTargetContext.Provider>,
+            <ChatLookProvider value="classic">
+              <ChatMarkdownFileTargetContext.Provider value={scope}>
+                <ChatMarkdownLink href={link}>Authored label</ChatMarkdownLink>
+              </ChatMarkdownFileTargetContext.Provider>
+            </ChatLookProvider>,
           ),
         );
       try {
@@ -3137,34 +3451,36 @@ describe('CAN-4275 located links', () => {
       try {
         act(() =>
           root.render(
-            <ChatMarkdownFileTargetContext.Provider value={scope}>
-              <ChatMarkdownLink
-                href="old.ts:150-160"
-                originChatTabId="race-chat"
-              >
-                A
-              </ChatMarkdownLink>
-              {newerKind === 'markdown' ? (
+            <ChatLookProvider value="classic">
+              <ChatMarkdownFileTargetContext.Provider value={scope}>
                 <ChatMarkdownLink
-                  href="/workspace/new.ts:18"
+                  href="old.ts:150-160"
                   originChatTabId="race-chat"
                 >
-                  B
+                  A
                 </ChatMarkdownLink>
-              ) : (
-                <ChatBlockRenderer
-                  block={{
-                    type: 'text',
-                    text:
-                      newerKind === 'bare located'
-                        ? 'page.html:18'
-                        : 'page.html',
-                  }}
-                  filePathMentionIndex={index}
-                  originChatTabId="race-chat"
-                />
-              )}
-            </ChatMarkdownFileTargetContext.Provider>,
+                {newerKind === 'markdown' ? (
+                  <ChatMarkdownLink
+                    href="/workspace/new.ts:18"
+                    originChatTabId="race-chat"
+                  >
+                    B
+                  </ChatMarkdownLink>
+                ) : (
+                  <ChatBlockRenderer
+                    block={{
+                      type: 'text',
+                      text:
+                        newerKind === 'bare located'
+                          ? 'page.html:18'
+                          : 'page.html',
+                    }}
+                    filePathMentionIndex={index}
+                    originChatTabId="race-chat"
+                  />
+                )}
+              </ChatMarkdownFileTargetContext.Provider>
+            </ChatLookProvider>,
           ),
         );
         const buttons = container.querySelectorAll('button');
@@ -3248,11 +3564,13 @@ describe('CAN-4275 located links', () => {
     try {
       act(() =>
         root.render(
-          <ChatMarkdownFileTargetContext.Provider value={scope}>
-            <ChatMarkdownLink href="/workspace/old.ts:150-160">
-              Old
-            </ChatMarkdownLink>
-          </ChatMarkdownFileTargetContext.Provider>,
+          <ChatLookProvider value="classic">
+            <ChatMarkdownFileTargetContext.Provider value={scope}>
+              <ChatMarkdownLink href="/workspace/old.ts:150-160">
+                Old
+              </ChatMarkdownLink>
+            </ChatMarkdownFileTargetContext.Provider>
+          </ChatLookProvider>,
         ),
       );
       await act(() =>
@@ -3260,13 +3578,15 @@ describe('CAN-4275 located links', () => {
       );
       act(() =>
         root.render(
-          <ChatMarkdownFileTargetContext.Provider
-            value={{ ...scope, worktreeId: 'new-worktree' }}
-          >
-            <ChatMarkdownLink href="/workspace/new.ts:150-160">
-              New
-            </ChatMarkdownLink>
-          </ChatMarkdownFileTargetContext.Provider>,
+          <ChatLookProvider value="classic">
+            <ChatMarkdownFileTargetContext.Provider
+              value={{ ...scope, worktreeId: 'new-worktree' }}
+            >
+              <ChatMarkdownLink href="/workspace/new.ts:150-160">
+                New
+              </ChatMarkdownLink>
+            </ChatMarkdownFileTargetContext.Provider>
+          </ChatLookProvider>,
         ),
       );
       await act(async () => {
@@ -3298,10 +3618,12 @@ describe('CAN-4275 located links', () => {
       try {
         act(() =>
           root.render(
-            <ChatBlockRenderer
-              block={{ type: 'text', text: 'page.html:150-160' }}
-              filePathMentionIndex={index}
-            />,
+            <ChatLookProvider value="classic">
+              <ChatBlockRenderer
+                block={{ type: 'text', text: 'page.html:150-160' }}
+                filePathMentionIndex={index}
+              />
+            </ChatLookProvider>,
           ),
         );
         await act(() =>
@@ -3320,12 +3642,266 @@ describe('CAN-4275 located links', () => {
   it('keeps external URLs and their port/fragment unchanged', () => {
     const href = 'https://example.com:8443/src/a.ts#L12-L20';
     const html = renderToStaticMarkup(
-      <ChatMarkdownFileTargetContext.Provider value={scope}>
-        <ChatMarkdownLink href={href}>External label</ChatMarkdownLink>
-      </ChatMarkdownFileTargetContext.Provider>,
+      <ChatLookProvider value="classic">
+        <ChatMarkdownFileTargetContext.Provider value={scope}>
+          <ChatMarkdownLink href={href}>External label</ChatMarkdownLink>
+        </ChatMarkdownFileTargetContext.Provider>
+      </ChatLookProvider>,
     );
     expect(html).toContain(`href="${href}"`);
     expect(html).toContain('External label');
     expect(html).not.toContain('<button');
+  });
+});
+
+describe('Smooth streaming (Labs)', () => {
+  beforeAll(() => preloadSmoothMarkdown());
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('keeps a smooth-streamed block mounted when it settles mid-turn', () => {
+    const text =
+      'The fix is in https://github.com/acme/app/pull/12 and it covers the port check.';
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const renderBlock = (settled: boolean): void => {
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <CanopyClientProvider client={createFakeClient().client}>
+              <SmoothStreamingProvider value>
+                <ChatBlockRenderer
+                  block={{ type: 'text', text }}
+                  streaming
+                  settled={settled}
+                />
+              </SmoothStreamingProvider>
+            </CanopyClientProvider>
+          </ChatLookProvider>,
+        );
+      });
+    };
+    try {
+      renderBlock(false);
+      for (let frame = 0; frame < 120; frame += 1) {
+        act(() => {
+          jest.advanceTimersByTime(16);
+        });
+      }
+      const paragraph = container.querySelector('p');
+      expect(paragraph).toBeInstanceOf(HTMLParagraphElement);
+      expect(paragraph?.textContent).toContain('covers the port check.');
+
+      // A later block arrives: this one settles while the turn still runs.
+      renderBlock(true);
+      expect(container.querySelector('p')).toBe(paragraph);
+      expect(container.textContent).toContain('covers the port check.');
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+});
+
+describe('ChatBlockRenderer Codex account model notice (CAN-4716)', () => {
+  const rawError =
+    "Error: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.";
+  const failure = {
+    kind: 'model_unsupported' as const,
+    model: 'gpt-6.1-sol',
+    modelLabel: '6.1 Sol',
+    fallbackModel: 'gpt-6-luna',
+    fallbackModelLabel: 'Luna 6.0',
+  };
+  const failedBlock: DisplayBlock = {
+    type: 'text',
+    text: rawError,
+    modelAccessFailure: failure,
+  };
+
+  function tabWith(
+    messages: ChatTab['messages'],
+    status: ChatTab['status'] = 'idle',
+  ): ChatTab {
+    return {
+      id: 'chat-1',
+      title: 'Chat',
+      messages,
+      status,
+      error: null,
+      createdAt: '2026-10-27T00:00:00.000Z',
+      queuedMessages: [],
+      planMode: false,
+      proposalMode: 'optional',
+      thinkingLevel: 'high',
+      modelConfig: {
+        thinkingLevel: 'high',
+        fastMode: false,
+        speed: 'standard',
+      },
+      fastModeExplicit: false,
+      model: 'gpt-6.1-sol',
+      providerType: 'codex',
+    };
+  }
+
+  const userMessage: ChatTab['messages'][number] = {
+    id: 'user-1',
+    role: 'user',
+    blocks: [{ type: 'text', text: 'Fix the build' }],
+    timestamp: 1,
+  };
+  const failedMessage: ChatTab['messages'][number] = {
+    id: 'failed-1',
+    // The reducer records the rejected turn as a system error row.
+    role: 'system',
+    blocks: [failedBlock],
+    timestamp: 2,
+  };
+
+  async function renderInStore(
+    tab: ChatTab,
+    stubs: {
+      sendMessage: jest.Mock;
+      setModelAndWait: jest.Mock;
+    },
+  ): Promise<{ container: HTMLDivElement; cleanup: () => void }> {
+    const originalState = useChatStore.getState();
+    useChatStore.setState({
+      ...stubs,
+      worktreeChats: {
+        'project-1/worktree-1': { activeTabId: tab.id, tabs: [tab] },
+      },
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <ChatBlockRenderer block={failedBlock} originChatTabId={tab.id} />,
+      );
+      await Promise.resolve();
+    });
+    return {
+      container,
+      cleanup: (): void => {
+        act(() => root.unmount());
+        container.remove();
+        useChatStore.setState({
+          sendMessage: originalState.sendMessage,
+          setModelAndWait: originalState.setModelAndWait,
+          worktreeChats: originalState.worktreeChats,
+        });
+      },
+    };
+  }
+
+  const button = (container: HTMLElement): HTMLButtonElement | null =>
+    container.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-codex-account-model-notice-use-fallback"]',
+    );
+
+  it('renders the notice instead of the raw error text', () => {
+    const html = render(failedBlock);
+
+    expect(html).toContain('data-testid="chat-codex-account-model-notice"');
+    expect(html).toContain('Your ChatGPT account can&#x27;t use 6.1 Sol.');
+    expect(html).not.toContain('is not supported when using Codex');
+  });
+
+  it('switches to the fallback model, then resends the failed turn', async () => {
+    const sendMessage = jest.fn().mockResolvedValue(undefined);
+    const setModelAndWait = jest.fn().mockResolvedValue(true);
+    const { container, cleanup } = await renderInStore(
+      tabWith([userMessage, failedMessage]),
+      { sendMessage, setModelAndWait },
+    );
+    try {
+      expect(button(container)?.disabled).toBe(false);
+      await act(async () => {
+        button(container)?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const target = {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      };
+      expect(setModelAndWait).toHaveBeenCalledWith('gpt-6-luna', target);
+      expect(sendMessage).toHaveBeenCalledWith(
+        'Fix the build',
+        undefined,
+        target,
+        'typed',
+        {},
+      );
+      expect(setModelAndWait.mock.invocationCallOrder[0]).toBeLessThan(
+        sendMessage.mock.invocationCallOrder[0] ?? 0,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not resend when the model switch is refused', async () => {
+    const sendMessage = jest.fn().mockResolvedValue(undefined);
+    const setModelAndWait = jest.fn().mockResolvedValue(false);
+    const { container, cleanup } = await renderInStore(
+      tabWith([userMessage, failedMessage]),
+      { sendMessage, setModelAndWait },
+    );
+    try {
+      await act(async () => {
+        button(container)?.click();
+        await Promise.resolve();
+      });
+      expect(setModelAndWait).toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('is disabled once a later message exists', async () => {
+    const stubs = {
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      setModelAndWait: jest.fn().mockResolvedValue(true),
+    };
+    const { container, cleanup } = await renderInStore(
+      tabWith([
+        userMessage,
+        failedMessage,
+        { ...userMessage, id: 'user-2', timestamp: 3 },
+      ]),
+      stubs,
+    );
+    try {
+      expect(button(container)?.disabled).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('is disabled while the chat is streaming', async () => {
+    const stubs = {
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      setModelAndWait: jest.fn().mockResolvedValue(true),
+    };
+    const { container, cleanup } = await renderInStore(
+      tabWith([userMessage, failedMessage], 'streaming'),
+      stubs,
+    );
+    try {
+      expect(button(container)?.disabled).toBe(true);
+    } finally {
+      cleanup();
+    }
   });
 });

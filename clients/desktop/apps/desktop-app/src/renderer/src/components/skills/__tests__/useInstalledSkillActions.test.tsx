@@ -19,12 +19,23 @@ jest.mock('@/hooks/useWorkspaceContextReset', () => ({
   },
 }));
 jest.mock('@/hooks/useShareAccess', () => ({
-  useShareAccess: (): { requestShare: jest.Mock; shareGateModal: null } => ({
-    requestShare: jest.fn(),
+  useShareAccess: (): {
+    requestShare: jest.Mock<void, [unknown, () => void]>;
+    shareGateModal: null;
+  } => ({
+    requestShare: jest.fn<void, [unknown, () => void]>((...args): void =>
+      args[1](),
+    ),
     shareGateModal: null,
   }),
 }));
-jest.mock('../ShareSkillModal', () => ({ ShareSkillModal: (): null => null }));
+let mockSharedSkill: unknown = null;
+jest.mock('../ShareSkillModal', () => ({
+  ShareSkillModal: ({ skill }: { skill: unknown }): null => {
+    mockSharedSkill = skill;
+    return null;
+  },
+}));
 jest.mock('../../shared', () => ({ DeleteConfirmModal: (): null => null }));
 
 import {
@@ -61,8 +72,8 @@ function makeSkill(
     description: 'A skill',
     sourceId: 'github:owner:repo',
     source: 'owner/repo',
-    sourceType: 'github',
     installedAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
     updateAvailable: false,
     ...overrides,
   };
@@ -422,6 +433,7 @@ describe('useInstalledSkillActions updates (CAN-4264)', () => {
     const check = deferred<{
       success: boolean;
       data?: Record<string, boolean>;
+      error?: string;
     }>();
     checkUpdates.mockReturnValueOnce(check.promise);
     const { current } = renderActions();
@@ -650,5 +662,36 @@ describe('useInstalledSkillActions updates (CAN-4264)', () => {
       updateMap: { [keyOf(skill)]: true },
     });
     expect(current().updateAvailable(skill)).toBe(false);
+  });
+});
+
+describe('useInstalledSkillActions share', () => {
+  it("opens Share with the skill's cloud share so a reopen finds it", () => {
+    const skill = makeSkill({
+      sourceId: 'custom:app',
+      remote: {
+        remoteId: 'b662dd63-86f5-4a02-8b4f-f335fcebea90',
+        accountId: 'account-1',
+        contentHash: 'hash-1',
+        shareScope: 'private',
+        sharedAt: '2026-10-23T00:00:00.000Z',
+      },
+    });
+    let latest: InstalledSkillActions | null = null;
+    function Harness(): ReactElement {
+      latest = useInstalledSkillActions({
+        onSkillsChanged: () => Promise.resolve(),
+      });
+      return latest.dialogs;
+    }
+    const root = createRoot(document.createElement('div'));
+    roots.push(root);
+    act(() => root.render(<Harness />));
+    act(() => latest?.requestShare(skill));
+    expect(mockSharedSkill).toEqual({
+      sourceId: skill.sourceId,
+      name: skill.name,
+      remote: skill.remote,
+    });
   });
 });

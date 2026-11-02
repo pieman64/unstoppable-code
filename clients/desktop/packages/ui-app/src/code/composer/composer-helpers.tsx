@@ -2,9 +2,9 @@
  * Composer decision logic shared by the shared `ChatComposer` and the web
  * composer today; desktop adopts it in slice 4.
  *
- * These are the pure parts of the portal composer: placeholder copy, usage
- * projection, execution-harness resolution, the thinking-chip cycle, and the
- * mobile overflow-menu build. They live here so both hosts (and the shared
+ * These are the pure parts of the portal composer: usage projection,
+ * execution-harness resolution, the thinking-chip cycle, and the mobile
+ * overflow-menu build. They live here so both hosts (and the shared
  * `ChatComposer`) answer the same questions the same way, and so each one is
  * unit-testable without mounting a composer around a jsdom Slate editor.
  *
@@ -36,41 +36,11 @@ import { PlanModeIcon, ThinkingIcon } from '@canopy/ui-shared/icons';
 import { FastModeIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 /**
- * The composer placeholder, which is capability-derived and now also
- * width-derived.
- *
- * The desktop strings name every affordance the composer has, which is right
- * on a wide row that can show them. At 390px "Send a message, @ to mention, /
- * for skills and commands" is longer than the input, so it truncates — and a
- * truncated placeholder teaches nothing while looking broken. The phone forms
- * lead with the ask and keep only the affordance a visitor cannot discover any
- * other way.
- *
- * The bare "Send a message" fallback has no phone form on purpose: it already
- * fits, and giving it one would mean two strings for a case with nothing to
- * distinguish.
- *
- * Exported for the same reason {@link buildComposerOverflowMenuItems} is: it is
- * pure, and the alternative is asserting a placeholder through a jsdom-mocked
- * Slate editor that never receives it.
+ * The default placeholder lives in `@canopy/ui-shared` so the desktop composer,
+ * the web composer, and the shared editor all word it from one place. Kept
+ * here as a re-export so existing `@canopy/ui-app` imports keep working.
  */
-export function defaultChatPlaceholder(
-  slashEnabled: boolean,
-  fileMentionsEnabled: boolean,
-  isPhone: boolean = false,
-): string {
-  if (isPhone) {
-    if (slashEnabled) return 'Ask anything, / for skills';
-    if (fileMentionsEnabled) return 'Ask anything';
-    return 'Send a message';
-  }
-  if (slashEnabled && fileMentionsEnabled) {
-    return 'Send a message, @ to mention, / for skills and commands';
-  }
-  if (fileMentionsEnabled) return 'Send a message, @ to mention';
-  if (slashEnabled) return 'Send a message, / for skills and commands';
-  return 'Send a message';
-}
+export { defaultChatPlaceholder } from '@canopy/ui-shared/lib';
 
 /**
  * Before the first answer no harness is bound yet, so a Codex model is

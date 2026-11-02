@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
+import { selectProfileRoles } from './settingsProfileRoles.mjs';
+
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
@@ -14,18 +14,6 @@ import {
   getScenarioActivity,
   registerScenario,
 } from './seeders/index.mjs';
-
-/** Skips AI providers and repo setup to the tools step's category row. */
-async function openCategoryRow(window) {
-  // Home is active here, so the sidebar card is not mounted: step the queue
-  // with the Home card's own forward arrows.
-  const app = new CanopyAppDriver(window);
-  for (const entry of ['agent-connections', 'add-repo']) {
-    await expect(app.homeChecklistRow(entry)).toBeVisible();
-    await app.homeChecklistForward(entry).click();
-  }
-  await expect(window.getByTestId('home-onboarding-categorys')).toBeVisible();
-}
 
 const CLOUD_API_KEY = 'csk_onboarding_profile_sync_e2e';
 const SERIAL_ROLE_SAVE_API_KEY = 'csk_onboarding_serial_role_save_e2e';
@@ -43,13 +31,7 @@ test('assistant role changes replace earlier multi-role answers locally and in t
     await app.waitForShell();
     await connectMockCloudAccount(window, apiKey);
     await window.getByTestId('sidebar-create-task').click();
-    await openCategoryRow(window);
-    await window
-      .getByTestId('home-onboarding-category-software-engineer')
-      .click();
-    await window
-      .getByTestId('home-onboarding-category-product-manager')
-      .click();
+    await selectProfileRoles(window, ['software-engineer', 'product-manager']);
     await expect
       .poll(
         async () =>
@@ -85,16 +67,6 @@ test('assistant role changes replace earlier multi-role answers locally and in t
       window.getByTestId('settings-profile-role-tile-designer'),
     ).toBeVisible();
     await app.closeSettings();
-    // The tools step stays for a nontechnical role (it carries the category
-    // row), and that row reflects the assistant's change.
-    const tools = window.getByTestId('home-onboarding-suggestion-github');
-    await expect(tools).toBeVisible();
-    await expect(
-      tools.getByTestId('home-onboarding-category-designer'),
-    ).toHaveAttribute('aria-pressed', 'true');
-    await expect(
-      tools.getByTestId('home-onboarding-category-software-engineer'),
-    ).toHaveAttribute('aria-pressed', 'false');
     await window.reload();
     await app.waitForShell();
     expect(
@@ -106,7 +78,7 @@ test('assistant role changes replace earlier multi-role answers locally and in t
   }
 });
 
-test('syncs every selected Home role to the cloud and reconciles them after relaunch', async () => {
+test('syncs selected Settings roles to the cloud and reconciles them after relaunch', async () => {
   test.setTimeout(120_000);
   const apiKey = 'csk_onboarding_multi_role_sync_e2e';
   await registerScenario(DEFAULT_MOCK_BASE_URL, apiKey, {});
@@ -120,14 +92,7 @@ test('syncs every selected Home role to the cloud and reconciles them after rela
     await new CanopyAppDriver(window).waitForShell();
     await connectMockCloudAccount(window, apiKey);
     await window.getByTestId('sidebar-create-task').click();
-    await openCategoryRow(window);
-    await window
-      .getByTestId('home-onboarding-category-software-engineer')
-      .click();
-    await window.getByTestId('home-onboarding-category-designer').click();
-    await expect(
-      window.getByTestId('home-onboarding-category-designer'),
-    ).toHaveAttribute('aria-pressed', 'true');
+    await selectProfileRoles(window, ['software-engineer', 'designer']);
     const roleWrites = async () => {
       const { activity } = await getScenarioActivity(
         DEFAULT_MOCK_BASE_URL,

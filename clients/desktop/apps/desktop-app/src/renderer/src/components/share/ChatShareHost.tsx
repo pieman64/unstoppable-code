@@ -300,8 +300,9 @@ export function ChatShareHost(): JSX.Element {
               useShareRequestStore.getState().request?.id !== request.id
             )
               return;
+            // The dialog stays open on its success notice; Done finishes
+            // the request through `onClose`.
             notifyShareCompleted(request);
-            finish(request);
           }}
         />
       </Suspense>,
@@ -321,8 +322,11 @@ export function ChatShareHost(): JSX.Element {
       )
         return;
       resolveCompletedNudge(request);
+      // The dialog stays open on its success notice; Done finishes the
+      // request through `onClose`, which refreshes the chat's share data.
+      // Refreshing here would unsettle the inventory this dialog resolves
+      // from and remount it without its success notice.
       notifyShareCompleted(request);
-      finish(request);
     };
     dialog = createPortal(
       // Keyed by request so a replacement never inherits dialog state.

@@ -5,6 +5,7 @@ import {
 } from '@canopy/protocol/installed-items';
 import { pruneInstalledItemRefs } from '../installed-items/installed-item-ref-prune';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { detachedWorkCallback } from '@canopy/desktop-shared/node/lib/detached-work';
 import type { W5Resource } from '@canopy/desktop-shared/node/w5-commit-log';
 import type {
   ChatTabPluginSelections,
@@ -24,6 +25,8 @@ import { getProjectPluginDefaultsRevision } from '../plugins/plugin-defaults-rev
 import {
   projectPluginDefaultsWritten,
   projectPluginLayerChanged,
+  projectPluginLayerSettled,
+  projectPluginLayerUnsettled,
   reconcileProjectPluginDefaults,
 } from '../plugins/project-plugin-defaults-cache';
 import { logMainProcessWarn } from './main-process-logging';
@@ -39,7 +42,12 @@ import {
   W5RevisionConflictError,
   withW5Commit,
 } from './w5-commit-log-file-store';
-import { afterW5Commit, w5CommitsSettling } from './w5-commit-scope';
+import {
+  afterW5Commit,
+  currentW5CommitScope,
+  outsideW5CommitScope,
+  w5CommitsSettling,
+} from './w5-commit-scope';
 import { createW5SingleDecisionOperation } from './w5-single-decision-operation';
 import { WORKSPACE_MANIFEST_STORAGE } from './w5-storage';
 import { WorkspaceConfigUnreadableError } from './workspace-manifest-repository';
@@ -65,7 +73,12 @@ export type WorkspacePluginsSource =
   /** `mcp-servers:rewrite-refs`. */
   | 'mcp_server_move'
   /** `plugins:removeMarketplace` and `portal.marketplace.remove`. */
-  | 'marketplace_removal';
+  | 'marketplace_removal'
+  /**
+   * A fork's capability package install merging its skills into the fork
+   * destination's defaults, and that install's compensation (CAN-4655).
+   */
+  | 'shared_container_fork';
 
 /** One recommendation the caller installed and matched in the catalog. */
 export type RecommendedPluginSelection =
@@ -100,7 +113,15 @@ export type WorkspacePluginsChange =
       to: McpServerRef;
     }
   /** Drop every plugin ref of a removed marketplace. */
-  | { kind: 'pruneMarketplace'; marketplaceId: string };
+  | { kind: 'pruneMarketplace'; marketplaceId: string }
+  /**
+   * Remove exactly these selections from the current defaults, keeping every
+   * other one: undoes what a `selectRecommended` added (CAN-4655).
+   */
+  | {
+      kind: 'removeSelections';
+      selections: readonly RecommendedPluginSelection[];
+    };
 
 /** The user changes, which take an optional revision and key. */
 export type WorkspacePluginsUserChange = Extract<
@@ -341,6 +362,37 @@ function selectRecommended(
   config.recommendedPluginOptOutKeys = keys.length > 0 ? keys : undefined;
 }
 
+/** Reports whether any of the named selections was a default. */
+function removeSelections(
+  config: WorkspaceConfigFile,
+  change: Extract<WorkspacePluginsChange, { kind: 'removeSelections' }>,
+): boolean {
+  if (!config.defaultPluginSelections) return false;
+  const selections = normalizeDefaultPluginSelections(
+    config.defaultPluginSelections,
+  );
+  const skills = new Set<string>();
+  const plugins = new Set<string>();
+  for (const selection of change.selections) {
+    if (selection.kind === 'skill')
+      skills.add(`${selection.sourceId}\0${selection.skillName}`);
+    else plugins.add(`${selection.marketplaceId}\0${selection.pluginName}`);
+  }
+  const skillRefs = selections.skillRefs.filter(
+    (ref) => !skills.has(`${ref.sourceId}\0${ref.skillName}`),
+  );
+  const pluginRefs = selections.pluginRefs.filter(
+    (ref) => !plugins.has(`${ref.marketplaceId}\0${ref.pluginName}`),
+  );
+  if (
+    skillRefs.length === selections.skillRefs.length &&
+    pluginRefs.length === selections.pluginRefs.length
+  )
+    return false;
+  config.defaultPluginSelections = { ...selections, skillRefs, pluginRefs };
+  return true;
+}
+
 /** Reports whether any default or turned-off ref named the moved server. */
 function replaceMcpServerRefs(
   config: WorkspaceConfigFile,
@@ -377,6 +429,8 @@ function applyChange(
       return true;
     case 'replaceMcpServerRefs':
       return replaceMcpServerRefs(config, change);
+    case 'removeSelections':
+      return removeSelections(config, change);
   }
 }
 
@@ -401,6 +455,7 @@ function validateChange(change: WorkspacePluginsChange): void {
     }
     case 'selectRecommended':
     case 'replaceMcpServerRefs':
+    case 'removeSelections':
       return;
     case 'pruneMarketplace':
       if (change.marketplaceId.length === 0) throw invalid;
@@ -600,13 +655,13 @@ async function reconcilePluginDefaults(
  * plugin layer (`core.workspace.cowork.update`'s preset-derived defaults): a
  * failed attempt (`replayed: false`) or a replay. Its outcome carries no
  * selections, so a replay that finds the manifest removed leaves the
- * removal to its remover.
+ * removal to its remover. Resolves to whether a read decided it.
  */
-export async function reconcileManifestPluginDefaults(
+export function reconcileManifestPluginDefaults(
   workspaceId: string,
   replayed: boolean,
-): Promise<void> {
-  await reconcilePluginDefaults(
+): Promise<boolean> {
+  return reconcilePluginDefaults(
     workspaceId,
     replayed ? { owed: null } : undefined,
   );
@@ -729,6 +784,124 @@ async function updateUserChange(
 }
 
 /**
+ * Workspaces with an unkeyed change of this process that failed after it may
+ * have written (a lost response), each with the sequence of its latest such
+ * failure. No receipt replays an unkeyed change, and its decision may apply
+ * after the failure's own reconcile or while that reconcile cannot read the
+ * manifest. Until the next change of the workspace that succeeds reconciles
+ * again, chat reads skip the cached layer and request a reconcile when they
+ * find a layer other than the one served. Process-local, like the cached
+ * layer and revision.
+ */
+const unkeyedOutcomeUnknown = new Map<string, number>();
+let unkeyedFailures = 0;
+
+/**
+ * A failure sequence the reconcile settles once it decides, if it is still
+ * the workspace's latest; null settles none.
+ */
+type Settles = number | null;
+
+function laterSettles(a: Settles, b: Settles): Settles {
+  return a === null ? b : b === null ? a : Math.max(a, b);
+}
+
+/**
+ * Each workspace's background reconcile, with what a rerun requested while
+ * it runs settles. Requests while it runs coalesce into one rerun after it.
+ */
+const backgroundReconciles = new Map<string, { rerun?: Settles }>();
+
+/**
+ * Starts the reconcile off the caller's path: it waits for other commits of
+ * the manifest to finish their post-commit work, which has no time limit and
+ * may be the caller's own.
+ */
+function reconcileInBackground(workspaceId: string, settles: Settles): void {
+  const running = backgroundReconciles.get(workspaceId);
+  if (running) {
+    running.rerun =
+      running.rerun === undefined
+        ? settles
+        : laterSettles(running.rerun, settles);
+    return;
+  }
+  const state: { rerun?: Settles } = {};
+  backgroundReconciles.set(workspaceId, state);
+  detachedWorkCallback(() =>
+    outsideW5CommitScope(async (): Promise<void> => {
+      let next: Settles | undefined = settles;
+      try {
+        while (next !== undefined) {
+          const settling = next;
+          delete state.rerun;
+          if (
+            (await reconcilePluginDefaults(workspaceId)) &&
+            settling !== null &&
+            unkeyedOutcomeUnknown.get(workspaceId) === settling
+          ) {
+            unkeyedOutcomeUnknown.delete(workspaceId);
+            projectPluginLayerSettled(getWorkspaceConfigPath(workspaceId));
+          }
+          next = state.rerun;
+        }
+      } catch (error) {
+        // The mark stays set, so a later request reconciles again.
+        logMainProcessWarn(
+          '[workspace-plugins] background plugin defaults reconcile failed',
+          { workspaceId, error },
+        );
+      } finally {
+        backgroundReconciles.delete(workspaceId);
+      }
+    }),
+  )();
+}
+
+/** Refusals that prove the change wrote nothing. */
+function refusedBeforeWriting(error: unknown): boolean {
+  return (
+    error instanceof WorkspacePluginsRefusedError ||
+    error instanceof W5FileWriteRefusedError ||
+    error instanceof W5RevisionConflictError
+  );
+}
+
+/**
+ * Runs one change, reconciling the cached plugin layer in the background
+ * after an unkeyed failure that may have written (CAN-4417) and after the
+ * next change that follows it. Inside another commit scope its owner settles
+ * the outcome.
+ */
+async function withUnkeyedOutcomeReconcile(
+  workspaceId: string,
+  unkeyed: boolean,
+  run: () => Promise<WorkspacePluginsUpdateOutcome>,
+): Promise<WorkspacePluginsUpdateOutcome> {
+  if (currentW5CommitScope()) return run();
+  const owed = unkeyedOutcomeUnknown.get(workspaceId);
+  let outcome: WorkspacePluginsUpdateOutcome;
+  try {
+    outcome = await run();
+  } catch (error) {
+    // Its post-commit refresh may have run before the decision applied.
+    if (unkeyed && !refusedBeforeWriting(error)) {
+      unkeyedFailures += 1;
+      unkeyedOutcomeUnknown.set(workspaceId, unkeyedFailures);
+      projectPluginLayerUnsettled(getWorkspaceConfigPath(workspaceId), () =>
+        reconcileInBackground(workspaceId, null),
+      );
+      reconcileInBackground(workspaceId, null);
+    }
+    throw error;
+  }
+  // Its manifest read recovered the commit log first, after the earlier
+  // decision applied or was lost.
+  if (owed !== undefined) reconcileInBackground(workspaceId, owed);
+  return outcome;
+}
+
+/**
  * The keyed marketplace prune of one workspace: its key is derived from the
  * fan-out request ID and the workspace (A25(b)); there is no expected
  * revision.
@@ -757,7 +930,9 @@ async function updatePruneMarketplace(
  * global selections and recommendation opt-outs, from the settings dialogs
  * (`workspace:save-default-plugins`, `project:save-default-plugins`),
  * recommended plugin selection (`recommended-plugins:apply`), the MCP server
- * move (`mcp-servers:rewrite-refs`) and marketplace removal.
+ * move (`mcp-servers:rewrite-refs`), marketplace removal, and a fork's
+ * capability install adding its skills (`selectRecommended`) and its
+ * compensation removing them again (`removeSelections`).
  *
  * The change is applied to the manifest read inside the workspace's write
  * queue, so a repository, ownership or other settings change committed in the
@@ -773,8 +948,11 @@ async function updatePruneMarketplace(
  * it releases the key and the retry normalizes again, which leaves already
  * normalized chats alone; a normalization failure leaves a keyed attempt
  * recovery-required. A marketplace prune given its fan-out's request ID is
- * keyed per workspace (CAN-4717); the server move and an unkeyed prune stay
- * on their own paths. The operation stays unregistered.
+ * keyed per workspace (CAN-4717); the server move, unkeyed prune and selection
+ * removal stay on their own paths. An unkeyed change that fails after it may
+ * have written reconciles the cached plugin layer in the background, as does
+ * the next change of that workspace that succeeds (CAN-4417); the writes are
+ * unchanged. The operation stays unregistered.
  */
 export async function updateWorkspacePlugins(
   request: WorkspacePluginsUserChangeRequest,
@@ -793,13 +971,15 @@ export async function updateWorkspacePlugins(
   validateId(workspaceId, 'workspaceId');
   validateChange(change);
 
-  let outcome: WorkspacePluginsUpdateOutcome;
+  let run: () => Promise<WorkspacePluginsUpdateOutcome>;
+  let unkeyed = true;
   // Only the prune reads a fan-out request ID; it and the server move never
   // read a key or revision.
   if (change.kind === 'pruneMarketplace') {
     const { fanOutRequestId } = request;
     if (fanOutRequestId === undefined) {
-      outcome = await pruneMarketplace(workspaceId, change.marketplaceId);
+      run = (): Promise<WorkspacePluginsUpdateOutcome> =>
+        pruneMarketplace(workspaceId, change.marketplaceId);
     } else {
       // Only marketplace removal keys a prune, which fixes its receipt caller.
       if (
@@ -811,20 +991,29 @@ export async function updateWorkspacePlugins(
           'invalid-change',
           'Invalid plugins change.',
         );
-      outcome = await updatePruneMarketplace(
-        workspaceId,
-        change.marketplaceId,
-        fanOutRequestId,
-      );
+      unkeyed = false;
+      run = (): Promise<WorkspacePluginsUpdateOutcome> =>
+        updatePruneMarketplace(
+          workspaceId,
+          change.marketplaceId,
+          fanOutRequestId,
+        );
     }
   } else if (
     change.kind === 'replaceMcpServerRefs' ||
-    change.kind === 'pruneInstalledItem'
+    change.kind === 'pruneInstalledItem' ||
+    change.kind === 'removeSelections'
   ) {
-    outcome = await updatePluginsConfig(workspaceId, change);
+    run = (): Promise<WorkspacePluginsUpdateOutcome> =>
+      updatePluginsConfig(workspaceId, change);
   } else {
-    outcome = await updateUserChange({ ...request, change });
+    unkeyed =
+      request.idempotencyKey === undefined &&
+      request.expectedRevision === undefined;
+    run = (): Promise<WorkspacePluginsUpdateOutcome> =>
+      updateUserChange({ ...request, change });
   }
+  const outcome = await withUnkeyedOutcomeReconcile(workspaceId, unkeyed, run);
 
   if (SETTINGS_SOURCES.has(source)) {
     // Loaded on use: the marketplace prune runs this module inside the

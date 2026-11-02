@@ -26,12 +26,14 @@ import {
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';
-import { ChatComposerToolbarChip } from '@canopy/ui-shared';
+import {
+  ChatComposerToolbarChip,
+  DrawerWatcherControl,
+} from '@canopy/ui-shared';
 import { AppAdvisorWatcherIcon, WatcherEyeIcon } from '@canopy/ui-shared/icons';
 import { useChatSidebarStore } from '@/stores/chatSidebarStore';
 import {
   formatGitHubRunSampleLabel,
-  formatRelativeTime,
   githubRunSampleOverflow,
   githubWatcherTargetDisplay,
   liveWatcherDestinationTitle,
@@ -40,6 +42,7 @@ import {
   watcherOwnerDelegateDisplay,
   watcherTargetDisplay,
 } from './watcherDisplay';
+import { formatRelativeTime } from '@/lib/format';
 import { WatcherManagementModal } from './WatcherManagementModal';
 
 export interface WatcherManagementButtonProps {
@@ -51,6 +54,8 @@ export interface WatcherManagementButtonProps {
   modalEmptyMessage: string;
   /** Accessible label for the icon button. */
   ariaLabel: string;
+  /** Optional visible label for the drawer action. */
+  actionLabel?: string;
   /** `data-testid` for the button. */
   dataTestId: string;
   /** Icon used in the button. Defaults to the target-side eye tracking icon. */
@@ -65,7 +70,7 @@ export interface WatcherManagementButtonProps {
    * glyph and the count past one. `icon` (the default) is the compact icon
    * button other surfaces use.
    */
-  appearance?: 'icon' | 'composer-chip';
+  appearance?: 'icon' | 'composer-chip' | 'drawer';
   /**
    * Optional override for the jump-to-chat handler. Forwarded to the modal.
    * Useful for the Automations Watchers tab which wants a different
@@ -88,6 +93,7 @@ export function WatcherManagementButton({
   modalTitle,
   modalEmptyMessage,
   ariaLabel,
+  actionLabel,
   dataTestId,
   icon = 'eye',
   tooltipTitle = 'Active watchers',
@@ -184,7 +190,7 @@ export function WatcherManagementButton({
   if (watchers.length === 0) return null;
 
   const buttonClasses = [
-    'focus-ring inline-flex h-7 items-center justify-center gap-1 rounded-lg border border-fg-info/30 bg-info-subtle px-1.5 fg-info transition hover:bg-info-subtle/80',
+    'focus-ring inline-flex h-7 items-center justify-center gap-1 rounded-lg border border-fg-info/30 bg-info-subtle px-1.5 fg-info transition-colors hover:bg-info-subtle/80',
     watchers.length === 1 ? 'w-7 px-0' : '',
     className ?? '',
   ]
@@ -195,6 +201,57 @@ export function WatcherManagementButton({
     setTooltipOpen(false);
     setModalOpen(true);
   };
+
+  if (appearance === 'drawer')
+    return (
+      <>
+        <DrawerWatcherControl
+          count={watchers.length}
+          label={actionLabel}
+          ariaLabel={ariaLabel}
+          dataTestId={dataTestId}
+          heading={tooltipTitle}
+          onClick={openModal}
+          rows={visibleTooltipRows.map((watcher, index) => {
+            const target = watcherTargetDisplay(watcher.target);
+            const github = githubWatcherTargetDisplay(watcher.target);
+            const sample =
+              github?.sample.slice(0, MAX_TOOLTIP_SAMPLE_RUNS) ?? [];
+            const owner = watcher.ownerDelegate
+              ? watcherOwnerDelegateDisplay(watcher.ownerDelegate)
+              : null;
+            const more = github
+              ? githubRunSampleOverflow(github, sample.length)
+              : 0;
+            return {
+              id: watcher.id,
+              name: watcher.label || target.title,
+              details: [
+                triggerTitle(watcher.trigger),
+                `Subscribed chat: ${watcherDestinationDisplay(watcher.destination, liveDestinationTitles[index])}`,
+                ...(owner
+                  ? [
+                      `Delegate: ${owner.name}${owner.detail ? ` · ${owner.detail}` : ''}`,
+                    ]
+                  : []),
+                ...(github?.subtitle ? [github.subtitle] : []),
+                ...sample.map(formatGitHubRunSampleLabel),
+                ...(more > 0 ? [`+${more} more`] : []),
+              ],
+            };
+          })}
+        />
+        {modalOpen && (
+          <WatcherManagementModal
+            title={modalTitle}
+            emptyMessage={modalEmptyMessage}
+            watchers={watchers}
+            onClose={closeModal}
+            onJumpToChat={onJumpToChat}
+          />
+        )}
+      </>
+    );
 
   return (
     <>

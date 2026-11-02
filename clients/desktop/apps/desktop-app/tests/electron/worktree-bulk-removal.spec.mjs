@@ -19,8 +19,10 @@ import {
 // selection, shown as a highlight with no checkbox; Esc, the menu's Clear
 // selection, a plain click on a row, and a click anywhere else end it.
 // Dragging a selected row carries the whole selection into a group. A
-// selected row's right-click menu opens one confirm; the batch runs through
-// the real archive path, one worktree at a time. Archive keeps the branch
+// selected row's right-click menu opens one confirm, which closes at once:
+// the batch runs in the background through the real archive path, one
+// worktree at a time, with queued rows inert and a rail notice that shows
+// progress and can stop what has not started. Archive keeps the branch
 // (Preserve local) and locks the retained container; Delete applies the
 // project's retention window and removes the local branch (Delete local).
 //
@@ -111,7 +113,8 @@ test.describe('bulk worktree removal (CAN-3975)', () => {
     await rowFrame(id).click({ button: 'right' });
     await menuItem(`bulk-${action}`).click();
   };
-  const [bulkOne] = RETENTION_BULK_WORKTREE_IDS;
+  const notice = () => window.getByTestId('worktree-batch-removal-notice');
+  const [bulkOne, bulkTwo] = RETENTION_BULK_WORKTREE_IDS;
   // A click in the main content, away from the rail and its menus.
   const clickOutsideRail = async () => {
     const { width, height } = await window.evaluate(() => ({
@@ -152,7 +155,7 @@ test.describe('bulk worktree removal (CAN-3975)', () => {
     const select = menuItem('toggle-selection');
     await expect(select).toContainText('Select');
     await expect(select.getByTestId('worktree-menu-item-shortcut')).toHaveText(
-      process.platform === 'darwin' ? '⌘ Click' : 'Ctrl+Click',
+      process.platform === 'darwin' ? '⌘ Click' : 'Ctrl Click',
     );
     await select.click();
     await expectSelected('retain-archive', true);
@@ -259,9 +262,118 @@ test.describe('bulk worktree removal (CAN-3975)', () => {
     await expect(selectedRows()).toHaveCount(0);
   });
 
-  test('archives a batch with Preserve local, keeping each branch', async () => {
+  test('pins, unpins, and hides a selection from its menu', async () => {
+    await rowFrame(bulkOne).click({ modifiers: [MODIFIER] });
+    await rowFrame(bulkTwo).click({ modifiers: [MODIFIER] });
+    await expect(selectedRows()).toHaveCount(2);
+
+    await rowFrame(bulkTwo).click({ button: 'right' });
+    await expect(menuItem('bulk-pin')).toHaveText(/Pin 2 worktrees/);
+    await menuItem('bulk-pin').click();
+    await expect(selectedRows()).toHaveCount(2);
+    await rowFrame(bulkTwo).click({ button: 'right' });
+    await expect(menuItem('bulk-pin')).toHaveText(/Unpin 2 worktrees/);
+    await menuItem('bulk-pin').click();
+    await expect(selectedRows()).toHaveCount(2);
+
+    // Hide both: they leave the list and the selection for the Hidden section.
+    await rowFrame(bulkTwo).click({ button: 'right' });
+    await expect(menuItem('bulk-hide')).toHaveText(/Hide 2 worktrees/);
+    await menuItem('bulk-hide').click();
+    await expect(selectedRows()).toHaveCount(0);
+    const hiddenSection = window.getByTestId('hidden-worktrees-section');
+    await expect(hiddenSection).toBeVisible();
+
+    // Show them again so the removal flows below find them. Pinning and
+    // showing reorder rows, so this uses the rows whose later removals don't
+    // depend on order.
+    await window
+      .getByTestId(`hidden-worktrees-toggle-${RETENTION_WORKSPACE_ID}`)
+      .click();
+    for (const id of [bulkOne, bulkTwo]) {
+      await rowFrame(id).hover();
+      await rowFrame(id).getByTestId('worktree-show-button').click();
+    }
+    await expect(hiddenSection).toHaveCount(0);
+    await expect(rowFrame(bulkOne)).toBeVisible();
+    await expect(rowFrame(bulkTwo)).toBeVisible();
+  });
+
+  test('confirm closes the dialog and the user keeps working while the batch runs', async () => {
+    await window.evaluate(() =>
+      window.__canopyArchivedContainersTestApi?.holdNextPendingRemoval(),
+    );
     await rowFrame('retain-archive').click({ modifiers: [MODIFIER] });
     await rowFrame('retain-hover').click({ modifiers: [MODIFIER] });
+    await bulkAction('retain-hover', 'archive');
+    await dialog()
+      .getByTestId('worktree-batch-removal-dialog-preserve-branch')
+      .click();
+    // The dialog is gone at once; the selection is cleared.
+    await expect(dialog()).toHaveCount(0);
+    await expect(selectedRows()).toHaveCount(0);
+    await window.evaluate(() =>
+      window.__canopyArchivedContainersTestApi?.waitForHeldPendingRemoval(),
+    );
+    await expect(notice()).toContainText('Archiving worktrees');
+    await expect(notice()).toContainText('0 of 2 done');
+    // Pinned with the rail's footer, not scrolled away with the rows.
+    await expect(
+      window
+        .getByTestId('sidebar-scroll-container')
+        .getByTestId('worktree-batch-removal-notice'),
+    ).toHaveCount(0);
+    await expect(notice()).toBeInViewport({ ratio: 1 });
+    // Queued rows are inert; the rest of the rail still works.
+    await expect(rowFrame('retain-archive')).toHaveAttribute('inert', '');
+    await expect(rowFrame('retain-hover')).toHaveAttribute('inert', '');
+    // The row still waiting names its removal; the one in flight does not.
+    await expect(rowFrame('retain-hover')).toContainText(
+      'Queued for archiving',
+    );
+    await expect(rowFrame('retain-archive')).not.toContainText('Queued');
+    await rowFrame('retain-delete').click();
+    // The row frame marks the open worktree with data-selected.
+    await expect(rowFrame('retain-delete')).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
+    // Stop after the in-flight one, then let it finish.
+    await notice().getByTestId('worktree-batch-removal-notice-stop').click();
+    await expect(notice()).toContainText('Stopping…');
+    await window.evaluate(() =>
+      window.__canopyArchivedContainersTestApi?.releaseHeldPendingRemoval(),
+    );
+    await expect(rowFrame('retain-archive')).toHaveCount(0, {
+      timeout: 60_000,
+    });
+    await expect(notice()).toContainText('Archived 1 of 2 worktrees', {
+      timeout: 60_000,
+    });
+    await expect(notice()).toContainText('1 not started');
+    await expect(rowFrame('retain-hover')).toBeVisible();
+    await expect(rowFrame('retain-hover')).not.toHaveAttribute('inert');
+    await expect(rowFrame('retain-hover')).not.toContainText('Queued');
+    // Details shows the dropped row as not started; Done clears the notice.
+    await notice().getByTestId('worktree-batch-removal-notice-details').click();
+    await expect(dialog().locator('[data-phase="results"]')).toBeVisible();
+    await expect(dialog()).toContainText('1 archived, 1 not started');
+    await dialog().getByTestId('worktree-batch-removal-dialog-done').click();
+    await expect(dialog()).toHaveCount(0);
+    await expect(notice()).toHaveCount(0);
+    // The archive itself completed like a single Preserve local archive.
+    await expect
+      .poll(() => existsSync(manifestPath(userDataDir, 'retain-archive')), {
+        timeout: 60_000,
+      })
+      .toBe(true);
+    // The main checkout, so no row the later tests drive is left open.
+    await rowFrame('demo-main').click();
+  });
+
+  test('archives a batch with Preserve local, keeping each branch', async () => {
+    await rowFrame('retain-hover').click({ modifiers: [MODIFIER] });
+    await rowFrame(bulkTwo).click({ modifiers: [MODIFIER] });
     await expect(selectedRows()).toHaveCount(2);
     await bulkAction('retain-hover', 'archive');
     await expect(dialog()).toContainText('Archive 2 worktrees?');
@@ -270,10 +382,12 @@ test.describe('bulk worktree removal (CAN-3975)', () => {
       .getByTestId('worktree-batch-removal-dialog-preserve-branch')
       .click();
 
-    // Full success closes the dialog and clears the selection.
+    // The confirm closes the dialog and clears the selection; full success
+    // leaves no notice behind once the batch is done.
     await expect(dialog()).toHaveCount(0, { timeout: 120_000 });
     await expect(selectedRows()).toHaveCount(0);
-    for (const id of ['retain-archive', 'retain-hover']) {
+    await expect(notice()).toHaveCount(0, { timeout: 120_000 });
+    for (const id of ['retain-hover', bulkTwo]) {
       await expect(rowFrame(id)).toHaveCount(0, { timeout: 60_000 });
       await expect
         .poll(() => existsSync(workspacePath(userDataDir, 'worktrees', id)), {
@@ -291,7 +405,7 @@ test.describe('bulk worktree removal (CAN-3975)', () => {
       expect(typeof manifest.lockedAt).toBe('string');
     }
     expect(localBranches(gitDir)).toEqual(
-      expect.arrayContaining(['retain-archive', 'retain-hover']),
+      expect.arrayContaining(['retain-hover', bulkTwo]),
     );
     // The untouched worktree stays.
     await expect(rowFrame('retain-delete')).toBeVisible();
@@ -310,6 +424,7 @@ test.describe('bulk worktree removal (CAN-3975)', () => {
       .click();
 
     await expect(dialog()).toHaveCount(0, { timeout: 120_000 });
+    await expect(notice()).toHaveCount(0, { timeout: 120_000 });
     for (const id of ['retain-delete', bulkOne]) {
       await expect(rowFrame(id)).toHaveCount(0, { timeout: 60_000 });
       await expect

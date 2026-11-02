@@ -15,6 +15,8 @@
  * later tickets.
  */
 export * from './capability';
+export { TurnFiles } from './code/TurnFiles';
+export * from './code/subagents/LifetimeLimitNoticeContainer';
 export {
   CHAT_VISUAL_TEST_IDS,
   ChatVisualHostProvider,
@@ -112,6 +114,17 @@ export {
 } from './code/ChatTranscript';
 export { ChatComposer, type ChatComposerProps } from './code/ChatComposer';
 export {
+  QueuedMessageStack,
+  QUEUED_MESSAGE_REORDER_ERROR,
+  type QueuedMessageStackProps,
+} from './code/QueuedMessageStack';
+export {
+  ComposerWorkDrawer,
+  type ComposerWorkDrawerBackground,
+  type ComposerWorkDrawerSections,
+  type ComposerWorkDrawerProps,
+} from './code/ComposerWorkDrawer';
+export {
   ChatMessageView,
   type ChatMessageViewProps,
 } from './code/ChatMessageView';
@@ -125,14 +138,38 @@ export {
   type ChatPartViewProps,
   AskUserQuestionInteractionProvider,
   DeliverableInteractionProvider,
+  ModelAccessRecoveryInteractionProvider,
   TurnWorkingStatusProvider,
   useAskUserQuestionInteraction,
+  useModelAccessRecoveryInteraction,
   useTurnWorkingStatus,
   type AskUserQuestionInteraction,
+  type ModelAccessRecoveryInteraction,
   type AskUserQuestionRequestStatus,
   type DeliverableInteraction,
   type DeliverableRef,
 } from './code/ChatPartView';
+export {
+  DeferredToolOutput,
+  transcriptFieldUnavailable,
+  ToolOutputReaderContext,
+  type ToolOutputPage,
+  type ToolOutputReader,
+  type ToolOutputIdentity,
+} from './code/DeferredToolOutput';
+export {
+  TranscriptReadHostContext,
+  type TranscriptReadHost,
+} from './code/transcript-read-host-context';
+export {
+  DelegationChildPages,
+  isStreamBackedDelegation,
+  type DelegationChildPagesProps,
+} from './code/DelegationChildPages';
+export {
+  DelegationChildRowNotice,
+  type DelegationChildRowEntry,
+} from './code/delegation-child-rows';
 export {
   ChatToolResultPart,
   readChatToolResultVisual,
@@ -146,6 +183,10 @@ export {
   type TranscriptFileLinkInteraction,
 } from './code/TranscriptFileLinks';
 export { TurnGroupView, type TurnGroupViewProps } from './code/TurnGroupView';
+export {
+  usePinnedPlanCopy,
+  type PinnedPlanTarget,
+} from './code/activity/plans/usePinnedPlanCopy';
 export {
   FileViewer,
   type FileViewerProps,
@@ -190,6 +231,7 @@ export {
 } from './code/file/UnifiedDiffView';
 export {
   resolveFileRenderKind,
+  defaultFileViewMode,
   fileExtension,
   fileRenderKindForMediaType,
   isRichDocumentRenderKind,
@@ -247,7 +289,50 @@ export {
   type BackgroundTaskDetail,
   type BackgroundTaskHostActions,
   type BackgroundTasksSectionHostModel,
+  type BackgroundWorkflowAgentProgress,
+  type BackgroundWorkflowProgress,
 } from './code/activity/background-tasks-section';
+export {
+  TaskStopAction,
+  TASK_STOP_FAILED_LABEL,
+  type TaskStopActionProps,
+} from './code/activity/TaskStopAction';
+export {
+  AgentCardHeaderActionContext,
+  agentPartTaskStoppable,
+  type AgentCardTaskStopHost,
+} from './code/agent-card-task-stop';
+export {
+  BackgroundTray,
+  backgroundTrayCounts,
+  type BackgroundTrayCounts,
+  type BackgroundTrayProps,
+} from './code/activity/background-tray/BackgroundTray';
+export {
+  githubBackgroundTrayRun,
+  githubPullRequestBackgroundTrayRun,
+  isFinishedTrayRun,
+  pipelineBackgroundTrayRun,
+  pipelineTrayRunStatus,
+  type BackgroundTrayRun,
+  type BackgroundTrayRunDag,
+  type BackgroundTrayRunKind,
+  type BackgroundTrayRunStatus,
+  type GitHubPullRequestRowData,
+} from './code/activity/background-tray/RunRow';
+export {
+  AGENT_STEP_LIMIT,
+  delegateAgentMeta,
+  delegateAgentStatus,
+  type BackgroundTrayAgent,
+  type BackgroundTrayAgentKind,
+  type BackgroundTrayAgentStep,
+} from './code/activity/background-tray/AgentRow';
+export {
+  portalBackgroundProcessToTask,
+  portalBackgroundTrayAgents,
+  portalBackgroundTrayRuns,
+} from './code/activity/portal-background-tray-mapper';
 export {
   McpServersSectionBody,
   type McpServersSectionBodyProps,
@@ -441,6 +526,7 @@ export {
 export {
   isSidebarActivityAvailable,
   prepareSidebarActivityLoader,
+  withSidebarActivitySpaceMute,
   type SidebarActivityHost,
   type SidebarActivityHostInventory,
 } from './code/shell/sidebar-activity-host';
@@ -523,27 +609,65 @@ export {
   type SidebarRowFrameVariant,
   type SidebarSectionProps,
 } from './code/shell/sidebar';
-// Bulk worktree selection and removal (CAN-3975).
+// Bulk selection and removal of sidebar rows (CAN-3975).
 export {
   batchActionAvailability,
   worktreeRemovalBlockedReason,
+  type SidebarBatchActionAvailability,
+  type SidebarBatchAvailabilityRow,
   type WorktreeBatchActionAvailability,
   type WorktreeBatchAvailabilityRow,
   type WorktreeRemovalBlockInputs,
 } from './code/shell/worktree-menu-items';
 export {
+  bulkStateActions,
+  deriveSelectionMenuItems,
+  rowNeedsStateAction,
+  selectionToggleMenuItem,
+  withSelectionGroupItems,
+  type SidebarBulkNotificationState,
+  type SidebarBulkRowState,
+  type SidebarBulkStateAction,
+  type SidebarBulkStateActions,
+  type SidebarSelectionMenuTestIds,
+} from './code/shell/sidebar-selection-menu-items';
+export {
   isWorktreeSelectable,
-  useWorktreeBatchRemoval,
-  useWorktreeSelection,
+  useSidebarBatchRemoval,
+  useSidebarBulk,
+  useSidebarRowSelection,
+  useSidebarSelectionRows,
+  SidebarSelectionRowsReporter,
+  useSidebarWorkEntryBulk,
+  workEntryRowKey,
+  workEntryRowMultiSelectProps,
+  type GetWorkEntryBatchRemovalFacts,
+  type GetWorkEntryBulkState,
   type GetWorktreeBatchRemovalFacts,
+  type RemoveWorkEntryInBatch,
+  type WorkEntryBatchRemovalFacts,
+  type WorkEntryBatchTarget,
+  type WorkEntryMultiSelectBinding,
+  type RemoveRowInBatch,
   type RemoveWorktreeInBatch,
+  type SidebarBatchRemovalMode,
+  type SidebarBatchRemovalOptions,
+  type SidebarBatchRemovalUiState,
+  type SidebarBatchTarget,
+  type SidebarBulk,
+  type SidebarBulkBinding,
+  type SidebarBulkTarget,
+  type SidebarRowKind,
+  type SidebarRowMultiSelect,
+  type SidebarRowSelection,
+  type SidebarSelectionRow,
+  type SidebarSelectionRows,
   type WorktreeBatchItem,
   type WorktreeBatchLocalWork,
   type WorktreeBatchRemovalFacts,
   type WorktreeBatchRemovalMode,
   type WorktreeBatchRemovalOptions,
   type WorktreeBatchRemovalUiState,
-  type WorktreeSelection,
 } from './code/shell/sidebar';
 export {
   deriveWorktreeMenuItems,
@@ -558,6 +682,15 @@ export {
   type WorktreeDeleteLabels,
   type WorktreeRemovalMode,
 } from './code/shell/worktree-removal-labels';
+export {
+  ARCHIVE_TOOLTIP,
+  deleteRetentionTooltip,
+  getWorkEntryBatchCopy,
+  getWorkEntryRemovalLabels,
+  WORK_ENTRY_BATCH_UNIT,
+  type WorkEntryRemovalLabels,
+  type WorkEntryRemovalMode,
+} from './code/shell/work-entry-removal-labels';
 export {
   deriveWorktreeUiStatus,
   isTreeLayout,
@@ -578,6 +711,23 @@ export {
 } from './home/Overview';
 export { OverviewCard, type OverviewCardProps } from './home/OverviewCard';
 export {
+  ContinueSection,
+  buildContinueSectionModel,
+  continueAttentionTargetKey,
+  countContinueAttentionByKind,
+  rankContinueAttention,
+  resolveLastViewedNames,
+  sameContinueAttentionItems,
+  type ContinueAttentionItem,
+  type ContinueAttentionKind,
+  type ContinueAttentionTarget,
+  type ContinueInterruptedSession,
+  type ContinueInterruptedTarget,
+  type ContinueLastViewed,
+  type ContinueSectionInterrupted,
+  type ContinueSectionProps,
+} from './home/continue';
+export {
   PanelGridSurface,
   type PanelAddTabMenuRenderProps,
   type PanelGridSurfaceProps,
@@ -590,6 +740,7 @@ export {
 export {
   getPanelCommand,
   isPanelCommandAvailable,
+  matchesPanelShortcutBinding,
   PANEL_COMMANDS,
   PANEL_SHORTCUT_BINDINGS,
   runPanelCommand,
@@ -645,6 +796,17 @@ export {
   type SidebarContextOrgScopedActions,
   type SidebarContextRowProps,
 } from './code/shell/SidebarContextRow';
+export {
+  usePendingOrganizationInvitations,
+  ACCEPTED_FOLLOW_UP_FALLBACK_COPY,
+  INVITATION_UNAVAILABLE_COPY,
+  type AcceptedInvitationFollowUp,
+  type PendingInvitationError,
+  type PendingInvitationResponse,
+  type PendingOrganizationInvitationsOptions,
+  type SidebarContextInvitations,
+} from './code/shell/usePendingOrganizationInvitations';
+export { resolveJoinedOrganization } from './settings/organization/resolve-joined-organization';
 export {
   resolveSidebarContextActions,
   sidebarContextSwitcherAvailable,
@@ -716,6 +878,11 @@ export {
   toUsageIndicatorUsage,
   type ComposerOverflowMenuArgs,
 } from './code/composer/composer-helpers';
+export {
+  usePlanModeSuggestion,
+  type PlanModeSuggestion,
+  type UsePlanModeSuggestionOptions,
+} from './code/composer/usePlanModeSuggestion';
 export {
   cloneComposerDraft,
   composerDraftContentEquals,
@@ -792,3 +959,18 @@ export {
   useGitHubPreviewConnected,
   type GitHubReferencePreviewProps,
 } from './code/GitHubReferencePreview';
+export {
+  PlanModeHintProvider,
+  usePlanModeHintStore,
+} from './code/composer/PlanModeHintContext';
+export { useComposerHintActivity } from './code/composer/useComposerHintActivity';
+export {
+  PlanModeHint,
+  type PlanModeHintProps,
+} from './code/composer/PlanModeHint';
+
+export {
+  DelegationRowBlocks,
+  type DelegationRowBlocksProps,
+  type DelegationBlockRenderer,
+} from './code/DelegationRowBlocks';

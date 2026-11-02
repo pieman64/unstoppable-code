@@ -586,6 +586,15 @@ describe('isAccountProxyReadyForHarness', () => {
     routeClaude: true,
     routeCodex: true,
     refreshedAt: 1,
+    local: {
+      phase: 'stopped',
+      version: null,
+      install: null,
+      port: null,
+      startWithApp: true,
+      message: null,
+    },
+    signIn: null,
   };
 
   it('is ready only for a harness with a ready account and routing on', () => {

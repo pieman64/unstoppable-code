@@ -30,6 +30,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   doesBranchMatchWorktreeId,
+  isBranchPromptSent,
   readPersistedWorktreeBranch,
   resolveChatArchivesFilePath,
   resolveChatTabsFilePath,
@@ -45,9 +46,20 @@ import {
   getPipelineEditorHomeDir,
   getWorkspaceChatArchivesFilePath,
   getWorkspaceHomeDir,
+  getProjectWorktreesFilePath,
+  getWorkspaceIndexFilePath,
+  getWorkspaceWorktreesFilePath,
   getSharedContainerRunRepoDir,
   getSharedContainerRunRootDir,
 } from '../lib/paths';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../canopy-runtime/desktop-runtime';
+import { setDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
+import { __setDesktopW5FileStoreForTests } from '../lib/w5-commit-log-file-store';
+import { nodeW5FileStore, type W5FileRead } from '../lib/w5-file-store';
+import { markWorkspaceWorktreeRecentlyRemoved } from '../lib/workspace-persistence';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import {
   getWorkspaceExternalPath,
@@ -56,7 +68,6 @@ import {
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 
 const mockedGetCurrentBranch = jest.mocked(getCurrentBranch);
-const mockedReadFile = jest.mocked(readFile);
 const mockedGetWorkspaceType = jest.mocked(getWorkspaceType);
 const mockedGetWorkspaceExternalPath = jest.mocked(getWorkspaceExternalPath);
 const mockedListWorkspaceWorktreeRepoEntries = jest.mocked(
@@ -65,25 +76,68 @@ const mockedListWorkspaceWorktreeRepoEntries = jest.mocked(
 
 const COWORK_ID = 'cw-registered';
 
-describe('readPersistedWorktreeBranch', () => {
+describe('persisted worktree reads through core.worktree.get', () => {
+  const files = new Map<string, W5FileRead>();
+  const replaced: string[] = [];
+  let runtime: DesktopCanopyDispatcher | null = null;
+
+  function stored(path: string, value: unknown): void {
+    files.set(path, { state: 'present', raw: JSON.stringify(value) });
+  }
+
+  function storedRows(rows: unknown): void {
+    stored(getWorkspaceWorktreesFilePath('project-1'), {
+      version: 1,
+      worktrees: rows,
+    });
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockedGetWorkspaceType.mockReturnValue(null);
+    files.clear();
+    replaced.length = 0;
+    // Only reads through the W5 repositories see these files.
+    __setDesktopW5FileStoreForTests({
+      read: (path) => Promise.resolve(files.get(path) ?? { state: 'absent' }),
+      replace: (path) => {
+        replaced.push(path);
+        return Promise.reject(new Error('Reads never write'));
+      },
+    });
+    stored(getWorkspaceIndexFilePath(), {
+      version: 1,
+      workspaces: [
+        { id: 'project-1', name: 'One', type: 'single-repo', color: 'blue' },
+      ],
+    });
+    runtime = createDesktopRuntime();
+    setDesktopCanopyRuntime(runtime);
   });
 
-  it('returns the branch with the resolved worktree id', async () => {
-    mockedReadFile.mockResolvedValue(
-      JSON.stringify({
-        version: 1,
-        worktrees: [
-          {
-            id: 'wt-1',
-            branchName: 'wt-1-1713571200123',
-            createdAt: '2026-08-03T00:00:00.000Z',
-          },
-        ],
-      }),
-    );
+  afterEach(async () => {
+    jest.mocked(readFile).mockReset();
+    setDesktopCanopyRuntime(null);
+    await runtime?.shutdown();
+    runtime = null;
+    __setDesktopW5FileStoreForTests(nodeW5FileStore);
+  });
+
+  it('returns the branch and the prompt flag of the worktree row', async () => {
+    storedRows([
+      {
+        id: 'wt-1',
+        branchName: 'wt-1-1713571200123',
+        createdAt: '2026-08-03T00:00:00.000Z',
+        branchPromptSent: true,
+      },
+      {
+        id: 'wt-2',
+        branchName: 'feature/two',
+        createdAt: '2026-08-03T00:00:00.000Z',
+        branchPromptSent: 'yes',
+      },
+    ]);
 
     await expect(
       readPersistedWorktreeBranch('project-1', 'wt-1'),
@@ -91,6 +145,9 @@ describe('readPersistedWorktreeBranch', () => {
       worktreeId: 'wt-1',
       branchName: 'wt-1-1713571200123',
     });
+    await expect(isBranchPromptSent('project-1', 'wt-1')).resolves.toBe(true);
+    await expect(isBranchPromptSent('project-1', 'wt-2')).resolves.toBe(false);
+    await expect(isBranchPromptSent('project-1', 'wt-3')).resolves.toBe(false);
   });
 
   it.each([
@@ -105,12 +162,108 @@ describe('readPersistedWorktreeBranch', () => {
       version: 1,
       worktrees: [{ id: 'wt-1', branchName: 'feature/test' }],
     }),
+    // Any row the list cannot read leaves every branch unproven.
+    JSON.stringify({
+      version: 1,
+      worktrees: [
+        { id: 'wt-1', branchName: 'feature/test', createdAt: 'today' },
+        { id: 'wt-2', branchName: 'feature/other' },
+      ],
+    }),
   ])('returns null for malformed persisted data', async (raw) => {
-    mockedReadFile.mockResolvedValue(raw);
+    files.set(getWorkspaceWorktreesFilePath('project-1'), {
+      state: 'present',
+      raw,
+    });
 
     await expect(
       readPersistedWorktreeBranch('project-1', 'wt-1'),
     ).resolves.toBeNull();
+  });
+
+  it('reads nothing for a workspace the index does not list', async () => {
+    stored(getWorkspaceWorktreesFilePath('project-2'), {
+      version: 1,
+      worktrees: [
+        {
+          id: 'wt-1',
+          branchName: 'feature/test',
+          createdAt: 'today',
+          branchPromptSent: true,
+        },
+      ],
+    });
+
+    await expect(
+      readPersistedWorktreeBranch('project-2', 'wt-1'),
+    ).resolves.toBeNull();
+    await expect(isBranchPromptSent('project-2', 'wt-1')).resolves.toBe(false);
+  });
+
+  it('no longer reads a legacy project worktrees.json for a non-workspace id', async () => {
+    const legacyPath = getProjectWorktreesFilePath('legacy-project');
+    const legacyList = JSON.stringify({
+      version: 1,
+      worktrees: [
+        {
+          id: 'wt-1',
+          branchName: 'feature/test',
+          createdAt: 'today',
+          branchPromptSent: true,
+        },
+      ],
+    });
+    // Served on both read paths, so a return to the raw file read fails here.
+    files.set(legacyPath, { state: 'present', raw: legacyList });
+    jest
+      .mocked(readFile)
+      .mockImplementation((path) =>
+        path === legacyPath
+          ? Promise.resolve(legacyList)
+          : Promise.reject(new Error('ENOENT')),
+      );
+
+    await expect(
+      readPersistedWorktreeBranch('legacy-project', 'wt-1'),
+    ).resolves.toBeNull();
+    await expect(isBranchPromptSent('legacy-project', 'wt-1')).resolves.toBe(
+      false,
+    );
+  });
+
+  it('leaves out a row this process removed, without rewriting the list', async () => {
+    storedRows([
+      {
+        id: 'wt-1',
+        branchName: 'feature/test',
+        createdAt: 'today',
+        branchPromptSent: true,
+      },
+    ]);
+    markWorkspaceWorktreeRecentlyRemoved('project-1', 'wt-1', 'today');
+
+    await expect(
+      readPersistedWorktreeBranch('project-1', 'wt-1'),
+    ).resolves.toBeNull();
+    await expect(isBranchPromptSent('project-1', 'wt-1')).resolves.toBe(false);
+    expect(replaced).toEqual([]);
+  });
+
+  it('degrades to no value while the runtime is unavailable', async () => {
+    storedRows([
+      {
+        id: 'wt-1',
+        branchName: 'feature/test',
+        createdAt: 'today',
+        branchPromptSent: true,
+      },
+    ]);
+    setDesktopCanopyRuntime(null);
+
+    await expect(
+      readPersistedWorktreeBranch('project-1', 'wt-1'),
+    ).resolves.toBeNull();
+    await expect(isBranchPromptSent('project-1', 'wt-1')).resolves.toBe(false);
   });
 });
 

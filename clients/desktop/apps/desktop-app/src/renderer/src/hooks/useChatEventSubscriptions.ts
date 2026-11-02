@@ -4,15 +4,23 @@ import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import { chatStoreRenderView, useChatStore } from '@/stores/chatStore';
 import { windowFrameScheduler } from '@/stores/chat/frame-batched-store-view';
 import { applyChatStateChangedForRender } from '@/stores/chat/render-cadence';
-import { useAiCreditsBannerStore } from '@/stores/aiCreditsBannerStore';
+import {
+  chatBannerKey,
+  useAiCreditsBannerStore,
+} from '@/stores/aiCreditsBannerStore';
 import { useTransientRetryBannerStore } from '@/stores/transientRetryBannerStore';
+import { useIngestionLagStore } from '@/stores/ingestionLagStore';
 import { invalidateAiCreditsAvailabilityCache } from '@/hooks/useAiCreditsAvailability';
 import { invalidateSharedAiCreditsRead } from '@/lib/openBillingPage';
 import {
   recordChatEventApplied,
   recordChatStateApplied,
 } from '@/lib/renderer-diagnostics/recorder';
-import { invalidateAiCreditsUsageCache } from '@/hooks/useAiCreditsUsage';
+import {
+  invalidateAiCreditsUsageCache,
+  refreshAiCreditsAfterChargedTurn,
+} from '@/hooks/useAiCreditsUsage';
+import { isRecord } from '@/stores/chat/utils';
 import type {
   ApprovalRequestEvent,
   ApprovalRuleAddedEvent,
@@ -28,12 +36,23 @@ import type {
   PlanExitRequestEvent,
 } from '@canopy/desktop-shared/types';
 import {
+  INGESTION_LAG_EVENT_TYPE,
   isAiCreditsNoBillingSourceEventData,
   isAiCreditsRoutingStatusEventData,
   isAiCreditsUsageLimitEventData,
+  isChatIngestionLagEventData,
   isNoBillingSourceErrorEventData,
   isTransientRetryStateEventData,
 } from '@canopy/desktop-shared/types';
+
+function hasIngestionLagEventType(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    value.type === INGESTION_LAG_EVENT_TYPE
+  );
+}
 
 export function useChatEventSubscriptions(): void {
   const handleChatEvent = useChatStore((s) => s.handleChatEvent);
@@ -123,8 +142,25 @@ export function useChatEventSubscriptions(): void {
 
   useEffect(() => {
     let active = true;
+    // Track the turn that actually used credits, independently of which chat
+    // or model happens to be visible when it finishes. A fallback can turn
+    // routing off before the terminal event; retain that turn's charge flag.
+    const chargedTurns = new Set<string>();
     const retryTargetsUpdatedAfterSnapshotRequest = new Set<string>();
     const unsubscribe = subscribeToChatEvents((event: ChatEvent) => {
+      if (hasIngestionLagEventType(event.data)) {
+        if (isChatIngestionLagEventData(event.data)) {
+          useIngestionLagStore.getState().setLag(
+            {
+              projectId: event.projectId,
+              worktreeId: event.worktreeId,
+              chatId: event.chatId,
+            },
+            event.data.lag,
+          );
+        }
+        return;
+      }
       const startedAt = performance.now();
       handleChatEvent(event);
       recordChatEventApplied(event, startedAt);
@@ -136,6 +172,40 @@ export function useChatEventSubscriptions(): void {
         worktreeId: event.worktreeId,
         chatId: event.chatId,
       };
+      const turnKey = JSON.stringify([
+        event.projectId,
+        event.worktreeId,
+        event.chatId,
+      ]);
+      const data = event.data;
+      if (isRecord(data)) {
+        if (data.type === 'canopy_user_prompt') {
+          chargedTurns.delete(turnKey);
+          // Persistent sessions emit routing at spawn. A later turn inherits
+          // that authoritative route until main reports a route change.
+          if (
+            useAiCreditsBannerStore.getState().routingActiveByChat[
+              chatBannerKey(target)
+            ]?.active
+          ) {
+            chargedTurns.add(turnKey);
+          }
+        }
+        if (isAiCreditsRoutingStatusEventData(data) && data.active) {
+          chargedTurns.add(turnKey);
+        }
+        const codex =
+          data.type === 'codex' && isRecord(data.event) ? data.event : null;
+        const terminal =
+          (data.type === 'result' && data.canopy_session_continues !== true) ||
+          data.type === 'error' ||
+          codex?.type === 'turn.completed' ||
+          codex?.type === 'turn.failed' ||
+          codex?.type === 'error';
+        if (terminal && chargedTurns.delete(turnKey)) {
+          refreshAiCreditsAfterChargedTurn();
+        }
+      }
       if (isAiCreditsRoutingStatusEventData(event.data)) {
         useAiCreditsBannerStore
           .getState()

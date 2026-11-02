@@ -15,6 +15,8 @@ import {
   LedgerOwnersListParamsSchema,
   LedgerRequestKeySchema,
   LedgerUpdateEntryParamsSchema,
+  LedgerGlobalOwnerSchema,
+  isSameLedgerGlobalOwner,
   type CanopyCallerDescriptor,
   type LedgerAuthorDetails,
   type LedgerContainer,
@@ -25,7 +27,10 @@ import {
 import {
   LEDGER_FEED_AUDIENCES,
   LEDGER_FEED_PERIODS,
+  isLedgerTaskViewScope,
+  ledgerViewScopeKey,
   type LedgerFeedPage,
+  type LedgerGlobalViewScope,
   type LedgerViewChange,
   type LedgerViewChangedEvent,
   type LedgerViewEntry,
@@ -50,6 +55,7 @@ import {
   onLedgerEntryChanged,
   onLedgerSyncChanged,
 } from '../ledger/change-events';
+import { readLedgerGlobalAccountId } from '../ledger/core-ledger-adapter';
 import { getLedgerFeedService } from '../ledger/feed-host';
 import type {
   LedgerFeedScopeIncarnation,
@@ -133,6 +139,17 @@ export interface LedgerIpcHost {
     scope: LedgerViewScope,
     origin: LedgerOrigin,
   ) => Promise<LedgerViewSource>;
+  /** A stored scope by its ledger ID, read without minting; null if none. */
+  readonly globalScope: (ledgerId: string) => Promise<{
+    readonly container: LedgerContainer;
+    readonly containerCreatedAt: string;
+    readonly accountId: string | null;
+  } | null>;
+  /**
+   * The account a global Ledger belongs to: the signed-in account's server
+   * ID, or null when signed out. Throws when the account cannot be read.
+   */
+  readonly accountId: () => Promise<string | null>;
 }
 
 function isLedgerFlagEnabled(): boolean {
@@ -160,6 +177,17 @@ export const DESKTOP_LEDGER_IPC_HOST: LedgerIpcHost = {
       : null,
   resolveSource: (scope, origin): Promise<LedgerViewSource> =>
     resolveLedgerViewSource(scope, origin),
+  globalScope: async (ledgerId) => {
+    const scope = await getLedgerStoreClient().getScope(ledgerId);
+    return scope === null
+      ? null
+      : {
+          container: scope.scope.container,
+          containerCreatedAt: scope.containerCreatedAt,
+          accountId: scope.accountId,
+        };
+  },
+  accountId: readLedgerGlobalAccountId,
 };
 
 type ScopeResolution =
@@ -177,8 +205,19 @@ function invalidRequest(message: string): LedgerViewResult<never> {
   return { status: 'error', reason: 'INVALID_INPUT', message };
 }
 
+/** A global (workflow) Ledger's view scope, as the renderer sends it. */
+const LedgerGlobalViewScopeSchema = z.strictObject({
+  kind: z.literal('global'),
+  owner: LedgerGlobalOwnerSchema,
+  ledgerId: LedgerUuidSchema,
+});
+
 function readViewScope(value: unknown): LedgerViewScope | null {
   if (!isRecord(value)) return null;
+  if ('kind' in value) {
+    const global = LedgerGlobalViewScopeSchema.safeParse(value);
+    return global.success ? global.data : null;
+  }
   const { projectId, worktreeId } = value;
   try {
     validateId(projectId, 'project ID');
@@ -211,6 +250,7 @@ async function resolveScope(
       result: { status: 'unavailable', reason: 'disabled' },
     };
   }
+  if (!isLedgerTaskViewScope(scope)) return resolveGlobalScope(scope, host);
   const container = host.container(scope);
   const liveCreatedAt =
     container === null ? null : await host.containerCreatedAt(container);
@@ -232,6 +272,41 @@ async function resolveScope(
     return { kind: 'empty' };
   }
   return { kind: 'ready', scope, container, containerCreatedAt };
+}
+
+/**
+ * A global (workflow) Ledger, addressed by its `ledgerId`. It is never
+ * minted here: a view only reads, corrects or updates what agents recorded.
+ * The stored scope must be a global one of the same owner, bound to the
+ * signed-in account (or the signed-out one while signed out), or the view
+ * has no scope: another account's Ledger never answers.
+ */
+async function resolveGlobalScope(
+  scope: LedgerGlobalViewScope,
+  host: LedgerIpcHost,
+): Promise<ScopeResolution> {
+  const noScope: ScopeResolution = {
+    kind: 'done',
+    result: { status: 'unavailable', reason: 'no_scope' },
+  };
+  if (!(await host.databaseMayExist())) return noScope;
+  const stored = await host.globalScope(scope.ledgerId);
+  // An account that cannot be read is no account's: never the signed-out one.
+  const accountId = await host.accountId().catch((): undefined => undefined);
+  if (
+    stored === null ||
+    stored.container.kind !== 'global' ||
+    !isSameLedgerGlobalOwner(stored.container.owner, scope.owner) ||
+    stored.accountId !== accountId
+  ) {
+    return noScope;
+  }
+  return {
+    kind: 'ready',
+    scope,
+    container: stored.container,
+    containerCreatedAt: stored.containerCreatedAt,
+  };
 }
 
 /**
@@ -391,6 +466,13 @@ export async function addLedgerEntryForView(
       return resolution.kind === 'done'
         ? resolution.result
         : invalidRequest('Unknown Feed scope.');
+    }
+    // Agents record a global (workflow) Ledger; people only correct it.
+    if (
+      !isLedgerTaskViewScope(resolution.scope) &&
+      params.data.supersedesEntryId === undefined
+    ) {
+      return invalidRequest('Workflow entries can only be corrected.');
     }
     const value = await asLocalUser(
       resolution,
@@ -611,10 +693,6 @@ export interface LedgerChangeBroadcaster {
   dispose(): void;
 }
 
-function viewScopeKey(scope: LedgerViewScope): string {
-  return JSON.stringify([scope.projectId, scope.worktreeId]);
-}
-
 /**
  * Coalesces committed changes: one event at most every `intervalMs`, carrying
  * each changed entry once at its latest revision and each scope whose sync
@@ -647,8 +725,7 @@ export function createLedgerChangeBroadcaster(
   return {
     push(change): void {
       const key = JSON.stringify([
-        change.scope.projectId,
-        change.scope.worktreeId,
+        ledgerViewScopeKey(change.scope),
         change.entryId,
       ]);
       const previous = pending.get(key);
@@ -666,7 +743,7 @@ export function createLedgerChangeBroadcaster(
     },
     pushSyncChange(scope): void {
       if (scope === 'all') allSyncChanged = true;
-      else syncChanged.set(viewScopeKey(scope), scope);
+      else syncChanged.set(ledgerViewScopeKey(scope), scope);
       timer ??= setTimeout(flush, intervalMs);
     },
     dispose(): void {
@@ -731,7 +808,7 @@ export function registerLedgerHandlers(
   );
   const unsubscribe = onLedgerEntryChanged((change): void =>
     broadcaster.push({
-      scope: ledgerViewScopeForContainer(change.container),
+      scope: ledgerViewScopeForContainer(change.container, change.ledgerId),
       entryId: change.entryId,
       revision: change.revision,
       ...(change.titleResolved === true ? { titleResolved: true } : {}),
@@ -740,7 +817,7 @@ export function registerLedgerHandlers(
   const unsubscribeSync = onLedgerSyncChanged((change): void =>
     broadcaster.pushSyncChange(
       change.kind === 'scope'
-        ? ledgerViewScopeForContainer(change.container)
+        ? ledgerViewScopeForContainer(change.container, change.ledgerId)
         : 'all',
     ),
   );

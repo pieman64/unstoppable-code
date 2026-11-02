@@ -14,6 +14,9 @@ function skillTitle(name) {
 const SKILL_NAME = 'multi-file-skill';
 const FILE_PATH = 'references/api.md';
 const FILE_CONTENT = '# API reference\n\nSupporting file body.';
+// CAN-4267: installed skills list as Customize rows.
+const INSTALLED_ROW_ID = `customize-row-skill:custom:app:${SKILL_NAME}`;
+const INSTALLED_MENU_ID = `customize-row-menu-skill:custom:app:${SKILL_NAME}`;
 
 test('multi-file custom skills: create with a supporting file, view with tree and file tabs', async ({}, testInfo) => {
   test.setTimeout(180_000);
@@ -32,7 +35,8 @@ test('multi-file custom skills: create with a supporting file, view with tree an
     // -------------------------------------------------------------------
     // Create a custom skill with one supporting file.
     // -------------------------------------------------------------------
-    await window.getByRole('button', { name: 'Create skill' }).click();
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-skill-custom').click();
     const modal = window.locator('#create-skill-modal-title');
     await expect(modal).toBeVisible();
 
@@ -87,16 +91,20 @@ test('multi-file custom skills: create with a supporting file, view with tree an
       ),
     ).toBeVisible();
 
-    await window
-      .getByRole('button', { name: 'Create skill', exact: true })
-      .click();
+    await window.getByTestId('skill-editor-save').click();
     await expect(modal).toBeHidden();
-    await expect(window.getByText(SKILL_NAME, { exact: true })).toBeVisible();
+    // Saving opens the new skill's detail; its row is on the list behind it.
+    await app.expectCreatedCustomizeDetail(skillTitle(SKILL_NAME));
+    await app.closeMarketplaceEntryDetail();
+    const installedRow = window
+      .getByTestId('customize-section-installed')
+      .getByTestId(INSTALLED_ROW_ID);
+    await expect(installedRow).toContainText(skillTitle(SKILL_NAME));
 
     // -------------------------------------------------------------------
     // View the skill: folder icon + file tabs appear for multi-file skills.
     // -------------------------------------------------------------------
-    await window.getByRole('button', { name: SKILL_NAME }).click();
+    await installedRow.click();
     const detailTitle = window.locator('#skill-detail-modal-title');
     await expect(detailTitle).toHaveText(skillTitle(SKILL_NAME));
     await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
@@ -159,8 +167,13 @@ test('multi-file custom skills: create with a supporting file, view with tree an
     // -------------------------------------------------------------------
     // Re-editing loads the supporting file back into the editor, which opens
     // as the skill's edit page (CAN-3485); Cancel lands on its details.
+    // The installed row's ⋯ menu carries a custom skill's Edit (CAN-4267).
     // -------------------------------------------------------------------
-    await window.getByRole('button', { name: 'Edit skill' }).click();
+    await window
+      .getByTestId('customize-section-installed')
+      .getByTestId(INSTALLED_MENU_ID)
+      .click();
+    await window.getByTestId(`${INSTALLED_MENU_ID}-edit`).click();
     const editorPage = window.getByTestId('skill-editor-page');
     await expect(editorPage).toBeVisible();
     await window.getByTestId('skill-file-tree-toggle').click();

@@ -26,7 +26,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export const FILES_FLAG = 'canopy-desktop-daemon-files-reads';
+export const FILES_FLAG = 'canopy-desktop-labs-daemon-files-reads';
+const FILES_EXPERIMENT = 'daemon-files-reads';
 export const GOLDEN_DIR = 'c4307-golden';
 export const brand = loadBrand(process.env.CANOPY_BRAND ?? 'canopy');
 export const MANAGED_DIR = brand.storage.projectConfigDirNames[0];
@@ -165,7 +166,20 @@ export async function openFilesPanel(window, { chatTabId } = {}) {
   await expect(chat.getByTestId('panel-binding-loading')).toHaveCount(0, {
     timeout: 30_000,
   });
-  await window.getByTestId('panel-add-panel-group-chat').click();
+  // Standard filled rows open the add menu from their tab-strip +. Classic
+  // rows keep a separate Add panel control, and their + (earlier in the DOM)
+  // creates a chat instead, so the classic control wins when shown.
+  const classicAdd = window
+    .getByTestId('panel-add-panel-group-chat')
+    .filter({ visible: true });
+  const tabStripAdd = window
+    .getByTestId('panel-add-tab-group-chat')
+    .filter({ visible: true });
+  await expect(classicAdd.or(tabStripAdd).first()).toBeVisible();
+  await ((await classicAdd.count()) > 0 ? classicAdd : tabStripAdd)
+    .first()
+    .click();
+  await expect(window.getByTestId('panel-add-menu')).toBeVisible();
   await window.getByTestId('panel-add-menu-item-file-explorer').click();
   const panel = window.getByTestId('files-tree-tab');
   await expect(panel).toBeVisible({ timeout: 30_000 });
@@ -194,6 +208,17 @@ export async function expandFolder(panel, rootId, relativePath) {
   await expect(row).toBeVisible({ timeout: 30_000 });
   if ((await row.getAttribute('aria-expanded')) !== 'true') await row.click();
   await expect(row).toHaveAttribute('aria-expanded', 'true');
+}
+
+/** Expands the brand-labelled group holding Cowork's app-owned roots. */
+export async function expandAppManagedRootGroup(panel) {
+  await expectFilesPanelActive(panel);
+  const group = panel.getByTestId('files-tree-root-group');
+  await expect(group).toBeVisible({ timeout: 30_000 });
+  if ((await group.getAttribute('aria-expanded')) !== 'true') {
+    await group.click();
+  }
+  await expect(group).toHaveAttribute('aria-expanded', 'true');
 }
 
 /** Rows the panel renders directly under one folder, in DOM order. */
@@ -290,23 +315,19 @@ export function expectDirectOnly(traffic, operations) {
   ).toEqual([]);
 }
 
-export async function setFilesFlag(electronApp, window, enabled) {
-  await electronApp.evaluate(
-    (_electron, { key, value }) => {
-      const flags = JSON.parse(
-        process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS ?? '{}',
-      );
-      process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS = JSON.stringify({
-        ...flags,
-        [key]: value,
-      });
-    },
-    { key: FILES_FLAG, value: enabled },
+export async function setFilesChoice(window, enabled) {
+  const snapshot = await window.evaluate(
+    (value) =>
+      window.api.experiments.setChoice({
+        experimentId: 'daemon-files-reads',
+        enabled: value,
+      }),
+    enabled,
   );
-  const snapshot = await window.evaluate(() =>
-    window.api.featureFlags.refreshContext(),
-  );
-  expect(snapshot.values[FILES_FLAG]).toBe(enabled);
+  expect(snapshot.ready).toBe(true);
+  expect(
+    snapshot.experiments.find((entry) => entry.id === FILES_EXPERIMENT),
+  ).toMatchObject({ choice: enabled, enabled });
 }
 
 export function readDescriptor(canonicalDataRoot) {
@@ -481,16 +502,20 @@ export async function cleanupAbandonedDaemonFilesApp() {
  * Launches the ordinary app on a short isolated data root with the verified
  * daemon bridged into the product lookup paths, runs `scenario`, then cleans
  * up only what this run owns: processes, staged files and the data root.
- * `flag: null` leaves the Files flag unpinned, as every other spec does.
+ * `enabled: null` leaves the ordinary suite’s offered rollout without a choice.
  */
 export async function withDaemonFilesApp(
   testInfo,
-  { flag, seed, launchEnv = {} },
+  { enabled, seed, launchEnv = {} },
   scenario,
 ) {
-  const expectedFlag = flag ?? false;
+  const expectedEnabled = enabled ?? false;
   const runtimeRoot = resolveLaunchRuntimeRoot();
-  const report = { flag: expectedFlag, flagPinned: flag !== null, steps: {} };
+  const report = {
+    enabled: expectedEnabled,
+    choiceSet: enabled !== null,
+    steps: {},
+  };
   const bridge = stageProductDaemonBridge({
     runtimeRoot,
     sourceSha: sourceSha(runtimeRoot),
@@ -576,19 +601,22 @@ export async function withDaemonFilesApp(
       userDataDir: dataRoot,
       env: {
         ...launchEnv,
-        ...(flag !== null && {
-          CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
-            [FILES_FLAG]: flag,
-          }),
-        }),
       },
     });
     Object.assign(context, launched);
+    if (enabled !== null) await setFilesChoice(launched.window, enabled);
     const snapshot = await launched.window.evaluate(() =>
-      window.api.featureFlags.getSnapshot(),
+      window.api.experiments.getSnapshot(),
     );
-    // Unknown E2E flag keys are dropped silently; prove the key arrived.
-    expect(snapshot.values[FILES_FLAG]).toBe(expectedFlag);
+    const experiment = snapshot.experiments.find(
+      (entry) => entry.id === FILES_EXPERIMENT,
+    );
+    expect(snapshot.ready).toBe(true);
+    expect(experiment).toMatchObject({
+      flagKey: FILES_FLAG,
+      availability: 'offered',
+      enabled: expectedEnabled,
+    });
     context.mainPid = await launched.electronApp.evaluate(() => process.pid);
     context.counters = workCounters(launched.electronApp);
     report.runtime = {
@@ -600,10 +628,7 @@ export async function withDaemonFilesApp(
         isPackaged: app.isPackaged,
       })),
       electron: await launched.electronApp.evaluate(() => process.versions),
-      flagSnapshot: {
-        status: snapshot.status,
-        value: snapshot.values[FILES_FLAG],
-      },
+      experimentSnapshot: { ...snapshot, experiments: [experiment] },
     };
     expect(report.runtime.app.isPackaged).toBe(false);
     await scenario(context);

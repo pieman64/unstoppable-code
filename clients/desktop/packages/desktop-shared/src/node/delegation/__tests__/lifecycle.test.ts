@@ -41,6 +41,29 @@ describe('managed child event ownership', () => {
     expect(reduceDelegationEvent(running, started)).toBe(running);
   });
 
+  it('keeps the same state for a transcript receipt', () => {
+    const running = reduceDelegationEvent(
+      initial,
+      event(1, { type: 'started' }),
+    );
+    const receipt = event(2, {
+      type: 'transcript_receipt',
+      streamRevision: 4,
+      mutationKey: 'key-1',
+      replayed: false,
+      items: [{ id: 'row-1', itemRevision: 0, final: true }],
+    });
+    expect(reduceDelegationEvent(running, receipt)).toBe(running);
+    const progressed = reduceDelegationEvent(
+      running,
+      event(3, { type: 'progress', text: 'after the receipt' }),
+    );
+    expect(progressed).toMatchObject({
+      partialText: 'after the receipt',
+      sequence: 3,
+    });
+  });
+
   it('moves a running child to a new native session without restarting it', () => {
     const running = reduceDelegationEvent(
       initial,
@@ -219,4 +242,45 @@ describe('managed child event ownership', () => {
     expect(completed.finalText).toHaveLength(16_385);
     expect(completed.usage).toEqual({ inputTokens: 3 });
   });
+
+  it.each([
+    { label: 'none', finalText: undefined },
+    { label: 'empty', finalText: '' },
+    { label: 'ASCII whitespace', finalText: ' \tanswer\r\n ' },
+    { label: 'astral', finalText: '🌿' },
+    { label: 'lone surrogate', finalText: '\uD800' },
+    {
+      label: 'larger than the progress preview',
+      finalText: 'x'.repeat(65_537),
+    },
+  ])(
+    'does not alter the $label terminal event or promote progress to an answer',
+    ({ finalText }) => {
+      const preview = 'p'.repeat(65_536);
+      const running = reduceDelegationEvent(
+        reduceDelegationEvent(initial, event(1, { type: 'started' })),
+        event(2, { type: 'progress', text: preview }),
+      );
+      const terminal = event(3, {
+        type: 'terminal',
+        status: 'completed',
+        ...(finalText === undefined ? {} : { finalText }),
+      });
+      Object.freeze(terminal.event);
+      Object.freeze(terminal);
+      const completed = reduceDelegationEvent(running, terminal);
+
+      expect(completed.status).toBe('completed');
+      expect(completed.partialText).toBe(preview);
+      expect(completed.finalText).toBe(finalText);
+      expect(terminal.event).toEqual({
+        type: 'terminal',
+        status: 'completed',
+        ...(finalText === undefined ? {} : { finalText }),
+      });
+      expect(running).not.toHaveProperty('finalText');
+      if (finalText === undefined)
+        expect(completed).not.toHaveProperty('finalText');
+    },
+  );
 });

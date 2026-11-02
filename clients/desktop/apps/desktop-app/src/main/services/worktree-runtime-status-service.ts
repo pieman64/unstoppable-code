@@ -4,12 +4,11 @@ import type {
   PortalTarget,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import {
-  listDelegationActivity,
-  parseDelegationSessionKey,
-  subscribeDelegationActivity,
-} from '../agents/delegation/activity';
+  listBackgroundWorkTargets,
+  subscribeBackgroundWork,
+} from '../agents/background-work';
+import { subscribeDelegationActivity } from '../agents/delegation/activity';
 import {
   getAllActiveSessionInfos,
   subscribeChatSessionActivity,
@@ -32,7 +31,7 @@ import {
   getActivePipelineExecutionHandles,
   subscribeToActiveCountChange,
 } from '../pipelines/pipeline-execution-registry';
-import { ptyManager } from '../terminal/pty-manager';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { subscribePipelineRunUpdates } from './pipelines-service';
 import { scheduleDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 
@@ -40,6 +39,9 @@ const SESSION_REFRESH_DELAY_MS = 35;
 
 export interface WorktreeRuntimeStatus {
   isStreaming?: boolean;
+  hasBackgroundWork?: true;
+  /** The worktree's background tasks (D11), summed over its chats. */
+  backgroundTasks?: number;
   hasUnread?: boolean;
   awaitingApproval?: boolean;
   lastActivityAt?: string;
@@ -57,6 +59,8 @@ interface WorktreeRuntimeStatusInput {
 
 interface SessionStatus {
   isStreaming: boolean;
+  hasBackgroundWork?: boolean;
+  backgroundTasks?: number;
   lastActivityAt?: number;
 }
 
@@ -75,6 +79,7 @@ let started = false;
 let generation = 0;
 let unsubscribeSessionActivity: (() => void) | null = null;
 let unsubscribeDelegationActivity: (() => void) | null = null;
+let unsubscribeBackgroundWork: (() => void) | null = null;
 let unsubscribePipelineCount: (() => void) | null = null;
 let unsubscribePipelineUpdates: (() => void) | null = null;
 let unsubscribeTerminalActivity: (() => void) | null = null;
@@ -126,13 +131,18 @@ function buildSessionStatuses(): Map<string, SessionStatus> {
       ),
     });
   }
-  // Queued, starting or running delegates keep their root chat's worktree or
-  // Work Entry working, even when no root session is attached.
-  for (const entry of listDelegationActivity()) {
-    const chat = parseDelegationSessionKey(entry.sessionKey);
-    if (!chat) continue;
-    const key = statusKey(chat.projectId, chat.worktreeId);
-    statuses.set(key, { ...statuses.get(key), isStreaming: true });
+  // Delegates are background work (D15): they count toward the worktree's
+  // background tasks, never its streaming turn (turn-state phase 41f).
+  for (const target of listBackgroundWorkTargets()) {
+    if (!target.hasBackgroundWork) continue;
+    const key = statusKey(target.projectId, target.worktreeId);
+    const current = statuses.get(key);
+    statuses.set(key, {
+      ...current,
+      isStreaming: current?.isStreaming ?? false,
+      hasBackgroundWork: true,
+      backgroundTasks: (current?.backgroundTasks ?? 0) + target.backgroundTasks,
+    });
   }
   return statuses;
 }
@@ -157,7 +167,7 @@ function buildExecutionStatuses(): Map<string, WorktreeRuntimeStatus> {
       statuses.set(key, { ...current, pipelineStatus: 'paused' });
     }
   }
-  for (const target of ptyManager.getRunningWorktreeTargets()) {
+  for (const target of workerTerminal.runningWorktrees()) {
     const key = statusKey(target.projectId, target.worktreeId);
     statuses.set(key, { ...statuses.get(key), terminalStatus: 'running' });
   }
@@ -172,10 +182,14 @@ function buildExecutionStatuses(): Map<string, WorktreeRuntimeStatus> {
   return statuses;
 }
 
-function combineStatus(key: string): WorktreeRuntimeStatus {
-  const session = sessionStatuses.get(key);
+function combineStatus(
+  key: string,
+  sessions = sessionStatuses,
+  executions = executionStatuses,
+): WorktreeRuntimeStatus {
+  const session = sessions.get(key);
   const persisted = persistedStatuses.get(key);
-  const execution = executionStatuses.get(key);
+  const execution = executions.get(key);
   const badges = mirroredBadges.get(key);
   const liveLastActivityAt = session?.lastActivityAt;
   const persistedLastActivityAt = persisted?.lastActivityAt;
@@ -187,6 +201,10 @@ function combineStatus(key: string): WorktreeRuntimeStatus {
 
   return {
     ...(session?.isStreaming === true ? { isStreaming: true } : {}),
+    ...(session?.hasBackgroundWork === true ? { hasBackgroundWork: true } : {}),
+    ...(session?.backgroundTasks
+      ? { backgroundTasks: session.backgroundTasks }
+      : {}),
     // Live chat writes are always at least as fresh as the asynchronously
     // flushed mirror, so they win over it.
     ...(persisted?.hasUnread === true ||
@@ -206,6 +224,8 @@ function combineStatus(key: string): WorktreeRuntimeStatus {
 function fingerprint(status: WorktreeRuntimeStatus): string {
   return JSON.stringify([
     status.isStreaming ?? false,
+    status.hasBackgroundWork ?? false,
+    status.backgroundTasks ?? 0,
     status.hasUnread ?? false,
     status.awaitingApproval ?? false,
     status.lastActivityAt ?? null,
@@ -302,6 +322,8 @@ function refreshSessionsAndEmit(): void {
     const after = sessionStatuses.get(key);
     if (
       before?.isStreaming !== after?.isStreaming ||
+      before?.hasBackgroundWork !== after?.hasBackgroundWork ||
+      before?.backgroundTasks !== after?.backgroundTasks ||
       before?.lastActivityAt !== after?.lastActivityAt ||
       fingerprint(previousExecutions.get(key) ?? {}) !==
         fingerprint(executionStatuses.get(key) ?? {})
@@ -332,6 +354,7 @@ export function startWorktreeRuntimeStatusService(): void {
   unsubscribeDelegationActivity = subscribeDelegationActivity(
     scheduleSessionRefresh,
   );
+  unsubscribeBackgroundWork = subscribeBackgroundWork(scheduleSessionRefresh);
   unsubscribePipelineCount = subscribeToActiveCountChange(
     scheduleSessionRefresh,
   );
@@ -340,14 +363,13 @@ export function startWorktreeRuntimeStatusService(): void {
   );
   // Only the running-detector flip and exit affect getRunningWorktreeTargets;
   // filtering keeps per-chunk terminalOutput events from scheduling refreshes.
-  unsubscribeTerminalActivity = ptyManager.addEventListener((channel): void => {
-    if (
-      channel === IPC_CHANNELS.terminalRunningChanged ||
-      channel === IPC_CHANNELS.terminalExit
-    ) {
-      scheduleSessionRefresh();
-    }
-  });
+  unsubscribeTerminalActivity = workerTerminal.addEventListener(
+    (event): void => {
+      if (event.type === 'runningChanged' || event.type === 'exit') {
+        scheduleSessionRefresh();
+      }
+    },
+  );
   unsubscribeScriptActivity = subscribeTrackedScriptsChanged(
     scheduleSessionRefresh,
   );
@@ -363,6 +385,8 @@ export function stopWorktreeRuntimeStatusService(): void {
   unsubscribeSessionActivity = null;
   unsubscribeDelegationActivity?.();
   unsubscribeDelegationActivity = null;
+  unsubscribeBackgroundWork?.();
+  unsubscribeBackgroundWork = null;
   unsubscribePipelineCount?.();
   unsubscribePipelineCount = null;
   unsubscribePipelineUpdates?.();
@@ -388,8 +412,11 @@ export function getWorktreeRuntimeStatuses(
   inputs: WorktreeRuntimeStatusInput[],
   target?: PortalTarget,
 ): Promise<Map<string, WorktreeRuntimeStatus>> {
-  sessionStatuses = buildSessionStatuses();
-  executionStatuses = buildExecutionStatuses();
+  // A read answers its caller alone: the Portal snapshot, the desktop session
+  // snapshot or auto-archive. It must not move the delta emitter's baselines,
+  // or a change it sees first is never emitted to the Portal.
+  const sessions = buildSessionStatuses();
+  const executions = buildExecutionStatuses();
   const selected = inputs.filter(
     ({ workspaceId, worktree }) =>
       (!target?.workspaceLocalId || target.workspaceLocalId === workspaceId) &&
@@ -405,9 +432,7 @@ export function getWorktreeRuntimeStatuses(
       hasUnread: (worktree.chatBadges?.unreadChats.length ?? 0) > 0,
       awaitingApproval: (worktree.chatBadges?.approvalChats.length ?? 0) > 0,
     });
-    const status = combineStatus(key);
-    statuses.set(key, status);
-    fingerprints.set(key, fingerprint(status));
+    statuses.set(key, combineStatus(key, sessions, executions));
   }
   return Promise.resolve(statuses);
 }

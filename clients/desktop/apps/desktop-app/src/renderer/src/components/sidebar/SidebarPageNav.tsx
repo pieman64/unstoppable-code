@@ -2,6 +2,8 @@ import { type JSX, type ReactNode, type Ref } from 'react';
 import { SidebarPageNav as SharedSidebarPageNav } from '@canopy/ui-app/sidebar';
 import { SIDEBAR_DEFAULT_WIDTH } from '@/stores/sidebarStore';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 
 interface SidebarPageNavProps {
   readonly ariaLabel: string;
@@ -45,7 +47,11 @@ export function SidebarPageNav({
       width={width}
       surface="app-material"
       controlsInDragRegion
-      topInset={<div className="electron-drag h-10 shrink-0" />}
+      topInset={
+        usesNativeWindowFrame(localPlatform()) ? undefined : (
+          <div className="electron-drag h-10 shrink-0" />
+        )
+      }
       trailing={
         onResize ? (
           <SidebarResizeHandle

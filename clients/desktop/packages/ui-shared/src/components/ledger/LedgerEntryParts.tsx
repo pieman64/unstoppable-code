@@ -187,7 +187,35 @@ function rowOrigin(
   entry: LedgerEntrySearchItem,
   details: LedgerEntryRowDetails | undefined,
 ): JSX.Element | null {
-  const attribution = details?.attribution;
+  const attribution = rowAttribution(entry, details?.attribution);
+  const context = details?.context;
+  if (context === undefined) return attribution;
+  // A long context, such as an organization's name, truncates; the title
+  // keeps it whole.
+  const contextLabel = (
+    <span
+      data-testid="ledger-entry-row-context"
+      className="min-w-0 truncate"
+      title={context}
+    >
+      {context}
+    </span>
+  );
+  if (attribution === null) return contextLabel;
+  return (
+    <>
+      {contextLabel}
+      <span aria-hidden="true">·</span>
+      {attribution}
+    </>
+  );
+}
+
+/** Who recorded a row elsewhere: a teammate or another device. */
+function rowAttribution(
+  entry: LedgerEntrySearchItem,
+  attribution: LedgerEntryRowDetails['attribution'],
+): JSX.Element | null {
   if (attribution?.kind === 'teammate') {
     const ownEntry = entry.author.kind === 'user';
     const Icon = ownEntry ? BuildingIcon : PersonIcon;
@@ -221,8 +249,7 @@ function rowOrigin(
       </span>
     );
   }
-  if (details?.context === undefined) return null;
-  return <span data-testid="ledger-entry-row-context">{details.context}</span>;
+  return null;
 }
 
 export interface LedgerActorNameTextProps {
@@ -389,7 +416,7 @@ export function LedgerEntryActions({
       <Button
         type="button"
         variant="ghost"
-        size="control"
+        size="compact"
         data-testid="ledger-entry-add-correction"
         disabled={addCorrectionDisabled}
         aria-description={addCorrectionDisabled ? disabledReason : undefined}
@@ -407,7 +434,7 @@ export function LedgerEntryActions({
       <Button
         type="button"
         variant="ghost"
-        size="control"
+        size="compact"
         data-testid="ledger-entry-source-open"
         data-source-archived={
           sourceAction.glyph === 'archived' ? 'true' : undefined
@@ -430,7 +457,7 @@ export function LedgerEntryActions({
       <Button
         type="button"
         variant="ghost"
-        size="control"
+        size="compact"
         data-testid="ledger-entry-details-toggle"
         aria-expanded={detailsOpen}
         onClick={onToggleDetails}

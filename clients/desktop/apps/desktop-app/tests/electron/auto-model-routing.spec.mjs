@@ -344,15 +344,17 @@ test('Auto reroutes an existing Claude chat, keeps its harness, and survives res
     await app.openMainPage();
     await app.selectWorktree(CODE_WORKTREE_ID);
     panel = window.getByTestId('panel-content-chat');
-    // The chip names the mode only; each turn's footer names the model Auto
+    // The chip names the mode only; each turn's timestamp tooltip names the model Auto
     // picked for it, and that history survives a restart.
     await expect(panel.getByTestId('chat-model-picker')).toHaveText(
       AUTO_CHIP_TEXT,
     );
-    const turnModels = panel.getByTestId('turn-auto-model');
+    const turnModels = panel.getByTestId('turn-timer-relative');
     await expect(turnModels).toHaveCount(2);
-    await expect(turnModels.nth(0)).toHaveText(/Opus/);
-    await expect(turnModels.nth(1)).toHaveText(/Sonnet 5/);
+    await turnModels.nth(0).hover();
+    await expect(window.getByRole('tooltip')).toContainText('Opus');
+    await turnModels.nth(1).hover();
+    await expect(window.getByRole('tooltip')).toContainText('Sonnet 5');
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }
@@ -409,9 +411,8 @@ test('Auto New Task can choose Codex', async () => {
       1,
     );
     const panel = window.getByTestId('panel-content-chat');
-    await expect(panel.getByTestId('turn-auto-model')).toHaveText(
-      'GPT 5.6 Luna',
-    );
+    await panel.getByTestId('turn-timer-relative').hover();
+    await expect(window.getByRole('tooltip')).toContainText('GPT 5.6 Luna');
     await expect(panel.getByTestId('chat-model-picker')).toHaveText(
       AUTO_CHIP_TEXT,
     );
@@ -663,32 +664,10 @@ test('queued Auto messages route independently when dequeued', async () => {
   test.setTimeout(180_000);
   const scenarioKey = 'csk_auto_model_routing_queue_e2e';
   const marker = 'Canopy-CAUTOROUTEQUEUE';
+  const firstProgress = 'The first Auto turn is running.';
+  const completionBarrier = 'finish-first-turn';
   const firstReply = 'The first queued-routing turn completed slowly.';
   const secondReply = 'The dequeued Auto turn completed.';
-  await registerScenario(DEFAULT_MOCK_BASE_URL, scenarioKey, {
-    authUsage: { scenario: 'authed-low-usage' },
-    cloud: {
-      modelRouting: {
-        responses: [
-          { selectedModelId: 'anthropic/claude-opus-5' },
-          { selectedModelId: 'anthropic/claude-haiku-4.5' },
-        ],
-      },
-    },
-  });
-  await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
-    llm: {
-      steps: [
-        {
-          text: firstReply,
-          stopReason: 'end_turn',
-          streamMs: 2_000,
-          chunkChars: 8,
-        },
-        { text: secondReply, stopReason: 'end_turn' },
-      ],
-    },
-  });
   const { apiKey, electronApp, userDataDir } = await launchWithCodeWorkspace(
     scenarioKey,
     {
@@ -696,14 +675,54 @@ test('queued Auto messages route independently when dequeued', async () => {
       cloud: {
         modelRouting: {
           responses: [
-            { selectedModelId: 'anthropic/claude-opus-5' },
+            { selectedModelId: 'anthropic/claude-opus-5', delayMs: 1_000 },
             { selectedModelId: 'anthropic/claude-haiku-4.5' },
           ],
         },
       },
     },
   );
+  const releaseFirstTurn = async () => {
+    const response = await fetch(`${DEFAULT_MOCK_BASE_URL}/__mock/barrier`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: marker, name: completionBarrier }),
+    });
+    expect(response.ok).toBe(true);
+  };
   try {
+    await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+      llm: {
+        steps: [
+          {
+            text: firstProgress,
+            toolCalls: [
+              {
+                name: 'Read',
+                input: {
+                  file_path: path.join(
+                    userDataDir,
+                    'workspaces',
+                    CHATS_SECTION_CODE_WORKSPACE_ID,
+                    'worktrees',
+                    CODE_WORKTREE_ID,
+                    'README.md',
+                  ),
+                },
+              },
+            ],
+            stopReason: 'tool_use',
+          },
+          {
+            text: firstReply,
+            stopReason: 'end_turn',
+            waitFor: completionBarrier,
+            barrierTimeoutMs: 120_000,
+          },
+          { text: secondReply, stopReason: 'end_turn' },
+        ],
+      },
+    });
     const window = await electronApp.firstWindow();
     await connectMockCloudAccount(window, apiKey);
     const app = new CanopyAppDriver(window);
@@ -717,6 +736,20 @@ test('queued Auto messages route independently when dequeued', async () => {
       .fill(`[${marker}] Start the slow turn.`);
     await home.getByTestId('home-send-button').click();
     const panel = window.getByTestId('panel-content-chat');
+    // Stop also appears during provisional first-send preparation. Provider
+    // output proves admission; the next response stays held until we queue.
+    await expect(panel.getByText(firstProgress).first()).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect
+      .poll(async () => {
+        const response = await fetch(
+          `${DEFAULT_MOCK_BASE_URL}/__mock/barrier?key=${encodeURIComponent(marker)}`,
+        );
+        expect(response.ok).toBe(true);
+        return (await response.json()).barriers;
+      })
+      .toContainEqual({ name: completionBarrier, waiting: 1, released: false });
     await expect(panel.getByTestId('chat-stop-generation')).toBeVisible();
     const composer = panel.getByRole('textbox').first();
     await composer.fill(`[${marker}] Queue this follow-up.`);
@@ -724,9 +757,16 @@ test('queued Auto messages route independently when dequeued', async () => {
     await expect(window.getByTestId('queued-message-bubble')).toContainText(
       'Queue this follow-up',
     );
+    await expect(composer).not.toContainText('Queue this follow-up.');
+    await waitForActivity(scenarioKey, 'modelRoutingResolve', 1);
+    await releaseFirstTurn();
+    await expect(panel.getByText(firstReply).first()).toBeVisible({
+      timeout: 60_000,
+    });
     await expect(panel.getByText(secondReply).first()).toBeVisible({
       timeout: 90_000,
     });
+    await expect(window.getByTestId('queued-message-bubble')).toHaveCount(0);
     await waitForActivity(scenarioKey, 'modelRoutingResolve', 2);
     await waitForActivity(
       scenarioKey,
@@ -739,7 +779,11 @@ test('queued Auto messages route independently when dequeued', async () => {
       1,
     );
   } finally {
-    await closeCanopy(electronApp, userDataDir);
+    try {
+      await releaseFirstTurn();
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
   }
 });
 
@@ -857,7 +901,18 @@ test('Auto without AI Credits opens billing instead of doing nothing', async () 
     );
 
     await autoRow.click();
-    await waitForActivity(scenarioKey, 'authLinkMint:/account/billing', 1);
+    // CAN-4691: Billing opens inside Settings, so no auth link is minted.
+    await expect(
+      window.locator(
+        '[data-testid="hosted-settings-content"][data-hosted-settings-page="account/billing"], ' +
+          '[data-testid="hosted-settings-frame"][data-hosted-settings-page="account/billing"]',
+      ),
+    ).toBeVisible({ timeout: 20_000 });
+    expect(
+      (await scenarioActivity(scenarioKey))['authLinkMint:/account/billing'] ??
+        0,
+    ).toBe(0);
+    await app.closeSettings();
     // Opening billing is not an opt-in: the chat stays manual.
     await expect(window.getByTestId('chat-model-menu')).toHaveCount(0);
     await expect(trigger).toHaveText(manualLabel);

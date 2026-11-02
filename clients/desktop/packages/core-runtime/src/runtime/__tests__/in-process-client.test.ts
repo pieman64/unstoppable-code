@@ -30,6 +30,32 @@ describe('createInProcessCanopyClient', () => {
           return { roots: [] };
         },
         'worker.filesystem.directory.list': () => ({ entries: [] }),
+        'worker.filesystem.file.read': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.search': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.link.resolve': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.branch.list': () => ({
+          branches: [],
+          defaultBranch: null,
+          defaultBranchSource: null,
+        }),
+        'worker.git.executable.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.remote.get': () => ({
+          origin: { state: 'absent' as const },
+        }),
+        'worker.git.worktree.health.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.diff.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const client = createInProcessCanopyClient(dispatcher, caller);
@@ -60,6 +86,32 @@ describe('createInProcessCanopyClient', () => {
       handlers: {
         'worker.filesystem.roots.list': roots,
         'worker.filesystem.directory.list': () => ({ entries: [] }),
+        'worker.filesystem.file.read': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.search': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.link.resolve': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.branch.list': () => ({
+          branches: [],
+          defaultBranch: null,
+          defaultBranchSource: null,
+        }),
+        'worker.git.executable.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.remote.get': () => ({
+          origin: { state: 'absent' as const },
+        }),
+        'worker.git.worktree.health.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.diff.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const client = createInProcessCanopyClient(dispatcher, caller);
@@ -78,6 +130,32 @@ describe('createInProcessCanopyClient', () => {
       handlers: {
         'worker.filesystem.roots.list': roots,
         'worker.filesystem.directory.list': () => ({ entries: [] }),
+        'worker.filesystem.file.read': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.search': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.link.resolve': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.branch.list': () => ({
+          branches: [],
+          defaultBranch: null,
+          defaultBranchSource: null,
+        }),
+        'worker.git.executable.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.remote.get': () => ({
+          origin: { state: 'absent' as const },
+        }),
+        'worker.git.worktree.health.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.diff.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const forwardedNames: string[] = [];
@@ -107,6 +185,32 @@ describe('createInProcessCanopyClient', () => {
       handlers: {
         'worker.filesystem.roots.list': roots,
         'worker.filesystem.directory.list': () => ({ entries: [] }),
+        'worker.filesystem.file.read': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.search': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.link.resolve': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.branch.list': () => ({
+          branches: [],
+          defaultBranch: null,
+          defaultBranchSource: null,
+        }),
+        'worker.git.executable.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.remote.get': () => ({
+          origin: { state: 'absent' as const },
+        }),
+        'worker.git.worktree.health.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.diff.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const client = createInProcessCanopyClient(dispatcher, caller);

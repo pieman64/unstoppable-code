@@ -1,5 +1,4 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import {
   useCallback,
@@ -20,7 +19,13 @@ import {
   X,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Button,
+  buttonClassName,
   DelayedLoadingPlaceholder,
+  FilterDropdown,
+  PageSearchControls,
+  PageSearchField,
+  PageSearchRow,
   ErrorBanner,
   LoadingPlaceholder,
   SettingsListSkeleton,
@@ -47,6 +52,7 @@ import {
 } from './team-api';
 import { useSettingsLoadErrorCopy } from '../errors';
 import { FeedActorProfileLinksProvider, FeedItemCard } from './team-feed-cards';
+import { TeamPageHeaderActions } from './team-page-header-slot';
 import { useViewerDataSharing } from './use-viewer-data-sharing';
 import { OrganizationDataSharingOptIn } from './web-data-sharing-opt-in';
 
@@ -83,7 +89,7 @@ const FEED_TYPE_LABELS: Record<FeedItemType, string> = {
   worktree_started: 'Worktree started',
   worktree_updated: 'Worktree updated',
   agent_session: 'Agent session',
-  pipeline_run: 'Pipeline run',
+  pipeline_run: 'Workflow run',
   run_failed: 'Run failed',
 };
 
@@ -522,131 +528,114 @@ export function TeamFeedSection({
   const header = (
     <div className="flex flex-col gap-3" data-testid="team-feed-header">
       {/* The page header above already names this page, so the toolbar
-          leads with search and filters rather than an "Activity" title. */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <div className="relative min-w-0 flex-1 sm:max-w-xs">
-            <Search
-              size={14}
-              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 fg-secondary"
+          leads with search and filters rather than an "Activity" title. Its
+          live controls sit in the page header's actions. */}
+      <TeamPageHeaderActions>
+        {bufferedCount > 0 && (
+          <Button
+            variant="secondary"
+            size="compact"
+            onClick={showBufferedItems}
+            data-testid="team-feed-new-items"
+            aria-label={`Show ${bufferedCount > 99 ? '99+' : bufferedCount} new ${
+              bufferedCount === 1 ? 'item' : 'items'
+            }`}
+          >
+            <ArrowUp size={14} />
+            {bufferedCount > 99 ? '99+' : bufferedCount} new
+          </Button>
+        )}
+
+        {subscriptionState === 'disabled' ? (
+          // Stream gated off or refused: fall back to manual refresh so the
+          // feed is never worse than the poll-only experience.
+          <Button
+            variant="secondary"
+            size="compact"
+            onClick={() => void reloadFeed()}
+            disabled={refreshing}
+            data-testid="team-feed-refresh"
+            aria-label="Refresh activity"
+            title="Refresh activity"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            Refresh
+          </Button>
+        ) : (
+          <Button
+            variant="secondary"
+            size="compact"
+            onClick={toggleLive}
+            data-testid="team-feed-live-toggle"
+            aria-pressed={live}
+            aria-label={live ? 'Pause live updates' : 'Resume live updates'}
+            title={
+              subscriptionState === 'reconnecting'
+                ? 'Reconnecting…'
+                : live
+                  ? 'Live — pause updates'
+                  : 'Paused — resume updates'
+            }
+          >
+            <span
               aria-hidden="true"
-            />
-            <input
-              type="search"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search activity…"
-              aria-label="Search activity"
-              data-testid="team-feed-search"
-              className="w-full rounded-md border bg-card py-1.5 pl-8 pr-8 text-s fg-primary"
-            />
-            {searchInput && (
-              <button
-                type="button"
-                onClick={() => setSearchInput('')}
-                data-testid="team-feed-search-clear"
-                aria-label="Clear search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 fg-secondary transition-colors hover:fg-primary"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </div>
-
-          {!personal && (members?.length ?? 0) > 0 && (
-            <SettingsControlSelect
-              value={selectedMember}
-              onChange={(e) => setSelectedMember(e.target.value)}
-              aria-label="Filter by member"
-              data-testid="team-feed-member-filter"
-              replayPrivacy={{ blockClassName }}
-            >
-              <option value="">All members</option>
-              {members?.map((member) => (
-                <option key={member.id} value={member.id}>
-                  {member.name}
-                </option>
-              ))}
-            </SettingsControlSelect>
-          )}
-
-          {hasActiveFilters && (
-            <button
-              type="button"
-              onClick={clearFilters}
-              data-testid="team-feed-clear-filters"
-              className="text-s font-medium fg-accent hover:underline"
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {bufferedCount > 0 && (
-            <button
-              type="button"
-              onClick={showBufferedItems}
-              data-testid="team-feed-new-items"
-              aria-label={`Show ${bufferedCount > 99 ? '99+' : bufferedCount} new ${
-                bufferedCount === 1 ? 'item' : 'items'
+              className={`h-2 w-2 rounded-full ${
+                subscriptionState === 'open'
+                  ? 'bg-success'
+                  : subscriptionState === 'reconnecting'
+                    ? 'animate-pulse bg-warning'
+                    : 'bg-fg-secondary'
               }`}
-              className="inline-flex items-center gap-1.5 rounded-full border border-line-accent bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-colors hover:opacity-90"
-            >
-              <ArrowUp size={14} />
-              {bufferedCount > 99 ? '99+' : bufferedCount} new
-            </button>
-          )}
-
-          {subscriptionState === 'disabled' ? (
-            // Stream gated off or refused: fall back to manual refresh so the
-            // feed is never worse than the poll-only experience.
-            <button
-              type="button"
-              onClick={() => void reloadFeed()}
-              disabled={refreshing}
-              data-testid="team-feed-refresh"
-              aria-label="Refresh activity"
-              title="Refresh activity"
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RefreshCw
-                size={14}
-                className={refreshing ? 'animate-spin' : ''}
-              />
-              Refresh
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={toggleLive}
-              data-testid="team-feed-live-toggle"
-              aria-pressed={live}
-              aria-label={live ? 'Pause live updates' : 'Resume live updates'}
-              title={
-                subscriptionState === 'reconnecting'
-                  ? 'Reconnecting…'
-                  : live
-                    ? 'Live — pause updates'
-                    : 'Paused — resume updates'
+            />
+            {live ? <Pause size={14} /> : <Play size={14} />}
+            {live ? 'Live' : 'Paused'}
+          </Button>
+        )}
+      </TeamPageHeaderActions>
+      <PageSearchRow>
+        <PageSearchField
+          value={searchInput}
+          onValueChange={setSearchInput}
+          placeholder="Search activity"
+          aria-label="Search activity"
+          data-testid="team-feed-search"
+          clearTestId="team-feed-search-clear"
+        />
+        {!personal && (members?.length ?? 0) > 0 && (
+          <PageSearchControls>
+            <FilterDropdown<string>
+              title="Member"
+              label={
+                members?.find((member) => member.id === selectedMember)?.name ??
+                'All members'
               }
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-            >
-              <span
-                aria-hidden="true"
-                className={`h-2 w-2 rounded-full ${
-                  subscriptionState === 'open'
-                    ? 'bg-success'
-                    : subscriptionState === 'reconnecting'
-                      ? 'animate-pulse bg-warning'
-                      : 'bg-fg-secondary'
-                }`}
-              />
-              {live ? <Pause size={14} /> : <Play size={14} />}
-              {live ? 'Live' : 'Paused'}
-            </button>
-          )}
-        </div>
-      </div>
+              anyLabel="All members"
+              options={(members ?? []).map((member) => ({
+                value: member.id,
+                label: member.name,
+              }))}
+              selected={selectedMember === '' ? [] : [selectedMember]}
+              onToggle={(memberId): void =>
+                setSelectedMember(memberId === selectedMember ? '' : memberId)
+              }
+              onClear={(): void => setSelectedMember('')}
+              testId="team-feed-member-filter"
+              replayPrivacy={{ blockClassName }}
+            />
+          </PageSearchControls>
+        )}
+        {hasActiveFilters && (
+          <button
+            type="button"
+            data-settings-control="link"
+            onClick={clearFilters}
+            data-testid="team-feed-clear-filters"
+            className="shrink-0 whitespace-nowrap text-s font-medium fg-accent hover:underline"
+          >
+            Clear filters
+          </button>
+        )}
+      </PageSearchRow>
 
       <div
         className="flex flex-wrap gap-1.5"
@@ -660,6 +649,7 @@ export function TeamFeedSection({
             <button
               key={type}
               type="button"
+              data-settings-control="chip"
               onClick={() => toggleType(type)}
               aria-pressed={active}
               data-testid={`team-feed-type-${type}`}
@@ -680,7 +670,7 @@ export function TeamFeedSection({
   let body: JSX.Element;
   if (!initialLoaded) {
     body = (
-      <DelayedLoadingPlaceholder>
+      <DelayedLoadingPlaceholder slowNote="Still loading the timeline…">
         <SettingsListSkeleton />
       </DelayedLoadingPlaceholder>
     );
@@ -709,15 +699,15 @@ export function TeamFeedSection({
                 or clear the filters to see everything.
               </p>
             </div>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={clearFilters}
               data-testid="team-feed-no-results-clear"
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
             >
               <X size={14} />
               Clear filters
-            </button>
+            </Button>
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center gap-4 px-6 py-16 text-center">
@@ -738,7 +728,10 @@ export function TeamFeedSection({
               <SettingsLink
                 href={`/organization/${orgId}/members?invite=1`}
                 data-testid="team-feed-invite-cta"
-                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
+                className={buttonClassName({
+                  variant: 'secondary',
+                  size: 'compact',
+                })}
               >
                 <UserPlus size={14} />
                 Invite people

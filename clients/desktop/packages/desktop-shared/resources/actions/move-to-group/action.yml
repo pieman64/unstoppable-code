@@ -1,5 +1,5 @@
 name: Move to Group
-description: Move a task (a worktree, a cowork Work Entry or an App Advisor Work Entry) into a sidebar group, creating the group when it doesn't exist. Runs in the desktop app; group problems never fail the step.
+description: Move a task (a worktree, a cowork Work Entry or an Orchestrator Work Entry) into a sidebar group, creating the group when it doesn't exist. Runs in the desktop app; group problems never fail the step.
 scope: [global, directory, worktree]
 inputs:
   project_id:

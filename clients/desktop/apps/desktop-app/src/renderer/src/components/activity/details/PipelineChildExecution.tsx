@@ -1,8 +1,9 @@
 import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import type { JSX } from 'react';
-import { DetailChevronIcon } from './DetailChevronIcon';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { Tooltip } from '@canopy/ui-shared';
 import { MaximizeIcon as AppCatalogMaximizeIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Button } from '@canopy/ui-shared/components';
 
 function EnlargeIcon(): JSX.Element {
   return <AppCatalogMaximizeIcon width="14" height="14" aria-hidden="true" />;
@@ -35,24 +36,25 @@ export function PipelineChildExecution({
         <button
           type="button"
           onClick={onToggle}
-          className="flex flex-1 items-center gap-1 rounded-md px-2.5 py-1 text-2xs fg-info/80 transition hover:bg-fg-primary/[0.04] hover:fg-info"
+          className="flex flex-1 items-center gap-1 rounded-md px-2.5 py-1 text-2xs fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
         >
-          <DetailChevronIcon open={expanded} />
+          <ChevronIcon open={expanded} />
           {child.pipeline_name}
         </button>
         {onDrillIntoChild !== undefined && (
           <Tooltip label="Open in full view">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={(): void =>
                 onDrillIntoChild(child.id, child.pipeline_name)
               }
               aria-label={`Open ${child.pipeline_name} in full view`}
               data-testid={`pipeline-step-drill-${stepId}`}
-              className="focus-ring shrink-0 rounded-md border bg-fg-primary/[0.04] p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary/80"
             >
               <EnlargeIcon />
-            </button>
+            </Button>
           </Tooltip>
         )}
       </div>

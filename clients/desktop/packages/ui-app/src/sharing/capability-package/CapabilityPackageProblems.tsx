@@ -3,10 +3,12 @@ import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import type {
   PipelinePackageAnalysisBlocker,
   PipelinePackageInvocationDismissal,
+  PipelinePackageReferenceDismissal,
 } from '@canopy/protocol/pipelines';
 import {
   buildCapabilityPackageProblems,
   DISMISS_INVOCATION_PHRASE,
+  DISMISS_REFERENCE_PHRASES,
   slugifyProblemPart,
   type CapabilityPackageProblem,
 } from './capability-package-blockers';
@@ -52,8 +54,25 @@ function problemCountTitle(count: number): string {
   return `${String(count)} problems block this share`;
 }
 
-function dismissedDetail(count: number): string {
-  return `${String(count)} marked as not commands.`;
+function dismissedDetail(invocations: number, references: number): string {
+  const parts: string[] = [];
+  if (invocations > 0) {
+    parts.push(`${String(invocations)} marked as not commands.`);
+  }
+  if (references > 0) {
+    parts.push(
+      `${String(references)} pipeline ${references === 1 ? 'mention' : 'mentions'} left out.`,
+    );
+  }
+  return parts.join(' ');
+}
+
+function referenceAriaLabel(
+  dismissal: PipelinePackageReferenceDismissal,
+): string {
+  return dismissal.kind === 'pipeline_reference'
+    ? `Mark ${dismissal.token} as not a pipeline`
+    : `Share without the child pipeline ${dismissal.token}`;
 }
 
 function stepsLabel(count: number): string {
@@ -78,6 +97,10 @@ interface CapabilityPackageProblemsProps {
   dismissedInvocations?: readonly PipelinePackageInvocationDismissal[];
   onDismiss?: (dismissal: PipelinePackageInvocationDismissal) => void;
   onRestore?: (dismissal: PipelinePackageInvocationDismissal) => void;
+  /** Pipeline references the publisher left out, echoed by main. */
+  dismissedReferences?: readonly PipelinePackageReferenceDismissal[];
+  onDismissReference?: (dismissal: PipelinePackageReferenceDismissal) => void;
+  onRestoreReference?: (dismissal: PipelinePackageReferenceDismissal) => void;
   bindingLabelFor?: (binding: {
     jobId: string;
     stepId: string;
@@ -102,6 +125,9 @@ export function CapabilityPackageProblems({
   dismissedInvocations: dismissedInput,
   onDismiss,
   onRestore,
+  dismissedReferences: dismissedReferencesInput,
+  onDismissReference,
+  onRestoreReference,
   bindingLabelFor = (binding): string => `${binding.jobId}.${binding.stepId}`,
   disabled: disabledInput,
   onFixWithAI,
@@ -114,8 +140,18 @@ export function CapabilityPackageProblems({
   const [expanded, setExpanded] = useState(false);
   const [showDismissed, setShowDismissed] = useState(false);
   const dismissedInvocations = dismissedInput ?? [];
+  const dismissedReferences = dismissedReferencesInput ?? [];
   const problems = buildCapabilityPackageProblems(blockers);
-  if (problems.length === 0 && dismissedInvocations.length === 0) return null;
+  if (
+    problems.length === 0 &&
+    dismissedInvocations.length === 0 &&
+    dismissedReferences.length === 0
+  )
+    return null;
+  const dismissProps = {
+    ...(onDismiss !== undefined ? { onDismiss } : {}),
+    ...(onDismissReference !== undefined ? { onDismissReference } : {}),
+  };
 
   const visible = expanded ? problems : problems.slice(0, VISIBLE_LIMIT);
   const hidden = problems.length - visible.length;
@@ -142,6 +178,7 @@ export function CapabilityPackageProblems({
       data-testid={`${testIdPrefix}-dependency-problems`}
       data-problem-count={String(problems.length)}
       data-dismissed-count={String(dismissedInvocations.length)}
+      data-dismissed-reference-count={String(dismissedReferences.length)}
     >
       {single !== undefined ? (
         <div {...problemAttributes(single, testIdPrefix)}>
@@ -156,7 +193,7 @@ export function CapabilityPackageProblems({
               problem={single}
               disabled={disabled}
               testIdPrefix={testIdPrefix}
-              {...(onDismiss !== undefined ? { onDismiss } : {})}
+              {...dismissProps}
             />
           </Notice>
           <ProblemDisclosures
@@ -181,7 +218,10 @@ export function CapabilityPackageProblems({
         <Notice
           intent="positive"
           surface="none"
-          detail={dismissedDetail(dismissedInvocations.length)}
+          detail={dismissedDetail(
+            dismissedInvocations.length,
+            dismissedReferences.length,
+          )}
           data-testid={noticeTestId}
         >
           {RESOLVED_TITLE}
@@ -207,7 +247,7 @@ export function CapabilityPackageProblems({
               disabled={disabled}
               bindingLabelFor={bindingLabelFor}
               testIdPrefix={testIdPrefix}
-              {...(onDismiss !== undefined ? { onDismiss } : {})}
+              {...dismissProps}
             />
           ))}
         </ul>
@@ -275,6 +315,75 @@ export function CapabilityPackageProblems({
           )}
         </div>
       )}
+
+      {dismissedReferences.length > 0 && onRestoreReference !== undefined && (
+        <DismissedReferenceList
+          dismissals={dismissedReferences}
+          disabled={disabled}
+          onRestore={onRestoreReference}
+          testIdPrefix={testIdPrefix}
+        />
+      )}
+    </div>
+  );
+}
+
+function DismissedReferenceList({
+  dismissals,
+  disabled,
+  onRestore,
+  testIdPrefix,
+}: {
+  dismissals: readonly PipelinePackageReferenceDismissal[];
+  disabled: boolean;
+  onRestore: (dismissal: PipelinePackageReferenceDismissal) => void;
+  testIdPrefix: string;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className={`space-y-1 ${SECTION_CLASS}`}
+      data-testid={`${testIdPrefix}-dependency-problems-dismissed-references`}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={(): void => {
+          setOpen((value) => !value);
+        }}
+        className={DISCLOSURE_CLASS}
+      >
+        Pipeline mentions left out ({String(dismissals.length)})
+      </button>
+      {open && (
+        <ul className="space-y-1">
+          {dismissals.map((dismissal) => {
+            const slug = `${dismissal.kind === 'pipeline_reference' ? 'name' : 'child'}-${slugifyProblemPart(dismissal.token)}`;
+            return (
+              <li
+                key={`${dismissal.kind}:${dismissal.token}`}
+                data-testid={`${testIdPrefix}-dependency-problems-dismissed-reference-${slug}`}
+                className="flex items-center gap-2 text-xs fg-secondary"
+              >
+                <span className="min-w-0 truncate fg-primary">
+                  {dismissal.token}
+                </span>
+                <button
+                  type="button"
+                  data-testid={`${testIdPrefix}-dependency-problems-dismissed-reference-undo-${slug}`}
+                  disabled={disabled}
+                  onClick={(): void => {
+                    onRestore(dismissal);
+                  }}
+                  className={`${DISCLOSURE_CLASS} disabled:opacity-40`}
+                >
+                  {UNDO_LABEL}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
@@ -296,6 +405,7 @@ interface ProblemDetailProps {
   disabled: boolean;
   /** Absent when the host cannot produce an ambiguous-token blocker. */
   onDismiss?: (dismissal: PipelinePackageInvocationDismissal) => void;
+  onDismissReference?: (dismissal: PipelinePackageReferenceDismissal) => void;
   testIdPrefix: string;
 }
 
@@ -304,41 +414,68 @@ interface ProblemDetailProps {
  * it as not a command" are the dismiss control, so the escape hatch reads as
  * part of the advice instead of competing with Fix it with AI.
  */
+function dismissAction(
+  problem: CapabilityPackageProblem,
+  onDismiss: ProblemDetailProps['onDismiss'],
+  onDismissReference: ProblemDetailProps['onDismissReference'],
+): { phrase: string; ariaLabel: string; dismiss: () => void } | null {
+  if (!problem.dismissible) return null;
+  const { dismissal, referenceDismissal } = problem;
+  if (dismissal !== undefined && onDismiss !== undefined) {
+    return {
+      phrase: DISMISS_INVOCATION_PHRASE,
+      ariaLabel: `Mark ${dismissal.token} as not a command`,
+      dismiss: (): void => {
+        onDismiss(dismissal);
+      },
+    };
+  }
+  const phrase = DISMISS_REFERENCE_PHRASES[problem.code];
+  if (
+    referenceDismissal !== undefined &&
+    onDismissReference !== undefined &&
+    phrase !== undefined
+  ) {
+    return {
+      phrase,
+      ariaLabel: referenceAriaLabel(referenceDismissal),
+      dismiss: (): void => {
+        onDismissReference(referenceDismissal);
+      },
+    };
+  }
+  return null;
+}
+
 function ProblemDetail({
   problem,
   disabled,
   onDismiss,
+  onDismissReference,
   testIdPrefix,
 }: ProblemDetailProps): JSX.Element {
-  const dismissal = problem.dismissal;
-  const phraseAt = problem.detail.indexOf(DISMISS_INVOCATION_PHRASE);
-  if (
-    !problem.dismissible ||
-    dismissal === undefined ||
-    onDismiss === undefined ||
-    phraseAt < 0
-  ) {
+  const action = dismissAction(problem, onDismiss, onDismissReference);
+  const phraseAt = action === null ? -1 : problem.detail.indexOf(action.phrase);
+  if (action === null || phraseAt < 0) {
     return <>{problem.detail}</>;
   }
   const link: ReactNode = (
     <button
       type="button"
       data-testid={`${testIdPrefix}-dependency-problems-dismiss-${problem.slug}`}
-      aria-label={`Mark ${dismissal.token} as not a command`}
+      aria-label={action.ariaLabel}
       disabled={disabled}
-      onClick={(): void => {
-        onDismiss(dismissal);
-      }}
+      onClick={action.dismiss}
       className={INLINE_ACTION_CLASS}
     >
-      {DISMISS_INVOCATION_PHRASE}
+      {action.phrase}
     </button>
   );
   return (
     <>
       {problem.detail.slice(0, phraseAt)}
       {link}
-      {problem.detail.slice(phraseAt + DISMISS_INVOCATION_PHRASE.length)}
+      {problem.detail.slice(phraseAt + action.phrase.length)}
     </>
   );
 }
@@ -412,6 +549,7 @@ interface ProblemRowProps {
   disabled: boolean;
   /** Absent when the host cannot produce an ambiguous-token blocker. */
   onDismiss?: (dismissal: PipelinePackageInvocationDismissal) => void;
+  onDismissReference?: (dismissal: PipelinePackageReferenceDismissal) => void;
   bindingLabelFor: (binding: {
     jobId: string;
     stepId: string;
@@ -423,6 +561,7 @@ function ProblemRow({
   problem,
   disabled,
   onDismiss,
+  onDismissReference,
   bindingLabelFor,
   testIdPrefix,
 }: ProblemRowProps): JSX.Element {
@@ -438,6 +577,7 @@ function ProblemRow({
           disabled={disabled}
           testIdPrefix={testIdPrefix}
           {...(onDismiss !== undefined ? { onDismiss } : {})}
+          {...(onDismissReference !== undefined ? { onDismissReference } : {})}
         />
       </p>
       <ProblemDisclosures

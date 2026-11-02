@@ -45,6 +45,8 @@ describe('InlineMention', () => {
     expect(html).toMatch(/^<button type="button"/);
     expect(html).toContain('aria-label="Open src/app.ts"');
     expect(html).toContain('hover:underline');
+    // Keyboard focus shows the hover cue as well as the focus ring.
+    expect(html).toContain('focus-visible:underline');
     expect(html).toContain('focus-ring');
   });
 

@@ -102,18 +102,22 @@ import { buildCodeGraphAvailabilityPrompt } from '../lib/code-graph-availability
 import {
   CLAUDE_CODE_GRAPH_STEERING_CONTEXT,
   buildClaudeCodeGraphPreToolUseContext,
+  isClaudeCodeGraphBuildToolName,
   isClaudeCodeGraphPostToolUse,
   isClaudeCodeGraphToolName,
   loadConfiguredClaudeCodeGraphSourceExtensions,
 } from '../lib/claude-code-graph-steering';
-import { spawnManagedTerminal } from '../services/terminal-service';
 import {
-  ptyManager,
-  type TerminalEventChannel,
-  type TerminalEventPayload,
-} from '../terminal/pty-manager';
+  beginClaudeCodeGraphToolCall,
+  isClaudeCodeGraphOrientationCurrent,
+  readClaudeCodeGraphToolAnswer,
+  recordClaudeCodeGraphOrientation,
+  resolveClaudeCodeGraphWorktreeRoot,
+} from '../lib/claude-code-graph-orientation';
+import { spawnManagedTerminal } from '../services/terminal-service';
+import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
+import { workerTerminal } from '../terminal/worker-terminal';
 import type {
-  TerminalExitEvent,
   TerminalOutputEvent,
   TerminalRunningChangedEvent,
 } from '@canopy/desktop-shared/types';
@@ -256,8 +260,8 @@ interface RuntimeRecord {
   codeGraphToolsAdvertised?: boolean;
   /** Snapshot of graph availability at the start of the current user turn. */
   codeGraphAvailableThisTurn?: boolean;
-  /** True after any graph tool was used during the current user turn. */
-  codeGraphOrientedThisTurn?: boolean;
+  /** Identifies the current user turn for chat-scoped orientation fallback. */
+  codeGraphOrientationTurn: object;
   /** True when graph orientation was blocked during the current user turn. */
   codeGraphOrientationBlockedThisTurn?: boolean;
   /** Lazily loaded custom source extensions for the current user turn. */
@@ -446,24 +450,6 @@ function shouldScheduleTrailingTranscriptSync(
   // has returned, so the Stop-time sync reliably misses it. Keep syncing
   // briefly until the completed turn timer lands.
   return !importedTurnCompletionMessage(result);
-}
-
-function isTerminalExitEvent(
-  payload: TerminalEventPayload,
-): payload is TerminalExitEvent {
-  return 'exitCode' in payload && 'signal' in payload;
-}
-
-function isTerminalOutputEvent(
-  payload: TerminalEventPayload,
-): payload is TerminalOutputEvent {
-  return 'data' in payload && 'seq' in payload;
-}
-
-function isTerminalRunningChangedEvent(
-  payload: TerminalEventPayload,
-): payload is TerminalRunningChangedEvent {
-  return 'running' in payload && 'processName' in payload;
 }
 
 function stripTerminalControlSequences(text: string): string {
@@ -792,9 +778,9 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
   private chatSummaryScheduler: ClaudeTerminalChatSummaryScheduler = () => {};
 
   public constructor() {
-    if (typeof ptyManager.addEventListener === 'function') {
-      ptyManager.addEventListener((channel, payload) => {
-        this.handleTerminalEvent(channel, payload);
+    if (typeof workerTerminal.addEventListener === 'function') {
+      workerTerminal.addEventListener((event) => {
+        this.handleTerminalEvent(event);
       });
     }
   }
@@ -977,6 +963,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
         auditTurnOpen: false,
         turnUsage: emptyTurnUsage(),
         turnDiffCaptureActive: false,
+        codeGraphOrientationTurn: {},
         watcherObservations: observations,
       };
       this.reconcileAbandonedWatcherObservations(recovered);
@@ -1362,6 +1349,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       assistantMode: appAdvisorMode ? 'app-advisor' : 'default',
       planMode: pendingPlanMode ?? tab.planMode === true,
       auditTurnOpen: false,
+      codeGraphOrientationTurn: {},
       turnUsage: emptyTurnUsage(),
       turnDiffCaptureActive: false,
       ...(pendingApprovalMode !== undefined ? { pendingApprovalMode } : {}),
@@ -1577,6 +1565,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       record.approvalMode = effectiveApprovalMode;
       record.approvalSession = createApprovalSession({
         sessionKey,
+        getTurnUserMessageId: () => record.auditUserMessageId,
         // Policy reads use the resolved target above, while renderer events
         // retain the owning sentinel identity subscribed by the approval dock.
         projectId: request.projectId,
@@ -1605,7 +1594,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           },
         ),
       );
-      record.codeGraphOrientedThisTurn = false;
+      record.codeGraphOrientationTurn = {};
       record.codeGraphOrientationBlockedThisTurn = false;
       record.codeGraphCustomSourceExtensionsThisTurn = undefined;
       // The Ledger exposure gate runs once per terminal process: the CLI
@@ -2032,8 +2021,8 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     record.state = { ...record.state, turnState: 'cleaning_up' };
     this.emitState(record);
     if (record.state.terminalId) {
-      ptyManager.kill(record.state.terminalId, {
-        signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      workerTerminal.kill(record.state.terminalId, {
+        signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
       });
     }
     if (record.state.sessionKey) {
@@ -2140,7 +2129,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           toolsAdvertised: record.codeGraphToolsAdvertised === true,
         }),
       );
-      record.codeGraphOrientedThisTurn = false;
+      record.codeGraphOrientationTurn = {};
       record.codeGraphOrientationBlockedThisTurn = false;
       record.codeGraphCustomSourceExtensionsThisTurn = undefined;
     }
@@ -3316,7 +3305,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           if (record.state.turnState === 'running' && record.state.terminalId) {
             // Escape uses Claude Code's own turn interruption. Keep hook and output
             // routes alive until it acknowledges the stop and finishes syncing.
-            ptyManager.write(record.state.terminalId, '\u001b');
+            workerTerminal.write(record.state.terminalId, '\u001b');
             const deadline = Date.now() + 10_000;
             while (
               record.state.turnState === 'running' ||
@@ -3425,9 +3414,30 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           : undefined,
       )
     ) {
-      if (record) {
-        record.codeGraphOrientedThisTurn = true;
+      const answer = readClaudeCodeGraphToolAnswer(
+        isUnknownRecord(body.hookPayload)
+          ? body.hookPayload.tool_response
+          : undefined,
+      );
+      if (record && !answer.failed) {
         record.codeGraphOrientationBlockedThisTurn = false;
+        const toolName = getStringField(body.hookPayload, 'tool_name');
+        await recordClaudeCodeGraphOrientation(
+          {
+            projectId: record.projectId,
+            worktreeId: record.worktreeId,
+            chatId: record.chatId,
+            cwd: record.cwd ?? '',
+            turn: record.codeGraphOrientationTurn,
+          },
+          {
+            toolUseId: getStringField(body.hookPayload, 'tool_use_id'),
+            rebuildsGraph:
+              toolName !== undefined &&
+              isClaudeCodeGraphBuildToolName(toolName),
+            answeredBuildAt: answer.lastBuildAt,
+          },
+        );
       }
       return undefined;
     }
@@ -3489,21 +3499,46 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       };
     }
     if (
-      toolName === 'Read' &&
+      (toolName === 'Read' ||
+        toolName === 'Grep' ||
+        toolName === 'Glob' ||
+        toolName === 'Bash') &&
       record.codeGraphAvailableThisTurn === true &&
       record.codeGraphCustomSourceExtensionsThisTurn === undefined
     ) {
       record.codeGraphCustomSourceExtensionsThisTurn =
-        await loadConfiguredClaudeCodeGraphSourceExtensions(record.cwd ?? '');
+        await loadConfiguredClaudeCodeGraphSourceExtensions(
+          resolveClaudeCodeGraphWorktreeRoot(
+            record.projectId,
+            record.worktreeId,
+            record.cwd ?? '',
+          ),
+        );
     }
-    const additionalContext = buildClaudeCodeGraphPreToolUseContext({
+    const graphScope = {
+      projectId: record.projectId,
+      worktreeId: record.worktreeId,
+      chatId: record.chatId,
+      cwd: record.cwd ?? '',
+      turn: record.codeGraphOrientationTurn,
+    };
+    const graphCallId = getStringField(body.hookPayload, 'tool_use_id');
+    // Also before a first build, which must orient later turns.
+    if (graphCallId !== undefined && isClaudeCodeGraphToolName(toolName)) {
+      await beginClaudeCodeGraphToolCall(graphScope, graphCallId, toolName);
+    }
+    const steeringContext = buildClaudeCodeGraphPreToolUseContext({
       toolName,
       toolInput,
       cwd: record.cwd ?? '',
       graphAvailable: record.codeGraphAvailableThisTurn === true,
-      graphOriented: record.codeGraphOrientedThisTurn === true,
       customSourceExtensions: record.codeGraphCustomSourceExtensionsThisTurn,
     });
+    const additionalContext =
+      steeringContext &&
+      !(await isClaudeCodeGraphOrientationCurrent(graphScope))
+        ? steeringContext
+        : undefined;
     const advisoryContext =
       additionalContext && record.codeGraphOrientationBlockedThisTurn === true
         ? additionalContext
@@ -3601,25 +3636,18 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     };
   }
 
-  private handleTerminalEvent(
-    channel: TerminalEventChannel,
-    payload: TerminalEventPayload,
-  ): void {
-    if (channel === IPC_CHANNELS.terminalOutput) {
-      if (isTerminalOutputEvent(payload)) {
-        this.handleFirstTerminalOutput(payload);
-        this.handleTerminalOutputForInterruptedTurn(payload);
-      }
+  private handleTerminalEvent(event: WorkerTerminalEvent): void {
+    if (event.type === 'output') {
+      this.handleFirstTerminalOutput(event.payload);
+      this.handleTerminalOutputForInterruptedTurn(event.payload);
       return;
     }
-    if (channel === IPC_CHANNELS.terminalRunningChanged) {
-      if (isTerminalRunningChangedEvent(payload)) {
-        this.handleTerminalRunningChanged(payload);
-      }
+    if (event.type === 'runningChanged') {
+      this.handleTerminalRunningChanged(event.payload);
       return;
     }
-    if (channel !== IPC_CHANNELS.terminalExit) return;
-    if (!isTerminalExitEvent(payload)) return;
+    if (event.type !== 'exit') return;
+    const payload = event.payload;
     this.pendingFirstOutputTerminalIds.delete(payload.terminalId);
     this.terminalOutputDetectionTails.delete(payload.terminalId);
     const record = this.recordsByTerminalId.get(payload.terminalId);

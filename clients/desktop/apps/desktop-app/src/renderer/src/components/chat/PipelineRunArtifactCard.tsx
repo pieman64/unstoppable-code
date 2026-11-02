@@ -1,19 +1,32 @@
-import { memo, useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import type { PipelineRunArtifactReceiptV1 } from '@canopy/desktop-shared/types';
 import type {
   ExecutionState,
-  ExecutionSummary,
   PipelineData,
 } from '@canopy/desktop-shared/types/pipeline';
-import {
-  PipelineRunTreeRow,
-  type PipelineRunBreadcrumbEntry,
-  type PipelineRunPauseResponse,
-  type PipelineRunStatus,
-  type PipelineRunSummary,
+import type {
+  PipelineRunBreadcrumbEntry,
+  PipelineRunPauseResponse,
+  PipelineRunSummary,
 } from '@canopy/ui-app';
+import {
+  PipelineRunReceiptCard,
+  pipelineRunReceiptView,
+  type PipelineRunReceiptActions,
+  type PipelineRunReceiptLiveOverride,
+  type PipelineRunReceiptPending,
+} from '@canopy/ui-app/agent-activity';
 import { getDocument } from '@canopy/ui-shared/panels';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -27,10 +40,7 @@ import {
   openTrackedPlan,
   type OpenTrackedPlanOptions,
 } from '@/lib/plans/open-tracked-plan';
-import {
-  buildExecutionTree,
-  collectVisibleExecutionTreeNodes,
-} from '@/lib/executionTree';
+import { collectVisibleExecutionTreeNodes } from '@/lib/executionTree';
 import { revealChatPanel } from '@/lib/panels/reveal-chat-panel';
 import { detectChatStoreSurface } from '@/stores/chat/surface';
 import { AdvisorEtaBadge } from '@/components/activity/AdvisorEtaBadge';
@@ -41,49 +51,7 @@ import { watchersForPipelineExecution } from '@/components/watchers/watcherFilte
 import { PlanReadyPipelineModal } from './PlanReadyPipelineModal';
 import { openAgentArtifactNavigation } from './agent-artifact-navigation';
 
-const requestedExecutionDetails = new Set<string>();
-
-function normalizedStatus(status: string | undefined): PipelineRunStatus {
-  switch (status) {
-    case 'pending':
-    case 'running':
-    case 'paused':
-    case 'success':
-    case 'failure':
-    case 'cancelled':
-      return status;
-    default:
-      return 'pending';
-  }
-}
-
-function fallbackSummary(
-  receipt: PipelineRunArtifactReceiptV1,
-): ExecutionSummary {
-  return {
-    id: receipt.executionId,
-    pipeline_id: receipt.pipelineId,
-    pipeline_name: receipt.pipelineName,
-    status: receipt.initialStatus,
-    status_reasons: [],
-    started_at: receipt.startedAt ?? receipt.queuedAt,
-    cwd: '',
-    project_id: receipt.projectId,
-    worktree_id: receipt.worktreeId,
-  };
-}
-
-function findSummaryNode(
-  nodes: ReturnType<typeof buildExecutionTree>,
-  executionId: string,
-): ReturnType<typeof buildExecutionTree>[number] | null {
-  for (const node of nodes) {
-    if (node.summary.id === executionId) return node;
-    const child = findSummaryNode(node.children, executionId);
-    if (child) return child;
-  }
-  return null;
-}
+const requestedExecutionRows = new Set<string>();
 
 function executionPlanPath(state: ExecutionState): string | undefined {
   return (
@@ -118,8 +86,10 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
 }: PipelineRunArtifactCardProps): JSX.Element {
   const {
     summaries,
+    rowStatesById,
     statesById,
     loadDetails,
+    loadRowState,
     retryExecution,
     resumeExecution,
     rerunExecution,
@@ -127,8 +97,10 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
   } = usePipelineRunsStore(
     useShallow((state) => ({
       summaries: state.summaries,
+      rowStatesById: state.rowStatesById,
       statesById: state.statesById,
       loadDetails: state.loadExecutionDetails,
+      loadRowState: state.loadExecutionRowState,
       retryExecution: state.retryExecution,
       resumeExecution: state.resumeExecution,
       rerunExecution: state.rerunExecution,
@@ -156,80 +128,54 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [pipelineRunError, setPipelineRunError] = useState<string | null>(null);
   const portalHostRef = useRef<HTMLDivElement>(null);
-  const executionState = statesById[receipt.executionId];
+  const rowExecutionState = rowStatesById[receipt.executionId];
 
-  const displaySummary = useMemo((): ExecutionSummary => {
-    const stored = summaries.find(
-      (summary) => summary.id === receipt.executionId,
-    );
-    const base = { ...fallbackSummary(receipt), ...(stored ?? {}) };
+  const liveOverride = useMemo(():
+    | PipelineRunReceiptLiveOverride
+    | undefined => {
+    if (!rowExecutionState) return undefined;
     return {
-      ...base,
-      status: normalizedStatus(executionState?.status ?? base.status),
-      status_reasons:
-        executionState?.status_reasons?.map((reason) => {
-          const safeReason = structuredClone(reason);
-          delete safeReason.diagnostic_message;
-          return safeReason;
-        }) ?? base.status_reasons,
-      completed_at: executionState?.completed_at ?? base.completed_at,
-      planId: executionState?.planId ?? base.planId,
-      rerun_source_id: executionState?.rerun_source_id ?? base.rerun_source_id,
-      trigger_source: executionState?.trigger_source ?? base.trigger_source,
+      status: rowExecutionState.status,
+      status_reasons: rowExecutionState.status_reasons,
+      planId: rowExecutionState.planId,
+      rerun_source_id: rowExecutionState.rerun_source_id,
+      trigger_source: rowExecutionState.trigger_source,
     };
-  }, [executionState, receipt, summaries]);
-  const summaryLookup = useMemo(() => {
-    const lookup: Record<string, PipelineRunSummary> = {};
-    for (const summary of [
-      ...summaries.filter((item) => item.id !== displaySummary.id),
-      displaySummary,
-    ]) {
-      lookup[summary.id] = summary;
-    }
-    return lookup;
-  }, [displaySummary, summaries]);
-  const node = useMemo(() => {
-    const allSummaries = [
-      ...summaries.filter((summary) => summary.id !== displaySummary.id),
-      displaySummary,
-    ];
-    return (
-      findSummaryNode(buildExecutionTree(allSummaries), displaySummary.id) ?? {
-        summary: displaySummary,
-        children: [],
-        depth: 0,
-      }
-    );
-  }, [displaySummary, summaries]);
+  }, [rowExecutionState]);
+  const view = useMemo(
+    () => pipelineRunReceiptView(receipt, summaries, liveOverride),
+    [liveOverride, receipt, summaries],
+  );
+  const displaySummary = view.summary;
+  const summaryLookup = view.summaryLookup;
   const visibleNodes = useMemo(
-    () => collectVisibleExecutionTreeNodes([node], expandedIds),
-    [expandedIds, node],
+    () => collectVisibleExecutionTreeNodes([view.node], expandedIds),
+    [expandedIds, view.node],
   );
   const visibleExecutionIds = useMemo(
     () => visibleNodes.map((visibleNode) => visibleNode.summary.id),
     [visibleNodes],
   );
-  // A lightweight summary interest keeps these runs' cached state live under
-  // execution events and across run-list scope changes, even when the card
-  // sits outside the selected worktree. Cards never take detail or log
-  // interest.
+  // A lightweight summary interest keeps these rows live under execution
+  // events and across run-list scope changes, even when the card sits outside
+  // the selected worktree. Cards never take detail or log interest.
   usePipelineExecutionSummaryInterest(visibleExecutionIds);
 
   useEffect(() => {
     for (const visibleNode of visibleNodes) {
       const executionId = visibleNode.summary.id;
       if (
-        statesById[executionId] ||
-        requestedExecutionDetails.has(executionId)
+        rowStatesById[executionId] ||
+        requestedExecutionRows.has(executionId)
       ) {
         continue;
       }
-      requestedExecutionDetails.add(executionId);
-      void loadDetails(executionId).finally(() => {
-        requestedExecutionDetails.delete(executionId);
+      requestedExecutionRows.add(executionId);
+      void loadRowState(executionId).finally(() => {
+        requestedExecutionRows.delete(executionId);
       });
     }
-  }, [loadDetails, statesById, visibleNodes]);
+  }, [loadRowState, rowStatesById, visibleNodes]);
 
   const showError = (message: string): void =>
     addToast(message, 'error', undefined, { category: 'Pipeline' });
@@ -355,13 +301,14 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
       openExecution(executionId);
       return;
     }
-    const state = statesById[executionId] ?? (await loadDetails(executionId));
+    const fullState =
+      statesById[executionId] ?? (await loadDetails(executionId));
     const summary = summaryLookup[executionId];
-    const planId = state?.planId ?? summary?.planId;
-    const projectId = state?.project_id ?? summary?.project_id;
-    const worktreeId = state?.worktree_id ?? summary?.worktree_id;
+    const planId = fullState?.planId ?? summary?.planId;
+    const projectId = fullState?.project_id ?? summary?.project_id;
+    const worktreeId = fullState?.worktree_id ?? summary?.worktree_id;
     if (!planId || !projectId || !worktreeId) {
-      showError('This pipeline run is not linked to a tracked plan');
+      showError('This workflow run is not linked to a tracked plan');
       return;
     }
     await openTrackedPlan(
@@ -377,18 +324,19 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
       openExecution(executionId);
       return;
     }
-    const state = statesById[executionId] ?? (await loadDetails(executionId));
-    if (!state) {
-      showError('Failed to load pipeline execution details');
+    const fullState =
+      statesById[executionId] ?? (await loadDetails(executionId));
+    if (!fullState) {
+      showError('Failed to load workflow execution details');
       return;
     }
     const filePath =
       kind === 'plan'
-        ? executionPlanPath(state)
-        : (state.report_outputs?.report_file ??
-          state.report_outputs?.report_json_file);
+        ? executionPlanPath(fullState)
+        : (fullState.report_outputs?.report_file ??
+          fullState.report_outputs?.report_json_file);
     if (!filePath) {
-      showError(`This pipeline run does not have a saved ${kind} file`);
+      showError(`This workflow run does not have a saved ${kind} file`);
       return;
     }
     // The chat that receives the message may sit behind another tab, in a
@@ -403,17 +351,23 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
       openExecution(executionId);
       return;
     }
-    const state = statesById[executionId] ?? (await loadDetails(executionId));
-    if (!state) {
-      showError('Failed to load pipeline execution details');
+    const fullState =
+      statesById[executionId] ?? (await loadDetails(executionId));
+    if (!fullState) {
+      showError('Failed to load workflow execution details');
       return;
     }
-    if (!executionPlanPath(state)) {
-      showError('This pipeline run does not have a saved plan file');
+    if (!executionPlanPath(fullState)) {
+      showError('This workflow run does not have a saved plan file');
+      return;
+    }
+    // A run with no project starts only by dispatch, never from a plan.
+    if ((fullState.scope ?? fullState.target?.scope) === 'global') {
+      showError("A run with no project can't start a follow-up pipeline.");
       return;
     }
     setPipelineRunError(null);
-    setFollowUpExecution(state);
+    setFollowUpExecution(fullState);
   };
   const handlePipelineRun = async (
     _pipelineId: string,
@@ -502,7 +456,7 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
           : {}),
       });
       if (!result.success) {
-        setPipelineRunError(result.error ?? 'Pipeline execution failed');
+        setPipelineRunError(result.error ?? 'Workflow execution failed');
         return;
       }
       setFollowUpExecution(null);
@@ -532,6 +486,111 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
       setDebuggingFailureId(null);
     }
   };
+  // The shared card is memoized: its actions stay stable and call the latest
+  // handlers, which close over this render's state.
+  const latestActions = useRef<Required<PipelineRunReceiptActions> | null>(
+    null,
+  );
+  useLayoutEffect(() => {
+    const handlers: Required<PipelineRunReceiptActions> = {
+      onOpenDetail: openExecution,
+      onCancel: (executionId) => void handleCancel(executionId),
+      onResume: (executionId, pauseResponses) =>
+        void handleResume(executionId, pauseResponses),
+      onChatFollowUp: (executionId) =>
+        void sendExecutionArtifactToChat(executionId, 'plan'),
+      onReportChatFollowUp: (executionId) =>
+        void sendExecutionArtifactToChat(executionId, 'report'),
+      onViewReport: (executionId) =>
+        setReportExecution({
+          id: executionId,
+          name:
+            summaryLookup[executionId]?.pipeline_name ??
+            displaySummary.pipeline_name,
+        }),
+      onPipelineFollowUp: (executionId) =>
+        void handlePipelineFollowUp(executionId),
+      onOpenPlan: (executionId) => void handleOpenPlan(executionId),
+      onRetry: (executionId) => void handleRetry(executionId),
+      onRerun: (executionId) => void handleRerun(executionId),
+      onDebugFailure: (executionId) => void handleDebug(executionId),
+      onOpenSource: (executionId) => openExecution(executionId),
+    };
+    latestActions.current = handlers;
+  });
+  const actions = useMemo(
+    (): PipelineRunReceiptActions => ({
+      onOpenDetail: (rootId, viewStack, jobId) =>
+        latestActions.current?.onOpenDetail(rootId, viewStack, jobId),
+      onCancel: (executionId) => latestActions.current?.onCancel(executionId),
+      onResume: (executionId, pauseResponses) =>
+        latestActions.current?.onResume(executionId, pauseResponses),
+      onChatFollowUp: (executionId) =>
+        latestActions.current?.onChatFollowUp(executionId),
+      onReportChatFollowUp: (executionId) =>
+        latestActions.current?.onReportChatFollowUp(executionId),
+      onViewReport: (executionId) =>
+        latestActions.current?.onViewReport(executionId),
+      onPipelineFollowUp: (executionId) =>
+        latestActions.current?.onPipelineFollowUp(executionId),
+      onOpenPlan: (executionId) =>
+        latestActions.current?.onOpenPlan(executionId),
+      onRetry: (executionId) => latestActions.current?.onRetry(executionId),
+      onRerun: (executionId) => latestActions.current?.onRerun(executionId),
+      onDebugFailure: (executionId) =>
+        latestActions.current?.onDebugFailure(executionId),
+      onOpenSource: (executionId) =>
+        latestActions.current?.onOpenSource(executionId),
+    }),
+    [],
+  );
+  const pending = useMemo(
+    (): PipelineRunReceiptPending => ({
+      cancellingId,
+      resumingId,
+      retryingIds,
+      rerunningIds,
+      debuggingFailureId,
+    }),
+    [cancellingId, debuggingFailureId, rerunningIds, resumingId, retryingIds],
+  );
+  const handleToggleExpand = useCallback((executionId: string): void => {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(executionId)) next.delete(executionId);
+      else next.add(executionId);
+      return next;
+    });
+  }, []);
+  const renderAdvisorBadge = useCallback(
+    (summary: PipelineRunSummary): JSX.Element | null => (
+      <AdvisorEtaBadge
+        snapshot={advisorSnapshots[summary.id]}
+        pipelineStatus={summary.status}
+      />
+    ),
+    [advisorSnapshots],
+  );
+  const renderWatcherButton = useCallback(
+    (summary: PipelineRunSummary): JSX.Element | null => {
+      const matching = watchersForPipelineExecution(watchers, {
+        projectId: summary.project_id,
+        worktreeId: summary.worktree_id,
+        executionId: summary.id,
+        pipelineId: summary.pipeline_id,
+      });
+      return matching.length > 0 ? (
+        <WatcherManagementButton
+          watchers={matching}
+          modalTitle="Workflow watchers"
+          modalEmptyMessage="No active watchers for this workflow."
+          ariaLabel="Manage workflow watchers"
+          dataTestId={`pipeline-run-watchers-${summary.id}`}
+        />
+      ) : null;
+    },
+    [watchers],
+  );
   const portalDocument = getDocument(portalHostRef.current);
 
   return (
@@ -541,78 +600,17 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
         className="contents"
         data-testid={`pipeline-run-portal-host-${receipt.executionId}`}
       >
-        <PipelineRunTreeRow
-          node={node}
+        <PipelineRunReceiptCard
+          receipt={receipt}
+          summaries={summaries}
+          statesById={rowStatesById}
+          liveOverride={liveOverride}
           expandedIds={expandedIds}
-          onToggleExpand={(executionId): void =>
-            setExpandedIds((current) => {
-              const next = new Set(current);
-              if (next.has(executionId)) next.delete(executionId);
-              else next.add(executionId);
-              return next;
-            })
-          }
-          statesById={statesById}
-          cancellingId={cancellingId}
-          resumingId={resumingId}
-          onOpenDetail={(rootId, viewStack, jobId): void =>
-            openExecution(rootId, viewStack, jobId)
-          }
-          onCancel={(executionId): void => void handleCancel(executionId)}
-          onResume={(executionId, pauseResponses): void =>
-            void handleResume(executionId, pauseResponses)
-          }
-          onChatFollowUp={(executionId): void =>
-            void sendExecutionArtifactToChat(executionId, 'plan')
-          }
-          onReportChatFollowUp={(executionId): void =>
-            void sendExecutionArtifactToChat(executionId, 'report')
-          }
-          onViewReport={(executionId): void => {
-            setReportExecution({
-              id: executionId,
-              name:
-                summaryLookup[executionId]?.pipeline_name ??
-                displaySummary.pipeline_name,
-            });
-          }}
-          onPipelineFollowUp={(executionId): void =>
-            void handlePipelineFollowUp(executionId)
-          }
-          onOpenPlan={(executionId): void => void handleOpenPlan(executionId)}
-          onRetry={(executionId): void => void handleRetry(executionId)}
-          onRerun={(executionId): void => void handleRerun(executionId)}
-          onDebugFailure={(executionId): void => void handleDebug(executionId)}
-          chatFollowUpDisabled={false}
-          retryingIds={retryingIds}
-          rerunningIds={rerunningIds}
-          debuggingFailureId={debuggingFailureId}
-          summaryLookup={summaryLookup}
-          onOpenSource={(executionId): void => openExecution(executionId)}
-          parentChain={[]}
-          renderAdvisorBadge={(summary): JSX.Element | null => (
-            <AdvisorEtaBadge
-              snapshot={advisorSnapshots[summary.id]}
-              pipelineStatus={summary.status}
-            />
-          )}
-          renderWatcherButton={(summary): JSX.Element | null => {
-            const matching = watchersForPipelineExecution(watchers, {
-              projectId: summary.project_id,
-              worktreeId: summary.worktree_id,
-              executionId: summary.id,
-              pipelineId: summary.pipeline_id,
-            });
-            return matching.length > 0 ? (
-              <WatcherManagementButton
-                watchers={matching}
-                modalTitle="Pipeline watchers"
-                modalEmptyMessage="No active watchers for this pipeline."
-                ariaLabel="Manage pipeline watchers"
-                dataTestId={`pipeline-run-watchers-${summary.id}`}
-              />
-            ) : null;
-          }}
+          onToggleExpand={handleToggleExpand}
+          actions={actions}
+          pending={pending}
+          renderAdvisorBadge={renderAdvisorBadge}
+          renderWatcherButton={renderWatcherButton}
         />
       </div>
       {reportExecution &&

@@ -1,9 +1,9 @@
 /** PRIVATE CANDIDATE: no tests executed. Dedicated reader is the only summary path. */
-import * as base from '@canopy/desktop-shared/node/code-graph/base-graph';
+import * as base from '@canopy/code-graph/base-graph';
 import type {
   ReadCodeGraphSummaryProjectionResult,
   CodeGraphSummaryProjectionV1,
-} from '@canopy/desktop-shared/node/code-graph/summary-projection';
+} from '@canopy/code-graph/summary-projection';
 import {
   executeCodeGraphRead,
   CodeGraphReadConnectionCache,

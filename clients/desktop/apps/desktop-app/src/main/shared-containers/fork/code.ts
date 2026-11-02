@@ -1,3 +1,17 @@
+import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import {
+  assertForkWorkspaceOwner,
+  assertNewForkOwner,
+  validateForkDestination,
+} from './destination';
+import {
+  assertForkWorkspaceUnbound,
+  assertOrganizationForkEligible,
+  bindForkCodeWorkspaceToOrganization,
+  organizationForkError,
+  releaseForkOrganizationBinding,
+  toOrganizationForkFailure,
+} from './org-destination';
 import { chmod, mkdir, rm, rmdir, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type {
@@ -100,6 +114,7 @@ function safeRepositoryFolderName(name: string): string {
 async function matchExistingWorkspace(
   layout: SharedContainerCodeLayout,
   workspaceId: string,
+  owner: WorkspaceContext,
   readOnly = false,
 ): Promise<ResolvedCodeDestination> {
   const workspace = (
@@ -110,6 +125,7 @@ async function matchExistingWorkspace(
   if (!workspace || workspace.type === 'cowork') {
     throw new Error('Fork destination must be a git-backed workspace');
   }
+  await assertForkWorkspaceOwner(workspace.id, owner);
   const repoIds = new Map<string, string>();
   if (workspace.type === 'single-repo') {
     const repository = layout.repositories[0];
@@ -167,6 +183,9 @@ async function matchExistingWorkspace(
 }
 
 async function createWorkspaceFromReplica(options: {
+  request: SharedContainerForkRequest;
+  owner: WorkspaceContext;
+  organizationName?: string;
   layout: SharedContainerCodeLayout;
   revisionRoot: string;
   parentDirectory?: string;
@@ -193,10 +212,16 @@ async function createWorkspaceFromReplica(options: {
     );
     promotedPaths.push(destination);
     options.rollback.defer(async () => {
+      // Keep a checkout any remaining workspace still points at: this fork's
+      // own, when its cleanup failed, or one a creator bound to it.
       if (
-        createdWorkspaceId &&
         (await readAllSidebarItems()).items.some(
-          (item) => item.id === createdWorkspaceId,
+          (item) =>
+            item.id === createdWorkspaceId ||
+            (item.type === 'single-repo' && item.repoPath === destination) ||
+            (item.type === 'multi-repo' &&
+              (item.sourceRepoPath === destination ||
+                item.repos.some((repo) => repo.repoPath === destination))),
         )
       ) {
         throw new Error(
@@ -234,11 +259,32 @@ async function createWorkspaceFromReplica(options: {
     }
     createdWorkspaceId = result.workspace.id;
     options.rollback.defer(async () => {
+      if (options.owner.kind === 'organization')
+        await assertForkWorkspaceUnbound(result.workspace.id);
       await deleteForkWorkspaceOrHide(
         { source: 'code_fork', workspaceId: result.workspace.id },
         () => deleteWorkspaceById(result.workspace.id, 'shared_container_fork'),
       );
     });
+    if (options.owner.kind === 'organization') {
+      // Registered before binding: a creator can bind and then fail.
+      options.rollback.defer(() =>
+        releaseForkOrganizationBinding(result.workspace.id),
+      );
+      await bindForkCodeWorkspaceToOrganization({
+        owner: options.owner,
+        organizationName: options.organizationName,
+        workspaceId: result.workspace.id,
+        checkoutPath: promotedPath,
+        containerId: options.request.containerId,
+        revisionId: options.request.revisionId,
+        title: options.layout.title,
+        fallbackName: repository.repoName,
+        ...(isSnapshotRepository(repository)
+          ? {}
+          : { remoteUrl: repository.remoteUrl }),
+      });
+    }
     return {
       workspace: result.workspace,
       repoIds: new Map([[repository.repoId, result.workspace.id]]),
@@ -247,6 +293,13 @@ async function createWorkspaceFromReplica(options: {
     };
   }
 
+  if (options.owner.kind === 'organization') {
+    // Refused before promotion; never stage a Personal multi-repo copy.
+    throw organizationForkError(
+      'organization-shape-unsupported',
+      options.organizationName,
+    );
+  }
   const { workspace } = await createWorkspace(
     {
       source: 'shared_container_fork',
@@ -467,6 +520,9 @@ export async function replaySharedContainerOverlay(options: {
 
 export async function forkSharedCodeContainer(options: {
   request: SharedContainerForkRequest;
+  owner: WorkspaceContext;
+  /** The owning organization's display name, for refusals. */
+  organizationName?: string;
   provenance: SharedContainerForkProvenance;
   revisionRoot: string;
   layout: SharedContainerCodeLayout;
@@ -474,107 +530,148 @@ export async function forkSharedCodeContainer(options: {
   commit?: W5CommitOptions;
   attempt?: W5KeyedAttempt;
 }): Promise<SharedContainerForkResponse> {
+  const requestedDestination = validateForkDestination(
+    options.request.destination,
+  );
+  if (requestedDestination.kind === 'new-workspace') {
+    assertNewForkOwner(requestedDestination, options.owner);
+  }
   if (options.layout.containerType !== 'CODE_WORKTREE') {
     throw new Error('Shared-container fork type mismatch');
   }
   if (options.layout.repositories.length === 0) {
     throw new Error('Code fork has no repositories');
   }
-  return runWithSharedContainerForkRollback(async (rollback) => {
-    const destination =
-      options.request.destination.kind === 'existing-workspace'
-        ? await matchExistingWorkspace(
-            options.layout,
-            options.request.destination.workspaceId,
-            !!options.commit?.expectedRevisions || !!options.attempt,
-          )
-        : await createWorkspaceFromReplica({
-            layout: options.layout,
-            revisionRoot: options.revisionRoot,
-            parentDirectory: options.request.destination.parentDirectory,
-            rollback,
-            commit: options.commit,
-            attempt: options.attempt,
-          });
-    if (
-      destination.createdWorkspace &&
-      'startPage' in options.layout &&
-      options.layout.startPage
-    ) {
-      const mappedStartPage = mapCodeForkStartPage(
-        options.layout.startPage,
-        destination.repoIds,
-        destination.workspace.type,
-      );
-      if (mappedStartPage) {
-        await recordSharedContainerForkStartPage(
-          {
-            source: 'code_fork',
-            workspaceId: destination.workspace.id,
-            startPage: mappedStartPage,
-          },
-          options.commit,
+  const newOrganizationCopy =
+    requestedDestination.kind === 'new-workspace' &&
+    options.owner.kind === 'organization';
+  const assertEligible = (): Promise<void> => {
+    const [repository] = options.layout.repositories;
+    return assertOrganizationForkEligible({
+      owner: options.owner,
+      organizationName: options.organizationName,
+      shape:
+        options.layout.repositories.length > 1 ? 'multi-repo' : 'single-repo',
+      ...(repository && !isSnapshotRepository(repository)
+        ? { remoteUrl: repository.remoteUrl }
+        : {}),
+    });
+  };
+  const run = (): Promise<SharedContainerForkResponse> =>
+    runWithSharedContainerForkRollback<SharedContainerForkResponse>(
+      async (rollback) => {
+        const destination =
+          options.request.destination.kind === 'existing-workspace'
+            ? await matchExistingWorkspace(
+                options.layout,
+                options.request.destination.workspaceId,
+                options.owner,
+                !!options.commit?.expectedRevisions || !!options.attempt,
+              )
+            : await createWorkspaceFromReplica({
+                request: options.request,
+                owner: options.owner,
+                organizationName: options.organizationName,
+                layout: options.layout,
+                revisionRoot: options.revisionRoot,
+                parentDirectory: options.request.destination.parentDirectory,
+                rollback,
+                commit: options.commit,
+                attempt: options.attempt,
+              });
+        if (
+          destination.createdWorkspace &&
+          'startPage' in options.layout &&
+          options.layout.startPage
+        ) {
+          const mappedStartPage = mapCodeForkStartPage(
+            options.layout.startPage,
+            destination.repoIds,
+            destination.workspace.type,
+          );
+          if (mappedStartPage) {
+            await recordSharedContainerForkStartPage(
+              {
+                source: 'code_fork',
+                workspaceId: destination.workspace.id,
+                startPage: mappedStartPage,
+              },
+              options.commit,
+            );
+          }
+        }
+        await assertForkWorkspaceOwner(
+          destination.workspace.id,
+          options.owner,
+          true,
         );
-      }
-    }
-    const worktree = await createDestinationWorktree(
-      destination,
-      options.layout,
-      options.commit,
-      options.attempt,
+        const worktree = await createDestinationWorktree(
+          destination,
+          options.layout,
+          options.commit,
+          options.attempt,
+        );
+        if (!destination.createdWorkspace) {
+          rollback.defer(() =>
+            destination.workspace.type === 'single-repo'
+              ? archiveSingleRepoWorktree({
+                  workspaceId: destination.workspace.id,
+                  worktreeId: worktree.id,
+                  retainAsArchivedContainer: false,
+                  deleteBranch: true,
+                })
+              : archiveMultiRepoWorktree({
+                  workspaceId: destination.workspace.id,
+                  worktreeId: worktree.id,
+                  retainAsArchivedContainer: false,
+                  deleteBranch: true,
+                }),
+          );
+        }
+        await replaySharedContainerOverlay({
+          store: options.store,
+          revisionRoot: options.revisionRoot,
+          layout: options.layout,
+          workspaceId: destination.workspace.id,
+          worktreeId: worktree.id,
+          repoIds: destination.repoIds,
+          singleRepo: destination.workspace.type === 'single-repo',
+        });
+        const attachments = await copyForkAttachments({
+          store: options.store,
+          revisionRoot: options.revisionRoot,
+          layout: options.layout,
+          projectId: destination.workspace.id,
+          worktreeId: worktree.id,
+          rollback,
+        });
+        const warnings = await rehydrateForkChats({
+          containerId: options.request.containerId,
+          revisionId: options.request.revisionId,
+          projectId: destination.workspace.id,
+          worktreeId: worktree.id,
+          attachments,
+        });
+        await writeForkProvenanceForDestination(
+          destination.workspace.id,
+          worktree.id,
+          options.provenance,
+        );
+        await assertForkWorkspaceOwner(destination.workspace.id, options.owner);
+        return {
+          containerType: 'CODE_WORKTREE',
+          projectId: destination.workspace.id,
+          worktreeId: worktree.id,
+          warnings,
+          provenance: options.provenance,
+        };
+      },
     );
-    if (!destination.createdWorkspace) {
-      rollback.defer(() =>
-        destination.workspace.type === 'single-repo'
-          ? archiveSingleRepoWorktree({
-              workspaceId: destination.workspace.id,
-              worktreeId: worktree.id,
-              retainAsArchivedContainer: false,
-              deleteBranch: true,
-            })
-          : archiveMultiRepoWorktree({
-              workspaceId: destination.workspace.id,
-              worktreeId: worktree.id,
-              retainAsArchivedContainer: false,
-              deleteBranch: true,
-            }),
-      );
-    }
-    await replaySharedContainerOverlay({
-      store: options.store,
-      revisionRoot: options.revisionRoot,
-      layout: options.layout,
-      workspaceId: destination.workspace.id,
-      worktreeId: worktree.id,
-      repoIds: destination.repoIds,
-      singleRepo: destination.workspace.type === 'single-repo',
-    });
-    const attachments = await copyForkAttachments({
-      store: options.store,
-      revisionRoot: options.revisionRoot,
-      layout: options.layout,
-      projectId: destination.workspace.id,
-      worktreeId: worktree.id,
-      rollback,
-    });
-    const warnings = await rehydrateForkChats({
-      containerId: options.request.containerId,
-      revisionId: options.request.revisionId,
-      projectId: destination.workspace.id,
-      worktreeId: worktree.id,
-      attachments,
-    });
-    await writeForkProvenanceForDestination(
-      destination.workspace.id,
-      worktree.id,
-      options.provenance,
-    );
-    return {
-      containerType: 'CODE_WORKTREE',
-      projectId: destination.workspace.id,
-      worktreeId: worktree.id,
-      warnings,
-      provenance: options.provenance,
-    };
-  });
+  if (!newOrganizationCopy) return run();
+  try {
+    await assertEligible();
+    return await run();
+  } catch (error) {
+    throw toOrganizationForkFailure(error, options.organizationName);
+  }
 }

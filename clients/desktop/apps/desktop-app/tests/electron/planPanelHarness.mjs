@@ -3,7 +3,7 @@
 // A tracked plan opens as a `plan` document panel (`panel-plan-<planId>`) and
 // can split its diagram into one `plan-diagram` panel
 // (`panel-plan-diagram-<planId>`). Both are reached from Add Panel → Plans
-// (`panel-add-panel-<groupId>` → `panel-add-menu` →
+// (`panel-add-tab-<groupId>` → `panel-add-menu` →
 // `panel-add-menu-plans-submenu` → `panel-add-menu-item-plan-<planId>`; since
 // phase 09 the submenu leads with All plans,
 // `panel-add-menu-item-activity-card-plans`, and with no visible plan Plans is
@@ -395,7 +395,7 @@ export function planDiagramPanel(page, planId) {
 
 /** Open the Add Panel menu of `groupId` in the main window `page`. */
 export async function openAddPanelMenu(page, groupId) {
-  await page.getByTestId(`panel-add-panel-${groupId}`).click();
+  await page.getByTestId(`panel-add-tab-${groupId}`).click();
   const menu = page.getByTestId('panel-add-menu');
   await expect(menu).toBeVisible();
   await expect(menu).toHaveAttribute('data-group-id', groupId);

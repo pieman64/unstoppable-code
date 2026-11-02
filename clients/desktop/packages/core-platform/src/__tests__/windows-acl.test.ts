@@ -135,7 +135,12 @@ describe('secure files: Windows ACL receipts', () => {
         },
       });
       const result = await secure.permissions({ ...BASE, path: target, kind });
-      expect(result.state).toBe('unverifiable');
+      // Hosts retry this POSIX reason: atomic descriptor publication can
+      // replace core.json during a launcher's probe.
+      expect(result).toEqual({
+        state: 'unverifiable',
+        reason: 'path changed during permission check',
+      });
     },
   );
 

@@ -45,6 +45,30 @@ const conformanceWorldSchema = z.strictObject({
       thinkingLevels: z.array(z.enum(['off', 'medium', 'high'])),
     }),
   ),
+  transcript: z.strictObject({
+    target: z.strictObject({
+      kind: z.literal('delegation'),
+      chatId: idSchema,
+      delegationId: idSchema,
+      runGeneration: z.number().int().positive(),
+    }),
+    pageSize: z.number().int().positive(),
+    blockPageSize: z.number().int().positive(),
+    revision: z.number().int().nonnegative(),
+    rows: z.array(
+      z.strictObject({
+        id: idSchema,
+        role: z.enum(['user', 'assistant', 'system']),
+        timestamp: z.number(),
+        blocks: z.array(
+          z.strictObject({
+            type: z.enum(['text', 'thinking']),
+            text: z.string(),
+          }),
+        ),
+      }),
+    ),
+  }),
   defaultModelId: idSchema,
   /** The signed-in account's current organization memberships. */
   organizations: z

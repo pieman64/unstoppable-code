@@ -17,7 +17,7 @@ export interface FinishWorktreeArchiveInput {
 
 /**
  * Renderer cleanup after a worktree archive or delete succeeded. Single-row
- * removal, its force-delete retry, and bulk removal all run it, so a removed
+ * removal, its without-teardown retry, and bulk removal all run it, so a removed
  * worktree never leaves panels or pipeline UI behind.
  */
 export function finishWorktreeArchive({

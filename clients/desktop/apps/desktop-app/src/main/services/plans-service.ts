@@ -14,7 +14,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { BrowserWindow } from 'electron';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
+import {
+  worktreeScopedParentLocalId,
+  type PortalPlanGetPayload,
+} from '@canopy/protocol/portal';
 import {
   createTrackedPlan,
   deleteTrackedPlan,
@@ -184,6 +187,11 @@ function toPlanSummary(plan: TrackedPlanData): PortalPlanSummary {
     title: plan.title,
     status: plan.reviewStatus,
     source: plan.source,
+    // Only imported plans name their source file; detected plans keep the
+    // path as a local dedup key and agent plans have none.
+    ...(plan.source === 'imported' && plan.sourceFilePath
+      ? { sourceFilePath: plan.sourceFilePath }
+      : {}),
     updatedAt: plan.updatedAt,
   };
 }
@@ -205,6 +213,35 @@ function toPlanDetail(plan: TrackedPlanData): PortalPlanDetail {
     // Mirror the canonical revision counter under the shorter alias too so
     // renderers that just want "v3" can read `revisionNumber` directly.
     revisionNumber: plan.latestRevisionNumber,
+  };
+}
+
+/** Historical reads must never substitute the current revision's Markdown. */
+function toRequestedPlanDetail(
+  plan: TrackedPlanData,
+  revisionNumber: number | undefined,
+): PortalPlanDetail | null {
+  const detail = toPlanDetail(plan);
+  if (
+    revisionNumber === undefined ||
+    revisionNumber === plan.latestRevisionNumber
+  ) {
+    return detail;
+  }
+  const revision = plan.revisions.find(
+    (candidate) => candidate.revisionNumber === revisionNumber,
+  );
+  if (!revision) return null;
+  return {
+    ...detail,
+    content: revision.content,
+    body: revision.content,
+    revisionNumber: revision.revisionNumber,
+    source: revision.source,
+    status: revision.reviewStatus,
+    reviewStatus: revision.reviewStatus,
+    approvedAt: revision.approvedAt ?? null,
+    dismissedAt: revision.dismissedAt ?? null,
   };
 }
 
@@ -230,25 +267,35 @@ export async function listTrackedPlanData(
 }
 
 export async function readPlan(
-  request: TrackedPlanGetRequest,
+  request: PortalPlanGetPayload,
   options: { portalCommandId?: string } = {},
 ): Promise<PortalPlanDetail | null> {
   validateWorktreeIds(request);
   validateId(request.planId, 'planId');
+  if (
+    request.revisionNumber !== undefined &&
+    (!Number.isSafeInteger(request.revisionNumber) ||
+      request.revisionNumber < 1)
+  ) {
+    throw new Error('revisionNumber must be a positive safe integer.');
+  }
   if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
     const plan =
       (await listViewerPlans(request)).find(
         (plan) => plan.id === request.planId,
       ) ?? null;
-    return plan ? toPlanDetail(plan) : null;
+    return plan ? toRequestedPlanDetail(plan, request.revisionNumber) : null;
   }
   const plan = await getTrackedPlan(
     request.projectId,
     request.worktreeId,
     request.planId,
   );
-  const detail = plan ? toPlanDetail(plan) : null;
-  if (detail) {
+  const detail = plan
+    ? toRequestedPlanDetail(plan, request.revisionNumber)
+    : null;
+  // A pinned read is a query result, not a change to the live Plans card.
+  if (detail && request.revisionNumber === undefined) {
     emitPortalFeatureUpsert({
       type: 'portal.plan.event',
       commandId: options.portalCommandId,

@@ -8,6 +8,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { Camera, Pencil } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ALLOWED_AVATAR_MIME_TYPES,
@@ -61,6 +62,7 @@ export function AvatarEditor({
     <div className="flex flex-col items-center gap-1">
       <button
         type="button"
+        data-settings-control="media"
         data-testid="profile-avatar-edit"
         onClick={() => inputRef.current?.click()}
         disabled={busy}
@@ -92,15 +94,15 @@ export function AvatarEditor({
         onChange={handleChange}
       />
       {image && (
-        <button
-          type="button"
+        <Button
+          size="compact"
+          variant="secondary"
           data-testid="profile-avatar-remove"
           onClick={onRemove}
           disabled={busy}
-          className="text-xs font-medium fg-secondary transition-colors hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           Remove photo
-        </button>
+        </Button>
       )}
       {error && (
         <p className="max-w-48 text-center text-xs fg-destructive" role="alert">
@@ -176,15 +178,16 @@ export function NameEditor({
           {name}
         </h1>
         {aux}
-        <button
-          type="button"
+        <Button
+          size="compact"
+          iconOnly
+          variant="ghost"
           data-testid="profile-name-edit"
           onClick={open}
           aria-label="Edit display name"
-          className="rounded-md p-1 fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
         >
           <Pencil size={14} />
-        </button>
+        </Button>
         {error && (
           <p className="w-full text-xs fg-destructive" role="alert">
             {error}
@@ -211,23 +214,22 @@ export function NameEditor({
           blockClassName,
         )}
       />
-      <button
+      <Button
         type="submit"
+        size="compact"
         disabled={busy || draft.trim().length < PROFILE_NAME_MIN_LENGTH}
         data-testid="profile-name-save"
-        className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {busy ? 'Saving…' : 'Save'}
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        size="compact"
         onClick={cancel}
         disabled={busy}
         data-testid="profile-name-cancel"
-        className="rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
       >
         Cancel
-      </button>
+      </Button>
       {error && (
         <p className="w-full text-xs fg-destructive" role="alert">
           {error}

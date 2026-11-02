@@ -44,6 +44,30 @@ test('Search explains its scope and keeps the mode hint current', async () => {
     await input.fill('demo');
     await expect(hint).toHaveText('Type > for commands');
     await expect(hint).toHaveAttribute('data-mode', 'all');
+
+    // The header is the shared lg search field: its nested button clears the
+    // query and keeps the hint, and a search with no results hands off to
+    // the shared empty state.
+    await expect(
+      palette
+        .locator('[data-search-field="lg"]')
+        .getByTestId('command-palette-input'),
+    ).toBeVisible();
+    await palette.getByTestId('command-palette-clear').click();
+    await expect(input).toHaveValue('');
+    await expect(input).toBeFocused();
+    await expect(hint).toHaveText('Type > for commands');
+    await input.fill('zzqxv-no-such-thing');
+    const empty = palette.getByTestId('command-palette-empty');
+    await expect(empty).toContainText('Nothing matches your search.');
+    await empty.getByTestId('command-palette-empty-clear').click();
+    await expect(input).toHaveValue('');
+    await expect(empty).toHaveCount(0);
+
+    // Escape still closes the palette at once, whatever the query.
+    await input.fill('demo');
+    await window.keyboard.press('Escape');
+    await expect(palette).toBeHidden();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

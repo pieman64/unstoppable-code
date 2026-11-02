@@ -1,0 +1,29 @@
+{
+  "scenario": "malformed-non-integer-index",
+  "serializedInvocation": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}",
+  "claude": {
+    "deliveryText": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}",
+    "isError": true,
+    "serializedDelivery": "{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"invalid_request\\\",\\\"message\\\":\\\"Invalid delegation request.\\\",\\\"retryable\\\":false}}\"}],\"isError\":true}"
+  },
+  "codex": {
+    "deliveryText": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}",
+    "success": false,
+    "serializedDelivery": "{\"success\":false,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"invalid_request\\\",\\\"message\\\":\\\"Invalid delegation request.\\\",\\\"retryable\\\":false}}\"}]}"
+  },
+  "cursor": {
+    "deliveryText": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}",
+    "isError": true,
+    "serializedDelivery": "{\"text\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"invalid_request\\\",\\\"message\\\":\\\"Invalid delegation request.\\\",\\\"retryable\\\":false}}\",\"isError\":true}"
+  },
+  "copilot": {
+    "deliveryText": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}",
+    "resultType": "failure",
+    "serializedDelivery": "{\"textResultForLlm\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"invalid_request\\\",\\\"message\\\":\\\"Invalid delegation request.\\\",\\\"retryable\\\":false}}\",\"resultType\":\"failure\"}"
+  },
+  "opencode": {
+    "deliveryText": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}",
+    "isError": true,
+    "serializedDelivery": "{\"text\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"invalid_request\\\",\\\"message\\\":\\\"Invalid delegation request.\\\",\\\"retryable\\\":false}}\",\"isError\":true}"
+  }
+}

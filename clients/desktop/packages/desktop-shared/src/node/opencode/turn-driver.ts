@@ -16,6 +16,10 @@ import {
   type OpenCodeCapabilityBinding,
 } from './capability-snapshot';
 import { OpenCodeMetadataError, type OpenCodeUsage } from './runtime-api';
+import {
+  prepareOpenCodeInferenceRoute,
+  assertOpenCodeInferenceBinding,
+} from './inference-route';
 import { readOpenCodeToolCatalog, openCodePromptUsage } from './runtime-api';
 import { openCodeMcpNativeKey } from './mcp-tool-identity';
 import { openCodeToolDisplay } from './tool-display';
@@ -43,6 +47,7 @@ export interface OpenCodeTurnRequest extends Pick<
   | 'env'
   | 'signal'
   | 'providerConfig'
+  | 'inferenceRoute'
   | 'promptTimeoutMs'
   | 'skillDirectories'
 > {
@@ -85,7 +90,12 @@ export interface OpenCodeTurnHost {
   onToolCompleted?(name: string, input: unknown): void;
 }
 
+/** A local admission refusal, never a provider transport or cleanup failure. */
+class OpenCodeRequestError extends Error {}
+
 export interface OpenCodeTurnResult {
+  /** An explicit worker refusal before prompt submission. */
+  requestRejected?: boolean;
   diagnostics?: OpenCodeUpdateDiagnostics;
   sessionId?: string;
   responseText: string;
@@ -129,6 +139,22 @@ export async function runOpenCodeTurn(
   );
   const tools = new Map<string, { name: string; input: unknown }>();
   try {
+    const inference = request.inferenceRoute
+      ? prepareOpenCodeInferenceRoute(request.inferenceRoute)
+      : undefined;
+    if (
+      inference &&
+      !inference.route.model.supportsVision &&
+      request.promptContent?.some((block) => block.type === 'image')
+    ) {
+      throw new OpenCodeRequestError(
+        'This OpenCode model does not support images. Remove them or choose another model.',
+      );
+    }
+    if (inference && inference.rawModelId !== request.rawModelId)
+      throw new OpenCodeRequestError(
+        'OpenCode inference route does not match the selected model. Select the model again.',
+      );
     if (sessionId) {
       previous = await readOpenCodeCapabilityBinding(
         request.profileDir,
@@ -136,7 +162,7 @@ export async function runOpenCodeTurn(
       );
       if (!previous) {
         if (request.resumePolicy !== 'recover')
-          throw new Error(
+          throw new OpenCodeRequestError(
             'OpenCode cannot verify the capabilities of this saved session. Start a new chat.',
           );
         contextLost = true;
@@ -144,8 +170,22 @@ export async function runOpenCodeTurn(
         host.onSessionCleared?.();
       }
     }
+    if (previous) {
+      try {
+        assertOpenCodeInferenceBinding(
+          previous,
+          inference,
+          request.capabilityChanges === 'announce',
+        );
+      } catch (error) {
+        if (error instanceof Error)
+          throw new OpenCodeRequestError(error.message);
+        throw error;
+      }
+    }
     runtime = await startOpenCodeRuntime({
       ...request,
+      inferenceRoute: inference?.route,
       authorize: async (input) => {
         const outcome = await host.authorize(input);
         tools.set(input.toolCallId, {
@@ -227,7 +267,7 @@ export async function runOpenCodeTurn(
           (block.type === 'audio' && !promptCapabilities?.audio),
       )
     )
-      throw new Error(
+      throw new OpenCodeRequestError(
         'OpenCode does not support these attachments. Remove them or choose another harness.',
       );
     const mcpServers = request.mcpServers ?? [];
@@ -239,7 +279,7 @@ export async function runOpenCodeTurn(
             !request.mcpSnapshot?.some((entry) => entry.name === server.name),
         ))
     )
-      throw new Error(
+      throw new OpenCodeRequestError(
         'OpenCode could not verify the selected MCP tools. Reconnect the servers and try again.',
       );
     const attach = async (): Promise<{
@@ -297,11 +337,11 @@ export async function runOpenCodeTurn(
             }
           }
           if (!missing)
-            throw new Error(
+            throw new OpenCodeRequestError(
               'OpenCode could not resume this session. Check the connection and try again.',
             );
           if (request.resumePolicy !== 'recover')
-            throw new Error(
+            throw new OpenCodeRequestError(
               'OpenCode could not resume the requested session because its saved context is unavailable.',
             );
           contextLost = true;
@@ -316,7 +356,8 @@ export async function runOpenCodeTurn(
     const attached = await attach();
     if ('sessionId' in attached && typeof attached.sessionId === 'string')
       sessionId = attached.sessionId;
-    if (!sessionId) throw new Error('OpenCode did not create a session.');
+    if (!sessionId)
+      throw new OpenCodeRequestError('OpenCode did not create a session.');
     runtime.assertApprovalReady();
     const configOptions: SessionConfigOption[] = attached.configOptions ?? [];
     if (
@@ -324,7 +365,7 @@ export async function runOpenCodeTurn(
         (entry) => entry.rawModelId === request.rawModelId,
       )
     )
-      throw new Error(
+      throw new OpenCodeRequestError(
         'This OpenCode model is unavailable. Choose another model.',
       );
     const selected = await client.setSessionConfigOption(
@@ -337,7 +378,7 @@ export async function runOpenCodeTurn(
           option.id === 'model' && option.currentValue === request.rawModelId,
       )
     )
-      throw new Error('OpenCode could not select this model.');
+      throw new OpenCodeRequestError('OpenCode could not select this model.');
     if (request.thinkingLevel) {
       const effort = selected.configOptions.find(
         (option) => option.id === 'effort',
@@ -353,7 +394,7 @@ export async function runOpenCodeTurn(
         );
       const message =
         'OpenCode could not apply this thinking level. Choose another level and try again.';
-      if (!supported) throw new Error(message);
+      if (!supported) throw new OpenCodeRequestError(message);
       const applied = await client.setSessionConfigOption(
         { sessionId, configId: 'effort', value: request.thinkingLevel },
         request.signal,
@@ -369,7 +410,7 @@ export async function runOpenCodeTurn(
             option.id === 'model' && option.currentValue === request.rawModelId,
         )
       )
-        throw new Error(message);
+        throw new OpenCodeRequestError(message);
     }
     const owned = runtime;
     const nativeTools = await readOpenCodeToolCatalog(
@@ -391,15 +432,28 @@ export async function runOpenCodeTurn(
       },
       contextDigest: openCodeCapabilityDigest(request.capabilityContext),
       providerSettingsDigest: runtime.providerSettingsDigest,
+      ...(inference ? { inferenceRouteDigest: inference.identityDigest } : {}),
+      ...(inference?.selection
+        ? { inferenceSelection: inference.selection }
+        : {}),
       files: await openCodeCapabilityFiles(
         request.capabilityRoots ?? [],
         request.signal,
       ),
       mcp: request.mcpSnapshot ?? [],
     };
-    if (previous && previous.digest !== openCodeCapabilityDigest(snapshot)) {
+    const { inferenceSelection: addedSelection, ...legacySnapshot } = snapshot;
+    const upgradesSelectionOnly =
+      previous?.version === 2 &&
+      addedSelection !== undefined &&
+      previous.digest === openCodeCapabilityDigest(legacySnapshot);
+    if (
+      previous &&
+      !upgradesSelectionOnly &&
+      previous.digest !== openCodeCapabilityDigest(snapshot)
+    ) {
       if (request.capabilityChanges !== 'announce')
-        throw new Error(
+        throw new OpenCodeRequestError(
           'OpenCode capabilities changed since this session was saved. Start a new chat to use the current selection.',
         );
       capabilitiesChanged = true;
@@ -465,7 +519,7 @@ export async function runOpenCodeTurn(
       request.promptContent?.length &&
       Buffer.byteLength(JSON.stringify(prompt)) > 7 * 1024 * 1024
     )
-      throw new Error(
+      throw new OpenCodeRequestError(
         'OpenCode attachments and instructions exceed the message size limit. Send fewer or smaller files.',
       );
     await host.beforePrompt?.();
@@ -478,6 +532,8 @@ export async function runOpenCodeTurn(
     );
     if (response.stopReason === 'end_turn') admitPrompt();
     const usage = openCodePromptUsage(response.usage);
+    // Injected model metadata has no native prices. App billing is host-owned.
+    if (inference && usage) delete usage.estimated_cost_usd;
     if (usage || context)
       await host.emit({
         type: 'canopy_opencode_usage',
@@ -522,6 +578,9 @@ export async function runOpenCodeTurn(
       sessionId,
       diagnostics: accounting.snapshot(),
       responseText: projection.getResponseText(),
+      ...(error instanceof OpenCodeRequestError && !submittingPrompt
+        ? { requestRejected: true }
+        : {}),
       cancelled: request.signal.aborted,
       isError: !request.signal.aborted,
       message: request.signal.aborted

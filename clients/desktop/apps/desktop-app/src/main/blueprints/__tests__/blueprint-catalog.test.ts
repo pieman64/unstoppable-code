@@ -3,7 +3,17 @@ const writeFile = jest.fn();
 const mkdir = jest.fn();
 const requestPublicJson = jest.fn();
 
-jest.mock('node:fs/promises', () => ({ readFile, writeFile, mkdir }));
+jest.mock('node:fs/promises', () => ({
+  get readFile(): typeof readFile {
+    return readFile;
+  },
+  get writeFile(): typeof writeFile {
+    return writeFile;
+  },
+  get mkdir(): typeof mkdir {
+    return mkdir;
+  },
+}));
 jest.mock('../../canopy-cloud/client', () => ({
   requestCanopyCloudPublicJson: (...args: unknown[]): Promise<unknown> =>
     requestPublicJson(...args) as Promise<unknown>,

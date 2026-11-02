@@ -16,12 +16,15 @@ import {
   type RefObject,
 } from 'react';
 import { createPortal, flushSync } from 'react-dom';
+import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
 import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
-import { useSingleOpenTooltip } from './tooltip-exclusivity';
+import { useTooltipHandoff } from './tooltip-handoff';
 
 const TOOLTIP_GAP = 6;
 const VIEWPORT_PADDING = 8;
 const INTERACTIVE_CLOSE_GRACE_MS = 120;
+/** Keys that open an interactive surface from its trigger by default. */
+const DEFAULT_TRIGGER_OPEN_KEYS: readonly string[] = ['Enter', ' '];
 
 /**
  * Surface inset. `compact` (8px by 4px) is a single line that happens to
@@ -129,6 +132,12 @@ interface RichHoverTooltipProps {
   onOpenChange?: (open: boolean) => void;
   /** Delay before opening; leaving the trigger cancels the pending open. */
   openDelay?: number;
+  /**
+   * How the surface moves when it opens in place of a neighbour's: `jump`
+   * (default) appears at its own place at once; `slide` glides over from the
+   * previous surface, for tab hover cards.
+   */
+  handoffMotion?: 'jump' | 'slide';
   /** Delay for keyboard focus; defaults to `openDelay`. */
   focusOpenDelay?: number;
   /** Block pointer-triggered tooltips while content scrolls under a stationary cursor. */
@@ -182,7 +191,8 @@ interface RichHoverTooltipProps {
   /**
    * The element the surface is placed against, when it is larger than the
    * trigger (for example the whole tab around a tab's label). Defaults to the
-   * trigger itself.
+   * trigger itself. Its visibility also determines whether the surface can
+   * show, including when a `contents` trigger has no layout box of its own.
    */
   getPlacementAnchor?: (trigger: HTMLElement) => Element | null;
   /**
@@ -192,17 +202,33 @@ interface RichHoverTooltipProps {
    * content.
    */
   triggerWrapperClassName?: string;
+  /** Preserve the child's layout box when the entire child is the hover region. */
+  triggerDisplay?: 'inline-flex' | 'contents';
   /**
    * Keep the portaled surface open while the pointer/focus moves into it and
    * allow pointer interaction (for example, scrolling a bounded detail list).
    */
   interactive?: boolean;
   /**
+   * Draw a noninteractive surface over a live in-app browser page instead of
+   * hiding the page behind a still frame ({@link ABOVE_BROWSER_ATTRIBUTE}). For
+   * hover cards the pointer never enters; ignored with `interactive`. Web
+   * ignores the attribute.
+   */
+  aboveBrowser?: boolean;
+  /**
    * With `interactive`, Enter or Space on the trigger opens the surface and
    * moves focus into it. Turn it off when the trigger owns those keys (a row
    * that opens on Enter); the surface then stays a pointer affordance.
    */
   openOnTriggerKey?: boolean;
+  /**
+   * The trigger keys that open an interactive surface and move focus into
+   * it; Enter and Space by default. A trigger that acts on Enter itself (a
+   * button that opens a panel) can open its surface on ArrowDown instead,
+   * the menu-button key.
+   */
+  triggerOpenKeys?: readonly string[];
   /**
    * Escape on the trigger closes a noninteractive surface until the pointer
    * leaves or focus moves. Interactive surfaces handle Escape themselves.
@@ -327,7 +353,7 @@ function DeferredRichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
     const opens =
       props.interactive &&
       props.openOnTriggerKey !== false &&
-      (event.key === 'Enter' || event.key === ' ');
+      (props.triggerOpenKeys ?? DEFAULT_TRIGGER_OPEN_KEYS).includes(event.key);
     (opens ? activate() : handlers.current)?.keyDown(event);
   };
   if (props.disabled) return <>{props.children}</>;
@@ -343,7 +369,7 @@ function DeferredRichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
   return (
     <span
       ref={triggerRef}
-      className={`relative inline-flex ${props.triggerWrapperClassName ?? ''}`.trim()}
+      className={`relative ${props.triggerDisplay ?? 'inline-flex'} ${props.triggerWrapperClassName ?? ''}`.trim()}
       onMouseEnter={enter}
       onMouseMove={open ? undefined : enter}
       onMouseLeave={() => handlers.current?.leave()}
@@ -378,6 +404,7 @@ function RichHoverTooltipController({
   open: controlledOpen,
   onOpenChange,
   openDelay = 0,
+  handoffMotion = 'jump',
   focusOpenDelay = openDelay,
   suppressPointerHover = false,
   surfaceClassName,
@@ -391,8 +418,11 @@ function RichHoverTooltipController({
   placementGap = TOOLTIP_GAP,
   getPlacementAnchor,
   triggerWrapperClassName = '',
+  triggerDisplay = 'inline-flex',
   interactive = false,
+  aboveBrowser = false,
   openOnTriggerKey = true,
+  triggerOpenKeys = DEFAULT_TRIGGER_OPEN_KEYS,
   dismissOnEscape = false,
   containEvents = false,
   externalTrigger,
@@ -445,10 +475,26 @@ function RichHoverTooltipController({
     closeTimerRef.current = null;
   }, []);
 
+  const closeTooltip = useCallback((): void => {
+    clearOpenTimer();
+    clearCloseTimer();
+    setOpen(false);
+  }, [clearOpenTimer, clearCloseTimer, setOpen]);
+
+  const handoff = useTooltipHandoff({
+    open: open && !suppressed && !disabled,
+    positioned: position !== null,
+    close: closeTooltip,
+    triggerRef,
+    surfaceRef: tooltipRef,
+    slide: handoffMotion === 'slide',
+  });
+
   const showTooltipAfter = useCallback(
     (delay: number): void => {
       if (suppressed || escapeDismissedRef.current) return;
       clearCloseTimer();
+      handoff.setLeaving(false);
       if (openTimerRef.current !== null) return;
       if (delay <= 0) {
         setOpen(true);
@@ -461,7 +507,7 @@ function RichHoverTooltipController({
       }, delay);
       openTimerRef.current = { view, id };
     },
-    [clearCloseTimer, suppressed, setOpen],
+    [clearCloseTimer, handoff, suppressed, setOpen],
   );
   const showTooltip = useCallback(
     (): void => showTooltipAfter(openDelay),
@@ -471,14 +517,8 @@ function RichHoverTooltipController({
   const showPointerTooltip = useCallback((): void => {
     if (suppressPointerHover) return;
     pointerHoverRef.current = true;
-    showTooltip();
-  }, [showTooltip, suppressPointerHover]);
-
-  const closeTooltip = useCallback((): void => {
-    clearOpenTimer();
-    clearCloseTimer();
-    setOpen(false);
-  }, [clearOpenTimer, clearCloseTimer, setOpen]);
+    showTooltipAfter(handoff.pointerOpenDelay(openDelay));
+  }, [handoff, openDelay, showTooltipAfter, suppressPointerHover]);
 
   useEffect((): void => {
     if (controlledOpen === false) {
@@ -494,7 +534,14 @@ function RichHoverTooltipController({
 
   const requestClose = useCallback((): void => {
     escapeDismissedRef.current = false;
-    if (!interactive) {
+    // The surface stays for the host's close delay (longer when interactive,
+    // so the pointer can reach it); a neighbour that opens meanwhile replaces
+    // it at once.
+    const linger = Math.max(
+      handoff.closeDelay,
+      interactive ? INTERACTIVE_CLOSE_GRACE_MS : 0,
+    );
+    if (linger <= 0) {
       closeTooltip();
       return;
     }
@@ -502,13 +549,21 @@ function RichHoverTooltipController({
     // would appear later with nothing under the pointer to close it.
     clearOpenTimer();
     clearCloseTimer();
+    handoff.setLeaving(true);
     const view = triggerRef.current?.ownerDocument.defaultView ?? window;
     const id = view.setTimeout((): void => {
       closeTimerRef.current = null;
       setOpen(false);
-    }, INTERACTIVE_CLOSE_GRACE_MS);
+    }, linger);
     closeTimerRef.current = { view, id };
-  }, [clearCloseTimer, clearOpenTimer, closeTooltip, interactive, setOpen]);
+  }, [
+    clearCloseTimer,
+    clearOpenTimer,
+    closeTooltip,
+    handoff,
+    interactive,
+    setOpen,
+  ]);
 
   const focusTooltipContent = useCallback((): boolean => {
     const focusTarget = tooltipRef.current?.querySelector<HTMLElement>(
@@ -556,7 +611,7 @@ function RichHoverTooltipController({
         if (
           !interactive ||
           !openOnTriggerKey ||
-          (event.key !== 'Enter' && event.key !== ' ')
+          !triggerOpenKeys.includes(event.key)
         ) {
           return;
         }
@@ -585,6 +640,7 @@ function RichHoverTooltipController({
         open,
         openOnTriggerKey,
         setOpen,
+        triggerOpenKeys,
       ],
     );
 
@@ -619,15 +675,15 @@ function RichHoverTooltipController({
     // chat tile that navigates to another page only hides the always-mounted
     // main page. Its zeroed rect would otherwise pin the surface to the
     // viewport's top-left corner, over the sidebar, until the user returns
-    // and hovers out. A trigger with no box has nothing to describe; close.
-    if (!trigger.isConnected || trigger.checkVisibility?.() === false) {
+    // and hovers out. Check the placement anchor: a display:contents trigger
+    // can still describe a visible tab without creating its own layout box.
+    const anchor = getPlacementAnchor?.(trigger) ?? trigger;
+    if (!trigger.isConnected || anchor.checkVisibility?.() === false) {
       closeTooltip();
       return;
     }
 
-    const rect = (
-      getPlacementAnchor?.(trigger) ?? trigger
-    ).getBoundingClientRect();
+    const rect = anchor.getBoundingClientRect();
     const tooltipWidth = tooltip.offsetWidth;
     const tooltipHeight = tooltip.offsetHeight;
     const view = trigger.ownerDocument.defaultView ?? window;
@@ -810,14 +866,6 @@ function RichHoverTooltipController({
     if (doc) trackInputModality(doc);
   }, [disabled]);
 
-  // Early access: one tooltip or card open at a time per window.
-  useSingleOpenTooltip({
-    open: open && !suppressed && !disabled,
-    close: closeTooltip,
-    triggerRef,
-    surfaceRef: tooltipRef,
-  });
-
   useLayoutEffect(() => {
     if (!externalTrigger) return undefined;
     externalTrigger.handlers.current = {
@@ -861,6 +909,9 @@ function RichHoverTooltipController({
         ref={tooltipRef}
         role="tooltip"
         data-testid={dataTestId}
+        {...(aboveBrowser && !interactive
+          ? { [ABOVE_BROWSER_ATTRIBUTE]: 'true' }
+          : {})}
         onMouseEnter={interactive ? showTooltip : undefined}
         onMouseLeave={interactive ? requestClose : undefined}
         onFocus={interactive ? handleFocusVisible : undefined}
@@ -889,7 +940,7 @@ function RichHoverTooltipController({
   return (
     <span
       ref={triggerRef}
-      className={`relative inline-flex ${triggerWrapperClassName}`.trim()}
+      className={`relative ${triggerDisplay} ${triggerWrapperClassName}`.trim()}
       onMouseEnter={showPointerTooltip}
       // Same swallowed-enter fallback as the shared Tooltip: when the trigger
       // mounts under a resting pointer, Chromium's `mouseover` names a

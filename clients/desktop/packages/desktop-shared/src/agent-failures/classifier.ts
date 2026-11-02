@@ -418,10 +418,7 @@ export function classifyAgentFailure(
   // fall through to a buffered `serverOverloaded` and be classified transient,
   // which is precisely how billed, non-idempotent work gets auto-retried into a
   // wall that already refused it.
-  if (
-    terminalSignals.statuses.length > 0 ||
-    terminalSignals.canopyProxyFailureCode !== undefined
-  ) {
+  if (isDefinitiveTerminalSignal(terminalSignals)) {
     return null;
   }
 
@@ -437,6 +434,41 @@ export function classifyAgentFailure(
     resetsAt,
   );
   return bufferedOutcome === SUPPRESS ? null : bufferedOutcome;
+}
+
+function isDefinitiveTerminalSignal(signals: ClassificationSignals): boolean {
+  return (
+    signals.statuses.length > 0 || signals.canopyProxyFailureCode !== undefined
+  );
+}
+
+/**
+ * Whether the error that ended a turn carries a definitive signal: an HTTP
+ * status or an AI Credits proxy code. {@link classifyAgentFailure} never lets
+ * buffered events explain such a failure, even when it leaves the failure
+ * unclassified, and callers with a fallback of their own must follow the same
+ * rule.
+ */
+export function hasDefinitiveTerminalFailureSignal(
+  context: Pick<AgentFailureClassificationContext, 'provider' | 'error'>,
+): boolean {
+  if (context.provider === 'ollama' || context.error === undefined) {
+    return false;
+  }
+  const terminalContext: AgentFailureClassificationContext = {
+    provider: context.provider,
+    accountScope: 'native',
+    events: [],
+    error: context.error,
+  };
+  return isDefinitiveTerminalSignal(
+    buildSignals(
+      terminalContext,
+      [context.error],
+      providerHttpStatuses(terminalContext),
+      true,
+    ),
+  );
 }
 
 function classifySignals(

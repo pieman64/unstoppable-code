@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type JSX } from 'react';
 import {
+  Button,
   Checkbox,
   Select,
   TextArea,
@@ -285,9 +286,11 @@ export function PipelineRunPauseForm({
           </div>
         ))}
       </div>
-      <button
+      <Button
         type="button"
-        className="mt-3 shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-50"
+        variant="primary"
+        size="compact"
+        className="mt-3"
         data-testid="portal-pipeline-pause-submit"
         disabled={!canSubmit || submitting}
         onClick={(): void =>
@@ -308,7 +311,7 @@ export function PipelineRunPauseForm({
           : checkpoints.some((checkpoint) => checkpoint.request)
             ? 'Submit responses'
             : 'Resume'}
-      </button>
+      </Button>
     </div>
   );
 }

@@ -28,6 +28,17 @@ export interface CodexSpeedCatalogModel {
    */
   tiers: string[] | null;
   source: CodexSpeedTierSource;
+  /** The runtime's display name for the model, when it reported one. */
+  displayName?: string;
+  /**
+   * The runtime lists the model only for `includeHidden` reads. Hidden models
+   * are never registered or chosen as a default (CAN-4716).
+   */
+  hidden?: boolean;
+  /** The runtime marks this model as the account's own default. */
+  isDefault?: boolean;
+  /** Reasoning efforts the model supports, in the runtime's own ids. */
+  reasoningEfforts?: string[];
 }
 
 /** A temporary, expiring denial learned from a definitive tier rejection. */

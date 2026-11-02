@@ -92,7 +92,7 @@ export function BlueprintPicker({
                   disabled={disabled}
                   title={blueprint.document.description}
                   onClick={() => onSelect(active ? null : blueprint.externalId)}
-                  className={`focus-ring inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition disabled:opacity-60 ${
+                  className={`focus-ring inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-colors disabled:opacity-60 ${
                     active
                       ? 'bg-secondary fg-primary inset-ring-1 inset-ring-line-accent'
                       : 'bg-secondary/40 fg-secondary hover:fg-primary'
@@ -126,7 +126,7 @@ export function BlueprintPicker({
                       title={template.description}
                       onClick={() => onSelect(active ? null : selectionId)}
                       data-testid={`add-workspace-shared-template-${template.externalId}`}
-                      className={`focus-ring rounded-lg px-3 py-1.5 text-xs transition disabled:opacity-60 ${
+                      className={`focus-ring rounded-lg px-3 py-1.5 text-xs transition-colors disabled:opacity-60 ${
                         active
                           ? 'bg-secondary fg-primary inset-ring-1 inset-ring-line-accent'
                           : 'bg-secondary/40 fg-secondary hover:fg-primary'

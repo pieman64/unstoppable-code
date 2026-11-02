@@ -647,6 +647,7 @@ export interface SharedPlanUpdateRequest extends Omit<
  * desktop inventory sync contract; the implementation lives in `../lib`.
  */
 export { stableStringify } from '../lib/stable-stringify';
+export { derivePlanTitle } from './plan-title';
 
 // ===========================================================================
 // Owner / actor / response shapes.

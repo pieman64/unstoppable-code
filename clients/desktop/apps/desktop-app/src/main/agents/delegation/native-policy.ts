@@ -500,6 +500,8 @@ export function commandForApproval(
 
 /** Native harness permissions stay narrower than the parent's approval policy. */
 export class DelegationNativePolicy {
+  private awaitingApprovalPrompts = 0;
+  private approvalPublication: Promise<void> = Promise.resolve();
   private readonly approvals = new Map<
     string,
     { mode: ApprovalMode; policyKey: string | undefined }
@@ -548,6 +550,38 @@ export class DelegationNativePolicy {
       emit: (event: AgentDelegationEvent['event']) => Promise<void>;
     },
   ) {}
+
+  private publishApprovalTransition(pending: boolean): Promise<void> {
+    const publication = this.approvalPublication.then(() =>
+      this.options.emit({ type: 'approval', pending }),
+    );
+    // Handle delayed failures immediately and keep later transitions flowing.
+    // The triggering check awaits the original promise, not this caught tail.
+    this.approvalPublication = publication.catch(() => undefined);
+    return publication;
+  }
+
+  private approvalPromptOpened(): Promise<void> | undefined {
+    this.awaitingApprovalPrompts += 1;
+    return this.awaitingApprovalPrompts === 1
+      ? this.publishApprovalTransition(true)
+      : undefined;
+  }
+
+  private async approvalPromptSettled(
+    openingPublication: Promise<void> | undefined,
+  ): Promise<void> {
+    this.awaitingApprovalPrompts -= 1;
+    const closingPublication =
+      this.awaitingApprovalPrompts === 0
+        ? this.publishApprovalTransition(false)
+        : undefined;
+    try {
+      await openingPublication;
+    } finally {
+      await closingPublication;
+    }
+  }
 
   get mode(): ApprovalMode {
     return this.options.mode();
@@ -676,12 +710,14 @@ export class DelegationNativePolicy {
     );
   }
 
-  async hasLiveAuthority(): Promise<boolean> {
-    return (
-      !this.options.signal.aborted &&
-      (await this.options.allowed()) &&
-      !this.options.signal.aborted
-    );
+  private approvalSignal(requestSignal?: AbortSignal): AbortSignal {
+    return requestSignal
+      ? AbortSignal.any([this.options.signal, requestSignal])
+      : this.options.signal;
+  }
+
+  async hasLiveAuthority(signal = this.options.signal): Promise<boolean> {
+    return !signal.aborted && (await this.options.allowed()) && !signal.aborted;
   }
 
   async authorize(
@@ -689,9 +725,12 @@ export class DelegationNativePolicy {
     input: unknown,
     callId: string,
     isGrant = false,
+    requestSignal?: AbortSignal,
   ): Promise<boolean> {
+    const signal = this.approvalSignal(requestSignal);
     const data = record(input);
     if (
+      signal.aborted ||
       !data ||
       (!DELEGATION_NATIVE_CLAUDE_TOOLS.includes(name) &&
         !(
@@ -699,7 +738,8 @@ export class DelegationNativePolicy {
           typeof data.skill === 'string' &&
           this.options.skillNames?.includes(data.skill) === true
         )) ||
-      !(await this.hasLiveAuthority())
+      !(await this.hasLiveAuthority(signal)) ||
+      signal.aborted
     )
       return false;
     const shell = name === 'Bash';
@@ -732,6 +772,7 @@ export class DelegationNativePolicy {
     if (
       typeof file !== 'string' ||
       !(await this.pathAllowed(file, write)) ||
+      signal.aborted ||
       (shell && !(await this.commandWritesAllowed()))
     )
       return false;
@@ -753,18 +794,22 @@ export class DelegationNativePolicy {
       normalizedInput,
       isGrant,
     ]);
+    if (signal.aborted) return false;
     const previousApproval = this.approvals.get(approvalKey);
     if (previousApproval) {
       if (!(await this.pathAllowed(file, write))) return false;
+      if (signal.aborted) return false;
       if (shell && !(await this.commandWritesAllowed())) return false;
-      if (!(await this.options.allowed())) return false;
+      if (signal.aborted || !(await this.options.allowed()) || signal.aborted)
+        return false;
       return this.approvalContextCurrent(
         previousApproval.mode,
         previousApproval.policyKey,
         write || shell,
       );
     }
-    await this.options.emit({ type: 'approval', pending: true });
+    let promptOpened = false;
+    let pendingPublication: Promise<void> | undefined;
     const approvedMode = this.mode;
     let policyKey: string | undefined;
     let approved = false;
@@ -807,12 +852,22 @@ export class DelegationNativePolicy {
                 }),
           toolUseId: callId,
           subagentId: this.options.delegationId,
+          signal,
+          onAwaitingUser: (): void => {
+            promptOpened = true;
+            pendingPublication = this.approvalPromptOpened();
+          },
         },
       );
       this.options.approval.setMode(this.mode);
-      approved = outcome.decision === 'allow';
+      approved = outcome.decision === 'allow' && !signal.aborted;
+    } catch (error) {
+      if (signal.aborted) return false;
+      throw error;
     } finally {
-      await this.options.emit({ type: 'approval', pending: false });
+      if (promptOpened) {
+        await this.approvalPromptSettled(pendingPublication);
+      }
     }
     // Publishing completion can await durable storage too. Check authority
     // after every awaited operation before caching or returning an allowance.
@@ -822,6 +877,7 @@ export class DelegationNativePolicy {
     const ownerStillAllowed =
       commandStillAllowed && (await this.options.allowed());
     if (
+      signal.aborted ||
       !ownerStillAllowed ||
       !this.approvalContextCurrent(approvedMode, policyKey, write || shell)
     )
@@ -891,17 +947,20 @@ export class DelegationNativePolicy {
     signal: AbortSignal | undefined,
     sharedToolUse: boolean,
   ): Promise<boolean> {
+    const approvalSignal = this.approvalSignal(signal);
     if (
+      approvalSignal.aborted ||
       !callId ||
       callId.length > 4096 ||
-      !(await this.canUseMcp(server, tool, signal))
+      !(await this.canUseMcp(server, tool, approvalSignal)) ||
+      approvalSignal.aborted
     )
       return false;
     return this.approveMcpTarget(
       server,
       tool,
       callId,
-      signal,
+      approvalSignal,
       true,
       sharedToolUse,
     );
@@ -919,38 +978,39 @@ export class DelegationNativePolicy {
     callId: string,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    const approvalSignal = this.approvalSignal(signal);
     if (
+      approvalSignal.aborted ||
       !server ||
       !tool ||
       tool.length > 256 ||
       /[\0\r\n]/.test(tool) ||
       !callId ||
       callId.length > 4096 ||
-      this.options.signal.aborted ||
-      signal?.aborted ||
       (!readOnly && this.options.writable?.() === false) ||
-      !(await this.options.allowed())
+      !(await this.options.allowed()) ||
+      approvalSignal.aborted
     )
       return false;
     return this.approveMcpTarget(
       server,
       tool,
       callId,
-      signal,
+      approvalSignal,
       !readOnly,
       false,
     );
   }
 
-  /** Resolves (once) the approval decision for one provider tool_use of
-   * `[toolUseId, server, tool]`. Its hook and `canUseTool` checks share this
-   * decision instead of prompting again; only a thrown/rejected check is
-   * evicted so a transient failure can be retried under a fresh call. */
+  /** Resolves the decision for one provider tool_use. Its hook and
+   * `canUseTool` checks share one prompt, while failures and cancellation are
+   * evicted so a later call can retry instead of inheriting stale authority. */
   private resolveMcpDecision(
     key: string,
     server: string,
     tool: string,
     callId: string,
+    signal: AbortSignal,
   ): Promise<{
     approvedMode: ApprovalMode;
     policyKey: string | undefined;
@@ -958,11 +1018,22 @@ export class DelegationNativePolicy {
   }> {
     const existing = this.mcpDecisions.get(key);
     if (existing) return existing;
-    const task = this.checkMcp(server, tool, callId);
+    const task = this.checkMcp(server, tool, callId, signal);
     this.mcpDecisions.set(key, task);
-    void task.catch(() => {
+    const removeIfCurrent = (): void => {
       if (this.mcpDecisions.get(key) === task) this.mcpDecisions.delete(key);
-    });
+    };
+    const onAbort = (): void => removeIfCurrent();
+    signal.addEventListener('abort', onAbort, { once: true });
+    void task.then(
+      () => {
+        if (signal.aborted) removeIfCurrent();
+      },
+      () => {
+        signal.removeEventListener('abort', onAbort);
+        removeIfCurrent();
+      },
+    );
     return task;
   }
 
@@ -970,6 +1041,7 @@ export class DelegationNativePolicy {
     server: string,
     tool: string,
     callId: string,
+    signal: AbortSignal,
   ): Promise<{
     approvedMode: ApprovalMode;
     policyKey: string | undefined;
@@ -981,9 +1053,11 @@ export class DelegationNativePolicy {
       policyKey: string | undefined;
       decision: 'allow' | 'deny';
     }> => {
-      await this.options.emit({ type: 'approval', pending: true });
+      let promptOpened = false;
+      let pendingPublication: Promise<void> | undefined;
       let policyKey: string | undefined;
       try {
+        signal.throwIfAborted();
         this.options.approval.setMode(approvedMode);
         policyKey = this.options.approval.policyContextKey?.();
         const target = { kind: 'mcp' as const, server, tool };
@@ -993,7 +1067,13 @@ export class DelegationNativePolicy {
           suggestedTarget: target,
           toolUseId: callId,
           subagentId: this.options.delegationId,
+          signal,
+          onAwaitingUser: (): void => {
+            promptOpened = true;
+            pendingPublication = this.approvalPromptOpened();
+          },
         });
+        signal.throwIfAborted();
         return {
           approvedMode,
           policyKey,
@@ -1004,7 +1084,9 @@ export class DelegationNativePolicy {
         };
       } finally {
         this.options.approval.setMode(this.mode);
-        await this.options.emit({ type: 'approval', pending: false });
+        if (promptOpened) {
+          await this.approvalPromptSettled(pendingPublication);
+        }
       }
     })();
   }
@@ -1013,25 +1095,41 @@ export class DelegationNativePolicy {
     server: string,
     tool: string,
     callId: string,
-    signal: AbortSignal | undefined,
+    signal: AbortSignal,
     requireWritable: boolean,
     sharedToolUse: boolean,
   ): Promise<boolean> {
-    const { approvedMode, policyKey, decision } = sharedToolUse
-      ? await this.resolveMcpDecision(
-          JSON.stringify([callId, server, tool]),
-          server,
-          tool,
-          callId,
-        )
-      : await this.checkMcp(server, tool, callId);
-    return (
-      decision === 'allow' &&
-      !signal?.aborted &&
-      (!requireWritable || this.options.writable?.() !== false) &&
-      this.approvalContextCurrent(approvedMode, policyKey, false) &&
-      (await this.options.allowed())
-    );
+    if (signal.aborted) return false;
+    let resolved: {
+      approvedMode: ApprovalMode;
+      policyKey: string | undefined;
+      decision: 'allow' | 'deny';
+    };
+    try {
+      resolved = sharedToolUse
+        ? await this.resolveMcpDecision(
+            JSON.stringify([callId, server, tool]),
+            server,
+            tool,
+            callId,
+            signal,
+          )
+        : await this.checkMcp(server, tool, callId, signal);
+    } catch (error) {
+      if (signal.aborted) return false;
+      throw error;
+    }
+    const { approvedMode, policyKey, decision } = resolved;
+    if (
+      decision !== 'allow' ||
+      signal.aborted ||
+      (requireWritable && this.options.writable?.() === false) ||
+      !this.approvalContextCurrent(approvedMode, policyKey, false) ||
+      !(await this.options.allowed()) ||
+      signal.aborted
+    )
+      return false;
+    return true;
   }
 
   /** A stdio server executes code at startup, before its first tools/call. */
@@ -1062,7 +1160,13 @@ export class DelegationNativePolicy {
     const commandLine = [command, ...args].map(quote).join(' ');
     const display = cwd ? `cd ${quote(cwd)} && ${commandLine}` : commandLine;
     if (display.length > 8192) return false;
-    const approved = await this.authorize('Bash', { command: display }, callId);
+    const approved = await this.authorize(
+      'Bash',
+      { command: display },
+      callId,
+      false,
+      signal,
+    );
     return approved && !signal?.aborted;
   }
 
@@ -1203,12 +1307,25 @@ export class DelegationNativePolicy {
   }
 
   /**
-   * The parent approval policy's context key: it changes with the mode and
-   * the persisted project or global rules, so the runner can recheck the
-   * grants at once. Session rules do not change it.
+   * The parent approval policy's context key: it changes with the mode, the
+   * persisted project or global rules, and when a save of those starts or
+   * settles, so the runner can recheck the grants at once. Session rules do
+   * not change it.
    */
   policyContextKey(): string | undefined {
     return this.options.approval.policyContextKey?.();
+  }
+
+  /**
+   * Whether a parent rule save that may revoke a grant is in flight. The
+   * grants' evaluation waits for its outcome, so the runner stops a
+   * write-profile turn meanwhile instead of letting it write.
+   */
+  codexSandboxWritesNarrowing(): boolean {
+    return (
+      this.writePaths.length > 0 &&
+      this.options.approval.fileWriteNarrowingInFlight?.() === true
+    );
   }
 
   /**
@@ -1260,13 +1377,15 @@ export class DelegationNativePolicy {
   async approveCodex(
     method: string,
     request: Record<string, unknown>,
+    requestSignal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
+    const signal = this.approvalSignal(requestSignal);
     const params = record(request.params) ?? request;
     const deny =
       method === 'item/permissions/requestApproval'
         ? { permissions: {}, scope: 'turn' }
         : { decision: 'decline' };
-    if (this.options.signal.aborted || !(await this.options.allowed()))
+    if (signal.aborted || !(await this.options.allowed()) || signal.aborted)
       return deny;
     if (method === 'item/commandExecution/requestApproval') {
       const { cwd, itemId } = params;
@@ -1282,6 +1401,7 @@ export class DelegationNativePolicy {
       // path checks.
       const turnWrites = this.codexTurnWrites;
       if (
+        signal.aborted ||
         (turnWrites &&
           (!(await this.commandWritesAllowed()) ||
             (await this.sandboxWritesNotAllowed(this.writePaths)))) ||
@@ -1299,7 +1419,9 @@ export class DelegationNativePolicy {
         !(await this.commandDirectoryAllowed(cwd))
       )
         return deny;
-      await this.options.emit({ type: 'approval', pending: true });
+      if (signal.aborted) return deny;
+      let promptOpened = false;
+      let pendingPublication: Promise<void> | undefined;
       const approvedMode = this.mode;
       let policyKey: string | undefined;
       try {
@@ -1316,20 +1438,34 @@ export class DelegationNativePolicy {
             },
             toolUseId: itemId,
             subagentId: this.options.delegationId,
+            signal,
+            onAwaitingUser: (): void => {
+              promptOpened = true;
+              pendingPublication = this.approvalPromptOpened();
+            },
           },
         );
         this.options.approval.setMode(this.mode);
         const approved =
           outcome.decision === 'allow' &&
+          !signal.aborted &&
           approvedMode === this.mode &&
           policyKey === this.options.approval.policyContextKey?.() &&
-          !this.options.signal.aborted &&
+          !signal.aborted &&
           (await this.options.allowed()) &&
+          !signal.aborted &&
           (await this.commandPermissionsAllowed(params)) &&
-          (await this.commandDirectoryAllowed(cwd));
+          !signal.aborted &&
+          (await this.commandDirectoryAllowed(cwd)) &&
+          !signal.aborted;
         if (!approved) return deny;
+      } catch (error) {
+        if (signal.aborted) return deny;
+        throw error;
       } finally {
-        await this.options.emit({ type: 'approval', pending: false });
+        if (promptOpened) {
+          await this.approvalPromptSettled(pendingPublication);
+        }
       }
       // Completion publication awaits I/O. Recheck authority afterwards,
       // immediately before returning the native decision.
@@ -1343,6 +1479,7 @@ export class DelegationNativePolicy {
         directoryStillAllowed && (await this.options.allowed());
       const requiresWrite = turnWrites || params.additionalPermissions != null;
       if (
+        signal.aborted ||
         !ownerStillAllowed ||
         !this.approvalContextCurrent(approvedMode, policyKey, requiresWrite)
       )
@@ -1384,6 +1521,7 @@ export class DelegationNativePolicy {
     const grantPolicyKey = this.options.approval.policyContextKey?.();
     for (const file of paths)
       if (
+        signal.aborted ||
         !(await this.authorize(
           'Write',
           { file_path: file },
@@ -1391,10 +1529,12 @@ export class DelegationNativePolicy {
           // A permission bundle (or grantRoot) authorizes a scope, not just
           // one edit. Preserve descendant deny/protected-path checks.
           method === 'item/permissions/requestApproval' || file === grantRoot,
+          signal,
         ))
       )
         return deny;
     if (
+      signal.aborted ||
       grantMode !== this.mode ||
       grantPolicyKey !== this.options.approval.policyContextKey?.()
     )
@@ -1408,13 +1548,18 @@ export class DelegationNativePolicy {
           : [];
     let grantedPathsAllowed = true;
     for (const file of grantedPaths)
-      if (!(await this.pathAllowed(file, true))) {
+      if (
+        signal.aborted ||
+        !(await this.pathAllowed(file, true)) ||
+        signal.aborted
+      ) {
         grantedPathsAllowed = false;
         break;
       }
     const ownerStillAllowed =
       grantedPathsAllowed && (await this.options.allowed());
     if (
+      signal.aborted ||
       !ownerStillAllowed ||
       !this.approvalContextCurrent(grantMode, grantPolicyKey, true)
     )

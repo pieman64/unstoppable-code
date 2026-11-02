@@ -286,6 +286,7 @@ describe('AutomationCatalogDetail', () => {
         remote: {
           remoteId: SHARE_ID,
           contentHash: CURRENT,
+          shareScope: 'team',
           sharedAt: '2026-08-19T00:00:00.000Z',
         },
       },
@@ -515,6 +516,7 @@ describe('SharedAutomationMarketplaceDetail', () => {
         remote: {
           remoteId: SHARE_ID,
           contentHash: CURRENT,
+          shareScope: 'team',
           sharedAt: '2026-08-19T00:00:00.000Z',
         },
       }),
@@ -547,6 +549,7 @@ describe('SharedAutomationMarketplaceDetail', () => {
         remote: {
           remoteId: SHARE_ID,
           contentHash: CURRENT,
+          shareScope: 'team',
           sharedAt: '2026-08-19T00:00:00.000Z',
         },
       }),

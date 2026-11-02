@@ -2,6 +2,8 @@
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
+import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineRunRowState } from '@/lib/pipelineRunRowState';
 import { buildCurrentUiStateSnapshot } from '../buildCurrentUiStateSnapshot';
 import {
   PIPELINE_DETAIL_MODAL_UI_STATE_KEY,
@@ -51,6 +53,54 @@ beforeEach(() => {
 });
 
 describe('buildCurrentUiStateSnapshot pipeline run details', () => {
+  it('uses row state to derive the active paused run input gate', () => {
+    const summary: ExecutionSummary = {
+      id: 'run-paused',
+      pipeline_id: 'pipeline-paused',
+      pipeline_name: 'Paused pipeline',
+      status: 'paused',
+      status_reasons: [],
+      started_at: '2026-10-24T00:00:00.000Z',
+      cwd: '/repo',
+      project_id: 'project-1',
+      worktree_id: 'worktree-1',
+    };
+    const row: PipelineRunRowState = {
+      id: summary.id,
+      status: 'paused',
+      pipeline_snapshot: { jobs: {} },
+      jobs: {},
+      job_groups: {},
+      pending_pauses: [
+        {
+          id: 'input-pause',
+          kind: 'input',
+          job_id: 'build',
+          logical_job_id: 'build',
+          step_id: 'input',
+          request: { fields: [] },
+        },
+      ],
+    };
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'project-1', worktreeId: 'worktree-1' },
+    });
+    usePipelineRunsStore.setState({
+      summaries: [summary],
+      statesById: {},
+      rowStatesById: { [summary.id]: row },
+    });
+
+    const snapshot = buildCurrentUiStateSnapshot({});
+
+    expect(snapshot.activePipelineRun).toMatchObject({
+      executionId: summary.id,
+      status: 'paused',
+      inputRequired: true,
+      resumable: false,
+    });
+  });
+
   it('lists every shown run panel and marks the active main-window one focused', () => {
     const snapshot = buildCurrentUiStateSnapshot({
       [key('project-1/worktree-1', 'panel-pipeline-run-a')]: panelSlice(

@@ -1,6 +1,9 @@
 export * from './InviteTeammateDialog';
 export * from './ShareResourceDialog';
 export * from './deriveExistingShare';
+export * from './sharedResourceProvenance';
+export * from './SharedResourceProvenanceMeta';
+export * from './sharedByYouAudiences';
 export { resourceContextRefusalMessage } from './share-refusal-copy';
 export * from './share-errors';
 export * from './share-destination-access';

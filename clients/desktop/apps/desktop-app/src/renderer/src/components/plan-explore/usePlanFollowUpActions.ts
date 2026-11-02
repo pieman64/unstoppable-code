@@ -18,6 +18,8 @@ import { useTeamOrgShareEntryVisible } from '@/lib/share-targets';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { buildPlanReadyExecuteOptions } from '@/lib/planReadyPipelineExecuteOptions';
 import { implementTrackedPlan } from '@/lib/plans/plan-follow-up';
+import { reconcileExecutedPlan } from '@/lib/plans/reconcile-tracked-plans';
+import { planLinkedExecutionIds } from '@/lib/plans/linked-executions';
 import { SHARE_PLAN_GATE_CONTEXT } from '@/lib/share-gate-context';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -30,6 +32,8 @@ export interface PlanLinkedExecution {
   /** Pipeline name, or a short id while the run's summary is unknown. */
   readonly label: string;
   readonly status?: string;
+  /** ISO start, once the run's summary is known. */
+  readonly startedAt?: string;
 }
 
 export interface UsePlanFollowUpActionsOptions {
@@ -76,8 +80,6 @@ export interface PlanFollowUpActions {
   submitShare: (
     request: SharePlanShareRequest,
   ) => Promise<TrackedPlanData | null>;
-  /** The share dialog finished (it raises its own success toast). */
-  handleShared: () => void;
   /** Cloud sign-in prompt backing {@link requestShare}; render it once. */
   shareGateModal: JSX.Element | null;
 }
@@ -87,21 +89,17 @@ function useLinkedExecutions(
 ): readonly PlanLinkedExecution[] {
   const summaries = usePipelineRunsStore((s) => s.summaries);
   return useMemo((): PlanLinkedExecution[] => {
-    const ids: string[] = [...plan.linkedExecutionIds];
-    for (const summary of summaries) {
-      if (summary.planId === plan.id && !ids.includes(summary.id)) {
-        ids.push(summary.id);
-      }
-    }
-    return ids.map((id): PlanLinkedExecution => {
+    const ids = planLinkedExecutionIds(plan, summaries);
+    return Array.from(ids).map((id): PlanLinkedExecution => {
       const summary = summaries.find((entry) => entry.id === id);
       return {
         id,
         label: summary?.pipeline_name ?? id.slice(0, 8),
         ...(summary?.status ? { status: summary.status } : {}),
+        ...(summary?.started_at ? { startedAt: summary.started_at } : {}),
       };
     });
-  }, [plan.id, plan.linkedExecutionIds, summaries]);
+  }, [plan, summaries]);
 }
 
 function useImplementAction(
@@ -146,7 +144,6 @@ function usePipelineRun(
   const markTrackedPlanExecuted = useChatStore(
     (s) => s.markTrackedPlanExecuted,
   );
-  const loadTrackedPlans = useActivityStore((s) => s.loadTrackedPlans);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [pipelineRunError, setPipelineRunError] = useState<string | null>(null);
@@ -185,7 +182,7 @@ function usePipelineRun(
         );
 
         if (!result.success) {
-          setPipelineRunError(result.error ?? 'Pipeline execution failed');
+          setPipelineRunError(result.error ?? 'Workflow execution failed');
           return;
         }
 
@@ -195,7 +192,7 @@ function usePipelineRun(
         // process (`startPipelineExecutionFromMain`) for every `plan_ready`
         // run, so the renderer no longer emits a duplicate approval. The
         // refetch below pulls the already-approved state back from main.
-        await loadTrackedPlans(projectId, worktreeId);
+        await reconcileExecutedPlan({ projectId, worktreeId }, plan.id);
       } catch (error: unknown) {
         setPipelineRunError(extractIpcErrorMessage(error));
       } finally {
@@ -206,7 +203,7 @@ function usePipelineRun(
         }
       }
     },
-    [plan, markTrackedPlanExecuted, loadTrackedPlans, onPipelineStarted],
+    [plan, markTrackedPlanExecuted, onPipelineStarted],
   );
 
   return {
@@ -361,10 +358,6 @@ export function usePlanFollowUpActions(
     setShareModalOpen(false);
   }, [sharing, setShareModalOpen]);
 
-  const handleShared = useCallback((): void => {
-    setShareModalOpen(false);
-  }, [setShareModalOpen]);
-
   return {
     linkedExecutions,
     executionsOpen,
@@ -382,7 +375,6 @@ export function usePlanFollowUpActions(
     shareModalOpen: share.shareModalOpen,
     closeShareModal,
     submitShare: share.submitShare,
-    handleShared,
     shareGateModal,
   };
 }

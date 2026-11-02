@@ -313,6 +313,7 @@ describe('mcp oauth probe', () => {
   ])(
     'fails closed for an initialize response with %s',
     async (_label, overrides) => {
+      const responseId = 'id' in overrides ? overrides.id : undefined;
       fetchMock.mockResolvedValueOnce(
         new Response(JSON.stringify(initializePayload(overrides)), {
           status: 200,
@@ -322,7 +323,7 @@ describe('mcp oauth probe', () => {
 
       await expect(
         probeMcpHttpOAuthRequirement(
-          `https://mcp.example.test/malformed-${String(overrides.id ?? 'error')}`,
+          `https://mcp.example.test/malformed-${String(responseId ?? 'error')}`,
           {},
           50,
         ),

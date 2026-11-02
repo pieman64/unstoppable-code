@@ -1,9 +1,10 @@
 import { type JSX } from 'react';
+import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { CreditCard } from '../icons/AppIcons';
+import { aiCreditsLabel } from './aiCreditsLabel';
 import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 
-/** Label shared by the account-menu row and the account/organization tabs. */
-export const AI_CREDITS_LABEL = 'AI Credits';
+export { AI_CREDITS_LABEL } from './aiCreditsLabel';
 
 const WHOLE_FORMAT = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 0,
@@ -98,6 +99,12 @@ function AiCreditsBalancePill({
 export interface SidebarAiCreditsMenuItemProps {
   /** Balance in credits, or null while it is unknown (loading or failed). */
   balanceCredits: number | null;
+  /**
+   * The signed-in person's own model-library access. Before the first
+   * purchase the row reads `Free AI Credits`; unknown access keeps the plain
+   * label.
+   */
+  libraryAccess?: ModelLibraryAccess;
   onSelect: () => void;
   selected?: boolean;
   'data-testid'?: string;
@@ -111,26 +118,28 @@ export interface SidebarAiCreditsMenuItemProps {
  */
 export function SidebarAiCreditsMenuItem({
   balanceCredits,
+  libraryAccess,
   onSelect,
   selected = false,
   'data-testid': dataTestId = 'sidebar-account-menu-item-ai-credits',
 }: SidebarAiCreditsMenuItemProps): JSX.Element {
   const balance = normalizeBalance(balanceCredits);
+  const label = aiCreditsLabel(libraryAccess);
   return (
     <DropdownMenuItem
       onClick={onSelect}
       selected={selected}
       aria-label={
         balance === null
-          ? AI_CREDITS_LABEL
-          : `${AI_CREDITS_LABEL}, ${WHOLE_FORMAT.format(balance)} available`
+          ? label
+          : `${label}, ${WHOLE_FORMAT.format(balance)} available`
       }
       data-testid={dataTestId}
     >
       <DropdownMenuItemIcon>
         <CreditCard aria-hidden="true" />
       </DropdownMenuItemIcon>
-      <span className="min-w-0 flex-1 truncate">{AI_CREDITS_LABEL}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
       {balance !== null && (
         <AiCreditsBalancePill
           balance={balance}

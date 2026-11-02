@@ -24,11 +24,13 @@ describe('buildUsageLimitedEntry', () => {
         chatId: 'c',
         provider,
         detectedAt: 5,
+        interruptedUserMessageId: 'original',
         accountProxyConnectionId: 'proxy-a',
       };
       expect(buildAccountProxyUsageLimitedEntry(input, event)).toMatchObject({
         accountProxyConnectionId: 'proxy-a',
         resumeReason: 'usage_limit',
+        interruptedUserMessageId: 'original',
         provider,
       });
       expect(

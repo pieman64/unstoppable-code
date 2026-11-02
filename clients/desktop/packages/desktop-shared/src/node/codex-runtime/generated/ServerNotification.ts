@@ -57,8 +57,10 @@ import type { ThreadDeletedNotification } from './v2/ThreadDeletedNotification';
 import type { ThreadGoalClearedNotification } from './v2/ThreadGoalClearedNotification';
 import type { ThreadGoalUpdatedNotification } from './v2/ThreadGoalUpdatedNotification';
 import type { ThreadNameUpdatedNotification } from './v2/ThreadNameUpdatedNotification';
+import type { ThreadPredictionUpdatedNotification } from './v2/ThreadPredictionUpdatedNotification';
 import type { ThreadProjectUpdatedNotification } from './v2/ThreadProjectUpdatedNotification';
 import type { ThreadQueueChangedNotification } from './v2/ThreadQueueChangedNotification';
+import type { ThreadReadStateChangedNotification } from './v2/ThreadReadStateChangedNotification';
 import type { ThreadRealtimeClosedNotification } from './v2/ThreadRealtimeClosedNotification';
 import type { ThreadRealtimeErrorNotification } from './v2/ThreadRealtimeErrorNotification';
 import type { ThreadRealtimeItemAddedNotification } from './v2/ThreadRealtimeItemAddedNotification';
@@ -92,6 +94,10 @@ export type ServerNotification =
   | { method: 'error'; params: ErrorNotification }
   | { method: 'thread/started'; params: ThreadStartedNotification }
   | { method: 'thread/status/changed'; params: ThreadStatusChangedNotification }
+  | {
+      method: 'thread/readState/changed';
+      params: ThreadReadStateChangedNotification;
+    }
   | { method: 'thread/archived'; params: ThreadArchivedNotification }
   | { method: 'thread/deleted'; params: ThreadDeletedNotification }
   | { method: 'thread/unarchived'; params: ThreadUnarchivedNotification }
@@ -104,6 +110,10 @@ export type ServerNotification =
       params: ThreadAttachmentUpdatedNotification;
     }
   | { method: 'thread/goal/updated'; params: ThreadGoalUpdatedNotification }
+  | {
+      method: 'thread/prediction/updated';
+      params: ThreadPredictionUpdatedNotification;
+    }
   | { method: 'thread/goal/cleared'; params: ThreadGoalClearedNotification }
   | { method: 'thread/queue/changed'; params: ThreadQueueChangedNotification }
   | { method: 'project/changed'; params: ProjectChangedNotification }

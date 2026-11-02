@@ -1,3 +1,10 @@
+import {
+  applyOnboardingTipsUpdate,
+  normalizeOnboardingTipDismissals,
+  parseOnboardingTipsUpdate,
+  type OnboardingTipDismissals,
+  type OnboardingTipsState,
+} from '@canopy/protocol/onboarding-tips';
 import { isDataSharingOptInFeature } from '@canopy/protocol/canopy-server';
 import { DATA_SHARING_OPT_IN_SCOPES } from '@canopy/ui-shared/lib/data-sharing-features';
 import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
@@ -13,6 +20,7 @@ import {
   requireDataSharingPersonalOptInAuthority,
 } from '../lib/data-sharing-opt-in-authority';
 import { broadcastPreferencesChanged } from '../lib/preferences-broadcast';
+import { notifyManagedDelegationLifetimePreferencesChanged } from '../agents/delegation/lifetime-status';
 import { personalCatalogPreferenceChanged } from '../services/personal-catalog-sync-host';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -52,12 +60,14 @@ import {
   bumpGlobalPluginDefaultsRevision,
   markCodexSessionsForNextTurnRecreation,
   markManagedDelegationSessionsForNextTurnRecreation,
+  updateClaudeSessionIdleTimeoutMinutes,
   updateCodexSessionIdleTimeoutMinutes,
 } from '../agents/session-manager';
 import {
   updateManagedDelegationPolicy,
   updateManagedDelegationMaxConcurrent,
   updateManagedDelegationMaxDepth,
+  updateManagedDelegationLifetimeLimit,
 } from '../agents/delegation/service';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { updatePerformanceLimitsFromPreferences } from '../lib/performance-limits';
@@ -136,6 +146,11 @@ function beginManagedDelegationPolicyUpdate(
       normalized.managedDelegationMaxConcurrent,
     );
   }
+  if ('managedDelegationLifetimeLimit' in changedPreferences) {
+    updateManagedDelegationLifetimeLimit(
+      normalized.managedDelegationLifetimeLimit,
+    );
+  }
   if (!('managedDelegationMode' in changedPreferences)) return undefined;
   const mode = resolveManagedDelegationMode(normalized.managedDelegationMode);
   const generation = ++managedDelegationPolicyGeneration;
@@ -172,6 +187,19 @@ function preferencesSaveResult(
     __managedDelegationRevocationIncomplete:
       managedDelegationRevocationIncomplete,
   };
+}
+
+/**
+ * Broadcasts preferences that a main-side writer (such as a Portal adapter)
+ * just committed. It advances the save generation like a renderer save, so a
+ * save still waiting on profile sync cannot broadcast its older snapshot over
+ * this one.
+ */
+export function broadcastCommittedPreferences(
+  normalized: PreferencesData,
+): void {
+  ++preferencesSaveGeneration;
+  broadcastPreferencesSynced(preferencesSaveResult(normalized));
 }
 
 async function latestPreferencesSaveResult(): Promise<PreferencesSaveResult> {
@@ -410,6 +438,9 @@ async function applyPreferenceSideEffects(
   updateCodexSessionIdleTimeoutMinutes(
     normalized.codexAppServerIdleTimeoutMinutes,
   );
+  updateClaudeSessionIdleTimeoutMinutes(
+    normalized.claudeSessionIdleTimeoutMinutes,
+  );
   const { getCodexRuntimeService } = await import('../codex/runtime-service');
   getCodexRuntimeService()
     .admin()
@@ -599,13 +630,22 @@ export function registerPreferenceHandlers(): void {
           'The account proxy connection must be changed with accountProxy.connect.',
         );
       }
+      if (Object.prototype.hasOwnProperty.call(preferences, 'copilotAccount')) {
+        throw new Error(
+          'The Copilot account must be changed with copilotConnection.connect.',
+        );
+      }
       // Main owns native account tracking (CAN-4200); a renderer copy can be
       // older than main's latest record, so it never overwrites it.
       const rendererPatch = { ...preferences };
+      // Main's Copilot connection owns the flag with its account pin (CAN-4880).
+      delete rendererPatch.copilotEnabled;
       delete rendererPatch.disabledInstalledItems;
       delete rendererPatch.parkedCodexPlugins;
       delete rendererPatch.pendingInstalledItemUninstalls;
       delete rendererPatch.nativeProviderAccounts;
+      // Rule mutations belong to the approval authority, not renderer snapshots.
+      delete rendererPatch.globalApprovalRules;
       // Follows the proxy's own strategy, which accountProxy.setRoutingStrategy
       // changes first.
       delete rendererPatch.accountProxyLocalRoutingStrategy;
@@ -653,6 +693,8 @@ export function registerPreferenceHandlers(): void {
       // broadcast, or other side effect can leave old sessions launchable.
       const pendingManagedDelegationPolicyUpdate =
         beginManagedDelegationPolicyUpdate(normalized, preferences);
+      if ('managedDelegationLifetimeLimit' in preferences)
+        notifyManagedDelegationLifetimePreferencesChanged();
       if (
         committedPrevious.personalWorkspaceCatalogSync !==
         normalized.personalWorkspaceCatalogSync
@@ -990,6 +1032,30 @@ export function registerPreferenceHandlers(): void {
         disabledPipelineIds: normalized.disabledPipelineIds,
       });
       return normalized;
+    },
+  );
+
+  // Onboarding tips (CAN-4904): applied to the latest stored record inside the
+  // serialized write, like the Portal adapter, so neither surface can drop a
+  // dismissal the other saved meanwhile.
+  registerIpcHandler(
+    IPC_CHANNELS.preferencesUpdateOnboardingTips,
+    async (_event, request: unknown): Promise<OnboardingTipsState> => {
+      const update = parseOnboardingTipsUpdate(request);
+      if (update === null) {
+        throw new Error('Invalid onboarding tip update.');
+      }
+      let dismissed: OnboardingTipDismissals = {};
+      const normalized = await updatePreferencesFile((previous) => {
+        dismissed = applyOnboardingTipsUpdate(
+          normalizeOnboardingTipDismissals(previous.onboardingTipsDismissed),
+          update,
+          new Date(),
+        );
+        return { onboardingTipsDismissed: dismissed };
+      });
+      broadcastCommittedPreferences(normalized);
+      return { dismissed };
     },
   );
 

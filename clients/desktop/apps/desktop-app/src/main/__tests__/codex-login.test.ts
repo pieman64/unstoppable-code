@@ -1,8 +1,11 @@
+import type * as CodexLoginModule from '../auth/codex-login';
 const mockActiveCount = jest.fn(() => 0);
 const mockRelease = jest.fn();
 const mockPause = jest.fn(() => ({
   paused: Promise.resolve(0),
-  release: mockRelease,
+  get release(): typeof mockRelease {
+    return mockRelease;
+  },
 }));
 const mockSession = {
   ready: Promise.resolve(),
@@ -42,33 +45,59 @@ const mockFingerprint = jest.fn(() => 'current');
 const mockRecordAuthenticationGrant = jest.fn().mockResolvedValue(undefined);
 const mockRevokeAuthenticationGrant = jest.fn().mockResolvedValue(undefined);
 const mockHasAuthenticationGrant = jest.fn().mockResolvedValue(true);
+const mockRecordConnectionFailure = jest.fn();
+jest.mock('../lib/provider-connection-events', () => ({
+  recordProviderConnectionFailure: mockRecordConnectionFailure,
+}));
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn().mockReturnValue({
-    beginAuthentication: mockBegin,
+    get beginAuthentication() {
+      return mockBegin;
+    },
     admin: jest.fn().mockReturnValue({
       getResourceSnapshots: jest.fn().mockReturnValue([]),
     }),
   }),
 }));
 jest.mock('../agents/session-manager', () => ({
-  getCodexAuthenticationActiveWorkCount: mockActiveCount,
-  pauseCodexSessionsForAuthentication: mockPause,
+  get getCodexAuthenticationActiveWorkCount(): typeof mockActiveCount {
+    return mockActiveCount;
+  },
+  get pauseCodexSessionsForAuthentication(): typeof mockPause {
+    return mockPause;
+  },
 }));
 jest.mock('../pipelines/pipeline-execution-registry', () => ({
   getActivePipelineExecutionHandles: jest.fn().mockReturnValue([]),
 }));
 jest.mock('../auth/provider-auth-state', () => ({
-  verifiedCodexAccountStatus: mockVerifiedStatus,
-  commitVerifiedCodexAccount: mockCommit,
-  checkCodexAuthStatus: mockCheckCodexAuthStatus,
-  fingerprintCodexRecoveryIdentity: mockFingerprint,
+  get verifiedCodexAccountStatus(): typeof mockVerifiedStatus {
+    return mockVerifiedStatus;
+  },
+  get commitVerifiedCodexAccount(): typeof mockCommit {
+    return mockCommit;
+  },
+  get checkCodexAuthStatus(): typeof mockCheckCodexAuthStatus {
+    return mockCheckCodexAuthStatus;
+  },
+  get fingerprintCodexRecoveryIdentity(): typeof mockFingerprint {
+    return mockFingerprint;
+  },
 }));
 jest.mock('../lib/usage-limited-chats-registry', () => ({
-  recordCodexAuthenticationGrant: mockRecordAuthenticationGrant,
-  revokeCodexAuthenticationGrant: mockRevokeAuthenticationGrant,
-  hasCodexAuthenticationGrant: mockHasAuthenticationGrant,
+  get recordCodexAuthenticationGrant(): typeof mockRecordAuthenticationGrant {
+    return mockRecordAuthenticationGrant;
+  },
+  get revokeCodexAuthenticationGrant(): typeof mockRevokeAuthenticationGrant {
+    return mockRevokeAuthenticationGrant;
+  },
+  get hasCodexAuthenticationGrant(): typeof mockHasAuthenticationGrant {
+    return mockHasAuthenticationGrant;
+  },
 }));
-import { CodexLoginManager, assertCodexLoginUrl } from '../auth/codex-login';
+const { CodexLoginManager, assertCodexLoginUrl } = jest.requireActual<
+  typeof CodexLoginModule
+>('../auth/codex-login');
 
 async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -180,6 +209,17 @@ test.each(['success', 'cancelled', 'failed'])(
     expect(mockSession.verifyAccount).toHaveBeenCalledTimes(1);
     expect(mockSession.close).toHaveBeenCalledTimes(1);
     expect(mockRelease).toHaveBeenCalledTimes(1);
+    if (outcome === 'success') {
+      expect(mockRecordConnectionFailure).not.toHaveBeenCalled();
+    } else {
+      expect(mockRecordConnectionFailure.mock.calls).toEqual([
+        [
+          'codex',
+          'native_login',
+          outcome === 'cancelled' ? 'cancelled' : 'authentication',
+        ],
+      ]);
+    }
     mockHasAuthenticationGrant.mockImplementation((attemptId, fingerprint) =>
       Promise.resolve(
         attemptId === state.attemptId && fingerprint === 'current',
@@ -210,6 +250,9 @@ test('verification failure holds admission and disables resume until retry succe
     phase: 'complete',
   });
   expect(mockRelease).toHaveBeenCalledTimes(1);
+  expect(mockRecordConnectionFailure.mock.calls).toEqual([
+    ['codex', 'native_login', 'cancelled'],
+  ]);
 });
 
 test('explicit cancel after verification failure abandons the attempt and releases admission', async () => {
@@ -227,6 +270,9 @@ test('explicit cancel after verification failure abandons the attempt and releas
   });
   expect(mockSession.close).toHaveBeenCalledTimes(1);
   expect(mockRelease).toHaveBeenCalledTimes(1);
+  expect(mockRecordConnectionFailure.mock.calls).toEqual([
+    ['codex', 'native_login', 'authentication'],
+  ]);
 });
 
 test('failed cancellation cleanup keeps the attempt retryable and admission closed', async () => {
@@ -248,6 +294,9 @@ test('failed cancellation cleanup keeps the attempt retryable and admission clos
   });
   expect(mockSession.close).toHaveBeenCalledTimes(2);
   expect(mockRelease).toHaveBeenCalledTimes(1);
+  expect(mockRecordConnectionFailure.mock.calls).toEqual([
+    ['codex', 'native_login', 'authentication'],
+  ]);
 });
 
 test('accepts only the managed HTTPS sign-in origin', () => {
@@ -374,6 +423,113 @@ test('cancel interrupts verification and ignores its late result', async () => {
     phase: 'complete',
     outcome: 'cancelled',
   });
+  expect(mockRecordConnectionFailure.mock.calls).toEqual([
+    ['codex', 'native_login', 'cancelled'],
+  ]);
+});
+
+test('cancelling from waiting without an account records one cancellation even after abandonment', async () => {
+  mockVerifiedStatus.mockImplementationOnce(() => {
+    throw new Error('Could not verify Codex authentication.');
+  });
+  const manager = new CodexLoginManager();
+  manager.start({ confirmPause: true, method: 'chatgpt' });
+  await flush();
+  expect(manager.browserUrl()).toBe('https://auth.openai.com/authorize');
+
+  expect(await manager.finish('cancelled')).toMatchObject({
+    phase: 'verification-failed',
+    outcome: 'cancelled',
+  });
+  expect(mockRecordConnectionFailure.mock.calls).toEqual([
+    ['codex', 'native_login', 'cancelled'],
+  ]);
+  expect(await manager.finish('cancelled')).toMatchObject({
+    phase: 'complete',
+    outcome: 'cancelled',
+    account: undefined,
+  });
+  expect(mockRecordConnectionFailure.mock.calls).toEqual([
+    ['codex', 'native_login', 'cancelled'],
+  ]);
+});
+
+test.each(['probe failure', 'invalid account'])(
+  'a successful login with %s records authentication failure only once across retries',
+  async (failure) => {
+    if (failure === 'probe failure') {
+      mockSession.verifyAccount.mockRejectedValueOnce(
+        new Error('probe failed'),
+      );
+    } else {
+      mockVerifiedStatus.mockImplementationOnce(() => {
+        throw new Error('Could not verify Codex authentication.');
+      });
+    }
+    const manager = new CodexLoginManager();
+    manager.start({ confirmPause: true, method: 'chatgpt' });
+    await flush();
+    expect(await manager.finish('success')).toMatchObject({
+      phase: 'verification-failed',
+      outcome: 'success',
+    });
+    expect(mockRecordConnectionFailure.mock.calls).toEqual([
+      ['codex', 'native_login', 'authentication'],
+    ]);
+
+    mockSession.verifyAccount.mockRejectedValueOnce(new Error('probe failed'));
+    expect(await manager.retryVerification()).toMatchObject({
+      phase: 'verification-failed',
+    });
+    expect(await manager.retryVerification()).toMatchObject({
+      phase: 'complete',
+      outcome: 'success',
+    });
+    expect(mockRecordConnectionFailure.mock.calls).toEqual([
+      ['codex', 'native_login', 'authentication'],
+    ]);
+  },
+);
+
+test('a new attempt on the same manager can record its own failure', async () => {
+  const manager = new CodexLoginManager();
+  const first = manager.start({ confirmPause: true, method: 'chatgpt' });
+  await flush();
+  await manager.finish('cancelled');
+  const second = manager.start({ confirmPause: true, method: 'chatgpt' });
+  await flush();
+  await manager.finish('failed');
+
+  expect(second.attemptId).not.toBe(first.attemptId);
+  expect(mockRecordConnectionFailure.mock.calls).toEqual([
+    ['codex', 'native_login', 'cancelled'],
+    ['codex', 'native_login', 'authentication'],
+  ]);
+});
+
+test('the login deadline records one timeout even when verification finds an existing account', async () => {
+  jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+  const manager = new CodexLoginManager();
+  const states: Array<{ phase: string; outcome?: string }> = [];
+  manager.onState((state) => states.push(state));
+  try {
+    manager.start({ confirmPause: true, method: 'chatgpt' });
+    await flush();
+    await jest.advanceTimersByTimeAsync(10 * 60_000);
+    await flush();
+
+    expect(states.at(-1)).toMatchObject({
+      phase: 'complete',
+      outcome: 'failed',
+    });
+    expect(mockRecordConnectionFailure.mock.calls).toEqual([
+      ['codex', 'native_login', 'timeout'],
+    ]);
+    await manager.finish('failed');
+    expect(mockRecordConnectionFailure).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test('cancelling during a grant write revokes the saved grant before resume', async () => {

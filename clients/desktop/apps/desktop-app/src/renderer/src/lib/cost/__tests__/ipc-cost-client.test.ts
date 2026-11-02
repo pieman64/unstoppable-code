@@ -42,16 +42,30 @@ const error: CostViewResult<never> = {
 
 function costApi(overrides: Partial<CostApi> = {}): CostApi {
   return {
-    getScope: jest.fn<CostApi['getScope']>().mockResolvedValue(okay),
-    getChat: jest.fn<CostApi['getChat']>().mockResolvedValue(error),
-    getPipelineRun: jest
-      .fn<CostApi['getPipelineRun']>()
-      .mockResolvedValue(error),
-    refresh: jest.fn<CostApi['refresh']>().mockResolvedValue(unavailable),
-    watchScope: jest
-      .fn<CostApi['watchScope']>()
-      .mockReturnValue(() => undefined),
-    onUpdated: jest.fn<CostApi['onUpdated']>().mockReturnValue(() => undefined),
+    getScope: jest.fn<
+      ReturnType<CostApi['getScope']>,
+      Parameters<CostApi['getScope']>
+    >(() => Promise.resolve(okay)),
+    getChat: jest.fn<
+      ReturnType<CostApi['getChat']>,
+      Parameters<CostApi['getChat']>
+    >(() => Promise.resolve(error)),
+    getPipelineRun: jest.fn<
+      ReturnType<CostApi['getPipelineRun']>,
+      Parameters<CostApi['getPipelineRun']>
+    >(() => Promise.resolve(error)),
+    refresh: jest.fn<
+      ReturnType<CostApi['refresh']>,
+      Parameters<CostApi['refresh']>
+    >(() => Promise.resolve(unavailable)),
+    watchScope: jest.fn<
+      ReturnType<CostApi['watchScope']>,
+      Parameters<CostApi['watchScope']>
+    >(() => () => undefined),
+    onUpdated: jest.fn<
+      ReturnType<CostApi['onUpdated']>,
+      Parameters<CostApi['onUpdated']>
+    >(() => () => undefined),
     ...overrides,
   };
 }
@@ -71,9 +85,10 @@ test('passes through successful, unavailable and error results from CostApi', as
 
 test('turns a rejected IPC read into an UNKNOWN error result', async () => {
   const api = costApi({
-    getScope: jest
-      .fn<CostApi['getScope']>()
-      .mockRejectedValue(new Error('IPC is unavailable.')),
+    getScope: jest.fn<
+      ReturnType<CostApi['getScope']>,
+      Parameters<CostApi['getScope']>
+    >(() => Promise.reject(new Error('IPC is unavailable.'))),
   });
   const client = createIpcCostClient(() => api);
 
@@ -98,10 +113,13 @@ test('reports an unavailable runtime when the preload API is missing', async () 
 });
 
 test('releases a scope watch only once', () => {
-  const release = jest.fn();
+  const release = jest.fn<void, []>();
   const client = createIpcCostClient(() =>
     costApi({
-      watchScope: jest.fn<CostApi['watchScope']>().mockReturnValue(release),
+      watchScope: jest.fn<
+        ReturnType<CostApi['watchScope']>,
+        Parameters<CostApi['watchScope']>
+      >(() => release),
     }),
   );
 

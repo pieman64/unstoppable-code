@@ -28,12 +28,13 @@ import {
   overviewChatRouteAction,
   projectDesktopOverview,
 } from '@/lib/desktopOverviewProjector';
-import { selectRunningExecutionIdsMissingState } from '@/lib/overviewSelectors';
+import { selectOverviewExecutionIdsMissingRowState } from '@/lib/overviewSelectors';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
 import { findPlanExploreTarget, useChatStore } from '@/stores/chatStore';
 import { dismissPageLikeViewers } from '@/lib/dismissPageLikeViewers';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
+import { usePipelineExecutionSummaryInterest } from '@/stores/pipelineDetailCoordinator';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useContextScopedWorkspaces } from '@/hooks/useContextScopedWorkspaces';
 import { openInWorkspaceContext } from '@/lib/contextScope';
@@ -102,39 +103,20 @@ export function OverviewPage(): JSX.Element {
     runningExecutionsByWorktree,
     unseenPipelineWorktreeKeys,
     pipelineSummariesByWorktree,
-    statesById,
-    loadExecutionDetails,
+    rowStatesById,
+    loadExecutionRowState,
     markWorktreePipelineSeen,
   } = usePipelineRunsStore(
     useShallow((s) => ({
       runningExecutionsByWorktree: s.runningExecutionsByWorktree,
       unseenPipelineWorktreeKeys: s.unseenPipelineWorktreeKeys,
       pipelineSummariesByWorktree: s.pipelineSummariesByWorktree,
-      statesById: s.statesById,
-      loadExecutionDetails: s.loadExecutionDetails,
+      rowStatesById: s.rowStatesById,
+      loadExecutionRowState: s.loadExecutionRowState,
       markWorktreePipelineSeen: s.markWorktreePipelineSeen,
     })),
   );
-  const hydratedPipelineIdsRef = useRef<Set<string>>(new Set());
-
-  // Shared pipeline cards still use desktop ExecutionState for rich DAG
-  // progress and exact job navigation. Hydrate new running executions with
-  // bounded concurrency as they appear while this page remains mounted.
-  useEffect(() => {
-    const missing = selectRunningExecutionIdsMissingState(
-      runningExecutionsByWorktree,
-      statesById,
-    ).filter((id) => !hydratedPipelineIdsRef.current.has(id));
-    if (missing.length === 0) return;
-
-    for (const id of missing) {
-      hydratedPipelineIdsRef.current.add(id);
-    }
-    void runWithConcurrency(
-      missing.map((id) => (): Promise<unknown> => loadExecutionDetails(id)),
-      HYDRATE_PARALLELISM,
-    );
-  }, [loadExecutionDetails, runningExecutionsByWorktree, statesById]);
+  const inFlightPipelineRowIdsRef = useRef<Set<string>>(new Set());
 
   const projection = useMemo(
     () =>
@@ -157,6 +139,40 @@ export function OverviewPage(): JSX.Element {
       worktreeChats,
     ],
   );
+  const displayedPipelineExecutionIds = useMemo(
+    () =>
+      projection.snapshot.pipelineRuns.flatMap((run) =>
+        run.localId ? [run.localId] : [],
+      ),
+    [projection.snapshot.pipelineRuns],
+  );
+  usePipelineExecutionSummaryInterest(displayedPipelineExecutionIds);
+
+  // Keep only row projections for every card shown here, including unread
+  // paused and terminal runs. The in-flight set is temporary: if the store
+  // later evicts a still-visible row, the missing-row selector will hydrate
+  // it again rather than being blocked by a permanent request marker.
+  useEffect(() => {
+    const missing = selectOverviewExecutionIdsMissingRowState(
+      displayedPipelineExecutionIds,
+      rowStatesById,
+    ).filter((id) => !inFlightPipelineRowIdsRef.current.has(id));
+    if (missing.length === 0) return;
+
+    for (const id of missing) {
+      inFlightPipelineRowIdsRef.current.add(id);
+    }
+    void runWithConcurrency(
+      missing.map(
+        (id) => (): Promise<unknown> =>
+          loadExecutionRowState(id).finally(() => {
+            inFlightPipelineRowIdsRef.current.delete(id);
+          }),
+      ),
+      HYDRATE_PARALLELISM,
+    );
+  }, [displayedPipelineExecutionIds, loadExecutionRowState, rowStatesById]);
+
   const hydrateOverview = useOverviewStore((s) => s.hydrate);
   useEffect(() => {
     hydrateOverview(projection.snapshot);
@@ -252,7 +268,7 @@ export function OverviewPage(): JSX.Element {
       const projectId = run.workspaceLocalId;
       const worktreeId = run.worktreeLocalId;
       const executionId = run.localId;
-      const state = statesById[executionId];
+      const state = rowStatesById[executionId];
       const hiddenCount = projection.pipelineHiddenCounts[executionId];
       return (
         <div className="mt-1 flex flex-col gap-1">
@@ -277,7 +293,7 @@ export function OverviewPage(): JSX.Element {
           ) : (
             <div className="flex items-center gap-2 text-xs fg-secondary">
               <LoadingSpinner sizePx={12} />
-              <span>Loading pipeline details…</span>
+              <span>Loading workflow details…</span>
             </div>
           )}
           {hiddenCount !== undefined && hiddenCount > 0 && (
@@ -288,7 +304,7 @@ export function OverviewPage(): JSX.Element {
         </div>
       );
     },
-    [projection.pipelineHiddenCounts, statesById],
+    [projection.pipelineHiddenCounts, rowStatesById],
   );
 
   if (isFirstRun) {

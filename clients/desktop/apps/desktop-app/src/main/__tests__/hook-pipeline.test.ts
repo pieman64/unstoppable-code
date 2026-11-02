@@ -195,12 +195,14 @@ function buildExecutionState(args: {
   pipelineName: string;
   cwd: string;
 }): ExecutionState {
-  return {
+  // A version-3 persisted state predates the newer required fields.
+  const state: Partial<ExecutionState> = {
     version: 3,
     id: args.executionId,
     pipeline_id: args.pipelineId,
     pipeline_snapshot: {
       name: args.pipelineName,
+      scope: ['directory'],
       jobs: {},
     },
     status: 'running',
@@ -210,6 +212,7 @@ function buildExecutionState(args: {
     env: {},
     inputs: {},
   };
+  return state as ExecutionState;
 }
 
 function buildLaunchArgs(
@@ -280,7 +283,11 @@ describe('hook-pipeline', () => {
         ],
       },
     });
-    const result = await resolveProjectHooks({ id: 'project-a', ...config });
+    const result = await resolveProjectHooks({
+      id: 'project-a',
+      ...config,
+      repoPath: testRepo,
+    });
     expect(result['pr:create']?.actions).toEqual([
       expect.objectContaining({
         type: 'chat',
@@ -316,7 +323,12 @@ describe('hook-pipeline', () => {
           'pr:create': [{ type: 'pipeline', source: 'bundled', id: 'review' }],
         },
       });
-      const project = { id: 'project-a', ...config, hooks: config.hooks };
+      const project = {
+        id: 'project-a',
+        ...config,
+        repoPath: testRepo,
+        hooks: config.hooks,
+      };
       const resolve = async (): Promise<
         Awaited<ReturnType<typeof resolveProjectHooks>>
       > =>
@@ -355,6 +367,7 @@ describe('hook-pipeline', () => {
       mockDestinationRead.mockResolvedValue({
         authority: 'ok',
         ownerMalformed: false,
+        memoryMalformed: false,
         config,
       });
       const actual = jest.requireActual<typeof BackgroundContextModule>(
@@ -434,6 +447,7 @@ describe('hook-pipeline', () => {
     );
     const converted = await buildWorkspaceManifest({
       version: 1,
+      type: 'single-repo',
       repos: [],
       hooks,
     });
@@ -466,7 +480,10 @@ describe('hook-pipeline', () => {
     mockDestinationRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
+      memoryMalformed: false,
       config: {
+        version: 1,
+        type: 'single-repo',
         repos: [],
         owner: {
           type: 'organization',
@@ -490,7 +507,10 @@ describe('hook-pipeline', () => {
       mockDestinationRead.mockResolvedValue({
         authority: mode === 'unreadable' ? 'unreadable' : 'ok',
         ownerMalformed: false,
+        memoryMalformed: false,
         config: {
+          version: 1,
+          type: 'single-repo',
           repos: [],
           owner: {
             type: 'organization',
@@ -623,7 +643,7 @@ describe('hook-pipeline', () => {
           executionId,
           pipelineId: args.options.pipelineId,
           pipelineName: args.pipeline.name,
-          cwd: args.options.cwd,
+          cwd: args.options.cwd ?? testRepo,
         }),
       });
     });
@@ -778,7 +798,7 @@ describe('hook-pipeline', () => {
             }),
           ),
         ).rejects.toThrow(
-          'Pipeline hooks do not support Ultra fast. Choose Regular or Fast.',
+          'Workflow hooks do not support Ultra fast. Choose Regular or Fast.',
         );
 
         expect(mockedGetStoredPipelineBySource).not.toHaveBeenCalled();
@@ -806,7 +826,7 @@ describe('hook-pipeline', () => {
             }),
           ),
         ).rejects.toThrow(
-          'Pipeline hooks do not support Ultra fast. Choose Regular or Fast for this hook, or change the Codex default speed.',
+          'Workflow hooks do not support Ultra fast. Choose Regular or Fast for this hook, or change the Codex default speed.',
         );
 
         expect(mockedGetStoredPipelineBySource).not.toHaveBeenCalled();
@@ -955,7 +975,7 @@ describe('hook-pipeline', () => {
       const result = await launchHookPipeline(
         buildLaunchArgs({
           type: 'pipeline',
-          source: 'user',
+          source: 'local',
           id: 'local-review',
         }),
       );
@@ -997,7 +1017,7 @@ describe('hook-pipeline', () => {
         }),
       ),
     ).rejects.toThrow(
-      'Pipeline "review pipeline" does not define a dispatch trigger',
+      'Workflow "review pipeline" does not define a dispatch trigger',
     );
     expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();
   });
@@ -1111,7 +1131,7 @@ describe('hook-pipeline', () => {
           id: 'review',
         }),
       ),
-    ).rejects.toThrow('Pipeline input "pr_url" is required');
+    ).rejects.toThrow('Workflow input "pr_url" is required');
     expect(mockedSendToWindow).not.toHaveBeenCalled();
     expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();
   });
@@ -1144,7 +1164,7 @@ describe('hook-pipeline', () => {
     launchArgs.env = {};
 
     await expect(launchHookPipeline(launchArgs)).rejects.toThrow(
-      'Pipeline input "pr_url" is required',
+      'Workflow input "pr_url" is required',
     );
     expect(mockedSendToWindow).not.toHaveBeenCalled();
     expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();

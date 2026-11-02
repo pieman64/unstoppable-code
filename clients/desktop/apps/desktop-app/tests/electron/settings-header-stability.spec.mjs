@@ -5,6 +5,7 @@ import {
   connectMockCloudAccount,
   registerHostedSettingsScenario,
 } from './seeders/index.mjs';
+import { openOrganizationsList } from './hostedSettingsLocators.mjs';
 
 /**
  * Settings headers hold still (CAN-4558).
@@ -36,11 +37,13 @@ import {
  * hidden E2E window. Fonts are loaded before the first measurement so a font
  * swap is not mistaken for a shift.
  *
- * The organization-tab walk asserts the organization block never disappears
- * between tabs: the previous tab stays in place while the next loads, then
- * the read-only organization header placeholder takes over until the page
- * arrives. Organization memory is in the walk: its pages render under the
- * organization header like the other tabs (CAN-4558 item D).
+ * The organization-page walk asserts a page header never disappears between
+ * pages: the previous page stays in place while the next loads, then the
+ * placeholder's page header takes over until the page arrives. The settings
+ * rail's scope picker names the organization throughout. Memory is in the
+ * walk (CAN-4558 item D). Timeline, Statistics and Memory use the wide
+ * column, the other pages the 640px settings column, so titles share their
+ * top edge everywhere and their left edge within one column.
  */
 
 const PAGE_DATA_DELAY_MS = 400;
@@ -54,15 +57,16 @@ const VIEWPORTS = [
   { width: 1024, height: 900 },
 ];
 
+/** Organization rail rows, by the page they open. */
 const ORG_TABS = [
-  'feed',
-  'statistics',
-  'digests',
-  'members',
-  'groups',
-  'projects',
-  'memory',
-  'settings',
+  ['feed', 'organization-feed', 'wide'],
+  ['statistics', 'organization-statistics', 'wide'],
+  ['digests', 'organization-digests', 'settings'],
+  ['members', 'organization-members', 'settings'],
+  ['groups', 'organization-groups', 'settings'],
+  ['projects', 'organization-projects', 'settings'],
+  ['memory', 'organization-memory', 'wide'],
+  ['settings', 'organization-settings-general', 'settings'],
 ];
 
 const ACCOUNT_PAGES = [
@@ -76,13 +80,7 @@ const ACCOUNT_PAGES = [
 ];
 
 /** The header parts the probe follows, by test id. */
-const TRACKED = [
-  'page-header',
-  'page-header-title',
-  'page-header-description',
-  'team-overview-section',
-  'team-org-switcher',
-];
+const TRACKED = ['page-header', 'page-header-title', 'page-header-description'];
 
 /** The probe's keys for the drawn title and description text. */
 const TITLE_TEXT = 'page-header-title-text';
@@ -107,8 +105,6 @@ const STILL_KEYS = {
   [TITLE_TEXT]: ALL_KEYS,
   'page-header-description': ['x', 'y', 'height'],
   [DESCRIPTION_TEXT]: ALL_KEYS,
-  'team-overview-section': ALL_KEYS,
-  'team-org-switcher': ALL_KEYS,
 };
 
 async function launchSignedIn(apiKey, viewportSize) {
@@ -302,7 +298,7 @@ async function walkAccountPages(window) {
 }
 
 async function openOwnedOrganization(window) {
-  await window.getByTestId('settings-nav-organizations-list').click();
+  await openOrganizationsList(window);
   const list = hostedPage(window, 'organizations/list');
   await expect(list).toBeVisible();
   await list
@@ -311,9 +307,9 @@ async function openOwnedOrganization(window) {
     .first()
     .click();
   await expect(hostedPage(window, 'organization/feed')).toBeVisible();
-  await expect(
-    window.getByTestId('settings-content').getByTestId('team-overview-section'),
-  ).toBeVisible();
+  await expect(window.getByTestId('settings-nav-scope-title')).toHaveText(
+    'Northwind Labs',
+  );
   await window.waitForTimeout(PAGE_DATA_DELAY_MS + SETTLE_MS);
 }
 
@@ -337,21 +333,32 @@ for (const viewportSize of VIEWPORTS) {
         expectSameBox(box, reference, `account/${page} title`, ['x', 'y']);
       }
 
-      // An organization tab's title starts at the same left edge as the
-      // account pages' titles: one shared column. It sits lower, under the
-      // organization block.
+      // An organization Settings page's title sits exactly where the
+      // account pages' titles do: one structure for both scopes.
       await openOwnedOrganization(window);
+      await window
+        .getByTestId('settings-nav-organization-settings-general')
+        .click();
+      await expect(
+        hostedPage(window, 'organization/settings').getByTestId(
+          'page-header-title',
+        ),
+      ).toHaveText('General');
+      await window.waitForTimeout(PAGE_DATA_DELAY_MS + SETTLE_MS);
       const organizationTitle = await finalTitleBox(window);
-      expectSameBox(organizationTitle, reference, 'organization/feed title', [
-        'x',
-      ]);
+      expectSameBox(
+        organizationTitle,
+        reference,
+        'organization/settings title',
+        ['x', 'y'],
+      );
     } finally {
       await stopProbe(window).catch(() => undefined);
       await closeCanopy(electronApp, userDataDir);
     }
   });
 
-  test(`organization tabs keep the organization block and header in place (${size})`, async () => {
+  test(`organization pages keep their header in place (${size})`, async () => {
     test.setTimeout(180_000);
     const { app, electronApp, userDataDir, window } = await launchSignedIn(
       `csk_settings_header_stability_org_${viewportSize.width}`,
@@ -363,10 +370,9 @@ for (const viewportSize of VIEWPORTS) {
       await installProbe(window);
 
       const titles = {};
-      const blocks = {};
-      for (const tab of ORG_TABS) {
+      for (const [tab, rowKey] of ORG_TABS) {
         const step = `organization/${tab}`;
-        const row = `settings-nav-organization-${tab}`;
+        const row = `settings-nav-${rowKey}`;
         const label = await railLabel(window, row);
         await beginStep(window, step);
         await window.getByTestId(row).click();
@@ -377,33 +383,30 @@ for (const viewportSize of VIEWPORTS) {
         await window.waitForTimeout(PAGE_DATA_DELAY_MS + SETTLE_MS);
 
         const records = await stepRecords(window, step);
-        // The organization block never leaves the screen between tabs.
+        // A page header never leaves the screen between pages.
         for (const entry of records) {
           expect(
-            entry.boxes['team-overview-section'],
-            `the organization block disappeared while opening ${tab}`,
+            entry.boxes['page-header'],
+            `the page header disappeared while opening ${tab}`,
           ).not.toBeNull();
         }
         for (const testId of [...TRACKED, TITLE_TEXT, DESCRIPTION_TEXT]) {
           expectStillAfterFirstShown(records, testId, step, label);
         }
         titles[tab] = await finalTitleBox(window);
-        blocks[tab] = await window
-          .getByTestId('settings-content')
-          .getByTestId('team-overview-section')
-          .boundingBox();
       }
 
-      for (const tab of ORG_TABS) {
+      const firstOf = (width) =>
+        ORG_TABS.find(([, , column]) => column === width)?.[0];
+      for (const [tab, , column] of ORG_TABS) {
         expectSameBox(titles[tab], titles.feed, `organization/${tab} title`, [
-          'x',
           'y',
         ]);
         expectSameBox(
-          blocks[tab],
-          blocks.feed,
-          `organization/${tab} organization block`,
-          ['x', 'y', 'width'],
+          titles[tab],
+          titles[firstOf(column)],
+          `organization/${tab} title in its column`,
+          ['x'],
         );
       }
     } finally {

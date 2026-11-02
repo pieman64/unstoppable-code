@@ -25,9 +25,13 @@ import {
 } from '@canopy/ui-app/sharing/share-install-copy';
 import { hasMarkdownDescriptionText } from '@canopy/ui-shared/lib/markdown-plain-text';
 import { ErrorBanner, LoadingPlaceholder } from '../shared';
+import { Button } from '../shared/Button';
 import { SkillPublisherProvenance } from '@canopy/ui-shared/components/SkillPublisherProvenance';
 import { parseSkillSource } from '@/lib/skillFrontmatter';
-import { shareLandingErrorCopy } from './shareLandingErrorCopy';
+import {
+  shareLandingErrorCopy,
+  shareLandingRecovery,
+} from './shareLandingErrorCopy';
 import type { PublicShareLanding } from './usePublicShareLanding';
 import { useSkillDependencyReadiness } from './useSkillDependencyReadiness';
 import { CapabilityPackageReadiness } from '../shared/capability-package/CapabilityPackageReadiness';
@@ -40,8 +44,6 @@ import { CapabilityPackageReadiness } from '../shared/capability-package/Capabil
  * shared ⋯ menu; a plugin offers Manage.
  */
 
-const PRIMARY_BUTTON_CLASS =
-  'focus-ring inline-flex shrink-0 items-center whitespace-nowrap rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis disabled:opacity-60';
 // The status stays with its buttons and is the part that gives way, breaking
 // even inside a long skill name, so the buttons keep their size.
 const ACTION_STATUS_CLASS = 'min-w-0 break-words text-s fg-secondary';
@@ -95,6 +97,10 @@ export function MarketplaceSkillDetailBody({
 }: MarketplaceSkillDetailBodyProps): JSX.Element {
   const headerOwned = headerTitle !== undefined;
   const { state, snapshot, installError } = landing;
+  const recovery =
+    state.phase === 'error'
+      ? shareLandingRecovery(state.reason, landing)
+      : undefined;
   const skillPackage =
     snapshot?.entity === 'skill' && snapshot.distributionMode === 'package'
       ? snapshot.package
@@ -169,22 +175,18 @@ export function MarketplaceSkillDetailBody({
         {state.phase === 'error' && (
           <div data-testid="deep-link-share-error" className="space-y-2">
             <ErrorBanner
-              error={shareLandingErrorCopy(state.reason)}
+              error={shareLandingErrorCopy(state.reason, entity)}
               className="mb-0"
             />
-            {state.reason === 'client-upgrade-required' && (
-              <button
-                type="button"
-                data-testid="deep-link-share-update-app"
-                onClick={(): void => {
-                  void window.api.update.checkForUpdates().catch(() => {
-                    // Best effort: the update surface reports its own errors.
-                  });
-                }}
-                className={PRIMARY_BUTTON_CLASS}
+            {recovery !== undefined && (
+              <Button
+                variant="primary"
+                size="compact"
+                data-testid={recovery.testId}
+                onClick={recovery.onClick}
               >
-                Check for updates
-              </button>
+                {recovery.label}
+              </Button>
             )}
           </div>
         )}
@@ -277,43 +279,43 @@ function BodyActions({
   let primary: JSX.Element;
   if (installed === null) {
     primary = (
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="compact"
         data-testid="deep-link-share-install"
         onClick={onInstall}
         disabled={detecting}
-        className={PRIMARY_BUTTON_CLASS}
       >
         {shareInstallActionLabel(entity, 'install')}
-      </button>
+      </Button>
     );
   } else if (installed.entity === 'skill') {
     primary = (
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="compact"
         data-testid="deep-link-share-try"
         onClick={(): void => {
           landing.tryNow(onNavigate);
         }}
-        className={PRIMARY_BUTTON_CLASS}
       >
         Try now
-      </button>
+      </Button>
     );
   } else {
     // A plugin opens its management surface: its marketplace can carry
     // several plugins, so removing one belongs to the Plugins page.
     primary = (
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="compact"
         data-testid="deep-link-share-manage"
         onClick={(): void => {
           landing.manage(onNavigate);
         }}
-        className={PRIMARY_BUTTON_CLASS}
       >
         Manage
-      </button>
+      </Button>
     );
   }
 

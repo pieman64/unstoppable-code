@@ -13,8 +13,24 @@ import type {
   PlatformUnixSocketAddress,
 } from '../../platform/platform-services';
 import { assertStorageWriteAllowed, STORAGE_OWNERSHIP } from '../../storage';
-import type { DaemonStartupClaimPort } from '../../platform/startup-claim';
+import type {
+  DaemonStartupClaimAcquisition,
+  DaemonStartupClaimPort,
+} from '../../platform/startup-claim';
 import { bindCanopyDaemonEndpoint } from './binding';
+
+/**
+ * A startup claim the caller acquired before publishing, for a writer it
+ * composed under the claim (W5b Q8(a)). Publication releases it only after
+ * it succeeds; a failed publication keeps it held, so the caller releases it
+ * once its writer has stopped. `current` follows a reclaim.
+ */
+export interface CanopyDaemonHeldClaim {
+  current: object;
+  /** The acquisition's departed-owner recovery, as `tryAcquire` reported it. */
+  readonly recovered?: { readonly endpointBound: boolean };
+  released: boolean;
+}
 
 export interface CanopyDaemonPublicationOptions {
   readonly dataRoot: string;
@@ -22,6 +38,8 @@ export interface CanopyDaemonPublicationOptions {
   readonly platform: PlatformServices;
   readonly claims: DaemonStartupClaimPort;
   readonly claimHandle?: object;
+  /** Exclusive with `claimHandle`. */
+  readonly heldClaim?: CanopyDaemonHeldClaim;
   readonly pid: number;
   readonly startIdentity: string;
   readonly buildVersion: string;
@@ -39,16 +57,63 @@ export interface CanopyDaemonPublication {
   close(): Promise<void>;
 }
 
+async function privatePath(
+  platform: PlatformServices,
+  path: string,
+  kind: 'file' | 'directory',
+  action: 'verify' | 'restrict',
+): Promise<void> {
+  const permissions = await platform.secureFiles.permissions({
+    path,
+    kind,
+    action,
+    mode: 'owner-only',
+  });
+  if (permissions.state !== 'private')
+    throw new Error('Runtime permissions are not private.');
+}
+
+/**
+ * Creates the private `runtime/` directory the startup claim and publication
+ * use, under a private data root. Returns its path.
+ */
+export async function prepareCanopyDaemonRuntimeDirectory(
+  dataRoot: string,
+  platform: PlatformServices,
+): Promise<string> {
+  const directory = platform.paths.runtimeDirectory({ dataRoot });
+  if (directory !== join(dataRoot, 'runtime'))
+    throw new Error('Foreign runtime directory.');
+  await privatePath(platform, dataRoot, 'directory', 'verify');
+  try {
+    await mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    if (
+      typeof error !== 'object' ||
+      error === null ||
+      !('code' in error) ||
+      error.code !== 'EEXIST'
+    )
+      throw error;
+  }
+  await privatePath(platform, directory, 'directory', 'restrict');
+  return directory;
+}
+
 /** Explicit roots/modes only. Windows additionally requires native pipe security in the platform endpoints. */
 export async function publishCanopyDaemon(
   options: CanopyDaemonPublicationOptions,
 ): Promise<CanopyDaemonPublication> {
-  const { platform, claims, dataRoot } = options;
+  const { platform, claims, dataRoot, heldClaim } = options;
   if (
     platform.endpoints.semantics === 'first-instance-pipe' &&
-    options.claimHandle !== undefined
+    (options.claimHandle !== undefined || heldClaim !== undefined)
   )
     throw new Error('Windows launcher claim unsupported.');
+  if (options.claimHandle !== undefined && heldClaim !== undefined)
+    throw new Error('Startup claim handle and held claim are exclusive.');
+  if (heldClaim?.released === true)
+    throw new Error('Startup claim unavailable.');
   if (
     !['prod', 'rc', 'dev'].includes(options.runtimeMode) ||
     !isAbsolute(dataRoot) ||
@@ -85,40 +150,14 @@ export async function publishCanopyDaemon(
     'daemon',
     STORAGE_OWNERSHIP,
   );
-  async function privatePath(
-    path: string,
-    kind: 'file' | 'directory',
-    action: 'verify' | 'restrict',
-  ): Promise<void> {
-    const permissions = await platform.secureFiles.permissions({
-      path,
-      kind,
-      action,
-      mode: 'owner-only',
-    });
-    if (permissions.state !== 'private')
-      throw new Error('Runtime permissions are not private.');
-  }
-  await privatePath(dataRoot, 'directory', 'verify');
-  try {
-    await mkdir(directory, { mode: 0o700 });
-  } catch (error) {
-    if (
-      typeof error !== 'object' ||
-      error === null ||
-      !('code' in error) ||
-      error.code !== 'EEXIST'
-    )
-      throw error;
-  }
-  await privatePath(directory, 'directory', 'restrict');
+  await prepareCanopyDaemonRuntimeDirectory(dataRoot, platform);
   // Verify inherited ACLs before writing secret bytes; POSIX creates with 0600.
   async function exclusiveFile(path: string, contents: string): Promise<void> {
     const file = await open(path, 'wx', 0o600);
     if (path === tokenPath) tokenCreated = true;
     if (path === temporaryPath) temporaryCreated = true;
     try {
-      await privatePath(path, 'file', 'verify');
+      await privatePath(platform, path, 'file', 'verify');
       await file.writeFile(contents, 'utf8');
       await file.sync();
     } finally {
@@ -189,8 +228,13 @@ export async function publishCanopyDaemon(
     await unlinkIfPresent(previous.tokenRef);
   }
   // Only a standalone POSIX start replaces a departed claim; a pipe has no stale file (CAN-3935).
-  const startup =
-    options.claimHandle === undefined
+  const startup: DaemonStartupClaimAcquisition = heldClaim
+    ? {
+        kind: 'acquired',
+        handle: heldClaim.current,
+        ...(heldClaim.recovered && { recovered: heldClaim.recovered }),
+      }
+    : options.claimHandle === undefined
       ? await claims.tryAcquire(undefined, {
           recoverDeparted: platform.endpoints.semantics === 'filesystem-socket',
         })
@@ -233,6 +277,7 @@ export async function publishCanopyDaemon(
     temporaryCreated = false;
     await platform.secureFiles.syncDirectory(directory);
     await release(handle);
+    if (heldClaim) heldClaim.released = true;
   } catch (error) {
     let cleanupHandle = handle;
     const failures: unknown[] = [error];
@@ -270,11 +315,14 @@ export async function publishCanopyDaemon(
     } catch (cleanupError) {
       failures.push(cleanupError);
     } finally {
-      try {
-        await release(cleanupHandle, true);
-      } catch (releaseError) {
-        failures.push(releaseError);
-      }
+      // A held claim stays with its caller until the caller's writer stops.
+      if (heldClaim) heldClaim.current = cleanupHandle;
+      else
+        try {
+          await release(cleanupHandle, true);
+        } catch (releaseError) {
+          failures.push(releaseError);
+        }
     }
     if (failures.length > 1)
       throw Object.assign(new Error('Daemon startup rollback failed.'), {

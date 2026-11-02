@@ -204,10 +204,10 @@ export function matchesChatFilters(
   return true;
 }
 
-function isDiscoverableWorktree(worktree: WorktreeData): boolean {
+export function isDiscoverableWorktree(worktree: WorktreeData): boolean {
   return worktree.hidden !== true && worktree.id !== COWORK_HOME_WORKTREE_ID;
 }
 
-function isDiscoverableWorkEntry(entry: CoworkWorkEntryData): boolean {
+export function isDiscoverableWorkEntry(entry: CoworkWorkEntryData): boolean {
   return entry.id !== COWORK_HOME_WORKTREE_ID;
 }

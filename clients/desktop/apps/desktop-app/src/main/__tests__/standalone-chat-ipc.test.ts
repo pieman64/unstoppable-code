@@ -670,9 +670,10 @@ describe('standalone chat IPC handlers', () => {
       collapsed: false,
       order: 0,
     });
-    mockedReadWorkspaceConfig.mockResolvedValue({
-      version: 1,
-      type: 'cowork',
+    // Keep the stale top-level name to verify the legacy field is ignored.
+    const workspaceConfigWithLegacyName = {
+      version: 1 as const,
+      type: 'cowork' as const,
       repos: [],
       name: 'Acme Research',
       cowork: {
@@ -693,7 +694,8 @@ describe('standalone chat IPC handlers', () => {
         ],
         archiveRetentionDays: 45,
       },
-    });
+    };
+    mockedReadWorkspaceConfig.mockResolvedValue(workspaceConfigWithLegacyName);
     mockedLoadHistoryIndex.mockResolvedValue([]);
 
     const response = await getHandler(IPC_CHANNELS.standaloneChatLoadWorkspace)(

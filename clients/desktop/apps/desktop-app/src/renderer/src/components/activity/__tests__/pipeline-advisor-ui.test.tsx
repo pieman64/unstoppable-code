@@ -68,7 +68,7 @@ describe('Pipeline Advisor activity and detail UI', () => {
       expect(rendered.container.textContent).toContain('ETA ~12m');
       expect(rendered.container.textContent).toContain('!');
       const badge = rendered.container.querySelector(
-        '[aria-label="Pipeline Advisor ETA"]',
+        '[aria-label="Workflow Advisor ETA"]',
       );
       if (!(badge instanceof HTMLElement)) {
         throw new Error('Advisor ETA badge not found');
@@ -83,7 +83,7 @@ describe('Pipeline Advisor activity and detail UI', () => {
         throw new Error('Advisor preview tooltip not found');
       }
       expect(rendered.container.contains(tooltip)).toBe(false);
-      expect(tooltip.textContent).toContain('Pipeline Advisor');
+      expect(tooltip.textContent).toContain('Workflow Advisor');
       expect(tooltip.textContent).toContain('Health');
       expect(tooltip.textContent).toContain('Healthy enough');
       expect(tooltip.textContent).toContain('ETA');
@@ -106,7 +106,7 @@ describe('Pipeline Advisor activity and detail UI', () => {
 
     try {
       const badge = rendered.container.querySelector(
-        '[aria-label="Pipeline Advisor ETA"]',
+        '[aria-label="Workflow Advisor ETA"]',
       );
       if (!(badge instanceof HTMLElement)) {
         throw new Error('Advisor ETA badge not found');
@@ -132,17 +132,12 @@ describe('Pipeline Advisor activity and detail UI', () => {
 
   it('renders the activity ETA badge on the shared pipeline-row status badge standard', () => {
     // Geometry every status badge in the pipeline row shares (see
-    // `statusBadgeClassName` in @canopy/ui-shared): 20px pill, 3xs label,
-    // hairline ring. `border-<color>` utilities are inert under the unlayered
-    // base border rule (CAN-2734) and raw palette literals wash out in light
-    // mode, so neither may appear.
-    const geometry = [
-      'h-5',
-      'rounded-full',
-      'text-3xs',
-      'ring-[length:var(--border-hairline)]',
-    ];
-    const forbidden = /(^|\s)border(-|\s|$)|\b(sky|violet|amber|rose)-/;
+    // `statusBadgeClassName` in @canopy/ui-shared): the shared 18px Badge
+    // capsule with a 2xs label and no ring. `border-<color>` utilities are
+    // inert under the unlayered base border rule (CAN-2734) and raw palette
+    // literals wash out in light mode, so neither may appear.
+    const geometry = ['h-4.5', 'rounded-full', 'text-2xs'];
+    const forbidden = /(^|\s)(border|ring)(-|\s|$)|\b(sky|violet|amber|rose)-/;
     const active = renderBadge(createSnapshot(), 'running');
     const stale = renderBadge(
       createSnapshot({
@@ -158,10 +153,10 @@ describe('Pipeline Advisor activity and detail UI', () => {
 
     try {
       const activeBadge = active.container.querySelector(
-        '[aria-label="Pipeline Advisor ETA"]',
+        '[aria-label="Workflow Advisor ETA"]',
       );
       const staleBadge = stale.container.querySelector(
-        '[aria-label="Pipeline Advisor ETA"]',
+        '[aria-label="Workflow Advisor ETA"]',
       );
       expect(activeBadge).not.toBeNull();
       expect(staleBadge).not.toBeNull();
@@ -172,12 +167,10 @@ describe('Pipeline Advisor activity and detail UI', () => {
         }
         expect(badge?.className ?? '').not.toMatch(forbidden);
       }
-      expect(activeBadge?.className).toContain('bg-info-subtle');
-      expect(activeBadge?.className).toContain('fg-info');
-      expect(activeBadge?.className).toContain('ring-fg-info/20');
-      expect(staleBadge?.className).toContain('bg-warning-subtle');
-      expect(staleBadge?.className).toContain('fg-warning');
-      expect(staleBadge?.className).toContain('ring-line-attention/30');
+      expect(activeBadge?.className).toContain('bg-info-subtle fg-info');
+      expect(staleBadge?.className).toContain(
+        'bg-warning-subtle fg-warning-strong',
+      );
       // Icons inside a status badge are 12px.
       const icon = activeBadge?.querySelector('svg');
       expect(icon?.getAttribute('class')).toContain('h-3');
@@ -647,7 +640,7 @@ describe('Pipeline Advisor activity and detail UI', () => {
     );
 
     try {
-      expect(rendered.container.textContent).toContain('Run pipeline advisor');
+      expect(rendered.container.textContent).toContain('Run workflow advisor');
       expect(rendered.container.textContent).not.toContain('Advisor starting');
       const button = rendered.container.querySelector(
         '[data-testid="pipeline-detail-run-advisor"]',
@@ -681,7 +674,7 @@ describe('Pipeline Advisor activity and detail UI', () => {
     );
 
     try {
-      expect(rendered.container.textContent).toContain('Run pipeline advisor');
+      expect(rendered.container.textContent).toContain('Run workflow advisor');
       expect(rendered.container.textContent).not.toContain('Advisor starting');
     } finally {
       rendered.cleanup();
@@ -694,7 +687,7 @@ describe('Pipeline Advisor activity and detail UI', () => {
     );
 
     try {
-      expect(rendered.container.textContent).toContain('Run pipeline advisor');
+      expect(rendered.container.textContent).toContain('Run workflow advisor');
       const button = rendered.container.querySelector('button');
       expect(button).toBeInstanceOf(HTMLButtonElement);
       expect((button as HTMLButtonElement).disabled).toBe(false);

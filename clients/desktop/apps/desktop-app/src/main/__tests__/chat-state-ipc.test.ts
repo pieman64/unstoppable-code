@@ -1,5 +1,6 @@
 jest.mock('../ipc/register', () => ({ registerIpcHandler: jest.fn() }));
 
+import type { BrowserWindow, WebContents } from 'electron';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import {
   CANOPY_STREAM_DEFINITIONS,
@@ -34,6 +35,27 @@ import {
   validateChatVisualReadRequest,
 } from '../ipc/chat-state';
 import { assertUntrustedChatInput } from '../agent-messaging/untrusted-input';
+
+type TestWebContents = {
+  id?: number;
+  isDestroyed: () => boolean;
+  send: (channel: string, ...args: unknown[]) => void;
+  mainFrame?: { id: string };
+  once?: (event: 'destroyed', next: () => void) => void;
+};
+
+// These Electron doubles implement only the send/lifecycle surface exercised here.
+function asTestWebContents(contents: TestWebContents): WebContents {
+  return contents as unknown as WebContents;
+}
+
+function asTestBrowserWindow(
+  window: Partial<Omit<BrowserWindow, 'webContents'>> & {
+    webContents: WebContents | TestWebContents;
+  },
+): BrowserWindow {
+  return window as unknown as BrowserWindow;
+}
 
 const visualRequest = {
   projectId: 'project-1',
@@ -137,11 +159,27 @@ describe('transcript page boundary validation', () => {
 });
 
 describe('assertUntrustedChatInput', () => {
+  it('rejects a Portal or tool turn override', () => {
+    expect(() =>
+      assertUntrustedChatInput({
+        command: {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'message-1',
+          text: 'text',
+          turnOverride: { version: 1, approvalMode: 'full-access' },
+        },
+      }),
+    ).toThrow('Untrusted chat input cannot contain the "turnOverride" field.');
+  });
+
   it.each([
     ['userMessageSource', { userMessageSource: 'agent' }],
     ['agentSteeringActor', { agentSteeringActor: { kind: 'bot' } }],
     ['agentSent', { agentSent: { sender: { kind: 'project' } } }],
     ['agentSenderProvenance', { agentSenderProvenance: { version: 1 } }],
+    ['turnOverride', { turnOverride: { version: 1 } }],
+    ['automationDispatch', { automationDispatch: { version: 1 } }],
     [
       'agent-sender-context',
       {
@@ -328,14 +366,20 @@ describe('revisioned chat-state IPC adapter', () => {
   const firstSend = jest.fn();
   const secondSend = jest.fn();
   const windows = [
-    {
+    asTestBrowserWindow({
       isDestroyed: (): boolean => false,
-      webContents: { isDestroyed: (): boolean => false, send: firstSend },
-    },
-    {
+      webContents: asTestWebContents({
+        isDestroyed: (): boolean => false,
+        send: firstSend,
+      }),
+    }),
+    asTestBrowserWindow({
       isDestroyed: (): boolean => false,
-      webContents: { isDestroyed: (): boolean => false, send: secondSend },
-    },
+      webContents: asTestWebContents({
+        isDestroyed: (): boolean => false,
+        send: secondSend,
+      }),
+    }),
   ];
   // Each registration runs a reopening event push until it is disposed; a
   // leaked one keeps writing to stderr in later test files on this worker.
@@ -417,7 +461,7 @@ describe('revisioned chat-state IPC adapter', () => {
       clientInstanceId: 'electron-web-contents:42',
       authorityId: 'local-desktop',
       interfaceKind: 'desktop' as const,
-      grants: ['core.chat.write'],
+      grants: ['core.chat.write' as const],
     };
     const resolveCaller = jest.fn(() => caller);
     mockedRegisterIpcHandler.mockClear();
@@ -973,6 +1017,41 @@ describe('revisioned chat-state IPC adapter', () => {
     ).toThrow('payload-size');
   });
 
+  it.each(['queue-1', null])(
+    'accepts a queued-message move before %s',
+    (beforeQueuedMessageId) => {
+      const request = {
+        ...command,
+        command: {
+          type: 'chat.move_queued_message',
+          chatId: 'chat-1',
+          queuedMessageId: 'queue-2',
+          beforeQueuedMessageId,
+        },
+      };
+      expect(validateChatCommandRequest(request)).toEqual(request);
+    },
+  );
+
+  it.each([
+    ['a missing anchor', {}],
+    ['an empty anchor', { beforeQueuedMessageId: '' }],
+    ['a non-string anchor', { beforeQueuedMessageId: 7 }],
+    ['an unexpected field', { beforeQueuedMessageId: null, text: 'x' }],
+  ])('rejects a queued-message move with %s', (_label, fields) => {
+    expect(() =>
+      validateChatCommandRequest({
+        ...command,
+        command: {
+          type: 'chat.move_queued_message',
+          chatId: 'chat-1',
+          queuedMessageId: 'queue-2',
+          ...fields,
+        },
+      }),
+    ).toThrow();
+  });
+
   it('rejects a main-only steering actor from renderer steer commands', () => {
     expect(() =>
       validateChatCommandRequest({
@@ -1074,6 +1153,53 @@ describe('revisioned chat-state IPC adapter', () => {
     }
   });
 
+  it.each([false, true])(
+    'rejects approval mode in a settings patch (main-only fields: %s)',
+    (allowMainOnlyFields) => {
+      expect(() =>
+        validateChatCommandRequest(
+          {
+            ...command,
+            command: {
+              type: 'chat.patch_tab_settings',
+              tabId: 'tab',
+              patch: { approvalMode: 'full-access' },
+            },
+          },
+          { allowMainOnlyFields },
+        ),
+      ).toThrow('unexpected');
+    },
+  );
+
+  it('accepts the dedicated approval-mode command only from main', () => {
+    const request = {
+      ...command,
+      command: {
+        type: 'chat.set_approval_mode',
+        tabId: 'tab',
+        approvalMode: 'full-access',
+      },
+    };
+    expect(() => validateChatCommandRequest(request)).toThrow('main');
+    expect(
+      validateChatCommandRequest(request, { allowMainOnlyFields: true })
+        .command,
+    ).toEqual(request.command);
+    for (const invalid of [
+      { ...request.command, approvalMode: 'root' },
+      { type: 'chat.set_approval_mode', tabId: 'tab' },
+      { ...request.command, patch: { title: 'Extra' } },
+    ]) {
+      expect(() =>
+        validateChatCommandRequest(
+          { ...request, command: invalid },
+          { allowMainOnlyFields: true },
+        ),
+      ).toThrow();
+    }
+  });
+
   it.each([null, 'My chat', 'x'.repeat(256), '😀'.repeat(128)])(
     'accepts a normalized custom title: %s',
     (customTitle) => {
@@ -1115,6 +1241,38 @@ describe('revisioned chat-state IPC adapter', () => {
       }),
     ).toThrow();
   });
+
+  it.each([null, 'raw', 'preview', 'table', 'diff'])(
+    'accepts an explicit file view mode or removal: %s',
+    (fileViewMode) => {
+      expect(() =>
+        validateChatCommandRequest({
+          ...command,
+          command: {
+            type: 'chat.patch_tab_settings',
+            tabId: 'file-1',
+            patch: { fileViewMode },
+          },
+        }),
+      ).not.toThrow();
+    },
+  );
+
+  it.each(['source', '', 42, false, {}, []])(
+    'rejects an unsupported file view mode: %s',
+    (fileViewMode) => {
+      expect(() =>
+        validateChatCommandRequest({
+          ...command,
+          command: {
+            type: 'chat.patch_tab_settings',
+            tabId: 'file-1',
+            patch: { fileViewMode },
+          },
+        }),
+      ).toThrow('command.patch.fileViewMode is unsupported.');
+    },
+  );
 
   it('accepts a persisted diff context without optional repository or rename fields', () => {
     expect(() =>
@@ -1668,6 +1826,30 @@ describe('revisioned chat-state IPC adapter', () => {
         command: { type: 'chat.mark_unread', chatId: 'chat-1' },
       }).command,
     ).toEqual({ type: 'chat.mark_unread', chatId: 'chat-1' });
+  });
+
+  it('keeps the manual flag on an explicit unread mark', () => {
+    expect(
+      validateChatCommandRequest({
+        ...command,
+        command: { type: 'chat.mark_unread', chatId: 'chat-1', manual: true },
+      }).command,
+    ).toEqual({ type: 'chat.mark_unread', chatId: 'chat-1', manual: true });
+  });
+
+  it('rejects an unread mark with an unknown key or a non-true manual flag', () => {
+    expect(() =>
+      validateChatCommandRequest({
+        ...command,
+        command: { type: 'chat.mark_unread', chatId: 'chat-1', extra: true },
+      }),
+    ).toThrow();
+    expect(() =>
+      validateChatCommandRequest({
+        ...command,
+        command: { type: 'chat.mark_unread', chatId: 'chat-1', manual: false },
+      }),
+    ).toThrow();
   });
 
   it('accepts a canonical provider session-id patch', () => {
@@ -2347,10 +2529,13 @@ describe('revisioned chat-state IPC adapter', () => {
     const dispose = registerChatStateHandlers(
       freshPort,
       () => [
-        {
+        asTestBrowserWindow({
           isDestroyed: (): boolean => false,
-          webContents: { isDestroyed: (): boolean => false, send },
-        },
+          webContents: asTestWebContents({
+            isDestroyed: (): boolean => false,
+            send,
+          }),
+        }),
       ],
       {
         dispatcher,
@@ -2509,16 +2694,16 @@ describe('chat-state push cadence and routing', () => {
   const mainSend = jest.fn<void, [string, ...unknown[]]>();
   const advisorSend = jest.fn<void, [string, ...unknown[]]>();
   let mainDestroyed: (() => void) | undefined;
-  const mainContents = {
+  const mainContents = asTestWebContents({
     id: 1,
     isDestroyed: (): boolean => false,
     send: mainSend,
     once: (_event: 'destroyed', next: () => void): void => {
       mainDestroyed = next;
     },
-  };
+  });
   let advisorDestroyed: (() => void) | undefined;
-  const advisorContents = {
+  const advisorContents = asTestWebContents({
     id: 2,
     isDestroyed: (): boolean => false,
     send: advisorSend,
@@ -2526,10 +2711,16 @@ describe('chat-state push cadence and routing', () => {
     once: (_event: 'destroyed', next: () => void): void => {
       advisorDestroyed = next;
     },
-  };
+  });
   const windows = [
-    { isDestroyed: (): boolean => false, webContents: mainContents },
-    { isDestroyed: (): boolean => false, webContents: advisorContents },
+    asTestBrowserWindow({
+      isDestroyed: (): boolean => false,
+      webContents: mainContents,
+    }),
+    asTestBrowserWindow({
+      isDestroyed: (): boolean => false,
+      webContents: advisorContents,
+    }),
   ];
 
   function event(
@@ -2666,6 +2857,7 @@ describe('chat-state push cadence and routing', () => {
       getState: serviceGetState,
       searchTranscript: jest.fn(),
       getTranscriptPage: jest.fn(),
+      readVisual: jest.fn(),
       readToolOutput: jest.fn(),
       command: jest.fn(),
       subscribe: (next): (() => void) => {
@@ -3183,6 +3375,165 @@ describe('phase 09 host-only send fields', () => {
     });
     expect(() => withSetup({ version: 1, startedChat: false })).toThrow();
     expect(() => withSetup({ version: 1, other: true })).toThrow();
+  });
+  describe('pipeline turn override', () => {
+    const pipelineSender = {
+      kind: 'pipeline',
+      executionId: 'exec-1',
+      pipelineId: 'nightly',
+      stepId: 'notify',
+    };
+    const pipelineFields = {
+      agentSent: {
+        sender: pipelineSender,
+        chatTitle: 'Nightly',
+        projectLabel: '',
+      },
+      agentSenderProvenance: {
+        version: 1,
+        capturedAt: '2026-10-26T00:00:00.000Z',
+        acceptedInputId: 'message-1',
+        sender: pipelineSender,
+        owner: { kind: 'personal' },
+      },
+      hiddenContext: { kind: 'agent-sender-context', text: 'trusted' },
+    };
+    const turnOverride = {
+      version: 1,
+      model: 'sonnet',
+      providerType: 'claude',
+      modelConfig: { thinkingLevel: 'high', fastMode: true },
+      planMode: true,
+      approvalMode: 'auto',
+      resetRuntime: true,
+    };
+    const validate = (extra: object, allowMainOnlyFields = true): unknown =>
+      validateChatCommandRequest(
+        { ...command, command: { ...command.command, ...extra } },
+        { allowMainOnlyFields },
+      ).command;
+
+    it('admits an override only with pipeline attribution through main', () => {
+      expect(validate({ ...pipelineFields, turnOverride })).toMatchObject({
+        turnOverride,
+      });
+      expect(() => validate({ turnOverride })).toThrow(
+        'A turn override needs pipeline send attribution.',
+      );
+      // A project or bot sender cannot carry per-turn settings.
+      expect(() => validate({ ...fields, turnOverride })).toThrow(
+        'A turn override needs pipeline send attribution.',
+      );
+    });
+
+    it('rejects an override with unknown keys, another version or bad values', () => {
+      for (const bad of [
+        { ...turnOverride, extra: true },
+        { ...turnOverride, version: 2 },
+        { ...turnOverride, approvalMode: 'yolo' },
+        { ...turnOverride, providerType: 'nope' },
+        { ...turnOverride, resetRuntime: false },
+        { ...turnOverride, modelConfig: { thinkingLevel: 'huge' } },
+      ])
+        expect(() =>
+          validate({ ...pipelineFields, turnOverride: bad }),
+        ).toThrow();
+    });
+
+    it('rejects an override from the renderer', () => {
+      expect(() =>
+        validate({ ...pipelineFields, turnOverride }, false),
+      ).toThrow();
+    });
+  });
+  describe('automation dispatch (CAN-4549)', () => {
+    const automationSender = { kind: 'pipeline', automationId: 'automation-1' };
+    const automationFields = {
+      agentSent: {
+        sender: automationSender,
+        chatTitle: 'Morning report',
+        projectLabel: '',
+      },
+      agentSenderProvenance: {
+        version: 1,
+        capturedAt: '2026-10-28T00:00:00.000Z',
+        acceptedInputId: 'message-1',
+        sender: automationSender,
+        owner: { kind: 'personal' },
+      },
+      hiddenContext: { kind: 'agent-sender-context', text: 'trusted' },
+    };
+    const stepSender = {
+      kind: 'pipeline',
+      executionId: 'exec-1',
+      pipelineId: 'nightly',
+      stepId: 'notify',
+      automationId: 'automation-1',
+    };
+    const automationDispatch = {
+      version: 1,
+      automationName: 'Morning report',
+      executionContext: 'personal',
+      presentation: 'background',
+      packageOverlay: { packageDigest: 'sha256:abc', resources: [] },
+    };
+    const validate = (extra: object, allowMainOnlyFields = true): unknown =>
+      validateChatCommandRequest(
+        { ...command, command: { ...command.command, ...extra } },
+        { allowMainOnlyFields },
+      ).command;
+
+    it('admits the block only with an automation-only sender through main', () => {
+      expect(
+        validate({ ...automationFields, automationDispatch }),
+      ).toMatchObject({ automationDispatch });
+      expect(() => validate({ automationDispatch })).toThrow(
+        'An automation dispatch needs automation send attribution.',
+      );
+      // A project or bot sender cannot carry it.
+      expect(() => validate({ ...fields, automationDispatch })).toThrow(
+        'An automation dispatch needs automation send attribution.',
+      );
+      // A step in a run an automation started carries it (CAN-4551)...
+      const stepFields = (sender: object): object => ({
+        agentSent: { ...automationFields.agentSent, sender },
+        agentSenderProvenance: {
+          ...automationFields.agentSenderProvenance,
+          sender,
+        },
+        hiddenContext: automationFields.hiddenContext,
+        automationDispatch,
+      });
+      expect(validate(stepFields(stepSender))).toMatchObject({
+        automationDispatch,
+      });
+      // ...but not a step a person or an agent started.
+      const { automationId, ...personStep } = stepSender;
+      void automationId;
+      expect(() => validate(stepFields(personStep))).toThrow(
+        'An automation dispatch needs automation send attribution.',
+      );
+    });
+
+    it('rejects unknown keys, another version or bad values', () => {
+      for (const bad of [
+        { ...automationDispatch, extra: true },
+        { ...automationDispatch, version: 2 },
+        { ...automationDispatch, presentation: 'popup' },
+        { ...automationDispatch, automationName: 7 },
+        { ...automationDispatch, executionContext: '' },
+        { ...automationDispatch, packageOverlay: { resources: [] } },
+      ])
+        expect(() =>
+          validate({ ...automationFields, automationDispatch: bad }),
+        ).toThrow();
+    });
+
+    it('rejects the block from the renderer', () => {
+      expect(() =>
+        validate({ ...automationFields, automationDispatch }, false),
+      ).toThrow();
+    });
   });
   it.each(Object.entries(fields))(
     'rejects renderer spoof field %s',

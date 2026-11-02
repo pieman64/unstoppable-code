@@ -96,6 +96,57 @@ function compareWorkCounters(baseline, current, baselineCounts, currentCounts) {
   return { comparisons, unavailable: [...unavailable].sort(), mismatch };
 }
 
+// Treatment arms (CAN-4607, `daemon-treatment-admission.mjs`). Arms of one
+// artifact may differ only by the treatment itself; one arm across builds
+// only by the artifact and its Labs context, whose hash includes the app
+// version. Kept here so the comparator's study closure gains no file.
+const TREATMENT_ARMS = ['off', 'on'];
+const ARM_DIFFERENCES = ['arm', 'enabled', 'choice'];
+const BUILD_DIFFERENCES = ['artifactSha256', 'contextIdentity'];
+const SHA256 = /^[a-f0-9]{64}$/;
+
+/** Treatment metadata never lives in workload `config`. */
+function treatmentMismatches(baseline, current) {
+  const mismatches = [];
+  if (
+    baseline.config?.treatment !== undefined ||
+    current.config?.treatment !== undefined
+  )
+    mismatches.push('treatmentInConfig');
+  const left = baseline.treatment;
+  const right = current.treatment;
+  if (left === undefined && right === undefined) return mismatches;
+  if (!left || !right) return [...mismatches, 'treatment'];
+  for (const side of [left, right]) {
+    if (
+      !TREATMENT_ARMS.includes(side.arm) ||
+      side.enabled !== (side.arm === 'on') ||
+      side.choice !== side.enabled
+    )
+      return [...mismatches, 'treatment.arm'];
+    if (
+      !SHA256.test(side.artifactSha256 ?? '') ||
+      typeof side.brand !== 'string' ||
+      !side.brand
+    )
+      return [...mismatches, 'treatment.artifact'];
+  }
+  // One build compares one Labs context: a context change needs a new artifact.
+  const allowed =
+    left.arm !== right.arm
+      ? ARM_DIFFERENCES
+      : left.artifactSha256 !== right.artifactSha256
+        ? BUILD_DIFFERENCES
+        : [];
+  for (const key of new Set([...Object.keys(left), ...Object.keys(right)]))
+    if (
+      !allowed.includes(key) &&
+      JSON.stringify(left[key]) !== JSON.stringify(right[key])
+    )
+      mismatches.push(`treatment.${key}`);
+  return mismatches;
+}
+
 function requiresStudyValidation(result) {
   const environment = result.environment;
   return (
@@ -135,6 +186,7 @@ function compatibleBaseline(baseline, current, { repeated = false } = {}) {
   if (JSON.stringify(baseline.config) !== JSON.stringify(current.config)) {
     mismatches.push('config');
   }
+  mismatches.push(...treatmentMismatches(baseline, current));
   const environmentKeys = [
     'electronVersion',
     'playwrightVersion',

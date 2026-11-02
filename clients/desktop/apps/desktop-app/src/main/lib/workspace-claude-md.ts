@@ -1,5 +1,8 @@
 import { mkdir, readFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import {
+  readInstructionTarget,
+  writeInstructionTarget,
+} from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import { recordWorkspaceCrudTelemetry } from './desktop-telemetry';
 import {
   resolveProjectInstructionFile,
@@ -18,8 +21,8 @@ interface WorkspaceClaudeMdTarget {
 /**
  * Resolve where a workspace's editable instructions live. For a source-backed
  * workspace this preserves the attached source repo's instruction file; otherwise it is
- * the local per-workspace copy. Shared by the renderer IPC handlers and the
- * browser Remote Control portal adapter so the two surfaces cannot drift.
+ * the local per-workspace copy. This is the trusted host port behind
+ * `core.workspace.instructions.*`; interfaces reach it through the dispatcher.
  */
 async function resolveWorkspaceClaudeMdTarget(
   workspaceId: string,
@@ -41,21 +44,10 @@ async function resolveWorkspaceClaudeMdTarget(
 export async function loadWorkspaceClaudeMd(
   workspaceId: string,
 ): Promise<string> {
-  const { filePath } = await resolveWorkspaceClaudeMdTarget(workspaceId);
-  try {
-    return await readFile(filePath, 'utf8');
-  } catch (error) {
-    // A missing file is the normal "no CLAUDE.md yet" case → empty string. Any
-    // OTHER read error (permissions, I/O) MUST propagate so callers can tell
-    // "empty" apart from "couldn't read". The portal small-RPC get relies on
-    // this: a failed read then fails the command (no synchronous result) instead
-    // of surfacing as a confirmed-empty result the editor could Save back,
-    // overwriting the real file.
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      return '';
-    }
-    throw error;
-  }
+  return readInstructionTarget(
+    await resolveWorkspaceClaudeMdTarget(workspaceId),
+    { readText: (path) => readFile(path, 'utf8') },
+  );
 }
 
 /**
@@ -69,9 +61,16 @@ export async function saveWorkspaceClaudeMd(
   content: string,
   telemetrySource: string,
 ): Promise<void> {
-  const target = await resolveWorkspaceClaudeMdTarget(workspaceId);
-  await mkdir(dirname(target.filePath), { recursive: true });
-  await writeProjectInstructionFile(target, content);
+  await writeInstructionTarget(
+    await resolveWorkspaceClaudeMdTarget(workspaceId),
+    content,
+    {
+      ensureDirectory: async (path) => {
+        await mkdir(path, { recursive: true });
+      },
+      writeTarget: writeProjectInstructionFile,
+    },
+  );
   recordWorkspaceCrudTelemetry({
     action: 'update',
     workspaceId,

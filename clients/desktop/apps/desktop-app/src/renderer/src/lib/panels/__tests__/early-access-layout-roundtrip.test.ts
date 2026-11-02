@@ -1,5 +1,9 @@
 /** @jest-environment jsdom */
-import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
+import { usesSimplifiedMinimalDefaults } from '../minimal-layout-defaults';
+import {
+  setTestLabsFeatures,
+  setTestEarlyAccessFeatures,
+} from '@/test-utils/labsExperiments';
 
 // Early access must never change a user's layout mode or rewrite a layout
 // they already have: on -> off round trips through the real experimental
@@ -24,10 +28,6 @@ import {
   flushPendingPanelLayoutSaves,
   resetPanelLayoutPersistenceBridgeForTests,
 } from '../persistence-bridge';
-import {
-  ensureEarlyAccessMinimalSync,
-  resetEarlyAccessMinimalSyncForTest,
-} from '../early-access-minimal-sync';
 import {
   ensureEarlyAccessPanelRulesSync,
   resetEarlyAccessPanelRulesSyncForTest,
@@ -178,12 +178,10 @@ beforeEach(() => {
   disposeTerminalClient = bindTerminalClient(ipcTerminalClient);
   // Hydrated, early access off.
   setTestEarlyAccessFeatures({ enabled: false, hydrated: true });
-  ensureEarlyAccessMinimalSync();
   ensureEarlyAccessPanelRulesSync();
 });
 
 afterEach(() => {
-  resetEarlyAccessMinimalSyncForTest();
   resetEarlyAccessPanelRulesSyncForTest();
   setFixedSidePanelTabsClosable(false);
   resetExperimentalFeaturesStoreForTest();
@@ -230,6 +228,23 @@ async function relaunch(): Promise<void> {
   await ensureWorktreePanelLayout(KEY);
   await settle();
 }
+
+it('ignores old Minimal layout choices without changing saved layouts or modes', async () => {
+  await ensureWorktreePanelLayout(KEY);
+  const before = shape();
+  const mode = getWorkspaceLayoutMode(KEY);
+  saveWorktreeLayout.mockClear();
+  saveWorktreeMode.mockClear();
+  for (const enabled of [false, true, false]) {
+    setTestLabsFeatures({ 'minimal-layout': enabled });
+    await settle();
+    expect(usesSimplifiedMinimalDefaults(KEY)).toBe(true);
+    expect(shape()).toEqual(before);
+    expect(getWorkspaceLayoutMode(KEY)).toBe(mode);
+    expect(saveWorktreeLayout).not.toHaveBeenCalled();
+    expect(saveWorktreeMode).not.toHaveBeenCalled();
+  }
+});
 
 describe('an Advanced user turning early access on and off', () => {
   it('keeps Advanced and the layout unchanged, in memory and on disk', async () => {

@@ -1,8 +1,13 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
+import {
+  SETTINGS_CARD_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
+  SETTINGS_CARD_TITLE_CLASS,
+  SETTINGS_CARD_SUBTITLE_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 
 import { useEffect, useRef, useState, type JSX } from 'react';
-import { BarChart3, Lock, ShieldCheck } from '@canopy/ui-shared/icons/AppIcons';
+import { Lock } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ConfirmDialog,
   DataSharingFeaturePills,
@@ -10,6 +15,7 @@ import {
   ErrorBanner,
   SettingsFormSkeleton,
   Tooltip,
+  SettingsSelect,
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import {
@@ -170,46 +176,39 @@ function UsageStatsCard({
 
   return (
     <section
-      className="rounded-xl bg-card p-5 shadow-sm"
+      className={SETTINGS_CARD_CLASS}
       data-testid="team-usage-settings-section"
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-          <BarChart3 size={18} />
-        </span>
-        <div className="flex-1">
-          <h2 className="text-m font-semibold fg-primary">Statistics</h2>
-          <p className="mt-1 text-s fg-secondary">
-            Choose the minimum role that can open the statistics dashboard. It
-            only ever shows aggregated counts and cost — never message content.
-          </p>
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2 className={SETTINGS_CARD_TITLE_CLASS}>Statistics</h2>
+        <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
+          Choose the minimum role that can open the statistics dashboard. It
+          only ever shows aggregated counts and cost — never message content.
+        </p>
+      </div>
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <ErrorBanner className="mt-3" error={error} />
 
-          <ErrorBanner className="mt-3" error={error} />
-
-          <label className="mt-3 flex flex-col gap-1 text-s font-medium fg-primary">
-            Who can view usage stats
-            <div className="relative inline-flex max-w-xs">
-              <SettingsControlSelect
-                value={detail.usageStatsMinRole}
-                disabled={saving}
-                data-testid="usage-min-role-select"
-                onChange={(event) => {
-                  const next = event.target.value;
-                  if (isRole(next)) {
-                    void handleChange(next);
-                  }
-                }}
-                fill
-              >
-                {ORGANIZATION_ROLES.map((role) => (
-                  <option key={role} value={role}>
-                    {ROLE_LABELS[role]}
-                  </option>
-                ))}
-              </SettingsControlSelect>
-            </div>
-          </label>
-        </div>
+        <label className="mt-3 flex flex-col gap-1 text-s font-medium fg-primary">
+          Who can view usage stats
+          <div className="relative inline-flex max-w-xs">
+            <SettingsSelect
+              value={detail.usageStatsMinRole}
+              disabled={saving}
+              data-testid="usage-min-role-select"
+              onValueChange={(next) => {
+                if (isRole(next)) {
+                  void handleChange(next);
+                }
+              }}
+              width="fill"
+              options={ORGANIZATION_ROLES.map((role) => ({
+                value: role,
+                label: ROLE_LABELS[role],
+              }))}
+            />
+          </div>
+        </label>
       </div>
     </section>
   );
@@ -484,105 +483,99 @@ function EnforcedSettingsCard({
 
   return (
     <section
-      className="rounded-xl bg-card p-5 shadow-sm"
+      className={SETTINGS_CARD_CLASS}
       data-testid="team-enforced-settings-section"
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-          <ShieldCheck size={18} />
-        </span>
-        <div className="flex-1">
-          <h2 className="text-m font-semibold fg-primary">Data sharing</h2>
-          <p className="mt-1 text-s fg-secondary">
-            {`Choose what agent activity members may share with ${brand.displayName} from this organization's work. Anything turned off here is not shared. Basic usage counts are still collected. Personal work follows each member's own settings.`}
-          </p>
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2 className={SETTINGS_CARD_TITLE_CLASS}>Data sharing</h2>
+        <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
+          {`Choose what agent activity members may share with ${brand.displayName} from this organization's work. Anything turned off here is not shared. Basic usage counts are still collected. Personal work follows each member's own settings.`}
+        </p>
+      </div>
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <ErrorBanner className="mt-3" error={error} />
+        {/*
+         * Its own banner, not the save-error slot: a save clears `error` and
+         * must not take an unresolved plan-read failure with it.
+         */}
+        <ErrorBanner
+          className="mt-3"
+          error={coverageError}
+          onRetry={retryCoverage}
+        />
 
-          <ErrorBanner className="mt-3" error={error} />
-          {/*
-           * Its own banner, not the save-error slot: a save clears `error` and
-           * must not take an unresolved plan-read failure with it.
-           */}
-          <ErrorBanner
-            className="mt-3"
-            error={coverageError}
-            onRetry={retryCoverage}
+        <label className="mt-4 flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            checked={enforcing}
+            /*
+             * Also held until coverage resolves, so the confirm dialog can
+             * never be opened in the one state where it cannot say which
+             * scopes turning this on would force on.
+             */
+            disabled={saving || !coverageResolved}
+            data-testid="enforce-member-data-sharing-checkbox"
+            onChange={(event) => handleMasterChange(event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded"
           />
-
-          <label className="mt-4 flex cursor-pointer items-start gap-3">
-            <input
-              type="checkbox"
-              checked={enforcing}
-              /*
-               * Also held until coverage resolves, so the confirm dialog can
-               * never be opened in the one state where it cannot say which
-               * scopes turning this on would force on.
-               */
-              disabled={saving || !coverageResolved}
-              data-testid="enforce-member-data-sharing-checkbox"
-              onChange={(event) => handleMasterChange(event.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded"
-            />
-            <span className="min-w-0">
-              <span className="block text-s font-medium fg-primary">
-                Enforce member data sharing policy
-              </span>
-              <span className="block text-xs fg-secondary">
-                Members use this organization&apos;s settings instead of their
-                own.
-              </span>
+          <span className="min-w-0">
+            <span className="block text-s font-medium fg-primary">
+              Enforce member data sharing policy
             </span>
-          </label>
-
-          {enforcing && !coverageResolved ? (
-            <div className="mt-4" data-testid="enforced-sync-coverage-pending">
-              <DelayedLoadingPlaceholder>
-                <SettingsFormSkeleton />
-              </DelayedLoadingPlaceholder>
-            </div>
-          ) : null}
-
-          {enforcing && coverageResolved ? (
-            <div className="mt-4 overflow-hidden rounded-lg border">
-              <ul className="flex flex-col gap-4 p-4">
-                {DATA_SHARING_SCOPE_ORDER.map((key) => (
-                  <DataSharingScopeRow
-                    key={key}
-                    scope={key}
-                    value={enforcedSync[key]}
-                    coverage={effectiveCoverage}
-                    busy={saving}
-                    orgId={orgId}
-                    metadataProhibited={metadataProhibited}
-                    onChange={handleScopeChange}
-                  />
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          <label className="mt-4 flex cursor-pointer items-start gap-3">
-            <input
-              type="checkbox"
-              checked={allowExternalSharing}
-              // Independent of plan coverage, so only an in-flight save holds it.
-              disabled={saving}
-              data-testid="allow-external-container-sharing-checkbox"
-              onChange={(event) =>
-                void saveExternalSharing(event.target.checked)
-              }
-              className="mt-0.5 h-4 w-4 rounded"
-            />
-            <span className="min-w-0">
-              <span className="block text-s font-medium fg-primary">
-                Allow sharing outside the organization
-              </span>
-              <span className="block text-xs fg-secondary">
-                Members can share worktrees and Cowork work by email with people
-                outside this organization.
-              </span>
+            <span className="block text-xs fg-secondary">
+              Members use this organization&apos;s settings instead of their
+              own.
             </span>
-          </label>
-        </div>
+          </span>
+        </label>
+
+        {enforcing && !coverageResolved ? (
+          <div className="mt-4" data-testid="enforced-sync-coverage-pending">
+            <DelayedLoadingPlaceholder>
+              <SettingsFormSkeleton />
+            </DelayedLoadingPlaceholder>
+          </div>
+        ) : null}
+
+        {enforcing && coverageResolved ? (
+          <div className="mt-4 overflow-hidden rounded-lg border">
+            <ul className="flex flex-col gap-4 p-4">
+              {DATA_SHARING_SCOPE_ORDER.map((key) => (
+                <DataSharingScopeRow
+                  key={key}
+                  scope={key}
+                  value={enforcedSync[key]}
+                  coverage={effectiveCoverage}
+                  busy={saving}
+                  orgId={orgId}
+                  metadataProhibited={metadataProhibited}
+                  onChange={handleScopeChange}
+                />
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        <label className="mt-4 flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            checked={allowExternalSharing}
+            // Independent of plan coverage, so only an in-flight save holds it.
+            disabled={saving}
+            data-testid="allow-external-container-sharing-checkbox"
+            onChange={(event) => void saveExternalSharing(event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded"
+          />
+          <span className="min-w-0">
+            <span className="block text-s font-medium fg-primary">
+              Allow sharing outside the organization
+            </span>
+            <span className="block text-xs fg-secondary">
+              Members can share worktrees and Cowork work by email with people
+              outside this organization.
+            </span>
+          </span>
+        </label>
       </div>
 
       {pendingConfirm === 'enable-enforcement' ? (
@@ -733,7 +726,7 @@ interface ScopeSwitchProps {
   busy?: boolean;
   onToggle?: () => void;
   /**
-   * Forwarded onto the `<button>`, not the component boundary.
+   * Forwarded onto the switch's button element, not the component boundary.
    *
    * `Tooltip.attachTooltipDescription` recurses through layout `<span>`s and
    * then clones `aria-describedby` onto the first non-span element it reaches.
@@ -751,8 +744,8 @@ interface ScopeSwitchProps {
  *
  * Extracted deliberately: the entire point of rendering a locked scope as a
  * switch is that it sits on the same control axis and reads identically to the
- * rows above it. Two hand-maintained copies of the same `h-6 w-11` /
- * `translate-x-6` geometry is exactly how that stops being true.
+ * rows above it. Two hand-maintained copies of the same `h-4.5 w-8` /
+ * `translate-x-4` geometry is exactly how that stops being true.
  */
 function ScopeSwitch({
   sharing,
@@ -774,21 +767,21 @@ function ScopeSwitch({
       disabled={locked ? undefined : busy}
       data-testid={dataTestId}
       onClick={locked ? undefined : onToggle}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+      className={`relative inline-flex h-4.5 w-8 shrink-0 items-center rounded-full transition-colors ${
         locked
           ? `cursor-not-allowed opacity-60 ${
-              sharing ? 'bg-accent' : 'bg-fg-secondary/30'
+              sharing ? 'bg-accent' : 'bg-fg-quaternary'
             }`
           : `disabled:cursor-not-allowed disabled:opacity-60 ${
               sharing
                 ? 'bg-accent hover:bg-accent/90'
-                : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
+                : 'bg-fg-quaternary hover:bg-fg-tertiary'
             }`
       }`}
     >
       <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
-          sharing ? 'translate-x-6' : 'translate-x-1'
+        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-fg-emphasis transition-transform ${
+          sharing ? 'translate-x-4' : 'translate-x-0.5'
         }`}
       />
     </button>

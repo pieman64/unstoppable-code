@@ -2,10 +2,16 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { openBackgroundDrawer } from './backgroundDrawer.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
-import { injectChatEvent, seedWorktreeChat } from './seeders/index.mjs';
+import {
+  injectChatEvent,
+  publishTurnLifecycle,
+  seedWorktreeChat,
+  turnEventInjector,
+} from './seeders/index.mjs';
 
 // ---------------------------------------------------------------------------
 // Agent Background Processes in the chat's Agent activity section.
@@ -27,10 +33,14 @@ import { injectChatEvent, seedWorktreeChat } from './seeders/index.mjs';
 //       completed section;
 //   (e) a terminal task notification folds it into the collapsed Stopped
 //       group, exactly as the panel card does.
+// A default-background Claude Agent without `run_in_background` also stays in
+// Agent activity while its task is live, then leaves when notified complete.
 //
 // Determinism: no live agents, no network. Every event goes through the E2E
 // chat-event ingress (`__CANOPY_E2E_INGEST_CHAT_EVENT__`), which commits
-// through `ChatStateService` exactly as a real provider session does.
+// through `ChatStateService` exactly as a real provider session does. Each
+// turn's start and root-result end are published as the lifecycle events a
+// Claude session produces, since canonical root turns follow only those.
 //
 // The cases after the first one cover stale-card resolution: the
 // panel and the transcript used to show background processes as `running`
@@ -64,7 +74,7 @@ const TASK_ID = 'bg-task-1';
 const COMMAND = 'npm run dev';
 const TURN_STARTED_AT = Date.parse('2026-09-21T12:00:00.000Z');
 
-test('a turn that launches a background process shows it in Agent activity and the panel card', async () => {
+test('a turn that launches a background process lists it in the drawer and the panel card', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-chat-bg-process-'),
   );
@@ -83,57 +93,24 @@ test('a turn that launches a background process shows it in Agent activity and t
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    // Inspect individual steps without changing the product's Recent default.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
     const panel = window.getByTestId('panel-content-chat');
     await expect(panel).toBeVisible();
 
-    const inject = (data) =>
-      injectChatEvent(electronApp, {
-        projectId: WORKSPACE_ID,
-        worktreeId: WORKTREE_ID,
-        chatId: CHAT_ID,
-        providerType: 'claude',
-        turnUserMessageId: TURN_ID,
-        data: { ...data, canopy_turn_user_message_id: TURN_ID },
-      });
+    const inject = turnInjector(electronApp, CHAT_ID, TURN_ID);
 
     // (a) Open an in-flight turn, then launch the background process from it.
-    await injectChatEvent(electronApp, {
-      projectId: WORKSPACE_ID,
-      worktreeId: WORKTREE_ID,
+    await startTurn(electronApp, panel, {
       chatId: CHAT_ID,
-      data: {
-        type: 'claude_terminal_transcript_sync',
-        importedEventCount: 2,
-        messages: [
-          {
-            id: TURN_ID,
-            role: 'user',
-            timestamp: TURN_STARTED_AT,
-            blocks: [
-              { type: 'text', text: 'Start the dev server in the background.' },
-            ],
-          },
-          {
-            id: `${TURN_ID}-timer`,
-            role: 'system',
-            timestamp: TURN_STARTED_AT + 1_000,
-            blocks: [
-              {
-                type: 'turn_timer',
-                startedAt: TURN_STARTED_AT,
-                completedAt: null,
-              },
-            ],
-          },
-        ],
-      },
+      turnId: TURN_ID,
+      prompt: 'Start the dev server in the background.',
     });
-    await expect(
-      panel.getByText('Start the dev server in the background.'),
-    ).toBeVisible({ timeout: 30_000 });
     await inject({
       type: 'assistant',
       message: {
@@ -154,15 +131,13 @@ test('a turn that launches a background process shows it in Agent activity and t
       },
     });
 
-    const activeSection = panel.getByTestId('agent-activity-active');
-    await expect(activeSection).toBeVisible({ timeout: 30_000 });
-    const activeProcesses = activeSection.getByTestId(
-      'agent-activity-background-process-items',
-    );
-    await expect(activeProcesses).toBeVisible();
-    const activeCard = activeProcesses.getByTestId('activity-bg-item');
-    await expect(activeCard).toHaveCount(1);
-    await expect(activeCard).toContainText(COMMAND);
+    // The composer's background drawer lists it; Agent activity does not.
+    await openBackgroundDrawer(panel);
+    const row = drawerTask(panel, COMMAND);
+    await expect(row).toHaveCount(1);
+    await expect(
+      panel.getByTestId('agent-activity-background-process-items'),
+    ).toHaveCount(0);
 
     // (b) The launch result carries the task id, which is what makes the
     // process stoppable.
@@ -179,8 +154,7 @@ test('a turn that launches a background process shows it in Agent activity and t
         ],
       },
     });
-    await expect(activeCard).toContainText('running');
-    await expect(activeProcesses.getByTestId('activity-bg-stop')).toBeVisible();
+    await expect(row.getByTestId('background-tray-row-stop')).toBeVisible();
 
     // (c) Same process, same store, in the Agent Background Processes card.
     const panelSection = window.getByTestId(
@@ -189,8 +163,8 @@ test('a turn that launches a background process shows it in Agent activity and t
     await panelSection.scrollIntoViewIfNeeded();
     await expect(panelSection).toContainText(COMMAND);
 
-    // (d) A terminal notification folds the live card into the Stopped
-    // group, with the panel card's own collapsed presentation.
+    // (d) A terminal notification takes it out of the drawer; the panel card
+    // folds it into its Stopped group.
     await inject({
       type: 'system',
       subtype: 'task_notification',
@@ -199,28 +173,20 @@ test('a turn that launches a background process shows it in Agent activity and t
       status: 'completed',
       summary: 'Dev server exited.',
     });
-    const stoppedToggle = activeProcesses.getByTestId(
-      'activity-bg-stopped-toggle',
-    );
-    await expect(stoppedToggle).toBeVisible({ timeout: 30_000 });
-    await expect(stoppedToggle).toContainText('Stopped (1)');
-    await stoppedToggle.click();
-    await expect(activeProcesses.getByTestId('activity-bg-item')).toContainText(
+    await expect(row).toHaveCount(0, { timeout: 30_000 });
+    await expect(await expandStopped(panelSection, 1)).toContainText(
       'Dev server exited.',
     );
 
-    // (e) Completing the turn keeps the process on the turn that launched it,
-    // now in that turn's completed Agent activity section.
+    // (e) Completing the turn adds no Agent activity box for it: background
+    // tasks stay out of turn records (background drawer D3).
     await inject({ type: 'result', is_error: false, result: 'Started' });
-    const completedSection = panel
-      .getByTestId('agent-activity-completed')
-      .first();
-    await expect(completedSection).toBeVisible({ timeout: 30_000 });
-    await expect(
-      completedSection
-        .getByTestId('agent-activity-background-process-items')
-        .getByTestId('activity-bg-stopped-toggle'),
-    ).toContainText('Stopped (1)');
+    await expect(panel.getByTestId('turn-timer').first()).toHaveAttribute(
+      'data-state',
+      'completed',
+      { timeout: 30_000 },
+    );
+    await expect(panel.getByTestId('agent-activity-completed')).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -248,6 +214,10 @@ async function openWorktree(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
+  // Inspect individual steps without changing the product's Recent default.
+  await window.evaluate(() =>
+    window.api.savePreferences({ chatDetail: 'detailed' }),
+  );
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_ID);
   const panel = window.getByTestId('panel-content-chat');
@@ -255,20 +225,20 @@ async function openWorktree(electronApp) {
   return { window, app, panel };
 }
 
-/** Inject one provider event into `chatId`, attributed to `turnId`. */
+/**
+ * Inject provider events into `chatId`, attributed to `turnId`. A root result
+ * ends the turn first, in a Claude session's receipt order.
+ */
 function turnInjector(electronApp, chatId, turnId) {
-  return (data) =>
-    injectChatEvent(electronApp, {
-      projectId: WORKSPACE_ID,
-      worktreeId: WORKTREE_ID,
-      chatId,
-      providerType: 'claude',
-      turnUserMessageId: turnId,
-      data: { ...data, canopy_turn_user_message_id: turnId },
-    });
+  return turnEventInjector(electronApp, {
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    chatId,
+    turnUserMessageId: turnId,
+  });
 }
 
-/** Open an in-flight turn the way the first case does, and wait for it. */
+/** Open an in-flight turn on its prompt, and wait for the prompt. */
 async function startTurn(electronApp, panel, { chatId, turnId, prompt }) {
   await injectChatEvent(electronApp, {
     projectId: WORKSPACE_ID,
@@ -276,7 +246,7 @@ async function startTurn(electronApp, panel, { chatId, turnId, prompt }) {
     chatId,
     data: {
       type: 'claude_terminal_transcript_sync',
-      importedEventCount: 2,
+      importedEventCount: 1,
       messages: [
         {
           id: turnId,
@@ -284,22 +254,174 @@ async function startTurn(electronApp, panel, { chatId, turnId, prompt }) {
           timestamp: TURN_STARTED_AT,
           blocks: [{ type: 'text', text: prompt }],
         },
-        {
-          id: `${turnId}-timer`,
-          role: 'system',
-          timestamp: TURN_STARTED_AT + 1_000,
-          blocks: [
-            {
-              type: 'turn_timer',
-              startedAt: TURN_STARTED_AT,
-              completedAt: null,
-            },
-          ],
-        },
       ],
     },
   });
+  await publishTurnLifecycle(electronApp, {
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    chatId,
+    turnUserMessageId: turnId,
+    phase: 'start',
+    atMs: TURN_STARTED_AT,
+  });
   await expect(panel.getByText(prompt)).toBeVisible({ timeout: 30_000 });
+}
+
+/** Run an isolated live default-background agent with one open child tool call. */
+async function withLiveBackgroundAgentChildTool(
+  { chatId, turnId, prefix },
+  run,
+) {
+  const agentToolUseId = `${chatId}-agent-tool-use`;
+  const agentTaskId = `${chatId}-agent-task`;
+  const childToolUseId = `${chatId}-child-read`;
+  const description = `Inspect source for ${chatId}`;
+  const childResult = `Read completed for ${chatId}`;
+  const userDataDir = seedWorkspace(prefix, chatId);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const { window, app, panel } = await openWorktree(electronApp);
+    const inject = turnInjector(electronApp, chatId, turnId);
+    await startTurn(electronApp, panel, {
+      chatId,
+      turnId,
+      prompt: `Run a default-background agent for ${chatId}.`,
+    });
+
+    await inject({
+      type: 'assistant',
+      message: {
+        id: `${agentToolUseId}-message`,
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: agentToolUseId,
+            name: 'Agent',
+            input: {
+              subagent_type: 'Explore',
+              description,
+              prompt: `Inspect the source for ${chatId}.`,
+            },
+          },
+        ],
+      },
+    });
+    await inject({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: agentTaskId,
+      tool_use_id: agentToolUseId,
+      task_type: 'local_agent',
+      is_backgrounded: true,
+      description,
+    });
+    await inject({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: agentToolUseId,
+            content: `Async agent launched successfully. agentId: ${agentTaskId} (This is an internal ID for your use, do not mention it to user.)\nThe agent is working in the background. You will be notified automatically when it completes.`,
+          },
+        ],
+      },
+    });
+    await inject({
+      type: 'assistant',
+      parent_tool_use_id: agentToolUseId,
+      message: {
+        id: `${childToolUseId}-message`,
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: childToolUseId,
+            name: 'Read',
+            input: { file_path: 'README.md' },
+          },
+        ],
+      },
+    });
+
+    // The agent's own block in its turn; once the turn completes the cases
+    // show it again (`showAgentBlock`).
+    const agentBlock = transcriptAgentBlock(panel);
+    await expect(agentBlock).toContainText(description, { timeout: 30_000 });
+    await expandToggle(agentBlock);
+    const childToolCall = readToolCall(agentBlock);
+    await expect(childToolCall).toHaveCount(1);
+    await expect(childToolCall).toHaveAttribute('data-tool-status', 'pending');
+
+    await run({
+      app,
+      window,
+      panel,
+      inject,
+      agentTaskId,
+      agentToolUseId,
+      childToolUseId,
+      childResult,
+      description,
+      agentBlock,
+      childToolCall,
+    });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+}
+
+/**
+ * The live agent's own block in its turn; each case runs one agent. The
+ * composer's background drawer lists the agent as a row; its tool calls stay
+ * in the transcript (background drawer D2).
+ */
+function transcriptAgentBlock(panel) {
+  return panel.getByTestId('agent-block').first();
+}
+
+/**
+ * Shows the agent's own block again once its turn completed and collapsed,
+ * through the turn summary's steps toggle.
+ */
+async function showAgentBlock(panel) {
+  const block = transcriptAgentBlock(panel);
+  if ((await block.count()) === 0) {
+    await panel
+      .getByTestId('sticky-turn-summary')
+      .getByRole('button', { name: /^Agent steps:/ })
+      .click();
+  }
+  await expect(block).toHaveCount(1);
+  return block;
+}
+
+/** A drawer task row (shell, workflow, task) by its text. */
+function drawerTask(panel, text) {
+  return panel.getByTestId('background-tray-row').filter({ hasText: text });
+}
+
+/** A drawer agent row by its text. */
+function drawerAgent(panel, text) {
+  return panel.getByTestId('background-tray-agent').filter({ hasText: text });
+}
+
+/** The child `Read` tool call inside an agent block. */
+function readToolCall(agentBlock) {
+  return agentBlock.locator(
+    '[data-testid="chat-tool-call"][data-tool-name="Read"]',
+  );
+}
+
+/** Expand a collapsible agent block or tool call so its body is in the DOM. */
+async function expandToggle(scope) {
+  const toggle = scope.getByRole('button').first();
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
+    await toggle.click();
+  }
 }
 
 function bashToolUse({ toolUseId, command, background }) {
@@ -427,18 +549,16 @@ test('a foreground task never becomes a background-process card, while a backgro
     await expect(panelCards).toContainText(BACKGROUND_COMMAND);
     await expect(section).not.toContainText(FOREGROUND_COMMAND);
 
-    const turnProcesses = panel
-      .getByTestId('agent-activity-background-process-items')
-      .first();
-    await expect(turnProcesses.getByTestId('activity-bg-item')).toHaveCount(1);
-    await expect(turnProcesses).toContainText(BACKGROUND_COMMAND);
-    await expect(turnProcesses).not.toContainText(FOREGROUND_COMMAND);
+    await openBackgroundDrawer(panel);
+    await expect(panel.getByTestId('background-tray-row')).toHaveCount(1);
+    await expect(drawerTask(panel, BACKGROUND_COMMAND)).toHaveCount(1);
+    await expect(drawerTask(panel, FOREGROUND_COMMAND)).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('a background agent stays in its subagent block, not Agent activity, while the panel still lists it', async () => {
+test('a background agent is one agent row in the drawer, while the panel still lists it', async () => {
   const CHAT = 'background-agent-chat';
   const TURN = 'background-agent-turn';
   const AGENT_TOOL_USE = 'background-agent-1';
@@ -498,23 +618,508 @@ test('a background agent stays in its subagent block, not Agent activity, while 
     await expect(section).toContainText(AGENT_DESCRIPTION);
     await expect(section).toContainText(BASH_COMMAND);
 
-    // Agent activity already shows the agent through its dedicated subagent
-    // row, so it keeps that row and the Bash card but drops the redundant
-    // agent process card.
-    const activeSection = panel.getByTestId('agent-activity-active');
-    await expect(activeSection.getByTestId('agent-block')).toContainText(
-      AGENT_DESCRIPTION,
-    );
-    const turnProcesses = activeSection.getByTestId(
-      'agent-activity-background-process-items',
-    );
-    await expect(turnProcesses.getByTestId('activity-bg-item')).toHaveCount(1);
-    await expect(turnProcesses).toContainText(BASH_COMMAND);
-    await expect(turnProcesses).not.toContainText(AGENT_DESCRIPTION);
-    await expect(activeSection).toContainText('2 items');
+    // The drawer lists the agent once, as its agent row, beside the Bash
+    // task; no task row repeats the agent.
+    await openBackgroundDrawer(panel);
+    await expect(drawerAgent(panel, AGENT_DESCRIPTION)).toHaveCount(1);
+    await expect(panel.getByTestId('background-tray-row')).toHaveCount(1);
+    await expect(drawerTask(panel, BASH_COMMAND)).toHaveCount(1);
+    await expect(drawerTask(panel, AGENT_DESCRIPTION)).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
+});
+
+test('a default-background agent without run_in_background stays in the drawer until its task ends', async () => {
+  const CHAT = 'default-background-agent-chat';
+  const TURN = 'default-background-agent-turn';
+  const AGENT_TOOL_USE = 'default-background-agent-1';
+  const AGENT_TASK = 'default-background-agent-task-1';
+  const AGENT_DESCRIPTION = 'Review the default-background task';
+  const userDataDir = seedWorkspace('canopy-bg-agent-default-', CHAT);
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const { window, panel } = await openWorktree(electronApp);
+    const inject = turnInjector(electronApp, CHAT, TURN);
+    await startTurn(electronApp, panel, {
+      chatId: CHAT,
+      turnId: TURN,
+      prompt: 'Run a default-background agent.',
+    });
+
+    await inject({
+      type: 'assistant',
+      message: {
+        id: `${AGENT_TOOL_USE}-message`,
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: AGENT_TOOL_USE,
+            name: 'Agent',
+            input: {
+              subagent_type: 'Explore',
+              description: AGENT_DESCRIPTION,
+              prompt: 'Inspect the source for this task.',
+            },
+          },
+        ],
+      },
+    });
+    await inject({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: AGENT_TASK,
+      tool_use_id: AGENT_TOOL_USE,
+      task_type: 'local_agent',
+      is_backgrounded: true,
+      description: AGENT_DESCRIPTION,
+    });
+    await inject({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: AGENT_TOOL_USE,
+            content: `Async agent launched successfully. agentId: ${AGENT_TASK} (This is an internal ID for your use, do not mention it to user.)\nThe agent is working in the background. You will be notified automatically when it completes.`,
+          },
+        ],
+      },
+    });
+
+    const section = await backgroundProcessesPanelCard(window);
+    await expect(section.getByTestId('activity-bg-item')).toContainText(
+      AGENT_DESCRIPTION,
+    );
+    await openBackgroundDrawer(panel);
+    const activeAgent = drawerAgent(panel, AGENT_DESCRIPTION);
+    await expect(activeAgent).toBeVisible();
+
+    await inject({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: AGENT_TASK,
+      tool_use_id: AGENT_TOOL_USE,
+      status: 'completed',
+      summary: 'The default-background task completed.',
+    });
+
+    await expect(activeAgent).toHaveCount(0);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Stop targets one native background agent without stopping its sibling', async () => {
+  const CHAT = 'per-task-stop-agents-chat';
+  const TURN = 'per-task-stop-agents-turn';
+  const AGENTS = [
+    {
+      key: 'a',
+      toolUseId: 'per-task-stop-agent-a-tool',
+      taskId: 'per-task-stop-agent-a-task',
+      description: 'Review the first background task',
+    },
+    {
+      key: 'b',
+      toolUseId: 'per-task-stop-agent-b-tool',
+      taskId: 'per-task-stop-agent-b-task',
+      description: 'Review the second background task',
+    },
+  ];
+  const userDataDir = seedWorkspace('canopy-bg-agent-stop-one-', CHAT);
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const { panel } = await openWorktree(electronApp);
+    const inject = turnInjector(electronApp, CHAT, TURN);
+    await startTurn(electronApp, panel, {
+      chatId: CHAT,
+      turnId: TURN,
+      prompt: 'Start two independent background reviews.',
+    });
+
+    for (const agent of AGENTS) {
+      await inject({
+        type: 'assistant',
+        message: {
+          id: `${agent.toolUseId}-message`,
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: agent.toolUseId,
+              name: 'Agent',
+              input: {
+                subagent_type: 'Explore',
+                description: agent.description,
+                prompt: `Inspect the source for ${agent.key}.`,
+              },
+            },
+          ],
+        },
+      });
+      await inject({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: agent.taskId,
+        tool_use_id: agent.toolUseId,
+        task_type: 'local_agent',
+        is_backgrounded: true,
+        description: agent.description,
+      });
+      await inject({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: agent.toolUseId,
+              content: `Async agent launched successfully. agentId: ${agent.taskId}\nThe agent is working in the background. You will be notified automatically when it completes.`,
+            },
+          ],
+        },
+      });
+    }
+
+    await openBackgroundDrawer(panel);
+    const agentRowA = drawerAgent(panel, AGENTS[0].description);
+    const agentRowB = drawerAgent(panel, AGENTS[1].description);
+    await expect(agentRowA).toBeVisible({ timeout: 30_000 });
+    await expect(agentRowB).toBeVisible({ timeout: 30_000 });
+
+    const stopA = agentRowA.getByTestId('background-tray-agent-stop');
+    const stopB = agentRowB.getByTestId('background-tray-agent-stop');
+    await expect(stopA).toBeVisible();
+    await expect(stopA).toHaveAccessibleName('Stop agent');
+    await expect(stopA).toBeEnabled();
+    await expect(stopB).toBeVisible();
+    await expect(stopB).toHaveAccessibleName('Stop agent');
+    await expect(stopB).toBeEnabled();
+    await stopA.click();
+
+    await expect(stopA).toHaveAccessibleName('Stopping…');
+    await expect(stopA).toBeDisabled();
+    await expect(stopB).toBeEnabled();
+    // This seam assertion proves the request reached main's stop path with
+    // A's task id, not that a provider stop call was made.
+    await expect
+      .poll(
+        async () =>
+          await electronApp.evaluate(
+            () => globalThis.__CANOPY_E2E_STOP_TASK_REQUESTS__ ?? [],
+          ),
+      )
+      .toEqual([
+        {
+          projectId: WORKSPACE_ID,
+          worktreeId: WORKTREE_ID,
+          chatId: CHAT,
+          taskId: AGENTS[0].taskId,
+        },
+      ]);
+
+    await inject({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: AGENTS[0].taskId,
+      tool_use_id: AGENTS[0].toolUseId,
+      status: 'stopped',
+      summary: 'The first background task was stopped.',
+    });
+    // A settled agent leaves the drawer; its sibling keeps running.
+    await expect(agentRowA).toHaveCount(0);
+    await expect(agentRowB).toBeVisible();
+    await expect(stopB).toBeVisible();
+    await expect(stopB).toBeEnabled();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Stop on a background workflow stays stopping until its task notification', async () => {
+  const CHAT = 'per-task-stop-workflow-chat';
+  const TURN = 'per-task-stop-workflow-turn';
+  const TASK = 'per-task-stop-workflow-task';
+  const TOOL_USE = 'per-task-stop-workflow-tool';
+  const DESCRIPTION = 'Run the release verification workflow';
+  const userDataDir = seedWorkspace('canopy-bg-workflow-stop-', CHAT);
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const { window, panel } = await openWorktree(electronApp);
+    const inject = turnInjector(electronApp, CHAT, TURN);
+    await startTurn(electronApp, panel, {
+      chatId: CHAT,
+      turnId: TURN,
+      prompt: 'Run the release verification workflow in the background.',
+    });
+    // A process joins the turn whose tool call launched it.
+    await inject({
+      type: 'assistant',
+      message: {
+        id: `${TOOL_USE}-message`,
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: TOOL_USE,
+            name: 'Workflow',
+            input: { workflow: 'release-verification' },
+          },
+        ],
+      },
+    });
+    await inject({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: TASK,
+      tool_use_id: TOOL_USE,
+      task_type: 'local_workflow',
+      is_backgrounded: true,
+      description: DESCRIPTION,
+    });
+
+    await openBackgroundDrawer(panel);
+    const activeCard = drawerTask(panel, DESCRIPTION);
+    await expect(activeCard).toHaveCount(1, { timeout: 30_000 });
+    const panelSection = await backgroundProcessesPanelCard(window);
+    const panelCard = panelSection.getByTestId('activity-bg-item');
+    await expect(panelCard).toHaveCount(1);
+    await expect(panelCard).toContainText(DESCRIPTION);
+
+    const stop = activeCard.getByTestId('background-tray-row-stop');
+    const panelStop = panelCard.getByTestId('activity-bg-stop');
+    await expect(stop).toBeVisible();
+    await expect(panelStop).toBeVisible();
+    await stop.click();
+    await expect(stop).toHaveAccessibleName('Stopping…');
+    await expect(stop).toBeDisabled();
+    await expect(panelStop).toHaveText('Stopping…');
+    await expect(panelStop).toBeDisabled();
+    // This seam assertion proves the request reached main's stop path with
+    // the workflow task id, not that a provider stop call was made.
+    await expect
+      .poll(
+        async () =>
+          await electronApp.evaluate(
+            () => globalThis.__CANOPY_E2E_STOP_TASK_REQUESTS__ ?? [],
+          ),
+      )
+      .toEqual([
+        {
+          projectId: WORKSPACE_ID,
+          worktreeId: WORKTREE_ID,
+          chatId: CHAT,
+          taskId: TASK,
+        },
+      ]);
+
+    await inject({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: TASK,
+      tool_use_id: TOOL_USE,
+      status: 'stopped',
+      summary: 'The release verification workflow was stopped.',
+    });
+    await expect(activeCard).toHaveCount(0, { timeout: 30_000 });
+    const stoppedPanelCards = await expandStopped(panelSection, 1);
+    await expect(stoppedPanelCards).toContainText(
+      'The release verification workflow was stopped.',
+    );
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('a parent result leaves a live background agent child tool call pending', async () => {
+  await withLiveBackgroundAgentChildTool(
+    {
+      chatId: 'parent-result-live-child-chat',
+      turnId: 'parent-result-live-child-turn',
+      prefix: 'canopy-parent-result-live-child-',
+    },
+    async ({ panel, inject, childToolCall }) => {
+      await inject({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'Parent turn finished while the agent continues.',
+      });
+
+      await expandToggle(await showAgentBlock(panel));
+      await expandToggle(childToolCall);
+      await expect(childToolCall).not.toContainText('Cancelled');
+      await expect(childToolCall).toHaveAttribute(
+        'data-tool-status',
+        'pending',
+      );
+    },
+  );
+});
+
+test('a live child tool result arriving after the parent result renders once', async () => {
+  await withLiveBackgroundAgentChildTool(
+    {
+      chatId: 'late-child-result-chat',
+      turnId: 'late-child-result-turn',
+      prefix: 'canopy-late-child-result-',
+    },
+    async ({
+      panel,
+      inject,
+      agentToolUseId,
+      childToolUseId,
+      childResult,
+      childToolCall,
+    }) => {
+      await inject({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'Parent turn finished before the agent child.',
+      });
+      await expandToggle(await showAgentBlock(panel));
+      await expandToggle(childToolCall);
+      await expect(childToolCall).not.toContainText('Cancelled');
+      await expect(childToolCall).toHaveAttribute(
+        'data-tool-status',
+        'pending',
+      );
+      await inject({
+        type: 'user',
+        parent_tool_use_id: agentToolUseId,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: childToolUseId,
+              content: childResult,
+            },
+          ],
+        },
+      });
+
+      await expandToggle(childToolCall);
+      await expect(childToolCall).toHaveAttribute(
+        'data-tool-status',
+        'success',
+      );
+      await expect(childToolCall).toHaveCount(1);
+      await expect(childToolCall).not.toContainText('Cancelled');
+      await expect(
+        childToolCall.getByText(childResult, { exact: true }),
+      ).toHaveCount(1);
+    },
+  );
+});
+
+test('agent task completion closes a child tool call left open by the parent result', async () => {
+  await withLiveBackgroundAgentChildTool(
+    {
+      chatId: 'task-end-open-child-chat',
+      turnId: 'task-end-open-child-turn',
+      prefix: 'canopy-task-end-open-child-',
+    },
+    async ({
+      panel,
+      inject,
+      agentTaskId,
+      agentToolUseId,
+      childToolCall,
+      description,
+    }) => {
+      await inject({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'Parent turn finished before the agent child.',
+      });
+      await expandToggle(await showAgentBlock(panel));
+      await expandToggle(childToolCall);
+      await expect(childToolCall).not.toContainText('Cancelled');
+      await expect(childToolCall).toHaveAttribute(
+        'data-tool-status',
+        'pending',
+      );
+      // Live, the agent is a row in the open drawer.
+      await openBackgroundDrawer(panel);
+      await expect(drawerAgent(panel, description)).toBeVisible();
+      await inject({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: agentTaskId,
+        tool_use_id: agentToolUseId,
+        status: 'completed',
+        summary: 'The agent finished without a child result.',
+      });
+
+      // The ended agent leaves the drawer (here its last item, so the drawer
+      // goes too); its block stays in the completed turn, behind the turn
+      // summary's steps toggle.
+      await expect(drawerAgent(panel, description)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      const turnAgentBlock = await showAgentBlock(panel);
+      await expect(turnAgentBlock).toHaveCount(1);
+      await expandToggle(turnAgentBlock);
+      const closedChild = readToolCall(turnAgentBlock);
+      await expect(closedChild).toHaveCount(1);
+      await expect(closedChild).toHaveAttribute('data-tool-status', 'success');
+      await expandToggle(closedChild);
+      await expect(closedChild).toContainText('Cancelled');
+    },
+  );
+});
+
+test('reloading after a parent result keeps a live background agent child tool call pending', async () => {
+  await withLiveBackgroundAgentChildTool(
+    {
+      chatId: 'reload-live-child-chat',
+      turnId: 'reload-live-child-turn',
+      prefix: 'canopy-reload-live-child-',
+    },
+    async ({ app, window, panel, inject, description }) => {
+      await inject({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'Parent turn finished while the agent continues.',
+      });
+
+      await window.reload();
+      await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+
+      // The drawer still lists the agent after the reload.
+      await openBackgroundDrawer(panel);
+      await expect(drawerAgent(panel, description)).toHaveCount(1, {
+        timeout: 30_000,
+      });
+      const agentBlock = await showAgentBlock(panel);
+      await expect(agentBlock).toContainText(description);
+      await expandToggle(agentBlock);
+      const childToolCall = readToolCall(agentBlock);
+      await expect(childToolCall).toHaveCount(1);
+      await expandToggle(childToolCall);
+      await expect(childToolCall).not.toContainText('Cancelled');
+      await expect(childToolCall).toHaveAttribute(
+        'data-tool-status',
+        'pending',
+      );
+    },
+  );
 });
 
 test('a running background process folds into Stopped when its chat session ends', async () => {
@@ -562,6 +1167,9 @@ test('a running background process folds into Stopped when its chat session ends
       'running',
     );
     await expect(section.getByTestId('activity-bg-stop')).toBeVisible();
+    // Live, it is a row in the open drawer.
+    await openBackgroundDrawer(panel);
+    await expect(drawerTask(panel, COMMAND_TEXT)).toBeVisible();
 
     // The exact notification main mints for every task still live when a
     // chat's CLI process goes away (`buildSessionEndedTaskNotification`).
@@ -587,12 +1195,8 @@ test('a running background process folds into Stopped when its chat session ends
     await expect(stoppedCards).toContainText('stopped');
     await expect(section.getByTestId('activity-bg-stop')).toHaveCount(0);
 
-    const turnProcesses = panel
-      .getByTestId('agent-activity-background-process-items')
-      .first();
-    await expect(await expandStopped(turnProcesses, 1)).toContainText(
-      'Stopped when the chat session ended',
-    );
+    // Settled, it leaves the drawer.
+    await expect(drawerTask(panel, COMMAND_TEXT)).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -829,7 +1433,7 @@ test('Stop on a process whose chat has no provider session resolves and moves th
 // shared ui-app BackgroundTasksList with its shared detail modal, driven by
 // the same desktop host actions. Opening the modal from the transcript and
 // stopping from inside it must settle the card on both surfaces.
-test('Stop from the detail modal opened in Agent activity settles the card in both lists', async () => {
+test('Stop from the detail modal opened from the drawer settles the task in both lists', async () => {
   const CHAT = 'bg-modal-stop-chat';
   const TURN = 'bg-modal-stop-turn';
   const TOOL_USE = 'bg-modal-stop-bash-1';
@@ -862,17 +1466,20 @@ test('Stop from the detail modal opened in Agent activity settles the card in bo
       }),
     );
 
-    const activity = panel
-      .getByTestId('agent-activity-active')
-      .getByTestId('agent-activity-background-process-items');
-    const transcriptCard = activity.getByTestId('activity-bg-item');
-    await expect(transcriptCard).toContainText('running', { timeout: 30_000 });
+    await openBackgroundDrawer(panel);
+    const drawerRow = drawerTask(panel, COMMAND_TEXT);
+    await expect(drawerRow).toHaveCount(1, { timeout: 30_000 });
     const section = await backgroundProcessesPanelCard(window);
     await expect(section.getByTestId('activity-bg-item')).toContainText(
       COMMAND_TEXT,
     );
 
-    await transcriptCard.click();
+    // The row's inspector opens the task's detail modal.
+    await drawerRow.getByTestId('background-tray-row-toggle').click();
+    await panel
+      .getByTestId('background-tray-inspector')
+      .getByTestId('background-tray-inspector-open')
+      .click();
     const modal = window.getByTestId('bg-process-detail-modal');
     await expect(modal).toBeVisible({ timeout: 30_000 });
     await expect(modal).toContainText(COMMAND_TEXT);
@@ -888,13 +1495,12 @@ test('Stop from the detail modal opened in Agent activity settles the card in bo
     await window.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
 
-    // Both lists fold the stopped card away from their active cards.
-    for (const scope of [activity, section]) {
-      const stopped = await expandStopped(scope, 1);
-      await expect(stopped).toContainText('stopped');
-      await expect(stopped).toContainText(COMMAND_TEXT);
-      await expect(scope.getByTestId('activity-bg-stop')).toHaveCount(0);
-    }
+    // The drawer drops the stopped task; the panel folds it into Stopped.
+    await expect(drawerRow).toHaveCount(0);
+    const stopped = await expandStopped(section, 1);
+    await expect(stopped).toContainText('stopped');
+    await expect(stopped).toContainText(COMMAND_TEXT);
+    await expect(section.getByTestId('activity-bg-stop')).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -950,9 +1556,14 @@ test('a background process the session still reports live survives its turn comp
     // Completing the turn runs the full resolution pass. A live task must come
     // out of it untouched — the stale-card repair must not reap real work.
     await inject({ type: 'result', is_error: false, result: 'Watching' });
-    await expect(
-      panel.getByTestId('agent-activity-completed').first(),
-    ).toBeVisible({ timeout: 30_000 });
+    await expect(panel.getByTestId('turn-timer').first()).toHaveAttribute(
+      'data-state',
+      'completed',
+      { timeout: 30_000 },
+    );
+    // The drawer still lists it after the turn.
+    await openBackgroundDrawer(panel);
+    await expect(drawerTask(panel, COMMAND_TEXT)).toHaveCount(1);
 
     // The resolution pass is asynchronous (an audit-trail read plus the
     // live-task IPC), so re-assert after it has had time to land: passing

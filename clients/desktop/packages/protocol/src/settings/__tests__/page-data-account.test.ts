@@ -87,6 +87,7 @@ const FIXTURES: Record<AccountPageDataKind, { kind: string; data: unknown }> = {
   },
   'account.notifications': { kind: 'account.notifications', data: {} },
   'account.labs': { kind: 'account.labs', data: {} },
+  'account.appearance': { kind: 'account.appearance', data: {} },
   'account.integrations': {
     kind: 'account.integrations',
     data: { userId: 'user_1' },
@@ -176,6 +177,7 @@ const MALFORMED: Record<AccountPageDataKind, unknown> = {
   },
   'account.notifications': { kind: 'account.notifications', data: null },
   'account.labs': { kind: 'account.labs', data: null },
+  'account.appearance': { kind: 'account.appearance', data: null },
   'account.integrations': {
     kind: 'account.integrations',
     data: { userId: '' },

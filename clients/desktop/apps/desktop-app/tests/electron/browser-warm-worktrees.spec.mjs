@@ -1,4 +1,4 @@
-// Exercises the early-access native Browser view lifecycle through real
+// Exercises the graduated native Browser view lifecycle through real
 // worktree navigation. Pages come from an in-test loopback server.
 import { execFileSync } from 'node:child_process';
 import http from 'node:http';
@@ -129,7 +129,7 @@ async function openPage(window, origin, id) {
   const before = await getLayout(window);
   const groupId = collectLeaves(before.root)[0]?.groupId;
   expect(groupId).toBeTruthy();
-  // Early access puts the add-panel menu on the tab row's + button.
+  // The add-panel menu lives on the tab row's + button.
   await window.getByTestId(`panel-add-tab-${groupId}`).click();
   await window.getByTestId('panel-add-menu-item-browser').click();
   const layout = await getLayout(window);
@@ -146,7 +146,7 @@ async function openPage(window, origin, id) {
   await input.press('Enter');
 }
 
-test('early access preserves warm native views, evicts the oldest, and flushes on disable', async () => {
+test('preserves warm native views, evicts the oldest, and ignores the legacy preference', async () => {
   test.setTimeout(240_000);
   const server = await pageServer();
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-warm-views-'));
@@ -202,16 +202,26 @@ test('early access preserves warm native views, evicts the oldest, and flushes o
       .poll(() => nativeView(electronApp, `${server.origin}/${y}`))
       .toBeNull();
 
+    const retained = [ids[0], ids[2], ids[3]];
+    const retainedRequests = new Map();
+    for (const id of retained) {
+      await expect
+        .poll(() => nativeView(electronApp, `${server.origin}/${id}`))
+        .toMatchObject({ id: originals.get(id), visible: false });
+      retainedRequests.set(id, server.requests.get(`/${id}`));
+    }
     await window.evaluate(() =>
       window.api.experiments.setChoice({
         experimentId: 'early-access',
         enabled: false,
       }),
     );
-    for (const id of [ids[0], ids[2], ids[3]]) {
+    // Changing the legacy choice must preserve every warm native view.
+    for (const id of retained) {
       await expect
         .poll(() => nativeView(electronApp, `${server.origin}/${id}`))
-        .toBeNull();
+        .toMatchObject({ id: originals.get(id), visible: false });
+      expect(server.requests.get(`/${id}`)).toBe(retainedRequests.get(id));
     }
     await expect
       .poll(() => nativeView(electronApp, `${server.origin}/${ids[4]}`))

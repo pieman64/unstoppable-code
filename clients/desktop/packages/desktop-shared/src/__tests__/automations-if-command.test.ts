@@ -82,12 +82,13 @@ describe('automation If Command helpers', () => {
       ],
     };
     const result = interpolateAutomationActionIfCommandOutput(action, 'X');
-    expect(result.prompt).toBe('Got: X Read src/a.ts');
-    if (result.type === 'worktree_prompt') {
-      expect(result.promptReferences?.[0]?.textStart).toBe(
-        result.prompt.indexOf('src/a.ts'),
-      );
+    if (result.type !== 'worktree_prompt') {
+      throw new Error('Expected a worktree prompt action');
     }
+    expect(result.prompt).toBe('Got: X Read src/a.ts');
+    expect(result.promptReferences?.[0]?.textStart).toBe(
+      result.prompt.indexOf('src/a.ts'),
+    );
   });
 
   it('validates the If Command string', () => {

@@ -25,6 +25,7 @@ import {
   ScheduleIcon,
   SkillIcon,
 } from '@canopy/ui-shared/icons';
+import { formatDateTime } from '@canopy/ui-shared/lib';
 import {
   PIPELINE_EXECUTION_SCOPE_BADGE_CLASS,
   PIPELINE_EXECUTION_SCOPE_META,
@@ -96,12 +97,6 @@ interface CapabilityTooltipProps {
 
 interface AgentArtifactTooltipProps {
   receipt: CapabilityTileReceipt;
-}
-
-/** Local wall-clock rendering for the ISO timestamps carried on receipts. */
-function formatTimestamp(value: string): string {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
 function Badge({
@@ -316,7 +311,7 @@ function AutomationTooltip({ receipt }: AutomationTooltipProps): JSX.Element {
           <span className="min-w-0 break-words">{receipt.schedule}</span>
         </Fact>
         {receipt.nextRunAt ? (
-          <Fact label="Next run">{formatTimestamp(receipt.nextRunAt)}</Fact>
+          <Fact label="Next run">{formatDateTime(receipt.nextRunAt)}</Fact>
         ) : null}
         <Fact label="Runs">
           <span aria-hidden="true" className="fg-secondary">
@@ -365,9 +360,9 @@ function CapabilityTooltip({ receipt }: CapabilityTooltipProps): JSX.Element {
         {receipt.kind === 'automation_run' ? (
           <>
             <Fact label="Trigger">{RUN_TRIGGER_LABELS[receipt.trigger]}</Fact>
-            <Fact label="Started">{formatTimestamp(receipt.startedAt)}</Fact>
+            <Fact label="Started">{formatDateTime(receipt.startedAt)}</Fact>
             {receipt.completedAt ? (
-              <Fact label="Ended">{formatTimestamp(receipt.completedAt)}</Fact>
+              <Fact label="Ended">{formatDateTime(receipt.completedAt)}</Fact>
             ) : null}
           </>
         ) : null}

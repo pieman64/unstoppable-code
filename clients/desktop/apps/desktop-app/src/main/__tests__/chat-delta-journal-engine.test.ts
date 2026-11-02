@@ -19,7 +19,7 @@ import fs, {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { basename, join } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
 import type { ChatCoreMutation } from '@canopy/desktop-shared/types';
 import * as workCounters from '@canopy/desktop-shared/node/work-counters';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
@@ -28,9 +28,42 @@ import {
   ChatDeltaJournalIntegrityError,
   ChatStorageNewerFormatError,
   DELTA_JOURNAL_FILE_NAME,
+  DELTA_JOURNAL_V2_FILE_NAME,
+  DELTA_JOURNAL_V2_GENESIS_DIGEST,
   encodeDeltaJournalFrame,
 } from '../lib/chat-delta-journal/format';
 import { readDeltaJournal } from '../lib/chat-delta-journal/replay';
+
+it('selects the format-4 journal without touching a stale v1 journal', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'format4-journal-select-'));
+  try {
+    const segment = encodeDeltaJournalFrame({
+      type: 'segment',
+      v: 2,
+      scopeId: 'scope',
+      baseRevision: 0,
+      prev: DELTA_JOURNAL_V2_GENESIS_DIGEST,
+    });
+    await writeFile(join(directory, DELTA_JOURNAL_V2_FILE_NAME), segment.frame);
+    await writeFile(
+      join(directory, DELTA_JOURNAL_FILE_NAME),
+      Buffer.from('stale'),
+    );
+    const result = await readDeltaJournal(directory, 'scope', {
+      version: 4,
+      scopeId: 'scope',
+      journal: 'chat-delta-journal-v2',
+      migrationId: 'test',
+      sourceRevision: 0,
+      sourceDigest: '0'.repeat(64),
+      cleanupComplete: true,
+    });
+    expect(result.segment.v).toBe(2);
+    expect(result.fileBytes).toBe(segment.frame.length);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 import { openReplayedChatScope } from '../lib/chat-delta-journal/reader';
 import {
   ChatDeltaJournalWriter,
@@ -188,7 +221,6 @@ describe('chat delta journal engine', () => {
         ? {
             commandResult: {
               commandId: `command-${mutationId}`,
-              revision: 0,
               outcome: 'applied' as const,
               entityId: 'sibling',
             },
@@ -666,18 +698,21 @@ describe('chat delta journal engine', () => {
   it('publishes and syncs artifacts before the record that references them', async () => {
     const { store, writer } = await simpleWriter();
     const events: string[] = [];
+    // Separator-free names keep the event order checks valid on Windows.
+    const storePath = (path: string): string =>
+      `/${relative(store.directory, path).split(sep).join('/')}`;
     const sync = workCounters.recordChatStorageFileSync;
     jest
       .spyOn(workCounters, 'recordChatStorageFileSync')
       .mockImplementation((path) => {
-        events.push(`sync ${path.slice(store.directory.length)}`);
+        events.push(`sync ${storePath(path)}`);
         sync(path);
       });
     const write = workCounters.recordChatStorageFileWrite;
     jest
       .spyOn(workCounters, 'recordChatStorageFileWrite')
       .mockImplementation((path, bytes, serialized) => {
-        events.push(`write ${path.slice(store.directory.length)}`);
+        events.push(`write ${storePath(path)}`);
         write(path, bytes, serialized);
       });
     await writer.commit({
@@ -878,10 +913,11 @@ describe('chat delta journal engine', () => {
     expect(writer.revision).toBe(0);
   });
 
-  it('keeps directory sync a no-op on Windows with file sync as the boundary', async () => {
+  it('flushes directories on Windows through read-write handles, after file sync', async () => {
     const { store } = await simpleWriter();
     const platform = Object.getOwnPropertyDescriptor(process, 'platform');
-    const synced = enforceWindowsFileSync();
+    const syncedDirectories: string[] = [];
+    const synced = enforceWindowsFileSync(syncedDirectories);
     const directories = jest.spyOn(
       workCounters,
       'recordChatStorageDirectorySync',
@@ -892,7 +928,9 @@ describe('chat delta journal engine', () => {
       await writer.commit(appendInput(writer, 'a'));
       await writer.commit(appendInput(writer, 'b'));
       await writer.checkpoint();
-      expect(directories).not.toHaveBeenCalled();
+      // CAN-5151 D1: the folder flush runs, no longer a Windows no-op.
+      expect(directories).toHaveBeenCalled();
+      expect(syncedDirectories).toContain(store.directory);
       expect(synced).toContain(join(store.directory, DELTA_JOURNAL_FILE_NAME));
     } finally {
       if (platform) Object.defineProperty(process, 'platform', platform);
@@ -940,7 +978,7 @@ describe('chat delta journal engine', () => {
       // then publishes revision 2 before it reads the archive index.
       const archive = interceptIndexReads(
         join(store.directory, 'archive-index.json'),
-        () => writer.checkpoint(),
+        () => writer.checkpoint().then(() => undefined),
       );
       const indexes = await loader.indexes();
       expect(archive.reads()).toBe(2);

@@ -64,16 +64,22 @@ describe('SidebarScrollArea', () => {
     expect(GLOBALS_SOURCE).toContain(
       '[data-sidebar-scrollbar],\n[data-overlay-scrollbar] {\n  transition: opacity 200ms ease-out !important;',
     );
+    // The thumb grows by `scale` from its right edge, never by `width`, so
+    // the motion runs on the compositor.
     expect(GLOBALS_SOURCE).toContain(
-      'width 250ms ease-out,\n    background-color 250ms ease-out !important;',
+      'transform-origin: right center;\n  transition:\n    scale 250ms ease-out,\n    background-color 250ms ease-out !important;',
+    );
+    expect(TOKENS_SOURCE).toContain(
+      '[data-overlay-scrollbar-thumb] {\n  transform-origin: right center;\n  transition:\n    scale 250ms ease-out,\n    background-color 250ms ease-out;',
     );
     expect(GLOBALS_SOURCE).toContain(
       '[data-sidebar-scrollbar]:hover [data-sidebar-scrollbar-thumb]',
     );
-    // Hover widens the thumb beyond its 6px resting width and darkens the
-    // fill two token steps, fg-quaternary → fg-secondary, at full opacity.
+    // Hover widens the thumb from its 6px resting width to 8px (scaled, with
+    // the corner narrowed across so it lands on a true 4px round end) and
+    // darkens the fill two token steps, fg-quaternary → fg-secondary.
     expect(GLOBALS_SOURCE).toContain(
-      '[data-sidebar-scrollbar]:hover [data-sidebar-scrollbar-thumb],\n[data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {\n  width: 8px;\n  background-color: var(--fg-secondary);',
+      '[data-sidebar-scrollbar]:hover [data-sidebar-scrollbar-thumb],\n[data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {\n  scale: calc(8 / 6) 1;\n  border-radius: 3px / 4px;\n  background-color: var(--fg-secondary);',
     );
   });
 
@@ -84,7 +90,10 @@ describe('SidebarScrollArea', () => {
       /:root \{[\s\S]*?--canopy-scrollbar-thumb-inset: 2px;[\s\S]*?--canopy-scrollbar-thumb-size: 6px;[\s\S]*?--canopy-scrollbar-rail-size: 10px;/,
     );
     expect(GLOBALS_SOURCE).toContain(
-      '[data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {\n  width: 8px;',
+      '[data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {\n  scale: calc(8 / 6) 1;',
+    );
+    expect(TOKENS_SOURCE).toContain(
+      '[data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {\n  scale: calc(8 / 6) 1;',
     );
 
     // Always mode: match the platform's own track width rather than a magic
@@ -95,7 +104,7 @@ describe('SidebarScrollArea', () => {
     // ...and no hover growth there: native always-visible scrollbars keep a
     // fixed width.
     expect(GLOBALS_SOURCE).toMatch(
-      /:root\[data-scrollbars='always'\][\s\S]*?width: var\(--canopy-scrollbar-thumb-size\);/,
+      /:root\[data-scrollbars='always'\][\s\S]*?\[data-overlay-scrollbar-thumb\] \{\n {2}scale: none;/,
     );
 
     // Both scrollbar families read the same variables.
@@ -598,6 +607,8 @@ describe('SidebarScrollArea', () => {
     let nextFrameId = 1;
     const frameCallbacks = new Map<number, (timestamp: number) => void>();
     let scheduledFrame: ((timestamp: number) => void) | null = null;
+    const getScheduledFrame = (): ((timestamp: number) => void) | null =>
+      scheduledFrame;
     const requestAnimationFrame = jest
       .spyOn(window, 'requestAnimationFrame')
       .mockImplementation((callback: (timestamp: number) => void) => {
@@ -640,7 +651,7 @@ describe('SidebarScrollArea', () => {
         resizeObserverCallback,
       );
 
-      const initialFrame = scheduledFrame;
+      const initialFrame = getScheduledFrame();
       if (!initialFrame) throw new Error('Expected an initial layout frame');
       act(() => {
         frameCallbacks.clear();
@@ -648,7 +659,7 @@ describe('SidebarScrollArea', () => {
       });
       expect(onViewportLayout).not.toHaveBeenCalled();
       expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
-      const initialHostFrame = scheduledFrame;
+      const initialHostFrame = getScheduledFrame();
       if (!initialHostFrame || initialHostFrame === initialFrame) {
         throw new Error('Expected host layout in a follow-up frame');
       }
@@ -667,7 +678,7 @@ describe('SidebarScrollArea', () => {
 
       expect(requestAnimationFrame).toHaveBeenCalledTimes(3);
       expect(onViewportLayout).not.toHaveBeenCalled();
-      const mutationFrame = scheduledFrame;
+      const mutationFrame = getScheduledFrame();
       if (!mutationFrame) {
         throw new Error('Expected a scheduled mutation frame');
       }
@@ -701,7 +712,7 @@ describe('SidebarScrollArea', () => {
           registeredMutationObserver,
         );
       });
-      const selectionMutationFrame = scheduledFrame;
+      const selectionMutationFrame = getScheduledFrame();
       if (!selectionMutationFrame) {
         throw new Error('Expected a scheduled selection-mutation frame');
       }
@@ -710,7 +721,7 @@ describe('SidebarScrollArea', () => {
         selectionMutationFrame(performance.now());
       });
       expect(onViewportLayout).not.toHaveBeenCalled();
-      const selectionHostFrame = scheduledFrame;
+      const selectionHostFrame = getScheduledFrame();
       if (
         !selectionHostFrame ||
         selectionHostFrame === selectionMutationFrame
@@ -740,12 +751,12 @@ describe('SidebarScrollArea', () => {
           registeredMutationObserver,
         ),
       );
-      const membershipFrame = scheduledFrame;
+      const membershipFrame = getScheduledFrame();
       if (!membershipFrame) throw new Error('Expected membership layout frame');
       act(() => {
         membershipFrame(performance.now());
       });
-      const membershipHostFrame = scheduledFrame;
+      const membershipHostFrame = getScheduledFrame();
       if (!membershipHostFrame || membershipHostFrame === membershipFrame) {
         throw new Error(
           'Expected headerless membership to invalidate host geometry',
@@ -760,7 +771,7 @@ describe('SidebarScrollArea', () => {
       act(() => {
         resizeObserverCallback?.([], registeredResizeObserver);
       });
-      const resizeFrame = scheduledFrame;
+      const resizeFrame = getScheduledFrame();
       if (!resizeFrame) throw new Error('Expected a scheduled resize frame');
       act(() => {
         frameCallbacks.clear();
@@ -768,7 +779,7 @@ describe('SidebarScrollArea', () => {
       });
 
       expect(onViewportLayout).not.toHaveBeenCalled();
-      const resizeHostFrame = scheduledFrame;
+      const resizeHostFrame = getScheduledFrame();
       if (!resizeHostFrame || resizeHostFrame === resizeFrame) {
         throw new Error('Expected resized host layout in a follow-up frame');
       }

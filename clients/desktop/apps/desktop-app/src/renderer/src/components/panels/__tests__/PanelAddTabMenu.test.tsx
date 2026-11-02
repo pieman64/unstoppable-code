@@ -32,6 +32,7 @@ import { useTerminalStore } from '@/stores/terminalStore';
 import { useWorkspaceLayoutModeStore } from '@/stores/workspaceLayoutModeStore';
 import { PanelAddTabMenu } from '../PanelAddTabMenu';
 import { listAddablePanels } from '@/lib/panels/registry';
+import { PIPELINE_EXECUTION_PANEL_TITLE } from '@/lib/panels/pipeline-execution-panel-identity';
 import { __resetTerminalShellProfilesForTests } from '@/lib/terminalShellProfiles';
 import * as terminalFocusIntent from '@/lib/terminal-focus-intent';
 import { bindTerminalClient } from '@canopy/app-state/terminal';
@@ -241,7 +242,7 @@ function makeChatTab(overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
@@ -517,6 +518,9 @@ describe('PanelAddTabMenu', () => {
         menuElement().querySelectorAll('[role="menuitem"]'),
         (item) => item.textContent?.trim() ?? '',
       );
+      // CAN-4651: the run panel is titled Workflow run; the old name must
+      // not come back either.
+      expect(labels).not.toContain(PIPELINE_EXECUTION_PANEL_TITLE);
       expect(labels).not.toContain('Pipeline run');
     }
 

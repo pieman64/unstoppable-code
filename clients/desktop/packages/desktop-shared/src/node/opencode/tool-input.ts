@@ -50,7 +50,9 @@ export function openCodeNativeOperations(
     if (!paths.length || paths.length > 512) return undefined;
     return Array.from(new Set(paths)).map((file_path) => ({
       tool: 'Write',
-      input: { file_path, content: '' },
+      // A patch grants mutation of this target; it supplies no Write content.
+      // Keep it path-only rather than inventing an empty proposed file.
+      input: { file_path },
       mutates: true,
     }));
   }

@@ -3,13 +3,15 @@
 import { useCallback, useId, useRef, useState, type JSX } from 'react';
 import {
   ChatComposerToolbarChip,
+  PickerTrigger,
+  Tooltip,
   FLOATING_PICKER_GAP,
   FloatingMenu,
+  DirectoryPickerOptionRow,
 } from '@canopy/ui-shared';
 import {
   ChevronDownMediumIcon,
   FolderIcon,
-  CheckIcon as AppCatalogCheckIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   WORKSPACE_ROOT_REPO_ID,
@@ -31,6 +33,8 @@ export interface DirectoryPickerOption {
 }
 
 interface PortalDirectoryPickerProps {
+  statusRow?: boolean;
+  compact?: boolean;
   /**
    * Currently selected repo id. `undefined` is equivalent to
    * {@link WORKSPACE_ROOT_REPO_ID} and renders as "Project root".
@@ -63,6 +67,8 @@ export function PortalDirectoryPicker({
   childRepos,
   onSelect,
   disabled = false,
+  statusRow = false,
+  compact = false,
 }: PortalDirectoryPickerProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -98,26 +104,49 @@ export function PortalDirectoryPicker({
   }
 
   return (
-    <div className="relative shrink-0">
-      <ChatComposerToolbarChip
-        variant="capsule"
-        buttonRef={triggerRef}
-        onClick={disabled ? undefined : (): void => setOpen((prev) => !prev)}
-        disabled={disabled}
-        icon={<FolderIcon width={16} height={16} />}
-        label={currentName}
-        trailing={
-          disabled ? undefined : (
-            <ChevronDownMediumIcon width={12} height={12} />
-          )
-        }
-        ariaLabel={`Select working directory, current ${currentName}`}
-        ariaHasPopup={disabled ? undefined : 'listbox'}
-        ariaExpanded={disabled ? undefined : open}
-        ariaControls={!disabled && open ? menuId : undefined}
-        title={disabled ? SESSION_LOCKED_TOOLTIP : 'Working directory'}
-        dataTestId="portal-chat-directory-picker"
-      />
+    <div className={statusRow ? 'relative min-w-0' : 'relative shrink-0'}>
+      {statusRow ? (
+        <Tooltip
+          label={disabled ? SESSION_LOCKED_TOOLTIP : 'Working directory'}
+          allowShrink
+        >
+          <PickerTrigger
+            ref={triggerRef}
+            disabled={disabled}
+            onClick={(): void => setOpen((prev) => !prev)}
+            className="max-w-full"
+            textTrail
+            aria-label={`Select working directory, current ${currentName}`}
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-controls={open ? menuId : undefined}
+            data-testid="portal-chat-directory-picker"
+          >
+            {compact ? null : <FolderIcon width={16} height={16} />}
+            <span className="min-w-0 truncate fg-primary">{currentName}</span>
+          </PickerTrigger>
+        </Tooltip>
+      ) : (
+        <ChatComposerToolbarChip
+          variant="capsule"
+          buttonRef={triggerRef}
+          onClick={disabled ? undefined : (): void => setOpen((prev) => !prev)}
+          disabled={disabled}
+          icon={<FolderIcon width={16} height={16} />}
+          label={currentName}
+          trailing={
+            disabled ? undefined : (
+              <ChevronDownMediumIcon width={12} height={12} />
+            )
+          }
+          ariaLabel={`Select working directory, current ${currentName}`}
+          ariaHasPopup={disabled ? undefined : 'listbox'}
+          ariaExpanded={disabled ? undefined : open}
+          ariaControls={!disabled && open ? menuId : undefined}
+          title={disabled ? SESSION_LOCKED_TOOLTIP : 'Working directory'}
+          dataTestId="portal-chat-directory-picker"
+        />
+      )}
       <FloatingMenu
         id={menuId}
         open={open && !disabled}
@@ -134,27 +163,15 @@ export function PortalDirectoryPicker({
       >
         <DirectoryPickerHeading />
         {options.map((option) => (
-          <button
+          <DirectoryPickerOptionRow
             key={option.id}
-            type="button"
-            role="option"
-            aria-selected={option.id === effectiveId}
+            name={option.name}
+            selected={option.id === effectiveId}
             data-testid="portal-chat-directory-option"
-            onMouseDown={(event): void => event.preventDefault()}
-            onClick={(): void => handleSelect(option.id)}
-            className="focus-ring flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-s fg-primary/80 transition-colors hover:bg-subtle focus-visible:bg-subtle"
-          >
-            <span className="w-4 text-center">
-              {option.id === effectiveId ? <CheckIcon /> : null}
-            </span>
-            <span className="truncate">{option.name}</span>
-          </button>
+            onSelect={(): void => handleSelect(option.id)}
+          />
         ))}
       </FloatingMenu>
     </div>
   );
-}
-
-function CheckIcon(): JSX.Element {
-  return <AppCatalogCheckIcon width="12" height="12" aria-hidden="true" />;
 }

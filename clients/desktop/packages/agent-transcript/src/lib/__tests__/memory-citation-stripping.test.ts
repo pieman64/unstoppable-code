@@ -524,7 +524,13 @@ describe('local-memory citation portal projection scope', () => {
       timestamp: 2,
       blocks: [
         { type: 'tool_use', toolUseId: 'tool-1', toolName: 'Grep', input },
-        { type: 'tool_result', toolUseId: 'tool-1', output, isError: false },
+        {
+          type: 'tool_result',
+          toolUseId: 'tool-1',
+          toolName: 'Grep',
+          output,
+          isError: false,
+        },
       ],
     };
 

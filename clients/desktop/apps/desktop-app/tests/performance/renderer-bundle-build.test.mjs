@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -16,8 +25,9 @@ const { rendererManualChunk, rendererStartupBoundaryPlugin } = chunks;
 /**
  * Builds a small renderer through Vite's real pipeline with the release
  * renderer output plugins and the renderer chunking rules, then inspects what
- * would ship: Vite's own late output transforms used to undo the obfuscator's
- * compact output, so only the built files can show whether it survives.
+ * would ship: Vite's own late output transforms used to re-print every chunk in
+ * readable form, so only the built files can show whether minification
+ * survives.
  */
 const FIXTURE = {
   'index.html':
@@ -65,7 +75,11 @@ export const loadVendorExtra = () => import('./extra.js');
     "export const vendorExtraValue = 'fixture-vendor-extra';\n",
 };
 
-async function buildFixture(overrides = {}, startupBoundaries = []) {
+async function buildFixture(
+  overrides = {},
+  startupBoundaries = [],
+  define = {},
+) {
   // Vite needs the real path: macOS temp directories sit behind a symlink.
   const root = await realpath(
     await mkdtemp(path.join(os.tmpdir(), 'renderer-bundle-build-')),
@@ -79,8 +93,9 @@ async function buildFixture(overrides = {}, startupBoundaries = []) {
       root,
       configFile: false,
       logLevel: 'silent',
+      define,
       plugins: [
-        ...rendererOutputPlugins({ enabled: true, obfuscateVendor: false }),
+        ...rendererOutputPlugins(),
         rendererStartupBoundaryPlugin(startupBoundaries),
       ],
       build: {
@@ -125,9 +140,9 @@ function indentedLines(code) {
   return code.split('\n').filter((line) => /^[ \t]/.test(line));
 }
 
-test('the obfuscated entry ships compact, not re-printed on many lines', () => {
+test('the entry ships minified, not re-printed on many lines', () => {
   assert.ok(entry, 'entry chunk built');
-  // Vite may append a final newline; the obfuscated body is one line.
+  // Vite may append a final newline; the minified body is one line.
   assert.ok(
     entry.code.trimEnd().split('\n').length <= 2,
     `entry has ${entry.code.split('\n').length} lines`,
@@ -135,8 +150,8 @@ test('the obfuscated entry ships compact, not re-printed on many lines', () => {
   assert.deepEqual(indentedLines(entry.code), []);
 });
 
-test('the entry keeps hexadecimal identifier mangling', () => {
-  assert.match(entry.code, /\b_0x[0-9a-f]{4,}\b/);
+test('the entry is minified without obfuscation', () => {
+  assert.doesNotMatch(entry.code, /\b_0x[0-9a-f]+\b/);
   for (const localName of [
     'fixtureAccumulator',
     'widgetCandidate',
@@ -149,9 +164,8 @@ test('the entry keeps hexadecimal identifier mangling', () => {
   assert.match(entry.code, /fixture-summary-label/);
 });
 
-test('vendor chunks are fully minified and not obfuscated', () => {
+test('vendor chunks are fully minified', () => {
   assert.ok(vendor, 'vendor chunk built');
-  assert.doesNotMatch(vendor.code, /\b_0x[0-9a-f]+\b/);
   assert.doesNotMatch(vendor.code, /\bvendorIntermediate\b/);
   assert.deepEqual(indentedLines(vendor.code), []);
 });
@@ -179,8 +193,8 @@ test('hidden source maps still resolve shipped code to its sources', () => {
   const column = offset - (before.lastIndexOf('\n') + 1);
   const original = originalPositionFor(map, { line, column });
   assert.ok(original.source?.endsWith('widget-summary.js'), original.source);
-  // The obfuscator maps at statement granularity: the literal resolves into
-  // `summarizeWidgets`' return statement (lines 3-5).
+  // The literal resolves into `summarizeWidgets`' return statement
+  // (lines 3-5).
   assert.ok(
     original.line >= 3 && original.line <= 5,
     `mapped to line ${original.line}`,
@@ -213,5 +227,127 @@ test('the build fails when a startup boundary matches no entry', async () => {
       { entryModule: '/missing-entry.js', forbiddenModules: ['/main.js'] },
     ]),
     /no renderer entry loads \/missing-entry\.js/,
+  );
+});
+
+async function extractSidebarFlags(code) {
+  const script = new URL(
+    '../../../../scripts/browser-profiles-build-config.py',
+    import.meta.url,
+  );
+  const result = spawnSync(
+    'python3',
+    [
+      '-c',
+      `
+import json, pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+namespace = {}
+exec(source.split("# CI entry:")[0], namespace)
+print(json.dumps(namespace["extract_sidebar_flags"](sys.stdin.read())[0]))
+`,
+      fileURLToPath(script),
+    ],
+    { input: code, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+for (const shared of [false, true]) {
+  for (const shadow of [false, true]) {
+    for (const e2e of [false, true]) {
+      test(`release evidence survives renderer minification (shared=${shared}, shadow=${shadow}, e2e=${e2e})`, async () => {
+        const sidebarDirectory = new URL(
+          '../../src/renderer/src/components/sidebar/',
+          import.meta.url,
+        );
+        const output = await buildFixture(
+          {
+            'main.js': `import { isDesktopSharedSidebarEnabled } from './shared.ts';
+import { isDesktopSidebarShadowEnabled } from './shadow.ts';
+console.info(isDesktopSharedSidebarEnabled(), isDesktopSidebarShadowEnabled());`,
+            'shared.ts': await readFile(
+              new URL('desktop-shared-sidebar-flag.ts', sidebarDirectory),
+              'utf8',
+            ),
+            'shadow.ts': await readFile(
+              new URL('desktop-sidebar-shadow-flag.ts', sidebarDirectory),
+              'utf8',
+            ),
+          },
+          [],
+          {
+            __CANOPY_DESKTOP_SHARED_SIDEBAR__: JSON.stringify(shared),
+            __CANOPY_DESKTOP_SIDEBAR_SHADOW__: JSON.stringify(shadow),
+            __CANOPY_E2E__: JSON.stringify(e2e),
+          },
+        );
+        const renderer = output.find(
+          (item) => item.type === 'chunk' && item.isEntry,
+        );
+        assert.ok(renderer);
+        assert.doesNotMatch(
+          renderer.code,
+          /function isDesktop(?:SharedSidebar|SidebarShadow)Enabled/,
+        );
+        assert.deepEqual(await extractSidebarFlags(renderer.code), {
+          desktopSharedSidebar: shared,
+          desktopSidebarShadow: shadow,
+          e2eCrossCheck: e2e,
+        });
+      });
+    }
+  }
+}
+
+test('historical unminified sidebar evidence remains readable', async () => {
+  assert.deepEqual(
+    await extractSidebarFlags(`
+function isDesktopSharedSidebarEnabled() {
+  try { return window.localStorage.getItem("canopy.desktop.sharedSidebar") !== "0"; }
+  catch { return true; }
+}
+function isDesktopSidebarShadowEnabled() {
+  if (!window.devInfo?.isDev && true) return false;
+  try { return window.localStorage.getItem("canopy.dev.desktopSidebarShadow") === "1"; }
+  catch { return false; }
+}`),
+    {
+      desktopSharedSidebar: false,
+      desktopSidebarShadow: false,
+      e2eCrossCheck: false,
+    },
+  );
+});
+
+for (const evidence of [
+  '{',
+  'null',
+  '{"schemaVersion":2}',
+  '{"schemaVersion":1,"desktopSharedSidebar":0,"desktopSidebarShadow":false,"e2eCrossCheck":false}',
+  '{"schemaVersion":1,"desktopSharedSidebar":false,"desktopSidebarShadow":false}',
+]) {
+  test(`invalid renderer metadata fails closed: ${evidence}`, async () => {
+    await assert.rejects(
+      extractSidebarFlags(`/* canopy-renderer-build-config:${evidence} */`),
+      /Invalid renderer build configuration/,
+    );
+  });
+}
+
+test('duplicate renderer metadata fails closed', async () => {
+  await assert.rejects(
+    extractSidebarFlags(
+      '/* canopy-renderer-build-config:{} *//* canopy-renderer-build-config:{} */',
+    ),
+    /Duplicate renderer build configuration/,
+  );
+});
+
+test('partial renderer build defines fail instead of publishing guessed defaults', async () => {
+  await assert.rejects(
+    buildFixture({}, [], { __CANOPY_E2E__: 'false' }),
+    /Expected a literal boolean build define/,
   );
 });

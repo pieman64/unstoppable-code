@@ -4,6 +4,7 @@ import type {
   AgentDelegationTranscript,
 } from '@canopy/protocol/delegation';
 import {
+  DELEGATION_CARD_ACTIVE_INTERVAL_MS,
   DELEGATION_CARD_SETTLED_INTERVAL_MS,
   DelegationCardPublisher,
 } from '../agents/delegation/card-publication';
@@ -19,6 +20,10 @@ import {
   type TranscriptReducerState,
 } from '@canopy/agent-transcript';
 import { ChatEventOutputDelivery } from '../ipc/chat-event-output';
+import {
+  resetWorkCounters,
+  snapshotWorkCounters,
+} from '@canopy/desktop-shared/node/work-counters';
 
 function transcript(
   sequence: number,
@@ -80,6 +85,7 @@ describe('DelegationCardPublisher', () => {
   const sequences = (): number[] => published.map((entry) => entry.sequence);
 
   beforeEach(() => {
+    resetWorkCounters();
     clock = 1_000_000;
     timers = [];
     published = [];
@@ -103,11 +109,92 @@ describe('DelegationCardPublisher', () => {
 
   afterEach(() => publisher.dispose());
 
-  it('publishes every snapshot while the parent turn is active', () => {
+  it('coalesces active-parent progress to the 2 s deadline with the newest snapshot', () => {
     parentActive = true;
-    for (let sequence = 1; sequence <= 5; sequence += 1)
-      publisher.offer(transcript(sequence));
+    publisher.offer(transcript(1));
+    expect(sequences()).toEqual([1]);
+    advance(800);
+    publisher.offer(transcript(2));
+    advance(900);
+    publisher.offer(transcript(3));
+    expect(sequences()).toEqual([1]);
+    advance(DELEGATION_CARD_ACTIVE_INTERVAL_MS - 1_701);
+    expect(sequences()).toEqual([1]);
+    advance(1);
+    expect(sequences()).toEqual([1, 3]);
+    expect(published[1]).toEqual(transcript(3));
+  });
+
+  it('publishes active-parent prompt-visible changes and terminal results immediately', () => {
+    parentActive = true;
+    publisher.offer(transcript(1));
+
+    publisher.offer(transcript(2, { status: 'pending' }));
+    expect(sequences()).toEqual([1, 2]);
+    publisher.offer(
+      transcript(3, { status: 'pending', approvalPending: true }),
+    );
+    expect(sequences()).toEqual([1, 2, 3]);
+    publisher.offer(
+      transcript(4, {
+        status: 'pending',
+        approvalPending: true,
+        control: { operationId: 'op', operation: 'steer', status: 'accepted' },
+      }),
+    );
+    expect(sequences()).toEqual([1, 2, 3, 4]);
+    publisher.offer(
+      transcript(5, {
+        status: 'pending',
+        approvalPending: true,
+        control: { operationId: 'op', operation: 'steer', status: 'accepted' },
+        stopRequested: { operationId: 'stop', status: 'accepted' },
+      }),
+    );
     expect(sequences()).toEqual([1, 2, 3, 4, 5]);
+    const terminal = transcript(6, { status: 'completed', finalText: 'Done' });
+    publisher.offer(terminal);
+    expect(published[published.length - 1]).toBe(terminal);
+    expect(sequences()).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('publishes an active-parent interruption at once and keeps the run cadenced after it', () => {
+    // `interrupted` is settled but resumable, so it is not a terminal status:
+    // it publishes as a status change and the run keeps its published state.
+    parentActive = true;
+    publisher.offer(transcript(1));
+    advance(500);
+    const interrupted = transcript(2, { status: 'interrupted' });
+    publisher.offer(interrupted);
+    expect(published[published.length - 1]).toBe(interrupted);
+    expect(sequences()).toEqual([1, 2]);
+    advance(500);
+    publisher.offer(transcript(3, { status: 'interrupted' }));
+    expect(sequences()).toEqual([1, 2]);
+    advance(DELEGATION_CARD_ACTIVE_INTERVAL_MS - 500);
+    expect(sequences()).toEqual([1, 2, 3]);
+  });
+
+  it('publishes active-parent progress immediately after a full interval without pending work', () => {
+    parentActive = true;
+    publisher.offer(transcript(1));
+    advance(DELEGATION_CARD_ACTIVE_INTERVAL_MS);
+    publisher.offer(transcript(2));
+    expect(sequences()).toEqual([1, 2]);
+  });
+
+  it('shortens a settled pending deadline when a newer offer arrives while active', () => {
+    publisher.offer(transcript(1));
+    advance(1_000);
+    publisher.offer(transcript(2));
+    advance(500);
+    parentActive = true;
+    publisher.offer(transcript(3));
+    expect(sequences()).toEqual([1]);
+    advance(DELEGATION_CARD_ACTIVE_INTERVAL_MS - 1_501);
+    expect(sequences()).toEqual([1]);
+    advance(1);
+    expect(sequences()).toEqual([1, 3]);
   });
 
   it('coalesces settled-parent progress to one publish per window with the newest snapshot', () => {
@@ -118,7 +205,9 @@ describe('DelegationCardPublisher', () => {
     }
     // 19 progress events over 7.6 s: only the first appearance so far.
     expect(sequences()).toEqual([1]);
-    advance(DELEGATION_CARD_SETTLED_INTERVAL_MS);
+    advance(DELEGATION_CARD_SETTLED_INTERVAL_MS - 7_601);
+    expect(sequences()).toEqual([1]);
+    advance(1);
     expect(sequences()).toEqual([1, 20]);
     expect(published[1]).toEqual(transcript(20));
   });
@@ -183,11 +272,30 @@ describe('DelegationCardPublisher', () => {
     expect(sequences()).toEqual([2, 3]);
   });
 
-  it('flushes immediately when the parent turn becomes active and on flush()', () => {
+  it('counts only accepted offers and counts a coalesced snapshot once when published', () => {
+    publisher.offer(transcript(1));
+    publisher.offer(transcript(1)); // stale sequence is discarded
+    publisher.offer(transcript(2));
+    publisher.offer(transcript(3));
+
+    expect(snapshotWorkCounters().provider).toEqual({
+      'delegationSnapshots.offered': 3,
+      'delegationSnapshots.published': 1,
+    });
+    advance(DELEGATION_CARD_SETTLED_INTERVAL_MS);
+    expect(snapshotWorkCounters().provider).toEqual({
+      'delegationSnapshots.offered': 3,
+      'delegationSnapshots.published': 2,
+    });
+  });
+
+  it('flushes the latest pending snapshot immediately on flush()', () => {
     publisher.offer(transcript(1));
     publisher.offer(transcript(2));
     parentActive = true;
     publisher.offer(transcript(3));
+    expect(sequences()).toEqual([1]);
+    publisher.flush();
     expect(sequences()).toEqual([1, 3]);
     parentActive = false;
     advance(DELEGATION_CARD_SETTLED_INTERVAL_MS);
@@ -241,7 +349,7 @@ describe('delegate cards delivered to a page as transcript appends', () => {
           output: `${last.output ?? ''}${'o'.repeat(300)}\n`,
           isError: false,
         };
-      } else if (last.type !== 'tool') {
+      } else {
         items[items.length - 1] = {
           ...last,
           text: `${last.text}${'t'.repeat(300)} `,
@@ -315,7 +423,11 @@ describe('delegate cards delivered to a page as transcript appends', () => {
         state = applyClaudeTranscriptEvent(
           state,
           event.data as Record<string, unknown>,
-          { now: 1, createMessageId: () => 'message' },
+          {
+            now: 1,
+            createMessageId: () => 'message',
+            childToolLiveness: { kind: 'unknown' },
+          },
         );
         projected.push(
           runtimeChatEventToPortalMessage({
@@ -338,6 +450,7 @@ describe('delegate cards delivered to a page as transcript appends', () => {
     const publisher = new DelegationCardPublisher({
       publish: (entry) => published.push(entry),
       parentTurnActive: () => true,
+      activeIntervalMs: 0,
     });
     for (const run of growingRun(200)) publisher.offer(run);
     expect(published).toHaveLength(200);
@@ -370,6 +483,7 @@ describe('delegate cards delivered to a page as transcript appends', () => {
     const publisher = new DelegationCardPublisher({
       publish: (entry) => published.push(entry),
       parentTurnActive: () => true,
+      activeIntervalMs: 0,
     });
     for (const index of [0, 1, 2, 1, 2, 3]) publisher.offer(at(index));
     expect(published.map((entry) => entry.sequence)).toEqual([1, 2, 3, 4]);

@@ -86,9 +86,9 @@ function publish(): void {
 export async function shutdownCopilotConnections(): Promise<void> {
   shuttingDown = true;
   for (const operation of Array.from(operations)) operation.controller.abort();
-  const { revokeCopilotRuntimes } = await import('../copilot/connection');
+  const { shutdownCopilotRuntimes } = await import('../copilot/connection');
   await Promise.allSettled([
-    revokeCopilotRuntimes(),
+    shutdownCopilotRuntimes(),
     ...Array.from(operations).map((operation) => operation.done),
   ]);
 }

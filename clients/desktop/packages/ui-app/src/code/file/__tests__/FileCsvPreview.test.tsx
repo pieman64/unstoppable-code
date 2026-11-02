@@ -61,6 +61,12 @@ describe('FileCsvPreview', () => {
     expect(output).toContain('alpha');
   });
 
+  it('opts parsed table content into the shared native-selection policy', () => {
+    expect(render('name,count\nalpha,2')).toMatch(
+      /^<div\b[^>]*data-selectable="true"/,
+    );
+  });
+
   it('blocks the table root from session replay', () => {
     expect(
       rootClassList(renderToString(<FileCsvPreview content={'a,b\n1,2'} />)),

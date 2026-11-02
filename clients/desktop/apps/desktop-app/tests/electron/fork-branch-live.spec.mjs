@@ -193,10 +193,8 @@ test.describe('fork / branch live turn (743)', () => {
           'aria-label',
           `Tool approval mode, current mode ${modeLabel}`,
         );
-        await window
-          .getByRole('button', { name: 'Branch Chat into new worktree' })
-          .last()
-          .click();
+        await window.getByTestId('turn-more-actions').last().click();
+        await window.getByTestId('turn-more-branch').click();
         const selected = window
           .locator('[data-sidebar-selected-item] [data-testid="worktree-row"]')
           .first();
@@ -328,34 +326,29 @@ test.describe('fork / branch live turn (743)', () => {
         'aria-label',
         'Tool approval mode, current mode Full access',
       );
-      await expect(
-        window
-          .getByRole('button', { name: 'Branch Chat into new worktree' })
-          .last(),
-      ).toBeVisible();
-      await picker.click();
-      await expect(
-        window.getByTestId('approval-mode-option-ask'),
-      ).toBeVisible();
-
-      // Dispatch both real UI actions in one renderer task. This guarantees
-      // Branch Chat begins while the approval IPC promise is still pending.
-      await window.evaluate(() => {
-        const ask = document.querySelector(
-          '[data-testid="approval-mode-option-ask"]',
-        );
-        const branchButtons = Array.from(
-          document.querySelectorAll(
-            '[aria-label="Branch Chat into new worktree"]',
-          ),
-        );
-        const branch = branchButtons.at(-1);
-        if (!(ask instanceof HTMLElement) || !(branch instanceof HTMLElement)) {
-          throw new Error('Expected approval option and branch action');
-        }
-        ask.click();
-        branch.click();
+      await electronApp.evaluate(({ ipcMain }) => {
+        const original = ipcMain._invokeHandlers.get('approval:mode-set');
+        if (!original) throw new Error('Missing approval mode handler');
+        const held = new Promise((resolve) => {
+          globalThis.__releaseBranchApproval = resolve;
+        });
+        ipcMain.removeHandler('approval:mode-set');
+        ipcMain.handle('approval:mode-set', async (event, request) => {
+          globalThis.__branchApprovalHeld = true;
+          await held;
+          return original(event, request);
+        });
       });
+      await picker.click();
+      await window.getByTestId('approval-mode-option-ask').click();
+      await expect
+        .poll(() => electronApp.evaluate(() => globalThis.__branchApprovalHeld))
+        .toBe(true);
+      // Hold the real approval IPC until Branch has been invoked through its
+      // menu. This preserves the pending-transition race across menu renders.
+      await window.getByTestId('turn-more-actions').last().click();
+      await window.getByTestId('turn-more-branch').click();
+      await electronApp.evaluate(() => globalThis.__releaseBranchApproval());
 
       const selected = window
         .locator('[data-sidebar-selected-item] [data-testid="worktree-row"]')
@@ -517,10 +510,8 @@ test.describe('fork / branch live turn (743)', () => {
 
       const rows = window.getByTestId('worktree-row');
       const rowCountBefore = await rows.count();
-      await window
-        .getByRole('button', { name: 'Branch Chat into new worktree' })
-        .last()
-        .click();
+      await window.getByTestId('turn-more-actions').last().click();
+      await window.getByTestId('turn-more-branch').click();
 
       const warning = window.getByTestId('branch-from-uncommitted-warning');
       await expect(warning).toBeVisible();
@@ -829,7 +820,7 @@ test.describe('fork / branch live turn (743)', () => {
         };
         process.getBuiltinModule('node:module').syncBuiltinESMExports();
       });
-      await window.getByRole('button', { name: 'Fork Chat' }).click();
+      await window.getByRole('button', { name: 'Fork chat' }).click();
 
       let placement = null;
       await expect
@@ -1123,19 +1114,19 @@ test.describe('fork / branch live turn (743)', () => {
 
       // These literal labels intentionally mirror CHAT_UNIT_LABEL in
       // packages/protocol/src/ui-labels.ts while asserting real a11y names.
-      const forkButton = window.getByRole('button', { name: 'Fork Chat' });
-      const branchButton = window.getByRole('button', {
-        name: 'Branch Chat into new worktree',
-      });
+      const forkButton = window.getByRole('button', { name: 'Fork chat' });
+      const branchButton = window.getByTestId('turn-more-branch');
 
       // Before the live turn: Fork + Branch are present on the seeded forkable
       // turn (PR 743 surface).
       await expect(forkButton.last()).toBeVisible({ timeout: 30_000 });
-      await expect(branchButton.last()).toBeVisible();
+      await window.getByTestId('turn-more-actions').last().click();
+      await expect(branchButton).toBeVisible();
+      await window.keyboard.press('Escape');
       await forkButton.last().hover();
       const forkTooltip = window
         .getByRole('tooltip')
-        .filter({ hasText: 'The agent keeps its context from this point' });
+        .filter({ hasText: 'Fork chat' });
       await expect(forkTooltip).toBeVisible();
       await expect(forkButton.last()).toHaveAttribute(
         'aria-describedby',
@@ -1168,7 +1159,9 @@ test.describe('fork / branch live turn (743)', () => {
       // After the live turn completes, the Fork / Branch actions remain
       // reachable on the latest forkable turn (PR 743 survives a live turn).
       await expect(forkButton.last()).toBeVisible({ timeout: 30_000 });
-      await expect(branchButton.last()).toBeVisible();
+      await window.getByTestId('turn-more-actions').last().click();
+      await expect(branchButton).toBeVisible();
+      await window.keyboard.press('Escape');
 
       // Fork is renderer-only: clicking it duplicates the conversation into a
       // new chat tab (no agent). Assert the tab count increases by one.
@@ -1441,8 +1434,11 @@ for (const [toolName, branched, rejectAnchor] of [
         if (!branched) {
           expect(child.title).toBe('Fork: Generated split source');
           expect(child.description).toBe('Generated split source');
+          // Fill tabs also show a position number; assert only the title.
           await expect(
-            window.getByTestId(`panel-tab-panel-chat-${receipt.chatId}`),
+            window
+              .getByTestId(`panel-tab-panel-chat-${receipt.chatId}`)
+              .locator('.canopy-panel-tab-title'),
           ).toHaveText('Generated split source');
         }
         if (branched) {
@@ -1466,11 +1462,16 @@ for (const [toolName, branched, rejectAnchor] of [
           await window
             .getByTestId(`panel-tab-panel-chat-${receipt.chatId}`)
             .click();
+          // The loaded child transcript carries no setup annotation
+          // (CAN-4981); wait for its reply before asserting absence.
           await expect(
-            panel.getByText('Chat initiated before project setup at', {
+            panel.getByText(childReply, { exact: false }).first(),
+          ).toBeVisible();
+          await expect(
+            panel.getByText('Chat initiated before project setup', {
               exact: false,
             }),
-          ).toBeVisible();
+          ).toHaveCount(0);
         }
         expect(child.forkedFrom).toMatchObject({
           worktreeId: WORKTREE_ID,

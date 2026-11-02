@@ -1,3 +1,9 @@
+import { handlePortalWatcherDelete } from './adapters/watchers-adapter';
+import {
+  handlePortalLifecycleJournalInspect,
+  handlePortalLifecycleJournalQuarantine,
+} from './adapters/lifecycle-journal-adapter';
+import { handlePortalSharedMultiRepo } from './adapters/shared-multi-repo-adapter';
 import { createPortalScriptActionsAdapter } from './adapters/script-actions-adapter';
 import { handlePortalPersonalOrganizationProjects } from './adapters/personal-organization-upgrade-adapter';
 import { handlePortalInstalledItems } from './adapters/installed-items-adapter';
@@ -10,7 +16,10 @@ import {
   handlePortalWorkspaceItemsReadPrompt,
   handlePortalWorkspaceItemsListAttachments,
 } from './adapters/workspace-items-adapter';
-import { handlePortalChatMarkRead } from './adapters/chat-read-adapter';
+import {
+  handlePortalChatMarkRead,
+  handlePortalChatSetUnread,
+} from './adapters/chat-read-adapter';
 import { handlePortalChatVisualRead } from './adapters/chat-visual-adapter';
 import { handlePortalProviderUsageRefresh } from './adapters/provider-usage-adapter';
 import { timingSafeEqual } from 'node:crypto';
@@ -24,6 +33,10 @@ import type {
   PortalStateRequestPayload,
 } from '@canopy/desktop-shared/types';
 import { PORTAL_SNAPSHOT_SCOPES_SET } from '@canopy/desktop-shared/types';
+import {
+  PORTAL_EVENT_BATCH_MAX_BYTES,
+  type PortalChangedFilesPageResult,
+} from '@canopy/protocol/portal';
 import {
   handlePortalTerminalClose,
   handlePortalTerminalOpen,
@@ -72,6 +85,10 @@ import {
   handlePortalAppAdvisorSetModel,
 } from './adapters/app-advisor-adapter';
 import {
+  handlePortalOnboardingTipsGet,
+  handlePortalOnboardingTipsUpdate,
+} from './adapters/onboarding-tips-adapter';
+import {
   handlePortalScriptCancel,
   handlePortalScriptLogRequest,
   handlePortalScriptRun,
@@ -98,6 +115,7 @@ import {
   handlePortalPipelineGet,
   handlePortalPipelineShare,
   handlePortalPipelineChatFollowUpPrepare,
+  handlePortalPipelineContentRead,
   handlePortalPipelineInstallCurated,
   handlePortalPipelineList,
   handlePortalPipelineLogRequest,
@@ -138,6 +156,8 @@ import {
 import {
   handlePortalWorktreeArchive,
   handlePortalWorktreeCreate,
+  handlePortalWorktreeDiscard,
+  handlePortalWorktreeDiscardDescribe,
   handlePortalWorktreeReorder,
   handlePortalWorktreeUpdate,
 } from './adapters/worktree-adapter';
@@ -173,6 +193,7 @@ import {
   handlePortalWorkspaceClaudeMdSave,
   handlePortalWorkspaceCreate,
   handlePortalWorkspaceDelete,
+  handlePortalWorkspaceDeleteDiscardDescribe,
   handlePortalWorkspaceReorder,
   handlePortalWorkspaceScriptsGet,
   handlePortalWorkspaceScriptsSave,
@@ -183,8 +204,21 @@ import type {
   PortalCommandAdapter,
 } from './adapters/types';
 import { queryPortalChatSendReceipt } from './adapters/chat-state-query';
+import {
+  handlePortalChatTranscriptPage,
+  handlePortalChatTranscriptBlocksPage,
+  handlePortalChatContentRead,
+} from './adapters/chat-transcript-reads-adapter';
 import { buildPortalSnapshot } from './portal-snapshot-builders';
 import { acquirePortalOverviewSnapshot } from './portal-overview-build';
+import {
+  MAX_CHANGED_FILES_PAGE_SIZE,
+  pageChangedFiles,
+  sortChangedFiles,
+} from './changed-files-paging';
+import { listChangedFileSets } from '../services/diff-service';
+import { portalEventMaxRoutedByteLength } from './portal-outbox';
+import { validateId } from '../lib/validation';
 import {
   armWorktreeDiffStatsRefreshTimer,
   createCommandCompletedPayload,
@@ -216,6 +250,7 @@ export interface PortalCommandHandlerContext {
   sessionId?: string | null;
   chatDispatcher?: DesktopCanopyDispatcher;
   canReadAssets?: () => boolean;
+  canReadTranscripts?: () => boolean;
   pairingCode: string | null;
   getWindow: () => BrowserWindow | null;
   enqueueEvent: (event: PortalEventEnvelope) => void;
@@ -228,6 +263,65 @@ export interface PortalCommandHandlerContext {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeChangedFilesPage(
+  value: unknown,
+): PortalStateRequestPayload['changedFilesPage'] {
+  if (
+    !isRecord(value) ||
+    (value.group !== 'uncommitted' && value.group !== 'committed') ||
+    typeof value.cursor !== 'string' ||
+    value.cursor.length > 512
+  ) {
+    return undefined;
+  }
+  const limit = value.limit;
+  if (
+    limit !== undefined &&
+    (typeof limit !== 'number' ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_CHANGED_FILES_PAGE_SIZE)
+  ) {
+    return undefined;
+  }
+  return {
+    group: value.group,
+    cursor: value.cursor,
+    ...(limit === undefined ? {} : { limit }),
+  };
+}
+
+function hasChangedFilesPageField(payload: unknown): boolean {
+  return (
+    isRecord(payload) &&
+    Object.prototype.hasOwnProperty.call(payload, 'changedFilesPage')
+  );
+}
+
+function isValidChangedFilesPageRequest(
+  payload: unknown,
+  request: PortalStateRequestPayload,
+): boolean {
+  if (!hasChangedFilesPageField(payload) && !request.changedFilesPage)
+    return true;
+  const target = request.target;
+  if (
+    !request.changedFilesPage ||
+    request.scope !== 'diff' ||
+    typeof target?.workspaceLocalId !== 'string' ||
+    typeof target.worktreeLocalId !== 'string'
+  ) {
+    return false;
+  }
+  try {
+    validateId(target.workspaceLocalId, 'workspaceId');
+    validateId(target.worktreeLocalId, 'worktreeId');
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 function normalizeValidatePayload(
@@ -271,6 +365,7 @@ export function normalizeStateRequestPayload(
     typeof payload.scope === 'string'
       ? payload.scope
       : inferStateRequestScope(target);
+  const changedFilesPage = normalizeChangedFilesPage(payload.changedFilesPage);
   return {
     scope: isPortalStateScope(scope) ? scope : 'overview',
     ...(payload.includeChatSummaries === true
@@ -279,6 +374,7 @@ export function normalizeStateRequestPayload(
     ...(scope === 'chat' && payload.selectedChatOnly === true
       ? { selectedChatOnly: true }
       : {}),
+    ...(changedFilesPage ? { changedFilesPage } : {}),
     ...(target ? { target } : {}),
     ...(typeof payload.refresh === 'boolean'
       ? { refresh: payload.refresh }
@@ -334,6 +430,43 @@ function refreshDiffStatsAfterSnapshot(
   }
 }
 
+async function readChangedFilesPageResult(
+  command: PortalCommandEnvelope,
+  request: PortalStateRequestPayload,
+): Promise<PortalChangedFilesPageResult | undefined> {
+  const pageRequest = request.changedFilesPage;
+  const workspaceLocalId = request.target?.workspaceLocalId;
+  const worktreeLocalId = request.target?.worktreeLocalId;
+  if (!pageRequest || !workspaceLocalId || !worktreeLocalId) return undefined;
+
+  const listed = await listChangedFileSets(workspaceLocalId, worktreeLocalId);
+  const groups = {
+    uncommitted: sortChangedFiles(listed.uncommitted),
+    committed: sortChangedFiles(listed.committed),
+  };
+  return pageChangedFiles(
+    groups,
+    {
+      workspaceLocalId,
+      worktreeLocalId,
+      group: pageRequest.group,
+      cursor: pageRequest.cursor,
+      ...(pageRequest.limit === undefined ? {} : { limit: pageRequest.limit }),
+    },
+    (candidate: PortalChangedFilesPageResult) => {
+      const event = createPortalCommandEvent(
+        command,
+        'portal.command.completed',
+        createCommandCompletedPayload(command, candidate),
+      );
+      return (
+        portalEventMaxRoutedByteLength(event) <=
+        PORTAL_EVENT_BATCH_MAX_BYTES - 4096
+      );
+    },
+  );
+}
+
 function constantTimeCodeEquals(
   left: string | null,
   right: string | null,
@@ -348,6 +481,9 @@ function constantTimeCodeEquals(
 const FEATURE_ADAPTERS: Partial<
   Record<PortalCommandType, PortalCommandAdapter<unknown>>
 > = {
+  'portal.watcher.delete': handlePortalWatcherDelete,
+  'portal.lifecycle_journal.inspect': handlePortalLifecycleJournalInspect,
+  'portal.lifecycle_journal.quarantine': handlePortalLifecycleJournalQuarantine,
   'portal.script_actions.list': createPortalScriptActionsAdapter('list'),
   'portal.script_actions.rescan': createPortalScriptActionsAdapter('rescan'),
   'portal.script_actions.review': createPortalScriptActionsAdapter('review'),
@@ -374,6 +510,7 @@ const FEATURE_ADAPTERS: Partial<
   'portal.sidebar.item_groups.move_group': handlePortalSidebarItemGroups,
   'portal.chat.send': handlePortalChatSend as PortalCommandAdapter<unknown>,
   'portal.chat.mark_read': handlePortalChatMarkRead,
+  'portal.chat.set_unread': handlePortalChatSetUnread,
   'portal.chat.visual.read': handlePortalChatVisualRead,
   'portal.chat.cancel': handlePortalChatCancel as PortalCommandAdapter<unknown>,
   'portal.chat.cancel_turn': handlePortalChatCancelTurn,
@@ -430,8 +567,15 @@ const FEATURE_ADAPTERS: Partial<
     handlePortalAppAdvisorSettingsGet as PortalCommandAdapter<unknown>,
   'portal.app_advisor.settings.save':
     handlePortalAppAdvisorSettingsSave as PortalCommandAdapter<unknown>,
+  'portal.onboarding_tips.get': handlePortalOnboardingTipsGet,
+  'portal.onboarding_tips.update': handlePortalOnboardingTipsUpdate,
+  // The census handler span below stays as on develop until the Portal
+  // standalone chat slice moves it (CAN-3745); TypeScript 7 no longer needs
+  // its cast.
+  /* oxlint-disable typescript/no-unnecessary-type-assertion */
   'portal.standalone_chat.send':
     handlePortalStandaloneChatSend as PortalCommandAdapter<unknown>,
+  /* oxlint-enable typescript/no-unnecessary-type-assertion */
   'portal.standalone_chat.create': handlePortalStandaloneChatCreate,
   'portal.standalone_chat.cancel':
     handlePortalStandaloneChatCancel as PortalCommandAdapter<unknown>,
@@ -491,6 +635,7 @@ const FEATURE_ADAPTERS: Partial<
     handlePortalPipelineLogRequest as PortalCommandAdapter<unknown>,
   'portal.pipeline.chat_follow_up.prepare':
     handlePortalPipelineChatFollowUpPrepare,
+  'portal.pipeline.content.read': handlePortalPipelineContentRead,
   'portal.diff.read': handlePortalDiffRead as PortalCommandAdapter<unknown>,
   'portal.pr.action': handlePortalPrAction as PortalCommandAdapter<unknown>,
   'portal.pr.refresh': handlePortalPrRefresh as PortalCommandAdapter<unknown>,
@@ -506,6 +651,9 @@ const FEATURE_ADAPTERS: Partial<
     handlePortalFilePreview as PortalCommandAdapter<unknown>,
   'portal.file.read': handlePortalFileRead as PortalCommandAdapter<unknown>,
   'portal.chat.asset.read': handlePortalChatAssetRead,
+  'portal.chat.transcript.page': handlePortalChatTranscriptPage,
+  'portal.chat.transcript.blocks.page': handlePortalChatTranscriptBlocksPage,
+  'portal.chat.content.read': handlePortalChatContentRead,
   'portal.file.asset.read': handlePortalFileAssetRead,
   'portal.file.save': handlePortalFileSave as PortalCommandAdapter<unknown>,
   'portal.editor.list_slash_commands':
@@ -519,6 +667,7 @@ const FEATURE_ADAPTERS: Partial<
   'portal.workspace.set_section_order':
     handlePortalSetSectionOrder as PortalCommandAdapter<unknown>,
   'portal.workspace.reorder': handlePortalWorkspaceReorder,
+  'portal.org_projects.shared_multi_repo': handlePortalSharedMultiRepo,
   'portal.org_projects.find_repository_owner':
     handlePortalOrgProjectsFindRepositoryOwner,
   'portal.personal_organization.projects.list':
@@ -531,12 +680,16 @@ const FEATURE_ADAPTERS: Partial<
     handlePortalWorktreeCreate as PortalCommandAdapter<unknown>,
   'portal.worktree.archive':
     handlePortalWorktreeArchive as PortalCommandAdapter<unknown>,
+  'portal.worktree.discard.describe': handlePortalWorktreeDiscardDescribe,
+  'portal.worktree.discard': handlePortalWorktreeDiscard,
   'portal.worktree.update': handlePortalWorktreeUpdate,
   'portal.worktree.reorder': handlePortalWorktreeReorder,
   'portal.workspace.create':
     handlePortalWorkspaceCreate as PortalCommandAdapter<unknown>,
   'portal.workspace.delete':
     handlePortalWorkspaceDelete as PortalCommandAdapter<unknown>,
+  'portal.workspace.delete.discard.describe':
+    handlePortalWorkspaceDeleteDiscardDescribe,
   'portal.workspace.update':
     handlePortalWorkspaceUpdate as PortalCommandAdapter<unknown>,
   'portal.workspace.claude_md.get':
@@ -626,6 +779,7 @@ function createAdapterContext(
     sessionId: context.sessionId,
     ...(origin ? { origin } : {}),
     canReadAssets: context.canReadAssets,
+    canReadTranscripts: context.canReadTranscripts,
     chatStatePort,
     ...(chatStatePort && chatDispatcher
       ? {
@@ -703,83 +857,92 @@ export async function executePortalStateRequest(
   context: PortalStateRequestExecutionContext,
   request?: PortalStateRequestPayload,
 ): Promise<void> {
+  let invalidPageRequest = false;
   try {
     const resolvedRequest =
       request ?? normalizeStateRequestPayload(command.payload, command.target);
+    if (!isValidChangedFilesPageRequest(command.payload, resolvedRequest)) {
+      invalidPageRequest = true;
+      throw new Error('Invalid changed-files page request');
+    }
     context.recordStateRequestTarget?.(resolvedRequest);
     if (context.isCurrent?.() === false) return;
-    const buildStartedAt = performance.now();
-    recordPortalSnapshotTiming({
-      commandId: command.id,
-      stage: 'snapshot_build_started',
-      scope: resolvedRequest.scope,
-      workspaceLocalId: resolvedRequest.target?.workspaceLocalId,
-      worktreeLocalId: resolvedRequest.target?.worktreeLocalId,
-      chatLocalId:
-        resolvedRequest.target?.chatLocalId ??
-        resolvedRequest.target?.standaloneChatLocalId,
-    });
-    const catalogRevision = getPortalModelCatalogRevision();
-    const builtSnapshot =
-      resolvedRequest.scope === 'overview' &&
-      resolvedRequest.includeChatSummaries !== true &&
-      Object.keys(resolvedRequest.target ?? {}).length === 0
-        ? await acquirePortalOverviewSnapshot(
-            context.receivedAtPerf ?? buildStartedAt,
-            command.id,
-          )
-        : await buildPortalSnapshot(resolvedRequest, {
-            commandId: command.id,
-          });
-    if (context.isCurrent?.() === false) return;
-    recordPortalSnapshotTiming({
-      commandId: command.id,
-      stage: 'snapshot_build_completed',
-      scope: resolvedRequest.scope,
-      workspaceLocalId: resolvedRequest.target?.workspaceLocalId,
-      worktreeLocalId: resolvedRequest.target?.worktreeLocalId,
-      chatLocalId:
-        resolvedRequest.target?.chatLocalId ??
-        resolvedRequest.target?.standaloneChatLocalId,
-      elapsedMs: elapsedMilliseconds(buildStartedAt),
-      entityCount: builtSnapshot.snapshot.entities.length,
-    });
-    context.enqueueEvent(
-      createPortalCommandEvent(
-        command,
-        'portal.state.snapshot',
-        builtSnapshot.snapshot,
-      ),
-    );
-    recordPublishedWorktreeDiffStats(builtSnapshot.snapshot, catalogRevision);
-    // Cache population starts only after the frozen snapshot is queued, so
-    // a fast fill delta cannot be overwritten by that older snapshot.
-    refreshDiffStatsAfterSnapshot(resolvedRequest);
-    for (const event of builtSnapshot.followUpEvents) {
-      context.enqueueEvent(event);
+    let completion: unknown;
+    if (resolvedRequest.changedFilesPage) {
+      // A page answers in the command completion; it publishes no snapshot.
+      completion = await readChangedFilesPageResult(command, resolvedRequest);
+    } else {
+      const buildStartedAt = performance.now();
+      recordPortalSnapshotTiming({
+        commandId: command.id,
+        stage: 'snapshot_build_started',
+        scope: resolvedRequest.scope,
+        workspaceLocalId: resolvedRequest.target?.workspaceLocalId,
+        worktreeLocalId: resolvedRequest.target?.worktreeLocalId,
+        chatLocalId:
+          resolvedRequest.target?.chatLocalId ??
+          resolvedRequest.target?.standaloneChatLocalId,
+      });
+      const catalogRevision = getPortalModelCatalogRevision();
+      const builtSnapshot =
+        resolvedRequest.scope === 'overview' &&
+        resolvedRequest.includeChatSummaries !== true &&
+        Object.keys(resolvedRequest.target ?? {}).length === 0
+          ? await acquirePortalOverviewSnapshot(
+              context.receivedAtPerf ?? buildStartedAt,
+              command.id,
+            )
+          : await buildPortalSnapshot(resolvedRequest, {
+              commandId: command.id,
+            });
+      if (context.isCurrent?.() === false) return;
+      recordPortalSnapshotTiming({
+        commandId: command.id,
+        stage: 'snapshot_build_completed',
+        scope: resolvedRequest.scope,
+        workspaceLocalId: resolvedRequest.target?.workspaceLocalId,
+        worktreeLocalId: resolvedRequest.target?.worktreeLocalId,
+        chatLocalId:
+          resolvedRequest.target?.chatLocalId ??
+          resolvedRequest.target?.standaloneChatLocalId,
+        elapsedMs: elapsedMilliseconds(buildStartedAt),
+        entityCount: builtSnapshot.snapshot.entities.length,
+      });
+      context.enqueueEvent(
+        createPortalCommandEvent(
+          command,
+          'portal.state.snapshot',
+          builtSnapshot.snapshot,
+        ),
+      );
+      recordPublishedWorktreeDiffStats(builtSnapshot.snapshot, catalogRevision);
+      // Cache population starts only after the frozen snapshot is queued, so
+      // a fast fill delta cannot be overwritten by that older snapshot.
+      refreshDiffStatsAfterSnapshot(resolvedRequest);
+      for (const event of builtSnapshot.followUpEvents) {
+        context.enqueueEvent(event);
+      }
+      // Couple eligibility to this command, rather than a cache another
+      // composer or snapshot lane can replace before the browser reads it.
+      const contextual = builtSnapshot.snapshot.entities.find((entity) => {
+        if (!isRecord(entity.payload)) return false;
+        const access = entity.payload.modelLibraryContext;
+        return isModelLibraryContext(access) && access.requestId === command.id;
+      });
+      const modelLibrary =
+        contextual && isRecord(contextual.payload)
+          ? {
+              modelLibraryContext: contextual.payload.modelLibraryContext,
+              availableModels: contextual.payload.availableModels,
+            }
+          : undefined;
+      completion = modelLibrary ? { modelLibrary } : undefined;
     }
-    // Couple eligibility to this command, rather than a cache another
-    // composer or snapshot lane can replace before the browser reads it.
-    const contextual = builtSnapshot.snapshot.entities.find((entity) => {
-      if (!isRecord(entity.payload)) return false;
-      const access = entity.payload.modelLibraryContext;
-      return isModelLibraryContext(access) && access.requestId === command.id;
-    });
-    const modelLibrary =
-      contextual && isRecord(contextual.payload)
-        ? {
-            modelLibraryContext: contextual.payload.modelLibraryContext,
-            availableModels: contextual.payload.availableModels,
-          }
-        : undefined;
     context.enqueueEvent(
       createPortalCommandEvent(
         command,
         'portal.command.completed',
-        createCommandCompletedPayload(
-          command,
-          modelLibrary ? { modelLibrary } : undefined,
-        ),
+        createCommandCompletedPayload(command, completion),
       ),
     );
   } catch {
@@ -787,12 +950,19 @@ export async function executePortalStateRequest(
       createPortalCommandEvent(
         command,
         'portal.command.failed',
-        createCommandFailedPayload(
-          command,
-          'execution_failed',
-          'Unable to prepare the requested state. Reconnect and try again.',
-          false,
-        ),
+        invalidPageRequest
+          ? createCommandFailedPayload(
+              command,
+              'invalid_payload',
+              'Portal changed-files page requests require a valid diff target and page cursor.',
+              false,
+            )
+          : createCommandFailedPayload(
+              command,
+              'execution_failed',
+              'Unable to prepare the requested state. Reconnect and try again.',
+              false,
+            ),
       ),
     );
   }

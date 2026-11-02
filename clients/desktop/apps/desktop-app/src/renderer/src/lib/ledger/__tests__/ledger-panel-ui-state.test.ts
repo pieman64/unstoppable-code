@@ -35,7 +35,8 @@ const CLIENT: LedgerClient = {
   getEntry: notRead,
   addEntry: notRead,
   updateEntry: notRead,
-  onEntriesChanged: () => (): void => undefined,
+  listOwners: notRead,
+  subscribeChanges: (): (() => void) => (): void => undefined,
 };
 
 function viewStore(): LedgerViewStore {

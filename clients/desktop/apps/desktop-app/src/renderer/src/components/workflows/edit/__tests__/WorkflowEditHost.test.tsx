@@ -142,7 +142,7 @@ describe('WorkflowEditHost', () => {
     });
 
     const adapter = byTestId('mock-automation-adapter');
-    expect(adapter?.dataset.backLabel).toBe('Pipeline');
+    expect(adapter?.dataset.backLabel).toBe('Workflow');
     expect(adapter?.dataset.section).toBe('trigger');
   });
 

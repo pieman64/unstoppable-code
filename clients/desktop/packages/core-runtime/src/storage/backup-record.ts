@@ -131,13 +131,29 @@ function backupPathError(path: string): string | undefined {
 
 function provenOutsideCheckouts(
   path: string,
-  context: NamespaceBackupValidationContext,
+  isOutsideCheckouts: NamespaceBackupValidationContext['isOutsideCheckouts'],
 ): boolean {
   try {
-    return context.isOutsideCheckouts(path) === true;
+    return isOutsideCheckouts(path) === true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Why a backup path is unusable, or undefined when it is a normalized
+ * data-root-relative path proven outside every checkout. Writers check it
+ * before touching the file system.
+ */
+export function namespaceBackupPathError(
+  path: string,
+  isOutsideCheckouts: NamespaceBackupValidationContext['isOutsideCheckouts'],
+): string | undefined {
+  const pathError = backupPathError(path);
+  if (pathError !== undefined) return pathError;
+  if (!provenOutsideCheckouts(path, isOutsideCheckouts))
+    return 'backupPath must be proven outside every checkout';
+  return undefined;
 }
 
 /**
@@ -169,10 +185,11 @@ export function validateNamespaceBackupRecord(
 
   const backupPath = nonblank(candidate, 'backupPath', errors);
   if (backupPath !== undefined) {
-    const pathError = backupPathError(backupPath);
+    const pathError = namespaceBackupPathError(
+      backupPath,
+      context.isOutsideCheckouts,
+    );
     if (pathError !== undefined) errors.push(pathError);
-    else if (!provenOutsideCheckouts(backupPath, context))
-      errors.push('backupPath must be proven outside every checkout');
   }
 
   const sourceRevision = nonblank(candidate, 'sourceRevision', errors);

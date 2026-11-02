@@ -1,3 +1,17 @@
+const mockTranscriptQuery = jest.fn<
+  Promise<unknown>,
+  [string, unknown, unknown]
+>();
+const mockTranscriptStandalone = jest.fn<Promise<object>, [unknown]>();
+const mockTranscriptEntries = jest.fn<Promise<object[]>, [string]>();
+jest.mock('../canopy-runtime/desktop-runtime-access', () => ({
+  getDesktopCanopyRuntime: (): object => ({ query: mockTranscriptQuery }),
+}));
+jest.mock('../services/standalone-chat-service', () => ({
+  resolveStandaloneChatTarget: (input: unknown): Promise<object> =>
+    mockTranscriptStandalone(input),
+}));
+import type { TranscriptReadAction } from '@canopy/agent-actions';
 import { dispatchLegacyChatCreation } from '../app-advisor/creation-adapters';
 jest.mock('../app-advisor/creation-adapters', () => ({
   dispatchLegacyChatCreation: jest.fn(),
@@ -37,11 +51,17 @@ jest.mock('../agent-messaging/send-orchestration', () => ({
 }));
 const mockResolveSendTarget = jest.fn();
 jest.mock('../project-discovery/chat-target', () => ({
-  resolveAuthorizedChat: mockResolveSendTarget,
+  get resolveAuthorizedChat(): typeof mockResolveSendTarget {
+    return mockResolveSendTarget;
+  },
 }));
 const mockResolveLegacyEntry = jest.fn();
 jest.mock('../lib/cowork-work-entries', () => ({
-  resolveWorkEntryForChat: mockResolveLegacyEntry,
+  listWorkEntryChatSummaries: (workspaceId: string): Promise<object[]> =>
+    mockTranscriptEntries(workspaceId),
+  get resolveWorkEntryForChat(): typeof mockResolveLegacyEntry {
+    return mockResolveLegacyEntry;
+  },
 }));
 import {
   projectReadActionSchema,
@@ -85,11 +105,15 @@ jest.mock('../canopy-tools/resource-actions', () => ({
       'automation.disable',
       'automation.list',
     ].includes(action.type),
-  dispatchAgentResourceAction: mockHeadlessResourceAction,
+  get dispatchAgentResourceAction(): typeof mockHeadlessResourceAction {
+    return mockHeadlessResourceAction;
+  },
 }));
 const mockExperimentDispatch = jest.fn();
 jest.mock('../agent-actions/desktop-surface', () => ({
-  executeDesktopAgentActionTool: mockExperimentDispatch,
+  get executeDesktopAgentActionTool(): typeof mockExperimentDispatch {
+    return mockExperimentDispatch;
+  },
 }));
 const mockArchiveIngest = jest.fn().mockResolvedValue(true);
 jest.mock('../services/chat-state-service', (): unknown => ({
@@ -110,7 +134,9 @@ const mockStartSplitAgent = jest.fn().mockResolvedValue({
   independent: true,
 });
 jest.mock('../canopy-tools/start-split-agent-runtime', () => ({
-  startSplitAgent: mockStartSplitAgent,
+  get startSplitAgent(): typeof mockStartSplitAgent {
+    return mockStartSplitAgent;
+  },
 }));
 jest.mock('../canopy-tools/worktree-actions', () => ({
   dispatchScopedBrowserAction: jest
@@ -249,6 +275,7 @@ function state(
     digest: 'digest',
     snapshot: {
       activePage: 'main',
+      archivedContainers: { count: 0, viewerOpen: false },
       overlays: {
         commandPaletteOpen: false,
         fileSearchPaletteOpen: false,
@@ -338,6 +365,7 @@ describe('createAppAdvisorToolRuntime', () => {
     mockedCreateApprovalSession.mockReturnValue({
       check: jest.fn().mockResolvedValue({ decision: 'allow' }),
       setMode: jest.fn(),
+      reevaluatePendingApprovals: jest.fn().mockResolvedValue(undefined),
       dispose: jest.fn(),
     });
     mockedRequestShowFiles.mockResolvedValue({
@@ -1460,6 +1488,7 @@ describe('createAppAdvisorToolRuntime', () => {
     mockedCreateApprovalSession.mockReturnValue({
       check: approvalCheck,
       setMode: jest.fn(),
+      reevaluatePendingApprovals: jest.fn().mockResolvedValue(undefined),
       dispose: jest.fn(),
     });
     setLatestAppAdvisorUiState(
@@ -1519,6 +1548,7 @@ describe('createAppAdvisorToolRuntime', () => {
     mockedCreateApprovalSession.mockReturnValue({
       check: approvalCheck,
       setMode: jest.fn(),
+      reevaluatePendingApprovals: jest.fn().mockResolvedValue(undefined),
       invalidatePending,
       dispose: jest.fn(),
     });
@@ -1644,6 +1674,304 @@ describe('createAppAdvisorToolRuntime', () => {
   });
 });
 
+describe('App Advisor shared retained-transcript runtime', () => {
+  const target = {
+    kind: 'delegation',
+    chatId: 'owner',
+    delegationId: 'child',
+    runGeneration: 1,
+  } as const;
+  const actions: TranscriptReadAction[] = [
+    { type: 'chat.transcript.page', target },
+    {
+      type: 'chat.content.read',
+      target,
+      messageId: 'row',
+      blockOrdinal: 0,
+      field: 'text',
+      offset: 0,
+      fieldSource: 'logical',
+      limit: 16384,
+    },
+    {
+      type: 'chat.transcript.blocks.page',
+      target,
+      messageId: 'row',
+      limit: 16,
+    },
+  ];
+  let ownerPresent: boolean;
+  let workspaceId: string;
+  let kind: 'git' | 'cowork';
+  let archive: boolean;
+  let entryId: string | null;
+  let ownerWorktreeId: string | null;
+  let readHook: (() => Promise<void>) | undefined;
+  let metadataHook: (() => Promise<void>) | undefined;
+  let ownerListed: boolean;
+  const reads = (): unknown[][] =>
+    mockTranscriptQuery.mock.calls.filter(
+      ([name]) =>
+        name.startsWith('core.chat.transcript.') ||
+        name === 'core.chat.content.read',
+    );
+  beforeEach(() => {
+    jest.clearAllMocks();
+    ownerPresent = true;
+    ownerListed = true;
+    workspaceId = 'owner-workspace';
+    kind = 'git';
+    archive = false;
+    entryId = 'entry';
+    ownerWorktreeId = 'owner-tree';
+    readHook = undefined;
+    metadataHook = undefined;
+    mockTranscriptEntries.mockResolvedValue([{ entryId: 'entry' }]);
+    mockTranscriptStandalone.mockImplementation(() =>
+      Promise.resolve({
+        workspaceId,
+        entryId,
+        archivedInEntryId: archive ? entryId : null,
+      }),
+    );
+    mockTranscriptQuery.mockImplementation(async (name, raw) => {
+      const input = raw as {
+        cursor?: string;
+        workspaceId?: string;
+        scope?: { workspaceId: string; worktreeId?: string };
+      };
+      if (name === 'core.workspace.list')
+        return input.cursor === 'next'
+          ? {
+              items: ownerListed ? [{ workspaceId, kind }] : [],
+              nextCursor: null,
+            }
+          : {
+              items: [{ workspaceId: 'other', kind: 'git' }],
+              nextCursor: 'next',
+            };
+      if (name === 'core.workspace.get')
+        return {
+          workspaceId: input.workspaceId,
+          kind: input.workspaceId === workspaceId ? kind : 'git',
+        };
+      if (name === 'core.worktree.list')
+        return { items: [{ worktreeId: 'owner-tree' }], nextCursor: null };
+      if (name === 'core.chat.list') {
+        const items =
+          ownerPresent && input.scope?.workspaceId === workspaceId
+            ? [
+                {
+                  workspaceId,
+                  worktreeId: kind === 'cowork' ? 'entry' : ownerWorktreeId,
+                  chatId: 'owner',
+                  state: archive ? 'archived' : 'idle',
+                },
+              ]
+            : [];
+        if (items.length > 0) await metadataHook?.();
+        return { items, nextCursor: null };
+      }
+      await readHook?.();
+      if (name === 'core.chat.transcript.page')
+        return { messages: [], totalMessages: 0, transcriptRevision: 1 };
+      if (name === 'core.chat.content.read')
+        return { text: '/tmp stored body', byteLength: 16 };
+      if (name === 'core.chat.transcript.blocks.page')
+        return {
+          projection: 'bounded-v1',
+          messageId: 'row',
+          firstBlockOrdinal: 0,
+          entries: [],
+          blockCount: 0,
+          transcriptRevision: 1,
+        };
+      throw new Error('Unexpected query');
+    });
+  });
+  it.each(actions)(
+    'dispatches $type in the resolved owner scope without renderer',
+    async (action) => {
+      const runtime = createAppAdvisorToolRuntime(
+        makeSurfaces(),
+        destination(),
+      );
+      const signal = new AbortController().signal;
+      const response = await runtime.dispatchRendererAction(
+        action,
+        999,
+        'shared-request',
+        signal,
+      );
+      expect(response).toMatchObject({ requestId: 'shared-request', ok: true });
+      expect(reads()).toHaveLength(1);
+      expect(reads()[0]?.[1]).toMatchObject({
+        scope: {
+          workspaceId: 'owner-workspace',
+          worktreeId: 'owner-tree',
+          chatId: 'owner',
+        },
+      });
+      expect(reads()[0]?.[2]).toMatchObject({
+        signal,
+        caller: { grants: ['core.chat.read'] },
+      });
+      expect(dispatchWorktreeAction).not.toHaveBeenCalled();
+      expect(dispatchScopedBrowserAction).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['outside', 'sentinel', 'unresolved archive', 'pre-entry archive'])(
+    'rejects %s without any transcript read',
+    async (scenario) => {
+      if (scenario === 'outside') ownerPresent = false;
+      if (scenario === 'sentinel') workspaceId = APP_ADVISOR_PROJECT_ID;
+      if (scenario === 'unresolved archive') {
+        archive = true;
+        ownerWorktreeId = null;
+      }
+      if (scenario === 'pre-entry archive') {
+        kind = 'cowork';
+        archive = true;
+        entryId = null;
+      }
+      const runtime = createAppAdvisorToolRuntime(
+        makeSurfaces(),
+        destination(),
+      );
+      const result = await runtime.dispatchRendererAction(
+        actions[0],
+        undefined,
+        'denied',
+      );
+      expect(result).toMatchObject({
+        requestId: 'denied',
+        ok: false,
+        error: { code: 'not_found' },
+      });
+      expect(reads()).toHaveLength(0);
+      expect(dispatchWorktreeAction).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['git', 'cowork'] as const)(
+    'supports trusted %s archives',
+    async (ownerKind) => {
+      kind = ownerKind;
+      archive = true;
+      const result = await createAppAdvisorToolRuntime(
+        makeSurfaces(),
+        destination(),
+      ).dispatchRendererAction(actions[0]);
+      expect(result.ok).toBe(true);
+      if (kind === 'cowork')
+        expect(reads()[0]?.[1]).toMatchObject({ archivedContainerId: 'entry' });
+      else {
+        // A git chat archived inside a live worktree reads through its scope.
+        expect(reads()[0]?.[1]).toMatchObject({
+          scope: { worktreeId: 'owner-tree' },
+          archivedContainerId: undefined,
+        });
+      }
+    },
+  );
+  it('reauthorizes cursor calls instead of retaining a discovered owner', async () => {
+    const runtime = createAppAdvisorToolRuntime(makeSurfaces(), destination());
+    expect((await runtime.dispatchRendererAction(actions[0])).ok).toBe(true);
+    ownerPresent = false;
+    const response = await runtime.dispatchRendererAction({
+      type: 'chat.transcript.page',
+      target,
+      cursor: 'prior-page',
+    });
+    expect(response).toMatchObject({ ok: false, error: { code: 'not_found' } });
+    expect(reads()).toHaveLength(1);
+  });
+  it('revalidates a stale located owner before any transcript read', async () => {
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const enteredMetadata = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    metadataHook = async (): Promise<void> => {
+      if (!ownerPresent) return;
+      entered?.();
+      await held;
+    };
+    const pending = createAppAdvisorToolRuntime(
+      makeSurfaces(),
+      destination(),
+    ).dispatchRendererAction(actions[0]);
+    const outcome = await Promise.race([
+      enteredMetadata.then(() => 'entered'),
+      pending.then(() => 'returned'),
+    ]);
+    expect(outcome).toBe('entered');
+    ownerPresent = false;
+    release?.();
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    expect(reads()).toHaveLength(0);
+  });
+  it('never infers a target workspace that is absent from trusted inventory', async () => {
+    ownerListed = false;
+    const result = await createAppAdvisorToolRuntime(
+      makeSurfaces(),
+      destination(),
+    ).dispatchRendererAction(actions[0]);
+    expect(result).toMatchObject({ ok: false, error: { code: 'not_found' } });
+    expect(reads()).toHaveLength(0);
+  });
+  it('drops a held read after owner removal before reply', async () => {
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const enteredRead = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    readHook = async (): Promise<void> => {
+      entered?.();
+      await held;
+    };
+    const pending = createAppAdvisorToolRuntime(
+      makeSurfaces(),
+      destination(),
+    ).dispatchRendererAction(actions[0]);
+    // Do not hang the red against the renderer-only implementation.
+    const outcome = await Promise.race([
+      enteredRead.then(() => 'entered'),
+      pending.then(() => 'returned'),
+    ]);
+    expect(outcome).toBe('entered');
+    ownerPresent = false;
+    release?.();
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    expect(reads()).toHaveLength(1);
+  });
+  it('does not read for an already-aborted request', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const response = await createAppAdvisorToolRuntime(
+      makeSurfaces(),
+      destination(),
+    ).dispatchRendererAction(
+      actions[0],
+      undefined,
+      'cancelled',
+      controller.signal,
+    );
+    expect(response).toMatchObject({ ok: false, error: { code: 'timeout' } });
+    expect(reads()).toHaveLength(0);
+  });
+});
 it.each(['projects.list', 'projects.list_tasks', 'projects.list_task_chats'])(
   'handles %s in main without requesting a UI snapshot or renderer action',
   async (type) => {
@@ -1751,7 +2079,7 @@ it.each(BOT_ACTION_TYPES)(
 );
 
 describe('Advisor list UI envelopes', () => {
-  const cases = [
+  const cases: { type: string; address: Record<string, string> }[] = [
     { type: 'projects.list', address: { projectId: 'target' } },
     {
       type: 'projects.list_tasks',
@@ -2347,6 +2675,7 @@ describe('phase 10 main-only message controls and legacy adapters', () => {
       digest: 'digest',
       snapshot: {
         activePage: 'overview',
+        archivedContainers: { count: 0, viewerOpen: false },
         overlays: {
           commandPaletteOpen: false,
           fileSearchPaletteOpen: false,
@@ -2663,7 +2992,6 @@ it.each([
   const legacy = jest
     .spyOn(advisorChatActions, 'dispatchAdvisorChatAction')
     .mockResolvedValue({
-      requestId: 'advisor-create',
       ok: true,
       result: { workEntryId: 'entry', chatId: 'chat' },
     });

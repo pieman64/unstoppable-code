@@ -7,6 +7,7 @@ import {
   ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
 } from '../icons/AppIcons';
+import { Button } from './Button';
 
 export interface SearchBarProps {
   query: string;
@@ -114,7 +115,7 @@ export function SearchBar({
           <button
             type="button"
             onClick={() => onQueryChange('')}
-            className="shrink-0 rounded-sm p-0.5 fg-secondary transition hover:fg-primary"
+            className="shrink-0 rounded-sm p-0.5 fg-secondary transition-colors hover:fg-primary"
             aria-label="Clear search"
           >
             <CloseIcon />
@@ -129,33 +130,36 @@ export function SearchBar({
           </span>
         )}
       </div>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="compact"
+        iconOnly
         onClick={onPrevious}
         disabled={totalCount === 0}
-        className="focus-ring rounded p-1 fg-secondary transition hover:fg-primary disabled:opacity-30"
         aria-label="Previous match"
       >
         <ChevronUpIcon />
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="ghost"
+        size="compact"
+        iconOnly
         onClick={onNext}
         disabled={totalCount === 0}
-        className="focus-ring rounded p-1 fg-secondary transition hover:fg-primary disabled:opacity-30"
         aria-label="Next match"
       >
         <ChevronDownIcon />
-      </button>
+      </Button>
       {onClose && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onClose}
-          className="focus-ring rounded p-1 fg-secondary transition hover:fg-primary"
           aria-label="Close search"
         >
           <CloseIcon />
-        </button>
+        </Button>
       )}
     </div>
   );

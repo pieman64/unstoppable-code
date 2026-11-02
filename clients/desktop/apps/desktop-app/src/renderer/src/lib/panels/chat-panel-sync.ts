@@ -19,7 +19,9 @@
  * - a chat-side `activeTabId` change selects AND focuses the matching panel;
  *   the FIRST sweep for a worktree (hydration) instead re-activates the
  *   chat-active tab within its group only (`selectTab` with `focus: false`),
- *   so a restored layout's persisted active group is never clobbered.
+ *   so a restored layout's persisted active group is never clobbered. A
+ *   group whose restored selection is an unbound panel (a Browser, say) keeps
+ *   it: the chat side cannot record that selection, so it must not undo it.
  *
  * panels → chatStore:
  * - the active panel of the active group being chat/file-bound and differing
@@ -49,8 +51,12 @@
  */
 import { useChatStore, type ChatTab } from '@/stores/chatStore';
 import {
+  hasPendingAttentionLanding,
+  takeAttentionLandingPanelTarget,
+} from '@/stores/chat/attention-landing-intent';
+import {
   getChatTabCloseBlocker,
-  notifyDelegatesBlockClose,
+  notifyCloseBlocked,
   type ChatCloseBlocker,
 } from '@/stores/chat/close-guard';
 import { setPanelTabCloseGuard } from '@canopy/ui-app/panel-layout-store';
@@ -69,7 +75,6 @@ import {
   chatTabToPanelSeed,
   type ChatTabPanelSeed,
 } from './chat-panel-binding';
-import { DEFAULT_CHAT_GROUP_ID } from './default-layout';
 import { getWorkspaceLayoutMode } from '@/stores/workspaceLayoutModeStore';
 import {
   ensureMinimalDestination,
@@ -79,12 +84,22 @@ import {
   createChatSiblingGroupToRight,
   pickContentTargetGroupId,
   pickReusableChatSiblingGroupId,
+  resolveChatPanelAnchor,
   rollbackCreatedChatSiblingGroup,
+  type ChatPanelAnchor,
+  type CreatedChatSiblingGroup,
 } from './sibling-panel-placement';
+import { filePanelPlacementPolicyForWorktreeKey } from './panel-surface';
 import { ensureWorktreePanelLayout } from './persistence-bridge';
-import { findPanelLocation, revealPanel } from './panel-reveal';
+import {
+  findAuxWindowForLayout,
+  findPanelLocation,
+  focusAuxWindowForLayout,
+  revealPanel,
+} from './panel-reveal';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
-import { refuseFullTabRow } from './tab-row-limit';
+import { schedulePanelGroupFocus } from './panel-focus';
+import { subscribeFilePanelOpen } from './file-panel-open-intent';
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -128,6 +143,14 @@ function reconcilesAsMountedOwner(projectId: string): boolean {
 let lastFamilyBindings = new Map<string, Map<string, string>>();
 /** Chat-side `activeTabId` per worktree at the end of the last sweep. */
 const lastChatActiveTabId = new Map<string, string | null>();
+/**
+ * The last chat-kind tab (never a file) the chat side had active per
+ * worktree. Opening a file makes the file the chat-side active tab before the
+ * sweep runs, so this is what documents-group placement anchors beside.
+ */
+const lastActiveChatKindTabId = new Map<string, string>();
+const pendingFileOpenIntents = new Map<string, string>();
+let unsubscribeFileOpen: (() => void) | null = null;
 /** Panel-side active bound tab id per worktree at the end of the last sweep. */
 const lastPanelActiveTabId = new Map<string, string | null>();
 /**
@@ -144,11 +167,15 @@ let lastHiddenChatTabIds = new Set<string>();
  * - `file-sibling`: place in the SAME group as an existing file tab's
  *   panel, immediately after it (files opened from within a file tab's
  *   embedded tree or breadcrumb).
- * Hints for tabs whose panel already exists are dropped without moving
- * anything (an already-open file only activates).
+ * Existing files keep their panel identity. On documents-group surfaces an
+ * activating hint also restores its chat anchor and repairs chat-group placement.
  */
 type FilePanelPlacementHint =
-  | { readonly kind: 'beside-chat'; readonly originChatTabId: string }
+  | {
+      readonly kind: 'beside-chat';
+      readonly originChatTabId: string;
+      readonly activate?: boolean;
+    }
   | { readonly kind: 'file-sibling'; readonly originFileTabId: string };
 
 const pendingFilePanelPlacements = new Map<string, FilePanelPlacementHint>();
@@ -286,9 +313,7 @@ function refuseBusyChatPanelClose(
     ]?.groups[groupId]?.tabs.find((candidate) => candidate.panelId === panelId);
   if (!panelTab) return false;
   const blocker = panelChatCloseBlocker(layoutKey, panelTab);
-  if (blocker === 'delegates') {
-    notifyDelegatesBlockClose();
-  }
+  notifyCloseBlocked([blocker]);
   return blocker !== null;
 }
 
@@ -354,7 +379,7 @@ function filterCloseablePanelIds(
   const ownerTabs = useChatStore.getState().worktreeChats[ownerKey]?.tabs ?? [];
   const targets = new Set(panelIds);
   const protectedPanelIds = new Set<string>();
-  let protectedForDelegates = false;
+  const targetBlockers: ChatCloseBlocker[] = [];
   for (const panelTab of group.tabs) {
     if (panelTab.kind !== 'chat') continue;
     const chatTabId = panelTab.instance?.chatTabId;
@@ -363,14 +388,11 @@ function filterCloseablePanelIds(
     const blocker = chatTab ? chatCloseBlocker(chatTab, ownerKey) : null;
     if (blocker !== null) {
       protectedPanelIds.add(panelTab.panelId);
-      if (blocker === 'delegates' && targets.has(panelTab.panelId)) {
-        protectedForDelegates = true;
-      }
+      if (targets.has(panelTab.panelId)) targetBlockers.push(blocker);
     }
   }
-  if (protectedForDelegates) {
-    notifyDelegatesBlockClose();
-  }
+  // One notice for the whole gesture.
+  notifyCloseBlocked(targetBlockers);
 
   return panelIds.filter((panelId) => !protectedPanelIds.has(panelId));
 }
@@ -649,71 +671,23 @@ function replaceOrphanedFinalChatPanel(
 /**
  * Where a chat/file panel that arrives on its own (a remote, delegated, or
  * forked chat, an opened file) goes, rather than from a gesture into a group:
- * the preferred group when it has room, else the most recently used chat
- * group with room, else a new group split beside the preferred one. When no
- * split is possible (a fixed topology), the preferred group takes it past the
- * row limit: a chat that may be waiting on the user is never left without a
- * tab. A chat restricted to the chat group (early access) goes there the same
- * way, since the store would move it out of any other group. `null` only when
- * the preferred group is unknown.
+ * the preferred group. A chat restricted to the chat group (early access)
+ * goes there instead, since the store would move it out of any other group.
+ * `null` when the worktree has no layout or the preferred group is unknown.
  */
-function groupWithRoom(
+function placementGroupId(
   worktreeKey: string,
   preferredGroupId: string,
   kind: PanelTabDescriptor['kind'],
 ): string | null {
-  const store = usePanelLayoutStore.getState();
-  const layout = store.layouts[worktreeKey];
+  const layout = usePanelLayoutStore.getState().layouts[worktreeKey];
   if (layout === undefined) {
     return null;
   }
-  const chatGroupId = kind === 'chat' ? restrictedChatGroupId(layout) : null;
-  if (chatGroupId !== null) {
-    return chatGroupId;
-  }
-  const preferred = layout.groups[preferredGroupId];
-  if (store.canAddTabToGroup(worktreeKey, preferredGroupId)) {
-    return preferredGroupId;
-  }
-  for (const groupId of layout.mruGroupIds) {
-    if (
-      layout.groups[groupId]?.tabs.some((tab) => tab.kind === 'chat') ===
-        true &&
-      store.canAddTabToGroup(worktreeKey, groupId)
-    ) {
-      return groupId;
-    }
-  }
   return (
-    usePanelLayoutStore
-      .getState()
-      .splitGroup(worktreeKey, preferredGroupId, 'right') ??
-    (preferred !== undefined ? preferredGroupId : null)
+    (kind === 'chat' ? restrictedChatGroupId(layout) : null) ??
+    (layout.groups[preferredGroupId] !== undefined ? preferredGroupId : null)
   );
-}
-
-/**
- * For a chat the user is about to create with no target group (Cmd/Ctrl+T,
- * the command palette): refuses with the full-row note, before the chat
- * exists, when the row it would open in is full, like the disabled `+` on
- * that row. That row is the chat group when early access keeps chats there
- * (see `groupWithRoom`), else Minimal's chat row, else the
- * `pickContentTargetGroupId` pick (the most recently used row with a chat,
- * then the default chat row, then the active row). Chats that arrive on
- * their own are placed elsewhere instead (see `groupWithRoom`). Returns
- * whether it refused.
- */
-export function refuseFullNewChatRow(worktreeKey: string): boolean {
-  const layout = usePanelLayoutStore.getState().layouts[worktreeKey];
-  if (layout === undefined) {
-    return false;
-  }
-  const groupId =
-    restrictedChatGroupId(layout) ??
-    (getWorkspaceLayoutMode(worktreeKey) === 'minimal'
-      ? DEFAULT_CHAT_GROUP_ID
-      : pickContentTargetGroupId(layout));
-  return groupId !== null && refuseFullTabRow(worktreeKey, groupId);
 }
 
 /** Chat tab ids bound to a panel that is currently in a COLLAPSED group. */
@@ -876,6 +850,289 @@ function materializeContentBesideChat(
   return panelId;
 }
 
+// ---------------------------------------------------------------------------
+// Documents-group placement (Cowork Advanced layout)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether `worktreeKey` opens files in a documents group beside its chat.
+ * Minimal layout keeps routing files to its Side Panel.
+ */
+function usesDocumentsGroup(worktreeKey: string): boolean {
+  return (
+    getWorkspaceLayoutMode(worktreeKey) !== 'minimal' &&
+    filePanelPlacementPolicyForWorktreeKey(worktreeKey) === 'documents-group'
+  );
+}
+
+/**
+ * The chat a documents group opens beside: a live explicit origin first,
+ * then the worktree's last active chat, then the layout's MRU chat panel.
+ * An origin bound in an auxiliary layout of the family anchors there.
+ */
+function resolveDocumentsAnchor(
+  worktreeKey: string,
+  originChatTabId: string | null,
+): { readonly layoutKey: string; readonly anchor: ChatPanelAnchor } | null {
+  const layouts = usePanelLayoutStore.getState().layouts;
+  for (const chatTabId of [
+    originChatTabId,
+    lastActiveChatKindTabId.get(worktreeKey),
+  ]) {
+    if (chatTabId == null) continue;
+    const origin = findPanelByInstanceKey(worktreeKey, `chat:${chatTabId}`);
+    const originLayout =
+      origin === null ? undefined : layouts[origin.layoutKey];
+    if (origin !== null && originLayout !== undefined) {
+      const anchor = resolveChatPanelAnchor(originLayout, [chatTabId]);
+      if (anchor !== null) {
+        return { layoutKey: origin.layoutKey, anchor };
+      }
+    }
+  }
+  const layout = layouts[worktreeKey];
+  if (layout === undefined) {
+    return null;
+  }
+  const anchor = resolveChatPanelAnchor(layout, []);
+  return anchor === null ? null : { layoutKey: worktreeKey, anchor };
+}
+
+/** Focus the documents group in the window that actually renders it. */
+function focusDocumentsGroup(layoutKey: string, groupId: string): void {
+  const auxiliary = findAuxWindowForLayout(layoutKey);
+  if (auxiliary !== null && !auxiliary.childWindow.closed) {
+    focusAuxWindowForLayout(layoutKey);
+    schedulePanelGroupFocus(auxiliary.childWindow.document, groupId);
+  } else if (typeof document !== 'undefined') {
+    schedulePanelGroupFocus(document, groupId);
+  }
+}
+
+/**
+ * The reusable documents group beside `anchorGroupId`, else a new one split
+ * to its right. A background open creates the group without taking the
+ * focused group. `null` when no group can be created.
+ */
+function ensureDocumentsGroup(
+  layoutKey: string,
+  anchorGroupId: string,
+  activate: boolean,
+): {
+  readonly groupId: string;
+  readonly created: CreatedChatSiblingGroup | null;
+} | null {
+  const layout = usePanelLayoutStore.getState().layouts[layoutKey];
+  if (layout === undefined) {
+    return null;
+  }
+  const reusable = pickReusableChatSiblingGroupId(layout, anchorGroupId);
+  if (reusable !== null) {
+    return { groupId: reusable, created: null };
+  }
+  const created = createChatSiblingGroupToRight(layoutKey, anchorGroupId, {
+    activate,
+  });
+  if (created === null) {
+    return null;
+  }
+  return { groupId: created.groupId, created };
+}
+
+/**
+ * Re-selects the anchor chat in its own group without taking keyboard focus,
+ * so a file or other chat selected there no longer covers the conversation.
+ */
+function restoreAnchorChatSelection(
+  layoutKey: string,
+  anchor: ChatPanelAnchor,
+): void {
+  const group =
+    usePanelLayoutStore.getState().layouts[layoutKey]?.groups[anchor.groupId];
+  if (group !== undefined && group.activePanelId !== anchor.panelId) {
+    usePanelLayoutStore
+      .getState()
+      .selectTab(layoutKey, anchor.groupId, anchor.panelId, { focus: false });
+  }
+}
+
+/** Whether a group holds a chat panel (the chat group, for placement). */
+function groupHoldsChat(layoutKey: string, groupId: string): boolean {
+  return (
+    usePanelLayoutStore
+      .getState()
+      .layouts[
+        layoutKey
+      ]?.groups[groupId]?.tabs.some((tab) => tab.kind === 'chat') === true
+  );
+}
+
+/**
+ * Outcome of placing a new file panel by the documents-group policy.
+ * `failed` is a handled refusal: the caller must not fall back to the chat
+ * group. `no-anchor` means the policy does not apply (no chat panel yet).
+ */
+type DocumentsPlacement =
+  | { readonly kind: 'placed'; readonly panelId: string }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'no-anchor' };
+
+/**
+ * Places a new file panel beside its anchor chat. A `file-sibling` hint is
+ * honored only while its origin file is outside every chat group; a stale
+ * hint pointing into the chat group places by the documents rule instead.
+ */
+function materializeFilePanelInDocumentsGroup(
+  worktreeKey: string,
+  seed: ChatTabPanelSeed,
+  hint: FilePanelPlacementHint | undefined,
+  activate: boolean,
+): DocumentsPlacement {
+  const originChatTabId =
+    hint?.kind === 'beside-chat' ? hint.originChatTabId : null;
+  const resolved = resolveDocumentsAnchor(worktreeKey, originChatTabId);
+  if (resolved === null) {
+    return { kind: 'no-anchor' };
+  }
+  const { layoutKey, anchor } = resolved;
+  const originFileTabId = honoredSiblingOrigin(worktreeKey, hint, layoutKey);
+  const panelId =
+    (originFileTabId === null
+      ? null
+      : materializeFilePanelAsSibling(
+          worktreeKey,
+          seed,
+          originFileTabId,
+          activate,
+        )) ?? addFileTabToDocumentsGroup(layoutKey, anchor, seed, activate);
+  if (panelId === null) {
+    return { kind: 'failed' };
+  }
+  if (activate) {
+    restoreAnchorChatSelection(layoutKey, anchor);
+  }
+  return { kind: 'placed', panelId };
+}
+
+/** The origin file of a `file-sibling` hint whose panel is outside chat groups. */
+function honoredSiblingOrigin(
+  worktreeKey: string,
+  hint: FilePanelPlacementHint | undefined,
+  layoutKey: string,
+): string | null {
+  if (hint?.kind !== 'file-sibling') {
+    return null;
+  }
+  const originFile = findPanelByInstanceKey(
+    worktreeKey,
+    `file-diff:${hint.originFileTabId}`,
+  );
+  return originFile !== null &&
+    originFile.layoutKey === layoutKey &&
+    !groupHoldsChat(layoutKey, originFile.groupId)
+    ? hint.originFileTabId
+    : null;
+}
+
+/**
+ * Adds the file tab to the documents group beside `anchor`, creating the
+ * group when needed and rolling a created group back if the tab is refused.
+ */
+function addFileTabToDocumentsGroup(
+  layoutKey: string,
+  anchor: ChatPanelAnchor,
+  seed: ChatTabPanelSeed,
+  activate: boolean,
+): string | null {
+  const destination = ensureDocumentsGroup(layoutKey, anchor.groupId, activate);
+  if (destination === null) {
+    return null;
+  }
+  const store = usePanelLayoutStore.getState();
+  const options = {
+    title: seed.title,
+    instance: seed.instance,
+    ...(activate ? {} : { activate: false }),
+  };
+  const panelId =
+    store.addTab(layoutKey, destination.groupId, seed.kind, {
+      ...options,
+      panelId: seed.panelId,
+    }) ?? store.addTab(layoutKey, destination.groupId, seed.kind, options);
+  if (panelId === null && destination.created !== null) {
+    rollbackCreatedChatSiblingGroup(layoutKey, destination.created);
+  }
+  return panelId;
+}
+
+/**
+ * Explicitly opening an already materialized file: a panel still in a chat
+ * group moves to the documents group instead of covering the conversation,
+ * and the anchor chat is re-selected in its own group. A refused move keeps
+ * both groups' visible content and reports failure; it must not reveal the
+ * file over the conversation. The caller activates only a successful repair.
+ */
+function repairFilePanelPlacement(
+  worktreeKey: string,
+  fileTabId: string,
+  originChatTabId: string | null,
+  activate = true,
+): boolean {
+  const location = findPanelByInstanceKey(
+    worktreeKey,
+    `file-diff:${fileTabId}`,
+  );
+  if (location === null) {
+    return true;
+  }
+  const resolved = resolveDocumentsAnchor(worktreeKey, originChatTabId);
+  if (resolved === null || resolved.layoutKey !== location.layoutKey) {
+    return true;
+  }
+  const { layoutKey, anchor } = resolved;
+  const refuse = (): false => {
+    if (activate) {
+      restoreAnchorChatSelection(layoutKey, anchor);
+      const selected =
+        activeBoundTabId(usePanelLayoutStore.getState().layouts[layoutKey]) ??
+        anchor.chatTabId;
+      useChatStore
+        .getState()
+        .switchTab(selected, splitWorktreeKey(worktreeKey));
+    }
+    return false;
+  };
+  if (groupHoldsChat(layoutKey, location.groupId)) {
+    const destination = ensureDocumentsGroup(
+      layoutKey,
+      anchor.groupId,
+      activate,
+    );
+    if (destination === null) {
+      return refuse();
+    }
+    if (
+      !usePanelLayoutStore
+        .getState()
+        .movePanel(
+          layoutKey,
+          location.panelId,
+          destination.groupId,
+          'center',
+          undefined,
+          { activate },
+        )
+    ) {
+      if (destination.created !== null) {
+        rollbackCreatedChatSiblingGroup(layoutKey, destination.created);
+      }
+      return refuse();
+    }
+  }
+  if (activate) restoreAnchorChatSelection(layoutKey, anchor);
+  return true;
+}
+
 function materializeChatPanelFromForkPlacement(
   worktreeKey: string,
   tab: ChatTab,
@@ -999,6 +1256,25 @@ function activeBoundTabId(
   return tab !== undefined ? boundChatTabId(tab) : null;
 }
 
+/**
+ * Whether `group`'s selected tab is a panel the chat side cannot select, such
+ * as a Browser or terminal. Instance-less legacy chat/file panels do not
+ * count: they are transient placeholders, never a user's restored selection.
+ */
+function restoredActiveTabIsUnbound(
+  group: WorktreePanelLayout['groups'][string],
+): boolean {
+  const tab = group.tabs.find(
+    (candidate) => candidate.panelId === group.activePanelId,
+  );
+  return (
+    tab !== undefined &&
+    tab.kind !== 'chat' &&
+    tab.kind !== 'file-diff' &&
+    boundChatTabId(tab) === null
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The sweep
 // ---------------------------------------------------------------------------
@@ -1053,6 +1329,7 @@ function runSweep(): void {
     }
     for (const selection of Array.from(selections.values())) {
       const worktreeKey = `${selection.projectId}/${selection.worktreeId}`;
+      if (hasPendingAttentionLanding(worktreeKey)) continue;
       const layoutBefore = panelState.layouts[worktreeKey];
       // Both sides must be hydrated: reconciling against a not-yet-loaded
       // chat list would treat every restored bound panel as orphaned and
@@ -1065,6 +1342,9 @@ function runSweep(): void {
         // SIDE changed since the last settled sweep decides the direction.
         const chatActiveBefore =
           chatState.worktreeChats[worktreeKey]?.activeTabId ?? null;
+        const landingDrive =
+          chatActiveBefore !== null &&
+          takeAttentionLandingPanelTarget(worktreeKey, chatActiveBefore);
         const panelActiveBefore = activeBoundTabId(layoutBefore);
         const seenBefore =
           lastChatActiveTabId.has(worktreeKey) ||
@@ -1107,7 +1387,21 @@ function runSweep(): void {
         const preserveRestoredSelection =
           !seenBefore &&
           selection.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID;
-        for (const tab of chatTabs) {
+        const documentsGroup = usesDocumentsGroup(worktreeKey);
+        const requestedFileTabId = pendingFileOpenIntents.get(worktreeKey);
+        pendingFileOpenIntents.delete(worktreeKey);
+        // Origins of already-open files explicitly reopened this sweep, read
+        // before their one-shot hints are dropped below.
+        const reopenedFileOrigins = new Map<string, string | null>();
+        // Files open beside a chat, so a chat still awaiting its panel is
+        // materialized before the files that anchor beside it.
+        const materializeOrder = documentsGroup
+          ? [
+              ...chatTabs.filter((tab) => tab.kind !== 'file'),
+              ...chatTabs.filter((tab) => tab.kind === 'file'),
+            ]
+          : chatTabs;
+        for (const tab of materializeOrder) {
           // A panel-initiated close removes the panel before the chat store's
           // authoritative archive/cancel request completes. Do not interpret
           // that intentional gap as a missing panel to recreate: addTab would
@@ -1146,12 +1440,48 @@ function runSweep(): void {
               useChatStore.getState().worktreeChats[worktreeKey]?.activeTabId;
           if (findPanelByInstanceKey(worktreeKey, instanceKey) !== null) {
             if (tab.kind === 'file') {
+              const hint = pendingFilePanelPlacements.get(tab.id);
+              if (
+                hint !== undefined &&
+                (hint.kind !== 'beside-chat' || hint.activate !== false)
+              ) {
+                reopenedFileOrigins.set(
+                  tab.id,
+                  hint.kind === 'beside-chat' ? hint.originChatTabId : null,
+                );
+              }
               pendingFilePanelPlacements.delete(tab.id);
             }
             continue;
           }
           const layout = usePanelLayoutStore.getState().layouts[worktreeKey];
           if (!layout) break;
+          if (tab.kind === 'file' && documentsGroup) {
+            const placement = materializeFilePanelInDocumentsGroup(
+              worktreeKey,
+              seed,
+              pendingFilePanelPlacements.get(tab.id),
+              activate,
+            );
+            if (placement.kind !== 'no-anchor') {
+              pendingFilePanelPlacements.delete(tab.id);
+            }
+            if (placement.kind === 'placed') {
+              addedInstanceKeys.add(instanceKey);
+              continue;
+            }
+            if (placement.kind === 'failed') {
+              // Never fall back into the chat group. Close the file tab that
+              // found no place, so no panel-less tab retries placement on
+              // every sweep.
+              useChatStore.getState().closeTab(tab.id, {
+                projectId: selection.projectId,
+                worktreeId: selection.worktreeId,
+              });
+              continue;
+            }
+            // No chat to anchor beside: the existing placement applies.
+          }
           const minimalDestination =
             getWorkspaceLayoutMode(worktreeKey) === 'minimal'
               ? ensureMinimalDestination(
@@ -1162,10 +1492,9 @@ function runSweep(): void {
           const preferredGroupId =
             minimalDestination ?? pickContentTargetGroupId(layout);
           if (preferredGroupId === null) break;
-          // Resolved only when the placement hints below do not apply, so a
-          // full preferred row is never split for a tab that lands elsewhere.
-          const addToGroupWithRoom = (): string | null => {
-            const groupId = groupWithRoom(
+          // Resolved only when the placement hints below do not apply.
+          const addToPlacementGroup = (): string | null => {
+            const groupId = placementGroupId(
               worktreeKey,
               preferredGroupId,
               seed.kind,
@@ -1205,7 +1534,7 @@ function runSweep(): void {
             (tab.kind === 'file'
               ? materializeFilePanelFromPlacement(worktreeKey, seed, activate)
               : null) ??
-            addToGroupWithRoom();
+            addToPlacementGroup();
           if (tab.kind === 'file') {
             pendingFilePanelPlacements.delete(tab.id);
           }
@@ -1258,9 +1587,16 @@ function runSweep(): void {
               worktreeKey
             ]?.tabs.find((tab) => tab.id === useChatStore.getState().worktreeChats[worktreeKey]?.activeTabId) ??
           undefined;
+        const explicitFileOpen =
+          documentsGroup &&
+          chatActiveTab?.kind === 'file' &&
+          (reopenedFileOrigins.has(chatActiveTab.id) ||
+            requestedFileTabId === chatActiveTab.id);
         if (
           panelActiveChanged &&
           !chatActiveChanged &&
+          !landingDrive &&
+          !explicitFileOpen &&
           panelActiveBefore !== null &&
           panelActiveBefore !== chatActiveBefore
         ) {
@@ -1274,23 +1610,54 @@ function runSweep(): void {
           // An explicit chat-side change or a just-materialized panel is user
           // interaction → select AND focus. Ordinary worktrees preserve the
           // historical first-sweep behavior of re-activating the chat-store
-          // tab within its group. The shared-container viewer instead keeps
+          // tab within its group, unless the group restored an unbound panel
+          // (a Browser) as its selection. The shared-container viewer keeps
           // the restored panel selection verbatim: its persisted active tab
           // is recipient-local view state, and must win over the projected
           // chat manifest's active tab after restart.
           const interactionDrive =
+            landingDrive ||
             chatActiveChanged ||
+            explicitFileOpen ||
             (addedInstanceKeys.has(instanceKey) && !preserveRestoredSelection);
           const shouldDrive =
             interactionDrive ||
             (!seenBefore &&
               selection.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID);
           if (shouldDrive) {
-            const location = findPanelByInstanceKey(worktreeKey, instanceKey);
-            if (location !== null) {
-              const layout =
-                usePanelLayoutStore.getState().layouts[location.layoutKey];
-              const group = layout?.groups[location.groupId];
+            let canReveal = true;
+            if (
+              documentsGroup &&
+              (chatActiveChanged || explicitFileOpen) &&
+              chatActiveTab.kind === 'file' &&
+              !addedInstanceKeys.has(instanceKey)
+            ) {
+              canReveal = repairFilePanelPlacement(
+                worktreeKey,
+                chatActiveTab.id,
+                reopenedFileOrigins.get(chatActiveTab.id) ?? null,
+              );
+            }
+            const location = canReveal
+              ? findPanelByInstanceKey(worktreeKey, instanceKey)
+              : null;
+            const layout =
+              location === null
+                ? undefined
+                : usePanelLayoutStore.getState().layouts[location.layoutKey];
+            const group =
+              location === null ? undefined : layout?.groups[location.groupId];
+            // The chat side's active tab only tracks chat- and file-bound
+            // panels, so it cannot record that a Browser or another unbound
+            // panel was selected over it. Hydration keeps that restored
+            // selection instead of covering it with the chat-active tab.
+            const keepsRestoredUnboundSelection =
+              !interactionDrive &&
+              location !== null &&
+              group !== undefined &&
+              group.activePanelId !== location.panelId &&
+              restoredActiveTabIsUnbound(group);
+            if (location !== null && !keepsRestoredUnboundSelection) {
               const alreadyActive =
                 layout !== undefined &&
                 group !== undefined &&
@@ -1317,16 +1684,29 @@ function runSweep(): void {
                     { focus: interactionDrive },
                   );
               }
+              if (
+                documentsGroup &&
+                interactionDrive &&
+                chatActiveTab.kind === 'file'
+              ) {
+                focusDocumentsGroup(location.layoutKey, location.groupId);
+              }
             }
           }
         }
 
         // Settled snapshots for the next sweep's change detection.
-        lastChatActiveTabId.set(
-          worktreeKey,
-          useChatStore.getState().worktreeChats[worktreeKey]?.activeTabId ??
-            null,
-        );
+        const settledChats = useChatStore.getState().worktreeChats[worktreeKey];
+        const settledActiveTabId = settledChats?.activeTabId ?? null;
+        lastChatActiveTabId.set(worktreeKey, settledActiveTabId);
+        if (
+          settledChats?.tabs.some(
+            (tab) => tab.id === settledActiveTabId && tab.kind !== 'file',
+          ) === true &&
+          settledActiveTabId !== null
+        ) {
+          lastActiveChatKindTabId.set(worktreeKey, settledActiveTabId);
+        }
         lastPanelActiveTabId.set(
           worktreeKey,
           activeBoundTabId(usePanelLayoutStore.getState().layouts[worktreeKey]),
@@ -1419,6 +1799,13 @@ export function initChatPanelSync(): void {
   }
   installed = true;
   installPanelTabCloseGuard();
+  unsubscribeFileOpen = subscribeFilePanelOpen((intent): void => {
+    pendingFileOpenIntents.set(intent.worktreeKey, intent.fileTabId);
+    if (intent.previousChatTabId !== null) {
+      lastActiveChatKindTabId.set(intent.worktreeKey, intent.previousChatTabId);
+    }
+    scheduleSweep();
+  });
 
   let previousChatChats = useChatStore.getState().worktreeChats;
   let previousChatSelection = useChatStore.getState().selectedWorktree;
@@ -1500,20 +1887,28 @@ export function getChatPanelSyncOwnerKeys(): string[] {
 export function requestFilePanelPlacementBesideChat(
   fileTabId: string,
   originChatTabId: string,
-): void {
-  pendingFilePanelPlacements.set(fileTabId, {
+  options?: { activate?: boolean },
+): () => void {
+  const placement: FilePanelPlacementHint = {
     kind: 'beside-chat',
     originChatTabId,
-  });
+    activate: options?.activate !== false,
+  };
+  pendingFilePanelPlacements.set(fileTabId, placement);
   scheduleSweep();
+  return (): void => {
+    if (pendingFilePanelPlacements.get(fileTabId) === placement) {
+      pendingFilePanelPlacements.delete(fileTabId);
+    }
+  };
 }
 
 /**
  * One-shot hint: place `fileTabId`'s freshly materialized panel as a SIBLING
  * of `originFileTabId`'s panel (same group, directly after it). Used by
  * opens initiated from within a file tab — its embedded tree or breadcrumb.
- * A no-op for files that are already open (their panel exists, so the hint
- * is dropped and the tab is only activated).
+ * Existing panels keep their identity. Cowork activating reopens also repair
+ * a legacy chat-group placement before revealing the requested file.
  */
 export function requestFilePanelPlacementAsSibling(
   fileTabId: string,
@@ -1527,6 +1922,44 @@ export function requestFilePanelPlacementAsSibling(
     originFileTabId,
   });
   scheduleSweep();
+}
+
+/**
+ * Settles a file open before ShowFiles acknowledges it. A capacity refusal
+ * may have removed the optimistic tab; an existing legacy file may still be
+ * present but could not move out of the chat group. Neither is an opened file.
+ * Surfaces without documents placement keep their existing acknowledgement.
+ */
+export function settleFilePanelOpen(
+  worktreeKey: string,
+  fileTabId: string,
+  options: { activate?: boolean; originChatTabId?: string } = {},
+): boolean {
+  if (!usesDocumentsGroup(worktreeKey)) return true;
+  if (pendingSweep) {
+    pendingSweep = false;
+    runSweep();
+  }
+  const tabs = useChatStore.getState().worktreeChats[worktreeKey]?.tabs;
+  if (!tabs?.some((tab) => tab.id === fileTabId)) {
+    pendingFilePanelPlacements.delete(fileTabId);
+    return false;
+  }
+  if (resolveDocumentsAnchor(worktreeKey, null) === null) return true;
+  // Agent opens keep the chat active until creation is acknowledged, so
+  // active-tab reconciliation alone cannot repair an existing legacy panel.
+  if (
+    !repairFilePanelPlacement(
+      worktreeKey,
+      fileTabId,
+      options.originChatTabId ?? null,
+      options.activate === true,
+    )
+  ) {
+    return false;
+  }
+  const panel = findPanelByInstanceKey(worktreeKey, `file-diff:${fileTabId}`);
+  return panel !== null && !groupHoldsChat(panel.layoutKey, panel.groupId);
 }
 
 /**
@@ -1551,6 +1984,7 @@ export function placeFilePanelsBesideChat(
     pendingFilePanelPlacements.set(fileTabId, {
       kind: 'beside-chat',
       originChatTabId,
+      activate,
     });
   }
   if (pendingSweep) {
@@ -1559,7 +1993,15 @@ export function placeFilePanelsBesideChat(
   }
 
   const worktreeKey = `${projectId}/${worktreeId}`;
-  const origin = findPanelByInstanceKey(worktreeKey, `chat:${originChatTabId}`);
+  // A documents-group surface anchors the batch to a live chat even when the
+  // origin chat is stale, then re-selects that chat in its own group.
+  const documents = usesDocumentsGroup(worktreeKey)
+    ? resolveDocumentsAnchor(worktreeKey, originChatTabId)
+    : null;
+  const origin =
+    documents !== null
+      ? { layoutKey: documents.layoutKey, groupId: documents.anchor.groupId }
+      : findPanelByInstanceKey(worktreeKey, `chat:${originChatTabId}`);
   const store = usePanelLayoutStore.getState();
   const firstFile = findPanelByInstanceKey(
     worktreeKey,
@@ -1625,6 +2067,10 @@ export function placeFilePanelsBesideChat(
   );
   if (first?.groupId === targetGroupId) {
     store.selectTab(layoutKey, targetGroupId, first.panelId);
+    if (documents !== null) focusDocumentsGroup(layoutKey, targetGroupId);
+  }
+  if (documents !== null && documents.layoutKey === layoutKey) {
+    restoreAnchorChatSelection(layoutKey, documents.anchor);
   }
   return targetGroupId;
 }
@@ -1637,6 +2083,8 @@ export function placeFilePanelsBesideChat(
  */
 export function forgetChatPanelSyncWorktree(worktreeKey: string): void {
   lastChatActiveTabId.delete(worktreeKey);
+  lastActiveChatKindTabId.delete(worktreeKey);
+  pendingFileOpenIntents.delete(worktreeKey);
   lastPanelActiveTabId.delete(worktreeKey);
 }
 
@@ -1653,6 +2101,9 @@ export function flushChatPanelSyncForTests(): void {
 export function resetChatPanelSyncForTests(): void {
   unsubscribeChat?.();
   unsubscribePanels?.();
+  unsubscribeFileOpen?.();
+  unsubscribeFileOpen = null;
+  pendingFileOpenIntents.clear();
   unsubscribeChat = null;
   unsubscribePanels = null;
   setPanelTabCloseGuard(undefined);
@@ -1661,6 +2112,7 @@ export function resetChatPanelSyncForTests(): void {
   pendingSweep = false;
   lastFamilyBindings = new Map();
   lastChatActiveTabId.clear();
+  lastActiveChatKindTabId.clear();
   lastPanelActiveTabId.clear();
   lastHiddenChatTabIds = new Set();
   mountedOwnerRefCounts.clear();

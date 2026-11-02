@@ -4,7 +4,7 @@ const presentationModels = [];
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, rename } from 'node:fs/promises';
 import path from 'node:path';
 const state = process.env.COPILOT_HOME;
 await mkdir(state, { recursive: true });
@@ -25,6 +25,7 @@ const loginFromToken = (token) => {
 };
 // Replaced only by the fixture packager; ordinary runs use default quotas.
 const quotaFixtureFile = '';
+const heldTurnFixtureFile = '';
 const sessions = new Map();
 async function httpMcpRpc(serverConfig) {
   const headers = {
@@ -141,6 +142,8 @@ async function connectMcp(serverConfig) {
       clientInfo: { name: 'copilot-fixture', version: '1' },
     });
     const listed = await channel.rpc('tools/list', {});
+    if (listed.tools.some((tool) => tool.name === 'WatchDelegates'))
+      throw new Error('Fresh tool list includes WatchDelegates');
     return { ...channel, tools: listed.tools };
   } catch (error) {
     mcpChannels.delete(channel);
@@ -226,6 +229,13 @@ const server = net.createServer((socket) => {
     saved.turns++;
     await writeFile(savedFile, JSON.stringify(saved));
     if (prompt.includes('COPILOT_HOLD')) {
+      if (heldTurnFixtureFile) {
+        await writeFile(
+          `${heldTurnFixtureFile}.tmp`,
+          JSON.stringify({ pid: process.pid, turns: saved.turns, sessionId }),
+        );
+        await rename(`${heldTurnFixtureFile}.tmp`, heldTurnFixtureFile);
+      }
       event(sessionId, 'assistant.message_delta', {
         messageId: 'waiting',
         deltaContent: 'Waiting for Stop.',
@@ -233,6 +243,25 @@ const server = net.createServer((socket) => {
       return;
     }
     let answer = `Copilot fixture reply ${saved.turns}.`;
+    if (prompt.includes('COPILOT_REPOSITORY_POLICY')) {
+      const instructions = config.systemMessage?.content ?? '';
+      for (const sentinel of [
+        'ROOT_POLICY_SENTINEL',
+        'DESKTOP_POLICY_SENTINEL',
+      ]) {
+        if (instructions.split(sentinel).length !== 2)
+          throw new Error(
+            `Repository instructions missing or duplicated: ${sentinel}`,
+          );
+      }
+      if (
+        config.enableConfigDiscovery !== false ||
+        config.skipCustomInstructions !== true ||
+        config.enableOnDemandInstructionDiscovery !== false
+      )
+        throw new Error('Ambient instruction discovery must remain disabled.');
+      answer = 'Copilot received root and scoped repository instructions.';
+    }
     if (prompt.includes('COPILOT_HOME_NOTICE_FOLLOWUP'))
       answer = 'Home notice follow-up completed.';
     if (prompt.includes('COPILOT_UNAUTHORIZED_COMPLETION')) {
@@ -584,11 +613,7 @@ const server = net.createServer((socket) => {
         if (!settled) throw new Error('Selector fixture child did not settle');
         answer = `Integrated Copilot child: ${JSON.stringify(settled)}`;
       } else {
-        await appTool('WatchDelegates', {
-          delegationIds: [saved.delegationId],
-          mode: 'all',
-          timeoutMs: 60000,
-        });
+        // Completion notices are automatic; no watch call.
         answer = 'Waiting for delegated evidence.';
       }
     } else if (
@@ -900,6 +925,7 @@ const server = net.createServer((socket) => {
         };
         break;
       case 'session.options.update':
+        Object.assign(sessions.get(params.sessionId), params);
         result = {};
         break;
       case 'session.send':

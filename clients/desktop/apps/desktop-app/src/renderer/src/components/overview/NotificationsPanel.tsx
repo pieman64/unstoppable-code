@@ -7,12 +7,14 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { EmptyState } from '@/components/shared/StatusBlocks';
 import { formatRelativeTime } from '@/lib/format';
 import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
-import { Tooltip } from '@canopy/ui-shared';
+import { Button, Tooltip } from '@canopy/ui-shared';
 import { useContextScopedWorkspaces } from '@/hooks/useContextScopedWorkspaces';
 import { openInWorkspaceContext } from '@/lib/contextScope';
+import { toastCategoryLabel } from '@/lib/osNotifications';
 import { toastMessageReplayClass } from '@/lib/replayPrivacy';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { useCoworkEntryLabel } from '@/components/shared/useCoworkEntryLabel';
 
 function badgeClasses(type: Notification['type']): string {
   switch (type) {
@@ -28,7 +30,10 @@ function badgeClasses(type: Notification['type']): string {
 }
 
 function badgeLabel(notification: Notification): string {
-  return notification.meta?.category ?? typeLabel(notification.type);
+  const category = notification.meta?.category;
+  return category === undefined
+    ? typeLabel(notification.type)
+    : toastCategoryLabel(category);
 }
 
 function typeLabel(type: Notification['type']): string {
@@ -92,6 +97,16 @@ function NotificationCard({
 }): JSX.Element {
   const meta = notification.meta;
   const projects = useProjectsStore((state) => state.projects);
+  // A Cowork entry id is opaque; show the entry's name, as its toast did.
+  const coworkEntryLabel = useCoworkEntryLabel(
+    meta?.projectId,
+    meta?.worktreeId,
+    meta?.chatId,
+  );
+  const placeLabel =
+    projects.find((entry) => entry.id === meta?.projectId)?.type === 'cowork'
+      ? (coworkEntryLabel ?? meta?.worktreeId)
+      : meta?.worktreeId;
   const hasHydratedProjects = useProjectsStore(
     (state) => state.hasHydratedProjects,
   );
@@ -179,9 +194,9 @@ function NotificationCard({
           {meta?.workspaceName && meta?.worktreeId && (
             <span className="mx-1 opacity-60">·</span>
           )}
-          {meta?.worktreeId && (
+          {placeLabel && (
             <span className={`${POSTHOG_REPLAY_MASK_CLASS} fg-primary/80`}>
-              {meta.worktreeId}
+              {placeLabel}
             </span>
           )}
         </div>
@@ -189,15 +204,16 @@ function NotificationCard({
           {formatRelativeTime(new Date(notification.createdAt).toISOString())}
         </span>
         <Tooltip label="Dismiss notification">
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
             onClick={handleDismissClick}
             aria-label="Dismiss notification"
             data-testid="overview-notification-dismiss"
-            className="shrink-0 inline-flex h-5 w-5 items-center justify-center rounded fg-secondary hover:bg-secondary hover:fg-primary transition-colors focus-ring"
           >
             <AppCatalogCloseIcon width="14" height="14" aria-hidden="true" />
-          </button>
+          </Button>
         </Tooltip>
       </div>
       <div

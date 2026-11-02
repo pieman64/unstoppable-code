@@ -3,7 +3,8 @@
 // no Node handles cross it. `@canopy/core-platform`
 // selects one implementation per host at composition. Endpoint families land
 // first (C2a scaffold, CAN-3763; behavior in CAN-3766); secure files and paths
-// are C2b/C2b2 members; child supervision is C2c.
+// are C2b/C2b2 members; child supervision is C2c; power is CAN-5066; the
+// host-supplied Trash member is CAN-4101.
 
 export type PlatformOperatingSystem = 'darwin' | 'win32' | 'linux';
 
@@ -195,7 +196,11 @@ export interface PlatformSecureFileServices {
   ): Promise<PlatformPermissionResult>;
   /** Singly-linked regular sources only; atomic no-replace fails closed without hard links. */
   rename(request: PlatformRenameRequest): Promise<PlatformRenameResult>;
-  /** Windows is a no-op and returns `unsupported`, never a durability claim. */
+  /**
+   * Rejects on any open or flush failure. Windows `flushed` is CAN-5151 D1's
+   * API-level flush: namespace ordering undocumented, power-loss unverified.
+   * `unsupported` stays for hosts with no directory flush.
+   */
   syncDirectory(path: string): Promise<'flushed' | 'unsupported'>;
 }
 
@@ -256,6 +261,30 @@ export type PlatformProcessInspection =
   | { readonly state: 'absent' }
   | { readonly state: 'unverifiable'; readonly reason: string };
 
+/** One host process, for resource accounting only; never authority to signal. */
+export interface PlatformProcessTableRow {
+  readonly pid: number;
+  readonly ppid: number;
+  /** The POSIX process group; Windows has none and reports the PID. */
+  readonly pgid: number;
+  /** Share of all logical CPUs, 0 to 100. */
+  readonly cpuPercent: number;
+  readonly memoryRssBytes: number;
+  /** The executable's base name, never its arguments. */
+  readonly command: string;
+}
+
+export interface PlatformProcessTableRequest {
+  readonly signal?: AbortSignal;
+}
+
+export type PlatformProcessTable =
+  | {
+      readonly kind: 'sampled';
+      readonly rows: ReadonlyMap<number, PlatformProcessTableRow>;
+    }
+  | { readonly kind: 'unavailable'; readonly reason: string };
+
 export interface PlatformSupervisionServices {
   childProcessOptions(
     request: PlatformChildProcessRequest,
@@ -271,11 +300,21 @@ export interface PlatformSupervisionServices {
   inspectProcess(
     request: PlatformProcessInspectionRequest,
   ): Promise<PlatformProcessInspection>;
+  /**
+   * Every host process the user can see, for resource accounting. CPU is
+   * measured between this services instance's consecutive reads where the
+   * platform reports cumulative time, so a first read may report zero.
+   * Never rejects for an unreadable table: it reports `unavailable`.
+   */
+  readProcessTable(
+    request?: PlatformProcessTableRequest,
+  ): Promise<PlatformProcessTable>;
 }
 
 /**
- * Host-only: a spawned root whose process group stays owned until committed
- * or terminated. Not part of PlatformServices or any portable DTO.
+ * Host-only: a spawned root whose process group (a job on Windows) stays
+ * owned until committed or terminated. Not part of PlatformServices or any
+ * portable DTO.
  */
 export interface PlatformOwnedChild {
   /** The actual root PID, for correlation only; never authority to signal. */
@@ -304,9 +343,201 @@ export interface PlatformOwnedChildServices {
     readonly args: readonly string[];
     /** The complete child environment; nothing is inherited. */
     readonly environment: Readonly<Record<string, string>>;
-    /** Private bounded handoff, written then closed; never argv or environment. */
+    /**
+     * Private bounded handoff, written then closed; never argv or environment.
+     * Refused on Windows, where the launcher passes no startup claim.
+     */
     readonly stdin?: string;
   }): Promise<PlatformOwnedChild>;
+}
+
+/**
+ * Host-only: one stdio stream of an execution child, metered by credit.
+ * Delivered bytes hold credit until acknowledged, so at most the window is
+ * outstanding; past it the pipe stops being read and the child blocks.
+ */
+export interface PlatformExecutionOutput {
+  /**
+   * The next bytes, no more than the unacknowledged window allows; `null`
+   * once the stream has ended and everything was delivered, or once it was
+   * discarded. One read may be pending at a time.
+   */
+  read(options?: { readonly signal?: AbortSignal }): Promise<Uint8Array | null>;
+  /** Returns credit for delivered bytes; more than is outstanding is clamped. */
+  acknowledge(bytes: number): void;
+  /** Drops unread and later output and returns all credit. Idempotent. */
+  discard(): void;
+}
+
+/** Host-only: the stdin pipe of an execution child. */
+export interface PlatformExecutionInput {
+  /** Resolves once the OS has accepted every byte; rejects once stdin is closed. */
+  write(bytes: Uint8Array): Promise<void>;
+  /** Closes stdin after earlier writes. Idempotent. */
+  end(): Promise<void>;
+}
+
+/**
+ * `exited`: the root ended on its own with an exit code. `crashed`: a signal
+ * or Windows exception status ended it without a stop request. `cancelled`:
+ * a stop was requested before the root's exit was observed. `lost`: cleanup
+ * could not confirm that the root ended.
+ */
+export type PlatformExecutionOutcomeKind =
+  | 'exited'
+  | 'crashed'
+  | 'cancelled'
+  | 'lost';
+
+export interface PlatformExecutionOutcome {
+  readonly kind: PlatformExecutionOutcomeKind;
+  readonly code: number | null;
+  readonly signal: string | null;
+  /** `discarded` once any output was dropped unread. */
+  readonly output: 'complete' | 'discarded';
+}
+
+export interface PlatformExecutionRequest {
+  /** Fully qualified for the host; never resolved through PATH. */
+  readonly executable: string;
+  readonly args: readonly string[];
+  /** Fully qualified working directory. */
+  readonly cwd: string;
+  /** The complete child environment; nothing is inherited. */
+  readonly environment: Readonly<Record<string, string>>;
+  /** Defaults to `ignore`. */
+  readonly stdin?: 'pipe' | 'ignore';
+  /** `discard` still drains the pipe, so the child never blocks on it. Defaults to `pipe`. */
+  readonly stderr?: 'pipe' | 'discard';
+  /** Credit window per output stream; 1 byte to 1 MiB, default 64 KiB. */
+  readonly outputWindowBytes?: number;
+}
+
+/**
+ * Host-only: an execution child whose process tree stays owned until it is
+ * stopped, or its root exits and no other member remains. POSIX trees are
+ * process groups; descendants that start a new session or group leave them.
+ * Windows trees are kill-on-close jobs that forbid breakaway; the root is
+ * created inside its job, so every descendant it creates is in the tree.
+ * Members are only what the tree holds: stopping it says nothing of
+ * processes outside. Not part of PlatformServices or any portable DTO.
+ */
+export interface PlatformExecutionProcess {
+  /** The root PID, for correlation only; never authority to signal. */
+  readonly pid: number;
+  readonly stdin: PlatformExecutionInput | null;
+  readonly stdout: PlatformExecutionOutput;
+  readonly stderr: PlatformExecutionOutput | null;
+  /**
+   * Resolves exactly once, after the root's exit and the full delivery or
+   * discard of every output stream. Never rejects.
+   */
+  readonly outcome: Promise<PlatformExecutionOutcome>;
+  /**
+   * Discards output and stops every tree member, survivors of an exited root
+   * included. `graceful` sends TERM first on POSIX; Windows always forces.
+   * Resolves once the tree holds no member; rejects when that cannot be confirmed,
+   * and the outcome is then `lost` unless the root's exit was observed.
+   * Concurrent callers share one attempt; a failed attempt may be retried.
+   */
+  terminate(options?: {
+    readonly mode?: PlatformStopMode;
+    readonly signal?: AbortSignal;
+  }): Promise<void>;
+}
+
+export interface PlatformExecutionProcessServices {
+  /**
+   * Resolves once the child has started inside its owned tree. Rejects when
+   * it could not start or be placed in custody; such a child is stopped first.
+   */
+  start(request: PlatformExecutionRequest): Promise<PlatformExecutionProcess>;
+  /** Refuses later starts and force-stops every owned tree. */
+  shutdown(options?: { readonly signal?: AbortSignal }): Promise<void>;
+}
+
+/**
+ * `power-assertion`: an idle-sleep power assertion (macOS).
+ * `thread-execution-state`: `SetThreadExecutionState` on the host's main
+ * thread (Windows). `logind-inhibitor`: a systemd-logind sleep inhibitor
+ * (Linux). `electron`: Electron's `powerSaveBlocker`, which only the
+ * in-process desktop composition supplies. `unavailable`: nothing is held.
+ */
+export type PlatformPowerMechanism =
+  | 'power-assertion'
+  | 'thread-execution-state'
+  | 'logind-inhibitor'
+  | 'electron'
+  | 'unavailable';
+
+/** Why an assertion stopped being held, or never was. */
+export type PlatformPowerAssertionEnd =
+  | { readonly kind: 'released' }
+  | { readonly kind: 'lost'; readonly reason: string };
+
+/** Host-only: one held request to keep the system awake. Not a portable DTO. */
+export interface PlatformPowerAssertion {
+  /** Unique per services instance; for correlation only. */
+  readonly id: number;
+  /** Whether the OS holds it now. Throws when the backend cannot tell. */
+  isHeld(): boolean;
+  /** Resolves `true` once held, or `false` when it ended first. Never rejects. */
+  readonly held: Promise<boolean>;
+  /** Resolves once, when it is no longer held. Never rejects. */
+  readonly ended: Promise<PlatformPowerAssertionEnd>;
+  /**
+   * Throws without releasing when the backend refuses the request; the
+   * caller keeps the handle and may retry. Otherwise resolves once release
+   * is confirmed, or rejects when it cannot be. Idempotent once released.
+   */
+  release(): Promise<void>;
+}
+
+export type PlatformPowerAcquireResult =
+  | { readonly kind: 'acquired'; readonly assertion: PlatformPowerAssertion }
+  /** The host has no backend; repeating the request cannot help. */
+  | { readonly kind: 'unavailable'; readonly reason: string }
+  /** This attempt failed and holds nothing; a later request may succeed. */
+  | {
+      readonly kind: 'failed';
+      readonly reason: string;
+      readonly id?: number;
+    };
+
+/**
+ * Keeps the host out of idle system sleep; the display may still sleep. An
+ * assertion ends with the process that holds it, so a crashed host never
+ * leaves the machine awake.
+ */
+export interface PlatformPowerServices {
+  readonly mechanism: PlatformPowerMechanism;
+  /** Throws only for a request the backend refused outright. */
+  preventSystemSleep(request: {
+    readonly reason: string;
+  }): PlatformPowerAcquireResult;
+}
+
+/**
+ * Why a Trash request rejected. Neither code reports success, and no backend
+ * deletes permanently instead. `unavailable`: this host, or the entry's
+ * volume, has no trash; nothing was moved. `failed`: nothing was moved, and
+ * an entry the request named is still in place. `unconfirmed`: the outcome
+ * is unknown and the entry is no longer at its path, as when the trash
+ * helper ended without reporting; it may be in the trash, or gone. A
+ * rejection that carries no code, such as Electron's `shell.trashItem`,
+ * means `failed`.
+ */
+export type PlatformTrashErrorCode = 'unavailable' | 'failed' | 'unconfirmed';
+
+/**
+ * Moves an entry to the OS trash or recycle bin, with the signature of
+ * Electron's `shell.trashItem`. `path` is absolute, and the entry at it is
+ * moved itself: a symlink or junction, never its target. Resolves only once
+ * the OS reports the move; rejects otherwise, with `PlatformTrashError` from
+ * the native backends.
+ */
+export interface PlatformTrashServices {
+  trashItem(path: string): Promise<void>;
 }
 
 export interface PlatformServices {
@@ -316,4 +547,12 @@ export interface PlatformServices {
   readonly secureFiles: PlatformSecureFileServices;
   readonly paths: PlatformPathServices;
   readonly supervision: PlatformSupervisionServices;
+  readonly power: PlatformPowerServices;
+  /**
+   * Host-supplied; absent where the host has none, and a Trash request then
+   * fails instead of deleting permanently. `createNativeTrashServices` in
+   * `@canopy/core-platform` builds the native backends; no host composes
+   * them yet.
+   */
+  readonly trash?: PlatformTrashServices;
 }

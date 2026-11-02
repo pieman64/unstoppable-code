@@ -99,3 +99,53 @@ it('refreshes a completed-but-stale turn once, keyed by the owning turn, even wh
   });
   host.remove();
 });
+
+it("pages a tools-loaded continuation's omitted steps through its prompt's turn", () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  const calls: string[] = [];
+  // Main indexes one turn per prompt; its span holds the continuation too.
+  const continuation: TurnGroup = {
+    ...group,
+    isComplete: false,
+    userMessage: {
+      id: 'timer-2:wake',
+      role: 'system',
+      timestamp: 6,
+      blocks: [
+        {
+          type: 'wake_boundary',
+          turnId: 'turn-2',
+          spawningUserMessageId: 'user',
+          toolsLoaded: true,
+        },
+      ],
+    },
+  };
+  act(() => {
+    root.render(
+      <TurnGroupRenderer
+        group={continuation}
+        historyTurn={{ ...partiallyLoadedTurn, complete: true }}
+        historyError="Messages did not load."
+        onLoadHistory={(userMessageId: string): void => {
+          calls.push(userMessageId);
+        }}
+        chatPendingQuestions={[]}
+        isLastTurnGroup
+        isLastForkableTurnGroup
+      />,
+    );
+  });
+  act(() => {
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-transcript-retry"]')
+      ?.click();
+  });
+  expect(calls).toEqual(['user']);
+  act(() => {
+    root.unmount();
+  });
+  host.remove();
+});

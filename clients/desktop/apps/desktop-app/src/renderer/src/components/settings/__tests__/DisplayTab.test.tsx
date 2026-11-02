@@ -16,7 +16,12 @@ import { makeTestPreferences } from '@/test-utils/preferences';
 import { subscribePreferencesUpdated } from '@/lib/preferences-events';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { resetChatDetailStoreForTest } from '@/stores/chatDetailStore';
 import { DisplayTab } from '../DisplayTab';
+import {
+  querySettingsSelect,
+  type SettingsSelectProbe,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 const originalApiDescriptor = Object.getOwnPropertyDescriptor(window, 'api');
 const originalMatchMediaDescriptor = Object.getOwnPropertyDescriptor(
@@ -212,6 +217,152 @@ describe('DisplayTab worktree diff stats style', () => {
   });
 });
 
+describe('DisplayTab chat detail', () => {
+  beforeEach(() => {
+    resetChatDetailStoreForTest();
+  });
+  afterEach(() => {
+    resetChatDetailStoreForTest();
+  });
+
+  async function settle(): Promise<void> {
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    });
+  }
+
+  it('ends Appearance with the saved level and its description', async () => {
+    loadPreferences.mockResolvedValue(
+      makeTestPreferences({ chatDetail: 'compact' }),
+    );
+    const { container, cleanup } = await mount();
+    try {
+      await settle();
+      const labels = rowLabels(container);
+      expect(labels.indexOf('Interface scale')).toBe(
+        labels.indexOf('Chat detail') - 1,
+      );
+      const row = container.querySelector(
+        '[data-testid="settings-chat-detail-row"]',
+      );
+      expect(row?.nextElementSibling).toBeNull();
+      expect(
+        container
+          .querySelector('[data-testid="chat-detail-compact"]')
+          ?.getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(row?.textContent).toContain('Open a row to see each step.');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('defaults to Recent and saves the chosen level', async () => {
+    loadPreferences.mockResolvedValue(makeTestPreferences());
+    savePreferences.mockResolvedValue(
+      makeTestPreferences({ chatDetail: 'detailed' }),
+    );
+    const { container, cleanup } = await mount();
+    try {
+      await settle();
+      expect(
+        container
+          .querySelector('[data-testid="chat-detail-recent"]')
+          ?.getAttribute('aria-pressed'),
+      ).toBe('true');
+      const detailed = container.querySelector(
+        '[data-testid="chat-detail-detailed"]',
+      );
+      await click(detailed, 'Detailed');
+      await settle();
+      expect(savePreferences).toHaveBeenCalledWith({ chatDetail: 'detailed' });
+      expect(detailed?.getAttribute('aria-pressed')).toBe('true');
+      expect(
+        container.querySelector('[data-testid="settings-chat-detail-row"]')
+          ?.textContent,
+      ).toContain('Every step the agent takes gets its own row.');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('goes back to the saved level and says so when a save fails', async () => {
+    loadPreferences.mockResolvedValue(
+      makeTestPreferences({ chatDetail: 'recent' }),
+    );
+    savePreferences.mockRejectedValue(new Error('disk full'));
+    const { container, cleanup } = await mount();
+    try {
+      await settle();
+      await click(
+        container.querySelector('[data-testid="chat-detail-compact"]'),
+        'Compact',
+      );
+      await settle();
+      expect(
+        container
+          .querySelector('[data-testid="chat-detail-recent"]')
+          ?.getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        'Could not save this setting. Try again.',
+      );
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('DisplayTab dollar-sign math (CAN-5124)', () => {
+  it('defaults to On and persists Off', async () => {
+    loadPreferences.mockResolvedValue(makeTestPreferences({}));
+    savePreferences.mockResolvedValue(
+      makeTestPreferences({ singleDollarMath: false }),
+    );
+    const { container, cleanup } = await mount();
+
+    try {
+      const on = container.querySelector(
+        '[data-testid="single-dollar-math-on"]',
+      );
+      const off = container.querySelector(
+        '[data-testid="single-dollar-math-off"]',
+      );
+      expect(on?.getAttribute('aria-pressed')).toBe('true');
+      expect(off?.getAttribute('aria-pressed')).toBe('false');
+
+      await click(off, 'Off');
+
+      expect(savePreferences).toHaveBeenCalledWith({ singleDollarMath: false });
+      expect(off?.getAttribute('aria-pressed')).toBe('true');
+      expect(
+        container.querySelector('[data-testid="single-dollar-math-row"]')
+          ?.textContent,
+      ).toContain('stays text');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('shows a saved Off choice', async () => {
+    loadPreferences.mockResolvedValue(
+      makeTestPreferences({ singleDollarMath: false }),
+    );
+    const { container, cleanup } = await mount();
+    try {
+      expect(
+        container
+          .querySelector('[data-testid="single-dollar-math-off"]')
+          ?.getAttribute('aria-pressed'),
+      ).toBe('true');
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 describe('DisplayTab sidebar items (CAN-3678)', () => {
   it('closes Settings and asks the sidebar to open Customize', async () => {
     useNavigationStore.setState({
@@ -331,11 +482,12 @@ describe('DisplayTab project layout under early access', () => {
   });
 });
 
-function scrollbarSelect(container: HTMLElement): HTMLSelectElement {
-  const select = container.querySelector(
+function scrollbarSelect(container: HTMLElement): SettingsSelectProbe {
+  const select = querySettingsSelect(
+    container,
     '[data-testid="settings-scrollbar-behavior"]',
   );
-  if (!(select instanceof HTMLSelectElement)) {
+  if (!select) {
     throw new Error('Expected the scrollbar behavior select');
   }
   return select;
@@ -357,9 +509,8 @@ describe('DisplayTab scrollbar behavior', () => {
       ).toContain('Derived from your system settings');
       expect(document.documentElement.dataset.scrollbarBehavior).toBe('system');
 
+      select.choose('hover');
       await act(async () => {
-        select.value = 'hover';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
         await Promise.resolve();
       });
 
@@ -517,11 +668,12 @@ describe('DisplayTab interface scale', () => {
 function enrichmentSelect(
   container: HTMLElement,
   provider: 'linear' | 'github',
-): HTMLSelectElement {
-  const select = container.querySelector(
+): SettingsSelectProbe {
+  const select = querySettingsSelect(
+    container,
     `[data-testid="settings-${provider}-chat-enrichment-mode"]`,
   );
-  if (!(select instanceof HTMLSelectElement)) {
+  if (!select) {
     throw new Error(`Expected the ${provider} chat enrichment select`);
   }
   return select;
@@ -532,10 +684,8 @@ async function chooseEnrichmentMode(
   provider: 'linear' | 'github',
   mode: string,
 ): Promise<void> {
+  enrichmentSelect(container, provider).choose(mode);
   await act(async () => {
-    const select = enrichmentSelect(container, provider);
-    select.value = mode;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -579,15 +729,23 @@ describe('DisplayTab chat area data enrichment', () => {
         ]);
       }
       expect(
-        container.querySelector(`label[for="${linear.id}"]`)?.textContent,
+        container.querySelector(`label[for="${linear.trigger.id}"]`)
+          ?.textContent,
       ).toBe('Linear');
       expect(
-        container.querySelector(`label[for="${github.id}"]`)?.textContent,
+        container.querySelector(`label[for="${github.trigger.id}"]`)
+          ?.textContent,
       ).toBe('GitHub');
-      expect(linear.getAttribute('aria-label')).toBe('Linear chat enrichment');
-      expect(github.getAttribute('aria-label')).toBe('GitHub chat enrichment');
+      expect(linear.trigger.getAttribute('aria-label')).toBe(
+        'Linear chat enrichment',
+      );
+      expect(github.trigger.getAttribute('aria-label')).toBe(
+        'GitHub chat enrichment',
+      );
       const labels = rowLabels(container);
-      expect(labels.slice(-3)).toEqual(['Linear', 'GitHub', 'How it works']);
+      expect(labels.slice(-3, -1)).toEqual(['Linear', 'GitHub']);
+      // What each mode does is the section's description, not a row.
+      expect(labels).not.toContain('How it works');
       const explanation = container.querySelector(
         '[data-testid="chat-enrichment-how-it-works"]',
       )?.textContent;
@@ -886,7 +1044,7 @@ describe('DisplayTab headings', () => {
           container.querySelectorAll('h2'),
           (heading) => heading.textContent,
         ),
-      ).toEqual(['Appearance', 'Layout', 'Chat area data enrichment']);
+      ).toEqual(['Appearance', 'Layout', 'Chat area data enrichment', 'Math']);
     } finally {
       cleanup();
     }

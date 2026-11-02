@@ -25,27 +25,3 @@ export function getBaseName(filePath: string): string {
   );
   return slashIndex >= 0 ? filePath.slice(slashIndex + 1) : filePath;
 }
-
-const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
-
-/**
- * Human-readable byte size (`0 B`, `12 KB`, `1.4 MB`). Whole numbers below
- * 10 keep one decimal so small archives do not all collapse to `1 MB`.
- */
-export function formatByteSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return '0 B';
-  }
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < BYTE_UNITS.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  const unit = BYTE_UNITS[unitIndex];
-  if (unitIndex === 0) {
-    return `${Math.round(value)} ${unit}`;
-  }
-  const rounded = value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
-  return `${rounded} ${unit}`;
-}

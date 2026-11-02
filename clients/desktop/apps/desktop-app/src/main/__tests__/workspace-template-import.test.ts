@@ -1,12 +1,36 @@
 import type { ShareablePluginCatalog } from '../plugins/shareable-plugin-resolution';
+import type { MarketplaceInfo, PluginInfo } from '@canopy/protocol/plugins';
 import {
   installDesktopWorkspaceTemplateCapabilityPackages,
   prepareDesktopWorkspaceTemplateRefs,
   resolveDesktopWorkspaceTemplate,
 } from '../plugins/workspace-template-import';
 
+type WorkspaceTemplateRefPreparationDependencies = NonNullable<
+  Parameters<typeof prepareDesktopWorkspaceTemplateRefs>[1]
+>;
+type AddMarketplace =
+  WorkspaceTemplateRefPreparationDependencies['addMarketplace'];
+type InstallPlugin =
+  WorkspaceTemplateRefPreparationDependencies['installPlugin'];
+type InstallSkills =
+  WorkspaceTemplateRefPreparationDependencies['installSkills'];
+
+function buildMarketplacePlugin(
+  name: string,
+  marketplaceId: string,
+): PluginInfo {
+  return {
+    name,
+    sourcePath: `/plugins/${name}`,
+    marketplaceId,
+    providerSupport: { claude: 'native', codex: 'native' },
+    facets: {},
+  };
+}
+
 const document = {
-  version: 1 as const,
+  version: 2 as const,
   name: 'Course',
   description: '',
   instructions: 'Tutor patiently.',
@@ -25,6 +49,7 @@ const document = {
   customSkills: [
     { clientKey: 'custom-1', name: 'flashcards', rawSkill: 'raw bytes' },
   ],
+  starterPrompts: [],
 };
 
 describe('resolveDesktopWorkspaceTemplate', () => {
@@ -80,7 +105,13 @@ describe('resolveDesktopWorkspaceTemplate', () => {
         installPackage: () =>
           Promise.resolve({
             supportingFileCount: 0,
-            installedSkills: [{ name: 'Helper', localName: 'helper' }],
+            installedSkills: [
+              {
+                name: 'Helper',
+                localName: 'helper',
+                resourceId: 'helper',
+              },
+            ],
             uninstalledResourceLabels: [],
             keptLocalFiles: [],
           }),
@@ -217,44 +248,83 @@ describe('resolveDesktopWorkspaceTemplate', () => {
     ];
     const operations: string[] = [];
     let activeInstalls = 0;
-    const addMarketplace = jest.fn((repo: string) => {
+    const addMarketplace = jest.fn<
+      ReturnType<AddMarketplace>,
+      Parameters<AddMarketplace>
+    >((repo: string): ReturnType<AddMarketplace> => {
       operations.push(`add:${repo}`);
-      return Promise.resolve({
+      const plugins = [
+        'teacher',
+        'grader',
+        'writing-coach',
+        'lab-assistant',
+      ].map((name) => buildMarketplacePlugin(name, repo));
+      const providerStatus: MarketplaceInfo['providerStatus'] = {
+        claude: {
+          provider: 'claude',
+          state: 'valid',
+          accepted: true,
+          pluginCount: plugins.length,
+          lastCheckedAt: '2026-10-27T00:00:00.000Z',
+        },
+        codex: {
+          provider: 'codex',
+          state: 'valid',
+          accepted: true,
+          pluginCount: plugins.length,
+          lastCheckedAt: '2026-10-27T00:00:00.000Z',
+        },
+      };
+      const marketplace: MarketplaceInfo = {
+        id: repo,
+        name: repo,
+        sourceType: 'github',
+        sourceUrl: `https://github.com/${repo}.git`,
+        installLocation: `/marketplaces/${repo}`,
+        pluginCount: plugins.length,
+        plugins,
+        providerStatus,
+        validProviders: ['claude', 'codex'],
+      };
+      const result: Awaited<ReturnType<AddMarketplace>> = {
         success: true,
         data: {
-          marketplace: {
-            id: repo,
-            sourceUrl: `https://github.com/${repo}.git`,
-            plugins: [
-              { name: 'teacher' },
-              { name: 'grader' },
-              { name: 'writing-coach' },
-              { name: 'lab-assistant' },
-            ],
-          },
+          marketplace,
+          providerOutcomes: providerStatus,
         },
-      });
+      };
+      return Promise.resolve(result);
     });
-    const installPlugin = jest.fn(async (_id: string, name: string) => {
-      activeInstalls += 1;
-      expect(activeInstalls).toBe(1);
-      operations.push(`install:${name}`);
-      await Promise.resolve();
-      activeInstalls -= 1;
-    });
-    const installSkills = jest.fn(() =>
-      Promise.resolve({ success: true as const }),
+    const installPlugin = jest.fn<
+      ReturnType<InstallPlugin>,
+      Parameters<InstallPlugin>
+    >(
+      async (
+        marketplaceId: string,
+        name: string,
+      ): Promise<Awaited<ReturnType<InstallPlugin>>> => {
+        activeInstalls += 1;
+        expect(activeInstalls).toBe(1);
+        operations.push(`install:${name}`);
+        await Promise.resolve();
+        activeInstalls -= 1;
+        return {
+          success: true,
+          data: buildMarketplacePlugin(name, marketplaceId),
+        };
+      },
     );
+    const installSkills = jest.fn<
+      ReturnType<InstallSkills>,
+      Parameters<InstallSkills>
+    >((): ReturnType<InstallSkills> => Promise.resolve({ success: true }));
     const dependencies = {
       addMarketplace,
       installPlugin,
       installSkills,
     };
 
-    await prepareDesktopWorkspaceTemplateRefs(
-      refs,
-      dependencies as Parameters<typeof prepareDesktopWorkspaceTemplateRefs>[1],
-    );
+    await prepareDesktopWorkspaceTemplateRefs(refs, dependencies);
 
     expect(addMarketplace).toHaveBeenCalledTimes(2);
     expect(addMarketplace).toHaveBeenNthCalledWith(1, 'Example/Course');
@@ -293,7 +363,7 @@ describe('resolveDesktopWorkspaceTemplate', () => {
           installSkills,
           addMarketplace: jest.fn(),
           installPlugin: jest.fn(),
-        } as Parameters<typeof prepareDesktopWorkspaceTemplateRefs>[1],
+        },
       ),
     ).rejects.toThrow('The requested skill was not found.');
   });

@@ -289,7 +289,9 @@ test('a background completion offers notifications on return, and Not now sticks
     const app = new CanopyAppDriver(first.window);
     await app.openSettings();
     await app.openSettingsSection('canopy');
-    await first.window.getByTestId('settings-canopy-restore-checklist').click();
+    await expect(
+      first.window.getByTestId('settings-canopy-restore-checklist'),
+    ).toHaveCount(0);
     await app.closeSettings();
     expect(readPreferences(userDataDir).osNotificationOfferAnsweredAt).toBe(
       stamp,
@@ -408,30 +410,30 @@ for (const legacyNotifications of ['completed', 'dismissed']) {
   test(`a ${legacyNotifications} legacy checklist step suppresses the offer`, async () => {
     test.setTimeout(120_000);
     const { userDataDir, state } = seedProfile({ legacyNotifications });
+    const legacyAnswer =
+      readPreferences(userDataDir).homeOnboardingSuggestions.entries
+        .notifications;
+    const stamp = legacyAnswer.completedAt ?? legacyAnswer.dismissedAt;
     const { electronApp, window } = await launch(userDataDir);
     try {
       await setFocused(window, false);
       await completePipeline(electronApp, state);
       await setFocused(window, true);
       await expect(window.getByTestId('os-notification-offer')).toHaveCount(0);
-      const before =
-        readPreferences(userDataDir).homeOnboardingSuggestions.entries
-          .notifications;
-      const stamp = before.completedAt ?? before.dismissedAt;
       await window.evaluate(() =>
         window.api.savePreferences({ sidebarCollapsed: true }),
       );
       expect(readPreferences(userDataDir).osNotificationOfferAnsweredAt).toBe(
         stamp,
       );
-      // The retired record survives normalization and never renders a row.
+      // The independent answer survives; its retired source is no longer saved.
       await expect(
         window.getByTestId('home-onboarding-suggestion-notifications'),
       ).toHaveCount(0);
       expect(
-        readPreferences(userDataDir).homeOnboardingSuggestions.entries
-          .notifications,
-      ).toEqual(expect.any(Object));
+        readPreferences(userDataDir).homeOnboardingSuggestions?.entries
+          ?.notifications,
+      ).toBeUndefined();
     } finally {
       await closeOfferApp(electronApp, userDataDir);
     }
@@ -575,51 +577,6 @@ test('OS denial keeps the answer and offers system settings exactly once', async
       .poll(() => electronApp.evaluate(() => globalThis.__offerSettingsOpened))
       .toBe(1);
     await expect(window.getByTestId('os-notification-offer')).toHaveCount(0);
-  } finally {
-    await closeOfferApp(electronApp, userDataDir);
-  }
-});
-
-test('every fresh Getting started step excludes notifications on Home and sidebar', async () => {
-  test.setTimeout(180_000);
-  const { userDataDir } = seedProfile({ fresh: true });
-  const { electronApp, window } = await launch(userDataDir);
-  try {
-    const app = new CanopyAppDriver(window);
-    let lastTotal;
-    for (let index = 0; index < 20; index++) {
-      await expect(
-        window.getByTestId('home-onboarding-suggestion-notifications'),
-      ).toHaveCount(0);
-      if (
-        (await window
-          .getByTestId('home-onboarding-checklist-progress')
-          .count()) === 0
-      )
-        break;
-      const entry = await app.currentHomeChecklistEntry();
-      expect(entry).not.toBe('notifications');
-      const homeCount = await window
-        .getByTestId('home-onboarding-checklist-progress')
-        .innerText();
-      lastTotal = homeCount.split('/')[1];
-      await app.openPluginsPage();
-      const sidebar = window.getByTestId('sidebar-onboarding-checklist');
-      await expect(sidebar).not.toHaveAttribute(
-        'data-entry-id',
-        'notifications',
-      );
-      await window.getByTestId('sidebar-create-task').click();
-      await app.advanceHomeChecklist();
-    }
-    expect(lastTotal).toBeDefined();
-    await expect(
-      window.getByTestId('home-onboarding-checklist-progress'),
-    ).toHaveCount(0);
-    await app.openPluginsPage();
-    await expect(
-      window.getByTestId('sidebar-onboarding-checklist'),
-    ).toHaveCount(0);
   } finally {
     await closeOfferApp(electronApp, userDataDir);
   }

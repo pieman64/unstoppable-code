@@ -24,6 +24,7 @@ jest.mock('@/hooks/useAiCreditsUsage', () => ({
   refreshAiCreditsUsage: (): void => {
     mockRefreshAiCreditsUsage();
   },
+  useAiCreditsUsage: (): { refreshing: boolean } => ({ refreshing: false }),
 }));
 
 // Keeps the real ProviderUsageCards module (for its provider selector) from
@@ -175,7 +176,7 @@ describe('UsagePage', () => {
     });
     useObservabilityStore.setState({
       initialized: false,
-      usage: { updatedAt: null, providers: [] },
+      usage: { updatedAt: '1970-01-01T00:00:00.000Z', providers: [] },
       initialize: originalObservability.initialize,
     });
 

@@ -3,7 +3,10 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  ExecutionState,
+  NormalizedJob,
+} from '@canopy/desktop-shared/types/pipeline';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { PipelineJobView } from '../details/PipelineJobView';
 
@@ -48,7 +51,7 @@ function matrixState(
   executionStatus: ExecutionState['status'],
   variantStatus: ExecutionState['jobs'][string]['status'],
 ): ExecutionState {
-  const logicalJob = {
+  const logicalJob: NormalizedJob = {
     name: 'Build matrix',
     needs: [],
     if: 'true',
@@ -62,7 +65,16 @@ function matrixState(
       dynamic: false,
       fail_fast: true,
     },
-    steps: [{ id: 'run', name: 'Run', shell: 'bash' as const }],
+    steps: [
+      {
+        id: 'run',
+        name: 'Run',
+        shell: 'bash',
+        continue_on_error: false,
+        timeout_minutes: 30,
+        skip_on_missing_action: false,
+      },
+    ],
   };
   return {
     version: 8,
@@ -70,6 +82,7 @@ function matrixState(
     pipeline_id: 'matrix-pipeline',
     pipeline_snapshot: {
       name: 'Matrix pipeline',
+      scope: ['directory'],
       jobs: { build: logicalJob },
     },
     status: executionStatus,

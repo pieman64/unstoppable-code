@@ -1,3 +1,4 @@
+import { subscribeAcceptedWorktreeTurns } from '@/components/onboarding-tips/homeSendEvents';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import type {
   AutomationMutationResponse,
@@ -11,9 +12,14 @@ import type {
   SingleRepoSidebarItem,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
-import { DEFAULT_MODEL, initCodexModels } from '@canopy/desktop-shared/types';
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_MODEL,
+  initCodexModels,
+} from '@canopy/desktop-shared/types';
 import { orgDefaultCoworkWorkspaceId } from '@canopy/desktop-shared/types';
-import { useChatStore } from '@/stores/chatStore';
+import { useChatStore, type ChatTab } from '@/stores/chatStore';
+import { createEmptyTab } from '@/stores/chat/tab-utils';
 import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
 import {
   useProjectsStore,
@@ -25,7 +31,12 @@ import { useAutomationsStore } from '@/stores/automationsStore';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
 import { useGitHubConnectOfferStore } from '@/stores/githubConnectOfferStore';
 import { importChatAttachments } from '@/lib/chatAttachments';
+import * as promptMentionExpansion from '@/lib/promptMentionExpansion';
 import { showAutomationCreatedToast } from '@/lib/automationToasts';
+import {
+  toActiveComposerView,
+  toActiveTranscriptView,
+} from '@/components/chat/types';
 import { ensureWorktreePanelLayout } from '@/lib/panels/persistence-bridge';
 import { applyNewChatPluginSelections } from '@/lib/chatPluginEditing';
 import type { AttachmentMeta } from '@canopy/desktop-shared/types';
@@ -34,7 +45,13 @@ import {
   cancelHomeLinkSubmission,
   dispatchHomeSend,
   resolveTaskReadyLaunchTarget,
+  retryFailedFirstSend,
 } from '../components/home/homeSend';
+import {
+  cachedHomeModelRefusal,
+  preflightHomeModel,
+} from '../components/home/homeModelPreflight';
+import { useGitHubStore } from '@/stores/githubStore';
 import {
   resetHomeLinkTargetSyncForTests,
   syncHomeLinkTarget,
@@ -52,6 +69,16 @@ jest.mock('@/lib/panels/persistence-bridge', () => ({
   ensureWorktreePanelLayout: jest.fn(() => Promise.resolve()),
 }));
 
+jest.mock('@/components/chat/chatMessageListChunk', () => ({
+  loadChatMessageListModule: jest.fn(() => Promise.resolve({})),
+}));
+
+// CAN-5021: eligibility facts are covered in homeModelPreflight.test.ts;
+// here every model passes unless a test establishes a refusal.
+jest.mock('@/components/home/homeModelPreflight', () => ({
+  preflightHomeModel: jest.fn(() => Promise.resolve({ ok: true })),
+  cachedHomeModelRefusal: jest.fn(() => ({ ok: true })),
+}));
 jest.mock('@/lib/chatPluginEditing', () => ({
   applyNewChatPluginSelections: jest.fn(() => Promise.resolve()),
 }));
@@ -219,7 +246,20 @@ function seedLoadTabsForTarget(
       callOrder.push('loadTabsForTarget');
       useChatStore.setState({
         worktreeChats: {
-          'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+          'ws-1/wt-1': {
+            tabs: [
+              {
+                ...createEmptyTab(),
+                ...useChatStore
+                  .getState()
+                  .worktreeChats[
+                    'ws-1/wt-1'
+                  ]?.tabs.find((tab) => tab.id === 'tab-1'),
+                id: 'tab-1',
+              },
+            ],
+            activeTabId: 'tab-1',
+          },
         },
       });
       return Promise.resolve();
@@ -231,7 +271,20 @@ function seedLoadTabsForTarget(
       callOrder.push('loadAllWorktreeTabs');
       useChatStore.setState({
         worktreeChats: {
-          'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+          'ws-1/wt-1': {
+            tabs: [
+              {
+                ...createEmptyTab(),
+                ...useChatStore
+                  .getState()
+                  .worktreeChats[
+                    'ws-1/wt-1'
+                  ]?.tabs.find((tab) => tab.id === 'tab-1'),
+                id: 'tab-1',
+              },
+            ],
+            activeTabId: 'tab-1',
+          },
         },
       });
       return Promise.resolve();
@@ -400,6 +453,8 @@ function resetStores(): void {
 beforeEach(() => {
   resetStores();
   resetHomeLinkTargetSyncForTests();
+  jest.mocked(preflightHomeModel).mockReset().mockResolvedValue({ ok: true });
+  jest.mocked(cachedHomeModelRefusal).mockReset().mockReturnValue({ ok: true });
 });
 
 describe('Cursor Home runtime availability', () => {
@@ -444,7 +499,7 @@ describe('Cursor Home runtime availability', () => {
 
 describe('dispatchHomeSend guards', () => {
   it.each(['new-worktree', 'worktree'] as const)(
-    'carries attachment-only drafts and settings into a %s chat',
+    'sends attachment-only drafts and settings into a %s chat',
     async (kind) => {
       seedLoadTabsForTarget('git-ready');
       await useChatStore.getState().loadAllWorktreeTabs([]);
@@ -475,16 +530,21 @@ describe('dispatchHomeSend guards', () => {
         { projectId: 'ws-1', worktreeId: 'wt-1' },
         [attachment.absolutePath],
       );
-      expect(
-        useChatStore.getState().addPendingAttachments,
-      ).toHaveBeenCalledWith([{ ...restaged, promptKind: 'linear-ticket' }], {
-        projectId: 'ws-1',
-        worktreeId: 'wt-1',
-        chatId: 'tab-1',
-      });
       expect(useChatStore.getState().togglePlanMode).toHaveBeenCalled();
       expect(useChatStore.getState().setTabApprovalMode).toHaveBeenCalled();
-      expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+      expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        undefined,
+        { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
+        undefined,
+        expect.objectContaining({
+          attachmentPaths: [restaged.absolutePath],
+        }),
+      );
+      expect(
+        typeof jest.mocked(useChatStore.getState().sendMessage).mock
+          .calls[0]?.[4]?.userMessageId,
+      ).toBe('string');
       expect(useHomeComposerStore.getState().attachments).toEqual([]);
     },
   );
@@ -741,8 +801,8 @@ describe('dispatchHomeSend cowork routing', () => {
     const request = jest.mocked(
       useStandaloneChatStore.getState().createStandaloneChatWithMessage,
     ).mock.calls[0]?.[0];
-    expect(request?.config.model).toBe('limited-codex');
-    expect(request?.config.thinkingLevel).toBe('high');
+    expect(request?.config?.model).toBe('limited-codex');
+    expect(request?.config?.thinkingLevel).toBe('high');
   });
 
   it('does not touch chatStore worktree/tab flows for cowork', async () => {
@@ -761,6 +821,51 @@ describe('dispatchHomeSend cowork routing', () => {
 });
 
 describe('dispatchHomeSend existing-worktree routing', () => {
+  it.each(['accepted', 'queued', 'rejected'] as const)(
+    'reports a Home worktree turn only after %s dispatch',
+    async (outcome) => {
+      useProjectsStore.setState({
+        projects: [
+          makeSingleRepoProject('ws-1', { worktrees: [makeWorktree()] }),
+        ],
+      });
+      jest.mocked(useChatStore.getState().createTab).mockImplementation(() => {
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
+          },
+        });
+      });
+      useHomeComposerStore.setState({
+        workspaceId: 'ws-1',
+        branchTarget: { kind: 'worktree', worktreeId: 'wt-1' },
+        text: 'A live turn',
+      });
+      jest
+        .mocked(useChatStore.getState().sendMessage)
+        .mockImplementation(
+          (_text, _refs, _target, _mode, options): Promise<void> => {
+            if (outcome === 'accepted') options?.onDispatchAccepted?.();
+            if (outcome === 'queued')
+              options?.onQueuedWithoutDispatch?.('renderer');
+            if (outcome === 'rejected') options?.onPreDispatchRejected?.();
+            return Promise.resolve();
+          },
+        );
+      const accepted = jest.fn();
+      const unsubscribe = subscribeAcceptedWorktreeTurns(accepted);
+      try {
+        await dispatchHomeSend();
+        expect(accepted).toHaveBeenCalledTimes(outcome === 'accepted' ? 1 : 0);
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
   it('waits for the canonical Auto selection before accepting the first message', async () => {
     useProjectsStore.setState({
       projects: [
@@ -772,7 +877,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       .mockImplementation((): void => {
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -827,7 +935,7 @@ describe('dispatchHomeSend existing-worktree routing', () => {
         useChatStore.setState({
           worktreeChats: {
             'ws-1/wt-1': {
-              tabs: [],
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
               activeTabId: 'tab-1',
             },
           },
@@ -870,14 +978,17 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      { attachmentPaths: undefined, attachmentPromptContexts: undefined },
+      expect.objectContaining({
+        attachmentPaths: undefined,
+        attachmentPromptContexts: undefined,
+      }),
     );
 
     // Config (via createTab) and the plan toggle both happen before sendMessage.
     expect(callOrder).toEqual([
+      'createTab',
       'selectWorktree',
       'navigate',
-      'createTab',
       'ensureWorktreeHasChatTab',
       'togglePlanMode',
       'sendMessage',
@@ -896,7 +1007,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       .mockImplementation((): void => {
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -934,7 +1048,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       [pluginMention],
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      { attachmentPaths: undefined, attachmentPromptContexts: undefined },
+      expect.objectContaining({
+        attachmentPaths: undefined,
+        attachmentPromptContexts: undefined,
+      }),
     );
   });
 
@@ -950,7 +1067,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
         callOrder.push('createTab');
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -969,9 +1089,9 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       'full-access',
     );
     expect(callOrder).toEqual([
+      'createTab',
       'selectWorktree',
       'navigate',
-      'createTab',
       'ensureWorktreeHasChatTab',
       'setTabApprovalMode',
       'sendMessage',
@@ -989,7 +1109,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       .mockImplementation((): void => {
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -1017,7 +1140,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
         callOrder.push('createTab');
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -1062,7 +1188,7 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         attachmentPaths: [
           '/workspaces/ws-1/attachments/wt-1/linear-can-202.md',
         ],
@@ -1073,7 +1199,7 @@ describe('dispatchHomeSend existing-worktree routing', () => {
             promptKind: 'linear-ticket',
           },
         ],
-      },
+      }),
     );
 
     // The `toHaveBeenCalledWith` assertion above already pins
@@ -1081,9 +1207,9 @@ describe('dispatchHomeSend existing-worktree routing', () => {
     // the stale home-draft path never reaches the dispatched payload.
 
     expect(callOrder).toEqual([
+      'createTab',
       'selectWorktree',
       'navigate',
-      'createTab',
       'ensureWorktreeHasChatTab',
       'importChatAttachments',
       'sendMessage',
@@ -1101,7 +1227,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       .mockImplementation((): void => {
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -1126,10 +1255,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         attachmentPaths: ['/workspaces/ws-1/attachments/wt-1/a.png'],
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
@@ -1139,7 +1268,10 @@ describe('dispatchHomeSend existing-worktree routing', () => {
       .mockImplementation((): void => {
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -1413,7 +1545,7 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
     expect(useChatStore.getState().deselectWorktree).toHaveBeenCalledTimes(1);
     // Task I1: the created worktree's chat is seeded, then the worktree is
     // selected and navigated to, so the FIRST Code frame is its real chat
-    // panel (with the queued bubble + `pending_setup_info` banner).
+    // panel (with the queued bubble explaining the setup wait).
     expect(useChatStore.getState().selectWorktree).toHaveBeenCalledWith(
       'ws-1',
       'wt-1',
@@ -1451,11 +1583,11 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       undefined,
       target,
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: true,
         attachmentPaths: ['/workspaces/ws-1/attachments/wt-1/a.png'],
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
 
     // Task I1 single-transition ordering: deselect (sync) → create (fast,
@@ -1693,11 +1825,11 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: true,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
@@ -1787,7 +1919,7 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: undefined,
         attachmentPaths: [
           '/workspaces/ws-1/attachments/wt-1/linear-can-202.md',
@@ -1799,7 +1931,7 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
             promptKind: 'linear-ticket',
           },
         ],
-      },
+      }),
     );
   });
 
@@ -1831,11 +1963,11 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
@@ -1857,7 +1989,12 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       .mockImplementation((): Promise<void> => {
         callOrder.push('loadTabsForTarget');
         useChatStore.setState({
-          worktreeChats: { 'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' } },
+          worktreeChats: {
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
+          },
         });
         // Git setup completes here, after the reservation resolved.
         useProjectsStore.setState({
@@ -1883,18 +2020,18 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
   it('Task H3 fix 3: reads setupPhase LIVE before dispatch — still git-pending at dispatch keeps queueForSetup', async () => {
     // The complement: setup is still running at dispatch time, so the live
     // re-read yields `queueForSetup: true` and the message queues (queued bubble
-    // + `pending_setup_info` banner in the real chat).
+    // explaining the setup wait in the real chat).
     seedLoadTabsForTarget('git-pending');
     useHomeComposerStore.setState({
       workspaceId: 'ws-1',
@@ -1909,11 +2046,11 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: true,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
@@ -1941,11 +2078,11 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       undefined,
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: true,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
@@ -2200,6 +2337,1041 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
   });
 });
 
+describe('dispatchHomeSend CAN-4742 first-send echo', () => {
+  function starter(id = 'tab-1'): ChatTab {
+    return { ...createEmptyTab(), id };
+  }
+
+  function tabIn(chatId: string): ChatTab | undefined {
+    return useChatStore
+      .getState()
+      .worktreeChats['ws-1/wt-1']?.tabs.find((tab) => tab.id === chatId);
+  }
+
+  function userTexts(tab: ChatTab | undefined): string[] {
+    return (tab?.messages ?? [])
+      .filter((message) => message.role === 'user')
+      .flatMap((message) =>
+        message.blocks.flatMap((block) =>
+          block.type === 'text' ? [block.text] : [],
+        ),
+      );
+  }
+
+  function seedStarterHydration(
+    setupPhase: 'git-pending' | 'git-ready',
+    pendingInitialCreation = false,
+  ): void {
+    useProjectsStore.setState({
+      projects: [
+        makeSingleRepoProject('ws-1', {
+          worktrees: [makeWorktree({ setupPhase })],
+        }),
+      ],
+    });
+    jest
+      .mocked(useChatStore.getState().loadTabsForTarget)
+      .mockImplementation((): Promise<void> => {
+        callOrder.push('loadTabsForTarget');
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': {
+              tabs: [{ ...starter(), pendingInitialCreation }],
+              activeTabId: 'tab-1',
+            },
+          },
+        });
+        return Promise.resolve();
+      });
+  }
+
+  function draftNewWorktreeSend(text = 'build a thing'): void {
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'new-worktree' },
+      text,
+    });
+  }
+
+  it.each(['git-pending', 'git-ready'] as const)(
+    'shows the question and its title before the %s chat opens',
+    async (setupPhase) => {
+      seedStarterHydration(setupPhase);
+      const atNavigation: Array<{
+        texts: string[];
+        title?: string;
+        shown: string[];
+        queued: string[];
+        starting: boolean;
+      }> = [];
+      jest
+        .mocked(useNavigationStore.getState().navigate)
+        .mockImplementation((): void => {
+          callOrder.push('navigate');
+          const tab = tabIn('tab-1');
+          const view = tab ? toActiveTranscriptView(tab) : undefined;
+          atNavigation.push({
+            texts: userTexts(tab),
+            title: tab?.title,
+            shown: userTexts(view && { ...starter(), messages: view.messages }),
+            queued: view?.queuedMessages.map((row) => row.text) ?? [],
+            starting: view?.startingTurnUserMessageId !== undefined,
+          });
+        });
+      draftNewWorktreeSend('Why is the deck empty?');
+
+      await expect(dispatchHomeSend()).resolves.toBe(true);
+
+      // A chat still setting up opens on the queue row the send becomes,
+      // never on a starting turn that the queue then replaces (CAN-4981).
+      const pending = setupPhase === 'git-pending';
+      expect(atNavigation).toEqual([
+        {
+          texts: ['Why is the deck empty?'],
+          title: 'Why is the deck empty?',
+          shown: pending ? [] : ['Why is the deck empty?'],
+          queued: pending ? ['Why is the deck empty?'] : [],
+          starting: !pending,
+        },
+      ]);
+      const presented = tabIn('tab-1')?.provisionalFirstSend;
+      expect(presented?.phase).toBe('preparing');
+      expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
+        'Why is the deck empty?',
+        undefined,
+        { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
+        undefined,
+        expect.objectContaining({ userMessageId: presented?.userMessageId }),
+      );
+    },
+  );
+
+  it('fails before opening the chat when no starter exists to show the question', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().loadTabsForTarget)
+      .mockImplementation((): Promise<void> => Promise.resolve());
+    draftNewWorktreeSend();
+
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+
+    expect(useNavigationStore.getState().navigate).not.toHaveBeenCalled();
+    expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+    expect(useHomeComposerStore.getState().sendError).toBe(
+      'Failed to create chat tab.',
+    );
+  });
+
+  const failedTarget = {
+    projectId: 'ws-1',
+    worktreeId: 'wt-1',
+    chatId: 'tab-1',
+  };
+
+  function setTabModel(chatId: string, model: ChatTab['model']): void {
+    const scope = useChatStore.getState().worktreeChats['ws-1/wt-1'];
+    if (!scope) throw new Error('The worktree scope was not seeded.');
+    useChatStore.setState({
+      worktreeChats: {
+        'ws-1/wt-1': {
+          ...scope,
+          tabs: scope.tabs.map((tab) =>
+            tab.id === chatId ? { ...tab, model } : tab,
+          ),
+        },
+      },
+    });
+  }
+
+  it.each([
+    ['resolves false', (): Promise<boolean> => Promise.resolve(false)],
+    [
+      'rejects',
+      (): Promise<boolean> => Promise.reject(new Error('main refused it')),
+    ],
+  ])(
+    'keeps the prompt and title failed in place when the model change %s (CAN-5021)',
+    async (_label, refuse) => {
+      seedStarterHydration('git-ready');
+      jest
+        .mocked(useChatStore.getState().setModelAndWait)
+        .mockImplementation(refuse);
+      draftNewWorktreeSend();
+
+      await expect(dispatchHomeSend()).resolves.toBe(false);
+
+      const tab = tabIn('tab-1');
+      expect(userTexts(tab)).toEqual(['build a thing']);
+      expect(tab?.title).toBe('build a thing');
+      expect(tab?.pendingTurn).toBeUndefined();
+      expect(tab?.provisionalFirstSend?.phase).toBe('failed');
+      const view = tab && toActiveTranscriptView(tab);
+      expect(view?.messages.map((message) => message.id)).toEqual([
+        tab?.provisionalFirstSend?.userMessageId,
+      ]);
+      expect(view?.startingTurnUserMessageId).toBeUndefined();
+      // A bare refusal establishes no billing cause; the copy stays generic.
+      expect(tab && toActiveComposerView(tab).failedFirstSend?.message).toMatch(
+        /couldn’t be used to start this chat\. Choose another model\.$/,
+      );
+      expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+      expect(useHomeComposerStore.getState().text).toBe('build a thing');
+    },
+  );
+
+  it('names a refusal reason only when cached facts still establish it', async () => {
+    seedStarterHydration('git-ready');
+    jest.mocked(cachedHomeModelRefusal).mockReturnValueOnce({
+      ok: false,
+      reason: 'org-policy',
+      modelLabel: 'Opus',
+    });
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockResolvedValue(false);
+    draftNewWorktreeSend();
+
+    await dispatchHomeSend();
+
+    expect(tabIn('tab-1')?.provisionalFirstSend?.failure?.message).toBe(
+      'Opus is blocked by your organization’s model policy. Choose another model.',
+    );
+  });
+
+  it('withdraws the echo and its title when unrelated preparation fails, keeping the draft', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().ensureSelectedWorktreeTabsLoaded)
+      .mockResolvedValue(false);
+    draftNewWorktreeSend();
+
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+
+    const tab = tabIn('tab-1');
+    expect(tab?.messages).toEqual([]);
+    expect(tab?.pendingTurn).toBeUndefined();
+    expect(tab?.provisionalFirstSend).toBeUndefined();
+    expect(tab?.title).toBe('New Chat');
+    expect(useHomeComposerStore.getState().text).toBe('build a thing');
+    expect(useHomeComposerStore.getState().sendErrorChooseModel).toBeNull();
+  });
+
+  it('retries the same message exactly once in the failed chat without creating anything', async () => {
+    seedStarterHydration('git-ready');
+    const setModelAndWait = jest.mocked(
+      useChatStore.getState().setModelAndWait,
+    );
+    setModelAndWait.mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+    const failed = tabIn('tab-1')?.provisionalFirstSend;
+
+    const first = retryFailedFirstSend(failedTarget);
+    const second = retryFailedFirstSend(failedTarget);
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
+
+    expect(useProjectsStore.getState().createWorktree).toHaveBeenCalledTimes(1);
+    expect(useNavigationStore.getState().navigate).toHaveBeenCalledTimes(1);
+    expect(setModelAndWait).toHaveBeenCalledTimes(2);
+    expect(setModelAndWait.mock.calls[1]?.[0]).toBe(
+      setModelAndWait.mock.calls[0]?.[0],
+    );
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
+      'build a thing',
+      undefined,
+      failedTarget,
+      undefined,
+      expect.objectContaining({
+        userMessageId: failed?.userMessageId,
+        submittedAt: failed?.submittedAt,
+      }),
+    );
+    // The prompt never left the transcript, and the send consumed the draft.
+    expect(userTexts(tabIn('tab-1'))).toEqual(['build a thing']);
+    expect(tabIn('tab-1')?.provisionalFirstSend?.userMessageId).toBe(
+      failed?.userMessageId,
+    );
+    expect(useHomeComposerStore.getState().text).toBe('');
+  });
+
+  it.each(['preflight', 'model'] as const)(
+    'does not send or mutate a retry whose target closes during %s',
+    async (stage) => {
+      seedStarterHydration('git-ready');
+      const apply = jest.mocked(useChatStore.getState().setModelAndWait);
+      apply.mockResolvedValueOnce(false);
+      draftNewWorktreeSend();
+      await dispatchHomeSend();
+      let release = (): void => {
+        throw new Error('Gate not reached');
+      };
+      const gate = new Promise<boolean>((resolve) => {
+        release = (): void => resolve(true);
+      });
+      if (stage === 'preflight') {
+        jest.mocked(preflightHomeModel).mockImplementationOnce(async () => {
+          await gate;
+          return { ok: true };
+        });
+      } else {
+        apply.mockImplementationOnce(() => gate);
+      }
+      const retry = retryFailedFirstSend(failedTarget);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      useChatStore.setState({ worktreeChats: {} });
+      release();
+      await expect(retry).resolves.toBe(false);
+      expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+      expect(useHomeComposerStore.getState().sendError).toMatch(
+        /couldn’t be used to start this chat/,
+      );
+      if (stage === 'preflight') expect(apply).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not claim a retry while a picker selection is pending', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+    useChatStore.setState({
+      pendingModelChanges: {
+        'ws-1/wt-1/tab-1': {
+          requestId: 'picker-request',
+          model: DEFAULT_CODEX_MODEL,
+        },
+      },
+    });
+    try {
+      await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(false);
+      expect(tabIn('tab-1')?.provisionalFirstSend?.phase).toBe('failed');
+      expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+    } finally {
+      useChatStore.setState({ pendingModelChanges: {} });
+    }
+  });
+
+  it('uses an accepted same-model harness change for recovery', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+    const scope = useChatStore.getState().worktreeChats['ws-1/wt-1'];
+    if (!scope) throw new Error('Missing scope');
+    useChatStore.setState({
+      worktreeChats: {
+        'ws-1/wt-1': {
+          ...scope,
+          tabs: scope.tabs.map((tab) => ({
+            ...tab,
+            executionHarness: 'codex',
+          })),
+        },
+      },
+    });
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(true);
+    expect(useChatStore.getState().setModelAndWait).toHaveBeenLastCalledWith(
+      expect.any(String),
+      failedTarget,
+      'codex',
+    );
+  });
+
+  it('uses an accepted recovery pick even when the tab already retained that model', async () => {
+    seedStarterHydration('git-ready');
+    const apply = jest.mocked(useChatStore.getState().setModelAndWait);
+    const load = jest.mocked(useChatStore.getState().loadTabsForTarget);
+    const hydrate = load.getMockImplementation();
+    load.mockImplementation(async (...args) => {
+      await hydrate?.(...args);
+      setTabModel('tab-1', DEFAULT_CODEX_MODEL);
+    });
+    apply.mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+    const failure = tabIn('tab-1')?.provisionalFirstSend?.failure;
+    if (!failure) throw new Error('Missing failed send');
+    // Mirror the model setter's accepted intent, even for a same-value pick.
+    Object.assign(failure, { recoveryModelSelectionAccepted: true });
+
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(true);
+
+    expect(apply).toHaveBeenLastCalledWith(DEFAULT_CODEX_MODEL, failedTarget);
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry across an account change during eligibility reads', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+    const { useWorkspaceContextStore } =
+      await import('@/stores/workspaceContextStore');
+    const epoch = useWorkspaceContextStore.getState().accountEpoch;
+    jest.mocked(preflightHomeModel).mockImplementationOnce(() => {
+      useWorkspaceContextStore.setState({ accountEpoch: epoch + 1 });
+      return Promise.resolve({ ok: true });
+    });
+    try {
+      await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(false);
+      expect(useChatStore.getState().setModelAndWait).toHaveBeenCalledTimes(1);
+      expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+    } finally {
+      useWorkspaceContextStore.setState({ accountEpoch: epoch });
+    }
+  });
+
+  it('retains attachment contexts and mentions through retry without importing them twice', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockResolvedValueOnce(false);
+    const attachment = makeAttachment({ promptKind: 'linear-ticket' });
+    const imported = {
+      ...attachment,
+      absolutePath: '/tmp/ws-1/attachments/wt-1/ticket.md',
+    };
+    importChatAttachmentsMock.mockResolvedValue([imported]);
+    jest
+      .mocked(useFileListStore.getState().fetchFileIndex)
+      .mockResolvedValue(undefined);
+    const references: FileReference[] = [
+      { displayPath: 'readme.md', absolutePath: '/tmp/readme.md' },
+    ];
+    draftNewWorktreeSend('Review readme.md');
+    useHomeComposerStore.setState({
+      attachments: [attachment],
+      fileReferences: references,
+    });
+    await dispatchHomeSend();
+    const failed = tabIn('tab-1')?.provisionalFirstSend;
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(true);
+    expect(importChatAttachmentsMock).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
+      'Review readme.md',
+      references,
+      failedTarget,
+      undefined,
+      expect.objectContaining({
+        userMessageId: failed?.userMessageId,
+        submittedAt: failed?.submittedAt,
+        attachmentPaths: [imported.absolutePath],
+        attachmentPromptContexts: [
+          {
+            attachmentPath: imported.absolutePath,
+            promptKind: 'linear-ticket',
+          },
+        ],
+      }),
+    );
+  });
+
+  it('does not turn a superseded model completion into a user-facing refusal', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockImplementationOnce(() =>
+        Promise.resolve().then(() => {
+          useChatStore.setState({
+            pendingModelChanges: {
+              'ws-1/wt-1/tab-1': {
+                requestId: 'newer-selection',
+                model: DEFAULT_CODEX_MODEL,
+              },
+            },
+          });
+          return false;
+        }),
+      );
+    draftNewWorktreeSend();
+    try {
+      await expect(dispatchHomeSend()).resolves.toBe(false);
+      expect(tabIn('tab-1')?.provisionalFirstSend?.phase).toBe('preparing');
+      expect(useHomeComposerStore.getState().sendError).toBeNull();
+      expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+    } finally {
+      useChatStore.setState({ pendingModelChanges: {} });
+    }
+  });
+
+  it('stops settings writes when retry preparation is replaced during an awaited setting', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    useHomeComposerStore.setState({ planMode: true, approvalMode: 'auto' });
+    await dispatchHomeSend();
+    jest
+      .mocked(useChatStore.getState().setThinkingLevel)
+      .mockImplementationOnce(() => {
+        const scope = useChatStore.getState().worktreeChats['ws-1/wt-1'];
+        if (!scope) throw new Error('Missing scope');
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': {
+              ...scope,
+              tabs: scope.tabs.map((tab) => ({
+                ...tab,
+                provisionalFirstSend: tab.provisionalFirstSend
+                  ? {
+                      ...tab.provisionalFirstSend,
+                      userMessageId: 'replacement',
+                    }
+                  : undefined,
+              })),
+            },
+          },
+        });
+        return Promise.resolve();
+      });
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(false);
+    expect(useChatStore.getState().togglePlanMode).not.toHaveBeenCalled();
+    expect(useChatStore.getState().setTabApprovalMode).not.toHaveBeenCalled();
+    expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('returns a repeated refusal to the failed state in place', async () => {
+    seedStarterHydration('git-ready');
+    const setModelAndWait = jest.mocked(
+      useChatStore.getState().setModelAndWait,
+    );
+    setModelAndWait.mockResolvedValue(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+    const firstFailure = tabIn('tab-1')?.provisionalFirstSend?.failure;
+
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(false);
+
+    const record = tabIn('tab-1')?.provisionalFirstSend;
+    expect(record?.phase).toBe('failed');
+    expect(record?.failure?.failureId).not.toBe(firstFailure?.failureId);
+    expect(userTexts(tabIn('tab-1'))).toEqual(['build a thing']);
+    expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+
+    setModelAndWait.mockResolvedValue(true);
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(true);
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a retry the eligibility recheck establishes, before applying the model', async () => {
+    seedStarterHydration('git-ready');
+    const setModelAndWait = jest.mocked(
+      useChatStore.getState().setModelAndWait,
+    );
+    setModelAndWait.mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+    jest.mocked(preflightHomeModel).mockResolvedValueOnce({
+      ok: false,
+      reason: 'needs-purchase',
+      modelLabel: 'Opus',
+    });
+
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(false);
+
+    expect(setModelAndWait).toHaveBeenCalledTimes(1);
+    expect(tabIn('tab-1')?.provisionalFirstSend?.failure?.message).toBe(
+      'Opus isn’t included in your AI Credits yet. Choose another model.',
+    );
+  });
+
+  it('retries with a model accepted in the failed chat; the selection alone sends nothing', async () => {
+    seedStarterHydration('git-ready');
+    const setModelAndWait = jest.mocked(
+      useChatStore.getState().setModelAndWait,
+    );
+    setModelAndWait.mockResolvedValueOnce(false);
+    draftNewWorktreeSend();
+    await dispatchHomeSend();
+
+    setTabModel('tab-1', DEFAULT_CODEX_MODEL);
+    expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+    await expect(retryFailedFirstSend(failedTarget)).resolves.toBe(true);
+
+    expect(setModelAndWait).toHaveBeenLastCalledWith(
+      DEFAULT_CODEX_MODEL,
+      failedTarget,
+    );
+    // Home's thinking level belongs to the submitted model, not the
+    // replacement its own picker configured.
+    expect(useChatStore.getState().setThinkingLevel).not.toHaveBeenCalled();
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains a refusal inline, without a toast, while the failed chat is in view', async () => {
+    seedStarterHydration('git-ready');
+    const addToast = jest.fn();
+    useGitHubStore.setState({ addToast });
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockImplementation((): Promise<boolean> => {
+        useNavigationStore.setState({ activePage: 'main' });
+        useChatStore.setState({
+          selectedWorktree: { projectId: 'ws-1', worktreeId: 'wt-1' },
+        });
+        return Promise.resolve(false);
+      });
+    draftNewWorktreeSend();
+
+    try {
+      await dispatchHomeSend();
+      expect(addToast).not.toHaveBeenCalled();
+      expect(tabIn('tab-1')?.provisionalFirstSend?.phase).toBe('failed');
+    } finally {
+      useNavigationStore.setState({ activePage: 'home' });
+    }
+  });
+
+  it('leads back with a toast when the user left the failed chat', async () => {
+    seedStarterHydration('git-ready');
+    const addToast = jest.fn<
+      void,
+      [string, string, unknown, { action?: { label: string } }?]
+    >();
+    useGitHubStore.setState({ addToast });
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockImplementation((): Promise<boolean> => {
+        useNavigationStore.setState({ activePage: 'main' });
+        useChatStore.setState({
+          selectedWorktree: { projectId: 'ws-1', worktreeId: 'wt-other' },
+        });
+        return Promise.resolve(false);
+      });
+    draftNewWorktreeSend();
+
+    try {
+      await dispatchHomeSend();
+      const [message, kind, , options] = addToast.mock.calls[0] ?? [];
+      expect(message).toMatch(/couldn’t be used to start this chat/);
+      expect(kind).toBe('error');
+      expect(options?.action?.label).toBe('Open draft');
+      // Home recovery is not given focus while the user is elsewhere.
+      expect(useHomeComposerStore.getState().sendErrorChooseModel?.focus).toBe(
+        false,
+      );
+    } finally {
+      useNavigationStore.setState({ activePage: 'home' });
+    }
+  });
+
+  it('never attaches an old refusal to a newer Home draft', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().setModelAndWait)
+      .mockImplementation((): Promise<boolean> => {
+        useHomeComposerStore.setState({ text: 'a newer draft' });
+        return Promise.resolve(false);
+      });
+    draftNewWorktreeSend();
+
+    await dispatchHomeSend();
+
+    const home = useHomeComposerStore.getState();
+    expect(home.text).toBe('a newer draft');
+    expect(home.sendError).toBeNull();
+    expect(home.sendErrorChooseModel).toBeNull();
+    expect(tabIn('tab-1')?.provisionalFirstSend?.phase).toBe('failed');
+  });
+
+  it('keeps the presented chat as the target when the user switches tabs', async () => {
+    seedStarterHydration('git-ready');
+    jest
+      .mocked(useChatStore.getState().loadAllWorktreeTabs)
+      .mockImplementation((): Promise<void> => {
+        const scope = useChatStore.getState().worktreeChats['ws-1/wt-1'];
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': {
+              tabs: [...(scope?.tabs ?? []), starter('tab-2')],
+              activeTabId: 'tab-2',
+            },
+          },
+        });
+        return Promise.resolve();
+      });
+    draftNewWorktreeSend();
+
+    await expect(dispatchHomeSend()).resolves.toBe(true);
+
+    expect(
+      jest.mocked(useChatStore.getState().sendMessage).mock.calls[0]?.[2],
+    ).toEqual({ projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' });
+    expect(userTexts(tabIn('tab-2'))).toEqual([]);
+  });
+
+  it('moves the same submission to a starter the refresh replaced', async () => {
+    seedStarterHydration('git-ready', true);
+    let presentedId: string | undefined;
+    jest
+      .mocked(useChatStore.getState().loadAllWorktreeTabs)
+      .mockImplementation((): Promise<void> => {
+        presentedId = tabIn('tab-1')?.provisionalFirstSend?.userMessageId;
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': { tabs: [starter('tab-2')], activeTabId: 'tab-2' },
+          },
+        });
+        return Promise.resolve();
+      });
+    draftNewWorktreeSend();
+
+    await expect(dispatchHomeSend()).resolves.toBe(true);
+
+    expect(presentedId).toBeDefined();
+    expect(tabIn('tab-2')?.provisionalFirstSend?.userMessageId).toBe(
+      presentedId,
+    );
+    expect(userTexts(tabIn('tab-2'))).toEqual(['build a thing']);
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
+      'build a thing',
+      undefined,
+      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-2' },
+      undefined,
+      expect.objectContaining({ userMessageId: presentedId }),
+    );
+  });
+
+  it.each([
+    ['an intact starter', false, 'tab-1'],
+    ['a replaced starter', true, 'tab-2'],
+  ] as const)(
+    'keeps a file tab selected after navigation with %s',
+    async (_label, replaced, expectedChatId) => {
+      seedStarterHydration('git-ready', replaced);
+      const fileTab: ChatTab = {
+        ...createEmptyTab(),
+        id: 'file-1',
+        kind: 'file',
+        filePath: '/workspace/notes.md',
+      };
+      jest
+        .mocked(useChatStore.getState().loadAllWorktreeTabs)
+        .mockImplementation((): Promise<void> => {
+          const scope = useChatStore.getState().worktreeChats['ws-1/wt-1'];
+          useChatStore.setState({
+            worktreeChats: {
+              'ws-1/wt-1': {
+                tabs: [
+                  ...(replaced ? [starter('tab-2')] : (scope?.tabs ?? [])),
+                  fileTab,
+                ],
+                activeTabId: 'file-1',
+              },
+            },
+          });
+          return Promise.resolve();
+        });
+      draftNewWorktreeSend();
+
+      await expect(dispatchHomeSend()).resolves.toBe(true);
+
+      expect(
+        jest.mocked(useChatStore.getState().ensureWorktreeHasChatTab).mock
+          .calls[1]?.[1],
+      ).toEqual({ preserveActiveTab: true });
+      expect(
+        jest.mocked(useChatStore.getState().sendMessage).mock.calls[0]?.[2],
+      ).toEqual({
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        chatId: expectedChatId,
+      });
+      expect(
+        useChatStore.getState().worktreeChats['ws-1/wt-1']?.activeTabId,
+      ).toBe('file-1');
+    },
+  );
+
+  it('hands the echo to the setup queue row it was queued as', async () => {
+    seedStarterHydration('git-pending');
+    draftNewWorktreeSend();
+    jest
+      .mocked(useChatStore.getState().sendMessage)
+      .mockImplementation((_text, _refs, _target, _mode, options) => {
+        options?.onQueuedWithoutDispatch?.('renderer');
+        return Promise.resolve();
+      });
+
+    await expect(dispatchHomeSend()).resolves.toBe(true);
+
+    const tab = tabIn('tab-1');
+    expect(tab?.provisionalFirstSend?.phase).toBe('queued');
+    expect(userTexts(tab)).toEqual([]);
+    expect(tab?.pendingTurn).toBeUndefined();
+    expect(tab?.title).toBe('build a thing');
+  });
+
+  it('withdraws the echo when the send is refused before dispatch', async () => {
+    seedStarterHydration('git-ready');
+    draftNewWorktreeSend();
+    jest
+      .mocked(useChatStore.getState().sendMessage)
+      .mockImplementation((_text, _refs, _target, _mode, options) => {
+        options?.onPreDispatchRejected?.();
+        return Promise.resolve();
+      });
+
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+
+    expect(tabIn('tab-1')?.messages).toEqual([]);
+    expect(tabIn('tab-1')?.title).toBe('New Chat');
+    expect(useHomeComposerStore.getState().text).toBe('build a thing');
+  });
+
+  it('restores the Home draft for a confirmed rejection after native adoption', async () => {
+    seedStarterHydration('git-ready');
+    draftNewWorktreeSend();
+    jest
+      .mocked(useChatStore.getState().sendMessage)
+      .mockImplementation((_text, _refs, _target, _mode, options) => {
+        const scope = useChatStore.getState().worktreeChats['ws-1/wt-1'];
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': {
+              ...scope,
+              tabs: scope.tabs.map((tab) => ({
+                ...tab,
+                provisionalFirstSend: tab.provisionalFirstSend
+                  ? { ...tab.provisionalFirstSend, phase: 'dispatched' }
+                  : undefined,
+              })),
+            },
+          },
+        });
+        options?.onPreDispatchRejected?.();
+        return Promise.resolve();
+      });
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+    expect(useHomeComposerStore.getState().text).toBe('build a thing');
+    expect(useHomeComposerStore.getState().sendErrorRetryable).toBe(true);
+  });
+
+  it('does not recreate a starter deleted during the post-navigation refresh', async () => {
+    seedStarterHydration('git-ready');
+    draftNewWorktreeSend();
+    jest
+      .mocked(useChatStore.getState().loadAllWorktreeTabs)
+      .mockImplementation((): Promise<void> => {
+        useChatStore.setState({
+          worktreeChats: { 'ws-1/wt-1': { tabs: [], activeTabId: '' } },
+        });
+        return Promise.resolve();
+      });
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+    expect(
+      useChatStore.getState().ensureWorktreeHasChatTab,
+    ).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not redirect a deleted canonical starter to another tab', async () => {
+    seedStarterHydration('git-ready');
+    draftNewWorktreeSend();
+    jest
+      .mocked(useChatStore.getState().loadAllWorktreeTabs)
+      .mockImplementation((): Promise<void> => {
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': {
+              tabs: [starter('unrelated')],
+              activeTabId: 'unrelated',
+            },
+          },
+        });
+        return Promise.resolve();
+      });
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+    expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+    expect(userTexts(tabIn('unrelated'))).toEqual([]);
+  });
+
+  it('recovers the submitted draft when a host rejection arrives after Home reset', async () => {
+    seedStarterHydration('git-ready');
+    draftNewWorktreeSend();
+    let reject: (() => void) | undefined;
+    jest
+      .mocked(useChatStore.getState().sendMessage)
+      .mockImplementation(
+        (_text, _refs, _target, _mode, options): Promise<void> => {
+          reject = options?.onDispatchRejected;
+          return Promise.resolve();
+        },
+      );
+    await expect(dispatchHomeSend()).resolves.toBe(true);
+    expect(useHomeComposerStore.getState().text).toBe('');
+    reject?.();
+    expect(useHomeComposerStore.getState().text).toBe('build a thing');
+    expect(useHomeComposerStore.getState().sendErrorRetryable).toBe(true);
+  });
+
+  it('creates submission identity before prompt expansion yields', async () => {
+    seedStarterHydration('git-ready');
+    draftNewWorktreeSend();
+    let release: (() => void) | undefined;
+    const expansion = jest
+      .spyOn(promptMentionExpansion, 'expandPromptMentions')
+      .mockImplementationOnce(async (_workspace, text, refs) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { text, fileReferences: [...refs] };
+      });
+    const before = Date.now();
+    const sending = dispatchHomeSend();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const resumedAt = before + 1000;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(resumedAt);
+    release?.();
+    try {
+      await sending;
+      expect(tabIn('tab-1')?.provisionalFirstSend?.submittedAt).toBeLessThan(
+        resumedAt,
+      );
+    } finally {
+      now.mockRestore();
+      expansion.mockRestore();
+    }
+  });
+
+  it('waits for the cold transcript chunk before revealing an existing worktree first send', async () => {
+    const chunkLoader = jest.requireMock<{
+      loadChatMessageListModule: jest.Mock;
+    }>('@/components/chat/chatMessageListChunk').loadChatMessageListModule;
+    let releaseChunk: () => void = () => {};
+    const chunk = new Promise<void>((resolve) => {
+      releaseChunk = resolve;
+    });
+    chunkLoader.mockImplementationOnce(() => chunk);
+    let created: () => void = () => {};
+    const tabCreated = new Promise<void>((resolve) => {
+      created = resolve;
+    });
+    useProjectsStore.setState({
+      projects: [
+        makeSingleRepoProject('ws-1', { worktrees: [makeWorktree()] }),
+      ],
+    });
+    jest
+      .mocked(useChatStore.getState().createTab)
+      .mockImplementation((): void => {
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': { tabs: [starter()], activeTabId: 'tab-1' },
+          },
+        });
+        created();
+      });
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'worktree', worktreeId: 'wt-1' },
+      text: 'fix the bug',
+    });
+    const sending = dispatchHomeSend();
+    await tabCreated;
+    const navigatedWhileCold = jest.mocked(
+      useNavigationStore.getState().navigate,
+    ).mock.calls.length;
+    const selectedWhileCold = jest.mocked(
+      useChatStore.getState().selectWorktree,
+    ).mock.calls.length;
+    releaseChunk();
+    await expect(sending).resolves.toBe(true);
+    expect(navigatedWhileCold).toBe(0);
+    expect(selectedWhileCold).toBe(0);
+    expect(userTexts(tabIn('tab-1'))).toEqual(['fix the bug']);
+    expect(useNavigationStore.getState().navigate).toHaveBeenCalledWith('main');
+  });
+
+  it('shows the question in an existing worktree chat right after creating it', async () => {
+    useProjectsStore.setState({
+      projects: [
+        makeSingleRepoProject('ws-1', { worktrees: [makeWorktree()] }),
+      ],
+    });
+    jest
+      .mocked(useChatStore.getState().createTab)
+      .mockImplementation((): void => {
+        callOrder.push('createTab');
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': { tabs: [starter()], activeTabId: 'tab-1' },
+          },
+        });
+      });
+    let textsAtNavigation: string[] = [];
+    jest
+      .mocked(useNavigationStore.getState().navigate)
+      .mockImplementation((): void => {
+        textsAtNavigation = userTexts(tabIn('tab-1'));
+      });
+    let textsAtEnsure: string[] = [];
+    jest
+      .mocked(useChatStore.getState().ensureWorktreeHasChatTab)
+      .mockImplementation((): Promise<void> => {
+        textsAtEnsure = userTexts(tabIn('tab-1'));
+        return Promise.resolve();
+      });
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'worktree', worktreeId: 'wt-1' },
+      text: 'fix the bug',
+    });
+
+    await expect(dispatchHomeSend()).resolves.toBe(true);
+
+    expect(textsAtNavigation).toEqual(['fix the bug']);
+    expect(textsAtEnsure).toEqual(['fix the bug']);
+    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
+      'fix the bug',
+      undefined,
+      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
+      undefined,
+      expect.objectContaining({
+        userMessageId: tabIn('tab-1')?.provisionalFirstSend?.userMessageId,
+      }),
+    );
+  });
+
+  it('presents nothing for a scheduled send', async () => {
+    useProjectsStore.setState({
+      projects: [
+        makeSingleRepoProject('ws-1', { worktrees: [makeWorktree()] }),
+      ],
+    });
+    jest
+      .mocked(useChatStore.getState().createTab)
+      .mockImplementation((): void => {
+        useChatStore.setState({
+          worktreeChats: {
+            'ws-1/wt-1': { tabs: [starter()], activeTabId: 'tab-1' },
+          },
+        });
+      });
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'worktree', worktreeId: 'wt-1' },
+      text: 'later',
+      scheduledSendDraft: { runAt: '2030-01-01T00:00:00.000Z' },
+    });
+
+    await dispatchHomeSend();
+
+    expect(tabIn('tab-1')?.provisionalFirstSend).toBeUndefined();
+    expect(tabIn('tab-1')?.messages).toEqual([]);
+  });
+});
+
 describe('dispatchHomeSend Task F3: shadow-backed @ mention rewrite (new-worktree / branch)', () => {
   it('rewrites a shadow-backed FileReference onto the created worktree cwd before sending (shadow path in → target path dispatched)', async () => {
     seedLoadTabsForTarget('git-ready');
@@ -2245,11 +3417,11 @@ describe('dispatchHomeSend Task F3: shadow-backed @ mention rewrite (new-worktre
       ],
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
@@ -2416,7 +3588,10 @@ describe('dispatchHomeSend multi-repo working directory', () => {
         callOrder.push('createTab');
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -2432,11 +3607,12 @@ describe('dispatchHomeSend multi-repo working directory', () => {
 
     expect(useChatStore.getState().setSelectedRepoId).toHaveBeenCalledWith(
       'web',
+      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
     );
     expect(callOrder).toEqual([
+      'createTab',
       'selectWorktree',
       'navigate',
-      'createTab',
       'ensureWorktreeHasChatTab',
       'setSelectedRepoId',
       'sendMessage',
@@ -2457,6 +3633,7 @@ describe('dispatchHomeSend multi-repo working directory', () => {
 
     expect(useChatStore.getState().setSelectedRepoId).toHaveBeenCalledWith(
       'web',
+      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
     );
     expect(callOrder).toEqual([
       'deselectWorktree',
@@ -2564,11 +3741,11 @@ describe('dispatchHomeSend multi-repo working directory', () => {
       ],
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 
@@ -2644,11 +3821,11 @@ describe('dispatchHomeSend multi-repo working directory', () => {
       ],
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
-      {
+      expect.objectContaining({
         queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
-      },
+      }),
     );
   });
 });
@@ -2666,7 +3843,10 @@ describe('dispatchHomeSend fix round 1: stale pills after a branch-target/worksp
         callOrder.push('createTab');
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -3094,7 +4274,10 @@ describe('dispatchHomeSend scheduled routing — existing worktree', () => {
         callOrder.push('createTab');
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -3151,9 +4334,9 @@ describe('dispatchHomeSend scheduled routing — existing worktree', () => {
     expect(showAutomationCreatedToastMock).not.toHaveBeenCalled();
 
     expect(callOrder).toEqual([
+      'createTab',
       'selectWorktree',
       'navigate',
-      'createTab',
       'ensureWorktreeHasChatTab',
       'togglePlanMode',
       'createActivity',
@@ -3170,7 +4353,10 @@ describe('dispatchHomeSend scheduled routing — existing worktree', () => {
       .mockImplementation((): void => {
         useChatStore.setState({
           worktreeChats: {
-            'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' },
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
           },
         });
       });
@@ -3549,7 +4735,12 @@ describe('dispatchHomeSend inherited workspace defaults', () => {
       .mockImplementation((): void => {
         callOrder.push('createTab');
         useChatStore.setState({
-          worktreeChats: { 'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' } },
+          worktreeChats: {
+            'ws-1/wt-1': {
+              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
+              activeTabId: 'tab-1',
+            },
+          },
         });
       });
   }
@@ -3573,8 +4764,8 @@ describe('dispatchHomeSend inherited workspace defaults', () => {
     const request = jest.mocked(
       useStandaloneChatStore.getState().createStandaloneChatWithMessage,
     ).mock.calls[0]?.[0];
-    expect(request?.config.pluginSelections).toEqual(own);
-    expect(request?.config.disabledGlobalPluginSelections).toEqual(tombstones);
+    expect(request?.config?.pluginSelections).toEqual(own);
+    expect(request?.config?.disabledGlobalPluginSelections).toEqual(tombstones);
   });
 
   it('seeds an existing-worktree chat with its own choices and turns defaults off before sending', async () => {
@@ -3688,14 +4879,34 @@ describe('dispatchHomeSend return value', () => {
   });
 
   it('returns true after a successful new-worktree send', async () => {
-    (
-      useChatStore.getState().loadAllWorktreeTabs as jest.Mock
-    ).mockImplementation((): Promise<void> => {
+    // Registration hydrates the starter before the chat opens (CAN-4742).
+    const seedStarter = (): Promise<void> => {
       useChatStore.setState({
-        worktreeChats: { 'ws-1/wt-1': { tabs: [], activeTabId: 'tab-1' } },
+        worktreeChats: {
+          'ws-1/wt-1': {
+            tabs: [
+              {
+                ...createEmptyTab(),
+                ...useChatStore
+                  .getState()
+                  .worktreeChats[
+                    'ws-1/wt-1'
+                  ]?.tabs.find((tab) => tab.id === 'tab-1'),
+                id: 'tab-1',
+              },
+            ],
+            activeTabId: 'tab-1',
+          },
+        },
       });
       return Promise.resolve();
-    });
+    };
+    jest
+      .mocked(useChatStore.getState().loadTabsForTarget)
+      .mockImplementation(seedStarter);
+    jest
+      .mocked(useChatStore.getState().loadAllWorktreeTabs)
+      .mockImplementation(seedStarter);
     useProjectsStore.setState({ projects: [makeSingleRepoProject('ws-1')] });
     useHomeComposerStore.setState({
       workspaceId: 'ws-1',
@@ -4457,6 +5668,77 @@ describe('dispatchHomeSend CAN-3606 link destinations', () => {
     expect(useHomeComposerStore.getState().linkTarget.status).toBe('idle');
   });
 
+  it('timestamps the submission before link materialization yields (CAN-4742)', async () => {
+    seedChatsAndProject();
+    const api = installLinkApi();
+    useHomeComposerStore.setState({ workspaceId: 'cowork-1', text: PR_URL });
+    await dispatchHomeSend();
+    await waitForLinkStatus('ready');
+    let release: (slug: { owner: string; repo: string }) => void = (): void =>
+      undefined;
+    let entered = (): void => undefined;
+    const atLookup = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    api.getRepoSlug.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+          entered();
+        }),
+    );
+    const sending = dispatchHomeSend();
+    await atLookup;
+    const resumedAt = Date.now() + 1000;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(resumedAt);
+    release({ owner: 'Acme', repo: 'App' });
+    try {
+      await expect(sending).resolves.toBe(true);
+      expect(
+        jest.mocked(useChatStore.getState().sendMessage).mock.calls[0]?.[4]
+          ?.submittedAt,
+      ).toBeLessThan(resumedAt);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('retires the first-send echo immediately when creation is cancelled at a held layout', async () => {
+    seedChatsAndProject();
+    installLinkApi();
+    useHomeComposerStore.setState({ workspaceId: 'cowork-1', text: PR_URL });
+    await dispatchHomeSend();
+    await waitForLinkStatus('ready');
+    let release = (): void => undefined;
+    let entered = (): void => undefined;
+    const atLayout = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    ensureWorktreePanelLayoutMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+          entered();
+        }),
+    );
+    const sending = dispatchHomeSend();
+    try {
+      await atLayout;
+      expect(
+        useChatStore.getState().worktreeChats['ws-1/wt-1']?.tabs[0]
+          ?.provisionalFirstSend,
+      ).toBeDefined();
+      cancelHomeLinkSubmission();
+      expect(
+        useChatStore.getState().worktreeChats['ws-1/wt-1']?.tabs[0]
+          ?.provisionalFirstSend,
+      ).toBeUndefined();
+    } finally {
+      release();
+      await sending;
+    }
+  });
+
   it.each(['registration', 'hydration', 'layout'] as const)(
     'stops chat activation when cancelled during %s',
     async (stage) => {
@@ -4521,6 +5803,7 @@ describe('dispatchHomeSend CAN-3606 link destinations', () => {
         }),
     );
     const submission = dispatchHomeSend();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useHomeComposerStore.getState().linkTarget.status).toBe(
       'submitting',
     );
@@ -4737,6 +6020,37 @@ describe('dispatchHomeSend CAN-3606 link destinations', () => {
     ).not.toHaveBeenCalled();
   });
 
+  it('refuses a known blocked model before cloning a link project', async () => {
+    useProjectsStore.setState({ projects: [makeCoworkProject('cowork-1')] });
+    const addRemoteRepo = jest.fn();
+    useProjectsStore.setState({ addRemoteRepo });
+    installLinkApi({
+      getDefaultCloneDirectory: jest.fn(() => Promise.resolve('/tmp/clones')),
+      probeCloneDestination: jest.fn(() =>
+        Promise.resolve({
+          repoName: 'app',
+          candidateExists: false,
+          reusablePath: null,
+        }),
+      ),
+    });
+    useHomeComposerStore.setState({
+      workspaceId: 'cowork-1',
+      text: 'start on https://github.com/acme/app',
+      model: 'claude-sonnet-4-5',
+    });
+    await dispatchHomeSend();
+    await waitForLinkStatus('ready');
+    jest.mocked(preflightHomeModel).mockResolvedValueOnce({
+      ok: false,
+      reason: 'not-routable',
+      modelLabel: 'Sonnet 4.5',
+    });
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+    expect(addRemoteRepo).not.toHaveBeenCalled();
+    expect(useProjectsStore.getState().createWorktree).not.toHaveBeenCalled();
+  });
+
   it('clones a missing repository, then creates its default-branch worktree', async () => {
     useProjectsStore.setState({ projects: [makeCoworkProject('cowork-1')] });
     seedLoadTabsForTarget(undefined);
@@ -4883,7 +6197,7 @@ describe('dispatchHomeSend CAN-3606 link destinations', () => {
     it('consumes a resend request even when the send stops early', async () => {
       useHomeComposerStore.setState({
         workspaceId: 'cowork-1',
-        pendingAttachmentImportIds: ['import-1'],
+        pendingAttachmentImportIds: [1],
       });
       useHomeComposerStore.getState().requestGitHubConnectResume();
       await expect(dispatchHomeSend()).resolves.toBe(false);
@@ -4923,5 +6237,207 @@ describe('dispatchHomeSend CAN-3606 link destinations', () => {
     expect(
       useAutomationsStore.getState().createActivity,
     ).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatchHomeSend CAN-5021 model pre-flight', () => {
+  const refusal = {
+    ok: false,
+    reason: 'not-routable',
+    modelLabel: 'Sonnet 4.5',
+  } as const;
+  const refusalCopy =
+    'Sonnet 4.5 isn’t available on AI Credits. Choose another model.';
+
+  it.each([
+    ['a new worktree', { kind: 'new-worktree' }, 'ws-1'],
+    ['an existing worktree', { kind: 'worktree', worktreeId: 'wt-1' }, 'ws-1'],
+    ['a Cowork chat', { kind: 'new-worktree' }, 'cowork-1'],
+  ] as const)(
+    'stays on Home with the whole draft when the model is known to be refused for %s',
+    async (_label, branchTarget, workspaceId) => {
+      jest.mocked(preflightHomeModel).mockResolvedValueOnce(refusal);
+      useHomeComposerStore.setState({
+        workspaceId,
+        branchTarget,
+        attachments: [makeAttachment()],
+        fileReferences: [
+          { displayPath: 'readme.md', absolutePath: '/tmp/readme.md' },
+        ],
+        planMode: true,
+        text: 'keep every word',
+        model: 'claude-sonnet-4-5',
+      });
+
+      await expect(dispatchHomeSend()).resolves.toBe(false);
+
+      expect(preflightHomeModel).toHaveBeenLastCalledWith(workspaceId, {
+        model: 'claude-sonnet-4-5',
+      });
+      expect(useProjectsStore.getState().createWorktree).not.toHaveBeenCalled();
+      expect(useChatStore.getState().createTab).not.toHaveBeenCalled();
+      expect(useNavigationStore.getState().navigate).not.toHaveBeenCalled();
+      expect(useChatStore.getState().setModelAndWait).not.toHaveBeenCalled();
+      expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+      const home = useHomeComposerStore.getState();
+      expect(home.text).toBe('keep every word');
+      expect(home.model).toBe('claude-sonnet-4-5');
+      expect(home.attachments).toEqual([makeAttachment()]);
+      expect(home.fileReferences).toEqual([
+        { displayPath: 'readme.md', absolutePath: '/tmp/readme.md' },
+      ]);
+      expect(home.planMode).toBe(true);
+      expect(
+        useStandaloneChatStore.getState().createStandaloneChatWithMessage,
+      ).not.toHaveBeenCalled();
+      expect(home.branchTarget).toEqual(branchTarget);
+      expect(home.isSending).toBe(false);
+      expect(home.sendError).toBe(refusalCopy);
+      expect(home.sendErrorChooseModel).toMatchObject({
+        message: refusalCopy,
+        focus: true,
+      });
+      expect(typeof home.sendErrorChooseModel?.failureId).toBe('string');
+    },
+  );
+
+  it('gives a repeated identical refusal a new identity, so it takes focus again', async () => {
+    jest.mocked(preflightHomeModel).mockResolvedValue(refusal);
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'new-worktree' },
+      text: 'again',
+    });
+
+    await dispatchHomeSend();
+    const first = useHomeComposerStore.getState().sendErrorChooseModel;
+    await dispatchHomeSend();
+    const second = useHomeComposerStore.getState().sendErrorChooseModel;
+
+    expect(second?.message).toBe(first?.message);
+    expect(second?.failureId).not.toBe(first?.failureId);
+  });
+
+  it('clears the refusal and its action when another model is accepted', async () => {
+    jest.mocked(preflightHomeModel).mockResolvedValueOnce(refusal);
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'new-worktree' },
+      text: 'switch models',
+      model: 'claude-sonnet-4-5',
+    });
+    await dispatchHomeSend();
+
+    useHomeComposerStore.getState().setModel(DEFAULT_CODEX_MODEL);
+
+    expect(useHomeComposerStore.getState().sendError).toBeNull();
+    expect(useHomeComposerStore.getState().sendErrorChooseModel).toBeNull();
+    expect(useHomeComposerStore.getState().text).toBe('switch models');
+  });
+
+  it('does not clear the lock or error of a newer submission after a reset', async () => {
+    let firstRelease = (): void => {
+      throw new Error('First check not reached');
+    };
+    let secondRelease = (): void => {
+      throw new Error('Second check not reached');
+    };
+    jest
+      .mocked(preflightHomeModel)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            firstRelease = (): void => resolve(refusal);
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            secondRelease = (): void => resolve(refusal);
+          }),
+      );
+    const submit = (): Promise<boolean> => {
+      useHomeComposerStore.setState({
+        workspaceId: 'ws-1',
+        text: 'same words',
+        model: 'claude-sonnet-4-5',
+      });
+      return dispatchHomeSend();
+    };
+    const first = submit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    useHomeComposerStore.getState().reset();
+    const second = submit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    firstRelease();
+    await expect(first).resolves.toBe(false);
+    expect(useHomeComposerStore.getState().isSending).toBe(true);
+    expect(useHomeComposerStore.getState().sendError).toBeNull();
+    secondRelease();
+    await expect(second).resolves.toBe(false);
+  });
+
+  it('drops a pre-flight result that a draft change made stale', async () => {
+    let settle = (): void => {
+      throw new Error('The pre-flight resolver was not initialized.');
+    };
+    jest.mocked(preflightHomeModel).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          settle = (): void => resolve(refusal);
+        }),
+    );
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'new-worktree' },
+      text: 'first thought',
+      model: 'claude-sonnet-4-5',
+    });
+
+    const send = dispatchHomeSend();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A second submit while the first is in flight is ignored.
+    await expect(dispatchHomeSend()).resolves.toBe(false);
+    useHomeComposerStore.setState({ model: DEFAULT_CODEX_MODEL });
+    settle();
+
+    await expect(send).resolves.toBe(false);
+    const home = useHomeComposerStore.getState();
+    expect(home.sendError).toBeNull();
+    expect(home.sendErrorChooseModel).toBeNull();
+    expect(home.isSending).toBe(false);
+    expect(useProjectsStore.getState().createWorktree).not.toHaveBeenCalled();
+    expect(preflightHomeModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a pre-flight result after the new-worktree base changes', async () => {
+    let settle = (): void => {
+      throw new Error('Pre-flight not reached');
+    };
+    jest.mocked(preflightHomeModel).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          settle = (): void => resolve({ ok: true });
+        }),
+    );
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'new-worktree' },
+      text: 'Keep my newer base selection',
+    });
+    const send = dispatchHomeSend();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    useHomeComposerStore.getState().setNewWorktreeBaseTarget({
+      kind: 'worktree',
+      worktreeId: 'new-base',
+    });
+    settle();
+
+    await expect(send).resolves.toBe(false);
+    expect(useProjectsStore.getState().createWorktree).not.toHaveBeenCalled();
+    expect(useHomeComposerStore.getState().text).toBe(
+      'Keep my newer base selection',
+    );
+    expect(useHomeComposerStore.getState().isSending).toBe(false);
   });
 });

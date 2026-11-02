@@ -1,5 +1,5 @@
 // Phase 4 grid operations — stacking panels as tabs inside one group via the
-// add-panel affordance (`panel-add-panel-${groupId}` -> `panel-add-menu` ->
+// add-panel affordance (`panel-add-tab-${groupId}` -> `panel-add-menu` ->
 // `panel-add-menu-item-${kind}`), switching tabs, and closing a tab.
 //
 // Post per-tab-chat rework: the add menu offers singleton kinds not yet open
@@ -62,7 +62,7 @@ test('add-tab menu stacks a second panel, tab switching preserves mounted conten
     await composer.fill('draft survives hidden chat suspension');
 
     // --- Add a file-explorer tab to the chat group -------------------------
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     const addMenu = window.getByTestId('panel-add-menu');
     await expect(addMenu).toBeVisible();
     // Singleton kinds not already open in the default layout.
@@ -175,7 +175,7 @@ test('add-tab menu stacks a second panel, tab switching preserves mounted conten
     expect(tabs.activePanelId).toBe(DEFAULT_PANEL_IDS.chat);
 
     // --- Escape dismisses a reopened add menu ------------------------------
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(addMenu).toBeVisible();
     await window.keyboard.press('Escape');
     await expect(addMenu).toBeHidden();
@@ -207,7 +207,7 @@ for (const pinnedVariant of ['codex', 'cursor']) {
     const { electronApp, userDataDir, window } = await seedPanelWorktree();
 
     try {
-      await window.getByTestId('panel-add-panel-group-chat').click();
+      await window.getByTestId('panel-add-tab-group-chat').click();
       const addMenu = window.getByTestId('panel-add-menu');
       await expect(addMenu).toBeVisible();
 
@@ -254,7 +254,7 @@ for (const pinnedVariant of ['codex', 'cursor']) {
 
       // Reopening the menu no longer offers the just-added provider variant, but
       // still offers the other variants.
-      await window.getByTestId('panel-add-panel-group-chat').click();
+      await window.getByTestId('panel-add-tab-group-chat').click();
       await expect(addMenu).toBeVisible();
       await window.getByTestId('panel-add-menu-usage-submenu').click();
       await expect(
@@ -273,7 +273,7 @@ for (const pinnedVariant of ['codex', 'cursor']) {
 test('App Advisor respects the Cursor usage rollout after the menu hides it', async () => {
   const { electronApp, userDataDir, window } = await seedPanelWorktree();
   try {
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-usage-submenu').click();
     await expect(
       window.getByTestId('panel-add-menu-item-usage-cursor'),
@@ -338,7 +338,7 @@ test('App Advisor respects the Cursor usage rollout after the menu hides it', as
       process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS = JSON.stringify(values);
     });
     await window.evaluate(() => window.api.featureFlags.refreshContext());
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-usage-submenu').click();
     await expect(
       window.getByTestId('panel-add-menu-item-usage-cursor'),
@@ -369,7 +369,7 @@ test('tab-strip + places the new chat panel in the clicked group', async ({}, te
     // Add Chat through the TERMINAL group's panel catalog: target-group
     // placement must win over the bridge's MRU chat-group placement. Advanced
     // mode only shows the direct New Chat `+` on groups already holding chat.
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await window.getByTestId('panel-add-menu-item-new-chat').click();
 
     // Store state: the terminal group gained a chat-bound panel with the

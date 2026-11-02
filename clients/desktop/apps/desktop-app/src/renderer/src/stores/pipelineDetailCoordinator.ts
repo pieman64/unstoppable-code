@@ -33,11 +33,10 @@ import {
  * - `acquirePipelineExecutionDetail` / `usePipelineExecutionDetailLease`:
  *   ref-counted detail leases keyed by owner plus execution. Interest is
  *   registered before the first snapshot read; the read is single-flight and
- *   stale-guarded in `pipelineRunsStore.loadExecutionDetails`. Releasing the
- *   last lease evicts the heavy snapshot unless the list or a summary
- *   interest still retains it.
- * - `usePipelineExecutionSummaryInterest`: lightweight live status for chat
- *   run cards. Never reads detail or logs by itself.
+ *   stale-guarded in `pipelineRunsStore`. Releasing the last lease evicts the
+ *   full snapshot even while a lightweight row remains listed or interested.
+ * - `usePipelineExecutionSummaryInterest`: lightweight row state for chat run
+ *   cards. Never retains full detail or reads logs by itself.
  * - `useStepLogInterest`: one physical step log's output, read and joined by
  *   `pipelineStepLogStore`.
  *
@@ -159,9 +158,9 @@ export function usePipelineExecutionDetailLease(
 }
 
 /**
- * Keeps the listed executions' cached state across list scope changes and
- * live under execution events, without detail or log demand. Releasing it
- * does not evict: the entry falls back to ordinary unretained cache.
+ * Keeps the listed executions' row state across list scope changes and live
+ * under execution events, without detail or log demand. Releasing the final
+ * interest lets the store prune rows that are no longer listed or leased.
  */
 export function usePipelineExecutionSummaryInterest(
   executionIds: readonly string[],

@@ -12,6 +12,7 @@ import type {
   TerminalOutputEvent,
   TerminalRunningChangedEvent,
 } from '@canopy/protocol/terminal';
+import type { ManagedDelegationLifetimeChangedEvent } from '@canopy/protocol/delegation';
 
 /**
  * Canonical streaming contract for the shared UI.
@@ -109,6 +110,10 @@ export interface OrgProjectSetupProgressEvent extends DomainEventBase {
   readonly progress: OrgProjectSetupProgress;
 }
 
+/** The authoritative lifetime allowance for a worktree may have changed. */
+export type DelegationLifetimeChangedEvent =
+  ManagedDelegationLifetimeChangedEvent & DomainEventBase;
+
 /** Durable script-action state changed for this project/worktree. Refetch the list. */
 export interface ScriptActionsChangedEvent extends DomainEventBase {
   readonly projectId: string;
@@ -131,6 +136,7 @@ export interface DomainEventMap {
   'workspace-context.changed': WorkspaceContextChangedEvent;
   'org-projects.changed': OrgProjectsChangedEvent;
   'org-projects.setup-progress': OrgProjectSetupProgressEvent;
+  'delegation.lifetimeChanged': DelegationLifetimeChangedEvent;
   'scriptActions.changed': ScriptActionsChangedEvent;
 }
 

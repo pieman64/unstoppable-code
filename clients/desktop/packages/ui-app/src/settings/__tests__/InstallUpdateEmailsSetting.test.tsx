@@ -21,9 +21,9 @@ const BASE_CAPABILITIES: CanopyCapabilities = {
   terminalPty: false,
   fileSystemAccess: 'read',
   voice: false,
-  settingsScope: 'limited',
-  pipelines: 'view-only',
-  routing: 'portal',
+  settingsScope: 'api-keys-only',
+  pipelines: 'read-only',
+  routing: 'url',
   overviewNotifications: false,
 };
 
@@ -77,7 +77,7 @@ function createClient(options: {
         return Promise.reject(new Error(`unexpected query ${name}`));
       }
       // The fake only answers the one query it is built for.
-      return next.promise as Promise<QueryMap[K]['result']>;
+      return next.promise;
     },
     command<K extends CommandName>(
       name: K,
@@ -88,7 +88,7 @@ function createClient(options: {
       if (name !== 'account.installUpdateEmails.set' || !next) {
         return Promise.reject(new Error(`unexpected command ${name}`));
       }
-      return next.promise as Promise<CommandMap[K]['result']>;
+      return next.promise;
     },
     subscribe(): Unsubscribe {
       return (): void => {};
@@ -168,7 +168,7 @@ describe('InstallUpdateEmailsSetting', () => {
     expect(toggle()?.getAttribute('aria-checked')).toBe('false');
     expect(toggle()?.disabled).toBe(false);
     expect(find('install-update-emails-setting')?.textContent).toContain(
-      'Get an email when someone updates a skill, pipeline, automation or other item you installed.',
+      'Get an email when someone updates a skill, workflow, automation or other item you installed.',
     );
   });
 
@@ -246,6 +246,7 @@ describe('InstallUpdateEmailsSetting', () => {
     expect(saveError).not.toContain('offline');
     expect(toggle()?.getAttribute('aria-checked')).toBe('true');
     expect(toggle()?.disabled).toBe(false);
+    expect(find('install-update-emails-retry')?.textContent).toBe('Try again');
 
     act(() => find('install-update-emails-retry')?.click());
     expect(client.commands).toEqual([

@@ -5,9 +5,22 @@ import type {
   ChatInputDeliveryRow,
 } from '@canopy/protocol/portal';
 import type { ChatSendMessageRequest } from '@canopy/desktop-shared/types';
+import { isGeneratedInputRequest } from './chat-input-request-kind';
 
 export type InputLedger = ChatInputDeliveryLedger<ChatSendMessageRequest>;
 export type InputRow = ChatInputDeliveryRow<ChatSendMessageRequest>;
+
+export type ChatPickupVerdict = 'accepted' | 'already-accepted' | 'rejected';
+
+export interface InputDeliveryObservation {
+  observed: boolean;
+  pickup?: ChatPickupVerdict;
+}
+
+export type InputHistoryVerdict =
+  | { kind: 'found'; attemptId: string }
+  | { kind: 'not-found' }
+  | { kind: 'unreadable' };
 
 export {
   inputSettingsKey,
@@ -17,10 +30,99 @@ export {
 const SUPERSEDED_PICKUP_REASON =
   'A superseded delivery attempt was picked up. Review the provider transcript before retrying this message.';
 
+/** Whether a row may use provider history to resolve an unconfirmed send. */
+export function isHistoryCandidate(
+  row: InputRow,
+  liveGeneration?: string,
+): boolean {
+  if (row.dismissedAt !== undefined || row.payload.managedDelegationDeliveryId)
+    return false;
+  if (row.state === 'uncertain') return true;
+  if (!['sending', 'pending', 'cancelling'].includes(row.state)) return false;
+
+  const currentAttempt = row.attempts.find(
+    (attempt) => attempt.id === row.currentAttemptId,
+  );
+  return (
+    liveGeneration === undefined ||
+    currentAttempt?.generation !== liveGeneration
+  );
+}
+
+/** Resolve per-attempt provider-history results without treating gaps as absence. */
+export function inputHistoryVerdict(
+  row: InputRow,
+  results: ReadonlyMap<string, 'found' | 'not-found' | 'unreadable'>,
+): InputHistoryVerdict {
+  const found = row.attempts.filter(
+    (attempt) =>
+      attempt.pickedUpAt !== undefined || results.get(attempt.id) === 'found',
+  );
+  const currentFound = found.find(
+    (attempt) => attempt.id === row.currentAttemptId,
+  );
+  const foundAttempt = currentFound ?? found[0];
+  if (foundAttempt) return { kind: 'found', attemptId: foundAttempt.id };
+
+  if (
+    row.attempts.length > 0 &&
+    row.attempts.every(
+      (attempt) =>
+        attempt.pickedUpAt === undefined &&
+        results.get(attempt.id) === 'not-found',
+    )
+  )
+    return { kind: 'not-found' };
+
+  return { kind: 'unreadable' };
+}
+
+/** Apply a fenced provider-history negative to one current, eligible attempt. */
+export function resolveInputHistoryNotDelivered(
+  ledger: InputLedger,
+  rowId: string,
+  currentAttemptId: string,
+  epoch: number,
+  now: number,
+  liveGeneration?: string,
+): InputLedger {
+  if (ledger.epoch !== epoch) return ledger;
+
+  let changed = false;
+  const rows = ledger.rows.map((row): InputRow => {
+    if (
+      row.id !== rowId ||
+      row.currentAttemptId !== currentAttemptId ||
+      !isHistoryCandidate(row, liveGeneration)
+    )
+      return row;
+
+    const {
+      reason: _reason,
+      ordinaryContinuation: _continuation,
+      ...rest
+    } = row;
+    void _reason;
+    void _continuation;
+    changed = true;
+    return {
+      ...rest,
+      revision: row.revision + 1,
+      state: 'cancelled',
+      notDelivered: { attemptId: currentAttemptId, at: now },
+      ...(isGeneratedInputRequest(row.payload)
+        ? { ordinaryContinuation: { attemptId: currentAttemptId, epoch } }
+        : {}),
+    };
+  });
+  return changed ? { ...ledger, rows } : ledger;
+}
+
 export function observeInputDelivery(
   ledger: InputLedger,
   event: ChatInputDeliveryEvent,
   now: number,
+  liveGeneration?: string,
 ): InputLedger {
   let changed = false;
   const rows = ledger.rows.map((row): InputRow => {
@@ -40,7 +142,20 @@ export function observeInputDelivery(
       unknown: 'uncertainAt',
     } as const;
     const field = fields[event.phase];
-    if (old[field] !== undefined) return row;
+    // After a late acknowledgement revived the row, an unknown is fresh only
+    // when it reports something new: a withdrawal requested since (the row is
+    // cancelling) or the session ending. A failed withdrawal reports unknown
+    // twice, so a delayed copy of the first must not undo the revival.
+    const freshUncertainty =
+      event.phase === 'unknown' &&
+      old.uncertainAt !== undefined &&
+      old.admittedAt !== undefined &&
+      old.admittedAt > old.uncertainAt &&
+      old.pickedUpAt === undefined &&
+      (row.state === 'cancelling' ||
+        event.failure?.class === 'restart' ||
+        old.generation !== liveGeneration);
+    if (old[field] !== undefined && !freshUncertainty) return row;
     changed = true;
     const attempt = {
       ...old,
@@ -87,11 +202,19 @@ export function observeInputDelivery(
     // withdrawal is uncertainty, never permission to replay the input.
     const conflict =
       attempt.pickedUpAt !== undefined && attempt.withdrawnAt !== undefined;
+    // The provider can take the input after Canopy gave up waiting. Only an
+    // acknowledgement from the live generation, strictly after the unknown,
+    // proves the input is still deliverable; anything else stays uncertain.
+    const lateAdmission =
+      attempt.uncertainAt !== undefined &&
+      attempt.admittedAt !== undefined &&
+      attempt.admittedAt > attempt.uncertainAt &&
+      attempt.generation === liveGeneration;
     const state = conflict
       ? 'uncertain'
       : attempt.pickedUpAt !== undefined
         ? 'picked-up'
-        : attempt.uncertainAt !== undefined
+        : attempt.uncertainAt !== undefined && !lateAdmission
           ? 'uncertain'
           : attempt.withdrawnAt !== undefined
             ? ['editing', 'queued', 'cancelled'].includes(row.state)
@@ -99,10 +222,23 @@ export function observeInputDelivery(
               : 'cancelled'
             : row.state === 'cancelling'
               ? 'cancelling'
-              : attempt.admittedAt !== undefined
-                ? 'pending'
-                : row.state;
-    return { ...row, revision: row.revision + 1, attempts, state };
+              : // Stop or recovery can make a row uncertain without an
+                // `uncertainAt`; a later admission must not revive it.
+                row.state === 'uncertain' && !lateAdmission
+                ? 'uncertain'
+                : attempt.admittedAt !== undefined
+                  ? 'pending'
+                  : row.state;
+    // The uncertainty reason no longer describes the row once it resolves.
+    const keepReason = row.state !== 'uncertain' || state === 'uncertain';
+    const next: InputRow = {
+      ...row,
+      revision: row.revision + 1,
+      attempts,
+      state,
+    };
+    if (!keepReason) delete next.reason;
+    return next;
   });
   return changed ? { ...ledger, rows } : ledger;
 }

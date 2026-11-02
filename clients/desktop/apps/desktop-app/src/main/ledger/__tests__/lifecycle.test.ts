@@ -252,6 +252,14 @@ class FakeLedgerStore implements LedgerStoreClient {
     return unused('bindScope');
   }
 
+  bindGlobalScope(): Promise<never> {
+    return unused('bindGlobalScope');
+  }
+
+  findGlobalScope(): Promise<never> {
+    return unused('findGlobalScope');
+  }
+
   registerActor(): Promise<never> {
     return unused('registerActor');
   }
@@ -2578,6 +2586,45 @@ describe('LedgerLifecycle intent chains', () => {
     );
     expect(harness.store.calls).not.toContain('purgeScope');
     expect(harness.intentFile.summary()).toEqual([]);
+  });
+});
+
+describe('LedgerLifecycle global (workflow) scopes', () => {
+  const GLOBAL: LedgerContainer = {
+    kind: 'global',
+    owner: { kind: 'personal' },
+  };
+
+  it('never settles a global scope: the startup pass leaves it active', async () => {
+    const harness = createHarness();
+    const global = harness.store.addScope(GLOBAL, T0);
+    // A worktree no registry lists any more is retired beside it.
+    const gone = harness.store.addScope(worktree('wt-gone'), T0);
+    harness.persistence.setRegistry('worktrees', WORKSPACE_ID, {});
+
+    await expect(harness.lifecycle.reconcileAtStartup()).resolves.toBe(
+      'settled',
+    );
+
+    expect(harness.store.state(global)).toEqual(global);
+    expect(harness.store.state(gone)).toBeUndefined();
+    expect(harness.failures).toEqual([]);
+  });
+
+  it("keeps a global scope through its workspace's deletion", async () => {
+    const harness = createHarness();
+    const global = harness.store.addScope(GLOBAL, T0);
+    harness.store.addScope(worktree('wt-1'), T0);
+    harness.persistence.setRegistry('worktrees', WORKSPACE_ID, { 'wt-1': T0 });
+
+    const capture = await harness.lifecycle.captureWorkspace(WORKSPACE_ID, []);
+    if (capture === null) throw new Error('Expected a capture');
+    harness.persistence.setRegistry('worktrees', WORKSPACE_ID, 'absent');
+    harness.lifecycle.workspaceDeleted(capture);
+    await harness.lifecycle.whenIdle();
+    await harness.restart().reconcileAtStartup();
+
+    expect(harness.store.state(global)).toEqual(global);
   });
 });
 

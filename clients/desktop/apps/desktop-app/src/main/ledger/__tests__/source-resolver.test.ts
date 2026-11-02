@@ -209,6 +209,43 @@ describe('resolveLedgerViewSource', () => {
     });
   });
 
+  it("opens a global run without a task, and nothing a global Ledger can't hold", async () => {
+    const GLOBAL_SCOPE: LedgerViewScope = {
+      kind: 'global',
+      owner: { kind: 'personal' },
+      ledgerId: LEDGER_ID,
+    };
+    const chatPresence = jest.fn<
+      ReturnType<LedgerSourceHost['chatPresence']>,
+      Parameters<LedgerSourceHost['chatPresence']>
+    >(() => Promise.resolve('live'));
+    const globalHost = host({
+      chatPresence,
+      keptExecution: () => Promise.resolve({}),
+    });
+
+    await expect(
+      resolveLedgerViewSource(GLOBAL_SCOPE, PIPELINE_ORIGIN, globalHost),
+    ).resolves.toEqual({
+      availability: 'available',
+      target: {
+        kind: 'pipeline',
+        executionId: 'execution-1',
+        jobId: 'build__1',
+        stepId: 'agent',
+        attempt: 2,
+      },
+    });
+    await expect(
+      resolveLedgerViewSource(
+        GLOBAL_SCOPE,
+        { kind: 'chat', ledgerId: LEDGER_ID, chatId: 'chat-1' },
+        globalHost,
+      ),
+    ).resolves.toEqual({ availability: 'deleted', target: null });
+    expect(chatPresence).not.toHaveBeenCalled();
+  });
+
   it('reports a pruned run as expired', async () => {
     await expect(
       resolveLedgerViewSource(
@@ -564,6 +601,19 @@ describe('DESKTOP_LEDGER_SOURCE_HOST', () => {
       DESKTOP_LEDGER_SOURCE_HOST.keptExecution('../outside'),
     ).resolves.toBeNull();
     expect(mockedLoadExecutionState).toHaveBeenCalledTimes(1);
+
+    // A global run is kept without a project or worktree.
+    const {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      project_id: _project,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      worktree_id: _worktree,
+      ...globalRun
+    } = state;
+    mockedLoadExecutionState.mockResolvedValue(globalRun);
+    await expect(
+      DESKTOP_LEDGER_SOURCE_HOST.keptExecution('execution-2'),
+    ).resolves.toEqual({});
   });
 
   it('reads the recorded snapshot from the scope summary history', async () => {

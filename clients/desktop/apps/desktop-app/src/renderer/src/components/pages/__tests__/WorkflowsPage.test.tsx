@@ -18,7 +18,7 @@ import { AUTOMATIONS_OPEN_TAB_EVENT } from '@/lib/navigation/workflows-navigatio
 import { WorkflowsPage } from '../WorkflowsPage';
 
 const WORKFLOWS_SUBTITLE =
-  'Chain together prompts and scripts from multiple agents and trigger them on a schedule, when something happens, or manually.';
+  'Chain prompts and scripts, and run them by hand, on a schedule, or when something happens.';
 
 let mockHostMounts = 0;
 let mockPipelinesProps: {
@@ -120,7 +120,9 @@ describe('WorkflowsPage (CAN-3981)', () => {
       expect(byTestId('page-workflows')).not.toBeNull();
       expect(byTestId('mock-tabs')?.dataset.tab).toBe(tab);
       expect(container.querySelector('h1')?.textContent).toBe('Workflows');
-      const subtitles = byTestId('page-heading')?.querySelectorAll('p');
+      const subtitles = byTestId('page-header')?.querySelectorAll(
+        '[data-testid="page-header-description"]',
+      );
       expect(subtitles).toHaveLength(1);
       expect(subtitles?.[0]?.textContent).toBe(WORKFLOWS_SUBTITLE);
       const selected = byTestId(`workflows-tab-${tab}`);

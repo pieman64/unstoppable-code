@@ -182,6 +182,7 @@ function requestFingerprint(request: PortalStateRequestPayload): string {
     request.selectedChatOnly ?? false,
     request.includeChatSummaries ?? false,
     request.refresh ?? false,
+    request.changedFilesPage ?? null,
     Object.entries(request.target ?? {}).sort(([a], [b]) => a.localeCompare(b)),
   ]);
 }

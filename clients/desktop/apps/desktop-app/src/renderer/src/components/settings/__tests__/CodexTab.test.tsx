@@ -9,6 +9,7 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
+import { makeTestPreferences } from '@/test-utils/preferences';
 import { CODEX_SPEED_CATALOG_TTL_MS } from '@canopy/desktop-shared/lib/codex-speed-availability';
 import type {
   CodexSpeedApi,
@@ -34,7 +35,7 @@ import {
 function makePreferences(
   overrides: Partial<PreferencesData> = {},
 ): PreferencesData {
-  return {
+  const defaults: PreferencesData = Object.assign(makeTestPreferences(), {
     worktreePanelPercent: 32,
     activityPanelExpanded: false,
     activityPanelWidthPercent: 25,
@@ -53,6 +54,9 @@ function makePreferences(
       codex: { model: 'gpt-5.5', thinkingLevel: 'high' },
       ollama: null,
     },
+    personalWorkspaceCatalogSync: 'off',
+    personalCatalogOfferSeen: false,
+    personalCatalogNotice: null,
     defaultWorktreeProvider: 'claude',
     defaultWorktreeModelByProvider: {
       claude: { model: 'claude-sonnet-4-6', thinkingLevel: 'high' },
@@ -86,6 +90,7 @@ function makePreferences(
     rtkEnabled: true,
     scriptTimeoutMinutes: 5,
     codexAppServerIdleTimeoutMinutes: 10,
+    claudeSessionIdleTimeoutMinutes: 10,
     defaultChatInterfaceMode: 'canopy',
     maxActiveChatTurns: 10,
     maxActivePipelineExecutions: 5,
@@ -129,6 +134,8 @@ function makePreferences(
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
     },
     terminalDrawerCollapsed: true,
@@ -147,6 +154,8 @@ function makePreferences(
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
       categorySounds: {
         chat: 'Default',
@@ -157,6 +166,8 @@ function makePreferences(
         prCreate: 'Default',
         pipeline: 'Default',
         terminal: 'Default',
+        runComment: 'Default',
+        activation: 'Default',
       },
     },
     branchNamingPluginSelections: {
@@ -191,8 +202,8 @@ function makePreferences(
     },
     autoDownloadUpdates: true,
     showDiagnosticsPill: true,
-    ...overrides,
-  };
+  });
+  return Object.assign(defaults, overrides);
 }
 
 describe('CodexTab multi-agent settings', () => {
@@ -246,15 +257,15 @@ describe('CodexTab multi-agent settings', () => {
       },
       {
         field: 'codexMultiAgentAppAdvisorEnabled',
-        title: 'App Advisor',
-        helperText: 'Applies to Codex-backed App Advisor chats.',
+        title: 'Orchestrator',
+        helperText: 'Applies to Codex-backed Orchestrator chats.',
         testId: 'settings-codex-multi-agent-app-advisor',
       },
       {
         field: 'codexMultiAgentPipelinesEnabled',
-        title: 'Pipelines',
+        title: 'Workflows',
         helperText:
-          'Applies to Codex-backed pipeline actions such as Agent Prompt and Agent Resume.',
+          'Applies to Codex-backed workflow actions such as Agent Prompt and Agent Resume.',
         testId: 'settings-codex-multi-agent-pipelines',
       },
     ]);
@@ -773,6 +784,100 @@ describe('CodexTab default speed', () => {
       expect(openExternalMock).toHaveBeenCalledWith({
         url: CODEX_SPEED_HELP_URL,
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
+
+describe('CodexTab idle timeout', () => {
+  const originalApiDescriptor = Object.getOwnPropertyDescriptor(window, 'api');
+  const savePreferencesMock = jest.fn<
+    Promise<PreferencesData>,
+    [Partial<PreferencesData>]
+  >();
+  const loadPreferencesMock = jest.fn<Promise<PreferencesData>, []>();
+
+  beforeEach(() => {
+    loadPreferencesMock.mockReset();
+    loadPreferencesMock.mockResolvedValue(makePreferences());
+    savePreferencesMock.mockReset();
+    installApi(loadPreferencesMock, savePreferencesMock);
+  });
+
+  afterEach(() => {
+    resetCodexSpeedStoreForTests();
+    if (originalApiDescriptor) {
+      Object.defineProperty(window, 'api', originalApiDescriptor);
+      return;
+    }
+    Reflect.deleteProperty(window, 'api');
+  });
+
+  function idleInput(container: HTMLElement): HTMLInputElement {
+    const input = container.querySelector<HTMLInputElement>(
+      '[data-testid="settings-codex-idle-timeout-minutes"]',
+    );
+    if (!input) throw new Error('Missing Codex idle timeout input');
+    return input;
+  }
+
+  async function enter(input: HTMLInputElement, value: string): Promise<void> {
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set?.bind(input);
+    if (!setValue) throw new Error('Missing value setter');
+    act(() => {
+      setValue(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      for (let index = 0; index < 5; index += 1) await Promise.resolve();
+    });
+  }
+
+  it('saves a clamped Codex timeout only', async () => {
+    savePreferencesMock.mockImplementation((patch) =>
+      Promise.resolve(makePreferences(patch)),
+    );
+    const rendered = await renderCodexTab();
+    try {
+      const input = idleInput(rendered.container);
+      expect(input.value).toBe('10');
+      expect(rendered.container.textContent).toContain(
+        'Suspend idle Codex app-server processes after this long. Chat sessions are kept.',
+      );
+
+      await enter(input, '500');
+
+      expect(savePreferencesMock).toHaveBeenCalledWith({
+        codexAppServerIdleTimeoutMinutes: 120,
+      });
+      expect(input.value).toBe('120');
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it('restores the saved timeout when saving fails or the entry is not a number', async () => {
+    savePreferencesMock.mockRejectedValue(new Error('disk'));
+    const rendered = await renderCodexTab();
+    try {
+      const input = idleInput(rendered.container);
+      await enter(input, '30');
+      expect(input.value).toBe('10');
+      expect(
+        rendered.container.querySelector(
+          '[data-testid="settings-codex-save-error"]',
+        ),
+      ).not.toBeNull();
+
+      savePreferencesMock.mockClear();
+      await enter(input, 'abc');
+      expect(input.value).toBe('10');
+      expect(savePreferencesMock).not.toHaveBeenCalled();
     } finally {
       rendered.cleanup();
     }

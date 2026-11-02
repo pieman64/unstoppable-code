@@ -75,9 +75,10 @@ const pausedSummary: ExecutionSummary = {
   pipeline_id: 'pipeline-1',
   pipeline_name: 'Paused pipeline',
   status: 'paused',
+  status_reasons: [],
   started_at: '2026-05-30T00:00:00.000Z',
   cwd: '/repo',
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };
@@ -87,8 +88,8 @@ const pausedState: ExecutionState = {
   id: 'paused-execution',
   pipeline_id: 'pipeline-1',
   pipeline_snapshot: {
-    id: 'pipeline-1',
     name: 'Paused pipeline',
+    scope: ['directory'],
     jobs: {
       gate: {
         name: 'Gate',
@@ -99,7 +100,17 @@ const pausedState: ExecutionState = {
         timeout_minutes: 60,
         max_retries: 0,
         continue_on_error: false,
-        steps: [{ id: 'ask', name: 'Ask', shell: 'bash', run: 'true' }],
+        steps: [
+          {
+            id: 'ask',
+            name: 'Ask',
+            shell: 'bash',
+            run: 'true',
+            continue_on_error: false,
+            timeout_minutes: 30,
+            skip_on_missing_action: false,
+          },
+        ],
       },
     },
   },
@@ -141,7 +152,17 @@ const pausedState: ExecutionState = {
       timeout_minutes: 60,
       max_retries: 0,
       continue_on_error: false,
-      steps: [{ id: 'ask', name: 'Ask', shell: 'bash', run: 'true' }],
+      steps: [
+        {
+          id: 'ask',
+          name: 'Ask',
+          shell: 'bash',
+          run: 'true',
+          continue_on_error: false,
+          timeout_minutes: 30,
+          skip_on_missing_action: false,
+        },
+      ],
     },
   },
   job_groups: {
@@ -181,7 +202,7 @@ const pausedState: ExecutionState = {
   cwd: '/repo',
   env: {},
   inputs: {},
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };

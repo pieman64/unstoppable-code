@@ -46,7 +46,14 @@ export class PipelineHostRefusal extends Error {
   }
 }
 
-const PIPELINE_HOST_ACTION_IDS = ['move-to-group'] as const;
+const PIPELINE_HOST_ACTION_IDS = [
+  'move-to-group',
+  'create-worktree',
+  'create-project-entry',
+  'create-bot-entry',
+  'send-agent-message',
+  'wait-for-agent-reply',
+] as const;
 
 export type PipelineHostActionId = (typeof PIPELINE_HOST_ACTION_IDS)[number];
 
@@ -101,12 +108,13 @@ export type HostInputParse<T> =
 
 // Same rule as `validateId` in `node/lib/validation.ts` and the desktop app's
 // `lib/validation.ts`; duplicated because this module must stay browser-safe.
-const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+export const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 // Bot ids are snake_case (`app_advisor`), so they also allow underscores.
-const SAFE_BOT_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
+export const SAFE_BOT_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const GROUP_ID_PREFIX = 'grp-';
 
-function presentInput(
+/** The trimmed input, or `undefined` when it is missing or blank. */
+export function presentInput(
   inputs: Record<string, string | undefined>,
   name: string,
 ): string | undefined {
@@ -114,8 +122,8 @@ function presentInput(
   return value ? value : undefined;
 }
 
-function unsafeIdMessage(input: string): string {
-  return `move-to-group "${input}" must be lowercase alphanumeric with hyphens`;
+function unsafeIdMessage(actionName: string, input: string): string {
+  return `${actionName} "${input}" must be lowercase alphanumeric with hyphens`;
 }
 
 function parseColor(value: string): SidebarItemGroupColor | undefined {
@@ -125,8 +133,10 @@ function parseColor(value: string): SidebarItemGroupColor | undefined {
 const COLOR_NEEDS_NAME_MESSAGE =
   'move-to-group "color" applies only when "group" names a group';
 
-function parseMoveToGroupTask(
+/** A project or bot task address, shared by host steps that take one. */
+export function parseHostTaskAddress(
   inputs: Record<string, string | undefined>,
+  actionName: string,
 ): HostInputParse<MoveToGroupTask> {
   const projectId = presentInput(inputs, 'project_id');
   const botId = presentInput(inputs, 'bot_id');
@@ -134,28 +144,33 @@ function parseMoveToGroupTask(
   if ((projectId === undefined) === (botId === undefined)) {
     return {
       ok: false,
-      message: 'move-to-group requires exactly one of "project_id" or "bot_id"',
+      message: `${actionName} requires exactly one of "project_id" or "bot_id"`,
     };
   }
   if (taskId === undefined) {
-    return { ok: false, message: 'move-to-group requires "task_id"' };
+    return { ok: false, message: `${actionName} requires "task_id"` };
   }
   if (!SAFE_ID_RE.test(taskId)) {
-    return { ok: false, message: unsafeIdMessage('task_id') };
+    return { ok: false, message: unsafeIdMessage(actionName, 'task_id') };
   }
   if (projectId !== undefined) {
     return SAFE_ID_RE.test(projectId)
       ? { ok: true, value: { kind: 'project', projectId, taskId } }
-      : { ok: false, message: unsafeIdMessage('project_id') };
+      : { ok: false, message: unsafeIdMessage(actionName, 'project_id') };
   }
   const bot = botId ?? '';
   return SAFE_BOT_ID_RE.test(bot)
     ? { ok: true, value: { kind: 'bot', botId: bot, taskId } }
     : {
         ok: false,
-        message:
-          'move-to-group "bot_id" must be lowercase alphanumeric with hyphens or underscores',
+        message: `${actionName} "bot_id" must be lowercase alphanumeric with hyphens or underscores`,
       };
+}
+
+function parseMoveToGroupTask(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<MoveToGroupTask> {
+  return parseHostTaskAddress(inputs, 'move-to-group');
 }
 
 function parseGroupIdTarget(

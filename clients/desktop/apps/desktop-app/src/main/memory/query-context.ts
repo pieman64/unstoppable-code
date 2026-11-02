@@ -13,6 +13,8 @@ const EMPTY_CONTEXT: MemoryQueryContext = {
   recentUserMessages: [],
   summaryDescription: null,
 };
+const MEMORY_CONTEXT_MAX_TRANSCRIPT_PAGES = 3;
+const MEMORY_CONTEXT_MAX_TRANSCRIPT_ROWS = 2_000;
 
 function visibleUserText(message: PersistedChatMessage): string {
   return message.blocks
@@ -53,7 +55,9 @@ export async function collectMemoryQueryContext(options: {
   worktreeId: string;
   chatId: string;
   currentUserMessageId: string;
+  signal?: AbortSignal;
 }): Promise<MemoryQueryContext> {
+  const { signal, ...transcriptRequest } = options;
   try {
     const [tabsFile, worktreeSummary] = await Promise.all([
       readChatTabsFile(options.projectId, options.worktreeId, {
@@ -75,18 +79,28 @@ export async function collectMemoryQueryContext(options: {
         )
       : [];
     let before = tab?.transcriptWindow?.before;
+    let pagesRead = 0;
+    let rowsRead = tab?.messages.length ?? 0;
+    const pagingAborted = (): boolean => signal?.aborted === true;
     while (
       before !== undefined &&
-      recentUserMessages.length < MEMORY_CONTEXT_MAX_RECENT_MESSAGES
+      recentUserMessages.length < MEMORY_CONTEXT_MAX_RECENT_MESSAGES &&
+      pagesRead < MEMORY_CONTEXT_MAX_TRANSCRIPT_PAGES &&
+      rowsRead < MEMORY_CONTEXT_MAX_TRANSCRIPT_ROWS &&
+      !pagingAborted()
     ) {
       // Defer the heavy state service until older V2 pages are needed.
       const { getChatStateService } =
         await import('../services/chat-state-service');
+      if (pagingAborted()) break;
       const page = await getChatStateService().getTranscriptPage({
-        ...options,
+        ...transcriptRequest,
         before,
         transcriptRevision: tab?.transcriptWindow?.transcriptRevision,
       });
+      pagesRead += 1;
+      rowsRead += page.messages.length;
+      if (pagingAborted()) break;
       recentUserMessages = [
         ...recentUserMessageTexts(page.messages, options.currentUserMessageId),
         ...recentUserMessages,

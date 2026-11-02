@@ -592,6 +592,12 @@ interface LiveBrowserSession {
   resourceHandle?: ResourceRegistrationHandle;
   bounds: BrowserRectangle;
   visible: boolean;
+  /**
+   * A tab-cycle chord came from this page, so the page held keyboard focus.
+   * The next visibility change consumes it: hiding hands focus to the host
+   * (see `showView`).
+   */
+  cycledFromPage?: boolean;
   /** The page area's corner radii in host CSS px (see `setBounds`). */
   cornerRadii: BrowserCornerRadii;
   console: BrowserConsoleEntry[];
@@ -1739,6 +1745,15 @@ export class BrowserService {
     BrowserSessionArtifacts
   >();
   private readonly destroying = new Map<string, Promise<void>>();
+  /**
+   * Tabs main asked the renderer to open for a page's new-window request,
+   * until their session exists: the opener's profile, and whether an agent's
+   * action caused it, so a create or its Retry keeps both.
+   */
+  private readonly popupTabs = new Map<
+    string,
+    { selection?: BrowserCreateRequest['selection']; agent: boolean }
+  >();
   private readonly liveDisposals = new Map<string, Promise<void>>();
   private readonly persistenceQueues = new KeyedAsyncLock();
   private readonly mutationQueues = new KeyedAsyncLock();
@@ -2899,6 +2914,26 @@ export class BrowserService {
     // Main-owned maintenance identity, never read from caller request fields.
     restoreBinding?: BrowserProfileResolution['binding'],
   ): Promise<BrowserSessionSnapshot> {
+    const popup =
+      request.browserId === undefined
+        ? undefined
+        : this.popupTabs.get(request.browserId);
+    if (!popup) return this.createSession(request, actor, restoreBinding);
+    // An agent's popup tab is the agent's new tab: its profile must allow it.
+    const snapshot = await this.createSession(
+      { ...request, selection: request.selection ?? popup.selection },
+      popup.agent ? 'agent' : actor,
+      restoreBinding,
+    );
+    this.popupTabs.delete(snapshot.id);
+    return snapshot;
+  }
+
+  private async createSession(
+    request: BrowserCreateRequest,
+    actor: 'user' | 'agent',
+    restoreBinding?: BrowserProfileResolution['binding'],
+  ): Promise<BrowserSessionSnapshot> {
     const browserId = request.browserId ?? uuid();
     return this.withCreationAdmission(
       browserId,
@@ -3438,6 +3473,7 @@ export class BrowserService {
 
   async destroy(browserId: string): Promise<void> {
     this.assertCommandTarget(browserId);
+    this.popupTabs.delete(browserId);
     browserHandoffs.releaseBrowser(browserId);
     // Ownerless and queued admissions must also observe this permanent close.
     for (const admission of Array.from(
@@ -3712,10 +3748,27 @@ export class BrowserService {
     this.updateBrowserResource(state);
   }
 
-  /** The frame takes input over the page area, so it hides with the page. */
+  /**
+   * The frame takes input over the page area, so it hides with the page.
+   * Hiding the page that owns keyboard focus hands focus to the host
+   * renderer; otherwise keystrokes would go to a hidden page until the user
+   * clicks. A tab-cycle chord pressed in the page relies on this, since the
+   * renderer only hides the page when it selects another tab. `isFocused()`
+   * is false while the window itself lacks OS focus, so the chord also
+   * records that the page held focus.
+   */
   private showView(state: LiveBrowserSession, visible: boolean): void {
+    const hidesFocusedPage =
+      !visible &&
+      (state.cycledFromPage === true ||
+        state.view.webContents?.isFocused() === true);
+    state.cycledFromPage = undefined;
     state.viewFrame.frame.setVisible(visible);
     state.view.setVisible(visible);
+    const host = state.hostWindow;
+    if (hidesFocusedPage && host && !host.isDestroyed()) {
+      rendererContentsOf(host.webContents).focus();
+    }
   }
 
   async navigate(
@@ -3820,8 +3873,11 @@ export class BrowserService {
    * already guard with `canGoBack`/`canGoForward`). Renderer-focus actions
    * (`new-tab` / `focus-address-bar` / `find-in-page` / `close-tab`) hand
    * keyboard focus back to the host renderer first so it can focus its own
-   * input, or keep focus after the page's panel closes. `toggle-sidebar`
-   * preserves focus in the browser page.
+   * input, or keep focus after the page's panel closes. `toggle-sidebar` and
+   * the tab-cycle actions (`select-next-tab` / `select-previous-tab`)
+   * preserve focus in the browser page: a cycle that selects another tab
+   * hides this page, and `showView` then hands focus to the host, while one
+   * with nothing to select leaves the page focused.
    */
   private handleBrowserShortcut(
     state: LiveBrowserSession,
@@ -3837,7 +3893,17 @@ export class BrowserService {
       return;
     }
     const host = state.hostWindow;
-    if (action !== 'toggle-sidebar' && host && !host.isDestroyed()) {
+    const cyclesTabs =
+      action === 'select-next-tab' || action === 'select-previous-tab';
+    if (cyclesTabs) {
+      state.cycledFromPage = true;
+    }
+    if (
+      !cyclesTabs &&
+      action !== 'toggle-sidebar' &&
+      host &&
+      !host.isDestroyed()
+    ) {
       // The renderer the window stands for: under early access the App
       // Advisor window's own page is blank and its renderer is a view.
       rendererContentsOf(host.webContents).focus();
@@ -11322,8 +11388,37 @@ export class BrowserService {
         this.isUrlAllowedInApp(details.url) &&
         (!targetIsFile || isTrustedLocalFileSource(details.referrer?.url))
       ) {
-        this.noteActionPopup(state, details.url, 'opened_in_tab');
-        void this.navigate({ browserId: state.snapshot.id, url: details.url });
+        const { projectId, worktreeId } = state.snapshot;
+        // A sign-in view has no tabs, so its popups continue in it.
+        if (isMcpOAuthBrowserScope(projectId, worktreeId)) {
+          this.noteActionPopup(state, details.url, 'opened_in_tab');
+          void this.navigate({
+            browserId: state.snapshot.id,
+            url: details.url,
+          });
+        } else {
+          const newBrowserId = randomUUID();
+          const popup = this.noteActionPopup(
+            state,
+            details.url,
+            'opened_in_tab',
+          );
+          if (popup) popup.browserId = newBrowserId;
+          const selection = state.snapshot.profile?.selection;
+          this.popupTabs.set(newBrowserId, {
+            ...(selection ? { selection } : {}),
+            agent: popup !== undefined,
+          });
+          // The new tab is a separate session, so the page keeps no opener.
+          this.emitForSession(state, {
+            type: 'new-tab-requested',
+            browserId: state.snapshot.id,
+            snapshot: state.snapshot,
+            url: details.url,
+            newBrowserId,
+            ...(popup ? { presentation: 'background' } : {}),
+          });
+        }
       } else if (targetIsFile) {
         this.noteActionPopup(state, details.url, 'blocked');
         this.captureConsole(state, {
@@ -11535,10 +11630,18 @@ export class BrowserService {
     state: LiveBrowserSession,
   ): Promise<void> {
     const debug = state.view.webContents.debugger;
-    await Promise.all([
+    const enabled = Promise.all([
       debug.sendCommand('Debugger.enable'),
       debug.sendCommand('Page.enable'),
     ]);
+    // The page model's document-start trackers (D4), queued right behind
+    // Page.enable in this same turn. Commands wait for the renderer the first
+    // navigation starts and then run in order, so the trackers are in place
+    // before that navigation's child documents. Awaiting Page.enable first
+    // let same-process frames of the first page start untracked. Registered
+    // after every Page.enable, since Page.disable drops registered scripts.
+    const trackers = state.pageModel.installTrackers('').catch(() => false);
+    await enabled;
     // Choosers the page opens come here instead of opening a native picker.
     void debug
       .sendCommand('Page.setInterceptFileChooserDialog', { enabled: true })
@@ -11552,13 +11655,11 @@ export class BrowserService {
         }),
       )
       .catch(() => undefined);
-    // The page model's document-start trackers (D4): registered after
-    // every Page.enable, since Page.disable drops registered scripts.
     await Promise.all([
       debug.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
         source: appOwnedPromptBridgeScript(state.appPromptBridgeSourceUrl),
       }),
-      state.pageModel.installTrackers('').catch(() => false),
+      trackers,
     ]);
   }
 

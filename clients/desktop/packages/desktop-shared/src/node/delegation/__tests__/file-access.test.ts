@@ -67,6 +67,7 @@ describe('original asset identity precision', () => {
     hostOs: DelegationHostOperatingSystem | undefined,
   ): Promise<Awaited<ReturnType<NativeDelegationFiles['readAsset']>>> {
     const stdout = new PassThrough();
+    const stdin = new PassThrough();
     let exit: () => void = () => undefined;
     const exited = new Promise<void>((resolve) => {
       exit = resolve;
@@ -75,17 +76,15 @@ describe('original asset identity precision', () => {
       Buffer.from(`1\t${identity}\n`),
       Buffer.from([0xa3]),
     ]);
+    stdin.on('data', () => {
+      stdout.write(
+        Buffer.concat([Buffer.from(`OK ${response.length}\n`), response]),
+      );
+    });
+    stdin.once('finish', exit);
     const opening = NativeDelegationFiles.open(
       {
-        stdin: {
-          write: () => {
-            stdout.write(
-              Buffer.concat([Buffer.from(`OK ${response.length}\n`), response]),
-            );
-            return true;
-          },
-          end: exit,
-        },
+        stdin,
         stdout,
         exited,
         terminate: exit,
@@ -165,6 +164,7 @@ describe('original asset path colons', () => {
     hostOs: DelegationHostOperatingSystem | undefined,
   ): Promise<{ requests: string[]; read: Promise<Buffer> }> {
     const stdout = new PassThrough();
+    const stdin = new PassThrough();
     const requests: string[] = [];
     let exit: () => void = () => undefined;
     const exited = new Promise<void>((resolve) => {
@@ -176,18 +176,16 @@ describe('original asset path colons', () => {
       Buffer.from(`1\t${identity}\n`),
       Buffer.from([0xa3]),
     ]);
+    stdin.on('data', (chunk: Buffer | string) => {
+      requests.push(String(chunk));
+      stdout.write(
+        Buffer.concat([Buffer.from(`OK ${response.length}\n`), response]),
+      );
+    });
+    stdin.once('finish', exit);
     const opening = NativeDelegationFiles.open(
       {
-        stdin: {
-          write: (chunk: string | Uint8Array) => {
-            requests.push(String(chunk));
-            stdout.write(
-              Buffer.concat([Buffer.from(`OK ${response.length}\n`), response]),
-            );
-            return true;
-          },
-          end: exit,
-        },
+        stdin,
         stdout,
         exited,
         terminate: exit,
@@ -481,7 +479,7 @@ describe('native read-only delegation file boundary', () => {
       await expect(
         NativeDelegationFiles.open(
           {
-            stdin: { write: () => true, end: () => undefined },
+            stdin: new PassThrough(),
             stdout: new PassThrough(),
             exited: new Promise<void>(() => undefined),
             terminate: () => undefined,

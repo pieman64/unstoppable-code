@@ -32,6 +32,8 @@ import { requestBrowserUrlFocus } from '@/lib/browserUrlFocus';
 import { requestTerminalSpawn } from '@/lib/terminalSpawnRequests';
 import { ensureTerminalPanelVisible } from '@/lib/panels/terminal-panel-activation';
 import {
+  findEditableSafePanelShortcut,
+  matchesPanelShortcutBinding,
   PANEL_SHORTCUT_BINDINGS,
   runPanelCommand,
 } from '@/lib/panels/commands';
@@ -266,6 +268,8 @@ export interface GlobalShortcutKeyEvent extends ShortcutEventLike {
   target: EventTarget | null;
   /** Auto-repeat while a key is held (hold-to-dictate swallows these). */
   repeat?: boolean;
+  /** A focused component already consumed the chord. */
+  defaultPrevented?: boolean;
 }
 
 export function handleGlobalShortcutKeyDown(
@@ -290,16 +294,21 @@ export function handleGlobalShortcutKeyDown(
   // shortcuts such as Ctrl+S, Ctrl+P, Ctrl+T, Ctrl+W, Ctrl+N, Ctrl+, and
   // numbered worktree navigation require moving focus out of the terminal
   // first. Only the command palette (Ctrl+K), the shortcuts settings page
-  // (Ctrl+Shift+K), and a searchable terminal's own find bar (Ctrl+F, above)
-  // stay global; readline's forward-char yields to the Right arrow. On macOS
-  // app shortcuts are Cmd-based (`isShortcutEvent` never matches Ctrl there),
-  // so this early return changes nothing on that platform.
+  // (Ctrl+Shift+K), a searchable terminal's own find bar (Ctrl+F, above),
+  // and the panel tab-cycle chords (CAN-4616: Ctrl+Tab / Ctrl+Shift+Tab,
+  // Ctrl+PageDown / Ctrl+PageUp, which a cycle landing on a terminal tab
+  // needs to leave it) stay global; readline's forward-char yields to the
+  // Right arrow. On macOS app shortcuts are Cmd-based (`isShortcutEvent`
+  // never matches Ctrl there), so this early return changes nothing on that
+  // platform.
+  const editableSafeBinding = findEditableSafePanelShortcut(event);
   if (
     event.ctrlKey &&
     !event.metaKey &&
     isTerminalTarget(event.target) &&
     !isShortcutEvent(event, 'k') &&
-    !isShortcutEvent(event, 'k', { shift: true })
+    !isShortcutEvent(event, 'k', { shift: true }) &&
+    editableSafeBinding === undefined
   ) {
     return;
   }
@@ -308,8 +317,10 @@ export function handleGlobalShortcutKeyDown(
   // accelerator to Close Window (see main/menu.ts), so the chord reaches the
   // renderer everywhere; swallow it unconditionally so it can never fall
   // through to a window-closing default. Whether it actually closes a tab is
-  // decided below under the usual gating (main page, normal worktree
-  // selected, active tab, no overlay open) — otherwise it is a safe no-op.
+  // decided below: it closes the active tab of the visible panel grid (the
+  // Code worktree on the main page, the Cowork work entry on the chat page)
+  // when no overlay, dialog or quick prompt is open and the close is not
+  // refused (for example a busy chat) — otherwise it is a safe no-op.
   const isCloseTabChord = isShortcutEvent(event, 'w');
   if (isCloseTabChord) {
     event.preventDefault();
@@ -714,9 +725,11 @@ export function handleGlobalShortcutKeyDown(
   if (isCloseTabChord) {
     // Already preventDefault-ed at the top; only the action is gated here.
     // Context-aware (ECW-7984): close the FOCUSED surface's active panel the
-    // same way its tab-strip "X" button does, not always the chat tab.
-    const selection = getNormalSelectedWorktree();
-    if (!selection || navigation.activePage !== 'main') {
+    // same way its tab-strip "X" button does, not always the chat tab. Acts on
+    // whichever panel grid is visible: the normal worktree on the main page or
+    // the cowork work entry on the chat page.
+    const selection = getVisibleGridSelection();
+    if (!selection) {
       return;
     }
 
@@ -724,6 +737,31 @@ export function handleGlobalShortcutKeyDown(
       projectId: selection.projectId,
       worktreeId: selection.worktreeId,
     });
+    return;
+  }
+
+  // Editable-safe panel chords (CAN-4616 tab cycling: ⌘⇧] / ⌘⇧[ on macOS,
+  // Ctrl+Tab / Ctrl+Shift+Tab and Ctrl+PageDown / Ctrl+PageUp elsewhere)
+  // never move a cursor or edit text, so like ⌘W they run before the
+  // editable-target guard and keep working from the composer, an editor, or
+  // a terminal (the CAN-338 guard above lets them through). They act on the
+  // visible grid (Cowork entries included) and stay unclaimed off it, and
+  // inside any dialog, editable or not: a focused confirm button must not
+  // switch the tab behind the modal it belongs to.
+  if (editableSafeBinding) {
+    const selection = getVisibleGridSelection();
+    if (
+      !selection ||
+      event.defaultPrevented === true ||
+      isDialogTarget(event.target)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    runPanelCommand(
+      editableSafeBinding.id,
+      makeWorktreePanelKey(selection.projectId, selection.worktreeId),
+    );
     return;
   }
 
@@ -736,11 +774,10 @@ export function handleGlobalShortcutKeyDown(
   // own keys (⌘[ / ⌘] are indent chords in editors). No-op (without
   // swallowing the event) when off the main page or no normal worktree is
   // selected.
-  const panelBinding = PANEL_SHORTCUT_BINDINGS.find((binding) =>
-    isShortcutEvent(event, binding.key, {
-      shift: binding.shift,
-      alt: binding.alt,
-    }),
+  const panelBinding = PANEL_SHORTCUT_BINDINGS.find(
+    (binding) =>
+      binding.editableSafe !== true &&
+      matchesPanelShortcutBinding(event, binding),
   );
   if (panelBinding) {
     const selection = getNormalSelectedWorktree();

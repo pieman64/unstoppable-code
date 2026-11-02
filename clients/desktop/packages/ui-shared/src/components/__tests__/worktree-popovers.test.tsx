@@ -3,7 +3,11 @@
  */
 import { act, StrictMode, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ChatPreviewPopover, type ChatPreviewRow } from '../ChatPreviewPopover';
+import {
+  CHAT_PREVIEW_MARKED_UNREAD_COPY,
+  ChatPreviewPopover,
+  type ChatPreviewRow,
+} from '../ChatPreviewPopover';
 import {
   PipelineStatusPopover,
   type PipelineStatusPopoverEntry,
@@ -126,7 +130,7 @@ describe('shared worktree popovers', () => {
     );
 
     try {
-      expect(document.body.textContent).toContain('Pipelines Running');
+      expect(document.body.textContent).toContain('Workflows Running');
       expect(document.body.textContent).toContain('Quality Gate');
       expect(document.body.textContent).toContain('Success');
       expect(document.body.textContent).toContain('Deploy Preview');
@@ -141,7 +145,7 @@ describe('shared worktree popovers', () => {
           />,
         );
       });
-      expect(document.body.textContent).toContain('No pipeline details');
+      expect(document.body.textContent).toContain('No workflow details');
     } finally {
       cleanup(rendered.root, rendered.container);
     }
@@ -207,7 +211,7 @@ describe('shared worktree popovers', () => {
         document.body.querySelector(
           '[data-testid="pipeline-status-popover-header"]',
         );
-      expect(header()?.textContent).toBe('Pipelines Completed');
+      expect(header()?.textContent).toBe('Workflows Completed');
 
       act(() => {
         rendered.root.render(
@@ -218,7 +222,7 @@ describe('shared worktree popovers', () => {
           />,
         );
       });
-      expect(header()?.textContent).toBe('Pipelines Completed (4)');
+      expect(header()?.textContent).toBe('Workflows Completed (4)');
     } finally {
       cleanup(rendered.root, rendered.container);
     }
@@ -527,6 +531,40 @@ describe('shared worktree popovers', () => {
       expect(document.body.textContent).toContain('Scheduled review');
       expect(document.body.textContent).toContain('No response yet');
       expect(document.body.textContent).toContain('Scheduled for ');
+    } finally {
+      cleanup(rendered.root, rendered.container);
+    }
+  });
+
+  test('a chat marked unread says so instead of its last response', () => {
+    const rows: ChatPreviewRow[] = [
+      {
+        chatId: 'chat-marked',
+        title: 'Flagged for later',
+        providerType: 'claude',
+        preview: 'Old reply text',
+        markedUnread: true,
+      },
+      {
+        chatId: 'chat-replied',
+        title: 'New reply',
+        providerType: 'claude',
+        preview: 'Fresh reply text',
+      },
+    ];
+    const rendered = render(
+      <ChatPreviewPopover
+        anchorRect={anchorRect()}
+        rows={rows}
+        heading="Unread chats"
+      />,
+    );
+
+    try {
+      expect(CHAT_PREVIEW_MARKED_UNREAD_COPY).toBe('Marked as unread');
+      expect(document.body.textContent).toContain('Marked as unread');
+      expect(document.body.textContent).not.toContain('Old reply text');
+      expect(document.body.textContent).toContain('Fresh reply text');
     } finally {
       cleanup(rendered.root, rendered.container);
     }

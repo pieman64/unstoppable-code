@@ -11,6 +11,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type { Notification } from '@/stores/githubStore';
+import { useProjectsStore } from '@/stores/projectsStore';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { NotificationsPanel } from '../NotificationsPanel';
 
 const notifications: Notification[] = [
@@ -39,6 +41,26 @@ const notifications: Notification[] = [
     type: 'success',
     createdAt: Date.now(),
     meta: { blockMessageFromReplay: true },
+  },
+  {
+    id: 'n-4',
+    message: 'Report drafted.',
+    type: 'info',
+    createdAt: Date.now(),
+    meta: {
+      category: 'Chat',
+      workspaceName: 'My Cowork',
+      projectId: 'cowork-1',
+      worktreeId: 'entry-opaque-id',
+      chatId: 'chat-1',
+    },
+  },
+  {
+    id: 'n-5',
+    message: 'Nightly checks finished.',
+    type: 'success',
+    createdAt: Date.now(),
+    meta: { category: 'Pipeline' },
   },
 ];
 
@@ -91,6 +113,43 @@ describe('NotificationsPanel', () => {
     container.remove();
   });
 
+  it('names a Cowork entry as its sidebar row does, not by its id', () => {
+    const projectsBefore = useProjectsStore.getState();
+    const standaloneBefore = useStandaloneChatStore.getState();
+    useProjectsStore.setState({
+      projects: [
+        {
+          type: 'cowork',
+          id: 'cowork-1',
+          name: 'My Cowork',
+          color: '#000000',
+          collapsed: false,
+          order: 0,
+        },
+      ],
+    });
+    useStandaloneChatStore.setState({
+      sidebarEntriesByProject: {
+        'cowork-1': [
+          {
+            id: 'entry-opaque-id',
+            title: 'Q3 report',
+            createdAt: '2026-10-01T00:00:00.000Z',
+            chatCount: 1,
+          },
+        ],
+      },
+    });
+    try {
+      act(() => root.render(<NotificationsPanel />));
+      expect(findTextElement(container, 'Q3 report')).toBeDefined();
+      expect(container.textContent).not.toContain('entry-opaque-id');
+    } finally {
+      useProjectsStore.setState(projectsBefore);
+      useStandaloneChatStore.setState(standaloneBefore);
+    }
+  });
+
   it('shows the category, project, worktree, and message', () => {
     act(() => root.render(<NotificationsPanel />));
 
@@ -102,6 +161,13 @@ describe('NotificationsPanel', () => {
     ]) {
       expect(findTextElement(container, text)).toBeDefined();
     }
+  });
+
+  it('names the Pipeline category Workflow on the badge', () => {
+    act(() => root.render(<NotificationsPanel />));
+
+    expect(findTextElement(container, 'Workflow')).toBeDefined();
+    expect(container.textContent).not.toContain('Pipeline');
   });
 
   it('blocks chat messages, which quote the agent reply, and records the rest', () => {

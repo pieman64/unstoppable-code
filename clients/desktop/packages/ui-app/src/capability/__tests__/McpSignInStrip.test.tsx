@@ -35,15 +35,15 @@ const SLACK = server('slack/default', 'Slack', 'expired');
 
 describe('mcpSignInSummary', () => {
   it('names each server that still needs sign-in', () => {
-    expect(mcpSignInSummary(['Linear'])).toBe('Linear needs sign-in');
+    expect(mcpSignInSummary(['Linear'])).toBe('Sign in to use Linear');
     expect(mcpSignInSummary(['Linear', 'Slack'])).toBe(
-      'Linear and Slack need sign-in',
+      'Sign in to use Linear and Slack',
     );
     expect(mcpSignInSummary(['Linear', 'Slack', 'Notion'])).toBe(
-      'Linear, Slack, and Notion need sign-in',
+      'Sign in to use Linear, Slack, and Notion',
     );
     expect(mcpSignInSummary(['Linear', 'Slack', 'Notion', 'Figma'])).toBe(
-      'Linear, Slack, and 2 more need sign-in',
+      'Sign in to use Linear, Slack, and 2 more',
     );
   });
 });
@@ -119,13 +119,13 @@ describe('McpSignInStrip', () => {
     expect(
       container.querySelector('[data-testid="mcp-sign-in-strip-summary"]')
         ?.textContent,
-    ).toBe('Linear and Slack need sign-in');
+    ).toBe('Sign in to use Linear and Slack');
     const [linear, slack] = rows();
     expect(rowText(linear, 'mcp-servers-card-name')).toBe('Linear');
-    expect(rowText(linear, 'mcp-servers-card-badge')).toBe('Not signed in');
+    expect(rowText(linear, 'mcp-servers-card-badge')).toBe('Sign-in needed');
     expect(rowText(linear, 'mcp-servers-card-connect')).toBe('Sign in');
-    expect(rowText(slack, 'mcp-servers-card-badge')).toBe('Needs reconnecting');
-    expect(rowText(slack, 'mcp-servers-card-connect')).toBe('Reconnect');
+    expect(rowText(slack, 'mcp-servers-card-badge')).toBe('Sign-in expired');
+    expect(rowText(slack, 'mcp-servers-card-connect')).toBe('Sign in');
     expect(
       container.querySelector('[data-testid="mcp-servers-card-disconnect"]'),
     ).toBeNull();
@@ -147,7 +147,7 @@ describe('McpSignInStrip', () => {
         ?.textContent,
     ).toBe('2 pending');
     const [linear, open] = rows();
-    expect(rowText(linear, 'mcp-servers-card-badge')).toBe('Not signed in');
+    expect(rowText(linear, 'mcp-servers-card-badge')).toBe('Sign-in needed');
     expect(rowText(open, 'mcp-servers-card-badge')).toBe('Not enabled');
     expect(rowText(open, 'mcp-servers-card-connect')).toBe('Enable');
   });
@@ -174,9 +174,9 @@ describe('McpSignInStrip', () => {
     expect(
       container.querySelector('[data-testid="mcp-sign-in-strip-summary"]')
         ?.textContent,
-    ).toBe('Slack needs sign-in');
+    ).toBe('Sign in to use Slack');
     const [linear] = rows();
-    expect(rowText(linear, 'mcp-servers-card-badge')).toBe('Signed in');
+    expect(rowText(linear, 'mcp-servers-card-badge')).toBe('Connected');
     expect(
       linear.querySelector('[data-testid="mcp-servers-card-connect"]'),
     ).toBeNull();

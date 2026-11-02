@@ -115,7 +115,7 @@ export function MarketplaceSourcesList({
           {listError ?? 'Marketplaces could not be loaded.'}
         </p>
         <Button
-          size="control"
+          size="compact"
           variant="secondary"
           onClick={() => void state.reload()}
         >
@@ -307,7 +307,7 @@ function MarketplaceSourceRow({
           )}
           {source.actions.update && (
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               disabled={busy}
               onClick={() => void state.update(source.id)}
@@ -318,7 +318,7 @@ function MarketplaceSourceRow({
           )}
           {source.actions.remove && (
             <Button
-              size="control"
+              size="compact"
               variant="ghost"
               disabled={busy}
               onClick={onRemove}

@@ -9,6 +9,7 @@ import {
   type HTMLAttributes,
   type JSX,
   type ReactNode,
+  type Ref,
 } from 'react';
 import {
   CircleCheckIcon,
@@ -16,7 +17,8 @@ import {
   InfoIcon,
   WarningIcon,
 } from '../icons/AppIcons';
-import { buttonClassName } from './Button';
+import { Button, buttonClassName } from './Button';
+import { LoadingSpinner } from './LoadingSpinner';
 
 /**
  * The two tiers of action a notice can offer. `primary` is the single
@@ -60,6 +62,15 @@ export interface NoticeButtonProps extends ButtonHTMLAttributes<HTMLButtonElemen
    * peer actions that carry icons (a toast's Copy link and Open) line up.
    */
   icon?: ReactNode;
+  /**
+   * The work this button started is still running: the spinner takes the
+   * glyph's place inside the capsule, `busyLabel` (when given) replaces the
+   * label, and the button announces `aria-busy` and stops taking presses, so
+   * a retry never blanks or runs twice.
+   */
+  busy?: boolean;
+  /** The label while `busy`. Defaults to the resting label. */
+  busyLabel?: ReactNode;
 }
 
 /**
@@ -74,18 +85,41 @@ export const NoticeButton = forwardRef<HTMLButtonElement, NoticeButtonProps>(
       type = 'button',
       className = '',
       icon,
+      busy = false,
+      busyLabel,
+      disabled,
       children,
       ...props
     },
     ref,
   ): JSX.Element {
     const size = useContext(NoticeButtonSizeContext);
+    if (busy) {
+      return (
+        <button
+          ref={ref}
+          type={type}
+          className={noticeButtonClassName(
+            variant,
+            `gap-1.5 ${className}`,
+            size,
+          )}
+          {...props}
+          disabled
+          aria-busy="true"
+        >
+          <LoadingSpinner className="shrink-0" decorative />
+          {busyLabel ?? children}
+        </button>
+      );
+    }
     if (icon === undefined || icon === null) {
       return (
         <button
           ref={ref}
           type={type}
           className={noticeButtonClassName(variant, className, size)}
+          disabled={disabled}
           {...props}
         >
           {children}
@@ -97,6 +131,7 @@ export const NoticeButton = forwardRef<HTMLButtonElement, NoticeButtonProps>(
         ref={ref}
         type={type}
         className={noticeButtonClassName(variant, `gap-1.5 ${className}`, size)}
+        disabled={disabled}
         {...props}
       >
         <span aria-hidden="true" className="inline-flex shrink-0">
@@ -129,6 +164,7 @@ export interface NoticeProps extends Omit<
   HTMLAttributes<HTMLDivElement>,
   'title' | 'children'
 > {
+  readonly ref?: Ref<HTMLDivElement>;
   intent?: NoticeIntent;
   /**
    * Leading glyph. Omit for the intent's default app icon, pass `null`
@@ -174,6 +210,8 @@ export interface NoticeProps extends Omit<
    * is read in document order instead of being announced on mount.
    */
   role?: 'status' | 'alert' | 'none';
+  /** Announce only the copy when action updates should stay outside the region. */
+  liveRegionScope?: 'notice' | 'content';
   /**
    * `composer` matches the composer box: 20px corners, with the controls 12px
    * from the edges so their 8px corners still nest (20 = 8 + 12). Defaults to
@@ -399,6 +437,7 @@ export function Notice({
   dismissLabel = 'Dismiss',
   dismissTestId,
   role,
+  liveRegionScope = 'notice',
   shape,
   surface = 'tray',
   titleLayout = 'inline',
@@ -423,7 +462,6 @@ export function Notice({
   const live = resolvedRole !== 'none';
   const hasActions = actions !== undefined && actions !== null;
   const trailingActions = hasActions && actionsPlacement === 'trailing';
-  const belowActions = hasActions && actionsPlacement === 'below';
   const actionNodes = hasActions ? (
     <NoticeButtonSizeContext.Provider
       value={ACTION_SIZE_BY_SHAPE[resolvedShape]}
@@ -434,7 +472,7 @@ export function Notice({
 
   return (
     <div
-      {...(live
+      {...(live && liveRegionScope === 'notice'
         ? {
             role: resolvedRole,
             'aria-live': resolvedRole === 'alert' ? 'assertive' : 'polite',
@@ -490,7 +528,16 @@ export function Notice({
                 {resolvedIcon}
               </span>
             )}
-            <div className="min-w-0 flex-1 py-1.25">
+            <div
+              className="min-w-0 flex-1 py-1.25"
+              {...(live && liveRegionScope === 'content'
+                ? {
+                    role: resolvedRole,
+                    'aria-live':
+                      resolvedRole === 'alert' ? 'assertive' : 'polite',
+                  }
+                : {})}
+            >
               {title !== undefined && titleLayout === 'stacked' ? (
                 // A headline over its explanation: the title on its own line
                 // with no added stop, the message under it in `fg-tertiary`.
@@ -524,56 +571,58 @@ export function Notice({
               {detail !== undefined && (
                 // 2px of air between the line and its detail, so the detail
                 // reads as a second paragraph rather than a wrapped line.
-                <div className="mt-0.5 fg-tertiary">{detail}</div>
+                <div className="mt-0.5 text-pretty fg-tertiary">{detail}</div>
               )}
             </div>
           </div>
-          {trailingActions && (
+          {/* One element for both placements, so moving the actions between
+              them restyles the row instead of remounting the buttons (and
+              losing state a stateful action holds). `below` takes a full
+              line of the wrapping row, which puts it under the copy. */}
+          {hasActions && (
             <div
-              data-notice-actions="trailing"
-              // Without a dismiss control the buttons are the right edge:
-              // pull them in by the same 4px as the dismiss box so a button
-              // sits 8px from the top, bottom, and right alike.
-              className={`ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 ${
-                onDismiss || !pullControlsIn ? '' : '-mr-1'
-              }`}
+              data-notice-actions={actionsPlacement}
+              className={
+                trailingActions
+                  ? // Without a dismiss control the buttons are the right
+                    // edge: pull them in by the same 4px as the dismiss box
+                    // so a button sits 8px from the top, bottom, and right
+                    // alike.
+                    `ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 ${
+                      onDismiss || !pullControlsIn ? '' : '-mr-1'
+                    }`
+                  : `flex basis-full flex-wrap items-center gap-2 ${
+                      resolvedIcon === null
+                        ? ''
+                        : composerShape
+                          ? 'pl-11'
+                          : toastShape
+                            ? // The copy starts 28px in (16px glyph + 12px
+                              // gap); the row starts 12px short of it (the
+                              // pill's own inset), so each button's label
+                              // lines up with the copy.
+                              'pl-4'
+                            : 'pl-6'
+                    }`
+              }
             >
               {actionNodes}
             </div>
           )}
         </div>
-        {belowActions && (
-          <div
-            data-notice-actions="below"
-            className={`flex flex-wrap items-center gap-2 ${
-              resolvedIcon === null
-                ? ''
-                : composerShape
-                  ? 'pl-11'
-                  : toastShape
-                    ? // The copy starts 28px in (16px glyph + 12px gap); the
-                      // row starts 12px short of it (the pill's own inset),
-                      // so each button's label lines up with the copy.
-                      'pl-4'
-                    : 'pl-6'
-            }`}
-          >
-            {actionNodes}
-          </div>
-        )}
       </div>
       {onDismiss && (
-        <button
-          type="button"
+        <Button
+          variant="ghost-overlay"
+          size="sm"
+          iconOnly
           onClick={onDismiss}
           aria-label={dismissLabel}
           data-testid={dismissTestId}
-          className={`focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-subtle hover:fg-primary ${
-            toastShape ? 'mt-px' : pullControlsIn ? '-mr-1' : ''
-          }`}
+          className={toastShape ? 'mt-px' : pullControlsIn ? '-mr-1' : ''}
         >
           <CloseMediumIcon size={16} aria-hidden="true" />
-        </button>
+        </Button>
       )}
     </div>
   );

@@ -282,10 +282,7 @@ test('duplicating the bundled multi-provider review preserves valid model aliase
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
     await app.openPipelinesPage();
-    await window.getByTestId('workflows-library-filter-source').click();
-    await window
-      .getByTestId('workflows-library-filter-source-option-built-in')
-      .click();
+    await app.chooseWorkflowsLibraryFilter('source', 'built-in');
     await app.chooseWorkflowsLibraryRowAction(
       app.workflowsLibraryPipelineRow(
         'bundled-code-review-multi-provider',
@@ -293,10 +290,7 @@ test('duplicating the bundled multi-provider review preserves valid model aliase
       ),
       'duplicate',
     );
-    await window.getByTestId('workflows-library-filter-source').click();
-    await window
-      .getByTestId('workflows-library-filter-source-option-mine')
-      .click();
+    await app.chooseWorkflowsLibraryFilter('source', 'mine');
     const copy = window
       .getByTestId('workflows-library-table')
       .getByRole('row')

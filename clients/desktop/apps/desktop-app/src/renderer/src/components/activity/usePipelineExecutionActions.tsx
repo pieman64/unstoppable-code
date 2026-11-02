@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   useCallback,
   useEffect,
@@ -137,7 +138,7 @@ async function resolveExecution(
     store.statesById[executionId] ??
     (await store.loadExecutionDetails(executionId));
   if (!state) {
-    addPipelineToast('Failed to load pipeline execution details', 'error');
+    addPipelineToast('Failed to load workflow execution details', 'error');
     return null;
   }
   return state;
@@ -477,7 +478,7 @@ export function usePipelineExecutionActions(
         if (!state) return false;
         if (state.status !== 'failure') {
           addPipelineToast(
-            'Only failed pipeline runs can be debugged with App Advisor',
+            `Only failed workflow runs can be debugged with ${ORCHESTRATOR_LABEL}`,
             'error',
           );
           return false;
@@ -490,7 +491,7 @@ export function usePipelineExecutionActions(
         if (!response.ok) {
           addPipelineToast(
             response.error?.message ??
-              'Failed to open App Advisor for pipeline debug',
+              `Failed to open ${ORCHESTRATOR_LABEL} for workflow debug`,
             'error',
           );
           return false;
@@ -500,7 +501,7 @@ export function usePipelineExecutionActions(
         addPipelineToast(
           error instanceof Error
             ? error.message
-            : 'Failed to open App Advisor for pipeline debug',
+            : `Failed to open ${ORCHESTRATOR_LABEL} for workflow debug`,
           'error',
         );
         return false;
@@ -519,7 +520,7 @@ export function usePipelineExecutionActions(
           const planPath = getExecutionPlanPath(state);
           return planPath ? `Review this plan: ${planPath}` : null;
         },
-        'This pipeline run does not have a saved plan file',
+        'This workflow run does not have a saved plan file',
       ),
     [],
   );
@@ -534,7 +535,7 @@ export function usePipelineExecutionActions(
             state.report_outputs?.report_json_file;
           return reportPath ? `Review this report: ${reportPath}` : null;
         },
-        'This pipeline run does not have a saved report file',
+        'This workflow run does not have a saved report file',
       ),
     [],
   );
@@ -546,7 +547,7 @@ export function usePipelineExecutionActions(
         store.summaries.find((summary) => summary.id === executionId)
           ?.pipeline_name ??
         store.statesById[executionId]?.pipeline_snapshot.name ??
-        'Pipeline run';
+        'Workflow run';
       setReport({
         executionId,
         pipelineName,
@@ -567,7 +568,7 @@ export function usePipelineExecutionActions(
     const worktreeId = state.worktree_id ?? summary?.worktree_id;
     if (!planId || !projectId || !worktreeId) {
       addPipelineToast(
-        'This pipeline run is not linked to a tracked plan',
+        'This workflow run is not linked to a tracked plan',
         'error',
       );
       return;
@@ -586,7 +587,7 @@ export function usePipelineExecutionActions(
       if (!state) return;
       if (!getExecutionPlanPath(state)) {
         addPipelineToast(
-          'This pipeline run does not have a saved plan file',
+          'This workflow run does not have a saved plan file',
           'error',
         );
         return;
@@ -619,7 +620,7 @@ export function usePipelineExecutionActions(
       }
       const planPath = getExecutionPlanPath(execution);
       if (!planPath) {
-        setFollowUpError('This pipeline run does not have a saved plan file');
+        setFollowUpError('This workflow run does not have a saved plan file');
         return;
       }
 
@@ -689,7 +690,7 @@ export function usePipelineExecutionActions(
         });
 
         if (!result.success) {
-          setFollowUpError(result.error ?? 'Pipeline execution failed');
+          setFollowUpError(result.error ?? 'Workflow execution failed');
           return;
         }
         setFollowUp(null);

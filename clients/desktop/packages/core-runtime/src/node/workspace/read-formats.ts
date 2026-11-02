@@ -28,6 +28,8 @@ export interface WorkspaceIndexRead<Section extends string> {
   document: Record<string, unknown> | undefined;
   /** First readable raw entry per id; duplicates still remain in entries. */
   rawEntriesById: Map<string, Record<string, unknown>>;
+  /** The raw entry each of `entries` was read from, at the same position. */
+  rawEntries: Record<string, unknown>[];
   unreadableEntries: Record<string, unknown>[];
 }
 
@@ -68,6 +70,7 @@ function emptyIndex<Section extends string>(
     raw: null,
     document: undefined,
     rawEntriesById: new Map(),
+    rawEntries: [],
     unreadableEntries: [],
   };
 }
@@ -78,7 +81,8 @@ function normalizeWorkspaceIndexEntry<Section extends string>(
 ): WorkspaceIndexReadEntry<Section> | null {
   if (
     typeof entry.id !== 'string' ||
-    typeof entry.name !== 'string' ||
+    (typeof entry.name !== 'string' &&
+      !(entry.type === 'cowork' && entry.name === undefined)) ||
     (entry.type !== 'single-repo' &&
       entry.type !== 'multi-repo' &&
       entry.type !== 'cowork') ||
@@ -86,9 +90,12 @@ function normalizeWorkspaceIndexEntry<Section extends string>(
   ) {
     return null;
   }
+  const name = typeof entry.name === 'string' ? entry.name : '';
   return {
     id: entry.id,
-    name: entry.name,
+    // Shared by sidebar/top-bar and filesystem readers; legacy Cowork names
+    // may be absent, but malformed metadata remains unreadable.
+    name: entry.type === 'cowork' ? name.trim() : name,
     type: entry.type,
     color: entry.color,
     collapsed: typeof entry.collapsed === 'boolean' ? entry.collapsed : false,
@@ -120,6 +127,7 @@ export function readWorkspaceIndex<Section extends string>(
   }
   const entries: WorkspaceIndexReadEntry<Section>[] = [];
   const rawEntriesById = new Map<string, Record<string, unknown>>();
+  const rawEntries: Record<string, unknown>[] = [];
   const unreadableEntries: Record<string, unknown>[] = [];
   for (const rawEntry of parsed.workspaces) {
     if (!isJsonObject(rawEntry)) return emptyIndex('unreadable');
@@ -132,6 +140,7 @@ export function readWorkspaceIndex<Section extends string>(
       continue;
     }
     entries.push(entry);
+    rawEntries.push(rawEntry);
     if (!rawEntriesById.has(entry.id)) rawEntriesById.set(entry.id, rawEntry);
   }
   return {
@@ -140,6 +149,7 @@ export function readWorkspaceIndex<Section extends string>(
     raw: input.raw,
     document: parsed,
     rawEntriesById,
+    rawEntries,
     unreadableEntries,
   };
 }

@@ -17,7 +17,7 @@ import {
   resolveWorkflowEditPlan,
   type UnsavedChangesSaveResult,
 } from '@canopy/ui-app/workflows';
-import { Notice } from '@canopy/ui-shared/components';
+import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { pipelineStartKinds } from '@/lib/workflows/pipeline-automations';
@@ -28,7 +28,6 @@ import {
   type WorkflowEditTarget,
 } from '@/lib/workflows/edit-target';
 import { useChatStore } from '@/stores/chatStore';
-import { useGitHubStore } from '@/stores/githubStore';
 import {
   runWithoutNavigationGuard,
   useNavigationStore,
@@ -53,6 +52,7 @@ import {
 } from './PipelineEditSections';
 import { replaceSavedDraft } from './replaceSavedDraft';
 import { useWorkflowEditGuard } from './useWorkflowEditGuard';
+import { usePipelineAssistantDraft } from '@/components/pipeline/pipelineAssistantDraft';
 import { WorkflowEditNotFound } from './WorkflowEditNotFound';
 
 type PipelineTarget = Extract<WorkflowEditTarget, { kind: 'pipeline' }>;
@@ -74,12 +74,6 @@ function goBack(): void {
   useNavigationStore.getState().closeWorkflowEdit();
 }
 
-function showError(message: string): void {
-  useGitHubStore
-    .getState()
-    .addToast(message, 'error', undefined, { category: 'Pipeline' });
-}
-
 /** The pipeline's name in the heading, renamed in place when editable. */
 function PipelineNameEditor({
   name,
@@ -89,13 +83,13 @@ function PipelineNameEditor({
   readonly onRename: (name: string) => void;
 }): JSX.Element {
   const [editing, setEditing] = useState(false);
-  const label = name || 'Untitled pipeline';
+  const label = name || 'Untitled workflow';
   if (editing) {
     return (
       <input
         autoFocus
         value={name}
-        aria-label="Pipeline name"
+        aria-label="Workflow name"
         data-testid="pipeline-editor-name-input"
         onChange={(event): void => onRename(event.target.value)}
         onBlur={(): void => setEditing(false)}
@@ -104,7 +98,9 @@ function PipelineNameEditor({
             setEditing(false);
           }
         }}
-        className={`w-full min-w-0 border-b border-line-accent bg-transparent text-lg font-semibold fg-primary outline-none ${REPLAY_MASK_CLASS}`}
+        // No type classes: the field takes the page title's type from the
+        // header's heading, so renaming does not change its size.
+        className={`w-full min-w-0 border-b border-line-accent bg-transparent fg-primary outline-none ${REPLAY_MASK_CLASS}`}
       />
     );
   }
@@ -113,7 +109,9 @@ function PipelineNameEditor({
       type="button"
       onClick={(): void => setEditing(true)}
       aria-label={`Rename ${label}`}
-      className={`focus-ring min-w-0 truncate rounded-sm text-left transition-colors hover:fg-accent ${REPLAY_MASK_CLASS}`}
+      // Capped at the heading's width, so a long name ends in an ellipsis
+      // instead of running under the save state and the actions.
+      className={`focus-ring min-w-0 max-w-full truncate rounded-sm align-top text-left transition-colors hover:fg-accent ${REPLAY_MASK_CLASS}`}
     >
       {label}
     </button>
@@ -205,15 +203,32 @@ export function PipelineEditAdapter({
     void save();
   }, [save]);
 
+  // Text typed into the Assistant and not sent is unsaved work too (Sergii's
+  // QA, 2026-10-23): leaving asks, and Discard drops it with the edits.
+  const assistantDraft = usePipelineAssistantDraft();
+  // With only the draft unsaved, Save keeps the draft and writes nothing: a
+  // clean pipeline has nothing to save.
+  const sessionIsDirty = session.isDirty;
+  const guardSave = useCallback(
+    (): Promise<UnsavedChangesSaveResult> =>
+      sessionIsDirty ? save() : Promise.resolve({ ok: true }),
+    [sessionIsDirty, save],
+  );
+  const sessionDiscard = session.discard;
+  const discardAssistantDraft = assistantDraft.discard;
+  const discard = useCallback((): void => {
+    sessionDiscard();
+    discardAssistantDraft();
+  }, [sessionDiscard, discardAssistantDraft]);
   const guard = useWorkflowEditGuard({
-    isDirty: session.isDirty,
-    save,
-    discard: session.discard,
+    isDirty: sessionIsDirty || (!session.readOnly && assistantDraft.present),
+    save: guardSave,
+    discard,
     targetKey,
   });
 
   const selectedWorktree = useChatStore((state) => state.selectedWorktree);
-  const { openDispatchPipelineModal, dispatchPipelineModal } =
+  const { openWorkflowsRunModal, dispatchPipelineModal } =
     useDispatchPipelineModal();
   const [deleting, setDeleting] = useState(false);
   const [toggling, setToggling] = useState(false);
@@ -224,6 +239,13 @@ export function PipelineEditAdapter({
     [pipelines.pipelines, pipelines.shared.rows],
   );
   const enabled = info ? !pipelines.disabledPipelineIds.has(info.id) : true;
+  // A converted chat automation's own pipeline names it (CAN-4551).
+  const owner =
+    info?.source === 'user'
+      ? automations.activities.find(
+          (activity) => activity.ownedPipeline?.pipelineId === info.id,
+        )
+      : undefined;
   const draft = session.isDraft;
 
   const plan = resolveWorkflowEditPlan({
@@ -255,16 +277,18 @@ export function PipelineEditAdapter({
 
   const run = useCallback((): void => {
     if (!info) return;
-    if (!selectedWorktree) {
-      showError('Open a worktree or chat first, then run a pipeline in it.');
-      return;
-    }
-    openDispatchPipelineModal({
-      projectId: selectedWorktree.projectId,
-      worktreeId: selectedWorktree.worktreeId,
+    openWorkflowsRunModal({
       initialPipelineId: info.id,
+      ...(selectedWorktree
+        ? {
+            currentTarget: {
+              projectId: selectedWorktree.projectId,
+              worktreeId: selectedWorktree.worktreeId,
+            },
+          }
+        : {}),
     });
-  }, [info, openDispatchPipelineModal, selectedWorktree]);
+  }, [info, openWorkflowsRunModal, selectedWorktree]);
 
   // The shell confirms first, and shows a failure in its confirmation.
   const handleDelete = useCallback(
@@ -275,7 +299,7 @@ export function PipelineEditAdapter({
       } catch (error: unknown) {
         throw error instanceof Error
           ? error
-          : new Error('The pipeline could not be deleted.');
+          : new Error('The workflow could not be deleted.');
       } finally {
         setDeleting(false);
       }
@@ -412,7 +436,7 @@ export function PipelineEditAdapter({
     <>
       <WorkflowEditShell
         kind="pipeline"
-        name={session.name || 'Untitled pipeline'}
+        name={session.name || 'Untitled workflow'}
         {...(!session.readOnly && session.pipeline
           ? {
               nameEditor: (
@@ -423,6 +447,7 @@ export function PipelineEditAdapter({
               ),
             }
           : {})}
+        {...(info?.description ? { description: info.description } : {})}
         backLabel={backLabel}
         onBack={goBack}
         plan={plan}
@@ -435,16 +460,37 @@ export function PipelineEditAdapter({
           onToggle: pipelines.assistant.toggle,
         }}
         notices={
+          owner ||
           // The editor shows its own load, save and Raw errors on Definition.
-          saveFailure !== null &&
-          session.error === null &&
-          session.rawYamlError === null ? (
-            <Notice
-              intent="destructive"
-              data-testid="pipeline-editor-save-error"
-            >
-              {saveFailure}
-            </Notice>
+          (saveFailure !== null &&
+            session.error === null &&
+            session.rawYamlError === null) ? (
+            <>
+              {owner ? (
+                <Notice
+                  intent="neutral"
+                  data-testid="pipeline-editor-owned-by"
+                  actions={
+                    <NoticeButton onClick={() => automations.beginEdit(owner)}>
+                      Open automation
+                    </NoticeButton>
+                  }
+                >
+                  This workflow belongs to the automation{' '}
+                  <span className={REPLAY_MASK_CLASS}>{owner.name}</span>.
+                </Notice>
+              ) : null}
+              {saveFailure !== null &&
+              session.error === null &&
+              session.rawYamlError === null ? (
+                <Notice
+                  intent="destructive"
+                  data-testid="pipeline-editor-save-error"
+                >
+                  {saveFailure}
+                </Notice>
+              ) : null}
+            </>
           ) : undefined
         }
         onSave={requestSave}

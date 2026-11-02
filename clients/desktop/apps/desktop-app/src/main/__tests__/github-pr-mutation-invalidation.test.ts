@@ -13,7 +13,8 @@ jest.mock('../lib/github-pr-read-model', () => ({
   invalidateGitHubPullRequest: jest.fn(),
 }));
 
-import { getGitHubClient } from '../lib/github-client';
+import type { Octokit } from '@octokit/rest';
+import { getGitHubClient, type GitHubClient } from '../lib/github-client';
 import {
   closePrForRepo,
   mergePrForRepo,
@@ -26,12 +27,19 @@ const mockedGetGitHubClient = jest.mocked(getGitHubClient);
 const mockedInvalidate = jest.mocked(invalidateGitHubPullRequest);
 const PR = { owner: 'acme', repo: 'example-repo', number: 42 };
 
-function clientAnswering(octokit: Record<string, unknown>): jest.Mock {
-  const enqueue = jest.fn((callback: (client: unknown) => unknown) =>
-    callback(octokit),
-  );
+function asTestOctokit(client: object): Octokit {
+  // Each mutation fixture contains only the endpoint exercised by its test.
+  return client as unknown as Octokit;
+}
+
+function clientAnswering(octokit: Record<string, unknown>): void {
+  const enqueue: GitHubClient['enqueue'] = <T>(
+    callback: (
+      client: Octokit,
+      conditionalHeaders: Record<string, string>,
+    ) => Promise<T>,
+  ): Promise<T> => callback(asTestOctokit(octokit), {});
   mockedGetGitHubClient.mockReturnValue({ enqueue });
-  return enqueue;
 }
 
 describe('pull request mutations invalidate the shared read model', () => {

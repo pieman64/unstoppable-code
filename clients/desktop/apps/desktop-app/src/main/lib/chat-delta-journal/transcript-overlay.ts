@@ -12,6 +12,7 @@ import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
 import { activeRowBytes } from './active-turn';
 import type { DeltaJournalTranscriptEffect } from './format';
 import { ChatDeltaJournalIntegrityError } from './format';
+import type { ActiveRowAnchor } from '../chat-transcript-live-positions';
 
 /** Read access to the transcript files a checkpoint last wrote. */
 export interface TranscriptOverlayBase {
@@ -22,6 +23,10 @@ export interface TranscriptOverlayBase {
   ): Promise<'absent' | 'identical' | 'different'>;
   hasCommittedMessage(chatId: string, messageId: string): Promise<boolean>;
   activeMessages(chatId: string): Promise<PersistedChatMessage[]>;
+  activeSnapshot?(chatId: string): Promise<{
+    messages: PersistedChatMessage[];
+    anchors?: Map<string, ActiveRowAnchor>;
+  }>;
   iterate(chatId: string): AsyncIterable<PersistedChatMessage>;
   /** The transcript revision the chat's log index holds. */
   transcriptRevision(chatId: string): Promise<number>;
@@ -37,6 +42,31 @@ export function rewriteTranscriptRevision(
 
 export function messageDigest(message: PersistedChatMessage): string {
   return createHash('sha256').update(JSON.stringify(message)).digest('hex');
+}
+
+function cloneAnchors(
+  anchors: ReadonlyMap<string, ActiveRowAnchor>,
+): Map<string, ActiveRowAnchor> {
+  return new Map(
+    Array.from(anchors, ([id, anchor]) => [
+      id,
+      {
+        version: 1,
+        runId: anchor.runId,
+        after: anchor.after,
+        tie: anchor.tie,
+      },
+    ]),
+  );
+}
+
+function survivingAnchors(
+  messages: readonly PersistedChatMessage[],
+  anchors: ReadonlyMap<string, ActiveRowAnchor>,
+): Map<string, ActiveRowAnchor> {
+  if (anchors.size === 0) return new Map();
+  const activeIds = new Set(messages.map((message) => message.id));
+  return new Map(Array.from(anchors).filter(([id]) => activeIds.has(id)));
 }
 
 /** Upsert by id: replace in place, append ids the projection lacks. */
@@ -83,6 +113,8 @@ export class ChatTranscriptOverlay {
     private revision: number,
     /** The chat's transcript revision in the files the effects apply to. */
     public readonly baseRevision: number,
+    /** Sidecar-owned placement; format-3 effects deliberately carry none. */
+    private activeAnchors: Map<string, ActiveRowAnchor>,
     /**
      * Ids the files hold no committed row for. The files do not change while
      * an overlay lives (a checkpoint replaces every overlay), so an active
@@ -106,6 +138,11 @@ export class ChatTranscriptOverlay {
         `Transcript ${chatId} is missing`,
       );
     const revision = exists ? await base.transcriptRevision(chatId) : 0;
+    const snapshot = exists
+      ? base.activeSnapshot
+        ? await base.activeSnapshot(chatId)
+        : { messages: await base.activeMessages(chatId) }
+      : undefined;
     return new ChatTranscriptOverlay(
       chatId,
       base,
@@ -117,6 +154,9 @@ export class ChatTranscriptOverlay {
       false,
       revision,
       revision,
+      snapshot?.anchors
+        ? cloneAnchors(snapshot.anchors)
+        : new Map<string, ActiveRowAnchor>(),
     );
   }
 
@@ -136,6 +176,7 @@ export class ChatTranscriptOverlay {
       true,
       0,
       0,
+      new Map(),
     );
   }
 
@@ -151,6 +192,7 @@ export class ChatTranscriptOverlay {
       this.deleted,
       this.revision,
       this.baseRevision,
+      cloneAnchors(this.activeAnchors),
       new Set(this.baseAbsent),
     );
     copy.activeRowsBytes = this.activeRowsBytes;
@@ -185,10 +227,25 @@ export class ChatTranscriptOverlay {
    * applied. `undefined` when no effect wrote the active projection.
    */
   public activeProjection():
-    | { messages: PersistedChatMessage[]; transcriptRevision: number }
+    | {
+        messages: PersistedChatMessage[];
+        transcriptRevision: number;
+        anchors?: Map<string, ActiveRowAnchor>;
+      }
     | undefined {
     if (this.changesCommittedRows || !this.active) return undefined;
-    return { messages: [...this.active], transcriptRevision: this.revision };
+    const anchors = survivingAnchors(this.active, this.activeAnchors);
+    return {
+      messages: [...this.active],
+      transcriptRevision: this.revision,
+      ...(anchors.size > 0 ? { anchors } : {}),
+    };
+  }
+
+  /** Whether a journaled active projection contains any ordinary parent row. */
+  public get hasOrdinaryActiveRows(): boolean {
+    if (this.changesCommittedRows || !this.active) return false;
+    return this.active.some((message) => !this.activeAnchors.has(message.id));
   }
 
   /**
@@ -207,7 +264,10 @@ export class ChatTranscriptOverlay {
    * the rows it changes, not the turn's length. Row identity is what
    * matters; the rows' ids are unique, so no object appears twice.
    */
-  private setActive(next: PersistedChatMessage[]): void {
+  private setActive(
+    next: PersistedChatMessage[],
+    anchors: ReadonlyMap<string, ActiveRowAnchor> = this.activeAnchors,
+  ): void {
     const previous = this.active;
     let bytes = 0;
     if (!previous || previous.length === 0)
@@ -223,6 +283,7 @@ export class ChatTranscriptOverlay {
     }
     this.active = next;
     this.activeRowsBytes = bytes;
+    this.activeAnchors = survivingAnchors(next, anchors);
   }
 
   /** The files' committed state of a row this overlay does not change. */
@@ -329,6 +390,7 @@ export class ChatTranscriptOverlay {
   private async writeActive(
     messages: readonly PersistedChatMessage[],
     allowRemoval: boolean,
+    anchors: ReadonlyMap<string, ActiveRowAnchor> = this.activeAnchors,
   ): Promise<void> {
     const stored: PersistedChatMessage[] = [];
     const ids = new Set<string>();
@@ -349,7 +411,7 @@ export class ChatTranscriptOverlay {
           throw new Error(
             'Active transcript replacement would discard an uncommitted message',
           );
-    this.setActive(stored);
+    this.setActive(stored, anchors);
     this.revision += 1;
   }
 
@@ -359,15 +421,17 @@ export class ChatTranscriptOverlay {
     activeTailCount: number,
     revision: number,
   ): Promise<void> {
+    const anchorsBeforeRewrite = cloneAnchors(this.activeAnchors);
     const split = rows.length - activeTailCount;
     this.revision = revision;
     this.hasBase = false;
     this.patches = new Map();
     this.removed = new Set();
     this.appended = rows.slice(0, split);
-    this.setActive([]);
+    this.setActive([], new Map());
     const mutable = rows.slice(split);
-    if (mutable.length) await this.writeActive(mutable, false);
+    if (mutable.length)
+      await this.writeActive(mutable, false, anchorsBeforeRewrite);
   }
 
   /**
@@ -414,6 +478,7 @@ export class ChatTranscriptOverlay {
     },
     revision: number,
   ): Promise<void> {
+    const anchorsBeforeRewrite = cloneAnchors(this.activeAnchors);
     this.revision = revision;
     const tailIds = new Set(effect.tail.map((message) => message.id));
     const dropped = new Set([
@@ -441,9 +506,10 @@ export class ChatTranscriptOverlay {
       .map((message) => replacements.get(message.id) ?? message);
     const split = effect.tail.length - effect.activeTailCount;
     this.appended.push(...effect.tail.slice(0, split));
-    this.setActive([]);
+    this.setActive([], new Map());
     const mutable = effect.tail.slice(split);
-    if (mutable.length) await this.writeActive(mutable, false);
+    if (mutable.length)
+      await this.writeActive(mutable, false, anchorsBeforeRewrite);
   }
 
   /**
@@ -461,6 +527,7 @@ export class ChatTranscriptOverlay {
     if (effect.kind === 'delete') {
       // Deletion needs no transcript, like `ChatTranscriptLog.remove`.
       this.deleted = true;
+      this.activeAnchors = new Map();
       return;
     }
     this.assertLive();

@@ -37,4 +37,4 @@ export function isPipelinePackageRunBlocked(
  * it satisfies the user-facing branding scan (this file is on its list).
  */
 export const PIPELINE_PACKAGE_SETUP_REQUIRED_REMOTE_MESSAGE =
-  'This pipeline needs setup finished in the desktop app before it can run.';
+  'This workflow needs setup finished in the desktop app before it can run.';

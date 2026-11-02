@@ -3,8 +3,12 @@ const mockRefresh = jest.fn();
 
 jest.mock('@canopy/desktop-shared/node/ai-gateway-model-catalog', () => ({
   AI_GATEWAY_MODEL_CATALOG_TTL_MS: 15 * 60 * 1000,
-  readAiGatewayModelCatalogCache: mockReadCache,
-  refreshAiGatewayModelCatalog: mockRefresh,
+  get readAiGatewayModelCatalogCache(): typeof mockReadCache {
+    return mockReadCache;
+  },
+  get refreshAiGatewayModelCatalog(): typeof mockRefresh {
+    return mockRefresh;
+  },
 }));
 
 import { createAiGatewayModelCatalogService } from '../ai-gateway-models/service';

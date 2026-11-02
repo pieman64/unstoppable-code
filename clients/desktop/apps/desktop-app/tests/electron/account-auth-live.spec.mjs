@@ -151,22 +151,17 @@ test.describe('Account auth surface (Spec 12, PRs 722/740/793)', () => {
       await app.closeSettings();
       await app.openUsagePage();
 
-      // The Codex provider card surfaces `authState: 'authenticated'` and the
-      // `Account: <email>` line sourced from the mock GetAccountResponse
-      // (`account: { type: 'chatgpt', email: 'tester@example.com' }`).
-      await expect
-        .poll(
-          async () => {
-            const usageRoot = win.getByTestId('page-usage');
-            const text = (await usageRoot.textContent()) ?? '';
-            return (
-              text.includes('authenticated') &&
-              text.includes('tester@example.com')
-            );
-          },
-          { timeout: 25_000 },
-        )
-        .toBe(true);
+      // The Codex provider group's account row names the signed-in account
+      // sourced from the mock GetAccountResponse
+      // (`account: { type: 'chatgpt', email: 'tester@example.com' }`), and its
+      // account action offers a change of account rather than a sign-in.
+      const codexCard = win.getByTestId('usage-provider-card-codex');
+      await expect(
+        codexCard.getByTestId('usage-provider-codex-account'),
+      ).toContainText('tester@example.com', { timeout: 25_000 });
+      await expect(
+        codexCard.getByTestId('usage-provider-codex-connect'),
+      ).toHaveText('Change account');
       // Claude provider card is also authenticated from the same scenario.
       await expect(win.getByTestId('page-usage')).toContainText('Claude');
     } finally {

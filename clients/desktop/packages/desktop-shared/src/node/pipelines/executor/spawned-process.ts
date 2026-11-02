@@ -147,6 +147,18 @@ export interface LocalSpawnedProcessOptions extends SpawnedProcessRunOptions {
   onSpawn?: (pid: number) => void;
   resourceMonitor?: ExecutionResourceMonitor;
   onProcessCleanup?: (cleanup: Promise<void>) => void;
+  /**
+   * Backpressure from whatever carries `onOutput` on. While it is congested
+   * the step's pipes are held, so the step blocks instead of the carrier
+   * queueing its output without bound.
+   */
+  outputGate?: SpawnedProcessOutputGate;
+}
+
+export interface SpawnedProcessOutputGate {
+  congested(): boolean;
+  /** Calls `listener` once, when the carried output has drained. */
+  onceDrained(listener: () => void): void;
 }
 
 /**
@@ -1516,6 +1528,7 @@ export async function runSpawnedProcessLocally(
       if (safe.length === 0) return;
       applyOutputBackpressure(logStream.write(safe));
       options.onOutput?.(stream, safe);
+      applyGateBackpressure();
     };
     /** Releases a genuinely unpaired trailing surrogate at the very end. */
     const flushPairGuards = (): void => {
@@ -1525,6 +1538,17 @@ export async function runSpawnedProcessLocally(
         logStream.write(trailing);
         options.onOutput?.(stream, trailing);
       }
+    };
+    let gateHeld = false;
+    const applyGateBackpressure = (): void => {
+      const gate = options.outputGate;
+      if (!gate || !child || gateHeld || !gate.congested()) return;
+      gateHeld = true;
+      holdChild('output-gate');
+      gate.onceDrained(() => {
+        gateHeld = false;
+        releaseChild('output-gate');
+      });
     };
     let logSinkHeld = false;
     const applyOutputBackpressure = (queueAccepted: boolean): void => {

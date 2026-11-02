@@ -2,8 +2,9 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { PipelinePackageAnalysisSummary } from '@canopy/protocol/pipelines';
 import type {
+  PipelinePackageAnalysisSummary,
+  PipelinePackageManifestV1,
   PipelinePackageResource,
   PipelinePackageTree,
 } from '@canopy/protocol/pipelines';
@@ -29,6 +30,23 @@ const emptyAnalysis: PipelinePackageAnalysisSummary = {
     totalBytes: 0,
   },
 };
+
+function emptyManifestWith(
+  overrides: Partial<PipelinePackageManifestV1>,
+): PipelinePackageManifestV1 {
+  const manifest = emptyAnalysis.manifest;
+  if (!manifest) throw new Error('Expected the empty package manifest');
+  return { ...manifest, ...overrides };
+}
+
+function analysisWithManifest(
+  analysis: PipelinePackageAnalysisSummary,
+  overrides: Partial<PipelinePackageManifestV1>,
+): PipelinePackageAnalysisSummary {
+  const manifest = analysis.manifest;
+  if (!manifest) throw new Error('Expected the analyzed package manifest');
+  return { ...analysis, manifest: { ...manifest, ...overrides } };
+}
 
 describe('CapabilityPackageDependencies', () => {
   let container: HTMLDivElement;
@@ -58,6 +76,247 @@ describe('CapabilityPackageDependencies', () => {
       toggle()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
   };
+  const helpTrigger = (): HTMLButtonElement | null =>
+    container.querySelector<HTMLButtonElement>(
+      '[data-testid="share-pipeline-dependencies-help"]',
+    );
+  const openHelp = (): string | null | undefined => {
+    const trigger = helpTrigger();
+    if (!trigger) throw new Error('help trigger missing');
+    act(() => {
+      trigger.dispatchEvent(
+        new MouseEvent('mouseover', {
+          bubbles: true,
+          relatedTarget: document.body,
+        }),
+      );
+    });
+    return document.body.querySelector(
+      '[data-testid="share-pipeline-dependencies-help-details"]',
+    )?.textContent;
+  };
+
+  it('lists packaged pipelines, toggles a suggestion, and names withheld files', () => {
+    const onTogglePipeline = jest.fn();
+    const pipelineResource: PipelinePackageResource = {
+      id: 'automation-pipeline-entry',
+      kind: 'automation_pipeline',
+      displayName: 'Entry',
+      sourceLabel: 'local pipeline',
+      sourceVisibility: 'local',
+      invocationKeys: [],
+      dependencyResourceIds: [],
+      trees: [],
+    };
+    const analysis: PipelinePackageAnalysisSummary = {
+      ...emptyAnalysis,
+      manifest: emptyAnalysis.manifest && {
+        ...emptyAnalysis.manifest,
+        resources: [pipelineResource],
+      },
+      packagedPipelines: [
+        {
+          key: 'entry',
+          resourceId: 'automation-pipeline-entry',
+          name: 'Entry',
+          pipelineContentHash: 'b'.repeat(64),
+          source: 'user',
+          isActionPipeline: false,
+          optional: false,
+          promptSpans: [],
+        },
+        {
+          key: 'daily',
+          resourceId: 'automation-pipeline-daily',
+          name: 'Daily',
+          pipelineContentHash: 'c'.repeat(64),
+          source: 'user',
+          isActionPipeline: false,
+          optional: true,
+          promptSpans: [],
+        },
+      ],
+      withheldFiles: [
+        {
+          pipelineKey: 'entry',
+          assetId: 'specialists',
+          relativePath: '.env',
+          reason: 'denied_name',
+        },
+      ],
+    };
+    act(() => {
+      root.render(
+        <CapabilityPackageDependencies
+          analysis={analysis}
+          loading={false}
+          errored={false}
+          selectedOptionalResourceIds={[]}
+          onToggleOptionalResource={() => {}}
+          selectedPipelineKeys={[]}
+          onTogglePipeline={onTogglePipeline}
+          onRetry={() => {}}
+          disabled={false}
+          testIdPrefix="share-automation"
+        />,
+      );
+    });
+    const required = container.querySelector(
+      '[data-testid="share-automation-dependencies-pipeline-entry"]',
+    );
+    expect(required?.getAttribute('data-required')).toBe('true');
+    expect(required?.getAttribute('data-included')).toBe('true');
+    expect(required?.querySelector('input')).toBeNull();
+    const suggestion = container.querySelector<HTMLInputElement>(
+      '[data-testid="share-automation-dependencies-pipeline-toggle-daily"]',
+    );
+    expect(suggestion?.checked).toBe(false);
+    act(() => {
+      suggestion?.click();
+    });
+    expect(onTogglePipeline).toHaveBeenCalledWith('daily');
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-summary"]',
+      )?.textContent,
+    ).toContain('1 pipeline');
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-summary"]',
+      )?.textContent,
+    ).not.toContain('Definition only');
+    // Required pipelines do not create an optional-file disclosure, and
+    // withheld files remain visible without opening one.
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-toggle"]',
+      ),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-item-automation-pipeline-entry"]',
+      ),
+    ).toBeNull();
+    const withheld = container.querySelector(
+      '[data-testid="share-automation-dependencies-withheld-item"]',
+    );
+    expect(withheld?.textContent).toContain('specialists/.env');
+    expect(withheld?.textContent).toContain('Credential file');
+  });
+
+  it('offers pipelines to add, leaving out ones the share already carries, and shows a failed add', async () => {
+    const onAdd = jest
+      .fn<Promise<void>, [string]>()
+      .mockRejectedValueOnce(new Error('Could not save the pipeline list.'))
+      .mockResolvedValue(undefined);
+    const analysis: PipelinePackageAnalysisSummary = {
+      ...emptyAnalysis,
+      packagedPipelines: [
+        {
+          key: 'entry',
+          resourceId: 'automation-pipeline-entry',
+          name: 'Entry',
+          pipelineContentHash: 'b'.repeat(64),
+          source: 'user',
+          isActionPipeline: false,
+          optional: false,
+          promptSpans: [],
+        },
+        {
+          key: 'daily',
+          resourceId: 'automation-pipeline-daily',
+          name: 'Daily',
+          pipelineContentHash: 'c'.repeat(64),
+          source: 'user',
+          isActionPipeline: false,
+          optional: true,
+          promptSpans: [],
+        },
+      ],
+    };
+    act(() => {
+      root.render(
+        <CapabilityPackageDependencies
+          analysis={analysis}
+          loading={false}
+          errored={false}
+          selectedOptionalResourceIds={[]}
+          onToggleOptionalResource={() => {}}
+          selectedPipelineKeys={[]}
+          pipelineAdd={{
+            options: [
+              { id: 'entry', key: 'entry', name: 'Entry' },
+              { id: 'daily', key: 'daily', name: 'Daily' },
+              { id: 'worker', key: 'worker', name: 'Worker' },
+            ],
+            onAdd,
+          }}
+          onRetry={() => {}}
+          disabled={false}
+          testIdPrefix="share-automation"
+        />,
+      );
+    });
+    const select = container.querySelector<HTMLSelectElement>(
+      '[data-testid="share-automation-dependencies-pipeline-add"]',
+    );
+    // A required pipeline is in the share; an unticked suggestion is not.
+    expect(
+      Array.from(select?.options ?? []).map((option) => option.value),
+    ).toEqual(['', 'daily', 'worker']);
+    const choose = async (value: string): Promise<void> => {
+      await act(async () => {
+        if (!select) return;
+        select.value = value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+    await choose('worker');
+    expect(onAdd).toHaveBeenCalledWith('worker');
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-pipeline-add-error"]',
+      )?.textContent,
+    ).toBe('Could not save the pipeline list.');
+    await choose('worker');
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-pipeline-add-error"]',
+      ),
+    ).toBeNull();
+  });
+
+  it('shows the Pipelines group with only the add control when nothing is packaged yet', () => {
+    act(() => {
+      root.render(
+        <CapabilityPackageDependencies
+          analysis={emptyAnalysis}
+          loading={false}
+          errored={false}
+          selectedOptionalResourceIds={[]}
+          onToggleOptionalResource={() => {}}
+          pipelineAdd={{
+            options: [{ id: 'worker', key: 'worker', name: 'Worker' }],
+            onAdd: () => Promise.resolve(),
+          }}
+          onRetry={() => {}}
+          disabled={false}
+          testIdPrefix="share-automation"
+        />,
+      );
+    });
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-pipelines"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="share-automation-dependencies-pipeline-add"]',
+      ),
+    ).not.toBeNull();
+  });
 
   it('shows the failure reason beneath the generic analysis failure', () => {
     act(() => {
@@ -224,8 +483,7 @@ describe('CapabilityPackageDependencies', () => {
         <CapabilityPackageDependencies
           analysis={{
             ...emptyAnalysis,
-            manifest: {
-              ...emptyAnalysis.manifest,
+            manifest: emptyManifestWith({
               resources: [
                 {
                   id: 'deploy',
@@ -251,7 +509,7 @@ describe('CapabilityPackageDependencies', () => {
               bindings: [{ target: 'subject', resourceIds: ['deploy'] }],
               totalFiles: 2,
               totalBytes: 20,
-            },
+            }),
           }}
           loading={false}
           errored={false}
@@ -270,12 +528,39 @@ describe('CapabilityPackageDependencies', () => {
 
     // A file count alone would hide that the share runs code. The publisher
     // sees exactly what the recipient will be told.
-    expand();
-    expect(
-      container.querySelector(
-        '[data-testid="capability-package-executable-files"]',
-      )?.textContent,
-    ).toBe('Runnable scripts: scripts/zip.sh');
+    expect(openHelp()).toContain('Runnable scripts: scripts/zip.sh.');
+  });
+
+  it('opens the included files help on a click or tap, not only on hover', () => {
+    act(() => {
+      root.render(
+        <CapabilityPackageDependencies
+          analysis={emptyAnalysis}
+          loading={false}
+          errored={false}
+          selectedOptionalResourceIds={[]}
+          onToggleOptionalResource={() => {}}
+          onRetry={() => {}}
+          subjectLabel="skill"
+          disabled={false}
+          testIdPrefix="share-pipeline"
+        />,
+      );
+    });
+    const details = (): Element | null =>
+      document.body.querySelector(
+        '[data-testid="share-pipeline-dependencies-help-details"]',
+      );
+    expect(details()).toBeNull();
+
+    // Touch has no hover, and the help is where a publisher learns what a
+    // share copies, so activating the icon must show it too.
+    act(() => {
+      helpTrigger()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(details()?.textContent).toContain(
+      'Only the skill definition is shared.',
+    );
   });
 
   it('shows a skill packaged for both providers as one row', () => {
@@ -297,8 +582,7 @@ describe('CapabilityPackageDependencies', () => {
         <CapabilityPackageDependencies
           analysis={{
             ...emptyAnalysis,
-            manifest: {
-              ...emptyAnalysis.manifest,
+            manifest: emptyManifestWith({
               resources: [
                 {
                   id: 'deploy-claude',
@@ -329,7 +613,7 @@ describe('CapabilityPackageDependencies', () => {
               ],
               totalFiles: 2,
               totalBytes: 20,
-            },
+            }),
           }}
           loading={false}
           errored={false}
@@ -348,16 +632,11 @@ describe('CapabilityPackageDependencies', () => {
 
     // Twins are one folder, so the summary counts its file once.
     expect(summaryText()).toContain('1 file · ');
-    expand();
-    const rows = container.querySelectorAll(
-      '[data-testid="share-pipeline-dependencies-list"] > li',
-    );
-    // One skill, one row: the Codex copy is the same folder, and its
+    // One skill, one name: the Codex copy is the same folder, and its
     // generated invocation name means nothing to a publisher.
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.textContent).toContain('/deploy');
-    expect(rows[0]?.textContent).not.toContain('$builtin-app-plugin');
-    expect(rows[0]?.textContent).toContain('1 file');
+    const details = openHelp();
+    expect(details).toContain('Copied into this share: /deploy.');
+    expect(details).not.toContain('$builtin-app-plugin');
   });
 
   describe('collapsed review', () => {
@@ -396,8 +675,7 @@ describe('CapabilityPackageDependencies', () => {
       requirementCount = 0,
     ): PipelinePackageAnalysisSummary => ({
       ...emptyAnalysis,
-      manifest: {
-        ...emptyAnalysis.manifest,
+      manifest: emptyManifestWith({
         resources: [
           resource('required', 'local', 1024),
           resource('optional', 'private', 2048),
@@ -407,7 +685,7 @@ describe('CapabilityPackageDependencies', () => {
           { length: requirementCount },
           (_, index) => ({
             id: `req-${String(index)}`,
-            kind: 'mcp_server' as const,
+            kind: 'mcp' as const,
             displayName: `Server ${String(index)}`,
             required: true,
             setupHint: 'Connect it.',
@@ -416,7 +694,7 @@ describe('CapabilityPackageDependencies', () => {
         ),
         totalFiles: 2,
         totalBytes: 3072,
-      },
+      }),
     });
     const renderReview = (
       analysis: PipelinePackageAnalysisSummary,
@@ -548,6 +826,71 @@ describe('CapabilityPackageDependencies', () => {
       });
       renderReview(analysisWith(['required']), []);
       expect(toggle()?.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    describe('included files help', () => {
+      it('replaces Show details with a help icon right after the value', () => {
+        renderReview(emptyAnalysis, []);
+        expect(container.textContent).not.toContain('Show details');
+        expect(toggle()).toBeNull();
+        expect(helpTrigger()?.getAttribute('aria-label')).toBe(
+          'About included files',
+        );
+        // The icon follows the value text inside the summary row.
+        expect(
+          helpTrigger()?.closest(
+            '[data-testid="share-pipeline-dependencies-summary"]',
+          ),
+        ).not.toBeNull();
+        expect(helpTrigger()?.closest('div')?.textContent).toContain(
+          'Definition only',
+        );
+        const details = openHelp();
+        expect(details).toContain('Only the skill definition is shared.');
+        expect(details).toContain(
+          'Credentials, private configuration, and local files are never included.',
+        );
+      });
+
+      it('summarizes a long file list and the recipient setup in the tooltip', () => {
+        const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+        renderReview(
+          analysisWithManifest(analysisWith(ids, 2), {
+            resources: ids.map((id) =>
+              resource(id, id === 'b' ? 'private' : 'local', 10),
+            ),
+          }),
+          [],
+        );
+        const details = openHelp();
+        expect(details).toContain(
+          'Copied into this share: a, b, c, d, e, and 3 more.',
+        );
+        expect(details).not.toContain('f, ');
+        expect(details).toContain('From private sources: b.');
+        expect(details).toContain('Recipients set up: Server 0, Server 1.');
+        expect(details).toContain(
+          'Credentials, private configuration, and other local files are never included.',
+        );
+      });
+
+      it('keeps a Choose files disclosure only when there are optional files', () => {
+        renderReview(analysisWith(['required']), []);
+        expect(toggle()?.textContent).toBe('Choose files');
+        expand();
+        expect(toggle()?.textContent).toBe('Hide files');
+        expect(
+          container.querySelector('input[aria-label="Include optional"]'),
+        ).not.toBeNull();
+
+        renderReview(
+          analysisWithManifest(analysisWith(['required']), {
+            resources: [resource('required', 'local', 10)],
+          }),
+          [],
+        );
+        expect(toggle()).toBeNull();
+      });
     });
   });
 });

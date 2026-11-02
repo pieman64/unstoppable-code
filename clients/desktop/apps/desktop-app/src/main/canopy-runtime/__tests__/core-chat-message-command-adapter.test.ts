@@ -16,7 +16,7 @@ const caller = {
   clientInstanceId: 'test-client',
   authorityId: 'local-desktop',
   interfaceKind: 'test' as const,
-  grants: ['core.chat.write'],
+  grants: ['core.chat.write' as const],
 };
 
 function request(
@@ -44,6 +44,7 @@ function createPort(result: ChatCommandResult): {
     getState: jest.fn(),
     getTranscriptPage: jest.fn(),
     searchTranscript: jest.fn(),
+    readVisual: jest.fn(),
     readToolOutput: jest.fn(),
     subscribe: jest.fn(() => () => {}),
   };
@@ -58,7 +59,7 @@ describe('chat message command adapter', () => {
     messageId: 'message-1',
   };
 
-  it.each([
+  it.each<[string, ChatCommand]>([
     [
       'send',
       {
@@ -88,6 +89,24 @@ describe('chat message command adapter', () => {
       },
     ],
     [
+      'queue move',
+      {
+        type: 'chat.move_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'queue-2',
+        beforeQueuedMessageId: 'queue-1',
+      },
+    ],
+    [
+      'queue move to tail',
+      {
+        type: 'chat.move_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'queue-1',
+        beforeQueuedMessageId: null,
+      },
+    ],
+    [
       'queue edit',
       {
         type: 'chat.edit_queued_message',
@@ -112,7 +131,7 @@ describe('chat message command adapter', () => {
         queuedMessageId: 'queue-1',
       },
     ],
-  ] as const)(
+  ])(
     'preserves the exact %s legacy command and receipt',
     async (_name, chatCommand) => {
       const { port, command } = createPort(receipt);
@@ -415,6 +434,46 @@ describe('chat message command adapter', () => {
     });
     await runtime.shutdown();
   });
+
+  it.each(['queue-1', null] as const)(
+    'reconstructs a portable queue move before %s without a legacy capture',
+    async (beforeEntryId) => {
+      const { port, command } = createPort(receipt);
+      const runtime = createDesktopRuntime({ chatCommandPort: port });
+      try {
+        expect(
+          await runtime.instruction(
+            'core.chat.queue.entry.update',
+            {
+              scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+              commandId: 'command-1',
+              _meta: { idempotencyKey: 'command-1' },
+              chatId: 'chat-1',
+              entryId: 'queue-2',
+              expectedRevision: 7,
+              mutation: { kind: 'move', beforeEntryId },
+            },
+            { caller, metadata: { idempotencyKey: 'command-1' } },
+          ),
+        ).toEqual(receipt);
+        expect(command).toHaveBeenCalledWith({
+          schemaVersion: 1,
+          commandId: 'command-1',
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          expectedRevision: 7,
+          command: {
+            type: 'chat.move_queued_message',
+            chatId: 'chat-1',
+            queuedMessageId: 'queue-2',
+            beforeQueuedMessageId: beforeEntryId,
+          },
+        });
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
 
   it.each(['wire', 'dispatcher'] as const)(
     'rejects a %s key that differs from the durable command id',

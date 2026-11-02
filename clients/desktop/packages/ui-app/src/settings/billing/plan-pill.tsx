@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Badge } from '@canopy/ui-shared/components/Badge';
 
 export interface PlanPillProps {
   /** Display name of the current plan (e.g. "Business", "Individual", "Free"). */
@@ -7,21 +8,14 @@ export interface PlanPillProps {
 }
 
 /**
- * The non-trial subscription pill shown in the account dropdown when the user is
- * on a plan but not actively trialing. Shares the accent styling of {@link
- * import('./trial-badge').TrialBadge} so the pill slot reads consistently
- * whether it shows a trial countdown or a plan name.
+ * The plan name on the shared neutral Badge, shown in the account dropdown
+ * and the billing cards. A plan is identity, not a state, so it never takes
+ * the accent or a status colour; only a running trial
+ * ({@link import('./trial-badge').TrialBadge}) is tinted.
  */
 export function PlanPill({
   planDisplayName,
   dataTestId,
 }: PlanPillProps): JSX.Element {
-  return (
-    <span
-      className="rounded-full bg-accent-subtle px-2 py-0.5 text-xs font-medium fg-accent"
-      data-testid={dataTestId}
-    >
-      {planDisplayName}
-    </span>
-  );
+  return <Badge data-testid={dataTestId}>{planDisplayName}</Badge>;
 }

@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -45,6 +46,8 @@ interface FilePreviewSearchProps {
   searchShortcutActive: boolean;
   header: ReactNode;
   children: ReactNode;
+  /** Reset search on a view change without remounting the header controls. */
+  resetKey?: string;
   control?: { operation: 'open' | 'close'; revision: number };
   onControlApplied?: (revision: number) => void;
   onStateChange?: (state: PreviewSearchState) => void;
@@ -68,6 +71,7 @@ const PREVIEW_SCROLL_SELECTOR = [
   '[data-testid="file-viewer-csv-raw-scroll"]',
   '[data-testid="file-viewer-raw-text-scroll"]',
   '[data-testid="file-viewer-image-scroll"]',
+  '[data-testid="file-notebook-preview"]',
 ].join(', ');
 
 export function resolvePreviewScrollContainer(
@@ -86,6 +90,7 @@ export function FilePreviewSearch({
   searchShortcutActive,
   header,
   children,
+  resetKey,
   control,
   onControlApplied,
   onStateChange,
@@ -140,6 +145,16 @@ export function FilePreviewSearch({
       ),
     [names],
   );
+  const previousResetKey = useRef(resetKey);
+  useLayoutEffect(() => {
+    if (previousResetKey.current === resetKey) return;
+    previousResetKey.current = resetKey;
+    setOpened(false);
+    setQuery('');
+    setCounted({ query: '', total: 0 });
+    setIndex(0);
+    executor.clearHighlights();
+  }, [executor, resetKey]);
 
   const open = useCallback((): void => {
     if (headless) {
@@ -200,7 +215,7 @@ export function FilePreviewSearch({
       if (!opened || query.length < 2) executor.clearHighlights();
     }, 150);
     return (): void => window.clearTimeout(timer);
-  }, [executor, opened, query, remote, report, revision]);
+  }, [executor, opened, query, remote, report, resetKey, revision]);
   useEffect(() => {
     if (remote || count === 0) return;
     executor.setActiveMatch(index);

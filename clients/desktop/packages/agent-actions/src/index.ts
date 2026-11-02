@@ -53,6 +53,17 @@ export {
   type AgentWatcherFiredMessage,
 } from './watchers/fired-message';
 export {
+  buildDelegationNoticeMessage,
+  DELEGATION_NOTICE_KIND,
+  DELEGATION_NOTICE_MAX_HIDDEN_BYTES,
+  DELEGATION_NOTICE_MAX_NOTICES,
+} from './watchers/delegation-notice';
+export type {
+  DelegationNotice,
+  DelegationNoticeStatus,
+  DelegationNoticeStillRunning,
+} from './watchers/delegation-notice';
+export {
   CANONICAL_CHAT_WATCHER_TRIGGERS,
   botChatWatcherAddressSchema,
   botChatWatcherScopeSchema,
@@ -282,6 +293,39 @@ export {
 } from './limits';
 
 export {
+  TRANSCRIPT_READ_ACTION_TYPES,
+  transcriptReadActionSchema,
+  transcriptPageActionSchema,
+  transcriptContentActionSchema,
+  transcriptBlocksActionSchema,
+  transcriptReadTargetSchema,
+  transcriptReadDelegationTargetSchema,
+  type TranscriptReadAction,
+  type TranscriptReadActionOf,
+  type TranscriptReadActionType,
+  type AgentTranscriptReadTarget,
+} from './families/transcript-read/actions';
+export {
+  transcriptReadActionCatalog,
+  transcriptReadDispatchJsonSchema,
+} from './families/transcript-read/catalog';
+export {
+  createTranscriptReadActionFamily,
+  type TranscriptReadActionFamilyOptions,
+} from './families/transcript-read/dispatch';
+export {
+  transcriptReadResult,
+  TRANSCRIPT_READ_REPLY_BYTES,
+} from './families/transcript-read/results';
+export {
+  AGENT_TRANSCRIPT_READ_OPERATIONS,
+  type AgentTranscriptReadOwner,
+  type AgentTranscriptReadPort,
+  type AgentTranscriptPageInput,
+  type AgentTranscriptContentInput,
+  type AgentTranscriptBlocksInput,
+} from './port/transcript-read-port';
+export {
   createExperimentsActionFamily,
   experimentActionCatalog,
   experimentDispatchJsonSchema,
@@ -325,6 +369,33 @@ export {
 } from './port/settings-port';
 
 export type { SettingsAction } from './families/settings/actions';
+
+export {
+  APP_ADVISOR_PIPELINE_RUN_TARGET_MESSAGE,
+  appAdvisorPipelineRunActionSchema,
+  appAdvisorPipelinesActionCatalog,
+  createPipelinesActionFamily,
+  GLOBAL_PIPELINE_RUN_MODE_MESSAGE,
+  GLOBAL_PIPELINE_RUN_TARGET_MESSAGE,
+  GLOBAL_PIPELINE_RUN_WATCHERS_MESSAGE,
+  PIPELINE_RUN_MAX_WATCHERS,
+  PIPELINE_RUN_MODES,
+  PIPELINES_ACTION_TYPES,
+  pipelineRunActionSchema,
+  pipelineRunWatcherSchema,
+  pipelinesActionCatalog,
+  pipelinesDispatchJsonSchema,
+  type AppAdvisorPipelineRunAction,
+  type PipelineRunAction,
+  type PipelineRunWatcher,
+} from './families/pipelines';
+export {
+  PIPELINE_RUN_REJECTION_REASONS,
+  type AgentPipelineRunExecution,
+  type AgentPipelineRunRejectionReason,
+  type AgentPipelineRunResult,
+  type AgentPipelinesPort,
+} from './port/pipelines-port';
 
 export {
   createPullRequestActionFamily,

@@ -741,8 +741,8 @@ test.describe('code-graph build responsiveness', () => {
       tabs: [{ id: 't1', title: 'Chat' }],
     });
 
-    // Register a build/context turn followed by a raw Grep turn. The latter
-    // proves that a new user turn resets graph orientation and the Claude
+    // Register a build/context turn followed by a raw search turn. The latter
+    // proves that a HEAD move ends the chat's graph orientation and the Claude
     // PreToolUse hook injects the graph-first reminder into provider context.
     await registerScenario(DEFAULT_MOCK_BASE_URL, CONVERSATION_MARKER, {
       llm: {
@@ -1008,6 +1008,23 @@ test.describe('code-graph build responsiveness', () => {
         existsSync(path.join(worktreePath, 'benign-bash-command-ran')),
       ).toBe(true);
 
+      // The first turn's graph calls orient the chat across turns (CAN-3987);
+      // moving HEAD invalidates that, so the next raw search is steered.
+      execFileSync('git', [
+        '-C',
+        worktreePath,
+        '-c',
+        'user.name=Canopy E2E',
+        '-c',
+        'user.email=e2e@example.invalid',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '--no-verify',
+        '-m',
+        'Move HEAD to end graph orientation',
+      ]);
       const explorationMessage = `[${CONVERSATION_MARKER}] Trace exports across the source tree.`;
       await composer.click();
       await composer.fill(explorationMessage);

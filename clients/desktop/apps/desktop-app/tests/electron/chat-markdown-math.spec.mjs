@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -9,10 +9,49 @@ import { setUiScale } from './uiScale.mjs';
 import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
 
 import { edgeMarkdown } from './fixtures/chat-width-edges.mjs';
+import {
+  assertMathClipboardActions,
+  assertMathRendering,
+  MATH_COPY_CHAT_ID,
+  MATH_COPY_INLINE_MESSAGE_ID,
+  MATH_COPY_LITERAL_MESSAGE_ID,
+  MATH_COPY_SINGLE_DOLLAR_MESSAGE_ID,
+  seedMathCopyChat,
+} from './fixtures/chat-math-copy.mjs';
 import { DEFAULT_MOCK_BASE_URL, registerScenario } from './seeders/index.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
+
+/** Chooses a row from a drawn diagram's "More diagram actions" menu. */
+async function chooseDiagramAction(window, diagram, name) {
+  await diagram
+    .getByRole('button', { name: 'More diagram actions', exact: true })
+    .click();
+  await window
+    .getByRole('menu', { name: 'Diagram actions' })
+    .getByRole('menuitem', { name, exact: true })
+    .click();
+}
+/**
+ * The main window's toast for a diagram export result, even when the diagram
+ * is in a pulled-out window. It is dismissed unless the caller keeps it to use
+ * its action.
+ */
+async function expectToast(window, message, { keep = false } = {}) {
+  const toast = window
+    .getByTestId('toast-live-region')
+    .getByTestId('toast-stack-card')
+    .filter({ hasText: message });
+  await expect(toast).toBeVisible();
+  if (keep) return toast;
+  await toast.getByRole('button', { name: /^Dismiss/ }).click();
+  await expect(toast).toHaveCount(0);
+  return toast;
+}
+/** The toolbar control whose glyph shows the success checkmark. */
+const confirmedControl = (diagram) =>
+  diagram.locator('button:has([data-confirmed])');
 const CHAT_ID = 'markdown-math-coverage';
 
 const MARKDOWN_WITH_MATH = [
@@ -127,6 +166,119 @@ test('chat transcript renders TeX math while preserving code literals', async ()
   }
 });
 
+test('chat transcript copies rendered inline math as its original TeX source', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-chat-math-copy-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedMathCopyChat({ userDataDir });
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+
+    const chatPanel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${MATH_COPY_CHAT_ID}"]`,
+    );
+    await expect(chatPanel).toBeVisible({ timeout: 30_000 });
+    const singleDollarRow = chatPanel.locator(
+      `[data-chat-message-id="${MATH_COPY_SINGLE_DOLLAR_MESSAGE_ID}"]`,
+    );
+    const inlineRow = chatPanel.locator(
+      `[data-chat-message-id="${MATH_COPY_INLINE_MESSAGE_ID}"]`,
+    );
+    const literalRow = chatPanel.locator(
+      `[data-chat-message-id="${MATH_COPY_LITERAL_MESSAGE_ID}"]`,
+    );
+    await expect(singleDollarRow).toBeVisible();
+    await expect(inlineRow).toBeVisible();
+    await expect(literalRow).toBeVisible();
+    await assertMathRendering({ singleDollarRow, inlineRow, literalRow });
+
+    const readClipboard = () =>
+      electronApp.evaluate(({ clipboard }) => clipboard.readText());
+    const writeClipboard = (text) =>
+      electronApp.evaluate(
+        ({ clipboard }, value) => clipboard.writeText(value),
+        text,
+      );
+    await assertMathClipboardActions(window, {
+      singleDollarRow,
+      inlineRow,
+      replyCopy: chatPanel.getByTestId('turn-copy-message').first(),
+      readClipboard,
+      writeClipboard,
+    });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Display can turn off dollar-sign math and the choice persists (CAN-5124)', async () => {
+  test.setTimeout(240_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-dollar-math-setting-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedMathCopyChat({ userDataDir });
+
+  const openChat = async (window) => {
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const chatPanel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${MATH_COPY_CHAT_ID}"]`,
+    );
+    await expect(chatPanel).toBeVisible({ timeout: 30_000 });
+    return {
+      app,
+      singleDollarRow: chatPanel.locator(
+        `[data-chat-message-id="${MATH_COPY_SINGLE_DOLLAR_MESSAGE_ID}"]`,
+      ),
+      inlineRow: chatPanel.locator(
+        `[data-chat-message-id="${MATH_COPY_INLINE_MESSAGE_ID}"]`,
+      ),
+    };
+  };
+
+  let { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const { app, singleDollarRow, inlineRow } = await openChat(window);
+    await expect(singleDollarRow.locator('.katex')).toHaveCount(1);
+
+    await app.openSettings();
+    await app.openSettingsSection('display');
+    const off = window.getByTestId('single-dollar-math-off');
+    await off.click();
+    await expect(off).toHaveAttribute('aria-pressed', 'true');
+    await app.closeSettings();
+
+    // `$n$` stays text; the `\\(...\\)` formula still renders.
+    await expect(singleDollarRow.locator('.katex')).toHaveCount(0);
+    await expect(singleDollarRow).toContainText('$n$');
+    await expect(inlineRow.locator('.katex')).toHaveCount(1);
+  } finally {
+    await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+  }
+
+  ({ electronApp } = await launchCanopy({ userDataDir }));
+  try {
+    const window = await electronApp.firstWindow();
+    const { singleDollarRow, inlineRow } = await openChat(window);
+    await expect(inlineRow.locator('.katex')).toHaveCount(1);
+    await expect(singleDollarRow.locator('.katex')).toHaveCount(0);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 for (const file of [false, true]) {
   test(`Mermaid literal placeholders render in ${file ? 'file preview' : 'chat'} without changing source`, async () => {
     const { seedMarkdownMermaid, MERMAID_PLACEHOLDER_SOURCE } =
@@ -147,21 +299,21 @@ for (const file of [false, true]) {
         panel.getByRole('heading', { name: 'Literal placeholders' }),
       ).toBeVisible();
       const diagram = panel.getByTestId('markdown-mermaid');
-      const image = diagram.getByRole('img', { name: 'Mermaid diagram' });
+      const image = diagram.getByRole('img', {
+        name: 'Sequence diagram: Literal placeholders',
+      });
       await expect(image).toBeVisible();
       await expect(image.locator('svg')).toContainText('vis_<uuid>');
-      await diagram
-        .getByRole('button', { name: 'Show source', exact: true })
-        .click();
+      await chooseDiagramAction(window, diagram, 'Show diagram text');
       await expect(diagram.locator('pre')).toHaveText(
         MERMAID_PLACEHOLDER_SOURCE,
       );
-      await diagram
-        .getByRole('button', { name: 'Copy source', exact: true })
-        .click();
-      await expect(
-        diagram.getByRole('button', { name: 'Copied', exact: true }),
-      ).toBeVisible();
+      await chooseDiagramAction(window, diagram, 'Copy diagram text');
+      await expect(confirmedControl(diagram)).toHaveAttribute(
+        'data-testid',
+        'mermaid-more-actions',
+      );
+      await expectToast(window, 'Diagram text copied.');
       await expect
         .poll(() =>
           electronApp.evaluate(({ clipboard }) => clipboard.readText()),
@@ -194,33 +346,21 @@ for (const file of [false, true]) {
         panel.getByRole('heading', { name: 'Diagram preview' }),
       ).toBeVisible();
       const diagrams = panel.getByTestId('markdown-mermaid');
-      await expect(
-        panel.getByRole('img', { name: 'Mermaid diagram' }),
-      ).toHaveCount(2);
+      const flowName = 'Flow diagram: Diagram preview';
+      await expect(diagrams.getByRole('img')).toHaveCount(2);
       await expect(diagrams).toHaveCount(3);
       await expect(
-        diagrams.nth(0).getByRole('img', { name: 'Mermaid diagram' }),
+        diagrams.nth(0).getByRole('img', { name: flowName }),
       ).toBeVisible();
       await expect(
-        diagrams.nth(1).getByRole('img', { name: 'Mermaid diagram' }),
+        diagrams
+          .nth(1)
+          .getByRole('img', { name: 'Sequence diagram: Diagram preview' }),
       ).toBeVisible();
-      await diagrams
-        .first()
-        .getByRole('button', { name: 'Show source', exact: true })
-        .click();
+      await chooseDiagramAction(window, diagrams.first(), 'Show diagram text');
       await expect(diagrams.first().locator('pre')).toHaveText(MERMAID_SOURCE);
-      const copyButton = diagrams
-        .first()
-        .getByRole('button', { name: 'Copy source', exact: true });
-      await expect(copyButton).toHaveText('');
-      await expect(copyButton.locator('svg')).toBeVisible();
-      await copyButton.click();
-      await expect(
-        diagrams.first().getByRole('button', { name: 'Copied', exact: true }),
-      ).toBeVisible();
-      await expect(
-        diagrams.first().getByRole('button', { name: 'Copied', exact: true }),
-      ).toHaveText('');
+      await chooseDiagramAction(window, diagrams.first(), 'Copy diagram text');
+      await expectToast(window, 'Diagram text copied.');
       const copied = await electronApp.evaluate(({ clipboard }) =>
         clipboard.readText(),
       );
@@ -230,8 +370,19 @@ for (const file of [false, true]) {
         .getByRole('button', { name: 'Show diagram', exact: true })
         .click();
       await expect(
-        diagrams.first().getByRole('img', { name: 'Mermaid diagram' }),
+        diagrams.first().getByRole('img', { name: flowName }),
       ).toBeVisible();
+      await expect(diagrams.nth(2).getByRole('status')).toHaveText(
+        "This diagram couldn't be drawn.",
+      );
+      await expect(diagrams.nth(2).locator('pre')).toBeHidden();
+      await expect(
+        diagrams.nth(2).getByRole('button', { name: /image|picture/i }),
+      ).toHaveCount(0);
+      await diagrams
+        .nth(2)
+        .getByRole('button', { name: 'Show diagram text', exact: true })
+        .click();
       await expect(diagrams.nth(2).locator('pre')).toHaveText(
         'this is not a diagram',
       );
@@ -271,6 +422,328 @@ for (const file of [false, true]) {
             else document.documentElement.setAttribute('style', style);
           }, previousStyle);
         }
+      }
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
+
+test('Mermaid renderer clipboard permission permits one PNG and HTML write', async () => {
+  const { seedMarkdownMermaid } =
+    await import('./seeders/seedMarkdownMermaid.mjs');
+  const userDataDir = seedMarkdownMermaid({ file: false });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await window.evaluate(() => {
+      const button = document.createElement('button');
+      button.textContent = 'Test diagram clipboard permission';
+      button.onclick = () => {
+        const png = new Promise((resolve) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 2;
+          canvas.getContext('2d').fillRect(0, 0, 2, 2);
+          canvas.toBlob(resolve, 'image/png');
+        });
+        void navigator.clipboard
+          .write([
+            new ClipboardItem({
+              'image/png': png,
+              'text/html': Promise.resolve(
+                new Blob(['<b>Diagram permission</b>'], { type: 'text/html' }),
+              ),
+            }),
+          ])
+          .then(
+            () => {
+              button.textContent = 'Diagram clipboard granted';
+            },
+            (error) => {
+              button.textContent = 'Diagram clipboard refused: ' + error.name;
+            },
+          );
+      };
+      document.body.append(button);
+    });
+    await window
+      .getByRole('button', { name: 'Test diagram clipboard permission' })
+      .click();
+    await expect(
+      window.getByRole('button', {
+        name: 'Diagram clipboard granted',
+        exact: true,
+      }),
+    ).toBeVisible();
+    const readback = await electronApp.evaluate(({ clipboard }) => ({
+      empty: clipboard.readImage().isEmpty(),
+      html: clipboard.readHTML(),
+    }));
+    expect(readback.empty).toBe(false);
+    expect(readback.html).toContain('Diagram permission');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Mermaid images copy from a pulled-out chat panel', async () => {
+  const { seedMarkdownMermaid } =
+    await import('./seeders/seedMarkdownMermaid.mjs');
+  const userDataDir = seedMarkdownMermaid();
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    await expect(
+      window.getByTestId('markdown-mermaid').first().getByRole('img'),
+    ).toBeVisible();
+    const opened = electronApp.waitForEvent('window');
+    await window.getByTestId('panel-group-menu-group-chat').click();
+    await window.getByTestId('panel-group-pop-out-group-chat').click();
+    const auxiliary = await opened;
+    const diagram = auxiliary.getByTestId('markdown-mermaid').first();
+    await expect(diagram.getByRole('img')).toBeVisible();
+    await diagram.getByTestId('mermaid-copy-image').click();
+    await expect(confirmedControl(diagram)).toHaveAttribute(
+      'data-testid',
+      'mermaid-copy-image',
+    );
+    await expectToast(window, 'Image copied.');
+    const copied = await electronApp.evaluate(({ clipboard }) => ({
+      empty: clipboard.readImage().isEmpty(),
+      html: clipboard.readHTML(),
+    }));
+    expect(copied.empty).toBe(false);
+    expect(copied.html).toContain('data:image/svg+xml;base64,');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Mermaid image exports wait for the current theme render', async () => {
+  const { seedMarkdownMermaid } =
+    await import('./seeders/seedMarkdownMermaid.mjs');
+  const userDataDir = seedMarkdownMermaid();
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const diagram = window
+      .getByTestId('panel-content-chat')
+      .getByTestId('markdown-mermaid')
+      .first();
+    await expect(diagram.getByRole('img')).toBeVisible();
+    // Hold the renderer at its real font-readiness boundary after changing theme.
+    await window.evaluate(() => {
+      let release;
+      const waiting = new Promise((resolve) => (release = resolve));
+      Object.defineProperty(document.fonts, 'ready', {
+        configurable: true,
+        get() {
+          document.documentElement.dataset.can5040ThemeWaiting = 'true';
+          return waiting;
+        },
+      });
+      window.__can5040ReleaseThemeRender = () => {
+        Reflect.deleteProperty(document.fonts, 'ready');
+        release();
+      };
+      document.documentElement.classList.toggle('dark');
+    });
+    await expect(window.locator('html')).toHaveAttribute(
+      'data-can5040-theme-waiting',
+      'true',
+    );
+    await expect(diagram.getByRole('img')).toBeVisible();
+    await expect(diagram.getByTestId('mermaid-copy-image')).toBeDisabled();
+    await expect(diagram.getByTestId('mermaid-save-png')).toBeDisabled();
+    await diagram.getByTestId('mermaid-more-actions').click();
+    await expect(
+      window.getByRole('menuitem', { name: 'Save as SVG…', exact: true }),
+    ).toBeDisabled();
+    await window.keyboard.press('Escape');
+    await window.evaluate(() => window.__can5040ReleaseThemeRender());
+    await expect(diagram.getByTestId('mermaid-copy-image')).toBeEnabled();
+    await expect(diagram.getByTestId('mermaid-save-png')).toBeEnabled();
+    await diagram.getByTestId('mermaid-copy-image').click();
+    await expectToast(window, 'Image copied.');
+    expect(
+      await electronApp.evaluate(({ clipboard }) =>
+        clipboard.readImage().isEmpty(),
+      ),
+    ).toBe(false);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+for (const file of [false, true]) {
+  test(`Mermaid diagrams export pictures in ${file ? 'file preview beside the document' : 'chat'}`, async () => {
+    const { seedMarkdownMermaid, mermaidDocumentPath } =
+      await import('./seeders/seedMarkdownMermaid.mjs');
+    const userDataDir = seedMarkdownMermaid({ file });
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      const panel = window.getByTestId(
+        file ? 'panel-content-file-diff' : 'panel-content-chat',
+      );
+      const diagram = panel.getByTestId('markdown-mermaid').first();
+      await expect(
+        diagram.getByRole('img', { name: 'Flow diagram: Diagram preview' }),
+      ).toBeVisible();
+      const copyImage = diagram.getByRole('button', {
+        name: 'Copy image',
+        exact: true,
+      });
+      await copyImage.click();
+      await expectToast(window, 'Image copied.');
+      const clipboard = await electronApp.evaluate(({ clipboard }) => ({
+        png: Array.from(clipboard.readImage().toPNG()),
+        html: clipboard.readHTML(),
+      }));
+      const copiedPng = Buffer.from(clipboard.png);
+      expect(copiedPng.subarray(0, 8)).toEqual(
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      );
+      expect(copiedPng.readUInt32BE(16)).toBeGreaterThan(16);
+      expect(copiedPng.readUInt32BE(20)).toBeGreaterThan(16);
+      const embedded = /data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)/.exec(
+        clipboard.html,
+      );
+      expect(embedded).not.toBeNull();
+      expect(
+        Buffer.from(embedded?.[1] ?? '', 'base64').toString('utf8'),
+      ).toMatch(/>Write<\/tspan>[^]*> Markdown<\/tspan>/);
+
+      if (file) {
+        // Start the normal watcher before saving; discovery must not depend on reopening or refreshing.
+        await panel.getByTestId('file-tab-tree-toggle').click();
+        const tree = window.getByTestId('file-tab-tree');
+        await expect(tree).toBeVisible();
+        const directory = path.dirname(mermaidDocumentPath(userDataDir));
+        const pngSignature = Buffer.from([
+          0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        ]);
+        await diagram
+          .getByRole('button', { name: 'Save as picture…', exact: true })
+          .click();
+        await expect(confirmedControl(diagram)).toHaveAttribute(
+          'data-testid',
+          'mermaid-save-png',
+        );
+        await expectToast(window, 'Saved DIAGRAM-diagram-preview.png.');
+        await expect(
+          tree.getByText('DIAGRAM-diagram-preview.png', { exact: true }),
+        ).toBeVisible();
+        const png = readFileSync(
+          path.join(directory, 'DIAGRAM-diagram-preview.png'),
+        );
+        expect(png.subarray(0, 8).equals(pngSignature)).toBe(true);
+        expect(png.readUInt32BE(16)).toBeGreaterThan(0);
+        expect(png.readUInt32BE(20)).toBeGreaterThan(0);
+
+        // A second save never overwrites: it takes the next free name.
+        await diagram
+          .getByRole('button', { name: 'Save as picture…', exact: true })
+          .click();
+        await expectToast(window, 'Saved DIAGRAM-diagram-preview-2.png.');
+        expect(
+          readFileSync(path.join(directory, 'DIAGRAM-diagram-preview.png')),
+        ).toEqual(png);
+
+        // The keyboard context menu offers the same picture actions.
+        await diagram.locator('[aria-label="Diagram scroll area"]').focus();
+        await window.keyboard.press('Shift+F10');
+        const menu = window.getByTestId('mermaid-context-menu');
+        await expect(menu.getByRole('menuitem')).toHaveText([
+          'Copy image',
+          'Save as picture…',
+          'Save as SVG…',
+          'Copy diagram text',
+        ]);
+        await menu
+          .getByRole('menuitem', { name: 'Save as SVG…', exact: true })
+          .click();
+        const savedSvgToast = await expectToast(
+          window,
+          'Saved DIAGRAM-diagram-preview.svg.',
+          { keep: true },
+        );
+        const savedSvg = readFileSync(
+          path.join(directory, 'DIAGRAM-diagram-preview.svg'),
+          'utf8',
+        );
+        expect(savedSvg).toMatch(
+          /^<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/,
+        );
+        // Mermaid splits labels into one tspan per word.
+        expect(savedSvg).toMatch(/>Write<\/tspan>[^]*> Markdown<\/tspan>/);
+        expect(savedSvg).toMatch(/<rect [^>]*fill="#[0-9a-f]{6}"/);
+        expect(savedSvg).not.toMatch(/<script|onload=|javascript:/i);
+
+        await expect(
+          tree.getByText('DIAGRAM-diagram-preview.svg', { exact: true }),
+        ).toBeVisible();
+        await panel.getByTestId('file-tab-tree-toggle').click();
+
+        await savedSvgToast
+          .getByRole('button', { name: 'Open', exact: true })
+          .click();
+        await expect(
+          window.getByText('DIAGRAM-diagram-preview.svg').first(),
+        ).toBeVisible();
+      } else {
+        // Observe Electron's actual download lifecycle and isolate its destination.
+        const downloadPath = path.join(userDataDir, 'diagram-preview.png');
+        await electronApp.evaluate(({ BrowserWindow }, destination) => {
+          globalThis.__can5040Download = null;
+          BrowserWindow.getAllWindows()[0].webContents.session.once(
+            'will-download',
+            (_event, item) => {
+              item.setSavePath(destination);
+              item.once('done', (_done, state) => {
+                globalThis.__can5040Download = {
+                  state,
+                  filename: item.getFilename(),
+                  path: item.getSavePath(),
+                };
+              });
+            },
+          );
+        }, downloadPath);
+        await diagram
+          .getByRole('button', { name: 'Save as picture…', exact: true })
+          .click();
+        await expect
+          .poll(() => electronApp.evaluate(() => globalThis.__can5040Download))
+          .toEqual({
+            state: 'completed',
+            filename: 'diagram-preview.png',
+            path: downloadPath,
+          });
+        await expectToast(window, 'Download started.');
+        await expect
+          .poll(() => {
+            try {
+              return readFileSync(downloadPath).subarray(0, 8).toString('hex');
+            } catch {
+              return '';
+            }
+          })
+          .toBe('89504e470d0a1a0a');
       }
     } finally {
       await closeCanopy(electronApp, userDataDir);
@@ -337,32 +810,31 @@ test('Mermaid supports diagram families and keeps unsafe input as source', async
     const panel = window.getByTestId('panel-content-file-diff');
     const diagrams = panel.getByTestId('markdown-mermaid');
     await expect(diagrams).toHaveCount(allowed.length + rejected.length);
+    const familyNames = [
+      'Sequence diagram',
+      'Sequence diagram',
+      'Class diagram',
+      'Class diagram',
+      'State diagram',
+      'Entity relationship diagram',
+      'Gantt chart',
+    ].map((family) => `${family}: Diagram families`);
     for (let index = 0; index < allowed.length; index += 1) {
       await diagrams.nth(index).scrollIntoViewIfNeeded();
-      await expect(
-        diagrams.nth(index).getByRole('img', { name: 'Mermaid diagram' }),
-      ).toBeVisible();
-      await expect(
-        diagrams
-          .nth(index)
-          .getByRole('img', { name: 'Mermaid diagram' })
-          .locator('svg'),
-      ).toHaveCount(1);
+      const image = diagrams
+        .nth(index)
+        .getByRole('img', { name: familyNames[index], exact: true });
+      await expect(image).toBeVisible();
+      await expect(image.locator('svg')).toHaveCount(1);
     }
-    await expect(
-      diagrams
-        .nth(0)
-        .getByRole('img', { name: 'Mermaid diagram' })
-        .locator('svg'),
-    ).toContainText('<uuid> <img> <svg> <script> <iframe>');
-    await expect(
-      diagrams
-        .nth(1)
-        .getByRole('img', { name: 'Mermaid diagram' })
-        .locator('svg'),
-    ).toContainText('<img src=https://mermaid-tracker.invalid/pixel>');
+    await expect(diagrams.nth(0).getByRole('img').locator('svg')).toContainText(
+      '<uuid> <img> <svg> <script> <iframe>',
+    );
+    await expect(diagrams.nth(1).getByRole('img').locator('svg')).toContainText(
+      '<img src=https://mermaid-tracker.invalid/pixel>',
+    );
     const svgIds = await diagrams
-      .getByRole('img', { name: 'Mermaid diagram' })
+      .getByRole('img')
       .locator('svg[id], svg [id]')
       .evaluateAll((nodes) => nodes.map((node) => node.id));
     expect(new Set(svgIds).size).toBe(svgIds.length);
@@ -370,9 +842,7 @@ test('Mermaid supports diagram families and keeps unsafe input as source', async
       const diagram = diagrams.nth(allowed.length + index);
       await diagram.scrollIntoViewIfNeeded();
       await expect(diagram.locator('pre')).toHaveText(rejected[index]);
-      await expect(
-        diagram.getByRole('img', { name: 'Mermaid diagram' }),
-      ).toHaveCount(0);
+      await expect(diagram.getByRole('img')).toHaveCount(0);
     }
     expect(remoteRequests).toEqual([]);
   } finally {
@@ -412,13 +882,215 @@ test('Mermaid preserves authored accessibility metadata', async () => {
   }
 });
 
+/** Computed paint of the shape behind a drawn flowchart node. */
+function nodePaint(diagram, nodeId, property = 'fill') {
+  return diagram
+    .locator(`g.node[id*="flowchart-${nodeId}-"]`)
+    .locator('rect, polygon, path')
+    .first()
+    .evaluate((shape, name) => getComputedStyle(shape)[name], property);
+}
+
+test('Created files opens the exact journey brief as a highlighted diagram', async () => {
+  const { seedCreatedFiles, openCreatedFiles, CREATED_FILES_TURN } =
+    await import('./createdFilesFixture.mjs');
+  const { JOURNEY_BRIEF_DIAGRAM } =
+    await import('./seeders/seedMarkdownMermaid.mjs');
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-mermaid-brief-'),
+  );
+  const fixture = seedCreatedFiles(userDataDir, true, {
+    fileNames: ['review-brief.md'],
+  });
+  writeFileSync(
+    path.join(fixture.root, 'outputs', 'review-brief.md'),
+    `# Current checkout flow\n\n\`\`\`mermaid\n${JOURNEY_BRIEF_DIAGRAM}\n\`\`\``,
+  );
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const chat = await openCreatedFiles(window, fixture);
+    const summary = chat.locator(
+      `[data-testid="turn-files"][data-turn-id="${CREATED_FILES_TURN}"]`,
+    );
+    await summary
+      .getByRole('button', { name: 'Open review-brief.md', exact: true })
+      .click();
+    const viewer = window.getByTestId('file-viewer');
+    await expect(
+      viewer.getByRole('heading', { name: 'Current checkout flow' }),
+    ).toBeVisible();
+    const diagram = viewer.getByTestId('markdown-mermaid');
+    await expect(diagram.getByRole('img')).toBeVisible();
+    for (const node of ['Promo', 'Billing', 'Review']) {
+      expect(await nodePaint(diagram, node)).toBe('rgb(253, 226, 226)');
+    }
+    expect(await nodePaint(diagram, 'Cart')).not.toBe('rgb(253, 226, 226)');
+    await expect(diagram.getByRole('status')).toHaveCount(0);
+    await chooseDiagramAction(window, diagram, 'Copy diagram text');
+    await expect
+      .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
+      .toBe(JOURNEY_BRIEF_DIAGRAM);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+for (const file of [false, true]) {
+  test(`styled Mermaid diagrams draw their highlighting in ${file ? 'file preview' : 'chat'}`, async () => {
+    const {
+      seedMarkdownMermaid,
+      JOURNEY_BRIEF_DIAGRAM,
+      PARTIALLY_STYLED_DIAGRAM,
+      REMOVED_STYLING_DIAGRAM,
+      MULTILINE_LABEL_DIAGRAM,
+    } = await import('./seeders/seedMarkdownMermaid.mjs');
+    const markdown = [
+      '# Checkout review',
+      '',
+      ...[
+        JOURNEY_BRIEF_DIAGRAM,
+        PARTIALLY_STYLED_DIAGRAM,
+        REMOVED_STYLING_DIAGRAM,
+        MULTILINE_LABEL_DIAGRAM,
+      ].flatMap((source) => ['```mermaid', source, '```', '']),
+    ].join('\n');
+    const userDataDir = seedMarkdownMermaid({ file, markdown });
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      const panel = window.getByTestId(
+        file ? 'panel-content-file-diff' : 'panel-content-chat',
+      );
+      const diagrams = panel.getByTestId('markdown-mermaid');
+      const brief = diagrams.nth(0);
+      await expect(brief.getByRole('img')).toBeVisible();
+      for (const node of ['Promo', 'Billing', 'Review']) {
+        expect(await nodePaint(brief, node)).toBe('rgb(253, 226, 226)');
+        expect(await nodePaint(brief, node, 'stroke')).toBe('rgb(217, 83, 79)');
+      }
+      expect(await nodePaint(brief, 'Cart')).not.toBe('rgb(253, 226, 226)');
+      await expect(brief.getByRole('status')).toHaveCount(0);
+
+      const partial = diagrams.nth(1);
+      await expect(partial.getByRole('img')).toBeVisible();
+      await expect(partial.getByRole('status')).toHaveText(
+        "Some highlighting couldn't be shown here.",
+      );
+      expect(await nodePaint(partial, 'A')).toBe('rgb(255, 153, 255)');
+      expect(
+        await partial
+          .locator('path[id*="L_B_C"]')
+          .first()
+          .evaluate((edge) => getComputedStyle(edge).stroke),
+      ).toBe('rgb(217, 83, 79)');
+      await chooseDiagramAction(window, partial, 'Copy diagram text');
+      await expect
+        .poll(() =>
+          electronApp.evaluate(({ clipboard }) => clipboard.readText()),
+        )
+        .toBe(PARTIALLY_STYLED_DIAGRAM);
+
+      expect(await nodePaint(partial, 'D', 'opacity')).toBe('1');
+      await expect(partial.getByRole('img').locator('svg')).toContainText(
+        '100%% done',
+      );
+
+      const removed = diagrams.nth(2);
+      await expect(removed.getByRole('img')).toBeVisible();
+      await expect(removed.getByRole('status')).toHaveText(
+        "Some highlighting couldn't be shown here.",
+      );
+      const multiline = diagrams.nth(3);
+      await expect(multiline.getByRole('img')).toBeVisible();
+      await expect(multiline.getByRole('img').locator('svg')).toContainText(
+        /style A\s*font-size:20px/,
+      );
+      await expect(multiline.getByRole('img').locator('svg')).toContainText(
+        /style B\s*font-size:25px/,
+      );
+      await expect(multiline.getByRole('img').locator('svg')).toContainText(
+        /style C\s*font-size:30px/,
+      );
+      await expect(multiline.getByRole('img').locator('svg')).toContainText(
+        /style D\s*font-size:35px/,
+      );
+      await expect(multiline.getByRole('img').locator('svg')).toContainText(
+        'style guide',
+      );
+      await expect(multiline.getByRole('status')).toHaveCount(0);
+      expect(await nodePaint(multiline, 'B')).toBe('rgb(253, 226, 226)');
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
+
+test('hostile Mermaid styling stays collapsed and requests nothing', async () => {
+  const { seedMarkdownMermaid, HOSTILE_STYLED_SOURCES } =
+    await import('./seeders/seedMarkdownMermaid.mjs');
+  const markdown = [
+    '# Hostile styling',
+    '',
+    ...HOSTILE_STYLED_SOURCES.flatMap((source) => [
+      '```mermaid',
+      source,
+      '```',
+      '',
+    ]),
+  ].join('\n');
+  const userDataDir = seedMarkdownMermaid({ markdown });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const requests = [];
+    window.on('request', (request) => {
+      if (request.url().includes('mermaid-tracker.invalid'))
+        requests.push(request.url());
+    });
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const panel = window.getByTestId('panel-content-chat');
+    const diagrams = panel.getByTestId('markdown-mermaid');
+    await expect(diagrams).toHaveCount(HOSTILE_STYLED_SOURCES.length);
+    for (const [index, source] of HOSTILE_STYLED_SOURCES.entries()) {
+      const diagram = diagrams.nth(index);
+      await expect(diagram.getByRole('status')).toHaveText(
+        "This diagram uses features that can't be drawn here.",
+      );
+      await expect(diagram.getByRole('img')).toHaveCount(0);
+      await expect(diagram.locator('pre')).toBeHidden();
+      const disclosure = diagram.getByRole('button', {
+        name: 'Show diagram text',
+        exact: true,
+      });
+      await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+      await disclosure.focus();
+      await window.keyboard.press('Enter');
+      await expect(diagram.locator('pre')).toHaveText(source);
+      await expect(
+        diagram.getByRole('button', { name: 'Hide diagram text', exact: true }),
+      ).toHaveAttribute('aria-expanded', 'true');
+    }
+    expect(requests).toEqual([]);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('chat search ignores generated Mermaid labels and finds authored prose', async () => {
   const { seedMarkdownMermaid } =
     await import('./seeders/seedMarkdownMermaid.mjs');
   const markdown = [
     '# Search boundary',
     '',
-    'Show source appears in authored prose.',
+    'Show diagram text appears in authored prose.',
     '',
     '```mermaid',
     'flowchart LR',
@@ -440,7 +1112,7 @@ test('chat search ignores generated Mermaid labels and finds authored prose', as
     await app.selectWorktree(WORKTREE_ID);
     const chatPanel = window.getByTestId('panel-content-chat');
     await expect(
-      chatPanel.getByRole('img', { name: 'Mermaid diagram' }),
+      chatPanel.getByRole('img', { name: 'Flow diagram: Search boundary' }),
     ).toBeVisible();
 
     await window.keyboard.press('ControlOrMeta+f');
@@ -448,13 +1120,13 @@ test('chat search ignores generated Mermaid labels and finds authored prose', as
     const searchBar = window.getByTestId('surface-find-bar');
     await expect(searchBar).toBeVisible();
     await expect(searchBar).toHaveAttribute('data-find-mode', 'chat');
-    await searchBar.getByRole('textbox').fill('Show source');
+    await searchBar.getByRole('textbox').fill('Show diagram text');
 
     await expect(searchBar.getByText('1 of 1', { exact: true })).toBeVisible();
 
     await searchBar
       .getByRole('textbox')
-      .fill('This diagram uses features unavailable in preview');
+      .fill("This diagram uses features that can't be drawn here");
     await expect(searchBar.getByText('0 of 0', { exact: true })).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);
@@ -553,7 +1225,10 @@ test('rich content fits first and only indivisible formulas scroll at narrow wid
     await app.selectWorktree(WORKTREE_ID);
     const content = window.getByTestId('chat-message-list-content');
     await expect(content.locator('.katex')).toHaveCount(3);
-    await content.getByRole('button', { name: /^Thinking/ }).click();
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
+    await content.getByRole('button', { name: /^Thought/ }).click();
     const tool = content.locator(
       '[data-testid="chat-tool-call"][data-tool-name="Bash"]',
     );

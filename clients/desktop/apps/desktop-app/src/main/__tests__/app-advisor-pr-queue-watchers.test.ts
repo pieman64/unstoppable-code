@@ -109,6 +109,7 @@ import {
   type AppAdvisorWatcherDestination,
   type AppAdvisorWindowCommand,
 } from '@canopy/desktop-shared/types';
+import type { WatcherChatDelivery } from '../services/watcher-chat-delivery';
 import type {
   GitHubPullRequestFiredContext,
   GitHubPullRequestSnapshot,
@@ -277,10 +278,13 @@ async function waitForStatus(status: AppAdvisorWatcher['status']) {
   ).toBe(true);
 }
 
-function sentMessages(): Extract<
-  AppAdvisorWindowCommand,
-  { type: 'send_watcher_message' }
->[] {
+type RecordedWatcherMessage = WatcherChatDelivery & {
+  type: 'send_watcher_message';
+};
+
+const deliveredWatcherMessages: RecordedWatcherMessage[] = [];
+
+function sentMessages(): RecordedWatcherMessage[] {
   return sendAppAdvisorWindowCommand.mock.calls.flatMap(([command]) =>
     command.type === 'send_watcher_message' ? [command] : [],
   );
@@ -301,7 +305,14 @@ function runtimeItems(watcher: AppAdvisorWatcher) {
   return watcher.runtimeState.items;
 }
 
-const sendAppAdvisorWindowCommand = jest.fn<void, [AppAdvisorWindowCommand]>();
+const sendAppAdvisorWindowCommand = jest.fn<
+  void,
+  [AppAdvisorWindowCommand | RecordedWatcherMessage]
+>();
+const deliverWatcherMessage = jest.fn<
+  Promise<'submitted' | 'already_delivered' | 'terminal_presenter'>,
+  [WatcherChatDelivery]
+>();
 
 function configureService(): void {
   getAppAdvisorWatcherService().configure({
@@ -311,6 +322,7 @@ function configureService(): void {
       Promise.resolve({ open: true, focused: false }),
     sendAppAdvisorWindowCommand,
     sendChatWindowCommand: () => true,
+    deliverWatcherMessage,
   });
   getGitHubWorkflowRunObserver().stop();
   getGitHubPullRequestObserver().stop();
@@ -357,21 +369,27 @@ function eventsOf(index: number) {
 describe('GitHub pull request merge queue watchers', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
+    sendAppAdvisorWindowCommand.mockReset();
+    deliverWatcherMessage.mockReset();
+    deliveredWatcherMessages.length = 0;
     clock = 0;
     resetChatStateServiceForTests();
     registerWorkspaceTypes(new Map());
     dataDirPath = await mkdtemp(join(tmpdir(), 'canopy-pr-queue-test-'));
     watchersFilePath = join(dataDirPath, 'app-advisor-watchers.json');
     setupReads();
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type !== 'send_watcher_message') return;
-      queueMicrotask(() => {
-        getAppAdvisorWatcherService().acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      });
+    sendAppAdvisorWindowCommand.mockImplementation(() => {
+      // The mock retains command-shaped message assertions only. Direct
+      // delivery outcomes no longer use the renderer acknowledgement path.
+    });
+    deliverWatcherMessage.mockImplementation((delivery) => {
+      const message: RecordedWatcherMessage = {
+        ...delivery,
+        type: 'send_watcher_message',
+      };
+      deliveredWatcherMessages.push(message);
+      sendAppAdvisorWindowCommand(message);
+      return Promise.resolve('submitted');
     });
     configureService();
   });
@@ -453,7 +471,14 @@ describe('GitHub pull request merge queue watchers', () => {
         destination(),
       );
 
-      if (!plain.ok || !entered.ok) throw new Error('setup');
+      if (
+        !plain.ok ||
+        plain.status === 'not_created' ||
+        !entered.ok ||
+        entered.status === 'not_created'
+      ) {
+        throw new Error('setup');
+      }
       expect(entered).toMatchObject({ status: 'created' });
       expect(enteredAgain).toMatchObject({
         status: 'deduped',

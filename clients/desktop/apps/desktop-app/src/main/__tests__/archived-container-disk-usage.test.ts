@@ -1,15 +1,18 @@
 const resolveGitMock = jest.fn<Promise<string>, [NodeJS.ProcessEnv?]>(() =>
   Promise.resolve('git'),
 );
-const runArchiveIoRequestMock = jest.fn<Promise<unknown>, [unknown]>();
+const runArchiveIoRequestMock = jest.fn<
+  Promise<unknown>,
+  [request: ArchiveIoOperationRequest]
+>();
 jest.mock('../lib/git-executable', () => ({
   getResolvedGitExecutableForSpawn: (
     env?: NodeJS.ProcessEnv,
   ): Promise<string> => resolveGitMock(env),
 }));
 jest.mock('../archive/archive-io-runner', () => ({
-  runArchiveIoRequest: (...args: [unknown]): Promise<unknown> =>
-    runArchiveIoRequestMock(...args),
+  runArchiveIoRequest: (request: ArchiveIoOperationRequest): Promise<unknown> =>
+    runArchiveIoRequestMock(request),
 }));
 
 import { execFileSync } from 'node:child_process';
@@ -18,8 +21,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   ArchivedContainerManifest,
+  ArchivedContainerManifestV1,
   ArchivedGitRepositoryState,
 } from '@canopy/desktop-shared/types';
+import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 
 jest.mock('../lib/paths', () => ({
   getArchivedContainerDir: jest.fn(),
@@ -60,7 +65,6 @@ import {
 } from '../lib/archived-container-disk-usage';
 import { getArchivedContainerDir } from '../lib/paths';
 import { executeArchiveIoRequest } from '../archive/archive-io-engine';
-import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 
 let rootDir: string;
 
@@ -69,8 +73,8 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function manifest(
-  overrides: Partial<ArchivedContainerManifest> = {},
-): ArchivedContainerManifest {
+  overrides: Partial<ArchivedContainerManifestV1> = {},
+): ArchivedContainerManifestV1 {
   return {
     version: 1,
     id: 'container-1',
@@ -216,9 +220,11 @@ describe('archived container disk usage', () => {
       worktreeSnapshotCommit: 'b'.repeat(40),
       snapshotRef: 'refs/app/archived-containers/x/y/z',
     };
+    const baseForWorktree: Omit<ArchivedContainerManifestV1, 'originalEntry'> =
+      base;
     const usage = await computeArchivedContainerDiskUsage(
       {
-        ...base,
+        ...baseForWorktree,
         version: 2,
         kind: 'worktree',
         workspaceType: 'single-repo',

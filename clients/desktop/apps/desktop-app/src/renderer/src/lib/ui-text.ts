@@ -44,6 +44,7 @@ const shellIntegration = {
     return {
       darwin: `The ${brandText.appName} CLI is not currently installed in /usr/local/bin.`,
       win32: `The ${brandText.appName} CLI is not currently available from your user PATH.`,
+      linux: `The ${brandText.appName} CLI is not currently installed for your user.`,
       default: `The ${brandText.appName} CLI is not currently installed on PATH.`,
     };
   },
@@ -51,23 +52,34 @@ const shellIntegration = {
     return {
       darwin: `The ${brandText.appName} CLI is installed at /usr/local/bin/${brandText.cliName}.`,
       win32: `The ${brandText.appName} CLI is available from your user PATH.`,
+      linux: `The ${brandText.appName} CLI is installed for your user. Add its launcher directory to PATH if needed.`,
       default: `The ${brandText.appName} CLI is installed on PATH.`,
     };
+  },
+  get outdated(): string {
+    return `The installed ${brandText.appName} CLI is outdated. Update it to match this app package.`;
+  },
+  updateButton: 'Update CLI',
+  get updateSuccess(): string {
+    return `Updated the ${brandText.appName} CLI.`;
   },
   addButton: {
     darwin: 'Add to PATH',
     win32: 'Add to user PATH',
+    linux: 'Install CLI',
     default: 'Add to PATH',
   } satisfies UiTextEntry,
   removeButton: {
     darwin: 'Remove from PATH',
     win32: 'Remove from user PATH',
+    linux: 'Remove CLI',
     default: 'Remove from PATH',
   } satisfies UiTextEntry,
   get addSuccess(): UiTextEntry {
     return {
       darwin: `Added ${brandText.appName} to /usr/local/bin.`,
       win32: `Added ${brandText.appName} to your user PATH. Restart open terminals to use it.`,
+      linux: `Installed the ${brandText.appName} CLI for your user. Add its launcher directory to PATH if needed.`,
       default: `Added ${brandText.appName} to PATH.`,
     };
   },
@@ -75,6 +87,7 @@ const shellIntegration = {
     return {
       darwin: `Removed ${brandText.appName} from /usr/local/bin.`,
       win32: `Removed ${brandText.appName} from your user PATH. Restart open terminals to pick up the change.`,
+      linux: `Removed the ${brandText.appName} CLI launcher.`,
       default: `Removed ${brandText.appName} from PATH.`,
     };
   },
@@ -116,6 +129,12 @@ export const uiText = {
       linux: 'Show in Files',
       default: 'Show in folder',
     } satisfies UiTextEntry,
+    showNamedItem: {
+      darwin: (name: string): string => `Show ${name} in Finder`,
+      win32: (name: string): string => `Show ${name} in File Explorer`,
+      linux: (name: string): string => `Show ${name} in Files`,
+      default: (name: string): string => `Show ${name} in folder`,
+    } satisfies PlatformText<(name: string) => string>,
     openItem: {
       darwin: 'Open in Finder',
       win32: 'Open in File Explorer',

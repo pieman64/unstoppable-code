@@ -142,8 +142,9 @@ export function OrganizationMemoryLayout({
 
   const item = teamNavItem('memory');
   return (
-    <SettingsPageColumn as="main">
+    <SettingsPageColumn as="main" width="wide">
       <PageHeader
+        inset="none"
         headingLevel="h1"
         reserveActions
         title={item.label}

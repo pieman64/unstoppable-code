@@ -1,3 +1,19 @@
+import { withChatSendAdmission } from '../services/chat-send-admission';
+import type { AgentSession, AgentSessionOptions } from '../agents/types';
+import type * as AdvisorRuntime from '../app-advisor/runtime';
+import type * as SessionManager from '../agents/session-manager';
+import type {
+  ApprovalMode,
+  ApprovalRule,
+  ChatTabsFile,
+} from '@canopy/desktop-shared/types';
+const mockOpenCodeAdmission = jest.fn<Promise<unknown>, [unknown]>(() =>
+  Promise.resolve({ kind: 'native', supportedThinkingLevels: [] }),
+);
+jest.mock('../opencode/selection', (): unknown => ({
+  assertOpenCodeSelectionAvailable: (input: unknown) =>
+    mockOpenCodeAdmission(input),
+}));
 import { scheduleChatSummary } from '../lib/worktree-chat-turn';
 import { browserHandoffs } from '../browser/browser-handoffs';
 import {
@@ -7,6 +23,15 @@ import {
 } from '../canopy-tools/presentation-state';
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import type * as os from 'node:os';
+import type * as ChatStateServiceModule from '../services/chat-state-service';
+import type * as ChatStateV2RepositoryModule from '../services/chat-state-v2-repository';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ProviderEventIngestResult } from '../services/chat-state-service';
+import type { ChatQueueRevivalLease } from '../services/chat-queue-service';
+
+let mockChatStateServiceOverride: object | undefined;
 import type {
   CanonicalChatStartedEvent,
   CanonicalChatTerminalEvent,
@@ -34,10 +59,22 @@ const getCanonicalInputAcceptedAtMock = jest.fn<
   Promise<string | undefined>,
   [unknown, string]
 >(() => Promise.resolve('2026-10-16T12:00:00.000Z'));
+const createLocalWatcherMock = jest.fn(() =>
+  Promise.resolve({ id: 'approved-command-watcher' }),
+);
+const captureLocalExecutionScopeMock = jest.fn(() =>
+  Promise.resolve({
+    projectId: 'project-one',
+    worktreeId: 'worktree-one',
+    createdAt: '2026-10-24T00:00:00.000Z',
+  }),
+);
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: () => ({
     handleCanonicalChatStartedEvent: handleCanonicalChatStartedEventMock,
     handleCanonicalChatTerminalEvent: handleCanonicalChatTerminalEventMock,
+    createLocalWatcher: createLocalWatcherMock,
+    captureLocalExecutionScope: captureLocalExecutionScopeMock,
   }),
 }));
 jest.mock('../services/active-chat-input', () => ({
@@ -78,6 +115,10 @@ const sendMessageMock = jest.fn();
 const setPlanModeMock = jest.fn(() => Promise.resolve());
 const setApprovalModeMock = jest.fn(() => Promise.resolve());
 const setCodexIdleMock = jest.fn(() => Promise.resolve());
+const mockCreateCodexSession = jest.fn<AgentSession, [AgentSessionOptions]>();
+jest.mock('../agents/codex-session', () => ({
+  CodexProvider: jest.fn(() => ({ createSession: mockCreateCodexSession })),
+}));
 const startChatTurnMock = jest.fn<void, [Record<string, unknown>]>();
 const openAppAdvisorWindowMock = jest.fn(() =>
   Promise.resolve({ open: true, focused: true }),
@@ -85,34 +126,70 @@ const openAppAdvisorWindowMock = jest.fn(() =>
 const ensureAppAdvisorWindowMock = jest.fn(() =>
   Promise.resolve({ open: false, focused: false }),
 );
-const ensureChatForTrustedSendMock = jest.fn(() => Promise.resolve());
+const ensureChatForTrustedSendMock = jest.fn<Promise<void>, [args: unknown]>(
+  () => Promise.resolve(),
+);
 const ingestProviderEventMock = jest.fn<Promise<boolean>, [input?: unknown]>(
   () => Promise.resolve(true),
 );
-// Delivery reads the three-way outcome; by default it mirrors the boolean
-// commit mock so existing commit expectations keep their meaning.
-const ingestOutcomeFromCommit = async (
+// Delivery reads the typed result; by default it mirrors the boolean commit
+// mock so existing commit expectations keep their meaning.
+const ingestResultFromCommit = async (
   input: unknown,
-): Promise<ProviderEventIngestOutcome> =>
-  (await ingestProviderEventMock(input)) ? 'applied' : 'not-applied';
-const ingestProviderEventWithOutcomeMock = jest.fn(ingestOutcomeFromCommit);
+): Promise<ProviderEventIngestResult> => {
+  const applied = await ingestProviderEventMock(input);
+  const data =
+    typeof input === 'object' && input !== null && 'data' in input
+      ? input.data
+      : undefined;
+  const isRecordData =
+    typeof data === 'object' && data !== null && !Array.isArray(data);
+  const isStartingPickup =
+    isRecordData &&
+    'type' in data &&
+    data.type === 'canopy_input_delivery' &&
+    'phase' in data &&
+    data.phase === 'picked-up' &&
+    'startsTurn' in data &&
+    data.startsTurn === true;
+  const pickupRejectedByRouter =
+    isRecordData &&
+    'turnRootAccepted' in data &&
+    data.turnRootAccepted === false;
+
+  return {
+    outcome: applied ? 'applied' : 'not-applied',
+    ...(isStartingPickup
+      ? { pickup: applied && !pickupRejectedByRouter ? 'accepted' : 'rejected' }
+      : {}),
+  };
+};
+const ingestProviderEventWithResultMock = jest.fn(ingestResultFromCommit);
 const hasMutationMock = jest.fn(() => Promise.resolve(false));
+const updateCompatibilityTabMock = jest.fn(() =>
+  Promise.resolve({ updated: false }),
+);
 const observeChatEventMock = jest.fn();
+const recordSessionDiagnosticMock = jest.fn();
 const completeChatTurnMock = jest.fn();
+const commitTurnPauseMock = jest.fn(() => Promise.resolve());
 const runWithScopeActivityMock = jest.fn(
   async <T>(_scope: unknown, operation: () => Promise<T>): Promise<T> =>
     operation(),
 );
-
 jest.mock('../services/chat-state-service', () => ({
-  getChatStateService: () => ({
-    runWithScopeActivity: runWithScopeActivityMock,
-    ensureChatForTrustedSend: ensureChatForTrustedSendMock,
-    hasMutation: hasMutationMock,
-    ingestProviderEvent: ingestProviderEventMock,
-    ingestProviderEventWithOutcome: ingestProviderEventWithOutcomeMock,
-    claimNewChatStarted: claimNewChatStartedMock,
-  }),
+  getChatStateService: () =>
+    mockChatStateServiceOverride ?? {
+      runWithScopeActivity: runWithScopeActivityMock,
+      ensureChatForTrustedSend: ensureChatForTrustedSendMock,
+      hasMutation: hasMutationMock,
+      ingestProviderEvent: ingestProviderEventMock,
+      ingestProviderEventWithResult: ingestProviderEventWithResultMock,
+      claimNewChatStarted: claimNewChatStartedMock,
+      updateCompatibilityTab: updateCompatibilityTabMock,
+      // Approval prompts commit their canonical turn pause before publishing.
+      commitTurnPause: commitTurnPauseMock,
+    },
 }));
 
 const mockConsumeClaudeForkMarker = jest.fn();
@@ -153,10 +230,18 @@ jest.mock('../lib/paths', () => ({
     jest.requireActual<typeof os>('node:os').tmpdir(),
   ),
   getWorktreeAttachmentsDir: jest.fn(() => '/mock/attachments'),
+  getWorktreeDataDir: jest.fn(() => '/mock/worktree-data'),
 }));
 
 jest.mock('../agents/session-manager', () => ({
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
+  subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
+  hasPendingCodexContinuation: jest.fn(() => false),
+  getChatSessionLiveness: jest.fn(() => ({
+    foreground: false,
+    background: false,
+  })),
   getGlobalPluginDefaultsRevision: jest.fn(() => 0),
   getSessionGlobalPluginDefaultsRevision: jest.fn(() => undefined),
   buildSessionKey: (
@@ -165,6 +250,7 @@ jest.mock('../agents/session-manager', () => ({
     chatId: string,
   ): string => `${projectId}/${worktreeId}/${chatId}`,
   destroySession: jest.fn(() => Promise.resolve()),
+  restrictSessionApprovalRules: jest.fn(),
   getOrCreateSession: jest.fn(() => ({
     sendMessage: sendMessageMock,
     setPlanMode: setPlanModeMock,
@@ -178,8 +264,18 @@ jest.mock('../agents/session-manager', () => ({
   getSessionGlobalInstructionsSnapshot: jest.fn(() => undefined),
 }));
 
+const mockReadAuthorityTabs = jest.fn<Promise<ChatTabsFile>, []>();
+jest.mock('../lib/approval-mode-resolution', () => ({
+  resolvePersistedApprovalMode: (
+    _project: string,
+    _worktree: string,
+    mode?: ApprovalMode,
+  ) => Promise.resolve(mode ?? 'auto'),
+}));
 jest.mock('../lib/chat-tabs-reader', () => ({
+  ...jest.requireActual<Record<string, unknown>>('../lib/chat-tabs-reader'),
   readPersistedChatDispatchMetadata: jest.fn(() => Promise.resolve({})),
+  readChatTabsFile: () => mockReadAuthorityTabs(),
 }));
 
 jest.mock('../observability', () => ({
@@ -188,7 +284,7 @@ jest.mock('../observability', () => ({
     startChatTurn: startChatTurnMock,
     completeChatTurn: completeChatTurnMock,
     pauseChatTurn: jest.fn(),
-    recordSessionDiagnostic: jest.fn(),
+    recordSessionDiagnostic: recordSessionDiagnosticMock,
     recordInjectedPromptForOpenChatTurn: jest.fn(),
     resumeChatTurn: jest.fn(),
     startObservedTask: jest.fn(),
@@ -254,7 +350,7 @@ jest.mock('../cursor/runtime-availability', () => ({
     isCursorRuntimeAvailableMock(),
 }));
 
-jest.mock('../opencode/connection', () => ({
+jest.mock('../opencode/connection', (): unknown => ({
   assertOpenCodeModelAvailable: jest.fn(() =>
     Promise.resolve({ id: 'opencode:fixture%2Fmodel' }),
   ),
@@ -278,10 +374,12 @@ import {
   initCursorModels,
   initOpenCodeModels,
   initCopilotModels,
+  isVisiblePersistedChatMessage,
   type AppAdvisorUiStateEnvelope,
   type ChatAgentSentInfo,
 } from '@canopy/desktop-shared/types';
 import {
+  captureAppAdvisorSyntheticResultFence,
   dispatchAppAdvisorChatMessage,
   emitAppAdvisorSyntheticResultEvent,
 } from '../app-advisor/chat-service';
@@ -289,6 +387,7 @@ import {
   destroySession,
   getActiveSessionInfos,
   getOrCreateSession,
+  restrictSessionApprovalRules,
 } from '../agents/session-manager';
 import { readPersistedChatDispatchMetadata } from '../lib/chat-tabs-reader';
 import {
@@ -297,11 +396,27 @@ import {
 } from '../lib/preferences-store';
 import { sendToWindowDetailed } from '../lib/window-send';
 import { createAppAdvisorToolRuntime } from '../app-advisor/runtime';
-import { listWorkEntryIds } from '../lib/cowork-work-entries';
+import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
+import { sessionEventRouterTestExports } from '../agents/session-event-router';
+import { getChatTurnOwnership } from '../services/chat-turn-ownership';
+import {
+  initialChatTurnState,
+  serializeChatTurnState,
+} from '@canopy/agent-transcript/turn';
+import {
+  listWorkEntryIds,
+  resolveWorkEntryForChat,
+} from '../lib/cowork-work-entries';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
+import {
+  ChatDispatchAuthorizationRegistry,
+  getChatDispatchAuthorization,
+  type AuthorizedChatDispatch,
+} from '../services/chat-dispatch-authorization';
 import { getChatQueueService } from '../services/chat-queue-service';
 import {
   clearLiveApprovalMode,
+  getLiveApprovalMode,
   setLiveApprovalMode,
 } from '../approvals/live-approval-modes';
 
@@ -335,15 +450,73 @@ beforeAll(() => {
   ]);
 });
 
+/** Stands in for a queue-issued capability; every dispatch carries one. */
+const TEST_DISPATCH_AUTHORIZATION: AuthorizedChatDispatch = {
+  authorizationToken: Symbol('test dispatch'),
+  scope: {
+    projectId: APP_ADVISOR_PROJECT_ID,
+    worktreeId: 'entry-one',
+    chatId: 'advisor-chat',
+  },
+  dispatchOwner: Symbol('test dispatch owner'),
+  userMessageId: 'message-1',
+  operationEpoch: 1,
+  kind: 'ordinary',
+};
+
 beforeEach(() => {
+  for (const [options] of jest.mocked(getOrCreateSession).mock.calls) {
+    clearLiveApprovalMode(
+      options.projectId,
+      options.worktreeId,
+      options.chatId,
+    );
+  }
+  const emptyAuthorityTabs: ChatTabsFile = {
+    version: 1,
+    activeTabId: '',
+    tabs: [],
+  };
+  // Keep the legacy null active id in this empty authority fixture.
+  Reflect.set(emptyAuthorityTabs, 'activeTabId', null);
+  mockReadAuthorityTabs.mockReset().mockResolvedValue(emptyAuthorityTabs);
   jest.restoreAllMocks();
   deferredToolsReloadCoordinator.resetForTests();
+  getChatQueueService().resetForTests();
   jest.clearAllMocks();
-  ensureChatForTrustedSendMock.mockResolvedValue(undefined);
-  ingestProviderEventMock.mockResolvedValue(true);
-  ingestProviderEventWithOutcomeMock.mockImplementation(
-    ingestOutcomeFromCommit,
+  // Authorize the test capability; any other goes to the real registry.
+  const registry = getChatDispatchAuthorization();
+  jest.spyOn(registry, 'consume').mockImplementation((authorization, target) =>
+    authorization === TEST_DISPATCH_AUTHORIZATION
+      ? {
+          kind: 'authorized',
+          ownership: {
+            kind: 'dispatch',
+            token: authorization.dispatchOwner,
+            userMessageId: target.userMessageId,
+            operationEpoch: authorization.operationEpoch,
+            reason: 'awaiting-start',
+          },
+        }
+      : ChatDispatchAuthorizationRegistry.prototype.consume.call(
+          registry,
+          authorization,
+          target,
+        ),
   );
+  // This suite's queue has no bound ownership, so it would issue no
+  // capability; a reload continuation gets the test one.
+  jest
+    .spyOn(getChatQueueService(), 'admitDirectDispatchWhenAllowed')
+    .mockResolvedValue({
+      authorization: TEST_DISPATCH_AUTHORIZATION,
+      release: jest.fn(),
+    });
+  ensureChatForTrustedSendMock.mockResolvedValue(undefined);
+  mockChatStateServiceOverride = undefined;
+  ingestProviderEventMock.mockResolvedValue(true);
+  ingestProviderEventWithResultMock.mockReset();
+  ingestProviderEventWithResultMock.mockImplementation(ingestResultFromCommit);
   hasMutationMock.mockResolvedValue(false);
   claimNewChatStartedMock.mockResolvedValue(true);
   captureChatWatcherEvidenceMock.mockResolvedValue({
@@ -356,6 +529,14 @@ beforeEach(() => {
   portalActive = false;
 });
 
+afterEach(() => {
+  // App Advisor specs use the real queue singleton. Clear its scheduled drain
+  // and gate-reconciliation timers so this suite leaves no worker handles.
+  getChatQueueService().resetForTests();
+  deferredToolsReloadCoordinator.resetForTests();
+  sessionEventRouterTestExports.reset();
+});
+
 function makeOptions(): Parameters<typeof dispatchAppAdvisorChatMessage>[1] {
   const getMainWindow: Parameters<
     typeof dispatchAppAdvisorChatMessage
@@ -364,6 +545,7 @@ function makeOptions(): Parameters<typeof dispatchAppAdvisorChatMessage>[1] {
     typeof dispatchAppAdvisorChatMessage
   >[1]['getAppAdvisorWindow'] = () => null;
   return {
+    authorization: TEST_DISPATCH_AUTHORIZATION,
     getMainWindow,
     getAppAdvisorWindow,
     toolSurfaces: {
@@ -374,6 +556,77 @@ function makeOptions(): Parameters<typeof dispatchAppAdvisorChatMessage>[1] {
     },
   };
 }
+
+function configureClaudeSteeringSession(): void {
+  jest.mocked(getOrCreateSession).mockResolvedValueOnce({
+    sendMessage: sendMessageMock,
+    cancel: jest.fn(),
+    destroy: jest.fn(),
+    setPlanMode: setPlanModeMock,
+    setApprovalMode: setApprovalModeMock,
+    setModel: jest.fn(),
+    setThinkingLevel: jest.fn(),
+    getSteeringCapabilities: () => ({
+      provider: 'claude',
+      generation: 'live',
+      steer: true,
+      withdraw: true,
+      interrupt: true,
+    }),
+  });
+}
+
+describe('dispatchAppAdvisorChatMessage dispatch authorization', () => {
+  it('refuses a capability the queue never issued before any session work', async () => {
+    const forged = {
+      authorizationToken: Symbol('forged dispatch'),
+      scope: {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'forged-advisor',
+      },
+      dispatchOwner: Symbol('forged owner'),
+      userMessageId: 'forged-message',
+      operationEpoch: 1,
+      kind: 'ordinary' as const,
+    };
+    await expect(
+      dispatchAppAdvisorChatMessage(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'forged-advisor',
+          userMessageId: 'forged-message',
+          text: 'Forged',
+          providerType: 'claude',
+          model: 'claude-opus-4-8',
+        },
+        { ...makeOptions(), authorization: forged },
+      ),
+    ).rejects.toMatchObject({
+      outcome: { kind: 'refused', reason: 'authorization' },
+    });
+    expect(getOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  it('refuses a dispatch without a capability before any session work', async () => {
+    await expect(
+      dispatchAppAdvisorChatMessage(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'unadmitted-advisor',
+          userMessageId: 'unadmitted-message',
+          text: 'Unadmitted',
+          providerType: 'claude',
+          model: 'claude-opus-4-8',
+        },
+        { ...makeOptions(), authorization: undefined },
+      ),
+    ).rejects.toThrow('Chat dispatch requires an admitted capability.');
+    expect(getOrCreateSession).not.toHaveBeenCalled();
+  });
+});
 
 describe('Advisor browser handoff acceptance (CAN-4663)', () => {
   const origin = {
@@ -570,7 +823,9 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       expect(handleCanonicalChatTerminalEventMock).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: 'terminal',
-          sourceInputId: order === 'pickup-terminal' ? 'selected' : 'original',
+          // A pickup moves the turn's root only once the session router
+          // confirms its acceptance, which this unit dispatch does not model.
+          sourceInputId: 'original',
           sourceInputAcceptedAt: '2026-10-16T12:00:00.000Z',
           occurredAt: new Date(terminalAt).toISOString(),
           evidence: { sourceOwner: null, accountEpoch: 7 },
@@ -658,10 +913,10 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       const call = jest.mocked(getOrCreateSession).mock.calls[0];
       if (!call) throw new Error('Missing session');
       if (outcome === 'failed')
-        ingestProviderEventWithOutcomeMock.mockRejectedValueOnce(
+        ingestProviderEventWithResultMock.mockRejectedValueOnce(
           new Error('Commit failed'),
         );
-      else ingestProviderEventWithOutcomeMock.mockResolvedValueOnce(outcome);
+      else ingestProviderEventWithResultMock.mockResolvedValueOnce({ outcome });
       void call[1]({ type: 'result', is_error: false });
       await call[3]?.drainEventsBeforeRemoval?.();
       expect(handleCanonicalChatTerminalEventMock).not.toHaveBeenCalled();
@@ -774,22 +1029,17 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
   });
 
   it('follows a committed Claude pickup into its autonomous root turn', async () => {
-    jest.mocked(getOrCreateSession).mockReturnValueOnce({
-      sendMessage: sendMessageMock,
-      cancel: jest.fn(),
-      destroy: jest.fn(),
-      setPlanMode: setPlanModeMock,
-      setApprovalMode: setApprovalModeMock,
-      setModel: jest.fn(),
-      setThinkingLevel: jest.fn(),
-      getSteeringCapabilities: () => ({
-        provider: 'claude',
-        generation: 'live',
-        steer: true,
-        withdraw: true,
-        interrupt: true,
-      }),
-    });
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = { rootId: 'selected', epoch: 4 };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(true);
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+    configureClaudeSteeringSession();
     await dispatchAppAdvisorChatMessage(
       {
         projectId: APP_ADVISOR_PROJECT_ID,
@@ -805,7 +1055,7 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     const call = jest.mocked(getOrCreateSession).mock.calls[0];
     const onEvent = call?.[1];
     if (!onEvent) throw new Error('Expected Advisor route');
-    void onEvent({
+    await onEvent({
       type: 'canopy_input_delivery',
       provider: 'claude',
       phase: 'picked-up',
@@ -814,7 +1064,7 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       startsTurn: true,
       userMessageId: 'selected',
     });
-    void onEvent({
+    await onEvent({
       type: 'assistant',
       canopy_turn_user_message_id: 'selected',
       message: {
@@ -823,32 +1073,440 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
         content: [{ type: 'text', text: 'Selected reply' }],
       },
     });
+    await onEvent({
+      type: 'result',
+      is_error: false,
+      result: 'Done',
+      canopy_turn_user_message_id: 'selected',
+    });
     await call[3]?.drainEventsBeforeRemoval?.();
+    expect(acceptTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'steering-advisor',
+      }),
+      'selected',
+    );
+    expect(confirmTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'steering-advisor' }),
+      lease,
+    );
+    expect(rollbackTurnRevival).not.toHaveBeenCalled();
+    expect(onTurnTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'steering-advisor' }),
+      'complete',
+      'selected',
+    );
     expect(ingestProviderEventMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ turnUserMessageId: 'selected' }),
     );
   });
 
-  it('honors a stamped rejected pickup without re-arbitrating the root', async () => {
-    const onTurnRevived = jest
-      .spyOn(getChatQueueService(), 'onTurnRevived')
-      .mockReturnValue(false);
-    jest.mocked(getOrCreateSession).mockReturnValueOnce({
-      sendMessage: sendMessageMock,
-      cancel: jest.fn(),
-      destroy: jest.fn(),
-      setPlanMode: setPlanModeMock,
-      setApprovalMode: setApprovalModeMock,
-      setModel: jest.fn(),
-      setThinkingLevel: jest.fn(),
-      getSteeringCapabilities: () => ({
-        provider: 'claude',
-        generation: 'live',
-        steer: true,
-        withdraw: true,
-        interrupt: true,
-      }),
+  it('reads pickup lease metadata before cloning a deferred-tools continuation event', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = { rootId: 'continued-root', epoch: 5 };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(true);
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'continuation-pickup-advisor',
+        userMessageId: 'original',
+        text: 'Continue the existing turn',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+        deferredToolsReloadEnabledResources: [],
+        deferredToolsReloadRequestId: 'continuation-pickup',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor continuation route');
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'continuation-attempt',
+      startsTurn: true,
+      userMessageId: 'continued-root',
     });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(acceptTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'continuation-pickup-advisor' }),
+      'continued-root',
+    );
+    expect(confirmTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'continuation-pickup-advisor' }),
+      lease,
+    );
+    expect(ingestProviderEventWithResultMock.mock.calls[0]?.[0]).toMatchObject({
+      data: {
+        type: 'canopy_input_delivery',
+        canopy_turn_revival: true,
+      },
+      turnUserMessageId: 'original',
+    });
+  });
+
+  it('keeps an adopted root after a repeated same-root pickup is rejected', async () => {
+    const queue = getChatQueueService();
+    const firstLease: ChatQueueRevivalLease = {
+      rootId: 'adopted-root',
+      epoch: 11,
+    };
+    const repeatLease: ChatQueueRevivalLease = {
+      rootId: 'adopted-root',
+      epoch: 12,
+    };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValueOnce({ accepted: true, lease: firstLease })
+      .mockReturnValueOnce({ accepted: true, lease: repeatLease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(true);
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'repeat-pickup-steering-advisor',
+        userMessageId: 'original',
+        text: 'Original',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'first-attempt',
+      startsTurn: true,
+      userMessageId: 'adopted-root',
+    });
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied', pickup: 'rejected' };
+      },
+    );
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'repeat-attempt',
+      startsTurn: true,
+      userMessageId: 'adopted-root',
+    });
+    await onEvent({
+      type: 'assistant',
+      canopy_turn_user_message_id: 'adopted-root',
+      message: {
+        id: 'adopted-reply',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Continue the adopted turn' }],
+      },
+    });
+    await onEvent({
+      type: 'result',
+      is_error: false,
+      result: 'Adopted turn done',
+      canopy_turn_user_message_id: 'adopted-root',
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(2);
+    expect(confirmTurnRevival).toHaveBeenCalledTimes(1);
+    expect(confirmTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'repeat-pickup-steering-advisor' }),
+      firstLease,
+    );
+    expect(rollbackTurnRevival).not.toHaveBeenCalled();
+    expect(ingestProviderEventWithResultMock.mock.calls[2]?.[0]).toMatchObject({
+      data: { canopy_turn_user_message_id: 'adopted-root' },
+      turnUserMessageId: 'adopted-root',
+    });
+    expect(onTurnTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'repeat-pickup-steering-advisor' }),
+      'complete',
+      'adopted-root',
+    );
+  });
+
+  it('keeps the initial execution root after its same-root pickup is rejected', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = { rootId: 'initial-root', epoch: 13 };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const confirmTurnRevival = jest.spyOn(queue, 'confirmTurnRevival');
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'initial-root-steering-advisor',
+        userMessageId: 'initial-root',
+        text: 'Initial turn',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied', pickup: 'rejected' };
+      },
+    );
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'unknown-attempt',
+      startsTurn: true,
+      userMessageId: 'initial-root',
+    });
+    await onEvent({
+      type: 'assistant',
+      canopy_turn_user_message_id: 'initial-root',
+      message: {
+        id: 'initial-root-reply',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Existing turn continues' }],
+      },
+    });
+    await onEvent({
+      type: 'result',
+      is_error: false,
+      result: 'Initial turn done',
+      canopy_turn_user_message_id: 'initial-root',
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(1);
+    expect(confirmTurnRevival).not.toHaveBeenCalled();
+    expect(rollbackTurnRevival).not.toHaveBeenCalled();
+    expect(ingestProviderEventWithResultMock.mock.calls[1]?.[0]).toMatchObject({
+      data: { canopy_turn_user_message_id: 'initial-root' },
+      turnUserMessageId: 'initial-root',
+    });
+    expect(onTurnTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'initial-root-steering-advisor' }),
+      'complete',
+      'initial-root',
+    );
+  });
+
+  it('releases the execution root for an untagged normal terminal event', async () => {
+    const queue = getChatQueueService();
+    const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'untagged-terminal-advisor',
+        userMessageId: 'current-root',
+        text: 'Current turn',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+
+    await onEvent({ type: 'result', is_error: false, result: 'Done' });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(onTurnTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'untagged-terminal-advisor' }),
+      'complete',
+      'current-root',
+    );
+  });
+
+  it('allows a rejected root retry pickup to be ingested and adopted', async () => {
+    const queue = getChatQueueService();
+    const rejectedLease: ChatQueueRevivalLease = {
+      rootId: 'retry-root',
+      epoch: 14,
+    };
+    const retryLease: ChatQueueRevivalLease = {
+      rootId: 'retry-root',
+      epoch: 15,
+    };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValueOnce({ accepted: true, lease: rejectedLease })
+      .mockReturnValueOnce({ accepted: true, lease: retryLease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(true);
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'retry-root-steering-advisor',
+        userMessageId: 'original',
+        text: 'Original',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+    ingestProviderEventWithResultMock
+      .mockResolvedValueOnce({ outcome: 'not-applied', pickup: 'rejected' })
+      .mockResolvedValueOnce({
+        outcome: 'not-applied',
+        pickup: 'already-accepted',
+      })
+      .mockResolvedValueOnce({ outcome: 'applied' });
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'rejected-attempt',
+      startsTurn: true,
+      userMessageId: 'retry-root',
+      canopy_turn_user_message_id: 'retry-root',
+    });
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'accepted-retry-attempt',
+      startsTurn: true,
+      userMessageId: 'retry-root',
+      canopy_turn_user_message_id: 'retry-root',
+    });
+    await onEvent({
+      type: 'assistant',
+      canopy_turn_user_message_id: 'retry-root',
+      message: {
+        id: 'retry-reply',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Retry output continues' }],
+      },
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(2);
+    expect(confirmTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'retry-root-steering-advisor' }),
+      retryLease,
+    );
+    expect(rollbackTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'retry-root-steering-advisor' }),
+      rejectedLease,
+    );
+    expect(ingestProviderEventWithResultMock.mock.calls[2]?.[0]).toMatchObject({
+      data: { canopy_turn_user_message_id: 'retry-root' },
+      turnUserMessageId: 'retry-root',
+    });
+  });
+
+  it('rolls back a current-root pickup when its accepted lease confirmation fails', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = {
+      rootId: 'current-root',
+      epoch: 16,
+    };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(false);
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'failed-current-confirm-advisor',
+        userMessageId: 'current-root',
+        text: 'Current turn',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+    ingestProviderEventWithResultMock.mockResolvedValueOnce({
+      outcome: 'applied',
+      pickup: 'accepted',
+    });
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'current-attempt',
+      startsTurn: true,
+      userMessageId: 'current-root',
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(1);
+    expect(confirmTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'failed-current-confirm-advisor' }),
+      lease,
+    );
+    expect(rollbackTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'failed-current-confirm-advisor' }),
+      lease,
+    );
+  });
+
+  it('honors a stamped rejected pickup without re-arbitrating the root', async () => {
+    const queue = getChatQueueService();
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: false });
+    const confirmTurnRevival = jest.spyOn(queue, 'confirmTurnRevival');
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    configureClaudeSteeringSession();
 
     try {
       await dispatchAppAdvisorChatMessage(
@@ -866,7 +1524,13 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       const call = jest.mocked(getOrCreateSession).mock.calls[0];
       const onEvent = call?.[1];
       if (!onEvent) throw new Error('Expected Advisor route');
-      void onEvent({
+      ingestProviderEventWithResultMock.mockImplementationOnce(
+        async (input: unknown) => {
+          await ingestProviderEventMock(input);
+          return { outcome: 'not-applied', pickup: 'rejected' };
+        },
+      );
+      await onEvent({
         type: 'canopy_input_delivery',
         provider: 'claude',
         phase: 'picked-up',
@@ -874,17 +1538,452 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
         attemptId: 'late-attempt',
         startsTurn: true,
         userMessageId: 'stale',
-        turnRootAccepted: false,
       });
       await call[3]?.drainEventsBeforeRemoval?.();
 
-      expect(onTurnRevived).toHaveBeenCalledTimes(1);
+      expect(acceptTurnRevival).toHaveBeenCalledTimes(1);
+      expect(confirmTurnRevival).not.toHaveBeenCalled();
+      expect(rollbackTurnRevival).not.toHaveBeenCalled();
+      const refusalPresentation = jest
+        .mocked(sendToWindowDetailed)
+        .mock.calls.find(
+          (call) =>
+            call[1] === 'chat:event' &&
+            typeof call[2] === 'object' &&
+            call[2] !== null &&
+            'data' in call[2] &&
+            typeof call[2].data === 'object' &&
+            call[2].data !== null &&
+            'userMessageId' in call[2].data &&
+            call[2].data.userMessageId === 'stale',
+        )?.[2];
+      expect(refusalPresentation).toMatchObject({
+        chatId: 'stamped-rejected-steering-advisor',
+        data: { userMessageId: 'stale', turnRootAccepted: false },
+      });
       expect(ingestProviderEventMock).toHaveBeenLastCalledWith(
         expect.objectContaining({ turnUserMessageId: 'current' }),
       );
     } finally {
-      onTurnRevived.mockRestore();
+      acceptTurnRevival.mockRestore();
     }
+  });
+
+  it('follows an already-accepted duplicate pickup even when it was not applied', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = { rootId: 'selected', epoch: 7 };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(true);
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'already-accepted-steering-advisor',
+        userMessageId: 'original',
+        text: 'Original',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied', pickup: 'already-accepted' };
+      },
+    );
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'duplicate-attempt',
+      startsTurn: true,
+      userMessageId: 'selected',
+    });
+    await onEvent({
+      type: 'assistant',
+      canopy_turn_user_message_id: 'selected',
+      message: {
+        id: 'duplicate-reply',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'The accepted turn continues' }],
+      },
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(1);
+    expect(confirmTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'already-accepted-steering-advisor' }),
+      lease,
+    );
+    expect(ingestProviderEventWithResultMock.mock.calls[1]?.[0]).toMatchObject({
+      data: { canopy_turn_user_message_id: 'selected' },
+      turnUserMessageId: 'selected',
+    });
+  });
+
+  it('rolls back a rejected pickup before dropping its output and still drains terminal and idle cleanup', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = { rootId: 'rejected-root', epoch: 8 };
+    const newerLease: ChatQueueRevivalLease = {
+      rootId: 'rejected-root',
+      epoch: 9,
+    };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValueOnce({ accepted: true, lease })
+      .mockReturnValueOnce({ accepted: true, lease: newerLease });
+    const confirmTurnRevival = jest.spyOn(queue, 'confirmTurnRevival');
+    const rollbackTurnRevival = jest
+      .spyOn(queue, 'rollbackTurnRevival')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+    const reconcileSessionActivity = jest.spyOn(
+      queue,
+      'reconcileSessionActivity',
+    );
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'rejected-steering-advisor',
+        userMessageId: 'original',
+        text: 'Original',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied', pickup: 'rejected' };
+      },
+    );
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'rejected-attempt',
+      startsTurn: true,
+      userMessageId: 'rejected-root',
+    });
+    expect(rollbackTurnRevival).toHaveBeenCalledTimes(1);
+    expect(rollbackTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'rejected-steering-advisor' }),
+      lease,
+    );
+    expect(confirmTurnRevival).not.toHaveBeenCalled();
+
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied', pickup: 'rejected' };
+      },
+    );
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'rejected-retry-attempt',
+      startsTurn: true,
+      userMessageId: 'rejected-root',
+    });
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(2);
+    expect(rollbackTurnRevival).toHaveBeenCalledTimes(2);
+    expect(rollbackTurnRevival).toHaveBeenLastCalledWith(
+      expect.objectContaining({ chatId: 'rejected-steering-advisor' }),
+      newerLease,
+    );
+
+    ingestProviderEventWithResultMock.mockClear();
+    ingestProviderEventMock.mockClear();
+    jest.mocked(sendToWindowDetailed).mockClear();
+    await onEvent({
+      type: 'assistant',
+      canopy_turn_user_message_id: 'rejected-root',
+      message: {
+        id: 'rejected-reply',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Do not commit this output' }],
+      },
+    });
+    await onEvent({
+      type: 'result',
+      is_error: false,
+      result: 'Rejected root terminal',
+      canopy_turn_user_message_id: 'rejected-root',
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(ingestProviderEventWithResultMock).not.toHaveBeenCalled();
+    expect(ingestProviderEventMock).not.toHaveBeenCalled();
+    expect(sendToWindowDetailed).not.toHaveBeenCalled();
+    expect(rollbackTurnRevival).toHaveBeenCalledTimes(3);
+    expect(rollbackTurnRevival).toHaveBeenLastCalledWith(
+      expect.objectContaining({ chatId: 'rejected-steering-advisor' }),
+      lease,
+    );
+    expect(onTurnTerminal).not.toHaveBeenCalled();
+
+    ingestProviderEventWithResultMock.mockClear();
+    await onEvent({
+      type: 'system',
+      subtype: 'status',
+      status: 'idle',
+      canopy_turn_user_message_id: 'rejected-root',
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+    expect(ingestProviderEventWithResultMock).not.toHaveBeenCalled();
+    expect(reconcileSessionActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('ingests an owned delegation snapshot tagged with a rejected root', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = { rootId: 'rejected-root', epoch: 8 };
+    jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValueOnce({ accepted: true, lease });
+    const rollbackTurnRevival = jest
+      .spyOn(queue, 'rollbackTurnRevival')
+      .mockReturnValue(true);
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'delegation-rejected-advisor',
+        userMessageId: 'original',
+        text: 'Original',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied', pickup: 'rejected' };
+      },
+    );
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'rejected-attempt',
+      startsTurn: true,
+      userMessageId: 'rejected-root',
+    });
+    expect(rollbackTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'delegation-rejected-advisor' }),
+      lease,
+    );
+
+    // A delegate started by the rejected turn keeps that turn's tag.
+    ingestProviderEventWithResultMock.mockClear();
+    await onEvent({
+      type: 'canopy_delegation',
+      canopy_turn_user_message_id: 'rejected-root',
+      delegation: {
+        delegationId: 'child',
+        runGeneration: 1,
+        sequence: 2,
+        parentHarnessId: 'claude',
+        parentTurnId: 'rejected-root',
+        parentToolCallId: 'call',
+        createdAt: 1,
+        task: {
+          description: 'Review',
+          prompt: 'Read',
+          executionMode: 'background',
+        },
+        snapshot: {
+          delegationId: 'child',
+          status: 'completed',
+          outputTruncated: false,
+          routeSnapshot: {
+            selectedModelId: 'reviewer',
+            runtimeModelId: 'runtime',
+            harnessId: 'claude',
+          },
+        },
+        transcript: [],
+      },
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(ingestProviderEventWithResultMock).toHaveBeenCalledTimes(1);
+    const ingested: unknown =
+      ingestProviderEventWithResultMock.mock.calls[0]?.[0];
+    const ingestedData =
+      typeof ingested === 'object' && ingested !== null && 'data' in ingested
+        ? ingested.data
+        : undefined;
+    expect(ingestedData).toMatchObject({
+      type: 'canopy_delegation',
+      canopy_turn_user_message_id: 'rejected-root',
+    });
+  });
+
+  it('rolls back when a superseded pickup lease cannot be confirmed', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = {
+      rootId: 'superseded-root',
+      epoch: 9,
+    };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(false);
+    const rollbackTurnRevival = jest
+      .spyOn(queue, 'rollbackTurnRevival')
+      .mockReturnValue(false);
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'superseded-steering-advisor',
+        userMessageId: 'original',
+        text: 'Original',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+
+    await onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'superseded-attempt',
+      startsTurn: true,
+      userMessageId: 'superseded-root',
+    });
+    expect(confirmTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'superseded-steering-advisor' }),
+      lease,
+    );
+    expect(rollbackTurnRevival).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'superseded-steering-advisor' }),
+      lease,
+    );
+
+    ingestProviderEventWithResultMock.mockClear();
+    await onEvent({
+      type: 'assistant_delta',
+      content: 'Current root remains original',
+    });
+    await call[3]?.drainEventsBeforeRemoval?.();
+    expect(ingestProviderEventWithResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({ turnUserMessageId: 'original' }),
+    );
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the previous root terminal commit and queue release before accepting a pickup', async () => {
+    const queue = getChatQueueService();
+    const lease: ChatQueueRevivalLease = { rootId: 'next-root', epoch: 10 };
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+    jest.spyOn(queue, 'confirmTurnRevival').mockReturnValue(true);
+    configureClaudeSteeringSession();
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'ordered-steering-advisor',
+        userMessageId: 'current-root',
+        text: 'Current turn',
+        providerType: 'claude',
+        model: 'claude-opus-4-8',
+      },
+      makeOptions(),
+    );
+    const call = jest.mocked(getOrCreateSession).mock.calls[0];
+    const onEvent = call?.[1];
+    if (!onEvent) throw new Error('Expected Advisor route');
+    let resolvePreviousTerminal:
+      | ((result: ProviderEventIngestResult) => void)
+      | undefined;
+    const previousTerminalCommit = new Promise<ProviderEventIngestResult>(
+      (resolve) => {
+        resolvePreviousTerminal = resolve;
+      },
+    );
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      () => previousTerminalCommit,
+    );
+
+    const previousTerminal = onEvent({
+      type: 'result',
+      is_error: false,
+      result: 'Current turn done',
+      canopy_turn_user_message_id: 'current-root',
+    });
+    const pickup = onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'next-attempt',
+      startsTurn: true,
+      userMessageId: 'next-root',
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(acceptTurnRevival).not.toHaveBeenCalled();
+
+    if (!resolvePreviousTerminal) {
+      throw new Error('Expected held terminal commit resolver');
+    }
+    resolvePreviousTerminal({ outcome: 'applied' });
+    await previousTerminal;
+    await pickup;
+    await call[3]?.drainEventsBeforeRemoval?.();
+
+    expect(onTurnTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'ordered-steering-advisor' }),
+      'complete',
+      'current-root',
+    );
+    expect(acceptTurnRevival).toHaveBeenCalledTimes(1);
+    const terminalCallOrder = onTurnTerminal.mock.invocationCallOrder[0];
+    const acceptCallOrder = acceptTurnRevival.mock.invocationCallOrder[0];
+    if (terminalCallOrder === undefined || acceptCallOrder === undefined) {
+      throw new Error('Expected queue terminal and acceptance calls');
+    }
+    expect(terminalCallOrder).toBeLessThan(acceptCallOrder);
   });
 
   it('uses persisted tab routing before the App Advisor preference on a bare send', async () => {
@@ -921,6 +2020,74 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       expect.any(Object),
     );
   });
+
+  it.each([true, false])(
+    'commits one Advisor watcher row and dispatches without a window (fired=%s)',
+    async (fired) => {
+      const options = makeOptions();
+      options.toolSurfaces.ensureAppAdvisorWindow = jest.fn(() =>
+        Promise.reject(new Error('Advisor window failed to load')),
+      );
+      const userMessageId = fired
+        ? 'watcher-advisor-fired'
+        : 'watcher-advisor-deleted';
+      await dispatchAppAdvisorChatMessage(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'advisor-watchers',
+          userMessageId,
+          text: 'Watcher notification',
+          providerType: 'codex',
+          model: 'gpt-5.5',
+          initiationSource: 'user',
+          hiddenContext: {
+            kind: 'canopy-watcher-event',
+            text: 'Watcher context',
+          },
+          ...(fired
+            ? { watcherFired: { kind: 'worktree_chat_completion' } }
+            : {}),
+        },
+        options,
+      );
+      const commits = ingestProviderEventMock.mock.calls.filter(
+        ([input]) =>
+          input !== null &&
+          typeof input === 'object' &&
+          'mutationId' in input &&
+          input.mutationId === `advisor-watchers:${userMessageId}:user-prompt`,
+      );
+      expect(commits).toHaveLength(1);
+      expect(commits[0]?.[0]).toMatchObject({
+        data: {
+          type: 'canopy_user_prompt',
+          original_text: 'Watcher notification',
+          canopy_turn_user_message_id: userMessageId,
+          canopy_persisted_messages: [
+            expect.objectContaining({
+              id: userMessageId,
+              role: 'user',
+              ...(fired
+                ? { watcherFired: { kind: 'worktree_chat_completion' } }
+                : {}),
+            }),
+          ],
+        },
+      });
+      if (!fired) {
+        expect(commits[0]?.[0]).not.toHaveProperty(
+          'data.canopy_persisted_messages.0.watcherFired',
+        );
+      }
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(options.getMainWindow()).toBeNull();
+      expect(options.getAppAdvisorWindow()).toBeNull();
+      expect(
+        options.toolSurfaces.ensureAppAdvisorWindow,
+      ).not.toHaveBeenCalled();
+    },
+  );
 
   it('refuses fork admission when parent Stop arrives during asynchronous preparation', async () => {
     const stop = new AbortController();
@@ -999,8 +2166,79 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     );
   });
 
+  // D12: a delegate's message is hidden only while it waits in the queue.
+  it('shows a sent delegation internal row after a durable reload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'app-advisor-internal-row-'));
+    const paths = {
+      tabs: join(root, 'chats.json'),
+      archives: join(root, 'archives.json'),
+      journal: join(root, 'journal.jsonl'),
+    };
+    const { ChatStateV2Repository } = jest.requireActual<
+      typeof ChatStateV2RepositoryModule
+    >('../services/chat-state-v2-repository');
+    const { ChatStateService } = jest.requireActual<
+      typeof ChatStateServiceModule
+    >('../services/chat-state-service');
+    const repository = new ChatStateV2Repository({
+      resolvePaths: () => paths,
+    });
+    const stateService = new ChatStateService({
+      repository,
+      inputSession: () => Promise.resolve(undefined),
+      recordDiagnostic: jest.fn(),
+    });
+    const reloadedRepository = new ChatStateV2Repository({
+      resolvePaths: () => paths,
+    });
+    const reloadedStateService = new ChatStateService({
+      repository: reloadedRepository,
+      inputSession: () => Promise.resolve(undefined),
+      recordDiagnostic: jest.fn(),
+    });
+    mockChatStateServiceOverride = stateService;
+    const internalRow = {
+      kind: 'delegation-request' as const,
+      delegationId: 'delegation-1',
+      displayLine: 'Waiting for the parent',
+    };
+
+    try {
+      await dispatchAppAdvisorChatMessage(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'advisor-internal-row-chat',
+          userMessageId: 'internal-row-message',
+          text: 'Private delegation payload',
+          providerType: 'codex',
+          model: 'gpt-5.5',
+          managedDelegationDeliveryId: 'delivery-1',
+          internalRow,
+        },
+        makeOptions(),
+      );
+
+      const reloadedState = await reloadedStateService.getState({
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+      });
+      const userMessage = reloadedState.tabsFile.tabs
+        .find((tab) => tab.id === 'advisor-internal-row-chat')
+        ?.messages.find((message) => message.id === 'internal-row-message');
+
+      if (!userMessage) throw new Error('Persisted user row was not reloaded');
+      expect(userMessage.hidden).toBeUndefined();
+      expect(isVisiblePersistedChatMessage(userMessage)).toBe(true);
+    } finally {
+      mockChatStateServiceOverride = undefined;
+      await Promise.all([repository.drainAll(), reloadedRepository.drainAll()]);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists accepted agent sender attribution as an agent-authored user message', async () => {
-    const agentSent: ChatAgentSentInfo = {
+    const agentSent = {
       sender: {
         kind: 'bot',
         botId: 'app_advisor',
@@ -1009,7 +2247,7 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       },
       chatTitle: 'Source chat',
       projectLabel: 'App Advisor',
-    };
+    } satisfies ChatAgentSentInfo;
     await dispatchAppAdvisorChatMessage(
       {
         projectId: APP_ADVISOR_PROJECT_ID,
@@ -1111,6 +2349,90 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['a reused session', 'parks', true],
+    ['a new session', 'sends', false],
+  ] as const)(
+    'on %s, %s an admitted Claude prompt while a wake runs',
+    async (_session, outcome, reusesSession) => {
+      const request = {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'advisor-chat',
+        userMessageId: 'message-1',
+        text: 'After the wake',
+        providerType: 'claude' as const,
+        model: 'claude-opus-4-8',
+      };
+      if (reusesSession) {
+        // A wake needs an earlier turn on the same session.
+        let earlier: ReturnType<typeof getOrCreateSession> | undefined;
+        const create = jest.mocked(getOrCreateSession).getMockImplementation();
+        jest.mocked(getOrCreateSession).mockImplementationOnce((...args) => {
+          if (!create)
+            throw new Error('The session mock has no implementation');
+          earlier = create(...args);
+          return earlier;
+        });
+        await dispatchAppAdvisorChatMessage(
+          { ...request, userMessageId: 'message-0' },
+          makeOptions(),
+        );
+        if (!earlier)
+          throw new Error('The earlier dispatch created no session');
+        jest.mocked(getOrCreateSession).mockReturnValueOnce(earlier);
+        startChatTurnMock.mockClear();
+        sendMessageMock.mockClear();
+      }
+      const wake = serializeChatTurnState({
+        ...initialChatTurnState(),
+        current: {
+          id: 'wake-turn',
+          origin: 'autonomous',
+          startedAtMs: 1,
+          pauses: [],
+        },
+      });
+      const { scope, dispatchOwner } = TEST_DISPATCH_AUTHORIZATION;
+      jest.spyOn(getChatTurnOwnership(), 'getSnapshot').mockReturnValue({
+        scope,
+        serviceEpoch: Symbol('service'),
+        operationEpoch: 1,
+        knowledge: 'known',
+        receipt: { generation: 3, state: wake },
+        committed: { generation: 3, state: wake },
+        unacknowledgedLifecycle: [],
+        dispatchOwners: [
+          {
+            kind: 'dispatch',
+            token: dispatchOwner,
+            userMessageId: 'message-1',
+            operationEpoch: 1,
+            reason: 'awaiting-start',
+          },
+        ],
+        stopOwners: [],
+        hostQueuedInputCount: 0,
+        removalAwaitingSettle: false,
+        backgroundFreshness: 'fresh',
+      });
+
+      const dispatch = dispatchAppAdvisorChatMessage(request, makeOptions());
+      if (outcome === 'sends') {
+        // A new Claude session can open a turn at its startup init.
+        await dispatch;
+        expect(sendMessageMock).toHaveBeenCalledTimes(1);
+        return;
+      }
+      await expect(dispatch).rejects.toMatchObject({
+        outcome: { kind: 'parked', blockedByTurnId: 'wake-turn' },
+      });
+      expect(startChatTurnMock).not.toHaveBeenCalled();
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(sessionEventRouterTestExports.pendingRouteCount()).toBe(0);
+    },
+  );
+
   it('destroys an active session owned by a different requested provider', async () => {
     jest.mocked(getActiveSessionInfos).mockReturnValueOnce([
       {
@@ -1183,6 +2505,27 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     },
   );
 
+  it('refuses OpenCode funding before accepting an Advisor message', async () => {
+    mockOpenCodeAdmission.mockRejectedValueOnce(
+      new Error('The funding account changed.'),
+    );
+    await expect(
+      dispatchAppAdvisorChatMessage(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'advisor-chat',
+          userMessageId: 'funding-refusal',
+          text: 'Review',
+          model: 'opencode:fixture%2Fmodel',
+        },
+        makeOptions(),
+      ),
+    ).rejects.toThrow('funding account');
+    expect(ensureChatForTrustedSendMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
   it('delivers OpenCode App Advisor attachment selections with the canonical root', async () => {
     const attachmentPaths = ['/mock/attachments/photo.png'];
     await dispatchAppAdvisorChatMessage(
@@ -1197,6 +2540,14 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       },
       makeOptions(),
     );
+    expect(mockOpenCodeAdmission.mock.calls[0]?.[0]).toMatchObject({
+      model: 'opencode:fixture%2Fmodel',
+      session: {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'advisor-chat',
+      },
+    });
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
@@ -1266,6 +2617,25 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     ).rejects.toThrow('Connect Cursor in Settings');
     // The failed switch must be side-effect free: the Claude session stays.
     expect(destroySession).not.toHaveBeenCalled();
+    expect(ensureChatForTrustedSendMock).not.toHaveBeenCalled();
+  });
+
+  it('asks to connect Copilot in Settings before switching to it', async () => {
+    jest.mocked(isCopilotRuntimeAvailable).mockResolvedValueOnce(false);
+    await expect(
+      dispatchAppAdvisorChatMessage(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'advisor-chat',
+          userMessageId: 'copilot-unavailable',
+          text: 'Hello',
+          model: 'copilot:fixture-model',
+          providerType: 'copilot',
+        },
+        makeOptions(),
+      ),
+    ).rejects.toThrow(new Error('Connect Copilot in Settings.'));
     expect(ensureChatForTrustedSendMock).not.toHaveBeenCalled();
   });
 
@@ -1497,6 +2867,29 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
   });
 
   it('sends hidden UI context to the provider but not to observability transcripts', async () => {
+    mockReadAuthorityTabs.mockResolvedValue({
+      version: 1,
+      activeTabId: 'advisor-chat',
+      tabs: [
+        {
+          id: 'advisor-chat',
+          title: 'Chat',
+          createdAt: '2026-07-23T00:00:00.000Z',
+          messages: [],
+          approvalMode: 'auto',
+          sessionApprovalRules: [
+            {
+              id: 'rule-1',
+              behavior: 'allow',
+              target: { kind: 'command', pattern: 'npm test *' },
+              createdAt: '2026-07-23T00:00:00.000Z',
+              origin: 'prompt',
+            },
+          ],
+        },
+      ],
+    });
+
     const envelope: AppAdvisorUiStateEnvelope = {
       version: 1,
       revision: 1,
@@ -1504,6 +2897,7 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       digest: 'digest',
       snapshot: {
         activePage: 'overview',
+        archivedContainers: { count: 0, viewerOpen: false },
         overlays: {
           commandPaletteOpen: false,
           fileSearchPaletteOpen: false,
@@ -1711,6 +3105,109 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     );
   });
 
+  it('admits a deferred continuation in its own right instead of presenting the consumed capability', async () => {
+    const consume = jest
+      .spyOn(getChatDispatchAuthorization(), 'consume')
+      .mockReturnValue({
+        kind: 'authorized',
+        ownership: {
+          kind: 'dispatch',
+          token: Symbol('owner'),
+          userMessageId: 'message-1',
+          operationEpoch: 1,
+          reason: 'awaiting-start',
+        },
+      });
+    const registerResumeHandler = jest.spyOn(
+      deferredToolsReloadCoordinator,
+      'registerResumeHandler',
+    );
+    const continuationAuthorization = {
+      authorizationToken: Symbol('continuation dispatch'),
+      scope: {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'advisor-chat',
+      },
+      dispatchOwner: Symbol('continuation owner'),
+      userMessageId: 'message-2',
+      operationEpoch: 1,
+      kind: 'ordinary' as const,
+    };
+    const admit = jest
+      .spyOn(getChatQueueService(), 'admitDirectDispatchWhenAllowed')
+      .mockResolvedValue({
+        authorization: continuationAuthorization,
+        release: jest.fn(),
+      });
+    try {
+      await dispatchAppAdvisorChatMessage(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'advisor-chat',
+          userMessageId: 'message-1',
+          text: 'Inspect the UI',
+          providerType: 'codex',
+          model: 'gpt-5.5',
+        },
+        {
+          ...makeOptions(),
+          authorization: {
+            authorizationToken: Symbol('issued dispatch'),
+            scope: {
+              projectId: APP_ADVISOR_PROJECT_ID,
+              worktreeId: 'entry-one',
+              chatId: 'advisor-chat',
+            },
+            dispatchOwner: Symbol('owner'),
+            userMessageId: 'message-1',
+            operationEpoch: 1,
+            kind: 'ordinary',
+          },
+        },
+      );
+      const resume = registerResumeHandler.mock.calls.find(
+        ([scope]) => scope.chatId === 'advisor-chat',
+      )?.[1];
+      if (!resume) throw new Error('Expected deferred-tools resume handler');
+      await resume({
+        scope: {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'advisor-chat',
+        },
+        requestId: 'reload-request',
+        toolCallId: 'tool-call',
+        userMessageId: 'message-2',
+        continuationText: '<system_instruction>Continue</system_instruction>',
+        enabledResources: [],
+        providerType: 'codex',
+        signal: new AbortController().signal,
+      });
+      // The continuation consumes its own admission, never the root's.
+      expect(admit).toHaveBeenCalledWith(
+        {
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: 'entry-one',
+          chatId: 'advisor-chat',
+        },
+        'message-2',
+        expect.any(AbortSignal),
+        'reload-request',
+      );
+      expect(consume).toHaveBeenCalledTimes(2);
+      expect(consume).toHaveBeenLastCalledWith(
+        continuationAuthorization,
+        expect.objectContaining({ userMessageId: 'message-2' }),
+      );
+    } finally {
+      admit.mockRestore();
+      consume.mockRestore();
+      registerResumeHandler.mockRestore();
+    }
+  });
+
   it.each(['automation', 'hook'] as const)(
     'preserves %s provenance through an Advisor tool reload',
     async (initiationSource) => {
@@ -1840,7 +3337,7 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       deferredToolsReloadCoordinator,
       'registerResumeHandler',
     );
-    const agentSent: ChatAgentSentInfo = {
+    const agentSent = {
       sender: {
         kind: 'bot',
         botId: 'app_advisor',
@@ -1849,7 +3346,7 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       },
       chatTitle: 'Source chat',
       projectLabel: 'App Advisor',
-    };
+    } satisfies ChatAgentSentInfo;
     await dispatchAppAdvisorChatMessage(
       {
         projectId: APP_ADVISOR_PROJECT_ID,
@@ -1915,10 +3412,14 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
   });
 
   it('resumes a started Claude fork child after a deferred-tools reload', async () => {
-    jest.mocked(getOrCreateSession).mockReturnValueOnce({
+    jest.mocked(getOrCreateSession).mockResolvedValueOnce({
       sendMessage: sendMessageMock,
+      cancel: jest.fn(),
+      destroy: jest.fn(),
       setPlanMode: setPlanModeMock,
       setApprovalMode: setApprovalModeMock,
+      setThinkingLevel: jest.fn(),
+      setModel: jest.fn(),
       getProviderSessionId: () => 'fork-child-session',
     });
     const registerResumeHandler = jest.spyOn(
@@ -2367,10 +3868,12 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     if (!onEvent) throw new Error('Expected App Advisor event handler');
     // The event carries no durable change, so it is not a commit.
     ingestProviderEventMock.mockResolvedValueOnce(false);
-    ingestProviderEventWithOutcomeMock.mockImplementationOnce(async (input) => {
-      await ingestProviderEventMock(input);
-      return 'activity-only';
-    });
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'activity-only' };
+      },
+    );
     jest.mocked(sendToWindowDetailed).mockClear();
     const progress = { type: 'system', subtype: 'status', status: 'busy' };
 
@@ -2390,10 +3893,12 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
     );
 
     ingestProviderEventMock.mockResolvedValueOnce(false);
-    ingestProviderEventWithOutcomeMock.mockImplementationOnce(async (input) => {
-      await ingestProviderEventMock(input);
-      return 'not-applied';
-    });
+    ingestProviderEventWithResultMock.mockImplementationOnce(
+      async (input: unknown) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied' };
+      },
+    );
     observeChatEventMock.mockClear();
     jest.mocked(sendToWindowDetailed).mockClear();
 
@@ -2442,6 +3947,8 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
       },
       {
         providerType: 'codex',
+        approvalMode: 'auto',
+        sessionApprovalRules: [],
         deferredToolsAllowed: true,
         pluginSelections: {
           collectionIds: [],
@@ -2489,6 +3996,53 @@ describe('dispatchAppAdvisorChatMessage observability text', () => {
 });
 
 describe('App Advisor portal event projection (CAN-2565)', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function deferred<T>(): {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+  } {
+    let resolve: (value: T) => void = () => {
+      throw new Error('Deferred value was not initialized');
+    };
+    const promise = new Promise<T>((complete) => {
+      resolve = complete;
+    });
+    return { promise, resolve };
+  }
+
+  function readProperty(value: object, key: string): unknown {
+    return Reflect.get(value, key) as unknown;
+  }
+
+  function isSyntheticCancelledWindowEvent(call: readonly unknown[]): boolean {
+    if (call[1] !== 'chat:event') return false;
+    const envelope = call[2];
+    if (!envelope || typeof envelope !== 'object') return false;
+    const data = readProperty(envelope, 'data');
+    return (
+      data !== null &&
+      typeof data === 'object' &&
+      Reflect.get(data, 'type') === 'result' &&
+      Reflect.get(data, 'result') === 'Cancelled'
+    );
+  }
+
+  function isCancelledPortalMessage(call: readonly unknown[]): boolean {
+    const event = call[0];
+    if (!event || typeof event !== 'object') return false;
+    const payload = readProperty(event, 'payload');
+    if (!payload || typeof payload !== 'object') return false;
+    const message = readProperty(payload, 'message');
+    return (
+      message !== null &&
+      typeof message === 'object' &&
+      Reflect.get(message, 'status') === 'cancelled'
+    );
+  }
+
   async function emitCommittedEvent(
     onEvent: (data: unknown) => void,
     data: unknown,
@@ -2551,34 +4105,11 @@ describe('App Advisor portal event projection (CAN-2565)', () => {
       text: 'Inspect the UI',
     });
 
-    // The user echo is immediately followed by the turn-timer start frame —
-    // the browser store's authoritative "agent is working" signal (there is
-    // no desktop renderer minting one for App Advisor).
-    const timerStartEvent = enqueuePortalEventMock.mock.calls[1]?.[0] as {
-      type: string;
-      payload: Record<string, unknown>;
-    };
-    expect(timerStartEvent.type).toBe('portal.app_advisor.event');
-    expect(timerStartEvent.payload.chatId).toBe('advisor-chat');
-    expect(timerStartEvent.payload.message).toMatchObject({
-      messageId: 'message-1:turn-timer',
-      chatId: 'advisor-chat',
-      role: 'system',
-      status: 'streaming',
-    });
-    const timerStartParts = (
-      timerStartEvent.payload.message as {
-        parts?: Array<{ kind: string; data: { completedAt: number | null } }>;
-      }
-    ).parts;
-    expect(timerStartParts?.[0]?.kind).toBe('turn_timer');
-    expect(timerStartParts?.[0]?.data.completedAt).toBeNull();
-
     await emitCommittedEvent(onEvent, {
       type: 'assistant_delta',
       content: 'Working',
     });
-    const streamedEvent = enqueuePortalEventMock.mock.calls[2]?.[0] as {
+    const streamedEvent = enqueuePortalEventMock.mock.calls[1]?.[0] as {
       type: string;
       payload: Record<string, unknown>;
     };
@@ -2593,52 +4124,31 @@ describe('App Advisor portal event projection (CAN-2565)', () => {
     });
   });
 
-  it('projects trusted agent sender attribution onto the Portal user echo only', async () => {
+  it('leaves App Advisor portal turn timers to committed turn state', async () => {
     portalActive = true;
-    const agentSent: ChatAgentSentInfo = {
-      sender: {
-        kind: 'bot',
-        botId: 'app_advisor',
-        taskId: 'entry-one',
-        chatId: 'source-chat',
-      },
-      chatTitle: 'Source chat',
-      projectLabel: 'App Advisor',
-    };
-    await dispatchAppAdvisorChatMessage(
-      {
-        projectId: APP_ADVISOR_PROJECT_ID,
-        worktreeId: 'entry-one',
-        chatId: 'advisor-chat',
-        userMessageId: 'message-agent-portal',
-        text: 'Forwarded message',
-        agentSent,
-        agentSenderProvenance: {
-          version: 1,
-          capturedAt: '2026-10-16T00:00:00.000Z',
-          acceptedInputId: 'message-agent-portal',
-          sender: agentSent.sender,
-          owner: { kind: 'none' },
-        },
-        hiddenContext: {
-          kind: 'agent-sender-context',
-          text: '<system_instruction>trusted</system_instruction>',
-        },
-      },
-      makeOptions(),
-    );
-
-    const userEvent = enqueuePortalEventMock.mock.calls[0]?.[0] as {
-      payload: { message: Record<string, unknown> };
-    };
-    expect(userEvent.payload.message).toMatchObject({
-      role: 'user',
-      messageId: 'message-agent-portal',
-      agentSent,
+    const onEvent = await dispatchAndGetEventHandler();
+    await emitCommittedEvent(onEvent, {
+      type: 'result',
+      is_error: false,
+      result: 'Done',
     });
-    expect(userEvent.payload.message).not.toHaveProperty(
-      'agentSenderProvenance',
+    const messageIds = enqueuePortalEventMock.mock.calls.flatMap(
+      ([event]): unknown[] => {
+        if (typeof event !== 'object' || event === null) return [];
+        const payload: unknown = Reflect.get(event, 'payload');
+        if (typeof payload !== 'object' || payload === null) return [];
+        const message: unknown = Reflect.get(payload, 'message');
+        return typeof message === 'object' && message !== null
+          ? [Reflect.get(message, 'messageId')]
+          : [];
+      },
     );
+    expect(messageIds).toContain('message-1');
+    expect(
+      messageIds.filter(
+        (id) => typeof id === 'string' && id.endsWith(':turn-timer'),
+      ),
+    ).toEqual([]);
   });
 
   it('keeps a watcher-shaped dispatch request out of the portal mirror and the recorded turn text (CAN-2569)', async () => {
@@ -2756,6 +4266,341 @@ describe('App Advisor portal event projection (CAN-2565)', () => {
     });
   });
 
+  it('honors an explicitly captured fence after a newer send replaces the frame', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    portalActive = true;
+    const options = makeOptions();
+    const oldOnEvent = await dispatchAndGetEventHandler();
+    await emitCommittedEvent(oldOnEvent, {
+      type: 'assistant_delta',
+      content: 'Captured old turn',
+    });
+
+    const fence = captureAppAdvisorSyntheticResultFence('advisor-chat');
+    const lookup =
+      deferred<Awaited<ReturnType<typeof resolveWorkEntryForChat>>>();
+    jest.mocked(resolveWorkEntryForChat).mockReturnValueOnce(lookup.promise);
+    const pendingCancel = emitAppAdvisorSyntheticResultEvent(
+      'advisor-chat',
+      options.toolSurfaces,
+      { fence, userMessageId: 'message-1' },
+    );
+
+    await emitCommittedEvent(oldOnEvent, {
+      type: 'result',
+      is_error: false,
+      result: 'Old turn completed',
+    });
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'advisor-chat',
+        userMessageId: 'newer-user-message',
+        text: 'Start a newer turn',
+      },
+      options,
+    );
+    const newOnEvent = jest.mocked(getOrCreateSession).mock.calls[1]?.[1];
+    if (!newOnEvent) {
+      throw new Error('Expected the replacement App Advisor event handler');
+    }
+    await emitCommittedEvent(newOnEvent, {
+      type: 'assistant_delta',
+      content: 'Newer turn content',
+    });
+    expect(fence.isCurrent()).toBe(false);
+    jest.mocked(sendToWindowDetailed).mockClear();
+    enqueuePortalEventMock.mockClear();
+
+    lookup.resolve({ entryId: 'entry-one', archivedInEntryId: null });
+    await pendingCancel;
+
+    try {
+      expect(
+        jest
+          .mocked(sendToWindowDetailed)
+          .mock.calls.filter(isSyntheticCancelledWindowEvent),
+      ).toHaveLength(0);
+      expect(
+        enqueuePortalEventMock.mock.calls.filter(isCancelledPortalMessage),
+      ).toHaveLength(0);
+    } finally {
+      await emitCommittedEvent(newOnEvent, {
+        type: 'result',
+        is_error: false,
+        result: 'Newer turn completed',
+      });
+    }
+  });
+
+  it('rechecks the host eligibility guard after synthetic-result lookup', async () => {
+    const options = makeOptions();
+    const fence = captureAppAdvisorSyntheticResultFence('advisor-guard-chat');
+    const lookup =
+      deferred<Awaited<ReturnType<typeof resolveWorkEntryForChat>>>();
+    jest.mocked(resolveWorkEntryForChat).mockReturnValueOnce(lookup.promise);
+    let eligible = true;
+    const pendingCancel = emitAppAdvisorSyntheticResultEvent(
+      'advisor-guard-chat',
+      options.toolSurfaces,
+      {
+        fence,
+        userMessageId: 'stopped-user-message',
+        isCurrent: () => eligible,
+      },
+    );
+    eligible = false;
+    jest.mocked(sendToWindowDetailed).mockClear();
+    enqueuePortalEventMock.mockClear();
+
+    lookup.resolve({ entryId: 'entry-one', archivedInEntryId: null });
+    await pendingCancel;
+
+    expect(
+      jest
+        .mocked(sendToWindowDetailed)
+        .mock.calls.filter(isSyntheticCancelledWindowEvent),
+    ).toHaveLength(0);
+    expect(enqueuePortalEventMock).not.toHaveBeenCalled();
+  });
+
+  it('skips a delayed synthetic cancel after a real terminal closes its turn', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    portalActive = true;
+    const onEvent = await dispatchAndGetEventHandler();
+    await emitCommittedEvent(onEvent, {
+      type: 'assistant_delta',
+      content: 'The turn is ending',
+    });
+
+    const lookup =
+      deferred<Awaited<ReturnType<typeof resolveWorkEntryForChat>>>();
+    jest.mocked(resolveWorkEntryForChat).mockReturnValueOnce(lookup.promise);
+    const options = makeOptions();
+    const pendingCancel = emitAppAdvisorSyntheticResultEvent(
+      'advisor-chat',
+      options.toolSurfaces,
+    );
+
+    await emitCommittedEvent(onEvent, {
+      type: 'result',
+      is_error: false,
+      result: 'Done before Stop settled',
+    });
+    jest.mocked(sendToWindowDetailed).mockClear();
+    enqueuePortalEventMock.mockClear();
+
+    lookup.resolve({ entryId: 'entry-one', archivedInEntryId: null });
+    await pendingCancel;
+
+    expect(
+      jest
+        .mocked(sendToWindowDetailed)
+        .mock.calls.filter(isSyntheticCancelledWindowEvent),
+    ).toHaveLength(0);
+    expect(
+      enqueuePortalEventMock.mock.calls.filter(isCancelledPortalMessage),
+    ).toHaveLength(0);
+  });
+
+  it('does not let a delayed synthetic cancel close a newer visible send', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    portalActive = true;
+    const options = makeOptions();
+    const oldOnEvent = await dispatchAndGetEventHandler();
+    await emitCommittedEvent(oldOnEvent, {
+      type: 'assistant_delta',
+      content: 'Older turn content',
+    });
+
+    const lookup =
+      deferred<Awaited<ReturnType<typeof resolveWorkEntryForChat>>>();
+    jest.mocked(resolveWorkEntryForChat).mockReturnValueOnce(lookup.promise);
+    const pendingCancel = emitAppAdvisorSyntheticResultEvent(
+      'advisor-chat',
+      options.toolSurfaces,
+    );
+
+    // Settle the old frame before the replacement send. Besides exercising the
+    // stale-frame fence, this closes the old turn timer before the newer turn
+    // installs its own timer.
+    await emitCommittedEvent(oldOnEvent, {
+      type: 'result',
+      is_error: false,
+      result: 'Older turn finished',
+    });
+    jest.mocked(sendToWindowDetailed).mockClear();
+    enqueuePortalEventMock.mockClear();
+
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'advisor-chat',
+        userMessageId: 'newer-user-message',
+        text: 'A newer turn',
+      },
+      options,
+    );
+    const newOnEvent = jest.mocked(getOrCreateSession).mock.calls[1]?.[1];
+    if (!newOnEvent) {
+      throw new Error('Expected the newer App Advisor event handler');
+    }
+    await emitCommittedEvent(newOnEvent, {
+      type: 'assistant_delta',
+      content: 'Newer turn content',
+    });
+
+    lookup.resolve({ entryId: 'entry-one', archivedInEntryId: null });
+    await pendingCancel;
+
+    try {
+      expect(
+        jest
+          .mocked(sendToWindowDetailed)
+          .mock.calls.filter(isSyntheticCancelledWindowEvent),
+      ).toHaveLength(0);
+      expect(
+        enqueuePortalEventMock.mock.calls.filter(isCancelledPortalMessage),
+      ).toHaveLength(0);
+      expect(
+        enqueuePortalEventMock.mock.calls.some((call) => {
+          const event = call[0];
+          if (!event || typeof event !== 'object') return false;
+          const payload = readProperty(event, 'payload');
+          if (!payload || typeof payload !== 'object') return false;
+          const message = readProperty(payload, 'message');
+          return (
+            message !== null &&
+            typeof message === 'object' &&
+            Reflect.get(message, 'messageId') ===
+              'newer-user-message:turn-timer' &&
+            Reflect.get(message, 'status') === 'complete'
+          );
+        }),
+      ).toBe(false);
+    } finally {
+      // Keep the newer turn's timer lifecycle tidy even when a red assertion
+      // exposes a stale synthetic cancel on unchanged production.
+      await emitCommittedEvent(newOnEvent, {
+        type: 'result',
+        is_error: false,
+        result: 'Newer turn finished',
+      });
+    }
+  });
+
+  it('projects trusted agent sender attribution onto the Portal user echo only', async () => {
+    portalActive = true;
+    const agentSent = {
+      sender: {
+        kind: 'bot',
+        botId: 'app_advisor',
+        taskId: 'entry-one',
+        chatId: 'source-chat',
+      },
+      chatTitle: 'Source chat',
+      projectLabel: 'App Advisor',
+    } satisfies ChatAgentSentInfo;
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId: 'advisor-chat',
+        userMessageId: 'message-agent-portal',
+        text: 'Forwarded message',
+        agentSent,
+        agentSenderProvenance: {
+          version: 1,
+          capturedAt: '2026-10-16T00:00:00.000Z',
+          acceptedInputId: 'message-agent-portal',
+          sender: agentSent.sender,
+          owner: { kind: 'none' },
+        },
+        hiddenContext: {
+          kind: 'agent-sender-context',
+          text: '<system_instruction>trusted</system_instruction>',
+        },
+      },
+      makeOptions(),
+    );
+
+    const userEvent = enqueuePortalEventMock.mock.calls[0]?.[0] as {
+      payload: { message: Record<string, unknown> };
+    };
+    expect(userEvent.payload.message).toMatchObject({
+      role: 'user',
+      messageId: 'message-agent-portal',
+      agentSent,
+    });
+    expect(userEvent.payload.message).not.toHaveProperty(
+      'agentSenderProvenance',
+    );
+  });
+
+  it('does not let a delayed synthetic cancel terminalize a newer wake timer', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    portalActive = true;
+    const options = makeOptions();
+    const onEvent = await dispatchAndGetEventHandler();
+    await emitCommittedEvent(onEvent, {
+      type: 'assistant_delta',
+      content: 'Earlier turn content',
+    });
+
+    const lookup =
+      deferred<Awaited<ReturnType<typeof resolveWorkEntryForChat>>>();
+    jest.mocked(resolveWorkEntryForChat).mockReturnValueOnce(lookup.promise);
+    const pendingCancel = emitAppAdvisorSyntheticResultEvent(
+      'advisor-chat',
+      options.toolSurfaces,
+    );
+
+    await emitCommittedEvent(onEvent, {
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      phase: 'picked-up',
+      generation: 'live',
+      attemptId: 'newer-wake-attempt',
+      startsTurn: true,
+      userMessageId: 'newer-wake-root',
+    });
+
+    lookup.resolve({ entryId: 'entry-one', archivedInEntryId: null });
+    await pendingCancel;
+
+    try {
+      expect(
+        jest
+          .mocked(sendToWindowDetailed)
+          .mock.calls.filter(isSyntheticCancelledWindowEvent),
+      ).toHaveLength(0);
+      expect(
+        enqueuePortalEventMock.mock.calls.filter((call) => {
+          const event = call[0];
+          if (!event || typeof event !== 'object') return false;
+          const payload = readProperty(event, 'payload');
+          if (!payload || typeof payload !== 'object') return false;
+          const message = readProperty(payload, 'message');
+          return (
+            message !== null &&
+            typeof message === 'object' &&
+            Reflect.get(message, 'messageId') ===
+              'newer-wake-root:turn-timer' &&
+            Reflect.get(message, 'status') === 'complete'
+          );
+        }),
+      ).toHaveLength(0);
+    } finally {
+      await emitCommittedEvent(onEvent, {
+        type: 'result',
+        is_error: false,
+        result: 'Wake turn finished',
+      });
+    }
+  });
+
   it('closes the streamed portal frame with a cancelled status on cancel', async () => {
     portalActive = true;
     const options = makeOptions();
@@ -2783,32 +4628,10 @@ describe('App Advisor portal event projection (CAN-2565)', () => {
       ...options.toolSurfaces,
     });
 
-    // The synthetic cancel `result` is a terminal runtime event, so the seam
-    // first terminalizes the live turn timer — the browser's turn lifecycle
-    // ends on this frame instead of spinning forever after the cancel.
-    const timerEvent = enqueuePortalEventMock.mock.calls[0]?.[0] as {
-      type: string;
-      payload: Record<string, unknown>;
-    };
-    expect(timerEvent.type).toBe('portal.app_advisor.event');
-    expect(timerEvent.payload.chatId).toBe('advisor-cancel-chat');
-    expect(timerEvent.payload.message).toMatchObject({
-      messageId: 'message-cancel:turn-timer',
-      role: 'system',
-      status: 'complete',
-    });
-    const cancelTimerParts = (
-      timerEvent.payload.message as {
-        parts?: Array<{ kind: string; data: { completedAt: number | null } }>;
-      }
-    ).parts;
-    expect(cancelTimerParts?.[0]?.kind).toBe('turn_timer');
-    expect(typeof cancelTimerParts?.[0]?.data.completedAt).toBe('number');
-
     // A successful terminal `result` projects to no portal message, so the
     // cancel re-keys 'cancelled' onto the LAST streamed assistant frame —
     // same messageId and text, so the merge cannot clobber streamed content.
-    const cancelEvent = enqueuePortalEventMock.mock.calls[1]?.[0] as {
+    const cancelEvent = enqueuePortalEventMock.mock.calls[0]?.[0] as {
       type: string;
       payload: Record<string, unknown>;
     };
@@ -2824,6 +4647,52 @@ describe('App Advisor portal event projection (CAN-2565)', () => {
     expect(projectAppAdvisorChatSummariesMock).toHaveBeenCalledWith(
       'entry-one',
     );
+  });
+
+  it('tags a synthetic App Advisor cancel with the stopped turn user message id', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    portalActive = true;
+    const options = makeOptions();
+    const chatId = 'advisor-tagged-cancel';
+    await dispatchAppAdvisorChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-one',
+        chatId,
+        userMessageId: 'stopped-user-message',
+        text: 'Long task',
+      },
+      options,
+    );
+    const onEvent = jest.mocked(getOrCreateSession).mock.calls[0]?.[1];
+    if (!onEvent) {
+      throw new Error('Expected App Advisor event handler');
+    }
+    await emitCommittedEvent(onEvent, {
+      type: 'assistant_delta',
+      content: 'Working',
+    });
+    jest.mocked(sendToWindowDetailed).mockClear();
+
+    await Reflect.apply(emitAppAdvisorSyntheticResultEvent, undefined, [
+      chatId,
+      options.toolSurfaces,
+      {
+        fence: { isCurrent: (): boolean => true },
+        userMessageId: 'stopped-user-message',
+      },
+    ]);
+
+    const syntheticCancel = jest
+      .mocked(sendToWindowDetailed)
+      .mock.calls.find(isSyntheticCancelledWindowEvent);
+    expect(syntheticCancel?.[2]).toMatchObject({
+      data: {
+        type: 'result',
+        result: 'Cancelled',
+        canopy_turn_user_message_id: 'stopped-user-message',
+      },
+    });
   });
 
   it('clears the remembered frame on terminal events even while the portal is disconnected', async () => {
@@ -2920,166 +4789,6 @@ describe('App Advisor portal event projection (CAN-2565)', () => {
     ).toHaveLength(0);
   });
 
-  it('terminalizes the live turn timer on the terminal runtime event', async () => {
-    portalActive = true;
-    const onEvent = await dispatchAndGetEventHandler();
-    enqueuePortalEventMock.mockClear();
-
-    await emitCommittedEvent(onEvent, {
-      type: 'result',
-      is_error: false,
-      result: 'done',
-    });
-
-    // A successful terminal `result` maps to NO content frame — the only
-    // mirrored event is the timer's terminal frame, which is what lets the
-    // browser store end the turn (spinner + Stop button) once the desktop
-    // goes idle.
-    expect(enqueuePortalEventMock).toHaveBeenCalledTimes(1);
-    const timerEvent = enqueuePortalEventMock.mock.calls[0]?.[0] as {
-      type: string;
-      payload: Record<string, unknown>;
-    };
-    expect(timerEvent.type).toBe('portal.app_advisor.event');
-    expect(timerEvent.payload.chatId).toBe('advisor-chat');
-    expect(timerEvent.payload.message).toMatchObject({
-      messageId: 'message-1:turn-timer',
-      role: 'system',
-      status: 'complete',
-    });
-    const terminalTimerParts = (
-      timerEvent.payload.message as {
-        parts?: Array<{ kind: string; data: { completedAt: number | null } }>;
-      }
-    ).parts;
-    expect(terminalTimerParts?.[0]?.kind).toBe('turn_timer');
-    expect(typeof terminalTimerParts?.[0]?.data.completedAt).toBe('number');
-
-    // The timer entry is consumed: a later event cannot re-open or re-emit it.
-    enqueuePortalEventMock.mockClear();
-    await emitCommittedEvent(onEvent, {
-      type: 'result',
-      is_error: false,
-      result: 'done again',
-    });
-    expect(enqueuePortalEventMock).not.toHaveBeenCalled();
-  });
-
-  it.each([false, true])(
-    'keeps the Portal turn timer streaming across a deferred-tools reload (coordinator finishes during commit: %s)',
-    async (finishesDuringCommit) => {
-      portalActive = true;
-      const onInitialEvent = await dispatchAndGetEventHandler();
-      const activeReloadSpy = jest
-        .spyOn(deferredToolsReloadCoordinator, 'hasActiveReload')
-        .mockReturnValue(true);
-      enqueuePortalEventMock.mockClear();
-      if (finishesDuringCommit) {
-        // Durability can lag the provider callback: the coordinator may already
-        // have started the continuation when the old terminal is projected.
-        ingestProviderEventMock.mockImplementationOnce(() => {
-          activeReloadSpy.mockReturnValue(false);
-          return Promise.resolve(true);
-        });
-      }
-
-      await emitCommittedEvent(onInitialEvent, {
-        type: 'result',
-        is_error: false,
-        result: 'reload requested',
-      });
-
-      // The provider's intermediate terminal event must not make Portal appear
-      // idle while the hidden continuation is being prepared.
-      expect(enqueuePortalEventMock).not.toHaveBeenCalled();
-
-      await dispatchAppAdvisorChatMessage(
-        {
-          projectId: APP_ADVISOR_PROJECT_ID,
-          worktreeId: 'entry-one',
-          chatId: 'advisor-chat',
-          userMessageId: 'message-1',
-          text: '<system_instruction>Continue after reload.</system_instruction>',
-          deferredToolsReloadEnabledResources: [],
-          deferredToolsReloadRequestId: 'reload-request-1',
-        },
-        makeOptions(),
-      );
-
-      // The continuation reuses the live timer and emits no duplicate user or
-      // timer-start frame.
-      expect(enqueuePortalEventMock).not.toHaveBeenCalled();
-
-      const onContinuationEvent =
-        jest.mocked(getOrCreateSession).mock.calls[1]?.[1];
-      if (!onContinuationEvent) {
-        throw new Error('Expected App Advisor continuation event handler');
-      }
-      activeReloadSpy.mockReturnValue(false);
-      await emitCommittedEvent(onContinuationEvent, {
-        type: 'result',
-        is_error: false,
-        result: 'done',
-      });
-
-      expect(enqueuePortalEventMock).toHaveBeenCalledTimes(1);
-      const timerEvent = enqueuePortalEventMock.mock.calls[0]?.[0];
-      expect(timerEvent).toMatchObject({
-        type: 'portal.app_advisor.event',
-        payload: {
-          message: {
-            messageId: 'message-1:turn-timer',
-            role: 'system',
-            status: 'complete',
-          },
-        },
-      });
-    },
-  );
-
-  it('completes the retained Portal timer when a deferred-tools reload fails', async () => {
-    portalActive = true;
-    const onInitialEvent = await dispatchAndGetEventHandler();
-    const scope = {
-      projectId: APP_ADVISOR_PROJECT_ID,
-      worktreeId: 'entry-one',
-      chatId: 'advisor-chat',
-    };
-    const intent = deferredToolsReloadCoordinator.createIntent({
-      scope,
-      toolCallId: 'reload-tool-call',
-      providerType: 'claude',
-      interfaceMode: 'canopy',
-      additions: { skillRefs: [], pluginRefs: [], mcpServerRefs: [] },
-      enabledResources: [],
-    });
-    expect(intent.accepted).toBe(true);
-    enqueuePortalEventMock.mockClear();
-
-    await emitCommittedEvent(onInitialEvent, {
-      type: 'result',
-      is_error: false,
-      result: 'reload requested',
-    });
-    expect(enqueuePortalEventMock).not.toHaveBeenCalled();
-
-    deferredToolsReloadCoordinator.cancelActiveReload(
-      scope,
-      'Deferred reload fixture failed.',
-    );
-
-    expect(enqueuePortalEventMock).toHaveBeenCalledTimes(1);
-    const timerEvent = enqueuePortalEventMock.mock.calls[0]?.[0] as {
-      payload: { message: Record<string, unknown> };
-    };
-    expect(timerEvent.payload.message).toMatchObject({
-      messageId: 'message-1:turn-timer',
-      role: 'system',
-      status: 'complete',
-    });
-    deferredToolsReloadCoordinator.resetForTests();
-  });
-
   it('skips assistant frames with no text and no parts (stray trailing bubble)', async () => {
     portalActive = true;
     const onEvent = await dispatchAndGetEventHandler();
@@ -3142,19 +4851,71 @@ describe('App Advisor portal event projection (CAN-2565)', () => {
 });
 
 describe('CAN-2835 retained provider callback', () => {
+  it('routes a large Codex MCP result to shared ingest without truncation', async () => {
+    let retained: ((data: unknown) => void) | undefined;
+    jest.mocked(getOrCreateSession).mockImplementation((_opts, onEvent) => {
+      retained = onEvent;
+      return Promise.resolve({
+        sendMessage: sendMessageMock,
+        cancel: jest.fn(),
+        destroy: jest.fn(),
+        setPlanMode: setPlanModeMock,
+        setApprovalMode: setApprovalModeMock,
+        setThinkingLevel: jest.fn(),
+        setModel: jest.fn(),
+        setCodexAppServerIdleTimeoutMinutes: setCodexIdleMock,
+      });
+    });
+    const body = `start-${'x'.repeat(65_536)}-end`;
+    const event = {
+      type: 'codex',
+      event: {
+        type: 'item.completed',
+        item: {
+          id: 'mcp-call-large',
+          type: 'mcp_tool_call',
+          status: 'completed',
+          result: { content: [{ type: 'text', text: body }] },
+        },
+      },
+    };
+    const request = {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: 'entry-one',
+      chatId: 'large-mcp-advisor',
+      userMessageId: 'large-mcp-message',
+      text: 'Inspect the result',
+      providerType: 'codex' as const,
+      model: 'gpt-5.5',
+    };
+
+    await dispatchAppAdvisorChatMessage(request, makeOptions());
+    retained?.(event);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(ingestProviderEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ data: event }),
+    );
+    expect(body).toHaveLength(65_546);
+  });
+
   it.each(['claude', 'codex'] as const)(
     'routes two %s turns and rejects obsolete output',
     async (providerType) => {
       let retained: ((data: unknown) => void) | undefined;
       const shared = {
         sendMessage: sendMessageMock,
+        cancel: jest.fn(),
+        destroy: jest.fn(),
         setPlanMode: setPlanModeMock,
         setApprovalMode: setApprovalModeMock,
+        setThinkingLevel: jest.fn(),
+        setModel: jest.fn(),
         setCodexAppServerIdleTimeoutMinutes: setCodexIdleMock,
       };
       jest.mocked(getOrCreateSession).mockImplementation((_opts, onEvent) => {
         retained ??= onEvent;
-        return shared;
+        return Promise.resolve(shared);
       });
       const request = {
         projectId: APP_ADVISOR_PROJECT_ID,
@@ -3220,7 +4981,7 @@ describe('App Advisor Codex speed', () => {
     const setFastMode = jest.fn(() => Promise.resolve());
     jest
       .mocked(getOrCreateSession)
-      .mockReturnValueOnce(makeSpeedSession({ setSpeed, setFastMode }));
+      .mockResolvedValueOnce(makeSpeedSession({ setSpeed, setFastMode }));
 
     await dispatchAppAdvisorChatMessage(
       {
@@ -3267,7 +5028,7 @@ describe('App Advisor Codex speed', () => {
     const setCodexFastMode = jest.fn(() => Promise.resolve());
     jest
       .mocked(getOrCreateSession)
-      .mockReturnValueOnce(
+      .mockResolvedValueOnce(
         makeSpeedSession({ setSpeed, setFastMode, setCodexFastMode }),
       );
 
@@ -3293,7 +5054,7 @@ describe('App Advisor Codex speed', () => {
     const setFastMode = jest.fn(() => Promise.resolve());
     jest
       .mocked(getOrCreateSession)
-      .mockReturnValueOnce(makeSpeedSession({ setFastMode }));
+      .mockResolvedValueOnce(makeSpeedSession({ setFastMode }));
 
     await expect(
       dispatchAppAdvisorChatMessage(
@@ -3324,5 +5085,644 @@ describe('App Advisor Codex speed', () => {
       }),
     );
     expect(releaseResourceMock).toHaveBeenCalled();
+  });
+});
+
+describe('app-advisor turn-start authority (CAN-4940)', () => {
+  const target = {
+    projectId: APP_ADVISOR_PROJECT_ID,
+    worktreeId: 'entry-one',
+    chatId: 'advisor-authority',
+    userMessageId: 'authority-message',
+  };
+  const grant: ApprovalRule = {
+    id: 'grant',
+    behavior: 'allow',
+    target: { kind: 'command', pattern: 'npm test *' },
+    createdAt: '2026-10-24T00:00:00.000Z',
+    origin: 'prompt',
+  };
+  const deny: ApprovalRule = {
+    ...grant,
+    id: 'deny',
+    behavior: 'deny',
+    target: { kind: 'command', pattern: 'rm *' },
+  };
+  function savedAuthority(
+    approvalMode: ApprovalMode,
+    sessionApprovalRules: ApprovalRule[] = [],
+  ): ChatTabsFile {
+    return {
+      version: 1,
+      activeTabId: target.chatId,
+      tabs: [
+        {
+          id: target.chatId,
+          title: 'Authority',
+          messages: [],
+          createdAt: grant.createdAt,
+          approvalMode,
+          sessionApprovalRules,
+        },
+      ],
+    };
+  }
+  beforeEach(() =>
+    clearLiveApprovalMode(target.projectId, target.worktreeId, target.chatId),
+  );
+  afterEach(() =>
+    clearLiveApprovalMode(target.projectId, target.worktreeId, target.chatId),
+  );
+  it.each([
+    { saved: 'ask', requested: 'full-access', expected: 'ask', grants: false },
+    { saved: 'full-access', requested: 'ask', expected: 'ask', grants: false },
+    {
+      saved: 'full-access',
+      requested: 'full-access',
+      expected: 'full-access',
+      grants: true,
+    },
+  ] as const)(
+    'uses saved $saved narrowed by $requested',
+    async ({ saved, requested, expected, grants }) => {
+      const savedRules = grants ? [grant] : [];
+      const expectedRules = [...savedRules, deny];
+      mockReadAuthorityTabs.mockResolvedValue(
+        savedAuthority(saved, savedRules),
+      );
+      await dispatchAppAdvisorChatMessage(
+        {
+          ...target,
+          text: 'npm test',
+          providerType: 'codex',
+          model: 'gpt-5.5',
+          approvalMode: requested,
+          sessionApprovalRules: [grant, deny],
+        },
+        makeOptions(),
+      );
+      expect(jest.mocked(getOrCreateSession).mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: expected,
+          sessionApprovalRules: expectedRules,
+        }),
+      );
+      expect(setApprovalModeMock).toHaveBeenLastCalledWith(expected);
+      expect(
+        getLiveApprovalMode(target.projectId, target.worktreeId, target.chatId),
+      ).toBe(expected);
+
+      expect(
+        jest.mocked(createAppAdvisorToolRuntime).mock.calls.at(-1)?.[2],
+      ).toEqual(
+        expect.objectContaining({
+          approvalMode: expected,
+          sessionApprovalRules: expectedRules,
+        }),
+      );
+    },
+  );
+  it.each(['missing', 'unreadable', 'admitted'] as const)(
+    'fails closed or narrows with %s authority',
+    async (state) => {
+      if (state === 'unreadable')
+        mockReadAuthorityTabs.mockRejectedValue(new Error('unreadable'));
+      if (state === 'admitted')
+        mockReadAuthorityTabs.mockResolvedValue(
+          savedAuthority('full-access', [grant]),
+        );
+      await dispatchAppAdvisorChatMessage(
+        {
+          ...target,
+          text: 'Continue',
+          model: 'gpt-5.5',
+          providerType: 'codex',
+          approvalMode: 'full-access',
+          sessionApprovalRules: [grant, deny],
+          ...(state === 'admitted'
+            ? {
+                admittedApproval: {
+                  approvalMode: 'ask',
+                  sessionApprovalRules: [],
+                },
+              }
+            : {}),
+        },
+        makeOptions(),
+      );
+      expect(jest.mocked(getOrCreateSession).mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: state === 'missing' ? 'auto' : 'ask',
+          sessionApprovalRules: [deny],
+        }),
+      );
+      if (state === 'admitted')
+        expect(
+          getLiveApprovalMode(
+            target.projectId,
+            target.worktreeId,
+            target.chatId,
+          ),
+        ).toBe('full-access');
+      expect(ensureChatForTrustedSendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          approvalMode:
+            state === 'admitted'
+              ? 'full-access'
+              : state === 'missing'
+                ? 'auto'
+                : 'ask',
+        }),
+      );
+    },
+  );
+
+  it.each(['ask', 'full-access'] as const)(
+    'rereads a grant removed during session creation before sending at %s',
+    async (mode) => {
+      mockReadAuthorityTabs
+        .mockResolvedValueOnce(savedAuthority('full-access', [grant]))
+        .mockResolvedValue(savedAuthority(mode, [deny]));
+      await dispatchAppAdvisorChatMessage(
+        {
+          ...target,
+          text: 'Continue',
+          model: 'gpt-5.5',
+          providerType: 'codex',
+        },
+        makeOptions(),
+      );
+      expect(
+        jest.mocked(createAppAdvisorToolRuntime).mock.calls.at(-1)?.[2],
+      ).toEqual(
+        expect.objectContaining({
+          approvalMode: mode,
+          sessionApprovalRules: [deny],
+        }),
+      );
+      expect(
+        jest.mocked(createAppAdvisorToolRuntime).mock.calls.at(-1)?.[2]
+          ?.sessionApprovalRules,
+      ).toBe(
+        jest.mocked(getOrCreateSession).mock.calls.at(-1)?.[0]
+          .sessionApprovalRules,
+      );
+      expect(setApprovalModeMock).toHaveBeenLastCalledWith(mode);
+      expect(
+        jest.mocked(restrictSessionApprovalRules),
+      ).toHaveBeenLastCalledWith(
+        target.projectId,
+        target.worktreeId,
+        target.chatId,
+        [deny],
+      );
+    },
+  );
+
+  it.each(['ask', 'full-access'] as const)(
+    'rechecks authority after asynchronous watcher setup at %s',
+    async (mode) => {
+      mockReadAuthorityTabs.mockResolvedValue(
+        savedAuthority('full-access', [grant]),
+      );
+      handleCanonicalChatStartedEventMock.mockImplementationOnce(() => {
+        mockReadAuthorityTabs.mockResolvedValue(savedAuthority(mode, [deny]));
+        return Promise.resolve();
+      });
+      await dispatchAppAdvisorChatMessage(
+        {
+          ...target,
+          text: 'npm test',
+          model: 'gpt-5.5',
+          providerType: 'codex',
+        },
+        makeOptions(),
+      );
+      expect(handleCanonicalChatStartedEventMock).toHaveBeenCalled();
+      expect(sendMessageMock).toHaveBeenCalled();
+      expect(setApprovalModeMock).toHaveBeenLastCalledWith(mode);
+      expect(
+        jest.mocked(createAppAdvisorToolRuntime).mock.calls.at(-1)?.[2],
+      ).toEqual(
+        expect.objectContaining({
+          approvalMode: mode,
+          sessionApprovalRules: [deny],
+        }),
+      );
+      expect(
+        jest.mocked(restrictSessionApprovalRules),
+      ).toHaveBeenLastCalledWith(
+        target.projectId,
+        target.worktreeId,
+        target.chatId,
+        [deny],
+      );
+    },
+  );
+
+  it('keeps a retained runtime within a later turn when setup changed its original mode', async () => {
+    let appliedMode: ApprovalMode = 'ask';
+    const shared: AgentSession = {
+      sendMessage: sendMessageMock,
+      setPlanMode: setPlanModeMock,
+      setApprovalMode: (mode) => {
+        appliedMode = mode;
+        return Promise.resolve();
+      },
+      getAppliedApprovalMode: () => appliedMode,
+      cancel: () => Promise.resolve(),
+      destroy: () => Promise.resolve(),
+      setModel: () => Promise.resolve(),
+      setThinkingLevel: () => Promise.resolve(),
+    };
+    mockReadAuthorityTabs.mockResolvedValue(savedAuthority('ask'));
+    jest.mocked(getOrCreateSession).mockImplementationOnce(() => {
+      // A legitimate user widening can land while the first session starts.
+      mockReadAuthorityTabs.mockResolvedValue(savedAuthority('full-access'));
+      setLiveApprovalMode(
+        target.projectId,
+        target.worktreeId,
+        target.chatId,
+        'full-access',
+      );
+      return Promise.resolve(shared);
+    });
+    await dispatchAppAdvisorChatMessage(
+      { ...target, text: 'Start', model: 'gpt-5.5', providerType: 'codex' },
+      makeOptions(),
+    );
+    const retainedContext = jest
+      .mocked(createAppAdvisorToolRuntime)
+      .mock.calls.at(-1)?.[2];
+    const firstOptions = jest.mocked(getOrCreateSession).mock.calls.at(-1)?.[0];
+    expect(retainedContext?.approvalMode).toBe('full-access');
+
+    // Matching options reuse the provider's first runtime, not the newly built one.
+    jest.mocked(getOrCreateSession).mockResolvedValueOnce(shared);
+    await dispatchAppAdvisorChatMessage(
+      {
+        ...target,
+        userMessageId: 'narrow-turn',
+        text: 'Continue in Ask',
+        model: 'gpt-5.5',
+        providerType: 'codex',
+        approvalMode: 'ask',
+      },
+      makeOptions(),
+    );
+    expect(
+      jest.mocked(getOrCreateSession).mock.calls.at(-1)?.[0].toolProfileHash,
+    ).toBe(firstOptions?.toolProfileHash);
+    expect(appliedMode).toBe('ask');
+    expect(retainedContext?.approvalMode).toBe('ask');
+  });
+
+  it.each([
+    ['cold', 'revoked allow'],
+    ['cold', 'committed deny'],
+    ['warm', 'revoked allow'],
+    ['warm', 'committed deny'],
+    ['warm', 'narrowed mode'],
+    ['warm', 'admitted cap'],
+  ] as const)(
+    'enforces %s WatchCommand approvals with %s after setup',
+    async (reuse, change) => {
+      // Real session reuse, runtime and approval engine; no provider SDK or shell execution.
+      const manager = jest.requireActual<typeof SessionManager>(
+        '../agents/session-manager',
+      );
+      const advisor = jest.requireActual<typeof AdvisorRuntime>(
+        '../app-advisor/runtime',
+      );
+      const ruleSources = await import('../approvals/approval-rule-sources');
+      const promptBridge = await import('../approvals/prompt-bridge');
+      const auth = await import('../auth/provider-auth-state');
+      const workOwner = await import('../agents/work-owner');
+      const modelPolicy = await import('../lib/model-policy-state');
+      const accountProxy = await import('../account-proxy/routing');
+      const advisorIpc = await import('../ipc/app-advisor');
+      const worktree = await import('../lib/resolve-worktree');
+      jest
+        .spyOn(auth, 'ensureProviderAuthBaselineForSession')
+        .mockResolvedValue(true);
+      jest
+        .spyOn(auth, 'peekProviderNativeAuthAvailability')
+        .mockReturnValue({ ollama: true });
+      jest
+        .spyOn(workOwner, 'captureSessionWorkOwner')
+        .mockImplementation(() => undefined);
+      jest
+        .spyOn(workOwner, 'resolveSessionWorkOwner')
+        .mockResolvedValue({ kind: 'personal' });
+      jest
+        .spyOn(modelPolicy, 'isModelBlockedByStoredPolicy')
+        .mockResolvedValue(false);
+      jest
+        .spyOn(accountProxy, 'previewAccountProxySessionRoute')
+        .mockResolvedValue(false);
+      jest
+        .spyOn(ruleSources, 'readWorkspaceApprovalRuleTier')
+        .mockResolvedValue({ rules: [], unreadable: false });
+      jest
+        .spyOn(ruleSources, 'readGlobalApprovalRuleTier')
+        .mockResolvedValue({ rules: [], unreadable: false });
+      jest
+        .spyOn(ruleSources, 'isPathCaseInsensitiveAt')
+        .mockResolvedValue(false);
+      jest
+        .spyOn(ruleSources, 'protectedApprovalFileWritePaths')
+        .mockResolvedValue([]);
+      const prompt = jest
+        .spyOn(promptBridge, 'requestApprovalFromRenderer')
+        .mockResolvedValue({ behavior: 'deny', scope: 'once' });
+      jest
+        .spyOn(worktree, 'resolveWorktreeCwd')
+        .mockReturnValue(jest.requireActual<typeof os>('node:os').tmpdir());
+      jest
+        .spyOn(advisorIpc, 'getCachedAppAdvisorUiStateForChat')
+        .mockReturnValue({
+          version: 1,
+          revision: 1,
+          capturedAt: grant.createdAt,
+          digest: 'authority',
+          snapshot: {
+            activePage: 'main',
+            archivedContainers: { count: 0, viewerOpen: false },
+            overlays: {
+              commandPaletteOpen: false,
+              fileSearchPaletteOpen: false,
+              prPickerOpen: false,
+              canopyPortalOpen: false,
+              appAdvisorOpen: true,
+            },
+            selectedWorktree: {
+              projectId: 'project-one',
+              worktreeId: 'worktree-one',
+            },
+          },
+        });
+      const createRuntimeImplementation = jest
+        .mocked(createAppAdvisorToolRuntime)
+        .getMockImplementation();
+      const getSessionImplementation = jest
+        .mocked(getOrCreateSession)
+        .getMockImplementation();
+      const restrictRulesImplementation = jest
+        .mocked(restrictSessionApprovalRules)
+        .getMockImplementation();
+      jest
+        .mocked(createAppAdvisorToolRuntime)
+        .mockImplementation(advisor.createAppAdvisorToolRuntime);
+      jest
+        .mocked(getOrCreateSession)
+        .mockImplementation(manager.getOrCreateSession);
+      jest
+        .mocked(restrictSessionApprovalRules)
+        .mockImplementation(manager.restrictSessionApprovalRules);
+      const command = {
+        command: 'npm test --runInBand',
+        intervalSeconds: 5,
+        maxAttempts: 1,
+      };
+      const matchingDeny: ApprovalRule = {
+        ...grant,
+        id: 'command-deny',
+        behavior: 'deny',
+      };
+      const initialMode = change === 'committed deny' ? 'full-access' : 'ask';
+      const narrowsMode =
+        change === 'narrowed mode' || change === 'admitted cap';
+      const initialRules = narrowsMode ? [] : [grant];
+      mockReadAuthorityTabs.mockResolvedValue(
+        savedAuthority(initialMode, initialRules),
+      );
+      const watchOutcomes: Array<'allowed' | 'denied'> = [];
+      let watchTask: Promise<void> | undefined;
+      const retainedRuntimes: AdvisorRuntime.AppAdvisorToolRuntime[] = [];
+      mockCreateCodexSession.mockImplementation((opts) => {
+        const runtime = opts.appAdvisorRuntime;
+        if (!runtime?.watchCommand)
+          throw new Error('Expected actual WatchCommand runtime');
+        retainedRuntimes.push(runtime);
+        const session: AgentSession = {
+          sendMessage: () => {
+            watchTask = runtime.watchCommand?.(command).then(
+              () => {
+                watchOutcomes.push('allowed');
+              },
+              (error: unknown) => {
+                expect(error).toEqual(
+                  new Error('WatchCommand registration was denied.'),
+                );
+                watchOutcomes.push('denied');
+              },
+            );
+          },
+          setPlanMode: () => Promise.resolve(),
+          setApprovalMode: () => Promise.resolve(),
+          cancel: () => Promise.resolve(),
+          destroy: () => Promise.resolve(),
+          setModel: () => Promise.resolve(),
+          setThinkingLevel: () => Promise.resolve(),
+        };
+        manager.registerSession(
+          `${opts.projectId}/${opts.worktreeId}/${opts.chatId}`,
+          session,
+          new AbortController(),
+          'codex',
+          opts.model,
+          opts.assistantMode,
+          opts.toolProfileHash,
+        );
+        return session;
+      });
+      const request = {
+        ...target,
+        text: command.command,
+        model: 'gpt-5.5',
+        providerType: 'codex' as const,
+      };
+      try {
+        if (reuse === 'warm') {
+          if (narrowsMode) {
+            handleCanonicalChatStartedEventMock.mockImplementationOnce(() => {
+              mockReadAuthorityTabs.mockResolvedValue(
+                savedAuthority('full-access'),
+              );
+              setLiveApprovalMode(
+                target.projectId,
+                target.worktreeId,
+                target.chatId,
+                'full-access',
+              );
+              return Promise.resolve();
+            });
+          }
+          await dispatchAppAdvisorChatMessage(request, makeOptions());
+          if (!watchTask) throw new Error('Expected WatchCommand execution');
+          await watchTask;
+          expect(watchOutcomes).toEqual(['allowed']);
+          expect(createLocalWatcherMock).toHaveBeenCalledTimes(1);
+          expect(prompt).not.toHaveBeenCalled();
+          createLocalWatcherMock.mockClear();
+        }
+        handleCanonicalChatStartedEventMock.mockImplementationOnce(() => {
+          mockReadAuthorityTabs.mockResolvedValue(
+            savedAuthority(
+              change === 'committed deny' || change === 'admitted cap'
+                ? 'full-access'
+                : 'ask',
+              change === 'committed deny' ? [matchingDeny] : [],
+            ),
+          );
+          return Promise.resolve();
+        });
+        await dispatchAppAdvisorChatMessage(
+          {
+            ...request,
+            userMessageId: 'restricted-watch-turn',
+            ...(change === 'narrowed mode'
+              ? { approvalMode: 'ask' as const }
+              : {}),
+            ...(change === 'admitted cap'
+              ? {
+                  admittedApproval: {
+                    approvalMode: 'ask' as const,
+                    sessionApprovalRules: [],
+                  },
+                }
+              : {}),
+          },
+          makeOptions(),
+        );
+        if (!watchTask) throw new Error('Expected WatchCommand execution');
+        await watchTask;
+        expect(watchOutcomes.at(-1)).toBe('denied');
+        expect(retainedRuntimes).toHaveLength(1);
+        expect(mockCreateCodexSession).toHaveBeenCalledTimes(1);
+        expect(createLocalWatcherMock).not.toHaveBeenCalled();
+        if (change === 'admitted cap') {
+          // The chat stays wide; only the reused provider's turn is capped.
+          expect(
+            getLiveApprovalMode(
+              target.projectId,
+              target.worktreeId,
+              target.chatId,
+            ),
+          ).toBe('full-access');
+        }
+        expect(recordSessionDiagnosticMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: 'approval_decision',
+            decision: 'deny',
+            scope: change === 'committed deny' ? 'session' : 'once',
+            targetKind: 'command',
+          }),
+        );
+        if (change === 'committed deny') expect(prompt).not.toHaveBeenCalled();
+        else expect(prompt).toHaveBeenCalledTimes(1);
+      } finally {
+        manager.unregisterSession(
+          `${target.projectId}/${target.worktreeId}/${target.chatId}`,
+        );
+        jest.mocked(getOrCreateSession).mockReset();
+        if (getSessionImplementation)
+          jest
+            .mocked(getOrCreateSession)
+            .mockImplementation(getSessionImplementation);
+        jest.mocked(restrictSessionApprovalRules).mockReset();
+        if (restrictRulesImplementation)
+          jest
+            .mocked(restrictSessionApprovalRules)
+            .mockImplementation(restrictRulesImplementation);
+        jest.mocked(createAppAdvisorToolRuntime).mockReset();
+        if (createRuntimeImplementation)
+          jest
+            .mocked(createAppAdvisorToolRuntime)
+            .mockImplementation(createRuntimeImplementation);
+      }
+    },
+  );
+
+  it('rechecks saved authority through its deferred-tools resume handler', async () => {
+    const registration = jest.spyOn(
+      deferredToolsReloadCoordinator,
+      'registerResumeHandler',
+    );
+    mockReadAuthorityTabs.mockResolvedValue(
+      savedAuthority('full-access', [grant]),
+    );
+    try {
+      await dispatchAppAdvisorChatMessage(
+        {
+          ...target,
+          text: 'Start',
+          model: 'gpt-5.5',
+          providerType: 'codex',
+          approvalMode: 'full-access',
+          sessionApprovalRules: [grant],
+        },
+        makeOptions(),
+      );
+      const resume = registration.mock.calls.find(
+        ([scope]) => scope.chatId === target.chatId,
+      )?.[1];
+      if (!resume) throw new Error('Missing deferred-tools resume handler');
+      mockReadAuthorityTabs.mockResolvedValue(savedAuthority('ask'));
+      setLiveApprovalMode(
+        target.projectId,
+        target.worktreeId,
+        target.chatId,
+        'full-access',
+      );
+      await resume({
+        scope: target,
+        requestId: 'reload-authority',
+        toolCallId: 'tool',
+        userMessageId: target.userMessageId,
+        continuationText: 'Continue',
+        enabledResources: [],
+        sdkSessionId: undefined,
+        providerType: 'codex',
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        },
+        signal: new AbortController().signal,
+      });
+      expect(jest.mocked(getOrCreateSession).mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          sessionApprovalRules: [],
+        }),
+      );
+      expect(setApprovalModeMock).toHaveBeenLastCalledWith('ask');
+    } finally {
+      registration.mockRestore();
+    }
+  });
+
+  it('rechecks registered send admission before creating a provider session', async () => {
+    mockReadAuthorityTabs.mockResolvedValue(savedAuthority('ask'));
+    await expect(
+      withChatSendAdmission(
+        target,
+        () => 'Authority changed',
+        () =>
+          dispatchAppAdvisorChatMessage(
+            {
+              ...target,
+              text: 'Start',
+              model: 'gpt-5.5',
+              providerType: 'codex',
+            },
+            makeOptions(),
+          ),
+      ),
+    ).rejects.toThrow('Authority changed');
+    expect(getOrCreateSession).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 });

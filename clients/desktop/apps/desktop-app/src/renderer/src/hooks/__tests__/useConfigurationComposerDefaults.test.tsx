@@ -116,7 +116,7 @@ describe('configuration composer defaults', () => {
       value: { loadPreferences: () => Promise.resolve(preferences) },
     });
     useChatStore.setState({
-      approvalDefaultsCache: { [APP_ADVISOR_PROJECT_ID]: 'allow' },
+      approvalDefaultsCache: { [APP_ADVISOR_PROJECT_ID]: 'auto' },
     });
     const observed: ReturnType<typeof useConfigurationComposerDefaults>[] = [];
     function Probe(): null {
@@ -139,7 +139,7 @@ describe('configuration composer defaults', () => {
     const result = observed[observed.length - 1];
     expect(result?.model).toBe('gpt-6-sol');
     expect(result?.modelConfig.thinkingLevel).toBe('medium');
-    expect(result?.approvalMode).toBe('allow');
+    expect(result?.approvalMode).toBe('auto');
     expect(result?.selections?.collectionIds).toEqual(['advisor-collection']);
   });
 });

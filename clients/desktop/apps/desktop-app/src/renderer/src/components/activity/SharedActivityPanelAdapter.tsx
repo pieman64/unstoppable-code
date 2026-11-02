@@ -3,6 +3,7 @@ import {
   PanelSection,
 } from '@/components/shared/panel-section';
 import { useActivityEventSubscriptions } from '@/hooks/useActivityEventSubscriptions';
+import { useAiCreditsOnlyBilling } from '@/hooks/useAiCreditsOnlyBilling';
 import { requestComposerAction } from '@/lib/composerShortcutRequests';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { earlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -195,9 +196,15 @@ export function SharedActivityPanelAdapter({
   const selectedWorktree =
     worktreeSelection !== undefined ? worktreeSelection : storedSelection;
 
-  // App Advisor keeps no cost, so its rail gets no cost scope.
+  // App Advisor keeps no cost, and an account that bills every turn to AI
+  // Credits sees no USD (CAN-5028), so neither rail gets a cost scope. The
+  // rail sums the whole worktree, so unlike the composer it gates on the
+  // account alone, not on how any one chat was billed.
+  const creditsOnly = useAiCreditsOnlyBilling();
   const costEntry =
-    selectedWorktree && selectedWorktree.projectId !== APP_ADVISOR_PROJECT_ID
+    selectedWorktree &&
+    selectedWorktree.projectId !== APP_ADVISOR_PROJECT_ID &&
+    !creditsOnly
       ? selectedWorktree
       : null;
 
@@ -386,6 +393,7 @@ function SharedActivityPanelAdapterContents({
   });
   const detectedMcp = useMcpServersActivityModel(chromeScope);
   const mcpDetectedContent =
+    detectedMcp.notice !== undefined ||
     detectedMcp.error != null ||
     detectedMcp.servers.length > 0 ||
     (detectedMcp.warnings?.length ?? 0) > 0;
@@ -503,7 +511,7 @@ function SharedActivityPanelAdapterContents({
     memory: !memoryEmpty,
     notes: headerChrome.notes.collapsedIconColor !== 'muted',
     prompts: headerChrome.prompts.collapsedIconColor !== 'muted',
-    attachments: headerChrome.attachments.collapsedIconColor !== 'muted',
+    attachments: headerChrome.attachments.hasContent,
     terminals: false,
   };
   const sectionHasAction: Partial<Record<ActivitySectionId, boolean>> = {
@@ -529,9 +537,10 @@ function SharedActivityPanelAdapterContents({
       access.containerType === 'COWORK_WORK_ENTRY')
       ? 'cowork'
       : 'worktree';
-  // CAN-2836: a rail Canopy seeded collapsed reopens itself the first time
-  // this worktree produces work. Consumes `sectionHasContent` verbatim so the
-  // signal and the rendered rail cannot drift.
+  // CAN-2836: a code worktree's rail that Canopy seeded collapsed reopens
+  // itself the first time the worktree produces work; a Cowork rail stays
+  // collapsed until the user opens it (CAN-4793). Consumes `sectionHasContent`
+  // verbatim so the signal and the rendered rail cannot drift.
   useAutoExpandActivityRail({ surface, sectionHasContent });
   const sectionOrder = useProjectsStore(
     useShallow((state): ActivitySectionId[] => {
@@ -548,14 +557,18 @@ function SharedActivityPanelAdapterContents({
     (state) => state.reorderActivitySections,
   );
 
+  const creditsOnly = useAiCreditsOnlyBilling();
   const sections = useMemo(
     () =>
       getActivitySectionsForSurface(surface).filter(
         (section) =>
           isActivitySectionAllowedForAccess(section.id, access) &&
-          !(section.id === 'cost' && projectId === APP_ADVISOR_PROJECT_ID),
+          !(
+            section.id === 'cost' &&
+            (projectId === APP_ADVISOR_PROJECT_ID || creditsOnly)
+          ),
       ),
-    [access, projectId, surface],
+    [access, creditsOnly, projectId, surface],
   );
   const renderedSections = useMemo(
     () =>
@@ -704,7 +717,7 @@ function SharedActivityPanelAdapterContents({
             : 'Generate summary',
           'mcp-servers': 'Add MCP server',
           plans: 'Import plan',
-          'pipeline-runs': 'Dispatch pipeline',
+          'pipeline-runs': 'Dispatch workflow',
           ...(onOpenSettingsTab ? { hooks: 'Add hook' } : {}),
           plugins: 'Add plugins',
           notes: 'Add note',

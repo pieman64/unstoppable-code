@@ -11,6 +11,25 @@ const INSTALL =
   'file:///Users/alice/Applications/App.app/Contents/Resources/app.asar/out/renderer/index.html';
 
 describe('PostHog outbound privacy', () => {
+  it('strips git transport URLs and internal identifiers as defense in depth', () => {
+    const result = sanitizePostHogEvent({
+      properties: {
+        repo_count: 2,
+        source: 'manual',
+        remote_url: 'https://github.com/secret-org/secret-repo',
+        workspace_id: 'secret-workspace',
+        worktree_path: '/private/secret-worktree',
+        source_url: 'https://github.com?secret=query#private-fragment',
+      },
+    });
+    expect(result?.properties).toEqual({
+      repo_count: 2,
+      source: 'manual',
+      source_url: 'https://github.com/',
+    });
+    expect(JSON.stringify(result)).not.toMatch(/secret|private-fragment/);
+  });
+
   it('retains only validated domain metadata, including nested person properties', () => {
     const result = sanitizePostHogEvent({
       properties: {
@@ -448,6 +467,21 @@ describe('PostHog outbound privacy', () => {
     expect(event.properties.context.label).toBe(EMAIL);
     expect(output).not.toBe(event);
     expect(sanitizePostHogEvent(output)).toEqual(output);
+  });
+
+  it('passes chat turn failure categories and triggers through unchanged', () => {
+    const event = {
+      event: 'chat:turn_end',
+      properties: {
+        status: 'failure',
+        failure_reason: 'error',
+        failure_category: 'no_credits',
+        failure_detail: 'organization_pool_unavailable',
+        sub_agent_failure_category: 'network',
+        trigger_type: 'automation',
+      },
+    };
+    expect(sanitizePostHogEvent(event)).toEqual(event);
   });
 
   it('handles null and events without properties', () => {

@@ -28,7 +28,7 @@ import {
   externalAgentPath,
 } from '../paths';
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const CAPABILITIES: CanopyCapabilities = {
   localExecution: false,

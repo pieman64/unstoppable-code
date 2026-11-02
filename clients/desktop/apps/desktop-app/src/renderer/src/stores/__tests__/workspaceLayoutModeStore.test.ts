@@ -46,6 +46,7 @@ it('marks an empty entry customized after a mode save succeeds', async () => {
     workEntries: [
       {
         id: 'tree',
+        title: 'Entry tree',
         createdAt: '2026-01-01T00:00:00.000Z',
         status: 'active',
         pinned: false,

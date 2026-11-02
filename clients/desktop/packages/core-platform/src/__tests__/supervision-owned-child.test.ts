@@ -155,11 +155,11 @@ afterEach(async () => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('unsupported hosts', () => {
-  it.each(['linux', 'win32'] as const)(
-    'rejects every %s spawn as capability_unavailable without loading',
-    async (os) => {
+  it('rejects every linux spawn as capability_unavailable without loading', async () => {
+    const dlopen = jest.spyOn(process, 'dlopen');
+    try {
       const owned = createOwnedChildServices({
-        os,
+        os: 'linux',
         nativePath: '/missing.node',
       });
       const error = await rejection(() =>
@@ -167,8 +167,28 @@ describe('unsupported hosts', () => {
       );
       expect(error).toBeInstanceOf(OwnedChildError);
       expect(error).toEqual(typed('capability_unavailable'));
-    },
-  );
+      expect(dlopen).not.toHaveBeenCalled();
+    } finally {
+      dlopen.mockRestore();
+    }
+  });
+
+  it('rejects a POSIX executable path on win32 as invalid_argument without loading', async () => {
+    const dlopen = jest.spyOn(process, 'dlopen');
+    try {
+      const owned = createOwnedChildServices({
+        os: 'win32',
+        nativePath: 'C:\\missing\\core-owned-child.node',
+      });
+      const error = await rejection(() =>
+        owned.spawn({ executable: '/bin/true', args: [], environment: {} }),
+      );
+      expect(error).toEqual(typed('invalid_argument'));
+      expect(dlopen).not.toHaveBeenCalled();
+    } finally {
+      dlopen.mockRestore();
+    }
+  });
 
   it.each([
     ['missing', '/nonexistent/core-owned-child.node'],
@@ -181,6 +201,27 @@ describe('unsupported hosts', () => {
     );
     expect(error).toEqual(typed('capability_unavailable'));
   });
+
+  it.each([
+    ['missing', 'C:\\nonexistent\\core-owned-child.node'],
+    ['relative', 'core-owned-child.node'],
+    ['drive-relative', 'C:core-owned-child.node'],
+    ['POSIX', '/nonexistent/core-owned-child.node'],
+    ['device namespace', '\\\\?\\C:\\core-owned-child.node'],
+  ])(
+    'rejects a %s win32 addon path as capability_unavailable',
+    async (_, nativePath) => {
+      const owned = createOwnedChildServices({ os: 'win32', nativePath });
+      const error = await rejection(() =>
+        owned.spawn({
+          executable: 'C:\\Windows\\System32\\cmd.exe',
+          args: [],
+          environment: {},
+        }),
+      );
+      expect(error).toEqual(typed('capability_unavailable'));
+    },
+  );
 });
 
 darwinDescribe('darwin owned child', () => {
@@ -413,6 +454,10 @@ darwinDescribe('darwin owned child', () => {
     );
     await until(() => get(native.observe(handle), 'state') === 'exited');
     expect(code(() => native.commit(handle))).toBe('ERR_OWNED_CHILD_EXITED');
+    // A group left with only its exited root has nothing to stop; Darwin
+    // refuses a group signal to it with EPERM rather than ESRCH.
+    expect(native.members(handle)).toBe(0);
+    expect(code(() => native.stopGroup(handle))).toBe(true);
     expect(native.rollbackSync(handle)).toBe(true);
   });
 
@@ -423,8 +468,10 @@ darwinDescribe('darwin owned child', () => {
       const child = await createOwnedChildServices({ os: 'darwin', nativePath })
         .spawn({ executable: '/bin/sh', args: ['-c', ${JSON.stringify(TREE)} + ' ' + tail, 'sh', file, file + '.stop'], environment: { PATH: '/usr/bin:/bin' } });
       process.stdout.write(String(child.pid));
-      const { existsSync } = await import('node:fs');
-      while (!existsSync(file)) await new Promise((r) => setTimeout(r, 10));
+      const { readFileSync } = await import('node:fs');
+      // The shell creates the file before writing the PID: wait for the PID.
+      const written = () => { try { return /^[0-9]+$/.test(readFileSync(file, 'utf8').trim()); } catch { return false; } };
+      while (!written()) await new Promise((r) => setTimeout(r, 10));
       if (mode.startsWith('commit')) child.commit();
       if (mode.endsWith('exit')) process.exit(3);
       if (mode === 'owned-throw') throw new Error('host failed');
@@ -508,8 +555,8 @@ describe('controlled native failures', () => {
     spawn(this: void): { handle: object; pid: number };
     observe(this: void): {
       state: 'running' | 'exited' | 'lost';
-      code?: number;
-      signal?: null;
+      code?: number | null;
+      signal?: number | null;
     };
     stopGroup(this: void): boolean;
     members(this: void): number;
@@ -518,9 +565,9 @@ describe('controlled native failures', () => {
     rollbackSync(this: void): boolean;
     rollbackUndelivered(this: void): boolean;
   };
-  function backend(): {
+  function backend(os: 'darwin' | 'win32' = 'darwin'): {
     native: jest.Mocked<ControlledNative>;
-    services: Runtime.PlatformOwnedChildServices;
+    services: ReturnType<typeof createOwnedChildServices>;
     state(next: 'running' | 'exited' | 'lost'): void;
   } {
     let state: 'running' | 'exited' | 'lost' = 'running';
@@ -545,8 +592,11 @@ describe('controlled native failures', () => {
     return {
       native,
       services: createOwnedChildServices({
-        os: 'darwin',
-        nativePath: '/controlled/backend.node',
+        os,
+        nativePath:
+          os === 'win32'
+            ? 'C:\\controlled\\backend.node'
+            : '/controlled/backend.node',
       }),
       state: (next: typeof state): void => {
         state = next;
@@ -746,5 +796,146 @@ describe('controlled native failures', () => {
       .forEach((listener) => listener(0));
     expect(b.native.rollbackUndelivered).toHaveBeenCalledTimes(1);
     expect(b.native.stopGroup).not.toHaveBeenCalled();
+  });
+
+  describe('win32 backend', () => {
+    const windowsRequest = {
+      executable: 'C:\\controlled\\canopyd.exe',
+      args: ['--data-root', 'C:\\Users\\a b\\data'],
+      environment: { SystemRoot: 'C:\\Windows', PATH: 'C:\\Windows' },
+    };
+
+    it('passes a fully qualified request to the native backend', async () => {
+      const b = backend('win32');
+      for (const executable of [
+        windowsRequest.executable,
+        'C:/controlled/canopyd.exe',
+        '\\\\server\\share\\canopyd.exe',
+      ]) {
+        const child = await b.services.spawn({ ...windowsRequest, executable });
+        expect(b.native.spawn).toHaveBeenLastCalledWith(
+          executable,
+          [executable, ...windowsRequest.args],
+          ['SystemRoot=C:\\Windows', 'PATH=C:\\Windows'],
+          null,
+        );
+        b.state('exited');
+        await child.terminate();
+        b.state('running');
+      }
+    });
+
+    it.each<
+      [
+        string,
+        Partial<Parameters<Runtime.PlatformOwnedChildServices['spawn']>[0]>,
+      ]
+    >([
+      ['POSIX executable', { executable: '/controlled/canopyd' }],
+      ['relative executable', { executable: 'canopyd.exe' }],
+      ['drive-relative executable', { executable: 'C:canopyd.exe' }],
+      ['rooted-only executable', { executable: '\\controlled\\canopyd.exe' }],
+      ['device executable', { executable: '\\\\?\\C:\\canopyd.exe' }],
+      ['pipe executable', { executable: '\\\\.\\pipe\\canopyd' }],
+      ['startup claim on stdin', { stdin: '{"claim":null}' }],
+      ['empty stdin', { stdin: '' }],
+      [
+        'case-duplicate environment names',
+        { environment: { Path: 'C:\\a', PATH: 'C:\\b' } },
+      ],
+      ['malformed environment', { environment: { '=C:': 'C:\\' } }],
+      ['NUL argument', { args: ['\0'] }],
+    ])('rejects a %s with no native call', async (_, change) => {
+      const b = backend('win32');
+      const error = await rejection(() =>
+        b.services.spawn({ ...windowsRequest, ...change }),
+      );
+      expect(error).toEqual(typed('invalid_argument'));
+      expect(b.native.spawn).not.toHaveBeenCalled();
+    });
+
+    it('keeps case-distinct environment names on darwin', async () => {
+      const b = backend('darwin');
+      const child = await b.services.spawn({
+        ...request,
+        environment: { Path: '/a', PATH: '/b' },
+      });
+      expect(b.native.spawn).toHaveBeenLastCalledWith(
+        request.executable,
+        [request.executable],
+        ['Path=/a', 'PATH=/b'],
+        null,
+      );
+      b.state('exited');
+      await child.terminate();
+    });
+
+    it('refuses a Windows path on darwin', async () => {
+      const b = backend('darwin');
+      const error = await rejection(() =>
+        b.services.spawn({ ...request, executable: 'C:\\controlled\\child' }),
+      );
+      expect(error).toEqual(typed('invalid_argument'));
+      expect(b.native.spawn).not.toHaveBeenCalled();
+    });
+
+    it('reports a backend-terminated root as SIGKILL and any other exit as its unsigned code', async () => {
+      const b = backend('win32');
+      const killed = await b.services.spawn(windowsRequest);
+      b.native.observe.mockReturnValue({
+        state: 'exited',
+        code: null,
+        signal: 9,
+      });
+      await jest.advanceTimersByTimeAsync(20);
+      await expect(killed.exited).resolves.toEqual({
+        code: null,
+        signal: 'SIGKILL',
+      });
+      await killed.terminate();
+
+      b.native.observe.mockReturnValue({
+        state: 'exited',
+        code: 0xc0000005,
+        signal: null,
+      });
+      const crashed = await b.services.spawn(windowsRequest);
+      await jest.advanceTimersByTimeAsync(20);
+      await expect(crashed.exited).resolves.toEqual({
+        code: 3221225477,
+        signal: null,
+      });
+      await crashed.terminate();
+    });
+
+    it('keeps ownership when the job cannot be committed', async () => {
+      const b = backend('win32');
+      const child = await b.services.spawn(windowsRequest);
+      b.native.commit.mockImplementationOnce(() => {
+        throw Object.assign(new Error('private native detail'), {
+          code: 'ERR_OWNED_CHILD_COMMIT',
+        });
+      });
+      expect(thrown(() => child.commit())).toEqual(
+        expect.objectContaining({
+          name: 'OwnedChildError',
+          code: 'failed_precondition',
+          message: 'Owned child could not be committed.',
+        }),
+      );
+      const stopped = child.terminate();
+      await jest.advanceTimersByTimeAsync(20);
+      await expect(stopped).resolves.toBeUndefined();
+      expect(b.native.stopGroup).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the launcher channel Darwin-only', async () => {
+      const b = backend('win32');
+      const error = await rejection(() =>
+        b.services.spawnWithChannel(windowsRequest),
+      );
+      expect(error).toEqual(typed('capability_unavailable'));
+      expect(b.native.spawn).not.toHaveBeenCalled();
+    });
   });
 });

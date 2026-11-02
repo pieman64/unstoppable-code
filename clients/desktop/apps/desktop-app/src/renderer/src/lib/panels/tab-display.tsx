@@ -23,6 +23,10 @@
  *   conveyed by the status-amber leading icon, not a separate trailing dot.
  *   With early access, chat tabs also show the orange dot while a plan review
  *   or tool approval waits and the blue unread dot here.
+ * - **Question waiting**: a chat with an unanswered question shows the shared
+ *   orange question marker instead of every other needs-input or working
+ *   state, in the leading slot on classic tabs (and collapsed icon strips)
+ *   and on the right of fill tabs.
  *
  * Each bound tab renders a small component that SUBSCRIBES to the chat store
  * (and the shared file-session controller for dirty state), so titles/status
@@ -37,11 +41,15 @@ import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import type { PanelTabModel } from '@canopy/ui-shared/panels';
 import {
   PANEL_TAB_BUSY_ATTRIBUTE,
-  PanelTabNumber,
+  PanelChatTabBackgroundGlyph,
+  PanelChatTabQuestionMarker,
+  PanelFillChatTabGlyph,
+  PANEL_TAB_UNREAD_ATTRIBUTE,
   usePanelTabPosition,
   usePanelTabStyle,
 } from '@canopy/ui-shared/components/panels';
 import { ActivityPingDot } from '@canopy/ui-shared/components';
+import { isCloseBlockingTaskType } from '@canopy/desktop-shared/lib/background-work';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { isPanelKind, isSessionBreakdownPanelInstance } from '@canopy/protocol';
 import {
@@ -68,6 +76,8 @@ import {
   usePipelinePanelUiStore,
 } from '@/stores/pipelinePanelUiStore';
 import { useDelegationActivityStore } from '@/stores/delegationActivityStore';
+import { useLiveBackgroundTaskStore } from '@/stores/liveBackgroundTaskStore';
+import { hasPendingQuestionForChat } from '@/stores/chat/pending-questions';
 import { useDesktopFileTabDirty } from '@/lib/file-viewer/desktop-file-session-controller';
 import { useBrowserLoading, useBrowserStore } from '@/stores/browserStore';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
@@ -92,7 +102,7 @@ import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posth
  * OBJECT (immutably replaced on change), so subscriptions re-render exactly
  * when the bound session changes.
  */
-function selectBrowserSnapshotById(
+export function selectBrowserSnapshotById(
   worktrees: ReturnType<typeof useBrowserStore.getState>['worktrees'],
   browserId: string,
 ): BrowserSessionSnapshot | undefined {
@@ -187,10 +197,13 @@ export function panelTabDisplayTitle(tab: PanelTabModel): string {
   if (isPanelKind(tab.kind) && (tab.title === '' || tab.title === tab.kind)) {
     return currentEarlyAccessTitle(getPanelDefinition(tab.kind).title);
   }
-  // A stored title equal to its kind's (or section's) default name is that
-  // default, so early access shows it in sentence case. Own titles never are.
-  return tab.title === defaultTabTitle(tab)
-    ? currentEarlyAccessTitle(tab.title)
+  // A stored title equal to its kind's (or section's) default name, current
+  // or former, is that default, so it shows the current sentence-case name.
+  // Own titles never are.
+  const fallback = defaultTabTitle(tab);
+  return fallback !== undefined &&
+    currentEarlyAccessTitle(tab.title) === currentEarlyAccessTitle(fallback)
+    ? currentEarlyAccessTitle(fallback)
     : tab.title;
 }
 
@@ -272,18 +285,41 @@ function useBoundChatTab(tabId: string): ChatTabStripTab | undefined {
 }
 
 /**
- * Whether the bound chat has live managed delegates (queued, starting or
- * running), which keep it working after its own turn ended. Read from the
- * delegation store, never from `tab.status`. Matched by chat id alone, like
- * {@link selectChatTabById} (chat tab ids are globally unique), so the
- * selector re-runs only on delegation changes, not on every streaming token.
+ * The bound chat's background work (turn-state D11) and whether it blocks
+ * close (D8): delegations and provider agents or workflows do, shells don't.
+ * Read from the activity mirrors, never from `tab.status`, and matched by chat
+ * id alone (chat tab ids are globally unique), so the selectors re-run only
+ * on activity changes, not on every streaming token.
  */
-function useBoundChatHasLiveDelegates(tabId: string): boolean {
-  return useDelegationActivityStore((state) =>
-    Object.values(state.byChat).some(
-      (entry) => entry.chatId === tabId && entry.live + entry.queued > 0,
+function useBoundChatBackgroundWork(tabId: string): {
+  tasks: number;
+  blocksClose: boolean;
+} {
+  const delegations = useDelegationActivityStore((state) =>
+    Object.values(state.byChat).reduce(
+      (total, entry) =>
+        entry.chatId === tabId ? total + entry.live + entry.queued : total,
+      0,
     ),
   );
+  const liveTasks = useLiveBackgroundTaskStore((state) =>
+    Object.values(state.byChat).reduce(
+      (total, entry) =>
+        entry.chatId === tabId ? total + entry.liveTasks.length : total,
+      0,
+    ),
+  );
+  const blockingTasks = useLiveBackgroundTaskStore((state) =>
+    Object.values(state.byChat).some(
+      (entry) =>
+        entry.chatId === tabId &&
+        entry.liveTasks.some((task) => isCloseBlockingTaskType(task.taskType)),
+    ),
+  );
+  return {
+    tasks: delegations + liveTasks,
+    blocksClose: delegations > 0 || blockingTasks,
+  };
 }
 
 /** Whether a chat tab is awaiting a plan-exit approval (ChatTabBar parity). */
@@ -310,6 +346,26 @@ function useAwaitingToolApproval(tab: ChatTabStripTab | undefined): boolean {
   );
 }
 
+/**
+ * True while an agent question in this chat waits for an answer: the same
+ * unanswered-question predicate the sidebar row reads, scoped to the panel's
+ * worktree. Merely viewing the question keeps it; answering the last one
+ * clears it.
+ */
+function useAwaitingQuestion(chatTabId: string): boolean {
+  const selection = usePanelActivityWorktreeSelection();
+  return useChatStore((s) =>
+    selection !== null
+      ? hasPendingQuestionForChat(
+          s.pendingQuestions,
+          selection.projectId,
+          selection.worktreeId,
+          chatTabId,
+        )
+      : false,
+  );
+}
+
 /** ChatTabBar's default-model fallback for the provider logo. */
 function useDefaultWorktreeModel(): ChatModel | undefined {
   return useChatStore((s) =>
@@ -328,9 +384,10 @@ function useDefaultWorktreeModel(): ChatModel | undefined {
 
 function ChatPanelTabIcon({ chatTabId }: { chatTabId: string }): JSX.Element {
   const tab = useBoundChatTab(chatTabId);
-  const hasLiveDelegates = useBoundChatHasLiveDelegates(chatTabId);
+  const background = useBoundChatBackgroundWork(chatTabId);
   const awaitingApproval = useAwaitingApproval(tab);
   const awaitingToolApproval = useAwaitingToolApproval(tab);
+  const awaitingQuestion = useAwaitingQuestion(chatTabId);
   const defaultWorktreeModel = useDefaultWorktreeModel();
   // A `fill` tab bar (early access) shows the states on the tab's right.
   // Read from the bar itself: a collapsed group's icon strip has no right
@@ -354,43 +411,61 @@ function ChatPanelTabIcon({ chatTabId }: { chatTabId: string }): JSX.Element {
       </span>
     );
   }
-  if (
-    (tab.status === 'streaming' || hasLiveDelegates) &&
-    !awaitingApproval &&
-    !awaitingToolApproval
-  ) {
+  if (!fillTabs && awaitingQuestion) {
+    // A waiting question outranks every other state, working included: the
+    // turn may still stream while it waits, and the user is what it needs.
     return (
-      // Working: its own turn streams or its delegates still run.
-      // The busy marker withholds the close button while the work runs; a
-      // classic tab also keeps this spinner visible on hover, where it would
-      // otherwise hide the leading icon and reveal the close button in that
-      // slot, erasing the only signal that the tab is working.
+      <span className="inline-flex shrink-0 items-center" {...unreadProps}>
+        <PanelChatTabQuestionMarker chatId={chatTabId} />
+      </span>
+    );
+  }
+  // Fill tabs show the question on their right, so the slot keeps the
+  // tab's number rather than a busy spinner.
+  if (
+    background.tasks > 0 &&
+    tab.status !== 'streaming' &&
+    !awaitingApproval &&
+    !awaitingToolApproval &&
+    !awaitingQuestion
+  ) {
+    // Background work alone. A shell doesn't block close, so its tab stays
+    // closable.
+    return (
+      <PanelChatTabBackgroundGlyph
+        backgroundTasks={background.tasks}
+        fill={fillTabs}
+        unread={unread}
+        blocksClose={background.blocksClose}
+        {...unreadProps}
+      />
+    );
+  }
+  if (
+    tab.status === 'streaming' &&
+    !awaitingApproval &&
+    !awaitingToolApproval &&
+    !awaitingQuestion
+  ) {
+    // Working: its own turn streams.
+    // The busy marker withholds the close button while the work runs; a
+    // classic tab also keeps this spinner visible on hover, where it would
+    // otherwise hide the leading icon and reveal the close button in that
+    // slot, erasing the only signal that the tab is working.
+    if (fillTabs) return <PanelFillChatTabGlyph busy {...unreadProps} />;
+    return (
       <span
         className="inline-flex shrink-0 items-center"
         {...{ [PANEL_TAB_BUSY_ATTRIBUTE]: 'true' }}
         {...unreadProps}
       >
-        {fillTabs ? (
-          <ThinkingSpinner
-            // A little under the 12px provider glyph it replaces: the dense
-            // dot grid reads heavier than a line glyph at the same size. It
-            // centers in the fixed 14px icon slot, so the label never moves.
-            sizePx={10}
-            // The accent, as the sidebar's running worktree spinner uses:
-            // the same "agent working here" signal in the theme's own colour.
-            tone="accent"
-            // Lifted onto the tab number's center in panels.css.
-            className="shrink-0"
-          />
-        ) : (
-          <ThinkingSpinner
-            // Matches the 12px provider/plan glyphs it alternates with, so the
-            // running tab does not read narrower than the idle one.
-            sizePx={12}
-            tone={unread ? 'unread' : 'active'}
-            className="shrink-0"
-          />
-        )}
+        <ThinkingSpinner
+          // Matches the 12px provider/plan glyphs it alternates with, so the
+          // running tab does not read narrower than the idle one.
+          sizePx={12}
+          tone={unread ? 'unread' : 'active'}
+          className="shrink-0"
+        />
       </span>
     );
   }
@@ -427,11 +502,7 @@ function ChatPanelTabIcon({ chatTabId }: { chatTabId: string }): JSX.Element {
   // Fill tabs (early access) number their chats by place in the strip
   // instead of repeating the provider glyph on every tab.
   if (fillTabs && tabPosition !== null) {
-    return (
-      <span className="inline-flex shrink-0 items-center" {...unreadProps}>
-        <PanelTabNumber position={tabPosition} />
-      </span>
-    );
+    return <PanelFillChatTabGlyph busy={false} {...unreadProps} />;
   }
   const provider = resolveChatTabProvider(tab, defaultWorktreeModel);
   // Classic tabs color the glyph: status-amber is their unread indicator.
@@ -485,7 +556,7 @@ function FilePanelTabIcon({
 // ---------------------------------------------------------------------------
 
 /** The bound browser id of a browser panel tab, or `null`. */
-function boundBrowserId(tab: PanelTabModel): string | null {
+export function boundBrowserId(tab: PanelTabModel): string | null {
   if (tab.kind !== 'browser') {
     return null;
   }
@@ -494,7 +565,7 @@ function boundBrowserId(tab: PanelTabModel): string | null {
 }
 
 /** Narrow live-label subscription for one browser session. */
-function useBrowserLabel(browserId: string): string {
+export function useBrowserLabel(browserId: string): string {
   return useBrowserStore((s) =>
     browserDisplayLabel(selectBrowserSnapshotById(s.worktrees, browserId)),
   );
@@ -516,7 +587,7 @@ function BrowserPanelTabLabel({
  * never renders a broken image, and the local error latch resets whenever
  * `faviconUrl` changes so a later good favicon shows again.
  */
-function BrowserPanelTabIcon({
+export function BrowserPanelTabIcon({
   browserId,
 }: {
   browserId: string;
@@ -598,7 +669,7 @@ function BrowserPanelTabTooltip({
  * glyph for unknown/missing sections from stale layouts); everything else
  * gets the registry's static kind icon — including `pipeline-execution`,
  * whose run tabs share the app `PipelineIcon` the Pipeline runs section
- * uses, with the run's instance title (default `Pipeline run`) as the label.
+ * uses, with the run's instance title (default `Workflow run`) as the label.
  */
 export function renderPanelTabIcon(tab: PanelTabModel): ReactNode {
   const bound = boundChatTabId(tab);
@@ -815,13 +886,33 @@ function ClassicChatPanelTabTrailing({
   chatTabId: string;
 }): JSX.Element | null {
   const tab = useBoundChatTab(chatTabId);
-  return tab?.readOnly === true ? <ClassicReadOnlyLockGlyph /> : null;
+  const awaitingQuestion = useAwaitingQuestion(chatTabId);
+  if (tab === undefined) {
+    return null;
+  }
+  return (
+    <>
+      {/* The tab bar hides the leading slot from assistive technology, so
+          the visible question marker there is named here instead. */}
+      {awaitingQuestion ? (
+        <span
+          className="sr-only"
+          data-testid={`panel-tab-question-label-${chatTabId}`}
+        >
+          Question waiting
+        </span>
+      ) : null}
+      {tab.readOnly === true ? <ClassicReadOnlyLockGlyph /> : null}
+    </>
+  );
 }
 
 /**
  * A fill tab shows every state indicator on its right, where the close button
- * appears on hover (the tab bar hides them while it shows the button): plan
- * review, tool approval, unread, and read-only.
+ * appears on hover (the tab bar hides them while it shows the button): a
+ * waiting question, plan review, tool approval, unread, and read-only. A
+ * question outranks the other needs-input dots, so one indicator says what
+ * the chat waits on.
  */
 function FillChatPanelTabTrailing({
   chatTabId,
@@ -831,11 +922,13 @@ function FillChatPanelTabTrailing({
   const tab = useBoundChatTab(chatTabId);
   const awaitingApproval = useAwaitingApproval(tab);
   const awaitingToolApproval = useAwaitingToolApproval(tab);
+  const awaitingQuestion = useAwaitingQuestion(chatTabId);
   if (tab === undefined) {
     return null;
   }
   const unread = tab.unread === true;
   if (
+    !awaitingQuestion &&
     !awaitingApproval &&
     !awaitingToolApproval &&
     !unread &&
@@ -848,7 +941,7 @@ function FillChatPanelTabTrailing({
       {/* Plan review and tool approval both wait on the user, so both show
           the orange needs-input dot the sidebar row uses; one dot covers
           either. */}
-      {awaitingToolApproval ? (
+      {awaitingQuestion ? null : awaitingToolApproval ? (
         <span
           aria-label="Approval needed"
           title="Approval needed"
@@ -868,6 +961,8 @@ function FillChatPanelTabTrailing({
           aria-label="Unread"
           title="Unread"
           data-testid={`panel-tab-unread-dot-${chatTabId}`}
+          // The tab bar reads it to dot ⌄ while this tab is out of view.
+          {...{ [PANEL_TAB_UNREAD_ATTRIBUTE]: 'true' }}
           className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${OPERATIONAL_STATUS_COLORS.unread.background}`}
         />
       ) : null}
@@ -1082,4 +1177,34 @@ export function renderPanelCollapsedTabIcon(tab: PanelTabModel): ReactNode {
     return <BrowserCollapsedTabIcon browserId={browserId} />;
   }
   return renderPanelTabIcon(tab);
+}
+
+/** Status description for pinned and collapsed chat tabs. */
+export function renderPanelTabAccessibleStatus(tab: PanelTabModel): ReactNode {
+  const chatId = tab.kind === 'chat' ? tab.instance?.chatTabId : undefined;
+  return chatId ? <ChatPanelTabQuestionDescription chatTabId={chatId} /> : null;
+}
+
+function ChatPanelTabQuestionDescription({
+  chatTabId,
+}: {
+  chatTabId: string;
+}): ReactNode {
+  return useAwaitingQuestion(chatTabId) ? 'Question waiting' : null;
+}
+
+/** Persistent fill-tab attention, outside the label that wraps away. */
+export function renderPanelTabAttention(tab: PanelTabModel): ReactNode {
+  const chatId = tab.kind === 'chat' ? tab.instance?.chatTabId : undefined;
+  return chatId ? <ChatPanelTabAttention chatTabId={chatId} /> : null;
+}
+
+function ChatPanelTabAttention({
+  chatTabId,
+}: {
+  chatTabId: string;
+}): ReactNode {
+  return useAwaitingQuestion(chatTabId) ? (
+    <PanelChatTabQuestionMarker chatId={chatTabId} />
+  ) : null;
 }

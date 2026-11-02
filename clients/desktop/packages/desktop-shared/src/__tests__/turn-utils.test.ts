@@ -1,5 +1,8 @@
 import {
   computeTurnSummary,
+  computeTurnOutcomes,
+  getTurnOutcomeSteps,
+  getTurnOutcomeStepDetails,
   getToolCategory,
   groupIntoTurns,
   isUsageInitiationSource,
@@ -8,6 +11,520 @@ import {
 } from '../lib/turn-utils';
 import type { TurnBlock, TurnMessage } from '../lib/turn-utils';
 import { getPortalChatToolFamily } from '../lib/portal-tool-family';
+
+describe('plan-file write summary accounting', () => {
+  it.each([undefined, false, true])(
+    'excludes canonical plan writes from project edits regardless of error state %s',
+    (isError) => {
+      const messages: TurnMessage[] = [
+        {
+          id: 'plan-turn',
+          role: 'assistant',
+          timestamp: 1,
+          blocks: [
+            ...[
+              '/Users/test/.claude/plans/draft.md',
+              'C:\\Users\\test\\.claude\\plans\\draft.md',
+            ].map(
+              (file_path, index): TurnBlock => ({
+                type: 'tool_use',
+                toolUseId: `plan-${index}`,
+                toolName: 'Write',
+                input: JSON.stringify({ file_path, content: '# Plan' }),
+                ...(isError === undefined
+                  ? {}
+                  : {
+                      result: {
+                        output: isError ? 'Write failed' : 'Written',
+                        isError,
+                      },
+                    }),
+              }),
+            ),
+            {
+              type: 'tool_use',
+              toolUseId: 'grep',
+              toolName: 'Grep',
+              input: '{}',
+              result: { output: 'Found', isError: false },
+            },
+            {
+              type: 'tool_use',
+              toolUseId: 'exit',
+              toolName: 'ExitPlanMode',
+              input: '{}',
+              result: { output: 'canopy_plan_handoff', isError: true },
+            },
+          ],
+        },
+      ];
+      expect(computeTurnSummary(messages)).toMatchObject({
+        writeEdit: 0,
+        grep: 1,
+        plan: 0,
+      });
+      expect(computeTurnOutcomes(messages)).toEqual({
+        blocked: 0,
+        failed: isError ? 2 : 0,
+        interrupted: 0,
+      });
+      messages[0].blocks.push(
+        {
+          type: 'tool_use',
+          toolUseId: 'project',
+          toolName: 'Write',
+          input: '{"file_path":"docs/plans/draft.md"}',
+        },
+        {
+          type: 'tool_use',
+          toolUseId: 'edit',
+          toolName: 'Edit',
+          input: '{"file_path":"src/index.ts"}',
+        },
+      );
+      expect(computeTurnSummary(messages).writeEdit).toBe(2);
+    },
+  );
+});
+
+describe('turn outcomes', () => {
+  it('classifies interruption metadata before errors while keeping blocked precedence and step totals', () => {
+    const interruption = { reason: 'app_restart', at: 14 } as const;
+    const blocks: TurnBlock[] = [
+      {
+        type: 'tool_use',
+        toolUseId: 'read',
+        toolName: 'Read',
+        input: '{}',
+        result: { output: 'ok', isError: false },
+      },
+      ...['edit', 'neutral', 'denied'].map(
+        (toolUseId): TurnBlock => ({
+          type: 'tool_use',
+          toolUseId,
+          toolName: 'Edit',
+          input: '{}',
+          result: {
+            output: 'Interrupted',
+            isError: toolUseId !== 'neutral',
+            interruption,
+          },
+        }),
+      ),
+      {
+        type: 'tool_use',
+        toolUseId: 'error',
+        toolName: 'Bash',
+        input: '{}',
+        result: { output: 'real error', isError: true },
+      },
+    ];
+    const rows: TurnMessage[] = [
+      { id: 'steps', role: 'assistant', timestamp: 14, blocks },
+    ];
+    expect(computeTurnOutcomes(rows, rows, 'user', ['denied'])).toEqual({
+      blocked: 1,
+      failed: 1,
+      interrupted: 2,
+    });
+    expect(getTurnOutcomeStepDetails(rows, rows, 'user', ['denied'])).toEqual([
+      expect.objectContaining({
+        toolUseId: 'edit',
+        outcome: 'interrupted',
+        interruption,
+      }),
+      expect.objectContaining({
+        toolUseId: 'neutral',
+        outcome: 'interrupted',
+        interruption,
+      }),
+      expect.objectContaining({ toolUseId: 'denied', outcome: 'blocked' }),
+      expect.objectContaining({ toolUseId: 'error', outcome: 'failed' }),
+    ]);
+    expect(computeTurnSummary(rows)).toMatchObject({
+      read: 1,
+      writeEdit: 3,
+      bash: 1,
+    });
+    expect(computeTurnOutcomes([rows[0], rows[0]])).toEqual({
+      blocked: 0,
+      failed: 1,
+      interrupted: 3,
+    });
+  });
+  const message = (blocks: TurnBlock[]): TurnMessage => ({
+    id: 'steps',
+    role: 'assistant',
+    timestamp: 1,
+    blocks,
+  });
+  const tool = (
+    toolUseId: string,
+    isError?: boolean,
+    toolName = 'Bash',
+  ): TurnBlock => ({
+    type: 'tool_use',
+    toolUseId,
+    toolName,
+    input: '{}',
+    ...(isError === undefined
+      ? {}
+      : { result: { output: 'fixture', isError } }),
+  });
+  const receipt = (
+    toolUseId: string,
+  ): Extract<TurnBlock, { type: 'approval_safety_denied_info' }> => ({
+    type: 'approval_safety_denied_info',
+    receiptId: `denied-${toolUseId}`,
+    timestamp: 2,
+    reason: 'force-push',
+    mode: 'ask',
+    command: 'fixture only',
+    toolUseId,
+  });
+
+  it('ignores receipts explicitly owned by another turn while preserving unscoped legacy receipts', () => {
+    const steps = [message([tool('reused', true)])];
+    expect(
+      computeTurnOutcomes(
+        steps,
+        [message([{ ...receipt('reused'), turnUserMessageId: 'first' }])],
+        'next',
+      ),
+    ).toEqual({ blocked: 0, failed: 1, interrupted: 0 });
+    expect(
+      computeTurnOutcomes(
+        steps,
+        [message([{ ...receipt('reused'), turnUserMessageId: 'first' }])],
+        'first',
+      ),
+    ).toEqual({ blocked: 1, failed: 0, interrupted: 0 });
+    expect(
+      computeTurnOutcomes(steps, [message([receipt('reused')])], 'next'),
+    ).toEqual({ blocked: 1, failed: 0, interrupted: 0 });
+  });
+
+  it('uses projected denial IDs only for eligible loaded steps when receipts are omitted', () => {
+    const steps = [
+      message([
+        tool('blocked', true),
+        tool('failed', true),
+        tool('blocked', true),
+      ]),
+    ];
+    const deniedIds = ['blocked', 'blocked', 'unloaded'];
+    expect(computeTurnOutcomes(steps, [], 'owner', deniedIds)).toEqual({
+      blocked: 1,
+      failed: 1,
+      interrupted: 0,
+    });
+    expect(getTurnOutcomeSteps(steps, [], 'owner', deniedIds)).toEqual([
+      { toolUseId: 'blocked', outcome: 'blocked' },
+      { toolUseId: 'failed', outcome: 'failed' },
+    ]);
+    expect(computeTurnOutcomes([], [], 'owner', deniedIds)).toEqual({
+      blocked: 0,
+      failed: 0,
+      interrupted: 0,
+    });
+  });
+
+  it('deduplicates steps and receipts, preferring blocked over an error', () => {
+    const steps = [
+      message([
+        tool('blocked', true),
+        tool('failed', true),
+        tool('blocked', true),
+      ]),
+    ];
+    expect(
+      computeTurnOutcomes(steps, [
+        message([receipt('blocked'), receipt('blocked'), receipt('unmatched')]),
+      ]),
+    ).toEqual({ blocked: 1, failed: 1, interrupted: 0 });
+    expect(getTurnOutcomeSteps(steps, [message([receipt('blocked')])])).toEqual(
+      [
+        { toolUseId: 'blocked', outcome: 'blocked' },
+        { toolUseId: 'failed', outcome: 'failed' },
+      ],
+    );
+  });
+
+  it('counts a receipt before its result and ignores pending and successful steps', () => {
+    expect(
+      computeTurnOutcomes([
+        message([
+          receipt('pending-denial'),
+          tool('pending-denial'),
+          tool('pending'),
+          tool('success', false),
+        ]),
+      ]),
+    ).toEqual({ blocked: 1, failed: 0, interrupted: 0 });
+    expect(computeTurnOutcomes([])).toEqual({
+      blocked: 0,
+      failed: 0,
+      interrupted: 0,
+    });
+  });
+
+  it('does not infer a safety refusal from output text', () => {
+    const failed: TurnBlock = {
+      type: 'tool_use',
+      toolUseId: 'error',
+      toolName: 'Bash',
+      input: '{}',
+      result: { output: 'Safety denied force-push', isError: true },
+    };
+    expect(computeTurnOutcomes([message([failed])])).toEqual({
+      blocked: 0,
+      failed: 1,
+      interrupted: 0,
+    });
+  });
+
+  it('excludes plan-mode steps, unmatched receipts and helper receipts', () => {
+    const helperReceipt: TurnBlock = {
+      ...receipt('top'),
+      subagentId: 'helper',
+    };
+    const unlinkedReceipt: TurnBlock = {
+      ...receipt('unused'),
+      toolUseId: undefined,
+    };
+    expect(
+      computeTurnOutcomes([
+        message([
+          tool('enter', true, 'EnterPlanMode'),
+          tool('exit', true, 'ExitPlanMode'),
+          receipt('enter'),
+          receipt('exit'),
+          receipt('unmatched'),
+          tool('top'),
+          helperReceipt,
+          unlinkedReceipt,
+        ]),
+      ]),
+    ).toEqual({ blocked: 0, failed: 0, interrupted: 0 });
+  });
+
+  it('counts workflow and authoritative agent results without descending into helper steps', () => {
+    const agent: Extract<TurnBlock, { type: 'agent' }> = {
+      type: 'agent',
+      toolUseId: 'agent',
+      subagentType: 'general',
+      description: 'Work',
+      prompt: 'Work',
+      runInBackground: true,
+      result: { output: 'dispatch failed', isError: true },
+      taskOutputResult: { output: 'completed', isError: false },
+      subBlocks: [tool('nested', true), receipt('nested')],
+    };
+    const workflow: TurnBlock = {
+      type: 'workflow',
+      toolUseId: 'workflow',
+      workflowName: 'Work',
+      summary: 'Work',
+      result: { output: 'failed', isError: true },
+    };
+    expect(computeTurnOutcomes([message([agent, workflow])])).toEqual({
+      blocked: 0,
+      failed: 1,
+      interrupted: 0,
+    });
+    expect(
+      computeTurnOutcomes([
+        message([
+          {
+            ...agent,
+            taskOutputResult: { output: 'failed', isError: true },
+            result: { output: 'started', isError: false },
+          },
+        ]),
+      ]),
+    ).toEqual({ blocked: 0, failed: 1, interrupted: 0 });
+    expect(
+      computeTurnOutcomes([
+        message([{ ...agent, taskOutputResult: undefined }]),
+      ]),
+    ).toEqual({ blocked: 0, failed: 1, interrupted: 0 });
+  });
+
+  it('uses the last authoritative result for repeated representations', () => {
+    expect(
+      computeTurnOutcomes([
+        message([tool('same', true), tool('same', false), tool('same')]),
+      ]),
+    ).toEqual({ blocked: 0, failed: 0, interrupted: 0 });
+  });
+
+  it('leaves Codex and delegated-agent outcomes outside the supported projection', () => {
+    const codex: TurnBlock = {
+      type: 'codex_agent',
+      agentBlockId: 'codex',
+      callId: 'codex-call',
+      status: 'failed',
+      senderThreadId: 'parent',
+      receiverThreadIds: [],
+      prompt: 'Work',
+      description: 'Work',
+      displayName: 'Agent',
+      agentsStates: {},
+      subBlocks: [tool('nested-codex', true)],
+    };
+    const delegated: TurnBlock = {
+      type: 'delegated_agent_call',
+      agentBlockId: 'delegate',
+      delegationId: 'delegate',
+      status: 'failed',
+      runGeneration: 1,
+      sequence: 1,
+      parentHarnessId: 'parent',
+      parentTurnId: 'turn',
+      parentToolCallId: 'call',
+      createdAt: 1,
+      selectedModelId: 'fixture',
+      runtimeModelId: 'fixture',
+      targetHarnessId: 'target',
+      description: 'Work',
+      prompt: 'Work',
+      executionMode: 'foreground',
+      outputTruncated: false,
+      subBlocks: [tool('nested-delegate', true)],
+    };
+    expect(computeTurnOutcomes([message([codex, delegated])])).toEqual({
+      blocked: 0,
+      failed: 0,
+      interrupted: 0,
+    });
+  });
+
+  describe('getTurnOutcomeStepDetails', () => {
+    const agent = (
+      toolUseId: string,
+      result?: { output: string; isError: boolean },
+      taskOutputResult?: { output: string; isError: boolean },
+    ): TurnBlock => ({
+      type: 'agent',
+      toolUseId,
+      subagentType: 'Explore',
+      description: 'Find the config',
+      prompt: 'Look around',
+      runInBackground: false,
+      subBlocks: [],
+      ...(result ? { result } : {}),
+      ...(taskOutputResult ? { taskOutputResult } : {}),
+    });
+
+    it('joins tool, agent and workflow steps to their calls in outcome order', () => {
+      const bash: TurnBlock = {
+        type: 'tool_use',
+        toolUseId: 'bash',
+        toolName: 'Bash',
+        input: '{"command":"ls *.json","description":"List MCP files"}',
+        result: {
+          output: 'Exit code 1\nzsh: no matches found: *.json',
+          isError: true,
+        },
+      };
+      const workflow: TurnBlock = {
+        type: 'workflow',
+        toolUseId: 'flow',
+        workflowName: 'review',
+        summary: 'Review',
+        result: { output: 'Workflow broke', isError: true },
+      };
+      const steps = [
+        message([
+          tool('ok', false),
+          bash,
+          agent(
+            'agent',
+            { output: 'launched', isError: false },
+            { output: 'Agent gave up', isError: true },
+          ),
+          workflow,
+          tool('denied', true, 'Edit'),
+          tool('plan', true, 'ExitPlanMode'),
+        ]),
+      ];
+
+      const details = getTurnOutcomeStepDetails(steps, [
+        message([receipt('denied')]),
+      ]);
+
+      expect(details).toEqual([
+        {
+          toolUseId: 'bash',
+          outcome: 'failed',
+          toolName: 'Bash',
+          input: '{"command":"ls *.json","description":"List MCP files"}',
+          output: 'Exit code 1\nzsh: no matches found: *.json',
+        },
+        {
+          toolUseId: 'agent',
+          outcome: 'failed',
+          toolName: 'Agent',
+          input: JSON.stringify({
+            description: 'Find the config',
+            subagent_type: 'Explore',
+            prompt: 'Look around',
+          }),
+          output: 'Agent gave up',
+        },
+        {
+          toolUseId: 'flow',
+          outcome: 'failed',
+          toolName: 'Workflow',
+          input: '{"name":"review"}',
+          output: 'Workflow broke',
+        },
+        {
+          toolUseId: 'denied',
+          outcome: 'blocked',
+          toolName: 'Edit',
+          input: '{}',
+          output: 'fixture',
+        },
+      ]);
+      expect(
+        details.map(({ toolUseId, outcome }) => ({ toolUseId, outcome })),
+      ).toEqual(getTurnOutcomeSteps(steps, [message([receipt('denied')])]));
+    });
+
+    it('keeps a known result when a repeated representation has none', () => {
+      const steps = [message([tool('repeat', true), tool('repeat')])];
+      expect(getTurnOutcomeStepDetails(steps)).toEqual([
+        {
+          toolUseId: 'repeat',
+          outcome: 'failed',
+          toolName: 'Bash',
+          input: '{}',
+          output: 'fixture',
+        },
+      ]);
+    });
+
+    it('lists a blocked step with no result yet without an output', () => {
+      const steps = [message([receipt('pending'), tool('pending')])];
+      expect(getTurnOutcomeStepDetails(steps)).toEqual([
+        {
+          toolUseId: 'pending',
+          outcome: 'blocked',
+          toolName: 'Bash',
+          input: '{}',
+        },
+      ]);
+    });
+
+    it('returns no details for a clean turn', () => {
+      expect(getTurnOutcomeStepDetails([message([tool('ok', false)])])).toEqual(
+        [],
+      );
+      expect(getTurnOutcomeStepDetails([])).toEqual([]);
+    });
+  });
+});
 
 describe('async answer grouping', () => {
   it('does not fabricate a completed timer when a steered answer arrives', () => {
@@ -103,6 +620,15 @@ describe('turn-utils tool category mapping', () => {
       expect(getToolCategory('ClaudeModelChange')).toBe('claude');
       expect(getPortalChatToolFamily('ClaudeModelChange')).toBe('claude');
     });
+  });
+
+  describe('Claude cron tools → scheduleWakeup', () => {
+    it.each(['CronCreate', 'CronDelete', 'CronList'])(
+      "counts Claude's %s with the scheduling tools",
+      (name) => {
+        expect(getToolCategory(name)).toBe('scheduleWakeup');
+      },
+    );
   });
 
   describe('Agent-to-agent message → agent', () => {
@@ -585,7 +1111,7 @@ describe('turn-utils tool category mapping', () => {
         {
           id: 'assistant-1',
           role: 'assistant',
-          timestamp: '2026-07-27T00:00:00.000Z',
+          timestamp: Date.parse('2026-07-27T00:00:00.000Z'),
           blocks: [
             {
               type: 'tool_use',
@@ -620,7 +1146,7 @@ describe('turn-utils tool category mapping', () => {
         {
           id: 'assistant-memory',
           role: 'assistant',
-          timestamp: '2026-08-05T00:00:00.000Z',
+          timestamp: Date.parse('2026-08-05T00:00:00.000Z'),
           blocks: [
             {
               type: 'tool_use',
@@ -663,7 +1189,7 @@ describe('turn-utils tool category mapping', () => {
         {
           id: 'assistant-ledger',
           role: 'assistant',
-          timestamp: '2026-09-29T00:00:00.000Z',
+          timestamp: Date.parse('2026-09-29T00:00:00.000Z'),
           blocks: ledgerToolNames.map(
             (toolName, index): TurnBlock => ({
               type: 'tool_use',
@@ -710,7 +1236,7 @@ describe('turn-utils tool category mapping', () => {
           {
             id: 'assistant-delegation-tool',
             role: 'assistant',
-            timestamp: '2026-09-29T00:00:00.000Z',
+            timestamp: Date.parse('2026-09-29T00:00:00.000Z'),
             blocks: [
               {
                 type: 'tool_use',
@@ -749,7 +1275,7 @@ describe('turn-utils tool category mapping', () => {
         {
           id: 'assistant-watch-delegates',
           role: 'assistant',
-          timestamp: '2026-09-26T00:00:00.000Z',
+          timestamp: Date.parse('2026-09-26T00:00:00.000Z'),
           blocks: [
             {
               type: 'tool_use',

@@ -374,6 +374,20 @@ describe('action-resolver', () => {
       expect(action?.mainPath).toBeUndefined();
     });
 
+    it('resolves the bundled send-agent-message manifest in every scope', () => {
+      const action = resolveActionRuntime(
+        'builtin/send-agent-message',
+        hostRuntime(getBundledActionsDir()),
+      );
+
+      expect(action?.definition.runs).toEqual({ using: 'host' });
+      expect(action?.definition.scopes).toEqual([
+        'global',
+        'directory',
+        'worktree',
+      ]);
+    });
+
     it('ignores a stray main key on a host action, as pipeline actions do', () => {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-action-'));
       const bundledDir = path.join(tempDir, 'bundled');
@@ -423,6 +437,122 @@ describe('action-resolver', () => {
           tempDir ?? undefined,
         ),
       ).toThrow(/only bundled actions may use/);
+    });
+
+    describe('node fallback', () => {
+      function bundledDirFor(): string {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-action-'));
+        return path.join(tempDir, 'bundled');
+      }
+
+      it('accepts a node fallback and resolves its main path', () => {
+        const bundledDir = bundledDirFor();
+        const actionDir = path.join(bundledDir, 'create-worktree');
+        writeManifest(actionDir, [
+          'name: Create Worktree',
+          'runs:',
+          '  using: host',
+          '  fallback:',
+          '    using: node',
+          '    main: index.js',
+        ]);
+
+        const action = resolveActionRuntime(
+          'builtin/create-worktree',
+          hostRuntime(bundledDir),
+        );
+
+        expect(action?.definition.runs).toEqual({
+          using: 'host',
+          fallback: { using: 'node', main: 'index.js' },
+        });
+        expect(action?.mainPath).toBe(path.resolve(actionDir, 'index.js'));
+      });
+
+      it('keeps a host action without a fallback mainless', () => {
+        const bundledDir = bundledDirFor();
+        writeManifest(path.join(bundledDir, 'move-to-group'), [
+          'name: Move to Group',
+          'runs:',
+          '  using: host',
+        ]);
+
+        const action = resolveActionRuntime(
+          'builtin/move-to-group',
+          hostRuntime(bundledDir),
+        );
+
+        expect(action?.definition.runs).toEqual({ using: 'host' });
+        expect(action?.mainPath).toBeUndefined();
+      });
+
+      it.each([
+        ['a python fallback', ['    using: python', '    main: index.py']],
+        ['a host fallback', ['    using: host']],
+        ['a fallback without main', ['    using: node']],
+        ['a fallback with a blank main', ['    using: node', "    main: '  '"]],
+      ])('refuses %s', (_label, fallbackLines) => {
+        const bundledDir = bundledDirFor();
+        writeManifest(path.join(bundledDir, 'host-thing'), [
+          'name: Host Thing',
+          'runs:',
+          '  using: host',
+          '  fallback:',
+          ...fallbackLines,
+        ]);
+
+        expect(() =>
+          resolveActionRuntime('builtin/host-thing', hostRuntime(bundledDir)),
+        ).toThrow(/runs\.fallback/);
+      });
+
+      it('refuses a fallback that is not a mapping', () => {
+        const bundledDir = bundledDirFor();
+        writeManifest(path.join(bundledDir, 'host-thing'), [
+          'name: Host Thing',
+          'runs:',
+          '  using: host',
+          '  fallback: index.js',
+        ]);
+
+        expect(() =>
+          resolveActionRuntime('builtin/host-thing', hostRuntime(bundledDir)),
+        ).toThrow(/runs\.fallback/);
+      });
+
+      it('refuses a fallback main outside the action directory', () => {
+        const bundledDir = bundledDirFor();
+        writeManifest(path.join(bundledDir, 'host-thing'), [
+          'name: Host Thing',
+          'runs:',
+          '  using: host',
+          '  fallback:',
+          '    using: node',
+          '    main: ../x.js',
+        ]);
+
+        expect(() =>
+          resolveActionRuntime('builtin/host-thing', hostRuntime(bundledDir)),
+        ).toThrow(
+          'Action "builtin/host-thing" has an unsafe runs.main "../x.js"',
+        );
+      });
+
+      it('still refuses a project host action that declares a fallback', () => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-action-'));
+        writeManifest(path.join(tempDir, '.canopy', 'actions', 'host-thing'), [
+          'name: Host Thing',
+          'runs:',
+          '  using: host',
+          '  fallback:',
+          '    using: node',
+          '    main: index.js',
+        ]);
+
+        expect(() =>
+          resolveAction('project/host-thing', tempDir ?? undefined),
+        ).toThrow(/only bundled actions may use/);
+      });
     });
 
     it('still requires runs.main for node actions', () => {

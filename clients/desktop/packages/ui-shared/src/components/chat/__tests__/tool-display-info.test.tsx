@@ -1,3 +1,7 @@
+import {
+  WatcherFiredTitle,
+  watcherFiredPresentation,
+} from '../WatcherFiredTitle';
 /**
  * Tests the closed-union tool-family dispatch helpers. Ensures every
  * `PortalChatToolFamily` value maps to a real icon component + a non-empty
@@ -11,6 +15,7 @@ import {
   type PortalChatToolFamily,
 } from '../tool-display-info';
 import {
+  codexToolCall,
   getToolDisplayInfo,
   getSendMessageDisplayInfo,
   getToolFamilyFromName,
@@ -23,14 +28,16 @@ import {
   ArchiveIcon,
   ClaudeLogo,
   CodeBracketsIcon,
+  ScheduleIcon,
   WrenchIcon,
 } from '../../../icons';
 import { PickIcon } from '../../../icons/AppIcons';
+import { ChatLookProvider } from '../../chat-look';
 
 describe('project/bot chat wrapper rendering compatibility', () => {
   it('keeps generic App, App Advisor and Watcher family labels', () => {
     expect(getToolFamilyLabel('canopy')).toBe('App');
-    expect(getToolFamilyLabel('app-advisor')).toBe('App Advisor');
+    expect(getToolFamilyLabel('app-advisor')).toBe('Orchestrator');
     expect(getToolFamilyLabel('watcher')).toBe('Watcher');
   });
 
@@ -78,7 +85,11 @@ describe('project/bot chat wrapper rendering compatibility', () => {
         JSON.stringify({ action: { type } }),
         TRUSTED_MCP_SCOPE,
       );
-      const html = renderToString(<>{info.label}</>);
+      const html = renderToString(
+        <ChatLookProvider value="classic">
+          <>{info.label}</>
+        </ChatLookProvider>,
+      );
       expect(html).toContain('Dispatch action');
       expect(html).toContain(title);
     }
@@ -123,13 +134,25 @@ describe('project/bot chat wrapper rendering compatibility', () => {
         JSON.stringify({ watchers: [{ trigger, target: {} }] }),
         TRUSTED_MCP_SCOPE,
       );
-      expect(renderToString(<>{searchInfo.label}</>)).toContain(
-        'Search watchers',
+      expect(
+        renderToString(
+          <ChatLookProvider value="classic">
+            <>{searchInfo.label}</>
+          </ChatLookProvider>,
+        ),
+      ).toContain('Search watchers');
+      expect(
+        renderToString(
+          <ChatLookProvider value="classic">
+            <>{searchInfo.label}</>
+          </ChatLookProvider>,
+        ),
+      ).toContain('chat completion');
+      const setupHtml = renderToString(
+        <ChatLookProvider value="classic">
+          <>{setupInfo.label}</>
+        </ChatLookProvider>,
       );
-      expect(renderToString(<>{searchInfo.label}</>)).toContain(
-        'chat completion',
-      );
-      const setupHtml = renderToString(<>{setupInfo.label}</>);
       expect(setupHtml).toContain('Setup watchers');
       expect(setupHtml.replace(/<[^>]*>/g, '')).toBe(
         'Setup watchers 1 watcher',
@@ -180,7 +203,11 @@ describe('tool-display-info', () => {
     });
     expect(getToolRowInput(name, input)).toBe('520px, dark');
     expect(getToolRowInput(name, '<b>SECRET_HTML</b>')).toBe('');
-    const label = renderToString(<>{getToolDisplayInfo(name, input).label}</>);
+    const label = renderToString(
+      <ChatLookProvider value="classic">
+        <>{getToolDisplayInfo(name, input).label}</>
+      </ChatLookProvider>,
+    );
     expect(label).toContain('Preview visual');
     expect(label).toContain('520px, dark');
     expect(label).not.toContain('SECRET_HTML');
@@ -195,7 +222,11 @@ describe('tool-display-info', () => {
       expect(getToolRowInput(name, input)).toBe('Revenue chart');
       expect(getToolRowInput(name, '<b>SECRET_HTML</b>')).toBe('');
       const display = getToolDisplayInfo(name, input);
-      const label = renderToString(<>{display.label}</>);
+      const label = renderToString(
+        <ChatLookProvider value="classic">
+          <>{display.label}</>
+        </ChatLookProvider>,
+      );
       expect(label).toContain('Show visual');
       expect(label).toContain('Revenue chart');
       expect(label).not.toContain('SECRET_HTML');
@@ -226,7 +257,11 @@ describe('tool-display-info', () => {
   it.each(FAMILIES)('maps %s to an icon component', (family) => {
     const Icon = getToolFamilyIcon(family);
     expect(typeof Icon).toBe('function');
-    const html = renderToString(<Icon />);
+    const html = renderToString(
+      <ChatLookProvider value="classic">
+        <Icon />
+      </ChatLookProvider>,
+    );
     expect(html.length).toBeGreaterThan(0);
   });
 
@@ -237,7 +272,11 @@ describe('tool-display-info', () => {
   it('falls back to the wrench icon for undefined family', () => {
     const Icon = getToolFamilyIcon(undefined);
     expect(typeof Icon).toBe('function');
-    const html = renderToString(<Icon />);
+    const html = renderToString(
+      <ChatLookProvider value="classic">
+        <Icon />
+      </ChatLookProvider>,
+    );
     expect(html.length).toBeGreaterThan(0);
   });
 
@@ -248,24 +287,28 @@ describe('tool-display-info', () => {
   it('renders compact and historical proxied MCP names identically', () => {
     const toolName = 'list_agentic_agent_session_artifacts';
     const compactLabel = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            `mcp__appproxy-prod-mcp-server--1b377c49de9ad913__${toolName}`,
-            '{}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              `mcp__appproxy-prod-mcp-server--1b377c49de9ad913__${toolName}`,
+              '{}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const historicalLabel = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            `mcp__appproxy-prod-mcp-server--622d6a60-adde-461c-9888-b1d100efcd26-59e020b9-764b-48a2-b23f-3f66acb2a165__${toolName}`,
-            '{}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              `mcp__appproxy-prod-mcp-server--622d6a60-adde-461c-9888-b1d100efcd26-59e020b9-764b-48a2-b23f-3f66acb2a165__${toolName}`,
+              '{}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
 
     expect(compactLabel).toBe(historicalLabel);
@@ -284,10 +327,32 @@ describe('tool-display-info', () => {
     const run = getToolDisplayInfo('mcp__cua_repl__js', '{"code":"1 + 1"}');
     const reset = getToolDisplayInfo('mcp__cua_repl__js_reset', '{}');
 
-    expect(renderToString(run.icon)).toBe(renderToString(<PickIcon />));
-    expect(renderToString(reset.icon)).toBe(renderToString(<PickIcon />));
-    expect(renderToString(<>{run.label}</>)).toContain('Computer use');
-    const resetLabel = renderToString(<>{reset.label}</>);
+    expect(renderToString(run.icon)).toBe(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <PickIcon />
+        </ChatLookProvider>,
+      ),
+    );
+    expect(renderToString(reset.icon)).toBe(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <PickIcon />
+        </ChatLookProvider>,
+      ),
+    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{run.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Computer use');
+    const resetLabel = renderToString(
+      <ChatLookProvider value="classic">
+        <>{reset.label}</>
+      </ChatLookProvider>,
+    );
     expect(resetLabel).toContain('Computer use');
     expect(resetLabel).toContain('Reset');
     expect(resetLabel).toContain('<code');
@@ -300,7 +365,9 @@ describe('tool-display-info', () => {
   it('does not claim another MCP server that happens to expose js', () => {
     expect(getToolFamilyFromName('mcp__other_server__js')).toBe('unknown');
     const label = renderToString(
-      <>{getToolDisplayInfo('mcp__other_server__js', '{}').label}</>,
+      <ChatLookProvider value="classic">
+        <>{getToolDisplayInfo('mcp__other_server__js', '{}').label}</>
+      </ChatLookProvider>,
     );
     expect(label).toContain('Other Server');
     expect(label).toContain('Js');
@@ -376,36 +443,78 @@ describe('tool-display-info', () => {
     expect(getToolFamilyFromName('canopy_update_feed_entry')).toBe('canopy');
   });
 
+  it("renders Claude's cron tools as scheduled prompts", () => {
+    const text = (name: string, input: string): string =>
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(name, input).label}</>
+        </ChatLookProvider>,
+      ).replace(/<!-- -->/g, '');
+    const icon = (name: string): string =>
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(name, '{}').icon}</>
+        </ChatLookProvider>,
+      );
+    const create = text(
+      'CronCreate',
+      '{"cron":"0 9 * * 1-5","prompt":"Check the deploy","recurring":true}',
+    );
+    expect(create).toContain('Schedule prompt');
+    expect(create).toContain('0 9 * * 1-5');
+    expect(create).toContain('Check the deploy');
+    expect(text('CronDelete', '{"id":"job-1"}')).toContain(
+      'Cancel scheduled prompt',
+    );
+    expect(text('CronDelete', '{"id":"job-1"}')).toContain('job-1');
+    expect(text('CronList', '{}')).toBe('List scheduled prompts');
+    const scheduleIcon = renderToString(
+      <ChatLookProvider value="classic">
+        <ScheduleIcon />
+      </ChatLookProvider>,
+    );
+    for (const name of ['CronCreate', 'CronDelete', 'CronList']) {
+      expect(icon(name)).toBe(scheduleIcon);
+      expect(getToolFamilyFromName(name)).toBe('monitor');
+    }
+  });
+
   it('renders memory tool labels with their scope and query context', () => {
     const saveHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'mcp__canopy__SaveMemory',
-            '{"text":"Uses Vim","scope":"user"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'mcp__canopy__SaveMemory',
+              '{"text":"Uses Vim","scope":"user"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const searchHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_search_memory',
-            '{"query":"package manager"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_search_memory',
+              '{"query":"package manager"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const readHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_read_memory',
-            '{"scope":"workspace","file":"topics/package-manager.md"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_read_memory',
+              '{"scope":"workspace","file":"topics/package-manager.md"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
 
     expect(saveHtml).toContain(
@@ -430,44 +539,52 @@ describe('tool-display-info', () => {
 
   it('renders ledger tool labels with their title, query, and status context', () => {
     const addHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'mcp__canopy__AddFeedEntry',
-            '{"type":"TASK","title":"Fix the login redirect loop","content":"Investigate"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'mcp__canopy__AddFeedEntry',
+              '{"type":"TASK","title":"Fix the login redirect loop","content":"Investigate"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const searchHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_search_feed_entries',
-            '{"query":"login redirect"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_search_feed_entries',
+              '{"query":"login redirect"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const searchByIdsHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_search_feed_entries',
-            '{"entryIds":["11111111-1111-1111-1111-111111111111"]}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_search_feed_entries',
+              '{"entryIds":["11111111-1111-1111-1111-111111111111"]}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const updateHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'mcp__canopy__UpdateFeedEntry',
-            '{"entryId":"11111111-1111-1111-1111-111111111111","expectedRevision":1,"status":"IN_PROGRESS","owner":"self"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'mcp__canopy__UpdateFeedEntry',
+              '{"entryId":"11111111-1111-1111-1111-111111111111","expectedRevision":1,"status":"IN_PROGRESS","owner":"self"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
 
     expect(addHtml).toContain(
@@ -535,13 +652,23 @@ describe('tool-display-info', () => {
 
     for (const { native, input, aliases } of cases) {
       const expected = getToolDisplayInfo(native, input, TRUSTED_MCP_SCOPE);
-      const expectedLabel = renderToString(<>{expected.label}</>);
+      const expectedLabel = renderToString(
+        <ChatLookProvider value="classic">
+          <>{expected.label}</>
+        </ChatLookProvider>,
+      );
       const expectedIcon = renderToString(expected.icon);
       expect(expectedLabel).toContain('data-testid="chat-tool-call-');
       for (const alias of aliases) {
         for (const scope of [undefined, TRUSTED_MCP_SCOPE]) {
           const actual = getToolDisplayInfo(alias, input, scope);
-          expect(renderToString(<>{actual.label}</>)).toBe(expectedLabel);
+          expect(
+            renderToString(
+              <ChatLookProvider value="classic">
+                <>{actual.label}</>
+              </ChatLookProvider>,
+            ),
+          ).toBe(expectedLabel);
           expect(renderToString(actual.icon)).toBe(expectedIcon);
           expect(getToolFamilyFromName(alias, scope)).toBe('canopy');
         }
@@ -595,15 +722,19 @@ describe('tool-display-info', () => {
 
     for (const { native, input, legacy, label } of cases) {
       const expectedLabel = renderToString(
-        <>{getToolDisplayInfo(native, input, TRUSTED_MCP_SCOPE).label}</>,
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(native, input, TRUSTED_MCP_SCOPE).label}</>
+        </ChatLookProvider>,
       );
       expect(expectedLabel).toContain(label);
       for (const legacyName of legacy) {
         expect(
           renderToString(
-            <>
-              {getToolDisplayInfo(legacyName, input, TRUSTED_MCP_SCOPE).label}
-            </>,
+            <ChatLookProvider value="classic">
+              <>
+                {getToolDisplayInfo(legacyName, input, TRUSTED_MCP_SCOPE).label}
+              </>
+            </ChatLookProvider>,
           ),
         ).toBe(expectedLabel);
         expect(getToolFamilyFromName(legacyName, TRUSTED_MCP_SCOPE)).toBe(
@@ -620,7 +751,11 @@ describe('tool-display-info', () => {
       toolName: string,
       scope?: { trustedMcpNamespace: string },
     ): string =>
-      renderToString(<>{getToolDisplayInfo(toolName, input, scope).label}</>);
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(toolName, input, scope).label}</>
+        </ChatLookProvider>,
+      );
 
     expect(
       getToolFamilyFromName('somebrand: SearchFeedEntries', brandedScope),
@@ -750,20 +885,54 @@ describe('tool-display-info', () => {
       'canopy_search_deferred_tools',
       '{"queries":[{"text":"python"}]}',
     );
-    expect(renderToString(<>{search.label}</>)).toContain(
-      'Search deferred tools',
-    );
-    expect(renderToString(<>{search.label}</>)).toContain('1');
-    expect(renderToString(<>{search.label}</>)).toContain('query');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{search.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Search deferred tools');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{search.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('1');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{search.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('query');
 
     const load = getToolDisplayInfo(
       'mcp__canopy__LoadDeferredTools',
       '{"items":[{"ref":"skill:demo"},{"ref":"plugin:demo"}]}',
       TRUSTED_MCP_SCOPE,
     );
-    expect(renderToString(<>{load.label}</>)).toContain('Load deferred tools');
-    expect(renderToString(<>{load.label}</>)).toContain('2');
-    expect(renderToString(<>{load.label}</>)).toContain('items');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{load.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Load deferred tools');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{load.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('2');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{load.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('items');
 
     const untrustedLoad = getToolDisplayInfo(
       'mcp__evil__LoadDeferredTools',
@@ -773,23 +942,37 @@ describe('tool-display-info', () => {
     expect(getToolFamilyFromName('mcp__evil__LoadDeferredTools')).toBe(
       'unknown',
     );
-    expect(renderToString(<>{untrustedLoad.label}</>)).toContain('Evil');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{untrustedLoad.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Evil');
 
     const appAdvisor = getToolDisplayInfo(
       'app_advisor_search_deferred_tools',
       '{"queries":[{"text":"watcher"}]}',
     );
-    expect(renderToString(<>{appAdvisor.label}</>)).toContain(
-      'Search deferred tools',
-    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{appAdvisor.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Search deferred tools');
 
     const pipelineEditor = getToolDisplayInfo(
       'canopy_pipeline_editor_load_deferred_tools',
       '{"items":[{"ref":"mcp:demo"}]}',
     );
-    expect(renderToString(<>{pipelineEditor.label}</>)).toContain(
-      'Load deferred tools',
-    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{pipelineEditor.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Load deferred tools');
   });
 
   it('renders clean labels and the pipeline icon for pipeline-editor tools', () => {
@@ -797,9 +980,13 @@ describe('tool-display-info', () => {
       'mcp__canopy_pipeline_editor__SetPipelineYaml',
       '{"yaml":"pipeline: {}"}',
     );
-    expect(renderToString(<>{setYaml.label}</>)).toContain(
-      'Edit pipeline YAML',
-    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{setYaml.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Edit workflow YAML');
     const pipelineIcon = renderToString(setYaml.icon);
     // The same icon is used for every pipeline-editor capability.
     const open = getToolDisplayInfo(
@@ -807,7 +994,13 @@ describe('tool-display-info', () => {
       '{"pipelineId":"p-1"}',
     );
     expect(renderToString(open.icon)).toEqual(pipelineIcon);
-    expect(renderToString(<>{open.label}</>)).toContain('Open pipeline');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{open.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Open workflow');
   });
 
   it('maps plan-comment tool names to the plan family', () => {
@@ -831,39 +1024,47 @@ describe('tool-display-info', () => {
     expect(planIcon).toBe(renderToString(renderToolFamilyIcon('plan')));
 
     const respondLabel = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'RespondToComment',
-            '{"threadId":"t-1","body":"hi","resolve":true}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'RespondToComment',
+              '{"threadId":"t-1","body":"hi","resolve":true}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(respondLabel).toContain('Reply &amp; resolve comment');
     expect(respondLabel).toContain('t-1');
 
     const replyOnlyLabel = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'RespondToComment',
-            '{"threadId":"t-2","body":"hi"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'RespondToComment',
+              '{"threadId":"t-2","body":"hi"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(replyOnlyLabel).toContain('Reply to comment');
     expect(replyOnlyLabel).not.toContain('resolve');
 
     const getCommentsLabel = renderToString(
-      <>{getToolDisplayInfo('GetPlanComments', '{}').label}</>,
+      <ChatLookProvider value="classic">
+        <>{getToolDisplayInfo('GetPlanComments', '{}').label}</>
+      </ChatLookProvider>,
     );
     expect(getCommentsLabel).toContain('Read plan comments');
     expect(getCommentsLabel).toContain('all open threads');
 
     const readThreadLabel = renderToString(
-      <>{getToolDisplayInfo('GetPlanComments', '{"threadId":"t-9"}').label}</>,
+      <ChatLookProvider value="classic">
+        <>{getToolDisplayInfo('GetPlanComments', '{"threadId":"t-9"}').label}</>
+      </ChatLookProvider>,
     );
     expect(readThreadLabel).toContain('Read comment thread');
     expect(readThreadLabel).toContain('t-9');
@@ -892,28 +1093,34 @@ describe('tool-display-info', () => {
     expect(planIcon).toBe(renderToString(renderToolFamilyIcon('plan')));
 
     const respondLabel = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'RespondToComment',
-            '{"threadId":"t-1","body":"hi","resolve":true}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'RespondToComment',
+              '{"threadId":"t-1","body":"hi","resolve":true}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(respondLabel).toContain('Reply &amp; resolve comment');
     expect(respondLabel).toContain('t-1');
 
     const getCommentsLabel = renderToString(
-      <>{getToolDisplayInfo('GetReviewComments', '{}').label}</>,
+      <ChatLookProvider value="classic">
+        <>{getToolDisplayInfo('GetReviewComments', '{}').label}</>
+      </ChatLookProvider>,
     );
     expect(getCommentsLabel).toContain('Read review comments');
     expect(getCommentsLabel).toContain('all open threads');
 
     const readThreadLabel = renderToString(
-      <>
-        {getToolDisplayInfo('GetReviewComments', '{"threadId":"t-9"}').label}
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {getToolDisplayInfo('GetReviewComments', '{"threadId":"t-9"}').label}
+        </>
+      </ChatLookProvider>,
     );
     expect(readThreadLabel).toContain('Read comment thread');
     expect(readThreadLabel).toContain('t-9');
@@ -926,7 +1133,13 @@ describe('tool-display-info', () => {
       getToolDisplayInfo('GetReviewComments', '{}').icon,
     );
     expect(reviewIcon).not.toBe(planIcon);
-    expect(reviewIcon).toBe(renderToString(<CodeBracketsIcon />));
+    expect(reviewIcon).toBe(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <CodeBracketsIcon />
+        </ChatLookProvider>,
+      ),
+    );
 
     // Same result across providers/brand namespaces — name-based, not scoped.
     const codexReviewIcon = renderToString(
@@ -1046,7 +1259,13 @@ describe('tool-display-info', () => {
         '{"query":"pipeline"}',
       ).icon,
     );
-    expect(iconHtml).toBe(renderToString(<AppAdvisorIcon />));
+    expect(iconHtml).toBe(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <AppAdvisorIcon />
+        </ChatLookProvider>,
+      ),
+    );
   });
 
   it('maps branded Canopy worktree action names to the canopy family', () => {
@@ -1132,12 +1351,16 @@ describe('tool-display-info', () => {
       expect(getToolFamilyFromName(codexName)).toBe('graph');
 
       const mcpHtml = renderToString(
-        <>{getToolDisplayInfo(mcpName, '{}').label}</>,
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(mcpName, '{}').label}</>
+        </ChatLookProvider>,
       );
       expect(mcpHtml).toContain(label);
 
       const codexHtml = renderToString(
-        <>{getToolDisplayInfo(codexName, '{}').label}</>,
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(codexName, '{}').label}</>
+        </ChatLookProvider>,
       );
       expect(codexHtml).toContain(label);
     }
@@ -1145,14 +1368,16 @@ describe('tool-display-info', () => {
 
   it('surfaces call context in code-graph tool labels', () => {
     const query = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'mcp__canopy__QueryCodeGraph',
-            '{"mode":"callers","target":"apps/desktop-app/src/main/lib/paths.ts::getWorktreeHomeDir"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'mcp__canopy__QueryCodeGraph',
+              '{"mode":"callers","target":"apps/desktop-app/src/main/lib/paths.ts::getWorktreeHomeDir"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(query).toContain('Query Code Graph');
     expect(query).toContain('callers');
@@ -1160,80 +1385,92 @@ describe('tool-display-info', () => {
     expect(query).not.toContain('apps/desktop-app/src/main/lib/paths.ts');
 
     const search = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_search_code_graph',
-            '{"query":"getWorktreeHomeDir"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_search_code_graph',
+              '{"query":"getWorktreeHomeDir"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(search).toContain('Search Code Graph');
     expect(search).toContain('getWorktreeHomeDir');
 
     const explain = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'mcp__canopy__ExplainCodeSymbol',
-            '{"qualifiedName":"packages/protocol/src/index.ts::CanopyClient"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'mcp__canopy__ExplainCodeSymbol',
+              '{"qualifiedName":"packages/protocol/src/index.ts::CanopyClient"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(explain).toContain('Explain symbol');
     expect(explain).toContain('index.ts::CanopyClient');
 
     const impact = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'mcp__canopy__GetImpactRadius',
-            '{"target":"packages/protocol/src/index.ts::CanopyClient","maxDepth":3}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'mcp__canopy__GetImpactRadius',
+              '{"target":"packages/protocol/src/index.ts::CanopyClient","maxDepth":3}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(impact).toContain('Impact radius');
     expect(impact).toContain('index.ts::CanopyClient');
     expect(impact).toContain('depth 3');
 
     const review = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_get_review_context',
-            '{"baseRef":"origin/develop"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_get_review_context',
+              '{"baseRef":"origin/develop"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(review).toContain('Review context');
     expect(review).toContain('origin/develop');
 
     const detect = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'mcp__canopy__DetectChangedSymbols',
-            '{"baseRef":"main"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'mcp__canopy__DetectChangedSymbols',
+              '{"baseRef":"main"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(detect).toContain('Detect changed symbols');
     expect(detect).toContain('main');
 
     const compare = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_compare_change_impact',
-            '{"baseRef":"origin/develop","maxDepth":4}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_compare_change_impact',
+              '{"baseRef":"origin/develop","maxDepth":4}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     expect(compare).toContain('Compare change impact');
     expect(compare).toContain('origin/develop');
@@ -1246,27 +1483,47 @@ describe('tool-display-info', () => {
       '{"enabled":true}',
     );
     expect(renderToString(enabledInfo.icon)).toBe(
-      renderToString(<ArchiveIcon />),
+      renderToString(
+        <ChatLookProvider value="classic">
+          <ArchiveIcon />
+        </ChatLookProvider>,
+      ),
     );
-    expect(renderToString(<>{enabledInfo.label}</>)).toContain(
-      'Enable chat auto-archive',
-    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{enabledInfo.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Enable chat auto-archive');
 
     const brandedInfo = getToolDisplayInfo(
       'mcp__somebrand__SetAutoArchive',
       '{"enabled":false}',
     );
     expect(renderToString(brandedInfo.icon)).toBe(
-      renderToString(<ArchiveIcon />),
+      renderToString(
+        <ChatLookProvider value="classic">
+          <ArchiveIcon />
+        </ChatLookProvider>,
+      ),
     );
-    expect(renderToString(<>{brandedInfo.label}</>)).toContain(
-      'Disable chat auto-archive',
-    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{brandedInfo.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Disable chat auto-archive');
 
     const legacyInfo = getToolDisplayInfo('canopy_archive_chat', '{}');
-    expect(renderToString(<>{legacyInfo.label}</>)).toContain(
-      'Set chat auto-archive',
-    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{legacyInfo.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Set chat auto-archive');
   });
 
   it('uses a neutral fallback for branded worktree action tool calls', () => {
@@ -1276,7 +1533,13 @@ describe('tool-display-info', () => {
         '{"action":{"type":"pipeline.run"}}',
       ).icon,
     );
-    expect(iconHtml).toBe(renderToString(<WrenchIcon />));
+    expect(iconHtml).toBe(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <WrenchIcon />
+        </ChatLookProvider>,
+      ),
+    );
   });
 
   it('maps ImmediateTurnRestart to the branded app family with its chat label', () => {
@@ -1289,13 +1552,21 @@ describe('tool-display-info', () => {
     expect(
       getToolFamilyFromName('canopy_immediate_turn_restart', TRUSTED_MCP_SCOPE),
     ).toBe('canopy');
-    expect(renderToString(<>{info.label}</>)).toBe('Refresh and resume');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{info.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toBe('Refresh and resume');
 
     const spoofed = 'mcp__attacker__fake_immediate_turn_restart';
     expect(getToolFamilyFromName(spoofed, TRUSTED_MCP_SCOPE)).toBe('unknown');
     expect(
       renderToString(
-        <>{getToolDisplayInfo(spoofed, '{}', TRUSTED_MCP_SCOPE).label}</>,
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(spoofed, '{}', TRUSTED_MCP_SCOPE).label}</>
+        </ChatLookProvider>,
       ),
     ).not.toBe('Refresh and resume');
 
@@ -1305,12 +1576,14 @@ describe('tool-display-info', () => {
     );
     expect(
       renderToString(
-        <>
-          {
-            getToolDisplayInfo(spoofedDynamicTool, '{}', TRUSTED_MCP_SCOPE)
-              .label
-          }
-        </>,
+        <ChatLookProvider value="classic">
+          <>
+            {
+              getToolDisplayInfo(spoofedDynamicTool, '{}', TRUSTED_MCP_SCOPE)
+                .label
+            }
+          </>
+        </ChatLookProvider>,
       ),
     ).not.toBe('Refresh and resume');
   });
@@ -1321,9 +1594,17 @@ describe('tool-display-info', () => {
       '{"previous_model":"fable[1m]","detected_model":"opus[1m]","previous_model_display":"Fable 5 1M","detected_model_display":"Opus 4.8 1M","reported_model":"claude-opus-4-8"}',
     );
     expect(renderToString(info.icon)).toBe(
-      renderToString(<ClaudeLogo width={14} height={14} />),
+      renderToString(
+        <ChatLookProvider value="classic">
+          <ClaudeLogo width={14} height={14} />
+        </ChatLookProvider>,
+      ),
     );
-    const labelHtml = renderToString(<>{info.label}</>);
+    const labelHtml = renderToString(
+      <ChatLookProvider value="classic">
+        <>{info.label}</>
+      </ChatLookProvider>,
+    );
     expect(labelHtml).toContain('Claude model changed from');
     expect(labelHtml).toContain('<strong>Fable 5 1M</strong>');
     expect(labelHtml).toContain('to');
@@ -1336,39 +1617,45 @@ describe('tool-display-info', () => {
 
   it('uses App Advisor-style labels for Canopy action tools', () => {
     const searchHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo('canopy_search_actions', '{"query":"pipeline"}')
-            .label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo('canopy_search_actions', '{"query":"pipeline"}')
+              .label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const dispatchHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_dispatch_action',
-            '{"action":{"type":"pipeline.run"}}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_dispatch_action',
+              '{"action":{"type":"pipeline.run"}}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const readYamlHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_read_pipeline_yaml',
-            '{"pipelineId":"build.yml","startLine":4,"endLine":12,"pattern":"steps"}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_read_pipeline_yaml',
+              '{"pipelineId":"build.yml","startLine":4,"endLine":12,"pattern":"steps"}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
 
     expect(searchHtml).toContain('Search actions');
     expect(searchHtml).toContain('pipeline');
     expect(dispatchHtml).toContain('Dispatch action');
     expect(dispatchHtml).toContain('Pipeline - Run');
-    expect(readYamlHtml).toContain('Read pipeline YAML');
+    expect(readYamlHtml).toContain('Read workflow YAML');
     expect(readYamlHtml).toContain('build.yml');
     expect(readYamlHtml).toContain('lines 4-12');
     expect(readYamlHtml).toContain('steps');
@@ -1388,13 +1675,41 @@ describe('tool-display-info', () => {
       input,
     );
 
-    expect(renderToString(<>{worktree.label}</>)).toContain(
-      'Watch GitHub workflow runs',
-    );
-    expect(renderToString(<>{worktree.label}</>)).toContain('>2<!-- -->');
-    expect(renderToString(<>{worktree.label}</>)).toContain('runs</span>');
-    expect(renderToString(<>{advisor.label}</>)).toContain('>2<!-- -->');
-    expect(renderToString(<>{advisor.label}</>)).toContain('runs</span>');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{worktree.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Watch GitHub workflow runs');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{worktree.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('>2<!-- -->');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{worktree.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('runs</span>');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{advisor.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('>2<!-- -->');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{advisor.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('runs</span>');
     expect(renderToString(worktree.icon)).toBe(renderToString(advisor.icon));
     expect(getToolFamilyFromName('canopy_watch_github_items')).toBe('watcher');
     expect(
@@ -1414,7 +1729,11 @@ describe('tool-display-info', () => {
         ],
       }),
     );
-    const singleHtml = renderToString(<>{single.label}</>);
+    const singleHtml = renderToString(
+      <ChatLookProvider value="classic">
+        <>{single.label}</>
+      </ChatLookProvider>,
+    );
     expect(singleHtml).toContain('Watch pull requests');
     expect(singleHtml).toContain('acme/api#42');
 
@@ -1428,7 +1747,13 @@ describe('tool-display-info', () => {
         ],
       }),
     );
-    expect(renderToString(<>{many.label}</>)).toContain('2 pull requests');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{many.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('2 pull requests');
 
     const numbered = getToolDisplayInfo(
       'canopy_watch_github_items',
@@ -1436,7 +1761,13 @@ describe('tool-display-info', () => {
         items: [{ kind: 'pull_request', repository: 'acme/api', number: 3 }],
       }),
     );
-    expect(renderToString(<>{numbered.label}</>)).toContain('acme/api#3');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{numbered.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('acme/api#3');
 
     const defaultRepository = getToolDisplayInfo(
       'canopy_watch_github_items',
@@ -1445,9 +1776,13 @@ describe('tool-display-info', () => {
         items: [{ kind: 'pull_request', number: 9 }],
       }),
     );
-    expect(renderToString(<>{defaultRepository.label}</>)).toContain(
-      'acme/api#9',
-    );
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{defaultRepository.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('acme/api#9');
   });
 
   it('renders GetGitHubPullRequestStatus as an app read on every surface', () => {
@@ -1459,7 +1794,11 @@ describe('tool-display-info', () => {
       'canopy_get_github_pull_request_status',
       'GetGitHubPullRequestStatus',
     ]) {
-      const html = renderToString(<>{getToolDisplayInfo(name, input).label}</>);
+      const html = renderToString(
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(name, input).label}</>
+        </ChatLookProvider>,
+      );
       expect(html).toContain('Read pull request status');
       expect(html).toContain('acme/api#42');
       expect(getToolFamilyFromName(name)).toBe('canopy');
@@ -1468,7 +1807,13 @@ describe('tool-display-info', () => {
       'mcp__canopy_app_advisor__GetGitHubPullRequestStatus',
       JSON.stringify({ pullRequest: 'acme/web#7' }),
     );
-    expect(renderToString(<>{advisor.label}</>)).toContain('acme/web#7');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{advisor.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('acme/web#7');
     expect(
       getToolFamilyFromName(
         'mcp__canopy_app_advisor__GetGitHubPullRequestStatus',
@@ -1476,14 +1821,16 @@ describe('tool-display-info', () => {
     ).toBe('app-advisor');
     expect(
       renderToString(
-        <>
-          {
-            getToolDisplayInfo(
-              'canopy_get_github_pull_request_status',
-              JSON.stringify({}),
-            ).label
-          }
-        </>,
+        <ChatLookProvider value="classic">
+          <>
+            {
+              getToolDisplayInfo(
+                'canopy_get_github_pull_request_status',
+                JSON.stringify({}),
+              ).label
+            }
+          </>
+        </ChatLookProvider>,
       ),
     ).toBe('Read pull request status');
   });
@@ -1492,8 +1839,20 @@ describe('tool-display-info', () => {
     const input = JSON.stringify({ watcherIds: ['watcher-1', 'watcher-2'] });
     const worktree = getToolDisplayInfo('canopy_delete_watchers', input);
 
-    expect(renderToString(<>{worktree.label}</>)).toContain('Delete watchers');
-    expect(renderToString(<>{worktree.label}</>)).toContain('>2<!-- -->');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{worktree.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Delete watchers');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{worktree.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('>2<!-- -->');
   });
 
   it.each([
@@ -1523,7 +1882,9 @@ describe('tool-display-info', () => {
       'mcp__canopy__DispatchAction',
     ]) {
       const html = renderToString(
-        <>{getToolDisplayInfo(toolName, JSON.stringify({ action })).label}</>,
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(toolName, JSON.stringify({ action })).label}</>
+        </ChatLookProvider>,
       );
       for (const text of expected) expect(html).toContain(text);
       expect(html).not.toContain('Dispatch action');
@@ -1534,14 +1895,16 @@ describe('tool-display-info', () => {
     'renders the generic dispatch row for the inherited key %s',
     (type) => {
       const html = renderToString(
-        <>
-          {
-            getToolDisplayInfo(
-              'mcp__canopy__DispatchAction',
-              JSON.stringify({ action: { type } }),
-            ).label
-          }
-        </>,
+        <ChatLookProvider value="classic">
+          <>
+            {
+              getToolDisplayInfo(
+                'mcp__canopy__DispatchAction',
+                JSON.stringify({ action: { type } }),
+              ).label
+            }
+          </>
+        </ChatLookProvider>,
       );
       expect(html).toContain('Dispatch action');
     },
@@ -1549,24 +1912,28 @@ describe('tool-display-info', () => {
 
   it('renders hook pause/resume dispatch actions with specific labels', () => {
     const pauseHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'canopy_dispatch_action',
-            '{"action":{"type":"hook.pause","hookKey":"project:pr:checks:fail"}}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'canopy_dispatch_action',
+              '{"action":{"type":"hook.pause","hookKey":"project:pr:checks:fail"}}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
     const resumeHtml = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'app_advisor_dispatch_action',
-            '{"action":{"type":"hook.resume","all":true,"projectId":"project-1","worktreeId":"worktree-1"}}',
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'app_advisor_dispatch_action',
+              '{"action":{"type":"hook.resume","all":true,"projectId":"project-1","worktreeId":"worktree-1"}}',
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
 
     expect(pauseHtml).toContain('Pause hook');
@@ -1617,12 +1984,16 @@ describe('tool-display-info', () => {
       'WorkspaceSettingsModal.tsx',
     ].join('\\');
     const html = renderToString(
-      <>
-        {
-          getToolDisplayInfo('Read', JSON.stringify({ file_path: windowsPath }))
-            .label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'Read',
+              JSON.stringify({ file_path: windowsPath }),
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('WorkspaceSettingsModal.tsx');
@@ -1632,18 +2003,20 @@ describe('tool-display-info', () => {
 
   it('renders last-line ReadLines labels', () => {
     const html = renderToString(
-      <>
-        {
-          getToolDisplayInfo(
-            'ReadLines',
-            JSON.stringify({
-              file_path:
-                'packages/ui-shared/src/components/chat/tool-display.tsx',
-              last: '40',
-            }),
-          ).label
-        }
-      </>,
+      <ChatLookProvider value="classic">
+        <>
+          {
+            getToolDisplayInfo(
+              'ReadLines',
+              JSON.stringify({
+                file_path:
+                  'packages/ui-shared/src/components/chat/tool-display.tsx',
+                last: '40',
+              }),
+            ).label
+          }
+        </>
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('tool-display.tsx');
@@ -1656,7 +2029,11 @@ describe('tool-display-info', () => {
       JSON.stringify({ command: 'npm test', description: 'run the tests' }),
     );
 
-    const label = renderToString(<>{info.label}</>);
+    const label = renderToString(
+      <ChatLookProvider value="classic">
+        <>{info.label}</>
+      </ChatLookProvider>,
+    );
     expect(label).toContain('Run the tests');
     expect(label).not.toContain('run the tests');
   });
@@ -1670,8 +2047,18 @@ describe('tool-display-info', () => {
     const powershell = getToolDisplayInfo('PowerShell', input);
 
     expect(renderToString(powershell.icon)).toBe(renderToString(bash.icon));
-    expect(renderToString(<>{powershell.label}</>)).toBe(
-      renderToString(<>{bash.label}</>),
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{powershell.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toBe(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{bash.label}</>
+        </ChatLookProvider>,
+      ),
     );
   });
 
@@ -1681,7 +2068,11 @@ describe('tool-display-info', () => {
       JSON.stringify({ command: 'Get-ChildItem' }),
     );
 
-    const label = renderToString(<>{info.label}</>);
+    const label = renderToString(
+      <ChatLookProvider value="classic">
+        <>{info.label}</>
+      </ChatLookProvider>,
+    );
     expect(label).toContain('PowerShell');
     expect(label).toContain('Get-ChildItem');
   });
@@ -1699,15 +2090,17 @@ describe('tool-display-info', () => {
     expect(getToolFamilyFromName('canopy_manage_delegate')).toBe('canopy');
     expect(
       renderToString(
-        <>
-          {
-            getToolDisplayInfo(
-              'mcp__canopy__ManageDelegate',
-              '{}',
-              TRUSTED_MCP_SCOPE,
-            ).label
-          }
-        </>,
+        <ChatLookProvider value="classic">
+          <>
+            {
+              getToolDisplayInfo(
+                'mcp__canopy__ManageDelegate',
+                '{}',
+                TRUSTED_MCP_SCOPE,
+              ).label
+            }
+          </>
+        </ChatLookProvider>,
       ),
     ).toBe('Manage delegate');
   });
@@ -1717,8 +2110,18 @@ describe('tool-display-info', () => {
       'SendMessage',
       '{"to":"ac70abe6769a1e1ea","summary":"Re-review Windows shell fix","message":"body"}',
     );
-    expect(renderToString(info.icon)).toBe(renderToString(<AgentIcon />));
-    const label = renderToString(<>{info.label}</>);
+    expect(renderToString(info.icon)).toBe(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <AgentIcon />
+        </ChatLookProvider>,
+      ),
+    );
+    const label = renderToString(
+      <ChatLookProvider value="classic">
+        <>{info.label}</>
+      </ChatLookProvider>,
+    );
     expect(label).toContain('Agent message');
     expect(label).toContain('Re-review Windows shell fix');
     // Without a host-resolved recipient the raw id is shown as a fallback.
@@ -1730,7 +2133,11 @@ describe('tool-display-info', () => {
       '{"to":"ac70abe6769a1e1ea","summary":"Re-review Windows shell fix","message":"body"}',
       'Fix Task 18',
     );
-    const label = renderToString(<>{resolved.label}</>);
+    const label = renderToString(
+      <ChatLookProvider value="classic">
+        <>{resolved.label}</>
+      </ChatLookProvider>,
+    );
     expect(label).toContain('Agent message');
     expect(label).toContain('Fix Task 18');
     expect(label).toContain('Re-review Windows shell fix');
@@ -1752,7 +2159,11 @@ describe('independent agent tools', () => {
         }),
         TRUSTED_MCP_SCOPE,
       );
-      const html = renderToString(<>{display.label}</>);
+      const html = renderToString(
+        <ChatLookProvider value="classic">
+          <>{display.label}</>
+        </ChatLookProvider>,
+      );
       expect(html).toContain(label);
       expect(html).toContain('Investigate the follow-up task');
       expect(getToolFamilyFromName(toolName, TRUSTED_MCP_SCOPE)).toBe('canopy');
@@ -1783,7 +2194,9 @@ it.each([
     for (const name of [claude, `mcp__canopy__${claude}`, `canopy_${codex}`]) {
       expect(
         renderToString(
-          <>{getToolDisplayInfo(name, '{}', TRUSTED_MCP_SCOPE).label}</>,
+          <ChatLookProvider value="classic">
+            <>{getToolDisplayInfo(name, '{}', TRUSTED_MCP_SCOPE).label}</>
+          </ChatLookProvider>,
         ),
       ).toContain(label);
       expect(getToolFamilyFromName(name, TRUSTED_MCP_SCOPE)).toBe(family);
@@ -1799,17 +2212,21 @@ it.each(['', 'update: src/index.ts', 'add: src/new.ts', 'delete: src/old.ts'])(
     expect(getToolFamilyFromName('apply_patch')).toBe('edit');
     expect(
       renderToString(
-        <>
-          {patch.label}
-          {patch.icon}
-        </>,
+        <ChatLookProvider value="classic">
+          <>
+            {patch.label}
+            {patch.icon}
+          </>
+        </ChatLookProvider>,
       ),
     ).toBe(
       renderToString(
-        <>
-          {edit.label}
-          {edit.icon}
-        </>,
+        <ChatLookProvider value="classic">
+          <>
+            {edit.label}
+            {edit.icon}
+          </>
+        </ChatLookProvider>,
       ),
     );
   },
@@ -1831,7 +2248,9 @@ it.each([
   'unwraps %s commands in delegated tool labels',
   (tool, command, expected) => {
     const label = renderToString(
-      <>{getToolDisplayInfo(tool, JSON.stringify({ command })).label}</>,
+      <ChatLookProvider value="classic">
+        <>{getToolDisplayInfo(tool, JSON.stringify({ command })).label}</>
+      </ChatLookProvider>,
     );
     expect(label).toContain(expected);
     expect(label).not.toMatch(/zsh|pwsh\.exe|powershell\.exe/);
@@ -1914,7 +2333,11 @@ describe('cloud tool display aliases', () => {
       const expected = getToolDisplayInfo(canonical, '{}');
       expect(getToolFamilyFromName(name)).toBe(family);
       expect(actual.icon.type).toBe(expected.icon.type);
-      const label = renderToString(<>{actual.label}</>);
+      const label = renderToString(
+        <ChatLookProvider value="classic">
+          <>{actual.label}</>
+        </ChatLookProvider>,
+      );
       expect(label).toContain(detail);
       expect(label).not.toContain('&quot;query&quot;');
     },
@@ -1927,7 +2350,9 @@ describe('cloud tool display aliases', () => {
     expect(getToolFamilyFromName(name)).toBe(family);
     expect(
       renderToString(
-        <>{getToolDisplayInfo(name, JSON.stringify(args)).label}</>,
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(name, JSON.stringify(args)).label}</>
+        </ChatLookProvider>,
       ),
     ).toContain(detail);
   });
@@ -1935,7 +2360,9 @@ describe('cloud tool display aliases', () => {
   it('preserves raw Codex web-search queries', () => {
     expect(
       renderToString(
-        <>{getToolDisplayInfo('web_search', 'cloud agents').label}</>,
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo('web_search', 'cloud agents').label}</>
+        </ChatLookProvider>,
       ),
     ).toContain('cloud agents');
   });
@@ -1949,6 +2376,53 @@ describe('cloud tool display aliases', () => {
       ).not.toBe(getToolDisplayInfo('Read', '{}').icon.type);
     },
   );
+});
+
+describe('Codex harness tool calls (CAN-5203)', () => {
+  it.each([
+    ['bash', { command: 'npm run lint' }],
+    ['exec_command', { cmd: 'npm run lint' }],
+    ['shell', { command: 'npm run lint' }],
+  ] as const)(
+    "reads a %s call as desktop's Codex command row",
+    (name, args) => {
+      const call = codexToolCall(name, JSON.stringify(args));
+      expect(call).toEqual({ toolName: 'command', input: 'npm run lint' });
+      const label = renderToString(
+        <>{getToolDisplayInfo(call.toolName, call.input).label}</>,
+      );
+      expect(label).toBe(
+        renderToString(
+          <>{getToolDisplayInfo('command', 'npm run lint').label}</>,
+        ),
+      );
+      expect(label).toContain('npm run lint');
+      expect(getToolFamilyFromName(call.toolName, undefined, call.input)).toBe(
+        'bash',
+      );
+    },
+  );
+
+  it('keeps every other call, and a shell call without a command, as it is', () => {
+    expect(codexToolCall('Read', '{"file_path":"a.ts"}')).toEqual({
+      toolName: 'Read',
+      input: '{"file_path":"a.ts"}',
+    });
+    expect(codexToolCall('bash', '{"command":["npm","test"]}')).toEqual({
+      toolName: 'bash',
+      input: '{"command":["npm","test"]}',
+    });
+    // A command that reads a file still reads as desktop's Read row.
+    const read = codexToolCall('bash', '{"command":"cat package.json"}');
+    expect(
+      renderToString(
+        <>{getToolDisplayInfo(read.toolName, read.input).label}</>,
+      ),
+    ).toContain('package.json');
+    expect(getToolFamilyFromName(read.toolName, undefined, read.input)).toBe(
+      'read',
+    );
+  });
 });
 
 describe('cloud shell read display', () => {
@@ -1975,7 +2449,13 @@ describe('cloud shell read display', () => {
       expect(display.icon.type).toBe(
         getToolDisplayInfo(canonical, '{}').icon.type,
       );
-      expect(renderToString(<>{display.label}</>)).toContain(detail);
+      expect(
+        renderToString(
+          <ChatLookProvider value="classic">
+            <>{display.label}</>
+          </ChatLookProvider>,
+        ),
+      ).toContain(detail);
     },
   );
 
@@ -1994,7 +2474,13 @@ describe('cloud shell read display', () => {
   ])('keeps real or compound shell operations as shell: %s', (command) => {
     const display = getToolDisplayInfo('bash', JSON.stringify({ command }));
     expect(display.icon.type).toBe(getToolDisplayInfo('Bash', '{}').icon.type);
-    expect(renderToString(<>{display.label}</>)).toContain('Bash');
+    expect(
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{display.label}</>
+        </ChatLookProvider>,
+      ),
+    ).toContain('Bash');
   });
 });
 
@@ -2010,13 +2496,21 @@ describe('saved and raw shell tool displays', () => {
       getToolDisplayInfo('Read', '{}').icon.type,
     );
     expect(
-      renderToString(<>{getToolDisplayInfo(name, input).label}</>),
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo(name, input).label}</>
+        </ChatLookProvider>,
+      ),
     ).toContain('package.json');
   });
 
   it('keeps raw shell operations visible', () => {
     expect(
-      renderToString(<>{getToolDisplayInfo('bash', 'npm test').label}</>),
+      renderToString(
+        <ChatLookProvider value="classic">
+          <>{getToolDisplayInfo('bash', 'npm test').label}</>
+        </ChatLookProvider>,
+      ),
     ).toContain('npm test');
   });
 
@@ -2033,4 +2527,28 @@ describe('saved and raw shell tool displays', () => {
       getToolDisplayInfo('Bash', '{}').icon.type,
     );
   });
+});
+
+it('renders automatic notices and combined ordinary watchers without delegate watches', () => {
+  const presentation = watcherFiredPresentation(
+    '<system_instruction><canopy_watcher_event>{"kind":"delegation_finished","label":"Review: completed"}</canopy_watcher_event></system_instruction>',
+  );
+  expect(presentation?.text).toBe('Review: completed');
+  if (!presentation) throw new Error('Expected an automatic notice');
+  expect(renderToString(presentation.title)).toContain(
+    'Delegate finished watcher has fired',
+  );
+  const combined = renderToString(
+    <WatcherFiredTitle
+      watcherFired={{
+        kind: '2 watchers fired',
+        combinedWatchers: [
+          { kind: 'Build', text: 'Tests passed' },
+          { kind: 'Deploy', text: 'Deployed' },
+        ],
+      }}
+    />,
+  );
+  expect(combined).toContain('2 watchers fired');
+  expect(combined).not.toContain('2 watchers fired watcher has fired');
 });

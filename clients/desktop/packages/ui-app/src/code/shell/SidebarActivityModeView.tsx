@@ -17,13 +17,18 @@ import {
   useSidebarActivityModeStore,
   type SidebarActivityEntry,
 } from '@canopy/app-state';
-import { WorkEntryRow, WorktreeRow } from '@canopy/ui-shared/components';
+import {
+  Button,
+  WorkEntryRow,
+  WorktreeRow,
+} from '@canopy/ui-shared/components';
 import {
   deriveWorktreeUiStatus,
   type SnapshotWorktree,
 } from './worktree-status';
 import {
   isSidebarActivityAvailable,
+  isSidebarActivityEntryMuted,
   type SidebarActivityHost,
 } from './sidebar-activity-host';
 import {
@@ -336,14 +341,14 @@ export function SidebarActivityModeView({
         className="flex flex-col items-start gap-2 px-3 py-2 text-s fg-secondary"
       >
         <p>Couldn&apos;t load activity. Try again.</p>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           onClick={retry}
           data-testid="sidebar-activity-retry"
-          className={`focus-ring rounded-md px-2 py-1 text-s fg-primary hover:bg-subtle ${touch ? 'min-h-11' : ''}`}
         >
           Try again
-        </button>
+        </Button>
       </div>
     );
   }
@@ -377,7 +382,11 @@ export function SidebarActivityModeView({
         key={entry.key}
         entry={entry}
         index={index}
-        unread={host.unreadKeys.has(entry.key)}
+        // A muted space shows no dot, even on a row built before the mute.
+        unread={
+          host.unreadKeys.has(entry.key) &&
+          !isSidebarActivityEntryMuted(host, entry)
+        }
         selected={host.activeChatKey === entry.key}
         touch={touch}
         working={

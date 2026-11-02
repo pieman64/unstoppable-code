@@ -2,6 +2,7 @@ import type { AgentProviderType } from '../types';
 import type {
   ProviderCreditsSnapshot,
   ProviderRateLimitSnapshot,
+  ProviderSpendSnapshot,
 } from '../types/observability';
 
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
@@ -22,6 +23,7 @@ export interface ProviderUsageWindow {
   resetsAt?: string | number;
   windowDurationMs?: number;
   credits?: ProviderCreditsSnapshot;
+  spend?: ProviderSpendSnapshot;
   /**
    * Codex reports its balance as a count of credits (carried in
    * `credits.remainingUsd`); every other provider's credits are dollars.
@@ -157,6 +159,7 @@ function toWindows(
         toWindowDurationMs(limit.primary?.windowDurationMins) ??
         claudeWindowDurationMs(limit.limitId),
       credits: limit.credits,
+      ...(limit.spend ? { spend: limit.spend } : {}),
     },
   ];
 }

@@ -37,7 +37,12 @@ import {
 import { notifyGitHubConnectionChanged } from '@/lib/integrationConnectionEvents';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { subscriptionLabelForPlanType } from '@canopy/protocol/telemetry';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  ProviderRowLabel,
+  ProviderStatusDot,
+} from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
   EyeIcon,
@@ -54,7 +59,6 @@ import {
   SettingsTextField,
 } from '@/components/settings/SettingsLayout';
 import { useObservabilityStore } from '@/stores/observabilityStore';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { PROVIDER_CONNECTION_STATE_LABELS } from '@/lib/onboarding/provider-connection-status';
 
 const TOKEN_SAVE_DEBOUNCE_MS = 600;
@@ -152,36 +156,10 @@ function StatusDot({
   ok: boolean;
   tone?: ProviderAuthUnauthenticatedTone;
 }): JSX.Element {
-  if (!ok && tone === 'neutral') {
-    return (
-      <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border border-fg-secondary/40" />
-    );
-  }
   return (
-    <span
-      className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-        ok ? 'bg-success' : 'bg-destructive'
-      }`}
+    <ProviderStatusDot
+      tone={ok ? 'connected' : tone === 'neutral' ? 'signed-out' : 'failed'}
     />
-  );
-}
-
-/** A provider's mark, name, and status dot as a settings row label. */
-function ProviderRowLabel({
-  icon,
-  name,
-  status,
-}: {
-  icon: ReactNode;
-  name: string;
-  status: ReactNode;
-}): JSX.Element {
-  return (
-    <span className="inline-flex items-center gap-2">
-      {icon}
-      {name}
-      {status}
-    </span>
   );
 }
 
@@ -195,7 +173,7 @@ function TokenVisibilityButton({
 }): JSX.Element {
   return (
     <Button
-      size="control"
+      size="compact"
       variant="ghost"
       iconOnly
       aria-label={visible ? 'Hide token' : 'Show token'}
@@ -229,7 +207,6 @@ function TerminalProviderAuthPanel({
   layout,
   unauthenticatedTone,
 }: TerminalProviderAuthPanelProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [claudeRefreshKey, setClaudeRefreshKey] = useState(0);
   const [codexRefreshKey, setCodexRefreshKey] = useState(0);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -352,27 +329,25 @@ function TerminalProviderAuthPanel({
         label={
           <ProviderRowLabel icon={logo} name={name} status={rowStatusDot} />
         }
-        description={
-          <>
-            {statusLine}
-            <ProviderCarryoverNote
-              provider={provider}
-              enabled={authenticated}
-              refreshKey={refreshKey}
-            />
-          </>
-        }
+        description={statusLine}
         control={
           <Button
             onClick={(): void => setLoginOpen(true)}
             disabled={status === null}
             data-testid={`auth-panel-${provider}-connect`}
-            size={settingsButtonSize}
+            size="compact"
           >
             {neutral ? 'Connect' : loginLabel}
           </Button>
         }
       >
+        {/* What carries over from the provider's own setup is detail under
+            the row, so the row keeps one subtitle line. */}
+        <ProviderCarryoverNote
+          provider={provider}
+          enabled={authenticated}
+          refreshKey={refreshKey}
+        />
         {loginModal}
       </SettingsRow>
     );
@@ -390,7 +365,7 @@ function TerminalProviderAuthPanel({
           onClick={(): void => setLoginOpen(true)}
           disabled={status === null}
           data-testid={`auth-panel-${provider}-connect`}
-          size="control"
+          size="compact"
           className="ml-auto"
         >
           {loginLabel}
@@ -443,7 +418,6 @@ function GitHubAuthPanel({
   compact = false,
   layout,
 }: GitHubAuthPanelProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [ghRefreshKey, setGhRefreshKey] = useState(0);
   const [loginOpen, setLoginOpen] = useState(false);
   const patInputId = useId();
@@ -736,7 +710,7 @@ function GitHubAuthPanel({
         data-testid="auth-panel-github-connect"
         // Settings rows take the settings size; the onboarding panel keeps
         // the control rectangle.
-        size={row ? settingsButtonSize : 'control'}
+        size={row ? 'compact' : 'control'}
         className={row ? undefined : 'ml-auto'}
       >
         {ghStatus?.authenticated ? 'Change account' : 'Sign in'}
@@ -975,18 +949,22 @@ function GitHubAuthPanel({
               data-testid="auth-panel-github-pat-input"
               className="focus-ring w-full rounded-lg border bg-base px-3 py-2 pr-10 text-s font-mono disabled:opacity-50"
             />
-            <button
-              type="button"
-              onClick={(): void => setPatVisible((prev) => !prev)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 fg-secondary hover:fg-primary transition-colors focus-ring rounded"
-              aria-label={patVisible ? 'Hide token' : 'Show token'}
-            >
-              {patVisible ? (
-                <EyeOffIcon size={16} aria-hidden />
-              ) : (
-                <EyeIcon size={16} aria-hidden />
-              )}
-            </button>
+            <span className="absolute right-1 top-1/2 flex -translate-y-1/2">
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                data-settings-control="field"
+                onClick={(): void => setPatVisible((prev) => !prev)}
+                aria-label={patVisible ? 'Hide token' : 'Show token'}
+              >
+                {patVisible ? (
+                  <EyeOffIcon size={16} aria-hidden />
+                ) : (
+                  <EyeIcon size={16} aria-hidden />
+                )}
+              </Button>
+            </span>
           </div>
         </div>
       )}

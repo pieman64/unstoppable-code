@@ -66,14 +66,17 @@ import type {
   ChatTab,
   ClaudeTerminalLaunchOptions,
   CreateTabTarget,
+  DelegationStreamScopeHints,
   PendingPlanExit,
   PendingQuestion,
+  ProvisionalFirstSendFailure,
   QueuedChatMessage,
   SendMessageDispatchOptions,
   WorktreeChatState,
 } from './types';
 import type { ChatScopeSyncStatus } from './revisioned-sync';
 import type { ChatCommandDisposition } from './revisioned-commands';
+import type { ProvisionalFirstSendInput } from './provisional-first-send';
 
 /**
  * Transient, per-scope user-facing notice raised by the revisioned command
@@ -91,6 +94,7 @@ export interface ChatStateNotice {
  * in order, issues typed commands, and keeps only presentation state local.
  */
 export interface ChatRevisionedSlice {
+  delegationStreamHints: Record<string, DelegationStreamScopeHints>;
   /** Per-scope sync lifecycle keyed by `projectId/worktreeId`. */
   chatStateSync: Record<string, ChatScopeSyncStatus>;
   /** Canonical runtime state per chat id from committed snapshots/deltas. */
@@ -115,6 +119,8 @@ export interface ChatRevisionedSlice {
   ) => Promise<'installed' | 'unavailable' | 'failed'>;
   /** Manual retry for the inline refresh-error treatment. */
   retryChatStateRefresh: (projectId: string, worktreeId: string) => void;
+  /** Re-read a live scope through the revision-guarded snapshot refresh. */
+  refreshChatScopeRevisioned: (projectId: string, worktreeId: string) => void;
   /** Stop tracking a scope (idle unload / worktree removal). */
   releaseChatScopeRevisioned: (projectId: string, worktreeId: string) => void;
   /** Dismiss the transient conflict/command-failure notice for a scope. */
@@ -392,7 +398,16 @@ export interface ChatTabsSlice {
   selectWorktree: (
     projectId: string,
     worktreeId: string,
-    options?: { deferTabLoad?: boolean; newlyCreated?: boolean },
+    options?: {
+      deferTabLoad?: boolean;
+      newlyCreated?: boolean;
+      /**
+       * An implicit entry (a sidebar row): open on the tab needing the user
+       * (question, approval, plan review, then newest unread) instead of the
+       * persisted active tab. Explicit chat navigation leaves this unset.
+       */
+      attentionLanding?: boolean;
+    },
   ) => void;
   deselectWorktree: () => void;
   loadTabs: () => Promise<void>;
@@ -514,9 +529,13 @@ export interface ChatTabsSlice {
    * the existing tab instead of creating a duplicate. File tabs do not
    * participate in command discovery or model-defaults sync.
    *
-   * `initialViewMode` seeds the raw/preview/table mode of a tab this call
-   * creates. It is deliberately ignored when the file is already open, so
-   * reopening never overrides the mode the user last chose there.
+   * A tab this call creates starts in, by precedence: `initialViewMode`, the
+   * file's remembered Source/Formatted/Table choice from this renderer
+   * session, then the file kind's default (Markdown/HTML formatted, CSV as a
+   * table, otherwise unset for the raw fallback). Callers pass
+   * `initialViewMode` only for a genuine override, never for a kind default.
+   * Every mode input is ignored when the file is already open, so reopening
+   * never overrides the mode the user last chose there.
    *
    * `activate: false` opens or finds the tab without selecting it, keeping
    * the user's current tab (background agent presentation).
@@ -544,7 +563,9 @@ export interface ChatTabsSlice {
    * Assign a file into an existing (typically empty) file tab. If another
    * file tab already shows `absolutePath`, that tab is activated instead and
    * its id returned; otherwise the target tab's path/title are updated in
-   * place and the tab id is returned.
+   * place and the tab id is returned. The assigned file's view mode resolves
+   * like {@link openFileTab} without an explicit mode, replacing any mode the
+   * tab held before.
    */
   assignFileTab: (
     tabId: string,
@@ -556,7 +577,12 @@ export interface ChatTabsSlice {
   ) => string | null;
   /**
    * Persist the raw/preview/table mode selected inside an open file tab so
-   * switching away and back restores the same view.
+   * switching away and back restores the same view. A successfully applied
+   * non-diff mode is also remembered for the file for the rest of the
+   * renderer session; closing a file tab remembers its last non-diff mode the
+   * same way, so a later reopen restores it. Entering Diff also preserves a
+   * restored reading mode without replacing a choice already made in that tab.
+   * Diff itself is never remembered.
    */
   setFileTabViewMode: (
     tabId: string,
@@ -773,6 +799,51 @@ export interface ChatMessagingSlice {
     options?: SendMessageDispatchOptions,
   ) => Promise<void>;
   /**
+   * Shows a Home first send in its empty, idle destination chat before
+   * dispatch (CAN-4742): the echo, a renderer-only turn and the first-message
+   * title. Idempotent for the same message id. Returns whether this
+   * submission is presented; `false` leaves the tab unchanged. A later
+   * `sendMessage` with the same `userMessageId` adopts it.
+   */
+  presentProvisionalFirstSend: (
+    target: { projectId: string; worktreeId: string; chatId: string },
+    input: ProvisionalFirstSendInput,
+  ) => boolean;
+  /**
+   * Retires a presented first send that was never dispatched or queued,
+   * restoring the prior title only while this submission still owns it.
+   */
+  withdrawProvisionalFirstSend: (
+    target: { projectId: string; worktreeId: string; chatId: string },
+    userMessageId: string,
+  ) => void;
+  /**
+   * Marks the current attempt of a presented first send failed because its
+   * model was refused, keeping the prompt and title (CAN-5021).
+   * Returns whether that failure is now shown.
+   */
+  failProvisionalFirstSend: (
+    target: { projectId: string; worktreeId: string; chatId: string },
+    input: {
+      userMessageId: string;
+      attemptId: string;
+      failure: ProvisionalFirstSendFailure;
+    },
+  ) => boolean;
+  /**
+   * Claims a failed first send for exactly one retry under `attemptId`.
+   * Returns `false` when the failure is gone or already claimed.
+   */
+  retryProvisionalFirstSend: (
+    target: { projectId: string; worktreeId: string; chatId: string },
+    input: { userMessageId: string; failureId: string; attemptId: string },
+  ) => boolean;
+  /** Hands a presented first send to the queue row that now holds it. */
+  handOffProvisionalFirstSend: (
+    target: { projectId: string; worktreeId: string; chatId: string },
+    userMessageId: string,
+  ) => void;
+  /**
    * Persist the chosen chat-interface surface on a tab. Missing tabs are
    * tolerated as no-ops so this is safe to call from idempotent UI effects
    * (the toggle component). The persistence schedule is reused so older
@@ -836,7 +907,10 @@ export interface ChatMessagingSlice {
    * Callers should only invoke this before the session has started; the UI
    * locks the picker after the first message.
    */
-  setSelectedRepoId: (selectedRepoId: string | undefined) => void;
+  setSelectedRepoId: (
+    selectedRepoId: string | undefined,
+    target?: ChatActionTarget & { chatId: string },
+  ) => void;
   /**
    * Dispatch a scheduled (automation) prompt forwarded from main for a
    * terminal-backed Claude chat. Runs through the normal terminal send path,
@@ -951,18 +1025,30 @@ export interface ChatQuestionsSlice {
 
 export interface ChatPlanSlice {
   pendingPlanExits: Record<string, PendingPlanExit>;
-  togglePlanMode: (target?: {
-    projectId: string;
-    worktreeId: string;
-    chatId: string;
-  }) => void;
+  togglePlanMode: (
+    target?: {
+      projectId: string;
+      worktreeId: string;
+      chatId: string;
+    },
+    onActivated?: (enabled: boolean) => void,
+  ) => void;
   handlePlanExitRequest: (
     event: PlanExitRequestEvent,
     mode?: 'recover',
   ) => void;
-  approvePlanExit: (requestId: string) => void;
-  denyPlanExit: (requestId: string) => void;
-  dismissPlanForPipeline: (requestId: string) => void;
+  /**
+   * Resolve once the review decision is synchronized into the tracked plan
+   * (or that failure is handled); not when the implementation turn finishes.
+   */
+  approvePlanExit: (requestId: string) => Promise<void>;
+  /** Resolves once the dismissal is synchronized or its failure is handled. */
+  denyPlanExit: (requestId: string) => Promise<void>;
+  /**
+   * Call only after the workflow launch succeeded. Resolves once the plan
+   * list is reconciled with the approval main recorded for that launch.
+   */
+  dismissPlanForPipeline: (requestId: string) => Promise<void>;
   markTrackedPlanExecuted: (options: {
     projectId: string;
     worktreeId: string;
@@ -1243,6 +1329,18 @@ export interface ChatAttentionSlice {
     projectId: string,
     worktreeId: string,
     options?: { allTabs?: boolean; tabId?: string },
+  ) => void;
+  /**
+   * The chat tab menu's "Mark as unread" / "Mark as read". Marking unread is
+   * recorded as the user's manual mark and leaves a viewed chat unread until
+   * it is left and re-acknowledged; marking read reuses {@link markTargetRead}.
+   * No-op when the tab is missing or already in the requested state.
+   */
+  setChatUnread: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    unread: boolean,
   ) => void;
 }
 

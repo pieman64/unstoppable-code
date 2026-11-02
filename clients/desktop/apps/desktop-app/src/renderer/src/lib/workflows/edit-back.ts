@@ -1,4 +1,5 @@
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import type {
   PipelineReturnTarget,
   PluginsNavigationIntent,
@@ -104,6 +105,8 @@ export function workflowEditBackLabel(target: WorkflowEditTarget): string {
     case 'plugins':
       return CUSTOMIZE_LABEL;
     case 'edit':
-      return back.target.kind === 'pipeline' ? 'Pipeline' : 'Automation';
+      return back.target.kind === 'pipeline'
+        ? WORKFLOW_ITEM_LABEL
+        : 'Automation';
   }
 }

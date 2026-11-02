@@ -5,9 +5,8 @@ export type WorkspaceSourceChangesRefusal =
   | 'invalid-request';
 
 /**
- * `core.workspace.sourceChanges.apply` was refused (CAN-3819). Every refusal
- * comes before the source files are written; a target worktree created for
- * the change is rolled back as before.
+ * `core.workspace.sourceChanges.apply` was refused (CAN-3819). Only a refusal
+ * before effects releases a retry key; rollback does not prove safe retry.
  */
 export class WorkspaceSourceChangesRefusedError extends Error {
   constructor(

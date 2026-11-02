@@ -84,9 +84,12 @@ describe('createWorkerFilesystemAdapter', () => {
     });
 
     await expect(
-      adapter['worker.filesystem.roots.list']({
-        scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
-      }),
+      adapter['worker.filesystem.roots.list'](
+        {
+          scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
+        },
+        undefined,
+      ),
     ).resolves.toEqual({
       roots: [
         {
@@ -102,11 +105,14 @@ describe('createWorkerFilesystemAdapter', () => {
       ],
     });
     await expect(
-      adapter['worker.filesystem.directory.list']({
-        scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
-        fileRootId: 'repo-1',
-        relativePath: '',
-      }),
+      adapter['worker.filesystem.directory.list'](
+        {
+          scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
+          fileRootId: 'repo-1',
+          relativePath: '',
+        },
+        undefined,
+      ),
     ).resolves.toEqual({
       entries: [
         {
@@ -166,9 +172,14 @@ describe('createWorkerFilesystemAdapter', () => {
         listFileTreeDirectory: () => Promise.resolve({ entries: [] }),
       });
 
-      const rejection = adapter['worker.filesystem.roots.list']({
-        scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
-      });
+      const rejection = Promise.resolve(
+        adapter['worker.filesystem.roots.list'](
+          {
+            scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
+          },
+          undefined,
+        ),
+      );
       await expect(rejection).rejects.toMatchObject({
         payload: { kind, retry: { kind: 'never' } },
       });
@@ -191,11 +202,14 @@ describe('createWorkerFilesystemAdapter', () => {
       listFileTreeDirectory: () => Promise.resolve({ entries: [] }),
     });
     await expect(
-      adapter['worker.filesystem.directory.list']({
-        scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
-        fileRootId: 'repo-1',
-        relativePath: 'missing',
-      }),
+      adapter['worker.filesystem.directory.list'](
+        {
+          scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
+          fileRootId: 'repo-1',
+          relativePath: 'missing',
+        },
+        undefined,
+      ),
     ).resolves.toEqual({ entries: [] });
   });
 
@@ -216,14 +230,17 @@ describe('createWorkerFilesystemAdapter', () => {
         ...selection,
       };
       await expect(
-        adapter['worker.filesystem.roots.list']({ scope }),
+        adapter['worker.filesystem.roots.list']({ scope }, undefined),
       ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
       await expect(
-        adapter['worker.filesystem.directory.list']({
-          scope,
-          fileRootId: 'repo-1',
-          relativePath: '',
-        }),
+        adapter['worker.filesystem.directory.list'](
+          {
+            scope,
+            fileRootId: 'repo-1',
+            relativePath: '',
+          },
+          undefined,
+        ),
       ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
       expect(services.listFileTreeRoots).not.toHaveBeenCalled();
       expect(services.listFileTreeDirectory).not.toHaveBeenCalled();
@@ -237,13 +254,16 @@ describe('createWorkerFilesystemAdapter', () => {
     };
     await createWorkerFilesystemAdapter(services)[
       'worker.filesystem.roots.list'
-    ]({
-      scope: {
-        workspaceId: 'workspace-1',
-        worktreeId: 'worktree-1',
-        authorityId: 'local-desktop',
+    ](
+      {
+        scope: {
+          workspaceId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          authorityId: 'local-desktop',
+        },
       },
-    });
+      undefined,
+    );
     expect(services.listFileTreeRoots).toHaveBeenCalledWith({
       projectId: 'workspace-1',
       worktreeId: 'worktree-1',
@@ -257,9 +277,12 @@ describe('createWorkerFilesystemAdapter', () => {
     });
 
     await expect(
-      adapter['worker.filesystem.roots.list']({
-        scope: { authorityId: 'primary', targetId: 'worker' },
-      }),
+      adapter['worker.filesystem.roots.list'](
+        {
+          scope: { authorityId: 'primary', targetId: 'worker' },
+        },
+        undefined,
+      ),
     ).rejects.toMatchObject({
       payload: { kind: 'invalid_argument', retry: { kind: 'never' } },
     });

@@ -1,6 +1,10 @@
 import { useEffect, type JSX, type ReactNode } from 'react';
 import type { DataSharingOptInFeature } from '@canopy/protocol/canopy-server';
-import { Button, LoadingSpinner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  LoadingSpinner,
+  DialogModal,
+} from '@canopy/ui-shared/components';
 import {
   DATA_SHARING_OPT_IN_SHEET_COPY as COPY,
   DataSharingOptInCta,
@@ -9,7 +13,6 @@ import {
   dataSharingOptInErrorText,
   dataSharingOptInHeadline,
 } from '@canopy/ui-shared/components/DataSharingOptInCta';
-import { DialogModal } from '@/components/shared';
 import { brandText } from '@/lib/brand';
 import {
   useNavigationStore,
@@ -140,8 +143,8 @@ function SheetButton({
 }): JSX.Element {
   return (
     <Button
-      variant={kind === 'done' ? 'primary' : 'outline'}
-      size="lg"
+      variant={kind === 'done' ? 'primary' : 'secondary'}
+      size="compact"
       onClick={onClick}
       data-testid={`${SHEET_ID}-${kind}`}
     >
@@ -245,8 +248,8 @@ function ReviewContent({
       actions={
         <>
           <Button
-            variant="outline"
-            size="lg"
+            variant="secondary"
+            size="compact"
             onClick={onClose}
             disabled={saving}
             data-testid={`${SHEET_ID}-cancel`}
@@ -255,7 +258,7 @@ function ReviewContent({
           </Button>
           <Button
             variant="primary"
-            size="lg"
+            size="compact"
             disabled={saving}
             aria-busy={saving}
             onClick={onEnable}

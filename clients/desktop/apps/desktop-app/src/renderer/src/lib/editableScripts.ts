@@ -12,6 +12,8 @@ import type {
 import {
   isLifecycleScriptName,
   listRunnableScripts,
+  MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH,
+  MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH,
   MAX_SCRIPT_DEV_SERVER_PATTERNS,
 } from '@canopy/desktop-shared/scripts';
 
@@ -64,6 +66,51 @@ export interface EditableScript {
 }
 
 export type EditableScripts = Record<string, EditableScript>;
+
+/** Whether a dev-server pattern compiles as a regular expression. */
+export function isRegexParseable(source: string): boolean {
+  try {
+    new RegExp(source);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ids of the dev-server pattern rows that cannot be saved: too long, not a
+ * regular expression, or with a label that is too long. Empty rows are not
+ * listed; saving drops them.
+ */
+export function invalidDevServerPatternRowIds(
+  patterns: readonly EditableDevServerPattern[] | undefined,
+): string[] {
+  const invalid: string[] = [];
+  for (const row of patterns ?? []) {
+    const trimmed = row.pattern.trim();
+    if (trimmed.length === 0) continue;
+    if (
+      trimmed.length > MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH ||
+      !isRegexParseable(trimmed) ||
+      row.label.trim().length > MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH
+    ) {
+      invalid.push(row.id);
+    }
+  }
+  return invalid;
+}
+
+/**
+ * Whether any script in a draft has a dev-server pattern that cannot be
+ * saved. Read from the draft itself, so it holds whether or not the script's
+ * editor is open.
+ */
+export function hasInvalidDevServerPatterns(scripts: EditableScripts): boolean {
+  return Object.values(scripts).some(
+    (script) =>
+      invalidDevServerPatternRowIds(script.devServerPatterns).length > 0,
+  );
+}
 
 export interface EditableCustomScript {
   name: string;

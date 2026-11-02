@@ -1,3 +1,9 @@
+import type {
+  PairingTelemetryAttempt,
+  PairingTelemetryContext,
+  PairingTelemetryOutcome,
+  PairingTelemetryRecorder,
+} from '@canopy/desktop-instrumentation/pairing';
 import { getSecretStoragePolicy } from '../../lib/secure-storage-policy';
 import { randomBytes } from 'node:crypto';
 import {
@@ -47,7 +53,11 @@ import type { HostBridge } from '../host/bridge-window';
 import { FakeBridge, FakeMainWindow, TEST_VERSION } from './host-fakes';
 import { createTestDevice } from './session-pair';
 import { RpcPeer } from '../transport/rpc-peer';
-import { REMOTE_FILE_OPEN_MAX_BYTES, REMOTE_METHODS } from '../remote-protocol';
+import {
+  REMOTE_FILE_OPEN_MAX_BYTES,
+  REMOTE_METHODS,
+  REMOTE_PROTOCOL_VERSION,
+} from '../remote-protocol';
 import * as atomicFile from '../../lib/atomic-file';
 
 jest.mock('../../lib/atomic-file', () => {
@@ -138,6 +148,10 @@ class FakeWindows implements RemoteControlWindows {
 }
 
 interface Machine {
+  pairingTelemetry: Array<{
+    context: PairingTelemetryContext;
+    outcomes: PairingTelemetryOutcome[];
+  }>;
   name: string;
   service: RemoteControlService;
   store: RemoteAccessStore;
@@ -163,6 +177,7 @@ interface Machine {
 }
 
 interface MachineOptions {
+  recordPairing?: PairingTelemetryRecorder;
   existingDir?: string;
   discoveryWindowMs?: number;
   version?: RemoteVersion;
@@ -203,7 +218,19 @@ function createMachine(
   const relays: InMemoryRelayEndpoint[] = [];
   const account: { current: string | null } = { current: 'account-1' };
   const feature = { enabled: true };
+  const pairingTelemetry: Machine['pairingTelemetry'] = [];
   const service = new RemoteControlService({
+    recordPairing:
+      options.recordPairing ??
+      ((context): PairingTelemetryAttempt => {
+        const outcomes: PairingTelemetryOutcome[] = [];
+        pairingTelemetry.push({ context, outcomes });
+        return {
+          end: (outcome): void => {
+            outcomes.push(outcome);
+          },
+        };
+      }),
     store,
     createRelay: (options: RemoteRelayFactoryOptions): RemoteRelay => {
       endpoint = new InMemoryRelayEndpoint(
@@ -278,6 +305,7 @@ function createMachine(
   });
   services.push(service);
   return {
+    pairingTelemetry,
     name,
     service,
     store,
@@ -374,6 +402,28 @@ describe('RemoteControlService', () => {
     await desktop.service.initialize();
     await pair(laptop, desktop);
 
+    expect(laptop.pairingTelemetry).toEqual([
+      {
+        context: {
+          pairing_kind: 'computer_outgoing',
+          pairing_entry: 'pair_computer_dialog',
+          peer_platform: 'darwin',
+        },
+        outcomes: ['approved'],
+      },
+    ]);
+    expect(desktop.pairingTelemetry).toEqual([
+      {
+        context: {
+          pairing_kind: 'computer_incoming',
+          pairing_entry: 'incoming_prompt',
+          peer_platform: 'darwin',
+        },
+        outcomes: ['approved'],
+      },
+    ]);
+    await laptop.service.cancelPairing();
+    expect(laptop.pairingTelemetry[0]?.outcomes).toEqual(['approved']);
     const laptopState = await laptop.service.getState();
     const desktopState = await desktop.service.getState();
     expect(laptopState.hosts).toEqual([
@@ -413,6 +463,8 @@ describe('RemoteControlService', () => {
       () => laptop.service.getState(),
       (state) => state.outgoingPairing?.status === 'rejected',
     );
+    expect(laptop.pairingTelemetry[0]?.outcomes).toEqual(['rejected']);
+    expect(desktop.pairingTelemetry[0]?.outcomes).toEqual(['declined']);
     expect((await laptop.store.read()).pairedHosts).toEqual([]);
     expect((await desktop.store.read()).pairedControllers).toEqual([]);
   });
@@ -491,6 +543,55 @@ describe('RemoteControlService', () => {
     expect(state.hosts[0]).toMatchObject({ ended: true, error: expected });
     expect(desktop.bridges).toHaveLength(0);
   });
+
+  it.each([
+    ['controller', 'this computer', 4],
+    ['controller', 'this computer', 6],
+    ['controller', 'this computer', 8],
+    ['controller', 'this computer', 9],
+    ['host', 'desktop', 4],
+    ['host', 'desktop', 6],
+    ['host', 'desktop', 8],
+    ['host', 'desktop', 9],
+  ] as const)(
+    'refuses an incompatible %s (update %s, protocol %s) before a bridge opens',
+    async (olderSide, update, protocolVersion) => {
+      // Protocol 7 retires checklist channels; protocol 9 adds receipt-bound
+      // skill replacement; protocol 10 adds a Labs flag key. Negotiate before
+      // dispatching incompatible requests.
+      expect(REMOTE_PROTOCOL_VERSION).toBeGreaterThan(protocolVersion);
+      const hub = new InMemoryRelayHub();
+      const older = { protocolVersion, appVersion: '0.9.0' };
+      const laptop = createMachine(
+        hub,
+        'laptop',
+        olderSide === 'controller' ? { version: older } : {},
+      );
+      const desktop = createMachine(
+        hub,
+        'desktop',
+        olderSide === 'host' ? { version: older } : {},
+      );
+      await laptop.service.initialize();
+      await desktop.service.initialize();
+      await pair(laptop, desktop);
+      const desktopId = (await desktop.store.identity()).deviceId;
+      const laptopVersion = olderSide === 'controller' ? '0.9.0' : '1.0.0';
+      const desktopVersion = olderSide === 'host' ? '0.9.0' : '1.0.0';
+      const expected = `desktop runs version ${desktopVersion}, which this computer (version ${laptopVersion}) can't control. Update ${update} to connect.`;
+
+      await laptop.service.openMachine(desktopId);
+      await expect(
+        laptop.service.invoke(desktopId, TUNNEL_CHANNEL, []),
+      ).rejects.toThrow(expected);
+      const state = await waitFor(
+        () => laptop.service.getState(),
+        (current) => current.hosts[0]?.connection === 'error',
+      );
+      expect(state.hosts[0]).toMatchObject({ ended: true, error: expected });
+      expect(desktop.bridges).toHaveLength(0);
+    },
+  );
 
   it('reconnects as soon as the computer is back, not after the backoff', async () => {
     const hub = new InMemoryRelayHub();
@@ -1054,6 +1155,8 @@ describe('RemoteControlService', () => {
     });
     await flushRelay(4);
     await desktop.store.whenIdle();
+    expect(laptop.pairingTelemetry[0]?.outcomes).toEqual(['cancelled']);
+    expect(desktop.pairingTelemetry[0]?.outcomes).toEqual(['failed']);
     expect((await laptop.store.read()).pairedHosts).toEqual([]);
     expect((await desktop.store.read()).pairedControllers).toEqual([]);
   });
@@ -1544,4 +1647,103 @@ describe('RemoteControlService', () => {
     expect(desktop.bridges).toHaveLength(2);
     expect(desktop.bridges[1]?.invocations).toHaveLength(1);
   });
+});
+
+it.each(['start', 'end'] as const)(
+  'pairing survives throwing telemetry %s callbacks',
+  async (phase) => {
+    const hub = new InMemoryRelayHub();
+    const recordPairing: PairingTelemetryRecorder =
+      (): PairingTelemetryAttempt => {
+        if (phase === 'start') throw new Error('telemetry start');
+        return {
+          end: (): void => {
+            throw new Error('telemetry end');
+          },
+        };
+      };
+    const laptop = createMachine(hub, 'laptop', { recordPairing });
+    const desktop = createMachine(hub, 'desktop', { recordPairing });
+    await laptop.service.initialize();
+    await desktop.service.initialize();
+    await pair(laptop, desktop);
+    expect((await laptop.store.read()).pairedHosts).toHaveLength(1);
+    expect((await desktop.store.read()).pairedControllers).toHaveLength(1);
+  },
+);
+
+it.each(['timeout', 'decline'] as const)(
+  'keeps the first incoming %s outcome when callbacks race cleanup',
+  async (first) => {
+    const hub = new InMemoryRelayHub();
+    const laptop = createMachine(hub, 'laptop');
+    const desktop = createMachine(hub, 'desktop');
+    await laptop.service.initialize();
+    await desktop.service.initialize();
+    await desktop.service.setAllowIncoming(true);
+    const desktopId = (await desktop.store.identity()).deviceId;
+    await waitFor(
+      () => laptop.service.getState({ discover: true }),
+      (state) => state.discoverable.length === 1,
+    );
+    const timers = jest.spyOn(globalThis, 'setTimeout');
+    try {
+      await laptop.service.startPairing(desktopId);
+      const pending = await waitFor(
+        () => desktop.service.getState(),
+        (state) => state.incomingPairings.length === 1,
+      );
+      const timer = timers.mock.calls.find((call) => call[1] === 3 * 60_000);
+      if (!timer) throw new Error('Missing pairing decision timer');
+      if (first === 'timeout') timer[0]();
+      const response = desktop.service.respondToPairing({
+        pairingId: pending.incomingPairings[0]?.pairingId ?? '',
+        approve: false,
+      });
+      if (first === 'decline') timer[0]();
+      await response;
+      await waitFor(
+        () => laptop.service.getState(),
+        (state) => state.outgoingPairing?.status === 'rejected',
+      );
+      expect(desktop.pairingTelemetry[0]?.outcomes).toEqual([
+        first === 'timeout' ? 'timed_out' : 'declined',
+      ]);
+      expect(laptop.pairingTelemetry[0]?.outcomes).toEqual(['rejected']);
+    } finally {
+      timers.mockRestore();
+    }
+  },
+);
+
+it('records incoming persistence failure after approval as failed', async () => {
+  const hub = new InMemoryRelayHub();
+  const laptop = createMachine(hub, 'laptop');
+  const desktop = createMachine(hub, 'desktop');
+  await laptop.service.initialize();
+  await desktop.service.initialize();
+  await desktop.service.setAllowIncoming(true);
+  const desktopId = (await desktop.store.identity()).deviceId;
+  await waitFor(
+    () => laptop.service.getState({ discover: true }),
+    (state) => state.discoverable.length === 1,
+  );
+  await laptop.service.startPairing(desktopId);
+  const pending = await waitFor(
+    () => desktop.service.getState(),
+    (state) => state.incomingPairings.length === 1,
+  );
+  jest
+    .spyOn(desktop.store, 'update')
+    .mockRejectedValueOnce(new Error('disk failure'));
+  await desktop.service.respondToPairing({
+    pairingId: pending.incomingPairings[0]?.pairingId ?? '',
+    approve: true,
+  });
+  await waitFor(
+    () => laptop.service.getState(),
+    (state) => state.outgoingPairing?.status === 'failed',
+  );
+  expect(desktop.pairingTelemetry[0]?.outcomes).toEqual(['failed']);
+  expect(laptop.pairingTelemetry[0]?.outcomes).toEqual(['failed']);
 });

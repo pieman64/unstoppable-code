@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from './Button';
 import { OverlayScrollArea } from './OverlayScrollArea';
 import {
   useId,
@@ -14,6 +15,11 @@ import {
   ChevronRightMediumIcon,
 } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { groupContiguousRuns } from '../lib/group-runs';
+import {
+  SlashCommandAvailabilityTag,
+  SlashCommandGroupHeading,
+} from './SlashCommandPrimitives';
 
 export interface ComposerActionRow {
   id: string;
@@ -38,8 +44,19 @@ export interface ComposerActionRow {
   dataTestId?: string;
   /** A typeahead suggestion that Tab may complete (files, plugins, commands). */
   completion?: boolean;
+  /** Selecting this row enables its skill or plugin before insertion. */
+  available?: boolean;
   onSelect: () => void;
 }
+
+/** A control that expands a capped result list; never a completion row. */
+export interface ComposerShowAllControl {
+  label: string;
+  onSelect: () => void;
+  dataTestId?: string;
+}
+
+const COMPOSER_SHOW_ALL_ROW_ID = 'show-all';
 
 function isRadioRow(row: ComposerActionRow): boolean {
   return row.checked !== undefined;
@@ -57,6 +74,9 @@ export function ComposerActionList({
   loading,
   dataTestIdPrefix,
   blockRowsFromReplay = false,
+  groupRuns = false,
+  flat = false,
+  showAll,
 }: {
   rows: ComposerActionRow[];
   menuRef?: RefObject<HTMLDivElement | null>;
@@ -74,12 +94,30 @@ export function ComposerActionList({
    * a large catalog when the menu opens.
    */
   blockRowsFromReplay?: boolean;
+  /**
+   * Head each contiguous run of a group instead of collecting a group's rows
+   * together, so a ranked list keeps its order. Collected by default.
+   */
+  groupRuns?: boolean;
+  /** Render ranked search results as one list without section headings. */
+  flat?: boolean;
+  /** Renders after the groups when a capped list has hidden rows. */
+  showAll?: ComposerShowAllControl;
 }): JSX.Element {
   const listId = useId();
   const [localActiveId, setLocalActiveId] = useState<string | null>(null);
   const highlightedId = activeId === undefined ? localActiveId : activeId;
   const setHighlightedId = onActiveIdChange ?? setLocalActiveId;
-  const groups = Array.from(new Set(rows.map((row) => row.group)));
+  const groups = flat
+    ? [{ key: 'Search results', occurrence: 0, rows }]
+    : groupRuns
+      ? groupContiguousRuns(rows, (row) => row.group)
+      : Array.from(new Set(rows.map((row) => row.group))).map((group) => ({
+          key: group,
+          occurrence: 0,
+          rows: rows.filter((row) => row.group === group),
+        }));
+  const showAllId = `${listId}-${COMPOSER_SHOW_ALL_ROW_ID}`;
   return (
     <div
       ref={menuRef}
@@ -139,15 +177,15 @@ export function ComposerActionList({
           className="flex shrink-0 items-center gap-2 px-2 py-1"
           onMouseDown={(event) => event.preventDefault()}
         >
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
             onClick={onBack}
-            className="focus-ring inline-flex shrink-0 items-center gap-1 rounded px-1 py-1 text-xs fg-tertiary"
             aria-label="Back to all actions"
           >
             <ChevronLeftMediumIcon aria-hidden className="h-4 w-4 shrink-0" />
             {scope}
-          </button>
+          </Button>
         </div>
       )}
       <OverlayScrollArea
@@ -159,8 +197,7 @@ export function ComposerActionList({
         edgeFadeSize={8}
         viewportProps={{ 'data-testid': `${dataTestIdPrefix}-menu-scroll` }}
       >
-        {groups.map((group) => {
-          const groupRows = rows.filter((row) => row.group === group);
+        {groups.map(({ key: group, occurrence, rows: groupRows }) => {
           const radioGroup = groupRows.every(isRadioRow);
           const tabStop = radioGroup
             ? (groupRows.find((row) => row.checked && !row.disabled) ??
@@ -168,15 +205,13 @@ export function ComposerActionList({
             : undefined;
           return (
             <div
-              key={group}
+              key={`${group}:${occurrence}`}
               role={radioGroup ? 'radiogroup' : 'group'}
               aria-label={group}
-              data-testid={`${dataTestIdPrefix}-plus-${group === 'Current settings' ? 'settings' : group.toLowerCase().replace(/ /g, '-')}`}
+              data-testid={`${dataTestIdPrefix}-plus-${group === 'Current settings' ? 'settings' : group.toLowerCase().replace(/ /g, '-')}${occurrence > 0 ? `-${occurrence}` : ''}`}
               className="mb-1.5 last:mb-0"
             >
-              <div className="px-2 pb-0.5 pt-2 text-xs fg-tertiary">
-                {group}
-              </div>
+              {!flat && <SlashCommandGroupHeading label={group} compact />}
               {/* Rows sit in their own wrapper so replay can block them while
                 the group heading above stays recorded. */}
               <div
@@ -188,6 +223,7 @@ export function ComposerActionList({
                     id={`${listId}-${encodeURIComponent(row.id)}`}
                     type="button"
                     data-action-row
+                    data-row-id={row.id}
                     data-completion-row={row.completion || undefined}
                     data-testid={row.dataTestId}
                     disabled={row.disabled}
@@ -225,6 +261,7 @@ export function ComposerActionList({
                         </span>
                       )}
                     </span>
+                    {row.available && <SlashCommandAvailabilityTag />}
                     {(row.value !== undefined || row.opensMenu) && (
                       <span
                         data-menu-trailing
@@ -271,6 +308,24 @@ export function ComposerActionList({
             </div>
           );
         })}
+        {showAll && rows.length > 0 && (
+          <button
+            id={showAllId}
+            type="button"
+            data-action-row
+            data-show-all-row
+            data-testid={showAll.dataTestId}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={showAll.onSelect}
+            onPointerEnter={(event) =>
+              onHoveredIdChange?.(event.currentTarget.id)
+            }
+            onPointerLeave={() => onHoveredIdChange?.(null)}
+            className={`focus-ring flex min-h-8 w-full items-center rounded-xl px-2 py-1 text-left text-xs fg-secondary ${highlightedId === showAllId ? 'bg-subtle' : highlightedId ? '' : 'hover:bg-subtle'}`}
+          >
+            {showAll.label}
+          </button>
+        )}
         {rows.length === 0 && (
           <p className="px-3 py-5 text-xs fg-tertiary">
             {loading

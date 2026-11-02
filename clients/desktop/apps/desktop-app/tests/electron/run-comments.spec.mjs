@@ -145,8 +145,9 @@ async function launchRunFixture({ cloud, sharedRun, seedAudit = false }) {
 }
 
 async function openShareModal(window) {
-  const shareControl = window.getByTestId('turn-share-session');
-  await expect(shareControl).toHaveAttribute('data-shared', 'false');
+  await window.getByTestId('turn-more-actions').click();
+  const shareControl = window.getByTestId('turn-more-share');
+  await expect(shareControl).toHaveText('Share session');
   await shareControl.click();
   const modal = window.getByTestId('share-run-modal');
   await expect(modal).toBeVisible({ timeout: 30_000 });
@@ -171,16 +172,13 @@ test('shared comments show unread state and round-trip reply and resolution', as
       },
     });
     const { window } = launched;
-    await expect(window.getByTestId('turn-share-session')).toHaveAttribute(
-      'data-shared',
-      'true',
-    );
-    await expect(window.getByTestId('turn-share-session-unread')).toHaveCount(
-      0,
+    await window.getByTestId('turn-more-actions').click();
+    await expect(window.getByTestId('turn-more-share')).toHaveText(
+      'Share again',
     );
 
-    const commentsButton = window.getByTestId('turn-run-comments');
-    await expect(commentsButton).toHaveAttribute('data-unread-count', '2');
+    const commentsButton = window.getByTestId('turn-more-share-comments');
+    await expect(commentsButton).toHaveText('Comments (2)');
     await commentsButton.click();
 
     const modal = window.getByTestId('run-comments-modal');
@@ -189,7 +187,10 @@ test('shared comments show unread state and round-trip reply and resolution', as
     const thread = modal.getByTestId('run-comment-thread').first();
     await expect(thread).toContainText(REVIEWER_BODY);
     await expect(thread).toHaveAttribute('data-thread-status', 'open');
-    await expect(commentsButton).toHaveAttribute('data-unread-count', '0');
+    await modal.getByRole('button', { name: 'Close', exact: true }).click();
+    await window.getByTestId('turn-more-actions').click();
+    await expect(commentsButton).toHaveText('Comments');
+    await commentsButton.click();
 
     const revisionBeforeReply = cloud.state.commentRevision;
     await modal.getByTestId('run-comment-reply-input').fill(REPLY_BODY);
@@ -236,8 +237,8 @@ test('Share again reopens a persisted team run as an update', async () => {
       },
     });
     const { window } = launched;
-    await window.getByTestId('turn-share-session').click();
-    await window.getByText('Share again', { exact: true }).click();
+    await window.getByTestId('turn-more-actions').click();
+    await window.getByTestId('turn-more-share').click();
 
     const modal = window.getByTestId('share-run-modal');
     await expect(modal).toBeVisible({ timeout: 30_000 });
@@ -259,12 +260,13 @@ test('unshared session footer does not expose comments', async () => {
   test.setTimeout(180_000);
   const launched = await launchRunFixture({ sharedRun: null });
   try {
-    await expect(
-      launched.window.getByTestId('turn-share-session'),
-    ).toHaveAttribute('data-shared', 'false');
-    await expect(launched.window.getByTestId('turn-run-comments')).toHaveCount(
-      0,
+    await launched.window.getByTestId('turn-more-actions').click();
+    await expect(launched.window.getByTestId('turn-more-share')).toHaveText(
+      'Share session',
     );
+    await expect(
+      launched.window.getByTestId('turn-more-share-comments'),
+    ).toHaveCount(0);
   } finally {
     await closeCanopy(launched.electronApp, launched.userDataDir);
   }

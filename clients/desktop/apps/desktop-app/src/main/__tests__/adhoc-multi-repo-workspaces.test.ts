@@ -1,4 +1,8 @@
+jest.mock('../lib/org-shared-multi-repo-legacy-guard', () => ({
+  assertLegacyCombineAllowed: jest.fn((): Promise<void> => Promise.resolve()),
+}));
 import type * as CompositionRecords from '../lib/workspace-composition-records';
+import type * as ScriptRunner from '../lib/script-runner';
 import {
   undoCompositionRepositories,
   promoteCompositionWorkspace,
@@ -137,6 +141,10 @@ jest.mock('../ledger/lifecycle', () => ({
   notifyLedgerContainerMoved: jest.fn(),
   recordLedgerMoveIntent: jest.fn(() => Promise.resolve('recorded')),
 }));
+jest.mock('../lib/script-runner', () => ({
+  ...jest.requireActual<typeof ScriptRunner>('../lib/script-runner'),
+  listTrackedShellScriptsForWorktree: jest.fn(() => []),
+}));
 
 import {
   combineWorktreeWithWorkspace,
@@ -153,6 +161,7 @@ import {
 } from '../lib/adhoc-combine-core';
 import { listArchivedContainerManifests } from '../lib/archived-containers';
 import { getActiveChatIds } from '../agents/session-manager';
+import { listTrackedShellScriptsForWorktree } from '../lib/script-runner';
 import { pathExists } from '../lib/fs-utils';
 import {
   createWorktree,
@@ -227,6 +236,9 @@ const mockedWriteAllSidebarItems = jest.mocked(writeAllSidebarItems);
 const mockedReadWorkspaceConfig = jest.mocked(readWorkspaceConfig);
 const mockedReadWorkspaceWorktrees = jest.mocked(readWorkspaceWorktrees);
 const mockedGetActiveChatIds = jest.mocked(getActiveChatIds);
+const mockedListTrackedShellScriptsForWorktree = jest.mocked(
+  listTrackedShellScriptsForWorktree,
+);
 const mockedListExecutionSummaries = jest.mocked(listExecutionSummaries);
 const mockedLoadExecutionState = jest.mocked(loadExecutionState);
 const mockedSaveExecutionState = jest.mocked(saveExecutionState);
@@ -367,6 +379,7 @@ describe('adhoc multi-repo project helpers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedGetActiveChatIds.mockReturnValue([]);
+    mockedListTrackedShellScriptsForWorktree.mockReturnValue([]);
     mockedListExecutionSummaries.mockResolvedValue([]);
     mockedLoadExecutionState.mockResolvedValue(null);
     mockedSaveExecutionState.mockResolvedValue(undefined);
@@ -1341,9 +1354,14 @@ describe('adhoc multi-repo project helpers', () => {
     mockedListExecutionSummaries.mockResolvedValue([
       {
         id: 'exec-1',
+        pipeline_id: 'pipeline-1',
+        pipeline_name: 'Pipeline 1',
         project_id: 'source',
         worktree_id: 'worktree',
-        status: 'completed',
+        status: 'success',
+        status_reasons: [],
+        started_at: '2026-05-19T00:00:00.000Z',
+        cwd: '/repos/source',
       },
     ]);
 
@@ -1430,11 +1448,13 @@ describe('adhoc multi-repo project helpers', () => {
       ]);
       mockedAddWorkspaceRepository.mockImplementation(
         withCandidate((repo) =>
-          Promise.resolve({
-            id: repo.id,
-            name: repo.name,
-            repoPath: repo.repoPath,
-          }),
+          repo.id === undefined || repo.name === undefined
+            ? Promise.reject(new Error('Expected repository identity'))
+            : Promise.resolve({
+                id: repo.id,
+                name: repo.name,
+                repoPath: repo.repoPath,
+              }),
         ),
       );
       mockedAddRepoCheckoutToWorktree.mockImplementation(
@@ -1527,11 +1547,13 @@ describe('adhoc multi-repo project helpers', () => {
       ]);
       mockedAddWorkspaceRepository.mockImplementation(
         withCandidate((repo) =>
-          Promise.resolve({
-            id: repo.id,
-            name: repo.name,
-            repoPath: repo.repoPath,
-          }),
+          repo.id === undefined || repo.name === undefined
+            ? Promise.reject(new Error('Expected repository identity'))
+            : Promise.resolve({
+                id: repo.id,
+                name: repo.name,
+                repoPath: repo.repoPath,
+              }),
         ),
       );
       mockedAddRepoCheckoutToWorktree.mockRejectedValue(
@@ -1631,9 +1653,14 @@ describe('adhoc multi-repo project helpers', () => {
     mockedListExecutionSummaries.mockResolvedValue([
       {
         id: 'exec-1',
+        pipeline_id: 'pipeline-1',
+        pipeline_name: 'Pipeline 1',
         project_id: 'source',
         worktree_id: 'worktree',
         status: 'running',
+        status_reasons: [],
+        started_at: '2026-05-19T00:00:00.000Z',
+        cwd: '/repos/source',
       },
     ]);
 
@@ -1645,7 +1672,47 @@ describe('adhoc multi-repo project helpers', () => {
         mode: 'temporary',
       }),
     ).rejects.toThrow(
-      'Wait for running pipeline executions to finish before adding a repo to this worktree.',
+      'Wait for running workflow executions to finish before adding a repo to this worktree.',
+    );
+
+    expect(mockedMoveWorktree).not.toHaveBeenCalled();
+    expect(mockedCreateWorktree).not.toHaveBeenCalled();
+  });
+
+  it('rejects a running source setup script before filesystem transition work starts', async () => {
+    const sourceWorkspace = {
+      type: 'single-repo' as const,
+      id: 'source',
+      name: 'Source',
+      color: '#123456',
+      repoPath: '/repos/source',
+      worktrees: [makeWorktree()],
+      collapsed: false,
+      order: 0,
+    };
+    const joinWorkspace = makeMultiRepoWorkspace({
+      id: 'join',
+      repos: [{ id: 'repo-b', name: 'Repo B', repoPath: '/repos/b' }],
+      worktrees: [],
+    });
+    mockedListWorkspaceItems
+      .mockResolvedValueOnce([sourceWorkspace, joinWorkspace])
+      .mockResolvedValueOnce([sourceWorkspace, joinWorkspace]);
+    mockedListTrackedShellScriptsForWorktree.mockImplementation((target) =>
+      target.projectId === 'source' && target.worktreeId === 'worktree'
+        ? [{ projectId: 'source', worktreeId: 'worktree', scriptKey: 'setup' }]
+        : [],
+    );
+
+    await expect(
+      combineWorktreeWithWorkspace({
+        sourceWorkspaceId: 'source',
+        sourceWorktreeId: 'worktree',
+        joinWorkspaceId: 'join',
+        mode: 'temporary',
+      }),
+    ).rejects.toThrow(
+      'Wait for running scripts, such as setup, to finish before adding a repo to this worktree.',
     );
 
     expect(mockedMoveWorktree).not.toHaveBeenCalled();
@@ -2422,9 +2489,14 @@ describe('adhoc multi-repo project helpers', () => {
       mockedListExecutionSummaries.mockResolvedValue([
         {
           id: 'exec-1',
+          pipeline_id: 'pipeline-1',
+          pipeline_name: 'Pipeline 1',
           project_id: 'source',
           worktree_id: 'worktree',
-          status: 'completed',
+          status: 'success',
+          status_reasons: [],
+          started_at: '2026-05-19T00:00:00.000Z',
+          cwd: '/repos/source',
         },
       ]);
       mockedLoadExecutionState.mockResolvedValue({
@@ -2475,7 +2547,7 @@ describe('adhoc multi-repo project helpers', () => {
             branchPromptSent: true,
             hidden: true,
             pausedHookKeys: ['post-checkout:repo-a'],
-            setupPhase: 'setup-running' as const,
+            setupPhase: 'git-ready' as const,
             status: 'active' as const,
             healthIssue: {
               status: 'broken' as const,
@@ -2502,6 +2574,12 @@ describe('adhoc multi-repo project helpers', () => {
         collapsed: false,
         order: 0,
       };
+      const legacySetupWorktree = sourceWorkspace.worktrees[0];
+      if (legacySetupWorktree === undefined) {
+        throw new Error('Expected source worktree fixture');
+      }
+      // Preserve this legacy setup phase as the input to the normalization test.
+      Reflect.set(legacySetupWorktree, 'setupPhase', 'setup-running');
       const destinationWorkspace: MultiRepoSidebarItem = {
         type: 'multi-repo',
         id: 'join',
@@ -2906,9 +2984,14 @@ describe('adhoc multi-repo project helpers', () => {
       mockedListExecutionSummaries.mockResolvedValue([
         {
           id: 'exec-rollback',
+          pipeline_id: 'pipeline-1',
+          pipeline_name: 'Pipeline 1',
           project_id: 'source',
           worktree_id: 'worktree',
-          status: 'completed',
+          status: 'success',
+          status_reasons: [],
+          started_at: '2026-05-19T00:00:00.000Z',
+          cwd: '/repos/source',
         },
       ]);
       mockedLoadExecutionState.mockResolvedValue(originalPipelineState);
@@ -3099,6 +3182,117 @@ describe('adhoc multi-repo project helpers', () => {
       ).rejects.toThrow('persist failed');
 
       expect(removeWorkspaceIndexEntry).toHaveBeenCalledWith('temp-workspace');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the destination when something recreates the source checkout path mid-combine', async () => {
+    const tempDir = await mkdtemp(
+      join(tmpdir(), 'canopy-adhoc-recreated-source-'),
+    );
+    try {
+      const sourceCheckout = join(tempDir, 'source-checkout');
+      const destinationRoot = join(tempDir, 'temp-worktree');
+      const movedCheckout = join(destinationRoot, 'repos', 'repo-a');
+      await mkdir(sourceCheckout, { recursive: true });
+      const movedDestinationPaths = new Set<string>();
+
+      mockedGetWorktreeDir.mockReturnValue(sourceCheckout);
+      mockedGetWorkspaceWorktreeDir.mockReturnValue(destinationRoot);
+      mockedGetWorkspaceWorktreeRepoDir.mockImplementation(
+        (_workspaceId: string, _worktreeId: string, repoId: string) =>
+          join(destinationRoot, 'repos', repoId),
+      );
+      mockedPathExists.mockImplementation(async (candidatePath: string) => {
+        if (candidatePath === sourceCheckout) {
+          try {
+            await lstat(sourceCheckout);
+            return true;
+          } catch {
+            return false;
+          }
+        }
+        if (candidatePath.startsWith(destinationRoot)) {
+          return (
+            candidatePath === destinationRoot ||
+            movedDestinationPaths.has(candidatePath)
+          );
+        }
+        return true;
+      });
+      mockedMoveWorktree.mockImplementation(
+        async (_repoPath, oldPath, newPath) => {
+          await rm(oldPath, { recursive: true, force: true });
+          await mkdir(newPath, { recursive: true });
+          movedDestinationPaths.add(newPath);
+          // A still-running setup script writes build output to the old path.
+          await mkdir(join(oldPath, 'apps', '.build'), { recursive: true });
+        },
+      );
+      mockedCreateWorktree.mockImplementation(
+        async (_repoPath, worktreePath) => {
+          await mkdir(worktreePath, { recursive: true });
+          movedDestinationPaths.add(worktreePath);
+          return 'feature';
+        },
+      );
+
+      const sourceWorkspace = {
+        type: 'single-repo' as const,
+        id: 'source',
+        name: 'Repo A',
+        color: '#123456',
+        repoPath: '/repos/a',
+        worktrees: [makeWorktree()],
+        collapsed: false,
+        order: 0,
+      };
+      const joinWorkspace = {
+        type: 'single-repo' as const,
+        id: 'join',
+        name: 'Repo B',
+        color: '#654321',
+        repoPath: '/repos/b',
+        worktrees: [],
+        collapsed: false,
+        order: 1,
+      };
+      const temporaryWorkspace = makeMultiRepoWorkspace({
+        id: 'temp-workspace',
+        temporary: true,
+        repos: [
+          { id: 'repo-a', name: 'Repo A', repoPath: '/repos/a' },
+          { id: 'repo-b', name: 'Repo B', repoPath: '/repos/b' },
+        ],
+        worktrees: [],
+        order: 2,
+      });
+      mockedCreateTemporaryMultiRepoWorkspace.mockResolvedValue(
+        temporaryWorkspace,
+      );
+      mockedReadAllSidebarItems.mockResolvedValue({
+        version: 1,
+        items: [sourceWorkspace, joinWorkspace, temporaryWorkspace],
+      });
+      mockedListWorkspaceItems.mockResolvedValue([
+        sourceWorkspace,
+        joinWorkspace,
+      ]);
+
+      await expect(
+        combineWorktreeWithWorkspace({
+          sourceWorkspaceId: 'source',
+          sourceWorktreeId: 'worktree',
+          joinWorkspaceId: 'join',
+          mode: 'temporary',
+        }),
+      ).rejects.toThrow(
+        'Add repo failed and rollback did not fully restore source checkouts',
+      );
+
+      expect(removeWorkspaceIndexEntry).not.toHaveBeenCalled();
+      await expect(lstat(movedCheckout)).resolves.toBeDefined();
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

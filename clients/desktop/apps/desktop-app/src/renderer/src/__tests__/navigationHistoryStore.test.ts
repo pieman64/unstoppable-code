@@ -1,5 +1,7 @@
 import type * as Zustand from 'zustand';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
+import type { isCoworkChatTarget } from '@/lib/cowork';
+import type { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
 import {
   applyLabsExperimentsSnapshot,
   resetLabsExperimentsStoreForTest,
@@ -79,13 +81,19 @@ jest.mock('@/stores/projectsStore', () => {
   return { useProjectsStore };
 });
 
-const canNavigateMock = jest.fn(() => true);
+const canNavigateMock = jest.fn<
+  boolean,
+  Parameters<typeof canNavigateToWorktreeFromSidebarItems>
+>((): boolean => true);
 jest.mock('@/lib/worktreeNavigation', () => ({
-  canNavigateToWorktreeFromSidebarItems: (...args: unknown[]): boolean =>
-    canNavigateMock(...args),
+  canNavigateToWorktreeFromSidebarItems: (
+    ...args: Parameters<typeof canNavigateToWorktreeFromSidebarItems>
+  ): boolean => canNavigateMock(...args),
 }));
 
-const isCoworkMock = jest.fn(() => false);
+const isCoworkMock = jest.fn<boolean, Parameters<typeof isCoworkChatTarget>>(
+  (): boolean => false,
+);
 jest.mock('@/lib/cowork', () => ({
   isCoworkChatTarget: (projectId: string): boolean => isCoworkMock(projectId),
 }));
@@ -95,6 +103,7 @@ import {
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
 import { useChatStore } from '@/stores/chatStore';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
 import {
@@ -137,6 +146,7 @@ describe('navigationHistoryStore', () => {
       activePage: 'overview',
       workflowEdit: undefined,
       pendingPluginsNavigation: undefined,
+      pluginsPresentation: undefined,
     });
     useNavigationStore.getState().setPluginsBrowseSectionId(null);
     useChatStore.setState({ selectedWorktree: null });
@@ -394,11 +404,23 @@ describe('navigationHistoryStore', () => {
       .spyOn(useSharedContainerReplicasStore, 'getState')
       .mockReturnValueOnce({
         ...sharedState,
-        viewer: { containerId: 'shared-1', organizationId: 'org-1' },
+        viewer: {
+          containerId: 'shared-1',
+          organizationId: 'org-1',
+          replica: null,
+          openError: null,
+          loading: false,
+        },
       })
       .mockReturnValueOnce({
         ...sharedState,
-        viewer: { containerId: 'shared-2', organizationId: 'org-2' },
+        viewer: {
+          containerId: 'shared-2',
+          organizationId: 'org-2',
+          replica: null,
+          openError: null,
+          loading: false,
+        },
       });
 
     expect(useNavigationHistoryStore.getState().replaceInitialLocation()).toBe(
@@ -428,7 +450,7 @@ describe('navigationHistoryStore', () => {
 
   it('normalizes cowork chat targets out of recorded locations', async () => {
     isCoworkMock.mockImplementation(
-      (projectId: unknown) => projectId === 'cowork-1',
+      (projectId: string): boolean => projectId === 'cowork-1',
     );
     useNavigationStore.getState().navigate('main');
     useChatStore.getState().selectWorktree('cowork-1', 'home');
@@ -829,5 +851,181 @@ describe('navigationHistoryStore', () => {
       expect(useNavigationStore.getState().activePage).toBe('plugins');
       expect(useNavigationHistoryStore.getState().index).toBe(3);
     });
+  });
+  it('restores source filters, entry context and Installed filtering without replaying Add (CAN-4267)', async () => {
+    const location = {
+      browse: {
+        query: 'catalog',
+        tab: 'sources' as const,
+        installedStatusFilter: 'disabled' as const,
+        installedExpanded: true,
+      },
+      source: {
+        sourceId: 'opaque/source',
+        filters: { query: 'lint', category: 'tools', author: null },
+      },
+      entry: { id: 'mkt:opaque/source/lint', stack: [], fromInstalled: true },
+      scrollTop: 240,
+      browseScrollTop: 120,
+      detailReturnScrollTop: 360,
+    };
+    useNavigationStore.getState().navigate('plugins');
+    useNavigationStore.getState().setPluginsPresentation(location);
+    await flush();
+    useNavigationStore.getState().navigate('overview');
+    await flush();
+    expect(useNavigationHistoryStore.getState().goBack()).toBe(true);
+    await flush();
+    expect(useNavigationStore.getState().pendingPluginsNavigation).toEqual({
+      kind: 'restore',
+      location,
+    });
+  });
+
+  it('restores older Customize visits atomically and preserves Forward history (CAN-4267)', async () => {
+    const older = { browse: { query: 'older', tab: 'skill' as const } };
+    const newer = { browse: { query: 'newer', tab: 'app' as const } };
+    useNavigationStore.getState().navigate('plugins');
+    useNavigationStore.getState().setPluginsPresentation(older);
+    await flush();
+    useNavigationStore.getState().navigate('overview');
+    await flush();
+    useNavigationStore.getState().navigate('plugins');
+    useNavigationStore.getState().setPluginsPresentation(newer);
+    await flush();
+    const entries = useNavigationHistoryStore.getState().entries;
+    expect(useNavigationHistoryStore.getState().goBack()).toBe(true);
+    await flush();
+    expect(useNavigationHistoryStore.getState().goBack()).toBe(true);
+    expect(useNavigationStore.getState().pluginsPresentation).toEqual(older);
+    await flush();
+    // Simulate the page publishing the restored state after its React effect.
+    useNavigationStore.getState().setPluginsPresentation(older);
+    await flush();
+    expect(useNavigationHistoryStore.getState().entries).toEqual(entries);
+    expect(useNavigationHistoryStore.getState().canGoForward).toBe(true);
+    expect(useNavigationHistoryStore.getState().goForward()).toBe(true);
+    await flush();
+    expect(useNavigationHistoryStore.getState().goForward()).toBe(true);
+    expect(useNavigationStore.getState().pluginsPresentation).toEqual(newer);
+    await flush();
+    expect(useNavigationHistoryStore.getState().entries).toEqual(entries);
+  });
+
+  it('refines the current Customize step while search text changes (CAN-4267)', async () => {
+    const source = {
+      sourceId: 'opaque/source',
+      filters: { query: '', category: null, author: null },
+    };
+    useNavigationStore.getState().navigate('plugins');
+    useNavigationStore.getState().setPluginsPresentation({
+      browse: { query: '', tab: 'all' },
+      categoryQuery: '',
+    });
+    await flush();
+    const { entries, index } = useNavigationHistoryStore.getState();
+    for (const query of ['r', 'repo', '']) {
+      useNavigationStore.getState().setPluginsPresentation({
+        browse: { query, tab: 'all' },
+        categoryQuery: query,
+      });
+      await flush();
+    }
+    useNavigationStore.getState().setPluginsPresentation({
+      browse: { query: 'lint', tab: 'all' },
+      categoryQuery: '',
+    });
+    await flush();
+    expect(useNavigationHistoryStore.getState().entries).toHaveLength(
+      entries.length,
+    );
+    expect(useNavigationHistoryStore.getState().index).toBe(index);
+    expect(
+      useNavigationHistoryStore.getState().entries[index]?.pluginsPresentation
+        ?.browse.query,
+    ).toBe('lint');
+
+    // A source is a step; typing in its search refines that step.
+    useNavigationStore.getState().setPluginsPresentation({
+      browse: { query: 'lint', tab: 'sources' },
+      source,
+    });
+    await flush();
+    useNavigationStore.getState().setPluginsPresentation({
+      browse: { query: 'lint', tab: 'sources' },
+      source: { ...source, filters: { ...source.filters, query: 'fmt' } },
+    });
+    await flush();
+    expect(useNavigationHistoryStore.getState().entries).toHaveLength(
+      entries.length + 1,
+    );
+    // Back leaves the source instead of replaying each search edit.
+    expect(useNavigationHistoryStore.getState().goBack()).toBe(true);
+    expect(useNavigationStore.getState().pluginsPresentation).toEqual({
+      browse: { query: 'lint', tab: 'all' },
+      categoryQuery: '',
+    });
+  });
+
+  it.each(['account', 'workspace'] as const)(
+    'never replays abandoned Customize history after a %s switch (CAN-4267)',
+    async (context) => {
+      useNavigationStore.getState().navigate('plugins');
+      useNavigationStore.getState().setPluginsPresentation({
+        browse: { query: 'PRIVATE QUERY', tab: 'sources' },
+        source: {
+          sourceId: 'private-source',
+          filters: { query: 'PRIVATE FILTER', category: null, author: null },
+        },
+      });
+      await flush();
+      useNavigationStore.getState().navigate('overview');
+      await flush();
+      useNavigationStore.getState().navigate('statistics');
+      await flush();
+      const workspace = useWorkspaceContextStore.getState();
+      useWorkspaceContextStore.setState(
+        context === 'account'
+          ? { accountEpoch: workspace.accountEpoch + 1 }
+          : { appliedGeneration: workspace.appliedGeneration + 1 },
+      );
+      await flush();
+      expect(useNavigationHistoryStore.getState().goBack()).toBe(true);
+      await flush();
+      expect(useNavigationStore.getState().activePage).toBe('overview');
+      expect(useNavigationHistoryStore.getState().goBack()).toBe(true);
+      await flush();
+      expect(useNavigationStore.getState().activePage).toBe('overview');
+      expect(
+        useNavigationStore.getState().pendingPluginsNavigation,
+      ).toBeUndefined();
+      expect(
+        useNavigationHistoryStore
+          .getState()
+          .entries.some((entry) => entry.pluginsPresentation !== undefined),
+      ).toBe(false);
+      expect(useNavigationHistoryStore.getState().goForward()).toBe(true);
+      await flush();
+      expect(useNavigationHistoryStore.getState().goForward()).toBe(true);
+      await flush();
+      expect(useNavigationStore.getState().activePage).toBe('statistics');
+    },
+  );
+
+  it('does not duplicate equivalent Customize locations (CAN-4267)', async () => {
+    useNavigationStore.getState().navigate('plugins');
+    useNavigationStore.getState().setPluginsPresentation({
+      browse: { query: '', tab: 'all', installedExpanded: true },
+    });
+    await flush();
+    const count = useNavigationHistoryStore.getState().entries.length;
+    useNavigationStore.getState().setPluginsPresentation({
+      browse: { query: '', tab: 'all', installedExpanded: true },
+      scrollTop: 120,
+      browseScrollTop: 240,
+      detailReturnScrollTop: 360,
+    });
+    await flush();
+    expect(useNavigationHistoryStore.getState().entries).toHaveLength(count);
   });
 });

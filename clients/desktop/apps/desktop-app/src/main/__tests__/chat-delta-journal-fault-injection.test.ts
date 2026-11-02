@@ -50,6 +50,20 @@ class SimulatedCrash extends Error {
   public override readonly name = 'SimulatedCrash';
 }
 
+/**
+ * A simulated crash, raw or as the cause of a typed storage failure: on
+ * Windows a folder flush after the crash opens read-write and so reports it
+ * as a `DirectoryFlushError` (CAN-5151 D1).
+ */
+function isSimulatedCrash(error: unknown): boolean {
+  for (let current = error, depth = 0; depth < 8; depth += 1) {
+    if (current instanceof SimulatedCrash) return true;
+    if (!(current instanceof Error)) return false;
+    current = current.cause;
+  }
+  return false;
+}
+
 type Step =
   | { kind: 'checkpoint' }
   | {
@@ -440,7 +454,7 @@ describe('delta journal fault injection', () => {
         () => undefined,
         (error: unknown) => error,
       );
-      if (!(crash instanceof SimulatedCrash))
+      if (!isSimulatedCrash(crash))
         throw new Error(
           `Crash at event ${n} of ${total} did not happen: ${String(crash)}`,
         );
@@ -533,7 +547,7 @@ describe('delta journal fault injection', () => {
           );
         dead = false;
         crashAt = Number.POSITIVE_INFINITY;
-        if (nested !== undefined && !(nested instanceof SimulatedCrash))
+        if (nested !== undefined && !isSimulatedCrash(nested))
           throw Object.assign(
             new Error(`Continuation after event ${n} failed`),
             {

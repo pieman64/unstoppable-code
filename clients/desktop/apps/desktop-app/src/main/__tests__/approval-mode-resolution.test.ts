@@ -22,7 +22,7 @@ import {
 
 const mockReadWorkspaceApprovals = jest.fn();
 const mockReadWorkspaceApprovalsManifest = jest.fn();
-const mockReadPreferencesFile = jest.fn();
+const mockReadPreferencesFile = jest.fn<Promise<Record<string, unknown>>, []>();
 const mockPeekPreferencesLoadError = jest.fn();
 const mockResolveWorktreeTargetIds = jest.fn();
 
@@ -35,8 +35,15 @@ jest.mock('../lib/workspace-approvals-manifest', () => ({
     mockReadWorkspaceApprovalsManifest(...args),
 }));
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: (...args: unknown[]): unknown =>
-    mockReadPreferencesFile(...args),
+  readPreferencesFileDetailed: async (): Promise<{
+    preferences: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
+    authority: 'ok' | 'unreadable';
+  }> => ({
+    preferences: await mockReadPreferencesFile(),
+    authority: mockPeekPreferencesLoadError() != null ? 'unreadable' : 'ok',
+  }),
+  readPreferencesFile: (): Promise<Record<string, unknown>> =>
+    mockReadPreferencesFile(),
   peekPreferencesLoadError: (...args: unknown[]): unknown =>
     mockPeekPreferencesLoadError(...args),
 }));

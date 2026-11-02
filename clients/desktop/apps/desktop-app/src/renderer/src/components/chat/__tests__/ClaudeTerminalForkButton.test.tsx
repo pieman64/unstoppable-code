@@ -3,6 +3,7 @@
  */
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type { CanopyApi } from '@canopy/desktop-shared/types';
 import { ClaudeTerminalForkButton } from '../ClaudeTerminalForkButton';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 
@@ -55,11 +56,15 @@ describe('ClaudeTerminalForkButton', () => {
         importedEventCount: 1,
       },
     });
-    window.api = {
+    const partialApi: Partial<CanopyApi> = {};
+    Object.assign(partialApi, {
       claudeTerminal: {
         syncTranscript: syncTranscriptMock,
       },
-    } as typeof window.api;
+    });
+    // This surface only calls claudeTerminal.syncTranscript; the remaining
+    // CanopyApi methods are intentionally absent from the test double.
+    window.api = partialApi as CanopyApi;
   });
 
   afterEach(() => {

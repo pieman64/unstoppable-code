@@ -198,7 +198,6 @@ import { buildPipelineBaseBranchEnv } from './worktree-base-branch-env';
 import { readEnvironmentConfig } from '../lib/user-environment-store';
 import { resolveEnvironmentForRuntime } from '@canopy/desktop-shared/lib/user-environment';
 import {
-  deletePipelinePluginCollectionPreferences,
   loadPipelineModelAliasPreferences,
   loadPipelinePluginCollectionPreferences,
   normalizePipelineModelAliasPreferences,
@@ -207,7 +206,7 @@ import {
   savePipelinePluginCollectionPreferences,
 } from './plugin-collection-store';
 import {
-  deleteUserPipelineLocalMetadata,
+  isPipelineLocalMetadataReadable,
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
   setUserPipelineAgentAuthor,
@@ -215,10 +214,17 @@ import {
 import {
   getUserPipelineOwner,
   isLocalUserPipeline,
+  PipelineNowOwnedError,
+  readUserPipelineLocalRunOwner,
   resolveExecutionOwnerContext,
   selectedOwnerContext,
   validatePipelineOwnerTargetsOnSave,
 } from './pipeline-owner-policy';
+import {
+  isPersonStart,
+  localUserPipelineIdForRequest,
+  preflightGlobalStart,
+} from './pipeline-global-start';
 import { resolvePipelinePluginCollections } from './plugin-collection-resolver';
 import {
   buildPipelineDefaultDisplay,
@@ -245,11 +251,9 @@ import {
   listPipelineAdvisorSnapshots,
   readPipelineAdvisorSnapshot,
 } from './pipeline-advisor-store';
-import {
-  withPipelineCrudTelemetry,
-  withPipelineCrudTelemetrySync,
-} from './instrumentation';
+import { withPipelineCrudTelemetry } from './instrumentation';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
+import { noteAutomationPipelineEvent } from '../automations/pipeline-run-chat-sends';
 import { getCachedClaudeAuthStatusObserved } from '../auth/provider-auth-state';
 import { resumePipelineExecutionFromMain } from './pipeline-resume-service';
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
@@ -260,10 +264,13 @@ import {
 } from './transient-error-retry-scheduler';
 import { broadcastPipelineExecutionEvent } from './pipeline-execution-event-broadcaster';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
+import { admitStoredRunDefinition } from './run-definition-admission';
+import { isSharedPipelineLocalId } from '@canopy/protocol/pipelines';
 import {
-  recordSharedItemInstall,
-  recordSharedItemLocalUninstall,
-} from '../canopy-cloud/shared-item-subscriptions';
+  deleteUserPipeline,
+  saveUserPipeline,
+} from '../canopy-runtime/pipeline-definition-dispatch';
+import { recordSharedItemInstall } from '../canopy-cloud/shared-item-subscriptions';
 import {
   analyzePackageRequest,
   cancelPackageAnalysis,
@@ -280,6 +287,10 @@ import {
   updateSharedPipelinePreservingPackage,
 } from './pipeline-package-service';
 import { getSharedPipelineSaveImpact } from './shared-pipeline-save-impact';
+import {
+  resolvePipelineAssetExecutionOptions,
+  type PipelineAssetIdentity,
+} from './pipeline-asset-resolution';
 
 export { getSharedPipelineSaveImpact } from './shared-pipeline-save-impact';
 
@@ -432,28 +443,21 @@ function trackExecutionWithAdvisor(
   attachPipelineRunObservers(handle);
 }
 
-type MainProcessExecutePipelineRequestOptions = Omit<
-  ExecutePipelineRequestOptions,
-  'cwd'
-> & {
-  /**
-   * Working directory of a project or directory run. A top-level global run
-   * ignores it and works in its own scratch folder.
-   */
-  cwd?: string;
-  /**
-   * Internal-only preallocated id used by hook-pipeline queue reservations.
-   * Renderer IPC execute requests are sanitized before reaching this type.
-   */
-  executionId?: string;
-  /**
-   * Internal package owned by the automation that launched a bundled local
-   * pipeline. Renderer IPC requests never populate this field.
-   */
-  automationPipelinePackage?: ExecutionOptions['pipelinePackage'];
-  /** Fresh foreground dispatch marker; never accepted from renderer IPC. */
-  allowUnverifiedForegroundChildren?: boolean;
-};
+type MainProcessExecutePipelineRequestOptions =
+  ExecutePipelineRequestOptions & {
+    /**
+     * Internal-only preallocated id used by hook-pipeline queue reservations.
+     * Renderer IPC execute requests are sanitized before reaching this type.
+     */
+    executionId?: string;
+    /**
+     * Internal package owned by the automation that launched a bundled local
+     * pipeline. Renderer IPC requests never populate this field.
+     */
+    automationPipelinePackage?: ExecutionOptions['pipelinePackage'];
+    /** Fresh foreground dispatch marker; never accepted from renderer IPC. */
+    allowUnverifiedForegroundChildren?: boolean;
+  };
 
 async function setupAppAdvisorPipelineWatchersForExecution(args: {
   state: ExecutionState;
@@ -519,6 +523,34 @@ function getErrorCode(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+/**
+ * The data-dir identity of a top-level run: a stored user pipeline's local
+ * id; else the absolute file of a project pipeline; else a stable source key
+ * for curated, shared and bundled pipelines, so their data dir survives
+ * revisions and app updates. Inline runs have none.
+ */
+function pipelineAssetIdentity(input: {
+  userPipelineId: string | undefined;
+  curatedId: string | undefined;
+  sharedPipeline: ExecutePipelineRequestOptions['sharedPipeline'];
+  projectPipelineSourcePath: string | undefined;
+  pipelinePreferenceLocator: ExecutionOptions['pipelinePreferenceLocator'];
+}): PipelineAssetIdentity {
+  if (input.userPipelineId) return { localPipelineId: input.userPipelineId };
+  if (input.projectPipelineSourcePath)
+    return { sourcePath: input.projectPipelineSourcePath };
+  if (input.curatedId) return { sourcePath: input.curatedId };
+  if (input.sharedPipeline)
+    return {
+      sourcePath: `shared:${input.sharedPipeline.serverId}:${input.sharedPipeline.remoteId}`,
+    };
+  const locator = input.pipelinePreferenceLocator;
+  if (locator?.type === 'file') return { sourcePath: locator.value };
+  if (locator?.type === 'stored')
+    return { sourcePath: `${locator.source}:${locator.value}` };
+  return {};
+}
+
 function formatPipelineExecutionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -548,6 +580,34 @@ function isSharedPipelineRequest(
     'remoteId' in request &&
     typeof request.remoteId === 'string'
   );
+}
+
+/**
+ * Annotate a local user pipeline read with its saved owner. A store that
+ * can't be read marks the owner unreadable rather than showing the pipeline
+ * unowned; the read itself still serves the editor and other callers. With
+ * organization projects off every run is Personal, so the saved owner is
+ * neither shown nor read.
+ */
+function withLocalRunOwner<
+  T extends { success: boolean; data?: PipelineData; error?: string },
+>(result: T): T {
+  if (
+    !result.success ||
+    result.data?.info.source !== 'user' ||
+    !backgroundExecutionContextEnabled()
+  )
+    return result;
+  try {
+    const owner = readUserPipelineLocalRunOwner(result.data.info.id);
+    if (owner === undefined) return result;
+    return { ...result, data: { ...result.data, localRunOwner: owner } };
+  } catch {
+    return {
+      ...result,
+      data: { ...result.data, localRunOwnerUnreadable: true },
+    };
+  }
 }
 
 function toErrorMessage(error: unknown): string {
@@ -680,7 +740,7 @@ async function cacheSharedPipelineForExecution(args: {
           error.isValidatedServerError &&
           (error.status === 403 || error.status === 404)) ||
         (error instanceof Error &&
-          error.message === 'Pipeline unavailable (access-removed)')
+          error.message === 'Workflow unavailable (access-removed)')
       )
         throw new Error(backgroundExecutionDeniedMessage('access-removed'));
     }
@@ -927,7 +987,7 @@ async function createScopedPipelineDuplicate(
     });
     const saved = service.savePipeline({ ...input, id }, { id });
     if (!saved.success || !saved.data)
-      throw new Error(saved.error ?? 'Failed to save the pipeline');
+      throw new Error(saved.error ?? 'Failed to save the workflow');
     savedId = saved.data.id;
     if (savedId !== id) throw new Error('Pipeline create identity mismatch');
     await afterCreate?.(id);
@@ -937,7 +997,7 @@ async function createScopedPipelineDuplicate(
       if (savedId) {
         const removed = service.deletePipeline(savedId);
         if (!removed.success)
-          throw new Error(removed.error ?? 'Failed to roll back pipeline');
+          throw new Error(removed.error ?? 'Failed to roll back workflow');
       }
       await undoReceipt?.();
     } catch (rollbackError) {
@@ -1081,9 +1141,11 @@ export function registerPipelineHandlers(): void {
 
           if (!isProjectPipelineRequest(request)) {
             if (isStoredPipelineLookupRequest(request)) {
-              return service.getStoredPipelineBySource(
-                request.source === 'bundled' ? 'bundled' : 'user',
-                request.id,
+              return withLocalRunOwner(
+                service.getStoredPipelineBySource(
+                  request.source === 'bundled' ? 'bundled' : 'user',
+                  request.id,
+                ),
               );
             }
             if (typeof request !== 'string') {
@@ -1092,7 +1154,7 @@ export function registerPipelineHandlers(): void {
                 error: 'Invalid pipeline lookup request',
               };
             }
-            return service.getPipeline(request);
+            return withLocalRunOwner(service.getPipeline(request));
           }
 
           return loadProjectPipelineData(request);
@@ -1148,7 +1210,7 @@ export function registerPipelineHandlers(): void {
               !previousRaw?.success ||
               !previousRaw.data)
           )
-            throw new Error('Pipeline unavailable (unknown-provenance)');
+            throw new Error('Workflow unavailable (unknown-provenance)');
           savedDefinition = Boolean(input.id);
           const result = service.savePipeline(
             {
@@ -1160,7 +1222,7 @@ export function registerPipelineHandlers(): void {
             input.id ? undefined : { id },
           );
           if (!result.success || !result.data)
-            throw new Error(result.error ?? 'Failed to save the pipeline');
+            throw new Error(result.error ?? 'Failed to save the workflow');
           savedDefinition = true;
           savedId = result.data.id;
           if (result.data.id !== id)
@@ -1191,13 +1253,13 @@ export function registerPipelineHandlers(): void {
                 });
                 if (!restored.success)
                   throw new Error(
-                    restored.error ?? 'Failed to restore pipeline',
+                    restored.error ?? 'Failed to restore workflow',
                   );
               } else {
                 const removed = service.deletePipeline(savedId);
                 if (!removed.success)
                   throw new Error(
-                    removed.error ?? 'Failed to roll back pipeline',
+                    removed.error ?? 'Failed to roll back workflow',
                   );
               }
             }
@@ -1216,16 +1278,30 @@ export function registerPipelineHandlers(): void {
         ownerContext,
       );
       if (ownerRefusal !== null) return { success: false, error: ownerRefusal };
-      const result = withPipelineCrudTelemetrySync(
+      // Core validates, refuses a stale revision, and runs the store's
+      // effects; this projection keeps the legacy result and owner records.
+      const result = await withPipelineCrudTelemetry(
         {
           action: input.id ? 'update' : 'create',
           source: 'user',
           hasPipelineId: Boolean(input.id),
         },
-        () => service.savePipeline(input),
+        (): Promise<IPCResult<PipelineInfo>> =>
+          saveUserPipeline({
+            ...(input.id ? { id: input.id } : {}),
+            ...(input.expectedRevision === undefined
+              ? {}
+              : { expectedRevision: input.expectedRevision }),
+            name: input.name,
+            description: input.description,
+            icon: input.icon,
+            content: input.content,
+            ...(input.rawContent === undefined
+              ? {}
+              : { rawContent: input.rawContent }),
+          }),
       );
       if (result.success && result.data) recordUserSave(result.data.id);
-      if (input.id && result.success) void removePackageInstall(input.id);
       if (result.success && result.data && input.sourceRemoteId) {
         // Without organization projects the definition comes from the
         // renderer and no server hash travels with it.
@@ -1237,30 +1313,15 @@ export function registerPipelineHandlers(): void {
           localId: result.data.id,
         });
       }
-      if (result.success) notifyDesktopInventoryChanged(['pipelines']);
       return result;
     },
   );
+  // Core deletes the definition with its preferences, local metadata,
+  // subscription ledger entry and package install.
   registerIpcHandler(PIPELINE_CHANNELS.DELETE, (_, id: string) => {
-    return withPipelineCrudTelemetrySync(
+    return withPipelineCrudTelemetry(
       { action: 'delete', source: 'user', hasPipelineId: true },
-      () => {
-        const result = service.deletePipeline(id);
-        if (result.success) {
-          deletePipelinePluginCollectionPreferences({
-            type: 'stored',
-            source: 'user',
-            value: id,
-          });
-          deleteUserPipelineLocalMetadata(id);
-          // The subscription ledger names every share this copy came from,
-          // even after a local edit dropped its package record.
-          recordSharedItemLocalUninstall({ kind: 'pipeline', localId: id });
-          void removePackageInstall(id);
-          notifyDesktopInventoryChanged(['pipelines']);
-        }
-        return result;
-      },
+      (): Promise<IPCResult> => deleteUserPipeline(id, null),
     );
   });
   registerIpcHandler(
@@ -1281,7 +1342,7 @@ export function registerPipelineHandlers(): void {
                 const { owner } =
                   await authorizeProjectPipelineRequest(request);
                 if (owner.type === 'organization')
-                  throw new Error('Pipeline unavailable (context-mismatch)');
+                  throw new Error('Workflow unavailable (context-mismatch)');
               } else {
                 const localId =
                   typeof request === 'string'
@@ -1290,7 +1351,7 @@ export function registerPipelineHandlers(): void {
                       ? request.id
                       : undefined;
                 if (localId?.startsWith('project--'))
-                  throw new Error('Pipeline unavailable (unknown-provenance)');
+                  throw new Error('Workflow unavailable (unknown-provenance)');
                 if (localId) await assertStoredPipelineContext(localId);
               }
             } catch (error) {
@@ -1518,7 +1579,7 @@ export function registerPipelineHandlers(): void {
             if (linked && !linked.success) {
               await deleteSharedPipeline(created.id);
               throw new Error(
-                linked.error ?? 'Failed to store pipeline share link.',
+                linked.error ?? 'Failed to store workflow share link.',
               );
             }
             return hydrateSharedPipelineDetailScopes(created);
@@ -1574,7 +1635,7 @@ export function registerPipelineHandlers(): void {
         if (linked && !linked.success) {
           if (!request.remoteId) await deleteSharedPipeline(created.id);
           throw new Error(
-            linked.error ?? 'Failed to store pipeline share link.',
+            linked.error ?? 'Failed to store workflow share link.',
           );
         }
         return hydrateSharedPipelineDetailScopes(created);
@@ -1693,7 +1754,7 @@ export function registerPipelineHandlers(): void {
             const linked = persistPipelineRemoteMetadata(request, detail);
             if (linked && !linked.success) {
               throw new Error(
-                linked.error ?? 'Failed to store pipeline share link.',
+                linked.error ?? 'Failed to store workflow share link.',
               );
             }
             return detail;
@@ -1731,7 +1792,7 @@ export function registerPipelineHandlers(): void {
               throw new Error(
                 cleared.error ??
                   projectCleared.error ??
-                  'Failed to clear pipeline share link.',
+                  'Failed to clear workflow share link.',
               );
             }
             return { success: true };
@@ -2214,6 +2275,7 @@ function emitExecutionEvent(
   notePipelineExecutionEvent(event, getWindow);
   getObservabilityService().syncPipelineExecutionState(event.state);
   recordPipelineUsageEvent(event);
+  noteAutomationPipelineEvent(event);
   if (
     (event.type === 'execution.completed' ||
       event.type === 'execution.failed') &&
@@ -2374,11 +2436,16 @@ function sanitizeRendererExecuteOptions(
     sanitized.planId = options.planId;
   }
   // The renderer is always a foreground caller; background sources are set
-  // only by main's own trusted callers.
+  // only by main's own trusted callers. App Advisor's global runs start in
+  // main, so a renderer global start is always a person's.
   if (
     options.initiationSource !== undefined &&
     isUsageInitiationSource(options.initiationSource) &&
-    RENDERER_INITIATION_SOURCES.has(options.initiationSource)
+    RENDERER_INITIATION_SOURCES.has(options.initiationSource) &&
+    !(
+      options.initiationSource === 'app_advisor' &&
+      (options.scope === 'global' || options.target?.scope === 'global')
+    )
   ) {
     sanitized.initiationSource = options.initiationSource;
   }
@@ -2399,6 +2466,14 @@ function sanitizeRendererExecuteOptions(
   }
   if (options.appAdvisorPipelineWatchers !== undefined) {
     sanitized.appAdvisorPipelineWatchers = options.appAdvisorPipelineWatchers;
+  }
+  // Only a serialized owner is kept; main validates it against the saved
+  // owner and the account's memberships before the run starts.
+  if (
+    typeof options.requestedOwner === 'string' &&
+    parseWorkspaceContext(options.requestedOwner) !== null
+  ) {
+    sanitized.requestedOwner = options.requestedOwner;
   }
   // Identity is recorded from the sanitized usage source only; a renderer
   // `initiator` or `agentOrigin` is never honored.
@@ -2478,6 +2553,17 @@ export async function startPipelineExecutionFromMain(args: {
 }): Promise<PipelineExecutionStartResult> {
   const speedError = pipelineSpeedError(args.options.modelConfig);
   if (speedError) return { success: false, error: speedError };
+  // A global start is refused before any reservation, owner binding, scratch
+  // folder, or watcher exists, including when its owner checks can't read.
+  const globalRefusal = await preflightGlobalStart(args.pipeline, args.options);
+  if (globalRefusal)
+    return {
+      success: false,
+      error: globalRefusal.message,
+      ...(globalRefusal.code !== undefined
+        ? { errorCode: globalRefusal.code }
+        : {}),
+    };
   const { projectId, worktreeId } = args.options;
   const planId =
     args.options.planId ?? args.options.eventData?.plan_ready?.planId;
@@ -2586,7 +2672,7 @@ export async function retryPipelineExecutionFromMain(args: {
         assertNotSplitLocked(
           state.project_id,
           state.worktree_id,
-          'retrying a pipeline execution',
+          'retrying a workflow execution',
         );
       }
       const preferences = await readPreferencesFile();
@@ -2690,7 +2776,7 @@ export async function retryMatrixJobFromMain(args: {
         assertNotSplitLocked(
           state.project_id,
           state.worktree_id,
-          'retrying a pipeline matrix job',
+          'retrying a workflow matrix job',
         );
       }
       prepareMatrixJobRetryState(structuredClone(state), request);
@@ -2876,7 +2962,7 @@ function resolveExecutionStartCwd(
     return globalOptions;
   }
   if (options.cwd === undefined)
-    throw new Error('Pipeline unavailable (unsupported-target)');
+    throw new Error('Workflow unavailable (unsupported-target)');
   return { ...options, cwd: options.cwd };
 }
 
@@ -2980,7 +3066,7 @@ async function resolvePipelineDispatchProject(
     if (projects.size !== 1) throw new Error('Unresolved target');
     return Array.from(projects)[0];
   } catch {
-    throw new Error('Pipeline unavailable (unsupported-target)');
+    throw new Error('Workflow unavailable (unsupported-target)');
   }
 }
 
@@ -3019,7 +3105,7 @@ async function startPipelineExecutionFromMainInternal(args: {
       assertNotSplitLocked(
         args.options.projectId,
         args.options.worktreeId,
-        'running a pipeline',
+        'running a workflow',
       );
     }
 
@@ -3037,6 +3123,7 @@ async function startPipelineExecutionFromMainInternal(args: {
       pipelineFilePath,
       sharedPipeline,
       automationPipelinePackage,
+      requestedOwner,
       ...executionOptions
     } = options;
     const resourceContextSnapshot = pipelineResourceContextEnabled()
@@ -3055,31 +3142,44 @@ async function startPipelineExecutionFromMainInternal(args: {
       executionOptions.initiationSource === 'portal';
     const foregroundOrgDispatch =
       capturedContext?.kind === 'organization' && foregroundSource;
+    const topLevelGlobal = isTopLevelGlobalRun({
+      scope: options.scope,
+      parentExecutionId: undefined,
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      target: options.target,
+    });
+    // A person's global run takes a saved or chosen owner, never the
+    // selected organization.
+    const personGlobalStart = topLevelGlobal && isPersonStart(options);
+    // An automation with no project has no dispatch gate that knows its
+    // folder; its final authorization runs here once that folder exists.
+    const globalAutomationRun =
+      topLevelGlobal &&
+      executionOptions.initiationSource === 'automation' &&
+      !sharedPipeline &&
+      backgroundExecutionContextEnabled();
     const targetProjectId = pipelineResourceContextEnabled()
       ? await resolvePipelineDispatchProject(options)
       : options.projectId;
     let executionResource: ResourceContextInput['resource'] | undefined;
-    if (
+    const storedPipelineId =
       pipelineResourceContextEnabled() &&
       args.options.pipelineId &&
       !sharedPipeline &&
       !pipelineFilePath
-    ) {
-      await assertStoredPipelineContext(
-        args.options.pipelineId,
-        targetProjectId,
-      );
-      if (
-        foregroundOrgDispatch &&
-        !(
-          executionOptions.pipelinePreferenceLocator?.type === 'stored' &&
-          executionOptions.pipelinePreferenceLocator.source === 'curated'
-        ) &&
-        !args.options.pipelineId.startsWith('curated:')
-      )
-        executionResource = await readStoredPipelineContext(
-          args.options.pipelineId,
-        );
+        ? args.options.pipelineId
+        : undefined;
+    const storedCurated =
+      (executionOptions.pipelinePreferenceLocator?.type === 'stored' &&
+        executionOptions.pipelinePreferenceLocator.source === 'curated') ||
+      storedPipelineId?.startsWith('curated:') === true;
+    // A global run's definition is authorized against its owner once that is
+    // resolved below, never the selected navigation context.
+    if (storedPipelineId !== undefined && !topLevelGlobal) {
+      await assertStoredPipelineContext(storedPipelineId, targetProjectId);
+      if (foregroundOrgDispatch && !storedCurated)
+        executionResource = await readStoredPipelineContext(storedPipelineId);
     }
     let pipelineContent = args.pipeline;
     let authorizedPipeline = args.pipeline;
@@ -3089,6 +3189,7 @@ async function startPipelineExecutionFromMainInternal(args: {
       (pipelineFilePath
         ? { type: 'file' as const, value: path.resolve(pipelineFilePath) }
         : undefined);
+    let projectPipelineSourcePath: string | undefined;
     let curatedPipelineSource: ExecutionOptions['curatedPipelineSource'];
     let curatedPipelinePackage: ExecutionOptions['pipelinePackage'];
     let sharedPipelineSource: SharedPipelineExecutionSource | undefined;
@@ -3111,7 +3212,7 @@ async function startPipelineExecutionFromMainInternal(args: {
           managed.info.curatedContentHash
       ) {
         throw new Error(
-          'This curated pipeline changed after you opened it. Reopen the launch dialog to review its updated inputs and try again.',
+          'This curated workflow changed after you opened it. Reopen the launch dialog to review its updated inputs and try again.',
         );
       }
       if (
@@ -3133,7 +3234,7 @@ async function startPipelineExecutionFromMainInternal(args: {
         )
       ) {
         throw new Error(
-          'This curated pipeline no longer supports the selected trigger. Reopen the launch dialog and choose another pipeline.',
+          'This curated workflow no longer supports the selected trigger. Reopen the launch dialog and choose another workflow.',
         );
       }
       pipelineContent = managed.content;
@@ -3153,6 +3254,18 @@ async function startPipelineExecutionFromMainInternal(args: {
     }
 
     if (!curatedId && sharedPipeline) {
+      // A global run's owner is already known here: an agent's binding, or
+      // the person's choice, since a shared definition has no saved owner.
+      // Its definition is authorized against that owner, not navigation.
+      const globalOwner = topLevelGlobal
+        ? (executionOptions.executionContext ??
+          (personGlobalStart ? requestedOwner : undefined))
+        : undefined;
+      const sharedExecutionContext =
+        executionOptions.initiationSource === 'hook' ||
+        executionOptions.initiationSource === 'automation'
+          ? executionOptions.executionContext
+          : globalOwner;
       const cachedSharedPipeline = await cacheSharedPipelineForExecution({
         serverId: sharedPipeline.serverId,
         remoteId: sharedPipeline.remoteId,
@@ -3160,9 +3273,8 @@ async function startPipelineExecutionFromMainInternal(args: {
         projectId: targetProjectId,
         runtime,
         executionId,
-        ...(executionOptions.initiationSource === 'hook' ||
-        executionOptions.initiationSource === 'automation'
-          ? { executionContext: executionOptions.executionContext }
+        ...(sharedExecutionContext !== undefined
+          ? { executionContext: sharedExecutionContext }
           : {}),
       });
       pipelineContent = cachedSharedPipeline.pipeline;
@@ -3196,10 +3308,14 @@ async function startPipelineExecutionFromMainInternal(args: {
             },
             sharedPipeline.remoteId,
           ),
-          {
-            projectId: executionOptions.projectId ?? '',
-            worktreeId: executionOptions.worktreeId,
-          },
+          // A run with no project authorizes against no project, never an
+          // empty project id.
+          options.scope === 'global' && !executionOptions.projectId
+            ? { scope: 'global' }
+            : {
+                projectId: executionOptions.projectId ?? '',
+                worktreeId: executionOptions.worktreeId,
+              },
           authorizations,
         );
         if (!decision.allow)
@@ -3229,7 +3345,7 @@ async function startPipelineExecutionFromMainInternal(args: {
           filePath: pipelineFilePath,
         });
         if (projectId !== targetProjectId)
-          throw new Error('Pipeline unavailable (unsupported-target)');
+          throw new Error('Workflow unavailable (unsupported-target)');
         executionResource = { owner };
         try {
           await assertPipelineContext({ owner }, targetProjectId);
@@ -3237,9 +3353,9 @@ async function startPipelineExecutionFromMainInternal(args: {
           // The owner is trusted here; an incompatible execution target is a context mismatch.
           if (
             error instanceof Error &&
-            error.message === 'Pipeline unavailable (unsupported-target)'
+            error.message === 'Workflow unavailable (unsupported-target)'
           )
-            throw new Error('Pipeline unavailable (context-mismatch)');
+            throw new Error('Workflow unavailable (context-mismatch)');
           throw error;
         }
       }
@@ -3250,38 +3366,57 @@ async function startPipelineExecutionFromMainInternal(args: {
         filePath: pipelineFilePath,
       }).catch((error: unknown): never => {
         if (pipelineResourceContextEnabled())
-          throw new Error('Pipeline unavailable (unsupported-target)');
+          throw new Error('Workflow unavailable (unsupported-target)');
         throw error;
       });
       if (!validated.success) {
         if (pipelineResourceContextEnabled())
-          throw new Error('Pipeline unavailable (unsupported-target)');
+          throw new Error('Workflow unavailable (unsupported-target)');
         return validated;
       }
 
       if (pipelineResourceContextEnabled()) {
         try {
           const { projectId, worktreeId } = args.options;
-          if (!projectId || !worktreeId) throw new Error('Missing target');
-          validateId(worktreeId, 'worktreeId');
-          const canonicalCwd = resolveWorktreeCwd(projectId, worktreeId);
+          if (!projectId) throw new Error('Missing target');
+          // A project-folder run has no worktree: its cwd, which its directory
+          // target must name, has to stay inside the project root authorized
+          // above.
+          const { target } = args.options;
+          const projectFolderRun =
+            !worktreeId &&
+            args.options.scope === 'directory' &&
+            (target === undefined ||
+              (target.scope === 'directory' &&
+                path.resolve(target.path) === path.resolve(options.cwd)));
+          if (!worktreeId && !projectFolderRun)
+            throw new Error('Missing target');
+          let canonicalCwd = options.cwd;
+          if (worktreeId) {
+            validateId(worktreeId, 'worktreeId');
+            canonicalCwd = resolveWorktreeCwd(projectId, worktreeId);
+          }
           if (
             !isPathInside(canonicalCwd, validated.data.rootDir) ||
-            !isPathInside(validated.data.rootDir, validated.data.filePath)
+            !isPathInside(validated.data.rootDir, validated.data.filePath) ||
+            (projectFolderRun && !isPathInside(rootCwd, canonicalCwd))
           )
             throw new Error('Outside target');
-          const [realCwd, realRoot, realFile] = await Promise.all([
-            realpath(canonicalCwd),
-            realpath(validated.data.rootDir),
-            realpath(validated.data.filePath),
-          ]);
+          const [realCwd, realRoot, realFile, realProjectRoot] =
+            await Promise.all([
+              realpath(canonicalCwd),
+              realpath(validated.data.rootDir),
+              realpath(validated.data.filePath),
+              realpath(rootCwd),
+            ]);
           if (
             !isPathInside(realCwd, realRoot) ||
-            !isPathInside(realRoot, realFile)
+            !isPathInside(realRoot, realFile) ||
+            (projectFolderRun && !isPathInside(realProjectRoot, realCwd))
           )
             throw new Error('Outside target');
         } catch {
-          throw new Error('Pipeline unavailable (unsupported-target)');
+          throw new Error('Workflow unavailable (unsupported-target)');
         }
       }
 
@@ -3289,14 +3424,29 @@ async function startPipelineExecutionFromMainInternal(args: {
         validated.data.filePath,
       );
       pipelineFileDir = path.dirname(validated.data.filePath);
+      projectPipelineSourcePath = path.resolve(validated.data.filePath);
     }
 
-    // Every top-level run records its owner. A foreground run with an
-    // organization owner, selected or derived, is authorized against it the
-    // way a background run is.
-    const authorizeForegroundOrganizationRun = async (
-      ownerContext: string,
-    ): Promise<void> => {
+    // A stored run executes the definition core validates, never the copy
+    // its caller sent; an id core doesn't know is an inline definition. Only
+    // a source main has itself loaded above opts out, never a caller's
+    // preference locator.
+    if (
+      !curatedId &&
+      !sharedPipeline &&
+      !pipelineFilePath &&
+      !executionOptions.pipelineId.startsWith('project--') &&
+      !isSharedPipelineLocalId(executionOptions.pipelineId)
+    ) {
+      const admitted = await admitStoredRunDefinition(
+        executionOptions.pipelineId,
+      );
+      if (admitted) pipelineContent = admitted.pipeline;
+    }
+
+    const runContextResources = (): ReturnType<
+      typeof pipelineContextResources
+    > => {
       const resources = pipelineContextResources(
         pipelineContent,
         executionResource?.owner ?? { shareScope: 'private' },
@@ -3315,10 +3465,18 @@ async function startPipelineExecutionFromMainInternal(args: {
       );
       if (executionResource?.provenance && resources[0])
         resources[0].provenance = executionResource.provenance;
+      return resources;
+    };
+    // Every top-level run records its owner. A foreground run with an
+    // organization owner, selected or derived, is authorized against it the
+    // way a background run is.
+    const authorizeForegroundOrganizationRun = async (
+      ownerContext: string,
+    ): Promise<void> => {
       // Foreground runs may contain a run-pipeline step with its own cwd or
       // directory target. Those children are resolved at execution time; the
       // persisted org context makes every replay reauthorize them afresh.
-      const topLevelResources = resources.filter(
+      const topLevelResources = runContextResources().filter(
         (resource) => resource.childPipeline === undefined,
       );
       const destinationProjectId =
@@ -3343,23 +3501,46 @@ async function startPipelineExecutionFromMainInternal(args: {
         );
       executionOptions.allowUnverifiedForegroundChildren = true;
     };
-    const userPipelineId =
-      !curatedId &&
-      !sharedPipeline &&
-      !pipelineFilePath &&
-      pipelinePreferenceLocator?.type !== 'file' &&
-      !(
-        pipelinePreferenceLocator?.type === 'stored' &&
-        pipelinePreferenceLocator.source !== 'user'
-      ) &&
-      isLocalUserPipeline(executionOptions.pipelineId)
-        ? executionOptions.pipelineId
-        : undefined;
+    // The automation's owner authorizes its definition and run-pipeline
+    // children in its own folder, as the dispatch gate does for a project run.
+    const authorizeGlobalAutomationRun = async (
+      ownerContext: string,
+    ): Promise<void> => {
+      const authorizations: Array<
+        NonNullable<ExecutionOptions['childPipelineAuthorizations']>[number]
+      > = [];
+      const decision = await authorizeBackgroundExecution(
+        ownerContext,
+        runContextResources(),
+        { scope: 'global' },
+        authorizations,
+      );
+      if (!decision.allow)
+        throw new Error(
+          decision.transient
+            ? backgroundExecutionRetryMessage('run')
+            : backgroundExecutionDeniedMessage(decision.reason, {
+                ...(decision.subject ? { subject: decision.subject } : {}),
+              }),
+        );
+      executionOptions.childPipelineAuthorizations = authorizations;
+    };
+    const userPipelineId = curatedId
+      ? undefined
+      : localUserPipelineIdForRequest({
+          pipelineId: executionOptions.pipelineId,
+          pipelineFilePath,
+          pipelinePreferenceLocator,
+          sharedPipeline,
+        });
     const ownerResult = await resolveExecutionOwnerContext({
-      // A foreground dispatch in a selected organization binds to it.
+      // A foreground dispatch in a selected organization binds to it; a
+      // global run keeps its saved or chosen owner instead.
       explicit:
         executionOptions.executionContext ??
-        (foregroundOrgDispatch ? capturedExecutionContext : undefined),
+        (foregroundOrgDispatch && !topLevelGlobal
+          ? capturedExecutionContext
+          : undefined),
       captured: capturedExecutionContext,
       scope: executionOptions.scope,
       parentExecutionId: undefined,
@@ -3367,11 +3548,23 @@ async function startPipelineExecutionFromMainInternal(args: {
       worktreeId: executionOptions.worktreeId,
       target: executionOptions.target,
       userPipelineId,
+      ...(personGlobalStart ? { person: { requestedOwner } } : {}),
     });
-    if ('refusal' in ownerResult) throw new Error(ownerResult.refusal);
+    if ('refusal' in ownerResult)
+      throw ownerResult.code !== undefined
+        ? new PipelineNowOwnedError()
+        : new Error(ownerResult.refusal);
     const ownerContext = parseWorkspaceContext(ownerResult.owner);
     if (!ownerContext)
       throw new Error(backgroundExecutionDeniedMessage('unsupported-target'));
+    if (storedPipelineId !== undefined && topLevelGlobal) {
+      const resource = await readStoredPipelineContext(
+        storedPipelineId,
+        ownerResult.owner,
+      );
+      await assertPipelineContext(resource, undefined, ownerResult.owner);
+      if (!storedCurated) executionResource = resource;
+    }
     if (foregroundSource && ownerContext.kind === 'organization') {
       // The selected context is one the account is in; any other owner is
       // checked before it is trusted.
@@ -3381,6 +3574,33 @@ async function startPipelineExecutionFromMainInternal(args: {
       )
         throw new Error(backgroundExecutionDeniedMessage('access-removed'));
       await authorizeForegroundOrganizationRun(ownerResult.owner);
+    }
+    if (globalAutomationRun)
+      await authorizeGlobalAutomationRun(ownerResult.owner);
+    if (ownerResult.bindUserPipelineId !== undefined) {
+      // A person's first choice binds a legacy unowned pipeline once the run
+      // is authorized. The binding is an ownership decision, so it persists
+      // even if the start later fails.
+      const bindLocator = {
+        type: 'stored',
+        source: 'user',
+        value: ownerResult.bindUserPipelineId,
+      } as const;
+      // Another start may have bound it while this one was authorized; the
+      // saved owner is never rewritten. A store that became unreadable is
+      // never written over.
+      if (!isPipelineLocalMetadataReadable())
+        throw new Error(backgroundExecutionDeniedMessage('unknown-provenance'));
+      const boundMeanwhile = readPipelineLocalMetadata(bindLocator).owner;
+      if (boundMeanwhile !== undefined && boundMeanwhile !== ownerResult.owner)
+        throw new PipelineNowOwnedError();
+      if (boundMeanwhile === undefined)
+        recordUserPipelineOwner(
+          ownerResult.bindUserPipelineId,
+          ownerResult.owner,
+        );
+      if (readPipelineLocalMetadata(bindLocator).owner !== ownerResult.owner)
+        throw new Error(backgroundExecutionDeniedMessage('unknown-provenance'));
     }
     executionOptions.executionContext = ownerResult.owner;
     const initiator =
@@ -3427,10 +3647,24 @@ async function startPipelineExecutionFromMainInternal(args: {
             executionOptions.pipelineId,
           )
         : undefined;
+    // Assets and the data dir resolve before the first step, so a missing
+    // required asset fails the start with a message naming it.
+    const assetResolution = await resolvePipelineAssetExecutionOptions({
+      pipeline: pipelineContent,
+      identity: pipelineAssetIdentity({
+        userPipelineId,
+        curatedId,
+        sharedPipeline,
+        projectPipelineSourcePath,
+        pipelinePreferenceLocator,
+      }),
+    });
+    if (!assetResolution.ok) throw new Error(assetResolution.message);
     if (resourceContextSnapshot !== undefined)
       await assertPipelineContextSnapshot(resourceContextSnapshot);
     const handle = await executePipeline(pipelineContent, {
       ...executionOptions,
+      ...assetResolution.options,
       pipelinePreferenceLocator,
       pipelineFileDir,
       executionId,
@@ -3499,7 +3733,9 @@ async function startPipelineExecutionFromMainInternal(args: {
       error: formatPipelineExecutionError(error),
       ...(error instanceof SharedPipelinePinMismatchError
         ? { errorCode: 'shared_pipeline_changed' as const }
-        : {}),
+        : error instanceof PipelineNowOwnedError
+          ? { errorCode: error.code }
+          : {}),
     };
   } finally {
     releaseResourceGuard?.();
@@ -3560,7 +3796,7 @@ export async function rerunPipelineExecutionFromMain(args: {
         assertNotSplitLocked(
           state.project_id,
           state.worktree_id,
-          'starting over a pipeline execution',
+          'starting over a workflow execution',
         );
       }
       const preferences = await readPreferencesFile();

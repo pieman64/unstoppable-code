@@ -23,6 +23,7 @@ import {
   repositoryNameFromCloneUrl,
 } from '@canopy/protocol/portal';
 import { normalizeWorkspaceOwner } from '@canopy/desktop-shared/lib/workspace-owner';
+import type { MultiRepoSetupRepository } from './org-project-setup-journal';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import type { WorkspaceOwnerBinding } from '@canopy/desktop-shared/types';
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
@@ -57,11 +58,13 @@ import {
 import { validateId } from './validation';
 import type { GitCloneProgressUpdate } from './git-clone-progress';
 import { inferCloneRepoName } from './git-clone-progress';
+import { readAllSidebarItems, readWorkspaceIndexEntry } from './sidebar-items';
 import {
-  readAllSidebarItems,
-  readWorkspaceIndexEntry,
-  writeAllSidebarItems,
-} from './sidebar-items';
+  applyWorkspaceAdditionDecision,
+  applyWorkspaceCreationDecision,
+} from './workspace-creation-decision-port';
+import { workspaceCreationIds } from './worktree-record-decision-apply';
+import type { WorkspaceCreationDecision } from './worktree-record-decisions';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { slugify, uniqueId } from './string-utils';
 import { pathExists } from './fs-utils';
@@ -77,6 +80,7 @@ import { readWorkspaceConfig } from './workspace-persistence';
 import { prepareNewWorkspaceSourceRepo } from './workspace-source-control';
 import { refreshOrganizationOwner } from './workspace-ownership';
 import { ensureAgentsMdSymlink } from './instruction-files';
+import { scaffoldWorkspaceInstructions } from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import { createExternalCoworkWorkspace } from './cowork-workspace-crud';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
 import { refuseWorkspaceCreation } from './workspace-creation-refusal';
@@ -378,12 +382,14 @@ async function createAdmittedTemporaryWorkspace(
           }),
       );
       seeded = true;
-      await writeFile(
-        getWorkspaceClaudeMdPath(id),
-        getDefaultWorkspaceClaudeMd(name),
-        'utf8',
+      await scaffoldWorkspaceInstructions(
+        { content: getDefaultWorkspaceClaudeMd(name), agentsMdAlias: true },
+        {
+          writeClaudeMd: (content) =>
+            writeFile(getWorkspaceClaudeMdPath(id), content, 'utf8'),
+          ensureAgentsMdAlias: () => ensureAgentsMdSymlink(wsDir),
+        },
       );
-      await ensureAgentsMdSymlink(wsDir);
       await commitW5BoundaryStep(
         options?.commit,
         options?.commit ? w5CompositionLocks({ index: true }) : [],
@@ -408,27 +414,20 @@ async function createAdmittedTemporaryWorkspace(
   });
 }
 
+/** Applies the addition through the record decision port (W6a1). */
 async function stageAddedWorkspace(
   persisted: SidebarItem,
   previousItems: SidebarItem[],
   preserveWorkspaceIds: string[],
   scoped: boolean,
 ): Promise<void> {
-  await writeAllSidebarItems(
-    scoped ? [persisted] : [...previousItems, persisted],
-    {
-      // A scope reserved only this workspace's files: preserving other empty
-      // temporary workspaces would read and write files outside its locks.
-      ...(scoped
-        ? {
-            preserveEmptyTemporary: false,
-            preserveUnmentionedWorkspaceIds: true,
-          }
-        : { preserveWorkspaceIds }),
-      // Only this addition owns the new workspace's binding.
-      replaceOwnershipWorkspaceIds: [persisted.id],
-    },
-  );
+  await applyWorkspaceAdditionDecision({
+    kind: 'workspace.add',
+    item: persisted,
+    scope: scoped
+      ? { kind: 'workspace' }
+      : { kind: 'sidebar', previousItems, preserveWorkspaceIds },
+  });
 }
 
 async function persistAddedWorkspace(
@@ -478,10 +477,7 @@ async function commitNewWorkspace<T extends SidebarItem>(
     const persisted: T = { ...item, order: items.length };
     const publish = async (): Promise<T> => {
       await local?.effects?.(persisted);
-      return commitWorkspaceCreation(
-        () => stageNewWorkspaceCreation(persisted),
-        [item.id],
-      );
+      return stageNewWorkspaceCreation(persisted);
     };
     return local
       ? withLocalWorkspaceCreation(
@@ -493,17 +489,24 @@ async function commitNewWorkspace<T extends SidebarItem>(
   });
 }
 
-/** Addition-only publication; observer edits during provisioning survive. */
+/**
+ * Publishes the addition in its creation boundary step, through the record
+ * decision port (W6a1); observer edits during provisioning survive.
+ */
 async function stageNewWorkspaceCreation<T extends SidebarItem>(
   persisted: T,
 ): Promise<T> {
-  markWorkspaceCreationEffectsStarted();
-  await writeAllSidebarItems([persisted], {
-    preserveEmptyTemporary: false,
-    preserveUnmentionedWorkspaceIds: true,
-    replaceOwnershipWorkspaceIds: [persisted.id],
-  });
-  return persisted;
+  const decision: WorkspaceCreationDecision = {
+    kind: 'workspace.create.publish',
+    item: persisted,
+  };
+  return commitWorkspaceCreation(async () => {
+    await applyWorkspaceCreationDecision(
+      decision,
+      markWorkspaceCreationEffectsStarted,
+    );
+    return persisted;
+  }, workspaceCreationIds(decision));
 }
 
 async function resolveExistingWorkspaceBindings(
@@ -603,7 +606,7 @@ async function persistImportedWorkspaceArtifacts(
       color: getNextSidebarColor(items.length),
       order: items.length,
     };
-    const additions: SidebarItem[] = [workspace];
+    const childWorkspaces: SingleRepoSidebarItem[] = [];
     const workspaceBindings = await resolveExistingWorkspaceBindings(items);
 
     for (const preparedChild of artifacts.childWorkspaces) {
@@ -621,6 +624,7 @@ async function persistImportedWorkspaceArtifacts(
         continue;
       }
 
+      const additions = [workspace, ...childWorkspaces];
       const child: SingleRepoSidebarItem = {
         ...preparedChild,
         id: await buildAvailableWorkspaceId(
@@ -630,7 +634,7 @@ async function persistImportedWorkspaceArtifacts(
         color: getNextSidebarColor(items.length + additions.length),
         order: items.length + additions.length,
       };
-      additions.push(child);
+      childWorkspaces.push(child);
       workspaceBindings.push({
         workspaceName: child.name,
         repoPath: child.repoPath,
@@ -638,17 +642,19 @@ async function persistImportedWorkspaceArtifacts(
       });
     }
 
-    return commitWorkspaceCreation(
-      async () => {
-        markWorkspaceCreationEffectsStarted();
-        await writeAllSidebarItems(additions, {
-          preserveEmptyTemporary: false,
-          preserveUnmentionedWorkspaceIds: true,
-        });
-        return workspace;
-      },
-      additions.map((item) => item.id),
-    );
+    // Published through the record decision port (W6a1).
+    const decision: WorkspaceCreationDecision = {
+      kind: 'workspace.import.publish',
+      workspace,
+      childWorkspaces,
+    };
+    return commitWorkspaceCreation(async () => {
+      await applyWorkspaceCreationDecision(
+        decision,
+        markWorkspaceCreationEffectsStarted,
+      );
+      return workspace;
+    }, workspaceCreationIds(decision));
   });
 }
 
@@ -1199,17 +1205,13 @@ async function addAdmittedWorkspaceFromRemote(
     return serializeWorkspaceMutation(async () => {
       const { items } = await readAllSidebarItems();
       assertRepositoryNotTracked(items, destinationPath);
-      return commitWorkspaceCreation(
-        () =>
-          stageNewWorkspaceCreation(
-            buildSingleRepoSidebarItem(
-              workspaceId,
-              basename(destinationPath),
-              destinationPath,
-              items.length,
-            ),
-          ),
-        [workspaceId],
+      return stageNewWorkspaceCreation(
+        buildSingleRepoSidebarItem(
+          workspaceId,
+          basename(destinationPath),
+          destinationPath,
+          items.length,
+        ),
       );
     });
   });
@@ -1566,10 +1568,17 @@ async function prepareNewMultiRepoWorkspace(
     type: 'multi-repo',
     repos: [],
   };
-  await writeFile(
-    getWorkspaceClaudeMdPath(id),
-    getDefaultWorkspaceClaudeMd(normalizedName),
-    'utf8',
+  // Unchanged: this local copy has never had an AGENTS.md alias.
+  await scaffoldWorkspaceInstructions(
+    {
+      content: getDefaultWorkspaceClaudeMd(normalizedName),
+      agentsMdAlias: false,
+    },
+    {
+      writeClaudeMd: (content) =>
+        writeFile(getWorkspaceClaudeMdPath(id), content, 'utf8'),
+      ensureAgentsMdAlias: () => ensureAgentsMdSymlink(wsDir),
+    },
   );
   return prepareNewWorkspaceSourceRepo(
     id,
@@ -1737,4 +1746,106 @@ export function toWorkspaceCliRecord(item: SidebarItem): WorkspaceCliRecord {
     })),
     worktrees: item.worktrees,
   };
+}
+
+/** Trusted setup publication: no import, conversion, source mutation, or clone. */
+export async function registerBoundMultiRepoWorkspace(input: {
+  path: string;
+  localWorkspaceId: string;
+  owner: WorkspaceOwnerBinding;
+  name: string;
+  repositories: MultiRepoSetupRepository[];
+}): Promise<MultiRepoSidebarItem> {
+  const owner = normalizeWorkspaceOwner(input.owner);
+  if (
+    !owner ||
+    !isAbsolute(input.path) ||
+    input.repositories.length < 1 ||
+    input.repositories.some((entry) => !entry.validated)
+  )
+    throw new Error('Invalid bound multi-repo setup');
+  validateId(input.localWorkspaceId, 'workspace id');
+  return withStorageAdmission(PROJECT_W5_STORAGE, () =>
+    withSplitDestinationWorkspaceCreationLock(async () => {
+      const items = await readExistingSidebarItems({
+        includeEmptyTemporary: true,
+      });
+      const current = items.find((item) => item.id === input.localWorkspaceId);
+      if (current) {
+        if (
+          current.type !== 'multi-repo' ||
+          current.sourceRepoPath !== input.path ||
+          current.owner?.organizationId !== owner.organizationId ||
+          current.owner.projectId !== owner.projectId ||
+          current.owner.instanceId !== owner.instanceId
+        )
+          throw new WorkspaceIdentityInUseError();
+        const persisted = await refreshOrganizationOwner({
+          workspaceId: current.id,
+          source: 'org_project_reclaim',
+          owner,
+        });
+        return { ...current, owner: persisted };
+      }
+      if (await readWorkspaceIndexEntry(input.localWorkspaceId))
+        throw new WorkspaceIdentityInUseError();
+      if (await pathExists(getWorkspaceDir(input.localWorkspaceId))) {
+        const orphan = await readWorkspaceConfig(input.localWorkspaceId);
+        if (
+          !orphan ||
+          orphan.type !== 'multi-repo' ||
+          orphan.sourceRepoPath !== input.path ||
+          orphan.owner?.organizationId !== owner.organizationId ||
+          orphan.owner.projectId !== owner.projectId ||
+          orphan.owner.instanceId !== owner.instanceId ||
+          orphan.owner.bindingGeneration > owner.bindingGeneration
+        )
+          throw new WorkspaceIdentityInUseError();
+      }
+      return commitNewWorkspace(
+        (live): Promise<MultiRepoSidebarItem> =>
+          Promise.resolve({
+            ...buildMultiRepoSidebarItem(
+              input.localWorkspaceId,
+              input.name,
+              input.repositories.map((entry) => ({
+                id: entry.relativePath.slice('repos/'.length),
+                name: entry.repository.name,
+                repoPath: join(input.path, entry.relativePath),
+                source: 'manifest',
+                manifestUrl: `https://${entry.repository.host}/${entry.repository.owner}/${entry.repository.name}.git`,
+              })),
+              live.length,
+              input.path,
+            ),
+            owner,
+          }),
+        {
+          effects: async () => {
+            await mkdir(getWorkspaceDir(input.localWorkspaceId), {
+              recursive: true,
+            });
+            await scaffoldWorkspaceInstructions(
+              {
+                content: getDefaultWorkspaceClaudeMd(input.name),
+                agentsMdAlias: false,
+              },
+              {
+                writeClaudeMd: (content) =>
+                  writeFile(
+                    getWorkspaceClaudeMdPath(input.localWorkspaceId),
+                    content,
+                    'utf8',
+                  ),
+                ensureAgentsMdAlias: () =>
+                  ensureAgentsMdSymlink(
+                    getWorkspaceDir(input.localWorkspaceId),
+                  ),
+              },
+            );
+          },
+        },
+      );
+    }),
+  );
 }

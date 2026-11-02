@@ -42,7 +42,10 @@ const workspace: SidebarItem = {
   id: 'workspace-a',
   name: 'Code',
   type: 'single-repo',
+  color: '#000000',
   repoPath: '/repo',
+  collapsed: false,
+  order: 0,
   worktrees: [worktree('wt-a'), worktree('wt-b')],
 };
 

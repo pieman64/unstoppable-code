@@ -10,7 +10,6 @@ import {
   type AgentDelegationSnapshot,
   type DelegationCapabilityChoice,
   type GetDelegateOutputValue,
-  type WatchDelegatesValue,
 } from '@canopy/protocol/delegation';
 import type { DelegationModelDiscovery } from '@canopy/protocol/delegation/discovery';
 import type { DelegationParentContext } from '../types';
@@ -71,26 +70,17 @@ function stubBroker(): DelegationProjectionBroker {
   return {
     spawn: (): Promise<AgentDelegationResult<AgentDelegationSnapshot>> =>
       Promise.resolve({ ok: true, value: snapshot }),
-    watch: (): Promise<AgentDelegationResult<WatchDelegatesValue>> =>
+    getOutput: (): Promise<AgentDelegationResult<GetDelegateOutputValue>> =>
       Promise.resolve({
         ok: true,
         value: {
-          watcherId: 'watcher-1',
-          mode: 'any',
-          deadlineAt: 0,
-          targets: [],
+          delegationId: 'delegation-1',
+          currentRunGeneration: 1,
+          currentStatus: 'pending',
+          latestResultIndex: null,
+          result: null,
         },
       }),
-    getOutput: (): AgentDelegationResult<GetDelegateOutputValue> => ({
-      ok: true,
-      value: {
-        delegationId: 'delegation-1',
-        currentRunGeneration: 1,
-        currentStatus: 'pending',
-        latestResultIndex: null,
-        result: null,
-      },
-    }),
     inspect: (): AgentDelegationSnapshot | undefined => snapshot,
     list: (): readonly AgentDelegationSnapshot[] => delegationsFixture,
     stop: (): AgentDelegationResult<AgentDelegationSnapshot> => ({
@@ -122,6 +112,9 @@ function schemaProperties(tool: DelegationTool): Record<string, unknown> {
 
 const LIST_TOOL_NAME = 'test_list_delegates';
 const SPAWN_TOOL_NAME = 'test_delegate_task';
+const WATCH_TOOL_NAME = 'test_watch_delegates';
+const OUTPUT_TOOL_NAME = 'test_get_delegate_output';
+const MESSAGE_TOOL_NAME = 'test_message_delegate';
 
 describe('List Delegates capability discovery projection', () => {
   it('returns { delegations, capabilities } when includeCapabilities is requested alone', async () => {
@@ -373,4 +366,61 @@ describe('Spawn Delegate description', () => {
     expect(spawnTool.description).toContain('inherit_capabilities: false');
     expect(spawnTool.description).toContain('includeCapabilities: true');
   });
+
+  it('describes automatic notices and result indices without listing watch', () => {
+    const projection = createDelegationProjection('claude', 'test', {
+      ...stubBroker(),
+      message: () => Promise.resolve({ ok: true, value: null }),
+    });
+    const spawn = findTool(projection.tools, SPAWN_TOOL_NAME);
+    expect(projection.tools.map((tool) => tool.name)).not.toContain(
+      WATCH_TOOL_NAME,
+    );
+    const output = findTool(projection.tools, OUTPUT_TOOL_NAME);
+    const message = findTool(projection.tools, MESSAGE_TOOL_NAME);
+
+    expect(spawn.description).toContain('automatic completion notice');
+    expect(spawn.description).not.toContain('Completion is silent');
+    expect(output.description).toContain(
+      'resultIndex from a completion notice',
+    );
+    expect(message.description).toContain(
+      'A follow_up run sends its own completion notice when it finishes',
+    );
+    expect(message.description).not.toContain('Register Watch Delegates');
+  });
+});
+
+describe('lifetime and concurrency copy', () => {
+  it.each(['claude', 'codex'] as const)(
+    'distinguishes spawn refusal from transient queueing for %s',
+    (harness) => {
+      const projection = createDelegationProjection(
+        harness,
+        'test',
+        stubBroker(),
+      );
+      const spawn = projection.tools.find((tool) =>
+        tool.description.includes('Start a delegated task'),
+      );
+      expect(spawn?.description).toContain('concurrency limit');
+      expect(spawn?.description).toContain('lifetime_limit_reached');
+    },
+  );
+});
+
+describe('phase 04 tool retirement', () => {
+  it.each(['claude', 'codex', 'cursor', 'copilot', 'opencode'] as const)(
+    'never advertises watch for %s',
+    (harness) => {
+      const projection = createDelegationProjection(
+        harness,
+        'test',
+        stubBroker(),
+      );
+      expect(projection.tools.map((tool) => tool.name)).not.toContain(
+        WATCH_TOOL_NAME,
+      );
+    },
+  );
 });

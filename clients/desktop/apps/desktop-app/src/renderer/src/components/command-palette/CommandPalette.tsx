@@ -15,7 +15,14 @@ import type {
   ChatSearchResult,
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { useOverlayEscape } from '@canopy/ui-shared/components';
+import {
+  Kbd,
+  KeyHintFooter,
+  SearchEmptyState,
+  SearchField,
+  useOverlayEscape,
+} from '@canopy/ui-shared/components';
+import { pickerKeyHints, shortcutKeys } from '@canopy/ui-shared/lib/shortcuts';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { useShallow } from 'zustand/shallow';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
@@ -814,6 +821,15 @@ export function CommandPalette({
     }
 
     if (event.key === 'Enter') {
+      // Enter on a focused control outside the results (Clear, the empty
+      // state's action) presses that control. Anywhere else, including a
+      // focused result row, Enter opens the highlighted result.
+      if (
+        event.target instanceof HTMLButtonElement &&
+        !event.target.closest('[role="listbox"]')
+      ) {
+        return;
+      }
       event.preventDefault();
       activateEntry(selectedIndex >= 0 ? flatItems[selectedIndex] : undefined);
     }
@@ -833,36 +849,68 @@ export function CommandPalette({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
-        <div className="flex items-center gap-3 border-b px-4 py-3">
-          <input
+        <div className="border-b">
+          <SearchField
             ref={inputRef}
+            size="lg"
             value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
+            onValueChange={(next): void => {
+              setQuery(next);
               setErrorMessage(null);
               selectedItemIdRef.current = null;
               setSelectedIndex(0);
             }}
+            // Escape closes the palette at once (the dialog's handler); the
+            // nested button clears the query.
+            clearOnEscape={false}
+            aria-label="Search"
             placeholder="Search chats, workspaces, plugins, settings, and more"
             data-testid="command-palette-input"
-            className="w-full min-w-0 flex-1 bg-transparent text-s fg-primary outline-none placeholder:fg-secondary"
+            clearTestId="command-palette-clear"
+            // The scope hint names its key as a cap, in the same quiet ink
+            // as the legend below; it never reads as a button.
+            trailing={
+              <span
+                data-testid="command-palette-mode-hint"
+                className="inline-flex shrink-0 items-center gap-1.25 text-xs whitespace-nowrap fg-quaternary"
+                aria-live="polite"
+                data-mode={commandsOnly ? 'commands' : 'all'}
+              >
+                {commandsOnly ? (
+                  'Commands only'
+                ) : (
+                  <>
+                    {/* The spaces keep the text "Type > for commands" for
+                        screen readers; the flex gap sets the visual spacing. */}
+                    Type{' '}
+                    <Kbd
+                      shortcut={shortcutKeys('palette-commands-prefix')}
+                      data-testid="command-palette-mode-hint-key"
+                    />{' '}
+                    for commands
+                  </>
+                )}
+              </span>
+            }
           />
-          <span
-            data-testid="command-palette-mode-hint"
-            className="shrink-0 rounded-md bg-secondary px-2 py-0.5 text-2xs fg-secondary whitespace-nowrap"
-            aria-live="polite"
-            data-mode={commandsOnly ? 'commands' : 'all'}
-          >
-            {commandsOnly ? 'Commands only' : 'Type > for commands'}
-          </span>
         </div>
         {/* Session replay records the results; a transcript or plan snippet
             row blocks its own snippet (`PaletteResultRow`). */}
         <div className="max-h-96 overflow-y-auto">
           {flatItems.length === 0 ? (
-            <div className="px-4 py-8 text-center text-s fg-secondary">
-              No results found
-            </div>
+            <SearchEmptyState
+              testId="command-palette-empty"
+              title="Nothing matches your search."
+              actionLabel={query === '' ? undefined : 'Clear search'}
+              onAction={(): void => {
+                setQuery('');
+                setErrorMessage(null);
+                selectedItemIdRef.current = null;
+                setSelectedIndex(0);
+                inputRef.current?.focus();
+              }}
+              actionTestId="command-palette-empty-clear"
+            />
           ) : (
             <ul role="listbox" aria-label="Results" className="py-1">
               {ranking.sections.map((section, sectionIdx) => (
@@ -932,6 +980,7 @@ export function CommandPalette({
             {errorMessage}
           </div>
         )}
+        <KeyHintFooter hints={pickerKeyHints('open')} />
       </div>
     </div>
   );

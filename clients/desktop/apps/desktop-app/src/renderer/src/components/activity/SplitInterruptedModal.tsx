@@ -1,6 +1,7 @@
 import { type JSX } from 'react';
 import { createPortal } from 'react-dom';
 import { DialogModal } from '@/components/shared/DialogModal';
+import { Button } from '@canopy/ui-shared/components';
 
 export interface SplitInterruptedModalProps {
   worktreeId: string;
@@ -10,12 +11,6 @@ export interface SplitInterruptedModalProps {
   onDiscard: () => void;
   onDismiss: () => void;
 }
-
-const SPLIT_INTERRUPTED_BUTTON_CLASS =
-  'focus-ring rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary';
-
-const SPLIT_INTERRUPTED_PRIMARY_CLASS =
-  'focus-ring rounded-lg bg-accent-subtle px-4 py-1.5 text-s font-medium fg-accent transition hover:bg-accent-subtle/80';
 
 /**
  * Shown on worktree open when a persisted split map is still `status:
@@ -67,30 +62,29 @@ export function SplitInterruptedModal({
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-2 border-t px-5 py-3">
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={onDismiss}
           data-testid="split-interrupted-dismiss"
-          className={SPLIT_INTERRUPTED_BUTTON_CLASS}
         >
           Dismiss
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="ghost-destructive"
+          size="compact"
           onClick={onDiscard}
           data-testid="split-interrupted-discard"
-          className={SPLIT_INTERRUPTED_BUTTON_CLASS}
         >
           Discard split state
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
+          size="compact"
           onClick={onResume}
           data-testid="split-interrupted-resume"
-          className={SPLIT_INTERRUPTED_PRIMARY_CLASS}
         >
           Resume
-        </button>
+        </Button>
       </div>
     </DialogModal>,
     document.body,

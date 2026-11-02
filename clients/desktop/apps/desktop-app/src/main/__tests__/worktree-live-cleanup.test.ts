@@ -11,45 +11,63 @@ const createElectronExecutionRuntimeMock = jest.fn(() => ({
 }));
 
 jest.mock('../agents/session-manager', () => ({
-  destroyWorktreeSessions: destroyWorktreeSessionsMock,
+  get destroyWorktreeSessions(): typeof destroyWorktreeSessionsMock {
+    return destroyWorktreeSessionsMock;
+  },
 }));
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    purgeWorktreeData: purgeWorktreeDataMock,
+    get purgeWorktreeData(): typeof purgeWorktreeDataMock {
+      return purgeWorktreeDataMock;
+    },
   })),
 }));
 
 jest.mock('../lib/github-poller', () => ({
-  stopTracking: stopTrackingMock,
+  get stopTracking(): typeof stopTrackingMock {
+    return stopTrackingMock;
+  },
 }));
 
 jest.mock('../lib/worktree-summary-scheduler', () => ({
-  cancelScheduledGeneration: cancelScheduledGenerationMock,
+  get cancelScheduledGeneration(): typeof cancelScheduledGenerationMock {
+    return cancelScheduledGenerationMock;
+  },
 }));
 
 jest.mock('../integration/claude-terminal-session-service', () => ({
   getClaudeTerminalSessionService: jest.fn(() => ({
-    cleanupWorktree: cleanupClaudeTerminalWorktreeMock,
+    get cleanupWorktree(): typeof cleanupClaudeTerminalWorktreeMock {
+      return cleanupClaudeTerminalWorktreeMock;
+    },
   })),
 }));
 
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
-    drainWorktreeTerminals: drainWorktreeTerminalsMock,
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    get releaseWorktree(): typeof drainWorktreeTerminalsMock {
+      return drainWorktreeTerminalsMock;
+    },
   },
 }));
 
 jest.mock('../lib/script-runner', () => ({
-  drainWorktreeShellScripts: drainWorktreeShellScriptsMock,
+  get drainWorktreeShellScripts(): typeof drainWorktreeShellScriptsMock {
+    return drainWorktreeShellScriptsMock;
+  },
 }));
 
 jest.mock('../pipelines/worktree-cleanup', () => ({
-  drainWorktreePipelines: drainWorktreePipelinesMock,
+  get drainWorktreePipelines(): typeof drainWorktreePipelinesMock {
+    return drainWorktreePipelinesMock;
+  },
 }));
 
 jest.mock('../pipelines/execution-runtime', () => ({
-  createElectronExecutionRuntime: createElectronExecutionRuntimeMock,
+  get createElectronExecutionRuntime(): typeof createElectronExecutionRuntimeMock {
+    return createElectronExecutionRuntimeMock;
+  },
 }));
 
 import {
@@ -95,10 +113,10 @@ describe('worktree live cleanup', () => {
       'project-1',
       'wt-1',
     );
-    expect(drainWorktreeTerminalsMock).toHaveBeenCalledWith(
-      'project-1',
-      'wt-1',
-    );
+    expect(drainWorktreeTerminalsMock).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+    });
     expect(destroyWorktreeSessionsMock).toHaveBeenCalledWith(
       'project-1',
       'wt-1',
@@ -120,10 +138,10 @@ describe('worktree live cleanup', () => {
       cleanupLiveWorktreeState('project-1', 'wt-1', onSessionsDestroyed),
     ).rejects.toThrow('claude cleanup failed');
 
-    expect(drainWorktreeTerminalsMock).toHaveBeenCalledWith(
-      'project-1',
-      'wt-1',
-    );
+    expect(drainWorktreeTerminalsMock).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+    });
     expect(destroyWorktreeSessionsMock).toHaveBeenCalledWith(
       'project-1',
       'wt-1',
@@ -171,10 +189,10 @@ describe('worktree live cleanup', () => {
     await expect(cleanupLiveWorktreeState('project-1', 'wt-1')).rejects.toThrow(
       'script still alive',
     );
-    expect(drainWorktreeTerminalsMock).toHaveBeenCalledWith(
-      'project-1',
-      'wt-1',
-    );
+    expect(drainWorktreeTerminalsMock).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+    });
     expect(destroyWorktreeSessionsMock).toHaveBeenCalledWith(
       'project-1',
       'wt-1',

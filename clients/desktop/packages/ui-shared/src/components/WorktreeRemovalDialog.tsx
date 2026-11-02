@@ -1,10 +1,11 @@
 'use client';
 
-import { useRef, type JSX, type ReactNode } from 'react';
+import { useId, useState, type JSX } from 'react';
 import { InfoIcon } from '../icons/AppIcons';
-import { Button } from './Button';
-import { DialogModal } from './DialogModal';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { ConfirmDialog } from './ConfirmDialog';
 import { RichHoverTooltip } from './RichHoverTooltip';
+import { ToggleSwitch } from './ToggleSwitch';
 
 /** The row a worktree removal confirmation names. */
 export interface WorktreeRemovalDialogIdentity {
@@ -15,8 +16,13 @@ export interface WorktreeRemovalDialogIdentity {
 }
 
 export interface WorktreeRemovalDialogProps {
-  /** `Delete worktree?` or `Archive worktree?`. */
-  readonly title: string;
+  /**
+   * The action, a verb and noun (`Delete worktree`). The title repeats it as
+   * a question naming the worktree: `Delete worktree “owl”?`.
+   */
+  readonly confirmLabel: string;
+  /** Delete takes the destructive role; Archive keeps everything. */
+  readonly destructive: boolean;
   readonly identity: WorktreeRemovalDialogIdentity;
   /**
    * Local work the removal takes with it. `insertions`/`deletions` are shown
@@ -30,14 +36,17 @@ export interface WorktreeRemovalDialogProps {
   readonly retentionSummary: string;
   /** The full retention explanation, shown from the info button. */
   readonly retentionDetail: string;
-  /** Branch-handling hint under the summary. */
-  readonly branchChoiceHint: string;
   /**
-   * The branch handling an App Advisor request asked for. Its button carries
-   * `data-requested`; the hint names it and the user still decides.
+   * Who suggested the branch handling, such as an App Advisor request. Shown
+   * under the switch; the user still decides.
+   */
+  readonly branchChoiceHint?: string | null;
+  /**
+   * The branch handling an App Advisor request asked for. It presets the
+   * switch; without one, the local branch is kept.
    */
   readonly requestedDeleteBranch?: boolean;
-  /** Removal cannot run right now; both removal actions are disabled. */
+  /** Removal cannot run right now; the action is disabled. */
   readonly disabled: boolean;
   /** Suffix for the automation ids on a pinned row copy. */
   readonly testIdSuffix?: string;
@@ -45,28 +54,14 @@ export interface WorktreeRemovalDialogProps {
   readonly onConfirm: (deleteBranch: boolean) => void;
 }
 
-function IdentityRow({
-  term,
-  children,
-}: {
-  term: string;
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <>
-      <dt className="fg-tertiary">{term}</dt>
-      <dd className="min-w-0 truncate fg-primary">{children}</dd>
-    </>
-  );
-}
-
 /**
- * Worktree removal confirmation: the row being removed, what happens to its
- * work, and three actions. Preserve local and Delete local both remove the
- * worktree; they differ only in whether its local Git branch is kept.
+ * Worktree removal confirmation in the shared confirmation shape: the
+ * question naming the worktree, what goes with it, one switch for the local
+ * Git branch, then Cancel and the action.
  */
 export function WorktreeRemovalDialog({
-  title,
+  confirmLabel,
+  destructive,
   identity,
   localChanges,
   retentionSummary,
@@ -78,13 +73,19 @@ export function WorktreeRemovalDialog({
   onCancel,
   onConfirm,
 }: WorktreeRemovalDialogProps): JSX.Element {
-  const cancelRef = useRef<HTMLButtonElement | null>(null);
-  const titleId = `worktree-removal-title-${identity.worktreeId}${testIdSuffix}`;
+  const [keepBranch, setKeepBranch] = useState(requestedDeleteBranch !== true);
+  // A replacement request (another worktree, the other mode, or a different
+  // requested branch handling) presets the switch again instead of keeping
+  // the choice made for the previous request.
+  const requestKey = `${identity.worktreeId}|${String(destructive)}|${String(requestedDeleteBranch)}`;
+  const [presetFor, setPresetFor] = useState(requestKey);
+  if (presetFor !== requestKey) {
+    setPresetFor(requestKey);
+    setKeepBranch(requestedDeleteBranch !== true);
+  }
+  const switchLabelId = useId();
+  const switchNoteId = useId();
   const automationId = (base: string): string => `${base}${testIdSuffix}`;
-  const confirm = (deleteBranch: boolean): void => {
-    if (disabled) return;
-    onConfirm(deleteBranch);
-  };
   const hasLineStats =
     localChanges !== undefined &&
     (localChanges.insertions ?? 0) + (localChanges.deletions ?? 0) > 0;
@@ -93,119 +94,103 @@ export function WorktreeRemovalDialog({
     // row that opened it; stop them here so a backdrop click cannot also
     // select or open that row.
     <div className="contents" onClick={(event) => event.stopPropagation()}>
-      <DialogModal
-        title={title}
-        titleId={titleId}
-        maxWidth="md"
-        headerBorder={false}
-        headerSpacing="tight"
-        showCloseButton={false}
-        scrollableBody={false}
-        trapFocus
-        initialFocusRef={cancelRef}
-        onClose={onCancel}
-      >
-        <div className="flex flex-col gap-4 px-5 pb-5 pt-1">
-          <dl
-            className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-s"
-            data-testid={automationId('worktree-removal-target-identity')}
-          >
-            <IdentityRow term="Worktree">
-              {identity.worktreeName}{' '}
-              <span className="fg-tertiary">{identity.worktreeId}</span>
-            </IdentityRow>
-            <IdentityRow term="Branch">{identity.branchName}</IdentityRow>
-            <IdentityRow term="Project">{identity.workspaceName}</IdentityRow>
-          </dl>
-          <div className="flex flex-col gap-1 text-s">
-            <p
-              className="fg-secondary"
-              data-testid={automationId('worktree-removal-summary')}
-            >
-              {localChanges && (
-                <>
-                  <span className="fg-primary">Has local changes</span>
-                  {hasLineStats && (
-                    <>
-                      {' '}
-                      <span className="font-medium tabular-nums">
-                        <span className="fg-success">
-                          +{localChanges.insertions ?? 0}
-                        </span>{' '}
-                        <span className="fg-destructive">
-                          -{localChanges.deletions ?? 0}
-                        </span>
+      <ConfirmDialog
+        // User-authored names are masked in session replay.
+        title={
+          <>
+            {confirmLabel} “
+            <span className={REPLAY_MASK_CLASS}>{identity.worktreeName}</span>”?
+          </>
+        }
+        message={
+          <p data-testid={automationId('worktree-removal-summary')}>
+            {localChanges && (
+              <>
+                Its local changes
+                {hasLineStats && (
+                  <>
+                    {' ('}
+                    <span className="tabular-nums">
+                      <span className="fg-success">
+                        +{localChanges.insertions ?? 0}
+                      </span>{' '}
+                      <span className="fg-destructive">
+                        −{localChanges.deletions ?? 0}
                       </span>
-                    </>
-                  )}
-                  .{' '}
-                </>
-              )}
-              {retentionSummary}
-              <RichHoverTooltip
-                content={
-                  <span className="block text-xs leading-snug fg-primary">
-                    {retentionDetail}
-                  </span>
-                }
-                surfaceClassName="w-72"
-                dataTestId={automationId('worktree-removal-retention-detail')}
-                triggerWrapperClassName="ml-1 align-middle"
+                    </span>
+                    {')'}
+                  </>
+                )}{' '}
+                go with it.{' '}
+              </>
+            )}
+            {retentionSummary}
+            <RichHoverTooltip
+              content={
+                <span className="block text-xs leading-snug fg-primary">
+                  {retentionDetail}
+                </span>
+              }
+              surfaceClassName="w-72"
+              dataTestId={automationId('worktree-removal-retention-detail')}
+              triggerWrapperClassName="ml-1 align-middle"
+            >
+              <button
+                type="button"
+                aria-label="About restoring this worktree"
+                data-testid={automationId('worktree-removal-retention-info')}
+                className="focus-ring inline-flex rounded-full fg-tertiary hover:fg-primary"
               >
-                <button
-                  type="button"
-                  aria-label="About restoring this worktree"
-                  data-testid={automationId('worktree-removal-retention-info')}
-                  className="focus-ring inline-flex rounded-full fg-tertiary hover:fg-primary"
-                >
-                  <InfoIcon size={14} aria-hidden="true" />
-                </button>
-              </RichHoverTooltip>
-            </p>
-            <p className="fg-tertiary">{branchChoiceHint}</p>
+                <InfoIcon size={14} aria-hidden="true" />
+              </button>
+            </RichHoverTooltip>
+          </p>
+        }
+        confirmLabel={confirmLabel}
+        destructive={destructive}
+        onConfirm={(): void => {
+          if (disabled) return;
+          onConfirm(!keepBranch);
+        }}
+        onCancel={onCancel}
+        dataTestId={automationId('worktree-removal-dialog')}
+        cancelTestId={automationId('worktree-removal-cancel')}
+        // The action names what it will do with the branch, so automation that
+        // asks for one outcome finds the button only while the switch says so.
+        confirmTestId={automationId(
+          keepBranch
+            ? 'worktree-removal-preserve-branch'
+            : 'worktree-removal-delete-branch',
+        )}
+        confirmDisabled={disabled}
+      >
+        <div className="flex items-center gap-3 rounded-xl bg-subtle py-2 pl-3 pr-2.5">
+          <div className="min-w-0 flex-1">
+            <div id={switchLabelId} className="text-s fg-primary">
+              Keep the local branch
+            </div>
+            <div
+              id={switchNoteId}
+              className="truncate text-xs fg-tertiary"
+              data-testid={automationId('worktree-removal-target-identity')}
+            >
+              {identity.branchName}
+              {keepBranch ? ' stays in ' : ' is deleted from '}
+              <span className={REPLAY_MASK_CLASS}>
+                {identity.workspaceName}
+              </span>
+              .{branchChoiceHint ? ` ${branchChoiceHint}` : ''}
+            </div>
           </div>
-          <div className="flex items-center gap-2 pt-1">
-            <Button
-              ref={cancelRef}
-              variant="ghost"
-              size="lg"
-              onClick={onCancel}
-              data-testid={automationId('worktree-removal-cancel')}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="outline"
-              size="lg"
-              className="ml-auto"
-              disabled={disabled}
-              data-requested={
-                requestedDeleteBranch === false ? 'true' : undefined
-              }
-              data-testid={automationId('worktree-removal-preserve-branch')}
-              onClick={(): void => confirm(false)}
-            >
-              Preserve local
-            </Button>
-            {/* Both actions delete the worktree; this one also deletes the
-                local branch, so it carries the destructive role rather than the
-                accent (DESIGN.md: never style a destructive action with the
-                accent role). Preserve local stays the quieter alternative. */}
-            <Button
-              variant="destructive"
-              size="lg"
-              disabled={disabled}
-              data-requested={
-                requestedDeleteBranch === true ? 'true' : undefined
-              }
-              data-testid={automationId('worktree-removal-delete-branch')}
-              onClick={(): void => confirm(true)}
-            >
-              Delete local
-            </Button>
-          </div>
+          <ToggleSwitch
+            checked={keepBranch}
+            label="Keep the local branch"
+            describedBy={switchNoteId}
+            onChange={setKeepBranch}
+            dataTestId={automationId('worktree-removal-keep-branch')}
+          />
         </div>
-      </DialogModal>
+      </ConfirmDialog>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, type JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { useSettingsRouter } from '../host';
 
 interface DigestAutoRefreshProps {
@@ -50,13 +51,13 @@ export function DigestAutoRefresh({
 
   if (!active) return null;
   return (
-    <button
-      type="button"
-      className="self-start text-s font-medium fg-accent hover:underline"
+    <Button
+      size="compact"
+      className="self-start"
       onClick={() => router.refresh()}
       data-testid="digest-refresh-now"
     >
       Refresh now
-    </button>
+    </Button>
   );
 }

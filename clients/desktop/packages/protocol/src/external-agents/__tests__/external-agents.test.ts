@@ -14,7 +14,11 @@ function decision(group: string, access: string): Record<string, unknown> {
     disabledTools: [],
     enabledDefaultOff: [],
     organizations: { mode: 'all', organizationIds: [] },
-    remotes: { mode: 'all', remoteIds: [] },
+    hosts: {
+      managed: true,
+      connected: { mode: 'all', remoteIds: [] },
+      exposeNames: false,
+    },
     durationDays: null,
   };
 }
@@ -25,7 +29,11 @@ function access(group: string, level: string): Record<string, unknown> {
     disabledTools: [],
     enabledDefaultOff: [],
     organizations: { mode: 'all', organizationIds: [] },
-    remotes: { mode: 'all', remoteIds: [] },
+    hosts: {
+      managed: true,
+      connected: { mode: 'all', remoteIds: [] },
+      exposeNames: false,
+    },
   };
 }
 

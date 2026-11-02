@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { WORKTREE_LABEL, CHAT_LABEL, CHAT_UNIT_LABEL } from '@canopy/protocol';
+import { Button } from '@canopy/ui-shared';
 import { brandText } from '@/lib/brand';
 import {
   BranchIcon as AppCatalogBranchIcon,
@@ -54,15 +55,14 @@ export function OverviewEmptyState({
               Create an isolated worktree and put agents to work on your
               repository.
             </p>
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={onCreateWorkspace}
               data-testid="overview-empty-create-workspace"
-              className="focus-ring inline-flex items-center justify-center gap-2 rounded-md border border-line-accent bg-transparent px-3.5 py-2 text-s font-medium fg-accent transition-colors hover:bg-accent-subtle"
             >
               <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
               Create a project
-            </button>
+            </Button>
           </section>
 
           {/* Cowork / chat on-ramp */}
@@ -79,15 +79,14 @@ export function OverviewEmptyState({
               Chat with an agent without a repo — brainstorm, plan, or ask a
               question.
             </p>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
               onClick={onStartChat}
               data-testid="overview-empty-start-chat"
-              className="focus-ring inline-flex items-center justify-center gap-2 rounded-md border bg-fg-primary/[0.04] px-3.5 py-2 text-s font-medium fg-primary transition-colors hover:bg-fg-primary/[0.08]"
             >
               <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
               New {CHAT_UNIT_LABEL}
-            </button>
+            </Button>
           </section>
         </div>
       </div>

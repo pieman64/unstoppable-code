@@ -32,7 +32,9 @@ jest.mock(
   (): {
     getGitHubClient: typeof mockGetGitHubClient;
   } => ({
-    getGitHubClient: mockGetGitHubClient,
+    get getGitHubClient(): typeof mockGetGitHubClient {
+      return mockGetGitHubClient;
+    },
   }),
 );
 

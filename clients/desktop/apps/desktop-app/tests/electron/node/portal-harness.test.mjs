@@ -561,6 +561,18 @@ test('prewarms request routes whose cold compile can exceed client deadlines', (
         request.method === 'POST',
     ),
   );
+  // Turn file chips resolve each file, then list roots, before rendering.
+  for (const route of ['file/resolve', 'file/roots']) {
+    assert.ok(
+      requests.some(
+        (request) =>
+          request.path ===
+            `/api/v1/desktop-app/portal/browser/sessions/warmup/${route}` &&
+          request.method === 'POST',
+      ),
+      `${route} is prewarmed`,
+    );
+  }
 });
 
 test('removes the Turbopack directory with bounded transient-error retries', () => {

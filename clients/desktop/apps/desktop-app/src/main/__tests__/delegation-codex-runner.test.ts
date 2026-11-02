@@ -7,14 +7,19 @@ jest.mock('../agents/delegation/canopy-tools', () => ({
   delegateAppToolGuidance: (): string => '',
 }));
 
-import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
-import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import type { DelegationTranscriptPort } from '@canopy/desktop-shared/node/delegation/transcript-port';
 import { DEFERRED_TOOLS_RELOAD_CONTINUATION_TEMPLATE } from '@canopy/desktop-shared/types';
+import {
+  createCommandOutputSpools,
+  type CommandSpool,
+} from '../agents/delegation/command-output-spools';
 import {
   CODEX_DELEGATION_GRANTS_REVOKED_CONTINUATION,
   CODEX_DELEGATION_PLANNING_CONTINUATION,
-  createCodexDelegationRunner,
   type CodexDelegationPreparation,
 } from '../agents/delegation/codex-runner';
 import {
@@ -22,241 +27,89 @@ import {
   DelegationCapabilityReloadFailure,
   type DelegationCapabilityReloadHost,
 } from '../agents/delegation/capability-reload';
+import { CodexDelegationProgress } from '../agents/delegation/codex-progress';
 import {
   clearDelegationModelRejections,
   isDelegationModelRejected,
 } from '../agents/delegation/model-rejections';
+import {
+  fakeHandle,
+  preparation,
+  request,
+  run,
+  tools,
+  type FakeHandle,
+  type Harness,
+  type TurnRequest,
+  type TurnScript,
+} from './helpers/delegation-runner-fixtures/codex';
 
 const LOAD_TOOL =
   CANOPY_INJECTED_TOOL_REGISTRY.load_deferred_tools.codexToolName;
 
-interface TurnRequest {
-  input: { text: string }[];
-  permissions?: string;
-  signal?: AbortSignal;
-  onEvent?: (event: {
-    method: string;
-    params: Record<string, unknown>;
-  }) => void;
-  mcpElicitationPolicy?: {
-    evaluate(call: {
-      serverName: string;
-      toolName: string;
-      approvalKind: string;
-    }): Promise<{ approved: boolean }> | { approved: boolean };
-  };
-}
-
-type TurnScript = (
-  request: TurnRequest,
-  interrupted: Promise<void>,
-) => Promise<{
-  status: 'completed' | 'interrupted' | 'failed';
-  text: string;
-  error?: string;
-  errorInfo?: string;
-}>;
-
-interface FakeHandle {
-  threadId: string;
-  runTurn: jest.Mock;
-  interrupt: jest.Mock;
-  unsubscribe: jest.Mock;
-  submitSteeringInput: jest.Mock;
-  turns: TurnRequest[];
-}
-
-function fakeHandle(threadId: string, script: TurnScript): FakeHandle {
-  let interruptTurn: () => void = () => undefined;
-  const handle: FakeHandle = {
-    threadId,
-    turns: [],
-    interrupt: jest.fn(() => {
-      interruptTurn();
-      return Promise.resolve();
-    }),
-    unsubscribe: jest.fn(() => Promise.resolve()),
-    submitSteeringInput: jest.fn(),
-    runTurn: jest.fn(async (request: TurnRequest) => {
-      handle.turns.push(request);
-      const interrupted = new Promise<void>((resolve) => {
-        interruptTurn = resolve;
-      });
-      const result = await script(request, interrupted);
-      return {
-        status: result.status,
-        threadId,
-        finalText: result.text,
-        usage: { inputTokens: 2, outputTokens: 3 },
-        ...(result.error ? { error: result.error } : {}),
-        ...(result.errorInfo ? { errorInfo: result.errorInfo } : {}),
-      };
-    }),
-  };
-  return handle;
-}
-
-function tools(
-  overrides: Partial<Record<string, unknown>> = {},
-): CodexDelegationPreparation['tools'] {
-  const value: unknown = {
-    cwd: '/worktree',
-    readRoots: [],
-    gitAccess: {
-      metadataRoots: [],
-      privateMetadataRoots: [],
-      runtimeRoots: [],
-      commandDirectories: [],
-    },
-    instructions: () => 'Delegated instructions',
-    writePaths: [],
-    writable: () => true,
-    prepareCodexSandboxWrites: () => Promise.resolve([]),
-    codexSandboxWritesRevoked: () => Promise.resolve(false),
-    policyContextKey: () => 'policy-1',
-    setCodexTurnWrites: jest.fn(),
-    observeCodex: jest.fn(),
-    approveCodex: jest.fn(() => Promise.resolve({ decision: 'decline' })),
-    authorizeMcp: jest.fn(() => Promise.resolve(true)),
-    ...overrides,
-  };
-  // Tests are not type-checked; the runner uses only these members.
-  return value as CodexDelegationPreparation['tools'];
-}
-
-function preparation(
-  extra: Partial<CodexDelegationPreparation> = {},
-): CodexDelegationPreparation {
-  return {
-    model: 'gpt-test',
-    profile: { environmentPolicy: 'restricted', includeCanopySecrets: false },
-    tools: tools(),
-    ...extra,
-  };
-}
-
-const request = {
+const streamTarget = {
+  kind: 'delegation',
+  chatId: 'chat',
   delegationId: 'delegation-1',
   runGeneration: 1,
-  launchKey: 'launch-1',
-  parent: {
-    harnessId: 'claude',
-    projectId: 'project',
-    worktreeId: 'worktree',
-    chatId: 'chat',
-    sessionKey: 'session',
-    turnId: 'turn',
-    toolCallId: 'call',
-    runtimeGeneration: 1,
-    depth: 0,
-  },
-  task: {
-    modelId: 'gpt-test',
-    description: 'Inspect code',
-    prompt: 'Inspect the requested code.',
-    executionMode: 'foreground',
-    contextPolicy: 'task_only',
-    isolation: 'shared_worktree',
-  },
-  route: {
-    selectedModelId: 'gpt-test',
-    runtimeModelId: 'gpt-test',
-    harnessId: 'codex',
-    runtimeKind: 'codex-app-server',
-    runnerRegistrationId: 'codex-local',
-    runtimeVersion: '1',
-    adapterVersion: '1',
-    modelSource: 'test',
-    providerType: 'codex',
-    assignmentRevision: 'assignment-1',
-    billingAuthority: 'native',
-    aiCreditsRouted: false,
-    capabilities: ['read'],
-    supportedThinkingLevels: [],
-    capabilitySnapshotHash: 'hash',
-    capabilityGeneration: 1,
-    policyRevision: 'read-only-1',
-  },
-  cwd: '/worktree',
-  effectivePermission: 'read-only',
-  signal: new AbortController().signal,
-} satisfies AgentRunRequest;
+} as const;
 
-interface Harness {
-  events: AgentDelegationEvent['event'][];
-  terminal: Promise<AgentDelegationEvent['event']>;
-  runtime: {
-    startThread: jest.Mock;
-    materializeThread: jest.Mock;
-    resumeThread: jest.Mock;
-  };
-  materialized: unknown[];
-  resumed: unknown[];
-  started: unknown[];
-  stop: () => Promise<void>;
+const streamRequest = {
+  ...request,
+  transcriptStream: { target: streamTarget },
+};
+
+function streamPort(
+  appendChanges: DelegationTranscriptPort['appendChanges'],
+): DelegationTranscriptPort {
+  return {
+    open: () =>
+      Promise.resolve({
+        ok: true,
+        value: { target: streamTarget, status: 'open', streamRevision: 0 },
+      }),
+    appendChanges,
+  } as unknown as DelegationTranscriptPort;
 }
 
-function run(options: {
-  prepare: () => Promise<CodexDelegationPreparation>;
-  handles: FakeHandle[];
-  runRequest?: AgentRunRequest;
-}): Harness {
-  const handles = [...options.handles];
-  const materialized: unknown[] = [];
-  const resumed: unknown[] = [];
-  const started: unknown[] = [];
-  const next = (): Promise<FakeHandle> => {
-    const handle = handles.shift();
-    return handle
-      ? Promise.resolve(handle)
-      : Promise.reject(new Error('No fake thread left'));
-  };
-  const runtime = {
-    admin: (): { request: jest.Mock } => ({
-      request: jest.fn(() => Promise.resolve({ config: { mcp_servers: {} } })),
-    }),
-    startThread: jest.fn((startRequest: unknown) => {
-      started.push(startRequest);
-      return next();
-    }),
-    materializeThread: jest.fn((materializeRequest: unknown) => {
-      materialized.push(materializeRequest);
-      return next();
-    }),
-    resumeThread: jest.fn((resumeRequest: unknown) => {
-      resumed.push(resumeRequest);
-      return next();
-    }),
-    getCanonicalState: jest.fn(() => Promise.resolve({ codexHome: '/codex' })),
-  };
-  const runner = createCodexDelegationRunner({
-    available: () => Promise.resolve({ available: true }),
-    prepare: options.prepare,
-    reportError: jest.fn(),
-    // Tests are not type-checked; the runner uses only these members.
-    runtime: () => runtime as never,
-    loadResumeItems: () => Promise.resolve([{ type: 'message' }]),
-  });
-  const events: AgentDelegationEvent['event'][] = [];
-  const runRequest = options.runRequest ?? request;
-  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
-    void runner.start(runRequest, (envelope: AgentDelegationEvent) => {
-      events.push(envelope.event);
-      if (envelope.event.type === 'terminal') resolve(envelope.event);
-      return Promise.resolve();
-    });
-  });
+function completedAgentMessage(
+  id: string,
+  text: string,
+): { method: string; params: Record<string, unknown> } {
   return {
-    events,
-    terminal,
-    runtime,
-    materialized,
-    resumed,
-    started,
-    stop: async (): Promise<void> => {
-      await runner.stop({ runId: runRequest.delegationId }, 'user_cancelled');
+    method: 'item/completed',
+    params: {
+      item: { type: 'agentMessage', id, text, phase: 'commentary' },
     },
   };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function successfulAppend(
+  input: Parameters<DelegationTranscriptPort['appendChanges']>[0],
+  streamRevision: number,
+): ReturnType<DelegationTranscriptPort['appendChanges']> {
+  return Promise.resolve({
+    ok: true,
+    value: {
+      target: input.target,
+      mutationKey: input.mutationKey,
+      streamRevision,
+      items: input.changes.map(({ row }) => ({
+        id: row.id,
+        itemRevision: row.itemRevision,
+        final: row.final,
+      })),
+      replayed: false,
+    },
+  });
 }
 
 function completes(text: string): TurnScript {
@@ -275,7 +128,7 @@ function loads(controller: DelegationCapabilityReloadController): TurnScript {
       ],
     });
     expect(admission.accepted).toBe(true);
-    turn.onEvent?.({
+    await turn.onEvent?.({
       method: 'item/completed',
       params: {
         item: {
@@ -329,6 +182,427 @@ it('continues the same proxy thread after a quota reset without publishing an in
   ).toHaveLength(1);
 });
 
+it.each([
+  { rebuilt: false, label: 'same thread' },
+  { rebuilt: true, label: 'rebuilt thread' },
+])(
+  'settles and releases unfinished command output before quota recovery on a $label',
+  async ({ rebuilt }) => {
+    const spoolRoot = await mkdtemp(join(tmpdir(), 'codex-delegation-spool-'));
+    try {
+      let firstEvent: TurnRequest['onEvent'];
+      let acquisitions = 0;
+      let releasedBeforeRecovery = false;
+      let lateEventDidNotAllocate = false;
+      const finalCommandRows = new Map<
+        string,
+        { count: number; text: string }
+      >();
+      const spoolFactory = (): ReturnType<typeof createCommandOutputSpools> => {
+        const owner = createCommandOutputSpools({ root: () => spoolRoot });
+        return {
+          acquire: async (key: string): Promise<CommandSpool> => {
+            acquisitions += 1;
+            return owner.acquire(key);
+          },
+          close: () => owner.close(),
+        };
+      };
+      let streamRevision = 0;
+      const appendChanges: DelegationTranscriptPort['appendChanges'] = (
+        input,
+      ) => {
+        for (const { row } of input.changes) {
+          if (!row.final) continue;
+          const commandId = ['command-1', 'command-2'].find((id) =>
+            row.id.endsWith(`::${id}`),
+          );
+          if (!commandId) continue;
+          const previous = finalCommandRows.get(commandId);
+          finalCommandRows.set(commandId, {
+            count: (previous?.count ?? 0) + 1,
+            text: JSON.stringify(row.blocks),
+          });
+        }
+        return successfulAppend(input, ++streamRevision);
+      };
+      const waitForQuotaRecovery = jest.fn(async () => {
+        const [runDirectory] = await readdir(spoolRoot);
+        if (!runDirectory) return;
+        const runDirectoryPath = join(spoolRoot, runDirectory);
+        releasedBeforeRecovery = (await readdir(runDirectoryPath)).length === 0;
+        if (firstEvent) {
+          await firstEvent({
+            method: 'item/commandExecution/outputDelta',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-old',
+              itemId: 'command-1',
+              delta: '-late',
+            },
+          });
+        }
+        lateEventDidNotAllocate =
+          (await readdir(runDirectoryPath)).length === 0;
+      });
+      const recoverWithFreshCommand = async (
+        turn: TurnRequest,
+        threadId: string,
+      ): Promise<{ status: 'completed'; text: string }> => {
+        await turn.onEvent?.({
+          method: 'turn/started',
+          params: { threadId, turn: { id: 'turn-new' } },
+        });
+        await turn.onEvent?.({
+          method: 'item/started',
+          params: {
+            threadId,
+            turnId: 'turn-new',
+            item: {
+              type: 'commandExecution',
+              id: 'command-2',
+              command: 'run recovered test',
+              status: 'inProgress',
+            },
+          },
+        });
+        await turn.onEvent?.({
+          method: 'item/commandExecution/outputDelta',
+          params: {
+            threadId,
+            turnId: 'turn-new',
+            itemId: 'command-2',
+            delta: 'fresh command output',
+          },
+        });
+        await turn.onEvent?.({
+          method: 'item/completed',
+          params: {
+            threadId,
+            turnId: 'turn-new',
+            item: {
+              type: 'commandExecution',
+              id: 'command-2',
+              command: 'run recovered test',
+              status: 'completed',
+              aggregatedOutput: null,
+            },
+          },
+        });
+        return { status: 'completed', text: 'recovered' };
+      };
+      let turns = 0;
+      const firstHandle = fakeHandle('thread-1', async (turn) => {
+        turns += 1;
+        if (turns > 1) return recoverWithFreshCommand(turn, 'thread-1');
+        firstEvent = turn.onEvent;
+        await turn.onEvent?.({
+          method: 'turn/started',
+          params: { threadId: 'thread-1', turn: { id: 'turn-old' } },
+        });
+        await turn.onEvent?.({
+          method: 'item/started',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-old',
+            item: {
+              type: 'commandExecution',
+              id: 'command-1',
+              command: 'run test',
+              status: 'inProgress',
+            },
+          },
+        });
+        await turn.onEvent?.({
+          method: 'item/commandExecution/outputDelta',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-old',
+            itemId: 'command-1',
+            delta: 'partial command output',
+          },
+        });
+        await turn.onEvent?.({
+          method: 'error',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-old',
+            willRetry: false,
+            error: {
+              message: 'Quota reached',
+              codexErrorInfo: 'usageLimitExceeded',
+            },
+          },
+        });
+        return {
+          status: 'failed',
+          text: '',
+          error: 'Quota reached',
+          errorInfo: 'usageLimitExceeded',
+        };
+      });
+      const rebuiltHandle = fakeHandle('thread-2', (turn) =>
+        recoverWithFreshCommand(turn, 'thread-2'),
+      );
+      const harness = run({
+        prepare: () =>
+          Promise.resolve(
+            preparation({
+              tools: tools({
+                prepareCodexSandboxWrites: () =>
+                  Promise.resolve(rebuilt ? ['/worktree'] : []),
+              }),
+              waitForQuotaRecovery,
+            }),
+          ),
+        handles: rebuilt ? [firstHandle, rebuiltHandle] : [firstHandle],
+        runRequest: streamRequest,
+        transcriptPort: streamPort(appendChanges),
+        spools: spoolFactory,
+      });
+
+      await expect(harness.terminal).resolves.toMatchObject({
+        type: 'terminal',
+        status: 'completed',
+        finalText: 'recovered',
+      });
+      expect(waitForQuotaRecovery).toHaveBeenCalledTimes(1);
+      expect(releasedBeforeRecovery).toBe(true);
+      expect(lateEventDidNotAllocate).toBe(true);
+      expect(acquisitions).toBe(2);
+      expect(finalCommandRows.get('command-1')).toMatchObject({ count: 1 });
+      expect(finalCommandRows.get('command-1')?.text).toContain(
+        'partial command output',
+      );
+      expect(finalCommandRows.get('command-1')?.text).not.toContain('-late');
+      expect(finalCommandRows.get('command-2')?.count).toBe(1);
+      expect(finalCommandRows.get('command-2')?.text).toContain(
+        'fresh command output',
+      );
+      if (rebuilt)
+        expect(harness.runtime.materializeThread).toHaveBeenCalledTimes(1);
+      else expect(firstHandle.runTurn).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(spoolRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+it('keeps settlement on the current turn after a late old-turn terminal event', async () => {
+  let turnCount = 0;
+  let currentCommandFinalRows = 0;
+  let currentCommandSettledBeforeRecovery = false;
+  let recoveryCount = 0;
+  const waitForQuotaRecovery = jest.fn((): Promise<void> => {
+    recoveryCount += 1;
+    if (recoveryCount === 2)
+      currentCommandSettledBeforeRecovery = currentCommandFinalRows === 1;
+    return Promise.resolve();
+  });
+  let streamRevision = 0;
+  const appendChanges: DelegationTranscriptPort['appendChanges'] = (input) => {
+    for (const { row } of input.changes)
+      if (row.final && row.id.endsWith('::current-command'))
+        currentCommandFinalRows += 1;
+    return successfulAppend(input, ++streamRevision);
+  };
+  const handle = fakeHandle('thread-1', async (turn) => {
+    turnCount += 1;
+    if (turnCount === 1) {
+      await turn.onEvent?.({
+        method: 'turn/started',
+        params: { threadId: 'thread-1', turn: { id: 'turn-old' } },
+      });
+      return {
+        status: 'failed',
+        text: '',
+        error: 'Quota reached',
+        errorInfo: 'usageLimitExceeded',
+      };
+    }
+    if (turnCount === 2) {
+      await turn.onEvent?.({
+        method: 'turn/started',
+        params: { threadId: 'thread-1', turn: { id: 'turn-current' } },
+      });
+      await turn.onEvent?.({
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-current',
+          item: {
+            type: 'commandExecution',
+            id: 'current-command',
+            command: 'run current command',
+            status: 'inProgress',
+            aggregatedOutput: 'current partial output',
+          },
+        },
+      });
+      // A late terminal event for the already-closed first segment must not
+      // overwrite the current turn id used for outcome-only settlement.
+      await turn.onEvent?.({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-old',
+          turn: { id: 'turn-old', items: [] },
+        },
+      });
+      return {
+        status: 'failed',
+        text: '',
+        error: 'Quota reached again',
+        errorInfo: 'usageLimitExceeded',
+      };
+    }
+    await turn.onEvent?.({
+      method: 'turn/started',
+      params: { threadId: 'thread-1', turn: { id: 'turn-final' } },
+    });
+    return { status: 'completed', text: 'recovered' };
+  });
+  const harness = run({
+    prepare: () => Promise.resolve(preparation({ waitForQuotaRecovery })),
+    handles: [handle],
+    runRequest: streamRequest,
+    transcriptPort: streamPort(appendChanges),
+  });
+
+  await expect(harness.terminal).resolves.toMatchObject({
+    type: 'terminal',
+    status: 'completed',
+    finalText: 'recovered',
+  });
+  expect(waitForQuotaRecovery).toHaveBeenCalledTimes(2);
+  expect(currentCommandSettledBeforeRecovery).toBe(true);
+  expect(currentCommandFinalRows).toBe(1);
+});
+
+it('does not construct a command spool owner for a legacy run', async () => {
+  const spools = jest.fn(() => {
+    throw new Error('legacy Codex must not construct a spool owner');
+  });
+  const harness = run({
+    prepare: () => Promise.resolve(preparation()),
+    handles: [fakeHandle('thread-1', completes('done'))],
+    spools,
+  });
+
+  await expect(harness.terminal).resolves.toMatchObject({
+    status: 'completed',
+  });
+  expect(spools).not.toHaveBeenCalled();
+});
+
+it.each([{ operation: 'append' as const }, { operation: 'read' as const }])(
+  'keeps real spool $operation failure attribution over overlapping stop and removal failure',
+  async ({ operation }) => {
+    const spoolRoot = await mkdtemp(
+      join(tmpdir(), 'codex-delegation-spool-fault-'),
+    );
+    let markOperationBlocked: () => void = () => undefined;
+    const operationBlocked = new Promise<void>((resolve) => {
+      markOperationBlocked = resolve;
+    });
+    let releaseOperation: () => void = () => undefined;
+    const operationRelease = new Promise<void>((resolve) => {
+      releaseOperation = resolve;
+    });
+    const originalFailure = new Error(`injected spool ${operation} failure`);
+    const cleanupFailure = new Error('injected spool cleanup failure');
+    const spoolOperations: string[] = [];
+    const spools = (): ReturnType<typeof createCommandOutputSpools> =>
+      createCommandOutputSpools({
+        root: () => spoolRoot,
+        faults: {
+          before: async (currentOperation) => {
+            spoolOperations.push(currentOperation);
+            if (currentOperation === operation) {
+              markOperationBlocked();
+              await operationRelease;
+              throw originalFailure;
+            }
+            if (currentOperation === 'remove') throw cleanupFailure;
+          },
+        },
+      });
+    const handle = fakeHandle('thread-1', async (turn) => {
+      await turn.onEvent?.({
+        method: 'turn/started',
+        params: { threadId: 'thread-1', turn: { id: 'turn-fault' } },
+      });
+      await turn.onEvent?.({
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-fault',
+          item: {
+            type: 'commandExecution',
+            id: 'command-fault',
+            command: 'run test',
+            status: 'inProgress',
+          },
+        },
+      });
+      await turn.onEvent?.({
+        method: 'item/commandExecution/outputDelta',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-fault',
+          itemId: 'command-fault',
+          delta: 'uncommitted output',
+        },
+      });
+      return { status: 'completed', text: 'unreachable' };
+    });
+    const reportError = jest.fn();
+    const harness = run({
+      prepare: () => Promise.resolve(preparation()),
+      handles: [handle],
+      runRequest: streamRequest,
+      transcriptPort: streamPort(() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            target: streamTarget,
+            mutationKey: 'fault-test',
+            streamRevision: 1,
+            items: [],
+            replayed: false,
+          },
+        }),
+      ),
+      spools,
+      reportError,
+    });
+
+    try {
+      await operationBlocked;
+      const stopping = harness.stop();
+      releaseOperation();
+      await stopping;
+      const terminal = await harness.terminal;
+      expect(terminal).toMatchObject({
+        type: 'terminal',
+        status: 'failed',
+        error: {
+          code: 'runtime_error',
+          message:
+            'The delegated transcript could not be saved. Retained partial output is available.',
+        },
+      });
+      expect(spoolOperations).toContain('close');
+      expect(spoolOperations).toContain('remove');
+      expect(reportError).toHaveBeenCalledWith(originalFailure);
+      expect(reportError).toHaveBeenCalledWith(cleanupFailure);
+    } finally {
+      releaseOperation();
+      await rm(spoolRoot, { recursive: true, force: true });
+    }
+  },
+);
+
 it('runs one turn and publishes one terminal result', async () => {
   const handle = fakeHandle('thread-1', completes('done'));
   const harness = run({
@@ -344,6 +618,304 @@ it('runs one turn and publishes one terminal result', async () => {
   expect(
     harness.events.filter((event) => event.type === 'terminal'),
   ).toHaveLength(1);
+});
+
+it('does not interrupt stream-backed Codex when the recorder exceeds its limit', async () => {
+  const handle = fakeHandle('thread-1', async (turn) => {
+    await turn.onEvent?.(completedAgentMessage('large', 'x'.repeat(1_100_000)));
+    return { status: 'completed', text: 'complete answer' };
+  });
+  let revision = 0;
+  const appendChanges = jest.fn(
+    (input: Parameters<DelegationTranscriptPort['appendChanges']>[0]) =>
+      successfulAppend(input, ++revision),
+  );
+  const harness = run({
+    prepare: () => Promise.resolve(preparation()),
+    handles: [handle],
+    runRequest: streamRequest,
+    transcriptPort: streamPort(appendChanges),
+  });
+
+  await expect(harness.terminal).resolves.toMatchObject({
+    type: 'terminal',
+    status: 'completed',
+    finalText: 'complete answer',
+  });
+  expect(handle.interrupt).not.toHaveBeenCalled();
+});
+
+it('keeps the recorder-limit interrupt in legacy mode', async () => {
+  const handle = fakeHandle('thread-1', async (turn, interrupted) => {
+    await turn.onEvent?.(completedAgentMessage('large', 'x'.repeat(1_100_000)));
+    await interrupted;
+    return { status: 'interrupted', text: '' };
+  });
+  const harness = run({
+    prepare: () => Promise.resolve(preparation()),
+    handles: [handle],
+  });
+
+  await expect(harness.terminal).resolves.toMatchObject({
+    type: 'terminal',
+    status: 'failed',
+    error: { code: 'runtime_error' },
+  });
+  expect(handle.interrupt).toHaveBeenCalledTimes(1);
+});
+
+it('returns and awaits the stream admission lane before delivering the next event', async () => {
+  const admission = deferred<void>();
+  const appendChanges = jest.fn(
+    (input: Parameters<DelegationTranscriptPort['appendChanges']>[0]) =>
+      admission.promise.then(() => successfulAppend(input, 1)),
+  );
+  let deliveredNext = false;
+  let callbackReturnedPromise = false;
+  let admissionHeldNextEvent = false;
+  const handle = fakeHandle('thread-1', async (turn) => {
+    const callback = turn.onEvent;
+    if (!callback) throw new Error('Codex event callback was not registered');
+    const first = callback(completedAgentMessage('first', 'one'));
+    callbackReturnedPromise = first instanceof Promise;
+    const next = Promise.resolve(first).then(() => {
+      deliveredNext = true;
+      return callback(completedAgentMessage('second', 'two'));
+    });
+
+    await Promise.resolve();
+    admissionHeldNextEvent = !deliveredNext;
+    admission.resolve();
+    await next;
+    return { status: 'completed', text: 'done' };
+  });
+  const harness = run({
+    prepare: () => Promise.resolve(preparation()),
+    handles: [handle],
+    runRequest: streamRequest,
+    transcriptPort: streamPort(appendChanges),
+  });
+
+  await expect(harness.terminal).resolves.toMatchObject({
+    status: 'completed',
+    finalText: 'done',
+  });
+  expect(deliveredNext).toBe(true);
+  expect(callbackReturnedPromise).toBe(true);
+  expect(admissionHeldNextEvent).toBe(true);
+  expect(appendChanges).toHaveBeenCalledTimes(2);
+});
+
+it('fails a stream-backed run with storage attribution when admission is rejected', async () => {
+  const handle = fakeHandle('thread-1', async (turn) => {
+    await turn.onEvent?.(completedAgentMessage('stored', 'must persist'));
+    return { status: 'completed', text: 'done' };
+  });
+  const appendChanges = jest.fn<
+    ReturnType<DelegationTranscriptPort['appendChanges']>,
+    Parameters<DelegationTranscriptPort['appendChanges']>
+  >(() =>
+    Promise.resolve({
+      ok: false,
+      error: {
+        code: 'storage_failure',
+        message: 'test storage unavailable',
+        retryable: false,
+      },
+    }),
+  );
+  const harness = run({
+    prepare: () => Promise.resolve(preparation()),
+    handles: [handle],
+    runRequest: streamRequest,
+    transcriptPort: streamPort(appendChanges),
+  });
+
+  await expect(harness.terminal).resolves.toMatchObject({
+    type: 'terminal',
+    status: 'failed',
+    error: {
+      code: 'runtime_error',
+      message:
+        'The delegated transcript could not be saved. Retained partial output is available.',
+    },
+  });
+});
+
+it('flushes pending stream rows before publishing a provider failure', async () => {
+  const admittedFinalRows: string[] = [];
+  const admittedFinalContents: string[] = [];
+  let terminalAlreadyEmittedWhenFinalAdmitted = false;
+  const harnessState: { current?: Harness } = {};
+  let revision = 0;
+  const appendChanges = jest.fn(
+    (input: Parameters<DelegationTranscriptPort['appendChanges']>[0]) => {
+      for (const { row } of input.changes) {
+        if (row.final) {
+          admittedFinalRows.push(row.id);
+          admittedFinalContents.push(JSON.stringify(row.blocks));
+          terminalAlreadyEmittedWhenFinalAdmitted ||=
+            harnessState.current?.events.some(
+              (event) => event.type === 'terminal',
+            ) === true;
+        }
+      }
+      return successfulAppend(input, ++revision);
+    },
+  );
+  const handle = fakeHandle('thread-1', async (turn) => {
+    await turn.onEvent?.({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-1',
+        item: {
+          type: 'agentMessage',
+          id: 'pending-failure',
+          text: 'partial output',
+          phase: 'commentary',
+        },
+      },
+    });
+    await turn.onEvent?.({
+      method: 'item/agentMessage/delta',
+      params: {
+        threadId: 'thread-1',
+        itemId: 'pending-failure',
+        delta: ' before failure',
+      },
+    });
+    return {
+      status: 'failed',
+      text: '',
+      error: 'stream disconnected',
+    };
+  });
+  const harness = run({
+    prepare: () => Promise.resolve(preparation()),
+    handles: [handle],
+    runRequest: streamRequest,
+    transcriptPort: streamPort(appendChanges),
+  });
+  harnessState.current = harness;
+
+  await expect(harness.terminal).resolves.toMatchObject({
+    type: 'terminal',
+    status: 'failed',
+    error: { code: 'runtime_error' },
+  });
+  expect(admittedFinalRows.some((id) => id.endsWith('::pending-failure'))).toBe(
+    true,
+  );
+  expect(admittedFinalContents.join('\n')).toContain(
+    'partial output before failure',
+  );
+  expect(terminalAlreadyEmittedWhenFinalAdmitted).toBe(false);
+});
+
+it('preserves cancellation attribution and finalizes pending stream rows before terminal', async () => {
+  const observed = deferred<void>();
+  const handle = fakeHandle('thread-1', async (turn, interrupted) => {
+    await turn.onEvent?.({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-1',
+        item: {
+          type: 'agentMessage',
+          id: 'pending',
+          text: 'pending output',
+          phase: 'commentary',
+        },
+      },
+    });
+    await turn.onEvent?.({
+      method: 'item/agentMessage/delta',
+      params: {
+        threadId: 'thread-1',
+        itemId: 'pending',
+        delta: ' after start',
+      },
+    });
+    observed.resolve();
+    await interrupted;
+    return { status: 'interrupted', text: '' };
+  });
+  const admittedFinalRows: string[] = [];
+  const admittedFinalContents: string[] = [];
+  let terminalAlreadyEmittedWhenFinalAdmitted = false;
+  const harnessState: { current?: Harness } = {};
+  let revision = 0;
+  const appendChanges = jest.fn(
+    (input: Parameters<DelegationTranscriptPort['appendChanges']>[0]) => {
+      for (const { row } of input.changes) {
+        if (row.final) {
+          admittedFinalRows.push(row.id);
+          admittedFinalContents.push(JSON.stringify(row.blocks));
+          terminalAlreadyEmittedWhenFinalAdmitted ||=
+            harnessState.current?.events.some(
+              (event) => event.type === 'terminal',
+            ) === true;
+        }
+      }
+      return successfulAppend(input, ++revision);
+    },
+  );
+  const testHarness = run({
+    prepare: () => Promise.resolve(preparation()),
+    handles: [handle],
+    runRequest: streamRequest,
+    transcriptPort: streamPort(appendChanges),
+  });
+  harnessState.current = testHarness;
+
+  await observed.promise;
+  await testHarness.stop();
+  const terminal = await testHarness.terminal;
+  expect(terminal).toMatchObject({ type: 'terminal', status: 'cancelled' });
+  expect(admittedFinalRows.some((id) => id.endsWith('::pending'))).toBe(true);
+  expect(admittedFinalContents.join('\n')).toContain(
+    'pending output after start',
+  );
+  expect(appendChanges).toHaveBeenCalled();
+  expect(terminalAlreadyEmittedWhenFinalAdmitted).toBe(false);
+  const terminalIndex = testHarness.events.findIndex(
+    (event) => event.type === 'terminal',
+  );
+  expect(terminalIndex).toBeGreaterThan(0);
+  expect(admittedFinalRows.length).toBeGreaterThan(0);
+});
+
+it('reads assembled Codex progress only after its cadence gate', async () => {
+  const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+  const textGetter = jest.spyOn(
+    CodexDelegationProgress.prototype,
+    'text',
+    'get',
+  );
+  try {
+    const handle = fakeHandle('thread-1', async (turn) => {
+      for (let index = 0; index < 10; index++)
+        await turn.onEvent?.({
+          method: 'item/agentMessage/delta',
+          params: { itemId: 'message', delta: 'x' },
+        });
+      return { status: 'completed', text: 'done' };
+    });
+    const harness = run({
+      prepare: () => Promise.resolve(preparation()),
+      handles: [handle],
+    });
+
+    await harness.terminal;
+    expect(textGetter).toHaveBeenCalledTimes(2);
+    expect(
+      harness.events
+        .filter((event) => event.type === 'progress')
+        .map((event) => (event.type === 'progress' ? event.text : '')),
+    ).toEqual(['x', 'x'.repeat(10)]);
+  } finally {
+    textGetter.mockRestore();
+    now.mockRestore();
+  }
 });
 
 // Delegated children do not support Ultra fast and never inherit the parent
@@ -606,6 +1178,72 @@ it('approves provider-handled MCP calls in the runner and leaves transport-gated
   ]);
 });
 
+it('forwards an MCP elicitation request signal through the provider gate', async () => {
+  const requestSignal = new AbortController().signal;
+  const authorizeMcp = jest.fn(() => Promise.resolve(true));
+  const handle = fakeHandle('thread-1', async (turn) => {
+    await turn.mcpElicitationPolicy?.evaluate(
+      {
+        serverName: 'direct',
+        toolName: 'search',
+        approvalKind: 'mcp_tool_call',
+      },
+      requestSignal,
+    );
+    return { status: 'completed', text: 'done' };
+  });
+  const harness = run({
+    prepare: () =>
+      Promise.resolve(
+        preparation({
+          tools: tools({ authorizeMcp }),
+          selectedMcpServers: {
+            direct: { url: 'https://mcp.example.test', required: false },
+          },
+          providerGatedMcpServers: ['direct'],
+        }),
+      ),
+    handles: [handle],
+  });
+
+  await harness.terminal;
+
+  expect(authorizeMcp).toHaveBeenCalledTimes(1);
+  expect(authorizeMcp).toHaveBeenCalledWith(
+    'direct',
+    'search',
+    undefined,
+    expect.any(String),
+    requestSignal,
+  );
+});
+
+it('forwards a native approval request signal to approveCodex', async () => {
+  const requestSignal = new AbortController().signal;
+  const approveCodex = jest.fn(() => Promise.resolve({ decision: 'accept' }));
+  const handle = fakeHandle('thread-1', async (turn) => {
+    await turn.nativeApprovalPolicy?.(
+      'item/commandExecution/requestApproval',
+      { kind: 'command', itemId: 'request-1' },
+      requestSignal,
+    );
+    return { status: 'completed', text: 'done' };
+  });
+  const harness = run({
+    prepare: () =>
+      Promise.resolve(preparation({ tools: tools({ approveCodex }) })),
+    handles: [handle],
+  });
+
+  await harness.terminal;
+
+  expect(approveCodex).toHaveBeenCalledWith(
+    'item/commandExecution/requestApproval',
+    { kind: 'command', itemId: 'request-1' },
+    requestSignal,
+  );
+});
+
 function recordOf(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.entries(value))
@@ -807,15 +1445,15 @@ function writeTools(
 }
 
 /** The runtime learns the native turn id from this notification. */
-function turnStarted(turn: TurnRequest, threadId: string): void {
-  turn.onEvent?.({
+async function turnStarted(turn: TurnRequest, threadId: string): Promise<void> {
+  await turn.onEvent?.({
     method: 'turn/started',
     params: { threadId, turn: { id: `${threadId}-turn` } },
   });
 }
 
-function itemStarted(turn: TurnRequest, threadId: string): void {
-  turn.onEvent?.({
+async function itemStarted(turn: TurnRequest, threadId: string): Promise<void> {
+  await turn.onEvent?.({
     method: 'item/started',
     params: { threadId, item: { type: 'reasoning', id: 'reasoning-1' } },
   });
@@ -854,19 +1492,22 @@ function stoppable(
 }
 
 function startedThreads(harness: Harness): string[] {
-  return harness.events.flatMap((event) =>
-    event.type === 'started' ? [event.nativeSessionId] : [],
-  );
+  return harness.events.flatMap((event) => {
+    if (event.type !== 'started') return [];
+    if (event.nativeSessionId === undefined)
+      throw new Error('Started event omitted nativeSessionId');
+    return [event.nativeSessionId];
+  });
 }
 
 describe('Root chat planning during a write-profile turn', () => {
   it('stops the provider turn and continues the run read-only on a new thread', async () => {
     const state = { writable: true };
     const setCodexTurnWrites = jest.fn();
-    const first = fakeHandle('thread-1', (turn, interrupted) => {
-      turnStarted(turn, 'thread-1');
+    const first = fakeHandle('thread-1', async (turn, interrupted) => {
+      await turnStarted(turn, 'thread-1');
       state.writable = false;
-      itemStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       return stoppable(interrupted, 1_000);
     });
     const second = fakeHandle('thread-2', completes('finished read-only'));
@@ -913,7 +1554,7 @@ describe('Root chat planning during a write-profile turn', () => {
   it('notices planning during a turn that emits no further events', async () => {
     const state = { writable: true };
     const first = fakeHandle('thread-1', async (turn, interrupted) => {
-      turnStarted(turn, 'thread-1');
+      await turnStarted(turn, 'thread-1');
       await delay(20);
       state.writable = false;
       return stoppable(interrupted, 2_000);
@@ -940,13 +1581,13 @@ describe('Root chat planning during a write-profile turn', () => {
       'thread-1',
       async (turn, interrupted) => {
         state.writable = false;
-        turn.onEvent?.({
+        await turn.onEvent?.({
           method: 'thread/status/changed',
           params: { threadId: 'thread-1' },
         });
         await delay(600);
         interruptsBeforeTurnStarted = first.interrupt.mock.calls.length;
-        turnStarted(turn, 'thread-1');
+        await turnStarted(turn, 'thread-1');
         return stoppable(interrupted, 1_000);
       },
     );
@@ -965,11 +1606,11 @@ describe('Root chat planning during a write-profile turn', () => {
 
   it('publishes a turn that finished before the stop took effect', async () => {
     const state = { writable: true };
-    const handle = fakeHandle('thread-1', (turn) => {
-      turnStarted(turn, 'thread-1');
+    const handle = fakeHandle('thread-1', async (turn) => {
+      await turnStarted(turn, 'thread-1');
       state.writable = false;
-      itemStarted(turn, 'thread-1');
-      return Promise.resolve({ status: 'completed', text: 'already done' });
+      await itemStarted(turn, 'thread-1');
+      return { status: 'completed', text: 'already done' };
     });
     const harness = run({
       prepare: () => Promise.resolve(preparation({ tools: writeTools(state) })),
@@ -987,9 +1628,9 @@ describe('Root chat planning during a write-profile turn', () => {
   it('cancels without a new thread when stopped during the planning switch', async () => {
     const state = { writable: true };
     const first = fakeHandle('thread-1', async (turn, interrupted) => {
-      turnStarted(turn, 'thread-1');
+      await turnStarted(turn, 'thread-1');
       state.writable = false;
-      itemStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       await interrupted;
       // The user's stop aborts synchronously, before this turn settles.
       void harness.stop();
@@ -1010,10 +1651,10 @@ describe('Root chat planning during a write-profile turn', () => {
   it('never stops a thread that opened read-only because the root was already planning', async () => {
     const state = { writable: false };
     const handle = fakeHandle('thread-1', async (turn) => {
-      turnStarted(turn, 'thread-1');
-      itemStarted(turn, 'thread-1');
+      await turnStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       await delay(600);
-      itemStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       return { status: 'completed', text: 'planned' };
     });
     const harness = run({
@@ -1034,10 +1675,10 @@ describe('Root chat planning during a write-profile turn', () => {
   it('leaves a write-profile turn alone while the root is not planning', async () => {
     const state = { writable: true };
     const handle = fakeHandle('thread-1', async (turn) => {
-      turnStarted(turn, 'thread-1');
-      itemStarted(turn, 'thread-1');
+      await turnStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       await delay(600);
-      itemStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       return { status: 'completed', text: 'written' };
     });
     const harness = run({
@@ -1131,13 +1772,13 @@ describe('Parent rules denying a grant during a write-profile turn', () => {
   it('stops the provider turn and continues the run read-only on a new thread', async () => {
     const state = { denied: false, key: 'policy-1' };
     const setCodexTurnWrites = jest.fn();
-    const first = fakeHandle('thread-1', (turn, interrupted) => {
-      turnStarted(turn, 'thread-1');
+    const first = fakeHandle('thread-1', async (turn, interrupted) => {
+      await turnStarted(turn, 'thread-1');
       // The parent saves a deny rule inside the grant. Commands native
       // `.rules` approve would keep writing without an approval callback.
       state.denied = true;
       state.key = 'policy-2';
-      itemStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       return stoppable(interrupted, 1_000);
     });
     const second = fakeHandle('thread-2', completes('finished read-only'));
@@ -1178,10 +1819,63 @@ describe('Parent rules denying a grant during a write-profile turn', () => {
     expect(startedThreads(harness)).toEqual(['thread-1', 'thread-2']);
   });
 
+  it('stops the turn while a rule save that may revoke a grant is unsettled, and reopens under its outcome', async () => {
+    const state = { denied: false, key: 'policy-1', narrowing: false };
+    let settleSave: () => void = () => undefined;
+    const saved = new Promise<void>((resolve) => {
+      settleSave = resolve;
+    });
+    // The parent's evaluation waits for the save; it then allows the grant
+    // (a deny outside it, or a save that failed).
+    const codexSandboxWritesRevoked = jest.fn(async (): Promise<boolean> => {
+      if (state.narrowing) await saved;
+      return state.denied;
+    });
+    let interruptedDuringSave = false;
+    const first = fakeHandle('thread-1', async (turn, interrupted) => {
+      await turnStarted(turn, 'thread-1');
+      state.narrowing = true;
+      state.key = 'policy-2';
+      await itemStarted(turn, 'thread-1');
+      interruptedDuringSave = await interruptedWithin(interrupted, 1_000);
+      state.narrowing = false;
+      state.key = 'policy-3';
+      settleSave();
+      return interruptedDuringSave
+        ? { status: 'interrupted', text: '' }
+        : { status: 'completed', text: 'kept writing during the save' };
+    });
+    const second = fakeHandle('thread-2', completes('finished'));
+    const harness = run({
+      prepare: () =>
+        Promise.resolve(
+          preparation({
+            tools: grantTools(state, {
+              codexSandboxWritesRevoked,
+              codexSandboxWritesNarrowing: () => state.narrowing,
+            }),
+          }),
+        ),
+      handles: [first, second],
+    });
+    expect(await harness.terminal).toMatchObject({
+      status: 'completed',
+      finalText: 'finished',
+    });
+    expect(interruptedDuringSave).toBe(true);
+    expect(first.interrupt).toHaveBeenCalledTimes(1);
+    expect(recordOf(recordOf(harness.materialized[0]).params).permissions).toBe(
+      'delegated_write',
+    );
+    expect(second.turns[0]?.input.map((item) => item.text)).not.toContain(
+      CODEX_DELEGATION_GRANTS_REVOKED_CONTINUATION,
+    );
+  });
+
   it('notices a denied grant the policy key does not reflect during a silent turn', async () => {
     const state = { denied: false, key: 'policy-1' };
     const first = fakeHandle('thread-1', async (turn, interrupted) => {
-      turnStarted(turn, 'thread-1');
+      await turnStarted(turn, 'thread-1');
       await delay(20);
       // A session rule, say: the policy context key stays the same.
       state.denied = true;
@@ -1206,12 +1900,12 @@ describe('Parent rules denying a grant during a write-profile turn', () => {
     const state = { denied: false, key: 'policy-1' };
     const codexSandboxWritesRevoked = jest.fn(() => Promise.resolve(false));
     const handle = fakeHandle('thread-1', async (turn) => {
-      turnStarted(turn, 'thread-1');
-      itemStarted(turn, 'thread-1');
+      await turnStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       // An unrelated rule or mode change.
       state.key = 'policy-2';
       await delay(600);
-      itemStarted(turn, 'thread-1');
+      await itemStarted(turn, 'thread-1');
       return { status: 'completed', text: 'written' };
     });
     const harness = run({
@@ -1248,11 +1942,11 @@ describe('Parent rules denying a grant during a write-profile turn', () => {
     });
     let callsWhileInFlight = -1;
     const handle = fakeHandle('thread-1', async (turn) => {
-      turnStarted(turn, 'thread-1');
+      await turnStarted(turn, 'thread-1');
       // Events, policy changes and timer ticks while one evaluation hangs.
       for (let index = 0; index < 30; index += 1) {
         state.key = `policy-${index + 2}`;
-        itemStarted(turn, 'thread-1');
+        await itemStarted(turn, 'thread-1');
         await delay(20);
       }
       callsWhileInFlight = evaluations;
@@ -1514,8 +2208,8 @@ describe('Codex delegate repository instructions', () => {
       runRequest: { ...request, resumeSessionId: 'thread-0' },
     });
     await resumed.terminal;
-    expect(resumed.resumed).toHaveLength(1);
-    expect(recordOf(resumed.resumed[0]).params).toMatchObject({
+    expect(resumed.runtime.resumeThread).toHaveBeenCalledTimes(1);
+    expect(recordOf(resumed.resumes[0]).params).toMatchObject({
       threadId: 'thread-0',
       config: projectDocConfig,
     });

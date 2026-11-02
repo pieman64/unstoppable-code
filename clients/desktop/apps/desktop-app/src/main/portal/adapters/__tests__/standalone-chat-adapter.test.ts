@@ -12,12 +12,18 @@ import {
   setStandaloneChatModel,
   createStandaloneChatTab,
 } from '../../../services/standalone-chat-service';
-import { handlePortalChatMarkRead } from '../chat-read-adapter';
+import {
+  handlePortalChatMarkRead,
+  handlePortalChatSetUnread,
+} from '../chat-read-adapter';
 import {
   resolveStandaloneChatTarget,
   emitStandaloneChatSummary,
 } from '../../../services/standalone-chat-service';
-import type { ChatStateCommandPort } from '@canopy/desktop-shared/types';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  type ChatStateCommandPort,
+} from '@canopy/desktop-shared/types';
 import {
   handlePortalStandaloneChatSend,
   handlePortalStandaloneChatCreate,
@@ -61,6 +67,7 @@ describe('standalone empty chat create adapter', () => {
     getTranscriptPage: jest.fn(),
     searchTranscript: jest.fn(),
     readToolOutput: jest.fn(),
+    readVisual: jest.fn(),
   };
   const complete = jest.fn();
   const fail = jest.fn();
@@ -227,6 +234,22 @@ const mockedResolvePolicyModels = jest.mocked(
   resolveStandaloneChatPolicyModels,
 );
 
+type StandaloneChatSendResult = Awaited<
+  ReturnType<typeof sendStandaloneChatMessage>
+>;
+
+function standaloneSendSuccess(
+  chatId = 'chat-1',
+  userMessageId = 'u-1',
+): StandaloneChatSendResult {
+  return {
+    ok: true,
+    chatId,
+    userMessageId,
+    delivery: 'accepted',
+  };
+}
+
 it('passes the renderer window through standalone model changes', async () => {
   const complete = jest.fn();
   const context: PortalAdapterContext = {
@@ -259,7 +282,7 @@ it('passes the renderer window through standalone model changes', async () => {
 });
 
 it('strips undeclared approval grants from standalone Portal payloads', async () => {
-  mockedSendStandaloneChatMessage.mockResolvedValue({ ok: true });
+  mockedSendStandaloneChatMessage.mockResolvedValue(standaloneSendSuccess());
   const complete = jest.fn();
   const fail = jest.fn();
   const context: PortalAdapterContext = {
@@ -305,13 +328,13 @@ it('strips undeclared approval grants from standalone Portal payloads', async ()
     },
     { getWindow: context.getWindow },
   );
-  expect(complete).toHaveBeenCalledWith(command, { ok: true });
+  expect(complete).toHaveBeenCalledWith(command, standaloneSendSuccess());
   expect(fail).not.toHaveBeenCalled();
 });
 
 it('keeps group-aware creation membership alongside normalized Portal model speed', async () => {
   mockedSendStandaloneChatMessage.mockClear();
-  mockedSendStandaloneChatMessage.mockResolvedValue({ ok: true });
+  mockedSendStandaloneChatMessage.mockResolvedValue(standaloneSendSuccess());
   const fail = jest.fn();
   const context: PortalAdapterContext = {
     getWindow: () => null,
@@ -345,7 +368,7 @@ it('keeps group-aware creation membership alongside normalized Portal model spee
 });
 
 it('forwards the declared input mode on standalone Portal sends', async () => {
-  mockedSendStandaloneChatMessage.mockResolvedValue({ ok: true });
+  mockedSendStandaloneChatMessage.mockResolvedValue(standaloneSendSuccess());
   const complete = jest.fn();
   const fail = jest.fn();
   const context: PortalAdapterContext = {
@@ -454,6 +477,7 @@ describe('Codex speed on standalone Portal sends', () => {
       ok: true,
       chatId: 'chat-1',
       userMessageId: 'u-1',
+      delivery: 'accepted',
     });
   });
 
@@ -738,6 +762,7 @@ describe('Cursor runtime preflight on Cowork Portal commands', () => {
       ok: true,
       chatId: 'chat-1',
       userMessageId: 'u-1',
+      delivery: 'accepted',
     });
     const ctx = context();
     const command = sendCommand({
@@ -803,6 +828,7 @@ describe('Cursor runtime preflight on Cowork Portal commands', () => {
       ok: true,
       chatId: 'chat-1',
       userMessageId: 'u-1',
+      delivery: 'accepted',
     });
     const ctx = context();
     const command = sendCommand({
@@ -829,7 +855,9 @@ describe('Cursor runtime preflight on Cowork Portal commands', () => {
       mockIsCopilotRuntimeAvailable.mockResolvedValue(false);
       for (const connected of [false, true]) {
         mockedSendStandaloneChatMessage.mockClear();
-        mockedSendStandaloneChatMessage.mockResolvedValue({ ok: true });
+        mockedSendStandaloneChatMessage.mockResolvedValue(
+          standaloneSendSuccess(),
+        );
         mockIsOpenCodeRuntimeAvailable.mockResolvedValue(connected);
         mockedResolvePolicyModels.mockResolvedValue({
           readable: true,
@@ -868,6 +896,7 @@ describe('Cursor runtime preflight on Cowork Portal commands', () => {
       ok: true,
       chatId: 'chat-1',
       userMessageId: 'u-1',
+      delivery: 'accepted',
     });
     const ctx = context();
     const command = sendCommand({
@@ -1046,7 +1075,9 @@ it.each([false, true])(
     const chatStatePort: ChatStateCommandPort = {
       command: commit,
       getTranscriptPage: jest.fn(),
+      searchTranscript: jest.fn(),
       readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
       getState: jest.fn().mockResolvedValue({
         schemaVersion: 1,
         projectId: 'research',
@@ -1150,7 +1181,9 @@ it('routes a Portal read acknowledgement through the chat command router', async
   const chatStatePort: ChatStateCommandPort = {
     command: commit,
     getTranscriptPage: jest.fn(),
+    searchTranscript: jest.fn(),
     readToolOutput: jest.fn(),
+    readVisual: jest.fn(),
     getState: jest.fn().mockResolvedValue({
       schemaVersion: 1,
       projectId: 'research',
@@ -1215,12 +1248,226 @@ it('routes a Portal read acknowledgement through the chat command router', async
   await runtime.shutdown();
 });
 
+describe('portal.chat.set_unread', () => {
+  function portWithTab(unread: boolean): ChatStateCommandPort & {
+    command: jest.Mock;
+  } {
+    return {
+      command: jest.fn().mockResolvedValue({ outcome: 'applied', revision: 4 }),
+      getTranscriptPage: jest.fn(),
+      searchTranscript: jest.fn(),
+      readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
+      getState: jest.fn().mockResolvedValue({
+        schemaVersion: 1,
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        revision: 3,
+        runtimeByChatId: {},
+        tabsFile: {
+          version: 1,
+          activeTabId: 'chat-1',
+          tabs: [
+            {
+              id: 'chat-1',
+              title: 'Chat',
+              createdAt: '2026-09-05T00:00:00Z',
+              unread,
+              messages: [],
+            },
+          ],
+        },
+        archives: [],
+        queue: [],
+      }),
+      subscribe: jest.fn(() => jest.fn()),
+    };
+  }
+
+  function setUnreadCommand(payload: unknown): PortalCommandEnvelope<unknown> {
+    return {
+      id: 'set-unread-1',
+      sequence: 1,
+      type: 'portal.chat.set_unread',
+      createdAt: '2026-09-05T00:00:00Z',
+      expiresAt: null,
+      payload,
+    };
+  }
+
+  async function run(
+    payload: unknown,
+    port: ChatStateCommandPort,
+    extra: Partial<PortalAdapterContext> = {},
+  ): Promise<{ complete: jest.Mock; fail: jest.Mock }> {
+    const complete = jest.fn();
+    const fail = jest.fn();
+    const runtime = createDesktopRuntime({ getChatStatePort: () => port });
+    await handlePortalChatSetUnread(setUnreadCommand(payload), {
+      sessionId: 'test-session',
+      complete,
+      fail,
+      enqueueEvent: jest.fn(),
+      getWindow: () => null,
+      chatStatePort: port,
+      ...extra,
+    });
+    await runtime.shutdown();
+    return { complete, fail };
+  }
+
+  const worktreeTarget = {
+    scope: 'worktree',
+    projectId: 'project-1',
+    worktreeId: 'worktree-1',
+    chatId: 'chat-1',
+  };
+
+  it.each([
+    [true, false, { type: 'chat.mark_unread', chatId: 'chat-1', manual: true }],
+    [false, true, { type: 'chat.mark_read', chatId: 'chat-1' }],
+  ])(
+    'sets unread=%s on a worktree chat with a portal-origin command',
+    async (unread, currentlyUnread, expected) => {
+      const port = portWithTab(currentlyUnread);
+      const { complete, fail } = await run({ ...worktreeTarget, unread }, port);
+      expect(port.command).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandId: 'set-unread-1',
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          origin: 'portal',
+          command: expected,
+        }),
+      );
+      // The user chose the state: an unrelated revision bump in the worktree
+      // must not turn a Portal-origin mark_read into a conflict.
+      expect(port.command).toHaveBeenCalledWith(
+        expect.not.objectContaining({ expectedRevision: 3 }),
+      );
+      expect(complete).toHaveBeenCalled();
+      expect(fail).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])(
+    'completes without a command when the chat is already unread=%s',
+    async (unread) => {
+      const port = portWithTab(unread);
+      const { complete } = await run({ ...worktreeTarget, unread }, port);
+      expect(port.command).not.toHaveBeenCalled();
+      expect(complete).toHaveBeenCalledWith(expect.anything(), {
+        ok: true,
+        applied: false,
+      });
+    },
+  );
+
+  it.each([
+    ['missing unread', worktreeTarget],
+    ['non-boolean unread', { ...worktreeTarget, unread: 'yes' }],
+    ['unknown scope', { ...worktreeTarget, scope: 'cloud', unread: true }],
+    [
+      'embedded scope',
+      { ...worktreeTarget, projectId: APP_ADVISOR_PROJECT_ID, unread: true },
+    ],
+  ])('rejects an invalid payload: %s', async (_label, payload) => {
+    const port = portWithTab(false);
+    const { fail } = await run(payload, port);
+    expect(port.command).not.toHaveBeenCalled();
+    expect(fail).toHaveBeenCalledWith(
+      expect.anything(),
+      'invalid_payload',
+      expect.any(String),
+    );
+  });
+
+  it('fails not_found when the chat tab is missing', async () => {
+    const port = portWithTab(false);
+    const { fail } = await run(
+      { ...worktreeTarget, chatId: 'chat-2', unread: true },
+      port,
+    );
+    expect(port.command).not.toHaveBeenCalled();
+    expect(fail).toHaveBeenCalledWith(
+      expect.anything(),
+      'not_found',
+      expect.any(String),
+    );
+  });
+
+  it('reports a rejected command without blaming a concurrent change', async () => {
+    const port = portWithTab(false);
+    port.command.mockResolvedValue({ outcome: 'rejected', revision: 3 });
+    const { fail } = await run({ ...worktreeTarget, unread: true }, port);
+    expect(fail).toHaveBeenCalledWith(
+      expect.anything(),
+      'execution_failed',
+      'The chat read state could not be updated.',
+      false,
+    );
+  });
+
+  it('maps a revision conflict to a retryable conflict', async () => {
+    const port = portWithTab(false);
+    port.command.mockResolvedValue({ outcome: 'conflict', revision: 5 });
+    const { fail } = await run({ ...worktreeTarget, unread: true }, port);
+    expect(fail).toHaveBeenCalledWith(
+      expect.anything(),
+      'conflict',
+      expect.any(String),
+      true,
+    );
+  });
+
+  it('routes a standalone mark through the command router and emits its summary', async () => {
+    jest.mocked(resolveStandaloneChatTarget).mockResolvedValue({
+      workspaceId: 'project-1',
+      entryId: 'worktree-1',
+      archivedInEntryId: null,
+      isArchived: false,
+    });
+    jest.mocked(emitStandaloneChatSummary).mockClear();
+    const port = portWithTab(false);
+    const dispatchChatCommand = jest.fn().mockResolvedValue({
+      commandId: 'set-unread-1',
+      outcome: 'applied',
+      revision: 4,
+    });
+    const { complete } = await run(
+      {
+        scope: 'standalone',
+        projectLocalId: 'project-1',
+        chatId: 'chat-1',
+        unread: true,
+      },
+      port,
+      { dispatchChatCommand },
+    );
+    expect(dispatchChatCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: 'portal',
+        command: { type: 'chat.mark_unread', chatId: 'chat-1', manual: true },
+      }),
+    );
+    expect(port.command).not.toHaveBeenCalled();
+    expect(emitStandaloneChatSummary).toHaveBeenCalledWith(
+      'project-1',
+      'worktree-1',
+      'chat-1',
+    );
+    expect(complete).toHaveBeenCalled();
+  });
+});
+
 describe('portal.standalone_chat.set_plugin_selections', () => {
   function selectionsState(): ChatStateCommandPort {
     return {
       command: jest.fn(),
       getTranscriptPage: jest.fn(),
+      searchTranscript: jest.fn(),
       readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
       getState: jest.fn().mockResolvedValue({
         schemaVersion: 1,
         projectId: 'research',
@@ -1545,6 +1792,7 @@ describe('mixed-version standalone text sends', () => {
       ok: true,
       chatId: 'cc-first-chat',
       userMessageId: 'desktop-minted',
+      delivery: 'accepted',
     });
     jest.mocked(handlePortalChatSend).mockClear();
     jest.mocked(resolveStandaloneChatTarget).mockReset();
@@ -1575,6 +1823,7 @@ describe('mixed-version standalone text sends', () => {
       ok: true,
       chatId: 'cc-first-chat',
       userMessageId: 'desktop-minted',
+      delivery: 'accepted',
     });
   });
 

@@ -54,7 +54,7 @@ export function TodoSectionBody({
             type="button"
             aria-expanded={showCompleted}
             onClick={(): void => setShowCompleted((v) => !v)}
-            className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition hover:fg-secondary"
+            className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition-colors hover:fg-secondary"
             data-testid="activity-todo-completed-toggle"
           >
             <ChevronIcon open={showCompleted} />

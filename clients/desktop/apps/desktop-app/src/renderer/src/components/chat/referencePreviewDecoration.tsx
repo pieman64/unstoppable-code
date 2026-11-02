@@ -124,15 +124,16 @@ export function scanLinearCandidates(text: string): LinearCandidates | null {
  * complete, fresh catalog; URLs only while the host holds a Linear credential.
  */
 export function useLinearDecoration(
-  candidates: LinearCandidates,
+  candidates: LinearCandidates | null,
 ): LinearDecoration | null {
   const mode = useChatEnrichmentModes().linear;
-  const catalog = useLinearTeamCatalog(mode !== 'off');
+  const catalog = useLinearTeamCatalog(mode !== 'off' && candidates !== null);
   const keys = catalog?.keys ?? null;
   const bare =
     keys !== null &&
+    candidates !== null &&
     Array.from(candidates.prefixes).some((prefix) => keys.has(prefix));
-  const urls = candidates.urls && catalog?.connected === true;
+  const urls = candidates?.urls === true && catalog?.connected === true;
   return useMemo(
     () => (bare || urls ? { teamKeys: bare ? keys : null, urls, mode } : null),
     [bare, keys, urls, mode],
@@ -181,11 +182,12 @@ export function scanGitHubCandidates(text: string): GitHubCandidates | null {
  * repository; cowork and multi-repository origins keep them plain.
  */
 export function useGitHubDecoration(
-  candidates: GitHubCandidates,
+  candidates: GitHubCandidates | null,
   target: ChatMarkdownFileTarget | null,
 ): GitHubDecoration | null {
   const mode = useChatEnrichmentModes().github;
-  const connected = useGitHubPreviewConnected(mode !== 'off') === true;
+  const connected =
+    useGitHubPreviewConnected(mode !== 'off' && candidates !== null) === true;
   const origin = useMemo(
     () =>
       target
@@ -201,6 +203,7 @@ export function useGitHubDecoration(
   const resolved = origin === null ? null : originRepository;
   const eligible =
     connected &&
+    candidates !== null &&
     resolved !== undefined &&
     (candidates.qualified || (candidates.bare && resolved !== null));
   return useMemo(

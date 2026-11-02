@@ -15,6 +15,11 @@ import {
   createTestSettingsHost,
   TestSettingsHost,
 } from '../../__tests__/helpers/test-settings-host';
+import {
+  chooseSettingsOption,
+  settingsSelectOptionLabels,
+  settingsSelectTrigger,
+} from '../../__tests__/helpers/settings-select';
 
 jest.mock('../team-api', () => {
   const actual = jest.requireActual<typeof TeamApi>('../team-api');
@@ -156,11 +161,13 @@ beforeEach((): void => {
   // Admins load both scopes; by default the member scope adds nothing.
   jest
     .mocked(listOrganizationProjects)
-    .mockImplementation(async (_client, _orgId, scope) => ({
-      data: scope === 'management' ? [project] : [],
-      revision: 'page1',
-      nextCursor: null,
-    }));
+    .mockImplementation(
+      async (_client, _orgId, scope: 'management' | 'member') => ({
+        data: scope === 'management' ? [project] : [],
+        revision: 'page1',
+        nextCursor: null,
+      }),
+    );
   jest.mocked(getOrganizationProject).mockResolvedValue(project);
   container = document.createElement('div');
   document.body.append(container);
@@ -317,16 +324,17 @@ it.each([
 ] satisfies Array<
   [Array<Pick<OrgProjectDetail['grants'][number], 'principal'>>, string]
 >)('summarizes access %j as %s', async (grants, label): Promise<void> => {
-  jest.mocked(listOrganizationProjects).mockResolvedValueOnce({
-    data: [
-      {
-        ...project,
-        grants: grants.map((grant) => ({ ...grant, defaultListed: false })),
-      },
-    ],
-    revision: 'grants',
-    nextCursor: null,
-  });
+  const projectWithGrants: OrgProjectDetail = {
+    ...project,
+    grants: grants.map((grant) => ({ ...grant, defaultListed: false })),
+  };
+  jest.mocked(listOrganizationProjects).mockImplementationOnce(() =>
+    Promise.resolve({
+      data: [projectWithGrants],
+      revision: 'grants',
+      nextCursor: null,
+    }),
+  );
   await renderSection();
   expect(el('[data-testid="team-projects-access-p1"]').textContent).toBe(label);
 });
@@ -751,7 +759,7 @@ it('member loading and read failure are distinct from an empty list', async (): 
   await act(async (): Promise<void> => {
     reject?.(new TeamApiError(500, 'Catalog failed'));
   });
-  expect(container.textContent).toContain("Couldn't load this. Try again.");
+  expect(container.textContent).toContain("Couldn't load this.");
   expect(container.textContent).not.toContain('Catalog failed');
   expect(container.textContent).not.toContain('Nothing shared with you yet');
 });
@@ -797,12 +805,13 @@ function mockScopes(
 ): void {
   jest
     .mocked(listOrganizationProjects)
-    .mockImplementation((_client, _organizationId, view) =>
-      Promise.resolve(
-        view === 'management'
-          ? { data: management, revision: 'management', nextCursor: null }
-          : { data: members, revision: 'member', nextCursor: memberCursor },
-      ),
+    .mockImplementation(
+      (_client, _organizationId, view: 'management' | 'member') =>
+        Promise.resolve(
+          view === 'management'
+            ? { data: management, revision: 'management', nextCursor: null }
+            : { data: members, revision: 'member', nextCursor: memberCursor },
+        ),
     );
 }
 
@@ -838,14 +847,15 @@ it('merges an admin’s management and member rows into one list', async (): Pro
 it('shows one error and no partial list when either scope fails', async (): Promise<void> => {
   jest
     .mocked(listOrganizationProjects)
-    .mockImplementation((_client, _organizationId, view) =>
-      view === 'management'
-        ? Promise.resolve({
-            data: [project],
-            revision: 'management',
-            nextCursor: null,
-          })
-        : Promise.reject(new TeamApiError(500, 'Member scope failed')),
+    .mockImplementation(
+      (_client, _organizationId, view: 'management' | 'member') =>
+        view === 'management'
+          ? Promise.resolve({
+              data: [project],
+              revision: 'management',
+              nextCursor: null,
+            })
+          : Promise.reject(new TeamApiError(500, 'Member scope failed')),
     );
   await renderSection({
     detail: {
@@ -853,7 +863,7 @@ it('shows one error and no partial list when either scope fails', async (): Prom
       githubConnection: { connected: true, accountLogin: 'acme' },
     },
   });
-  expect(container.textContent).toContain("Couldn't load this. Try again.");
+  expect(container.textContent).toContain("Couldn't load this.");
   expect(container.textContent).not.toContain('Member scope failed');
   expect(visibleRows()).toEqual([]);
   expect(
@@ -1274,7 +1284,7 @@ describe('setup checklist', (): void => {
       .mocked(listOrganizationProjects)
       .mockRejectedValue(new TeamApiError(503, 'Service unavailable'));
     await renderSection({ detail: connected });
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain('Service unavailable');
     expect(
       container.querySelector('[data-testid="team-projects-setup"]'),
@@ -1752,7 +1762,7 @@ it('shows load errors without claiming the list is empty', async (): Promise<voi
     .mocked(listOrganizationProjects)
     .mockRejectedValue(new TeamApiError(503, 'SENTINEL-SERVER-BODY'));
   await renderSection();
-  expect(container.textContent).toContain("Couldn't load this. Try again.");
+  expect(container.textContent).toContain("Couldn't load this.");
   expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
   expect(container.textContent).not.toContain(
     'Create your first organization project',
@@ -1761,42 +1771,42 @@ it('shows load errors without claiming the list is empty', async (): Promise<voi
 it('reloads the list on Retry after the first load failed', async (): Promise<void> => {
   jest
     .mocked(listOrganizationProjects)
-    .mockImplementation((_client, _orgId, scope) =>
+    .mockImplementation((_client, _orgId, scope: 'management' | 'member') =>
       scope === 'management'
         ? Promise.reject(new TeamApiError(503, 'SENTINEL-SERVER-BODY'))
         : Promise.resolve({ data: [], revision: 'one', nextCursor: null }),
     );
   await renderSection();
-  expect(container.textContent).toContain("Couldn't load this. Try again.");
+  expect(container.textContent).toContain("Couldn't load this.");
   expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
   jest.mocked(listOrganizationProjects).mockResolvedValue({
     data: [project],
     revision: 'two',
     nextCursor: null,
   });
-  await click(button('Retry'));
+  await click(button('Try again'));
   expect(el('[data-testid="team-projects-row-p1"]')).not.toBeNull();
   expect(container.textContent).not.toContain("Couldn't load this.");
 });
 
 async function select(label: string, value: string): Promise<void> {
-  const element = el(`[aria-label="${label}"]`);
-  if (!(element instanceof HTMLSelectElement))
-    throw new Error('Expected select');
-  await act(async (): Promise<void> => {
-    element.value = value;
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  await chooseSettingsOption(
+    settingsSelectTrigger(document, `[aria-label="${label}"]`),
+    value,
+  );
+}
+function optionText(label: string): string {
+  return settingsSelectOptionLabels(
+    settingsSelectTrigger(document, `[aria-label="${label}"]`),
+  ).join('\n');
 }
 
 it('adds only ungranted principals and saves the per-grant listing preference', async (): Promise<void> => {
   jest.mocked(replaceOrganizationProjectGrants).mockResolvedValue(project);
   await renderSection();
   await action('Access');
-  expect(el('[aria-label="Add member"]').textContent).not.toContain('Alice');
-  expect(el('[aria-label="Add team"]').textContent).not.toContain(
-    'Engineering',
-  );
+  expect(optionText('Add member')).not.toContain('Alice');
+  expect(optionText('Add team')).not.toContain('Engineering');
   await select('Add member', 'u3');
   await select('Add team', 't2');
   expect(document.body.textContent).toContain(
@@ -1849,9 +1859,7 @@ it('shows the everyone grant as one row for every member, with no default listin
   expect(row.textContent).toContain('Includes people who join later');
   expect(row.querySelector('input[type="checkbox"]')).toBeNull();
   expect(editor.textContent).toContain('3 members will see this project');
-  expect(el('[aria-label="Add member"]').textContent).not.toContain(
-    'Everyone in Acme',
-  );
+  expect(optionText('Add member')).not.toContain('Everyone in Acme');
 
   await click(el('[aria-label="Remove Everyone in Acme"]'));
   expect(document.body.textContent).toContain(
@@ -1876,9 +1884,7 @@ it('adds the everyone grant from the member picker, never listed by default', as
   jest.mocked(replaceOrganizationProjectGrants).mockResolvedValue(project);
   await renderSection();
   await action('Access');
-  expect(el('[aria-label="Add member"]').textContent).toContain(
-    'Everyone in Acme',
-  );
+  expect(optionText('Add member')).toContain('Everyone in Acme');
   await select('Add member', 'organization');
   expect(document.body.textContent).toContain(
     '3 members will see this project',
@@ -1989,7 +1995,7 @@ it('shows one error and no partial list when a later management page fails', asy
           });
     });
   await renderSection();
-  expect(container.textContent).toContain("Couldn't load this. Try again.");
+  expect(container.textContent).toContain("Couldn't load this.");
   expect(container.textContent).not.toContain('Try later');
   expect(
     container.querySelector('[data-testid="team-projects-row-p1"]'),

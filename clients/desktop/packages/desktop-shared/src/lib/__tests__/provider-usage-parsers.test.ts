@@ -15,8 +15,10 @@ describe('parseClaudeUsageDetails', () => {
           seven_day_sonnet: { utilization: 60 },
           extra_usage: {
             is_enabled: true,
-            monthly_limit: 50,
-            used_credits: 12.5,
+            monthly_limit: 5000,
+            used_credits: 1250,
+            currency: 'USD',
+            decimal_places: 2,
             utilization: 25,
           },
         },
@@ -39,13 +41,14 @@ describe('parseClaudeUsageDetails', () => {
           limitName: '7-day Sonnet',
           planType: 'default_claude_max_20x',
           primary: { usedPercent: 60 },
+          scope: { model: { id: 'sonnet', displayName: 'Sonnet' } },
         },
         {
           limitId: 'extra_usage',
           limitName: 'Extra usage',
           planType: 'default_claude_max_20x',
           primary: { usedPercent: 25 },
-          credits: { usedUsd: 12.5, totalUsd: 50, remainingUsd: 37.5 },
+          spend: { currency: 'USD', used: 12.5, limit: 50, isEnabled: true },
         },
       ],
     });
@@ -62,7 +65,7 @@ describe('parseClaudeUsageDetails', () => {
               group: 'weekly',
               percent: 60,
               resets_at: '2026-07-03T06:00:00Z',
-              scope: { model: { display_name: 'Fable' } },
+              scope: { model: { id: 'model-fable', display_name: 'Fable' } },
             },
             { kind: 'weekly_scoped', group: 'weekly', percent: 80 },
           ],
@@ -74,6 +77,7 @@ describe('parseClaudeUsageDetails', () => {
         limitId: 'weekly_scoped:Fable',
         limitName: '7-day Fable',
         planType: 'team-premium',
+        scope: { model: { id: 'model-fable', displayName: 'Fable' } },
         primary: {
           usedPercent: 60,
           resetsAt: '2026-07-03T06:00:00.000Z',
@@ -81,6 +85,127 @@ describe('parseClaudeUsageDetails', () => {
         },
       },
     ]);
+  });
+
+  it('attaches legacy model and surface scopes without changing their limit IDs', () => {
+    expect(
+      parseClaudeUsageDetails({
+        seven_day_opus: { utilization: 10 },
+        seven_day_cowork: { utilization: 20 },
+        seven_day_oauth_apps: { utilization: 30 },
+      }).rateLimits,
+    ).toMatchObject([
+      {
+        limitId: 'seven_day_opus',
+        scope: { model: { id: 'opus', displayName: 'Opus' } },
+      },
+      { limitId: 'seven_day_cowork', scope: { surface: 'cowork' } },
+      { limitId: 'seven_day_oauth_apps', scope: { surface: 'oauth_apps' } },
+    ]);
+  });
+
+  it('preserves modern SDK object-surface scopes and their display labels', () => {
+    expect(
+      parseClaudeUsageDetails({
+        limits: [
+          {
+            kind: 'weekly_scoped',
+            group: 'weekly',
+            percent: 40,
+            scope: { surface: { display_name: 'Cowork' } },
+          },
+        ],
+      }).rateLimits,
+    ).toMatchObject([
+      {
+        limitId: 'weekly_scoped:Cowork',
+        limitName: '7-day Cowork',
+        scope: { surface: 'Cowork' },
+      },
+    ]);
+  });
+
+  it('preserves extra-usage spend above its cap without inventing a wallet balance', () => {
+    const extra = parseClaudeUsageDetails({
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: 5000,
+        used_credits: 6100,
+        currency: 'USD',
+        decimal_places: 2,
+      },
+    }).rateLimits[0];
+    expect(extra?.spend).toEqual({
+      currency: 'USD',
+      used: 61,
+      limit: 50,
+      isEnabled: true,
+    });
+    expect(extra?.credits).toBeUndefined();
+  });
+
+  it('keeps disabled and missing-cap states distinct from zero', () => {
+    expect(
+      parseClaudeUsageDetails({ extra_usage: { is_enabled: false } })
+        .rateLimits[0]?.spend,
+    ).toEqual({ isEnabled: false });
+    expect(
+      parseClaudeUsageDetails({
+        extra_usage: { is_enabled: true, currency: 'USD', used_credits: 0 },
+      }).rateLimits[0]?.spend,
+    ).toEqual({ isEnabled: true, currency: 'USD', used: 0 });
+    expect(
+      parseClaudeUsageDetails({
+        extra_usage: {
+          is_enabled: true,
+          currency: 'USD',
+          monthly_limit: null,
+          used_credits: 1250,
+        },
+      }).rateLimits[0]?.spend,
+    ).toEqual({ isEnabled: true, currency: 'USD', used: 12.5 });
+  });
+
+  it('uses the known currency exponent when decimal metadata is absent', () => {
+    expect(
+      parseClaudeUsageDetails({
+        extra_usage: {
+          is_enabled: true,
+          currency: 'JPY',
+          monthly_limit: 5000,
+          used_credits: 1250,
+        },
+      }).rateLimits[0]?.spend,
+    ).toEqual({ isEnabled: true, currency: 'JPY', limit: 5000, used: 1250 });
+  });
+
+  it('does not mislabel unknown currency or invalid decimal metadata as USD', () => {
+    for (const extra_usage of [
+      { is_enabled: true, currency: 'ZZZ', used_credits: 1250 },
+      {
+        is_enabled: true,
+        currency: 'USD',
+        decimal_places: -1,
+        used_credits: 1250,
+      },
+    ]) {
+      const spend = parseClaudeUsageDetails({ extra_usage }).rateLimits[0]
+        ?.spend;
+      expect(spend?.isEnabled).toBe(true);
+      expect(spend?.used).toBeUndefined();
+    }
+  });
+
+  it('does not display negative raw spend or cap as money', () => {
+    const spend = parseClaudeUsageDetails({
+      extra_usage: {
+        is_enabled: true,
+        currency: 'USD',
+        monthly_limit: -5000,
+        used_credits: -1250,
+      },
+    }).rateLimits[0]?.spend;
+    expect(spend).toEqual({ isEnabled: true, currency: 'USD' });
   });
 
   it('returns an empty snapshot for non-object payloads', () => {

@@ -4,9 +4,9 @@ const getAppMetricsMock = jest.fn();
 const execFileMock = jest.fn();
 const recordAppDiagnosticMock = jest.fn();
 const getChatTurnConcurrencySnapshotMock = jest.fn();
-const getActivePipelineExecutionCountMock = jest.fn();
 const getCodexAppServerPoolResourceSnapshotsMock = jest.fn();
 const suspendIdleCodexAppServerPoolConnectionsForMemoryPressureMock = jest.fn();
+const releaseIdleClaudeSessionsForMemoryPressureMock = jest.fn();
 const mockOsFreemem = jest.fn((): number => 16 * 1024 * 1024 * 1024);
 const mockOsTotalmem = jest.fn((): number => 64 * 1024 * 1024 * 1024);
 const makeCpuInfo = (): NodeOs.CpuInfo => ({
@@ -25,21 +25,31 @@ const TEST_GIB = 1024 * 1024 * 1024;
 
 jest.mock('electron', () => ({
   app: {
-    getAppMetrics: getAppMetricsMock,
+    get getAppMetrics(): typeof getAppMetricsMock {
+      return getAppMetricsMock;
+    },
   },
 }));
 
 jest.mock('node:child_process', () => ({
-  execFile: execFileMock,
+  get execFile(): typeof execFileMock {
+    return execFileMock;
+  },
 }));
 
 jest.mock('node:os', () => {
   const actual: typeof NodeOs = jest.requireActual('node:os');
   return {
     ...actual,
-    freemem: mockOsFreemem,
-    totalmem: mockOsTotalmem,
-    cpus: mockOsCpus,
+    get freemem(): typeof mockOsFreemem {
+      return mockOsFreemem;
+    },
+    get totalmem(): typeof mockOsTotalmem {
+      return mockOsTotalmem;
+    },
+    get cpus(): typeof mockOsCpus {
+      return mockOsCpus;
+    },
   };
 });
 
@@ -51,25 +61,31 @@ jest.mock(
     };
   } => ({
     getObservabilityService: () => ({
-      recordAppDiagnostic: recordAppDiagnosticMock,
+      get recordAppDiagnostic(): typeof recordAppDiagnosticMock {
+        return recordAppDiagnosticMock;
+      },
     }),
   }),
 );
 
 jest.mock('../agents/session-manager', () => ({
-  getChatTurnConcurrencySnapshot: getChatTurnConcurrencySnapshotMock,
-}));
-
-jest.mock('../pipelines/pipeline-execution-registry', () => ({
-  getActivePipelineExecutionCount: getActivePipelineExecutionCountMock,
+  get getChatTurnConcurrencySnapshot(): typeof getChatTurnConcurrencySnapshotMock {
+    return getChatTurnConcurrencySnapshotMock;
+  },
+  get releaseIdleClaudeSessionsForMemoryPressure(): typeof releaseIdleClaudeSessionsForMemoryPressureMock {
+    return releaseIdleClaudeSessionsForMemoryPressureMock;
+  },
 }));
 
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({
     admin: jest.fn(() => ({
-      getResourceSnapshots: getCodexAppServerPoolResourceSnapshotsMock,
-      suspendIdleWorkersForMemoryPressure:
-        suspendIdleCodexAppServerPoolConnectionsForMemoryPressureMock,
+      get getResourceSnapshots(): typeof getCodexAppServerPoolResourceSnapshotsMock {
+        return getCodexAppServerPoolResourceSnapshotsMock;
+      },
+      get suspendIdleWorkersForMemoryPressure(): typeof suspendIdleCodexAppServerPoolConnectionsForMemoryPressureMock {
+        return suspendIdleCodexAppServerPoolConnectionsForMemoryPressureMock;
+      },
     })),
   })),
 }));
@@ -93,9 +109,8 @@ jest.mock('@canopy/desktop-instrumentation/electron/main', () => ({
 import {
   ResourceGuardError,
   ResourceMonitorService,
-  parseMacProcessTable,
-  parseWindowsProcessTable,
 } from '../resource-monitor/service';
+import { getExecutionAccounting } from '../execution-accounting';
 import {
   failDesktopOperation,
   startDesktopOperation,
@@ -202,11 +217,11 @@ describe('ResourceMonitorService', () => {
       activeTurns: 0,
       pendingMessages: 0,
     });
-    getActivePipelineExecutionCountMock.mockReturnValue(0);
     getCodexAppServerPoolResourceSnapshotsMock.mockReturnValue([]);
     suspendIdleCodexAppServerPoolConnectionsForMemoryPressureMock.mockReturnValue(
       0,
     );
+    releaseIdleClaudeSessionsForMemoryPressureMock.mockReturnValue(0);
     mockOsFreemem.mockReturnValue(16 * 1024 * 1024 * 1024);
     mockOsTotalmem.mockReturnValue(64 * 1024 * 1024 * 1024);
     mockOsCpus.mockReturnValue([makeCpuInfo()]);
@@ -217,87 +232,6 @@ describe('ResourceMonitorService', () => {
     process.env = { ...originalEnv };
     resetPerformanceLimitsForTests();
     jest.restoreAllMocks();
-  });
-
-  it('parses macOS ps rows, converts RSS to bytes, and sanitizes commands', () => {
-    const rows = parseMacProcessTable(
-      '200 100 200 2.5 128 /usr/local/bin/node --token secret\n',
-    );
-
-    expect(rows.get(200)).toEqual({
-      pid: 200,
-      ppid: 100,
-      pgid: 200,
-      cpuPercent: 2.5,
-      memoryRssBytes: 128 * 1024,
-      command: 'node',
-    });
-  });
-
-  it('normalizes macOS CPU by logical CPU count', () => {
-    mockOsCpus.mockReturnValue(Array.from({ length: 8 }, makeCpuInfo));
-
-    const rows = parseMacProcessTable(
-      '200 100 200 400.0 128 /usr/local/bin/node --token secret\n',
-    );
-
-    expect(rows.get(200)?.cpuPercent).toBe(50);
-  });
-
-  it('parses Windows process rows and derives CPU from previous samples', () => {
-    mockOsCpus.mockReturnValue(Array.from({ length: 4 }, makeCpuInfo));
-    const first = parseWindowsProcessTable(
-      JSON.stringify([
-        {
-          ProcessId: 200,
-          ParentProcessId: 100,
-          CpuTime100ns: 100_000_000,
-          WorkingSetSize: 128 * 1024 * 1024,
-          Name: 'node.exe',
-          CommandLine: 'C:\\Program Files\\nodejs\\node.exe --token secret',
-        },
-      ]),
-      new Map(),
-      1_000,
-    );
-
-    const second = parseWindowsProcessTable(
-      JSON.stringify([
-        {
-          ProcessId: 200,
-          ParentProcessId: 100,
-          CpuTime100ns: 140_000_000,
-          WorkingSetSize: 129 * 1024 * 1024,
-          Name: 'node.exe',
-          CommandLine: 'C:\\Program Files\\nodejs\\node.exe --token secret',
-        },
-      ]),
-      first.cpuSamples,
-      3_000,
-    );
-
-    expect(first.rows.get(200)).toEqual(
-      expect.objectContaining({
-        pid: 200,
-        ppid: 100,
-        pgid: 200,
-        cpuPercent: 0,
-        memoryRssBytes: 128 * 1024 * 1024,
-        command: 'node.exe',
-      }),
-    );
-    expect(second.rows.get(200)).toEqual(
-      expect.objectContaining({
-        cpuPercent: 50,
-        memoryRssBytes: 129 * 1024 * 1024,
-      }),
-    );
-  });
-
-  it('rejects empty Windows process table output', () => {
-    expect(() => parseWindowsProcessTable(' \n ', new Map(), 1_000)).toThrow(
-      'Windows process table output was empty',
-    );
   });
 
   it('aggregates registered process descendants', async () => {
@@ -1094,7 +1028,7 @@ describe('ResourceMonitorService', () => {
       ResourceGuardError,
     );
     expect(() => service.reservePipelineExecutionStart()).toThrow(
-      'Canopy is already running 1 pipeline executions. Wait for one to finish before starting another pipeline.',
+      'Canopy is already running 1 workflow executions. Wait for one to finish before starting another workflow.',
     );
     reservation.release();
     const nextReservation = service.reservePipelineExecutionStart();
@@ -1111,12 +1045,16 @@ describe('ResourceMonitorService', () => {
       maxActiveChatTurns: 10,
       maxActivePipelineExecutions: 2,
     });
-    getActivePipelineExecutionCountMock.mockReturnValue(2);
+    const leases = [
+      getExecutionAccounting().track('pipeline', 'exec-1'),
+      getExecutionAccounting().track('pipeline', 'exec-2'),
+    ];
     const service = new ResourceMonitorService();
 
     expect(() => service.reservePipelineExecutionStart()).toThrow(
-      'Canopy is already running 2 pipeline executions. Wait for one to finish before starting another pipeline.',
+      'Canopy is already running 2 workflow executions. Wait for one to finish before starting another workflow.',
     );
+    leases.forEach((lease) => lease.release());
   });
 
   it('allows disabling chat and pipeline concurrency caps', async () => {
@@ -1128,7 +1066,9 @@ describe('ResourceMonitorService', () => {
       activeTurns: 100,
       pendingMessages: 100,
     });
-    getActivePipelineExecutionCountMock.mockReturnValue(100);
+    const leases = Array.from({ length: 100 }, (_value, index) =>
+      getExecutionAccounting().track('pipeline', `exec-${String(index)}`),
+    );
     const service = new ResourceMonitorService();
 
     const chatReservation = await service.reserveChatTurnStart();
@@ -1136,6 +1076,7 @@ describe('ResourceMonitorService', () => {
 
     chatReservation.release();
     pipelineReservation.release();
+    leases.forEach((lease) => lease.release());
   });
 
   it('records critical pressure once and throttles idle Codex pool suspension sweeps', async () => {
@@ -1193,6 +1134,78 @@ describe('ResourceMonitorService', () => {
         isCriticalPressureDiagnosticCall,
       ),
     ).toHaveLength(1);
+  });
+
+  it('releases idle Claude sessions under critical pressure, throttled, without the Codex bypass', async () => {
+    const restorePlatform = setProcessPlatform('darwin');
+    updateTestPerformanceLimits({
+      memoryPressureWarningThresholdBytes: 1,
+      memoryPressureCriticalThresholdBytes: 2,
+      bypassCodexAppServerIdleTimeoutUnderCriticalPressure: false,
+    });
+    installProcessTable(
+      `${String(process.pid)} 1 ${String(process.pid)} 1.0 256 /Canopy\n`,
+    );
+    getAppMetricsMock.mockReturnValue([
+      {
+        pid: process.pid,
+        type: 'Browser',
+        cpu: { percentCPUUsage: 1 },
+        memory: { workingSetSize: 256 },
+      },
+    ]);
+    releaseIdleClaudeSessionsForMemoryPressureMock.mockReturnValue(2);
+
+    const service = new ResourceMonitorService();
+    await service.sampleNow();
+    await service.sampleNow();
+    restorePlatform();
+
+    expect(
+      releaseIdleClaudeSessionsForMemoryPressureMock,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      suspendIdleCodexAppServerPoolConnectionsForMemoryPressureMock,
+    ).not.toHaveBeenCalled();
+    const criticalCall: unknown = recordAppDiagnosticMock.mock.calls.find(
+      isCriticalPressureDiagnosticCall,
+    );
+    if (!Array.isArray(criticalCall) || !isRecord(criticalCall[0])) {
+      throw new TypeError('Expected a critical resource-pressure diagnostic');
+    }
+    expect(criticalCall[0]).toMatchObject({
+      kind: 'resource_pressure_critical',
+      suspendedCodexPoolCount: 0,
+      idleClaudeSessionReleaseCount: 2,
+    });
+  });
+
+  it('does not release Claude sessions below critical pressure', async () => {
+    const restorePlatform = setProcessPlatform('darwin');
+    updateTestPerformanceLimits({
+      memoryPressureWarningThresholdBytes: 1,
+      memoryPressureCriticalThresholdBytes: 1024 * 1024 * 1024,
+    });
+    installProcessTable(
+      `${String(process.pid)} 1 ${String(process.pid)} 1.0 256 /Canopy\n`,
+    );
+    getAppMetricsMock.mockReturnValue([
+      {
+        pid: process.pid,
+        type: 'Browser',
+        cpu: { percentCPUUsage: 1 },
+        memory: { workingSetSize: 256 },
+      },
+    ]);
+
+    const service = new ResourceMonitorService();
+    const snapshot = await service.sampleNow();
+    restorePlatform();
+
+    expect(snapshot.pressure.level).toBe('warning');
+    expect(
+      releaseIdleClaudeSessionsForMemoryPressureMock,
+    ).not.toHaveBeenCalled();
   });
 
   it('caches thresholds until performance limits change', async () => {
@@ -1319,7 +1332,7 @@ describe('ResourceMonitorService', () => {
       'Canopy is under high memory pressure. Wait for active work to finish before starting another chat.',
     );
     expect(() => service.reservePipelineExecutionStart()).toThrow(
-      'Canopy is under high memory pressure. Stop an active chat or pipeline execution before starting another pipeline.',
+      'Canopy is under high memory pressure. Stop an active chat or workflow execution before starting another workflow.',
     );
     service.dispose();
     restorePlatform();
@@ -1454,6 +1467,39 @@ describe('ResourceMonitorService', () => {
     expect(sendMock).toHaveBeenCalledTimes(2);
 
     service.dispose();
+    restorePlatform();
+  });
+
+  it('projects and broadcasts a core sample that another client took', async () => {
+    const restorePlatform = setProcessPlatform('darwin');
+    installProcessTable(
+      `${String(process.pid)} 1 ${String(process.pid)} 1.0 256 /Canopy\n`,
+    );
+    getAppMetricsMock.mockReturnValue([]);
+    const sendMock = jest.fn();
+    const service = new ResourceMonitorService();
+    service.start(() => ({
+      isDestroyed: (): boolean => false,
+      isFocused: (): boolean => true,
+      webContents: { isDestroyed: (): boolean => false, send: sendMock },
+    }));
+
+    const accounted = await getExecutionAccounting().sample();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(service.getSnapshot().sampledAt).toBe(accounted.sampledAt);
+    expect(service.snapshotFor(accounted)).toBe(service.getSnapshot());
+    // Its own sample is projected once, not again for the core event.
+    const reads = getChatTurnConcurrencySnapshotMock.mock.calls.length;
+    await service.sampleNow();
+    expect(getChatTurnConcurrencySnapshotMock.mock.calls.length).toBe(
+      reads + 1,
+    );
+    service.dispose();
+    await getExecutionAccounting().sample();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(sendMock).toHaveBeenCalledTimes(1);
     restorePlatform();
   });
 });

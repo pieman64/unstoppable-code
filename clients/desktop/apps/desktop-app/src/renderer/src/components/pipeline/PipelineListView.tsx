@@ -31,7 +31,7 @@ import {
   type PipelineCatalogEntry,
 } from './pipeline-catalog-entry';
 import type { CuratedPipelineListQuery } from '@canopy/protocol/pipeline-catalog';
-import { BusyLabel } from '@canopy/ui-shared/components';
+import { Button, BusyLabel } from '@canopy/ui-shared/components';
 import { filterCuratedPipelinesBySearch } from '@canopy/ui-shared/lib';
 import { PipelineIcon as AppCatalogPipelineIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -289,20 +289,22 @@ export function PipelineListView({
       <PageContent>
         <WorkflowsPageHeader
           actions={
-            <div className="flex items-center gap-2">
+            <>
               {headerAction}
-              <Tooltip label="Refresh pipelines">
-                <button
+              <Tooltip label="Refresh workflows">
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  iconOnly
                   onClick={() => {
                     void onRefresh();
                     void onSharedRefresh();
                     if (cloudReady) curated.onRefresh();
                   }}
-                  className="flex h-10 w-10 items-center justify-center rounded-lg border bg-secondary fg-secondary transition-colors hover:bg-accent-subtle hover:fg-primary focus-ring"
-                  aria-label="Refresh pipelines"
+                  aria-label="Refresh workflows"
                 >
                   <RefreshSpinner spinning={loading} />
-                </button>
+                </Button>
               </Tooltip>
               <CreatePipelineSplitButton
                 onStartInterview={onStartInterview}
@@ -310,7 +312,7 @@ export function PipelineListView({
                 interviewPending={interviewPending}
                 testIdPrefix="pipeline-create-new"
               />
-            </div>
+            </>
           }
         />
 
@@ -321,7 +323,7 @@ export function PipelineListView({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search pipelines…"
+              placeholder="Search workflows…"
               data-testid="pipeline-search"
               className="focus-ring flex-1 min-w-45 rounded-lg border bg-base px-3 py-2 text-s fg-primary placeholder:fg-secondary"
             />
@@ -384,7 +386,7 @@ export function PipelineListView({
           {/* Loading */}
           {loading && filtered.length === 0 && (
             <div className="flex items-center justify-center py-16">
-              <p className="text-s fg-secondary">Loading pipelines…</p>
+              <p className="text-s fg-secondary">Loading workflows…</p>
             </div>
           )}
 
@@ -424,7 +426,7 @@ export function PipelineListView({
                     <thead>
                       <tr className="bg-secondary/50 border-b">
                         <th className="text-left px-3 py-2 font-medium fg-secondary">
-                          Pipeline
+                          Workflow
                         </th>
                         <th className="text-left px-3 py-2 font-medium fg-secondary">
                           Source
@@ -469,7 +471,7 @@ export function PipelineListView({
               >
                 <span>
                   {filtered.length} loaded{' '}
-                  {filtered.length === 1 ? 'pipeline' : 'pipelines'}
+                  {filtered.length === 1 ? 'workflow' : 'workflows'}
                 </span>
               </div>
               {/* No results from active filters */}
@@ -478,7 +480,7 @@ export function PipelineListView({
                 hasActiveFilters &&
                 !sharedInitialLoading && (
                   <p className="py-12 text-center text-s fg-secondary">
-                    No pipelines match the current filters.
+                    No workflows match the current filters.
                   </p>
                 )}
 
@@ -494,31 +496,30 @@ export function PipelineListView({
                       ) : sharedState.loading &&
                         sharedState.rows.length === 0 ? (
                         <p className="text-xs fg-secondary">
-                          Loading shared pipelines…
+                          Loading shared workflows…
                         </p>
                       ) : (
                         <span />
                       )}
                       <div className="flex items-center gap-3">
                         {sharedState.nextCursor && (
-                          <button
-                            type="button"
+                          <Button
+                            size="compact"
                             onClick={() => void onLoadMoreShared()}
                             disabled={sharedState.loadingMore}
-                            className="rounded-lg border bg-secondary px-3 py-1.5 text-xs font-medium fg-secondary transition-colors hover:bg-accent-subtle hover:fg-primary disabled:opacity-50"
                           >
                             <BusyLabel busy={sharedState.loadingMore}>
                               Load more shared
                             </BusyLabel>
-                          </button>
+                          </Button>
                         )}
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
+                          size="compact"
                           onClick={() => void onSharedRefresh()}
-                          className="text-xs fg-secondary hover:fg-primary transition-colors"
                         >
                           Refresh shared
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -526,15 +527,11 @@ export function PipelineListView({
                     <div className="flex items-center gap-3">
                       <p className="text-xs fg-secondary">
                         No {brandText.appName} Cloud account configured — shared
-                        and curated pipelines are unavailable.
+                        and curated workflows are unavailable.
                       </p>
-                      <button
-                        type="button"
-                        onClick={onOpenAccountSettings}
-                        className="rounded-md border bg-secondary px-3 py-1 text-xs font-medium fg-primary hover:bg-accent-subtle hover:fg-accent"
-                      >
+                      <Button size="compact" onClick={onOpenAccountSettings}>
                         Open account settings
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -555,10 +552,10 @@ export function PipelineListView({
                       />
                     </div>
                     <h3 className="text-s font-medium fg-primary mb-1">
-                      No pipelines yet
+                      No workflows yet
                     </h3>
                     <p className="text-xs fg-secondary mb-4">
-                      Create your first pipeline to get started
+                      Create your first workflow to get started
                     </p>
                     <CreatePipelineSplitButton
                       onStartInterview={onStartInterview}

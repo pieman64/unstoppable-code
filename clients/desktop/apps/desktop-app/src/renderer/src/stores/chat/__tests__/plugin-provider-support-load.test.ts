@@ -44,7 +44,22 @@ function buildCache(pluginNames: string[]): PluginsCache {
         installLocation: '/tmp/agent-plugins',
         pluginCount: pluginNames.length,
         validProviders: ['claude', 'codex'],
-        providerStatus: {},
+        providerStatus: {
+          claude: {
+            provider: 'claude',
+            state: 'valid',
+            accepted: true,
+            pluginCount: pluginNames.length,
+            lastCheckedAt: '2026-03-19T00:00:00.000Z',
+          },
+          codex: {
+            provider: 'codex',
+            state: 'valid',
+            accepted: true,
+            pluginCount: pluginNames.length,
+            lastCheckedAt: '2026-03-19T00:00:00.000Z',
+          },
+        },
         plugins: pluginNames.map((name) => ({
           name,
           sourcePath: `/tmp/agent-plugins/${name}`,

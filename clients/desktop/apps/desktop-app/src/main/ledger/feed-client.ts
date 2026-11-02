@@ -1,5 +1,7 @@
 import { LedgerUuidSchema } from '@canopy/protocol/canopy-core';
 import {
+  LEDGER_MIRROR_GLOBAL_READ_VERSION,
+  LEDGER_MIRROR_VERSION_HEADER,
   LedgerMirrorEntryResponseSchema,
   LedgerMirrorSearchRequestSchema,
   LedgerMirrorSearchResponseSchema,
@@ -25,6 +27,15 @@ import {
  * credentials: an answer is always the account's own, whatever signs in
  * while it is on its way (LD02).
  */
+
+/**
+ * Every read negotiates version 2, so rows of global (workflow) scopes come
+ * back with their owner. A mirror without global scopes ignores the header
+ * and answers version 1, which this reader still accepts.
+ */
+const MIRROR_READ_HEADERS: Readonly<Record<string, string>> = {
+  [LEDGER_MIRROR_VERSION_HEADER]: String(LEDGER_MIRROR_GLOBAL_READ_VERSION),
+};
 
 /** Why a read did not succeed, as what the Feed does about it. */
 export type LedgerMirrorReadFailure =
@@ -138,6 +149,7 @@ export function createLedgerMirrorReader(
         '/api/v1/ledger/search',
         {
           method: 'POST',
+          headers: MIRROR_READ_HEADERS,
           body: JSON.stringify(outgoing.data),
           timeoutMs: SEARCH_TIMEOUT_MS,
           credentialContext,
@@ -171,6 +183,7 @@ export function createLedgerMirrorReader(
         `/api/v1/ledger/entries/${encodeURIComponent(entryId)}${query}`,
         {
           method: 'GET',
+          headers: MIRROR_READ_HEADERS,
           timeoutMs: ENTRY_TIMEOUT_MS,
           credentialContext,
           ...(signal === undefined ? {} : { signal }),

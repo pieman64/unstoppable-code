@@ -224,7 +224,9 @@ const EXPLICIT_ENV = {
   CANOPY_BRAND: 'canopy',
   CANOPY_RELEASE_FLAVOR: 'stable',
   CANOPY_DATADOG_ENABLED: 'false',
-  CANOPY_RENDERER_OBFUSCATION: 'true',
+  // Current builds never obfuscate; these keep the pinned historical baseline,
+  // which still reads them, building a comparable unobfuscated renderer.
+  CANOPY_RENDERER_OBFUSCATION: 'false',
   CANOPY_RENDERER_OBFUSCATE_VENDOR: 'false',
   CANOPY_DATADOG_SOURCEMAPS: 'false',
   CANOPY_OLLAMA_ENABLED: 'true',
@@ -1528,8 +1530,8 @@ export function requireLocalPhysicalMac(
   );
   assert.equal(
     version,
-    'v24.21.0',
-    'Local physical qualification requires actual Node v24.21.0',
+    'v24.22.1',
+    'Local physical qualification requires actual Node v24.22.1',
   );
 }
 
@@ -1721,7 +1723,7 @@ async function executeStudy(values, executionStartedAt, signal, owner) {
   const local = values.execution === 'local-physical';
   if (!local) {
     requireHostedMac(); // Before all filesystem mutations and subprocesses.
-    assert.equal(process.version, 'v24.15.0');
+    assert.equal(process.version, 'v24.22.1');
     assert.equal(
       os.userInfo().username,
       'runner',

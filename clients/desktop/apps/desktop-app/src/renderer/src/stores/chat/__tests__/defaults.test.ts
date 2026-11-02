@@ -16,6 +16,9 @@ import {
   getCurrentModelHarnessCatalog,
   initOllamaModels,
   resetGatewayCatalogHydrationForTests,
+  clearCodexAccountModels,
+  setCodexAccountModels,
+  type AiGatewayModelEntry,
   type ModelDefaultsByProvider,
 } from '@canopy/desktop-shared/types';
 import { CREDITS_LANE_DEFAULT_CANDIDATES } from '@canopy/desktop-shared/lib/default-model-lane';
@@ -31,8 +34,10 @@ import {
   setRendererModelPolicy,
 } from '../../modelPolicyRuntime';
 import {
+  getRendererBillingLaneFactsVersion,
   resetRendererBillingLaneForTests,
   setRendererBillingLaneAvailability,
+  setRendererCodexAccountModels,
   setRendererGuestPrincipal,
 } from '../../billingLaneRuntime';
 
@@ -57,6 +62,22 @@ function defaultsFor(model: string): {
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
+
+function gatewayModelEntry(
+  id: string,
+  label: string,
+  supportedThinkingLevels: AiGatewayModelEntry['supportedThinkingLevels'],
+): AiGatewayModelEntry {
+  return {
+    id,
+    label,
+    recommendedHarness: 'codex',
+    contextWindow: 128_000,
+    supportsPromptCaching: false,
+    supportedThinkingLevels,
+    toolSchemaProfile: 'standard',
+  };
+}
 
 describe('resolveTabDefaults model-policy fallback', () => {
   afterEach(() => {
@@ -144,13 +165,7 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
     initClaudeModels([{ id: 'claude-model', label: 'Claude' }]);
     initCodexModels([{ id: 'codex-model', label: 'Codex' }]);
     initAiGatewayModels(
-      [
-        {
-          id: 'deepseek-v4-pro',
-          label: 'DeepSeek',
-          supportedThinkingLevels: ['high'],
-        },
-      ],
+      [gatewayModelEntry('deepseek-v4-pro', 'DeepSeek', ['high'])],
       [
         {
           modelId: 'deepseek-v4-pro',
@@ -161,7 +176,7 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
           contextWindow: 128_000,
           supportsPromptCaching: false,
           supportedThinkingLevels: ['high'],
-          toolSchemaProfile: 'codex',
+          toolSchemaProfile: 'standard',
         },
       ],
     );
@@ -187,16 +202,8 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
     initCodexModels([{ id: 'codex-model', label: 'Codex' }]);
     initAiGatewayModels(
       [
-        {
-          id: 'deepseek-v4-pro',
-          label: 'DeepSeek',
-          supportedThinkingLevels: ['high'],
-        },
-        {
-          id: 'org-claude-sonnet',
-          label: 'Organization Sonnet',
-          supportedThinkingLevels: ['high'],
-        },
+        gatewayModelEntry('deepseek-v4-pro', 'DeepSeek', ['high']),
+        gatewayModelEntry('org-claude-sonnet', 'Organization Sonnet', ['high']),
       ],
       [
         {
@@ -208,7 +215,7 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
           contextWindow: 128_000,
           supportsPromptCaching: false,
           supportedThinkingLevels: ['high'],
-          toolSchemaProfile: 'codex',
+          toolSchemaProfile: 'standard',
         },
         {
           modelId: 'org-claude-sonnet',
@@ -416,30 +423,18 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
       contextWindow: 400_000,
       supportsPromptCaching: false,
       supportedThinkingLevels: ['high' as const],
-      toolSchemaProfile: 'codex' as const,
+      toolSchemaProfile: 'standard',
     });
     const gpt54 = {
-      id: 'gpt-5.4',
-      label: 'GPT 5.4',
-      supportedThinkingLevels: ['high' as const],
+      ...gatewayModelEntry('gpt-5.4', 'GPT 5.4', ['high']),
     };
     const luna56 = {
-      id: 'gpt-5.6-luna',
-      label: 'GPT 5.6 Luna',
-      supportedThinkingLevels: ['high' as const],
+      ...gatewayModelEntry('gpt-5.6-luna', 'GPT 5.6 Luna', ['high']),
     };
     initClaudeModels([{ id: 'claude-model', label: 'Claude' }]);
     initCodexModels([{ id: 'codex-model', label: 'Codex' }]);
     initAiGatewayModels(
-      [
-        gpt54,
-        {
-          id: 'gpt-6-luna',
-          label: 'GPT 6 Luna',
-          supportedThinkingLevels: ['high'],
-        },
-        luna56,
-      ],
+      [gpt54, gatewayModelEntry('gpt-6-luna', 'GPT 6 Luna', ['high']), luna56],
       [
         entry('gpt-5.4', 'openai/gpt-5.4'),
         entry('gpt-6-luna', 'openai/gpt-6-luna'),
@@ -513,7 +508,9 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
 
   it('never auto-selects Ollama when no lane is available and Ollama is not pinned', () => {
     seedCatalog();
-    initOllamaModels([{ id: 'llama-local', label: 'Llama', supported: true }]);
+    initOllamaModels([
+      { id: 'llama-local', rawModelId: 'llama-local', label: 'Llama' },
+    ]);
     setRendererBillingLaneAvailability({
       claudeNativeAuth: false,
       codexNativeAuth: false,
@@ -683,7 +680,7 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
       contextWindow: 400_000,
       supportsPromptCaching: false,
       supportedThinkingLevels,
-      toolSchemaProfile: 'codex',
+      toolSchemaProfile: 'standard',
     });
 
     /**
@@ -700,16 +697,8 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
         { id: 'codex-model', label: 'Codex' },
       ]);
       const entries: Parameters<typeof initAiGatewayModels>[0] = [
-        {
-          id: DEFAULT_APP_ADVISOR_MODEL,
-          label: 'GPT 6.1 Sol',
-          supportedThinkingLevels: ['high'],
-        },
-        {
-          id: 'other-gateway-model',
-          label: 'Other',
-          supportedThinkingLevels: ['high'],
-        },
+        gatewayModelEntry(DEFAULT_APP_ADVISOR_MODEL, 'GPT 6.1 Sol', ['high']),
+        gatewayModelEntry('other-gateway-model', 'Other', ['high']),
       ];
       const routes: GatewayRoute[] = [
         // A guest-ineligible fixture route isolates guest policy from
@@ -718,19 +707,15 @@ describe('resolveTabDefaults billing-lane selection (CAN-1929)', () => {
         route('other-gateway-model', 'vendor/other-gateway-model'),
       ];
       if (luna) {
-        entries.push({
-          id: 'gpt-5.6-luna',
-          label: 'GPT 5.6 Luna',
-          supportedThinkingLevels: ['medium'],
-        });
+        entries.push(
+          gatewayModelEntry('gpt-5.6-luna', 'GPT 5.6 Luna', ['medium']),
+        );
         routes.push(route('gpt-5.6-luna', 'openai/gpt-5.6-luna', ['medium']));
       }
       if (deepseek) {
-        entries.push({
-          id: 'deepseek-v4-pro',
-          label: 'DeepSeek',
-          supportedThinkingLevels: ['medium'],
-        });
+        entries.push(
+          gatewayModelEntry('deepseek-v4-pro', 'DeepSeek', ['medium']),
+        );
         routes.push(
           route('deepseek-v4-pro', 'deepseek/deepseek-v4-pro', ['medium']),
         );
@@ -995,4 +980,127 @@ test('applies a Cursor default harness to Cowork targets under the live flag', (
     initCursorModels([]);
     initModelHarnessAssignments({ revision: 0, assignments: [] });
   }
+});
+
+describe('resolveTabDefaults Codex account eligibility (CAN-4716)', () => {
+  afterEach(() => {
+    resetRendererModelPolicyForTests();
+    resetRendererBillingLaneForTests();
+    clearCodexAccountModels();
+    initClaudeModels([]);
+    initCodexModels([]);
+    initOllamaModels([]);
+    initAiGatewayModels([], []);
+    resetGatewayCatalogHydrationForTests();
+    initAgentModels([]);
+  });
+
+  function seedCodexOnly(): void {
+    initClaudeModels([{ id: 'claude-model', label: 'Claude' }]);
+    initCodexModels([
+      { id: 'codex-sol', label: 'Sol' },
+      { id: 'codex-luna', label: 'Luna' },
+    ]);
+    setRendererModelPolicy(new Set(), true);
+    setRendererBillingLaneAvailability({
+      claudeNativeAuth: false,
+      codexNativeAuth: true,
+      creditsEligible: false,
+    });
+  }
+
+  function codexDefaults(model = 'codex-sol'): {
+    chatProvider: 'codex';
+    chatModelByProvider: ModelDefaultsByProvider;
+    worktreeProvider: 'codex';
+    worktreeModelByProvider: ModelDefaultsByProvider;
+  } {
+    const selections: ModelDefaultsByProvider = {
+      claude: { model: 'claude-model', thinkingLevel: 'high' },
+      codex: { model, thinkingLevel: 'high' },
+      ollama: null,
+    };
+    return {
+      chatProvider: 'codex',
+      chatModelByProvider: selections,
+      worktreeProvider: 'codex',
+      worktreeModelByProvider: selections,
+    };
+  }
+
+  it('repairs a configured Codex default the account cannot run', () => {
+    seedCodexOnly();
+    setRendererCodexAccountModels(new Set(['codex-luna']));
+
+    expect(resolveTabDefaults('project', codexDefaults())).toMatchObject({
+      model: 'codex-luna',
+    });
+  });
+
+  it('keeps the configured default when the account can run it', () => {
+    seedCodexOnly();
+    setRendererCodexAccountModels(new Set(['codex-sol', 'codex-luna']));
+
+    expect(resolveTabDefaults('project', codexDefaults())).toMatchObject({
+      model: 'codex-sol',
+    });
+  });
+
+  it('changes nothing while the account list is unknown or empty', () => {
+    seedCodexOnly();
+    setRendererCodexAccountModels(null);
+    expect(resolveTabDefaults('project', codexDefaults()).model).toBe(
+      'codex-sol',
+    );
+
+    setRendererCodexAccountModels(new Set());
+    expect(resolveTabDefaults('project', codexDefaults()).model).toBe(
+      'codex-sol',
+    );
+  });
+
+  it('skips an eligible model that policy blocks', () => {
+    seedCodexOnly();
+    initCodexModels([
+      { id: 'codex-sol', label: 'Sol' },
+      { id: 'codex-luna', label: 'Luna' },
+      { id: 'codex-terra', label: 'Terra' },
+    ]);
+    setRendererModelPolicy(new Set(['codex-luna']), true);
+    setRendererCodexAccountModels(new Set(['codex-luna', 'codex-terra']));
+
+    expect(resolveTabDefaults('project', codexDefaults()).model).toBe(
+      'codex-terra',
+    );
+  });
+
+  it("falls back to the account's own default when no catalog model is eligible", () => {
+    seedCodexOnly();
+    setCodexAccountModels([
+      { id: 'acct-first', model: 'acct-first', displayName: 'First' },
+      {
+        id: 'acct-default',
+        model: 'acct-default',
+        displayName: 'Account default',
+        isDefault: true,
+      },
+    ]);
+    setRendererCodexAccountModels(new Set(['acct-first', 'acct-default']));
+
+    expect(resolveTabDefaults('project', codexDefaults())).toMatchObject({
+      model: 'acct-default',
+      providerType: 'codex',
+    });
+  });
+
+  it('does not bump the lane facts version for an unchanged list', () => {
+    setRendererCodexAccountModels(new Set(['codex-luna', 'codex-sol']));
+    const version = getRendererBillingLaneFactsVersion();
+
+    setRendererCodexAccountModels(new Set(['codex-sol', 'codex-luna']));
+    expect(getRendererBillingLaneFactsVersion()).toBe(version);
+
+    setRendererCodexAccountModels(new Set(['codex-luna']));
+    expect(getRendererBillingLaneFactsVersion()).toBe(version + 1);
+  });
 });

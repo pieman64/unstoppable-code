@@ -21,6 +21,7 @@ import { PlanDataModelDiffDiagram } from '@/components/plan-explore/diagram/Plan
 import { usePlanDiagramViews } from '@/components/plan-explore/diagram/usePlanDiagramViews';
 import type { DiagramSearchHandle } from '@canopy/ui-app/find';
 import type { AddNodeCommentInput } from '@/components/plan-explore/usePlanComments';
+import { Button, SegmentedControl } from '@canopy/ui-shared/components';
 
 type DiagramsTab = 'logicDiff' | 'dataModelDiff';
 
@@ -220,14 +221,14 @@ export const CodeReviewDiagramsPanel = forwardRef<
           <p className="mt-1 text-s fg-secondary">
             Generate annotations and diagrams for the branch&apos;s changes.
           </p>
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            className="mt-5"
             onClick={onArm}
             data-testid="code-review-start"
-            className="focus-ring mt-5 inline-flex items-center gap-2 rounded-md border border-line-accent bg-transparent px-3.5 py-2 text-s font-medium fg-accent transition-colors hover:bg-accent-subtle"
           >
             Start review
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -240,31 +241,26 @@ export const CodeReviewDiagramsPanel = forwardRef<
           data-testid="change-diagram-type-row"
           className="flex shrink-0 items-center gap-1 border-b px-2 py-1.5"
         >
-          <button
-            type="button"
-            onClick={(): void => setActiveTab('logicDiff')}
-            className={`rounded-md px-2 py-1 text-xs transition ${
-              resolvedTab === 'logicDiff'
-                ? 'bg-fg-primary/[0.08] fg-primary'
-                : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            Logic
-          </button>
-          {dataModelPresent && (
-            <button
-              type="button"
-              data-testid="code-review-data-model-tab"
-              onClick={(): void => setActiveTab('dataModelDiff')}
-              className={`rounded-md px-2 py-1 text-xs transition ${
-                resolvedTab === 'dataModelDiff'
-                  ? 'bg-fg-primary/[0.08] fg-primary'
-                  : 'fg-secondary hover:fg-primary'
-              }`}
-            >
-              Data model
-            </button>
-          )}
+          <SegmentedControl
+            label="Diagram type"
+            semantics="tabs"
+            shape="capsule"
+            width="content"
+            value={resolvedTab}
+            onChange={setActiveTab}
+            options={[
+              { value: 'logicDiff', label: 'Logic' },
+              ...(dataModelPresent
+                ? [
+                    {
+                      value: 'dataModelDiff' as const,
+                      label: 'Data model',
+                      dataTestId: 'code-review-data-model-tab',
+                    },
+                  ]
+                : []),
+            ]}
+          />
           <div className="ml-auto">{refreshAction}</div>
         </div>
       )}

@@ -1,8 +1,10 @@
 import {
   getChatTurnAuditStatus,
   isAgentContinuationEvent,
+  isClaudeChildFrame,
   isCodexSubagentFollowupEvent,
   isCodexSubagentTerminalEvent,
+  isRootAgentContinuationEvent,
   isRootTerminalChatEventData,
   isTerminalChatEventData,
   readCodexRootThreadId,
@@ -267,5 +269,18 @@ describe('Codex root turn classification', () => {
       }),
     ).toBe(true);
     expect(isAgentContinuationEvent(rootTerminal)).toBe(false);
+  });
+
+  it('distinguishes Claude child frames from root continuations', () => {
+    const childAssistant = {
+      type: 'assistant',
+      parent_tool_use_id: 'child-1',
+    };
+    expect(isClaudeChildFrame(childAssistant)).toBe(true);
+    expect(isAgentContinuationEvent(childAssistant)).toBe(true);
+    expect(isRootAgentContinuationEvent(childAssistant)).toBe(false);
+    expect(
+      isRootAgentContinuationEvent({ type: 'assistant', message: 'root' }),
+    ).toBe(true);
   });
 });

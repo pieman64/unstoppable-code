@@ -267,6 +267,13 @@ export function buildClaudeUsageBody(scenario, now = Date.now()) {
   const usage = scenario?.claude?.usage ?? {};
   const body = {};
   for (const [key, value] of Object.entries(usage)) {
+    if (key === 'limits' && Array.isArray(value)) {
+      body.limits = value.map((limit) => ({
+        ...limit,
+        resets_at: resolveResetIso(limit.resets_at, now),
+      }));
+      continue;
+    }
     if (key === 'extra_usage') {
       continue;
     }

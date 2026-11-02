@@ -332,9 +332,23 @@ test.describe('pipeline runs + redesigned run detail panel (Spec 6)', () => {
       await expect(window.getByTestId('panel-content-chat')).toBeVisible();
 
       await waitForActivityPanel(window);
-      await expect(window.getByText('Pipeline runs').first()).toBeVisible({
+      await expect(window.getByText('Workflow runs').first()).toBeVisible({
         timeout: 15_000,
       });
+
+      // ---- The run row labels its start and shows the exact time on hover ----
+      // The tooltip is local time without a year, so assert only that it
+      // resolved a real timestamp; the row's dateTime pins the seeded start.
+      const dispatched = window
+        .getByTestId(`pipeline-run-card-${FAILED_ID}`)
+        .getByTestId(`pipeline-run-dispatched-${FAILED_ID}`);
+      await expect(dispatched).toHaveText(/^Dispatched /, { timeout: 15_000 });
+      await expect(dispatched).toHaveAttribute('datetime', STEP_STARTED_AT);
+      await dispatched.hover();
+      const dispatchedTooltip = window.getByRole('tooltip');
+      await expect(dispatchedTooltip).toHaveText(/\S/);
+      await expect(dispatchedTooltip).not.toHaveText('Not available');
+      await window.mouse.move(0, 0);
 
       await openRunCard(window, FAILED_ID);
 
@@ -370,9 +384,9 @@ test.describe('pipeline runs + redesigned run detail panel (Spec 6)', () => {
       await summaryMore.click();
       await expect(summaryMore).toHaveAttribute('aria-expanded', 'true');
       await expect(summaryBar.getByText('Working directory')).toBeVisible();
-      // Restored run-metadata fields (Trigger / Pipeline ID / Execution ID).
+      // Restored run-metadata fields (Trigger / Workflow ID / Execution ID).
       await expect(summaryBar.getByText('Trigger')).toBeVisible();
-      await expect(summaryBar.getByText('Pipeline ID')).toBeVisible();
+      await expect(summaryBar.getByText('Workflow ID')).toBeVisible();
       await expect(summaryBar.getByText('Execution ID')).toBeVisible();
 
       // ---- Status filter lists ONLY statuses present in the run ----
@@ -728,7 +742,7 @@ test.describe('pipeline runs + redesigned run detail panel (Spec 6)', () => {
         `pipeline-run-card-${parentExecutionId}`,
       );
       await expect(parentCard).toBeVisible({ timeout: 15_000 });
-      await window.getByRole('button', { name: '1 sub-pipeline' }).click();
+      await window.getByRole('button', { name: '1 sub-workflow' }).click();
 
       await expect(
         window.getByTestId(`pipeline-run-card-${childExecutionId}`),
@@ -986,7 +1000,7 @@ test.describe('pipeline runs + redesigned run detail panel (Spec 6)', () => {
       await expect(window.getByTestId('panel-content-chat')).toBeVisible();
 
       await waitForActivityPanel(window);
-      await expect(window.getByText('Pipeline runs').first()).toBeVisible({
+      await expect(window.getByText('Workflow runs').first()).toBeVisible({
         timeout: 15_000,
       });
 
@@ -1471,15 +1485,15 @@ test('hidden-only history keeps a full-card Dispatch action', async () => {
     await title.click();
     for (let index = 0; index < 6; index++) {
       await card
-        .getByRole('button', { name: 'Hide pipeline run', exact: true })
+        .getByRole('button', { name: 'Hide workflow run', exact: true })
         .first()
         .click();
       await expect(
-        card.getByRole('button', { name: 'Hide pipeline run', exact: true }),
+        card.getByRole('button', { name: 'Hide workflow run', exact: true }),
       ).toHaveCount(5 - index);
     }
     const dispatch = card.getByTestId('pipeline-dispatch-open');
-    await expect(dispatch).toHaveText('Dispatch pipeline');
+    await expect(dispatch).toHaveText('Dispatch workflow');
     const unifiedCard = card.getByTestId('action-card-container');
     await expect(unifiedCard.getByTestId('action-card-body')).toBeVisible();
     await dispatch.hover();
@@ -1686,6 +1700,141 @@ test('builtin create-worktree keeps unsupported instruction links non-blocking',
     expect(readFileSync(path.join(root, 'docs', 'AGENTS.md'), 'utf8')).toBe(
       guidance,
     );
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// The desktop host route: main creates the worktree, waits for its setup,
+// keeps a copy of the failing setup log under the execution, and groups the
+// new row; `continue_on_error` lets the next step read the typed failure.
+test('builtin create-worktree runs setup, keeps its log and groups the row through desktop main', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'pipeline-create-worktree-host-'),
+  );
+  const seeded = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const workspace = seeded.workspaces[0];
+  const configPath = path.join(
+    userDataDir,
+    'workspaces',
+    workspace.id,
+    'workspace.json',
+  );
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.scripts = {
+    ...config.scripts,
+    setup: 'echo pipeline-setup-output; exit 3',
+  };
+  writeFileSync(configPath, JSON.stringify(config));
+  const pipelineName = 'Create worktree with setup and group';
+  seedStoredPipeline({
+    userDataDir,
+    id: 'host-create-worktree',
+    name: pipelineName,
+    yaml: [
+      `name: ${pipelineName}`,
+      'on: dispatch',
+      'jobs:',
+      '  create:',
+      '    steps:',
+      '      - id: make',
+      '        uses: builtin/create-worktree',
+      '        continue_on_error: true',
+      '        with:',
+      `          project_id: ${workspace.id}`,
+      '          branch: pipeline-host-created',
+      '          worktree_setup: run_and_wait',
+      '          group: E2E',
+      '      - id: report',
+      '        run: echo "result ${{ steps.make.outputs.failure_reason }} ${{ steps.make.outputs.setup_exit_code }}"',
+      '',
+    ].join('\n'),
+  });
+  const executionsDir = path.join(userDataDir, 'pipeline-executions');
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openMainPage();
+    await app.selectWorktree('demo-main');
+    await waitForActivityPanel(window);
+    await app.openPipelineDispatchModal(pipelineName);
+    await window.getByTestId('pipeline-trigger-modal-run').click();
+    const card = window
+      .locator('[data-testid^="pipeline-run-card-"]')
+      .filter({ hasText: pipelineName })
+      .first();
+    await expect(card).toBeVisible();
+    const executionId = (await card.getAttribute('data-testid')).replace(
+      'pipeline-run-card-',
+      '',
+    );
+    const executionFile = path.join(executionsDir, `${executionId}.json`);
+    const readStep = (stepId) => {
+      if (!existsSync(executionFile)) return undefined;
+      return JSON.parse(readFileSync(executionFile, 'utf8')).jobs?.create
+        ?.steps?.[stepId];
+    };
+    await expect
+      .poll(() => readStep('report')?.status, { timeout: 90_000 })
+      .toBe('success');
+
+    const outputs = readStep('make').outputs;
+    expect(outputs).toMatchObject({
+      project_id: workspace.id,
+      workspace_id: workspace.id,
+      branch_name: 'pipeline-host-created',
+      failure_reason: 'setup_failed',
+      setup_state: 'failed',
+      setup_exit_code: '3',
+      grouped: 'true',
+      group_created: 'true',
+      not_grouped_reason: '',
+    });
+    expect(outputs.task_id).toBe(outputs.worktree_id);
+    const hostDir = path.join(executionsDir, executionId, 'host');
+    expect(outputs.setup_log_file.startsWith(`${hostDir}${path.sep}`)).toBe(
+      true,
+    );
+    expect(readFileSync(outputs.setup_log_file, 'utf8')).toContain(
+      'pipeline-setup-output',
+    );
+    const results = JSON.parse(
+      readFileSync(outputs.setup_results_file, 'utf8'),
+    );
+    expect(results).toMatchObject({
+      version: 1,
+      project_id: workspace.id,
+      task_id: outputs.task_id,
+      setup_state: 'failed',
+    });
+    expect(results.scripts).toEqual([
+      expect.objectContaining({
+        lifecycle: 'setup',
+        state: 'failed',
+        exit_code: 3,
+        log_file: path.basename(outputs.setup_log_file),
+      }),
+    ]);
+
+    const logsDir = path.join(executionsDir, executionId, 'logs');
+    const logs = readdirSync(logsDir)
+      .map((name) => readFileSync(path.join(logsDir, name), 'utf8'))
+      .join('\n');
+    expect(logs).toContain('result setup_failed 3');
+
+    // The row appears inside its new group without a reload.
+    const groupBlock = window.locator(
+      `[data-sidebar-item-group-id="${outputs.group_id}"]`,
+    );
+    await expect(groupBlock).toContainText('E2E');
+    await expect(
+      groupBlock.locator(
+        `[data-testid="worktree-row"][data-worktree-id="${outputs.task_id}"]`,
+      ),
+    ).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

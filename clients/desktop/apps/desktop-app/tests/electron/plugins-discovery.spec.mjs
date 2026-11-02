@@ -54,12 +54,131 @@ import {
   completePendingPluginInstall,
 } from './pluginInstallCompletionFixture.mjs';
 
+test('CAN-4845 workflow triggers share a glyph, count configured triggers and expose failure reasons', async () => {
+  test.setTimeout(120_000);
+  const check = expect.configure({ soft: true, timeout: 1_000 });
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'can4845-trigger-flow-'),
+  );
+  const fixtures = [
+    ['manual', 'dispatch', 'Manual'],
+    ['plan', 'plan_ready', 'Plan approval'],
+    ['task', 'task_ready', 'Task ready'],
+    ['two', '{plan_ready: {}, task_ready: {}}', '2 triggers'],
+    ['three', '{dispatch: {}, plan_ready: {}, task_ready: {}}', '3 triggers'],
+  ];
+  for (const [id, trigger] of fixtures) {
+    seedStoredPipeline({
+      userDataDir,
+      id: `can4845-${id}`,
+      name: `QA ${id}`,
+      yaml: `name: QA ${id}\non: ${trigger}\njobs:\n  check:\n    steps:\n      - run: echo check\n`,
+    });
+  }
+  const failedAt = new Date(Date.now() - 3600_000).toISOString();
+  seedAutomations({
+    userDataDir,
+    activities: [
+      {
+        version: 1,
+        id: 'can4845-failed',
+        name: 'QA failed digest',
+        enabled: false,
+        schedule: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+        action: { type: 'app_advisor_prompt', prompt: 'Write digest.' },
+        createdAt: failedAt,
+        updatedAt: failedAt,
+        failureCount: 1,
+      },
+    ],
+    recentRuns: [
+      {
+        id: 'can4845-failed-run',
+        activityId: 'can4845-failed',
+        activityName: 'QA failed digest',
+        scheduledFor: failedAt,
+        manual: false,
+        status: 'failure',
+        startedAt: failedAt,
+        completedAt: failedAt,
+        durationMs: 0,
+        error: 'Digest source was unavailable.',
+      },
+    ],
+  });
+  const launch = await launchCanopy({ userDataDir });
+  try {
+    const window = await launch.electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    await window.getByTestId('plugins-type-tab-workflow').click();
+    const installed = window.getByTestId('customize-section-installed');
+    let manualGlyph;
+    for (const [id, , label] of fixtures) {
+      const line = installed.locator(
+        `[data-testid^="customize-row-trigger-pipeline:"][data-testid$=":can4845-${id}"]`,
+      );
+      await expect(line).toBeVisible();
+      await check(line).toHaveText(label);
+      await check(line.locator('svg')).toHaveCount(1);
+      const glyph = await line.locator('svg').first().innerHTML();
+      if (id === 'manual') manualGlyph = glyph;
+      else check(glyph).toBe(manualGlyph);
+      if (id === 'two' || id === 'three') {
+        await line.locator('[tabindex="0"]').hover();
+        const tooltip = window.getByRole('tooltip');
+        await check(tooltip).toContainText('Plan approval');
+        await check(tooltip).toContainText('Task ready');
+        if (id === 'three') await check(tooltip).toContainText('Manual');
+        await window.mouse.move(0, 0);
+        const focusTarget = line.locator('[tabindex="0"]');
+        await check(focusTarget).toHaveCount(1);
+        if ((await focusTarget.count()) === 1) {
+          await focusTarget.focus();
+          await window.keyboard.press('Shift+Tab');
+          await window.keyboard.press('Tab');
+          await expect(tooltip).toContainText('Plan approval');
+          await expect(tooltip).toContainText('Task ready');
+          if (id === 'three') await expect(tooltip).toContainText('Manual');
+        }
+      }
+    }
+    const failed = installed.getByTestId(
+      'customize-row-last-run-automation:local:can4845-failed',
+    );
+    await expect(failed).toBeVisible();
+    await check(failed.locator('circle')).toHaveCount(0);
+    await failed.hover();
+    await expect(window.getByRole('tooltip')).toContainText(
+      'Digest source was unavailable.',
+    );
+    await window.mouse.move(0, 0);
+    const focusTarget = installed
+      .getByTestId(
+        'customize-row-last-run-line-automation:local:can4845-failed',
+      )
+      .locator('[tabindex="0"]');
+    await check(focusTarget).toHaveCount(1);
+    if ((await focusTarget.count()) === 1) {
+      await focusTarget.focus();
+      await window.keyboard.press('Shift+Tab');
+      await window.keyboard.press('Tab');
+      await expect(window.getByRole('tooltip')).toContainText(
+        'Digest source was unavailable.',
+      );
+    }
+  } finally {
+    await closeCanopy(launch.electronApp, userDataDir);
+  }
+});
+
 test('marketplace reflects an install that completes after leaving details', async () => {
   const { electronApp, window, userDataDir } = await openPendingPluginInstall();
   try {
     await completePendingPluginInstall(electronApp);
     await expect(
-      window.getByTestId('plugins-entry-mkt:demo/market/alpha-tool'),
+      window.getByTestId('customize-row-mkt:demo/market/alpha-tool'),
     ).toBeVisible();
     await expect(
       window.getByTestId('plugins-entry-add-mkt:demo/market/alpha-tool'),
@@ -154,6 +273,21 @@ test('plugin detail keeps long descriptions scannable and installation aligned',
     await expect(shell).toHaveJSProperty('tagName', 'SECTION');
     // CAN-4261: a page draws no plugin Back; the breadcrumb leads out.
     await expect(window.getByTestId('plugin-detail-back')).toHaveCount(0);
+    // CAN-4842: at most three header actions, [⋯ More] [Share] [Try it];
+    // Update is in the ⋯ menu and the Claude/Codex switch is not in the bar.
+    const bar = window
+      .getByTestId('plugin-detail-chrome')
+      .getByTestId('detail-action-bar');
+    await expect(bar.getByRole('button')).toHaveCount(3);
+    await expect(bar.getByTestId('plugin-detail-provider-toggle')).toHaveCount(
+      0,
+    );
+    await expect(window.getByTestId('plugin-detail-update')).toHaveCount(0);
+    await bar.getByRole('button', { name: /^More actions for / }).click();
+    await expect(
+      window.getByRole('menuitem', { name: 'Update', exact: true }),
+    ).toBeVisible();
+    await window.keyboard.press('Escape');
     for (const viewport of [
       { width: 1440, height: 1000 },
       { width: 1920, height: 1080 },
@@ -260,15 +394,61 @@ test('installed plugin details show installation by harness and never offer sign
     await openPluginConnectionDesign(window, new CanopyAppDriver(window));
     await expect(window.locator('h2#plugin-detail-title')).toBeVisible();
     await expect(window.locator('h1#plugin-detail-title')).toHaveCount(0);
-    const endpoint = window.getByText('https://gmail.example.test/mcp', {
-      exact: true,
+    // CAN-4842: MCP servers are always visible, with the row's status. The
+    // fixture has no device configuration for the bundled server.
+    await expect(
+      window.locator('summary').filter({ hasText: 'MCP servers' }),
+    ).toHaveCount(0);
+    await expect(
+      window.getByText('https://gmail.example.test/mcp', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      window
+        .locator('[data-mcp-member="gmail"]')
+        .getByTestId('plugin-detail-mcp-status-unavailable'),
+    ).toHaveText('Not configured yet');
+    await expect(window.getByTestId('mcp-health-test')).toHaveCount(0);
+    // Status, harness table, MCP servers, then README, in that order; the
+    // Status ⋯ (Uninstall) sits in the header action bar.
+    const order = await window.evaluate(() => {
+      const nodes = [
+        document.querySelector('[data-testid="plugins-entry-detail-status"]'),
+        document.querySelector('[data-testid="plugin-harness-connections"]'),
+        Array.from(
+          document.querySelectorAll(
+            '[data-testid="plugin-detail-section-heading"]',
+          ),
+        ).find((node) => node.textContent === 'MCP servers') ?? null,
+        Array.from(document.querySelectorAll('button')).find(
+          (node) => node.textContent?.trim() === 'README',
+        ) ?? null,
+      ].filter((node) => node !== null);
+      return {
+        count: nodes.length,
+        ordered: nodes.every(
+          (node, index) =>
+            index === 0 ||
+            (nodes[index - 1].compareDocumentPosition(node) &
+              Node.DOCUMENT_POSITION_FOLLOWING) !==
+              0,
+        ),
+      };
     });
-    await expect(endpoint).toBeHidden();
-    await window.locator('summary').filter({ hasText: 'MCP servers' }).focus();
-    await window.keyboard.press('Enter');
-    await expect(endpoint).toBeVisible();
-    await window.locator('summary').filter({ hasText: 'MCP servers' }).click();
-    await expect(endpoint).toBeHidden();
+    expect(order.ordered).toBe(true);
+    expect(order.count).toBeGreaterThanOrEqual(3);
+    const status = window.getByTestId('plugins-entry-detail-status');
+    if ((await status.count()) > 0) {
+      // Any Status ⋯ renders in the header action bar, never inline.
+      await expect(
+        status.getByTestId('plugins-entry-detail-status-more'),
+      ).toHaveCount(0);
+      const barMore = window
+        .getByTestId('detail-action-bar')
+        .getByTestId('plugins-entry-detail-status-more');
+      await expect(
+        window.getByTestId('plugins-entry-detail-status-more'),
+      ).toHaveCount(await barMore.count());
+    }
     await expect(window.getByTestId('related-pipelines-section')).toHaveCount(
       0,
     );
@@ -295,7 +475,9 @@ test('installed plugin details show installation by harness and never offer sign
     ).toHaveCount(0);
     // The app is where the plugin is added, not a harness it installs into.
     await expect(window.getByTestId('plugin-harness-app')).toHaveCount(0);
-    for (const harness of ['codex', 'cursor']) {
+    // Copilot's harness gate is off by default, so it gets no row (CAN-4842).
+    await expect(window.getByTestId('plugin-harness-copilot')).toHaveCount(0);
+    for (const harness of ['codex', 'cursor', 'opencode']) {
       const status = window
         .getByTestId(`plugin-harness-${harness}`)
         .getByRole('cell');
@@ -321,6 +503,29 @@ test('installed plugin details show installation by harness and never offer sign
     await expect(window.locator('#plugin-detail-title')).toHaveText(
       'Outlook Email',
     );
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('installed plugin details list every harness with no harness signed in (CAN-4842)', async () => {
+  const userDataDir = makeUserDataDir('plugin-connection-signed-out-');
+  seedPluginConnectionDesign(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    await installPluginConnectionDesignHandlers(electronApp, {
+      authenticated: false,
+    });
+    const window = await electronApp.firstWindow();
+    await openPluginConnectionDesign(window, new CanopyAppDriver(window));
+    await expect(window.getByTestId('plugin-harness-claude')).toContainText(
+      'Not supported',
+    );
+    for (const harness of ['codex', 'cursor', 'opencode']) {
+      await expect(
+        window.getByTestId(`plugin-harness-${harness}`),
+      ).toContainText('Installed');
+    }
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -977,7 +1182,7 @@ test('distinct Codex connection adopts a matching original legacy credential wit
     await app.waitForShell();
     await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('Dual Auth');
-    await window.getByTestId('plugins-entry-mkt:demo/market/dual-auth').click();
+    await window.getByTestId('customize-row-mkt:demo/market/dual-auth').click();
     // Plugin details never sign in; the inventory a chat reads adopts the
     // legacy credential.
     await expect(window.getByTestId('plugin-account-connection')).toHaveCount(
@@ -1083,7 +1288,7 @@ test('normalized declarations preserve a previously connected account without an
     await app.waitForShell();
     await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('Dual Auth');
-    await window.getByTestId('plugins-entry-mkt:demo/market/dual-auth').click();
+    await window.getByTestId('customize-row-mkt:demo/market/dual-auth').click();
     await expect(window.getByTestId('plugin-account-connection')).toHaveCount(
       0,
     );
@@ -1265,7 +1470,7 @@ for (const matchingClaude of [false, true, 'unavailable-first']) {
       await app.openPluginsPage();
       await window.getByTestId('plugins-search').fill('Dual Auth');
       await window
-        .getByTestId('plugins-entry-mkt:demo/market/dual-auth')
+        .getByTestId('customize-row-mkt:demo/market/dual-auth')
         .click();
       // Plugin details no longer sign in (REG-3015); a chat's MCP Servers
       // panel does. Start the same embedded sign-in that panel requests and
@@ -1481,7 +1686,7 @@ test('curated reconnect silently renews an expired account and preserves its ref
     await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('Vendor OAuth Callback');
     await window
-      .getByTestId('plugins-entry-mcp-catalog:vendor-oauth-callback')
+      .getByTestId('customize-row-mcp-catalog:vendor-oauth-callback')
       .click();
     await expect(window.getByTestId('mcp-browse-detail-add')).toHaveText(
       'Connect Vendor OAuth Callback',
@@ -1876,10 +2081,9 @@ test('marketplace Add signs in once for configured harnesses, then adds the serv
 //      and every seeded marketplace plugin (alpha/beta/gamma/delta-*tool*),
 //      which is enough to prove cross-source search without inventing fixture
 //      data the seeder doesn't produce.
-//   3. The Installed gear opens the management view directly, which uses the
-//      shared sidebar structure; all five sections are reachable from its nav.
-//   4. The "Add custom" dropdown's "Add marketplace…" item opens
-//      `AddMarketplaceModal`.
+//   3. Each legacy management section routes to its Customize destination.
+//   4. The "Add custom" dropdown's "Add marketplace…" item opens the shared
+//      marketplace source Add dialog.
 //   5. With no curated content seeded, the page still renders: no
 //      recommended/curated sections appear, and search still works over
 //      marketplace-only rows.
@@ -2035,7 +2239,11 @@ const WINDOWED_PLUGIN_COUNT = 150;
  * fixture that every other test asserts against, so the windowing scenario
  * writes its own cache rather than parameterizing the shared seeder.
  */
-function seedManyMarketplacePlugins(userDataDir, count) {
+function seedManyMarketplacePlugins(
+  userDataDir,
+  count,
+  { installed = true } = {},
+) {
   const iso = '2026-06-17T00:00:00.000Z';
   const plugins = Array.from({ length: count }, (_unused, index) => ({
     name: `windowed-tool-${String(index).padStart(3, '0')}`,
@@ -2043,15 +2251,25 @@ function seedManyMarketplacePlugins(userDataDir, count) {
     category: 'developer-tools',
     sourcePath: `plugins/windowed-tool-${index}`,
     marketplaceId: 'demo/market',
-    details: {
-      skills: [],
-      agents: [],
-      commands: [],
-      hooks: [],
-      mcpServers: [],
-      lspServers: [],
-      hasReadme: false,
-    },
+    details: installed
+      ? {
+          skills: [],
+          agents: [],
+          commands: [],
+          hooks: [],
+          mcpServers: [],
+          lspServers: [],
+          hasReadme: false,
+        }
+      : null,
+    ...(installed
+      ? {}
+      : {
+          externalSource: {
+            source: 'github',
+            url: 'https://example.com/windowed.git',
+          },
+        }),
     providerSupport: { claude: 'native', codex: 'none' },
     facets: {},
   }));
@@ -2228,6 +2446,14 @@ function seedCuratedOverflow(userDataDir, count) {
       description: 'Deterministic Curated overflow fixture.',
       sourcePath: `curated-overflow-${index}`,
       recommended: false,
+      // These overflow cards exercise Browse, so they must lack installed
+      // content on every facet (CAN-5272).
+      details: null,
+      facets: {},
+      externalSource: {
+        source: 'github',
+        url: 'https://example.com/overflow.git',
+      },
     });
   }
   marketplace.pluginCount = marketplace.plugins.length;
@@ -2343,7 +2569,10 @@ test.describe('plugins discovery page', () => {
       await saveProfileRoles(window, ['designer']);
       await app.openPluginsPage();
       const marketplaceSearch = window.getByTestId('plugins-search');
-      await expect(marketplaceSearch).toHaveAttribute('placeholder', 'Search…');
+      await expect(marketplaceSearch).toHaveAttribute(
+        'placeholder',
+        'Search all capabilities',
+      );
       await marketplaceSearch.fill('g');
       await marketplaceSearch.fill('');
       const typeTabs = window.getByTestId('plugins-type-tabs');
@@ -2407,32 +2636,35 @@ test.describe('plugins discovery page', () => {
       const figmaCard = suggested.getByTestId(
         'plugins-entry-mkt:openai-curated/figma',
       );
-      const developerTools = window.getByTestId(
-        'plugins-section-category-developer-tools',
-      );
-      const githubMenu = developerTools.getByTestId(
-        'plugins-entry-menu-mkt:openai-curated/github',
-      );
-      const githubCard = developerTools.getByTestId(
-        'plugins-entry-mkt:openai-curated/github',
-      );
       await expect(canvaAdd).toBeVisible();
       await expect(suggested).not.toContainText('GitHub');
       await expect(suggested).not.toContainText('Gmail');
-      await expect(developerTools).toContainText('GitHub');
-      await expect(githubMenu).toHaveCount(0);
+      const addBox = await canvaAdd.boundingBox();
+      expect(addBox).not.toBeNull();
+      expect(addBox.height).toBeGreaterThanOrEqual(28);
       const productLogoSources = await Promise.all([
         figmaCard.locator('img').getAttribute('src'),
         canvaCard.locator('img').getAttribute('src'),
-        githubCard.locator('img').getAttribute('src'),
       ]);
+      // Installed GitHub lists only as an Installed row, never in Browse.
+      // A search reaches it past the Installed preview.
+      await window.getByTestId('plugins-search').fill('GitHub');
+      const githubRow = window
+        .getByTestId('customize-section-installed')
+        .getByTestId('customize-row-mkt:openai-curated/github');
+      await expect(githubRow).toContainText('GitHub');
+      await expect(
+        window.getByTestId('plugins-entry-mkt:openai-curated/github'),
+      ).toHaveCount(0);
+      productLogoSources.push(
+        await githubRow.locator('img').getAttribute('src'),
+      );
+      await window.getByTestId('plugins-search-clear').click();
+      await expect(window.getByTestId('plugins-search')).toHaveValue('');
       expect(productLogoSources.every(Boolean)).toBe(true);
       // OpenAI publishes these integrations, but each card must keep the
       // connected product's identity instead of repeating one publisher mark.
       expect(new Set(productLogoSources).size).toBe(3);
-      const addBox = await canvaAdd.boundingBox();
-      expect(addBox).not.toBeNull();
-      expect(addBox.height).toBeGreaterThanOrEqual(28);
 
       // Former fixed picks are no longer pulled out of their categories.
       const productivity = window.getByTestId(
@@ -2533,13 +2765,21 @@ test.describe('plugins discovery page', () => {
       await window.getByTestId('plugins-search-clear').click();
 
       const visibleOfficialPluginCards = window.locator(
-        '[data-testid^="plugins-entry-mkt:openai-curated/"]:visible',
+        '[data-testid^="plugins-entry-mkt:openai-curated/"]:visible, [data-testid^="customize-row-mkt:openai-curated/"]:visible',
       );
-      await expect(
-        window.locator(
-          '[data-testid^="marketplace-product-logo-mkt:openai-curated/"]:visible',
-        ),
-      ).toHaveCount(await visibleOfficialPluginCards.count());
+      const visibleOfficialPluginLogos = window.locator(
+        '[data-testid^="marketplace-product-logo-mkt:openai-curated/"]:visible',
+      );
+      // Count once the cleared search has re-rendered the browse sections.
+      await expect(window.getByTestId('plugins-search')).toHaveValue('');
+      await expect
+        .poll(
+          async () =>
+            (await visibleOfficialPluginLogos.count()) -
+            (await visibleOfficialPluginCards.count()),
+        )
+        .toBe(0);
+      await expect(visibleOfficialPluginCards).not.toHaveCount(0);
       await expect(
         window.locator(
           '[data-testid^="marketplace-product-logo-fallback-mkt:openai-curated/"]:visible',
@@ -2640,6 +2880,24 @@ test.describe('plugins discovery page', () => {
       seedPluginsCache({ userDataDir });
       seedCuratedPlugins({ userDataDir });
       seedCuratedOverflow(userDataDir, 13);
+      // Recommendation metadata comes from the curated catalog. Keep this
+      // uninstalled control outside the capped Developer tools category.
+      const cachePath = path.join(userDataDir, 'plugins-cache.json');
+      const cache = JSON.parse(readFileSync(cachePath, 'utf8'));
+      const curated = cache.marketplaces.find(
+        (row) => row.id === 'curated/cloud',
+      );
+      curated.plugins.push({
+        ...curated.plugins.find(
+          (plugin) => plugin.name === 'curated-overflow-1',
+        ),
+        name: 'recommended-tool',
+        displayName: 'Recommended Tool',
+        category: 'productivity',
+        recommended: true,
+      });
+      curated.pluginCount = curated.plugins.length;
+      writeJson(cachePath, cache);
 
       const launched = await launchCanopy({ userDataDir });
       electronApp = launched.electronApp;
@@ -2660,16 +2918,22 @@ test.describe('plugins discovery page', () => {
       await expect(
         window.getByTestId('customize-row-curated:writer-toolkit'),
       ).toBeVisible();
-      const writerToolkitEntry = window.getByTestId(
-        'plugins-entry-curated:writer-toolkit',
+      await expect(
+        window.getByTestId('plugins-entry-curated:writer-toolkit'),
+      ).toHaveCount(0);
+      const recommendedEntry = window.getByTestId(
+        'plugins-entry-curated:recommended-tool',
       );
       await expect(
         window.getByTestId('plugins-entry-add-curated:writer-toolkit'),
       ).toHaveCount(0);
-      await expect(writerToolkitEntry).toBeVisible();
-      await expect(writerToolkitEntry).toContainText('Writer Toolkit');
-      await expect(writerToolkitEntry).toContainText('Recommended');
-      const cardBox = await writerToolkitEntry.boundingBox();
+      await expect(recommendedEntry).toBeVisible();
+      await expect(recommendedEntry).toContainText('Recommended Tool');
+      // Recommended is a star icon named for assistive tech (CAN-4261).
+      await expect(
+        recommendedEntry.getByRole('img', { name: 'Recommended' }),
+      ).toBeVisible();
+      const cardBox = await recommendedEntry.boundingBox();
       expect(cardBox).not.toBeNull();
       expect(cardBox.height).toBeGreaterThanOrEqual(44);
 
@@ -2712,7 +2976,10 @@ test.describe('plugins discovery page', () => {
       const categorySearch = categoryPage.getByTestId(
         'plugins-category-search',
       );
-      await expect(categorySearch).toHaveAttribute('placeholder', 'Search…');
+      await expect(categorySearch).toHaveAttribute(
+        'placeholder',
+        'Search Developer tools',
+      );
       await categorySearch.fill('repo');
       await categorySearch.fill('');
       await expect(
@@ -2721,15 +2988,20 @@ test.describe('plugins discovery page', () => {
         'data-row-count',
         String(developerToolsCollapsedCount + 10),
       );
+      await expect(
+        categoryPage.getByTestId('plugins-entry-curated:repo-search'),
+      ).toHaveCount(0);
       const developerToolsEntry = categoryPage.getByTestId(
-        'plugins-entry-curated:repo-search',
+        'plugins-entry-curated:curated-overflow-1',
       );
       await expect(developerToolsEntry).toBeVisible();
-      await expect(developerToolsEntry).toContainText('Repo Search');
+      await expect(developerToolsEntry).toContainText('Curated Overflow 1');
       await expect(developerToolsEntry).not.toContainText('Available');
       // The non-recommended row must NOT carry the badge — otherwise the
       // assertions above would be meaningless (every row could match).
-      await expect(developerToolsEntry.getByText('Recommended')).toHaveCount(0);
+      await expect(
+        developerToolsEntry.getByRole('img', { name: 'Recommended' }),
+      ).toHaveCount(0);
       const titlebarBack = window.getByTestId('nav-history-back');
       await expect(titlebarBack).toBeEnabled();
       await titlebarBack.click();
@@ -2840,6 +3112,9 @@ test.describe('plugins discovery page', () => {
       );
       await expect(
         searchResults.getByTestId('plugins-entry-curated:writer-toolkit'),
+      ).toHaveCount(0);
+      await expect(
+        window.getByTestId('customize-row-curated:writer-toolkit'),
       ).toBeVisible();
       await expect(
         window.getByTestId('plugins-section-recommended'),
@@ -2890,6 +3165,14 @@ test.describe('plugins discovery page', () => {
       await expect(
         window.getByText('Nothing matches your search.'),
       ).toBeVisible();
+      // The search empty state's one action clears the query and hands
+      // focus back to the field.
+      await window.getByTestId('customize-sections-clear-search').click();
+      await expect(window.getByTestId('plugins-search')).toHaveValue('');
+      await expect(window.getByTestId('plugins-search')).toBeFocused();
+      await expect(window.getByTestId('customize-sections-empty')).toHaveCount(
+        0,
+      );
     } catch (error) {
       if (electronApp) {
         await closeCanopy(electronApp, userDataDir).catch(() => undefined);
@@ -2958,7 +3241,7 @@ test.describe('plugins discovery page', () => {
         'plugins-entry-pipeline:shared:shared:canopy-cloud:shared-dispatch',
       );
       await expect(pipelineEntry).toBeVisible();
-      await expect(pipelineEntry).toContainText('Pipeline');
+      await expect(pipelineEntry).toContainText('Workflow');
 
       await window.getByTestId('plugins-type-tab-workflow').click();
       await expect(search).toHaveValue('Shared Dispatch');
@@ -3011,11 +3294,11 @@ test.describe('plugins discovery page', () => {
 
       // An installed detail can cross into the pipeline editor. Returning
       // must preserve its Installed breadcrumb, which leads back to the
-      // management section (CAN-4261: the page has no Back).
+      // Installed section (CAN-4261: the page has no Back).
       await window.getByTestId('plugins-type-tab-all').click();
       await app.openPluginsTab('installed');
       const installedSection = window.getByTestId(
-        'plugins-management-section-installed',
+        'customize-section-installed',
       );
       await installedSection
         .getByText('Tool Release Pipeline', { exact: true })
@@ -3036,7 +3319,7 @@ test.describe('plugins discovery page', () => {
         .click();
       await expect(installedSection).toBeVisible();
 
-      // Pipelines has no dedicated management section, so its type crumb
+      // Pipelines has no dedicated Installed tab, so its type crumb
       // returns to the existing Marketplace Pipelines filtered view.
       await installedSection
         .getByText('Tool Release Pipeline', { exact: true })
@@ -3214,17 +3497,102 @@ test.describe('plugins discovery page', () => {
         'customize-row-automation:local:morning-standup',
       );
       await expect(local).toBeVisible();
+      const installedEntryId = 'automation:local:team-digest-copy';
+      const installed = installedSection.getByTestId(
+        `customize-row-${installedEntryId}`,
+      );
+      await expect(installed).toHaveCount(1);
+      await expect(installed).toBeVisible();
       await expect(
-        installedSection.getByTestId(
-          'customize-row-automation:local:team-digest-copy',
-        ),
-      ).toBeVisible();
+        installed.getByTestId(`customize-row-name-line-${installedEntryId}`),
+      ).toHaveText('Team Digest');
+      await expect(installed).toContainText('Shared by Platform');
+      await expect(
+        installed.getByTestId(`customize-row-trigger-${installedEntryId}`),
+      ).toHaveText('Daily · 09:00');
+      // The switch and the row menu sit beside the row's primary button, inside
+      // the row container, not within the button itself.
+      const installedRow = installedSection.getByTestId(
+        `customize-installed-row-${installedEntryId}`,
+      );
+      const installedToggle = installedRow.getByTestId(
+        `customize-workflow-toggle-${installedEntryId}`,
+      );
+      await expect(installedToggle).toBeEnabled();
+      await expect(installedToggle).not.toBeChecked();
+      const installedMenu = `customize-row-menu-${installedEntryId}`;
+      await installedRow.getByTestId(installedMenu).click();
+      for (const action of [
+        'details',
+        'edit',
+        'view-runs',
+        'run-now',
+        'delete',
+      ]) {
+        await expect(
+          window.getByTestId(`${installedMenu}-${action}`),
+        ).toBeEnabled();
+      }
+      await window.keyboard.press('Escape');
+      await expect(window.getByTestId(`${installedMenu}-surface`)).toBeHidden();
       const section = window.getByTestId('customize-section-browse');
       const available = section.getByTestId(
         `plugins-entry-automation:shared:${availableShareId}`,
       );
       await expect(available).toBeVisible();
-      await expect(local).toContainText('Automation');
+      // The Workflows tab omits type labels; only All shows them.
+      await expect(
+        local.getByTestId(
+          'customize-row-type-automation:local:morning-standup',
+        ),
+      ).toHaveCount(0);
+      // CAN-4845: schedule metadata is separate from the minimal last-run
+      // line, which never-run workflows omit. Pipeline rows carry Run.
+      await expect(
+        installedSection.getByTestId(
+          'customize-row-trigger-automation:local:morning-standup',
+        ),
+      ).toHaveText('Daily · 09:00');
+      await expect(
+        installedSection.getByTestId(
+          'customize-row-last-run-line-automation:local:morning-standup',
+        ),
+      ).toHaveCount(0);
+      await expect(
+        installedSection.locator('[data-testid^="customize-workflow-run-"]'),
+      ).not.toHaveCount(0);
+      await expect(
+        installedSection.getByTestId('customize-installed-footnote'),
+      ).toHaveText(
+        'Pipelines run when you start them or their trigger fires. Automations run on their schedule.',
+      );
+      const localMenu = 'customize-row-menu-automation:local:morning-standup';
+      await installedSection.getByTestId(localMenu).click();
+      const localMenuItems = await window
+        .getByTestId(`${localMenu}-surface`)
+        .locator(`[data-testid^="${localMenu}-"]`)
+        .evaluateAll((nodes) => nodes.map((node) => node.textContent));
+      expect(
+        localMenuItems.filter((label) =>
+          [
+            'Open details',
+            'Edit',
+            'View runs',
+            'Run now',
+            'Share…',
+            'Delete…',
+          ].includes(label),
+        ),
+      ).toEqual([
+        'Open details',
+        'Edit',
+        'View runs',
+        'Run now',
+        'Share…',
+        'Delete…',
+      ]);
+      await window.keyboard.press('Escape');
+      await expect(window.getByTestId(`${localMenu}-surface`)).toBeHidden();
       const sectionOrder = await window
         .getByTestId('customize-sections')
         .locator(':scope > section')
@@ -3232,12 +3600,18 @@ test.describe('plugins discovery page', () => {
       expect(sectionOrder.indexOf('customize-section-installed')).toBeLessThan(
         sectionOrder.indexOf('customize-section-browse'),
       );
-      // An installed publication remains in Browse with its own identity.
+      // installedFrom.remoteId links this exact publication to the retained
+      // Installed row above; Browse offers only publications not yet installed.
       await expect(
         section.getByTestId(
           `plugins-entry-automation:shared:${installedShareId}`,
         ),
-      ).toBeVisible();
+      ).toHaveCount(0);
+      await expect(
+        window.getByTestId(
+          `plugins-entry-add-automation:shared:${installedShareId}`,
+        ),
+      ).toHaveCount(0);
       await expect(
         section.getByTestId(`plugins-entry-automation:shared:${publicShareId}`),
       ).toHaveCount(0);
@@ -3314,6 +3688,80 @@ test.describe('plugins discovery page', () => {
     } finally {
       await clearScenario(DEFAULT_MOCK_BASE_URL, apiKey).catch(() => undefined);
     }
+  });
+
+  test('Customize workflow rows turn an automation on and off and delete it', async () => {
+    test.setTimeout(120_000);
+    userDataDir = makeUserDataDir('canopy-customize-workflow-rows-');
+    const activityId = 'morning-standup';
+    const rowId = `automation:local:${activityId}`;
+    seedPluginsCache({ userDataDir });
+    seedAutomations({
+      userDataDir,
+      activities: [
+        {
+          version: 1,
+          id: activityId,
+          name: 'Morning standup',
+          // Disabled so nothing is scheduled until the switch turns it on.
+          enabled: false,
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * *',
+            timezone: 'local',
+          },
+          action: { type: 'app_advisor_prompt', prompt: 'Summarize the day.' },
+          createdAt: '2026-09-01T00:00:00.000Z',
+          updatedAt: '2026-09-01T00:00:00.000Z',
+          failureCount: 0,
+        },
+      ],
+    });
+
+    const launched = await launchCanopy({ userDataDir });
+    electronApp = launched.electronApp;
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    await window.getByTestId('plugins-type-tab-workflow').click();
+
+    const installedSection = window.getByTestId('customize-section-installed');
+    await expect(
+      installedSection.getByTestId(`customize-row-${rowId}`),
+    ).toBeVisible();
+    const enabledOf = () =>
+      window.evaluate(async (id) => {
+        const { activities } = await window.api.automations.list();
+        return activities.find((entry) => entry.id === id)?.enabled ?? null;
+      }, activityId);
+
+    // The switch reflects the store; it never flips ahead of it.
+    const toggle = installedSection.getByTestId(
+      `customize-workflow-toggle-${rowId}`,
+    );
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(toggle).toHaveAttribute('aria-label', / is off$/);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await expect(toggle).toHaveAttribute('aria-label', / is on$/);
+    await expect.poll(enabledOf).toBe(true);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect.poll(enabledOf).toBe(false);
+
+    // Delete… confirms before it removes the automation.
+    await installedSection.getByTestId(`customize-row-menu-${rowId}`).click();
+    await window.getByTestId(`customize-row-menu-${rowId}-delete`).click();
+    const dialog = window.getByTestId('customize-workflow-delete');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('This cannot be undone.');
+    await window.getByTestId('customize-workflow-delete-confirm').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      installedSection.getByTestId(`customize-row-${rowId}`),
+    ).toHaveCount(0);
+    await expect.poll(enabledOf).toBeNull();
   });
 
   test('Workflows without automations still shows installed pipelines', async () => {
@@ -3427,17 +3875,16 @@ test.describe('plugins discovery page', () => {
         window.getByTestId('plugins-type-tab-skill'),
       ).toHaveAttribute('aria-selected', 'true');
 
-      // The Installed crumb of a detail opened in management restores that
+      // The Installed crumb of a detail opened from Installed restores that
       // exact section (CAN-4261: the page has no Back).
       await window.getByTestId('plugins-type-tab-all').click();
       await app.openPluginsTab('installed');
-      await expect(window.getByTestId('plugins-management-view')).toBeVisible();
       await expect(
-        window.getByTestId('plugins-management-section-installed'),
+        window.getByTestId('customize-section-installed'),
       ).toBeVisible();
       await window
-        .getByTestId('plugins-management-section-installed')
-        .getByTestId('plugins-entry-skill:builtin:app:canopy-config')
+        .getByTestId('customize-section-installed')
+        .getByTestId('customize-row-skill:builtin:app:canopy-config')
         .click();
       await expect(skillDetail).toBeVisible();
       await expect(window.getByTestId('plugins-entry-detail-back')).toHaveCount(
@@ -3448,7 +3895,7 @@ test.describe('plugins discovery page', () => {
         .click();
       await expect(skillDetail).toHaveCount(0);
       await expect(
-        window.getByTestId('plugins-management-section-installed'),
+        window.getByTestId('customize-section-installed'),
       ).toBeVisible();
     } catch (error) {
       if (electronApp) {
@@ -3551,7 +3998,7 @@ test.describe('plugins discovery page', () => {
     }
   });
 
-  test('installed strip keeps chip heights aligned and its heading opens management directly', async () => {
+  test('installed section previews its rows and management sections route to Customize', async () => {
     test.setTimeout(120_000);
     userDataDir = makeUserDataDir('canopy-plugins-discovery-management-');
 
@@ -3571,11 +4018,6 @@ test.describe('plugins discovery page', () => {
       await app.waitForShell();
       await app.openPluginsPage();
 
-      const dormantManagementView = window.getByTestId(
-        'plugins-management-view',
-      );
-      await expect(dormantManagementView).toBeHidden();
-      await expect(dormantManagementView).toHaveAttribute('data-open', 'false');
       const resourceMonitor = window.getByTestId(
         'sidebar-titlebar-resource-monitor',
       );
@@ -3589,53 +4031,28 @@ test.describe('plugins discovery page', () => {
       await expand.click();
       await expect(expand).toHaveCount(0);
       await app.openPluginsTab('installed');
-      const managementView = window.getByTestId('plugins-management-view');
-      await expect(managementView).toBeVisible();
-      await expect(managementView).toHaveAttribute('data-open', 'true');
-      await expect(
-        window.getByTestId('plugins-management-section-installed'),
-      ).toBeVisible();
-      const installedSection = window.getByTestId(
-        'plugins-management-section-installed',
-      );
-      const installedHeading = installedSection.getByRole('heading', {
-        name: 'Installed plugins',
-        level: 1,
-      });
-      await expect(installedHeading).toBeVisible();
+      await expect(installed).toBeVisible();
+      await expect(expand).toHaveCount(0);
       await expect(
         window.getByTestId('plugins-installed-gear-surface'),
       ).toHaveCount(0);
 
-      const sidebar = window.getByTestId('plugins-management-sidebar');
-      await expect(sidebar).toBeVisible();
-      await expect(
-        window.getByTestId('plugins-management-sidebar-resize-handle'),
-      ).toBeVisible();
-      await expect(window.getByTestId('plugins-management-back')).toBeVisible();
-
-      for (const [section, heading] of [
-        ['installed', 'Installed plugins'],
-        ['skills', 'Skills'],
-        ['mcp', 'MCP servers'],
-        ['collections', 'Collections'],
-        ['marketplaces', 'Marketplaces'],
+      for (const section of [
+        'installed',
+        'skills',
+        'mcp',
+        'collections',
+        'marketplaces',
       ]) {
-        await window.getByTestId(`plugins-management-nav-${section}`).click();
-        const managementSection = window.getByTestId(
-          `plugins-management-section-${section}`,
-        );
-        await expect(managementSection).toBeVisible();
-        await expect(
-          managementSection.getByTestId('page-heading'),
-        ).toBeVisible();
-        await expect(
-          managementSection.getByRole('heading', { name: heading, level: 1 }),
-        ).toBeVisible();
+        await window.evaluate((target) => {
+          window.dispatchEvent(
+            new CustomEvent('canopy:plugins-open-management', {
+              detail: { section: target },
+            }),
+          );
+        }, section);
+        await app.expectPluginsTab(section);
       }
-
-      await window.getByTestId('plugins-management-back').click();
-      await expect(managementView).toBeHidden();
     } catch (error) {
       if (electronApp) {
         await closeCanopy(electronApp, userDataDir).catch(() => undefined);
@@ -3830,7 +4247,7 @@ test.describe('plugins discovery page', () => {
       await expect(mcpDialog).toBeVisible();
       await expect(
         mcpDialog.getByRole('button', { name: 'HTTP', exact: true }),
-      ).toHaveClass(/(?:^|\s)bg-accent(?:\s|$)/);
+      ).toHaveAttribute('aria-pressed', 'true');
       await expect(
         mcpDialog.getByPlaceholder('https://mcp.example.com/sse'),
       ).toBeVisible();
@@ -3843,7 +4260,7 @@ test.describe('plugins discovery page', () => {
       await window.getByTestId('plugins-add-custom-mcp').click();
       await expect(
         mcpDialog.getByRole('button', { name: 'HTTP', exact: true }),
-      ).toHaveClass(/(?:^|\s)bg-accent(?:\s|$)/);
+      ).toHaveAttribute('aria-pressed', 'true');
       await window.keyboard.press('Escape');
       await addCustomTrigger.click();
       for (const action of [
@@ -4051,12 +4468,147 @@ test.describe('plugins discovery page', () => {
     }
   });
 
+  test('history restores the list scroll behind a Customize detail (CAN-4267)', async () => {
+    userDataDir = makeUserDataDir('canopy-plugins-history-scroll-');
+    seedManyMarketplacePlugins(userDataDir, WINDOWED_PLUGIN_COUNT, {
+      installed: false,
+    });
+    const launched = await launchCanopy({ userDataDir });
+    electronApp = launched.electronApp;
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    await window
+      .getByTestId('plugins-section-heading-category-developer-tools')
+      .click();
+    await window.getByTestId('plugins-category-search').fill('Windowed');
+    const page = window.getByTestId('page-plugins');
+    const lastId = `mkt:demo/market/windowed-tool-${String(WINDOWED_PLUGIN_COUNT - 1).padStart(3, '0')}`;
+    await window
+      .getByTestId(`plugins-entry-${lastId}`)
+      .scrollIntoViewIfNeeded();
+    const returnScroll = await page.evaluate((node) => node.scrollTop);
+    expect(returnScroll).toBeGreaterThan(0);
+    await window.getByTestId(`plugins-entry-${lastId}`).click();
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    await app.openOverviewPage();
+    await window.getByTestId('nav-history-back').click();
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    await expect(window.getByTestId('nav-history-forward')).toBeEnabled();
+    await window.getByTestId('nav-history-forward').click();
+    await expect(window.getByTestId('plugins-entry-detail-page')).toHaveCount(
+      0,
+    );
+    await window.getByTestId('nav-history-back').click();
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    await window
+      .getByTestId('plugins-entry-detail-breadcrumb-category')
+      .click();
+    await expect(window.getByTestId('plugins-category-page')).toBeVisible();
+    await expect(window.getByTestId('plugins-category-search')).toHaveValue(
+      'Windowed',
+    );
+    await expect
+      .poll(() => page.evaluate((node) => node.scrollTop))
+      .toBe(returnScroll);
+  });
+
+  test('account changes prevent replaying private Customize history (CAN-4267)', async () => {
+    userDataDir = makeUserDataDir('canopy-plugins-history-account-');
+    seedManyMarketplacePlugins(userDataDir, WINDOWED_PLUGIN_COUNT, {
+      installed: false,
+    });
+    const launched = await launchCanopy({ userDataDir });
+    electronApp = launched.electronApp;
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    await window
+      .getByTestId('plugins-section-heading-category-developer-tools')
+      .click();
+    await window.getByTestId('plugins-category-search').fill('Windowed');
+    await app.openOverviewPage();
+    await app.openStatisticsPage();
+    await window.evaluate(() =>
+      window.dispatchEvent(new Event('canopy:cloud-account-changed')),
+    );
+    await window.getByTestId('nav-history-back').click();
+    await expect(window.getByTestId('overview-page')).toBeVisible();
+    await window.getByTestId('nav-history-back').click();
+    await expect(window.getByTestId('plugins-category-search')).toHaveCount(0);
+    await expect(window.getByTestId('plugins-entry-detail-page')).toHaveCount(
+      0,
+    );
+    await expect(window.getByTestId('nav-history-forward')).toBeEnabled();
+    await window.getByTestId('nav-history-forward').click();
+    await expect(window.getByTestId('overview-page')).toBeVisible();
+    await window.getByTestId('nav-history-forward').click();
+    await app.expectStatisticsPage();
+  });
+
+  test('CAN-5272 standalone Browse category and its search exclude installed copies', async () => {
+    const userDataDir = makeUserDataDir('canopy-browse-installed-');
+    seedManyMarketplacePlugins(userDataDir, 12, { installed: false });
+    const cachePath = path.join(userDataDir, 'plugins-cache.json');
+    const cache = JSON.parse(readFileSync(cachePath, 'utf8'));
+    cache.marketplaces[0].plugins[0].details = {
+      skills: [],
+      agents: [],
+      commands: [],
+      hooks: [],
+      mcpServers: [],
+      lspServers: [],
+      hasReadme: false,
+    };
+    writeJson(cachePath, cache);
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openPluginsPage();
+      await window
+        .getByTestId('customize-section-installed')
+        .getByRole('button', { name: /^Show all / })
+        .click();
+      await expect(
+        window.getByTestId('customize-row-mkt:demo/market/windowed-tool-000'),
+      ).toBeVisible();
+      await window
+        .getByTestId('plugins-section-heading-category-developer-tools')
+        .click();
+      const category = window.getByTestId('plugins-category-page');
+      await expect(category).toBeVisible();
+      await expect(
+        category.getByTestId('plugins-section-category-page'),
+      ).toHaveAttribute('data-row-count', '11');
+      await expect(
+        category.getByTestId('plugins-entry-mkt:demo/market/windowed-tool-000'),
+      ).toHaveCount(0);
+      await category
+        .getByTestId('plugins-category-search')
+        .fill('windowed-tool-000');
+      await expect(
+        category.getByTestId('plugins-entry-mkt:demo/market/windowed-tool-000'),
+      ).toHaveCount(0);
+      await expect(
+        category.locator('[data-marketplace-entry="true"]'),
+      ).toHaveCount(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   test('a large section uses the page as its only vertical scroller', async () => {
     test.setTimeout(120_000);
     userDataDir = makeUserDataDir('canopy-plugins-discovery-window-');
 
     try {
-      seedManyMarketplacePlugins(userDataDir, WINDOWED_PLUGIN_COUNT);
+      seedManyMarketplacePlugins(userDataDir, WINDOWED_PLUGIN_COUNT, {
+        installed: false,
+      });
 
       const launched = await launchCanopy({ userDataDir });
       electronApp = launched.electronApp;
@@ -4292,18 +4844,19 @@ test.describe('plugins discovery page', () => {
       // Every `openai-curated` row ships `logoUrl: null`, so the bundled mark
       // is the only source of artwork. `outlook-calendar` was mapped and its
       // siblings were not, leaving Outlook Email on a monogram beside a
-      // correctly-marked Outlook Calendar.
+      // correctly-marked Outlook Calendar. The seeded listings are installed,
+      // so they list only as Installed rows, never in Browse.
       for (const name of ['outlook-calendar', 'outlook-email']) {
         const id = `mkt:openai-curated/${name}`;
-        await expect(window.getByTestId(`plugins-entry-${id}`)).toBeVisible();
-        const logo = window.getByTestId(`marketplace-product-logo-${id}`);
+        const row = window.getByTestId(`customize-row-${id}`);
+        await expect(row).toBeVisible();
+        // An Installed row's monogram fallback is a tile, not an image, so a
+        // single image here is the row's logo.
+        const logo = row.locator('img');
         await expect(logo).toBeVisible();
-        await expect(
-          window.getByTestId(`marketplace-product-logo-fallback-${id}`),
-        ).toHaveCount(0);
         // The bundled mark specifically, not the google.com favicon service
-        // the unmapped fallback reaches for — which carries this same testid,
-        // needs the network, and returns a generic microsoft.com icon.
+        // the unmapped fallback reaches for, which needs the network and
+        // returns a generic microsoft.com icon.
         await expect(logo).toHaveAttribute('src', /^data:image\/svg\+xml/);
       }
 
@@ -4313,7 +4866,7 @@ test.describe('plugins discovery page', () => {
       // thing twice.
       await window.getByTestId('plugins-search').fill('teams');
       const teams = window.getByTestId(
-        'plugins-entry-mkt:openai-curated/teams',
+        'customize-row-mkt:openai-curated/teams',
       );
       await expect(teams).toBeVisible();
       await teams.click();
@@ -4331,11 +4884,17 @@ test.describe('plugins discovery page', () => {
           .getByRole('link', { name: 'Website' }),
       ).toHaveAttribute('href', /microsoft\.com/);
 
-      // The marketplace table credits the same vendor, and its author filter
-      // is built from the same corrected value, so "Microsoft" is an option.
+      // The marketplace source detail credits the same vendor, built from the
+      // same corrected value.
       await app.openPluginsTab('marketplace');
-      await window.getByTestId('marketplace-row-openai-curated').click();
-      const teamsRow = window.getByTestId('plugin-row-teams');
+      await window
+        .locator(
+          '[data-source-id="openai-curated"] [data-testid="marketplace-source-open"]',
+        )
+        .click();
+      const teamsRow = window.locator(
+        '[data-testid="marketplace-source-plugin"][data-plugin-key="teams"]',
+      );
       await expect(teamsRow).toBeVisible();
       await expect(teamsRow).toContainText('Microsoft');
       await expect(teamsRow).not.toContainText('OpenAI');
@@ -4353,7 +4912,7 @@ test.describe('plugins discovery page', () => {
 });
 
 for (const kind of ['plugin', 'mcp']) {
-  test(`CAN-4359 ${kind} detail submits once and reopens its standalone chat`, async () => {
+  test(`CAN-4359 ${kind} detail stages without sending and refuses a closed target`, async () => {
     test.setTimeout(180_000);
     const fixture =
       kind === 'plugin'
@@ -4381,8 +4940,11 @@ for (const kind of ['plugin', 'mcp']) {
       const messages = window
         .getByTestId('page-chat')
         .getByTestId('user-message-content');
-      await expect(messages).toHaveCount(1, { timeout: 60_000 });
-      await expect(messages).toContainText(subject);
+      await expect(messages).toHaveCount(0);
+      const editor = window
+        .locator('[data-slate-editor="true"]:visible')
+        .first();
+      await expect(editor).toContainText(subject);
       const receipts = () =>
         window.evaluate(() =>
           Object.entries(localStorage)
@@ -4391,7 +4953,7 @@ for (const kind of ['plugin', 'mcp']) {
         );
       await expect
         .poll(receipts)
-        .toEqual([expect.objectContaining({ status: 'completed' })]);
+        .toEqual([expect.objectContaining({ status: 'staged' })]);
       const [receipt] = await receipts();
       expect(receipt.capability.kind).toBe(kind);
       await expect(window.getByTestId('chat-stop-generation')).toBeHidden();
@@ -4405,33 +4967,36 @@ for (const kind of ['plugin', 'mcp']) {
         .poll(() =>
           window.evaluate(
             async ({ location, chatId }) =>
-              (await window.api.chat.loadArchives(location)).some(
-                (chat) => chat.chatId === chatId,
+              (await window.api.chat.getState(location)).tabsFile.tabs.some(
+                (tab) => tab.id === chatId,
               ),
             { location: receipt.location, chatId: receipt.chatId },
           ),
         )
-        .toBe(true);
+        .toBe(false);
       await window.reload();
       const app = new CanopyAppDriver(window);
       await app.waitForShell();
       await app.openPluginsPage();
       await window.getByTestId('plugins-search').fill(subject);
+      // Installed entries list only as Installed rows, never in Browse.
       await window
         .getByTestId(
           kind === 'plugin'
-            ? 'plugins-entry-mkt:demo/market/gmail'
-            : 'plugins-entry-mcp-catalog:vendor-oauth-callback',
+            ? 'customize-row-mkt:demo/market/gmail'
+            : 'customize-row-mcp-catalog:vendor-oauth-callback',
         )
         .click();
       await expect(primary).toHaveText('Try it');
       await primary.click();
-      await expect(messages).toHaveCount(1);
-      await expect(messages).toContainText(subject);
+      await expect(messages).toHaveCount(0);
+      await expect(editor).toContainText(subject);
+      const [next] = await receipts();
+      expect(next.chatId).not.toBe(receipt.chatId);
+      expect(next.status).toBe('staged');
       await expect(
-        window.getByTestId(`panel-tab-panel-chat-${receipt.chatId}`),
+        window.getByTestId(`panel-tab-panel-chat-${next.chatId}`),
       ).toBeVisible();
-      expect(await receipts()).toEqual([receipt]);
     } finally {
       await closeCanopy(electronApp, userDataDir);
       await clearScenario(DEFAULT_MOCK_BASE_URL, subject);
@@ -4489,12 +5054,10 @@ test('CAN-4359 uninstalled detail updates its primary on live account changes', 
     }
     await primary.click();
     const chat = window.getByTestId('page-chat');
-    await expect(chat.getByTestId('user-message-content')).toHaveCount(1, {
-      timeout: 60_000,
-    });
-    await expect(chat.getByTestId('user-message-content')).toContainText(
-      'Alpha Tool',
-    );
+    await expect(chat.getByTestId('user-message-content')).toHaveCount(0);
+    await expect(
+      chat.locator('[data-slate-editor="true"]:visible').first(),
+    ).toContainText('Alpha Tool');
     const launchCapabilities = await window.evaluate(() =>
       Object.entries(localStorage)
         .filter(([key]) => key.startsWith('canopy:try-it-launch:'))
@@ -4617,7 +5180,7 @@ for (const outcome of ['setup-required', 'completed', 'storage-failure']) {
       const messages = window
         .getByTestId('page-chat')
         .getByTestId('user-message-content');
-      await expect(messages).toHaveCount(1, { timeout: 60_000 });
+      await expect(messages).toHaveCount(0);
       const notice = window.getByTestId('try-it-sign-in-notice');
       await expect(notice).toHaveAttribute('data-state', 'sign-in');
       const readRecord = () =>
@@ -4642,7 +5205,7 @@ for (const outcome of ['setup-required', 'completed', 'storage-failure']) {
         await window.evaluate(() =>
           window.dispatchEvent(new Event('canopy:cloud-account-changed')),
         );
-        await expect(messages).toHaveCount(1);
+        await expect(messages).toHaveCount(0);
         expect(await readRecord()).toEqual([]);
         return;
       }
@@ -4656,7 +5219,7 @@ for (const outcome of ['setup-required', 'completed', 'storage-failure']) {
         requestId: original.requestId,
         failure: 'authentication-cancelled',
       });
-      await expect(messages).toHaveCount(1);
+      await expect(messages).toHaveCount(0);
       // Sidebar sign-in and its account notification enter the same runner.
       if (cloud)
         await window.evaluate(async () => {
@@ -4674,139 +5237,34 @@ for (const outcome of ['setup-required', 'completed', 'storage-failure']) {
         await expect
           .poll(async () => (await readRecord())[0]?.status)
           .toBe('completed');
-        await expect(messages).toHaveCount(2);
-        expect((await readRecord())[0].receipt).toMatchObject({
+        await expect(messages).toHaveCount(0);
+        expect((await readRecord())[0].selectionResolution).toMatchObject({
           requestId: original.requestId,
           chatId: original.sourceChatId,
           accountKey: 'account:try-it-upgrade',
         });
       } else {
         await expect(notice).toHaveAttribute('data-state', 'setup-required');
-        await expect(messages).toHaveCount(1);
+        await expect(messages).toHaveCount(0);
       }
       await window.reload();
       await app.waitForShell();
-      // Reload opens New task. Reopen the persisted entry before checking its
-      // continuation; a missing composer here is not a lost chat or receipt.
-      const savedChat = window
-        .getByTestId('sidebar-section-chats-content')
-        .locator(`[data-standalone-chat-id="${original.host.worktreeId}"]`);
-      await expect(savedChat).toHaveCount(1);
-      await savedChat.click();
+      // Empty draft-only entries are intentionally absent from the Chats
+      // activity list. Continue restores the exact persisted last-viewed entry.
+      await window
+        .locator('[data-testid="home-resume-button"]:visible')
+        .click();
+      await expect(
+        window.locator('[data-slate-editor="true"]:visible').first(),
+      ).not.toBeEmpty();
       if (outcome === 'completed') await expect(notice).toHaveCount(0);
       else await expect(notice).toHaveAttribute('data-state', 'setup-required');
-      await expect(messages).toHaveCount(outcome === 'completed' ? 2 : 1);
+      await expect(messages).toHaveCount(0);
       expect((await readRecord())[0]).toMatchObject({
         requestId: original.requestId,
         status: outcome,
         destinationAccountKey: 'account:try-it-upgrade',
       });
-      if (outcome === 'completed') {
-        // CAN-4404: seeded durable reload recovery. The unit suite separately
-        // covers a real rejected response and the first unsuccessful reread.
-        const completed = (await readRecord())[0];
-        const commandId = `try-it-${completed.requestId}`;
-        const durableReceipt = await window.evaluate(
-          ({ record, commandId }) =>
-            window.canopyCore.invoke({
-              kind: 'request',
-              method: 'core.chat.send.receipt',
-              params: {
-                scope: {
-                  workspaceId: record.host.projectId,
-                  worktreeId: record.host.worktreeId,
-                  chatId: record.sourceChatId,
-                },
-                commandId,
-              },
-            }),
-          { record: completed, commandId },
-        );
-        expect(durableReceipt).toMatchObject({
-          ok: true,
-          value: {
-            outcome: 'matched',
-            receipt: {
-              commandId,
-              entityId: completed.sourceChatId,
-              messageId: completed.requestId,
-            },
-          },
-        });
-        expect(['applied', 'already_applied']).toContain(
-          durableReceipt.value.receipt.outcome,
-        );
-        // Observe the real main handler before reload: renderer startup cannot
-        // dispatch early and escape the counter. Delegate unchanged to main.
-        await electronApp.evaluate(({ ipcMain }) => {
-          const channel = 'chat:command';
-          const originalHandler = ipcMain._invokeHandlers.get(channel);
-          if (!originalHandler) throw new Error('Missing chat command handler');
-          globalThis.__can4404ContinuationCommands = [];
-          ipcMain.removeHandler(channel);
-          ipcMain.handle(channel, (event, request) => {
-            if (
-              request?.command?.type === 'chat.send_message' &&
-              typeof request.commandId === 'string' &&
-              request.commandId.startsWith('try-it-')
-            )
-              globalThis.__can4404ContinuationCommands.push(request);
-            return originalHandler(event, request);
-          });
-        });
-        const seedUncertain = async (accountKey) => {
-          const uncertain = {
-            ...completed,
-            status: 'failed',
-            failure: 'acceptance-uncertain',
-            destinationAccountKey: accountKey,
-          };
-          delete uncertain.receipt;
-          await window.evaluate((record) => {
-            localStorage.setItem(
-              `canopy:try-it-continuation:${record.sourceChatId}`,
-              JSON.stringify(record),
-            );
-          }, uncertain);
-          return uncertain;
-        };
-        const reopen = async () => {
-          await window.reload();
-          await app.waitForShell();
-          await savedChat.click();
-          await expect(messages).toHaveCount(2);
-        };
-        await seedUncertain('account:try-it-upgrade');
-        await reopen();
-        await expect
-          .poll(async () => (await readRecord())[0]?.status)
-          .toBe('completed');
-        expect((await readRecord())[0]).toMatchObject({
-          requestId: completed.requestId,
-          receipt: {
-            accountKey: 'account:try-it-upgrade',
-            chatId: completed.sourceChatId,
-            requestId: completed.requestId,
-          },
-        });
-        await expect(notice).toHaveCount(0);
-        expect(
-          await electronApp.evaluate(
-            () => globalThis.__can4404ContinuationCommands,
-          ),
-        ).toEqual([]);
-
-        const differentAccount = await seedUncertain('account:someone-else');
-        await reopen();
-        await expect(notice).toHaveCount(0);
-        expect((await readRecord())[0]).toEqual(differentAccount);
-        expect(
-          await electronApp.evaluate(
-            () => globalThis.__can4404ContinuationCommands,
-          ),
-        ).toEqual([]);
-        await expect(messages).toHaveCount(2);
-      }
     } finally {
       await closeCanopy(electronApp, userDataDir);
       await clearScenario(DEFAULT_MOCK_BASE_URL, subject);
@@ -4918,7 +5376,10 @@ test('CAN-4396 fresh signed-out catalog uses public transport and survives an of
     await window.getByTestId('detail-primary-cta').click();
     await expect(
       window.getByTestId('page-chat').getByTestId('user-message-content'),
-    ).toHaveCount(1, { timeout: 60_000 });
+    ).toHaveCount(0);
+    await expect(
+      window.locator('[data-slate-editor="true"]:visible').first(),
+    ).not.toBeEmpty();
     await expect(window.getByTestId('try-it-sign-in-notice')).toHaveAttribute(
       'data-state',
       'sign-in',
@@ -4935,5 +5396,95 @@ test('CAN-4396 fresh signed-out catalog uses public transport and survives an of
     } finally {
       await cloud.close();
     }
+  }
+});
+
+test('CAN-4267 legacy management events land on Customize Installed and type tabs', async () => {
+  test.setTimeout(120_000);
+  const userDataDir = makeUserDataDir('canopy-can-4267-navigation-');
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    for (const [section, tab] of [
+      ['installed', 'all'],
+      ['skills', 'skill'],
+      ['mcp', 'app'],
+      ['collections', 'collection'],
+    ]) {
+      await window.evaluate((section) => {
+        window.dispatchEvent(
+          new CustomEvent('canopy:plugins-open-management', {
+            detail: { section },
+          }),
+        );
+      }, section);
+      await expect(
+        window.getByTestId(`plugins-type-tab-${tab}`),
+      ).toHaveAttribute('aria-selected', 'true');
+      await expect(
+        window.getByTestId('customize-section-installed'),
+      ).toBeVisible();
+    }
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('CAN-4267 workflow filters survive navigating away from Customize and returning', async () => {
+  const launch = await launchCanopy();
+  try {
+    const page = await launch.electronApp.firstWindow();
+    const app = new CanopyAppDriver(page);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    await page.getByTestId('plugins-type-tab-workflow').click();
+    await page.getByTestId('plugins-pipeline-filter-source').click();
+    await page.getByTestId('plugins-pipeline-filter-source-user').click();
+    await expect(
+      page.getByTestId('plugins-pipeline-filter-source'),
+    ).toContainText('Custom');
+    await app.openOverviewPage();
+    await app.openPluginsPage();
+    await expect(page.getByTestId('plugins-type-tab-workflow')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(
+      page.getByTestId('plugins-pipeline-filter-source'),
+    ).toContainText('Custom');
+  } finally {
+    await closeCanopy(launch.electronApp, launch.userDataDir);
+  }
+});
+
+test('CAN-4267 the Customize row returns a detail page to the Customize home', async () => {
+  const launch = await launchCanopy();
+  try {
+    const page = await launch.electronApp.firstWindow();
+    const app = new CanopyAppDriver(page);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    await app.openPluginsTab('skills');
+    await page
+      .getByTestId('customize-section-installed')
+      .getByTestId('customize-row-skill:builtin:app:canopy-config')
+      .click();
+    await expect(page.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    // Re-clicking the current row remounts Customize; it must not restore
+    // the detail it was showing.
+    await page.getByTestId('sidebar-nav-plugins').click();
+    await expect(page.getByTestId('plugins-entry-detail-page')).toHaveCount(0);
+    await expect(
+      page.getByRole('heading', { name: 'Customize', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByTestId('plugins-type-tab-all')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  } finally {
+    await closeCanopy(launch.electronApp, launch.userDataDir);
   }
 });

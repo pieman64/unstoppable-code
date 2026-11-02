@@ -10,7 +10,10 @@ import {
   type TerminalPopoverRow,
 } from '@canopy/ui-shared/components';
 import type { CanopyCapabilities } from '@canopy/app-core';
-import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import {
+  useProjectDeletionDiscardOffer,
+  type ProjectDeletionDiscardOffer,
+} from '@canopy/app-state';
 import {
   DEFAULT_SIDEBAR_NAV_LAYOUT,
   type SidebarNavLayout,
@@ -23,10 +26,11 @@ import {
   type SidebarSurfaceSnapshot,
 } from '../SidebarSurface';
 import { RAIL_SECTION_HEADER_PADDING_RIGHT } from '../sidebar';
+import type { WorktreeRowOverrides } from '../WorkspacesSidebarSections';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-const capabilities = {
+const capabilities: CanopyCapabilities = {
   localExecution: false,
   terminalPty: false,
   fileSystemAccess: 'read' as const,
@@ -45,7 +49,7 @@ const capabilities = {
   worktreeRemoval: 'archive' as const,
 };
 
-const snapshot = {
+const snapshot: SidebarSurfaceSnapshot = {
   workspaces: [
     { localId: 'workspace', name: 'Workspace', type: 'single-repo' as const },
   ],
@@ -57,7 +61,7 @@ const snapshot = {
     },
   ],
   standaloneChats: [],
-} as PortalSessionShellState;
+};
 
 /**
  * The pre-CAN-3678 arrangement: Overview through Workers in More. Tests
@@ -249,7 +253,7 @@ describe('SidebarSurface', () => {
         {
           selection: null,
           onCreateWorktree: jest.fn(),
-          capabilitiesFor: (localId) =>
+          capabilitiesFor: (localId): CanopyCapabilities =>
             localId === 'cloud:ws:repo' || localId === 'cloud:task:repo'
               ? readOnlyCapabilities
               : creatingCapabilities,
@@ -292,7 +296,7 @@ describe('SidebarSurface', () => {
             selection: null,
             onCreateWorktree: jest.fn(),
             onCreateBranchWorktree: jest.fn(),
-            capabilitiesFor: (localId) =>
+            capabilitiesFor: (localId): CanopyCapabilities =>
               localId === 'cloud:task:repo' || localId === 'cloud:ws:repo'
                 ? { ...capabilities, ...rowReports }
                 : {
@@ -454,7 +458,11 @@ describe('SidebarSurface', () => {
           name: `${organizationId} project ${index}`,
           type: 'single-repo' as const,
           collapsed: true,
-          owner: { type: 'organization' as const, organizationId },
+          owner: {
+            type: 'organization' as const,
+            organizationId,
+            projectId: `${organizationId}-project`,
+          },
         })),
       ),
       worktrees: [],
@@ -1619,8 +1627,8 @@ describe('SidebarSurface', () => {
   });
 
   it.each([
-    [undefined, 'Dispatch pipeline'],
-    [true, 'Dispatch pipeline'],
+    [undefined, 'Dispatch workflow'],
+    [true, 'Dispatch workflow'],
   ] as const)(
     'names the dispatch row for sentenceCaseMenuLabels=%s',
     (sentenceCaseMenuLabels, label) => {
@@ -1998,7 +2006,7 @@ describe('SidebarSurface', () => {
     expect(document.body.textContent).toContain('kept for 7 days');
     const confirm = Array.from(
       document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
-    ).find((button) => button.textContent === 'Delete');
+    ).find((button) => button.textContent === 'Delete worktree');
     expect(confirm).toBeDefined();
     act(() => confirm?.click());
     expect(onArchiveWorktree).toHaveBeenCalledWith(
@@ -2017,25 +2025,25 @@ describe('SidebarSurface', () => {
       'archive',
       'archive-or-delete',
       11,
-      "Archive main? Its changes are saved before it stops. If they can't be saved, you choose what happens. Archived worktrees are kept until you delete them.",
+      "Its changes are saved before it stops. If they can't be saved, you choose what happens. Archived worktrees are kept until you delete them.",
     ],
     [
       'delete',
       'archive-or-delete',
       11,
-      "Delete main? It's archived first, with its changes saved. If they can't be saved, you choose what happens. Deleted worktrees are kept for 11 days, then removed. You can restore it from Archived and deleted.",
+      "It's archived first, with its changes saved. If they can't be saved, you choose what happens. Deleted worktrees are kept for 11 days, then removed. You can restore it from Archived and deleted.",
     ],
     [
       'delete',
       'archive-or-delete',
       1,
-      "Delete main? It's archived first, with its changes saved. If they can't be saved, you choose what happens. Deleted worktrees are kept for 1 day, then removed. You can restore it from Archived and deleted.",
+      "It's archived first, with its changes saved. If they can't be saved, you choose what happens. Deleted worktrees are kept for 1 day, then removed. You can restore it from Archived and deleted.",
     ],
     [
       undefined,
       undefined,
       undefined,
-      "Archive main? Its changes are saved before it stops. If they can't be saved, you choose what happens.",
+      "Its changes are saved before it stops. If they can't be saved, you choose what happens.",
     ],
   ] as const)(
     'uses the saved-changes %s confirmation for a client that asks for it (retention %s, %p days)',
@@ -2088,19 +2096,19 @@ describe('SidebarSurface', () => {
       'remote-control',
       'archive',
       11,
-      'Archive main? This removes the active checkout. Archived worktrees are kept until you delete them. Restore it from the desktop app.',
+      'This removes the active checkout. Archived worktrees are kept until you delete them. Restore it from the desktop app.',
     ],
     [
       'remote-control',
       'delete',
       11,
-      'Delete main? This removes the active checkout. Deleted worktrees are kept for 11 days, then removed. Restore it from the desktop app.',
+      'This removes the active checkout. Deleted worktrees are kept for 11 days, then removed. Restore it from the desktop app.',
     ],
     [
       undefined,
       'delete',
       undefined,
-      "Delete main? This removes the active checkout. Deleted worktrees are kept for the project's retention window, then removed. Restore it from the desktop app.",
+      "This removes the active checkout. Deleted worktrees are kept for the project's retention window, then removed. Restore it from the desktop app.",
     ],
   ] as const)(
     'pins the %s %s confirmation exactly (%p days)',
@@ -2315,9 +2323,11 @@ describe('SidebarSurface', () => {
           ? 'You can restore it from Archived and deleted.'
           : 'Restore it from the desktop app.',
       );
-      const cancel = Array.from(
-        document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
-      ).find((button) => button.textContent === 'Cancel');
+      // The shared confirmation's Cancel (its esc chip is part of its text).
+      const cancel =
+        document.querySelector<HTMLButtonElement>(
+          '[role="dialog"] [data-testid="confirm-dialog-cancel"]',
+        ) ?? undefined;
       expect(cancel).toBeDefined();
       act(() => cancel?.click());
       expect(document.querySelector('[role="dialog"]')).toBeNull();
@@ -3208,7 +3218,7 @@ describe('SidebarSurface', () => {
             'scrollIntoView',
             descriptor,
           );
-        else delete HTMLElement.prototype.scrollIntoView;
+        else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
       }
     });
 
@@ -3589,6 +3599,184 @@ describe('SidebarSurface', () => {
     ).toHaveLength(2);
     expect(container.textContent).toContain('iurevych/hey');
     expect(container.textContent).toContain('My label');
+  });
+
+  describe('muted spaces (CAN-4378)', () => {
+    const muted = {
+      status: 'ready' as const,
+      override: 'mute' as const,
+      selectionKnown: true,
+    };
+    const savingToMute = {
+      status: 'saving' as const,
+      override: null,
+      selectionKnown: true,
+      pendingChoice: 'mute' as const,
+    };
+    const mutedSnapshot: SidebarSurfaceSnapshot = {
+      ...snapshot,
+      workspaces: [
+        {
+          localId: 'workspace',
+          name: 'Workspace',
+          type: 'single-repo',
+          itemGroups: [
+            {
+              id: 'group',
+              name: 'Group',
+              color: 'neutral',
+              collapsed: true,
+              memberIds: ['unread', 'pipeline-done'],
+            },
+          ],
+        },
+      ],
+      worktrees: [
+        {
+          localId: 'unread',
+          workspaceLocalId: 'workspace',
+          branch: 'unread',
+          hasUnread: true,
+        },
+        {
+          localId: 'pipeline-done',
+          workspaceLocalId: 'workspace',
+          branch: 'pipeline-done',
+          pipelineStatus: 'unseen',
+        },
+        {
+          localId: 'failed',
+          workspaceLocalId: 'workspace',
+          branch: 'failed',
+          hasUnread: true,
+          pipelineStatus: 'unseen-failure',
+        },
+        {
+          localId: 'question',
+          workspaceLocalId: 'workspace',
+          branch: 'question',
+          hasUnread: true,
+        },
+        {
+          localId: 'loose-unread',
+          workspaceLocalId: 'workspace',
+          branch: 'loose-unread',
+          hasUnread: true,
+        },
+      ],
+      chatSummaries: [
+        {
+          workspaceLocalId: 'workspace',
+          worktreeLocalId: 'question',
+          pendingQuestions: [{ answered: false }],
+        },
+      ],
+    };
+    const rowIndicator = (
+      worktreeId: string,
+      selector: string,
+    ): Element | null =>
+      container.querySelector(`[data-worktree-id="${worktreeId}"] ${selector}`);
+    const groupHeader = (): Element | null =>
+      container.querySelector('[data-testid="sidebar-item-group-header"]');
+
+    it('hides blue dots and the group rollup while orange and red still show', () => {
+      render(
+        'ready',
+        { getWorktreeNotificationSettings: () => muted },
+        mutedSnapshot,
+      );
+      // The group is collapsed, so only its header speaks for its rows.
+      expect(groupHeader()).not.toBeNull();
+      expect(
+        groupHeader()?.querySelector('[aria-label="Unread work in group"]'),
+      ).toBeNull();
+      expect(
+        rowIndicator('loose-unread', '[data-testid="worktree-row-unread"]'),
+      ).toBeNull();
+      expect(
+        rowIndicator('failed', '[aria-label="Workflow failed"]'),
+      ).not.toBeNull();
+      expect(
+        rowIndicator('question', '[data-testid="worktree-row-question"]'),
+      ).not.toBeNull();
+    });
+
+    it('masks live host overrides too, as desktop rows read unread live', () => {
+      const ungrouped: SidebarSurfaceSnapshot = {
+        ...mutedSnapshot,
+        workspaces: [
+          { localId: 'workspace', name: 'Workspace', type: 'single-repo' },
+        ],
+      };
+      const liveOverrides = (): WorktreeRowOverrides => ({
+        hasUnread: true,
+        pipelineStatus: 'unseen',
+      });
+      render(
+        'ready',
+        {
+          getWorktreeNotificationSettings: () => muted,
+          useWorktreeRowOverrides: liveOverrides,
+        },
+        ungrouped,
+      );
+      expect(
+        rowIndicator('unread', '[data-testid="worktree-row-unread"]'),
+      ).toBeNull();
+      expect(
+        rowIndicator('pipeline-done', '[aria-label="Workflow completed"]'),
+      ).toBeNull();
+
+      render('ready', { useWorktreeRowOverrides: liveOverrides }, ungrouped);
+      expect(
+        rowIndicator('unread', '[data-testid="worktree-row-unread"]'),
+      ).not.toBeNull();
+    });
+
+    it('keeps blue dots for unmuted spaces and a save still in flight', () => {
+      for (const state of [undefined, savingToMute]) {
+        render(
+          'ready',
+          { getWorktreeNotificationSettings: () => state },
+          mutedSnapshot,
+        );
+        expect(
+          groupHeader()?.querySelector('[aria-label="Unread work in group"]'),
+        ).not.toBeNull();
+        expect(
+          rowIndicator('loose-unread', '[data-testid="worktree-row-unread"]'),
+        ).not.toBeNull();
+      }
+    });
+
+    it('hides an unread row and an unseen pipeline success outside groups', () => {
+      const ungrouped: SidebarSurfaceSnapshot = {
+        ...mutedSnapshot,
+        workspaces: [
+          { localId: 'workspace', name: 'Workspace', type: 'single-repo' },
+        ],
+      };
+      render('ready', {}, ungrouped);
+      expect(
+        rowIndicator('unread', '[data-testid="worktree-row-unread"]'),
+      ).not.toBeNull();
+      expect(
+        rowIndicator('pipeline-done', '[aria-label="Workflow completed"]'),
+      ).not.toBeNull();
+
+      render(
+        'ready',
+        { getWorktreeNotificationSettings: () => muted },
+        ungrouped,
+      );
+      expect(
+        rowIndicator('unread', '[data-testid="worktree-row-unread"]'),
+      ).toBeNull();
+      expect(
+        rowIndicator('pipeline-done', '[aria-label="Workflow completed"]'),
+      ).toBeNull();
+    });
   });
 
   it('owns loading and empty presentation', () => {
@@ -4029,6 +4217,125 @@ describe('SidebarSurface', () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
+  describe('the active nav row returns to its section root', () => {
+    it('active row click returns to root instead of selecting again', () => {
+      const onSelect = jest.fn();
+      const onReturnToRoot = jest.fn();
+      render('ready', {
+        navItemActions: {
+          plugins: { onSelect, onReturnToRoot, active: true },
+        },
+      });
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="portal-sidebar-nav-plugins"]',
+          )
+          ?.click(),
+      );
+      expect(onReturnToRoot).toHaveBeenCalledTimes(1);
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('enters an inactive row as before', () => {
+      const onSelect = jest.fn();
+      const onReturnToRoot = jest.fn();
+      render('ready', {
+        navItemActions: { plugins: { onSelect, onReturnToRoot } },
+      });
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="portal-sidebar-nav-plugins"]',
+          )
+          ?.click(),
+      );
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onReturnToRoot).not.toHaveBeenCalled();
+    });
+
+    it('routes an active anchor row to its root href', () => {
+      const onNavigateHref = jest.fn();
+      render('ready', {
+        onNavigateHref,
+        navItemActions: {
+          plugins: { href: '/portal/plugins/marketplace', active: true },
+        },
+      });
+      act(() =>
+        container
+          .querySelector<HTMLAnchorElement>(
+            '[data-testid="portal-sidebar-nav-plugins"]',
+          )
+          ?.click(),
+      );
+      expect(onNavigateHref).toHaveBeenCalledWith(
+        '/portal/plugins/marketplace',
+      );
+    });
+
+    it.each([
+      ['meta', { metaKey: true }],
+      ['ctrl', { ctrlKey: true }],
+      ['shift', { shiftKey: true }],
+      ['alt', { altKey: true }],
+      ['middle', { button: 1 }],
+    ])(
+      'leaves this tab alone on a %s click of an active anchor row',
+      (_name, init) => {
+        const onNavigateHref = jest.fn();
+        const onReturnToRoot = jest.fn();
+        render('ready', {
+          onNavigateHref,
+          navItemActions: {
+            plugins: {
+              href: '/portal/plugins/marketplace',
+              active: true,
+              onReturnToRoot,
+            },
+          },
+        });
+        const row = container.querySelector<HTMLAnchorElement>(
+          '[data-testid="portal-sidebar-nav-plugins"]',
+        );
+        act(() => {
+          row?.dispatchEvent(
+            new MouseEvent('click', {
+              bubbles: true,
+              cancelable: true,
+              button: 0,
+              ...init,
+            }),
+          );
+        });
+        expect(onReturnToRoot).not.toHaveBeenCalled();
+        expect(onNavigateHref).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns an active anchor row to its root on a plain click', () => {
+      const onReturnToRoot = jest.fn();
+      render('ready', {
+        onNavigateHref: jest.fn(),
+        navItemActions: {
+          plugins: {
+            href: '/portal/plugins/marketplace',
+            active: true,
+            onReturnToRoot,
+          },
+        },
+      });
+      act(() =>
+        container
+          .querySelector<HTMLAnchorElement>(
+            '[data-testid="portal-sidebar-nav-plugins"]',
+          )
+          ?.click(),
+      );
+      expect(onReturnToRoot).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('marks the active nav row as the current page', () => {
     render('ready', {
       navItemActions: {
@@ -4407,7 +4714,7 @@ describe('SidebarSurface', () => {
       const controls = stripControls();
       expect(controls.map((node) => node.getAttribute('aria-label'))).toEqual([
         'Search',
-        'Advisor',
+        'Orchestrator',
         'Workflows',
         'Customize',
         'Remote Control',
@@ -5336,7 +5643,7 @@ describe('SidebarSurface', () => {
       '[data-testid="portal-sidebar-advisor"]',
     );
     expect(row).not.toBeNull();
-    expect(row?.textContent).toContain('Advisor');
+    expect(row?.textContent).toContain('Orchestrator');
     expect(row?.getAttribute('aria-current')).toBeNull();
     expect(row?.getAttribute('data-selected')).toBeNull();
     act(() => row?.click());
@@ -5374,6 +5681,120 @@ describe('SidebarSurface', () => {
         '[data-testid="portal-more-item-app-advisor"]',
       ),
     ).toBeNull();
+  });
+
+  it('lists both repositories in shared multi-repo project settings without a creation accessory', async () => {
+    render(
+      'ready',
+      {
+        capabilities: { ...capabilities, workspaceSettings: 'full' },
+        onLoadClaudeMd: jest.fn().mockResolvedValue(''),
+        onLoadScripts: jest.fn().mockResolvedValue({}),
+        onSaveClaudeMd: jest.fn().mockResolvedValue(undefined),
+        onSaveScripts: jest.fn().mockResolvedValue(undefined),
+        onUpdateWorkspace: jest.fn().mockResolvedValue(undefined),
+      },
+      {
+        ...snapshot,
+        workspaces: [
+          {
+            localId: 'workspace',
+            name: 'Shared project',
+            type: 'multi-repo',
+            owner: {
+              type: 'organization',
+              organizationId: 'org',
+              projectId: 'shared',
+            },
+            repos: ['setup-repo', 'second-repo'].map((name) => ({
+              id: name,
+              name,
+              repoPath: `/repos/${name}`,
+            })),
+          },
+        ],
+      },
+    );
+    const gear = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Settings for Shared project"]',
+    );
+    if (!gear) throw new Error('Missing settings gear');
+    act(() => gear.click());
+    await flush();
+    const tab = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent === 'Repositories');
+    expect(tab).toBeDefined();
+    act(() => tab?.click());
+    await flush();
+    const dialog = document.querySelector(
+      '[data-testid="portal-workspace-settings-dialog"]',
+    );
+    expect(dialog?.textContent).toContain('setup-repo');
+    expect(dialog?.textContent).toContain('second-repo');
+    expect(dialog?.textContent).not.toContain('worktree ⋯ → Add repository');
+  });
+
+  it('opens a newly published destination from a settings callback captured before the snapshot refresh', async () => {
+    let openDestination: ((id: string) => void | Promise<void>) | undefined;
+    const onLoadClaudeMd = jest.fn().mockResolvedValue('');
+    const settingsProps: Partial<SidebarSurfaceProps> = {
+      capabilities: { ...capabilities, workspaceSettings: 'full' },
+      onLoadClaudeMd,
+      onLoadScripts: jest.fn().mockResolvedValue({}),
+      onSaveClaudeMd: jest.fn().mockResolvedValue(undefined),
+      onSaveScripts: jest.fn().mockResolvedValue(undefined),
+      onUpdateWorkspace: jest.fn().mockResolvedValue(undefined),
+      renderWorkspaceRepositoriesAccessory: (_id, _close, open) => {
+        openDestination = open;
+        return <span>Shared setup</span>;
+      },
+    };
+    const source = {
+      localId: 'workspace',
+      name: 'Workspace',
+      type: 'single-repo' as const,
+      owner: {
+        type: 'organization' as const,
+        organizationId: 'org',
+        projectId: 'source',
+      },
+    };
+    render('ready', settingsProps, { ...snapshot, workspaces: [source] });
+    const gear = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Settings for Workspace"]',
+    );
+    if (!gear) throw new Error('Workspace settings gear missing');
+    act(() => gear.click());
+    await flush();
+    const captured = openDestination;
+    if (!captured) throw new Error('Repositories callback missing');
+    const pending = captured('destination');
+    render('ready', settingsProps, {
+      ...snapshot,
+      workspaces: [
+        source,
+        {
+          localId: 'destination',
+          name: 'Created project',
+          type: 'multi-repo',
+          owner: {
+            type: 'organization',
+            organizationId: 'org',
+            projectId: 'created',
+          },
+        },
+      ],
+    });
+    await act(async () => {
+      await pending;
+    });
+    await flush();
+    expect(onLoadClaudeMd).toHaveBeenLastCalledWith('destination');
+    expect(
+      document.querySelector('[data-testid="portal-workspace-settings-dialog"]')
+        ?.textContent,
+    ).toContain('Created project');
   });
 
   it('renames and recolors through Details, then re-diffs against the refreshed snapshot', async () => {
@@ -5745,11 +6166,11 @@ describe('SidebarSurface', () => {
     });
     await flush();
 
-    const done = Array.from(
+    const close = Array.from(
       document.querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent === 'Done');
-    if (!done) throw new Error('Done button missing');
-    act(() => done.click());
+    ).find((button) => button.getAttribute('aria-label') === 'Close');
+    if (!close) throw new Error('Close button missing');
+    act(() => close.click());
     await open();
 
     const reopenedName = document.querySelector<HTMLInputElement>(
@@ -5787,6 +6208,82 @@ describe('SidebarSurface', () => {
       ),
     ).toBeNull();
   });
+
+  // CAN-5337: a Settings deletion refused after the owner changed belongs to
+  // the owner that issued it, so the new owner is offered no discard.
+  it.each([
+    ['offers', 'live'],
+    ['does not offer', 'baseline'],
+  ])(
+    '%s a Settings deletion refusal its discards when the owner is %s at rejection',
+    async (_label, ownerAtRejection) => {
+      const latest: { offer: ProjectDeletionDiscardOffer | null } = {
+        offer: null,
+      };
+      function OfferProbe(): null {
+        latest.offer = useProjectDeletionDiscardOffer().offer;
+        return null;
+      }
+      const probeContainer = document.createElement('div');
+      const probeRoot = createRoot(probeContainer);
+      act(() => probeRoot.render(<OfferProbe />));
+      let rejectDeletion: ((reason: Error) => void) | undefined;
+      const settingsProps: Partial<SidebarSurfaceProps> = {
+        dataOwnerId: 'live',
+        capabilities: {
+          ...capabilities,
+          workspaceSettings: 'full',
+          workspaceRemoval: 'delete',
+          projectDeletionDiscard: true,
+        },
+        onLoadClaudeMd: jest.fn().mockResolvedValue(''),
+        onLoadScripts: jest.fn().mockResolvedValue({}),
+        onSaveClaudeMd: jest.fn().mockResolvedValue(undefined),
+        onSaveScripts: jest.fn().mockResolvedValue(undefined),
+        onUpdateWorkspace: jest.fn().mockResolvedValue(undefined),
+        onDeleteWorkspace: jest.fn(
+          () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectDeletion = reject;
+            }),
+        ),
+      };
+      render('ready', settingsProps);
+      const gear = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Settings for Workspace"]',
+      );
+      if (!gear) throw new Error('Workspace settings gear missing');
+      act(() => gear.click());
+      await flush();
+      const button = (text: string): HTMLButtonElement => {
+        const found = Array.from(
+          document.querySelectorAll<HTMLButtonElement>(
+            '[data-testid="portal-workspace-settings-dialog"] button',
+          ),
+        ).find((item) => item.textContent === text);
+        if (!found) throw new Error(`Missing ${text} button`);
+        return found;
+      };
+      act(() => button('Delete…').click());
+      act(() => button('Delete').click());
+      expect(settingsProps.onDeleteWorkspace).toHaveBeenCalledWith('workspace');
+      const before = latest.offer;
+
+      render('ready', { ...settingsProps, dataOwnerId: ownerAtRejection });
+      rejectDeletion?.(new Error('A source repository is unavailable.'));
+      await flush();
+
+      if (ownerAtRejection === 'live') {
+        expect(latest.offer).toMatchObject({
+          workspaceId: 'workspace',
+          message: 'A source repository is unavailable.',
+        });
+      } else {
+        expect(latest.offer).toBe(before);
+      }
+      act(() => probeRoot.unmount());
+    },
+  );
 
   it('routes worktree deletion through confirmation before archiving', () => {
     const onArchiveWorktree = jest.fn();
@@ -5971,7 +6468,7 @@ describe('SidebarSurface', () => {
       worktree: { setupPhase: 'running-setup' },
       tooltip: 'Wait for setup to finish before adding a repo',
     },
-  ])(
+  ] as const)(
     'uses desktop Add repository disabled copy for $name',
     ({ props, worktree, tooltip }) => {
       render(
@@ -6022,7 +6519,7 @@ describe('SidebarSurface', () => {
       worktree: { status: 'done', setupPhase: 'git-pending' },
       tooltip: 'Done worktrees cannot add repos',
     },
-  ])(
+  ] as const)(
     'preserves desktop Add repository disabled precedence for $name',
     ({ props, worktree, tooltip }) => {
       render(
@@ -6251,7 +6748,6 @@ describe('SidebarSurface', () => {
       'ready',
       {
         workspaceNameTogglesCollapse: true,
-        onSelectWorkspace: jest.fn(),
         testIds: {
           root: 'portal-sidebar',
           workspaceToggle: (workspaceLocalId, workspaceType) =>
@@ -6354,19 +6850,19 @@ describe('SidebarSurface', () => {
       capability: 'archive' as const,
       label: 'Archive main',
       iconSelector: 'svg[data-glyph="archive"]',
-      dialogTitle: 'Archive worktree?',
+      dialogTitle: 'Archive worktree “main”?',
       dialogCopy:
-        'This removes the worktree from disk while keeping its chats and eligible pipeline history.',
-      confirmLabel: 'Archive',
+        'This removes the worktree from disk while keeping its chats and eligible workflow history.',
+      confirmLabel: 'Archive worktree',
     },
     {
       capability: 'delete' as const,
       label: 'Delete main',
       iconSelector: 'svg[data-glyph="trash-2"]',
-      dialogTitle: 'Delete worktree?',
+      dialogTitle: 'Delete worktree “main”?',
       dialogCopy:
         'This removes the worktree and its checkout and can’t be undone.',
-      confirmLabel: 'Delete',
+      confirmLabel: 'Delete worktree',
     },
   ])(
     'hover-reveals $capability presentation for a done worktree removal action',
@@ -6432,10 +6928,12 @@ describe('SidebarSurface', () => {
       act(() => removalButton?.click());
       const dialog = document.querySelector('[role="dialog"]');
       expect(dialog?.textContent).toContain(dialogTitle);
+      // The row's name is masked in session replay.
+      expect(dialog?.querySelector('h2 .ph-mask')?.textContent).toBe('main');
       expect(dialog?.textContent).toContain(dialogCopy);
       expect(
         Array.from(dialog?.querySelectorAll('button') ?? []).some(
-          (button) => button.textContent === confirmLabel,
+          (button) => button.firstChild?.textContent === confirmLabel,
         ),
       ).toBe(true);
     },
@@ -6689,7 +7187,7 @@ describe('SidebarSurface', () => {
       expect(footer).not.toBeNull();
       expect(list).not.toBeNull();
       expect(
-        list?.compareDocumentPosition(footer ?? list) &
+        (list?.compareDocumentPosition(footer ?? list) ?? 0) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
@@ -6717,11 +7215,11 @@ describe('SidebarSurface', () => {
       expect(section).not.toBeNull();
       expect(rail?.contains(section)).toBe(true);
       expect(
-        list?.compareDocumentPosition(section ?? list) &
+        (list?.compareDocumentPosition(section ?? list) ?? 0) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       expect(
-        section?.compareDocumentPosition(footer ?? section) &
+        (section?.compareDocumentPosition(footer ?? section) ?? 0) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
@@ -6799,7 +7297,7 @@ describe('SidebarSurface', () => {
       // And it follows the list rather than preceding it — bottom of the nav,
       // not top.
       expect(
-        scroll?.compareDocumentPosition(callout ?? scroll) &
+        (scroll?.compareDocumentPosition(callout ?? scroll) ?? 0) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
@@ -6875,7 +7373,7 @@ describe('SidebarSurface', () => {
       expect(callout).not.toBeNull();
       expect(strip).not.toBeNull();
       expect(
-        callout?.compareDocumentPosition(strip ?? callout) &
+        (callout?.compareDocumentPosition(strip ?? callout) ?? 0) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
@@ -6965,7 +7463,7 @@ describe('SidebarSurface', () => {
 
     function renderMixed(
       overrides: Partial<SidebarSurfaceProps> = {},
-      nextSnapshot: PortalSessionShellState = mixedSnapshot,
+      nextSnapshot: SidebarSurfaceSnapshot = mixedSnapshot,
     ): void {
       render(
         'ready',
@@ -7017,10 +7515,11 @@ describe('SidebarSurface', () => {
         {},
         {
           ...mixedSnapshot,
-          workspaces: mixedSnapshot.workspaces.map((workspace) => ({
-            ...workspace,
-            itemSortMode: undefined,
-          })),
+          workspaces: mixedSnapshot.workspaces.map((workspace) => {
+            const olderWorkspace = { ...workspace };
+            delete olderWorkspace.itemSortMode;
+            return olderWorkspace;
+          }),
           worktrees: [
             {
               localId: 'wt-older',
@@ -7384,6 +7883,110 @@ describe('SidebarSurface', () => {
           '[data-testid="confirm-dialog-confirm"]',
         )?.disabled,
       ).toBe(false);
+    });
+
+    // CAN-5337: the refusal is offered to the project deletion discard host.
+    it('offers a refused deletion its discards; the confirmation takes over the dialog and its retry deletes again', async () => {
+      const latest: { offer: ProjectDeletionDiscardOffer | null } = {
+        offer: null,
+      };
+      function OfferProbe(): null {
+        latest.offer = useProjectDeletionDiscardOffer().offer;
+        return null;
+      }
+      const probeContainer = document.createElement('div');
+      const probeRoot = createRoot(probeContainer);
+      act(() => probeRoot.render(<OfferProbe />));
+      const onDeleteWorkspace = jest.fn(() =>
+        Promise.reject(new Error('A source repository is unavailable.')),
+      );
+      // Only a workspace whose host can describe the deletion offers it.
+      renderMixed({
+        onDeleteWorkspace,
+        capabilitiesFor: (localId) => ({
+          ...capabilitiesFor(localId),
+          projectDeletionDiscard: true,
+        }),
+      });
+      const confirm = (): Element | null =>
+        document.querySelector(
+          '[data-testid="portal-remove-workspace-confirm"]',
+        );
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="workspace-section-remove"]',
+          )
+          ?.click(),
+      );
+      act(() =>
+        confirm()
+          ?.querySelector<HTMLButtonElement>(
+            '[data-testid="confirm-dialog-confirm"]',
+          )
+          ?.click(),
+      );
+      await flush();
+
+      const first = latest.offer;
+      expect(first).toMatchObject({
+        workspaceId: 'cloud:ws:a',
+        projectName: 'Cloud',
+        message: 'A source repository is unavailable.',
+      });
+      // Until a confirmation opens, the refusal stays in this dialog.
+      expect(confirm()).not.toBeNull();
+      act(() => first?.onOpen?.());
+      expect(confirm()).toBeNull();
+
+      // A retry refused again shows its refusal and offers again.
+      act(() => first?.retry());
+      await flush();
+      expect(onDeleteWorkspace).toHaveBeenCalledTimes(2);
+      expect(
+        confirm()?.querySelector('[data-testid="confirm-dialog-error"]')
+          ?.textContent,
+      ).toContain('A source repository is unavailable.');
+      expect(latest.offer).not.toBe(first);
+      expect(latest.offer?.workspaceId).toBe('cloud:ws:a');
+      act(() => probeRoot.unmount());
+    });
+
+    it('offers nothing for a workspace whose host cannot describe its deletion', async () => {
+      const latest: { offer: ProjectDeletionDiscardOffer | null } = {
+        offer: null,
+      };
+      function OfferProbe(): null {
+        latest.offer = useProjectDeletionDiscardOffer().offer;
+        return null;
+      }
+      const probeContainer = document.createElement('div');
+      const probeRoot = createRoot(probeContainer);
+      act(() => probeRoot.render(<OfferProbe />));
+      const before = latest.offer;
+      renderMixed({
+        onDeleteWorkspace: jest.fn(() =>
+          Promise.reject(new Error('Workspace archive rejected')),
+        ),
+      });
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="workspace-section-remove"]',
+          )
+          ?.click(),
+      );
+      act(() =>
+        document
+          .querySelector('[data-testid="portal-remove-workspace-confirm"]')
+          ?.querySelector<HTMLButtonElement>(
+            '[data-testid="confirm-dialog-confirm"]',
+          )
+          ?.click(),
+      );
+      await flush();
+      expect(latest.offer).toBe(before);
+      act(() => probeRoot.unmount());
     });
 
     it('keeps every row on the flat capabilities without a resolver', () => {
@@ -8133,7 +8736,7 @@ describe('SidebarSurface', () => {
       // Chats "+", and under the rail.
       renderChatsSection({
         scrollOwner: 'host',
-        onCreateWorkspace: () => undefined,
+        onCreateWorkspace: () => Promise.resolve({ status: 'pending' }),
         onCreateChatsSectionChat: () => undefined,
       });
       const inlineStyle = (selector: string): string =>
@@ -8148,7 +8751,9 @@ describe('SidebarSurface', () => {
       );
 
       // A surface that scrolls itself has no host rail to clear.
-      renderChatsSection({ onCreateWorkspace: () => undefined });
+      renderChatsSection({
+        onCreateWorkspace: () => Promise.resolve({ status: 'pending' }),
+      });
       expect(inlineStyle('[data-sidebar-projects-header]')).not.toContain(
         'padding-right',
       );

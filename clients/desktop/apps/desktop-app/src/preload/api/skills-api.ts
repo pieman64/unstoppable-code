@@ -25,6 +25,8 @@ import type {
   SkillsAPI,
   UpdateSharedSkillRequest,
   WriteRawSkillRequest,
+  WriteRawSkillResult,
+  DesktopSharedSkillDetail,
 } from '@canopy/desktop-shared/types/skills';
 
 export type { SkillsAPI };
@@ -70,7 +72,7 @@ export function createSkillsAPI(): SkillsAPI {
       ipcRenderer.invoke(SKILLS_CHANNELS.READ_RAW, skillId),
     writeRawSkill: (
       input: WriteRawSkillRequest,
-    ): Promise<{ skillId: string; skillName: string }> =>
+    ): Promise<WriteRawSkillResult> =>
       ipcRenderer.invoke(SKILLS_CHANNELS.WRITE_RAW, input),
 
     // ---- Shared (Canopy Cloud) CRUD ---------------------------------------
@@ -78,7 +80,7 @@ export function createSkillsAPI(): SkillsAPI {
       request: ListSharedSkillsRequest,
     ): Promise<ListSharedSkillsResponse> =>
       ipcRenderer.invoke(SKILLS_CHANNELS.SHARED_LIST, request),
-    getShared: (skillId: string): Promise<SharedSkillDetail> =>
+    getShared: (skillId: string): Promise<DesktopSharedSkillDetail> =>
       ipcRenderer.invoke(SKILLS_CHANNELS.SHARED_GET, skillId),
     createShared: (
       request: CreateSharedSkillRequest,

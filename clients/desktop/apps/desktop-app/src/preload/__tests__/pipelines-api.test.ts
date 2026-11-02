@@ -2,7 +2,9 @@ const mockInvoke = jest.fn();
 
 jest.mock('electron', () => ({
   ipcRenderer: {
-    invoke: mockInvoke,
+    get invoke(): typeof mockInvoke {
+      return mockInvoke;
+    },
     on: jest.fn(),
     removeListener: jest.fn(),
   },

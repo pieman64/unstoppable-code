@@ -6,7 +6,9 @@ import {
 const mockRequestRendererTool = jest.fn();
 
 jest.mock('../ipc/app-advisor', () => ({
-  requestAppAdvisorRendererTool: mockRequestRendererTool,
+  get requestAppAdvisorRendererTool(): typeof mockRequestRendererTool {
+    return mockRequestRendererTool;
+  },
 }));
 
 import {

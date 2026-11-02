@@ -108,8 +108,8 @@ describe('launchRebaseResolutionChat', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedReadAllSidebarItems.mockResolvedValue({ items: [] } as any);
-    mockedDispatchTurn.mockResolvedValue(undefined as any);
-    mockedUpsert.mockResolvedValue(undefined as any);
+    mockedDispatchTurn.mockResolvedValue(undefined);
+    mockedUpsert.mockResolvedValue(undefined);
     mockedResolveOptional.mockResolvedValue({
       selection: { model: 'claude-model', thinkingLevel: 'high' },
       requireModel: () => ({ model: 'claude-model', thinkingLevel: 'high' }),
@@ -123,7 +123,7 @@ describe('launchRebaseResolutionChat', () => {
     // undefined. Reading the raw worktree preference therefore bypassed
     // CAN-1929: a credits-only user kept creating rebase chats on the
     // billing-unaware native default.
-    await launchRebaseResolutionChat({ ...baseArgs, prefs: prefs() } as any);
+    await launchRebaseResolutionChat({ ...baseArgs, prefs: prefs() });
 
     expect(runWithScopeActivityMock).toHaveBeenCalledWith(
       { projectId: 'project-1', worktreeId: 'worktree-1' },
@@ -137,6 +137,25 @@ describe('launchRebaseResolutionChat', () => {
     // this same workspace.
     expect(credentialScope).toEqual({ workspaceId: 'project-1' });
     expect(mockedDispatchTurn.mock.calls[0][0].model).toBe('claude-model');
+  });
+
+  it('counts the turn as automation for analytics while keeping its user initiation (CAN-4629)', async () => {
+    await launchRebaseResolutionChat({ ...baseArgs, prefs: prefs() });
+
+    expect(mockedDispatchTurn.mock.calls[0]?.[0]).toMatchObject({
+      initiationSource: 'user',
+      turnTrigger: 'automation',
+    });
+  });
+
+  it('starts a chat without a launcher turn timer row', async () => {
+    await launchRebaseResolutionChat({ ...baseArgs, prefs: prefs() });
+    const tab = mockedUpsert.mock.calls[0]?.[0].tab;
+    expect(
+      tab?.messages.some((message) =>
+        message.blocks.some((block) => block.type === 'turn_timer'),
+      ),
+    ).toBe(false);
   });
 
   it('leaves project default plugins inherited instead of copying them', async () => {
@@ -181,12 +200,12 @@ describe('launchRebaseResolutionChat', () => {
       requireModel: () => {
         throw new Error('No dispatchable model is available (billing-lane).');
       },
-    } as any);
+    });
 
     await launchRebaseResolutionChat({
       ...baseArgs,
-      prefs: prefs({ agentRebaseResolutionModel: 'codex-model' } as any),
-    } as any);
+      prefs: prefs({ agentRebaseResolutionModel: 'codex-model' }),
+    });
 
     expect(mockedDispatchTurn.mock.calls[0][0].model).toBe('codex-model');
   });
@@ -199,12 +218,12 @@ describe('launchRebaseResolutionChat', () => {
       requireModel: () => {
         throw new Error('unused on the explicit branch');
       },
-    } as any);
+    });
 
     await launchRebaseResolutionChat({
       ...baseArgs,
-      prefs: prefs({ agentRebaseResolutionModel: 'codex-model' } as any),
-    } as any);
+      prefs: prefs({ agentRebaseResolutionModel: 'codex-model' }),
+    });
 
     // Codex's own configured `low`, not Claude's `high`.
     expect(mockedDispatchTurn.mock.calls[0][0].thinkingLevel).toBe('low');
@@ -243,7 +262,7 @@ describe('launchRebaseResolutionChat', () => {
       requireModel: () => {
         throw new Error('No dispatchable model is available (billing-lane).');
       },
-    } as any);
+    });
 
     await expect(
       launchRebaseResolutionChat({ ...baseArgs, prefs: prefs() } as any),

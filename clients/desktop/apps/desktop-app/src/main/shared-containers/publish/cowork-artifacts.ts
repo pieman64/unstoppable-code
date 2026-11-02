@@ -122,6 +122,9 @@ export function buildCoworkRevisionArtifacts(
                   objectMaxDepth: Infinity,
                   objectMaxKeys: Infinity,
                   arrayMaxItems: Infinity,
+                  // Tool occurrences and output locators name this host's
+                  // transcript rows; a published envelope carries neither.
+                  outputLocators: false,
                 },
               ),
               message.attachmentPaths,

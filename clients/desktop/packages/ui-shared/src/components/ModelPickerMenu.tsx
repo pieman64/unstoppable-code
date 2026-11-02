@@ -1,5 +1,8 @@
 'use client';
 
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import { ModelPickerTriggerControl } from './ModelPickerTriggerControl';
+
 import {
   Fragment,
   useCallback,
@@ -21,8 +24,10 @@ import type {
   ModelCatalog,
   ModelCatalogOption,
   ModelCatalogProvider,
+  ModelLibraryAccess,
 } from '@canopy/protocol/models';
 import {
+  resolveModelCatalogHarnessChoice,
   formatModelContextWindow,
   getModelCatalogProviderLabel,
   getModelVendorLabel,
@@ -30,7 +35,6 @@ import {
 import { getDocument, getWindow } from '../panels';
 import { measureTextWidth } from '../lib/measure-text-width';
 import {
-  ChevronDownMediumIcon,
   AllModelsIcon,
   AllModelsFilledIcon,
   ArrowUpRightIcon,
@@ -45,7 +49,6 @@ import {
   CheckIcon as AppCatalogCheckIcon,
   StarIcon as AppCatalogStarIcon,
 } from '../icons/AppIcons';
-import { CAPSULE_TOUCH_FLOOR_CLASS } from './ChatComposerToolbar';
 import {
   DropdownMenuItem,
   type DropdownMenuSurfaceShell,
@@ -55,8 +58,8 @@ import {
   FLOATING_PICKER_GAP,
   FloatingMenu,
 } from './FloatingMenu';
-import { FoldReveal } from './FoldReveal';
 import { ModelGroupHeader } from './ModelGroupHeader';
+import { MODEL_PICKER_ROW_CUE_COPY } from './modelPickerRowCue';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
 import { OverlayScrollArea } from './OverlayScrollArea';
 import {
@@ -72,6 +75,11 @@ import {
 } from './PickerMenu';
 import { Button } from './Button';
 import { RichHoverTooltip } from './RichHoverTooltip';
+import {
+  AI_CREDITS_LABEL,
+  FREE_AI_CREDITS_LABEL,
+  isFreeOnlyAiCredits,
+} from './aiCreditsLabel';
 import { EmptyState } from './StatusBlocks';
 import { IconToggleButton } from './IconToggleButton';
 import { Tooltip } from './Tooltip';
@@ -148,7 +156,19 @@ export interface ModelPickerOptionState {
      */
     readonly label?: string;
     readonly onUnlock: () => void;
+    /**
+     * Keep the row where it was instead of sinking it below usable rows. A
+     * lock that describes recovery the row always had (CAN-5213: turning on
+     * free daily credits) must not reorder the section it annotates.
+     */
+    readonly keepsOrder?: boolean;
   };
+  /**
+   * CAN-5213 — settled evidence says this row runs a new turn now, so a
+   * library-locked viewer sees a check and `Available` in place of the
+   * credits tag. Selection is unchanged. Ignored when `disabled` or `locked`.
+   */
+  readonly available?: boolean;
 }
 
 /** The lock a row shows, or none when another restriction disables it. */
@@ -172,6 +192,7 @@ export const MODEL_PICKER_AUTO_REASONS = {
   noCredits: 'Add AI Credits to use this',
   tooFewCandidates: 'Needs two or more models',
   organizationBlocked: 'Turned off by your organization',
+  unsupportedHarness: 'Auto model selection is not available for this harness.',
 } as const;
 
 /**
@@ -267,6 +288,13 @@ export interface ModelPickerMenuProps {
     option: ModelCatalogOption,
     selection?: ModelPickerSelectionContext,
   ) => ModelPickerOptionState;
+  /**
+   * The work owner's model-library access. Before the first purchase, a
+   * credit-billed row without an active library lock tags itself
+   * `Free AI Credits`; locked rows and unknown access keep `AI Credits`.
+   * Hosts omit it for organization-owned work.
+   */
+  readonly libraryAccess?: ModelLibraryAccess;
   /** Route-specific billing and details; the menu retains the row's identity. */
   readonly getOptionPresentation?: (
     option: ModelCatalogOption,
@@ -575,6 +603,18 @@ function ModelRowDetail({
   if (harness && harnessLabel) {
     rows.push({ label: 'Harness', value: harnessLabel, glyph: harness });
   }
+  if (option.funding)
+    rows.push({
+      label: 'Billing',
+      value:
+        option.funding === 'org-gateway'
+          ? 'Organization gateway'
+          : 'AI Credits',
+    });
+  else if (usesAiCredits)
+    // CAN-5213: a credits route says so even when the row's tag gives way to
+    // an availability cue.
+    rows.push({ label: 'Billing', value: 'AI Credits' });
   rows.push({
     label: 'Reasoning',
     value: modelReasoningLabel(option),
@@ -876,6 +916,7 @@ export function ModelPickerMenu({
   onSelect,
   getOptionState,
   getOptionPresentation,
+  libraryAccess,
   vendorLabels,
   cursorExperimental = true,
   triggerTooltip = 'Model for this chat',
@@ -914,6 +955,7 @@ export function ModelPickerMenu({
 }: ModelPickerMenuProps): JSX.Element {
   const generatedMenuId = useId();
   const resolvedMenuId = menuId ?? generatedMenuId;
+  const freeCreditsAccess = isFreeOnlyAiCredits(libraryAccess);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     onOpenChange?.(open);
@@ -1027,6 +1069,8 @@ export function ModelPickerMenu({
   const [modelSearch, setModelSearch] = useState('');
   const [billingMenuKey, setBillingMenuKey] = useState<string | null>(null);
   const [suppressRowHover, setSuppressRowHover] = useState(false);
+  /** The list offset at the pointer's last real move. */
+  const pointerScrollTopRef = useRef<number | null>(null);
   const [favoriteModelIds, setFavoriteModelIds] = useState<readonly string[]>(
     [],
   );
@@ -1250,8 +1294,12 @@ export function ModelPickerMenu({
     // `sortOrder` is the host's stated intent for that combined order.
     // Library-locked rows sink below the usable ones in their section. With no
     // lock anywhere the comparator contributes nothing and order is unchanged.
-    const lockRank = (option: ModelCatalogOption): number =>
-      getOptionState && activeLock(getOptionState(option)) ? 1 : 0;
+    const lockRank = (option: ModelCatalogOption): number => {
+      const lock = getOptionState
+        ? activeLock(getOptionState(option))
+        : undefined;
+      return lock && lock.keepsOrder !== true ? 1 : 0;
+    };
     const models = [...vendorSections.values()]
       .map((section) => ({
         ...section,
@@ -1535,6 +1583,10 @@ export function ModelPickerMenu({
   useLayoutEffect(() => {
     if (open) scrollToSelectionRef.current = true;
   }, [open]);
+  // A pointer offset only describes the list it was recorded over.
+  useLayoutEffect(() => {
+    pointerScrollTopRef.current = null;
+  }, [open, activeHarnessTab, modelSearch]);
   useEffect(() => {
     const list = harnessListRef.current;
     if (!open || !list || !scrollToSelectionRef.current) return undefined;
@@ -1893,7 +1945,7 @@ export function ModelPickerMenu({
   );
 
   const triggerControl = (
-    <button
+    <ModelPickerTriggerControl
       ref={triggerRef}
       type="button"
       data-testid={`${testIdPrefix}-picker`}
@@ -1913,48 +1965,22 @@ export function ModelPickerMenu({
         event.preventDefault();
         setOpen(true);
       }}
-      className={`flex min-w-0 max-w-full items-center whitespace-nowrap fg-primary transition hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
-        variant === 'capsule'
-          ? compactTrigger
-            ? // 32px is desktop's capsule contract; a coarse pointer (phone,
-              // tablet, touch laptop) still gets the 44px floor (DESIGN.md).
-              `h-8 gap-1 rounded-full px-1 text-xs ${CAPSULE_TOUCH_FLOOR_CLASS}`
-            : `h-8 gap-1 rounded-full px-2.5 text-xs${chevronless ? ' pr-3' : ''} ${CAPSULE_TOUCH_FLOOR_CLASS}`
-          : 'gap-1 rounded-md px-1.5 py-0.5 text-2xs'
-      }`}
       aria-label={`Select model, current model ${triggerLabel}`}
       aria-haspopup="menu"
       aria-expanded={open}
       aria-controls={open ? resolvedMenuId : undefined}
-    >
-      {foldTriggerIcon ? (
-        // `pr-1.5` plus the capsule's 4px gap, less the fold's `-mr-1`, keeps
-        // the icon's usual 6px inset; folded, the margin takes the gap back.
-        <FoldReveal open={!triggerIconFolded} className="-mr-1">
-          <span className="flex pr-1.5">{triggerIcon}</span>
-        </FoldReveal>
-      ) : (
-        triggerIcon
-      )}
-      {!hideLabel && (
-        <span
-          ref={attachTriggerLabel}
-          // Long names stop at 12rem unless the host sets its own width.
-          className={`min-w-0 truncate ${triggerLabelClassName ?? 'max-w-48'}`}
-        >
-          {triggerLabel}
-        </span>
-      )}
-      {chevronless ? null : (
-        <ChevronDownMediumIcon
-          width={variant === 'capsule' ? 16 : 8}
-          height={variant === 'capsule' ? 16 : 8}
-          className={
-            variant === 'capsule' ? 'shrink-0 fg-quaternary' : 'shrink-0'
-          }
-        />
-      )}
-    </button>
+      icon={triggerIcon}
+      label={triggerLabel}
+      labelRef={attachTriggerLabel}
+      // eslint-disable-next-line shadcn/require-static-classes -- Preserve the caller-supplied label width when forwarding to the extracted trigger.
+      labelClassName={triggerLabelClassName}
+      variant={variant}
+      compact={compactTrigger}
+      hideLabel={hideLabel}
+      hideChevron={chevronless}
+      foldIcon={foldTriggerIcon}
+      iconFolded={triggerIconFolded}
+    />
   );
 
   const trigger = (
@@ -2199,10 +2225,10 @@ export function ModelPickerMenu({
             openDelay={100}
             label={
               <span className="block w-64 whitespace-normal">
-                Experimental Cursor integration for Code chats, Cowork, App
-                Advisor, and pipelines. Chats support plugin MCP servers,
-                skills, and commands. Enable managed subagents for Code worktree
-                chats in desktop Settings &gt; Labs.
+                Experimental Cursor integration for Code chats, Cowork,{' '}
+                {ORCHESTRATOR_LABEL}, and workflows. Chats support plugin MCP
+                servers, skills, and commands. Enable managed subagents for Code
+                worktree chats in desktop Settings &gt; Labs.
               </span>
             }
           >
@@ -2395,6 +2421,7 @@ export function ModelPickerMenu({
     // A disconnected native account does not remove the managed route's
     // identity. Selection and favorites still need the chosen harness.
     const runsOnSeveralHarnesses =
+      Boolean(option.harnessChoices?.length) ||
       option.source === 'ai-gateway' ||
       harnessPanelIds.some(
         (harness) =>
@@ -2415,6 +2442,9 @@ export function ModelPickerMenu({
     const billingHarness =
       ownHarness ??
       resultHarness ??
+      (inAll && option.harnessChoices?.length
+        ? (option.harness ?? modelHarnessTab(option))
+        : undefined) ??
       (activeHarnessTab === 'favorites' ? option.harness : activeHarnessTab) ??
       modelHarnessTab(option);
     // A favorite retains its saved account even if that account stops offering
@@ -2435,12 +2465,25 @@ export function ModelPickerMenu({
       option.id === AUTO_ROW_ID
         ? harnessTabs?.billing?.includeAuto === true
         : option.id !== autoModeOption?.id &&
+          billingHarness !== 'opencode' &&
           harnessTabs?.billing?.modelIds.has(option.id) === true
     )
       ? harnessTabs?.billing
       : undefined;
+    const selectedChoice = option.harnessChoices?.find(
+      (choice) => choice.harness === billingHarness,
+    );
+    const displayOption = resolveModelCatalogHarnessChoice(
+      option,
+      billingHarness,
+    );
     const preference = billing?.getPreference(option.id, billingHarness);
-    credits = credits || preference?.payment === 'credits';
+    credits =
+      selectedChoice?.funding === 'org-gateway'
+        ? false
+        : credits ||
+          preference?.payment === 'credits' ||
+          selectedChoice?.funding === 'ai-credits';
     const stateSelection: ModelPickerSelectionContext | undefined =
       selectionHarness
         ? {
@@ -2452,7 +2495,7 @@ export function ModelPickerMenu({
         : undefined;
     const state = resolveOptionState(option, stateSelection, credits);
     const presentation =
-      getOptionPresentation?.(option, stateSelection) ?? option;
+      getOptionPresentation?.(option, stateSelection) ?? displayOption;
     const managedAccount =
       presentation.source === 'cursor' ||
       presentation.source === 'copilot' ||
@@ -2494,10 +2537,16 @@ export function ModelPickerMenu({
           harnessTabs?.leadingFavorites && option.id !== autoModeOption?.id
         }
         usesAiCredits={
+          selectedChoice?.funding !== 'org-gateway' &&
           !managedAccount &&
           (credits ||
             presentation.source === 'ai-gateway' ||
             harnessTabs?.creditsRoutedModelIds?.has(option.id) === true)
+        }
+        creditsTagLabel={
+          freeCreditsAccess && !activeLock(state)
+            ? FREE_AI_CREDITS_LABEL
+            : AI_CREDITS_LABEL
         }
         settingsHarnesses={
           // Harness tabs and search groups already fix where the model runs.
@@ -2788,30 +2837,48 @@ export function ModelPickerMenu({
         : 'model-picker'
       : 'model-browser'
     : 'menu';
+  // Recovery text shares a row with the model's identity. The compact shell
+  // predates these labels and leaves Haiku almost entirely ellipsized beside
+  // Needs free daily credits. Use the same roomier shell on every host; the
+  // existing picker surface still caps it to the available viewport.
+  const hasRowCueLabel = useMemo(
+    () =>
+      catalog.some((option) => {
+        const state = getOptionState?.(option);
+        return (
+          state !== undefined &&
+          !state.disabled &&
+          (state.available === true || activeLock(state)?.label !== undefined)
+        );
+      }),
+    [catalog, getOptionState],
+  );
+  const rowCueWidth = hasRowCueLabel ? '28rem' : '19rem';
   const menuSurfaceStyle:
     | (CSSProperties & {
         '--canopy-picker-minimum-width': string;
         '--canopy-picker-maximum-width': string;
         height?: number;
       })
-    | undefined = pickerChrome
-    ? {
-        // 304px: the harness rail plus model names, badges and the trailing
-        // provider glyph without dead space.
-        '--canopy-picker-minimum-width': '19rem',
-        '--canopy-picker-maximum-width': '19rem',
-        ...(pickerChromeHeightPx === undefined
-          ? {}
-          : {
-              height: Math.max(
-                menuMinHeightPx ?? 0,
-                menuMaxHeightPx === undefined
-                  ? pickerChromeHeightPx
-                  : Math.min(pickerChromeHeightPx, menuMaxHeightPx),
-              ),
-            }),
-      }
-    : undefined;
+    | undefined =
+    pickerChrome || (harnessTabs !== undefined && hasRowCueLabel)
+      ? {
+          // Keep ordinary rows compact; labelled rows also reserve room for
+          // their recovery or readiness text beside the model name.
+          '--canopy-picker-minimum-width': rowCueWidth,
+          '--canopy-picker-maximum-width': rowCueWidth,
+          ...(pickerChromeHeightPx === undefined
+            ? {}
+            : {
+                height: Math.max(
+                  menuMinHeightPx ?? 0,
+                  menuMaxHeightPx === undefined
+                    ? pickerChromeHeightPx
+                    : Math.min(pickerChromeHeightPx, menuMaxHeightPx),
+                ),
+              }),
+        }
+      : undefined;
   const renderMenuSurface = (children: ReactNode): JSX.Element => {
     return (
       <FloatingMenu
@@ -2859,7 +2926,11 @@ export function ModelPickerMenu({
         // search row and a short model list, and still inside a short viewport.
         shell={menuSurfaceShell}
         className={
-          harnessTabs ? 'overscroll-contain' : 'w-64 overscroll-contain'
+          harnessTabs
+            ? 'overscroll-contain'
+            : hasRowCueLabel
+              ? 'w-112 max-w-[calc(100vw-16px)] overscroll-contain'
+              : 'w-64 overscroll-contain'
         }
         style={menuSurfaceStyle}
       >
@@ -3007,7 +3078,6 @@ export function ModelPickerMenu({
                     <PickerMenuSearchInput
                       ref={searchRef}
                       type="search"
-                      hideNativeClear
                       value={modelSearch}
                       onChange={(event): void =>
                         setModelSearch(event.target.value)
@@ -3228,9 +3298,22 @@ export function ModelPickerMenu({
                   role="presentation"
                   edges={pickerChrome && !modelSearch ? 'right' : 'both'}
                   gutter={pickerChrome ? 'none' : 'scrollbar'}
-                  onScrollCapture={(): void => setSuppressRowHover(true)}
+                  onScrollCapture={(event): void => {
+                    // Chromium reports a scroll a frame after it happens. A
+                    // pointer that already moved at this offset entered the
+                    // rows it is over now, so its hover stands.
+                    if (
+                      event.target === event.currentTarget &&
+                      event.currentTarget.scrollTop ===
+                        pointerScrollTopRef.current
+                    )
+                      return;
+                    setSuppressRowHover(true);
+                  }}
                   onPointerMoveCapture={(event): void => {
                     if (event.movementX !== 0 || event.movementY !== 0) {
+                      pointerScrollTopRef.current =
+                        event.currentTarget.scrollTop;
                       setSuppressRowHover(false);
                     }
                   }}
@@ -3661,6 +3744,7 @@ function ModelPickerOption({
   highlightSelection = false,
   leadingFavorite = false,
   usesAiCredits = option.source === 'ai-gateway',
+  creditsTagLabel = AI_CREDITS_LABEL,
   extraChargeMarker = false,
   billingPreference,
   billingFallback = true,
@@ -3691,6 +3775,8 @@ function ModelPickerOption({
   readonly onBillingOpenChange?: (open: boolean) => void;
   readonly billingMenuActive?: boolean;
   readonly usesAiCredits?: boolean;
+  /** Text of the credits tag; `Free AI Credits` before the first purchase. */
+  readonly creditsTagLabel?: string;
   /** Single-list rows mark AI Credits-only models with `$`, not a label. */
   readonly extraChargeMarker?: boolean;
   readonly option: ModelCatalogOption;
@@ -3743,6 +3829,8 @@ function ModelPickerOption({
   const [reasonRevealed, setReasonRevealed] = useState(false);
   const lock = activeLock(state);
   const lockLabel = lock?.label?.trim() || undefined;
+  const available =
+    state.available === true && !state.disabled && !lock && !isAutoMode;
   const visibleDetail = hidden ? false : detailOpen;
   const handleDetailOpenChange = useCallback(
     (next: boolean): void => {
@@ -3754,9 +3842,13 @@ function ModelPickerOption({
     [visibleDetail, inFlyout, onDetailChange, option.id],
   );
   // A sign-in label replaces the credits tag: the row cannot run on credits
-  // until the user signs in.
+  // until the user signs in. So does `Available`; the detail names billing.
   const showsCreditsTag =
-    usesAiCredits && !isAutoMode && !extraChargeMarker && !lockLabel;
+    usesAiCredits &&
+    !isAutoMode &&
+    !extraChargeMarker &&
+    !lockLabel &&
+    !available;
   const [creditsHovered, setCreditsHovered] = useState(false);
   const [creditsFocused, setCreditsFocused] = useState(false);
   const creditsTooltipActive =
@@ -3768,6 +3860,7 @@ function ModelPickerOption({
   const hasExtraCharge = option.extraChargeOnly === true;
   const hasDescription = Boolean(option.description);
   const lockHintId = `${tooltipId}-unlock`;
+  const availableId = `${tooltipId}-available`;
   const showReasonInTooltip =
     state.unavailableReason !== undefined && !reasonRevealed;
   /*
@@ -3900,7 +3993,11 @@ function ModelPickerOption({
     ? tooltipVisible
       ? `${reasonId} ${tooltipId}`
       : reasonId
-    : [lock ? lockHintId : undefined, tooltipVisible ? tooltipId : undefined]
+    : [
+        lock ? lockHintId : undefined,
+        available ? availableId : undefined,
+        tooltipVisible ? tooltipId : undefined,
+      ]
         .filter(Boolean)
         .join(' ') || undefined;
   const lockGlyph = (
@@ -3975,6 +4072,7 @@ function ModelPickerOption({
             role={autoState?.actionable || lock ? 'menuitem' : 'menuitemradio'}
             aria-checked={autoState?.actionable || lock ? undefined : selected}
             data-locked={lock ? 'true' : undefined}
+            data-available={available ? 'true' : undefined}
             aria-disabled={
               state.disabled ? true : uniformTestIds ? false : undefined
             }
@@ -4086,35 +4184,6 @@ function ModelPickerOption({
                 </span>
               ) : null}
             </PickerMenuOptionContent>
-            {lock ? (
-              <>
-                <span id={lockHintId} className="sr-only">
-                  {lock.hint}
-                </span>
-                {lockLabel ? (
-                  // The hint above already names the remedy for assistive
-                  // technology, so the visible label is not read twice.
-                  <span
-                    aria-hidden="true"
-                    className="inline-flex shrink-0 items-center gap-1"
-                  >
-                    {lockGlyph}
-                    <span
-                      className="text-2xs fg-secondary"
-                      data-testid={
-                        uniformTestIds
-                          ? `${testIdPrefix}-option-lock-label`
-                          : `${testIdPrefix}-option-lock-label-${option.id}`
-                      }
-                    >
-                      {lockLabel}
-                    </span>
-                  </span>
-                ) : (
-                  lockGlyph
-                )}
-              </>
-            ) : null}
             {autoState?.actionable ? (
               // The hint sits on the label's baseline, 1px under the row's
               // center; the 2px top margin moves the arrow's center there.
@@ -4124,6 +4193,14 @@ function ModelPickerOption({
                 className="mt-0.5 shrink-0 fg-tertiary"
                 data-testid={`${testIdPrefix}-option-auto-action-icon`}
               />
+            ) : null}
+            {option.funding === 'org-gateway' && !isAutoMode ? (
+              <span
+                className="shrink-0 text-2xs fg-secondary"
+                data-testid={`${testIdPrefix}-row-org-gateway-${option.id}`}
+              >
+                Org gateway
+              </span>
             ) : null}
             {showsCreditsTag ? (
               <span
@@ -4135,11 +4212,22 @@ function ModelPickerOption({
                 onBlurCapture={(): void => setCreditsFocused(false)}
               >
                 <span
-                  className="shrink-0 text-2xs fg-tertiary"
+                  className="shrink-0 text-2xs fg-secondary"
                   data-testid={`${testIdPrefix}-row-credits-${option.id}`}
                 >
-                  AI credits
+                  {creditsTagLabel}
                 </span>
+                {/* CAN-5213: the free tag means the row runs now, so it
+                    takes the same trailing check as `Available`. */}
+                {creditsTagLabel === FREE_AI_CREDITS_LABEL ? (
+                  <AppCatalogCheckIcon
+                    width={PICKER_ROW_GLYPH_SIZE}
+                    height={PICKER_ROW_GLYPH_SIZE}
+                    aria-hidden="true"
+                    className="ml-1 shrink-0 fg-secondary"
+                    data-testid={`${testIdPrefix}-row-credits-check-${option.id}`}
+                  />
+                ) : null}
               </span>
             ) : null}
             {extraChargeMarker && hasExtraCharge ? (
@@ -4153,6 +4241,64 @@ function ModelPickerOption({
                 aria-label="AI Credits only"
               >
                 $
+              </span>
+            ) : null}
+            {/* CAN-5213: the state cue renders last, its icon after its
+                label, so locks and checks line up in one column beside the
+                harness icon. */}
+            {lock ? (
+              <>
+                <span id={lockHintId} className="sr-only">
+                  {lock.hint}
+                </span>
+                {lockLabel ? (
+                  // The hint above already names the remedy for assistive
+                  // technology, so the visible label is not read twice.
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex shrink-0 items-center gap-1"
+                  >
+                    <span
+                      className="text-2xs fg-secondary"
+                      data-testid={
+                        uniformTestIds
+                          ? `${testIdPrefix}-option-lock-label`
+                          : `${testIdPrefix}-option-lock-label-${option.id}`
+                      }
+                    >
+                      {lockLabel}
+                    </span>
+                    {lockGlyph}
+                  </span>
+                ) : (
+                  lockGlyph
+                )}
+              </>
+            ) : null}
+            {available ? (
+              // Read through `aria-describedby`, so the row's accessible name
+              // stays the model's name.
+              <span
+                aria-hidden="true"
+                className="inline-flex shrink-0 items-center gap-1"
+              >
+                <span
+                  id={availableId}
+                  className="text-2xs fg-secondary"
+                  data-testid={
+                    uniformTestIds
+                      ? `${testIdPrefix}-option-available`
+                      : `${testIdPrefix}-option-available-${option.id}`
+                  }
+                >
+                  {MODEL_PICKER_ROW_CUE_COPY.available}
+                </span>
+                <AppCatalogCheckIcon
+                  width={PICKER_ROW_GLYPH_SIZE}
+                  height={PICKER_ROW_GLYPH_SIZE}
+                  aria-hidden="true"
+                  className="shrink-0 fg-secondary"
+                />
               </span>
             ) : null}
           </PickerMenuOption>
@@ -4362,7 +4508,7 @@ function ModelPickerOption({
                     ? isAutoMode
                       ? 'Subscription'
                       : `${billingHarnessLabel ?? getModelCatalogProviderLabel(option.provider)} subscription`
-                    : 'AI credits'}
+                    : 'AI Credits'}
                   {billingPreference.payment === payment ? (
                     <PickerMenuOptionCheck selected />
                   ) : null}
@@ -4390,7 +4536,7 @@ function ModelPickerOption({
                   >
                     <span className="flex min-w-0 flex-1 items-center gap-6 whitespace-normal">
                       <span className="min-w-0 flex-1 text-pretty text-xs leading-snug">
-                        Use AI credits when limits are reached
+                        Use AI Credits when limits are reached
                       </span>
                       <CompactToggleIndicator
                         checked={billingPreference.fallback}

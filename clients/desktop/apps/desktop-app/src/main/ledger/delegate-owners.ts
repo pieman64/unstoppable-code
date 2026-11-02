@@ -48,7 +48,8 @@ export async function readLedgerContainerLiveDelegates(
   container: LedgerContainer,
 ): Promise<readonly LedgerLiveDelegate[]> {
   const source = registeredSource;
-  if (source === undefined) return [];
+  // A global (workflow) Ledger has no chats, so no delegates of them.
+  if (source === undefined || container.kind === 'global') return [];
   try {
     return await source(container);
   } catch {

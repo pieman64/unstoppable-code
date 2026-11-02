@@ -205,7 +205,7 @@ describe('CostScopeView', () => {
       byTestId(renderer.container, 'cost-run-row-run-1')
         .querySelector('[role="img"]')
         ?.getAttribute('aria-label'),
-    ).toContain('Pipeline steps');
+    ).toContain('Workflow steps');
 
     click(byTestId(renderer.container, 'cost-split-billing'));
 

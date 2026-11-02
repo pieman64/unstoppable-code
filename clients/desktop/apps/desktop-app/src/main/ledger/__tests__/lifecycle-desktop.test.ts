@@ -63,6 +63,8 @@ import type {
 import type * as LifecycleModule from '../lifecycle';
 import type * as ServiceModule from '../service';
 import type * as StorageHostModule from '../storage-host';
+import type * as W5CommitStoreModule from '../../lib/w5-commit-log-file-store';
+import type { W5FileRead } from '../../lib/w5-file-store';
 
 type Lifecycle = typeof LifecycleModule;
 
@@ -130,6 +132,14 @@ class InMemoryLifecycleStore implements LedgerStoreClient {
 
   bindScope(): Promise<never> {
     return unused('bindScope');
+  }
+
+  bindGlobalScope(): Promise<never> {
+    return unused('bindGlobalScope');
+  }
+
+  findGlobalScope(): Promise<never> {
+    return unused('findGlobalScope');
   }
 
   registerActor(): Promise<never> {
@@ -280,6 +290,7 @@ class InMemoryLifecycleStore implements LedgerStoreClient {
 }
 
 const ANY_STRING: unknown = expect.any(String);
+const ABSENT: W5FileRead = { state: 'absent' };
 
 /** The first argument of each recorded call, as text. */
 function firstArguments(
@@ -898,6 +909,12 @@ describe('desktop Ledger lifecycle', () => {
       await expect(
         persistence.readContainerRegistry('work_entries', 'cowork-1'),
       ).resolves.toEqual({ status: 'unreadable' });
+      // Only a missing list is absent: a file where the workspace directory
+      // should be (ENOTDIR) proves nothing.
+      writeFileSync(join(workspaces, 'ws-file'), 'not a directory');
+      await expect(
+        persistence.readContainerRegistry('worktrees', 'ws-file'),
+      ).resolves.toEqual({ status: 'unreadable' });
     });
 
     it('read an archive as absent, unreadable or what its manifest records', async () => {
@@ -969,6 +986,201 @@ describe('desktop Ledger lifecycle', () => {
 
       writeFileSync(indexPath, '{ damaged');
       await expect(persistence.readWorkspaceIndex()).resolves.toBeNull();
+    });
+
+    // The reads behind the worktree:archive and workspace:delete
+    // participants, the relocation search and the startup pass.
+    describe('through the W5 repositories (CAN-5478)', () => {
+      let files: Map<string, W5FileRead>;
+      let replaced: string[];
+      let storeModule: typeof W5CommitStoreModule;
+
+      function stored(path: string, value: unknown): void {
+        files.set(path, { state: 'present', raw: JSON.stringify(value) });
+      }
+
+      function indexPath(): string {
+        return join(dataDir, 'workspaces', 'index.json');
+      }
+
+      function listPath(workspaceId: string): string {
+        return join(dataDir, 'workspaces', workspaceId, 'worktrees.json');
+      }
+
+      function entry(id: string, type: string): Record<string, unknown> {
+        return { id, name: id, type, color: 'blue' };
+      }
+
+      beforeEach(async () => {
+        files = new Map();
+        replaced = [];
+        storeModule = await import('../../lib/w5-commit-log-file-store');
+        // Disk stays empty: only a read through the repositories sees these.
+        storeModule.__setDesktopW5FileStoreForTests({
+          read: (path) => Promise.resolve(files.get(path) ?? ABSENT),
+          replace: (path) => {
+            replaced.push(path);
+            return Promise.reject(new Error('Reads never write'));
+          },
+        });
+      });
+
+      afterEach(async () => {
+        const { nodeW5FileStore } = await import('../../lib/w5-file-store');
+        storeModule.__setDesktopW5FileStoreForTests(nodeW5FileStore);
+      });
+
+      it('reads the index only when the repository proves every entry', async () => {
+        const persistence = lifecycle.DESKTOP_LEDGER_LIFECYCLE_PERSISTENCE;
+        stored(indexPath(), {
+          version: 1,
+          workspaces: [
+            entry('ws-1', 'single-repo'),
+            entry('ws-1', 'single-repo'),
+            { id: 'cowork-1', type: 'cowork', color: 'green' },
+          ],
+        });
+        await expect(persistence.readWorkspaceIndex()).resolves.toEqual(
+          new Map([
+            ['ws-1', 'single-repo'],
+            ['cowork-1', 'cowork'],
+          ]),
+        );
+
+        for (const workspaces of [
+          // Partial: entries the repository cannot normalize.
+          [entry('ws-1', 'single-repo'), { id: 'ws-2', type: 'multi-repo' }],
+          [entry('ws-1', 'single-repo'), { ...entry('ws-2', 'git') }],
+          [{ id: 'ws-1', type: 'single-repo', color: 'blue' }],
+          // Ambiguous: no id, or one id with two types.
+          [entry('', 'single-repo')],
+          [entry('ws-1', 'single-repo'), entry('ws-1', 'multi-repo')],
+        ]) {
+          stored(indexPath(), { version: 1, workspaces });
+          await expect(persistence.readWorkspaceIndex()).resolves.toBeNull();
+        }
+        files.set(indexPath(), { state: 'unreadable' });
+        await expect(persistence.readWorkspaceIndex()).resolves.toBeNull();
+        files.delete(indexPath());
+        await expect(persistence.readWorkspaceIndex()).resolves.toBeNull();
+      });
+
+      it('reads a worktree list as absent, unreadable or every row it holds', async () => {
+        const persistence = lifecycle.DESKTOP_LEDGER_LIFECYCLE_PERSISTENCE;
+        const { markWorkspaceWorktreeRecentlyRemoved } =
+          await import('../../lib/workspace-persistence');
+        stored(listPath('ws-1'), {
+          version: 1,
+          worktrees: [
+            { id: 'wt-1', branchName: 'one', createdAt: T0 },
+            { id: 'wt-2', branchName: 'two', createdAt: T1 },
+          ],
+        });
+        // A row this process removed still names its incarnation.
+        markWorkspaceWorktreeRecentlyRemoved('ws-1', 'wt-2', T1);
+        await expect(
+          persistence.readContainerRegistry('worktrees', 'ws-1'),
+        ).resolves.toEqual({
+          status: 'ok',
+          createdAtById: new Map([
+            ['wt-1', T0],
+            ['wt-2', T1],
+          ]),
+        });
+        expect(replaced).toEqual([]);
+
+        await expect(
+          persistence.readContainerRegistry('worktrees', 'ws-missing'),
+        ).resolves.toEqual({ status: 'absent' });
+        files.set(listPath('ws-io'), { state: 'unreadable' });
+        stored(listPath('ws-partial'), {
+          version: 1,
+          worktrees: [
+            { id: 'wt-1', branchName: 'one', createdAt: T0 },
+            { id: 'wt-2', branchName: 'two' },
+          ],
+        });
+        stored(listPath('ws-twice'), {
+          version: 1,
+          worktrees: [
+            { id: 'wt-1', branchName: 'one', createdAt: T0 },
+            { id: 'wt-1', branchName: 'again', createdAt: T1 },
+          ],
+        });
+        stored(listPath('ws-v2'), { version: 2, worktrees: [] });
+        for (const workspaceId of [
+          'ws-io',
+          'ws-partial',
+          'ws-twice',
+          'ws-v2',
+        ]) {
+          await expect(
+            persistence.readContainerRegistry('worktrees', workspaceId),
+          ).resolves.toEqual({ status: 'unreadable' });
+        }
+      });
+
+      it('reads a list without waiting on, or joining, a W5 list lock', async () => {
+        const persistence = lifecycle.DESKTOP_LEDGER_LIFECYCLE_PERSISTENCE;
+        const locks = await import('../../lib/w5-repository-locks');
+        for (const workspaceId of ['ws-a', 'ws-b'])
+          stored(listPath(workspaceId), {
+            version: 1,
+            worktrees: [{ id: 'wt-1', branchName: 'one', createdAt: T0 }],
+          });
+        const ok = { status: 'ok', createdAtById: new Map([['wt-1', T0]]) };
+        let release = (): void => undefined;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let entered = (): void => undefined;
+        const holding = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        // Another task holds ws-a's list, as an archive at quit may.
+        const holder = locks.withW5RepositoryLock(
+          { kind: 'list', path: listPath('ws-a') },
+          async () => {
+            entered();
+            await held;
+          },
+        );
+        await holding;
+        // The quit drain waits 2 s for lifecycle work.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise((resolve) => {
+          timer = setTimeout(resolve, 2_000, 'timed out');
+        });
+        try {
+          await expect(
+            Promise.race([
+              persistence.readContainerRegistry('worktrees', 'ws-a'),
+              timedOut,
+            ]),
+          ).resolves.toEqual(ok);
+          // A lifecycle task inherits its participant's context: here a
+          // later list's lease, and then a commit scope that has finished.
+          await locks.withW5RepositoryLock(
+            { kind: 'list', path: listPath('ws-b') },
+            () =>
+              expect(
+                persistence.readContainerRegistry('worktrees', 'ws-a'),
+              ).resolves.toEqual(ok),
+          );
+          let afterScope: Promise<unknown> = Promise.resolve();
+          await locks.withW5CommitLocks([], () => {
+            afterScope = new Promise((resolve) => setImmediate(resolve)).then(
+              () => persistence.readContainerRegistry('worktrees', 'ws-b'),
+            );
+            return Promise.resolve();
+          });
+          await expect(afterScope).resolves.toEqual(ok);
+        } finally {
+          clearTimeout(timer);
+          release();
+          await holder;
+        }
+      });
     });
   });
 });

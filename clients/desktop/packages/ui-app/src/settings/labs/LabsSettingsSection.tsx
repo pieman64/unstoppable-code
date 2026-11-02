@@ -9,7 +9,6 @@ import {
   SETTINGS_CARD_ROW_CLASS,
   SettingsCard,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
-import { ExperimentIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useLabsSettingsPort } from './labs-settings-port';
 
 function CardSection({
@@ -25,12 +24,7 @@ function CardSection({
   readonly children?: ReactNode;
 }): JSX.Element {
   return (
-    <SettingsCard
-      icon={<ExperimentIcon size={18} />}
-      title={title}
-      subtitle={description}
-      testId={dataTestId}
-    >
+    <SettingsCard title={title} subtitle={description} testId={dataTestId}>
       {children}
     </SettingsCard>
   );

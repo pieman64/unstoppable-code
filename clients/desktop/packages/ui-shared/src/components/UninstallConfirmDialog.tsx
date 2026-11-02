@@ -14,7 +14,8 @@ import { ConfirmDialog } from './ConfirmDialog';
  * installed-item Status row and the ⋯ menu beside an installed share.
  *
  * Focus lands on Cancel so a reflexive Enter backs out. The confirm button
- * reads `Uninstall`, then `Uninstalling…` while the host writes; a repeated
+ * reads `Uninstall`, then `Uninstalling…` while the host writes (a Customize
+ * row passes its own verb, CAN-4840); a repeated
  * confirm during that write is ignored. A failure keeps the dialog open with
  * its message so the user can retry or cancel.
  */
@@ -32,6 +33,10 @@ export interface UninstallConfirmDialogProps {
   /** Called after a confirmed removal; the host closes the dialog here. */
   readonly onUninstalled: () => void;
   readonly fallbackErrorMessage?: string;
+  /** The confirm button's verb, such as `Remove` or `Delete`. */
+  readonly confirmLabel?: string;
+  /** Confirm button label while the removal is in flight. */
+  readonly busyLabel?: string;
   readonly dataTestId?: string;
   readonly confirmTestId?: string;
   readonly cancelTestId?: string;
@@ -45,6 +50,8 @@ export function UninstallConfirmDialog({
   onCancel,
   onUninstalled,
   fallbackErrorMessage = 'Could not uninstall. Try again.',
+  confirmLabel = 'Uninstall',
+  busyLabel = 'Uninstalling…',
   dataTestId = 'uninstall-confirm-dialog',
   confirmTestId = 'uninstall-confirm-dialog-confirm',
   cancelTestId = 'uninstall-confirm-dialog-cancel',
@@ -78,8 +85,8 @@ export function UninstallConfirmDialog({
     <ConfirmDialog
       title={title}
       message={message}
-      confirmLabel="Uninstall"
-      busyLabel="Uninstalling…"
+      confirmLabel={confirmLabel}
+      busyLabel={busyLabel}
       busy={busy}
       destructive
       focusCancel

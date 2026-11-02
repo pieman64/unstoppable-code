@@ -1,5 +1,6 @@
 import type { BackgroundTaskStatus } from '@canopy/protocol/background-tasks';
 import type { DisplayBlock, ToolResult } from '../message-display';
+import { claudeLaunchedAgentId, isPendingTaskOutput } from './claude-agent-id';
 
 export function isClaudeAgentRunning(
   runInBackground: boolean,
@@ -9,14 +10,16 @@ export function isClaudeAgentRunning(
 ): boolean {
   if (backgroundStatus)
     return backgroundStatus === 'queued' || backgroundStatus === 'running';
-  if (taskOutputResult) return false;
+  if (taskOutputResult && !isPendingTaskOutput(taskOutputResult.output))
+    return false;
   if (!result) return true;
-  // A background launch acknowledgement is not the child's final result.
-  return (
-    runInBackground &&
-    !result.isError &&
-    /Async agent launched|agentId:\s*[a-f0-9-]+/i.test(result.output)
-  );
+  // A background launch acknowledgement is not the child's final result. An
+  // async launch says so even without `run_in_background`.
+  if (result.isError) return false;
+  if (/Async agent launched/i.test(result.output)) return true;
+  if (claudeLaunchedAgentId(result.output) !== undefined)
+    return runInBackground;
+  return false;
 }
 
 export function codexAgentState(

@@ -179,10 +179,17 @@ async function openNarrowAdvisorTranscript({ earlyAccess }) {
       .locator('[data-role="user"]')
       .filter({ hasText: PROMPT })
       .first();
-    const banner = chatPanel
+    const bannerToggle = chatPanel
       .getByRole('button', { name: /^Agent steps:/ })
       .first();
+    // The banner is the summary row that wraps the toggle, its outcome and
+    // its chips; the toggle button only spans its own words. The row is
+    // what takes the bubble's width.
+    const banner = earlyAccess
+      ? chatPanel.getByTestId('turn-work-header').first()
+      : bannerToggle.locator('xpath=ancestor::*[@data-turn-summary-row][1]');
     await expect(bubble).toBeVisible();
+    await expect(bannerToggle).toBeVisible();
     await expect(banner).toBeVisible();
     // The phone tier is what shrinks the bubble to its text.
     await expect
@@ -199,7 +206,7 @@ async function openNarrowAdvisorTranscript({ earlyAccess }) {
 async function readGeometry(bubble, banner) {
   const bubbleGeometry = await bubble.evaluate((wrapper) => {
     const copy = wrapper.querySelector(
-      'button[aria-label="Copy to clipboard"]',
+      'button[aria-label="Copy your message"]',
     );
     let cluster = copy;
     while (cluster && cluster.parentElement !== wrapper) {
@@ -234,22 +241,11 @@ async function readGeometry(bubble, banner) {
   return { ...bubbleGeometry, banner: bannerRect };
 }
 
-test('early access puts the bubble actions on its corner and matches the steps banner to the bubble', async () => {
+test('Clean chat preserves corner bubble actions beneath a full-width work header', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, bubble, banner } =
     await openNarrowAdvisorTranscript({ earlyAccess: true });
   try {
-    // The banner tracks the bubble through a ResizeObserver, so wait for the
-    // widths to settle before reading the rest of the geometry.
-    await expect
-      .poll(async () => {
-        const { wrapper, banner: bannerRect } = await readGeometry(
-          bubble,
-          banner,
-        );
-        return Math.abs(bannerRect.width - wrapper.width);
-      })
-      .toBeLessThan(1);
     const geometry = await readGeometry(bubble, banner);
     const detail = JSON.stringify(geometry);
 
@@ -267,16 +263,17 @@ test('early access puts the bubble actions on its corner and matches the steps b
     expect(geometry.surfaceClasses, detail).not.toContain('pr-9');
     expect(geometry.surfaceClasses, detail).not.toContain('pr-17');
 
-    // The steps banner reads as one stack with the bubble: same width, same
-    // right edge.
-    expect(
-      Math.abs(geometry.banner.right - geometry.wrapper.right),
-      detail,
-    ).toBeLessThan(1);
-    expect(
-      Math.abs(geometry.banner.left - geometry.wrapper.left),
-      detail,
-    ).toBeLessThan(1);
+    // Clean chat's work header spans the turn rather than matching the
+    // narrow user bubble. It still contains the bubble's horizontal bounds.
+    expect(geometry.banner.width, detail).toBeGreaterThanOrEqual(
+      geometry.wrapper.width,
+    );
+    expect(geometry.banner.left, detail).toBeLessThanOrEqual(
+      geometry.wrapper.left + 1,
+    );
+    expect(geometry.banner.right, detail).toBeGreaterThanOrEqual(
+      geometry.wrapper.right - 1,
+    );
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

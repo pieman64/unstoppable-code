@@ -17,9 +17,17 @@
  * The interrupted-work scan and feedback bundles have their cases in their
  * own suites; restart recovery is in the write-path suite.
  */
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import {
+  appendFile,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type * as FsPromisesModule from 'node:fs/promises';
 import type {
   ChatCoreMutation,
@@ -28,8 +36,20 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { resetResolvedCanopyDataDirForTests } from '@canopy/desktop-shared/canopy-paths';
 import { getWorkspaceChatTabsFilePath } from '../lib/paths';
-import { ChatStorageV2 } from '../lib/chat-storage-v2';
-import { summarizeDeltaJournal } from '../lib/chat-delta-journal/reader';
+import {
+  assertChatStorageIndexes,
+  ChatStorageV2,
+} from '../lib/chat-storage-v2';
+import {
+  ChatStorageNewerFormatError,
+  DELTA_JOURNAL_FILE_NAME,
+  FRAME_HEADER_BYTES,
+  scanDeltaJournalFrames,
+} from '../lib/chat-delta-journal/format';
+import {
+  readReplayedChatIndexes,
+  summarizeDeltaJournal,
+} from '../lib/chat-delta-journal/reader';
 import { readChatStorageDiscoveryIndex } from '../lib/chat-storage-discovery';
 import {
   hasEverSentChatMessage,
@@ -58,6 +78,10 @@ import {
 } from '../services/chat-state-service';
 import { ChatStateV2Backend } from '../services/chat-state-v2-backend';
 import { ChatStateV2Repository } from '../services/chat-state-v2-repository';
+import { ChatStateRepositoryLoadError } from '../services/chat-state-contracts';
+import type { DelegationChildRow } from '@canopy/agent-transcript';
+import { readChildStreamCompatibilityPage } from '../lib/chat-delta-journal/child-overlay';
+import type { ChildStreamSequenceEntry } from '../lib/child-stream-sequence-index';
 import { scopeSource } from './helpers/chat-delta-journal-harness';
 import {
   manifestVersion,
@@ -134,6 +158,31 @@ function tabsFile(...tabs: PersistedChatTab[]): ChatTabsFile {
   return { version: 1, tabs, activeTabId: tabs[0]?.id ?? '' };
 }
 
+async function storageSnapshot(
+  root: string,
+): Promise<Array<[string, string, number]>> {
+  const result: Array<[string, string, number]> = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) {
+        const [bytes, metadata] = await Promise.all([
+          readFile(path),
+          stat(path),
+        ]);
+        result.push([
+          path.slice(root.length + 1),
+          createHash('sha256').update(bytes).digest('hex'),
+          metadata.mtimeMs,
+        ]);
+      }
+    }
+  };
+  await visit(root);
+  return result.sort(([left], [right]) => left.localeCompare(right));
+}
+
 describe('delta journal readers', () => {
   let dataDir: string;
   const previous = process.env.CANOPY_DATA_DIR;
@@ -171,6 +220,56 @@ describe('delta journal readers', () => {
     else process.env.CANOPY_DATA_DIR = previous;
     resetResolvedCanopyDataDirForTests();
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('accounts decoded pending child rows separately from committed page bytes', async () => {
+    const pending: DelegationChildRow = {
+      id: 'delegated-agent-child-1:pending',
+      role: 'assistant',
+      timestamp: 2,
+      parentBlockId: 'delegated-agent-child-1',
+      delegationSequence: 2,
+      itemRevision: 0,
+      final: true,
+      blocks: [{ type: 'text', text: 'pending row payload' }],
+    };
+    const committed: ChildStreamSequenceEntry = {
+      id: 'delegated-agent-child-1:committed',
+      delegationSequence: 1,
+      offset: 0,
+      end: 128,
+    };
+    const pendingBytes = Buffer.byteLength(JSON.stringify(pending), 'utf8');
+    const readCommittedRow = jest.fn(
+      (): Promise<DelegationChildRow> =>
+        Promise.resolve({
+          ...pending,
+          id: committed.id,
+          delegationSequence: committed.delegationSequence,
+        }),
+    );
+
+    const page = await readChildStreamCompatibilityPage(
+      [committed],
+      [],
+      [pending],
+      readCommittedRow,
+      (row) => row.id,
+      {
+        limit: 10,
+        physicalByteBudget: pendingBytes,
+        encodedBudget: 1024,
+      },
+    );
+
+    expect(page).toEqual({
+      items: [pending.id],
+      hasMore: true,
+      physicalBytes: 0,
+      activeBytes: 0,
+      pendingBytes,
+    });
+    expect(readCommittedRow).not.toHaveBeenCalled();
   });
 
   it('chat search: rescans journaled metadata and indexes journaled active rows', async () => {
@@ -314,15 +413,7 @@ describe('delta journal readers', () => {
     expect((await stat(source, { bigint: true })).mtimeNs).not.toBe(before);
   });
 
-  it('Work Entry summary: an idle checkpoint after a commit does not make the next listing backfill', async () => {
-    await getChatStateService().drain();
-    resetChatStateServiceForTests(
-      new ChatStateService({
-        repository: new ChatStateV2Repository({
-          deltaJournalIdleCheckpointMs: 25,
-        }),
-      }),
-    );
+  it('Work Entry summary: a checkpoint after a commit does not make the next listing backfill', async () => {
     const workspaceId = APP_ADVISOR_PROJECT_ID;
     const { entry } = await createWorkEntry(workspaceId);
     const scope = { projectId: workspaceId, worktreeId: entry.id };
@@ -358,21 +449,23 @@ describe('delta journal readers', () => {
       )?.summary?.sourceMtimeNs;
     expect(await stamp()).toBe(committedMtimeNs);
 
+    // Checkpoint only after the committed stamp is recorded. The suite's
+    // one-hour idle window keeps the timer from rotating the journal first,
+    // and flushScope takes the same checkpoint path as the idle timer.
+    await repository().flushScope(scope);
+    expect(await pending(scope)).toBe(0);
+    const checkpointedMtimeNs = (
+      await stat(journal, { bigint: true })
+    ).mtimeNs.toString();
+    // The checkpoint hook refreshes the stamp asynchronously. A rotation that
+    // keeps the mtime (coarse clock) skips the hook, and the stamp is current.
     const deadline = Date.now() + 5_000;
-    let checkpointedMtimeNs = committedMtimeNs;
-    while (
-      checkpointedMtimeNs === committedMtimeNs ||
-      (await stamp()) !== checkpointedMtimeNs
-    ) {
+    while ((await stamp()) !== checkpointedMtimeNs) {
       if (Date.now() > deadline)
         throw new Error(
           'The checkpoint did not carry the summary stamp to the new journal',
         );
       await new Promise((resolve) => setTimeout(resolve, 10));
-      if ((await pending(scope)) === 0)
-        checkpointedMtimeNs = (
-          await stat(journal, { bigint: true })
-        ).mtimeNs.toString();
     }
 
     const reads = jest.spyOn(getChatStateService(), 'getCompatibilityTabs');
@@ -485,5 +578,45 @@ describe('delta journal readers', () => {
     expect(
       state.tabsFile.tabs.find((entry) => entry.id === 'chat')?.unread,
     ).toBe(true);
+  });
+  it('refuses a future record during lease-free replay and repository admission without writing', async () => {
+    const target = store();
+    const journalPath = join(target.directory, DELTA_JOURNAL_FILE_NAME);
+    const frames = scanDeltaJournalFrames(await readFile(journalPath)).frames;
+    const prev = frames.at(-1)?.digest;
+    if (!prev) throw new Error('Expected a delta-journal segment');
+    const payload = Buffer.from(JSON.stringify({ type: 'commit', v: 2, prev }));
+    const header = Buffer.alloc(FRAME_HEADER_BYTES);
+    header.write('CDJ1', 0, 'ascii');
+    header.writeUInt32LE(payload.length, 4);
+    createHash('sha256').update(payload).digest().copy(header, 8);
+    await appendFile(journalPath, Buffer.concat([header, payload]));
+    const root = dirname(dirname(target.directory));
+    const before = await storageSnapshot(root);
+
+    await expect(
+      readReplayedChatIndexes(
+        { directory: target.directory, scopeId: SCOPE.worktreeId },
+        assertChatStorageIndexes,
+      ),
+    ).rejects.toThrow(ChatStorageNewerFormatError);
+    const fresh = new ChatStateV2Repository({
+      deltaJournalIdleCheckpointMs: 3_600_000,
+    });
+    const error = await fresh.getState(SCOPE).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ChatStateRepositoryLoadError);
+    expect(error instanceof Error && error.cause).toBeInstanceOf(
+      ChatStorageNewerFormatError,
+    );
+    expect(fresh.getLifecycle(SCOPE)).toBe('recovery_error');
+    expect(await fresh.getState(SCOPE).catch((cause: unknown) => cause)).toBe(
+      error,
+    );
+    expect(fresh.getStorageDiagnostics(SCOPE)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'delta_journal_newer_format' }),
+      ]),
+    );
+    expect(await storageSnapshot(root)).toEqual(before);
   });
 });

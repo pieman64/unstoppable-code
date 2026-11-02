@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import { AgentIcon } from '../icons/AgentIcon';
+import { WarningIcon } from '../icons/AppIcons';
 import { ChevronDownIcon } from '../icons/ChevronDownIcon';
 import { ChevronRightIcon } from '../icons/ChevronRightIcon';
 import { PencilIcon } from '../icons/PencilIcon';
@@ -18,6 +19,7 @@ import {
   type PlanReviewAuthorKind,
 } from '../lib/plan-comments';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { Button } from './Button';
 import { RichHoverTooltip } from './RichHoverTooltip';
 import { Tooltip } from './Tooltip';
 
@@ -90,10 +92,11 @@ export interface PlanReviewCommentProps {
    * {@link PlanReviewCommentActions}). */
   actions?: ReactNode;
   /**
-   * Marks the comment as not yet submitted to the agent. Renders the shared
-   * "pending" badge (chip shape, warning color) after the author/time header
-   * — the single canonical treatment for both the Plan Explore and Code
-   * Review surfaces, so neither surface needs to build its own badge markup.
+   * Marks the comment as not yet sent to the agent. Renders the shared
+   * "Not sent" badge (chip shape, warning color, warning icon) after the
+   * author/time header — the single canonical treatment for both the Plan
+   * Explore and Code Review surfaces, so neither surface needs to build its
+   * own badge markup. Unrelated to a plan's `Pending` review status.
    */
   pending?: boolean;
   compact?: boolean;
@@ -142,8 +145,9 @@ export function PlanReviewComment({
             </time>
           )}
           {pending && (
-            <span className="rounded-full bg-warning-subtle px-1.5 py-px text-3xs font-medium fg-warning">
-              pending
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning-subtle px-1.5 py-px text-3xs font-medium fg-warning">
+              <WarningIcon size={12} exactSize />
+              Not sent
             </span>
           )}
           {actions && (
@@ -276,7 +280,7 @@ export function PlanReviewThread({
     <div
       data-testid={dataTestId}
       {...dataAttributes}
-      className={`overflow-hidden rounded-lg border bg-card transition ${
+      className={`overflow-hidden rounded-lg border bg-card transition-colors ${
         active ? 'border-line-accent/60 ring-1 ring-line-accent/40' : ''
       }`}
     >
@@ -475,24 +479,25 @@ export function PlanCommentComposer({
         />
         <div className="flex items-center justify-end gap-2 border-t px-2 py-1.5">
           {secondaryAction && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
               onClick={secondaryAction.onClick}
               data-testid={secondaryAction.dataTestId}
-              className="focus-ring mr-auto rounded-md px-2 py-1 text-xs font-medium fg-secondary transition-colors hover:fg-primary"
+              className="mr-auto"
             >
               {secondaryAction.label}
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onSubmit}
             disabled={disabled}
             data-testid={submitTestId}
-            className="focus-ring rounded-md bg-accent px-2.5 py-1 text-xs font-medium fg-emphasis transition-colors hover:bg-accent/90 disabled:opacity-50"
           >
             {submitLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

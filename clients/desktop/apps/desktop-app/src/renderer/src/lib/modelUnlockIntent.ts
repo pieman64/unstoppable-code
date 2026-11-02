@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { AiCreditsScopeRequest } from '@canopy/desktop-shared/types';
 import { succeedClientOperation } from '@canopy/desktop-instrumentation/client';
 import {
   isBillingIntentIdentifier,
@@ -6,10 +7,12 @@ import {
   type ModelLibraryUnlockSource,
 } from '@canopy/protocol/billing';
 import type { DesktopBillingDeepLink } from '@canopy/protocol/billing';
+import { announceAiCreditsChanged } from '@/lib/aiCreditsChanged';
 import {
   refreshModelLibraryAccess,
   type ModelLibraryAccessRead,
 } from '@/lib/modelLibraryAccess';
+import type { PersonalBalanceReading } from '@/lib/aiCreditsConfirmationBalance';
 
 /**
  * The pending "unlock advanced models" purchase (CAN-4028).
@@ -43,9 +46,16 @@ export interface PendingModelUnlockIntent {
   /** Billing owner checkout was opened for; the bound refresh reads this owner. */
   readonly owner: string;
   readonly chatId: string | null;
+  /** Originating work identity; chat ids can repeat across renderer sessions. */
+  readonly scope?: AiCreditsScopeRequest;
   readonly modelId: string | null;
   readonly startedAt: number;
   readonly source?: ModelLibraryUnlockSource;
+  /**
+   * The buyer's balance read before checkout opened, when that read finished
+   * first. Lets the confirmation name the credits added (CAN-5160).
+   */
+  readonly startingBalance?: PersonalBalanceReading;
 }
 
 /**
@@ -104,15 +114,17 @@ export const MODEL_UNLOCK_POLL_MAX_MS = 10 * 60_000;
 export const MODEL_UNLOCK_POLL_MAX_BACKOFF_MS = 30_000;
 
 let handlers: ModelUnlockIntentHandlers = {};
-let confirmedListener: (() => void) | null = null;
+let confirmedListener: ((intent: PendingModelUnlockIntent) => void) | null =
+  null;
 
 /**
  * Called once per intent when its unlock is confirmed, whichever of the poll,
- * a focus, or a return link got there first. The app root uses it for the
- * confirmation toast.
+ * a focus, or a return link got there first, and before the pending model is
+ * applied. The app root uses it for the confirmation toast and the in-chat
+ * confirmation (CAN-5027).
  */
 export function setModelUnlockConfirmedListener(
-  listener: (() => void) | null,
+  listener: ((intent: PendingModelUnlockIntent) => void) | null,
 ): void {
   confirmedListener = listener;
 }
@@ -240,9 +252,21 @@ async function evaluate(
     },
   });
   // Announced here rather than inside the application, so a later retry of a
-  // failed selection does not confirm the same unlock a second time.
-  confirmedListener?.();
-  await applying;
+  // failed selection does not confirm the same unlock a second time. The
+  // credits refresh comes first and stands on its own (CAN-5026): the purchase
+  // moved the balance whether or not a toast is mounted or the model lands.
+  try {
+    announceAiCreditsChanged();
+  } catch {
+    // A subscriber's failure must not strand the intent or the application.
+  }
+  try {
+    confirmedListener?.(intent);
+  } finally {
+    // Preserve observer error propagation, but always settle the application
+    // before this check finishes (including clearing its single-flight latch).
+    await applying;
+  }
   return 'unlocked';
 }
 

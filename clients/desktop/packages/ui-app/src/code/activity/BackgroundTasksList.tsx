@@ -21,7 +21,6 @@ export const BackgroundTasksList = memo(function BackgroundTasksList({
   tasks,
   actions,
 }: BackgroundTasksListProps): JSX.Element {
-  const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const selectedTask = selectedTaskId
     ? (tasks.find((task) => task.id === selectedTaskId) ?? null)
@@ -34,18 +33,6 @@ export const BackgroundTasksList = memo(function BackgroundTasksList({
     }
   }, [onSelectedTaskChange, selectedTask, selectedTaskId]);
 
-  const stop = actions?.stop;
-  const handleStop = async (task: BackgroundTask): Promise<void> => {
-    if (!stop || !task.canStop || stoppingTaskId === task.id) return;
-    setStoppingTaskId(task.id);
-    try {
-      await stop(task);
-    } catch {
-      // The host reports its own stop failures; the contract says stop never rejects.
-    } finally {
-      setStoppingTaskId((current) => (current === task.id ? null : current));
-    }
-  };
   const handleOpenDetail = (task: BackgroundTask): void => {
     setSelectedTaskId(task.id);
     onSelectedTaskChange?.(task);
@@ -58,8 +45,8 @@ export const BackgroundTasksList = memo(function BackgroundTasksList({
     <>
       <BackgroundProcessesSectionBody
         tasks={tasks}
-        stoppingTaskId={stoppingTaskId}
-        onStop={stop ? (task): void => void handleStop(task) : undefined}
+        stopTarget={actions?.stopTarget}
+        onStopError={actions?.onStopError}
         onOpenDetail={handleOpenDetail}
       />
       {selectedTask && (
@@ -67,8 +54,6 @@ export const BackgroundTasksList = memo(function BackgroundTasksList({
           task={selectedTask}
           actions={actions}
           onClose={handleCloseDetail}
-          onStop={stop ? (): void => void handleStop(selectedTask) : undefined}
-          isStopping={stoppingTaskId === selectedTask.id}
         />
       )}
     </>

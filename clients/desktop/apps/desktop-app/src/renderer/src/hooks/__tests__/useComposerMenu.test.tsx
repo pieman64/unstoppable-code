@@ -402,6 +402,35 @@ describe('one composer menu session', () => {
       }
     });
 
+    it.each(['keyboard', 'pointer'])(
+      'consumes Tab on Show all selected by %s without activating any row',
+      async (selection) => {
+        const h = setup();
+        try {
+          await h.setRows(['row-a', 'show-all']);
+          h.type('/rev');
+          const showAll = document.getElementById('show-all');
+          showAll?.removeAttribute('data-completion-row');
+          showAll?.setAttribute('data-show-all-row', '');
+          const clicks = trackClicks(['row-a', 'show-all']);
+          act(() => {
+            h.menu.setActiveId(selection === 'keyboard' ? 'show-all' : null);
+            h.menu.setHoveredId(selection === 'pointer' ? 'show-all' : null);
+          });
+          expect(h.key('Tab')).toBe(true);
+          expect(clicks.get('show-all')).not.toHaveBeenCalled();
+          expect(clicks.get('row-a')).not.toHaveBeenCalled();
+          expect(h.menu.open).toBe(true);
+          expect(serializeEditorValue(h.editor.children).text).toBe('/rev');
+          // Enter still activates it.
+          expect(h.key('Enter')).toBe(true);
+          expect(clicks.get('show-all')).toHaveBeenCalledTimes(1);
+        } finally {
+          h.close();
+        }
+      },
+    );
+
     it('leaves Tab to focus navigation when only action rows are listed', async () => {
       const h = setup();
       try {

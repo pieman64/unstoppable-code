@@ -13,6 +13,7 @@ import {
   isGitHubCloudErrorCode,
   type GitHubCloudErrorCode,
 } from './github-cloud-errors';
+import { isGitHubRepositoryFullName } from './github-repository-url';
 
 export const REPOSITORY_PROVISIONING_STATES = [
   'PENDING',
@@ -104,12 +105,15 @@ export function isCloudRepositoryFailureCode(
  * The only details an error may carry: owner-visible identifiers and digests.
  * `requestId` is the create's idempotency key; `workspaceId` the project's
  * external id once a row exists, so the client can surface and recover it.
+ * `repositoryFullName` (`owner/name`) names the canopy.json child repository
+ * a multi-repo failure is about (REG-3023).
  */
 export interface CloudRepositoryErrorDetails {
   requestId?: string;
   workspaceId?: string;
   manifestCommitSha?: string;
   manifestHash?: string;
+  repositoryFullName?: string;
 }
 
 /** The web `isCanonicalUuid` (`apps/web/src/lib/uuid.ts`): RFC 4122, lower case. */
@@ -138,12 +142,22 @@ export function readCloudRepositoryErrorDetails(
   value: unknown,
 ): CloudRepositoryErrorDetails | null {
   if (!isRecord(value)) return null;
-  const { requestId, workspaceId, manifestCommitSha, manifestHash } = value;
+  const {
+    requestId,
+    workspaceId,
+    manifestCommitSha,
+    manifestHash,
+    repositoryFullName,
+  } = value;
   const details: CloudRepositoryErrorDetails = {
     ...(isCanonicalUuidValue(requestId) ? { requestId } : {}),
     ...(isCanonicalUuidValue(workspaceId) ? { workspaceId } : {}),
     ...(isCommitSha(manifestCommitSha) ? { manifestCommitSha } : {}),
     ...(isSha256Hex(manifestHash) ? { manifestHash } : {}),
+    ...(typeof repositoryFullName === 'string' &&
+    isGitHubRepositoryFullName(repositoryFullName)
+      ? { repositoryFullName }
+      : {}),
   };
   return Object.keys(details).length > 0 ? details : null;
 }

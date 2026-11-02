@@ -14,7 +14,10 @@ import type {
   NativeAccountProvider,
 } from '@canopy/desktop-shared/types';
 import { isAiCreditsRoutingInEffect } from '@canopy/desktop-shared/ai-credits-routing-state';
-import { getNativeAccountChangedAt } from './native-account-change';
+import {
+  getNativeAccountChangedAt,
+  getNativeSubscriptionRestoredAt,
+} from './native-account-change';
 
 /**
  * The billed provider whose account change can end a chat's session routing:
@@ -46,7 +49,10 @@ export function effectiveTabAiCreditsRouting(
   return isAiCreditsRoutingInEffect(routing, {
     now,
     ...(provider
-      ? { accountChangedAt: getNativeAccountChangedAt(provider) }
+      ? {
+          accountChangedAt: getNativeAccountChangedAt(provider),
+          subscriptionRestoredAt: getNativeSubscriptionRestoredAt(provider),
+        }
       : {}),
   })
     ? routing

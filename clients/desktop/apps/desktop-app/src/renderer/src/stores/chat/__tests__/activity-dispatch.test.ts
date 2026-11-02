@@ -4,8 +4,8 @@
  * can assert the exact IDs, names, inputs, outputs, and error flags handed to
  * `handleToolUseBlock()` / `handleToolResultBlock()`; the name/output/error
  * mapping itself comes from the real shared `codexMcpToolName()` /
- * `flattenCodexMcpToolResult()` helpers so activity and persisted chat cannot
- * drift apart.
+ * `previewCodexMcpToolResult()` helpers, the bounded preview of the output
+ * persisted chat stores in full.
  */
 import { dispatchCodexActivityEvent } from '../activity-dispatch';
 import { useActivityStore } from '../../activityStore';

@@ -81,13 +81,26 @@ function fixture(
     },
   ]);
   const host: HostMocks = {
-    isCurrent: jest.fn(() => Promise.resolve(true)),
-    prepare: jest.fn(() => Promise.resolve(binding)),
-    dispatch: jest.fn(() =>
-      Promise.resolve<'accepted' | 'not_sent' | 'uncertain'>('accepted'),
-    ),
-    stop: jest.fn(() => Promise.resolve()),
-    reconcile: jest.fn(() =>
+    isCurrent: jest.fn<
+      ReturnType<McpActivationHost['isCurrent']>,
+      Parameters<McpActivationHost['isCurrent']>
+    >(() => Promise.resolve(true)),
+    prepare: jest.fn<
+      ReturnType<McpActivationHost['prepare']>,
+      Parameters<McpActivationHost['prepare']>
+    >(() => Promise.resolve(binding)),
+    dispatch: jest.fn<
+      ReturnType<McpActivationHost['dispatch']>,
+      Parameters<McpActivationHost['dispatch']>
+    >(() => Promise.resolve<'accepted' | 'not_sent' | 'uncertain'>('accepted')),
+    stop: jest.fn<
+      ReturnType<McpActivationHost['stop']>,
+      Parameters<McpActivationHost['stop']>
+    >(() => Promise.resolve()),
+    reconcile: jest.fn<
+      ReturnType<McpActivationHost['reconcile']>,
+      Parameters<McpActivationHost['reconcile']>
+    >(() =>
       Promise.resolve<'accepted' | 'not_sent' | 'uncertain'>('uncertain'),
     ),
   };

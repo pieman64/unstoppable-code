@@ -216,7 +216,7 @@ test('the Activity toggle shows only while the main chat group shows a chat', as
   }
 });
 
-test('with early access off there is no Activity card and Minimal keeps its Activity tab', async () => {
+test('with Activity card off Minimal still starts with an empty Side Panel', async () => {
   test.setTimeout(120_000);
   const { launched, userDataDir, window } = await launch({
     earlyAccess: false,
@@ -228,9 +228,7 @@ test('with early access off there is no Activity card and Minimal keeps its Acti
     await expect(
       window.getByTestId('worktree-activity-card-toggle'),
     ).toHaveCount(0);
-    await expect
-      .poll(() => sidePanelKinds(window))
-      .toEqual(['activity-section', 'file-explorer']);
+    await expect.poll(() => sidePanelKinds(window)).toEqual(['new-tab']);
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }

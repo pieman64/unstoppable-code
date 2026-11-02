@@ -5,6 +5,10 @@
 export type McpServerOauthLoginCompletedNotification = {
   name: string;
   threadId: string | null;
+  /**
+   * Identifies the explicit login attempt. Older servers omit this field.
+   */
+  loginId?: string | null;
   success: boolean;
   error?: string;
 };

@@ -1,4 +1,4 @@
-import type { JSX, ReactNode } from 'react';
+import { useId, type JSX, type ReactNode } from 'react';
 import type {
   PanelCollapseEdge,
   PanelGroupModel,
@@ -43,6 +43,7 @@ export interface PanelCollapsedBarProps {
   renderTabIcon?: (tab: PanelTabModel) => ReactNode;
   /** Plain-string title resolver for icon tooltips. */
   getTabTitle?: (tab: PanelTabModel) => string;
+  renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
   /**
    * Optional per-tab RICH tooltip renderer (same seam as the tab bar). A
    * non-null result replaces the plain-title tooltip on a collapsed tab
@@ -115,9 +116,11 @@ export function PanelCollapsedBar({
   addTab,
   renderTabIcon,
   getTabTitle,
+  renderTabAccessibleStatus,
   renderTabTooltip,
   tabStripAccessory,
 }: PanelCollapsedBarProps): JSX.Element {
+  const statusIdPrefix = useId();
   const orientation =
     edge === 'left' || edge === 'right' ? 'vertical' : 'horizontal';
   const isVertical = orientation === 'vertical';
@@ -155,11 +158,7 @@ export function PanelCollapsedBar({
   // (New Chat) the add-panel menu lives on its own button, and a collapsed
   // group would otherwise have NO way to receive non-chat panels.
   const addPanelButton = addTab?.addPanel ? (
-    <PanelAddPanelButton
-      groupId={group.groupId}
-      addPanel={addTab.addPanel}
-      {...(addTab.fullNote !== undefined ? { fullNote: addTab.fullNote } : {})}
-    />
+    <PanelAddPanelButton groupId={group.groupId} addPanel={addTab.addPanel} />
   ) : null;
 
   const moreMenu = (
@@ -197,11 +196,24 @@ export function PanelCollapsedBar({
                 tab.panelId === group.activePanelId ? 'true' : 'false'
               }
               aria-label={title}
+              aria-describedby={
+                renderTabAccessibleStatus
+                  ? `${statusIdPrefix}-${tab.panelId}`
+                  : undefined
+              }
               onClick={(): void => {
                 callbacks.onExpandGroupToTab?.(group.groupId, tab.panelId);
               }}
             >
               {icon ?? <FallbackTabGlyph />}
+              {renderTabAccessibleStatus ? (
+                <span
+                  className="sr-only"
+                  id={`${statusIdPrefix}-${tab.panelId}`}
+                >
+                  {renderTabAccessibleStatus(tab)}
+                </span>
+              ) : null}
             </button>
           </Tooltip>
         );

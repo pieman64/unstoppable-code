@@ -8,7 +8,7 @@ import {
   useStripe,
 } from '@stripe/react-stripe-js';
 import type { StripePaymentElementChangeEvent } from '@stripe/stripe-js';
-import { DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
 import type { BillingPaymentMethodSummary as PaymentMethodSummary } from '@canopy/protocol/billing';
 import { BILLING_CARD_DECLINED_ERROR } from '@canopy/app-state/billing';
 import { getBrowserStripe } from './stripe-browser';
@@ -262,23 +262,24 @@ function PaymentForm({
         <ErrorBanner error={error} className="" />
       </div>
       <div className="flex shrink-0 items-center gap-2 border-t px-5 py-4">
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="compact"
           disabled={!stripe || !elements || submitting}
           data-testid="billing-payment-method-submit"
-          className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {submitting ? submittingLabel : submitLabel}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          size="compact"
           onClick={onCancel}
           disabled={submitting}
           data-testid="billing-payment-method-cancel"
-          className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );

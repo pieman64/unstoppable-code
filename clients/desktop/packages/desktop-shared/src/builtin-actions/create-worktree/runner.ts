@@ -1,78 +1,152 @@
 import { setOutput } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
+import { getCanopyDataDir } from '../../canopy-paths';
+import {
+  registerW5Host,
+  W5HostCohortRefusedError,
+} from '../../node/w5-host-cohort';
 import { getWorkspaceItem } from '../../node/lib/workspace-service';
 import {
   createMultiRepoWorktree,
   createSingleRepoWorktree,
   getWorktreeCliRecord,
 } from '../../node/lib/worktree-service';
+import {
+  PIPELINE_HOST_FAILURE_REASON_OUTPUT,
+  type PipelineHostFailureReason,
+} from '../../pipelines/host-actions';
+import {
+  createWorktreeIdentifierOutputs,
+  emptyCreateWorktreeOutputs,
+  parseCreateWorktreeInputs,
+  type CreateWorktreeInputs,
+} from '../../pipelines/host-create-worktree';
 
-function optionalInput(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
+const INPUT_NAMES = [
+  'project_id',
+  'workspace_id',
+  'branch',
+  'existing_branch',
+  'base_branch',
+  'base_task_id',
+  'base_worktree_id',
+  'repair',
+  'restore_claude_md',
+  'worktree_setup',
+  'group',
+] as const;
+
+function readInputs(
+  env: NodeJS.ProcessEnv,
+): Record<string, string | undefined> {
+  const inputs: Record<string, string | undefined> = {};
+  for (const name of INPUT_NAMES) {
+    inputs[name] = env[`INPUT_${name.toUpperCase()}`];
+  }
+  return inputs;
 }
 
-function requireInput(value: string | undefined, name: string): string {
-  const trimmed = optionalInput(value);
-  if (!trimmed) {
-    throw new Error(`create-worktree requires input "${name}"`);
+function writeOutputs(outputs: Record<string, string>): void {
+  for (const [name, value] of Object.entries(outputs)) {
+    setOutput(name, value);
   }
-  return trimmed;
 }
 
-function parseOptionalBoolean(
-  value: string | undefined,
-  name: string,
-): boolean | undefined {
-  const trimmed = optionalInput(value)?.toLowerCase();
-  if (trimmed === undefined) {
-    return undefined;
+/** Writes every output empty with the typed reason, then fails the step. */
+function refuse(
+  failureReason: PipelineHostFailureReason,
+  message: string,
+): never {
+  writeOutputs({
+    ...emptyCreateWorktreeOutputs(),
+    [PIPELINE_HOST_FAILURE_REASON_OUTPUT]: failureReason,
+  });
+  throw new Error(message);
+}
+
+/**
+ * The first input only the desktop app supports, in documented order. The
+ * shared CLI service has no existing-branch option, never stacks on a base
+ * worktree, and can't reach sidebar groups or desktop setup.
+ */
+function firstDesktopOnlyInput(
+  parsed: CreateWorktreeInputs,
+  inputs: Record<string, string | undefined>,
+): string | undefined {
+  if (parsed.branch.kind === 'existing') return 'existing_branch';
+  if (parsed.baseTaskId !== undefined) {
+    return inputs.base_task_id?.trim() ? 'base_task_id' : 'base_worktree_id';
   }
-  if (trimmed === 'true') {
-    return true;
-  }
-  if (trimmed === 'false') {
-    return false;
-  }
-  throw new Error(`create-worktree input "${name}" must be true or false`);
+  if (parsed.group !== undefined) return 'group';
+  if (parsed.setup !== 'skip') return 'worktree_setup';
+  return undefined;
 }
 
 export async function runCreateWorktreeAction(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   await runWithActionEnvironment(env, async () => {
-    const workspaceId = requireInput(env.INPUT_WORKSPACE_ID, 'workspace_id');
-    const branch = optionalInput(env.INPUT_BRANCH);
-    const baseBranch = optionalInput(env.INPUT_BASE_BRANCH);
-    const repair = parseOptionalBoolean(env.INPUT_REPAIR, 'repair') === true;
-    const restoreClaudeMd = parseOptionalBoolean(
-      env.INPUT_RESTORE_CLAUDE_MD,
-      'restore_claude_md',
-    );
+    const inputs = readInputs(env);
+    const parsed = parseCreateWorktreeInputs(inputs);
+    if (!parsed.ok) {
+      refuse('validation_failed', parsed.message);
+    }
+    const desktopOnly = firstDesktopOnlyInput(parsed.value, inputs);
+    if (desktopOnly !== undefined) {
+      refuse(
+        'needs_desktop',
+        `create-worktree "${desktopOnly}" needs the desktop app.`,
+      );
+    }
+    const { projectId: workspaceId, branch, baseBranch, repair } = parsed.value;
+    const branchName = branch.kind === 'new' ? branch.name : undefined;
+
+    // TRANSITIONAL (CAN-3797): this detached child writes W5 through the shared
+    // writers, so it joins the host cohort before its first read. Remove when
+    // the W5 rows move to `daemon` and those writers are deleted (CAN-3802).
+    try {
+      await registerW5Host({
+        dataRoot: getCanopyDataDir(),
+        hostKind: 'create-worktree',
+      });
+    } catch (error) {
+      if (!(error instanceof W5HostCohortRefusedError)) throw error;
+      refuse('target_not_ready', error.message);
+    }
 
     const workspace = await getWorkspaceItem(workspaceId);
+    if (workspace.type === 'cowork') {
+      refuse(
+        'unsupported_action',
+        `Project \`${workspaceId}\` doesn't support worktrees. Use create-project-entry.`,
+      );
+    }
     const created =
       workspace.type === 'multi-repo'
         ? await createMultiRepoWorktree({
             workspaceId,
-            branchName: branch,
+            branchName,
             baseBranch,
             repairWorkspaceRoot: repair,
-            restoreClaudeMd,
+            restoreClaudeMd: parsed.value.restoreClaudeMd,
             startPostCreateSetup: false,
           })
         : await createSingleRepoWorktree({
             workspaceId,
-            branchName: branch,
+            branchName,
             baseBranch,
             startPostCreateSetup: false,
           });
 
     const record = await getWorktreeCliRecord(workspaceId, created.id);
-    setOutput('worktree_id', record.id);
-    setOutput('workspace_id', workspaceId);
-    setOutput('path', record.path);
-    setOutput('branch_name', record.branchName);
-    setOutput('created_at', record.createdAt);
+    writeOutputs({
+      ...emptyCreateWorktreeOutputs(),
+      ...createWorktreeIdentifierOutputs(workspaceId, record.id),
+      path: record.path,
+      branch_name: record.branchName,
+      created_at: record.createdAt,
+      setup_state: 'skipped',
+      [PIPELINE_HOST_FAILURE_REASON_OUTPUT]: '',
+    });
   });
 }

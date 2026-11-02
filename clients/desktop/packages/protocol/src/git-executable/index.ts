@@ -1,6 +1,9 @@
 /**
- * Pure Git executable selection helpers. Hosts own every filesystem, process
- * and environment read and pass the results in; nothing here touches the OS.
+ * Pure Git executable selection and status policy. Hosts own every
+ * filesystem, process and environment read, pass the results and their OS
+ * and architecture in, and apply every effect; nothing here touches the OS.
+ * `@canopy/core-platform`'s daemon selection keeps its own precedence
+ * (recorded convergence debt, CAN-5137).
  */
 
 /** Standard system location Linux discovery falls back to. */
@@ -140,4 +143,130 @@ export function parseWhereExeOutput(stdout: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+/**
+ * The precedence a host applies when it detects Git:
+ * - `linux` (Linux x64/arm64): the explicit choice, reported but never replaced
+ *   when it is broken; the revalidated earlier discovery; the refreshed login
+ *   PATH in order; then the system location. Only an explicit choice is saved.
+ * - `probe` (macOS and Windows): the saved preference, a published override,
+ *   then discovered candidates; the first valid one is saved.
+ * - `optional` (every other platform): Git is not required; only an override
+ *   is validated.
+ */
+export type GitExecutableDetectionMode = 'linux' | 'probe' | 'optional';
+
+export function getGitExecutableDetectionMode(
+  os: string,
+  arch: string,
+): GitExecutableDetectionMode {
+  if (os === 'linux' && (arch === 'x64' || arch === 'arm64')) return 'linux';
+  return os === 'darwin' || os === 'win32' ? 'probe' : 'optional';
+}
+
+export interface GitExecutableRequirement<Platform extends string> {
+  platform: Platform;
+  required: boolean;
+}
+
+export function getGitExecutableRequirement<Platform extends string>(
+  os: Platform,
+  arch: string,
+): GitExecutableRequirement<Platform> {
+  return {
+    platform: os,
+    required: getGitExecutableDetectionMode(os, arch) !== 'optional',
+  };
+}
+
+/**
+ * Whether a detection request joins the one already running. Unforced
+ * requests always do; so does a forced macOS recheck, so overlapping installer
+ * checks share one probe.
+ */
+export function shouldJoinGitExecutableDetection(
+  os: string,
+  force: boolean,
+): boolean {
+  return !force || os === 'darwin';
+}
+
+/**
+ * The Linux explicit choice: the saved selection, else an override the host
+ * did not publish from its own discovery.
+ */
+export function selectLinuxExplicitGitChoice(input: {
+  readonly saved: string | null;
+  readonly override: string | undefined;
+  readonly discovered: string | null;
+}): string | null {
+  if (input.saved) return input.saved;
+  return input.override && input.override !== input.discovered
+    ? input.override
+    : null;
+}
+
+/**
+ * macOS and Windows discovery candidates in probe order: Apple and Homebrew
+ * shims are dropped on macOS, and repeats are dropped, case-insensitively on
+ * Windows.
+ */
+export function getGitExecutableProbeOrder(
+  os: string,
+  candidates: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    if (os === 'darwin' && isMacGitShim(candidate)) return false;
+    const key = os === 'win32' ? candidate.toLowerCase() : candidate;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** A detection status, in the key order hosts report it. */
+export interface GitExecutableStatusShape<
+  Platform extends string,
+  Source extends string,
+> {
+  platform: Platform;
+  required: boolean;
+  checkedAt: string;
+  ready: boolean;
+  path: string | null;
+  version: string | null;
+  source: Source;
+  wingetAvailable: boolean;
+  error?: string;
+}
+
+/** Shapes a status; an empty `error` is omitted. */
+export function shapeGitExecutableStatus<
+  Platform extends string,
+  Source extends string,
+>(
+  requirement: GitExecutableRequirement<Platform>,
+  checkedAt: string,
+  values: {
+    readonly ready: boolean;
+    readonly path: string | null;
+    readonly version: string | null;
+    readonly source: Source;
+    readonly wingetAvailable: boolean;
+    readonly error?: string;
+  },
+): GitExecutableStatusShape<Platform, Source> {
+  return {
+    platform: requirement.platform,
+    required: requirement.required,
+    checkedAt,
+    ready: values.ready,
+    path: values.path,
+    version: values.version,
+    source: values.source,
+    wingetAvailable: values.wingetAvailable,
+    ...(values.error ? { error: values.error } : {}),
+  };
 }

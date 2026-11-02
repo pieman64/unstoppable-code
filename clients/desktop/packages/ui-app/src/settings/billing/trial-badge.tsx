@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Badge } from '@canopy/ui-shared/components/Badge';
 
 /** Whole days remaining until an ISO instant, clamped at zero. */
 export function trialDaysLeft(iso: string): number {
@@ -14,13 +15,10 @@ export interface TrialBadgeProps {
 }
 
 /**
- * The single trial-status pill shared by the account billing section and the
- * org Billing tab. Standardizes both on the "Trial: N days left" wording (which
- * reads more urgently than a raw end date). Uses an OUTLINED accent style
- * (vs the filled {@link import('./plan-pill').PlanPill}) so that where the two
- * pills sit side by side — the org Billing tab shows the plan name and the trial
- * countdown together — the solid plan pill stays the primary identity and the
- * trial status reads as a secondary, non-competing badge.
+ * The single trial-status badge shared by the account billing section and the
+ * org Billing tab, worded "Trial: N days left" (which reads more urgently than
+ * a raw end date). A trial runs out, so it takes the warning tone next to the
+ * neutral {@link import('./plan-pill').PlanPill}.
  */
 export function TrialBadge({
   endsAt,
@@ -28,11 +26,8 @@ export function TrialBadge({
 }: TrialBadgeProps): JSX.Element {
   const daysLeft = trialDaysLeft(endsAt);
   return (
-    <span
-      className="rounded-full border border-line-accent px-2 py-0.5 text-xs font-medium fg-accent"
-      data-testid={dataTestId}
-    >
+    <Badge tone="warning" data-testid={dataTestId}>
       {`Trial: ${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left`}
-    </span>
+    </Badge>
   );
 }

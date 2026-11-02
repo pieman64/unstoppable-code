@@ -300,8 +300,8 @@ export function PipelineRelatedSections({
   return (
     <>
       <RelatedItemsSection
-        title="Similar pipelines"
-        emptyLabel="No similar pipelines yet."
+        title="Similar workflows"
+        emptyLabel="No similar workflows yet."
         loading={loading}
         testId="similar-pipelines-section"
         items={similarPipelines.map((item) => ({

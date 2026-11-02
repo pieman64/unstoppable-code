@@ -140,7 +140,16 @@ export async function runSessionReuseFlow({
       worktreeId: 'demo-main',
       providerType,
       tabs: [
-        { id: chatId, title: 'Session reuse', model, interfaceMode: 'canopy' },
+        {
+          id: chatId,
+          title: 'Session reuse',
+          model,
+          // Saved as an app-created tab saves it. Without it, main reads the
+          // tab as 'high' while the composer sends the 'off' default, and a
+          // queued message cannot steer.
+          thinkingLevel: 'off',
+          interfaceMode: 'canopy',
+        },
       ],
     });
   }
@@ -260,7 +269,7 @@ export async function runSessionReuseFlow({
           await expectEachSubmittedOnce();
           return;
         }
-        await expect(pending).toContainText('Pending');
+        await expect(pending).toContainText('Sending…');
         await pending
           .getByRole('button', {
             name: 'Cancel pending message',

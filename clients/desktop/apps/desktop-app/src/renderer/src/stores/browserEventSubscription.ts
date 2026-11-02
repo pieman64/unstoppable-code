@@ -12,11 +12,13 @@ import type {
   BrowserHandoff,
   BrowserHandoffEvent,
   BrowserServiceEvent,
+  BrowserSessionSnapshot,
 } from '@canopy/desktop-shared/types';
 import {
   ensureBrowserWorktreeHydrated,
   findWorktreeKeyForBrowser,
   isBrowserOpenCancelled,
+  type OpenBrowserOptions,
   selectBrowserHandoff,
   useBrowserStore,
 } from './browserStore';
@@ -36,6 +38,7 @@ import {
   settingsPathOpensInApp,
 } from '@/lib/navigation/settings-destinations';
 import { routeBrowserFindResult } from '@/stores/browserFindController';
+import { isLinkBrowserTargetAvailable } from './linkBrowserTargetReporter';
 import { useSurfaceFindStore } from '@/stores/surfaceFindStore';
 
 let unsubscribe: (() => void) | null = null;
@@ -56,7 +59,8 @@ function isCurrentBrowserEvent(event: BrowserEvent): boolean {
     event.type === 'snapshot' ||
     event.type === 'load-failed' ||
     event.type === 'open-requested' ||
-    event.type === 'shortcut';
+    event.type === 'shortcut' ||
+    event.type === 'new-tab-requested';
   const generation =
     event.runtimeGeneration ??
     (snapshotEvent ? event.snapshot.profile?.runtimeGeneration : undefined);
@@ -98,6 +102,17 @@ function handleBrowserEvent(event: BrowserServiceEvent): void {
       return;
     case 'shortcut':
       void handleBrowserShortcutEvent(event).catch(() => undefined);
+      return;
+    case 'new-tab-requested':
+      // A page's `target="_blank"` link or `window.open` (CAN-4831). An
+      // agent's popup, like its browser.open, never takes the user's focus.
+      void openBrowserTab(
+        event.snapshot,
+        { url: event.url, browserId: event.newBrowserId },
+        event.presentation === 'background'
+          ? { focus: false, preserveSelection: true }
+          : undefined,
+      ).catch(() => undefined);
       return;
     case 'user-interaction':
       noteBrowserUserInteraction();
@@ -196,8 +211,12 @@ function handleBrowserEvent(event: BrowserServiceEvent): void {
  * `toggle-sidebar` toggles the app sidebar; `find-in-page` opens the find bar
  * in browser mode; `close-tab` closes the pressed browser's own panel (not the
  * layout's active panel, which a click into the native page may not have
- * updated) through the same path as the tab "X". The main process already
- * returned keyboard focus to this window before emitting.
+ * updated) through the same path as the tab "X". `select-next-tab` /
+ * `select-previous-tab` (CAN-4616) cycle from the pressed browser's own tab,
+ * for the same reason. The main process already returned keyboard focus to
+ * this window before emitting, except for `toggle-sidebar` and the tab-cycle
+ * actions: those leave it in the page, and main hands it to this window when
+ * the cycle hides the page by selecting another tab.
  */
 async function handleBrowserShortcutEvent(
   event: Extract<BrowserEvent, { type: 'shortcut' }>,
@@ -235,24 +254,59 @@ async function handleBrowserShortcutEvent(
     }
     return;
   }
+  // One press moves one tab, so only the first layout bound to this browser
+  // cycles. It must never fall through to the new-tab path below.
+  if (
+    event.action === 'select-next-tab' ||
+    event.action === 'select-previous-tab'
+  ) {
+    const [{ findBrowserPanelBindings }, { selectAdjacentPanelTab }] =
+      await Promise.all([
+        import('@/lib/panels/browser-panel-sync'),
+        import('@/lib/panels/commands'),
+      ]);
+    const [binding] = findBrowserPanelBindings(event.browserId);
+    if (binding !== undefined) {
+      selectAdjacentPanelTab(
+        binding.layoutKey,
+        { groupId: binding.groupId, panelId: binding.panelId },
+        event.action === 'select-next-tab' ? 'next' : 'previous',
+      );
+    }
+    return;
+  }
   if (!isCurrentBrowserEvent(event)) return;
-  const { projectId, worktreeId } = event.snapshot;
-  // The new tab is placed at once; its session is created in the background.
-  const opened = useBrowserStore.getState().openBrowser(projectId, worktreeId);
-  if (opened === null) return;
+  const browserId = await openBrowserTab(event.snapshot);
+  if (browserId !== null) requestBrowserUrlFocus(browserId);
+}
+
+/**
+ * Opens and selects a new tab in `opener`'s worktree. Its session is created
+ * in the background; the tab is discarded when its panel cannot be placed.
+ */
+async function openBrowserTab(
+  opener: BrowserSessionSnapshot,
+  options?: OpenBrowserOptions,
+  placement?: Parameters<typeof requestBrowserPanel>[4],
+): Promise<string | null> {
+  const { projectId, worktreeId } = opener;
+  const opened = useBrowserStore
+    .getState()
+    .openBrowser(projectId, worktreeId, options);
+  if (opened === null) return null;
   const { browserId } = opened;
   const activated = await requestBrowserPanel(
     projectId,
     worktreeId,
     browserId,
+    undefined,
+    placement,
   ).catch(() => false);
-  if (activated) {
-    requestBrowserUrlFocus(browserId);
-    return;
-  }
+  if (activated) return browserId;
   const { discardOpenedBrowser } =
     await import('@/lib/panels/browser-panel-sync');
   await discardOpenedBrowser(projectId, worktreeId, browserId);
+  return null;
 }
 
 /** `open-requested` reveals still placing their panel, by browser id. */
@@ -500,10 +554,21 @@ async function handleAppLinkOpenRequest(
   event: Extract<BrowserEvent, { type: 'app-link-open-requested' }>,
 ): Promise<void> {
   const selection = useChatStore.getState().selectedWorktree;
+  // An ordinary in-app link on the main window takes the worktree browser
+  // only where it can show (CAN-5271): from Customize, Home, Settings or the
+  // Portal, decline so main opens it externally. App Advisor and the other
+  // sources keep their routing.
+  const mainWindowAppLink =
+    event.source === 'app-link' &&
+    (typeof document === 'undefined' ||
+      document.body.dataset.rendererSurface !== 'app-advisor');
+  const handled =
+    selection !== null &&
+    (!mainWindowAppLink || isLinkBrowserTargetAvailable());
   const accepted = await window.api.browser
     .resolveOpenLinkRequest({
       requestId: event.requestId,
-      handled: selection !== null,
+      handled,
       phase: 'acknowledge',
     })
     .catch(() => false);
@@ -511,7 +576,7 @@ async function handleAppLinkOpenRequest(
   // `false` means main stopped waiting (its short deadline lapsed, or the
   // answer never reached it) and has already taken the link externally
   // itself. Placing a panel now would open the same link twice.
-  if (selection === null || !accepted || !event.openInApp) {
+  if (selection === null || !handled || !accepted || !event.openInApp) {
     if (fromLinkMenu) showLinkOpenFailureToast(event.url);
     return;
   }

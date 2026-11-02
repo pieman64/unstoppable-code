@@ -10,6 +10,7 @@ import {
 import type { CopilotCapabilitySnapshot } from './capability-snapshot';
 import type {
   CopilotSession,
+  GitHubTokenProvider,
   SessionConfig,
   SessionEvent,
 } from '@github/copilot-sdk';
@@ -20,12 +21,14 @@ import {
 } from './session-policy';
 import { CopilotEventProjection } from './events';
 import { CopilotToolAuthorization } from './tool-authorization';
+import { handleCopilotTurnCleanupError } from './turn-cleanup';
 
 type TurnSession = Pick<CopilotSession, 'sessionId' | 'send' | 'abort'> & {
   rpc?: CopilotToolMetadataRpc;
 };
 /** Minimal SDK boundary consumed by a turn; the full owned runtime satisfies it. */
 interface TurnRuntime extends Pick<OwnedCopilotRuntime, 'exited' | 'close'> {
+  tokenProviderForSession?(sessionId?: string): GitHubTokenProvider;
   client: {
     createSession(
       ...args: Parameters<OwnedCopilotRuntime['client']['createSession']>
@@ -64,8 +67,14 @@ export interface CopilotTurnOptions extends CopilotSessionPolicy {
   beforePrompt?(): Promise<void>;
 }
 
-/** One owned runtime per turn, one SDK conversation retained across turns. */
-export async function runCopilotTurn(options: CopilotTurnOptions): Promise<{
+/** A consumer's turn; the recipient supplies the runtime and session identity. */
+export type CopilotTurnRequest = Omit<
+  CopilotTurnOptions,
+  'runtime' | 'gitHubTokenProvider'
+>;
+
+export interface CopilotTurnResult {
+  /** The SDK conversation id: an opaque handle for a later resume. */
   sessionId: string;
   text: string;
   usage: {
@@ -74,7 +83,12 @@ export async function runCopilotTurn(options: CopilotTurnOptions): Promise<{
     cache_read_input_tokens: number;
     cache_creation_input_tokens: number;
   };
-}> {
+}
+
+/** One owned runtime per turn, one SDK conversation retained across turns. */
+export async function runCopilotTurn(
+  options: CopilotTurnOptions,
+): Promise<CopilotTurnResult> {
   const projection = new CopilotEventProjection(
     options.turnId,
     options.workingDirectory,
@@ -102,20 +116,6 @@ export async function runCopilotTurn(options: CopilotTurnOptions): Promise<{
   let receiving = false;
   let failure: Error | undefined;
   let turnFailed = false;
-  const handleCleanupError = (error: unknown): void => {
-    if (turnFailed) {
-      process.emitWarning(
-        'Copilot runtime cleanup failed after a turn error.',
-        {
-          code: 'COPILOT_TURN_CLEANUP_FAILED',
-        },
-      );
-      return;
-    }
-    throw error instanceof Error
-      ? error
-      : new Error('Copilot runtime cleanup failed.');
-  };
   const admissions = new Set<Promise<void>>();
   let deliveryTail = Promise.resolve();
   const usageIds = new Set<string>();
@@ -194,8 +194,11 @@ export async function runCopilotTurn(options: CopilotTurnOptions): Promise<{
   };
   try {
     options.signal.throwIfAborted();
-    const config = createCopilotSessionConfig({
+    let config = createCopilotSessionConfig({
       ...options,
+      gitHubTokenProvider:
+        options.runtime.tokenProviderForSession?.(options.sessionId) ??
+        options.gitHubTokenProvider,
       onEvent,
       authorize: (input) =>
         authorization.authorize(input, options.signal, (request) =>
@@ -225,6 +228,12 @@ export async function runCopilotTurn(options: CopilotTurnOptions): Promise<{
           throw error;
         await options.onSessionUnavailable();
         options.signal.throwIfAborted();
+        config = {
+          ...config,
+          gitHubTokenProvider:
+            options.runtime.tokenProviderForSession?.() ??
+            options.gitHubTokenProvider,
+        };
         session = await options.runtime.client.createSession(config);
       }
     } else session = await options.runtime.client.createSession(config);
@@ -373,6 +382,6 @@ export async function runCopilotTurn(options: CopilotTurnOptions): Promise<{
     } finally {
       await Promise.allSettled(Array.from(admissions));
     }
-    if (cleanupError) handleCleanupError(cleanupError);
+    if (cleanupError) handleCopilotTurnCleanupError(cleanupError, turnFailed);
   }
 }

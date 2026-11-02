@@ -31,6 +31,7 @@ import {
   isPlanDiagramArtifacts,
   isPlanCommentThreadArray,
 } from '@canopy/desktop-shared/types';
+import { derivePlanTitle } from '@canopy/protocol/plans';
 import { resolveTrackedPlansFilePath } from './resolve-worktree';
 import { getPlanExplorePlanFilePath } from './paths';
 import { isRecord } from './type-guards';
@@ -165,19 +166,6 @@ function emitPlanDiagramArtifactChange(plan: TrackedPlanData): void {
   planDiagramArtifactChangeListeners.forEach((listener) => {
     listener(plan);
   });
-}
-
-function derivePlanTitle(content: string): string {
-  const firstLine = content
-    .split('\n')
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  if (!firstLine) {
-    return 'Untitled plan';
-  }
-
-  const cleaned = firstLine.replace(/^[-*#\d.\s]+/, '').trim();
-  return cleaned.length > 0 ? cleaned.slice(0, 120) : 'Untitled plan';
 }
 
 function isTrackedPlanReviewStatus(

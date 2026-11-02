@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import { join, parse, resolve } from 'node:path';
@@ -15,21 +15,32 @@ import {
   type ApprovalRuleSets,
   type ApprovalRuleTarget,
   type PersistedChatMessage,
+  type SafetyDenyReason,
 } from '@canopy/desktop-shared/types';
+import {
+  approvalSafetyDeniedInfoSchema,
+  safetyDenyReasonSchema,
+  SAFETY_DENIED_COMMAND_MAX_CHARS,
+  FAIL_CLOSED_MESSAGE,
+  POLICY_DENIED_FALLBACK_MESSAGE,
+  safetyDeniedMessage,
+  savedRuleDeniedMessage,
+  userDeniedMessage,
+} from '@canopy/protocol/approvals';
+import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   evaluateApproval,
   recursiveForcedRemoveOperations,
   commandPathOperations,
 } from '@canopy/desktop-shared/lib/approval-engine';
-import {
-  addWorkspaceApprovalRule,
-  removeWorkspaceApprovalRule,
-} from '../lib/approvals-persistence';
+import { addWorkspaceApprovalRule } from '../lib/approvals-persistence';
 import { updatePreferencesFile } from '../lib/preferences-store';
 import { sendToWindow, type SendableBrowserWindow } from '../lib/window-send';
 import { getObservabilityService } from '../observability';
 import { requestApprovalFromRenderer } from './prompt-bridge';
 import {
+  cancelApproval,
   rejectAllApprovalsForSession,
   resolveApprovalFromMain,
 } from './pending-approvals';
@@ -45,7 +56,12 @@ import {
 import { clampToLiveApprovalMode } from './live-approval-modes';
 import {
   getGlobalApprovalRulesRevision,
+  getGlobalApprovalRulesSaveGeneration,
   getWorkspaceApprovalRulesRevision,
+  getWorkspaceApprovalRulesSaveGeneration,
+  isFileWriteNarrowingInFlight,
+  isGlobalApprovalRulesSettled,
+  isWorkspaceApprovalRulesSettled,
   markGlobalApprovalRulesChanged,
 } from './rule-revisions';
 import { isApprovalPromptDecision } from './approval-decision-validation';
@@ -54,7 +70,7 @@ import { releaseTurnTimerPause } from '../lib/settled-turn-timer-guard';
 
 const RULES_CACHE_TTL_MS = 5000;
 
-const FAIL_CLOSED_MESSAGE = 'Approval prompt unavailable; denied by default.';
+export const APPROVAL_REQUEST_RESOLVED = 'approval_request_resolved';
 
 function expandDestructiveOperandTilde(
   operand: string,
@@ -92,6 +108,87 @@ function expandDestructiveOperandTilde(
   return operand;
 }
 
+interface ApprovalCheckCancellation {
+  cancellation: Promise<never>;
+  isCancelled(): boolean;
+  registerRequestId(requestId: string): void;
+  throwIfCancelled(): void;
+  accept(): void;
+  dispose(): void;
+}
+
+function createApprovalCheckCancellation(
+  signal: AbortSignal | undefined,
+  onRequestCancelled: (requestId: string) => void,
+): ApprovalCheckCancellation {
+  let cancelled = false;
+  let accepted = false;
+  let requestId: string | undefined;
+  let rejectCancellation: (reason: Error) => void = () => undefined;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+
+  function cancelRegisteredRequest(id: string): void {
+    try {
+      onRequestCancelled(id);
+    } catch {
+      // The registry still needs to settle even if local prompt cleanup fails.
+    }
+    try {
+      cancelApproval(id, APPROVAL_REQUEST_RESOLVED);
+    } catch {
+      // Cancellation remains fail-closed even if detaching the renderer card fails.
+    }
+  }
+
+  function onAbort(): void {
+    if (accepted || cancelled) return;
+    cancelled = true;
+    if (requestId !== undefined) {
+      cancelRegisteredRequest(requestId);
+    }
+    rejectCancellation(new Error(APPROVAL_REQUEST_RESOLVED));
+  }
+
+  function isCancelled(): boolean {
+    if (!accepted && signal?.aborted) {
+      onAbort();
+    }
+    return cancelled;
+  }
+
+  function throwIfCancelled(): void {
+    if (isCancelled()) {
+      throw new Error(APPROVAL_REQUEST_RESOLVED);
+    }
+  }
+
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) {
+    onAbort();
+  }
+
+  return {
+    cancellation,
+    isCancelled,
+    registerRequestId(id: string): void {
+      requestId = id;
+      if (cancelled) {
+        cancelRegisteredRequest(id);
+      }
+    },
+    throwIfCancelled,
+    accept(): void {
+      throwIfCancelled();
+      accepted = true;
+    },
+    dispose(): void {
+      signal?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
 export interface ApprovalSessionContext {
   sessionKey: string;
   projectId: string;
@@ -110,6 +207,13 @@ export interface ApprovalSessionContext {
   promptTimeoutMs?: number;
   /** Non-chat approval surfaces have no persisted turn timer to pause. */
   trackChatTurn?: boolean;
+  /** Read synchronously at check entry, before policy or receipt IO. */
+  getTurnUserMessageId?: () => string | undefined;
+}
+
+interface SafetyReceiptIdentity {
+  receiptId: string;
+  turnUserMessageId?: string;
 }
 
 export interface ApprovalOutcome {
@@ -119,6 +223,10 @@ export interface ApprovalOutcome {
 }
 
 export interface ApprovalCheckDisplay {
+  /** Cancels this check's prompt without affecting other checks in the session. */
+  signal?: AbortSignal;
+  /** Called once, when this check parks on a person; after the session's own callback */
+  onAwaitingUser?: () => void;
   title: string;
   description?: string;
   details: ApprovalRequestDetails;
@@ -141,8 +249,17 @@ export interface ApprovalSessionHandle {
    */
   evaluate?(check: ApprovalCheck): Promise<ApprovalEvaluation['outcome']>;
   setMode(mode: ApprovalMode): void;
-  /** Changes whenever the mode or persisted project/global policy changes. */
+  /**
+   * Changes whenever the mode or persisted project/global policy changes, and
+   * when a project or global rule save starts or settles.
+   */
   policyContextKey?(): string;
+  /**
+   * Whether a project or global save that may revoke a file-write grant is in
+   * flight. Evaluations wait for its outcome; a sandbox that writes without
+   * asking has to stop meanwhile.
+   */
+  fileWriteNarrowingInFlight?(): boolean;
   /**
    * Re-runs the policy for every prompt this handle currently has on screen,
    * under `mode`, and releases the ones the widened mode would not have asked
@@ -221,7 +338,12 @@ export function createApprovalSession(
    */
   const inFlightPrompts = new Map<
     string,
-    { check: ApprovalCheck; display: ApprovalCheckDisplay; generation: number }
+    {
+      check: ApprovalCheck;
+      display: ApprovalCheckDisplay;
+      generation: number;
+      cancellation: ApprovalCheckCancellation;
+    }
   >();
   /**
    * Request ids a mode widening settled from main. A **suppression token**,
@@ -235,13 +357,12 @@ export function createApprovalSession(
    * tells that continuation to stay quiet.
    *
    * **Do not invert this.** Making the resuming path the recorder is the
-   * obvious-looking symmetry and it is wrong: `promptForDecision` has two
-   * early returns that skip `recordDecision` (the `disposed || generation !==
-   * promptGeneration` guard and the `persistScopedRule` failure), and the
-   * first is reachable for a widened grant because the `finally` above it
-   * awaits the durable turn-timer resume. Recording there can drop the audit
-   * record for a privileged action already committed to the transcript and
-   * announced to the renderer.
+   * obvious-looking symmetry and it is wrong: `promptForDecision`'s
+   * `disposed || generation !== promptGeneration` guards return without
+   * `recordDecision`, and one is reachable for a widened grant because the
+   * `finally` above it awaits the durable turn-timer resume. Recording there
+   * can drop the audit record for a privileged action already committed to
+   * the transcript and announced to the renderer.
    *
    * A token must survive an arbitrary I/O window for that same reason, and a
    * concurrent re-evaluation that loses the compare-and-delete must not clear
@@ -426,7 +547,8 @@ export function createApprovalSession(
       if (
         projectRulesCache &&
         projectRulesCache.expiresAt > now &&
-        projectRulesCache.revision === revision
+        projectRulesCache.revision === revision &&
+        isWorkspaceApprovalRulesSettled(policyWorkspaceId)
       ) {
         return projectRulesCache;
       }
@@ -454,7 +576,8 @@ export function createApprovalSession(
       if (
         globalRulesCache &&
         globalRulesCache.expiresAt > now &&
-        globalRulesCache.revision === revision
+        globalRulesCache.revision === revision &&
+        isGlobalApprovalRulesSettled()
       ) {
         return globalRulesCache;
       }
@@ -480,7 +603,7 @@ export function createApprovalSession(
     scope: ApprovalRuleScope | 'once';
     targetKind: ApprovalCheck['kind'];
     /** Omitted for an ordinary engine/prompt decision; see the field's doc. */
-    source?: 'prompt' | 'mode-widened';
+    source?: 'prompt' | 'mode-widened' | 'safety-rule';
   }): void {
     getObservabilityService().recordSessionDiagnostic({
       version: 1,
@@ -529,18 +652,39 @@ export function createApprovalSession(
     return result.updated;
   }
 
+  async function commitApprovalTurnPause(
+    type: 'PauseOpened' | 'PauseClosed',
+    ownerId: string,
+  ): Promise<void> {
+    if (ctx.trackChatTurn === false) return;
+    const { getChatStateService } =
+      await import('../services/chat-state-service');
+    await getChatStateService().commitTurnPause({
+      projectId: ctx.projectId,
+      worktreeId: ctx.worktreeId,
+      chatId: ctx.chatId,
+      type,
+      ownerKind: 'approval',
+      ownerId,
+    });
+  }
+
+  /**
+   * Saves a remembered decision. Resolves true only once the save is durable,
+   * so no reader in this process applies the rule before then. Once started,
+   * a save is kept whatever happens to the check that asked for it: a Stop
+   * withdraws the action, never the saved rule (CAN-4469 D-release).
+   */
   async function persistScopedRule(
     scope: ApprovalRuleScope,
     rule: ApprovalRule,
-    generation: number,
   ): Promise<boolean> {
     if (scope === 'session') {
       // Defer the main-owned chat-state graph until a session rule is persisted;
       // most approval checks complete without loading this heavy local module.
       const { getChatStateService } =
         await import('../services/chat-state-service');
-      const chatStateService = getChatStateService();
-      const persisted = await chatStateService.updateCompatibilityTab(
+      const persisted = await getChatStateService().updateCompatibilityTab(
         { projectId: ctx.projectId, worktreeId: ctx.worktreeId },
         ctx.chatId,
         (tab) => ({
@@ -552,24 +696,11 @@ export function createApprovalSession(
       if (!persisted.updated) {
         return false;
       }
-      if (disposed || generation !== promptGeneration) {
-        await chatStateService.updateCompatibilityTab(
-          { projectId: ctx.projectId, worktreeId: ctx.worktreeId },
-          ctx.chatId,
-          (tab) => {
-            const sessionApprovalRules = (
-              tab.sessionApprovalRules ?? []
-            ).filter((existingRule) => existingRule.id !== rule.id);
-            return sessionApprovalRules.length ===
-              (tab.sessionApprovalRules ?? []).length
-              ? null
-              : { ...tab, sessionApprovalRules };
-          },
-          `approval-session-rule-rollback:${rule.id}`,
-        );
-        return false;
+      // A disposed handle's rules are never read again; the next session for
+      // this chat is seeded from the tab, which now holds the rule.
+      if (!disposed) {
+        ctx.sessionRules.push(rule);
       }
-      ctx.sessionRules.push(rule);
       sendToWindow(ctx.getWindow(), IPC_CHANNELS.approvalRuleAdded, {
         projectId: ctx.projectId,
         worktreeId: ctx.worktreeId,
@@ -581,10 +712,6 @@ export function createApprovalSession(
     if (scope === 'project') {
       await addWorkspaceApprovalRule(policyWorkspaceId, rule);
       projectRulesCache = null;
-      if (disposed || generation !== promptGeneration) {
-        await removeWorkspaceApprovalRule(policyWorkspaceId, rule.id);
-        return false;
-      }
       return true;
     }
     await updatePreferencesFile((existing) => ({
@@ -592,15 +719,6 @@ export function createApprovalSession(
     }));
     markGlobalApprovalRulesChanged();
     globalRulesCache = null;
-    if (disposed || generation !== promptGeneration) {
-      await updatePreferencesFile((existing) => ({
-        globalApprovalRules: existing.globalApprovalRules.filter(
-          (existingRule) => existingRule.id !== rule.id,
-        ),
-      }));
-      markGlobalApprovalRulesChanged();
-      return false;
-    }
     return true;
   }
 
@@ -622,6 +740,7 @@ export function createApprovalSession(
   ): Promise<{
     evaluation: ApprovalEvaluation;
     rules: ApprovalRuleSets;
+    evaluatedMode: ApprovalMode;
   }> {
     let projectRules: RuleCacheEntry;
     let globalRules: RuleCacheEntry;
@@ -661,15 +780,17 @@ export function createApprovalSession(
             global: rules.global.filter((rule) => rule.behavior === 'deny'),
           }
         : rules;
+    const evaluatedMode = forcePrompt ? 'ask' : (modeOverride ?? mode);
     return {
       evaluation: evaluateApproval(canonical.check, {
-        mode: forcePrompt ? 'ask' : (modeOverride ?? mode),
+        mode: evaluatedMode,
         rules: evaluationRules,
         workspaceRoot: canonical.workspaceRoot,
         pathCaseInsensitive: canonical.pathCaseInsensitive,
         protectedFileWritePaths,
       }),
       rules,
+      evaluatedMode,
     };
   }
 
@@ -694,26 +815,32 @@ export function createApprovalSession(
     display: ApprovalCheckDisplay,
     generation: number,
     wideningAtCheckStart: number,
+    cancellation: ApprovalCheckCancellation,
   ): Promise<ApprovalOutcome> {
+    cancellation.throwIfCancelled();
     if (disposed || generation !== promptGeneration) {
       return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
     }
     const timerTransitionId = `approval:${randomUUID()}`;
     let ownsTimerPause = false;
-    try {
-      ownsTimerPause = await setApprovalTurnTimerPaused(
-        true,
-        timerTransitionId,
-      );
-    } catch {
-      return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
-    }
+    let releaseFailed = false;
     let promptDecision: ApprovalPromptDecision;
     let registeredRequestId: string | undefined;
     try {
+      await commitApprovalTurnPause('PauseOpened', timerTransitionId);
+      try {
+        ownsTimerPause = await setApprovalTurnTimerPaused(
+          true,
+          timerTransitionId,
+        );
+      } catch {
+        cancellation.throwIfCancelled();
+        return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
+      }
       // The durable timer mutation above yields to I/O. Cancellation may win
       // during that await before a prompt exists in the pending registry, so
       // re-check the generation before registering or delivering a stale card.
+      cancellation.throwIfCancelled();
       if (disposed || generation !== promptGeneration) {
         return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
       }
@@ -748,7 +875,12 @@ export function createApprovalSession(
             check: approvalCheck,
             display,
             generation,
+            cancellation,
           });
+          cancellation.registerRequestId(requestId);
+          if (cancellation.isCancelled()) {
+            return;
+          }
           // A widening that landed between this check's policy read and this
           // line saw an empty (or short) `inFlightPrompts` and moved on, so
           // this card would sit on screen asking about something the current
@@ -774,14 +906,31 @@ export function createApprovalSession(
             });
           }
         },
-        ...(ctx.onAwaitingUser !== undefined
-          ? { onAwaitingUser: ctx.onAwaitingUser }
+        ...(ctx.onAwaitingUser !== undefined ||
+        display.onAwaitingUser !== undefined
+          ? {
+              onAwaitingUser: (): void => {
+                try {
+                  ctx.onAwaitingUser?.();
+                } catch {
+                  // Status callbacks must not break prompt delivery.
+                }
+                try {
+                  display.onAwaitingUser?.();
+                } catch {
+                  // Check callbacks must not break prompt delivery.
+                }
+              },
+            }
           : {}),
         ...(ctx.promptTimeoutMs !== undefined
           ? { timeoutMs: ctx.promptTimeoutMs }
           : {}),
       });
+      cancellation.throwIfCancelled();
+      cancellation.accept();
     } catch {
+      cancellation.throwIfCancelled();
       recordDecision({
         decision: 'deny',
         scope: 'once',
@@ -804,17 +953,23 @@ export function createApprovalSession(
           }
         }
       }
-      if (ownsTimerPause) {
-        try {
+      try {
+        if (ownsTimerPause) {
           await setApprovalTurnTimerPaused(false, timerTransitionId);
-        } catch {
-          // The provider decision remains authoritative. Canonical transcript
-          // reconciliation will settle any still-open timer on terminal state.
         }
+      } catch {
+        releaseFailed = true;
+      }
+      try {
+        // Always release the canonical owner, even if the legacy row did not
+        // change, initialization failed, or the bridge never published a card.
+        await commitApprovalTurnPause('PauseClosed', timerTransitionId);
+      } catch {
+        releaseFailed = true;
       }
     }
 
-    if (!isApprovalPromptDecision(promptDecision)) {
+    if (releaseFailed || !isApprovalPromptDecision(promptDecision)) {
       recordDecision({
         decision: 'deny',
         scope: 'once',
@@ -827,7 +982,7 @@ export function createApprovalSession(
     // was being delivered. Never let a stale decision persist authority after
     // its owning session has been disposed.
     if (disposed || generation !== promptGeneration) {
-      return { decision: 'deny' };
+      return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
     }
 
     if (promptDecision.scope !== 'once' && promptDecision.target) {
@@ -838,13 +993,35 @@ export function createApprovalSession(
         createdAt: new Date().toISOString(),
         origin: 'prompt',
       };
-      const persisted = await persistScopedRule(
-        promptDecision.scope,
-        rule,
-        generation,
-      );
+      let persisted = false;
+      try {
+        persisted = await persistScopedRule(promptDecision.scope, rule);
+      } catch {
+        // Saving a rule cannot grant execution. A current Deny click still
+        // belongs to the user even when its durable rule could not be saved.
+      }
+      // Stop during the save: the rule stays saved and this action never runs.
+      if (disposed || generation !== promptGeneration) {
+        return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
+      }
       if (!persisted) {
-        return { decision: 'deny' };
+        // No rule exists, so the decision resolved for this check only.
+        recordDecision({
+          decision: 'deny',
+          scope: 'once',
+          targetKind: approvalCheck.kind,
+        });
+        return {
+          decision: 'deny',
+          message:
+            promptDecision.behavior === 'deny'
+              ? userDeniedMessage(promptDecision.message)
+              : FAIL_CLOSED_MESSAGE,
+          ...(promptDecision.behavior === 'deny' &&
+          promptDecision.stopTurn !== undefined
+            ? { stopTurn: promptDecision.stopTurn }
+            : {}),
+        };
       }
     }
 
@@ -869,9 +1046,11 @@ export function createApprovalSession(
 
     return {
       decision: promptDecision.behavior,
-      ...(promptDecision.message !== undefined
-        ? { message: promptDecision.message }
-        : {}),
+      ...(promptDecision.behavior === 'deny'
+        ? { message: userDeniedMessage(promptDecision.message) }
+        : promptDecision.message !== undefined
+          ? { message: promptDecision.message }
+          : {}),
       ...(promptDecision.stopTurn !== undefined
         ? { stopTurn: promptDecision.stopTurn }
         : {}),
@@ -885,11 +1064,158 @@ export function createApprovalSession(
   // only starts once every earlier-queued prompt has been answered.
   let promptChain: Promise<unknown> = Promise.resolve();
 
+  function safetyReceiptIdentity(
+    display: ApprovalCheckDisplay,
+  ): SafetyReceiptIdentity {
+    const turnUserMessageId = ctx.getTurnUserMessageId?.();
+    // IDs are scoped to the originating turn and subagent, never command text.
+    // Without a provider invocation ID cross-hook deduplication is impossible:
+    // the one UUID is retained through this check's queued re-evaluation.
+    const receiptId = display.toolUseId
+      ? `approval-safety-${createHash('sha256')
+          .update(
+            JSON.stringify([
+              ctx.projectId,
+              ctx.worktreeId,
+              ctx.chatId,
+              turnUserMessageId ?? `${ctx.sessionKey}:${promptGeneration}`,
+              display.subagentId ?? '',
+              display.toolUseId,
+            ]),
+          )
+          .digest('hex')}`
+      : `approval-safety-${randomUUID()}`;
+    return { receiptId, ...(turnUserMessageId ? { turnUserMessageId } : {}) };
+  }
+
+  async function denyEvaluation(
+    approvalCheck: ApprovalCheck,
+    display: ApprovalCheckDisplay,
+    evaluated: Awaited<ReturnType<typeof evaluateCheck>>,
+    identity: SafetyReceiptIdentity,
+  ): Promise<ApprovalOutcome> {
+    const { evaluation, rules, evaluatedMode } = evaluated;
+    if (evaluation.outcome !== 'deny')
+      return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
+    recordDecision({
+      decision: 'deny',
+      scope: scopeForMatchedRule(evaluation.matchedRule, rules),
+      targetKind: approvalCheck.kind,
+      ...(evaluation.safety ? { source: 'safety-rule' } : {}),
+    });
+    if (!evaluation.safety) {
+      const scope = scopeForMatchedRule(evaluation.matchedRule, rules);
+      return {
+        decision: 'deny',
+        message:
+          evaluation.matchedRule?.origin === 'canopy-json'
+            ? savedRuleDeniedMessage('repository')
+            : scope !== 'once'
+              ? savedRuleDeniedMessage(scope)
+              : POLICY_DENIED_FALLBACK_MESSAGE,
+      };
+    }
+
+    const labels: Record<SafetyDenyReason, string> = {
+      'force-push': 'force-push',
+      'destructive-delete': 'destructive delete',
+      'disk-write': 'disk write',
+      'unverifiable-command': 'unverifiable command',
+    };
+    const parsedReason = safetyDenyReasonSchema.safeParse(
+      evaluation.safetyReason,
+    );
+    const reason = parsedReason.success
+      ? parsedReason.data
+      : 'unverifiable-command';
+    const message = safetyDeniedMessage(labels[reason]);
+    if (ctx.trackChatTurn !== false) {
+      try {
+        if (
+          approvalCheck.kind !== 'command' ||
+          evaluatedMode === 'full-access'
+        ) {
+          throw new Error('Invalid safety denial metadata');
+        }
+        const redacted = redactSecrets(approvalCheck.command);
+        const suffix = '\n[truncated]';
+        const command =
+          redacted.length <= SAFETY_DENIED_COMMAND_MAX_CHARS
+            ? redacted
+            : redacted.slice(
+                0,
+                SAFETY_DENIED_COMMAND_MAX_CHARS - suffix.length,
+              ) + suffix;
+        const timestamp = Date.now();
+        const receipt: PersistedChatMessage = {
+          id: identity.receiptId,
+          role: 'system',
+          timestamp,
+          blocks: [
+            approvalSafetyDeniedInfoSchema.parse({
+              type: 'approval_safety_denied_info',
+              ...identity,
+              timestamp,
+              reason,
+              command,
+              mode: evaluatedMode,
+              ...(display.toolUseId ? { toolUseId: display.toolUseId } : {}),
+              ...(display.subagentId ? { subagentId: display.subagentId } : {}),
+            }),
+          ],
+        };
+        const { getChatStateService } =
+          await import('../services/chat-state-service');
+        let alreadyCommitted = false;
+        // Provider approval gates run outside chat-state transactions. Await
+        // the existing canonical transaction; no detached work survives check().
+        const result = await getChatStateService().updateCompatibilityTab(
+          { projectId: ctx.projectId, worktreeId: ctx.worktreeId },
+          ctx.chatId,
+          (tab) => {
+            alreadyCommitted = tab.messages.some(
+              (entry) => entry.id === receipt.id,
+            );
+            return alreadyCommitted
+              ? null
+              : { ...tab, messages: [...tab.messages, receipt] };
+          },
+          `approval-safety-denied:${receipt.id}`,
+        );
+        // A replayed canonical mutation can skip the updater entirely. Its
+        // returned, durably applied state still proves receipt delivery.
+        const delivered =
+          result.updated ||
+          alreadyCommitted ||
+          result.tabsFile.tabs.some(
+            (tab) =>
+              tab.id === ctx.chatId &&
+              tab.messages.some((entry) => entry.id === receipt.id),
+          );
+        if (!delivered) throw new Error('Receipt destination unavailable');
+      } catch {
+        // Error objects can contain command text/paths. Log only structured
+        // correlation, and always preserve the specific execution denial.
+        logMainProcessWarn('approval_safety_denied_receipt_failed', {
+          projectId: ctx.projectId,
+          worktreeId: ctx.worktreeId,
+          chatId: ctx.chatId,
+          receiptId: identity.receiptId,
+          reason,
+        });
+      }
+    }
+    return { decision: 'deny', message };
+  }
+
   async function checkViaQueue(
     approvalCheck: ApprovalCheck,
     display: ApprovalCheckDisplay,
     generation: number,
+    cancellation: ApprovalCheckCancellation,
+    identity: SafetyReceiptIdentity,
   ): Promise<ApprovalOutcome> {
+    cancellation.throwIfCancelled();
     if (disposed || generation !== promptGeneration) {
       return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
     }
@@ -901,7 +1227,9 @@ export function createApprovalSession(
     // may have persisted a rule (e.g. session-scope allow) that now covers
     // this check, in which case it is resolved without ever prompting.
     const evaluated = await evaluateCheckFailClosed(approvalCheck);
+    cancellation.throwIfCancelled();
     if (!evaluated) {
+      cancellation.accept();
       recordDecision({
         decision: 'deny',
         scope: 'once',
@@ -915,6 +1243,7 @@ export function createApprovalSession(
     }
 
     if (evaluation.outcome === 'allow') {
+      cancellation.accept();
       recordDecision({
         decision: 'allow',
         scope: scopeForMatchedRule(evaluation.matchedRule, rules),
@@ -924,12 +1253,8 @@ export function createApprovalSession(
     }
 
     if (evaluation.outcome === 'deny') {
-      recordDecision({
-        decision: 'deny',
-        scope: scopeForMatchedRule(evaluation.matchedRule, rules),
-        targetKind: approvalCheck.kind,
-      });
-      return { decision: 'deny' };
+      cancellation.accept();
+      return denyEvaluation(approvalCheck, display, evaluated, identity);
     }
 
     if (disposed || generation !== promptGeneration) {
@@ -940,6 +1265,7 @@ export function createApprovalSession(
       display,
       generation,
       wideningAtCheckStart,
+      cancellation,
     );
   }
 
@@ -947,52 +1273,72 @@ export function createApprovalSession(
     approvalCheck: ApprovalCheck,
     display: ApprovalCheckDisplay,
   ): Promise<ApprovalOutcome> {
-    if (disposed) {
-      return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
-    }
-    const generation = promptGeneration;
-    const evaluated = await evaluateCheckFailClosed(approvalCheck);
-    if (!evaluated) {
-      recordDecision({
-        decision: 'deny',
-        scope: 'once',
-        targetKind: approvalCheck.kind,
-      });
-      return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
-    }
-    const { evaluation, rules } = evaluated;
-    if (disposed || generation !== promptGeneration) {
-      return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
-    }
-
-    if (evaluation.outcome === 'allow') {
-      recordDecision({
-        decision: 'allow',
-        scope: scopeForMatchedRule(evaluation.matchedRule, rules),
-        targetKind: approvalCheck.kind,
-      });
-      return { decision: 'allow' };
-    }
-
-    if (evaluation.outcome === 'deny') {
-      recordDecision({
-        decision: 'deny',
-        scope: scopeForMatchedRule(evaluation.matchedRule, rules),
-        targetKind: approvalCheck.kind,
-      });
-      return { decision: 'deny' };
-    }
-
-    // Engine-resolved checks (above) never touch the queue. Only a check
-    // that actually needs a prompt joins the per-handle serialization chain.
-    const queued = promptChain.then(() =>
-      checkViaQueue(approvalCheck, display, generation),
+    const cancellation = createApprovalCheckCancellation(
+      display.signal,
+      (requestId) => {
+        inFlightPrompts.delete(requestId);
+        modeWidenedRequestIds.delete(requestId);
+        staleDenyObservedRequestIds.delete(requestId);
+      },
     );
-    // Keep the chain alive for the next queued check regardless of how this
-    // one resolves — `checkViaQueue` never rejects (prompt-bridge failures
-    // are caught and turned into a fail-closed outcome above).
-    promptChain = queued.catch(() => undefined);
-    return queued;
+    try {
+      return await Promise.race([
+        (async (): Promise<ApprovalOutcome> => {
+          cancellation.throwIfCancelled();
+          if (disposed) {
+            return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
+          }
+          const generation = promptGeneration;
+          const identity = safetyReceiptIdentity(display);
+          const evaluated = await evaluateCheckFailClosed(approvalCheck);
+          cancellation.throwIfCancelled();
+          if (!evaluated) {
+            cancellation.accept();
+            recordDecision({
+              decision: 'deny',
+              scope: 'once',
+              targetKind: approvalCheck.kind,
+            });
+            return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
+          }
+          const { evaluation, rules } = evaluated;
+          if (disposed || generation !== promptGeneration) {
+            return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
+          }
+
+          if (evaluation.outcome === 'allow') {
+            cancellation.accept();
+            recordDecision({
+              decision: 'allow',
+              scope: scopeForMatchedRule(evaluation.matchedRule, rules),
+              targetKind: approvalCheck.kind,
+            });
+            return { decision: 'allow' };
+          }
+
+          if (evaluation.outcome === 'deny') {
+            cancellation.accept();
+            return denyEvaluation(approvalCheck, display, evaluated, identity);
+          }
+
+          // Only a check that needs a prompt joins this handle's queue.
+          const queued = promptChain.then(() =>
+            checkViaQueue(
+              approvalCheck,
+              display,
+              generation,
+              cancellation,
+              identity,
+            ),
+          );
+          promptChain = queued.catch(() => undefined);
+          return queued;
+        })(),
+        cancellation.cancellation,
+      ]);
+    } finally {
+      cancellation.dispose();
+    }
   }
 
   /**
@@ -1199,6 +1545,9 @@ export function createApprovalSession(
         entry.check,
         effectiveMode,
       );
+      if (entry.cancellation.isCancelled()) {
+        continue;
+      }
       if (!evaluated) {
         continue;
       }
@@ -1247,9 +1596,10 @@ export function createApprovalSession(
     }
     // Still standing after the awaits? Anything the user answered in the
     // meantime has already left the map.
-    const stillPending = releasable.filter(({ requestId }) =>
-      inFlightPrompts.has(requestId),
-    );
+    const stillPending = releasable.filter(({ requestId }) => {
+      const entry = inFlightPrompts.get(requestId);
+      return entry !== undefined && !entry.cancellation.isCancelled();
+    });
     if (stillPending.length === 0) {
       return;
     }
@@ -1287,6 +1637,13 @@ export function createApprovalSession(
       return;
     }
 
+    // The receipt write yields to I/O; a request abort removes its own card
+    // immediately, so only the remaining live prompts can be granted below.
+    const claimable = stillPending.filter(({ requestId }) => {
+      const entry = inFlightPrompts.get(requestId);
+      return entry !== undefined && !entry.cancellation.isCancelled();
+    });
+
     // Third and final read of the live authority registry, immediately before
     // the synchronous claim below and with no await after it. The downgrade
     // path publishes to that registry synchronously *before* entering its
@@ -1306,8 +1663,11 @@ export function createApprovalSession(
     const released: string[] = [];
     const releasedTitles: string[] = [];
     if (liveModeAtGrant === effectiveMode) {
-      for (const { requestId, check, title, grantScope } of stillPending) {
-        inFlightPrompts.delete(requestId);
+      for (const { requestId, check, title, grantScope } of claimable) {
+        const entry = inFlightPrompts.get(requestId);
+        if (!entry || entry.cancellation.isCancelled()) {
+          continue;
+        }
         // Mark before settling: `resolveApprovalFromMain` settles the bridge
         // promise synchronously, so the resuming `promptForDecision` could
         // read this map at any point afterwards. It is NOT merely the next
@@ -1316,16 +1676,11 @@ export function createApprovalSession(
         // arbitrary I/O window, and a concurrent re-evaluation must not clear
         // one it did not create.
         //
-        // That last guard is live, not defensive. `stillPending` was
-        // snapshotted *before* the commit await, and this loop runs after it,
-        // so the `inFlightPrompts.delete` above does not fence a concurrent
-        // pass: one that filtered while the id was still present carries it
-        // across its own commit regardless. Two passes therefore reach the
-        // same id: the registration-window fallback is fire-and-forget and is
-        // not serialized against the dispatcher's `withApprovalModeOperation`.
-        // Clearing a mark this pass did not add would leave the winner's
-        // resuming `promptForDecision` unmarked, and it would record a second,
-        // untagged decision for one grant.
+        // `claimable` was rechecked after the receipt write, so a request
+        // removed by a competing settlement cannot be claimed twice. Keep
+        // mark ownership explicit as a defensive compare-and-delete guard:
+        // when resolution loses to another actor, clear only a mark this
+        // iteration added, never one already protecting that actor's grant.
         const hadMark = modeWidenedRequestIds.has(requestId);
         modeWidenedRequestIds.add(requestId);
         const resolved = resolveApprovalFromMain(requestId, ctx.sessionKey, {
@@ -1341,19 +1696,18 @@ export function createApprovalSession(
           }
           continue;
         }
+        entry.cancellation.accept();
+        inFlightPrompts.delete(requestId);
         // Recorded HERE, not in the resuming continuation. This is the one
         // point that knows the grant actually happened, and it has no early
-        // return after it. `promptForDecision` has two: the `disposed ||
-        // generation !== promptGeneration` guard, and the `persistScopedRule`
-        // failure. Only the first is reachable for a widened grant — the
-        // second is gated on `scope !== 'once'` and a widening always settles
-        // with `scope: 'once'` and no target — but one is enough, and it is
-        // reachable precisely because the `finally` above it awaits a durable
-        // write. Recording there could drop the audit record for a privileged
-        // action already committed to the transcript and announced to the
-        // renderer. `grantScope` names the tier that actually granted the
-        // allow, which a rule landing while the card sat there can own instead
-        // of the mode change.
+        // return after it. `promptForDecision`'s `disposed || generation !==
+        // promptGeneration` guards return without recording, and one is
+        // reachable for a widened grant precisely because the `finally` above
+        // it awaits a durable write. Recording there could drop the audit
+        // record for a privileged action already committed to the transcript
+        // and announced to the renderer. `grantScope` names the tier that
+        // actually granted the allow, which a rule landing while the card sat
+        // there can own instead of the mode change.
         recordDecision({
           decision: 'allow',
           scope: grantScope,
@@ -1418,7 +1772,12 @@ export function createApprovalSession(
         mode,
         getWorkspaceApprovalRulesRevision(policyWorkspaceId),
         getGlobalApprovalRulesRevision(),
+        getWorkspaceApprovalRulesSaveGeneration(policyWorkspaceId),
+        getGlobalApprovalRulesSaveGeneration(),
       ]);
+    },
+    fileWriteNarrowingInFlight(): boolean {
+      return isFileWriteNarrowingInFlight(policyWorkspaceId);
     },
     invalidatePending(): void {
       promptGeneration++;

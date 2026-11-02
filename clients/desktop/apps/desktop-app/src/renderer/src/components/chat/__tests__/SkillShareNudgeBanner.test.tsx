@@ -15,7 +15,9 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 });
 
 let mockData: ChatShareData;
-const mockUseChatShareData = jest.fn((): ChatShareData => mockData);
+const mockUseChatShareData = jest.fn<ChatShareData, [active: boolean]>(
+  (): ChatShareData => mockData,
+);
 jest.mock('@/hooks/useChatShareData', () => ({
   useChatShareData: (active: boolean): ChatShareData => {
     mockUseChatShareData(active);

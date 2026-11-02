@@ -486,6 +486,22 @@ describe('buildSubmittedMessageText', () => {
       );
       expect(result.endsWith('hello')).toBe(true);
     });
+
+    it('adds no external-agent instruction to a managed delegate message', () => {
+      // The broker's own wrapper already tells the agent who sent it.
+      const result = buildSubmittedMessageText({
+        text: '<system_instruction>Subordinate request</system_instruction>',
+        agentSent: {
+          kind: 'managed_delegate',
+          delegationId: 'delegation-1',
+          title: 'Review the plan',
+        },
+      });
+
+      expect(result).toBe(
+        '<system_instruction>Subordinate request</system_instruction>',
+      );
+    });
   });
 
   it('prepends pending system instructions as system_instruction blocks', () => {

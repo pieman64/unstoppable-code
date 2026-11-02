@@ -1,4 +1,5 @@
 import { isOpenCodeHarnessEnabled } from '../../opencode/feature-flag';
+import { delegationRuntimeUnavailableReason } from './runtime-support';
 import { isCopilotHarnessEnabled } from '../../copilot/feature-flag';
 import { peekCursorAccount } from '../../cursor/connection';
 import { readPreferencesFile } from '../../lib/preferences-store';
@@ -27,6 +28,7 @@ import { materializeDelegationAgentPlugins } from './agent-projection';
 import { delegationAgentCapabilityError } from './agent-capability-error';
 import { isDelegationModelRejected } from './model-rejections';
 import {
+  DELEGATION_FILE_HELPER_MISSING_MESSAGE,
   delegationFileBoundaryAvailable,
   openDelegationFiles,
 } from './file-process';
@@ -140,10 +142,14 @@ export async function discoverManagedDelegationModels(
         if (!model?.enabled) return disabled('This model is disabled.');
         if (await isModelBlockedByStoredPolicy(runtime.runtimeModel, workOwner))
           return disabled('This model is blocked by organization policy.');
-        if (!boundary || runtime.providerType === 'ollama')
+        if (!boundary) return disabled(DELEGATION_FILE_HELPER_MISSING_MESSAGE);
+        if (runtime.providerType === 'ollama')
           return disabled(
             'A validated delegated runner is unavailable for this route.',
           );
+        const runtimeUnavailable =
+          await delegationRuntimeUnavailableReason(harness);
+        if (runtimeUnavailable) return disabled(runtimeUnavailable);
         if (runtime.pluginSelections) {
           const discoverySignal = signal ?? new AbortController().signal;
           await materializeDelegationAgentPlugins(
@@ -157,7 +163,7 @@ export async function discoverManagedDelegationModels(
             !isOpenCodeHarnessEnabled() ||
             !(await readPreferencesFile()).opencodeEnabled
           )
-            return disabled('Connect OpenCode in Settings > Labs.');
+            return disabled('Connect OpenCode in Settings.');
           return {
             ...choice,
             availability: 'unknown',
@@ -171,7 +177,7 @@ export async function discoverManagedDelegationModels(
             !isCopilotHarnessEnabled() ||
             !(await readPreferencesFile()).copilotEnabled
           )
-            return disabled('Connect Copilot in Settings > Labs.');
+            return disabled('Connect Copilot in Settings.');
           return {
             ...choice,
             availability: 'unknown',

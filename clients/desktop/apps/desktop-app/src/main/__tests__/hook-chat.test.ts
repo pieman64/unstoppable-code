@@ -179,7 +179,25 @@ jest.mock('../services/chat-state-service', () => ({
   })),
 }));
 
+// Set to the store's product-default projection to simulate unreadable authority.
+let mockUnreadableAuthorityPreferences: PreferencesFile | null = null;
 jest.mock('../lib/preferences-store', () => ({
+  readPreferencesFileDetailed: async (options?: {
+    includeServed?: boolean;
+  }): Promise<{
+    preferences: Awaited<ReturnType<typeof readPreferencesFileMock>>;
+    authority: 'ok' | 'unreadable';
+    served?: Awaited<ReturnType<typeof readPreferencesFileMock>>;
+  }> => {
+    const served = await readPreferencesFileMock();
+    if (!mockUnreadableAuthorityPreferences)
+      return { preferences: served, authority: 'ok' };
+    return {
+      preferences: mockUnreadableAuthorityPreferences,
+      authority: 'unreadable',
+      ...(options?.includeServed === true ? { served } : {}),
+    };
+  },
   // Not degraded: approval resolution fails closed when this is non-null.
   peekPreferencesLoadError: (): null => null,
   readPreferencesFile: (): Promise<PreferencesFile> =>
@@ -239,6 +257,22 @@ jest.mock('../lib/chat-tabs', () => {
 jest.mock('../lib/window-send', () => ({
   sendToWindow: (...args: SendToWindowArgs): SendToWindowResult =>
     sendToWindowMock(...args),
+}));
+
+const hookAdmissionAuthorization = { authorizationToken: Symbol('hook') };
+const runAdmittedDirectDispatchMock = jest.fn(
+  async (
+    _target: unknown,
+    _userMessageId: string,
+    run: (authorization: unknown) => Promise<boolean>,
+  ): Promise<void> => {
+    await run(hookAdmissionAuthorization);
+  },
+);
+jest.mock('../services/chat-queue-service', () => ({
+  runAdmittedDirectDispatch: (
+    ...args: Parameters<typeof runAdmittedDirectDispatchMock>
+  ): Promise<void> => runAdmittedDirectDispatchMock(...args),
 }));
 
 jest.mock('../lib/worktree-chat-turn', () => ({
@@ -324,7 +358,8 @@ function buildTabsFile(tab?: PersistedChatTab): ChatTabsFile {
 }
 
 function buildPreferences(): PreferencesData {
-  return {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  const preferences: Partial<PreferencesData> = {
     worktreePanelPercent: 32,
     activityPanelExpanded: false,
     activityPanelWidthPercent: 25,
@@ -422,6 +457,8 @@ function buildPreferences(): PreferencesData {
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
     },
     terminalDrawerCollapsed: true,
@@ -440,6 +477,8 @@ function buildPreferences(): PreferencesData {
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
       categorySounds: {
         chat: 'Default',
@@ -450,6 +489,8 @@ function buildPreferences(): PreferencesData {
         prCreate: 'Default',
         pipeline: 'Default',
         terminal: 'Default',
+        runComment: 'Default',
+        activation: 'Default',
       },
     },
     branchNamingPluginSelections: {
@@ -485,6 +526,7 @@ function buildPreferences(): PreferencesData {
     autoDownloadUpdates: true,
     showDiagnosticsPill: true,
   };
+  return preferences as PreferencesData;
 }
 
 function buildSidebarProject(): SidebarItemsResult {
@@ -589,6 +631,7 @@ describe('hook-chat', () => {
     jest.spyOn(Date, 'now').mockReturnValue(1000);
     mockFeatureFlagValues.clear();
     mockLaneDefaultUnavailable = false;
+    mockUnreadableAuthorityPreferences = null;
     setMockHasActiveChatTurns(false);
     mockChatSessionActivityListeners.clear();
     currentTabsFile = buildTabsFile();
@@ -708,8 +751,45 @@ describe('hook-chat', () => {
         initiationSource: 'hook',
         executionContext: 'personal',
         skipBranchNaming: true,
+        authorization: hookAdmissionAuthorization,
       }),
     );
+    // Ordinary admission comes before the prompt's first effect.
+    expect(runAdmittedDirectDispatchMock).toHaveBeenCalledWith(
+      {
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-hook-1000-1',
+      },
+      expect.any(String),
+      expect.any(Function),
+    );
+    expect(
+      runAdmittedDirectDispatchMock.mock.invocationCallOrder[0],
+    ).toBeLessThan(writeChatTabsFileMock.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('starts a hook chat without a launcher turn timer row', async () => {
+    const { launchHookChat } = loadHookChatModule();
+    await launchHookChat({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      action: {
+        type: 'chat',
+        prompt: 'Review failures',
+        model: 'gpt-5.5',
+        thinking: 'medium',
+      },
+      prompt: 'Review failures',
+      triggerName: 'pr:checks:fail',
+      getWindow: () => null,
+    });
+    const tab = writeChatTabsFileMock.mock.calls[0]?.[2].tabs[0];
+    expect(
+      tab?.messages.some((message) =>
+        message.blocks.some((block) => block.type === 'turn_timer'),
+      ),
+    ).toBe(false);
   });
 
   it('opens the hook chat in the background, keeping the tab the user left', async () => {
@@ -1348,6 +1428,36 @@ describe('hook-chat', () => {
     );
   });
 
+  it('keeps the served default model but asks when preference authority is unreadable', async () => {
+    const { launchHookChat } = loadHookChatModule();
+    mockUnreadableAuthorityPreferences = buildPreferences();
+    readPreferencesFileMock.mockResolvedValue({
+      ...buildPreferences(),
+      defaultWorktreeProvider: 'claude',
+      approvalDefaults: {
+        worktree: 'full-access',
+        cowork: 'full-access',
+        appAdvisor: 'full-access',
+      },
+    });
+
+    await launchHookChat({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      action: { type: 'chat', prompt: 'Review failures' },
+      prompt: 'Review failures',
+      triggerName: 'pr:checks:fail',
+      getWindow: () => null,
+    });
+
+    expect(dispatchWorktreeChatTurnMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'claude-sonnet-4-6',
+        approvalMode: 'ask',
+      }),
+    );
+  });
+
   it('omits interfaceMode for Codex hook tabs', async () => {
     const { launchHookChat } = loadHookChatModule();
     readPreferencesFileMock.mockResolvedValue({
@@ -1486,7 +1596,7 @@ describe('hook-chat', () => {
     });
   });
 
-  it('marks timers complete and emits an error event when dispatch fails', async () => {
+  it('records the failure and emits an error event when dispatch fails', async () => {
     const { launchHookChat } = loadHookChatModule();
     const { IPC_CHANNELS } = loadSharedTypesModule();
     dispatchWorktreeChatTurnMock.mockRejectedValue(
@@ -1516,11 +1626,12 @@ describe('hook-chat', () => {
     if (!failedTab) {
       throw new Error('Expected failed tab');
     }
-    const failedTimerBlock = failedTab.messages[2]?.blocks[0];
-    if (!failedTimerBlock || failedTimerBlock.type !== 'turn_timer') {
-      throw new Error('Expected completed turn timer');
-    }
-    expect(typeof failedTimerBlock.completedAt).toBe('number');
+    // Canonical turn state owns timers; the launcher writes none to close.
+    expect(
+      failedTab.messages.some((message) =>
+        message.blocks.some((block) => block.type === 'turn_timer'),
+      ),
+    ).toBe(false);
     expect(completeChatTurnMock).toHaveBeenCalledWith(
       'project',
       'worktree',
@@ -1631,9 +1742,12 @@ describe('hook-chat', () => {
     expect(messages[0]?.blocks).toEqual([
       { type: 'hook_info', triggerName: 'pr:checks:fail', timestamp: 1000 },
     ]);
-    expect(messages.at(-1)?.blocks).toEqual([
-      { type: 'turn_timer', startedAt: 5000, completedAt: null },
-    ]);
+    // Canonical turn state opens the timer when the provider starts the turn.
+    expect(
+      messages.some((message) =>
+        message.blocks.some((block) => block.type === 'turn_timer'),
+      ),
+    ).toBe(false);
   });
 
   it('starts hook chats when only another worktree has active sessions', async () => {

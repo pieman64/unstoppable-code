@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -15,6 +15,7 @@ import {
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { exercisePlanApproval } from './planApprovalScenario.mjs';
+import { stripHookErrorPrefix } from '../../../../packages/ui-shared/src/components/chat/tool-denial.ts';
 
 // ---------------------------------------------------------------------------
 // Task 18 — live tool-approval round trip.
@@ -125,6 +126,25 @@ function readCompletedTurnTimer(userDataDir, workspaceId, worktreeId, tabId) {
     .find((block) => block.type === 'turn_timer' && block.completedAt !== null);
 }
 
+// Read committed results rather than relying on card interaction alone.
+function rawPersistedErrorOutputs(userDataDir) {
+  const tabs = readChatStorageTabs(
+    path.join(userDataDir, 'workspaces', WORKSPACE_ID),
+    WORKTREE_ID,
+  ).tabs;
+  return (
+    tabs
+      ?.find((tab) => tab.id === 't1')
+      ?.messages?.flatMap((message) => message.blocks ?? [])
+      .filter((block) => block.type === 'tool_result' && block.isError)
+      .map((block) => block.output) ?? []
+  );
+}
+
+function persistedErrorOutputs(userDataDir) {
+  return rawPersistedErrorOutputs(userDataDir).map(stripHookErrorPrefix);
+}
+
 test.describe('live tool-approval round trip (Claude)', () => {
   for (const scenario of [
     { mode: 'ask', decision: 'allow' },
@@ -139,6 +159,207 @@ test.describe('live tool-approval round trip (Claude)', () => {
       await exercisePlanApproval(scenario);
     });
   }
+
+  test('an Ask-mode force-push is denied by a safety rule with a visible notice and no approval card', async () => {
+    test.setTimeout(180_000);
+    const CONVERSATION_MARKER = 'Canopy-CAPPROVELIVE-SAFETY';
+    const FOLLOW_UP_REPLY = 'The force-push was blocked by a safety rule';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-live-safety-'),
+    );
+    // The marker segment runs first, so it exists only if the denied command
+    // executed. The demo worktree has no remote to push to either way.
+    const markerPath = path.join(userDataDir, 'safety-denied-ran');
+    const command = `touch ${markerPath}; git push --force origin HEAD`;
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat', approvalMode: 'ask' }],
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, CONVERSATION_MARKER, {
+      llm: {
+        steps: [
+          {
+            toolCalls: [{ name: 'Bash', input: { command } }],
+            stopReason: 'tool_use',
+          },
+          { text: FOLLOW_UP_REPLY, stopReason: 'end_turn' },
+        ],
+      },
+    });
+
+    let { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({ userDataDir }),
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      await expect(window.getByTestId('approval-mode-picker')).toHaveAttribute(
+        'aria-label',
+        'Tool approval mode, current mode Ask',
+        { timeout: 15_000 },
+      );
+
+      // Watch the whole turn: a final count of zero cannot prove a card
+      // never flashed up and resolved.
+      await window.evaluate(() => {
+        const seen = { card: false };
+        Reflect.set(window, '__can4811ApprovalCardSeen', seen);
+        const check = () => {
+          if (document.querySelector('[data-testid="tool-approval-card"]')) {
+            seen.card = true;
+          }
+        };
+        new MutationObserver((records) => {
+          for (const record of records) {
+            for (const added of record.addedNodes) {
+              if (
+                added instanceof Element &&
+                (added.matches('[data-testid="tool-approval-card"]') ||
+                  added.querySelector('[data-testid="tool-approval-card"]'))
+              )
+                seen.card = true;
+            }
+          }
+          check();
+        }).observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
+        check();
+      });
+
+      const panel = window.getByTestId('panel-content-chat');
+      const composer = window.getByRole('textbox').first();
+      await composer.fill(`[${CONVERSATION_MARKER}] Force-push this branch.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+
+      const notice = panel.getByTestId('approval-safety-denied-notice');
+      await expect(notice).toBeVisible({ timeout: 60_000 });
+      await expect(notice).toHaveAttribute('data-safety-reason', 'force-push');
+      await expect(notice).toContainText(
+        'Force-push blocked by a safety rule.',
+      );
+      await expect(notice).toContainText(
+        'This call cannot be approved from a prompt.',
+      );
+      await expect(notice).toContainText('git push --force origin HEAD');
+      await expect(notice).toHaveCount(1);
+
+      const reply = panel.getByText(FOLLOW_UP_REPLY).first();
+      await expect(reply).toBeVisible({ timeout: 90_000 });
+      await expect
+        .poll(() =>
+          readCompletedTurnTimer(userDataDir, WORKSPACE_ID, WORKTREE_ID, 't1'),
+        )
+        .toBeTruthy();
+
+      // The notice reads before the agent's follow-up text.
+      const noticeBeforeReply = await notice.evaluate((element, text) => {
+        const walker = document.createTreeWalker(
+          document.body,
+          NodeFilter.SHOW_TEXT,
+        );
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (node.textContent?.includes(text)) {
+            return Boolean(
+              element.compareDocumentPosition(node) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+            );
+          }
+        }
+        return false;
+      }, FOLLOW_UP_REPLY);
+      expect(noticeBeforeReply).toBe(true);
+      // Inspect the denied Bash row, then restore the completed collapsed turn.
+      const steps = panel.getByRole('button', { name: /^Agent steps/ }).first();
+      if ((await steps.getAttribute('aria-expanded')) !== 'true')
+        await steps.click();
+      const blockedRow = panel
+        .locator('[data-tool-name="Bash"][data-tool-status="blocked"]')
+        .first();
+      await expect(blockedRow).toBeVisible();
+      await blockedRow.locator('button').first().click();
+      await expect(blockedRow).toContainText('blocked by safety rule');
+      await expect(blockedRow).not.toContainText('user denied');
+      await expect(blockedRow).not.toContainText('PreToolUse:');
+      expect(
+        await blockedRow.evaluate((row) => {
+          const notice = document.querySelector(
+            '[data-testid="approval-safety-denied-notice"]',
+          );
+          return (
+            notice !== null &&
+            Boolean(
+              row.compareDocumentPosition(notice) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+            )
+          );
+        }),
+      ).toBe(true);
+      if ((await steps.getAttribute('aria-expanded')) === 'true')
+        await steps.click();
+      await expect(steps).toHaveAttribute('aria-expanded', 'false');
+      // Still visible once the completed turn collapses its tool rows.
+      await expect(notice).toBeVisible();
+
+      expect(
+        await window.evaluate(
+          () => Reflect.get(window, '__can4811ApprovalCardSeen')?.card,
+        ),
+      ).toBe(false);
+      expect(existsSync(markerPath)).toBe(false);
+      const safetyMessage =
+        'Blocked by a safety rule (force-push). This call cannot be approved from a prompt. Do not retry or repackage the blocked operation. Choose a safe alternative or explain the block to the user.';
+      await expect
+        .poll(() => persistedErrorOutputs(userDataDir))
+        .toContainEqual(expect.stringContaining(safetyMessage));
+      await test.info().attach('safety-denial-persisted-output.json', {
+        body: JSON.stringify(rawPersistedErrorOutputs(userDataDir), null, 2),
+        contentType: 'application/json',
+      });
+
+      // Exactly one durable receipt, and exactly one notice after a full app restart.
+      const receipts = () =>
+        readChatStorageTabs(
+          path.join(userDataDir, 'workspaces', WORKSPACE_ID),
+          WORKTREE_ID,
+        )
+          .tabs?.find((tab) => tab.id === 't1')
+          ?.messages?.flatMap((message) => message.blocks ?? [])
+          .filter((block) => block.type === 'approval_safety_denied_info') ??
+        [];
+      await expect.poll(() => receipts().length).toBe(1);
+      expect(receipts()[0]).toEqual(
+        expect.objectContaining({ reason: 'force-push', mode: 'ask' }),
+      );
+
+      await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+      ({ electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+        launchCanopy({ userDataDir }),
+      ));
+      const restoredWindow = await electronApp.firstWindow();
+      const restoredApp = new CanopyAppDriver(restoredWindow);
+      await restoredApp.waitForShell({ timeout: 30_000 });
+      await restoredApp.openMainPage();
+      await restoredApp.selectWorktree(WORKTREE_BRANCH);
+      await expect(
+        restoredWindow.getByTestId('approval-safety-denied-notice'),
+      ).toHaveCount(1, { timeout: 30_000 });
+      expect(receipts()).toHaveLength(1);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
 
   test('a remembered command allow still prompts before targeting protected approval policy', async () => {
     test.setTimeout(180_000);
@@ -185,6 +406,9 @@ test.describe('live tool-approval round trip (Claude)', () => {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell({ timeout: 30_000 });
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_BRANCH);
 
@@ -197,8 +421,44 @@ test.describe('live tool-approval round trip (Claude)', () => {
       const card = window.getByTestId('tool-approval-card');
       await expect(card).toBeVisible({ timeout: 60_000 });
       await expect(card).toContainText(command);
+      await card.getByRole('button', { name: 'Add a reason' }).click();
+      await card.getByRole('textbox').fill('Not on this branch.');
       await window.getByTestId('tool-approval-deny').click();
       await expect(card).toHaveCount(0);
+      await expect
+        .poll(() => persistedErrorOutputs(userDataDir), { timeout: 60_000 })
+        .toContainEqual(
+          expect.stringMatching(
+            /^The user denied this tool call: Not on this branch\./,
+          ),
+        );
+      const steps = window
+        .getByRole('button', { name: /^Agent steps/ })
+        .first();
+      if (
+        (await steps.count()) > 0 &&
+        (await steps.getAttribute('aria-expanded')) !== 'true'
+      )
+        await steps.click();
+      const blocked = window
+        .locator('[data-tool-name="Bash"][data-tool-status="blocked"]')
+        .first();
+      await expect(blocked).toBeVisible();
+      await blocked.locator('button').first().click();
+      await expect(blocked).toContainText('denied by you');
+      await expect(blocked).toContainText('Not on this branch.');
+      await expect(blocked).not.toContainText('PreToolUse:');
+      await expect
+        .poll(() => persistedErrorOutputs(userDataDir))
+        .toContainEqual(
+          expect.stringMatching(
+            /^The user denied this tool call: Not on this branch\./,
+          ),
+        );
+      await test.info().attach('user-denial-persisted-output.json', {
+        body: JSON.stringify(rawPersistedErrorOutputs(userDataDir), null, 2),
+        contentType: 'application/json',
+      });
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -289,6 +549,23 @@ test.describe('live tool-approval round trip (Claude)', () => {
         'touch /tmp/canopy-approval-live-once-marker',
       );
 
+      // CAN-5291: inspect the transcript call tied to this real approval.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
+      const waitingCall = panel
+        .locator('[data-tool-name="Bash"]')
+        .filter({ hasText: 'canopy-approval-live-once-marker' });
+      await expect(waitingCall).toHaveAttribute('data-tool-status', 'pending');
+      await expect(waitingCall).toHaveAttribute(
+        'data-tool-approval',
+        'waiting',
+      );
+      await expect(waitingCall).toContainText('Waiting to run');
+      await expect(
+        waitingCall.locator('[class*="canopy-text-shimmer"]'),
+      ).toHaveCount(0);
+
       // A renderer-only reload keeps the main-process approval waiter alive.
       // Revisioned hydration must recover that canonical pending request so
       // the user can still answer it after the renderer reconnects.
@@ -321,6 +598,10 @@ test.describe('live tool-approval round trip (Claude)', () => {
       // "does not resume" case asserted in
       // `tool-approval-interactions.spec.mjs`.
       await expect(timer).not.toHaveAttribute('data-state', 'paused');
+      await expect(waitingCall).not.toHaveAttribute(
+        'data-tool-approval',
+        'waiting',
+      );
 
       // The follow-up text can only originate from the SDK actually
       // executing the approved command and continuing the turn.

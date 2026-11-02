@@ -138,27 +138,24 @@ function createReader(chats: Map<string, FakeChat>): {
   const listChatTabs = jest.fn(
     (): Promise<PersistedChatTab[]> =>
       Promise.resolve(
-        Array.from(chats.entries()).map(
-          ([id, chat]) =>
-            ({
-              id,
-              title: id,
-              messages: [],
-              createdAt: '2026-05-06T00:00:00.000Z',
-              ...(chat.carry ? { agentArtifactCarryByTurn: chat.carry } : {}),
-              ...(chat.revision === undefined
-                ? {}
-                : {
-                    transcript: {
-                      format: 'complete-message-jsonl-v1',
-                      committedMessageCount: chat.messages.length,
-                      committedByteLength: 0,
-                      transcriptRevision: chat.revision,
-                      hasActiveSidecar: false,
-                    },
-                  }),
-            }) as PersistedChatTab,
-        ),
+        Array.from(chats.entries()).map(([id, chat]) => ({
+          id,
+          title: id,
+          messages: [],
+          createdAt: '2026-05-06T00:00:00.000Z',
+          ...(chat.carry ? { agentArtifactCarryByTurn: chat.carry } : {}),
+          ...(chat.revision === undefined
+            ? {}
+            : {
+                transcript: {
+                  format: 'complete-message-jsonl-v1',
+                  committedMessageCount: chat.messages.length,
+                  committedByteLength: 0,
+                  transcriptRevision: chat.revision,
+                  hasActiveSidecar: false,
+                },
+              }),
+        })),
       ),
   );
   const readTranscript = jest.fn(

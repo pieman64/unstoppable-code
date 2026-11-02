@@ -1,23 +1,26 @@
 'use client';
 
-import { Suspense, useRef, useState, type JSX, type ReactNode } from 'react';
+import { useState, type JSX, type ReactNode } from 'react';
 import { ExternalLink, Plus, UserPlus } from '@canopy/ui-shared/icons/AppIcons';
 import { Button, buttonClassName } from '@canopy/ui-shared/components';
 import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import { useOptionalSettingsStoreApi } from '@canopy/app-state/settings';
-import type {
-  OrganizationDetail,
-  OrganizationSettingsNavModel,
-  OrganizationSummary,
-  OrgTeamsLapseReason,
+import {
+  ORGANIZATION_SETTINGS_SUBTABS,
+  type OrganizationDetail,
+  type OrganizationSettingsSubtab,
+  type OrgTeamsLapseReason,
 } from '@canopy/protocol/settings';
 import {
   canEditOrg,
   canManageMembers,
   canManageSubTeams,
+  visibleOrganizationSettingsSubtabs,
 } from '@canopy/protocol/settings/organization-permissions';
 import {
   LAPSED_LIVE_TABS,
+  organizationSettingsSubtabItem,
+  resolveOrganizationSettingsSubtab,
   teamNavItem,
   type TeamTab,
 } from '../navigation/organization-nav-items';
@@ -25,15 +28,18 @@ import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 import { SettingsPageNotice } from '../layout/settings-page-notice';
 import {
   SettingsLink,
-  useSettingsClient,
   useSettingsHost,
   useSettingsNavigation,
   useSettingsRouter,
+  useSettingsSearchParams,
   useSettingsWorkspaceContext,
 } from '../host';
-import { OrgSwitcher, PersonalOverviewHeader } from './organization-header';
-import { TeamOverviewSection } from './team-overview-section';
+import {
+  organizationTabColumnWidth,
+  PersonalOverviewHeader,
+} from './organization-header';
 import { TeamFeedSection } from './team-feed-section';
+import { TeamPageHeaderSlotContext } from './team-page-header-slot';
 import { TeamMembersSection } from './team-members-section';
 import {
   TeamProjectsHeaderActions,
@@ -42,31 +48,13 @@ import {
 } from './team-projects-section';
 import { TeamSubTeamsSection } from './team-subteams-section';
 import { TeamSettingsSection } from './settings/team-settings-section';
+import { useOrganizationSettingsSubtabSlots } from './settings/organization-settings-subtab-slots';
+import { canManageOrganizationExternalAgents } from './settings/external-agents-policy';
 import { TeamStatisticsSection } from './statistics/TeamStatisticsSection';
 import { TeamLapsedState } from './team-lapsed-state';
 import { useInviteSeatCharge } from './invite-seat-charge';
 import { useOrganizationSettingsSlots } from './organization-settings-slots';
 import { useMembershipChangeFollowUp } from './membership-change';
-
-/**
- * The tab switching to another organization lands on: the current tab when
- * the destination's rail (after its lapse, personal-kind, flag, and role
- * filtering) offers it live, otherwise the destination's Feed. `null` (the
- * destination's rail could not be read) also lands on Feed.
- */
-export function organizationSwitchTab(
-  currentTab: TeamTab,
-  destination: Pick<
-    OrganizationSettingsNavModel,
-    'visibleTabs' | 'disabledTabs'
-  > | null,
-): TeamTab {
-  if (destination === null) return 'feed';
-  return destination.visibleTabs.includes(currentTab) &&
-    !destination.disabledTabs.includes(currentTab)
-    ? currentTab
-    : 'feed';
-}
 
 /**
  * Why an org's tabs are blocked, when they are (CAN-2311). `null` is the normal
@@ -87,8 +75,6 @@ export interface TeamLapsedInfo {
 
 export interface TeamPageProps {
   initialDetail: OrganizationDetail;
-  /** All orgs the viewer belongs to, for the switcher dropdown. */
-  organizations: OrganizationSummary[];
   /** Session email used to identify the viewer's own member row. */
   viewerEmail: string;
   /**
@@ -100,12 +86,6 @@ export interface TeamPageProps {
   /** Whether organization memory is rolled out for this org. */
   memoryEnabled: boolean;
   projectsEnabled: boolean;
-  /**
-   * Whether the org's billing needs an action the viewer can take. Renders an
-   * attention dot on the Billing subtab inside Settings; the settings rail
-   * carries its own dot so it is noticed from any page.
-   */
-  billingNeedsAttention: boolean;
   /**
    * Server-resolved free app access (CAN-3926). The Billing settings subtab is
    * then named "AI Credits" and drops the subscription plan.
@@ -162,9 +142,10 @@ export interface TeamPageProps {
 /**
  * Client shell for the team routes. Holds the authoritative
  * {@link OrganizationDetail} (each settings section's mutations return a fresh
- * detail) and renders the org switcher, the organization block, the page
- * header naming the current destination, the notices, and that destination's
- * content. The settings rail navigates between destinations. Feed is the
+ * detail) and renders the page header naming the current destination, the
+ * notices, and that destination's content. The settings rail names the
+ * organization, switches between organizations and navigates between
+ * destinations, including each Settings page (`?tab=`). Feed is the
  * primary view; members and teams are first-class pages so any member can view
  * them, while management actions stay role-gated inside the Members and Teams
  * sections.
@@ -172,12 +153,10 @@ export interface TeamPageProps {
 
 export function TeamPage({
   initialDetail,
-  organizations,
   viewerEmail,
   billingEnabled,
   memoryEnabled,
   projectsEnabled,
-  billingNeedsAttention,
   freeAccess = false,
   activeTab,
   mobileBrowser,
@@ -190,12 +169,11 @@ export function TeamPage({
   externalAgentsEnabled = false,
 }: TeamPageProps): JSX.Element {
   const router = useSettingsRouter();
-  const client = useSettingsClient();
   const navigation = useSettingsNavigation();
+  const searchParams = useSettingsSearchParams();
   const webOrigin = useSettingsHost().webOrigin();
-  // Browsing settings never changes the workspace context; explicitly
-  // switching to another organization below selects it.
-  const { accountKey, selectOrganization } = useSettingsWorkspaceContext();
+  const { accountKey } = useSettingsWorkspaceContext();
+  const { renderExternalAgentsPolicy } = useOrganizationSettingsSubtabSlots();
   const { PromotionDialog } = useOrganizationSettingsSlots();
   // Desktop's settings store keeps the latest detail per organization, so a
   // tab that is still loading draws this header with current values. Web has
@@ -223,8 +201,10 @@ export function TeamPage({
     inviteSeatCharge.invalidate();
     const railChanged =
       next.name !== detail.name ||
+      next.logoUrl !== detail.logoUrl ||
       next.viewerRole !== detail.viewerRole ||
-      next.canViewUsageStats !== detail.canViewUsageStats;
+      next.canViewUsageStats !== detail.canViewUsageStats ||
+      next.githubConnection.connected !== detail.githubConnection.connected;
     setDetailState(next);
     settingsStore?.getState().rememberOrganizationDetail(next.id, next);
     if (railChanged) router.refresh();
@@ -241,7 +221,31 @@ export function TeamPage({
   // for what it actually answers so the next reader does not hunt for a
   // top-level Billing tab that no longer exists.
   const canRestoreViaBilling = billingEnabled && canEdit;
-  const pageNavItem = teamNavItem(activeTab);
+
+  // Each Settings page is its own rail row (`?tab=`). The rail and this page
+  // share one visibility rule; a stale or hidden `?tab=` shows the first
+  // page the viewer gets.
+  const settingsSubtabs = visibleOrganizationSettingsSubtabs({
+    viewerRole: detail.viewerRole,
+    lapsed: lapsed !== null,
+    billingEnabled,
+    canViewUsageStats: detail.canViewUsageStats,
+    githubConnected: detail.githubConnection.connected,
+    externalAgentsPolicy:
+      renderExternalAgentsPolicy !== undefined &&
+      canManageOrganizationExternalAgents(detail, externalAgentsEnabled),
+  });
+  const settingsSubtab =
+    activeTab === 'settings'
+      ? resolveOrganizationSettingsSubtab(
+          parseSettingsSubtab(searchParams.get('tab')),
+          settingsSubtabs,
+        )
+      : null;
+  const pageNavItem =
+    settingsSubtab === null
+      ? teamNavItem(activeTab)
+      : organizationSettingsSubtabItem(settingsSubtab, freeAccess);
 
   // Carrying the info (rather than a boolean) keeps the panel's fields narrowed
   // at the render site without a second `lapsed !== null` check.
@@ -277,35 +281,6 @@ export function TeamPage({
   const onBillingChanged = (): void => {
     inviteSeatCharge.invalidate();
     refreshPage();
-  };
-
-  // Switching organizations keeps the current tab only when the destination
-  // offers it; its rail is read for the destination explicitly, never
-  // inferred from this organization's.
-  const switchRequest = useRef(0);
-  const [switching, setSwitching] = useState(false);
-  const switchOrganization = async (orgId: string): Promise<void> => {
-    const request = ++switchRequest.current;
-    if (activeTab === 'feed') {
-      router.push(teamNavItem('feed').href(orgId));
-      return;
-    }
-    setSwitching(true);
-    let destination: OrganizationSettingsNavModel | null = null;
-    try {
-      const bootstrap = await client.read('settings.bootstrap', {
-        organizationId: orgId,
-      });
-      destination =
-        bootstrap.organization?.id === orgId ? bootstrap.organization : null;
-    } catch {
-      destination = null;
-    }
-    if (request !== switchRequest.current) return;
-    setSwitching(false);
-    router.push(
-      teamNavItem(organizationSwitchTab(activeTab, destination)).href(orgId),
-    );
   };
 
   // The Personal header's invite promotes Personal to a team. The host's
@@ -358,9 +333,22 @@ export function TeamPage({
     setInviteDialogShown(showInviteDialog);
   }
 
+  // Sections whose page actions read their own state (the Timeline's Live
+  // toggle, the Projects Refresh from GitHub) portal them into this slot,
+  // first in the header's actions.
+  const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
+  const headerSlotElement = (
+    <span
+      ref={setHeaderSlot}
+      className="contents"
+      data-testid="team-page-header-slot"
+    />
+  );
   const headerActions = ((): ReactNode => {
     if (lapsedPanelInfo !== null) return undefined;
     switch (activeTab) {
+      case 'feed':
+        return headerSlotElement;
       case 'members':
         if (!canInvite) return undefined;
         if (inviteSeatCharge.mode === 'handoff') {
@@ -381,7 +369,7 @@ export function TeamPage({
         return (
           <Button
             size="compact"
-            variant="primary"
+            variant="secondary"
             onClick={() => setAddingMember(true)}
             // Disabled until this host knows whether inviting can charge.
             disabled={inviteSeatCharge.mode === 'checking'}
@@ -395,7 +383,7 @@ export function TeamPage({
         return canCreateTeam && !creatingTeam ? (
           <Button
             size="compact"
-            variant="primary"
+            variant="secondary"
             onClick={() => setCreatingTeam(true)}
             data-testid="team-create-subteam"
           >
@@ -405,12 +393,15 @@ export function TeamPage({
         ) : undefined;
       case 'projects':
         return projectRepositoriesAvailable || projectAddAvailable ? (
-          <TeamProjectsHeaderActions
-            repositoriesAvailable={projectRepositoriesAvailable}
-            addAvailable={projectAddAvailable}
-            onAdd={() => setCreatingProject(true)}
-            onRepositories={() => setProjectRepositoriesOpen(true)}
-          />
+          <>
+            {headerSlotElement}
+            <TeamProjectsHeaderActions
+              repositoriesAvailable={projectRepositoriesAvailable}
+              addAvailable={projectAddAvailable}
+              onAdd={() => setCreatingProject(true)}
+              onRepositories={() => setProjectRepositoriesOpen(true)}
+            />
+          </>
         ) : undefined;
       case 'digests':
         // Forward link to the cadence settings. The left nav is what moves
@@ -418,7 +409,10 @@ export function TeamPage({
         return canEdit ? (
           <SettingsLink
             href={`/organization/${detail.id}/settings`}
-            className={buttonClassName({ variant: 'secondary' })}
+            className={buttonClassName({
+              variant: 'secondary',
+              size: 'compact',
+            })}
             data-testid="org-digest-settings-link"
           >
             Digest settings
@@ -527,25 +521,18 @@ export function TeamPage({
       case 'memory':
         return memoryContent ?? null;
       case 'settings':
-        // The settings cards live behind subtabs (`?tab=`), which
-        // `TeamSettingsSection` reads via `useSearchParams`, so it needs a
-        // Suspense boundary. This boundary also covers the Billing subtab's
-        // own `?plan=` read.
-        return (
-          <Suspense fallback={null}>
-            <TeamSettingsSection
-              detail={detail}
-              onDetailChange={setDetail}
-              onBillingChanged={onBillingChanged}
-              memoryEnabled={memoryEnabled}
-              billingEnabled={billingEnabled}
-              billingNeedsAttention={billingNeedsAttention}
-              freeAccess={freeAccess}
-              lapsed={lapsed}
-              onDeleted={afterMembershipRemoved}
-              externalAgentsEnabled={externalAgentsEnabled}
-            />
-          </Suspense>
+        return settingsSubtab === null ? null : (
+          <TeamSettingsSection
+            subtab={settingsSubtab}
+            detail={detail}
+            onDetailChange={setDetail}
+            onBillingChanged={onBillingChanged}
+            memoryEnabled={memoryEnabled}
+            freeAccess={freeAccess}
+            lapsed={lapsed}
+            onDeleted={afterMembershipRemoved}
+            externalAgentsEnabled={externalAgentsEnabled}
+          />
         );
     }
     const exhaustive: never = activeTab;
@@ -553,24 +540,13 @@ export function TeamPage({
   })();
 
   return (
-    <SettingsPageColumn className="relative">
-      {!personal && organizations.length > 1 && (
-        <OrgSwitcher
-          organizations={organizations}
-          currentOrgId={detail.id}
-          switching={switching}
-          onSelect={(orgId) => {
-            selectOrganization(orgId);
-            void switchOrganization(orgId);
-          }}
-        />
-      )}
-
+    <SettingsPageColumn
+      className="relative"
+      width={organizationTabColumnWidth(activeTab)}
+    >
       {personal ? (
         <PersonalOverviewHeader onInvite={openPersonalInvite} />
-      ) : (
-        <TeamOverviewSection detail={detail} onDetailChange={setDetail} />
-      )}
+      ) : null}
 
       {personalInviteId && accountKey !== null && PromotionDialog && (
         <PromotionDialog
@@ -582,7 +558,8 @@ export function TeamPage({
       )}
 
       <PageHeader
-        headingLevel="h2"
+        inset="none"
+        headingLevel={personal ? 'h2' : 'h1'}
         reserveActions
         title={pageNavItem.label}
         description={pageNavItem.description}
@@ -638,7 +615,17 @@ export function TeamPage({
         </p>
       )}
 
-      {tabContent}
+      <TeamPageHeaderSlotContext.Provider value={headerSlot}>
+        {tabContent}
+      </TeamPageHeaderSlotContext.Provider>
     </SettingsPageColumn>
+  );
+}
+
+function parseSettingsSubtab(
+  value: string | null,
+): OrganizationSettingsSubtab | null {
+  return (
+    ORGANIZATION_SETTINGS_SUBTABS.find((subtab) => subtab === value) ?? null
   );
 }

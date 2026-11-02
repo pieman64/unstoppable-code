@@ -614,7 +614,7 @@ export function pipelineHookUnsupportedSpeedError(
 ): string | undefined {
   return readCodexSpeedRecord(action.modelConfig, action.codexFastMode) ===
     'ultrafast'
-    ? 'Pipeline hooks do not support Ultra fast. Choose Regular or Fast.'
+    ? 'Workflow hooks do not support Ultra fast. Choose Regular or Fast.'
     : undefined;
 }
 
@@ -846,7 +846,7 @@ export function getHookActionLabel(action: HookAction): string {
   }
 
   if (action.type === 'pipeline') {
-    return `Pipeline: ${action.source}/${action.id}`;
+    return `Workflow: ${action.source}/${action.id}`;
   }
 
   const [firstLine = action.prompt] = action.prompt
@@ -867,7 +867,7 @@ export function getHookActionLogLabel(action: HookAction): string {
   }
 
   if (action.type === 'pipeline') {
-    return `Pipeline action (${action.source}/${action.id})`;
+    return `Workflow action (${action.source}/${action.id})`;
   }
 
   const baseLabel = action.model

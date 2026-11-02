@@ -1,4 +1,5 @@
-import { memo, type JSX, type NamedExoticComponent } from 'react';
+import { memo, useRef, type JSX, type NamedExoticComponent } from 'react';
+import { useFlipBox } from '../../lib/flip-box';
 import type { DropDirection, DropOverlayBox } from '../../panels/drop-geometry';
 
 /**
@@ -49,6 +50,9 @@ function toPercent(fraction: number): string {
   return `${fraction * 100}%`;
 }
 
+/** The highlight's move between zones: a compositor translate and stretch. */
+const BOX_MOVE = { durationMs: 100, easing: 'ease-out' } as const;
+
 /**
  * Controlled, display-only drop feedback for ONE panel group: the moving
  * highlight box VS Code's `DropOverlay.positionOverlay` renders, plus
@@ -67,6 +71,8 @@ function PanelDropOverlayComponent({
   visible,
   showZones,
 }: PanelDropOverlayProps): JSX.Element | null {
+  const boxRef = useRef<HTMLDivElement>(null);
+  useFlipBox(boxRef, BOX_MOVE);
   if (!visible) {
     return null;
   }
@@ -90,6 +96,7 @@ function PanelDropOverlayComponent({
         : null}
       {direction !== null && overlayBox !== null ? (
         <div
+          ref={boxRef}
           className="canopy-panel-drop-overlay-box"
           style={{
             top: toPercent(overlayBox.top),

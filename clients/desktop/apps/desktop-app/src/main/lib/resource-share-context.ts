@@ -1,6 +1,7 @@
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { PortalSharingExistingShare } from '@canopy/protocol/portal';
 import type { ShareRemoteMetadata, ShareScope } from '@canopy/protocol/sharing';
+import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
 
 export async function assertResourceShareDestination(request: {
   shareScope?: 'private' | 'team' | 'organization';
@@ -107,9 +108,10 @@ export async function preserveOrganizationPublicLink(
 /** Project a Cloud detail into the neutral state consumed by Portal UI. */
 export function toPortalExistingShare(detail: {
   shareScope?: ShareScope;
-  publicShare?: { upToDate?: boolean } | null;
+  publicShare?: { upToDate?: boolean; sharePath?: string } | null;
   owner?: ExistingShareOwner | null;
 }): PortalSharingExistingShare {
+  const publicUrl = portalPublicUrl(detail.publicShare?.sharePath);
   const owner = detail.owner;
   const target =
     owner && (owner.type === 'team' || owner.type === 'organization')
@@ -138,5 +140,20 @@ export function toPortalExistingShare(detail: {
     ...(detail.publicShare?.upToDate === false
       ? { publicLinkStale: true }
       : {}),
+    ...(publicUrl !== undefined ? { publicUrl } : {}),
   };
+}
+
+/**
+ * The public link a reopened Portal Share shows, resolved against the
+ * publishing account's cloud origin like a fresh share's `shareUrl`.
+ */
+function portalPublicUrl(sharePath: string | undefined): string | undefined {
+  if (sharePath === undefined || sharePath.length === 0) return undefined;
+  try {
+    return new URL(sharePath, getCanopyCloudBaseUrl()).toString();
+  } catch {
+    // An unconfigured origin opens the dialog without the link.
+    return undefined;
+  }
 }

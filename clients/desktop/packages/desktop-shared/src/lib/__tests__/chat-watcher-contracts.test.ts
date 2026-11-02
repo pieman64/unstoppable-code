@@ -1,5 +1,6 @@
-import Ajv from 'ajv';
+import Ajv, { type AnySchema } from 'ajv';
 import { z } from 'zod';
+import type { AgentJson } from '@canopy/agent-actions';
 import {
   canonicalChatWatcherEntrySchema,
   canonicalChatWatcherEntryJsonSchema,
@@ -42,6 +43,13 @@ const forbidden = [
   'ui',
 ];
 
+function asAjvSchema(value: AgentJson): AnySchema {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return value;
+  }
+  throw new Error('Expected the canonical watcher JSON schema to be an object');
+}
+
 describe('canonical chat watcher strict contracts', () => {
   it('validates all raw canonical entries before any mixed-batch legacy normalization', () => {
     const normalizeLegacy = jest.fn((entry: unknown) => entry);
@@ -62,8 +70,10 @@ describe('canonical chat watcher strict contracts', () => {
     expect(normalizeLegacy).toHaveBeenCalledTimes(1);
     expect(normalizeLegacy).toHaveBeenCalledWith({ trigger: 'legacy' });
   });
-  const validateJson = new Ajv({ strict: false }).compile(
-    canonicalChatWatcherEntryJsonSchema,
+  const validateJson = new Ajv({
+    strict: false,
+  }).compile<CanonicalChatWatcherEntry>(
+    asAjvSchema(canonicalChatWatcherEntryJsonSchema),
   );
   function expectEntry(value: unknown, valid: boolean): void {
     expect(canonicalChatWatcherEntrySchema.safeParse(value).success).toBe(

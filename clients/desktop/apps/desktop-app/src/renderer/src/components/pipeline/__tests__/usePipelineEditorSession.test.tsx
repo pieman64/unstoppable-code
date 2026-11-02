@@ -218,7 +218,7 @@ describe('usePipelineEditorSession', () => {
     expect(mockEditor.save).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       ok: false,
-      message: 'The pipeline could not be saved.',
+      message: 'The workflow could not be saved.',
     });
     expect(session?.isDirty).toBe(true);
   });

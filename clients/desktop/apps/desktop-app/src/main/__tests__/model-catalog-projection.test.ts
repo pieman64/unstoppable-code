@@ -5,6 +5,7 @@
  * show the same models the desktop has.
  */
 import {
+  clearCodexAccountModels,
   initAgentModels,
   initAiGatewayModels,
   initClaudeModels,
@@ -12,17 +13,23 @@ import {
   initCursorModels,
   initModelAliases,
   initOllamaModels,
+  setCodexAccountModels,
 } from '@canopy/desktop-shared/types';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { replaceModelFamilyMetadata } from '@canopy/desktop-shared/model-config';
 import { toCursorModelId } from '@canopy/desktop-shared/lib/cursor-models';
 import { isOrgGatewayRouteUsableByOwner } from '@canopy/desktop-shared/lib/org-model-gateway';
-const mockIsModelBlockedByCurrentPolicy = jest.fn(() => false);
+const mockIsModelBlockedByCurrentPolicy = jest.fn<boolean, [string]>(
+  () => false,
+);
 jest.mock('../lib/model-policy-state', () => ({
   isModelBlockedByCurrentPolicy: (id: string): boolean =>
     mockIsModelBlockedByCurrentPolicy(id),
 }));
-const mockIsModelExcludedByCurrentGatewayRequirement = jest.fn(() => false);
+const mockIsModelExcludedByCurrentGatewayRequirement = jest.fn<
+  boolean,
+  [string, WorkOwner | undefined]
+>(() => false);
 jest.mock('../lib/model-gateway-state', () => ({
   isModelExcludedByCurrentGatewayRequirement: (
     id: string,
@@ -177,7 +184,7 @@ describe('buildProjectedModelCatalog', () => {
         name: 'Reviewer',
         baseModel: 'opus',
         instructions: '',
-        pluginSelections: { collectionIds: [] },
+        pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         available: true,
@@ -187,7 +194,7 @@ describe('buildProjectedModelCatalog', () => {
         name: 'Stale',
         baseModel: 'ghost-model-that-does-not-exist',
         instructions: '',
-        pluginSelections: { collectionIds: [] },
+        pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         available: true,
@@ -196,7 +203,10 @@ describe('buildProjectedModelCatalog', () => {
   });
 
   it('projects provider models in Claude → Codex → Ollama → Cursor → Agents order', () => {
-    const catalog = buildProjectedModelCatalog(undefined, { cursor: true });
+    const catalog = buildProjectedModelCatalog(undefined, {
+      cursor: true,
+      agentDefaultModel: undefined,
+    });
     expect(catalog.map((option) => option.id)).toEqual([
       'opus',
       'sonnet',
@@ -209,32 +219,60 @@ describe('buildProjectedModelCatalog', () => {
     ]);
   });
 
+  it("projects the account's own Codex models after the catalog's, with their display names (CAN-4716)", () => {
+    setCodexAccountModels([
+      { id: 'gpt-5.5', model: 'gpt-5.5' },
+      { id: 'free-6', model: 'free-6', displayName: 'Free 6' },
+    ]);
+    try {
+      const catalog = buildProjectedModelCatalog(undefined, {
+        agentDefaultModel: undefined,
+      });
+      const ids = catalog.map((option) => option.id);
+      expect(ids.indexOf('free-6')).toBe(ids.indexOf('gpt-5.5') + 1);
+      expect(catalog.find((option) => option.id === 'free-6')).toMatchObject({
+        label: 'Free 6',
+        provider: 'codex',
+      });
+    } finally {
+      clearCodexAccountModels();
+    }
+    expect(
+      buildProjectedModelCatalog(undefined, {
+        agentDefaultModel: undefined,
+      }).some((option) => option.id === 'free-6'),
+    ).toBe(false);
+  });
+
   it('omits Cursor rows unless the caller opts in', () => {
     expect(
-      buildProjectedModelCatalog().some(
+      buildProjectedModelCatalog(undefined).some(
         (option) => option.provider === 'cursor',
       ),
     ).toBe(false);
     expect(
-      buildProjectedModelCatalog(undefined, { cursor: false }).some(
-        (option) => option.provider === 'cursor',
-      ),
+      buildProjectedModelCatalog(undefined, {
+        cursor: false,
+        agentDefaultModel: undefined,
+      }).some((option) => option.provider === 'cursor'),
     ).toBe(false);
   });
 
   it('projects Cursor rows after Ollama and before Agents when the harness flag is on', () => {
-    const ids = buildProjectedModelCatalog(undefined, { cursor: true }).map(
-      (option) => option.id,
-    );
+    const ids = buildProjectedModelCatalog(undefined, {
+      cursor: true,
+      agentDefaultModel: undefined,
+    }).map((option) => option.id);
     expect(ids.indexOf('cursor-default')).toBeGreaterThan(
       ids.indexOf('ollama-llama'),
     );
     expect(ids.indexOf('cursor-default')).toBeLessThan(
       ids.indexOf('agent_model_reviewer'),
     );
-    const row = buildProjectedModelCatalog(undefined, { cursor: true }).find(
-      (option) => option.id === 'cursor-default',
-    );
+    const row = buildProjectedModelCatalog(undefined, {
+      cursor: true,
+      agentDefaultModel: undefined,
+    }).find((option) => option.id === 'cursor-default');
     expect(row).toMatchObject({
       provider: 'cursor',
       source: 'cursor',
@@ -248,9 +286,10 @@ describe('buildProjectedModelCatalog', () => {
   it('omits Cursor rows when the harness flag is off', () => {
     mockCursorFlag.mockReturnValue(false);
     expect(
-      buildProjectedModelCatalog(undefined, { cursor: true }).some(
-        (option) => option.provider === 'cursor',
-      ),
+      buildProjectedModelCatalog(undefined, {
+        cursor: true,
+        agentDefaultModel: undefined,
+      }).some((option) => option.provider === 'cursor'),
     ).toBe(false);
   });
 
@@ -258,15 +297,16 @@ describe('buildProjectedModelCatalog', () => {
     mockIsModelBlockedByCurrentPolicy.mockImplementation(
       (id: string) => id === 'cursor-default',
     );
-    const ids = buildProjectedModelCatalog(undefined, { cursor: true }).map(
-      (option) => option.id,
-    );
+    const ids = buildProjectedModelCatalog(undefined, {
+      cursor: true,
+      agentDefaultModel: undefined,
+    }).map((option) => option.id);
     expect(ids).not.toContain('cursor-default');
     expect(ids).toContain('cursor:gpt-6-luna%5Breasoning%3Dmedium%5D');
   });
 
   it('tags each row with its provider and kind', () => {
-    const catalog = buildProjectedModelCatalog();
+    const catalog = buildProjectedModelCatalog(undefined);
     const byId = new Map(catalog.map((option) => [option.id, option]));
     expect(byId.get('opus')).toMatchObject({
       provider: 'claude',
@@ -298,9 +338,10 @@ describe('buildProjectedModelCatalog', () => {
       (id: string) => id === 'opus' || id === 'agent_model_reviewer',
     );
     expect(
-      buildProjectedModelCatalog(undefined, { cursor: true }).map(
-        (option) => option.id,
-      ),
+      buildProjectedModelCatalog(undefined, {
+        cursor: true,
+        agentDefaultModel: undefined,
+      }).map((option) => option.id),
     ).toEqual([
       'sonnet',
       'gpt-5.5',
@@ -329,6 +370,7 @@ describe('buildProjectedModelCatalog', () => {
         {
           modelId: gatewayModel,
           gatewayId: 'vertex/acme-gateway-model',
+          family: 'custom',
           recommendedHarness: 'claude',
           gatewayOnly: true,
           contextWindow: 200_000,
@@ -351,7 +393,10 @@ describe('buildProjectedModelCatalog', () => {
     };
 
     expect(
-      buildProjectedModelCatalog(undefined, { owner }).map(({ id }) => id),
+      buildProjectedModelCatalog(undefined, {
+        owner,
+        agentDefaultModel: undefined,
+      }).map(({ id }) => id),
     ).toEqual([gatewayModel]);
     expect(mockIsModelExcludedByCurrentGatewayRequirement).toHaveBeenCalledWith(
       'opus',
@@ -390,7 +435,7 @@ describe('buildProjectedModelCatalog', () => {
         },
       ],
     );
-    const gateway = buildProjectedModelCatalog().find(
+    const gateway = buildProjectedModelCatalog(undefined).find(
       (option) => option.id === 'deepseek-v4.1-flash',
     );
     expect(gateway).toMatchObject({
@@ -423,6 +468,7 @@ describe('buildProjectedModelCatalog', () => {
         {
           modelId: 'gateway-only-blocked',
           gatewayId: 'provider/gateway-only-blocked',
+          family: 'custom',
           recommendedHarness: 'codex',
           gatewayOnly: true,
           contextWindow: 128_000,
@@ -437,7 +483,7 @@ describe('buildProjectedModelCatalog', () => {
     );
 
     expect(
-      buildProjectedModelCatalog().some(
+      buildProjectedModelCatalog(undefined).some(
         (option) => option.id === 'gateway-only-blocked',
       ),
     ).toBe(false);
@@ -471,6 +517,7 @@ describe('buildProjectedModelCatalog', () => {
         {
           modelId: 'org-a-model',
           gatewayId: `${orgA}/model`,
+          family: 'custom',
           organizationId: orgA,
           origin: 'org-gateway',
           recommendedHarness: 'claude',
@@ -483,6 +530,7 @@ describe('buildProjectedModelCatalog', () => {
         {
           modelId: 'org-b-model',
           gatewayId: `${orgB}/model`,
+          family: 'custom',
           organizationId: orgB,
           origin: 'org-gateway',
           recommendedHarness: 'claude',
@@ -498,19 +546,23 @@ describe('buildProjectedModelCatalog', () => {
     expect(
       buildProjectedModelCatalog(undefined, {
         owner: { kind: 'organization', organizationId: orgA },
+        agentDefaultModel: undefined,
       })
         .filter((option) => option.id.startsWith('org-'))
         .map((option) => option.id),
     ).toEqual(['org-a-model']);
     expect(
-      buildProjectedModelCatalog(undefined, { owner: { kind: 'personal' } })
+      buildProjectedModelCatalog(undefined, {
+        owner: { kind: 'personal' },
+        agentDefaultModel: undefined,
+      })
         .filter((option) => option.id.startsWith('org-'))
         .map((option) => option.id),
     ).toEqual([]);
   });
 
   it('carries extra-charge billing metadata onto the catalog row', () => {
-    const sonnet = buildProjectedModelCatalog().find(
+    const sonnet = buildProjectedModelCatalog(undefined).find(
       (option) => option.id === 'sonnet',
     );
     expect(sonnet).toMatchObject({
@@ -518,14 +570,14 @@ describe('buildProjectedModelCatalog', () => {
       extraChargeMessage: 'AI credits only.',
     });
     // A model without billing metadata omits the extra-charge fields.
-    const opus = buildProjectedModelCatalog().find(
+    const opus = buildProjectedModelCatalog(undefined).find(
       (option) => option.id === 'opus',
     );
     expect(opus?.extraChargeOnly).toBeUndefined();
   });
 
   it('projects package-owned show-more placement without applying it to Agents', () => {
-    const catalog = buildProjectedModelCatalog();
+    const catalog = buildProjectedModelCatalog(undefined);
     expect(catalog.find((option) => option.id === 'sonnet')).toMatchObject({
       showMoreOnly: true,
     });
@@ -537,17 +589,19 @@ describe('buildProjectedModelCatalog', () => {
 
   it('projects configured descriptions for desktop and Portal pickers', () => {
     expect(
-      buildProjectedModelCatalog().find((option) => option.id === 'opus'),
+      buildProjectedModelCatalog(undefined).find(
+        (option) => option.id === 'opus',
+      ),
     ).toMatchObject({ description: 'Most capable model.' });
     expect(
-      buildProjectedModelCatalog().find(
+      buildProjectedModelCatalog(undefined).find(
         (option) => option.id === 'agent_model_reviewer',
       ),
     ).toMatchObject({ description: 'Most capable model.' });
   });
 
   it('marks a stale custom Agent unavailable while an available Agent resolves its base provider', () => {
-    const catalog = buildProjectedModelCatalog();
+    const catalog = buildProjectedModelCatalog(undefined);
     const reviewer = catalog.find((o) => o.id === 'agent_model_reviewer');
     const stale = catalog.find((o) => o.id === 'agent_model_stale');
     expect(reviewer).toMatchObject({
@@ -566,7 +620,7 @@ describe('buildProjectedModelCatalog', () => {
 
   describe('per-model thinking levels (CAN-2441)', () => {
     const levelsFor = (id: string): unknown =>
-      buildProjectedModelCatalog().find((option) => option.id === id)
+      buildProjectedModelCatalog(undefined).find((option) => option.id === id)
         ?.thinkingLevels;
 
     it('projects each model its own configured efforts, including max and ultra', () => {
@@ -591,7 +645,7 @@ describe('buildProjectedModelCatalog', () => {
     });
 
     it('never projects the internal-only `low` tier', () => {
-      for (const option of buildProjectedModelCatalog()) {
+      for (const option of buildProjectedModelCatalog(undefined)) {
         expect(option.thinkingLevels).not.toContain('low');
       }
     });
@@ -599,6 +653,7 @@ describe('buildProjectedModelCatalog', () => {
     it('always offers `off` first so the cycle has a defined start', () => {
       for (const option of buildProjectedModelCatalog(undefined, {
         cursor: true,
+        agentDefaultModel: undefined,
       })) {
         // Cursor rows carry no thinking chip at all (the CLI owns effort), so
         // their projected cycle is deliberately empty rather than `off`-led.
@@ -619,7 +674,7 @@ describe('buildProjectedModelCatalog', () => {
       // the provider fallback while desktop resolves the base model's real
       // set (CAN-2540 §1) — the Agent row must declare the base model's
       // effective set like every provider row does.
-      const catalog = buildProjectedModelCatalog();
+      const catalog = buildProjectedModelCatalog(undefined);
       const reviewer = catalog.find((o) => o.id === 'agent_model_reviewer');
       const opus = catalog.find((o) => o.id === 'opus');
       expect(reviewer?.supportedThinkingLevels).toEqual(

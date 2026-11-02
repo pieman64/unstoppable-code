@@ -51,18 +51,6 @@ describe('Sidebar platform spacing', () => {
     expect(titlebarCornerWidthPx(true, false)).toBe(184);
   });
 
-  // The 100% case; `Sidebar floor under the interface-scale zoom` below
-  // covers the other supported scales, where the corner's physical reserve
-  // costs a different number of CSS px.
-  it('fits one full header-button target in the status space at the minimum width', () => {
-    const statusWidth = SIDEBAR_MIN_WIDTH - titlebarCornerWidthPx(true, false);
-
-    expect(statusWidth).toBe(36);
-    expect(statusWidth - TITLEBAR_CORNER_TRAILING_PX).toBe(
-      TITLEBAR_TOGGLE_FOOTPRINT_PX,
-    );
-  });
-
   it('adds only New task while the sidebar is collapsed', () => {
     expect(titlebarCornerControlCount(true)).toBe(4);
     expect(titlebarCornerWidthPx(true, true)).toBe(216);
@@ -112,19 +100,16 @@ describe('Sidebar floor under the interface-scale zoom', () => {
     },
   );
 
-  it('grows the floor by exactly the extra physical reserve below 100%', () => {
-    // 72px of reserve costs 96 CSS px at 75%, so the floor takes the 24px
-    // difference; the status area keeps its 36px either way. At 50% the same
-    // reserve costs 144 CSS px and the floor takes the full 72px difference.
-    expect(sidebarMinWidthPx(true, 1)).toBe(SIDEBAR_MIN_WIDTH);
+  it('allows a 220px sidebar while keeping the traffic-light reserve physical', () => {
+    expect(sidebarMinWidthPx(true, 1)).toBe(220);
     expect(sidebarMinWidthPx(true, 0.75)).toBe(244);
     expect(sidebarMinWidthPx(true, 0.8)).toBe(238);
     expect(sidebarMinWidthPx(true, 0.5)).toBe(292);
   });
 
-  it('never drops the floor below the sidebar minimum above 100%', () => {
-    expect(sidebarMinWidthPx(true, 1.25)).toBe(SIDEBAR_MIN_WIDTH);
-    expect(sidebarMinWidthPx(true, 1.5)).toBe(SIDEBAR_MIN_WIDTH);
+  it('uses the normal floor once the titlebar fits above 100%', () => {
+    expect(sidebarMinWidthPx(true, 1.25)).toBeCloseTo(220);
+    expect(sidebarMinWidthPx(true, 1.5)).toBe(220);
     expect(sidebarMinWidthPx(true, 2)).toBe(SIDEBAR_MIN_WIDTH);
   });
 
@@ -135,7 +120,7 @@ describe('Sidebar floor under the interface-scale zoom', () => {
 
   it('expresses the same floor as a CSS length for the rendered sidebar', () => {
     expect(sidebarMinWidthCss(true)).toBe(
-      'max(220px, calc(220px + 72px / var(--ui-zoom, 1) - 72px))',
+      'max(220px, calc(72px / var(--ui-zoom, 1) + 148px))',
     );
   });
 });

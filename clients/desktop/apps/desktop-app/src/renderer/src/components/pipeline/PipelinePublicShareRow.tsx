@@ -1,5 +1,6 @@
 import { type JSX, useEffect, useState } from 'react';
 import type { SharedPipelinePublicShareInfo } from '@canopy/desktop-shared/types/pipeline';
+import { Button } from '@canopy/ui-shared/components';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { resolveSharedPipelineUrl } from '@/lib/share-links';
 
@@ -74,47 +75,40 @@ export function PipelinePublicShareRow({
       <span className="font-medium fg-primary">Public link</span>
       {!share ? (
         canManage && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void publish()}
-            className="rounded-md border px-2 py-1 fg-primary disabled:opacity-50"
-          >
+          <Button size="compact" disabled={busy} onClick={() => void publish()}>
             Publish
-          </button>
+          </Button>
         )
       ) : (
         <>
           <span className="min-w-0 flex-1 truncate fg-secondary">{url}</span>
-          <button
-            type="button"
+          <Button
+            size="compact"
             disabled={!url || busy}
             onClick={() => {
               if (url) void copyTextToClipboard(url).then(setCopied);
             }}
-            className="rounded-md border px-2 py-1 fg-primary disabled:opacity-50"
           >
             {copied ? 'Copied' : 'Copy link'}
-          </button>
+          </Button>
           {canManage && !share.upToDate && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               disabled={busy}
               onClick={() => void publish()}
-              className="rounded-md border px-2 py-1 fg-primary disabled:opacity-50"
             >
               Update to latest
-            </button>
+            </Button>
           )}
           {canManage && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               disabled={busy}
+              variant="ghost-destructive"
               onClick={() => void revoke()}
-              className="rounded-md border border-line-destructive/40 px-2 py-1 fg-destructive disabled:opacity-50"
             >
               Remove
-            </button>
+            </Button>
           )}
         </>
       )}

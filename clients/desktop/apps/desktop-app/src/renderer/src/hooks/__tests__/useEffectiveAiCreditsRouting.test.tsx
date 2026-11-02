@@ -5,10 +5,10 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   AiCreditsRoutingState,
-  CanopyApi,
   NativeAccountProvider,
   PreferencesLoadResult,
 } from '@canopy/desktop-shared/types';
+import type { CreditsModelRoutability } from '@/lib/chatBillingFramework';
 import type { NativeProviderAccounts } from '../useNativeProviderAccounts';
 import { useEffectiveAiCreditsRouting } from '../useEffectiveAiCreditsRouting';
 
@@ -48,16 +48,19 @@ function Harness({
   probe,
   routing,
   provider = 'claude',
+  routability = 'routable',
 }: {
   probe: Probe;
   routing: AiCreditsRoutingState | undefined;
   /** `null` stands for an unknown billed provider. */
   provider?: NativeAccountProvider | null;
+  routability?: CreditsModelRoutability;
 }): JSX.Element {
   probe.current = useEffectiveAiCreditsRouting(
     routing,
     provider ?? undefined,
     TARGET,
+    routability,
   ).inEffect;
   return <></>;
 }
@@ -105,7 +108,7 @@ describe('useEffectiveAiCreditsRouting', () => {
           changed = cb;
           return (): void => {};
         },
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 
@@ -249,5 +252,83 @@ describe('useEffectiveAiCreditsRouting', () => {
     await render(<Harness probe={probe} routing={undefined} />);
     expect(probe.current).toBe(false);
     expect(mockClearAiCreditsRouting).not.toHaveBeenCalled();
+  });
+  it('reverts an older session after a fresh account-bound allowance observation', async () => {
+    accounts = {
+      claude: {
+        accountKey: 'tester@example.com',
+        subscriptionRestoredAt: NOW + 1,
+      },
+    };
+    const probe: Probe = { current: null };
+    await render(<Harness probe={probe} routing={session()} />);
+    expect(probe.current).toBe(false);
+    expect(mockClearAiCreditsRouting).toHaveBeenCalledWith(TARGET);
+  });
+
+  describe('model that cannot run on AI Credits (CAN-4900)', () => {
+    it('reverts and clears session routing once', async () => {
+      const probe: Probe = { current: null };
+      const routing = session();
+      await render(
+        <Harness probe={probe} routing={routing} routability="not-routable" />,
+      );
+      expect(probe.current).toBe(false);
+      expect(mockClearAiCreditsRouting).toHaveBeenCalledTimes(1);
+      expect(mockClearAiCreditsRouting).toHaveBeenCalledWith(TARGET);
+
+      await render(
+        <Harness
+          probe={probe}
+          routing={{ ...routing }}
+          routability="not-routable"
+        />,
+      );
+      expect(mockClearAiCreditsRouting).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps session routing until the catalog answers', async () => {
+      const probe: Probe = { current: null };
+      await render(
+        <Harness probe={probe} routing={session()} routability="unknown" />,
+      );
+      expect(probe.current).toBe(true);
+      expect(mockClearAiCreditsRouting).not.toHaveBeenCalled();
+    });
+
+    it('never clears persistent routing', async () => {
+      const probe: Probe = { current: null };
+      await render(
+        <Harness
+          probe={probe}
+          routing={session({ scope: 'persistent' })}
+          routability="not-routable"
+        />,
+      );
+      expect(probe.current).toBe(true);
+      expect(mockClearAiCreditsRouting).not.toHaveBeenCalled();
+    });
+
+    it('does not clear when the model becomes routable before the scope is live', async () => {
+      mockStore.live = false;
+      const probe: Probe = { current: null };
+      const routing = session();
+      await render(
+        <Harness probe={probe} routing={routing} routability="not-routable" />,
+      );
+      await render(
+        <Harness probe={probe} routing={routing} routability="routable" />,
+      );
+      mockStore.live = true;
+      await render(
+        <Harness
+          probe={probe}
+          routing={{ ...routing }}
+          routability="routable"
+        />,
+      );
+      expect(probe.current).toBe(true);
+      expect(mockClearAiCreditsRouting).not.toHaveBeenCalled();
+    });
   });
 });

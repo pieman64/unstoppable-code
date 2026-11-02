@@ -28,6 +28,7 @@
 import http from 'node:http';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { closeCanopy } from './launchCanopy.mjs';
 import {
@@ -132,7 +133,15 @@ async function expectTabBeforeSession(
     } else {
       await expect(pane).toBeVisible();
     }
-    await expect(pane.getByTestId('browser-url-input')).toHaveValue(url);
+    const displayedAddress =
+      url === '' || url === 'about:blank'
+        ? ''
+        : url.startsWith('file:')
+          ? decodeURIComponent(new URL(url).pathname.split('/').pop())
+          : new URL(url).host;
+    await expect(pane.getByTestId('browser-url-input')).toHaveValue(
+      displayedAddress,
+    );
     if (label === null) {
       await expect(pane.getByTestId('browser-pane-loading')).toHaveCount(0);
       await expect(pane.getByTestId('browser-pane-empty')).toHaveText(
@@ -161,32 +170,30 @@ async function expectTabBeforeSession(
 }
 
 /** Resolves once a native browser view on exactly `url` shows `title`. */
-async function expectPageLoaded(electronApp, url, title) {
+async function expectPageLoaded(
+  electronApp,
+  url,
+  title,
+  excludedContents = [],
+) {
   await expect
     .poll(
       () =>
         electronApp.evaluate(
-          ({ webContents }, { pageUrl, pageTitle }) =>
+          ({ webContents }, { pageUrl, pageTitle, excludedIds }) =>
             webContents
               .getAllWebContents()
               .some(
                 (contents) =>
+                  !excludedIds.includes(contents.id) &&
                   contents.getURL() === pageUrl &&
                   contents.getTitle() === pageTitle,
               ),
-          { pageUrl: url, pageTitle: title },
+          { pageUrl: url, pageTitle: title, excludedIds: excludedContents },
         ),
       { timeout: 30_000 },
     )
     .toBe(true);
-}
-
-/** The URL shown in one browser tab's address bar. */
-function browserUrl(window, browserId) {
-  return window
-    .getByTestId(`browser-pane-${browserId}`)
-    .getByTestId('browser-url-input')
-    .inputValue();
 }
 
 function sendRendererTool(electronApp, request) {
@@ -359,7 +366,7 @@ test.describe('Browser tabs open before their session exists', () => {
       await row.hover();
       await row.getByTestId('worktree-actions-menu-button').click();
       await window.getByTestId('worktree-actions-menu-delete').click();
-      const dialog = window.getByRole('dialog', { name: 'Delete worktree?' });
+      const dialog = window.getByRole('dialog', { name: /^Delete worktree/ });
       await expect(dialog).toBeVisible();
       await dialog.getByTestId('worktree-removal-preserve-branch').click();
       const retirement = () =>
@@ -392,6 +399,7 @@ test.describe('Browser tabs open before their session exists', () => {
       const { electronApp, userDataDir, window, demoSeed } =
         await seedPanelWorktree();
       let inventory;
+      let pendingSwitch;
       try {
         const worktreePath = demoSeed?.workspaces?.[0]?.worktreePath;
         if (!worktreePath) throw new Error('Expected a seeded worktree path.');
@@ -404,6 +412,7 @@ test.describe('Browser tabs open before their session exists', () => {
         ).toMatchObject({ ok: true });
 
         let sourceId;
+        let source;
         let named;
         if (mode !== 'open') {
           const before = await browserIds(window);
@@ -411,9 +420,17 @@ test.describe('Browser tabs open before their session exists', () => {
           sourceId = await newBrowserId(window, before);
           await expectPageLoaded(
             electronApp,
-            await browserUrl(window, sourceId),
+            pathToFileURL(path.join(worktreePath, 'latency-site/index.html'))
+              .href,
             HTML_TITLE,
           );
+          source = await window.evaluate(async (browserId) => {
+            const { state } = await window.api.browser.loadWorktreeState({
+              projectId: 'demo-ts-pnpm-vite',
+              worktreeId: 'demo-main',
+            });
+            return state.browsers.find((browser) => browser.id === browserId);
+          }, sourceId);
           named = await window.evaluate(() =>
             window.api.browser.profiles.create({
               operationId: crypto.randomUUID(),
@@ -450,18 +467,27 @@ test.describe('Browser tabs open before their session exists', () => {
           await expect(
             window.getByTestId(`browser-pane-${browserId}`),
           ).toHaveAttribute('data-browser-state', 'opening');
-        } else {
-          await window.getByTestId('browser-profile-picker').click();
+        } else if (mode === 'replace') {
+          await window.getByTestId('browser-more').click();
+          await window.getByTestId('browser-more-profile').hover();
           await window
-            .getByTestId('browser-profile-selection')
-            .selectOption(named.profileId);
-          await window
-            .getByTestId(
-              mode === 'replace'
-                ? 'browser-profile-replace'
-                : 'browser-profile-new-tab',
-            )
+            .getByTestId(`browser-profile-option-${named.profileId}`)
             .click();
+        } else {
+          // The graduated submenu switches in place. New-tab remains a backend
+          // operation, so exercise that mode through its real preload API.
+          pendingSwitch = window
+            .evaluate((request) => window.api.browser.switchProfile(request), {
+              operationId: 'latency-new-tab-switch',
+              browserId: sourceId,
+              expectedRuntimeGeneration: source.profile.runtimeGeneration,
+              selection: { kind: 'named', profileId: named.profileId },
+              mode: 'new-tab',
+            })
+            .then(
+              (result) => ({ result }),
+              (error) => ({ error: String(error) }),
+            );
         }
         // Allocation follows profile/session resolution and precedes binding persistence.
         await expect
@@ -498,22 +524,56 @@ test.describe('Browser tabs open before their session exists', () => {
           await globalThis.__browserWorkspaceOperation;
         });
         if (mode === 'replace') browserId = sourceId;
-        else if (mode === 'new-tab')
-          browserId = await newBrowserId(window, before);
+        else if (mode === 'new-tab') {
+          const completed = await pendingSwitch;
+          expect(completed).not.toHaveProperty('error');
+          expect(completed.result).toMatchObject({
+            status: 'complete',
+            browser: { profile: { resolvedProfileId: named.profileId } },
+          });
+          browserId = completed.result.browser.id;
+          expect(browserId).not.toBe(sourceId);
+          // The API creates a session; the retired picker owned panel placement.
+          await expect
+            .poll(async () => {
+              const { state } = await window.evaluate(() =>
+                window.api.browser.loadWorktreeState({
+                  projectId: 'demo-ts-pnpm-vite',
+                  worktreeId: 'demo-main',
+                }),
+              );
+              return state.browsers.find((browser) => browser.id === browserId);
+            })
+            .toMatchObject({
+              id: browserId,
+              status: 'ready',
+              url: pathToFileURL(
+                path.join(worktreePath, 'latency-site/index.html'),
+              ).href,
+              profile: { resolvedProfileId: named.profileId },
+            });
+        }
         await expectPageLoaded(
           electronApp,
-          await browserUrl(window, browserId),
+          pathToFileURL(path.join(worktreePath, 'latency-site/index.html'))
+            .href,
           HTML_TITLE,
+          existingContents,
         );
-        await expect(
-          window.getByTestId(`browser-pane-${browserId}`),
-        ).toHaveAttribute('data-browser-state', 'live');
-        if (mode !== 'open')
+        if (mode !== 'new-tab') {
           await expect(
-            window
-              .getByTestId('browser-profile-picker')
-              .filter({ hasText: 'Contended profile' }),
-          ).toBeVisible();
+            window.getByTestId(`browser-pane-${browserId}`),
+          ).toHaveAttribute('data-browser-state', 'live');
+        }
+        if (mode === 'replace') {
+          await window.getByTestId('browser-more').click();
+          await window.getByTestId('browser-more-profile').hover();
+          const selected = window.getByTestId(
+            `browser-profile-option-${named.profileId}`,
+          );
+          await expect(selected).toHaveAttribute('aria-checked', 'true');
+          await expect(selected).toHaveText('Contended profile');
+        }
       } finally {
         await electronApp
           .evaluate(async () => {
@@ -522,6 +582,7 @@ test.describe('Browser tabs open before their session exists', () => {
           })
           .catch(() => undefined);
         await inventory?.catch(() => undefined);
+        await pendingSwitch;
         await closeCanopy(electronApp, userDataDir);
       }
     });
@@ -558,7 +619,7 @@ test.describe('Browser tabs open before their session exists', () => {
         },
         open: async () => {
           await window
-            .getByTestId(`panel-add-panel-${DEFAULT_GROUP_IDS.terminal}`)
+            .getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.terminal}`)
             .click();
           await window.getByTestId('panel-add-menu-item-browser').click();
           // The menu closes on placement, not after the session exists.
@@ -612,14 +673,15 @@ test.describe('Browser tabs open before their session exists', () => {
         .locator('[data-testid="panel-content-file-diff"]:visible')
         .filter({ hasText: 'index.html' });
       await expect(viewer).toBeVisible({ timeout: 30_000 });
-      const fileTabId = await expectTabBeforeSession(electronApp, window, {
-        url: /^file:\/\/.*\/latency-site\/index\.html$/,
+      await expectTabBeforeSession(electronApp, window, {
+        url: pathToFileURL(path.join(worktreePath, 'latency-site/index.html'))
+          .href,
         label: 'Loading index.html…',
         open: () => viewer.getByTestId('file-viewer-open-in-browser').click(),
       });
       await expectPageLoaded(
         electronApp,
-        await browserUrl(window, fileTabId),
+        pathToFileURL(path.join(worktreePath, 'latency-site/index.html')).href,
         HTML_TITLE,
       );
 
@@ -716,8 +778,9 @@ test.describe('Browser tabs open before their session exists', () => {
 
       // --- ShowFiles for an HTML page ---------------------------------------
       let shown;
-      const shownId = await expectTabBeforeSession(electronApp, window, {
-        url: /^file:\/\/.*\/latency-site\/index\.html$/,
+      await expectTabBeforeSession(electronApp, window, {
+        url: pathToFileURL(path.join(worktreePath, 'latency-site/index.html'))
+          .href,
         label: 'Loading index.html…',
         backgroundTabLabel: 'latency-site/index.html',
         open: () =>
@@ -733,7 +796,7 @@ test.describe('Browser tabs open before their session exists', () => {
       });
       await expectPageLoaded(
         electronApp,
-        await browserUrl(window, shownId),
+        pathToFileURL(path.join(worktreePath, 'latency-site/index.html')).href,
         HTML_TITLE,
       );
     } finally {

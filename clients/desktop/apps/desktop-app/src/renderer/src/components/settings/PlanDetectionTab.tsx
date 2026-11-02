@@ -5,7 +5,12 @@ import type {
   PlanDetectionRule,
   PlanDetectionRuleKind,
 } from '@canopy/desktop-shared/types';
-import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  Button,
+  SettingsSelect,
+  ToggleSwitch,
+  type SettingsSelectOption,
+} from '@canopy/ui-shared/components';
 import {
   getGlobalInheritedRows,
   loadPlanDetectionTabState,
@@ -19,10 +24,8 @@ import {
   SettingsPageMessage,
   SettingsRow,
   SettingsSection,
-  SettingsSelect,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const TEST_ID_PREFIX = 'settings-plan-detection';
 
@@ -30,6 +33,12 @@ const RULE_KIND_LABELS: Record<PlanDetectionRuleKind, string> = {
   include: 'Include',
   exclude: 'Exclude',
 };
+
+const RULE_KIND_OPTIONS: readonly SettingsSelectOption<PlanDetectionRuleKind>[] =
+  [
+    { value: 'include', label: 'Include' },
+    { value: 'exclude', label: 'Exclude' },
+  ];
 
 function isPlanDetectionRuleKind(
   value: string,
@@ -54,7 +63,6 @@ interface NewRuleRowProps {
 
 /** The custom-rule form: kind, optional label, glob, and the Add action. */
 function NewRuleRow({ onAdd }: NewRuleRowProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [kind, setKind] = useState<PlanDetectionRuleKind>('include');
   const [label, setLabel] = useState('');
   const [pattern, setPattern] = useState('');
@@ -81,18 +89,16 @@ function NewRuleRow({ onAdd }: NewRuleRowProps): JSX.Element {
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <SettingsSelect
+          options={RULE_KIND_OPTIONS}
           value={kind}
           aria-label="Rule type"
-          onChange={(event): void => {
-            if (isPlanDetectionRuleKind(event.target.value)) {
-              setKind(event.target.value);
+          onValueChange={(next): void => {
+            if (isPlanDetectionRuleKind(next)) {
+              setKind(next);
             }
           }}
           data-testid={`${TEST_ID_PREFIX}-kind`}
-        >
-          <option value="include">Include</option>
-          <option value="exclude">Exclude</option>
-        </SettingsSelect>
+        />
         <SettingsTextField
           type="text"
           width="sm"
@@ -127,7 +133,7 @@ function NewRuleRow({ onAdd }: NewRuleRowProps): JSX.Element {
           />
         </div>
         <Button
-          size={settingsButtonSize}
+          size="compact"
           className="shrink-0"
           onClick={handleAdd}
           data-testid={`${TEST_ID_PREFIX}-add`}
@@ -148,7 +154,6 @@ function NewRuleRow({ onAdd }: NewRuleRowProps): JSX.Element {
 }
 
 export function PlanDetectionTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [state, setState] = useState<PlanDetectionTabState>({
     status: 'loading',
   });
@@ -245,15 +250,20 @@ export function PlanDetectionTab(): JSX.Element {
         dataTestId={`${TEST_ID_PREFIX}-editor`}
       >
         <SettingsGroup>
-          <NewRuleRow
-            onAdd={(rule): void => {
-              const next: PlanDetectionRule = { ...rule, id: makeRuleId() };
-              void persist({
-                ...prefs,
-                customRules: [...prefs.customRules, next],
-              });
-            }}
-          />
+          <SettingsRow
+            label="New rule"
+            description="Include or exclude files whose path matches a glob."
+          >
+            <NewRuleRow
+              onAdd={(rule): void => {
+                const next: PlanDetectionRule = { ...rule, id: makeRuleId() };
+                void persist({
+                  ...prefs,
+                  customRules: [...prefs.customRules, next],
+                });
+              }}
+            />
+          </SettingsRow>
           {prefs.customRules.length === 0 ? (
             <p
               className="text-s fg-secondary"
@@ -270,8 +280,8 @@ export function PlanDetectionTab(): JSX.Element {
                 dataTestId={`${TEST_ID_PREFIX}-custom-${rule.id}`}
                 control={
                   <Button
-                    size={settingsButtonSize}
-                    variant="ghost"
+                    size="compact"
+                    variant="secondary"
                     onClick={(): void => {
                       void persist({
                         ...prefs,

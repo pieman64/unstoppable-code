@@ -588,6 +588,141 @@ posix(
       expect(selections.map(({ chunk }) => chunk)).toEqual([0]);
     });
 
+    it('reports each chunk once its process starts, with its selected executable and version', async () => {
+      const { file, log } = fakeGit('cat "$in"');
+      const started: [number, unknown][] = [];
+      /** Chunks reported by the time each chunk's process ran. */
+      const reportedBefore: number[] = [];
+      const result = await runner.checkIgnoredPathsSelected({
+        cwd: base,
+        paths: paths(12_000),
+        environment: gitEnv(),
+        deadlineAt: performance.now() + 10_000,
+        signal: new AbortController().signal,
+        executableForChunk: (chunk) => {
+          reportedBefore.push(started.length);
+          return Promise.resolve(
+            chunk === 1 ? file : { executable: file, version: 'git version 2.47.1' }, // prettier-ignore
+          );
+        },
+        onChunkStarted: (chunk, selected) => started.push([chunk, selected]),
+      });
+      expect(result.size).toBe(12_000);
+      expect(calls(log)).toEqual(['5000', '5000', '2000']);
+      expect(started).toEqual([
+        [0, { executable: file, version: 'git version 2.47.1' }],
+        [1, { executable: file, version: undefined }],
+        [2, { executable: file, version: 'git version 2.47.1' }],
+      ]);
+      // Reported per chunk as it runs, not once at the end.
+      expect(reportedBefore).toEqual([0, 1, 2]);
+      expect(started.every(([, selected]) => Object.isFrozen(selected))).toBe(true); // prettier-ignore
+    });
+
+    it('reports no chunk that fails planning or spawn after selection', async () => {
+      const missing = join(base, `missing-git-${(serial += 1)}`);
+      for (const [selected, error] of [
+        [missing, { code: 'ENOENT', syscall: `spawn ${missing}` }],
+        ['', { code: 'invalid_request' }],
+        [`absent-git-${serial}`, { code: 'command_not_found' }],
+      ] as const) {
+        const started: unknown[] = [];
+        const outcome = await settle(
+          runner.checkIgnoredPathsSelected({
+            cwd: base,
+            paths: ['x'],
+            environment: gitEnv({ PATH: base }),
+            deadlineAt: performance.now() + 10_000,
+            signal: new AbortController().signal,
+            executableForChunk: () => Promise.resolve(selected),
+            onChunkStarted: (chunk) => started.push(chunk),
+          }),
+        );
+        expect(outcome).toMatchObject({ error });
+        expect(started).toEqual([]);
+      }
+    });
+
+    it('reports no chunk aborted after its selection and before its spawn', async () => {
+      const { file, log } = fakeGit('cat "$in"');
+      const controller = new AbortController();
+      const reason = new Error('after selection');
+      // The abort lands during the bare command's PATH lookup, after selection.
+      const r = createGitReadRunner({
+        os: HOST ?? 'linux',
+        isExecutable: (candidate) => {
+          controller.abort(reason);
+          return Promise.resolve(candidate === file);
+        },
+      });
+      const selections: Selection[] = [];
+      const started: unknown[] = [];
+      const outcome = await settle(
+        r.checkIgnoredPathsSelected({
+          cwd: base,
+          paths: ['x'],
+          environment: gitEnv({ PATH: base }),
+          deadlineAt: performance.now() + 10_000,
+          signal: controller.signal,
+          executableForChunk: select(selections, log, () =>
+            Promise.resolve(file.slice(base.length + 1)),
+          ),
+          onChunkStarted: (chunk) => started.push(chunk),
+        }),
+      );
+      expect(outcome).toEqual({ error: reason });
+      expect(selections.map(({ chunk }) => chunk)).toEqual([0]);
+      expect(existsSync(log)).toBe(false);
+      expect(started).toEqual([]);
+    });
+
+    it('reports no absolute-path chunk aborted after its selection was accepted', async () => {
+      const { file, log } = fakeGit('cat "$in"');
+      const controller = new AbortController();
+      const reason = new Error('after acceptance');
+      const started: unknown[] = [];
+      // The runner reads the accepted selection's fields before planning:
+      // abort there, with no PATH lookup between it and the spawn.
+      const accepted = {
+        get executable(): string {
+          controller.abort(reason);
+          return file;
+        },
+        version: 'git version 2.47.1',
+      };
+      const outcome = await settle(
+        runner.checkIgnoredPathsSelected({
+          cwd: base,
+          paths: ['x'],
+          environment: gitEnv(),
+          deadlineAt: performance.now() + 10_000,
+          signal: controller.signal,
+          executableForChunk: () => Promise.resolve(accepted),
+          onChunkStarted: (chunk) => started.push(chunk),
+        }),
+      );
+      expect(controller.signal.aborted).toBe(true);
+      expect(outcome).toEqual({ error: reason });
+      expect(existsSync(log)).toBe(false);
+      expect(started).toEqual([]);
+    });
+
+    it('keeps the result when the start observer throws', async () => {
+      const { file } = fakeGit('cat "$in"');
+      const result = await runner.checkIgnoredPathsSelected({
+        cwd: base,
+        paths: ['x'],
+        environment: gitEnv(),
+        deadlineAt: performance.now() + 10_000,
+        signal: new AbortController().signal,
+        executableForChunk: () => Promise.resolve(file),
+        onChunkStarted: () => {
+          throw new Error('observer');
+        },
+      });
+      expect(result).toEqual(new Set(['x']));
+    });
+
     it.each(['', './git'])(
       'rejects a selected executable %p before spawning',
       async (selected) => {

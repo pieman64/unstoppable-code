@@ -68,6 +68,11 @@ test('automations form lists sidebar groups in left-nav order', async () => {
         await window.api.sidebarItemGroups.create({ scope, ...group });
     }, APP_ADVISOR_SCOPE);
     await app.startNewWorkflow('schedule');
+    // A new workflow opens with no project; the sidebar group belongs to
+    // App Advisor.
+    await window
+      .getByTestId('automations-form-action-type-app_advisor')
+      .click();
 
     await window.getByTestId(SIDEBAR_GROUP_TEST_ID).click();
     await expect(
@@ -95,6 +100,10 @@ test('automations form creates and reuses an App Advisor sidebar group', async (
     await app.openAutomationsPage();
     await seedSidebarGroups(window);
     await app.startNewWorkflow('schedule');
+    // A new workflow opens with no project; choose App Advisor.
+    await window
+      .getByTestId('automations-form-action-type-app_advisor')
+      .click();
 
     await window
       .getByTestId('automations-form-name')

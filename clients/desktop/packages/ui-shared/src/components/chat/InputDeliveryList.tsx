@@ -28,14 +28,12 @@ import {
   MessageEditNotice,
   MessageEditSurface,
 } from './MessageEditEntry';
-import {
-  BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS,
-  BUBBLE_PILL_ACTION_CLASS,
-} from '../bubble-badge';
+import { BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS } from '../bubble-badge';
 
 const LABELS = {
-  sending: 'Sending',
-  pending: 'Pending',
+  // Until the provider confirms, the message is still on its way.
+  sending: 'Sending…',
+  pending: 'Sending…',
   cancelling: 'Cancelling',
   editing: 'Editing',
   cancelled: 'Cancelled',
@@ -93,6 +91,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
     row.revision <= draftSave.revision;
   const busy = acting || awaitingDraftRevision;
   const [error, setError] = useState('');
+  const [resendWarningOpen, setResendWarningOpen] = useState(false);
   useEffect(() => {
     if (!awaitingDraftRevision) return;
     // A host can acknowledge the draft before running it (the Portal answers
@@ -116,6 +115,8 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
   );
   const rowRef = useRef<HTMLDivElement>(null);
   const editButtonRef = useRef<HTMLButtonElement>(null);
+  const resendButtonRef = useRef<HTMLButtonElement>(null);
+  const resendKeepButtonRef = useRef<HTMLButtonElement>(null);
   const returnEditFocus = useRef(false);
   const localDraft = useRef(false);
   const saveRevision = useRef<{ revision: number; draft: string } | undefined>(
@@ -131,6 +132,12 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
       localDraft.current = false;
     }
   }, [row.draft, row.text, row.state]);
+  useEffect(() => {
+    if (row.state !== 'uncertain') setResendWarningOpen(false);
+  }, [row.state]);
+  useLayoutEffect(() => {
+    if (resendWarningOpen) resendKeepButtonRef.current?.focus();
+  }, [resendWarningOpen]);
   const act = async (
     action: ChatInputDeliveryAction,
     text?: string,
@@ -232,10 +239,25 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
       editButtonRef.current?.focus();
     }
   }, [row.state, busy]);
+  const statusLabel =
+    row.state === 'cancelled' && row.notDelivered
+      ? 'Not delivered'
+      : LABELS[row.state];
+  const detail =
+    error ||
+    row.reason ||
+    (row.state === 'uncertain'
+      ? 'Delivery could not be confirmed. This message will not be resent automatically.'
+      : row.state === 'cancelled' && row.notDelivered
+        ? 'This message never reached the agent.'
+        : '');
   const shownText =
     row.state === 'cancelled' ? (row.draft ?? row.text) : row.text;
+  // A generated internal row can be cancelled or resent, never edited.
   const editable =
-    (row.state === 'pending' && row.canWithdraw) || row.state === 'cancelled';
+    ((row.state === 'pending' && row.canWithdraw) ||
+      row.state === 'cancelled') &&
+    !row.generated;
   const steeringRequest = hostMessagePresentation(shownText);
   return (
     <div
@@ -324,17 +346,20 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                   : 'default'
               }
             >
-              {editable && (
-                <div className="absolute -right-2 -top-2 z-10 flex gap-1 transition">
-                  <MessageEditBadge
-                    buttonRef={
-                      row.state === 'cancelled' ? editButtonRef : undefined
-                    }
-                    testId="input-delivery-edit"
-                    label={`Edit ${row.state} message`}
-                    disabled={busy}
-                    onEdit={() => act('edit')}
-                  />
+              {((row.state === 'pending' && row.canWithdraw) ||
+                row.state === 'cancelled') && (
+                <div className="absolute -right-2 -top-2 z-10 flex gap-1 transition-colors">
+                  {editable && (
+                    <MessageEditBadge
+                      buttonRef={
+                        row.state === 'cancelled' ? editButtonRef : undefined
+                      }
+                      testId="input-delivery-edit"
+                      label={`Edit ${row.state} message`}
+                      disabled={busy}
+                      onEdit={() => act('edit')}
+                    />
+                  )}
                   {row.state === 'pending' && (
                     <button
                       type="button"
@@ -347,10 +372,23 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                       <TrashIcon width={14} height={14} aria-hidden="true" />
                     </button>
                   )}
+                  {row.state === 'cancelled' && (
+                    <button
+                      type="button"
+                      data-testid="input-delivery-dismiss"
+                      aria-label="Dismiss message"
+                      title="Dismiss message"
+                      className={`${BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS} pointer-coarse:h-11 pointer-coarse:w-11`}
+                      disabled={busy}
+                      onClick={() => void act('dismiss')}
+                    >
+                      <TrashIcon width={14} height={14} aria-hidden="true" />
+                    </button>
+                  )}
                 </div>
               )}
               {row.state === 'uncertain' && (
-                <div className="absolute -right-2 -top-2 z-10 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:right-0 pointer-coarse:top-0 pointer-coarse:opacity-100">
+                <div className="absolute -right-2 -top-2 z-10 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:right-0 pointer-coarse:top-0 pointer-coarse:opacity-100">
                   <button
                     type="button"
                     data-testid="input-delivery-dismiss"
@@ -369,7 +407,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                 role="status"
                 aria-live="polite"
               >
-                {LABELS[row.state]}
+                {statusLabel}
               </div>
               {agentTitle}
               {row.watcherFired ? (
@@ -386,39 +424,82 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                   {row.attachmentCount === 1 ? '' : 's'}
                 </div>
               )}
-              {(error || row.reason || row.state === 'uncertain') && (
+              {detail && (
                 <p
                   className="mt-1 text-3xs fg-secondary"
                   role={error ? 'alert' : undefined}
                 >
-                  {error ||
-                    row.reason ||
-                    'Delivery could not be confirmed. This message will not be resent automatically.'}
+                  {detail}
                 </p>
               )}
             </MessageEditSurface>
-            {editable && (
+            {((row.state === 'pending' && row.canWithdraw) ||
+              row.state === 'cancelled' ||
+              row.state === 'uncertain') && (
               <div className="mt-1 flex flex-wrap justify-end gap-2">
-                {row.state === 'cancelled' && (
-                  <button
-                    type="button"
+                {(row.state === 'cancelled' || row.state === 'uncertain') && (
+                  <Button
+                    ref={
+                      row.state === 'uncertain' ? resendButtonRef : undefined
+                    }
+                    variant="secondary"
+                    size="compact"
                     data-testid="input-delivery-resend"
-                    className={BUBBLE_PILL_ACTION_CLASS}
                     disabled={busy}
-                    onClick={() => void act('resend')}
+                    onClick={() => {
+                      if (row.state === 'uncertain') {
+                        setResendWarningOpen(true);
+                      } else {
+                        void act('resend');
+                      }
+                    }}
                   >
                     Resend
-                  </button>
+                  </Button>
                 )}
-                <button
-                  type="button"
-                  data-testid="input-delivery-queue"
-                  className={BUBBLE_PILL_ACTION_CLASS}
+                {row.state !== 'uncertain' && (
+                  <Button
+                    variant="secondary"
+                    size="compact"
+                    data-testid="input-delivery-queue"
+                    disabled={busy}
+                    onClick={() => void act('queue')}
+                  >
+                    Queue
+                  </Button>
+                )}
+              </div>
+            )}
+            {row.state === 'uncertain' && resendWarningOpen && (
+              <div
+                data-testid="input-delivery-resend-warning"
+                className="mt-2 flex flex-wrap items-center justify-end gap-2 text-3xs fg-secondary"
+                role="status"
+                aria-live="polite"
+              >
+                <span>Send again? It may arrive twice.</span>
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  data-testid="input-delivery-resend-confirm"
                   disabled={busy}
-                  onClick={() => void act('queue')}
+                  onClick={() => void act('resend')}
                 >
-                  Queue
-                </button>
+                  Send again
+                </Button>
+                <Button
+                  ref={resendKeepButtonRef}
+                  variant="secondary"
+                  size="compact"
+                  data-testid="input-delivery-resend-keep"
+                  disabled={busy}
+                  onClick={() => {
+                    setResendWarningOpen(false);
+                    resendButtonRef.current?.focus();
+                  }}
+                >
+                  Keep
+                </Button>
               </div>
             )}
           </div>

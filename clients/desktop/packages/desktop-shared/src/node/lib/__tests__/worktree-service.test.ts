@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { registerW5Host } from '../../w5-host-cohort';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
@@ -112,11 +113,16 @@ describe('desktop-shared node worktree service', () => {
   const originalCanopyDataDir = process.env.CANOPY_DATA_DIR;
   let tempDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = fs.mkdtempSync(
       path.join(os.tmpdir(), 'canopy-worktree-service-'),
     );
     process.env.CANOPY_DATA_DIR = path.join(tempDir, 'data');
+    // Shared W5 writers run only in registered hosts (CAN-3797).
+    await registerW5Host({
+      dataRoot: process.env.CANOPY_DATA_DIR ?? '',
+      hostKind: 'cli',
+    });
   });
 
   afterEach(() => {

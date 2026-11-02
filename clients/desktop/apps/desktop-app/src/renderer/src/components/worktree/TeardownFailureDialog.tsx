@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '../shared';
@@ -6,7 +7,8 @@ import type { TeardownFailedError } from '@/stores/projectsStore';
 interface TeardownFailureDialogProps {
   error: TeardownFailedError;
   onRetry: () => void;
-  onForceDelete: () => void;
+  /** Skips the teardown script and runs the ordinary archive or delete. */
+  onSkipTeardown: () => void;
   onCancel: () => void;
   isRetrying?: boolean;
 }
@@ -14,7 +16,7 @@ interface TeardownFailureDialogProps {
 export function TeardownFailureDialog({
   error,
   onRetry,
-  onForceDelete,
+  onSkipTeardown,
   onCancel,
   isRetrying,
 }: TeardownFailureDialogProps): JSX.Element {
@@ -50,28 +52,26 @@ export function TeardownFailureDialog({
           </div>
         )}
         <div className="flex items-center justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="focus-ring rounded-md px-3 py-1.5 text-xs fg-secondary hover:fg-primary"
-          >
+          <Button size="compact" onClick={onCancel}>
             Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onForceDelete}
-            className="focus-ring rounded-md bg-destructive-subtle px-3 py-1.5 text-xs font-medium fg-destructive hover:bg-destructive-subtle/80"
+          </Button>
+          <Button
+            variant="ghost-destructive"
+            size="compact"
+            onClick={onSkipTeardown}
           >
-            Force delete
-          </button>
-          <button
-            type="button"
+            {error.lockAfterArchive === true
+              ? 'Archive without teardown'
+              : 'Delete without teardown'}
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onRetry}
             disabled={isRetrying}
-            className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
           >
             {isRetrying ? 'Retrying…' : 'Retry teardown'}
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>

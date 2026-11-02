@@ -128,7 +128,7 @@ export function OpenDropdown({
                 type="button"
                 data-testid="worktree-open-app"
                 onClick={() => handleOpenApp(splitApp.id)}
-                className={`focus-ring flex w-7 items-center justify-center gap-1.5 text-xs font-medium fg-primary transition ${SECONDARY_SURFACE_HOVER_CLASS} @[560px]/prbar:w-auto @[560px]/prbar:justify-start @[560px]/prbar:px-2.5`}
+                className={`focus-ring flex w-7 items-center justify-center gap-1.5 text-xs font-medium fg-primary transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} @[560px]/prbar:w-auto @[560px]/prbar:justify-start @[560px]/prbar:px-2.5`}
                 aria-label={`Open in ${splitApp.name}`}
               >
                 {/* Compact mode: below a 560px status region the label drops and
@@ -161,7 +161,7 @@ export function OpenDropdown({
             aria-expanded={open}
             aria-controls={open ? menuId : undefined}
             aria-label="Open in…"
-            className={`focus-ring flex items-center transition ${SECONDARY_SURFACE_HOVER_CLASS} ${
+            className={`focus-ring flex items-center transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} ${
               splitApp && splitApp.icon
                 ? 'w-7 justify-center'
                 : 'gap-1 px-2.5 text-xs font-medium fg-primary'

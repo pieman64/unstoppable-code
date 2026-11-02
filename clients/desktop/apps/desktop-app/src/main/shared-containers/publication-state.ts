@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { BrowserWindow } from 'electron';
+import { isCapabilityPackageDigest } from '@canopy/protocol/pipelines';
 import {
   IPC_CHANNELS,
   type SharedContainerPublicationState,
@@ -86,6 +87,13 @@ export interface SharedContainerPublicationRecord extends SharedContainerPublica
   stageRequestHash?: string;
   publishedContentHash?: string;
   pendingContentHash?: string;
+  publishedPackageDigest?: string;
+  pendingArtifactContentHash?: string;
+  pendingPackageDigest?: string;
+  pendingCommittedPackageUploadId?: string;
+  pendingCarryParentPackage?: boolean;
+  packageRecoveryPending?: boolean;
+  packageRecoveryAttempts?: number;
   restartWithFreshStage?: boolean;
   terminalError?: boolean;
 }
@@ -226,6 +234,34 @@ function normalizeRecord(
       : {}),
     ...(typeof value.pendingContentHash === 'string'
       ? { pendingContentHash: value.pendingContentHash }
+      : {}),
+    ...(isCapabilityPackageDigest(value.publishedPackageDigest)
+      ? { publishedPackageDigest: value.publishedPackageDigest }
+      : {}),
+    ...(typeof value.pendingArtifactContentHash === 'string'
+      ? { pendingArtifactContentHash: value.pendingArtifactContentHash }
+      : {}),
+    ...(isCapabilityPackageDigest(value.pendingPackageDigest)
+      ? { pendingPackageDigest: value.pendingPackageDigest }
+      : {}),
+    ...(typeof value.pendingCommittedPackageUploadId === 'string' &&
+    value.pendingCarryParentPackage !== true
+      ? {
+          pendingCommittedPackageUploadId:
+            value.pendingCommittedPackageUploadId,
+        }
+      : {}),
+    ...(value.pendingCarryParentPackage === true &&
+    value.pendingCommittedPackageUploadId === undefined
+      ? { pendingCarryParentPackage: true }
+      : {}),
+    ...(value.packageRecoveryPending === true
+      ? { packageRecoveryPending: true }
+      : {}),
+    ...(typeof value.packageRecoveryAttempts === 'number' &&
+    Number.isSafeInteger(value.packageRecoveryAttempts) &&
+    value.packageRecoveryAttempts >= 0
+      ? { packageRecoveryAttempts: value.packageRecoveryAttempts }
       : {}),
     ...(typeof value.restartWithFreshStage === 'boolean'
       ? { restartWithFreshStage: value.restartWithFreshStage }

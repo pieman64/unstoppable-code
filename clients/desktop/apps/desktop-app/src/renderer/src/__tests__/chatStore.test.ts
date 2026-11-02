@@ -1,4 +1,8 @@
+import type * as TryItContinuationRunnerModule from '../lib/tryItContinuationRunner';
+import type * as CanonicalChangesModule from '../stores/chat/canonical-changes';
 import type * as ChatTabUtils from '../stores/chat/tab-utils';
+import type * as SetupQueueDispatchModule from '../stores/chat/setup-queue-dispatch';
+import { WATCHER_TERMINAL_ONLY_MESSAGE } from '../stores/chat/tab-utils';
 import type * as ChatViewTypes from '../components/chat/types';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -44,7 +48,6 @@ import type {
   ChatActiveSessions,
   ChatActiveSessionInfo,
   ChatEvent,
-  ChatModel,
   ChatLoadTabsRequest,
   ChatQueueEditRequest,
   ChatQueueSetEditLockRequest,
@@ -90,6 +93,7 @@ import {
 } from '../stores/chat/constants';
 import { HANDOFF_CONVERSATION_TEXT_LIMIT } from '../stores/chat/messages';
 import type * as ChatStoreModule from '../stores/chatStore';
+import type * as HydrationModule from '../stores/chat/hydration';
 import type * as StandaloneChatStoreModule from '../stores/standaloneChatStore';
 import { chatInheritsProjectDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import type * as ProjectsStoreModule from '../stores/projectsStore';
@@ -119,6 +123,7 @@ const sendMessageMock = jest.fn<
   Promise<ChatSendMessageResult>,
   [ChatSendMessageRequest]
 >();
+const ACCEPTED_CHAT_SEND_RESULT: ChatSendMessageResult = {};
 const setApprovalModeMock = jest.fn<Promise<void>, [unknown]>();
 const cancelChatMock = jest.fn<Promise<void>, [ChatCancelRequest]>();
 const flushScopeMock = jest.fn<Promise<void>, [ChatFlushScopeRequest]>();
@@ -304,6 +309,32 @@ afterEach(() => {
   for (const dispose of disposeLoadedChatStores.splice(0)) dispose();
 });
 
+// A pending idle-unload timer closes over its module instance, so it keeps a
+// `jest.resetModules()` copy of the whole store graph alive until it fires.
+function registerChatStoreDisposal(chatStore: typeof ChatStoreModule): void {
+  const hydration = jest.requireActual<typeof HydrationModule>(
+    '../stores/chat/hydration',
+  );
+  disposeLoadedChatStores.push(() => {
+    chatStore.useChatStore.setState({ worktreeChats: {} });
+    hydration.clearIdleChatUnloadTimer();
+  });
+}
+
+// Jest keeps every replaced global until the file ends, so a fake clock
+// swapped out with pending timers keeps their store module graphs alive.
+function installFakeTimers(
+  config?: Parameters<typeof jest.useFakeTimers>[0],
+): void {
+  jest.clearAllTimers();
+  jest.useFakeTimers(config);
+}
+
+function restoreRealTimers(): void {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+}
+
 function loadChatStore(
   surface: 'main' | 'app-advisor' = 'main',
 ): typeof ChatStoreModule {
@@ -402,9 +433,7 @@ function loadChatStore(
   const chatStore = jest.requireActual<typeof ChatStoreModule>(
     '../stores/chatStore',
   );
-  disposeLoadedChatStores.push(() => {
-    chatStore.useChatStore.setState({ worktreeChats: {} });
-  });
+  registerChatStoreDisposal(chatStore);
   // Most send-path tests model an already selected project, whose approval
   // default is normally warmed on selection. Tests for the uncached first-send
   // path explicitly clear this cache.
@@ -502,6 +531,7 @@ function loadStores(): {
   const chatStore = jest.requireActual<typeof ChatStoreModule>(
     '../stores/chatStore',
   );
+  registerChatStoreDisposal(chatStore);
 
   const activityStore = jest.requireActual<typeof ActivityStoreModule>(
     '../stores/activityStore',
@@ -541,10 +571,16 @@ function loadWorkspaceCommentDispatch(): typeof SubmitWorkspaceCommentsModule {
   );
 }
 
+const DEFAULT_CHAT_MODEL_CONFIG: ChatStoreModule.ChatTab['modelConfig'] = {
+  thinkingLevel: 'high',
+  speed: 'standard',
+  fastMode: false,
+};
+
 function makeTab(
   overrides?: Partial<ChatStoreModule.ChatTab>,
 ): ChatStoreModule.ChatTab {
-  return {
+  const tab: ChatStoreModule.ChatTab = {
     id: 'chat',
     title: 'Chat',
     messages: [],
@@ -557,7 +593,20 @@ function makeTab(
     thinkingLevel: 'high',
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
+    modelConfig: { ...DEFAULT_CHAT_MODEL_CONFIG },
+    fastModeExplicit: false,
     ...overrides,
+  };
+  if (overrides?.modelConfig !== undefined) return tab;
+
+  const fastMode = tab.codexFastModeEnabled === true;
+  return {
+    ...tab,
+    modelConfig: {
+      thinkingLevel: tab.thinkingLevel,
+      speed: fastMode ? 'fast' : 'standard',
+      fastMode,
+    },
   };
 }
 
@@ -616,6 +665,34 @@ function makeSidebarItem(projectId: string, worktreeId: string): SidebarItem {
   };
 }
 
+const DEFAULT_NOTIFICATION_CATEGORIES: OsNotificationPreferences['categories'] =
+  {
+    chat: true,
+    script: true,
+    hook: true,
+    gitCommit: true,
+    gitPush: true,
+    prCreate: true,
+    pipeline: true,
+    terminal: true,
+    runComment: true,
+    activation: true,
+  };
+
+const DEFAULT_NOTIFICATION_CATEGORY_SOUNDS: OsNotificationPreferences['categorySounds'] =
+  {
+    chat: 'Default',
+    script: 'Default',
+    hook: 'Default',
+    gitCommit: 'Default',
+    gitPush: 'Default',
+    prCreate: 'Default',
+    pipeline: 'Default',
+    terminal: 'Default',
+    runComment: 'Default',
+    activation: 'Default',
+  };
+
 function enableChatOsNotifications(): typeof showOsNotificationMock {
   showOsNotificationMock.mockClear();
   const osNotifications = jest.requireActual<typeof OsNotificationsModule>(
@@ -625,40 +702,13 @@ function enableChatOsNotifications(): typeof showOsNotificationMock {
     enabled: true,
     skipWhenFocused: false,
     defaultSound: 'System',
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-    },
-    categorySounds: {
-      chat: 'Default',
-      script: 'Default',
-      hook: 'Default',
-      gitCommit: 'Default',
-      gitPush: 'Default',
-      prCreate: 'Default',
-      pipeline: 'Default',
-      terminal: 'Default',
-    },
+    categories: { ...DEFAULT_NOTIFICATION_CATEGORIES },
+    categorySounds: { ...DEFAULT_NOTIFICATION_CATEGORY_SOUNDS },
   };
   const inAppPreferences: InAppNotificationPreferences = {
     enabled: true,
     placement: 'bottom-right',
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-    },
+    categories: { ...DEFAULT_NOTIFICATION_CATEGORIES },
   };
   osNotifications.refreshOsNotificationPrefs(preferences);
   osNotifications.refreshInAppNotificationPrefs(inAppPreferences);
@@ -674,40 +724,13 @@ function enableChatOsNotificationsWithInAppToastsDisabled(): typeof showOsNotifi
     enabled: true,
     skipWhenFocused: false,
     defaultSound: 'System',
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-    },
-    categorySounds: {
-      chat: 'Default',
-      script: 'Default',
-      hook: 'Default',
-      gitCommit: 'Default',
-      gitPush: 'Default',
-      prCreate: 'Default',
-      pipeline: 'Default',
-      terminal: 'Default',
-    },
+    categories: { ...DEFAULT_NOTIFICATION_CATEGORIES },
+    categorySounds: { ...DEFAULT_NOTIFICATION_CATEGORY_SOUNDS },
   };
   const inAppPreferences: InAppNotificationPreferences = {
     enabled: false,
     placement: 'bottom-right',
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-    },
+    categories: { ...DEFAULT_NOTIFICATION_CATEGORIES },
   };
   osNotifications.refreshOsNotificationPrefs(preferences);
   osNotifications.refreshInAppNotificationPrefs(inAppPreferences);
@@ -723,40 +746,13 @@ function disableChatNotifications(): typeof showOsNotificationMock {
     enabled: false,
     skipWhenFocused: false,
     defaultSound: 'System',
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-    },
-    categorySounds: {
-      chat: 'Default',
-      script: 'Default',
-      hook: 'Default',
-      gitCommit: 'Default',
-      gitPush: 'Default',
-      prCreate: 'Default',
-      pipeline: 'Default',
-      terminal: 'Default',
-    },
+    categories: { ...DEFAULT_NOTIFICATION_CATEGORIES },
+    categorySounds: { ...DEFAULT_NOTIFICATION_CATEGORY_SOUNDS },
   };
   const inAppPreferences: InAppNotificationPreferences = {
     enabled: true,
     placement: 'bottom-right',
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-    },
+    categories: { ...DEFAULT_NOTIFICATION_CATEGORIES },
   };
   osNotifications.refreshOsNotificationPrefs(preferences);
   osNotifications.refreshInAppNotificationPrefs(inAppPreferences);
@@ -1034,9 +1030,7 @@ describe('chatStore', () => {
     expect(chatInheritsProjectDefaults(worktreeChat)).toBe(true);
     expect(worktreeChat?.pluginSelections?.mcpServerRefs).toEqual([linear]);
     // A chat written before live defaults inherits no project layer.
-    expect(
-      chatInheritsProjectDefaults({ pluginSelections: projectDefaults }),
-    ).toBe(false);
+    expect(chatInheritsProjectDefaults({})).toBe(false);
   });
 
   it('resolves the live project plugin layer only for inheriting surfaces', () => {
@@ -1131,7 +1125,7 @@ describe('chatStore', () => {
   });
 
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     sendMessageMock.mockReset();
     setApprovalModeMock.mockReset();
     cancelChatMock.mockReset();
@@ -1304,7 +1298,7 @@ describe('chatStore', () => {
     jest
       .requireActual<typeof OsNotificationsModule>('../lib/osNotifications')
       .__resetForTests();
-    jest.useRealTimers();
+    restoreRealTimers();
     jest.resetModules();
     Object.defineProperty(global, 'window', {
       configurable: true,
@@ -1828,6 +1822,8 @@ describe('chatStore', () => {
               id: 'chat',
               llmProviderUsageLimitBanner: {
                 provider: 'codex',
+                message: 'Usage limit reached',
+                detectedAt: 123,
                 dismissKey: 'codex:2099',
                 resetsAt: 4102444800000,
               },
@@ -2138,6 +2134,138 @@ describe('chatStore', () => {
     expect(newTab?.aiCreditsRouting).toBeUndefined();
   });
 
+  it.each(['rejection', 'transport failure'])(
+    'restores credits after subscription command %s (CAN-4759)',
+    async (failure) => {
+      const { useChatStore } = loadChatStore();
+      const routing = {
+        active: true as const,
+        scope: 'session' as const,
+        activatedAt: 1,
+      };
+      chatCommandMock.mockImplementationOnce(
+        (request): Promise<ChatCommandResponse> => {
+          if (failure === 'transport failure')
+            return Promise.reject(new Error('offline'));
+          return Promise.resolve({
+            commandId: request.commandId,
+            revision: 1,
+            outcome: 'rejected',
+          });
+        },
+      );
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'proj', worktreeId: 'wt' },
+        worktreeChats: {
+          'proj/wt': {
+            activeTabId: 'chat',
+            tabs: [makeTab({ id: 'chat', aiCreditsRouting: routing })],
+          },
+        },
+        chatStateSync: { 'proj/wt': { phase: 'live', revision: 1 } },
+      });
+      useChatStore.getState().selectBillingFramework('subscription');
+      expect(
+        useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+          ?.subscriptionBillingOverride,
+      ).toBe(true);
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      const tab = useChatStore.getState().worktreeChats['proj/wt']?.tabs[0];
+      expect(tab?.aiCreditsRouting).toEqual(routing);
+      expect(tab?.subscriptionBillingOverride).toBeUndefined();
+      expect(useChatStore.getState().chatStateNotices['proj/wt']?.kind).toBe(
+        'command_failed',
+      );
+    },
+  );
+
+  it('does not roll back a newer billing choice when an older subscription command fails (CAN-4759)', async () => {
+    const { useChatStore } = loadChatStore();
+    let rejectOld = (): void => {};
+    chatCommandMock.mockImplementationOnce(
+      (request) =>
+        new Promise((resolve) => {
+          rejectOld = (): void =>
+            resolve({
+              commandId: request.commandId,
+              revision: 1,
+              outcome: 'rejected',
+            });
+        }),
+    );
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'proj', worktreeId: 'wt' },
+      worktreeChats: {
+        'proj/wt': {
+          activeTabId: 'chat',
+          tabs: [
+            makeTab({
+              id: 'chat',
+              aiCreditsRouting: {
+                active: true,
+                scope: 'session',
+                activatedAt: 1,
+              },
+            }),
+          ],
+        },
+      },
+      chatStateSync: { 'proj/wt': { phase: 'live', revision: 1 } },
+    });
+    useChatStore.getState().selectBillingFramework('subscription');
+    useChatStore.getState().selectBillingFramework('ai-credits');
+    rejectOld();
+    await flushChatStoreAsyncWork();
+    const tab = useChatStore.getState().worktreeChats['proj/wt']?.tabs[0];
+    expect(tab?.aiCreditsRouting?.scope).toBe('persistent');
+    expect(tab?.subscriptionBillingOverride).toBeUndefined();
+  });
+
+  it('keeps newer credits recovery when the pending subscription command fails (CAN-4759)', async () => {
+    const { useChatStore } = loadChatStore();
+    let rejectOld = (): void => {};
+    chatCommandMock.mockImplementationOnce(
+      (request) =>
+        new Promise((resolve) => {
+          rejectOld = (): void =>
+            resolve({
+              commandId: request.commandId,
+              revision: 1,
+              outcome: 'rejected',
+            });
+        }),
+    );
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'proj', worktreeId: 'wt' },
+      worktreeChats: {
+        'proj/wt': {
+          activeTabId: 'chat',
+          tabs: [
+            makeTab({
+              id: 'chat',
+              aiCreditsRouting: {
+                active: true,
+                scope: 'session',
+                activatedAt: 1,
+              },
+            }),
+          ],
+        },
+      },
+      chatStateSync: { 'proj/wt': { phase: 'live', revision: 1 } },
+    });
+    useChatStore.getState().selectBillingFramework('subscription');
+    const activation = useChatStore
+      .getState()
+      .enableAiCreditsRouting({ scope: 'session' });
+    rejectOld();
+    await flushChatStoreAsyncWork();
+    expect(
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.aiCreditsRouting?.activatedAt,
+    ).toBe(activation);
+  });
+
   describe('billing framework seeding from the remembered choice', () => {
     const seedModelDefaults = (
       store: ReturnType<typeof loadChatStore>['useChatStore'],
@@ -2326,6 +2454,12 @@ describe('chatStore', () => {
               thinkingLevel: 'high',
               model: 'gpt-6-sol',
               providerType: 'codex',
+              modelConfig: {
+                thinkingLevel: 'high',
+                speed: 'standard',
+                fastMode: false,
+              },
+              fastModeExplicit: false,
               pendingPlanExit: {
                 plan: 'Implement the feature',
                 source: 'codex',
@@ -2349,7 +2483,7 @@ describe('chatStore', () => {
       },
     });
 
-    useChatStore.getState().approvePlanExit('request');
+    void useChatStore.getState().approvePlanExit('request');
     await jest.advanceTimersByTimeAsync(0);
 
     expect(sendMessageMock).toHaveBeenCalledWith(
@@ -2440,7 +2574,7 @@ describe('chatStore', () => {
     });
 
     const commandCount = chatCommandMock.mock.calls.length;
-    useChatStore.getState().approvePlanExit('request');
+    void useChatStore.getState().approvePlanExit('request');
     await jest.advanceTimersByTimeAsync(0);
 
     expect(sendMessageMock).not.toHaveBeenCalled();
@@ -2521,7 +2655,7 @@ describe('chatStore', () => {
       useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
         ?.pendingPlanExit,
     ).toMatchObject({ source: 'codex', reviewMode: 'manual' });
-    useChatStore.getState().approvePlanExit('request');
+    void useChatStore.getState().approvePlanExit('request');
     await jest.advanceTimersByTimeAsync(0);
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'Approved' }),
@@ -2675,6 +2809,7 @@ describe('chatStore', () => {
               id: 'chat',
               title: 'Chat',
               messages: [],
+              createdAt: '2026-03-19T00:00:00.000Z',
               planMode: true,
               providerType: 'cursor',
               ...(hasExistingPlan
@@ -2763,6 +2898,7 @@ describe('chatStore', () => {
               id: 'chat',
               title: 'Chat',
               messages: [],
+              createdAt: '2026-03-19T00:00:00.000Z',
               providerType: source,
               pendingPlanExitRequestId: 'saved-request',
               pendingPlanExit: {
@@ -2849,7 +2985,7 @@ describe('chatStore', () => {
       toolInput: { plan: 'Implement in this chat' },
     });
     await jest.advanceTimersByTimeAsync(0);
-    useChatStore.getState().approvePlanExit('approve-owner');
+    void useChatStore.getState().approvePlanExit('approve-owner');
     await jest.advanceTimersByTimeAsync(0);
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({ chatId: 'proposal-chat' }),
@@ -2936,7 +3072,7 @@ describe('chatStore', () => {
         },
       },
     });
-    useChatStore.getState().approvePlanExit('restored-request');
+    void useChatStore.getState().approvePlanExit('restored-request');
     await jest.advanceTimersByTimeAsync(0);
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(chatCommandMock).not.toHaveBeenCalled();
@@ -3862,17 +3998,24 @@ describe('chatStore', () => {
       chatId: 'chat',
     };
     const attachment = {
+      filename: 'native-failure.png',
       absolutePath: '/tmp/native-failure.png',
       name: 'native-failure.png',
       type: 'image/png',
     };
     const selection = {
-      id: 'selection-1',
-      filePath: '/tmp/source.ts',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      absolutePath: '/tmp/source.ts',
+      displayPath: 'source.ts',
       startLine: 1,
+      startColumn: 1,
       endLine: 2,
-      selectedText: 'selected text',
+      endColumn: 1,
+      text: 'selected text',
+      capturedDirty: false,
     };
+    const storedSelection = { ...selection, id: 'selection-1' };
     sendMessageMock.mockRejectedValueOnce(new Error('native dispatch failed'));
     useChatStore.setState({
       selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
@@ -3884,17 +4027,17 @@ describe('chatStore', () => {
               id: 'chat',
               pendingAttachments: [attachment],
               pendingRevertAttachmentPath: '/tmp/revert-summary.md',
-              pendingEditorSelections: [selection],
             }),
           ],
         },
       },
+      pendingEditorSelections: { chat: [storedSelection] },
     });
     const store = useChatStore.getState();
     const revertPath = store.reservePendingRevertAttachment(target);
     if (!revertPath) throw new Error('Expected a reserved revert attachment');
     store.removePendingAttachment(attachment.absolutePath, target);
-    store.removePendingEditorSelection('chat', selection.id);
+    store.removePendingEditorSelection('chat', storedSelection.id);
     const restore = jest.fn(() => {
       const current = useChatStore.getState();
       current.addPendingAttachments([attachment], target);
@@ -3904,8 +4047,7 @@ describe('chatStore', () => {
 
     await useChatStore
       .getState()
-      .sendMessage('Native prompt', undefined, undefined, undefined, {
-        target,
+      .sendMessage('Native prompt', undefined, target, undefined, {
         composerAttachmentsReserved: true,
         reservedRevertAttachmentPath: revertPath,
         onDispatchRejected: restore,
@@ -3914,7 +4056,9 @@ describe('chatStore', () => {
     expect(restore).toHaveBeenCalledTimes(1);
     const tab = useChatStore.getState().worktreeChats[key]?.tabs[0];
     expect(tab?.pendingAttachments).toEqual([attachment]);
-    expect(tab?.pendingEditorSelections).toEqual([selection]);
+    expect(useChatStore.getState().pendingEditorSelections.chat).toMatchObject([
+      selection,
+    ]);
     expect(tab?.pendingRevertAttachmentPath).toBe('/tmp/revert-summary.md');
   });
 
@@ -4278,7 +4422,126 @@ describe('chatStore', () => {
     expect(tab?.status).toBe('idle');
   });
 
-  it('marks a streaming Codex send for interrupted-turn recovery', async () => {
+  const watcherRefusalTargets = [
+    {
+      targetName: 'native Claude chat',
+      tabOverrides: {
+        status: 'streaming',
+        providerType: 'claude',
+        interfaceMode: 'canopy',
+      },
+      disableClaudeTuiChats: false,
+    },
+    {
+      targetName: 'Codex chat',
+      tabOverrides: {
+        status: 'streaming',
+        model: 'gpt-5.5',
+        providerType: 'codex',
+        interfaceMode: 'canopy',
+      },
+      disableClaudeTuiChats: false,
+    },
+    {
+      targetName: 'Claude terminal mode with TUI chats disabled',
+      tabOverrides: { providerType: 'claude', interfaceMode: 'claude-code' },
+      disableClaudeTuiChats: true,
+    },
+  ] satisfies Array<{
+    targetName: string;
+    tabOverrides: Partial<ChatStoreModule.ChatTab>;
+    disableClaudeTuiChats: boolean;
+  }>;
+  const watcherFiredVariants = [
+    { watcherFiredName: 'without watcherFired', watcherFired: undefined },
+    {
+      watcherFiredName: 'with watcherFired',
+      watcherFired: { kind: 'Wakeup' },
+    },
+  ] as const;
+  const watcherRefusalCases = watcherRefusalTargets.flatMap((targetCase) =>
+    watcherFiredVariants.flatMap((watcherFiredCase) =>
+      [false, true].map((throwOnDispatchFailure) => ({
+        ...targetCase,
+        ...watcherFiredCase,
+        throwOnDispatchFailure,
+      })),
+    ),
+  );
+
+  it.each(watcherRefusalCases)(
+    'refuses watcher sends to $targetName $watcherFiredName when throwOnDispatchFailure=$throwOnDispatchFailure',
+    async ({
+      tabOverrides,
+      disableClaudeTuiChats,
+      watcherFired,
+      throwOnDispatchFailure,
+    }) => {
+      const { useChatStore } = loadChatStore();
+      const { useGitHubStore } = jest.requireActual<typeof GitHubStoreModule>(
+        '../stores/githubStore',
+      );
+      const addToast = jest.fn<
+        void,
+        [
+          string,
+          'error' | 'info' | 'success' | 'warning',
+          (() => void)?,
+          GitHubStoreModule.ToastMeta?,
+        ]
+      >();
+      useGitHubStore.setState({ addToast });
+
+      if (disableClaudeTuiChats) {
+        const { useFeatureFlagsStore } = jest.requireActual<
+          typeof FeatureFlagsStoreModule
+        >('../stores/featureFlagsStore');
+        const snapshot = getDefaultFeatureFlagSnapshot('ready');
+        snapshot.values[CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key] =
+          false;
+        useFeatureFlagsStore.setState({ snapshot });
+      }
+
+      const originalTab = makeTab({ id: 'chat', ...tabOverrides });
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+        worktreeChats: {
+          'project/worktree': {
+            activeTabId: 'chat',
+            tabs: [originalTab],
+          },
+        },
+      });
+      const onPreDispatchRejected = jest.fn();
+      const send = useChatStore
+        .getState()
+        .sendMessage('Watcher prompt', undefined, undefined, undefined, {
+          watcherDeliveryId: 'delivery-refused',
+          ...(watcherFired ? { watcherFired } : {}),
+          onPreDispatchRejected,
+          ...(throwOnDispatchFailure ? { throwOnDispatchFailure: true } : {}),
+        });
+
+      if (throwOnDispatchFailure) {
+        await expect(send).rejects.toThrow(WATCHER_TERMINAL_ONLY_MESSAGE);
+      } else {
+        await expect(send).resolves.toBeUndefined();
+      }
+
+      expect(onPreDispatchRejected).toHaveBeenCalledTimes(1);
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(addToast).not.toHaveBeenCalled();
+      expect(claudeTerminalLaunchMock).not.toHaveBeenCalled();
+      expect(terminalWriteMock).not.toHaveBeenCalled();
+      expect(chatCommandMock).not.toHaveBeenCalled();
+      expect(
+        useChatStore.getState().worktreeChats['project/worktree']?.tabs[0],
+      ).toBe(originalTab);
+      expect(originalTab.messages).toEqual([]);
+    },
+  );
+
+  it('does not add renderer recovery metadata to streaming Codex host sends', async () => {
     const { useChatStore } = loadChatStore();
     useChatStore.setState({
       selectedWorktree: {
@@ -4302,16 +4565,12 @@ describe('chatStore', () => {
 
     await useChatStore.getState().sendMessage('continue');
 
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: 'continue',
-        providerType: 'codex',
-        recoverInterruptedCodexTurn: true,
-      }),
-    );
+    const request = sendMessageMock.mock.calls[0]?.[0];
+    expect(request).toMatchObject({ text: 'continue', providerType: 'codex' });
+    expect(request).not.toHaveProperty('recoverInterruptedCodexTurn');
   });
 
-  it('marks a streaming Ollama send on the Codex harness for interrupted-turn recovery', async () => {
+  it('does not add renderer recovery metadata to streaming Ollama sends on the Codex harness', async () => {
     const { useChatStore } = loadChatStore();
     const { initModelHarnessAssignments, initOllamaModels } =
       jest.requireActual<typeof DesktopSharedTypes>(
@@ -4349,96 +4608,17 @@ describe('chatStore', () => {
 
     await useChatStore.getState().sendMessage('continue');
 
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: 'continue',
-        providerType: 'ollama',
-        executionHarness: 'codex',
-        recoverInterruptedCodexTurn: true,
-      }),
-    );
-  });
-
-  it('lets the host choose idle watcher delivery without an optimistic root message', async () => {
-    const { useChatStore } = loadChatStore();
-    useChatStore.setState({
-      selectedWorktree: {
-        projectId: 'project',
-        worktreeId: 'worktree',
-      },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab({ id: 'chat' })],
-        },
-      },
+    const request = sendMessageMock.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      text: 'continue',
+      providerType: 'ollama',
+      executionHarness: 'codex',
     });
-
-    await useChatStore
-      .getState()
-      .sendMessage('Canopy watcher fired.', undefined, undefined, undefined, {
-        hiddenContext: { kind: 'canopy-watcher-event', text: 'payload' },
-        watcherFired: { kind: 'Pipeline completion (Deploy)' },
-        watcherDeliveryId: 'delivery-1',
-      });
-
-    const tab =
-      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0];
-    const userMessage = tab?.messages.find(
-      (message) => message.role === 'user',
-    );
-    expect(userMessage).toBeUndefined();
-    expect(tab?.status).not.toBe('streaming');
-    expect(tab?.messages).toEqual([]);
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userMessageId: 'watcher-delivery-1',
-        text: 'Canopy watcher fired.',
-        watcherFired: { kind: 'Pipeline completion (Deploy)' },
-        watcherDeliveryId: 'delivery-1',
-      }),
-    );
-    await jest.advanceTimersByTimeAsync(500);
-  });
-
-  it('drops a watcher delivery held at main ingress without an error bubble', async () => {
-    const { useChatStore } = loadChatStore();
-    const onDispatchRejected = jest.fn();
-    sendMessageMock.mockResolvedValueOnce({
-      watcherDeliveryHeld: { outcome: 'held', reason: 'owner_boundary' },
-    });
-    useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab({ id: 'chat' })],
-        },
-      },
-    });
-
-    await expect(
-      useChatStore
-        .getState()
-        .sendMessage('Canopy watcher fired.', undefined, undefined, undefined, {
-          hiddenContext: { kind: 'canopy-watcher-event', text: 'payload' },
-          watcherFired: { kind: 'Pipeline completion (Deploy)' },
-          watcherDeliveryId: 'delivery-held',
-          onDispatchRejected,
-          throwOnDispatchFailure: true,
-        }),
-    ).rejects.toThrow('Watcher delivery is held.');
-
-    const tab =
-      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0];
-    expect(onDispatchRejected).toHaveBeenCalledTimes(1);
-    expect(tab?.messages).toEqual([]);
-    expect(tab?.queuedMessages).toEqual([]);
-    expect(tab?.pendingQueueMessages ?? []).toEqual([]);
+    expect(request).not.toHaveProperty('recoverInterruptedCodexTurn');
   });
 
   it.each(['pending', 'cancelled', 'uncertain'] as const)(
-    'acknowledges a replayed %s watcher without resending or opening a root',
+    'acknowledges a terminal watcher recorded as %s in input delivery',
     async (state) => {
       const { useChatStore } = loadChatStore();
       const onDispatchAccepted = jest.fn();
@@ -4450,6 +4630,8 @@ describe('chatStore', () => {
             tabs: [
               makeTab({
                 id: 'chat',
+                interfaceMode: 'claude-code',
+                providerType: 'claude',
                 inputDelivery: {
                   version: 1,
                   epoch: 1,
@@ -4494,92 +4676,6 @@ describe('chatStore', () => {
     },
   );
 
-  it('retries an already-persisted watcher message without a duplicate bubble', async () => {
-    const { useChatStore } = loadChatStore();
-    const existingMessage = {
-      id: 'watcher-delivery-replayed',
-      role: 'user' as const,
-      blocks: [{ type: 'text' as const, text: 'Already delivered' }],
-      timestamp: 1,
-    };
-    useChatStore.setState({
-      selectedWorktree: {
-        projectId: 'project',
-        worktreeId: 'worktree',
-      },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab({ id: 'chat', messages: [existingMessage] })],
-        },
-      },
-    });
-
-    await useChatStore
-      .getState()
-      .sendMessage('Already delivered', undefined, undefined, undefined, {
-        watcherDeliveryId: 'delivery-replayed',
-      });
-
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userMessageId: 'watcher-delivery-replayed',
-        text: 'Already delivered',
-      }),
-    );
-    expect(
-      useChatStore
-        .getState()
-        .worktreeChats[
-          'project/worktree'
-        ]?.tabs[0]?.messages.filter((message) => message.id === 'watcher-delivery-replayed'),
-    ).toEqual([existingMessage]);
-  });
-
-  it('rolls back the optimistic timer for an already-accepted watcher replay', async () => {
-    const { useChatStore } = loadChatStore();
-    const existingMessage = {
-      id: 'watcher-delivery-accepted',
-      role: 'user' as const,
-      blocks: [{ type: 'text' as const, text: 'Already accepted' }],
-      timestamp: 1,
-    };
-    sendMessageMock.mockResolvedValueOnce({
-      disposition: 'already_accepted',
-    });
-    useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab({ id: 'chat', messages: [existingMessage] })],
-        },
-      },
-    });
-
-    await useChatStore
-      .getState()
-      .sendMessage('Already accepted', undefined, undefined, undefined, {
-        watcherDeliveryId: 'delivery-accepted',
-      });
-
-    const tab =
-      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0];
-    expect(tab?.status).not.toBe('streaming');
-    expect(
-      tab?.messages.filter(
-        (message) =>
-          message.blocks[0]?.type === 'turn_timer' &&
-          message.blocks[0].completedAt === null,
-      ),
-    ).toEqual([]);
-    expect(
-      tab?.messages.filter(
-        (message) => message.id === 'watcher-delivery-accepted',
-      ),
-    ).toEqual([existingMessage]);
-  });
-
   it('consumes one-shot system instructions after the host queue accepts them', async () => {
     const { useChatStore } = loadChatStore();
     const key = 'project/worktree';
@@ -4587,11 +4683,11 @@ describe('chatStore', () => {
     sendMessageMock
       .mockImplementationOnce(
         () =>
-          new Promise<void>((resolve) => {
-            acceptFirstSend = resolve;
+          new Promise<ChatSendMessageResult>((resolve) => {
+            acceptFirstSend = (): void => resolve(ACCEPTED_CHAT_SEND_RESULT);
           }),
       )
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce(ACCEPTED_CHAT_SEND_RESULT);
     const pendingSystemInstruction = {
       id: 'instruction-1',
       text: 'Use the reviewed implementation plan.',
@@ -4634,44 +4730,6 @@ describe('chatStore', () => {
       useChatStore.getState().worktreeChats[key]?.tabs[0]
         ?.pendingSystemInstructions,
     ).toBeUndefined();
-  });
-
-  it('forwards watcherFired on streaming host-queue sends', async () => {
-    const { useChatStore } = loadChatStore();
-    useChatStore.setState({
-      selectedWorktree: {
-        projectId: 'project',
-        worktreeId: 'worktree',
-      },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [
-            makeTab({
-              id: 'chat',
-              status: 'streaming',
-              interfaceMode: 'canopy',
-            }),
-          ],
-        },
-      },
-    });
-
-    await useChatStore
-      .getState()
-      .sendMessage('Canopy watcher fired.', undefined, undefined, undefined, {
-        watcherFired: { kind: 'Hook (CI guard)' },
-        watcherDeliveryId: 'delivery-2',
-      });
-
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userMessageId: 'watcher-delivery-2',
-        text: 'Canopy watcher fired.',
-        watcherFired: { kind: 'Hook (CI guard)' },
-        interfaceMode: 'canopy',
-      }),
-    );
   });
 
   it('reports an asynchronously rejected streaming host-queue dispatch', async () => {
@@ -4804,41 +4862,9 @@ describe('chatStore', () => {
 
       // Clicking the toast opens the chat the same way the chat activity
       // toast does.
-      useNavigationStore.getState().navigate('settings');
+      useNavigationStore.getState().openSettings();
       toasts()[0]?.[2]?.();
       expect(useNavigationStore.getState().activePage).toBe('main');
-    });
-
-    it('says a watcher update was not delivered and omits the retry hint', async () => {
-      const { useChatStore, useProjectsStore, toasts } = loadWithToasts();
-      useProjectsStore.setState({
-        hasHydratedProjects: true,
-        projects: [makeSidebarItem('project', 'worktree')],
-      });
-      seedStreamingChat(useChatStore);
-      sendMessageMock.mockRejectedValueOnce(new Error('ipc failed'));
-
-      await useChatStore
-        .getState()
-        .sendMessage('Watcher fired.', undefined, undefined, undefined, {
-          watcherFired: { kind: 'Hook (CI guard)' },
-          watcherDeliveryId: 'delivery-9',
-        });
-      await settleRejectedSend();
-
-      expect(toasts()).toEqual([
-        [
-          "Couldn't deliver a watcher update.",
-          'error',
-          expect.any(Function),
-          {
-            workspaceName: 'Project',
-            projectId: 'project',
-            worktreeId: 'worktree',
-            chatId: 'chat',
-          },
-        ],
-      ]);
     });
 
     it('attributes a Work chat to its workspace', async () => {
@@ -4857,7 +4883,6 @@ describe('chatStore', () => {
             color: '#000000',
             collapsed: false,
             order: 0,
-            worktrees: [],
           },
         ],
       });
@@ -4894,8 +4919,8 @@ describe('chatStore', () => {
     let acceptDispatch: (() => void) | undefined;
     sendMessageMock.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          acceptDispatch = resolve;
+        new Promise<ChatSendMessageResult>((resolve) => {
+          acceptDispatch = (): void => resolve(ACCEPTED_CHAT_SEND_RESULT);
         }),
     );
     useChatStore.setState({
@@ -5030,8 +5055,8 @@ describe('chatStore', () => {
     let acceptQueuedSend: (() => void) | undefined;
     sendMessageMock.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          acceptQueuedSend = resolve;
+        new Promise<ChatSendMessageResult>((resolve) => {
+          acceptQueuedSend = (): void => resolve(ACCEPTED_CHAT_SEND_RESULT);
         }),
     );
 
@@ -5209,7 +5234,7 @@ describe('chatStore', () => {
       pluginName: 'shared',
     };
     const expectedSelections = {
-      bundleIds: ['bundle-default'],
+      collectionIds: ['bundle-default'],
       skillRefs: [],
       pluginRefs: [sharedRef],
     };
@@ -5282,7 +5307,7 @@ describe('chatStore', () => {
       },
       worktreeDefaultPlugins: {
         [`${CODE_REVIEW_CHAT_PROJECT_ID}/worktree`]: {
-          bundleIds: ['bundle-default'],
+          collectionIds: ['bundle-default'],
           skillRefs: [],
           pluginRefs: [codexOnlyRef, sharedRef],
         },
@@ -5316,7 +5341,7 @@ describe('chatStore', () => {
       },
       worktreeDefaultPlugins: {
         [`${PIPELINE_EDITOR_PROJECT_ID}/worktree`]: {
-          bundleIds: ['bundle-default'],
+          collectionIds: ['bundle-default'],
           skillRefs: [],
           pluginRefs: [codexOnlyRef, sharedRef],
           mcpHttpAuthPreferences: [
@@ -5478,6 +5503,7 @@ describe('chatStore', () => {
       archivedAt: '2026-06-19T00:00:00.000Z',
       createdAt: '2026-06-19T00:00:00.000Z',
       restorable: true,
+      unread: false,
       providerType: 'claude',
     };
     archiveTabMock.mockResolvedValue([summary]);
@@ -5540,6 +5566,7 @@ describe('chatStore', () => {
       archivedAt: '2026-07-15T00:00:00.000Z',
       createdAt: '2026-07-15T00:00:00.000Z',
       restorable: true,
+      unread: false,
       providerType: 'claude',
     };
     let resolveArchive: ((value: ArchivedChatSummary[]) => void) | undefined;
@@ -5761,12 +5788,12 @@ describe('chatStore', () => {
 
   describe('with live managed delegates', () => {
     const DELEGATES_NOTICE =
-      'Delegates are still running. Stop them in Agent activity to close this chat.';
+      'Delegates are still running. Open background work and stop them to close this chat.';
 
     beforeEach(() => {
       // Refusal toasts arm auto-dismiss timers; the suite's afterEach flushes
       // fake timers.
-      jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick'] });
+      installFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick'] });
     });
 
     function loadWithDelegates(): {
@@ -6038,6 +6065,7 @@ describe('chatStore', () => {
       archivedAt: '2026-06-19T00:00:00.000Z',
       createdAt: '2026-06-19T00:00:00.000Z',
       restorable: true,
+      unread: false,
       providerType: 'claude',
     };
     archiveTabMock
@@ -6993,6 +7021,7 @@ describe('chatStore', () => {
             archivedAt: '2026-06-20T00:00:00.000Z',
             createdAt: '2026-06-19T00:00:00.000Z',
             restorable: true,
+            unread: false,
             providerType: 'claude',
           },
         ],
@@ -7066,6 +7095,7 @@ describe('chatStore', () => {
             archivedAt: '2026-06-20T00:00:00.000Z',
             createdAt: '2026-06-19T00:00:00.000Z',
             restorable: true,
+            unread: false,
             providerType: 'codex',
           },
         ],
@@ -8013,17 +8043,24 @@ describe('chatStore', () => {
     const { useChatStore } = loadChatStore();
     const key = 'project/worktree';
     const attachment = {
+      filename: 'terminal-failure.png',
       absolutePath: '/tmp/terminal-failure.png',
       name: 'terminal-failure.png',
       type: 'image/png',
     };
     const selection = {
-      id: 'selection-1',
-      filePath: '/tmp/source.ts',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      absolutePath: '/tmp/source.ts',
+      displayPath: 'source.ts',
       startLine: 1,
+      startColumn: 1,
       endLine: 2,
-      selectedText: 'selected text',
+      endColumn: 1,
+      text: 'selected text',
+      capturedDirty: false,
     };
+    const storedSelection = { ...selection, id: 'selection-1' };
     claudeTerminalGetStateMock.mockResolvedValue({
       terminalId: 'terminal-1',
       sessionKey: 'session-key',
@@ -8044,7 +8081,6 @@ describe('chatStore', () => {
               providerType: 'claude',
               pendingAttachments: [attachment],
               pendingRevertAttachmentPath: '/tmp/revert-summary.md',
-              pendingEditorSelections: [selection],
               claudeTerminal: {
                 terminalId: 'terminal-1',
                 sessionKey: 'session-key',
@@ -8055,6 +8091,7 @@ describe('chatStore', () => {
           ],
         },
       },
+      pendingEditorSelections: { chat: [storedSelection] },
     });
     const target = {
       projectId: 'project',
@@ -8065,7 +8102,7 @@ describe('chatStore', () => {
     const revertPath = store.reservePendingRevertAttachment(target);
     if (!revertPath) throw new Error('Expected a reserved revert attachment');
     store.removePendingAttachment(attachment.absolutePath, target);
-    store.removePendingEditorSelection('chat', selection.id);
+    store.removePendingEditorSelection('chat', storedSelection.id);
     const restore = jest.fn(() => {
       const current = useChatStore.getState();
       current.addPendingAttachments([attachment], target);
@@ -8075,8 +8112,7 @@ describe('chatStore', () => {
 
     const send = useChatStore
       .getState()
-      .sendMessage('Terminal prompt', undefined, undefined, undefined, {
-        target,
+      .sendMessage('Terminal prompt', undefined, target, undefined, {
         composerAttachmentsReserved: true,
         reservedRevertAttachmentPath: revertPath,
         onDispatchRejected: restore,
@@ -8087,7 +8123,9 @@ describe('chatStore', () => {
     expect(restore).toHaveBeenCalledTimes(1);
     const tab = useChatStore.getState().worktreeChats[key]?.tabs[0];
     expect(tab?.pendingAttachments).toEqual([attachment]);
-    expect(tab?.pendingEditorSelections).toEqual([selection]);
+    expect(useChatStore.getState().pendingEditorSelections.chat).toMatchObject([
+      selection,
+    ]);
     expect(tab?.pendingRevertAttachmentPath).toBe('/tmp/revert-summary.md');
   });
 
@@ -8157,6 +8195,7 @@ describe('chatStore', () => {
     await jest.advanceTimersByTimeAsync(600);
     await retry;
 
+    expect(sendMessageMock).not.toHaveBeenCalled();
     expect(chatCommandMock).not.toHaveBeenCalled();
     expect(terminalWriteMock).toHaveBeenCalled();
     expect(terminalWriteMock.mock.calls.length).toBeGreaterThan(1);
@@ -8172,26 +8211,32 @@ describe('chatStore', () => {
     ]);
 
     terminalWriteMock.mockResolvedValue('already_written');
-    useChatStore.setState((state) => ({
+    const currentWorktreeChat = useChatStore.getState().worktreeChats[key];
+    if (!currentWorktreeChat) throw new Error('Expected worktree chat state');
+    useChatStore.setState({
       worktreeChats: {
-        ...state.worktreeChats,
+        ...useChatStore.getState().worktreeChats,
         [key]: {
-          ...state.worktreeChats[key],
-          tabs:
-            state.worktreeChats[key]?.tabs.map((entry) =>
-              entry.id === 'chat'
-                ? {
-                    ...entry,
-                    pendingAttachments: ['/tmp/consumed.png'],
-                    pendingSystemInstructions: [
-                      { id: 'instruction-1', text: 'Consumed instruction' },
-                    ],
-                  }
-                : entry,
-            ) ?? [],
+          ...currentWorktreeChat,
+          tabs: currentWorktreeChat.tabs.map((entry) =>
+            entry.id === 'chat'
+              ? {
+                  ...entry,
+                  pendingAttachments: [
+                    {
+                      filename: 'consumed.png',
+                      absolutePath: '/tmp/consumed.png',
+                    },
+                  ],
+                  pendingSystemInstructions: [
+                    { id: 'instruction-1', text: 'Consumed instruction' },
+                  ],
+                }
+              : entry,
+          ),
         },
       },
-    }));
+    });
     const replay = sendWatcher();
     await jest.advanceTimersByTimeAsync(1_000);
     await replay;
@@ -8633,9 +8678,14 @@ describe('chatStore', () => {
     expect(useChatStore.getState().worktreeChats[key]?.tabs[0]?.title).toBe(
       'Launch with me',
     );
+    // Terminal turns are not canonical: a terminal send keeps the terminal's
+    // own status source and takes no canonical sending lease.
     expect(useChatStore.getState().worktreeChats[key]?.tabs[0]?.status).toBe(
       'streaming',
     );
+    expect(
+      useChatStore.getState().worktreeChats[key]?.tabs[0]?.sendingLease,
+    ).toBeUndefined();
     expect(
       useChatStore.getState().worktreeChats[key]?.tabs[0]
         ?.pendingSystemInstructions,
@@ -8694,11 +8744,13 @@ describe('chatStore', () => {
     const { useChatStore } = loadChatStore();
     const key = 'project/worktree';
     const attachment = {
+      filename: 'failed-launch.png',
       absolutePath: '/tmp/failed-launch.png',
       name: 'failed-launch.png',
       type: 'image/png',
     };
     const nextAttachment = {
+      filename: 'next-draft.png',
       absolutePath: '/tmp/next-draft.png',
       name: 'next-draft.png',
       type: 'image/png',
@@ -8768,6 +8820,7 @@ describe('chatStore', () => {
       const { useChatStore } = loadChatStore();
       const key = 'project/worktree';
       const nextAttachment = {
+        filename: 'next-draft.png',
         absolutePath: '/tmp/next-draft.png',
         name: 'next-draft.png',
         type: 'image/png',
@@ -9115,6 +9168,244 @@ describe('chatStore', () => {
       expect(
         sendMessageMock.mock.calls[0]?.[0]?.pendingSystemInstructions,
       ).toBeUndefined();
+    });
+
+    it('retires the waiting plan request with an ordinary send, keeping its tracking (CAN-5431)', async () => {
+      const { useChatStore } = loadChatStore();
+      const toolInput = { plan: '# Plan v1' };
+      useChatStore.setState({
+        selectedWorktree: scope,
+        pendingPlanExits: {
+          'request-1': {
+            requestId: 'request-1',
+            ...scope,
+            chatId: 'chat',
+            source: 'claude',
+            toolInput,
+          },
+        },
+        worktreeChats: {
+          [key]: {
+            activeTabId: 'chat',
+            tabs: [
+              makeTab({
+                id: 'chat',
+                interfaceMode: 'canopy',
+                pendingPlanExit: toolInput,
+                pendingPlanExitRequestId: 'request-1',
+                trackedPlanId: 'plan-1',
+                trackedPlanSource: 'claude',
+                trackedPlanReviewStatus: 'pending',
+                latestRevisionNumber: 1,
+              }),
+            ],
+          },
+        },
+      });
+
+      await useChatStore
+        .getState()
+        .sendMessage('Tighten step 2', undefined, undefined, undefined, {
+          activePlan,
+        });
+
+      const state = useChatStore.getState();
+      const tab = state.worktreeChats[key]?.tabs[0];
+      expect(tab?.pendingPlanExit).toBeUndefined();
+      expect(tab?.pendingPlanExitRequestId).toBeUndefined();
+      expect(state.pendingPlanExits).toEqual({});
+      expect(tab).toMatchObject({
+        trackedPlanId: 'plan-1',
+        trackedPlanReviewStatus: 'pending',
+        latestRevisionNumber: 1,
+      });
+    });
+
+    it.each(['codex', 'cursor'] as const)(
+      'preserves the %s proposal exit, request and map on send (CAN-5431)',
+      async (source) => {
+        const { useChatStore } = loadChatStore();
+        const toolInput = { plan: '# Proposal', reviewMode: 'proposal' };
+        useChatStore.setState({
+          selectedWorktree: scope,
+          pendingPlanExits: {
+            'proposal-1': {
+              ...scope,
+              chatId: 'chat',
+              requestId: 'proposal-1',
+              source,
+              toolInput,
+            },
+          },
+          worktreeChats: {
+            [key]: {
+              activeTabId: 'chat',
+              tabs: [
+                makeTab({
+                  id: 'chat',
+                  interfaceMode: 'canopy',
+                  pendingPlanExit: toolInput,
+                  pendingPlanExitRequestId: 'proposal-1',
+                  trackedPlanId: 'plan-1',
+                  trackedPlanSource: source,
+                  trackedPlanReviewStatus: 'pending',
+                }),
+              ],
+            },
+          },
+        });
+        await useChatStore.getState().sendMessage('Tighten step 2');
+        const state = useChatStore.getState();
+        expect(state.worktreeChats[key]?.tabs[0]?.pendingPlanExit).toEqual(
+          toolInput,
+        );
+        expect(
+          state.worktreeChats[key]?.tabs[0]?.pendingPlanExitRequestId,
+        ).toBe('proposal-1');
+        expect(state.pendingPlanExits['proposal-1']).toBeDefined();
+      },
+    );
+
+    it.each([false, true])(
+      'reconciles a rejected revision without overwriting a newer request (%s) (CAN-5431)',
+      async (newer) => {
+        const { useChatStore } = loadChatStore();
+        const original = makeTab({
+          id: 'chat',
+          interfaceMode: 'canopy',
+          planMode: true,
+          trackedPlanId: 'plan-1',
+          trackedPlanSource: 'claude',
+          trackedPlanReviewStatus: 'pending',
+          pendingPlanExit: { plan: '# v1' },
+          pendingPlanExitRequestId: 'review-old',
+        });
+        useChatStore.setState({
+          selectedWorktree: scope,
+          worktreeChats: { [key]: { activeTabId: 'chat', tabs: [original] } },
+        });
+        loadTabsMock.mockResolvedValue({
+          version: 1,
+          activeTabId: 'chat',
+          tabs: [
+            {
+              ...original,
+              messages: [],
+            },
+          ],
+        });
+        sendMessageMock.mockImplementationOnce(() => {
+          if (newer)
+            useChatStore.getState().handlePlanExitRequest({
+              ...scope,
+              chatId: 'chat',
+              requestId: 'review-new',
+              source: 'claude',
+              toolInput: { plan: '# v2' },
+              planId: 'plan-1',
+              revisionNumber: 2,
+            });
+          return Promise.reject(new Error('Admission rejected'));
+        });
+        await useChatStore.getState().sendMessage('Revise');
+        const tab = useChatStore.getState().worktreeChats[key]?.tabs[0];
+        expect(tab?.pendingPlanExitRequestId).toBe(
+          newer ? 'review-new' : 'review-old',
+        );
+        expect(tab?.pendingPlanExit?.plan).toBe(newer ? '# v2' : '# v1');
+      },
+    );
+
+    it('restores the canonical review when a revision is stopped before dispatch (CAN-5431)', async () => {
+      const { useChatStore } = loadChatStore();
+      let releaseLookup:
+        | ((mode: DesktopSharedTypes.ApprovalMode) => void)
+        | undefined;
+      getResolvedDefaultMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseLookup = resolve;
+          }),
+      );
+      const original = makeTab({
+        id: 'chat',
+        interfaceMode: 'canopy',
+        planMode: true,
+        trackedPlanId: 'plan-1',
+        trackedPlanSource: 'claude',
+        trackedPlanReviewStatus: 'pending',
+        pendingPlanExit: { plan: '# v1' },
+        pendingPlanExitRequestId: 'review-old',
+      });
+      loadTabsMock.mockResolvedValue({
+        version: 1,
+        activeTabId: 'chat',
+        tabs: [{ ...original, messages: [] }],
+      });
+      useChatStore.setState({
+        selectedWorktree: scope,
+        approvalDefaultsCache: {},
+        worktreeChats: { [key]: { activeTabId: 'chat', tabs: [original] } },
+      });
+      const target = { ...scope, chatId: 'chat' };
+      const sending = useChatStore
+        .getState()
+        .sendMessage('Stopped revision', undefined, target);
+      await flushChatStoreAsyncWork();
+      expect(releaseLookup).toBeDefined();
+      await useChatStore.getState().cancelSession(target);
+      await jest.advanceTimersByTimeAsync(10);
+      useChatStore.getState().handleChatEvent({
+        ...target,
+        data: { type: 'result', result: 'Cancelled', is_error: false },
+      });
+      releaseLookup?.('ask');
+      await sending;
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(
+        useChatStore.getState().worktreeChats[key]?.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('review-old');
+    });
+
+    it('keeps the replacement review when a replayed send was already accepted (CAN-5431)', async () => {
+      const { useChatStore } = loadChatStore();
+      const current = makeTab({
+        id: 'chat',
+        interfaceMode: 'canopy',
+        planMode: true,
+        trackedPlanId: 'plan-1',
+        trackedPlanSource: 'claude',
+        trackedPlanReviewStatus: 'pending',
+        latestRevisionNumber: 2,
+        pendingPlanExit: { plan: '# v2' },
+        pendingPlanExitRequestId: 'review-new',
+      });
+      useChatStore.setState({
+        selectedWorktree: scope,
+        worktreeChats: { [key]: { activeTabId: 'chat', tabs: [current] } },
+      });
+      loadTabsMock.mockResolvedValue({
+        version: 1,
+        activeTabId: 'chat',
+        tabs: [{ ...current, messages: [] }],
+      });
+      sendMessageMock.mockResolvedValueOnce({
+        disposition: 'already_accepted',
+      });
+      await useChatStore
+        .getState()
+        .sendMessage('A replayed send', undefined, undefined, undefined, {
+          userMessageId: 'previously-accepted-user',
+        });
+      expect(
+        useChatStore.getState().worktreeChats[key]?.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('review-new');
+      expect(
+        useChatStore.getState().worktreeChats[key]?.tabs[0]?.pendingPlanExit
+          ?.plan,
+      ).toBe('# v2');
     });
 
     it('forwards the active plan with a host-queued send', async () => {
@@ -10697,7 +10988,7 @@ describe('chatStore', () => {
       },
     });
 
-    useChatStore.getState().approvePlanExit('request');
+    void useChatStore.getState().approvePlanExit('request');
     await jest.advanceTimersByTimeAsync(0);
 
     expect(activityPlansUpdateMock).toHaveBeenCalledWith(
@@ -10766,7 +11057,7 @@ describe('chatStore', () => {
       },
       sendMessage: send,
     });
-    useChatStore.getState().approvePlanExit('');
+    void useChatStore.getState().approvePlanExit('');
     useChatStore.setState({
       selectedWorktree: { projectId: 'another', worktreeId: 'another' },
     });
@@ -10802,6 +11093,7 @@ describe('chatStore', () => {
             return Promise.reject(new Error('Write failed'));
           return Promise.resolve({
             commandId: request.commandId,
+            revision: 1,
             outcome: 'rejected',
           });
         }
@@ -10831,7 +11123,7 @@ describe('chatStore', () => {
         sendMessage: send,
       });
 
-      useChatStore.getState().approvePlanExit('');
+      void useChatStore.getState().approvePlanExit('');
       await jest.advanceTimersByTimeAsync(0);
 
       expect(send).not.toHaveBeenCalled();
@@ -10876,7 +11168,7 @@ describe('chatStore', () => {
       },
     });
 
-    useChatStore.getState().approvePlanExit('request-old');
+    void useChatStore.getState().approvePlanExit('request-old');
 
     expect(chatCommandMock).not.toHaveBeenCalled();
     expect(
@@ -10926,7 +11218,7 @@ describe('chatStore', () => {
       hydrateChatScopeRevisioned: hydrate,
     });
 
-    useChatStore.getState().approvePlanExit('request');
+    void useChatStore.getState().approvePlanExit('request');
     await Promise.resolve();
     await Promise.resolve();
 
@@ -11206,7 +11498,7 @@ describe('chatStore', () => {
       },
     });
 
-    useChatStore.getState().dismissPlanForPipeline('request');
+    void useChatStore.getState().dismissPlanForPipeline('request');
     await jest.advanceTimersByTimeAsync(0);
 
     expect(togglePlanModeMock).toHaveBeenCalledWith({
@@ -11225,6 +11517,410 @@ describe('chatStore', () => {
       hasOutstandingProposal: false,
     });
     expect(useChatStore.getState().pendingPlanExits).toEqual({});
+  });
+
+  describe('tracked-plan review synchronization (CAN-5166)', () => {
+    function makeReviewPlan(
+      reviewStatus: TrackedPlanData['reviewStatus'],
+      overrides: Partial<TrackedPlanData> = {},
+    ): TrackedPlanData {
+      return {
+        id: 'plan-1',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        source: 'claude',
+        title: 'Plan',
+        content: 'Implement the feature',
+        reviewStatus,
+        createdAt: '2026-03-19T00:00:00.000Z',
+        updatedAt: '2026-03-19T00:10:00.000Z',
+        latestRevisionNumber: 1,
+        revisions: [],
+        linkedExecutionIds: [],
+        ...overrides,
+      };
+    }
+
+    function deferred<T>(): {
+      promise: Promise<T>;
+      resolve: (value: T) => void;
+      reject: (error: unknown) => void;
+    } {
+      let resolve!: (value: T) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    function seedPendingClaudePlan(
+      useChatStore: typeof ChatStoreModule.useChatStore,
+      useActivityStore: typeof ActivityStoreModule.useActivityStore,
+    ): void {
+      useActivityStore.setState({
+        trackedPlans: { 'project/worktree': [makeReviewPlan('pending')] },
+      });
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+        worktreeChats: {
+          'project/worktree': {
+            activeTabId: 'chat',
+            tabs: [
+              makeTab({
+                planMode: true,
+                pendingPlanExit: { plan: 'Implement the feature' },
+                pendingPlanExitRequestId: 'request',
+                trackedPlanId: 'plan-1',
+                trackedPlanSource: 'claude',
+                trackedPlanReviewStatus: 'pending',
+              }),
+            ],
+          },
+        },
+        pendingPlanExits: {
+          request: {
+            requestId: 'request',
+            projectId: 'project',
+            worktreeId: 'worktree',
+            chatId: 'chat',
+            source: 'claude',
+            toolInput: { plan: 'Implement the feature' },
+          },
+        },
+      });
+    }
+
+    function storedReviewStatus(
+      useActivityStore: typeof ActivityStoreModule.useActivityStore,
+    ): string | undefined {
+      return useActivityStore.getState().trackedPlans['project/worktree']?.[0]
+        ?.reviewStatus;
+    }
+
+    it('starts reconciliation only after the update and settles with the approval visible', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      const update = deferred<TrackedPlanData | null>();
+      let updateCommitted = false;
+      activityPlansUpdateMock.mockReturnValueOnce(
+        update.promise.then((plan) => {
+          updateCommitted = true;
+          return plan;
+        }),
+      );
+      // Like main, a list read reflects only writes that already committed.
+      activityPlansListMock.mockImplementation(() =>
+        Promise.resolve([
+          makeReviewPlan(updateCommitted ? 'approved' : 'pending'),
+        ]),
+      );
+
+      let settled = false;
+      const approval = useChatStore
+        .getState()
+        .approvePlanExit('request')
+        .then(() => {
+          settled = true;
+        });
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(activityPlansUpdateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ planId: 'plan-1', reviewStatus: 'approved' }),
+      );
+      expect(activityPlansListMock).not.toHaveBeenCalled();
+      expect(settled).toBe(false);
+      // The implementation request does not wait for the plan projection.
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+
+      update.resolve(makeReviewPlan('approved'));
+      await approval;
+
+      expect(activityPlansListMock).toHaveBeenCalledTimes(1);
+      expect(storedReviewStatus(useActivityStore)).toBe('approved');
+    });
+
+    it('keeps the approval when a list read started earlier resolves afterward', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      const olderList = deferred<TrackedPlanData[]>();
+      activityPlansListMock
+        .mockReturnValueOnce(olderList.promise)
+        .mockResolvedValue([makeReviewPlan('approved')]);
+      activityPlansUpdateMock.mockResolvedValueOnce(makeReviewPlan('approved'));
+
+      const olderLoad = useActivityStore
+        .getState()
+        .loadTrackedPlans('project', 'worktree');
+      await useChatStore.getState().approvePlanExit('request');
+      expect(storedReviewStatus(useActivityStore)).toBe('approved');
+
+      olderList.resolve([makeReviewPlan('pending')]);
+      await olderLoad;
+      expect(storedReviewStatus(useActivityStore)).toBe('approved');
+    });
+
+    it.each(['null', 'rejected', 'wrong-status'])(
+      'reports a %s update without inventing an approval or resending',
+      async (failure) => {
+        const {
+          chatStore: { useChatStore },
+          activityStore: { useActivityStore },
+        } = loadStores();
+        const { useGitHubStore } = jest.requireActual<typeof GitHubStoreModule>(
+          '../stores/githubStore',
+        );
+        const addToast = jest.spyOn(useGitHubStore.getState(), 'addToast');
+        seedPendingClaudePlan(useChatStore, useActivityStore);
+        if (failure === 'rejected')
+          activityPlansUpdateMock.mockRejectedValueOnce(new Error('offline'));
+        else if (failure === 'wrong-status')
+          activityPlansUpdateMock.mockResolvedValueOnce(
+            makeReviewPlan('pending'),
+          );
+        else activityPlansUpdateMock.mockResolvedValueOnce(null);
+
+        await useChatStore.getState().approvePlanExit('request');
+
+        expect(storedReviewStatus(useActivityStore)).toBe('pending');
+        expect(activityPlansListMock).not.toHaveBeenCalled();
+        expect(addToast).toHaveBeenCalledWith(
+          expect.stringContaining('approval'),
+          'error',
+          expect.any(Function),
+          expect.objectContaining({ chatId: 'chat' }),
+        );
+        // The committed chat decision stays approved and implementation was
+        // requested exactly once.
+        expect(
+          useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
+            ?.trackedPlanReviewStatus,
+        ).toBe('approved');
+        expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('refreshes current status after a failed review write without replaying the decision on a newer revision', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      const { useGitHubStore } = jest.requireActual<typeof GitHubStoreModule>(
+        '../stores/githubStore',
+      );
+      const addToast = jest.spyOn(useGitHubStore.getState(), 'addToast');
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      activityPlansUpdateMock.mockRejectedValueOnce(new Error('offline'));
+      await useChatStore.getState().approvePlanExit('request');
+      const refresh = addToast.mock.calls.at(-1)?.[2];
+      const newerPlan = makeReviewPlan('pending', { latestRevisionNumber: 2 });
+      useActivityStore.getState().commitTrackedPlanUpdate(newerPlan);
+      activityPlansListMock.mockResolvedValueOnce([newerPlan]);
+
+      refresh?.();
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(activityPlansUpdateMock).toHaveBeenCalledTimes(1);
+      expect(activityPlansListMock).toHaveBeenCalledTimes(1);
+      expect(
+        useActivityStore.getState().trackedPlans['project/worktree']?.[0]
+          ?.latestRevisionNumber,
+      ).toBe(2);
+      expect(storedReviewStatus(useActivityStore)).toBe('pending');
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves a returned approval when the reconciliation read fails', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      activityPlansUpdateMock.mockResolvedValueOnce(makeReviewPlan('approved'));
+      activityPlansListMock.mockRejectedValueOnce(new Error('offline'));
+
+      await expect(
+        useChatStore.getState().approvePlanExit('request'),
+      ).resolves.toBeUndefined();
+      expect(storedReviewStatus(useActivityStore)).toBe('approved');
+    });
+
+    it('offers refresh-only recovery after a committed approval without resending or rewriting', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      const { useGitHubStore } = jest.requireActual<typeof GitHubStoreModule>(
+        '../stores/githubStore',
+      );
+      const addToast = jest.spyOn(useGitHubStore.getState(), 'addToast');
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      activityPlansUpdateMock.mockResolvedValueOnce(makeReviewPlan('approved'));
+      activityPlansListMock
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce([makeReviewPlan('approved')]);
+      await useChatStore.getState().approvePlanExit('request');
+      expect(addToast).toHaveBeenCalledWith(
+        expect.stringContaining('refresh'),
+        'error',
+        expect.any(Function),
+        expect.objectContaining({
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'chat',
+        }),
+      );
+      const retry = addToast.mock.calls.at(-1)?.[2];
+      retry?.();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(activityPlansListMock).toHaveBeenCalledTimes(2);
+      expect(activityPlansUpdateMock).toHaveBeenCalledTimes(1);
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(storedReviewStatus(useActivityStore)).toBe('approved');
+    });
+
+    it('refuses a returned approval from another worktree', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      activityPlansUpdateMock.mockResolvedValueOnce(
+        makeReviewPlan('approved', { worktreeId: 'other' }),
+      );
+      await useChatStore.getState().approvePlanExit('request');
+      expect(storedReviewStatus(useActivityStore)).toBe('pending');
+      expect(
+        useActivityStore.getState().trackedPlans['project/other'],
+      ).toBeUndefined();
+      expect(activityPlansListMock).not.toHaveBeenCalled();
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends the implementation request once for repeated approval clicks', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      const update = deferred<TrackedPlanData | null>();
+      activityPlansUpdateMock.mockReturnValueOnce(update.promise);
+
+      const first = useChatStore.getState().approvePlanExit('request');
+      const second = useChatStore.getState().approvePlanExit('request');
+      await jest.advanceTimersByTimeAsync(0);
+      const restoredRepeat = useChatStore.getState().approvePlanExit('');
+      update.resolve(makeReviewPlan('approved'));
+      await Promise.all([first, second, restoredRepeat]);
+
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(activityPlansUpdateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([false, true])(
+      'approves a distinct request in the same chat while an earlier review sync waits (restored=%s)',
+      async (restored) => {
+        const {
+          chatStore: { useChatStore },
+          activityStore: { useActivityStore },
+        } = loadStores();
+        seedPendingClaudePlan(useChatStore, useActivityStore);
+        const update = deferred<TrackedPlanData | null>();
+        activityPlansUpdateMock
+          .mockReturnValueOnce(update.promise)
+          .mockResolvedValueOnce(makeReviewPlan('approved'));
+        const first = useChatStore.getState().approvePlanExit('request');
+        await jest.advanceTimersByTimeAsync(0);
+
+        seedPendingClaudePlan(useChatStore, useActivityStore);
+        const state = useChatStore.getState();
+        const pending = state.pendingPlanExits.request;
+        const chats = state.worktreeChats['project/worktree'];
+        useChatStore.setState({
+          pendingPlanExits: restored
+            ? {}
+            : { 'next-request': { ...pending, requestId: 'next-request' } },
+          worktreeChats: {
+            'project/worktree': {
+              ...chats,
+              tabs: chats.tabs.map((tab) => ({
+                ...tab,
+                pendingPlanExitRequestId: 'next-request',
+                latestRevisionNumber: 2,
+              })),
+            },
+          },
+        });
+        const next = useChatStore.getState().approvePlanExit('next-request');
+        await jest.advanceTimersByTimeAsync(0);
+        update.resolve(makeReviewPlan('approved'));
+        await Promise.all([first, next]);
+
+        expect(activityPlansUpdateMock).toHaveBeenCalledTimes(2);
+        expect(sendMessageMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('applies a dismissal before the denial settles', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      activityPlansUpdateMock.mockResolvedValueOnce(
+        makeReviewPlan('dismissed'),
+      );
+      activityPlansListMock.mockResolvedValue([makeReviewPlan('dismissed')]);
+      const olderList = deferred<TrackedPlanData[]>();
+      activityPlansListMock.mockReturnValueOnce(olderList.promise);
+      const olderLoad = useActivityStore
+        .getState()
+        .loadTrackedPlans('project', 'worktree');
+
+      await useChatStore.getState().denyPlanExit('request');
+      olderList.resolve([makeReviewPlan('pending')]);
+      await olderLoad;
+
+      expect(activityPlansUpdateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewStatus: 'dismissed' }),
+      );
+      expect(storedReviewStatus(useActivityStore)).toBe('dismissed');
+    });
+
+    it('awaits the plan refresh after a workflow launch and tolerates its failure', async () => {
+      const {
+        chatStore: { useChatStore },
+        activityStore: { useActivityStore },
+      } = loadStores();
+      seedPendingClaudePlan(useChatStore, useActivityStore);
+      const refresh = deferred<TrackedPlanData[]>();
+      activityPlansListMock.mockReturnValueOnce(refresh.promise);
+
+      let settled = false;
+      const dismissal = useChatStore
+        .getState()
+        .dismissPlanForPipeline('request')
+        .then(() => {
+          settled = true;
+        });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(activityPlansListMock).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+
+      refresh.reject(new Error('offline'));
+      await dismissal;
+      expect(settled).toBe(true);
+      // Main records the pipeline approval; the renderer never writes it.
+      expect(activityPlansUpdateMock).not.toHaveBeenCalled();
+      expect(sendMessageMock).not.toHaveBeenCalled();
+    });
   });
 
   it('does not restore a resolved Codex proposal when the pending plan save finishes late', async () => {
@@ -11310,7 +12006,7 @@ describe('chatStore', () => {
       },
     });
 
-    useChatStore.getState().approvePlanExit('request-1');
+    void useChatStore.getState().approvePlanExit('request-1');
     await jest.advanceTimersByTimeAsync(0);
 
     if (!resolvePendingUpdate) {
@@ -11473,6 +12169,8 @@ describe('chatStore', () => {
               thinkingLevel: 'high',
               model: 'gpt-6-sol',
               providerType: 'codex',
+              modelConfig: { ...DEFAULT_CHAT_MODEL_CONFIG },
+              fastModeExplicit: false,
             },
           ],
         },
@@ -11862,6 +12560,8 @@ describe('chatStore', () => {
               thinkingLevel: 'high',
               model: 'claude-sonnet-4-5-20250514',
               providerType: 'claude',
+              modelConfig: { ...DEFAULT_CHAT_MODEL_CONFIG },
+              fastModeExplicit: false,
             },
           ],
         },
@@ -11881,6 +12581,8 @@ describe('chatStore', () => {
               thinkingLevel: 'high',
               model: 'claude-sonnet-4-5-20250514',
               providerType: 'claude',
+              modelConfig: { ...DEFAULT_CHAT_MODEL_CONFIG },
+              fastModeExplicit: false,
             },
           ],
         },
@@ -11915,6 +12617,200 @@ describe('chatStore', () => {
       useChatStore.getState().worktreeChats['projB/wtB']?.tabs[0]
         ?.queuedMessages,
     ).toEqual([]);
+  });
+
+  it('applies waiting delegation ids from empty queue events and clears them when omitted', () => {
+    const { useChatStore } = loadChatStore();
+    useChatStore.setState({
+      worktreeChats: {
+        'proj/wt': {
+          activeTabId: 'chat',
+          tabs: [makeTab({ id: 'chat' })],
+        },
+      },
+    });
+
+    useChatStore.getState().handleChatQueueUpdated({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      queue: [],
+      waitingDelegationIds: ['delegate-1', 'delegate-1'],
+    });
+    const firstIds =
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds;
+    expect(firstIds).toEqual(['delegate-1']);
+
+    useChatStore.getState().handleChatQueueUpdated({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      queue: [],
+      waitingDelegationIds: ['delegate-1'],
+    });
+    expect(
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds,
+    ).toBe(firstIds);
+
+    useChatStore.getState().handleChatQueueUpdated({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      queue: [],
+    });
+    expect(
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds,
+    ).toEqual([]);
+  });
+
+  it('hydrates waiting delegation ids from queue snapshots with no queue rows', async () => {
+    const { useChatStore } = loadChatStore();
+    loadTabsMock.mockResolvedValueOnce({
+      version: 1,
+      tabs: [
+        {
+          id: 'chat',
+          title: 'Chat',
+          createdAt: '2026-03-19T00:00:00.000Z',
+          messages: [],
+        },
+      ],
+      activeTabId: 'chat',
+    });
+    getChatQueueSnapshotMock.mockResolvedValueOnce([
+      {
+        projectId: 'proj',
+        worktreeId: 'wt',
+        chatId: 'chat',
+        queue: [],
+        waitingDelegationIds: ['delegate-1'],
+      },
+    ]);
+
+    await useChatStore.getState().loadTabsForTarget('proj', 'wt');
+
+    expect(
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds,
+    ).toEqual(['delegate-1']);
+  });
+
+  it('hydrates revisioned waiting ids from snapshots with empty queues', async () => {
+    const { useChatStore } = loadChatStore();
+    const persisted: PersistedChatTab = {
+      id: 'chat',
+      title: 'Chat',
+      createdAt: '2026-03-19T00:00:00.000Z',
+      messages: [],
+    };
+    const canonicalSnapshot: ChatStateSnapshot = {
+      schemaVersion: 1,
+      projectId: 'proj',
+      worktreeId: 'wt',
+      revision: 5,
+      tabsFile: { version: 1, tabs: [persisted], activeTabId: 'chat' },
+      archives: [],
+      runtimeByChatId: {},
+      queue: [
+        {
+          projectId: 'proj',
+          worktreeId: 'wt',
+          chatId: 'chat',
+          queue: [],
+          waitingDelegationIds: ['delegate-1'],
+        },
+      ],
+    };
+    const getStateMock = jest.fn(() => Promise.resolve(canonicalSnapshot));
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...window.api,
+        chat: { ...window.api.chat, getState: getStateMock },
+      },
+    });
+
+    await useChatStore.getState().loadTabsForTarget('proj', 'wt');
+    expect(
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds,
+    ).toEqual(['delegate-1']);
+  });
+
+  it('preserves waiting delegation ids across a canonical tab change', async () => {
+    const { useChatStore } = loadChatStore();
+    const persisted: PersistedChatTab = {
+      id: 'chat',
+      title: 'Chat',
+      createdAt: '2026-03-19T00:00:00.000Z',
+      messages: [],
+    };
+    const canonicalSnapshot: ChatStateSnapshot = {
+      schemaVersion: 1,
+      projectId: 'proj',
+      worktreeId: 'wt',
+      revision: 5,
+      tabsFile: { version: 1, tabs: [persisted], activeTabId: 'chat' },
+      archives: [],
+      runtimeByChatId: {},
+      queue: [],
+    };
+    const getStateMock = jest.fn(() => Promise.resolve(canonicalSnapshot));
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...window.api,
+        chat: { ...window.api.chat, getState: getStateMock },
+      },
+    });
+    await useChatStore.getState().loadTabsForTarget('proj', 'wt');
+    useChatStore.setState((state) => {
+      const worktreeChat = state.worktreeChats['proj/wt'];
+      if (!worktreeChat) return state;
+      return {
+        worktreeChats: {
+          ...state.worktreeChats,
+          'proj/wt': {
+            ...worktreeChat,
+            tabs: worktreeChat.tabs.map((tab) => ({
+              ...tab,
+              waitingDelegationIds: ['delegate-1'],
+            })),
+          },
+        },
+      };
+    });
+    const waitingIdsBeforeCanonicalChange =
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds;
+
+    useChatStore.getState().handleChatStateChanged({
+      schemaVersion: 1,
+      eventId: 'canonical-tab-updated',
+      occurredAt: '2026-03-19T00:01:00.000Z',
+      projectId: 'proj',
+      worktreeId: 'wt',
+      baseRevision: 5,
+      revision: 6,
+      changes: [
+        {
+          type: 'tab.upserted',
+          tab: { ...persisted, title: 'Canonical update' },
+        },
+      ],
+    });
+
+    expect(
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds,
+    ).toEqual(['delegate-1']);
+    expect(
+      useChatStore.getState().worktreeChats['proj/wt']?.tabs[0]
+        ?.waitingDelegationIds,
+    ).toBe(waitingIdsBeforeCanonicalChange);
   });
 
   it('prioritizes Git stats and known PR refreshes when an agent turn finishes', () => {
@@ -12128,9 +13024,8 @@ describe('chatStore', () => {
     const toasts = useGitHubStore.getState().toasts;
     expect(toasts).toHaveLength(1);
     expect(toasts[0]?.type).toBe('info');
-    expect(toasts[0]?.message).toBe(
-      'Q3 planning session: Weekly report: Report drafted.',
-    );
+    // The headline names the work entry, so the message is the reply alone.
+    expect(toasts[0]?.message).toBe('Report drafted.');
     expect(toasts[0]?.meta).toMatchObject({
       category: 'Chat',
       projectId: 'ws',
@@ -12334,16 +13229,14 @@ describe('chatStore', () => {
     );
     Object.assign(window.api, {
       archiveWorktree: archiveWorktreeRequest,
+      checkWorktreeRemovalAdmission: jest
+        .fn()
+        .mockResolvedValue({ status: 'admitted' }),
     });
 
     projectsStore.useProjectsStore.setState({
       hasHydratedProjects: true,
-      projects: [
-        {
-          ...makeSidebarItem('project', 'worktree'),
-          effectiveScripts: {},
-        },
-      ],
+      projects: [makeSidebarItem('project', 'worktree')],
       tearingDownWorktrees: new Set<string>(),
       appliedProjectWorktreeScripts: {},
       appliedProjectWorktreeHooks: {},
@@ -12365,9 +13258,9 @@ describe('chatStore', () => {
     await flushChatStoreAsyncWork();
 
     expect(archiveWorktreeRequest).toHaveBeenCalledTimes(1);
-    expect(
-      projectsStore.useProjectsStore.getState().projects[0]?.worktrees,
-    ).toEqual([]);
+    expect(projectsStore.useProjectsStore.getState().projects[0]).toMatchObject(
+      { type: 'single-repo', worktrees: [] },
+    );
 
     useChatStore.getState().handleChatEvent({
       projectId: 'project',
@@ -12411,16 +13304,14 @@ describe('chatStore', () => {
     );
     Object.assign(window.api, {
       archiveWorktree: archiveWorktreeRequest,
+      checkWorktreeRemovalAdmission: jest
+        .fn()
+        .mockResolvedValue({ status: 'admitted' }),
     });
 
     projectsStore.useProjectsStore.setState({
       hasHydratedProjects: true,
-      projects: [
-        {
-          ...makeSidebarItem('project', 'worktree'),
-          effectiveScripts: {},
-        },
-      ],
+      projects: [makeSidebarItem('project', 'worktree')],
       tearingDownWorktrees: new Set<string>(),
       appliedProjectWorktreeScripts: {},
       appliedProjectWorktreeHooks: {},
@@ -12911,57 +13802,69 @@ describe('chatStore', () => {
     expect(savePreferencesMock).not.toHaveBeenCalled();
   });
 
-  it('waits for an existing hydration before navigating to a chat tab', async () => {
-    const chatStore = loadChatStore();
-    const projectsStore = jest.requireActual<typeof ProjectsStoreModule>(
-      '../stores/projectsStore',
-    );
-    let resolveLoad: ((tabsFile: ChatTabsFile) => void) | undefined;
-    loadTabsMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveLoad = resolve;
-        }),
-    );
-    projectsStore.useProjectsStore.setState({
-      projects: [makeSidebarItem('project', 'worktree')],
-      hasHydratedProjects: true,
-    });
+  it.each([false, true])(
+    'waits for hydration and respects stale chat navigation (cancelled: %s)',
+    async (cancelled) => {
+      let current = true;
+      const chatStore = loadChatStore();
+      const projectsStore = jest.requireActual<typeof ProjectsStoreModule>(
+        '../stores/projectsStore',
+      );
+      let resolveLoad: ((tabsFile: ChatTabsFile) => void) | undefined;
+      loadTabsMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveLoad = resolve;
+          }),
+      );
+      projectsStore.useProjectsStore.setState({
+        projects: [makeSidebarItem('project', 'worktree')],
+        hasHydratedProjects: true,
+      });
 
-    const hydration = chatStore.useChatStore
-      .getState()
-      .loadTabsForTarget('project', 'worktree');
-    await flushChatStoreAsyncWork();
-    const navigation = chatStore.navigateToWorktreeChat({
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'target-chat',
-    });
-    let navigationFinished = false;
-    void navigation.then(() => {
-      navigationFinished = true;
-    });
-    await flushChatStoreAsyncWork();
+      const hydration = chatStore.useChatStore
+        .getState()
+        .loadTabsForTarget('project', 'worktree');
+      await flushChatStoreAsyncWork();
+      const navigation = chatStore.navigateToWorktreeChat(
+        {
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'target-chat',
+        },
+        () => current,
+      );
+      let navigationFinished = false;
+      void navigation.then(() => {
+        navigationFinished = true;
+      });
+      await flushChatStoreAsyncWork();
 
-    expect(navigationFinished).toBe(false);
-    resolveLoad?.({
-      version: 1,
-      tabs: [makeTab({ id: 'target-chat', title: 'Target chat' })],
-      activeTabId: 'target-chat',
-    });
-    await flushChatStoreAsyncWork();
-    await jest.advanceTimersByTimeAsync(25);
-    await Promise.all([hydration, navigation]);
+      expect(navigationFinished).toBe(false);
+      current = !cancelled;
+      resolveLoad?.({
+        version: 1,
+        tabs: [makeTab({ id: 'target-chat', title: 'Target chat' })],
+        activeTabId: 'target-chat',
+      });
+      await flushChatStoreAsyncWork();
+      await jest.advanceTimersByTimeAsync(25);
+      await Promise.all([hydration, navigation]);
 
-    expect(chatStore.useChatStore.getState().selectedWorktree).toEqual({
-      projectId: 'project',
-      worktreeId: 'worktree',
-    });
-    expect(
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.activeTabId,
-    ).toBe('target-chat');
-  });
+      if (cancelled) {
+        expect(chatStore.useChatStore.getState().selectedWorktree).toBeNull();
+        return;
+      }
+      expect(chatStore.useChatStore.getState().selectedWorktree).toEqual({
+        projectId: 'project',
+        worktreeId: 'worktree',
+      });
+      expect(
+        chatStore.useChatStore.getState().worktreeChats['project/worktree']
+          ?.activeTabId,
+      ).toBe('target-chat');
+    },
+  );
 
   it('tracks the prior worktree when entering standalone chat', () => {
     const { useChatStore } = loadChatStore();
@@ -13899,7 +14802,8 @@ describe('chatStore', () => {
     expect(tab?.queuedMessages).toEqual([
       { hostQueueEntryId: 'queue-1', text: 'Tighten phase 2.' },
     ]);
-    expect(tab?.pendingPlanExit).toBeUndefined();
+    expect(tab?.pendingPlanExit?.plan).toBe('Draft the implementation plan.');
+    expect(tab?.pendingPlanExitRequestId).toBe('request');
     expect(tab?.status).toBe('streaming');
   });
 
@@ -13991,6 +14895,8 @@ describe('chatStore', () => {
               thinkingLevel: 'high',
               model: 'claude-sonnet-4-5-20250514',
               providerType: 'claude',
+              modelConfig: { ...DEFAULT_CHAT_MODEL_CONFIG },
+              fastModeExplicit: false,
             },
           ],
         },
@@ -14116,6 +15022,8 @@ describe('chatStore', () => {
               thinkingLevel: 'high',
               model: 'claude-sonnet-4-5-20250514',
               providerType: 'claude',
+              modelConfig: { ...DEFAULT_CHAT_MODEL_CONFIG },
+              fastModeExplicit: false,
             },
           ],
         },
@@ -14853,7 +15761,7 @@ describe('chatStore', () => {
     let failDispatch = (): void => undefined;
     sendMessageMock.mockImplementationOnce(
       () =>
-        new Promise<void>((_resolve, reject) => {
+        new Promise<ChatSendMessageResult>((_resolve, reject) => {
           failDispatch = (): void => reject(new Error('host rejected'));
         }),
     );
@@ -15563,6 +16471,74 @@ describe('chatStore', () => {
     expect(tab?.readOnly).toBeUndefined();
   });
 
+  it('preserves a staged capability when an optimistic plugin action waits behind staging', async () => {
+    const { useChatStore } = loadChatStore();
+    const { queueDesktopTryItSelectionUpdate } = jest.requireActual<
+      typeof TryItContinuationRunnerModule
+    >('../lib/tryItContinuationRunner');
+    const target = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    };
+    const empty = {
+      collectionIds: [],
+      skillRefs: [],
+      pluginRefs: [],
+      mcpServerRefs: [],
+    };
+    const selected = { marketplaceId: 'demo/market', pluginName: 'delta-tool' };
+    useChatStore.setState({
+      selectedWorktree: target,
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [makeTab({ id: 'chat', pluginSelections: empty })],
+        },
+      },
+    });
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const staging = queueDesktopTryItSelectionUpdate(target, async () => {
+      await gate;
+      useChatStore.getState().setPluginSelections(
+        {
+          ...empty,
+          mcpServerRefs: [{ serverId: 'staged', configId: 'default' }],
+        },
+        target,
+        undefined,
+        { runtimeAlreadyUpdated: true },
+      );
+    });
+    useChatStore
+      .getState()
+      .setPluginSelections({ ...empty, pluginRefs: [selected] }, target);
+    release();
+    await staging;
+    await flushChatStoreAsyncWork();
+    expect(updatePluginsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        ...target,
+        pluginSelections: {
+          ...empty,
+          pluginRefs: [selected],
+          mcpServerRefs: [{ serverId: 'staged', configId: 'default' }],
+        },
+      }),
+    );
+    expect(
+      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
+        ?.pluginSelections,
+    ).toEqual({
+      ...empty,
+      pluginRefs: [selected],
+      mcpServerRefs: [{ serverId: 'staged', configId: 'default' }],
+    });
+  });
+
   it('re-runs discovery with the active provider when plugin selections change', async () => {
     const { useChatStore } = loadChatStore();
     const pluginSelections = {
@@ -15589,9 +16565,8 @@ describe('chatStore', () => {
 
     useChatStore.getState().setPluginSelections(pluginSelections);
 
-    // Discovery is now sequenced after updatePlugins via an async IIFE,
-    // so flush the microtask queue to let both calls complete.
-    await Promise.resolve();
+    // Wait for the queued selection persistence and its discovery refresh.
+    await flushChatStoreAsyncWork();
 
     expect(updatePluginsMock).toHaveBeenCalledWith({
       projectId: 'project',
@@ -15673,7 +16648,7 @@ describe('chatStore', () => {
     useChatStore
       .getState()
       .setPluginSelections(pluginSelections, undefined, false);
-    await Promise.resolve();
+    await flushChatStoreAsyncWork();
 
     expect(
       useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
@@ -15860,7 +16835,7 @@ describe('chatStore', () => {
     });
 
     useChatStore.getState().setPluginSelections(pluginSelections);
-    await Promise.resolve();
+    await flushChatStoreAsyncWork();
 
     expect(discoverWorktreeEnvMock).toHaveBeenCalledWith({
       projectId: 'project',
@@ -15871,6 +16846,56 @@ describe('chatStore', () => {
       selectedRepoId: 'frontend',
     });
   });
+
+  it.each([true, false])(
+    'records only an accepted same-value recovery model pick (%s)',
+    async (accepted) => {
+      const { useChatStore } = loadChatStore();
+      const { initCodexModels } = jest.requireActual<typeof DesktopSharedTypes>(
+        '@canopy/desktop-shared/types',
+      );
+      initCodexModels([{ id: 'gpt-5.6-sol', label: 'GPT 5.6 Sol' }]);
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+        worktreeChats: {
+          'project/worktree': {
+            activeTabId: 'chat',
+            tabs: [
+              makeTab({
+                id: 'chat',
+                model: 'gpt-5.6-sol',
+                providerType: 'codex',
+                messages: [],
+                provisionalFirstSend: {
+                  userMessageId: 'failed-prompt',
+                  submittedAt: 1,
+                  phase: 'failed',
+                  failure: {
+                    failureId: 'failure',
+                    model: 'gpt-5.6-luna',
+                    message: 'Could not apply Luna',
+                  },
+                },
+              }),
+            ],
+          },
+        },
+      });
+      changeModelMock.mockResolvedValueOnce(accepted);
+      await expect(
+        useChatStore.getState().setModelAndWait('gpt-5.6-sol'),
+      ).resolves.toBe(accepted);
+      const failure =
+        useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
+          ?.provisionalFirstSend?.failure;
+      expect(failure).toEqual(
+        expect.objectContaining({ failureId: 'failure' }),
+      );
+      if (accepted)
+        expect(failure).toHaveProperty('recoveryModelSelectionAccepted', true);
+      else expect(failure).not.toHaveProperty('recoveryModelSelectionAccepted');
+    },
+  );
 
   it.each([true, false])(
     'keeps pending model intent separate from confirmed settings until acceptance is %s',
@@ -16505,6 +17530,7 @@ describe('chatStore', () => {
         {
           id: 'gateway-claude-terminal-test',
           label: 'Gateway Claude terminal test',
+          family: 'claude',
           recommendedHarness: 'claude',
           contextWindow: 100_000,
           supportsPromptCaching: false,
@@ -16516,6 +17542,7 @@ describe('chatStore', () => {
         {
           modelId: 'gateway-claude-terminal-test',
           gatewayId: 'provider/gateway-claude-terminal-test',
+          family: 'claude',
           recommendedHarness: 'claude',
           gatewayOnly: true,
           contextWindow: 100_000,
@@ -16528,7 +17555,14 @@ describe('chatStore', () => {
     initModelHarnessAssignments({
       revision: 1,
       assignments: [
-        { modelId: 'gateway-claude-terminal-test', harness: 'claude' },
+        {
+          modelId: 'gateway-claude-terminal-test',
+          source: 'ai-gateway',
+          harness: 'claude',
+          defaultHarness: 'claude',
+          configurable: true,
+          overridden: false,
+        },
       ],
     });
     useChatStore.setState({
@@ -17161,7 +18195,7 @@ describe('chatStore', () => {
     ).toMatchObject({ active: true, scope: 'persistent' });
   });
 
-  it.each([
+  it.each<[string, Partial<ChatStoreModule.ChatTab>]>([
     ['an explicit model pick', { modelExplicitlyChosen: true }],
     [
       // A tab persisted before `defaultStampModel` existed is indistinguishable
@@ -17179,7 +18213,7 @@ describe('chatStore', () => {
       { defaultStampModel: 'claude-opus-4-1' },
     ],
     ['an explicit billing toggle', { billingExplicitlyChosen: true }],
-    ['a queued message', { queuedMessages: [{ id: 'q1', content: 'hi' }] }],
+    ['a queued message', { queuedMessages: [{ text: 'hi' }] }],
     ['a non-idle status', { status: 'streaming' }],
     ['a Claude Code interface', { interfaceMode: 'claude-code' }],
   ])(
@@ -17314,28 +18348,28 @@ describe('chatStore', () => {
         contextWindow: 400_000,
         supportsPromptCaching: false,
         supportedThinkingLevels: ['high' as const],
-        toolSchemaProfile: 'codex' as const,
+        toolSchemaProfile: 'standard' as const,
+      });
+      const gatewayModel = (
+        id: string,
+        label: string,
+      ): Parameters<typeof initAiGatewayModels>[0][number] => ({
+        id,
+        label,
+        recommendedHarness: 'codex',
+        contextWindow: 400_000,
+        supportsPromptCaching: false,
+        supportedThinkingLevels: ['high'],
+        toolSchemaProfile: 'standard',
       });
       initCodexModels([
         { id: DEFAULT_APP_ADVISOR_MODEL, label: 'GPT 6.1 Sol' },
       ]);
       initAiGatewayModels(
         [
-          {
-            id: DEFAULT_APP_ADVISOR_MODEL,
-            label: 'GPT 6.1 Sol',
-            supportedThinkingLevels: ['high'],
-          },
-          {
-            id: 'gpt-5.4',
-            label: 'GPT 5.4',
-            supportedThinkingLevels: ['high'],
-          },
-          {
-            id: 'deepseek-v4-pro',
-            label: 'DeepSeek',
-            supportedThinkingLevels: ['high'],
-          },
+          gatewayModel(DEFAULT_APP_ADVISOR_MODEL, 'GPT 6.1 Sol'),
+          gatewayModel('gpt-5.4', 'GPT 5.4'),
+          gatewayModel('deepseek-v4-pro', 'DeepSeek'),
         ],
         [
           // Give the native seed a guest-ineligible fixture route so these
@@ -18340,21 +19374,22 @@ describe('chatStore', () => {
     const savedDraft = [
       { type: 'paragraph' as const, children: [{ text: 'keep me' }] },
     ];
-    const savedFileReferenceDraft = [
-      {
-        type: 'paragraph' as const,
-        children: [
-          { text: '' },
-          {
-            type: 'file-reference' as const,
-            displayPath: 'src/a.ts',
-            absolutePath: '/repo/src/a.ts',
-            children: [{ text: '' }],
-          },
-          { text: '' },
-        ],
-      },
-    ];
+    const savedFileReferenceDraft: ChatTabUtils.PristineChatTabComposerState['tabDrafts'][string] =
+      [
+        {
+          type: 'paragraph' as const,
+          children: [
+            { text: '' },
+            {
+              type: 'file-reference' as const,
+              displayPath: 'src/a.ts',
+              absolutePath: '/repo/src/a.ts',
+              children: [{ text: '' }],
+            },
+            { text: '' },
+          ],
+        },
+      ];
     const stagedSelection = {
       id: 'selection-1',
       projectId: STANDALONE_CHAT_PROJECT_ID,
@@ -18462,8 +19497,8 @@ describe('chatStore', () => {
             {
               id: 'm1',
               role: 'user',
-              content: 'hello',
-              timestamp: '2026-03-19T00:00:00.000Z',
+              blocks: [{ type: 'text', text: 'hello' }],
+              timestamp: Date.parse('2026-03-19T00:00:00.000Z'),
             },
           ],
         },
@@ -18473,12 +19508,14 @@ describe('chatStore', () => {
         'a persisted transcript without loaded messages',
         {
           transcript: {
+            format: 'complete-message-jsonl-v1',
+            committedMessageCount: 2,
+            committedByteLength: 200,
+            transcriptRevision: 1,
+            hasActiveSidecar: false,
             messageCount: 2,
-            loadedStartIndex: 2,
-            loadedEndIndex: 2,
-            hasOlderMessages: true,
           },
-        } as Partial<ChatStoreModule.ChatTab>,
+        },
         {},
       ],
       [
@@ -18486,20 +19523,14 @@ describe('chatStore', () => {
         {
           queuedMessages: [
             {
-              id: 'q1',
-              content: 'later',
-              timestamp: '2026-03-19T00:00:00.000Z',
+              text: 'later',
             },
           ],
-        } as Partial<ChatStoreModule.ChatTab>,
+        },
         {},
       ],
-      ['a running turn', { status: 'running' }, {}],
-      [
-        'a pending plan exit',
-        { pendingPlanExit: {} } as Partial<ChatStoreModule.ChatTab>,
-        {},
-      ],
+      ['a running turn', { status: 'streaming' }, {}],
+      ['a pending plan exit', { pendingPlanExit: {} }, {}],
     ])(
       'keeps a starter holding %s and opens beside it',
       async (_label, tab, composer) => {
@@ -18661,8 +19692,8 @@ describe('chatStore', () => {
           >('../stores/standaloneChatStore');
           const entryMeta: DesktopSharedTypes.CoworkWorkEntryMeta = {
             id: 'entry-send',
+            title: 'Entry',
             createdAt: '2026-03-19T00:00:00.000Z',
-            updatedAt: '2026-03-19T00:00:00.000Z',
             chatCount: 1,
           };
           const createEntry = jest.fn().mockResolvedValue({
@@ -19197,7 +20228,7 @@ describe('Ollama provider support', () => {
           tabs: [
             makeTab({
               id: 'chat',
-              model: 'ollama-llama3:8b' as ChatModel,
+              model: 'ollama-llama3:8b',
               providerType: 'ollama',
               trackedPlanSource: 'ollama',
               trackedPlanId: 'plan-1',
@@ -19228,7 +20259,7 @@ describe('Ollama provider support', () => {
     activityPlansUpdateMock.mockResolvedValue(null);
     activityPlansListMock.mockResolvedValue([]);
 
-    useChatStore.getState().approvePlanExit('request');
+    void useChatStore.getState().approvePlanExit('request');
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(activityPlansUpdateMock).toHaveBeenCalledWith(
@@ -19428,7 +20459,7 @@ describe('Ollama provider support', () => {
           tabs: [
             makeTab({
               id: 'chat',
-              model: 'ollama-llama3:8b' as ChatModel,
+              model: 'ollama-llama3:8b',
               providerType: 'ollama',
               executionHarness: 'codex',
               sdkSessionId: 'sdk-1',
@@ -19497,7 +20528,7 @@ describe('Ollama provider support', () => {
           tabs: [
             makeTab({
               id: 'chat',
-              model: 'ollama-llama3:8b' as ChatModel,
+              model: 'ollama-llama3:8b',
               providerType: 'ollama',
               sdkSessionId: 'sdk-1',
             }),
@@ -19558,7 +20589,7 @@ describe('Ollama provider support', () => {
           tabs: [
             makeTab({
               id: 'chat',
-              model: 'ollama-llama3:8b' as ChatModel,
+              model: 'ollama-llama3:8b',
               providerType: 'ollama',
               sdkSessionId: 'sdk-1',
             }),
@@ -19844,6 +20875,7 @@ describe('Ollama provider support', () => {
       const route = {
         modelId: namespaced,
         gatewayId: 'vertex/acme-sonnet',
+        family: 'custom',
         recommendedHarness: 'claude' as const,
         gatewayOnly: true,
         contextWindow: 200_000,
@@ -19919,6 +20951,7 @@ describe('Ollama provider support', () => {
       const route = {
         modelId: gatewayModel,
         gatewayId: 'vertex/acme-haiku',
+        family: 'custom',
         recommendedHarness: 'claude' as const,
         gatewayOnly: true,
         contextWindow: 200_000,
@@ -20023,8 +21056,13 @@ describe('Ollama provider support', () => {
                   {
                     id: 'message-1',
                     role: 'user',
-                    content: 'Keep this Personal session Personal.',
-                    timestamp: new Date(),
+                    blocks: [
+                      {
+                        type: 'text',
+                        text: 'Keep this Personal session Personal.',
+                      },
+                    ],
+                    timestamp: Date.now(),
                   },
                 ],
               }),
@@ -20310,7 +21348,7 @@ describe('Ollama provider support', () => {
 
 describe('chatStore imported-session tabs', () => {
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     chatCommandMock.mockReset();
     chatCommandMock.mockResolvedValue({
       commandId: 'imported-session-command',
@@ -20328,7 +21366,7 @@ describe('chatStore imported-session tabs', () => {
 
   afterEach(async () => {
     await jest.runOnlyPendingTimersAsync();
-    jest.useRealTimers();
+    restoreRealTimers();
     jest.resetModules();
   });
 
@@ -20497,9 +21535,9 @@ describe('chatStore imported-session tabs', () => {
 
 describe('chatStore hook-started tabs', () => {
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     jest.clearAllTimers();
-    sendMessageMock.mockReset().mockResolvedValue(undefined);
+    sendMessageMock.mockReset().mockResolvedValue(ACCEPTED_CHAT_SEND_RESULT);
     cancelChatMock.mockReset().mockResolvedValue(undefined);
     flushScopeMock.mockReset().mockResolvedValue(undefined);
     forkOpenWorktreeTabsMock.mockReset().mockResolvedValue({
@@ -20522,7 +21560,7 @@ describe('chatStore hook-started tabs', () => {
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    restoreRealTimers();
     jest.resetModules();
   });
 
@@ -20709,7 +21747,7 @@ describe('chatStore hook-started tabs', () => {
     const mirroredRow = {
       hostQueueEntryId: 'host-queue-1',
       text: 'Queued while the turn streams',
-      origin: 'user' as const,
+      origin: 'desktop' as const,
       enqueuedAtMs: 123,
     };
     useChatStore.setState({
@@ -20751,7 +21789,7 @@ describe('chatStore hook-started tabs', () => {
     const mirroredRow = {
       hostQueueEntryId: 'host-queue-1',
       text: 'Existing host queue row',
-      origin: 'user' as const,
+      origin: 'desktop' as const,
       enqueuedAtMs: 123,
     };
     useChatStore.setState({
@@ -20930,7 +21968,7 @@ describe('chatStore hook-started tabs', () => {
   });
 
   it('requests discovery for a terminal hook start without touching runtime state', async () => {
-    jest.useFakeTimers();
+    installFakeTimers();
     const { useChatStore } = loadChatStore();
     useChatStore.setState({
       worktreeChats: {
@@ -20969,11 +22007,11 @@ describe('chatStore hook-started tabs', () => {
     await jest.advanceTimersByTimeAsync(500);
 
     expect(discoverWorktreeEnvMock).toHaveBeenCalledTimes(1);
-    jest.useRealTimers();
+    restoreRealTimers();
   });
 
   it('inserts an idle placeholder tab with a hook-queue message when queuedMessage is present', () => {
-    jest.useFakeTimers();
+    installFakeTimers();
     const { useChatStore } = loadChatStore();
     const projectId = 'queued-project';
     const worktreeId = 'queued-worktree';
@@ -21031,7 +22069,7 @@ describe('chatStore hook-started tabs', () => {
     ]);
     // Discovery is deferred until the start event replaces the placeholder.
     expect(discoverWorktreeEnvMock).not.toHaveBeenCalled();
-    jest.useRealTimers();
+    restoreRealTimers();
   });
 
   it('does not send user input from a queued hook placeholder before the real session starts', async () => {
@@ -21101,7 +22139,7 @@ describe('chatStore hook-started tabs', () => {
   });
 
   it('start event replaces the queued placeholder and clears the marker', () => {
-    jest.useFakeTimers();
+    installFakeTimers();
     const { useChatStore } = loadChatStore();
 
     const persistedQueuedTab: PersistedChatTab = {
@@ -21167,7 +22205,7 @@ describe('chatStore hook-started tabs', () => {
     expect(hookTab?.status).toBe('streaming');
     expect(hookTab?.queuedMessages).toEqual([]);
     expect(discoverWorktreeEnvMock).toHaveBeenCalledTimes(1);
-    jest.useRealTimers();
+    restoreRealTimers();
   });
 
   it('start event preserves user follow-up messages typed into the queued placeholder', async () => {
@@ -21247,7 +22285,7 @@ describe('chatStore hook-started tabs', () => {
   });
 
   it('hydrates an unloaded worktree before applying hook chat transcript events', async () => {
-    jest.useFakeTimers();
+    installFakeTimers();
     const { useChatStore } = loadChatStore();
 
     const startedTab: PersistedChatTab = {
@@ -21323,11 +22361,11 @@ describe('chatStore hook-started tabs', () => {
         }),
       ]),
     );
-    jest.useRealTimers();
+    restoreRealTimers();
   });
 
   it('keeps pending hydration events when the first hydration attempt fails', async () => {
-    jest.useFakeTimers();
+    installFakeTimers();
     const { useChatStore } = loadChatStore();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation();
     activeSessionsMock.mockResolvedValue({ activeChatIds: ['existing'] });
@@ -21430,7 +22468,7 @@ describe('chatStore hook-started tabs', () => {
   });
 
   it('hydrates an unloaded worktree before applying queued hook placeholders', async () => {
-    jest.useFakeTimers();
+    installFakeTimers();
     jest.clearAllTimers();
     activeSessionsMock.mockResolvedValue({ activeChatIds: [] });
     const { useChatStore } = loadChatStore();
@@ -21593,7 +22631,7 @@ describe('chatStore hook-started tabs', () => {
   });
 
   it('clearQueuedMessage on a hook-queue placeholder cancels via IPC, removes the tab, and falls back active tab', async () => {
-    jest.useFakeTimers();
+    installFakeTimers();
     jest.clearAllTimers();
     const { useChatStore } = loadChatStore();
 
@@ -21633,7 +22671,7 @@ describe('chatStore hook-started tabs', () => {
     const wc = useChatStore.getState().worktreeChats['project/worktree'];
     expect(wc?.tabs.map((tab) => tab.id)).toEqual(['real-tab']);
     expect(wc?.activeTabId).toBe('real-tab');
-    jest.useRealTimers();
+    restoreRealTimers();
   });
 
   it('clearQueuedMessage keeps a hook placeholder when backend cancellation reports not cancelled', async () => {
@@ -21816,7 +22854,7 @@ describe('chatStore hook-started tabs', () => {
               interfaceMode: 'auto',
               providerType: 'claude',
               status: 'streaming',
-              queuedMessages: [{ text: 'force me' }],
+              queuedMessages: [{ text: 'keep waiting' }, { text: 'force me' }],
             }),
           ],
         },
@@ -21825,7 +22863,7 @@ describe('chatStore hook-started tabs', () => {
 
     terminalWriteMock.mockClear();
     cancelChatMock.mockClear();
-    useChatStore.getState().forceQueuedMessage(0);
+    useChatStore.getState().forceQueuedMessage(1);
 
     expect(terminalWriteMock).toHaveBeenCalledWith({
       terminalId: 'terminal-1',
@@ -21836,6 +22874,10 @@ describe('chatStore hook-started tabs', () => {
       useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
         ?.forceQueuedMessageCancelPending,
     ).toBe(true);
+    expect(
+      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
+        ?.queuedMessages,
+    ).toEqual([{ text: 'force me' }, { text: 'keep waiting' }]);
   });
 
   it('forceQueuedMessage ignores a duplicate cancellation after sending the forced follow-up', () => {
@@ -22954,14 +23996,15 @@ describe('chatStore hook-started tabs', () => {
 
   it('backfills a forked Codex thread id after canonical hydration normalizes the cloned transcript', async () => {
     const { useChatStore } = loadChatStore();
-    let resolveFork: ((value: { forkedThreadId: string }) => void) | null =
-      null;
+    const forkResolver: {
+      resolve?: (value: { forkedThreadId: string }) => void;
+    } = {};
     const forkCodexThreadMock = jest
       .fn<Promise<{ forkedThreadId: string }>, [unknown]>()
       .mockImplementation(
         () =>
           new Promise((resolve) => {
-            resolveFork = resolve;
+            forkResolver.resolve = resolve;
           }),
       );
     Object.defineProperty(window, 'api', {
@@ -23002,7 +24045,7 @@ describe('chatStore hook-started tabs', () => {
     useChatStore.getState().forkTab('chat');
     const forkedTabId =
       useChatStore.getState().worktreeChats['project/worktree']?.activeTabId;
-    if (!forkedTabId || forkedTabId === 'chat' || !resolveFork) {
+    if (!forkedTabId || forkedTabId === 'chat' || !forkResolver.resolve) {
       throw new Error('Expected a forked tab and pending Codex fork');
     }
     useChatStore.setState((state) => ({
@@ -23030,7 +24073,7 @@ describe('chatStore hook-started tabs', () => {
       },
     }));
 
-    resolveFork({ forkedThreadId: 'thread-forked' });
+    forkResolver.resolve?.({ forkedThreadId: 'thread-forked' });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -23293,7 +24336,7 @@ describe('chatStore hook-started tabs', () => {
                       type: 'tool_use',
                       toolUseId: 'tool-1',
                       toolName: 'Bash',
-                      input: { command: 'npm test' },
+                      input: '{"command":"npm test"}',
                     },
                   ],
                   timestamp: 3,
@@ -23359,7 +24402,7 @@ describe('chatStore hook-started tabs', () => {
           tabs: [
             makeTab({
               id: 'chat',
-              status: 'waiting-for-user',
+              status: 'streaming',
               providerType: 'claude',
               sdkSessionId: 'source-session',
               messages: [
@@ -23737,7 +24780,7 @@ describe('chatStore hook-started tabs', () => {
                       type: 'tool_use',
                       toolUseId: 'tool-1',
                       toolName: 'WebSearch',
-                      input: { query: 'weather' },
+                      input: '{"query":"weather"}',
                     },
                   ],
                   timestamp: 200,
@@ -24123,7 +25166,7 @@ describe('chatStore hook-started tabs', () => {
                       type: 'tool_use',
                       toolUseId: 'tool-1',
                       toolName: 'shell',
-                      input: { command: 'npm test' },
+                      input: '{"command":"npm test"}',
                     },
                   ],
                   timestamp: 3,
@@ -25317,7 +26360,7 @@ describe('chatStore hook-started tabs', () => {
               selectedRepoId: 'repo-1',
               pluginSelections,
               planMode: true,
-              proposalMode: 'plan',
+              proposalMode: 'required',
               thinkingLevel: 'xhigh',
               pendingPlanExit: {
                 requestId: 'request-1',
@@ -25368,7 +26411,7 @@ describe('chatStore hook-started tabs', () => {
       selectedRepoId: 'repo-1',
       pluginSelections,
       planMode: true,
-      proposalMode: 'plan',
+      proposalMode: 'required',
       thinkingLevel: 'xhigh',
       pendingPlanExit: {
         requestId: 'request-1',
@@ -25477,7 +26520,7 @@ describe('chatStore hook-started tabs', () => {
                   behavior: 'allow',
                   target: { kind: 'tool', toolName: 'exec_command' },
                   createdAt: '2026-09-02T12:00:00.000Z',
-                  origin: 'session',
+                  origin: 'prompt',
                 },
               ],
               messages: [
@@ -25958,14 +27001,15 @@ describe('chatStore hook-started tabs', () => {
     const createWorktreeMock = jest.fn().mockResolvedValue({
       id: 'branched-worktree',
     });
-    let resolveFork: ((value: { forkedThreadId: string }) => void) | null =
-      null;
+    const forkResolution: {
+      resolve?: (value: { forkedThreadId: string }) => void;
+    } = {};
     const forkCodexThreadMock = jest
       .fn<Promise<{ forkedThreadId: string }>, [unknown]>()
       .mockImplementation(
         () =>
           new Promise((resolve) => {
-            resolveFork = resolve;
+            forkResolution.resolve = resolve;
           }),
       );
 
@@ -26018,11 +27062,11 @@ describe('chatStore hook-started tabs', () => {
     if (!branchedTabId) {
       throw new Error('Expected branchTab to create a branched active tab');
     }
-    if (!resolveFork) {
+    if (!forkResolution.resolve) {
       throw new Error('Expected forkCodexThread to be requested');
     }
 
-    resolveFork({ forkedThreadId: 'thread-branched' });
+    forkResolution.resolve({ forkedThreadId: 'thread-branched' });
     await Promise.resolve();
     await Promise.resolve();
 
@@ -26145,14 +27189,15 @@ describe('chatStore hook-started tabs', () => {
         .mockResolvedValue({ id: 'rejected-thread-worktree' }),
       refreshWorktreeDiffStatsVerified: jest.fn().mockResolvedValue(true),
     });
-    let resolveFork: ((value: { forkedThreadId: string }) => void) | null =
-      null;
+    const forkResolution: {
+      resolve?: (value: { forkedThreadId: string }) => void;
+    } = {};
     const forkCodexThreadMock = jest
       .fn<Promise<{ forkedThreadId: string }>, [unknown]>()
       .mockImplementation(
         () =>
           new Promise((resolve) => {
-            resolveFork = resolve;
+            forkResolution.resolve = resolve;
           }),
       );
     chatCommandMock.mockImplementation((request) =>
@@ -26210,11 +27255,11 @@ describe('chatStore hook-started tabs', () => {
     const branchedTabId =
       useChatStore.getState().worktreeChats['project/rejected-thread-worktree']
         ?.activeTabId;
-    if (!branchedTabId || !resolveFork) {
+    if (!branchedTabId || !forkResolution.resolve) {
       throw new Error('Expected a branched tab and pending Codex fork');
     }
 
-    resolveFork({ forkedThreadId: 'thread-rejected' });
+    forkResolution.resolve({ forkedThreadId: 'thread-rejected' });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -26249,15 +27294,16 @@ describe('chatStore hook-started tabs', () => {
         .mockResolvedValue({ id: 'committed-thread-worktree' }),
       refreshWorktreeDiffStatsVerified: jest.fn().mockResolvedValue(true),
     });
-    let resolveFork: ((value: { forkedThreadId: string }) => void) | null =
-      null;
+    const forkResolution: {
+      resolve?: (value: { forkedThreadId: string }) => void;
+    } = {};
     let branchSeed: PersistedChatTab | undefined;
     const forkCodexThreadMock = jest
       .fn<Promise<{ forkedThreadId: string }>, [unknown]>()
       .mockImplementation(
         () =>
           new Promise((resolve) => {
-            resolveFork = resolve;
+            forkResolution.resolve = resolve;
           }),
       );
     chatCommandMock.mockImplementation((request) => {
@@ -26334,11 +27380,11 @@ describe('chatStore hook-started tabs', () => {
     const branchedTabId =
       useChatStore.getState().worktreeChats['project/committed-thread-worktree']
         ?.activeTabId;
-    if (!branchedTabId || !resolveFork) {
+    if (!branchedTabId || !forkResolution.resolve) {
       throw new Error('Expected a branched tab and pending Codex fork');
     }
 
-    resolveFork({ forkedThreadId: 'thread-committed' });
+    forkResolution.resolve({ forkedThreadId: 'thread-committed' });
     for (let index = 0; index < 10; index += 1) await Promise.resolve();
 
     expect(getStateMock).toHaveBeenCalledWith({
@@ -26354,7 +27400,7 @@ describe('chatStore hook-started tabs', () => {
     ).toBe('thread-committed');
   });
 
-  it('forceQueuedMessage only acts on the top queued message', () => {
+  it('forceQueuedMessage promotes a selected local message before cancellation without reordering the rest', () => {
     const { useChatStore } = loadChatStore();
 
     useChatStore.setState({
@@ -26366,7 +27412,11 @@ describe('chatStore hook-started tabs', () => {
             makeTab({
               id: 'chat',
               status: 'streaming',
-              queuedMessages: [{ text: 'first' }, { text: 'second' }],
+              queuedMessages: [
+                { text: 'first' },
+                { text: 'second' },
+                { text: 'third' },
+              ],
             }),
           ],
         },
@@ -26376,7 +27426,57 @@ describe('chatStore hook-started tabs', () => {
     cancelChatMock.mockClear();
     useChatStore.getState().forceQueuedMessage(1);
 
+    expect(cancelChatMock).toHaveBeenCalledWith({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    });
+    const tab =
+      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0];
+    expect(tab?.queuedMessages).toEqual([
+      { text: 'second' },
+      { text: 'first' },
+      { text: 'third' },
+    ]);
+    expect(tab?.forceQueuedMessageCancelPending).toBe(true);
+  });
+
+  it('forceQueuedMessage dispatches a non-head host queue entry by its id', () => {
+    const { useChatStore } = loadChatStore();
+    const forceHostQueuedMessage = jest.fn(() => Promise.resolve());
+    Object.assign(window.api.chat, {
+      forceQueuedMessage: forceHostQueuedMessage,
+    });
+    const queuedMessages = [
+      { text: 'first', hostQueueEntryId: 'queue-1' },
+      { text: 'second', hostQueueEntryId: 'queue-2' },
+    ];
+
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [makeTab({ id: 'chat', status: 'streaming', queuedMessages })],
+        },
+      },
+    });
+
+    cancelChatMock.mockClear();
+    useChatStore.getState().forceQueuedMessage(1);
+
+    expect(forceHostQueuedMessage).toHaveBeenCalledWith({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      entryId: 'queue-2',
+    });
     expect(cancelChatMock).not.toHaveBeenCalled();
+    // The host owns order: the renderer neither promotes nor drops the entry.
+    expect(
+      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
+        ?.queuedMessages,
+    ).toEqual(queuedMessages);
   });
 
   it('forceQueuedMessage does not bypass worktree setup queues', () => {
@@ -26860,7 +27960,7 @@ describe('chatStore queued edit entry by message identity', () => {
 
 describe('chatStore Canopy injected ask-user pending questions', () => {
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     sendMessageMock.mockReset();
     cancelChatMock.mockReset();
     flushScopeMock.mockReset();
@@ -26939,7 +28039,7 @@ describe('chatStore Canopy injected ask-user pending questions', () => {
 
   afterEach(() => {
     jest.runOnlyPendingTimers();
-    jest.useRealTimers();
+    restoreRealTimers();
     jest.resetModules();
     // Intentionally do NOT clear `window` here. Earlier `describe` blocks
     // (`chatStore hook-started tabs`, `Ollama provider support`) lack
@@ -27159,7 +28259,6 @@ describe('chatStore Canopy injected ask-user pending questions', () => {
         {
           id: 'chat',
           title: 'Paused prompt',
-          status: 'idle',
           providerType: 'codex',
           messages: [
             {
@@ -28380,8 +29479,8 @@ describe('chatStore Canopy injected ask-user pending questions', () => {
     let completeFallback!: () => void;
     sendMessageMock.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          completeFallback = resolve;
+        new Promise<ChatSendMessageResult>((resolve) => {
+          completeFallback = (): void => resolve(ACCEPTED_CHAT_SEND_RESULT);
         }),
     );
     const { useChatStore } = loadChatStore();
@@ -28536,7 +29635,7 @@ describe('chatStore Canopy injected ask-user pending questions', () => {
 
 describe('chatStore Codex dynamic_tool_call activity dispatch', () => {
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     sendMessageMock.mockReset();
     cancelChatMock.mockReset();
     flushScopeMock.mockReset();
@@ -28615,7 +29714,7 @@ describe('chatStore Codex dynamic_tool_call activity dispatch', () => {
 
   afterEach(() => {
     jest.runOnlyPendingTimers();
-    jest.useRealTimers();
+    restoreRealTimers();
     jest.resetModules();
     // See note in the sibling `chatStore Canopy injected ask-user pending
     // questions` afterEach: leaving `window` in place avoids dereference
@@ -28745,7 +29844,7 @@ describe('chatStore Codex dynamic_tool_call activity dispatch', () => {
 
 describe('chatStore thinking-level cycle and persistence migration', () => {
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     sendMessageMock.mockReset();
     cancelChatMock.mockReset();
     flushScopeMock.mockReset();
@@ -28824,11 +29923,57 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
 
   afterEach(() => {
     jest.runOnlyPendingTimers();
-    jest.useRealTimers();
+    restoreRealTimers();
     jest.resetModules();
   });
 
-  it('cycles thinking levels in the order off → medium → high → xhigh → max → off for Claude tabs', () => {
+  it('cycles a declared Sol Low through the persisted desktop shortcut path', () => {
+    const { useChatStore } = loadChatStore();
+    const { initCodexModels } = jest.requireActual<typeof DesktopSharedTypes>(
+      '@canopy/desktop-shared/types',
+    );
+    initCodexModels([
+      {
+        id: 'gpt-6.1-sol',
+        label: 'GPT 6.1 Sol',
+        supportedThinkingLevels: ['low', 'medium', 'high'],
+      },
+    ]);
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [
+            makeTab({
+              id: 'chat',
+              model: 'gpt-6.1-sol',
+              providerType: 'codex',
+              thinkingLevel: 'high',
+            }),
+          ],
+        },
+      },
+    });
+    useChatStore.getState().cycleThinkingLevel();
+    expect(
+      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
+        ?.thinkingLevel,
+    ).toBe('low');
+    expect(toggleThinkingLevelMock).toHaveBeenLastCalledWith({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      level: 'low',
+    });
+    useChatStore.getState().cycleThinkingLevel();
+    expect(
+      useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
+        ?.thinkingLevel,
+    ).toBe('medium');
+  });
+
+  it('cycles the native canonical Claude stops including supported Low', () => {
     const { useChatStore } = loadChatStore();
 
     useChatStore.setState({
@@ -28848,7 +29993,7 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
       },
     });
 
-    const expected = ['medium', 'high', 'xhigh', 'max', 'off'] as const;
+    const expected = ['low', 'medium', 'high', 'xhigh', 'max', 'off'] as const;
     for (const level of expected) {
       useChatStore.getState().cycleThinkingLevel();
       const tab = useChatStore
@@ -28878,7 +30023,7 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
       },
     });
 
-    const expected = ['medium', 'high', 'xhigh', 'off'] as const;
+    const expected = ['low', 'medium', 'high', 'xhigh', 'off'] as const;
     for (const level of expected) {
       useChatStore.getState().cycleThinkingLevel();
       expect(
@@ -28978,6 +30123,7 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
         {
           modelId: 'gpt-5.6-sol',
           gatewayId: 'openai/gpt-5.6-sol',
+          family: 'gpt',
           recommendedHarness: 'codex',
           gatewayOnly: false,
           contextWindow: 100_000,
@@ -29048,6 +30194,7 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
         {
           modelId: 'gpt-5.6-sol',
           gatewayId: 'openai/gpt-5.6-sol',
+          family: 'gpt',
           recommendedHarness: 'codex',
           gatewayOnly: false,
           contextWindow: 100_000,
@@ -29102,7 +30249,11 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
             makeTab({
               id: 'chat',
               thinkingLevel: 'medium',
-              modelConfig: { thinkingLevel: 'high', fastMode: true },
+              modelConfig: {
+                thinkingLevel: 'high',
+                speed: 'fast',
+                fastMode: true,
+              },
               model: 'claude-sonnet-4-5-20250929',
               providerType: 'claude',
             }),
@@ -29119,15 +30270,23 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
     expect(tab?.thinkingLevel).toBe('xhigh');
     expect(tab?.modelConfig).toEqual({
       thinkingLevel: 'xhigh',
+      speed: 'fast',
       fastMode: true,
     });
   });
 
-  it("treats canonical 'low' as the UI 'medium' position when cycling", () => {
-    // `low` is hidden from the UI but still valid on disk for pipelines. When
-    // a tab loaded with `low` is cycled, it must advance from the `medium`
-    // slot rather than stalling.
+  it('keeps the Medium alias when the model does not support Low', () => {
     const { useChatStore } = loadChatStore();
+    const { initClaudeModels } = jest.requireActual<typeof DesktopSharedTypes>(
+      '@canopy/desktop-shared/types',
+    );
+    initClaudeModels([
+      {
+        id: 'no-low-cycle-model',
+        label: 'Sonnet',
+        supportedThinkingLevels: ['off', 'medium', 'high', 'xhigh', 'max'],
+      },
+    ]);
 
     useChatStore.setState({
       selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
@@ -29138,7 +30297,7 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
             makeTab({
               id: 'chat',
               thinkingLevel: 'low',
-              model: 'claude-sonnet-4-5-20250929',
+              model: 'no-low-cycle-model',
               providerType: 'claude',
             }),
           ],
@@ -29183,7 +30342,7 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
     expect(tab?.thinkingLevel).toBe('high');
   });
 
-  it("preserves persisted canonical 'low' on hydration but surfaces it as 'medium' when cycling", async () => {
+  it('preserves supported Low on hydration and advances to Medium', async () => {
     const { useChatStore } = loadChatStore();
     loadTabsMock.mockResolvedValueOnce({
       version: 1,
@@ -29216,8 +30375,8 @@ describe('chatStore thinking-level cycle and persistence migration', () => {
     const tabAfterCycle = useChatStore
       .getState()
       .worktreeChats['project/worktree']?.tabs.find((t) => t.id === 'chat');
-    // From the UI's `medium` position the next slot is `high`.
-    expect(tabAfterCycle?.thinkingLevel).toBe('high');
+    // The canonical Low stop advances to Medium without an alias jump.
+    expect(tabAfterCycle?.thinkingLevel).toBe('medium');
   });
 });
 
@@ -29225,7 +30384,7 @@ describe('chatStore post-crash restore grace window', () => {
   const NOW = new Date('2026-04-15T12:00:00.000Z').getTime();
 
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     jest.setSystemTime(NOW);
     sendMessageMock.mockReset();
     cancelChatMock.mockReset();
@@ -29308,7 +30467,7 @@ describe('chatStore post-crash restore grace window', () => {
     // tick. Settle that callback while the fake clock still owns its timers.
     await jest.runOnlyPendingTimersAsync();
     jest.clearAllTimers();
-    jest.useRealTimers();
+    restoreRealTimers();
     jest.resetModules();
   });
 
@@ -29410,7 +30569,7 @@ describe('chatStore post-crash restore grace window', () => {
           {
             id: 'host-queue-1',
             text: 'Host-owned follow-up',
-            origin: 'user',
+            origin: 'desktop',
             enqueuedAtMs: 123,
           },
         ],
@@ -29441,7 +30600,7 @@ describe('chatStore post-crash restore grace window', () => {
       {
         hostQueueEntryId: 'host-queue-1',
         text: 'Host-owned follow-up',
-        origin: 'user',
+        origin: 'desktop',
         enqueuedAtMs: 123,
       },
     ]);
@@ -29459,7 +30618,7 @@ describe('chatStore post-crash restore grace window', () => {
           {
             id: 'host-queue-1',
             text: 'Host-owned follow-up',
-            origin: 'user',
+            origin: 'desktop',
             enqueuedAtMs: 123,
           },
         ],
@@ -29491,7 +30650,7 @@ describe('chatStore post-crash restore grace window', () => {
       {
         hostQueueEntryId: 'host-queue-1',
         text: 'Host-owned follow-up',
-        origin: 'user',
+        origin: 'desktop',
         enqueuedAtMs: 123,
       },
     ]);
@@ -30102,14 +31261,18 @@ describe('chatStore post-crash restore grace window', () => {
       );
 
     jest.setSystemTime(new Date('2026-05-29T12:00:10.000Z'));
-    await useChatStore.getState().respondToApproval('req-resume-1', 'accept');
+    const decision: DesktopSharedTypes.ApprovalPromptDecision = {
+      behavior: 'allow',
+      scope: 'once',
+    };
+    await useChatStore.getState().respondToApproval('req-resume-1', decision);
 
     expect(respondToApprovalMock).toHaveBeenCalledWith({
       requestId: 'req-resume-1',
       projectId: 'project',
       worktreeId: 'worktree',
       chatId: 'chat',
-      decision: 'accept',
+      decision,
     });
     expect(
       useChatStore.getState().pendingApprovals['req-resume-1'],
@@ -30174,9 +31337,13 @@ describe('chatStore post-crash restore grace window', () => {
     );
 
     jest.setSystemTime(new Date('2026-05-29T12:00:08.000Z'));
+    const decision: DesktopSharedTypes.ApprovalPromptDecision = {
+      behavior: 'allow',
+      scope: 'once',
+    };
     await useChatStore
       .getState()
-      .respondToApproval('approval-overlap-1', 'accept');
+      .respondToApproval('approval-overlap-1', decision);
 
     let timer = useChatStore
       .getState()
@@ -30905,9 +32072,10 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
   }
 
   beforeEach(() => {
-    jest.useFakeTimers();
+    installFakeTimers();
     sendMessageMock.mockReset();
     sendMessageMock.mockResolvedValue({});
+    getDiffStatsBatchMock.mockResolvedValue([]);
     flushScopeMock.mockReset();
     flushScopeMock.mockResolvedValue(undefined);
     forkOpenWorktreeTabsMock.mockReset();
@@ -30938,7 +32106,7 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    restoreRealTimers();
   });
 
   it('recovers an automation-created chat when the worktree already hydrated an empty fallback tab', async () => {
@@ -31051,12 +32219,9 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     expect(tab?.queuedMessages[0]?.dispatchOptions).toBeUndefined();
     // The tab should NOT have transitioned to streaming.
     expect(tab?.status).toBe('idle');
-    // Intro block prepended so the chat shows a "queued during setup"
-    // annotation similar to the hook_info block.
-    expect(tab?.messages).toHaveLength(1);
-    const introBlock = tab?.messages[0]?.blocks[0];
-    expect(tab?.messages[0]?.role).toBe('system');
-    expect(introBlock?.type).toBe('pending_setup_info');
+    // The queued bubble explains the wait; no setup annotation is added to
+    // the transcript (CAN-4981).
+    expect(tab?.messages).toHaveLength(0);
   });
 
   // CAN eager-composer regression: a brand-new worktree is `git-pending`
@@ -31130,9 +32295,8 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     ).toHaveLength(0);
     expect(tab?.pendingUserMessages ?? []).toHaveLength(0);
     expect(tab?.pendingTurn).toBeUndefined();
-    // The setup intro block still renders.
-    expect(tab?.messages).toHaveLength(1);
-    expect(tab?.messages[0]?.blocks[0]?.type).toBe('pending_setup_info');
+    // No setup annotation is added alongside the queued row (CAN-4981).
+    expect(tab?.messages).toHaveLength(0);
   });
 
   it('keeps the saved prompt when an eager native send fails', async () => {
@@ -31348,7 +32512,7 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     ).toHaveLength(0);
   });
 
-  it('only injects the pending_setup_info intro block once when multiple messages are queued', async () => {
+  it('queues multiple setup-pending sends in order without adding a setup annotation', async () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
 
     projectsStore.useProjectsStore.setState({
@@ -31371,21 +32535,278 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     const tab =
       chatStore.useChatStore.getState().worktreeChats['project/worktree']
         ?.tabs[0];
-    const introBlocks = (tab?.messages ?? []).filter(
-      (msg) =>
-        msg.role === 'system' &&
-        msg.blocks.length === 1 &&
-        msg.blocks[0].type === 'pending_setup_info',
+    const hasSetupAnnotation = (tab?.messages ?? []).some((msg) =>
+      msg.blocks.some((block) => block.type === 'pending_setup_info'),
     );
-    expect(introBlocks).toHaveLength(1);
-    expect(tab?.queuedMessages).toHaveLength(2);
+    expect(hasSetupAnnotation).toBe(false);
+    expect(tab?.queuedForSetup).toBe(true);
+    expect(tab?.queuedMessages.map((message) => message.text)).toEqual([
+      'first',
+      'second',
+    ]);
   });
 
-  it('queueForSetup adds the intro block and immediately dispatches when the worktree already raced to git-ready', async () => {
+  it('dispatches each setup-queued message once on git-ready without a setup annotation', async () => {
+    const { chatStore, projectsStore } = loadStoresWithProjects();
+
+    projectsStore.useProjectsStore.setState({
+      projects: [makeProjectWithWorktree('git-pending')],
+    });
+
+    chatStore.useChatStore.setState({
+      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [makeTab()],
+        },
+      },
+    });
+
+    await chatStore.useChatStore.getState().sendMessage('first');
+    expect(sendMessageMock).not.toHaveBeenCalled();
+
+    projectsStore.useProjectsStore.setState({
+      projects: [makeProjectWithWorktree('git-ready')],
+    });
+    chatStore.useChatStore
+      .getState()
+      .flushPendingChatsForWorktree('project', 'worktree');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
+      text: 'first',
+    });
+    const tab =
+      chatStore.useChatStore.getState().worktreeChats['project/worktree']
+        ?.tabs[0];
+    expect(tab?.queuedForSetup).toBeUndefined();
+    expect(tab?.queuedMessages).toHaveLength(0);
+    expect(
+      (tab?.messages ?? []).some((msg) =>
+        msg.blocks.some((block) => block.type === 'pending_setup_info'),
+      ),
+    ).toBe(false);
+  });
+
+  it('drains multiple setup sends once in order while preserving existing history', async () => {
+    const { chatStore, projectsStore } = loadStoresWithProjects();
+    const notice: ChatStoreModule.ChatMessage = {
+      id: 'existing-notice',
+      role: 'system',
+      timestamp: 1,
+      blocks: [{ type: 'text', text: 'Keep this notice' }],
+    };
+    projectsStore.useProjectsStore.setState({
+      projects: [makeProjectWithWorktree('git-pending')],
+    });
+    chatStore.useChatStore.setState({
+      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [makeTab({ messages: [notice] })],
+        },
+      },
+    });
+    const tab = (): ChatStoreModule.ChatTab | undefined =>
+      chatStore.useChatStore.getState().worktreeChats['project/worktree']
+        ?.tabs[0];
+    await chatStore.useChatStore.getState().sendMessage('first');
+    await chatStore.useChatStore
+      .getState()
+      .sendMessage('second', undefined, undefined, undefined, {
+        queueForSetup: true,
+      });
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(tab()?.messages).toEqual([notice]);
+    expect(tab()?.queuedMessages.map((message) => message.text)).toEqual([
+      'first',
+      'second',
+    ]);
+    projectsStore.useProjectsStore.setState({
+      projects: [makeProjectWithWorktree('git-ready')],
+    });
+    chatStore.useChatStore
+      .getState()
+      .flushPendingChatsForWorktree('project', 'worktree');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(sendMessageMock.mock.calls.map(([request]) => request.text)).toEqual(
+      ['first'],
+    );
+    chatStore.useChatStore.getState().handleChatEvent({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      data: { type: 'result', is_error: false, result: 'Done' },
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(sendMessageMock.mock.calls.map(([request]) => request.text)).toEqual(
+      ['first', 'second'],
+    );
+    chatStore.useChatStore
+      .getState()
+      .flushPendingChatsForWorktree('project', 'worktree');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(sendMessageMock).toHaveBeenCalledTimes(2);
+    expect(tab()?.queuedForSetup).toBeUndefined();
+    expect(tab()?.queuedMessages).toHaveLength(0);
+    expect(tab()?.messages).toContainEqual(notice);
+    expect(
+      tab()
+        ?.messages.flatMap((message) => message.blocks)
+        .some((block) => block.type === 'pending_setup_info'),
+    ).toBe(false);
+  });
+
+  it.each(['failure', 'repair'] as const)(
+    'handles the actual setup %s event without an annotation or premature dispatch',
+    async (outcome) => {
+      const { chatStore, projectsStore } = loadStoresWithProjects();
+      const failed = jest.fn<
+        ReturnType<CanopyApi['onWorktreeGitFailed']>,
+        Parameters<CanopyApi['onWorktreeGitFailed']>
+      >(() => jest.fn());
+      const needsRepair = jest.fn<
+        ReturnType<CanopyApi['onWorktreeNeedsRepair']>,
+        Parameters<CanopyApi['onWorktreeNeedsRepair']>
+      >(() => jest.fn());
+      const repair = jest
+        .fn()
+        .mockResolvedValue({ id: 'worktree', branchName: 'feature/setup' });
+      Object.assign(window.api, {
+        onWorktreeGitReady: jest.fn(() => jest.fn()),
+        onWorktreeGitFailed: failed,
+        onWorktreeNeedsRepair: needsRepair,
+        onWorktreeBranchChanged: jest.fn(() => jest.fn()),
+        onWorkspaceWorktreesUpdated: jest.fn(() => jest.fn()),
+        onWorktreesFileChanged: jest.fn(() => jest.fn()),
+        onWorkspaceSplitTemporaryComplete: jest.fn(() => jest.fn()),
+        orgProjects: { onOwnershipChanged: jest.fn(() => jest.fn()) },
+        repairWorkspaceWorktree: repair,
+      });
+      const project = makeProjectWithWorktree('git-pending');
+      const setupProject: SidebarItem =
+        outcome === 'repair' && project.type !== 'cowork'
+          ? {
+              ...project,
+              type: 'multi-repo',
+              repos: [],
+              sourceRepoPath: '/workspace',
+            }
+          : project;
+      projectsStore.useProjectsStore.setState({
+        projects: [setupProject],
+        saveProjects: jest.fn().mockResolvedValue(undefined),
+        refreshDiffStats: jest.fn().mockResolvedValue(undefined),
+        refreshWorkspaceDrift: jest.fn().mockResolvedValue(undefined),
+        inspectHookChatPluginDependencies: jest
+          .fn()
+          .mockResolvedValue(undefined),
+        inspectRecommendedPlugins: jest.fn().mockResolvedValue(undefined),
+      });
+      chatStore.useChatStore.setState({
+        selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+        worktreeChats: {
+          'project/worktree': { activeTabId: 'chat', tabs: [makeTab()] },
+        },
+      });
+      const tab = (): ChatStoreModule.ChatTab | undefined =>
+        chatStore.useChatStore.getState().worktreeChats['project/worktree']
+          ?.tabs[0];
+      const unsubscribe = projectsStore.useProjectsStore
+        .getState()
+        .subscribeToWorktreeGitLifecycleEvents();
+      try {
+        await chatStore.useChatStore
+          .getState()
+          .sendMessage('Keep my queued input');
+        expect(tab()?.queuedForSetup).toBe(true);
+        expect(tab()?.messages).toEqual([]);
+        if (outcome === 'failure') {
+          const callback = failed.mock.calls[0]?.[0];
+          if (!callback) throw new Error('Missing setup failure subscription');
+          callback({
+            projectId: 'project',
+            worktreeId: 'worktree',
+            error: 'Setup failed in git',
+          });
+          expect(projectsStore.useProjectsStore.getState().worktreeError).toBe(
+            'Setup failed in git',
+          );
+          expect(tab()).toBeUndefined();
+          expect(sendMessageMock).not.toHaveBeenCalled();
+        } else {
+          const callback = needsRepair.mock.calls[0]?.[0];
+          if (!callback) throw new Error('Missing setup repair subscription');
+          const repairIssues = [
+            {
+              code: 'missing-claude-md' as const,
+              message: 'Project instructions missing',
+              blocking: true,
+            },
+          ];
+          callback({
+            projectId: 'project',
+            worktreeId: 'worktree',
+            branchName: 'feature/setup',
+            repairIssues,
+          });
+          expect(
+            projectsStore.useProjectsStore.getState().pendingWorkspaceRepair,
+          ).toMatchObject({ id: 'worktree', repairIssues });
+          expect(tab()?.queuedMessages.map((message) => message.text)).toEqual([
+            'Keep my queued input',
+          ]);
+          expect(tab()?.queuedForSetup).toBe(true);
+          expect(tab()?.messages).toEqual([]);
+          expect(sendMessageMock).not.toHaveBeenCalled();
+          await projectsStore.useProjectsStore
+            .getState()
+            .repairPendingWorkspaceWorktree(true);
+          await jest.advanceTimersByTimeAsync(0);
+          expect(
+            projectsStore.useProjectsStore.getState().worktreeError,
+          ).toBeNull();
+          expect(
+            projectsStore.useProjectsStore.getState().pendingWorkspaceRepair,
+          ).toBeNull();
+          expect(repair).toHaveBeenCalledWith(
+            expect.objectContaining({
+              workspaceId: 'project',
+              worktreeId: 'worktree',
+              restoreClaudeMd: true,
+            }),
+          );
+          expect(sendMessageMock).toHaveBeenCalledTimes(1);
+          expect(sendMessageMock.mock.calls[0]?.[0].text).toBe(
+            'Keep my queued input',
+          );
+          expect(tab()?.queuedForSetup).toBeUndefined();
+          expect(tab()?.queuedMessages).toHaveLength(0);
+          expect(
+            tab()
+              ?.messages.flatMap((message) => message.blocks)
+              .some((block) => block.type === 'pending_setup_info'),
+          ).toBe(false);
+          await projectsStore.useProjectsStore
+            .getState()
+            .repairPendingWorkspaceWorktree(true);
+          expect(sendMessageMock).toHaveBeenCalledTimes(1);
+        }
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
+  it('queueForSetup immediately dispatches without a setup annotation when the worktree already raced to git-ready', async () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
 
     // Worktree already advanced past git-pending before sendMessage runs — the
-    // Create Task → Chat race. queueForSetup makes the intro block deterministic.
+    // Create Task → Chat race. queueForSetup makes the queue treatment deterministic.
     projectsStore.useProjectsStore.setState({
       projects: [makeProjectWithWorktree('git-ready')],
     });
@@ -31410,12 +32831,15 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
         { queueForSetup: true },
       );
 
-    // Intro block is prepended even though the worktree is git-ready.
+    // No setup annotation is added to the transcript (CAN-4981).
     const tab =
       chatStore.useChatStore.getState().worktreeChats['project/worktree']
         ?.tabs[0];
-    expect(tab?.messages[0]?.role).toBe('system');
-    expect(tab?.messages[0]?.blocks[0]?.type).toBe('pending_setup_info');
+    expect(
+      (tab?.messages ?? []).some((msg) =>
+        msg.blocks.some((block) => block.type === 'pending_setup_info'),
+      ),
+    ).toBe(false);
 
     // The message is not stranded: the immediate flush dispatched it via IPC.
     await Promise.resolve();
@@ -31437,14 +32861,14 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
 
   it('queueForSetup stays queued when a concurrent project refresh temporarily omits the reserved row', async () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
+    const project = makeProjectWithWorktree('git-pending');
+    if (project.type !== 'single-repo') {
+      throw new Error('Expected a single-repo worktree fixture');
+    }
+    project.worktrees = [];
 
     projectsStore.useProjectsStore.setState({
-      projects: [
-        {
-          ...makeProjectWithWorktree('git-pending'),
-          worktrees: [],
-        },
-      ],
+      projects: [project],
     });
     chatStore.useChatStore.setState({
       selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
@@ -31475,7 +32899,7 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     expect(tab?.queuedMessages[0]?.text).toBe('keep this queued');
   });
 
-  it('sends immediately with no intro block when the worktree is git-ready and queueForSetup is omitted', async () => {
+  it('sends immediately with no setup annotation when the worktree is git-ready and queueForSetup is omitted', async () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
 
     projectsStore.useProjectsStore.setState({
@@ -31651,6 +33075,7 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
           tabs: [
             makeTab({
               queuedMessages: [
+                { text: 'keep waiting' },
                 {
                   text: 'Implement the queued ticket',
                   attachmentPaths: [linearPath, plainPath],
@@ -31668,12 +33093,17 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
       },
     });
 
-    chatStore.useChatStore.getState().forceQueuedMessage(0);
+    chatStore.useChatStore.getState().forceQueuedMessage(1);
     await Promise.resolve();
     await Promise.resolve();
 
+    expect(
+      chatStore.useChatStore.getState().worktreeChats['project/worktree']
+        ?.tabs[0]?.queuedMessages,
+    ).toEqual([{ text: 'keep waiting' }]);
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        text: 'Implement the queued ticket',
         attachmentPaths: [linearPath, plainPath],
         attachmentPromptContexts: [
           {
@@ -31739,6 +33169,193 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
         ?.tabs[0];
     expect(tabAfter?.queuedForSetup).toBeUndefined();
   });
+
+  it('signals the setup-queue dispatch only when a flush actually sends', async () => {
+    const { chatStore, projectsStore } = loadStoresWithProjects();
+    const dispatchSignal = jest.requireActual<typeof SetupQueueDispatchModule>(
+      '../stores/chat/setup-queue-dispatch',
+    );
+    const dispatched = jest.fn();
+    const unsubscribe = dispatchSignal.subscribeSetupQueueDispatch(dispatched);
+
+    projectsStore.useProjectsStore.setState({
+      projects: [makeProjectWithWorktree('git-pending')],
+    });
+    chatStore.useChatStore.setState({
+      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+      worktreeChats: {
+        'project/worktree': { activeTabId: 'chat', tabs: [makeTab()] },
+      },
+    });
+    await chatStore.useChatStore.getState().sendMessage('first');
+
+    // The queue was emptied before setup finished: the flush only clears
+    // the marker, so there is nothing to announce.
+    const pending =
+      chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+    if (!pending) throw new Error('Expected the worktree chats');
+    chatStore.useChatStore.setState({
+      worktreeChats: {
+        'project/worktree': {
+          ...pending,
+          tabs: pending.tabs.map((tab) => ({ ...tab, queuedMessages: [] })),
+        },
+      },
+    });
+    chatStore.useChatStore
+      .getState()
+      .flushPendingChatsForWorktree('project', 'worktree');
+    expect(dispatched).not.toHaveBeenCalled();
+
+    await chatStore.useChatStore.getState().sendMessage('second');
+    projectsStore.useProjectsStore.setState({
+      projects: [makeProjectWithWorktree('git-ready')],
+    });
+    chatStore.useChatStore
+      .getState()
+      .flushPendingChatsForWorktree('project', 'worktree');
+    await jest.advanceTimersByTimeAsync(0);
+    // An IPC acknowledgement can still mean host-queue admission. Only the
+    // identified live provider-accepted event proves the input started.
+    expect(dispatched).not.toHaveBeenCalled();
+    const request = sendMessageMock.mock.calls.at(-1)?.[0];
+    if (!request) throw new Error('Expected the dispatched request');
+    chatStore.useChatStore.getState().handleChatEvent({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      data: {
+        type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
+        canopy_turn_user_message_id: request.userMessageId,
+      },
+    });
+    unsubscribe();
+
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    expect(dispatched).toHaveBeenCalledWith({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      count: 1,
+    });
+  });
+
+  it.each(['pending', 'refused', 'replay', 'failed', 'blocked'] as const)(
+    'does not signal sending for a %s setup dispatch',
+    async (outcome) => {
+      const { chatStore, projectsStore } = loadStoresWithProjects();
+      const dispatchSignal = jest.requireActual<
+        typeof SetupQueueDispatchModule
+      >('../stores/chat/setup-queue-dispatch');
+      const dispatched = jest.fn();
+      const unsubscribe =
+        dispatchSignal.subscribeSetupQueueDispatch(dispatched);
+      projectsStore.useProjectsStore.setState({
+        projects: [makeProjectWithWorktree('git-pending')],
+      });
+      chatStore.useChatStore.setState({
+        selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+        worktreeChats: {
+          'project/worktree': {
+            activeTabId: 'chat',
+            tabs: [
+              makeTab({
+                ...(outcome === 'blocked'
+                  ? {
+                      inputDelivery: {
+                        version: 1,
+                        epoch: 0,
+                        rows: [
+                          {
+                            id: 'earlier-input',
+                            revision: 1,
+                            createdAt: 1,
+                            state: 'pending',
+                            text: 'Earlier input',
+                            payload: {
+                              projectId: 'project',
+                              worktreeId: 'worktree',
+                              chatId: 'chat',
+                              userMessageId: 'earlier-input',
+                              text: 'Earlier input',
+                            },
+                            settingsKey: 'settings',
+                            currentAttemptId: 'attempt-1',
+                            attempts: [
+                              {
+                                id: 'attempt-1',
+                                generation: 'generation-1',
+                                provider: 'claude',
+                                createdAt: 1,
+                                admittedAt: 2,
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    }
+                  : {}),
+              }),
+            ],
+          },
+        },
+      });
+      await chatStore.useChatStore.getState().sendMessage('first');
+      projectsStore.useProjectsStore.setState({
+        projects: [makeProjectWithWorktree('git-ready')],
+      });
+      let complete: (() => void) | undefined;
+      if (outcome === 'pending') {
+        sendMessageMock.mockImplementationOnce(
+          () =>
+            new Promise<DesktopSharedTypes.ChatSendMessageResult>((resolve) => {
+              complete = (): void => resolve({});
+            }),
+        );
+      } else if (outcome === 'refused') {
+        sendMessageMock.mockResolvedValueOnce({
+          watcherDeliveryHeld: {
+            outcome: 'held',
+            reason: 'runtime_unavailable',
+          },
+        });
+      } else if (outcome === 'replay') {
+        sendMessageMock.mockResolvedValueOnce({
+          disposition: 'already_accepted',
+        });
+      } else if (outcome === 'failed') {
+        sendMessageMock.mockRejectedValueOnce(new Error('Send failed'));
+      }
+      try {
+        chatStore.useChatStore
+          .getState()
+          .flushPendingChatsForWorktree('project', 'worktree');
+        await jest.advanceTimersByTimeAsync(0);
+        expect(sendMessageMock).toHaveBeenCalled();
+        expect(dispatched).not.toHaveBeenCalled();
+        complete?.();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(dispatched).not.toHaveBeenCalled();
+        if (outcome === 'pending' || outcome === 'blocked') {
+          const request = sendMessageMock.mock.calls.at(-1)?.[0];
+          if (!request) throw new Error('Expected the queued request');
+          chatStore.useChatStore.getState().handleChatEvent({
+            projectId: 'project',
+            worktreeId: 'worktree',
+            chatId: 'chat',
+            data: {
+              type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
+              canopy_turn_user_message_id: request.userMessageId,
+            },
+          });
+          expect(dispatched).toHaveBeenCalledTimes(1);
+        }
+      } finally {
+        complete?.();
+        unsubscribe();
+      }
+    },
+  );
 
   it('keeps the active plan on a setup-queued message and forwards it when the queue flushes', async () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
@@ -32399,16 +34016,16 @@ describe('chatStore App Advisor sentinel unread + single-writer policy', () => {
     expect(useChatStore.getState().unreadWorktreeKeys.has(key)).toBe(true);
     const toast = useGitHubStore.getState().toasts[0];
     expect(toast?.message).toBe(
-      'App Advisor: I found the setting and updated the App Advisor flow.',
+      'Orchestrator: I found the setting and updated the App Advisor flow.',
     );
     expect(toast?.meta).toEqual({
       category: 'Chat',
-      workspaceName: 'App Advisor',
+      workspaceName: 'Orchestrator',
     });
     expect(showOsNotificationMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'App Advisor',
-        body: 'App Advisor: I found the setting and updated the App Advisor flow.',
+        title: 'Orchestrator',
+        body: 'Orchestrator: I found the setting and updated the App Advisor flow.',
       }),
     );
 
@@ -32467,11 +34084,11 @@ describe('chatStore App Advisor sentinel unread + single-writer policy', () => {
     });
 
     const toast = useGitHubStore.getState().toasts[0];
-    expect(toast?.message).toBe('New App Advisor activity');
+    expect(toast?.message).toBe('New Orchestrator activity');
     expect(showOsNotificationMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'App Advisor',
-        body: 'New App Advisor activity',
+        title: 'Orchestrator',
+        body: 'New Orchestrator activity',
       }),
     );
   });
@@ -32518,12 +34135,12 @@ describe('chatStore App Advisor sentinel unread + single-writer policy', () => {
     const tab = useChatStore.getState().worktreeChats[key]?.tabs[0];
     expect(tab?.unread).toBe(true);
     expect(useGitHubStore.getState().toasts[0]?.message).toBe(
-      'App Advisor: Codex finished the App Advisor task.',
+      'Orchestrator: Codex finished the App Advisor task.',
     );
     expect(showOsNotificationMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'App Advisor',
-        body: 'App Advisor: Codex finished the App Advisor task.',
+        title: 'Orchestrator',
+        body: 'Orchestrator: Codex finished the App Advisor task.',
       }),
     );
   });
@@ -32887,11 +34504,11 @@ describe('chatStore queuePlanImportInstruction', () => {
     forkOpenWorktreeTabsMock.mockResolvedValue({ tabBindings: {} });
     adhocMigrateTabsMock.mockReset();
     adhocMigrateTabsMock.mockResolvedValue({ migratedTabIds: [] });
-    jest.useFakeTimers();
+    installFakeTimers();
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    restoreRealTimers();
   });
 
   it('appends a pendingSystemInstruction to the matching tab', () => {
@@ -33104,6 +34721,39 @@ describe('chatStore continueTabOnProvider', () => {
     initCodexModels([{ id: 'gpt-5.5', label: 'GPT-5.5' }]);
   }
 
+  function applyLegacyThinkingLevel(
+    tab: ChatStoreModule.ChatTab,
+    applyThinkingLevel: boolean,
+    applyModelConfig: boolean,
+  ): ChatStoreModule.ChatTab {
+    if (applyThinkingLevel) {
+      Reflect.set(tab, 'thinkingLevel', 'ultrathink');
+    }
+    if (applyModelConfig) {
+      Reflect.set(tab.modelConfig, 'thinkingLevel', 'ultrathink');
+    }
+    return tab;
+  }
+
+  function marketplaceProviderStatuses(): PluginsCache['marketplaces'][number]['providerStatus'] {
+    return {
+      claude: {
+        provider: 'claude',
+        state: 'valid',
+        accepted: true,
+        pluginCount: 1,
+        lastCheckedAt: '2026-03-19T00:00:00.000Z',
+      },
+      codex: {
+        provider: 'codex',
+        state: 'valid',
+        accepted: true,
+        pluginCount: 1,
+        lastCheckedAt: '2026-03-19T00:00:00.000Z',
+      },
+    };
+  }
+
   function seedClaudeChat(
     overrides?: Partial<ChatStoreModule.ChatTab>,
   ): ReturnType<typeof loadChatStore> {
@@ -33115,31 +34765,36 @@ describe('chatStore continueTabOnProvider', () => {
         'project/worktree': {
           activeTabId: 'chat',
           tabs: [
-            makeTab({
-              id: 'chat',
-              title: 'Original title',
-              description: 'Fix the flaky archive spec',
-              providerType: 'claude',
-              model: 'claude-sonnet-4-5-20250514',
-              sdkSessionId: 'claude-session-uuid',
-              interfaceMode: 'claude-code',
-              thinkingLevel: 'ultrathink',
-              messages: [
-                {
-                  id: 'msg-1',
-                  role: 'user',
-                  blocks: [{ type: 'text', text: 'Fix the archive spec' }],
-                  timestamp: 1,
-                },
-                {
-                  id: 'msg-2',
-                  role: 'assistant',
-                  blocks: [{ type: 'text', text: 'Done, it passes now.' }],
-                  timestamp: 2,
-                },
-              ],
-              ...overrides,
-            }),
+            applyLegacyThinkingLevel(
+              makeTab({
+                id: 'chat',
+                title: 'Original title',
+                description: 'Fix the flaky archive spec',
+                providerType: 'claude',
+                model: 'claude-sonnet-4-5-20250514',
+                sdkSessionId: 'claude-session-uuid',
+                interfaceMode: 'claude-code',
+                thinkingLevel: 'high',
+                messages: [
+                  {
+                    id: 'msg-1',
+                    role: 'user',
+                    blocks: [{ type: 'text', text: 'Fix the archive spec' }],
+                    timestamp: 1,
+                  },
+                  {
+                    id: 'msg-2',
+                    role: 'assistant',
+                    blocks: [{ type: 'text', text: 'Done, it passes now.' }],
+                    timestamp: 2,
+                  },
+                ],
+                ...overrides,
+              }),
+              overrides?.thinkingLevel === undefined,
+              overrides?.thinkingLevel === undefined &&
+                overrides?.modelConfig === undefined,
+            ),
           ],
         },
       },
@@ -33350,9 +35005,12 @@ describe('chatStore continueTabOnProvider', () => {
     // is optional on the type. An earlier version of this test omitted it, which
     // exercised a resolver branch production never reaches and made a dead
     // provider-default computation look load-bearing.
+    const legacyModelConfig = { ...DEFAULT_CHAT_MODEL_CONFIG, fastMode: false };
+    // Preserve the legacy invalid value that the runtime resolver normalizes.
+    Reflect.set(legacyModelConfig, 'thinkingLevel', 'ultrathink');
     const { useChatStore } = seedClaudeChat({
       interfaceMode: undefined,
-      modelConfig: { thinkingLevel: 'ultrathink', fastMode: false },
+      modelConfig: legacyModelConfig,
     });
     const claudeDefault = {
       model: 'claude-sonnet-4-6' as const,
@@ -33381,10 +35039,6 @@ describe('chatStore continueTabOnProvider', () => {
           codex: { fastMode: true },
           ollama: { fastMode: false },
         },
-        deferredToolsWorktreeChatsEnabled: false,
-        deferredToolsStandaloneChatsEnabled: true,
-        deferredToolsAppAdvisorEnabled: false,
-        deferredToolsPipelineAssistantEnabled: true,
       },
     });
 
@@ -33584,7 +35238,7 @@ describe('chatStore continueTabOnProvider', () => {
       model: 'gpt-5.5',
       sdkSessionId: undefined,
       pluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [codexOnlyRef, sharedRef],
       },
@@ -33657,7 +35311,7 @@ describe('chatStore continueTabOnProvider', () => {
       worktreeId: 'worktree',
       chatId: continued?.id,
       pluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [sharedRef],
       },
@@ -33673,7 +35327,7 @@ describe('chatStore continueTabOnProvider', () => {
       () => new Promise<{ summary: string }>(() => {}),
     );
 
-    jest.useFakeTimers();
+    installFakeTimers();
     try {
       const pending = useChatStore
         .getState()
@@ -33687,7 +35341,7 @@ describe('chatStore continueTabOnProvider', () => {
         useChatStore.getState().worktreeChats['project/worktree']?.tabs,
       ).toHaveLength(1);
     } finally {
-      jest.useRealTimers();
+      restoreRealTimers();
     }
   });
 
@@ -33734,7 +35388,7 @@ describe('chatStore continueTabOnProvider', () => {
       model: 'gpt-5.5',
       sdkSessionId: undefined,
       pluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [codexOnlyRef, sharedRef],
       },
@@ -33865,7 +35519,7 @@ describe('chatStore continueTabOnProvider', () => {
   /** A source chat carrying one plugin ref, so the index load is reached. */
   function pluginCarryingSelections(): ChatStoreModule.ChatTab['pluginSelections'] {
     return {
-      bundleIds: [],
+      collectionIds: [],
       skillRefs: [],
       pluginRefs: [
         { marketplaceId: 'agent-plugins', pluginName: 'claude-only' },
@@ -33884,7 +35538,7 @@ describe('chatStore continueTabOnProvider', () => {
     loadMarketplacesMock.mockReset();
     loadMarketplacesMock.mockImplementation(() => new Promise(() => {}));
 
-    jest.useFakeTimers();
+    installFakeTimers();
     try {
       const pending = useChatStore
         .getState()
@@ -33899,7 +35553,7 @@ describe('chatStore continueTabOnProvider', () => {
         useChatStore.getState().worktreeChats['project/worktree']?.tabs,
       ).toHaveLength(1);
     } finally {
-      jest.useRealTimers();
+      restoreRealTimers();
     }
   });
 
@@ -33930,7 +35584,7 @@ describe('chatStore continueTabOnProvider', () => {
     loadMarketplacesMock.mockReset();
     loadMarketplacesMock.mockImplementationOnce(() => new Promise(() => {}));
 
-    jest.useFakeTimers();
+    installFakeTimers();
     try {
       const pending = useChatStore
         .getState()
@@ -33939,7 +35593,7 @@ describe('chatStore continueTabOnProvider', () => {
       jest.advanceTimersByTime(PLUGIN_SUPPORT_INDEX_TIMEOUT_MS + 1);
       expect((await pending).status).toBe('failed');
     } finally {
-      jest.useRealTimers();
+      restoreRealTimers();
     }
 
     // The retry the failure message promises: a second, independent request.
@@ -33959,7 +35613,7 @@ describe('chatStore continueTabOnProvider', () => {
             installLocation: '/tmp/agent-plugins',
             pluginCount: 1,
             validProviders: ['claude', 'codex'],
-            providerStatus: {},
+            providerStatus: marketplaceProviderStatuses(),
             plugins: [
               {
                 name: 'claude-only',
@@ -33989,7 +35643,7 @@ describe('chatStore continueTabOnProvider', () => {
     const { useChatStore } = seedClaudeChat({
       interfaceMode: undefined,
       pluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [
           { marketplaceId: 'agent-plugins', pluginName: 'claude-only' },
@@ -34033,7 +35687,7 @@ describe('chatStore continueTabOnProvider', () => {
     const { useChatStore } = seedClaudeChat({
       interfaceMode: undefined,
       pluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [sharedRef],
       },
@@ -34053,7 +35707,7 @@ describe('chatStore continueTabOnProvider', () => {
             installLocation: '/tmp/agent-plugins',
             pluginCount: 1,
             validProviders: ['claude', 'codex'],
-            providerStatus: {},
+            providerStatus: marketplaceProviderStatuses(),
             plugins: [
               {
                 name: 'shared',
@@ -34112,7 +35766,7 @@ describe('chatStore continueTabOnProvider', () => {
     const { useChatStore } = seedClaudeChat({
       interfaceMode: undefined,
       pluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [sharedRef],
       },
@@ -34132,7 +35786,7 @@ describe('chatStore continueTabOnProvider', () => {
             installLocation: '/tmp/agent-plugins',
             pluginCount: 1,
             validProviders: ['claude', 'codex'],
-            providerStatus: {},
+            providerStatus: marketplaceProviderStatuses(),
             plugins: [
               {
                 name: 'shared',
@@ -34180,7 +35834,7 @@ describe('chatStore continueTabOnProvider', () => {
     const { useChatStore } = seedClaudeChat({
       interfaceMode: undefined,
       pluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [
           { marketplaceId: 'agent-plugins', pluginName: 'since-removed' },
@@ -34203,7 +35857,7 @@ describe('chatStore continueTabOnProvider', () => {
             installLocation: '/tmp/agent-plugins',
             pluginCount: 1,
             validProviders: ['claude', 'codex'],
-            providerStatus: {},
+            providerStatus: marketplaceProviderStatuses(),
             plugins: [
               {
                 name: 'something-else',
@@ -34547,7 +36201,7 @@ describe('chatStore continueTabOnProvider', () => {
     const { useChatStore } = seedClaudeChat({
       interfaceMode: undefined,
       disabledGlobalPluginSelections: {
-        bundleIds: [],
+        collectionIds: [],
         skillRefs: [],
         pluginRefs: [
           { marketplaceId: 'agent-plugins', pluginName: 'globally-on' },
@@ -34728,7 +36382,11 @@ describe('chatStore continueTabOnProvider', () => {
     // `ResolvedAgentModelConfig.thinkingLevel` as proof the default was dead.
     const { useChatStore } = seedClaudeChat({
       interfaceMode: undefined,
-      modelConfig: { thinkingLevel: 'low', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'low',
+        speed: 'standard',
+        fastMode: false,
+      },
     });
     useChatStore.setState({
       modelDefaults: {
@@ -34984,5 +36642,1183 @@ describe('chatStore continueTabOnProvider', () => {
       .worktreeChats[key]?.tabs.find((tab) => tab.id !== 'chat');
     expect(continued?.providerType).toBe('codex');
     expect(continued?.forkedFrom?.continuedFromProvider).toBe('claude');
+  });
+});
+
+describe('chatStore provisional Home first send (CAN-4742)', () => {
+  const target = {
+    projectId: 'project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+  };
+  const firstSend = {
+    userMessageId: 'msg-home-1',
+    submittedAt: 1_000,
+    text: 'Why is the deck empty?',
+  };
+
+  function loadWithWorktree(setupPhase: 'git-pending' | 'git-ready'): {
+    chatStore: typeof ChatStoreModule;
+  } {
+    const chatStore = loadChatStore();
+    const projectsStore = jest.requireActual<typeof ProjectsStoreModule>(
+      '../stores/projectsStore',
+    );
+    projectsStore.useProjectsStore.setState({
+      projects: [
+        {
+          type: 'single-repo',
+          id: 'project',
+          name: 'Project',
+          repoPath: '/workspace',
+          color: '#000000',
+          collapsed: false,
+          order: 0,
+          worktrees: [
+            {
+              id: 'worktree',
+              branchName: 'feature/first-send',
+              createdAt: '2026-04-25T00:00:00.000Z',
+              setupPhase,
+            },
+          ],
+        },
+      ],
+    });
+    chatStore.useChatStore.setState({
+      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [makeTab({ title: 'New Chat' })],
+        },
+      },
+    });
+    return { chatStore };
+  }
+
+  function chatTab(
+    chatStore: typeof ChatStoreModule,
+  ): ChatStoreModule.ChatTab | undefined {
+    return chatStore.useChatStore.getState().worktreeChats['project/worktree']
+      ?.tabs[0];
+  }
+
+  beforeEach(() => {
+    sendMessageMock.mockReset();
+    sendMessageMock.mockResolvedValue({});
+    flushScopeMock.mockReset();
+    flushScopeMock.mockResolvedValue(undefined);
+    activeSessionsMock.mockReset();
+    activeSessionsMock.mockResolvedValue({ activeChatIds: [] });
+    getChatQueueSnapshotMock.mockReset();
+    getChatQueueSnapshotMock.mockResolvedValue([]);
+    discoverWorktreeEnvMock.mockReset();
+    discoverWorktreeEnvMock.mockResolvedValue(undefined);
+  });
+
+  it('presents one echo, a renderer turn and the question title, idempotently', () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const store = chatStore.useChatStore.getState();
+
+    expect(store.presentProvisionalFirstSend(target, firstSend)).toBe(true);
+    expect(store.presentProvisionalFirstSend(target, firstSend)).toBe(true);
+
+    const tab = chatTab(chatStore);
+    expect(tab?.messages.map((message) => message.id)).toEqual(['msg-home-1']);
+    expect(tab?.pendingTurn?.timerMessage.blocks[0]).toMatchObject({
+      type: 'turn_timer',
+      startedAt: 1_000,
+    });
+    expect(tab?.title).toBe('Why is the deck empty?');
+    expect(tab?.status).toBe('idle');
+  });
+
+  it('refuses a chat that already has conversation content', () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    chatStore.useChatStore.setState({
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [
+            makeTab({
+              messages: [
+                {
+                  id: 'earlier',
+                  role: 'user',
+                  timestamp: 1,
+                  blocks: [{ type: 'text', text: 'earlier' }],
+                },
+              ],
+            }),
+          ],
+        },
+      },
+    });
+
+    expect(
+      chatStore.useChatStore
+        .getState()
+        .presentProvisionalFirstSend(target, firstSend),
+    ).toBe(false);
+    expect(chatTab(chatStore)?.messages.map((message) => message.id)).toEqual([
+      'earlier',
+    ]);
+  });
+
+  it('applies the Home repository to the provisional target after a tab switch', () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    const scope =
+      chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+    chatStore.useChatStore.setState({
+      worktreeChats: {
+        'project/worktree': {
+          ...scope,
+          activeTabId: 'other',
+          tabs: [...scope.tabs, makeTab({ id: 'other' })],
+        },
+      },
+    });
+    store.setSelectedRepoId('app', target);
+    expect(chatTab(chatStore)?.selectedRepoId).toBe('app');
+    expect(
+      chatStore.useChatStore.getState().worktreeChats['project/worktree']
+        ?.tabs[1]?.selectedRepoId,
+    ).toBeUndefined();
+  });
+
+  it('adopts the echo at dispatch: one bubble, one timer, original start time', async () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    chatStore.useChatStore
+      .getState()
+      .presentProvisionalFirstSend(target, firstSend);
+
+    await chatStore.useChatStore
+      .getState()
+      .sendMessage(firstSend.text, undefined, target, undefined, {
+        userMessageId: firstSend.userMessageId,
+      });
+
+    const tab = chatTab(chatStore);
+    const users = tab?.messages.filter((message) => message.role === 'user');
+    expect(users?.map((message) => message.id)).toEqual(['msg-home-1']);
+    expect(users?.[0]?.timestamp).toBe(1_000);
+    const timers = tab?.messages.filter((message) =>
+      message.blocks.some((block) => block.type === 'turn_timer'),
+    );
+    expect(timers).toHaveLength(1);
+    expect(timers?.[0]?.blocks[0]).toMatchObject({ startedAt: 1_000 });
+    expect(tab?.pendingTurn).toBeUndefined();
+    expect(tab?.pendingUserMessages).toBeUndefined();
+    expect(tab?.provisionalFirstSend?.phase).toBe('dispatched');
+    expect(tab?.title).toBe('Why is the deck empty?');
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
+      userMessageId: 'msg-home-1',
+    });
+
+    // A late failure callback cannot remove the adopted turn.
+    chatStore.useChatStore
+      .getState()
+      .withdrawProvisionalFirstSend(target, firstSend.userMessageId);
+    expect(
+      chatTab(chatStore)?.messages.filter((message) => message.role === 'user'),
+    ).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    'withdraws an adopted first send cancelled before host dispatch (revisioned: %s)',
+    async (revisioned) => {
+      const { chatStore } = loadWithWorktree('git-ready');
+      chatStore.useChatStore.setState({
+        approvalDefaultsCache: {},
+        ...(revisioned
+          ? {
+              chatStateSync: {
+                'project/worktree': { phase: 'live', revision: 1 },
+              },
+            }
+          : {}),
+      });
+      let releaseLookup:
+        | ((mode: DesktopSharedTypes.ApprovalMode) => void)
+        | undefined;
+      getResolvedDefaultMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseLookup = resolve;
+          }),
+      );
+      const store = chatStore.useChatStore.getState();
+      store.presentProvisionalFirstSend(target, firstSend);
+      const rejected = jest.fn();
+      const accepted = jest.fn();
+      const sending = store.sendMessage(
+        firstSend.text,
+        undefined,
+        target,
+        undefined,
+        {
+          userMessageId: firstSend.userMessageId,
+          onPreDispatchRejected: rejected,
+          onDispatchAccepted: accepted,
+        },
+      );
+      await flushChatStoreAsyncWork();
+      expect(releaseLookup).toBeDefined();
+      expect(chatTab(chatStore)?.provisionalFirstSend?.phase).toBe(
+        'dispatched',
+      );
+      await store.cancelSession(target);
+      store.handleChatEvent({
+        ...target,
+        data: { type: 'result', is_error: false, result: 'Cancelled' },
+      });
+      releaseLookup?.('ask');
+      await sending;
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(rejected).toHaveBeenCalledTimes(1);
+      expect(accepted).not.toHaveBeenCalled();
+      const tab = chatTab(chatStore);
+      expect(tab?.messages).toEqual([]);
+      expect(tab?.pendingTurn).toBeUndefined();
+      expect(tab?.pendingUserMessages?.length ?? 0).toBe(0);
+      expect(tab?.sendingLease).toBeUndefined();
+      expect(tab?.provisionalFirstSend).toBeUndefined();
+      expect(tab?.title).toBe('New Chat');
+    },
+  );
+
+  it('dispatches concurrent retries of the same submission only once', async () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    const send = (): Promise<void> =>
+      store.sendMessage(firstSend.text, undefined, target, undefined, {
+        userMessageId: firstSend.userMessageId,
+      });
+    await Promise.all([send(), send()]);
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(
+      chatTab(chatStore)?.messages.filter((message) => message.role === 'user'),
+    ).toHaveLength(1);
+    expect(
+      chatTab(chatStore)?.messages.filter((message) =>
+        message.blocks.some((block) => block.type === 'turn_timer'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('hands the echo to the setup queue row in the same update', async () => {
+    const { chatStore } = loadWithWorktree('git-pending');
+    chatStore.useChatStore
+      .getState()
+      .presentProvisionalFirstSend(target, firstSend);
+    const states: Array<{ users: number; queued: number }> = [];
+    const unsubscribe = chatStore.useChatStore.subscribe((state) => {
+      const tab = state.worktreeChats['project/worktree']?.tabs[0];
+      states.push({
+        users:
+          tab?.messages.filter((message) => message.role === 'user').length ??
+          0,
+        queued: tab?.queuedMessages.length ?? 0,
+      });
+    });
+
+    await chatStore.useChatStore
+      .getState()
+      .sendMessage(firstSend.text, undefined, target, undefined, {
+        userMessageId: firstSend.userMessageId,
+        queueForSetup: true,
+      });
+    unsubscribe();
+
+    expect(
+      states.some((state) => state.users === 0 && state.queued === 0),
+    ).toBe(false);
+    const tab = chatTab(chatStore);
+    expect(tab?.queuedMessages.map((message) => message.text)).toEqual([
+      firstSend.text,
+    ]);
+    expect(tab?.messages.some((message) => message.role === 'user')).toBe(
+      false,
+    );
+    expect(tab?.pendingTurn).toBeUndefined();
+    expect(tab?.provisionalFirstSend?.phase).toBe('queued');
+    expect(tab?.title).toBe('Why is the deck empty?');
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('withdraws an unsent echo and restores the title it replaced', () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+
+    store.withdrawProvisionalFirstSend(target, firstSend.userMessageId);
+
+    const tab = chatTab(chatStore);
+    expect(tab?.messages).toEqual([]);
+    expect(tab?.pendingTurn).toBeUndefined();
+    expect(tab?.provisionalFirstSend).toBeUndefined();
+    expect(tab?.title).toBe('New Chat');
+  });
+
+  it('refuses a follow-up during preparation without dispatching or clearing its draft', async () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    chatStore.useChatStore
+      .getState()
+      .presentProvisionalFirstSend(target, firstSend);
+    const rejected = jest.fn();
+    await chatStore.useChatStore
+      .getState()
+      .sendMessage('follow-up', undefined, target, undefined, {
+        onPreDispatchRejected: rejected,
+      });
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(rejected).toHaveBeenCalledTimes(1);
+    expect(chatTab(chatStore)?.provisionalFirstSend?.phase).toBe('preparing');
+  });
+
+  it('keeps first-send admission closed after the sending lease expires until canonical acknowledgement', async () => {
+    installFakeTimers();
+    const { chatStore } = loadWithWorktree('git-ready');
+    chatStore.useChatStore.setState({
+      chatStateSync: { 'project/worktree': { phase: 'live', revision: 1 } },
+    });
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    let release: () => void = () => {
+      throw new Error('Missing send barrier');
+    };
+    sendMessageMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = (): void => resolve({});
+        }),
+    );
+    const sending = store.sendMessage(
+      firstSend.text,
+      undefined,
+      target,
+      undefined,
+      { userMessageId: firstSend.userMessageId },
+    );
+    try {
+      await jest.advanceTimersByTimeAsync(16_000);
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(chatTab(chatStore)?.sendingLease?.state).toBe('expired');
+      const rejected = jest.fn();
+      await store.sendMessage('follow-up', undefined, target, undefined, {
+        onPreDispatchRejected: rejected,
+      });
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(rejected).toHaveBeenCalledTimes(1);
+      const { toActiveComposerView } = jest.requireActual<typeof ChatViewTypes>(
+        '../components/chat/types',
+      );
+      expect(
+        toActiveComposerView(chatTab(chatStore) ?? makeTab())
+          .firstSendPreparing,
+      ).toBe(true);
+      const { preserveRendererOnlyTabFields } = jest.requireActual<
+        typeof CanonicalChangesModule
+      >('../stores/chat/canonical-changes');
+      const tab = chatTab(chatStore);
+      if (!tab) throw new Error('Missing tab');
+      const acknowledged = preserveRendererOnlyTabFields(tab, {
+        ...tab,
+        messages: tab.messages,
+      });
+      expect(toActiveComposerView(acknowledged).firstSendPreparing).toBe(false);
+    } finally {
+      release();
+      await sending;
+      restoreRealTimers();
+    }
+  });
+
+  it.each(['accepted', 'rejected', 'accepted-before-rejection'])(
+    'atomically hands the first send to the pending host queue and rolls back rejection (%s)',
+    async (outcome) => {
+      const { chatStore } = loadWithWorktree('git-ready');
+      const store = chatStore.useChatStore.getState();
+      store.presentProvisionalFirstSend(target, firstSend);
+      const scope = store.worktreeChats['project/worktree'];
+      chatStore.useChatStore.setState({
+        worktreeChats: {
+          'project/worktree': {
+            ...scope,
+            tabs: [
+              { ...(chatTab(chatStore) ?? makeTab()), status: 'streaming' },
+            ],
+          },
+        },
+      });
+      let release: () => void = () => {
+        throw new Error('Missing host barrier');
+      };
+      let failHost: (error: Error) => void = () => {
+        throw new Error('Missing host barrier');
+      };
+      let arrived: () => void = () => {
+        throw new Error('Missing request barrier');
+      };
+      const atHost = new Promise<void>((resolve) => {
+        arrived = resolve;
+      });
+      const host = new Promise<ChatSendMessageResult>((resolve, reject) => {
+        release = (): void => resolve(ACCEPTED_CHAT_SEND_RESULT);
+        failHost = (error: Error): void => reject(error);
+      });
+      sendMessageMock.mockImplementationOnce(() => {
+        arrived();
+        return host;
+      });
+      const { toActiveTranscriptView } = jest.requireActual<
+        typeof ChatViewTypes
+      >('../components/chat/types');
+      const representations: number[] = [];
+      const unsubscribe = chatStore.useChatStore.subscribe((state) => {
+        const tab = state.worktreeChats['project/worktree'].tabs[0];
+        const view = toActiveTranscriptView(tab);
+        representations.push(
+          view.messages.filter((message) => message.role === 'user').length +
+            view.queuedMessages.length,
+        );
+      });
+      const dispatchRejected = jest.fn();
+      const sending = store.sendMessage(
+        firstSend.text,
+        undefined,
+        target,
+        undefined,
+        {
+          userMessageId: firstSend.userMessageId,
+          throwOnDispatchFailure: true,
+          onDispatchRejected: dispatchRejected,
+          onQueuedWithoutDispatch: () =>
+            store.handOffProvisionalFirstSend(target, firstSend.userMessageId),
+        },
+      );
+      try {
+        await atHost;
+        expect(representations.length).toBeGreaterThan(0);
+        expect(representations.every((count) => count === 1)).toBe(true);
+        expect(chatTab(chatStore)?.provisionalFirstSend?.phase).toBe('queued');
+        for (const status of ['idle', 'error'] as const) {
+          const current =
+            chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+          chatStore.useChatStore.setState({
+            worktreeChats: {
+              'project/worktree': {
+                ...current,
+                tabs: current.tabs.map((tab) => ({ ...tab, status })),
+              },
+            },
+          });
+          const deferred = jest.fn();
+          await store.sendMessage(
+            'distinct follow-up',
+            undefined,
+            target,
+            undefined,
+            { onPreDispatchRejected: deferred },
+          );
+          expect(sendMessageMock).toHaveBeenCalledTimes(1);
+          expect(deferred).toHaveBeenCalledTimes(1);
+        }
+        if (outcome === 'accepted-before-rejection') {
+          store.handleChatQueueUpdated({
+            ...target,
+            queue: [
+              {
+                id: 'host-row',
+                supersedesUserMessageId: firstSend.userMessageId,
+                text: firstSend.text,
+                origin: 'desktop',
+                enqueuedAtMs: Date.now(),
+              },
+            ],
+          });
+          failHost(new Error('Late host acknowledgement rejection'));
+          await sending;
+          expect(dispatchRejected).not.toHaveBeenCalled();
+          expect(chatTab(chatStore)?.provisionalFirstSend?.phase).toBe(
+            'queued',
+          );
+          expect(
+            toActiveTranscriptView(chatTab(chatStore) ?? makeTab())
+              .queuedMessages,
+          ).toHaveLength(1);
+        } else if (outcome === 'rejected') {
+          failHost(new Error('Host queue rejected'));
+          await expect(sending).rejects.toThrow('Host queue rejected');
+          expect(chatTab(chatStore)?.provisionalFirstSend).toBeUndefined();
+          expect(chatTab(chatStore)?.title).toBe('New Chat');
+          expect(chatTab(chatStore)?.pendingQueueMessages?.length ?? 0).toBe(0);
+        } else {
+          release();
+          await sending;
+          expect(chatTab(chatStore)?.title).toBe(firstSend.text);
+        }
+      } finally {
+        unsubscribe();
+        release();
+        await sending.catch(() => undefined);
+      }
+    },
+  );
+
+  it('restores the owned title when a setup-queued first send is cancelled', async () => {
+    const { chatStore } = loadWithWorktree('git-pending');
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    await store.sendMessage(firstSend.text, undefined, target, undefined, {
+      userMessageId: firstSend.userMessageId,
+    });
+    store.clearQueuedMessage(0, target);
+    expect(chatTab(chatStore)?.queuedMessages).toHaveLength(0);
+    expect(chatTab(chatStore)?.title).toBe('New Chat');
+    expect(chatTab(chatStore)?.provisionalFirstSend).toBeUndefined();
+  });
+
+  it('keeps the same submission identity when the setup queue flushes', async () => {
+    const { chatStore } = loadWithWorktree('git-pending');
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    await store.sendMessage(firstSend.text, undefined, target, undefined, {
+      userMessageId: firstSend.userMessageId,
+    });
+    expect(
+      chatTab(chatStore)?.queuedMessages[0]?.dispatchOptions?.userMessageId,
+    ).toBe(firstSend.userMessageId);
+  });
+
+  it('does not fail a newer turn when the first dispatch throws late', async () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    sendMessageMock.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      const scope =
+        chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+      chatStore.useChatStore.setState({
+        worktreeChats: {
+          'project/worktree': {
+            ...scope,
+            tabs: scope.tabs.map((tab) => ({
+              ...tab,
+              messages: [
+                ...tab.messages,
+                {
+                  id: 'newer-user',
+                  role: 'user',
+                  timestamp: 2000,
+                  blocks: [{ type: 'text', text: 'newer' }],
+                },
+                {
+                  id: 'newer-timer',
+                  role: 'system',
+                  timestamp: 2000,
+                  blocks: [
+                    { type: 'turn_timer', startedAt: 2000, completedAt: null },
+                  ],
+                },
+              ],
+            })),
+          },
+        },
+      });
+      throw new Error('Late transport error');
+    });
+    await store.sendMessage(firstSend.text, undefined, target, undefined, {
+      userMessageId: firstSend.userMessageId,
+    });
+    expect(chatTab(chatStore)?.status).toBe('streaming');
+    expect(chatTab(chatStore)?.error).toBeNull();
+    expect(
+      chatTab(chatStore)?.messages.find(
+        (message) => message.id === 'newer-timer',
+      )?.blocks[0],
+    ).toMatchObject({ completedAt: null });
+  });
+
+  it.each([false, true])(
+    'keeps a revisioned acknowledgement when the dispatch promise rejects after Stop: %s',
+    async (cancelled) => {
+      const { chatStore } = loadWithWorktree('git-ready');
+      chatStore.useChatStore.setState({
+        chatStateSync: { 'project/worktree': { phase: 'live', revision: 1 } },
+      });
+      const store = chatStore.useChatStore.getState();
+      store.presentProvisionalFirstSend(target, firstSend);
+      sendMessageMock.mockImplementationOnce(async () => {
+        await Promise.resolve();
+        const scope =
+          chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+        chatStore.useChatStore.setState({
+          worktreeChats: {
+            'project/worktree': {
+              ...scope,
+              tabs: scope.tabs.map((tab) => ({
+                ...tab,
+                // Revisioned sends take their status from the canonical update,
+                // rather than setting streaming optimistically at dispatch.
+                status: 'streaming',
+                pendingUserMessages: undefined,
+                pendingTurn: undefined,
+              })),
+            },
+          },
+        });
+        if (cancelled) await store.cancelSession(target);
+        throw new Error('Late transport error');
+      });
+      await store.sendMessage(firstSend.text, undefined, target, undefined, {
+        userMessageId: firstSend.userMessageId,
+      });
+      expect(chatTab(chatStore)?.status).toBe('streaming');
+      expect(chatTab(chatStore)?.error).toBeNull();
+      expect(
+        chatTab(chatStore)?.messages.filter(
+          (message) => message.role === 'user',
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('keeps native output accepted before a late dispatch rejection', async () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    const rejected = jest.fn();
+    const accepted = jest.fn();
+    sendMessageMock.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      store.handleChatEvent({
+        ...target,
+        data: {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'Accepted answer' }] },
+        },
+      });
+      throw new Error('Late transport error');
+    });
+
+    await store.sendMessage(firstSend.text, undefined, target, undefined, {
+      userMessageId: firstSend.userMessageId,
+      onDispatchAccepted: accepted,
+      onDispatchRejected: rejected,
+    });
+
+    expect(chatTab(chatStore)?.status).toBe('streaming');
+    expect(chatTab(chatStore)?.error).toBeNull();
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it('retains the terminal first-send echo and title ownership during preparation', async () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const scope =
+      chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+    chatStore.useChatStore.setState({
+      worktreeChats: {
+        'project/worktree': {
+          ...scope,
+          tabs: [
+            makeTab({
+              title: 'New Chat',
+              interfaceMode: 'claude-code',
+              providerType: 'claude',
+              claudeTerminal: {
+                terminalId: 'terminal-1',
+                sessionKey: 'session-key',
+                turnState: 'idle',
+              },
+            }),
+          ],
+        },
+      },
+    });
+    const store = chatStore.useChatStore.getState();
+    store.presentProvisionalFirstSend(target, firstSend);
+    let rejectState: (error: Error) => void = () => {
+      throw new Error('Missing barrier');
+    };
+    claudeTerminalGetStateMock.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectState = reject;
+        }),
+    );
+    const rejected = jest.fn(() =>
+      store.withdrawProvisionalFirstSend(target, firstSend.userMessageId),
+    );
+    const send = store.sendMessage(
+      firstSend.text,
+      undefined,
+      target,
+      undefined,
+      {
+        userMessageId: firstSend.userMessageId,
+        onDispatchRejected: rejected,
+      },
+    );
+    await Promise.resolve();
+    const pending = chatTab(chatStore);
+    rejectState(new Error('Terminal unavailable'));
+    await send;
+
+    expect(pending?.messages.map((message) => message.id)).toContain(
+      firstSend.userMessageId,
+    );
+    expect(pending?.pendingTurn?.userMessageId).toBe(firstSend.userMessageId);
+    expect(pending?.provisionalFirstSend?.phase).toBe('preparing');
+    expect(rejected).toHaveBeenCalledTimes(1);
+    expect(chatTab(chatStore)?.title).toBe('New Chat');
+    expect(
+      chatTab(chatStore)?.messages.some((message) => message.role === 'user'),
+    ).toBe(false);
+  });
+
+  it.each([false, true])(
+    'hands a terminal first send to its queue and adopts its original timestamp (consumed: %s)',
+    async (consumed) => {
+      const { chatStore } = loadWithWorktree('git-ready');
+      const scope =
+        chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+      chatStore.useChatStore.setState({
+        worktreeChats: {
+          'project/worktree': {
+            ...scope,
+            tabs: [
+              makeTab({
+                title: 'New Chat',
+                interfaceMode: 'claude-code',
+                providerType: 'claude',
+              }),
+            ],
+          },
+        },
+      });
+      const store = chatStore.useChatStore.getState();
+      store.presentProvisionalFirstSend(target, firstSend);
+      const queueStates: Array<{ users: number; queued: number }> = [];
+      const unsubscribe = chatStore.useChatStore.subscribe((state) => {
+        const tab = state.worktreeChats['project/worktree'].tabs[0];
+        queueStates.push({
+          users: tab.messages.filter((message) => message.role === 'user')
+            .length,
+          queued: tab.queuedMessages.length,
+        });
+      });
+      const launch = jest.fn(store.ensureClaudeTerminal).mockResolvedValue({
+        ...target,
+        terminalId: 'terminal-1',
+        sessionKey: 'session-key',
+        turnState: 'idle',
+        launchStatus: 'ready',
+        lastLaunchConsumedInitialPrompt: consumed,
+      });
+      chatStore.useChatStore.setState({ ensureClaudeTerminal: launch });
+      try {
+        await store.sendMessage(firstSend.text, undefined, target, undefined, {
+          userMessageId: firstSend.userMessageId,
+        });
+        // The terminal launch continuation is joined before inspecting adoption.
+        await launch.mock.results[0]?.value;
+        await Promise.resolve();
+        const tab = chatTab(chatStore);
+        expect(
+          queueStates.every((state) => state.users + state.queued === 1),
+        ).toBe(true);
+        if (consumed) {
+          expect(tab?.queuedMessages).toHaveLength(0);
+          expect(
+            tab?.messages.find((message) => message.role === 'user'),
+          ).toMatchObject({
+            id: firstSend.userMessageId,
+            timestamp: firstSend.submittedAt,
+          });
+          expect(tab?.provisionalFirstSend?.phase).toBe('dispatched');
+        } else {
+          expect(tab?.messages).toEqual([]);
+          expect(tab?.queuedMessages[0]?.dispatchOptions).toMatchObject({
+            userMessageId: firstSend.userMessageId,
+            submittedAt: firstSend.submittedAt,
+          });
+          expect(tab?.provisionalFirstSend?.phase).toBe('queued');
+        }
+      } finally {
+        unsubscribe();
+        chatStore.useChatStore.setState({
+          ensureClaudeTerminal: store.ensureClaudeTerminal,
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'adopts an incremental live-terminal prompt without duplicating the Home echo (late rejection: %s)',
+    async (lateRejection) => {
+      installFakeTimers();
+      const { chatStore } = loadWithWorktree('git-ready');
+      const scope =
+        chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+      chatStore.useChatStore.setState({
+        worktreeChats: {
+          'project/worktree': {
+            ...scope,
+            tabs: [
+              makeTab({
+                title: 'New Chat',
+                interfaceMode: 'claude-code',
+                providerType: 'claude',
+                claudeTerminal: {
+                  terminalId: 'terminal-1',
+                  sessionKey: 'session-key',
+                  turnState: 'idle',
+                },
+              }),
+            ],
+          },
+        },
+      });
+      claudeTerminalGetStateMock.mockResolvedValueOnce({
+        terminalId: 'terminal-1',
+        sessionKey: 'session-key',
+        turnState: 'idle',
+        readyForInput: true,
+      });
+      const store = chatStore.useChatStore.getState();
+      const syncUser = (): void =>
+        store.handleChatEvent({
+          ...target,
+          data: {
+            type: 'claude_terminal_transcript_sync',
+            importedEventCount: 1,
+            replayedFromStart: false,
+            messages: [
+              {
+                id: 'claude-user',
+                role: 'user',
+                timestamp: 2000,
+                blocks: [{ type: 'text', text: firstSend.text }],
+              },
+            ],
+          },
+        });
+      terminalWriteMock.mockReset();
+      terminalWriteMock.mockImplementation((request) => {
+        if (lateRejection && request.data.includes(firstSend.text)) {
+          syncUser();
+          return Promise.reject(new Error('Late terminal write rejection'));
+        }
+        return Promise.resolve('written');
+      });
+      const rejected = jest.fn();
+      try {
+        store.presentProvisionalFirstSend(target, firstSend);
+        const sending = store.sendMessage(
+          firstSend.text,
+          undefined,
+          target,
+          undefined,
+          {
+            userMessageId: firstSend.userMessageId,
+            onDispatchRejected: rejected,
+          },
+        );
+        await jest.advanceTimersByTimeAsync(1000);
+        await sending;
+        store.handleChatEvent({
+          ...target,
+          data: {
+            type: 'claude_terminal_transcript_sync',
+            importedEventCount: 1,
+            replayedFromStart: false,
+            messages: [
+              {
+                id: 'claude-user',
+                role: 'user',
+                timestamp: 2000,
+                blocks: [{ type: 'text', text: firstSend.text }],
+              },
+            ],
+          },
+        });
+        const acknowledged = chatTab(chatStore);
+        expect(acknowledged?.error).toBeNull();
+        expect(rejected).not.toHaveBeenCalled();
+        expect(
+          acknowledged?.messages.filter((message) => message.role === 'user'),
+        ).toHaveLength(1);
+        expect(
+          acknowledged?.messages.find((message) => message.role === 'user')?.id,
+        ).toBe('claude-user');
+        expect(acknowledged?.pendingUserMessages).toBeUndefined();
+        expect(acknowledged?.provisionalFirstSend?.userMessageId).toBe(
+          firstSend.userMessageId,
+        );
+        const { toActiveTranscriptView } = jest.requireActual<
+          typeof ChatViewTypes
+        >('../components/chat/types');
+        expect(
+          toActiveTranscriptView(acknowledged ?? makeTab())
+            .startingTurnUserMessageId,
+        ).toBe('claude-user');
+        expect(
+          toActiveTranscriptView(acknowledged ?? makeTab())
+            .startingTurnPresentationKey,
+        ).toBe(firstSend.userMessageId);
+        store.handleChatEvent({
+          ...target,
+          data: {
+            type: 'claude_terminal_transcript_sync',
+            importedEventCount: 2,
+            replayedFromStart: false,
+            messages: [
+              {
+                id: 'claude-user',
+                role: 'user',
+                timestamp: 2000,
+                blocks: [{ type: 'text', text: firstSend.text }],
+              },
+              {
+                id: 'claude-timer',
+                role: 'system',
+                timestamp: 2000,
+                blocks: [
+                  { type: 'turn_timer', startedAt: 2000, completedAt: null },
+                ],
+              },
+              {
+                id: 'claude-answer',
+                role: 'assistant',
+                timestamp: 2001,
+                blocks: [{ type: 'text', text: 'Answer' }],
+              },
+            ],
+          },
+        });
+        const output = chatTab(chatStore);
+        expect(output?.pendingTurn).toBeUndefined();
+        expect(
+          output?.messages.filter((message) => message.role === 'user'),
+        ).toHaveLength(1);
+        expect(
+          output?.messages.filter((message) =>
+            message.blocks.some((block) => block.type === 'turn_timer'),
+          ),
+        ).toHaveLength(1);
+        const view = toActiveTranscriptView(output ?? makeTab());
+        expect(
+          view.messages.find((message) => message.role === 'user')?.timestamp,
+        ).toBe(firstSend.submittedAt);
+      } finally {
+        restoreRealTimers();
+      }
+    },
+  );
+
+  it('keeps a pending starter visible through a canonical snapshot with another starter', async () => {
+    const { chatStore } = loadWithWorktree('git-ready');
+    const scope =
+      chatStore.useChatStore.getState().worktreeChats['project/worktree'];
+    chatStore.useChatStore.setState({
+      worktreeChats: {
+        'project/worktree': {
+          ...scope,
+          tabs: [makeTab({ title: 'New Chat', pendingInitialCreation: true })],
+        },
+      },
+    });
+    chatStore.useChatStore
+      .getState()
+      .presentProvisionalFirstSend(target, firstSend);
+    const snapshot: ChatStateSnapshot = {
+      schemaVersion: 1,
+      projectId: 'project',
+      worktreeId: 'worktree',
+      revision: 1,
+      tabsFile: {
+        version: 1,
+        activeTabId: 'canonical-starter',
+        tabs: [
+          {
+            id: 'canonical-starter',
+            title: 'New Chat',
+            messages: [],
+            createdAt: '2026-03-19T00:00:00.000Z',
+          },
+        ],
+      },
+      archives: [],
+      runtimeByChatId: {},
+      queue: [],
+    };
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...window.api,
+        chat: {
+          ...window.api.chat,
+          getState: jest.fn().mockResolvedValue(snapshot),
+        },
+      },
+    });
+    const visible: boolean[] = [];
+    const unsubscribe = chatStore.useChatStore.subscribe((state) => {
+      const current = state.worktreeChats['project/worktree'];
+      visible.push(
+        current.tabs
+          .find((tab) => tab.id === current.activeTabId)
+          ?.messages.some(
+            (message) => message.id === firstSend.userMessageId,
+          ) === true,
+      );
+    });
+    try {
+      await chatStore.useChatStore
+        .getState()
+        .hydrateChatScopeRevisioned('project', 'worktree');
+      expect(visible.length).toBeGreaterThan(0);
+      expect(visible.every(Boolean)).toBe(true);
+      expect(
+        chatTab(chatStore)?.provisionalFirstSend?.userMessageId ??
+          chatStore.useChatStore
+            .getState()
+            .worktreeChats[
+              'project/worktree'
+            ].tabs.find((tab) => tab.id === 'chat')?.provisionalFirstSend
+            ?.userMessageId,
+      ).toBe(firstSend.userMessageId);
+    } finally {
+      unsubscribe();
+    }
+  });
+});
+
+describe('syncActiveEmptyTabToDefaults with the Codex account list (CAN-4716)', () => {
+  function seedCodexWorktree(
+    tabOverrides: Partial<ChatStoreModule.ChatTab> = {},
+  ): {
+    useChatStore: typeof ChatStoreModule.useChatStore;
+    setAccountModels: (models: ReadonlySet<string> | null) => void;
+    types: typeof DesktopSharedTypes;
+  } {
+    const { useChatStore } = loadChatStore();
+    const types = jest.requireActual<typeof DesktopSharedTypes>(
+      '@canopy/desktop-shared/types',
+    );
+    const { setRendererModelPolicy } = jest.requireActual<
+      typeof ModelPolicyRuntime
+    >('../stores/modelPolicyRuntime');
+    const {
+      setRendererBillingLaneAvailability,
+      setRendererCodexAccountModels,
+    } = jest.requireActual<typeof BillingLaneRuntime>(
+      '../stores/billingLaneRuntime',
+    );
+    types.clearCodexAccountModels();
+    types.initCodexModels([
+      { id: 'codex-sol', label: 'Sol' },
+      { id: 'codex-luna', label: 'Luna' },
+    ]);
+    setRendererModelPolicy(new Set(), true);
+    setRendererBillingLaneAvailability({
+      claudeNativeAuth: false,
+      codexNativeAuth: true,
+      creditsEligible: false,
+    });
+    const byProvider = {
+      claude: { model: 'sonnet', thinkingLevel: 'high' as const },
+      codex: { model: 'codex-sol', thinkingLevel: 'high' as const },
+      ollama: null,
+    };
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
+      modelDefaults: {
+        chatProvider: 'codex',
+        chatModelByProvider: byProvider,
+        worktreeProvider: 'codex',
+        worktreeModelByProvider: byProvider,
+      },
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat',
+          tabs: [
+            makeTab({
+              id: 'chat',
+              model: 'codex-sol',
+              providerType: 'codex',
+              defaultStampModel: 'codex-sol',
+              ...tabOverrides,
+            }),
+          ],
+        },
+      },
+    });
+    return {
+      useChatStore,
+      setAccountModels: setRendererCodexAccountModels,
+      types,
+    };
+  }
+
+  function activeTab(
+    useChatStore: typeof ChatStoreModule.useChatStore,
+  ): ChatStoreModule.ChatTab | undefined {
+    return useChatStore.getState().worktreeChats['project/worktree']?.tabs[0];
+  }
+
+  afterEach(() => {
+    jest
+      .requireActual<typeof DesktopSharedTypes>('@canopy/desktop-shared/types')
+      .clearCodexAccountModels();
+  });
+
+  it('re-stamps a pristine composer when the account list arrives', async () => {
+    const { useChatStore, setAccountModels } = seedCodexWorktree();
+
+    setAccountModels(new Set(['codex-luna']));
+    await useChatStore.getState().syncActiveEmptyTabToDefaults();
+
+    expect(activeTab(useChatStore)?.model).toBe('codex-luna');
+    // The saved default itself is never rewritten.
+    expect(
+      useChatStore.getState().modelDefaults?.worktreeModelByProvider.codex
+        ?.model,
+    ).toBe('codex-sol');
+  });
+
+  it('keeps an explicit model pick when the account list arrives', async () => {
+    const { useChatStore, setAccountModels } = seedCodexWorktree({
+      modelExplicitlyChosen: true,
+    });
+
+    setAccountModels(new Set(['codex-luna']));
+    await useChatStore.getState().syncActiveEmptyTabToDefaults();
+
+    expect(activeTab(useChatStore)?.model).toBe('codex-sol');
+  });
+
+  it('re-stamps a pristine account-only model once the account models clear', async () => {
+    const { useChatStore, setAccountModels, types } = seedCodexWorktree();
+    types.setCodexAccountModels([
+      { id: 'acct-only', model: 'acct-only', displayName: 'Account only' },
+    ]);
+    setAccountModels(new Set(['acct-only']));
+    await useChatStore.getState().syncActiveEmptyTabToDefaults();
+    expect(activeTab(useChatStore)?.model).toBe('acct-only');
+
+    // Sign-out: main reports an unknown catalog.
+    types.clearCodexAccountModels();
+    setAccountModels(null);
+    await useChatStore.getState().syncActiveEmptyTabToDefaults();
+
+    expect(activeTab(useChatStore)?.model).toBe('codex-sol');
   });
 });

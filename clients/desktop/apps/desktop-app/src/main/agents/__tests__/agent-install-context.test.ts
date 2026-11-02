@@ -56,7 +56,7 @@ const detail: SharedAgentDetail = {
   instructionsPreview: '',
   contentHash: 'hash',
   publicShare: null,
-  createdBy: { id: 'user-a', name: 'User' },
+  createdBy: { id: 'user-a', name: 'User', email: null },
   createdAt: '2026-09-23T00:00:00Z',
   updatedAt: '2026-09-23T00:00:00Z',
   canUpdate: true,

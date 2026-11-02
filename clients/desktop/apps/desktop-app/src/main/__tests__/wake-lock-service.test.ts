@@ -15,7 +15,7 @@ function createPowerSaveBlocker(): PowerSaveBlockerLike & {
   let nextId = 1;
   const blocker = {
     startedIds,
-    start: jest.fn(() => {
+    start: jest.fn<number, ['prevent-app-suspension']>(() => {
       const id = nextId;
       nextId += 1;
       startedIds.add(id);

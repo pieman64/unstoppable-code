@@ -1,27 +1,39 @@
 import { OpenCodeAccountCard } from '@canopy/ui-shared';
 import { getCursorSettingsSection } from '@/lib/cursor-settings';
+import { getCopilotSettingsSection } from '@/lib/copilot-settings';
 /* eslint-disable react-refresh/only-export-components -- exports the shared
    provider-selection helpers (reused by the Usage panel) alongside the card
    components; splitting them would fragment a single cohesive display module. */
-import { type JSX, useCallback, useState } from 'react';
+import { type JSX, useCallback, useEffect, useRef, useState } from 'react';
+import { CODE_REVIEW_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type {
   AgentUsageOverview,
   AgentProviderType,
   ProviderUsageSummary,
+  UsageLimitedSessionItem,
+  PersistedChatTab,
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
-import { AgentProviderIcon } from '@/lib/providerUi';
 import {
+  Button,
   getModelCatalogProviderLabel,
   ProviderUsageAccountRow,
+  UsageGroup,
+  UsageProviderGroup,
+  UsageRowList,
+  UsageRow,
+  usagePlanLabel,
 } from '@canopy/ui-shared';
-import { UsageCardHeader } from '@canopy/ui-shared/components';
-import { usageCardContainerClass } from './usage-card-container';
+import {
+  UsageLimitedSessionsControl,
+  DialogModal,
+  TranscriptPagingControls,
+  type NonEmptyUsageLimitedWaitingSessions,
+  type UsageLimitedWaitingSession,
+} from '@canopy/ui-shared/components';
 import { OtherAccountSnapshots } from './OtherAccountSnapshots';
-import { LimitSubCardView } from '@canopy/ui-shared/components';
-import { ACCOUNT_BUTTON_PRIMARY } from '@/lib/account-button-styles';
 import { AuthLoginModal } from '@/components/settings/AuthLoginModal';
 import {
   invalidateClaudeAuthStatusCache,
@@ -31,17 +43,24 @@ import {
   invalidateCodexAuthStatusCache,
   useCodexAuthStatus,
 } from '@/hooks/useCodexAuthStatus';
-import { useUsageLimitedSessionCount } from '@/hooks/useUsageLimitedSessionCount';
-import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
-import { hasBlockingRateLimit } from '@/lib/usage-limit/resume-availability';
+import {
+  useUsageLimitedSessions,
+  type UsageLimitedSessionEntry,
+} from '@/hooks/useUsageLimitedSessionCount';
+import {
+  hasBlockingRateLimit,
+  selectBlockingResetAtMs,
+} from '@/lib/usage-limit/resume-availability';
+import { formatUsageLimitTimeLabel } from '@/lib/usage-limit-time-label';
+import { navigateToLiveChat } from '@/lib/navigation/live-chat-navigation';
+import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
+import { ChatMessageList } from '@/components/chat/ChatMessageList';
+import { installTranscriptPage } from '@/stores/chat/transcript-pages';
+import { WorkspaceAccessContext } from '@/lib/workspace-access';
 import { buildSubCards } from './usage-sub-cards';
 import { UsageErrorNotice, resolveUsageErrorInfo } from './UsageErrorNotice';
 import { AccountProxyUsageSection } from './AccountProxyUsageSection';
-import {
-  refreshAccountProxyStatus,
-  useAccountProxyStore,
-  useProviderAccountSource,
-} from '@/stores/accountProxyStore';
+import { useProviderAccountSource } from '@/stores/accountProxyStore';
 
 type UsageLoginProvider = Extract<AgentProviderType, 'claude' | 'codex'>;
 type LoginProviderUsageSummary = ProviderUsageSummary & {
@@ -58,10 +77,6 @@ export type AccountProviderUsageSummary =
   | (ProviderUsageSummary & { provider: 'cursor' })
   | (ProviderUsageSummary & { provider: 'copilot' });
 
-/** Visual density of a provider usage card. `compact` trims padding and header
- * size for small panel containers; the standalone page uses `comfortable`. */
-export type ProviderUsageCardDensity = 'comfortable' | 'compact';
-
 interface ProviderUsageCardsProps {
   nowMs: number;
   usage: AgentUsageOverview;
@@ -77,15 +92,11 @@ interface ProviderAccountRowProps {
   refreshProviderUsageDetails: (
     provider: AgentProviderType,
   ) => Promise<AgentUsageOverview>;
-  /** Panel-optimized density: smaller text, tighter spacing, no "Account:"
-   * prefix. The standalone page keeps the full row. */
-  frameless?: boolean;
 }
 
 function ProviderAccountRow({
   provider,
   refreshProviderUsageDetails,
-  frameless = false,
 }: ProviderAccountRowProps): JSX.Element {
   const [loginOpen, setLoginOpen] = useState(false);
   const claudeStatus = useClaudeAuthStatus(0);
@@ -124,17 +135,17 @@ function ProviderAccountRow({
       <ProviderUsageAccountRow
         accountLabel={accountLabel}
         statusLabel={statusLabel}
-        frameless={frameless}
+        testId={`usage-provider-${provider.provider}-account`}
       >
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
           onClick={(): void => setLoginOpen(true)}
           disabled={authStatus === null && provider.authState === 'unknown'}
           data-testid={`usage-provider-${provider.provider}-connect`}
-          className={`shrink-0 ${ACCOUNT_BUTTON_PRIMARY}`}
         >
           {authenticated ? 'Change account' : 'Sign in'}
-        </button>
+        </Button>
       </ProviderUsageAccountRow>
       {loginOpen && (
         <AuthLoginModal
@@ -148,14 +159,10 @@ function ProviderAccountRow({
 
 interface ManagedAccountRowProps {
   provider: ProviderUsageSummary & { provider: 'cursor' | 'copilot' };
-  frameless: boolean;
 }
 
 /** Managed harness accounts use their existing connection settings. */
-function ManagedAccountRow({
-  provider,
-  frameless,
-}: ManagedAccountRowProps): JSX.Element {
+function ManagedAccountRow({ provider }: ManagedAccountRowProps): JSX.Element {
   const openSettings = useNavigationStore((state) => state.openSettings);
   const accountLabel =
     provider.authState === 'authenticated'
@@ -173,67 +180,282 @@ function ManagedAccountRow({
     <ProviderUsageAccountRow
       accountLabel={accountLabel}
       statusLabel={statusLabel}
-      frameless={frameless}
+      testId={`usage-provider-${provider.provider}-account`}
     >
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        size="compact"
         onClick={(): void =>
           openSettings(
             provider.provider === 'copilot'
-              ? 'experiments'
+              ? getCopilotSettingsSection()
               : getCursorSettingsSection(),
           )
         }
         data-testid={`usage-provider-${provider.provider}-manage`}
-        className={`shrink-0 ${ACCOUNT_BUTTON_PRIMARY}`}
       >
         Manage {label}
-      </button>
+      </Button>
     </ProviderUsageAccountRow>
   );
 }
 
-interface UsageLimitedResumeButtonProps {
-  provider: LoginProviderUsageSummary;
-  nowMs: number;
-  frameless: boolean;
+function waitingSessionId(session: UsageLimitedSessionItem): string {
+  return session.kind === 'chat'
+    ? `chat-${session.projectId}-${session.worktreeId}-${session.chatId}`
+    : `pipeline-${session.executionId}`;
 }
 
-/**
- * Info-themed "Resume" affordance for sessions (chats and pipelines) that hit
- * this provider's usage limit. Rendered only while resuming could actually
- * succeed: at least one interrupted session is recorded and no rate-limit
- * window is confirmed still at 100% (a window whose reset time has passed is
- * treated as stale, not blocking). Opens the same resume modal the
- * account-change flow uses, and stays for follow-up rounds after a partial
- * resume until nothing resumable is left.
- */
-function UsageLimitedResumeButton({
-  provider,
-  nowMs,
-  frameless,
-}: UsageLimitedResumeButtonProps): JSX.Element | null {
-  const sessionCount = useUsageLimitedSessionCount(provider.provider, nowMs);
-  const openResumePrompt = useUsageLimitResumePromptStore((s) => s.open);
+function toWaitingSession({
+  session,
+  workspaceName,
+}: UsageLimitedSessionEntry): UsageLimitedWaitingSession {
+  const worktreeName = session.worktreeName?.trim();
+  const subtitle = [workspaceName.trim(), worktreeName]
+    .filter((part): part is string => Boolean(part))
+    .join(' · ');
+  return {
+    id: waitingSessionId(session),
+    kind: session.kind,
+    title: session.kind === 'chat' ? session.chatTitle : session.pipelineName,
+    ...(subtitle ? { subtitle } : {}),
+  };
+}
 
-  if (sessionCount === 0 || hasBlockingRateLimit(provider.rateLimits, nowMs)) {
-    return null;
+/** The retired review host has no live destination; its exact chat is still readable. */
+function RetainedReviewChatDialog({
+  session,
+  onClose,
+}: {
+  session: Extract<UsageLimitedSessionItem, { kind: 'chat' }>;
+  onClose: () => void;
+}): JSX.Element {
+  const [tab, setTab] = useState<PersistedChatTab | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const inFlight = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    let cancelled = false;
+    alive.current = true;
+    const scope = {
+      projectId: session.projectId,
+      worktreeId: session.worktreeId,
+    };
+    void Promise.all([
+      window.api.chat.getState(scope),
+      window.api.chat.getTranscriptPage({ ...scope, chatId: session.chatId }),
+    ])
+      .then(([state, page]) => {
+        if (cancelled) return;
+        const found = state.tabsFile.tabs.find(
+          (candidate) => candidate.id === session.chatId,
+        );
+        if (found) setTab(installTranscriptPage(found, page, false));
+        else setError("Couldn't open the chat. Close this view and try again.");
+      })
+      .catch(() => {
+        if (!cancelled)
+          setError("Couldn't open the chat. Close this view and try again.");
+      });
+    return (): void => {
+      cancelled = true;
+      alive.current = false;
+    };
+  }, [session.projectId, session.worktreeId, session.chatId]);
+
+  async function loadEarlier(): Promise<void> {
+    const before = tab?.transcriptWindow?.before;
+    if (!tab || before === undefined || inFlight.current) return;
+    inFlight.current = true;
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await window.api.chat.getTranscriptPage({
+        projectId: session.projectId,
+        worktreeId: session.worktreeId,
+        chatId: session.chatId,
+        before,
+        transcriptRevision: tab.transcriptWindow?.transcriptRevision,
+      });
+      if (alive.current) setTab(installTranscriptPage(tab, page, true));
+    } catch {
+      if (alive.current) setError("Couldn't load earlier messages. Try again.");
+    } finally {
+      inFlight.current = false;
+      if (alive.current) setLoading(false);
+    }
   }
 
   return (
-    <div className={frameless ? 'mt-2' : 'mt-4'}>
-      <button
-        type="button"
-        data-testid={`usage-provider-${provider.provider}-resume`}
-        onClick={(): void =>
-          openResumePrompt(provider.provider, 'usage-review')
+    <DialogModal
+      title="Interrupted review chat"
+      subtitle="Viewing this chat doesn't resume it."
+      onClose={onClose}
+      trapFocus
+      maxWidth="4xl"
+      height="85vh"
+      dataTestId="usage-retained-review-chat"
+    >
+      {tab ? (
+        <WorkspaceAccessContext.Provider
+          value={{
+            mode: 'read-only',
+            reason: 'retained-chat',
+            containerType: 'CODE_WORKTREE',
+            runAllowed: false,
+          }}
+        >
+          <ChatMessageList
+            messages={tab.messages}
+            queuedMessages={[]}
+            chatId={tab.id}
+            agentUsage={tab.agentUsage}
+            turnDiffs={tab.turnDiffs}
+            targetOverride={{
+              projectId: session.projectId,
+              worktreeId: session.worktreeId,
+              chatId: tab.id,
+            }}
+            hideBranchActions
+            onClearQueuedMessage={(): void => undefined}
+            pagingControls={
+              <TranscriptPagingControls
+                loading={loading}
+                error={error}
+                hasEarlier={tab.transcriptWindow?.before !== undefined}
+                onLoadEarlier={(): void => {
+                  void loadEarlier();
+                }}
+                onReload={(): void => {
+                  void loadEarlier();
+                }}
+              />
+            }
+          />
+        </WorkspaceAccessContext.Provider>
+      ) : (
+        <p className="p-4 text-s fg-secondary">
+          {error ?? 'Loading transcript…'}
+        </p>
+      )}
+    </DialogModal>
+  );
+}
+
+/** Navigate to a waiting session. Only navigates: never resumes or schedules. */
+function openUsageLimitedSession({
+  session,
+  workspaceId,
+}: UsageLimitedSessionEntry): void {
+  if (session.kind === 'chat') {
+    void navigateToLiveChat({
+      projectId: session.projectId,
+      worktreeId: session.worktreeId,
+      chatId: session.chatId,
+      workspaceId,
+    });
+    return;
+  }
+  void openPipelineExecutionFromUi({
+    executionId: session.executionId,
+    ...(session.projectId && session.worktreeId
+      ? {
+          owner: {
+            projectId: session.projectId,
+            worktreeId: session.worktreeId,
+          },
         }
-        className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-fg-info/30 bg-info-subtle px-2.5 py-1.5 text-xs font-medium fg-info transition hover:bg-info-subtle/80"
-      >
-        Resume {sessionCount} interrupted session
-        {sessionCount === 1 ? '' : 's'}…
-      </button>
-    </div>
+      : {}),
+  });
+}
+
+/**
+ * Sessions (chats and pipelines) waiting on this provider's usage limit.
+ * Shown only while a rate-limit window is confirmed still at 100% (a window
+ * whose reset time has passed is stale, not blocking): it says how many are
+ * waiting, the expected reset when every blocking window reports one, and
+ * navigates to each session. Once nothing blocks, the surface's one
+ * interrupted-sessions notice offers the resume instead. The account-proxy
+ * group passes the native `rateLimits`, so eligibility matches the native
+ * group rather than the proxy's display windows.
+ */
+function UsageLimitedSessionsSection({
+  provider,
+  nowMs,
+  boxed = false,
+}: {
+  provider: LoginProviderUsageSummary;
+  nowMs: number;
+  /** In its own row box, for a group whose rows the host does not supply. */
+  boxed?: boolean;
+}): JSX.Element | null {
+  const { sessions, status } = useUsageLimitedSessions(
+    provider.provider,
+    nowMs,
+  );
+  const [retainedReview, setRetainedReview] = useState<Extract<
+    UsageLimitedSessionItem,
+    { kind: 'chat' }
+  > | null>(null);
+  const [first, ...rest] = sessions;
+  const resetAtMs = selectBlockingResetAtMs(provider.rateLimits, nowMs);
+  const entriesById = new Map(
+    sessions.map((entry) => [waitingSessionId(entry.session), entry]),
+  );
+  const waiting: NonEmptyUsageLimitedWaitingSessions | null =
+    first === undefined
+      ? null
+      : [toWaitingSession(first), ...rest.map(toWaitingSession)];
+  const row =
+    (waiting !== null || status === 'idle') &&
+    hasBlockingRateLimit(provider.rateLimits, nowMs) ? (
+      <UsageLimitedSessionsControl
+        testIdPrefix={`usage-provider-${provider.provider}`}
+        state={
+          waiting === null
+            ? { kind: 'loading' }
+            : {
+                kind: 'waiting',
+                sessions: waiting,
+                resetLabel:
+                  resetAtMs === null
+                    ? null
+                    : formatUsageLimitTimeLabel(resetAtMs),
+                onOpenSession: (session): void => {
+                  const target = entriesById.get(session.id);
+                  if (!target) return;
+                  if (
+                    target.session.kind === 'chat' &&
+                    target.session.projectId === CODE_REVIEW_CHAT_PROJECT_ID
+                  ) {
+                    setRetainedReview(target.session);
+                  } else {
+                    openUsageLimitedSession(target);
+                  }
+                },
+              }
+        }
+      />
+    ) : null;
+  return (
+    <>
+      {row &&
+        (boxed ? (
+          <div className="mt-2">
+            <UsageRowList>{row}</UsageRowList>
+          </div>
+        ) : (
+          row
+        ))}
+      {retainedReview && (
+        <RetainedReviewChatDialog
+          key={waitingSessionId(retainedReview)}
+          session={retainedReview}
+          onClose={(): void => setRetainedReview(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -270,22 +492,14 @@ interface ProviderUsageCardProps {
   refreshProviderUsageDetails: (
     provider: AgentProviderType,
   ) => Promise<AgentUsageOverview>;
-  density?: ProviderUsageCardDensity;
-  /**
-   * Drop the card container chrome (border/background/rounded corners) so the
-   * content fills its parent. The Usage panel renders frameless sections
-   * separated by dividers; the standalone page keeps the framed card.
-   */
-  frameless?: boolean;
 }
 
 /**
- * One provider's usage card — header (icon/label/auth/subscription + refresh),
- * account row, live remaining-limit sub-cards, retained other-account
- * snapshots, and any error. Shared by the standalone Usage page (via
- * {@link ProviderUsageCards}) and the Usage panel, so both surfaces render
- * identical content. `density` trims padding/heading size for small panels;
- * `frameless` strips the card box so the content fills the panel.
+ * One provider's usage group: its name and plan as the heading, a row per
+ * limit window, then the account as the last row, with retained snapshots
+ * of other accounts and any error under it. Shared by the standalone Usage
+ * page (via {@link ProviderUsageCards}) and the Usage panel, so both
+ * surfaces render identical content. The surface owns refresh.
  */
 export function ProviderUsageCard({
   provider,
@@ -294,191 +508,117 @@ export function ProviderUsageCard({
   refreshingProviders,
   refreshProviderUsage,
   refreshProviderUsageDetails,
-  density = 'comfortable',
-  frameless = false,
 }: ProviderUsageCardProps): JSX.Element {
-  const compact = density === 'compact';
   const proxyHarness =
     provider.provider === 'claude' || provider.provider === 'codex'
       ? provider.provider
       : undefined;
   const proxied = useProviderAccountSource(proxyHarness) === 'account-proxy';
-  const proxyRefreshedAt = useAccountProxyStore(
-    (state) => state.status?.refreshedAt ?? null,
-  );
-  const proxyRefreshing = useAccountProxyStore((state) => state.refreshing);
   const providerLabel = getModelCatalogProviderLabel(provider.provider);
 
-  return (
-    <article
-      data-testid={`usage-provider-card-${provider.provider}`}
-      className={usageCardContainerClass({ compact, frameless })}
-    >
-      <UsageCardHeader
-        icon={
-          <AgentProviderIcon
-            provider={provider.provider}
-            width={18}
-            height={18}
-          />
-        }
+  if (
+    proxied &&
+    (provider.provider === 'claude' || provider.provider === 'codex')
+  ) {
+    return (
+      <UsageGroup
         title={providerLabel}
-        authState={provider.authState}
-        {...(proxied
-          ? {
-              authLabel: 'via account proxy',
-              planActive: false,
-              lastUpdatedAt: proxyRefreshedAt,
-              refreshing: proxyRefreshing,
-              onRefresh: (): void => {
-                void refreshAccountProxyStatus();
-              },
-            }
-          : {
-              planLabel: provider.subscriptionLabel,
-              planActive: provider.authState === 'authenticated',
-              lastUpdatedAt: provider.lastUpdatedAt,
-              refreshing: refreshingProviders.has(provider.provider),
-              onRefresh: (): void => {
-                void refreshProviderUsage(provider.provider);
-              },
-            })}
-        planChipTestId={`usage-provider-${provider.provider}-plan-chip`}
-        refreshLabel={`Refresh ${providerLabel} usage`}
-        compact={compact}
-        frameless={frameless}
-      />
+        provider={provider.provider}
+        plan="Account proxy"
+        testId={`usage-provider-card-${provider.provider}`}
+      >
+        <AccountProxyUsageSection harness={provider.provider} nowMs={nowMs} />
+        <UsageLimitedSessionsSection provider={provider} nowMs={nowMs} boxed />
+      </UsageGroup>
+    );
+  }
 
-      {proxied &&
-      (provider.provider === 'claude' || provider.provider === 'codex') ? (
-        <>
-          <AccountProxyUsageSection
-            harness={provider.provider}
-            nowMs={nowMs}
-            frameless={frameless}
-          />
-          <UsageLimitedResumeButton
-            provider={provider}
-            nowMs={nowMs}
-            frameless={frameless}
-          />
-        </>
-      ) : (
-        <ProviderUsageDetails
-          provider={provider}
-          nowMs={nowMs}
-          snapshots={snapshots}
-          refreshingProviders={refreshingProviders}
-          refreshProviderUsage={refreshProviderUsage}
-          refreshProviderUsageDetails={refreshProviderUsageDetails}
-          frameless={frameless}
-        />
-      )}
-    </article>
+  return (
+    <ProviderUsageDetails
+      provider={provider}
+      providerLabel={providerLabel}
+      nowMs={nowMs}
+      snapshots={snapshots}
+      refreshingProviders={refreshingProviders}
+      refreshProviderUsage={refreshProviderUsage}
+      refreshProviderUsageDetails={refreshProviderUsageDetails}
+    />
   );
 }
 
-/** The user's own sign-in on this device: its account, limits, and errors. */
+/** The user's own sign-in on this device: its limits, account, and errors. */
 function ProviderUsageDetails({
   provider,
+  providerLabel,
   nowMs,
   snapshots,
   refreshingProviders,
   refreshProviderUsage,
   refreshProviderUsageDetails,
-  frameless,
-}: Omit<ProviderUsageCardProps, 'density' | 'frameless'> & {
-  frameless: boolean;
-}): JSX.Element {
+}: ProviderUsageCardProps & { providerLabel: string }): JSX.Element {
   const subCards = buildSubCards(provider.provider, provider.rateLimits);
   const errorInfo = resolveUsageErrorInfo(provider.errorInfo, provider.error);
   return (
-    <>
-      {provider.provider === 'cursor' || provider.provider === 'copilot' ? (
-        <ManagedAccountRow provider={provider} frameless={frameless} />
-      ) : (
+    <UsageProviderGroup
+      title={providerLabel}
+      provider={provider.provider}
+      plan={
+        provider.authState === 'authenticated'
+          ? usagePlanLabel(providerLabel, provider.subscriptionLabel)
+          : null
+      }
+      planTestId={`usage-provider-${provider.provider}-plan-chip`}
+      testId={`usage-provider-card-${provider.provider}`}
+      windows={subCards}
+      nowMs={nowMs}
+      rows={
         <>
-          <ProviderAccountRow
-            provider={provider}
-            refreshProviderUsageDetails={refreshProviderUsageDetails}
-            frameless={frameless}
-          />
-          <UsageLimitedResumeButton
-            provider={provider}
-            nowMs={nowMs}
-            frameless={frameless}
-          />
-        </>
-      )}
-
-      {subCards.length > 0 ? (
-        <div className={`space-y-3 ${frameless ? 'mt-2' : 'mt-4'}`}>
-          {subCards.map((card) => (
-            <LimitSubCardView
-              key={`${provider.provider}-${card.key}`}
-              card={card}
-              nowMs={nowMs}
-              frameless={frameless}
+          {/* The error notice below already explains why no live data is
+              available, so this row only renders for the error-free case. */}
+          {subCards.length === 0 && !errorInfo ? (
+            <UsageRow
+              title="Limits"
+              detail="No live remaining-limit data is available for this provider in the current session."
             />
-          ))}
-        </div>
-      ) : (
-        // The error notice below already explains why no live data is
-        // available, so the placeholder only renders for the error-free case.
-        !errorInfo && (
-          <p className={`text-s fg-secondary ${frameless ? 'mt-2' : 'mt-4'}`}>
-            No live remaining-limit data is available for this provider in the
-            current session.
-          </p>
-        )
-      )}
-
-      <OtherAccountSnapshots
-        provider={provider.provider}
-        activeEmail={provider.accountEmail}
-        activeSubscriptionLabel={provider.subscriptionLabel}
-        snapshots={snapshots ?? []}
-        nowMs={nowMs}
-      />
-
-      {errorInfo && (
-        <UsageErrorNotice
-          label={getModelCatalogProviderLabel(provider.provider)}
-          testIdPrefix={`usage-provider-${provider.provider}`}
-          info={errorInfo}
-          onRetry={(): void => {
-            void refreshProviderUsage(provider.provider);
-          }}
-          retrying={refreshingProviders.has(provider.provider)}
-          showingRetainedUsage={subCards.length > 0}
-          frameless={frameless}
-        />
-      )}
-    </>
-  );
-}
-
-/** Also exposes shutdown checkpoints for local models and non-agent pipelines. */
-interface ShutdownResumeButtonProps {
-  nowMs: number;
-}
-
-export function ShutdownResumeButton({
-  nowMs,
-}: ShutdownResumeButtonProps): JSX.Element | null {
-  const count = useUsageLimitedSessionCount(null, nowMs);
-  const open = useUsageLimitResumePromptStore((state) => state.open);
-  if (!count) return null;
-  return (
-    <button
-      type="button"
-      data-testid="usage-shutdown-resume"
-      className="focus-ring rounded-md ring-1 ring-fg-info/30 bg-info-subtle px-2.5 py-1.5 text-xs font-medium fg-info"
-      onClick={() => open(null, 'app-restart')}
-    >
-      Resume {count} session{count === 1 ? '' : 's'} paused when the application
-      stopped…
-    </button>
+          ) : null}
+          {provider.provider === 'claude' || provider.provider === 'codex' ? (
+            <UsageLimitedSessionsSection provider={provider} nowMs={nowMs} />
+          ) : null}
+          {provider.provider === 'cursor' || provider.provider === 'copilot' ? (
+            <ManagedAccountRow provider={provider} />
+          ) : (
+            <ProviderAccountRow
+              provider={provider}
+              refreshProviderUsageDetails={refreshProviderUsageDetails}
+            />
+          )}
+        </>
+      }
+      footer={
+        <>
+          <OtherAccountSnapshots
+            provider={provider.provider}
+            activeEmail={provider.accountEmail}
+            activeSubscriptionLabel={provider.subscriptionLabel}
+            snapshots={snapshots ?? []}
+            nowMs={nowMs}
+          />
+          {errorInfo && (
+            <UsageErrorNotice
+              label={providerLabel}
+              testIdPrefix={`usage-provider-${provider.provider}`}
+              info={errorInfo}
+              onRetry={(): void => {
+                void refreshProviderUsage(provider.provider);
+              }}
+              retrying={refreshingProviders.has(provider.provider)}
+              showingRetainedUsage={subCards.length > 0}
+              frameless
+            />
+          )}
+        </>
+      }
+    />
   );
 }
 
@@ -503,7 +643,6 @@ export function ProviderUsageCards({
 
   return (
     <>
-      <ShutdownResumeButton nowMs={nowMs} />
       {providers.map((provider) => (
         <ProviderUsageCard
           key={provider.provider}
@@ -515,34 +654,20 @@ export function ProviderUsageCards({
           refreshProviderUsageDetails={refreshProviderUsageDetails}
         />
       ))}
-      <OpenCodeUsageSection
-        usage={usage}
-        refreshProviderUsage={refreshProviderUsage}
-      />
+      <OpenCodeUsageSection usage={usage} />
     </>
   );
 }
 
-/** Host gate and existing usage transport around the shared account card. */
+/** Host gate around the shared OpenCode account group. */
 export function OpenCodeUsageSection({
   usage,
-  refreshProviderUsage,
-  frameless = false,
 }: {
   usage: AgentUsageOverview;
-  refreshProviderUsage: (provider: AgentProviderType) => Promise<void>;
-  frameless?: boolean;
 }): JSX.Element | null {
   const enabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
   );
   if (!enabled || !usage.openCodeAccounts) return null;
-  return (
-    <div className={usageCardContainerClass({ compact: true, frameless })}>
-      <OpenCodeAccountCard
-        snapshot={usage.openCodeAccounts}
-        onRefresh={() => refreshProviderUsage('opencode')}
-      />
-    </div>
-  );
+  return <OpenCodeAccountCard snapshot={usage.openCodeAccounts} />;
 }

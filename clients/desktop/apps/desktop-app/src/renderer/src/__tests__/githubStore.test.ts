@@ -76,6 +76,8 @@ describe('githubStore', () => {
     prCreate: true,
     pipeline: true,
     terminal: true,
+    runComment: true,
+    activation: true,
   };
 
   function applyDefaultInAppPreferences(): void {
@@ -104,6 +106,8 @@ describe('githubStore', () => {
         prCreate: 'Default',
         pipeline: 'Default',
         terminal: 'Default',
+        runComment: 'Default',
+        activation: 'Default',
       },
     };
     refreshOsNotificationPrefs(preferences);
@@ -1213,6 +1217,23 @@ describe('githubStore', () => {
     );
   });
 
+  it('titles a Pipeline-category OS notification without a title Workflow', () => {
+    const notificationMock = enableOsNotifications();
+
+    useGitHubStore
+      .getState()
+      .addToast('Nightly checks finished.', 'success', undefined, {
+        category: 'Pipeline',
+      });
+
+    expect(notificationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Workflow',
+        body: 'Nightly checks finished.',
+      }),
+    );
+  });
+
   describe('per-space notification choices (CAN-3615)', () => {
     const scope = { projectId: 'project-a', worktreeId: 'wt-1' };
     function saveChoice(override: SpaceNotificationLevel | null): void {
@@ -1427,6 +1448,7 @@ describe('githubStore', () => {
         },
       ],
       requireReviewedMessages: true,
+      telemetryFlow: 'pull_request',
       repoIds: ['repo-a'],
       operationId: ANY_STRING,
     });

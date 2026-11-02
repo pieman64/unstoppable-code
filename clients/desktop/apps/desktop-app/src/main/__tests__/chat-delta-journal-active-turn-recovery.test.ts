@@ -93,12 +93,21 @@ function askUser(): ChatCoreMutation[] {
 
 /** The user answers: the question is settled and the turn streams again. */
 function answer(): ChatCoreMutation[] {
+  const branchQuestion = QUESTION.questions.find(({ id }) => id === '0');
+  if (!branchQuestion) throw new Error('Missing branch question fixture');
+
   return [
     {
       type: 'pending_question.upserted',
       question: {
         ...QUESTION,
-        answers: [{ questionId: '0', answer: 'release' }],
+        answers: [
+          {
+            questionId: branchQuestion.id,
+            question: branchQuestion.question,
+            selectedOptions: ['release'],
+          },
+        ],
         answeredAt: TURN_STARTED_AT + 9_000,
       },
     },
@@ -125,6 +134,13 @@ async function fullState(repository: ChatStateV2Repository): Promise<string> {
       chatIds: ['chat'],
       fullTranscript: true,
     }),
+  );
+}
+
+/** Phase 25 keeps different write forms on/off; log-operation counts differ. */
+function withoutTranscriptRevisions(state: string): unknown {
+  return JSON.parse(state, (key, value: unknown) =>
+    key === 'transcriptRevision' ? undefined : value,
   );
 }
 
@@ -261,7 +277,9 @@ describe('delta journal active-turn recovery (phase 10)', () => {
       await beforeCrash(repository);
       await afterCrash(repository);
     });
-    expect(final).toBe(reference);
+    expect(withoutTranscriptRevisions(final)).toEqual(
+      withoutTranscriptRevisions(reference),
+    );
   });
 
   it('replays the turn timer’s pause owners after a crash', async () => {
@@ -331,7 +349,9 @@ describe('delta journal active-turn recovery (phase 10)', () => {
       await beforeCrash(repository);
       await afterCrash(repository);
     });
-    expect(final).toBe(reference);
+    expect(withoutTranscriptRevisions(final)).toEqual(
+      withoutTranscriptRevisions(reference),
+    );
   });
 
   it('recovers a long active turn killed midway through its last acknowledged event', async () => {

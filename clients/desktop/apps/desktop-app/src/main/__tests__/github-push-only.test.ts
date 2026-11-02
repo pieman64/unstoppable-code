@@ -109,6 +109,8 @@ const mockedHasRemoteTrackingBranch = jest.mocked(hasRemoteTrackingBranch);
 const mockedHasUnpushedCommits = jest.mocked(hasUnpushedCommits);
 const mockedPushBranch = jest.mocked(pushBranch);
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+// The user flows pass fetchOrigin a signal so failures are not swallowed.
+const ANY_SIGNAL: unknown = expect.any(AbortSignal);
 
 type HandlerFn = (
   event: any,
@@ -146,7 +148,13 @@ describe('githubPushOnly handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    registerGitHubHandlers(() => mockWindow as any, {
+      // These tests reach no projected pull request read.
+      dispatcher: {} as never,
+      resolveCaller: () => {
+        throw new Error('No projected pull request read in this test.');
+      },
+    });
     handler = getPushOnlyHandler();
   });
 
@@ -320,7 +328,9 @@ describe('githubPushOnly handler', () => {
           pullFirst: true,
         },
       );
-      expect(fetchOrigin).toHaveBeenCalledWith('/workspace/wt');
+      expect(fetchOrigin).toHaveBeenCalledWith('/workspace/wt', {
+        signal: ANY_SIGNAL,
+      });
       expect(pullBranchRebase).toHaveBeenCalledTimes(behind ? 1 : 0);
       if (behind)
         expect(pullBranchRebase).toHaveBeenCalledWith(
@@ -331,6 +341,44 @@ describe('githubPushOnly handler', () => {
       expect(commitWithMessage).not.toHaveBeenCalled();
     },
   );
+
+  // fetchOrigin swallows every error unless the caller passes a signal.
+  it('fails the repo when the pull-first fetch fails instead of pushing over stale refs', async () => {
+    jest.mocked(isMultiRepoWorkspace).mockReturnValue(false);
+    jest.mocked(resolveWorktreeCwd).mockReturnValue('/workspace/wt');
+    jest.mocked(getRemoteUrl).mockResolvedValue('git@github.com:a/b.git');
+    jest.mocked(getCurrentBranch).mockResolvedValue('feature');
+    jest
+      .mocked(fetchOrigin)
+      .mockImplementation((_repoPath, options) =>
+        options?.signal === undefined
+          ? Promise.resolve()
+          : Promise.reject(new Error('fatal: unable to access origin')),
+      );
+    jest.mocked(hasUnpulledCommits).mockResolvedValue(false);
+    jest.mocked(pullBranchRebase).mockResolvedValue();
+    jest.mocked(pushBranch).mockResolvedValue();
+
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+        repoIds: ['__single_repo__'],
+        establishUpstream: true,
+        expectedHeadBranch: 'feature',
+        pullFirst: true,
+      },
+    );
+
+    expect(result.failedRepos).toEqual([
+      expect.objectContaining({ error: 'fatal: unable to access origin' }),
+    ]);
+    const options = jest.mocked(fetchOrigin).mock.calls[0]?.[1];
+    expect(options?.signal?.aborted).toBe(false);
+    expect(pullBranchRebase).not.toHaveBeenCalled();
+    expect(pushBranch).not.toHaveBeenCalled();
+  });
 
   it('continues only the selected push without tracking or a new commit', async () => {
     jest.clearAllMocks();

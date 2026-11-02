@@ -34,6 +34,7 @@ export interface AiCreditsUsage {
 }
 
 interface Snapshot {
+  accountGeneration: number;
   state: CanopyCloudAiCreditsState | null;
   routingMode: AiCreditsRoutingMode | null;
   lastUpdatedAt: number | null;
@@ -58,6 +59,7 @@ interface ScopeEntry {
  */
 const entries = new Map<string, ScopeEntry>();
 let requestVersion = 0;
+let accountGeneration = 0;
 
 function entryFor(key: string): ScopeEntry {
   let entry = entries.get(key);
@@ -107,21 +109,57 @@ export function invalidateAiCreditsUsageCache(): void {
  * than superseded.
  */
 export function refreshAiCreditsUsage(): void {
-  const key = aiCreditsScopeKey(undefined, readNavigationScopeKey());
+  const navigationKey = aiCreditsScopeKey(undefined, readNavigationScopeKey());
+  const key =
+    navigationKey === 'nav|personal' ? 'wallet|personal' : navigationKey;
   if (entries.get(key)?.pending) {
     return;
   }
   invalidateAiCreditsUsageCache();
 }
 
+/**
+ * When a charged turn's balance re-reads run, after the turn ends. The proxy
+ * debits after the stream completes, so the first read can predate the
+ * charge; two short delayed reads catch the settled balance without a steady
+ * poll, as the routing banner does.
+ */
+export const AI_CREDITS_SETTLEMENT_REFRESH_DELAYS_MS: readonly number[] = [
+  0, 1_500, 4_000,
+];
+
+let settlementTimers: ReturnType<typeof setTimeout>[] = [];
+
+/**
+ * Re-read every mounted AI Credits balance after a turn that AI Credits paid
+ * for. Calls within the window coalesce into one schedule, so several
+ * composers on the same chat, or a duplicate completion, do not multiply the
+ * reads. Never deducts an estimate locally: each read is the server's figure.
+ */
+export function refreshAiCreditsAfterChargedTurn(): void {
+  settlementTimers.forEach(clearTimeout);
+  settlementTimers = AI_CREDITS_SETTLEMENT_REFRESH_DELAYS_MS.map((delay) =>
+    setTimeout(invalidateAiCreditsUsageCache, delay),
+  );
+}
+
+/** Test seam: drop any scheduled settlement re-reads. */
+export function cancelAiCreditsSettlementRefreshForTests(): void {
+  settlementTimers.forEach(clearTimeout);
+  settlementTimers = [];
+}
+
 // Drop the cache whenever the cloud account connection changes (connect,
 // disconnect, or API-key change all dispatch this event). Registered once at
 // module load so usage re-reads no matter which surface mounts the hook.
 if (typeof window !== 'undefined') {
-  window.addEventListener(
-    CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
-    invalidateAiCreditsUsageCache,
-  );
+  window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, () => {
+    accountGeneration += 1;
+    entries.clear();
+    settlementTimers.forEach(clearTimeout);
+    settlementTimers = [];
+    invalidateAiCreditsUsageCache();
+  });
 }
 
 function preserveBalanceAfterFailedRefresh(
@@ -147,6 +185,7 @@ async function readSnapshot(
   previousState: CanopyCloudAiCreditsState | null,
   scope: AiCreditsScopeRequest | undefined,
 ): Promise<Snapshot> {
+  const generationAtRead = accountGeneration;
   const loadCredits = window.api?.loadCanopyCloudAiCredits;
   const loadPreferences = window.api?.loadPreferences;
 
@@ -162,16 +201,34 @@ async function readSnapshot(
   ]);
 
   return {
+    accountGeneration: generationAtRead,
     state: preserveBalanceAfterFailedRefresh(previousState, state),
     routingMode,
     lastUpdatedAt: Date.now(),
   };
 }
 
+export interface AiCreditsUsageOptions {
+  /** The host has resolved this work's funding owner as Personal. */
+  readonly personalWallet?: boolean;
+  /**
+   * False skips every read, so a surface that shows the balance only for some
+   * chats can call the hook unconditionally. Defaults to true.
+   */
+  readonly enabled?: boolean;
+}
+
 export function useAiCreditsUsage(
   scope?: AiCreditsScopeRequest,
+  { enabled = true, personalWallet = false }: AiCreditsUsageOptions = {},
 ): AiCreditsUsage {
-  const { scope: stableScope, key } = useStableAiCreditsScope(scope);
+  const { scope: stableScope, key: scopeKey } = useStableAiCreditsScope(scope);
+  // A confirmed Personal chat and the Personal navigation tiles read the
+  // same wallet. Keep the real request scope for main's ownership resolution.
+  const key =
+    personalWallet || scopeKey === 'nav|personal'
+      ? 'wallet|personal'
+      : scopeKey;
   const [keyedSnapshot, setKeyedSnapshot] = useState<{
     key: string;
     value: Snapshot;
@@ -182,7 +239,11 @@ export function useAiCreditsUsage(
       : null;
   });
   // A snapshot read for another scope is never shown for this one.
-  const snapshot = keyedSnapshot?.key === key ? keyedSnapshot.value : null;
+  const snapshot =
+    keyedSnapshot?.key === key &&
+    keyedSnapshot.value.accountGeneration === accountGeneration
+      ? keyedSnapshot.value
+      : null;
   const setSnapshot = useCallback(
     (value: Snapshot | null): void =>
       setKeyedSnapshot(value ? { key, value } : null),
@@ -197,14 +258,16 @@ export function useAiCreditsUsage(
   }, []);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     const notify = (): void => setRefreshSignal((n) => n + 1);
     subscribers.add(notify);
     return (): void => {
       subscribers.delete(notify);
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     let cancelled = false;
     const entry = entryFor(key);
     if (entry.cache && isCacheFresh(entry)) {
@@ -252,8 +315,18 @@ export function useAiCreditsUsage(
     return (): void => {
       cancelled = true;
     };
-  }, [key, stableScope, setSnapshot, refreshSignal]);
+  }, [enabled, key, stableScope, setSnapshot, refreshSignal]);
 
+  if (!enabled) {
+    return {
+      state: null,
+      routingMode: null,
+      lastUpdatedAt: null,
+      loading: false,
+      refreshing: false,
+      refresh,
+    };
+  }
   return {
     state: snapshot?.state ?? null,
     routingMode: snapshot?.routingMode ?? null,

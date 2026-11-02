@@ -35,8 +35,9 @@ test('shares a portable desktop plugin and copies its public link', async () => 
     });
 
     await app.openPluginsPage();
+    await window.getByTestId('plugins-search').fill('gamma-tool');
     await window
-      .getByTestId('plugins-entry-mkt:demo/market/gamma-tool')
+      .getByTestId('customize-row-mkt:demo/market/gamma-tool')
       .click();
     await window.getByTestId('plugin-detail-share').click();
 
@@ -49,15 +50,26 @@ test('shares a portable desktop plugin and copies its public link', async () => 
       'Public source: codex-builtin:demo/market',
     );
     await modal.getByTestId('share-plugin-submit').click();
-    await expect(modal).toHaveCount(0);
-    const toast = window
-      .getByTestId('toast-card')
-      .filter({ hasText: 'Plugin is now public' });
-    await toast.getByTestId('toast-copy-link').click();
-    await expect(toast.getByRole('button', { name: 'Copied' })).toBeVisible();
+    // The dialog stays open on its success notice with the new link.
+    const publicLink = /\/portal\/plugins\/plugins\/shared\/public-plugin-e2e$/;
+    await expect(modal.getByTestId('share-plugin-success')).toContainText(
+      'Plugin is now public',
+    );
+    await expect(modal.getByTestId('share-plugin-link')).toHaveText(publicLink);
+    await expect(
+      window
+        .getByTestId('toast-card')
+        .filter({ hasText: 'Plugin is now public' }),
+    ).toHaveCount(0);
+    await modal.getByTestId('share-plugin-copy-link').click();
+    await expect(modal.getByTestId('share-plugin-copy-link')).toContainText(
+      'Copied',
+    );
     await expect
       .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
-      .toMatch(/\/portal\/plugins\/plugins\/shared\/public-plugin-e2e$/);
+      .toMatch(publicLink);
+    await modal.getByTestId('share-plugin-done').click();
+    await expect(modal).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -140,8 +152,9 @@ test('moves a plugin share reused from another organization to the chosen one', 
     });
 
     await app.openPluginsPage();
+    await window.getByTestId('plugins-search').fill('gamma-tool');
     await window
-      .getByTestId('plugins-entry-mkt:demo/market/gamma-tool')
+      .getByTestId('customize-row-mkt:demo/market/gamma-tool')
       .click();
     await window.getByTestId('plugin-detail-share').click();
     const modal = window.getByTestId('share-plugin-modal');
@@ -152,6 +165,8 @@ test('moves a plugin share reused from another organization to the chosen one', 
       )
       .click();
     await modal.getByTestId('share-plugin-submit').click();
+    await expect(modal.getByTestId('share-plugin-success')).toBeVisible();
+    await modal.getByTestId('share-plugin-done').click();
     await expect(modal).toHaveCount(0);
     expect(
       await electronApp.evaluate(() => globalThis.__pluginShareUpdates),

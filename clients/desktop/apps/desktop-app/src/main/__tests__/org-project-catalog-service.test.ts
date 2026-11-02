@@ -7,6 +7,7 @@ import type {
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { OrgProjectSummary } from '@canopy/protocol/org-projects';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
 
 const mockReadFile = jest.fn<Promise<string>, [string, string]>();
 const mockWriteFileAtomically = jest.fn<
@@ -487,12 +488,34 @@ describe('OrgProjectCatalogService', () => {
     }
   });
 
-  it.each<CanopyCloudAccountReadResult>([
-    { status: 'unavailable' },
-    { status: 'error', error: new Error('Decryption failed') },
-  ])(
+  const secureStorageFailure: SecureStorageFailure = {
+    version: 1,
+    code: 'SECURE_STORAGE_READ_UNAVAILABLE',
+    operation: 'read',
+    state: 'unavailable',
+    backend: null,
+    retryable: true,
+  };
+  const startupReads: Array<{
+    status: string;
+    read: CanopyCloudAccountReadResult;
+  }> = [
+    {
+      status: 'unavailable',
+      read: {
+        status: 'unavailable',
+        error: new Error('Secure storage unavailable'),
+        secureStorageFailure,
+      },
+    },
+    {
+      status: 'error',
+      read: { status: 'error', error: new Error('Decryption failed') },
+    },
+  ];
+  it.each(startupReads)(
     'recovers from a $status startup account read on refresh',
-    async (read): Promise<void> => {
+    async ({ read }): Promise<void> => {
       mockLoadAccount.mockResolvedValue(null);
       mockReadAccount.mockResolvedValue(read);
       const service = createOrgProjectCatalogService();

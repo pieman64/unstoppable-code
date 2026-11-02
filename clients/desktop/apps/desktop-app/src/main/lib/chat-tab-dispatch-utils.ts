@@ -12,7 +12,10 @@ import { completePersistedTabTurnTimers, writeChatTabsFile } from './chat-tabs';
 import { readChatTabsFile } from './chat-tabs-reader';
 import { enqueueChatTabMutation } from './chat-tab-mutation-queue';
 import { sendToWindow } from './window-send';
-import { getChatStateService } from '../services/chat-state-service';
+import {
+  getChatStateService,
+  type ProviderEventIngestResult,
+} from '../services/chat-state-service';
 
 async function waitForE2eHookChatPersistBarrier(
   tab: PersistedChatTab,
@@ -39,8 +42,8 @@ async function waitForE2eHookChatPersistBarrier(
 }
 
 /**
- * Resolves whether the event may be delivered: it committed, or it only
- * refreshed runtime activity. Duplicate and stale events resolve false.
+ * Returns canonical ingestion detail for ordinary events and starting
+ * pickups, whose acceptance can differ from the event's ordinary outcome.
  */
 export async function commitProviderChatEvent(args: {
   projectId: string;
@@ -55,10 +58,10 @@ export async function commitProviderChatEvent(args: {
     turnUserMessageId?: string;
     providerType?: AgentProviderType;
   };
-}): Promise<boolean> {
+}): Promise<ProviderEventIngestResult> {
   // The provider that ran wins: lane selection may substitute one.
   const providerType = args.event.providerType ?? args.providerType;
-  const outcome = await getChatStateService().ingestProviderEventWithOutcome({
+  return getChatStateService().ingestProviderEventWithResult({
     projectId: args.projectId,
     worktreeId: args.worktreeId,
     chatId: args.chatId,
@@ -69,7 +72,6 @@ export async function commitProviderChatEvent(args: {
       ? { turnUserMessageId: args.event.turnUserMessageId }
       : {}),
   });
-  return outcome !== 'not-applied';
 }
 
 export async function upsertPersistedChatTab(args: {
@@ -238,6 +240,7 @@ export async function emitChatDispatchFailure(args: {
     args.chatId,
     'failure',
     args.errorMessage,
+    { setupFailure: true },
   );
   const data = {
     type: 'error',

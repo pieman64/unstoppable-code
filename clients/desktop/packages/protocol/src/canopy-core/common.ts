@@ -67,3 +67,5 @@ export const CanopyCallerDescriptorSchema = z.strictObject({
 export type CanopyCallerDescriptor = z.output<
   typeof CanopyCallerDescriptorSchema
 >;
+
+export * from './shared-multi-repo-validation';

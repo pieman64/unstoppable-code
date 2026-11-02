@@ -1,18 +1,22 @@
 import {
   BarChart3,
   Boxes,
+  CreditCard,
   Database,
   FeedIcon,
   FileText,
   FolderGit2,
+  PluginsIcon,
   Settings,
+  Shield,
   Users,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { organizationBillingPath } from '@canopy/protocol/billing';
+import { AI_CREDITS_LABEL } from '@canopy/ui-shared';
 import {
   LAPSED_LIVE_TABS,
   organizationSettingsNavTabForRoute,
   type OrganizationSettingsNavTab,
+  type OrganizationSettingsSubtab,
 } from '@canopy/protocol/settings';
 import { parseSettingsPathname } from './settings-path';
 
@@ -51,7 +55,7 @@ export const TEAM_NAV_ITEMS: readonly TeamNavItem[] = [
   },
   {
     key: 'digests',
-    label: 'Organization digests',
+    label: 'Digests',
     description: "Regular summaries of this organization's work.",
     icon: FileText,
     href: (id) => `/organization/${id}/digests`,
@@ -79,7 +83,7 @@ export const TEAM_NAV_ITEMS: readonly TeamNavItem[] = [
   },
   {
     key: 'memory',
-    label: 'Organization memory',
+    label: 'Memory',
     description: "Facts agents have learned from this organization's work.",
     icon: Database,
     href: (id) => `/organization/${id}/memory`,
@@ -102,21 +106,6 @@ export function teamNavItem(tab: TeamTab): TeamNavItem {
 }
 
 /**
- * Where a tab links. When billing needs the viewer's action, Settings
- * deep-links to its Billing subtab so the attention dot does not cost an extra
- * click. Callers must gate `billingNeedsAttention` on the viewer's LIVE role.
- */
-export function teamTabHref(
-  item: TeamNavItem,
-  orgId: string,
-  billingNeedsAttention: boolean,
-): string {
-  return item.key === 'settings' && billingNeedsAttention
-    ? organizationBillingPath(orgId)
-    : item.href(orgId);
-}
-
-/**
  * The tab a route belongs to within ONE organization. `null` for any other
  * organization's routes, routes outside `/organization/<orgId>`, and unknown
  * sub-routes, so a caller never marks an unrelated tab current. Timeline
@@ -131,4 +120,99 @@ export function matchTeamNavTab(
     parseSettingsPathname(pathname),
     orgId,
   );
+}
+
+export interface OrganizationSettingsSubtabItem {
+  readonly key: OrganizationSettingsSubtab;
+  readonly label: string;
+  /** One sentence under the page header title. See `docs/ux-writing.md`. */
+  readonly description: string;
+  readonly icon: typeof FeedIcon;
+}
+
+/**
+ * The organization's Settings pages. Each is its own settings rail row and
+ * names its page header; the order is the rail's (identity first, then the
+ * rules the organization sets for members, its connections, and the
+ * commercial pages last, side by side).
+ */
+export const ORGANIZATION_SETTINGS_SUBTAB_ITEMS: readonly OrganizationSettingsSubtabItem[] =
+  [
+    {
+      key: 'general',
+      label: 'General',
+      description: "The organization's name, logo and work digests.",
+      icon: Settings,
+    },
+    {
+      key: 'policies',
+      label: 'Policies',
+      description:
+        'What members share, and which models and agents they can use.',
+      icon: Shield,
+    },
+    {
+      key: 'integrations',
+      label: 'Integrations',
+      description:
+        'Accounts the organization connects for everyone, such as GitHub.',
+      icon: PluginsIcon,
+    },
+    {
+      key: 'usage',
+      label: 'Usage',
+      description:
+        'Who can see statistics, and what your AI provider plans cost.',
+      icon: BarChart3,
+    },
+    {
+      key: 'billing',
+      label: 'Billing',
+      description:
+        'The plan, seats, AI credit pool, payment method and past payments.',
+      icon: CreditCard,
+    },
+  ];
+
+/**
+ * The item for a Settings page. With free access on, Billing keeps its key
+ * and `?tab=billing` URL but is named for the AI credits it still sells.
+ */
+export function organizationSettingsSubtabItem(
+  key: OrganizationSettingsSubtab,
+  freeAccess = false,
+): OrganizationSettingsSubtabItem {
+  const item = ORGANIZATION_SETTINGS_SUBTAB_ITEMS.find(
+    (candidate) => candidate.key === key,
+  );
+  if (!item) throw new Error(`Unknown organization settings page: ${key}`);
+  return key === 'billing' && freeAccess
+    ? {
+        ...item,
+        label: AI_CREDITS_LABEL,
+        description: 'The AI credit pool, payment method and past payments.',
+      }
+    : item;
+}
+
+/** Where a Settings page lives; General keeps the bare Settings URL. */
+export function organizationSettingsSubtabHref(
+  orgId: string,
+  key: OrganizationSettingsSubtab,
+): string {
+  const base = `/organization/${orgId}/settings`;
+  return key === 'general' ? base : `${base}?tab=${key}`;
+}
+
+/**
+ * The Settings page a request shows: the requested one when the viewer gets
+ * it, otherwise the first one they get. A stale or hidden `?tab=` falls back
+ * rather than 404ing. `null` when the viewer gets none.
+ */
+export function resolveOrganizationSettingsSubtab(
+  requested: OrganizationSettingsSubtab | null,
+  visible: readonly OrganizationSettingsSubtab[],
+): OrganizationSettingsSubtab | null {
+  if (requested !== null && visible.includes(requested)) return requested;
+  return visible[0] ?? null;
 }

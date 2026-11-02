@@ -21,6 +21,7 @@ import { iterateAsync, writeJsonValuesCooperatively } from './cooperative-json';
 import { fsyncDirectory } from './fsync-directory';
 import { isPersistedChatMessage } from './persisted-chat-message-validation';
 import { isErrnoException, isRecord } from './type-guards';
+import { recordChatStorageFileWrite } from '@canopy/desktop-shared/node/work-counters';
 
 /** Rows are bounded on the write side so a stored row can always be read back. */
 export const MAX_TRANSCRIPT_ROW_BYTES = 16 * 1024 * 1024;
@@ -51,7 +52,7 @@ export interface SharedPrefixReplaceOptions {
     offset: number,
     end: number,
     rowDigest: string,
-  ) => void;
+  ) => void | Promise<void>;
   /**
    * The caller's cached index when its locator inventory is known complete
    * and the directory stamp is unchanged; otherwise the inventory is counted.
@@ -71,6 +72,8 @@ export type SharedPrefixReplaceResult =
     }
   | {
       kind: 'preserved';
+      /** JSONL bytes serialized into the suffix; cloned prefix bytes excluded. */
+      bytesWritten: number;
       mode: SharedPrefixReplaceMode;
       prefixRows: number;
       suffixRows: number;
@@ -319,12 +322,24 @@ async function createLocators(
 ): Promise<'created' | 'collision'> {
   for (let start = 0; start < entries.length; start += LOCATOR_BATCH) {
     const results = await Promise.allSettled(
-      entries.slice(start, start + LOCATOR_BATCH).map(([name, content]) =>
-        writeFile(join(directory, name), content, {
-          mode: 0o600,
-          flag: 'wx',
+      entries
+        .slice(start, start + LOCATOR_BATCH)
+        .map(async ([name, content]) => {
+          const path = join(directory, name);
+          await writeFile(path, content, {
+            mode: 0o600,
+            flag: 'wx',
+          });
+          try {
+            recordChatStorageFileWrite(
+              path,
+              Buffer.byteLength(content, 'utf8'),
+              true,
+            );
+          } catch {
+            // A counter failure must not turn a successful locator write into an error.
+          }
         }),
-      ),
     );
     let collision = false;
     for (const result of results) {
@@ -475,7 +490,14 @@ export async function replaceSharedPrefix(
       if (!isPersistedChatMessage(stored) || ids.has(stored.id))
         throw new Error('Invalid or duplicate replacement message');
       ids.add(stored.id);
-      options.record(stored, oldRow.offset, oldRow.end, sha256(json));
+      // Only a paged row's record reads its pages; others stay synchronous.
+      const recorded = options.record(
+        stored,
+        oldRow.offset,
+        oldRow.end,
+        sha256(json),
+      );
+      if (recorded) await recorded;
       prefixRows += 1;
       prefixEnd = oldRow.end;
       sinceYield += oldRow.bytes.length;
@@ -524,7 +546,8 @@ export async function replaceSharedPrefix(
         locatorName(stored.id),
         locatorContent(stored.id, offset, end, rowDigest),
       );
-      record(stored, offset, end, rowDigest);
+      const recorded = record(stored, offset, end, rowDigest);
+      if (recorded) await recorded;
       offset = end;
       suffixRows += 1;
       yield stored;
@@ -541,6 +564,7 @@ export async function replaceSharedPrefix(
     }
   }
 
+  let bytesWritten = 0;
   let temporaryCreated = false;
   let renamed = false;
   try {
@@ -558,12 +582,16 @@ export async function replaceSharedPrefix(
       );
       if (prefixEnd < baseline.committedByteLength)
         await truncate(options.temporaryPath, prefixEnd);
-      await writeJsonValuesCooperatively(options.temporaryPath, suffix(), {
-        pretty: false,
-        separator: '\n',
-        trailingSeparator: true,
-        append: true,
-      });
+      bytesWritten = await writeJsonValuesCooperatively(
+        options.temporaryPath,
+        suffix(),
+        {
+          pretty: false,
+          separator: '\n',
+          trailingSeparator: true,
+          append: true,
+        },
+      );
     }
 
     // Old suffix locators, read before the old log is replaced. A row that
@@ -652,6 +680,7 @@ export async function replaceSharedPrefix(
     }
     return {
       kind: 'preserved',
+      bytesWritten,
       mode,
       prefixRows,
       suffixRows,

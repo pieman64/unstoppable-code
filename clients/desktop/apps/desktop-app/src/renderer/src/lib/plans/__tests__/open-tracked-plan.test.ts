@@ -161,10 +161,14 @@ beforeEach(() => {
     return Promise.resolve(PLACED);
   });
   useNavigationStore.setState({
-    navigate: jest.fn((page: NavigationPage): void => {
-      order.push(`navigate:${page}`);
-      useNavigationStore.setState({ activePage: page });
-    }),
+    navigate: jest.fn<void, [page: NavigationPage | 'agents']>(
+      (page: NavigationPage | 'agents'): void => {
+        order.push(`navigate:${page}`);
+        if (page !== 'agents') {
+          useNavigationStore.setState({ activePage: page });
+        }
+      },
+    ),
   });
   useChatStore.setState({
     loadTabsForTarget: jest.fn(

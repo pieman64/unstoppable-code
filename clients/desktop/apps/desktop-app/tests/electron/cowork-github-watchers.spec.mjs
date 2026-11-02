@@ -14,6 +14,7 @@ import {
   seedDemoWorkspaces,
 } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { readChatStorageMessages } from './readChatStorage.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { writeJson } from './seeders/fsHelpers.mjs';
 import { DEFAULT_MOCK_BASE_URL, registerScenario } from './seeders/index.mjs';
@@ -168,32 +169,17 @@ function toolResultPayload(result) {
   return typeof output === 'string' ? JSON.parse(output) : output;
 }
 
-/** Record every watcher message the renderer sends to main, unchanged. */
-async function recordWatcherSends(electronApp) {
-  await electronApp.evaluate(({ ipcMain }) => {
-    const channel = 'chat:send-message';
-    const original = ipcMain._invokeHandlers?.get(channel);
-    if (typeof original !== 'function') {
-      throw new Error(`Expected a registered ${channel} handler`);
-    }
-    globalThis.__coworkPrWatcherSends = [];
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, (event, request, ...rest) => {
-      if (request?.watcherFired) {
-        globalThis.__coworkPrWatcherSends.push({
-          projectId: request.projectId,
-          worktreeId: request.worktreeId,
-          chatId: request.chatId,
-          text: request.text,
-        });
-      }
-      return original(event, request, ...rest);
-    });
-  });
-}
-
-async function watcherSends(electronApp) {
-  return electronApp.evaluate(() => globalThis.__coworkPrWatcherSends ?? []);
+/** Main delivers fired watcher messages directly into the durable chat. */
+function watcherMessages(userDataDir, chatId) {
+  try {
+    return readChatStorageMessages(
+      path.join(userDataDir, 'workspaces', COWORK_WORKSPACE_ID),
+      COWORK_ENTRY_ID,
+      chatId,
+    ).filter((message) => message.role === 'user' && message.watcherFired);
+  } catch {
+    return [];
+  }
 }
 
 async function attachDiagnostics(testInfo, userDataDir) {
@@ -270,7 +256,6 @@ test('a Cowork chat watches a pull request by repository and only that chat wake
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
-    await recordWatcherSends(electronApp);
     await app.openMainPage();
     const toggle = window.getByTestId(
       `sidebar-cowork-project-${COWORK_WORKSPACE_ID}-toggle`,
@@ -341,17 +326,12 @@ test('a Cowork chat watches a pull request by repository and only that chat wake
       },
     });
     await expect
-      .poll(async () => (await watcherSends(electronApp)).length, {
+      .poll(() => watcherMessages(userDataDir, CHAT_A).length, {
         timeout: OBSERVATION_TIMEOUT_MS,
       })
       .toBeGreaterThanOrEqual(1);
-    const [send] = await watcherSends(electronApp);
-    expect(send).toMatchObject({
-      projectId: COWORK_WORKSPACE_ID,
-      worktreeId: COWORK_ENTRY_ID,
-      chatId: CHAT_A,
-    });
-    expect(send.text).toContain(
+    const [send] = watcherMessages(userDataDir, CHAT_A);
+    expect(send.blocks.map((block) => block.text ?? '').join('')).toContain(
       `${REPOSITORY}#${PR_NUMBER} merged into develop`,
     );
     await expect(panel.getByTestId('watcher-fired-title')).toHaveCount(1, {
@@ -365,9 +345,8 @@ test('a Cowork chat watches a pull request by repository and only that chat wake
         timeout: 30_000,
       })
       .toBe('fired');
-    expect(
-      (await watcherSends(electronApp)).map((entry) => entry.chatId),
-    ).toEqual([CHAT_A]);
+    expect(watcherMessages(userDataDir, CHAT_A)).toHaveLength(1);
+    expect(watcherMessages(userDataDir, CHAT_B)).toHaveLength(0);
   } catch (error) {
     await attachDiagnostics(testInfo, userDataDir);
     throw error;

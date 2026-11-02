@@ -230,9 +230,13 @@ for (const kind of ['pipeline', 'skill', 'project']) {
       } else {
         await app.openPluginsPage();
         await app.openPluginsTab('skills');
+        // CAN-4267: Share sits in the Customize Installed row's ⋯ menu.
+        const menu = `customize-row-menu-skill:custom:app:${SHARE_SKILL}`;
         await window
-          .getByTestId(`skill-share-custom:app-${SHARE_SKILL}`)
+          .getByTestId('customize-section-installed')
+          .getByTestId(menu)
           .click();
+        await window.getByTestId(`${menu}-share`).click();
       }
       const review = window.getByTestId(`share-${uiKind}-dependencies`);
       await expect(review).toHaveAttribute('data-state', 'blocked', {

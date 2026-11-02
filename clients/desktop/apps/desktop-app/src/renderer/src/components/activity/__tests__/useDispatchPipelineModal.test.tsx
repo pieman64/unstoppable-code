@@ -6,13 +6,95 @@
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 import type * as ReactModule from 'react';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
-import type { DispatchPipelinePluginCollectionContext } from '../DispatchPipelineModal';
+import {
+  PIPELINE_NOW_OWNED_MESSAGE,
+  type PipelineData,
+} from '@canopy/desktop-shared/types/pipeline';
+import type {
+  DispatchPipelinePluginCollectionContext,
+  PipelineRunDestination,
+} from '../DispatchPipelineModal';
+
+const ORG_A = 'org:11111111-1111-4111-8111-111111111111';
 
 jest.mock('../DispatchPipelineModal', () => {
   const React = jest.requireActual<typeof ReactModule>('react');
+  const pipeline = {
+    info: { id: 'global-pipeline', source: 'user' },
+    content: { name: 'Global pipeline', on: 'dispatch' },
+  } as PipelineData;
+  const context: DispatchPipelinePluginCollectionContext = {
+    preferences: {},
+    modelConfig: { fastMode: false },
+  };
+  const destinations: Record<string, PipelineRunDestination> = {
+    'workflows-run-chosen-owner': {
+      kind: 'global',
+      requestedOwner: 'org:11111111-1111-4111-8111-111111111111',
+      ownerLabel: 'Acme',
+      outsideNavigation: true,
+    },
+    'workflows-run-saved-owner': {
+      kind: 'global',
+      ownerLabel: 'Personal',
+      outsideNavigation: false,
+    },
+    'workflows-run-task': {
+      kind: 'current-task',
+      projectId: 'project-2',
+      worktreeId: 'worktree-2',
+    },
+  };
 
   return {
+    WorkflowsRunPipelineModal: ({
+      onRun,
+      runError,
+      reloadToken,
+      currentTarget,
+    }: {
+      onRun: (
+        pipeline: PipelineData,
+        inputs: Record<string, string>,
+        selectedRepoId: string | undefined,
+        pluginCollectionContext: DispatchPipelinePluginCollectionContext,
+        destination: PipelineRunDestination,
+      ) => Promise<void>;
+      runError?: string | null;
+      reloadToken?: number;
+      currentTarget?: { projectId: string; worktreeId: string };
+    }): JSX.Element =>
+      React.createElement(
+        'div',
+        {
+          'data-testid': 'workflows-run-modal',
+          'data-reload-token': String(reloadToken ?? 0),
+          'data-current-project': currentTarget?.projectId ?? '',
+        },
+        runError
+          ? React.createElement(
+              'div',
+              { 'data-testid': 'workflows-run-error' },
+              runError,
+            )
+          : null,
+        ...Object.entries(destinations).map(([testId, destination]) =>
+          React.createElement('button', {
+            key: testId,
+            type: 'button',
+            'data-testid': testId,
+            onClick: (): void => {
+              void onRun(
+                pipeline,
+                { topic: 'release' },
+                'repo-1',
+                context,
+                destination,
+              );
+            },
+          }),
+        ),
+      ),
     DispatchPipelineModal: ({
       projectId,
       worktreeId,
@@ -64,7 +146,16 @@ jest.mock('../DispatchPipelineModal', () => {
                 { input_name: 'input value' },
                 'repo-1',
                 {
-                  preferences: { 'agent-prompt': 'codex' },
+                  preferences: {
+                    'agent-prompt': {
+                      disabledDefaultKeys: ['agent-prompt-default'],
+                      extraSelections: {
+                        collectionIds: [],
+                        skillRefs: [],
+                        pluginRefs: [],
+                      },
+                    },
+                  },
                   modelAliasPreferences: {
                     reviewer: {
                       mode: 'inline',
@@ -73,8 +164,9 @@ jest.mock('../DispatchPipelineModal', () => {
                   },
                   modelConfig: { fastMode: true },
                   pipelinePreferenceLocator: {
-                    type: 'pipeline',
-                    pipelineId: 'pipeline-1',
+                    type: 'stored',
+                    source: 'user',
+                    value: 'pipeline-1',
                   },
                 },
               );
@@ -106,7 +198,11 @@ jest.mock('../DispatchPipelineModal', () => {
 
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { useDispatchPipelineModal } from '../useDispatchPipelineModal';
+import { useGitHubStore } from '@/stores/githubStore';
+import {
+  PIPELINE_STARTED_TOAST,
+  useDispatchPipelineModal,
+} from '../useDispatchPipelineModal';
 
 interface HookProbe {
   current: ReturnType<typeof useDispatchPipelineModal> | null;
@@ -269,7 +365,16 @@ describe('useDispatchPipelineModal', () => {
         repoPath: undefined,
         eventName: 'dispatch',
         inputs: { input_name: 'input value' },
-        pluginCollectionPreferences: { 'agent-prompt': 'codex' },
+        pluginCollectionPreferences: {
+          'agent-prompt': {
+            disabledDefaultKeys: ['agent-prompt-default'],
+            extraSelections: {
+              collectionIds: [],
+              skillRefs: [],
+              pluginRefs: [],
+            },
+          },
+        },
         modelAliasPreferences: {
           reviewer: {
             mode: 'inline',
@@ -278,8 +383,9 @@ describe('useDispatchPipelineModal', () => {
         },
         modelConfig: { fastMode: true },
         pipelinePreferenceLocator: {
-          type: 'pipeline',
-          pipelineId: 'pipeline-1',
+          type: 'stored',
+          source: 'user',
+          value: 'pipeline-1',
         },
       }),
     );
@@ -312,5 +418,200 @@ describe('useDispatchPipelineModal', () => {
     ).toBeNull();
 
     cleanup();
+  });
+
+  describe('Workflows Run', () => {
+    let addToast: jest.Mock;
+
+    beforeEach(() => {
+      addToast = jest.fn();
+      useGitHubStore.setState({ addToast });
+    });
+
+    it('opens without a selected task', () => {
+      const { probe, cleanup } = renderHookHarness();
+
+      act(() => {
+        probe.current?.openWorkflowsRunModal();
+      });
+
+      const modal = document.body.querySelector(
+        '[data-testid="workflows-run-modal"]',
+      );
+      expect(modal?.getAttribute('data-current-project')).toBe('');
+      cleanup();
+    });
+
+    it('starts a run with no project under the chosen owner', async () => {
+      const { probe, cleanup } = renderHookHarness();
+
+      act(() => {
+        probe.current?.openWorkflowsRunModal();
+      });
+      await click('[data-testid="workflows-run-chosen-owner"]');
+      await flush();
+
+      expect(getWorktreePathMock).not.toHaveBeenCalled();
+      expect(executePipelineMock).toHaveBeenCalledTimes(1);
+      const [, options] = executePipelineMock.mock.calls[0] as [
+        unknown,
+        Record<string, unknown>,
+      ];
+      expect(options).toEqual({
+        pipelineId: 'global-pipeline',
+        scope: 'global',
+        target: { scope: 'global' },
+        eventName: 'dispatch',
+        inputs: { topic: 'release' },
+        requestedOwner: ORG_A,
+        pluginCollectionPreferences: {},
+        modelConfig: { fastMode: false },
+      });
+      // No project, task, folder, or watcher goes with a global run.
+      for (const key of [
+        'cwd',
+        'projectId',
+        'worktreeId',
+        'repoPath',
+        'pipelineFilePath',
+        'appAdvisorPipelineWatchers',
+      ]) {
+        expect(options).not.toHaveProperty(key);
+      }
+      expect(
+        document.body.querySelector('[data-testid="workflows-run-modal"]'),
+      ).toBeNull();
+      expect(addToast).toHaveBeenCalledWith(
+        'Pipeline started. Find it in Acme › Workflows › Runs.',
+        'success',
+        undefined,
+        { category: 'Pipeline' },
+      );
+      cleanup();
+    });
+
+    it('sends no owner for a pipeline with a saved owner', async () => {
+      const { probe, cleanup } = renderHookHarness();
+
+      act(() => {
+        probe.current?.openWorkflowsRunModal();
+      });
+      await click('[data-testid="workflows-run-saved-owner"]');
+      await flush();
+
+      const [, options] = executePipelineMock.mock.calls[0] as [
+        unknown,
+        Record<string, unknown>,
+      ];
+      expect(options).not.toHaveProperty('requestedOwner');
+      expect(addToast).toHaveBeenCalledWith(
+        PIPELINE_STARTED_TOAST,
+        'success',
+        undefined,
+        { category: 'Pipeline' },
+      );
+      cleanup();
+    });
+
+    it('keeps the dialog and re-reads the pipeline when a start is refused', async () => {
+      executePipelineMock.mockResolvedValueOnce({
+        success: false,
+        error: PIPELINE_NOW_OWNED_MESSAGE,
+        errorCode: 'pipeline_now_owned',
+      });
+      const { probe, cleanup } = renderHookHarness();
+
+      act(() => {
+        probe.current?.openWorkflowsRunModal();
+      });
+      await click('[data-testid="workflows-run-chosen-owner"]');
+      await flush();
+
+      const modal = document.body.querySelector(
+        '[data-testid="workflows-run-modal"]',
+      );
+      expect(modal).toBeTruthy();
+      expect(
+        document.body.querySelector('[data-testid="workflows-run-error"]')
+          ?.textContent,
+      ).toBe(PIPELINE_NOW_OWNED_MESSAGE);
+      expect(modal?.getAttribute('data-reload-token')).toBe('1');
+      expect(addToast).not.toHaveBeenCalled();
+      cleanup();
+    });
+
+    it('re-reads only on a now-owned refusal and clears the error on retry', async () => {
+      // The same text without the now-owned code is an ordinary failure.
+      executePipelineMock.mockResolvedValueOnce({
+        success: false,
+        error: PIPELINE_NOW_OWNED_MESSAGE,
+      });
+      const { probe, cleanup } = renderHookHarness();
+
+      act(() => {
+        probe.current?.openWorkflowsRunModal();
+      });
+      await click('[data-testid="workflows-run-chosen-owner"]');
+      await flush();
+
+      const modal = (): Element | null =>
+        document.body.querySelector('[data-testid="workflows-run-modal"]');
+      // Only a refusal coded as now owned re-reads the pipeline.
+      expect(modal()?.getAttribute('data-reload-token')).toBe('0');
+      expect(
+        document.body.querySelector('[data-testid="workflows-run-error"]')
+          ?.textContent,
+      ).toBe(PIPELINE_NOW_OWNED_MESSAGE);
+
+      let resolveRetry: (value: { success: true; data: object }) => void = () =>
+        undefined;
+      executePipelineMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRetry = resolve;
+          }),
+      );
+      await click('[data-testid="workflows-run-chosen-owner"]');
+      // The earlier error is cleared while the retry starts.
+      expect(
+        document.body.querySelector('[data-testid="workflows-run-error"]'),
+      ).toBeNull();
+      resolveRetry({ success: true, data: {} });
+      await flush();
+      cleanup();
+    });
+
+    it('runs in the current task through its worktree path', async () => {
+      const { probe, cleanup } = renderHookHarness();
+
+      act(() => {
+        probe.current?.openWorkflowsRunModal({
+          currentTarget: { projectId: 'project-2', worktreeId: 'worktree-2' },
+        });
+      });
+      await click('[data-testid="workflows-run-task"]');
+      await flush();
+
+      expect(getWorktreePathMock).toHaveBeenCalledWith({
+        projectId: 'project-2',
+        worktreeId: 'worktree-2',
+        repoId: 'repo-1',
+      });
+      expect(executePipelineMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          cwd: '/repo/worktree',
+          projectId: 'project-2',
+          worktreeId: 'worktree-2',
+        }),
+      );
+      const [, options] = executePipelineMock.mock.calls[0] as [
+        unknown,
+        Record<string, unknown>,
+      ];
+      expect(options).not.toHaveProperty('scope');
+      expect(options).not.toHaveProperty('requestedOwner');
+      cleanup();
+    });
   });
 });

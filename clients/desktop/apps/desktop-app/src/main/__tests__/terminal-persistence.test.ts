@@ -1,9 +1,131 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import type * as NodeFs from 'node:fs';
+
+const actualFs = jest.requireActual<typeof NodeFs>('node:fs');
+const mockWriteFileSync = jest.fn<
+  void,
+  Parameters<typeof NodeFs.writeFileSync>
+>();
+jest.mock('node:fs', () => ({
+  ...jest.requireActual<typeof NodeFs>('node:fs'),
+  writeFileSync: (...args: Parameters<typeof NodeFs.writeFileSync>): void =>
+    mockWriteFileSync(...args),
+}));
+const mockLogMainProcessWarn = jest.fn();
+jest.mock('../lib/main-process-logging', () => ({
+  ...jest.requireActual<object>('../lib/main-process-logging'),
+  logMainProcessWarn: (...args: unknown[]): unknown =>
+    mockLogMainProcessWarn(...args),
+}));
+jest.mock('../plugins/plugin-cleanup', () => ({
+  cleanupWorktreeChatPluginDirs: jest.fn(),
+}));
+jest.mock('../observability/worktree-cleanup', () => ({
+  purgePersistedWorktreeObservabilityData: jest.fn(() => Promise.resolve()),
+}));
+// Cleanup's chat-state scope deletion records a fire-and-forget session
+// diagnostic, which would start the real observability service. Its debounced
+// flush then writes `agent-observability/snapshot.json` into the temp data dir
+// without being awaited, racing the `afterEach` removal (ENOTEMPTY). The stub
+// must cover what the cleanup path calls on the service: chat-state's lazy
+// callers swallow a missing method instead of failing the test.
+jest.mock('../observability', () => ({
+  getObservabilityService: jest.fn(() => ({
+    recordSessionDiagnostic: jest.fn(),
+    recordAppDiagnostic: jest.fn(),
+    flush: jest.fn(() => Promise.resolve()),
+  })),
+  peekObservabilityService: jest.fn(() => null),
+}));
+jest.mock('../browser/browser-service-registry', () => ({
+  getBrowserService: jest.fn(() => null),
+}));
+jest.mock('../lib/plan-persistence', () => ({
+  deleteTrackedPlansForWorktree: jest.fn(() => Promise.resolve()),
+}));
+jest.mock('../lib/detected-plan-persistence', () => ({
+  deleteDetectedPlansForWorktree: jest.fn(() => Promise.resolve()),
+}));
+jest.mock('../lib/script-log-store', () => ({
+  deleteScriptRunLogsForWorktree: jest.fn(() => Promise.resolve()),
+}));
+jest.mock('../lib/hook-log-store', () => ({
+  deleteHookRunLogsForWorktree: jest.fn(() => Promise.resolve()),
+}));
+jest.mock('../chat-search/service', () => ({
+  getChatSearchService: jest.fn(() => ({
+    deleteWorktreeDocs: jest.fn(() => Promise.resolve()),
+  })),
+}));
+
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { TerminalSession } from '@canopy/desktop-shared/types';
-import { getWorktreeTerminalStateFilePath } from '../lib/paths';
-import { TerminalPersistenceStore } from '../terminal/persistence';
+import {
+  getWorktreeDataDir,
+  getWorktreeTerminalStateFilePath,
+} from '../lib/paths';
+import { cleanupPersistedWorktreeData } from '../lib/worktree-data-cleanup';
+import {
+  TerminalPersistenceStore,
+  terminalPersistenceStore,
+} from '../terminal/persistence';
+
+function errnoError(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(code), { code });
+}
+
+function attempt(operation: () => void): void {
+  try {
+    operation();
+  } catch {
+    // Only the file left behind matters to the caller.
+  }
+}
+
+function sessionGroupRequest(session: TerminalSession): {
+  projectId: string;
+  worktreeId: string;
+  drawerCollapsed: boolean;
+  groups: Array<{
+    id: string;
+    terminalIds: string[];
+    focusedTerminalId: string;
+    splitSizes: number[];
+  }>;
+  activeGroupId: string;
+  nextGroupOrdinal: number;
+  groupOrdinals: Record<string, number>;
+  terminalCustomNames: Record<string, string>;
+  groupCustomNames: Record<string, string>;
+} {
+  return {
+    projectId: session.projectId,
+    worktreeId: session.worktreeId,
+    drawerCollapsed: false,
+    groups: [
+      {
+        id: 'group-1',
+        terminalIds: [session.id],
+        focusedTerminalId: session.id,
+        splitSizes: [1],
+      },
+    ],
+    activeGroupId: 'group-1',
+    nextGroupOrdinal: 2,
+    groupOrdinals: { 'group-1': 1 },
+    terminalCustomNames: {},
+    groupCustomNames: {},
+  };
+}
 
 function makeSession(
   overrides: Partial<TerminalSession> = {},
@@ -36,9 +158,13 @@ describe('TerminalPersistenceStore', () => {
   beforeEach(() => {
     tempDataDir = mkdtempSync(join(tmpdir(), 'canopy-terminal-persist-'));
     process.env.CANOPY_DATA_DIR = tempDataDir;
+    mockWriteFileSync.mockReset();
+    mockWriteFileSync.mockImplementation(actualFs.writeFileSync);
+    mockLogMainProcessWarn.mockReset();
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     if (originalCanopyDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
     } else {
@@ -391,4 +517,185 @@ describe('TerminalPersistenceStore', () => {
       signal: 'app-quit',
     });
   });
+
+  it.each([
+    ['unparseable JSON', '{"version":1,"terminals":['],
+    ['a non-object document', '[1,2,3]'],
+    ['a document without a version', '{"terminals":[]}'],
+    [
+      'a version 1 document with a malformed terminal entry',
+      '{"version":1,"terminals":[{"session":{"id":"t-1"}}],"groups":[]}',
+    ],
+    [
+      'a version 1 document whose groups are not a list',
+      '{"version":1,"terminals":[],"groups":{"id":"g-1"}}',
+    ],
+  ])(
+    'sets %s aside with its original bytes before writing a new state file',
+    (_label, original) => {
+      const filePath = getWorktreeTerminalStateFilePath('project-1', 'wt-1');
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, original);
+      const store = new TerminalPersistenceStore();
+      const session = makeSession();
+
+      store.registerLiveSession(session);
+      store.flushAllSync();
+
+      const asides = readdirSync(dirname(filePath)).filter((name) =>
+        /^terminal-state\.json\.damaged-\d+$/.test(name),
+      );
+      expect(asides).toHaveLength(1);
+      expect(
+        readFileSync(join(dirname(filePath), asides[0] ?? ''), 'utf8'),
+      ).toBe(original);
+      const persisted: unknown = JSON.parse(readFileSync(filePath, 'utf8'));
+      expect(persisted).toMatchObject({ version: 1, terminals: [{ session }] });
+    },
+  );
+
+  it('never rewrites or removes a state file written by a newer version', () => {
+    const filePath = getWorktreeTerminalStateFilePath('project-1', 'wt-1');
+    mkdirSync(dirname(filePath), { recursive: true });
+    const original = '{\n  "version": 2,\n  "futureField": true\n}\n';
+    writeFileSync(filePath, original);
+    const store = new TerminalPersistenceStore();
+
+    expect(store.loadWorktreeState('project-1', 'wt-1').terminals).toEqual([]);
+    store.flushAllSync();
+    expect(readFileSync(filePath, 'utf8')).toBe(original);
+
+    const session = makeSession();
+    store.registerLiveSession(session);
+    store.saveWorktreeState(sessionGroupRequest(session));
+    store.flushAllSync();
+
+    expect(readFileSync(filePath, 'utf8')).toBe(original);
+    expect(readdirSync(dirname(filePath))).toEqual(['terminal-state.json']);
+  });
+
+  it('keeps the previous state file when a write fails partway through', () => {
+    const store = new TerminalPersistenceStore();
+    const session = makeSession();
+    store.registerLiveSession(session);
+    store.flushAllSync();
+    const filePath = getWorktreeTerminalStateFilePath(
+      session.projectId,
+      session.worktreeId,
+    );
+    const previous = readFileSync(filePath, 'utf8');
+    mockWriteFileSync.mockImplementation((file, data) => {
+      actualFs.writeFileSync(
+        file,
+        typeof data === 'string' ? data.slice(0, 10) : data,
+      );
+      throw errnoError('ENOSPC');
+    });
+
+    store.appendTerminalOutput(
+      session.projectId,
+      session.worktreeId,
+      session.id,
+      Buffer.from('more output', 'utf8'),
+    );
+    attempt(() => store.flushAllSync());
+
+    expect(readFileSync(filePath, 'utf8')).toBe(previous);
+    expect(readdirSync(dirname(filePath))).toEqual(['terminal-state.json']);
+  });
+
+  it('logs a failed debounced write and writes the state on the next flush', () => {
+    jest.useFakeTimers();
+    const store = new TerminalPersistenceStore();
+    const session = makeSession();
+    const filePath = getWorktreeTerminalStateFilePath(
+      session.projectId,
+      session.worktreeId,
+    );
+    mockWriteFileSync.mockImplementation(() => {
+      throw errnoError('ENOSPC');
+    });
+
+    store.registerLiveSession(session);
+    expect(() => jest.advanceTimersByTime(1_000)).not.toThrow();
+
+    expect(mockLogMainProcessWarn).toHaveBeenCalledWith(
+      'Failed to write terminal state',
+      expect.objectContaining({ code: 'ENOSPC' }),
+    );
+    expect(existsSync(filePath)).toBe(false);
+
+    mockWriteFileSync.mockImplementation(actualFs.writeFileSync);
+    store.flushAllSync();
+
+    const persisted: unknown = JSON.parse(readFileSync(filePath, 'utf8'));
+    expect(persisted).toMatchObject({ version: 1, terminals: [{ session }] });
+  });
+
+  it('ignores output and exits for a forgotten worktree', () => {
+    jest.useFakeTimers();
+    const store = new TerminalPersistenceStore();
+    const session = makeSession();
+    store.registerLiveSession(session);
+    store.flushAllSync();
+    const filePath = getWorktreeTerminalStateFilePath(
+      session.projectId,
+      session.worktreeId,
+    );
+    const persisted = readFileSync(filePath, 'utf8');
+
+    store.forgetWorktree(session.projectId, session.worktreeId);
+    store.appendTerminalOutput(
+      session.projectId,
+      session.worktreeId,
+      session.id,
+      Buffer.from('late output', 'utf8'),
+    );
+    store.markTerminalExited(
+      session.projectId,
+      session.worktreeId,
+      session.id,
+      0,
+      null,
+    );
+    jest.advanceTimersByTime(1_000);
+    store.flushAllSync();
+
+    expect(readFileSync(filePath, 'utf8')).toBe(persisted);
+  });
+
+  it('worktree-data cleanup cancels a pending terminal state write', async () => {
+    jest.useFakeTimers();
+    const session = makeSession();
+    const filePath = getWorktreeTerminalStateFilePath(
+      session.projectId,
+      session.worktreeId,
+    );
+    mkdirSync(getWorktreeDataDir(session.projectId, session.worktreeId), {
+      recursive: true,
+    });
+    terminalPersistenceStore.registerLiveSession(session);
+
+    const warnings = await cleanupPersistedWorktreeData(
+      session.projectId,
+      session.worktreeId,
+    );
+    terminalPersistenceStore.markTerminalExited(
+      session.projectId,
+      session.worktreeId,
+      session.id,
+      0,
+      null,
+    );
+    jest.advanceTimersByTime(1_000);
+
+    expect(warnings).toEqual([]);
+    expect(existsSync(filePath)).toBe(false);
+    expect(
+      terminalPersistenceStore.loadWorktreeState(
+        session.projectId,
+        session.worktreeId,
+      ).terminals,
+    ).toEqual([]);
+  }, 30_000);
 });

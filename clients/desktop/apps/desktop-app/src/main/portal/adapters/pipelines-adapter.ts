@@ -10,6 +10,7 @@ import {
   PORTAL_CATALOG_RESULT_MAX_BYTES,
   type PortalPipelineChatFollowUpOutput,
   type PortalPipelineChatFollowUpPrepareResult,
+  type PortalPipelineContentSource,
   type PortalPipelineDefinitionWireViewModel,
   type PortalPipelineExecutionListResult,
   type PortalPipelineGetResult,
@@ -24,6 +25,7 @@ import {
   listPipelineExecutions,
   listPipelines,
   preparePipelineChatFollowUp,
+  readPipelineContent,
   rerunPipeline,
   resumePipeline,
   retryPipeline,
@@ -667,6 +669,84 @@ export const handlePortalPipelineChatFollowUpPrepare = (
       );
       return { ...request, prompt, ...(chatId ? { chatId } : {}) };
     },
+  );
+  return Promise.resolve();
+};
+
+const CONTENT_READ_PAYLOAD_KEYS = new Set([
+  'projectId',
+  'worktreeId',
+  'executionId',
+  'source',
+  'offset',
+  'revision',
+]);
+
+function readContentSource(value: unknown): PortalPipelineContentSource | null {
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value);
+  if (value.kind === 'report' && keys.length === 1) return { kind: 'report' };
+  if (
+    value.kind === 'step_output' &&
+    keys.length === 3 &&
+    typeof value.jobId === 'string' &&
+    typeof value.stepId === 'string'
+  ) {
+    return { kind: 'step_output', jobId: value.jobId, stepId: value.stepId };
+  }
+  return null;
+}
+
+/**
+ * `portal.pipeline.content.read` (CAN-3717): one page of a step's complete
+ * readable output or of the run's saved report, for the routed run owner. The
+ * payload names only the run and the source; a path from the client is
+ * rejected.
+ */
+export const handlePortalPipelineContentRead = (
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> => {
+  const payload = command.payload;
+  const source = isRecord(payload) ? readContentSource(payload.source) : null;
+  if (
+    !isRecord(payload) ||
+    source === null ||
+    Object.keys(payload).some((key) => !CONTENT_READ_PAYLOAD_KEYS.has(key)) ||
+    typeof payload.executionId !== 'string' ||
+    (payload.offset !== undefined && typeof payload.offset !== 'number') ||
+    (payload.revision !== undefined && typeof payload.revision !== 'string')
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid pipeline content payload.',
+    );
+    return Promise.resolve();
+  }
+  const target = requireWorktreeTarget(command, context);
+  if (!target) return Promise.resolve();
+  if (
+    payload.projectId !== target.workspaceLocalId ||
+    payload.worktreeId !== target.worktreeLocalId
+  ) {
+    context.fail(
+      command,
+      'invalid_target',
+      'Pipeline payload scope does not match the routed target.',
+    );
+    return Promise.resolve();
+  }
+  const { executionId, offset, revision } = payload;
+  completeOffLoop(command, context, () =>
+    readPipelineContent({
+      projectId: target.workspaceLocalId,
+      worktreeId: target.worktreeLocalId,
+      executionId,
+      source,
+      ...(offset === undefined ? {} : { offset }),
+      ...(revision === undefined ? {} : { revision }),
+    }),
   );
   return Promise.resolve();
 };

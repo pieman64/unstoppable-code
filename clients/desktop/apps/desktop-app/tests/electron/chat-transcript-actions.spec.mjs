@@ -155,6 +155,15 @@ function buildSeededChat(userDataDir) {
         toolName: 'file_change',
         input: 'delete: src/legacy/old-module.ts',
       },
+      // A settled turn draws a call without a result as interrupted
+      // (CAN-4897), so the delete needs its result to keep the trash icon.
+      {
+        type: 'tool_result',
+        toolUseId: 'codex-delete-1',
+        toolName: 'file_change',
+        output: 'Deleted src/legacy/old-module.ts',
+        isError: false,
+      },
       {
         type: 'tool_use',
         toolUseId: 'send-message-1',
@@ -416,9 +425,7 @@ test('routes plugins and forks an Ollama-source chat through its captured Codex 
         expectedCurrentThreadId: 'thread-source',
       });
 
-    await chatPanel
-      .getByRole('button', { name: `Fork ${CHAT_UNIT_LABEL}` })
-      .click();
+    await chatPanel.getByRole('button', { name: 'Fork chat' }).click();
 
     await expect(
       window.locator('[role="tab"][data-panel-kind="chat"]'),
@@ -446,6 +453,9 @@ test('persists fork/branch actions, renders the delete icon, and resolves the co
     const app = new CanopyAppDriver(window);
 
     await app.waitForShell({ timeout: 30_000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
 
     await app.selectWorktree(WORKTREE_ID);
@@ -530,32 +540,19 @@ test('persists fork/branch actions, renders the delete icon, and resolves the co
     // These labels intentionally mirror CHAT_UNIT_LABEL in
     // packages/protocol/src/ui-labels.ts while asserting real a11y names.
     const forkButton = chatPanel.getByRole('button', {
-      name: `Fork ${CHAT_UNIT_LABEL}`,
-    });
-    const branchButton = chatPanel.getByRole('button', {
-      name: `Branch ${CHAT_UNIT_LABEL} into new worktree`,
+      name: 'Fork chat',
     });
     await expect(forkButton).toBeVisible();
-    await expect(branchButton).toBeVisible();
-    // They appear once — only on the single last forkable turn group.
     await expect(forkButton).toHaveCount(1);
+    await chatPanel.getByTestId('turn-more-actions').last().click();
+    const branchButton = window.getByTestId('turn-more-branch');
+    await expect(branchButton).toBeVisible();
     await expect(branchButton).toHaveCount(1);
-
-    // ---- Share control moved to the last forkable completed turn ----------
-    // Scope to the chat panel, which includes both the transcript and composer:
-    // there should be exactly one Share session button, and it should be the
-    // turn-level control rendered by TurnGroupRenderer.
-    const shareButton = chatPanel.getByRole('button', {
-      name: 'Share session',
-    });
-    await expect(shareButton).toHaveCount(1);
-    await expect(chatPanel.getByTestId('turn-share-session')).toBeVisible();
-    await shareButton.hover();
-    const shareTooltip = window.getByRole('tooltip');
-    await expect(shareTooltip).toContainText(`Share ${CHAT_UNIT_LABEL}`);
-    await expect(shareTooltip).toContainText(
-      `Share a redacted, read-only copy of this ${CHAT_UNIT_LABEL} with your team or organization.`,
+    await expect(branchButton).toHaveText('Branch into a new worktree');
+    await expect(window.getByTestId('turn-more-share')).toHaveText(
+      'Share session',
     );
+    await window.keyboard.press('Escape');
 
     // ---- Active-turn auto-archive toggle renders and updates --------------
     const disableAutoArchiveButton = chatPanel.getByRole('button', {
@@ -607,7 +604,7 @@ test('persists fork/branch actions, renders the delete icon, and resolves the co
     // expanded body should show the parsed message payload plus the tool
     // result instead of raw JSON.
     const sendMessageCard = chatPanel
-      .locator('button[aria-expanded][data-tool-family="agent"]')
+      .locator('button[aria-expanded][data-step-row]')
       .filter({ hasText: 'Agent message' })
       .filter({ hasText: 'Review transcript rendering' });
     await expect(sendMessageCard).toHaveCount(1);
@@ -649,16 +646,10 @@ test('persists fork/branch actions, renders the delete icon, and resolves the co
     const computerUseRunButton = computerUseRun.locator('button');
     const computerUseResetButton = computerUseReset.locator('button');
     await expect(computerUseRun).toContainText('Computer use');
-    await expect(computerUseRunButton).toHaveAttribute(
-      'data-tool-family',
-      'computer-use',
-    );
+    await expect(computerUseRunButton).toHaveAttribute('data-step-row', '');
     await expect(computerUseReset).toContainText('Computer use');
     await expect(computerUseReset.locator('code')).toHaveText('Reset');
-    await expect(computerUseResetButton).toHaveAttribute(
-      'data-tool-family',
-      'computer-use',
-    );
+    await expect(computerUseResetButton).toHaveAttribute('data-step-row', '');
     await expect(
       computerUseReset.locator('svg[data-glyph="mouse-pointer-click"]'),
     ).toHaveCount(1);

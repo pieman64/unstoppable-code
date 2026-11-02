@@ -22,7 +22,9 @@ jest.mock('@/hooks/useChatShareData', () => ({
   },
 }));
 
-const mockOpenNavigation = jest.fn(() => Promise.resolve());
+const mockOpenNavigation = jest.fn<Promise<void>, [target: unknown]>(() =>
+  Promise.resolve(),
+);
 jest.mock('../agent-artifact-navigation', () => ({
   openAgentArtifactNavigation: (target: unknown): Promise<void> =>
     mockOpenNavigation(target),

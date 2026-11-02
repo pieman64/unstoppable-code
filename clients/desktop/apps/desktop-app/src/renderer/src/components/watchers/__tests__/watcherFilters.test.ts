@@ -19,6 +19,8 @@ function pipelineWatcher(
     >;
   },
 ): AppAdvisorWatcherSummary {
+  const watcherOverrides: Partial<AppAdvisorWatcherSummary> = { ...overrides };
+  delete watcherOverrides.target;
   return {
     id: overrides.id ?? `watcher-${Math.random().toString(36).slice(2)}`,
     trigger: 'worktree_pipeline_completion',
@@ -31,7 +33,7 @@ function pipelineWatcher(
       chatId: 'advisor-chat',
     },
     createdAt: new Date('2026-01-01T00:00:00Z').toISOString(),
-    ...overrides,
+    ...watcherOverrides,
   };
 }
 
@@ -43,6 +45,8 @@ function chatWatcher(
     >;
   },
 ): AppAdvisorWatcherSummary {
+  const watcherOverrides: Partial<AppAdvisorWatcherSummary> = { ...overrides };
+  delete watcherOverrides.target;
   return {
     id: overrides.id ?? `watcher-${Math.random().toString(36).slice(2)}`,
     trigger:
@@ -59,7 +63,7 @@ function chatWatcher(
       chatId: 'advisor-chat',
     },
     createdAt: new Date('2026-01-01T00:00:00Z').toISOString(),
-    ...overrides,
+    ...watcherOverrides,
   };
 }
 
@@ -71,6 +75,8 @@ function hookWatcher(
     >;
   },
 ): AppAdvisorWatcherSummary {
+  const watcherOverrides: Partial<AppAdvisorWatcherSummary> = { ...overrides };
+  delete watcherOverrides.target;
   return {
     id: overrides.id ?? `watcher-${Math.random().toString(36).slice(2)}`,
     trigger: 'worktree_hook_triggered',
@@ -83,7 +89,7 @@ function hookWatcher(
       chatId: 'advisor-chat',
     },
     createdAt: new Date('2026-01-01T00:00:00Z').toISOString(),
-    ...overrides,
+    ...watcherOverrides,
   };
 }
 
@@ -225,6 +231,7 @@ describe('watcherFilters.watchersForHook', () => {
       kind: 'worktree_hook',
       projectId: 'project-1',
       worktreeId: 'worktree-1',
+      triggerName: 'worktree:precommit:failure',
     },
   });
   const projectScoped = hookWatcher({
@@ -233,6 +240,7 @@ describe('watcherFilters.watchersForHook', () => {
       kind: 'worktree_hook',
       projectId: 'project-1',
       worktreeId: 'worktree-1',
+      triggerName: 'worktree:precommit:failure',
       scope: 'project',
     },
   });
@@ -242,6 +250,7 @@ describe('watcherFilters.watchersForHook', () => {
       kind: 'worktree_hook',
       projectId: 'project-1',
       worktreeId: 'worktree-1',
+      triggerName: 'worktree:precommit:failure',
       scope: 'workspace-repo',
       repoId: 'repo-1',
     },
@@ -339,12 +348,18 @@ function githubWatcher(
   const target: AppAdvisorWatcherSummary['target'] = {
     kind: 'github_workflow_runs',
     items: [{ kind: 'workflow_run', repository: 'acme/api', runId: '1' }],
-    notifyOn: { statuses: [], conclusions: ['failure', 'success'] },
+    notifyOn: {
+      statuses: [],
+      conclusions: ['failure', 'success'],
+      jobConclusions: [],
+    },
     display: {
       repositories: ['acme/api'],
-      sample: [{ repository: 'acme/api', runId: '1' }],
+      sample: [{ repository: 'acme/api', runId: '1', runAttempt: 1 }],
     },
   };
+  const watcherOverrides: Partial<AppAdvisorWatcherSummary> = { ...overrides };
+  delete watcherOverrides.destination;
   return {
     id: overrides.id ?? `watcher-${Math.random().toString(36).slice(2)}`,
     trigger: 'github_workflow_runs_changed',
@@ -353,7 +368,7 @@ function githubWatcher(
     target,
     destination: overrides.destination,
     createdAt: new Date('2026-01-01T00:00:00Z').toISOString(),
-    ...overrides,
+    ...watcherOverrides,
   };
 }
 

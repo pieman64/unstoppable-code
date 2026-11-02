@@ -68,7 +68,7 @@ export function AdvisorEtaBadge({
       <span
         tabIndex={interactive ? 0 : undefined}
         role="status"
-        aria-label="Pipeline Advisor ETA"
+        aria-label="Workflow Advisor ETA"
         ref={badgeRef}
         className={interactive ? `${className} focus-ring` : className}
         onFocus={
@@ -195,7 +195,7 @@ export function AdvisorPreviewPopover({
       }
     >
       <span className="block text-2xs font-semibold fg-secondary">
-        Pipeline Advisor
+        Workflow Advisor
       </span>
       <span className="mt-1.5 block">
         <span className="block text-3xs font-medium fg-secondary/70">

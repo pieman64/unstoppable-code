@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { DiffLineCounts } from './DiffLineCounts';
 
 /**
  * Closed set of file-change statuses surfaced in the Changed Files section,
@@ -41,9 +42,9 @@ const STATUS_LABELS: Record<FileChangeStatus, string> = {
 };
 
 export interface FileChangeMetadataProps {
-  /** Insertion count. Hidden when undefined. */
+  /** Insertion count. Hidden when undefined or zero. */
   insertions?: number;
-  /** Deletion count. Hidden when undefined. */
+  /** Deletion count. Hidden when undefined or zero. */
   deletions?: number;
   /** File status; renders the colored dot at the end. */
   status: FileChangeStatus;
@@ -69,16 +70,11 @@ export function FileChangeMetadata({
   const label = STATUS_LABELS[status];
   return (
     <>
-      {typeof insertions === 'number' && (
-        <span className={`shrink-0 text-2xs fg-success ${hiddenClass}`}>
-          +{insertions}
-        </span>
-      )}
-      {typeof deletions === 'number' && (
-        <span className={`shrink-0 text-2xs fg-destructive ${hiddenClass}`}>
-          -{deletions}
-        </span>
-      )}
+      <DiffLineCounts
+        insertions={insertions}
+        deletions={deletions}
+        className={`shrink-0 ${hiddenClass}`}
+      />
       <span
         className={`h-2 w-2 shrink-0 rounded-full ${dotClass} ${hiddenClass}`}
         title={label}

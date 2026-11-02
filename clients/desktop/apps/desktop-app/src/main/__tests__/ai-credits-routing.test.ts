@@ -122,6 +122,7 @@ function isStringKeyedRecord(value: unknown): value is Record<string, unknown> {
 const mockNativeAccountChangedAt: Partial<Record<'claude' | 'codex', number>> =
   {};
 jest.mock('../agents/native-account-change', () => ({
+  getNativeSubscriptionRestoredAt: (): number | undefined => undefined,
   getNativeAccountChangedAt: (
     provider: 'claude' | 'codex',
   ): number | undefined => mockNativeAccountChangedAt[provider],
@@ -185,6 +186,7 @@ const mockAccountProxyRoute = jest.fn(
     ...args: unknown[]
   ): Promise<{
     env: Record<string, string>;
+    accountKey?: string;
     codexConfig?: Record<string, unknown>;
   } | null> => {
     void args;
@@ -338,9 +340,13 @@ beforeAll(() => {
               id: `api-model-${index}`,
               gatewayId: entry.gatewayId,
               label: entry.label,
+              family: entry.gatewayId.split('/')[0] ?? '',
+              familyLabel: entry.familyLabel ?? entry.vendor ?? 'Test family',
               recommendedHarness: entry.harness ?? 'codex',
               contextWindow: entry.contextWindow ?? 100_000,
               supportsPromptCaching: entry.harness === 'claude',
+              requiresLocalHarnessSupport: false,
+              showMoreOnly: false,
               supportedThinkingLevels: [],
               toolSchemaProfile: 'standard' as const,
             },
@@ -358,16 +364,20 @@ beforeAll(() => {
     id: id ?? '',
     gatewayId: gatewayId ?? '',
     label: id ?? '',
+    family: (gatewayId ?? '').split('/')[0] ?? '',
+    familyLabel: (gatewayId ?? '').split('/')[0] ?? '',
     recommendedHarness: 'codex' as const,
     contextWindow: 1_000_000,
     supportsPromptCaching: false,
+    requiresLocalHarnessSupport: false,
+    showMoreOnly: false,
     supportedThinkingLevels: [],
     toolSchemaProfile:
       id === 'kimi-k3' ? ('flat' as const) : ('standard' as const),
   }));
   const merged = mergeAiGatewayModelCatalog({
     packageConfig: config,
-    catalog: { version: 1, models: [...matched, ...apiOnly] },
+    catalog: { version: 8, models: [...matched, ...apiOnly] },
     featureFlags: { 'canopy-shared-claude-model-fable5': true },
   });
   initClaudeModels(merged.claudeModels);
@@ -1149,7 +1159,7 @@ describe('ai-credits-routing', () => {
           true,
         ),
       ).resolves.toBeNull();
-      expect(isAuthed).toHaveBeenCalledTimes(1);
+      expect(isAuthed).not.toHaveBeenCalled();
       // Without the override, stale routing falls through to the mode.
       await expect(
         resolveAiCreditsRoutingAttempt(
@@ -1330,10 +1340,10 @@ describe('ai-credits-routing', () => {
         true,
       );
       expect(attempt).toBeNull();
-      expect(isAuthed).toHaveBeenCalledTimes(1);
+      expect(isAuthed).not.toHaveBeenCalled();
     });
 
-    it('subscription override is ignored when the provider has no native login (falls through to mode)', async () => {
+    it('subscription override attempts native even without confirmed login', async () => {
       setAiCreditsRoutingModeCache('on');
       const isAuthed = jest.fn(notAuthed);
       const attempt = await resolveAiCreditsRoutingAttempt(
@@ -1342,13 +1352,11 @@ describe('ai-credits-routing', () => {
         isAuthed,
         true,
       );
-      // Cannot honor subscription without a native login, so the global mode routes.
-      expect(attempt).toEqual({ reason: 'mode' });
+      expect(attempt).toBeNull();
+      expect(isAuthed).not.toHaveBeenCalled();
     });
 
-    // ECW-9091: an unhonorable subscription override (no native login to bill)
-    // no longer strands the user — it falls through to credits routing.
-    it('subscription override without a native login and mode off routes to credits', async () => {
+    it('subscription override without a native login never silently spends credits', async () => {
       setAiCreditsRoutingModeCache('off');
       const isAuthed = jest.fn(notAuthed);
       const attempt = await resolveAiCreditsRoutingAttempt(
@@ -1357,13 +1365,11 @@ describe('ai-credits-routing', () => {
         isAuthed,
         true,
       );
-      expect(attempt).toEqual({ reason: 'no-native-auth' });
-      // Probe memoization guard: the override check and the trailing
-      // no-native-auth fallback must share a single read.
-      expect(isAuthed).toHaveBeenCalledTimes(1);
+      expect(attempt).toBeNull();
+      expect(isAuthed).not.toHaveBeenCalled();
     });
 
-    it('an active session-override still wins over a subscription override', async () => {
+    it('an explicit subscription override wins over stale session routing', async () => {
       setAiCreditsRoutingModeCache('off');
       const attempt = await resolveAiCreditsRoutingAttempt(
         activeState('opus[1m]'),
@@ -1371,10 +1377,7 @@ describe('ai-credits-routing', () => {
         authed,
         true,
       );
-      expect(attempt).toEqual({
-        reason: 'session-override',
-        modelId: 'opus[1m]',
-      });
+      expect(attempt).toBeNull();
     });
   });
 
@@ -2387,9 +2390,11 @@ describe('ai-credits-routing', () => {
 
     it('never routes a non-Claude/Codex provider', async () => {
       setAiCreditsRoutingModeCache('on');
-      const override = await resolveAiCreditsRoutingOverride(
-        'llama3',
-        'ollama',
+      // Keep the unsupported provider input intact for this routing guard test.
+      const override: unknown = await Reflect.apply(
+        resolveAiCreditsRoutingOverride,
+        undefined,
+        ['llama3', 'ollama'],
       );
       expect(override).toBeNull();
     });
@@ -2624,6 +2629,8 @@ describe('resolveAiCreditsRoutingOverride with the account proxy', () => {
     mockAccountProxyRoute.mockResolvedValue({ env: {} });
     await resolveAiCreditsRoutingOverride('opus[1m]', 'claude', {
       active: true,
+      scope: 'persistent',
+      activatedAt: Date.now(),
       modelId: 'opus[1m]',
     }).catch(() => null);
     expect(mockAccountProxyRoute).not.toHaveBeenCalled();
@@ -2665,7 +2672,12 @@ describe('resolveAiCreditsRoutingOverride with the account proxy', () => {
             'opus[1m]',
             'claude',
             choice === 'chat'
-              ? { active: true, modelId: 'opus[1m]' }
+              ? {
+                  active: true,
+                  scope: 'persistent',
+                  activatedAt: Date.now(),
+                  modelId: 'opus[1m]',
+                }
               : undefined,
             'pipeline-continuation',
             { requiredAccountProxyConnectionId: 'connection-1' },

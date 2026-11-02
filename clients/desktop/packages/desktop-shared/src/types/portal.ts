@@ -51,6 +51,13 @@ export interface CanopyPortalState {
    * (CAN-2938). `null` only before the main process has reported state.
    */
   machineName: string | null;
+  /**
+   * The host code agents use to address this app install through the hosted
+   * Tasks MCP, as the server returned it on the latest heartbeat. Stable per
+   * install. `null` until a heartbeat returns one (older servers never do),
+   * and reset when the session stops or re-pairs.
+   */
+  hostCode: string | null;
   activatedAt: string | null;
   lastSeenAt: string | null;
   lastErrorAt: string | null;

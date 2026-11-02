@@ -86,6 +86,10 @@ import {
   labsExperimentChoiceRequestSchema,
   type AccountLabsResponse,
 } from '../experiments/index';
+import {
+  accountAppearanceSchema,
+  type AccountAppearance,
+} from '../chat-detail/index';
 
 /**
  * Hosted settings table entries for the personal (account) scope. Each entry
@@ -646,6 +650,27 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
     request: (input) => ({
       method: 'PUT',
       path: `${API}/account/labs`,
+      body: input,
+    }),
+  }),
+
+  /* ------------------------------------------------------------------------ */
+  /* Appearance tab                                                           */
+  /* ------------------------------------------------------------------------ */
+
+  'account.appearance.read': defineSettingsRead({
+    transport: 'backend',
+    input: settingsEmptyInputSchema,
+    result: settingsDtoSchema<AccountAppearance>(accountAppearanceSchema),
+    request: () => ({ method: 'GET', path: `${API}/account/appearance` }),
+  }),
+  'account.appearance.update': defineSettingsWrite({
+    transport: 'backend',
+    input: accountAppearanceSchema,
+    result: settingsDtoSchema<AccountAppearance>(accountAppearanceSchema),
+    request: (input) => ({
+      method: 'PUT',
+      path: `${API}/account/appearance`,
       body: input,
     }),
   }),

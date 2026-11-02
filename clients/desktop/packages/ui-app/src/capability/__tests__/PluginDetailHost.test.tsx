@@ -3,6 +3,11 @@ import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PluginDetails } from '@canopy/protocol/plugins';
 import {
+  DetailPageActions,
+  useContributeDetailMoreItems,
+  useDetailMoreItems,
+} from '@canopy/ui-shared/components';
+import {
   PluginDetailHost,
   type PluginDetailHostPlugin,
 } from '../PluginDetailHost';
@@ -104,6 +109,52 @@ describe('PluginDetailHost', () => {
     ).toBeNull();
   });
 
+  describe('CAN-3653 — also available from', () => {
+    const codex = {
+      entryId: 'mkt:openai-curated/slack',
+      label: 'Codex official',
+      ref: {
+        type: 'marketplace-plugin' as const,
+        marketplaceId: 'openai-curated',
+        pluginName: 'slack',
+      },
+    };
+    const curated = {
+      entryId: 'curated:slack',
+      label: 'the curated catalog',
+      ref: { type: 'curated-plugin' as const, key: 'slack' },
+    };
+
+    it('links the same app from another catalog', () => {
+      const onOpenEntryId = jest.fn<void, [string]>();
+      renderHost({ alternatives: [codex], onOpenEntryId });
+      const line = container.querySelector(
+        '[data-testid="plugin-detail-also-available"]',
+      );
+      expect(line?.textContent).toBe('Also available from Codex official');
+      const link = container.querySelector<HTMLButtonElement>(
+        '[data-testid="plugin-detail-also-available-mkt:openai-curated/slack"]',
+      );
+      act(() => link?.click());
+      expect(onOpenEntryId).toHaveBeenCalledWith('mkt:openai-curated/slack');
+    });
+
+    it('joins several alternatives', () => {
+      renderHost({ alternatives: [codex, curated], onOpenEntryId: jest.fn() });
+      expect(
+        container.querySelector('[data-testid="plugin-detail-also-available"]')
+          ?.textContent,
+      ).toBe('Also available from Codex official, the curated catalog');
+    });
+
+    it('renders nothing without alternatives', () => {
+      renderHost({ alternatives: [] });
+      expect(
+        container.querySelector('[data-testid="plugin-detail-also-available"]'),
+      ).toBeNull();
+    });
+  });
+
   it('retains the nested desktop heading and allows a public-page h1', () => {
     renderHost();
     expect(container.querySelector('h2#plugin-detail-title')).not.toBeNull();
@@ -113,15 +164,17 @@ describe('PluginDetailHost', () => {
     expect(container.querySelector('h2#plugin-detail-title')).toBeNull();
   });
 
-  it('keeps connection content and drops install controls for a read-only host', () => {
+  it('keeps harness rows and drops install controls for a read-only host', () => {
     renderHost({
       onInstall: undefined,
       needsInstall: true,
       plugin: { ...plugin, builtIn: true },
-      connectionContent: <div data-testid="connection-content" />,
+      harnessRows: [
+        { id: 'claude', name: 'Claude', installation: 'Installed' },
+      ],
     });
     expect(
-      container.querySelector('[data-testid="connection-content"]'),
+      container.querySelector('[data-testid="plugin-harness-claude"]'),
     ).not.toBeNull();
     expect(
       container.querySelector('[data-testid="built-in-install-panel"]'),
@@ -129,6 +182,166 @@ describe('PluginDetailHost', () => {
     expect(container.textContent).not.toContain('Install Plugin');
     // Components stay listed: nothing here is waiting on an install.
     expect(container.textContent).toContain('Review');
+  });
+
+  it('forwards status, harness and shared slots and keeps a status More menu in the action bar', () => {
+    renderHost({
+      onInstall: undefined,
+      statusContent: (
+        <div data-testid="t-status">
+          <DetailPageActions
+            more={<button type="button" data-testid="t-more" />}
+          />
+        </div>
+      ),
+      harnessRows: [
+        { id: 'claude', name: 'Claude', installation: 'Installed' },
+      ],
+      installContent: (
+        <DetailPageActions
+          primary={<button type="button" data-testid="t-primary" />}
+        />
+      ),
+      sharedContent: <section data-testid="t-shared" />,
+    });
+    const bar = container.querySelector(
+      '[data-testid="plugin-detail-chrome"] [data-testid="detail-action-bar"]',
+    );
+    expect(bar).not.toBeNull();
+    for (const id of ['t-more', 't-primary']) {
+      const nodes = container.querySelectorAll(`[data-testid="${id}"]`);
+      expect(nodes).toHaveLength(1);
+      expect(bar?.contains(nodes[0])).toBe(true);
+    }
+    // Neither declaration falls back to an inline bar in the body.
+    expect(
+      container.querySelectorAll('[data-testid="detail-action-bar"]'),
+    ).toHaveLength(1);
+    expect(container.querySelector('[data-testid="t-status"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="plugin-harness-connections"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[data-testid="t-shared"]')).not.toBeNull();
+  });
+
+  describe('MCP server health (CAN-4842)', () => {
+    const mcpPlugin: PluginDetailHostPlugin = {
+      ...plugin,
+      facets: undefined,
+      details: {
+        ...details,
+        mcpServers: [
+          { name: 'slack', type: 'http', url: 'https://slack.example/mcp' },
+        ],
+      },
+    };
+    const byTestId = (id: string): HTMLElement | null =>
+      container.querySelector(`[data-testid="${id}"]`);
+
+    it('renders the inline health and runs Test connection through the port', async () => {
+      const run = jest.fn().mockResolvedValue({ success: true, message: 'ok' });
+      const onTested = jest.fn();
+      const resolve = jest.fn().mockReturnValue({
+        kind: 'target',
+        target: {
+          targetKey: 'server-1',
+          status: {
+            connectionStatus: 'connected',
+            reachability: 'reachable',
+            lastCheckedAt: '2026-10-01T10:00:00.000Z',
+            configs: [],
+          },
+          configs: [{ id: 'cfg', name: 'Default' }],
+          testConnection: { available: true, run },
+          onTested,
+        },
+      });
+      renderHost({
+        plugin: mcpPlugin,
+        mcpServerHealth: { resolve, formatTimestamp: () => '2 min ago' },
+      });
+      expect(resolve).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'slack' }),
+      );
+      const row = container.querySelector('[data-mcp-member="slack"]');
+      expect(
+        row?.querySelector('[data-testid="mcp-health-badge"]'),
+      ).not.toBeNull();
+      // Each row's health group names its server.
+      expect(byTestId('mcp-health-section')?.getAttribute('aria-label')).toBe(
+        'Health for slack',
+      );
+      expect(byTestId('mcp-health-last-checked')?.textContent).toBe(
+        'Last checked 2 min ago',
+      );
+      const test = byTestId('mcp-health-test');
+      expect(test?.hasAttribute('disabled')).toBe(false);
+      await act(async () => {
+        test?.click();
+        await Promise.resolve();
+      });
+      expect(run).toHaveBeenCalledWith('cfg');
+      expect(onTested).toHaveBeenCalledTimes(1);
+    });
+
+    it('disables Test connection with the port reason', () => {
+      renderHost({
+        plugin: mcpPlugin,
+        mcpServerHealth: {
+          resolve: () => ({
+            kind: 'target',
+            target: {
+              targetKey: 'server-1',
+              configs: [{ id: 'cfg', name: 'Default' }],
+              testConnection: { available: false, reason: 'Desktop offline.' },
+            },
+          }),
+        },
+      });
+      expect(byTestId('mcp-health-test')?.hasAttribute('disabled')).toBe(true);
+      expect(byTestId('mcp-health-test-reason')?.textContent).toBe(
+        'Desktop offline.',
+      );
+    });
+
+    it('reads Not configured yet, Loading… or the unavailable reason without a test', () => {
+      renderHost({
+        plugin: mcpPlugin,
+        mcpServerHealth: { resolve: () => undefined },
+      });
+      expect(
+        byTestId('plugin-detail-mcp-status-unavailable')?.textContent,
+      ).toBe('Not configured yet');
+      expect(byTestId('mcp-health-test')).toBeNull();
+      expect(byTestId('mcp-health-badge')).toBeNull();
+
+      renderHost({
+        plugin: mcpPlugin,
+        mcpServerHealth: { resolve: () => ({ kind: 'loading' }) },
+      });
+      expect(
+        container.querySelector('[data-mcp-member="slack"]')?.textContent,
+      ).toContain('Loading…');
+      expect(byTestId('plugin-detail-mcp-status-unavailable')).toBeNull();
+
+      renderHost({
+        plugin: mcpPlugin,
+        mcpServerHealth: {
+          resolve: () => ({ kind: 'unavailable', reason: 'Not paired.' }),
+        },
+      });
+      expect(
+        byTestId('plugin-detail-mcp-status-unavailable')?.textContent,
+      ).toBe('Not paired.');
+      expect(byTestId('mcp-health-test')).toBeNull();
+    });
+
+    it('falls back to Not configured yet without a health port', () => {
+      renderHost({ plugin: mcpPlugin });
+      expect(
+        byTestId('plugin-detail-mcp-status-unavailable')?.textContent,
+      ).toBe('Not configured yet');
+    });
   });
 
   it('still offers the built-in install panel when the host can install', () => {
@@ -168,8 +381,9 @@ describe('PluginDetailHost', () => {
     expect(shareButton?.getAttribute('aria-label')).toBe('Share Reviewer');
     expect(shareButton?.textContent).toBe('Share');
     expect(shareButton?.className).toContain('bg-quaternary');
-    expect(shareButton?.className).toContain('rounded-md');
-    expect(shareButton?.className).not.toContain('rounded-full');
+    // The compact capsule, never the deprecated control rectangle.
+    expect(shareButton?.className).toContain('rounded-full');
+    expect(shareButton?.className).not.toContain('rounded-md');
     expect(shareButton?.className).toContain('h-7');
     expect(shareButton?.className).not.toContain('border-border');
   });
@@ -208,6 +422,148 @@ describe('PluginDetailHost', () => {
       expect(onShare).toHaveBeenCalledTimes(1);
     },
   );
+
+  describe('CAN-4842 — at most three header actions', () => {
+    const external = {
+      ...plugin,
+      externalSource: 'https://example.com/plugin.git',
+    };
+
+    function chromeControls(): string[] {
+      const bar = container.querySelector(
+        '[data-testid="plugin-detail-chrome"] [data-testid="detail-action-bar"]',
+      );
+      return Array.from(bar?.querySelectorAll('button') ?? []).map(
+        (button) => button.getAttribute('data-testid') ?? '',
+      );
+    }
+
+    it('puts Update in the ⋯ More menu beside Share and the primary', async () => {
+      const onInstall = jest.fn(
+        (): Promise<PluginDetailHostPlugin> => Promise.resolve(external),
+      );
+      renderHost({
+        plugin: external,
+        onInstall,
+        shareAction: { status: 'shareable', onShare: jest.fn() },
+        idlePrimaryAction: <button data-testid="host-primary">Try it</button>,
+      });
+      expect(chromeControls()).toEqual([
+        'plugin-detail-more',
+        'plugin-detail-share',
+        'host-primary',
+      ]);
+      expect(
+        container.querySelector('[data-testid="plugin-detail-update"]'),
+      ).toBeNull();
+      act(() => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="plugin-detail-more"]',
+          )
+          ?.click();
+      });
+      const update = document.querySelector<HTMLElement>(
+        '[data-testid="plugin-detail-menu"] [data-testid="plugin-detail-update"]',
+      );
+      expect(update?.textContent).toContain('Update');
+      await act(async () => {
+        update?.click();
+        await Promise.resolve();
+      });
+      expect(onInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows an Update failure on the page, since the ⋯ menu closes on select', async () => {
+      renderHost({
+        plugin: external,
+        onInstall: (): Promise<PluginDetailHostPlugin> =>
+          Promise.reject(new Error('Could not fetch the plugin source.')),
+      });
+      act(() => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="plugin-detail-more"]',
+          )
+          ?.click();
+      });
+      await act(async () => {
+        document
+          .querySelector<HTMLElement>('[data-testid="plugin-detail-update"]')
+          ?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const error = container.querySelector(
+        '[data-testid="plugin-detail-update-error"]',
+      );
+      expect(error?.getAttribute('role')).toBe('alert');
+      expect(error?.textContent).toContain(
+        'Could not fetch the plugin source.',
+      );
+    });
+
+    it("adds Update to a body's ⋯ menu instead of drawing a second one", () => {
+      function BodyMenu(): ReactElement {
+        const hostItems = useDetailMoreItems();
+        return (
+          <span data-testid="body-more">
+            {hostItems.map((item) => item.label).join(',')}
+          </span>
+        );
+      }
+      renderHost({
+        plugin: external,
+        statusContent: <DetailPageActions more={<BodyMenu />} />,
+      });
+      expect(
+        container.querySelector('[data-testid="plugin-detail-more"]'),
+      ).toBeNull();
+      expect(
+        container.querySelector('[data-testid="body-more"]')?.textContent,
+      ).toBe('Update');
+    });
+
+    it('lists a row an install body offers in the same ⋯ menu', () => {
+      const onReinstall = jest.fn();
+      function InstallBody(): ReactElement {
+        const inMenu = useContributeDetailMoreItems('reinstall', [
+          {
+            id: 'reinstall',
+            label: 'Reinstall plugin',
+            icon: null,
+            testId: 'body-reinstall',
+            onSelect: onReinstall,
+          },
+        ]);
+        return <p data-testid="install-body">{inMenu ? 'in menu' : 'own'}</p>;
+      }
+      renderHost({ installContent: <InstallBody /> });
+      expect(
+        container.querySelector('[data-testid="install-body"]')?.textContent,
+      ).toBe('in menu');
+      act(() => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="plugin-detail-more"]',
+          )
+          ?.click();
+      });
+      const row = document.querySelector<HTMLElement>(
+        '[data-testid="plugin-detail-menu"] [data-testid="body-reinstall"]',
+      );
+      expect(row?.textContent).toContain('Reinstall plugin');
+      act(() => row?.click());
+      expect(onReinstall).toHaveBeenCalledTimes(1);
+    });
+
+    it('draws no ⋯ when the plugin has no rarer actions', () => {
+      renderHost({ shareAction: { status: 'shareable', onShare: jest.fn() } });
+      expect(
+        container.querySelector('[data-testid="plugin-detail-more"]'),
+      ).toBeNull();
+    });
+  });
 
   it('shows a blocked Share with its reason and never invokes it', () => {
     const reason = 'This plugin has no public source to share.';

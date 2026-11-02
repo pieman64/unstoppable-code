@@ -1,3 +1,13 @@
+jest.mock('../../shared-containers/canopy-server-client', () => ({
+  fetchLatestSharedContainerRevision: jest.fn(() =>
+    Promise.resolve({
+      id: 'container',
+      access: 'direct',
+      owner: { id: 'publisher', name: 'Ada' },
+    }),
+  ),
+}));
+import { acceptSharedContainer } from '../../shared-containers/acceptance-store';
 import { execFileSync } from 'node:child_process';
 import {
   cpSync,
@@ -17,9 +27,33 @@ jest.mock('node:worker_threads', () =>
     >('../../ledger/__tests__/fixtures/tsx-worker-threads')
     .createTsxWorkerThreads(),
 );
+import type * as CoreStorage from '@canopy/core-runtime/storage';
+// W6g: the same rows every checked writer reads, daemon-owned on the daemon side.
+jest.mock('@canopy/core-runtime/storage', () => {
+  const actual = jest.requireActual<typeof CoreStorage>(
+    '@canopy/core-runtime/storage',
+  );
+  const rows: CoreStorage.StorageOwnershipRow[] = [...actual.STORAGE_OWNERSHIP];
+  return {
+    ...actual,
+    STORAGE_OWNERSHIP: rows,
+    setDaemonOwnedForTest: (namespaceIds: readonly string[]): void => {
+      actual.STORAGE_OWNERSHIP.forEach((row, index) => {
+        rows[index] = namespaceIds.includes(row.id)
+          ? { ...row, transitionOwner: 'daemon', currentWriters: [] }
+          : row;
+      });
+    },
+  };
+});
+const { setDaemonOwnedForTest } = jest.requireMock<{
+  setDaemonOwnedForTest: (namespaceIds: readonly string[]) => void;
+}>('@canopy/core-runtime/storage');
 jest.mock('../../agents/session-manager', () => ({
   getActiveChatIds: jest.fn(() => []),
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
+  subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
 }));
 jest.mock('../../observability', () => ({
   getObservabilityService: jest.fn(() => ({
@@ -92,6 +126,7 @@ import {
   W5RevisionConflictError,
 } from '../w5-commit-log-file-store';
 import { nodeW5FileStore } from '../w5-file-store';
+import { installW5StoreSide, W5_STORE_SIDES } from './fixtures/w5-store-sides';
 import { __resetSidebarItemsStateForTests } from '../sidebar-items';
 import {
   splitTemporaryWorkspaceWorktree,
@@ -100,7 +135,7 @@ import {
 } from '../split-temporary-workspace';
 import * as git from '../git';
 import { ownsW5RepositoryLock } from '../w5-repository-locks';
-import * as locks from '../w5-repository-locks';
+import * as locks from '@canopy/core-runtime/node/w5/repository-locks';
 import {
   updateWorkspaceConfig,
   updateWorkspaceWorktrees,
@@ -138,7 +173,7 @@ jest.mock('../../archive/archive-io-runner', () => ({
       .requireActual<typeof ArchiveEngine>('../../archive/archive-io-engine')
       .executeArchiveIoRequest(request, new AbortController().signal, {
         progress: () => {},
-        child: { started: () => {}, finished: () => {} },
+        child: { started: () => {}, exited: () => {} },
       }),
 }));
 
@@ -254,6 +289,7 @@ function images(): string[] {
 }
 
 async function prepareFork(cowork = false, repositoryCount = 1): Promise<void> {
+  await acceptSharedContainer('container', undefined, undefined, 'direct');
   const replicaRoot = join(dir, 'replicas');
   const revisionRoot = join(replicaRoot, 'container/revisions/revision');
   mkdirSync(join(revisionRoot, 'artifacts'), { recursive: true });
@@ -369,7 +405,11 @@ function invoke(
     containerId: 'container',
     revisionId: 'revision',
     sourceOwnerDisplayName: changed ? 'Other' : 'Ada',
-    destination: { kind: 'new-workspace', parentDirectory: join(dir, 'forks') },
+    destination: {
+      kind: 'new-workspace',
+      owner: { kind: 'personal' },
+      parentDirectory: join(dir, 'forks'),
+    },
     expectedRevision,
     idempotencyKey,
   });
@@ -378,326 +418,373 @@ async function prepare(kind: 'restore' | 'fork'): Promise<void> {
   if (kind === 'restore') prepareRestore();
   else await prepareFork();
 }
-it.each(['restore', 'fork'] as const)(
-  '%s refuses stale admission without writes or effects and releases the key',
-  async (kind) => {
-    await prepare(kind);
+describe.each(W5_STORE_SIDES)('over the %s store', (side) => {
+  let teardown = (): Promise<void> => Promise.resolve();
+  beforeEach(async () => {
+    teardown = await installW5StoreSide(side, {
+      host,
+      root,
+      setDaemonOwned: setDaemonOwnedForTest,
+    });
+  });
+  afterEach(() => teardown());
+
+  /** A failed decision call: the daemon reports it uncertain, with fixed text. */
+  const uncertain = (message: string): string =>
+    side === 'daemon' ? 'The W5 record port call failed.' : message;
+
+  it.each(['restore', 'fork'] as const)(
+    '%s refuses stale admission without writes or effects and releases the key',
+    async (kind) => {
+      await prepare(kind);
+      const before = images();
+      const commits = jest.spyOn(host, 'commit');
+      await expect(invoke(kind, 99, 'key')).rejects.toBeInstanceOf(
+        W5RevisionConflictError,
+      );
+      expect(images()).toEqual(before);
+      expect(commits).not.toHaveBeenCalled();
+      expect(existsSync(join(dir, 'forks'))).toBe(false);
+      await expect(invoke(kind, 0, 'key')).resolves.toBeDefined();
+    },
+  );
+  it.each(['restore', 'fork'] as const)(
+    '%s replays exactly its portable final DTO and refuses parameter reuse',
+    async (kind) => {
+      await prepare(kind);
+      const first = await invoke(kind, 0, 'key');
+      expect(JSON.stringify(first)).not.toContain(dir);
+      const before = images();
+      const commits = jest.spyOn(host, 'commit');
+      expect(await invoke(kind, 99, 'key')).toStrictEqual(first);
+      expect(images()).toEqual(before);
+      expect(commits).not.toHaveBeenCalled();
+      await expect(invoke(kind, undefined, 'key', true)).rejects.toMatchObject({
+        reason: 'key-reused',
+      });
+    },
+  );
+  it.each(['restore', 'fork'] as const)(
+    '%s marks uncertain failures recovery-required despite existing rollback',
+    async (kind) => {
+      await prepare(kind);
+      jest
+        .spyOn(host, 'commit')
+        .mockRejectedValueOnce(new Error('decision failed'));
+      await expect(invoke(kind, 0, 'failed')).rejects.toThrow(
+        uncertain('decision failed'),
+      );
+      await expect(invoke(kind, 0, 'failed')).rejects.toMatchObject({
+        reason: 'recovery-required',
+      });
+    },
+  );
+  it('split refuses a stale revision before any effect and releases its key', async () => {
     const before = images();
     const commits = jest.spyOn(host, 'commit');
-    await expect(invoke(kind, 99, 'key')).rejects.toBeInstanceOf(
+    await expect(split(99, 'key')).rejects.toBeInstanceOf(
       W5RevisionConflictError,
     );
     expect(images()).toEqual(before);
     expect(commits).not.toHaveBeenCalled();
-    expect(existsSync(join(dir, 'forks'))).toBe(false);
-    await expect(invoke(kind, 0, 'key')).resolves.toBeDefined();
-  },
-);
-it.each(['restore', 'fork'] as const)(
-  '%s replays exactly its portable final DTO and refuses parameter reuse',
-  async (kind) => {
-    await prepare(kind);
-    const first = await invoke(kind, 0, 'key');
+    await expect(split(0, 'key')).resolves.toBeDefined();
+  });
+  it('split replays its portable foreground outcome without restarting background work', async () => {
+    const first = await split(0, 'key');
     expect(JSON.stringify(first)).not.toContain(dir);
     const before = images();
     const commits = jest.spyOn(host, 'commit');
-    expect(await invoke(kind, 99, 'key')).toStrictEqual(first);
+    expect(await split(99, 'key')).toStrictEqual(first);
     expect(images()).toEqual(before);
     expect(commits).not.toHaveBeenCalled();
-    await expect(invoke(kind, undefined, 'key', true)).rejects.toMatchObject({
+    await expect(split(undefined, 'key', true)).rejects.toMatchObject({
       reason: 'key-reused',
     });
-  },
-);
-it.each(['restore', 'fork'] as const)(
-  '%s marks uncertain failures recovery-required despite existing rollback',
-  async (kind) => {
-    await prepare(kind);
+    releaseMove();
+    await drainSplitTemporaryWorkspaceBackgroundPhases();
+    expect(await split(99, 'key')).toStrictEqual(first);
+  });
+  it('split retains recovery-required after an uncertain reservation decision even when cleanup runs', async () => {
     jest
       .spyOn(host, 'commit')
       .mockRejectedValueOnce(new Error('decision failed'));
-    await expect(invoke(kind, 0, 'failed')).rejects.toThrow('decision failed');
-    await expect(invoke(kind, 0, 'failed')).rejects.toMatchObject({
+    await expect(split(0, 'failed')).rejects.toThrow(
+      uncertain('decision failed'),
+    );
+    await expect(split(0, 'failed')).rejects.toMatchObject({
       reason: 'recovery-required',
     });
-  },
-);
-it('split refuses a stale revision before any effect and releases its key', async () => {
-  const before = images();
-  const commits = jest.spyOn(host, 'commit');
-  await expect(split(99, 'key')).rejects.toBeInstanceOf(
-    W5RevisionConflictError,
-  );
-  expect(images()).toEqual(before);
-  expect(commits).not.toHaveBeenCalled();
-  await expect(split(0, 'key')).resolves.toBeDefined();
-});
-it('split replays its portable foreground outcome without restarting background work', async () => {
-  const first = await split(0, 'key');
-  expect(JSON.stringify(first)).not.toContain(dir);
-  const before = images();
-  const commits = jest.spyOn(host, 'commit');
-  expect(await split(99, 'key')).toStrictEqual(first);
-  expect(images()).toEqual(before);
-  expect(commits).not.toHaveBeenCalled();
-  await expect(split(undefined, 'key', true)).rejects.toMatchObject({
-    reason: 'key-reused',
   });
-  releaseMove();
-  await drainSplitTemporaryWorkspaceBackgroundPhases();
-  expect(await split(99, 'key')).toStrictEqual(first);
-});
-it('split retains recovery-required after an uncertain reservation decision even when cleanup runs', async () => {
-  jest
-    .spyOn(host, 'commit')
-    .mockRejectedValueOnce(new Error('decision failed'));
-  await expect(split(0, 'failed')).rejects.toThrow('decision failed');
-  await expect(split(0, 'failed')).rejects.toMatchObject({
-    reason: 'recovery-required',
-  });
-});
-it('split groups a new destination publication, keeps its reservation separate and saves the foreground receipt last', async () => {
-  writeFileSync(
-    join(root, 'index.json'),
-    JSON.stringify({
-      version: 1,
-      workspaces: [
-        {
-          id: 'temp',
-          name: 'temp',
-          type: 'multi-repo',
-          color: '#7C3AED',
-          order: 0,
-        },
-      ],
-    }),
-  );
-  const beforeA = readFileSync(join(root, 'a/workspace.json'), 'utf8');
-  const commits = jest.spyOn(host, 'commit');
-  await split(0, 'grouped');
-  expect(commits).toHaveBeenCalledTimes(3);
-  const decisions = commits.mock.calls.map(([request]) => request);
-  expect(decisions[0]?.files).toHaveLength(4); // includes the readable index backup
-  expect(
-    decisions[0]?.files.some((file) => file.path.endsWith('/index.json')),
-  ).toBe(true);
-  expect(decisions[1]?.files).toHaveLength(1);
-  expect(decisions[0]?.receipt).toBeUndefined();
-  expect(decisions[1]?.receipt).toBeUndefined();
-  expect(decisions[2]?.receipt?.idempotencyKey).toBe('grouped');
-  expect(readFileSync(join(root, 'a/workspace.json'), 'utf8')).toBe(beforeA);
-});
-it('fork groups destination index, manifest and list publication and carries its own collection revision', async () => {
-  await prepareFork();
-  const commits = jest.spyOn(host, 'commit');
-  await invoke('fork', 0, 'grouped');
-  const writes = commits.mock.calls
-    .map(([request]) => request)
-    .filter((request) => request.files.length);
-  expect(writes).toHaveLength(5); // creation, start page, reservation, Git phase, readiness
-  expect(writes[0]?.files).toHaveLength(4); // includes the readable index backup
-  expect(writes[0]?.files.map((file) => file.path)).toEqual(
-    expect.arrayContaining([
+  it('split groups a new destination publication, keeps its reservation separate and saves the foreground receipt last', async () => {
+    writeFileSync(
       join(root, 'index.json'),
-      join(root, 'fork/workspace.json'),
-      join(root, 'fork/worktrees.json'),
-    ]),
-  );
-  expect(writes.every((request) => request.receipt === undefined)).toBe(true);
-  const receipt = commits.mock.calls.at(-1)?.[0];
-  expect(receipt?.receipt?.idempotencyKey).toBe('grouped');
-  expect(receipt?.expectedRevisions).toEqual([
-    { resource: { kind: 'workspaces' }, revision: 1 },
-  ]);
-});
-function addEmptyTemporaryWorkspace(): string {
-  mkdirSync(join(root, 'empty'), { recursive: true });
-  writeFileSync(
-    join(root, 'empty/workspace.json'),
-    JSON.stringify({
-      version: 1,
-      type: 'multi-repo',
-      temporary: true,
-      repos: [{ id: 'a', name: 'A', repoPath: repo }],
-    }),
-  );
-  writeFileSync(
-    join(root, 'empty/worktrees.json'),
-    JSON.stringify({ version: 1, worktrees: [] }),
-  );
-  writeFileSync(
-    join(root, 'index.json'),
-    JSON.stringify({
-      version: 1,
-      workspaces: ['a', 'temp', 'empty'].map((id, order) => ({
-        id,
-        name: id,
-        type: id === 'a' ? 'single-repo' : 'multi-repo',
-        color: '#7C3AED',
-        order,
-      })),
-    }),
-  );
-  __resetSidebarItemsStateForTests();
-  return readFileSync(join(root, 'empty/workspace.json'), 'utf8');
-}
-it('new-destination publication reads no other workspace inside its scope', async () => {
-  await prepareFork();
-  const emptyManifest = addEmptyTemporaryWorkspace();
-  const lockOrderErrors: unknown[] = [];
-  const acquire = locks.withW5RepositoryLock;
-  jest
-    .spyOn(locks, 'withW5RepositoryLock')
-    .mockImplementation(async (...args) => {
-      try {
-        return await acquire(...args);
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('lock order'))
-          lockOrderErrors.push(error);
-        throw error;
-      }
-    });
-  await invoke('fork');
-  await split();
-  expect(lockOrderErrors).toEqual([]);
-  expect(readFileSync(join(root, 'empty/workspace.json'), 'utf8')).toBe(
-    emptyManifest,
-  );
-});
-it('split refuses a foreign source revision after migration without absorbing it into its carried precondition', async () => {
-  const migrate = splitItems.migrateSplitChatsAndPlans;
-  jest
-    .spyOn(splitItems, 'migrateSplitChatsAndPlans')
-    .mockImplementationOnce(async (...args) => {
-      const result = await migrate(...args);
-      await updateWorkspaceConfig('temp', (config) => {
-        config.alwaysShow = true;
-      });
-      return result;
-    });
-  await expect(split(0, 'conflict')).rejects.toBeInstanceOf(
-    W5RevisionConflictError,
-  );
-  expect(git.moveWorktree).not.toHaveBeenCalled();
-  await expect(split(0, 'conflict')).rejects.toMatchObject({
-    reason: 'recovery-required',
+      JSON.stringify({
+        version: 1,
+        workspaces: [
+          {
+            id: 'temp',
+            name: 'temp',
+            type: 'multi-repo',
+            color: '#7C3AED',
+            order: 0,
+          },
+        ],
+      }),
+    );
+    const beforeA = readFileSync(join(root, 'a/workspace.json'), 'utf8');
+    const commits = jest.spyOn(host, 'commit');
+    await split(0, 'grouped');
+    expect(commits).toHaveBeenCalledTimes(3);
+    const decisions = commits.mock.calls.map(([request]) => request);
+    expect(decisions[0]?.files).toHaveLength(4); // includes the readable index backup
+    expect(
+      decisions[0]?.files.some((file) => file.path.endsWith('/index.json')),
+    ).toBe(true);
+    expect(decisions[1]?.files).toHaveLength(1);
+    expect(decisions[0]?.receipt).toBeUndefined();
+    expect(decisions[1]?.receipt).toBeUndefined();
+    expect(decisions[2]?.receipt?.idempotencyKey).toBe('grouped');
+    expect(readFileSync(join(root, 'a/workspace.json'), 'utf8')).toBe(beforeA);
   });
-});
-it('restore carries its reservation revision and refuses a foreign collection edit after Git', async () => {
-  prepareRestore();
-  const create = git.createWorktree;
-  jest.spyOn(git, 'createWorktree').mockImplementationOnce(async (...args) => {
-    const result = await create(...args);
-    await updateWorkspaceWorktrees('a', (rows) => [
-      ...rows,
-      {
-        id: 'foreign',
-        branchName: 'foreign',
-        createdAt: new Date().toISOString(),
-      },
+  it('fork groups destination index, manifest and list publication and carries its own collection revision', async () => {
+    await prepareFork();
+    const commits = jest.spyOn(host, 'commit');
+    await invoke('fork', 0, 'grouped');
+    const writes = commits.mock.calls
+      .map(([request]) => request)
+      .filter((request) => request.files.length);
+    expect(writes).toHaveLength(5); // creation, start page, reservation, Git phase, readiness
+    expect(writes[0]?.files).toHaveLength(4); // includes the readable index backup
+    expect(writes[0]?.files.map((file) => file.path)).toEqual(
+      expect.arrayContaining([
+        join(root, 'index.json'),
+        join(root, 'fork/workspace.json'),
+        join(root, 'fork/worktrees.json'),
+      ]),
+    );
+    expect(writes.every((request) => request.receipt === undefined)).toBe(true);
+    const receipt = commits.mock.calls.at(-1)?.[0];
+    expect(receipt?.receipt?.idempotencyKey).toBe('grouped');
+    expect(receipt?.expectedRevisions).toEqual([
+      { resource: { kind: 'workspaces' }, revision: 1 },
     ]);
-    return result;
   });
-  await expect(invoke('restore', 0, 'conflict')).rejects.toBeInstanceOf(
-    W5RevisionConflictError,
-  );
-  await expect(invoke('restore', 0, 'conflict')).rejects.toMatchObject({
-    reason: 'recovery-required',
-  });
-});
-it('fork refuses a foreign collection edit after its own publication and before the final receipt', async () => {
-  await prepareFork();
-  const write = provenance.writeForkProvenanceForDestination;
-  jest
-    .spyOn(provenance, 'writeForkProvenanceForDestination')
-    .mockImplementationOnce(async (...args) => {
-      const result = await write(...args);
-      await getWorkspaceIndexRepository().update((snapshot) => ({
-        entries: snapshot.entries.filter((entry) => entry.id !== 'a'),
-        result: undefined,
-      }));
-      return result;
-    });
-  await expect(invoke('fork', 0, 'conflict')).rejects.toBeInstanceOf(
-    W5RevisionConflictError,
-  );
-  await expect(invoke('fork', 0, 'conflict')).rejects.toMatchObject({
-    reason: 'recovery-required',
-  });
-});
-it('split keeps its foreground receipt when background rollback reports failure', async () => {
-  jest.mocked(recordLedgerMoveIntent).mockResolvedValueOnce('not_durable');
-  const first = await split(0, 'background-failure');
-  releaseMove();
-  await drainSplitTemporaryWorkspaceBackgroundPhases();
-  expect(await split(99, 'background-failure')).toStrictEqual(first);
-});
-it('a Cowork fork carries its grouped creation decision through settings and entry creation', async () => {
-  await prepareFork(true);
-  const commits = jest.spyOn(host, 'commit');
-  const first = await invoke('fork', 0, 'cowork');
-  expect(first).toMatchObject({ containerType: 'COWORK_WORK_ENTRY' });
-  expect(commits.mock.calls[0]?.[0].files.map((file) => file.path)).toEqual(
-    expect.arrayContaining([
+  function addEmptyTemporaryWorkspace(): string {
+    mkdirSync(join(root, 'empty'), { recursive: true });
+    writeFileSync(
+      join(root, 'empty/workspace.json'),
+      JSON.stringify({
+        version: 1,
+        type: 'multi-repo',
+        temporary: true,
+        repos: [{ id: 'a', name: 'A', repoPath: repo }],
+      }),
+    );
+    writeFileSync(
+      join(root, 'empty/worktrees.json'),
+      JSON.stringify({ version: 1, worktrees: [] }),
+    );
+    writeFileSync(
       join(root, 'index.json'),
-      join(root, 'fork/workspace.json'),
-    ]),
-  );
-  expect(await invoke('fork', 99, 'cowork')).toStrictEqual(first);
-});
-it('restore saves the final partial outcome after execution migration changes the warnings', async () => {
-  prepareRestore();
-  const executions = getArchivedContainerExecutionsDir('a', 'archived');
-  mkdirSync(executions, { recursive: true });
-  writeFileSync(join(executions, 'broken.json'), '{');
-  const first = await invoke('restore', 0, 'partial');
-  expect(first).toMatchObject({
-    warnings: ['Pipeline executions failed to restore: broken.'],
+      JSON.stringify({
+        version: 1,
+        workspaces: ['a', 'temp', 'empty'].map((id, order) => ({
+          id,
+          name: id,
+          type: id === 'a' ? 'single-repo' : 'multi-repo',
+          color: '#7C3AED',
+          order,
+        })),
+      }),
+    );
+    __resetSidebarItemsStateForTests();
+    return readFileSync(join(root, 'empty/workspace.json'), 'utf8');
+  }
+  it('new-destination publication reads no other workspace inside its scope', async () => {
+    await prepareFork();
+    const emptyManifest = addEmptyTemporaryWorkspace();
+    const lockOrderErrors: unknown[] = [];
+    const acquire = locks.withW5RepositoryLock;
+    jest
+      .spyOn(locks, 'withW5RepositoryLock')
+      .mockImplementation(async (...args) => {
+        try {
+          return await acquire(...args);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('lock order'))
+            lockOrderErrors.push(error);
+          throw error;
+        }
+      });
+    await invoke('fork');
+    await split();
+    expect(locks.withW5RepositoryLock).toHaveBeenCalled();
+    expect(lockOrderErrors).toEqual([]);
+    expect(readFileSync(join(root, 'empty/workspace.json'), 'utf8')).toBe(
+      emptyManifest,
+    );
   });
-  expect(await invoke('restore', 99, 'partial')).toStrictEqual(first);
-  expect(JSON.stringify(first)).not.toContain(dir);
-});
+  it('split refuses a foreign source revision after migration without absorbing it into its carried precondition', async () => {
+    const migrate = splitItems.migrateSplitChatsAndPlans;
+    jest
+      .spyOn(splitItems, 'migrateSplitChatsAndPlans')
+      .mockImplementationOnce(async (...args) => {
+        const result = await migrate(...args);
+        await updateWorkspaceConfig('temp', (config) => {
+          config.alwaysShow = true;
+        });
+        return result;
+      });
+    await expect(split(0, 'conflict')).rejects.toBeInstanceOf(
+      W5RevisionConflictError,
+    );
+    expect(git.moveWorktree).not.toHaveBeenCalled();
+    await expect(split(0, 'conflict')).rejects.toMatchObject({
+      reason: 'recovery-required',
+    });
+  });
+  it('restore carries its reservation revision and refuses a foreign collection edit after Git', async () => {
+    prepareRestore();
+    const create = git.createWorktree;
+    jest
+      .spyOn(git, 'createWorktree')
+      .mockImplementationOnce(async (...args) => {
+        const result = await create(...args);
+        await updateWorkspaceWorktrees('a', (rows) => [
+          ...rows,
+          {
+            id: 'foreign',
+            branchName: 'foreign',
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        return result;
+      });
+    await expect(invoke('restore', 0, 'conflict')).rejects.toBeInstanceOf(
+      W5RevisionConflictError,
+    );
+    await expect(invoke('restore', 0, 'conflict')).rejects.toMatchObject({
+      reason: 'recovery-required',
+    });
+  });
+  it('fork refuses a foreign collection edit after its own publication and before the final receipt', async () => {
+    await prepareFork();
+    const write = provenance.writeForkProvenanceForDestination;
+    jest
+      .spyOn(provenance, 'writeForkProvenanceForDestination')
+      .mockImplementationOnce(async (...args) => {
+        const result = await write(...args);
+        await getWorkspaceIndexRepository().update((snapshot) => ({
+          entries: snapshot.entries.filter((entry) => entry.id !== 'a'),
+          result: undefined,
+        }));
+        return result;
+      });
+    await expect(invoke('fork', 0, 'conflict')).rejects.toBeInstanceOf(
+      W5RevisionConflictError,
+    );
+    await expect(invoke('fork', 0, 'conflict')).rejects.toMatchObject({
+      reason: 'recovery-required',
+    });
+  });
+  it('split keeps its foreground receipt when background rollback reports failure', async () => {
+    jest.mocked(recordLedgerMoveIntent).mockResolvedValueOnce('not_durable');
+    const first = await split(0, 'background-failure');
+    releaseMove();
+    await drainSplitTemporaryWorkspaceBackgroundPhases();
+    expect(await split(99, 'background-failure')).toStrictEqual(first);
+  });
+  it('a Cowork fork carries its grouped creation decision through settings and entry creation', async () => {
+    await prepareFork(true);
+    const commits = jest.spyOn(host, 'commit');
+    const first = await invoke('fork', 0, 'cowork');
+    expect(first).toMatchObject({ containerType: 'COWORK_WORK_ENTRY' });
+    expect(commits.mock.calls[0]?.[0].files.map((file) => file.path)).toEqual(
+      expect.arrayContaining([
+        join(root, 'index.json'),
+        join(root, 'fork/workspace.json'),
+      ]),
+    );
+    expect(await invoke('fork', 99, 'cowork')).toStrictEqual(first);
+  });
+  it('restore saves the final partial outcome after execution migration changes the warnings', async () => {
+    prepareRestore();
+    const executions = getArchivedContainerExecutionsDir('a', 'archived');
+    mkdirSync(executions, { recursive: true });
+    writeFileSync(join(executions, 'broken.json'), '{');
+    const first = await invoke('restore', 0, 'partial');
+    expect(first).toMatchObject({
+      warnings: ['Workflow executions failed to restore: broken.'],
+    });
+    expect(await invoke('restore', 99, 'partial')).toStrictEqual(first);
+    expect(JSON.stringify(first)).not.toContain(dir);
+  });
 
-it('a multi-repo fork carries child creation and repository decisions without a lock across Git', async () => {
-  await prepareFork(false, 2);
-  const create = git.createWorktree;
-  jest.spyOn(git, 'createWorktree').mockImplementation(async (...args) => {
-    expect(ownsW5RepositoryLock()).toBe(false);
-    return create(...args);
+  it('a multi-repo fork carries child creation and repository decisions without a lock across Git', async () => {
+    await prepareFork(false, 2);
+    const create = git.createWorktree;
+    jest.spyOn(git, 'createWorktree').mockImplementation(async (...args) => {
+      expect(ownsW5RepositoryLock()).toBe(false);
+      return create(...args);
+    });
+    const first = await invoke('fork', 0, 'multi');
+    expect(first).toMatchObject({ containerType: 'CODE_WORKTREE' });
+    expect(await invoke('fork', 99, 'multi')).toStrictEqual(first);
   });
-  const first = await invoke('fork', 0, 'multi');
-  expect(first).toMatchObject({ containerType: 'CODE_WORKTREE' });
-  expect(await invoke('fork', 99, 'multi')).toStrictEqual(first);
-});
-it('split starts no background lifecycle when its final receipt decision fails', async () => {
-  const commit = host.commit.bind(host);
-  jest.spyOn(host, 'commit').mockImplementation((request) => {
-    if (request.receipt) return Promise.reject(new Error('receipt failed'));
-    return commit(request);
+  it('split starts no background lifecycle when its final receipt decision fails', async () => {
+    const commit = host.commit.bind(host);
+    jest.spyOn(host, 'commit').mockImplementation((request) => {
+      if (request.receipt) return Promise.reject(new Error('receipt failed'));
+      return commit(request);
+    });
+    await expect(split(0, 'receipt-failed')).rejects.toThrow(
+      uncertain('receipt failed'),
+    );
+    expect(git.moveWorktree).not.toHaveBeenCalled();
+    expect(isSplitTemporaryWorkspaceInFlight('temp', 'one')).toBe(false);
+    await expect(split(0, 'receipt-failed')).rejects.toMatchObject({
+      reason: 'recovery-required',
+    });
   });
-  await expect(split(0, 'receipt-failed')).rejects.toThrow('receipt failed');
-  expect(git.moveWorktree).not.toHaveBeenCalled();
-  expect(isSplitTemporaryWorkspaceInFlight('temp', 'one')).toBe(false);
-  await expect(split(0, 'receipt-failed')).rejects.toMatchObject({
-    reason: 'recovery-required',
-  });
-});
 
-it('restore releases a read-only child refusal before worktree creation effects', async () => {
-  prepareRestore();
-  const config = join(root, 'a/workspace.json');
-  const valid = readFileSync(config, 'utf8');
-  writeFileSync(
-    config,
-    JSON.stringify({ version: 1, type: 'single-repo', repos: [] }),
-  );
-  const before = images();
-  const commits = jest.spyOn(host, 'commit');
-  await expect(invoke('restore', 0, 'refused')).rejects.toMatchObject({
-    reason: 'unsupported-workspace',
+  it('restore releases a read-only child refusal before worktree creation effects', async () => {
+    prepareRestore();
+    const config = join(root, 'a/workspace.json');
+    const valid = readFileSync(config, 'utf8');
+    writeFileSync(
+      config,
+      JSON.stringify({ version: 1, type: 'single-repo', repos: [] }),
+    );
+    const before = images();
+    const commits = jest.spyOn(host, 'commit');
+    await expect(invoke('restore', 0, 'refused')).rejects.toMatchObject({
+      reason: 'unsupported-workspace',
+    });
+    expect(images()).toEqual(before);
+    expect(commits).not.toHaveBeenCalled();
+    writeFileSync(config, valid);
+    await expect(invoke('restore', 0, 'refused')).resolves.toBeDefined();
   });
-  expect(images()).toEqual(before);
-  expect(commits).not.toHaveBeenCalled();
-  writeFileSync(config, valid);
-  await expect(invoke('restore', 0, 'refused')).resolves.toBeDefined();
+
+  it('a changed owner cannot reuse a successful fork receipt', async () => {
+    await prepareFork();
+    const first = await invoke('fork', 0, 'owner-replay');
+    await expect(
+      forkSharedContainer({
+        containerId: 'container',
+        revisionId: 'revision',
+        sourceOwnerDisplayName: 'Ada',
+        idempotencyKey: 'owner-replay',
+        destination: {
+          kind: 'new-workspace',
+          owner: {
+            kind: 'organization',
+            organizationId: '11111111-1111-4111-8111-111111111111',
+          },
+          parentDirectory: join(dir, 'forks'),
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'owner-mismatch' });
+    expect(await invoke('fork', 99, 'owner-replay')).toStrictEqual(first);
+  });
 });

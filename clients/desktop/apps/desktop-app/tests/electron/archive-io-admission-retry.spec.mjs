@@ -19,7 +19,7 @@ async function confirmWorktreeArchive(window, row) {
   await row.hover();
   await row.getByTestId('worktree-actions-menu-button').click();
   await window.getByTestId('worktree-actions-menu-archive').click();
-  const dialog = window.getByRole('dialog', { name: 'Archive worktree?' });
+  const dialog = window.getByRole('dialog', { name: /^Archive worktree/ });
   await expect(dialog).toBeVisible();
   await dialog.getByTestId('worktree-removal-preserve-branch').click();
 }

@@ -54,20 +54,20 @@ function joinClasses(...classes: string[]): string {
 
 interface GitHubConnectionLinkProps {
   orgId: string;
-  variant?: 'primary' | 'secondary';
 }
 /**
  * Opens the organization's Integrations tab through the host's link, so the
  * desktop settings overlay routes it in place instead of leaving the page.
+ * A secondary capsule: it sits in a checklist row or a notice, never as a
+ * dialog's primary action.
  */
 export function GitHubConnectionLink({
   orgId,
-  variant = 'primary',
 }: GitHubConnectionLinkProps): JSX.Element {
   return (
     <SettingsLink
       href={organizationIntegrationsPath(orgId)}
-      className={buttonClassName({ variant })}
+      className={buttonClassName({ variant: 'secondary', size: 'compact' })}
       data-testid="team-projects-connect-github"
     >
       Connect GitHub
@@ -118,7 +118,7 @@ export function RequestNotice({
       intent="attention"
       actions={
         failure.needsConnection ? (
-          <GitHubConnectionLink orgId={orgId} variant="secondary" />
+          <GitHubConnectionLink orgId={orgId} />
         ) : undefined
       }
     >
@@ -231,6 +231,9 @@ export function TeamProjectsCreateDialog({
         </div>
         {step === 'repositories' && (
           <Button
+            variant="primary"
+            size="compact"
+            className="self-start"
             disabled={selected.length === 0 || growthDisabled}
             onClick={(): void => setStep('definition')}
           >
@@ -283,7 +286,8 @@ export function TeamProjectsCreateDialog({
             />
             <div className="flex gap-3">
               <Button
-                variant="ghost"
+                variant="secondary"
+                size="compact"
                 disabled={busy}
                 onClick={(): void => {
                   setError(null);
@@ -293,6 +297,8 @@ export function TeamProjectsCreateDialog({
                 Back
               </Button>
               <LoadingButton
+                variant="primary"
+                size="compact"
                 data-testid="team-projects-create-submit"
                 loading={busy}
                 disabled={growthDisabled}
@@ -341,7 +347,14 @@ export function TeamProjectsCreateDialog({
               {results.filter((result) => result.outcome === 'error').length}{' '}
               failed
             </p>
-            <Button onClick={onClose}>Done</Button>
+            <Button
+              variant="secondary"
+              size="compact"
+              className="self-start"
+              onClick={onClose}
+            >
+              Done
+            </Button>
           </>
         )}
       </div>
@@ -648,7 +661,9 @@ function RepositoryPicker({
       {error && <RequestNotice failure={error} orgId={orgId} />}
       {error && !page.nextCursor && (
         <Button
-          variant="ghost"
+          variant="secondary"
+          size="compact"
+          className="self-start"
           disabled={loading || disabled}
           onClick={(): void => {
             resetSearch();
@@ -719,6 +734,9 @@ function RepositoryPicker({
       )}
       {page.nextCursor && (
         <LoadingButton
+          variant="secondary"
+          size="compact"
+          className="self-start"
           data-testid="team-projects-repo-load-more"
           loading={loading}
           disabled={disabled}

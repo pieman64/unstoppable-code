@@ -34,6 +34,7 @@ import {
   invoiceStatusTone,
   isUnpaidCurrentInvoice,
 } from '../lib/invoice-display';
+import { BADGE_BASE_CLASS, BADGE_TONE_CLASS } from '../lib/badge';
 import { BILLING_STATUS_TONE_CLASSES } from '../lib/billing-status-tone';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
@@ -141,8 +142,7 @@ export interface InvoiceDetailViewProps {
   blockBillToFromReplay?: boolean;
 }
 
-const BADGE_BASE =
-  'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap';
+const BADGE_BASE = BADGE_BASE_CLASS;
 
 function cardLabelFor(item: InvoiceDetailLineItem): string {
   if (item.cardBrand && item.cardLast4) {
@@ -376,7 +376,7 @@ export function InvoiceDetailView({
           {isUnpaidCurrentInvoice(invoice) ? (
             <span className="flex flex-wrap gap-1">
               <span
-                className={`${BADGE_BASE} bg-accent fg-emphasis`}
+                className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
                 data-testid="invoice-detail-status"
               >
                 {CURRENT_INVOICE_LABEL}
@@ -390,7 +390,7 @@ export function InvoiceDetailView({
             </span>
           ) : invoice.isCurrent ? (
             <span
-              className={`${BADGE_BASE} bg-accent fg-emphasis`}
+              className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
               data-testid="invoice-detail-status"
             >
               {CURRENT_INVOICE_LABEL}

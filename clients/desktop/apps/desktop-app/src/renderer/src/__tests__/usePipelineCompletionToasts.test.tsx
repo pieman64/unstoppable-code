@@ -5,6 +5,10 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ExecutionEvent } from '@canopy/desktop-shared/types/pipeline';
 import type { SidebarItem } from '@canopy/desktop-shared/types';
+import {
+  WORKFLOW_ITEM_LABEL,
+  WORKFLOW_KIND_LABELS,
+} from '@canopy/ui-shared/lib/workflow-labels';
 import { usePipelineCompletionToasts } from '@/hooks/usePipelineCompletionToasts';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
 import { useActivityStore } from '@/stores/activityStore';
@@ -131,7 +135,7 @@ function makeProject(): SidebarItem {
     ],
     collapsed: false,
     order: 0,
-  } as SidebarItem;
+  };
 }
 
 type ExecutionEventType = ExecutionEvent['type'];
@@ -161,9 +165,12 @@ function makeEvent({
       pipeline_snapshot: {
         name: 'Deploy',
         jobs: {},
-      } as ExecutionEvent['state']['pipeline_snapshot'],
+        scope: ['directory'],
+      },
       status,
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
       started_at: '2026-06-02T00:00:00.000Z',
       cwd: '/tmp/worktree',
       env: {},
@@ -256,7 +263,7 @@ describe('usePipelineCompletionToasts', () => {
       emit(makeEvent({ type, status }));
 
       expect(addToastMock).toHaveBeenCalledWith(
-        `Pipeline "Deploy" ${label}`,
+        `Workflow "Deploy" ${label}`,
         toastType,
         expect.any(Function),
         expect.objectContaining({
@@ -280,6 +287,28 @@ describe('usePipelineCompletionToasts', () => {
       });
       // The Activity panel is no longer forced open.
       expect(useActivityStore.getState().panelExpanded).toBe(false);
+    },
+  );
+
+  it.each([
+    ['execution.completed', 'success'],
+    ['execution.completed', 'failure'],
+    ['execution.failed', 'failure'],
+    ['execution.paused', 'paused'],
+  ] as const)(
+    'names a %s (%s) run with the workflow item noun, never a kind label',
+    async (type, status) => {
+      await renderHarness();
+      emit(makeEvent({ type, status }));
+
+      const message = addToastMock.mock.calls.at(-1)?.[0];
+      expect(message?.startsWith(`${WORKFLOW_ITEM_LABEL} "Deploy" `)).toBe(
+        true,
+      );
+      expect(message).not.toMatch(/pipeline/i);
+      for (const kindLabel of Object.values(WORKFLOW_KIND_LABELS)) {
+        expect(message).not.toContain(kindLabel);
+      }
     },
   );
 
@@ -348,7 +377,7 @@ describe('usePipelineCompletionToasts', () => {
     Reflect.deleteProperty(legacy.state, 'pending_pauses');
     emit(legacy);
     expect(addToastMock).toHaveBeenCalledWith(
-      'Pipeline "Deploy" paused',
+      'Workflow "Deploy" paused',
       'warning',
       expect.any(Function),
       expect.objectContaining({

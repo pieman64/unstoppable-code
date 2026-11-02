@@ -4,7 +4,9 @@ import type { WindowBounds } from '@canopy/desktop-shared/types';
 const mockGetAllDisplays = jest.fn();
 jest.mock('electron', () => ({
   screen: {
-    getAllDisplays: mockGetAllDisplays,
+    get getAllDisplays(): typeof mockGetAllDisplays {
+      return mockGetAllDisplays;
+    },
   },
 }));
 

@@ -34,6 +34,22 @@ const BASE = 'https://cloud.example.test';
 const MINT_PATH = `/api/v1/${BRAND.web.apiNamespace}/auth-link`;
 const CONSUME = `${BASE}/api/v1/${BRAND.web.apiNamespace}/auth-link/consume?code=c`;
 
+it('the legacy handler rejects an object before minting or opening', async () => {
+  await expect(
+    Reflect.apply(openAuthenticatedPortalPage, undefined, [
+      {
+        requireAuthentication: true,
+        kind: 'signed-in',
+        path: '/account',
+        accountId: 'acct-1',
+        webOrigin: BASE,
+      },
+    ]),
+  ).rejects.toThrow('same-origin path');
+  expect(mockRequestCanopyCloudJson).not.toHaveBeenCalled();
+  expect(mockOpenExternalGuarded).not.toHaveBeenCalled();
+});
+
 beforeEach((): void => {
   jest.resetAllMocks();
   mockIsEnabled.mockReturnValue(true);
@@ -168,20 +184,38 @@ it('never consults the signed-in account for a legacy caller', async (): Promise
 });
 
 describe('strict mode', (): void => {
-  const credentialContext = {
+  const credentialContext: Parameters<
+    typeof openStrictAuthenticatedPortalPage
+  >[1] = {
     baseUrl: BASE,
     apiKey: 'csk_captured',
-    account: { id: 'acct-1' },
+    account: {
+      id: 'acct-1',
+      name: 'Test Account',
+      email: 'owner@example.test',
+      role: 'ADMIN',
+    },
   };
-  const strict = {
-    credentialContext,
-    requireAuthentication: true,
-  } as const;
+  const openLegacyStrictPortalPage = (
+    path: string,
+    credentialContext:
+      | Parameters<typeof openStrictAuthenticatedPortalPage>[1]
+      | { baseUrl: string; apiKey: string },
+  ): ReturnType<typeof openAuthenticatedPortalPage> => {
+    const options: Exclude<
+      Parameters<typeof openAuthenticatedPortalPage>[1],
+      undefined
+    > = {};
+    // Preserve legacy strict inputs that the current type cannot represent.
+    Reflect.set(options, 'credentialContext', credentialContext);
+    Reflect.set(options, 'requireAuthentication', true);
+    return openAuthenticatedPortalPage(path, options);
+  };
   const PATH =
     '/account/billing?paymentModal=payment-method&paymentRequestId=r1';
 
   it('opens the consume URL minted with the captured credential', async (): Promise<void> => {
-    expect(await openAuthenticatedPortalPage(PATH, strict)).toEqual({
+    expect(await openLegacyStrictPortalPage(PATH, credentialContext)).toEqual({
       ok: true,
     });
     expect(mockRequestCanopyCloudJson).toHaveBeenCalledWith(MINT_PATH, {
@@ -284,10 +318,12 @@ describe('strict mode', (): void => {
     'reports a typed failure and opens nothing when %s',
     async (_name, arrange, reason): Promise<void> => {
       arrange();
-      expect(await openAuthenticatedPortalPage(PATH, strict)).toEqual({
-        ok: false,
-        reason,
-      });
+      expect(await openLegacyStrictPortalPage(PATH, credentialContext)).toEqual(
+        {
+          ok: false,
+          reason,
+        },
+      );
       expect(mockOpenExternalGuarded).not.toHaveBeenCalled();
     },
   );
@@ -301,7 +337,7 @@ describe('strict mode', (): void => {
       });
       return Promise.resolve({ url: CONSUME });
     });
-    expect(await openAuthenticatedPortalPage(PATH, strict)).toEqual({
+    expect(await openLegacyStrictPortalPage(PATH, credentialContext)).toEqual({
       ok: false,
       reason: 'identity_changed',
     });
@@ -310,7 +346,7 @@ describe('strict mode', (): void => {
 
   it('reports browser_failed when the browser does not open, without a signed-out retry', async (): Promise<void> => {
     mockOpenExternalGuarded.mockRejectedValue(new Error('no browser'));
-    expect(await openAuthenticatedPortalPage(PATH, strict)).toEqual({
+    expect(await openLegacyStrictPortalPage(PATH, credentialContext)).toEqual({
       ok: false,
       reason: 'browser_failed',
     });
@@ -319,11 +355,13 @@ describe('strict mode', (): void => {
   });
 
   it('is unavailable when the captured credential names no account', async (): Promise<void> => {
+    const missingAccountContext = {
+      baseUrl: BASE,
+      apiKey: 'csk_captured',
+    };
+    // Deliberately omit account info to exercise the strict path's malformed-input handling.
     expect(
-      await openAuthenticatedPortalPage(PATH, {
-        credentialContext: { baseUrl: BASE, apiKey: 'csk_captured' },
-        requireAuthentication: true,
-      }),
+      await openLegacyStrictPortalPage(PATH, missingAccountContext),
     ).toEqual({ ok: false, reason: 'unavailable' });
     expect(mockRequestCanopyCloudJson).not.toHaveBeenCalled();
     expect(mockOpenExternalGuarded).not.toHaveBeenCalled();
@@ -331,7 +369,7 @@ describe('strict mode', (): void => {
 
   it('still refuses a destination that is not a same-origin path', async (): Promise<void> => {
     await expect(
-      openAuthenticatedPortalPage('//evil.example', strict),
+      openLegacyStrictPortalPage('//evil.example', credentialContext),
     ).rejects.toThrow('same-origin path');
     expect(mockOpenExternalGuarded).not.toHaveBeenCalled();
   });

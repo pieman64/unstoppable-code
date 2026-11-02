@@ -9,6 +9,7 @@
  */
 
 import type { WorkspaceContextOrganizationRole } from '../workspace-context';
+export * from './shared-multi-repo';
 
 /**
  * Manage organization project definitions and access: OWNER or ADMIN, matching
@@ -152,6 +153,12 @@ export interface OrgProjectSummary {
    * field omit it, which means `single-repo`.
    */
   topology?: OrgProjectTopology;
+  /** Complete ordered definition, additive for older peers. */
+  repositories?: readonly OrgProjectRepository[];
+  repositoryCount?: number;
+  repositoriesComplete?: boolean;
+  /** Unknown versions must not be used for multi-repository setup. */
+  materializationVersion?: number;
   state: OrgProjectState;
   revision: number;
   authorizationVersion: number;
@@ -172,9 +179,91 @@ export interface OrgProjectSummary {
  * else yet, so it never offers that setup.
  */
 export function isOrgProjectCatalogSetupSupported(
-  project: Pick<OrgProjectSummary, 'topology'>,
+  project: Pick<OrgProjectSummary, 'topology'> & Partial<OrgProjectSummary>,
 ): boolean {
-  return project.topology !== 'multi-repo';
+  if (project.topology !== 'multi-repo') return true;
+  return (
+    project.organizationId !== null &&
+    typeof project.organizationId === 'string' &&
+    project.visibility === 'organization' &&
+    project.memberOwned === false &&
+    project.kind === 'CODE' &&
+    project.location === 'LOCAL' &&
+    project.purpose === 'project' &&
+    hasCompleteOrgProjectRepositories(project)
+  );
+}
+
+/** Validate the entire versioned materialization projection before any clone. */
+export function hasCompleteOrgProjectRepositories(
+  project: Partial<OrgProjectSummary>,
+): boolean {
+  const repositories = project.repositories;
+  if (
+    project.materializationVersion !== 1 ||
+    project.repositoriesComplete !== true ||
+    !Number.isSafeInteger(project.revision) ||
+    (project.revision ?? 0) < 1 ||
+    !repositories ||
+    repositories.length < 1 ||
+    repositories.length > 32 ||
+    project.repositoryCount !== repositories.length ||
+    !project.repository
+  )
+    return false;
+  const ids = new Set<string>();
+  const coordinates = new Set<string>();
+  for (const repository of repositories) {
+    if (
+      !isOrgProjectRepository(repository) ||
+      repository.host !== 'github.com' ||
+      !/^[a-z\d](?:[a-z\d-]*[a-z\d])?$/i.test(repository.owner) ||
+      !/^[a-z\d_.-]+$/i.test(repository.name) ||
+      repository.name === '.' ||
+      repository.name === '..' ||
+      (repository.providerRepoId !== null &&
+        !/^[1-9]\d*$/.test(repository.providerRepoId))
+    )
+      return false;
+    const coordinate =
+      `${repository.host}/${repository.owner}/${repository.name}`.toLowerCase();
+    const id =
+      repository.providerRepoId === null
+        ? coordinate
+        : `${repository.provider}:${repository.host}:${repository.providerRepoId}`;
+    if (ids.has(id) || coordinates.has(coordinate)) return false;
+    ids.add(id);
+    coordinates.add(coordinate);
+  }
+  const primary = repositories[0];
+  return (
+    primary !== undefined &&
+    primary.provider === project.repository.provider &&
+    primary.host === project.repository.host &&
+    primary.owner === project.repository.owner &&
+    primary.name === project.repository.name &&
+    primary.providerRepoId === project.repository.providerRepoId &&
+    primary.defaultBranch === project.repository.defaultBranch
+  );
+}
+
+export function isOrgProjectRepository(
+  value: unknown,
+): value is OrgProjectRepository {
+  return (
+    isRecordValue(value) &&
+    value.provider === 'github' &&
+    typeof value.host === 'string' &&
+    typeof value.owner === 'string' &&
+    typeof value.name === 'string' &&
+    (value.providerRepoId === null ||
+      typeof value.providerRepoId === 'string') &&
+    (value.defaultBranch === null || typeof value.defaultBranch === 'string') &&
+    (value.verification === 'VERIFIED' ||
+      value.verification === 'STALE' ||
+      value.verification === 'UNVERIFIED') &&
+    hasValidRepositoryMetadata(value)
+  );
 }
 
 /** A catalog row that should appear as a setup placeholder on this device. */
@@ -393,6 +482,8 @@ export interface OrgProjectLifecycleRequest {
 }
 
 export interface ClaimOrgProjectInstanceRequest {
+  materializationVersion?: 1;
+  expectedDefinitionRevision?: number;
   /** Stable per actor and device; a replay with a different body is a 409. */
   idempotencyKey: string;
   /** The desktop's portal `clientDeviceId`. */
@@ -419,6 +510,8 @@ export interface OrgProjectReclaimTarget {
 }
 
 export interface ClaimOrgProjectInstanceResponse {
+  project?: OrgProjectSummary;
+  definitionRevision?: number;
   instanceId: string;
   operationId: string;
   /** Echoed back on completion so a stale attempt cannot finish a newer claim. */
@@ -427,6 +520,7 @@ export interface ClaimOrgProjectInstanceResponse {
 }
 
 export interface CompleteOrgProjectInstanceRequest {
+  expectedDefinitionRevision?: number;
   operationId: string;
   fencingGeneration: number;
   outcome: 'ready' | 'failed';
@@ -600,12 +694,61 @@ export function isRefreshOrgProjectRepositoriesResponse(
   );
 }
 
+function validRepositoryProjection(value: Record<string, unknown>): boolean {
+  if (
+    !Array.isArray(value.repositories) ||
+    !value.repositories.every(isOrgProjectRepository) ||
+    typeof value.repositoryCount !== 'number' ||
+    !Number.isSafeInteger(value.repositoryCount) ||
+    value.repositoryCount < value.repositories.length ||
+    typeof value.repositoriesComplete !== 'boolean' ||
+    !Number.isSafeInteger(value.revision) ||
+    typeof value.revision !== 'number' ||
+    value.revision < 1
+  )
+    return false;
+  if (!value.repositoriesComplete) return true;
+  if (value.repositoryCount !== value.repositories.length) return false;
+  if (value.repositories.length === 0) return value.repository === null;
+  if (!isOrgProjectRepository(value.repository)) return false;
+  const first = value.repositories[0];
+  if (
+    !first ||
+    first.host !== value.repository.host ||
+    first.owner !== value.repository.owner ||
+    first.name !== value.repository.name ||
+    first.providerRepoId !== value.repository.providerRepoId ||
+    first.defaultBranch !== value.repository.defaultBranch
+  )
+    return false;
+  const identities = new Set<string>();
+  const coordinates = new Set<string>();
+  for (const repository of value.repositories) {
+    const coordinate =
+      `${repository.host}/${repository.owner}/${repository.name}`.toLowerCase();
+    const id =
+      `${repository.host}/${repository.providerRepoId ?? coordinate}`.toLowerCase();
+    if (
+      !repository.host ||
+      !repository.owner ||
+      !repository.name ||
+      identities.has(id) ||
+      coordinates.has(coordinate)
+    )
+      return false;
+    identities.add(id);
+    coordinates.add(coordinate);
+  }
+  return true;
+}
+
 /** Wire guard for one catalog row; tolerant of optional server additions. */
 export function isOrgProjectSummary(
   value: unknown,
 ): value is OrgProjectSummary {
   if (!isRecordValue(value)) return false;
   return (
+    (value.materializationVersion !== 1 || validRepositoryProjection(value)) &&
     typeof value.id === 'string' &&
     (value.organizationId === null ||
       typeof value.organizationId === 'string') &&
@@ -633,6 +776,18 @@ export function isOrgProjectSummary(
     (value.topology === undefined ||
       value.topology === 'single-repo' ||
       value.topology === 'multi-repo') &&
+    (value.repositories === undefined ||
+      (Array.isArray(value.repositories) &&
+        value.repositories.every(isOrgProjectRepository))) &&
+    (value.repositoryCount === undefined ||
+      (Number.isSafeInteger(value.repositoryCount) &&
+        typeof value.repositoryCount === 'number' &&
+        value.repositoryCount >= 0)) &&
+    (value.repositoriesComplete === undefined ||
+      typeof value.repositoriesComplete === 'boolean') &&
+    (value.materializationVersion === undefined ||
+      (typeof value.materializationVersion === 'number' &&
+        Number.isSafeInteger(value.materializationVersion))) &&
     (value.privateMemory === undefined ||
       typeof value.privateMemory === 'boolean') &&
     (value.state === 'ACTIVE' || value.state === 'ARCHIVED') &&

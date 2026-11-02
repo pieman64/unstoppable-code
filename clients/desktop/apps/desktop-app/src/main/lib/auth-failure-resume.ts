@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
-import { computeUsageLimitResumePrompt } from '@canopy/desktop-shared/lib/usage-limit-resume-prompt';
+import {
+  buildTrustedAutoResume,
+  claimTrustedChatResume,
+} from './trusted-auto-resume';
 import { getObservabilityService } from '../observability';
 import {
   logMainProcessError,
@@ -127,6 +130,11 @@ export async function resumeChatAfterAuthRecovery(
     return 'chat-busy';
   }
 
+  const release = claimTrustedChatResume(pending.target);
+  if (!release) {
+    recordResumeOutcome(pending, input.trigger, 'chat-busy');
+    return 'chat-busy';
+  }
   const { projectId, worktreeId, chatId } = pending.target;
   try {
     const tabOptions = await buildExistingTabDispatchOptions(
@@ -147,7 +155,11 @@ export async function resumeChatAfterAuthRecovery(
       recordResumeOutcome(pending, input.trigger, 'chat-busy');
       return 'chat-busy';
     }
-    const resumePrompt = computeUsageLimitResumePrompt(tab.messages);
+    const resumePrompt = buildTrustedAutoResume(
+      tab,
+      'auth_recovery',
+      pending.recordedAt,
+    );
     await sendWorktreeChatMessage(
       {
         projectId,
@@ -167,7 +179,11 @@ export async function resumeChatAfterAuthRecovery(
           : {}),
         userMessageId: randomUUID(),
         initiationSource: 'automation',
-        inputMode: resumePrompt.inputMode ?? 'typed',
+        autoResume: resumePrompt.autoResume,
+        resumesInterruptedTurn: true,
+        ...(resumePrompt.resendsUserMessage && resumePrompt.inputMode
+          ? { inputMode: resumePrompt.inputMode }
+          : {}),
         ...tabOptions,
       },
       { getWindow: input.getWindow },
@@ -186,6 +202,8 @@ export async function resumeChatAfterAuthRecovery(
     );
     recordResumeOutcome(pending, input.trigger, 'dispatch-failed', error);
     return 'dispatch-failed';
+  } finally {
+    release();
   }
 }
 

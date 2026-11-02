@@ -1,27 +1,36 @@
 'use client';
 
-import { useCallback, useMemo, type JSX } from 'react';
+import { useCallback, useMemo, type JSX, type RefObject } from 'react';
 import {
   getModelCatalogProviderLabel,
   MODEL_PICKER_AUTO_REASONS,
+  MODEL_PICKER_ROW_CUE_COPY,
   ModelPickerMenu,
   modelLibraryUnlockHint,
   modelLibraryUnlockLabel,
+  resolveModelPickerRowCue,
   type ModelCatalog,
   type ModelCatalogOption,
   type ModelCatalogProvider,
   type ModelPickerAutoOption,
   type ModelPickerOptionState,
+  type ModelPickerRowFact,
   type ModelPickerSelectionContext,
 } from '@canopy/ui-shared';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
-import type {
-  AgentExecutionHarness,
-  ModelLibraryAccess,
+import {
+  resolveModelCatalogHarnessChoice,
+  type AgentExecutionHarness,
+  type ModelLibraryAccess,
 } from '@canopy/protocol/models';
 import type { PortalChatProviderAvailability } from '@canopy/protocol/portal';
 
 export interface PortalModelPickerProps {
+  /** Opt in only in the shared composer status row; other consumers keep their current trigger. */
+  readonly statusRow?: boolean;
+  readonly compact?: boolean;
+  readonly menuAlignRef?: RefObject<HTMLElement | null>;
+  readonly triggerTooltip?: string | null;
   readonly disabled?: boolean;
   readonly catalog: ModelCatalog;
   readonly currentModel?: string;
@@ -29,6 +38,7 @@ export interface PortalModelPickerProps {
   readonly providerType?: string;
   readonly providerAvailability?: PortalChatProviderAvailability;
   readonly capturedHarness?: AgentExecutionHarness;
+  readonly selectedHarness?: AgentExecutionHarness;
   /**
    * Display name of the running brand, used to label gateway rows that carry
    * no vendor of their own. Injected by the host: the brand runtime is an
@@ -50,9 +60,37 @@ export interface PortalModelPickerProps {
   readonly modelLibrary?: {
     readonly access: ModelLibraryAccess;
     /** Start recovery. `modelId` is absent when the locked row was Auto. */
-    readonly onUnlock: (modelId?: string) => void;
+    readonly onUnlock: (
+      modelId?: string,
+      harness?: AgentExecutionHarness,
+    ) => void;
   };
-  readonly onSelect: (modelId: string) => void;
+  /**
+   * The work owner's access for the rows' credits tag (`Free AI Credits`
+   * before the first purchase). Hosts pass it only for Personal work, so an
+   * organization's chat never shows the viewer's own purchase state.
+   */
+  readonly libraryAccess?: ModelLibraryAccess;
+  /**
+   * CAN-5213 — settled facts for the shared availability cues, shown only to
+   * a library-locked viewer (`modelLibrary.access`). Omitted, every row keeps
+   * its current presentation: the picker never infers Available from
+   * `libraryEligibility`, which grants permission, not readiness.
+   */
+  readonly rowReadiness?: {
+    /** Whether the row runs a new turn now; `unknown` until settled. */
+    readonly usableNow: (modelId: string) => ModelPickerRowFact;
+    /** Spendable AI Credits cover a credits-route row. */
+    readonly creditsSufficient: ModelPickerRowFact;
+    /** The viewer's free daily credits preference. */
+    readonly dailyCreditsOn: ModelPickerRowFact;
+    /** The host's recovery that turns daily credits on; absent offers none. */
+    readonly onTurnOnDailyCredits?: (
+      modelId: string,
+      harness?: AgentExecutionHarness,
+    ) => void;
+  };
+  readonly onSelect: (modelId: string, harness?: AgentExecutionHarness) => void;
 }
 
 const CLAUDE_SORT_ORDER = 100;
@@ -116,15 +154,22 @@ function optionHarness(
 /** Portal wiring for the browser-safe shared model picker. */
 export function PortalModelPicker({
   disabled,
+  statusRow = false,
+  compact = false,
+  menuAlignRef,
+  triggerTooltip,
   catalog,
   currentModel,
   currentModelLabel,
   providerType,
   providerAvailability,
   capturedHarness,
+  selectedHarness = capturedHarness,
   brandDisplayName,
   autoOption,
   modelLibrary,
+  libraryAccess,
+  rowReadiness,
   onSelect,
 }: PortalModelPickerProps): JSX.Element {
   const unlockHint = modelLibraryUnlockHint(modelLibrary?.access);
@@ -178,6 +223,9 @@ export function PortalModelPicker({
     const supported: Record<string, string[]> = {};
     for (const [id, routes] of modelRoutes) {
       for (const route of routes) {
+        for (const choice of route.harnessChoices ?? []) {
+          (supported[choice.harness] ??= []).push(id);
+        }
         const harness = optionHarness(route);
         if (harness) (supported[harness] ??= []).push(id);
         else if (optionSource(route) === 'ai-gateway') {
@@ -204,17 +252,17 @@ export function PortalModelPicker({
       const routes = modelRoutes.get(option.id) ?? [option];
       const harness = selection?.harnessExplicitlyChosen
         ? selection.harness
-        : (capturedHarness ?? selection?.harness);
-      return (
+        : (capturedHarness ?? selection?.harness ?? selectedHarness);
+      const route =
         (harness
           ? routes.find((route) => optionHarness(route) === harness)
           : (routes.find((route) => route.id === rawSelectedModelId) ??
             routes.find((route) => route.isDefault))) ??
         routes.find((route) => route.id === option.id) ??
-        option
-      );
+        option;
+      return resolveModelCatalogHarnessChoice(route, harness);
     },
-    [capturedHarness, modelRoutes, rawSelectedModelId],
+    [capturedHarness, selectedHarness, modelRoutes, rawSelectedModelId],
   );
   const menuCatalog = useMemo<ModelCatalog>(
     () =>
@@ -269,14 +317,32 @@ export function PortalModelPicker({
     [selectedModelId, menuCatalog],
   );
   const triggerProvider =
-    capturedHarness && selectedOption?.provider !== 'ollama'
-      ? capturedHarness
+    selectedHarness && selectedOption?.provider !== 'ollama'
+      ? selectedHarness
       : selectedOption
         ? resolveRoute(selectedOption).provider
         : undefined;
 
   const getRouteState = useCallback(
-    (option: ModelCatalogOption): ModelPickerOptionState => {
+    (
+      option: ModelCatalogOption,
+      selection?: ModelPickerSelectionContext,
+    ): ModelPickerOptionState => {
+      if (capturedHarness === 'opencode' && currentModel) {
+        const current = catalog.find(
+          (entry) => entry.id === rawSelectedModelId,
+        );
+        if (
+          current &&
+          (optionSource(current) === 'opencode') !==
+            (optionSource(option) === 'opencode')
+        )
+          return {
+            disabled: true,
+            unavailableReason:
+              'Start a new chat to change the OpenCode billing selection.',
+          };
+      }
       // Cursor runs on the paired desktop's managed runtime. The desktop
       // projects whether that runtime is connected on `providerAvailability.
       // cursor`; anything but an explicit `true` (including a cold "unknown")
@@ -333,6 +399,7 @@ export function PortalModelPicker({
         };
       }
       if (
+        option.funding === undefined &&
         optionSource(option) !== 'ai-gateway' &&
         option.provider !== 'unknown' &&
         providerAvailability?.[option.provider] === false
@@ -354,23 +421,89 @@ export function PortalModelPicker({
           locked: {
             hint: unlockHint,
             ...(unlockLabel === undefined ? {} : { label: unlockLabel }),
-            onUnlock: (): void => onUnlock(option.id),
+            onUnlock: (): void => {
+              const harness =
+                selection?.harness === undefined
+                  ? capturedHarness
+                  : optionHarness(option);
+              if (harness === undefined) onUnlock(option.id);
+              else onUnlock(option.id, harness);
+            },
           },
         };
       }
+      const onTurnOnDailyCredits = rowReadiness?.onTurnOnDailyCredits;
+      const cue = rowReadiness
+        ? resolveModelPickerRowCue({
+            rowKind: option.kind === 'agent' ? 'agent' : 'model',
+            viewerAccess: modelLibrary?.access,
+            hardDisabled: false,
+            libraryLocked: false,
+            usableNow: rowReadiness.usableNow(option.id),
+            creditsRoute:
+              option.funding === 'org-gateway'
+                ? 'no'
+                : optionSource(option) === 'ai-gateway'
+                  ? 'yes'
+                  : 'unknown',
+            creditsSufficient: rowReadiness.creditsSufficient,
+            dailyCreditsOn: rowReadiness.dailyCreditsOn,
+            dailyCreditsRecoverySupported: onTurnOnDailyCredits !== undefined,
+          })
+        : undefined;
+      if (cue?.kind === 'available')
+        return { disabled: false, available: true };
+      if (cue?.kind === 'needs-daily-credits' && onTurnOnDailyCredits)
+        return {
+          disabled: false,
+          locked: {
+            hint: MODEL_PICKER_ROW_CUE_COPY.needsDailyCreditsHint,
+            label: MODEL_PICKER_ROW_CUE_COPY.needsDailyCredits,
+            keepsOrder: true,
+            onUnlock: (): void => {
+              const harness =
+                selection?.harness === undefined
+                  ? capturedHarness
+                  : optionHarness(option);
+              if (harness === undefined) onTurnOnDailyCredits(option.id);
+              else onTurnOnDailyCredits(option.id, harness);
+            },
+          },
+        };
       return { disabled: false };
     },
-    [capturedHarness, onUnlock, providerAvailability, unlockHint, unlockLabel],
+    [
+      capturedHarness,
+      currentModel,
+      catalog,
+      rawSelectedModelId,
+      modelLibrary?.access,
+      onUnlock,
+      providerAvailability,
+      rowReadiness,
+      unlockHint,
+      unlockLabel,
+    ],
   );
   const getOptionState = useCallback(
     (
       option: ModelCatalogOption,
       selection?: ModelPickerSelectionContext,
-    ): ModelPickerOptionState => getRouteState(resolveRoute(option, selection)),
+    ): ModelPickerOptionState =>
+      getRouteState(resolveRoute(option, selection), selection),
     [getRouteState, resolveRoute],
   );
   const effectiveAutoOption = useMemo<ModelPickerAutoOption | undefined>(() => {
     if (!autoOption || autoOption.unavailableReason) return autoOption;
+    if (
+      (selectedHarness ?? selectedOption?.harness ?? providerType) ===
+      'opencode'
+    )
+      return {
+        ...autoOption,
+        unavailableReason: MODEL_PICKER_AUTO_REASONS.unsupportedHarness,
+        unavailableAction: undefined,
+      };
     // Auto can route to any model, so it needs unlocked access.
     if (unlockHint !== undefined && onUnlock) {
       return {
@@ -421,6 +554,8 @@ export function PortalModelPicker({
         };
   }, [
     autoOption,
+    selectedHarness,
+    providerType,
     catalog,
     getRouteState,
     onUnlock,
@@ -429,32 +564,58 @@ export function PortalModelPicker({
     unlockHint,
   ]);
 
+  // The descriptors are the host's capability advertisement for explicit setters.
+  // Older hosts keep their existing picker and never receive a harness field.
+  const supportsChoices = menuCatalog.some(
+    (option) => option.harnessChoices?.length,
+  );
+  const runnable = (
+    ['claude', 'codex', 'cursor', 'copilot', 'opencode', 'ollama'] as const
+  )
+    .filter((id) =>
+      menuCatalog.some(
+        (option) =>
+          optionHarness(option) === id ||
+          option.provider === id ||
+          option.harnessChoices?.some((choice) => choice.harness === id),
+      ),
+    )
+    .map((id) => ({
+      id,
+      connected:
+        id === 'ollama' ||
+        (id === 'opencode' || id === 'cursor' || id === 'copilot'
+          ? providerAvailability?.[id] === true
+          : providerAvailability?.[id] !== false),
+    }));
   return (
     <ModelPickerMenu
       disabled={disabled}
       catalog={menuCatalog}
+      libraryAccess={libraryAccess}
       currentModel={selectedModelId}
       currentModelLabel={currentModelLabel}
       providerType={providerType}
       triggerProvider={triggerProvider}
       onSelect={(modelId, selection): void => {
         const option = menuCatalog.find((entry) => entry.id === modelId);
-        if (option) onSelect(resolveRoute(option, selection).id);
+        if (!option) return;
+        const route = resolveRoute(option, selection);
+        if (supportsChoices) onSelect(route.id, optionHarness(route));
+        else onSelect(route.id);
       }}
       harnessTabs={{
-        // Favorites must remain reachable while routes or account state refresh.
         allModelsTab: true,
         leadingFavorites: true,
         brandIcon: null,
         brandLabel: brandDisplayName ?? 'AI Credits',
-        // A captured harness without rows has no tab; open on All so the
-        // locked rows stay visible instead of an empty Favorites tab.
         initialTab:
-          capturedHarness === 'claude' ||
-          capturedHarness === 'codex' ||
-          (capturedHarness && supportedModelIds[capturedHarness]?.length)
-            ? capturedHarness
+          selectedHarness === 'claude' ||
+          selectedHarness === 'codex' ||
+          (selectedHarness && supportedModelIds[selectedHarness]?.length)
+            ? selectedHarness
             : 'all',
+        ...(supportsChoices ? { runnableHarnesses: runnable } : {}),
         supportedModelIds,
         favoriteModelAliases,
       }}
@@ -466,7 +627,17 @@ export function PortalModelPicker({
       menuId="portal-chat-model-menu"
       testIdPrefix="portal-chat-model"
       uniformTestIds
-      triggerLabelClassName="max-w-20 lg:max-w-none"
+      triggerLabelClassName={
+        statusRow ? 'max-w-full' : 'max-w-20 lg:max-w-none'
+      }
+      allowTriggerShrink={statusRow}
+      foldTriggerIconWhenTight={statusRow}
+      foldTriggerIconOnTruncate={statusRow}
+      hideTriggerChevron={statusRow}
+      compactTrigger={statusRow && compact}
+      menuAlignRef={menuAlignRef}
+      {...(statusRow ? { menuAlignEdge: 'left' } : {})}
+      {...(statusRow ? { triggerTooltip: triggerTooltip ?? null } : {})}
     />
   );
 }

@@ -41,12 +41,8 @@ export {
 const WIDTH_SAVE_DEBOUNCE_MS = 300;
 
 /**
- * The live sidebar floor. `SIDEBAR_MIN_WIDTH` is a CSS-px budget (corner
- * spacer plus a one-button status area), but the corner's traffic-light
- * reserve is physical, so below 100% interface scale it costs extra CSS px
- * and the floor has to grow with it — see `sidebarMinWidthPx`. The rendered
- * sidebar carries the same floor as a CSS `min-width`, which keeps a width
- * persisted at another scale from squeezing the status area.
+ * Match the rendered floor: history, Resources and Activity must all fit
+ * beside the physical traffic-light reserve at the current interface scale.
  */
 function currentMinWidth(): number {
   const platform: NodeJS.Platform = localPlatform();

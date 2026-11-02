@@ -3,6 +3,8 @@ import {
   ChevronRightMediumIcon,
 } from '../../icons/AppIcons';
 import type { JSX, ReactNode } from 'react';
+import { Button } from '../Button';
+import { DiffLineCounts } from '../DiffLineCounts';
 import { RichHoverTooltip } from '../RichHoverTooltip';
 
 /**
@@ -151,14 +153,15 @@ export function DiffFileTree({
         data-testid={dataTestId ? `${dataTestId}-collapsed` : undefined}
       >
         {onToggleCollapsed && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={onToggleCollapsed}
-            className="focus-ring rounded-md p-1.5 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
             aria-label="Expand file tree"
           >
             <CollapseArrow direction="right" />
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -177,14 +180,15 @@ export function DiffFileTree({
             </span>
           )}
           {onToggleCollapsed && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={onToggleCollapsed}
-              className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
               aria-label="Collapse file tree"
             >
               <CollapseArrow direction="left" />
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -279,12 +283,11 @@ function DiffFileTreeRow({
             {file.label ?? file.filePath}
           </span>
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            {typeof file.insertions === 'number' && (
-              <span className="text-3xs fg-success">+{file.insertions}</span>
-            )}
-            {typeof file.deletions === 'number' && (
-              <span className="text-3xs fg-destructive">-{file.deletions}</span>
-            )}
+            <DiffLineCounts
+              insertions={file.insertions}
+              deletions={file.deletions}
+              size="compact"
+            />
             <span className="text-3xs fg-secondary">
               {DIFF_STATUS_LABELS[status]}
             </span>

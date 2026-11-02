@@ -122,6 +122,10 @@ for (const surface of SURFACES) {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell({ timeout: 30_000 });
+      // Individual-step assertions use the Detailed preference.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
 

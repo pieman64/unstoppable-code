@@ -105,9 +105,10 @@ beforeEach(() => {
   jest.setSystemTime(NOW);
   resetWorkflowRunCacheForTests();
   useActivityStore.setState({ bgProcesses: {} });
-  readWorkflowRun = jest.fn(
-    (): Promise<WorkflowRunState | null> => Promise.resolve(null),
-  );
+  readWorkflowRun = jest.fn<
+    Promise<WorkflowRunState | null>,
+    [request: ActivityReadWorkflowRunRequest]
+  >(() => Promise.resolve(null));
   installApi(readWorkflowRun);
 });
 

@@ -2,6 +2,7 @@ import type {
   SharedContainerPreviewRequest,
   TrackedPlanData,
 } from '@canopy/desktop-shared/types';
+import { getSharedContainerCapabilityPackagePreviewRefresher } from '../shared-containers/capability-package/preview';
 import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -51,11 +52,17 @@ const request: SharedContainerPreviewRequest = {
 };
 
 /**
- * Drains and retires the chat state service, then deletes the data dir it
- * writes to. Call only during teardown.
+ * Settles background capability analysis and drains the chat state service,
+ * then deletes the data dir they write to. The default preview starts an
+ * analysis that writes the usage cache under worktree-data, so removal must
+ * wait for it. Cancelling would only stop the preview's wait, allowing the
+ * underlying analysis to finish a cache write during removal. Call only
+ * during teardown.
  */
 async function removeDataDir(dataDir: string): Promise<void> {
   try {
+    const refresher = getSharedContainerCapabilityPackagePreviewRefresher();
+    await refresher.whenIdle();
     await getChatStateService().drain();
   } finally {
     await rm(dataDir, { recursive: true, force: true });
@@ -121,9 +128,9 @@ describe('shared-container share preview', () => {
       });
     } finally {
       registerWorkspaceTypes(new Map());
+      await removeDataDir(dataDir);
       if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
       else process.env.CANOPY_DATA_DIR = originalDataDir;
-      await removeDataDir(dataDir);
     }
   });
 
@@ -154,9 +161,9 @@ describe('shared-container share preview', () => {
       });
     } finally {
       registerWorkspaceTypes(new Map());
+      await removeDataDir(dataDir);
       if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
       else process.env.CANOPY_DATA_DIR = originalDataDir;
-      await removeDataDir(dataDir);
     }
   });
 
@@ -202,9 +209,9 @@ describe('shared-container share preview', () => {
         artifactBudget: { used: 3, limit: 200 },
       });
     } finally {
+      await removeDataDir(dataDir);
       if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
       else process.env.CANOPY_DATA_DIR = originalDataDir;
-      await removeDataDir(dataDir);
     }
   }, 15_000);
 
@@ -293,9 +300,9 @@ describe('shared-container share preview', () => {
           artifactBudget: { used: 4, limit: 200 },
         });
       } finally {
+        await removeDataDir(dataDir);
         if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
         else process.env.CANOPY_DATA_DIR = originalDataDir;
-        await removeDataDir(dataDir);
       }
     },
     15_000,
@@ -382,9 +389,9 @@ describe('shared-container share preview', () => {
         expect.objectContaining({ kind: 'chat_storage_diagnostic', projectId }),
       );
     } finally {
+      await removeDataDir(dataDir);
       if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
       else process.env.CANOPY_DATA_DIR = originalDataDir;
-      await removeDataDir(dataDir);
     }
   }, 15_000);
 
@@ -451,9 +458,9 @@ describe('shared-container share preview', () => {
         ).resolves.toMatchObject({ attachmentCount: 1 });
       } finally {
         registerWorkspaceTypes(new Map());
+        await removeDataDir(dataDir);
         if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
         else process.env.CANOPY_DATA_DIR = originalDataDir;
-        await removeDataDir(dataDir);
       }
     },
     15_000,
@@ -532,9 +539,9 @@ describe('shared-container share preview', () => {
         expect(preview.untrackedCandidates[0]).toBe('z-referenced/latest.txt');
       } finally {
         registerWorkspaceTypes(new Map());
+        await removeDataDir(dataDir);
         if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
         else process.env.CANOPY_DATA_DIR = originalDataDir;
-        await removeDataDir(dataDir);
       }
     },
     60_000,
@@ -622,6 +629,71 @@ describe('shared-container share preview', () => {
     expect(resolvePushedBase).toHaveBeenCalledWith(
       expect.objectContaining({ allowRemoteLookup: false }),
     );
+  });
+
+  describe('capability package counts', () => {
+    const counts = {
+      skills: 2,
+      pipelines: 1,
+      agents: 0,
+      automations: 1,
+      hooks: 0,
+    };
+    function previewDependencies(
+      readCapabilityPackageCounts: SharedContainerPreviewDependencies['readCapabilityPackageCounts'],
+    ): SharedContainerPreviewDependencies {
+      return {
+        countChats: () => Promise.resolve(1),
+        countPlans: () => Promise.resolve(0),
+        countAttachments: () => Promise.resolve(0),
+        resolveRepositories: () => Promise.resolve([]),
+        getRemoteUrl: () => Promise.resolve(null),
+        getHeadCommitSha: () => Promise.resolve(null),
+        getChangedFiles: () => Promise.resolve([]),
+        listUntrackedFiles: () => Promise.resolve([]),
+        readApprovedFileScope: () => Promise.resolve({ includedPaths: [] }),
+        listCoworkCandidateFiles: () => Promise.resolve([]),
+        readCapabilityPackageCounts,
+      };
+    }
+
+    it.each(['CODE_WORKTREE', 'COWORK_WORK_ENTRY'] as const)(
+      'shows completed current-scope counts for %s and omits cold ones',
+      async (containerType) => {
+        const read = jest.fn<
+          ReturnType<
+            NonNullable<
+              SharedContainerPreviewDependencies['readCapabilityPackageCounts']
+            >
+          >,
+          Parameters<
+            NonNullable<
+              SharedContainerPreviewDependencies['readCapabilityPackageCounts']
+            >
+          >
+        >();
+        read.mockResolvedValueOnce(counts).mockResolvedValueOnce(undefined);
+        const target = { ...request, containerType };
+        await expect(
+          buildSharedContainerSharePreview(target, previewDependencies(read)),
+        ).resolves.toMatchObject({ capabilityPackageCounts: counts });
+        await expect(
+          buildSharedContainerSharePreview(target, previewDependencies(read)),
+        ).resolves.not.toHaveProperty('capabilityPackageCounts');
+        expect(read).toHaveBeenCalledWith(target, { includedPaths: [] });
+      },
+    );
+
+    it('keeps the preview when the package lookup fails', async () => {
+      await expect(
+        buildSharedContainerSharePreview(
+          request,
+          previewDependencies(() =>
+            Promise.reject(new Error('cache unavailable')),
+          ),
+        ),
+      ).resolves.not.toHaveProperty('capabilityPackageCounts');
+    });
   });
 
   it('ranks referenced worktree files first and caps default inclusion', async () => {
@@ -1485,9 +1557,9 @@ describe('shared-container share preview', () => {
       });
     } finally {
       registerWorkspaceTypes(new Map());
+      await removeDataDir(dataDir);
       if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
       else process.env.CANOPY_DATA_DIR = originalDataDir;
-      await removeDataDir(dataDir);
     }
   }, 15_000);
 
@@ -1521,9 +1593,9 @@ describe('shared-container share preview', () => {
       });
     } finally {
       registerWorkspaceTypes(new Map());
+      await removeDataDir(dataDir);
       if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
       else process.env.CANOPY_DATA_DIR = originalDataDir;
-      await removeDataDir(dataDir);
     }
   }, 15_000);
 

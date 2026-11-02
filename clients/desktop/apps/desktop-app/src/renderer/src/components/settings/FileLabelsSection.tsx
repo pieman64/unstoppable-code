@@ -42,9 +42,9 @@ import {
   SettingsGroup,
   SettingsRow,
   SettingsSection,
+  SettingsSubRow,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 interface FileLabelsSectionProps {
   labels: FileLabelBucket[];
@@ -99,11 +99,10 @@ export function SectionDisclosureButton({
   expandedLabel,
   dataTestId,
 }: SectionDisclosureButtonProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   return (
     <Button
-      size={settingsButtonSize}
-      variant="ghost"
+      size="compact"
+      variant="secondary"
       onClick={onToggle}
       aria-expanded={expanded}
       data-testid={dataTestId}
@@ -138,7 +137,6 @@ function MatcherRow({
   onChange,
   onDelete,
 }: MatcherRowProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const {
     attributes,
     listeners,
@@ -165,7 +163,7 @@ function MatcherRow({
       className="flex flex-col gap-1"
       data-testid={`file-label-matcher-${matcher.id}`}
     >
-      <div className="flex min-h-7 items-center gap-2">
+      <div className="flex min-h-10 items-center gap-2">
         <span
           className="shrink-0 cursor-grab fg-secondary hover:fg-primary active:cursor-grabbing"
           aria-label="Reorder matcher"
@@ -225,8 +223,8 @@ function MatcherRow({
         </Tooltip>
         {!matcher.builtin && (
           <Button
-            size={settingsButtonSize}
-            variant="ghost"
+            size="compact"
+            variant="secondary"
             iconOnly
             onClick={onDelete}
             aria-label={`Delete matcher ${matcher.pattern}`}
@@ -258,7 +256,6 @@ function AddMatcherInput({
   bucketId,
   onAdd,
 }: AddMatcherInputProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -296,7 +293,7 @@ function AddMatcherInput({
           data-testid={`file-label-add-matcher-input-${bucketId}`}
         />
         <Button
-          size={settingsButtonSize}
+          size="compact"
           variant="secondary"
           onClick={submit}
           disabled={!value.trim()}
@@ -334,7 +331,6 @@ function BucketRow({
   onChange,
   onDelete,
 }: BucketRowProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const {
     attributes,
     listeners,
@@ -442,7 +438,7 @@ function BucketRow({
       data-testid={`file-label-bucket-${bucket.id}`}
     >
       <div className="flex flex-col gap-1">
-        <div className="flex min-h-7 items-center gap-2">
+        <div className="flex min-h-10 items-center gap-2">
           <span
             className="shrink-0 cursor-grab fg-secondary hover:fg-primary active:cursor-grabbing"
             aria-label={`Reorder label ${bucket.name}`}
@@ -489,25 +485,9 @@ function BucketRow({
               />
             </div>
           )}
-          <Tooltip label="When a file matches this label, stop assigning further labels.">
-            <span className="flex shrink-0 items-center gap-2">
-              <label htmlFor={stopId} className="text-xs fg-secondary">
-                Stop further labels
-              </label>
-              <ToggleSwitch
-                id={stopId}
-                checked={bucket.stopFurtherLabels}
-                label={`Stop further labels after ${bucket.name}`}
-                dataTestId={`file-label-stop-${bucket.id}`}
-                onChange={(next) =>
-                  onChange({ ...bucket, stopFurtherLabels: next })
-                }
-              />
-            </span>
-          </Tooltip>
           <Button
-            size={settingsButtonSize}
-            variant="ghost"
+            size="compact"
+            variant="secondary"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
             data-testid={`file-label-expand-${bucket.id}`}
@@ -520,8 +500,8 @@ function BucketRow({
           </Button>
           {!bucket.builtin && (
             <Button
-              size={settingsButtonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               iconOnly
               onClick={onDelete}
               aria-label={`Delete label ${bucket.name}`}
@@ -538,6 +518,24 @@ function BucketRow({
 
       {expanded && (
         <div className="flex flex-col gap-2 pl-16">
+          {/* The label's second switch is a detail of the label, so it sits
+              with the matchers instead of beside the label's own switch. */}
+          <SettingsSubRow
+            label="Stop further labels"
+            description="When a file matches this label, stop assigning further labels."
+            htmlFor={stopId}
+            control={
+              <ToggleSwitch
+                id={stopId}
+                checked={bucket.stopFurtherLabels}
+                label={`Stop further labels after ${bucket.name}`}
+                dataTestId={`file-label-stop-${bucket.id}`}
+                onChange={(next) =>
+                  onChange({ ...bucket, stopFurtherLabels: next })
+                }
+              />
+            }
+          />
           <DndContext
             sensors={matcherSensors}
             collisionDetection={closestCenter}
@@ -582,7 +580,6 @@ export function FileLabelsSection({
   onSave,
   expandRequest = 0,
 }: FileLabelsSectionProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const { expanded, toggle } = useSectionDisclosure(expandRequest);
   const changedFilesTitle = useEarlyAccessTitle('Changed Files');
   const [localLabels, setLocalLabels] = useState<FileLabelBucket[]>(labels);
@@ -714,7 +711,7 @@ export function FileLabelsSection({
                 <>
                   {expanded && (
                     <Button
-                      size={settingsButtonSize}
+                      size="compact"
                       variant="secondary"
                       onClick={handleAdd}
                       data-testid="file-labels-add-label"

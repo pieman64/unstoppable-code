@@ -55,7 +55,7 @@ function createHarness(
     powerMonitor,
     notify,
     setIntervalFn: setIntervalFn as unknown as typeof setInterval,
-    clearIntervalFn: clearIntervalFn as unknown as typeof clearInterval,
+    clearIntervalFn,
     ...overrides,
   };
 

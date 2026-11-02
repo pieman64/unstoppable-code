@@ -423,7 +423,7 @@ describe('LaunchAtLoginService.setEnabled', () => {
       openAtLogin: false,
       status: 'not-registered',
     });
-    const read = registrar.getLoginItemSettings.bind(registrar);
+    const read = (): LoginItemSnapshot => ({ ...registrar.state });
     let failNextRead = true;
     registrar.getLoginItemSettings = (): LoginItemSnapshot => {
       if (failNextRead) {

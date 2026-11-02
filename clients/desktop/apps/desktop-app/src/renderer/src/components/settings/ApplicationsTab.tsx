@@ -5,7 +5,6 @@ import type { DetectedApp } from '@canopy/desktop-shared/types';
 import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
 import { SettingsGroup, SettingsPage, SettingsLoading } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const CATEGORY_LABELS: Record<string, string> = {
   'file-manager': 'File manager',
@@ -15,7 +14,6 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export function ApplicationsTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [apps, setApps] = useState<DetectedApp[] | null>(null);
   const [disabledApps, setDisabledApps] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -59,7 +57,7 @@ export function ApplicationsTab(): JSX.Element {
       dataTestId="settings-tab-applications"
       headerTrailing={
         <Button
-          size={settingsButtonSize}
+          size="compact"
           variant="secondary"
           onClick={() => loadApps(true)}
           disabled={refreshing}

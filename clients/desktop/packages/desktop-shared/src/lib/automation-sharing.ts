@@ -1,26 +1,36 @@
-import { CHAT_LABEL } from '@canopy/protocol';
+import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { AGENT_MODEL_ID_PREFIX } from '@canopy/protocol/agents';
 import {
+  SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
   SHARED_AUTOMATION_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION,
   SHARED_AUTOMATION_REFERENCES_API_VERSION,
   SHARED_AUTOMATION_RUN_CONDITION_API_VERSION,
   SHARED_AUTOMATION_TARGET_REQUIREMENT_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
   impliedTargetContexts,
   validateSharedAutomationTargetRequirement,
   isCodexSpeed,
+  canonicalizeSharedAutomationPrompt,
+  sharedAutomationPromptSpansError,
   validateSharedAutomationDocument,
 } from '@canopy/protocol/automations';
 import type {
   SharedAutomationAction,
   SharedAutomationDocument,
   SharedAutomationModelConfig,
+  SharedAutomationPipelineDependency,
   SharedAutomationPipelineRef,
   SharedAutomationTrigger,
   TargetContext,
 } from '@canopy/protocol/automations';
 import type { ShareablePluginRef } from '@canopy/protocol/plugins';
-import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-prompt-references';
+import {
+  validateConfiguredPromptReferences,
+  type ConfiguredPromptReference,
+} from '@canopy/protocol/configured-prompt-references';
 import type {
+  PipelinePackagePackagedPipeline,
   PipelinePackageRef,
   PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
@@ -66,6 +76,8 @@ export const AUTOMATION_SHARE_BLOCK_REASONS = [
   'installed_prompt_reference',
   'session_target_unresolved',
   'pipeline_target_unresolved',
+  'pipeline_dependencies_stale',
+  'installed_pipeline_dependencies',
 ] as const;
 
 export type AutomationShareBlockReason =
@@ -209,7 +221,7 @@ export const AUTOMATION_SHARE_BLOCK_MESSAGES: Record<
   string
 > = {
   action_execution_bound:
-    'This automation resumes a pipeline execution on this machine and cannot be shared.',
+    'This automation resumes a workflow run on this machine and cannot be shared.',
   document_invalid:
     'This automation could not be converted into a shareable document.',
   installed_prompt_reference:
@@ -217,7 +229,11 @@ export const AUTOMATION_SHARE_BLOCK_MESSAGES: Record<
   session_target_unresolved:
     'Choose an accessible chat before sharing this automation.',
   pipeline_target_unresolved:
-    'Verify the selected pipeline before sharing this automation.',
+    'Verify the selected workflow before sharing this automation.',
+  pipeline_dependencies_stale:
+    'This automation changed after its workflows were checked. Check them again before sharing.',
+  installed_pipeline_dependencies:
+    'This automation was installed from a share with its workflows, so it cannot be shared again. Share the original instead.',
 };
 
 /** User-facing copy for each stripped-field notice. */
@@ -230,23 +246,22 @@ export const AUTOMATION_SHARE_NOTICE_MESSAGES: Record<
   run_condition_stripped:
     'The run-condition command stays on this machine; recipients only see that a condition existed.',
   input_values_stripped:
-    'Pipeline input values stay on this machine; recipients supply their own values when installing.',
+    'Workflow input values stay on this machine; recipients supply their own values when installing.',
   model_alias_preferences_stripped:
-    'Per-alias model preferences stay on this machine; recipients get the pipeline defaults.',
+    'Per-alias model preferences stay on this machine; recipients get the workflow defaults.',
   model_config_stripped:
-    'Model tuning for the pipeline run stays on this machine; recipients get the pipeline defaults.',
-  session_target_downgraded:
-    'Sharing creates new runs in the required project or App Advisor. The original chat and its history stay on this machine.',
+    'Model tuning for the workflow run stays on this machine; recipients get the workflow defaults.',
+  session_target_downgraded: `Sharing creates new runs in the required project or ${ORCHESTRATOR_LABEL}. The original chat and its history stay on this machine.`,
   attachments_stripped:
     'Attached files and file references stay on this machine.',
   local_agent_model_stripped:
     'The custom Agent this automation uses stays on this machine. Recipients get their default model.',
   plugin_collection_preferences_stripped:
-    'Collection preferences stay on this machine; recipients get the pipeline defaults.',
+    'Collection preferences stay on this machine; recipients get the workflow defaults.',
   pipeline_reference_unresolved:
-    'This pipeline only exists on this machine. Recipients pick one of their own pipelines when installing.',
+    'This workflow only exists on this machine. Recipients pick one of their own workflows when installing.',
   pipeline_definition_bundled:
-    'The pipeline definition travels with this automation so recipients can install the workflow you shared.',
+    'The workflow definition travels with this automation so recipients can install it too.',
   local_plugins_stripped:
     'Some plugins, skills, servers, and collections only exist on this machine and stay behind:',
   cowork_project_binding_stripped: `The ${CHAT_LABEL} project stays on this machine; recipients pick their own when installing.`,
@@ -282,6 +297,18 @@ export interface BuildSharedAutomationDocumentOptions {
   pipelineContentHash?: string;
   capabilityPackage?: PipelinePackageRef;
   /**
+   * Pipelines the capability package carries as `automation_pipeline`
+   * resources, from the analysis summary's `packagedPipelines`. The caller
+   * passes only the entries that ship: the required ones plus the optional
+   * (name-matched) ones the author selected, and the same package must be
+   * passed as `capabilityPackage`. The `isActionPipeline` entry turns a user
+   * or project `worktree_pipeline` ref into `{ source: 'packaged', key:
+   * 'action' }` instead of an inline copy; the other entries become a prompt
+   * action's `pipelineDependencies`. Either makes the document version 5;
+   * without them the document keeps its older version.
+   */
+  packagedPipelines?: PipelinePackagePackagedPipeline[];
+  /**
    * Include the source's `ifCommand` as a v4 `runCondition`. Only the desktop
    * share modal sets this, from a checkbox beside the command that the author
    * can uncheck; every other caller (including agent shares) keeps the default
@@ -299,7 +326,10 @@ export type BuildSharedAutomationDocumentResult =
   | {
       ok: false;
       reasons: AutomationShareBlockReason[];
-      /** Validator error text, present only with `document_invalid`. */
+      /**
+       * Validator error text with `document_invalid`; the stale span or hash
+       * with `pipeline_dependencies_stale`.
+       */
       detail?: string;
     };
 
@@ -409,6 +439,19 @@ function buildSharedPipelineRef(
     }
     return { ref, unresolved: false, bundledDefinition: false };
   }
+  const packagedActionPipeline =
+    action.pipelineSource === 'user' || action.pipelineSource === 'project'
+      ? options.packagedPipelines?.find((entry) => entry.isActionPipeline)
+      : undefined;
+  if (packagedActionPipeline !== undefined) {
+    const ref: SharedAutomationPipelineRef = {
+      source: 'packaged',
+      key: packagedActionPipeline.key,
+      pipelineContentHash: packagedActionPipeline.pipelineContentHash,
+      name: action.pipelineName ?? packagedActionPipeline.name,
+    };
+    return { ref, unresolved: false, bundledDefinition: true };
+  }
   if (
     (action.pipelineSource === 'user' ||
       action.pipelineSource === 'project' ||
@@ -474,6 +517,68 @@ function buildSharedPipelineRef(
   return { ref, unresolved: true, bundledDefinition: false };
 }
 
+type PipelineDependenciesResult =
+  | { ok: true; dependencies: SharedAutomationPipelineDependency[] }
+  | { ok: false; detail: string };
+
+function rangesOverlap(
+  start: number,
+  end: number,
+  references: readonly ConfiguredPromptReference[],
+): boolean {
+  return references.some(
+    (reference) =>
+      start < reference.textStart + reference.displayText.length &&
+      reference.textStart < end,
+  );
+}
+
+/**
+ * Turn the shipped non-action packaged pipelines into a prompt action's
+ * `pipelineDependencies`. Spans are checked against the canonical prompt the
+ * document carries; a span that no longer matches means the prompt changed
+ * after analysis, so the share is refused rather than shifted. A span inside
+ * a configured prompt reference's display text is left out: the reference
+ * names a file or plugin, so the installer must not rewrite it.
+ */
+function buildSharedPipelineDependencies(
+  prompt: string,
+  promptReferences: readonly ConfiguredPromptReference[] | undefined,
+  packagedPipelines: readonly PipelinePackagePackagedPipeline[] | undefined,
+): PipelineDependenciesResult {
+  const canonicalPrompt = canonicalizeSharedAutomationPrompt(prompt);
+  const dependencies: SharedAutomationPipelineDependency[] = [];
+  for (const entry of packagedPipelines ?? []) {
+    if (entry.isActionPipeline) continue;
+    const promptSpans = entry.promptSpans
+      .filter(
+        (span) =>
+          !rangesOverlap(
+            span.textStart,
+            span.textStart + span.text.length,
+            promptReferences ?? [],
+          ),
+      )
+      .map((span) => ({ textStart: span.textStart, text: span.text }));
+    dependencies.push({
+      key: entry.key,
+      pipeline: {
+        source: 'packaged',
+        key: entry.key,
+        pipelineContentHash: entry.pipelineContentHash,
+        name: entry.name,
+      },
+      promptSpans,
+    });
+  }
+  const spansError = sharedAutomationPromptSpansError(
+    canonicalPrompt,
+    dependencies,
+  );
+  if (spansError) return { ok: false, detail: spansError };
+  return { ok: true, dependencies };
+}
+
 /**
  * Build the portable share snapshot for a local automation.
  *
@@ -499,6 +604,12 @@ export function buildSharedAutomationDocument(
 
   if (action.type === 'pipeline_execution_resume') {
     return { ok: false, reasons: ['action_execution_bound'] };
+  }
+  // An installed copy re-shares its installed package by reference, which
+  // carries no prompt spans for the pipelines in it: recipients would get
+  // this machine's pipeline IDs in the prompt and never install them.
+  if ((activity.installedFrom?.pipelineDependencies?.length ?? 0) > 0) {
+    return { ok: false, reasons: ['installed_pipeline_dependencies'] };
   }
 
   const reasons: AutomationShareBlockReason[] = [];
@@ -570,6 +681,22 @@ export function buildSharedAutomationDocument(
       notices.push('plan_mode_stripped');
     }
     const modelConfig = buildSharedModelConfig(action, stripLocalAgentModel);
+    const pipelineDependencies = buildSharedPipelineDependencies(
+      action.prompt,
+      action.promptReferences,
+      options.packagedPipelines,
+    );
+    if (!pipelineDependencies.ok) {
+      return {
+        ok: false,
+        reasons: ['pipeline_dependencies_stale'],
+        detail: pipelineDependencies.detail,
+      };
+    }
+    const dependencyFields =
+      pipelineDependencies.dependencies.length > 0
+        ? { pipelineDependencies: pipelineDependencies.dependencies }
+        : {};
 
     if (action.type === 'worktree_session_prompt') {
       const common = {
@@ -577,6 +704,7 @@ export function buildSharedAutomationDocument(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
+        ...dependencyFields,
         ...(modelConfig !== undefined ? { modelConfig } : {}),
         plugins: plugins.plugins,
       };
@@ -597,6 +725,7 @@ export function buildSharedAutomationDocument(
           ...(action.promptReferences
             ? { promptReferences: action.promptReferences }
             : {}),
+          ...dependencyFields,
           ...(modelConfig !== undefined ? { modelConfig } : {}),
           plugins: plugins.plugins,
           ...(action.planMode !== undefined
@@ -611,6 +740,7 @@ export function buildSharedAutomationDocument(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
+        ...dependencyFields,
         ...(modelConfig !== undefined ? { modelConfig } : {}),
         plugins: plugins.plugins,
       };
@@ -623,6 +753,7 @@ export function buildSharedAutomationDocument(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
+        ...dependencyFields,
         ...(modelConfig !== undefined ? { modelConfig } : {}),
         plugins: plugins.plugins,
       };
@@ -638,6 +769,7 @@ export function buildSharedAutomationDocument(
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
+        ...dependencyFields,
         ...(modelConfig !== undefined ? { modelConfig } : {}),
         plugins: plugins.plugins,
         ...(action.planMode !== undefined ? { planMode: action.planMode } : {}),
@@ -647,8 +779,33 @@ export function buildSharedAutomationDocument(
       };
     }
   } else {
-    notices.push('workspace_binding_stripped');
+    // Local project and task ids never travel; a destination with no project
+    // has none to strip.
+    if (action.target?.kind !== 'global')
+      notices.push('workspace_binding_stripped');
     const pipelineRef = buildSharedPipelineRef(action, options);
+    if (pipelineRef.ref.source === 'packaged') {
+      // The analysis packaged one exact pipeline; a different key or newer
+      // local bytes mean the package no longer matches what is shared.
+      if (pipelineRef.ref.key !== SHARED_AUTOMATION_ACTION_PIPELINE_KEY) {
+        return {
+          ok: false,
+          reasons: ['pipeline_dependencies_stale'],
+          detail: `The packaged action pipeline must use the key "${SHARED_AUTOMATION_ACTION_PIPELINE_KEY}".`,
+        };
+      }
+      if (
+        options.pipelineContentHash !== undefined &&
+        options.pipelineContentHash !== pipelineRef.ref.pipelineContentHash
+      ) {
+        return {
+          ok: false,
+          reasons: ['pipeline_dependencies_stale'],
+          detail:
+            'The pipeline changed after the capability package was built.',
+        };
+      }
+    }
     if (pipelineRef.unresolved) {
       notices.push('pipeline_reference_unresolved');
     }
@@ -673,7 +830,9 @@ export function buildSharedAutomationDocument(
     }
     sharedAction = {
       type: 'worktree_pipeline',
-      target: { kind: 'workspace' },
+      target: action.target
+        ? { kind: action.target.kind }
+        : { kind: 'workspace' },
       pipeline: pipelineRef.ref,
       inputKeys,
     };
@@ -730,14 +889,16 @@ export function buildSharedAutomationDocument(
           error:
             error instanceof Error
               ? error.message
-              : 'Pipeline definition could not be read.',
+              : 'Workflow definition could not be read.',
         };
       }
     }
+    const destination = sharedAction.target.kind;
     const resolution = resolveAutomationTargetRequirement(
       sharedAction.type,
       requirement,
       pipelineResolution,
+      destination === 'workspace' ? undefined : destination,
     );
     if (resolution.status !== 'resolved') {
       return {
@@ -751,14 +912,27 @@ export function buildSharedAutomationDocument(
     requirement !== undefined &&
     requirement.contexts.length <
       impliedTargetContexts(sharedAction.type).length;
+  const sharesPipelineDestination =
+    sharedAction.type === 'worktree_pipeline' &&
+    sharedAction.target.kind !== 'workspace';
+  // Only documents that carry packaged pipelines need version 5, so an
+  // automation without them still reaches recipients on older clients.
+  const usesPackagedPipelines =
+    sharedAction.type === 'worktree_pipeline'
+      ? sharedAction.pipeline.source === 'packaged'
+      : sharedAction.pipelineDependencies !== undefined;
   const document: SharedAutomationDocument = {
-    version: includesRunCondition
-      ? SHARED_AUTOMATION_RUN_CONDITION_API_VERSION
-      : narrows
-        ? SHARED_AUTOMATION_TARGET_REQUIREMENT_API_VERSION
-        : configuredRefs !== undefined
-          ? SHARED_AUTOMATION_REFERENCES_API_VERSION
-          : SHARED_AUTOMATION_API_VERSION,
+    version: sharesPipelineDestination
+      ? SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION
+      : usesPackagedPipelines
+        ? SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION
+        : includesRunCondition
+          ? SHARED_AUTOMATION_RUN_CONDITION_API_VERSION
+          : narrows
+            ? SHARED_AUTOMATION_TARGET_REQUIREMENT_API_VERSION
+            : configuredRefs !== undefined
+              ? SHARED_AUTOMATION_REFERENCES_API_VERSION
+              : SHARED_AUTOMATION_API_VERSION,
     name: activity.name,
     description: options.description,
     trigger: buildSharedTrigger(activity.schedule),

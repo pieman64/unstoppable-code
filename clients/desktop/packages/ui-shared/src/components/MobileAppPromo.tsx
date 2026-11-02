@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Button } from './Button';
 import {
   StoreBadgeLink,
   type MobileAppStoreLink,
@@ -69,15 +70,19 @@ export function MobileAppPromo({
           : 'relative w-full'
       }
     >
+      {/* The wrapper owns the corner: Button's own `relative` wins over a
+          caller's `absolute` in the built CSS. */}
       {onDismiss && (
-        <button
-          data-testid="mobile-app-promo-dismiss"
-          type="button"
-          onClick={onDismiss}
-          className="absolute right-3 top-3 rounded px-2 py-1 text-xs fg-secondary hover:fg-primary"
-        >
-          Not now
-        </button>
+        <span className="absolute right-3 top-3">
+          <Button
+            variant="ghost"
+            size="compact"
+            data-testid="mobile-app-promo-dismiss"
+            onClick={onDismiss}
+          >
+            Not now
+          </Button>
+        </span>
       )}
       <h2
         className={

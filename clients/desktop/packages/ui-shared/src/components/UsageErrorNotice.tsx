@@ -178,7 +178,7 @@ export function UsageErrorNotice({
                 )}
                 {showRetry && (
                   <NoticeButton
-                    variant="primary"
+                    variant="secondary"
                     data-testid={`${testIdPrefix}-error-retry`}
                     onClick={onRetry}
                     disabled={retrying || (isRateLimited && waitingForRetry)}

@@ -30,6 +30,8 @@ function syncStoreForServerRender<T extends object>(store: {
 function readyAccount(): CanopyCloudAccountPublicState {
   return {
     hasApiKey: true,
+    authMode: null,
+    credentialSource: null,
     capabilities: ['portal-v1'],
     storageAvailable: true,
     account: {
@@ -71,6 +73,7 @@ function buildState(overrides: Partial<CanopyPortalState>): CanopyPortalState {
     pairingCode: null,
     pairingCodeExpiresAt: null,
     machineName: null,
+    hostCode: null,
     activatedAt: null,
     lastSeenAt: null,
     lastErrorAt: null,
@@ -390,6 +393,8 @@ describe('CanopyPortalModal — visible state snapshots', () => {
           return Promise.resolve({ state: buildState({}) });
         },
         stop: () => Promise.resolve({ state: buildState({}) }),
+        regeneratePairingCode: () => Promise.resolve({ state: buildState({}) }),
+        cancelPairingCode: () => Promise.resolve({ state: buildState({}) }),
         onStateChanged: (): (() => void) => () => undefined,
       },
     });
@@ -431,6 +436,8 @@ describe('CanopyPortalModal — visible state snapshots', () => {
       loadCanopyCloudAccount: () =>
         Promise.resolve({
           hasApiKey: false,
+          authMode: null,
+          credentialSource: null,
           capabilities: [],
           storageAvailable: true,
         }),

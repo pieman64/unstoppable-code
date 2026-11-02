@@ -40,6 +40,76 @@ function fakeFile(name: string, type: string, bytes: number[]): File {
 }
 
 describe('importChatAttachments (regression)', () => {
+  it('does not publish a late attachment list over a fresh activation', async () => {
+    let finish: ((rows: { filename: string }[]) => void) | undefined;
+    api.workspaceItems.listAttachments.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    let current = true;
+    const stale = useWorkspaceItemsStore
+      .getState()
+      .loadAttachments('proj', 'wt', () => current);
+    current = false;
+    api.workspaceItems.listAttachments.mockResolvedValue([
+      { filename: 'fresh.png' },
+    ]);
+    await useWorkspaceItemsStore
+      .getState()
+      .loadAttachments('proj', 'wt', () => true);
+    finish?.([{ filename: 'old.png' }]);
+    await stale;
+    expect(useWorkspaceItemsStore.getState().attachments['proj/wt']).toEqual([
+      { filename: 'fresh.png' },
+    ]);
+  });
+
+  it('discards import results if access is lost while the list refresh is pending', async () => {
+    api.importWorktreeAttachments.mockResolvedValue({
+      attachments: [{ filename: 'a.png', absolutePath: '/wt/a.png' }],
+    });
+    let finish: ((rows: []) => void) | undefined;
+    let started: (() => void) | undefined;
+    const listing = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    api.workspaceItems.listAttachments.mockImplementationOnce(() => {
+      started?.();
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    let current = true;
+    const pending = importChatAttachments(
+      { projectId: 'proj', worktreeId: 'wt' },
+      [],
+      undefined,
+      () => current,
+    );
+    await listing;
+    current = false;
+    finish?.([]);
+    expect(await pending).toEqual([]);
+    expect(useWorkspaceItemsStore.getState().attachments).toEqual({});
+  });
+
+  it('skips the post-delete refresh when access is lost, including a failed delete', async () => {
+    let current = true;
+    const deleteAttachment = jest.fn(() => {
+      current = false;
+      return Promise.reject(new Error('delete failed'));
+    });
+    Object.assign(api.workspaceItems, { deleteAttachment });
+    await expect(
+      useWorkspaceItemsStore
+        .getState()
+        .deleteAttachment('proj', 'wt', 'a.png', () => current),
+    ).rejects.toThrow('delete failed');
+    expect(api.workspaceItems.listAttachments).not.toHaveBeenCalled();
+  });
+
   it('routes worktree projects to importWorktreeAttachments', async () => {
     api.importWorktreeAttachments.mockResolvedValue({
       attachments: [{ filename: 'a.png', absolutePath: '/wt/a.png' }],

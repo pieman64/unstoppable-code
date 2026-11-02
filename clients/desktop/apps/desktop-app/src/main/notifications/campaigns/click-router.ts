@@ -1,15 +1,10 @@
-import {
-  ACTIVATION_CAMPAIGN_IDS,
-  GETTING_STARTED_SEQUENCE_CAMPAIGN_ID,
-} from '@canopy/desktop-shared/types';
+import { ACTIVATION_CAMPAIGN_IDS } from '@canopy/desktop-shared/types';
 import type {
   ActivationCampaignId,
   CampaignDestination,
-  OnboardingChecklistItemId,
   PromotionalCampaignId,
 } from '@canopy/desktop-shared/types';
 import { DEFAULT_VARIANT_KEY } from './campaign-config';
-import { getGettingStartedStep } from './getting-started-sequence';
 import { getCampaignVariant } from './served-config-sync';
 
 /**
@@ -32,14 +27,11 @@ export const NOTIFICATION_ID_PREFIX = 'activation-campaign:';
 
 export interface CampaignClickPayload {
   campaignId: PromotionalCampaignId;
-  /** The checklist step, for Getting Started sequence clicks (CAN-3013). */
-  itemId?: OnboardingChecklistItemId;
   destination: CampaignDestination;
 }
 
 interface ParsedNotificationId {
   campaignId: PromotionalCampaignId;
-  /** For the Getting Started sequence this slot carries the item id. */
   variantKey: string;
 }
 
@@ -50,10 +42,7 @@ interface ParsedNotificationId {
 export type CampaignClickSender = (payload: CampaignClickPayload) => boolean;
 
 /** Notified as soon as a valid click arrives, regardless of delivery. */
-export type CampaignClickObserver = (
-  campaignId: PromotionalCampaignId,
-  itemId?: OnboardingChecklistItemId,
-) => void;
+export type CampaignClickObserver = (campaignId: PromotionalCampaignId) => void;
 
 interface ClickRouterState {
   pending: CampaignClickPayload | null;
@@ -97,12 +86,6 @@ export function parseCampaignNotificationId(
   const campaignId = rest.slice(0, separator);
   const variantKey = rest.slice(separator + 1);
   if (variantKey.length === 0) return null;
-  if (campaignId === GETTING_STARTED_SEQUENCE_CAMPAIGN_ID) {
-    // Same fail-closed rule as below, against the checklist instead of the
-    // campaign table: a step this build's checklist lacks routes nowhere.
-    if (getGettingStartedStep(variantKey) === undefined) return null;
-    return { campaignId, variantKey };
-  }
   if (!isActivationCampaignId(campaignId)) return null;
   // Resolving through the definition table, not the id union alone, so an id
   // naming a campaign or variant this build does not define fails closed
@@ -128,19 +111,6 @@ function flushPendingClick(): void {
 export function handleCampaignNotificationClick(notificationId: string): void {
   const parsed = parseCampaignNotificationId(notificationId);
   if (parsed === null) return;
-
-  if (parsed.campaignId === GETTING_STARTED_SEQUENCE_CAMPAIGN_ID) {
-    const step = getGettingStartedStep(parsed.variantKey);
-    if (step === undefined) return;
-    state.observer?.(parsed.campaignId, step.itemId);
-    state.pending = {
-      campaignId: parsed.campaignId,
-      itemId: step.itemId,
-      destination: step.deepLink,
-    };
-    flushPendingClick();
-    return;
-  }
 
   const variant = getCampaignVariant(parsed.campaignId, parsed.variantKey);
   if (variant === undefined) return;

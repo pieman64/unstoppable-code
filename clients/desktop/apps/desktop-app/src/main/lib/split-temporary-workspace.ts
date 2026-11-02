@@ -1117,8 +1117,10 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
     );
     await assertNoActiveWorktreeWork(request.workspaceId, request.worktreeId, {
       activeChats: 'Stop active chats before splitting this project.',
+      runningScripts:
+        'Wait for running scripts, such as setup, to finish before splitting this project.',
       runningPipelines:
-        'Wait for running or paused pipeline executions to finish before splitting this project.',
+        'Wait for running or paused workflow executions to finish before splitting this project.',
       blockedPipelineStatuses: new Set<ExecutionSummary['status']>([
         'running',
         'paused',
@@ -1743,7 +1745,7 @@ async function runSplitBackgroundPhase(args: {
         error,
       );
       warnings.push(
-        'Pipeline execution migration rollback was incomplete; destination state was retained and source teardown was stopped.',
+        'Workflow execution migration rollback was incomplete; destination state was retained and source teardown was stopped.',
       );
       if (markingErrors.length > 0) {
         warnings.push(
@@ -1767,7 +1769,7 @@ async function runSplitBackgroundPhase(args: {
       return;
     }
     warnings.push(
-      'Pipeline execution migration failed; the split was rolled back before source teardown.',
+      'Workflow execution migration failed; the split was rolled back before source teardown.',
     );
     await rollbackReversibleStage(error);
     return;
@@ -1936,7 +1938,7 @@ async function runSplitBackgroundPhase(args: {
           success: false,
           results,
           warnings,
-          error: `Could not delete pipeline records for removed repository "${plan.repo.name}": ${
+          error: `Could not delete workflow records for removed repository "${plan.repo.name}": ${
             error instanceof Error ? error.message : String(error)
           }`,
         });

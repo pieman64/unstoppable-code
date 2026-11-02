@@ -32,6 +32,14 @@ export interface ElectronDaemonConnectionOptions<C extends Connection> {
   readonly attach: (signal: AbortSignal) => Promise<C>;
   readonly setupTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
+  /**
+   * Observes each session a `get` resolves, new or reused. Observers ride the
+   * session; they never open one (W5e's commit event subscriber).
+   */
+  readonly onSession?: (
+    session: ElectronDaemonSession<C>,
+    caller: CanopyCallerDescriptor,
+  ) => void;
 }
 const failure = (
   kind: CanopyClientError['payload']['kind'],
@@ -300,7 +308,15 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         admissions.get(caller.clientInstanceId) ?? Promise.resolve();
       const next = previous
         .catch(() => undefined)
-        .then(() => get(caller, owner));
+        .then(() => get(caller, owner))
+        .then((session) => {
+          try {
+            options.onSession?.(session, caller);
+          } catch {
+            // An observer never fails the session's consumer.
+          }
+          return session;
+        });
       admissions.set(caller.clientInstanceId, next);
       void next
         .finally(() => {

@@ -83,4 +83,42 @@ describe('portal chat attachment client', () => {
       }),
     );
   });
+
+  it('sends the client platform with a heartbeat when provided', async () => {
+    mockRequestCanopyCloudJson.mockResolvedValue({
+      ok: true,
+      status: 'active',
+    });
+
+    await sendPortalHeartbeat({
+      sessionId: 'sess-1',
+      clientPlatform: 'mac',
+    });
+
+    expect(mockRequestCanopyCloudJson).toHaveBeenCalledWith(
+      expect.stringContaining('/portal/sessions/sess-1/heartbeat'),
+      expect.objectContaining({
+        body: JSON.stringify({ clientPlatform: 'mac' }),
+      }),
+    );
+  });
+
+  it('omits the client platform from a heartbeat when undefined', async () => {
+    mockRequestCanopyCloudJson.mockResolvedValue({
+      ok: true,
+      status: 'active',
+    });
+
+    await sendPortalHeartbeat({
+      sessionId: 'sess-1',
+      clientPlatform: undefined,
+    });
+
+    expect(mockRequestCanopyCloudJson).toHaveBeenCalledWith(
+      expect.stringContaining('/portal/sessions/sess-1/heartbeat'),
+      expect.objectContaining({
+        body: JSON.stringify({}),
+      }),
+    );
+  });
 });

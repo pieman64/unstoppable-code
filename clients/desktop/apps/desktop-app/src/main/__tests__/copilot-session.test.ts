@@ -1,9 +1,15 @@
+import type { createManagedDelegationSession } from '../agents/delegation/service';
+type DelegationSessionOptions = Parameters<
+  typeof createManagedDelegationSession
+>[0];
+import { DelegationParent } from '@canopy/desktop-shared/node/delegation/parent';
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SessionEvent } from '@github/copilot-sdk';
 import type { CanopyWorktreeSessionRoute } from '../mcp/http-proxy-service';
+import type * as CopilotConnectionModule from '../copilot/connection';
 import { authorizeCursorMcpTool } from '../cursor/tool-approval';
 import { assertCopilotConnectionGeneration } from '../copilot/connection';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
@@ -14,45 +20,67 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import * as mainProcessLogging from '../lib/main-process-logging';
-import { registerSession } from '../agents/session-manager';
+import {
+  markTurnAwaitingUser,
+  markTurnIdle,
+  recordSessionEvent,
+  registerSession,
+} from '../agents/session-manager';
 import { CopilotProvider } from '../agents/copilot-session';
 import * as homeCapture from '../agents/delegation/capture-home-capabilities';
 import { resolvePlugins } from '../plugins/plugin-resolver';
 import { runCopilotTurn } from '@canopy/desktop-shared/node/copilot/turn-driver';
+import { authorizeCopilotNativeTool } from '../copilot/tool-approval';
 import { cursorCanopyMcpServerNames } from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
 import { buildCoworkDispatchSystemPromptAppend } from '../lib/cowork-chat-system-prompt';
 import type { CursorCapabilityProjection } from '@canopy/desktop-shared/lib/cursor-capabilities';
-
-type ForkTurn = Parameters<typeof runCopilotTurn>[0] & {
-  preparePrompt?: (sessionId: string) => Promise<string>;
-  onPromptAccepted?: (sessionId: string) => Promise<void>;
-};
+import {
+  ChatTurnLifecycleEventSchema,
+  type ChatTurnLifecycleEvent,
+} from '@canopy/protocol/canopy-core';
+import {
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+  setTurnLifecycleSink,
+} from '../agents/provider-turn-lifecycle';
 
 jest.mock('../lib/chat-tabs-reader', () => ({ readChatTabsFile: jest.fn() }));
 
 let mockCommands: CursorCapabilityProjection['commands'] = [];
 const mockManagedDelegationEnabled = jest.fn(() => false);
-const mockCreateManagedDelegationSession = jest.fn<Promise<unknown>, []>();
+const mockCreateManagedDelegationSession = jest.fn<
+  Promise<unknown>,
+  [DelegationSessionOptions]
+>();
 jest.mock('../agents/delegation/gate', () => ({
   managedDelegationEnabled: () => mockManagedDelegationEnabled(),
 }));
 jest.mock('../agents/delegation/service', () => ({
-  createManagedDelegationSession: () => mockCreateManagedDelegationSession(),
+  createManagedDelegationSession: (options: DelegationSessionOptions) =>
+    mockCreateManagedDelegationSession(options),
 }));
 
-const mockAssertCopilotModelAvailable = jest.fn((model: string) =>
+const mockAssertCopilotModelAvailable = jest.fn<
+  ReturnType<typeof CopilotConnectionModule.assertCopilotModelAvailable>,
+  [string]
+>((model) =>
   Promise.resolve({
     id: model,
+    rawModelId: model,
+    label: model,
+    supportsVision: false,
     supportedThinkingLevels: [],
   }),
 );
 const mockWorkspace = { directory: '', cowork: true, localMemoryEnabled: true };
+const mockRegisterCanopyWorktreeSessionRoute = jest.fn<
+  Promise<string>,
+  [CanopyWorktreeSessionRoute]
+>(() => Promise.resolve('route'));
 const mockProxy = {
   getMcpCapabilityDigests: jest.fn(() => ({})),
   getCanopyCapabilityDefinitions: jest.fn(() => []),
-  registerCanopyWorktreeSessionRoute: jest
-    .fn<Promise<string>, [CanopyWorktreeSessionRoute]>()
-    .mockResolvedValue('route'),
+  registerCanopyWorktreeSessionRoute: mockRegisterCanopyWorktreeSessionRoute,
   getCanopyWorktreeMcpUrl: jest.fn(() => 'http://localhost:1234/main'),
   getCanopyWorktreeUiMcpUrl: jest.fn(() => 'http://localhost:1234/ui'),
   setSessionToolCallGate: jest.fn(),
@@ -62,10 +90,13 @@ const mockProxy = {
 jest.mock('../mcp/http-proxy-service', () => ({
   getMcpHttpProxyService: () => mockProxy,
 }));
-const mockAuth = {
-  token: (): Promise<string> => Promise.resolve('ghu_test'),
-  tokenProvider: jest.fn(),
-};
+const mockRequestAnswersFromRenderer = jest.fn(
+  (options: { onAwaitingUser?: () => void }) => {
+    options.onAwaitingUser?.();
+    return Promise.resolve([{ selectedOptions: ['One'] }]);
+  },
+);
+const mockRuntimeClose = jest.fn<Promise<void>, []>(() => Promise.resolve());
 jest.mock('../copilot/connection', () => ({
   assertCopilotModelAvailable: (model: string) =>
     mockAssertCopilotModelAvailable(model),
@@ -73,8 +104,14 @@ jest.mock('../copilot/connection', () => ({
     Promise.resolve({
       account: { login: 'test-account' },
       generation: 1,
-      close: jest.fn(),
-      auth: mockAuth,
+      close: () => mockRuntimeClose(),
+      // The handle runs the turn; the turn driver itself is mocked below.
+      runTurn: (request: unknown) =>
+        jest
+          .requireMock<{
+            runCopilotTurn: (request: unknown) => Promise<unknown>;
+          }>('@canopy/desktop-shared/node/copilot/turn-driver')
+          .runCopilotTurn(request),
     }),
   ),
   assertCopilotConnectionGeneration: jest.fn(),
@@ -215,12 +252,19 @@ jest.mock('@canopy/desktop-shared/node/cursor/capability-root', () => ({
 }));
 jest.mock('../pipelines/config-paths', () => ({ getEnhancedEnv: jest.fn() }));
 jest.mock('../canopy-tools/session-runtime', () => ({
-  requestAnswersFromRenderer: jest.fn(),
+  requestAnswersFromRenderer: (options: { onAwaitingUser?: () => void }) =>
+    mockRequestAnswersFromRenderer(options),
 }));
+const mockGetSessionKeyOwnership = jest.fn<string, unknown[]>(
+  () => 'registered',
+);
 jest.mock('../agents/session-manager', () => ({
   buildSessionKey: () => 'project/worktree/chat',
+  getSessionKeyOwnership: (...args: unknown[]): string =>
+    mockGetSessionKeyOwnership(...args),
   drainChatSessionEvents: jest.fn(),
   markTurnActive: jest.fn(),
+  markTurnAwaitingUser: jest.fn(),
   markTurnIdle: jest.fn(),
   recordSessionEvent: jest.fn(),
   registerSession: jest.fn(),
@@ -229,9 +273,10 @@ jest.mock('../agents/session-manager', () => ({
 describe('Copilot desktop session instructions', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
-    jest
-      .mocked(readChatTabsFile)
-      .mockResolvedValue({ version: 1, tabs: [], activeTabId: null });
+    const emptyTabs: ChatTabsFile = { version: 1, tabs: [], activeTabId: '' };
+    // Preserve the legacy nullable active-tab fixture after the type tightened.
+    Reflect.set(emptyTabs, 'activeTabId', null);
+    jest.mocked(readChatTabsFile).mockResolvedValue(emptyTabs);
     jest.mocked(runCopilotTurn).mockImplementation(async (config) => {
       await config.onToolsReady?.({ version: 1, digest: 'a'.repeat(64) }, []);
       return {
@@ -258,6 +303,183 @@ describe('Copilot desktop session instructions', () => {
     );
   });
 
+  it('auto-allows an unlisted WatchDelegates call through the root MCP gate without prompting', async () => {
+    mockManagedDelegationEnabled.mockReturnValue(true);
+    let delegationOptions: DelegationSessionOptions | undefined;
+    const broker = {
+      spawn: jest.fn(),
+      getOutput: jest.fn(),
+      inspect: jest.fn(),
+      list: jest.fn(),
+      stop: jest.fn(),
+      closeOwner: jest.fn(),
+    };
+    const parent = new DelegationParent({
+      harness: 'copilot',
+      namespace: 'canopy',
+      names: {
+        spawn: 'DelegateTask',
+        output: 'GetDelegateOutput',
+        inspect: 'InspectDelegate',
+        list: 'ListDelegates',
+        stop: 'StopDelegate',
+      },
+      owner: {
+        harnessId: 'copilot',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sessionKey: 'project/worktree/chat',
+        runtimeGeneration: 1,
+        depth: 0,
+      },
+      broker,
+      currentTurn: () => delegationOptions?.currentTurn(),
+      removeQueued: () => Promise.resolve(),
+      reportError: () => undefined,
+    });
+
+    mockCreateManagedDelegationSession.mockImplementation((options) => {
+      delegationOptions = options;
+      return Promise.resolve({
+        parent,
+        mcpTools: parent.projection.tools,
+        applyPolicyGuidance: (text: string) => text,
+        detach: jest.fn(),
+        retireTurn: jest.fn(),
+        observe: jest.fn(),
+      });
+    });
+    let release = (): void => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    jest.mocked(runCopilotTurn).mockImplementation(async () => {
+      ready();
+      await hold;
+      return {
+        sessionId: 'fixture-session',
+        text: 'Done',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      };
+    });
+    let finished = (): void => undefined;
+    const done = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    const session = new CopilotProvider().createSession(
+      {
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        cwd: mockWorkspace.directory,
+        model: 'copilot:model',
+        approvalMode: 'ask',
+      },
+      (event) => {
+        if (
+          event &&
+          typeof event === 'object' &&
+          'type' in event &&
+          (event.type === 'result' || event.type === 'error')
+        )
+          finished();
+      },
+      () => null,
+    );
+    try {
+      session.sendMessage('Resume');
+      await started;
+      const route =
+        mockProxy.registerCanopyWorktreeSessionRoute.mock.calls.at(-1)?.[0];
+      const invoke = route?.managedDelegation?.invoke;
+      if (!invoke) throw new Error('Expected the root managed MCP route');
+      expect(
+        route.managedDelegation?.tools.map((tool) => tool.name),
+      ).not.toContain('WatchDelegates');
+      // The host callback supplies the owning turn, never model arguments.
+      const dispatch = jest.spyOn(parent, 'invokeCursor');
+      expect(
+        await invoke(
+          'WatchDelegates',
+          { mode: 'all' },
+          { requestId: 'compat' },
+        ),
+      ).toEqual({
+        text: JSON.stringify({
+          ok: true,
+          value: {
+            watcherId: 'delegation-notices-automatic',
+            mode: 'all',
+            deadlineAt: 0,
+            targets: [],
+            message:
+              'Delegate completion notices now arrive automatically; no watch is needed.',
+          },
+        }),
+        isError: false,
+      });
+      expect(authorizeCursorMcpTool).not.toHaveBeenCalled();
+      expect(await invoke('WatchDelegates', {}, {})).toMatchObject({
+        isError: true,
+      });
+      release();
+      await done;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      let releaseNext = (): void => undefined;
+      const nextHold = new Promise<void>((resolve) => {
+        releaseNext = resolve;
+      });
+      let nextReady = (): void => undefined;
+      const nextStarted = new Promise<void>((resolve) => {
+        nextReady = resolve;
+      });
+      const firstImplementation = jest
+        .mocked(runCopilotTurn)
+        .getMockImplementation();
+      if (!firstImplementation) throw new Error('Missing turn fixture');
+      jest.mocked(runCopilotTurn).mockImplementationOnce(async (...args) => {
+        nextReady();
+        await nextHold;
+        return firstImplementation(...args);
+      });
+      session.sendMessage('Next turn');
+      await nextStarted;
+      try {
+        expect(
+          await invoke('WatchDelegates', {}, { requestId: 'stale-turn' }),
+        ).toMatchObject({ isError: true });
+        const currentInvoke =
+          mockProxy.registerCanopyWorktreeSessionRoute.mock.calls.at(-1)?.[0]
+            .managedDelegation?.invoke;
+        if (!currentInvoke) throw new Error('Missing second-turn route');
+        const cancelled = session.cancel();
+        expect(
+          await currentInvoke('WatchDelegates', {}, { requestId: 'aborted' }),
+        ).toMatchObject({ isError: true });
+        releaseNext();
+        await cancelled;
+      } finally {
+        releaseNext();
+      }
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(authorizeCursorMcpTool).not.toHaveBeenCalled();
+      Object.values(broker).forEach((fn) => expect(fn).not.toHaveBeenCalled());
+    } finally {
+      release();
+      mockManagedDelegationEnabled.mockReturnValue(false);
+      await session.destroy();
+    }
+  });
   test.each([true, false])(
     'keeps Code Graph advertisement consistent with the session snapshot (%s)',
     async (advertised) => {
@@ -310,6 +532,62 @@ describe('Copilot desktop session instructions', () => {
       }
     },
   );
+
+  test("a displaced Copilot session's ending turn leaves its successor's turn state and routes alone (CAN-4833)", async () => {
+    let turnStarted = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      turnStarted = resolve;
+    });
+    jest.mocked(runCopilotTurn).mockImplementationOnce(
+      (config) =>
+        new Promise((_resolve, reject) => {
+          turnStarted();
+          config.signal?.addEventListener('abort', () =>
+            reject(new Error('Turn aborted')),
+          );
+        }),
+    );
+    const events: unknown[] = [];
+    const session = new CopilotProvider().createSession(
+      {
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        cwd: mockWorkspace.directory,
+        model: 'copilot:model',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+    try {
+      session.sendMessage('Hello', { userMessageId: 'displaced-turn' });
+      await started;
+      jest.mocked(markTurnIdle).mockClear();
+      jest.mocked(recordSessionEvent).mockClear();
+      mockProxy.unregisterRoutesForSession.mockClear();
+      mockProxy.unregisterCanopyWorktreeSessionRoute.mockClear();
+      // A registration displaced this session mid-turn and destroys it.
+      mockGetSessionKeyOwnership.mockReturnValue('replaced');
+      await session.destroy();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          canopy_turn_user_message_id: 'displaced-turn',
+          subtype: 'cancelled',
+        }),
+      );
+      expect(markTurnIdle).not.toHaveBeenCalled();
+      expect(recordSessionEvent).not.toHaveBeenCalled();
+      expect(mockProxy.unregisterRoutesForSession).not.toHaveBeenCalled();
+      expect(
+        mockProxy.unregisterCanopyWorktreeSessionRoute,
+      ).not.toHaveBeenCalled();
+    } finally {
+      mockGetSessionKeyOwnership.mockReturnValue('registered');
+      await session.destroy();
+    }
+  });
 
   test.each([false, true])(
     'advertises independent forks while managed delegation is enabled (Cowork=%s)',
@@ -480,35 +758,30 @@ describe('Copilot desktop session instructions', () => {
       jest.mocked(readChatTabsFile).mockResolvedValue(tabs);
       let nativeTurns = 0;
       const submittedPrompts: string[] = [];
-      jest
-        .mocked(runCopilotTurn)
-        .mockImplementation(async (config: ForkTurn) => {
-          nativeTurns++;
-          await config.onToolsReady?.(
-            { version: 1, digest: 'a'.repeat(64) },
-            [],
-          );
-          await config.onSession('fork-native-session');
-          submittedPrompts.push(
-            (await config.preparePrompt?.('fork-native-session')) ??
-              config.prompt,
-          );
-          if (failure === 'before-acceptance' && nativeTurns === 1)
-            throw new Error('fixture send was rejected');
-          await config.onPromptAccepted?.('fork-native-session');
-          if (failure === 'after-acceptance' && nativeTurns === 1)
-            throw new Error('fixture model failed after accepting the prompt');
-          return {
-            sessionId: 'fork-native-session',
-            text: 'Done',
-            usage: {
-              input_tokens: 0,
-              output_tokens: 0,
-              cache_read_input_tokens: 0,
-              cache_creation_input_tokens: 0,
-            },
-          };
-        });
+      jest.mocked(runCopilotTurn).mockImplementation(async (config) => {
+        nativeTurns++;
+        await config.onToolsReady?.({ version: 1, digest: 'a'.repeat(64) }, []);
+        await config.onSession('fork-native-session');
+        submittedPrompts.push(
+          (await config.preparePrompt?.('fork-native-session')) ??
+            config.prompt,
+        );
+        if (failure === 'before-acceptance' && nativeTurns === 1)
+          throw new Error('fixture send was rejected');
+        await config.onPromptAccepted?.('fork-native-session');
+        if (failure === 'after-acceptance' && nativeTurns === 1)
+          throw new Error('fixture model failed after accepting the prompt');
+        return {
+          sessionId: 'fork-native-session',
+          text: 'Done',
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        };
+      });
       let finish = () => {};
       const session = new CopilotProvider().createSession(
         {
@@ -602,7 +875,7 @@ describe('Copilot desktop session instructions', () => {
       ],
     });
     let submitted = false;
-    jest.mocked(runCopilotTurn).mockImplementation(async (config: ForkTurn) => {
+    jest.mocked(runCopilotTurn).mockImplementation(async (config) => {
       await config.preparePrompt?.('new-fork-session');
       submitted = true;
       return {
@@ -984,7 +1257,9 @@ describe('Copilot desktop session instructions', () => {
         });
         expect(runCopilotTurn).toHaveBeenCalledTimes(1);
         const config = jest.mocked(runCopilotTurn).mock.calls[0]?.[0];
-        expect(config?.gitHubTokenProvider).toBe(mockAuth.tokenProvider);
+        // The recipient handle owns the runtime and the session identity.
+        expect(config).not.toHaveProperty('runtime');
+        expect(config).not.toHaveProperty('gitHubTokenProvider');
         expect(config?.systemPrompt).toContain('cowork project');
         expect(config?.systemPrompt).toMatch(
           /SearchDeferredTools|LoadDeferredTools/,
@@ -1003,6 +1278,410 @@ describe('Copilot desktop session instructions', () => {
             deferredToolsAllowed: true,
           }),
         );
+      } finally {
+        await session.destroy();
+      }
+    },
+  );
+
+  it('publishes schema-valid Copilot lifecycle outside the transcript and releases its producer', async () => {
+    const scope = {
+      projectId: 'copilot-lifecycle-project',
+      worktreeId: 'copilot-lifecycle-worktree',
+      chatId: 'copilot-lifecycle-chat',
+    };
+    const producer = getTurnLifecycleProducer('copilot', scope);
+    const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+    setTurnLifecycleSink((event): void => {
+      lifecycleEvents.push(event);
+    });
+    jest
+      .mocked(authorizeCopilotNativeTool)
+      .mockResolvedValueOnce({ decision: 'allow' });
+    const question = {
+      question: 'Choose one',
+      choices: ['One', 'Two'],
+    };
+    jest.mocked(runCopilotTurn).mockImplementationOnce(async (options) => {
+      const event: Parameters<NonNullable<typeof options.onEvent>>[0] = {
+        id: 'copilot-ask-user-event',
+        type: 'tool.execution_start',
+        timestamp: '2026-10-18T00:00:00Z',
+        parentId: null,
+        ephemeral: false,
+        data: {
+          toolCallId: 'copilot-ask-user-call',
+          toolName: 'ask_user',
+          arguments: question,
+        },
+      };
+      options.onEvent?.(event);
+      const authorization: Parameters<typeof options.authorize>[0] = {
+        sessionId: 'copilot-provider-session',
+        timestamp: new Date(),
+        workingDirectory: mockWorkspace.directory,
+        toolName: 'ask_user',
+        toolArgs: question,
+      };
+      await options.authorize(authorization);
+      const request: Parameters<
+        NonNullable<typeof options.onUserInputRequest>
+      >[0] = {
+        ...question,
+        allowFreeform: false,
+      };
+      await options.onUserInputRequest?.(request, {
+        sessionId: 'copilot-provider-session',
+      });
+      return {
+        sessionId: 'copilot-provider-session',
+        text: 'Done',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      };
+    });
+    let finish: (event: unknown) => void = () => undefined;
+    const finished = new Promise<unknown>((resolve) => {
+      finish = resolve;
+    });
+    const transcriptEvents: unknown[] = [];
+    const session = new CopilotProvider().createSession(
+      {
+        ...scope,
+        cwd: mockWorkspace.directory,
+        model: 'copilot:gpt-5',
+      },
+      (event) => {
+        transcriptEvents.push(event);
+        finish(event);
+      },
+      () => null,
+    );
+    let destroyed = false;
+
+    try {
+      session.sendMessage('Choose an option', {
+        userMessageId: 'copilot-user-message',
+      });
+      await expect(finished).resolves.toMatchObject({
+        type: 'result',
+        is_error: false,
+        result: 'Done',
+      });
+      // The question pause keeps the turn's identity; only its end is idle.
+      expect(markTurnAwaitingUser).toHaveBeenCalledWith(
+        'project/worktree/chat',
+      );
+      expect(markTurnIdle).toHaveBeenCalledTimes(1);
+
+      expect(lifecycleEvents.map((event) => event.type)).toEqual([
+        'TurnStarted',
+        'SessionState',
+        'SessionState',
+        'SessionState',
+        'TurnEnded',
+        'SessionState',
+      ]);
+      expect(lifecycleEvents.map((event) => event.sequence)).toEqual([
+        1, 2, 3, 4, 5, 6,
+      ]);
+      expect(
+        lifecycleEvents.every(
+          (event) => ChatTurnLifecycleEventSchema.safeParse(event).success,
+        ),
+      ).toBe(true);
+      expect(lifecycleEvents).toContainEqual(
+        expect.objectContaining({
+          type: 'TurnStarted',
+          provider: 'copilot',
+          ...scope,
+          turnId: 'copilot-user-message',
+          origin: 'user',
+          binding: 'bound',
+          userMessageIds: ['copilot-user-message'],
+          phase: 'start',
+        }),
+      );
+      expect(lifecycleEvents).toContainEqual(
+        expect.objectContaining({
+          type: 'SessionState',
+          provider: 'copilot',
+          ...scope,
+          state: 'running',
+          observedDuringTurnId: 'copilot-user-message',
+        }),
+      );
+      expect(lifecycleEvents).toContainEqual(
+        expect.objectContaining({
+          type: 'SessionState',
+          state: 'requires_action',
+          source: 'provider',
+          observedDuringTurnId: 'copilot-user-message',
+        }),
+      );
+      expect(lifecycleEvents).toContainEqual(
+        expect.objectContaining({
+          type: 'TurnEnded',
+          outcome: 'completed',
+          source: 'result',
+        }),
+      );
+      // A host wall-clock duration would include the requires_action pause; the
+      // reducer derives the active duration instead.
+      expect(
+        lifecycleEvents.find((event) => event.type === 'TurnEnded'),
+      ).not.toHaveProperty('durationMs');
+      expect(lifecycleEvents.at(-1)).toMatchObject({
+        type: 'SessionState',
+        state: 'idle',
+        source: 'result-fallback',
+      });
+      expect(transcriptEvents).toEqual([
+        expect.objectContaining({
+          type: 'result',
+          is_error: false,
+          result: 'Done',
+          provider: 'copilot',
+          canopy_turn_user_message_id: 'copilot-user-message',
+        }),
+      ]);
+
+      await session.destroy();
+      destroyed = true;
+      expect(getTurnLifecycleProducer('copilot', scope)).not.toBe(producer);
+    } finally {
+      if (!destroyed) await session.destroy();
+      setTurnLifecycleSink(null);
+      releaseTurnLifecycleProducer('copilot', scope);
+    }
+  });
+
+  it.each(['cancelled', 'failed'] as const)(
+    'publishes a Copilot turn-ended %s outcome',
+    async (outcome) => {
+      const scope = {
+        projectId: `copilot-${outcome}-project`,
+        worktreeId: `copilot-${outcome}-worktree`,
+        chatId: `copilot-${outcome}-chat`,
+      };
+      const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+      setTurnLifecycleSink((event): void => {
+        lifecycleEvents.push(event);
+      });
+      let markRunStarted: () => void = () => undefined;
+      const runStarted = new Promise<void>((resolve) => {
+        markRunStarted = resolve;
+      });
+      if (outcome === 'cancelled') {
+        jest.mocked(runCopilotTurn).mockImplementationOnce(
+          (options) =>
+            new Promise<Awaited<ReturnType<typeof runCopilotTurn>>>(
+              (_resolve, reject) => {
+                markRunStarted();
+                options.signal.addEventListener(
+                  'abort',
+                  () => reject(new Error('Copilot run stopped.')),
+                  { once: true },
+                );
+              },
+            ),
+        );
+      } else {
+        mockAssertCopilotModelAvailable.mockRejectedValueOnce(
+          new Error('Copilot model unavailable.'),
+        );
+      }
+      let finish: (event: unknown) => void = () => undefined;
+      const finished = new Promise<unknown>((resolve) => {
+        finish = resolve;
+      });
+      const session = new CopilotProvider().createSession(
+        {
+          ...scope,
+          cwd: mockWorkspace.directory,
+          model: 'copilot:gpt-5',
+        },
+        finish,
+        () => null,
+      );
+
+      try {
+        session.sendMessage('Continue this turn', {
+          userMessageId: `copilot-${outcome}-message`,
+        });
+        if (outcome === 'cancelled') {
+          await runStarted;
+          await session.cancel();
+        }
+        await expect(finished).resolves.toMatchObject({
+          type: outcome === 'cancelled' ? 'result' : 'error',
+        });
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnEnded',
+            outcome: outcome === 'cancelled' ? 'cancelled' : 'failed',
+            source: 'result',
+          }),
+        );
+        expect(lifecycleEvents.at(-1)).toMatchObject({
+          type: 'SessionState',
+          state: 'idle',
+        });
+      } finally {
+        await session.destroy();
+        setTurnLifecycleSink(null);
+        releaseTurnLifecycleProducer('copilot', scope);
+      }
+    },
+  );
+
+  it('publishes requires-action when a Copilot MCP route awaits the user', async () => {
+    const scope = {
+      projectId: 'copilot-route-lifecycle-project',
+      worktreeId: 'copilot-route-lifecycle-worktree',
+      chatId: 'copilot-route-lifecycle-chat',
+    };
+    const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+    setTurnLifecycleSink((event): void => {
+      lifecycleEvents.push(event);
+    });
+    jest.mocked(runCopilotTurn).mockImplementationOnce(() => {
+      const route =
+        mockProxy.registerCanopyWorktreeSessionRoute.mock.calls[0]?.[0];
+      expect(route?.onAwaitingUser).toEqual(expect.any(Function));
+      jest.mocked(markTurnIdle).mockClear();
+      route?.onAwaitingUser?.();
+      // A question pause keeps the turn's message identity so an exact-turn
+      // stop still applies to it.
+      expect(markTurnAwaitingUser).toHaveBeenCalledWith(
+        'project/worktree/chat',
+      );
+      expect(markTurnIdle).not.toHaveBeenCalled();
+      return Promise.resolve({
+        sessionId: 'copilot-route-provider-session',
+        text: 'Done',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      });
+    });
+    let finish: (event: unknown) => void = () => undefined;
+    const finished = new Promise<unknown>((resolve) => {
+      finish = resolve;
+    });
+    const transcriptEvents: unknown[] = [];
+    const session = new CopilotProvider().createSession(
+      {
+        ...scope,
+        cwd: mockWorkspace.directory,
+        model: 'copilot:gpt-5',
+      },
+      (event) => {
+        transcriptEvents.push(event);
+        finish(event);
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Wait for user input', {
+        userMessageId: 'copilot-route-user-message',
+      });
+      await expect(finished).resolves.toMatchObject({
+        type: 'result',
+        is_error: false,
+        result: 'Done',
+      });
+
+      expect(lifecycleEvents.map((event) => event.type)).toEqual([
+        'TurnStarted',
+        'SessionState',
+        'SessionState',
+        'TurnEnded',
+        'SessionState',
+      ]);
+      expect(lifecycleEvents.map((event) => event.sequence)).toEqual([
+        1, 2, 3, 4, 5,
+      ]);
+      expect(
+        lifecycleEvents.every(
+          (event) => ChatTurnLifecycleEventSchema.safeParse(event).success,
+        ),
+      ).toBe(true);
+      expect(lifecycleEvents).toContainEqual(
+        expect.objectContaining({
+          type: 'SessionState',
+          provider: 'copilot',
+          ...scope,
+          state: 'requires_action',
+          source: 'provider',
+          observedDuringTurnId: 'copilot-route-user-message',
+        }),
+      );
+      expect(transcriptEvents).toEqual([
+        expect.objectContaining({
+          type: 'result',
+          is_error: false,
+          result: 'Done',
+          provider: 'copilot',
+          canopy_turn_user_message_id: 'copilot-route-user-message',
+        }),
+      ]);
+    } finally {
+      await session.destroy();
+      setTurnLifecycleSink(null);
+      releaseTurnLifecycleProducer('copilot', scope);
+    }
+  });
+
+  // The composer shows and sends Low when the model declares it; the turn must
+  // run at Low, not the Medium the display-only clamp folds it into.
+  it.each([
+    { requested: 'low', expected: 'low' },
+    { requested: 'medium', expected: 'medium' },
+    { requested: 'max', expected: 'high' },
+  ] as const)(
+    'runs a $requested request at $expected effort',
+    async ({ requested, expected }) => {
+      mockAssertCopilotModelAvailable.mockResolvedValueOnce({
+        id: 'gpt-5',
+        rawModelId: 'gpt-5',
+        label: 'GPT-5',
+        supportsVision: false,
+        supportedThinkingLevels: ['off', 'low', 'medium', 'high'],
+      });
+      let finish: (event: unknown) => void = () => undefined;
+      const finished = new Promise<unknown>((resolve) => {
+        finish = resolve;
+      });
+      const session = new CopilotProvider().createSession(
+        {
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'chat',
+          cwd: mockWorkspace.directory,
+          model: 'copilot:gpt-5',
+          thinkingLevel: requested,
+        },
+        (event) => finish(event),
+        () => null,
+      );
+      try {
+        session.sendMessage('Hello');
+        await expect(finished).resolves.toMatchObject({
+          type: 'result',
+          is_error: false,
+        });
+        expect(
+          jest.mocked(runCopilotTurn).mock.calls[0]?.[0].reasoningEffort,
+        ).toBe(expected);
       } finally {
         await session.destroy();
       }
@@ -1166,6 +1845,50 @@ describe('Copilot desktop session instructions', () => {
       }
     },
   );
+
+  it('explains why a tool from an MCP server outside this chat is denied', async () => {
+    jest.mocked(authorizeCursorMcpTool).mockClear();
+    const events: unknown[] = [];
+    const { session } = startSession((event) => events.push(event));
+    const originalRun = jest.mocked(runCopilotTurn).getMockImplementation();
+    if (!originalRun) throw new Error('Missing turn fixture');
+    let decision: unknown;
+    jest.mocked(runCopilotTurn).mockImplementationOnce(async (config) => {
+      const toolName = 'github-mcp-server-get_me';
+      const args = {};
+      config.onEvent?.({
+        id: 'unselected-server',
+        parentId: null,
+        timestamp: '2026-10-12T00:00:00Z',
+        type: 'tool.execution_start',
+        data: {
+          toolCallId: 'unselected-server',
+          toolName,
+          arguments: args,
+          mcpConfigServerName: 'github-mcp-server',
+          mcpToolName: 'get_me',
+        },
+      });
+      decision = await config.authorize({
+        toolName,
+        toolArgs: args,
+        timestamp: new Date(),
+        workingDirectory: config.workingDirectory,
+        sessionId: 'native-session',
+      });
+      return originalRun(config);
+    });
+    try {
+      await sendAndSettle(session, events, 'Use the GitHub server');
+      expect(decision).toEqual({
+        decision: 'deny',
+        message: 'This MCP server is not available in this chat.',
+      });
+      expect(authorizeCursorMcpTool).not.toHaveBeenCalled();
+    } finally {
+      await session.destroy();
+    }
+  });
 
   it.each([true, false])(
     'keeps explicit discovery opt-out in Copilot Cowork=%s',
@@ -1978,6 +2701,40 @@ describe('Copilot desktop session instructions', () => {
         } as never),
       );
       await session.destroy();
+    }
+  });
+
+  it("reports the turn's own error when runtime cleanup fails too", async () => {
+    const warning = jest
+      .spyOn(process, 'emitWarning')
+      .mockImplementation(() => undefined);
+    mockRuntimeClose.mockRejectedValueOnce(
+      Object.assign(new Error('spawn EBADF'), {
+        code: 'EBADF',
+        syscall: 'spawn',
+      }),
+    );
+    jest
+      .mocked(runCopilotTurn)
+      .mockRejectedValueOnce(
+        new Error('Copilot runtime stopped before the turn finished.'),
+      );
+    const events: unknown[] = [];
+    const { session } = startSession((event) => events.push(event));
+    try {
+      await sendAndSettle(session, events, 'Hello');
+      expect(mockRuntimeClose).toHaveBeenCalled();
+      expect(events.at(-1)).toMatchObject({
+        type: 'error',
+        error: 'Copilot runtime stopped before the turn finished.',
+      });
+      expect(warning).toHaveBeenCalledWith(
+        'Copilot runtime cleanup failed after a turn error.',
+        { code: 'COPILOT_TURN_CLEANUP_FAILED', detail: 'spawn EBADF' },
+      );
+    } finally {
+      await session.destroy();
+      warning.mockRestore();
     }
   });
 

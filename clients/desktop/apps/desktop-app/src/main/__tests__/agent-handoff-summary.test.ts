@@ -32,12 +32,16 @@ const mockDispose = jest.fn();
 const mockSeedTranscript = jest.fn<unknown, [string, { provider: string }]>();
 const mockUpdateObservedTask = jest.fn();
 
-jest.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: mockQuery }));
+jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  get query(): typeof mockQuery {
+    return mockQuery;
+  },
+}));
 jest.mock('../ollama/helper-invocation', () => ({
   resolveHelperInvocation: (...args: unknown[]): unknown =>
     mockResolveInvocation(...args),
-  resolveHelperWorkOwner: (...args: unknown[]): unknown =>
-    mockResolveOwner(...args),
+  resolveHelperWorkOwner: (options: { workOwner?: WorkOwner }): unknown =>
+    mockResolveOwner(options),
 }));
 jest.mock('../lib/model-policy-state', () => ({
   isModelBlockedByStoredPolicy: (...args: unknown[]): unknown =>
@@ -107,6 +111,15 @@ import {
 } from '@canopy/desktop-shared/types';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { generateHandoffSummary } from '../agents/utils';
+
+type PreferencesFileData = Awaited<ReturnType<typeof readPreferencesFile>>;
+
+function preferencesFileFixture(
+  preferences: Partial<PreferencesFileData>,
+): PreferencesFileData {
+  // These tests intentionally provide only the preference fields they exercise.
+  return preferences as PreferencesFileData;
+}
 
 const owner: WorkOwner = {
   kind: 'organization',
@@ -217,7 +230,9 @@ describe('handoff summary model routing', () => {
     });
     codexResult('  ## Decisions\n\nKeep the owner bound.  ');
     claudeResult('  ## Decisions\n\nKeep the owner bound.  ');
-    jest.mocked(readPreferencesFile).mockResolvedValue({});
+    jest
+      .mocked(readPreferencesFile)
+      .mockResolvedValue(preferencesFileFixture({}));
     initModelHarnessAssignments({ revision: 0, assignments: [] });
   });
 
@@ -281,9 +296,11 @@ describe('handoff summary model routing', () => {
       settingSources: [],
     });
 
-    jest.mocked(readPreferencesFile).mockResolvedValue({
-      canopyBackgroundProcessesMode: 'terminal',
-    });
+    jest.mocked(readPreferencesFile).mockResolvedValue(
+      preferencesFileFixture({
+        canopyBackgroundProcessesMode: 'terminal',
+      }),
+    );
     mockRunWorker.mockResolvedValue({
       status: 'success',
       finalText: '  Background briefing  ',

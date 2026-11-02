@@ -41,7 +41,11 @@ import {
   spawnTerminalForRenderer,
   writeTerminal,
 } from '../services/terminal-service';
-import { ptyManager, type TerminalEventPayload } from '../terminal/pty-manager';
+import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
+import {
+  TERMINAL_EVENT_CHANNELS,
+  workerTerminal,
+} from '../terminal/worker-terminal';
 import { TerminalOutputDelivery } from '../terminal/output-delivery';
 import { assertNotSplitLocked } from '../services/split-lock-service';
 import { terminalPersistenceStore } from '../terminal/persistence';
@@ -113,7 +117,10 @@ export function registerTerminalHandlers(
   windowAccessors: WindowAccessors | (() => BrowserWindow | null),
 ): void {
   const accessors = normalizeTerminalWindowAccessors(windowAccessors);
-  const route = (channel: string, payload: TerminalEventPayload): void => {
+  const route = (
+    channel: string,
+    payload: WorkerTerminalEvent['payload'],
+  ): void => {
     if (isAppAdvisorTarget(payload.projectId, payload.worktreeId)) {
       sendToMainAndAppAdvisor(accessors, channel, payload);
       return;
@@ -142,15 +149,16 @@ export function registerTerminalHandlers(
     removeBarrier();
     output.dispose();
   };
-  ptyManager.setEventSender((channel, payload): void => {
-    if (channel === IPC_CHANNELS.terminalOutput && 'seq' in payload) {
-      output.push(payload);
+  workerTerminal.setEventSink((event): void => {
+    if (event.type === 'output') {
+      output.push(event.payload);
       return;
     }
     output.flushAll();
-    route(channel, payload);
-    if (channel === IPC_CHANNELS.terminalExit && 'terminalId' in payload) {
-      output.forget(payload.terminalId);
+    const channel = TERMINAL_EVENT_CHANNELS[event.type];
+    route(channel, event.payload);
+    if (event.type === 'exit') {
+      output.forget(event.payload.terminalId);
     }
   });
   getClaudeTerminalSessionService().setEventSender((channel, payload): void => {
@@ -234,7 +242,7 @@ export function registerTerminalHandlers(
     IPC_CHANNELS.terminalAttach,
     (_event, request): TerminalAttachResponse => {
       validateId(request.terminalId, 'terminalId');
-      const session = ptyManager
+      const session = workerTerminal
         .list()
         .find((entry) => entry.id === request.terminalId);
       if (session) {
@@ -244,7 +252,7 @@ export function registerTerminalHandlers(
           'attaching to a terminal',
         );
       }
-      return ptyManager.attach(request.terminalId);
+      return workerTerminal.replay(request.terminalId);
     },
   );
 
@@ -255,7 +263,9 @@ export function registerTerminalHandlers(
       validateTerminalDimension(request.cols, 'cols');
       validateTerminalDimension(request.rows, 'rows');
       const session =
-        ptyManager.list().find((entry) => entry.id === request.terminalId) ??
+        workerTerminal
+          .list()
+          .find((entry) => entry.id === request.terminalId) ??
         terminalPersistenceStore.getPersistedTerminalEntry(request.terminalId)
           ?.session;
       if (session) {
@@ -282,7 +292,7 @@ export function registerTerminalHandlers(
         const disposition = writeTerminal(request);
         // Typing into a chat's terminal drives that chat from this window; the
         // emulator answering a program's query does not.
-        const chatId = ptyManager.chatIdOf(request.terminalId);
+        const chatId = workerTerminal.get(request.terminalId)?.chatId;
         if (chatId !== undefined && !isTerminalReplyOnly(request.data)) {
           noteChatDriver(
             chatId,
@@ -341,7 +351,7 @@ export function registerTerminalHandlers(
   registerIpcHandler<[], TerminalSession[]>(
     IPC_CHANNELS.terminalList,
     (): TerminalSession[] => {
-      return ptyManager.list();
+      return workerTerminal.list();
     },
   );
 

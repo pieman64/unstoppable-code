@@ -10,6 +10,11 @@ import { appendUniquePendingAttachments } from '../attachments';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatComposerSlice } from '../state';
 import { isScopeRevisionedLive } from './revisioned';
+import {
+  readTryItDraft,
+  saveTryItDraft,
+  clearTryItDraft,
+} from '@/lib/tryItDraftStorage';
 
 export const createComposerSlice: StateCreator<
   ChatState,
@@ -36,16 +41,22 @@ export const createComposerSlice: StateCreator<
   },
 
   saveTabDraft: (tabId, content): void => {
+    try {
+      saveTryItDraft(tabId, content);
+    } catch {
+      /* Keep edits in memory if browser storage becomes unavailable. */
+    }
     set((state) => ({
       tabDrafts: { ...state.tabDrafts, [tabId]: content },
     }));
   },
 
   getTabDraft: (tabId): Descendant[] | undefined => {
-    return get().tabDrafts[tabId];
+    return get().tabDrafts[tabId] ?? readTryItDraft(tabId)?.content;
   },
 
   clearTabDraft: (tabId): void => {
+    clearTryItDraft(tabId);
     set((state) => {
       if (!(tabId in state.tabDrafts)) return state;
       const next = { ...state.tabDrafts };

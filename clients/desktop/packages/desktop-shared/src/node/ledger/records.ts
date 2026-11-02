@@ -1,9 +1,12 @@
 import {
   LEDGER_ACTOR_KINDS,
   LedgerEntrySchema,
+  ledgerGlobalOwnerKey,
+  parseLedgerGlobalOwner,
   type LedgerActorKind,
   type LedgerContainer,
   type LedgerEntry,
+  type LedgerGlobalOwner,
 } from '@canopy/protocol/canopy-core';
 
 import { LedgerStoreError } from './errors';
@@ -85,6 +88,13 @@ export function parseStoredEntry(json: string): LedgerEntry {
   return parseStoredRecord(LedgerEntrySchema, json);
 }
 
+/**
+ * The parent column of every global container. Its item column is the owner
+ * key, so all global Ledgers of one owner are incarnations of one container,
+ * told apart by their minted creation time.
+ */
+export const LEDGER_GLOBAL_PARENT_ID = 'global';
+
 /** Identity columns of a container tuple. */
 export interface LedgerContainerColumns {
   readonly kind: LedgerContainer['kind'];
@@ -114,6 +124,12 @@ export function toContainerColumns(
         parentId: container.appWorkspaceId,
         itemId: container.entryId,
       };
+    case 'global':
+      return {
+        kind: container.kind,
+        parentId: LEDGER_GLOBAL_PARENT_ID,
+        itemId: ledgerGlobalOwnerKey(container.owner),
+      };
   }
 }
 
@@ -121,6 +137,15 @@ function malformedScope(): LedgerStoreError {
   return new LedgerStoreError('STORAGE_UNAVAILABLE', {
     diagnosticCode: 'malformed_scope',
   });
+}
+
+/** A stored owner key, only in the exact form `ledgerGlobalOwnerKey` writes. */
+function globalOwnerFromKey(ownerKey: string): LedgerGlobalOwner {
+  const parsed = parseLedgerGlobalOwner(ownerKey);
+  if (!parsed.ok || ledgerGlobalOwnerKey(parsed.owner) !== ownerKey) {
+    throw malformedScope();
+  }
+  return parsed.owner;
 }
 
 function fromContainerColumns(
@@ -136,6 +161,9 @@ function fromContainerColumns(
     case 'advisor_entry':
       if (parentId !== 'app-advisor') throw malformedScope();
       return { kind, appWorkspaceId: parentId, entryId: itemId };
+    case 'global':
+      if (parentId !== LEDGER_GLOBAL_PARENT_ID) throw malformedScope();
+      return { kind, owner: globalOwnerFromKey(itemId) };
     default:
       throw malformedScope();
   }

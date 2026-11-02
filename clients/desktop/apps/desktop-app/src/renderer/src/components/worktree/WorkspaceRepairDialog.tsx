@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import type { WorkspaceWorktreeRepairIssue } from '@canopy/desktop-shared/types';
 import { DialogModal } from '../shared';
@@ -71,22 +72,17 @@ export function WorkspaceRepairDialog({
         </label>
 
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={isPending}
-            className="focus-ring rounded-lg px-3 py-1.5 text-xs fg-secondary hover:fg-primary disabled:opacity-60"
-          >
+          <Button size="compact" onClick={onCancel} disabled={isPending}>
             Cancel and clean up
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => onRepair(restoreClaudeMd)}
             disabled={isPending}
-            className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
           >
             {isPending ? 'Repairing…' : 'Repair worktree'}
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>

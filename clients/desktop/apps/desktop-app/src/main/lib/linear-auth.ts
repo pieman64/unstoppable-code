@@ -137,20 +137,3 @@ export function invalidateLinearTokenCache(): void {
   cachedAt = 0;
   cachedBackend = null;
 }
-
-/**
- * Build the `LinearClient` constructor options. In production this is just
- * `{ apiKey }`. Under the build-time E2E gate (Doc 9 §2, Doc 11) it also sets
- * `apiUrl` to the mock server so Linear traffic is redirected off
- * api.linear.app. The branch is dead-code-eliminated from production builds, so
- * no runtime env can redirect Linear in a shipped app.
- */
-export function buildLinearClientOptions(apiKey: string): {
-  apiKey: string;
-  apiUrl?: string;
-} {
-  if (__CANOPY_E2E__ && __CANOPY_LINEAR_API_BASE_URL__) {
-    return { apiKey, apiUrl: __CANOPY_LINEAR_API_BASE_URL__ };
-  }
-  return { apiKey };
-}

@@ -60,8 +60,9 @@ async function resolveGitHubOrigin(repoPath: string): Promise<RepoSlug | null> {
 
 async function fetchOpenPullRequests(
   repoPath: string,
+  origin: RepoSlug | undefined,
 ): Promise<PullRequestSummary[]> {
-  const remote = await resolveGitHubOrigin(repoPath);
+  const remote = origin ?? (await resolveGitHubOrigin(repoPath));
   if (!remote) {
     throw new Error(
       'This repository has no GitHub origin remote, so pull requests cannot be listed.',
@@ -107,10 +108,12 @@ export const __resetPullRequestListingCacheForTests =
  * List open pull requests for a repo's GitHub origin remote, mapped to the
  * fields the create-from dropdown needs. Results are cached per repo path for
  * `CACHE_TTL_MS` and concurrent lookups for the same repo share one in-flight
- * request, mirroring `github-repo-listing.ts`.
+ * request, mirroring `github-repo-listing.ts`. A caller that already read the
+ * origin passes it, so a lookup reads it once.
  */
 export async function listOpenPullRequestsForRepo(
   repoPath: string,
+  origin?: RepoSlug,
 ): Promise<PullRequestSummary[]> {
   const cached = cache.get(repoPath);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
@@ -123,7 +126,7 @@ export async function listOpenPullRequestsForRepo(
   }
 
   const lookupGeneration = cacheGeneration;
-  const fetchPromise = fetchOpenPullRequests(repoPath);
+  const fetchPromise = fetchOpenPullRequests(repoPath, origin);
   void fetchPromise.catch(() => undefined);
 
   const trackedLookup = fetchPromise
@@ -165,17 +168,21 @@ export function __resetRepoSlugCacheForTests(): void {
  * not a GitHub remote (never throws — a missing/foreign remote is a normal,
  * expected result the caller acts on). This is a purely local `git config`
  * read plus a pure parse, so no GitHub broker/API call is involved; results
- * are cached per repo path for `REPO_SLUG_CACHE_TTL_MS`.
+ * are cached per repo path for `REPO_SLUG_CACHE_TTL_MS`. `readRemoteUrl`
+ * reads `origin` on a miss; it answers `null` for an absent origin or any
+ * failure, as the direct read does.
  */
 export async function getRepoSlugForRepoPath(
   repoPath: string,
+  readRemoteUrl: (repoPath: string) => Promise<string | null> = getRemoteUrl,
 ): Promise<RepoSlug | null> {
   const cached = repoSlugCache.get(repoPath);
   if (cached && Date.now() - cached.cachedAt < REPO_SLUG_CACHE_TTL_MS) {
     return cached.slug;
   }
 
-  const remote = await resolveGitHubOrigin(repoPath);
+  const remoteUrl = await readRemoteUrl(repoPath);
+  const remote = remoteUrl ? parseGitHubRemote(remoteUrl) : null;
   const slug: RepoSlug | null = remote
     ? { owner: remote.owner, repo: remote.repo }
     : null;

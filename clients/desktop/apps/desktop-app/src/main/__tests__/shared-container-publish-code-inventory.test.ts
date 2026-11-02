@@ -18,10 +18,12 @@ import { promisify } from 'node:util';
 import type {
   PersistedChatTab,
   TrackedPlanData,
+  SharedContainerFileScope,
   WorkspaceNoteItem,
 } from '@canopy/desktop-shared/types';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import type * as ScriptResolverModule from '../lib/script-resolver';
+import type { ResolvedScriptMap } from '../lib/script-resolver';
 
 jest.mock('../lib/script-resolver', () => ({
   ...jest.requireActual<typeof ScriptResolverModule>('../lib/script-resolver'),
@@ -77,7 +79,6 @@ import {
   type SharedContainerCodeSnapshot,
   type SharedContainerSnapshotChunk,
 } from '../shared-containers/publish/code-snapshot';
-import type { SharedContainerPublishRefusalError } from '../shared-containers/publish/errors';
 import { SharedContainerPublishInventoryChangedError } from '../shared-containers/publish/source-files';
 import { createStableFileSource } from '../shared-containers/publish/source-files';
 import { SharedContainerReplicaManager } from '../shared-containers/replica/manager';
@@ -265,8 +266,6 @@ describe('code shared-container publish inventory', () => {
       repoPath,
       headSha,
       includeChunkSources: false,
-    } as Parameters<typeof buildSharedContainerCodeSnapshot>[0] & {
-      includeChunkSources: false;
     });
 
     expect(snapshot.chunks.length).toBeGreaterThan(0);
@@ -434,7 +433,7 @@ describe('code shared-container publish inventory', () => {
     mockedResolveWorkspaceRepoScripts.mockResolvedValue({});
     mockedResolveWorkspaceRootScripts.mockResolvedValue({
       setup: {
-        source: 'workspace-root',
+        source: 'workspace-manifest',
         definition: { command: 'npm install' },
       },
     });
@@ -453,7 +452,7 @@ describe('code shared-container publish inventory', () => {
     expect(mockedResolveWorkspaceRepoScripts).not.toHaveBeenCalled();
     expect(scripts).toEqual({
       setup: {
-        source: 'workspace-root',
+        source: 'workspace-manifest',
         definition: { command: 'npm install' },
       },
     });
@@ -474,7 +473,7 @@ describe('code shared-container publish inventory', () => {
   });
 
   it('publishes every default-selected script, not just the lifecycle pair', async () => {
-    const scripts = {
+    const scripts: ResolvedScriptMap = {
       setup: {
         source: 'repo-canopy',
         definition: { command: 'npm run prepare:dev' },
@@ -533,7 +532,10 @@ describe('code shared-container publish inventory', () => {
         'echo',
       ].map((name) => [
         name,
-        { source: 'repo-canopy', definition: { command: `npm run ${name}` } },
+        {
+          source: 'repo-canopy' as const,
+          definition: { command: `npm run ${name}` },
+        },
       ]),
     );
 
@@ -734,6 +736,8 @@ describe('code shared-container publish inventory', () => {
           owner: expectedRepo.owner,
           repository: expectedRepo.repository,
           baseCommitSha: expectedRepo.baseCommitSha,
+          headSha: expectedRepo.baseCommitSha,
+          unpushedCommitCount: 0,
           fingerprint: 'snapshot',
           approvedUntrackedPaths: [],
           files: [
@@ -790,20 +794,19 @@ describe('code shared-container publish inventory', () => {
       throw new Error('Publisher emitted an invalid revision layout');
     }
     const layout = layoutValue;
+    const anyArtifactId: unknown = expect.any(String);
     expect(layout.repositories[0].files).toEqual([
       ...expectedRepo.files.map((file) => ({
         path: file.path,
         status: file.status,
         mode: file.mode,
-        ...(file.artifactId
-          ? { artifactId: expect.any(String) as unknown as string }
-          : {}),
+        ...(file.artifactId ? { artifactId: anyArtifactId } : {}),
       })),
       {
         path: 'src/dangling-link',
         status: 'added',
         mode: '120000',
-        artifactId: expect.any(String) as unknown as string,
+        artifactId: anyArtifactId,
       },
     ]);
     const plaintextArtifacts = await Promise.all(
@@ -840,6 +843,8 @@ describe('code shared-container publish inventory', () => {
         await mkdir(join(destination, '.git'), { recursive: true });
       },
       fetchOrigin: () => Promise.resolve(),
+      prepareCommittedRange: () => Promise.resolve(),
+      readOriginUrl: () => Promise.resolve(null),
       materializeRawCommit: async (repoPath) => {
         await mkdir(join(repoPath, 'src'), { recursive: true });
         await writeFile(join(repoPath, 'src', 'modified.ts'), 'before\n');
@@ -1074,7 +1079,7 @@ describe('code shared-container publish inventory', () => {
         {
           id: 'message-1',
           role: 'user',
-          timestamp: '2026-09-27T00:00:00.000Z',
+          timestamp: 1,
           blocks: [{ type: 'text', text: 'x'.repeat(4_096) }],
         },
       ],
@@ -1322,7 +1327,7 @@ describe('code shared-container publish inventory', () => {
           readWorkspaceItem: readCodeWorkspaceItemForPublication,
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
   });
@@ -1359,7 +1364,7 @@ describe('code shared-container publish inventory', () => {
           readWorkspaceItem: readCodeWorkspaceItemForPublication,
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
   });
@@ -1439,7 +1444,7 @@ describe('code shared-container publish inventory', () => {
           inspectTreeEntries: () => Promise.resolve([]),
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
     expect(createFileSource).not.toHaveBeenCalled();
@@ -2336,7 +2341,7 @@ describe('code shared-container publish inventory', () => {
           inspectTreeEntries: () => Promise.resolve([]),
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
     expect(createFileSource).not.toHaveBeenCalled();
@@ -2382,7 +2387,7 @@ describe('code shared-container publish inventory', () => {
             }),
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
     expect(disposeSnapshotSource).toHaveBeenCalledTimes(1);
@@ -2503,7 +2508,7 @@ describe('code shared-container publish inventory', () => {
             }),
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
   });
@@ -2587,7 +2592,7 @@ describe('code shared-container publish inventory', () => {
         >
       ): ReturnType<CodePublishInventoryDependencies['openAttachmentFile']> => {
         const [file, options] = args;
-        options.reserveInspectionBytes?.(
+        options?.reserveInspectionBytes?.(
           BigInt(MAX_SHARED_CONTAINER_ARTIFACT_BYTES),
         );
         return Promise.resolve({
@@ -2622,7 +2627,7 @@ describe('code shared-container publish inventory', () => {
           inspectTreeEntries: () => Promise.resolve([]),
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
     expect(createFileSource).not.toHaveBeenCalled();
@@ -2655,7 +2660,7 @@ describe('code shared-container publish inventory', () => {
           inspectTreeEntries: () => Promise.resolve([]),
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
   });
@@ -2710,7 +2715,7 @@ describe('code shared-container publish inventory', () => {
           inspectTreeEntries: () => Promise.resolve([]),
         }),
       ),
-    ).rejects.toMatchObject<SharedContainerPublishRefusalError>({
+    ).rejects.toMatchObject({
       reason: 'artifact-budget',
     });
     expect(createFileSource).toHaveBeenCalledTimes(filesWithinLimit);
@@ -3483,7 +3488,12 @@ describe('code shared-container published layout', () => {
     });
     try {
       const inventory = await buildCodePublishInventory(
-        { projectId: 'project-1', worktreeId: 'layout-wt', scope: {} },
+        {
+          projectId: 'project-1',
+          worktreeId: 'layout-wt',
+          // These tests preserve the legacy missing-scope shape.
+          scope: {} as SharedContainerFileScope,
+        },
         dependencies(repoPath, {
           readChatTabs: () =>
             Promise.resolve({ version: 1 as const, tabs, activeTabId: '' }),
@@ -3520,7 +3530,12 @@ describe('code shared-container published layout', () => {
         preferredLayout: { enabled: false },
       });
       const withoutLayout = await buildCodePublishInventory(
-        { projectId: 'project-1', worktreeId: 'layout-wt', scope: {} },
+        {
+          projectId: 'project-1',
+          worktreeId: 'layout-wt',
+          // These tests preserve the legacy missing-scope shape.
+          scope: {} as SharedContainerFileScope,
+        },
         dependencies(repoPath, {
           readChatTabs: () =>
             Promise.resolve({ version: 1 as const, tabs, activeTabId: '' }),

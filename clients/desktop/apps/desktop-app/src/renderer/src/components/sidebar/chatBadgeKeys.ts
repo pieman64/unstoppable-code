@@ -2,6 +2,7 @@ import type {
   ApprovalRequestEvent,
   WorktreeChatBadgesSummary,
 } from '@canopy/desktop-shared/types';
+import { isCloseBlockingTaskType } from '@canopy/desktop-shared/lib/background-work';
 import type { PendingPlanExit, PendingQuestion } from '@/stores/chat/types';
 
 /** The only tab fields the badge-key derivation reads. */
@@ -42,6 +43,22 @@ export type LiveDelegateChats = Readonly<
 >;
 
 /**
+ * Chats with a live provider session, as the live background-task store keeps
+ * them (`byChat`). Only the identity and each task's type are read.
+ */
+export type LiveProviderTaskChats = Readonly<
+  Record<
+    string,
+    {
+      readonly projectId: string;
+      readonly worktreeId: string;
+      readonly chatId: string;
+      readonly liveTasks: ReadonlyArray<{ readonly taskType?: string }>;
+    }
+  >
+>;
+
+/**
  * Sorted, comma-joined `${projectId}/${worktreeId}` key lists. Strings rather
  * than Sets on purpose: the sidebar selectors compare them by value, so a
  * streaming token that changes no membership produces no re-render.
@@ -50,9 +67,9 @@ export interface ChatBadgeKeys {
   /** Worktrees with a chat the agent is actively working in. */
   streaming: string;
   /**
-   * Worktrees with a live provider session or live managed delegates
-   * (currently mirrors `streaming`). Drives `hasActiveSession`, which
-   * disables Archive and Delete.
+   * Worktrees with a streaming chat, live managed delegates, or live provider
+   * agents or workflows. Drives `hasActiveSession`, which disables Archive
+   * and Delete.
    */
   active: string;
   /** Worktrees with a plan awaiting the user's approval. */
@@ -61,6 +78,26 @@ export interface ChatBadgeKeys {
   question: string;
   /** Worktrees with a chat blocked on a Canopy tool-approval prompt. */
   toolApproval: string;
+  /**
+   * Live background tasks per worktree, as sorted `${key}=${count}` pairs:
+   * queued and live delegations plus every provider task, shells included
+   * (turn-state D11). Rows draw the background spinner from it while no turn
+   * runs (D15); read it with {@link parseBackgroundTaskCounts}.
+   */
+  background: string;
+}
+
+/** The `background` key list as counts by `${projectId}/${worktreeId}`. */
+export function parseBackgroundTaskCounts(
+  background: string,
+): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  if (background === '') return counts;
+  for (const pair of background.split(',')) {
+    const separator = pair.lastIndexOf('=');
+    counts.set(pair.slice(0, separator), Number(pair.slice(separator + 1)));
+  }
+  return counts;
 }
 
 /**
@@ -77,14 +114,19 @@ export interface ChatBadgeKeys {
  * suppression — `tab.status` stays `'streaming'` so session restore does not
  * force-close the tab out from under a backend prompt that has no timeout.
  *
- * A chat whose managed delegates are still queued or running counts as working
- * even after its own turn ended (`liveDelegateChats`), with the same
- * blocked-on-the-user suppression. Delegate activity never goes through
- * `tab.status`, for the same restore reason.
+ * A chat whose managed delegates are still queued or running is background
+ * work after its own turn ended (`liveDelegateChats`): the row draws the
+ * background spinner, not the working one (turn-state D15). Delegate activity
+ * never goes through `tab.status`, for the same restore reason.
+ *
+ * Provider background agents and workflows (`liveProviderTaskChats`) block
+ * Archive and Delete like delegates, so they set `active`. Every provider
+ * task, shells included, counts as background work.
  */
 export function deriveChatBadgeKeys(
   state: ChatBadgeKeySource,
   liveDelegateChats: LiveDelegateChats = {},
+  liveProviderTaskChats: LiveProviderTaskChats = {},
 ): ChatBadgeKeys {
   const planExits = Object.values(state.pendingPlanExits);
   const planExitChatIds = new Set(planExits.map((exit) => exit.chatId));
@@ -102,6 +144,10 @@ export function deriveChatBadgeKeys(
   const awaiting: string[] = [];
   const question: string[] = [];
   const toolApproval: string[] = [];
+  const backgroundCounts = new Map<string, number>();
+  const addBackground = (key: string, count: number): void => {
+    backgroundCounts.set(key, (backgroundCounts.get(key) ?? 0) + count);
+  };
 
   for (const exit of planExits) {
     awaiting.push(`${exit.projectId}/${exit.worktreeId}`);
@@ -132,25 +178,24 @@ export function deriveChatBadgeKeys(
     }
   }
 
-  // Live delegates light the row whether or not the worktree is hydrated.
+  // Live delegates count whether or not the worktree is hydrated. They own
+  // the worktree, so Archive and Delete stay unavailable.
   for (const entry of Object.values(liveDelegateChats)) {
     if (entry.live + entry.queued <= 0) continue;
     const key = `${entry.projectId}/${entry.worktreeId}`;
-    // Pending input suppresses only the working indicator. The delegate
-    // still owns the worktree, so Archive and Delete remain unavailable.
     activeSessions.push(key);
+    addBackground(key, entry.live + entry.queued);
+  }
+
+  for (const entry of Object.values(liveProviderTaskChats)) {
+    if (entry.liveTasks.length === 0) continue;
+    const key = `${entry.projectId}/${entry.worktreeId}`;
+    addBackground(key, entry.liveTasks.length);
     if (
-      planExitChatIds.has(entry.chatId) ||
-      questionChatIds.has(entry.chatId) ||
-      approvalChatIds.has(entry.chatId)
+      entry.liveTasks.some((task) => isCloseBlockingTaskType(task.taskType))
     ) {
-      continue;
+      activeSessions.push(key);
     }
-    const pendingPlanExit = state.worktreeChats[key]?.tabs.some(
-      (tab) => tab.id === entry.chatId && !!tab.pendingPlanExit,
-    );
-    if (pendingPlanExit) continue;
-    streaming.push(key);
   }
 
   // Non-hydrated worktrees: persisted badge summaries stand in for live tab
@@ -167,5 +212,9 @@ export function deriveChatBadgeKeys(
     awaiting: Array.from(new Set(awaiting)).sort().join(','),
     question: Array.from(new Set(question)).sort().join(','),
     toolApproval: Array.from(new Set(toolApproval)).sort().join(','),
+    background: Array.from(backgroundCounts)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, count]) => `${key}=${count}`)
+      .join(','),
   };
 }

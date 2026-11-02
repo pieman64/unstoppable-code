@@ -1,13 +1,19 @@
+import type { PlanModeHintRecord } from '@canopy/protocol/onboarding';
 import type * as ComposerPlusMenuModule from '@/components/shared/ComposerPlusMenu';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { JSX, ReactNode } from 'react';
 import { CanopyClientProvider } from '@canopy/app-state';
 import { createFakeClient } from '@canopy/app-state/__tests__/fake-org-projects-client';
-import { STANDALONE_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
+import {
+  STANDALONE_CHAT_PROJECT_ID,
+  type ApprovalRequestEvent,
+} from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
   AgentProviderAuthStatus,
+  ChatIngestionLag,
   ChatProjectData,
+  ChatRuntimeState,
   DiffStats,
   GitHubCliStatus,
   GitHubPermissionsStatus,
@@ -20,8 +26,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { WorktreePrStatus } from '@canopy/desktop-shared/types/github';
 import type { ActiveComposerView } from '@/components/chat/types';
+import type { ChatTab } from '@/stores/chatStore';
 import type * as CancelRunningChatShortcutModule from '@/components/chat/useCancelRunningChatShortcut';
 import { ChatInput } from '@/components/chat/ChatInput';
+import * as composerCommands from '@/lib/composerCommands';
 import { PrStatusBar } from '@/components/github/PrStatusBar';
 import { AccountTab } from '@/components/settings/AccountTab';
 import { OllamaModelCard } from '@/components/settings/OllamaTab';
@@ -37,6 +45,7 @@ import { useInvocableInventory } from '@/hooks/useInvocableInventory';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
+import { useIngestionLagStore } from '@/stores/ingestionLagStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -51,7 +60,7 @@ import {
 
 const mockUseStuckAgentTimer = jest.fn<
   number | null,
-  [boolean, number | undefined, string | undefined]
+  [boolean, number | undefined, string | undefined, () => Promise<boolean>]
 >(() => null);
 const mockUseCancelRunningChatShortcut = jest.fn();
 
@@ -93,6 +102,7 @@ jest.mock('@dnd-kit/sortable', () => ({
 
 jest.mock('@dnd-kit/core', () => ({
   closestCenter: (): null => null,
+  defaultDropAnimationSideEffects: jest.fn(),
   DndContext: ({ children }: { children: ReactNode }): JSX.Element => (
     <>{children}</>
   ),
@@ -144,7 +154,7 @@ jest.mock('@canopy/ui-rich/editor', () => ({
   resetEditor: (): void => {},
   restoreEditorContent: (): void => {},
   serializeEditorValue: (): { text: string; fileReferences: unknown[] } => ({
-    text: '',
+    text: mockSerializedDraftText,
     fileReferences: [],
   }),
 }));
@@ -378,9 +388,12 @@ jest.mock('@/hooks/useFileTypeahead', () => ({
   }),
 }));
 
+let mockVoiceState: 'idle' | 'listening' = 'idle';
+let mockSerializedDraftText = '';
+
 jest.mock('@/hooks/useVoiceTranscription', () => ({
   useVoiceTranscription: (): {
-    state: 'idle';
+    state: 'idle' | 'listening';
     error: null;
     errorGuidance: null;
     dismissError: () => void;
@@ -388,7 +401,7 @@ jest.mock('@/hooks/useVoiceTranscription', () => ({
     stop: () => Promise<void>;
     cancel: () => Promise<void>;
   } => ({
-    state: 'idle',
+    state: mockVoiceState,
     error: null,
     errorGuidance: null,
     dismissError: (): void => undefined,
@@ -403,7 +416,9 @@ jest.mock('@/hooks/useStuckAgentTimer', () => ({
     isStreaming: boolean,
     lastEventAt: number | undefined,
     tabId: string | undefined,
-  ): number | null => mockUseStuckAgentTimer(isStreaming, lastEventAt, tabId),
+    confirmQuietPeriod: () => Promise<boolean>,
+  ): number | null =>
+    mockUseStuckAgentTimer(isStreaming, lastEventAt, tabId, confirmQuietPeriod),
 }));
 
 const PROJECT_ID = 'project-1';
@@ -503,16 +518,24 @@ function makeTab(
     title: 'New Chat',
     status: 'idle',
     planMode: false,
+    proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: {
+      thinkingLevel: 'high',
+      speed: 'standard',
+      fastMode: false,
+    },
     providerType: 'claude',
     hasStartedSession: false,
+    shareSessionBusy: false,
     ...overrides,
+    error: overrides.error === undefined ? null : overrides.error,
   };
 }
 
+// The renderer root mounts every surface inside `CanopyClientProvider`; a
+// test that needs specific capabilities nests its own provider, which wins.
 function render(element: JSX.Element): string {
-  // The renderer root mounts every surface inside `CanopyClientProvider`; the
-  // composer's `!` typeahead reads the client's capabilities from it.
   return renderToStaticMarkup(
     <CanopyClientProvider client={createFakeClient().client}>
       {element}
@@ -533,14 +556,22 @@ function installRendererWindow(): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      addEventListener: jest.fn(),
       api: {
         chatProject: {
           loadClaudeMd: (): Promise<string> => Promise.resolve(''),
           saveClaudeMd: (): Promise<void> => Promise.resolve(),
         },
-        loadPreferences: (): Promise<{ sidebarCollapsed: boolean }> =>
-          Promise.resolve({ sidebarCollapsed: false }),
-        savePreferences: (): Promise<void> => Promise.resolve(),
+        loadPreferences: (): Promise<{
+          sidebarCollapsed: boolean;
+          planModeHint: PlanModeHintRecord;
+        }> =>
+          Promise.resolve({
+            sidebarCollapsed: false,
+            planModeHint: { version: 1, generation: 0 },
+          }),
+        savePreferences: (): Promise<{ planModeHint: PlanModeHintRecord }> =>
+          Promise.resolve({ planModeHint: { version: 1, generation: 0 } }),
       },
       devInfo: {
         isDev: true,
@@ -594,6 +625,7 @@ function resetRendererStores(
     pendingPlanExits: {},
     pendingModelChanges: {},
     tabDiscoveryLoading: new Set(),
+    runtimeByChatId: {},
   });
   useGitHubStore.setState({
     prStatuses: {},
@@ -818,6 +850,32 @@ describe('critical renderer component health coverage', () => {
     expect(markup).toContain('Usage indicator');
   });
 
+  it('uses the shared bare placeholder without an ellipsis when no affordances are available', () => {
+    const commands = jest
+      .spyOn(composerCommands, 'buildComposerCommands')
+      .mockReturnValue([]);
+    try {
+      const markup = render(<ChatInput tab={makeTab()} disableFileTypeahead />);
+      expect(markup).toContain(
+        'data-chat-textarea="true">Send a message</div>',
+      );
+      expect(markup).not.toContain('Send a message…');
+    } finally {
+      commands.mockRestore();
+    }
+  });
+
+  it.each(['cursor', 'copilot', 'opencode'] as const)(
+    'keeps the %s account placeholder override ahead of default affordances',
+    (providerType) => {
+      const markup = render(<ChatInput tab={makeTab({ providerType })} />);
+      expect(markup).toContain(
+        'data-chat-textarea="true">Send a message</div>',
+      );
+      expect(markup).not.toContain('data-chat-textarea="true">@ to mention');
+    },
+  );
+
   it('records the composer box and blocks only the draft paragraphs', () => {
     const markup = render(<ChatInput tab={makeTab()} />);
 
@@ -895,7 +953,414 @@ describe('critical renderer component health coverage', () => {
       />,
     );
 
-    expect(mockUseStuckAgentTimer).toHaveBeenCalledWith(false, 123, 'chat-1');
+    expect(mockUseStuckAgentTimer).toHaveBeenCalledWith(
+      false,
+      123,
+      'chat-1',
+      expect.any(Function),
+    );
+  });
+
+  describe('pending approval placeholder (CAN-4997)', () => {
+    beforeEach(() => {
+      mockVoiceState = 'idle';
+      mockSerializedDraftText = '';
+    });
+    const APPROVAL_PLACEHOLDER = 'Answer the approval above first';
+
+    function pendingFor(chatId: string): ApprovalRequestEvent {
+      return {
+        requestId: `request-${chatId}`,
+        projectId: PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+        chatId,
+        provider: 'claude',
+        title: 'Run command',
+        details: { kind: 'command', command: 'pnpm test' },
+      };
+    }
+
+    function setPending(
+      pendingApprovals: Record<string, ApprovalRequestEvent>,
+    ): void {
+      useChatStore.setState({ pendingApprovals });
+      syncCurrentStateForServerRender(useChatStore);
+    }
+
+    afterEach(() => {
+      setPending({});
+      mockVoiceState = 'idle';
+      mockSerializedDraftText = '';
+      useChatStore.setState({ pendingQuestions: {}, pendingPlanExits: {} });
+    });
+
+    it('asks to answer the approval while this chat has one, ahead of the queue prompt', () => {
+      setPending({ 'request-chat-1': pendingFor('chat-1') });
+      const markup = render(
+        <ChatInput tab={makeTab({ status: 'streaming', lastEventAt: 1 })} />,
+      );
+      expect(markup).toContain(APPROVAL_PLACEHOLDER);
+      expect(markup).not.toContain('Type to queue a follow-up message…');
+      expect(markup).toContain('data-testid="tool-approval-card"');
+    });
+
+    it('keeps the normal placeholder when only another chat waits, or once it clears', () => {
+      setPending({ 'request-chat-2': pendingFor('chat-2') });
+      expect(render(<ChatInput tab={makeTab()} />)).not.toContain(
+        APPROVAL_PLACEHOLDER,
+      );
+      setPending({});
+      expect(render(<ChatInput tab={makeTab()} />)).not.toContain(
+        APPROVAL_PLACEHOLDER,
+      );
+    });
+
+    it('keeps voice, question, plan and terminal prompts ahead of approval guidance', () => {
+      setPending({ 'request-chat-1': pendingFor('chat-1') });
+      mockVoiceState = 'listening';
+      expect(render(<ChatInput tab={makeTab()} />)).toContain('Start talking…');
+      mockVoiceState = 'idle';
+      useChatStore.setState({
+        pendingQuestions: {
+          question: {
+            requestId: 'question',
+            projectId: PROJECT_ID,
+            worktreeId: WORKTREE_ID,
+            chatId: 'chat-1',
+            questions: [{ question: 'Which scope?', options: [] }],
+          },
+        },
+      });
+      syncCurrentStateForServerRender(useChatStore);
+      expect(render(<ChatInput tab={makeTab()} />)).not.toContain(
+        APPROVAL_PLACEHOLDER,
+      );
+      useChatStore.setState({
+        pendingQuestions: {},
+        pendingPlanExits: {
+          plan: {
+            requestId: 'plan',
+            projectId: PROJECT_ID,
+            worktreeId: WORKTREE_ID,
+            chatId: 'chat-1',
+            source: 'codex',
+            toolInput: { plan: 'Review changes', source: 'codex' },
+          },
+        },
+      });
+      syncCurrentStateForServerRender(useChatStore);
+      expect(render(<ChatInput tab={makeTab()} />)).toContain(
+        'No, explain what to do differently',
+      );
+      expect(render(<ChatInput tab={makeTab()} hidePlanMode />)).toContain(
+        'Enter your plan adjustments here…',
+      );
+      useChatStore.setState({ pendingPlanExits: {} });
+      syncCurrentStateForServerRender(useChatStore);
+      mockSerializedDraftText = '! echo healthy';
+      expect(render(<ChatInput tab={makeTab()} />)).toContain(
+        '! shell command…',
+      );
+    });
+
+    it('leaves a queued-message editor, which hides the dock, its own placeholder', () => {
+      setPending({ 'request-chat-1': pendingFor('chat-1') });
+      const markup = render(
+        <ChatInput
+          tab={makeTab({ status: 'streaming' })}
+          editingState={{
+            initialText: '',
+            initialFileReferences: [],
+            attachments: [],
+            onAddAttachments: jest.fn(),
+            onRemoveAttachment: jest.fn(),
+            onCancel: jest.fn(),
+            onSave: jest.fn(),
+          }}
+        />,
+      );
+      expect(markup).toContain('Edit queued message…');
+      expect(markup).not.toContain(APPROVAL_PLACEHOLDER);
+    });
+  });
+
+  describe('turn activity from canonical runtime', () => {
+    function storeTab(overrides: Partial<ChatTab> = {}): ChatTab {
+      return {
+        id: 'chat-1',
+        title: 'New Chat',
+        kind: 'chat',
+        createdAt: '2026-10-14T12:00:00.000Z',
+        status: 'idle',
+        error: null,
+        planMode: false,
+        proposalMode: 'optional',
+        thinkingLevel: 'high',
+        modelConfig: {
+          thinkingLevel: 'high',
+          speed: 'standard',
+          fastMode: false,
+        },
+        fastModeExplicit: false,
+        model: 'claude-opus-4-8',
+        providerType: 'claude',
+        messages: [],
+        queuedMessages: [],
+        ...overrides,
+      };
+    }
+
+    function setChatState(
+      tab: ChatTab,
+      runtime: ChatRuntimeState | undefined,
+    ): void {
+      useChatStore.setState({
+        worktreeChats: {
+          [`${PROJECT_ID}/${WORKTREE_ID}`]: {
+            tabs: [tab],
+            activeTabId: tab.id,
+          },
+        },
+        runtimeByChatId: runtime ? { [tab.id]: runtime } : {},
+      });
+      syncCurrentStateForServerRender(useChatStore);
+    }
+
+    const STOP = 'data-testid="chat-stop-generation"';
+    const QUEUE_PLACEHOLDER = 'Type to queue a follow-up message...';
+
+    // The octopus regression: the tab kept saying streaming after main had
+    // finished the turn, so Stop, the queue placeholder and the stuck timer
+    // stayed on an idle chat.
+    it('hides Stop when canonical runtime has finished while the tab still says streaming', () => {
+      setChatState(storeTab({ status: 'streaming' }), {
+        status: 'completed',
+        queuedMessageIds: [],
+      });
+
+      const markup = render(
+        <ChatInput tab={makeTab({ status: 'streaming', lastEventAt: 123 })} />,
+      );
+
+      expect(markup).not.toContain(STOP);
+      expect(markup).not.toContain(QUEUE_PLACEHOLDER);
+      expect(mockUseStuckAgentTimer).toHaveBeenLastCalledWith(
+        false,
+        123,
+        'chat-1',
+        expect.any(Function),
+      );
+      expect(mockUseCancelRunningChatShortcut).toHaveBeenLastCalledWith(
+        expect.objectContaining({ enabled: false }),
+      );
+    });
+
+    it('shows Stop while canonical runtime runs the turn even if the tab says idle', () => {
+      setChatState(storeTab({ status: 'idle' }), {
+        status: 'streaming',
+        queuedMessageIds: [],
+        activeTurn: { userMessageId: 'user-1', startedAt: 1 },
+      });
+
+      const markup = render(
+        <ChatInput tab={makeTab({ status: 'idle', lastEventAt: 123 })} />,
+      );
+
+      expect(markup).toContain(STOP);
+      expect(mockUseStuckAgentTimer).toHaveBeenLastCalledWith(
+        true,
+        123,
+        'chat-1',
+        expect.any(Function),
+      );
+    });
+
+    it('shows Stop for a pending sending lease before its deadline, without the stuck timer', () => {
+      const now = Date.now();
+      setChatState(
+        storeTab({
+          sendingLease: {
+            userMessageId: 'user-1',
+            kind: 'send',
+            issuedAt: now,
+            deadline: now + 15_000,
+            state: 'pending',
+          },
+        }),
+        { status: 'idle', queuedMessageIds: [] },
+      );
+
+      const markup = render(
+        <ChatInput tab={makeTab({ status: 'idle', lastEventAt: 123 })} />,
+      );
+
+      expect(markup).toContain(STOP);
+      expect(mockUseStuckAgentTimer).toHaveBeenLastCalledWith(
+        false,
+        123,
+        'chat-1',
+        expect.any(Function),
+      );
+    });
+
+    it('drops Stop once a pending sending lease is past its deadline', () => {
+      const now = Date.now();
+      setChatState(
+        storeTab({
+          sendingLease: {
+            userMessageId: 'user-1',
+            kind: 'send',
+            issuedAt: now - 20_000,
+            deadline: now - 5_000,
+            state: 'pending',
+          },
+        }),
+        { status: 'idle', queuedMessageIds: [] },
+      );
+
+      expect(
+        render(<ChatInput tab={makeTab({ status: 'idle' })} />),
+      ).not.toContain(STOP);
+    });
+
+    // Phase 15c: while main is behind the agent, the composer says so instead
+    // of warning that the agent might be stuck, and offers nothing that
+    // touches the turn.
+    describe('catching up', () => {
+      const NOTICE = 'data-testid="catching-up-notice"';
+      const STUCK = 'data-testid="stuck-agent-warning"';
+      const LAG_TARGET = {
+        projectId: PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+        chatId: 'chat-1',
+      };
+
+      function setLag(lag: ChatIngestionLag | null): void {
+        useIngestionLagStore.getState().setLag(LAG_TARGET, lag);
+        syncCurrentStateForServerRender(useIngestionLagStore);
+      }
+
+      function runningTurn(): void {
+        setChatState(storeTab({ status: 'streaming' }), {
+          status: 'streaming',
+          queuedMessageIds: [],
+          activeTurn: { userMessageId: 'user-1', startedAt: 1 },
+        });
+      }
+
+      /** The markup of the `<div>` element whose opening tag carries `attribute`. */
+      function divMarkupWith(markup: string, attribute: string): string {
+        const start = markup.lastIndexOf('<div', markup.indexOf(attribute));
+        if (start < 0 || !markup.includes(attribute)) return '';
+        const tags = /<div\b|<\/div>/g;
+        tags.lastIndex = start;
+        let depth = 0;
+        for (let match = tags.exec(markup); match; match = tags.exec(markup)) {
+          depth += match[0] === '</div>' ? -1 : 1;
+          if (depth === 0) return markup.slice(start, tags.lastIndex);
+        }
+        return '';
+      }
+
+      afterEach(() => {
+        setLag(null);
+        mockUseStuckAgentTimer.mockImplementation(() => null);
+      });
+
+      it('replaces a confirmed stuck warning with an action-free notice and keeps Stop', () => {
+        runningTurn();
+        mockUseStuckAgentTimer.mockImplementation(() => 6);
+        const tab = makeTab({ status: 'streaming', lastEventAt: 123 });
+
+        const stuck = render(<ChatInput tab={tab} />);
+        expect(stuck).toContain(STUCK);
+        expect(stuck).not.toContain(NOTICE);
+
+        setLag({
+          lagMs: 7_000,
+          source: 'provider',
+          sampledAtMs: Date.now(),
+          catchingUp: true,
+        });
+        const catchingUp = render(<ChatInput tab={tab} />);
+        expect(catchingUp).toContain(NOTICE);
+        expect(catchingUp).not.toContain(STUCK);
+        expect(catchingUp).toContain(STOP);
+        const notice = divMarkupWith(catchingUp, NOTICE);
+        expect(notice).toContain('Catching up.');
+        expect(notice).toContain('Updates are a few seconds behind the agent.');
+        expect(notice).toContain('data-notice-intent="neutral"');
+        expect(notice).toContain('role="status"');
+        expect(notice).not.toContain('<button');
+
+        setLag(null);
+        const cleared = render(<ChatInput tab={tab} />);
+        expect(cleared).not.toContain(NOTICE);
+        expect(cleared).toContain(STUCK);
+        expect(cleared).toContain(STOP);
+      });
+
+      it('shows the notice without a stuck warning and reports minutes', () => {
+        runningTurn();
+        setLag({
+          lagMs: 150_000,
+          source: 'receipt',
+          sampledAtMs: Date.now(),
+          catchingUp: true,
+        });
+
+        const markup = render(
+          <ChatInput
+            tab={makeTab({ status: 'streaming', lastEventAt: 123 })}
+          />,
+        );
+        expect(markup).toContain(NOTICE);
+        expect(markup).toContain(
+          'Updates are about 2 minutes behind the agent.',
+        );
+        expect(markup).toContain(STOP);
+      });
+
+      it('ignores a sample that is stale, not catching up, or for another chat', () => {
+        runningTurn();
+        mockUseStuckAgentTimer.mockImplementation(() => 6);
+        const tab = makeTab({ status: 'streaming', lastEventAt: 123 });
+
+        setLag({
+          lagMs: 7_000,
+          source: 'provider',
+          sampledAtMs: Date.now() - 10_001,
+          catchingUp: true,
+        });
+        expect(render(<ChatInput tab={tab} />)).not.toContain(NOTICE);
+
+        setLag({
+          lagMs: 7_000,
+          source: 'provider',
+          sampledAtMs: Date.now(),
+          catchingUp: false,
+        });
+        expect(render(<ChatInput tab={tab} />)).not.toContain(NOTICE);
+
+        setLag(null);
+        useIngestionLagStore.getState().setLag(
+          { ...LAG_TARGET, chatId: 'chat-2' },
+          {
+            lagMs: 7_000,
+            source: 'provider',
+            sampledAtMs: Date.now(),
+            catchingUp: true,
+          },
+        );
+        syncCurrentStateForServerRender(useIngestionLagStore);
+        const otherChat = render(<ChatInput tab={tab} />);
+        expect(otherChat).not.toContain(NOTICE);
+        expect(otherChat).toContain(STUCK);
+        useIngestionLagStore
+          .getState()
+          .clearForChat({ ...LAG_TARGET, chatId: 'chat-2' });
+      });
+    });
   });
 
   it('does not let an inline queued editor own the global cancel shortcut', () => {
@@ -1110,6 +1575,8 @@ describe('critical renderer component health coverage', () => {
       <WorktreeItem
         worktree={worktree}
         projectId={PROJECT_ID}
+        isSelected={false}
+        isStreaming={false}
         hasActiveSession={false}
         awaitingApproval={false}
         hasUnread={false}
@@ -1162,6 +1629,8 @@ describe('critical renderer component health coverage', () => {
       <WorktreeItem
         worktree={worktree}
         projectId={PROJECT_ID}
+        isSelected={false}
+        isStreaming={false}
         hasActiveSession={false}
         awaitingApproval={false}
         hasUnread={false}
@@ -1416,9 +1885,11 @@ describe('critical renderer component health coverage', () => {
     expect(markup).toContain('llama3:8b');
     expect(markup).toContain('Deleting…');
     expect(markup).toContain('required capabilities');
-    expect(markup).toContain('Family: llama');
-    expect(markup).toContain('Seed messages');
-    expect(markup).toContain('Raw show() response');
+    // The facts sit behind the shared Details disclosure, collapsed at first;
+    // OllamaTab.test covers them expanded.
+    expect(markup).toContain('Details');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain('Family: llama');
   });
 
   it('renders the worktree manager chat/work shell on the main page', () => {
@@ -1760,7 +2231,7 @@ describe('critical renderer component health coverage', () => {
         /<button[^>]*disabled=""[^>]*data-testid="worktree-actions-menu-split-workspace"/,
       );
       // Mirrors SPLIT_PR_BLOCKER_COPY.active_pipelines.
-      expect(markup).toContain('Wait for active pipelines to finish');
+      expect(markup).toContain('Wait for active workflows to finish');
     });
 
     it('disables the Split project entry while setup is pending', () => {

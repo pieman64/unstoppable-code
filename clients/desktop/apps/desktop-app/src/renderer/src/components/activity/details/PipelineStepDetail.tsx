@@ -48,6 +48,7 @@ import {
   ShellCommandContent,
   TimingSummaryCard,
 } from './PipelineStepDetailParts';
+import { SegmentedControl } from '@canopy/ui-shared/components';
 
 interface PipelineStepDetailProps {
   executionId: string;
@@ -453,45 +454,33 @@ export function PipelineStepDetail({
             {isStepRunning && <LoadingSpinner tone="active" />}
           </div>
           {logSources.richLogFile !== undefined && (
-            <div className="flex rounded-md border bg-fg-primary/[0.03] p-0.5">
-              <button
-                type="button"
-                data-testid={`pipeline-step-log-mode-raw-${stepDef.id}`}
-                aria-pressed={logViewMode === 'plain'}
-                onClick={(): void => {
-                  chooseLogViewMode('plain');
-                  richSearch.close();
-                }}
-                className={`rounded px-2 py-0.5 text-3xs font-medium transition ${
-                  logViewMode === 'plain'
-                    ? 'bg-fg-primary/[0.08] fg-primary/80'
-                    : 'fg-secondary hover:fg-secondary'
-                }`}
-              >
-                Raw
-              </button>
-              <button
-                type="button"
-                data-testid={`pipeline-step-log-mode-rich-${stepDef.id}`}
-                aria-pressed={logViewMode === 'rich'}
-                disabled={!richTranscriptAvailable}
-                onClick={(): void => {
-                  chooseLogViewMode('rich');
-                  ansiSearch.close();
-                }}
-                className={`rounded px-2 py-0.5 text-3xs font-medium transition ${
-                  logViewMode === 'rich'
-                    ? 'bg-fg-primary/[0.08] fg-primary/80'
-                    : 'fg-secondary hover:fg-secondary'
-                } ${
-                  !richTranscriptAvailable
-                    ? 'cursor-not-allowed opacity-40'
-                    : ''
-                }`}
-              >
-                Rich
-              </button>
-            </div>
+            <SegmentedControl
+              label="Log view"
+              shape="capsule"
+              width="content"
+              value={logViewMode}
+              onChange={(mode): void => {
+                chooseLogViewMode(mode);
+                if (mode === 'plain') richSearch.close();
+                else ansiSearch.close();
+              }}
+              options={[
+                {
+                  value: 'plain',
+                  label: 'Raw',
+                  dataTestId: `pipeline-step-log-mode-raw-${stepDef.id}`,
+                },
+                {
+                  value: 'rich',
+                  label: 'Rich',
+                  dataTestId: `pipeline-step-log-mode-rich-${stepDef.id}`,
+                  unavailable: !richTranscriptAvailable,
+                  ...(richTranscriptAvailable
+                    ? {}
+                    : { tooltip: 'No rich transcript for this step' }),
+                },
+              ]}
+            />
           )}
         </div>
 

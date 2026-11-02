@@ -56,10 +56,9 @@ jest.mock('../portal-event-bus', () => ({
 const mockLaneDefault = jest.mocked(requireLaneAwareDefaultSelection);
 
 function laneDefault(
-  providerType: 'claude' | 'codex',
   model: string,
 ): Awaited<ReturnType<typeof requireLaneAwareDefaultSelection>> {
-  return { providerType, model, thinkingLevel: 'high' };
+  return { model, thinkingLevel: 'high' };
 }
 
 async function projectedAgentRow(): Promise<ModelCatalogOption | undefined> {
@@ -96,14 +95,14 @@ afterEach(() => {
 });
 
 it('re-projects the Agent row onto the new default after a default-model setting changes', async () => {
-  mockLaneDefault.mockResolvedValue(laneDefault('codex', 'gpt-5.5'));
+  mockLaneDefault.mockResolvedValue(laneDefault('gpt-5.5'));
   await expect(projectedAgentRow()).resolves.toMatchObject({
     provider: 'codex',
     harness: 'codex',
     available: true,
   });
 
-  mockLaneDefault.mockResolvedValue(laneDefault('claude', 'claude-sonnet-4-6'));
+  mockLaneDefault.mockResolvedValue(laneDefault('claude-sonnet-4-6'));
   await refreshCatalogAgentDefaults({ defaultWorktreeProvider: 'claude' });
 
   expect(mockNotifyCatalogChanged).toHaveBeenCalledTimes(1);
@@ -115,14 +114,18 @@ it('re-projects the Agent row onto the new default after a default-model setting
 });
 
 it('marks the Agent row unavailable once the new default is one it cannot run on', async () => {
-  mockLaneDefault.mockResolvedValue(laneDefault('codex', 'gpt-5.5'));
+  mockLaneDefault.mockResolvedValue(laneDefault('gpt-5.5'));
   await expect(projectedAgentRow()).resolves.toMatchObject({
     available: true,
   });
 
-  mockLaneDefault.mockResolvedValue(laneDefault('codex', 'removed-model'));
+  mockLaneDefault.mockResolvedValue(laneDefault('removed-model'));
   await refreshCatalogAgentDefaults({
-    defaultWorktreeModelByProvider: { codex: 'removed-model' },
+    defaultWorktreeModelByProvider: {
+      claude: laneDefault('claude-sonnet-4-6'),
+      codex: laneDefault('removed-model'),
+      ollama: null,
+    },
   });
 
   await expect(projectedAgentRow()).resolves.toMatchObject({
@@ -131,14 +134,14 @@ it('marks the Agent row unavailable once the new default is one it cannot run on
 });
 
 it('leaves the Agent row out when organization policy blocks the default it would run on', async () => {
-  mockLaneDefault.mockResolvedValue(laneDefault('codex', 'gpt-5.5'));
+  mockLaneDefault.mockResolvedValue(laneDefault('gpt-5.5'));
   mockBlockedModels.add('gpt-5.5');
 
   await expect(projectedAgentRow()).resolves.toBeUndefined();
 });
 
 it('keeps the Agent row when policy blocks a model other than the default', async () => {
-  mockLaneDefault.mockResolvedValue(laneDefault('codex', 'gpt-5.5'));
+  mockLaneDefault.mockResolvedValue(laneDefault('gpt-5.5'));
   mockBlockedModels.add('claude-sonnet-4-6');
 
   await expect(projectedAgentRow()).resolves.toMatchObject({

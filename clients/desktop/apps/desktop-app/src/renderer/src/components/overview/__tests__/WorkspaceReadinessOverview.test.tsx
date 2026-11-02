@@ -71,7 +71,7 @@ const issue: WorkspaceReadinessIssue = {
 
 const secondIssue: WorkspaceReadinessIssue = {
   ...issue,
-  code: 'add-launch-script',
+  code: 'configure-scripts',
   title: 'Add a launch script',
 };
 

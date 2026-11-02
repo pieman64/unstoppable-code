@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { LedgerFeedStore } from '@canopy/app-state';
 import type { LedgerViewScope } from '@canopy/protocol/ledger-view';
-import { LedgerFeed } from '@canopy/ui-app/ledger';
+import { LedgerFeedPage, type LedgerFeedLocal } from '@canopy/ui-app/ledger';
+import { useCanopyClient } from '@canopy/app-state';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
   describeLedgerScope,
@@ -15,13 +16,13 @@ import { DESKTOP_LEDGER_NAVIGATOR } from '@/lib/ledger/ledger-navigator';
 import {
   desktopLedgerClient,
   ledgerFeedStore,
-  ledgerViewHasDraft,
-  ledgerViewStoreFor,
+  ledgerViewScopeHasDraft,
+  ledgerViewStoreForScope,
 } from '@/lib/ledger/ledger-view-stores';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { PageContent } from '../shared/PageContent';
-import { PageHeading } from '../shared/PageHeading';
 import { PageTitlebar } from '../shared/PageTitlebar';
 
 /** Whether the window is on screen; the Feed looks for activity only then. */
@@ -54,6 +55,9 @@ function FeedUiStateReporter({ store }: { store: LedgerFeedStore }): null {
 export function FeedPage(): JSX.Element {
   const store = useMemo(() => ledgerFeedStore(), []);
   const projects = useProjectsStore((state) => state.projects);
+  const organizations = useWorkspaceContextStore(
+    (state) => state.state.organizations,
+  );
   const { workEntries, activeChatProjectId, sidebarEntriesByProject } =
     useStandaloneChatStore(
       useShallow((state) => ({
@@ -69,8 +73,15 @@ export function FeedPage(): JSX.Element {
         ...sidebarEntriesByProject,
         [activeChatProjectId]: workEntries,
       },
+      organizations,
     }),
-    [projects, sidebarEntriesByProject, activeChatProjectId, workEntries],
+    [
+      projects,
+      sidebarEntriesByProject,
+      activeChatProjectId,
+      workEntries,
+      organizations,
+    ],
   );
   const describeScope = useCallback(
     (scope: LedgerViewScope): string | null =>
@@ -81,41 +92,39 @@ export function FeedPage(): JSX.Element {
     () => ledgerFeedAddableScopes(sources),
     [sources],
   );
-  const scopeStore = useCallback(
-    (scope: LedgerViewScope) =>
-      ledgerViewStoreFor(scope.projectId, scope.worktreeId),
-    [],
+  const local = useMemo(
+    (): LedgerFeedLocal => ({
+      client: desktopLedgerClient,
+      navigator: DESKTOP_LEDGER_NAVIGATOR,
+      files: DESKTOP_LEDGER_FILE_PICKER,
+      scopeStore: ledgerViewStoreForScope,
+      scopeHasDraft: ledgerViewScopeHasDraft,
+      describeScope,
+      addableScopes,
+    }),
+    [describeScope, addableScopes],
   );
-  const scopeHasDraft = useCallback(
-    (scope: LedgerViewScope): boolean =>
-      ledgerViewHasDraft(scope.projectId, scope.worktreeId),
-    [],
-  );
+  const { capabilities } = useCanopyClient();
   const visible = useDocumentVisible();
 
   return (
     <section className="flex h-full min-h-0 flex-col" data-testid="page-feed">
       <PageTitlebar />
-      <PageContent bottomInset="tight">
-        <PageHeading
-          title="Feed"
-          subtitle="Entries from all your projects and tasks, newest change first."
-        />
-      </PageContent>
-      <PageContent className="flex min-h-0 flex-1 flex-col">
-        <FeedUiStateReporter store={store} />
-        <LedgerFeed
-          store={store}
-          client={desktopLedgerClient}
-          navigator={DESKTOP_LEDGER_NAVIGATOR}
-          files={DESKTOP_LEDGER_FILE_PICKER}
-          scopeStore={scopeStore}
-          scopeHasDraft={scopeHasDraft}
-          describeScope={describeScope}
-          addableScopes={addableScopes}
-          visible={visible}
-        />
-      </PageContent>
+      <FeedUiStateReporter store={store} />
+      <LedgerFeedPage
+        capabilities={capabilities}
+        store={store}
+        local={local}
+        visible={visible}
+        frameHeading={(heading) => (
+          <PageContent bottomInset="tight">{heading}</PageContent>
+        )}
+        frameFeed={(feed) => (
+          <PageContent className="flex min-h-0 flex-1 flex-col">
+            {feed}
+          </PageContent>
+        )}
+      />
     </section>
   );
 }

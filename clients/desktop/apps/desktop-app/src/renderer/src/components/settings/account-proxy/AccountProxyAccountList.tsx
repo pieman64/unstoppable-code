@@ -8,6 +8,8 @@ import {
   ModelProviderIcon,
   ProviderAccountUsageDetails,
   useMinuteClock,
+  ProviderStatusDot,
+  type ProviderStatusDotTone,
 } from '@canopy/ui-shared';
 import {
   MoreHorizontalIcon,
@@ -25,21 +27,20 @@ import type {
 import { DeleteConfirmModal } from '@/components/shared/DeleteConfirmModal';
 import { useAccountProxyStore } from '@/stores/accountProxyStore';
 import { SettingsRow, SettingsSubRow } from '../SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import {
   accountProxyAccountDescription,
   accountProxyProviderLabel,
 } from './accountProxyCopy';
 
-const STATUS_DOT_CLASS_NAMES: Readonly<
-  Record<AccountProxyAccountStatus, string>
+const STATUS_DOT_TONES: Readonly<
+  Record<AccountProxyAccountStatus, ProviderStatusDotTone>
 > = {
-  active: 'bg-success',
-  refreshing: 'bg-success',
-  cooling: 'bg-warning',
-  error: 'bg-destructive',
-  disabled: 'bg-fg-quaternary',
-  pending: 'bg-info',
+  active: 'connected',
+  refreshing: 'connected',
+  cooling: 'limited',
+  error: 'failed',
+  disabled: 'idle',
+  pending: 'pending',
 };
 
 const STATUS_LABELS: Readonly<Record<AccountProxyAccountStatus, string>> = {
@@ -57,11 +58,10 @@ export function AccountProxyStatusDot({
   readonly status: AccountProxyAccountStatus;
 }): JSX.Element {
   return (
-    <span
-      role="img"
-      aria-label={STATUS_LABELS[status]}
+    <ProviderStatusDot
+      tone={STATUS_DOT_TONES[status]}
+      label={STATUS_LABELS[status]}
       data-status={status}
-      className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${STATUS_DOT_CLASS_NAMES[status]}`}
     />
   );
 }
@@ -115,7 +115,6 @@ function AccountMenu({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const buttonSize = useSettingsButtonSize();
   // API-key accounts live in the server's config file; the management API
   // cannot turn them off or remove them, so there is nothing to offer.
   if (account.source !== 'sign-in') return null;
@@ -123,7 +122,7 @@ function AccountMenu({
     <>
       <Button
         ref={buttonRef}
-        size={buttonSize}
+        size="compact"
         variant="ghost"
         iconOnly
         aria-label={ACCOUNT_MENU_LABEL}
@@ -255,7 +254,6 @@ export function AccountProxyAccountList({
         <ProviderAccountUsageDetails
           account={projectAccountProxyUsageAccount(account)}
           nowMs={nowMs}
-          frameless
           collapsible
         />
       </div>

@@ -150,11 +150,7 @@ export async function runHeaderChatOpenedRedesignScenario() {
     await expect(branchTrigger).toBeVisible();
 
     // --- Tab strip: every trailing control on the shared 28px frame.
-    for (const prefix of [
-      'panel-add-tab-',
-      'panel-add-panel-',
-      'panel-group-menu-',
-    ]) {
+    for (const prefix of ['panel-add-tab-', 'panel-group-menu-']) {
       const control = groupTitle.locator(`[data-testid^="${prefix}"]`).first();
       await expect(control).toBeVisible();
       const box = await control.boundingBox();

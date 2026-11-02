@@ -1,6 +1,7 @@
 import {
   CHAT_LABEL,
   CUSTOMIZE_LABEL,
+  ORCHESTRATOR_LABEL,
   WORKTREE_LABEL_PLURAL,
   WORKTREE_UNIT_LABEL,
 } from '@canopy/protocol';
@@ -11,6 +12,7 @@ import {
   isShortcutEvent,
   type ShortcutEventLike,
 } from '@canopy/ui-app/find';
+import { formatShortcut as formatShortcutHint } from '@canopy/ui-shared/lib/shortcuts';
 
 export type CommandCategory =
   | 'navigation'
@@ -81,7 +83,9 @@ export type CommandId =
   | 'panel-move-to-next-group'
   | 'panel-toggle-maximize'
   | 'panel-close-group'
-  | 'panel-even-sizes';
+  | 'panel-even-sizes'
+  | 'panel-select-next-tab'
+  | 'panel-select-previous-tab';
 
 export interface CommandDefinition {
   id: CommandId;
@@ -154,6 +158,22 @@ function matchesCommandQuery(
   );
 }
 
+/**
+ * Names the Windows/Linux alternate tab-cycling chord in a command subtitle
+ * (`. Ctrl PageDown also works`). macOS has no alternate, so it adds nothing.
+ */
+function tabCycleAlternateHint(
+  id: 'panel-select-next-tab-alternate' | 'panel-select-previous-tab-alternate',
+): string {
+  return isMacPlatform() ? '' : `. ${formatShortcutHint(id)} also works`;
+}
+
+/**
+ * Picks a display string by platform, for a chord that is not in the shared
+ * shortcut registry (a user-recorded or reserved accelerator). Bindings the
+ * app owns read their keys from `@canopy/ui-shared/lib/shortcuts` instead,
+ * so every hint spells them the same way.
+ */
 export function formatShortcut(mac: string, other: string): string {
   return isMacPlatform() ? mac : other;
 }
@@ -162,7 +182,7 @@ export function formatShortcut(mac: string, other: string): string {
  * Hold ⌃M to dictate into the composer on screen; a quick tap keeps it
  * listening until the next tap.
  */
-export const DICTATION_SHORTCUT_LABEL = formatShortcut('⌃M', 'Ctrl M');
+export const DICTATION_SHORTCUT_LABEL = formatShortcutHint('toggle-dictation');
 
 /**
  * Control+M on every platform (Control, not ⌘, on macOS, and free on both:
@@ -325,7 +345,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Open command palette',
     category: 'navigation',
     keywords: ['command', 'palette', 'search', 'commands'],
-    shortcut: formatShortcut('⌘K', 'Ctrl K'),
+    shortcut: formatShortcutHint('open-command-palette'),
   },
   {
     id: 'open-file-search-palette',
@@ -333,7 +353,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: `Search files in the current ${WORKTREE_UNIT_LABEL.toLowerCase()} and open in a file tab`,
     category: 'navigation',
     keywords: ['file', 'find', 'search', 'open', 'goto', 'fuzzy'],
-    shortcut: formatShortcut('⌘P', 'Ctrl P'),
+    shortcut: formatShortcutHint('open-file-search-palette'),
     requiresWorktree: true,
     allowCoworkSelection: true,
   },
@@ -343,7 +363,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Open the home surface to start a new task',
     category: 'worktrees',
     keywords: ['new', 'task', 'home', 'start', 'compose'],
-    shortcut: formatShortcut('⌘N', 'Ctrl N'),
+    shortcut: formatShortcutHint('new-task'),
   },
   {
     id: 'new-worktree',
@@ -366,37 +386,37 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: `Open a new tab in the focused surface (chat by default) of the selected ${WORKTREE_UNIT_LABEL.toLowerCase()}`,
     category: 'chat',
     keywords: ['new', 'chat', 'tab', 'conversation'],
-    shortcut: formatShortcut('⌘T', 'Ctrl T'),
+    shortcut: formatShortcutHint('new-chat-tab'),
     requiresWorktree: true,
   },
   {
     id: 'new-terminal-tab',
     title: 'New terminal tab',
-    subtitle: `${formatShortcut('⌘T', 'Ctrl T')} while the terminal surface is focused`,
+    subtitle: `${formatShortcutHint('new-terminal-tab')} while the terminal surface is focused`,
     category: 'panels',
     keywords: ['new', 'terminal', 'tab', 'shell'],
-    shortcut: formatShortcut('⌘T', 'Ctrl T'),
+    shortcut: formatShortcutHint('new-terminal-tab'),
   },
   {
     id: 'new-browser-tab',
     title: 'New browser tab',
-    subtitle: `${formatShortcut('⌘T', 'Ctrl T')} while the browser is focused — selects the tab and focuses its address bar`,
+    subtitle: `${formatShortcutHint('new-browser-tab')} while the browser is focused — selects the tab and focuses its address bar`,
     category: 'panels',
     keywords: ['new', 'browser', 'tab', 'web'],
-    shortcut: formatShortcut('⌘T', 'Ctrl T'),
+    shortcut: formatShortcutHint('new-browser-tab'),
   },
   {
     id: 'focus-browser-address-bar',
     title: 'Focus browser address bar',
-    subtitle: `${formatShortcut('⌘L', 'Ctrl L')} while the browser is focused`,
+    subtitle: `${formatShortcutHint('focus-browser-address-bar')} while the browser is focused`,
     category: 'panels',
     keywords: ['browser', 'address', 'url', 'bar', 'focus', 'location'],
-    shortcut: formatShortcut('⌘L', 'Ctrl L'),
+    shortcut: formatShortcutHint('focus-browser-address-bar'),
   },
   {
     id: 'find-in-surface',
     title: 'Find in chat, browser, file, or terminal',
-    subtitle: `${formatShortcut('⌘F', 'Ctrl F')} while a chat, browser, file, or terminal is focused`,
+    subtitle: `${formatShortcutHint('find-in-surface')} while a chat, browser, file, or terminal is focused`,
     category: 'panels',
     keywords: [
       'find',
@@ -408,7 +428,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
       'text',
       'terminal',
     ],
-    shortcut: formatShortcut('⌘F', 'Ctrl F'),
+    shortcut: formatShortcutHint('find-in-surface'),
   },
   {
     id: 'browser-history-back',
@@ -416,7 +436,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Navigate the active browser tab back in its own history',
     category: 'panels',
     keywords: ['browser', 'back', 'history', 'navigate'],
-    shortcut: formatShortcut('⌘←', 'Alt ←'),
+    shortcut: formatShortcutHint('browser-history-back'),
   },
   {
     id: 'browser-history-forward',
@@ -424,7 +444,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Navigate the active browser tab forward in its own history',
     category: 'panels',
     keywords: ['browser', 'forward', 'history', 'navigate'],
-    shortcut: formatShortcut('⌘→', 'Alt →'),
+    shortcut: formatShortcutHint('browser-history-forward'),
   },
   {
     id: 'app-history-back',
@@ -432,7 +452,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Go back in app navigation history',
     category: 'navigation',
     keywords: ['back', 'history', 'navigate', 'previous'],
-    shortcut: formatShortcut('⌘←', 'Alt ←'),
+    shortcut: formatShortcutHint('app-history-back'),
   },
   {
     id: 'app-history-forward',
@@ -440,7 +460,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Go forward in app navigation history',
     category: 'navigation',
     keywords: ['forward', 'history', 'navigate', 'next'],
-    shortcut: formatShortcut('⌘→', 'Alt →'),
+    shortcut: formatShortcutHint('app-history-forward'),
   },
   {
     id: 'toggle-sidebar',
@@ -448,7 +468,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Show or hide the left navigation sidebar',
     category: 'panels',
     keywords: ['sidebar', 'navbar', 'navigation', 'toggle', 'hide', 'show'],
-    shortcut: formatShortcut('⌘B', 'Ctrl B'),
+    shortcut: formatShortcutHint('toggle-sidebar'),
   },
   {
     id: 'open-workspace-picker',
@@ -456,7 +476,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Choose the project for the task you are describing',
     category: 'navigation',
     keywords: ['workspace', 'picker', 'selector', 'project', 'repo'],
-    shortcut: formatShortcut('⌥W', 'Alt W'),
+    shortcut: formatShortcutHint('open-workspace-picker'),
   },
   {
     id: 'open-model-picker',
@@ -464,7 +484,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Choose the model for the active composer',
     category: 'chat',
     keywords: ['model', 'picker', 'selector', 'provider', 'claude', 'codex'],
-    shortcut: formatShortcut('⌥M', 'Alt M'),
+    shortcut: formatShortcutHint('open-model-picker'),
   },
   {
     id: 'cycle-effort-level',
@@ -472,7 +492,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Step the active composer through its effort levels',
     category: 'chat',
     keywords: ['effort', 'thinking', 'reasoning', 'level', 'toggle', 'cycle'],
-    shortcut: formatShortcut('⌥T', 'Alt T'),
+    shortcut: formatShortcutHint('cycle-effort-level'),
   },
   {
     id: 'toggle-dictation',
@@ -488,7 +508,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: `Show the terminal panel for the selected ${WORKTREE_UNIT_LABEL.toLowerCase()} (spawns one when empty)`,
     category: 'panels',
     keywords: ['terminal', 'open', 'shell', 'console', 'toggle'],
-    shortcut: formatShortcut('⌃`', 'Ctrl `'),
+    shortcut: formatShortcutHint('open-terminal'),
   },
   {
     id: 'chat-attachments',
@@ -496,38 +516,46 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: `Open the ${CHAT_LABEL.toLowerCase()} composer's file picker`,
     category: 'chat',
     keywords: ['attachment', 'attach', 'file', 'upload', 'image'],
-    shortcut: formatShortcut('⌘U', 'Ctrl U'),
+    shortcut: formatShortcutHint('chat-attachments'),
   },
   {
     id: 'close-chat-tab',
     title: 'Close tab',
     category: 'chat',
     keywords: ['close', 'chat', 'tab'],
-    shortcut: formatShortcut('⌘W', 'Ctrl W'),
+    shortcut: formatShortcutHint('close-chat-tab'),
     requiresWorktree: true,
     requiresActiveChatTab: true,
   },
   {
     id: 'open-app-advisor',
-    title: 'Open App Advisor',
+    title: `Open ${ORCHESTRATOR_LABEL}`,
     category: 'app-advisor',
-    keywords: ['app', 'advisor', 'assistant', 'open'],
-    shortcut: formatShortcut('⌘L', 'Ctrl L'),
+    keywords: ['app', 'advisor', 'orchestrator', 'assistant', 'open'],
+    shortcut: formatShortcutHint('open-app-advisor'),
   },
   {
     id: 'open-app-advisor-quick-prompt',
-    title: 'App Advisor quick prompt',
-    subtitle: 'Send a prompt to a new App Advisor chat',
+    title: `${ORCHESTRATOR_LABEL} quick prompt`,
+    subtitle: `Send a prompt to a new ${ORCHESTRATOR_LABEL} chat`,
     category: 'app-advisor',
-    keywords: ['app', 'advisor', 'assistant', 'prompt', 'quick', 'chat'],
-    shortcut: formatShortcut('⌘⇧L', 'Ctrl Shift L'),
+    keywords: [
+      'app',
+      'advisor',
+      'orchestrator',
+      'assistant',
+      'prompt',
+      'quick',
+      'chat',
+    ],
+    shortcut: formatShortcutHint('open-app-advisor-quick-prompt'),
   },
   {
     id: 'open-settings',
     title: 'Open settings',
     category: 'settings',
     keywords: ['settings', 'preferences', 'config'],
-    shortcut: formatShortcut('⌘,', 'Ctrl ,'),
+    shortcut: formatShortcutHint('open-settings'),
   },
   {
     id: 'open-shortcuts-settings',
@@ -535,7 +563,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Open settings to the shortcuts page',
     category: 'settings',
     keywords: ['keyboard', 'shortcuts', 'keys', 'settings'],
-    shortcut: formatShortcut('⌘⇧K', 'Ctrl Shift K'),
+    shortcut: formatShortcutHint('open-shortcuts-settings'),
   },
   {
     id: 'open-environment-settings',
@@ -549,7 +577,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: `Open the pull request for the selected ${WORKTREE_UNIT_LABEL.toLowerCase()} in the browser`,
     category: 'activity',
     keywords: ['pr', 'pull', 'request', 'open', 'github', 'browser'],
-    shortcut: formatShortcut('⌘⇧G', 'Ctrl Shift G'),
+    shortcut: formatShortcutHint('open-current-pr'),
     requiresWorktree: true,
   },
   {
@@ -594,7 +622,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Open Overview',
     category: 'navigation',
     keywords: ['overview', 'home', 'dashboard'],
-    shortcut: formatShortcut('⌘1', 'Ctrl 1'),
+    shortcut: formatShortcutHint('navigate-overview'),
     page: 'overview',
   },
   {
@@ -602,7 +630,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: `Open ${WORKTREE_LABEL_PLURAL}`,
     category: 'navigation',
     keywords: ['worktrees', 'workspace', 'main'],
-    shortcut: formatShortcut('⌘2', 'Ctrl 2'),
+    shortcut: formatShortcutHint('navigate-worktrees'),
     page: 'main',
   },
   {
@@ -610,7 +638,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: `Open ${CHAT_LABEL}`,
     category: 'navigation',
     keywords: ['chat', 'standalone', 'conversation'],
-    shortcut: formatShortcut('⌘3', 'Ctrl 3'),
+    shortcut: formatShortcutHint('navigate-chat'),
     page: 'chat',
   },
   {
@@ -625,7 +653,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
       'automations',
       'automation',
     ],
-    shortcut: formatShortcut('⌘4', 'Ctrl 4'),
+    shortcut: formatShortcutHint('navigate-pipelines'),
     page: 'workflows-library',
   },
   {
@@ -645,7 +673,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
       'watchers',
       'runs',
     ],
-    shortcut: formatShortcut('⌘8', 'Ctrl 8'),
+    shortcut: formatShortcutHint('navigate-automations'),
     page: 'workflows',
   },
   {
@@ -670,7 +698,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
       'pipelines',
       'automations',
     ],
-    shortcut: formatShortcut('⌘5', 'Ctrl 5'),
+    shortcut: formatShortcutHint('navigate-plugins'),
     page: 'plugins',
   },
   {
@@ -678,7 +706,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Open Audit trail',
     category: 'navigation',
     keywords: ['audit', 'trail', 'observability'],
-    shortcut: formatShortcut('⌘6', 'Ctrl 6'),
+    shortcut: formatShortcutHint('navigate-audit'),
     page: 'audit',
   },
   {
@@ -686,7 +714,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Open Statistics',
     category: 'navigation',
     keywords: ['statistics', 'stats', 'tokens', 'activity', 'metrics'],
-    shortcut: formatShortcut('⌘9', 'Ctrl 9'),
+    shortcut: formatShortcutHint('navigate-statistics'),
     page: 'statistics',
   },
   {
@@ -694,7 +722,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Open Usage',
     category: 'navigation',
     keywords: ['usage', 'subscription', 'limits', 'cost'],
-    shortcut: formatShortcut('⌘7', 'Ctrl 7'),
+    shortcut: formatShortcutHint('navigate-usage'),
     page: 'usage',
   },
   {
@@ -734,7 +762,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Split the active panel group to the right',
     category: 'panels',
     keywords: ['panel', 'split', 'right', 'group', 'layout', 'grid'],
-    shortcut: formatShortcut('⌘\\', 'Ctrl \\'),
+    shortcut: formatShortcutHint('panel-split-right'),
     requiresWorktree: true,
   },
   {
@@ -743,7 +771,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Split the active panel group downward',
     category: 'panels',
     keywords: ['panel', 'split', 'down', 'group', 'layout', 'grid'],
-    shortcut: formatShortcut('⌘⇧D', 'Ctrl Shift D'),
+    shortcut: formatShortcutHint('panel-split-down'),
     requiresWorktree: true,
   },
   {
@@ -751,7 +779,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Focus next panel group',
     category: 'panels',
     keywords: ['panel', 'focus', 'next', 'group', 'cycle'],
-    shortcut: formatShortcut('⌘]', 'Ctrl ]'),
+    shortcut: formatShortcutHint('panel-focus-next-group'),
     requiresWorktree: true,
   },
   {
@@ -759,7 +787,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Focus previous panel group',
     category: 'panels',
     keywords: ['panel', 'focus', 'previous', 'group', 'cycle'],
-    shortcut: formatShortcut('⌘[', 'Ctrl ['),
+    shortcut: formatShortcutHint('panel-focus-previous-group'),
     requiresWorktree: true,
   },
   {
@@ -767,7 +795,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Focus panel group left',
     category: 'panels',
     keywords: ['panel', 'focus', 'left', 'group', 'direction'],
-    shortcut: formatShortcut('⌘⌥←', 'Ctrl Alt ←'),
+    shortcut: formatShortcutHint('panel-focus-group-left'),
     requiresWorktree: true,
   },
   {
@@ -775,7 +803,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Focus panel group right',
     category: 'panels',
     keywords: ['panel', 'focus', 'right', 'group', 'direction'],
-    shortcut: formatShortcut('⌘⌥→', 'Ctrl Alt →'),
+    shortcut: formatShortcutHint('panel-focus-group-right'),
     requiresWorktree: true,
   },
   {
@@ -783,7 +811,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Focus panel group up',
     category: 'panels',
     keywords: ['panel', 'focus', 'up', 'above', 'group', 'direction'],
-    shortcut: formatShortcut('⌘⌥↑', 'Ctrl Alt ↑'),
+    shortcut: formatShortcutHint('panel-focus-group-up'),
     requiresWorktree: true,
   },
   {
@@ -791,7 +819,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     title: 'Focus panel group down',
     category: 'panels',
     keywords: ['panel', 'focus', 'down', 'below', 'group', 'direction'],
-    shortcut: formatShortcut('⌘⌥↓', 'Ctrl Alt ↓'),
+    shortcut: formatShortcutHint('panel-focus-group-down'),
     requiresWorktree: true,
   },
   {
@@ -800,7 +828,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Move the active panel into the next panel group',
     category: 'panels',
     keywords: ['panel', 'move', 'next', 'group', 'tab'],
-    shortcut: formatShortcut('⌘⇧M', 'Ctrl Shift M'),
+    shortcut: formatShortcutHint('panel-move-to-next-group'),
     requiresWorktree: true,
   },
   {
@@ -809,7 +837,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Maximize or restore the active panel group',
     category: 'panels',
     keywords: ['panel', 'maximize', 'restore', 'group', 'toggle', 'zoom'],
-    shortcut: formatShortcut('⌘⇧F', 'Ctrl Shift F'),
+    shortcut: formatShortcutHint('panel-toggle-maximize'),
     requiresWorktree: true,
   },
   {
@@ -818,7 +846,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Close the active panel group and its tabs',
     category: 'panels',
     keywords: ['panel', 'close', 'group', 'remove'],
-    shortcut: formatShortcut('⌘⇧W', 'Ctrl Shift W'),
+    shortcut: formatShortcutHint('panel-close-group'),
     requiresWorktree: true,
   },
   {
@@ -827,7 +855,43 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     subtitle: 'Distribute sizes evenly across all panel groups',
     category: 'panels',
     keywords: ['panel', 'even', 'sizes', 'distribute', 'arrange', 'group'],
-    shortcut: formatShortcut('⌘⇧E', 'Ctrl Shift E'),
+    shortcut: formatShortcutHint('panel-even-sizes'),
+    requiresWorktree: true,
+  },
+  {
+    id: 'panel-select-next-tab',
+    title: 'Select next tab',
+    subtitle: `Switch to the next tab in the active panel group, wrapping at the end${tabCycleAlternateHint('panel-select-next-tab-alternate')}`,
+    category: 'panels',
+    keywords: [
+      'tab',
+      'next',
+      'previous',
+      'switch',
+      'cycle',
+      'chat',
+      'panel',
+      'group',
+    ],
+    shortcut: formatShortcutHint('panel-select-next-tab'),
+    requiresWorktree: true,
+  },
+  {
+    id: 'panel-select-previous-tab',
+    title: 'Select previous tab',
+    subtitle: `Switch to the previous tab in the active panel group, wrapping at the start${tabCycleAlternateHint('panel-select-previous-tab-alternate')}`,
+    category: 'panels',
+    keywords: [
+      'tab',
+      'next',
+      'previous',
+      'switch',
+      'cycle',
+      'chat',
+      'panel',
+      'group',
+    ],
+    shortcut: formatShortcutHint('panel-select-previous-tab'),
     requiresWorktree: true,
   },
 ];

@@ -278,6 +278,90 @@ export const LedgerFilePathSchema = z
   .refine(isPortableRelativePath, 'Expected a normalized relative POSIX path')
   .meta({ maxLength: LEDGER_LIMITS.pathMaxCodePoints });
 
+/**
+ * Organization ids in a global owner are lowercase canonical UUIDs. Mixed-case
+ * input is rejected here so one organization never yields two owner keys;
+ * {@link parseLedgerGlobalOwner} normalizes a persisted execution context
+ * before it reaches this schema.
+ */
+export const LedgerOrganizationIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+/** Who owns a global (workflow) Ledger: the account itself or an organization. */
+export const LedgerGlobalOwnerSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('personal') }),
+  z.strictObject({
+    kind: z.literal('organization'),
+    organizationId: LedgerOrganizationIdSchema,
+  }),
+]);
+export type LedgerGlobalOwner = z.output<typeof LedgerGlobalOwnerSchema>;
+
+/**
+ * The container of entries written by pipeline agents that have no task: one
+ * per owner, account and local writer. It has no workspace and no lifecycle.
+ */
+export const LedgerGlobalContainerSchema = z.strictObject({
+  kind: z.literal('global'),
+  owner: LedgerGlobalOwnerSchema,
+});
+export type LedgerGlobalContainer = z.output<
+  typeof LedgerGlobalContainerSchema
+>;
+
+const LEDGER_PERSONAL_OWNER_KEY = 'personal';
+const LEDGER_ORGANIZATION_OWNER_PREFIX = 'org:';
+
+/** `personal` or `org:<lowercase uuid>`, for storage, sync policy and view keys. */
+export function ledgerGlobalOwnerKey(owner: LedgerGlobalOwner): string {
+  return owner.kind === 'personal'
+    ? LEDGER_PERSONAL_OWNER_KEY
+    : `${LEDGER_ORGANIZATION_OWNER_PREFIX}${owner.organizationId.toLowerCase()}`;
+}
+
+export function isSameLedgerGlobalOwner(
+  left: LedgerGlobalOwner,
+  right: LedgerGlobalOwner,
+): boolean {
+  return ledgerGlobalOwnerKey(left) === ledgerGlobalOwnerKey(right);
+}
+
+export type LedgerGlobalOwnerParseResult =
+  | { readonly ok: true; readonly owner: LedgerGlobalOwner }
+  | { readonly ok: false; readonly reason: 'malformed_owner' };
+
+/**
+ * The single parser from a run's persisted `execution_context` (`personal` /
+ * `org:<uuid>`) to a global owner. Absent means Personal (runs persisted before
+ * ownership existed); anything malformed fails closed.
+ */
+export function parseLedgerGlobalOwner(
+  executionContext: string | null | undefined,
+): LedgerGlobalOwnerParseResult {
+  if (executionContext === null || executionContext === undefined) {
+    return { ok: true, owner: { kind: 'personal' } };
+  }
+  if (executionContext === LEDGER_PERSONAL_OWNER_KEY) {
+    return { ok: true, owner: { kind: 'personal' } };
+  }
+  if (executionContext.startsWith(LEDGER_ORGANIZATION_OWNER_PREFIX)) {
+    const organizationId = LedgerOrganizationIdSchema.safeParse(
+      executionContext
+        .slice(LEDGER_ORGANIZATION_OWNER_PREFIX.length)
+        .trim()
+        .toLowerCase(),
+    );
+    if (organizationId.success) {
+      return {
+        ok: true,
+        owner: { kind: 'organization', organizationId: organizationId.data },
+      };
+    }
+  }
+  return { ok: false, reason: 'malformed_owner' };
+}
+
 export const LedgerContainerSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('code_worktree'),
@@ -294,8 +378,15 @@ export const LedgerContainerSchema = z.discriminatedUnion('kind', [
     appWorkspaceId: z.literal('app-advisor'),
     entryId: LedgerOpaqueIdSchema,
   }),
+  LedgerGlobalContainerSchema,
 ]);
 export type LedgerContainer = z.output<typeof LedgerContainerSchema>;
+
+export function isLedgerGlobalContainer(
+  container: LedgerContainer,
+): container is LedgerGlobalContainer {
+  return container.kind === 'global';
+}
 
 export const LedgerScopeRefSchema = z.strictObject({
   ledgerId: LedgerUuidSchema,

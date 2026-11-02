@@ -21,7 +21,7 @@ const RENDERER = 'apps/desktop-app/src/renderer/src';
 
 /** Ordinary content links: these follow the preference. */
 const CONTENT_LINK_FILES = [
-  'components/memory/MemoryExplorer.tsx',
+  'client/ipc-local-memory-client.ts',
   'components/chat/agent-artifact-navigation.ts',
   'components/chat/GitHubWorkflowRunArtifactCard.tsx',
   'components/github/PrMergeMultiRepoModal.tsx',
@@ -42,7 +42,6 @@ const ALWAYS_EXTERNAL_FILES = [
   'components/startup/WindowsGitRequiredScreen.tsx',
   'components/shared/MobileAppCtaBanner.tsx',
   'components/overview/MobileAppPromoCard.tsx',
-  'components/home/onboarding-suggestions/OnboardingMobileAppDialog.tsx',
   'components/portal/RemoteControlMobileAppsCta.tsx',
   'components/portal/CanopyPortalModal.tsx',
   'components/onboarding/LegalConsentGate.tsx',

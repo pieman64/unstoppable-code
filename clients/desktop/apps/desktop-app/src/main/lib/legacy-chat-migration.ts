@@ -1,5 +1,10 @@
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { inferLegacyExecutionHarness } from '@canopy/desktop-shared/types';
+import {
+  hydrateChatTurnState,
+  initialChatTurnState,
+  serializeChatTurnState,
+} from '@canopy/agent-transcript/turn';
 import type { PersistedChatTab } from '@canopy/desktop-shared/types';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
 import { iterateAsync } from './cooperative-json';
@@ -10,6 +15,7 @@ import type {
   ChatTabsFile,
   ChatJournalRecord,
   ChatCoreMutation,
+  ChatRuntimeState,
   PersistedCommandReceipt,
 } from '@canopy/desktop-shared/types';
 import {
@@ -40,6 +46,8 @@ import {
 } from './chat-storage-v2';
 import {
   buildPersistedTurnInterruptedMutations,
+  collectPersistedSettlementEvidence,
+  hasOpenPersistedChatTurn,
   settlePersistedInterruptedStream,
 } from './persisted-chat-settle';
 
@@ -336,6 +344,7 @@ export async function loadLegacyChatMigrationSource(
     state.runtimeByChatId[tab.id] = {
       status: 'idle',
       queuedMessageIds: [],
+      turn: serializeChatTurnState(initialChatTurnState()),
       ...(last ? { lastActivityAt: last.timestamp } : {}),
     };
   }
@@ -467,8 +476,17 @@ export async function loadLegacyChatMigrationSource(
     await normalizeMigrationTab(input, tab);
   for (const entry of state.archivesFile.archived)
     await normalizeMigrationTab(input, entry.tab);
+  for (const [chatId, runtime] of Object.entries(state.runtimeByChatId)) {
+    const turn = hydrateChatTurnState(runtime.turn) ?? initialChatTurnState();
+    state = applyMutation(state, {
+      type: 'runtime.patched',
+      chatId,
+      runtime: { ...runtime, turn: serializeChatTurnState(turn) },
+    });
+  }
   validateCanonicalChatState(state);
   const interrupted = new Set<string>();
+  const interruptedRuntimes = new Map<string, ChatRuntimeState>();
   const completedAt = Date.now();
   // Admission guarantees that no provider owns this scope. Runtime left in a
   // v1 journal belongs to a process that ended before this cold load.
@@ -481,18 +499,31 @@ export async function loadLegacyChatMigrationSource(
         'awaiting_input',
         'completing',
       ].includes(runtime.status) &&
-      !runtime.queuedMessageIds.length
+      !runtime.queuedMessageIds.length &&
+      !hasOpenPersistedChatTurn(runtime.turn)
     )
       continue;
     interrupted.add(chatId);
+    interruptedRuntimes.set(chatId, runtime);
+    const tab = state.tabsFile.tabs.find(
+      (candidate) => candidate.id === chatId,
+    );
+    const evidence = tab
+      ? await collectPersistedSettlementEvidence(
+          input.messages(tab.messages).iterate(),
+          completedAt,
+        )
+      : [];
     for (const mutation of buildPersistedTurnInterruptedMutations(
       chatId,
-      [],
+      evidence,
       runtime,
       completedAt,
       [],
+      tab,
     ))
-      state = applyMutation(state, mutation);
+      if (mutation.type !== 'message.upserted')
+        state = applyMutation(state, mutation);
   }
   const revision =
     Math.max(tabsRevision, archiveRevision, maxJournalRevision) +
@@ -550,7 +581,11 @@ export async function loadLegacyChatMigrationSource(
           yield {
             metadata,
             messages: interrupted.has(tab.id)
-              ? settlePersistedInterruptedStream(rows, completedAt)
+              ? settlePersistedInterruptedStream(
+                  rows,
+                  completedAt,
+                  interruptedRuntimes.get(tab.id),
+                )
               : rows(),
           };
         }

@@ -24,11 +24,14 @@ import type {
   WorktreeRowDecision,
   WorktreeRowDecisionOutcome,
 } from './worktree-record-decisions';
+import { runW5PreEffectUnit } from './w5-pre-effect-retry';
 
 // The in-process `W5RecordDecisionPort` (W6-0): each decision is applied by
 // the existing locked list writers, with its pure apply as the updater, so
 // tombstone filtering, the sidebar group reconciler and the W5 commit hooks
-// run as they did for the record functions' own updaters.
+// run as they did for the record functions' own updaters. Over the daemon
+// record port each member is one pre-effect unit (W6g, A18′): a conflict
+// with another routed write reruns the whole locked read, apply and write.
 
 /** What the last pass of a row updater did. */
 interface RowPass {
@@ -96,6 +99,15 @@ export async function applyWorktreeRowDecision(
   target: WorktreeRecordTarget,
   decision: WorktreeRowDecision,
 ): Promise<WorktreeRowDecisionOutcome> {
+  return runW5PreEffectUnit('internal.worktree.record', () =>
+    applyRowDecision(target, decision),
+  );
+}
+
+async function applyRowDecision(
+  target: WorktreeRecordTarget,
+  decision: WorktreeRowDecision,
+): Promise<WorktreeRowDecisionOutcome> {
   const pass: RowPass = { ran: false, next: null, changed: false };
   const found = await updateWorkspaceWorktree(
     target.workspaceId,
@@ -127,6 +139,15 @@ export async function applyWorktreeListDecision(
   decision: WorktreeListDecision,
 ): Promise<WorktreeListDecisionOutcome>;
 export async function applyWorktreeListDecision(
+  workspaceId: string,
+  decision: WorktreeListDecision,
+): Promise<WorktreeListDecisionOutcome> {
+  return runW5PreEffectUnit('internal.worktree.record', () =>
+    applyListDecision(workspaceId, decision),
+  );
+}
+
+async function applyListDecision(
   workspaceId: string,
   decision: WorktreeListDecision,
 ): Promise<WorktreeListDecisionOutcome> {

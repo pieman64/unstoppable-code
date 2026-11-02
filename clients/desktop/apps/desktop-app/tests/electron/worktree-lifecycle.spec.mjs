@@ -21,6 +21,7 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { injectScriptRunEvent, seedWorktreeChat } from './seeders/index.mjs';
+import { waitForProjectSettingsSaved } from './projectSettingsDriver.mjs';
 
 // Doc 3 — Supplemental gap plan, gaps G1, G5, and G6.
 //
@@ -89,7 +90,7 @@ async function sessionSnapshotListsWorktree(window, workspaceId, worktreeId) {
  * it, so the removal specs accept both.
  */
 async function confirmWorktreeDeleteIfAsked(window) {
-  const deleteDialog = window.getByRole('dialog', { name: 'Delete worktree?' });
+  const deleteDialog = window.getByRole('dialog', { name: /^Delete worktree/ });
   const asked = await deleteDialog
     .waitFor({ state: 'visible', timeout: 3_000 })
     .then(
@@ -392,8 +393,9 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
           await expect(
             panel.getByText('Draft while the new chat loads', { exact: true }),
           ).toHaveCount(1);
-          await expect(panel.getByTestId('turn-timer-label')).toHaveText(
-            'Working…',
+          await expect(panel.getByTestId('turn-timer')).toHaveAttribute(
+            'data-state',
+            'live',
           );
           await expect(
             panel.getByTestId('turn-timer').getByRole('button'),
@@ -814,7 +816,7 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
       ).toHaveCount(0);
       await expect(
         dialog
-          .getByTestId('project-settings-retention-card')
+          .getByTestId('project-settings-retention')
           .getByTestId('project-settings-auto-archive-toggle'),
       ).toBeVisible();
       await dialog.getByTestId('project-settings-auto-archive-toggle').check();
@@ -822,9 +824,9 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
       await dialog
         .getByTestId('project-settings-auto-archive-delete-branch')
         .check();
-      await dialog
-        .getByRole('button', { name: 'Save local', exact: true })
-        .click();
+      // Project settings saves each change as it is made; Back closes it.
+      await waitForProjectSettingsSaved(app);
+      await dialog.getByTestId('project-settings-back').click();
       await expect(dialog).toHaveCount(0);
 
       await app.workspaceHeaderLabel(WORKSPACE_NAME).hover();
@@ -864,9 +866,8 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
         .locator('[role="dialog"]')
         .filter({ has: window.locator('#project-settings-title') });
       await dialog.getByTestId('project-settings-auto-archive-toggle').check();
-      await dialog
-        .getByRole('button', { name: 'Save local', exact: true })
-        .click();
+      await waitForProjectSettingsSaved(app);
+      await dialog.getByTestId('project-settings-back').click();
 
       const row = window.locator(
         `[data-testid="worktree-row"][data-branch="${WORKTREE_BRANCH}"]`,
@@ -1492,16 +1493,17 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
       await window.getByTestId('worktree-actions-menu-archive').click();
 
       const confirmDialog = window.getByRole('dialog', {
-        name: 'Archive worktree?',
+        name: /^Archive worktree/,
       });
       await expect(confirmDialog).toBeVisible();
-      await expect(confirmDialog.getByText('Has local changes')).toBeVisible();
+      await expect(confirmDialog).toContainText('Its local changes');
       await expect(confirmDialog).toContainText(
         'Kept until you delete the archive.',
       );
-      await expect(confirmDialog).toContainText(
-        'Choose whether to keep the local Git branch.',
-      );
+      // One switch keeps the local branch, on by default.
+      await expect(
+        confirmDialog.getByRole('switch', { name: 'Keep the local branch' }),
+      ).toHaveAttribute('aria-checked', 'true');
       // The full retention explanation moved behind the info button.
       await expect(confirmDialog).not.toContainText(
         'restoring recreates that state in a new worktree.',
@@ -1512,12 +1514,18 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
       await expect(window.getByRole('tooltip')).toContainText(
         'When a restorable archive can be created, its commits and local changes are kept too',
       );
-      await expect(confirmDialog.getByRole('button')).toHaveText([
-        '',
-        'Cancel',
-        'Preserve local',
-        'Delete local',
-      ]);
+      // Cancel and one action named for the outcome; the keys sit inside
+      // them, so match the buttons by accessible name.
+      await expect(confirmDialog.getByRole('button')).toHaveCount(3);
+      await expect(
+        confirmDialog.getByRole('button', { name: 'Cancel', exact: true }),
+      ).toBeVisible();
+      await expect(
+        confirmDialog.getByRole('button', {
+          name: 'Archive worktree',
+          exact: true,
+        }),
+      ).toBeVisible();
       await expect(confirmDialog).not.toContainText('changes will be lost');
       await confirmDialog.getByRole('button', { name: 'Cancel' }).click();
       await expect(confirmDialog).toHaveCount(0);
@@ -1528,7 +1536,7 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
       await window.getByTestId('worktree-actions-menu-button').click();
       await window.getByTestId('worktree-actions-menu-delete').click();
       const deleteDialog = window.getByRole('dialog', {
-        name: 'Delete worktree?',
+        name: /^Delete worktree/,
       });
       await expect(deleteDialog).toBeVisible();
       await expect(deleteDialog).toContainText(
@@ -2493,6 +2501,7 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
       await expect(card).toBeVisible();
       await card.hover();
       await card.getByTestId('worktree-actions-menu-button').click();
+      await window.getByTestId('worktree-actions-menu-more').click();
       await window.getByTestId('worktree-actions-menu-create-branch').click();
 
       const warning = window.getByTestId('branch-from-uncommitted-warning');
@@ -2500,6 +2509,102 @@ test.describe('worktree lifecycle (G1/G5/G6)', () => {
       await warning.getByRole('button', { name: 'Cancel' }).click();
       await expect(warning).toHaveCount(0);
       await expect(card).toBeVisible();
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  // An agent's worktree.create from a dirty source must not block on the
+  // human Branch from warning: nobody is at the modal, so the action used to
+  // wait until the user dismissed it. The uncommitted changes stay in the
+  // source. A person's Branch from on the same dirty source still warns.
+  test('assistant worktree.create from a dirty source skips the Branch from warning', async () => {
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-electron-assistant-dirty-branch-'),
+    );
+    const demoSeed = seedDemoWorkspaces({
+      userDataDir,
+      apps: ['ts-pnpm-vite'],
+    });
+    const worktreePath = demoSeed.workspaces[0]?.worktreePath;
+    expect(worktreePath, 'seeded worktree path').toBeTruthy();
+    const dirtyFile = path.join(worktreePath, 'CANOPY_E2E_ASSISTANT_DIRTY.txt');
+    writeFileSync(dirtyFile, 'dirty assistant branch source\n', 'utf8');
+
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      await expect(
+        window.getByTestId('pr-status-bar-local-commit'),
+      ).toBeVisible({ timeout: 15_000 });
+
+      const rows = window.getByTestId('worktree-row');
+      const sourceRow = window.locator(
+        `[data-testid="worktree-row"][data-branch="${WORKTREE_BRANCH}"]`,
+      );
+      const sourceWorktreeId = await sourceRow.getAttribute('data-worktree-id');
+      expect(sourceWorktreeId, 'source worktree id').toBeTruthy();
+      const rowCountBefore = await rows.count();
+      const warning = window.getByTestId('branch-from-uncommitted-warning');
+
+      const response = await electronApp.evaluate(
+        async ({ BrowserWindow, ipcMain }, request) => {
+          const mainWindow = BrowserWindow.getAllWindows().find(
+            (candidate) =>
+              candidate.webContents.getURL().includes('surface=app-advisor') ===
+              false,
+          );
+          if (mainWindow === undefined)
+            throw new Error('Main window not found');
+          ipcMain.removeHandler('app-advisor:tool-response');
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error('Advisor response timed out')),
+              30_000,
+            );
+            ipcMain.handle('app-advisor:tool-response', (_event, candidate) => {
+              if (candidate?.requestId === request.requestId) {
+                clearTimeout(timer);
+                resolve(candidate);
+              }
+            });
+            mainWindow.webContents.send('app-advisor:tool-request', request);
+          });
+        },
+        {
+          kind: 'dispatch_action',
+          requestId: 'assistant-dirty-source-worktree-create',
+          source: 'assistant',
+          action: {
+            type: 'worktree.create',
+            workspaceId: WORKSPACE_ID,
+            baseWorktreeId: sourceWorktreeId,
+          },
+        },
+      );
+
+      expect(response.error).toBeUndefined();
+      expect(response.ok).toBe(true);
+      await expect(warning).toHaveCount(0);
+      await expect
+        .poll(async () => rows.count(), { timeout: 30_000 })
+        .toBe(rowCountBefore + 1);
+      await expect(warning).toHaveCount(0);
+      expect(readFileSync(dirtyFile, 'utf8')).toBe(
+        'dirty assistant branch source\n',
+      );
+
+      await sourceRow.hover();
+      await sourceRow.getByTestId('worktree-actions-menu-button').click();
+      await window.getByTestId('worktree-actions-menu-create-branch').click();
+      await expect(warning).toBeVisible();
+      await warning.getByRole('button', { name: 'Cancel' }).click();
+      await expect(warning).toHaveCount(0);
+      await expect(rows).toHaveCount(rowCountBefore + 1);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

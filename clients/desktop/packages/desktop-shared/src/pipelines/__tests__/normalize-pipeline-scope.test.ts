@@ -135,7 +135,7 @@ describe('executionContextSatisfies (capability truth table)', () => {
   it('directory/global contexts never provide a worktree', () => {
     for (const declared of [['directory'], ['global']] as const) {
       expect(executionContextSatisfies(declared, 'worktree')).toBe(
-        declared.includes('directory'),
+        declared[0] === 'directory',
       );
     }
     // exhaustively reference all contexts so the table is explicit

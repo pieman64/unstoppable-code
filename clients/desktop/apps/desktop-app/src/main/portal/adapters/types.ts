@@ -60,6 +60,8 @@ export type PortalAdapterFailureCode =
   | 'invalid_payload'
   | 'invalid_target'
   | 'not_found'
+  | 'not_found_or_firing'
+  | 'forbidden'
   | 'execution_failed'
   | 'github_not_connected'
   | 'unsupported_command';
@@ -85,6 +87,7 @@ export interface PortalAdapterContext {
   /** Validated server-attested sender metadata from the Portal envelope. */
   origin?: ExternalAgentSender;
   canReadAssets?: () => boolean;
+  canReadTranscripts?: () => boolean;
   /**
    * Main-owned revisioned chat command service. When present, chat mutations
    * are acknowledged from its committed result and never routed via renderer.

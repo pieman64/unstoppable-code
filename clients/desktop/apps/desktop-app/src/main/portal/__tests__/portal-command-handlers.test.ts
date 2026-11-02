@@ -16,9 +16,13 @@ jest.mock('../../account-proxy/service', () => ({
   onAccountProxyInventoryChanged: jest.fn(() => jest.fn()),
 }));
 
-const mockFindRepositoryOwnerAdapter = jest.fn();
+jest.mock('../adapters/chat-transcript-reads-adapter', () => ({
+  handlePortalChatTranscriptPage: jest.fn(),
+  handlePortalChatContentRead: jest.fn(),
+  handlePortalChatTranscriptBlocksPage: jest.fn(),
+}));
 jest.mock('../adapters/org-projects-adapter', () => ({
-  handlePortalOrgProjectsFindRepositoryOwner: mockFindRepositoryOwnerAdapter,
+  handlePortalOrgProjectsFindRepositoryOwner: jest.fn(),
 }));
 jest.mock('../adapters/chat-state-query', () => ({
   queryPortalChatState: (
@@ -43,10 +47,20 @@ import type {
   PortalEventEnvelope,
 } from '@canopy/desktop-shared/types';
 import type { ExternalAgentSender } from '@canopy/protocol/portal';
+import type { PortalChangedFilesPayload } from '@canopy/protocol/portal';
+import {
+  encodeChangedFilesCursor,
+  getChangedFilesRevision,
+  sortChangedFiles,
+} from '../changed-files-paging';
 import type * as WorkspaceAdapterModule from '../adapters/workspace-adapter';
 import type * as WorktreeAdapterModule from '../adapters/worktree-adapter';
 jest.mock('../portal-snapshot-builders', () => ({
   buildPortalSnapshot: jest.fn(),
+}));
+
+jest.mock('../../services/diff-service', () => ({
+  listChangedFileSets: jest.fn(),
 }));
 
 jest.mock('../../services/worktree-diff-stats-cache', () => ({
@@ -95,6 +109,7 @@ import {
 } from '../portal-command-handlers';
 import type { PortalCommandAdapter } from '../adapters/types';
 import { buildPortalSnapshot } from '../portal-snapshot-builders';
+import { listChangedFileSets } from '../../services/diff-service';
 import { acquirePortalOverviewSnapshot } from '../portal-overview-build';
 import {
   setCanopyPortalEventSink,
@@ -116,8 +131,24 @@ import {
   requestWorkspaceWorktreeDiffStatsRefresh,
   warmWorktreeDiffStats,
 } from '../../services/worktree-diff-stats-cache';
+import {
+  handlePortalChatContentRead,
+  handlePortalChatTranscriptBlocksPage,
+  handlePortalChatTranscriptPage,
+} from '../adapters/chat-transcript-reads-adapter';
+import { handlePortalOrgProjectsFindRepositoryOwner } from '../adapters/org-projects-adapter';
+
+const mockTranscriptPageAdapter = jest.mocked(handlePortalChatTranscriptPage);
+const mockContentReadAdapter = jest.mocked(handlePortalChatContentRead);
+const mockTranscriptBlocksAdapter = jest.mocked(
+  handlePortalChatTranscriptBlocksPage,
+);
+const mockFindRepositoryOwnerAdapter = jest.mocked(
+  handlePortalOrgProjectsFindRepositoryOwner,
+);
 
 const mockedBuildPortalSnapshot = jest.mocked(buildPortalSnapshot);
+const mockedListChangedFileSets = jest.mocked(listChangedFileSets);
 const mockedPersistPortalViewMode = jest.mocked(persistPortalViewMode);
 const mockedSetWorkspaceActivitySectionOrder = jest.mocked(
   setWorkspaceActivitySectionOrder,
@@ -146,9 +177,58 @@ function command(
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function filesOf(value: unknown): unknown[] {
+  const page = recordOf(recordOf(value)?.changedFilesPage);
+  return Array.isArray(page?.files) ? page.files : [];
+}
+
 describe('handlePortalCommand command result envelopes', () => {
+  it.each([
+    ['portal.chat.transcript.page', mockTranscriptPageAdapter],
+    ['portal.chat.content.read', mockContentReadAdapter],
+    ['portal.chat.transcript.blocks.page', mockTranscriptBlocksAdapter],
+  ] as const)(
+    'routes %s to its trusted adapter, not the unsupported fallback',
+    async (type, adapter) => {
+      const enqueueEvent = jest.fn();
+      const canReadTranscripts = (): boolean => true;
+      const envelope = command({ type });
+      await handlePortalCommand(envelope, {
+        sessionId: 'session-1',
+        canReadTranscripts,
+        pairingCode: null,
+        getWindow: () => null,
+        enqueueEvent,
+        markAuthenticated: jest.fn(),
+        stop: jest.fn(),
+      });
+      expect(adapter).toHaveBeenCalledWith(
+        envelope,
+        expect.objectContaining({
+          sessionId: 'session-1',
+          canReadTranscripts,
+        }),
+      );
+      expect(enqueueEvent).not.toHaveBeenCalled();
+    },
+  );
+
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedListChangedFileSets.mockResolvedValue({
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+      uncommitted: [],
+      committed: [],
+    });
     mockedBuildPortalSnapshot.mockResolvedValue({
       snapshot: {
         scope: 'overview',
@@ -366,7 +446,8 @@ describe('handlePortalCommand command result envelopes', () => {
       result: { approved: true },
     });
     expect(
-      typeof (completed?.payload as { generatedAt?: unknown }).generatedAt,
+      typeof (completed?.payload as { generatedAt?: unknown } | undefined)
+        ?.generatedAt,
     ).toBe('string');
   });
 
@@ -512,7 +593,12 @@ describe('handlePortalCommand command result envelopes', () => {
     expect(events[0]).toMatchObject({ type: 'portal.command.completed' });
   });
 
-  it.each([null, { kind: 'external_agent' }])(
+  it.each([
+    null,
+    { kind: 'external_agent' },
+    // A command origin is only ever an external agent.
+    { kind: 'managed_delegate', delegationId: 'd-1', title: 'Release task' },
+  ])(
     'fails malformed present origins before handling the command: %j',
     async (origin) => {
       const events: PortalEventEnvelope[] = [];
@@ -1082,6 +1168,204 @@ describe('handlePortalCommand command result envelopes', () => {
     );
   });
 
+  it('keeps legacy diff requests on the snapshot path without page metadata', async () => {
+    const target = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+    };
+    const events: PortalEventEnvelope[] = [];
+
+    await handlePortalCommand(
+      command({
+        type: 'portal.state.request',
+        target,
+        payload: { scope: 'diff', target },
+      }),
+      {
+        pairingCode: null,
+        getWindow: () => null,
+        enqueueEvent: (event) => events.push(event),
+        markAuthenticated: jest.fn(),
+        stop: jest.fn(),
+      },
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      'portal.state.snapshot',
+      'portal.command.completed',
+    ]);
+    expect(mockedBuildPortalSnapshot).toHaveBeenCalledWith(
+      { scope: 'diff', target },
+      { commandId: 'cmd-1' },
+    );
+    expect(mockedListChangedFileSets).not.toHaveBeenCalled();
+  });
+
+  it('returns changed-files pages from the completion result without publishing snapshots', async () => {
+    const fullPayload: PortalChangedFilesPayload = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+      uncommitted: [
+        { filePath: 'src/c.ts', status: 'modified' },
+        { filePath: 'src/a.ts', status: 'added' },
+        { filePath: 'src/b.ts', status: 'deleted' },
+      ],
+      committed: [
+        { filePath: 'src/f.ts', status: 'modified' },
+        { filePath: 'src/d.ts', status: 'added' },
+      ],
+    };
+    mockedListChangedFileSets.mockResolvedValue(fullPayload);
+    const groups = {
+      uncommitted: sortChangedFiles(fullPayload.uncommitted),
+      committed: sortChangedFiles(fullPayload.committed),
+    };
+    const revision = getChangedFilesRevision(groups);
+    const received: Record<'uncommitted' | 'committed', unknown[]> = {
+      uncommitted: [],
+      committed: [],
+    };
+    const target = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+    };
+
+    for (const group of ['uncommitted', 'committed'] as const) {
+      let cursor: string | undefined = encodeChangedFilesCursor({
+        revision,
+        group,
+        offset: 0,
+      });
+      while (cursor) {
+        const events: PortalEventEnvelope[] = [];
+        await handlePortalCommand(
+          command({
+            type: 'portal.state.request',
+            target,
+            payload: {
+              scope: 'diff',
+              target,
+              changedFilesPage: { group, cursor, limit: 2 },
+            },
+          }),
+          {
+            pairingCode: null,
+            getWindow: () => null,
+            enqueueEvent: (event) => events.push(event),
+            markAuthenticated: jest.fn(),
+            stop: jest.fn(),
+          },
+        );
+
+        expect(events.map((event) => event.type)).toEqual([
+          'portal.command.completed',
+        ]);
+        const completion = recordOf(events[0]?.payload);
+        const result = recordOf(completion?.result);
+        const page = recordOf(result?.changedFilesPage);
+        expect(page).toMatchObject({
+          workspaceLocalId: target.workspaceLocalId,
+          worktreeLocalId: target.worktreeLocalId,
+          group,
+          revision,
+          total: groups[group].length,
+        });
+        received[group].push(...filesOf(result));
+        cursor =
+          typeof page?.nextCursor === 'string' ? page.nextCursor : undefined;
+      }
+    }
+
+    expect(received.uncommitted).toEqual(groups.uncommitted);
+    expect(received.committed).toEqual(groups.committed);
+    expect(mockedListChangedFileSets).toHaveBeenCalledTimes(3);
+    expect(mockedBuildPortalSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns stale and invalid cursor results, and rejects page requests outside diff scope', async () => {
+    mockedListChangedFileSets.mockResolvedValue({
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+      uncommitted: [{ filePath: 'src/a.ts', status: 'modified' }],
+      committed: [],
+    });
+    const target = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+    };
+    const staleCursor = encodeChangedFilesCursor({
+      revision: 'outdated-revision',
+      group: 'uncommitted',
+      offset: 0,
+    });
+
+    for (const [cursor, expectedError] of [
+      ['bad-cursor', 'invalid_cursor'],
+      [staleCursor, 'stale_cursor'],
+    ]) {
+      const events: PortalEventEnvelope[] = [];
+      await handlePortalCommand(
+        command({
+          type: 'portal.state.request',
+          target,
+          payload: {
+            scope: 'diff',
+            target,
+            changedFilesPage: { group: 'uncommitted', cursor },
+          },
+        }),
+        {
+          pairingCode: null,
+          getWindow: () => null,
+          enqueueEvent: (event) => events.push(event),
+          markAuthenticated: jest.fn(),
+          stop: jest.fn(),
+        },
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]?.payload).toMatchObject({
+        result: {
+          changedFilesPage: {
+            workspaceLocalId: target.workspaceLocalId,
+            worktreeLocalId: target.worktreeLocalId,
+            group: 'uncommitted',
+            cursor,
+            error: expectedError,
+          },
+        },
+      });
+    }
+
+    const invalidEvents: PortalEventEnvelope[] = [];
+    await handlePortalCommand(
+      command({
+        type: 'portal.state.request',
+        target,
+        payload: {
+          scope: 'worktree',
+          target,
+          changedFilesPage: { group: 'uncommitted', cursor: 'cursor' },
+        },
+      }),
+      {
+        pairingCode: null,
+        getWindow: () => null,
+        enqueueEvent: (event) => invalidEvents.push(event),
+        markAuthenticated: jest.fn(),
+        stop: jest.fn(),
+      },
+    );
+    expect(invalidEvents).toMatchObject([
+      {
+        type: 'portal.command.failed',
+        payload: { error: { code: 'invalid_payload' } },
+      },
+    ]);
+    expect(invalidEvents).not.toContainEqual(
+      expect.objectContaining({ type: 'portal.state.snapshot' }),
+    );
+  });
+
   it('forwards complete Activity inventory and bypasses shallow overview reuse', async () => {
     await handlePortalCommand(
       command({
@@ -1338,7 +1622,9 @@ describe('mobile read acknowledgements (CAN-2809)', () => {
       });
       const chatStatePort: ChatStateCommandPort = {
         getTranscriptPage,
+        searchTranscript: jest.fn(),
         readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
         getState: jest.fn().mockResolvedValue({
           revision: 7,
           tabsFile: {
@@ -1374,7 +1660,7 @@ describe('mobile read acknowledgements (CAN-2809)', () => {
       const events: PortalEventEnvelope[] = [];
       await handlePortalCommand(
         command({
-          type: 'portal.chat.mark_read' as PortalCommandEnvelope['type'],
+          type: 'portal.chat.mark_read',
           payload: {
             scope: 'worktree',
             projectId: 'workspace-1',
@@ -1455,7 +1741,9 @@ it.each([
     const chatStatePort: ChatStateCommandPort = {
       getState,
       getTranscriptPage: jest.fn(),
+      searchTranscript: jest.fn(),
       readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
       command: jest.fn(),
       subscribe: jest.fn(() => jest.fn()),
     };
@@ -1463,7 +1751,7 @@ it.each([
     const events: PortalEventEnvelope[] = [];
     await handlePortalCommand(
       command({
-        type: 'portal.chat.mark_read' as PortalCommandEnvelope['type'],
+        type: 'portal.chat.mark_read',
         payload,
       }),
       {
@@ -1481,6 +1769,56 @@ it.each([
     jest.mocked(getChatStateCommandPort).mockReset();
   },
 );
+
+it('routes portal.chat.set_unread to a manual unread mark', async () => {
+  const commit = jest
+    .fn()
+    .mockResolvedValue({ outcome: 'applied', revision: 8 });
+  const chatStatePort: ChatStateCommandPort = {
+    getTranscriptPage: jest.fn(),
+    searchTranscript: jest.fn(),
+    readToolOutput: jest.fn(),
+    readVisual: jest.fn(),
+    getState: jest.fn().mockResolvedValue({
+      revision: 7,
+      tabsFile: { tabs: [{ id: 'chat-1', unread: false, messages: [] }] },
+      runtimeByChatId: {},
+    }),
+    command: commit,
+    subscribe: jest.fn(() => jest.fn()),
+  };
+  jest.mocked(getChatStateCommandPort).mockReturnValue(chatStatePort);
+  createDesktopRuntime({ chatServices: { getPort: () => chatStatePort } });
+  const events: PortalEventEnvelope[] = [];
+  await handlePortalCommand(
+    command({
+      type: 'portal.chat.set_unread',
+      payload: {
+        scope: 'worktree',
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        unread: true,
+      },
+    }),
+    {
+      sessionId: 'portal-session-1',
+      pairingCode: null,
+      getWindow: () => null,
+      enqueueEvent: (event) => events.push(event),
+      markAuthenticated: jest.fn(),
+      stop: jest.fn(),
+    },
+  );
+  expect(commit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      origin: 'portal',
+      command: { type: 'chat.mark_unread', chatId: 'chat-1', manual: true },
+    }),
+  );
+  expect(events[events.length - 1]?.type).toBe('portal.command.completed');
+  jest.mocked(getChatStateCommandPort).mockReset();
+});
 
 describe('provider usage refresh (CAN-3635)', () => {
   let refreshSpy: jest.SpiedFunction<

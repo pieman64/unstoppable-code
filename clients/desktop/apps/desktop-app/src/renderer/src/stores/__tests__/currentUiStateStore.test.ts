@@ -66,7 +66,9 @@ beforeEach(() => {
       connectionStatus: 'inactive',
       sessionId: 'sess',
       pairingCode: '123456',
+      hostCode: null,
       pairingCodeExpiresAt: new Date().toISOString(),
+      machineName: null,
       activatedAt: null,
       lastSeenAt: null,
       lastErrorAt: null,
@@ -126,7 +128,9 @@ describe('currentUiStateStore.recomputeEnvelope', () => {
       connectionStatus: 'active' as const,
       sessionId: 'sess',
       pairingCode: null,
+      hostCode: null,
       pairingCodeExpiresAt: null,
+      machineName: null,
       activatedAt: '2026-10-13T11:00:00.000Z',
       lastSeenAt: '2026-10-13T11:05:02.178Z',
       lastErrorAt: null,
@@ -574,7 +578,7 @@ describe('currentUiStateStore.recomputeEnvelope', () => {
       open: true,
       projectId: 'project-1',
       worktreeId: 'worktree-1',
-      activeTab: 'detected',
+      selectedGroup: 'suggestions',
       importing: true,
       originChatId: 'chat-1',
       detectedEntryCount: 3,
@@ -588,7 +592,7 @@ describe('currentUiStateStore.recomputeEnvelope', () => {
       open: true,
       projectId: 'project-1',
       worktreeId: 'worktree-1',
-      activeTab: 'detected',
+      selectedGroup: 'suggestions',
       importing: true,
       originChatId: 'chat-1',
       detectedEntryCount: 3,
@@ -615,7 +619,7 @@ describe('currentUiStateStore.recomputeEnvelope', () => {
     expect(JSON.stringify(plugins)).not.toContain('must not be copied');
   });
 
-  it('reports the plugins management view slice', () => {
+  it('still reads the retired plugins management view slice', () => {
     const store = useCurrentUiStateStore.getState();
     store.updateSlice('plugins.managementView', {
       section: 'marketplaces',
@@ -838,6 +842,46 @@ describe('currentUiStateStore.recomputeEnvelope', () => {
       itemCount: 8,
     });
     expect(JSON.stringify(envelope)).not.toContain('app-advisor');
+  });
+
+  it('reports resume readiness only for gated resume origins', () => {
+    const store = useCurrentUiStateStore.getState();
+    store.updateSlice('usageLimit.resumeModal', {
+      open: true,
+      origin: 'home',
+      loading: false,
+      selectedCount: 2,
+      readinessPending: false,
+      readyCount: 2,
+      waitingCount: 1,
+    });
+    expect(
+      useCurrentUiStateStore.getState().envelope.snapshot.appAdvisor
+        ?.usageLimitResumeModal,
+    ).toEqual({
+      open: true,
+      origin: 'home',
+      loading: false,
+      selectedCount: 2,
+      readinessPending: false,
+      readyCount: 2,
+      waitingCount: 1,
+    });
+    store.updateSlice('usageLimit.resumeModal', {
+      open: true,
+      origin: 'account-change',
+      provider: 'codex',
+      selectedCount: 3,
+    });
+    expect(
+      useCurrentUiStateStore.getState().envelope.snapshot.appAdvisor
+        ?.usageLimitResumeModal,
+    ).toEqual({
+      open: true,
+      origin: 'account-change',
+      provider: 'codex',
+      selectedCount: 3,
+    });
   });
 
   it('includes sanitized App Advisor watchers modal reporter state', () => {
@@ -1084,7 +1128,7 @@ describe('currentUiStateStore.recomputeEnvelope', () => {
       ],
       started_at: '2026-05-19T00:00:00.000Z',
       cwd: '/repo',
-      event_name: 'manual',
+      event_name: 'dispatch',
       project_id: 'project-1',
       worktree_id: 'worktree-1',
     };
@@ -1105,7 +1149,11 @@ describe('currentUiStateStore.recomputeEnvelope', () => {
               planMode: false,
               proposalMode: 'optional',
               thinkingLevel: 'high',
-              modelConfig: { thinkingLevel: 'high', fastMode: false },
+              modelConfig: {
+                thinkingLevel: 'high',
+                speed: 'standard',
+                fastMode: false,
+              },
               fastModeExplicit: false,
               selectedRepoId: 'repo-a',
             },

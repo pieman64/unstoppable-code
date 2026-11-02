@@ -1,7 +1,9 @@
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { posix, win32, sep } from 'node:path';
 import {
   CLAUDE_PLAN_MODE_READ_ONLY_TOOLS,
   approvalCheckForClaudeTool,
+  approvalFileDisplayPath,
   claudePermissionModeFor,
   isClaudePlanModeBookkeepingTool,
 } from '../agents/claude-approval-adapter';
@@ -48,6 +50,276 @@ describe('claudePermissionModeFor', () => {
 
   it('maps full-access + planMode -> plan', () => {
     expect(claudePermissionModeFor('full-access', true)).toBe('plan');
+  });
+});
+
+describe('file-write display details', () => {
+  const cap = 20_000;
+
+  it('retains both Edit strings and a boolean replacement flag without changing policy identity or input', () => {
+    const input = Object.freeze({
+      file_path: '/repo/src/a.ts',
+      old_string: 'before\r\n',
+      new_string: 'after\n',
+      replace_all: true,
+    });
+    const result = approvalCheckForClaudeTool('Edit', input, '/repo');
+    expect(result.details).toEqual({
+      kind: 'file-write',
+      path: input.file_path,
+      displayPath: ['src', 'a.ts'].join(sep),
+      change: {
+        kind: 'edit',
+        oldText: input.old_string,
+        newText: input.new_string,
+        replaceAll: true,
+      },
+    });
+    expect(result.check).toEqual({ kind: 'file-write', path: input.file_path });
+    expect(result.suggestedTarget).toEqual(result.check);
+    expect(input).toEqual({
+      file_path: '/repo/src/a.ts',
+      old_string: 'before\r\n',
+      new_string: 'after\n',
+      replace_all: true,
+    });
+  });
+
+  it.each([true, false, undefined, 'true', 1, null])(
+    'accepts replace_all only when boolean: %s',
+    (replace_all) => {
+      const result = approvalCheckForClaudeTool('Edit', {
+        file_path: '/repo/a',
+        old_string: '',
+        new_string: '',
+        replace_all,
+      });
+      expect(result.details).toEqual({
+        kind: 'file-write',
+        path: '/repo/a',
+        change: {
+          kind: 'edit',
+          oldText: '',
+          newText: '',
+          ...(typeof replace_all === 'boolean'
+            ? { replaceAll: replace_all }
+            : {}),
+        },
+      });
+    },
+  );
+
+  it.each([
+    [
+      'Edit',
+      { old_string: '', new_string: 'insert' },
+      { kind: 'edit', oldText: '', newText: 'insert' },
+    ],
+    [
+      'Edit',
+      { old_string: 'delete', new_string: '' },
+      { kind: 'edit', oldText: 'delete', newText: '' },
+    ],
+    ['Write', { content: '' }, { kind: 'write', content: '' }],
+    [
+      'Write',
+      { content: '<script>\n\r\n' },
+      { kind: 'write', content: '<script>\n\r\n' },
+    ],
+  ])(
+    'preserves supplied %s text, including empty content',
+    (tool, input, change) => {
+      expect(
+        approvalCheckForClaudeTool(tool, { file_path: '/repo/a', ...input })
+          .details,
+      ).toEqual({ kind: 'file-write', path: '/repo/a', change });
+    },
+  );
+
+  it.each([
+    ['Edit', {}],
+    ['Edit', { old_string: 'old' }],
+    ['Edit', { new_string: 'new' }],
+    ['Edit', { old_string: null, new_string: 'new' }],
+    ['Edit', { old_string: 'old', new_string: 12 }],
+    ['Edit', { old_string: [], new_string: {} }],
+    ['Write', {}],
+    ['Write', { content: null }],
+    ['Write', { content: 42 }],
+    ['Write', { content: ['text'] }],
+  ])('keeps the path-only fallback for malformed %s content', (tool, input) => {
+    expect(
+      approvalCheckForClaudeTool(
+        tool,
+        { file_path: '/repo/a', ...input },
+        '/repo',
+      ).details,
+    ).toEqual({ kind: 'file-write', path: '/repo/a', displayPath: 'a' });
+  });
+
+  it('projects NotebookEdit paths without treating cells as Edit or Write content', () => {
+    expect(
+      approvalCheckForClaudeTool(
+        'NotebookEdit',
+        {
+          notebook_path: '/repo/book.ipynb',
+          old_string: 'old',
+          new_string: 'new',
+          content: 'cell',
+        },
+        '/repo',
+      ).details,
+    ).toEqual({
+      kind: 'file-write',
+      path: '/repo/book.ipynb',
+      displayPath: 'book.ipynb',
+    });
+  });
+
+  it.each([cap, cap + 1])(
+    'caps each text field independently at %i units',
+    (length) => {
+      const text = 'x'.repeat(length);
+      const truncated = length > cap ? { truncated: true } : {};
+      expect(
+        approvalCheckForClaudeTool('Edit', {
+          file_path: '/a',
+          old_string: text,
+          new_string: text,
+        }).details,
+      ).toEqual({
+        kind: 'file-write',
+        path: '/a',
+        change: {
+          kind: 'edit',
+          oldText: text.slice(0, cap),
+          newText: text.slice(0, cap),
+          ...truncated,
+        },
+      });
+      expect(
+        approvalCheckForClaudeTool('Write', { file_path: '/a', content: text })
+          .details,
+      ).toEqual({
+        kind: 'file-write',
+        path: '/a',
+        change: { kind: 'write', content: text.slice(0, cap), ...truncated },
+      });
+    },
+  );
+
+  it.each(['old_string', 'new_string'])(
+    'marks an Edit capped on only %s',
+    (side) => {
+      const input = {
+        file_path: '/a',
+        old_string: 'old',
+        new_string: 'new',
+        [side]: 'x'.repeat(cap + 1),
+      };
+      expect(approvalCheckForClaudeTool('Edit', input).details).toEqual({
+        kind: 'file-write',
+        path: '/a',
+        change: {
+          kind: 'edit',
+          oldText: input.old_string.slice(0, cap),
+          newText: input.new_string.slice(0, cap),
+          truncated: true,
+        },
+      });
+      expect(input[side]).toHaveLength(cap + 1);
+    },
+  );
+
+  it.each([
+    ['x'.repeat(cap - 1) + '😀', 'x'.repeat(cap - 1), true],
+    ['x'.repeat(cap - 2) + '😀', 'x'.repeat(cap - 2) + '😀', false],
+    ['x'.repeat(cap - 2) + '😀tail', 'x'.repeat(cap - 2) + '😀', true],
+    ['x'.repeat(cap - 1) + '\ud800z', 'x'.repeat(cap - 1) + '\ud800', true],
+  ])(
+    'does not split a surrogate pair at the cap',
+    (text, expected, truncated) => {
+      expect(
+        approvalCheckForClaudeTool('Write', { file_path: '/a', content: text })
+          .details,
+      ).toEqual({
+        kind: 'file-write',
+        path: '/a',
+        change: {
+          kind: 'write',
+          content: expected,
+          ...(truncated ? { truncated: true } : {}),
+        },
+      });
+      expect(
+        approvalCheckForClaudeTool('Edit', {
+          file_path: '/a',
+          old_string: text,
+          new_string: text,
+        }).details,
+      ).toEqual({
+        kind: 'file-write',
+        path: '/a',
+        change: {
+          kind: 'edit',
+          oldText: expected,
+          newText: expected,
+          ...(truncated ? { truncated: true } : {}),
+        },
+      });
+    },
+  );
+
+  it.each([
+    ['/repo/src/a.ts', '/repo', 'src/a.ts'],
+    ['src/a.ts', '/repo', 'src/a.ts'],
+    ['./src/../a.ts', '/repo', 'a.ts'],
+    ['/repo/../repo/a.ts', '/repo', 'a.ts'],
+    ['/repo/..config/a', '/repo', '..config/a'],
+    ['../repo/a', '/repo', 'a'],
+    ['/repo-other/a', '/repo', undefined],
+    ['../outside/a', '/repo', undefined],
+    ['/outside/a', '/repo', undefined],
+    ['/repo', '/repo', undefined],
+    ['.', '/repo', undefined],
+    ['', '/repo', undefined],
+    ['/repo/a', undefined, undefined],
+    ['/repo/a', '', undefined],
+    ['/private/var/repo/a', '/var/repo', undefined],
+  ])(
+    'projects native target %s against %s only when contained',
+    (file_path, cwd, displayPath) => {
+      expect(approvalFileDisplayPath(file_path, cwd, posix)).toBe(displayPath);
+      const result = approvalCheckForClaudeTool('Write', { file_path }, cwd);
+      expect(result.details).toEqual({
+        kind: 'file-write',
+        path: file_path,
+        ...(displayPath
+          ? { displayPath: displayPath.split('/').join(sep) }
+          : {}),
+      });
+      expect(result.check).toEqual({ kind: 'file-write', path: file_path });
+      expect(result.suggestedTarget).toEqual(result.check);
+    },
+  );
+
+  it.each([
+    ['C:\\repo\\src\\a.ts', 'C:\\repo', 'src\\a.ts'],
+    ['src/a.ts', 'C:\\repo', 'src\\a.ts'],
+    ['c:/REPO/src/../a.ts', 'C:\\repo', 'a.ts'],
+    ['C:\\repo\\..config\\a', 'C:\\repo', '..config\\a'],
+    ['C:\\repo-other\\a', 'C:\\repo', undefined],
+    ['..\\outside\\a', 'C:\\repo', undefined],
+    ['C:\\repo', 'C:\\repo', undefined],
+    ['C:\\', 'C:\\repo', undefined],
+    ['D:\\repo\\a', 'C:\\repo', undefined],
+    ['\\\\host\\share\\repo\\a', '\\\\host\\share\\repo', 'a'],
+    ['src\\a', '\\\\host\\share\\repo', 'src\\a'],
+    ['\\\\host\\share\\repo-other\\a', '\\\\host\\share\\repo', undefined],
+    ['\\\\other\\share\\repo\\a', '\\\\host\\share\\repo', undefined],
+    ['\\\\host\\other\\repo\\a', '\\\\host\\share\\repo', undefined],
+  ])('projects Windows drive and UNC paths: %s', (target, cwd, expected) => {
+    expect(approvalFileDisplayPath(target, cwd, win32)).toBe(expected);
   });
 });
 

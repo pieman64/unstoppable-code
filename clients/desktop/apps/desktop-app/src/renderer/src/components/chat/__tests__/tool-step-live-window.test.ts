@@ -17,6 +17,7 @@ import {
  */
 
 type ToolUseBlock = Extract<DisplayBlock, { type: 'tool_use' }>;
+type ThinkingBlock = Extract<DisplayBlock, { type: 'thinking' }>;
 
 let nextId = 0;
 
@@ -35,7 +36,7 @@ function toolUse(
   };
 }
 
-function thinking(text: string): DisplayBlock {
+function thinking(text: string): ThinkingBlock {
   return { type: 'thinking', text };
 }
 

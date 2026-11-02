@@ -46,6 +46,7 @@ function run(
 const projectLaunch: ScriptEntry = {
   script: descriptor('launch', 'launch'),
   request: {
+    target: 'project',
     projectId: 'code-1',
     worktreeId: 'wt-1',
     scriptName: 'launch',

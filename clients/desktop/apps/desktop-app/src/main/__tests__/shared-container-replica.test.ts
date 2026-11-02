@@ -37,11 +37,17 @@ import {
   transportForSharedContainerFixture as transportFor,
 } from './fixtures/shared-container-replica-fixture';
 import { getWorktreeDataDir } from '../lib/paths';
+import { isRecord } from '../lib/type-guards';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type {
   SharedContainerDetail,
   SharedContainerFetchRevisionResponse,
 } from '@canopy/protocol/shared-containers';
+import legacyRevision from '../../../../../packages/protocol/src/__fixtures__/legacy-shares/shared-container/revision-detail.2026-10-21.json';
+
+function responseForBody(body: Buffer | undefined): Response {
+  return new Response(body ? new Uint8Array(body) : undefined);
+}
 
 jest.mock('node:child_process', () => {
   const actual =
@@ -934,6 +940,194 @@ describe('replica purge identity recovery', () => {
 });
 
 describe('shared-container replica manager', () => {
+  it('hydrates package metadata on a legacy cached revision without downloading it again', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'shared-package-upgrade-'));
+    const fixture = await buildFixture();
+    const transport = transportFor(fixture);
+    const fetchRevision = jest.spyOn(transport, 'fetchRevision');
+    const manager = new SharedContainerReplicaManager({
+      rootDir,
+      transport,
+      fetchImpl: fetchFor(fixture),
+    });
+    try {
+      expect(await manager.sync('container-1', 'org-1')).not.toHaveProperty(
+        'package',
+      );
+      const capabilityPackage = {
+        digest: `pp:v1:${'a'.repeat(43)}`,
+        counts: {
+          skills: 1,
+          pipelines: 0,
+          agents: 0,
+          automations: 0,
+          hooks: 0,
+        },
+        executableFiles: [],
+      };
+      fixture.revision.revision.package = capabilityPackage;
+      expect(await manager.sync('container-1', 'org-1')).toMatchObject({
+        package: capabilityPackage,
+      });
+      expect(fetchRevision).toHaveBeenCalledTimes(1);
+      expect(
+        await new SharedContainerReplicaStore(rootDir).get('container-1'),
+      ).toMatchObject({ package: capabilityPackage });
+    } finally {
+      await manager.store.purgeAllBytes();
+    }
+  });
+
+  it('preserves a concurrent pin while hydrating same-revision metadata', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'shared-package-pin-'));
+    const fixture = await buildFixture();
+    const manager = new SharedContainerReplicaManager({
+      rootDir,
+      transport: transportFor(fixture),
+      fetchImpl: fetchFor(fixture),
+    });
+    try {
+      await manager.sync('container-1', 'org-1');
+      const capabilityPackage = {
+        digest: `pp:v1:${'a'.repeat(43)}`,
+        counts: {
+          skills: 1,
+          pipelines: 0,
+          agents: 0,
+          automations: 0,
+          hooks: 0,
+        },
+        executableFiles: [],
+      };
+      fixture.revision.revision.package = capabilityPackage;
+      const realGet = manager.store.get.bind(manager.store);
+      let reads = 0;
+      // The first read checks ownership; the second captures the cached
+      // checkpoint. Simulate another actor pinning that checkpoint after the
+      // snapshot was read but before the metadata-only write gets its turn.
+      const get = jest
+        .spyOn(manager.store, 'get')
+        .mockImplementation(async (id) => {
+          const cached = await realGet(id);
+          reads += 1;
+          if (reads === 2 && cached?.status === 'available') {
+            await manager.store.set({ ...cached, status: 'pinned' });
+          }
+          return cached;
+        });
+      try {
+        expect(await manager.sync('container-1', 'org-1')).toMatchObject({
+          status: 'pinned',
+          package: capabilityPackage,
+        });
+        expect(await realGet('container-1')).toMatchObject({
+          status: 'pinned',
+          package: capabilityPackage,
+        });
+      } finally {
+        get.mockRestore();
+      }
+    } finally {
+      await manager.store.purgeAllBytes();
+    }
+  });
+
+  it('retains the fetched revision package across promotion, restart and pinning', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'shared-package-replica-'));
+    const fixture = await buildFixture();
+    const capabilityPackage = {
+      digest: `pp:v1:${'a'.repeat(43)}`,
+      counts: { skills: 1, pipelines: 0, agents: 0, automations: 0, hooks: 0 },
+      executableFiles: ['skill/scripts/run.sh'],
+    };
+    fixture.revision.revision.package = capabilityPackage;
+    const options = {
+      rootDir,
+      transport: transportFor(fixture),
+      fetchImpl: fetchFor(fixture),
+    };
+    const manager = new SharedContainerReplicaManager(options);
+    try {
+      expect(await manager.sync('container-1', 'org-1')).toMatchObject({
+        status: 'available',
+        revisionId: 'revision-1',
+        package: capabilityPackage,
+      });
+      const restarted = new SharedContainerReplicaManager(options);
+      expect(await restarted.getState('container-1')).toMatchObject({
+        package: capabilityPackage,
+      });
+      expect(await restarted.pin('container-1', 'org-1')).toMatchObject({
+        status: 'pinned',
+        revisionId: 'revision-1',
+        package: capabilityPackage,
+      });
+      const afterPin = new SharedContainerReplicaManager(options);
+      expect(await afterPin.getState('container-1')).toMatchObject({
+        status: 'pinned',
+        package: capabilityPackage,
+      });
+      // A latest-detail response about another checkpoint must not replace the
+      // package on the retained newer revision, even when it is pinned.
+      const latest = fixture.detail.latestRevision;
+      if (!latest) throw new Error('Missing latest revision');
+      fixture.detail.latestRevision = {
+        ...latest,
+        id: 'older-revision',
+        revision: 0,
+        package: { ...capabilityPackage, digest: `pp:v1:${'b'.repeat(43)}` },
+      };
+      expect(await afterPin.sync('container-1', 'org-1')).toMatchObject({
+        status: 'pinned',
+        revisionId: 'revision-1',
+        package: capabilityPackage,
+      });
+    } finally {
+      await manager.store.purgeAllBytes();
+    }
+  });
+
+  it('keeps legacy replicas readable and drops corrupt optional package metadata', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'shared-package-replica-'));
+    const fixture = await buildFixture({
+      revisionId: legacyRevision.id,
+      revision: legacyRevision.revision,
+    });
+    // Preserve the retained response's fields and absence of package; the
+    // generated encrypted artifacts supply real verifiable bytes for sync.
+    fixture.revision.revision = {
+      ...legacyRevision,
+      ...fixture.revision.revision,
+    };
+    const manager = new SharedContainerReplicaManager({
+      rootDir,
+      transport: transportFor(fixture),
+      fetchImpl: fetchFor(fixture),
+    });
+    try {
+      const legacy = await manager.sync('container-1', 'org-1');
+      expect(legacy.status).toBe('available');
+      expect(legacy).not.toHaveProperty('package');
+      const indexPath = join(rootDir, 'index.json');
+      const index: unknown = JSON.parse(await readFile(indexPath, 'utf8'));
+      if (
+        !isRecord(index) ||
+        !isRecord(index.containers) ||
+        !isRecord(index.containers['container-1'])
+      ) {
+        throw new Error('Missing persisted replica');
+      }
+      index.containers['container-1'].package = { digest: 'tampered' };
+      await writeFile(indexPath, JSON.stringify(index));
+      const restarted = new SharedContainerReplicaStore(rootDir);
+      const state = await restarted.get('container-1');
+      expect(state?.status).toBe('available');
+      expect(state).not.toHaveProperty('package');
+    } finally {
+      await manager.store.purgeAllBytes();
+    }
+  });
+
   it('forwards missing-access repository identity and retains it across restart and retry', async () => {
     const rootDir = await mkdtemp(join(tmpdir(), 'shared-replica-'));
     const fixture = await buildFixture({
@@ -1082,7 +1276,9 @@ describe('shared-container replica manager', () => {
   it('blocks an unknown future layout version with an update-required reason', async () => {
     const rootDir = await mkdtemp(join(tmpdir(), 'shared-replica-'));
     const fixture = await buildFixture();
-    fixture.detail.latestRevision.schemaVersion = 6;
+    const latestRevision = fixture.detail.latestRevision;
+    if (!latestRevision) throw new Error('fixture missing latest revision');
+    latestRevision.schemaVersion = 6;
     fixture.revision.revision.schemaVersion = 6;
     const fetchImpl = jest.fn(fetchFor(fixture));
     const manager = new SharedContainerReplicaManager({
@@ -1144,17 +1340,19 @@ describe('shared-container replica manager', () => {
       ): Promise<{ dev: unknown; ino: unknown } | null>;
     };
     const originalLstat = store.lstatIfPresent.bind(store);
-    let observedIdentity: { dev: unknown; ino: unknown } | null = null;
+    const observedIdentity: {
+      value: { dev: unknown; ino: unknown } | null;
+    } = { value: null };
     jest.spyOn(store, 'lstatIfPresent').mockImplementation(async (path) => {
       const info = await originalLstat(path);
-      if (path === rootDir && info) observedIdentity = info;
+      if (path === rootDir && info) observedIdentity.value = info;
       return info;
     });
 
     await manager.sync('container-1', 'org-1');
 
-    expect(typeof observedIdentity?.dev).toBe('bigint');
-    expect(typeof observedIdentity?.ino).toBe('bigint');
+    expect(typeof observedIdentity.value?.dev).toBe('bigint');
+    expect(typeof observedIdentity.value?.ino).toBe('bigint');
   });
 
   it('distinguishes adjacent replica inode identities above the safe integer limit', async () => {
@@ -1194,7 +1392,7 @@ describe('shared-container replica manager', () => {
       return Object.assign(info, {
         dev: BigInt(1),
         ino: BigInt('9007199254740993'),
-      }) as Record<string, unknown>;
+      });
     });
 
     await expect(
@@ -1537,14 +1735,14 @@ describe('shared-container replica manager', () => {
       }
     ).cleanupWorkerTimeoutMs = 100;
 
-    let stopStalledChild: (() => void) | null = null;
+    const stalledChildControl: { stop: (() => void) | null } = { stop: null };
     mockedSpawn.mockImplementationOnce((_command, _args, options) => {
       const child = actualSpawn(
         process.execPath,
         ['--input-type=commonjs', '--eval', STALLED_REPLICA_CLEANUP_SCRIPT],
         options as SpawnOptionsWithoutStdio,
       );
-      stopStalledChild = (): void => {
+      stalledChildControl.stop = (): void => {
         child.kill();
       };
       return child;
@@ -1563,7 +1761,7 @@ describe('shared-container replica manager', () => {
         setTimeout(() => resolve({ status: 'pending', message: '' }), 1_000);
       }),
     ]);
-    if (outcome.status === 'pending') stopStalledChild?.();
+    if (outcome.status === 'pending') stalledChildControl.stop?.();
     await purge.catch(() => undefined);
 
     expect(outcome.status).toBe('rejected');
@@ -1579,11 +1777,10 @@ describe('shared-container replica manager', () => {
     const fixture = await buildFixture();
     const transport = transportFor(fixture);
     const originalResolveLatest = transport.resolveLatest.bind(transport);
-    const resolveLatest = jest.fn(
-      (
-        input: Parameters<SharedContainerReplicaTransport['resolveLatest']>[0],
-      ) => originalResolveLatest(input),
-    );
+    const resolveLatest = jest.fn<
+      ReturnType<SharedContainerReplicaTransport['resolveLatest']>,
+      Parameters<SharedContainerReplicaTransport['resolveLatest']>
+    >((...args) => originalResolveLatest(...args));
     transport.resolveLatest = resolveLatest;
     const manager = new SharedContainerReplicaManager({
       rootDir,
@@ -1688,9 +1885,12 @@ describe('shared-container replica manager', () => {
     const firstPaused = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    transport.resolveLatest = jest.fn(async (input) => {
+    transport.resolveLatest = jest.fn<
+      ReturnType<SharedContainerReplicaTransport['resolveLatest']>,
+      Parameters<SharedContainerReplicaTransport['resolveLatest']>
+    >(async (...args) => {
       await firstPaused;
-      return originalResolveLatest(input);
+      return originalResolveLatest(...args);
     });
     const reservation = BigInt(10 * 1024 * 1024);
     const manager = new SharedContainerReplicaManager({
@@ -2026,15 +2226,15 @@ describe('shared-container replica manager', () => {
       const manager = new SharedContainerReplicaManager({
         rootDir,
         transport,
-        fetchImpl: ((input) => {
+        fetchImpl: (input): Promise<Response> => {
           const url =
             typeof input === 'string'
               ? input
               : input instanceof URL
                 ? input.href
                 : input.url;
-          return Promise.resolve(new Response(fixture.responses.get(url)));
-        }) as typeof fetch,
+          return Promise.resolve(responseForBody(fixture.responses.get(url)));
+        },
         sealReplicaTree: async (revisionDir): Promise<void> => {
           if (failSealing) throw new Error('sealing unavailable');
           await makeReplicaTreeReadOnly(revisionDir);
@@ -2163,15 +2363,15 @@ describe('shared-container replica manager', () => {
     const manager = new SharedContainerReplicaManager({
       rootDir,
       transport,
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
     });
     await manager.sync('container-1', 'org-1');
     fixture = await buildFixture({ chatContents: 'committed replacement' });
@@ -2305,15 +2505,15 @@ describe('shared-container replica manager', () => {
     const manager = new SharedContainerReplicaManager({
       rootDir,
       transport,
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(responses.get(url)));
+      },
     });
     await manager.sync('container-1', 'org-1');
 
@@ -2378,15 +2578,15 @@ describe('shared-container replica manager', () => {
     const manager = new SharedContainerReplicaManager({
       rootDir,
       transport,
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(responses.get(url)));
+      },
     });
     await manager.sync('container-1', 'org-1');
 
@@ -2445,7 +2645,7 @@ describe('shared-container replica manager', () => {
     const manager = new SharedContainerReplicaManager({
       rootDir,
       transport: transportFor(fixture),
-      fetchImpl: ((_input, init) => {
+      fetchImpl: (_input, init): Promise<Response> => {
         markStarted();
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener(
@@ -2457,7 +2657,7 @@ describe('shared-container replica manager', () => {
             { once: true },
           );
         });
-      }) as typeof fetch,
+      },
     });
 
     const syncing = manager.sync('container-1', 'org-1');
@@ -3184,6 +3384,8 @@ describe('shared-container replica manager', () => {
       fetchOrigin: () => Promise.resolve(),
       materializeRawCommit: () =>
         Promise.resolve({ fileCount: 0, totalBytes: BigInt(0) }),
+      prepareCommittedRange: () => Promise.resolve(),
+      readOriginUrl: () => Promise.resolve(null),
     };
     const manager = new SharedContainerReplicaManager({
       rootDir,
@@ -3229,15 +3431,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
     });
     await manager.sync('container-1', 'org-1');
     fixture = await buildFixture({
@@ -3278,15 +3480,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
     });
     await manager.sync('container-1', 'org-1');
     const pruneRevisions = jest
@@ -3328,7 +3530,7 @@ describe('shared-container replica manager', () => {
     const manager = new SharedContainerReplicaManager({
       rootDir,
       transport: transportFor(fixture),
-      fetchImpl: ((_input, init) => {
+      fetchImpl: (_input, init): Promise<Response> => {
         markStarted();
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener(
@@ -3337,7 +3539,7 @@ describe('shared-container replica manager', () => {
             { once: true },
           );
         });
-      }) as typeof fetch,
+      },
     });
 
     const syncing = manager.sync('container-1', 'org-1');
@@ -3628,15 +3830,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
       materializeCodeRevision: materializeCode,
       syncReservationBytes: BigInt(10 * 1024 * 1024),
     });
@@ -3858,15 +4060,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
       materializeCodeRevision: async ({
         reposDir,
       }: MaterializeCodeRevisionOptions): Promise<{ ok: true }> => {
@@ -3951,15 +4153,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
       materializeCodeRevision: async ({
         reposDir,
         onRepositoryMutating,
@@ -4042,15 +4244,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
       materializeCodeRevision: async ({
         layout,
         reposDir,
@@ -4119,21 +4321,19 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
       materializeCodeRevision: async ({
         reposDir,
         onRepositoryMutating,
-      }: MaterializeCodeRevisionOptions): Promise<
-        { ok: true } | { ok: false; block: { reason: string; message: string } }
-      > => {
+      }: MaterializeCodeRevisionOptions): Promise<MaterializeCodeResult> => {
         onRepositoryMutating?.('repo-1');
         const repoDir = join(reposDir, 'repo-1');
         await mkdir(join(repoDir, '.git'), { recursive: true });
@@ -4146,6 +4346,7 @@ describe('shared-container replica manager', () => {
             block: {
               reason: 'lfs-unsupported',
               message: 'Git LFS repositories are not supported',
+              repository: 'repo-1',
             },
           };
         }
@@ -4206,15 +4407,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
       materializeCodeRevision: async ({
         reposDir,
         onRepositoryMutating,
@@ -4305,15 +4506,15 @@ describe('shared-container replica manager', () => {
             ),
           }),
       },
-      fetchImpl: ((input) => {
+      fetchImpl: (input): Promise<Response> => {
         const url =
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
               : input.url;
-        return Promise.resolve(new Response(fixture.responses.get(url)));
-      }) as typeof fetch,
+        return Promise.resolve(responseForBody(fixture.responses.get(url)));
+      },
       materializeCodeRevision: async ({
         reposDir,
       }: MaterializeCodeRevisionOptions): Promise<{ ok: true }> => {

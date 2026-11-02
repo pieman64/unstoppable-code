@@ -9,6 +9,8 @@ import {
 } from 'react';
 import type { ScheduledActivityRun } from '@canopy/desktop-shared/types';
 import { NewWorkflowMenu } from '@canopy/ui-app/workflows';
+import { OnboardingTipSlot } from '@canopy/ui-app/onboarding-tips';
+import type { OnboardingTipId } from '@canopy/protocol/onboarding-tips';
 import { Button, Tooltip } from '@canopy/ui-shared';
 import type { WorkflowsTabId } from '@canopy/ui-shared/lib';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -49,6 +51,22 @@ const TAB_NAMES: Readonly<
   workflows: 'runs',
   'workflows-schedule': 'schedule',
   'workflows-library': 'library',
+};
+
+/**
+ * The tips each tab can show, highest priority first (CAN-4904). The
+ * Workflows tip applies to the whole page, so on Schedule it shows first and
+ * the Schedule tip waits for a later visit.
+ */
+const TAB_TIPS: Readonly<Record<WorkflowsTabId, readonly OnboardingTipId[]>> = {
+  workflows: ['workflows'],
+  'workflows-schedule': ['workflows', 'workflows-schedule'],
+  'workflows-library': ['workflows'],
+};
+
+const TIP_ACTIONS: Partial<Record<OnboardingTipId, () => void>> = {
+  'workflows-schedule': (): void =>
+    useNavigationStore.getState().navigate('workflows-library'),
 };
 
 function showError(message: string): void {
@@ -136,21 +154,24 @@ export function WorkflowsTabs({
   );
 
   const selectedWorktree = useChatStore((state) => state.selectedWorktree);
-  const { openDispatchPipelineModal, dispatchPipelineModal } =
+  const { openWorkflowsRunModal, dispatchPipelineModal } =
     useDispatchPipelineModal();
+  // Run needs no selected task: a global pipeline runs with no project.
   const runPipeline = useCallback(
     (pipelineId?: string): void => {
-      if (!selectedWorktree) {
-        showError('Open a worktree or chat first, then run a pipeline in it.');
-        return;
-      }
-      openDispatchPipelineModal({
-        projectId: selectedWorktree.projectId,
-        worktreeId: selectedWorktree.worktreeId,
+      openWorkflowsRunModal({
         ...(pipelineId !== undefined ? { initialPipelineId: pipelineId } : {}),
+        ...(selectedWorktree
+          ? {
+              currentTarget: {
+                projectId: selectedWorktree.projectId,
+                worktreeId: selectedWorktree.worktreeId,
+              },
+            }
+          : {}),
       });
     },
-    [openDispatchPipelineModal, selectedWorktree],
+    [openWorkflowsRunModal, selectedWorktree],
   );
 
   // The Personal/organization context changed: page 1, and no Project filter
@@ -265,28 +286,29 @@ export function WorkflowsTabs({
       // opens the pipeline editor directly in every state.
       <Button
         variant="primary"
-        size="md"
+        size="compact"
         data-testid="workflows-new-manual"
         onClick={buildPipeline}
       >
         New workflow
       </Button>
     ) : tab === 'workflows-library' ? (
-      <div className="flex items-center gap-2">
+      <>
         {pipelines.headerAction}
         <Tooltip label="Refresh workflows">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="compact"
+            iconOnly
             onClick={refreshLibrary}
-            className="focus-ring flex h-10 w-10 items-center justify-center rounded-lg border bg-secondary fg-secondary transition-colors hover:bg-accent-subtle hover:fg-primary"
             aria-label="Refresh workflows"
             data-testid="workflows-library-refresh"
           >
             <RefreshSpinner spinning={refreshing || pipelines.loading} />
-          </button>
+          </Button>
         </Tooltip>
         {newWorkflow}
-      </div>
+      </>
     ) : (
       newWorkflow
     );
@@ -308,6 +330,14 @@ export function WorkflowsTabs({
           }}
         />
         <WorkflowsTabPanel>
+          <OnboardingTipSlot
+            placement="inline"
+            eligible={TAB_TIPS[tab]}
+            arrivalKey={tab}
+            onAction={TIP_ACTIONS}
+            className="mt-4"
+            data-testid="workflows-onboarding-tip"
+          />
           {tab === 'workflows' ? (
             <WorkflowsRunsTab
               feed={feed}

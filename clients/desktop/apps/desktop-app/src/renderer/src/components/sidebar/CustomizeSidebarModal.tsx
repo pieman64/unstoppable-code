@@ -265,7 +265,7 @@ export function CustomizeSidebarModal({
       <div className="flex items-center justify-between gap-2 px-5 pb-5 pt-3">
         <Button
           variant="ghost"
-          size="control"
+          size="compact"
           onClick={handleReset}
           data-testid="customize-sidebar-reset"
         >
@@ -274,7 +274,7 @@ export function CustomizeSidebarModal({
         <div className="flex items-center gap-2">
           <Button
             variant="secondary"
-            size="control"
+            size="compact"
             onClick={onClose}
             data-testid="customize-sidebar-cancel"
           >
@@ -282,7 +282,7 @@ export function CustomizeSidebarModal({
           </Button>
           <Button
             variant="primary"
-            size="control"
+            size="compact"
             onClick={handleSave}
             data-testid="customize-sidebar-save"
           >

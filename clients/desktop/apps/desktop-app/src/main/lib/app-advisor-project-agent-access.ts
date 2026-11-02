@@ -15,7 +15,7 @@ import { getWorkspaceContextService } from './workspace-context-service';
 export const ADVISOR_ACCESS_DISABLED = 'advisor_access_disabled' as const;
 
 export const ADVISOR_ACCESS_DISABLED_MESSAGE =
-  'App Advisor access is turned off for agents in this project. The user controls this in Settings > App Advisor.';
+  'Orchestrator access is turned off for agents in this project. The user controls this in Settings > Orchestrator.';
 
 let currentAccess: AppAdvisorProjectAgentAccess =
   normalizeAppAdvisorProjectAgentAccess(undefined);

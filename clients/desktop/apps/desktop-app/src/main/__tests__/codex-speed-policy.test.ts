@@ -120,10 +120,13 @@ describe('classifyCodexSpeedRouteProfile', () => {
   it.each([
     [{ gateway: 'ai-credits' as const }, 'ai-credits'],
     [{ gateway: 'org-gateway' as const }, 'org-gateway'],
-    [{ providerType: 'ollama' }, 'ollama'],
+    [{ providerType: 'ollama' as const }, 'ollama'],
     [{ modelSource: 'ollama' as const }, 'ollama'],
-    [{ harness: 'cursor' as const, providerType: 'cursor' }, 'cursor'],
-    [{ harness: 'claude' as const, providerType: 'claude' }, 'foreign'],
+    [{ harness: 'cursor' as const, providerType: 'cursor' as const }, 'cursor'],
+    [
+      { harness: 'claude' as const, providerType: 'claude' as const },
+      'foreign',
+    ],
     [{ environment: { OPENAI_API_KEY: 'sk-user' } }, 'foreign'],
     [{ environment: { OPENAI_BASE_URL: 'https://proxy.test' } }, 'foreign'],
     [{ codexConfig: { model_provider: 'custom' } }, 'foreign'],
@@ -284,7 +287,7 @@ describe('admitCodexSpeed', () => {
     [{ gateway: 'ai-credits' as const }],
     [{ environment: { OPENAI_API_KEY: 'sk-user' } }],
     [{ modelSelection: 'auto' as const }],
-    [{ providerType: 'ollama' }],
+    [{ providerType: 'ollama' as const }],
   ])(
     'rejects Ultra fast on %j without consulting the native catalog',
     async (override) => {

@@ -3,6 +3,7 @@ import type {
   CanopyQueryDefinitionMap,
   CanopyStreamDefinitionMap,
 } from '@canopy/protocol/canopy-core';
+import { paramsDeclareMeta } from '../runtime/request-metadata';
 import type { CanopyRuntimeProfile } from '../runtime/types';
 
 export interface RuntimeOperationOwner {
@@ -16,6 +17,8 @@ export interface RuntimeOperation {
   kind: 'query' | 'instruction' | 'stream';
   plane: 'core' | 'worker';
   owner: string;
+  /** The params schema declares `_meta`, so a framed host keeps it in params. */
+  declaresMeta: boolean;
 }
 
 export interface OperationRegistryOptions {
@@ -60,7 +63,9 @@ export function createOperationRegistry(
 
   const groups: readonly [
     RuntimeOperation['kind'],
-    Readonly<Record<string, { plane: RuntimeOperation['plane'] }>>,
+    Readonly<
+      Record<string, { plane: RuntimeOperation['plane']; params: unknown }>
+    >,
   ][] = [
     ['query', definitions.queries],
     ['instruction', definitions.instructions],
@@ -85,7 +90,13 @@ export function createOperationRegistry(
           `Module ${owner} cannot register ${definition.plane} operation ${name}`,
         );
       operations.push(
-        Object.freeze({ name, kind, plane: definition.plane, owner }),
+        Object.freeze({
+          name,
+          kind,
+          plane: definition.plane,
+          owner,
+          declaresMeta: paramsDeclareMeta(definition.params),
+        }),
       );
     }
   }

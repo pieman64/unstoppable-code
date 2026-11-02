@@ -107,6 +107,8 @@ export interface DesktopWorktreeRowLiveKeys {
   readonly pipelineUnseen: ReadonlySet<string>;
   readonly pipelineUnseenFailed: ReadonlySet<string>;
   readonly pipelinePaused: ReadonlySet<string>;
+  /** Live background tasks by row (turn-state D11), for the background spinner. */
+  readonly backgroundTasks: ReadonlyMap<string, number>;
 }
 
 interface DesktopRowLiveKeysState {
@@ -160,6 +162,7 @@ export type DesktopRowAttention = Required<
     WorktreeRowOverrides,
     | 'uiStatus'
     | 'isStreaming'
+    | 'backgroundTasks'
     | 'awaitingApproval'
     | 'hasPendingQuestion'
     | 'hasPendingToolApproval'
@@ -198,6 +201,7 @@ export function deriveDesktopRowAttention(
     uiStatus,
     runtimeState: uiStatus === 'done' ? 'done' : undefined,
     isStreaming: keys.streaming.has(key),
+    backgroundTasks: keys.backgroundTasks.get(key) ?? 0,
     awaitingApproval: keys.awaitingApproval.has(key),
     hasPendingQuestion: keys.pendingQuestion.has(key),
     hasPendingToolApproval: keys.toolApproval.has(key),
@@ -227,6 +231,7 @@ export function desktopRowAttentionEqual(
     a.uiStatus === b.uiStatus &&
     a.runtimeState === b.runtimeState &&
     a.isStreaming === b.isStreaming &&
+    a.backgroundTasks === b.backgroundTasks &&
     a.awaitingApproval === b.awaitingApproval &&
     a.hasPendingQuestion === b.hasPendingQuestion &&
     a.hasPendingToolApproval === b.hasPendingToolApproval &&

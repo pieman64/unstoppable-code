@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
+  Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   LoadingSpinner,
@@ -148,15 +149,14 @@ export function ProfileActivitySection({
 
       {nextCursor !== null && (
         <div className="flex justify-center py-2">
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={() => void loadMore()}
             disabled={loadingMore}
             data-testid="profile-activity-load-more"
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loadingMore ? <LoadingSpinner /> : 'Load more'}
-          </button>
+          </Button>
         </div>
       )}
     </div>

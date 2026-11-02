@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { X } from '@canopy/ui-shared/icons/AppIcons';
 import type { BillingChrome } from '@canopy/protocol/settings/billing';
 import { SettingsLink } from '../host/settings-host';
@@ -104,14 +105,18 @@ export function TrialEndingBanner({
           View plans
         </SettingsLink>
       </p>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="compact"
+        iconOnly
         onClick={() => setDismissed(true)}
         aria-label="Dismiss"
-        className="rounded-md p-0.5 fg-secondary transition-colors hover:bg-secondary hover:fg-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-line-accent"
+        data-settings-control="dismiss"
+        className="-my-1"
       >
         <X size={16} aria-hidden="true" />
-      </button>
+      </Button>
     </div>
   );
 }

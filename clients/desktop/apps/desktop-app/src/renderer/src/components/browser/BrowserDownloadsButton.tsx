@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { CircularProgress } from '@canopy/ui-shared';
-import { HeaderActionButton } from '@canopy/ui-shared/components';
+import { Count, HeaderActionButton } from '@canopy/ui-shared/components';
 import { DownloadIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   selectActiveTransferCount,
@@ -57,9 +57,12 @@ export function BrowserDownloadsButton({
       {activeCount > 0 ? (
         <>
           <CircularProgress percentage={percentage} tone="neutral" size={16} />
-          <span className="pointer-events-none absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-fg-info px-1 text-3xs font-semibold tabular-nums fg-emphasis">
-            {activeCount > 99 ? '99+' : activeCount}
-          </span>
+          <Count
+            value={activeCount}
+            placement="icon"
+            aria-hidden
+            className="pointer-events-none absolute -right-0.5 -top-0.5"
+          />
         </>
       ) : (
         <DownloadIcon size={16} aria-hidden="true" />

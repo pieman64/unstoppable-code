@@ -3653,6 +3653,92 @@ test('invites from a Cowork Work Entry', async () => {
   }
 });
 
+test('discloses the capabilities a Cowork chat used once the background analysis finishes', async () => {
+  // CAN-4655: the preview never analyzes in the foreground. The first preview
+  // starts one background analysis; a later preview request (here, reopening
+  // the dialog) reads its counts. The chat invokes a local custom skill, so
+  // the share carries that skill.
+  test.setTimeout(150_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-shared-container-capabilities-'),
+  );
+  const fixture = seedCoworkSharedContainer(userDataDir);
+  const skillDir = path.join(
+    userDataDir,
+    'skills',
+    'custom:app',
+    'refund-helper',
+  );
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(
+    path.join(skillDir, 'SKILL.md'),
+    '---\nname: refund-helper\ndescription: Draft a refund reply.\n---\n\nDraft a short refund reply.\n',
+    'utf8',
+  );
+  const chatPath = path.join(
+    userDataDir,
+    'workspaces',
+    fixture.projectId,
+    'chats',
+    `${ENTRY_ID}.json`,
+  );
+  const chats = JSON.parse(readFileSync(chatPath, 'utf8'));
+  chats.tabs[0].messages.push({
+    id: 'chat-refunds-skill-invocation',
+    role: 'user',
+    blocks: [{ type: 'text', text: '/refund-helper draft the reply' }],
+    timestamp: Date.parse('2026-01-02T00:00:01.000Z'),
+  });
+  writeFileSync(chatPath, JSON.stringify(chats), 'utf8');
+  await registerFixture();
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy({
+      userDataDir,
+      env: buildSharedContainerE2eEnv(userDataDir),
+    }));
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await connectSharedContainersAccount(window);
+    await app.openMainPage();
+    await expandCoworkWorkspace(window, fixture.projectId);
+
+    const capabilities = window.getByTestId(
+      'shared-container-invite-modal-capabilities',
+    );
+    const openShare = async () => {
+      await openWorkEntryMenu(window, ENTRY_ID);
+      await window.getByTestId(`sidebar-work-entry-${ENTRY_ID}-invite`).click();
+      await expandScopeDetails(window);
+    };
+    await expect(async () => {
+      if (
+        (await window.getByTestId('shared-container-invite-modal').count()) > 0
+      ) {
+        await window.keyboard.press('Escape');
+        await expect(
+          window.getByTestId('shared-container-invite-modal'),
+        ).toHaveCount(0);
+      }
+      await openShare();
+      await expect(capabilities).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000] });
+    await expect(capabilities).toHaveText(
+      'This share also carries the 1 skill used here. They install only if a teammate makes a copy.',
+    );
+  } finally {
+    try {
+      if (electronApp) await closeCanopy(electronApp, userDataDir);
+    } finally {
+      await clearScenario(
+        DEFAULT_MOCK_BASE_URL,
+        SHARED_CONTAINERS_CLOUD_API_KEY,
+      ).catch(() => undefined);
+    }
+  }
+});
+
 // Personal work with work stats Off: registration needs metadata sharing, so
 // the invite reports `sync-disabled` instead of waiting out retries. The owner
 // recovers either through Privacy or with the inline personal opt-in, which

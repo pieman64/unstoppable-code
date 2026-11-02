@@ -19,6 +19,10 @@ import {
 } from 'node:timers';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  armTurnLifecycleContinuation,
+  setTurnLifecycleHostRestartLookup,
+} from '../agents/provider-turn-lifecycle';
+import {
   buildDeferredToolsCatalog,
   classifyLoadItems,
   encodeDeferredCatalogRef,
@@ -305,6 +309,23 @@ class DeferredToolsReloadCoordinator {
     return intent !== undefined && intent.state !== 'resuming';
   }
 
+  /**
+   * Whether the reload is restarting the scope's provider session: from its
+   * begin until its continuation resumes. A turn that session ends there was
+   * ended by the reload, not cancelled.
+   */
+  isRestartingSession(scope: DeferredToolsReloadScopeKey): boolean {
+    const activeIntentKey = this.activeByScope.get(scopeKey(scope));
+    const state = activeIntentKey
+      ? this.intents.get(activeIntentKey)?.state
+      : undefined;
+    return (
+      state === 'ui_prepared' ||
+      state === 'interrupting' ||
+      state === 'enabling'
+    );
+  }
+
   cancelActiveReload(
     scope: DeferredToolsReloadScopeKey,
     reason = 'Deferred-tools reload was cancelled.',
@@ -549,6 +570,13 @@ class DeferredToolsReloadCoordinator {
     request: DeferredToolsReloadFinishRequest,
     handler: DeferredToolsResumeHandler,
   ): Promise<DeferredToolsReloadAck> {
+    // The continuation heads its own turn after the load call, on any host.
+    // shortcut: only worktree-chat sends disarm a continuation that never
+    // starts; disarm in the Advisor and pipeline-editor sends if one leaks.
+    armTurnLifecycleContinuation(request.scope, {
+      userMessageId: request.userMessageId,
+      spawnedBy: { toolUseId: request.toolCallId, toolsLoaded: true },
+    });
     try {
       await handler({
         scope: request.scope,
@@ -588,6 +616,7 @@ class DeferredToolsReloadCoordinator {
         lifecycle: lifecycleForState('completed'),
       };
     } catch (error) {
+      armTurnLifecycleContinuation(request.scope, null);
       if (this.isActiveIntent(intent)) {
         this.fail(
           intent,
@@ -773,3 +802,7 @@ class DeferredToolsReloadCoordinator {
 
 export const deferredToolsReloadCoordinator =
   new DeferredToolsReloadCoordinator();
+
+setTurnLifecycleHostRestartLookup((scope) =>
+  deferredToolsReloadCoordinator.isRestartingSession(scope),
+);

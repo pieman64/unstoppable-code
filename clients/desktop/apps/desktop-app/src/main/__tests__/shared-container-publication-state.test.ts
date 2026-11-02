@@ -62,6 +62,32 @@ describe('SharedContainerPublicationStateStore', () => {
     expect(broadcast).toHaveBeenCalledWith(state);
   });
 
+  it('retains package attachment replay identity and bounded recovery across restart', async () => {
+    const store = new SharedContainerPublicationStateStore(jest.fn());
+    const record: SharedContainerPublicationRecord = {
+      projectId: 'package-project',
+      worktreeId: 'entry',
+      containerId: 'container',
+      containerType: 'COWORK_WORK_ENTRY',
+      status: 'publishing',
+      updatedAt: 'now',
+      idempotencyKey: 'stage',
+      stageRequestHash: 'request-hash',
+      pendingArtifactContentHash: 'artifact-hash',
+      pendingContentHash: 'combined-hash',
+      pendingPackageDigest: `pp:v1:${'a'.repeat(43)}`,
+      pendingCommittedPackageUploadId: 'upload',
+      publishedPackageDigest: `pp:v1:${'b'.repeat(43)}`,
+      packageRecoveryPending: true,
+      packageRecoveryAttempts: 2,
+    };
+    await store.set(record);
+    const restarted = new SharedContainerPublicationStateStore(jest.fn());
+    await expect(
+      restarted.get(record.projectId, record.worktreeId, undefined),
+    ).resolves.toEqual(record);
+  });
+
   it('reuses unchanged publication state across sequential lookups and observes mutations', async () => {
     const fsPromises =
       jest.requireActual<typeof FsPromisesModule>('node:fs/promises');
@@ -418,7 +444,7 @@ describe('SharedContainerPublicationStateStore', () => {
       worktreeId: 'worktree-1',
       organizationId: 'org-1',
       containerId: 'container-1',
-      containerType: 'WORKTREE',
+      containerType: 'CODE_WORKTREE',
     });
     expect(recordTransition).toHaveBeenCalledTimes(1);
     expect(recordTransition.mock.calls[0]?.[0]).toBeUndefined();
@@ -432,7 +458,7 @@ describe('SharedContainerPublicationStateStore', () => {
       worktreeId: 'worktree-1',
       organizationId: 'org-1',
       containerId: 'container-1',
-      containerType: 'WORKTREE',
+      containerType: 'CODE_WORKTREE',
       status: 'publishing',
       updatedAt: new Date().toISOString(),
     };
@@ -463,7 +489,7 @@ describe('SharedContainerPublicationStateStore', () => {
       worktreeId: 'worktree-1',
       organizationId: 'org-1',
       containerId: 'container-1',
-      containerType: 'WORKTREE' as const,
+      containerType: 'CODE_WORKTREE' as const,
     };
     await store.markNotPublished(input);
     await store.markNotPublished(input);
@@ -495,7 +521,7 @@ describe('SharedContainerPublicationStateStore', () => {
       worktreeId: 'worktree-1',
       organizationId: 'org-1',
       containerId: 'container-1',
-      containerType: 'WORKTREE',
+      containerType: 'CODE_WORKTREE',
       status: 'error',
       errorReason: 'artifact-budget',
       updatedAt: new Date().toISOString(),
@@ -525,6 +551,7 @@ describe('SharedContainerPublicationStateStore', () => {
       worktreeId: 'worktree-1',
       organizationId: 'org-1',
       containerId: 'container-1',
+      containerType: undefined,
     });
     const second = await store.markNotPublished({
       projectId: 'project-1',
@@ -664,7 +691,7 @@ describe('SharedContainerPublicationStateStore', () => {
       worktreeId: 'worktree-1',
       organizationId: 'org-1',
       containerId: 'container-user',
-      containerType: 'WORKTREE',
+      containerType: 'CODE_WORKTREE',
     });
     await store.markNotPublished({
       projectId: PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -849,7 +876,7 @@ describe('SharedContainerPublicationStateStore', () => {
       error: 'Upload target refresh limit exceeded',
       restartWithFreshStage: true,
       updatedAt: '2026-08-30T12:00:00.000Z',
-    } as SharedContainerPublicationRecord & { restartWithFreshStage: true });
+    });
 
     const restarted = new SharedContainerPublicationStateStore(jest.fn());
     await expect(

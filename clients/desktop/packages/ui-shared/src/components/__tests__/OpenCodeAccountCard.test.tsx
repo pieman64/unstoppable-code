@@ -43,53 +43,49 @@ const snapshot: OpenCodeAccountSnapshot = {
   ],
 };
 it('shows all reported accounts without treating configured credentials as authenticated or quota data', () => {
-  act(() =>
-    root.render(
-      <OpenCodeAccountCard
-        snapshot={snapshot}
-        onRefresh={() => Promise.resolve()}
-      />,
-    ),
+  act(() => root.render(<OpenCodeAccountCard snapshot={snapshot} />));
+  const rows = container.querySelectorAll(
+    '[data-testid="opencode-account-row"]',
   );
-  const rows = container.querySelectorAll('li');
   expect(rows).toHaveLength(3);
   expect(rows[0]?.textContent).not.toContain('Selected');
   expect(rows[1]?.textContent).toContain('Selected in OpenCode');
   expect(rows[1]?.textContent).toContain('Sign in again');
   expect(rows[2]?.textContent).toContain('Environment variable');
+  expect(container.querySelector('h2')?.textContent).toBe(
+    'OpenCode · Provider accounts',
+  );
   expect(container.textContent).toContain(
     'Plan and usage limits are unavailable from OpenCode.',
   );
   expect(container.textContent).not.toMatch(/authenticated|Unlimited|0%/);
-  expect(container.querySelectorAll(`.${REPLAY_BLOCK_CLASS}`)).toHaveLength(4);
+  // Each account's label and its provider's name are blocked from replay.
+  expect(container.querySelectorAll(`.${REPLAY_BLOCK_CLASS}`)).toHaveLength(6);
 });
-it('keeps refresh disabled when the paired desktop is unavailable', () => {
-  const refresh = jest.fn(() => Promise.resolve());
-  act(() =>
-    root.render(
-      <OpenCodeAccountCard snapshot={snapshot} onRefresh={refresh} disabled />,
-    ),
-  );
-  const button = container.querySelector('button');
-  expect(button?.disabled).toBe(true);
-  act(() => button?.click());
-  expect(refresh).not.toHaveBeenCalled();
+it('has no refresh of its own; the host refreshes every usage group', () => {
+  act(() => root.render(<OpenCodeAccountCard snapshot={snapshot} />));
+  expect(container.querySelector('button')).toBeNull();
 });
-it('reports refresh failures with curated copy', async () => {
+it('names a provider that reports no accounts and an unavailable read', () => {
   act(() =>
     root.render(
       <OpenCodeAccountCard
-        snapshot={snapshot}
-        onRefresh={() => Promise.reject(new Error('secret-token'))}
+        snapshot={{
+          ...snapshot,
+          providers: [{ id: 'empty', name: 'Empty', accounts: [] }],
+        }}
       />,
     ),
   );
-  await act(() => {
-    container.querySelector('button')?.click();
-    return Promise.resolve();
-  });
-  expect(container.textContent).toContain(
-    'Could not refresh accounts. Try again.',
+  expect(container.textContent).toContain('No account information reported.');
+  act(() =>
+    root.render(
+      <OpenCodeAccountCard
+        snapshot={{ ...snapshot, status: 'unavailable', providers: [] }}
+      />,
+    ),
   );
-  expect(container.textContent).not.toContain('secret-token');
+  expect(container.querySelector('[role="status"]')?.textContent).toBe(
+    'Account information is unavailable. Try refreshing.',
+  );
 });

@@ -101,7 +101,7 @@ import { buildPipelineGlobalInstructionsBlock } from '@canopy/desktop-shared/lib
 import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
 import type { CodexPromptRunnerRequest } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
-import { runPipelineProcessInUtilityProcess } from './process-host-runner';
+import { runPipelineProcessInExecutionHost } from './process-host-runner';
 import { buildCodexPipelineThreadConfig } from '@canopy/desktop-shared/node/pipelines/codex-preferences';
 import {
   codexNativeMemoryThreadConfig,
@@ -119,7 +119,10 @@ import {
   type PipelineLedgerCodexTools,
 } from './pipeline-ledger';
 import { createDesktopPipelineHostActions } from './host-actions';
-import { createDesktopPipelineOwnershipPort } from './pipeline-owner-policy';
+import {
+  assertPipelineHostTargetOwner,
+  createDesktopPipelineOwnershipPort,
+} from './pipeline-owner-policy';
 
 function parseTranscriptEvents(jsonl: string): unknown[] {
   return jsonl
@@ -554,18 +557,18 @@ async function runCodexPipelinePrompt(
               session_id: handle.threadId,
               had_agent_activity:
                 codexTranscriptEventsHaveAgentActivity(transcriptEvents),
-              message: 'Codex pipeline turn was cancelled.',
+              message: 'Codex workflow turn was cancelled.',
             },
           };
         }
         throw codexTurnOutcomeError(
           outcome,
-          'Codex pipeline turn was interrupted before completion',
+          'Codex workflow turn was interrupted before completion',
         );
       }
       try {
         if (outcome.status !== 'completed') {
-          throw codexTurnOutcomeError(outcome, 'Codex pipeline turn failed');
+          throw codexTurnOutcomeError(outcome, 'Codex workflow turn failed');
         }
         // The shared safe parser, not `JSON.parse`: V8's message quotes the
         // text it choked on, and that excerpt reached the retry prompt and the
@@ -602,7 +605,7 @@ async function runCodexPipelinePrompt(
         throw lastError;
       }
     }
-    throw lastError ?? new Error('Codex pipeline turn failed');
+    throw lastError ?? new Error('Codex workflow turn failed');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const accountScope = aiCreditsRouted ? 'ai_credits' : failureAccountScope;
@@ -662,7 +665,7 @@ export function createElectronExecutionRuntime(
     resolvePipelineContextResource: async (parent, executionContext) => {
       if (!pipelineResourceContextEnabled()) return undefined;
       if (!parent.pipelineId)
-        throw new Error('Pipeline unavailable (unknown-provenance)');
+        throw new Error('Workflow unavailable (unknown-provenance)');
       const parentShared = parseSharedPipelineLocalId(parent.pipelineId);
       let resource: ResourceContextInput['resource'];
       if (parentShared) {
@@ -684,7 +687,7 @@ export function createElectronExecutionRuntime(
           !getStoredPipelinePathWithSource(parent.pipelineId).success)
       ) {
         if (!parent.cwd || !parent.pipelineFileDir)
-          throw new Error('Pipeline unavailable (unknown-provenance)');
+          throw new Error('Workflow unavailable (unknown-provenance)');
         const { owner, projectId } = await authorizeProjectPipelineRequest({
           id: parent.pipelineId,
           cwd: parent.pipelineSource?.cwd ?? parent.cwd,
@@ -696,7 +699,7 @@ export function createElectronExecutionRuntime(
             ),
         });
         if (!parent.pipelineSource && projectId !== parent.projectId)
-          throw new Error('Pipeline unavailable (context-mismatch)');
+          throw new Error('Workflow unavailable (context-mismatch)');
         resource = { owner };
       } else {
         resource = await readStoredPipelineContext(
@@ -724,7 +727,7 @@ export function createElectronExecutionRuntime(
       if (!pipelineResourceContextEnabled()) return undefined;
       if (target) {
         if (!parent)
-          throw new Error('Pipeline unavailable (unknown-provenance)');
+          throw new Error('Workflow unavailable (unknown-provenance)');
         if (
           target.target.scope === 'directory' &&
           !target.projectId &&
@@ -732,7 +735,7 @@ export function createElectronExecutionRuntime(
             strict: true,
           }) === 'object'
         )
-          throw new Error('Pipeline unavailable (unsupported-target)');
+          throw new Error('Workflow unavailable (unsupported-target)');
         await assertPipelineContext(parent, target.projectId, executionContext);
       }
       if (file) {
@@ -747,7 +750,7 @@ export function createElectronExecutionRuntime(
           : (await authorizeProjectPipelineRequest({ id: reference, ...file }))
               .owner;
         if (!parent)
-          throw new Error('Pipeline unavailable (unknown-provenance)');
+          throw new Error('Workflow unavailable (unknown-provenance)');
         if (target)
           await assertPipelineContext(
             { owner },
@@ -760,7 +763,7 @@ export function createElectronExecutionRuntime(
           [{ owner: effectivePipelineOwner({ owner }), available: true }],
         );
         if (!decision.allow)
-          throw new Error(`Pipeline unavailable (${decision.reason})`);
+          throw new Error(`Workflow unavailable (${decision.reason})`);
         return undefined;
       }
       const shared = parseSharedPipelineLocalId(reference);
@@ -780,13 +783,13 @@ export function createElectronExecutionRuntime(
           child = { owner: { type: 'system' } };
       }
       await assertPipelineContext(child, target?.projectId, executionContext);
-      if (!parent) throw new Error('Pipeline unavailable (unknown-provenance)');
+      if (!parent) throw new Error('Workflow unavailable (unknown-provenance)');
       await assertPipelineContext(parent, undefined, executionContext);
       const decision = validateDependencyGraph(effectivePipelineOwner(parent), [
         { owner: effectivePipelineOwner(child), available: true },
       ]);
       if (!decision.allow)
-        throw new Error(`Pipeline unavailable (${decision.reason})`);
+        throw new Error(`Workflow unavailable (${decision.reason})`);
       if (detail) {
         return {
           pipeline: parsePipelineText(detail.rawPipeline),
@@ -1017,7 +1020,10 @@ export function createElectronExecutionRuntime(
     },
     resolvePipelineTarget: resolveDesktopPipelineTarget,
     pipelineLedger: createDesktopPipelineLedgerPort(),
-    pipelineHostActions: createDesktopPipelineHostActions(),
+    pipelineHostActions: createDesktopPipelineHostActions({
+      assertTargetOwner: assertPipelineHostTargetOwner,
+      ...(getWindow ? { getWindow } : {}),
+    }),
     pipelineOwnership: createDesktopPipelineOwnershipPort(),
     codexPromptRunner: {
       runCodexPrompt: runCodexPipelinePrompt,
@@ -1196,7 +1202,7 @@ export function createElectronExecutionRuntime(
     processSpec,
     options,
   ): Promise<SpawnedProcessResult> =>
-    runPipelineProcessInUtilityProcess(
+    runPipelineProcessInExecutionHost(
       processSpec,
       options,
       runtime.resourceMonitor,

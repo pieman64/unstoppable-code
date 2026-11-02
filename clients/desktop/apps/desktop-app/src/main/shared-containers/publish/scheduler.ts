@@ -257,11 +257,16 @@ export class SharedContainerPublishScheduler {
           (state.status === 'publishing' || state.status === 'error') &&
           (Boolean(state.idempotencyKey) ||
             state.restartWithFreshStage === true);
+        const recoverPackage =
+          state.packageRecoveryPending === true &&
+          (state.packageRecoveryAttempts ?? 0) < MAX_RETRY_ATTEMPTS;
         if (
           !state.containerType ||
           !state.containerId ||
           state.terminalError ||
-          (!recoverFirstPublication && !recoverPersistedAttempt)
+          (!recoverFirstPublication &&
+            !recoverPersistedAttempt &&
+            !recoverPackage)
         ) {
           return [];
         }
@@ -339,8 +344,24 @@ export class SharedContainerPublishScheduler {
         this.attempts.delete(key);
       }
       if (!(await this.deps.hasAudience(target))) return;
-      await this.deps.publish(target);
+      const published = await this.deps.publish(target);
       this.attempts.delete(key);
+      if (
+        published?.packageRecoveryPending &&
+        (published.packageRecoveryAttempts ?? 0) < MAX_RETRY_ATTEMPTS
+      ) {
+        const attempt = published.packageRecoveryAttempts ?? 1;
+        this.retryTimers.set(
+          key,
+          setTimeout(
+            () => {
+              this.retryTimers.delete(key);
+              void this.run(target, 'retry');
+            },
+            Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** Math.min(attempt, 5)),
+          ),
+        );
+      }
     } catch (error) {
       const classification = classifySharedContainerPublishFailure(error);
       const attempt = (this.attempts.get(key) ?? 0) + 1;

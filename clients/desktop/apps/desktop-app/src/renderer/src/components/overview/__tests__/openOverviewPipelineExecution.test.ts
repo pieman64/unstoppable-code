@@ -2,15 +2,18 @@
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
+import type { OpenPipelineExecutionRequest } from '@/lib/panels/open-pipeline-execution';
 import { openOverviewPipelineExecution } from '../openOverviewPipelineExecution';
 
-const openPipelineExecutionFromUi = jest.fn(() =>
-  Promise.resolve({ status: 'applied' }),
-);
+const openPipelineExecutionFromUi = jest.fn<
+  Promise<unknown>,
+  [request: OpenPipelineExecutionRequest]
+>(() => Promise.resolve({ status: 'applied' }));
 
 jest.mock('@/lib/panels/open-pipeline-execution', () => ({
-  openPipelineExecutionFromUi: (request: unknown): Promise<unknown> =>
-    openPipelineExecutionFromUi(request),
+  openPipelineExecutionFromUi: (
+    request: OpenPipelineExecutionRequest,
+  ): Promise<unknown> => openPipelineExecutionFromUi(request),
 }));
 
 describe('openOverviewPipelineExecution', () => {

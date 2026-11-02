@@ -18,39 +18,27 @@ import {
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 
-const mockReconcileModelRegistry = jest.fn();
-const mockSyncActiveEmptyTabToDefaults = jest.fn();
-const mockApplyModelDefaults = jest.fn();
-const mockApplyDeferredToolsDefaults = jest.fn();
-
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 
-let mockScopingContext:
-  | { kind: 'personal' }
-  | { kind: 'organization'; organizationId: string }
-  | undefined;
-
 jest.mock('@/components/sidebar/useSidebarScopingContext', () => ({
-  getSidebarScopingContext: (): typeof mockScopingContext => mockScopingContext,
+  getSidebarScopingContext: jest.fn(),
 }));
 
-jest.mock('../chatStore', () => ({
-  useChatStore: {
-    getState: (): {
-      applyModelDefaults: typeof mockApplyModelDefaults;
-      applyDeferredToolsDefaults: typeof mockApplyDeferredToolsDefaults;
-      reconcileModelRegistry: typeof mockReconcileModelRegistry;
-      syncActiveEmptyTabToDefaults: typeof mockSyncActiveEmptyTabToDefaults;
-    } => ({
-      applyModelDefaults: mockApplyModelDefaults,
-      applyDeferredToolsDefaults: mockApplyDeferredToolsDefaults,
-      reconcileModelRegistry: mockReconcileModelRegistry,
-      syncActiveEmptyTabToDefaults: mockSyncActiveEmptyTabToDefaults,
-    }),
-  },
-}));
+jest.mock('../chatStore', () => {
+  const state = {
+    applyModelDefaults: jest.fn(),
+    applyDeferredToolsDefaults: jest.fn(),
+    reconcileModelRegistry: jest.fn(),
+    syncActiveEmptyTabToDefaults: jest.fn(),
+  };
+  return {
+    useChatStore: { getState: (): typeof state => state },
+  };
+});
 
+import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
+import { useChatStore } from '../chatStore';
 import { useModelCatalogStore } from '../modelCatalogStore';
 import { useAppAdvisorStore } from '../appAdvisorStore';
 import { makeTestPreferences } from '../../test-utils/preferences';
@@ -61,6 +49,17 @@ import {
   resetRendererModelPolicyForTests,
   subscribeRendererModelFacts,
 } from '../modelPolicyRuntime';
+
+const mockReconcileModelRegistry = jest.mocked(
+  useChatStore.getState().reconcileModelRegistry,
+);
+const mockSyncActiveEmptyTabToDefaults = jest.mocked(
+  useChatStore.getState().syncActiveEmptyTabToDefaults,
+);
+const mockApplyModelDefaults = jest.mocked(
+  useChatStore.getState().applyModelDefaults,
+);
+const mockScopingContext = jest.mocked(getSidebarScopingContext);
 
 function setOllamaEnabled(enabled: boolean): void {
   (globalThis as Record<string, unknown>).__CANOPY_OLLAMA_ENABLED__ = enabled;
@@ -114,6 +113,7 @@ const POLICY_SNAPSHOT: ModelRegistrySnapshot = {
     {
       modelId: 'gateway-only-policy-test',
       gatewayId: 'provider/gateway-only-policy-test',
+      family: 'openai',
       recommendedHarness: 'codex',
       gatewayOnly: true,
       contextWindow: 128_000,
@@ -174,14 +174,23 @@ function accountWithPolicy(
   };
 }
 
+function signedOutAccount(): CanopyCloudAccountPublicState {
+  return {
+    hasApiKey: false,
+    authMode: null,
+    credentialSource: null,
+    capabilities: [],
+    storageAvailable: true,
+  };
+}
+
 function stubAccount(account: CanopyCloudAccountPublicState | null): void {
   Object.defineProperty(window, 'api', {
     configurable: true,
     writable: true,
     value: {
-      loadCanopyCloudAccount:
-        (): Promise<CanopyCloudAccountPublicState | null> =>
-          Promise.resolve(account),
+      loadCanopyCloudAccount: (): Promise<CanopyCloudAccountPublicState> =>
+        Promise.resolve(account ?? signedOutAccount()),
     },
   });
 }
@@ -303,7 +312,7 @@ describe('modelCatalogStore — org model policy filter', () => {
           supportsPromptCaching: true,
           supportedThinkingLevels: [],
           toolSchemaProfile: 'standard' as const,
-          family: 'custom' as const,
+          family: 'custom',
           familyLabel: 'Acme',
           vendor: `org-gateway:${ORG_A}`,
         },
@@ -313,6 +322,7 @@ describe('modelCatalogStore — org model policy filter', () => {
         {
           modelId: 'org-1-sonnet-5',
           gatewayId: 'anthropic/acme-sonnet-5',
+          family: 'custom' as const,
           recommendedHarness: 'claude' as const,
           gatewayOnly: true,
           contextWindow: 1_000_000,
@@ -410,7 +420,7 @@ describe('modelCatalogStore — org model policy filter', () => {
       writable: true,
       value: {
         loadCanopyCloudAccount: (): Promise<CanopyCloudAccountPublicState> =>
-          Promise.resolve(null),
+          Promise.resolve(signedOutAccount()),
         harnessAssignments: {
           load: (): Promise<
             NonNullable<ModelRegistrySnapshot['harnessAssignments']>
@@ -511,7 +521,7 @@ describe('modelCatalogStore — org model policy filter', () => {
   });
 
   it('refreshes the policy when main broadcasts a periodic account change', async () => {
-    let account: CanopyCloudAccountPublicState | null = accountWithPolicy(
+    let account: CanopyCloudAccountPublicState = accountWithPolicy(
       ['anthropic/claude-opus-5'],
       [
         'anthropic/claude-opus-5',
@@ -526,9 +536,8 @@ describe('modelCatalogStore — org model policy filter', () => {
       configurable: true,
       writable: true,
       value: {
-        loadCanopyCloudAccount:
-          (): Promise<CanopyCloudAccountPublicState | null> =>
-            Promise.resolve(account),
+        loadCanopyCloudAccount: (): Promise<CanopyCloudAccountPublicState> =>
+          Promise.resolve(account),
         onModelRegistryUpdated: (): (() => void) => unsubscribeRegistry,
         onPreferencesChanged: (callback: () => void): (() => void) => {
           preferencesChanged = callback;
@@ -543,7 +552,7 @@ describe('modelCatalogStore — org model policy filter', () => {
     await Promise.resolve();
     expect(CLAUDE_MODELS).toEqual(['claude-sonnet-5']);
 
-    account = null;
+    account = signedOutAccount();
     preferencesChanged?.();
     await Promise.resolve();
     await Promise.resolve();
@@ -633,12 +642,13 @@ test('reconciles a pristine tab with refreshed defaults when its saved model ret
   useAppAdvisorStore.setState({ appAdvisorModel: 'gpt-5.5' });
   mockSyncActiveEmptyTabToDefaults.mockImplementation(() => {
     activeModel = defaultModel;
+    return Promise.resolve();
   });
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: {
       loadPreferences,
-      loadCanopyCloudAccount: () => Promise.resolve(null),
+      loadCanopyCloudAccount: () => Promise.resolve(signedOutAccount()),
       onModelRegistryUpdated: (
         callback: (snapshot: ModelRegistrySnapshot) => void,
       ) => {
@@ -691,7 +701,7 @@ describe('modelCatalogStore — AI Gateway catalog status', () => {
       writable: true,
       value: {
         loadPreferences: () => new Promise(() => undefined),
-        loadCanopyCloudAccount: () => Promise.resolve(null),
+        loadCanopyCloudAccount: () => Promise.resolve(signedOutAccount()),
         onModelRegistryUpdated: (
           callback: (snapshot: ModelRegistrySnapshot) => void,
         ) => {
@@ -759,6 +769,7 @@ describe('modelCatalogStore — owner-scoped policy and gateways (CAN-3464)', ()
       route: {
         modelId: id,
         gatewayId: `anthropic/${id}`,
+        family: 'custom',
         recommendedHarness: 'claude',
         gatewayOnly: true,
         contextWindow: 1_000_000,
@@ -839,9 +850,9 @@ describe('modelCatalogStore — owner-scoped policy and gateways (CAN-3464)', ()
   }
 
   async function hydrateForOwner(
-    context: typeof mockScopingContext,
+    context: ReturnType<typeof getSidebarScopingContext>,
   ): Promise<void> {
-    mockScopingContext = context;
+    mockScopingContext.mockReturnValue(context);
     stubAccount(twoOrgAccount());
     useModelCatalogStore.getState().syncActiveOwner();
     useModelCatalogStore.getState().hydrate(TWO_ORG_SNAPSHOT);
@@ -854,7 +865,7 @@ describe('modelCatalogStore — owner-scoped policy and gateways (CAN-3464)', ()
   });
 
   afterEach(() => {
-    mockScopingContext = undefined;
+    mockScopingContext.mockReturnValue(undefined);
     initClaudeModels([]);
     initCodexModels([]);
     initAiGatewayModels([], []);
@@ -934,7 +945,10 @@ describe('modelCatalogStore — owner-scoped policy and gateways (CAN-3464)', ()
     await hydrateForOwner({ kind: 'personal' });
     expect(CLAUDE_MODELS).toContain('claude-opus-5');
 
-    mockScopingContext = { kind: 'organization', organizationId: ORG_A };
+    mockScopingContext.mockReturnValue({
+      kind: 'organization',
+      organizationId: ORG_A,
+    });
     useModelCatalogStore.getState().syncActiveOwner();
 
     expect(CLAUDE_MODELS).not.toContain('claude-opus-5');

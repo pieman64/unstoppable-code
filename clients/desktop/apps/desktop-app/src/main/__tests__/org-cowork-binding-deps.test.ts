@@ -11,7 +11,7 @@ let mockState: WorkspaceContextBroadcast = {
   context: { kind: 'personal' },
   organizations: [],
   revision: 1,
-  reason: 'startup',
+  reason: 'organizations',
 };
 let mockListener: ((state: WorkspaceContextBroadcast) => void) | undefined;
 const mockEnsureDefaultChats = jest.fn();
@@ -135,7 +135,7 @@ beforeEach(() => {
     context: { kind: 'personal' },
     organizations: [],
     revision: 1,
-    reason: 'startup',
+    reason: 'organizations',
   };
   mockListener = undefined;
   mockReadOwnership.mockResolvedValue({ authority: 'absent' });
@@ -352,7 +352,7 @@ describe('membership scope', () => {
       context: { kind: 'personal' },
       organizations: [{ id: organizationId, name: 'Acme', role: 'MEMBER' }],
       revision: 1,
-      reason: 'startup',
+      reason: 'organizations',
     };
     mockAccountRead = {
       status: 'ok',

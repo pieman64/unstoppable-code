@@ -43,6 +43,8 @@ export function legacyChatHistoryMessageText(message: PersistedChatMessage): {
           return `[${block.kind}] ${block.repoName} ${block.branchName}`;
         case 'builtin_gh_chat_info':
           return `[${block.kind}] ${block.repoName ?? ''} ${block.branchName ?? ''}`.trim();
+        case 'approval_safety_denied_info':
+          return `[blocked by safety rule: ${block.reason}] ${block.command}`;
         case 'approval_resolution_info':
           return `[approval released by mode change -> ${block.mode}] ${block.titles.join('; ')}`.trim();
         case 'revert_info':

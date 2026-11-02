@@ -56,6 +56,11 @@ export const HOSTED_SETTINGS_PAGES: HostedSettingsPageRegistry = {
       default: m.LabsPage,
     })),
   ),
+  'account.appearance': lazy(() =>
+    import('../appearance/AppearancePage').then((m) => ({
+      default: m.AppearancePage,
+    })),
+  ),
   'account.integrations': lazy(() =>
     import('../github/AccountIntegrationsPage').then((m) => ({
       default: m.AccountIntegrationsPage,

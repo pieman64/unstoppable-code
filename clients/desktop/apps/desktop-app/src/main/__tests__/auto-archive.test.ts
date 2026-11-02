@@ -1,6 +1,26 @@
+import type * as AutoArchiveModule from '../lib/auto-archive';
 jest.mock('../agents/session-manager', () => ({
   getAllActiveSessionInfos: jest.fn(() => []),
   subscribeChatSessionActivity: jest.fn(() => (): void => undefined),
+}));
+type BackgroundWorkTarget = {
+  sessionKey: string;
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+  hasBackgroundWork: boolean;
+  blocksClose: boolean;
+};
+const listBackgroundWorkTargetsMock = jest.fn<BackgroundWorkTarget[], []>();
+const worktreeBlocksCloseMock = jest.fn<boolean, [string, string]>();
+const subscribeBackgroundWorkMock = jest.fn<
+  () => void,
+  [(sessionKey: string) => void]
+>();
+jest.mock('../agents/background-work', () => ({
+  listBackgroundWorkTargets: listBackgroundWorkTargetsMock,
+  worktreeBlocksClose: worktreeBlocksCloseMock,
+  subscribeBackgroundWork: subscribeBackgroundWorkMock,
 }));
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: jest.fn(() => ({ list: jest.fn() })),
@@ -41,7 +61,6 @@ jest.mock('../lib/workspace-activity', () => ({
 }));
 
 import {
-  IPC_CHANNELS,
   type AppAdvisorWatcherSummary,
   type AutomationsListResponse,
   type CoworkWorkEntriesFile,
@@ -52,24 +71,19 @@ import {
   LiveDelegationsError,
   setDelegationActivity,
 } from '../agents/delegation/activity';
+import { getAllActiveSessionInfos } from '../agents/session-manager';
 import { getWorktreeRuntimeStatuses } from '../services/worktree-runtime-status-service';
 import { readAllSidebarItems } from '../lib/sidebar-items';
+import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
+import { getAutomationsService } from '../automations/service';
+import {
+  archiveSingleRepoWorktree,
+  archiveMultiRepoWorktree,
+} from '../lib/worktree-service';
+import { WorktreeArchiveRefusedError } from '../lib/worktree-archive-refusal';
 import { readAppAdvisorWorkspaceSettings } from '../lib/app-advisor-workspace';
 import { touchWorkspaceTarget } from '../lib/workspace-activity';
-import {
-  applyAutoArchive,
-  collectActiveAutoArchiveTargetKeys,
-  collectAutoArchiveCandidates,
-  isAutoArchiveRuntimeBusy,
-  startAutoArchiveScheduler,
-  collectScheduledAutomationTargetKeys,
-  collectWatcherTargetKeys,
-  createActiveTargetActivityTracker,
-  resolveCurrentAutoArchivePolicy,
-  shouldTouchAutoArchiveTargetsForTerminalEvent,
-  startDrainableAutoArchiveSweeps,
-  type AutoArchiveDependencies,
-} from '../lib/auto-archive';
+import type { AutoArchiveDependencies } from '../lib/auto-archive';
 import {
   assertWorkspaceTargetRuntimeStartAllowed,
   resetWorkspaceTargetExclusionsForTests,
@@ -81,7 +95,38 @@ import {
   isSplitLocked,
 } from '../services/split-lock-service';
 
+const {
+  applyAutoArchive,
+  collectActiveAutoArchiveTargetKeys,
+  collectAutoArchiveCandidates,
+  isAutoArchiveRuntimeBusy,
+  startAutoArchiveScheduler,
+  collectScheduledAutomationTargetKeys,
+  collectWatcherTargetKeys,
+  createActiveTargetActivityTracker,
+  resolveCurrentAutoArchivePolicy,
+  shouldTouchAutoArchiveTargetsForTerminalEvent,
+  startDrainableAutoArchiveSweeps,
+} = jest.requireActual<typeof AutoArchiveModule>('../lib/auto-archive');
+
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
+let mockBackgroundWorkListener: ((sessionKey: string) => void) | null = null;
+let backgroundWorkTargets: BackgroundWorkTarget[] = [];
+
+beforeEach(() => {
+  backgroundWorkTargets = [];
+  mockBackgroundWorkListener = null;
+  jest.mocked(getAllActiveSessionInfos).mockReset().mockReturnValue([]);
+  listBackgroundWorkTargetsMock.mockReset();
+  listBackgroundWorkTargetsMock.mockImplementation(() => backgroundWorkTargets);
+  worktreeBlocksCloseMock.mockReset().mockReturnValue(false);
+  subscribeBackgroundWorkMock.mockReset().mockImplementation((listener) => {
+    mockBackgroundWorkListener = listener;
+    return (): void => {
+      mockBackgroundWorkListener = null;
+    };
+  });
+});
 
 afterEach(() => {
   resetWorkspaceTargetExclusionsForTests();
@@ -156,13 +201,25 @@ function createDependencies(): AutoArchiveDependencies {
     readWorkEntries: jest.fn(async (workspaceId: string) =>
       Promise.resolve(entriesByWorkspace.get(workspaceId) ?? workEntries([])),
     ),
-    listWorkEntryChatSummaries: jest.fn((workspaceId: string) => {
-      const file = entriesByWorkspace.get(workspaceId) ?? workEntries([]);
-      return file.entries.map((entry) => ({
-        entryId: entry.id,
-        chats: entry.summary?.chats ?? [],
-      }));
-    }),
+    listWorkEntryChatSummaries: jest.fn<
+      ReturnType<AutoArchiveDependencies['listWorkEntryChatSummaries']>,
+      [workspaceId: string]
+    >(
+      (
+        workspaceId: string,
+      ): ReturnType<AutoArchiveDependencies['listWorkEntryChatSummaries']> => {
+        const file = entriesByWorkspace.get(workspaceId) ?? workEntries([]);
+        return Promise.resolve(
+          file.entries.map((entry, order) => ({
+            entryId: entry.id,
+            title: entry.title ?? '',
+            order,
+            createdAt: entry.createdAt,
+            chats: entry.summary?.chats ?? [],
+          })),
+        );
+      },
+    ),
     readAppAdvisorSettings: jest.fn().mockResolvedValue({
       version: 1,
       archiveRetentionDays: 30,
@@ -181,6 +238,53 @@ function createDependencies(): AutoArchiveDependencies {
 }
 
 describe('Auto Delete', () => {
+  it('requires source admission on the default archive route and reports refusal without fallback', async () => {
+    const deps = createDependencies();
+    jest.mocked(readAllSidebarItems).mockResolvedValue({
+      version: 1,
+      items: (await deps.listSidebarItems()).filter(
+        (item) => item.type === 'single-repo',
+      ),
+    });
+    jest
+      .mocked(readAppAdvisorWorkspaceSettings)
+      .mockResolvedValue(await deps.readAppAdvisorSettings());
+    const watchers = getAppAdvisorWatcherService();
+    jest.spyOn(watchers, 'list').mockResolvedValue([]);
+    jest.mocked(getAppAdvisorWatcherService).mockReturnValue(watchers);
+    const automations = getAutomationsService();
+    jest
+      .spyOn(automations, 'list')
+      .mockResolvedValue({ activities: [], recentRuns: [] });
+    jest.mocked(getAutomationsService).mockReturnValue(automations);
+    jest.mocked(getWorktreeRuntimeStatuses).mockResolvedValue(new Map());
+    const archive = jest.mocked(archiveSingleRepoWorktree);
+    archive
+      .mockReset()
+      .mockRejectedValue(
+        new WorktreeArchiveRefusedError(
+          'source-unavailable',
+          'Source verification failed; retry.',
+        ),
+      );
+    jest.mocked(archiveMultiRepoWorktree).mockClear();
+
+    await expect(applyAutoArchive(NOW)).resolves.toEqual([
+      expect.objectContaining({
+        status: 'failure',
+        error: 'Source verification failed; retry.',
+      }),
+    ]);
+    expect(archive).toHaveBeenCalledTimes(1);
+    expect(archive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceAdmission: 'required',
+        requireArchivedContainer: true,
+      }),
+    );
+    expect(archiveMultiRepoWorktree).not.toHaveBeenCalled();
+  });
+
   it('drains an in-flight scheduler sweep and prevents later sweeps on stop', async () => {
     jest.useFakeTimers();
     let finishSweep: (() => void) | undefined;
@@ -234,19 +338,11 @@ describe('Auto Delete', () => {
   });
 
   it('ignores terminal output chunks when scheduling activity sweeps', () => {
+    expect(shouldTouchAutoArchiveTargetsForTerminalEvent('output')).toBe(false);
     expect(
-      shouldTouchAutoArchiveTargetsForTerminalEvent(
-        IPC_CHANNELS.terminalOutput,
-      ),
-    ).toBe(false);
-    expect(
-      shouldTouchAutoArchiveTargetsForTerminalEvent(
-        IPC_CHANNELS.terminalRunningChanged,
-      ),
+      shouldTouchAutoArchiveTargetsForTerminalEvent('runningChanged'),
     ).toBe(true);
-    expect(
-      shouldTouchAutoArchiveTargetsForTerminalEvent(IPC_CHANNELS.terminalExit),
-    ).toBe(true);
+    expect(shouldTouchAutoArchiveTargetsForTerminalEvent('exit')).toBe(true);
   });
 
   it('collects multi-repo and App Advisor targets without treating the legacy Advisor slot as a session', async () => {
@@ -338,7 +434,7 @@ describe('Auto Delete', () => {
     const deps = createDependencies();
     jest
       .mocked(deps.archive)
-      .mockResolvedValue({ warnings: ['Browser cleanup failed'] } as never);
+      .mockResolvedValue({ warnings: ['Browser cleanup failed'] });
     const results = await applyAutoArchive(NOW, deps);
     expect(results[0]).toMatchObject({
       status: 'success',
@@ -441,6 +537,77 @@ describe('Auto Delete', () => {
     }
   });
 
+  it('treats provider worktree blockers as busy', async () => {
+    const candidates = await collectAutoArchiveCandidates(createDependencies());
+    const oldTree = candidates.find(
+      (candidate) => candidate.targetId === 'old-tree',
+    );
+    if (!oldTree) throw new Error('old-tree candidate missing');
+    jest.mocked(getWorktreeRuntimeStatuses).mockResolvedValue(new Map());
+    worktreeBlocksCloseMock.mockReturnValue(true);
+
+    await expect(isAutoArchiveRuntimeBusy(oldTree)).resolves.toBe(true);
+  });
+
+  it('does not defer for a live shell alone without finite background sessions', async () => {
+    const candidates = await collectAutoArchiveCandidates(createDependencies());
+    const oldTree = candidates.find(
+      (candidate) => candidate.targetId === 'old-tree',
+    );
+    if (!oldTree) throw new Error('old-tree candidate missing');
+    backgroundWorkTargets = [
+      {
+        sessionKey: 'code-1/old-tree/chat-a',
+        projectId: 'code-1',
+        worktreeId: 'old-tree',
+        chatId: 'chat-a',
+        hasBackgroundWork: true,
+        blocksClose: false,
+      },
+    ];
+    jest.mocked(getAllActiveSessionInfos).mockReturnValue([
+      {
+        chatId: 'chat-a',
+        projectId: 'code-1',
+        worktreeId: 'old-tree',
+        providerType: 'claude',
+        turnActive: false,
+        createdAt: NOW,
+        lastActivityAt: NOW,
+        turnCount: 1,
+        pendingMessageCount: 0,
+        activeBackgroundTaskCount: 0,
+      },
+    ]);
+    jest.mocked(getWorktreeRuntimeStatuses).mockResolvedValue(new Map());
+
+    await expect(isAutoArchiveRuntimeBusy(oldTree)).resolves.toBe(false);
+  });
+
+  it('continues deferring for finite background session tasks', async () => {
+    const candidates = await collectAutoArchiveCandidates(createDependencies());
+    const oldTree = candidates.find(
+      (candidate) => candidate.targetId === 'old-tree',
+    );
+    if (!oldTree) throw new Error('old-tree candidate missing');
+    jest.mocked(getAllActiveSessionInfos).mockReturnValue([
+      {
+        chatId: 'chat-a',
+        projectId: 'code-1',
+        worktreeId: 'old-tree',
+        providerType: 'claude',
+        turnActive: false,
+        createdAt: NOW,
+        lastActivityAt: NOW,
+        turnCount: 1,
+        pendingMessageCount: 0,
+        activeBackgroundTaskCount: 1,
+      },
+    ]);
+
+    await expect(isAutoArchiveRuntimeBusy(oldTree)).resolves.toBe(true);
+  });
+
   it('treats a live-delegate refusal during deletion as busy, not a failure', async () => {
     const deps = createDependencies();
     jest
@@ -476,6 +643,23 @@ describe('Auto Delete', () => {
     } finally {
       setDelegationActivity('auto-archive-active', 'code-1/old-tree/chat-a', 0);
     }
+  });
+
+  it('counts provider blockers as active targets', () => {
+    backgroundWorkTargets = [
+      {
+        sessionKey: 'code-1/old-tree/chat-a',
+        projectId: 'code-1',
+        worktreeId: 'old-tree',
+        chatId: 'chat-a',
+        hasBackgroundWork: true,
+        blocksClose: true,
+      },
+    ];
+
+    expect(collectActiveAutoArchiveTargetKeys().has('code-1\0old-tree')).toBe(
+      true,
+    );
   });
 
   it('refreshes the inactivity clock when delegate activity changes', async () => {
@@ -516,6 +700,56 @@ describe('Auto Delete', () => {
       setDelegationActivity('auto-archive-touch', 'code-1/old-tree/chat-a', 0);
       scheduler.disposeActivitySubscriptions();
       await scheduler.stopScheduling();
+    }
+  });
+
+  it('touches blocker start and completion through the background-work subscription', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(NOW));
+    jest.mocked(readAllSidebarItems).mockResolvedValue({
+      version: 1,
+      items: [],
+    });
+    jest.mocked(readAppAdvisorWorkspaceSettings).mockResolvedValue({
+      version: 1,
+      archiveRetentionDays: 30,
+      autoArchiveDays: null,
+    });
+    const touch = jest.mocked(touchWorkspaceTarget);
+    touch.mockReset().mockResolvedValue(undefined);
+    const scheduler = startAutoArchiveScheduler();
+    try {
+      expect(mockBackgroundWorkListener).not.toBeNull();
+      touch.mockClear();
+      backgroundWorkTargets = [
+        {
+          sessionKey: 'code-1/old-tree/chat-a',
+          projectId: 'code-1',
+          worktreeId: 'old-tree',
+          chatId: 'chat-a',
+          hasBackgroundWork: true,
+          blocksClose: true,
+        },
+      ];
+      mockBackgroundWorkListener?.('code-1/old-tree/chat-a');
+      expect(touch).toHaveBeenCalledWith('code-1', 'old-tree', NOW);
+
+      touch.mockClear();
+      const completedAt = NOW + 1000;
+      jest.setSystemTime(new Date(completedAt));
+      backgroundWorkTargets = [];
+      mockBackgroundWorkListener?.('code-1/old-tree/chat-a');
+      expect(touch).toHaveBeenCalledWith('code-1', 'old-tree', completedAt);
+
+      scheduler.disposeActivitySubscriptions();
+      expect(mockBackgroundWorkListener).toBeNull();
+      touch.mockClear();
+      mockBackgroundWorkListener?.('code-1/old-tree/chat-a');
+      expect(touch).not.toHaveBeenCalled();
+    } finally {
+      scheduler.disposeActivitySubscriptions();
+      await scheduler.stopScheduling();
+      jest.useRealTimers();
     }
   });
 
@@ -688,26 +922,30 @@ describe('Auto Delete', () => {
     const code = sidebarItems.find((item) => item.id === 'code-1');
     if (!code || code.type === 'cowork')
       throw new Error('Missing code fixture');
-    code.worktrees[0] = {
-      ...code.worktrees[0],
-      autoArchiveLocked: true,
-    };
+    const firstWorktree = code.worktrees[0];
+    if (!firstWorktree) throw new Error('Missing worktree fixture');
+    const legacyWorktree = { ...firstWorktree };
+    // This legacy field is intentionally absent from the current worktree DTO.
+    Reflect.set(legacyWorktree, 'autoArchiveLocked', true);
+    code.worktrees[0] = legacyWorktree;
     jest.mocked(deps.listSidebarItems).mockResolvedValue(sidebarItems);
-    jest.mocked(deps.readWorkEntries).mockImplementation(async (workspaceId) =>
-      Promise.resolve(
-        workspaceId === 'cowork-1'
-          ? workEntries([
-              {
-                id: 'old-entry',
-                title: 'Old entry',
-                createdAt: '2026-08-01T00:00:00.000Z',
-                lastTouchedAt: '2026-08-20T00:00:00.000Z',
-                autoArchiveLocked: true,
-              },
-            ])
-          : workEntries([]),
-      ),
-    );
+    const legacyEntry: CoworkWorkEntriesFile['entries'][number] = {
+      id: 'old-entry',
+      title: 'Old entry',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      lastTouchedAt: '2026-08-20T00:00:00.000Z',
+    };
+    // This legacy field is intentionally absent from the current entry DTO.
+    Reflect.set(legacyEntry, 'autoArchiveLocked', true);
+    jest
+      .mocked(deps.readWorkEntries)
+      .mockImplementation((workspaceId) =>
+        Promise.resolve(
+          workspaceId === 'cowork-1'
+            ? workEntries([legacyEntry])
+            : workEntries([]),
+        ),
+      );
 
     const results = await applyAutoArchive(NOW, deps);
 
@@ -804,6 +1042,44 @@ describe('Auto Delete', () => {
     expect(
       collectScheduledAutomationTargetKeys(entryActivities, new Set()),
     ).toEqual(new Set(['cowork-1\0entry-1', 'app-advisor\0advisor-entry']));
+
+    // A pipeline that runs in an existing task protects it; one with no
+    // project protects nothing, whatever inert workspaceId it carries.
+    const pipelineActivities = [
+      {
+        ...activities[0],
+        id: 'automation-task',
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: 'code-1',
+          target: { kind: 'task', taskId: 'tree-2' },
+          pipelineId: 'p',
+        },
+      },
+      {
+        ...activities[0],
+        id: 'automation-global',
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: 'code-1',
+          target: { kind: 'global' },
+          pipelineId: 'p',
+        },
+      },
+      {
+        ...activities[0],
+        id: 'automation-base',
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: 'code-1',
+          baseWorktreeId: 'tree-3',
+          pipelineId: 'p',
+        },
+      },
+    ] satisfies AutomationsListResponse['activities'];
+    expect(
+      collectScheduledAutomationTargetKeys(pipelineActivities, new Set()),
+    ).toEqual(new Set(['code-1\0tree-2', 'code-1\0tree-3']));
   });
 
   it('reports an archive failure without preventing later due targets', async () => {

@@ -2,6 +2,7 @@ import {
   initAiGatewayModels,
   OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE,
   OLLAMA_SERVER_UNAVAILABLE_ERROR_NAME,
+  type ChatTabPluginSelections,
   type ModelHarnessInvocation,
 } from '@canopy/desktop-shared/types';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
@@ -94,7 +95,9 @@ jest.mock('../codex/transcript-seed', () => ({
 }));
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn().mockReturnValue({
-    materializeThread: mockMaterializeThread,
+    get materializeThread() {
+      return mockMaterializeThread;
+    },
     getCanonicalState: jest
       .fn()
       .mockResolvedValue({ codexHome: '/tmp/.codex' }),
@@ -103,7 +106,9 @@ jest.mock('../codex/runtime-service', () => ({
 }));
 jest.mock('../codex/capability-store', () => ({
   getDesktopCodexCapabilityStore: jest.fn().mockReturnValue({
-    readLease: mockReadLease,
+    get readLease() {
+      return mockReadLease;
+    },
   }),
 }));
 jest.mock('../mcp/http-proxy-service', () => ({
@@ -127,11 +132,15 @@ jest.mock('../canopy-tools/ledger-tools-runtime', () => ({
     mockLedgerToolPromptFor(options),
 }));
 jest.mock('../ollama/codex-compatible', () => ({
-  resolveCodexCompatibleOllamaInvocation: mockResolveOllamaInvocation,
+  get resolveCodexCompatibleOllamaInvocation(): typeof mockResolveOllamaInvocation {
+    return mockResolveOllamaInvocation;
+  },
 }));
 jest.mock('@canopy/desktop-shared/node/codex-runtime', () => ({
   createCodexCapabilitySnapshotId: jest.fn().mockReturnValue('snapshot-new'),
-  loadCodexThreadSeedItemsWithLoadCount: mockLoadSeedItems,
+  get loadCodexThreadSeedItemsWithLoadCount(): typeof mockLoadSeedItems {
+    return mockLoadSeedItems;
+  },
 }));
 
 import { materializeCodexCapabilityTransition } from '../codex/capability-transition';
@@ -165,12 +174,18 @@ function serverUnavailableError(message: string): Error {
   return error;
 }
 
+const emptyPluginSelections: ChatTabPluginSelections = {
+  collectionIds: [],
+  skillRefs: [],
+  pluginRefs: [],
+};
+
 const baseInput = {
   projectId: 'project',
   worktreeId: 'worktree',
   chatId: 'chat',
   sourceThreadId: 'thread-existing',
-  pluginSelections: {},
+  pluginSelections: emptyPluginSelections,
   localMemoryEnabled: false,
 };
 
@@ -197,6 +212,7 @@ beforeAll(() => {
         gatewayOnly: true,
         contextWindow: 1_000_000,
         supportsPromptCaching: false,
+        family: 'deepseek',
         supportedThinkingLevels: [],
         toolSchemaProfile: 'flat',
       },
@@ -211,6 +227,7 @@ beforeAll(() => {
         gatewayOnly: false,
         contextWindow: 400_000,
         supportsPromptCaching: false,
+        family: 'gpt',
         supportedThinkingLevels: [],
         toolSchemaProfile: 'standard',
       },

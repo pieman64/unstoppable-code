@@ -34,7 +34,9 @@ const CHAT_ID = 'linear-previews-chat';
 const TOKEN = 'lin_api_e2e_reference_previews';
 const ISSUE_URL = 'https://linear.app/acme/issue/CAN-42/preview-tickets';
 const LINK_ITEMS = ['Copy link', 'Open in browser', 'Open in external browser'];
-const COPY_ITEMS = ['Copy message', 'Copy as Markdown'];
+// Copy selection follows the link section, disabled without a selection
+// (CAN-4870).
+const COPY_ITEMS = ['Copy selection'];
 const LONG_TITLE =
   'Preview tickets in transcripts with titles long enough to need visual truncation — résumé 日本語 🚀';
 const ASSISTANT_TEXT = [

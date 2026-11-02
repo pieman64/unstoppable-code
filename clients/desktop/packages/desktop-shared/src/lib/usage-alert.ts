@@ -9,6 +9,7 @@ import type {
 } from '../types/observability';
 import type { AiCreditsRoutingMode, CanopyCloudAiCreditsState } from '../types';
 import type { AccountProxyStatus } from '../types/account-proxy';
+import { subscriptionUsageLimits } from './subscription-usage';
 import { resolveAiCreditsFundingSource } from './ai-credits-funding';
 import {
   accountProxyAccountsForHarness,
@@ -104,7 +105,10 @@ export function computeUsageAlertLevel(
   let hasWarning = poolLevels.includes('warning');
   for (const provider of usage.providers) {
     if (pools.has(provider.provider)) continue;
-    for (const rl of provider.rateLimits ?? []) {
+    for (const rl of subscriptionUsageLimits({
+      provider: provider.provider,
+      rateLimits: provider.rateLimits,
+    })) {
       const windows: Array<ProviderRateLimitWindow | undefined> = [
         rl.primary,
         rl.secondary,
@@ -147,12 +151,12 @@ function isAuthenticatedCloudProvider(provider: ProviderUsageSummary): boolean {
 
 /** True when any of the provider's rate-limit windows is at critical usage. */
 function isProviderOutOfQuota(provider: ProviderUsageSummary): boolean {
-  for (const rl of provider.rateLimits ?? []) {
+  for (const rl of subscriptionUsageLimits({
+    provider: provider.provider,
+    rateLimits: provider.rateLimits,
+  })) {
     for (const w of [rl.primary, rl.secondary]) {
-      if (
-        w?.usedPercent != null &&
-        w.usedPercent >= USAGE_ALERT_CRITICAL_THRESHOLD
-      ) {
+      if (w?.usedPercent != null && w.usedPercent >= 100) {
         return true;
       }
     }

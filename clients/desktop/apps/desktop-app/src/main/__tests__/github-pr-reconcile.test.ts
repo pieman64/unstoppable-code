@@ -281,13 +281,21 @@ describe('listReconcilableRepos', () => {
 
   it('reports every checked-out branch, and unresolved ones separately', async () => {
     jest.mocked(readAllSidebarItems).mockResolvedValue({
+      version: 1,
       items: [
         {
           id: 'canopy',
           type: 'single-repo',
+          name: 'Canopy',
+          repoPath: '/tmp/canopy',
+          color: '#000000',
+          collapsed: false,
+          order: 0,
           worktrees: [
             {
               id: 'tapir',
+              branchName: 'tapir/chain',
+              createdAt: '2026-09-28T00:00:00Z',
               lastKnownPrStatus: {
                 lastCheckedAt: '2026-09-28T00:00:00Z',
                 repos: [
@@ -300,7 +308,9 @@ describe('listReconcilableRepos', () => {
                       title: 'PR',
                       state: 'open',
                       checkStatus: 'none',
+                      checkDetails: [],
                       reviewStatus: 'none',
+                      reviewers: [],
                       hasConflicts: false,
                       commentCount: 0,
                       updatedAt: '2026-09-28T00:00:00Z',
@@ -309,7 +319,11 @@ describe('listReconcilableRepos', () => {
                 ],
               },
             },
-            { id: 'kudu' },
+            {
+              id: 'kudu',
+              branchName: 'kudu/fix',
+              createdAt: '2026-09-28T00:00:00Z',
+            },
           ],
         },
       ],

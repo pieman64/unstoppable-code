@@ -1,7 +1,11 @@
 import * as path from 'path';
+import type { NonSharedBuffer } from 'node:buffer';
 import type * as NodeUtil from 'node:util';
+import type { PluginInstallResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginInstallResponse';
+import type { PluginMarketplaceEntry } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
 import { BRAND } from '@canopy/brand/current';
 import type * as PreferencesStoreModule from '../lib/preferences-store';
+import type * as AtomicFileModule from '@canopy/desktop-shared/node/lib/atomic-file';
 
 jest.mock('../lib/preferences-broadcast', () => ({
   broadcastPreferencesSynced: jest.fn(),
@@ -12,7 +16,10 @@ jest.mock('../agents/session-manager', () => ({
 
 const mockExecFileAsync = jest.fn();
 const mockRunClaudeCliProcessOffMain = jest.fn();
-const mockGetRemoteHeadCommitSha = jest.fn(() => Promise.resolve(null));
+const mockGetRemoteHeadCommitSha = jest.fn<
+  Promise<string | null>,
+  [remoteUrl: string]
+>(() => Promise.resolve(null));
 let mockMarketplaceLockTail = Promise.resolve();
 function runWithMockMarketplaceLock<T>(
   operation: () => Promise<T>,
@@ -27,9 +34,11 @@ function runWithMockMarketplaceLock<T>(
 const mockWithMarketplaceRefreshLock = jest.fn(runWithMockMarketplaceLock);
 
 jest.mock('fs', () => ({
+  copyFileSync: jest.fn(),
   existsSync: jest.fn(),
   mkdirSync: jest.fn(),
   readFileSync: jest.fn(),
+  renameSync: jest.fn(),
   rmSync: jest.fn(),
   realpathSync: jest.fn((value: unknown): string => String(value)),
   statSync: jest.fn(),
@@ -52,30 +61,61 @@ jest.mock('node:util', () => ({
   promisify: jest.fn(() => mockExecFileAsync),
 }));
 jest.mock('../agents/claude-process-host-runner', () => ({
-  runClaudeCliProcessOffMain: mockRunClaudeCliProcessOffMain,
+  get runClaudeCliProcessOffMain(): typeof mockRunClaudeCliProcessOffMain {
+    return mockRunClaudeCliProcessOffMain;
+  },
 }));
 jest.mock('../plugins/plugin-scanner', () => ({
   scanPluginDetails: jest.fn(),
 }));
 jest.mock('../plugins/marketplace-refresh-lock', () => ({
-  withMarketplaceRefreshLock: mockWithMarketplaceRefreshLock,
+  get withMarketplaceRefreshLock(): typeof mockWithMarketplaceRefreshLock {
+    return mockWithMarketplaceRefreshLock;
+  },
+}));
+// Managed-marketplace receipts install through the synchronous atomic writer,
+// which the mocked `fs` above does not reach; capture its writes instead.
+const mockWriteFileAtomicallySync = jest.fn<
+  void,
+  [string, string | Uint8Array, unknown?]
+>();
+jest.mock('@canopy/desktop-shared/node/lib/atomic-file', () => ({
+  ...jest.requireActual<typeof AtomicFileModule>(
+    '@canopy/desktop-shared/node/lib/atomic-file',
+  ),
+  get writeFileAtomicallySync(): typeof mockWriteFileAtomicallySync {
+    return mockWriteFileAtomicallySync;
+  },
 }));
 jest.mock('../lib/git', () => ({
   cloneRepo: jest.fn(),
   getHeadCommitSha: jest.fn(() => Promise.resolve(null)),
-  getRemoteHeadCommitSha: mockGetRemoteHeadCommitSha,
+  get getRemoteHeadCommitSha(): typeof mockGetRemoteHeadCommitSha {
+    return mockGetRemoteHeadCommitSha;
+  },
 }));
-jest.mock('../lib/preferences-store', () => ({
-  ...jest.requireActual<typeof PreferencesStoreModule>(
+jest.mock('../lib/preferences-store', () => {
+  const actual = jest.requireActual<typeof PreferencesStoreModule>(
     '../lib/preferences-store',
-  ),
-  invalidateRendererPreferencesCache: jest.fn(),
-  readPreferencesFile: jest.fn(),
-  peekPreferencesLoadError: jest.fn(),
-  updatePreferencesFile: jest.fn(),
-  writePreferencesFile: jest.fn(),
-}));
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      invalidateRendererPreferencesCache: {
+        value: jest.fn(),
+        enumerable: true,
+      },
+      readPreferencesFile: { value: jest.fn(), enumerable: true },
+      peekPreferencesLoadError: { value: jest.fn(), enumerable: true },
+      updatePreferencesFile: { value: jest.fn(), enumerable: true },
+      writePreferencesFile: { value: jest.fn(), enumerable: true },
+    },
+  );
+});
 jest.mock('../lib/paths', () => ({
+  getBuiltInPluginMarketplacesFilePath: (): string =>
+    '/mock/data/built-in-plugin-marketplaces.json',
   getChatProjectChatTabsFilePath: (projectId: string): string =>
     `/mock/data/standalone-chat/projects/${projectId}/chat-tabs.json`,
   getChatProjectHistoryDir: (projectId: string): string =>
@@ -96,7 +136,7 @@ jest.mock('../lib/paths', () => ({
   getPipelinePluginPreferencesFilePath: (): string =>
     '/mock/data/pipeline-plugin-preferences.json',
   getPluginCacheDir: jest.fn(() => '/mock/data/plugin-cache'),
-  getPreferencesFilePath: (): string => '/mock/data/preferences.json',
+  getPreferencesFilePath: jest.fn(() => '/mock/data/preferences.json'),
   getWorkspaceChatHistoryMetaFilePath: (
     workspaceId: string,
     chatId: string,
@@ -147,10 +187,11 @@ const mockUpdateCompatibilityTab = jest.fn<
     { metadataOnly?: boolean } | undefined,
   ]
 >();
+// A plain function: resetAllMocks would clear a jest.fn once any test loads it.
 jest.mock('../services/chat-state-service', () => ({
-  getChatStateService: jest.fn(() => ({
-    updateCompatibilityTab: mockUpdateCompatibilityTab,
-  })),
+  getChatStateService: (): {
+    updateCompatibilityTab: typeof mockUpdateCompatibilityTab;
+  } => ({ updateCompatibilityTab: mockUpdateCompatibilityTab }),
 }));
 jest.mock('../lib/chat-storage-discovery', () => ({
   chatStorageScopeIds: jest.fn(() => Promise.resolve([])),
@@ -247,6 +288,7 @@ jest.mock('../plugins/codex-plugin-compat', () => ({
       skills: [],
       commands: [],
       agents: [],
+      warnings: [],
       sourceVersion: '1.0.0',
       sourceLastUpdatedAt: '2026-05-01T00:00:00.000Z',
     }),
@@ -308,6 +350,7 @@ import {
   refreshMarketplaces,
   removeMarketplace,
   removeInstalledPluginCache,
+  pruneSelectionRefsForInstalledItem,
   setClaudeInstalledItemEnabled,
   uninstallClaudeInstalledItem,
   resetBuiltInMarketplaceScanCacheForTests,
@@ -318,6 +361,7 @@ import {
 import type {
   ChatTabsFile,
   PersistedChatTab,
+  PreferencesData,
 } from '@canopy/desktop-shared/types';
 import type { ChatScopeKey } from '../services/chat-state-contracts';
 import {
@@ -327,7 +371,7 @@ import {
 import { cloneRepo, getHeadCommitSha } from '../lib/git';
 import {
   DEFAULT_PREFERENCES,
-  invalidateRendererPreferencesCache,
+  normalizePreferences,
   readPreferencesFile,
   peekPreferencesLoadError,
   updatePreferencesFile,
@@ -359,6 +403,7 @@ import {
   getCuratedPluginsMarketplaceDir,
   getDataDir,
   getPluginCacheDir,
+  getPreferencesFilePath,
 } from '../lib/paths';
 import {
   getBundledClaudePluginMarketplaceManifestPath,
@@ -373,11 +418,13 @@ const readChatStorageDiscoveryIndexMock = jest.mocked(
   readChatStorageDiscoveryIndex,
 );
 
-function mockDirent(name: string, directory: boolean): fs.Dirent<string> {
-  return {
-    name,
+function mockBufferDirent(
+  name: string,
+  directory: boolean,
+): fs.Dirent<NonSharedBuffer> {
+  const dirent: fs.Dirent<NonSharedBuffer> = {
+    name: Buffer.from(name),
     parentPath: '',
-    path: '',
     isFile: (): boolean => !directory,
     isDirectory: (): boolean => directory,
     isBlockDevice: (): boolean => false,
@@ -386,6 +433,38 @@ function mockDirent(name: string, directory: boolean): fs.Dirent<string> {
     isSocket: (): boolean => false,
     isSymbolicLink: (): boolean => false,
   };
+  // Jest resolves readdir's overloaded mock signature to the buffer variant;
+  // these legacy test doubles intentionally keep their runtime string names.
+  Reflect.set(dirent, 'name', name);
+  Reflect.set(dirent, 'path', '');
+  return dirent;
+}
+
+type SparseCodexMarketplaceEntry = Omit<
+  Partial<PluginMarketplaceEntry>,
+  'plugins'
+> & {
+  name: string;
+  plugins: unknown[];
+};
+
+/** Keep sparse legacy Codex response fixtures unchanged at this mock boundary. */
+function mockCodexMarketplaceEntry(
+  entry: SparseCodexMarketplaceEntry,
+): PluginMarketplaceEntry {
+  return entry as PluginMarketplaceEntry;
+}
+
+/** These tests do not exercise the new install-response payload fields. */
+function emptyPluginInstallResponse(): PluginInstallResponse {
+  return {} as PluginInstallResponse;
+}
+
+/** Legacy selections intentionally omit collectionIds and skillRefs. */
+function legacyPluginSelections(
+  pluginRefs: NonNullable<PersistedChatTab['pluginSelections']>['pluginRefs'],
+): NonNullable<PersistedChatTab['pluginSelections']> {
+  return { pluginRefs } as NonNullable<PersistedChatTab['pluginSelections']>;
 }
 
 const existsSyncMock = jest.mocked(fs.existsSync);
@@ -393,14 +472,13 @@ const statSyncMock = jest.mocked(fs.statSync);
 const actualFs = jest.requireActual<typeof fs>('fs');
 const readFileSyncMock = jest.mocked(fs.readFileSync);
 const writeFileSyncMock = jest.mocked(fs.writeFileSync);
+const renameSyncMock = jest.mocked(fs.renameSync);
+const copyFileSyncMock = jest.mocked(fs.copyFileSync);
 const readFileAsyncMock = jest.mocked(fs.promises.readFile);
 const readdirAsyncMock = jest.mocked(fs.promises.readdir);
 const writeFileAsyncMock = jest.mocked(fs.promises.writeFile);
 const cloneRepoMock = jest.mocked(cloneRepo);
 const getHeadCommitShaMock = jest.mocked(getHeadCommitSha);
-const invalidateRendererPreferencesCacheMock = jest.mocked(
-  invalidateRendererPreferencesCache,
-);
 const readPreferencesFileMock = jest.mocked(readPreferencesFile);
 const updatePreferencesFileMock = jest.mocked(updatePreferencesFile);
 const writePreferencesFileMock = jest.mocked(writePreferencesFile);
@@ -436,6 +514,7 @@ const getCuratedPluginsMarketplaceDirMock = jest.mocked(
   getCuratedPluginsMarketplaceDir,
 );
 const getPluginCacheDirMock = jest.mocked(getPluginCacheDir);
+const getPreferencesFilePathMock = jest.mocked(getPreferencesFilePath);
 const getBundledClaudePluginMarketplaceManifestPathMock = jest.mocked(
   getBundledClaudePluginMarketplaceManifestPath,
 );
@@ -481,6 +560,7 @@ beforeEach(() => {
     '/mock/data/curated-plugins/marketplace',
   );
   getPluginCacheDirMock.mockReturnValue('/mock/data/plugin-cache');
+  getPreferencesFilePathMock.mockReturnValue('/mock/data/preferences.json');
   getBundledClaudePluginMarketplaceManifestPathMock.mockReturnValue(
     '/mock/resources/plugins/.claude-plugin/marketplace.json',
   );
@@ -540,7 +620,7 @@ beforeEach(() => {
     accepted: false,
     error: 'codex unavailable',
   });
-  installCodexPluginMock.mockResolvedValue({});
+  installCodexPluginMock.mockResolvedValue(emptyPluginInstallResponse());
   // Kept in sync with the real `isStructuralCodexMarketplaceFailure` in
   // codex-marketplace-service.ts. A drifted copy here silently stops these
   // tests from exercising the classification they exist to cover - it had
@@ -604,6 +684,7 @@ beforeEach(() => {
       skills: [],
       commands: [],
       agents: [],
+      warnings: [],
       sourceVersion: '1.0.0',
       sourceLastUpdatedAt: '2026-05-01T00:00:00.000Z',
     }),
@@ -655,7 +736,7 @@ function readLastWrittenJson(): unknown {
 const CODEX_SECURITY_MARKETPLACE_ROOT = '/mock/codex/.tmp/plugins';
 const CODEX_SECURITY_PLUGIN_ROOT = `${CODEX_SECURITY_MARKETPLACE_ROOT}/plugins/codex-security`;
 
-const CODEX_SECURITY_MARKETPLACE_ENTRY = {
+const CODEX_SECURITY_MARKETPLACE_ENTRY = mockCodexMarketplaceEntry({
   name: 'openai-curated',
   path: `${CODEX_SECURITY_MARKETPLACE_ROOT}/.agents/plugins/marketplace.json`,
   interface: { displayName: 'OpenAI Curated' },
@@ -674,7 +755,7 @@ const CODEX_SECURITY_MARKETPLACE_ENTRY = {
       source: { type: 'local' as const, path: CODEX_SECURITY_PLUGIN_ROOT },
     },
   ],
-};
+});
 
 function poisonedCodexSecurityMarketplace(
   sourceType?: string,
@@ -1213,7 +1294,11 @@ describe('marketplace commands', () => {
     expect(result.data?.marketplaces.map((entry) => entry.id)).toEqual([
       'builtin/app',
     ]);
-    expect(mockExecFileAsync).not.toHaveBeenCalled();
+    // The managed registration only receives its periodic nudge; nothing is
+    // added or removed.
+    expect(
+      mockExecFileAsync.mock.calls.map((call: unknown[]): unknown => call[1]),
+    ).toEqual([['plugin', 'marketplace', 'update', 'canopy-plugins']]);
   });
 
   it('still surfaces a known_marketplaces entry that reuses the built-in name but points at a different, real location', async () => {
@@ -1235,7 +1320,7 @@ describe('marketplace commands', () => {
           plugins: [{ name: 'clone-plugin', source: './clone-plugin' }],
         });
       }
-      return baseReadFileSync?.(target);
+      return baseReadFileSync?.(target) ?? actualFs.readFileSync(target);
     });
     const baseExistsSync = existsSyncMock.getMockImplementation();
     existsSyncMock.mockImplementation((target) => {
@@ -1458,7 +1543,8 @@ describe('marketplace commands', () => {
     readFileSyncMock.mockImplementation((target, options) =>
       String(target).endsWith('plugins-cache.json') && cacheText !== null
         ? cacheText
-        : baseRead?.(target, options),
+        : (baseRead?.(target, options) ??
+          actualFs.readFileSync(target, options)),
     );
     writeFileSyncMock.mockImplementation((target, value) => {
       if (!String(target).endsWith('plugins-cache.json')) return;
@@ -1513,7 +1599,8 @@ describe('marketplace commands', () => {
     readFileSyncMock.mockImplementation((target, options) =>
       String(target).endsWith('plugins-cache.json') && cacheText !== null
         ? cacheText
-        : baseRead?.(target, options),
+        : (baseRead?.(target, options) ??
+          actualFs.readFileSync(target, options)),
     );
     writeFileSyncMock.mockImplementation((target, value) => {
       if (!String(target).endsWith('plugins-cache.json')) return;
@@ -1997,6 +2084,362 @@ describe('marketplace commands', () => {
         ([, args]) => Array.isArray(args) && args.includes('add'),
       ),
     ).toHaveLength(2);
+  });
+
+  describe('managed-marketplace receipts', () => {
+    const LEDGER_PATH = '/mock/data/built-in-plugin-marketplaces.json';
+    const LAST_UPDATED = '2026-05-01T00:00:00.000Z';
+    // The managed name follows the build's brand, and recorded roots are
+    // resolved (`C:\mock\...` on Windows).
+    const MANAGED_NAME = `${BRAND.internalName}-plugins`;
+    const RECORDED_MANAGED_ROOT = path.resolve('/mock/resources/plugins');
+    const movedRootRegistration = {
+      [MANAGED_NAME]: {
+        source: { source: 'directory', path: '/old/resources/plugins' },
+        installLocation: '/old/resources/plugins',
+        lastUpdated: LAST_UPDATED,
+      },
+    };
+    const managedRootRegistration = {
+      [MANAGED_NAME]: {
+        source: { source: 'directory', path: '/mock/resources/plugins' },
+        installLocation: '/mock/resources/plugins',
+        lastUpdated: LAST_UPDATED,
+      },
+    };
+    const movedRootReceipt = {
+      provider: 'claude',
+      marketplaceName: MANAGED_NAME,
+      sourceRoot: '/old/resources/plugins',
+      brandId: 'canopy',
+      recordedAt: LAST_UPDATED,
+    };
+    const builtInRequest = {
+      marketplaceId: 'builtin/app',
+      pluginName: 'built-in',
+    };
+
+    // The shared reads, matched on `/` paths: on Windows the app joins plugin
+    // manifest paths with backslashes.
+    function mockReceiptReads(
+      options?: Parameters<typeof mockBuiltInMarketplaceReads>[0],
+    ): void {
+      mockBuiltInMarketplaceReads(options);
+      const baseRead = readFileSyncMock.getMockImplementation();
+      if (!baseRead) throw new Error('Receipt read mock is not initialized');
+      readFileSyncMock.mockImplementation((target, encoding) =>
+        baseRead(String(target).replaceAll('\\', '/'), encoding),
+      );
+    }
+
+    function failLedgerWrites(): void {
+      const fail = (target: unknown): void => {
+        if (String(target) === LEDGER_PATH) throw new Error('disk full');
+      };
+      writeFileSyncMock.mockImplementation(fail);
+      mockWriteFileAtomicallySync.mockImplementation(fail);
+    }
+
+    /** Every ledger payload written, through either writer, in call order. */
+    function ledgerWrites(): unknown[] {
+      return [
+        ...writeFileSyncMock.mock.calls,
+        ...mockWriteFileAtomicallySync.mock.calls,
+      ].flatMap(([target, data]): unknown[] =>
+        String(target) === LEDGER_PATH && typeof data === 'string'
+          ? [JSON.parse(data)]
+          : [],
+      );
+    }
+
+    function claudeUpdateCalls(marketplaceName: string): unknown[] {
+      return mockExecFileAsync.mock.calls.filter(
+        ([, args]) =>
+          JSON.stringify(args) ===
+          JSON.stringify(['plugin', 'marketplace', 'update', marketplaceName]),
+      );
+    }
+
+    it('keeps refreshing when the receipt ledger holds a null entry', async () => {
+      mockReceiptReads({
+        knownMarketplaces: movedRootRegistration,
+        builtInProviderLedger: {
+          version: 1,
+          entries: [null, movedRootReceipt],
+        },
+      });
+
+      const result = await refreshMarketplaces();
+
+      expect(result.success).toBe(true);
+      // The receipt still identifies the moved registration as the managed one.
+      expect(result.data?.marketplaces.map((entry) => entry.id)).toEqual([
+        'builtin/app',
+      ]);
+    });
+
+    it('repairs a moved Claude registration when the receipt ledger holds a null entry', async () => {
+      mockReceiptReads({
+        knownMarketplaces: movedRootRegistration,
+        builtInProviderLedger: {
+          version: 1,
+          entries: [null, movedRootReceipt],
+        },
+      });
+      mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+
+      const result = await installBuiltInPlugin({
+        ...builtInRequest,
+        providers: ['claude'],
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        '/mock/claude',
+        ['plugin', 'marketplace', 'remove', MANAGED_NAME],
+        expect.anything(),
+      );
+    });
+
+    it.each([
+      ['a new registration', {}],
+      ['an existing registration at the managed root', managedRootRegistration],
+    ])(
+      'keeps a Claude install through %s when its receipt cannot be written',
+      async (_case, knownMarketplaces) => {
+        mockReceiptReads({ knownMarketplaces });
+        failLedgerWrites();
+        mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+
+        const result = await installBuiltInPlugin({
+          ...builtInRequest,
+          providers: ['claude'],
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.data?.providerOutcomes.claude).toEqual({
+          installed: true,
+        });
+      },
+    );
+
+    it('keeps both provider installs when the Codex receipt cannot be written', async () => {
+      mockReceiptReads();
+      failLedgerWrites();
+      mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+      addCodexMarketplaceMock.mockResolvedValue({
+        accepted: true,
+        marketplaceName: MANAGED_NAME,
+        installedRoot: `/mock/codex/${MANAGED_NAME}`,
+      });
+
+      const result = await installBuiltInPlugin({
+        ...builtInRequest,
+        providers: ['claude', 'codex'],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.providerOutcomes).toEqual({
+        claude: { installed: true },
+        codex: { installed: true },
+      });
+    });
+
+    it('never overwrites a receipt ledger written by a newer version', async () => {
+      mockReceiptReads({
+        builtInProviderLedger: { version: 2, entries: [] },
+      });
+      mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+
+      const result = await installBuiltInPlugin({
+        ...builtInRequest,
+        providers: ['claude'],
+      });
+
+      expect(result.success).toBe(true);
+      expect(ledgerWrites()).toEqual([]);
+      expect(renameSyncMock).not.toHaveBeenCalled();
+    });
+
+    it('copies a damaged receipt ledger aside before recording a receipt', async () => {
+      mockReceiptReads();
+      const baseRead = readFileSyncMock.getMockImplementation();
+      if (!baseRead) throw new Error('Receipt read mock is not initialized');
+      readFileSyncMock.mockImplementation((target, options) =>
+        String(target) === LEDGER_PATH
+          ? '{"version": 1, "entries": ['
+          : baseRead(target, options),
+      );
+      mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+
+      const result = await installBuiltInPlugin({
+        ...builtInRequest,
+        providers: ['claude'],
+      });
+
+      expect(result.success).toBe(true);
+      expect(copyFileSyncMock).toHaveBeenCalledWith(
+        LEDGER_PATH,
+        expect.stringMatching(
+          /built-in-plugin-marketplaces\.json\.damaged-\d+$/,
+        ),
+      );
+      // The damaged file stays in place until the replacement renames over it.
+      expect(renameSyncMock).not.toHaveBeenCalled();
+      expect(ledgerWrites()).toEqual([
+        {
+          version: 1,
+          entries: [
+            expect.objectContaining({
+              provider: 'claude',
+              marketplaceName: MANAGED_NAME,
+              sourceRoot: RECORDED_MANAGED_ROOT,
+            }),
+          ],
+        },
+      ]);
+      expect(copyFileSyncMock.mock.invocationCallOrder[0]).toBeLessThan(
+        mockWriteFileAtomicallySync.mock.invocationCallOrder[0] ?? 0,
+      );
+    });
+
+    it('nudges a managed Claude registration that has no receipt and records one', async () => {
+      mockReceiptReads({
+        knownMarketplaces: managedRootRegistration,
+      });
+      mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+
+      const result = await refreshMarketplaces();
+
+      expect(result.success).toBe(true);
+      expect(claudeUpdateCalls(MANAGED_NAME)).toHaveLength(1);
+      expect(ledgerWrites()).toEqual([
+        {
+          version: 1,
+          entries: [
+            expect.objectContaining({
+              provider: 'claude',
+              marketplaceName: MANAGED_NAME,
+              sourceRoot: RECORDED_MANAGED_ROOT,
+            }),
+          ],
+        },
+      ]);
+    });
+
+    it('does not nudge a same-named marketplace registered somewhere else', async () => {
+      mockReceiptReads({
+        knownMarketplaces: {
+          [MANAGED_NAME]: {
+            source: { source: 'directory', path: '/elsewhere/canopy-plugins' },
+            installLocation: '/elsewhere/canopy-plugins',
+            lastUpdated: LAST_UPDATED,
+          },
+        },
+        existingPaths: ['/elsewhere/canopy-plugins'],
+        builtInProviderLedger: {
+          version: 1,
+          entries: [
+            {
+              ...movedRootReceipt,
+              sourceRoot: '/mock/resources/plugins',
+            },
+          ],
+        },
+      });
+      mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+
+      const result = await refreshMarketplaces();
+
+      expect(result.success).toBe(true);
+      // Only the foreign row's own source update; no managed nudge.
+      expect(claudeUpdateCalls(MANAGED_NAME)).toHaveLength(1);
+      expect(ledgerWrites()).toEqual([]);
+    });
+
+    it('records a Codex receipt from the provider list a refresh reads', async () => {
+      mockReceiptReads({
+        builtInProviderLedger: {
+          version: 1,
+          entries: [
+            {
+              ...movedRootReceipt,
+              sourceRoot: '/mock/resources/plugins',
+            },
+          ],
+        },
+      });
+      listCodexPluginsMock.mockResolvedValue({
+        marketplaces: [
+          {
+            name: MANAGED_NAME,
+            path: '/mock/resources/plugins/.agents/plugins/marketplace.json',
+            interface: null,
+            plugins: [],
+          },
+        ],
+        marketplaceLoadErrors: [],
+        featuredPluginIds: [],
+      });
+
+      const result = await refreshMarketplaces();
+
+      expect(result.success).toBe(true);
+      expect(ledgerWrites()).toEqual([
+        {
+          version: 1,
+          entries: [
+            expect.objectContaining({
+              provider: 'claude',
+              sourceRoot: '/mock/resources/plugins',
+            }),
+            expect.objectContaining({
+              provider: 'codex',
+              marketplaceName: MANAGED_NAME,
+              sourceRoot: RECORDED_MANAGED_ROOT,
+            }),
+          ],
+        },
+      ]);
+      expect(addCodexMarketplaceMock).not.toHaveBeenCalled();
+    });
+
+    it('rescans the managed marketplace after an install that failed partway', async () => {
+      mockReceiptReads();
+      // Fill the scan memo with the pre-install snapshot.
+      await loadMarketplaces();
+      mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
+      addCodexMarketplaceMock.mockRejectedValue(new Error('app-server exited'));
+
+      const failed = await installBuiltInPlugin({
+        ...builtInRequest,
+        providers: ['claude', 'codex'],
+      });
+      expect(failed.success).toBe(false);
+
+      // Claude kept the plugin installed before Codex failed.
+      const managedInstallPath = `/mock/claude/plugins/cache/${MANAGED_NAME}/built-in/1.0.0`;
+      mockReceiptReads({
+        claudeInstalledPlugins: {
+          version: 2,
+          plugins: {
+            [`built-in@${MANAGED_NAME}`]: [
+              {
+                scope: 'user',
+                installPath: managedInstallPath,
+                version: '1.0.0',
+              },
+            ],
+          },
+        },
+        existingPaths: [managedInstallPath],
+      });
+      const loaded = await loadMarketplaces();
+
+      expect(
+        loaded.data?.marketplaces[0]?.plugins[0]?.globalInstallStatus?.claude,
+      ).toMatchObject({ installed: true });
+    });
   });
 
   it('uses the bundled Claude binary when adding a marketplace', async () => {
@@ -3205,13 +3648,15 @@ describe('marketplace commands', () => {
         },
       ],
     };
-    let releaseClaudeAdd:
-      | ((value: { stdout: string; stderr: string }) => void)
-      | null = null;
+    let releaseClaudeAdd: () => void = () => {
+      throw new Error('Expected Claude add to be pending.');
+    };
     mockExecFileAsync.mockImplementation(
-      () =>
+      (): Promise<{ stdout: string; stderr: string }> =>
         new Promise((resolve) => {
-          releaseClaudeAdd = resolve;
+          releaseClaudeAdd = (): void => {
+            resolve({ stdout: '', stderr: '' });
+          };
         }),
     );
     readFileSyncMock.mockImplementation((target) => {
@@ -3287,7 +3732,7 @@ describe('marketplace commands', () => {
     );
     expect(readClaudePluginCompatibilitySourceMock).not.toHaveBeenCalled();
 
-    releaseClaudeAdd?.({ stdout: '', stderr: '' });
+    releaseClaudeAdd();
     const refreshResult = await refresh;
 
     expect(refreshResult.success).toBe(true);
@@ -3406,7 +3851,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'acme',
           path: '/mock/codex/acme/.agents/plugins/marketplace.json',
           plugins: [
@@ -3416,7 +3861,7 @@ describe('marketplace commands', () => {
               interface: { displayName: 'codex-plugin' },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -3756,7 +4201,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'openai-curated',
           path: '/mock/codex/.tmp/plugins/.agents/plugins/marketplace.json',
           interface: { displayName: 'Codex official' },
@@ -3778,7 +4223,7 @@ describe('marketplace commands', () => {
               },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: ['linear@openai-curated'],
@@ -3876,7 +4321,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'awesome-codex-plugins',
           path: '/mock/codex/awesome/.agents/plugins/marketplace.json',
           interface: { displayName: 'Awesome Codex Plugins' },
@@ -3891,7 +4336,7 @@ describe('marketplace commands', () => {
               },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -3962,7 +4407,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'awesome-codex-plugins',
           path: '/mock/codex/awesome/.agents/plugins/marketplace.json',
           interface: { displayName: 'Awesome Codex Plugins' },
@@ -3977,7 +4422,7 @@ describe('marketplace commands', () => {
               },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -4115,7 +4560,7 @@ describe('marketplace commands', () => {
   it('does not discover the obsolete internal Codex marketplace as a global marketplace', async () => {
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'canopy-chat-plugins',
           path: '/mock/obsolete/.agents/plugins/marketplace.json',
           interface: { displayName: 'Canopy Chat Plugins' },
@@ -4130,7 +4575,7 @@ describe('marketplace commands', () => {
               },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -4173,7 +4618,7 @@ describe('marketplace commands', () => {
     mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'openai/curated',
           path: '/mock/codex/.tmp/plugins/.agents/plugins/marketplace.json',
           interface: { displayName: 'Codex curated' },
@@ -4188,7 +4633,7 @@ describe('marketplace commands', () => {
               },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: ['linear@openai/curated'],
@@ -4293,7 +4738,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'superpowers-marketplace',
           path: '/mock/codex/super/.claude-plugin/marketplace.json',
           interface: { displayName: 'Superpowers' },
@@ -4311,7 +4756,7 @@ describe('marketplace commands', () => {
               },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -4486,7 +4931,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'acme',
           path: '/mock/codex/acme/.agents/plugins/marketplace.json',
           plugins: [
@@ -4496,7 +4941,7 @@ describe('marketplace commands', () => {
               interface: { displayName: 'Pretty Plugin' },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -4606,7 +5051,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'acme',
           path: '/mock/codex/acme/.agents/plugins/marketplace.json',
           plugins: [
@@ -4616,7 +5061,7 @@ describe('marketplace commands', () => {
               interface: { displayName: 'shared-plugin' },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -4699,7 +5144,7 @@ describe('marketplace commands', () => {
     });
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'acme',
           path: '/mock/codex/acme/.agents/plugins/marketplace.json',
           plugins: [
@@ -4709,7 +5154,7 @@ describe('marketplace commands', () => {
               interface: { displayName: 'codex-specific' },
             },
           ],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -4919,20 +5364,28 @@ describe('marketplace commands', () => {
       }
       throw new Error(`unexpected sync read: ${filePath}`);
     });
-    readFileAsyncMock.mockImplementation((target) => {
-      const filePath = typeof target === 'string' ? target : '';
-      if (filePath.endsWith('preferences.json')) {
-        return JSON.stringify({
-          selections: {
-            pluginRefs: [
-              { marketplaceId: 'acme/plugins', pluginName: 'shared' },
-              { marketplaceId: 'other/plugins', pluginName: 'other' },
-            ],
-          },
-        }) as never;
-      }
-      return Promise.reject(new Error(`ENOENT: ${filePath}`)) as never;
-    });
+    let preferences: PreferencesData = {
+      ...DEFAULT_PREFERENCES,
+      globalPluginSelections: {
+        collectionIds: [],
+        skillRefs: [],
+        ...DEFAULT_PREFERENCES.globalPluginSelections,
+        pluginRefs: [
+          { marketplaceId: 'acme/plugins', pluginName: 'shared' },
+          { marketplaceId: 'other/plugins', pluginName: 'other' },
+        ],
+      },
+    };
+    updatePreferencesFileMock.mockImplementation(
+      async (updater, onCommitted) => {
+        const patch = await updater(preferences);
+        if (patch !== null) {
+          preferences = { ...preferences, ...patch };
+          onCommitted?.(preferences);
+        }
+        return preferences;
+      },
+    );
 
     const result = await removeMarketplace('acme/plugins');
 
@@ -4947,18 +5400,157 @@ describe('marketplace commands', () => {
         return typeof target === 'string' && target.includes('chat-plugins');
       }),
     ).toBe(false);
-    const selectionWrite = writeFileAsyncMock.mock.calls.find(([target]) => {
-      return typeof target === 'string' && target.endsWith('preferences.json');
-    });
-    expect(selectionWrite).toBeDefined();
-    expect(invalidateRendererPreferencesCacheMock).toHaveBeenCalledTimes(1);
-    expect(typeof selectionWrite?.[1]).toBe('string');
-    expect(JSON.parse(selectionWrite?.[1] as string)).toEqual({
-      selections: {
-        pluginRefs: [{ marketplaceId: 'other/plugins', pluginName: 'other' }],
-      },
-    });
+    expect(writeFileAsyncMock).not.toHaveBeenCalled();
+    expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
+    expect(preferences.globalPluginSelections?.pluginRefs).toEqual([
+      { marketplaceId: 'other/plugins', pluginName: 'other' },
+    ]);
   });
+
+  it('W-prune: uses the queued preferences value after a global revocation', async () => {
+    mockExecFileAsync.mockRejectedValue(new Error('marketplace not found'));
+    removeCodexMarketplaceMock.mockResolvedValue({
+      accepted: true,
+      alreadySatisfied: true,
+    });
+    readFileSyncMock.mockImplementation((target) => {
+      if (String(target).endsWith('plugins-cache.json'))
+        return JSON.stringify(dualValidMarketplaceCache());
+      throw new Error('ENOENT');
+    });
+    readdirAsyncMock.mockResolvedValue([]);
+    chatStorageScopeIdsMock.mockResolvedValue([]);
+    const acme = { marketplaceId: 'acme/plugins', pluginName: 'shared' };
+    const other = { marketplaceId: 'other/plugins', pluginName: 'other' };
+    let queuedPreferences: PreferencesData = {
+      ...DEFAULT_PREFERENCES,
+      sidebarCollapsed: true,
+      globalPluginSelections: {
+        collectionIds: [],
+        skillRefs: [],
+        ...DEFAULT_PREFERENCES.globalPluginSelections,
+        pluginRefs: [acme, other],
+      },
+      globalApprovalRules: [
+        {
+          id: 'R',
+          behavior: 'allow' as const,
+          origin: 'prompt' as const,
+          createdAt: '2026-10-27T00:00:00.000Z',
+          target: { kind: 'file-write' as const, path: 'allowed/**' },
+        },
+      ],
+    };
+    let latest: unknown = queuedPreferences;
+    let lastGood: unknown = structuredClone(latest);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    readFileAsyncMock.mockImplementation(async (target) => {
+      if (target !== '/mock/data/preferences.json') throw new Error('ENOENT');
+      const stale = JSON.stringify({ version: 1, preferences: latest });
+      entered.resolve();
+      await release.promise;
+      return Buffer.from(stale);
+    });
+    writeFileAsyncMock.mockImplementation((target, value) => {
+      if (target === '/mock/data/preferences.json') {
+        if (typeof value !== 'string' && !Buffer.isBuffer(value)) {
+          throw new Error('Expected serialized preferences');
+        }
+        const parsed: unknown = JSON.parse(value.toString());
+        if (!isRecord(parsed) || !isRecord(parsed.preferences)) {
+          throw new Error('Expected preferences document');
+        }
+        latest = parsed.preferences;
+      }
+      return Promise.resolve();
+    });
+    updatePreferencesFileMock.mockImplementation(
+      async (updater, onCommitted) => {
+        entered.resolve();
+        await release.promise;
+        queuedPreferences = {
+          ...queuedPreferences,
+          ...(await updater(queuedPreferences)),
+        };
+        latest = queuedPreferences;
+        lastGood = structuredClone(latest);
+        onCommitted?.(queuedPreferences);
+        return queuedPreferences;
+      },
+    );
+    expect((await removeMarketplace('acme/plugins')).success).toBe(true);
+    await entered.promise;
+    queuedPreferences = { ...queuedPreferences, globalApprovalRules: [] };
+    latest = queuedPreferences;
+    lastGood = structuredClone(latest);
+    release.resolve();
+    await flushMarketplaceSelectionPruneForTests();
+    expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
+    expect(latest).toMatchObject({
+      sidebarCollapsed: true,
+      globalApprovalRules: [],
+      globalPluginSelections: { pluginRefs: [other] },
+    });
+    expect(lastGood).toEqual(latest);
+    expect(writeFileAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['commit', 'failure', 'no-op'])(
+    'W-prune: invalidates global defaults only at commit (%s)',
+    async (outcome) => {
+      mockExecFileAsync.mockRejectedValue(new Error('marketplace not found'));
+      removeCodexMarketplaceMock.mockResolvedValue({
+        accepted: true,
+        alreadySatisfied: true,
+      });
+      readFileSyncMock.mockImplementation((target) => {
+        if (String(target).endsWith('plugins-cache.json'))
+          return JSON.stringify(dualValidMarketplaceCache());
+        throw new Error('ENOENT');
+      });
+      readdirAsyncMock.mockResolvedValue([]);
+      chatStorageScopeIdsMock.mockResolvedValue([]);
+      const before = getGlobalPluginDefaultsRevision();
+      const latest = normalizePreferences({
+        ...DEFAULT_PREFERENCES,
+        globalPluginSelections: {
+          ...DEFAULT_PREFERENCES.globalPluginSelections,
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs:
+            outcome === 'no-op'
+              ? []
+              : [{ marketplaceId: 'acme/plugins', pluginName: 'shared' }],
+        },
+      });
+      let revisionAfterUpdater: number | undefined;
+      let updaterReturnedNull: boolean | undefined;
+      updatePreferencesFileMock.mockImplementation(
+        async (updater, onCommitted) => {
+          const patch = await updater(latest);
+          revisionAfterUpdater = getGlobalPluginDefaultsRevision();
+          updaterReturnedNull = patch === null;
+          if (outcome === 'failure') throw new Error('primary commit failed');
+          if (outcome === 'no-op') {
+            return latest;
+          }
+          const committed = { ...latest, ...patch };
+          onCommitted?.(committed);
+          return committed;
+        },
+      );
+      expect((await removeMarketplace('acme/plugins')).success).toBe(true);
+      await flushMarketplaceSelectionPruneForTests();
+      expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
+      expect(revisionAfterUpdater).toBe(before);
+      expect(updaterReturnedNull).toBe(outcome === 'no-op');
+      expect(getGlobalPluginDefaultsRevision()).toBe(
+        before + (outcome === 'commit' ? 1 : 0),
+      );
+      expect(writeFileAsyncMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('prunes a workspace config inside its manifest queue, so a queued update keeps the prune', async () => {
     mockExecFileAsync.mockRejectedValue(new Error('marketplace not found'));
@@ -4990,7 +5582,7 @@ describe('marketplace commands', () => {
     readdirAsyncMock.mockImplementation((target) =>
       Promise.resolve(
         String(target) === '/mock/data/workspaces'
-          ? [mockDirent('ws-1', true)]
+          ? [mockBufferDirent('ws-1', true)]
           : [],
       ),
     );
@@ -5060,7 +5652,7 @@ describe('marketplace commands', () => {
     readdirAsyncMock.mockImplementation((target) =>
       Promise.resolve(
         String(target) === '/mock/data/workspaces'
-          ? [mockDirent('ws-1', true)]
+          ? [mockBufferDirent('ws-1', true)]
           : [],
       ),
     );
@@ -5122,7 +5714,7 @@ describe('marketplace commands', () => {
     readdirAsyncMock.mockImplementation((target) =>
       Promise.resolve(
         String(target) === '/mock/data/workspaces'
-          ? ['ws-1', 'ws-2', 'ws-3'].map((id) => mockDirent(id, true))
+          ? ['ws-1', 'ws-2', 'ws-3'].map((id) => mockBufferDirent(id, true))
           : [],
       ),
     );
@@ -5181,6 +5773,24 @@ describe('marketplace commands', () => {
     const other = { marketplaceId: 'other/plugins', pluginName: 'other' };
 
     function removeWith(files: Record<string, unknown>): Promise<void> {
+      const stored = files['/mock/data/preferences.json'];
+      let preferences = normalizePreferences(
+        {
+          ...DEFAULT_PREFERENCES,
+          ...(typeof stored === 'object' && stored !== null ? stored : {}),
+        },
+        'persisted',
+      );
+      updatePreferencesFileMock.mockImplementation(
+        async (updater, onCommitted) => {
+          const patch = await updater(preferences);
+          if (patch !== null) {
+            preferences = { ...preferences, ...patch };
+            onCommitted?.(preferences);
+          }
+          return preferences;
+        },
+      );
       mockExecFileAsync.mockRejectedValue(new Error('marketplace not found'));
       removeCodexMarketplaceMock.mockResolvedValue({
         accepted: true,
@@ -5201,7 +5811,7 @@ describe('marketplace commands', () => {
       readdirAsyncMock.mockImplementation((target) =>
         Promise.resolve(
           String(target) === '/mock/data/workspaces'
-            ? workspaceIds.map((id) => mockDirent(id, true))
+            ? workspaceIds.map((id) => mockBufferDirent(id, true))
             : [],
         ),
       );
@@ -5293,11 +5903,97 @@ describe('marketplace commands', () => {
         },
       });
 
-      expect(writeFileAsyncMock.mock.calls.map(([target]) => target)).toContain(
-        '/mock/data/preferences.json',
-      );
+      expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
+      expect(writeFileAsyncMock).not.toHaveBeenCalled();
       expect(getGlobalPluginDefaultsRevision()).toBe(before);
     });
+
+    it('prunes preferences through the preferences store first, never through the generic file loop', async () => {
+      const before = getGlobalPluginDefaultsRevision();
+      await removeWith({
+        '/mock/data/preferences.json': {
+          globalPluginSelections: { pluginRefs: [acme, other] },
+        },
+        '/mock/data/pipeline-plugin-preferences.json': {
+          pluginSelections: { pluginRefs: [acme, other] },
+        },
+      });
+
+      // The generic loop reads and rewrites the files it is given; the
+      // preferences path never enters it.
+      expect(getPreferencesFilePathMock).not.toHaveBeenCalled();
+      for (const mock of [readFileAsyncMock, writeFileAsyncMock])
+        expect(mock.mock.calls.map(([target]) => target)).not.toContain(
+          '/mock/data/preferences.json',
+        );
+      expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
+      expect(getGlobalPluginDefaultsRevision()).toBe(before + 1);
+      expect(writeFileAsyncMock.mock.calls.map(([target]) => target)).toEqual([
+        '/mock/data/pipeline-plugin-preferences.json',
+      ]);
+      const pipelineRead = readFileAsyncMock.mock.calls.findIndex(
+        ([target]) => target === '/mock/data/pipeline-plugin-preferences.json',
+      );
+      expect(
+        updatePreferencesFileMock.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        readFileAsyncMock.mock.invocationCallOrder[pipelineRead] ?? 0,
+      );
+    });
+
+    it('keeps pruning the other files when the preferences prune fails', async () => {
+      const files = {
+        '/mock/data/pipeline-plugin-preferences.json': {
+          pluginSelections: { pluginRefs: [acme, other] },
+        },
+      };
+      const removal = removeWith(files);
+      updatePreferencesFileMock.mockRejectedValue(
+        Object.assign(new Error('refused'), {
+          code: 'PREFERENCES_RECOVERY_REQUIRED',
+        }),
+      );
+      await removal;
+
+      expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
+      expect(writeFileAsyncMock.mock.calls.map(([target]) => target)).toEqual([
+        '/mock/data/pipeline-plugin-preferences.json',
+      ]);
+    });
+  });
+
+  it('installed-item removal leaves preferences to its caller and prunes the other files', async () => {
+    const ref = {
+      kind: 'plugin' as const,
+      marketplaceId: 'acme/plugins',
+      pluginName: 'shared',
+    };
+    const document = {
+      pluginSelections: {
+        pluginRefs: [{ marketplaceId: 'acme/plugins', pluginName: 'shared' }],
+      },
+    };
+    readdirAsyncMock.mockResolvedValue([]);
+    chatStorageScopeIdsMock.mockResolvedValue([]);
+    readFileAsyncMock.mockImplementation((target) =>
+      target === '/mock/data/preferences.json' ||
+      target === '/mock/data/pipeline-plugin-preferences.json'
+        ? Promise.resolve(Buffer.from(JSON.stringify(document)))
+        : Promise.reject(
+            Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+          ),
+    );
+
+    await pruneSelectionRefsForInstalledItem(ref);
+
+    expect(getPreferencesFilePathMock).not.toHaveBeenCalled();
+    expect(
+      readFileAsyncMock.mock.calls.map(([target]) => target),
+    ).not.toContain('/mock/data/preferences.json');
+    expect(writeFileAsyncMock.mock.calls.map(([target]) => target)).toEqual([
+      '/mock/data/pipeline-plugin-preferences.json',
+    ]);
+    expect(updatePreferencesFileMock).not.toHaveBeenCalled();
   });
 
   it('prunes marketplace refs from canonical v2 chat scopes without rewriting legacy chat files', async () => {
@@ -5320,12 +6016,12 @@ describe('marketplace commands', () => {
     readdirAsyncMock.mockImplementation((target) => {
       const dir = String(target);
       if (dir === '/mock/data/workspaces') {
-        return Promise.resolve([mockDirent('ws-1', true)]);
+        return Promise.resolve([mockBufferDirent('ws-1', true)]);
       }
       if (dir === '/mock/data/workspaces/ws-1/chats') {
         return Promise.resolve([
-          mockDirent('wt-1.json', false),
-          mockDirent('wt-legacy.json', false),
+          mockBufferDirent('wt-1.json', false),
+          mockBufferDirent('wt-legacy.json', false),
         ]);
       }
       return Promise.resolve([]);
@@ -5351,10 +6047,14 @@ describe('marketplace commands', () => {
     );
     readChatStorageDiscoveryIndexMock.mockResolvedValue({
       tabs: [
-        { id: 'chat-1', pluginSelections: { pluginRefs: [acme, other] } },
-        { id: 'chat-2', pluginSelections: { pluginRefs: [other] } },
+        {
+          id: 'chat-1',
+          pluginSelections: legacyPluginSelections([acme, other]),
+        },
+        { id: 'chat-2', pluginSelections: legacyPluginSelections([other]) },
       ],
       runtimeByChatId: {},
+      pendingJournal: false,
     });
     mockUpdateCompatibilityTab.mockResolvedValue({
       tabsFile: { version: 1, tabs: [], activeTabId: '' },
@@ -5384,7 +6084,7 @@ describe('marketplace commands', () => {
       title: 'Chat',
       createdAt: '2026-09-01T00:00:00.000Z',
       messages: [],
-      pluginSelections: { pluginRefs: [acme, other] },
+      pluginSelections: legacyPluginSelections([acme, other]),
     };
     expect(update(current)).toEqual({
       ...current,
@@ -5393,7 +6093,7 @@ describe('marketplace commands', () => {
     // The current tab is never mutated in place.
     expect(current.pluginSelections?.pluginRefs).toEqual([acme, other]);
     expect(
-      update({ ...current, pluginSelections: { pluginRefs: [other] } }),
+      update({ ...current, pluginSelections: legacyPluginSelections([other]) }),
     ).toBeNull();
 
     // The migrated scope's stale legacy file is a migration input and must
@@ -6140,7 +6840,7 @@ describe('setCodexCompatDisabled and the loadMarketplaces overlay', () => {
       const updater = updatePreferencesFileMock.mock.calls[0]?.[0];
       expect(updater).toBeDefined();
       if (!updater) throw new Error('Expected curated defaults update');
-      const persisted = updater?.({
+      const persisted = await updater({
         ...DEFAULT_PREFERENCES,
         codexCompatDisabledPlugins: [],
       });
@@ -6171,7 +6871,7 @@ describe('setCodexCompatDisabled and the loadMarketplaces overlay', () => {
       const updater = updatePreferencesFileMock.mock.calls[0]?.[0];
       expect(updater).toBeDefined();
       if (!updater) throw new Error('Expected curated defaults update');
-      const persisted = updater?.({
+      const persisted = await updater({
         ...DEFAULT_PREFERENCES,
         codexCompatDisabledPlugins: ['mkt-1/my-plugin'],
       });
@@ -6227,7 +6927,7 @@ describe('setCodexCompatDisabled and the loadMarketplaces overlay', () => {
       const updater = updatePreferencesFileMock.mock.calls[0]?.[0];
       expect(updater).toBeDefined();
       if (!updater) throw new Error('Expected curated defaults update');
-      const persisted = updater?.({
+      const persisted = await updater({
         ...DEFAULT_PREFERENCES,
         codexCompatDisabledPlugins: [],
       });
@@ -6298,6 +6998,7 @@ describe('curated marketplace', () => {
       knownMarketplaces?: unknown;
       lastProviderRefreshAt?: string;
       cacheInitiallyMissing?: boolean;
+      curatedMarketplaceExists?: boolean;
     } = {},
   ): void {
     let persistedCache: string | null = null;
@@ -6421,6 +7122,31 @@ describe('curated marketplace', () => {
     });
   }
 
+  /** Claude's registration of a managed marketplace at its managed root. */
+  function managedClaudeRegistration(
+    name: string,
+    root: string,
+  ): Record<string, unknown> {
+    return {
+      [name]: {
+        source: { source: 'directory', path: root },
+        installLocation: root,
+        lastUpdated: '2026-05-01T00:00:00.000Z',
+      },
+    };
+  }
+
+  function curatedClaudeRegistration(): Record<string, unknown> {
+    return managedClaudeRegistration('canopy-curated', CURATED_MARKETPLACE_DIR);
+  }
+
+  function builtInClaudeRegistration(): Record<string, unknown> {
+    return managedClaudeRegistration(
+      'canopy-plugins',
+      '/mock/resources/plugins',
+    );
+  }
+
   function curatedCacheRow(): Record<string, unknown> {
     return {
       id: 'curated/cloud',
@@ -6442,18 +7168,7 @@ describe('curated marketplace', () => {
 
   it('serializes background provider nudges across curated sync entry points', async () => {
     mockCuratedMarketplaceReads({
-      builtInProviderLedger: {
-        version: 1,
-        entries: [
-          {
-            provider: 'claude',
-            marketplaceName: 'canopy-curated',
-            sourceRoot: CURATED_MARKETPLACE_DIR,
-            brandId: 'canopy',
-            recordedAt: '2026-05-01T00:00:00.000Z',
-          },
-        ],
-      },
+      knownMarketplaces: curatedClaudeRegistration(),
     });
     syncCuratedPluginsMock.mockResolvedValue({
       status: 'synced',
@@ -6689,18 +7404,18 @@ describe('curated marketplace', () => {
         initializedCuratedPluginDefaults: ['team-tools'],
       }),
     ).toEqual({});
-    expect(
-      updater({
-        ...DEFAULT_PREFERENCES,
-        globalPluginSelections: {
-          collectionIds: ['custom'],
-          skillRefs: [],
-          pluginRefs: [
-            { marketplaceId: 'external/tools', pluginName: 'custom' },
-          ],
-        },
-      }).globalPluginSelections,
-    ).toMatchObject({
+    const updatedPreferences = await updater({
+      ...DEFAULT_PREFERENCES,
+      globalPluginSelections: {
+        collectionIds: ['custom'],
+        skillRefs: [],
+        pluginRefs: [{ marketplaceId: 'external/tools', pluginName: 'custom' }],
+      },
+    });
+    if (!updatedPreferences) {
+      throw new Error('Expected curated defaults update');
+    }
+    expect(updatedPreferences.globalPluginSelections).toMatchObject({
       collectionIds: ['custom'],
       pluginRefs: [
         { marketplaceId: 'external/tools', pluginName: 'custom' },
@@ -6829,18 +7544,22 @@ describe('curated marketplace', () => {
       'builtin/app',
       'curated/cloud',
     ]);
-    expect(mockExecFileAsync).not.toHaveBeenCalled();
+    // The managed registration only receives its periodic nudge; nothing is
+    // added or removed.
+    expect(
+      mockExecFileAsync.mock.calls.map((call: unknown[]): unknown => call[1]),
+    ).toEqual([['plugin', 'marketplace', 'update', 'canopy-curated']]);
   });
 
   it('does not surface a second row when Codex lists the managed curated marketplace', async () => {
     mockCuratedMarketplaceReads();
     listCodexPluginsMock.mockResolvedValue({
       marketplaces: [
-        {
+        mockCodexMarketplaceEntry({
           name: 'canopy-curated',
           path: CURATED_CODEX_MANIFEST,
           plugins: [],
-        },
+        }),
       ],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
@@ -6876,7 +7595,7 @@ describe('curated marketplace', () => {
           plugins: [{ name: 'clone-plugin', source: './clone-plugin' }],
         });
       }
-      return baseReadFileSync?.(target);
+      return baseReadFileSync?.(target) ?? actualFs.readFileSync(target);
     });
     const baseExistsSync = existsSyncMock.getMockImplementation();
     existsSyncMock.mockImplementation((target) => {
@@ -6923,16 +7642,10 @@ describe('curated marketplace', () => {
 
   it('nudges only the providers that registered the curated marketplace after a sync', async () => {
     mockCuratedMarketplaceReads({
+      knownMarketplaces: curatedClaudeRegistration(),
       builtInProviderLedger: {
         version: 1,
         entries: [
-          {
-            provider: 'claude',
-            marketplaceName: 'canopy-curated',
-            sourceRoot: CURATED_MARKETPLACE_DIR,
-            brandId: 'canopy',
-            recordedAt: '2026-05-01T00:00:00.000Z',
-          },
           {
             provider: 'codex',
             marketplaceName: 'canopy-plugins',
@@ -6964,7 +7677,7 @@ describe('curated marketplace', () => {
     // provider scan observes their current contents without a Git upgrade.
     expect(upgradeCodexMarketplaceMock).not.toHaveBeenCalled();
     // The curated sync already nudged Claude for the curated marketplace, and
-    // the built-in marketplace has no Claude ledger entry here, so that single
+    // Claude has no built-in registration here, so that single
     // update is the ONLY Claude shell-out: the periodic managed nudge must not
     // re-run the curated one.
     expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
@@ -6976,16 +7689,10 @@ describe('curated marketplace', () => {
     // update — and `updateMarketplace` refuses them, so there is no manual
     // heal either.
     mockCuratedMarketplaceReads({
+      knownMarketplaces: builtInClaudeRegistration(),
       builtInProviderLedger: {
         version: 1,
         entries: [
-          {
-            provider: 'claude',
-            marketplaceName: 'canopy-plugins',
-            sourceRoot: '/mock/resources/plugins',
-            brandId: 'canopy',
-            recordedAt: '2026-05-01T00:00:00.000Z',
-          },
           {
             provider: 'codex',
             marketplaceName: 'canopy-curated',
@@ -7013,16 +7720,10 @@ describe('curated marketplace', () => {
   it('skips the periodic managed nudge while the provider stamp is fresh', async () => {
     mockCuratedMarketplaceReads({
       lastProviderRefreshAt: new Date().toISOString(),
+      knownMarketplaces: builtInClaudeRegistration(),
       builtInProviderLedger: {
         version: 1,
         entries: [
-          {
-            provider: 'claude',
-            marketplaceName: 'canopy-plugins',
-            sourceRoot: '/mock/resources/plugins',
-            brandId: 'canopy',
-            recordedAt: '2026-05-01T00:00:00.000Z',
-          },
           {
             provider: 'codex',
             marketplaceName: 'canopy-curated',

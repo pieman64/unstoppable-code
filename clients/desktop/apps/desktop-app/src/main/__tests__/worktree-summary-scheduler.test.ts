@@ -14,6 +14,7 @@ jest.mock('../lib/chat-tabs-reader', () => ({
 jest.mock('../lib/worktree-summary-persistence', () => ({
   emitWorktreeSummaryPortalDelta: jest.fn(),
   readWorktreeSummary: jest.fn(),
+  readWorktreeSummaryWriteAbortReason: jest.fn(),
   writeWorktreeSummarySnapshot: jest.fn(),
 }));
 
@@ -32,8 +33,11 @@ jest.mock('../ledger/summary-publication', () => ({
     isEnabled: (): boolean => mockLedgerEnabled(),
   },
   isSummaryScopePublishable: (): boolean => mockLedgerEnabled(),
+  reportAbortedSummaryWrite: jest.fn(),
   reportDroppedSummarySnapshots: jest.fn(),
+  reportInvalidSummarySnapshots: jest.fn(),
   reportReplacedSummaryFile: jest.fn(),
+  reportStrippedSummaryProvenance: jest.fn(),
 }));
 
 jest.mock('../ledger/summary-reconciliation', () => ({
@@ -124,12 +128,16 @@ import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import {
   emitWorktreeSummaryPortalDelta,
   readWorktreeSummary,
+  readWorktreeSummaryWriteAbortReason,
   writeWorktreeSummarySnapshot,
   type WorktreeSummaryWriteResult,
 } from '../lib/worktree-summary-persistence';
 import {
+  reportAbortedSummaryWrite,
   reportDroppedSummarySnapshots,
+  reportInvalidSummarySnapshots,
   reportReplacedSummaryFile,
+  reportStrippedSummaryProvenance,
 } from '../ledger/summary-publication';
 import { publishPendingSummarySnapshots } from '../ledger/summary-reconciliation';
 import {
@@ -166,9 +174,15 @@ const mockedReadPreferencesFile = jest.mocked(readPreferencesFile);
 const mockedReadChatTabsFile = jest.mocked(readChatTabsFile);
 const mockedReadWorktreeSummary = jest.mocked(readWorktreeSummary);
 const mockedWriteWorktreeSummary = jest.mocked(writeWorktreeSummarySnapshot);
+const mockedReadWriteAbortReason = jest.mocked(
+  readWorktreeSummaryWriteAbortReason,
+);
 const mockedPublishPending = jest.mocked(publishPendingSummarySnapshots);
 const mockedReportDropped = jest.mocked(reportDroppedSummarySnapshots);
 const mockedReportReplaced = jest.mocked(reportReplacedSummaryFile);
+const mockedReportAborted = jest.mocked(reportAbortedSummaryWrite);
+const mockedReportInvalid = jest.mocked(reportInvalidSummarySnapshots);
+const mockedReportStripped = jest.mocked(reportStrippedSummaryProvenance);
 const mockedEmitWorktreeSummaryPortalDelta = jest.mocked(
   emitWorktreeSummaryPortalDelta,
 );
@@ -233,7 +247,8 @@ function makeChatTabs(turns: number): ChatTabsFile {
 function makePreferences(
   overrides: Partial<PreferencesData> = {},
 ): PreferencesData {
-  return {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  const preferences: Partial<PreferencesData> = {
     worktreePanelPercent: 32,
     activityPanelExpanded: false,
     activityPanelWidthPercent: 25,
@@ -347,6 +362,8 @@ function makePreferences(
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
     },
     terminalDrawerCollapsed: true,
@@ -365,6 +382,8 @@ function makePreferences(
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
       categorySounds: {
         chat: 'Default',
@@ -375,6 +394,8 @@ function makePreferences(
         prCreate: 'Default',
         pipeline: 'Default',
         terminal: 'Default',
+        runComment: 'Default',
+        activation: 'Default',
       },
     },
     voiceDictationEnabled: true,
@@ -387,6 +408,7 @@ function makePreferences(
     ...overrides,
     showDiagnosticsPill: overrides.showDiagnosticsPill ?? true,
   };
+  return preferences as PreferencesData;
 }
 
 function makeSummaryData(turnCountAtGeneration: number): WorktreeSummaryData {
@@ -435,6 +457,7 @@ function newSnapshotWrite(
   provenance?: WorktreeSummaryProvenance,
 ): WorktreeSummaryWriteResult {
   return {
+    kind: 'written',
     snapshot: {
       snapshotId: 'snapshot-new',
       summary,
@@ -442,6 +465,8 @@ function newSnapshotWrite(
     },
     isNewSnapshot: true,
     droppedPublishableSnapshotIds: [],
+    strippedPublishableSnapshotIds: [],
+    droppedInvalidSnapshotCount: 0,
     replacedCorruptFile: false,
   };
 }
@@ -478,6 +503,7 @@ describe('worktree summary scheduler', () => {
     mockedReadPreferencesFile.mockResolvedValue(makePreferences());
     mockedReadChatTabsFile.mockResolvedValue(makeChatTabs(2));
     mockedReadWorktreeSummary.mockResolvedValue(makeSummaryData(1));
+    mockedReadWriteAbortReason.mockResolvedValue(null);
     mockedGenerateWorktreeSummary.mockResolvedValue(makeSummary(2));
     mockLedgerEnabled.mockReturnValue(false);
     mockTurnRunning.mockReturnValue(false);
@@ -495,14 +521,18 @@ describe('worktree summary scheduler', () => {
     mockedReadEffectiveWorkspaceConfig.mockResolvedValue(
       makeEffectiveWorkspaceConfig(),
     );
-    mockedWithResolvedHelperPlugins.mockImplementation((_, run) =>
-      run({
+    mockedWithResolvedHelperPlugins.mockImplementation((_, run) => {
+      const pluginRuntime: Parameters<typeof run>[0] = {
         claudePlugins: [],
         claudeMcpServers: {},
-        codexEnv: {},
+        codexCapabilityRoots: [],
         codexMcpServers: {},
-      }),
-    );
+      };
+      Reflect.deleteProperty(pluginRuntime, 'codexCapabilityRoots');
+      // Preserve the legacy runtime field this scheduler fixture supplies.
+      Reflect.set(pluginRuntime, 'codexEnv', {});
+      return run(pluginRuntime);
+    });
   });
 
   afterEach(() => {
@@ -612,14 +642,18 @@ describe('worktree summary scheduler', () => {
         },
       }),
     );
-    mockedWithResolvedHelperPlugins.mockImplementationOnce((_, run) =>
-      run({
+    mockedWithResolvedHelperPlugins.mockImplementationOnce((_, run) => {
+      const pluginRuntime: Parameters<typeof run>[0] = {
         claudePlugins: [{ type: 'local', path: '/plugins/summary' }],
         claudeMcpServers: {},
-        codexEnv: {},
+        codexCapabilityRoots: [],
         codexMcpServers: {},
-      }),
-    );
+      };
+      Reflect.deleteProperty(pluginRuntime, 'codexCapabilityRoots');
+      // Preserve the legacy runtime field this scheduler fixture supplies.
+      Reflect.set(pluginRuntime, 'codexEnv', {});
+      return run(pluginRuntime);
+    });
 
     triggerManualRefresh('proj', 'wt', () => null);
     await flushMicrotasks();
@@ -1191,6 +1225,77 @@ describe('worktree summary scheduler', () => {
       // The new snapshot still publishes.
       expect(mockedPublishPending).toHaveBeenCalledTimes(1);
     });
+
+    it('reports what the write discarded from the history it read', async () => {
+      mockLedgerEnabled.mockReturnValue(true);
+      mockedWriteWorktreeSummary.mockImplementation(
+        (_projectId, _worktreeId, summary, provenance) =>
+          Promise.resolve({
+            ...newSnapshotWrite(summary, provenance),
+            strippedPublishableSnapshotIds: ['snapshot-stripped'],
+            droppedInvalidSnapshotCount: 2,
+          }),
+      );
+
+      triggerManualRefresh('proj', 'wt', () => null);
+      await flushMicrotasks();
+
+      const scope = { projectId: 'proj', worktreeId: 'wt' };
+      expect(mockedReportStripped).toHaveBeenCalledWith(scope, [
+        'snapshot-stripped',
+      ]);
+      expect(mockedReportInvalid).toHaveBeenCalledWith(scope, 2);
+      expect(mockedPublishPending).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['unreadable', 'future_version'] as const)(
+      'reports a write aborted because the file is %s, and publishes nothing',
+      async (reason) => {
+        mockLedgerEnabled.mockReturnValue(true);
+        mockedWriteWorktreeSummary.mockResolvedValue({
+          kind: 'aborted',
+          reason,
+        });
+
+        triggerManualRefresh('proj', 'wt', () => null);
+        await flushMicrotasks();
+
+        expect(mockedReportAborted).toHaveBeenCalledWith(
+          { projectId: 'proj', worktreeId: 'wt' },
+          reason,
+        );
+        expect(mockedPublishPending).not.toHaveBeenCalled();
+        expect(
+          mockedSendToAllWindows.mock.calls.filter(
+            (call) => call[0] === IPC_CHANNELS.worktreeSummaryUpdated,
+          ),
+        ).toHaveLength(0);
+      },
+    );
+
+    it.each(['unreadable', 'future_version'] as const)(
+      'generates nothing over a summary file that is %s',
+      async (reason) => {
+        mockLedgerEnabled.mockReturnValue(true);
+        mockedReadWriteAbortReason.mockResolvedValue(reason);
+
+        triggerManualRefresh('proj', 'wt', () => null);
+        await flushMicrotasks();
+
+        expect(mockedReportAborted).toHaveBeenCalledTimes(1);
+        expect(mockedReportAborted).toHaveBeenCalledWith(
+          { projectId: 'proj', worktreeId: 'wt' },
+          reason,
+        );
+        expect(mockedGenerateWorktreeSummary).not.toHaveBeenCalled();
+        expect(mockedWriteWorktreeSummary).not.toHaveBeenCalled();
+        expect(
+          mockedSendToAllWindows.mock.calls.filter(
+            (call) => call[0] === IPC_CHANNELS.worktreeSummaryGenerating,
+          ),
+        ).toHaveLength(0);
+      },
+    );
   });
 
   describe('cadence while the Ledger is on (LD05)', () => {

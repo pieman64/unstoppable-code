@@ -10,15 +10,21 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { PipelinePublicShareRow } from '../PipelinePublicShareRow';
 
-const resolveSharedPipelineUrl = jest.fn(() =>
-  Promise.resolve('https://cloud.example.test/share/pipelines/public-1'),
+const resolveSharedPipelineUrl = jest.fn<
+  Promise<string | null>,
+  [sharePath: string]
+>(
+  (): Promise<string | null> =>
+    Promise.resolve('https://cloud.example.test/share/pipelines/public-1'),
 );
 jest.mock('@/lib/share-links', () => ({
   resolveSharedPipelineUrl: (sharePath: string): Promise<string | null> =>
     resolveSharedPipelineUrl(sharePath),
 }));
 
-const copyTextToClipboard = jest.fn(() => Promise.resolve(true));
+const copyTextToClipboard = jest.fn<Promise<boolean>, [value: string]>(
+  (): Promise<boolean> => Promise.resolve(true),
+);
 jest.mock('@/lib/clipboard', () => ({
   copyTextToClipboard: (value: string): Promise<boolean> =>
     copyTextToClipboard(value),

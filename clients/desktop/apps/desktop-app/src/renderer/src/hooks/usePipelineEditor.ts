@@ -171,7 +171,7 @@ export function usePipelineEditor({
         if (cancelled) return;
 
         if (loaded.error !== undefined || !loaded.data) {
-          setError(loaded.error ?? 'Failed to load pipeline');
+          setError(loaded.error ?? 'Failed to load workflow');
           setLoading(false);
           return;
         }
@@ -545,7 +545,7 @@ export function usePipelineEditor({
             rawPipeline,
           });
           if (!result.success || !result.data) {
-            setError(result.error ?? 'Failed to save pipeline');
+            setError(result.error ?? 'Failed to save workflow');
             return null;
           }
           const updated = sharedDetailToPipelineData(result.data);
@@ -560,8 +560,15 @@ export function usePipelineEditor({
           return updated.info;
         }
 
+        // The revision this editor loaded: a save after another writer's
+        // edit is refused as a conflict instead of overwriting it.
+        const expectedRevision =
+          persistedIdRef.current && pipelineInfo?.source === 'user'
+            ? (pipelineInfo.revision ?? 0)
+            : undefined;
         const result = await window.pipelines.save({
           id: persistedIdRef.current,
+          ...(expectedRevision === undefined ? {} : { expectedRevision }),
           name: pipelineToSave.name,
           description: pipelineToSave.description ?? '',
           icon: pipelineToSave.icon ?? '',
@@ -569,7 +576,7 @@ export function usePipelineEditor({
         });
 
         if (!result.success) {
-          setError(result.error ?? 'Failed to save pipeline');
+          setError(result.error ?? 'Failed to save workflow');
           return null;
         }
 

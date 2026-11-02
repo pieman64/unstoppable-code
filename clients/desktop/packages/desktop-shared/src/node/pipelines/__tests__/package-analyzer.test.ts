@@ -8,10 +8,19 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { validatePipelinePackageManifest } from '@canopy/protocol/pipelines';
 import type { Pipeline } from '../../../types/pipeline';
-import type { InvocableInventoryEntry } from '../../../types/invocable-inventory';
+import type {
+  InvocableInventoryCache,
+  InvocableInventoryEntry,
+} from '../../../types/invocable-inventory';
+import type { AutomationPipelineInventoryEntry } from '../automation-pipeline-references';
 import {
   analyzeCapabilityPackage,
+  type AutomationPipelinePortableInput,
+  type CapabilityPackageAnalysisInternal,
+  type CapabilityPackagePromptSource,
+  type FileAssetPortableInput,
   analyzePipelinePackage,
   buildPipelineCapabilityPackageSources,
   pipelinePackageAnalysisIsStale,
@@ -60,7 +69,7 @@ describe('analyzePipelinePackage', () => {
           },
         ],
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -159,7 +168,7 @@ describe('analyzePipelinePackage', () => {
           },
         ],
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -211,7 +220,7 @@ describe('analyzePipelinePackage', () => {
       ),
       providerByStep: { 'review.loop': 'claude' },
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -238,7 +247,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Run ./scripts/run and $HOME/bin/tool.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -289,7 +298,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /collect.py to gather the results.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -355,7 +364,7 @@ describe('analyzePipelinePackage', () => {
       pipeline: repeated,
       providerByStep: { 'review.one': 'claude', 'review.two': 'claude' },
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -374,7 +383,7 @@ describe('analyzePipelinePackage', () => {
       pipeline: pipeline('Run /not-a-command.'),
       providerByStep: { 'review.loop': 'claude' },
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -413,7 +422,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Run /deploy.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -485,7 +494,7 @@ describe('analyzePipelinePackage', () => {
         'review.codex_step': 'codex',
       },
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -525,7 +534,7 @@ describe('analyzePipelinePackage', () => {
         'Mention $not-a-command in the prompt.\n',
       );
       const inventory = {
-        version: 2 as const,
+        version: 5 as const,
         builtAt: new Date().toISOString(),
         entries: ['root', 'middle'].map((name) => ({
           id: `review-${name}`,
@@ -600,7 +609,7 @@ describe('analyzePipelinePackage', () => {
         rawPipeline: 'name: Example\n',
         pipeline: pipeline('Use /large-skill.'),
         providerByStep: { 'review.loop': 'claude' },
-        invocableInventory: { version: 2, builtAt: '', entries: [] },
+        invocableInventory: { version: 5, builtAt: '', entries: [] },
         repoLocalInvocables: {
           entries: [
             {
@@ -658,7 +667,7 @@ describe('analyzePipelinePackage', () => {
       }
       const result = await analyzeCapabilityPackage({
         rawContent: '# Big skill\n',
-        invocableInventory: { version: 2, builtAt: '', entries: [] },
+        invocableInventory: { version: 5, builtAt: '', entries: [] },
         requests: [],
         repoLocalInvocables: {
           entries: [
@@ -713,7 +722,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /review-loop to review this.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -791,7 +800,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /review-loop to review this.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -869,7 +878,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $secret-skill now.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -932,7 +941,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /repair-diffs.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1033,7 +1042,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Read /foo.v2.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [],
         },
@@ -1077,7 +1086,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $docs:helper now.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1140,7 +1149,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /review.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1205,7 +1214,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /review now.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1266,7 +1275,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /a:b:c now.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [],
         },
@@ -1320,7 +1329,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $docs:helper now.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1368,7 +1377,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $docs:helper now.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1434,7 +1443,7 @@ describe('analyzePipelinePackage', () => {
       );
       await writeFile(join(root, 'agents', 'reviewer.md'), '# Reviewer\n');
       const inventory = {
-        version: 2 as const,
+        version: 5 as const,
         builtAt: new Date().toISOString(),
         entries: [
           {
@@ -1521,7 +1530,7 @@ describe('analyzePipelinePackage', () => {
       );
       await writeFile(join(root, 'references', 'checklist.md'), '# Checks\n');
       const inventory = {
-        version: 2 as const,
+        version: 5 as const,
         builtAt: new Date().toISOString(),
         entries: [
           {
@@ -1622,7 +1631,7 @@ describe('analyzePipelinePackage', () => {
         '# Multi review\n',
       );
       const inventory = {
-        version: 2 as const,
+        version: 5 as const,
         builtAt: new Date().toISOString(),
         entries: [
           {
@@ -1708,7 +1717,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $review:review-loop.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1769,7 +1778,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use /review now.'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [],
         },
@@ -1833,7 +1842,7 @@ describe('analyzePipelinePackage', () => {
         ),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -1896,13 +1905,13 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $review.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
               id: 'review',
               provider: 'codex',
-              kind: 'standalone_skill',
+              kind: 'skill',
               name: 'review',
               displayName: '$review',
               description: '',
@@ -1954,7 +1963,7 @@ describe('analyzePipelinePackage', () => {
             steps: ['loop'],
             ref: {
               type: 'skill',
-              source: { type: 'builtin' },
+              source: { type: 'builtin', id: 'app' },
               skill_name: 'declared-skill',
             },
           },
@@ -1965,7 +1974,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: declaredPipeline,
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -2025,7 +2034,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: unnamedPipeline,
         providerByStep: { 'review.__auto_step_0': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -2083,7 +2092,7 @@ describe('analyzePipelinePackage', () => {
             steps: ['loop'],
             ref: {
               type: 'skill',
-              source: { type: 'builtin' },
+              source: { type: 'builtin', id: 'app' },
               skill_name: 'optional-skill',
             },
           },
@@ -2094,7 +2103,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: optionalPipeline,
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -2155,7 +2164,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $native-skill.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -2211,7 +2220,7 @@ describe('analyzePipelinePackage', () => {
         pipeline: pipeline('Use $opaque-skill.'),
         providerByStep: { 'review.loop': 'codex' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [
             {
@@ -2281,7 +2290,7 @@ describe('analyzePipelinePackage', () => {
         'review.agent': 'codex',
       },
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -2299,7 +2308,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
   } {
     return {
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [
           {
@@ -2426,7 +2435,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
         },
       ],
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -2456,7 +2465,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
         },
       ],
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -2490,7 +2499,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
     };
     const providerByStep = { 'review.loop': 'claude' as const };
     const inventory = {
-      version: 2 as const,
+      version: 5 as const,
       builtAt: '2026-09-23T00:00:00.000Z',
       entries: [],
     };
@@ -2542,7 +2551,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
           steps: ['loop'],
           ref: {
             type: 'skill',
-            source: { type: 'builtin' },
+            source: { type: 'builtin', id: 'app' },
             skill_name: 'helper',
           },
         },
@@ -2668,7 +2677,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
                 steps: ['loop'],
                 ref: {
                   type: 'skill',
-                  source: { type: 'builtin' },
+                  source: { type: 'builtin', id: 'app' },
                   skill_name: 'declared-skill',
                 },
               },
@@ -2681,7 +2690,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
             ],
           },
           invocableInventory: {
-            version: 2,
+            version: 5,
             builtAt: new Date().toISOString(),
             // The capability exists only for Claude.
             entries: [
@@ -2770,7 +2779,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
           pipeline: pipeline('Run /helper.'),
           providerByStep: unresolvedModel,
           invocableInventory: {
-            version: 2,
+            version: 5,
             builtAt: new Date().toISOString(),
             entries: [helperEntry('claude', 'claude-helper'), ...codexEntries],
           },
@@ -2841,7 +2850,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
           'review.loop': [{ provider: 'codex', inputs: { providers: 'x' } }],
         },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [],
         },
@@ -2863,7 +2872,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
           ],
         },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [],
         },
@@ -2889,7 +2898,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
       pipeline: pipeline('Use /missing-command here.'),
       providerByStep: { 'review.loop': 'claude' },
       invocableInventory: {
-        version: 2,
+        version: 5,
         builtAt: new Date().toISOString(),
         entries: [],
       },
@@ -2918,7 +2927,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
         pipeline: pipeline('hello'),
         providerByStep: { 'review.loop': 'claude' },
         invocableInventory: {
-          version: 2,
+          version: 5,
           builtAt: new Date().toISOString(),
           entries: [],
         },
@@ -2926,7 +2935,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
           {
             kind: 'pipeline_action',
             displayName: 'project/review',
-            invocationKey: 'project/review',
+            invocationKeys: ['project/review'],
             bindingKey: 'review\0loop',
             descriptor: {
               sourceRoot: join(root, 'action'),
@@ -2939,7 +2948,7 @@ describe('analyzeCapabilityPackage prompt sources', () => {
           {
             kind: 'child_pipeline',
             displayName: 'children/review.yaml',
-            invocationKey: 'children/review.yaml',
+            invocationKeys: ['children/review.yaml'],
             bindingKey: 'review\0loop',
             descriptor: {
               sourceRoot: root,
@@ -2974,5 +2983,798 @@ describe('analyzeCapabilityPackage prompt sources', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('emits every invocation key of a portable resource, deduplicated', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'portable-invocation-keys-'));
+    const workerId = '5b0f4c3e-2a1d-4e6f-9c8b-7a6d5e4f3a2b';
+    try {
+      await writeFile(
+        join(root, `${workerId}.yaml`),
+        'name: Worker\non: dispatch\njobs:\n  run:\n    steps:\n      - run: echo worker\n',
+      );
+      const descriptor = {
+        sourceRoot: root,
+        memberPath: `${workerId}.yaml`,
+        sourceVisibility: 'local' as const,
+        runtimeKind: 'plugin_fragment' as const,
+        rootName: 'pipelines-test',
+      };
+      const result = await analyzePipelinePackage({
+        rawPipeline: 'name: Example\n',
+        pipeline: pipeline('hello'),
+        providerByStep: { 'review.loop': 'claude' },
+        invocableInventory: {
+          version: 5,
+          builtAt: new Date().toISOString(),
+          entries: [],
+        },
+        portableResources: [
+          {
+            kind: 'child_pipeline',
+            displayName: '${{ env.WORKER_PIPELINE }}',
+            invocationKeys: [
+              '${{ env.WORKER_PIPELINE }}',
+              workerId,
+              '${{ env.WORKER_PIPELINE }}',
+            ],
+            bindingKey: 'review\0loop',
+            descriptor,
+          },
+          {
+            kind: 'child_pipeline',
+            displayName: workerId,
+            invocationKeys: [workerId, workerId],
+            bindingKey: 'review\0other',
+            descriptor,
+          },
+        ],
+      });
+
+      expect(result.summary.state).toBe('ready');
+      expect(
+        result.summary.manifest?.resources.map((resource) => ({
+          displayName: resource.displayName,
+          invocationKeys: resource.invocationKeys,
+        })),
+      ).toEqual([
+        {
+          displayName: '${{ env.WORKER_PIPELINE }}',
+          invocationKeys: ['${{ env.WORKER_PIPELINE }}', workerId],
+        },
+        { displayName: workerId, invocationKeys: [workerId] },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks on host blockers and echoes the reference dismissals it applied', async () => {
+    const result = await analyzePipelinePackage({
+      rawPipeline: 'name: Example\n',
+      pipeline: pipeline('hello'),
+      providerByStep: { 'review.loop': 'claude' },
+      invocableInventory: {
+        version: 5,
+        builtAt: new Date().toISOString(),
+        entries: [],
+      },
+      hostBlockers: [
+        {
+          code: 'UNRESOLVED_CHILD_PIPELINE_REF',
+          subject: '${{ inputs.target }}',
+          message: 'unresolved',
+          jobId: 'review',
+          stepId: 'loop',
+          occurrences: [],
+          referenceDismissal: {
+            kind: 'child_pipeline_ref',
+            token: '${{ inputs.target }}',
+          },
+        },
+      ],
+      dismissedReferences: [
+        { kind: 'child_pipeline_ref', token: '${{ steps.a.outputs.b }}' },
+      ],
+    });
+
+    expect(result.summary.state).toBe('blocked');
+    expect(result.summary.blockers).toEqual([
+      expect.objectContaining({
+        code: 'UNRESOLVED_CHILD_PIPELINE_REF',
+        occurrences: [{ jobId: 'review', stepId: 'loop' }],
+        referenceDismissal: {
+          kind: 'child_pipeline_ref',
+          token: '${{ inputs.target }}',
+        },
+      }),
+    ]);
+    expect(result.summary.dismissedReferences).toEqual([
+      { kind: 'child_pipeline_ref', token: '${{ steps.a.outputs.b }}' },
+    ]);
+  });
+});
+
+describe('automation pipeline dependencies', () => {
+  const ENTRY_ID = '3f2b8c1e-9d4a-4e6b-8f1c-2a7d5e9b0c13';
+  const WORKER_ID = '0a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d';
+  const ACTION_BINDING = 'automation\0action';
+  const ENTRY_YAML =
+    'name: Entry\non: dispatch\nenv:\n  API_TOKEN: ${{ secrets.API_TOKEN }}\n  WORKER_PIPELINE: worker\njobs: {}\n';
+  const WORKER_YAML = 'name: Worker\non: dispatch\njobs: {}\n';
+  // Assembled so the literal never appears in source.
+  const LITERAL_TOKEN = ['gh', 'p_', 'A1b2C3d4'.repeat(5)].join('');
+
+  const emptyInventory = (): InvocableInventoryCache => ({
+    version: 5,
+    builtAt: new Date().toISOString(),
+    entries: [],
+  });
+
+  function userPipeline(
+    pipelineId: string,
+    name: string,
+    overrides: Partial<AutomationPipelineInventoryEntry> = {},
+  ): AutomationPipelineInventoryEntry {
+    return {
+      key: pipelineId,
+      pipelineId,
+      name,
+      source: 'user',
+      path: `/data/pipelines/${pipelineId}.yaml`,
+      hasInstalledPackage: false,
+      ...overrides,
+    };
+  }
+
+  function promptSource(text: string): CapabilityPackagePromptSource {
+    return {
+      jobId: 'automation',
+      stepId: 'action',
+      provider: 'claude',
+      text,
+      pipelineReferences: true,
+    };
+  }
+
+  function pipelineInput(
+    pipelineKey: string,
+    name: string,
+    rawContent: string,
+  ): AutomationPipelinePortableInput {
+    return {
+      pipelineKey,
+      name,
+      source: 'user',
+      rawContent,
+      bindingKey: ACTION_BINDING,
+    };
+  }
+
+  it('packages a pipeline the prompt names by UUID, with every span', async () => {
+    const prompt = `\u{1F680} Run ${ENTRY_ID}. Again: ${ENTRY_ID.toUpperCase()}`;
+    const result = await analyzeCapabilityPackage({
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [promptSource(prompt)],
+      pipelineInventory: [
+        userPipeline(ENTRY_ID, 'Entry'),
+        userPipeline(WORKER_ID, 'Worker'),
+      ],
+      automationPipelines: [pipelineInput(ENTRY_ID, 'Entry', ENTRY_YAML)],
+    });
+
+    expect(result.summary.blockers).toEqual([]);
+    expect(result.summary.state).toBe('ready');
+    const manifest = result.summary.manifest;
+    expect(manifest && validatePipelinePackageManifest(manifest)).toEqual({
+      ok: true,
+    });
+    const resource = manifest?.resources.find(
+      (candidate) => candidate.kind === 'automation_pipeline',
+    );
+    expect(resource).toEqual(
+      expect.objectContaining({
+        id: `automation-pipeline-${ENTRY_ID}`,
+        pipelineKey: ENTRY_ID,
+        trees: [
+          expect.objectContaining({
+            runtimeKind: 'automation_pipeline',
+            rootName: ENTRY_ID,
+            entries: [
+              expect.objectContaining({
+                path: 'pipeline.yaml',
+                sha256: resource?.pipelineContentHash,
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(manifest?.bindings).toEqual([
+      {
+        jobId: 'automation',
+        stepId: 'action',
+        resourceIds: [`automation-pipeline-${ENTRY_ID}`],
+      },
+    ]);
+    expect(
+      new TextDecoder().decode(
+        result.blobs.get(resource?.pipelineContentHash ?? ''),
+      ),
+    ).toBe(ENTRY_YAML);
+    expect(result.summary.packagedPipelines).toEqual([
+      {
+        key: ENTRY_ID,
+        resourceId: `automation-pipeline-${ENTRY_ID}`,
+        name: 'Entry',
+        pipelineContentHash: resource?.pipelineContentHash,
+        source: 'user',
+        isActionPipeline: false,
+        optional: false,
+        promptSpans: [
+          { textStart: 7, text: ENTRY_ID },
+          { textStart: 52, text: ENTRY_ID.toUpperCase() },
+        ],
+      },
+    ]);
+  });
+
+  it('lists a name match as an optional suggestion until it is selected', async () => {
+    const input = {
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [promptSource('Hand off to Worker when done.')],
+      pipelineInventory: [userPipeline(WORKER_ID, 'Worker')],
+      automationPipelines: [pipelineInput(WORKER_ID, 'Worker', WORKER_YAML)],
+    };
+    const suggested = await analyzeCapabilityPackage(input);
+    expect(suggested.summary.state).toBe('ready');
+    expect(suggested.summary.manifest?.resources).toEqual([]);
+    expect(suggested.summary.packagedPipelines).toEqual([
+      expect.objectContaining({
+        key: WORKER_ID,
+        optional: true,
+        promptSpans: [],
+      }),
+    ]);
+
+    const selected = await analyzeCapabilityPackage({
+      ...input,
+      pipelineSelections: [WORKER_ID],
+    });
+    expect(selected.summary.manifest?.resources).toEqual([
+      expect.objectContaining({ id: `automation-pipeline-${WORKER_ID}` }),
+    ]);
+    expect(selected.summary.packagedPipelines).toEqual([
+      expect.objectContaining({ key: WORKER_ID, optional: true }),
+    ]);
+  });
+
+  it('blocks an ambiguous name until it is dismissed', async () => {
+    const input = {
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [promptSource('Run Review.')],
+      pipelineInventory: [
+        userPipeline(ENTRY_ID, 'Review'),
+        {
+          key: 'project-review',
+          pipelineId: 'project:review.yaml',
+          name: 'Review',
+          source: 'project' as const,
+          path: '/repo/pipelines/review.yaml',
+          hasInstalledPackage: false,
+        },
+      ],
+    };
+    const blocked = await analyzeCapabilityPackage(input);
+    expect(blocked.summary.blockers).toEqual([
+      expect.objectContaining({
+        code: 'AMBIGUOUS_PIPELINE_REFERENCE',
+        subject: 'Review',
+        occurrences: [{ jobId: 'automation', stepId: 'action' }],
+        referenceDismissal: { kind: 'pipeline_reference', token: 'Review' },
+      }),
+    ]);
+
+    const dismissed = await analyzeCapabilityPackage({
+      ...input,
+      dismissedReferences: [
+        { kind: 'pipeline_reference', token: 'Review' },
+        { kind: 'pipeline_reference', token: 'Unrelated' },
+      ],
+    });
+    expect(dismissed.summary.state).toBe('ready');
+    expect(dismissed.summary.dismissedReferences).toEqual([
+      { kind: 'pipeline_reference', token: 'Review' },
+    ]);
+  });
+
+  it('ignores stray UUIDs', async () => {
+    const result = await analyzeCapabilityPackage({
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [
+        promptSource('Trace 11111111-2222-4333-8444-555555555555 in the logs.'),
+      ],
+      pipelineInventory: [userPipeline(ENTRY_ID, 'Entry')],
+    });
+    expect(result.summary.state).toBe('ready');
+    expect(result.summary.packagedPipelines).toEqual([]);
+  });
+
+  it('packages a stored dependency the prompt only names, and reports a missing one', async () => {
+    const result = await analyzeCapabilityPackage({
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [promptSource('Hand off to Worker.')],
+      pipelineInventory: [userPipeline(WORKER_ID, 'Worker')],
+      pipelineRequests: [
+        { pipelineId: WORKER_ID, source: 'user' },
+        { pipelineId: ENTRY_ID, source: 'user' },
+      ],
+      automationPipelines: [pipelineInput(WORKER_ID, 'Worker', WORKER_YAML)],
+    });
+    expect(result.summary.blockers).toEqual([
+      expect.objectContaining({
+        code: 'MISSING_DEPENDENCY_SOURCE',
+        subject: ENTRY_ID,
+      }),
+    ]);
+    expect(result.summary.packagedPipelines).toEqual([
+      expect.objectContaining({ key: WORKER_ID, optional: false }),
+    ]);
+    expect(result.summary.manifest?.resources).toEqual([
+      expect.objectContaining({ id: `automation-pipeline-${WORKER_ID}` }),
+    ]);
+  });
+
+  it('reports a selected pipeline whose YAML the host did not supply', async () => {
+    const result = await analyzeCapabilityPackage({
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [promptSource(`Run ${ENTRY_ID}.`)],
+      pipelineInventory: [userPipeline(ENTRY_ID, 'Entry')],
+    });
+    expect(result.summary.blockers).toEqual([
+      expect.objectContaining({
+        code: 'MISSING_DEPENDENCY_SOURCE',
+        subject: 'Entry',
+      }),
+    ]);
+  });
+
+  it('blocks a dependency that has its own installed package', async () => {
+    const result = await analyzeCapabilityPackage({
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [promptSource(`Run ${ENTRY_ID}.`)],
+      pipelineInventory: [
+        userPipeline(ENTRY_ID, 'Entry', { hasInstalledPackage: true }),
+      ],
+      automationPipelines: [pipelineInput(ENTRY_ID, 'Entry', ENTRY_YAML)],
+    });
+    expect(result.summary.blockers).toEqual([
+      expect.objectContaining({
+        code: 'DEPENDENCY_HAS_INSTALLED_PACKAGE',
+        subject: 'Entry',
+      }),
+    ]);
+  });
+
+  it('blocks two project pipelines that travel under one key', async () => {
+    const project = (
+      fileName: string,
+      name: string,
+    ): AutomationPipelineInventoryEntry => ({
+      key: 'project-nightly-build',
+      pipelineId: `project:${fileName}`,
+      name,
+      source: 'project',
+      path: `/repo/pipelines/${fileName}`,
+      hasInstalledPackage: false,
+    });
+    const result = await analyzeCapabilityPackage({
+      rawContent: '{"automation":"example"}',
+      requests: [],
+      invocableInventory: emptyInventory(),
+      pipelineInventory: [
+        project('Nightly Build.yaml', 'Nightly'),
+        project('nightly-build.yaml', 'Nightly two'),
+      ],
+      pipelineRequests: [
+        { pipelineId: 'project:Nightly Build.yaml', source: 'project' },
+      ],
+      automationPipelines: [
+        {
+          ...pipelineInput('project-nightly-build', 'Nightly', WORKER_YAML),
+          source: 'project',
+        },
+      ],
+    });
+    expect(result.summary.blockers).toEqual([
+      expect.objectContaining({
+        code: 'DUPLICATE_PIPELINE_KEY',
+        subject: 'project-nightly-build',
+      }),
+    ]);
+  });
+
+  it('scans every packaged pipeline, root included, for literal secrets', async () => {
+    const base = {
+      rawContent: 'name: Action\n',
+      requests: [],
+      invocableInventory: emptyInventory(),
+    };
+    const clean = await analyzeCapabilityPackage({
+      ...base,
+      automationPipelines: [pipelineInput('action', 'Action', ENTRY_YAML)],
+    });
+    expect(clean.summary.blockers).toEqual([]);
+    expect(clean.summary.packagedPipelines).toEqual([
+      expect.objectContaining({
+        key: 'action',
+        isActionPipeline: true,
+        optional: false,
+      }),
+    ]);
+
+    const leaked = await analyzeCapabilityPackage({
+      ...base,
+      automationPipelines: [
+        pipelineInput(
+          'action',
+          'Action',
+          `name: Action\nenv:\n  API_TOKEN: ${LITERAL_TOKEN}\njobs: {}\n`,
+        ),
+      ],
+    });
+    expect(leaked.summary.blockers).toEqual([
+      expect.objectContaining({
+        code: 'SUSPECTED_SECRET',
+        subject: 'Action',
+        relativePath: 'pipeline.yaml',
+      }),
+    ]);
+    expect(leaked.blobs.size).toBe(0);
+  });
+
+  it('stores identical YAML once when it travels under two keys', async () => {
+    const result = await analyzeCapabilityPackage({
+      rawContent: WORKER_YAML,
+      requests: [],
+      invocableInventory: emptyInventory(),
+      promptSources: [promptSource(`Then run ${WORKER_ID}.`)],
+      pipelineInventory: [userPipeline(WORKER_ID, 'Worker')],
+      automationPipelines: [
+        pipelineInput('action', 'Worker', WORKER_YAML),
+        pipelineInput(WORKER_ID, 'Worker', WORKER_YAML),
+      ],
+    });
+    expect(result.summary.state).toBe('ready');
+    expect(result.summary.manifest?.resources).toHaveLength(2);
+    expect(result.blobs.size).toBe(1);
+  });
+
+  it('keeps skill detection unchanged next to pipeline references', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'automation-pipeline-skill-'));
+    try {
+      await mkdir(join(root, 'helper'), { recursive: true });
+      await writeFile(join(root, 'helper', 'SKILL.md'), '# Helper\n');
+      const result = await analyzeCapabilityPackage({
+        rawContent: '{"automation":"example"}',
+        requests: [],
+        invocableInventory: {
+          ...emptyInventory(),
+          entries: [
+            {
+              id: 'helper',
+              provider: 'claude',
+              kind: 'skill',
+              name: 'helper',
+              displayName: 'Helper',
+              description: '',
+              insertText: '/helper ',
+              invocationKey: '/helper',
+              enableRef: {
+                kind: 'skill',
+                sourceId: 'custom',
+                skillName: 'helper',
+              },
+            },
+          ],
+        },
+        sourceByInventoryEntryId: {
+          helper: {
+            sourceRoot: root,
+            memberPath: 'helper',
+            sourceVisibility: 'local',
+            runtimeKind: 'standalone_skill',
+            rootName: 'helper',
+          },
+        },
+        promptSources: [
+          promptSource(`Use /helper, then run ${ENTRY_ID}. Skip /missing.`),
+        ],
+        pipelineInventory: [userPipeline(ENTRY_ID, 'Entry')],
+        automationPipelines: [pipelineInput(ENTRY_ID, 'Entry', ENTRY_YAML)],
+      });
+      expect(result.summary.blockers).toEqual([
+        expect.objectContaining({
+          code: 'UNRESOLVED_INVOCATION',
+          subject: '/missing',
+        }),
+      ]);
+      expect(
+        result.summary.manifest?.resources.map((resource) => resource.kind),
+      ).toEqual(['standalone_skill', 'automation_pipeline']);
+      const bindings = result.summary.manifest?.bindings ?? [];
+      expect(bindings).toHaveLength(1);
+      expect(bindings[0]).toEqual(
+        expect.objectContaining({ jobId: 'automation', stepId: 'action' }),
+      );
+      const boundIds = bindings[0]?.resourceIds ?? [];
+      expect(boundIds).toHaveLength(2);
+      expect(boundIds).toContain(`automation-pipeline-${ENTRY_ID}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  describe('file assets', () => {
+    let home: string;
+    beforeEach(async () => {
+      home = await mkdtemp(join(tmpdir(), 'automation-asset-home-'));
+    });
+    afterEach(async () => {
+      await rm(home, { recursive: true, force: true });
+    });
+
+    function assetInput(
+      sourcePath: string,
+      overrides: Partial<{
+        assetId: string;
+        required: boolean;
+        localState: string[];
+      }> = {},
+    ): FileAssetPortableInput {
+      return {
+        pipelineKey: 'action',
+        assetId: overrides.assetId ?? 'specialists',
+        sourcePath,
+        required: overrides.required ?? true,
+        installMode: 'seed',
+        localState: overrides.localState ?? [],
+      };
+    }
+
+    function analyzeAssets(
+      fileAssets: FileAssetPortableInput[],
+    ): Promise<CapabilityPackageAnalysisInternal> {
+      return analyzeCapabilityPackage({
+        rawContent: ENTRY_YAML,
+        requests: [],
+        invocableInventory: emptyInventory(),
+        automationPipelines: [pipelineInput('action', 'Entry', ENTRY_YAML)],
+        fileAssets,
+        homedir: home,
+      });
+    }
+
+    it('withholds credential files, symlinks and git directories', async () => {
+      const assetDir = join(home, 'journey', 'specialists');
+      await mkdir(join(assetDir, 'nested', '.git'), { recursive: true });
+      await writeFile(join(assetDir, 'designer.json'), '{"role":"design"}\n');
+      await writeFile(join(assetDir, 'nested', 'notes.md'), '# Notes\n');
+      await writeFile(join(assetDir, '.env'), 'PLAIN=1\n');
+      await writeFile(
+        join(assetDir, 'leaked.json'),
+        `{"note": "${LITERAL_TOKEN}"}\n`,
+      );
+      await writeFile(join(assetDir, 'nested', '.git', 'config'), '[core]\n');
+      await symlink(
+        join(assetDir, 'designer.json'),
+        join(assetDir, 'linked.json'),
+      );
+
+      const result = await analyzeAssets([assetInput('~/journey/specialists')]);
+
+      expect(result.summary.blockers).toEqual([]);
+      expect(result.summary.state).toBe('ready');
+      expect(
+        [...(result.summary.withheldFiles ?? [])].sort((left, right) =>
+          left.relativePath.localeCompare(right.relativePath),
+        ),
+      ).toEqual([
+        {
+          pipelineKey: 'action',
+          assetId: 'specialists',
+          relativePath: '.env',
+          reason: 'denied_name',
+        },
+        {
+          pipelineKey: 'action',
+          assetId: 'specialists',
+          relativePath: 'leaked.json',
+          reason: 'suspected_secret',
+        },
+        {
+          pipelineKey: 'action',
+          assetId: 'specialists',
+          relativePath: 'linked.json',
+          reason: 'symlink',
+        },
+        {
+          pipelineKey: 'action',
+          assetId: 'specialists',
+          relativePath: 'nested/.git',
+          reason: 'git_directory',
+        },
+      ]);
+      const manifest = result.summary.manifest;
+      expect(manifest && validatePipelinePackageManifest(manifest)).toEqual({
+        ok: true,
+      });
+      const asset = manifest?.resources.find(
+        (resource) => resource.kind === 'file_asset',
+      );
+      expect(asset).toEqual(
+        expect.objectContaining({
+          id: 'file-asset-action-specialists',
+          pipelineKey: 'action',
+          assetId: 'specialists',
+          installMode: 'seed',
+          required: true,
+          trees: [
+            expect.objectContaining({
+              runtimeKind: 'pipeline_asset',
+              rootName: 'specialists',
+              entries: [
+                expect.objectContaining({ path: 'designer.json' }),
+                expect.objectContaining({ path: 'nested/notes.md' }),
+              ],
+            }),
+          ],
+        }),
+      );
+      expect(
+        manifest?.resources.find(
+          (resource) => resource.kind === 'automation_pipeline',
+        )?.dependencyResourceIds,
+      ).toEqual(['file-asset-action-specialists']);
+      expect(manifest?.totalFiles).toBe(3);
+    });
+
+    it('still blocks native executables inside an asset', async () => {
+      const assetDir = join(home, 'tools');
+      await mkdir(assetDir, { recursive: true });
+      await writeFile(
+        join(assetDir, 'tool'),
+        new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0, 0]),
+      );
+      const result = await analyzeAssets([
+        assetInput(assetDir, { assetId: 'tools' }),
+      ]);
+      expect(result.summary.blockers).toEqual([
+        expect.objectContaining({ code: 'NATIVE_EXECUTABLE_BLOCKED' }),
+      ]);
+    });
+
+    it.each([
+      ['local_state inside the asset', '~/journey', ['~/journey/state.db']],
+      ['the asset inside local_state', '~/journey/specialists', ['~/journey']],
+      ['the same folder', '~/journey', ['~/journey/']],
+    ])('blocks %s', async (_label, assetPath, localState) => {
+      await mkdir(join(home, 'journey', 'specialists'), { recursive: true });
+      const result = await analyzeAssets([
+        assetInput(assetPath, { localState }),
+      ]);
+      expect(result.summary.blockers).toEqual([
+        expect.objectContaining({
+          code: 'ASSET_OVERLAPS_LOCAL_STATE',
+          subject: 'action/specialists',
+        }),
+      ]);
+    });
+
+    it('allows local_state next to the asset', async () => {
+      await mkdir(join(home, 'journey', 'specialists'), { recursive: true });
+      const result = await analyzeAssets([
+        assetInput('~/journey/specialists', {
+          localState: ['~/journey/state.db', '~/journey/checkout'],
+        }),
+      ]);
+      expect(result.summary.blockers).toEqual([]);
+    });
+
+    it.each([
+      ['an absolute path outside home', '/etc'],
+      ['a relative path', 'journey/specialists'],
+      ['home itself', '~'],
+      ['a path that climbs out of home', '~/../elsewhere'],
+    ])('blocks %s', async (_label, assetPath) => {
+      const result = await analyzeAssets([assetInput(assetPath)]);
+      expect(result.summary.blockers).toEqual([
+        expect.objectContaining({ code: 'ASSET_PATH_OUTSIDE_HOME' }),
+      ]);
+    });
+
+    it('blocks a missing required asset and withholds a missing optional one', async () => {
+      const required = await analyzeAssets([assetInput('~/absent')]);
+      expect(required.summary.blockers).toEqual([
+        expect.objectContaining({
+          code: 'MISSING_REQUIRED_ASSET',
+          subject: 'action/specialists',
+        }),
+      ]);
+
+      const optional = await analyzeAssets([
+        assetInput('~/absent', { required: false }),
+      ]);
+      expect(optional.summary.blockers).toEqual([]);
+      expect(optional.summary.withheldFiles).toEqual([
+        {
+          pipelineKey: 'action',
+          assetId: 'specialists',
+          relativePath: '',
+          reason: 'missing_optional_asset',
+        },
+      ]);
+      expect(
+        optional.summary.manifest?.resources.map((resource) => resource.kind),
+      ).toEqual(['automation_pipeline']);
+      await expect(pipelinePackageAnalysisIsStale(optional)).resolves.toBe(
+        false,
+      );
+      await mkdir(join(home, 'absent'));
+      await expect(pipelinePackageAnalysisIsStale(optional)).resolves.toBe(
+        true,
+      );
+    });
+
+    it('packages an empty asset folder as an empty tree', async () => {
+      await mkdir(join(home, 'empty'));
+      const result = await analyzeAssets([assetInput('~/empty')]);
+      expect(result.summary.blockers).toEqual([]);
+      const manifest = result.summary.manifest;
+      expect(manifest && validatePipelinePackageManifest(manifest)).toEqual({
+        ok: true,
+      });
+      expect(
+        manifest?.resources.find((resource) => resource.kind === 'file_asset')
+          ?.trees,
+      ).toEqual([
+        {
+          provider: 'claude',
+          runtimeKind: 'pipeline_asset',
+          rootName: 'specialists',
+          entries: [],
+        },
+      ]);
+    });
+
+    it('ignores assets of a pipeline that is not packaged', async () => {
+      await mkdir(join(home, 'journey'), { recursive: true });
+      const result = await analyzeCapabilityPackage({
+        rawContent: '{"automation":"example"}',
+        requests: [],
+        invocableInventory: emptyInventory(),
+        promptSources: [promptSource('Hand off to Worker.')],
+        pipelineInventory: [userPipeline(WORKER_ID, 'Worker')],
+        automationPipelines: [pipelineInput(WORKER_ID, 'Worker', WORKER_YAML)],
+        fileAssets: [{ ...assetInput('~/journey'), pipelineKey: WORKER_ID }],
+        homedir: home,
+      });
+      expect(result.summary.manifest?.resources).toEqual([]);
+      expect(result.summary.withheldFiles).toBeUndefined();
+    });
   });
 });

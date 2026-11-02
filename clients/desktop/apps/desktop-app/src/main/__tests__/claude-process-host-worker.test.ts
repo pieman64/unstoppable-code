@@ -101,11 +101,17 @@ describe('Claude process host worker', () => {
         windowsHide: true,
       }),
     );
-    expect(parent.postMessage).toHaveBeenCalledWith({
+    const started = parent.postMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === 'started');
+    if (started?.type !== 'started') throw new Error('Expected started.');
+    expect(started).toEqual({
       type: 'started',
       requestId: 'request-1',
       pid: 4242,
+      startedAtMs: started.startedAtMs,
     });
+    expect(Number.isFinite(started.startedAtMs)).toBe(true);
 
     parent.emit('message', {
       data: {
@@ -180,6 +186,8 @@ describe('Claude process host worker', () => {
       second,
       expect.anything(),
     );
+    // Exit as a real child would, so no SIGKILL escalation reaches a later test.
+    first.emit('exit', null, 'SIGTERM');
   });
 
   it('tracks stdout credit independently for each child', () => {
@@ -462,6 +470,140 @@ describe('Claude process host worker', () => {
     },
   );
 
+  it('keeps a child that errors after spawning tracked until it exits', async () => {
+    const parent = new FakeParentPort();
+    const exitProcess = jest.fn<void, [number]>();
+    const child = new FakeChildProcess();
+    spawnMock.mockReturnValue(child);
+    startClaudeProcessHost(parent, exitProcess);
+    parent.emit('message', { data: request() });
+
+    // A spawned child (it has a pid) can still emit 'error', for example when
+    // a signal cannot be delivered. That error does not mean it exited.
+    child.emit('error', new Error('kill EPERM'));
+    expect(parent.postMessage).toHaveBeenCalledWith({
+      type: 'error',
+      requestId: 'request-1',
+      message: 'kill EPERM',
+      exitPending: true,
+    });
+
+    parent.emit('message', {
+      data: { type: 'kill', requestId: 'request-1', signal: 'SIGKILL' },
+    });
+    expect(killChildProcessGroupMock).toHaveBeenCalledWith(child, 'SIGKILL');
+
+    parent.emit('message', { data: { type: 'shutdown' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(killProcessGroupByPidMock).toHaveBeenCalledWith(4242, 'SIGKILL', {
+      timeoutMs: 5_000,
+    });
+  });
+
+  it('reports one error and survives a spawned child that errors twice', () => {
+    const parent = new FakeParentPort();
+    const exitProcess = jest.fn<void, [number]>();
+    const child = new FakeChildProcess();
+    spawnMock.mockReturnValue(child);
+    startClaudeProcessHost(parent, exitProcess);
+    parent.emit('message', { data: request() });
+
+    child.emit('error', new Error('kill EPERM'));
+    // An unhandled second 'error' would throw and take every child down with
+    // the host.
+    expect(() => child.emit('error', new Error('kill ESRCH'))).not.toThrow();
+    const errors = parent.postMessage.mock.calls.filter(
+      ([response]) => response.type === 'error',
+    );
+    expect(errors).toHaveLength(1);
+  });
+
+  it('reports the exit of a child that errored after spawning', async () => {
+    const parent = new FakeParentPort();
+    const child = new FakeChildProcess();
+    spawnMock.mockReturnValue(child);
+    startClaudeProcessHost(parent);
+    parent.emit('message', { data: request() });
+
+    child.emit('error', new Error('kill EPERM'));
+    child.stdout.end();
+    child.emit('exit', null, 'SIGKILL');
+    child.emit('close', null, 'SIGKILL');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(parent.postMessage).toHaveBeenCalledWith({
+      type: 'exit',
+      requestId: 'request-1',
+      code: null,
+      signal: 'SIGKILL',
+    });
+  });
+
+  it('releases a child whose spawn failed asynchronously', () => {
+    const parent = new FakeParentPort();
+    const child = new FakeChildProcess();
+    child.pid = undefined;
+    spawnMock.mockReturnValue(child);
+    startClaudeProcessHost(parent);
+    parent.emit('message', { data: request() });
+
+    child.emit('error', new Error('spawn ENOENT'));
+    expect(parent.postMessage).toHaveBeenCalledWith({
+      type: 'error',
+      requestId: 'request-1',
+      message: 'spawn ENOENT',
+    });
+
+    parent.emit('message', { data: request() });
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  describe('SIGTERM escalation', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('SIGKILLs the process group of a child that ignores SIGTERM', () => {
+      const parent = new FakeParentPort();
+      const child = new FakeChildProcess();
+      spawnMock.mockReturnValue(child);
+      startClaudeProcessHost(parent);
+      parent.emit('message', { data: request() });
+
+      parent.emit('message', {
+        data: { type: 'kill', requestId: 'request-1', signal: 'SIGTERM' },
+      });
+      expect(killChildProcessGroupMock).toHaveBeenCalledWith(child, 'SIGTERM');
+      expect(killChildProcessGroupMock).not.toHaveBeenCalledWith(
+        child,
+        'SIGKILL',
+      );
+
+      jest.advanceTimersByTime(5_000);
+      expect(killChildProcessGroupMock).toHaveBeenCalledWith(child, 'SIGKILL');
+    });
+
+    it('does not SIGKILL a child that exits after SIGTERM', () => {
+      const parent = new FakeParentPort();
+      const child = new FakeChildProcess();
+      spawnMock.mockReturnValue(child);
+      startClaudeProcessHost(parent);
+      parent.emit('message', { data: request() });
+
+      parent.emit('message', {
+        data: { type: 'kill', requestId: 'request-1', signal: 'SIGTERM' },
+      });
+      child.emit('exit', null, 'SIGTERM');
+      jest.advanceTimersByTime(5_000);
+
+      expect(killChildProcessGroupMock).toHaveBeenCalledTimes(1);
+      expect(killChildProcessGroupMock).toHaveBeenCalledWith(child, 'SIGTERM');
+    });
+  });
+
   it('reports spawn failures without affecting later requests', () => {
     const parent = new FakeParentPort();
     spawnMock
@@ -482,5 +624,26 @@ describe('Claude process host worker', () => {
     expect(parent.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'started', requestId: 'healthy' }),
     );
+  });
+
+  it('reports the wall-clock time taken just before the spawn with the pid (CAN-4835)', () => {
+    const parent = new FakeParentPort();
+    let spawnedAt = 0;
+    spawnMock.mockImplementation(() => {
+      spawnedAt = Date.now();
+      return new FakeChildProcess();
+    });
+    startClaudeProcessHost(parent);
+    const before = Date.now();
+
+    parent.emit('message', { data: request() });
+
+    const started = parent.postMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === 'started');
+    if (started?.type !== 'started') throw new Error('Expected started.');
+    expect(started.pid).toBe(4242);
+    expect(started.startedAtMs).toBeGreaterThanOrEqual(before);
+    expect(started.startedAtMs).toBeLessThanOrEqual(spawnedAt);
   });
 });

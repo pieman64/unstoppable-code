@@ -45,7 +45,7 @@ const RESTORED_CREATED = '2026-10-08T15:00:00.000Z';
 describe.each([
   ['Code', 'code-project', 'worktree'],
   ['Cowork', 'cowork-project', 'work-entry'],
-  ['App Advisor', 'app-advisor', 'app-advisor-entry'],
+  ['App Advisor', 'app-advisor', 'work-entry'],
 ] as const)('%s persisted cost lifecycle', (_name, projectId, kind) => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'cost-entry-lifecycle-'));
@@ -188,13 +188,11 @@ describe.each([
     expect(
       (await archivedContainerSummaryWithCost(manifest)).observedCostUsd,
     ).toBe(3);
+    const deletedManifest: ArchivedContainerManifestV1 = { ...manifest };
+    // Keep the legacy deletion marker on this archived-summary test input.
+    Reflect.set(deletedManifest, 'deletedAt', '2026-10-08T14:01:00.000Z');
     expect(
-      (
-        await archivedContainerSummaryWithCost({
-          ...manifest,
-          deletedAt: '2026-10-08T14:01:00.000Z',
-        })
-      ).observedCostUsd,
+      (await archivedContainerSummaryWithCost(deletedManifest)).observedCostUsd,
     ).toBe(3);
     await appendFile(audit, line('late-old-turn', 'entry-old', 100));
     await store.refreshInternal('idle');

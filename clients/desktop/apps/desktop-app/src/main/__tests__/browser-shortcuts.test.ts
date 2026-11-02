@@ -288,6 +288,94 @@ describe('resolveBrowserShortcutAction (ECW-7984)', () => {
     });
   });
 
+  // CAN-4616: the panel tab-cycle chords reach the renderer from a focused
+  // native page.
+  describe('tab cycling (CAN-4616)', () => {
+    it('maps Cmd+Shift+] and Cmd+Shift+[ on macOS', () => {
+      expect(
+        resolveBrowserShortcutAction(
+          input({ code: 'BracketRight', meta: true, shift: true }),
+          'darwin',
+        ),
+      ).toBe('select-next-tab');
+      expect(
+        resolveBrowserShortcutAction(
+          input({ code: 'BracketLeft', meta: true, shift: true }),
+          'darwin',
+        ),
+      ).toBe('select-previous-tab');
+    });
+
+    it('leaves Cmd+], Ctrl+Tab, and Cmd+Shift+Alt+] unhandled on macOS', () => {
+      expect(
+        resolveBrowserShortcutAction(
+          input({ code: 'BracketRight', meta: true }),
+          'darwin',
+        ),
+      ).toBeNull();
+      expect(
+        resolveBrowserShortcutAction(
+          input({ code: 'Tab', control: true }),
+          'darwin',
+        ),
+      ).toBeNull();
+      expect(
+        resolveBrowserShortcutAction(
+          input({ code: 'BracketRight', meta: true, shift: true, alt: true }),
+          'darwin',
+        ),
+      ).toBeNull();
+    });
+
+    it.each(['win32', 'linux'] as const)(
+      'maps Ctrl+Tab, Ctrl+Shift+Tab, and Ctrl+PageDown/PageUp on %s',
+      (platform) => {
+        expect(
+          resolveBrowserShortcutAction(
+            input({ code: 'Tab', control: true }),
+            platform,
+          ),
+        ).toBe('select-next-tab');
+        expect(
+          resolveBrowserShortcutAction(
+            input({ code: 'Tab', control: true, shift: true }),
+            platform,
+          ),
+        ).toBe('select-previous-tab');
+        expect(
+          resolveBrowserShortcutAction(
+            input({ code: 'PageDown', control: true }),
+            platform,
+          ),
+        ).toBe('select-next-tab');
+        expect(
+          resolveBrowserShortcutAction(
+            input({ code: 'PageUp', control: true }),
+            platform,
+          ),
+        ).toBe('select-previous-tab');
+      },
+    );
+
+    it.each(['win32', 'linux'] as const)(
+      'leaves Ctrl+Shift+PageDown and Ctrl+Shift+] unhandled on %s',
+      (platform) => {
+        expect(
+          resolveBrowserShortcutAction(
+            input({ code: 'PageDown', control: true, shift: true }),
+            platform,
+          ),
+        ).toBeNull();
+        expect(
+          resolveBrowserShortcutAction(
+            input({ code: 'BracketRight', control: true, shift: true }),
+            platform,
+          ),
+        ).toBeNull();
+      },
+    );
+  });
+
   it('only handles keyDown inputs', () => {
     expect(
       resolveBrowserShortcutAction(

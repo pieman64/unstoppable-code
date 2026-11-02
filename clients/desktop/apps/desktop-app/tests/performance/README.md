@@ -46,10 +46,12 @@ pnpm run perf:desktop --profile baseline --scenarios code-graph-new-worktree,cod
 pnpm run perf:desktop --profile baseline --scenarios startup-settle --startup-trace
 pnpm run perf:desktop:compare before.json after.json
 pnpm run perf:desktop:sampler-overhead --assert
+pnpm run build:core-daemon && pnpm run perf:desktop:daemon-idle-shutdown --stop signal
 pnpm run test:desktop-performance
 pnpm run perf:desktop --profile baseline --scenarios browser-actions --browser-actions-iterations 50
 pnpm run build && node --import tsx apps/desktop-app/tests/performance/run.mjs --release-like --profile baseline --scenarios browser-actions --browser-actions-iterations 50
 pnpm run perf:desktop --profile baseline --scenarios browser-agent-actions
+pnpm run perf:desktop:compare:interleaved --release-like --baseline-root /path/to/unchanged --candidate-root . --profile baseline --scenarios code-review-registry-cleanup
 ```
 
 Timestamped smoke outputs and their matching `-diagnostics/` directories are
@@ -231,6 +233,7 @@ exposes intermittent stalls that a burst can miss.
 | `scenarios.mjs`        | deterministic fixtures and startup/loaded UI/chat/pipeline/worktree workflows                              |
 | `monitor.mjs`          | renderer, IPC, per-process, and work-counter sampling and summaries                                        |
 | `responsiveness.mjs`   | absolute unresponsive verdict                                                                              |
+| `quit-latency.mjs`     | bounded `app.quit()`-to-exit timing for `startup-settle`                                                   |
 | `results.mjs`          | flat comparison-metric generation and result normalization                                                 |
 | `scaling-ratios.mjs`   | the P0 section C scaling ratios, their bounds, and their advisory reports                                  |
 | `comparison.mjs`       | compatibility, the single-sample flat rule, the repeated-sample comparison, and exact work-counter changes |
@@ -241,6 +244,7 @@ exposes intermittent stalls that a burst can miss.
 | `inspector-client.mjs` | loopback Electron main-process inspector client                                                            |
 | `hotspots.mjs`         | source-map resolution and Markdown/JSON hot-path reports                                                   |
 | `mock-server.mjs`      | deterministic E2E service lifecycle                                                                        |
+| `daemon-*.mjs`         | daemon Files treatment admission, start/attach and Files populations, arm preparation, raw summaries       |
 
 `work-metrics.json` (the counter registry) and `work-ceilings.json` (the
 per-platform ceilings) are checked-in inputs to `work-ratchet.mjs`; see

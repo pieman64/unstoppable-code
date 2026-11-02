@@ -42,6 +42,8 @@ function setLiveWorktrees(ids: string[]): void {
         id,
         name: id,
         path: `/tmp/${id}`,
+        branchName: id,
+        createdAt: '2026-07-20T12:00:00.000Z',
       })),
     },
   ];

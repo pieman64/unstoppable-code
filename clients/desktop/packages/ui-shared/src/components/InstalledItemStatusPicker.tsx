@@ -1,11 +1,15 @@
 'use client';
 
 import { useId, useRef, useState, type JSX } from 'react';
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
+import type {
+  InstalledItemStatus,
+  InstalledItemTarget,
+} from '@canopy/protocol/installed-items';
 import { CheckIcon, ChevronDownIcon } from '../icons/AppIcons';
 import {
   INSTALLED_ITEM_STATUS_COPY,
   INSTALLED_ITEM_STATUS_ORDER,
+  installedItemStatusDescription,
 } from '../lib/installed-item-status';
 import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 import { FloatingMenu } from './FloatingMenu';
@@ -29,7 +33,7 @@ import { Tooltip } from './Tooltip';
 const STATUS_DOT: Record<InstalledItemStatus, string> = {
   active: 'bg-success',
   available: 'bg-fg-tertiary',
-  disabled: 'border border-current fg-tertiary',
+  disabled: 'box-border border-2',
 };
 
 export function InstalledItemStatusIcon({
@@ -50,10 +54,16 @@ export function InstalledItemStatusIcon({
     >
       <span
         data-status-dot={status}
+        // Keep the glyph stroke above the unlayered universal border color.
+        style={
+          status === 'disabled'
+            ? { borderColor: 'var(--fg-tertiary)' }
+            : undefined
+        }
         className={`h-2 w-2 rounded-full ${
           disabled
             ? status === 'disabled'
-              ? 'border border-current fg-disabled'
+              ? STATUS_DOT.disabled
               : 'bg-fg-quaternary'
             : STATUS_DOT[status]
         }`}
@@ -76,6 +86,8 @@ export interface InstalledItemStatusPickerProps {
   readonly testId?: string;
   /** Where the menu opens; a control leading its row opens to the right. */
   readonly menuPlacement?: 'bottom-right' | 'bottom-left';
+  /** The item's kind, when known, for kind-specific status descriptions. */
+  readonly targetKind?: InstalledItemTarget['kind'];
 }
 
 const TRIGGER_CLASS =
@@ -158,6 +170,7 @@ export function InstalledItemStatusPicker({
   disabledReason,
   testId = 'installed-item-status-picker',
   menuPlacement = 'bottom-right',
+  targetKind,
 }: InstalledItemStatusPickerProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -252,7 +265,7 @@ export function InstalledItemStatusPicker({
                   {optionCopy.label}
                 </span>
                 <span className="block text-xs fg-tertiary">
-                  {optionCopy.description}
+                  {installedItemStatusDescription(option, targetKind)}
                 </span>
               </span>
               <DropdownMenuItemIcon>

@@ -50,8 +50,11 @@ export {
   createChatSiblingGroupToRight,
   pickContentTargetGroupId,
   pickReusableChatSiblingGroupId,
+  resolveChatPanelAnchor,
   rollbackCreatedChatSiblingGroup,
+  type ChatPanelAnchor,
   type CreatedChatSiblingGroup,
+  type FilePanelPlacementPolicy,
 } from './code/panels/sibling-panel-placement';
 export {
   CHAT_VISUALS_PANEL_KIND,

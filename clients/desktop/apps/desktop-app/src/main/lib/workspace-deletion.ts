@@ -1,6 +1,12 @@
 import {
-  assertNoDestructiveRecovery,
+  assertFailedChildArchivesResumed,
+  completeSupersededChildArchives,
+  isStepFreeDestructiveFailure,
+  readInFlightWorktreeDestructiveOperations,
+  resumableDestructiveStep,
+  runStepFreeChildLifecycles,
   withDestructiveLifecycle,
+  withdrawInterruptedWorkspaceDeletion,
   destructiveStep,
   markDestructiveCleanupRequired,
   destructiveCleanup,
@@ -19,19 +25,28 @@ import {
   W5RevisionConflictError,
   type W5CommitOptions,
 } from './w5-commit-log-file-store';
-import type { W5KeyedAttempt } from './w5-keyed-operation';
+import {
+  admitLifecycleJournals,
+  type W5KeyedAttempt,
+} from './w5-keyed-operation';
 import { rm } from 'node:fs/promises';
 import { CHAT_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import {
   COWORK_HOME_WORKTREE_ID,
   isDefaultCoworkWorkspaceId,
+  STANDALONE_CHAT_PROJECT_ID,
   type ArchivedContainerManifest,
   type ArchivedGitState,
   type SidebarItem,
   type SidebarItemsFile,
 } from '@canopy/desktop-shared/types';
 import {
+  assertWorkspaceCanBeRemoved,
+  assertWorktreeCanBeRemoved,
+} from '../agents/background-work';
+import {
   assertNoLiveDelegationsInWorkspace,
+  assertNoLiveDelegationsInWorktree,
   LiveDelegationsError,
 } from '../agents/delegation/activity';
 import { destroyWorktreeSessions } from '../agents/session-manager';
@@ -59,19 +74,22 @@ import {
 import {
   readAllSidebarItems,
   readWorkspaceIndexEntry,
-  removeWorkspaceIndexEntry,
   getWorkspaceIndexRepository,
 } from './sidebar-items';
+import { applyWorkspaceIndexRemoval } from './workspace-record-decision-port';
+import { readWorkspaceConfigDetailed } from './workspace-persistence';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { validateId } from './validation';
 import { getChatSearchService } from '../chat-search/service';
 import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { publishWorktreeLifecycleChange } from './worktree-lifecycle-signals';
 import {
   acquireWorkspaceDeletionLease,
   SplitLockError,
 } from '../services/split-lock-service';
 import { projectPluginDefaultsWritten } from '../plugins/project-plugin-defaults-cache';
 import {
+  listArchivedContainerManifests,
   listArchivedContainerManifestsStrict,
   withArchivedWorkspaceOperationLock,
 } from './archived-containers';
@@ -79,10 +97,19 @@ import {
   readArchivedGitStagedDescriptor,
   releaseArchivedGitState,
 } from './archived-container-git';
-import { finishArchivedContainerRecovery } from './archived-container-recovery';
+import {
+  finishArchivedContainerRecovery,
+  isArchivedContainerGitCleanupBlocked,
+  readProjectWorktreeRegistrations,
+  removeProjectWorktreeRegistrations,
+  verifyArchivedContainerRecoveryFinish,
+  type ProjectWorktreeRegistrations,
+} from './archived-container-recovery';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
 import {
   archiveWorkspaceWorktrees,
+  assertWorkspaceWorktreesHaveNoLegacyArchiveRecovery,
+  hasWorkspaceWorktreeWithUnavailableSource,
   WorktreeArchiveRefusedError,
 } from './worktree-archive';
 import {
@@ -116,19 +143,42 @@ export type WorkspaceDeletionSource =
   | 'single_repo_project_delete'
   | 'portal'
   | 'org-member-multi-repo-create'
-  | 'shared_container_fork';
+  | 'shared_container_fork'
+  | 'chat_project_delete';
 
-export interface WorkspaceDeletionRequest extends W5BoundaryOptions {
+/** At most one project-kind admission; the two contradict each other. */
+type WorkspaceDeletionKindAdmission =
+  | {
+      /**
+       * The single-repo project deletion (`project:delete`, CAN-3799 B6):
+       * refuse any other kind of project, refuse while its configuration is
+       * unreadable, and also remove its repository when the app created it
+       * under the managed repos directory. A user's repository is never
+       * deleted.
+       */
+      singleRepoProject?: boolean;
+      coworkProject?: never;
+    }
+  | {
+      /**
+       * The chat project deletion (`chat-project:delete`, W6c2 P1(a), routed
+       * here by G1): refuse a code project or an unindexed id as "Chat
+       * project not found" before any effect.
+       */
+      coworkProject?: boolean;
+      singleRepoProject?: never;
+    };
+
+export type WorkspaceDeletionRequest = W5BoundaryOptions & {
   workspaceId: string;
   source: WorkspaceDeletionSource;
   /**
-   * The single-repo project deletion (`project:delete`, CAN-3799 B6): refuse
-   * any other kind of project, refuse while its configuration is unreadable,
-   * and also remove its repository when the app created it under the managed
-   * repos directory. A user's repository is never deleted.
+   * CAN-5337: the operation id of an interrupted deletion the user confirmed
+   * superseding (`describeProjectDeletionDiscard`). Honored only for an
+   * unkeyed user deletion; an older host ignores it and refuses as before.
    */
-  singleRepoProject?: boolean;
-}
+  supersedeInterruptedDeletion?: string;
+} & WorkspaceDeletionKindAdmission;
 
 /** One cleanup step that runs after the deletion has committed. */
 export type WorkspaceCleanupResult =
@@ -153,20 +203,45 @@ export interface WorkspaceDeletionOutcome {
   };
 }
 
+/**
+ * Rebuildable data purged outside the destructive journal: its failure stays
+ * in the receipt and never requires manual recovery (CAN-4962).
+ */
+const UNJOURNALED_CLEANUP: keyof WorkspaceDeletionOutcome['cleanup'] =
+  'skillSuggestions';
+
+/** The deletion removes every archive with its retained files (CAN-5011). */
+const DISCARDING_ARCHIVE = { discardingArchive: true } as const;
+
+const GIT_CLEANUP_PENDING_REFUSAL =
+  'Git registration cleanup is still pending. Retry after the source repository is available.';
+const CONFIGURATION_UNAVAILABLE_REFUSAL =
+  'Cannot delete this project while its configuration is unavailable. Reload and try again.';
+
 export type WorkspaceDeletionRefusal =
   | 'protected'
   | 'configuration-unavailable'
   | 'not-single-repo'
-  | 'git-cleanup-pending';
+  | 'not-cowork'
+  | 'git-cleanup-pending'
+  | 'archive-recovery-unverified'
+  | 'source-unavailable'
+  | 'archive-in-progress';
 
 /** An admission check refused the deletion before anything was removed. */
 export class WorkspaceDeletionRefusedError extends Error {
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  /** The admission check's own failure, when it caused the refusal. */
+  declare readonly cause?: unknown;
+
   constructor(
     readonly reason: WorkspaceDeletionRefusal,
     message: string,
+    cause?: unknown,
   ) {
     super(message);
     this.name = 'WorkspaceDeletionRefusedError';
+    if (cause !== undefined) this.cause = cause;
   }
 }
 
@@ -218,7 +293,8 @@ export async function deleteWorkspace(
         error instanceof WorktreeArchiveRefusedError ||
         error instanceof LiveDelegationsError ||
         error instanceof SplitLockError ||
-        error instanceof W5RevisionConflictError,
+        error instanceof W5RevisionConflictError ||
+        isStepFreeDestructiveFailure(error),
     },
     (outcome) => workspaceDeletionReceiptSchema.parse(outcome),
     (options, attempt) =>
@@ -227,7 +303,25 @@ export async function deleteWorkspace(
           { kind: 'workspace', workspaceId },
           expectedRevision,
         );
-        await assertNoDestructiveRecovery(workspaceId);
+        const superseded = request.supersedeInterruptedDeletion;
+        // Anything but an operation id refuses as it would without it.
+        if (
+          typeof superseded === 'string' &&
+          z.string().uuid().safeParse(superseded).success &&
+          idempotencyKey === undefined &&
+          USER_DELETION_SOURCES.has(request.source)
+        )
+          await withdrawInterruptedWorkspaceDeletion(
+            workspaceId,
+            superseded,
+            () => isWorkspaceIndexed(workspaceId),
+          );
+        await admitLifecycleJournals(attempt, () =>
+          assertNoStrandedRecoveryOrArchive(
+            workspaceId,
+            USER_DELETION_SOURCES.has(request.source),
+          ),
+        );
         return withDestructiveLifecycle(
           {
             operation: 'workspace-delete',
@@ -243,8 +337,9 @@ export async function deleteWorkspace(
               attempt,
             );
             if (
-              Object.values(outcome.cleanup).some(
-                (step) => step.status === 'failed',
+              Object.entries(outcome.cleanup).some(
+                ([name, step]) =>
+                  name !== UNJOURNALED_CLEANUP && step.status === 'failed',
               )
             )
               markDestructiveCleanupRequired();
@@ -255,12 +350,100 @@ export async function deleteWorkspace(
   );
 }
 
+/**
+ * CAN-4977: a worktree archive or delete this process is still running
+ * refuses step-free and retryably; its journal is `active`, not stranded. Any
+ * stranded journal of the project still refuses `recovery-required` first,
+ * except a failed child archive of an earlier deletion that the worktree
+ * archives of a user deletion resume (CAN-4993).
+ */
+async function assertNoStrandedRecoveryOrArchive(
+  workspaceId: string,
+  archivesWorktrees: boolean,
+): Promise<void> {
+  const [inFlight] = await readInFlightWorktreeDestructiveOperations(
+    workspaceId,
+    archivesWorktrees ? 'workspace-delete' : undefined,
+  );
+  if (inFlight)
+    throw new WorkspaceDeletionRefusedError(
+      'archive-in-progress',
+      `A worktree in this project is still being ${
+        inFlight.operation === 'worktree-delete' ? 'deleted' : 'archived'
+      }. Retry after it finishes.`,
+    );
+}
+
 /** {@link deleteWorkspace} for callers that only need it to finish. */
 export async function deleteWorkspaceById(
   workspaceId: string,
   source: WorkspaceDeletionSource,
+  options: Pick<WorkspaceDeletionRequest, 'supersedeInterruptedDeletion'> = {},
 ): Promise<void> {
-  await deleteWorkspace({ workspaceId, source });
+  await deleteWorkspace({ workspaceId, source, ...options });
+}
+
+/** The index reads cleanly and still lists the project (CAN-5316 otherwise). */
+export async function isWorkspaceIndexed(
+  workspaceId: string,
+): Promise<boolean> {
+  const index = await getWorkspaceIndexRepository().read();
+  return (
+    index.authority === 'ok' &&
+    index.entries.some((entry) => entry.id === workspaceId)
+  );
+}
+
+/**
+ * CAN-5337: a user deletion's read-only admission checks other than its
+ * lifecycle journals and its worktrees' sources and archives, in their order,
+ * for the project-level discard description. Throws the deletion's own
+ * refusal; resolves with the project's kind.
+ */
+export async function assertWorkspaceDeletableBesideItsWorktrees(
+  workspaceId: string,
+): Promise<SidebarItem['type'] | undefined> {
+  assertNoLiveDelegationsInWorkspace(workspaceId);
+  assertNoLiveDelegationsInWorktree(STANDALONE_CHAT_PROJECT_ID, workspaceId);
+  assertWorkspaceCanBeRemoved(workspaceId);
+  assertWorktreeCanBeRemoved(STANDALONE_CHAT_PROJECT_ID, workspaceId);
+  // Taken and released at once: refuses as a held split or deletion would.
+  acquireWorkspaceDeletionLease(workspaceId)();
+  const { kind, sidebarItems } = await readDeletionTarget({
+    workspaceId,
+    source: 'portal',
+  });
+  if (kind === 'single-repo')
+    admitSingleRepoProjectDeletion(
+      workspaceId,
+      sidebarItems,
+      sidebarItems.items.find((item) => item.id === workspaceId),
+      kind,
+    );
+  await assertArchivedRecoveriesCanFinish(workspaceId);
+  if (kind === 'single-repo' || kind === 'multi-repo')
+    await assertWorkspaceWorktreesHaveNoLegacyArchiveRecovery(workspaceId);
+  return kind;
+}
+
+/**
+ * CAN-5337: the strict reads {@link deleteWorkspaceWithLease} makes of the
+ * retained archives after any discards, read-only. Skips the `discarded`
+ * archive-root entries, which the discards remove first. Throws as the
+ * deletion would.
+ */
+export async function assertRetainedArchivesReadable(
+  workspaceId: string,
+  discarded: ReadonlySet<string>,
+): Promise<void> {
+  for (const manifest of await listArchivedContainerManifestsStrict(
+    workspaceId,
+    discarded,
+  ))
+    if (manifest.version === 3)
+      await readArchivedGitStagedDescriptor(workspaceId, manifest.id, {
+        readOnly: true,
+      });
 }
 
 /** Host-only manual repair; never repeats canonical deletion, Git or directory removal. */
@@ -300,8 +483,16 @@ async function deleteWorkspaceSerialized(
   const admit = (check: () => void): void =>
     attempt ? attempt.validate(check) : check();
   // In-app deletion is refused while any chat in the workspace has queued,
-  // starting or running delegates; the user stops them first.
-  admit(() => assertNoLiveDelegationsInWorkspace(workspaceId));
+  // starting or running delegates or close-blocking background work; the user
+  // stops them first. A Cowork chat can still be keyed to the standalone-chat
+  // sentinel (W6c2 B1(a)). Delegates are checked in both scopes first so their
+  // refusal copy keeps precedence over the background-work refusal.
+  admit(() => {
+    assertNoLiveDelegationsInWorkspace(workspaceId);
+    assertNoLiveDelegationsInWorktree(STANDALONE_CHAT_PROJECT_ID, workspaceId);
+    assertWorkspaceCanBeRemoved(workspaceId);
+    assertWorktreeCanBeRemoved(STANDALONE_CHAT_PROJECT_ID, workspaceId);
+  });
   // Defer the scheduler-backed service until a workspace deletion is actually
   // requested; ordinary workspace reads do not need watcher lifecycle state.
   const { getAppAdvisorWatcherService } =
@@ -310,22 +501,56 @@ async function deleteWorkspaceSerialized(
   admit(() => {
     releaseDeletionLease = acquireWorkspaceDeletionLease(workspaceId);
   });
+  let watchersFenced = false;
   let workspaceRemoved = false;
   try {
     // Read-only admission precedes watcher cancellation and child archives.
     const deletionTarget = await readDeletionTarget(request);
+    await assertArchivedRecoveriesCanFinish(workspaceId);
+    const { kind } = deletionTarget;
+    const archivedKind =
+      USER_DELETION_SOURCES.has(request.source) &&
+      (kind === 'single-repo' || kind === 'multi-repo')
+        ? kind
+        : undefined;
+    if (archivedKind) {
+      // The archives' own refusal comes first, as in each archive. It is
+      // read-only, so a keyed request is released for a retry after repair.
+      await assertWorkspaceWorktreesHaveNoLegacyArchiveRecovery(
+        workspaceId,
+      ).catch((error: unknown) => {
+        throw attempt && error instanceof Error
+          ? attempt.validationError(error)
+          : error;
+      });
+      await assertWorktreeSourcesAvailable(workspaceId, archivedKind);
+    } else if (USER_DELETION_SOURCES.has(request.source))
+      // Admission let them through for archives this deletion does not run.
+      // Read-only, so a keyed request is released for a retry after repair.
+      await assertFailedChildArchivesResumed(
+        workspaceId,
+        'workspace-delete',
+      ).catch((error: unknown) => {
+        throw attempt && error instanceof Error
+          ? attempt.validationError(error)
+          : error;
+      });
+    // Set before the call: the fence goes up before cancellation can fail.
+    watchersFenced = true;
     await getAppAdvisorWatcherService().cancelLocalWorkspace(workspaceId);
-    if (USER_DELETION_SOURCES.has(request.source)) {
+    if (archivedKind) {
       // Every client gets the cleanup of an archive from the app (CAN-3799
       // B2): teardown scripts, live sessions and Git worktree registrations.
       // The app's own deletion archives first, so this finds what is left,
       // such as a deletion from the Portal. Admission runs first, and the
       // archives run before the archive lock: each drains the worktree's
-      // activity, and an activity touch waits for that lock.
-      const { kind } = deletionTarget;
-      if (kind === 'single-repo' || kind === 'multi-repo') {
-        await archiveWorkspaceWorktrees(workspaceId, kind);
-      }
+      // activity, and an activity touch waits for that lock. A failed archive
+      // refuses the deletion step-free (CAN-4993), earlier archives stay
+      // restorable, and a retry resumes a failed archive it can redo.
+      await runStepFreeChildLifecycles(async () => {
+        await archiveWorkspaceWorktrees(workspaceId, archivedKind);
+        await assertFailedChildArchivesResumed(workspaceId, 'workspace-delete');
+      });
     }
     const outcome = await withArchivedWorkspaceOperationLock(workspaceId, () =>
       deleteWorkspaceWithLease(request, options),
@@ -336,7 +561,8 @@ async function deleteWorkspaceSerialized(
     );
     return outcome;
   } catch (error) {
-    if (!workspaceRemoved) {
+    // A refusal before cancellation must not release a concurrent holder's fence.
+    if (watchersFenced && !workspaceRemoved) {
       await getAppAdvisorWatcherService().releaseLocalWorkspaceFence(
         workspaceId,
       );
@@ -398,6 +624,7 @@ const USER_DELETION_SOURCES: ReadonlySet<WorkspaceDeletionSource> =
     'multi_repo_workspace_delete',
     'single_repo_project_delete',
     'portal',
+    'chat_project_delete',
   ]);
 
 /** Read what the deletion removes and run its admission checks. */
@@ -413,10 +640,116 @@ async function readDeletionTarget(request: WorkspaceDeletionRequest): Promise<{
   ]);
   const target = sidebarItems.items.find((item) => item.id === workspaceId);
   const kind = target?.type ?? indexEntry?.type;
+  // Refused before any effect; the pre-G1 chat-project route refused only
+  // after tearing down sessions.
+  if (request.coworkProject && kind !== 'cowork')
+    throw new WorkspaceDeletionRefusedError(
+      'not-cowork',
+      'Chat project not found',
+    );
+  // Its `externalPath` is unknown, so the Cowork deletion's overlap guard
+  // could not protect the attached folder (CAN-4975).
+  if (
+    kind === 'cowork' &&
+    (await readWorkspaceConfigDetailed(workspaceId)).authority === 'unreadable'
+  )
+    throw new WorkspaceDeletionRefusedError(
+      'configuration-unavailable',
+      CONFIGURATION_UNAVAILABLE_REFUSAL,
+    );
   const managedRepoPath = request.singleRepoProject
     ? admitSingleRepoProjectDeletion(workspaceId, sidebarItems, target, kind)
     : undefined;
   return { sidebarItems, kind, managedRepoPath };
+}
+
+/**
+ * Refuse step-free when the `retained-git-cleanup` step could not finish a
+ * retained version-3 archive's recovery; its failure leaves a
+ * recovery-required journal that freezes the project. CAN-4994: the finish
+ * step's own checks before its first effect, so a changed checkout refuses
+ * once the failure repeats under the archive lock. The deletion discards the
+ * archive, so its retained payload goes unverified and an unusable recovery
+ * journal admits it (CAN-5011).
+ * R-V3(ii) (CAN-4963): then its Git registration cleanup; a Git or filesystem
+ * failure during inspection refuses too, as the locked step's walk fails the
+ * same way. Both refusals are retryable. An unreadable listing admits, and the
+ * locked strict listing reports its own error.
+ */
+async function assertArchivedRecoveriesCanFinish(
+  workspaceId: string,
+): Promise<void> {
+  let manifests: ArchivedContainerManifest[];
+  try {
+    manifests = await listArchivedContainerManifests(workspaceId);
+  } catch {
+    return;
+  }
+  for (const listed of manifests) {
+    if (listed.version !== 3 || !listed.recovery.gitCleanupPending) continue;
+    const manifest = await verifiedPendingRecovery(workspaceId, listed);
+    if (manifest && (await isArchivedContainerGitCleanupBlocked(manifest)))
+      throw new WorkspaceDeletionRefusedError(
+        'git-cleanup-pending',
+        GIT_CLEANUP_PENDING_REFUSAL,
+      );
+  }
+}
+
+/**
+ * The pending archive once its recovery verifies, or null when it is no
+ * longer pending. Unlocked, a concurrent restore or purge can fail the check,
+ * so only a failure that repeats under the archive lock refuses.
+ */
+async function verifiedPendingRecovery(
+  workspaceId: string,
+  listed: Extract<ArchivedContainerManifest, { version: 3 }>,
+): Promise<Extract<ArchivedContainerManifest, { version: 3 }> | null> {
+  try {
+    await verifyArchivedContainerRecoveryFinish(listed, DISCARDING_ARCHIVE);
+    return listed;
+  } catch {
+    // Confirmed under the lock below.
+  }
+  return withArchivedWorkspaceOperationLock(workspaceId, async () => {
+    let current: ArchivedContainerManifest | undefined;
+    try {
+      current = (await listArchivedContainerManifests(workspaceId)).find(
+        (manifest) => manifest.id === listed.id,
+      );
+    } catch {
+      return null;
+    }
+    if (current?.version !== 3 || !current.recovery.gitCleanupPending)
+      return null;
+    try {
+      await verifyArchivedContainerRecoveryFinish(current, DISCARDING_ARCHIVE);
+    } catch (error) {
+      throw new WorkspaceDeletionRefusedError(
+        'archive-recovery-unverified',
+        "An archived worktree's recovery files couldn't be verified. Preserve its archive and recovery journal, and retry after repair.",
+        error,
+      );
+    }
+    return current;
+  });
+}
+
+/**
+ * CAN-4985: refuse step-free when a live worktree's archive needs a source
+ * repository that Git cannot open. That archive fails after its teardown, or
+ * leaves Git registration cleanup pending for the locked step; either leaves
+ * a recovery-required journal that freezes the project. Retryable.
+ */
+async function assertWorktreeSourcesAvailable(
+  workspaceId: string,
+  kind: 'single-repo' | 'multi-repo',
+): Promise<void> {
+  if (await hasWorkspaceWorktreeWithUnavailableSource(workspaceId, kind))
+    throw new WorkspaceDeletionRefusedError(
+      'source-unavailable',
+      "A source repository for this project's worktrees is unavailable. Retry after it is available.",
+    );
 }
 
 function admitSingleRepoProjectDeletion(
@@ -428,7 +761,7 @@ function admitSingleRepoProjectDeletion(
   if (getSidebarItemsPreserveWorkspaceIds(sidebarItems).includes(workspaceId)) {
     throw new WorkspaceDeletionRefusedError(
       'configuration-unavailable',
-      'Cannot delete this project while its configuration is unavailable. Reload and try again.',
+      CONFIGURATION_UNAVAILABLE_REFUSAL,
     );
   }
   // An unindexed id keeps its existing outcome: only its data directory goes.
@@ -469,8 +802,12 @@ async function deleteWorkspaceWithLease(
   const { workspaceId, source: telemetrySource } = request;
   const { kind, managedRepoPath } = await readDeletionTarget(request);
   if (managedRepoPath) await protectDestructivePath(managedRepoPath);
+  // One X4 decision for both branches; the Cowork branch commits it through
+  // `deleteCoworkWorkspace`. The commit, lock and revisions stay host-side.
   async function removeDeletedWorkspaceIndexEntry(): Promise<void> {
-    await removeWorkspaceIndexEntry(workspaceId);
+    await applyWorkspaceIndexRemoval(workspaceId, {
+      kind: 'workspace.delete.index',
+    });
   }
   const commitIndexRemoval = (): Promise<void> =>
     destructiveStep(
@@ -502,15 +839,17 @@ async function deleteWorkspaceWithLease(
     }
     if (manifest.version === 3) {
       if (manifest.recovery.gitCleanupPending) {
-        await destructiveStep('retained-git-cleanup', () =>
-          finishArchivedContainerRecovery(manifest),
-        );
-        if (manifest.recovery.gitCleanupPending) {
-          throw new WorkspaceDeletionRefusedError(
-            'git-cleanup-pending',
-            'Git registration cleanup is still pending. Retry project deletion after the source repository is available.',
-          );
-        }
+        // The archive's recovery journal records the finish step's progress,
+        // so a failure before the deletion's own effects refuses step-free
+        // and a retry resumes it (CAN-5011).
+        await resumableDestructiveStep('retained-git-cleanup', async () => {
+          await finishArchivedContainerRecovery(manifest, DISCARDING_ARCHIVE);
+          if (manifest.recovery.gitCleanupPending)
+            throw new WorkspaceDeletionRefusedError(
+              'git-cleanup-pending',
+              GIT_CLEANUP_PENDING_REFUSAL,
+            );
+        });
       }
       const staged = await readArchivedGitStagedDescriptor(
         workspaceId,
@@ -529,6 +868,8 @@ async function deleteWorkspaceWithLease(
     workspaceId,
     archivedManifests,
   );
+  // Unregistered once the directory removal takes their checkouts (CAN-5011).
+  let worktreeRegistrations: ProjectWorktreeRegistrations | undefined;
   if (kind === 'cowork') {
     // Live agent sessions key (workspaceId, workEntryId, chatId) — tear down
     // every entry's sessions plus the legacy pre-entry 'home' slot.
@@ -540,13 +881,15 @@ async function deleteWorkspaceWithLease(
         destroyWorktreeSessions(workspaceId, worktreeId),
       );
     }
+    // Then the compatibility standalone-chat sentinel keying (W6c2 B1(a)).
+    await destructiveStep('session-teardown', () =>
+      destroyWorktreeSessions(STANDALONE_CHAT_PROJECT_ID, workspaceId),
+    );
     await destructiveStep('cowork-deletion', () =>
-      deleteCoworkWorkspace(workspaceId, {
-        deferLocalWatcherCancellationCommit: true,
-        commitIndexRemoval,
-      }),
+      deleteCoworkWorkspace(workspaceId, { commitIndexRemoval }),
     );
   } else {
+    worktreeRegistrations = await readProjectWorktreeRegistrations(workspaceId);
     // Defer browser lifecycle/session initialization until the non-cowork
     // deletion path executes; ordinary workspace planning must stay lightweight.
     const {
@@ -592,6 +935,15 @@ async function deleteWorkspaceWithLease(
   // The deletion has committed: the index entry and the workspace directory,
   // with its Work Entries and archives, are gone.
   notifyLedgerOfWorkspaceDeletion(ledgerContents);
+  try {
+    await completeSupersededChildArchives(workspaceId, 'workspace-delete');
+  } catch (error) {
+    // Their journals stay recovery-required for a project that is gone.
+    // eslint-disable-next-line no-console
+    console.error('Failed to complete superseded archive journals:', error);
+  }
+  if (worktreeRegistrations)
+    await removeProjectWorktreeRegistrations(worktreeRegistrations);
   const managedRepository = await removeManagedRepository(managedRepoPath);
   let archivedGitRefs: WorkspaceCleanupResult = { status: 'done' };
   for (const gitState of archivedGitStates) {
@@ -644,6 +996,7 @@ async function deleteWorkspaceWithLease(
   // self-heals on the next read), so the shared index-write hook never fires;
   // push the portal overview refresh explicitly (CAN-1304).
   schedulePortalStructuralSync();
+  publishWorktreeLifecycleChange('workspace-deleted');
 
   // Best-effort, non-blocking: reap repo shadows for repos no remaining
   // workspace references. Re-read sidebar items after deletion so the deleted
@@ -660,8 +1013,15 @@ async function deleteWorkspaceWithLease(
         collectReferencedRepoPaths(remainingItems),
       ).catch(() => undefined),
     );
-  } catch {
-    // Ignore: the workspace is already deleted; shadow reaping is follow-up.
+  } catch (error) {
+    // The workspace is already deleted; reading the remaining projects and
+    // starting the shadow reap are follow-up, so a failure here never fails
+    // the deletion. Log it so it is not invisible.
+    // eslint-disable-next-line no-console
+    console.error(
+      'Failed to start repo shadow cleanup after workspace deletion:',
+      error,
+    );
   }
   return {
     workspaceId,

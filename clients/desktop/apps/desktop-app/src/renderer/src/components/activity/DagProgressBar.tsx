@@ -1,19 +1,21 @@
 import { memo, useMemo, type JSX } from 'react';
 import { DagProgressBar as SharedDagProgressBar } from '@canopy/ui-shared/components';
 import { computeDagTiers } from './dag-tiers';
-import { buildDagJobs } from './dag-progress-jobs';
-import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import {
+  buildDagJobs,
+  type DagProgressExecutionState,
+} from './dag-progress-jobs';
 
 interface DagProgressBarProps {
-  executionState: ExecutionState;
+  executionState: DagProgressExecutionState;
   muted?: boolean;
   onJobClick?: (jobId: string) => void;
 }
 
 /**
  * Desktop wrapper around the shared {@link SharedDagProgressBar}. Adapts the
- * desktop executor's {@link ExecutionState} shape into the portable tiers
- * + jobs payload the shared component consumes.
+ * shared row projection or full execution detail into the portable tiers +
+ * jobs payload the shared component consumes.
  */
 function DagProgressBarInner({
   executionState,

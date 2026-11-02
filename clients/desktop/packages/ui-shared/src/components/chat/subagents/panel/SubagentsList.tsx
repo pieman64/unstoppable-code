@@ -1,7 +1,4 @@
 import { memo, useId, useMemo, type JSX, type MouseEvent } from 'react';
-import { ThinkingSpinner } from '../../../ThinkingSpinner';
-import { useSubagentsView } from '../subagents-view';
-import { SubagentsList as ClassicSubagentsList } from './SubagentsListClassic';
 import type {
   SubagentNode,
   SubagentSkipEdgeNode,
@@ -24,10 +21,21 @@ import {
   subagentWorkflowPhases,
   subagentWorkflowRunOf,
 } from '../common/SubagentWorkflow';
-import { OPERATIONAL_STATUS_COLORS } from '../../../../lib/operational-status-colors';
 import {
+  SubagentStatusGlyph,
+  subagentStatusInk,
+} from '../common/SubagentStatusGlyph';
+import {
+  SUBAGENT_OPEN_CHAT_LABEL,
+  SUBAGENTS_COLUMN_CHANGES,
+  SUBAGENTS_COLUMN_MODEL,
+  SUBAGENTS_COLUMN_STATUS,
+  SUBAGENTS_COLUMN_TASK,
+  SUBAGENTS_COLUMN_TIME,
+  SUBAGENTS_COLUMN_WORKSPACE,
   SUBAGENTS_LIST_LABEL,
   subagentStatusDetail,
+  subagentViaLabel,
   subagentWorkspaceShortLabel,
   subagentsDepthAccessibleLabel,
   subagentsToggleRowLabel,
@@ -42,8 +50,7 @@ import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
 /**
  * Supported list layouts, chosen from the list's own available width.
  * `minimal` drops the status column for very narrow panels; each row still
- * announces its status to assistive technology, shimmers a running title,
- * and names any other status beside the title.
+ * shows its status glyph and announces the status to assistive technology.
  */
 export type SubagentsListColumns =
   | 'full'
@@ -53,75 +60,69 @@ export type SubagentsListColumns =
 
 /**
  * CSS grid template for a D9 column set. Task takes the remaining width; the
- * other columns are fixed (every row is its own grid, so an `auto` column
- * would land at a different place on each row). Changes is left out when no
- * listed task has changes to show, and Status when the filter already says
- * what every row's status is.
+ * other columns are fixed so rows line up, and Changes is left out when no
+ * listed task has changes to show.
  */
 export function subagentsListGrid(
   columns: SubagentsListColumns,
   showChanges: boolean,
-  showStatus = true,
 ): string {
-  const base = 'grid items-center gap-x-3';
   switch (columns) {
     case 'full':
-      if (showChanges) {
-        return showStatus
-          ? `${base} grid-cols-[minmax(0,1fr)_7.5rem_7rem_4.5rem_5.5rem_3rem_1.75rem]`
-          : `${base} grid-cols-[minmax(0,1fr)_7rem_4.5rem_5.5rem_3rem_1.75rem]`;
-      }
-      return showStatus
-        ? `${base} grid-cols-[minmax(0,1fr)_7.5rem_7rem_4.5rem_3rem_1.75rem]`
-        : `${base} grid-cols-[minmax(0,1fr)_7rem_4.5rem_3rem_1.75rem]`;
+      return showChanges
+        ? 'grid grid-cols-[minmax(0,1fr)_7.5rem_7rem_4.5rem_5.5rem_2.5rem_1.75rem] items-center gap-x-2'
+        : 'grid grid-cols-[minmax(0,1fr)_7.5rem_7rem_4.5rem_2.5rem_1.75rem] items-center gap-x-2';
     case 'no-workspace':
-      return showStatus
-        ? `${base} grid-cols-[minmax(0,1fr)_7.5rem_7rem_3rem_1.75rem]`
-        : `${base} grid-cols-[minmax(0,1fr)_7rem_3rem_1.75rem]`;
+      return 'grid grid-cols-[minmax(0,1fr)_7.5rem_7rem_2.5rem_1.75rem] items-center gap-x-2';
     case 'compact':
-      return showStatus
-        ? `${base} grid-cols-[minmax(0,1fr)_6.5rem_3rem_1.75rem]`
-        : `${base} grid-cols-[minmax(0,1fr)_3rem_1.75rem]`;
+      return 'grid grid-cols-[minmax(0,1fr)_minmax(0,6.5rem)_auto_1.75rem] items-center gap-x-2';
     case 'minimal':
-      return `${base} grid-cols-[minmax(0,1fr)_3rem_1.75rem]`;
+      return 'grid grid-cols-[minmax(0,1fr)_auto_1.75rem] items-center gap-x-2';
   }
 }
-
-/** Whether a column set shows the Status column. */
-function hasStatusColumn(
-  columns: SubagentsListColumns,
-  showStatus: boolean,
-): boolean {
-  return showStatus && columns !== 'minimal';
-}
-
-/** Whether a status draws its title in the shimmer of work in progress. */
-function isRunningStatus(status: SubagentNode['status']): boolean {
-  return status === 'running' || status === 'starting';
-}
-
-/**
- * The Status column's ink: neutral secondary text, with failure the one
- * status that keeps its intent (DESIGN.md: failed is destructive). Running
- * is told by the title's shimmer, not a color.
- */
-function listStatusInk(status: SubagentNode['status']): string {
-  return status === 'failed'
-    ? OPERATIONAL_STATUS_COLORS.failed.foreground
-    : 'fg-secondary';
-}
-
-/** Row geometry shared by every row kind, so they line up. */
-// The 2px left side and a quarter-pixel transform (layout snaps padding to
-// whole pixels) put each row's drawn chevron on the toolbar's left line, the
-// filter pill's outer edge (measured at 2x); the right keeps 12px before the
-// open arrow.
-const ROW_CLASS =
-  'h-10 shrink-0 rounded-md pl-0.5 pr-3 text-xs translate-x-[calc(var(--spacing)/16)]';
 
 /** Whether a column set has the Model column. */
 function hasModelColumn(columns: SubagentsListColumns): boolean {
   return columns === 'full' || columns === 'no-workspace';
+}
+
+/** Props for the header row that names the visible list columns. */
+export interface SubagentsListHeaderProps {
+  /** The column set that applies to the rows below. */
+  readonly columns: SubagentsListColumns;
+  /** Whether a listed task has changes, which adds the Changes column. */
+  readonly showChanges: boolean;
+}
+
+/** Pure, column-set-aware heading row. */
+export function SubagentsListHeader({
+  columns,
+  showChanges,
+}: SubagentsListHeaderProps): JSX.Element {
+  return (
+    <div
+      role="row"
+      className={`${subagentsListGrid(columns, showChanges)} h-8 shrink-0 border-b px-3 text-2xs fg-tertiary`}
+    >
+      <span role="columnheader">{SUBAGENTS_COLUMN_TASK}</span>
+      {columns !== 'minimal' ? (
+        <span role="columnheader">{SUBAGENTS_COLUMN_STATUS}</span>
+      ) : null}
+      {hasModelColumn(columns) ? (
+        <span role="columnheader">{SUBAGENTS_COLUMN_MODEL}</span>
+      ) : null}
+      {columns === 'full' ? (
+        <span role="columnheader">{SUBAGENTS_COLUMN_WORKSPACE}</span>
+      ) : null}
+      {columns === 'full' && showChanges ? (
+        <span role="columnheader">{SUBAGENTS_COLUMN_CHANGES}</span>
+      ) : null}
+      <span role="columnheader" className="text-right">
+        {SUBAGENTS_COLUMN_TIME}
+      </span>
+      <span role="columnheader" aria-label={SUBAGENT_OPEN_CHAT_LABEL} />
+    </div>
+  );
 }
 
 /** One pre-order item for the subagent list. */
@@ -148,12 +149,12 @@ export interface SubagentsListRowProps {
   readonly hasChildren: boolean;
   /** Whether the inspector or drawer is showing this task. */
   readonly selected: boolean;
+  /** Optional hidden ancestors to announce after the title. */
+  readonly via?: readonly SubagentNode[];
   /** Visible list column set. */
   readonly columns: SubagentsListColumns;
   /** Whether the list shows the Changes column. */
   readonly showChanges: boolean;
-  /** Whether the list shows the Status column; defaults to true. */
-  readonly showStatus?: boolean;
   /** Whether this row's children are hidden. */
   readonly collapsed?: boolean;
   /** Shows or hides this row's children. */
@@ -199,9 +200,9 @@ export const SubagentsListRow = memo(function SubagentsListRow({
   absoluteDepth,
   hasChildren,
   selected,
+  via,
   columns,
   showChanges,
-  showStatus = true,
   collapsed = false,
   onToggleCollapsed,
   showWorkspaceDetails,
@@ -215,8 +216,6 @@ export const SubagentsListRow = memo(function SubagentsListRow({
   const openLabelId = useId();
   const workspace = subagentWorkspaceShortLabel(node);
   const showWorkspace = showWorkspaceDetails;
-  const running = isRunningStatus(node.status);
-  const statusColumn = hasStatusColumn(columns, showStatus);
   const openChat = (event: MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation();
     onOpenChat(node);
@@ -228,7 +227,7 @@ export const SubagentsListRow = memo(function SubagentsListRow({
       data-testid={`subagents-list-row-${node.id}`}
       aria-selected={selected}
       onClick={(): void => onSelect(node)}
-      className={`${subagentsListGrid(columns, showChanges, showStatus)} ${ROW_CLASS} ${selected ? 'bg-secondary' : 'hover:bg-subtle'}`}
+      className={`${subagentsListGrid(columns, showChanges)} h-9 shrink-0 rounded-md px-3 text-xs ${selected ? 'bg-secondary' : 'hover:bg-subtle'}`}
     >
       <span role="gridcell" className="flex min-w-0 items-center gap-1.5">
         <Indent depth={depth} absoluteDepth={absoluteDepth} />
@@ -255,55 +254,34 @@ export const SubagentsListRow = memo(function SubagentsListRow({
         ) : (
           <span className="w-4 shrink-0" />
         )}
-        {/* The 14px icon slot: the chat tab's spinner while the task runs
-            (it follows the Labs loader choice), empty otherwise, so every
-            title starts at the same place. */}
-        <span
-          aria-hidden="true"
-          data-testid={`subagents-list-status-${node.id}`}
-          className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
-        >
-          {running ? <ThinkingSpinner sizePx={14} tone="accent" /> : null}
-        </span>
+        <SubagentStatusGlyph status={node.status} />
         <button
           type="button"
           aria-pressed={selected}
           data-testid={`subagents-list-select-${node.id}`}
-          data-status={node.status}
           onClick={(event): void => {
             event.stopPropagation();
             onSelect(node);
           }}
           className="min-w-0 flex-1 truncate text-left fg-primary focus-ring"
         >
-          <span
-            id={titleId}
-            data-testid={`subagents-list-title-${node.id}`}
-            className={REPLAY_MASK_CLASS}
-          >
+          <span id={titleId} className={REPLAY_MASK_CLASS}>
             {node.title}
           </span>
-          {!statusColumn && running ? (
+          {columns === 'minimal' ? (
             <span className="sr-only">, {subagentStatusDetail(node)}</span>
           ) : null}
         </button>
-        {/* Without the Status column (the minimal set, or the Active
-            filter), a running row says so with its spinner and every other
-            row (queued, awaiting approval, settled) names its status. */}
-        {!statusColumn && !running ? (
-          // Shrinks after the title has kept half the row, so a long status
-          // ("Idle · 2 active below") never squeezes the title to one letter.
-          <span
-            className={`min-w-0 max-w-1/2 truncate ${listStatusInk(node.status)}`}
-          >
-            {subagentStatusDetail(node)}
+        {via && via.length > 0 ? (
+          <span className="min-w-0 w-1/3 shrink-0 truncate text-2xs fg-tertiary">
+            {subagentViaLabel(via)}
           </span>
         ) : null}
       </span>
-      {statusColumn ? (
+      {columns !== 'minimal' ? (
         <span
           role="gridcell"
-          className={`truncate ${listStatusInk(node.status)}`}
+          className={`truncate ${subagentStatusInk(node.status)}`}
         >
           {subagentStatusDetail(node)}
         </span>
@@ -339,7 +317,7 @@ export const SubagentsListRow = memo(function SubagentsListRow({
       ) : null}
       <span
         role="gridcell"
-        className="truncate text-right tabular-nums fg-tertiary"
+        className="whitespace-nowrap text-right tabular-nums fg-tertiary"
       >
         {formatSubagentElapsed(node, now)}
       </span>
@@ -373,7 +351,6 @@ interface WorkflowGroupRowProps {
   readonly collapsed: boolean;
   readonly columns: SubagentsListColumns;
   readonly showChanges: boolean;
-  readonly showStatus: boolean;
   readonly onToggleCollapsed?: (node: SubagentNode) => void;
 }
 
@@ -439,7 +416,6 @@ function SubagentWorkflowRunListRow({
   collapsed,
   columns,
   showChanges,
-  showStatus,
   onToggleCollapsed,
   selected,
   now,
@@ -464,7 +440,7 @@ function SubagentWorkflowRunListRow({
       data-testid={`subagents-list-row-${node.id}`}
       aria-selected={selected}
       onClick={(): void => onSelect(node)}
-      className={`${subagentsListGrid(columns, showChanges, showStatus)} ${ROW_CLASS} ${selected ? 'bg-secondary' : 'hover:bg-subtle'}`}
+      className={`${subagentsListGrid(columns, showChanges)} h-9 shrink-0 rounded-md px-3 text-xs ${selected ? 'bg-secondary' : 'hover:bg-subtle'}`}
     >
       <span role="gridcell" className="flex min-w-0 items-center gap-1.5">
         <Indent depth={depth} absoluteDepth={absoluteDepth} />
@@ -492,7 +468,7 @@ function SubagentWorkflowRunListRow({
           <span id={titleId} className={REPLAY_MASK_CLASS}>
             {node.title}
           </span>
-          {!hasStatusColumn(columns, showStatus) ? (
+          {columns === 'minimal' ? (
             <span className="sr-only">
               , <SubagentWorkflowRunStatusText tree={tree} run={node} short />
             </span>
@@ -502,7 +478,7 @@ function SubagentWorkflowRunListRow({
           {subagentWorkflowRunProgressNote(tree, node)}
         </span>
       </span>
-      {hasStatusColumn(columns, showStatus) ? (
+      {columns !== 'minimal' ? (
         <span role="gridcell" className="truncate">
           <SubagentWorkflowRunStatusText tree={tree} run={node} short />
         </span>
@@ -512,7 +488,7 @@ function SubagentWorkflowRunListRow({
       {columns === 'full' && showChanges ? <span role="gridcell" /> : null}
       <span
         role="gridcell"
-        className="truncate text-right tabular-nums fg-tertiary"
+        className="whitespace-nowrap text-right tabular-nums fg-tertiary"
       >
         {formatSubagentElapsed(node, now)}
       </span>
@@ -545,7 +521,6 @@ function SubagentWorkflowPhaseListRow({
   collapsed,
   columns,
   showChanges,
-  showStatus,
   onToggleCollapsed,
 }: WorkflowGroupRowProps & { readonly tree: SubagentTree }): JSX.Element {
   const titleId = useId();
@@ -553,7 +528,7 @@ function SubagentWorkflowPhaseListRow({
     <div
       role="row"
       data-testid={`subagents-list-row-${node.id}`}
-      className={`${subagentsListGrid(columns, showChanges, showStatus)} ${ROW_CLASS}`}
+      className={`${subagentsListGrid(columns, showChanges)} h-9 shrink-0 rounded-md px-3 text-xs`}
     >
       <span role="gridcell" className="flex min-w-0 items-center gap-1.5">
         <Indent depth={depth} absoluteDepth={absoluteDepth} />
@@ -576,13 +551,13 @@ function SubagentWorkflowPhaseListRow({
         <span className="shrink-0 text-2xs tabular-nums fg-tertiary">
           {workflowPhasePositionLabel(tree, node)}
         </span>
-        {!hasStatusColumn(columns, showStatus) ? (
+        {columns === 'minimal' ? (
           <span className="sr-only">
             , <SubagentWorkflowPhaseCountText tree={tree} phase={node} />
           </span>
         ) : null}
       </span>
-      {hasStatusColumn(columns, showStatus) ? (
+      {columns !== 'minimal' ? (
         <span role="gridcell" className="truncate">
           <SubagentWorkflowPhaseCountText tree={tree} phase={node} />
         </span>
@@ -606,12 +581,6 @@ export interface SubagentsListProps {
   readonly selectedId: string | null;
   /** Which columns are available at this width. */
   readonly columns: SubagentsListColumns;
-  /**
-   * Whether rows show the Status column. Off under the Active filter, where
-   * running rows show their spinner and the rest (queued, awaiting approval)
-   * name their status beside the title. Defaults to true.
-   */
-  readonly showStatus?: boolean;
   /** Tasks whose children are hidden. */
   readonly collapsedIds?: ReadonlySet<string>;
   /** Shows or hides a task's children; parents get a toggle when set. */
@@ -703,12 +672,11 @@ function flattenEntries(
 const NO_COLLAPSED_IDS: ReadonlySet<string> = new Set();
 
 /** Memoized task rows in pre-order, for Tree/List parity. */
-function SubagentsViewList({
+export function SubagentsList({
   tree,
   projection,
   selectedId,
   columns,
-  showStatus = true,
   collapsedIds = NO_COLLAPSED_IDS,
   onToggleCollapsed,
   showWorkspaceDetails,
@@ -743,7 +711,8 @@ function SubagentsViewList({
       data-testid="subagents-list"
       className="flex min-h-0 flex-1 flex-col"
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto p-1.5">
+      <SubagentsListHeader columns={columns} showChanges={showChanges} />
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto p-1.5">
         {entries.map((entry) => {
           const node = entry.node;
           const groupToggle = projection ? undefined : onToggleCollapsed;
@@ -759,7 +728,6 @@ function SubagentsViewList({
                 selected={node.id === selectedId}
                 columns={columns}
                 showChanges={showChanges}
-                showStatus={showStatus}
                 collapsed={!projection && collapsedIds.has(node.id)}
                 onToggleCollapsed={groupToggle}
                 now={now}
@@ -779,7 +747,6 @@ function SubagentsViewList({
                 hasChildren={entry.hasChildren}
                 columns={columns}
                 showChanges={showChanges}
-                showStatus={showStatus}
                 collapsed={!projection && collapsedIds.has(node.id)}
                 onToggleCollapsed={groupToggle}
               />
@@ -793,9 +760,9 @@ function SubagentsViewList({
               absoluteDepth={node.depth}
               hasChildren={entry.hasChildren}
               selected={node.id === selectedId}
+              via={entry.via}
               columns={columns}
               showChanges={showChanges}
-              showStatus={showStatus}
               collapsed={collapsedIds.has(node.id)}
               onToggleCollapsed={onToggleCollapsed}
               showWorkspaceDetails={showWorkspaceDetails}
@@ -808,17 +775,5 @@ function SubagentsViewList({
         })}
       </div>
     </div>
-  );
-}
-
-/**
- * The Subagents list: spinner rows without a column header under the
- * Subagents view experiment, the classic list otherwise.
- */
-export function SubagentsList(props: SubagentsListProps): JSX.Element {
-  return useSubagentsView() ? (
-    <SubagentsViewList {...props} />
-  ) : (
-    <ClassicSubagentsList {...props} />
   );
 }

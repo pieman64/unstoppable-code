@@ -155,7 +155,7 @@ describe('custom review track discovery', () => {
     ['model: ok\nmodel: duplicate', 'Invalid YAML'],
     ['models: [', 'Invalid YAML'],
     ['- model', 'mapping'],
-    ['model: agent_model_raw', 'pipeline aliases'],
+    ['model: agent_model_raw', 'workflow aliases'],
     [
       'model: ok\npermission_preset: dangerous_all',
       'Unsupported reviewer argument',

@@ -11,47 +11,71 @@
  *
  * Either answer marks the user decided on every device. A failed save keeps
  * the card undecided with an inline error so the user is not stranded.
+ *
+ * A turn-on saved from this hook also keeps its server outcome (grant,
+ * balance, blocked reason) for an inline confirmation. Only this hook's own
+ * save sets it: a choice saved elsewhere never claims a grant here.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { CloudDailyCreditDripState } from '@canopy/desktop-shared/types';
-import type { DailyCreditDripPreference } from '@canopy/protocol/billing';
+import type {
+  DailyCreditDripPreference,
+  DailyCreditDripPreferenceSaveResult,
+} from '@canopy/protocol/billing';
 import {
   onDailyCreditDripChanged,
   saveDailyCreditDripChoice,
 } from '@/lib/daily-credit-drip';
-import type { OnboardingDailyCreditDripInput } from '@/components/home/onboarding-suggestions/queue';
+export interface DailyCreditDripInput {
+  state: 'unavailable' | 'loading' | 'undecided' | 'decided';
+  enabled: boolean;
+  /** Plan cap offered by the card; null falls back to the default cap. */
+  capCredits: number | null;
+}
 
 export const DAILY_CREDIT_DRIP_SAVE_ERROR = "Couldn't save. Try again.";
 
+/** What the server reported for a turn-on saved from this hook. */
+export type DailyCreditDripLocalSaveOutcome = Pick<
+  DailyCreditDripPreferenceSaveResult,
+  'granted' | 'balanceCredits' | 'blockedReason'
+>;
+
 export interface DailyCreditDripOptInState {
   /** The queue's view of the opt-in. */
-  live: OnboardingDailyCreditDripInput;
+  live: DailyCreditDripInput;
   /** True while a save is in flight; both buttons disable. */
   busy: boolean;
   /** Inline error after a failed save, or null. */
   error: string | null;
+  /**
+   * The outcome of the last successful turn-on saved here, for the current
+   * account, or null. Cleared when a new save starts, on failure, when the
+   * drip is turned off anywhere, and when the account changes.
+   */
+  outcome: DailyCreditDripLocalSaveOutcome | null;
   /** Save `enabled: true`. Resolves once the save settles. */
   turnOn: () => Promise<void>;
   /** Save `enabled: false`. Resolves once the save settles. */
   notNow: () => Promise<void>;
 }
 
-const LOADING: OnboardingDailyCreditDripInput = {
+const LOADING: DailyCreditDripInput = {
   state: 'loading',
   enabled: false,
   capCredits: null,
 };
 
-const UNAVAILABLE: OnboardingDailyCreditDripInput = {
+const UNAVAILABLE: DailyCreditDripInput = {
   state: 'unavailable',
   enabled: false,
   capCredits: null,
 };
 
 /** Last settled answer, so a remounted Home draws the settled queue at once. */
-let lastKnown: OnboardingDailyCreditDripInput = LOADING;
+let lastKnown: DailyCreditDripInput = LOADING;
 
 /** Test seam: forget the remembered answer between tests. */
 export function resetDailyCreditDripOptInCacheForTests(): void {
@@ -60,7 +84,7 @@ export function resetDailyCreditDripOptInCacheForTests(): void {
 
 function fromPreference(
   preference: DailyCreditDripPreference,
-): OnboardingDailyCreditDripInput {
+): DailyCreditDripInput {
   return {
     state: preference.decidedAt === null ? 'undecided' : 'decided',
     enabled: preference.enabled,
@@ -68,21 +92,25 @@ function fromPreference(
   };
 }
 
-function fromState(
-  state: CloudDailyCreditDripState,
-): OnboardingDailyCreditDripInput {
+function fromState(state: CloudDailyCreditDripState): DailyCreditDripInput {
   if (!state.available || !state.resolved) return UNAVAILABLE;
   return fromPreference(state.preference);
 }
 
 export function useDailyCreditDripOptIn(): DailyCreditDripOptInState {
-  const [live, setLive] = useState<OnboardingDailyCreditDripInput>(lastKnown);
+  const [live, setLive] = useState<DailyCreditDripInput>(lastKnown);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [outcome, setOutcome] =
+    useState<DailyCreditDripLocalSaveOutcome | null>(null);
   const busyRef = useRef(false);
+  const activeSave = useRef(0);
   const readVersion = useRef(0);
+  // Bumped by every save and account change, so a late save result cannot
+  // restore a confirmation for an answer or account that has moved on.
+  const outcomeVersion = useRef(0);
 
-  const adopt = useCallback((next: OnboardingDailyCreditDripInput): void => {
+  const adopt = useCallback((next: DailyCreditDripInput): void => {
     lastKnown = next;
     setLive(next);
   }, []);
@@ -102,7 +130,13 @@ export function useDailyCreditDripOptIn(): DailyCreditDripOptInState {
   useEffect(() => {
     void reload();
     const onAccountChanged = (): void => {
+      outcomeVersion.current += 1;
+      activeSave.current += 1;
+      busyRef.current = false;
+      setBusy(false);
       setError(null);
+      setOutcome(null);
+      adopt(LOADING);
       void reload();
     };
     window.addEventListener(
@@ -115,9 +149,18 @@ export function useDailyCreditDripOptIn(): DailyCreditDripOptInState {
       // Supersede any read still in flight: it predates this save.
       readVersion.current += 1;
       setError(null);
+      // Another surface's turn-on keeps this one's confirmation; a turn-off
+      // anywhere withdraws it.
+      if (!result.enabled) {
+        outcomeVersion.current += 1;
+        setOutcome(null);
+      }
       adopt(fromPreference(result));
     });
     return (): void => {
+      readVersion.current += 1;
+      outcomeVersion.current += 1;
+      activeSave.current += 1;
       window.removeEventListener(
         CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
         onAccountChanged,
@@ -130,22 +173,41 @@ export function useDailyCreditDripOptIn(): DailyCreditDripOptInState {
     async (enabled: boolean): Promise<void> => {
       if (busyRef.current) return;
       busyRef.current = true;
+      const saveRequest = ++activeSave.current;
+      const version = ++outcomeVersion.current;
       setBusy(true);
       setError(null);
+      setOutcome(null);
       try {
-        const { result, accountChanged } =
-          await saveDailyCreditDripChoice(enabled);
+        const { result, accountChanged } = await saveDailyCreditDripChoice(
+          enabled,
+          () => version === outcomeVersion.current,
+        );
         // The account-change re-read owns the state for the new account.
-        if (!accountChanged) {
+        if (!accountChanged && version === outcomeVersion.current) {
           readVersion.current += 1;
           adopt(fromPreference(result));
+          if (enabled && result.enabled) {
+            setOutcome({
+              granted: result.granted,
+              balanceCredits: result.balanceCredits,
+              ...(result.blockedReason !== undefined
+                ? { blockedReason: result.blockedReason }
+                : {}),
+            });
+          }
         }
       } catch {
         // Not decided locally: the server did not record an answer.
-        setError(DAILY_CREDIT_DRIP_SAVE_ERROR);
+        if (version === outcomeVersion.current) {
+          setOutcome(null);
+          setError(DAILY_CREDIT_DRIP_SAVE_ERROR);
+        }
       } finally {
-        busyRef.current = false;
-        setBusy(false);
+        if (activeSave.current === saveRequest) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       }
     },
     [adopt],
@@ -154,5 +216,5 @@ export function useDailyCreditDripOptIn(): DailyCreditDripOptInState {
   const turnOn = useCallback((): Promise<void> => save(true), [save]);
   const notNow = useCallback((): Promise<void> => save(false), [save]);
 
-  return { live, busy, error, turnOn, notNow };
+  return { live, busy, error, outcome, turnOn, notNow };
 }

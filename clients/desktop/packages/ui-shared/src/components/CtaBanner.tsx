@@ -2,6 +2,7 @@
 
 import { type JSX, type ReactNode, useCallback, useRef, useState } from 'react';
 import { CloseMediumIcon } from '../icons/AppIcons';
+import { Button } from './Button';
 import { FloatingMenu, type FloatingMenuPlacement } from './FloatingMenu';
 
 /** Which edge of the surrounding stack the hugged pill sits against. */
@@ -133,26 +134,25 @@ export function CtaBanner({
           pill. `min-w-0` still lets it shrink into the ellipsis when the
           column itself cannot hold the copy. */}
       <span className="min-w-0 truncate text-s fg-primary">{message}</span>
-      <button
+      <Button
         ref={actionRef}
-        type="button"
+        variant="primary"
         data-testid={dataTestId ? `${dataTestId}-action` : undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => handleOpenChange(!open)}
-        className="focus-ring inline-flex shrink-0 items-center rounded-lg bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-opacity hover:opacity-90"
       >
         {actionLabel}
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="ghost"
+        iconOnly
         data-testid={dataTestId ? `${dataTestId}-dismiss` : undefined}
         aria-label={dismissAriaLabel}
         onClick={onDismiss}
-        className="focus-ring shrink-0 rounded-md p-1 fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
       >
         <CloseMediumIcon size={16} aria-hidden="true" />
-      </button>
+      </Button>
       <FloatingMenu
         open={open}
         onOpenChange={handleOpenChange}

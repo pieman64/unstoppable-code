@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { Button } from './Button';
 
 export interface RunConfirmationCardProps {
   /** Prompt copy — typically "Run <label>?". Caller supplies the sentence so
@@ -32,20 +33,12 @@ export function RunConfirmationCard({
       <p className="mb-1.5 fg-primary/80">{prompt}</p>
       <div className="mb-2">{details}</div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onConfirm}
-          className="focus-ring rounded-md bg-accent px-2.5 py-1 text-2xs font-medium fg-emphasis"
-        >
+        <Button variant="primary" size="compact" onClick={onConfirm}>
           {confirmLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="focus-ring rounded-md px-2.5 py-1 text-2xs fg-secondary hover:fg-primary/80"
-        >
+        </Button>
+        <Button size="compact" onClick={onCancel}>
           {cancelLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );

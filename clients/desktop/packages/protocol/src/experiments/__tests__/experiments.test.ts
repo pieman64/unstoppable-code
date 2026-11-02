@@ -1,5 +1,6 @@
 import {
-  CLEAN_CHAT_EXPERIMENT,
+  COMPACT_QUEUE_EXPERIMENT,
+  SMOOTH_STREAMING_EXPERIMENT,
   EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS,
   labsExperimentChoicesSchema,
   migrateExtractedLabsChoices,
@@ -94,9 +95,12 @@ describe('Labs resolution', () => {
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatTabPreviews.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsSubagentsView.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard.key,
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat.key,
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key,
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key,
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key,
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key,
@@ -175,11 +179,13 @@ it('migrates only own legacy choices, retains explicit choices and is idempotent
 
 describe('shared Labs experiments', () => {
   it('names each web Labs experiment by its registered flag', () => {
-    expect(CLEAN_CHAT_EXPERIMENT.flagKey).toBe(
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat.key,
+    expect(SMOOTH_STREAMING_EXPERIMENT.flagKey).toBe(
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key,
     );
-    expect(WEB_LABS_EXPERIMENTS.map((entry) => entry.id)).toEqual([
-      'clean-chat',
-    ]);
+    expect(COMPACT_QUEUE_EXPERIMENT.flagKey).toBe(
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.key,
+    );
+    // Clean chat graduated on 2026-10-27 and left Labs.
+    expect(WEB_LABS_EXPERIMENTS).toEqual([]);
   });
 });

@@ -42,33 +42,39 @@ test('marketplace row actions switch in one press and stay visible on the last r
     await app.openPluginsPage();
     await app.openPluginsTab('marketplace');
 
-    const first = window.getByTestId('marketplace-row-demo/market');
-    const last = window.getByTestId('marketplace-row-demo/third');
-    const firstTrigger = first.getByRole('button', {
-      name: 'More marketplace actions',
-    });
-    const lastTrigger = last.getByRole('button', {
-      name: 'More marketplace actions',
-    });
-    await expect(firstTrigger).toBeVisible();
-    await expect(lastTrigger).toBeVisible();
-    await firstTrigger.click();
-    await expect(firstTrigger).toHaveAttribute('aria-expanded', 'true');
+    const sourceRow = (id) =>
+      window.locator(
+        `[data-testid="marketplace-source-row"][data-source-id="${id}"]`,
+      );
+    const first = sourceRow('demo/market');
+    const last = sourceRow('demo/third');
+    const firstRemove = first.getByTestId('marketplace-source-remove');
+    const lastRemove = last.getByTestId('marketplace-source-remove');
+    await expect(firstRemove).toBeVisible();
+    await expect(lastRemove).toBeVisible();
 
-    await lastTrigger.click();
-    await expect(lastTrigger).toHaveAttribute('aria-expanded', 'true');
-    await expect(firstTrigger).toHaveAttribute('aria-expanded', 'false');
-    const removeAction = window.getByTestId('remove-marketplace-action');
-    await expect(removeAction).toBeVisible();
-    const bounds = await removeAction.evaluate((element) => {
+    // Marketplace source rows show Update and Remove directly, with no per-row
+    // menu. After one row's confirmation is cancelled, a single press on
+    // another row's Remove opens that row's confirmation.
+    await firstRemove.click();
+    const firstConfirmation = window.getByRole('dialog', {
+      name: 'Remove Demo Market?',
+    });
+    await expect(firstConfirmation).toBeVisible();
+    await firstConfirmation
+      .getByRole('button', { name: 'Cancel', exact: true })
+      .click();
+    await expect(firstConfirmation).not.toBeVisible();
+
+    // The last row's action stays inside the viewport and unobscured. Rows no
+    // longer sit in a clipping table frame, so there is no frame edge to
+    // compare against.
+    await lastRemove.scrollIntoViewIfNeeded();
+    const bounds = await lastRemove.evaluate((element) => {
       const rect = element.getBoundingClientRect();
-      const tableFrame = document
-        .querySelector('[data-testid="marketplace-row-demo/third"]')
-        ?.closest('table')
-        ?.parentElement?.getBoundingClientRect();
       const hit = document.elementFromPoint(
         rect.left + rect.width / 2,
-        (Math.max(rect.top, tableFrame?.bottom ?? rect.top) + rect.bottom) / 2,
+        rect.top + rect.height / 2,
       );
       return {
         left: rect.left,
@@ -77,26 +83,25 @@ test('marketplace row actions switch in one press and stay visible on the last r
         bottom: rect.bottom,
         viewportWidth: window.innerWidth,
         viewportHeight: window.innerHeight,
-        tableBottom: tableFrame?.bottom,
         unobscured: hit === element || element.contains(hit),
       };
     });
-    expect(bounds.tableBottom).toBeDefined();
-    expect(bounds.bottom).toBeGreaterThan(bounds.tableBottom);
     expect(bounds.left).toBeGreaterThanOrEqual(0);
     expect(bounds.top).toBeGreaterThanOrEqual(0);
     expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth);
     expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
     expect(bounds.unobscured).toBe(true);
 
-    await removeAction.click();
-    const confirmation = window.getByRole('dialog', {
-      name: 'Remove plugin marketplace?',
-    });
+    await lastRemove.click();
+    const confirmation = window.getByTestId('marketplace-source-remove-dialog');
     await expect(confirmation).toBeVisible();
+    await expect(confirmation).toHaveAccessibleName('Remove Third Market?');
     await expect(confirmation).toContainText('Third Market');
+    await expect(confirmation).toContainText(
+      'will remove this marketplace from Claude',
+    );
     await expect(
-      confirmation.getByTestId('remove-marketplace-confirm-button'),
+      confirmation.getByTestId('marketplace-source-remove-confirm'),
     ).toBeVisible();
     await confirmation.getByRole('button', { name: 'Cancel' }).click();
     await expect(confirmation).not.toBeVisible();

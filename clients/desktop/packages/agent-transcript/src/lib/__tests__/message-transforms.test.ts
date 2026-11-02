@@ -1315,6 +1315,352 @@ describe('mergeToolResults', () => {
     expect(subBlock.toolName).toBe('Read');
   });
 
+  it('folds a nested Claude Agent call into a nested agent card with its own rows', () => {
+    const outerInput = JSON.stringify({
+      subagent_type: 'Explore',
+      description: 'Map the API routes',
+      prompt: 'List every route.',
+    });
+    const nestedInput = JSON.stringify({
+      subagent_type: 'general-purpose',
+      description: 'Check the auth middleware',
+      prompt: 'Report which routes skip requireAuth.',
+    });
+    const input = asChat([
+      msg('1', 'assistant', [toolUseBlock('outer', 'Agent', outerInput)]),
+      msg('o1', 'assistant', [toolUseBlock('nested', 'Agent', nestedInput)], {
+        parentToolUseId: 'outer',
+      }),
+      msg('n1', 'assistant', [toolUseBlock('grep', 'Grep')], {
+        parentToolUseId: 'nested',
+      }),
+      msg('n2', 'user', [toolResultBlock('grep', 'Grep', 'src/routes.ts:3')], {
+        parentToolUseId: 'nested',
+      }),
+      msg('n3', 'assistant', [textBlock('Only /health skips it.')], {
+        parentToolUseId: 'nested',
+      }),
+      msg(
+        'o2',
+        'user',
+        [toolResultBlock('nested', 'Agent', 'Only /health skips it.')],
+        { parentToolUseId: 'outer' },
+      ),
+      msg('2', 'user', [toolResultBlock('outer', 'Agent', 'Mapped 2 routes')]),
+    ]);
+
+    const outer = mergeToolResults(input)[0].blocks[0];
+    expectDisplayBlockType(outer, 'agent');
+    expect(outer.subBlocks).toHaveLength(1);
+    const nested = outer.subBlocks[0];
+    expectDisplayBlockType(nested, 'agent');
+    expect(nested).toMatchObject({
+      toolUseId: 'nested',
+      subagentType: 'general-purpose',
+      description: 'Check the auth middleware',
+      prompt: 'Report which routes skip requireAuth.',
+      runInBackground: false,
+      result: { output: 'Only /health skips it.', isError: false },
+    });
+    expect(nested.subBlocks.map((block) => block.type)).toEqual([
+      'tool_use',
+      'text',
+    ]);
+  });
+
+  it("folds a nested background agent's TaskOutput read into its card", () => {
+    const nestedInput = JSON.stringify({
+      description: 'Watch the logs',
+      prompt: 'Tail the logs.',
+      run_in_background: true,
+    });
+    const input = asChat([
+      msg('1', 'assistant', [toolUseBlock('outer', 'Agent', '{}')]),
+      msg('o1', 'assistant', [toolUseBlock('nested', 'Agent', nestedInput)], {
+        parentToolUseId: 'outer',
+      }),
+      msg(
+        'o2',
+        'user',
+        [toolResultBlock('nested', 'Agent', 'Launched.\nagentId: abc123')],
+        { parentToolUseId: 'outer' },
+      ),
+      msg(
+        'o3',
+        'assistant',
+        [
+          toolUseBlock(
+            'read',
+            'TaskOutput',
+            JSON.stringify({ task_id: 'abc123' }),
+          ),
+        ],
+        { parentToolUseId: 'outer' },
+      ),
+      msg('o4', 'user', [toolResultBlock('read', 'TaskOutput', 'All quiet')], {
+        parentToolUseId: 'outer',
+      }),
+    ]);
+
+    const outer = mergeToolResults(input)[0].blocks[0];
+    expectDisplayBlockType(outer, 'agent');
+    expect(outer.subBlocks).toHaveLength(1);
+    const nested = outer.subBlocks[0];
+    expectDisplayBlockType(nested, 'agent');
+    expect(nested.runInBackground).toBe(true);
+    expect(nested.taskOutputResult).toEqual({
+      output: 'All quiet',
+      isError: false,
+    });
+  });
+
+  it.each(['abc123', 'task-watch'])(
+    "folds a later root turn's TaskOutput read into a nested background agent's card (agentId %s)",
+    (agentId) => {
+      const nestedInput = JSON.stringify({
+        description: 'Watch the logs',
+        prompt: 'Tail the logs.',
+        run_in_background: true,
+      });
+      const input = asChat([
+        msg('u1', 'user', [textBlock('Audit the logs.')]),
+        msg('1', 'assistant', [toolUseBlock('outer', 'Agent', '{}')]),
+        msg('o1', 'assistant', [toolUseBlock('nested', 'Agent', nestedInput)], {
+          parentToolUseId: 'outer',
+        }),
+        msg(
+          'o2',
+          'user',
+          [
+            toolResultBlock(
+              'nested',
+              'Agent',
+              `Launched.\nagentId: ${agentId}`,
+            ),
+          ],
+          { parentToolUseId: 'outer' },
+        ),
+        msg('2', 'user', [toolResultBlock('outer', 'Agent', 'Started it.')]),
+        msg('u2', 'user', [textBlock('Is the watcher done?')]),
+        msg('3', 'assistant', [
+          toolUseBlock(
+            'read',
+            'TaskOutput',
+            JSON.stringify({ task_id: agentId }),
+          ),
+        ]),
+        msg('4', 'user', [toolResultBlock('read', 'TaskOutput', 'All quiet')]),
+        msg('5', 'assistant', [textBlock('The watcher saw nothing.')]),
+      ]);
+
+      const result = mergeToolResults(input);
+      const outer = result
+        .flatMap((message) => message.blocks)
+        .find((block) => block.type === 'agent');
+      expect(outer).toBeDefined();
+      if (outer === undefined) return;
+      expectDisplayBlockType(outer, 'agent');
+      const nested = outer.subBlocks[0];
+      expectDisplayBlockType(nested, 'agent');
+      expect(nested.taskOutputResult).toEqual({
+        output: 'All quiet',
+        isError: false,
+      });
+      const visit = (blocks: DisplayBlock[]): string[] =>
+        blocks.flatMap((block) => [
+          ...(block.type === 'tool_use' ? [block.toolName] : []),
+          ...('subBlocks' in block ? visit(block.subBlocks) : []),
+        ]);
+      expect(visit(result.flatMap((message) => message.blocks))).not.toContain(
+        'TaskOutput',
+      );
+    },
+  );
+
+  describe('TaskOutput reads of one background agent', () => {
+    const NOT_READY =
+      '<retrieval_status>not_ready</retrieval_status>\n\n<task_id>abc123</task_id>\n\n<status>running</status>';
+    const watchInput = JSON.stringify({
+      description: 'Watch the logs',
+      prompt: 'Tail the logs.',
+      run_in_background: true,
+    });
+    const read = (id: string): Block =>
+      toolUseBlock(id, 'TaskOutput', JSON.stringify({ task_id: 'abc123' }));
+    const toolNames = (blocks: DisplayBlock[]): string[] =>
+      blocks.flatMap((block) => [
+        ...(block.type === 'tool_use' ? [block.toolName] : []),
+        ...('subBlocks' in block ? toolNames(block.subBlocks) : []),
+      ]);
+    const agentById = (
+      blocks: DisplayBlock[],
+      toolUseId: string,
+    ): Extract<DisplayBlock, { type: 'agent' }> | undefined => {
+      for (const block of blocks) {
+        if (block.type === 'agent' && block.toolUseId === toolUseId)
+          return block;
+        if ('subBlocks' in block) {
+          const found = agentById(block.subBlocks, toolUseId);
+          if (found) return found;
+        }
+      }
+      return undefined;
+    };
+
+    it("keeps a later parent-level completed read over a sibling's earlier not-ready read", () => {
+      const input = asChat([
+        msg('1', 'assistant', [toolUseBlock('outer', 'Agent', '{}')]),
+        msg('o1', 'assistant', [toolUseBlock('watch', 'Agent', watchInput)], {
+          parentToolUseId: 'outer',
+        }),
+        msg(
+          'o2',
+          'user',
+          [toolResultBlock('watch', 'Agent', 'Launched.\nagentId: abc123')],
+          { parentToolUseId: 'outer' },
+        ),
+        msg('o3', 'assistant', [toolUseBlock('check', 'Agent', '{}')], {
+          parentToolUseId: 'outer',
+        }),
+        msg('c1', 'assistant', [read('early')], { parentToolUseId: 'check' }),
+        msg('c2', 'user', [toolResultBlock('early', 'TaskOutput', NOT_READY)], {
+          parentToolUseId: 'check',
+        }),
+        msg('o4', 'user', [toolResultBlock('check', 'Agent', 'Still going.')], {
+          parentToolUseId: 'outer',
+        }),
+        msg('o5', 'assistant', [read('late')], { parentToolUseId: 'outer' }),
+        msg(
+          'o6',
+          'user',
+          [toolResultBlock('late', 'TaskOutput', 'Finished: all quiet')],
+          { parentToolUseId: 'outer' },
+        ),
+        msg('2', 'user', [toolResultBlock('outer', 'Agent', 'Done.')]),
+      ]);
+
+      const blocks = mergeToolResults(input).flatMap(
+        (message) => message.blocks,
+      );
+      expect(agentById(blocks, 'watch')?.taskOutputResult).toEqual({
+        output: 'Finished: all quiet',
+        isError: false,
+      });
+      expect(toolNames(blocks)).not.toContain('TaskOutput');
+    });
+
+    it("keeps a later root completed read over a nested agent's earlier not-ready read", () => {
+      const input = asChat([
+        msg('1', 'assistant', [toolUseBlock('watch', 'Agent', watchInput)]),
+        msg('2', 'user', [
+          toolResultBlock('watch', 'Agent', 'Launched.\nagentId: abc123'),
+        ]),
+        msg('3', 'assistant', [toolUseBlock('check', 'Agent', '{}')]),
+        msg('c1', 'assistant', [read('early')], { parentToolUseId: 'check' }),
+        msg('c2', 'user', [toolResultBlock('early', 'TaskOutput', NOT_READY)], {
+          parentToolUseId: 'check',
+        }),
+        msg('4', 'user', [toolResultBlock('check', 'Agent', 'Still going.')]),
+        msg('5', 'assistant', [read('late')]),
+        msg('6', 'user', [
+          toolResultBlock('late', 'TaskOutput', 'Finished: all quiet'),
+        ]),
+      ]);
+
+      const blocks = mergeToolResults(input).flatMap(
+        (message) => message.blocks,
+      );
+      expect(agentById(blocks, 'watch')?.taskOutputResult).toEqual({
+        output: 'Finished: all quiet',
+        isError: false,
+      });
+      expect(toolNames(blocks)).not.toContain('TaskOutput');
+    });
+
+    it("folds an earlier sibling's read of a later sibling's task into the later card", () => {
+      const background = JSON.stringify({
+        prompt: 'Go.',
+        run_in_background: true,
+      });
+      const input = asChat([
+        msg('1', 'assistant', [toolUseBlock('outer', 'Agent', '{}')]),
+        msg('o1', 'assistant', [toolUseBlock('reader', 'Agent', background)], {
+          parentToolUseId: 'outer',
+        }),
+        msg(
+          'o2',
+          'user',
+          [toolResultBlock('reader', 'Agent', 'Launched.\nagentId: aaa111')],
+          { parentToolUseId: 'outer' },
+        ),
+        msg('o3', 'assistant', [toolUseBlock('target', 'Agent', background)], {
+          parentToolUseId: 'outer',
+        }),
+        msg(
+          'o4',
+          'user',
+          [toolResultBlock('target', 'Agent', 'Launched.\nagentId: bbb222')],
+          { parentToolUseId: 'outer' },
+        ),
+        msg(
+          'r1',
+          'assistant',
+          [
+            toolUseBlock(
+              'read',
+              'TaskOutput',
+              JSON.stringify({ task_id: 'bbb222' }),
+            ),
+          ],
+          { parentToolUseId: 'reader' },
+        ),
+        msg(
+          'r2',
+          'user',
+          [toolResultBlock('read', 'TaskOutput', 'Target finished.')],
+          { parentToolUseId: 'reader' },
+        ),
+      ]);
+
+      const blocks = mergeToolResults(input).flatMap(
+        (message) => message.blocks,
+      );
+      expect(agentById(blocks, 'target')?.taskOutputResult).toEqual({
+        output: 'Target finished.',
+        isError: false,
+      });
+      expect(agentById(blocks, 'reader')?.taskOutputResult).toBeUndefined();
+      expect(toolNames(blocks)).not.toContain('TaskOutput');
+    });
+
+    it('never lets a not-ready read replace or stand in for a completed one', () => {
+      const completedFirst: Msg[] = [
+        msg('1', 'assistant', [toolUseBlock('watch', 'Agent', watchInput)]),
+        msg('2', 'user', [
+          toolResultBlock('watch', 'Agent', 'Launched.\nagentId: abc123'),
+        ]),
+        msg('3', 'assistant', [read('done')]),
+        msg('4', 'user', [
+          toolResultBlock('done', 'TaskOutput', 'Finished: all quiet'),
+        ]),
+        msg('5', 'assistant', [read('again')]),
+        msg('6', 'user', [toolResultBlock('again', 'TaskOutput', NOT_READY)]),
+      ];
+      const settled = mergeToolResults(asChat(completedFirst)).flatMap(
+        (message) => message.blocks,
+      );
+      expect(agentById(settled, 'watch')?.taskOutputResult?.output).toBe(
+        'Finished: all quiet',
+      );
+
+      const pending = mergeToolResults(
+        asChat([...completedFirst.slice(0, 2), ...completedFirst.slice(4)]),
+      ).flatMap((message) => message.blocks);
+      expect(agentById(pending, 'watch')?.taskOutputResult).toBeUndefined();
+      expect(toolNames(pending)).not.toContain('TaskOutput');
+    });
+  });
+
   it('converts a codex_agent_call into a codex_agent display block with derived displayName/description', () => {
     const codexAgentBlock: Block = {
       type: 'codex_agent_call',
@@ -1349,6 +1695,12 @@ describe('mergeToolResults', () => {
   ])(
     'formats task path %s separately from nickname and prompt',
     (agentPath, title) => {
+      const receiver = {
+        nickname: 'Sartre',
+        agentPath,
+        model: 'gpt-6-astra',
+        reasoningEffort: 'high',
+      };
       const input = asChat([
         msg('parent', 'assistant', [
           {
@@ -1362,12 +1714,7 @@ describe('mergeToolResults', () => {
             prompt: '',
             agentsStates: {},
             receiverAgents: {
-              child: {
-                nickname: 'Sartre',
-                agentPath,
-                model: 'gpt-6-astra',
-                reasoningEffort: 'high',
-              },
+              child: receiver,
             },
           },
         ]),

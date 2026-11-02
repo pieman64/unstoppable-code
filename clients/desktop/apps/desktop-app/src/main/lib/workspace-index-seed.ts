@@ -1,4 +1,5 @@
 import { createSerialQueue } from './w5-file-store';
+import { registerDesktopW5Root } from './w5-host-admission';
 import { WORKSPACE_INDEX_STORAGE, withStorageAdmission } from './w5-storage';
 import { applyWorkspaceIndexSeed } from './workspace-index-seed-decision-port';
 
@@ -27,12 +28,20 @@ export async function seedWorkspaceIndex(
       'Unknown workspace index seed source',
     );
   }
-  return withStorageAdmission([WORKSPACE_INDEX_STORAGE], () =>
-    serialize(() =>
+  return withStorageAdmission([WORKSPACE_INDEX_STORAGE], async () => {
+    // TRANSITIONAL (CAN-3797): the primary folder may not be the resolved
+    // data root, so it joins the host cohort for the rest of the process,
+    // only once storage admission allows the seed. It is admitted as the
+    // commit-log writer is. Remove with the cohort when the W5 rows move to
+    // `daemon`.
+    const registration = await registerDesktopW5Root(request.primaryDataDir);
+    if (registration.kind === 'refused' || registration.kind === 'failed')
+      throw registration.error;
+    return serialize(() =>
       applyWorkspaceIndexSeed({
         kind: 'index.seed',
         primaryDataDir: request.primaryDataDir,
       }),
-    ),
-  );
+    );
+  });
 }

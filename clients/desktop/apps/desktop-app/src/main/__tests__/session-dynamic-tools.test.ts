@@ -46,6 +46,7 @@ describe('buildCodexSessionDynamicToolSpecs', () => {
       workspaceMode: 'cowork',
       isCodeReview: false,
       includeCodeGraph: false,
+      includeChatVisuals: false,
       includeLedger: true,
       toolSchemaProfile: 'standard',
     });
@@ -53,6 +54,7 @@ describe('buildCodexSessionDynamicToolSpecs', () => {
     expect(buildCanopyDynamicToolSpecs).toHaveBeenCalledWith({
       mode: 'cowork',
       includeCodeGraph: false,
+      includeChatVisuals: false,
       includeLedger: true,
       isCodeReview: false,
       toolSchemaProfile: 'standard',
@@ -67,6 +69,7 @@ describe('buildCodexSessionDynamicToolSpecs', () => {
         workspaceMode: 'worktree',
         isCodeReview: false,
         includeCodeGraph: true,
+        includeChatVisuals: false,
         ...(includeLedger === undefined ? {} : { includeLedger }),
         toolSchemaProfile: 'standard',
       });

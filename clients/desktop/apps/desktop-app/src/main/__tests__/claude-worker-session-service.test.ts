@@ -3,8 +3,12 @@ import { tmpdir } from 'node:os';
 import type * as FsPromisesModule from 'node:fs/promises';
 import type * as PathsModule from '../lib/paths';
 import type * as TranscriptSyncModule from '../integration/claude-terminal-transcript-sync';
+import type * as ApprovalServiceModule from '../approvals/approval-service';
 import { BRAND } from '@canopy/brand/current';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type {
+  AgentProviderAuthStatus,
+  ApprovalMode,
+} from '@canopy/desktop-shared/types';
 
 const mockMkdir = jest.fn();
 const mockRm = jest.fn();
@@ -18,6 +22,7 @@ interface WorkerHookBody {
 interface RegisteredCanopyWorktreeSessionRoute {
   sessionKey?: string;
   workerMemoryToolExposure?: string;
+  ledgerTools?: unknown;
   reportStructuredResultSchema?: Record<string, unknown>;
   onReportStructuredResult?: (payload: unknown) => {
     ok: boolean;
@@ -35,7 +40,7 @@ const mockUnregisterMcpProxyRoutesForSession = jest.fn();
 const mockPtyKill = jest.fn();
 const mockAddEventListener = jest.fn<
   void,
-  [(channel: string, payload: unknown) => void]
+  [(event: { type: string; payload: unknown }) => void]
 >();
 const mockEnsureClaudeWorkspaceTrust = jest.fn();
 const mockBuildClaudeTerminalLaunchConfig = jest.fn();
@@ -49,7 +54,17 @@ function launchConfigAt(index: number): unknown {
 const mockGetClaudeWorkerRuntimeDir = jest.fn();
 const mockStartObservedTask = jest.fn();
 const mockFinalizeObservedTask = jest.fn();
-const mockGetCachedClaudeAuthStatusObserved = jest.fn(() =>
+const mockGetCachedClaudeAuthStatusObserved = jest.fn<
+  Promise<AgentProviderAuthStatus>,
+  [
+    string,
+    {
+      forceAuthenticatedInvalidation?: boolean;
+      forceRefresh?: boolean;
+      maxAgeMs?: number;
+    }?,
+  ]
+>(() =>
   Promise.resolve({
     authenticated: true,
     accountLabel: 'dev@example.com',
@@ -62,10 +77,21 @@ const mockApprovalCheck = jest.fn(() =>
   Promise.resolve({ decision: 'allow' as const }),
 );
 const mockApprovalDispose = jest.fn();
-const mockCreateApprovalSession = jest.fn(() => ({
-  check: mockApprovalCheck,
+const mockCreateApprovalSession = jest.fn<
+  ReturnType<typeof ApprovalServiceModule.createApprovalSession>,
+  Parameters<typeof ApprovalServiceModule.createApprovalSession>
+>(() => ({
+  get check(): typeof mockApprovalCheck {
+    return mockApprovalCheck;
+  },
   setMode: jest.fn(),
-  dispose: mockApprovalDispose,
+  reevaluatePendingApprovals: jest.fn<
+    Promise<void>,
+    [ApprovalMode, ApprovalMode?]
+  >(() => Promise.resolve()),
+  get dispose(): typeof mockApprovalDispose {
+    return mockApprovalDispose;
+  },
 }));
 const mockWorkerRuntimeRoot = join(
   tmpdir(),
@@ -74,37 +100,56 @@ const mockWorkerRuntimeRoot = join(
 
 jest.mock('node:fs/promises', () => ({
   ...jest.requireActual<typeof FsPromisesModule>('node:fs/promises'),
-  mkdir: mockMkdir,
-  rm: mockRm,
+  get mkdir(): typeof mockMkdir {
+    return mockMkdir;
+  },
+  get rm(): typeof mockRm {
+    return mockRm;
+  },
 }));
 
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
 jest.mock('../services/terminal-service', () => ({
-  spawnManagedTerminal: mockSpawnManagedTerminal,
+  get spawnManagedTerminal(): typeof mockSpawnManagedTerminal {
+    return mockSpawnManagedTerminal;
+  },
 }));
 
 jest.mock('../integration/claude-workspace-trust', () => ({
-  ensureClaudeWorkspaceTrust: mockEnsureClaudeWorkspaceTrust,
+  get ensureClaudeWorkspaceTrust(): typeof mockEnsureClaudeWorkspaceTrust {
+    return mockEnsureClaudeWorkspaceTrust;
+  },
 }));
 
 jest.mock('../integration/claude-terminal-settings', () => ({
-  buildClaudeTerminalLaunchConfig: mockBuildClaudeTerminalLaunchConfig,
+  get buildClaudeTerminalLaunchConfig(): typeof mockBuildClaudeTerminalLaunchConfig {
+    return mockBuildClaudeTerminalLaunchConfig;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({
   ...jest.requireActual<typeof PathsModule>('../lib/paths'),
-  getClaudeWorkerRuntimeDir: mockGetClaudeWorkerRuntimeDir,
+  get getClaudeWorkerRuntimeDir(): typeof mockGetClaudeWorkerRuntimeDir {
+    return mockGetClaudeWorkerRuntimeDir;
+  },
 }));
 
 jest.mock('../integration/desktop-integration-server', () => ({
   getDesktopIntegrationServer: jest.fn(() => ({
-    registerCanopyWorktreeSessionRoute: mockRegisterCanopyWorktreeSessionRoute,
-    unregisterCanopyWorktreeSessionRoute:
-      mockUnregisterCanopyWorktreeSessionRoute,
-    unregisterMcpProxyRoutesForSession: mockUnregisterMcpProxyRoutesForSession,
+    get registerCanopyWorktreeSessionRoute(): typeof mockRegisterCanopyWorktreeSessionRoute {
+      return mockRegisterCanopyWorktreeSessionRoute;
+    },
+    get unregisterCanopyWorktreeSessionRoute(): typeof mockUnregisterCanopyWorktreeSessionRoute {
+      return mockUnregisterCanopyWorktreeSessionRoute;
+    },
+    get unregisterMcpProxyRoutesForSession(): typeof mockUnregisterMcpProxyRoutesForSession {
+      return mockUnregisterMcpProxyRoutesForSession;
+    },
   })),
 }));
 
@@ -112,25 +157,37 @@ const mockSyncClaudeTerminalTranscript = jest.fn();
 
 jest.mock('../integration/claude-terminal-transcript-sync', () => ({
   isAllowedClaudeTerminalTranscriptPath: jest.fn(() => true),
-  syncClaudeTerminalTranscript: mockSyncClaudeTerminalTranscript,
+  get syncClaudeTerminalTranscript(): typeof mockSyncClaudeTerminalTranscript {
+    return mockSyncClaudeTerminalTranscript;
+  },
 }));
 
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
-    addEventListener: mockAddEventListener,
-    kill: mockPtyKill,
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    get addEventListener(): typeof mockAddEventListener {
+      return mockAddEventListener;
+    },
+    get kill(): typeof mockPtyKill {
+      return mockPtyKill;
+    },
   },
 }));
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    startObservedTask: mockStartObservedTask,
-    finalizeObservedTask: mockFinalizeObservedTask,
+    get startObservedTask(): typeof mockStartObservedTask {
+      return mockStartObservedTask;
+    },
+    get finalizeObservedTask(): typeof mockFinalizeObservedTask {
+      return mockFinalizeObservedTask;
+    },
   })),
 }));
 
 jest.mock('../auth/provider-auth-state', () => ({
-  getCachedClaudeAuthStatusObserved: mockGetCachedClaudeAuthStatusObserved,
+  get getCachedClaudeAuthStatusObserved(): typeof mockGetCachedClaudeAuthStatusObserved {
+    return mockGetCachedClaudeAuthStatusObserved;
+  },
 }));
 
 jest.mock('../lib/claude-tui-workers', () => ({
@@ -140,12 +197,16 @@ jest.mock('../lib/claude-tui-workers', () => ({
         ? (preferences?.workerConcurrencyLimit ?? 5)
         : 0,
   ),
-  isClaudeTuiWorkersEnabled: mockIsClaudeTuiWorkersEnabled,
+  get isClaudeTuiWorkersEnabled(): typeof mockIsClaudeTuiWorkersEnabled {
+    return mockIsClaudeTuiWorkersEnabled;
+  },
 }));
 
 jest.mock('../approvals/approval-service', () => ({
-  createApprovalSession: (...args: unknown[]): unknown =>
-    mockCreateApprovalSession(...args),
+  createApprovalSession: (
+    context: Parameters<typeof ApprovalServiceModule.createApprovalSession>[0],
+  ): ReturnType<typeof ApprovalServiceModule.createApprovalSession> =>
+    mockCreateApprovalSession(context),
 }));
 
 import { DefaultClaudeWorkerSessionService } from '../integration/claude-worker-session-service';
@@ -663,7 +724,7 @@ describe('claude-worker-session-service', () => {
     await waitForMockCalls(mockSpawnManagedTerminal, 1);
     await expect(runPromise).resolves.toMatchObject({ status: 'failure' });
     expect(mockPtyKill).toHaveBeenCalledWith('term-1', {
-      signalOverride: 'app-managed-cleanup',
+      signal: 'app-managed-cleanup',
     });
   });
 
@@ -988,10 +1049,13 @@ describe('claude-worker-session-service', () => {
         if (!listener) {
           throw new Error('Missing terminal exit listener');
         }
-        listener(IPC_CHANNELS.terminalExit, {
-          terminalId: 'term-1',
-          exitCode: 1,
-          signal: null,
+        listener({
+          type: 'exit',
+          payload: {
+            terminalId: 'term-1',
+            exitCode: 1,
+            signal: null,
+          },
         });
       }
       await flushPromises();
@@ -1026,6 +1090,7 @@ describe('claude-worker-session-service', () => {
     ): Awaited<
       ReturnType<typeof TranscriptSyncModule.syncClaudeTerminalTranscript>
     > => ({
+      chatId: 'worker-chat',
       importedMessages: [
         {
           id,
@@ -1242,10 +1307,13 @@ describe('claude-worker-session-service', () => {
       if (!listener) {
         throw new Error('Missing terminal exit listener');
       }
-      listener(IPC_CHANNELS.terminalExit, {
-        terminalId: 'term-1',
-        exitCode: 1,
-        signal: null,
+      listener({
+        type: 'exit',
+        payload: {
+          terminalId: 'term-1',
+          exitCode: 1,
+          signal: null,
+        },
       });
       let shutdownResolved = false;
       const shutdown = service.shutdown().then(() => {
@@ -1643,13 +1711,15 @@ describe('claude-worker-session-service', () => {
         privateField: 'private source contents',
       };
       const onResultRejected = jest.fn();
-      const isResult = jest.fn(
-        (value: unknown): value is { memoryMd: string } =>
+      const isResultCheck = jest.fn<boolean, [value: unknown]>(
+        (value: unknown): boolean =>
           typeof value === 'object' &&
           value !== null &&
           'memoryMd' in value &&
           typeof value.memoryMd === 'string',
       );
+      const isResult = (value: unknown): value is { memoryMd: string } =>
+        isResultCheck(value);
       const service = new DefaultClaudeWorkerSessionService();
       const runPromise = service.runWorker({
         kind: 'test',
@@ -1672,7 +1742,7 @@ describe('claude-worker-session-service', () => {
           ?.onReportStructuredResult;
       if (!report) throw new Error('Missing structured report callback');
       expect(report(rejected).ok).toBe(false);
-      expect(isResult).not.toHaveBeenCalled();
+      expect(isResultCheck).not.toHaveBeenCalled();
       const [card] = service.listWorkers();
       if (!card) throw new Error('Missing worker');
       if (ending === 'accepted')
@@ -1738,13 +1808,15 @@ describe('claude-worker-session-service', () => {
           topicFiles: { type: 'array', maxItems: 100, items: {} },
         },
       };
-      const isResult = jest.fn(
-        (value: unknown): value is Record<string, unknown> =>
+      const isResultCheck = jest.fn<boolean, [value: unknown]>(
+        (value: unknown): boolean =>
           typeof value === 'object' &&
           value !== null &&
           'memoryMd' in value &&
           value.memoryMd !== 'reject-by-guard',
       );
+      const isResult = (value: unknown): value is Record<string, unknown> =>
+        isResultCheck(value);
       const service = new DefaultClaudeWorkerSessionService();
       const runPromise = service.runWorker({
         kind: 'test',
@@ -1767,8 +1839,9 @@ describe('claude-worker-session-service', () => {
         topicFiles: [null, { filename: 'good.md', content: 'Fact' }],
       };
       expect(report(payload).ok).toBe(useEnvelopeValidation);
-      if (useEnvelopeValidation) expect(isResult).toHaveBeenCalledWith(payload);
-      else expect(isResult).not.toHaveBeenCalled();
+      if (useEnvelopeValidation)
+        expect(isResultCheck).toHaveBeenCalledWith(payload);
+      else expect(isResultCheck).not.toHaveBeenCalled();
       for (const invalid of [
         { memoryMd: 42 },
         { memoryMd: '# Memory', topicFiles: 'wrong' },

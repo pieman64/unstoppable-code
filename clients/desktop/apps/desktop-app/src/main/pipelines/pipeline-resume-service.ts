@@ -24,6 +24,7 @@ import { getResourceMonitorService } from '../resource-monitor';
 import { buildPipelinePreferenceEnv } from './preference-env';
 import { getPipelineAdvisorService } from './pipeline-advisor';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
+import { noteAutomationPipelineEvent } from '../automations/pipeline-run-chat-sends';
 import { enqueueKnownPrFastRefresh } from '../lib/github-poller';
 import {
   getActiveExecutionHandle,
@@ -381,6 +382,7 @@ export async function resumePipelineExecutionFromMain(
         notePipelineExecutionEvent(event, request.getWindow);
         getObservabilityService().syncPipelineExecutionState(event.state);
         recordPipelineUsageEvent(event);
+        noteAutomationPipelineEvent(event);
         if (
           event.type === 'execution.paused' ||
           event.state.status === 'success' ||

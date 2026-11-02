@@ -14,7 +14,21 @@ test('navigates the primary application pages', async ({}, testInfo) => {
     await app.openChatPage();
     await app.openPipelinesPage();
     await app.openMarketplaceAgents();
+    // On the Customize home the current row only puts the tab back to All
+    // and scrolls to the top, in place: the page keeps its element rather
+    // than remounting (QA, 2026-10-23).
+    await window.getByTestId('page-plugins').evaluate((node) => {
+      node.setAttribute('data-e2e-kept', 'true');
+    });
     await app.openPluginsPage();
+    await expect(window.getByTestId('plugins-type-tab-all')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(window.getByTestId('page-plugins')).toHaveAttribute(
+      'data-e2e-kept',
+      'true',
+    );
     await app.openAuditPage();
     await app.openUsagePage();
     await app.openPluginsPage();

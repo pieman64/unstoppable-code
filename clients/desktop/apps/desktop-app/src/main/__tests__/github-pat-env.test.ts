@@ -9,16 +9,14 @@ jest.mock('../lib/paths', () => ({
   ),
 }));
 let mockBackend = 'gnome_libsecret';
-const mockAvailable = jest.fn(() => true);
-const mockDecrypt = jest.fn((encrypted: Buffer) => encrypted.toString('utf8'));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): 'linux' => 'linux',
 }));
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
   safeStorage: {
-    isEncryptionAvailable: mockAvailable,
-    decryptString: mockDecrypt,
+    isEncryptionAvailable: jest.fn(() => true),
+    decryptString: jest.fn((encrypted: Buffer) => encrypted.toString('utf8')),
     encryptString: jest.fn(),
     getSelectedStorageBackend: (): string => mockBackend,
   },
@@ -26,16 +24,13 @@ jest.mock('electron', () => ({
 jest.mock('../pipelines/config-paths', () => ({
   registerSecretsEnvInjector: jest.fn(),
 }));
-let migrationLoadCount = 0;
-const mockLoadStoredPat = jest.fn((): Promise<string> => {
-  migrationLoadCount += 1;
-  return Promise.resolve('');
-});
 jest.mock('../lib/github-auth', () => ({
-  loadStoredPat: mockLoadStoredPat,
+  loadStoredPat: jest.fn(() => Promise.resolve('')),
 }));
 
 import { readFileSync, statSync, type Stats } from 'node:fs';
+import { safeStorage } from 'electron';
+import { loadStoredPat } from '../lib/github-auth';
 import { registerSecretsEnvInjector } from '../pipelines/config-paths';
 import {
   initializeGitHubPatEnvRuntime,
@@ -45,7 +40,18 @@ import {
 const readFileSyncMock = jest.mocked(readFileSync);
 const registerSecretsEnvInjectorMock = jest.mocked(registerSecretsEnvInjector);
 const statSyncMock = jest.mocked(statSync);
+/* eslint-disable @typescript-eslint/unbound-method */
+const mockAvailable = jest.mocked(safeStorage.isEncryptionAvailable);
+const mockDecrypt = jest.mocked(safeStorage.decryptString);
+/* eslint-enable @typescript-eslint/unbound-method */
+const mockLoadStoredPat = jest.mocked(loadStoredPat);
+let migrationLoadCount = 0;
 let injector: () => Record<string, string>;
+
+mockLoadStoredPat.mockImplementation(() => {
+  migrationLoadCount += 1;
+  return Promise.resolve('');
+});
 
 function errnoError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
@@ -101,13 +107,13 @@ beforeEach(() => {
 });
 
 it('does not key PAT injection to the legacy file when the secure file has a real stat error', () => {
-  statSyncMock.mockImplementation((path: string) => {
+  statSyncMock.mockImplementation((path) => {
     if (path === '/mock/secure/github-pat.enc') {
       throw errnoError('EACCES');
     }
     return statWithMtime(123);
   });
-  readFileSyncMock.mockImplementation((path: string) => {
+  readFileSyncMock.mockImplementation((path) => {
     if (path === '/mock/secure/github-pat.enc') {
       throw errnoError('EACCES');
     }

@@ -47,10 +47,13 @@ jest.mock('../lib/paths', () => ({
   getCoworkWorkspaceRootDir: jest.fn(() =>
     path.join(runtimeDir, 'standalone-home'),
   ),
-  getWorktreeAttachmentsDir: mockGetWorktreeAttachmentsDir,
+  get getWorktreeAttachmentsDir(): typeof mockGetWorktreeAttachmentsDir {
+    return mockGetWorktreeAttachmentsDir;
+  },
 }));
 
 import { syncClaudeTerminalTranscript } from '../integration/claude-terminal-transcript-sync';
+import type { TranscriptSyncRequest } from '../integration/claude-terminal-transcript-sync';
 import { enqueueChatTabMutation } from '../lib/chat-tab-mutation-queue';
 import { initClaudeModels } from '@canopy/desktop-shared/types';
 
@@ -323,7 +326,7 @@ describe('claude-terminal-transcript-sync', () => {
           },
         }) + '\n',
       );
-      const input = {
+      const input: TranscriptSyncRequest = {
         projectId: 'p',
         worktreeId: 'w',
         chatId: 'chat',
@@ -843,6 +846,105 @@ describe('claude-terminal-transcript-sync', () => {
       type: 'turn_timer',
       completedAt: Date.parse('2026-06-02T14:11:56.147Z'),
     });
+  });
+
+  it('skips the API request records Claude Code 2.1.299+ writes beside the conversation', async () => {
+    const transcriptPath = path.join(runtimeDir, 'claude.jsonl');
+    const toolUse = {
+      type: 'tool_use',
+      id: 'tool-1',
+      name: 'Read',
+      input: { file_path: '/tmp/a' },
+    };
+    await writeFile(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-10-26T14:11:46.526Z',
+          message: { role: 'user', content: 'read a' },
+        }),
+        JSON.stringify({
+          type: 'api-request-shape',
+          sessionId: 'sdk',
+          shapeHash: 'shape-1',
+          timestamp: '2026-10-26T14:11:46.600Z',
+          version: 1,
+          shape: { system: [], tools: [] },
+        }),
+        JSON.stringify({
+          type: 'api-request-blob',
+          sessionId: 'sdk',
+          hash: 'blob-user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'read a' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'api-request-blob',
+          sessionId: 'sdk',
+          hash: 'blob-system',
+          message: {
+            role: 'system',
+            content: [{ type: 'text', text: 'context' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'api-request',
+          sessionId: 'sdk',
+          id: 'request-1',
+          timestamp: '2026-10-26T14:11:46.700Z',
+          version: 1,
+          querySource: 'repl_main_thread',
+          shapeHash: 'shape-1',
+          params: {},
+          keep: ['blob-user', 'blob-system'],
+          tail: [],
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          uuid: 'a1',
+          timestamp: '2026-10-26T14:11:51.163Z',
+          message: { role: 'assistant', content: [toolUse] },
+        }),
+        JSON.stringify({
+          type: 'api-request-blob',
+          sessionId: 'sdk',
+          hash: 'blob-assistant',
+          message: { role: 'assistant', content: [toolUse] },
+        }),
+        JSON.stringify({
+          type: 'api-request-blob',
+          sessionId: 'sdk',
+          hash: 'blob-result',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'tool-1', content: 'a' },
+            ],
+          },
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await syncClaudeTerminalTranscript({
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'chat',
+      sessionKey: 'session',
+      sdkSessionId: 'sdk',
+      transcriptPath,
+      hookEventName: 'Stop',
+      hookPayload: {},
+    });
+
+    expect(result.importedMessages.map((message) => message.id)).toEqual([
+      'u1',
+      'a1',
+    ]);
   });
 
   it('does not re-import a replayed Canopy-native transcript prefix with different Claude ids', async () => {

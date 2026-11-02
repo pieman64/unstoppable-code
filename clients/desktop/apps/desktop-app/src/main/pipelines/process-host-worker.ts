@@ -1,4 +1,8 @@
-import type { ParentPort } from 'electron';
+import {
+  connectExecutionHostChannel,
+  type ExecutionHostChannel,
+} from '@canopy/desktop-shared/node/execution-host/channel';
+import type { SpawnedProcessOutputGate } from '@canopy/desktop-shared/node/pipelines/executor/spawned-process';
 import { runSpawnedProcessLocally } from '@canopy/desktop-shared/node/pipelines/executor/spawned-process';
 import { e2eReplayGateFactory } from './e2e-replay-gate';
 import type {
@@ -110,9 +114,10 @@ function createOutputBatcher(
 }
 
 export function startPipelineProcessHost(
-  parentPort: ParentPort,
+  parentPort: ExecutionHostChannel,
   exitProcess: (code: number) => void = (code) => process.exit(code),
-): void {
+  outputGate?: SpawnedProcessOutputGate,
+): { shutdown(): Promise<void> } {
   const active = new Map<string, ActiveRun>();
   const pendingProcessCleanups = new Set<Promise<void>>();
   let shuttingDown = false;
@@ -144,6 +149,7 @@ export function startPipelineProcessHost(
           ...request.options,
           ...(replayGate ? { createRecordStore: replayGate } : {}),
           signal: controller.signal,
+          ...(outputGate ? { outputGate } : {}),
           onProcessCleanup: (cleanup) => {
             const tracked = cleanup.catch(() => undefined);
             pendingProcessCleanups.add(tracked);
@@ -200,7 +206,16 @@ export function startPipelineProcessHost(
       void shutdown();
     }
   });
+  return { shutdown };
 }
 
-const workerParentPort: ParentPort | undefined = process.parentPort;
-if (workerParentPort) startPipelineProcessHost(workerParentPort);
+const channel = connectExecutionHostChannel();
+if (channel) {
+  const host = startPipelineProcessHost(
+    channel,
+    (code) => channel.exit(code),
+    channel,
+  );
+  // A launcher that can no longer be reached cancels the runs, as shutdown does.
+  channel.onDisconnect(() => void host.shutdown());
+}

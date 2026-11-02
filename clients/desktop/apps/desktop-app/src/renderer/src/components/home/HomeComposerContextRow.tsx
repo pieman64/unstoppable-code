@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { ComposerDrawerSection } from '@canopy/ui-shared/components';
 
 interface HomeComposerContextRowProps {
   visible: boolean;
@@ -15,7 +16,7 @@ interface HomeComposerContextRowProps {
 const SINGLE_LINE_ROW_CLASS_NAME =
   "flex flex-nowrap min-w-0 items-center gap-0 *:shrink-0 [&>[data-testid='home-workspace-picker']]:min-w-0 [&>[data-testid='home-workspace-picker']]:max-w-52 [&>[data-testid='home-workspace-picker']]:shrink [&_[data-testid='home-workspace-select']]:max-w-full";
 
-/** Context pickers for the Home composer; spacing lives on the depth overhang. */
+/** Context pickers for the Home composer; spacing lives on its drawer. */
 export function HomeComposerContextRow({
   visible,
   children,
@@ -23,13 +24,14 @@ export function HomeComposerContextRow({
   if (!visible) return null;
 
   return (
-    <div
-      data-testid="home-composer-context"
-      // Bottom gap under the pickers is owned by the grey overhang (`p-1` /
-      // `pb-5`): 4px visible inset after the `-mb-4` tuck under the composer.
-      className={SINGLE_LINE_ROW_CLASS_NAME}
-    >
-      {children}
-    </div>
+    // The 4px inset around the pickers is the drawer's (`ComposerDrawer`).
+    <ComposerDrawerSection>
+      <div
+        data-testid="home-composer-context"
+        className={SINGLE_LINE_ROW_CLASS_NAME}
+      >
+        {children}
+      </div>
+    </ComposerDrawerSection>
   );
 }

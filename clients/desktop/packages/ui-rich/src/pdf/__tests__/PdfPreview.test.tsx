@@ -42,10 +42,14 @@ class MockTextLayer {
 jest.mock('pdfjs-dist', () => ({
   __esModule: true,
   version: '5.7.284',
-  GlobalWorkerOptions: mockGlobalWorkerOptions,
+  get GlobalWorkerOptions(): typeof mockGlobalWorkerOptions {
+    return mockGlobalWorkerOptions;
+  },
   getDocument: (options: MockDocumentInit): MockLoadingTask<MockPdfDocument> =>
     mockGetDocument(options),
-  TextLayer: MockTextLayer,
+  get TextLayer(): typeof MockTextLayer {
+    return MockTextLayer;
+  },
 }));
 
 interface ObservedEntry {

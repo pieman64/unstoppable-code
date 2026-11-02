@@ -38,6 +38,7 @@ import { useMinuteClock } from '../lib/useMinuteClock';
 import { CometSpinner } from './CometSpinner';
 import { RunSpinner } from './RunSpinner';
 import { ThinkingSpinner } from './ThinkingSpinner';
+import { AgentStateGlyph, backgroundTasksLabel } from './AgentStateGlyph';
 import { AppAdvisorWatcherIcon } from '../icons/AppAdvisorWatcherIcon';
 import { HoverCardIconSlot } from './HoverCardIconSlot';
 import { PlanMapIcon } from '../icons/PlanMapIcon';
@@ -71,6 +72,8 @@ import {
   OPERATIONAL_STATUS_COLORS,
   SIDEBAR_INDICATOR_COLORS,
 } from '../lib/operational-status-colors';
+import { STATUS_GLYPHS } from '../lib/status-glyph';
+import { StatusGlyph } from './StatusGlyph';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 export type WorktreeRowUiStatus =
@@ -228,6 +231,12 @@ export interface WorktreeRowProps {
   multiSelect?: WorktreeRowMultiSelect;
   /** True when chat is actively streaming. Drives the thinking spinner. */
   isStreaming?: boolean;
+  /**
+   * Live background tasks in the worktree's chats: the neutral background
+   * spinner while no turn runs (turn-state D15). Hosts without the data omit
+   * it.
+   */
+  backgroundTasks?: number;
   /** True when a pipeline run is currently executing. */
   isRunningRun?: boolean;
   /** True when desktop is mid-discovery; shows a small spinner. */
@@ -282,6 +291,11 @@ export interface WorktreeRowProps {
   hasMismatch?: boolean;
   /** Coarse-grained setup phase. */
   setupPhase?: WorktreeSetupPhase;
+  /**
+   * The row waits in a bulk removal queue for this removal. A host setup
+   * phase (teardown included) takes precedence once its own removal starts.
+   */
+  queuedRemoval?: 'archive' | 'delete';
   /** PR status, if any. */
   lastKnownPrStatus?: WorktreeRowPrStatus;
   /**
@@ -590,7 +604,7 @@ function statusDotTokens(status: WorktreeRowUiStatus): {
       };
     case 'done':
       return {
-        color: SIDEBAR_INDICATOR_COLORS.purple,
+        color: STATUS_GLYPHS.done.ink,
         label: 'Done',
       };
     case 'idle':
@@ -604,10 +618,10 @@ function statusDotTokens(status: WorktreeRowUiStatus): {
 
 /**
  * Solid 6px classic-layout dot fills, using the generic hue roles from
- * {@link SIDEBAR_INDICATOR_COLORS}'s vocabulary: unread is blue, working is
- * purple, planning is orange. Idle renders no dot at all (empty leading
- * space) and done renders the checkmark glyph, so neither reaches here in
- * practice; both keep safe fallbacks.
+ * {@link SIDEBAR_INDICATOR_COLORS}'s vocabulary: unread is blue, planning is
+ * orange. Idle renders no dot at all (empty leading space), and working and
+ * done render their status glyphs, so none of those reach here in practice;
+ * they keep safe fallbacks.
  */
 function classicStatusDotTokens(status: WorktreeRowUiStatus): {
   className: string;
@@ -631,7 +645,7 @@ function classicStatusDotTokens(status: WorktreeRowUiStatus): {
       };
     case 'done':
       return {
-        className: 'bg-fg-purple',
+        className: 'bg-fg-success-strong',
         label: 'Done',
       };
     case 'idle':
@@ -654,11 +668,17 @@ export function WorktreeRowPrimaryIndicator({
   doneLabel = 'Done',
   planningLabel = 'Planning',
   layout = 'compact',
+  merged = false,
   testIdSuffix,
 }: {
   uiStatus: WorktreeRowUiStatus;
   setupPhase?: WorktreeSetupPhase;
   doneLabel?: string;
+  /**
+   * The done worktree's pull request merged: Done then draws the shared
+   * Merged glyph, not the finished check.
+   */
+  merged?: boolean;
   /** Tooltip/aria for the planning shield, naming what is waiting. */
   planningLabel?: string;
   layout?: 'classic' | 'compact';
@@ -702,16 +722,21 @@ export function WorktreeRowPrimaryIndicator({
     );
   }
 
-  if (layout === 'classic' && uiStatus === 'done') {
+  if (uiStatus === 'done') {
+    // Done is the shared status glyph: the green circled check, the same
+    // mark a finished run or subagent wears, or Merged when its PR merged.
     return withStatusTooltip(
       doneLabel,
       <span
-        className="inline-flex h-4 w-4 items-center justify-center fg-purple"
+        className={
+          layout === 'classic'
+            ? 'inline-flex h-4 w-4 items-center justify-center'
+            : 'inline-flex h-6 w-6 items-center justify-center'
+        }
         aria-label={doneLabel}
+        data-testid={withTestIdSuffix('worktree-row-done', testIdSuffix)}
       >
-        {/* Circled checkmark (design asset) at the shared 16px leading-slot
-            glyph size. */}
-        <DoneCheckIcon width={16} height={16} aria-hidden="true" />
+        <StatusGlyph state={merged ? 'merged' : 'done'} />
       </span>,
     );
   }
@@ -757,16 +782,17 @@ export function WorktreeRowPrimaryIndicator({
   }
 
   if (uiStatus === 'working') {
-    // Working means a pipeline is running (a streaming chat shows the accent
-    // spinner instead, upstream of this branch), so the indicator promotes
-    // the pipeline glyph — in the working purple — over an anonymous dot.
+    // Working means a workflow is running in the background (a streaming
+    // chat shows the accent spinner instead, upstream of this branch), so the
+    // indicator is the shared Running glyph: the neutral spinner the sidebar
+    // already uses for background work, never the accent.
     return withStatusTooltip(
       'Working',
       <span
         className={
           layout === 'classic'
-            ? 'inline-flex h-4 w-4 items-center justify-center fg-accent'
-            : 'inline-flex h-6 w-6 items-center justify-center fg-accent'
+            ? 'inline-flex h-4 w-4 items-center justify-center'
+            : 'inline-flex h-6 w-6 items-center justify-center'
         }
         aria-label="Working"
         data-testid={withTestIdSuffix(
@@ -774,29 +800,27 @@ export function WorktreeRowPrimaryIndicator({
           testIdSuffix,
         )}
       >
-        <PipelineIcon width={16} height={16} aria-hidden="true" />
+        <StatusGlyph state="running" spinnerSize={12} />
       </span>,
     );
   }
 
   if (layout === 'classic') {
     const classicTokens = classicStatusDotTokens(uiStatus);
-    const classicLabel = uiStatus === 'done' ? doneLabel : classicTokens.label;
     return withStatusTooltip(
-      classicLabel,
+      classicTokens.label,
       <span
-        aria-label={classicLabel}
+        aria-label={classicTokens.label}
         className={`inline-flex h-1.5 w-1.5 rounded-full ${classicTokens.className}`}
       />,
     );
   }
 
   const tokens = statusDotTokens(uiStatus);
-  const label = uiStatus === 'done' ? doneLabel : tokens.label;
   return withStatusTooltip(
-    label,
+    tokens.label,
     <span
-      aria-label={label}
+      aria-label={tokens.label}
       className="inline-flex h-6 w-6 items-center justify-center"
     >
       <span
@@ -1109,10 +1133,10 @@ export function PrBadgeTooltipContent({
 }
 
 function pipelineStatusAriaLabel(status: WorktreePipelineStatus): string {
-  if (status === 'running') return 'Pipeline running';
-  if (status === 'unseen-failure') return 'Pipeline failed';
-  if (status === 'unseen') return 'Pipeline completed';
-  return 'Pipeline paused';
+  if (status === 'running') return 'Workflow running';
+  if (status === 'unseen-failure') return 'Workflow failed';
+  if (status === 'unseen') return 'Workflow completed';
+  return 'Workflow paused';
 }
 
 /**
@@ -1410,8 +1434,8 @@ export function DiffStatsBadge({
  */
 export function worktreeRowActionButtonClass(hoverRevealed: boolean): string {
   return hoverRevealed
-    ? 'focus-ring inline-flex shrink-0 items-center justify-center rounded-md p-1.5 fg-secondary opacity-0 transition hover:fg-primary focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:opacity-100'
-    : 'focus-ring inline-flex shrink-0 items-center justify-center rounded-md p-1.5 fg-secondary transition hover:fg-primary pointer-coarse:min-h-11 pointer-coarse:min-w-11';
+    ? 'focus-ring inline-flex shrink-0 items-center justify-center rounded-md p-1.5 fg-secondary opacity-0 transition-opacity hover:fg-primary focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:opacity-100'
+    : 'focus-ring inline-flex shrink-0 items-center justify-center rounded-md p-1.5 fg-secondary transition-opacity hover:fg-primary pointer-coarse:min-h-11 pointer-coarse:min-w-11';
 }
 
 export interface WorktreeRowActionChipProps {
@@ -1599,6 +1623,7 @@ function WorktreeRowImpl(
     selected = false,
     multiSelect,
     isStreaming = false,
+    backgroundTasks = 0,
     isRunningRun = false,
     isDiscovering: isDiscoveringProp = false,
     pipelineStatus,
@@ -1617,6 +1642,7 @@ function WorktreeRowImpl(
     healthIssue,
     hasMismatch = false,
     setupPhase,
+    queuedRemoval,
     lastKnownPrStatus,
     sharedWithTeammates = false,
     pinnedToTop = false,
@@ -1757,6 +1783,16 @@ function WorktreeRowImpl(
   const isRunningSetup = setupPhase === 'running-setup';
   const isArchiving = setupPhase === 'running-archive';
   const isTearingDown = setupPhase === 'running-teardown' || isArchiving;
+  // Waiting, not working: read still, with no loader.
+  const queuedRemovalLabel =
+    queuedRemoval === undefined ||
+    isTearingDown ||
+    isRunningSetup ||
+    isPendingGitSetup
+      ? null
+      : queuedRemoval === 'archive'
+        ? 'Queued for archiving'
+        : 'Queued for deletion';
   const hasLineChanges =
     diffStats !== undefined &&
     (diffStats.insertions > 0 || diffStats.deletions > 0);
@@ -2030,6 +2066,7 @@ function WorktreeRowImpl(
         uiStatus={uiStatus}
         setupPhase={setupPhase}
         doneLabel={doneLabel}
+        merged={lastKnownPrStatus?.state === 'merged'}
       />
     ) : pipelineStatus === 'running' ? (
       <OperationalStatusLoader
@@ -2136,12 +2173,15 @@ function WorktreeRowImpl(
       />
     ) : showPrBadge && lastKnownPrStatus?.ciStatus === 'pending' ? (
       <OperationalStatusLoader label="Pull request checks running" />
+    ) : backgroundTasks > 0 ? (
+      <AgentStateGlyph state="background" backgroundTasks={backgroundTasks} />
     ) : uiStatus !== 'idle' ? (
       <WorktreeRowPrimaryIndicator
         testIdSuffix={testIdSuffix}
         uiStatus={uiStatus}
         setupPhase={setupPhase}
         doneLabel={doneLabel}
+        merged={lastKnownPrStatus?.state === 'merged'}
       />
     ) : null;
   const hasRightStatusIndicator = rightStatusIndicator !== null;
@@ -2504,6 +2544,9 @@ function WorktreeRowImpl(
     const classicStreamingSpinner =
       !classicHasSetupLoader &&
       (isStreaming || (uiStatus === 'working' && pipelineStatus !== 'running'));
+    // Background work alone draws the neutral spinner in the same slot.
+    const classicBackgroundSpinner =
+      !classicHasSetupLoader && !classicStreamingSpinner && backgroundTasks > 0;
     // Classic has no unread subtitle badge; the blue unread dot itself hosts
     // the chat-preview popover (hover/focus), so the wrapper around the
     // indicator + drag overlay becomes the interactive target.
@@ -2555,7 +2598,7 @@ function WorktreeRowImpl(
     const classicPlanningLabel = awaitingApproval
       ? 'Review plan'
       : pipelineStatus === 'paused'
-        ? 'Pipeline paused'
+        ? 'Workflow paused'
         : 'Planning';
     // The leading slot shows only glyph states (shield, pipeline glyphs,
     // done check, setup loaders); the working spinner and the attention dots
@@ -2612,6 +2655,7 @@ function WorktreeRowImpl(
         // spinners; the leading indicator never shows them.
         setupPhase={undefined}
         doneLabel={doneLabel}
+        merged={lastKnownPrStatus?.state === 'merged'}
         planningLabel={classicPlanningLabel}
         layout="classic"
       />
@@ -2646,8 +2690,21 @@ function WorktreeRowImpl(
             </span>
           </span>,
         )
-      ) : classicStreamingSpinner || classicAttentionDot !== null ? (
+      ) : classicStreamingSpinner ||
+        classicBackgroundSpinner ||
+        classicAttentionDot !== null ? (
         <>
+          {classicBackgroundSpinner && (
+            <AgentStateGlyph
+              state="background"
+              backgroundTasks={backgroundTasks}
+              slot="row"
+              testId={withTestIdSuffix(
+                'worktree-row-classic-background-spinner',
+                testIdSuffix,
+              )}
+            />
+          )}
           {classicStreamingSpinner &&
             withStatusTooltip(
               'Working',
@@ -2823,7 +2880,7 @@ function WorktreeRowImpl(
           : awaitingApproval
             ? 'Review plan'
             : pipelineStatus === 'paused'
-              ? 'Pipeline paused'
+              ? 'Workflow paused'
               : splitStatus === 'review'
                 ? 'Split ready for review'
                 : null;
@@ -2840,6 +2897,7 @@ function WorktreeRowImpl(
       | 'failed'
       | 'working'
       | 'unread'
+      | 'background'
       | 'idle'
       | null = !focusedStatus
       ? null
@@ -2853,10 +2911,13 @@ function WorktreeRowImpl(
               ? 'working'
               : hasUnread || pipelineStatus === 'unseen'
                 ? 'unread'
-                : 'idle';
+                : // Below unread: a long-running server would hide it.
+                  backgroundTasks > 0
+                  ? 'background'
+                  : 'idle';
     const focusedPipelineTarget =
       (focusedRowStatus === 'needs-input' &&
-        focusedNeedsInput === 'Pipeline paused') ||
+        focusedNeedsInput === 'Workflow paused') ||
       focusedRowStatus === 'failed' ||
       (focusedRowStatus === 'unread' && !hasUnread);
     const focusedHandlers =
@@ -2912,12 +2973,14 @@ function WorktreeRowImpl(
           ? pipelineStatusAriaLabel('unseen-failure')
           : focusedRowStatus === 'working'
             ? (classicSetupStatusTitle ??
-              (pipelineStatus === 'running' ? 'Pipeline running' : 'Working'))
+              (pipelineStatus === 'running' ? 'Workflow running' : 'Working'))
             : focusedRowStatus === 'unread'
               ? hasUnread
                 ? 'Unread messages'
                 : pipelineStatusAriaLabel('unseen')
-              : null;
+              : focusedRowStatus === 'background'
+                ? backgroundTasksLabel(backgroundTasks)
+                : null;
     const focusedDotClassName =
       focusedRowStatus === 'needs-input'
         ? 'bg-fg-warning'
@@ -2940,7 +3003,9 @@ function WorktreeRowImpl(
           aria-label={focusedLabel ?? undefined}
           aria-hidden={focusedRowStatus === 'idle' ? 'true' : undefined}
           tabIndex={
-            focusedRowStatus === 'idle' || focusedRowStatus === 'working'
+            focusedRowStatus === 'idle' ||
+            focusedRowStatus === 'working' ||
+            focusedRowStatus === 'background'
               ? undefined
               : 0
           }
@@ -2948,9 +3013,13 @@ function WorktreeRowImpl(
           data-testid={withTestIdSuffix('worktree-row-status', testIdSuffix)}
           data-row-status={focusedRowStatus}
         >
-          {focusedRowStatus === 'working' ? (
+          {focusedRowStatus === 'working' ||
+          focusedRowStatus === 'background' ? (
             // Follows Labs → Comet spinners; the comet keeps its 12px slot.
-            <ThinkingSpinner tone="accent" sizePx={12} />
+            <ThinkingSpinner
+              tone={focusedRowStatus === 'working' ? 'accent' : 'tertiary'}
+              sizePx={12}
+            />
           ) : (
             <span
               className={`rounded-full h-1.5 w-1.5 ${focusedDotClassName}`}
@@ -2988,6 +3057,7 @@ function WorktreeRowImpl(
       isTearingDown ||
       isRunningSetup ||
       isPendingGitSetup ||
+      queuedRemovalLabel !== null ||
       (!focusedStatus &&
         (isDone || classicPrMetadata || isCreatingPr || trailingDiffMetadata)),
     );
@@ -3052,12 +3122,14 @@ function WorktreeRowImpl(
             ? { text: 'Running setup…', shimmer: true }
             : isPendingGitSetup
               ? { text: 'Setting up…', shimmer: true }
-              : splitStatusMessage
-                ? {
-                    text: splitStatusMessage,
-                    shimmer: splitStatus === 'active',
-                  }
-                : null;
+              : queuedRemovalLabel
+                ? { text: queuedRemovalLabel, shimmer: false }
+                : splitStatusMessage
+                  ? {
+                      text: splitStatusMessage,
+                      shimmer: splitStatus === 'active',
+                    }
+                  : null;
     return (
       <div
         ref={ref}
@@ -3144,11 +3216,11 @@ function WorktreeRowImpl(
           ) : classicWorkingPipeline ? (
             withBadgeTooltip(
               onPipelineIconMouseEnter !== undefined,
-              'Pipeline running',
+              'Workflow running',
               <span
                 className="focus-ring relative inline-flex h-6 w-6 items-center justify-center rounded-sm outline-none"
                 role={pipelineDisclosureEnabled ? 'button' : 'img'}
-                aria-label="Pipeline running"
+                aria-label="Workflow running"
                 aria-controls={
                   pipelineDisclosureEnabled && pipelinePopoverSlot
                     ? pipelinePopoverListId
@@ -3995,6 +4067,18 @@ function WorktreeRowImpl(
                         <span>Running setup…</span>
                       </>
                     )}
+                    {queuedRemovalLabel && (
+                      <>
+                        {((worktreeIdentity !== null &&
+                          worktreeIdentity !== undefined) ||
+                          splitStatusMessage) && (
+                          <span className="mx-1" aria-hidden="true">
+                            ·
+                          </span>
+                        )}
+                        <span>{queuedRemovalLabel}</span>
+                      </>
+                    )}
                     {!isRunningSetup && !isTearingDown && isPendingGitSetup && (
                       <>
                         <span className="mx-1" aria-hidden="true">
@@ -4016,7 +4100,15 @@ function WorktreeRowImpl(
                                 ·
                               </span>
                               <span
-                                className={focusedStatus ? '' : 'fg-purple'}
+                                className={
+                                  focusedStatus
+                                    ? ''
+                                    : STATUS_GLYPHS[
+                                        lastKnownPrStatus?.state === 'merged'
+                                          ? 'merged'
+                                          : 'done'
+                                      ].ink
+                                }
                               >
                                 {doneLabel}
                               </span>
@@ -4618,7 +4710,7 @@ function WorktreeRowPreviewCard({
               )}
               {prDone && !prChecksRunning && !prChecksPassing && (
                 <span
-                  className="absolute -right-0.5 -bottom-0.5 inline-flex rounded-full bg-quaternary p-px fg-purple"
+                  className={`absolute -right-0.5 -bottom-0.5 inline-flex rounded-full bg-quaternary p-px ${STATUS_GLYPHS.done.ink}`}
                   data-testid="worktree-row-preview-pr-done"
                 >
                   <DoneCheckIcon className="h-2 w-2" />

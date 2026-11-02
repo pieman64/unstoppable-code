@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { openProjectSettingsPage } from './projectSettingsDriver.mjs';
 
 export const PROJECT_ID = 'auto-open-project';
 export const WORKTREE_ID = 'wt-1';
@@ -101,10 +102,9 @@ export async function openAutoOpenSettings(window) {
   await app.workspaceSettingsButton(PROJECT_NAME).click();
   const dialog = window.getByRole('dialog', { name: PROJECT_NAME });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole('tab', { name: 'Scripts', exact: true }).click();
-  await dialog
-    .getByRole('button', { name: 'Source controlled', exact: true })
-    .click();
+  // Scripts and hooks: changes go to canopy.json, read from the worktree.
+  await openProjectSettingsPage(app, 'scripts');
+  await dialog.getByTestId('project-settings-scope-source').click();
   const defaultBranch = dialog.getByRole('button', { name: /Default branch/ });
   if (await defaultBranch.count()) {
     await defaultBranch.click();
@@ -113,6 +113,8 @@ export async function openAutoOpenSettings(window) {
       .getByRole('option', { name: /wt-1/ })
       .click();
   }
+  // The launch script's editor opens in place from its row.
+  await dialog.getByTestId('project-settings-script-edit-launch').click();
   const command = dialog.locator('textarea').filter({ visible: true });
   await expect
     .poll(() =>

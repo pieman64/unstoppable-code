@@ -144,6 +144,7 @@ import {
   registerScenario,
   seedObservabilityAudit,
   seedPipelineExecution,
+  seedStoredPipeline,
   userComment,
 } from './seeders/index.mjs';
 
@@ -349,21 +350,18 @@ function legacyPlanChatTranscript(userDataDir, planId) {
 }
 
 /**
- * Show the Minimal layout's activity section: expand the (seeded collapsed)
- * Side Panel through its collapsed bar and select the Activity tab.
+ * Open Plans from the Minimal Side Panel's empty-state picker.
  */
 async function showMinimalActivity(window) {
-  const collapsedTab = window.getByTestId(
-    `panel-collapsed-tab-${DEFAULT_PANEL_IDS.activity}`,
-  );
-  if ((await collapsedTab.count()) > 0) {
-    await collapsedTab.click();
-  } else {
-    await window.getByTestId(`panel-tab-${DEFAULT_PANEL_IDS.activity}`).click();
+  const group = window.getByTestId(`panel-group-${MINIMAL_SIDE_GROUP_ID}`);
+  if (!(await group.isVisible())) {
+    await window.getByTestId('workspace-layout-side-panel-toggle').click();
   }
+  await group.getByTestId('side-panel-empty-item-plans').click();
   await expect(window.getByTestId('activity-plans-section')).toBeVisible({
     timeout: 30_000,
   });
+  return (await mainLeaf(window, MINIMAL_SIDE_GROUP_ID)).activePanelId;
 }
 
 /** The selected sidebar worktree row of `workspaceId`'s demo-main worktree. */
@@ -706,7 +704,7 @@ test('P2: in a Minimal layout, plan list opens go to the Side Panel', async () =
         MINIMAL_SIDE_GROUP_ID,
       ].sort(),
     );
-    await showMinimalActivity(window);
+    const plansPanelId = await showMinimalActivity(window);
 
     await planRow(window, ROADMAP).click();
     await expect(
@@ -722,7 +720,7 @@ test('P2: in a Minimal layout, plan list opens go to the Side Panel', async () =
     expect((await mainGroupIds(window)).sort()).toEqual(groupsBefore);
     await expectNoTakeover(window);
 
-    await window.getByTestId(`panel-tab-${DEFAULT_PANEL_IDS.activity}`).click();
+    await window.getByTestId(`panel-tab-${plansPanelId}`).click();
     await planRow(window, IMPORTER).click();
     await expect(
       planDocumentPanel(window, IMPORTER).getByTestId('plan-panel-view'),
@@ -1999,12 +1997,14 @@ test('P13: on an older revision the Plan panel shares nothing, implements the la
 
     // --- A linked run opens in its own panel; the plan stays ---------------
     await doc.getByTestId('plan-panel-executions').click();
-    await window
+    const linkedRun = window
       .getByTestId('plan-panel-executions-menu')
       .getByRole('menuitem', {
         name: new RegExp(`^(${pipelineName}|${executionId.slice(0, 8)})`),
-      })
-      .click();
+      });
+    // Each loaded run shows when it was dispatched beside its status.
+    await expect(linkedRun).toContainText(/Dispatched /, { timeout: 15_000 });
+    await linkedRun.click();
     await expectPipelineRunPanel(window, executionId, { timeout: 30_000 });
     expect(await planGroupOf(electronApp, window, ROADMAP)).toBe(planGroupId);
     await expect(view).toBeVisible();
@@ -2368,6 +2368,210 @@ test('P17: Implement shows its chat at once, expanding its group and leaving a m
     await closeCanopy(electronApp, userDataDir);
   }
 });
+
+test('CAN-5166: workflow outcomes and retries update both plan surfaces and open the selected run', async () => {
+  test.setTimeout(180_000);
+  const plan = buildPanelPlan({
+    id: ROADMAP,
+    title: ROADMAP_TITLE,
+    updatedAt: '2026-06-02T00:00:00.000Z',
+  });
+  const names = {
+    success: 'CAN5166 success',
+    failure: 'CAN5166 failure',
+    cancel: 'CAN5166 cancel',
+  };
+  const { electronApp, userDataDir, window } = await seedPlanPanelWorktree({
+    plans: [plan],
+    chatTab: {
+      trackedPlanId: ROADMAP,
+      trackedPlanSource: 'claude',
+      trackedPlanReviewStatus: 'pending',
+      pendingPlanExitRequestId: 'can-5166-workflow-review',
+      pendingPlanExit: {
+        plan: plan.content,
+        source: 'claude',
+        reviewMode: 'manual',
+      },
+    },
+    onBeforeLaunch: ({ userDataDir }) => {
+      for (const [kind, name] of Object.entries(names)) {
+        const command =
+          kind === 'failure'
+            ? 'exit 7'
+            : `while [ ! -f .can5166-${kind} ]; do sleep 0.05; done`;
+        seedStoredPipeline({
+          userDataDir,
+          id: `can5166-${kind}`,
+          name,
+          yaml: `name: ${name}\non: plan_ready\nscope: worktree\njobs:\n  main:\n    steps:\n      - run: ${command}\n`,
+        });
+      }
+    },
+  });
+  const scope = {
+    projectId: PLAN_PANEL_WORKSPACE_ID,
+    worktreeId: PLAN_PANEL_WORKTREE_ID,
+  };
+  try {
+    await planRow(window, ROADMAP).click();
+    const doc = planDocumentPanel(window, ROADMAP);
+    const header = doc.getByTestId('plan-panel-status-badge');
+    const card = window.getByTestId(`activity-plan-status-${ROADMAP}`);
+    let firstLaunch = true;
+    const launch = async (kind) => {
+      if (firstLaunch) {
+        await chatPanelLocator(window, SEEDED_CHAT_TAB_ID)
+          .getByTestId('chat-plan-pipeline')
+          .click();
+        firstLaunch = false;
+      } else {
+        await doc.getByTestId('plan-panel-execute').click();
+        await window.getByTestId('plan-panel-execute-pipeline').click();
+      }
+      const modal = window.getByTestId('pipeline-trigger-modal');
+      await modal
+        .getByTestId('pipeline-trigger-modal-selector')
+        .getByRole('button')
+        .filter({ hasText: names[kind] })
+        .click();
+      const run = modal.getByTestId('pipeline-trigger-modal-run');
+      await expect(run).toBeEnabled();
+      const configuring = (await run.textContent())?.includes('Continue');
+      await run.click();
+      if (configuring) {
+        await expect(run).toBeEnabled();
+        await run.click();
+      }
+      await expect(modal).toBeHidden();
+      const result = await window.evaluate(async (name) => {
+        const result = await window.pipelines.listExecutions();
+        return result.data
+          ?.filter((run) => run.pipeline_name === name)
+          .sort((left, right) =>
+            right.started_at.localeCompare(left.started_at),
+          )[0]?.id;
+      }, names[kind]);
+      expect(typeof result).toBe('string');
+      return result;
+    };
+    await launch('failure');
+    await expect(header).toHaveText('Approved');
+    await expect(card).toHaveText('Approved');
+    await expect(
+      doc.getByTestId('plan-panel-status-note-outcome'),
+    ).toContainText('Workflow failed');
+    const successfulRun = await launch('success');
+    await expect(header).toHaveText('Implementing');
+    await expect(card).toHaveText('Implementing');
+    await doc.getByTestId('plan-panel-status-note-run').click();
+    await expectPipelineRunPanel(window, successfulRun);
+    await closePipelineRunPanels(window);
+    const cwd = await window.evaluate(
+      (scope) => window.api.getWorktreePath(scope),
+      scope,
+    );
+    writeFileSync(path.join(cwd, '.can5166-success'), 'release');
+    await expect(header).toHaveText('Implemented');
+    await expect(card).toHaveText('Implemented');
+    await launch('failure');
+    await expect(header).toHaveText('Implemented');
+    await expect(
+      doc.getByTestId('plan-panel-status-note-outcome'),
+    ).toContainText('Workflow failed');
+    const cancelledRun = await launch('cancel');
+    await expect(header).toHaveText('Implementing');
+    await window.evaluate(
+      (id) => window.pipelines.cancelExecution(id),
+      cancelledRun,
+    );
+    await expect(header).toHaveText('Implemented');
+    await expect(card).toHaveText('Implemented');
+    await expect(
+      doc.getByTestId('plan-panel-status-note-outcome'),
+    ).toContainText('Workflow cancelled');
+    await expect(doc.getByTestId('plan-panel-execute')).not.toHaveClass(
+      /bg-accent/,
+    );
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+for (const entry of ['chat approval', 'Plan Implement']) {
+  test(`CAN-5166: ${entry} updates header and card before the admitted send settles`, async () => {
+    test.setTimeout(180_000);
+    const marker = `Canopy-CAN5166-${entry.replaceAll(' ', '-')}`;
+    const plan = buildPanelPlan({
+      id: ROADMAP,
+      title: ROADMAP_TITLE,
+      updatedAt: '2026-06-02T00:00:00.000Z',
+      summary: `[${marker}] Implement this change.`,
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+      llm: {
+        steps: [{ text: 'Implementation finished.', stopReason: 'end_turn' }],
+      },
+    });
+    const pending =
+      entry === 'chat approval'
+        ? {
+            trackedPlanId: ROADMAP,
+            trackedPlanSource: 'claude',
+            trackedPlanReviewStatus: 'pending',
+            pendingPlanExitRequestId: 'can-5166-review',
+            pendingPlanExit: {
+              plan: plan.content,
+              source: 'claude',
+              reviewMode: 'manual',
+            },
+          }
+        : undefined;
+    const { electronApp, userDataDir, window } = await seedPlanPanelWorktree({
+      plans: [plan],
+      chatTab: pending,
+    });
+    try {
+      await planRow(window, ROADMAP).click();
+      const doc = planDocumentPanel(window, ROADMAP);
+      const header = doc.getByTestId('plan-panel-status-badge');
+      const card = window.getByTestId(`activity-plan-status-${ROADMAP}`);
+      await expect(header).toHaveText('Pending');
+      await expect(card).toHaveText('Pending');
+      await window.evaluate(() =>
+        window.__canopyPanelTestApi.holdChatSends(true),
+      );
+      if (entry === 'chat approval') {
+        await chatPanelLocator(window, SEEDED_CHAT_TAB_ID)
+          .getByTestId('chat-plan-implement')
+          .click();
+      } else {
+        await doc.getByTestId('plan-panel-execute').click();
+        await window.getByTestId('plan-panel-execute-implement').click();
+      }
+      await expect(header).toHaveText('Approved', { timeout: 30_000 });
+      await expect(card).toHaveText('Approved');
+      await expect(doc.getByTestId('plan-panel-execute')).not.toHaveClass(
+        /bg-accent/,
+      );
+      await expect(
+        window.getByTestId(`activity-plan-${ROADMAP}-execute`),
+      ).not.toHaveClass(/bg-accent/);
+      // No identified implementation turn exists in the projection. Even
+      // after an assistant response, the status remains evidence-led.
+      await window.evaluate(() =>
+        window.__canopyPanelTestApi.releaseHeldChatSends(),
+      );
+      await expect(header).toHaveText('Approved');
+    } finally {
+      await window
+        .evaluate(() => window.__canopyPanelTestApi.releaseHeldChatSends())
+        .catch(() => undefined);
+      await clearScenario(DEFAULT_MOCK_BASE_URL, marker).catch(() => undefined);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
 
 test('P18: Plans has its own Add Panel entry that opens or reveals the plans list', async () => {
   test.setTimeout(180_000);

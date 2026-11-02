@@ -27,98 +27,46 @@ const PAGE_EXPERIMENTS = [
   ['audit-trail-page', 'audit', 'canopy-desktop-labs-audit-trail-page'],
 ] as const;
 describe('experiment registry', () => {
-  it('offers the remaining feature experiments after graduation, plus Chat tab previews, Subagents view, Archived chats card, Clean chat and Pull request cards', () => {
+  it('offers Files reads independently without owning navigation or inheriting Early access', () => {
     expect(
-      LABS_EXPERIMENTS.filter(
-        (entry) => entry.id !== 'early-access' && entry.pages.length === 0,
-      ).map((entry) => entry.id),
-    ).toEqual([
-      'sidebar',
-      'activity-card',
-      'minimal-layout',
-      'comet-spinners',
-      'chat-tab-previews',
-      'subagents-view',
-      'archived-chats-card',
-      'clean-chat',
-      'proxy-account-cards',
-      'pr-hover-cards',
-    ]);
-  });
-  it('registers Pull request cards as an independent off-by-default feature', () => {
-    expect(
-      LABS_EXPERIMENTS.find((entry) => entry.id === 'pr-hover-cards'),
+      LABS_EXPERIMENTS.find((entry) => entry.id === 'daemon-files-reads'),
     ).toMatchObject({
-      name: 'Pull request cards',
+      flagKey: 'canopy-desktop-labs-daemon-files-reads',
+      requiresEarlyAccess: false,
       pages: [],
       sidebarKeys: [],
-      flagKey: 'canopy-desktop-labs-pr-hover-cards',
-      requiresEarlyAccess: false,
     });
     expect(EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS).not.toContain(
-      'pr-hover-cards',
+      'daemon-files-reads',
     );
   });
-  it('registers Clean chat as an independent off-by-default feature', () => {
+  // CAN-4551: off by default, so no automation converts until someone opts in.
+  it('offers chat automation pipelines independently, owning no navigation', () => {
     expect(
-      LABS_EXPERIMENTS.find((entry) => entry.id === 'clean-chat'),
+      LABS_EXPERIMENTS.find(
+        (entry) => entry.id === 'chat-automation-pipelines',
+      ),
     ).toMatchObject({
-      name: 'Clean chat',
+      flagKey: 'canopy-desktop-labs-chat-automation-pipelines',
+      requiresEarlyAccess: false,
       pages: [],
       sidebarKeys: [],
-      flagKey: 'canopy-desktop-labs-clean-chat',
-      requiresEarlyAccess: false,
-    });
-    expect(EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS).not.toContain('clean-chat');
-  });
-  it('registers Archived chats card as an independent off-by-default feature', () => {
-    expect(
-      LABS_EXPERIMENTS.find((entry) => entry.id === 'archived-chats-card'),
-    ).toMatchObject({
-      name: 'Archived chats card',
-      pages: [],
-      sidebarKeys: [],
-      flagKey: 'canopy-desktop-labs-archived-chats-card',
-      requiresEarlyAccess: false,
     });
     expect(EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS).not.toContain(
-      'archived-chats-card',
+      'chat-automation-pipelines',
     );
   });
-  it('registers Subagents view as an independent off-by-default feature', () => {
-    expect(
-      LABS_EXPERIMENTS.find((entry) => entry.id === 'subagents-view'),
-    ).toMatchObject({
-      name: 'Subagents view',
-      pages: [],
-      sidebarKeys: [],
-      flagKey: 'canopy-desktop-labs-subagents-view',
-      requiresEarlyAccess: false,
-    });
-    expect(EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS).not.toContain(
-      'subagents-view',
-    );
-  });
-  it('registers Early access without navigation ownership and four independent page experiments', () => {
+  it('keeps only the Appearance preference, Files reads, chat automation pipelines and pages after UI graduation', () => {
     expect(LABS_EXPERIMENTS.map((entry) => entry.id)).toEqual([
       'early-access',
-      ...EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS.filter((id) =>
-        [
-          'sidebar',
-          'activity-card',
-          'minimal-layout',
-          'comet-spinners',
-        ].includes(id),
-      ),
-      // Never part of Early access, so they have no extracted choice.
-      'chat-tab-previews',
-      'subagents-view',
-      'archived-chats-card',
-      'clean-chat',
-      'proxy-account-cards',
-      'pr-hover-cards',
+      'sidebar',
+      'activity-card',
+      'daemon-files-reads',
+      'chat-automation-pipelines',
       ...PAGE_EXPERIMENTS.map(([id]) => id),
     ]);
+  });
+  it('registers Early access without navigation ownership and four independent page experiments', () => {
     expect(LABS_EXPERIMENTS[0]).toMatchObject({
       pages: [],
       sidebarKeys: [],

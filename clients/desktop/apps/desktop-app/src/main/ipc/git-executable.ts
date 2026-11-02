@@ -1,9 +1,13 @@
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { dialog, type BrowserWindow, type OpenDialogOptions } from 'electron';
 import { showRemoteOpenDialogForEvent } from '../lib/dialog-window';
 import {
   IPC_CHANNELS,
   type GitExecutableInstallProgress,
 } from '@canopy/desktop-shared/types';
+import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
+import { getGitExecutableStatus } from '../canopy-runtime/worker-git-dispatch';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import {
   detectGitExecutable,
   detectWinget,
@@ -33,13 +37,23 @@ function sendInstallProgress(
 
 export function registerGitExecutableHandlers(
   getWindow: () => BrowserWindow | null,
+  runtime: {
+    dispatcher: WorkerGitDispatcher;
+    resolveCaller: DesktopIpcCallerResolver;
+  },
 ): void {
-  registerIpcHandler(IPC_CHANNELS.gitExecutableStatus, () =>
-    detectGitExecutable(),
+  // worker.git.executable.get; Browse, the installers and spawn-time
+  // resolution keep the direct detection (CAN-5137).
+  registerIpcHandler(IPC_CHANNELS.gitExecutableStatus, async (event) =>
+    getGitExecutableStatus(runtime.dispatcher, runtime.resolveCaller(event), {
+      recheck: false,
+    }),
   );
 
-  registerIpcHandler(IPC_CHANNELS.gitExecutableRedetect, () =>
-    detectGitExecutable({ force: true }),
+  registerIpcHandler(IPC_CHANNELS.gitExecutableRedetect, async (event) =>
+    getGitExecutableStatus(runtime.dispatcher, runtime.resolveCaller(event), {
+      recheck: true,
+    }),
   );
 
   registerIpcHandler(IPC_CHANNELS.gitExecutableBrowse, async (event) => {
@@ -47,7 +61,7 @@ export function registerGitExecutableHandlers(
     const options: OpenDialogOptions = {
       properties: ['openFile'],
       filters:
-        process.platform === 'win32'
+        hostPlatformOperatingSystem() === 'win32'
           ? [{ name: 'Git executable', extensions: ['exe'] }]
           : undefined,
     };

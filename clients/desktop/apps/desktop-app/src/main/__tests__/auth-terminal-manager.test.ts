@@ -6,6 +6,7 @@ import {
   type AuthTerminalExitEvent,
   type AuthTerminalOutputEvent,
 } from '@canopy/desktop-shared/types';
+import type { GetEnhancedEnvOptions } from '@canopy/desktop-shared/pipelines/config-paths';
 import { AuthTerminalManager } from '../auth-terminal/manager';
 
 jest.mock('node:child_process', () => {
@@ -135,7 +136,7 @@ class MockPty implements IPty {
 
 interface EnhancedEnvCall {
   includeCanopySecrets: boolean;
-  environment: false | undefined;
+  environment: GetEnhancedEnvOptions['environment'];
 }
 
 interface Harness {
@@ -174,10 +175,7 @@ function createHarness(options: { sigtermGraceMs?: number } = {}): Harness {
   // GH_TOKEN, otherwise we don't. process.env.GH_TOKEN (external) is left
   // untouched in both cases — this harness doesn't simulate externals.
   const getEnhancedEnvFn = (
-    enhancedOptions: {
-      includeCanopySecrets?: boolean;
-      environment?: false;
-    } = {},
+    enhancedOptions: GetEnhancedEnvOptions = {},
   ): NodeJS.ProcessEnv => {
     const includeCanopySecrets = enhancedOptions.includeCanopySecrets !== false;
     enhancedEnvCalls.push({

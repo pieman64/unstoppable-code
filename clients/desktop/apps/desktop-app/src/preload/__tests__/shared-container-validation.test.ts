@@ -53,6 +53,36 @@ describe('shared container replica state validation', () => {
     },
   );
 
+  it('accepts revision-bound package metadata on readable states only', () => {
+    const capabilityPackage = {
+      digest: `pp:v1:${'c'.repeat(43)}`,
+      counts: { skills: 1, pipelines: 0, agents: 0, automations: 1, hooks: 0 },
+      executableFiles: ['skill-a/scripts/setup.sh'],
+    };
+    for (const status of ['available', 'pinned'] as const) {
+      expect(
+        isSharedContainerReplicaState({
+          ...available,
+          status,
+          package: capabilityPackage,
+        }),
+      ).toBe(true);
+    }
+    expect(
+      isSharedContainerReplicaState({
+        ...available,
+        package: { ...capabilityPackage, counts: { skills: -1 } },
+      }),
+    ).toBe(false);
+    expect(
+      isSharedContainerReplicaState({
+        ...base,
+        status: 'nothing-published',
+        package: capabilityPackage,
+      }),
+    ).toBe(false);
+  });
+
   it('rejects undeclared fields alongside a repository', () => {
     expect(
       isSharedContainerReplicaState({

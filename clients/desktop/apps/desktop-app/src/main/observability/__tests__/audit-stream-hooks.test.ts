@@ -4,7 +4,9 @@ import {
   notifyAuditEntryEnqueued,
   onAuditEntryEnqueued,
   resetAuditStreamHooksForTest,
+  sameAuditDayFileIdentity,
   setAuditDayPruneGuard,
+  type AuditDayFileIdentity,
 } from '../audit-stream-hooks';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -84,41 +86,88 @@ describe('audit stream hooks', () => {
   });
 
   describe('mayPruneAuditDayFile', () => {
+    const consumed: AuditDayFileIdentity = { size: 64, mtimeMs: 1_000, ino: 9 };
+
     it('allows pruning when no reader registered a guard', async () => {
-      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toBe(true);
+      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toEqual({
+        prune: true,
+      });
     });
 
-    it('asks the guard about a file that is due', async () => {
-      const guard = jest.fn(() => Promise.resolve(false));
+    it('asks the guard about a file that is due and passes on what it consumed', async () => {
+      const guard = jest.fn(
+        (): Promise<AuditDayFileIdentity | null> => Promise.resolve(null),
+      );
       setAuditDayPruneGuard(guard);
 
-      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toBe(false);
+      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toEqual({
+        prune: false,
+      });
       expect(guard).toHaveBeenCalledWith('day.jsonl');
 
-      guard.mockResolvedValue(true);
-      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toBe(true);
+      guard.mockResolvedValue(consumed);
+      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toEqual({
+        prune: true,
+        verified: consumed,
+      });
     });
 
     it('keeps the file when the guard throws', async () => {
       setAuditDayPruneGuard(() => Promise.reject(new Error('reader is down')));
 
-      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toBe(false);
+      await expect(mayPruneAuditDayFile(pruneRequest(1))).resolves.toEqual({
+        prune: false,
+      });
     });
 
     it('stops holding a file one retention period past its cutoff', async () => {
-      const guard = jest.fn(() => Promise.resolve(false));
+      const guard = jest.fn(
+        (): Promise<AuditDayFileIdentity | null> => Promise.resolve(null),
+      );
       setAuditDayPruneGuard(guard);
 
-      await expect(mayPruneAuditDayFile(pruneRequest(7))).resolves.toBe(false);
-      await expect(mayPruneAuditDayFile(pruneRequest(8))).resolves.toBe(true);
+      await expect(mayPruneAuditDayFile(pruneRequest(7))).resolves.toEqual({
+        prune: false,
+      });
+      await expect(mayPruneAuditDayFile(pruneRequest(8))).resolves.toEqual({
+        prune: true,
+      });
     });
 
     it('gives the reader its catch-up attempt however old the file is', async () => {
-      const guard = jest.fn(() => Promise.resolve(true));
+      const guard = jest.fn(
+        (): Promise<AuditDayFileIdentity | null> => Promise.resolve(consumed),
+      );
       setAuditDayPruneGuard(guard);
 
-      await expect(mayPruneAuditDayFile(pruneRequest(400))).resolves.toBe(true);
+      await expect(mayPruneAuditDayFile(pruneRequest(400))).resolves.toEqual({
+        prune: true,
+        verified: consumed,
+      });
       expect(guard).toHaveBeenCalledWith('day.jsonl');
+    });
+  });
+
+  describe('sameAuditDayFileIdentity', () => {
+    const file: AuditDayFileIdentity = { size: 10, mtimeMs: 5, ino: 3 };
+
+    it('matches only the same size, modification time and inode', () => {
+      expect(sameAuditDayFileIdentity(file, { ...file })).toBe(true);
+      expect(sameAuditDayFileIdentity(file, { ...file, size: 11 })).toBe(false);
+      expect(sameAuditDayFileIdentity(file, { ...file, mtimeMs: 6 })).toBe(
+        false,
+      );
+      expect(sameAuditDayFileIdentity(file, { ...file, ino: 4 })).toBe(false);
+    });
+
+    it('treats a zero or missing inode as unknown, not as a different file', () => {
+      expect(sameAuditDayFileIdentity(file, { ...file, ino: 0 })).toBe(true);
+      expect(sameAuditDayFileIdentity({ size: 10, mtimeMs: 5 }, file)).toBe(
+        true,
+      );
+      expect(
+        sameAuditDayFileIdentity({ ...file, ino: 0 }, { ...file, size: 12 }),
+      ).toBe(false);
     });
   });
 

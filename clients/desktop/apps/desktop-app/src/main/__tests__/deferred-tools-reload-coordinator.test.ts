@@ -1,4 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import type { ChatTurnLifecycleEvent } from '@canopy/protocol/canopy-core';
+import {
+  armTurnLifecycleContinuation,
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+  setTurnLifecycleSink,
+} from '../agents/provider-turn-lifecycle';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import type {
   DeferredToolsReloadEvent,
@@ -198,6 +205,95 @@ describe('deferredToolsReloadCoordinator', () => {
     ).toBe(false);
     releaseResume?.();
     await finishPromise;
+  });
+
+  it('restarts the session itself only from begin until resume, so that end is not a cancellation', async () => {
+    const testScope = scope();
+    const toolCallId = `tool-${randomUUID()}`;
+    const intent = deferredToolsReloadCoordinator.createIntent({
+      scope: testScope,
+      toolCallId,
+      providerType: 'claude',
+      interfaceMode: 'canopy',
+      additions,
+      enabledResources,
+    });
+    if (!intent.accepted) throw new Error('Expected accepted intent');
+    const events: ChatTurnLifecycleEvent[] = [];
+    setTurnLifecycleSink((event) => events.push(event));
+    const producer = getTurnLifecycleProducer('claude', testScope);
+    const end = (turnId: string): void =>
+      producer.turnEnded({
+        turnId,
+        origin: 'user',
+        binding: 'bound',
+        submissionIds: [],
+        userMessageIds: ['message-1'],
+        providerUserMessageUuids: [],
+        endedAtMs: 1,
+        outcome: 'cancelled',
+        terminalReason: 'Session aborted',
+        source: 'abort-fallback',
+      });
+    try {
+      expect(
+        deferredToolsReloadCoordinator.isRestartingSession(testScope),
+      ).toBe(false);
+      end('before-begin');
+      await deferredToolsReloadCoordinator.begin({
+        scope: testScope,
+        requestId: intent.requestId,
+        toolCallId,
+        additions,
+        enabledResources,
+      });
+      expect(
+        deferredToolsReloadCoordinator.isRestartingSession(testScope),
+      ).toBe(true);
+      end('restarted');
+      deferredToolsReloadCoordinator.registerResumeHandler(testScope, () =>
+        Promise.resolve(),
+      );
+      await deferredToolsReloadCoordinator.finish({
+        scope: testScope,
+        requestId: intent.requestId,
+        toolCallId,
+        userMessageId: 'message-1',
+        continuationText: 'continue',
+        resume: { providerType: 'claude' },
+      });
+      expect(
+        deferredToolsReloadCoordinator.isRestartingSession(testScope),
+      ).toBe(false);
+      producer.turnStarted({
+        turnId: 'continuation',
+        origin: 'autonomous',
+        binding: 'pending',
+        submissionIds: [],
+        userMessageIds: [],
+        providerUserMessageUuids: [],
+        phase: 'start',
+        startedAtMs: 1,
+      });
+      expect(events.at(-1)).toMatchObject({
+        type: 'TurnStarted',
+        spawnedBy: { toolUseId: toolCallId, toolsLoaded: true },
+      });
+      end('after-resume');
+      expect(
+        events.flatMap((event) =>
+          event.type === 'TurnEnded' ? [[event.turnId, event.outcome]] : [],
+        ),
+      ).toEqual([
+        ['before-begin', 'cancelled'],
+        ['restarted', 'completed'],
+        ['after-resume', 'cancelled'],
+      ]);
+    } finally {
+      setTurnLifecycleSink(null);
+      armTurnLifecycleContinuation(testScope, null);
+      releaseTurnLifecycleProducer('claude', testScope);
+    }
   });
 
   it('cancels an active reload by chat scope before the renderer handshake begins', () => {

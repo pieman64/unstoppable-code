@@ -26,6 +26,19 @@ export {
   type SidebarRowFrameVariant,
 } from './SidebarRowFrame';
 export { SidebarSection, type SidebarSectionProps } from './SidebarSection';
+export {
+  activateSidebarNavItem,
+  type SidebarNavItemActivation,
+} from './sidebar-nav-activation';
+export {
+  createSidebarSectionRootRegistry,
+  returnSidebarSectionToRoot,
+  scrollSectionToTop,
+  useSidebarSectionRoot,
+  type SidebarSectionRootRegistry,
+  type SidebarSectionRootReset,
+  type SidebarSectionRootReturn,
+} from './sidebar-section-root';
 export { SHARED_WITH_YOU_SECTION_LABEL } from './shared-with-you-label';
 export {
   SidebarPageNav,
@@ -70,5 +83,8 @@ export {
 } from './CodeSidebarItemGroups';
 export * from './sidebar-item-groups-model';
 export { WorktreeSortableStateContext } from '../sortable-state-context';
-export * from './worktree-selection';
-export * from './use-worktree-batch-removal';
+export * from './sidebar-row-selection';
+export * from './use-sidebar-batch-removal';
+export * from './use-sidebar-bulk';
+export * from './use-sidebar-work-entry-bulk';
+export * from '../work-entry-removal-labels';

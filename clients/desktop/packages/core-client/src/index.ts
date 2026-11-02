@@ -17,7 +17,24 @@ export type {
 } from '@canopy/protocol/canopy-core';
 
 export { createCanopyClient } from './client';
+export {
+  CANOPY_CONNECTION_DEFAULTS,
+  CanopyDeliveryScope,
+  deliverCanopy,
+  type CanopyDeliveryAttempt,
+  type CanopyDeliveryOptions,
+  type CanopyDeliveryScopeOptions,
+  type CanopyReplayDirective,
+} from './delivery';
 export { createCanopyEventSubscription } from './events/subscription';
+export {
+  CANOPY_WORKSPACE_BROAD_INVALIDATION,
+  createCanopyWorkspaceEventBridge,
+  planCanopyWorkspaceInvalidation,
+  type CanopyWorkspaceEventBridge,
+  type CanopyWorkspaceEventBridgeOptions,
+  type CanopyWorkspaceInvalidationPlan,
+} from './events/workspace-commits';
 export type * from './events/types';
 export {
   createCanopyAuthorityRegistry,

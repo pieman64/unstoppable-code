@@ -183,7 +183,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
       queued.push(task);
       return Promise.resolve();
     },
-    notifyResolved: (change): void => changes.push(change),
+    notifyResolved: (change): void => {
+      changes.push(change);
+    },
     now: (): number => now,
     sweepIntervalMs: 60_000,
     generationTimeoutMs: options.generationTimeoutMs ?? 1_000,
@@ -234,6 +236,7 @@ describe('Ledger pending titles', () => {
     expect(harness.changes).toEqual([
       {
         container: CONTAINER,
+        ledgerId: LEDGER_ID,
         entryId: ENTRY_ID,
         revision: 1,
         titleResolved: true,
@@ -253,6 +256,7 @@ describe('Ledger pending titles', () => {
     expect(harness.changes).toEqual([
       {
         container: CONTAINER,
+        ledgerId: LEDGER_ID,
         entryId: ENTRY_ID,
         revision: 1,
         titleResolved: true,
@@ -282,6 +286,7 @@ describe('Ledger pending titles', () => {
     expect(harness.changes).toEqual([
       {
         container: CONTAINER,
+        ledgerId: LEDGER_ID,
         entryId: ENTRY_ID,
         revision: 1,
         titleResolved: true,
@@ -503,6 +508,7 @@ describe('Ledger pending titles', () => {
       expect(harness.changes).toEqual([
         {
           container: CONTAINER,
+          ledgerId: LEDGER_ID,
           entryId: ENTRY_ID,
           revision: 1,
           titleResolved: true,
@@ -593,6 +599,29 @@ describe('Ledger pending titles', () => {
     });
 
     expect(calls[0]?.workOwner).toBeNull();
+  });
+
+  it("keeps a global (workflow) entry's title without a task to generate in", async () => {
+    const generateChatSummary = jest.fn(() =>
+      Promise.resolve({ text: 'Never asked' }),
+    );
+    const resolveWorkOwner = jest.fn(() => Promise.resolve(undefined));
+    const generateTitle = createPendingTitleSummaryGenerator({
+      readSettings: () => Promise.resolve({ model: 'summary-model' }),
+      resolveScope: () => null,
+      resolveWorkOwner,
+      generateChatSummary,
+    });
+
+    await expect(
+      generateTitle({
+        record: RECORD,
+        container: { kind: 'global', owner: { kind: 'personal' } },
+        entry: { entryId: ENTRY_ID, content: 'A finding.' },
+      }),
+    ).resolves.toBeNull();
+    expect(resolveWorkOwner).not.toHaveBeenCalled();
+    expect(generateChatSummary).not.toHaveBeenCalled();
   });
 
   it('does not treat the helper fallback as a generated title', async () => {

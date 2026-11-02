@@ -28,7 +28,21 @@ export const MISSING_FILE_NAME = 'deleted.md';
 /** Written for real, but outside every workspace root: also hidden. */
 export const OUTSIDE_FILE_NAME = 'outside-note.md';
 
-export function seedCreatedFiles(userDataDir, cowork = false) {
+/**
+ * `markdownLink` also gives the final reply an inline `outputs/summary.txt`
+ * mention and a markdown link to the budget.
+ */
+export function seedCreatedFiles(
+  userDataDir,
+  cowork = false,
+  {
+    externalPath,
+    fileNames = CREATED_FILE_NAMES,
+    diffedFileNames = DIFFED_FILE_NAMES,
+    name = 'Deliverables',
+    markdownLink = false,
+  } = {},
+) {
   const workspaceId = cowork ? 'cowork-default' : 'demo-ts-pnpm-vite';
   const worktreeId = cowork ? 'created-files-entry' : 'demo-main';
   let root;
@@ -36,10 +50,12 @@ export function seedCreatedFiles(userDataDir, cowork = false) {
     seedCoworkWorkspace({
       userDataDir,
       workspaceId,
-      name: 'Deliverables',
+      name,
+      ...(externalPath ? { externalPath } : {}),
       seedMessage: false,
     });
-    root = path.join(userDataDir, 'workspaces', workspaceId, 'home');
+    root =
+      externalPath ?? path.join(userDataDir, 'workspaces', workspaceId, 'home');
     writeFileSync(
       path.join(userDataDir, 'workspaces', workspaceId, 'work-entries.json'),
       JSON.stringify({
@@ -55,7 +71,7 @@ export function seedCreatedFiles(userDataDir, cowork = false) {
   const outsidePath = path.join(userDataDir, OUTSIDE_FILE_NAME);
   writeFileSync(outsidePath, '# Outside note\n');
   const entries = [
-    ...CREATED_FILE_NAMES.map((name) => ({
+    ...fileNames.map((name) => ({
       name,
       absolutePath: path.join(root, 'outputs', name),
       write: true,
@@ -204,7 +220,9 @@ export function seedCreatedFiles(userDataDir, cowork = false) {
     blocks: [
       {
         type: 'text',
-        text: 'Revenue grew 12%. See outputs/Quarterly report.md.',
+        text: markdownLink
+          ? `Revenue grew 12%. See outputs/Quarterly report.md, outputs/summary.txt and [the budget](${path.join(root, 'outputs', 'budget.csv')}).`
+          : 'Revenue grew 12%. See outputs/Quarterly report.md.',
       },
     ],
     timestamp: 61,
@@ -219,13 +237,14 @@ export function seedCreatedFiles(userDataDir, cowork = false) {
     ? undefined
     : {
         [CREATED_FILES_TURN]: {
-          files: DIFFED_FILE_NAMES.map((name, index) => ({
+          files: diffedFileNames.map((name, index) => ({
             path: `outputs/${name}`,
             status: 'added',
             insertions: index + 1,
             deletions: 0,
           })),
-          totalInsertions: 3,
+          totalInsertions:
+            (diffedFileNames.length * (diffedFileNames.length + 1)) / 2,
           totalDeletions: 0,
           capturedAt: 52,
         },
@@ -248,7 +267,11 @@ export function seedCreatedFiles(userDataDir, cowork = false) {
   return { workspaceId, worktreeId, root, cowork, outsidePath };
 }
 
-export async function openCreatedFiles(window, fixture) {
+export async function openCreatedFiles(
+  window,
+  fixture,
+  { expandSummary = true } = {},
+) {
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
   await app.openMainPage();
@@ -269,5 +292,12 @@ export async function openCreatedFiles(window, fixture) {
       exact: true,
     }),
   ).toBeVisible();
+  // This fixture includes a follow-up turn. Reopen the older summary for
+  // file-action tests now that clean summaries honor historical collapse.
+  const disclosure = chat.getByTestId('turn-files').getByRole('button', {
+    name: 'Expand changed files',
+    exact: true,
+  });
+  if (expandSummary && (await disclosure.count())) await disclosure.click();
   return chat;
 }

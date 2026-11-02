@@ -115,7 +115,11 @@ const PLUGIN_CONTEXT: PipelinePluginCollectionRunContext = {
     },
   },
   modelConfig: { fastMode: true },
-  pipelinePreferenceLocator: { type: 'pipeline', pipelineId: 'pipeline-1' },
+  pipelinePreferenceLocator: {
+    type: 'stored',
+    source: 'user',
+    value: 'pipeline-1',
+  },
 };
 
 const originalSelectWorktree = useChatStore.getState().selectWorktree;

@@ -385,7 +385,7 @@ export function AutomationChatTargetPicker({
               });
             }}
             data-testid="automations-form-open-chat"
-            className="focus-ring text-xs font-medium fg-accent transition hover:fg-primary"
+            className="focus-ring text-xs font-medium fg-accent transition-colors hover:fg-primary"
           >
             Open {CHAT_UNIT_LABEL.toLowerCase()}
           </button>

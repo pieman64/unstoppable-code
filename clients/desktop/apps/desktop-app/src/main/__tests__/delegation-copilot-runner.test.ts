@@ -1,11 +1,9 @@
-import type { CopilotToolMetadataRpc } from '@canopy/desktop-shared/node/copilot/tool-snapshot';
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import type {
   CopilotPreToolInput,
   CopilotToolDecision,
 } from '@canopy/desktop-shared/node/copilot/session-policy';
 import type { CursorCapabilityProjection } from '@canopy/desktop-shared/lib/cursor-capabilities';
-import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -16,19 +14,29 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  CurrentToolMetadata,
-  SessionConfig,
-  SessionEvent,
-} from '@github/copilot-sdk';
+import type { CurrentToolMetadata } from '@github/copilot-sdk';
 import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
-import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
-import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
+import type {
+  AgentRunRequest,
+  NativeRunHandle,
+} from '@canopy/desktop-shared/node/delegation';
+import { InMemoryDelegationTranscriptPort } from '@canopy/desktop-shared/node/delegation/in-memory-transcript-port';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptTarget,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
 import { DelegationNativePolicy } from '../agents/delegation/native-policy';
 import {
   authorizeDelegatedCopilotTool,
   createCopilotDelegationRunner,
 } from '../agents/delegation/copilot-runner';
+import { DELEGATION_TRANSCRIPT_RECORDER_LIMITS } from '../agents/delegation/transcript-recorder';
+import {
+  account,
+  nativeRuntime as createCopilotNativeRuntime,
+  request as copilotRequest,
+  type FixtureRuntime,
+} from './helpers/delegation-runner-fixtures/copilot';
 
 const mockOpen = jest.fn<Promise<FixtureRuntime>, unknown[]>();
 const mockCheckGeneration = jest.fn<void, unknown[]>();
@@ -75,7 +83,6 @@ let selectedMcpServers: Record<string, McpServerConfig>;
 let serverStatuses: Record<string, 'connected' | 'needs-auth' | 'failed'> = {};
 const mockReportError = jest.fn();
 const check = jest.fn(() => Promise.resolve({ decision: 'allow' as const }));
-const account = { host: 'https://github.com', login: 'fixture' };
 beforeEach(async () => {
   cwd = await realpath(await mkdtemp(join(tmpdir(), 'copilot-delegate-test-')));
   abort = new AbortController();
@@ -109,7 +116,12 @@ function createTools(
     delegationId: 'child',
     mode: (): 'full-access' => 'full-access',
     allowed: (): Promise<boolean> => Promise.resolve(allowed),
-    approval: { check, setMode: jest.fn(), dispose: jest.fn() },
+    approval: {
+      check,
+      setMode: jest.fn(),
+      reevaluatePendingApprovals: (): Promise<void> => Promise.resolve(),
+      dispose: jest.fn(),
+    },
     emit: (): Promise<void> => Promise.resolve(),
   });
 }
@@ -158,143 +170,106 @@ test('native reads, writes and every search root obey live child grants above Fu
   expect(await decide('list_bash', {})).toEqual({ decision: 'deny' });
 });
 
-interface FixtureSession {
-  rpc: CopilotToolMetadataRpc;
-  sessionId: string;
-  send: (input: { prompt: string }) => Promise<string>;
-}
-interface FixtureRuntime {
-  client: {
-    createSession: jest.Mock<Promise<FixtureSession>, [SessionConfig]>;
-    resumeSession: jest.Mock<Promise<FixtureSession>, [string, SessionConfig]>;
-  };
-  generation: number;
-  account: typeof account;
-  auth: {
-    token: () => Promise<string>;
-    tokenProvider: jest.Mock;
-  };
-  exited: Promise<void>;
-  close: jest.Mock<Promise<void>, []>;
-}
-function nativeRuntime(hold = false): {
-  runtime: FixtureRuntime;
-  sends: string[];
-  configs: SessionConfig[];
-  metadata: jest.Mock<Promise<{ tools: CurrentToolMetadata[] | null }>, []>;
-} {
-  const metadata = jest.fn<
-    Promise<{ tools: CurrentToolMetadata[] | null }>,
-    []
-  >(() => Promise.resolve({ tools: [] }));
-  let reap!: () => void;
-  const exited = new Promise<void>((resolve) => {
-    reap = resolve;
-  });
-  const sends: string[] = [];
-  const configs: SessionConfig[] = [];
-  const create = (config: SessionConfig): Promise<FixtureSession> => {
-    configs.push(config);
-    return Promise.resolve({
-      sessionId: 'native-child',
-      rpc: {
-        tools: {
-          initializeAndValidate: () => Promise.resolve({}),
-          getCurrentMetadata: metadata,
-        },
-        mcp: {
-          list: () =>
-            Promise.resolve({
-              servers: Object.keys(config.mcpServers ?? {}).map((name) => ({
-                name,
-                status: serverStatuses[name] ?? ('connected' as const),
-              })),
-            }),
-        },
-      },
-      send: ({ prompt }: { prompt: string }): Promise<string> => {
-        sends.push(prompt);
-        const event = (type: string, data: unknown, id: string): void =>
-          config.onEvent?.({
-            id,
-            type,
-            data,
-            timestamp: new Date(0).toISOString(),
-            parentId: null,
-            ephemeral: false,
-          } as SessionEvent);
-        event(
-          'assistant.message',
-          { messageId: 'answer', content: 'Verified evidence' },
-          'message',
-        );
-        event(
-          'assistant.usage',
-          { inputTokens: 12, cacheReadTokens: 2, outputTokens: 3 },
-          'usage',
-        );
-        if (!hold) event('session.idle', {}, 'idle');
-        return Promise.resolve('message-id');
-      },
-    });
-  };
-  const runtime = {
-    client: {
-      createSession: jest.fn(create),
-      resumeSession: jest.fn(async (_id: string, config: SessionConfig) =>
-        create(config),
-      ),
-    },
-    generation: 1,
+function nativeRuntime(
+  options: { hold?: boolean; assistantText?: string } = {},
+): ReturnType<typeof createCopilotNativeRuntime> {
+  return createCopilotNativeRuntime({
     account,
-    auth: {
-      token: (): Promise<string> => Promise.resolve('ghu_fixture'),
-      tokenProvider: jest.fn(),
-    },
-    exited,
-    close: jest.fn(() => {
-      reap();
-      return Promise.resolve();
-    }),
-  };
-  mockOpen.mockResolvedValue(runtime);
-  return { runtime, sends, configs, metadata };
+    serverStatuses,
+    ...options,
+    openRuntime: (runtime) => mockOpen.mockResolvedValue(runtime),
+  });
 }
 function request(resumeSessionId?: string): AgentRunRequest {
-  return {
-    delegationId: 'child',
-    runGeneration: 1,
-    launchKey: 'launch',
-    resumeSessionId,
-    parent: {
-      harnessId: 'claude',
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'chat',
-      sessionKey: 'parent',
-      runtimeGeneration: 1,
-      depth: 0,
-      turnId: 'turn',
-      toolCallId: 'spawn',
-    },
-    task: {
-      modelId: 'copilot:fixture',
-      description: 'Read evidence',
-      prompt: 'Read evidence',
-      deliveryMode: 'background',
-    },
-    route: routeFixture({
-      harnessId: 'copilot',
-      runtimeKind: 'copilot-sdk',
-      runtimeModelId: 'fixture',
-      authAccountKey: createHash('sha256')
-        .update(JSON.stringify(account))
-        .digest('hex'),
-    }),
+  return copilotRequest({
     cwd,
-    effectivePermission: 'read-only',
     signal: abort.signal,
+    resumeSessionId,
+    account,
+  });
+}
+
+function transcriptHarness(): {
+  port: InMemoryDelegationTranscriptPort;
+  admitted: DelegationTranscriptChange[];
+  firstAdmission: Promise<void>;
+} {
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  const admitted: DelegationTranscriptChange[] = [];
+  let admit: () => void = () => undefined;
+  const firstAdmission = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  const append = port.appendChanges.bind(port);
+  jest
+    .spyOn(port, 'appendChanges')
+    .mockImplementation(async (input, signal) => {
+      const result = await append(input, signal);
+      if (result.ok) {
+        admitted.push(...input.changes);
+        admit();
+      }
+      return result;
+    });
+  return { port, admitted, firstAdmission };
+}
+
+function transcriptRequest(original: AgentRunRequest): AgentRunRequest {
+  const target: DelegationTranscriptTarget = {
+    kind: 'delegation',
+    chatId: original.parent.chatId,
+    delegationId: original.delegationId,
+    runGeneration: original.runGeneration,
   };
+  return { ...original, transcriptStream: { target } };
+}
+
+function retainedText(
+  changes: readonly DelegationTranscriptChange[],
+  text: string,
+): boolean {
+  return changes.some(
+    ({ row }) =>
+      row.final &&
+      row.blocks.some((block) => block.type === 'text' && block.text === text),
+  );
+}
+
+async function startStream(
+  transcriptPort: InMemoryDelegationTranscriptPort,
+): Promise<{
+  runner: ReturnType<typeof createCopilotDelegationRunner>;
+  handle: NativeRunHandle;
+  terminal: Promise<AgentDelegationEvent['event']>;
+}> {
+  const runner = createCopilotDelegationRunner({
+    available: () => Promise.resolve({ available: true }),
+    prepare: () =>
+      Promise.resolve({
+        model: 'fixture',
+        profileDir: join(cwd, 'private-profile'),
+        tools,
+        plugins: [],
+        retainedReadRoots,
+        mcpServers: selectedMcpServers,
+      }),
+    reportError: jest.fn(),
+    transcriptPort,
+  });
+  let finish: (event: AgentDelegationEvent['event']) => void = () => undefined;
+  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
+    finish = resolve;
+  });
+  const handle = await runner.start(
+    transcriptRequest(request()),
+    ({ event }) => {
+      if (event.type === 'terminal') finish(event);
+      return Promise.resolve();
+    },
+  );
+  return { runner, handle, terminal };
 }
 async function run(
   resumeSessionId?: string,
@@ -814,4 +789,54 @@ test('delegate cancellation during native metadata cannot publish a binding or s
   await expect(
     readFile(join(cwd, 'private-profile', 'host-session.json'), 'utf8'),
   ).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+test('keeps stream-backed Copilot rows when the legacy transcript preview budget is exceeded', async () => {
+  const text = 'x'.repeat(DELEGATION_TRANSCRIPT_RECORDER_LIMITS.itemBytes + 1);
+  nativeRuntime({ assistantText: text });
+  const { port, admitted } = transcriptHarness();
+  const result = await startStream(port);
+
+  await expect(result.terminal).resolves.toMatchObject({ status: 'completed' });
+  expect(retainedText(admitted, text)).toBe(true);
+});
+
+test('attributes rejected Copilot row admission to fatal transcript storage failure', async () => {
+  nativeRuntime();
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  jest.spyOn(port, 'appendChanges').mockResolvedValue({
+    ok: false,
+    error: {
+      code: 'storage_failure',
+      message: 'fixture storage failure',
+      retryable: false,
+    },
+  });
+  const result = await startStream(port);
+
+  await expect(result.terminal).resolves.toMatchObject({
+    status: 'failed',
+    error: {
+      code: 'runtime_error',
+      message:
+        'The delegated transcript could not be saved. Retained partial output is available.',
+      retryable: false,
+    },
+  });
+});
+
+test('finalizes Copilot rows before a requested stop is acknowledged as cancellation', async () => {
+  const text = 'cancelled Copilot partial';
+  nativeRuntime({ hold: true, assistantText: text });
+  const { port, admitted, firstAdmission } = transcriptHarness();
+  const result = await startStream(port);
+  await firstAdmission;
+  await expect(
+    result.runner.stop(result.handle, 'user_cancelled'),
+  ).resolves.toEqual({ stopped: true });
+
+  await expect(result.terminal).resolves.toMatchObject({ status: 'cancelled' });
+  expect(retainedText(admitted, text)).toBe(true);
 });

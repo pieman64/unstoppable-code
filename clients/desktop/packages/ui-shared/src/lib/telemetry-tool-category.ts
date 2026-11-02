@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { TelemetryToolCategory } from '@canopy/protocol/telemetry';
 
 /**
@@ -32,8 +33,8 @@ export const TELEMETRY_TOOL_CATEGORY_LABELS = {
   watcher: 'Watcher',
   canopy: 'Built-in',
   graph: 'Graph',
-  appAdvisor: 'App advisor',
-  pipelineEditor: 'Pipeline editor',
+  appAdvisor: ORCHESTRATOR_LABEL,
+  pipelineEditor: 'Workflow editor',
   mcp: 'MCP',
   other: 'Other',
 } as const satisfies Record<TelemetryToolCategory, string>;

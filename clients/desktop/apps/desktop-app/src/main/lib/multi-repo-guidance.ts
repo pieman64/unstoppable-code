@@ -1,4 +1,8 @@
 import { BRAND } from '@canopy/brand/current';
+import {
+  mergeMultiRepoGuidance as mergeGuidance,
+  type MultiRepoGuidanceHeadings,
+} from '@canopy/core-runtime/node/workspace/instruction-files';
 
 /** Heading that marks the generated multi-repo guidance block in a project's CLAUDE.md. */
 export const MULTI_REPO_GUIDANCE_HEADING = `## ${BRAND.displayName} Multi-Repo Project Guidance`;
@@ -10,6 +14,11 @@ export const MULTI_REPO_GUIDANCE_HEADING = `## ${BRAND.displayName} Multi-Repo P
  */
 export const LEGACY_MULTI_REPO_GUIDANCE_HEADING = `## ${BRAND.displayName} Multi-Repo Workspace Guidance`;
 
+export const MULTI_REPO_GUIDANCE_HEADINGS: MultiRepoGuidanceHeadings = {
+  current: MULTI_REPO_GUIDANCE_HEADING,
+  legacy: LEGACY_MULTI_REPO_GUIDANCE_HEADING,
+};
+
 /**
  * Replace the generated guidance block (current or legacy heading) at the end
  * of an existing CLAUDE.md with the current default, or append it when absent.
@@ -19,22 +28,9 @@ export function mergeMultiRepoGuidance(
   existingContent: string,
   defaultContent: string,
 ): string {
-  const currentIndex = existingContent.indexOf(MULTI_REPO_GUIDANCE_HEADING);
-  const headingIndex =
-    currentIndex === -1
-      ? existingContent.indexOf(LEGACY_MULTI_REPO_GUIDANCE_HEADING)
-      : currentIndex;
-  const guidanceBlock = `${MULTI_REPO_GUIDANCE_HEADING}\n\n${defaultContent.trim()}\n`;
-
-  if (headingIndex === -1) {
-    const trimmed = existingContent.trimEnd();
-    return trimmed.length === 0
-      ? `${guidanceBlock}\n`
-      : `${trimmed}\n\n${guidanceBlock}\n`;
-  }
-
-  const before = existingContent.slice(0, headingIndex).trimEnd();
-  return before.length === 0
-    ? `${guidanceBlock}\n`
-    : `${before}\n\n${guidanceBlock}\n`;
+  return mergeGuidance(
+    existingContent,
+    defaultContent,
+    MULTI_REPO_GUIDANCE_HEADINGS,
+  );
 }

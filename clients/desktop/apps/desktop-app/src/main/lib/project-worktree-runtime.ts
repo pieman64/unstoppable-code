@@ -36,16 +36,26 @@ import {
   getWorkspaceWorktreeCreatedAt,
   isWorkspaceWorktreeCurrent,
 } from './workspace-persistence';
+import {
+  buildWorktreeSetupScriptResult,
+  notifyWorktreeSetupObserver,
+  type WorktreeSetupObserver,
+  type WorktreeSetupScriptRef,
+  type WorktreeSetupScriptResult,
+} from './worktree-setup-result';
 
 /**
  * Outcome of running a project worktree's post-create setup script to
  * completion. `skipped` means no setup script is configured; `completed` means
  * the setup script exited 0; `failed` means it exited non-zero, timed out, or
  * threw. `detail` carries a short human-readable reason for `failed`.
+ * `script` identifies the started setup run (run ID, canonical log ref, real
+ * exit code); it is absent when no script started.
  */
 export interface ProjectWorktreeSetupResult {
   status: 'completed' | 'failed' | 'skipped';
   detail?: string;
+  script?: WorktreeSetupScriptResult;
 }
 
 export function startProjectWorktreePostCreateSetup(params: {
@@ -74,6 +84,9 @@ export function startProjectWorktreePostCreateSetup(params: {
  * trigger — with two additions: it resolves with a `ProjectWorktreeSetupResult`
  * and it honors an optional `signal` so a caller can abort the running script
  * (the underlying `runShellScript` kills the process group on abort).
+ *
+ * An optional `observer` receives resolution, start and completion events
+ * (see `WorktreeSetupObserver`); observer failures never affect setup.
  */
 export async function runProjectWorktreePostCreateSetup(
   params: Parameters<typeof runProjectWorktreePostCreateSetupOwned>[0],
@@ -91,6 +104,7 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
   project: Pick<SingleRepoSidebarItem, 'repoPath' | 'scripts'>;
   getWindow: () => BrowserWindow | null;
   signal?: AbortSignal;
+  observer?: WorktreeSetupObserver;
 }): Promise<ProjectWorktreeSetupResult> {
   const worktreePath = getWorktreeDir(params.projectId, params.worktreeId);
   const setupStartedCreatedAt = await getWorkspaceWorktreeCreatedAt(
@@ -102,6 +116,9 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
   let setupScriptLogRef: Awaited<ReturnType<typeof startScriptRunLog>> | null =
     null;
   let runId: string = randomUUID();
+  let startedScript: WorktreeSetupScriptRef | null = null;
+  let completedScript: WorktreeSetupScriptResult | null = null;
+  const observer = params.observer;
 
   try {
     const resolvedScripts = await resolveProjectScripts(
@@ -109,6 +126,9 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
       worktreePath,
     );
     const definition = getResolvedScriptDefinition(resolvedScripts, 'setup');
+    notifyWorktreeSetupObserver('resolved', () =>
+      observer?.onResolved?.(definition !== undefined),
+    );
     if (!definition) {
       return { status: 'skipped' };
     }
@@ -133,6 +153,17 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
       invocation: 'automatic-setup',
     }).catch(() => null);
     runId = setupScriptLogRef?.runId ?? runId;
+    const scriptRef: WorktreeSetupScriptRef = {
+      scriptKey: setupScriptDescriptor.scriptKey,
+      runId,
+      target: 'project',
+      lifecycle: 'setup',
+      logRef: setupScriptLogRef,
+    };
+    startedScript = scriptRef;
+    notifyWorktreeSetupObserver('script-started', () =>
+      observer?.onScriptStarted?.(scriptRef),
+    );
     const prefs = await readPreferencesFile().catch(() => null);
     const startedWindow = params.getWindow();
     if (startedWindow) {
@@ -219,6 +250,14 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
         response: result,
       }).catch(() => {});
     }
+    const scriptResult = buildWorktreeSetupScriptResult(scriptRef, result);
+    // Cleared so a throw from the completion broadcast below cannot report
+    // this run a second time from the catch branch.
+    startedScript = null;
+    completedScript = scriptResult;
+    notifyWorktreeSetupObserver('script-completed', () =>
+      observer?.onScriptCompleted?.(scriptResult),
+    );
 
     const window = params.getWindow();
     if (window) {
@@ -237,17 +276,23 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
     }
 
     if (result.success) {
-      return { status: 'completed' };
+      return { status: 'completed', script: scriptResult };
     }
     const detail = result.timedOut
       ? 'setup script timed out'
       : `setup script exited with code ${result.exitCode ?? 'null'}`;
-    return { status: 'failed', detail };
+    return { status: 'failed', detail, script: scriptResult };
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (completedScript) {
+      // A throw after completion (the broadcast) keeps the real run: its
+      // canonical log is not rewritten and the result the observer saw stands.
+      return { status: 'failed', detail, script: completedScript };
+    }
     const failureResult = {
       success: false,
       exitCode: 1,
-      output: error instanceof Error ? error.message : String(error),
+      output: detail,
       timedOut: false,
       durationMs: 0,
     };
@@ -261,6 +306,15 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
         ref: setupScriptLogRef,
         response: failureResult,
       }).catch(() => {});
+    }
+    const failedRef = startedScript;
+    const scriptResult = failedRef
+      ? buildWorktreeSetupScriptResult(failedRef, failureResult)
+      : undefined;
+    if (scriptResult) {
+      notifyWorktreeSetupObserver('script-completed', () =>
+        observer?.onScriptCompleted?.(scriptResult),
+      );
     }
 
     const window = params.getWindow();
@@ -279,7 +333,9 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
       );
     }
 
-    return { status: 'failed', detail: failureResult.output };
+    return scriptResult
+      ? { status: 'failed', detail: failureResult.output, script: scriptResult }
+      : { status: 'failed', detail: failureResult.output };
   } finally {
     let runtimeStartAllowed = false;
     try {

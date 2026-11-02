@@ -83,8 +83,23 @@ describe('buildNoBillingSourceError', () => {
     expect(banner).toContain(
       'message: `You have no ${brandText.appName} AI Credits to cover this chat either.`',
     );
-    expect(banner).toContain('{`Sign in to ${providerLabel}`}');
-    expect(banner).toContain('label="Get AI Credits"');
+    // The sign-in label gains "instead" while a credits hand-off is visible
+    // (`visibleHandoff !== null`); both variants must keep the same remedy.
+    expect(banner).toContain(': `Sign in to ${providerLabel}`');
+    expect(banner).toContain('? `Sign in to ${providerLabel} instead`');
+    // The credits CTA takes its label from the shared purchase copy, so pin
+    // both the reference and the shared value it resolves to.
+    expect(banner).toContain('label={AI_CREDITS_PURCHASE_LABEL}');
+    const purchaseCopy = readFileSync(
+      path.resolve(
+        __dirname,
+        '../../../ui-shared/src/components/aiCreditsPurchaseCopy.ts',
+      ),
+      'utf8',
+    );
+    expect(purchaseCopy).toContain(
+      "export const AI_CREDITS_PURCHASE_LABEL = 'Get AI Credits';",
+    );
 
     // Both surfaces must name the same two remedies: get credits, or sign in.
     const error = buildNoBillingSourceError('Claude', 'Canopy');

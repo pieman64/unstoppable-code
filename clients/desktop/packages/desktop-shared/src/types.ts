@@ -1,3 +1,27 @@
+import type {
+  FileImageSaveSupport,
+  FileSaveOptions,
+} from '@canopy/protocol/file-image-save';
+import type {
+  SharedMultiRepoCreateCommand,
+  PrepareSharedMultiRepoParams,
+  PreparedSharedMultiRepo,
+  SharedMultiRepoCreationStatus,
+} from '@canopy/protocol/org-projects';
+import type {
+  AutoResumeMetadata,
+  AutoResumeReason,
+  ProjectDeletionDiscardDescription,
+  WorktreeArchiveTypedRefusal,
+  WorktreeDiscardDescription,
+  WorktreeDiscardResult,
+} from '@canopy/protocol/portal';
+export type {
+  ProjectDeletionDiscardDescription,
+  WorktreeArchiveTypedRefusal,
+  WorktreeDiscardDescription,
+  WorktreeDiscardResult,
+} from '@canopy/protocol/portal';
 import type { ScriptPreferencesAction } from '@canopy/agent-actions/families/settings/script-preferences';
 import type {
   ScriptActionsClient,
@@ -15,9 +39,23 @@ import type {
   ProjectMessageControlAction,
 } from './lib/chat-send-actions';
 import type { AgentBrowserAction } from '@canopy/agent-actions/families/browser/types';
+import type {
+  AuthenticatedPortalRequest,
+  AuthenticatedPortalResult,
+} from './lib/authenticated-portal-request';
+export type {
+  AuthenticatedPortalRequest,
+  AuthenticatedPortalResult,
+} from './lib/authenticated-portal-request';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type {
+  LifecycleJournalInspection,
+  LifecycleJournalQuarantineRequest,
+  LifecycleJournalQuarantineResult,
+} from '@canopy/protocol/portal/lifecycle-journal';
 import type { UnifiedEntryRef } from '@canopy/protocol/unified-entry';
 import type { TryItCapability } from '@canopy/protocol/try-it';
+import type { ChatDetail } from '@canopy/protocol/chat-detail';
 import type { EditorSetupAction } from '@canopy/agent-actions/families/editor-setup/actions';
 import type {
   RepoRulesScanRequest,
@@ -31,6 +69,11 @@ import type {
 } from '@canopy/protocol/repo-rules';
 import type { ReleaseNotesEntry } from '@canopy/protocol/release-notes';
 import type { FileIndexingPreferences } from '@canopy/protocol/file-indexing';
+import type {
+  OnboardingTipDismissals,
+  OnboardingTipsState,
+  OnboardingTipsUpdate,
+} from '@canopy/protocol/onboarding-tips';
 export type {
   FileIndexingPreferences,
   FileIndexingCustomGlob,
@@ -54,6 +97,7 @@ import type { ChatPlanReviewApproval } from '@canopy/protocol/portal';
 import type { McpActivationRecord } from '@canopy/protocol/mcp-servers';
 import type { AppAdvisorCodeGraphAction } from './types/app-advisor-code-graph';
 import type { DataSharingOptInFeature } from '@canopy/protocol/canopy-server';
+import type { PlanModeHintRecord } from '@canopy/protocol/onboarding';
 import type {
   AgentActionError,
   AgentActionErrorCode,
@@ -72,6 +116,11 @@ import type {
   SidebarItemGroupMoveItemRequest,
   SidebarItemGroupMoveRequest,
 } from '@canopy/protocol/sidebar';
+import type {
+  TranscriptContentField,
+  TranscriptTarget,
+  CardStateV2,
+} from '@canopy/protocol/canopy-core';
 import type {
   ChatAgentSentInfo,
   PortalQuestionControl,
@@ -129,14 +178,14 @@ import type {
   ForeignActivityStopRequest,
 } from '@canopy/protocol/foreign-activity';
 import type {
-  AgentDelegationStatus,
   AgentDelegationSnapshot,
   ManagedDelegationTreeEntry,
   ManagedDelegationRootEntry,
   ManagedDelegationTranscriptPage,
   ManagedDelegationWorktreeSummary,
+  ManagedDelegationLifetimeStatus as ProtocolManagedDelegationLifetimeStatus,
+  ManagedDelegationLifetimeChangedEvent as ProtocolManagedDelegationLifetimeChangedEvent,
   AgentDelegationTranscriptItem,
-  DelegateWatchEvent,
   DelegationWorkspaceChanges,
 } from '@canopy/protocol/delegation';
 import type { ManagedDelegationMode } from '@canopy/protocol/delegation/discovery';
@@ -212,7 +261,16 @@ import type {
   ChatInputDeliveryLedger,
   ChatSteeringCapabilities,
   ChatInputDeliveryAction,
+  ChatTurnPhase,
+  QueuedMessageRetryBlockedReason,
+  QueuedMessageWaitingReason,
+  SettingsHeldChange,
 } from '@canopy/protocol/portal';
+import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
+export type { ChatTurnPhase } from '@canopy/protocol/portal';
+export type { QueuedMessageWaitingReason } from '@canopy/protocol/portal';
+export type { QueuedMessageRetryBlockedReason } from '@canopy/protocol/portal';
+export type { SettingsHeldChange } from '@canopy/protocol/portal';
 import type { OrgProjectSetupProgress } from '@canopy/protocol/org-projects';
 import type {
   GitHubOriginRepository,
@@ -261,6 +319,8 @@ import type {
   LocalMemoryReadRequest,
   LocalMemoryDeleteRequest,
   LocalMemoryUpdateRequest,
+  LocalMemoryDeleteFileRequest,
+  LocalMemoryUpdateFileRequest,
   LocalMemoryConsolidationStatus,
   LocalMemoryRebuildResponse,
   LocalMemorySnapshotSummary,
@@ -298,11 +358,13 @@ import type {
   SharedContainerCapability,
   SharedContainerFileStatus,
   SharedContainerForkRequest,
-  SharedContainerForkResponse,
+  SharedContainerForkResult,
   SharedContainerForkProvenance,
   SharedContainerPublishedChat,
   SharedContainerPublishedPlan,
   SharedContainerRecipientRequest as SharedContainerRecipientRequestWire,
+  SharedContainerCapabilityPackageCounts,
+  SharedContainerRevisionPackage,
   SharedContainerRevisionRunConfig,
   SharedContainerType,
   SharedContainerLink,
@@ -317,8 +379,12 @@ export type {
   SharedContainerForkProvenance,
   SharedContainerForkRequest,
   SharedContainerForkResponse,
+  SharedContainerForkResult,
 } from '@canopy/protocol/shared-containers';
-import type { PublicShareSnapshot as ProtocolPublicShareSnapshot } from '@canopy/protocol/share-deep-link';
+import type {
+  DeepLinkResolveShareResponse,
+  PublicShareSnapshot as ProtocolPublicShareSnapshot,
+} from '@canopy/protocol/share-deep-link';
 import type { UserEnvironmentEntry } from './types/user-environment';
 import type { ResolvedCanopyDataDir } from '@canopy/protocol/brand';
 import type {
@@ -471,6 +537,7 @@ import type {
   GitHubWorkflowRunTransition,
   GitHubWorkflowRunWatchProgress,
   GitHubWorkflowWatcherEvent,
+  GitHubPullRequestWatchProgress,
 } from './types/github-watchers';
 import type {
   AgentAuditLinkTarget,
@@ -612,6 +679,7 @@ export {
 import {
   THINKING_LEVELS,
   THINKING_UI_OPTIONS,
+  clampModelThinkingLevel,
   isThinkingLevel,
   normalizePersistedThinkingLevel,
   normalizeThinkingForUi,
@@ -655,10 +723,12 @@ import type {
   ExecutionState,
   ExecutionSummary,
   PipelineAgentAuthor,
+  PipelineAssetInstallMode,
   PipelinePackageAnalysisSummary,
   PipelinePackageCapabilityOverlay,
   PipelinePackageInvocationDismissal,
   PipelinePackageReadiness,
+  PipelinePackageReferenceDismissal,
   StepLogLocator,
 } from './types/pipeline';
 import type {
@@ -1494,6 +1564,16 @@ export interface AccountOrganizationSettingsEventMessage {
 }
 
 export interface OrgProjectsApi {
+  sharedMultiRepo: {
+    prepare(
+      params: PrepareSharedMultiRepoParams,
+    ): Promise<PreparedSharedMultiRepo>;
+    create(
+      params: SharedMultiRepoCreateCommand,
+    ): Promise<SharedMultiRepoCreationStatus>;
+    getCreation(key: string): Promise<SharedMultiRepoCreationStatus | null>;
+    listCreations(): Promise<readonly SharedMultiRepoCreationStatus[]>;
+  };
   /**
    * Whether the member can create Code projects in this organization
    * (CAN-3534): Cowork create eligibility plus the server's
@@ -2284,7 +2364,8 @@ export interface NativeAiCreditsAvailability {
   ownerOrganization?: { id: string; name: string };
   /**
    * That organization's current credit pool balance, when its probe resolved.
-   * Absent when no organization was probed or the read failed. Optional for
+   * Absent when no organization was probed, the read failed, or the server
+   * omitted the balance because the viewer is not an OWNER/ADMIN. Optional for
    * compatibility with older main processes (CAN-3926 sidebar balance).
    */
   ownerOrganizationBalanceCredits?: number;
@@ -2542,6 +2623,7 @@ export interface GitHubRepoSummary {
 }
 
 export type CliPathState =
+  | 'outdated'
   | 'unsupported'
   | 'missing'
   | 'installed'
@@ -3450,6 +3532,8 @@ export interface WorktreeChatBadgeChatRef {
   providerType?: AgentProviderType;
   /** Short last-agent-response snippet for the unread hover popover. */
   preview?: string;
+  /** Set when the user marked the chat unread themselves. */
+  markedUnread?: boolean;
 }
 
 /**
@@ -3518,7 +3602,7 @@ export const SINGLE_REPO_USAGE_REPO_ID = '__single_repo__';
  * resolution (`getCwdFromFileIndex`) returns this root's own path, unlike
  * other standalone roots which resolve to their parent directory.
  */
-export const COWORK_WORKSPACE_FILE_ROOT_ID = 'workspace';
+export { COWORK_WORKSPACE_FILE_ROOT_ID } from '@canopy/protocol/ui-labels';
 
 /**
  * Source-controlled (`canopy.json`) script map. Widened to accept the canonical
@@ -4353,14 +4437,25 @@ export interface ArchiveWorkspaceWorktreeRequest {
   remainingWorktreeOrder?: string[];
   /** Persisted survivor order observed before asynchronous archive cleanup. */
   expectedRemainingWorktreeOrder?: string[];
+  /** Resolve an ordinary refusal with its discard description (CAN-5334). */
+  typedRefusal?: boolean;
 }
 
 export interface DeleteWorkspaceRequest {
   workspaceId: string;
+  /** CAN-5337: the interrupted deletion the user confirmed superseding. */
+  supersedeInterruptedDeletion?: string;
 }
 
 export interface DeleteProjectRequest {
   projectId: string;
+  /** CAN-5337: the interrupted deletion the user confirmed superseding. */
+  supersedeInterruptedDeletion?: string;
+}
+
+/** `workspace:delete-discard-describe`: read-only (CAN-5337). */
+export interface ProjectDeletionDiscardDescribeRequest {
+  workspaceId: string;
 }
 
 export interface AddRepoToWorktreeRequest {
@@ -5299,6 +5394,8 @@ export const DEFAULT_HIDE_ANTHROPIC_NAV = true;
 
 export const DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES = 10;
 
+export const DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES = 10;
+
 /**
  * Built-in macOS system sounds under `/System/Library/Sounds/`. Passing one
  * of these as the `sound` property on the Electron `Notification` constructor
@@ -5447,16 +5544,14 @@ export interface OsNotificationPreferences {
 
 /**
  * Promotional notification controls (CAN-3013). `enabled` is the master; the
- * other two are its children. Operational notifications -- agent completion,
+ * remaining category is independently configurable. Operational notifications -- agent completion,
  * failures, approval requests -- are outside this control entirely and stay
  * governed by {@link OsNotificationPreferences}.
  *
- * `arbitrary` covers every product or growth campaign that is not the Getting
- * Started sequence, which today means the activation campaigns.
+ * `arbitrary` covers product and growth campaigns, including activation campaigns.
  */
 export interface PromotionalNotificationPreferences {
   enabled: boolean;
-  gettingStarted: boolean;
   arbitrary: boolean;
 }
 
@@ -6089,20 +6184,70 @@ export function isTransientRetryStateEventData(
 }
 
 /** Identifies a single chat within the usage-limited chats registry. */
+
+/**
+ * Raw session-event `data.type` the main process emits while it is behind a
+ * Codex provider: the age of the oldest provider frame main has received but
+ * not yet ingested. Sent by the Codex session over the existing
+ * `IPC_CHANNELS.chatEvent` pipeline, outside the admission and commit path,
+ * so it reaches the renderer while a durable transcript write is held. Not
+ * persisted and not part of canonical chat state.
+ */
+export const INGESTION_LAG_EVENT_TYPE = 'canopy_ingestion_lag';
+
+/** One current sample of a chat's ingestion lag. */
+export interface ChatIngestionLag {
+  /** Age of the oldest frame main has not yet ingested, at `sampledAtMs`. */
+  lagMs: number;
+  /** `provider`: the frame's own timestamp; `receipt`: main's receipt time. */
+  source: 'provider' | 'receipt';
+  /** Main's clock when the sample was taken (epoch ms). */
+  sampledAtMs: number;
+  /** The lane's catch-up episode is active (lag above its threshold). */
+  catchingUp: boolean;
+}
+
+/** Payload shape for {@link INGESTION_LAG_EVENT_TYPE} events. */
+export interface ChatIngestionLagEventData {
+  type: typeof INGESTION_LAG_EVENT_TYPE;
+  /** `null` clears the chat's lag. */
+  lag: ChatIngestionLag | null;
+}
+
+/** Narrow an emitted session-event payload to an ingestion-lag event. */
+export function isChatIngestionLagEventData(
+  value: unknown,
+): value is ChatIngestionLagEventData {
+  if (!isRecord(value) || value.type !== INGESTION_LAG_EVENT_TYPE) return false;
+  const lag = value.lag;
+  if (lag === null) return true;
+  return (
+    isRecord(lag) &&
+    typeof lag.lagMs === 'number' &&
+    Number.isFinite(lag.lagMs) &&
+    lag.lagMs >= 0 &&
+    (lag.source === 'provider' || lag.source === 'receipt') &&
+    typeof lag.sampledAtMs === 'number' &&
+    Number.isFinite(lag.sampledAtMs) &&
+    typeof lag.catchingUp === 'boolean'
+  );
+}
+
 export interface UsageLimitedChatTarget {
   projectId: string;
   worktreeId: string;
   chatId: string;
 }
 
-export type AccountChangeResumeReason =
-  | 'usage_limit'
-  | 'authentication'
-  | 'provider_sign_in'
-  | 'app_shutdown';
+export type AccountChangeResumeReason = Exclude<
+  AutoResumeReason,
+  'auth_recovery'
+>;
 
 /** A registry entry recorded when a chat hits a provider usage limit. */
 export interface UsageLimitedChatEntry extends UsageLimitedChatTarget {
+  /** Exact owning turn captured by the trusted detector, absent on legacy entries. */
+  interruptedUserMessageId?: string;
   /** Present only for proxy quota recovery; never resumed by native account changes. */
   accountProxyConnectionId?: string;
   /** A dismissed automatic attempt stays stopped until a new interruption. */
@@ -6146,6 +6291,22 @@ export interface UsageLimitedChatItem extends UsageLimitedChatTarget {
    * Empty for cowork workspaces, which have no branches and render flat.
    */
   worktreeName: string;
+  /** Preview only; execution re-evaluates its existing prompt policy. */
+  resumePromptKind?: 'continue' | 'resend_user_message';
+  /** Last persisted invocation in the current turn, not proof it was interrupted. */
+  lastStep?: {
+    toolName: string;
+    detail?: string;
+    /**
+     * true requires an unambiguous matching later result with isError false.
+     * false requires positive evidence the invocation did not finish; current
+     * transcript evidence does not establish this, so previews never derive it.
+     * Missing/error/unspecified or ambiguous results leave this absent. Even a
+     * synthetic interruption records no outcome, not proof of no side effects.
+     * Completion describes this invocation, not the original request.
+     */
+    finished?: boolean;
+  };
 }
 
 /** Workspace grouping of usage-limited idle chats for the resume modal. */
@@ -6161,6 +6322,12 @@ export interface UsageLimitedChatGroup {
 /** Request body for `IPC_CHANNELS.listUsageLimitedIdleChats`. */
 export interface ListUsageLimitedIdleChatsRequest {
   provider: AgentProviderType;
+  /**
+   * Read each listed chat's full transcript to fill `resumePromptKind` and
+   * `lastStep`. Only the resume dialog asks; counts and dispatch stay
+   * metadata-only.
+   */
+  includeResumePreview?: boolean;
 }
 /** Response body for `IPC_CHANNELS.listUsageLimitedIdleChats`. */
 export type ListUsageLimitedIdleChatsResponse = UsageLimitedChatGroup[];
@@ -6223,6 +6390,8 @@ export interface ListUsageLimitedIdleSessionsRequest {
   provider?: AgentProviderType;
   /** Review application-stop checkpoints across all providers and shell pipelines. */
   resumeReason?: 'app_shutdown';
+  /** See `ListUsageLimitedIdleChatsRequest.includeResumePreview`. */
+  includeResumePreview?: boolean;
 }
 
 export type ListUsageLimitedIdleSessionsResponse = UsageLimitedSessionGroup[];
@@ -6387,6 +6556,13 @@ export type AgentSenderProvenance = {
       sender: Extract<ChatAgentSentInfo['sender'], { kind: 'bot' }>;
       owner: { kind: 'none' };
     }
+  | {
+      sender: Extract<ChatAgentSentInfo['sender'], { kind: 'pipeline' }>;
+      /** The run's owner; the evidence a pipeline send is authorized by. */
+      owner: ProjectOwnerContext;
+      /** The agent chat whose admission applied (D11); absent for user-originated runs. */
+      agentOrigin?: { projectId: string; worktreeId: string; chatId: string };
+    }
 );
 
 /**
@@ -6420,6 +6596,8 @@ export interface NativeProviderAccountRecord {
   accountKey: string;
   /** ms since epoch of the last observed change to a different account. */
   changedAt?: number;
+  /** Start of the last successful account-bound usage read with included headroom. */
+  subscriptionRestoredAt?: number;
 }
 
 export interface PreferencesData extends TerminalDrawerPreferences {
@@ -6436,6 +6614,7 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   orgProjectCloneProtocol?: 'https' | 'ssh';
   /** Opt-in to the app-managed pinned Cursor runtime. */
   cursorEnabled?: boolean;
+  /** Written by the main process only; renderer saves drop it. */
   copilotEnabled?: boolean;
   opencodeEnabled?: boolean;
   /**
@@ -6472,6 +6651,10 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * proxy's default, round robin.
    */
   accountProxyLocalRoutingStrategy?: AccountProxyRoutingStrategy;
+  /**
+   * The signed-in Copilot account pin. Written by the main process only;
+   * renderer saves that include it are rejected.
+   */
   copilotAccount?: CopilotAccount;
   /** Executable path for the local Cursor approval-check diagnostic. */
   cursorAgentPath?: string;
@@ -6544,6 +6727,12 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   globalApprovalRules: ApprovalRule[];
   /** Whether the user has dismissed the one-time upgrade notice introducing the tool-approval system. */
   approvalsUpgradeNoticeDismissed: boolean;
+  /**
+   * Onboarding tips the user dismissed, with when (CAN-4904). A tip listed
+   * here stays hidden until "Show tips again" in Settings clears the record.
+   * The web Portal reads and writes it through the paired desktop.
+   */
+  onboardingTipsDismissed: OnboardingTipDismissals;
   /**
    * Most recent fully-resolved lane across BOTH default scopes, retained while
    * auth, policy, or catalog facts reload.
@@ -6816,6 +7005,12 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   scriptTimeoutMinutes: number;
   codexAppServerIdleTimeoutMinutes: number;
   /**
+   * Minutes an open chat on the Claude harness (Claude, or Ollama on the
+   * Claude harness) stays idle before its `claude` process is released; the
+   * next message resumes the conversation.
+   */
+  claudeSessionIdleTimeoutMinutes: number;
+  /**
    * Default {@link ChatInterfaceMode} applied to newly-created Claude-backed
    * worktree chats. Honored by:
    *
@@ -6887,11 +7082,13 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   memoryPressureCriticalThresholdBytes: number;
   /** When true, active chat turns and pipeline runs prevent supported platforms from idle sleeping. */
   keepSystemAwakeWhileAgentsActive: boolean;
-  /** Opt-in managed delegation for macOS and Windows worktree chats. */
+  /** Opt-in managed delegation for macOS, Windows, and Linux Code worktree chats. */
   managedDelegationMode?: ManagedDelegationMode;
-  /** Maximum active managed children per parent chat; defaults to 5 (1–16). */
+  /** Maximum active managed children per parent chat; defaults to 5 (1–64). */
   managedDelegationMaxConcurrent?: number;
   managedDelegationMaxDepth?: number;
+  /** Lifetime retained-result limit for managed delegation; defaults to the shipped cap. */
+  managedDelegationLifetimeLimit?: number;
   codexMultiAgentWorktreeChatsEnabled: boolean;
   codexMultiAgentStandaloneChatsEnabled: boolean;
   codexMultiAgentPipelinesEnabled: boolean;
@@ -6966,6 +7163,12 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    */
   scrollbarBehavior?: ScrollbarBehavior;
   /**
+   * Whether chat and Markdown previews render `$...$` as inline math
+   * (CAN-5124). Optional for compatibility; normalization supplies `true`.
+   * `\(...\)`, `\[...\]`, `$$...$$` and math fences render either way.
+   */
+  singleDollarMath?: boolean;
+  /**
    * Chat transcript enrichment for Linear and GitHub references, set per
    * provider. Optional for compatibility; normalization supplies each
    * provider's default independently (Linear `replace`, GitHub `hover`).
@@ -7020,18 +7223,14 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    */
   rendererCodeCacheSchemeEnabled?: boolean;
   /**
-   * Opt-in to show only the three most recent agent steps while a chat runs
-   * (CAN-4274). Independent of Early access and off by default.
-   * Normalization reads anything but `true` as `false`.
+   * Appearance → "Chat detail": how much of an agent's work a chat shows
+   * (`detailed`, `recent` or `compact`). Preferences saved before the
+   * setting existed move over once from the retired switches: "Show only
+   * recent steps" (`chatLiveStepWindowEnabled`, CAN-4274) on reads as
+   * `recent`, "Group tool calls" (`chatGroupToolCallsEnabled`) on as
+   * `compact`, anything else as the default `recent`.
    */
-  chatLiveStepWindowEnabled?: boolean;
-  /**
-   * Opt-in to fold back-to-back tool calls into one row ("Ran 3 commands").
-   * Off by default, so every tool call shows as its own row; independent of
-   * `chatLiveStepWindowEnabled`. Normalization reads anything but `true` as
-   * `false`.
-   */
-  chatGroupToolCallsEnabled?: boolean;
+  chatDetail?: ChatDetail;
   /**
    * Opt-in for device-to-device remote control (Settings → Labs →
    * Remote access). The `canopy-device-remote-control` flag must also be on.
@@ -7291,25 +7490,17 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    */
   mobileInstallCueSnoozedUntil?: string;
   /**
-   * ISO-8601 timestamp of when the user dismissed the inline Home onboarding
-   * card (CAN-2411). Legacy and no longer read: the card lost its whole-card
-   * dismiss control, so honoring this would hide it forever from users with
-   * no way to bring it back. Preserved on read/write for older installs;
-   * nothing writes it any more.
-   *
-   * @deprecated Orphaned persisted state. Do not read it for behavior and do
-   * not write new values — the Home onboarding gate deliberately ignores it.
-   * The preferences normalizer must keep preserving it on read/write, or the
-   * value is dropped on the next save and the decision stops being
-   * reversible.
+   * Read-only legacy input for CAN-4008/#5222's independent plan-mode migration.
+   * Remove after that converter is integrated; never use for checklist UI.
    */
-  homeOnboardingDismissedAt?: string;
+  homeOnboardingSuggestions?: LegacyPlanModeChecklistInput;
   /**
-   * Durable state for the dynamic Home onboarding suggestions module (the
-   * merged successor of the CAN-2411 card + Home suggested prompts). Absent
-   * until the module first becomes eligible for the install.
+   * Local plan-mode lesson state. Save a patch through the authoritative
+   * preference writer: retirement merges within a generation; a higher
+   * generation resets it. Keep the version marker after reset so legacy
+   * checklist progress cannot retire the lesson again.
    */
-  homeOnboardingSuggestions?: HomeOnboardingSuggestionsPreferences;
+  planModeHint?: PlanModeHintRecord;
   /**
    * ISO-8601 timestamp of when the user accepted the first-run legal consent
    * (Terms of Service / Privacy Policy). Unlike guest consent, this blocking
@@ -7836,6 +8027,8 @@ export interface FileTreeRootsRequest {
 
 export interface FileTreeRootsResponse {
   roots: FileTreeRoot[];
+  /** Absence means image saves are unavailable. Negotiate before issuing a write. */
+  imageSaveSupport?: FileImageSaveSupport;
 }
 
 export interface FileTreeDirectoryRequest {
@@ -7897,12 +8090,30 @@ export interface FileReferenceResolveRequest {
   baseFilePath: string;
   /** Raw href as written in markdown. May be relative, repo-prefixed, or absolute. */
   href: string;
+  /**
+   * `transcript` (CAN-5038) resolves `href` as agent transcript link text to
+   * one file across the roots and ignores `baseFilePath`; its answer carries
+   * `canonical`. Omitted, the link resolves as markdown. A host that
+   * predates the field resolves it as markdown and returns no `canonical`.
+   */
+  mode?: 'markdown' | 'transcript';
+}
+
+/** The `worker.filesystem.link.resolve` result behind a transcript answer. */
+export interface FileReferenceCanonicalLink {
+  fileRootId: string;
+  /** Root-relative with `/` separators; empty only for a root directory. */
+  relativePath: string;
+  name: string;
+  kind: 'file' | 'directory';
 }
 
 export type FileReferenceResolveResponse = {
   absolutePath: string;
   filename: string;
   kind: 'file' | 'directory';
+  /** Present only for `mode: 'transcript'` (CAN-5038). */
+  canonical?: FileReferenceCanonicalLink;
 } | null;
 
 export interface CreateWorktreeResponse {
@@ -7931,6 +8142,21 @@ export interface ArchiveWorktreeResponse {
   warnings: string[];
   removedTemporaryWorkspaceId?: string;
   removedTemporaryWorkspaceName?: string;
+  /** Only with `typedRefusal`: why nothing was removed (CAN-5334). */
+  refusal?: WorktreeArchiveTypedRefusal;
+}
+
+/** `worktree:discard-describe`: read-only. */
+export interface WorktreeDiscardDescribeRequest {
+  projectId: string;
+  worktreeId: string;
+}
+
+/** `worktree:discard`: user-only and permanent; binds to a description. */
+export interface WorktreeDiscardRequest {
+  projectId: string;
+  worktreeId: string;
+  confirmation: string;
 }
 
 export interface CreateWorktreeRequest extends SidebarItemGroupCreationOptions {
@@ -7987,7 +8213,31 @@ export interface ArchiveWorktreeRequest {
   remainingWorktreeOrder?: string[];
   /** Persisted survivor order observed before asynchronous archive cleanup. */
   expectedRemainingWorktreeOrder?: string[];
+  /** Resolve an ordinary refusal with its discard description (CAN-5334). */
+  typedRefusal?: boolean;
 }
+
+/** Read-only source admission before a removal's renderer effects (CAN-5333). */
+export interface CheckWorktreeRemovalAdmissionRequest {
+  workspaceId: string;
+  worktreeIds: string[];
+  /** Decides the kind only when the project config can't be read. */
+  expectedKind?: 'single-repo' | 'multi-repo';
+}
+
+/**
+ * `refused` names the first refused worktree. `unchecked`: a remote-control
+ * host on an older release has no such check; its archive still admits.
+ */
+export type CheckWorktreeRemovalAdmissionResponse =
+  | { status: 'admitted' }
+  | {
+      status: 'refused';
+      worktreeId: string;
+      reason: 'source-unavailable';
+      message: string;
+    }
+  | { status: 'unchecked' };
 
 export interface RenameBranchRequest {
   projectId: string;
@@ -8590,6 +8840,23 @@ export type CodexModel = string;
 /** Mutable runtime list of codex model IDs — populated by {@link initCodexModels}. */
 export const CODEX_MODELS: string[] = [];
 
+/**
+ * Codex models the signed-in ChatGPT account lists through `model/list` that
+ * the package catalog does not (CAN-4716), populated by
+ * {@link setCodexAccountModels}. A separate overlay like {@link AGENT_MODELS}:
+ * {@link CODEX_MODELS} and `DEFAULT_CODEX_MODEL` never change, and re-running
+ * any registry init keeps these. They have no gateway route, so they only ever
+ * run on the native Codex lane.
+ */
+export const CODEX_ACCOUNT_MODELS: string[] = [];
+
+/** Whether `resolved` is a Codex-harness model: catalog or account-only. */
+function isCodexHarnessModelId(resolved: string): boolean {
+  return (
+    CODEX_MODELS.includes(resolved) || CODEX_ACCOUNT_MODELS.includes(resolved)
+  );
+}
+
 /** Cursor catalog metadata is discovered lazily; persisted identity survives cold starts. */
 export const CURSOR_MODELS: string[] = ['cursor-default'];
 export const COPILOT_MODELS: string[] = [];
@@ -8658,6 +8925,9 @@ const _pickerNativeCatalog: {
   codex: CodexModelEntry[];
   gateway: ConfiguredModelEntry[];
 } = { claude: [], codex: [], gateway: [] };
+// Every Codex id the package catalog configures, including flag-gated,
+// non-selectable and policy-filtered entries: never an account-only model.
+const _configuredCodexCatalogIds = new Set<string>();
 
 function normalizeCursorIdentity(id: string): string {
   return id.replace(/^(anthropic|openai)\//, '').replace(/\./g, '-');
@@ -9478,10 +9748,9 @@ export function getModelBillingMetadata(
 }
 
 /**
- * The protocol's provider-cycle fallback plus the canonical internal-only
- * `low` tier, in canonical `THINKING_LEVELS` order. `low` never reaches UI
- * cycles (it displays as `medium`), but the canonical layer keeps accepting it
- * for persisted/provider configuration.
+ * The desktop's native canonical defaults retain the supported Low tier in
+ * THINKING_LEVELS order. Model-aware controls use these capabilities; legacy
+ * provider-only UI helpers keep their separate Low-to-Medium alias.
  */
 function withCanonicalLow(
   levels: readonly ThinkingLevel[],
@@ -9671,28 +9940,7 @@ export function clampThinkingLevelForModel(
       aiCreditsRouted,
       providerFallback,
     );
-  if (supported.includes(level)) {
-    return level;
-  }
-  // Canonical `low` displays and transmits as `medium`
-  // (`normalizeThinkingForUi`), so when a sparse set omits `low` the clamp
-  // starts from `medium` — keeping this clamp consistent with the protocol
-  // `clampThinkingLevel` instead of falling straight through to `off`.
-  const requested = level === 'low' ? 'medium' : level;
-  if (supported.includes(requested)) {
-    return requested;
-  }
-  // THINKING_LEVELS is ordered ascending with 'off' first; walk down from the
-  // requested level to the highest supported level below it.
-  for (let i = THINKING_LEVELS.indexOf(requested) - 1; i >= 1; i--) {
-    const candidate = THINKING_LEVELS[i];
-    if (candidate && supported.includes(candidate)) {
-      return candidate;
-    }
-  }
-  return (
-    THINKING_LEVELS.find((candidate) => supported.includes(candidate)) ?? 'off'
-  );
+  return clampModelThinkingLevel(level, supported);
 }
 
 /** Rebuild ALL_MODELS from all registries. */
@@ -9701,6 +9949,7 @@ function rebuildAllModels(): void {
   ALL_MODELS.push(
     ...CLAUDE_MODELS,
     ...CODEX_MODELS,
+    ...CODEX_ACCOUNT_MODELS,
     ...AI_GATEWAY_MODELS,
     ...OLLAMA_MODELS,
     ...AGENT_MODELS,
@@ -9784,9 +10033,14 @@ export function initClaudeModels(
       .filter((entry) => isConfiguredModelEntryEnabled(entry, featureFlags))
       .map((entry) => ({ ...entry }));
   if (entries.length > 0) _modelRegistryHydrated = true;
+  releaseCodexAccountModels(new Set(entries.map((entry) => entry.id)));
   for (const id of CLAUDE_MODELS) delete _configuredGatewayIds[id];
   // Remove stale claude display names (keep codex ones)
-  const codexSet = new Set([...CODEX_MODELS, ...AI_GATEWAY_MODELS]);
+  const codexSet = new Set([
+    ...CODEX_MODELS,
+    ...CODEX_ACCOUNT_MODELS,
+    ...AI_GATEWAY_MODELS,
+  ]);
   for (const k of Object.keys(_displayNames)) {
     if (!codexSet.has(k)) {
       delete _displayNames[k];
@@ -9901,17 +10155,26 @@ export function initCodexModels(
   _cursorMappings = undefined;
   _managedPickerMappings.clear();
   _cursorLabels = undefined;
-  if (!preserveCursorIdentity)
+  if (!preserveCursorIdentity) {
     _pickerNativeCatalog.codex = entries
       .filter((entry) => isConfiguredModelEntryEnabled(entry, featureFlags))
       .map((entry) => ({ ...entry }));
+    _configuredCodexCatalogIds.clear();
+    for (const entry of entries) _configuredCodexCatalogIds.add(entry.id);
+  }
+  releaseCodexAccountModels(_configuredCodexCatalogIds);
   if (entries.length > 0) _modelRegistryHydrated = true;
   for (const id of CODEX_MODELS) delete _configuredGatewayIds[id];
   for (const id of Object.keys(_listedContextWindows)) {
     delete _listedContextWindows[id];
   }
-  // Remove stale codex display names (keep claude ones)
-  const claudeSet = new Set([...CLAUDE_MODELS, ...AI_GATEWAY_MODELS]);
+  // Remove stale codex display names (keep claude ones, and the account-only
+  // Codex overlay, which `setCodexAccountModels` owns)
+  const claudeSet = new Set([
+    ...CLAUDE_MODELS,
+    ...CODEX_ACCOUNT_MODELS,
+    ...AI_GATEWAY_MODELS,
+  ]);
   for (const k of Object.keys(_displayNames)) {
     if (!claudeSet.has(k)) {
       delete _displayNames[k];
@@ -10004,6 +10267,7 @@ export function initAiGatewayModels(
   // distinguishable from a catalog that never arrived. Sticky by design.
   if (entries.length > 0 || routes.length > 0) _gatewayCatalogHydrated = true;
   const nextIds = new Set(entries.map((entry) => entry.id));
+  releaseCodexAccountModels(nextIds);
   for (const id of AI_GATEWAY_MODELS) {
     if (nextIds.has(id)) continue;
     delete _displayNames[id];
@@ -10056,6 +10320,7 @@ export function initOllamaModels(entries: OllamaModelEntry[]): void {
   const keepSet = new Set([
     ...CLAUDE_MODELS,
     ...CODEX_MODELS,
+    ...CODEX_ACCOUNT_MODELS,
     ...AI_GATEWAY_MODELS,
   ]);
   for (const k of Object.keys(_displayNames)) {
@@ -10202,7 +10467,7 @@ export function getProviderForModel(
   if (isOpenCodeModel(resolved)) return 'opencode';
   if (isOllamaModel(resolved)) return 'ollama';
   if (CLAUDE_MODELS.includes(resolved)) return 'claude';
-  if (CODEX_MODELS.includes(resolved)) return 'codex';
+  if (isCodexHarnessModelId(resolved)) return 'codex';
   // Gateway models execute on their assigned harness: an EXPLICIT hydrated
   // user assignment wins, everything else follows the merged catalog
   // recommendation. A hydrated but non-overridden entry is a captured
@@ -10214,7 +10479,9 @@ export function getProviderForModel(
     _modelAliases,
   );
   return assignment?.overridden &&
-    (assignment.harness === 'claude' || assignment.harness === 'codex')
+    (assignment.harness === 'claude' ||
+      assignment.harness === 'codex' ||
+      assignment.harness === 'opencode')
     ? assignment.harness
     : _gatewayModelEntries[resolved]?.recommendedHarness;
 }
@@ -10234,7 +10501,10 @@ export function getCurrentModelHarnessCatalog(): ModelHarnessCatalog {
   );
   return {
     claudeModels: CLAUDE_MODELS,
-    codexModels: CODEX_MODELS,
+    codexModels:
+      CODEX_ACCOUNT_MODELS.length > 0
+        ? [...CODEX_MODELS, ...CODEX_ACCOUNT_MODELS]
+        : CODEX_MODELS,
     cursorModels: CURSOR_MODELS,
     copilotModels: COPILOT_MODELS,
     opencodeModels: OPENCODE_MODELS,
@@ -10264,7 +10534,7 @@ export function getExecutionHarnessForModel(
   // an explicit choice or a persisted native chat.
   const resolved = resolveModelAlias(model);
   if (CLAUDE_MODELS.includes(resolved)) return 'claude';
-  if (CODEX_MODELS.includes(resolved)) return 'codex';
+  if (isCodexHarnessModelId(resolved)) return 'codex';
   const agentBaseModels = Object.fromEntries(
     Object.entries(_agentModels).map(([id, entry]) => [id, entry.baseModel]),
   );
@@ -10285,6 +10555,15 @@ export function getExecutionHarnessForModel(
 export function getChatHarnessOptions(
   model: ChatModel,
 ): readonly ModelHarness[] {
+  const agentBaseModels = Object.fromEntries(
+    Object.entries(_agentModels).map(([id, entry]) => [id, entry.baseModel]),
+  );
+  const assignment = resolveHydratedModelHarnessAssignment(
+    model,
+    _modelAliases,
+    agentBaseModels,
+  );
+  if (assignment?.chatHarnesses) return assignment.chatHarnesses;
   const source = getModelSource(model);
   return source === 'ai-gateway' || source === 'ollama'
     ? ['claude', 'codex']
@@ -10298,6 +10577,9 @@ export function getProviderForChatModel(
   model: ChatModel,
   executionHarness?: ModelHarness,
 ): AgentProviderType | undefined {
+  // A captured OpenCode choice stays OpenCode when catalog availability changes.
+  // Admission revalidates its route; falling back would change funding/runtime.
+  if (executionHarness === 'opencode') return 'opencode';
   if (
     (executionHarness === 'claude' || executionHarness === 'codex') &&
     getModelSource(model) === 'ai-gateway'
@@ -10313,6 +10595,7 @@ export function inferLegacyExecutionHarness(input: {
   hasStarted: boolean;
 }): ModelHarness | undefined {
   if (!input.hasStarted) return undefined;
+  if (input.providerType === 'opencode') return 'opencode';
   if (input.model) {
     const source = getModelSource(input.model);
     if (source === 'ollama') return 'claude';
@@ -10336,11 +10619,7 @@ export function inferLegacyExecutionHarness(input: {
       );
     }
   }
-  if (
-    input.providerType === 'copilot' ||
-    input.providerType === 'cursor' ||
-    input.providerType === 'opencode'
-  )
+  if (input.providerType === 'copilot' || input.providerType === 'cursor')
     return input.providerType;
   return input.providerType === 'codex' ? 'codex' : 'claude';
 }
@@ -10375,7 +10654,117 @@ export function isClaudeModel(model: string): boolean {
 }
 
 export function isCodexModel(model: string): boolean {
-  return CODEX_MODELS.includes(resolveModelAlias(model));
+  return isCodexHarnessModelId(resolveModelAlias(model));
+}
+
+/**
+ * One `model/list` entry as {@link setCodexAccountModels} reads it. The
+ * sanitized `CodexSpeedCatalogModel` satisfies this shape.
+ */
+export interface CodexAccountModelListEntry {
+  id: string;
+  model: string;
+  displayName?: string;
+  hidden?: boolean;
+  isDefault?: boolean;
+  reasoningEfforts?: readonly string[];
+}
+
+/** Codex `reasoningEffort` ids that differ from Canopy's thinking levels. */
+const CODEX_REASONING_EFFORT_LEVELS: Readonly<Record<string, ThinkingLevel>> = {
+  none: 'off',
+  minimal: 'low',
+};
+
+function codexAccountThinkingLevels(
+  efforts: readonly string[] | undefined,
+): ThinkingLevel[] | undefined {
+  if (!efforts) return undefined;
+  const mapped = new Set<ThinkingLevel>();
+  for (const effort of efforts) {
+    const level = CODEX_REASONING_EFFORT_LEVELS[effort] ?? effort;
+    if (isThinkingLevel(level)) mapped.add(level);
+  }
+  // Canopy's own order; an effort Canopy does not know is dropped.
+  const levels = THINKING_LEVELS.filter((level) => mapped.has(level));
+  return levels.length > 0 ? levels : undefined;
+}
+
+/**
+ * Hand overlay ids a package registry now configures back to that registry,
+ * whichever hydrated first. The registry writes their metadata itself, so it
+ * is not deleted here. One-directional: an id a registry later stops
+ * configuring returns to the overlay only on the next account catalog push.
+ */
+function releaseCodexAccountModels(owned: ReadonlySet<string>): void {
+  for (let i = CODEX_ACCOUNT_MODELS.length - 1; i >= 0; i--) {
+    if (owned.has(CODEX_ACCOUNT_MODELS[i])) CODEX_ACCOUNT_MODELS.splice(i, 1);
+  }
+}
+
+function removeCodexAccountModelMetadata(): void {
+  for (const id of CODEX_ACCOUNT_MODELS) {
+    delete _displayNames[id];
+    delete _supportedThinkingLevels[id];
+  }
+  CODEX_ACCOUNT_MODELS.length = 0;
+}
+
+/**
+ * Register the signed-in account's Codex models that the package catalog does
+ * not list, REPLACING any earlier set (CAN-4716).
+ *
+ * Hidden entries, and entries whose `id` or `model` the registry already
+ * knows or the package catalog configures (even flag-gated, non-selectable or
+ * policy-filtered), are skipped. Order is the account's `isDefault` model first, then
+ * list order, deduplicated. Each registers under its `model` slug (what the
+ * Codex runtime is asked to run) as a codex-managed, Codex-harness model with
+ * no gateway route, labelled with its `displayName` and offering the thinking
+ * levels its reasoning efforts map to (Codex defaults when it lists none).
+ */
+export function setCodexAccountModels(
+  entries: readonly CodexAccountModelListEntry[],
+): void {
+  removeCodexAccountModelMetadata();
+  rebuildAllModels();
+  // Claude and gateway ids a policy re-init filtered out keep their configured
+  // picker identity; they are never account-only either.
+  const configuredElsewhere = new Set(
+    [..._pickerNativeCatalog.claude, ..._pickerNativeCatalog.gateway].map(
+      (entry) => entry.id,
+    ),
+  );
+  const ordered = [
+    ...entries.filter((entry) => entry.isDefault === true),
+    ...entries.filter((entry) => entry.isDefault !== true),
+  ];
+  for (const entry of ordered) {
+    if (entry.hidden === true) continue;
+    const id = entry.model || entry.id;
+    if (!id || CODEX_ACCOUNT_MODELS.includes(id)) continue;
+    if (
+      _configuredCodexCatalogIds.has(entry.id) ||
+      _configuredCodexCatalogIds.has(entry.model) ||
+      configuredElsewhere.has(entry.id) ||
+      configuredElsewhere.has(entry.model) ||
+      resolveKnownModel(entry.id) !== undefined ||
+      resolveKnownModel(entry.model) !== undefined
+    ) {
+      continue;
+    }
+    CODEX_ACCOUNT_MODELS.push(id);
+    _displayNames[id] = entry.displayName ?? id;
+    const levels = codexAccountThinkingLevels(entry.reasoningEfforts);
+    if (levels) _supportedThinkingLevels[id] = levels;
+  }
+  rebuildAllModels();
+}
+
+/** Drop every account-only Codex model, as on sign-out or account change. */
+export function clearCodexAccountModels(): void {
+  if (CODEX_ACCOUNT_MODELS.length === 0) return;
+  removeCodexAccountModelMetadata();
+  rebuildAllModels();
 }
 
 // ---------------------------------------------------------------------------
@@ -10589,6 +10978,12 @@ export interface ClaudeForkToolResult {
   content: string;
 }
 
+/** See `ChatSendMessageRequest.admittedApproval`. */
+export interface ChatSendAdmittedApproval {
+  approvalMode: ApprovalMode;
+  sessionApprovalRules: ApprovalRule[];
+}
+
 export interface ChatSendMessageRequest {
   projectId: string;
   worktreeId: string;
@@ -10596,8 +10991,16 @@ export interface ChatSendMessageRequest {
   userMessageId: string;
   /** Main-owned: this send resumes the chat's turn an app restart interrupted. */
   resumesInterruptedTurn?: boolean;
+  /** Trusted backend provenance, stripped at ordinary composer ingress. */
+  autoResume?: AutoResumeMetadata;
   /** Captured at acceptance; absent means manual for legacy callers. */
   modelSelectionMode?: 'auto';
+  /**
+   * Host-internal, never persisted: run this turn with the settings the live
+   * provider session already uses (Run now on a held row, generated
+   * deliveries), leaving the chat's saved settings for a later turn.
+   */
+  useLiveSessionSettings?: true;
   /** Main-process attribution projected onto completed turn telemetry. */
   modelRouting?: ModelRoutingAttributionV1;
   /** Stable provider-side deduplication identity when a local send is retried. */
@@ -10629,6 +11032,13 @@ export interface ChatSendMessageRequest {
   planMode?: boolean;
   approvalMode?: ApprovalMode;
   sessionApprovalRules?: ApprovalRule[];
+  /**
+   * Main-owned: the chat's approval mode and session rules when an agent send
+   * was admitted against them. Its turn never runs with more: the stricter
+   * mode, only allow rules held then, and their deny rules too. Kept on a
+   * queued send.
+   */
+  admittedApproval?: ChatSendAdmittedApproval;
   modelConfig?: AgentModelConfig;
   /** @deprecated Use modelConfig.thinkingLevel. */
   thinkingLevel?: ThinkingLevel;
@@ -10679,13 +11089,6 @@ export interface ChatSendMessageRequest {
   providerType?: AgentProviderType;
   /** Captured execution harness. Clients may echo this but cannot override main. */
   executionHarness?: ModelHarness;
-  /**
-   * The renderer submitted this message while a Codex turn still appeared to
-   * be streaming. If main finds that the provider turn has already stopped,
-   * it settles the stale visible turn and dispatches this message immediately
-   * instead of leaving it behind the host queue's stale active-turn gate.
-   */
-  recoverInterruptedCodexTurn?: boolean;
   /** @deprecated Use modelConfig.fastMode. */
   codexFastModeEnabled?: boolean;
   codexProposalMode?: 'optional' | 'required';
@@ -10706,6 +11109,18 @@ export interface ChatSendMessageRequest {
   initiationSource?: UsageInitiationSource;
   /** Host-created delivery identity. Persisted queue replay must recheck live ownership. */
   managedDelegationDeliveryId?: string;
+  /**
+   * Main-only: the host-issued id of a delegation completion notice batch
+   * (equal to `userMessageId`). Unlike `managedDelegationDeliveryId` the row
+   * stays a visible watcher-class row. Trusted batch provenance is checked at
+   * admission, not against live-root delivery slots. Untrusted ingress rejects it.
+   */
+  delegationNoticeBatchId?: string;
+  /**
+   * Marks a queue row the user never sees, such as a delegate's request to
+   * its parent. Its payload is never rendered; surfaces hide the row.
+   */
+  internalRow?: ChatInternalRow;
   /** Optional display name for the scheduled activity that initiated this turn. */
   automationName?: string;
   /**
@@ -10727,11 +11142,38 @@ export interface ChatSendMessageRequest {
    */
   agentSendSetup?: { version: 1; startedChat?: true };
   /**
+   * Main-only: the per-turn override a pipeline send was accepted with (D2).
+   * Its settings are already applied to this request; it is kept so queued
+   * dispatch can tell an admitted approval override from a captured copy.
+   */
+  turnOverride?: ChatSendTurnOverride;
+  /**
+   * Main-only: an automation's own send facts (CAN-4549). Its fields are
+   * already applied to this request; kept so a queued or setup-held row
+   * restored after a restart keeps its tab lineage.
+   */
+  automationDispatch?: ChatSendAutomationDispatch;
+  /**
    * Stable user-message ids represented by a main-process watcher queue
    * consolidation. Main uses these to record provider acceptance for every
    * constituent delivery, so a later retry cannot dispatch one again.
    */
   consolidatedWatcherUserMessageIds?: string[];
+  /**
+   * Main-only saved-merge parts, never transcript or untrusted input. Fields
+   * omitted here are shared by every part (merge requires deep equality).
+   * Restore only when these ids equal consolidatedWatcherUserMessageIds in
+   * order; an older writer may have extended the row without this snapshot.
+   */
+  watcherPartSnapshots?: readonly {
+    userMessageId: string;
+    kind: string;
+    text: string;
+    hiddenContext?: ChatSendMessageRequest['hiddenContext'];
+    clientUserMessageId?: string;
+    watcherDeliveryId?: string;
+    delegationNoticeBatchId?: string;
+  }[];
   /**
    * True when this user message is the first user-authored turn after a chat
    * tab became newly tracked (including forked tabs). Backend watcher delivery
@@ -10900,6 +11342,7 @@ export interface HostQueuedMessageView {
   supersedesUserMessageId?: string;
   /** Host-owned human/automated attribution, shared with the Portal projection. */
   promptSource?: 'human' | 'automated';
+  autoResume?: AutoResumeMetadata;
   text: string;
   fileReferences?: FileReference[];
   attachmentPaths?: string[];
@@ -10907,11 +11350,28 @@ export interface HostQueuedMessageView {
   inputMode?: 'typed' | 'voice';
   origin: ChatQueueOrigin;
   enqueuedAtMs: number;
+  turnPhase?: ChatTurnPhase;
   editLocked?: boolean;
   /** Host-authoritative eligibility for moving this row into the active turn. */
   canSteer?: boolean;
   /** Steer must wait for the next turn to apply this message's tool selections. */
   steerBlockedByCapabilityChange?: boolean;
+  /** Transient, like `turnPhase`: why main is holding this row. */
+  waitingReason?: QueuedMessageWaitingReason;
+  /** Transient host-owned send restriction; never persisted with the queue. */
+  retryBlockedReason?: QueuedMessageRetryBlockedReason;
+  /** A held row still requires explicit Retry after funding is confirmed. */
+  retryable?: boolean;
+  /**
+   * Transient: sending this row would restart the session with changed
+   * settings and stop live native background work, so main holds it.
+   */
+  blockedByBackgroundWork?: true;
+  /**
+   * Transient: sending this row's saved request now would restart the session
+   * and stop live native background work. Names the settings that differ.
+   */
+  restartHeldChanges?: readonly SettingsHeldChange[];
   /** Present when the queued message was generated by a fired Canopy watcher. */
   watcherFired?: ChatWatcherFiredInfo;
   /** Public captured sender labels only; no hidden context or owner evidence. */
@@ -10924,8 +11384,27 @@ export interface ChatQueueTarget {
   chatId: string;
 }
 
+/** A queue row that no surface renders; see {@link ChatSendMessageRequest.internalRow}. */
+export interface ChatInternalRow {
+  kind: 'delegation-request';
+  /** The delegate whose request this row carries. */
+  delegationId: string;
+  /** One plain line that may stand in for the payload; never the payload itself. */
+  displayLine: string;
+}
+
 export interface ChatQueueUpdatedEvent extends ChatQueueTarget {
   queue: HostQueuedMessageView[];
+  /**
+   * Delegations whose request to this chat is queued and not yet claimed, in
+   * queue order. Carries ids only; internal rows never appear in `queue`.
+   */
+  waitingDelegationIds?: string[];
+  /**
+   * The chat's current settings would restart its session while native
+   * background work is live, so a send would wait for that work to end.
+   */
+  restartHeldByBackgroundWork?: true;
 }
 
 export interface ChatQueueSnapshotRequest {
@@ -11825,6 +12304,11 @@ export interface ShowFilesRendererResult {
 
 export interface FileAnnotationDocument {
   filePath: string;
+  /**
+   * Per-document revision from main: 0 before the first write, then +1 per
+   * write. Absent from hosts that predate CAN-4104.
+   */
+  revision?: number;
   annotations: ReviewAnnotation[];
   commentThreads: ReviewCommentThread[];
 }
@@ -11852,6 +12336,11 @@ export interface FileAnnotationsSaveRequest extends FileAnnotationsScopeRequest 
    * intentional renderer deletions.
    */
   baseCommentThreadIds: string[];
+  /**
+   * The document revision this save was derived from. When set, main refuses
+   * the save if another write landed first; omitted, it merges as before.
+   */
+  expectedRevision?: number;
 }
 
 export interface FileAnnotationsAppendRequest extends FileAnnotationsScopeRequest {
@@ -11997,15 +12486,20 @@ export interface PersistedChatTab {
   unacceptedTurnEnds?: Record<string, 'cancelled' | 'failed'>;
   /**
    * Main-owned record of how turns ended, keyed by user message id: once they
-   * ran, written in the commit that settles the turn's runtime, and, when no
-   * provider accepted them, in the commit that records their unaccepted end.
-   * Dropped when the same turn runs again. Bounded: completed ends, which
-   * acceptance order also reports, are dropped before failed or cancelled ones.
+   * ran, written from the canonical turn's end, with an empty completion
+   * recorded as failed, and, when no provider accepted them, in the commit
+   * that records their unaccepted end. Dropped when the same turn runs again.
+   * Bounded: completed ends, which acceptance order also reports, are dropped
+   * before failed or cancelled ones.
    */
   turnEnds?: Record<
     string,
     { outcome: 'completed' | 'failed' | 'cancelled'; endedAt: number }
   >;
+  /** Main-owned input ownership for delayed root terminal attribution. */
+  rootTurnInputIds?: Record<string, string[]>;
+  /** Main-owned durable fence for committed root terminal reductions. */
+  reducedRootTerminalTurnIds?: string[];
   /**
    * Main-owned record of turns an app restart interrupted, keyed by user
    * message id: the turn that resumed each (`resumedBy`), or `abandoned`
@@ -12124,6 +12618,12 @@ export interface PersistedChatTab {
    * worktree's `chatBadges` summary without renderer involvement.
    */
   unread?: boolean;
+  /**
+   * Set while `unread` came from the user's explicit "Mark as unread" rather
+   * than unseen output. Meaningful only while `unread` is true; every other
+   * unread write clears it.
+   */
+  unreadMarkedManually?: boolean;
   /** Persisted so the approval bar survives app restart. */
   pendingPlanExit?: Record<string, unknown>;
   /** Correlates a plan-resolution command with the proposal it reviewed. */
@@ -12413,6 +12913,15 @@ export interface PersistedPendingQuestion {
   toolUseId?: string;
 }
 
+/** Internal archive incarnation and cutoff; never a client-supplied start permit. */
+export interface ArchivedTurnFence {
+  version: 1;
+  archiveEpoch: string;
+  archivedAtMs: number;
+  closedTurnId?: string;
+  providerSessionId?: string;
+}
+
 /**
  * On-disk archive entry for a single closed-but-archived chat tab. Written and
  * read by the backend archive storage lib. The **full** entry (which embeds the
@@ -12427,6 +12936,8 @@ export interface ArchivedChatEntry {
   tab: PersistedChatTab;
   /** ISO timestamp of when the tab was archived. */
   archivedAt: string;
+  /** Absent on legacy archives, which cannot authorize automatic restoration. */
+  turnFence?: ArchivedTurnFence;
   /** Turn count computed via `groupIntoTurns` at archive time. */
   turnCount: number;
   /**
@@ -12522,6 +13033,14 @@ export interface PersistedHostQueuedMessage {
   enqueuedAtMs: number;
   /** Attempt-scoped dispatch gate retained across application restarts. */
   authenticationAttemptId?: string;
+  /**
+   * The queue is dispatching this row. It has left `queuedMessageIds` and
+   * stays here only until its prompt commit removes it, so a restart in
+   * between recovers it at the head of the queue.
+   */
+  dispatching?: true;
+  /** Accepted but not yet queued or dispatched. Recovered at the end of the queue after a restart; removed when the message is queued, its row commits or the send is rejected. */
+  admitting?: true;
   /** Trusted host-owned billing constraint; never accepted from a send DTO. */
   requiredAccountProxyConnectionId?: string;
 }
@@ -12529,6 +13048,7 @@ export interface PersistedHostQueuedMessage {
 export interface ChatRuntimeState {
   steeringCapabilities?: ChatSteeringCapabilities;
   status: ChatRuntimeStatus;
+  turn?: PersistedChatTurnState;
   activeTurn?: {
     userMessageId: string;
     startedAt: number;
@@ -12554,7 +13074,8 @@ export interface ChatTabSettingsPatch {
   /** Null clears the one-turn auto-archive marker. */
   autoArchive?: boolean | null;
   pinned?: boolean;
-  fileViewMode?: FileTabViewMode;
+  /** Omission preserves the view mode; null removes it (raw fallback). */
+  fileViewMode?: FileTabViewMode | null;
   fileDiffContext?: FileDiffContext;
   /**
    * File-tab-only: assigns a file into an empty file tab (or retargets the
@@ -12569,7 +13090,7 @@ export interface ChatTabSettingsPatch {
   modelSelectionMode?: 'auto' | null;
   modelExplicitlyChosen?: boolean;
   billingExplicitlyChosen?: boolean;
-  approvalMode?: ApprovalMode;
+  // Approval mode changes only through `chat.set_approval_mode`.
   /** Durable Claude resume id or Codex thread id; null clears continuity. */
   sdkSessionId?: string | null;
   /** Global Instructions block captured with the durable provider session. */
@@ -12608,7 +13129,10 @@ export interface ChatTabSettingsPatch {
   agentArtifactCarryByTurn?: AgentArtifactCarryByTurn | null;
 }
 
-/** Canonical metadata keys supported by compatibility snapshot compaction. */
+/**
+ * Canonical metadata keys supported by compatibility snapshot compaction.
+ * Compaction also carries `approvalMode`, which no settings patch accepts.
+ */
 export const CHAT_TAB_SETTINGS_PATCH_KEYS = [
   'customTitle',
   'unread',
@@ -12653,7 +13177,7 @@ export const CHAT_TAB_SETTINGS_PATCH_KEYS = [
   'latestRevisionNumber',
   'pendingSystemInstructions',
   'agentArtifactCarryByTurn',
-] as const satisfies readonly (keyof ChatTabSettingsPatch)[];
+] as const satisfies readonly (keyof ChatTabSettingsPatch | 'approvalMode')[];
 
 /**
  * Main-owned metadata delta for a persisted tab. Provider events may update
@@ -12825,6 +13349,37 @@ export interface ChatCreateFileTabCommand {
   pinned?: boolean;
 }
 
+/** Main-only; the per-turn settings a trusted send commits with its message (D2). */
+export interface ChatSendTurnOverride {
+  version: 1;
+  model?: ChatModel;
+  providerType?: AgentProviderType;
+  executionHarness?: ModelHarness;
+  /** The runtime changed: clear session-resume fields, as the automation does today. */
+  resetRuntime?: true;
+  modelConfig?: AgentModelConfig;
+  planMode?: boolean;
+  approvalMode?: ApprovalMode;
+  pluginSelections?: ChatTabPluginSelections;
+}
+
+/**
+ * Main-only: the facts an automation's own send kept on its native path
+ * (banner, usage source, tab lineage, package overlay, activation). Grants no
+ * authority. Accepted only with an automation-only pipeline sender.
+ * `inputMode` is not here: it is already on the command.
+ */
+export interface ChatSendAutomationDispatch {
+  version: 1;
+  /** Raw automation name for the banner; the title line uses the sender's normalized name. */
+  automationName: string;
+  /** The automation's bound context; written to the tab like `ChatServiceOptions.executionContext`. */
+  executionContext?: string;
+  /** `background` keeps the scope's active tab (a scheduled run). */
+  presentation: 'foreground' | 'background';
+  packageOverlay?: PipelinePackageCapabilityOverlay;
+}
+
 export interface ChatSendMessageCommand {
   /** Checked and committed with the implementation message. */
   planReviewApproval?: ChatPlanReviewApproval;
@@ -12856,6 +13411,17 @@ export interface ChatSendMessageCommand {
   agentSenderProvenance?: ChatSendMessageRequest['agentSenderProvenance'];
   hiddenContext?: ChatSendMessageRequest['hiddenContext'];
   agentSendSetup?: ChatSendMessageRequest['agentSendSetup'];
+  /**
+   * Main-only: a pipeline send's per-turn settings (D2), accepted only with
+   * pipeline sender metadata. Renderer IPC, Portal commands and public tool
+   * schemas must reject it.
+   */
+  turnOverride?: ChatSendTurnOverride;
+  /**
+   * Main-only: accepted only with an automation-only pipeline sender.
+   * Renderer IPC, Portal commands and public tool schemas must reject it.
+   */
+  automationDispatch?: ChatSendAutomationDispatch;
 }
 
 /**
@@ -12945,8 +13511,17 @@ export type ChatCommand =
       /** Optional system notice persisted atomically with an automatic change. */
       notice?: ChatModelChangeNotice;
     }
+  | {
+      /**
+       * Main-only durable half of an approval-mode transition. Main orders it
+       * against the live runtimes; chat command IPC rejects it.
+       */
+      type: 'chat.set_approval_mode';
+      tabId: string;
+      approvalMode: ApprovalMode;
+    }
   | { type: 'chat.mark_read'; chatId: string }
-  | { type: 'chat.mark_unread'; chatId: string }
+  | { type: 'chat.mark_unread'; chatId: string; manual?: true }
   | {
       type: 'chat.dismiss_attention';
       chatId: string;
@@ -12963,6 +13538,13 @@ export type ChatCommand =
       fileReferences?: FileReference[];
       attachmentPaths?: string[];
       attachmentPromptContexts?: ChatAttachmentPromptContext[];
+    }
+  | {
+      /** Places the queued entry before `beforeQueuedMessageId`; null moves it to the tail. */
+      type: 'chat.move_queued_message';
+      chatId: string;
+      queuedMessageId: string;
+      beforeQueuedMessageId: string | null;
     }
   | {
       type: 'chat.cancel_queued_message';
@@ -13070,6 +13652,15 @@ export interface ChatCommandResult {
 }
 
 export type ChatStateChange =
+  | {
+      type: 'delegation.card_state_updated';
+      chatId: string;
+      delegationId: string;
+      runGeneration: number;
+      cardRevision: number;
+      streamRevision: number;
+      cardState: CardStateV2;
+    }
   | {
       type: 'transcript.updated';
       chatId: string;
@@ -13213,12 +13804,17 @@ export interface ChatTranscriptPageRequest
   archivedContainerId?: string;
   standaloneHistory?: boolean;
   chatId: string;
+  /** Absent or `primary`: the chat's transcript; `delegation`: a child stream. */
+  target?: TranscriptTarget;
+  /** A child stream page's continuation cursor, as the backend returned it. */
+  cursor?: string;
   before?: number;
   transcriptRevision?: number;
 }
 /** Compact occurrence counts; transcript bodies stay in main until navigation. */
 export interface ChatTranscriptSearchRequest extends ChatGetStateRequest {
   chatId: string;
+  target?: TranscriptTarget;
   query: string;
   requestId: string;
 }
@@ -13237,12 +13833,50 @@ export interface ChatToolOutputRequest extends ChatGetStateRequest {
   archivedContainerId?: string;
   standaloneHistory?: boolean;
   chatId: string;
+  target?: TranscriptTarget;
   messageId: string;
   toolUseId: string;
   requestId: string;
   reference: PersistedToolOutputReference;
   offset: number;
   limit: number;
+}
+/** A byte range of one stored body field, selected by row and block. */
+export interface ChatTranscriptContentRequest extends ChatGetStateRequest {
+  archivedContainerId?: string;
+  standaloneHistory?: boolean;
+  chatId: string;
+  target?: TranscriptTarget;
+  messageId: string;
+  blockOrdinal: number;
+  field: TranscriptContentField;
+  fieldSource?: 'stored' | 'logical';
+  requestId: string;
+  offset: number;
+  limit: number;
+}
+/** One ordinal page of a row's logical block list. */
+export interface ChatTranscriptBlocksRequest extends ChatGetStateRequest {
+  archivedContainerId?: string;
+  standaloneHistory?: boolean;
+  chatId: string;
+  target?: TranscriptTarget;
+  messageId: string;
+  firstBlockOrdinal?: number;
+  /** A later page's continuation cursor, as the backend returned it. */
+  cursor?: string;
+  limit: number;
+}
+export interface ChatTranscriptBlocksPage {
+  messageId: string;
+  firstBlockOrdinal: number;
+  blocks: PersistedChatBlock[];
+  blockCount: number;
+  nextBlockOrdinal?: number;
+  cursor?: string;
+  transcriptRevision: number;
+  /** Present only when the delegation run is known to have truncated output. */
+  runTruncated?: true;
 }
 export interface ChatToolOutputCancelRequest {
   requestId: string;
@@ -13251,6 +13885,11 @@ export interface ChatToolOutputResponse {
   text: string;
   nextOffset?: number;
   byteLength: number;
+}
+/** A byte-range transcript result with optional run-level truncation evidence. */
+export interface ChatTranscriptContentResponse extends ChatToolOutputResponse {
+  /** Present only when the delegation run is known to have truncated output. */
+  runTruncated?: true;
 }
 /** One raw byte range of a promoted chat visual; see `core.chat.visual.read`. */
 export interface ChatVisualReadRequest extends ChatGetStateRequest {
@@ -13337,6 +13976,16 @@ export interface ChatStateCommandPort {
     request: ChatToolOutputRequest,
     signal?: AbortSignal,
   ): Promise<ChatToolOutputResponse>;
+  /** A byte range of one stored body field; absent on hosts without it. */
+  readTranscriptContent?(
+    request: ChatTranscriptContentRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatTranscriptContentResponse>;
+  /** One page of a row's logical blocks; absent on hosts without it. */
+  getTranscriptBlocks?(
+    request: ChatTranscriptBlocksRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatTranscriptBlocksPage>;
   readVisual(
     request: ChatVisualReadRequest,
     signal?: AbortSignal,
@@ -14156,9 +14805,35 @@ export type ChatSendMessageDisposition = 'dispatched' | 'already_accepted';
 // Tool-approval prompt types
 // ---------------------------------------------------------------------------
 
+/** Maximum UTF-16 string units per supplied file-change text field. */
+export const APPROVAL_FILE_CHANGE_MAX_CHARS = 20_000;
+
+/** Display-only request text, bounded before delivery and persistence. */
+export type ApprovalFileChange =
+  | {
+      kind: 'edit';
+      oldText: string;
+      newText: string;
+      replaceAll?: boolean;
+      truncated?: boolean;
+    }
+  | {
+      kind: 'write';
+      content: string;
+      truncated?: boolean;
+    };
+
 export type ApprovalRequestDetails =
   | { kind: 'command'; command: string; cwd?: string; reason?: string }
-  | { kind: 'file-write'; path?: string; reason?: string; itemId?: string }
+  | {
+      kind: 'file-write';
+      path?: string;
+      /** Host-projected relative path; never an approval rule target. */
+      displayPath?: string;
+      change?: ApprovalFileChange;
+      reason?: string;
+      itemId?: string;
+    }
   | {
       kind: 'mcp';
       server: string;
@@ -14456,8 +15131,9 @@ export interface McpAskUserEvent {
    * Optional deterministic correlation id used by providers that can supply
    * a `tool_use` id alongside the IPC event. When present, the renderer
    * copies this onto the stored `PendingQuestion` so it can match the card
-   * to the eventual `tool_use` block without the "first un-answered pending"
-   * heuristic.
+   * to the eventual `tool_use` block by exact id. When set, it must equal
+   * that block's id: a record with a different id never falls back to the
+   * ordered-question-text match, so its card would not settle.
    *
    * Notes:
    *  - Codex paths (dynamic `canopy_ask_user_question` and built-in
@@ -15282,6 +15958,11 @@ export interface SharedContainerSharePreview {
   withheldFileCount?: number;
   withheldFilePaths?: string[];
   withheldSymlinkPaths?: string[];
+  /**
+   * Finalized counts from a completed capability-package analysis for this
+   * scope. Absent while analysis is cold, stale, failed or empty.
+   */
+  capabilityPackageCounts?: SharedContainerCapabilityPackageCounts;
 }
 
 export type SharedContainerPreviewRequest = SharedContainerTargetRequest;
@@ -15549,6 +16230,8 @@ export type SharedContainerReplicaState =
       revisionCreatedAt: string;
       withheldFileCount?: number;
       withheldFileReasons?: SharedContainerWithheldFileReason[];
+      /** Capability package bound to this exact revision; absent when none. */
+      package?: SharedContainerRevisionPackage;
     })
   | (SharedContainerReplicaStateBase & {
       status: 'blocked';
@@ -15680,6 +16363,8 @@ export interface SharedContainerInboxChangedEvent {
 
 export interface SharedContainerRecipientRequest {
   containerId: string;
+  /** Optional bounded analytics hint from the listing; never authorization. */
+  containerType?: SharedContainerType;
   /** Ownership hint; absent for a personal container shared directly. */
   organizationId?: string;
   access?: SharedContainerAccess;
@@ -16112,9 +16797,7 @@ export interface SharedContainersApi {
    */
   refreshRunCopy(request: SharedContainerRunRefreshRequest): Promise<void>;
   /** Copies one accepted revision into an independent local container. */
-  fork(
-    request: SharedContainerForkRequest,
-  ): Promise<SharedContainerForkResponse>;
+  fork(request: SharedContainerForkRequest): Promise<SharedContainerForkResult>;
   readForkProvenance(
     request: ReadSharedContainerForkProvenanceRequest,
   ): Promise<SharedContainerForkProvenance | null>;
@@ -16571,6 +17254,20 @@ export interface AppAdvisorWindowUiState {
    * the page (rather than remaking it) while it does. Absent reads as false.
    */
   hasUnsentDraft?: boolean;
+  /**
+   * The nav's bulk chat removal dialog while it is open; `null` or absent
+   * when closed. Mode, count, and phase only, never the chats it names. The
+   * main window reports it as `appAdvisor.batchRemovalDialog`.
+   */
+  batchRemovalDialog?: AppAdvisorWindowBatchRemovalDialog | null;
+}
+
+/** An open bulk removal dialog in the App Advisor popout's nav. */
+export interface AppAdvisorWindowBatchRemovalDialog {
+  open: true;
+  mode: 'archive' | 'delete';
+  count: number;
+  phase: 'confirm' | 'running' | 'results';
 }
 
 export type AppAdvisorWindowUiStateReportRequest = AppAdvisorWindowUiState;
@@ -16638,6 +17335,12 @@ export interface OpenExternalFileRequest {
 
 export interface FilePreviewRequest {
   absolutePath: string;
+  /**
+   * For a video file, answer with an image: the operating system's thumbnail
+   * of its first frame (Compact queue attachment tiles). Without it, or where
+   * the OS has no thumbnail (Linux), a video stays `unsupported`.
+   */
+  videoFrame?: boolean;
 }
 
 export interface FilePreviewResponse {
@@ -16691,6 +17394,38 @@ export interface FileContentRequest {
    * Agent-driven ShowFiles reads must always supply this target.
    */
   workspaceTarget?: ShowFilesWorkspaceTarget;
+  /**
+   * The root identity of a scoped read (CAN-4099). With `workspaceTarget`,
+   * main reads the file as `worker.filesystem.file.read` addresses it and
+   * answers with `canonical`; `absolutePath` stays for hosts that predate it.
+   */
+  file?: FileContentReadIdentity;
+}
+
+export interface FileContentReadIdentity {
+  fileRootId: string;
+  /** Root-relative, `/`-separated, without `.` or `..` segments. */
+  relativePath: string;
+}
+
+/**
+ * The `worker.filesystem.file.read` result behind a scoped response, without
+ * its content (CAN-4099). Present only when the request named `file`.
+ */
+export interface FileContentCanonicalRead {
+  fileRootId: string;
+  relativePath: string;
+  /** The resolved file's name. */
+  name: string;
+  contentKind: 'text' | 'markdown' | 'html' | 'image' | 'unsupported';
+  mediaType?: string;
+  sizeBytes: number;
+  returnedBytes: number;
+  truncated: boolean;
+  /** RFC 3339, millisecond precision. */
+  modifiedAt: string;
+  /** Opaque `size:round(mtimeMs)` save-conflict token. */
+  version: string;
 }
 
 /**
@@ -16745,6 +17480,8 @@ export interface FileContentResponse {
    * the write rather than silently overwriting the newer state.
    */
   modifiedAtMs: number;
+  /** The canonical read, when the request named `file` (CAN-4099). */
+  canonical?: FileContentCanonicalRead;
 }
 
 /**
@@ -16753,7 +17490,12 @@ export interface FileContentResponse {
  * the backend can detect concurrent on-disk modifications and reject the save
  * rather than overwriting newer changes.
  *
- * Backend rejects the save in any of these cases:
+ * Negotiated image saves instead supply `createOnly: true` and the advertised
+ * format's encoding, without an edit version. PNG/base64 and SVG/UTF-8 are
+ * bounded to 5 MiB, create a missing file exclusively, and return metadata.
+ * Missing imageSaveSupport means this extension is unavailable.
+ *
+ * The default text editor path rejects the save in any of these cases:
  *
  * - `validateId` fails for `projectId` or `worktreeId`.
  * - `absolutePath` is relative or otherwise invalid.
@@ -16767,17 +17509,20 @@ export interface FileContentResponse {
  * - `expectedModifiedAtMs` is supplied and the current `stat().mtimeMs`
  *   differs by more than 1 ms (`Math.abs(currentMtimeMs - expectedModifiedAtMs) > 1`).
  */
-export interface SaveFileContentRequest {
+export interface SaveFileContentRequest extends FileSaveOptions {
   projectId: string;
   worktreeId: string;
   absolutePath: string;
   content: string;
   /**
-   * `modifiedAtMs` returned by `readFileContent` / `readFilePreview` at load
-   * time. The backend rejects the save when supplied and the on-disk
-   * `stat().mtimeMs` has drifted by more than 1 ms. Omit to skip the
-   * concurrent-modification check (e.g. for first-time saves of files that
-   * may have been touched by other tooling between load and save).
+   * `modifiedAtMs` from the confirmed `readFileContent` / `readFilePreview`.
+   * `file:save-content` rejects with `FileSaveConflictError` when the current
+   * `stat().mtimeMs` differs by more than 1 ms. Electron invoke wraps that
+   * error's name; the client adapter must restore the shared error identity.
+   * Recovery writes must supply the freshly confirmed version, including
+   * an explicit replacement of a newer version. For text edits, omission
+   * retains the legacy unconditional-save behavior and must never bypass a
+   * conflict. Negotiated create-only image saves must omit this edit version.
    */
   expectedModifiedAtMs?: number;
 }
@@ -17086,7 +17831,17 @@ export type ChatSearchSource =
   | 'plan';
 
 /** What a search document represents, independently of where it is stored. */
-export type ChatSearchDocumentKind = 'chat' | 'plan' | 'archived-container';
+export type ChatSearchDocumentKind =
+  | 'chat'
+  | 'chat-child'
+  | 'plan'
+  | 'archived-container';
+
+/** Locates a retained delegation transcript relative to its parent chat. */
+export interface ChatSearchChildLocator {
+  delegationId: string;
+  runGeneration: number;
+}
 
 /**
  * A single document in the search catalog. Mirrors the backend
@@ -17095,7 +17850,7 @@ export type ChatSearchDocumentKind = 'chat' | 'plan' | 'archived-container';
  * client-side — the catalog carries only ids, never resolved names.
  */
 export interface ChatSearchCatalogEntry {
-  /** `${projectId}/${worktreeId}/${chatId}/${source}` */
+  /** Parent chat identity, or an escaped child tuple for `chat-child` docs. */
   docId: string;
   /** Workspace id | `APP_ADVISOR_PROJECT_ID`. */
   projectId: string;
@@ -17109,6 +17864,8 @@ export interface ChatSearchCatalogEntry {
    * renderer fixtures and persisted derived-index rows forward compatible.
    */
   documentKind?: ChatSearchDocumentKind;
+  /** Present only when the best content match is a retained child transcript. */
+  childLocator?: ChatSearchChildLocator;
   title: string;
   /** Chat or archived-container summary description. */
   description?: string | null;
@@ -17144,6 +17901,15 @@ export interface ChatSearchCatalogResponse {
  */
 export interface ChatSearchScopeHint {
   linkedPersonalWorkspaceIds?: string[];
+}
+
+/**
+ * Catalog request. With `chatIds` the catalog returns only those chats' rows
+ * (live and archived copies) however old they are, instead of the newest page;
+ * an empty list returns nothing. Visibility and scoping are unchanged.
+ */
+export interface ChatSearchCatalogRequest extends ChatSearchScopeHint {
+  chatIds?: readonly string[];
 }
 
 /**
@@ -17190,7 +17956,9 @@ export interface ChatSearchQueryResponse {
  * - {@link onUpdated} — subscribes to the `chatSearchUpdated` broadcast.
  */
 export interface ChatSearchApi {
-  catalog(scope?: ChatSearchScopeHint): Promise<ChatSearchCatalogResponse>;
+  catalog(
+    request?: ChatSearchCatalogRequest,
+  ): Promise<ChatSearchCatalogResponse>;
   query(req: ChatSearchQueryRequest): Promise<ChatSearchQueryResponse>;
   /**
    * Subscribe to the payload-less, main→renderer `chatSearchUpdated` broadcast
@@ -17874,6 +18642,18 @@ export function buildNoBillingSourceError(
   return `You're not signed in to ${providerLabel} and have no ${brandName} AI Credits available. Get AI Credits or sign in to ${providerLabel} to start chatting.`;
 }
 
+/**
+ * Build the error for a turn aborted because its model runs only on AI
+ * Credits and none are spendable. Shared by every provider backstop so chat
+ * turn telemetry can recognize the abort, which carries no stable code on
+ * every provider.
+ *
+ * @param brandName Injected brand display name; never hard-code a product name.
+ */
+export function buildAiCreditsRequiredError(brandName: string): string {
+  return `This model is only available with ${brandName} credits. Make sure you have available credits or an active plan with spendable balance to use it.`;
+}
+
 /** Payload shape for the aborted-turn error carrying {@link NO_BILLING_SOURCE_ERROR_CODE}. */
 export interface NoBillingSourceErrorEventData {
   type: 'error';
@@ -18461,10 +19241,13 @@ export type AutomationTrigger =
  *    affect execution, and the `workspaceName` / `worktreeName` / `chatTitle`
  *    display fields are informational only.
  *  - `worktree_pipeline`: dispatches the pipeline identified by
- *    `pipelineId` against the workspace. For code workspaces a fresh
- *    worktree is provisioned (optionally from `baseWorktreeId`) and the run
- *    is worktree-scoped. When `workspaceId` refers to a cowork workspace the
- *    run is directory-scoped at the cowork root instead — no worktree is
+ *    `pipelineId`. `target` chooses the destination: `global` runs with no
+ *    project in the automation owner's scratch directory (`workspaceId`, if
+ *    present, is inert); `new_worktree` provisions a fresh worktree on a code
+ *    project; `task` runs in an existing worktree or Work Entry; `project`
+ *    runs directory-scoped in the project folder. With `target` absent, code
+ *    workspaces get a fresh worktree (optionally from `baseWorktreeId`) and a
+ *    cowork workspace runs directory-scoped at its root — no worktree is
  *    created, and `baseWorktreeId` / `repoId` must be omitted. `inputs` is a
  *    plain string→string record so it can serialize over IPC; both
  *    validator and consumer must reject non-string values.
@@ -18626,7 +19409,10 @@ export type AutomationAction =
     }
   | {
       type: 'worktree_pipeline';
-      workspaceId: string;
+      /** Absent keeps the legacy destination; see {@link AutomationPipelineTarget}. */
+      target?: AutomationPipelineTarget;
+      /** Required unless `target.kind` is `global`, where it is inert. */
+      workspaceId?: string;
       baseWorktreeId?: string;
       pipelineId: string;
       pipelineSource?: 'bundled' | 'user' | 'project' | 'shared' | 'curated';
@@ -18662,6 +19448,13 @@ export type AutomationAction =
       workspaceName?: string;
       worktreeName?: string;
     };
+
+/** Where a `worktree_pipeline` automation runs. Absent means today's behavior. */
+export type AutomationPipelineTarget =
+  | { kind: 'global' }
+  | { kind: 'new_worktree' }
+  | { kind: 'task'; taskId: string }
+  | { kind: 'project' };
 
 /**
  * Optional structured result captured by the scheduler when an automation
@@ -18778,6 +19571,48 @@ export interface ScheduledActivity {
    * it, and edits keep it. Top-level so older binaries keep it on edit.
    */
   agentScheduledSend?: AgentScheduledSend;
+  /**
+   * Renderer projection only, never stored (CAN-4551): the pipeline this
+   * automation owns, as main validated its marker. While `chatEditable`,
+   * `action` is the chat action the pipeline stands for, and a save of it
+   * regenerates the pipeline; otherwise the pipeline was edited by hand.
+   * `storedAction` is the action main stores and runs, which sharing uses.
+   */
+  ownedPipeline?: {
+    pipelineId: string;
+    chatEditable: boolean;
+    storedAction: AutomationAction;
+  };
+  /**
+   * Local pipelines this automation's prompt uses, chosen by the author and
+   * carried into the capability package when the automation is shared.
+   * Additive: older binaries ignore it.
+   */
+  dependencies?: AutomationDependencies;
+}
+
+/**
+ * A local pipeline an automation depends on. For `project`, `pipelineId` is
+ * the project pipeline's path-derived identity the pipeline store uses.
+ */
+export interface AutomationPipelineDependency {
+  pipelineId: string;
+  source: 'user' | 'project';
+}
+
+export interface AutomationDependencies {
+  pipelines: AutomationPipelineDependency[];
+}
+
+/**
+ * Recipient-side record of one packaged prompt dependency pipeline: the local
+ * pipeline materialized for the share's `key` and the hash of the bytes last
+ * written to it.
+ */
+export interface AutomationInstalledPipelineDependency {
+  key: string;
+  localPipelineId: string;
+  pipelineContentHash: string;
 }
 
 /**
@@ -18815,6 +19650,12 @@ export interface AutomationInstalledFromMetadata {
   bundledPipelineLocalId?: string;
   /** Hash of the inline pipeline bytes last written to that local pipeline. */
   bundledPipelineContentHash?: string;
+  /**
+   * Packaged prompt dependency pipelines materialized for this install, one
+   * per share key. The `worktree_pipeline` action's own pipeline (key
+   * `action`) stays in `bundledPipelineLocalId` / `bundledPipelineContentHash`.
+   */
+  pipelineDependencies?: AutomationInstalledPipelineDependency[];
   /** Capability package that must be present before this automation can run. */
   capabilityPackage?: PipelinePackageRef;
   /**
@@ -18932,6 +19773,8 @@ export interface AutomationCreateRequest {
    * authored activities.
    */
   installedFrom?: AutomationInstalledFromMetadata;
+  /** Local pipelines the prompt uses. See {@link ScheduledActivity.dependencies}. */
+  dependencies?: AutomationDependencies;
   /**
    * Owner to bind the automation to (`personal` / `org:<uuid>`). Validated
    * against the account; absent binds the selected context. Only trusted host
@@ -18967,6 +19810,11 @@ export interface AutomationUpdateRequest {
    * contentHash. `undefined` preserves the existing value.
    */
   installedFrom?: AutomationInstalledFromMetadata;
+  /**
+   * Dependency patch: an object replaces the stored list, `null` clears it,
+   * and `undefined` preserves the existing value.
+   */
+  dependencies?: AutomationDependencies | null;
 }
 
 /** Request shape for `automations.delete`. */
@@ -19008,7 +19856,13 @@ export type AutomationIfCommandGenerateResponse =
  *   this directly — the backend does not localize error codes.
  */
 export type AutomationMutationResponse =
-  | { ok: true; activity?: ScheduledActivity; run?: ScheduledActivityRun }
+  | {
+      ok: true;
+      activity?: ScheduledActivity;
+      run?: ScheduledActivityRun;
+      /** Create only: false when an existing activity satisfied the request. */
+      created?: boolean;
+    }
   | { ok: false; error: string };
 
 // ---------------------------------------------------------------------------
@@ -19077,6 +19931,19 @@ export interface AnalyzeAutomationCapabilityPackageRequest {
   pipelineContent?: string;
   /** Tokens the author marked as not commands, echoed back by the analysis. */
   dismissedInvocations?: PipelinePackageInvocationDismissal[];
+  /** The automation's stored `dependencies.pipelines` plus manual adds. */
+  pipelineDependencies?: AutomationPipelineDependency[];
+  /** Keys of the optional (name-matched) pipelines the author selected. */
+  pipelineSelections?: string[];
+  /** Share audience; some content (file assets) is not allowed for Public. */
+  audience?: 'private' | 'team' | 'organization' | 'public';
+  /** Pipeline references the author marked as not dependencies. */
+  dismissedReferences?: PipelinePackageReferenceDismissal[];
+  /**
+   * False when the server can't publish v5 documents: the share keeps its
+   * pre-v5 shape, with no pipeline detected or packaged.
+   */
+  packagePipelines?: boolean;
 }
 
 export type CommitAutomationCapabilityPackageRequest =
@@ -19108,17 +19975,96 @@ export interface AutomationCapabilityPackageRequest {
   publicShare?: boolean;
 }
 
-export type InstallAutomationCapabilityPackageRequest =
+/** A packaged pipeline already installed locally for this share key. */
+export interface AutomationExistingPipelineInstall {
+  key: string;
+  localPipelineId: string;
+  /** Hash the local pipeline must still have to be updated in place. */
+  expectedContentHash: string;
+}
+
+/**
+ * Stage A of an automation install: materialize the package's
+ * `automation_pipeline` resources as local pipelines before the automation
+ * exists. Idempotent; refuses before writing anything when a recorded local
+ * pipeline was edited or a blob does not match its hash.
+ */
+export type InstallAutomationPipelinesRequest =
+  AutomationCapabilityPackageRequest & {
+    stage: 'pipelines';
+    existingPipelines?: AutomationExistingPipelineInstall[];
+  };
+
+export interface InstallAutomationPipelinesResponse {
+  pipelines: Array<{
+    key: string;
+    localPipelineId: string;
+    pipelineContentHash: string;
+    outcome: 'created' | 'reused' | 'kept';
+  }>;
+}
+
+/**
+ * The update review's read of Stage A: the same checks (a locally edited
+ * recorded pipeline or a blob that does not match its hash refuses), and what
+ * Stage A would do per key, without saving a pipeline, an install record or
+ * a file. Only the package cache is filled, as Stage A would.
+ */
+export type PreviewAutomationPipelinesRequest =
+  AutomationCapabilityPackageRequest & {
+    stage: 'pipelines-preview';
+    existingPipelines?: AutomationExistingPipelineInstall[];
+  };
+
+/** How installing changes the files one packaged asset put on this computer. */
+export interface AutomationPipelineAssetChanges {
+  assetId: string;
+  installMode: PipelineAssetInstallMode;
+  /** Missing here, so install writes them. Asset-relative paths. */
+  added: string[];
+  /** The share changed them and install overwrites them (`replace`). */
+  updated: string[];
+  /** Edited here since they were installed, and install overwrites them (`replace`). */
+  overwritten: string[];
+  /** Differ from the share and stay as they are here (`seed`). */
+  kept: string[];
+}
+
+export interface PreviewAutomationPipelinesResponse {
+  pipelines: Array<{
+    key: string;
+    /** The local pipeline Stage A would use; absent when it would create one. */
+    localPipelineId?: string;
+    pipelineContentHash: string;
+    outcome: 'created' | 'reused' | 'kept';
+    /** Whether Stage A would rewrite `localPipelineId` with the shared YAML. */
+    rewrites: boolean;
+    /** The shared YAML, for review. */
+    rawPipeline: string;
+    /** Per asset, only for a pipeline already on this computer. */
+    assetChanges: AutomationPipelineAssetChanges[];
+  }>;
+}
+
+/** Stage B (record the automation-owner install) or removal. */
+export type InstallAutomationCapabilityPackageForAutomationRequest =
   | (AutomationCapabilityPackageRequest & {
       localAutomationId: string;
       /** Baseline hash of the installed, recipient-bound automation content. */
       localContentHash?: string;
       remove?: false;
+      stage?: undefined;
     })
   | {
       localAutomationId: string;
       remove: true;
+      stage?: undefined;
     };
+
+export type InstallAutomationCapabilityPackageRequest =
+  | InstallAutomationCapabilityPackageForAutomationRequest
+  | InstallAutomationPipelinesRequest
+  | PreviewAutomationPipelinesRequest;
 
 export interface VerifyAutomationSharedPipelinePinRequest {
   remoteId: string;
@@ -19224,8 +20170,17 @@ export interface AutomationsApi {
   getCapabilityPackageReadiness(
     request: AutomationCapabilityPackageRequest,
   ): Promise<PipelinePackageReadiness>;
+  /** Stage A: materialize the package's pipelines before the automation exists. */
   installCapabilityPackage(
-    request: InstallAutomationCapabilityPackageRequest,
+    request: InstallAutomationPipelinesRequest,
+  ): Promise<InstallAutomationPipelinesResponse>;
+  /** Stage A dry run for the update review; writes no pipeline or file. */
+  installCapabilityPackage(
+    request: PreviewAutomationPipelinesRequest,
+  ): Promise<PreviewAutomationPipelinesResponse>;
+  /** Stage B (after create) or removal. */
+  installCapabilityPackage(
+    request: InstallAutomationCapabilityPackageForAutomationRequest,
   ): Promise<void>;
   verifySharedPipelineInstallPin(
     request: VerifyAutomationSharedPipelinePinRequest,
@@ -19248,229 +20203,15 @@ export interface AutomationsApi {
   onChanged(cb: (snapshot: AutomationsListResponse) => void): () => void;
 }
 
-/**
- * Stable item ids for the persistent sidebar onboarding checklist (CAN-788,
- * revised by CAN-2663). Order here is the display order.
- *
- * The list is deliberately short and *universal*: every item applies to every
- * user regardless of role. Role-targeted, rotating suggestions (roles, repos,
- * per-plugin try-its, pipelines) belong to the dynamic Home "Getting started"
- * module (`components/home/onboarding-suggestions/`), which refills from its
- * own queue. Keeping the two surfaces disjoint is what stops them from
- * showing the user contradictory progress.
- *
- * CAN-2663 removed `choose-role`, `add-repository`, `run-pipeline`, and
- * `schedule-automation` (all now owned by the Home queue) and added
- * `start-chat` / `create-account`. `connect-accounts` and `add-capability`
- * keep their original ids on purpose: renaming them would orphan every latch
- * already written to `onboarding-checklist.json`, silently un-completing the
- * step for existing users. Only their labels changed (CAN-2664).
- *
- * `create-account` leads because CAN-2663 specifies it first. It is
- * pre-completed for an already-signed-in user, so returning users open the
- * panel to visible progress rather than to a list of pure chores. It is NOT
- * the only step that can be complete on first render -- `start-chat` backfills
- * through `hasEverSentChatMessage()`, `add-capability` derives from the skills
- * lock file plus the plugin marketplace cache, and `connect-accounts` reads a
- * persisted latch, all inside `computeOnboardingChecklistState()`.
- *
- * It is deliberately NOT a gate: nothing downstream blocks on it, guests get
- * the included AI Credits without it, and `ACTIVATION_ITEM_IDS` excludes it
- * precisely so signing in never counts as evidence the user did something
- * with the product. Note the flip side of that exclusion --
- * `hasRealCloudAccount()` is false for every guest, so for a guest this step
- * is permanently the first incomplete one and the collapsed card's CTA reads
- * "Create an account" regardless of how much else they have finished.
- *
- * This order is the display order for every surface. The renderer keeps its
- * own parallel `ITEM_DEFS` (labels and open-actions cannot live in this
- * environment-neutral package), so a reorder here must be applied there too —
- * `SidebarOnboardingChecklist.test.tsx` compares the rendered DOM against this
- * constant to keep the two from drifting apart silently.
- */
-export const ONBOARDING_CHECKLIST_ITEM_IDS = [
-  'create-account',
-  'start-chat',
-  'connect-accounts',
-  'add-capability',
-] as const;
-
-export type OnboardingChecklistItemId =
-  (typeof ONBOARDING_CHECKLIST_ITEM_IDS)[number];
-
-/**
- * Providers surfaced by the checklist's "Connect a tool" item.
- *
- * Since CAN-2664 the item completes on the *first* genuine connection of any
- * one of these, so the goal is only to teach the mechanic — not to wire up a
- * stack. Two consequences follow, and both are load-bearing:
- *
- * - Included AI Credits (`gatewayCovered`) still render as "Ready via AI
- *   Credits" but must NOT complete the item. Credits are granted to every
- *   guest install, so counting them would mark the step done before the user
- *   had connected anything at all.
- * - `providersNotUsed` no longer gates completion (nothing needs unblocking
- *   once any single connection suffices). The marks are retained purely as a
- *   display affordance for tidying rows the user does not care about.
- */
-export const ONBOARDING_CHECKLIST_PROVIDERS = [
-  'github',
-  'linear',
-  'claude',
-  'codex',
-] as const;
-
-export type OnboardingChecklistProvider =
-  (typeof ONBOARDING_CHECKLIST_PROVIDERS)[number];
-
-export interface OnboardingChecklistItemState {
-  id: OnboardingChecklistItemId;
-  /**
-   * Completion is derived from real product state (never from clicks or page
-   * views) and latched: once an item has been observed complete it stays
-   * complete so returning users never repeat finished steps.
-   */
-  complete: boolean;
-}
-
-/**
- * Snapshot returned by `onboarding-checklist:get-state` and pushed on
- * `onboarding-checklist:changed`. The `connect-accounts` item is the one
- * exception to main-side derivation: provider auth probes live in the
- * renderer, which reports completion through
- * {@link OnboardingChecklistApi.markItemComplete}.
- */
-export interface OnboardingChecklistState {
-  items: OnboardingChecklistItemState[];
-  /** ISO-8601 permanent dismissal timestamp, or null when not dismissed. */
-  dismissedAt: string | null;
-  /** ISO-8601 snooze deadline; the card stays hidden until it passes. */
-  snoozedUntil: string | null;
-  providersNotUsed: OnboardingChecklistProvider[];
-}
-
-export interface OnboardingChecklistSetProviderNotUsedRequest {
-  provider: OnboardingChecklistProvider;
-  notUsed: boolean;
-}
-
-export interface OnboardingChecklistSnoozeRequest {
-  /** ISO-8601 timestamp until which the checklist stays hidden. */
-  until: string;
-}
-
-export interface OnboardingChecklistMarkItemCompleteRequest {
-  itemId: OnboardingChecklistItemId;
-}
-
-/**
- * Curated portion of the master queue for the dynamic "Getting started"
- * suggestions module under the Home composer (successor to the CAN-2411
- * connections card and the Home instance of the CAN-1809 suggested prompts).
- * The queue derivation places fixed universal connectors and selected-role
- * plugin suggestions before the two opt-ins below; additional catalog picks
- * follow them. Plugin entries use dynamic `plugin:<key>` ids.
- */
-export const HOME_ONBOARDING_SUGGESTION_ENTRY_IDS = [
-  // Connecting an AI provider leads the checklist: nothing else runs without
-  // one.
-  'agent-connections',
-  // Offer the daily free AI Credits opt-in once its cloud preference is loaded.
-  'daily-credits',
-  // Bulk project import (CAN-2439). The roles question that followed is now
-  // the category row on the tools step ('github'), not its own entry.
-  'import-projects',
-  // Bring a code project's Cursor rules into new chats (CAN-2053). Shown only
-  // when a code project has rules to review.
-  'import-editor-setup',
-  'add-repo',
-  'github',
-  'plugin-examples-preview',
-  'plan-mode',
-  'linear',
-  // Keep opt-ins ahead of the open-ended catalog recommendations. The
-  // notifications step was retired (CAN-4005).
-  // OS focus shortcut consent (CAN-1963).
-  'focus-shortcut',
-  // Launch at sign-in (CAN-3449): follows the focus shortcut.
-  'launch-at-login',
-  'mobile-app',
-] as const;
-
-export type HomeOnboardingSuggestionEntryId =
-  (typeof HOME_ONBOARDING_SUGGESTION_ENTRY_IDS)[number];
-
-/**
- * Historical records retained for preference migration, never new rows.
- * `notifications` (CAN-4005): its completion or dismissal answers the one-time
- * notification offer.
- */
-export const RETIRED_HOME_ONBOARDING_SUGGESTION_ENTRY_IDS = [
-  'notifications',
-] as const;
-
-/** Persisted-entry id prefix for dynamic plugin-suggestion queue entries. */
-export const HOME_ONBOARDING_PLUGIN_SUGGESTION_PREFIX = 'plugin:';
-/** Persisted progress for advanced examples, after the introductory queue. */
-export const HOME_ONBOARDING_ADVANCED_SUGGESTION_PREFIX = 'advanced:';
-/**
- * Persisted progress for checklist items tailored to a chat project's
- * curated project template (CAN-3032): `blueprint:<projectId>:plugin:<name>`
- * and `blueprint:<projectId>:prompt:<starterPromptId>`. Keyed per project so
- * two projects seeded from the same template track their own steps.
- */
-export const HOME_ONBOARDING_BLUEPRINT_SUGGESTION_PREFIX = 'blueprint:';
-
-/**
- * Durable per-entry progress for one Home onboarding suggestion. Live state
- * (auth, workspaces) is always re-derived; only event-like progress persists.
- */
-export interface HomeOnboardingSuggestionEntryPreferences {
-  /** ISO-8601 permanent dismissal timestamp. Hidden, but counts toward checklist progress. */
-  dismissedAt?: string;
-  /** ISO-8601 timestamp of the entry finishing its final step. Permanent. */
-  completedAt?: string;
-  /**
-   * Step ids the user has already passed through when the step itself is an
-   * event rather than derivable product state (e.g. the Linear entry's
-   * first "open the branch picker on Issues" try).
-   */
-  latchedSteps?: string[];
-}
-
-/**
- * Persisted state for the Home onboarding suggestions module, stored in
- * `preferences.json`. Every install starts the module exactly once —
- * existing installs included — and `startedAt` records when; it then stays
- * eligible for the life of the install. Individual entries can be dismissed
- * (and restored from Settings); the module as a whole cannot.
- */
-export interface HomeOnboardingSuggestionsPreferences {
-  /** ISO-8601 timestamp of the module first becoming eligible. */
+/** Exact legacy preference input retained until CAN-4008/#5222 conversion lands. */
+export interface LegacyPlanModeChecklistInput {
   startedAt: string;
-  /**
-   * ISO-8601 timestamp of whole-module dismissal (or legacy queue
-   * exhaustion). Legacy and no longer read — the writing callback was removed
-   * along with the whole-card dismiss control, and honoring stored values
-   * would hide the module with no way to restore it.
-   *
-   * @deprecated Orphaned persisted state. Do not read it for behavior and do
-   * not write new values — the module's visibility deliberately ignores it.
-   * The preferences normalizer preserves it on read/write for older
-   * installs; Settings → "Show setup checklist" (`withDismissalsCleared`)
-   * drops it by design when it restores the rows.
-   */
-  retiredAt?: string;
-  /**
-   * Keyed by curated {@link HomeOnboardingSuggestionEntryId}, a retired id
-   * from {@link RETIRED_HOME_ONBOARDING_SUGGESTION_ENTRY_IDS}, or a dynamic
-   * `plugin:<curated-plugin-key>`, `advanced:<prompt-id>`, or
-   * `blueprint:<project-id>:…` id ({@link HOME_ONBOARDING_PLUGIN_SUGGESTION_PREFIX},
-   * {@link HOME_ONBOARDING_ADVANCED_SUGGESTION_PREFIX},
-   * {@link HOME_ONBOARDING_BLUEPRINT_SUGGESTION_PREFIX}); the normalizer
-   * drops every other key.
-   */
-  entries: Partial<Record<string, HomeOnboardingSuggestionEntryPreferences>>;
+  entries: {
+    'plan-mode'?: {
+      dismissedAt?: string;
+      completedAt?: string;
+    };
+  };
 }
 
 /** A space whose notifications a user can tune: a code worktree, or a Cowork
@@ -19551,39 +20292,6 @@ export interface SpaceNotificationsApi {
   onChanged(
     cb: (snapshot: SpaceNotificationPolicySnapshot) => void,
   ): () => void;
-}
-
-/**
- * Preload bridge surface for the sidebar onboarding checklist (CAN-788).
- * Mirrors the IPC channels declared under
- * `IPC_CHANNELS.onboardingChecklist*`. Returned by
- * `window.api.onboardingChecklist`. Every mutation resolves with the fresh
- * post-mutation snapshot so callers can update without waiting for the
- * broadcast.
- */
-export interface OnboardingChecklistApi {
-  getState(): Promise<OnboardingChecklistState>;
-  dismiss(): Promise<OnboardingChecklistState>;
-  snooze(
-    request: OnboardingChecklistSnoozeRequest,
-  ): Promise<OnboardingChecklistState>;
-  /** Clears dismissal and snooze so the checklist shows again. */
-  restore(): Promise<OnboardingChecklistState>;
-  setProviderNotUsed(
-    request: OnboardingChecklistSetProviderNotUsedRequest,
-  ): Promise<OnboardingChecklistState>;
-  /**
-   * Latch a renderer-derived item complete. Only `connect-accounts` is
-   * accepted — every other item is derived main-side.
-   */
-  markItemComplete(
-    request: OnboardingChecklistMarkItemCompleteRequest,
-  ): Promise<OnboardingChecklistState>;
-  /**
-   * Subscribe to `onboarding-checklist:changed` broadcasts. The payload is a
-   * full snapshot, not a delta. Returns an unsubscribe function.
-   */
-  onChanged(cb: (state: OnboardingChecklistState) => void): () => void;
 }
 
 /**
@@ -19759,8 +20467,9 @@ export type DeepLinkShareOpenEvent = DesktopShareDeepLink;
 /**
  * Request/response for `IPC_CHANNELS.deepLinkResolveShare`: the landing modal
  * resolving a deep-linked public share to its pinned snapshot (anonymous web
- * endpoint; works signed-out). Unknown/revoked shares and malformed requests
- * collapse to `not-found`; transport failures to `cloud-unreachable`.
+ * endpoint; works signed-out). Unavailable shares and malformed requests
+ * collapse to `not-found`; missing credentials and account refusals retain
+ * their recovery reasons. Transport failures become `cloud-unreachable`.
  */
 export type DeepLinkResolveShareRequest = Pick<
   DeepLinkShareOpenEvent,
@@ -19782,23 +20491,7 @@ export type DeepLinkResolveShareRequest = Pick<
 
 export type PublicShareSnapshot = ProtocolPublicShareSnapshot;
 
-export type DeepLinkResolveShareResponse =
-  | { ok: true; snapshot: PublicShareSnapshot }
-  | {
-      ok: false;
-      /**
-       * `client-upgrade-required` mirrors the server's `426`
-       * (`pipeline_package_client_upgrade_required`) for a package share this
-       * build cannot install; `share-changed` mirrors `409`
-       * (`pipeline_share_changed`) when the pinned review no longer matches.
-       * Neither may be downgraded to a definition-only install.
-       */
-      reason:
-        | 'not-found'
-        | 'cloud-unreachable'
-        | 'client-upgrade-required'
-        | 'share-changed';
-    };
+export type { DeepLinkResolveShareResponse } from '@canopy/protocol/share-deep-link';
 
 /**
  * Renderer-reported legs of the CAN-2361 share-handoff funnel
@@ -19950,6 +20643,20 @@ export type ManagedDelegationWorktreeSummaryRequest =
 export type ManagedDelegationWorktreeSummaryResult =
   | { ok: true; summary: ManagedDelegationWorktreeSummary }
   | { ok: false; error: string };
+export type ManagedDelegationExtendLifetimeLimitRequest =
+  ManagedDelegationRootsRequest;
+export type ManagedDelegationLifetimeStatusRequest =
+  ManagedDelegationRootsRequest;
+export type ManagedDelegationLifetimeStatus =
+  ProtocolManagedDelegationLifetimeStatus;
+export type ManagedDelegationLifetimeChangedEvent =
+  ProtocolManagedDelegationLifetimeChangedEvent;
+export type ManagedDelegationExtendLifetimeLimitResult =
+  | { ok: true; baseline: number; effectiveLimit: number; retained: number }
+  | {
+      ok: false;
+      reason: 'at_cap' | 'no_increase' | 'unavailable' | 'invalid_request';
+    };
 export interface NativeSubagentInterruptRequest extends ManagedDelegationChatRequest {
   subagentKind: 'claude-native' | 'codex-native';
   subagentId: string;
@@ -20005,6 +20712,17 @@ export interface ManagedDelegationApi {
   worktreeSummary: (
     req: ManagedDelegationWorktreeSummaryRequest,
   ) => Promise<ManagedDelegationWorktreeSummaryResult>;
+  /** Local desktop observation only; does not initialize execution. */
+  getLifetimeStatus: (
+    req: ManagedDelegationLifetimeStatusRequest,
+  ) => Promise<ManagedDelegationLifetimeStatus>;
+  onLifetimeChanged: (
+    cb: (event: ManagedDelegationLifetimeChangedEvent) => void,
+  ) => () => void;
+  /** User only: raises this worktree's lifetime delegate limit; never an agent action. */
+  extendLifetimeLimit: (
+    req: ManagedDelegationExtendLifetimeLimitRequest,
+  ) => Promise<ManagedDelegationExtendLifetimeLimitResult>;
   listActivity: () => Promise<ChatDelegationActivity[]>;
   onActivityChanged: (
     cb: (activity: ChatDelegationActivity) => void,
@@ -20086,6 +20804,14 @@ export interface CanopyApi {
   setPipelineDisabledPreference: (
     request: SetPipelineDisabledPreferenceRequest,
   ) => Promise<PreferencesData>;
+  /**
+   * Dismisses one onboarding tip or brings every tip back (CAN-4904), merged
+   * inside the preferences write queue so a dismissal saved meanwhile from a
+   * Portal session is kept. Resolves with the stored dismissals.
+   */
+  updateOnboardingTips: (
+    update: OnboardingTipsUpdate,
+  ) => Promise<OnboardingTipsState>;
   /**
    * Persists ONE approval surface default, merged inside the preferences write
    * queue. Settings must use this rather than `savePreferences` with a whole
@@ -20278,6 +21004,18 @@ export interface CanopyApi {
   archiveWorktree: (
     request: ArchiveWorktreeRequest,
   ) => Promise<ArchiveWorktreeResponse>;
+  checkWorktreeRemovalAdmission: (
+    request: CheckWorktreeRemovalAdmissionRequest,
+  ) => Promise<CheckWorktreeRemovalAdmissionResponse>;
+  describeWorktreeDiscard: (
+    request: WorktreeDiscardDescribeRequest,
+  ) => Promise<WorktreeDiscardDescription>;
+  discardWorktree: (
+    request: WorktreeDiscardRequest,
+  ) => Promise<WorktreeDiscardResult>;
+  describeProjectDeletionDiscard: (
+    request: ProjectDeletionDiscardDescribeRequest,
+  ) => Promise<ProjectDeletionDiscardDescription>;
   getDiffStats: (request: DiffStatsRequest) => Promise<DiffStats>;
   getDiffStatsBatch: (
     request: DiffStatsBatchRequest,
@@ -20463,6 +21201,12 @@ export interface CanopyApi {
   ) => Promise<ArchiveWorktreeResponse>;
   deleteWorkspace: (request: DeleteWorkspaceRequest) => Promise<void>;
   deleteProject: (request: DeleteProjectRequest) => Promise<void>;
+  /** CAN-5335: unreadable destructive lifecycle journal entries. */
+  inspectLifecycleJournal: () => Promise<LifecycleJournalInspection>;
+  /** CAN-5335: user-only move of one confirmed entry to quarantine. */
+  quarantineLifecycleJournalEntry: (
+    request: LifecycleJournalQuarantineRequest,
+  ) => Promise<LifecycleJournalQuarantineResult>;
   onWorkspaceReferenceRepoStatus: (
     cb: (event: WorkspaceReferenceRepoStatusEvent) => void,
   ) => () => void;
@@ -20774,6 +21518,14 @@ export interface CanopyApi {
   deleteLocalMemoryItem: (
     request: LocalMemoryDeleteRequest,
   ) => Promise<LocalMemoryDocument>;
+  /** Replaces a memory file's body (and title); keeps front matter. */
+  updateLocalMemoryFile: (
+    request: LocalMemoryUpdateFileRequest,
+  ) => Promise<LocalMemoryDocument>;
+  /** Deletes a whole topic or inbox note at the revision the caller read. */
+  deleteLocalMemoryFile: (
+    request: LocalMemoryDeleteFileRequest,
+  ) => Promise<void>;
   onLocalMemoryChanged: (
     callback: (scope: LocalMemoryScopeRequest) => void,
   ) => () => void;
@@ -20885,7 +21637,11 @@ export interface CanopyApi {
    * branch on this boolean or it will strand the user on a page that was
    * never opened.
    */
-  openAuthenticatedPortalPage: (path: string) => Promise<boolean>;
+  openAuthenticatedPortalPage: {
+    (path: string): Promise<boolean>;
+    /** Main-bound authenticated opening; typed failure, no fallback or retry. */
+    (request: AuthenticatedPortalRequest): Promise<AuthenticatedPortalResult>;
+  };
   /**
    * Load the connected account's UD AI Credits subscription + balance from the
    * cloud (`/api/v1/ai-credits/subscription` + `/api/v1/ai-credits/balance`).
@@ -21261,12 +22017,6 @@ export interface CanopyApi {
    * see {@link AutomationsApi}.
    */
   automations: AutomationsApi;
-  /**
-   * Renderer surface for the persistent sidebar onboarding checklist
-   * (CAN-788). Mirrors the IPC channels declared under
-   * `IPC_CHANNELS.onboardingChecklist*` — see {@link OnboardingChecklistApi}.
-   */
-  onboardingChecklist: OnboardingChecklistApi;
   /** Per-space notification choices (CAN-3615); see {@link SpaceNotificationsApi}. */
   spaceNotifications: SpaceNotificationsApi;
   /**
@@ -21693,11 +22443,12 @@ export type WorkspaceSettingsTab =
   | 'danger';
 
 /**
- * Canonical declaration of the Plugins page's "Your plugins" management
- * sections (API-2153). Lives in shared types so the App Advisor action union
- * and the UI-state snapshot can target a section without duplicating the
- * literal list; the renderer's `PluginsManagementView` re-exports this alias
- * as `PluginsManagementSection`.
+ * Canonical declaration of the legacy "Your plugins" management sections
+ * (API-2153). The management view was deleted (CAN-4267); these values remain
+ * the compatibility input for `plugins.open_management`, the
+ * `canopy:plugins-open-management` event and pipeline `managementReturn`, and
+ * each one routes to a Customize destination. Lives in shared types so the
+ * App Advisor action union and the UI-state snapshot share one literal list.
  */
 export const PLUGINS_MANAGEMENT_SECTIONS = [
   'installed',
@@ -22063,6 +22814,8 @@ export interface AppAdvisorUiStateSnapshot {
       loaded: boolean;
       mode: ManagedDelegationMode;
       maxDepth: number;
+      /** A worktree's lifetime limit for managed delegates; absent from older reporters. */
+      lifetimeLimit?: number;
       revocationIncomplete: boolean;
     };
     /**
@@ -22193,6 +22946,22 @@ export interface AppAdvisorUiStateSnapshot {
      */
     interruptedSessionsBannerVisible: boolean;
     interruptedSessionCount?: number;
+    /** Interrupted sessions eligible to resume now under the usage snapshot. */
+    interruptedSessionReadyCount?: number;
+    /** Interrupted sessions waiting for a provider usage reset. */
+    interruptedSessionWaitingCount?: number;
+    /**
+     * Home Continue attention rows (CAN-4958) by kind, after deduplication,
+     * and whether the Last viewed row is showing beneath them. Absent until
+     * page Home reports it.
+     */
+    continueAttention?: {
+      questionCount: number;
+      toolApprovalCount: number;
+      planReviewCount: number;
+      unreadCount: number;
+      lastViewedVisible: boolean;
+    };
     plusMenuOpen: boolean;
     scheduleModalOpen: boolean;
     linearPickerOpen: boolean;
@@ -22468,11 +23237,31 @@ export interface AppAdvisorUiStateSnapshot {
     blocked: boolean;
   };
   /**
-   * The bulk worktree removal dialog (CAN-3975), while it is open: its mode,
-   * how many worktrees it removes, and whether it is confirming, running, or
-   * showing results. Reported by the shared sidebar's desktop host.
+   * The bulk worktree removal dialog (CAN-3975) while it is open, or its
+   * batch while it removes worktrees in the background: `open: false` with
+   * `phase: 'running'` means no dialog is open and `count` is the number of
+   * worktrees still queued. Reported by the shared sidebar's desktop host.
    */
   worktreeBatchRemovalDialog?: {
+    open: boolean;
+    mode: 'archive' | 'delete';
+    count: number;
+    phase: 'confirm' | 'running' | 'results';
+  };
+  /**
+   * The bulk chat removal dialog while it is open (confirming or showing
+   * results), or its chats while they are removed in the background:
+   * `open: false` with `phase: 'running'` means no dialog is open and `count`
+   * is the number of chats still queued. The shared sidebar's desktop host (Chats section and cowork projects)
+   * reports `workEntry.batchRemovalDialog`; the App Advisor nav, which
+   * renders in the popout window, reports `appAdvisor.batchRemovalDialog`
+   * there, and the main window receives only its open dialog through the
+   * popout's `AppAdvisorWindowUiState.batchRemovalDialog`. Separate keys keep one
+   * surface closing from clearing the other's open dialog; an open dialog is
+   * reported over rows draining in the background, and otherwise the main
+   * rail's state is the one reported.
+   */
+  workEntryBatchRemovalDialog?: {
     open: boolean;
     mode: 'archive' | 'delete';
     count: number;
@@ -22636,7 +23425,8 @@ export interface AppAdvisorUiStateSnapshot {
       open: boolean;
       projectId?: string;
       worktreeId?: string;
-      activeTab?: 'search' | 'detected';
+      /** Group of the selected row: chat suggestions or all files. */
+      selectedGroup?: 'suggestions' | 'files';
       importing?: boolean;
       originChatId?: string;
       detectedEntryCount?: number;
@@ -22828,6 +23618,19 @@ export interface AppAdvisorUiStateSnapshot {
     archived?: boolean;
   }>;
   /**
+   * The lifetime-limit notice of the mounted Subagents panel. `atLimit` and
+   * `limit` are null when the status is unread or unavailable. Refused chat
+   * ids are never included.
+   */
+  subagentsLifetimeLimit?: {
+    projectId: string;
+    worktreeId: string;
+    notice: 'none' | 'full' | 'full_at_cap' | 'unavailable';
+    atLimit: boolean | null;
+    limit: number | null;
+    canExtend: boolean;
+  };
+  /**
    * Visible state of the in-app Browser panels. All fields are optional.
    * `drawerOpen` is a compatibility alias that is true when at least one
    * Browser panel is visible, and `activeDrawerTab` is `browser` when a
@@ -22910,15 +23713,28 @@ export interface AppAdvisorUiStateSnapshot {
       deviceServer: boolean;
     };
     /**
-     * Plugins page state (API-2153). The page is a discovery surface; the old
-     * type tabs became sections of the "Your plugins" management overlay, so
-     * this reports which surface is visible rather than an `activeTab`. The
-     * search text is deliberately never published — only whether a search is
+     * Plugins page state (API-2153). The page is a discovery surface. The
+     * `'management'` view and `managementSection` described the "Your
+     * plugins" overlay deleted in CAN-4267; they stay in the type for older
+     * remote peers. The search text is deliberately never published — only whether a search is
      * active and how many rows it produced.
      */
     page?: {
       view: 'discovery' | 'management';
       managementSection?: PluginsManagementSectionId;
+      /** Canonical Customize destination; optional for older remote peers. */
+      customizeTab?:
+        | 'all'
+        | 'workflow'
+        | 'sources'
+        | 'plugin'
+        | 'app'
+        | 'skill'
+        | 'collection'
+        | 'agent'
+        | 'blueprint';
+      installedStatusFilter?: InstalledItemStatus;
+      installedExpanded?: boolean;
       searchActive: boolean;
       resultCount: number;
       /** Entry currently shown in the unified detail surface, if any. */
@@ -22941,7 +23757,11 @@ export interface AppAdvisorUiStateSnapshot {
       agentDialog?: 'create' | 'edit' | 'delete';
       agentDialogAgentId?: string;
     };
-    /** "Your plugins" management overlay state, when it is open. */
+    /**
+     * State of the retired "Your plugins" management overlay. It was deleted
+     * in CAN-4267 and nothing reports it now; the field stays for older
+     * remote peers.
+     */
     managementView?: {
       section: PluginsManagementSectionId;
       installedCount: number;
@@ -23120,6 +23940,13 @@ export interface AppAdvisorUiStateSnapshot {
       chatCount?: number;
       pipelineCount?: number;
       selectedCount?: number;
+      /**
+       * Readiness fields appear only for origins that gate selection on the
+       * provider usage snapshot (Home, usage review, app restart).
+       */
+      readinessPending?: boolean;
+      readyCount?: number;
+      waitingCount?: number;
     };
     resumeQueueModal?: {
       open: boolean;
@@ -24915,19 +25742,6 @@ export type AppAdvisorAction =
       includeYaml?: boolean;
     }
   | {
-      type: 'pipeline.run';
-      pipelineId: string;
-      projectId: string;
-      worktreeId: string;
-      inputs?: Record<string, string>;
-      runMode?: 'dispatch' | 'plan_ready' | 'task_ready';
-      planPath?: string;
-      taskPath?: string;
-      planId?: string;
-      repoId?: string;
-      watchers?: AppAdvisorInlineWatcherSetup[];
-    }
-  | {
       type: 'pipeline.open_run';
       executionId: string;
       jobId?: string;
@@ -26018,16 +26832,6 @@ export type AppAdvisorWatcherTarget =
       automationName?: string;
     }
   | {
-      kind: 'managed_delegation';
-      projectId: string;
-      worktreeId: string;
-      mode: 'any' | 'all';
-      deadlineAt: number;
-      targetCount: number;
-      recipient: 'root' | 'delegate';
-      outcome?: 'completed' | 'timeout';
-    }
-  | {
       /**
        * A grouped GitHub Actions workflow-run watcher. Created exclusively via
        * the `WatchGitHubItems` tool (never `setup_watchers`). `notifyOn` is the
@@ -26262,42 +27066,9 @@ export type AppAdvisorGitHubPullRequestWatcherRuntimeState = {
  */
 export type AppAdvisorWatcherRuntimeState =
   | LocalWatcherRuntimeState
-  | AppAdvisorManagedDelegationWatcherRuntimeState
   | AppAdvisorGitHubWatcherRuntimeState
   | AppAdvisorGitHubPullRequestWatcherRuntimeState
   | AppAdvisorAutomationRunRuntimeState;
-
-/** Backend-only state for a generation-pinned managed-delegation watch. */
-export interface AppAdvisorManagedDelegationWatcherRuntimeState {
-  kind: 'managed_delegation';
-  nextAttemptAt: string;
-  requestHash: string;
-  invocationKey: string;
-  recipient:
-    | { kind: 'root' }
-    | {
-        kind: 'delegate';
-        delegationId: string;
-        /** Display-only; see {@link AppAdvisorWatcherOwnerDelegate}. */
-        description?: string;
-        depth?: number;
-      };
-  targets: Array<{
-    delegationId: string;
-    runGeneration: number;
-    status: AgentDelegationStatus;
-    resultIndex: number | null;
-    settledAt?: number;
-  }>;
-  cancellationPending?: {
-    previousStatus: 'active' | 'firing';
-  };
-  pendingDelivery?: {
-    eventId: string;
-    attempts: number;
-    event: DelegateWatchEvent;
-  };
-}
 
 /**
  * Canonical persisted record for a single App Advisor watcher. The
@@ -26450,6 +27221,14 @@ export interface AppAdvisorWatcherSummary {
    */
   githubProgress?: {
     runs: GitHubWorkflowRunWatchProgress[];
+  };
+  /**
+   * Each watched pull request's last snapshot, for `github_pull_requests`
+   * watchers: the background drawer lists them from this. Absent for every
+   * other watcher kind.
+   */
+  githubPullRequestProgress?: {
+    pullRequests: GitHubPullRequestWatchProgress[];
   };
   /**
    * Set while a GitHub watcher's reads are held back by a GitHub rate limit
@@ -26680,15 +27459,13 @@ export interface DeleteWatchersResult {
  *
  * `select_chat` and `focus_composer` are idempotent nudges. The
  * `send_quick_prompt` command is intentionally non-idempotent: every delivered
- * command should create/send exactly one prompt. The `send_watcher_message`
- * command is also intentionally non-idempotent: each delivered command must
- * send exactly one watcher follow-up message into `chatId`, and the renderer
- * command queue must preserve order and must NOT coalesce these (multiple
- * watchers may fire for the same destination chat). The main process queues
+ * command should create/send exactly one prompt. The main process queues
  * commands in memory and flushes them after the App Advisor window's
  * `did-finish-load`; `select_chat` commands are coalesced so only the latest
- * selection is delivered, while prompt-send and watcher-message commands are
- * not coalesced.
+ * selection is delivered, while prompt-send commands are not coalesced.
+ *
+ * A fired watcher is not a window command here: main delivers it straight
+ * into the App Advisor chat's queue.
  */
 export type AppAdvisorWindowCommand =
   | {
@@ -26737,31 +27514,6 @@ export type AppAdvisorWindowCommand =
       approvalMode?: ApprovalMode;
       initiationSource?: UsageInitiationSource;
       automationName?: string;
-    }
-  | {
-      /**
-       * Every delivered command must be accepted in order. When several
-       * watcher follow-ups accumulate adjacently behind an active turn, the
-       * host queue may consolidate them into one provider turn while retaining
-       * each command's visible and hidden payload.
-       */
-      type: 'send_watcher_message';
-      chatId: string;
-      watcherId: string;
-      /** Correlates the renderer acknowledgement with this exact delivery. */
-      deliveryId: string;
-      /**
-       * Hidden provider-only watcher payload/instructions. The visible
-       * `text` should stay user-safe and free of internal watcher details.
-       */
-      hiddenContextText?: string;
-      text: string;
-      /**
-       * Short human-readable description of the watcher that fired (trigger
-       * kind plus basic target info) for the transcript's watcher-fired
-       * message treatment.
-       */
-      watcherFired?: ChatWatcherFiredInfo;
     };
 
 /**
@@ -26781,7 +27533,7 @@ type PortalChatComposerTarget = {
 
 export type PortalChatComposerSetterCommand = PortalChatComposerTarget &
   (
-    | { kind: 'model'; model: ChatModel }
+    | { kind: 'model'; model: ChatModel; executionHarness?: ModelHarness }
     | { kind: 'thinking'; thinkingLevel: ThinkingLevel }
     | { kind: 'plan'; planMode: boolean }
     | { kind: 'fast'; fastMode: boolean }
@@ -26886,10 +27638,10 @@ export type PortalChatComposerCommandResult =
 
 export type ChatWindowCommand = {
   /**
-   * Every delivered command must be accepted in order. When several watcher
-   * follow-ups accumulate adjacently behind an active turn, the host queue may
-   * consolidate them into one provider turn while retaining each command's
-   * visible and hidden payload.
+   * A fired watcher for a terminal-backed Claude chat, whose terminal the
+   * renderer drives. Main delivers every other watcher message straight into
+   * the chat queue and sends no command. Every delivered command must be
+   * accepted in order.
    */
   type: 'send_watcher_message';
   projectId: string;
@@ -27378,6 +28130,7 @@ export interface ClaudeTerminalSettingsSync {
  * queueing the prompt until the running turn returns to idle.
  */
 export interface ClaudeTerminalScheduledPromptEvent {
+  autoResume?: AutoResumeMetadata;
   projectId: string;
   worktreeId: string;
   chatId: string;
@@ -27612,6 +28365,7 @@ export const IPC_CHANNELS = {
   preferencesAcknowledgeLoadError: 'preferences:acknowledge-load-error',
   preferencesSave: 'preferences:save',
   preferencesSetPipelineDisabled: 'preferences:set-pipeline-disabled',
+  preferencesUpdateOnboardingTips: 'preferences:update-onboarding-tips',
   preferencesSetApprovalDefault: 'preferences:set-approval-default',
   preferencesCreatePrimaryDataDir: 'preferences:create-primary-data-dir',
   preferencesOpenMemoryDir: 'preferences:open-memory-dir',
@@ -27620,6 +28374,8 @@ export const IPC_CHANNELS = {
   localMemoryRead: 'local-memory:read',
   localMemoryUpdateItem: 'local-memory:update-item',
   localMemoryDeleteItem: 'local-memory:delete-item',
+  localMemoryUpdateFile: 'local-memory:update-file',
+  localMemoryDeleteFile: 'local-memory:delete-file',
   localMemoryChanged: 'local-memory:changed',
   localMemoryWatch: 'local-memory:watch',
   localMemoryUnwatch: 'local-memory:unwatch',
@@ -27779,6 +28535,8 @@ export const IPC_CHANNELS = {
   activityStopOutputPolling: 'activity:stop-output-polling',
   activityReadFullOutput: 'activity:read-full-output',
   activityListLiveBgTasks: 'activity:list-live-bg-tasks',
+  /** Main → renderer: one chat's live provider task set changed. */
+  activityLiveBgTasksChanged: 'activity:live-bg-tasks-changed',
   activityBgProcessOutput: 'activity:bg-process-output',
   activityReadWorkflowRun: 'activity:read-workflow-run',
   activityReadWorkflowAgentTranscript:
@@ -27796,6 +28554,10 @@ export const IPC_CHANNELS = {
   repoBrowseDir: 'repo:browse-dir',
   worktreeCreate: 'worktree:create',
   worktreeArchive: 'worktree:archive',
+  worktreeCheckRemovalAdmission: 'worktree:check-removal-admission',
+  worktreeDiscardDescribe: 'worktree:discard-describe',
+  worktreeDiscard: 'worktree:discard',
+  workspaceDeleteDiscardDescribe: 'workspace:delete-discard-describe',
   worktreeDiffStats: 'worktree:diff-stats',
   worktreeDiffStatsBatch: 'worktree:diff-stats-batch',
   worktreeHealthCheck: 'worktree:health-check',
@@ -27895,6 +28657,8 @@ export const IPC_CHANNELS = {
   workspaceRepairWorktree: 'workspace:repair-worktree',
   workspaceArchiveWorktree: 'workspace:archive-worktree',
   workspaceDelete: 'workspace:delete',
+  lifecycleJournalInspect: 'lifecycle-journal:inspect',
+  lifecycleJournalQuarantine: 'lifecycle-journal:quarantine',
   workspaceAddRepoToWorktree: 'workspace:add-repo-to-worktree',
   workspaceRemoveRepoFromWorktree: 'workspace:remove-repo-from-worktree',
   workspaceReferenceRepoStatusEvent: 'workspace:reference-repo-status-event',
@@ -28509,6 +29273,10 @@ export const IPC_CHANNELS = {
   managedDelegationTranscriptPage: 'managed-delegation:transcript-page',
   managedDelegationRoots: 'managed-delegation:roots',
   managedDelegationWorktreeSummary: 'managed-delegation:worktree-summary',
+  managedDelegationExtendLifetimeLimit:
+    'managed-delegation:extend-lifetime-limit',
+  managedDelegationLifetimeStatus: 'managed-delegation:lifetime-status',
+  managedDelegationLifetimeChanged: 'managed-delegation:lifetime-changed',
   nativeSubagentInterrupt: 'native-subagent:interrupt',
   managedDelegationTranscript: 'managed-delegation:transcript',
   workspaceContextGet: 'workspace-context:get',
@@ -28537,6 +29305,12 @@ export const IPC_CHANNELS = {
   referencePreviewGitHubScope: 'reference-preview:github-scope',
   referencePreviewGitHubOrigin: 'reference-preview:github-origin',
   referencePreviewGitHub: 'reference-preview:github',
+  orgProjectsSharedMultiRepoPrepare: 'org-projects:shared-multi-repo-prepare',
+  orgProjectsSharedMultiRepoCreate: 'org-projects:shared-multi-repo-create',
+  orgProjectsSharedMultiRepoGetCreation:
+    'org-projects:shared-multi-repo-get-creation',
+  orgProjectsSharedMultiRepoListCreations:
+    'org-projects:shared-multi-repo-list-creations',
   orgProjectsSetupStart: 'org-projects:setup-start',
   orgProjectsSetupFromFolder: 'org-projects:setup-from-folder',
   orgProjectsMemberCodeEligibility: 'org-projects:member-code-eligibility',
@@ -28631,6 +29405,7 @@ export const IPC_CHANNELS = {
   //    see consistent state.
   //  - `appAdvisorWatcherMessageDelivery` (renderer → main `invoke`) confirms
   //    that a one-way `send_watcher_message` command was accepted or failed.
+  //    Main sends that command only for a terminal-backed Claude chat.
   //  - `appAdvisorWatcherCreate` (renderer → main `invoke`) creates a single
   //    watcher from a trusted UI gesture with an explicit destination, taking
   //    `AppAdvisorWatcherCreateRequest` and resolving with
@@ -28707,25 +29482,6 @@ export const IPC_CHANNELS = {
     'automations:shared-pipeline-pin:resolve',
   automationsSharedPipelineReviewApprove:
     'automations:shared-pipeline-review:approve',
-  // Persistent sidebar onboarding checklist (CAN-788).
-  //  - `onboardingChecklistGetState` (renderer → main `invoke`) returns the
-  //    computed {@link OnboardingChecklistState} snapshot (persisted latches
-  //    plus live product-state derivation).
-  //  - The mutation channels (`dismiss`/`snooze`/`restore`/
-  //    `setProviderNotUsed`/`markItemComplete`) resolve with the fresh
-  //    post-mutation snapshot.
-  //  - `onboardingChecklistChanged` (main → renderer broadcast) carries the
-  //    full snapshot whenever a completion latch flips or visibility state
-  //    changes.
-  onboardingChecklistGetState: 'onboarding-checklist:get-state',
-  onboardingChecklistDismiss: 'onboarding-checklist:dismiss',
-  onboardingChecklistSnooze: 'onboarding-checklist:snooze',
-  onboardingChecklistRestore: 'onboarding-checklist:restore',
-  onboardingChecklistSetProviderNotUsed:
-    'onboarding-checklist:set-provider-not-used',
-  onboardingChecklistMarkItemComplete:
-    'onboarding-checklist:mark-item-complete',
-  onboardingChecklistChanged: 'onboarding-checklist:changed',
   // Per-space notification choices (CAN-3615) — see {@link SpaceNotificationsApi}.
   spaceNotificationsGetSnapshot: 'space-notifications:get-snapshot',
   spaceNotificationsRefresh: 'space-notifications:refresh',
@@ -28808,6 +29564,7 @@ export type {
   ActivityChangedFilesResponse,
   ActivityFileDiffRequest,
   ActivityFileDiffResponse,
+  ActivityLiveBgTasksChangedEvent,
   ActivityLiveBgTasksChatState,
   ActivityLiveBgTasksRequest,
   ActivityLiveBgTasksResponse,
@@ -28925,6 +29682,7 @@ export type {
   GitHubWorkflowRunSnapshot,
   GitHubWorkflowRunTransition,
   GitHubWorkflowRunWatchProgress,
+  GitHubPullRequestWatchProgress,
   GitHubWorkflowRunReference,
   GitHubNumericIdInput,
   GitHubWorkflowRunInput,
@@ -29468,5 +30226,6 @@ export interface ApplyRecommendedPluginsResponse {
 }
 import type {
   InstalledItemRef,
+  InstalledItemStatus,
   InstalledItemUninstallTarget,
 } from '@canopy/protocol/installed-items';

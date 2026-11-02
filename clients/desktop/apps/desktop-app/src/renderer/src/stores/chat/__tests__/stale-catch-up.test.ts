@@ -152,7 +152,12 @@ it('awaits declaration acknowledgement, retains cached rows, and replays live bo
   await tick();
   h.apply(
     { type: 'message.upserted', chatId: 'chat', message: row('live') },
-    { type: 'transcript.updated', chatId: 'chat', transcript: descriptor(2) },
+    {
+      type: 'transcript.updated',
+      chatId: 'chat',
+      transcript: descriptor(2),
+      reset: false,
+    },
   );
   resolve(page());
   await pending;
@@ -184,7 +189,12 @@ it.each(['messages.replaced', 'reset', 'messages.omitted'] as const)(
         reset: true,
       });
     else if (kind === 'messages.replaced')
-      h.apply({ type: kind, chatId: 'chat', messages: [row('replacement')] });
+      h.apply({
+        type: kind,
+        chatId: 'chat',
+        messages: [row('replacement')],
+        removedMessageIds: ['answer'],
+      });
     else h.apply({ type: kind, chatId: 'chat' });
     resolve(page());
     await pending;
@@ -317,10 +327,20 @@ it('replays only the newer part of a cadence batch, including a removal', async 
   await tick();
   h.apply(
     { type: 'message.upserted', chatId: 'chat', message: row('before page') },
-    { type: 'transcript.updated', chatId: 'chat', transcript: descriptor(2) },
+    {
+      type: 'transcript.updated',
+      chatId: 'chat',
+      transcript: descriptor(2),
+      reset: false,
+    },
     { type: 'message.removed', chatId: 'chat', messageId: removeMe.id },
     { type: 'message.upserted', chatId: 'chat', message: row('after page') },
-    { type: 'transcript.updated', chatId: 'chat', transcript: descriptor(3) },
+    {
+      type: 'transcript.updated',
+      chatId: 'chat',
+      transcript: descriptor(3),
+      reset: false,
+    },
   );
   resolve({
     ...page('snapshot', 2),

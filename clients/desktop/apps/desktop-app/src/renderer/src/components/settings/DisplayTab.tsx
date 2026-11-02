@@ -1,4 +1,4 @@
-import { type JSX, useEffect, useRef, useState } from 'react';
+import { Fragment, type JSX, useEffect, useRef, useState } from 'react';
 import {
   THEME_NAMES,
   COLOR_MODES,
@@ -27,17 +27,21 @@ import { applyScrollbarBehavior, applyTheme, applyUiScale } from '@/lib/theme';
 import { brand } from '@/lib/brand';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import { WORKSPACE_LAYOUT_MODE_COPY } from '@/lib/panels/layout-mode-copy';
-import { AppearanceSelect, Button } from '@canopy/ui-shared/components';
+import {
+  AppearanceSelect,
+  Button,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
   SettingsPage,
   SettingsRow,
   SettingsSection,
   SettingsSegmentedControl,
-  SettingsSelect,
 } from './SettingsLayout';
+import { ChatDetailSettingsRow } from './ChatDetailSettingsRow';
+import { ActivityCardSettingsRow } from './ActivityCardSettingsRow';
 import { SidebarStyleSettingsRow } from './SidebarStyleSettingsRow';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { useNavigationStore } from '@/stores/navigationStore';
 
 type ResolvedColorMode = Exclude<ColorMode, 'system'>;
@@ -67,77 +71,22 @@ function readCurrentScale(): number {
   return 100;
 }
 
-interface ThemeSwatchColors {
-  light: { bg: string; accent: string };
-  dark: { bg: string; accent: string };
-}
-
-const THEME_META: Record<
-  ThemeName,
-  { label: string; colors: ThemeSwatchColors }
-> = {
-  default: {
-    label: brand.theme.default.label,
-    colors: {
-      light: {
-        bg: brand.theme.default.swatch.light.background,
-        accent: brand.theme.default.swatch.light.accent,
-      },
-      dark: {
-        bg: brand.theme.default.swatch.dark.background,
-        accent: brand.theme.default.swatch.dark.accent,
-      },
-    },
-  },
-  unstoppable: {
-    label: 'Cobalt',
-    colors: {
-      light: { bg: '#F2F2F1', accent: '#0064FF' },
-      dark: { bg: '#0B0B0B', accent: '#5F9DFF' },
-    },
-  },
-  dusk: {
-    label: 'Dusk',
-    colors: {
-      light: { bg: '#F5F5F4', accent: '#0F9226' },
-      dark: { bg: '#141414', accent: '#47AF4E' },
-    },
-  },
-  lime: {
-    label: 'Lime',
-    colors: {
-      light: { bg: '#EBECE6', accent: '#8643FC' },
-      dark: { bg: '#101010', accent: '#9D6EFF' },
-    },
-  },
-  ocean: {
-    label: 'Ocean',
-    colors: {
-      light: { bg: '#ECEFF2', accent: '#007FCE' },
-      dark: { bg: '#2A2D2E', accent: '#009BF9' },
-    },
-  },
-  retro: {
-    label: 'Retro',
-    colors: {
-      light: { bg: '#F4F2EC', accent: '#C66100' },
-      dark: { bg: '#1A1A18', accent: '#E1842E' },
-    },
-  },
-  neo: {
-    label: 'Neo',
-    colors: {
-      light: { bg: '#F9F7F9', accent: '#B730CB' },
-      dark: { bg: '#0D0D0D', accent: '#D259E5' },
-    },
-  },
-  forest: {
-    label: 'Forest',
-    colors: {
-      light: { bg: '#EEF4F0', accent: '#009132' },
-      dark: { bg: '#232724', accent: '#32B058' },
-    },
-  },
+/**
+ * Theme names in the picker. Each preview dot draws its theme's own accent
+ * token: the dot carries that theme's `data-theme` scope (and the dark scope
+ * in dark mode), so it reads the theme's tokens instead of a copied color.
+ * The default theme has no scope of its own, so its dot takes the brand's
+ * configured swatch.
+ */
+const THEME_LABELS: Record<ThemeName, string> = {
+  default: brand.theme.default.label,
+  unstoppable: 'Cobalt',
+  dusk: 'Dusk',
+  lime: 'Lime',
+  ocean: 'Ocean',
+  retro: 'Retro',
+  neo: 'Neo',
+  forest: 'Forest',
 };
 
 // The dropdown offers the whole supported range. Sourced from the shared
@@ -345,6 +294,21 @@ function ChatEnrichmentSection(): JSX.Element {
   return (
     <SettingsSection
       title="Chat area data enrichment"
+      description={
+        // What each mode does, in the section's one explanation instead of a
+        // row of its own.
+        <span data-testid="chat-enrichment-how-it-works">
+          {CHAT_ENRICHMENT_MODES.map((mode, index) => (
+            <Fragment key={mode}>
+              {index > 0 ? ' ' : null}
+              <span className="font-medium fg-primary">
+                {CHAT_ENRICHMENT_MODE_META[mode].label}:
+              </span>{' '}
+              {CHAT_ENRICHMENT_MODE_META[mode].description}
+            </Fragment>
+          ))}
+        </span>
+      }
       dataTestId="chat-enrichment-section"
     >
       <SettingsGroup>
@@ -360,21 +324,19 @@ function ChatEnrichmentSection(): JSX.Element {
                 <SettingsSelect
                   id={id}
                   aria-label={`${label} chat enrichment`}
+                  options={CHAT_ENRICHMENT_MODES.map((mode) => ({
+                    value: mode,
+                    label: CHAT_ENRICHMENT_MODE_META[mode].label,
+                  }))}
                   value={modes[provider]}
-                  onChange={(event) => {
+                  onValueChange={(value) => {
                     const next = CHAT_ENRICHMENT_MODES.find(
-                      (mode) => mode === event.target.value,
+                      (mode) => mode === value,
                     );
                     if (next) choose(provider, patch(next), next);
                   }}
                   data-testid={id}
-                >
-                  {CHAT_ENRICHMENT_MODES.map((mode) => (
-                    <option key={mode} value={mode}>
-                      {CHAT_ENRICHMENT_MODE_META[mode].label}
-                    </option>
-                  ))}
-                </SettingsSelect>
+                />
               }
             >
               {failed[provider] ? (
@@ -385,30 +347,12 @@ function ChatEnrichmentSection(): JSX.Element {
             </SettingsRow>
           );
         })}
-        <SettingsRow
-          label="How it works"
-          dataTestId="chat-enrichment-how-it-works"
-          description={
-            <ul className="space-y-1">
-              {CHAT_ENRICHMENT_MODES.map((mode) => (
-                <li key={mode}>
-                  <span className="font-medium fg-primary">
-                    {CHAT_ENRICHMENT_MODE_META[mode].label}
-                  </span>
-                  {' — '}
-                  {CHAT_ENRICHMENT_MODE_META[mode].description}
-                </li>
-              ))}
-            </ul>
-          }
-        />
       </SettingsGroup>
     </SettingsSection>
   );
 }
 
 export function DisplayTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [theme, setTheme] = useState<ThemeName>(readCurrentTheme);
   const [colorMode, setColorMode] = useState<ColorMode>(readCurrentColorMode);
   const [systemColorMode, setSystemColorMode] =
@@ -418,6 +362,7 @@ export function DisplayTab(): JSX.Element {
   const [scrollbarBehavior, setScrollbarBehavior] =
     useState<ScrollbarBehavior>('system');
   const [uiScale, setUiScale] = useState(readCurrentScale);
+  const [singleDollarMath, setSingleDollarMath] = useState(true);
   // Newest `uiScale` this component wrote and has not seen echoed back.
   const inFlightScaleRef = useRef<number | null>(null);
   const [defaultLayoutMode, setDefaultLayoutMode] =
@@ -435,6 +380,7 @@ export function DisplayTab(): JSX.Element {
       setColorMode(prefs.colorMode);
       setWorktreeDiffStatsStyle(prefs.worktreeDiffStatsStyle ?? 'short');
       setScrollbarBehavior(prefs.scrollbarBehavior ?? 'system');
+      setSingleDollarMath(prefs.singleDollarMath !== false);
       setUiScale(prefs.uiScale);
       setDefaultLayoutMode(prefs.workspaceDefaultLayoutMode);
       applyTheme(prefs.theme, prefs.colorMode);
@@ -526,6 +472,11 @@ export function DisplayTab(): JSX.Element {
       });
   }
 
+  function handleSingleDollarMathChange(next: boolean): void {
+    setSingleDollarMath(next);
+    savePreference({ singleDollarMath: next });
+  }
+
   function handleScrollbarBehaviorChange(next: ScrollbarBehavior): void {
     setScrollbarBehavior(next);
     applyScrollbarBehavior(next);
@@ -568,30 +519,40 @@ export function DisplayTab(): JSX.Element {
                 onChange={handleThemeChange}
                 testId="settings-theme-select"
                 options={THEME_NAMES.map((name) => {
-                  const meta = THEME_META[name];
-                  const swatch =
-                    meta.colors[
-                      colorMode === 'system' ? systemColorMode : colorMode
-                    ];
+                  const mode =
+                    colorMode === 'system' ? systemColorMode : colorMode;
                   return {
                     value: name,
-                    label: meta.label,
+                    label: THEME_LABELS[name],
                     testId: `theme-swatch-${name}`,
                     // Each dot uses the represented theme's accent color.
-                    preview: (
-                      <span
-                        aria-hidden="true"
-                        data-testid={`theme-color-dot-${name}`}
-                        className="h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{ background: swatch.accent }}
-                      />
-                    ),
+                    preview:
+                      name === 'default' ? (
+                        <span
+                          aria-hidden="true"
+                          data-testid={`theme-color-dot-${name}`}
+                          className="h-1.5 w-1.5 shrink-0 rounded-full"
+                          style={{
+                            background: brand.theme.default.swatch[mode].accent,
+                          }}
+                        />
+                      ) : (
+                        <span
+                          aria-hidden="true"
+                          data-testid={`theme-color-dot-${name}`}
+                          data-theme={name}
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full bg-accent ${
+                            mode === 'dark' ? 'dark' : ''
+                          }`}
+                        />
+                      ),
                   };
                 })}
               />
             }
           />
           <SidebarStyleSettingsRow />
+          <ActivityCardSettingsRow />
           <SettingsRow
             label="Interface scale"
             description="The overall size of the interface."
@@ -599,8 +560,8 @@ export function DisplayTab(): JSX.Element {
               <>
                 {uiScale !== 100 ? (
                   <Button
-                    size={settingsButtonSize}
-                    variant="ghost"
+                    size="compact"
+                    variant="secondary"
                     onClick={() => handleScaleChange(100)}
                     data-testid="settings-ui-scale-reset"
                   >
@@ -627,6 +588,7 @@ export function DisplayTab(): JSX.Element {
               </>
             }
           />
+          <ChatDetailSettingsRow />
         </SettingsGroup>
       </SettingsSection>
 
@@ -638,7 +600,7 @@ export function DisplayTab(): JSX.Element {
             description="Choose which pages the sidebar shows and in what order."
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 data-testid="settings-customize-sidebar"
                 onClick={() => {
@@ -686,21 +648,19 @@ export function DisplayTab(): JSX.Element {
             control={
               <SettingsSelect
                 id="settings-scrollbar-behavior"
+                options={SCROLLBAR_BEHAVIORS.map((behavior) => ({
+                  value: behavior,
+                  label: SCROLLBAR_BEHAVIOR_META[behavior].label,
+                }))}
                 value={scrollbarBehavior}
-                onChange={(event) => {
+                onValueChange={(value) => {
                   const next = SCROLLBAR_BEHAVIORS.find(
-                    (behavior) => behavior === event.target.value,
+                    (behavior) => behavior === value,
                   );
                   if (next) handleScrollbarBehaviorChange(next);
                 }}
                 data-testid="settings-scrollbar-behavior"
-              >
-                {SCROLLBAR_BEHAVIORS.map((behavior) => (
-                  <option key={behavior} value={behavior}>
-                    {SCROLLBAR_BEHAVIOR_META[behavior].label}
-                  </option>
-                ))}
-              </SettingsSelect>
+              />
             }
           />
           <SettingsRow
@@ -726,6 +686,41 @@ export function DisplayTab(): JSX.Element {
       </SettingsSection>
 
       <ChatEnrichmentSection />
+
+      <SettingsSection title="Math">
+        <SettingsGroup>
+          <SettingsRow
+            label="Dollar-sign math"
+            description={
+              singleDollarMath
+                ? 'Text between single dollar signs, such as $x^2$, shows as math. Prices such as $5 stay text.'
+                : 'Text between single dollar signs stays text. Math in \\(…\\), $$…$$ and math code blocks still shows as math.'
+            }
+            dataTestId="single-dollar-math-row"
+            control={
+              <SettingsSegmentedControl
+                label="Dollar-sign math"
+                value={singleDollarMath ? 'on' : 'off'}
+                onChange={(value) =>
+                  handleSingleDollarMathChange(value === 'on')
+                }
+                options={[
+                  {
+                    value: 'on',
+                    label: 'On',
+                    dataTestId: 'single-dollar-math-on',
+                  },
+                  {
+                    value: 'off',
+                    label: 'Off',
+                    dataTestId: 'single-dollar-math-off',
+                  },
+                ]}
+              />
+            }
+          />
+        </SettingsGroup>
+      </SettingsSection>
     </SettingsPage>
   );
 }

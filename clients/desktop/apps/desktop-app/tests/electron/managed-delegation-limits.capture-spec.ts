@@ -28,9 +28,10 @@ test('managed delegation concurrency setting', async () => {
     const setting = window.getByTestId('managed-delegation-settings');
     await expect(
       window.getByTestId('settings-managed-delegation-mode'),
-    ).toHaveValue('off');
+    ).toHaveAttribute('data-value', 'off');
     const limit = window.getByTestId('settings-managed-delegation-concurrency');
-    if (stage === 'after') await expect(limit).toHaveValue('5');
+    if (stage === 'after')
+      await expect(limit).toHaveAttribute('data-value', '5');
     else await expect(limit).toHaveCount(0);
     mkdirSync(captureDir, { recursive: true });
     await setting.screenshot({

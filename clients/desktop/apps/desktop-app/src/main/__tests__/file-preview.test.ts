@@ -4,6 +4,10 @@ const mockOpenExternal = jest.fn<Promise<void>, [string]>(() =>
   Promise.resolve(),
 );
 const mockShowItemInFolder = jest.fn<void, [string]>();
+const mockCreateThumbnailFromPath = jest.fn<
+  Promise<{ isEmpty: () => boolean; toDataURL: () => string }>,
+  [string, { width: number; height: number }]
+>();
 const mockIsE2eBuild = jest.fn<boolean, []>(() => false);
 
 // Pin the production branch of openExternalGuarded instead of relying on the
@@ -27,16 +31,35 @@ jest.mock('../lib/file-browser-roots', () => ({
 
 jest.mock('../lib/paths', () => {
   const actual = jest.requireActual<typeof Paths>('../lib/paths');
-  return {
-    ...actual,
-    getSharedContainersRootDir: (): string => '/canopy-data/shared-containers',
-  };
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      getSharedContainersRootDir: {
+        configurable: true,
+        enumerable: true,
+        value: (): string => '/canopy-data/shared-containers',
+        writable: true,
+      },
+    },
+  );
 });
 
 jest.mock('electron', () => ({
   shell: {
-    openExternal: mockOpenExternal,
-    showItemInFolder: mockShowItemInFolder,
+    get openExternal(): typeof mockOpenExternal {
+      return mockOpenExternal;
+    },
+    get showItemInFolder(): typeof mockShowItemInFolder {
+      return mockShowItemInFolder;
+    },
+  },
+  nativeImage: {
+    createThumbnailFromPath: (
+      absolutePath: string,
+      size: { width: number; height: number },
+    ): ReturnType<typeof mockCreateThumbnailFromPath> =>
+      mockCreateThumbnailFromPath(absolutePath, size),
   },
 }));
 
@@ -65,7 +88,12 @@ import type {
   FileDocumentBytesRequest,
   FileDocumentBytesResponse,
 } from '@canopy/desktop-shared/types';
-import { documentInvokeEvent, documentRoots } from './file-preview-fixtures';
+import {
+  documentInvokeEvent,
+  documentRoots,
+  unusedCallerResolver,
+  unusedFileContentDispatcher,
+} from './file-preview-fixtures';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { FilePreviewResponse } from '@canopy/desktop-shared/types';
 import { registerIpcHandler } from '../ipc/register';
@@ -74,6 +102,11 @@ import {
   registerFilePreviewHandlers,
 } from '../ipc/file-preview';
 import { getFileBrowserRoots } from '../lib/file-browser-roots';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../canopy-runtime/desktop-runtime';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedStat = jest.mocked(stat);
@@ -91,9 +124,13 @@ function getHandler(channel: string): HandlerFn {
 }
 
 describe('fileReadPreview handler', () => {
-  function invoke(absolutePath: string): Promise<FilePreviewResponse> {
+  function invoke(
+    absolutePath: string,
+    options: { videoFrame?: boolean } = {},
+  ): Promise<FilePreviewResponse> {
     return getHandler(IPC_CHANNELS.fileReadPreview)(undefined, {
       absolutePath,
+      ...options,
     }) as Promise<FilePreviewResponse>;
   }
 
@@ -127,13 +164,16 @@ describe('fileReadPreview handler', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    registerFilePreviewHandlers();
+    registerFilePreviewHandlers(
+      unusedFileContentDispatcher,
+      unusedCallerResolver,
+    );
   });
 
   describe('extension classification', () => {
     it('classifies image extensions', async () => {
       mockStatSize(100);
-      mockedReadFile.mockResolvedValue(Buffer.from('PNG') as never);
+      mockedReadFile.mockResolvedValue(Buffer.from('PNG'));
 
       const result = await invoke('/tmp/photo.png');
       expect(result.kind).toBe('image');
@@ -219,11 +259,67 @@ describe('fileReadPreview handler', () => {
 
     it('returns image data for images under 5MB', async () => {
       mockStatSize(100);
-      mockedReadFile.mockResolvedValue(Buffer.from('PNG') as never);
+      mockedReadFile.mockResolvedValue(Buffer.from('PNG'));
 
       const result = await invoke('/tmp/small.png');
       expect(result.kind).toBe('image');
       expect(result.content).toMatch(/^data:image\/png;base64,/);
+    });
+  });
+
+  describe('video first frame', () => {
+    it('answers an opted-in video with the OS thumbnail of its first frame', async () => {
+      mockStatSize(4096);
+      mockCreateThumbnailFromPath.mockResolvedValue({
+        isEmpty: () => false,
+        toDataURL: () => 'data:image/png;base64,FRAME',
+      });
+
+      const result = await invoke('/tmp/demo.MP4', { videoFrame: true });
+      expect(result).toMatchObject({
+        kind: 'image',
+        content: 'data:image/png;base64,FRAME',
+        filename: 'demo.MP4',
+      });
+      expect(mockCreateThumbnailFromPath).toHaveBeenCalledWith(
+        '/tmp/demo.MP4',
+        { width: 96, height: 96 },
+      );
+    });
+
+    it('keeps a video unsupported unless the caller opts in', async () => {
+      mockStatSize(4096);
+
+      const result = await invoke('/tmp/demo.mp4');
+      expect(result.kind).not.toBe('image');
+      expect(mockCreateThumbnailFromPath).not.toHaveBeenCalled();
+    });
+
+    it('stays unsupported where the OS has no thumbnail', async () => {
+      mockStatSize(4096);
+      mockCreateThumbnailFromPath.mockRejectedValueOnce(
+        new Error('unsupported platform'),
+      );
+      expect((await invoke('/tmp/demo.mov', { videoFrame: true })).kind).toBe(
+        'unsupported',
+      );
+
+      mockCreateThumbnailFromPath.mockResolvedValueOnce({
+        isEmpty: () => true,
+        toDataURL: () => '',
+      });
+      expect((await invoke('/tmp/demo.webm', { videoFrame: true })).kind).toBe(
+        'unsupported',
+      );
+    });
+
+    it('never thumbnails a file that is not a video', async () => {
+      mockStatSize(100);
+      mockedReadFile.mockResolvedValue(Buffer.from('PNG'));
+
+      const result = await invoke('/tmp/small.png', { videoFrame: true });
+      expect(result.content).toMatch(/^data:image\/png;base64,/);
+      expect(mockCreateThumbnailFromPath).not.toHaveBeenCalled();
     });
   });
 
@@ -264,7 +360,7 @@ describe('fileReadPreview handler', () => {
 
     it('sets truncated to false for images', async () => {
       mockStatSize(1000);
-      mockedReadFile.mockResolvedValue(Buffer.from('GIF89a') as never);
+      mockedReadFile.mockResolvedValue(Buffer.from('GIF89a'));
 
       const result = await invoke('/tmp/anim.gif');
       expect(result.truncated).toBe(false);
@@ -298,7 +394,7 @@ describe('fileReadPreview handler', () => {
 
     it('returns correct MIME for jpeg', async () => {
       mockStatSize(50);
-      mockedReadFile.mockResolvedValue(Buffer.from('JPEG') as never);
+      mockedReadFile.mockResolvedValue(Buffer.from('JPEG'));
 
       const result = await invoke('/tmp/photo.jpg');
       expect(result.content).toMatch(/^data:image\/jpeg;base64,/);
@@ -306,7 +402,7 @@ describe('fileReadPreview handler', () => {
 
     it('returns correct MIME for svg', async () => {
       mockStatSize(50);
-      mockedReadFile.mockResolvedValue(Buffer.from('<svg>') as never);
+      mockedReadFile.mockResolvedValue(Buffer.from('<svg>'));
 
       const result = await invoke('/tmp/icon.svg');
       expect(result.content).toMatch(/^data:image\/svg\+xml;base64,/);
@@ -317,7 +413,10 @@ describe('fileReadPreview handler', () => {
 describe('fileOpenExternal handler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    registerFilePreviewHandlers();
+    registerFilePreviewHandlers(
+      unusedFileContentDispatcher,
+      unusedCallerResolver,
+    );
   });
 
   it('escapes reserved characters in local file URLs', async () => {
@@ -354,7 +453,10 @@ describe('fileOpenExternal handler', () => {
 describe('fileShowInFinder handler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    registerFilePreviewHandlers();
+    registerFilePreviewHandlers(
+      unusedFileContentDispatcher,
+      unusedCallerResolver,
+    );
   });
 
   it('rejects Windows UNC and device paths', async () => {
@@ -463,15 +565,25 @@ describe('fileShowInFinder handler', () => {
 describe('fileReferenceResolve handler', () => {
   const fileStats = statSync(__filename);
   const directoryStats = statSync(__dirname);
+  // The handler projects over `worker.filesystem.link.resolve` (CAN-5038).
+  let runtime: DesktopCanopyDispatcher | undefined;
 
   function invoke(baseFilePath: string, href: string): Promise<unknown> {
-    return getHandler(IPC_CHANNELS.fileReferenceResolve)(undefined, {
-      projectId: 'project-1',
-      worktreeId: 'wt-1',
-      baseFilePath,
-      href,
-    });
+    return getHandler(IPC_CHANNELS.fileReferenceResolve)(
+      { sender: { id: 7 } },
+      {
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        baseFilePath,
+        href,
+      },
+    );
   }
+
+  afterEach(async () => {
+    await runtime?.shutdown();
+    runtime = undefined;
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -496,7 +608,14 @@ describe('fileReferenceResolve handler', () => {
       }
       return Promise.reject(new Error('ENOENT'));
     });
-    registerFilePreviewHandlers();
+    runtime = createDesktopRuntime({ shutdownTimeoutMs: 1_000 });
+    registerFilePreviewHandlers(runtime, (event) => ({
+      principalId: 'local',
+      clientInstanceId: `electron-web-contents:${event.sender.id}`,
+      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+      interfaceKind: 'desktop',
+      grants: ['worker.filesystem.read'],
+    }));
   });
 
   it('resolves markdown-relative links inside allowed roots', async () => {
@@ -773,7 +892,10 @@ describe('fileReadDocumentBytes handler', () => {
 
   beforeEach(async () => {
     jest.resetAllMocks();
-    registerFilePreviewHandlers();
+    registerFilePreviewHandlers(
+      unusedFileContentDispatcher,
+      unusedCallerResolver,
+    );
     directory = await actualFs.mkdtemp(path.join(os.tmpdir(), 'pdf-bytes-'));
     handle = await actualFs.open(path.join(directory, 'brief.pdf'), 'w+');
     closeHandle = handle.close.bind(handle);
@@ -832,6 +954,23 @@ describe('fileReadDocumentBytes handler', () => {
     });
     expect(handleSpies.read).not.toHaveBeenCalled();
     expect(handleSpies.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives video files the larger video budget (CAN-3995)', async () => {
+    const videoMaxBytes = 100 * 1024 * 1024;
+    metadata.size = maxBytes + 1;
+    contents(Buffer.alloc(maxBytes + 1, 17));
+    const ready = await invoke('/workspace/reel.mp4');
+    expect(ready.status).toBe('ready');
+    if (ready.status !== 'ready') throw new Error('Expected ready video');
+    expect(ready.sizeBytes).toBe(maxBytes + 1);
+
+    metadata.size = videoMaxBytes + 1;
+    expect(await invoke('/workspace/reel.mp4')).toEqual({
+      status: 'too-large',
+      maxBytes: videoMaxBytes,
+      sizeBytes: videoMaxBytes + 1,
+    });
   });
 
   it('bounds growing files to the limit plus one observed byte', async () => {

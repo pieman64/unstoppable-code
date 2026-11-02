@@ -1,4 +1,8 @@
 import {
+  recordGitCommitTelemetry,
+  recordPullRequestOpenedTelemetry,
+} from '../lib/desktop-telemetry';
+import {
   pushBranchWithAuthFailure,
   withGitHubPushAuthFailure,
 } from '../lib/github-push';
@@ -59,6 +63,7 @@ import {
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { PortalServiceError } from './portal-service-error';
+import { runExclusiveGitMutation } from './git-action-exclusion';
 import { triggerWorktreePrecommitFailureHook } from '../lib/worktree-precommit-failure-hook';
 import { resolveFreshDefaultBranch } from '../lib/git-default-branch';
 import { refreshNow } from '../lib/github-poller';
@@ -388,6 +393,18 @@ export async function createPullRequest(
     if (githubAuthFailureCode(error)) throw githubNotConnected();
     throw error;
   });
+  if (pr.created === true) {
+    try {
+      recordPullRequestOpenedTelemetry({
+        projectId: request.workspaceLocalId,
+        source: 'manual',
+        flow: 'portal',
+        repoCount: 1,
+      });
+    } catch {
+      /* Best effort. */
+    }
+  }
   const state: PortalPullRequestState = {
     workspaceLocalId: request.workspaceLocalId,
     worktreeLocalId: request.worktreeLocalId,
@@ -465,19 +482,31 @@ export async function runPrAction(
           draft: request.draft,
         });
       case 'push':
-        return await pushTargetRepos(request, options);
+        return await refreshPullRequestStateAfterPush(
+          request,
+          await runExclusiveGitMutation(gitActionTarget(request), () =>
+            pushTargetRepos(request, options),
+          ),
+        );
       case 'commit_and_push':
         if (!request.commitMessage.trim())
           throw new PortalServiceError(
             'invalid_payload',
             'commitMessage is required.',
           );
-        return await pushTargetRepos(request, options);
+        return await refreshPullRequestStateAfterPush(
+          request,
+          await runExclusiveGitMutation(gitActionTarget(request), () =>
+            pushTargetRepos(request, options),
+          ),
+        );
       case 'pull':
-        for (const repo of await resolveTargetRepos(request)) {
-          const branch = await getCurrentBranch(repo.repoPath);
-          await pullBranchRebase(repo.repoPath, branch);
-        }
+        await runExclusiveGitMutation(gitActionTarget(request), async () => {
+          for (const repo of await resolveTargetRepos(request)) {
+            const branch = await getCurrentBranch(repo.repoPath);
+            await pullBranchRebase(repo.repoPath, branch);
+          }
+        });
         return refreshPullRequestStateAfterMutation(request);
       case 'update_base_branch':
         if (!request.baseBranch.trim()) {
@@ -501,16 +530,34 @@ export async function runPrAction(
   }
 }
 
+/**
+ * The desktop Git-action lock key the Portal's mutations share. Only the
+ * mutation holds the lock; the PR status read after it does not.
+ */
+function gitActionTarget(request: {
+  workspaceLocalId: string;
+  worktreeLocalId: string;
+}): { projectId: string; worktreeId: string } {
+  validateId(request.workspaceLocalId, 'workspaceLocalId');
+  validateId(request.worktreeLocalId, 'worktreeLocalId');
+  return {
+    projectId: request.workspaceLocalId,
+    worktreeId: request.worktreeLocalId,
+  };
+}
+
 async function pushTargetRepos(
   request: Extract<
     PortalPrActionPayload,
     { action: 'push' | 'commit_and_push' }
   >,
   options: { getWindow?: () => BrowserWindow | null },
-): Promise<PortalPullRequestState> {
+): Promise<PortalPrMutationResult> {
   const result: PortalPrMutationResult = { repos: [], failedRepos: [] };
   let firstError: unknown;
-  for (const repo of await resolveTargetRepos(request)) {
+  const repos = await resolveTargetRepos(request);
+  const repoCount = new Set(repos.map((repo) => repo.repoPath)).size;
+  for (const repo of repos) {
     try {
       if (
         request.action === 'commit_and_push' &&
@@ -519,6 +566,16 @@ async function pushTargetRepos(
         await stageAllChanges(repo.repoPath);
         try {
           await commitWithMessage(repo.repoPath, request.commitMessage);
+          try {
+            recordGitCommitTelemetry({
+              projectId: request.workspaceLocalId,
+              source: 'manual',
+              flow: 'portal',
+              repoCount,
+            });
+          } catch {
+            /* Best effort. */
+          }
         } catch (error) {
           await triggerWorktreePrecommitFailureHook({
             projectId: request.workspaceLocalId,
@@ -562,6 +619,13 @@ async function pushTargetRepos(
       throw githubNotConnected();
     throw firstError;
   }
+  return result;
+}
+
+async function refreshPullRequestStateAfterPush(
+  request: PortalPrRefreshPayload,
+  result: PortalPrMutationResult,
+): Promise<PortalPullRequestState> {
   if (!result.failedRepos.length)
     return refreshPullRequestStateAfterMutation(request);
   // A status read can fail for the same missing credential. Never lose a

@@ -1,7 +1,9 @@
 const mockAddClientFeatureFlagEvaluation = jest.fn<void, [string, unknown]>();
 
 jest.mock('@canopy/desktop-instrumentation/client', () => ({
-  addClientFeatureFlagEvaluation: mockAddClientFeatureFlagEvaluation,
+  get addClientFeatureFlagEvaluation(): typeof mockAddClientFeatureFlagEvaluation {
+    return mockAddClientFeatureFlagEvaluation;
+  },
 }));
 
 import {
@@ -24,7 +26,7 @@ function installWindowApi(featureFlags: FeatureFlagsApiMock): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
-      ...(globalThis as { window?: unknown }).window,
+      ...globalThis.window,
       api: { featureFlags },
     },
   });

@@ -36,7 +36,10 @@ function setPlatform(platform: NodeJS.Platform): void {
 function createApi(initial: WakeLockState): MockWakeLockApi {
   return {
     getWakeLockState: jest.fn(() => Promise.resolve(initial)),
-    onWakeLockStateChanged: jest.fn(() => jest.fn()),
+    onWakeLockStateChanged: jest.fn<
+      () => void,
+      [(state: WakeLockState) => void]
+    >((): (() => void) => () => {}),
   };
 }
 

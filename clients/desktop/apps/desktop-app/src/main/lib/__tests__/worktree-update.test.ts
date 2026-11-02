@@ -51,7 +51,7 @@ function row(id: string, extra: Partial<WorktreeData> = {}): WorktreeData {
 
 /** Renderer data reaches the boundary unchecked; tests send it the same way. */
 function untypedPatch(value: Record<string, unknown>): WorktreeMetadataPatch {
-  return value as WorktreeMetadataPatch;
+  return value;
 }
 
 function untypedMove(value: Record<string, unknown>): WorktreeMoveRequest {

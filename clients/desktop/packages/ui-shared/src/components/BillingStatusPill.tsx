@@ -9,8 +9,9 @@
 // ---------------------------------------------------------------------------
 
 import type { JSX } from 'react';
+import { badgeClassName } from '../lib/badge';
 import {
-  BILLING_STATUS_TONE_CLASSES,
+  BILLING_STATUS_BADGE_TONE,
   type BillingStatusTone,
 } from '../lib/billing-status-tone';
 
@@ -29,7 +30,7 @@ export function BillingStatusPill({
 }: BillingStatusPillProps): JSX.Element {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap ${BILLING_STATUS_TONE_CLASSES[tone]}`}
+      className={badgeClassName(BILLING_STATUS_BADGE_TONE[tone])}
       data-testid={testId}
     >
       {label}

@@ -69,6 +69,7 @@ function command(
 function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
   return {
     enqueueEvent: (event) => events.push(event),
+    getWindow: () => null,
     complete: (command, result): void => {
       events.push({
         type: 'portal.command.completed',

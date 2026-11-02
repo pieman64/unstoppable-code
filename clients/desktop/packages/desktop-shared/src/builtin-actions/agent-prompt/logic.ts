@@ -625,7 +625,7 @@ export function resolveFastModeInput(env: NodeJS.ProcessEnv): boolean {
   // Ultra fast run config is rejected rather than silently running Regular.
   if (modelConfig?.speed === 'ultrafast') {
     throw new Error(
-      'Pipelines do not support Ultra fast. Set fast_mode on this step, or run the pipeline with Regular or Fast.',
+      'Workflows do not support Ultra fast. Set fast_mode on this step, or run the workflow with Regular or Fast.',
     );
   }
   if (typeof modelConfig?.fastMode === 'boolean') {

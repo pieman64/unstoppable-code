@@ -8,6 +8,7 @@ import type {
   ActionInputDef,
   ActionOutputDef,
   ActionRuns,
+  HostActionNodeFallback,
   Step,
 } from '@canopy/desktop-shared/types/pipeline';
 import { parseLogFormatHint } from '@canopy/desktop-shared/types/pipeline';
@@ -140,16 +141,38 @@ function parseActionRuns(
     }
     case 'pipeline':
       return { using };
-    case 'host':
+    case 'host': {
       if (!bundled) {
         throw new Error(
           `Action "${filePath}" uses runs.using "host", which only bundled actions may use`,
         );
       }
-      return { using };
+      if (runs.fallback === undefined) {
+        return { using };
+      }
+      return { using, fallback: parseHostFallback(runs.fallback, filePath) };
+    }
     default:
       throw new Error(`Unsupported action runtime in ${filePath}`);
   }
+}
+
+function parseHostFallback(
+  fallback: unknown,
+  filePath: string,
+): HostActionNodeFallback {
+  if (!isRecord(fallback) || fallback.using !== 'node') {
+    throw new Error(
+      `Action "${filePath}" runs.fallback must declare using "node"`,
+    );
+  }
+  const main = fallback.main;
+  if (typeof main !== 'string' || !main.trim()) {
+    throw new Error(
+      `Action "${filePath}" requires a non-empty runs.fallback.main`,
+    );
+  }
+  return { using: 'node', main };
 }
 
 function parseActionDefinition(
@@ -355,9 +378,18 @@ export function resolveActionRuntime(
         );
       }
       break;
+    case 'host':
+      if (definition.runs.fallback) {
+        mainPath = path.resolve(actionDir, definition.runs.fallback.main);
+        if (!isPathInside(actionDir, mainPath)) {
+          throw new Error(
+            `Action "${usesRef}" has an unsafe runs.main "${definition.runs.fallback.main}"`,
+          );
+        }
+      }
+      break;
     case 'composite':
     case 'pipeline':
-    case 'host':
       break;
   }
 

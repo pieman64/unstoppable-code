@@ -1,14 +1,11 @@
 import {
   access,
-  cp,
-  link,
   lstat,
   mkdtemp,
   mkdir,
   readFile,
   readdir,
   readlink,
-  realpath,
   rename,
   rm,
   symlink,
@@ -17,7 +14,7 @@ import {
 } from 'node:fs/promises';
 import { promises as fsPromises, type Dirent } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type * as FileBrowserRootsModule from '../lib/file-browser-roots';
 import type * as PreferencesStoreModule from '../lib/preferences-store';
@@ -25,6 +22,7 @@ import {
   CanopyOperationError,
   createInProcessCanopyClient,
 } from '@canopy/core-runtime';
+import { buildCoworkRootCatalog } from '@canopy/core-runtime/node';
 import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
@@ -33,6 +31,8 @@ import {
   type FileIndexResponse,
   type FileTreeDirectoryRequest,
   type FileTreeDirectoryResponse,
+  type FileTreeMutationRequest,
+  type FileTreeMutationResponse,
   type FileTreeRootsRequest,
   type FileTreeRootsResponse,
   type WorkspaceConfigFile,
@@ -114,13 +114,7 @@ import {
   buildFileExplorerGlobMatcher,
   buildFileGlobMatcher,
 } from '../lib/file-glob-matcher';
-import { mutateFileTree } from '../services/files-service';
 import { assertNotSplitLocked } from '../services/split-lock-service';
-import {
-  getFileTreeWatchCount,
-  startFileTreeWatch,
-  stopFileTreeWatch,
-} from '../services/file-tree-watch-service';
 import {
   getWorkspaceWorktreeAttachmentsDir,
   getWorkspaceWorktreeRepoDir,
@@ -142,7 +136,6 @@ import {
   listFileTreeDirectory,
   listFileTreeRoots,
 } from '../services/files-service';
-import { validateId } from '../lib/validation';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedCheckIgnoredPaths = jest.mocked(checkIgnoredPaths);
@@ -166,7 +159,6 @@ const mockedResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
 const mockedResolveWorktreeTargetIds = jest.mocked(resolveWorktreeTargetIds);
 const mockedReadWorkspaceConfig = jest.mocked(readWorkspaceConfig);
 const mockedIsMultiRepoWorkspace = jest.mocked(isMultiRepoWorkspace);
-const mockedValidateId = jest.mocked(validateId);
 const mockedAssertNotSplitLocked = jest.mocked(assertNotSplitLocked);
 
 type IndexHandler = (
@@ -212,6 +204,35 @@ function createTrustedIpcFixture(): {
     event: { sender, senderFrame: mainFrame },
     window,
   };
+}
+
+const testOs =
+  process.platform === 'win32'
+    ? 'win32'
+    : process.platform === 'linux'
+      ? 'linux'
+      : 'darwin';
+const mockTrashItem = jest.fn<Promise<void>, [string]>();
+
+function isMutationResponse(value: unknown): value is FileTreeMutationResponse {
+  return isRecord(value) && typeof value.operation === 'string';
+}
+
+/**
+ * Deletes are `worker.filesystem.entry.delete` (CAN-4101): they run through
+ * the most recently registered `file-tree:mutate` projection.
+ */
+async function mutateThroughIpc(
+  request: FileTreeMutationRequest,
+): Promise<FileTreeMutationResponse> {
+  const call = mockedRegisterIpcHandler.mock.calls
+    .filter(([channel]) => channel === IPC_CHANNELS.fileTreeMutate)
+    .at(-1);
+  if (!call) throw new Error('Missing registered file-tree:mutate handler');
+  const result = await invokeHandler(call[1], trustedEvent, request);
+  if (!isMutationResponse(result))
+    throw new Error('Expected a file-tree mutation response');
+  return result;
 }
 
 function resolveTrustedCaller(event: DesktopIpcEvent): CanopyCallerDescriptor {
@@ -374,10 +395,15 @@ beforeEach(async () => {
   mockedIsMultiRepoWorkspace.mockReturnValue(false);
   listRootsService = jest.fn(listFileTreeRoots);
   listDirectoryService = jest.fn(listFileTreeDirectory);
+  mockTrashItem.mockResolvedValue(undefined);
   dispatcher = createDesktopRuntime({
     services: {
       listFileTreeRoots: listRootsService,
       listFileTreeDirectory: listDirectoryService,
+    },
+    platform: {
+      os: testOs,
+      trash: { trashItem: (path) => mockTrashItem(path) },
     },
     shutdownTimeoutMs: 25,
   });
@@ -426,13 +452,17 @@ describe('file-tree mutations', () => {
     await expect(access(pathValue)).rejects.toMatchObject({ code: 'ENOENT' });
   }
 
+  async function expectNoEntry(pathValue: string): Promise<void> {
+    await expect(lstat(pathValue)).rejects.toMatchObject({ code: 'ENOENT' });
+  }
+
   it('creates, renames, incrementally copies, moves, and deletes entries', async () => {
     const { repoRoot, attachmentsRoot } = await createRepoFixture();
     mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
     mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
     const scope = { projectId: 'project-1', worktreeId: 'wt-1' };
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       ...scope,
       operation: 'create-file',
       target: { repoId: 'project-1', relativePath: 'drafts/notes.txt' },
@@ -441,7 +471,7 @@ describe('file-tree mutations', () => {
       '',
     );
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       ...scope,
       operation: 'move',
       source: { repoId: 'project-1', relativePath: 'drafts/notes.txt' },
@@ -449,7 +479,7 @@ describe('file-tree mutations', () => {
     });
     await expectMissing(join(repoRoot, 'drafts', 'notes.txt'));
 
-    const copied = await mutateFileTree({
+    const copied = await mutateThroughIpc({
       ...scope,
       operation: 'copy',
       source: { repoId: 'project-1', relativePath: 'drafts/renamed.txt' },
@@ -458,12 +488,12 @@ describe('file-tree mutations', () => {
     });
     expect(copied.target?.relativePath).toBe('drafts/renamed copy.txt');
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       ...scope,
       operation: 'create-directory',
       target: { repoId: 'project-1', relativePath: 'archive' },
     });
-    await mutateFileTree({
+    await mutateThroughIpc({
       ...scope,
       operation: 'move',
       source: { repoId: 'project-1', relativePath: 'drafts/renamed copy.txt' },
@@ -473,7 +503,7 @@ describe('file-tree mutations', () => {
       '',
     );
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       ...scope,
       operation: 'delete',
       target: { repoId: 'project-1', relativePath: 'archive' },
@@ -486,7 +516,7 @@ describe('file-tree mutations', () => {
     mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
     mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       operation: 'create-directory',
@@ -508,7 +538,7 @@ describe('file-tree mutations', () => {
     mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
     mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       operation: 'create-file',
@@ -531,7 +561,7 @@ describe('file-tree mutations', () => {
       worktreeId: 'real-worktree',
     });
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       projectId: '__code_review__',
       worktreeId: 'managed-scope',
       operation: 'create-file',
@@ -566,12 +596,13 @@ describe('file-tree mutations', () => {
       },
     };
 
-    const result: unknown = Reflect.apply(mutateFileTree, undefined, [
-      malformedRequest,
-    ]);
-    await expect(Promise.resolve(result)).rejects.toThrow(
-      'Unsupported file-tree mutation operation',
-    );
+    const call = mockedRegisterIpcHandler.mock.calls
+      .filter(([channel]) => channel === IPC_CHANNELS.fileTreeMutate)
+      .at(-1);
+    if (!call) throw new Error('Missing registered file-tree:mutate handler');
+    await expect(
+      invokeHandler(call[1], trustedEvent, malformedRequest),
+    ).rejects.toThrow('Unsupported file-tree mutation operation');
     expect(await readFile(sourcePath, 'utf8')).toBe('source\n');
     await expectMissing(targetPath);
   });
@@ -583,21 +614,21 @@ describe('file-tree mutations', () => {
     const scope = { projectId: 'project-1', worktreeId: 'wt-1' };
 
     await expect(
-      mutateFileTree({
+      mutateThroughIpc({
         ...scope,
         operation: 'delete',
         target: { repoId: 'project-1', relativePath: '' },
       }),
     ).rejects.toThrow('cannot be a file-tree root');
     await expect(
-      mutateFileTree({
+      mutateThroughIpc({
         ...scope,
         operation: 'create-file',
         target: { repoId: 'project-1', relativePath: '../escaped.txt' },
       }),
     ).rejects.toThrow('cannot traverse outside');
     await expect(
-      mutateFileTree({
+      mutateThroughIpc({
         ...scope,
         operation: 'create-file',
         target: { repoId: 'project-1', relativePath: 'src/index.ts' },
@@ -608,7 +639,7 @@ describe('file-tree mutations', () => {
     await mkdir(outside);
     await symlink(outside, join(repoRoot, 'outside-link'));
     await expect(
-      mutateFileTree({
+      mutateThroughIpc({
         ...scope,
         operation: 'create-file',
         target: { repoId: 'project-1', relativePath: 'outside-link/nope.txt' },
@@ -620,22 +651,54 @@ describe('file-tree mutations', () => {
     const { repoRoot, attachmentsRoot } = await createRepoFixture();
     mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
     mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const trashItem = jest.fn(() => Promise.resolve());
 
-    await mutateFileTree(
-      {
-        projectId: 'project-1',
-        worktreeId: 'wt-1',
-        operation: 'delete',
-        target: { repoId: 'project-1', relativePath: 'src/index.ts' },
-        useTrash: true,
-      },
-      { trashItem },
-    );
+    await mutateThroughIpc({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      operation: 'delete',
+      target: { repoId: 'project-1', relativePath: 'src/index.ts' },
+      useTrash: true,
+    });
 
-    expect(trashItem).toHaveBeenCalledWith(
+    expect(mockTrashItem).toHaveBeenCalledWith(
       expect.stringMatching(/[/\\]repo[/\\]src[/\\]index\.ts$/),
     );
+    expect(await readFile(join(repoRoot, 'src', 'index.ts'), 'utf8')).toBe(
+      'export {};\n',
+    );
+  });
+
+  it('refuses a Trash delete without removing anything when no Trash is available', async () => {
+    const { repoRoot, attachmentsRoot } = await createRepoFixture();
+    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
+    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
+    const withoutTrash = createDesktopRuntime({
+      platform: { os: testOs },
+      shutdownTimeoutMs: 25,
+    });
+    registerFileTreeHandlers(withoutTrash, resolveTrustedCaller);
+    try {
+      for (const relativePath of ['src/index.ts', 'src']) {
+        await expect(
+          mutateThroughIpc({
+            projectId: 'project-1',
+            worktreeId: 'wt-1',
+            operation: 'delete',
+            target: { repoId: 'project-1', relativePath },
+            useTrash: true,
+          }),
+        ).rejects.toMatchObject({
+          name: 'PortalServiceError',
+          code: 'execution_failed',
+          message:
+            "Couldn't move the item to the trash; no trash is available here. Nothing was deleted.",
+        });
+      }
+    } finally {
+      await withoutTrash.shutdown();
+    }
+
+    expect(mockTrashItem).not.toHaveBeenCalled();
     expect(await readFile(join(repoRoot, 'src', 'index.ts'), 'utf8')).toBe(
       'export {};\n',
     );
@@ -648,7 +711,7 @@ describe('file-tree mutations', () => {
     await symlink('missing-target', join(repoRoot, 'dangling.txt'));
 
     await expect(
-      mutateFileTree({
+      mutateThroughIpc({
         projectId: 'project-1',
         worktreeId: 'wt-1',
         operation: 'move',
@@ -661,7 +724,7 @@ describe('file-tree mutations', () => {
       true,
     );
 
-    const copied = await mutateFileTree({
+    const copied = await mutateThroughIpc({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       operation: 'copy',
@@ -680,7 +743,7 @@ describe('file-tree mutations', () => {
     await symlink('real.txt', join(repoRoot, 'link.txt'));
 
     await expect(
-      mutateFileTree({
+      mutateThroughIpc({
         projectId: 'project-1',
         worktreeId: 'wt-1',
         operation: 'move',
@@ -698,418 +761,45 @@ describe('file-tree mutations', () => {
     );
   });
 
-  it('does not overwrite a move target created after conflict validation', async () => {
+  it('keeps a moved or renamed symlink a symlink', async () => {
     const { repoRoot, attachmentsRoot } = await createRepoFixture();
     mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
     mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'source.txt');
-    const targetPath = join(repoRoot, 'target.txt');
-    await writeFile(sourcePath, 'source\n');
+    await writeFile(join(repoRoot, 'real.txt'), 'real\n');
+    await mkdir(join(repoRoot, 'real-dir'));
+    await writeFile(join(repoRoot, 'real-dir', 'inside.txt'), 'inside\n');
+    await symlink('real.txt', join(repoRoot, 'file-link'));
+    await symlink('real-dir', join(repoRoot, 'dir-link'));
+    await mkdir(join(repoRoot, 'links'));
+    const scope = { projectId: 'project-1', worktreeId: 'wt-1' };
 
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'move',
-          source: { repoId: 'project-1', relativePath: 'source.txt' },
-          target: { repoId: 'project-1', relativePath: 'target.txt' },
-          conflict: 'error',
-        },
-        {
-          beforeMove: async () => {
-            await writeFile(targetPath, 'concurrent target\n');
-          },
-        },
-      ),
-    ).rejects.toThrow('already exists');
-
-    expect(await readFile(targetPath, 'utf8')).toBe('concurrent target\n');
-    expect(await readFile(sourcePath, 'utf8')).toBe('source\n');
-  });
-
-  it('refuses a move when a validated parent is swapped for an escaping symlink', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'race-source.txt');
-    const targetParent = join(repoRoot, 'race-target');
-    const originalParent = join(repoRoot, 'race-target-original');
-    const outside = join(tempRoot, 'race-outside');
-    const outsideTarget = join(outside, 'moved.txt');
-    await writeFile(sourcePath, 'source\n');
-    await mkdir(targetParent);
-    await mkdir(outside);
-
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'move',
-          source: { repoId: 'project-1', relativePath: 'race-source.txt' },
-          target: {
-            repoId: 'project-1',
-            relativePath: 'race-target/moved.txt',
-          },
-          conflict: 'error',
-        },
-        {
-          beforeMove: async () => {
-            await rename(targetParent, originalParent);
-            await symlink(outside, targetParent);
-          },
-        },
-      ),
-    ).rejects.toThrow('outside the selected worktree root');
-
-    await expectMissing(outsideTarget);
-    expect(await readFile(sourcePath, 'utf8')).toBe('source\n');
-  });
-
-  it('copies from the validated source when its lexical alias is swapped', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourceDirectory = join(repoRoot, 'validated-source');
-    const lexicalAlias = join(repoRoot, 'source-alias');
-    const outsideDirectory = join(tempRoot, 'outside-source');
-    const sourcePath = join(sourceDirectory, 'value.txt');
-    const targetPath = join(repoRoot, 'copied-value.txt');
-    await mkdir(sourceDirectory);
-    await mkdir(outsideDirectory);
-    await writeFile(sourcePath, 'inside\n');
-    await writeFile(join(outsideDirectory, 'value.txt'), 'outside\n');
-    await symlink(sourceDirectory, lexicalAlias);
-    const copyEntry = jest.fn(
-      async (validatedSource: string, target: string) => {
-        await rm(lexicalAlias);
-        await symlink(outsideDirectory, lexicalAlias);
-        await cp(validatedSource, target, {
-          recursive: true,
-          errorOnExist: true,
-          force: false,
-          preserveTimestamps: true,
-          verbatimSymlinks: true,
-        });
-      },
-    );
-
-    await mutateFileTree(
-      {
-        projectId: 'project-1',
-        worktreeId: 'wt-1',
-        operation: 'copy',
-        source: { repoId: 'project-1', relativePath: 'source-alias/value.txt' },
-        target: { repoId: 'project-1', relativePath: 'copied-value.txt' },
-        conflict: 'error',
-      },
-      { copyEntry },
-    );
-
-    expect(copyEntry).toHaveBeenCalledWith(
-      await realpath(sourcePath),
-      expect.any(String),
-    );
-    expect(await readFile(targetPath, 'utf8')).toBe('inside\n');
-  });
-
-  it('removes copy staging artifacts after a partial copy failure', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'partial-source.txt');
-    const targetPath = join(repoRoot, 'partial-target.txt');
-    await writeFile(sourcePath, 'source\n');
-    const copyEntry = jest.fn(async (_source: string, target: string) => {
-      await writeFile(target, 'partial\n');
-      throw new Error('copy interrupted');
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'move',
+      source: { repoId: 'project-1', relativePath: 'file-link' },
+      target: { repoId: 'project-1', relativePath: 'links/file-link' },
+      conflict: 'error',
+    });
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'move',
+      source: { repoId: 'project-1', relativePath: 'dir-link' },
+      target: { repoId: 'project-1', relativePath: 'renamed-dir-link' },
+      conflict: 'error',
     });
 
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'copy',
-          source: { repoId: 'project-1', relativePath: 'partial-source.txt' },
-          target: { repoId: 'project-1', relativePath: 'partial-target.txt' },
-          conflict: 'error',
-        },
-        { copyEntry },
-      ),
-    ).rejects.toThrow('copy interrupted');
-
-    await expectMissing(targetPath);
-    expect(
-      (await readdir(repoRoot)).some((entry) =>
-        entry.startsWith('.canopy-copy-'),
-      ),
-    ).toBe(false);
-  });
-
-  it('does not overwrite a copy target created during staged publication', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'publish-source.txt');
-    const targetPath = join(repoRoot, 'publish-target.txt');
-    await writeFile(sourcePath, 'source\n');
-    const linkEntry = jest.fn(async (stagingPath: string, target: string) => {
-      await writeFile(target, 'concurrent target\n', { flag: 'wx' });
-      await link(stagingPath, target);
-    });
-
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'copy',
-          source: {
-            repoId: 'project-1',
-            relativePath: 'publish-source.txt',
-          },
-          target: {
-            repoId: 'project-1',
-            relativePath: 'publish-target.txt',
-          },
-          conflict: 'error',
-        },
-        { publishLinkEntry: linkEntry },
-      ),
-    ).rejects.toThrow('already exists');
-
-    expect(linkEntry).toHaveBeenCalledWith(expect.any(String), targetPath);
-    expect(await readFile(targetPath, 'utf8')).toBe('concurrent target\n');
-    expect(await readFile(sourcePath, 'utf8')).toBe('source\n');
-  });
-
-  it('does not treat source cleanup failure as a hard-link capability failure', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'cleanup-file-source.txt');
-    const targetPath = join(repoRoot, 'cleanup-file-target.txt');
-    await writeFile(sourcePath, 'source\n');
-    const unlinkEntry = jest.fn(async (pathValue: string) => {
-      if (pathValue === sourcePath) {
-        throw Object.assign(new Error('source cleanup denied'), {
-          code: 'EPERM',
-        });
-      }
-      await rm(pathValue);
-    });
-
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'move',
-          source: {
-            repoId: 'project-1',
-            relativePath: 'cleanup-file-source.txt',
-          },
-          target: {
-            repoId: 'project-1',
-            relativePath: 'cleanup-file-target.txt',
-          },
-          conflict: 'error',
-        },
-        { unlinkEntry },
-      ),
-    ).rejects.toThrow('source cleanup denied');
-
-    expect(await readFile(sourcePath, 'utf8')).toBe('source\n');
-    await expectMissing(targetPath);
-  });
-
-  it('keeps a completed cross-device copy when source cleanup fails', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'cleanup-source');
-    const targetPath = join(repoRoot, 'cleanup-target');
-    await mkdir(sourcePath);
-    await writeFile(join(sourcePath, 'complete.txt'), 'complete\n');
-    const renameEntry = jest.fn(() =>
-      Promise.reject(
-        Object.assign(new Error('cross-device'), { code: 'EXDEV' }),
-      ),
+    const movedFileLink = join(repoRoot, 'links', 'file-link');
+    const renamedDirLink = join(repoRoot, 'renamed-dir-link');
+    expect((await lstat(movedFileLink)).isSymbolicLink()).toBe(true);
+    expect(await readlink(movedFileLink)).toBe('real.txt');
+    expect((await lstat(renamedDirLink)).isSymbolicLink()).toBe(true);
+    expect(await readlink(renamedDirLink)).toBe('real-dir');
+    expect(await readFile(join(renamedDirLink, 'inside.txt'), 'utf8')).toBe(
+      'inside\n',
     );
-    const removeEntry = jest.fn(
-      async (pathValue: string, options: { recursive: true; force: false }) => {
-        if (pathValue === sourcePath) {
-          throw new Error('source cleanup failed');
-        }
-        await rm(pathValue, options);
-      },
-    );
-
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'move',
-          source: { repoId: 'project-1', relativePath: 'cleanup-source' },
-          target: { repoId: 'project-1', relativePath: 'cleanup-target' },
-          conflict: 'error',
-        },
-        { renameEntry, removeEntry },
-      ),
-    ).rejects.toThrow('source cleanup failed');
-
-    expect(await readFile(join(targetPath, 'complete.txt'), 'utf8')).toBe(
-      'complete\n',
-    );
-    expect(await readFile(join(sourcePath, 'complete.txt'), 'utf8')).toBe(
-      'complete\n',
-    );
-  });
-
-  it('does not merge a cross-device directory move into a concurrent target', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'cross-device-source');
-    const targetPath = join(repoRoot, 'cross-device-target');
-    await mkdir(sourcePath);
-    await writeFile(join(sourcePath, 'source.txt'), 'source\n');
-    const renameEntry = jest.fn(() =>
-      Promise.reject(
-        Object.assign(new Error('cross-device'), { code: 'EXDEV' }),
-      ),
-    );
-    const copyEntry = jest.fn(async (source: string, target: string) => {
-      await mkdir(targetPath, { recursive: true });
-      await writeFile(join(targetPath, 'foreign.txt'), 'foreign\n');
-      await cp(source, target, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-      });
-    });
-
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'move',
-          source: {
-            repoId: 'project-1',
-            relativePath: 'cross-device-source',
-          },
-          target: {
-            repoId: 'project-1',
-            relativePath: 'cross-device-target',
-          },
-          conflict: 'error',
-        },
-        { renameEntry, copyEntry },
-      ),
-    ).rejects.toThrow('already exists');
-
-    expect(await readFile(join(targetPath, 'foreign.txt'), 'utf8')).toBe(
-      'foreign\n',
-    );
-    await expectMissing(join(targetPath, 'source.txt'));
-    expect(await readFile(join(sourcePath, 'source.txt'), 'utf8')).toBe(
-      'source\n',
-    );
-  });
-
-  it('keeps foreign destination content when a staged EXDEV copy fails', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'failed-cross-device-source');
-    const targetPath = join(repoRoot, 'failed-cross-device-target');
-    await mkdir(sourcePath);
-    await writeFile(join(sourcePath, 'source.txt'), 'source\n');
-    const renameEntry = jest.fn(() =>
-      Promise.reject(
-        Object.assign(new Error('cross-device'), { code: 'EXDEV' }),
-      ),
-    );
-    const copyEntry = jest.fn(async (_source: string, stagingPath: string) => {
-      await mkdir(targetPath, { recursive: true });
-      await writeFile(join(targetPath, 'foreign.txt'), 'foreign\n');
-      await mkdir(stagingPath, { recursive: true });
-      await writeFile(join(stagingPath, 'partial.txt'), 'partial\n');
-      throw new Error('copy interrupted');
-    });
-
-    await expect(
-      mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'move',
-          source: {
-            repoId: 'project-1',
-            relativePath: 'failed-cross-device-source',
-          },
-          target: {
-            repoId: 'project-1',
-            relativePath: 'failed-cross-device-target',
-          },
-          conflict: 'error',
-        },
-        { renameEntry, copyEntry },
-      ),
-    ).rejects.toThrow('copy interrupted');
-
-    expect(await readFile(join(targetPath, 'foreign.txt'), 'utf8')).toBe(
-      'foreign\n',
-    );
-    expect(await readFile(join(sourcePath, 'source.txt'), 'utf8')).toBe(
-      'source\n',
-    );
-    expect(
-      (await readdir(repoRoot)).some((entry) =>
-        entry.startsWith('.canopy-copy-'),
-      ),
-    ).toBe(false);
-  });
-
-  it('falls back when the filesystem does not support hard links', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'unsupported-link.txt');
-    const targetPath = join(repoRoot, 'moved-without-link.txt');
-    await writeFile(sourcePath, 'move me\n');
-    const linkEntry = jest.fn(() =>
-      Promise.reject(
-        Object.assign(new Error('not supported'), { code: 'ENOTSUP' }),
-      ),
-    );
-
-    await mutateFileTree(
-      {
-        projectId: 'project-1',
-        worktreeId: 'wt-1',
-        operation: 'move',
-        source: {
-          repoId: 'project-1',
-          relativePath: 'unsupported-link.txt',
-        },
-        target: {
-          repoId: 'project-1',
-          relativePath: 'moved-without-link.txt',
-        },
-        conflict: 'error',
-      },
-      { linkEntry, publishLinkEntry: linkEntry },
-    );
-
-    expect(linkEntry).toHaveBeenCalledWith(sourcePath, targetPath);
-    expect(linkEntry).toHaveBeenCalledWith(expect.any(String), targetPath);
-    expect(await readFile(targetPath, 'utf8')).toBe('move me\n');
-    await expectMissing(sourcePath);
+    expect((await lstat(join(repoRoot, 'real.txt'))).nlink).toBe(1);
+    await expectNoEntry(join(repoRoot, 'file-link'));
+    await expectNoEntry(join(repoRoot, 'dir-link'));
   });
 
   it('preserves directory identity and timestamps for same-filesystem moves', async () => {
@@ -1124,7 +814,7 @@ describe('file-tree mutations', () => {
     await utimes(sourcePath, timestamp, timestamp);
     const before = await lstat(sourcePath);
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       operation: 'move',
@@ -1139,41 +829,6 @@ describe('file-tree mutations', () => {
     await expectMissing(sourcePath);
   });
 
-  it('does not pre-create a directory move target on Windows', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const sourcePath = join(repoRoot, 'windows-source');
-    const targetPath = join(repoRoot, 'windows-target');
-    await mkdir(sourcePath);
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    const renameEntry = jest.fn(async (source: string, target: string) => {
-      await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
-      await rename(source, target);
-    });
-
-    try {
-      await mutateFileTree(
-        {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'move',
-          source: { repoId: 'project-1', relativePath: 'windows-source' },
-          target: { repoId: 'project-1', relativePath: 'windows-target' },
-          conflict: 'error',
-        },
-        { renameEntry },
-      );
-    } finally {
-      if (platform) Object.defineProperty(process, 'platform', platform);
-    }
-
-    expect(renameEntry).toHaveBeenCalledWith(sourcePath, targetPath);
-    expect((await lstat(targetPath)).isDirectory()).toBe(true);
-    await expectMissing(sourcePath);
-  });
-
   it('preserves relative symlinks when copying a directory', async () => {
     const { repoRoot, attachmentsRoot } = await createRepoFixture();
     mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
@@ -1182,7 +837,7 @@ describe('file-tree mutations', () => {
     await writeFile(join(repoRoot, 'linked-dir', 'target.txt'), 'target\n');
     await symlink('target.txt', join(repoRoot, 'linked-dir', 'link.txt'));
 
-    await mutateFileTree({
+    await mutateThroughIpc({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       operation: 'copy',
@@ -1205,7 +860,7 @@ describe('file-tree mutations', () => {
     mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
     await mkdir(join(repoRoot, 'config.v1'));
 
-    const copied = await mutateFileTree({
+    const copied = await mutateThroughIpc({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       operation: 'copy',
@@ -1231,7 +886,7 @@ describe('file-tree mutations', () => {
     );
 
     await expect(
-      mutateFileTree({
+      mutateThroughIpc({
         projectId: 'project-1',
         worktreeId: 'wt-1',
         operation: 'copy',
@@ -1242,255 +897,459 @@ describe('file-tree mutations', () => {
     ).rejects.toThrow('symlink');
   });
 
-  it('uses Windows path semantics when blocking a folder copied into itself', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    await mkdir(join(repoRoot, 'Folder'));
-    await writeFile(join(repoRoot, 'Folder', 'nested.txt'), 'nested\n');
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    try {
+  async function createMultiRepoMutationFixture(): Promise<{
+    workspaceRoot: string;
+    childRepoRoot: string;
+  }> {
+    const workspaceRoot = join(tempRoot, 'workspace');
+    const reposRoot = join(workspaceRoot, 'repos');
+    const childRepoRoot = join(reposRoot, 'app');
+    const attachmentsRoot = join(tempRoot, 'workspace-attachments');
+    await mkdir(childRepoRoot, { recursive: true });
+    await mkdir(attachmentsRoot, { recursive: true });
+    await writeFile(join(workspaceRoot, 'workspace.txt'), 'workspace\n');
+    await writeFile(join(childRepoRoot, 'child.txt'), 'child\n');
+    mockedIsMultiRepoWorkspace.mockReturnValue(true);
+    mockedReadWorkspaceConfig.mockResolvedValue({
+      version: 1,
+      type: 'multi-repo',
+      repos: [{ id: 'app', name: 'App', repoPath: '/source/app' }],
+    });
+    mockedGetWorkspaceWorktreeRootRepoDir.mockReturnValue(workspaceRoot);
+    mockedGetWorkspaceWorktreeReposDir.mockReturnValue(reposRoot);
+    mockedGetWorkspaceWorktreeRepoDir.mockReturnValue(childRepoRoot);
+    mockedGetWorkspaceWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
+    return { workspaceRoot, childRepoRoot };
+  }
+
+  it('refuses parent-root mutations at or inside child repo roots', async () => {
+    const { workspaceRoot, childRepoRoot } =
+      await createMultiRepoMutationFixture();
+    const scope = { projectId: 'workspace-1', worktreeId: 'wt-1' };
+    const parent = WORKSPACE_ROOT_REPO_ID;
+    const refused = 'belongs to another file-tree root';
+
+    for (const relativePath of ['repos', 'repos/app', 'repos/app/child.txt']) {
       await expect(
-        mutateFileTree({
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          operation: 'copy',
-          source: { repoId: 'project-1', relativePath: 'Folder' },
-          target: { repoId: 'project-1', relativePath: 'folder/sub' },
+        mutateThroughIpc({
+          ...scope,
+          operation: 'delete',
+          target: { repoId: parent, relativePath },
+          useTrash: true,
+        }),
+      ).rejects.toThrow(refused);
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation: 'delete',
+          target: { repoId: parent, relativePath },
+        }),
+      ).rejects.toThrow(refused);
+    }
+    for (const operation of ['move', 'copy'] as const) {
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation,
+          source: { repoId: parent, relativePath: 'repos/app/child.txt' },
+          target: { repoId: parent, relativePath: `${operation}-out.txt` },
           conflict: 'error',
         }),
-      ).rejects.toThrow('cannot be moved or copied into itself');
-    } finally {
-      if (platform) Object.defineProperty(process, 'platform', platform);
+      ).rejects.toThrow(refused);
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation,
+          source: { repoId: parent, relativePath: 'workspace.txt' },
+          target: {
+            repoId: parent,
+            relativePath: `repos/app/${operation}.txt`,
+          },
+          conflict: 'error',
+        }),
+      ).rejects.toThrow(refused);
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation,
+          source: { repoId: parent, relativePath: 'workspace.txt' },
+          target: { repoId: 'app', relativePath: `${operation}-in.txt` },
+          conflict: 'error',
+        }),
+      ).resolves.toMatchObject({ operation });
+      if (operation === 'move') {
+        await rename(
+          join(childRepoRoot, 'move-in.txt'),
+          join(workspaceRoot, 'workspace.txt'),
+        );
+      }
     }
-  });
-});
 
-describe('file-tree native change detection', () => {
-  it('watches an initially empty attachments root for its first file', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    await rm(join(attachmentsRoot, 'note.txt'));
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const listeners = new Map<string, () => void>();
-    const watchDirectory = jest.fn(
-      (
-        pathValue: string,
-        _options: { recursive: true },
-        listener: () => void,
-      ) => {
-        listeners.set(pathValue, listener);
-        return { close: jest.fn(), on: jest.fn() };
+    expect(mockTrashItem).not.toHaveBeenCalled();
+    expect(await readFile(join(childRepoRoot, 'child.txt'), 'utf8')).toBe(
+      'child\n',
+    );
+    await expectMissing(join(workspaceRoot, 'move-out.txt'));
+    await expectMissing(join(workspaceRoot, 'copy-out.txt'));
+    await expectMissing(join(childRepoRoot, 'move.txt'));
+    await expectMissing(join(childRepoRoot, 'copy.txt'));
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'delete',
+      target: { repoId: 'app', relativePath: 'child.txt' },
+    });
+    await expectMissing(join(childRepoRoot, 'child.txt'));
+  });
+
+  it('refuses parent-root mutations that reach a child repo through a symlink or case alias', async () => {
+    const { workspaceRoot, childRepoRoot } =
+      await createMultiRepoMutationFixture();
+    await symlink(join('repos', 'app'), join(workspaceRoot, 'app-alias'));
+    const scope = { projectId: 'workspace-1', worktreeId: 'wt-1' };
+    const parent = WORKSPACE_ROOT_REPO_ID;
+    const refused = 'belongs to another file-tree root';
+
+    await expect(
+      mutateThroughIpc({
+        ...scope,
+        operation: 'delete',
+        target: { repoId: parent, relativePath: 'app-alias/child.txt' },
+      }),
+    ).rejects.toThrow(refused);
+    await expect(
+      mutateThroughIpc({
+        ...scope,
+        operation: 'copy',
+        source: { repoId: parent, relativePath: 'app-alias' },
+        target: { repoId: parent, relativePath: 'app-copy' },
+        conflict: 'error',
+      }),
+    ).rejects.toThrow(refused);
+    await expect(
+      mutateThroughIpc({
+        ...scope,
+        operation: 'move',
+        source: { repoId: parent, relativePath: 'workspace.txt' },
+        target: { repoId: parent, relativePath: 'app-alias/moved.txt' },
+        conflict: 'error',
+      }),
+    ).rejects.toThrow(refused);
+    // A case-insensitive volume resolves this alias to repos/app; a
+    // case-sensitive one has no such path.
+    await expect(
+      mutateThroughIpc({
+        ...scope,
+        operation: 'delete',
+        target: { repoId: parent, relativePath: 'Repos/App/child.txt' },
+      }),
+    ).rejects.toThrow();
+
+    expect(await readFile(join(childRepoRoot, 'child.txt'), 'utf8')).toBe(
+      'child\n',
+    );
+    expect(await readFile(join(workspaceRoot, 'workspace.txt'), 'utf8')).toBe(
+      'workspace\n',
+    );
+    await expectMissing(join(workspaceRoot, 'app-copy'));
+
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'delete',
+      target: { repoId: parent, relativePath: 'app-alias' },
+    });
+    await expect(lstat(join(workspaceRoot, 'app-alias'))).rejects.toMatchObject(
+      { code: 'ENOENT' },
+    );
+    expect(await readFile(join(childRepoRoot, 'child.txt'), 'utf8')).toBe(
+      'child\n',
+    );
+  });
+
+  async function createCoworkMutationFixture(): Promise<{
+    home: string;
+    managed: string;
+  }> {
+    const home = join(tempRoot, 'cowork-home');
+    const managed = join(home, '.canopy');
+    const catalog = buildCoworkRootCatalog({
+      workspace: { id: 'workspace', name: 'Cowork', absolutePath: home },
+      notesPath: join(managed, 'notes'),
+      promptsPath: join(managed, 'prompts'),
+      attachments: {
+        absolutePath: join(managed, 'attachments'),
+        visible: true,
       },
-    );
-    const onChange = jest.fn();
-
-    await startFileTreeWatch(
-      42,
-      { projectId: 'project-1', worktreeId: 'wt-1' },
-      onChange,
-      { watchDirectory, debounceMs: 0 },
-    );
-
-    expect(watchDirectory).toHaveBeenCalledWith(
-      attachmentsRoot,
-      { recursive: true },
-      expect.any(Function),
-    );
-    listeners.get(attachmentsRoot)?.();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ changeCount: 1 }),
-    );
-    stopFileTreeWatch(42, { projectId: 'project-1', worktreeId: 'wt-1' });
-  });
-
-  it('watches an existing parent when the attachments root is not created yet', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    await rm(attachmentsRoot, { recursive: true, force: false });
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const listeners = new Map<string, () => void>();
-    const watchDirectory = jest.fn(
-      (
-        pathValue: string,
-        _options: { recursive: true },
-        listener: () => void,
-      ) => {
-        listeners.set(pathValue, listener);
-        return { close: jest.fn(), on: jest.fn() };
-      },
-    );
-    const onChange = jest.fn();
-
-    const request = { projectId: 'project-1', worktreeId: 'wt-1' };
-    try {
-      await startFileTreeWatch(43, request, onChange, {
-        watchDirectory,
-        debounceMs: 0,
-      });
-
-      const parentPath = dirname(attachmentsRoot);
-      expect(watchDirectory).toHaveBeenCalledWith(
-        parentPath,
-        { recursive: true },
-        expect.any(Function),
-      );
-      listeners.get(parentPath)?.();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(onChange).toHaveBeenCalledWith(
-        expect.objectContaining({ changeCount: 1 }),
-      );
-    } finally {
-      stopFileTreeWatch(43, request);
-    }
-  });
-
-  it('does not climb above a missing attachments hierarchy', async () => {
-    const { repoRoot } = await createRepoFixture();
-    const missingAttachmentsRoot = join(
-      tempRoot,
-      'workspace-state',
-      'attachments',
-      'wt-1',
-    );
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(missingAttachmentsRoot);
-    const watchDirectory = jest.fn(() => ({
-      close: jest.fn(),
-      on: jest.fn(),
+    });
+    const roots = catalog.roots.map((root) => ({
+      repoId: root.id,
+      repoName: root.name,
+      absolutePath: root.absolutePath,
+      rootKind: root.kind,
+      gitAware: root.gitAware,
+      excludedDescendantRoots: root.excludedDescendantRoots,
     }));
-    const request = { projectId: 'project-1', worktreeId: 'wt-1' };
+    mockedGetFileBrowserRoots.mockResolvedValue({
+      roots,
+      rootMap: new Map(roots.map((root) => [root.repoId, root])),
+    });
+    for (const managedDir of ['notes', 'prompts', 'attachments']) {
+      await mkdir(join(managed, managedDir), { recursive: true });
+      await writeFile(join(managed, managedDir, 'kept.md'), 'kept\n');
+    }
+    await writeFile(join(managed, 'settings.json'), '{}\n');
+    await writeFile(join(home, 'draft.md'), 'draft\n');
+    return { home, managed };
+  }
 
-    try {
-      await startFileTreeWatch(44, request, jest.fn(), { watchDirectory });
+  it('refuses cowork workspace-root mutations inside managed roots', async () => {
+    const { managed } = await createCoworkMutationFixture();
+    const scope = { projectId: 'cowork-1', worktreeId: 'wt-1' };
+    const refused = 'belongs to another file-tree root';
 
-      expect(watchDirectory).toHaveBeenCalledTimes(1);
-      expect(watchDirectory).toHaveBeenCalledWith(
-        repoRoot,
-        { recursive: true },
-        expect.any(Function),
+    for (const managedDir of ['notes', 'prompts', 'attachments']) {
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation: 'delete',
+          target: {
+            repoId: 'workspace',
+            relativePath: `.canopy/${managedDir}`,
+          },
+        }),
+      ).rejects.toThrow(refused);
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation: 'move',
+          source: {
+            repoId: 'workspace',
+            relativePath: `.canopy/${managedDir}/kept.md`,
+          },
+          target: { repoId: 'workspace', relativePath: `${managedDir}.md` },
+          conflict: 'error',
+        }),
+      ).rejects.toThrow(refused);
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation: 'copy',
+          source: { repoId: 'workspace', relativePath: 'draft.md' },
+          target: {
+            repoId: 'workspace',
+            relativePath: `.canopy/${managedDir}/draft.md`,
+          },
+          conflict: 'error',
+        }),
+      ).rejects.toThrow(refused);
+      expect(await readFile(join(managed, managedDir, 'kept.md'), 'utf8')).toBe(
+        'kept\n',
       );
+      await expectMissing(join(managed, managedDir, 'draft.md'));
+    }
+
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'copy',
+      source: { repoId: 'workspace', relativePath: 'draft.md' },
+      target: { repoId: 'notes', relativePath: 'draft.md' },
+      conflict: 'error',
+    });
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'delete',
+      target: { repoId: 'workspace', relativePath: '.canopy/settings.json' },
+    });
+    expect(await readFile(join(managed, 'notes', 'draft.md'), 'utf8')).toBe(
+      'draft\n',
+    );
+    await expectMissing(join(managed, 'settings.json'));
+  });
+
+  it('refuses deleting or moving a folder that contains a managed root', async () => {
+    const { home, managed } = await createCoworkMutationFixture();
+    const scope = { projectId: 'cowork-1', worktreeId: 'wt-1' };
+    const refused = 'contains another file-tree root';
+    await symlink('.canopy', join(home, 'managed-alias'));
+
+    await expect(
+      mutateThroughIpc({
+        ...scope,
+        operation: 'delete',
+        target: { repoId: 'workspace', relativePath: '.canopy' },
+        useTrash: true,
+      }),
+    ).rejects.toThrow(refused);
+    await expect(
+      mutateThroughIpc({
+        ...scope,
+        operation: 'delete',
+        target: { repoId: 'workspace', relativePath: '.canopy' },
+      }),
+    ).rejects.toThrow(refused);
+    await expect(
+      mutateThroughIpc({
+        ...scope,
+        operation: 'move',
+        source: { repoId: 'workspace', relativePath: '.canopy' },
+        target: { repoId: 'workspace', relativePath: 'moved-managed' },
+        conflict: 'error',
+      }),
+    ).rejects.toThrow(refused);
+    expect(mockTrashItem).not.toHaveBeenCalled();
+    expect(await readFile(join(managed, 'notes', 'kept.md'), 'utf8')).toBe(
+      'kept\n',
+    );
+    await expectMissing(join(home, 'moved-managed'));
+
+    // Copy leaves the managed roots in place; removing an alias keeps them.
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'copy',
+      source: { repoId: 'workspace', relativePath: '.canopy' },
+      target: { repoId: 'workspace', relativePath: 'managed-copy' },
+      conflict: 'error',
+    });
+    await mutateThroughIpc({
+      ...scope,
+      operation: 'delete',
+      target: { repoId: 'workspace', relativePath: 'managed-alias' },
+    });
+    expect(
+      await readFile(join(home, 'managed-copy', 'notes', 'kept.md'), 'utf8'),
+    ).toBe('kept\n');
+    await expectNoEntry(join(home, 'managed-alias'));
+    expect(await readFile(join(managed, 'notes', 'kept.md'), 'utf8')).toBe(
+      'kept\n',
+    );
+  });
+
+  it('refuses a copy or move whose new folder would contain a managed root', async () => {
+    const { home, managed } = await createCoworkMutationFixture();
+    await rm(managed, { recursive: true });
+    await mkdir(join(home, 'seed', 'notes'), { recursive: true });
+    await writeFile(join(home, 'seed', 'notes', 'seeded.md'), 'seeded\n');
+    const scope = { projectId: 'cowork-1', worktreeId: 'wt-1' };
+
+    for (const operation of ['copy', 'move'] as const) {
+      await expect(
+        mutateThroughIpc({
+          ...scope,
+          operation,
+          source: { repoId: 'workspace', relativePath: 'seed' },
+          target: { repoId: 'workspace', relativePath: '.canopy' },
+          conflict: 'error',
+        }),
+      ).rejects.toThrow('contains another file-tree root');
+    }
+
+    await expectMissing(managed);
+    expect(
+      await readFile(join(home, 'seed', 'notes', 'seeded.md'), 'utf8'),
+    ).toBe('seeded\n');
+  });
+
+  // A literal backslash filename exists only on a POSIX filesystem.
+  const itOnPosixHost = process.platform === 'win32' ? it.skip : it;
+
+  itOnPosixHost(
+    'refuses backslash mutation paths instead of acting on the slash path',
+    async () => {
+      const { repoRoot, attachmentsRoot } = await createRepoFixture();
+      mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
+      mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
+      await writeFile(join(repoRoot, 'a\\b'), 'literal\n');
+      await mkdir(join(repoRoot, 'a'));
+      await writeFile(join(repoRoot, 'a', 'b'), 'nested\n');
+      const scope = { projectId: 'project-1', worktreeId: 'wt-1' };
+      const refused = 'cannot contain a backslash';
+
+      for (const platform of ['darwin', 'linux'] as const) {
+        const original = Object.getOwnPropertyDescriptor(process, 'platform');
+        Object.defineProperty(process, 'platform', { value: platform });
+        try {
+          await expect(
+            mutateThroughIpc({
+              ...scope,
+              operation: 'delete',
+              target: { repoId: 'project-1', relativePath: 'a\\b' },
+              useTrash: true,
+            }),
+          ).rejects.toThrow(refused);
+          await expect(
+            mutateThroughIpc({
+              ...scope,
+              operation: 'delete',
+              target: { repoId: 'project-1', relativePath: 'a\\b' },
+            }),
+          ).rejects.toThrow(refused);
+          for (const operation of ['move', 'copy'] as const) {
+            await expect(
+              mutateThroughIpc({
+                ...scope,
+                operation,
+                source: { repoId: 'project-1', relativePath: 'a\\b' },
+                target: { repoId: 'project-1', relativePath: 'renamed.txt' },
+                conflict: 'error',
+              }),
+            ).rejects.toThrow(refused);
+            await expect(
+              mutateThroughIpc({
+                ...scope,
+                operation,
+                source: { repoId: 'project-1', relativePath: 'src/index.ts' },
+                target: { repoId: 'project-1', relativePath: 'a\\c' },
+                conflict: 'error',
+              }),
+            ).rejects.toThrow(refused);
+          }
+          await expect(
+            mutateThroughIpc({
+              ...scope,
+              operation: 'create-file',
+              target: { repoId: 'project-1', relativePath: 'new\\file.txt' },
+            }),
+          ).rejects.toThrow(refused);
+        } finally {
+          if (original) Object.defineProperty(process, 'platform', original);
+        }
+      }
+
+      expect(mockTrashItem).not.toHaveBeenCalled();
+      expect(await readFile(join(repoRoot, 'a\\b'), 'utf8')).toBe('literal\n');
+      expect(await readFile(join(repoRoot, 'a', 'b'), 'utf8')).toBe('nested\n');
+      expect(await readFile(join(repoRoot, 'src', 'index.ts'), 'utf8')).toBe(
+        'export {};\n',
+      );
+      await expectMissing(join(repoRoot, 'renamed.txt'));
+      await expectMissing(join(repoRoot, 'a', 'c'));
+      await expectMissing(join(repoRoot, 'new'));
+    },
+  );
+
+  it('keeps Windows backslash mutation paths as separators', async () => {
+    const { repoRoot, attachmentsRoot } = await createRepoFixture();
+    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
+    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
+    // The host's operating system decides, never the process it runs in.
+    const windows = createDesktopRuntime({
+      platform: { os: 'win32' },
+      shutdownTimeoutMs: 25,
+    });
+    registerFileTreeHandlers(windows, resolveTrustedCaller);
+    try {
+      const created = await mutateThroughIpc({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        operation: 'create-file',
+        target: { repoId: 'project-1', relativePath: 'windows\\nested.txt' },
+      });
+      expect(created.target?.relativePath).toBe('windows/nested.txt');
     } finally {
-      stopFileTreeWatch(44, request);
+      await windows.shutdown();
     }
-  });
-
-  it('coalesces changes while subscribed and releases every watcher on stop', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const request = { projectId: 'project-1', worktreeId: 'wt-1' };
-    const close = jest.fn();
-    let emitChange = (): void => undefined;
-    const watchDirectory = jest.fn(
-      (_path: string, _options: { recursive: true }, listener: () => void) => {
-        emitChange = listener;
-        return {
-          close,
-          on: jest.fn(),
-        };
-      },
-    );
-    let resolveChange: ((changeCount: number) => void) | undefined;
-    const changed = new Promise<number>((resolve) => {
-      resolveChange = resolve;
-    });
-
-    await startFileTreeWatch(
-      42,
-      request,
-      (event) => {
-        resolveChange?.(event.changeCount);
-      },
-      { watchDirectory, debounceMs: 0 },
-    );
-    expect(getFileTreeWatchCount()).toBe(1);
-
-    emitChange();
-    emitChange();
-    await expect(changed).resolves.toBe(2);
-
-    stopFileTreeWatch(42, request);
-    expect(watchDirectory).toHaveBeenCalled();
-    expect(close).toHaveBeenCalledTimes(watchDirectory.mock.calls.length);
-    expect(getFileTreeWatchCount()).toBe(0);
-  });
-
-  it('cancels an in-flight start and closes superseded watcher handles', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const request = { projectId: 'project-1', worktreeId: 'wt-1' };
-    const actualFileBrowserRoots = jest.requireActual<
-      typeof FileBrowserRootsModule
-    >('../lib/file-browser-roots');
-    const roots = await actualFileBrowserRoots.getFileBrowserRoots(
-      request.projectId,
-      request.worktreeId,
-    );
-    let releaseFirst: (() => void) | undefined;
-    const firstRoots = new Promise<typeof roots>((resolve) => {
-      releaseFirst = (): void => resolve(roots);
-    });
-    mockedGetFileBrowserRoots
-      .mockImplementationOnce(() => firstRoots)
-      .mockResolvedValueOnce(roots);
-    const watcherCloses: jest.Mock[] = [];
-    const watchDirectory = jest.fn((): { close: jest.Mock; on: jest.Mock } => {
-      const close = jest.fn();
-      watcherCloses.push(close);
-      return { close, on: jest.fn() };
-    });
-
-    const firstStart = startFileTreeWatch(42, request, jest.fn(), {
-      watchDirectory,
-    });
-    const secondStart = startFileTreeWatch(42, request, jest.fn(), {
-      watchDirectory,
-    });
-    await secondStart;
-    releaseFirst?.();
-    await firstStart;
-
-    expect(getFileTreeWatchCount()).toBe(1);
-    expect(watchDirectory).toHaveBeenCalledTimes(roots.roots.length);
-    for (const close of watcherCloses) expect(close).not.toHaveBeenCalled();
-    stopFileTreeWatch(42, request);
-    for (const close of watcherCloses) expect(close).toHaveBeenCalledTimes(1);
-  });
-
-  it('validates watcher stop identifiers', () => {
-    const request = { projectId: 'project-1', worktreeId: 'wt-1' };
-    stopFileTreeWatch(42, request);
-    expect(mockedValidateId).toHaveBeenCalledWith('project-1', 'projectId');
-    expect(mockedValidateId).toHaveBeenCalledWith('wt-1', 'worktreeId');
-  });
-
-  it('registers sender teardown only once across repeated watcher starts', async () => {
-    const { repoRoot, attachmentsRoot } = await createRepoFixture();
-    mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
-    mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
-    const call = mockedRegisterIpcHandler.mock.calls.find(
-      ([channel]) => channel === IPC_CHANNELS.fileTreeWatchStart,
-    );
-    if (!call || typeof call[1] !== 'function') {
-      throw new Error('Missing file-tree watch-start handler');
-    }
-    const sender = {
-      id: 42,
-      once: jest.fn(),
-      isDestroyed: jest.fn(() => false),
-      send: jest.fn(),
-    };
-    const request = { projectId: 'project-1', worktreeId: 'wt-1' };
-
-    await Reflect.apply(call[1], undefined, [{ sender }, request]);
-    await Reflect.apply(call[1], undefined, [{ sender }, request]);
-
-    expect(sender.once).toHaveBeenCalledTimes(1);
-    stopFileTreeWatch(42, request);
+    expect(
+      await readFile(join(repoRoot, 'windows', 'nested.txt'), 'utf8'),
+    ).toBe('');
   });
 });
 
@@ -1540,7 +1399,6 @@ describe('explorer file index bounds', () => {
     const virtualDirent = (name: string, directory: boolean): Dirent => ({
       name,
       parentPath: root,
-      path: root,
       isFile: () => !directory,
       isDirectory: () => directory,
       isBlockDevice: () => false,
@@ -1608,7 +1466,7 @@ describe('explorer file index bounds', () => {
     expect(result.truncated).toBe(true);
   });
 
-  it('routes roots and directory reads through the dispatcher while leaving the index direct', async () => {
+  it('routes roots, directory reads and each root of the index through the dispatcher', async () => {
     const { repoRoot, attachmentsRoot } = await createRepoFixture();
     mockedResolveWorktreeCwd.mockReturnValue(repoRoot);
     mockedGetWorktreeAttachmentsDir.mockReturnValue(attachmentsRoot);
@@ -1629,9 +1487,12 @@ describe('explorer file index bounds', () => {
       worktreeId: 'wt-1',
     });
 
+    // CAN-5037: the index is one search per root (the repo and attachments).
     expect(query.mock.calls.map(([name]) => name)).toEqual([
       'worker.filesystem.roots.list',
       'worker.filesystem.directory.list',
+      'worker.filesystem.search',
+      'worker.filesystem.search',
     ]);
   });
 
@@ -1661,7 +1522,10 @@ describe('explorer file index bounds', () => {
       trustedEvent,
       request,
     );
-    expect(legacyRoots).toEqual(directRoots);
+    expect(legacyRoots).toEqual({
+      ...directRoots,
+      imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
+    });
     expect(canonicalRoots.roots).toEqual(
       directRoots.roots.map((root) => ({
         fileRootId: root.repoId,
@@ -1861,7 +1725,10 @@ describe('explorer file index bounds', () => {
       }),
     ).rejects.toThrow('The runtime is unavailable.');
     gate.resolve({ roots: [] });
-    await expect(activeRead).resolves.toEqual({ roots: [] });
+    await expect(activeRead).resolves.toEqual({
+      roots: [],
+      imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
+    });
     await expect(shutdown).resolves.toBeUndefined();
   });
 
@@ -2069,7 +1936,8 @@ describe('file-index:get handler', () => {
     });
 
     const handler = getHandler(IPC_CHANNELS.fileIndexGet);
-    const result = await handler(null, {
+    // CAN-5037: the index derives its caller from a trusted sender.
+    const result = await handler(trustedEvent, {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       purpose: 'file-explorer',
@@ -2178,7 +2046,10 @@ describe('file-tree:directory handler', () => {
         projectId: 'project-1',
         worktreeId: 'wt-1',
       }),
-    ).resolves.toEqual(rootResponse);
+    ).resolves.toEqual({
+      ...rootResponse,
+      imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
+    });
     expect(roots).toHaveBeenCalledTimes(1);
   });
 
@@ -2639,3 +2510,4 @@ describe('literal file glob compatibility', () => {
     },
   );
 });
+import { DESKTOP_FILE_IMAGE_SAVE_SUPPORT } from '@canopy/protocol/file-image-save';

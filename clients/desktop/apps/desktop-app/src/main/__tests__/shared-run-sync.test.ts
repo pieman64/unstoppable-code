@@ -39,24 +39,36 @@ jest.mock('../services/telemetry-sync-service', () => ({
 }));
 
 jest.mock('../runs/canopy-server-client', () => ({
-  createSharedRun: createSharedRunMock,
-  unshareSharedRunByClientLocalId: unshareSharedRunByClientLocalIdMock,
+  get createSharedRun() {
+    return createSharedRunMock;
+  },
+  get unshareSharedRunByClientLocalId() {
+    return unshareSharedRunByClientLocalIdMock;
+  },
 }));
 
 jest.mock('../services/diff-service', () => ({
-  readDiff: readDiffMock,
+  get readDiff() {
+    return readDiffMock;
+  },
 }));
 
 jest.mock('../lib/shared-run-rollup', () => ({
-  rollupFromEntries: rollupFromEntriesMock,
+  get rollupFromEntries() {
+    return rollupFromEntriesMock;
+  },
 }));
 
 jest.mock('../lib/worktree-summary-persistence', () => ({
-  readWorktreeSummary: readWorktreeSummaryMock,
+  get readWorktreeSummary() {
+    return readWorktreeSummaryMock;
+  },
 }));
 
 jest.mock('../lib/plan-persistence', () => ({
-  listTrackedPlans: listTrackedPlansMock,
+  get listTrackedPlans() {
+    return listTrackedPlansMock;
+  },
 }));
 
 jest.mock('../lib/telemetry-enforcement-state', () => ({

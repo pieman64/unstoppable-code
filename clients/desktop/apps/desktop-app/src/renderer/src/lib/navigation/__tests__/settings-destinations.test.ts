@@ -2,15 +2,20 @@
 import type * as HostedSettingsAvailabilityModule from '@/components/settings/hosted/hosted-settings-availability';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { getDefaultFeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
 import { settingsRouteToPath } from '@canopy/protocol/settings';
 import type { SettingsRoute } from '@canopy/protocol/settings';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
+  SETTINGS_DEEP_LINK_FLAG_WAIT_MS,
+  cancelPendingSettingsDeepLink,
   openAccountOrganizationPage,
   openCloudAccountSettings,
   openIntegrationSettings,
   openNotificationSettings,
   openPersonalCatalogSettings,
+  openSettingsDeepLink,
   openSettingsPathInApp,
   openSettingsPathOrWeb,
   openSettingsPathOrWebReported,
@@ -311,6 +316,117 @@ describe('openAccountOrganizationPage', () => {
     expect(mockOpenAuthenticatedCloudPage).toHaveBeenCalledWith(
       settingsRouteToPath({ scope: 'organizations' }),
     );
+  });
+});
+
+describe('openSettingsDeepLink', () => {
+  it('opens the hosted Organizations list for the invite lander link (CAN-5111)', () => {
+    mockHostedSettingsOpenable.mockReturnValue(true);
+    openSettingsDeepLink('organizations');
+    expect(openAccountOrganizationSettings).toHaveBeenCalledWith({
+      scope: 'organizations',
+    });
+    expect(openSettings).not.toHaveBeenCalled();
+    expect(mockOpenAuthenticatedCloudPage).not.toHaveBeenCalled();
+  });
+
+  it('opens the signed-in web Organizations list without hosted settings', () => {
+    mockHostedSettingsOpenable.mockReturnValue(false);
+    openSettingsDeepLink('organizations');
+    expect(mockOpenAuthenticatedCloudPage).toHaveBeenCalledWith(
+      settingsRouteToPath({ scope: 'organizations' }),
+    );
+    expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+    expect(openSettings).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    'keeps Privacy on the local section (hosted=%s)',
+    (hosted) => {
+      mockHostedSettingsOpenable.mockReturnValue(hosted);
+      openSettingsDeepLink('privacy');
+      expect(openSettings).toHaveBeenCalledWith('privacy');
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+      expect(mockOpenAuthenticatedCloudPage).not.toHaveBeenCalled();
+    },
+  );
+
+  describe('while a configured LaunchDarkly has not answered yet', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      useFeatureFlagsStore.setState({
+        snapshot: getDefaultFeatureFlagSnapshot('initializing'),
+      });
+    });
+
+    afterEach(() => {
+      cancelPendingSettingsDeepLink();
+      useFeatureFlagsStore.setState({
+        snapshot: getDefaultFeatureFlagSnapshot(),
+      });
+      jest.useRealTimers();
+    });
+
+    it('waits for the first answer instead of bouncing a cold-start link to the web', () => {
+      mockHostedSettingsOpenable.mockReturnValue(false);
+      openSettingsDeepLink('organizations');
+      expect(mockOpenAuthenticatedCloudPage).not.toHaveBeenCalled();
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+
+      mockHostedSettingsOpenable.mockReturnValue(true);
+      useFeatureFlagsStore.setState({
+        snapshot: getDefaultFeatureFlagSnapshot('ready'),
+      });
+      expect(openAccountOrganizationSettings).toHaveBeenCalledTimes(1);
+      expect(openAccountOrganizationSettings).toHaveBeenCalledWith({
+        scope: 'organizations',
+      });
+      jest.advanceTimersByTime(60_000);
+      expect(openAccountOrganizationSettings).toHaveBeenCalledTimes(1);
+      expect(mockOpenAuthenticatedCloudPage).not.toHaveBeenCalled();
+    });
+
+    it('opens the web once when the answer turns hosted settings off', () => {
+      mockHostedSettingsOpenable.mockReturnValue(false);
+      openSettingsDeepLink('organizations');
+      useFeatureFlagsStore.setState({
+        snapshot: getDefaultFeatureFlagSnapshot('error'),
+      });
+      jest.advanceTimersByTime(60_000);
+      expect(mockOpenAuthenticatedCloudPage).toHaveBeenCalledTimes(1);
+      expect(mockOpenAuthenticatedCloudPage).toHaveBeenCalledWith(
+        settingsRouteToPath({ scope: 'organizations' }),
+      );
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+    });
+
+    it('stops waiting after the bound and opens wherever is available then', () => {
+      mockHostedSettingsOpenable.mockReturnValue(false);
+      openSettingsDeepLink('organizations');
+      jest.advanceTimersByTime(SETTINGS_DEEP_LINK_FLAG_WAIT_MS - 1);
+      expect(mockOpenAuthenticatedCloudPage).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(mockOpenAuthenticatedCloudPage).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a newer settings link replace a waiting one', () => {
+      mockHostedSettingsOpenable.mockReturnValue(false);
+      openSettingsDeepLink('organizations');
+      openSettingsDeepLink('privacy');
+      expect(openSettings).toHaveBeenCalledWith('privacy');
+      useFeatureFlagsStore.setState({
+        snapshot: getDefaultFeatureFlagSnapshot('ready'),
+      });
+      jest.advanceTimersByTime(60_000);
+      expect(mockOpenAuthenticatedCloudPage).not.toHaveBeenCalled();
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+    });
+
+    it('opens at once when hosted settings are already openable', () => {
+      mockHostedSettingsOpenable.mockReturnValue(true);
+      openSettingsDeepLink('organizations');
+      expect(openAccountOrganizationSettings).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

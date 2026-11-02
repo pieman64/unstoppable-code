@@ -7,7 +7,6 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { CanopyApi } from '@canopy/desktop-shared/types';
 import {
   expectReplayBlocksOnlyValue,
   outermostReplayBlock,
@@ -36,7 +35,7 @@ describe('LinearKeyRow', () => {
     loadLinearToken.mockResolvedValue('lin_api_saved');
     saveLinearToken.mockResolvedValue({ success: true });
     Object.assign(window, {
-      api: { loadLinearToken, saveLinearToken } as Partial<CanopyApi>,
+      api: { loadLinearToken, saveLinearToken },
     });
   });
 

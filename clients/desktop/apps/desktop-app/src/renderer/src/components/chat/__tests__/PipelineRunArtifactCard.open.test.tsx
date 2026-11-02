@@ -10,21 +10,26 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PipelineRunArtifactReceiptV1 } from '@canopy/desktop-shared/types';
 import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
-import type { PipelineRunTreeRowProps } from '@canopy/ui-app';
+import type { PipelineRunReceiptCardProps } from '@canopy/ui-app/agent-activity';
+import { toPipelineRunRowState } from '@/lib/pipelineRunRowState';
 import { useChatStore } from '@/stores/chatStore';
+import { useGitHubStore } from '@/stores/githubStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { PipelineRunArtifactCard } from '../PipelineRunArtifactCard';
 
-const openPipelineExecutionFromUi = jest.fn(() =>
-  Promise.resolve({ status: 'applied' }),
+const openPipelineExecutionFromUi = jest.fn<
+  Promise<unknown>,
+  [request: unknown]
+>(() => Promise.resolve({ status: 'applied' }));
+const openAgentArtifactNavigation = jest.fn<Promise<void>, [request: unknown]>(
+  () => Promise.resolve(),
 );
-const openAgentArtifactNavigation = jest.fn(() => Promise.resolve());
 const revealChatPanel = jest.fn<Promise<boolean>, [unknown]>(() =>
   Promise.resolve(true),
 );
 const reportModalProps: Array<Record<string, unknown>> = [];
 const detectChatStoreSurface = jest.fn(() => 'main');
-let rowProps: PipelineRunTreeRowProps | null = null;
+let cardProps: PipelineRunReceiptCardProps | null = null;
 
 jest.mock('@/lib/panels/open-pipeline-execution', () => ({
   openPipelineExecutionFromUi: (request: unknown): Promise<unknown> =>
@@ -44,8 +49,12 @@ jest.mock('@/stores/chat/surface', () => ({
 jest.mock('@/lib/app-actions/dispatcher', () => ({
   dispatchAppAction: jest.fn(),
 }));
+const planReadyModalProps: Array<Record<string, unknown>> = [];
 jest.mock('../PlanReadyPipelineModal', () => ({
-  PlanReadyPipelineModal: (): null => null,
+  PlanReadyPipelineModal: (props: Record<string, unknown>): null => {
+    planReadyModalProps.push(props);
+    return null;
+  },
 }));
 jest.mock('@/components/activity/PipelineReportModal', () => ({
   PipelineReportModal: (props: Record<string, unknown>): null => {
@@ -53,9 +62,9 @@ jest.mock('@/components/activity/PipelineReportModal', () => ({
     return null;
   },
 }));
-jest.mock('@canopy/ui-app', () => ({
-  PipelineRunTreeRow: (props: PipelineRunTreeRowProps): JSX.Element => {
-    rowProps = props;
+jest.mock('@canopy/ui-app/code/agent-activity/PipelineRunReceiptCard', () => ({
+  PipelineRunReceiptCard: (props: PipelineRunReceiptCardProps): JSX.Element => {
+    cardProps = props;
     return <div data-testid="row" />;
   },
 }));
@@ -93,14 +102,16 @@ describe('PipelineRunArtifactCard run links', () => {
   let root: Root;
 
   beforeEach(() => {
-    rowProps = null;
+    cardProps = null;
     openPipelineExecutionFromUi.mockClear();
     openAgentArtifactNavigation.mockClear();
     detectChatStoreSurface.mockReturnValue('main');
     usePipelineRunsStore.setState({
       summaries: [],
       statesById: {},
+      rowStatesById: {},
       advisorSnapshotsByExecutionId: {},
+      loadExecutionRowState: jest.fn(() => Promise.resolve(null)),
       loadExecutionDetails: jest.fn(() => Promise.resolve(null)),
     });
     container = document.createElement('div');
@@ -129,7 +140,7 @@ describe('PipelineRunArtifactCard run links', () => {
 
   it('opens a child job beside its chat with the breadcrumb stack and job', () => {
     act(() => {
-      rowProps?.onOpenDetail('run-root', CHILD_STACK, 'deploy');
+      cardProps?.actions?.onOpenDetail?.('run-root', CHILD_STACK, 'deploy');
     });
 
     expect(openPipelineExecutionFromUi).toHaveBeenCalledWith({
@@ -142,7 +153,7 @@ describe('PipelineRunArtifactCard run links', () => {
 
   it('opens a rerun source from its own record rather than the card owner', () => {
     act(() => {
-      rowProps?.onOpenSource('run-source');
+      cardProps?.actions?.onOpenSource?.('run-source');
     });
 
     expect(openPipelineExecutionFromUi).toHaveBeenCalledWith({
@@ -156,7 +167,7 @@ describe('PipelineRunArtifactCard run links', () => {
     detectChatStoreSurface.mockReturnValue('app-advisor');
 
     act(() => {
-      rowProps?.onOpenDetail('run-root', CHILD_STACK, 'deploy');
+      cardProps?.actions?.onOpenDetail?.('run-root', CHILD_STACK, 'deploy');
     });
 
     expect(openPipelineExecutionFromUi).not.toHaveBeenCalled();
@@ -189,7 +200,7 @@ describe('PipelineRunArtifactCard run links', () => {
         version: 8,
         id: 'run-root',
         pipeline_id: 'pipeline-1',
-        pipeline_snapshot: { name: 'Deploy', jobs: {} },
+        pipeline_snapshot: { name: 'Deploy', scope: ['directory'], jobs: {} },
         status: 'success',
         jobs: {},
         job_definitions: {},
@@ -202,16 +213,78 @@ describe('PipelineRunArtifactCard run links', () => {
         inputs: {},
         event_name: 'plan_ready',
         event_data: { plan_ready: { plan_path: '/plans/p.md' } },
+        planId: 'plan-1',
+        rerun_source_id: 'run-source',
+        trigger_source: {
+          kind: 'hook',
+          hook_key: 'pull-request',
+          hook_label: 'Pull request',
+          trigger_name: 'pr:create',
+          target: 'project',
+          action_index: 0,
+          triggered_at: '2026-09-29T00:00:00.000Z',
+        },
         project_id: 'project-1',
         worktree_id: 'worktree-1',
         report_outputs: { report_file: '/reports/r.md' },
       };
-      usePipelineRunsStore.setState({ statesById: { 'run-root': state } });
+      usePipelineRunsStore.setState({
+        statesById: {},
+        rowStatesById: { 'run-root': toPipelineRunRowState(state) },
+        loadExecutionDetails: jest.fn(() => Promise.resolve(state)),
+      });
+    });
+
+    it('uses live row metadata without a matching summary or full-state cache', () => {
+      expect(usePipelineRunsStore.getState().summaries).toEqual([]);
+      expect(cardProps?.statesById).toMatchObject({
+        'run-root': { id: 'run-root', status: 'success' },
+      });
+      expect(cardProps?.liveOverride).toMatchObject({
+        status: 'success',
+        planId: 'plan-1',
+        rerun_source_id: 'run-source',
+        trigger_source: { kind: 'hook', hook_label: 'Pull request' },
+      });
+      expect(cardProps?.actions?.onOpenPlan).toBeDefined();
+      expect(cardProps?.actions?.onRerun).toBeDefined();
+    });
+
+    it('updates an off-scope receipt from a live row event', () => {
+      const row = usePipelineRunsStore.getState().rowStatesById['run-root'];
+      if (row === undefined) {
+        throw new Error('Expected a projected row for the receipt run');
+      }
+      act(() => {
+        usePipelineRunsStore.setState({
+          rowStatesById: { 'run-root': { ...row, status: 'failure' } },
+        });
+      });
+
+      expect(cardProps?.liveOverride?.status).toBe('failure');
+      expect(cardProps?.liveOverride?.planId).toBe('plan-1');
+      expect(cardProps?.liveOverride?.rerun_source_id).toBe('run-source');
+    });
+
+    it('loads full state on demand for an action even when only a row is cached', async () => {
+      await act(async () => {
+        cardProps?.actions?.onChatFollowUp?.('run-root');
+        await Promise.resolve();
+      });
+
+      expect(
+        usePipelineRunsStore.getState().loadExecutionDetails,
+      ).toHaveBeenCalledWith('run-root');
+      expect(sendMessage).toHaveBeenCalledWith(
+        'Review this plan: /plans/p.md',
+        undefined,
+        CHAT_TARGET,
+      );
     });
 
     it('reveals its own chat after a plan Chat follow-up', async () => {
       await act(async () => {
-        rowProps?.onChatFollowUp('run-root');
+        cardProps?.actions?.onChatFollowUp?.('run-root');
         await Promise.resolve();
       });
 
@@ -225,7 +298,7 @@ describe('PipelineRunArtifactCard run links', () => {
 
     it('reveals its own chat after a report Chat follow-up', async () => {
       await act(async () => {
-        rowProps?.onReportChatFollowUp('run-root');
+        cardProps?.actions?.onReportChatFollowUp?.('run-root');
         await Promise.resolve();
       });
 
@@ -237,9 +310,55 @@ describe('PipelineRunArtifactCard run links', () => {
       expect(revealChatPanel).toHaveBeenCalledWith(CHAT_TARGET);
     });
 
+    it.each([
+      ['its scope', { scope: 'global' as const }],
+      [
+        'only its target',
+        { scope: undefined, target: { scope: 'global' as const } },
+      ],
+    ])(
+      'refuses a pipeline follow-up from a run with no project named by %s',
+      async (_label, globalFields) => {
+        const addToast = jest.fn();
+        useGitHubStore.setState({ addToast });
+        // The card caches only rows; the action loads the full state on demand.
+        const global = await usePipelineRunsStore
+          .getState()
+          .loadExecutionDetails('run-root');
+        if (!global) throw new Error('Expected the run state');
+        act(() => {
+          usePipelineRunsStore.setState({
+            loadExecutionDetails: jest.fn(() =>
+              Promise.resolve({
+                ...global,
+                ...globalFields,
+                project_id: undefined,
+                worktree_id: undefined,
+              }),
+            ),
+          });
+        });
+        planReadyModalProps.length = 0;
+
+        await act(async () => {
+          cardProps?.actions?.onPipelineFollowUp?.('run-root');
+          await Promise.resolve();
+        });
+
+        // A run with no project starts only by dispatch, never from a plan.
+        expect(planReadyModalProps).toHaveLength(0);
+        expect(addToast).toHaveBeenCalledWith(
+          "A run with no project can't start a follow-up pipeline.",
+          'error',
+          undefined,
+          { category: 'Pipeline' },
+        );
+      },
+    );
+
     it('still opens the report modal from View report', () => {
       act(() => {
-        rowProps?.onViewReport('run-root');
+        cardProps?.actions?.onViewReport?.('run-root');
       });
 
       expect(reportModalProps.at(-1)).toMatchObject({

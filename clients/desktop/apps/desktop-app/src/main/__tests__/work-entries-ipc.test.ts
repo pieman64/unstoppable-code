@@ -21,6 +21,8 @@ jest.mock('../ipc/register', () => ({ registerIpcHandler: jest.fn() }));
 jest.mock('../agents/session-manager', () => ({
   destroyWorktreeSessions: jest.fn(() => Promise.resolve()),
   getActiveChatIds: jest.fn(() => []),
+  getLiveBackgroundTasksForChat: jest.fn(),
+  listLiveBackgroundTaskOwners: jest.fn(),
 }));
 jest.mock('../lib/cowork-work-entries', () => ({
   createWorkEntry: jest.fn(),
@@ -129,10 +131,14 @@ import {
 import {
   destroyWorktreeSessions,
   getActiveChatIds,
+  getLiveBackgroundTasksForChat,
+  listLiveBackgroundTaskOwners,
+  type LiveBackgroundTaskOwner,
 } from '../agents/session-manager';
 import { archiveWorkEntry } from '../lib/work-entry-archive';
 import { setDelegationActivity } from '../agents/delegation/activity';
 import { registerWorkEntryHandlers } from '../ipc/work-entries';
+import { createLiveBackgroundTaskOwner } from '../ipc/__tests__/background-work-removal-test-helpers';
 import { commitTaskBrowserRetirement } from '../browser/browser-profile-lifecycle';
 import { registerIpcHandler } from '../ipc/register';
 import {
@@ -158,8 +164,15 @@ import {
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { notifyLedgerContainerArchived } from '../ledger/lifecycle';
+import { currentLocalFenceHolder } from '../app-advisor/local-fence-holder';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+const mockedGetLiveBackgroundTasksForChat = jest.mocked(
+  getLiveBackgroundTasksForChat,
+);
+const mockedListLiveBackgroundTaskOwners = jest.mocked(
+  listLiveBackgroundTaskOwners,
+);
 
 type Handler = (event: undefined, request: unknown) => Promise<unknown>;
 
@@ -177,16 +190,33 @@ function handlerFor(channel: string): Handler {
 describe('work-entry IPC handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedGetLiveBackgroundTasksForChat.mockReset().mockReturnValue(undefined);
+    mockedListLiveBackgroundTaskOwners.mockReset().mockReturnValue([]);
     jest.mocked(resolveContainerRetentionDays).mockResolvedValue(7);
     registerWorkEntryHandlers();
   });
 
+  function setProviderTask(owner: LiveBackgroundTaskOwner): void {
+    mockedGetLiveBackgroundTasksForChat.mockImplementation(
+      (projectId, worktreeId, chatId) =>
+        owner.projectId === projectId &&
+        owner.worktreeId === worktreeId &&
+        owner.chatId === chatId
+          ? owner.liveTasks
+          : undefined,
+    );
+    mockedListLiveBackgroundTaskOwners.mockReturnValue([owner]);
+  }
+
   it('closes and drains Work Entry admission before acquiring the archive lock', async () => {
-    jest
-      .mocked(listWorkEntries)
-      .mockResolvedValue([
-        { id: 'entry-1', createdAt: '2026-01-01T00:00:00.000Z', chatCount: 0 },
-      ]);
+    jest.mocked(listWorkEntries).mockResolvedValue([
+      {
+        id: 'entry-1',
+        title: 'Entry 1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        chatCount: 0,
+      },
+    ]);
     let lockHeld = false;
     const lock = jest.mocked(withArchivedWorkspaceOperationLock);
     lock.mockImplementation(
@@ -224,6 +254,7 @@ describe('work-entry IPC handlers', () => {
     jest.mocked(listWorkEntries).mockResolvedValue([
       {
         id: 'entry-1',
+        title: 'Entry 1',
         createdAt: '2026-01-01T00:00:00.000Z',
         lastTouchedAt: '2026-09-11T00:00:00.000Z',
         chatCount: 1,
@@ -241,11 +272,22 @@ describe('work-entry IPC handlers', () => {
   });
 
   it('returns persisted cleanup warnings after a committed automatic deletion', async () => {
-    jest
-      .mocked(listWorkEntries)
-      .mockResolvedValue([
-        { id: 'entry-1', createdAt: '2026-01-01T00:00:00.000Z', chatCount: 0 },
-      ]);
+    setProviderTask(
+      createLiveBackgroundTaskOwner(
+        'app-advisor',
+        'entry-1',
+        'chat-a',
+        'local_bash',
+      ),
+    );
+    jest.mocked(listWorkEntries).mockResolvedValue([
+      {
+        id: 'entry-1',
+        title: 'Entry 1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        chatCount: 0,
+      },
+    ]);
     jest
       .mocked(cleanupPersistedWorktreeData)
       .mockResolvedValueOnce(['cleanup warning']);
@@ -676,6 +718,14 @@ describe('work-entry IPC handlers', () => {
   });
 
   it('tears down sessions and persisted data before removing a row', async () => {
+    setProviderTask(
+      createLiveBackgroundTaskOwner(
+        'workspace-1',
+        'entry-1',
+        'chat-a',
+        'local_bash',
+      ),
+    );
     jest.mocked(commitTaskBrowserRetirement).mockResolvedValueOnce(true);
     jest.mocked(listWorkEntries).mockResolvedValue([
       {
@@ -978,6 +1028,79 @@ describe('work-entry IPC handlers', () => {
     expect(removeWorkEntryRow).not.toHaveBeenCalled();
   });
 
+  it('releases the local watcher fence as its own fence holder (CAN-4989)', async () => {
+    jest.mocked(resolveContainerRetentionDays).mockResolvedValue(7);
+    jest.mocked(listWorkEntries).mockResolvedValue([
+      {
+        id: 'entry-1',
+        title: 'Entry 1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        chatCount: 1,
+      },
+    ]);
+    jest
+      .mocked(commitArchivedContainer)
+      .mockRejectedValueOnce(new Error('manifest commit failed'));
+    const holders: unknown[] = [];
+    releaseLocalScopeFenceMock.mockImplementation(() => {
+      holders.push(currentLocalFenceHolder());
+      return Promise.resolve();
+    });
+
+    await expect(
+      handlerFor(IPC_CHANNELS.workEntriesDelete)(undefined, {
+        projectId: 'workspace-1',
+        entryId: 'entry-1',
+      }),
+    ).rejects.toThrow('manifest commit failed');
+
+    releaseLocalScopeFenceMock.mockImplementation(() => Promise.resolve());
+    expect(holders.length).toBeGreaterThan(0);
+    expect(new Set(holders).size).toBe(1);
+    expect(holders[0]).not.toBe(currentLocalFenceHolder());
+  });
+
+  it('runs each automatic Work Entry deletion as its own fence holder (CAN-4989)', async () => {
+    jest.mocked(listWorkEntries).mockResolvedValue([
+      {
+        id: 'entry-1',
+        title: 'Entry 1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        chatCount: 0,
+      },
+    ]);
+    const holders: unknown[] = [];
+    jest.mocked(cleanupPersistedWorktreeData).mockImplementation(() => {
+      holders.push(currentLocalFenceHolder());
+      return Promise.resolve([]);
+    });
+    commitLocalScopeCancellationMock.mockImplementation(() => {
+      holders.push(currentLocalFenceHolder());
+      return Promise.resolve();
+    });
+    try {
+      await archiveWorkEntry({
+        workspaceId: 'app-advisor',
+        entryId: 'entry-1',
+      });
+      await archiveWorkEntry({
+        workspaceId: 'app-advisor',
+        entryId: 'entry-1',
+      });
+    } finally {
+      jest
+        .mocked(cleanupPersistedWorktreeData)
+        .mockImplementation(() => Promise.resolve([]));
+      commitLocalScopeCancellationMock.mockReset();
+    }
+
+    expect(holders).toHaveLength(4);
+    expect(holders[0]).toBe(holders[1]);
+    expect(holders[2]).toBe(holders[3]);
+    expect(holders[0]).not.toBe(holders[2]);
+    expect(holders[0]).not.toBe(currentLocalFenceHolder());
+  });
+
   it('does not reactivate watchers after the work-entry row is removed', async () => {
     jest.mocked(listWorkEntries).mockResolvedValue([
       {
@@ -1069,6 +1192,14 @@ describe('work-entry IPC handlers', () => {
         chatCount: 1,
       },
     ]);
+    setProviderTask(
+      createLiveBackgroundTaskOwner(
+        'workspace-1',
+        'entry-1',
+        'chat-a',
+        'local_agent',
+      ),
+    );
     setDelegationActivity(
       'entry-delete-owner',
       'workspace-1/entry-1/chat-a',
@@ -1094,12 +1225,60 @@ describe('work-entry IPC handlers', () => {
     expect(removeWorkEntryRow).not.toHaveBeenCalled();
   });
 
-  it('refuses to archive a Work Entry while one of its chats has live delegates', async () => {
-    jest
-      .mocked(listWorkEntries)
-      .mockResolvedValue([
-        { id: 'entry-1', createdAt: '2026-01-01T00:00:00.000Z', chatCount: 1 },
+  it.each(['local_agent', 'local_workflow'] as const)(
+    'refuses to delete a Work Entry while one of its chats has a live %s',
+    async (taskType) => {
+      jest.mocked(listWorkEntries).mockResolvedValue([
+        {
+          id: 'entry-1',
+          title: 'Entry 1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          chatCount: 1,
+        },
       ]);
+      setProviderTask(
+        createLiveBackgroundTaskOwner(
+          'workspace-1',
+          'entry-1',
+          'chat-a',
+          taskType,
+        ),
+      );
+
+      await expect(
+        handlerFor(IPC_CHANNELS.workEntriesDelete)(undefined, {
+          projectId: 'workspace-1',
+          entryId: 'entry-1',
+        }),
+      ).rejects.toMatchObject({
+        code: 'conflict',
+        message:
+          'Background agents or workflows are still running here. Stop them first.',
+      });
+      expect(destroyWorktreeSessions).not.toHaveBeenCalled();
+      expect(beginWorktreeQueueDeletionMock).not.toHaveBeenCalled();
+      expect(cleanupPersistedWorktreeData).not.toHaveBeenCalled();
+      expect(removeWorkEntryRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses to archive a Work Entry while one of its chats has live delegates', async () => {
+    jest.mocked(listWorkEntries).mockResolvedValue([
+      {
+        id: 'entry-1',
+        title: 'Entry 1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        chatCount: 1,
+      },
+    ]);
+    setProviderTask(
+      createLiveBackgroundTaskOwner(
+        'cowork-1',
+        'entry-1',
+        'chat-a',
+        'local_agent',
+      ),
+    );
     setDelegationActivity(
       'entry-archive-owner',
       'cowork-1/entry-1/chat-a',
@@ -1121,6 +1300,40 @@ describe('work-entry IPC handlers', () => {
     expect(cleanupPersistedWorktreeData).not.toHaveBeenCalled();
     expect(removeWorkEntryRow).not.toHaveBeenCalled();
   });
+
+  it.each(['local_agent', 'local_workflow'] as const)(
+    'refuses to archive a Work Entry while one of its chats has a live %s',
+    async (taskType) => {
+      jest.mocked(listWorkEntries).mockResolvedValue([
+        {
+          id: 'entry-1',
+          title: 'Entry 1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          chatCount: 1,
+        },
+      ]);
+      setProviderTask(
+        createLiveBackgroundTaskOwner(
+          'cowork-1',
+          'entry-1',
+          'chat-a',
+          taskType,
+        ),
+      );
+
+      await expect(
+        archiveWorkEntry({ workspaceId: 'cowork-1', entryId: 'entry-1' }),
+      ).rejects.toMatchObject({
+        code: 'conflict',
+        message:
+          'Background agents or workflows are still running here. Stop them first.',
+      });
+      expect(destroyWorktreeSessions).not.toHaveBeenCalled();
+      expect(beginWorktreeQueueDeletionMock).not.toHaveBeenCalled();
+      expect(cleanupPersistedWorktreeData).not.toHaveBeenCalled();
+      expect(removeWorkEntryRow).not.toHaveBeenCalled();
+    },
+  );
 
   it('validates and resolves a chat id', async () => {
     jest.mocked(resolveWorkEntryForChat).mockResolvedValue({

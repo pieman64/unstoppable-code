@@ -1,9 +1,13 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 
 const mockGetCanonicalState = jest.fn();
-const runArchiveIoRequestMock = jest.fn<Promise<unknown>, [unknown]>();
+const runArchiveIoRequestMock = jest.fn<
+  Promise<unknown>,
+  [request: ArchiveIoOperationRequest]
+>();
 
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: (): {
@@ -22,8 +26,8 @@ jest.mock('../lib/paths', () => ({
   getArchivedContainerProviderSessionsDir: jest.fn(),
 }));
 jest.mock('../archive/archive-io-runner', () => ({
-  runArchiveIoRequest: (...args: [unknown]): Promise<unknown> =>
-    runArchiveIoRequestMock(...args),
+  runArchiveIoRequest: (request: ArchiveIoOperationRequest): Promise<unknown> =>
+    runArchiveIoRequestMock(request),
 }));
 
 import { resolveClaudeCodeSessionTranscriptPath } from '../lib/claude-project-paths';
@@ -31,7 +35,6 @@ import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { getArchivedContainerProviderSessionsDir } from '../lib/paths';
 import { captureArchivedContainerProviderState } from '../lib/archived-container-provider-state';
 import { executeArchiveIoRequest } from '../archive/archive-io-engine';
-import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 
 let rootDir: string;
 

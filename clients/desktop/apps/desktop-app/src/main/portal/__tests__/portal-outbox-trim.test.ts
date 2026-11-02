@@ -14,6 +14,14 @@ import {
 } from '../portal-outbox';
 import type { PortalEventEnvelope } from '@canopy/desktop-shared/types';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
 function event(
   type: PortalEventEnvelope['type'],
   eventId: string,
@@ -533,18 +541,20 @@ describe('portal routing sequences and dropped ranges', () => {
     );
 
     const result = computePortalOutboxTrim(events, maxEvents, null);
-    const aggregateMarker = result.kept.find(
-      (item) => item.payload.aggregate === true,
-    );
+    const aggregateMarker = result.kept.find((item) => {
+      const payload = recordOf(item.payload);
+      return payload?.aggregate === true;
+    });
+    const aggregatePayload = recordOf(aggregateMarker?.payload);
 
     expect(result.kept.length).toBeLessThanOrEqual(maxEvents);
     expect(aggregateMarker?.type).toBe('portal.events.dropped');
-    expect(aggregateMarker?.payload).toMatchObject({
+    expect(aggregatePayload).toMatchObject({
       aggregate: true,
       reason: 'overflow',
       truncatedKeyCount: 0,
     });
-    expect(aggregateMarker?.payload.keys).toEqual(['ws:key-0', 'ws:key-1']);
+    expect(aggregatePayload?.keys).toEqual(['ws:key-0', 'ws:key-1']);
   });
 
   it('bounds aggregate marker keys and reports the truncated count', () => {
@@ -557,11 +567,12 @@ describe('portal routing sequences and dropped ranges', () => {
 
     const result = computePortalOutboxTrim(events, 1, null);
     const marker = result.kept[0];
+    const markerPayload = recordOf(marker?.payload);
 
     expect(result.kept).toHaveLength(1);
     expect(marker?.type).toBe('portal.events.dropped');
-    expect(marker?.payload.keys).toHaveLength(100);
-    expect(marker?.payload.truncatedKeyCount).toBe(2);
+    expect(markerPayload?.keys).toHaveLength(100);
+    expect(markerPayload?.truncatedKeyCount).toBe(2);
   });
 
   it('places a marker between lower and higher surviving sequences for its key', () => {

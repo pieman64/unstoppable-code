@@ -16,7 +16,7 @@ import {
   PlanModifiedBadge,
 } from '@canopy/ui-app';
 import {
-  BUBBLE_ACTION_BADGE_CLASS,
+  BubbleCopyBadge,
   ChatComposerToolbarChip,
   ChatPreviewPopover,
   ExecutionActionButton,
@@ -54,7 +54,6 @@ import { NoteIcon } from '../activity/NotesSection';
 import { PromptIcon } from '../activity/PromptsSection';
 import { ChatMessageItem } from '../chat/ChatMessageItem';
 import { FastModeButton } from '../chat/FastModeButton';
-import { MessageCopyButton } from '../chat/MessageCopyButton';
 import { QueuedMessageBubble } from '../chat/QueuedMessageBubble';
 import { UsageIndicator } from '../chat/UsageIndicator';
 import { HeaderGalleryRow } from './HeaderStateGalleryPage';
@@ -204,6 +203,7 @@ function UserBubblesAfter(): JSX.Element {
             message={fixture.message}
             index={0}
             onClear={noop}
+            turnPhase={fixture.message.turnPhase}
             onForce={noop}
             onEdit={noop}
             canForce
@@ -375,7 +375,7 @@ function SleepPausedPillAfter(): JSX.Element {
       </div>
       <Caption>
         In the app the chip floats in the bottom-right corner of the main shell
-        while an agent turn or pipeline runs and Keep system awake is on in
+        while an agent turn or workflow runs and Keep system awake is on in
         Performance settings. Nothing reserves space for it: it floats over the
         panel content like a toast. Clicking it opens those settings. Hover for
         the full explanation.
@@ -494,7 +494,7 @@ function PipelineRowChipsAfter(): JSX.Element {
           dataTestId="change-review-follow-up-chat"
         />
         <FollowUpButton
-          label="Pipeline"
+          label="Workflow"
           icon={<PipelineIcon />}
           onClick={noop}
         />
@@ -502,7 +502,7 @@ function PipelineRowChipsAfter(): JSX.Element {
           label="Retry"
           icon={<RetryIcon width={13} height={13} />}
           onClick={noop}
-          ariaLabel="Retry pipeline run"
+          ariaLabel="Retry workflow run"
           variant="warning"
           dataTestId="change-review-retry"
         />
@@ -510,7 +510,7 @@ function PipelineRowChipsAfter(): JSX.Element {
           label="Start over"
           icon={<RerunIcon width={13} height={13} />}
           onClick={noop}
-          ariaLabel="Start pipeline run over"
+          ariaLabel="Start workflow run over"
           variant="destructive-chip"
           dataTestId="change-review-rerun"
         />
@@ -518,7 +518,7 @@ function PipelineRowChipsAfter(): JSX.Element {
       <Caption>
         Left to right: the status badges — running, success (muted), Plan
         updated, Input required, Advisor ETA — then the action buttons — Chat
-        and Pipeline (neutral), Retry (warning), Start over (destructive). Same
+        and Workflow (neutral), Retry (warning), Start over (destructive). Same
         height, radius, label size, and hairline ring within each shape.
       </Caption>
     </div>
@@ -668,10 +668,6 @@ function DemoSidebarRow({
 
 function RichTooltipsAfter(): JSX.Element {
   const [fastMode, setFastMode] = useState<boolean | undefined>(undefined);
-  const getCopyText = useCallback(
-    (): string => 'Copied from the review page',
-    [],
-  );
   return (
     <div className="space-y-3">
       <Caption>
@@ -690,9 +686,9 @@ function RichTooltipsAfter(): JSX.Element {
           onClick={noop}
         />
         <FastModeButton value={fastMode} onChange={setFastMode} />
-        <MessageCopyButton
-          getText={getCopyText}
-          className={BUBBLE_ACTION_BADGE_CLASS}
+        <BubbleCopyBadge
+          copyText="Copied from the review page"
+          label="Copy to clipboard"
         />
         <VoiceInputButton
           state="idle"

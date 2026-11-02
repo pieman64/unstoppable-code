@@ -10,19 +10,20 @@ import type {
   PreferencesData,
   ProfileRoleId,
 } from '@canopy/desktop-shared/types';
-import { Button } from '@canopy/ui-shared/components';
-import { CheckIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  Button,
+  Checkbox,
+  DialogModal,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import { expandLegacyProfileRoles } from '@canopy/protocol/plugin-catalog';
-import { DialogModal } from '@/components/shared/DialogModal';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { ROLE_OPTIONS } from '@/lib/onboarding/profile-options';
-import { clearOnboardingProfileRolesDurably } from '@/components/home/onboarding-suggestions/completionWriter';
 import { SettingsDescriptionLoading, SettingsRow } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const ROLE_DETAIL_MAX_LENGTH = 256;
 
-/** Older profiles have only `profileRole`; the checklist saves the full list. */
+/** Older profiles have only `profileRole`; current profiles save the full list. */
 function rolesFromPreferences(preferences: PreferencesData): ProfileRoleId[] {
   return expandLegacyProfileRoles(
     preferences.profileRoles?.length
@@ -43,7 +44,6 @@ function primaryRole(roles: readonly ProfileRoleId[]): ProfileRoleId | null {
  * modal so dismissing it cannot accidentally replace the saved role list.
  */
 export function ProfileRoleSection(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [roles, setRoles] = useState<ProfileRoleId[]>([]);
   const [detail, setDetail] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -126,7 +126,11 @@ export function ProfileRoleSection(): JSX.Element {
     inFlightSavesRef.current += 1;
     try {
       if (nextRoles.length === 0) {
-        await clearOnboardingProfileRolesDurably();
+        await window.api.savePreferences({
+          profileRole: undefined,
+          profileRoles: [],
+          profileRoleDetail: '',
+        });
       } else {
         await window.api.savePreferences({
           profileRole: primary ?? undefined,
@@ -189,7 +193,7 @@ export function ProfileRoleSection(): JSX.Element {
         loaded && !loadError ? (
           <Button
             ref={editButtonRef}
-            size={settingsButtonSize}
+            size="compact"
             onClick={openEditor}
             data-testid="settings-profile-role-edit"
           >
@@ -208,34 +212,53 @@ export function ProfileRoleSection(): JSX.Element {
           trapFocus
           restoreFocusRef={editButtonRef}
           closeOnBackdrop={!saving}
+          footer={
+            <>
+              <Button
+                size="compact"
+                variant="secondary"
+                onClick={closeEditor}
+                disabled={saving}
+                data-testid="settings-profile-role-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="compact"
+                variant="primary"
+                onClick={(): void => {
+                  void saveRoles();
+                }}
+                disabled={saving}
+                data-testid="settings-profile-role-save"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+            </>
+          }
         >
+          {/* Shared checkboxes in two columns: the roles fit the dialog
+              without scrolling, and selection is the neutral mark. */}
           <div
-            className="flex flex-wrap gap-2 p-5"
+            role="group"
+            aria-label="Roles"
+            className="grid grid-cols-2 gap-x-4 gap-y-3 p-5"
             data-testid="settings-profile-role-options"
           >
-            {ROLE_OPTIONS.map((option) => {
-              const selected = draftRoles.includes(option.id);
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={(): void => toggleRole(option.id)}
+            {ROLE_OPTIONS.map((option) => (
+              <label
+                key={option.id}
+                className="flex cursor-pointer items-center gap-2.5 text-s fg-primary"
+              >
+                <Checkbox
+                  checked={draftRoles.includes(option.id)}
+                  onChange={(): void => toggleRole(option.id)}
                   disabled={saving}
                   data-testid={`settings-profile-role-option-${option.id}`}
-                  className={`focus-ring inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-s ring-1 ring-inset transition-colors disabled:opacity-50 ${
-                    selected
-                      ? 'ring-line-accent bg-accent-subtle font-medium fg-primary hover:bg-accent-subtle/80'
-                      : 'ring-line-base bg-secondary fg-secondary hover:bg-subtle hover:fg-primary'
-                  }`}
-                >
-                  {selected ? (
-                    <CheckIcon size={12} className="shrink-0 fg-accent" />
-                  ) : null}
-                  {option.label}
-                </button>
-              );
-            })}
+                />
+                {option.label}
+              </label>
+            ))}
           </div>
           <div className="px-5 pb-5">
             <label
@@ -244,45 +267,21 @@ export function ProfileRoleSection(): JSX.Element {
             >
               Tell us more about what you do (optional)
             </label>
-            <input
+            <TextInput
               id="settings-profile-role-detail-input"
-              type="text"
               value={draftDetail}
               onChange={(event): void => setDraftDetail(event.target.value)}
               maxLength={ROLE_DETAIL_MAX_LENGTH}
               data-testid="settings-profile-role-detail-input"
               placeholder="Role, responsibilities, or goals"
               disabled={saving}
-              className="focus-ring w-full rounded-md border bg-base px-3 py-2 text-s fg-primary"
             />
           </div>
-          <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-            {saveError ? (
-              <p role="alert" className="mr-auto text-s fg-destructive">
-                Could not save your roles. Please try again.
-              </p>
-            ) : null}
-            <Button
-              size={settingsButtonSize}
-              variant="ghost"
-              onClick={closeEditor}
-              disabled={saving}
-              data-testid="settings-profile-role-cancel"
-            >
-              Cancel
-            </Button>
-            <Button
-              size={settingsButtonSize}
-              variant="primary"
-              onClick={(): void => {
-                void saveRoles();
-              }}
-              disabled={saving}
-              data-testid="settings-profile-role-save"
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-          </div>
+          {saveError ? (
+            <p role="alert" className="px-5 pb-5 text-s fg-destructive">
+              Could not save your roles. Please try again.
+            </p>
+          ) : null}
         </DialogModal>
       ) : null}
     </SettingsRow>

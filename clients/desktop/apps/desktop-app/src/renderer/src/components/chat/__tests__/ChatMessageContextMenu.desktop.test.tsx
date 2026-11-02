@@ -15,6 +15,7 @@ import { ChatMessageItem } from '../ChatMessageItem';
 import { TranscriptViewer } from '../TranscriptViewer';
 import type { DisplayMessage } from '../types';
 import { useChatMessageLinkActions } from '../chat-message-link-actions';
+import { ChatLookProvider } from '@canopy/ui-shared/components/chat-look';
 
 jest.mock('@/lib/terminal-instances', () => ({
   getOrCreateInstance: jest.fn(),
@@ -44,7 +45,6 @@ class ResizeObserverStub {
 function LiveParent({ children }: { children: ReactNode }): ReactNode {
   const { targetProps, menu } = useChatMessageContextMenu({
     messageId: 'outer-workflow-message',
-    getMarkdown: () => 'Outer message',
   });
   return (
     <div {...targetProps}>
@@ -104,6 +104,7 @@ describe('desktop chat message context menu (CAN-4277)', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    document.getSelection()?.removeAllRanges();
     if (originalClipboard) {
       Object.defineProperty(navigator, 'clipboard', originalClipboard);
     } else {
@@ -114,7 +115,9 @@ describe('desktop chat message context menu (CAN-4277)', () => {
   function render(message: DisplayMessage): void {
     act(() =>
       root.render(
-        <ChatMessageItem message={message} chatPendingQuestions={[]} />,
+        <ChatLookProvider value="classic">
+          <ChatMessageItem message={message} chatPendingQuestions={[]} />
+        </ChatLookProvider>,
       ),
     );
   }
@@ -150,17 +153,56 @@ describe('desktop chat message context menu (CAN-4277)', () => {
     });
   }
 
+  function menuItem(testId: string): HTMLButtonElement {
+    const item = document.querySelector(`[data-testid="${testId}"]`);
+    if (!(item instanceof HTMLButtonElement)) throw new Error(`no ${testId}`);
+    return item;
+  }
+
+  function menuLabels(): Array<string | null> {
+    return Array.from(
+      document.querySelectorAll(
+        '[data-testid="chat-message-context-menu"] [role="menuitem"]',
+      ),
+    ).map((item) => item.textContent);
+  }
+
+  /** Selects `node`'s rendered text and returns what the menu should copy. */
+  function select(node: Node | null): string {
+    if (!node) throw new Error('missing selection target');
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return selection?.toString() ?? '';
+  }
+
+  /** Without a selection the menu holds one disabled Copy selection (CAN-4870). */
+  async function expectOnlyDisabledSelectionCopy(): Promise<void> {
+    expect(menuLabels()).toEqual(['Copy selection']);
+    const item = menuItem('chat-message-copy-selection');
+    expect(item.disabled).toBe(true);
+    await act(async () => {
+      item.click();
+      await Promise.resolve();
+    });
+    expect(clipboardWrites).toEqual([]);
+  }
+
   it('renders no menu markup while closed', () => {
     const html = renderToStaticMarkup(
-      <ChatMessageItem
-        message={{
-          id: 'a1',
-          role: 'assistant',
-          timestamp: 1,
-          blocks: [{ type: 'text', text: 'Hello' }],
-        }}
-        chatPendingQuestions={[]}
-      />,
+      <ChatLookProvider value="classic">
+        <ChatMessageItem
+          message={{
+            id: 'a1',
+            role: 'assistant',
+            timestamp: 1,
+            blocks: [{ type: 'text', text: 'Hello' }],
+          }}
+          chatPendingQuestions={[]}
+        />
+      </ChatLookProvider>,
     );
     expect(html).not.toContain('chat-message-context-menu');
   });
@@ -208,7 +250,7 @@ describe('desktop chat message context menu (CAN-4277)', () => {
     },
   );
 
-  it('copies a user message like the corner badge, file references included', async () => {
+  it('copies only the selection inside a user bubble', async () => {
     render({
       id: 'u1',
       role: 'user',
@@ -223,18 +265,20 @@ describe('desktop chat message context menu (CAN-4277)', () => {
         },
       ],
     });
+    const row = container.querySelector('[data-chat-message-id="u1"]');
     // One menu owner per user row: the bubble, not ChatMessageItem too.
-    openMenuOn(container.querySelector('[data-chat-message-id="u1"]'));
+    openMenuOn(row);
     expect(menus()).toHaveLength(1);
-    await choose('chat-message-copy-markdown');
-    expect(clipboardWrites).toEqual(['Look at **this**\n@src/app.ts']);
+    await expectOnlyDisabledSelectionCopy();
 
-    openMenuOn(container.querySelector('[data-chat-message-id="u1"]'));
-    await choose('chat-message-copy-plain');
-    expect(clipboardWrites.at(-1)).toBe('Look at this\n@src/app.ts');
+    const expected = select(row?.querySelector('strong') ?? null);
+    expect(expected).toBe('this');
+    openMenuOn(row);
+    await choose('chat-message-copy-selection');
+    expect(clipboardWrites).toEqual([expected]);
   });
 
-  it('copies assistant text blocks in order and leaves tool output out', async () => {
+  it('copies only the selection inside an assistant reply', async () => {
     render({
       id: 'a1',
       role: 'assistant',
@@ -251,10 +295,16 @@ describe('desktop chat message context menu (CAN-4277)', () => {
         { type: 'text', text: '- second' },
       ],
     });
-    openMenuOn(container.querySelector('[data-chat-message-id="a1"]'));
+    const row = container.querySelector('[data-chat-message-id="a1"]');
+    openMenuOn(row);
     expect(menus()).toHaveLength(1);
-    await choose('chat-message-copy-markdown');
-    expect(clipboardWrites).toEqual(['First  \n\n- second']);
+    await expectOnlyDisabledSelectionCopy();
+
+    const expected = select(row?.querySelector('li') ?? null);
+    expect(expected).toBe('second');
+    openMenuOn(row);
+    await choose('chat-message-copy-selection');
+    expect(clipboardWrites).toEqual([expected]);
   });
 
   it('adds a Tab stop only to rows with text to copy', () => {
@@ -303,19 +353,22 @@ describe('desktop chat message context menu (CAN-4277)', () => {
     expect(menus()).toHaveLength(0);
   });
 
-  it('copies genuine system text through the regular message layout', async () => {
+  it('copies a selection in genuine system text through the regular message layout', async () => {
     render({
       id: 'system-text',
       role: 'system',
       timestamp: 1,
       blocks: [{ type: 'text', text: 'System **notice**' }],
     });
-    openMenuOn(container.querySelector('[data-chat-message-id="system-text"]'));
-    await choose('chat-message-copy-markdown');
-    expect(clipboardWrites).toEqual(['System **notice**']);
+    const row = container.querySelector('[data-chat-message-id="system-text"]');
+    const expected = select(row?.querySelector('strong') ?? null);
+    openMenuOn(row);
+    await choose('chat-message-copy-selection');
+    expect(clipboardWrites).toEqual([expected]);
+    expect(expected).toBe('notice');
   });
 
-  it('copies a visible async question rather than excluding its alternate layout', async () => {
+  it('copies a selection in a visible async question rather than excluding its alternate layout', async () => {
     render({
       id: 'question',
       role: 'assistant',
@@ -332,24 +385,23 @@ describe('desktop chat message context menu (CAN-4277)', () => {
       ],
     });
     expect(container.textContent).toContain('Which scope?');
-    openMenuOn(container.querySelector('p') ?? container.firstElementChild);
+    const paragraph =
+      container.querySelector('p') ?? container.firstElementChild;
+    openMenuOn(paragraph);
     expect(menus()).toHaveLength(1);
-    await choose('chat-message-copy-markdown');
-    expect(clipboardWrites).toEqual(['Which **scope**?']);
+    await expectOnlyDisabledSelectionCopy();
+
+    const expected = select(paragraph);
+    openMenuOn(paragraph);
+    await choose('chat-message-copy-selection');
+    expect(clipboardWrites).toEqual([expected]);
   });
 
-  it('opens on textless user messages without writing an empty source', () => {
+  it('opens on textless user messages with only a disabled selection copy', async () => {
     render({ id: 'empty-user', role: 'user', timestamp: 1, blocks: [] });
     openMenuOn(container.querySelector('[data-role="user"]'));
     expect(menus()).toHaveLength(1);
-    for (const testId of [
-      'chat-message-copy-plain',
-      'chat-message-copy-markdown',
-    ]) {
-      const item = document.querySelector(`[data-testid="${testId}"]`);
-      expect(item instanceof HTMLButtonElement && item.disabled).toBe(true);
-    }
-    expect(clipboardWrites).toEqual([]);
+    await expectOnlyDisabledSelectionCopy();
   });
 
   describe('link actions (CAN-2632)', () => {
@@ -381,9 +433,14 @@ describe('desktop chat message context menu (CAN-4277)', () => {
     ): HTMLAnchorElement {
       act(() =>
         root.render(
-          <LinkHost target={target}>
-            <ChatMessageItem message={linkMessage} chatPendingQuestions={[]} />
-          </LinkHost>,
+          <ChatLookProvider value="classic">
+            <LinkHost target={target}>
+              <ChatMessageItem
+                message={linkMessage}
+                chatPendingQuestions={[]}
+              />
+            </LinkHost>
+          </ChatLookProvider>,
         ),
       );
       const anchor = container.querySelector(`a[href="${LINK}"]`);
@@ -405,10 +462,11 @@ describe('desktop chat message context menu (CAN-4277)', () => {
         worktreeId: 'worktree-b',
       });
       openMenuOn(anchor);
-      expect(labels().slice(0, 3)).toEqual([
+      expect(labels()).toEqual([
         'Copy link',
         'Open in browser',
         'Open in external browser',
+        'Copy selection',
       ]);
       await choose('chat-message-copy-link');
       expect(clipboardWrites).toEqual([LINK]);
@@ -434,9 +492,10 @@ describe('desktop chat message context menu (CAN-4277)', () => {
           worktreeId: APP_ADVISOR_WORKTREE_ID,
         }),
       );
-      expect(labels().slice(0, 2)).toEqual([
+      expect(labels()).toEqual([
         'Copy link',
         'Open in external browser',
+        'Copy selection',
       ]);
       expect(
         document.querySelector(

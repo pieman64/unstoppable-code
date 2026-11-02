@@ -39,6 +39,9 @@ import {
   type CreateSharedAutomationIpcRequest,
   type DeleteSharedAutomationIpcRequest,
   type InstallAutomationCapabilityPackageRequest,
+  type InstallAutomationPipelinesResponse,
+  type PreviewAutomationPipelinesResponse,
+  type ScheduledActivity,
   type ListSharedAutomationsIpcRequest,
   type ResolveAutomationSharedPipelinePinRequest,
   type ResolvedAutomationSharedPipelinePin,
@@ -69,6 +72,11 @@ import {
   validateAutomationInstalledFrom,
   validateAutomationTrigger,
 } from '@canopy/desktop-shared/lib/automations';
+import {
+  createAutomationFromForm,
+  updateAutomationFromForm,
+} from '../automations/chat-automation-save';
+import { projectOwnedChatAutomations } from '../automations/owned-chat-projection';
 import { getAutomationsService } from '../automations/service';
 import {
   createSharedAutomation,
@@ -97,7 +105,13 @@ import {
   installAutomationCapabilityPackage,
   removeAutomationCapabilityPackageInstall,
   verifySharedPipelineAutomationInstallPin,
+  type AnalyzeAutomationCapabilityPackageOptions,
 } from '../pipelines/pipeline-package-service';
+import {
+  installAutomationPipelines,
+  pipelinesRecordedByAutomations,
+  previewAutomationPipelines,
+} from '../pipelines/automation-pipeline-install';
 import {
   getCuratedAutomation,
   listCuratedAutomations,
@@ -112,12 +126,31 @@ async function assertSharedAutomationsSupported(): Promise<void> {
   await assertCanopyCloudCapability(AUTOMATIONS_CAPABILITY);
 }
 
+/**
+ * The stored `worktree_pipeline` action pipeline an analysis packages as the
+ * `action` pipeline: only a user or project pipeline travels that way.
+ * Derived from the saved activity, never from the request.
+ */
+function automationActionPipeline(
+  activity: ScheduledActivity | undefined,
+): AnalyzeAutomationCapabilityPackageOptions['actionPipeline'] {
+  if (activity?.action.type !== 'worktree_pipeline') return undefined;
+  const { pipelineSource, pipelineId, pipelineName } = activity.action;
+  if (pipelineSource !== 'user' && pipelineSource !== 'project')
+    return undefined;
+  return {
+    source: pipelineSource,
+    pipelineId,
+    ...(pipelineName ? { name: pipelineName } : {}),
+  };
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 function validateCreateRequest(request: unknown): string | null {
-  return validateAutomationCreateRequest(request as AutomationCreateRequest);
+  return validateAutomationCreateRequest(request);
 }
 
 function validateUpdateRequest(request: unknown): string | null {
@@ -277,7 +310,9 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
     openAppAdvisorWindow: accessors.openAppAdvisorWindow,
     ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow,
     sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
-    onChange: (snapshot: AutomationsListResponse) => {
+    onChange: (stored: AutomationsListResponse) => {
+      // Windows edit a converted automation as its chat action (CAN-4551).
+      const snapshot = projectOwnedChatAutomations(stored);
       sendToWindow(
         accessors.getMainWindow(),
         IPC_CHANNELS.automationsChanged,
@@ -295,7 +330,7 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
     [AutomationsListRequest | undefined],
     AutomationsListResponse
   >(IPC_CHANNELS.automationsList, async (_event, request) => {
-    const snapshot = await service.list();
+    const snapshot = projectOwnedChatAutomations(await service.list());
     // App Advisor lists what the Automations page shows; everything else
     // reads the full snapshot.
     return isRecord(request) && request.scope === 'selected-context'
@@ -318,8 +353,9 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
       try {
         const validationError = validateCreateRequest(request);
         if (validationError) return { ok: false, error: validationError };
-        // A person writing the automation clears any agent marker.
-        return await service.create(request, { agentAuthor: null });
+        // A person writing the automation clears any agent marker, and may
+        // save a chat automation as a pipeline (CAN-4551).
+        return await createAutomationFromForm(request);
       } catch (error) {
         return { ok: false, error: errorMessage(error) };
       }
@@ -332,9 +368,7 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
       try {
         const validationError = validateUpdateRequest(request);
         if (validationError) return { ok: false, error: validationError };
-        return await service.update(request, undefined, undefined, {
-          agentAuthor: null,
-        });
+        return await updateAutomationFromForm(request);
       } catch (error) {
         return { ok: false, error: errorMessage(error) };
       }
@@ -563,8 +597,24 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
   registerIpcHandler<
     [AnalyzeAutomationCapabilityPackageRequest],
     PipelinePackageAnalysisSummary
-  >(IPC_CHANNELS.automationsCapabilityPackageAnalyze, async (_event, request) =>
-    analyzeAutomationCapabilityPackage(request),
+  >(
+    IPC_CHANNELS.automationsCapabilityPackageAnalyze,
+    async (_event, request) => {
+      if (
+        request.activityId === undefined ||
+        request.pipelineContent === undefined
+      )
+        return analyzeAutomationCapabilityPackage(request);
+      validateId(request.activityId, 'activityId');
+      const actionPipeline = automationActionPipeline(
+        (await service.list()).activities.find(
+          (activity) => activity.id === request.activityId,
+        ),
+      );
+      return actionPipeline
+        ? analyzeAutomationCapabilityPackage(request, { actionPipeline })
+        : analyzeAutomationCapabilityPackage(request);
+    },
   );
   registerIpcHandler<[string], void>(
     IPC_CHANNELS.automationsCapabilityPackageCancel,
@@ -602,20 +652,46 @@ export function registerAutomationsHandlers(accessors: WindowAccessors): void {
       return getAutomationCapabilityPackageReadiness(request);
     },
   );
-  registerIpcHandler<[InstallAutomationCapabilityPackageRequest], void>(
+  registerIpcHandler<
+    [InstallAutomationCapabilityPackageRequest],
+    | InstallAutomationPipelinesResponse
+    | PreviewAutomationPipelinesResponse
+    | undefined
+  >(
     IPC_CHANNELS.automationsCapabilityPackageInstall,
     async (_event, request) => {
+      // Stage A: materialize the package's pipelines before the automation
+      // exists; its preview is the update review's dry run. Stage B (below)
+      // records the automation-owner install.
+      if (
+        request.stage === 'pipelines' ||
+        request.stage === 'pipelines-preview'
+      ) {
+        if (request.source === 'curated') {
+          await assertCanopyCloudCapability(AUTOMATION_CATALOG_CAPABILITY);
+        }
+        // Each installed copy keeps its own pipelines.
+        const options = {
+          recordedPipelineIds: pipelinesRecordedByAutomations(
+            (await service.list()).activities,
+          ),
+        };
+        return request.stage === 'pipelines'
+          ? installAutomationPipelines(request, options)
+          : previewAutomationPipelines(request, options);
+      }
       validateId(request.localAutomationId, 'automation id');
       if (request.remove === true) {
         await removeAutomationCapabilityPackageInstall(
           request.localAutomationId,
         );
-        return;
+        return undefined;
       }
       if (request.source === 'curated') {
         await assertCanopyCloudCapability(AUTOMATION_CATALOG_CAPABILITY);
       }
       await installAutomationCapabilityPackage(request);
+      return undefined;
     },
   );
   registerIpcHandler<

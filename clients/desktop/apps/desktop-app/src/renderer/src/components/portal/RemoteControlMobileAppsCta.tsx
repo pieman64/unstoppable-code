@@ -1,6 +1,5 @@
 import type { JSX } from 'react';
-import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import { MobileAppPromo } from '@canopy/ui-shared/components/MobileAppPromo';
+import { RemoteControlMobileAppPromo } from '@canopy/ui-shared/components/RemoteControlMobileAppPromo';
 import type { MobileAppStore } from '@canopy/ui-shared/components/StoreBadgeLink';
 import { brandText } from '@/lib/brand';
 import { useMobileAppPromo } from '@/hooks/useMobileAppPromo';
@@ -25,27 +24,17 @@ import { useMobileAppPromo } from '@/hooks/useMobileAppPromo';
 export function RemoteControlMobileAppsCta(): JSX.Element | null {
   const { links, showPermanent } = useMobileAppPromo();
 
-  if (!showPermanent) {
-    return null;
-  }
-
   const openStore = (_store: MobileAppStore, url: string): void => {
     void window.api.browser.openExternal({ url });
   };
 
   return (
-    <div
+    <RemoteControlMobileAppPromo
       data-testid="remote-control-mobile-apps-cta"
-      className="border-t border-line-accent/40 pt-4"
-    >
-      <MobileAppPromo
-        brandDisplayName={brandText.appName}
-        links={links}
-        activation={{ kind: 'callback', onActivate: openStore }}
-        variant="inline"
-        heading={`Use ${REMOTE_CONTROL_LABEL} from your phone`}
-        description={`Install the ${brandText.appName} mobile app to watch and steer these agents while you are away from this machine.`}
-      />
-    </div>
+      brandDisplayName={brandText.appName}
+      links={links}
+      visible={showPermanent}
+      activation={{ kind: 'callback', onActivate: openStore }}
+    />
   );
 }

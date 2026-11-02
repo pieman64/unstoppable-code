@@ -1,3 +1,30 @@
+import type * as CryptoModule from 'node:crypto';
+import type {
+  PairingTelemetryContext,
+  PairingTelemetryOutcome,
+} from '@canopy/desktop-instrumentation/pairing';
+const mockPairingAttempts: Array<{
+  context: PairingTelemetryContext;
+  outcomes: PairingTelemetryOutcome[];
+}> = [];
+const mockStartPairingTelemetry = jest.fn(
+  (context: PairingTelemetryContext) => {
+    const outcomes: PairingTelemetryOutcome[] = [];
+    mockPairingAttempts.push({ context, outcomes });
+    return {
+      end: (outcome: PairingTelemetryOutcome): void => {
+        outcomes.push(outcome);
+      },
+    };
+  },
+);
+// A wrapper: SWC hoists jest.mock above the mock's declaration.
+jest.mock('../../lib/desktop-telemetry', () => ({
+  startRemotePairingTelemetry: (
+    context: PairingTelemetryContext,
+  ): ReturnType<typeof mockStartPairingTelemetry> =>
+    mockStartPairingTelemetry(context),
+}));
 const mockIsEnabled = jest.fn();
 const mockLoadCanopyCloudAccount = jest.fn();
 const mockCreatePortalSession = jest.fn();
@@ -30,11 +57,15 @@ jest.mock('../../agents/ai-credits-routing', () => ({
 
 jest.mock('../../feature-flags', (): unknown => ({
   getFeatureFlagService: () => ({
-    isEnabled: mockIsEnabled,
+    get isEnabled(): typeof mockIsEnabled {
+      return mockIsEnabled;
+    },
   }),
 }));
 jest.mock('../../lib/canopy-cloud-account-store', () => ({
-  loadCanopyCloudAccount: mockLoadCanopyCloudAccount,
+  get loadCanopyCloudAccount(): typeof mockLoadCanopyCloudAccount {
+    return mockLoadCanopyCloudAccount;
+  },
   subscribeCanopyCloudAccountChanges: jest.fn(() => jest.fn()),
 }));
 jest.mock('../canopy-portal-client', () => ({
@@ -50,21 +81,45 @@ jest.mock('../canopy-portal-client', () => ({
     }
   },
   assertLiveCanopyPortalSupport: jest.fn(),
-  createPortalSession: mockCreatePortalSession,
-  endPortalSession: mockEndPortalSession,
-  pollPortalCommands: mockPollPortalCommands,
-  sendPortalEvents: mockSendPortalEvents,
-  sendPortalHeartbeat: mockSendPortalHeartbeat,
+  get createPortalSession(): typeof mockCreatePortalSession {
+    return mockCreatePortalSession;
+  },
+  get endPortalSession(): typeof mockEndPortalSession {
+    return mockEndPortalSession;
+  },
+  get pollPortalCommands(): typeof mockPollPortalCommands {
+    return mockPollPortalCommands;
+  },
+  get sendPortalEvents(): typeof mockSendPortalEvents {
+    return mockSendPortalEvents;
+  },
+  get sendPortalHeartbeat(): typeof mockSendPortalHeartbeat {
+    return mockSendPortalHeartbeat;
+  },
 }));
 jest.mock('../portal-state-store', () => ({
-  clearActivePortalSession: mockClearActivePortalSession,
-  persistCompletedPortalCommand: mockPersistCompletedPortalCommand,
+  get clearActivePortalSession(): typeof mockClearActivePortalSession {
+    return mockClearActivePortalSession;
+  },
+  get persistCompletedPortalCommand(): typeof mockPersistCompletedPortalCommand {
+    return mockPersistCompletedPortalCommand;
+  },
   persistActivePortalSession: jest.fn(),
-  persistPortalCommandCursor: mockPersistPortalCommandCursor,
-  persistPortalEventOutbox: mockPersistPortalEventOutbox,
-  persistPortalStopReason: mockPersistPortalStopReason,
-  readCompletedPortalCommand: mockReadCompletedPortalCommand,
-  readPortalStateStore: mockReadPortalStateStore,
+  get persistPortalCommandCursor(): typeof mockPersistPortalCommandCursor {
+    return mockPersistPortalCommandCursor;
+  },
+  get persistPortalEventOutbox(): typeof mockPersistPortalEventOutbox {
+    return mockPersistPortalEventOutbox;
+  },
+  get persistPortalStopReason(): typeof mockPersistPortalStopReason {
+    return mockPersistPortalStopReason;
+  },
+  get readCompletedPortalCommand(): typeof mockReadCompletedPortalCommand {
+    return mockReadCompletedPortalCommand;
+  },
+  get readPortalStateStore(): typeof mockReadPortalStateStore {
+    return mockReadPortalStateStore;
+  },
 }));
 jest.mock('../../services/terminal-service', () => ({
   subscribeTerminalPortalEvents: jest.fn(() => jest.fn()),
@@ -81,21 +136,28 @@ const mockObservabilitySubscribe = jest.fn(
 const mockGetUsageOverview = jest.fn();
 jest.mock('../../observability', (): unknown => ({
   getObservabilityService: () => ({
-    recordAppDiagnostic: mockRecordAppDiagnostic,
-    recordSessionDiagnostic: mockRecordSessionDiagnostic,
-    subscribe: mockObservabilitySubscribe,
-    getUsageOverview: mockGetUsageOverview,
+    get recordAppDiagnostic(): typeof mockRecordAppDiagnostic {
+      return mockRecordAppDiagnostic;
+    },
+    get recordSessionDiagnostic(): typeof mockRecordSessionDiagnostic {
+      return mockRecordSessionDiagnostic;
+    },
+    get subscribe(): typeof mockObservabilitySubscribe {
+      return mockObservabilitySubscribe;
+    },
+    get getUsageOverview(): typeof mockGetUsageOverview {
+      return mockGetUsageOverview;
+    },
   }),
 }));
 jest.mock('../../lib/worktree-summary-persistence', () => ({
-  clearWorktreeSummaryPortalFingerprints:
-    mockClearWorktreeSummaryPortalFingerprints,
+  get clearWorktreeSummaryPortalFingerprints(): typeof mockClearWorktreeSummaryPortalFingerprints {
+    return mockClearWorktreeSummaryPortalFingerprints;
+  },
 }));
-const mockHandlePortalCommand = jest.fn();
-const mockExecutePortalStateRequest = jest.fn();
 jest.mock('../portal-command-handlers', () => ({
-  handlePortalCommand: mockHandlePortalCommand,
-  executePortalStateRequest: mockExecutePortalStateRequest,
+  handlePortalCommand: jest.fn(),
+  executePortalStateRequest: jest.fn(),
   // The real normalizer lives in the mocked module; a shape-preserving stub
   // keeps the manager's hand-off path (which normalizes before enqueueing to
   // the lane) working without dragging in the adapters' Electron graph.
@@ -225,7 +287,10 @@ it('sends two full visual pages in separate sub-512 KiB batches', () => {
 });
 import type { PortalPowerMonitor } from '../portal-session-manager';
 import { CanopyPortalClientError } from '../canopy-portal-client';
-import { handlePortalCommand } from '../portal-command-handlers';
+import {
+  executePortalStateRequest,
+  handlePortalCommand,
+} from '../portal-command-handlers';
 import { enqueuePortalEvent } from '../portal-event-bus';
 import {
   createDroppedRangeMarkers,
@@ -237,6 +302,16 @@ import {
 } from '@canopy/desktop-shared/types';
 import { PORTAL_CHAT_TEXT_MAX_CHARS } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { sanitizeStorableString } from '@canopy/protocol/portal';
+import {
+  isAgentDelegationCardData,
+  isAgentDelegationTranscript,
+  type AgentDelegationTranscript,
+} from '@canopy/protocol/delegation';
+import { delegationTranscriptMessages } from '@canopy/agent-transcript';
+import { persistedParts } from '@canopy/desktop-shared/portal/persisted-chat-projection';
+
+const mockHandlePortalCommand = jest.mocked(handlePortalCommand);
+const mockExecutePortalStateRequest = jest.mocked(executePortalStateRequest);
 
 type PortalTestEvent = Parameters<typeof compactPortalEvent>[0];
 
@@ -726,7 +801,7 @@ describe('portal snapshot compaction', () => {
     const compacted = compactPortalEvent({
       eventId: 'event-1',
       type: 'portal.state.snapshot',
-      createdAt: '2026-07-22T00:00:00.000Z',
+      occurredAt: '2026-07-22T00:00:00.000Z',
       payload: { scope: 'chat', chatMessages },
     });
 
@@ -740,6 +815,154 @@ describe('portal snapshot compaction', () => {
       throw new Error('Expected compacted snapshot chat messages');
     }
     expect(payload.chatMessages).toHaveLength(150);
+  });
+
+  it("keeps an agent part's delegation card structured through outbox compaction", () => {
+    const delegation = {
+      delegationId: 'child-1',
+      status: 'pending',
+      requestedModelId: 'reviewer',
+      outputTruncated: false,
+      phase: 'queued',
+      queue: { id: 'default', name: 'Default' },
+      capabilities: {
+        inherit: true,
+        discovery: false,
+        items: [{ kind: 'skill', name: 'code-review', source: 'inherited' }],
+        skipped: [],
+        omittedItems: 0,
+      },
+      parentHarnessId: 'claude',
+      description: 'Queued review',
+      prompt: 'Read the source.',
+      executionMode: 'background',
+    };
+    expect(isAgentDelegationCardData(delegation)).toBe(true);
+
+    const compacted = compactPortalEvent({
+      eventId: 'event-delegation-card',
+      type: 'portal.chat.event',
+      occurredAt: '2026-10-20T00:00:00.000Z',
+      payload: {
+        message: {
+          messageId: 'message-1',
+          parts: [{ kind: 'agent', data: { delegation, subBlocks: [] } }],
+        },
+      },
+    });
+
+    const message: unknown = Reflect.get(Object(compacted.payload), 'message');
+    const parts: unknown = Reflect.get(Object(message), 'parts');
+    const part: unknown = Array.isArray(parts) ? parts.at(0) : undefined;
+    const card: unknown = Reflect.get(
+      Object(Reflect.get(Object(part), 'data')),
+      'delegation',
+    );
+    // projectPortalDelegationPart may add compatibility fields such as selectedModelId.
+    expect(card).toMatchObject(delegation);
+    expect(isAgentDelegationCardData(card)).toBe(true);
+  });
+
+  it("keeps a real settled delegate's card valid through outbox compaction", () => {
+    const items = Array.from({ length: 30 }, (_, index) => ({
+      kind: 'skill' as const,
+      name: `skill-${index}`,
+      source: 'inherited' as const,
+    }));
+    const transcript: AgentDelegationTranscript = {
+      delegationId: 'child-done',
+      runGeneration: 1,
+      sequence: 4,
+      parentHarnessId: 'claude',
+      parentTurnId: 'user-1',
+      parentToolCallId: 'call-1',
+      createdAt: 1000,
+      task: {
+        description: 'Review the change',
+        prompt: 'Read the source and report.',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: 'child-done',
+        status: 'completed',
+        requestedModelId: 'reviewer',
+        routeSnapshot: {
+          selectedModelId: 'reviewer',
+          runtimeModelId: 'claude-sonnet',
+          harnessId: 'claude',
+          runtimeKind: 'claude',
+          runnerRegistrationId: 'runner-1',
+          runtimeVersion: '1',
+          adapterVersion: '1',
+          modelSource: 'catalog',
+          providerType: 'claude',
+          assignmentRevision: 'revision-1',
+          billingAuthority: 'none',
+          aiCreditsRouted: false,
+          requestedThinkingLevel: 'high',
+          effectiveThinkingLevel: 'high',
+          selectedModelLabel: 'Reviewer',
+          runtimeModelLabel: 'Sonnet',
+          capabilities: [],
+          supportedThinkingLevels: ['high'],
+          capabilitySnapshotHash: 'capabilities-1',
+          capabilityGeneration: 1,
+          policyRevision: 'policy-1',
+        },
+        nativeSessionId: 'native-1',
+        partialText: 'Working',
+        finalText: 'x'.repeat(10_000),
+        outputTruncated: false,
+        usage: { inputTokens: 10, outputTokens: 5 },
+        resultIndex: 1,
+        runGeneration: 1,
+        depth: 1,
+        capabilities: {
+          inherit: true,
+          discovery: false,
+          items,
+          skipped: [],
+          omittedItems: 0,
+        },
+      },
+      transcript: [],
+    };
+    expect(isAgentDelegationTranscript(transcript)).toBe(true);
+    const [message] = delegationTranscriptMessages(transcript);
+    if (!message) throw new Error('Expected a delegation message');
+    const parts = persistedParts(message);
+
+    const compacted = compactPortalEvent({
+      eventId: 'event-real-delegation-card',
+      type: 'portal.chat.event',
+      occurredAt: '2026-10-20T00:00:00.000Z',
+      payload: { message: { messageId: 'message-1', parts } },
+    });
+
+    const compactedMessage: unknown = Reflect.get(
+      Object(compacted.payload),
+      'message',
+    );
+    const compactedParts: unknown = Reflect.get(
+      Object(compactedMessage),
+      'parts',
+    );
+    const part: unknown = Array.isArray(compactedParts)
+      ? compactedParts.at(0)
+      : undefined;
+    const card: unknown = Reflect.get(
+      Object(Reflect.get(Object(part), 'data')),
+      'delegation',
+    );
+    expect(isAgentDelegationCardData(card)).toBe(true);
+    // The Portal projection keeps the newest capability items and counts the rest.
+    const capabilities: unknown = Reflect.get(Object(card), 'capabilities');
+    expect(Reflect.get(Object(capabilities), 'items')).toEqual(items.slice(-8));
+    expect(Reflect.get(Object(capabilities), 'omittedItems')).toBe(22);
+    // Long text keeps the outbox's string cap.
+    expect(String(Reflect.get(Object(card), 'finalText')).length).toBeLessThan(
+      10_000,
+    );
   });
 
   it('preserves long projected chat responses through outbox compaction (CAN-3146)', () => {
@@ -905,6 +1128,7 @@ describe('additional device pairing on a live session (CAN-2981)', () => {
   async function activateViaFirstDevice(): Promise<{
     markAuthenticated: () => void;
   }> {
+    mockPairingAttempts.length = 0;
     await primeActiveSession((poll) => {
       poll.mockResolvedValueOnce({
         session: {
@@ -941,6 +1165,26 @@ describe('additional device pairing on a live session (CAN-2981)', () => {
 
     const { state } = regenerateCanopyPortalPairingCode();
 
+    expect(mockPairingAttempts).toEqual([
+      {
+        context: {
+          pairing_kind: 'phone_code',
+          pairing_entry: 'portal_modal',
+          peer_platform: 'unknown',
+          is_additional_device: false,
+        },
+        outcomes: ['approved'],
+      },
+      {
+        context: {
+          pairing_kind: 'phone_code',
+          pairing_entry: 'portal_modal',
+          peer_platform: 'unknown',
+          is_additional_device: true,
+        },
+        outcomes: [],
+      },
+    ]);
     expect(state.status).toBe('active');
     expect(state.sessionId).toBe(active.sessionId);
     expect(state.activatedAt).toBe(active.activatedAt);
@@ -985,6 +1229,7 @@ describe('additional device pairing on a live session (CAN-2981)', () => {
       expect(state.pairingCodeExpiresAt).toBeNull();
       expect(state.status).toBe('active');
       expect(state.sessionId).toBe(armed.sessionId);
+      expect(mockPairingAttempts[1]?.outcomes).toEqual(['expired']);
       expect(mockEndPortalSession).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
@@ -1004,8 +1249,127 @@ describe('additional device pairing on a live session (CAN-2981)', () => {
     expect(state.pairingCode).toBeNull();
     expect(state.pairingCodeExpiresAt).toBeNull();
     expect(mockEndPortalSession).not.toHaveBeenCalled();
+    expect(mockPairingAttempts[1]?.outcomes).toEqual(['cancelled']);
     // Cancelling with nothing armed is a no-op, not an error.
     expect(cancelCanopyPortalPairingCode().state.pairingCode).toBeNull();
+  });
+
+  it('cancels the unredeemed attempt before replacement, and stop ends only the latest one', async () => {
+    const { markAuthenticated } = await activateViaFirstDevice();
+    markAuthenticated();
+    markAuthenticated();
+    expect(mockPairingAttempts[0]?.outcomes).toEqual(['approved']);
+    regenerateCanopyPortalPairingCode();
+    regenerateCanopyPortalPairingCode();
+    expect(mockPairingAttempts[1]?.outcomes).toEqual(['cancelled']);
+    // This callback validated the original code. It cannot approve its replacement.
+    markAuthenticated();
+    expect(mockPairingAttempts[2]?.outcomes).toEqual([]);
+    await stopCanopyPortal();
+    expect(mockPairingAttempts[2]?.outcomes).toEqual(['cancelled']);
+  });
+
+  it('records authentication that consumes each specifically armed code and ignores reconnect callbacks', async () => {
+    mockPairingAttempts.length = 0;
+    mockHandlePortalCommand
+      .mockImplementationOnce(
+        (
+          _command: unknown,
+          context: { markAuthenticated(): void },
+        ): Promise<void> => {
+          context.markAuthenticated();
+          regenerateCanopyPortalPairingCode();
+          return Promise.resolve();
+        },
+      )
+      .mockImplementationOnce(
+        (
+          _command: unknown,
+          context: { markAuthenticated(): void },
+        ): Promise<void> => {
+          context.markAuthenticated();
+          context.markAuthenticated();
+          return Promise.resolve();
+        },
+      );
+    await primeActiveSession((poll) =>
+      poll.mockResolvedValueOnce({
+        session: staleSessionRow({ id: 'session-1' }),
+        commands: [
+          validateCodeCommand('first'),
+          { ...validateCodeCommand('second'), sequence: 2 },
+        ],
+        nextCursor: 2,
+      }),
+    );
+    await pumpAsync(12);
+    expect(mockPairingAttempts.map((attempt) => attempt.outcomes)).toEqual([
+      ['approved'],
+      ['approved'],
+    ]);
+    expect(
+      mockPairingAttempts.map(
+        (attempt) => attempt.context.is_additional_device,
+      ),
+    ).toEqual([false, true]);
+    expect(getCanopyPortalState().pairingCode).toBeNull();
+    expect(JSON.stringify(mockPairingAttempts)).not.toMatch(
+      /pairing_code|deviceId|sessionId/,
+    );
+  });
+
+  it('records expiry while pending and preserves start errors when the recorder throws', async () => {
+    mockPairingAttempts.length = 0;
+    await primeActiveSession();
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    try {
+      // The initial timer was armed with real timers. Repeated start allocates
+      // its replacement under the fake clock and cancels the original attempt.
+      await startCanopyPortal();
+      jest.advanceTimersByTime(10 * 60 * 1000);
+      await pumpAsync(12);
+      expect(mockPairingAttempts.map((attempt) => attempt.outcomes)).toEqual([
+        ['cancelled'],
+        ['expired'],
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+    mockStartPairingTelemetry.mockImplementationOnce(() => {
+      throw new Error('telemetry');
+    });
+    mockCreatePortalSession.mockRejectedValueOnce(
+      new Error('server unavailable'),
+    );
+    await expect(startCanopyPortal()).rejects.toThrow('server unavailable');
+  });
+
+  it('ignores a stale expiry callback even when a replacement randomly reuses the same code', async () => {
+    const { markAuthenticated } = await activateViaFirstDevice();
+    markAuthenticated();
+    const crypto = jest.requireActual<typeof CryptoModule>('node:crypto');
+    const random = jest
+      .spyOn(crypto, 'randomInt')
+      .mockImplementation(() => 123456);
+    const timers = jest.spyOn(globalThis, 'setTimeout');
+    try {
+      regenerateCanopyPortalPairingCode();
+      const firstTimer = timers.mock.calls.find(
+        (call) => call[1] === 10 * 60 * 1000,
+      );
+      if (!firstTimer) throw new Error('No pairing expiry timer');
+      regenerateCanopyPortalPairingCode();
+      firstTimer[0]();
+      expect(getCanopyPortalState().pairingCode).toBe('123456');
+      expect(mockPairingAttempts.map((attempt) => attempt.outcomes)).toEqual([
+        ['approved'],
+        ['cancelled'],
+        [],
+      ]);
+    } finally {
+      random.mockRestore();
+      timers.mockRestore();
+    }
   });
 
   it('rejects re-arming a code unless the session is active', () => {
@@ -1171,8 +1535,15 @@ describe('portal session manager feature flag gates', () => {
       );
       await pumpAsync();
       if (!finishClone) throw new Error('clone did not start');
+      const readContext = jest.mocked(handlePortalCommand).mock.calls[0]?.[1];
+      expect(readContext?.canReadTranscripts).toBe(readContext?.canReadAssets);
+      expect(readContext?.canReadTranscripts?.()).toBe(false);
+      readContext?.markAuthenticated();
+      expect(readContext?.canReadTranscripts?.()).toBe(true);
       await stopCanopyPortal();
+      expect(readContext?.canReadTranscripts?.()).toBe(false);
       await primeActiveSession(undefined, 'session-2');
+      expect(readContext?.canReadTranscripts?.()).toBe(false);
       mockPersistPortalCommandCursor.mockClear();
       mockPersistCompletedPortalCommand.mockClear();
       finishClone();
@@ -1211,6 +1582,7 @@ describe('portal session manager feature flag gates', () => {
     expect(mockCreatePortalSession).toHaveBeenCalledTimes(1);
     const createCalls = JSON.stringify(mockCreatePortalSession.mock.calls);
     expect(createCalls).toContain('"portal-v1":true');
+    expect(createCalls).toContain('"transcript_reads_v1":true');
     expect(createCalls).toContain('"worktree_actions_scope":true');
     // CAN-1990: browsers gate the sidebar chat-search hydration on this.
     expect(createCalls).toContain('"worktree_chat_summaries_scope":true');
@@ -1222,6 +1594,7 @@ describe('portal session manager feature flag gates', () => {
     expect(createCalls).toContain('"plugin_mutations":true');
     expect(createCalls).toContain('"curated_pipeline_import":true');
     expect(createCalls).toContain('"chat_mark_read":true');
+    expect(createCalls).toContain('"chat_set_unread":true');
     // Mobile attachment support gates the attach control on this so older
     // desktops never receive refs they would drop.
     expect(createCalls).toContain('"chat_attachments":true');
@@ -1248,6 +1621,9 @@ describe('portal session manager feature flag gates', () => {
     // CAN-3719: mobile offers Chat follow-up only on desktops that project
     // saved-output availability and handle its prepare command.
     expect(createCalls).toContain('"pipeline_chat_follow_up":true');
+    // CAN-3717: mobile reads complete step output and the saved report only
+    // from desktops that handle `portal.pipeline.content.read`.
+    expect(createCalls).toContain('"pipeline_content":true');
 
     await stopCanopyPortal();
   });

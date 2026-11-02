@@ -99,7 +99,7 @@ test('a curated automation is browsed, added enabled, listed once, and updated i
     const actionBar = window.getByTestId('detail-action-bar');
     await expect(
       window.getByTestId('plugins-entry-detail-breadcrumbs'),
-    ).toContainText('CustomizeAutomationsDaily Curated Review');
+    ).toContainText('CustomizeWorkflowsDaily Curated Review');
     await expect(
       detail.getByTestId('automation-definition-summary'),
     ).toContainText('Review open work');
@@ -143,15 +143,21 @@ test('a curated automation is browsed, added enabled, listed once, and updated i
     await expect(app.workflowsLibraryAutomationRow(installed.id)).toBeVisible();
     await expect(window.getByText('Automation installed.')).toBeVisible();
 
-    // One canonical Installed copy; the catalog identity remains in Browse.
-    await app.openPluginsPage();
+    // Customize remembers where it was left: the curated detail. Its root
+    // crumb returns to the Workflows list.
+    await window.getByTestId('sidebar-nav-plugins').click();
+    await expect(detail).toBeVisible();
+    await app.closeMarketplaceEntryDetail();
+    await app.expectPluginsPage();
+
+    // One canonical Installed copy; its catalog alias stays out of Browse.
     await openAutomationsTab(window);
     const installedSection = window.getByTestId('customize-section-installed');
     const localEntry = installedSection.getByTestId(
       `customize-row-automation:local:${installed.id}`,
     );
     await expect(localEntry).toBeVisible();
-    await expect(window.getByTestId(CURATED_ENTRY)).toBeVisible();
+    await expect(window.getByTestId(CURATED_ENTRY)).toHaveCount(0);
     await expect(
       installedSection.getByTestId(
         `customize-row-update-marker-automation:local:${installed.id}`,
@@ -170,12 +176,18 @@ test('a curated automation is browsed, added enabled, listed once, and updated i
     await app.openAutomationsPage();
     await app.openPluginsPage();
     await openAutomationsTab(window);
+    const updateAction = installedSection.getByTestId(
+      `customize-update-automation:local:${installed.id}`,
+    );
+    await expect(updateAction).toBeVisible();
+    await expect(updateAction).toHaveText('');
+    await expect(updateAction).toHaveAccessibleName(/^Update /);
     await expect(
       installedSection.getByTestId(
         `customize-row-update-marker-automation:local:${installed.id}`,
       ),
-    ).toBeVisible();
-    await expect(window.getByTestId(CURATED_ENTRY)).toBeVisible();
+    ).toHaveCount(0);
+    await expect(window.getByTestId(CURATED_ENTRY)).toHaveCount(0);
 
     // Update: the wizard opens in update mode and rewrites the same copy.
     await localEntry.click();

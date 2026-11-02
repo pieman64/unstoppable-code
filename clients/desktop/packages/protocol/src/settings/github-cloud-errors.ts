@@ -82,12 +82,23 @@ export function isGitHubCloudErrorCode(
 export class GitHubCloudConnectionError extends Error {
   readonly code: GitHubCloudErrorCode;
   readonly status: GitHubCloudErrorStatus;
+  /**
+   * The canopy.json child repository (`owner/name`) a multi-repo project
+   * failure is about (REG-3023); repository routes return it as a detail.
+   */
+  readonly repositoryFullName?: string;
 
-  constructor(code: GitHubCloudErrorCode) {
+  constructor(
+    code: GitHubCloudErrorCode,
+    options: { readonly repositoryFullName?: string } = {},
+  ) {
     super(GITHUB_CLOUD_ERROR_COPY[code]);
     this.name = 'GitHubCloudConnectionError';
     this.code = code;
     this.status = GITHUB_CLOUD_ERROR_STATUS[code];
+    if (options.repositoryFullName !== undefined) {
+      this.repositoryFullName = options.repositoryFullName;
+    }
   }
 }
 

@@ -67,6 +67,7 @@ export async function openMergeFixture({
   provider = 'claude',
   queue = true,
   mergeQueueAgentHandling,
+  env,
 }) {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-merge-queue-'),
@@ -126,7 +127,7 @@ export async function openMergeFixture({
     }
   };
   try {
-    ({ electronApp } = await launchCanopy({ userDataDir }));
+    ({ electronApp } = await launchCanopy({ userDataDir, env }));
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });

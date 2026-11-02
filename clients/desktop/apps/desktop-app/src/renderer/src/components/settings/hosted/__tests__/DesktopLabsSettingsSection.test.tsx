@@ -99,7 +99,11 @@ describe('DesktopLabsSettingsSection', () => {
       createTestExperimentsBridge(
         makeTestLabsSnapshot({
           experiments: [
-            { id: 'activity-card', requiresEarlyAccess: false, choice: true },
+            {
+              id: 'daemon-files-reads',
+              requiresEarlyAccess: false,
+              choice: true,
+            },
           ],
         }),
       ),
@@ -123,14 +127,20 @@ describe('DesktopLabsSettingsSection', () => {
         makeTestLabsSnapshot({
           experiments: [
             { id: 'sidebar', requiresEarlyAccess: false, choice: true },
-            { id: 'activity-card', requiresEarlyAccess: false, choice: false },
+            {
+              id: 'daemon-files-reads',
+              requiresEarlyAccess: false,
+              choice: false,
+            },
           ],
         }),
       ),
     );
     const { container, cleanup } = await mount();
     try {
-      expect(rowIds(container)).toEqual(['labs-experiment-row-activity-card']);
+      expect(rowIds(container)).toEqual([
+        'labs-experiment-row-daemon-files-reads',
+      ]);
     } finally {
       cleanup();
     }
@@ -162,7 +172,7 @@ describe('DesktopLabsSettingsSection', () => {
     try {
       const toggle = byTestId(
         container,
-        'labs-experiment-toggle-activity-card',
+        'labs-experiment-toggle-daemon-files-reads',
       );
       expect(toggle.disabled).toBe(true);
       expect(toggle.getAttribute('aria-checked')).toBe('false');
@@ -173,7 +183,10 @@ describe('DesktopLabsSettingsSection', () => {
 
   it('lists every extracted feature independently with no master switch', async () => {
     const experiments = LABS_EXPERIMENTS.filter(
-      (entry) => entry.id !== 'early-access' && entry.id !== 'sidebar',
+      (entry) =>
+        entry.id !== 'early-access' &&
+        entry.id !== 'sidebar' &&
+        entry.id !== 'activity-card',
     ).map((entry) => ({ ...entry, choice: false }));
     installApi(
       createTestExperimentsBridge(
@@ -290,7 +303,11 @@ describe('DesktopLabsSettingsSection', () => {
       makeTestLabsSnapshot({
         earlyAccess: false,
         experiments: [
-          { id: 'activity-card', requiresEarlyAccess: false, choice: false },
+          {
+            id: 'daemon-files-reads',
+            requiresEarlyAccess: false,
+            choice: false,
+          },
         ],
       }),
     );
@@ -299,13 +316,16 @@ describe('DesktopLabsSettingsSection', () => {
     const { container, cleanup } = await mount();
     try {
       await act(async () => {
-        byTestId(container, 'labs-experiment-toggle-activity-card').click();
+        byTestId(
+          container,
+          'labs-experiment-toggle-daemon-files-reads',
+        ).click();
         await flush();
       });
       expect(
         byTestId(
           container,
-          'labs-experiment-toggle-activity-card',
+          'labs-experiment-toggle-daemon-files-reads',
         ).getAttribute('aria-checked'),
       ).toBe('false');
       expect(container.textContent).toContain(
@@ -320,7 +340,11 @@ describe('DesktopLabsSettingsSection', () => {
     const bridge = createTestExperimentsBridge(
       makeTestLabsSnapshot({
         experiments: [
-          { id: 'activity-card', requiresEarlyAccess: false, choice: false },
+          {
+            id: 'daemon-files-reads',
+            requiresEarlyAccess: false,
+            choice: false,
+          },
         ],
       }),
     );
@@ -333,7 +357,11 @@ describe('DesktopLabsSettingsSection', () => {
             earlyAccess: true,
             experiments: [
               AUDIT,
-              { id: 'activity-card', requiresEarlyAccess: false, choice: true },
+              {
+                id: 'daemon-files-reads',
+                requiresEarlyAccess: false,
+                choice: true,
+              },
             ],
             revision: 2,
           }),
@@ -343,7 +371,7 @@ describe('DesktopLabsSettingsSection', () => {
       expect(
         byTestId(
           container,
-          'labs-experiment-toggle-activity-card',
+          'labs-experiment-toggle-daemon-files-reads',
         ).getAttribute('aria-checked'),
       ).toBe('true');
       expect(rowIds(container)).toContain('labs-experiment-row-audit');

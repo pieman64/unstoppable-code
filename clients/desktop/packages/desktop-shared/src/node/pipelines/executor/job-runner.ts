@@ -1,10 +1,12 @@
 import type { ResourceContextInput } from '../../../lib/resource-context-policy';
 import type { ChildPipelineAuthorization } from './child-pipeline-resolver';
 import {
+  buildExpressionAssets,
   buildExpressionContext,
   cascadeEnv,
   inputsToEnv,
   rehydrateJobContext,
+  type ExpressionAssetsContext,
   type ExpressionCanopyContext,
   type ExpressionJobState,
   type ExpressionNeedsState,
@@ -57,6 +59,7 @@ import type {
   PipelineStatusReason,
   PipelinePackageCapabilityOverlay,
   PipelinePackageBinding,
+  PipelineAssetExecutionContext,
 } from '@canopy/desktop-shared/types/pipeline';
 import type {
   AgentModelConfig,
@@ -82,6 +85,7 @@ export interface RunJobOptions {
   secretEnv?: Record<string, string>;
   runtime: ExecutionRuntime;
   repoPath?: string;
+  executionCheckoutRoot?: string | null;
   scope?: PipelineExecutionScope;
   target?: ResolvedPipelineExecutionTarget;
   modelConfig?: AgentModelConfig;
@@ -89,6 +93,8 @@ export interface RunJobOptions {
   needs: Record<string, ExpressionNeedsState>;
   inputs: Record<string, PipelineInputValue>;
   canopy?: ExpressionCanopyContext;
+  /** Resolved asset paths and data dirs; inherited by child runs. */
+  pipelineAssets?: PipelineAssetExecutionContext;
   signal: AbortSignal;
   saveState: () => Promise<void>;
   onStepOutput?: (event: StepOutputEvent) => void;
@@ -251,6 +257,7 @@ function finalizeJobResult(
   jobContext: ExpressionJobState,
   canopy?: ExpressionCanopyContext,
   matrix?: MatrixContext,
+  assets?: ExpressionAssetsContext,
 ): void {
   jobResult.outputs = Object.fromEntries(
     Object.entries(job.outputs ?? {}).map(([name, expression]) => [
@@ -265,6 +272,7 @@ function finalizeJobResult(
           job: jobContext,
           canopy,
           matrix,
+          assets,
         }),
       ),
     ]),
@@ -339,6 +347,7 @@ async function executeJobAttempt(
       job: jobContext,
       canopy: options.canopy,
       matrix: options.matrix,
+      assets: buildExpressionAssets(options.pipelineAssets?.asset_paths),
     });
     const shouldRun = evaluateCondition(
       step.if,
@@ -438,6 +447,7 @@ async function executeJobAttempt(
       secretEnv: options.secretEnv,
       runtime: options.runtime,
       repoPath: options.repoPath,
+      executionCheckoutRoot: options.executionCheckoutRoot,
       scope: options.scope,
       target: options.target,
       modelConfig: options.modelConfig,
@@ -461,6 +471,7 @@ async function executeJobAttempt(
       resumeChildReasonIds: existingStep?.selected_child_reason_ids,
       jobContext,
       canopy: options.canopy,
+      pipelineAssets: options.pipelineAssets,
       onStepOutput: options.onStepOutput,
       onEvent: options.onEvent,
       projectId: options.projectId,
@@ -735,6 +746,7 @@ async function executeJobAttempt(
         jobContext,
         options.canopy,
         options.matrix,
+        buildExpressionAssets(options.pipelineAssets?.asset_paths),
       );
       await options.saveState();
       return options.jobResult;
@@ -751,6 +763,7 @@ async function executeJobAttempt(
     jobContext,
     options.canopy,
     options.matrix,
+    buildExpressionAssets(options.pipelineAssets?.asset_paths),
   );
   await options.saveState();
   return options.jobResult;

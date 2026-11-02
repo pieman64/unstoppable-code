@@ -1,4 +1,31 @@
+const mockOpenCodeAdmission = jest.fn<Promise<unknown>, [unknown]>(() =>
+  Promise.resolve({ kind: 'native', supportedThinkingLevels: [] }),
+);
+jest.mock('../../opencode/selection', (): unknown => ({
+  assertOpenCodeSelectionAvailable: (input: unknown) =>
+    mockOpenCodeAdmission(input),
+}));
+jest.mock('../../opencode/connection', (): unknown => ({
+  assertOpenCodeModelAvailable: () =>
+    Promise.resolve({
+      id: 'opencode:fixture%2Fmodel',
+      supportedThinkingLevels: [],
+    }),
+}));
+jest.mock('../../opencode/runtime-availability', (): unknown => ({
+  isOpenCodeRuntimeAvailable: () => Promise.resolve(true),
+}));
 import { readFile } from 'node:fs/promises';
+import type * as ChatQueueServiceModule from '../chat-queue-service';
+import type * as ChatStateServiceModule from '../chat-state-service';
+
+type ChatQueueService = ChatQueueServiceModule.ChatQueueService;
+type ChatStateService = ChatStateServiceModule.ChatStateService;
+type ChatQueueWorktreeSnapshot = ReturnType<
+  ChatQueueService['getWorktreeSnapshots']
+>[number] & {
+  turnActive?: boolean;
+};
 
 const mockPinInheritingAgentToDestination = jest.fn(
   (model: string): Promise<string> => {
@@ -31,13 +58,56 @@ import type * as FsPromises from 'node:fs/promises';
 import type * as CoworkWorkEntries from '../../lib/cowork-work-entries';
 import { getWorkspaceWorkEntriesFilePath } from '../../lib/paths';
 
-const mockCancelChatTurn = jest.fn(() => Promise.resolve());
+const standaloneStopContext = {
+  target: {
+    projectId: 'research',
+    worktreeId: 'entry-r',
+    chatId: 'shared-chat',
+  },
+  session: { owner: 'standalone-session-owner' },
+  fence: {
+    processOwner: Symbol('standalone-session-owner'),
+    turnId: 'standalone-turn',
+    userMessageId: 'standalone-stopped-message',
+    turnEpoch: 7,
+  },
+};
+const mockCaptureChatTurnStop = jest.fn<unknown, [unknown]>(
+  () => standaloneStopContext,
+);
+const mockIsChatTurnStopCurrent = jest.fn<boolean, [unknown]>(() => true);
+const mockCancelChatTurn = jest.fn<
+  Promise<unknown>,
+  [unknown, unknown?, unknown?]
+>(() =>
+  Promise.resolve({ context: standaloneStopContext, outcome: 'interrupted' }),
+);
+const mockCaptureChatTurnStopsForChat = jest.fn<unknown[], [string]>((chatId) =>
+  mockGetAllActiveSessionInfos()
+    .filter((info) => info.chatId === chatId)
+    .map((info) => mockCaptureChatTurnStop(info)),
+);
+const mockAdoptPreparingSendSession = jest.fn<unknown, [unknown]>(
+  (context) => context,
+);
 const mockQueueTerminal = jest.fn();
 jest.mock('../../lib/chat-turn-cancel', () => ({
-  cancelChatTurn: mockCancelChatTurn,
+  captureChatTurnStopsForChat: (...args: [string]): unknown[] =>
+    mockCaptureChatTurnStopsForChat(...args),
+  adoptPreparingSendSession: (...args: [unknown]): unknown =>
+    mockAdoptPreparingSendSession(...args),
+  isChatTurnStopCurrent: (...args: [unknown]): boolean =>
+    mockIsChatTurnStopCurrent(...args),
+  get cancelChatTurn(): typeof mockCancelChatTurn {
+    return mockCancelChatTurn;
+  },
 }));
-const mockQueueSubmit = jest.fn(() => Promise.resolve());
+const mockQueueSubmit = jest.fn<
+  ReturnType<ChatQueueService['submit']>,
+  Parameters<ChatQueueService['submit']>
+>(() => Promise.resolve());
 const mockGetSession = jest.fn();
+const mockChatHasNativeBackgroundWork = jest.fn(() => false);
 const mockGetActiveSessionInfos = jest.fn<
   Array<{ chatId: string; turnActive: boolean }>,
   [string, string]
@@ -50,7 +120,31 @@ const mockGetSessionProviderType = jest.fn<
   string | undefined,
   [string, string, string]
 >(() => undefined);
-const mockGetWorktreeSnapshots = jest.fn(() => []);
+const mockGetAllActiveSessionInfos = jest.fn(() => [
+  {
+    projectId: 'research',
+    worktreeId: 'entry-r',
+    chatId: 'shared-chat',
+  },
+]);
+const mockGetWorktreeSnapshots = jest.fn<
+  ChatQueueWorktreeSnapshot[],
+  Parameters<ChatQueueService['getWorktreeSnapshots']>
+>(() => []);
+const mockAdmissionRelease = jest.fn();
+const mockAdmissionAuthorization = { authorizationToken: Symbol('admitted') };
+const mockAdmitDirectDispatch = jest.fn<
+  Promise<
+    | { authorization: typeof mockAdmissionAuthorization; release: () => void }
+    | undefined
+  >,
+  unknown[]
+>(() =>
+  Promise.resolve({
+    authorization: mockAdmissionAuthorization,
+    release: mockAdmissionRelease,
+  }),
+);
 const mockQueueIsTurnActive = jest.fn(() => false);
 jest.mock('../chat-queue-service', () => ({
   getChatQueueService: (): {
@@ -58,11 +152,13 @@ jest.mock('../chat-queue-service', () => ({
     onTurnTerminal: typeof mockQueueTerminal;
     isTurnActive: () => boolean;
     getWorktreeSnapshots: typeof mockGetWorktreeSnapshots;
+    admitDirectDispatch: typeof mockAdmitDirectDispatch;
   } => ({
     submit: mockQueueSubmit,
     onTurnTerminal: mockQueueTerminal,
     isTurnActive: mockQueueIsTurnActive,
     getWorktreeSnapshots: mockGetWorktreeSnapshots,
+    admitDirectDispatch: mockAdmitDirectDispatch,
   }),
 }));
 jest.mock('../../lib/chat-tabs-reader', () => ({
@@ -75,11 +171,23 @@ jest.mock('../../lib/window-send', () => ({
   sendToWindow: jest.fn(),
 }));
 jest.mock('../../agents/session-manager', () => ({
+  get chatHasNativeBackgroundWork(): typeof mockChatHasNativeBackgroundWork {
+    return mockChatHasNativeBackgroundWork;
+  },
+  getAllActiveSessionInfos: (): unknown[] => mockGetAllActiveSessionInfos(),
   getActiveChatIds: jest.fn(() => []),
-  getActiveSessionInfos: mockGetActiveSessionInfos,
-  getSession: mockGetSession,
-  getSessionSelectedModel: mockGetSessionSelectedModel,
-  getSessionProviderType: mockGetSessionProviderType,
+  get getActiveSessionInfos(): typeof mockGetActiveSessionInfos {
+    return mockGetActiveSessionInfos;
+  },
+  get getSession(): typeof mockGetSession {
+    return mockGetSession;
+  },
+  get getSessionSelectedModel(): typeof mockGetSessionSelectedModel {
+    return mockGetSessionSelectedModel;
+  },
+  get getSessionProviderType(): typeof mockGetSessionProviderType {
+    return mockGetSessionProviderType;
+  },
 }));
 jest.mock('../../lib/validation', () => ({
   validateId: jest.fn((value: string, field: string): void => {
@@ -121,13 +229,25 @@ jest.mock('../../lib/worktree-chat-turn', () => ({
   dispatchWorktreeChatTurn: jest.fn(),
   scheduleChatSummary: jest.fn(),
 }));
-const ingestProviderEventMock = jest.fn<Promise<void>, [input?: unknown]>(() =>
-  Promise.resolve(),
-);
+const ingestProviderEventMock = jest.fn<
+  ReturnType<ChatStateService['ingestProviderEvent']>,
+  Parameters<ChatStateService['ingestProviderEvent']>
+>(() => Promise.resolve(false));
+const ingestProviderEventWithResultMock = jest.fn<
+  Promise<ProviderEventIngestResult>,
+  [input: ProviderEventInput]
+>(async (input) => {
+  await ingestProviderEventMock(input);
+  return { outcome: 'not-applied' };
+});
 const chatStateCommandMock = jest.fn<
   Promise<Pick<ChatCommandResult, 'outcome' | 'reason'>>,
   [ChatCommandEnvelope]
 >(() => Promise.resolve({ outcome: 'applied' }));
+const getTurnStateMock = jest.fn<
+  ReturnType<ChatStateService['getTurnState']>,
+  Parameters<ChatStateService['getTurnState']>
+>(() => undefined);
 const runWithScopeActivityMock = jest.fn(
   async <T>(_scope: unknown, operation: () => Promise<T>): Promise<T> =>
     operation(),
@@ -136,14 +256,9 @@ jest.mock('../chat-state-service', () => ({
   getChatStateService: jest.fn(() => ({
     ingestProviderEvent: ingestProviderEventMock,
     command: chatStateCommandMock,
-    // Mirrors the void commit mock: provider events report no commit.
-    ingestProviderEventWithOutcome: async (
-      input: unknown,
-    ): Promise<ProviderEventIngestOutcome> => {
-      await ingestProviderEventMock(input);
-      return 'not-applied';
-    },
+    ingestProviderEventWithResult: ingestProviderEventWithResultMock,
     runWithScopeActivity: runWithScopeActivityMock,
+    getTurnState: getTurnStateMock,
   })),
 }));
 jest.mock('../../app-advisor/watchers', () => ({
@@ -151,11 +266,20 @@ jest.mock('../../app-advisor/watchers', () => ({
     handleCanonicalChatStartedEvent: jest.fn(),
   })),
 }));
-const mockReadPreferencesFile = jest.fn();
+const mockReadPreferencesFile = jest.fn<Promise<Record<string, unknown>>, []>();
 jest.mock('../../lib/preferences-store', () => ({
+  readPreferencesFileDetailed: async (): Promise<{
+    preferences: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
+    authority: 'ok' | 'unreadable';
+  }> => ({
+    preferences: await mockReadPreferencesFile(),
+    authority: 'ok',
+  }),
   // Not degraded: approval resolution fails closed when this is non-null.
   peekPreferencesLoadError: (): null => null,
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 let concreteModelDispatchability: 'dispatchable' | 'no-billing-lane' =
   'dispatchable';
@@ -294,6 +418,7 @@ import {
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
   IPC_CHANNELS,
   initAgentModels,
+  initOpenCodeModels,
   initClaudeModels,
   initCodexModels,
   type AgentModelConfig,
@@ -305,7 +430,10 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
-import type { ProviderEventIngestOutcome } from '../chat-state-service';
+import type {
+  ProviderEventIngestResult,
+  ProviderEventInput,
+} from '../chat-state-service';
 import { readChatTabsFile } from '../../lib/chat-tabs-reader';
 import { writeChatTabsFile } from '../../lib/chat-tabs';
 import { enqueueChatTabMutation } from '../../lib/chat-tab-mutation-queue';
@@ -343,6 +471,7 @@ import {
   emitStandaloneChatSummary,
   emitStandaloneChatSummaryForTab,
   emitStandaloneWorkEntrySummary,
+  emitStandaloneWorkEntrySummaryStrict,
   emitStandaloneWorkspaceWorkEntrySummaries,
   listStandaloneChatTranscript,
   projectStandaloneChatSnapshot,
@@ -351,6 +480,7 @@ import {
   setStandaloneChatModel,
   withStandalonePendingQuestions,
 } from '../standalone-chat-service';
+import { createChatTabsAuxiliaryProjectionObserver } from '../../lib/chat-tabs-auxiliary-projection';
 
 const mockedReadChatTabsFile = jest.mocked(readChatTabsFile);
 const mockedWriteChatTabsFile = jest.mocked(writeChatTabsFile);
@@ -780,6 +910,13 @@ describe('canonical standalone empty chat creation', () => {
 describe('standalone chat service portal routing', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockQueueTerminal.mockReset();
+    mockCancelChatTurn.mockReset().mockResolvedValue({
+      context: standaloneStopContext,
+      outcome: 'interrupted',
+    });
+    mockCaptureChatTurnStop.mockReturnValue(standaloneStopContext);
+    mockIsChatTurnStopCurrent.mockReturnValue(true);
     chatStateCommandMock.mockResolvedValue({ outcome: 'applied' });
     blockedModelIds.clear();
     mockResolveAiCreditsScopeOwner.mockResolvedValue({ kind: 'personal' });
@@ -789,7 +926,15 @@ describe('standalone chat service portal routing', () => {
     });
     concreteModelDispatchability = 'dispatchable';
     mockedGetActiveChatIds.mockReturnValue([]);
+    mockGetAllActiveSessionInfos.mockReturnValue([
+      {
+        projectId: 'research',
+        worktreeId: 'entry-r',
+        chatId: 'shared-chat',
+      },
+    ]);
     mockGetSession.mockReturnValue(undefined);
+    mockChatHasNativeBackgroundWork.mockReturnValue(false);
     mockGetSessionSelectedModel.mockReturnValue(undefined);
     mockGetSessionProviderType.mockReturnValue(undefined);
     mockGetWorktreeSnapshots.mockReturnValue([]);
@@ -799,6 +944,12 @@ describe('standalone chat service portal routing', () => {
     mockedReadChatArchivesFile.mockResolvedValue({ version: 1, archived: [] });
     mockedListHistoryChatIds.mockResolvedValue([]);
     mockedDispatchWorktreeChatTurn.mockResolvedValue(undefined);
+    ingestProviderEventWithResultMock
+      .mockReset()
+      .mockImplementation(async (input) => {
+        await ingestProviderEventMock(input);
+        return { outcome: 'not-applied' };
+      });
     mockedClearUsageLimitedChat.mockResolvedValue(undefined);
     mockedCreateWorkEntry.mockImplementation(
       (_workspaceId: string, options?: { id?: string }) =>
@@ -830,6 +981,79 @@ describe('standalone chat service portal routing', () => {
 
   afterEach(() => {
     clearLiveApprovalMode('research', 'entry-r', 'shared-chat');
+  });
+
+  const setExistingCoworkTab = (): void => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          ...chatTab({
+            id: 'shared-chat',
+            title: 'Existing Cowork chat',
+            text: 'Earlier request',
+            timestamp: 20,
+          }),
+          model: 'claude-default',
+          providerType: 'claude',
+          executionHarness: 'claude',
+        },
+      ]),
+    );
+  };
+
+  it('attributes a slow Cowork prompt commit to prompt_commit', async () => {
+    setExistingCoworkTab();
+    mockedWriteChatTabsFile.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2_050));
+    });
+    let phases: Array<{ phase: string; elapsedMs: number }> = [];
+    mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
+      phases = options.turnDispatchTiming?.phaseSnapshot() ?? [];
+      return Promise.resolve();
+    });
+
+    await sendStandaloneChatMessage({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+      message: 'A Cowork prompt with a slow commit.',
+      model: 'claude-default',
+    });
+
+    expect(
+      phases.find(({ phase }) => phase === 'prompt_commit')?.elapsedMs,
+    ).toBeGreaterThanOrEqual(2_000);
+    expect(
+      phases.find(({ phase }) => phase === 'auth_preflight')?.elapsedMs,
+    ).toBeLessThan(2_000);
+    expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('attributes a slow Cowork caller preflight to auth_preflight', async () => {
+    setExistingCoworkTab();
+    mockResolveAiCreditsScopeOwner.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2_050));
+      return { kind: 'personal' };
+    });
+    let phases: Array<{ phase: string; elapsedMs: number }> = [];
+    mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
+      phases = options.turnDispatchTiming?.phaseSnapshot() ?? [];
+      return Promise.resolve();
+    });
+
+    await sendStandaloneChatMessage({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+      message: 'A Cowork prompt with a slow policy preflight.',
+      model: 'claude-default',
+    });
+
+    expect(
+      phases.find(({ phase }) => phase === 'auth_preflight')?.elapsedMs,
+    ).toBeGreaterThanOrEqual(2_000);
+    expect(
+      phases.find(({ phase }) => phase === 'prompt_commit')?.elapsedMs,
+    ).toBeLessThan(2_000);
+    expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledTimes(1);
   });
 
   it('holds a busy Portal cowork follow-up in the host queue before transcript persistence', async () => {
@@ -886,6 +1110,106 @@ describe('standalone chat service portal routing', () => {
     expect(mockedEnqueuePortalEvent).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'portal.chat.event' }),
     );
+  });
+
+  it('queues an idle Portal cowork follow-up that canonical admission blocks', async () => {
+    mockAdmitDirectDispatch.mockResolvedValueOnce(undefined);
+    await sendStandaloneChatMessage({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+      message: 'Wait for the other dispatch',
+    });
+    expect(mockQueueSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'shared-chat',
+        text: 'Wait for the other dispatch',
+      }),
+      'portal',
+    );
+    expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+    expect(mockedWriteChatTabsFile).not.toHaveBeenCalled();
+  });
+
+  it('dispatches an idle Portal cowork send with its admission capability', async () => {
+    await sendStandaloneChatMessage({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+      message: 'Start now',
+    });
+    expect(mockAdmitDirectDispatch).toHaveBeenCalledWith(
+      { projectId: 'research', worktreeId: 'entry-r', chatId: 'shared-chat' },
+      expect.any(String),
+    );
+    expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: mockAdmissionAuthorization }),
+    );
+    expect(mockAdmissionRelease).not.toHaveBeenCalled();
+  });
+
+  it('releases the admission when the direct dispatch fails', async () => {
+    mockedDispatchWorktreeChatTurn.mockRejectedValueOnce(new Error('refused'));
+    await expect(
+      sendStandaloneChatMessage({
+        projectLocalId: 'research',
+        chatId: 'shared-chat',
+        message: 'Fail to start',
+      }),
+    ).rejects.toThrow('refused');
+    expect(mockAdmissionRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues a Portal cowork follow-up before prompt persistence while native background work lives', async () => {
+    mockChatHasNativeBackgroundWork.mockReturnValue(true);
+
+    await sendStandaloneChatMessage({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+      message: 'Do not stop the background agent',
+    });
+
+    expect(mockChatHasNativeBackgroundWork).toHaveBeenCalledWith(
+      'research',
+      'entry-r',
+      'shared-chat',
+    );
+    expect(mockQueueSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'research',
+        worktreeId: 'entry-r',
+        chatId: 'shared-chat',
+        text: 'Do not stop the background agent',
+        initiationSource: 'portal',
+      }),
+      'portal',
+    );
+    expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+    expect(mockedWriteChatTabsFile).not.toHaveBeenCalled();
+    expect(ingestProviderEventMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves automation attribution when queueing an active standalone chat', async () => {
+    mockedGetActiveChatIds.mockReturnValue(['shared-chat']);
+
+    await sendStandaloneChatMessage({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+      message: 'Run the report',
+      initiationSource: 'automation',
+      automationName: 'Morning report',
+    });
+
+    expect(mockQueueSubmit).toHaveBeenCalledTimes(1);
+    expect(mockQueueSubmit.mock.calls[0]?.[0]).toMatchObject({
+      projectId: 'research',
+      worktreeId: 'entry-r',
+      chatId: 'shared-chat',
+      text: 'Run the report',
+      initiationSource: 'automation',
+      automationName: 'Morning report',
+    });
+    expect(mockQueueSubmit.mock.calls[0]?.[1]).toBe('portal');
+    expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+    expect(mockedWriteChatTabsFile).not.toHaveBeenCalled();
   });
 
   it('pins an Agent that inherits the default before queueing a Portal cowork send', async () => {
@@ -1624,6 +1948,70 @@ describe('standalone chat service portal routing', () => {
     );
   });
 
+  it.each([
+    ['auto', 'claude', false],
+    ['claude-code', 'claude', false],
+    ['canopy', 'opencode', true],
+    ['auto', 'opencode', true],
+  ] as const)(
+    'projects harness lock for an empty %s %s Cowork session as %s',
+    async (interfaceMode, executionHarness, locked) => {
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'shared-chat',
+            title: 'Empty',
+            createdAt: '2026-10-15T00:00:00.000Z',
+            kind: 'chat',
+            model: 'sonnet',
+            providerType: executionHarness,
+            interfaceMode,
+            executionHarness,
+            sdkSessionId: 'reserved-session',
+            messages: [],
+          },
+        ]),
+      );
+      await emitStandaloneChatSummary('research', 'entry-r', 'shared-chat');
+      expect(mockedEnqueuePortalEvent.mock.calls[0]?.[0]).toMatchObject({
+        payload: { entities: [{ payload: { modelHarnessLocked: locked } }] },
+      });
+    },
+  );
+
+  it('publishes an empty unselected Cowork summary after a model change', async () => {
+    const tab: PersistedChatTab = {
+      id: 'shared-chat',
+      title: 'Empty',
+      kind: 'chat',
+      createdAt: '2026-10-15T00:00:00.000Z',
+      model: 'sonnet',
+      providerType: 'claude',
+      executionHarness: 'claude',
+      messages: [],
+      transcript: {
+        format: 'complete-message-jsonl-v1',
+        committedMessageCount: 0,
+        committedByteLength: 0,
+        transcriptRevision: 1,
+        hasActiveSidecar: false,
+        messageCount: 0,
+      },
+    };
+    Object.defineProperty(tab, 'messages', {
+      get: (): never => {
+        throw new Error('Transcript shared-chat was not selected');
+      },
+    });
+    mockedReadChatTabsFile.mockResolvedValue(chatTabsFile([tab]));
+    await emitStandaloneChatSummary('research', 'entry-r', 'shared-chat');
+    expect(mockedEnqueuePortalEvent.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        entities: [{ payload: { model: 'sonnet', modelHarnessLocked: false } }],
+      },
+    });
+  });
+
   it('publishes entry identity and resolved rename in live chat summaries', async () => {
     const conversational = chatTab({
       id: 'shared-chat',
@@ -1785,6 +2173,132 @@ describe('standalone chat service portal routing', () => {
     },
   );
 
+  describe('post-commit Work Entry summary projection failures', () => {
+    const failure = new Error('Work Entry projection failed');
+    const injections: Array<[string, () => void]> = [
+      [
+        'reading Work Entry summaries',
+        (): void => {
+          mockedListWorkEntryChatSummaries.mockRejectedValueOnce(failure);
+        },
+      ],
+      [
+        'resolving the owner',
+        (): void => {
+          mockBuildScopeOwner.mockRejectedValueOnce(failure);
+        },
+      ],
+      [
+        'emitting the summary entity',
+        (): void => {
+          mockedEnqueuePortalEvent.mockImplementationOnce(() => {
+            throw failure;
+          });
+        },
+      ],
+    ];
+
+    it.each(injections)(
+      'stays best-effort for mutation callers when %s fails',
+      async (_stage, inject) => {
+        inject();
+        await expect(
+          emitStandaloneWorkEntrySummary('research', 'entry-r', {
+            tabs: [
+              chatTab({
+                id: 'shared-chat',
+                title: 'Cowork chat',
+                text: 'Reply',
+                timestamp: 20,
+              }),
+            ],
+          }),
+        ).resolves.toBeUndefined();
+      },
+    );
+
+    it.each(injections)(
+      'retries the Portal projection when %s fails',
+      async (_stage, inject) => {
+        const tabs = chatTabsFile([
+          chatTab({
+            id: 'shared-chat',
+            title: 'Cowork chat',
+            text: 'Reply',
+            timestamp: 20,
+          }),
+        ]);
+        const retries: Array<() => void> = [];
+        const timers: Array<ReturnType<typeof setTimeout>> = [];
+        const logRetry = jest.fn();
+        const runs: Array<Promise<void>> = [];
+        const observer = createChatTabsAuxiliaryProjectionObserver({
+          indexSearch: () => undefined,
+          syncBadges: () => undefined,
+          syncWorkEntrySummary: () => Promise.resolve(),
+          publishRuntimeStatus: () => undefined,
+          publishScope: (projectId, worktreeId, data) => {
+            const run = emitStandaloneWorkEntrySummaryStrict(
+              projectId,
+              worktreeId,
+              data,
+            );
+            runs.push(run);
+            return run;
+          },
+          nudgeSummary: () => undefined,
+          logRetry,
+          schedule: (retry) => {
+            retries.push(retry);
+            const timer = setTimeout(() => undefined, 60_000);
+            timers.push(timer);
+            return timer;
+          },
+        });
+        try {
+          inject();
+          await observer('research', 'entry-r', tabs, undefined, 1, () => true);
+          await expect(runs[0]).rejects.toBe(failure);
+          // A lenient read would turn an unreadable registry into success.
+          expect(mockedListWorkEntryChatSummaries).toHaveBeenCalledWith(
+            'research',
+            { strictRead: true },
+          );
+          await Promise.resolve();
+          expect(logRetry).toHaveBeenCalledWith(
+            expect.stringContaining('Portal projection failed (attempt 1)'),
+            failure,
+          );
+          expect(retries).toHaveLength(1);
+
+          mockedEnqueuePortalEvent.mockClear();
+          retries[0]?.();
+          await expect(runs[1]).resolves.toBeUndefined();
+          expect(mockedEnqueuePortalEvent.mock.calls[0]?.[0]).toMatchObject({
+            payload: { scope: 'standalone_chat' },
+          });
+          await Promise.resolve();
+          expect(retries).toHaveLength(1);
+          expect(logRetry).toHaveBeenCalledTimes(1);
+        } finally {
+          timers.forEach(clearTimeout);
+        }
+      },
+    );
+
+    it('settles without retrying once the Work Entry is gone', async () => {
+      // Deletion commits the scope's removal before its registry row goes,
+      // so the throttled projection can find no entry; that is not a failure.
+      mockedListWorkEntryChatSummaries.mockResolvedValueOnce([]);
+      await expect(
+        emitStandaloneWorkEntrySummaryStrict('research', 'entry-r', {
+          tabs: [],
+        }),
+      ).resolves.toBeUndefined();
+      expect(mockedEnqueuePortalEvent).not.toHaveBeenCalled();
+    });
+  });
+
   describe('questions and turn state', () => {
     const question = { question: 'Ship it?', options: ['Yes', 'No'] };
     const pendingQuestions = [
@@ -1943,6 +2457,39 @@ describe('standalone chat service portal routing', () => {
         'unreadable',
       );
     });
+
+    it.each([undefined, 0])(
+      'omits dismissed questions even when answeredAt is %s (CAN-4958)',
+      async (answeredAt) => {
+        const questions = [
+          ...pendingQuestions,
+          {
+            requestId: 'dismissed-request',
+            chatId: 'shared-chat',
+            questions: [question],
+            dismissedAt: 0,
+            answeredAt,
+          },
+        ];
+        mockedReadChatTabsFile.mockResolvedValue({
+          ...chatTabsFile([tab()]),
+          pendingQuestions: questions,
+        });
+
+        const summary = await withStandalonePendingQuestions({
+          projectLocalId: 'research',
+          projectId: 'research',
+          chatId: 'shared-chat',
+          title: 'Cowork chat',
+          workEntryId: 'entry-r',
+        });
+
+        expect(summary.pendingQuestions).toEqual(projected);
+        expect(questions).toHaveLength(3);
+        expect(questions[2]).toMatchObject({ dismissedAt: 0 });
+        expect(mockedWriteChatTabsFile).not.toHaveBeenCalled();
+      },
+    );
 
     it('adds the chat latest turn end from the same read, through to the entity', async () => {
       mockedReadChatTabsFile.mockResolvedValue(
@@ -2151,6 +2698,172 @@ describe('standalone chat service portal routing', () => {
         ],
       },
     });
+  });
+
+  it.each(['steer_unavailable', 'background_work'] as const)(
+    'projects queued-message waiting reason %s from queue snapshots',
+    async (waitingReason) => {
+      mockGetWorktreeSnapshots.mockReturnValue([
+        {
+          projectId: 'research',
+          worktreeId: 'entry-r',
+          chatId: 'shared-chat',
+          turnActive: true,
+          queue: [
+            {
+              id: 'queued-waiting',
+              text: 'Wait for the active turn',
+              origin: 'portal',
+              enqueuedAtMs: 1,
+              waitingReason,
+              retryable: true,
+              retryBlockedReason: 'insufficient_credits',
+            },
+            {
+              id: 'queued-ready',
+              text: 'Ready later',
+              origin: 'portal',
+              enqueuedAtMs: 2,
+            },
+          ],
+        },
+      ]);
+
+      await emitStandaloneChatSummary('research', 'entry-r', 'shared-chat');
+
+      expect(mockedEnqueuePortalEvent.mock.calls[0]?.[0]).toMatchObject({
+        payload: {
+          entities: [
+            {
+              payload: {
+                queuedMessages: [
+                  {
+                    id: 'queued-waiting',
+                    waitingReason,
+                    retryable: true,
+                    retryBlockedReason: 'insufficient_credits',
+                  },
+                  { id: 'queued-ready' },
+                ],
+              },
+            },
+          ],
+        },
+      });
+      expect(mockedEnqueuePortalEvent.mock.calls[0]?.[0]).not.toHaveProperty(
+        'payload.entities.0.payload.queuedMessages.1.waitingReason',
+      );
+    },
+  );
+
+  it('carries the queue snapshot waiting delegation ids into standalone summaries', async () => {
+    mockGetWorktreeSnapshots.mockReturnValue([
+      {
+        projectId: 'research',
+        worktreeId: 'entry-r',
+        chatId: 'shared-chat',
+        waitingDelegationIds: ['delegate-b', 'delegate-a'],
+        queue: [
+          {
+            id: 'visible-queue-row',
+            text: 'Visible follow-up',
+            origin: 'portal',
+            enqueuedAtMs: 3,
+          },
+        ],
+      },
+    ]);
+
+    await emitStandaloneChatSummary('research', 'entry-r', 'shared-chat');
+
+    expect(mockedEnqueuePortalEvent.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        entities: [
+          {
+            payload: {
+              queuedMessages: [
+                {
+                  id: 'visible-queue-row',
+                  text: 'Visible follow-up',
+                  origin: 'portal',
+                  enqueuedAtMs: 3,
+                },
+              ],
+              waitingDelegationIds: ['delegate-b', 'delegate-a'],
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it('includes queued delegation ids on compact standalone shell summaries', async () => {
+    mockGetWorktreeSnapshots.mockReturnValue([
+      {
+        projectId: 'research',
+        worktreeId: 'entry-r',
+        chatId: 'shared-chat',
+        waitingDelegationIds: ['delegate-b', 'delegate-a'],
+        queue: [],
+      },
+    ]);
+
+    const summaries = await listStandaloneChats();
+    const researchChat = summaries.find(
+      (summary) =>
+        summary.projectId === 'research' && summary.chatId === 'shared-chat',
+    );
+
+    if (!researchChat) throw new Error('Expected the research chat summary');
+    expect(researchChat.queuedMessages).toBeUndefined();
+    expect(researchChat.waitingDelegationIds).toEqual([
+      'delegate-b',
+      'delegate-a',
+    ]);
+    expect(
+      projectStandaloneChatSnapshot(researchChat).waitingDelegationIds,
+    ).toEqual(['delegate-b', 'delegate-a']);
+  });
+
+  it('reads the canonical turn: background work is not an active chat (turn-state phase 41b)', async () => {
+    mockedGetActiveChatIds.mockImplementation((workspaceId) =>
+      workspaceId === 'research' ? ['shared-chat'] : [],
+    );
+    getTurnStateMock.mockImplementation(
+      (scope: { projectId: string; worktreeId: string; chatId: string }) =>
+        scope.projectId === 'research' && scope.worktreeId === 'entry-r'
+          ? {
+              phase: 'background',
+              decisionPending: false,
+              catchingUp: false,
+              endedTurnIds: [],
+              background: {
+                native: [{ id: 'task-1' }],
+                managed: { live: 1, queued: 0 },
+              },
+            }
+          : undefined,
+    );
+    try {
+      const summaries = await listStandaloneChats();
+      const researchChat = summaries.find(
+        (summary) =>
+          summary.projectId === 'research' && summary.chatId === 'shared-chat',
+      );
+
+      if (!researchChat) throw new Error('Expected the research chat summary');
+      // The session still reports activity; the canonical turn is background.
+      expect(researchChat).toMatchObject({
+        hasActiveChat: false,
+        backgroundTasks: 2,
+      });
+      expect(projectStandaloneChatSnapshot(researchChat)).toMatchObject({
+        hasActiveChat: false,
+        backgroundTasks: 2,
+      });
+    } finally {
+      getTurnStateMock.mockReset();
+    }
   });
 
   it('keeps the sender of a queued agent message in the Portal summary', async () => {
@@ -2463,6 +3176,7 @@ describe('standalone chat service portal routing', () => {
         projectLocalId: 'research',
         chatId: 'shared-chat',
         message: 'Continue',
+        providerType: 'claude',
         inputMode: 'voice',
         initiationSource: 'portal',
       },
@@ -2525,12 +3239,23 @@ describe('standalone chat service portal routing', () => {
     );
     const dispatchOptions = mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0];
     expect(dispatchOptions?.onBeforeChatEvent).toEqual(expect.any(Function));
-    await dispatchOptions?.onBeforeChatEvent?.({
+    const injectedResult: ProviderEventIngestResult = {
+      outcome: 'not-applied',
+      pickup: 'accepted',
+    };
+    const onCommitQueued = jest.fn();
+    ingestProviderEventWithResultMock.mockImplementationOnce(async (input) => {
+      await ingestProviderEventMock(input);
+      return injectedResult;
+    });
+    const callbackResult: unknown = await dispatchOptions?.onBeforeChatEvent?.({
       projectId: 'research',
       worktreeId: 'entry-r',
       chatId: 'shared-chat',
       sequenceNamespace: 'initial',
       sequence: 4,
+      turnUserMessageId: 'standalone-user-message',
+      onCommitQueued,
       data: {
         type: 'assistant',
         message: {
@@ -2540,6 +3265,23 @@ describe('standalone chat service portal routing', () => {
         },
       },
     });
+    expect(callbackResult).toBe(injectedResult);
+    expect(ingestProviderEventWithResultMock).toHaveBeenCalledTimes(1);
+    const ingestedInput = ingestProviderEventWithResultMock.mock.calls[0]?.[0];
+    if (!ingestedInput) {
+      throw new Error('Expected the standalone provider event to be ingested');
+    }
+    expect(ingestedInput).toMatchObject({
+      projectId: 'research',
+      worktreeId: 'entry-r',
+      chatId: 'shared-chat',
+      providerType: 'claude',
+      turnUserMessageId: 'standalone-user-message',
+      onCommitQueued,
+    });
+    expect(ingestedInput.mutationId).toMatch(
+      /^shared-chat:.*:provider:initial:4$/,
+    );
     const committedProviderEvent = ingestProviderEventMock.mock.calls.find(
       ([input]) => String(input.mutationId).endsWith(':provider:initial:4'),
     )?.[0];
@@ -2801,7 +3543,7 @@ describe('standalone chat service portal routing', () => {
     );
   });
 
-  it('keeps a portal turn timer live after dispatch accepts until the terminal event', async () => {
+  it('leaves Cowork portal turn timers to committed turn state', async () => {
     let onChatEvent:
       | Parameters<typeof dispatchWorktreeChatTurn>[0]['onChatEvent']
       | undefined;
@@ -2815,39 +3557,74 @@ describe('standalone chat service portal routing', () => {
       chatId: 'shared-chat',
       message: 'Continue',
     });
-
-    const dispatchedUserMessageId =
-      mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0].userMessageId;
-    const timerStatuses = (): string[] =>
-      mockedEnqueuePortalEvent.mock.calls.flatMap(([event]) => {
-        const payload: unknown = event.payload;
-        if (!isRecord(payload) || !isRecord(payload.message)) {
-          return [];
-        }
-        const { messageId, status } = payload.message;
-        return messageId === `${dispatchedUserMessageId}:turn-timer` &&
-          typeof status === 'string'
-          ? [status]
-          : [];
-      });
-    expect(timerStatuses()).toEqual(['streaming']);
-
     onChatEvent?.({
       projectId: 'research',
       worktreeId: 'entry-r',
       chatId: 'shared-chat',
       isTerminalEvent: true,
-      data: {
-        type: 'result',
-        is_error: false,
-        result: 'Turn completed',
-      },
+      data: { type: 'result', is_error: false, result: 'Turn completed' },
     });
 
-    expect(timerStatuses()).toEqual(['streaming', 'complete']);
+    const timerFrames = mockedEnqueuePortalEvent.mock.calls.filter(
+      ([event]) => {
+        const payload: unknown = event.payload;
+        return (
+          isRecord(payload) &&
+          isRecord(payload.message) &&
+          typeof payload.message.messageId === 'string' &&
+          payload.message.messageId.endsWith(':turn-timer')
+        );
+      },
+    );
+    expect(timerFrames).toEqual([]);
   });
 
-  it('starts a separate Portal timer and fallback message for an autonomous steering root', async () => {
+  it('routes a large Codex MCP result to shared ingest without truncation', async () => {
+    let onBeforeChatEvent:
+      | Parameters<typeof dispatchWorktreeChatTurn>[0]['onBeforeChatEvent']
+      | undefined;
+    mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
+      onBeforeChatEvent = options.onBeforeChatEvent;
+      return Promise.resolve();
+    });
+    const body = `start-${'x'.repeat(65_536)}-end`;
+    const data = {
+      type: 'codex',
+      event: {
+        type: 'item.completed',
+        item: {
+          id: 'mcp-call-large',
+          type: 'mcp_tool_call',
+          status: 'completed',
+          result: { content: [{ type: 'text', text: body }] },
+        },
+      },
+    };
+
+    await sendStandaloneChatMessage({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+      message: 'Inspect the result',
+      providerType: 'codex',
+      model: 'gpt-5.5',
+    });
+    await onBeforeChatEvent?.({
+      projectId: 'research',
+      worktreeId: 'entry-r',
+      chatId: 'shared-chat',
+      data,
+      sequenceNamespace: 'initial',
+      sequence: 0,
+      turnUserMessageId: 'large-mcp-message',
+    });
+
+    expect(ingestProviderEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ data }),
+    );
+    expect(body).toHaveLength(65_546);
+  });
+
+  it('gives an autonomous steering root its own fallback message', async () => {
     await sendStandaloneChatMessage({
       projectLocalId: 'research',
       chatId: 'shared-chat',
@@ -2883,12 +3660,6 @@ describe('standalone chat service portal routing', () => {
           ? [payload.message]
           : [];
       });
-    expect(messages()).toContainEqual(
-      expect.objectContaining({
-        messageId: 'steered-root:turn-timer',
-        status: 'streaming',
-      }),
-    );
     callback?.({
       ...target,
       isTerminalEvent: false,
@@ -2900,20 +3671,9 @@ describe('standalone chat service portal routing', () => {
     expect(messages()).toContainEqual(
       expect.objectContaining({ messageId: 'steered-root:assistant' }),
     );
-    callback?.({
-      ...target,
-      isTerminalEvent: true,
-      data: { type: 'result', is_error: false },
-    });
-    expect(messages()).toContainEqual(
-      expect.objectContaining({
-        messageId: 'steered-root:turn-timer',
-        status: 'complete',
-      }),
-    );
   });
 
-  it('does not start a Portal turn for a host-rejected steering root', async () => {
+  it('keeps output off a host-rejected steering root', async () => {
     await sendStandaloneChatMessage({
       projectLocalId: 'research',
       chatId: 'shared-chat',
@@ -2935,6 +3695,16 @@ describe('standalone chat service portal routing', () => {
         turnRootAccepted: false,
       },
     });
+    callback?.({
+      projectId: 'research',
+      worktreeId: 'entry-r',
+      chatId: 'shared-chat',
+      isTerminalEvent: false,
+      data: {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Still the first turn' }] },
+      },
+    });
 
     const messages = mockedEnqueuePortalEvent.mock.calls.flatMap(([event]) => {
       const payload: unknown = event.payload;
@@ -2943,57 +3713,8 @@ describe('standalone chat service portal routing', () => {
         : [];
     });
     expect(messages).not.toContainEqual(
-      expect.objectContaining({ messageId: 'rejected-root:turn-timer' }),
+      expect.objectContaining({ messageId: 'rejected-root:assistant' }),
     );
-  });
-
-  it('keeps a portal turn timer live for a child Codex terminal event', async () => {
-    let onChatEvent:
-      | Parameters<typeof dispatchWorktreeChatTurn>[0]['onChatEvent']
-      | undefined;
-    mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
-      onChatEvent = options.onChatEvent;
-      return Promise.resolve();
-    });
-
-    await sendStandaloneChatMessage({
-      projectLocalId: 'research',
-      chatId: 'shared-chat',
-      message: 'Continue',
-    });
-
-    const dispatchedUserMessageId =
-      mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0].userMessageId;
-    const timerStatuses = (): string[] =>
-      mockedEnqueuePortalEvent.mock.calls.flatMap(([event]) => {
-        const payload: unknown = event.payload;
-        if (!isRecord(payload) || !isRecord(payload.message)) {
-          return [];
-        }
-        const { messageId, status } = payload.message;
-        return messageId === `${dispatchedUserMessageId}:turn-timer` &&
-          typeof status === 'string'
-          ? [status]
-          : [];
-      });
-    expect(timerStatuses()).toEqual(['streaming']);
-
-    onChatEvent?.({
-      projectId: 'research',
-      worktreeId: 'entry-r',
-      chatId: 'shared-chat',
-      isTerminalEvent: false,
-      data: {
-        type: 'codex',
-        event: {
-          type: 'turn.completed',
-          thread_id: 'thread-child',
-          turn_id: 'turn-child',
-        },
-      },
-    });
-
-    expect(timerStatuses()).toEqual(['streaming']);
   });
 
   it('publishes an inactive standalone summary on terminal events', async () => {
@@ -3082,14 +3803,36 @@ describe('standalone chat service portal routing', () => {
       chatId: 'shared-chat',
     });
 
-    expect(mockCancelChatTurn).toHaveBeenCalledWith({
-      projectId: 'research',
-      worktreeId: 'entry-r',
-      chatId: 'shared-chat',
-    });
+    expect(mockCancelChatTurn).toHaveBeenCalledWith(
+      {
+        projectId: 'research',
+        worktreeId: 'entry-r',
+        chatId: 'shared-chat',
+      },
+      'stop',
+      standaloneStopContext,
+    );
+    expect(mockCaptureChatTurnStop).toHaveBeenCalled();
+    expect(mockCaptureChatTurnStop.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelChatTurn.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
     expect(mockQueueTerminal).toHaveBeenCalledWith(
       { projectId: 'research', worktreeId: 'entry-r', chatId: 'shared-chat' },
       'cancelled',
+      'standalone-stopped-message',
+    );
+    expect(ingestProviderEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // Jest's asymmetric matcher is untyped; this is fixture data only.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: expect.objectContaining({
+          type: 'result',
+          result: 'Cancelled',
+          canopy_turn_user_message_id: 'standalone-stopped-message',
+        }),
+        turnUserMessageId: 'standalone-stopped-message',
+      }),
     );
     expect(mockedCancelTransientRetriesForWorkspaceChat).toHaveBeenCalledWith(
       'research',
@@ -3112,6 +3855,212 @@ describe('standalone chat service portal routing', () => {
       },
       'stop',
     );
+  });
+
+  it('does not retarget a stop after its Cowork lookup yields to a newer turn', async () => {
+    let resolveEntry: (value: {
+      entryId: string;
+      archivedInEntryId: null;
+    }) => void = () => {
+      throw new Error('Work Entry lookup did not settle');
+    };
+    const entryLookup = new Promise<{
+      entryId: string;
+      archivedInEntryId: null;
+    }>((resolve) => {
+      resolveEntry = resolve;
+    });
+    mockedResolveWorkEntryForChat.mockReturnValueOnce(entryLookup);
+
+    const stopping = cancelStandaloneChat({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+    });
+
+    expect(mockCaptureChatTurnStop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'research',
+        worktreeId: 'entry-r',
+        chatId: 'shared-chat',
+      }),
+    );
+    expect(mockCaptureChatTurnStop.mock.invocationCallOrder[0]).toBeLessThan(
+      mockedResolveWorkEntryForChat.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
+
+    mockIsChatTurnStopCurrent.mockReturnValue(false);
+    resolveEntry({ entryId: 'entry-r', archivedInEntryId: null });
+    await stopping;
+
+    expect(mockCancelChatTurn).not.toHaveBeenCalled();
+    expect(mockQueueTerminal).not.toHaveBeenCalled();
+    expect(ingestProviderEventMock).not.toHaveBeenCalled();
+  });
+
+  it('stops a Cowork first send whose session registers during target lookup', async () => {
+    let resolveEntry: (value: {
+      entryId: string;
+      archivedInEntryId: null;
+    }) => void = () => {
+      throw new Error('Work Entry lookup did not settle');
+    };
+    mockedResolveWorkEntryForChat.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveEntry = resolve;
+      }),
+    );
+    // Stop arrives before the first send has a session.
+    const preparingContext = {
+      target: standaloneStopContext.target,
+      session: undefined,
+      fence: undefined,
+      preparations: new Set([
+        {
+          cancelled: false,
+          userMessageId: 'standalone-stopped-message',
+          finish: (): void => undefined,
+        },
+      ]),
+    };
+    mockCaptureChatTurnStopsForChat.mockReturnValueOnce([preparingContext]);
+    // A context without the now-registered session is stale.
+    mockIsChatTurnStopCurrent.mockImplementation(
+      (context) =>
+        typeof context === 'object' &&
+        context !== null &&
+        'session' in context &&
+        context.session !== undefined,
+    );
+
+    const stopping = cancelStandaloneChat({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+    });
+    expect(mockAdoptPreparingSendSession).not.toHaveBeenCalled();
+    // The send registers its session and starts its turn meanwhile.
+    mockAdoptPreparingSendSession.mockImplementationOnce(
+      () => standaloneStopContext,
+    );
+    resolveEntry({ entryId: 'entry-r', archivedInEntryId: null });
+    await stopping;
+
+    expect(mockAdoptPreparingSendSession).toHaveBeenCalledWith(
+      preparingContext,
+    );
+    expect(mockCancelChatTurn).toHaveBeenCalledWith(
+      standaloneStopContext.target,
+      'stop',
+      standaloneStopContext,
+    );
+    expect(mockQueueTerminal).toHaveBeenCalledWith(
+      standaloneStopContext.target,
+      'cancelled',
+      'standalone-stopped-message',
+    );
+  });
+
+  it('keeps a newer standalone send active when the older Stop is still awaiting', async () => {
+    let signalCancellationStarted: () => void = () => {
+      throw new Error('Cancellation did not start');
+    };
+    const cancellationStarted = new Promise<void>((resolve) => {
+      signalCancellationStarted = resolve;
+    });
+    let resolveCancellation: (value: unknown) => void = () => {
+      throw new Error('Cancellation did not settle');
+    };
+    const cancellation = new Promise<unknown>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    mockCancelChatTurn.mockImplementationOnce(() => {
+      signalCancellationStarted();
+      return cancellation;
+    });
+    const queueOwner: { userMessageId: string | undefined } = {
+      userMessageId: 'standalone-stopped-message',
+    };
+    mockQueueTerminal.mockImplementation(
+      (_target: unknown, _status: unknown, userMessageId?: string): void => {
+        if (userMessageId === queueOwner.userMessageId) {
+          queueOwner.userMessageId = undefined;
+        }
+      },
+    );
+
+    const stopping = cancelStandaloneChat({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+    });
+    await cancellationStarted;
+    queueOwner.userMessageId = 'newer-send-or-wake';
+    resolveCancellation({
+      context: standaloneStopContext,
+      outcome: 'interrupted',
+    });
+    await stopping;
+
+    expect(mockQueueTerminal).toHaveBeenCalledWith(
+      {
+        projectId: 'research',
+        worktreeId: 'entry-r',
+        chatId: 'shared-chat',
+      },
+      'cancelled',
+      'standalone-stopped-message',
+    );
+    expect(queueOwner.userMessageId).toBe('newer-send-or-wake');
+    expect(ingestProviderEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // Jest's asymmetric matcher is untyped; this is fixture data only.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: expect.objectContaining({
+          canopy_turn_user_message_id: 'standalone-stopped-message',
+        }),
+        turnUserMessageId: 'standalone-stopped-message',
+      }),
+    );
+  });
+
+  it('does not synthesize an untagged terminal when an idle native Stop loses to a newer send', async () => {
+    const idleContext = {
+      ...standaloneStopContext,
+      fence: {
+        ...standaloneStopContext.fence,
+        turnId: undefined,
+        userMessageId: undefined,
+      },
+    };
+    mockCaptureChatTurnStop.mockReturnValueOnce(idleContext);
+    let signalCancellationStarted: () => void = () => {
+      throw new Error('Cancellation did not start');
+    };
+    const cancellationStarted = new Promise<void>((resolve) => {
+      signalCancellationStarted = resolve;
+    });
+    let resolveCancellation: (value: unknown) => void = () => {
+      throw new Error('Cancellation did not settle');
+    };
+    const cancellation = new Promise<unknown>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    mockCancelChatTurn.mockImplementationOnce(() => {
+      signalCancellationStarted();
+      return cancellation;
+    });
+
+    const stopping = cancelStandaloneChat({
+      projectLocalId: 'research',
+      chatId: 'shared-chat',
+    });
+    await cancellationStarted;
+    mockIsChatTurnStopCurrent.mockReturnValue(false);
+    resolveCancellation({ context: idleContext, outcome: 'not-found' });
+
+    await expect(stopping).resolves.toEqual({ ok: true });
+    expect(mockQueueTerminal).not.toHaveBeenCalled();
+    expect(ingestProviderEventMock).not.toHaveBeenCalled();
+    expect(enqueuePortalEvent).not.toHaveBeenCalled();
   });
 
   it('invalidates canonical retries before async Stop target resolution', async () => {
@@ -3174,6 +4123,7 @@ describe('standalone chat service portal routing', () => {
     const saved = {
       collectionIds: ['collection-a'],
       skillRefs: [{ sourceId: 'local', skillName: 'review' }],
+      pluginRefs: [],
     };
     mockedReadChatTabsFile.mockResolvedValue(
       chatTabsFile([
@@ -3194,7 +4144,11 @@ describe('standalone chat service portal routing', () => {
       chatId: 'shared-chat',
       message: '/review',
     });
-    const requested = { skillRefs: [{ sourceId: 'local', skillName: 'fix' }] };
+    const requested = {
+      collectionIds: [],
+      skillRefs: [{ sourceId: 'local', skillName: 'fix' }],
+      pluginRefs: [],
+    };
     await sendStandaloneChatMessage({
       projectLocalId: 'research',
       chatId: 'shared-chat',
@@ -3664,7 +4618,6 @@ describe('standalone chat service portal routing', () => {
         title: 'New Chat',
         createdAt: '2026-05-08T00:00:00.000Z',
         chatCount: 0,
-        chats: [],
       },
       reusedExistingEmpty: true,
     });
@@ -3897,6 +4850,86 @@ describe('standalone chat service portal routing', () => {
   });
 
   describe('setStandaloneChatModel (CAN-1219)', () => {
+    it('checks OpenCode funding for the resolved Cowork target before committing a selection', async () => {
+      initOpenCodeModels([
+        {
+          id: 'opencode:fixture%2Fmodel',
+          rawModelId: 'fixture/model',
+          label: 'Fixture model',
+          supportsVision: false,
+          supportedThinkingLevels: [],
+        },
+      ]);
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            ...chatTab({
+              id: 'shared-chat',
+              title: 'OpenCode',
+              text: 'Hello',
+              timestamp: 20,
+            }),
+            model: 'opencode:fixture%2Fmodel',
+            providerType: 'opencode',
+            executionHarness: 'opencode',
+          },
+        ]),
+      );
+      await setStandaloneChatModel({
+        projectLocalId: 'research',
+        chatId: 'shared-chat',
+        model: 'opencode:fixture%2Fmodel',
+      });
+      expect(mockOpenCodeAdmission).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'opencode:fixture%2Fmodel',
+          session: {
+            projectId: 'research',
+            worktreeId: 'entry-r',
+            chatId: 'shared-chat',
+          },
+        }),
+      );
+    });
+
+    it('does not persist a Cowork model after funding admission is refused', async () => {
+      initOpenCodeModels([
+        {
+          id: 'opencode:fixture%2Fmodel',
+          rawModelId: 'fixture/model',
+          label: 'Fixture model',
+          supportsVision: false,
+          supportedThinkingLevels: [],
+        },
+      ]);
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            ...chatTab({
+              id: 'shared-chat',
+              title: 'OpenCode',
+              text: 'Hello',
+              timestamp: 20,
+            }),
+            model: 'opencode:fixture%2Fmodel',
+            providerType: 'opencode',
+            executionHarness: 'opencode',
+          },
+        ]),
+      );
+      mockOpenCodeAdmission.mockRejectedValueOnce(
+        new Error('Funding unavailable'),
+      );
+      await expect(
+        setStandaloneChatModel({
+          projectLocalId: 'research',
+          chatId: 'shared-chat',
+          model: 'opencode:fixture%2Fmodel',
+        }),
+      ).rejects.toThrow('Funding unavailable');
+      expect(chatStateCommandMock).not.toHaveBeenCalled();
+    });
+
     beforeAll(() => {
       // `setStandaloneChatModel` rejects unknown model ids via
       // `resolveKnownModel`, so register a known model for the happy path.
@@ -4061,6 +5094,37 @@ describe('standalone chat service portal routing', () => {
       );
     });
 
+    it('allows another harness choice while an explicitly selected Cowork tab is still empty', async () => {
+      mockedGetActiveChatIds.mockReturnValue([]);
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'shared-chat',
+            title: 'New Chat',
+            createdAt: '2026-05-08T00:00:00.000Z',
+            kind: 'chat',
+            messages: [],
+            model: 'test-standalone-codex',
+            providerType: 'codex',
+            executionHarness: 'codex',
+            executionHarnessExplicitlyChosen: true,
+          },
+        ]),
+      );
+      await setStandaloneChatModel({
+        projectLocalId: 'research',
+        chatId: 'shared-chat',
+        model: 'test-standalone-model',
+      });
+      expect(chatStateCommandMock.mock.calls[0]?.[0]).toMatchObject({
+        command: {
+          model: 'test-standalone-model',
+          providerType: 'claude',
+          executionHarness: 'claude',
+        },
+      });
+    });
+
     it('captures the selected model harness on an unstarted tab', async () => {
       mockedGetActiveChatIds.mockReturnValue([]);
       mockedReadChatTabsFile.mockResolvedValue(
@@ -4220,7 +5284,7 @@ describe('standalone chat service portal routing', () => {
       claude?: string;
       codex?: string;
       ollama?: string | null;
-    }): unknown => ({
+    }): Record<string, unknown> => ({
       deferredToolsStandaloneChatsEnabled: true,
       defaultChatModelByProvider: {
         claude: { model: overrides?.claude ?? 'claude-default' },

@@ -1,13 +1,34 @@
-import { w5CompositionLocks } from './w5-composition-operation';
-import { commitW5BoundaryStep } from './w5-composition-operation';
-import type { W5CommitOptions } from './w5-commit-scope';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { getFeatureFlagService } from '../feature-flags';
+import { z } from 'zod';
+import {
+  w5CompositionLocks,
+  commitW5BoundaryStep,
+  decodeW5CompositionOutcome,
+} from './w5-composition-operation';
+import {
+  checkW5ExpectedRevision,
+  runW5BoundaryOperation,
+  w5ExpectedRevision,
+  type W5BoundaryOptions,
+} from './w5-boundary-operation';
+import {
+  W5RevisionConflictError,
+  W5FileWriteRefusedError,
+} from './w5-commit-log-file-store';
+import { currentW5CommitScope, type W5CommitOptions } from './w5-commit-scope';
+import {
+  applySourceInitializationTo,
+  sourceInitializationHookOverlays,
+  WorkspaceSourceRepoRefusedError,
+  type WorkspaceSourceRepoRefusal,
+} from './worktree-record-decision-apply';
+import { applyWorkspaceManifestDecision } from './workspace-record-decision-port';
+import { WORKSPACE_MANIFEST_STORAGE, withStorageAdmission } from './w5-storage';
+import { pipelineHookBindingsEnabled } from './workspace-source-record-policy';
 import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { restoreWorkspaceRootInstructions } from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import {
   isHookTriggerName,
-  getChatHookActionOverlayKey,
   normalizeHookInputMap,
   type HookAction,
   type HookOverrides,
@@ -34,7 +55,11 @@ import {
   getWorkspaceClaudeMdPath,
   getWorkspaceWorktreeRootRepoDir,
 } from './paths';
-import { readCanopyJson, writeCanopyJson } from './canopy-json';
+import {
+  readCanopyJson,
+  writeCanopyJson,
+  validateCanopyJson,
+} from './canopy-json';
 import {
   WORKSPACE_SOURCE_REPO_INITIAL_COMMIT_MESSAGE,
   ensureGitignoreContainsReposEntry,
@@ -54,7 +79,6 @@ import {
   readWorkspaceConfig,
   readWorkspaceConfigDetailed,
   readWorkspaceWorktrees,
-  updateWorkspaceConfig,
   WorkspaceConfigUnreadableError,
 } from './workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
@@ -85,7 +109,7 @@ export type WorkspaceSourceRepoInitializeSource =
   | 'temporary_promote';
 
 /** `core.workspace.sourceRepo.initialize`. */
-export interface WorkspaceSourceRepoInitializeRequest {
+export interface WorkspaceSourceRepoInitializeRequest extends W5BoundaryOptions {
   workspaceId: string;
   /** The repository folder name; the project name when omitted. */
   repoName?: string;
@@ -97,27 +121,37 @@ export interface WorkspaceSourceRepoInitializeRequest {
   source: WorkspaceSourceRepoInitializeSource;
 }
 
-export type WorkspaceSourceRepoRefusal =
-  | 'not-found'
-  | 'temporary'
-  | 'already-initialized'
-  | 'configuration-unavailable';
-
-/**
- * The initialization was refused. Every refusal but a source repository
- * recorded while this one was being created comes before any effect.
- */
-export class WorkspaceSourceRepoRefusedError extends Error {
-  constructor(
-    readonly reason: WorkspaceSourceRepoRefusal,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'WorkspaceSourceRepoRefusedError';
-  }
-}
+export {
+  WorkspaceSourceRepoRefusedError,
+  type WorkspaceSourceRepoRefusal,
+} from './worktree-record-decision-apply';
 
 const ALREADY_INITIALIZED_MESSAGE = 'Project already has a source repository';
+
+const sourceRepoWarningCodes = {
+  'missing-remote': 'missing-remote',
+  'duplicate-source-repo': 'duplicate-source-repo',
+  'duplicate-repo-binding': 'duplicate-repo-binding',
+  'duplicate-single-project': 'duplicate-single-project',
+  'local-hook-plugin-selections': 'local-hook-plugin-selections',
+} satisfies { [Code in WorkspaceSourceWarning['code']]: Code };
+
+const sourceRepoOutcomeSchema = z.object({
+  sourceRepoPath: z.string(),
+  manifest: z
+    .unknown()
+    .transform((value) =>
+      validateCanopyJson(value, 'Saved source repository outcome'),
+    ),
+  warnings: z.array(
+    z.object({
+      code: z.enum(sourceRepoWarningCodes),
+      message: z.string(),
+      repoId: z.string().optional(),
+      repoName: z.string().optional(),
+    }),
+  ),
+});
 
 function refuseSourceRepo(
   reason: WorkspaceSourceRepoRefusal,
@@ -138,25 +172,15 @@ function recordSourceRepo(
   built: BuiltWorkspaceManifest,
   sourceRepoPath: string,
 ): void {
-  const localized = new Map(
-    built.localConfig.repos.map((repo) => [repo.id, repo]),
+  applySourceInitializationTo(
+    config,
+    {
+      kind: 'workspace.source.initialize',
+      repositories: built.localConfig.repos,
+      sourceRepoPath,
+    },
+    pipelineHookBindingsEnabled(),
   );
-  config.repos = config.repos.map((repo) => {
-    const decided = localized.get(repo.id);
-    if (!decided) return repo;
-    return decided.source === 'manifest'
-      ? {
-          ...repo,
-          source: 'manifest',
-          manifestUrl: decided.manifestUrl,
-          scripts: undefined,
-          hooks: extractLocalHookOverlays(repo.hooks),
-        }
-      : { ...repo, source: 'local', manifestUrl: undefined };
-  });
-  config.scripts = undefined;
-  config.hooks = extractLocalHookOverlays(config.hooks);
-  config.sourceRepoPath = sourceRepoPath;
 }
 
 /**
@@ -173,15 +197,74 @@ function recordSourceRepo(
  * its write queue, so a repository or setting changed while the repository
  * was being committed is kept. A source repository recorded in the meantime
  * is refused and the new repository folder is left in place; nothing is
- * deleted. It makes no revision or idempotency guarantee (CAN-3805), so the
- * operation stays unregistered.
+ * deleted. Standalone keyed attempts reserve before Git, keep recovery state
+ * after uncertain effects, and save their historical result only after root
+ * worktree repair. Parent composition retains its own binding and receipt.
+ * The operation stays unregistered.
  */
 export async function initializeWorkspaceSourceRepo(
   request: WorkspaceSourceRepoInitializeRequest,
   transition?: { commit: W5CommitOptions; beforeEffects?: () => void },
 ): Promise<WorkspaceInitGitResponse> {
+  validateId(request.workspaceId, 'workspaceId');
+  if (
+    (request.idempotencyKey !== undefined ||
+      request.expectedRevision !== undefined) &&
+    (transition || currentW5CommitScope())
+  ) {
+    throw refuseSourceRepo(
+      'invalid-request',
+      'Standalone source initialization revision or retry options cannot join a parent commit',
+    );
+  }
+  if (transition)
+    return initializeWorkspaceSourceRepoAdmitted(request, transition);
+  if (
+    request.idempotencyKey === undefined &&
+    request.expectedRevision === undefined
+  )
+    return initializeWorkspaceSourceRepoAdmitted(request);
+  return withStorageAdmission([WORKSPACE_MANIFEST_STORAGE], () => {
+    const parameters = { ...request };
+    delete parameters.expectedRevision;
+    delete parameters.idempotencyKey;
+    return runW5BoundaryOperation<WorkspaceInitGitResponse>(
+      {
+        operation: 'core.workspace.sourceRepo.initialize',
+        caller: 'desktop-host:workspace-source-initialization',
+        idempotencyKey: request.idempotencyKey,
+        parameters,
+        recheckAtOutcome: true,
+        isPreEffectRefusal: (error) =>
+          error instanceof WorkspaceSourceRepoRefusedError ||
+          error instanceof W5RevisionConflictError ||
+          error instanceof W5FileWriteRefusedError,
+      },
+      (outcome) => decodeW5CompositionOutcome(sourceRepoOutcomeSchema, outcome),
+      async (commit, attempt) => {
+        const resource = {
+          kind: 'workspace',
+          workspaceId: request.workspaceId,
+        } as const;
+        commit.expectedRevisions = w5ExpectedRevision(
+          resource,
+          request.expectedRevision,
+        );
+        await checkW5ExpectedRevision(resource, request.expectedRevision);
+        return initializeWorkspaceSourceRepoAdmitted(request, {
+          commit,
+          beforeEffects: attempt?.beforeEffects,
+        });
+      },
+    );
+  });
+}
+
+async function initializeWorkspaceSourceRepoAdmitted(
+  request: WorkspaceSourceRepoInitializeRequest,
+  transition?: { commit: W5CommitOptions; beforeEffects?: () => void },
+): Promise<WorkspaceInitGitResponse> {
   const { workspaceId } = request;
-  validateId(workspaceId, 'workspaceId');
   const detail = await readWorkspaceConfigDetailed(workspaceId);
   if (detail.authority === 'absent') {
     throw refuseSourceRepo('not-found', `Project ${workspaceId} not found`);
@@ -217,20 +300,10 @@ export async function initializeWorkspaceSourceRepo(
 
   try {
     const stageInitializedSourceRepo = (): Promise<void> =>
-      updateWorkspaceConfig(workspaceId, (config, read): void => {
-        if (read.authority === 'absent') {
-          throw refuseSourceRepo(
-            'not-found',
-            `Project ${workspaceId} not found`,
-          );
-        }
-        if (config.sourceRepoPath) {
-          throw refuseSourceRepo(
-            'already-initialized',
-            ALREADY_INITIALIZED_MESSAGE,
-          );
-        }
-        recordSourceRepo(config, built, sourceRepoPath);
+      applyWorkspaceManifestDecision(workspaceId, {
+        kind: 'workspace.source.initialize',
+        repositories: built.localConfig.repos,
+        sourceRepoPath,
       });
     await commitW5BoundaryStep(
       transition?.commit,
@@ -243,7 +316,16 @@ export async function initializeWorkspaceSourceRepo(
     }
     throw error;
   }
-  await repairExistingWorkspaceRootWorktrees(workspaceId);
+  if (
+    request.idempotencyKey !== undefined ||
+    request.expectedRevision !== undefined
+  ) {
+    await repairExistingWorkspaceRootWorktrees(workspaceId, {
+      persistRemovalCleanup: false,
+    });
+  } else {
+    await repairExistingWorkspaceRootWorktrees(workspaceId);
+  }
 
   return {
     sourceRepoPath,
@@ -314,18 +396,23 @@ async function prepareWorkspaceSourceRepo(
 
 export async function repairExistingWorkspaceRootWorktrees(
   workspaceId: string,
+  options?: { persistRemovalCleanup: false },
 ): Promise<void> {
   // Startup project loading can overlap automatic archival. Re-read targets
   // only after acquiring the same operation lock used by capture and deletion.
   const { withArchivedWorkspaceOperationLock } =
     await import('./archived-containers');
   return withArchivedWorkspaceOperationLock(workspaceId, () =>
-    repairExistingWorkspaceRootWorktreesWithoutOperationLock(workspaceId),
+    repairExistingWorkspaceRootWorktreesWithoutOperationLock(
+      workspaceId,
+      options,
+    ),
   );
 }
 
 async function repairExistingWorkspaceRootWorktreesWithoutOperationLock(
   workspaceId: string,
+  options?: { persistRemovalCleanup: false },
 ): Promise<void> {
   const config = await readWorkspaceConfig(workspaceId);
   if (!config.sourceRepoPath) {
@@ -335,7 +422,9 @@ async function repairExistingWorkspaceRootWorktreesWithoutOperationLock(
     config.sourceRepoPath,
   );
 
-  const worktrees = await readWorkspaceWorktrees(workspaceId);
+  const worktrees = options
+    ? await readWorkspaceWorktrees(workspaceId, options)
+    : await readWorkspaceWorktrees(workspaceId);
   const failures: string[] = [];
 
   for (const worktree of worktrees) {
@@ -562,28 +651,20 @@ async function writeWorkspaceRootFiles(
   await writeCanopyJson(targetDir, manifest);
 
   try {
-    const existing = await resolveProjectInstructionFile(targetDir);
-    if (existing.exists) {
-      if (
-        basename(existing.filePath) === 'CLAUDE.md' &&
-        !(await pathExists(join(targetDir, 'AGENTS.md')))
-      ) {
-        await ensureAgentsMdSymlink(targetDir);
-      }
-      return;
-    }
-    if (!restoreClaudeMd) return;
-
-    const source = await resolveProjectInstructionFile(
-      dirname(claudeMdSourcePath),
+    await restoreWorkspaceRootInstructions(
+      {
+        targetDir,
+        sourceDir: dirname(claudeMdSourcePath),
+        restore: restoreClaudeMd,
+      },
+      {
+        resolve: resolveProjectInstructionFile,
+        agentsMdExists: () => pathExists(join(targetDir, 'AGENTS.md')),
+        ensureAgentsMdAlias: () => ensureAgentsMdSymlink(targetDir),
+        restore: (source, target) =>
+          restoreProjectInstructionFiles(source, target),
+      },
     );
-    if (!source.exists) return;
-    await restoreProjectInstructionFiles(source, existing);
-    // Only create a legacy alias when restoring an actual CLAUDE.md into an
-    // empty target. Existing project-owned instructions are never replaced.
-    if (!existing.aliasPath && basename(source.filePath) === 'CLAUDE.md') {
-      await ensureAgentsMdSymlink(targetDir);
-    }
   } catch {
     return;
   }
@@ -848,93 +929,10 @@ function portableManifestHookActions(actions: HookAction[]): {
   return { actions: portableActions, strippedLocalSelections };
 }
 
-function pipelineHookBindingsEnabled(): boolean {
-  return getFeatureFlagService().isEnabled(
-    CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key,
-  );
-}
-
 function extractLocalHookOverlays(
   hooks: WorkspaceConfigFile['hooks'],
 ): HookOverrides | undefined {
-  const normalized = normalizeHookInputMap(hooks);
-  if (!normalized) {
-    return undefined;
-  }
-
-  const overlays: HookOverrides = {};
-  for (const [triggerName, actions] of Object.entries(normalized)) {
-    if (actions === null) {
-      overlays[triggerName] = null;
-      continue;
-    }
-    if (!Array.isArray(actions)) {
-      continue;
-    }
-
-    const actionOverlays: HookAction[] = actions.flatMap(
-      (action): HookAction[] => {
-        if (
-          action.type === 'pipeline' &&
-          action.executionContext !== undefined &&
-          pipelineHookBindingsEnabled()
-        ) {
-          return [
-            {
-              type: 'pipeline',
-              source: action.source,
-              id: action.id,
-              executionContext: action.executionContext,
-              localExecutionContextOverlay: true,
-            },
-          ];
-        }
-        if (action.type !== 'chat') return [];
-        const hasExecutionContext =
-          action.executionContext !== undefined &&
-          pipelineHookBindingsEnabled();
-        const hasLocalPluginState =
-          action.pluginSelections ||
-          action.promptReferences?.some(
-            (reference) =>
-              reference.kind === 'plugin' &&
-              reference.plugin.kind === 'installed',
-          );
-        return hasExecutionContext || hasLocalPluginState
-          ? [
-              {
-                type: 'chat',
-                prompt: action.prompt,
-                ...(hasExecutionContext
-                  ? {
-                      executionContext: action.executionContext,
-                      localExecutionContextOverlay: true as const,
-                    }
-                  : {}),
-                ...(hasLocalPluginState
-                  ? {
-                      localPluginSelectionOverlay: true as const,
-                      localPluginSelectionOverlayKey:
-                        getChatHookActionOverlayKey(action),
-                    }
-                  : {}),
-                ...(action.pluginSelections
-                  ? { pluginSelections: action.pluginSelections }
-                  : {}),
-                ...(action.promptReferences
-                  ? { promptReferences: action.promptReferences }
-                  : {}),
-              },
-            ]
-          : [];
-      },
-    );
-    if (actionOverlays.length > 0) {
-      overlays[triggerName] = actionOverlays;
-    }
-  }
-
-  return Object.keys(overlays).length > 0 ? overlays : undefined;
+  return sourceInitializationHookOverlays(hooks, pipelineHookBindingsEnabled());
 }
 
 async function ensureDefaultReposDir(): Promise<string> {

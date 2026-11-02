@@ -1,8 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
-import { Bot, Lock } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  SETTINGS_CARD_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
+  SETTINGS_CARD_TITLE_CLASS,
+  SETTINGS_CARD_SUBTITLE_CLASS,
+  SETTINGS_CARD_ROW_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { Lock } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsFormSkeleton,
@@ -395,282 +403,275 @@ function ModelPolicyCard({
 
   return (
     <section
-      className="rounded-xl bg-card p-5 shadow-sm"
+      className={SETTINGS_CARD_CLASS}
       data-testid="team-model-policy-section"
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-          <Bot size={18} />
-        </span>
-        <div className="flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="text-m font-semibold fg-primary">Model access</h2>
-              <p className="mt-1 text-s fg-secondary">
-                Choose which AI models your members may use.
-              </p>
-            </div>
-            {showList && pendingReviewIds.length > 0 ? (
-              <span
-                className="shrink-0 rounded-full bg-warning-subtle px-2 py-0.5 text-xs font-medium fg-warning"
-                data-testid="model-policy-pending-review-count"
-              >
-                {pendingReviewIds.length} new
-              </span>
-            ) : null}
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className={SETTINGS_CARD_TITLE_CLASS}>Model access</h2>
+            <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
+              Choose which AI models your members may use.
+            </p>
           </div>
-
-          <ErrorBanner className="mt-3" error={error} />
-          <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
-          {/* Its own banner: a save clears `error` and must not take an
-              unresolved plan-read failure with it. */}
-          <ErrorBanner
-            className="mt-3"
-            // One load banner: both share the same copy and Retry.
-            error={loadError === null ? entitlementError : null}
-            onRetry={retryLoad}
-          />
-
-          {!entitlementResolved || enforcing === null || !catalogReady ? (
-            <div className="mt-4" data-testid="model-policy-pending">
-              <DelayedLoadingPlaceholder>
-                <SettingsFormSkeleton rows={2} />
-              </DelayedLoadingPlaceholder>
-            </div>
-          ) : entitled === true || relaxOnly ? (
-            <>
-              <label className="mt-4 flex cursor-pointer items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={enforcing}
-                  disabled={saving}
-                  data-testid="enforce-member-model-policy-checkbox"
-                  onChange={(event) => handleMasterChange(event.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded"
-                />
-                <span className="min-w-0">
-                  <span className="block text-s font-medium fg-primary">
-                    Enforce member model access policy
-                  </span>
-                  <span className="block text-xs fg-secondary">
-                    Members can only use the models you choose from an enabled
-                    policy.
-                  </span>
-                </span>
-              </label>
-              {relaxOnly ? (
-                <div
-                  className="mt-3 flex items-start gap-2 rounded-lg bg-warning-subtle px-3 py-2"
-                  data-testid="model-policy-relax-only-note"
-                >
-                  <Lock
-                    size={14}
-                    aria-hidden="true"
-                    className="mt-0.5 shrink-0 fg-warning"
-                  />
-                  <p className="text-xs fg-secondary">
-                    Your plan no longer includes a model policy, but the one you
-                    set is still in force for your members, and models released
-                    since your last save are blocked too. From here you can turn
-                    enforcement off or allow models it blocks. To block a model
-                    again, or to turn enforcement back on later, you&apos;ll
-                    need the capability back.{' '}
-                    <SettingsLink
-                      href={billingHref}
-                      data-testid="model-policy-relax-only-upgrade"
-                      className="underline fg-accent"
-                    >
-                      {upgradeText}
-                    </SettingsLink>
-                  </p>
-                </div>
-              ) : null}
-            </>
-          ) : (
-            /*
-             * Painted door, for an org with no capability AND no live policy
-             * (enforcement off, or a plan read that never resolved). The switch
-             * stays VISIBLE so the capability is discoverable, but the model
-             * list never renders: showing an uneditable list of models would
-             * read as a policy this org has, and it has none. An org that IS
-             * still enforcing gets the relax-only controls above instead, since
-             * for it the policy is real and it needs a way out.
-             */
-            <Tooltip
-              label={
-                <span className="block max-w-64 whitespace-normal">
-                  Your plan doesn&apos;t include a model policy, so members may
-                  use any model.
-                </span>
-              }
-              link={{
-                href: billingHref,
-                text: upgradeText,
-                external: false,
-              }}
+          {showList && pendingReviewIds.length > 0 ? (
+            <span
+              className="shrink-0 rounded-full bg-warning-subtle px-2 py-0.5 text-xs font-medium fg-warning"
+              data-testid="model-policy-pending-review-count"
             >
-              <span
-                className="mt-4 flex cursor-not-allowed items-start gap-3 opacity-60"
-                data-testid="model-policy-upgrade-cta"
+              {pendingReviewIds.length} new
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <ErrorBanner className="mt-3" error={error} />
+        <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
+        {/* Its own banner: a save clears `error` and must not take an
+              unresolved plan-read failure with it. */}
+        <ErrorBanner
+          className="mt-3"
+          // One load banner: both share the same copy and Retry.
+          error={loadError === null ? entitlementError : null}
+          onRetry={retryLoad}
+        />
+
+        {!entitlementResolved || enforcing === null || !catalogReady ? (
+          <div className="mt-4" data-testid="model-policy-pending">
+            <DelayedLoadingPlaceholder>
+              <SettingsFormSkeleton rows={2} />
+            </DelayedLoadingPlaceholder>
+          </div>
+        ) : entitled === true || relaxOnly ? (
+          <>
+            <label className="mt-4 flex cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                checked={enforcing}
+                disabled={saving}
+                data-testid="enforce-member-model-policy-checkbox"
+                onChange={(event) => handleMasterChange(event.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded"
+              />
+              <span className="min-w-0">
+                <span className="block text-s font-medium fg-primary">
+                  Enforce member model access policy
+                </span>
+                <span className="block text-xs fg-secondary">
+                  Members can only use the models you choose from an enabled
+                  policy.
+                </span>
+              </span>
+            </label>
+            {relaxOnly ? (
+              <div
+                className="mt-3 flex items-start gap-2 rounded-lg bg-warning-subtle px-3 py-2"
+                data-testid="model-policy-relax-only-note"
               >
                 <Lock
                   size={14}
                   aria-hidden="true"
-                  className="mt-0.5 fg-secondary/70"
+                  className="mt-0.5 shrink-0 fg-warning"
                 />
-                <span className="min-w-0">
-                  <span className="block text-s font-medium fg-primary">
-                    Enforce member model access policy
-                  </span>
-                  <span className="block text-xs fg-secondary">
-                    {requiredPlanName
-                      ? `Available on ${requiredPlanName}.`
-                      : 'Not included in your plan.'}
-                  </span>
+                <p className="text-xs fg-secondary">
+                  Your plan no longer includes a model policy, but the one you
+                  set is still in force for your members, and models released
+                  since your last save are blocked too. From here you can turn
+                  enforcement off or allow models it blocks. To block a model
+                  again, or to turn enforcement back on later, you&apos;ll need
+                  the capability back.{' '}
+                  <SettingsLink
+                    href={billingHref}
+                    data-testid="model-policy-relax-only-upgrade"
+                    className="underline fg-accent"
+                  >
+                    {upgradeText}
+                  </SettingsLink>
+                </p>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          /*
+           * Painted door, for an org with no capability AND no live policy
+           * (enforcement off, or a plan read that never resolved). The switch
+           * stays VISIBLE so the capability is discoverable, but the model
+           * list never renders: showing an uneditable list of models would
+           * read as a policy this org has, and it has none. An org that IS
+           * still enforcing gets the relax-only controls above instead, since
+           * for it the policy is real and it needs a way out.
+           */
+          <Tooltip
+            label={
+              <span className="block max-w-64 whitespace-normal">
+                Your plan doesn&apos;t include a model policy, so members may
+                use any model.
+              </span>
+            }
+            link={{
+              href: billingHref,
+              text: upgradeText,
+              external: false,
+            }}
+          >
+            <span
+              className="mt-4 flex cursor-not-allowed items-start gap-3 opacity-60"
+              data-testid="model-policy-upgrade-cta"
+            >
+              <Lock
+                size={14}
+                aria-hidden="true"
+                className="mt-0.5 fg-secondary/70"
+              />
+              <span className="min-w-0">
+                <span className="block text-s font-medium fg-primary">
+                  Enforce member model access policy
+                </span>
+                <span className="block text-xs fg-secondary">
+                  {requiredPlanName
+                    ? `Available on ${requiredPlanName}.`
+                    : 'Not included in your plan.'}
                 </span>
               </span>
-            </Tooltip>
-          )}
+            </span>
+          </Tooltip>
+        )}
 
-          {showList ? (
-            <>
-              {pendingReviewIds.length > 0 ? (
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                  <p
-                    className="text-xs fg-warning"
-                    data-testid="model-policy-pending-review-note"
-                  >
-                    {pendingReviewIds.length === 1
-                      ? '1 model is new since your last save and is blocked until you review it. Switch it on to allow it.'
-                      : `${pendingReviewIds.length} models are new since your last save and are blocked until you review them. Switch each one on to allow it.`}
-                  </p>
-                  <button
-                    type="button"
-                    disabled={saving}
-                    data-testid="model-policy-mark-all-reviewed"
-                    onClick={() => {
-                      setError(null);
-                      setConfirmReviewAll(true);
-                    }}
-                    className="shrink-0 rounded-md border px-3 py-1 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Mark all as reviewed
-                  </button>
-                </div>
-              ) : null}
-
-              <ul
-                className="mt-4 divide-y overflow-hidden rounded-lg border"
-                data-testid="model-policy-list"
-              >
-                {visible.map((model) => (
-                  <ModelPolicyRow
-                    key={model.id}
-                    model={model}
-                    allowed={
-                      !blocked.has(model.id) && !pendingReviewSet.has(model.id)
-                    }
-                    pendingReview={pendingReviewSet.has(model.id)}
-                    busy={saving}
-                    /*
-                     * Only an ALLOWED row locks in relax-only mode: switching
-                     * it off would add a blocked id, which the server refuses
-                     * without the capability. Blocked and unreviewed rows stay
-                     * live, because switching those on is a relaxation.
-                     */
-                    locked={
-                      relaxOnly &&
-                      !blocked.has(model.id) &&
-                      !pendingReviewSet.has(model.id)
-                    }
-                    upgradeHref={billingHref}
-                    upgradeText={upgradeText}
-                    onChange={(allow) => void saveModel(model.id, allow)}
-                  />
-                ))}
-                {visible.length === 0 ? (
-                  <li
-                    className="px-4 py-6 text-center text-xs fg-secondary"
-                    data-testid="model-policy-empty"
-                  >
-                    No models are available to configure yet.
-                  </li>
-                ) : null}
-              </ul>
-
-              {pageCount > 1 ? (
-                <div
-                  className="mt-3 flex items-center justify-between gap-3"
-                  data-testid="model-policy-pager"
+        {showList ? (
+          <>
+            {pendingReviewIds.length > 0 ? (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                <p
+                  className="text-xs fg-warning"
+                  data-testid="model-policy-pending-review-note"
                 >
-                  <button
-                    type="button"
-                    disabled={currentPage === 0}
-                    data-testid="model-policy-pager-prev"
-                    onClick={() => setPage(Math.max(0, currentPage - 1))}
-                    className="rounded-md border px-3 py-1 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Previous
-                  </button>
-                  <span className="text-xs fg-secondary">
-                    Page {currentPage + 1} of {pageCount}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={currentPage >= pageCount - 1}
-                    data-testid="model-policy-pager-next"
-                    onClick={() =>
-                      setPage(Math.min(pageCount - 1, currentPage + 1))
-                    }
-                    className="rounded-md border px-3 py-1 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Next
-                  </button>
-                </div>
-              ) : null}
+                  {pendingReviewIds.length === 1
+                    ? '1 model is new since your last save and is blocked until you review it. Switch it on to allow it.'
+                    : `${pendingReviewIds.length} models are new since your last save and are blocked until you review them. Switch each one on to allow it.`}
+                </p>
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  disabled={saving}
+                  data-testid="model-policy-mark-all-reviewed"
+                  onClick={() => {
+                    setError(null);
+                    setConfirmReviewAll(true);
+                  }}
+                >
+                  Mark all as reviewed
+                </Button>
+              </div>
+            ) : null}
 
-              {confirmReviewAll && pendingReviewIds.length > 0 ? (
-                <SettingsConfirmDialog
-                  dataTestId="model-policy-review-all-dialog"
-                  title={
-                    pendingReviewIds.length === 1
-                      ? 'Mark 1 model as reviewed?'
-                      : `Mark ${pendingReviewIds.length} models as reviewed?`
+            <ul className="flex flex-col" data-testid="model-policy-list">
+              {visible.map((model) => (
+                <ModelPolicyRow
+                  key={model.id}
+                  model={model}
+                  allowed={
+                    !blocked.has(model.id) && !pendingReviewSet.has(model.id)
                   }
-                  confirmLabel="Mark as reviewed"
-                  busyLabel="Saving…"
-                  busy={savingReviewAll}
-                  onCancel={() => setConfirmReviewAll(false)}
-                  onConfirm={() => void markAllReviewed()}
-                  message={
-                    <div className="flex flex-col gap-2">
-                      <p>
-                        This clears the review backlog for every model in the
-                        catalog, including any on pages you have not opened yet.
-                        Each one becomes available to your members right away
-                        unless you block it.
-                      </p>
-                      <p>
-                        {relaxOnly
-                          ? 'New models that ship later stay blocked until you review them too. Your plan no longer lets you block a model, though, so only do this if every model in the catalog is fine for your members.'
-                          : 'You can still block any model afterwards, and new models that ship later stay blocked until you review them too.'}
-                      </p>
-                      {error !== null ? (
-                        <p
-                          role="alert"
-                          data-testid="model-policy-review-all-error"
-                          className="fg-destructive"
-                        >
-                          {error}
-                        </p>
-                      ) : null}
-                    </div>
+                  pendingReview={pendingReviewSet.has(model.id)}
+                  busy={saving}
+                  /*
+                   * Only an ALLOWED row locks in relax-only mode: switching
+                   * it off would add a blocked id, which the server refuses
+                   * without the capability. Blocked and unreviewed rows stay
+                   * live, because switching those on is a relaxation.
+                   */
+                  locked={
+                    relaxOnly &&
+                    !blocked.has(model.id) &&
+                    !pendingReviewSet.has(model.id)
                   }
+                  upgradeHref={billingHref}
+                  upgradeText={upgradeText}
+                  onChange={(allow) => void saveModel(model.id, allow)}
                 />
+              ))}
+              {visible.length === 0 ? (
+                <li
+                  className="px-4 py-6 text-center text-xs fg-secondary"
+                  data-testid="model-policy-empty"
+                >
+                  No models are available to configure yet.
+                </li>
               ) : null}
-            </>
-          ) : null}
-        </div>
+            </ul>
+
+            {pageCount > 1 ? (
+              <div
+                className="mt-3 flex items-center justify-between gap-3"
+                data-testid="model-policy-pager"
+              >
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  disabled={currentPage === 0}
+                  data-testid="model-policy-pager-prev"
+                  onClick={() => setPage(Math.max(0, currentPage - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs fg-secondary">
+                  Page {currentPage + 1} of {pageCount}
+                </span>
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  disabled={currentPage >= pageCount - 1}
+                  data-testid="model-policy-pager-next"
+                  onClick={() =>
+                    setPage(Math.min(pageCount - 1, currentPage + 1))
+                  }
+                >
+                  Next
+                </Button>
+              </div>
+            ) : null}
+
+            {confirmReviewAll && pendingReviewIds.length > 0 ? (
+              <SettingsConfirmDialog
+                dataTestId="model-policy-review-all-dialog"
+                title={
+                  pendingReviewIds.length === 1
+                    ? 'Mark 1 model as reviewed?'
+                    : `Mark ${pendingReviewIds.length} models as reviewed?`
+                }
+                confirmLabel="Mark as reviewed"
+                busyLabel="Saving…"
+                busy={savingReviewAll}
+                onCancel={() => setConfirmReviewAll(false)}
+                onConfirm={() => void markAllReviewed()}
+                message={
+                  <div className="flex flex-col gap-2">
+                    <p>
+                      This clears the review backlog for every model in the
+                      catalog, including any on pages you have not opened yet.
+                      Each one becomes available to your members right away
+                      unless you block it.
+                    </p>
+                    <p>
+                      {relaxOnly
+                        ? 'New models that ship later stay blocked until you review them too. Your plan no longer lets you block a model, though, so only do this if every model in the catalog is fine for your members.'
+                        : 'You can still block any model afterwards, and new models that ship later stay blocked until you review them too.'}
+                    </p>
+                    {error !== null ? (
+                      <p
+                        role="alert"
+                        data-testid="model-policy-review-all-error"
+                        className="fg-destructive"
+                      >
+                        {error}
+                      </p>
+                    ) : null}
+                  </div>
+                }
+              />
+            ) : null}
+          </>
+        ) : null}
       </div>
     </section>
   );
@@ -719,21 +720,21 @@ function ModelPolicyRow({
       data-testid={`model-policy-toggle-${model.id}`}
       /* Inert by having no handler, not by a guard inside one. */
       onClick={locked ? undefined : (): void => onChange(!allowed)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+      className={`relative inline-flex h-4.5 w-8 shrink-0 items-center rounded-full transition-colors ${
         locked
           ? `cursor-not-allowed opacity-60 ${
-              allowed ? 'bg-accent' : 'bg-fg-secondary/30'
+              allowed ? 'bg-accent' : 'bg-fg-quaternary'
             }`
           : `disabled:cursor-not-allowed disabled:opacity-60 ${
               allowed
                 ? 'bg-accent hover:bg-accent/90'
-                : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
+                : 'bg-fg-quaternary hover:bg-fg-tertiary'
             }`
       }`}
     >
       <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
-          allowed ? 'translate-x-6' : 'translate-x-1'
+        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-fg-emphasis transition-transform ${
+          allowed ? 'translate-x-4' : 'translate-x-0.5'
         }`}
       />
     </button>
@@ -741,7 +742,7 @@ function ModelPolicyRow({
 
   return (
     <li
-      className="flex items-start justify-between gap-4 px-4 py-3"
+      className={SETTINGS_CARD_ROW_CLASS}
       data-testid={`model-policy-row-${model.id}`}
     >
       <div className="min-w-0">

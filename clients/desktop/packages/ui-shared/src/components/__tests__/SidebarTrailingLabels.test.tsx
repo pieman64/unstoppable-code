@@ -35,10 +35,18 @@ const DIVERGENT_CLASSES = ['tabular-nums', 'fg-tertiary', 'justify-center'];
 describe('sidebar trailing labels', () => {
   it('has one trailing cell constant', () => {
     expect(
-      Object.keys(sidebarItemClasses).filter((name) =>
-        /TRAILING|COUNTER/.test(name),
-      ),
-    ).toEqual(['SIDEBAR_ROW_TRAILING_CELL_CLASSNAME']);
+      Object.keys(sidebarItemClasses)
+        .filter((name) => /TRAILING|COUNTER/.test(name))
+        .sort(),
+    ).toEqual([
+      // Not a second label style: only the inset that ends a nav row's
+      // shortcut hint on this cell's right edge.
+      'SIDEBAR_NAV_ROW_TRAILING_INSET_CLASSNAME',
+      'SIDEBAR_ROW_TRAILING_CELL_CLASSNAME',
+    ]);
+    expect(sidebarItemClasses.SIDEBAR_NAV_ROW_TRAILING_INSET_CLASSNAME).toBe(
+      'pr-0.5',
+    );
     expect(sidebarItemClasses.SIDEBAR_ROW_TRAILING_CELL_CLASSNAME).toBe(
       'ml-auto inline-flex h-5 w-6 shrink-0 items-center justify-end whitespace-nowrap pr-1 text-2xs fg-quaternary',
     );

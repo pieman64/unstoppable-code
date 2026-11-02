@@ -8,11 +8,17 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { ExternalAgentSender as AgentSentInfo } from '@canopy/protocol/portal';
+import type {
+  ExternalAgentSender,
+  ToolMessageSender,
+} from '@canopy/protocol/portal';
 import { AgentSentMarker } from '../AgentSentMarker';
 import { AgentSentMarker as RootExport } from '../../../index';
+import { REPLAY_MASK_CLASS } from '../../../lib/replay-privacy';
 
-function agentSent(overrides: Partial<AgentSentInfo> = {}): AgentSentInfo {
+function agentSent(
+  overrides: Partial<ExternalAgentSender> = {},
+): ExternalAgentSender {
   return {
     kind: 'external_agent',
     connectionId: '0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d',
@@ -38,7 +44,7 @@ describe('AgentSentMarker', () => {
     container.remove();
   });
 
-  function render(info: AgentSentInfo): HTMLElement {
+  function render(info: ToolMessageSender): HTMLElement {
     act(() => {
       root.render(<AgentSentMarker agentSent={info} />);
     });
@@ -95,6 +101,50 @@ describe('AgentSentMarker', () => {
     expect(name?.className).toContain('min-w-0');
     expect(name?.getAttribute('title')).toBe(longName);
     expect(name?.textContent).toBe(`Sent by ${longName}`);
+  });
+
+  it('names a managed delegate by its task, with no app verification', () => {
+    const marker = render({
+      kind: 'managed_delegate',
+      delegationId: 'delegation-1',
+      title: 'Independent error handling review',
+    });
+
+    expect(marker.textContent).toBe(
+      'Sent by Independent error handling review',
+    );
+    expect(marker.dataset.sender).toBe('managed_delegate');
+    expect(marker.dataset.verified).toBeUndefined();
+    expect(
+      marker.querySelector('[data-testid="agent-sent-marker-unverified"]'),
+    ).toBeNull();
+    // The subagent glyph, not the MCP app icon, and still decorative.
+    const icon = marker.querySelector('svg');
+    expect(icon?.getAttribute('data-glyph')).toBe('bot');
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('keeps a delegate task out of the attributes replay records', () => {
+    const task = 'Independent error handling review';
+    const marker = render({
+      kind: 'managed_delegate',
+      delegationId: 'delegation-1',
+      title: task,
+    });
+
+    // The task is user-authored: replay masks its text, and attributes are
+    // recorded verbatim, so none may repeat it.
+    expect(marker.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent).toBe(
+      task,
+    );
+    const elements: Element[] = [
+      marker,
+      ...Array.from(marker.querySelectorAll('*')),
+    ];
+    const attributeValues = elements.flatMap((element) =>
+      Array.from(element.attributes, (attribute) => attribute.value),
+    );
+    expect(attributeValues.filter((value) => value.includes(task))).toEqual([]);
   });
 
   it('renders a markup-like name as plain text', () => {

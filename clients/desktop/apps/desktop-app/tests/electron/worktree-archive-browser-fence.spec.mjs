@@ -23,7 +23,7 @@ async function requestWorktreeDeletion(window, row) {
   await row.hover();
   await row.getByTestId('worktree-actions-menu-button').click();
   await window.getByTestId('worktree-actions-menu-delete').click();
-  const dialog = window.getByRole('dialog', { name: 'Delete worktree?' });
+  const dialog = window.getByRole('dialog', { name: /^Delete worktree/ });
   // A clean worktree can delete directly; otherwise confirm branch handling.
   const confirmationRequired = await dialog
     .waitFor({ state: 'visible', timeout: 5_000 })

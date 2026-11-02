@@ -20,8 +20,8 @@ import {
   type WorktreeDiscovery,
 } from '@canopy/desktop-shared/types';
 import type { FileGlobMatcher } from '../lib/file-glob-matcher';
-import { getRemoteUrlStrict, isGitRepo, listBranches } from '../lib/git';
-import { resolveFreshDefaultBranch } from '../lib/git-default-branch';
+import { getRemoteUrlStrict, isGitRepo } from '../lib/git';
+import { resolveHomeBranchRepoPath } from '../lib/home-branch-repo';
 import { buildFileGlobMatcher } from '../lib/file-glob-matcher';
 import { buildFileIndex } from '../lib/file-system-listing';
 import { getCoworkWorkspaceRootDir } from '../lib/paths';
@@ -35,39 +35,11 @@ import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
 import { buildFileIndexes } from '../services/files-service';
+import { listHomeBranchTargets } from '../canopy-runtime/worker-git-dispatch';
+import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 import { runProviderDiscovery } from './worktree-discovery';
-
-export async function resolveHomeBranchRepoPath(
-  workspaceId: string,
-): Promise<string | null> {
-  const config = await readWorkspaceConfig(workspaceId);
-  if (config.type === 'single-repo' && config.repoPath) {
-    return resolveWorkspaceReferenceRepoPath(config.repoPath);
-  }
-  if (config.type === 'multi-repo' && config.sourceRepoPath) {
-    return resolveWorkspaceReferenceRepoPath(config.sourceRepoPath);
-  }
-  return null;
-}
-
-export async function handleListBranchTargets(
-  request: HomeBranchTargetsRequest,
-): Promise<HomeBranchTargetsResponse> {
-  validateId(request.workspaceId, 'workspaceId');
-  const repoPath = await resolveHomeBranchRepoPath(request.workspaceId);
-  if (!repoPath) {
-    return { supported: false, branches: [], defaultBranch: null };
-  }
-  const result = await listBranches(repoPath, {
-    resolveDefaultBranch: resolveFreshDefaultBranch,
-  });
-  return {
-    supported: true,
-    branches: result.branches,
-    defaultBranch: result.defaultBranch,
-  };
-}
 
 const HOME_DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const discoveryCache = new Map<
@@ -519,16 +491,25 @@ export async function handleConfigurationComposerAdvisorEnvironment(
   };
 }
 
-export function registerHomeSurfaceHandlers(): void {
+export function registerHomeSurfaceHandlers(runtime: {
+  dispatcher: WorkerGitDispatcher;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   registerIpcHandler<
     [ConfigurationComposerAdvisorEnvironmentRequest],
     ConfigurationComposerAdvisorEnvironmentResponse
   >(IPC_CHANNELS.configurationComposerAdvisorEnvironment, (_event, request) =>
     handleConfigurationComposerAdvisorEnvironment(request),
   );
+  // ---- Branch targets (worker.git.branch.list) ----
   registerIpcHandler<[HomeBranchTargetsRequest], HomeBranchTargetsResponse>(
     IPC_CHANNELS.homeListBranchTargets,
-    (_event, request) => handleListBranchTargets(request),
+    (event, request) =>
+      listHomeBranchTargets(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
   registerIpcHandler<
     [HomeDiscoverEnvironmentRequest],

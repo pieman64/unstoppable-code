@@ -3,10 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   IPC_CHANNELS,
+  type CoworkSidebarItem,
   type ExternalProjectCandidate,
   type ExternalProjectImportProgressEvent,
+  type PersistedChatMessage,
   type PersistedChatTab,
   type SidebarItem,
+  type SidebarItemsFile,
 } from '@canopy/desktop-shared/types';
 
 jest.mock('electron', () => ({}));
@@ -192,7 +195,7 @@ function session(
   };
 }
 
-function coworkItem(id: string, externalPath: string): SidebarItem {
+function coworkItem(id: string, externalPath: string): CoworkSidebarItem {
   return {
     id,
     name: id,
@@ -203,6 +206,14 @@ function coworkItem(id: string, externalPath: string): SidebarItem {
     externalPath,
     cowork: { createdAt: '2026-09-01T00:00:00.000Z', archiveRetentionDays: 7 },
   };
+}
+
+function sidebarItemsFile(items: SidebarItem[]): SidebarItemsFile {
+  return { version: 1, items };
+}
+
+function projectedMessage(id: string): PersistedChatMessage {
+  return { id, role: 'user', timestamp: 1, blocks: [] };
 }
 
 function sessionImportedBroadcasts(): unknown[][] {
@@ -242,7 +253,7 @@ describe('importExternalProjects', () => {
       lastScanAt: null,
       inviteShownAt: null,
     });
-    mocked.sidebar.mockResolvedValue({ items: [] });
+    mocked.sidebar.mockResolvedValue(sidebarItemsFile([]));
     mocked.assertImportable.mockResolvedValue(undefined);
     mocked.upsertTabs.mockResolvedValue(undefined);
     mocked.projectsDir.mockReturnValue(join(root, 'claude-projects'));
@@ -355,8 +366,8 @@ describe('importExternalProjects', () => {
       ],
       { 'ext-abc': [session('s1')] },
     );
-    mocked.sidebar.mockResolvedValue({
-      items: [
+    mocked.sidebar.mockResolvedValue(
+      sidebarItemsFile([
         {
           id: 'multi',
           name: 'multi',
@@ -367,8 +378,8 @@ describe('importExternalProjects', () => {
           repos: [],
           worktrees: [],
         },
-      ],
-    });
+      ]),
+    );
     const { results } = await importExternalProjects({
       scanId: 'scan-1',
       selections: [{ candidateId: 'ext-abc', importChats: true }],
@@ -518,7 +529,9 @@ describe('importExternalProjects', () => {
       ],
       { 'ext-abc': [session('s1', { sourcePath: source })] },
     );
-    mocked.sidebar.mockResolvedValue({ items: [coworkItem('notes', folder)] });
+    mocked.sidebar.mockResolvedValue(
+      sidebarItemsFile([coworkItem('notes', folder)]),
+    );
     mocked.createWorkEntry.mockResolvedValue({
       entry: { id: 'entry-2', title: 'Imported', createdAt: 'x', chatCount: 0 },
       reusedExistingEmpty: false,
@@ -564,7 +577,9 @@ describe('importExternalProjects', () => {
       ],
       { 'ext-abc': [session('s1')] },
     );
-    mocked.sidebar.mockResolvedValue({ items: [coworkItem('notes', folder)] });
+    mocked.sidebar.mockResolvedValue(
+      sidebarItemsFile([coworkItem('notes', folder)]),
+    );
     mocked.createWorkEntry.mockResolvedValue({
       entry: { id: 'entry-2', title: 'Imported', createdAt: 'x', chatCount: 0 },
       reusedExistingEmpty: false,
@@ -621,7 +636,7 @@ describe('importExternalProjects', () => {
       reusedExistingEmpty: false,
     });
     mocked.cwd.mockReturnValue(folder);
-    const message = { id: 'm', role: 'user', timestamp: 1, blocks: [] };
+    const message = projectedMessage('m');
     mocked.projectClaude.mockImplementation((filePath: string) =>
       filePath.endsWith('s1.jsonl')
         ? Promise.reject(new Error('read failed'))
@@ -646,7 +661,9 @@ describe('importExternalProjects', () => {
 
     // The retry sees the world the first run left behind: the project is in
     // the sidebar and the ledger names both it and the Work Entry.
-    mocked.sidebar.mockResolvedValue({ items: [coworkItem('notes', folder)] });
+    mocked.sidebar.mockResolvedValue(
+      sidebarItemsFile([coworkItem('notes', folder)]),
+    );
     mocked.ledger.mockResolvedValue({
       imports: {
         'ext-abc': {
@@ -853,7 +870,7 @@ describe('importExternalProjects', () => {
       reusedExistingEmpty: false,
     });
     mocked.cwd.mockReturnValue(folder);
-    const message = { id: 'm', role: 'user', timestamp: 1, blocks: [] };
+    const message = projectedMessage('m');
     mocked.projectClaude.mockImplementation((filePath: string) =>
       filePath.endsWith('s1.jsonl')
         ? Promise.reject(new Error('read failed'))
@@ -879,7 +896,9 @@ describe('importExternalProjects', () => {
     );
 
     // No session record survived, but the entry-level destination did.
-    mocked.sidebar.mockResolvedValue({ items: [coworkItem('notes', folder)] });
+    mocked.sidebar.mockResolvedValue(
+      sidebarItemsFile([coworkItem('notes', folder)]),
+    );
     mocked.ledger.mockResolvedValue({
       imports: {
         'ext-abc': {
@@ -980,7 +999,7 @@ describe('importExternalProjects', () => {
     const gate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    const message = { id: 'm', role: 'user', timestamp: 1, blocks: [] };
+    const message = projectedMessage('m');
     // The first run parks inside projection; the second must not start.
     mocked.projectClaude.mockImplementationOnce(() =>
       gate.then(() => ({

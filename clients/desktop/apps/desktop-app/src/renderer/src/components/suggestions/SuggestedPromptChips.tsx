@@ -1,5 +1,5 @@
 import { memo, useMemo, type JSX } from 'react';
-import { SuggestionRow } from '@canopy/ui-shared';
+import { HomeSection, SuggestionRow } from '@canopy/ui-shared';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useCuratedMcpServers } from '@/hooks/useCuratedMcpServers';
 import { McpServerLogo } from '@/components/shared/McpServerLogo';
@@ -64,7 +64,7 @@ export const SuggestedPromptChips = memo(function SuggestedPromptChips({
   }, [entries]);
 
   if (prompts.length === 0) return null;
-  return (
+  const rows = (
     <div data-testid="suggested-prompt-chips" className="flex w-full flex-col">
       {prompts.map((prompt, index) => (
         <SuggestionRow
@@ -100,5 +100,12 @@ export const SuggestedPromptChips = memo(function SuggestedPromptChips({
         </SuggestionRow>
       ))}
     </div>
+  );
+  return surface === 'home' ? (
+    <HomeSection sectionId="suggested-prompts" title="Suggestions">
+      {rows}
+    </HomeSection>
+  ) : (
+    rows
   );
 });

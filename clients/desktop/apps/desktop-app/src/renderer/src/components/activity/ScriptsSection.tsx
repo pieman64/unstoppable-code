@@ -560,13 +560,12 @@ export function useScriptsSectionHostModel({
         title="Script source info"
       />
     ),
-    renderDevServerControl: (run, compact): JSX.Element | null => {
+    renderDevServerControl: (run): JSX.Element | null => {
       const sourceRun = runs[run.scriptKey];
       return sourceRun && sourceRun.devServerHits.length > 0 ? (
         <DevServerOpenControl
           hits={sourceRun.devServerHits}
           context={{ projectId, worktreeId }}
-          compact={compact}
         />
       ) : null;
     },

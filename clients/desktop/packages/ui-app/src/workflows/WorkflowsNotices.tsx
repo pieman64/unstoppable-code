@@ -43,7 +43,7 @@ export function NewWorkflowMenu({
       <Button
         ref={anchorRef}
         variant={variant}
-        size="md"
+        size="compact"
         aria-haspopup="menu"
         aria-expanded={open}
         data-testid="workflows-new"
@@ -89,7 +89,7 @@ export function NewWorkflowMenu({
               <span className="flex min-w-0 flex-col">
                 <span>When you start it</span>
                 <span className="text-xs fg-tertiary">
-                  Describe the pipeline to an agent
+                  Describe the workflow to an agent
                 </span>
               </span>
             </DropdownMenuItem>
@@ -110,7 +110,7 @@ export function NewWorkflowMenu({
                     : 'When you start it'}
                 </span>
                 <span className="text-xs fg-tertiary">
-                  Build the pipeline in the editor
+                  Build the workflow in the editor
                 </span>
               </span>
             </DropdownMenuItem>

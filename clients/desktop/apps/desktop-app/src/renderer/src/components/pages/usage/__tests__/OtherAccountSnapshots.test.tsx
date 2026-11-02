@@ -9,6 +9,7 @@ reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
 import { act, type JSX } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { RetainedAccountUsageSnapshot } from '@canopy/desktop-shared/types';
+import { normalizeRetainedAccountSnapshot } from '@canopy/desktop-shared/lib/account-usage-snapshots';
 import {
   OtherAccountSnapshots,
   OtherAccountSnapshotsPanel,
@@ -54,6 +55,59 @@ function renderInto(node: JSX.Element): HTMLDivElement {
 
 afterEach(() => {
   document.body.innerHTML = '';
+});
+
+it('shows retained Claude spend and cap after a JSON hydrate', () => {
+  const saved: unknown = JSON.parse(
+    JSON.stringify(
+      futureSnapshot({
+        rateLimits: [
+          {
+            limitId: 'extra_usage',
+            limitName: 'Extra usage',
+            spend: { currency: 'USD', used: 61, limit: 50, isEnabled: true },
+          },
+        ],
+      }),
+    ),
+  );
+  const restored = normalizeRetainedAccountSnapshot(saved);
+  if (!restored) throw new Error('Expected a retained account snapshot');
+  const container = renderInto(
+    <OtherAccountSnapshotsPanel
+      provider="claude"
+      snapshots={[restored]}
+      nowMs={NOW}
+    />,
+  );
+  expect(container.textContent).toContain('Monthly spend: $61.00');
+  expect(container.textContent).toContain('Monthly spending cap: $50.00');
+  expect(container.textContent).not.toContain('Spent:');
+});
+
+it('does not show ambiguous legacy Claude minor units as spend after hydrate', () => {
+  const restored = normalizeRetainedAccountSnapshot(
+    futureSnapshot({
+      rateLimits: [
+        {
+          limitId: 'extra_usage',
+          limitName: 'Extra usage',
+          credits: { usedUsd: 6100, totalUsd: 5000 },
+        },
+      ],
+    }),
+  );
+  if (!restored) throw new Error('Expected a retained account snapshot');
+  const container = renderInto(
+    <OtherAccountSnapshotsPanel
+      provider="claude"
+      snapshots={[restored]}
+      nowMs={NOW}
+    />,
+  );
+  expect(container.textContent).toContain('Extra usage');
+  expect(container.textContent).not.toContain('Spent:');
+  expect(container.textContent).not.toContain('$6100');
 });
 
 it('renders nothing when there are no other still-relevant accounts', () => {

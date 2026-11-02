@@ -3,7 +3,7 @@
  */
 import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { FileTreeChangeEvent } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -16,7 +16,12 @@ import {
 } from '@/stores/fileListStore';
 import { useChatStore } from '@/stores/chatStore';
 
-import { FILE_TREE_SEARCH_DEBOUNCE_MS } from '../files-tree-tab-state';
+import {
+  APP_MANAGED_ROOTS_TREE_PATH,
+  FILE_TREE_SEARCH_DEBOUNCE_MS,
+} from '../files-tree-tab-state';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { brandText } from '@/lib/brand';
 import { FilesTreeTab } from '../FilesTreeTab';
 import { EarlyAccessUiProviders } from '@/components/EarlyAccessUiProviders';
 
@@ -48,9 +53,10 @@ const EXPLORER_INDEX_KEY = getFileTreeIndexCacheKey(PROJECT_ID, WORKTREE_ID);
 const OTHER_WORKTREE_ID = 'worktree-2';
 const OTHER_WORKTREE_KEY = `${PROJECT_ID}/${OTHER_WORKTREE_ID}`;
 const mockShowInFinder = jest.fn(() => Promise.resolve());
-const mockMutateFileTree = jest.fn(() =>
-  Promise.resolve({ operation: 'create-file' as const }),
-);
+const mockMutateFileTree = jest.fn<
+  ReturnType<typeof window.api.mutateFileTree>,
+  Parameters<typeof window.api.mutateFileTree>
+>(() => Promise.resolve({ operation: 'create-file' }));
 const mockStartFileTreeWatch = jest.fn(() => Promise.resolve());
 const mockStopFileTreeWatch = jest.fn(() => Promise.resolve());
 let fileTreeChangedCallback:
@@ -3182,5 +3188,451 @@ describe('FilesTreeTab', () => {
         repoName: 'repo',
       },
     ]);
+  });
+  describe('Cowork root grouping', () => {
+    const HOME = '/Users/priya/Vendor Spend Q3';
+    const NOTES = `${HOME}/.canopy/notes`;
+    const coworkRoots = [
+      {
+        repoId: 'workspace',
+        repoName: 'Vendor Spend Q3',
+        absolutePath: HOME,
+        rootKind: 'standalone' as const,
+      },
+      {
+        repoId: 'notes',
+        repoName: 'notes',
+        absolutePath: NOTES,
+        rootKind: 'standalone' as const,
+      },
+      {
+        repoId: 'prompts',
+        repoName: 'prompts',
+        absolutePath: `${HOME}/.canopy/prompts`,
+        rootKind: 'standalone' as const,
+      },
+      {
+        repoId: 'attachments',
+        repoName: 'attachments',
+        absolutePath: `${HOME}/.canopy/attachments`,
+        rootKind: 'attachments' as const,
+      },
+    ];
+    const fileEntry = (
+      name: string,
+      parent: string,
+    ): {
+      name: string;
+      relativePath: string;
+      absolutePath: string;
+      kind: 'file';
+      isIgnored: boolean;
+      isIndexExcluded: boolean;
+      isSymlink: boolean;
+      hasChildren: boolean;
+    } => ({
+      name,
+      relativePath: name,
+      absolutePath: `${parent}/${name}`,
+      kind: 'file',
+      isIgnored: false,
+      isIndexExcluded: false,
+      isSymlink: false,
+      hasChildren: false,
+    });
+
+    function seedCowork(expanded?: Set<string>): void {
+      const directory = (repoId: string, entries: unknown[]): object => ({
+        [getDirectoryCacheKey(PROJECT_ID, WORKTREE_ID, repoId, '')]: {
+          fetchedAt: Date.now(),
+          data: { entries },
+        },
+      });
+      useFileListStore.setState({
+        rootsCache: {
+          [WORKTREE_KEY]: {
+            fetchedAt: Date.now(),
+            data: { roots: coworkRoots },
+          },
+        },
+        directoryCache: {
+          ...directory('workspace', [
+            fileEntry('vendor-spend-cleaned.csv', HOME),
+          ]),
+          ...directory('notes', [fileEntry('meeting.md', NOTES)]),
+          ...directory('prompts', []),
+          ...directory('attachments', []),
+        },
+        fileTreeExpandedPaths:
+          expanded === undefined ? {} : { [WORKTREE_KEY]: expanded },
+      });
+    }
+
+    function groupRow(): HTMLButtonElement {
+      const row = container.querySelector<HTMLButtonElement>(
+        '[data-testid="files-tree-root-group"]',
+      );
+      if (!row) throw new Error('Missing app-owned root group');
+      return row;
+    }
+
+    function rootLabels(): string[] {
+      return Array.from(
+        container.querySelectorAll<HTMLButtonElement>(
+          '[data-testid="files-tree-folder"][data-path=""]',
+        ),
+        (button) => (button.textContent ?? '').replace(/^[▼▶]/, ''),
+      );
+    }
+
+    function renderTree(
+      props: Partial<Parameters<typeof FilesTreeTab>[0]> = {},
+    ): void {
+      act(() => {
+        root.render(
+          <FilesTreeTab
+            projectId={PROJECT_ID}
+            worktreeId={WORKTREE_ID}
+            {...props}
+          />,
+        );
+      });
+    }
+
+    it('expands the named project root once and keeps the brand group collapsed', () => {
+      seedCowork();
+      renderTree();
+
+      expect(rootLabels()).toEqual(['Vendor Spend Q3']);
+      expect(container.textContent).toContain('vendor-spend-cleaned.csv');
+      expect(groupRow().textContent).toContain(brandText.appName);
+      expect(groupRow().getAttribute('aria-expanded')).toBe('false');
+      expect(groupRow().getAttribute('role')).toBe('treeitem');
+      expect(groupRow().hasAttribute('data-path')).toBe(false);
+      expect(container.textContent).not.toContain('meeting.md');
+      expect(
+        Array.from(
+          useFileListStore.getState().fileTreeExpandedPaths[WORKTREE_KEY] ?? [],
+        ),
+      ).toEqual(['repo:workspace']);
+      const label = Array.from(
+        getFolderButton(container, 'Vendor Spend Q3').querySelectorAll('span'),
+      ).find((span) => span.textContent === 'Vendor Spend Q3');
+      expect(label?.classList.contains(REPLAY_MASK_CLASS)).toBe(true);
+    });
+
+    it('waits for asynchronously loaded roots before expanding the project root', async () => {
+      useFileListStore.setState({ rootsCache: {}, fileTreeExpandedPaths: {} });
+      let resolveRoots: (value: { roots: typeof coworkRoots }) => void = () =>
+        undefined;
+      jest.mocked(window.api.getFileTreeRoots).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRoots = resolve;
+          }),
+      );
+      jest
+        .mocked(window.api.getFileTreeDirectory)
+        .mockResolvedValue({ entries: [] });
+      renderTree();
+      expect(
+        useFileListStore.getState().fileTreeExpandedPaths[WORKTREE_KEY],
+      ).toBeUndefined();
+
+      await act(async () => {
+        resolveRoots({ roots: coworkRoots });
+        await Promise.resolve();
+      });
+
+      expect(
+        Array.from(
+          useFileListStore.getState().fileTreeExpandedPaths[WORKTREE_KEY] ?? [],
+        ),
+      ).toEqual(['repo:workspace']);
+    });
+
+    it('preserves Cowork expansion through rename refresh and workspace switches', () => {
+      seedCowork(new Set([APP_MANAGED_ROOTS_TREE_PATH, 'repo:notes']));
+      renderTree();
+      const saved =
+        useFileListStore.getState().fileTreeExpandedPaths[WORKTREE_KEY];
+      act(() =>
+        useFileListStore.setState((state) => ({
+          rootsCache: {
+            ...state.rootsCache,
+            [WORKTREE_KEY]: {
+              fetchedAt: Date.now(),
+              data: {
+                roots: coworkRoots.map((root) =>
+                  root.repoId === 'workspace'
+                    ? { ...root, repoName: 'Renamed Q4 / 支出 🌳' }
+                    : root,
+                ),
+              },
+            },
+            [OTHER_WORKTREE_KEY]: {
+              fetchedAt: Date.now(),
+              data: { roots: coworkRoots },
+            },
+          },
+        })),
+      );
+      expect(rootLabels()).toContain('Renamed Q4 / 支出 🌳');
+      expect(
+        useFileListStore.getState().fileTreeExpandedPaths[WORKTREE_KEY],
+      ).toEqual(saved);
+      renderTree({ worktreeId: OTHER_WORKTREE_ID });
+      expect(groupRow().getAttribute('aria-expanded')).toBe('false');
+      renderTree();
+      expect(groupRow().getAttribute('aria-expanded')).toBe('true');
+      expect(
+        useFileListStore.getState().fileTreeExpandedPaths[WORKTREE_KEY],
+      ).toEqual(saved);
+    });
+
+    it('respects a saved all-collapsed state', () => {
+      seedCowork(new Set());
+      renderTree();
+
+      expect(
+        getFolderButton(container, 'Vendor Spend Q3').getAttribute(
+          'aria-expanded',
+        ),
+      ).toBe('false');
+      expect(container.textContent).not.toContain('vendor-spend-cleaned.csv');
+    });
+
+    it('shows app-owned roots indented under the group and remembers the choice', () => {
+      seedCowork();
+      renderTree();
+
+      act(() => groupRow().click());
+
+      expect(groupRow().getAttribute('aria-expanded')).toBe('true');
+      expect(rootLabels()).toEqual([
+        'Vendor Spend Q3',
+        'notes',
+        'prompts',
+        'attachments',
+      ]);
+      expect(
+        getFolderButton(container, 'notes').getAttribute('aria-level'),
+      ).toBe('2');
+      expect(
+        useFileListStore
+          .getState()
+          .fileTreeExpandedPaths[
+            WORKTREE_KEY
+          ]?.has(APP_MANAGED_ROOTS_TREE_PATH),
+      ).toBe(true);
+
+      act(() => root.unmount());
+      root = createRoot(container);
+      renderTree();
+      expect(groupRow().getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('operates the group from the keyboard and keeps focus on collapse', () => {
+      // jsdom has no CSS.escape; the tree's row lookup only needs identity here.
+      Object.defineProperty(globalThis, 'CSS', {
+        configurable: true,
+        value: { escape: (value: string): string => value },
+      });
+      seedCowork();
+      renderTree();
+      const keyDown = (key: string): void => {
+        const target = document.activeElement ?? groupRow();
+        act(() => {
+          target.dispatchEvent(
+            new KeyboardEvent('keydown', { key, bubbles: true }),
+          );
+        });
+      };
+
+      act(() => groupRow().focus());
+      keyDown('ArrowRight');
+      expect(groupRow().getAttribute('aria-expanded')).toBe('true');
+      keyDown('ArrowRight');
+      expect(document.activeElement).toBe(getFolderButton(container, 'notes'));
+      keyDown('ArrowUp');
+      expect(document.activeElement).toBe(groupRow());
+      expect(groupRow().tabIndex).toBe(0);
+      keyDown('ArrowLeft');
+      expect(groupRow().getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).toBe(groupRow());
+      keyDown('Enter');
+      expect(groupRow().getAttribute('aria-expanded')).toBe('true');
+      keyDown(' ');
+      expect(groupRow().getAttribute('aria-expanded')).toBe('false');
+      keyDown('ArrowUp');
+      expect(document.activeElement).toBe(
+        getFileButton(container, 'vendor-spend-cleaned.csv'),
+      );
+    });
+
+    it('moves from a collapsed managed root to its group with ArrowLeft', () => {
+      seedCowork(new Set(['repo:workspace', APP_MANAGED_ROOTS_TREE_PATH]));
+      renderTree();
+      const notes = getFolderButton(container, 'notes');
+      act(() => {
+        notes.focus();
+        notes.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }),
+        );
+      });
+      expect(document.activeElement).toBe(groupRow());
+    });
+
+    it('reveals an app-owned file by expanding the group and its root', () => {
+      seedCowork();
+      renderTree({
+        currentFilePath: `${NOTES}/meeting.md`,
+        revealCurrentFileInitially: true,
+        onCurrentFileInitialReveal: jest.fn(),
+      });
+
+      expect(groupRow().getAttribute('aria-expanded')).toBe('true');
+      expect(getFileButton(container, 'meeting.md').dataset.currentFile).toBe(
+        'true',
+      );
+    });
+
+    it('does not refresh directories hidden inside the collapsed group', async () => {
+      mockStartFileTreeWatch.mockResolvedValueOnce();
+      seedCowork(new Set(['repo:workspace', 'repo:notes']));
+      jest
+        .mocked(window.api.getFileTreeRoots)
+        .mockResolvedValue({ roots: coworkRoots });
+      jest
+        .mocked(window.api.getFileTreeDirectory)
+        .mockResolvedValue({ entries: [] });
+      await act(async () => {
+        root.render(
+          <FilesTreeTab
+            projectId={PROJECT_ID}
+            worktreeId={WORKTREE_ID}
+            isVisible
+          />,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      jest.mocked(window.api.getFileTreeDirectory).mockClear();
+
+      await act(async () => {
+        fileTreeChangedCallback?.({
+          projectId: PROJECT_ID,
+          worktreeId: WORKTREE_ID,
+          changeCount: 1,
+        });
+        await Promise.resolve();
+      });
+
+      expect(window.api.getFileTreeDirectory).toHaveBeenCalledWith(
+        expect.objectContaining({ repoId: 'workspace' }),
+      );
+      expect(window.api.getFileTreeDirectory).not.toHaveBeenCalledWith(
+        expect.objectContaining({ repoId: 'notes' }),
+      );
+    });
+
+    it('shows managed search matches without changing the saved group state', () => {
+      Object.defineProperty(document, 'hasFocus', {
+        configurable: true,
+        value: jest.fn(() => true),
+      });
+      seedCowork();
+      useFileListStore.setState({
+        indexCache: {
+          [EXPLORER_INDEX_KEY]: {
+            fetchedAt: Date.now(),
+            data: {
+              repos: coworkRoots.map((candidate) => ({
+                ...candidate,
+                files:
+                  candidate.repoId === 'notes'
+                    ? [
+                        {
+                          relativePath: 'meeting.md',
+                          filename: 'meeting.md',
+                          absolutePath: `${NOTES}/meeting.md`,
+                          isIgnored: false,
+                        },
+                      ]
+                    : candidate.repoId === 'workspace'
+                      ? [
+                          {
+                            relativePath: 'vendor-spend-cleaned.csv',
+                            filename: 'vendor-spend-cleaned.csv',
+                            absolutePath: `${HOME}/vendor-spend-cleaned.csv`,
+                            isIgnored: false,
+                          },
+                        ]
+                      : [],
+              })),
+            },
+          },
+        },
+      });
+      jest.useFakeTimers();
+      try {
+        renderTree();
+        act(() => {
+          document.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'f',
+              metaKey: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        });
+        const input = container.querySelector<HTMLInputElement>(
+          '[data-testid="files-tree-search-input"]',
+        );
+        if (!input) throw new Error('Search input is not open');
+        act(() => setInputValue(input, 'meeting'));
+        act(() => {
+          jest.advanceTimersByTime(FILE_TREE_SEARCH_DEBOUNCE_MS);
+        });
+
+        expect(groupRow().getAttribute('aria-expanded')).toBe('true');
+        expect(container.textContent).toContain('meeting.md');
+        expect(rootLabels()).toEqual(['notes']);
+
+        act(() => groupRow().click());
+        expect(container.textContent).not.toContain('meeting.md');
+
+        act(() => setInputValue(input, 'vendor'));
+        act(() => {
+          jest.advanceTimersByTime(FILE_TREE_SEARCH_DEBOUNCE_MS);
+        });
+        expect(
+          container.querySelector('[data-testid="files-tree-root-group"]'),
+        ).toBeNull();
+
+        act(() => setInputValue(input, ''));
+        act(() => {
+          jest.advanceTimersByTime(FILE_TREE_SEARCH_DEBOUNCE_MS);
+        });
+        expect(groupRow().getAttribute('aria-expanded')).toBe('false');
+        expect(
+          useFileListStore
+            .getState()
+            .fileTreeExpandedPaths[
+              WORKTREE_KEY
+            ]?.has(APP_MANAGED_ROOTS_TREE_PATH),
+        ).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('does not group roots outside a Cowork catalog', () => {
+      renderTree();
+      expect(
+        container.querySelector('[data-testid="files-tree-root-group"]'),
+      ).toBeNull();
+      expect(rootLabels()).toEqual(['repo']);
+    });
   });
 });

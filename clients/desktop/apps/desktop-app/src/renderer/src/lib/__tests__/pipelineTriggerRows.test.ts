@@ -340,6 +340,7 @@ describe('filterTriggerRowsByExecutionScope', () => {
       sharedRows: [],
       sourceFilter: 'all',
       searchQuery: '',
+      triggerType: 'dispatch',
     });
     return filterTriggerRowsByExecutionScope(rows, scope).map((r) => r.info.id);
   }

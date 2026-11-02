@@ -1,0 +1,289 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`reference repository health inspects a source recorded as a linked worktree at its main checkout 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/clones/worktree-main","shadowPath":"<root>/data/repo-shadows/<key>/checkout","healthy":true,"warnings":[],"lastCheckedAt":"<time>","remoteUrl":"<root>/origins/worktree-main.git","defaultBranch":"main"}",
+}
+`;
+
+exports[`reference repository health inspects the recorded source path whatever the workspace type: single-repo with a source path 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/clones/side-source","shadowPath":"<root>/data/repo-shadows/<key>/checkout","healthy":true,"warnings":[],"lastCheckedAt":"<time>","remoteUrl":"<root>/origins/side-source.git","defaultBranch":"main"}",
+}
+`;
+
+exports[`reference repository health keeps the failure of an invalid workspace id: "" 1`] = `
+{
+  "json": "null",
+}
+`;
+
+exports[`reference repository health keeps the failure of an invalid workspace id: "../escape" 1`] = `
+{
+  "json": "null",
+}
+`;
+
+exports[`reference repository health keeps the failure of an invalid workspace id: "Bad" 1`] = `
+{
+  "json": "null",
+}
+`;
+
+exports[`reference repository health publishes the status the poller reads 1`] = `
+[
+  "{"workspaceId":"multi-local-ws","status":{"referenceRepoPath":"<root>/clones/local-source","healthy":true,"warnings":[],"lastCheckedAt":"<time>"},"didUpdateReferenceRepo":false}",
+]
+`;
+
+exports[`reference repository health reports a source repository without origin as healthy without a shadow: blank origin URL 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/clones/blank-url","healthy":true,"warnings":[],"lastCheckedAt":"<time>"}",
+}
+`;
+
+exports[`reference repository health reports a source repository without origin as healthy without a shadow: no origin 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/clones/local-source","healthy":true,"warnings":[],"lastCheckedAt":"<time>"}",
+}
+`;
+
+exports[`reference repository health reports a source that is not a repository as a failed shadow sync: missing directory 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/missing/gone","healthy":false,"warnings":[{"code":"shadow-sync-failed","message":"Shadow sync failed"}],"lastCheckedAt":"<time>"}",
+}
+`;
+
+exports[`reference repository health reports a source that is not a repository as a failed shadow sync: plain directory 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/plain/not-a-repo","healthy":false,"warnings":[{"code":"shadow-sync-failed","message":"Shadow sync failed"}],"lastCheckedAt":"<time>"}",
+}
+`;
+
+exports[`reference repository health reports a source whose origin has no URL as a failed shadow sync 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/clones/no-url","healthy":false,"warnings":[{"code":"shadow-sync-failed","message":"Cannot maintain a default-branch shadow for \\"<root>/clones/no-url\\": no remote default branch"}],"lastCheckedAt":"<time>","remoteUrl":"origin"}",
+}
+`;
+
+exports[`reference repository health reports no status without a source repository: cowork-ws 1`] = `
+{
+  "json": "null",
+}
+`;
+
+exports[`reference repository health reports no status without a source repository: ghost-ws 1`] = `
+{
+  "json": "null",
+}
+`;
+
+exports[`reference repository health reports no status without a source repository: multi-no-source-ws 1`] = `
+{
+  "json": "null",
+}
+`;
+
+exports[`reference repository health reports no status without a source repository: single-ws 1`] = `
+{
+  "json": "null",
+}
+`;
+
+exports[`reference repository health reports the shadow and origin of a source whose origin is unreachable 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/clones/offline","shadowPath":"<root>/data/repo-shadows/<key>/checkout","healthy":true,"warnings":[],"lastCheckedAt":"<time>","remoteUrl":"<root>/origins/missing.git","defaultBranch":"main"}",
+}
+`;
+
+exports[`reference repository health rethrows a remote read failure inside a repository 1`] = `
+{
+  "error": {
+    "code": 128,
+    "message": "Command failed: <git> remote
+fatal: bad boolean config value 'notabool' for 'remote.origin.mirror'
+",
+    "name": "Error",
+  },
+}
+`;
+
+exports[`reference repository health syncs the shadow of a source repository with an origin 1`] = `
+{
+  "json": "{"referenceRepoPath":"<root>/clones/source","shadowPath":"<root>/data/repo-shadows/<key>/checkout","healthy":true,"warnings":[],"lastCheckedAt":"<time>","remoteUrl":"<root>/origins/source.git","defaultBranch":"main"}",
+}
+`;
+
+exports[`repo:get-remote-url keeps request validation messages: {"repoPath":"   "} 1`] = `
+{
+  "error": {
+    "message": "Repository path must be an absolute path",
+    "name": "Error",
+  },
+}
+`;
+
+exports[`repo:get-remote-url keeps request validation messages: {"repoPath":""} 1`] = `
+{
+  "error": {
+    "message": "Repository path must be an absolute path",
+    "name": "Error",
+  },
+}
+`;
+
+exports[`repo:get-remote-url keeps request validation messages: {"repoPath":"relative/repo"} 1`] = `
+{
+  "error": {
+    "message": "Repository path must be an absolute path",
+    "name": "Error",
+  },
+}
+`;
+
+exports[`repo:get-remote-url keeps request validation messages: {"repoPath":42} 1`] = `
+{
+  "error": {
+    "message": "request.repoPath.trim is not a function",
+    "name": "TypeError",
+  },
+}
+`;
+
+exports[`repo:get-remote-url keeps request validation messages: {} 1`] = `
+{
+  "error": {
+    "message": "Cannot read properties of undefined (reading 'trim')",
+    "name": "TypeError",
+  },
+}
+`;
+
+exports[`repo:get-remote-url keeps request validation messages: undefined 1`] = `
+{
+  "error": {
+    "message": "Cannot read properties of undefined (reading 'repoPath')",
+    "name": "TypeError",
+  },
+}
+`;
+
+exports[`repo:get-remote-url reads paths no workspace records directly: main checkout of a recorded linked worktree 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/worktree-main.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads paths no workspace records directly: recorded repository with a trailing separator 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/single.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads paths no workspace records directly: subdirectory of a recorded repository 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/single.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads paths no workspace records directly: untracked directory 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url reads paths no workspace records directly: untracked missing directory 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url reads paths no workspace records directly: untracked repository 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/untracked.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads paths no workspace records directly: untracked repository without origin 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: blank origin URL 1`] = `
+{
+  "json": "{"remoteUrl":""}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: directory that is not a repository 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: missing directory 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: multi-repo member 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/member.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: multi-repo member without origin 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: multi-repo source repository 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/source.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: origin without a URL 1`] = `
+{
+  "json": "{"remoteUrl":"origin"}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: repository without origin 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: single-repo repository 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/single.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: source recorded as a linked worktree 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/worktree-main.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: unreachable origin 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/missing.git"}",
+}
+`;
+
+exports[`repo:get-remote-url reads the origin of recorded workspace repositories: unreadable remote configuration 1`] = `
+{
+  "json": "{"remoteUrl":null}",
+}
+`;
+
+exports[`repo:get-remote-url trims the requested path before reading it 1`] = `
+{
+  "json": "{"remoteUrl":"<root>/origins/single.git"}",
+}
+`;

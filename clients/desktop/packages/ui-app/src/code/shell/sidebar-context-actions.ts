@@ -3,7 +3,6 @@ import {
   type WorkspaceContext,
   type WorkspaceContextOrganization,
 } from '@canopy/protocol/workspace-context';
-import { resolveCreditsBillingTarget } from '@canopy/protocol/billing';
 import { settingsRouteToPath } from '@canopy/protocol/settings/route-paths';
 import {
   invitableOrganization,
@@ -51,8 +50,8 @@ export interface SidebarContextActions {
       }
     | null;
   /**
-   * The selected organization whose AI Credits pool the row opens: only an
-   * OWNER can fund it, and only under free app access.
+   * The selected organization whose AI Credits pool the row opens: OWNER and
+   * ADMIN may view it under free app access, independently of purchase grants.
    */
   readonly creditsOrganizationId: string | null;
   /**
@@ -124,9 +123,6 @@ export function resolveSidebarContextActions({
   );
   if (!organization) return { ...NO_ACTIONS, createOrganizationPath };
   const invitable = invitableOrganization(context, organizations);
-  const creditsTarget = freeAccess
-    ? resolveCreditsBillingTarget(context, organizations)
-    : null;
   // Statistics follows the server's default `usageStatsMinRole` (ADMIN), so a
   // member never gets a row that cannot load. An organization may change that
   // minimum; this row deliberately keeps the default. Lowered to MEMBER, the
@@ -142,8 +138,9 @@ export function resolveSidebarContextActions({
       : null,
     invite: invitable ? { kind: 'invite', organization: invitable } : null,
     creditsOrganizationId:
-      creditsTarget?.kind === 'organization'
-        ? creditsTarget.organizationId
+      freeAccess &&
+      (organization.role === 'OWNER' || organization.role === 'ADMIN')
+        ? organization.id
         : null,
     settingsPath: organizationSettingsPath(organization.id),
     createOrganizationPath,

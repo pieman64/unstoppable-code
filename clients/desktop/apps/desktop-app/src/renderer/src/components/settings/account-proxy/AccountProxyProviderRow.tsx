@@ -1,9 +1,8 @@
 import type { JSX } from 'react';
-import { Button } from '@canopy/ui-shared';
+import { Button, ProviderStatusDot } from '@canopy/ui-shared';
 import { GlobeIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { isAccountProxyAccountReady } from '@canopy/desktop-shared/lib/account-proxy';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { useOpenSettingsSection } from '../settings-section-navigation';
 import {
   useAccountProxyLiveRefresh,
@@ -22,7 +21,6 @@ import { AccountProxyErrorMessage } from './AccountProxyErrorMessage';
 export function AccountProxyProviderRow(): JSX.Element | null {
   const status = useAccountProxyStatus();
   const openSettings = useOpenSettingsSection();
-  const buttonSize = useSettingsButtonSize();
   const connected =
     status?.available === true &&
     (status.state === 'connected' || status.state === 'error');
@@ -65,19 +63,14 @@ export function AccountProxyProviderRow(): JSX.Element | null {
           <GlobeIcon size={16} aria-hidden />
           Multi-account proxy
           {connected ? (
-            <span
-              aria-hidden="true"
-              className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-                status.error ? 'bg-destructive' : 'bg-success'
-              }`}
-            />
+            <ProviderStatusDot tone={status.error ? 'failed' : 'connected'} />
           ) : null}
         </span>
       }
       description={description}
       control={
         <Button
-          size={buttonSize}
+          size="compact"
           data-testid="settings-account-proxy-manage"
           onClick={(): void => openSettings('account-proxy')}
         >
@@ -87,7 +80,7 @@ export function AccountProxyProviderRow(): JSX.Element | null {
     >
       {connected && status.accounts.length > 0 ? (
         <div
-          className="flex flex-col gap-2.5 border-l pl-4"
+          className="flex flex-col gap-2.5 pl-4"
           data-testid="settings-account-proxy-accounts"
         >
           <AccountProxyAccountList

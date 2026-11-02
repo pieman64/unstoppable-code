@@ -5,6 +5,8 @@ import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { CanopyClientProvider } from '@canopy/app-state';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { ChatMessageList } from '../ChatMessageList';
 import {
   clearChatScrollPosition,
@@ -85,21 +87,26 @@ jest.mock('../ForkedFromLink', () => ({
 }));
 jest.mock('../TurnGroupRenderer', () => ({
   TurnGroupRenderer: ({
+    group,
     forceExpandedUserMessage,
   }: {
+    group: { assistantMessages: Array<{ id: string }> };
     forceExpandedUserMessage?: boolean;
   }): JSX.Element => (
-    <div data-force-expanded={String(forceExpandedUserMessage === true)} />
+    <div data-force-expanded={String(forceExpandedUserMessage === true)}>
+      {group.assistantMessages.map((message) => (
+        <div key={message.id} data-chat-message-id={message.id} />
+      ))}
+    </div>
   ),
 }));
 jest.mock('../ChatMessageItem', () => ({
-  ChatMessageItem: (): null => null,
+  ChatMessageItem: ({ message }: { message: { id: string } }): JSX.Element => (
+    <div data-chat-message-id={message.id} />
+  ),
 }));
 jest.mock('../QueuedMessageBubble', () => ({
   QueuedMessageBubble: (): null => null,
-}));
-jest.mock('../QueuedMessageEditor', () => ({
-  QueuedMessageEditor: (): null => null,
 }));
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
@@ -182,19 +189,21 @@ function chatMessageList(
   } = {},
 ): JSX.Element {
   return (
-    <ChatMessageList
-      messages={options.messages ?? []}
-      queuedMessages={options.queuedMessages ?? []}
-      chatId={chatId}
-      targetOverride={{
-        projectId: 'project-scroll-test',
-        worktreeId,
-        chatId,
-      }}
-      onClearQueuedMessage={(): void => undefined}
-      materializeAllTranscriptItems={options.materializeAllTranscriptItems}
-      suppressAutoScroll={options.suppressAutoScroll}
-    />
+    <CanopyClientProvider client={ipcCanopyClient}>
+      <ChatMessageList
+        messages={options.messages ?? []}
+        queuedMessages={options.queuedMessages ?? []}
+        chatId={chatId}
+        targetOverride={{
+          projectId: 'project-scroll-test',
+          worktreeId,
+          chatId,
+        }}
+        onClearQueuedMessage={(): void => undefined}
+        materializeAllTranscriptItems={options.materializeAllTranscriptItems}
+        suppressAutoScroll={options.suppressAutoScroll}
+      />
+    </CanopyClientProvider>
   );
 }
 
@@ -214,6 +223,15 @@ function virtualTranscript(prefix: string): ChatMessage[] {
       timestamp: index * 2 + 1,
     },
   ]).flat();
+}
+
+function systemMessages(ids: string[]): ChatMessage[] {
+  return ids.map((id, index) => ({
+    id,
+    role: 'system',
+    blocks: [{ type: 'text', text: id }],
+    timestamp: index,
+  }));
 }
 
 function renderList(chatId: string): {
@@ -243,6 +261,41 @@ function renderList(chatId: string): {
   return { root, host, scroller, content };
 }
 
+/**
+ * Lays the message rows out from the DOM, as a browser does: the rows sit at
+ * their `before` tops until the row named `inserted` is mounted, and at their
+ * `after` tops from then on. A prompt inside the sticky header stays pinned at
+ * the top of the viewport. `rowMeasurements` lists every row that was measured.
+ */
+function mockRowGeometry(
+  view: { host: HTMLElement; scroller: HTMLElement },
+  tops: { before: Record<string, number>; after: Record<string, number> },
+): { spy: jest.SpyInstance; rowMeasurements: string[] } {
+  const rowMeasurements: string[] = [];
+  const spy = jest
+    .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+    .mockImplementation(function (this: HTMLElement): DOMRect {
+      if (this === view.scroller) return new DOMRect(0, 0, 500, 200);
+      const messageId = this.dataset.chatMessageId;
+      if (messageId === undefined) return new DOMRect(0, 0, 500, 100);
+      rowMeasurements.push(messageId);
+      if (this.closest('[data-sticky-user-message-id]'))
+        return new DOMRect(0, 8, 100, 40);
+      const layout = view.host.querySelector(
+        '[data-chat-message-id="inserted"]',
+      )
+        ? tops.after
+        : tops.before;
+      return new DOMRect(
+        0,
+        (layout[messageId] ?? 0) - view.scroller.scrollTop,
+        100,
+        20,
+      );
+    });
+  return { spy, rowMeasurements };
+}
+
 beforeEach(() => {
   jest.useFakeTimers();
   resizeObservers.length = 0;
@@ -258,6 +311,223 @@ afterEach(() => {
 });
 
 describe('ChatMessageList scroll position', () => {
+  it('keeps the same message at the same viewport offset across a shifted transcript window', () => {
+    const chatId = 'chat-reset-message-anchor';
+    clearChatScrollPosition(scrollTarget(chatId));
+    const view = renderList(chatId);
+    const metrics = { scrollHeight: 1_000, clientHeight: 200 };
+    installScrollableMetrics(view.scroller, metrics);
+    const geometry = mockRowGeometry(view, {
+      before: { anchor: 350, tail: 450 },
+      after: { inserted: 330, anchor: 430, 'replacement-tail': 530 },
+    });
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: systemMessages(['anchor', 'tail']),
+        }),
+      );
+    });
+    view.scroller.scrollTop = 300;
+    act(() => {
+      view.scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(
+      view.host
+        .querySelector<HTMLElement>('[data-chat-message-id="anchor"]')
+        ?.getBoundingClientRect().top,
+    ).toBe(50);
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: systemMessages(['inserted', 'anchor', 'replacement-tail']),
+        }),
+      );
+    });
+
+    expect(view.scroller.scrollTop).toBe(380);
+    expect(
+      view.host
+        .querySelector<HTMLElement>('[data-chat-message-id="anchor"]')
+        ?.getBoundingClientRect().top,
+    ).toBe(50);
+
+    geometry.spy.mockRestore();
+    act(() => view.root.unmount());
+    view.host.remove();
+  });
+
+  it('keeps the row being read in place when rows shift above it under a pinned prompt', () => {
+    const chatId = 'chat-reset-pinned-prompt-anchor';
+    clearChatScrollPosition(scrollTarget(chatId));
+    const view = renderList(chatId);
+    const metrics = { scrollHeight: 1_000, clientHeight: 200 };
+    installScrollableMetrics(view.scroller, metrics);
+    const turn = (assistantIds: string[]): ChatMessage[] => [
+      {
+        id: 'prompt',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Ask' }],
+        timestamp: 0,
+      },
+      ...assistantIds.map(
+        (id, index): ChatMessage => ({
+          id,
+          role: 'assistant',
+          blocks: [{ type: 'text', text: id }],
+          timestamp: index + 1,
+        }),
+      ),
+      {
+        id: 'prompt:timer',
+        role: 'system',
+        blocks: [{ type: 'turn_timer', startedAt: 0, completedAt: 100 }],
+        timestamp: 100,
+      },
+    ];
+    const geometry = mockRowGeometry(view, {
+      before: { earlier: 200, anchor: 350, tail: 450 },
+      after: { earlier: 200, inserted: 330, anchor: 430, tail: 530 },
+    });
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: turn(['earlier', 'anchor', 'tail']),
+        }),
+      );
+    });
+    expect(
+      view.host.querySelector(
+        '[data-sticky-user-message-id] [data-chat-message-id="prompt"]',
+      ),
+    ).not.toBeNull();
+    view.scroller.scrollTop = 300;
+    act(() => {
+      view.scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(
+      view.host
+        .querySelector<HTMLElement>('[data-chat-message-id="anchor"]')
+        ?.getBoundingClientRect().top,
+    ).toBe(50);
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: turn(['earlier', 'inserted', 'anchor', 'tail']),
+        }),
+      );
+    });
+
+    expect(view.scroller.scrollTop).toBe(380);
+    expect(
+      view.host
+        .querySelector<HTMLElement>('[data-chat-message-id="anchor"]')
+        ?.getBoundingClientRect().top,
+    ).toBe(50);
+
+    geometry.spy.mockRestore();
+    act(() => view.root.unmount());
+    view.host.remove();
+  });
+
+  it("measures the reader's row when the transcript changes, not on every scroll event", () => {
+    const chatId = 'chat-reset-anchor-measurement';
+    clearChatScrollPosition(scrollTarget(chatId));
+    const view = renderList(chatId);
+    installScrollableMetrics(view.scroller, {
+      scrollHeight: 1_000,
+      clientHeight: 200,
+    });
+    const geometry = mockRowGeometry(view, {
+      before: { anchor: 350, tail: 450 },
+      after: { inserted: 330, anchor: 430, tail: 530 },
+    });
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: systemMessages(['anchor', 'tail']),
+        }),
+      );
+    });
+    view.scroller.scrollTop = 300;
+    geometry.rowMeasurements.length = 0;
+    act(() => {
+      for (let event = 0; event < 5; event += 1)
+        view.scroller.dispatchEvent(new Event('scroll'));
+      jest.advanceTimersByTime(500);
+    });
+    expect(geometry.rowMeasurements).toEqual([]);
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: systemMessages(['inserted', 'anchor', 'tail']),
+        }),
+      );
+    });
+
+    expect(view.scroller.scrollTop).toBe(380);
+
+    geometry.spy.mockRestore();
+    act(() => view.root.unmount());
+    view.host.remove();
+  });
+
+  it('anchors on a row that survives when the first visible row is removed', () => {
+    const chatId = 'chat-reset-anchor-survivor';
+    clearChatScrollPosition(scrollTarget(chatId));
+    const view = renderList(chatId);
+    installScrollableMetrics(view.scroller, {
+      scrollHeight: 1_000,
+      clientHeight: 200,
+    });
+    const geometry = mockRowGeometry(view, {
+      before: { removed: 350, anchor: 450, tail: 550 },
+      after: { inserted: 300, anchor: 500, tail: 600 },
+    });
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: systemMessages(['removed', 'anchor', 'tail']),
+        }),
+      );
+    });
+    view.scroller.scrollTop = 300;
+    act(() => {
+      view.scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(
+      view.host
+        .querySelector<HTMLElement>('[data-chat-message-id="anchor"]')
+        ?.getBoundingClientRect().top,
+    ).toBe(150);
+
+    act(() => {
+      view.root.render(
+        chatMessageList(chatId, undefined, {
+          messages: systemMessages(['inserted', 'anchor', 'tail']),
+        }),
+      );
+    });
+
+    expect(view.scroller.scrollTop).toBe(350);
+    expect(
+      view.host
+        .querySelector<HTMLElement>('[data-chat-message-id="anchor"]')
+        ?.getBoundingClientRect().top,
+    ).toBe(150);
+
+    geometry.spy.mockRestore();
+    act(() => view.root.unmount());
+    view.host.remove();
+  });
+
   it('materializes every row without replacing the virtual window', () => {
     const messages: ChatMessage[] = Array.from({ length: 90 }, (_, index) => ({
       id: `materialized-message-${index}`,
@@ -349,6 +619,27 @@ describe('ChatMessageList scroll position', () => {
       top: 180,
       measurements,
     });
+  });
+
+  it('stretches its scroll area over the Activity card inset, so the edge scrollbar stays reachable', () => {
+    // ActivityCardChatLayout pads the chat's right side and sets a negative
+    // --chat-scrollbar-inset. The scroll area itself (whose pointer hover
+    // reveals the rail) reaches the pane edge; its viewport pads the same
+    // amount back so the reading column does not move.
+    const view = renderList('chat-scroll-inset');
+    const area = view.scroller.closest<HTMLElement>(
+      '[data-overlay-scroll-area]',
+    );
+    expect(area?.className).toContain(
+      'right-[var(--chat-scrollbar-inset,0px)]',
+    );
+    expect(view.scroller.className).toContain(
+      'pr-[calc(1rem-var(--chat-scrollbar-inset,0px))]',
+    );
+    const rail = area?.querySelector<HTMLElement>('[data-overlay-scrollbar]');
+    expect(rail?.className).not.toContain('--chat-scrollbar-inset');
+    act(() => view.root.unmount());
+    view.host.remove();
   });
 
   it('keeps a first visit at the bottom when content grows after mount', () => {
@@ -550,6 +841,98 @@ describe('ChatMessageList scroll position', () => {
     // previous chat's offset would lay out sections the restore then drops.
     expect(mountedRows()).toContain(89);
     expect(Math.min(...mountedRows())).toBeGreaterThanOrEqual(87);
+    offsetHeight.mockRestore();
+    act(() => view.root.unmount());
+    view.host.remove();
+  });
+
+  it('drops a queued scroll restore when the list switches to a fork that shares the row', () => {
+    const offsetHeight = jest
+      .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+      .mockImplementation(function (this: HTMLElement): number {
+        if (this.dataset.testid === 'chat-message-list-scroll') return 600;
+        return this.dataset.index === undefined ? 0 : 300;
+      });
+    const sourceChatId = 'chat-anchor-queued-source';
+    const forkChatId = 'chat-anchor-queued-fork';
+    clearChatScrollPosition(scrollTarget(sourceChatId));
+    clearChatScrollPosition(scrollTarget(forkChatId));
+    const view = renderList(sourceChatId);
+    installScrollableMetrics(view.scroller, {
+      scrollHeight: 40_000,
+      clientHeight: 600,
+    });
+    // Each answer sits 60 px under the top of the section the list placed.
+    const geometry = jest
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement): DOMRect {
+        if (this === view.scroller) return new DOMRect(0, 0, 500, 600);
+        if (this.dataset.chatMessageId === undefined)
+          return new DOMRect(0, 0, 500, 100);
+        if (this.closest('[data-sticky-user-message-id]'))
+          return new DOMRect(0, 8, 100, 40);
+        const section = this.closest<HTMLElement>('[data-index]');
+        return new DOMRect(
+          0,
+          Number.parseFloat(section?.style.top ?? '0') +
+            60 -
+            view.scroller.scrollTop,
+          100,
+          20,
+        );
+      });
+    const messages = virtualTranscript('shared');
+    act(() => {
+      view.root.render(chatMessageList(sourceChatId, undefined, { messages }));
+    });
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    view.scroller.scrollTop = 12_000;
+    act(() => {
+      view.scroller.dispatchEvent(new Event('scroll'));
+      jest.advanceTimersByTime(500);
+    });
+
+    // A turn inserted above the reader queues a restore for the next frame.
+    const reordered: ChatMessage[] = [
+      ...messages.slice(0, 20),
+      {
+        id: 'shared-user-inserted',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Inserted ask' }],
+        timestamp: 20,
+      },
+      {
+        id: 'shared-assistant-inserted',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'Inserted answer' }],
+        timestamp: 20,
+      },
+      ...messages.slice(20),
+    ];
+    act(() => {
+      view.root.render(
+        chatMessageList(sourceChatId, undefined, { messages: reordered }),
+      );
+    });
+
+    // Before that frame, the list switches to a fork of the chat. It holds the
+    // same rows and was left at its own position.
+    saveChatScrollPosition(scrollTarget(forkChatId), 750);
+    mockChatId = forkChatId;
+    act(() => {
+      view.root.render(
+        chatMessageList(forkChatId, undefined, { messages: reordered }),
+      );
+    });
+    expect(view.scroller.scrollTop).toBe(750);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(view.scroller.scrollTop).toBe(750);
+    geometry.mockRestore();
     offsetHeight.mockRestore();
     act(() => view.root.unmount());
     view.host.remove();

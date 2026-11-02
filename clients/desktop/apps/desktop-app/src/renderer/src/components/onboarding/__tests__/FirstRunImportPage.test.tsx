@@ -1,14 +1,36 @@
 /**
  * @jest-environment jsdom
  */
-import { act } from 'react';
+import { act, StrictMode } from 'react';
+import type * as CursorRulesOffer from '@/lib/cursorRulesOffer';
 import { createRoot, type Root } from 'react-dom/client';
+
 import type {
   ExternalProjectCandidate,
   ExternalProjectDiscoverResponse,
   ExternalProjectImportItemResult,
   ExternalProjectImportResponse,
 } from '@canopy/desktop-shared/types';
+import type {
+  WorkspaceContext,
+  WorkspaceContextState,
+} from '@canopy/protocol/workspace-context';
+
+const startOperation = jest.fn<void, unknown[]>();
+const succeedOperation = jest.fn<void, unknown[]>();
+const failOperation = jest.fn<void, unknown[]>();
+jest.mock('@canopy/desktop-instrumentation/client', () => ({
+  ...jest.requireActual<object>('@canopy/desktop-instrumentation/client'),
+  startClientOperation: (...args: unknown[]): void => {
+    startOperation(...args);
+  },
+  succeedClientOperation: (...args: unknown[]): void => {
+    succeedOperation(...args);
+  },
+  failClientOperation: (...args: unknown[]): void => {
+    failOperation(...args);
+  },
+}));
 
 const loadProjects = jest.fn(() => Promise.resolve());
 const toggleCollapsed = jest.fn(() => Promise.resolve());
@@ -23,19 +45,23 @@ jest.mock('@/stores/projectsStore', () => ({
 }));
 const navigateAfterRepositoryWorkspaceCreated = jest.fn();
 jest.mock('@/lib/postWorkspaceCreateNavigation', () => ({
-  navigateAfterRepositoryWorkspaceCreated: (workspaceId: string): void => {
-    navigateAfterRepositoryWorkspaceCreated(workspaceId);
+  navigateAfterRepositoryWorkspaceCreated: (
+    workspaceId: string,
+    reason?: string,
+  ): void => {
+    if (reason) navigateAfterRepositoryWorkspaceCreated(workspaceId, reason);
+    else navigateAfterRepositoryWorkspaceCreated(workspaceId);
   },
 }));
-const completeOnboardingSuggestionDurably = jest.fn();
-jest.mock('@/components/home/onboarding-suggestions/completionWriter', () => ({
-  completeOnboardingSuggestionDurably: (...args: unknown[]): void => {
-    completeOnboardingSuggestionDurably(...args);
-  },
-}));
-const offerCursorRulesReview = jest.fn(() => Promise.resolve());
+
+const offerCursorRulesReview = jest.fn<
+  ReturnType<typeof CursorRulesOffer.offerCursorRulesReview>,
+  Parameters<typeof CursorRulesOffer.offerCursorRulesReview>
+>(() => Promise.resolve());
 jest.mock('@/lib/cursorRulesOffer', () => ({
-  offerCursorRulesReview: (...args: unknown[]): Promise<void> =>
+  offerCursorRulesReview: (
+    ...args: Parameters<typeof CursorRulesOffer.offerCursorRulesReview>
+  ): ReturnType<typeof CursorRulesOffer.offerCursorRulesReview> =>
     offerCursorRulesReview(...args),
 }));
 const providerPanelProps: Record<string, unknown>[] = [];
@@ -45,7 +71,11 @@ jest.mock('@/components/auth/ProviderAuthPanel', () => ({
     return null;
   },
 }));
-type MockAuthStatus = { authenticated: boolean } | null;
+type MockAuthStatus = {
+  authenticated: boolean;
+  error?: string;
+  probeFailed?: boolean;
+} | null;
 const SIGNED_OUT: MockAuthStatus = { authenticated: false };
 let mockClaudeStatus: MockAuthStatus = SIGNED_OUT;
 let mockCodexStatus: MockAuthStatus = SIGNED_OUT;
@@ -61,6 +91,7 @@ jest.mock('@/lib/ai-credits-refresh', () => ({
 }));
 
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import { LOADING_PLACEHOLDER_DELAY_MS } from '@canopy/ui-shared/lib';
 import type { CloudDailyCreditDripState } from '@canopy/desktop-shared/types';
 import { FirstRunImportPage } from '../FirstRunImportPage';
 import { resetDailyCreditDripOptInCacheForTests } from '@/hooks/useDailyCreditDripOptIn';
@@ -151,10 +182,14 @@ function dripState(
 
 function installApi(first: ExternalProjectDiscoverResponse): Api {
   const api: Api = {
-    discover: jest.fn(() => Promise.resolve(first)),
-    importProjects: jest.fn(() => Promise.resolve({ results: [] })),
+    discover: jest.fn<Promise<ExternalProjectDiscoverResponse>, [unknown]>(() =>
+      Promise.resolve(first),
+    ),
+    importProjects: jest.fn<Promise<ExternalProjectImportResponse>, [unknown]>(
+      () => Promise.resolve({ results: [] }),
+    ),
     pickFolder: jest.fn(() => Promise.resolve(null)),
-    savePreferences: jest.fn(() => Promise.resolve()),
+    savePreferences: jest.fn<Promise<void>, [unknown]>(() => Promise.resolve()),
     loadCloudDailyCreditDrip: jest.fn(() => Promise.resolve(dripState())),
     saveCloudDailyCreditDrip: jest.fn(({ enabled }: { enabled: boolean }) =>
       Promise.resolve({
@@ -226,8 +261,11 @@ describe('FirstRunImportPage', () => {
     onDone = jest.fn();
     loadProjects.mockClear();
     navigateAfterRepositoryWorkspaceCreated.mockClear();
-    completeOnboardingSuggestionDurably.mockClear();
+
     offerCursorRulesReview.mockClear();
+    startOperation.mockClear();
+    succeedOperation.mockClear();
+    failOperation.mockClear();
     providerPanelProps.length = 0;
     mockClaudeStatus = SIGNED_OUT;
     mockCodexStatus = SIGNED_OUT;
@@ -279,7 +317,7 @@ describe('FirstRunImportPage', () => {
         result('alpha', {
           status: 'failed',
           workspaceId: undefined,
-          error: 'Folder is gone',
+          message: 'Folder is gone',
         }),
       ],
     });
@@ -289,7 +327,7 @@ describe('FirstRunImportPage', () => {
 
     expect(onDone).not.toHaveBeenCalled();
     expect(api.savePreferences).not.toHaveBeenCalled();
-    expect(completeOnboardingSuggestionDurably).not.toHaveBeenCalled();
+
     expect(container.textContent).toContain("Couldn't import alpha.");
     expect(byTestId('first-run-import-submit').textContent).toBe(
       'Import 1 project',
@@ -347,6 +385,58 @@ describe('FirstRunImportPage', () => {
     );
   });
 
+  it('lands on the most recent of several imports and says why (CAN-4674)', async () => {
+    const OLDER = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const api = installApi(
+      scan([
+        candidate('payments-service', { lastActivityAt: OLDER }),
+        candidate('side-quest'),
+      ]),
+    );
+    api.importProjects.mockResolvedValue({
+      results: [result('payments-service'), result('side-quest')],
+    });
+    await render();
+
+    await click(byTestId('first-run-import-submit'));
+
+    expect(navigateAfterRepositoryWorkspaceCreated).toHaveBeenCalledWith(
+      'ws-side-quest',
+      'most-recent-import',
+    );
+  });
+
+  it('gives no reason when only one import succeeded (CAN-4674)', async () => {
+    const api = installApi(scan([candidate('alpha'), candidate('beta')]));
+    api.importProjects.mockResolvedValue({
+      results: [
+        result('alpha'),
+        result('beta', { status: 'failed', workspaceId: undefined }),
+      ],
+    });
+    await render();
+
+    await click(byTestId('first-run-import-submit'));
+
+    expect(navigateAfterRepositoryWorkspaceCreated).toHaveBeenCalledWith(
+      'ws-alpha',
+    );
+  });
+
+  it('opens nothing, with or without a reason, when the context changed during import (CAN-4674)', async () => {
+    const api = installApi(scan([candidate('alpha'), candidate('beta')]));
+    api.importProjects.mockImplementation(() => {
+      useWorkspaceContextStore.setState({ accountEpoch: 2 });
+      return Promise.resolve({ results: [result('alpha'), result('beta')] });
+    });
+    await render();
+
+    await click(byTestId('first-run-import-submit'));
+
+    expect(onDone).toHaveBeenCalled();
+    expect(navigateAfterRepositoryWorkspaceCreated).not.toHaveBeenCalled();
+  });
+
   it('offers nothing when the page is skipped', async () => {
     installApi(scan([candidate('alpha')]));
     await render();
@@ -372,7 +462,16 @@ describe('FirstRunImportPage', () => {
   it('opens an organization user’s import in Personal', async () => {
     const api = installApi(scan([candidate('alpha')]));
     api.importProjects.mockResolvedValue({ results: [result('alpha')] });
-    const setContext = jest.fn(() => Promise.resolve());
+    const setContext = jest.fn<
+      Promise<WorkspaceContextState>,
+      [WorkspaceContext]
+    >(() =>
+      Promise.resolve({
+        context: { kind: 'personal' },
+        revision: 2,
+        organizations: [{ id: ORG_A, name: 'Org A', role: 'MEMBER' }],
+      }),
+    );
     useWorkspaceContextStore.setState({
       hydrated: true,
       accountEpoch: 1,
@@ -395,10 +494,13 @@ describe('FirstRunImportPage', () => {
   });
 
   describe('without Claude or Codex', () => {
-    it('shows the provider rows in the neutral tone under the shared intro', async () => {
+    it('shows the provider rows in the neutral tone under the credits intro', async () => {
       installApi(scan([]));
       await render();
       expect(container.textContent).toContain(
+        'Use free AI Credits, or connect a subscription you already have.',
+      );
+      expect(container.textContent).not.toContain(
         `Bring your own subscription or use your ${brandText.appName} account.`,
       );
       const tones = providerPanelProps.map((props) => [
@@ -412,13 +514,181 @@ describe('FirstRunImportPage', () => {
     it('offers the daily AI Credits, off until turned on', async () => {
       installApi(scan([]));
       await render();
-      expect(byTestId('first-run-daily-credits').textContent).toContain(
-        '10 free AI Credits every day',
+      const row = byTestId('first-run-daily-credits');
+      expect(
+        byTestId('first-run-daily-credits-description').dataset.state,
+      ).toBe('offer');
+      expect(row.querySelector('label')?.textContent?.trim()).toBe(
+        'Free daily AI Credits',
       );
-      expect(byTestId('first-run-daily-credits').textContent).toContain(
-        brandText.appName,
+      expect(creditsSwitch().getAttribute('aria-label')).toBe(
+        'Free daily AI Credits',
       );
       expect(creditsSwitch().getAttribute('aria-checked')).toBe('false');
+      expect(queryTestId('first-run-daily-credits-confirmation')).toBeNull();
+    });
+
+    it('names the switch with its label and describes it with the offer', async () => {
+      installApi(scan([]));
+      await render();
+      const label = byTestId('first-run-daily-credits').querySelector('label');
+      expect(label?.htmlFor).toBe(creditsSwitch().id);
+      const describedBy = creditsSwitch().getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy ?? '')?.textContent).toBe(
+        'No card needed · 10 AI Credits every day',
+      );
+    });
+
+    it('reads the offer cap from the server', async () => {
+      const api = installApi(scan([]));
+      api.loadCloudDailyCreditDrip.mockResolvedValue({
+        available: true,
+        resolved: true,
+        preference: { enabled: false, decidedAt: null, capCredits: 25 },
+      });
+      await render();
+      expect(
+        byTestId('first-run-daily-credits-description').textContent,
+      ).toContain('No card needed · 25 AI Credits every day');
+    });
+
+    it('turns the switch on from its label', async () => {
+      const api = installApi(scan([]));
+      await render();
+      const label = byTestId('first-run-daily-credits').querySelector('label');
+      if (!(label instanceof HTMLElement)) throw new Error('missing label');
+      await click(label);
+      expect(api.saveCloudDailyCreditDrip).toHaveBeenCalledTimes(1);
+      expect(api.saveCloudDailyCreditDrip).toHaveBeenCalledWith({
+        enabled: true,
+      });
+    });
+
+    function saveResult(
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> {
+      return {
+        enabled: true,
+        decidedAt: RECENT,
+        capCredits: 10,
+        balanceCredits: 7,
+        granted: 7,
+        ...overrides,
+      };
+    }
+
+    it('confirms the actual grant, not the cap, once the save settles', async () => {
+      const api = installApi(scan([]));
+      api.saveCloudDailyCreditDrip.mockResolvedValueOnce(saveResult());
+      await render();
+      await click(creditsSwitch());
+      const confirmation = byTestId('first-run-daily-credits-confirmation');
+      expect(confirmation.textContent).toBe(
+        '7 free AI Credits added · refills daily',
+      );
+      expect(confirmation.closest('[role="status"]')).not.toBeNull();
+      expect(
+        byTestId('first-run-daily-credits-description').dataset.state,
+      ).toBe('granted');
+      const describedBy = creditsSwitch().getAttribute('aria-describedby');
+      expect(document.getElementById(describedBy ?? '')?.textContent).toBe(
+        '7 free AI Credits added · refills daily',
+      );
+    });
+
+    it('acknowledges a zero grant without claiming credits were added', async () => {
+      const api = installApi(scan([]));
+      api.saveCloudDailyCreditDrip.mockResolvedValueOnce(
+        saveResult({ granted: 0, balanceCredits: 0 }),
+      );
+      await render();
+      await click(creditsSwitch());
+      expect(byTestId('first-run-daily-credits-confirmation').textContent).toBe(
+        'Free daily AI Credits enabled.',
+      );
+      expect(
+        byTestId('first-run-daily-credits-description').dataset.state,
+      ).toBe('enabled');
+      const status = byTestId(
+        'first-run-daily-credits-description',
+      ).querySelector('[role="status"]');
+      expect(status?.textContent).not.toMatch(/added|tomorrow/);
+    });
+
+    it.each(['network_limit', 'network_unidentified'])(
+      'keeps the offer when the grant is blocked (%s), even with a grant',
+      async (blockedReason) => {
+        const api = installApi(scan([]));
+        api.saveCloudDailyCreditDrip.mockResolvedValueOnce(
+          saveResult({ blockedReason, granted: 5 }),
+        );
+        await render();
+        await click(creditsSwitch());
+        expect(creditsSwitch().getAttribute('aria-checked')).toBe('true');
+        expect(queryTestId('first-run-daily-credits-confirmation')).toBeNull();
+        expect(
+          byTestId('first-run-daily-credits-description').dataset.state,
+        ).toBe('offer');
+      },
+    );
+
+    it('keeps the offer and ignores repeat clicks while saving', async () => {
+      const api = installApi(scan([]));
+      let settle: (value: Record<string, unknown>) => void = () => undefined;
+      api.saveCloudDailyCreditDrip.mockReturnValueOnce(
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+      );
+      await render();
+      await click(creditsSwitch());
+      await click(creditsSwitch());
+      expect(api.saveCloudDailyCreditDrip).toHaveBeenCalledTimes(1);
+      expect(
+        byTestId('first-run-daily-credits-description').dataset.state,
+      ).toBe('offer');
+      expect(queryTestId('first-run-daily-credits-confirmation')).toBeNull();
+      await act(async () => {
+        settle(saveResult());
+        await Promise.resolve();
+      });
+      await flush();
+      expect(
+        byTestId('first-run-daily-credits-confirmation').textContent,
+      ).toContain('7 free AI Credits added');
+    });
+
+    it('withdraws the confirmation when the user turns the credits off', async () => {
+      const api = installApi(scan([]));
+      api.saveCloudDailyCreditDrip.mockResolvedValueOnce(saveResult());
+      await render();
+      await click(creditsSwitch());
+      expect(
+        queryTestId('first-run-daily-credits-confirmation'),
+      ).not.toBeNull();
+      await click(creditsSwitch());
+      expect(api.saveCloudDailyCreditDrip).toHaveBeenLastCalledWith({
+        enabled: false,
+      });
+      expect(queryTestId('first-run-daily-credits-confirmation')).toBeNull();
+      expect(
+        byTestId('first-run-daily-credits-description').textContent,
+      ).toContain('No card needed · 10 AI Credits every day');
+    });
+
+    it('clears the confirmation when a retry fails', async () => {
+      const api = installApi(scan([]));
+      api.saveCloudDailyCreditDrip
+        .mockResolvedValueOnce(saveResult())
+        .mockResolvedValueOnce(saveResult({ enabled: false, granted: 0 }))
+        .mockRejectedValueOnce(new Error('offline'));
+      await render();
+      await click(creditsSwitch());
+      await click(creditsSwitch());
+      await click(creditsSwitch());
+      expect(byTestId('first-run-daily-credits-error')).not.toBeNull();
+      expect(queryTestId('first-run-daily-credits-confirmation')).toBeNull();
     });
 
     it('saves the opt-in when the switch is turned on', async () => {
@@ -471,12 +741,20 @@ describe('FirstRunImportPage', () => {
       );
       await render();
       expect(creditsSwitch().getAttribute('aria-checked')).toBe('true');
+      // Already on, with no save from this page: no grant is claimed.
+      expect(queryTestId('first-run-daily-credits-confirmation')).toBeNull();
+      expect(
+        byTestId('first-run-daily-credits-description').textContent,
+      ).toContain('No card needed · 10 AI Credits every day');
     });
 
     it('does not offer the credits to a Claude subscriber', async () => {
       mockClaudeStatus = { authenticated: true };
       installApi(scan([]));
       await render();
+      expect(container.textContent).toContain(
+        `Bring your own subscription or use your ${brandText.appName} account.`,
+      );
       expect(queryTestId('first-run-daily-credits')).toBeNull();
     });
 
@@ -512,6 +790,58 @@ describe('FirstRunImportPage', () => {
       expect(queryTestId('first-run-daily-credits')).not.toBeNull();
     });
 
+    it('uses the replacement account choice while old and new saves settle', async () => {
+      const api = installApi(scan([]));
+      let settleOld: (value: Record<string, unknown>) => void = () => undefined;
+      let settleNew: (value: Record<string, unknown>) => void = () => undefined;
+      api.saveCloudDailyCreditDrip
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            settleOld = resolve;
+          }),
+        )
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            settleNew = resolve;
+          }),
+        );
+      await render();
+      await click(creditsSwitch());
+      expect(creditsSwitch().getAttribute('aria-checked')).toBe('true');
+
+      await act(async () => {
+        window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+        await Promise.resolve();
+      });
+      await flush();
+      expect(creditsSwitch().hasAttribute('disabled')).toBe(false);
+      expect(creditsSwitch().getAttribute('aria-checked')).toBe('false');
+
+      await click(creditsSwitch());
+      expect(api.saveCloudDailyCreditDrip).toHaveBeenNthCalledWith(2, {
+        enabled: true,
+      });
+      await act(async () => {
+        settleOld(saveResult());
+        await Promise.resolve();
+      });
+      await flush();
+      expect(creditsSwitch().hasAttribute('disabled')).toBe(true);
+      expect(creditsSwitch().getAttribute('aria-checked')).toBe('true');
+      expect(queryTestId('first-run-daily-credits-confirmation')).toBeNull();
+
+      await act(async () => {
+        settleNew(saveResult({ granted: 3 }));
+        await Promise.resolve();
+      });
+      await flush();
+      expect(creditsSwitch().hasAttribute('disabled')).toBe(false);
+      expect(creditsSwitch().getAttribute('aria-checked')).toBe('true');
+      expect(byTestId('first-run-daily-credits-confirmation').textContent).toBe(
+        '3 free AI Credits added · refills daily',
+      );
+    });
+
     it('hides the row once the cloud account goes away', async () => {
       const api = installApi(scan([]));
       await render();
@@ -539,29 +869,690 @@ describe('FirstRunImportPage', () => {
         customRoots: ['/Users/me/picked'],
       });
     });
+  });
 
-    it('labels the empty projects row without a trailing period', async () => {
+  // CAN-5290: every empty scan asks for a folder rather than explaining
+  // what the scan missed.
+  describe('empty projects row (CAN-5290)', () => {
+    const noProviders: ExternalProjectDiscoverResponse = {
+      ...scan([]),
+      providersDetected: { claude: false, codex: false },
+    };
+    const onlyAdded = scan([
+      candidate('tracked', { status: 'already-tracked' }),
+      candidate('imported', { status: 'already-imported' }),
+    ]);
+
+    it.each([
+      ['no provider data', noProviders],
+      ['an empty provider store', scan([])],
+      ['only projects already added', onlyAdded],
+    ])('asks for a folder with %s', async (_name, response) => {
+      installApi(response);
+      await render();
+      expect(queryTestId('first-run-import-submit')).toBeNull();
+      const empty = byTestId('first-run-import-empty');
+      expect(empty.textContent).toBe(
+        'Add a projectAdd the folder you want to work inChoose a folder',
+      );
+      expect(container.textContent).not.toMatch(
+        /No Claude or Codex|Everything found|Add any folder/,
+      );
+      const choose = byTestId('first-run-import-choose-folder');
+      expect(choose.className).toContain('bg-accent');
+      const skip = byTestId('first-run-import-skip');
+      expect(skip.textContent).toBe('Continue without a project');
+      expect(skip.className).toContain('bg-transparent');
+      expect(skip.className).not.toContain('bg-accent');
+    });
+
+    it('stays on the empty state when the folder pick is canceled', async () => {
+      const api = installApi(scan([]));
+      await render();
+      await click(byTestId('first-run-import-choose-folder'));
+      expect(api.pickFolder).toHaveBeenCalledTimes(1);
+      expect(onDone).not.toHaveBeenCalled();
+      expect(api.savePreferences).not.toHaveBeenCalled();
+      expect(queryTestId('first-run-import-empty')).not.toBeNull();
+      expect(byTestId('first-run-import-skip').textContent).toBe(
+        'Continue without a project',
+      );
+    });
+
+    it.each(['picker', 'rescan'] as const)(
+      'keeps the empty state usable after a %s failure',
+      async (failure) => {
+        const api = installApi(scan([]));
+        await render();
+        if (failure === 'picker') {
+          api.pickFolder.mockRejectedValueOnce(new Error('denied'));
+        } else {
+          api.pickFolder.mockResolvedValueOnce('/Users/me/picked');
+          api.discover.mockRejectedValueOnce(new Error('unreadable'));
+        }
+        await click(byTestId('first-run-import-choose-folder'));
+
+        expect(byTestId('first-run-import-actions').textContent).toContain(
+          "Couldn't add that folder. Try again.",
+        );
+        expect(queryTestId('first-run-import-empty')).not.toBeNull();
+        expect(onDone).not.toHaveBeenCalled();
+        expect(api.savePreferences).not.toHaveBeenCalled();
+
+        api.pickFolder.mockResolvedValueOnce('/Users/me/picked');
+        api.discover.mockResolvedValueOnce(
+          scan([
+            candidate('picked', {
+              surfaces: ['custom-folder'],
+              providers: [],
+              lastActivityAt: null,
+            }),
+          ]),
+        );
+        await click(byTestId('first-run-import-choose-folder'));
+
+        expect(queryTestId('first-run-import-empty')).toBeNull();
+        expect(byTestId('first-run-import-submit').textContent).toBe(
+          'Import 1 project',
+        );
+        expect(onDone).not.toHaveBeenCalled();
+        expect(api.savePreferences).not.toHaveBeenCalled();
+      },
+    );
+
+    it('moves to the import flow once a folder is chosen', async () => {
+      const api = installApi(scan([]));
+      api.pickFolder.mockResolvedValue('/Users/me/picked');
+      api.discover.mockResolvedValueOnce(scan([])).mockResolvedValueOnce(
+        scan([
+          candidate('picked', {
+            surfaces: ['custom-folder'],
+            providers: [],
+            lastActivityAt: null,
+          }),
+        ]),
+      );
+      await render();
+      await click(byTestId('first-run-import-choose-folder'));
+
+      expect(onDone).not.toHaveBeenCalled();
+      expect(api.savePreferences).not.toHaveBeenCalled();
+      expect(queryTestId('first-run-import-empty')).toBeNull();
+      expect(queryTestId('first-run-import-choose-folder')).toBeNull();
+      expect(byTestId('first-run-import-submit').textContent).toBe(
+        'Import 1 project',
+      );
+      expect(byTestId('first-run-import-skip').textContent).toBe(
+        'Skip for now',
+      );
+    });
+
+    it('keeps the import flow when every importable project is unchecked', async () => {
+      installApi(
+        scan([
+          candidate('alpha'),
+          candidate('tracked', { status: 'already-tracked' }),
+        ]),
+      );
+      await render();
+      const box = container.querySelector('#first-run-alpha');
+      if (!(box instanceof HTMLInputElement)) throw new Error('missing alpha');
+      expect(box.checked).toBe(true);
+      await click(box);
+
+      expect(box.checked).toBe(false);
+      expect(queryTestId('first-run-import-empty')).toBeNull();
+      expect(byTestId('first-run-import-submit').textContent).toBe(
+        'Select a project to import',
+      );
+      expect(byTestId('first-run-import-skip').textContent).toBe(
+        'Skip for now',
+      );
+    });
+  });
+
+  describe('found projects (CAN-4712)', () => {
+    const NOW = Date.parse('2026-10-24T12:00:00.000Z');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const daysAgo = (days: number): string =>
+      new Date(NOW - days * DAY_MS).toISOString();
+    const allOlder = (): ExternalProjectCandidate[] => [
+      candidate('invoice-api', { lastActivityAt: daysAgo(105) }),
+      candidate('ops-scripts', { lastActivityAt: daysAgo(130) }),
+      candidate('dotfiles', { lastActivityAt: daysAgo(150) }),
+    ];
+    const mixed = (): ExternalProjectCandidate[] => [
+      candidate('fresh', { lastActivityAt: daysAgo(2) }),
+      candidate('invoice-api', { lastActivityAt: daysAgo(105) }),
+      candidate('ops-scripts', { lastActivityAt: daysAgo(130) }),
+    ];
+
+    const rowIds = (): string[] =>
+      Array.from(
+        container.querySelectorAll('[data-testid^="first-run-import-row-"]'),
+      ).map((row) =>
+        (row.getAttribute('data-testid') ?? '').replace(
+          'first-run-import-row-',
+          '',
+        ),
+      );
+    const box = (id: string): HTMLInputElement => {
+      const node = container.querySelector(`#first-run-${id}`);
+      if (!(node instanceof HTMLInputElement)) throw new Error(`missing ${id}`);
+      return node;
+    };
+    const selectAll = (): HTMLInputElement => box('select-all');
+    const submit = (): HTMLButtonElement => {
+      const node = byTestId('first-run-import-submit');
+      if (!(node instanceof HTMLButtonElement)) throw new Error('not a button');
+      return node;
+    };
+    const projectsText = (): string =>
+      byTestId('first-run-import-projects').textContent ?? '';
+
+    beforeEach(() => {
+      jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('lists every older project unchecked with a found count', async () => {
+      installApi(scan(allOlder()));
+      await render();
+
+      expect(rowIds()).toEqual(['invoice-api', 'ops-scripts', 'dotfiles']);
+      for (const id of rowIds()) expect(box(id).checked).toBe(false);
+      expect(queryTestId('first-run-import-older')).toBeNull();
+      expect(projectsText()).toContain(
+        'Found 3 Claude projects · last used 3–5 months ago',
+      );
+      expect(projectsText()).not.toContain('A project is a folder you work in');
+    });
+
+    it('counts only importable projects and ignores recent excluded results', async () => {
+      installApi(
+        scan([
+          ...allOlder(),
+          candidate('missing', {
+            status: 'unavailable',
+            lastActivityAt: daysAgo(1),
+          }),
+          candidate('tracked', {
+            status: 'already-tracked',
+            lastActivityAt: daysAgo(1),
+          }),
+          candidate('imported', {
+            status: 'already-imported',
+            lastActivityAt: daysAgo(1),
+          }),
+          candidate('scratch', {
+            rootPath: '/Users/me/local-agent-mode-sessions/scratch',
+            lastActivityAt: daysAgo(1),
+          }),
+        ]),
+      );
+      await render();
+
+      expect(rowIds()).toEqual(['invoice-api', 'ops-scripts', 'dotfiles']);
+      expect(projectsText()).toContain(
+        'Found 3 Claude projects · last used 3–5 months ago',
+      );
+    });
+
+    it('prompts for a selection until a project is checked', async () => {
+      const api = installApi(scan(allOlder()));
+      await render();
+
+      expect(submit().textContent).toBe('Select a project to import');
+      expect(submit().disabled).toBe(true);
+
+      await click(box('ops-scripts'));
+      expect(submit().textContent).toBe('Import 1 project');
+      expect(submit().disabled).toBe(false);
+
+      await click(box('ops-scripts'));
+      expect(submit().textContent).toBe('Select a project to import');
+      expect(submit().disabled).toBe(true);
+
+      await click(box('invoice-api'));
+      await click(submit());
+      expect(api.importProjects).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selections: [{ candidateId: 'invoice-api', importChats: false }],
+        }),
+      );
+    });
+
+    it('selects all, shows a partial selection, and clears', async () => {
+      installApi(scan(allOlder()));
+      await render();
+
+      expect(selectAll().checked).toBe(false);
+      await click(selectAll());
+      for (const id of rowIds()) expect(box(id).checked).toBe(true);
+      expect(submit().textContent).toBe('Import 3 projects');
+
+      await click(box('dotfiles'));
+      expect(selectAll().checked).toBe(false);
+      expect(submit().textContent).toBe('Import 2 projects');
+
+      await click(selectAll());
+      expect(selectAll().checked).toBe(true);
+      await click(selectAll());
+      for (const id of rowIds()) expect(box(id).checked).toBe(false);
+      expect(submit().textContent).toBe('Select a project to import');
+    });
+
+    it('keeps a selection across a rerender', async () => {
+      installApi(scan(allOlder()));
+      await render();
+      await click(box('dotfiles'));
+
+      await render();
+
+      expect(box('dotfiles').checked).toBe(true);
+      expect(rowIds()).toHaveLength(3);
+      expect(submit().textContent).toBe('Import 1 project');
+    });
+
+    it('uses singular copy and no Select all for one older project', async () => {
+      installApi(
+        scan([candidate('dotfiles', { lastActivityAt: daysAgo(150) })]),
+      );
+      await render();
+
+      expect(rowIds()).toEqual(['dotfiles']);
+      expect(queryTestId('first-run-import-select-all')).toBeNull();
+      expect(projectsText()).toContain(
+        'Found 1 Claude project · last used 5 months ago',
+      );
+    });
+
+    it.each<[string, ExternalProjectCandidate[], string]>([
+      [
+        'Codex only',
+        [
+          candidate('a', {
+            providers: ['codex'],
+            lastActivityAt: daysAgo(100),
+          }),
+          candidate('b', {
+            providers: ['codex'],
+            lastActivityAt: daysAgo(100),
+          }),
+        ],
+        'Found 2 Codex projects',
+      ],
+      [
+        'Claude and Codex across projects',
+        [
+          candidate('a', { lastActivityAt: daysAgo(100) }),
+          candidate('b', {
+            providers: ['codex'],
+            lastActivityAt: daysAgo(100),
+          }),
+        ],
+        'Found 2 Claude and Codex projects',
+      ],
+      [
+        'both on one project',
+        [
+          candidate('a', {
+            providers: ['claude', 'codex'],
+            lastActivityAt: daysAgo(100),
+          }),
+        ],
+        'Found 1 Claude and Codex project',
+      ],
+      [
+        'no provider',
+        [candidate('a', { providers: [], lastActivityAt: daysAgo(100) })],
+        'Found 1 project',
+      ],
+      [
+        'a provider-less project among Claude ones',
+        [
+          candidate('a', { lastActivityAt: daysAgo(100) }),
+          candidate('b', { providers: [], lastActivityAt: daysAgo(100) }),
+        ],
+        'Found 2 projects',
+      ],
+    ])('names the providers for %s', async (_name, candidates, expected) => {
+      installApi(scan(candidates));
+      await render();
+      expect(projectsText()).toContain(`${expected} · last used 3 months ago`);
+    });
+
+    it.each<[string[]]>([[['cursor']], [['claude', 'cursor']]])(
+      'uses neutral copy for unsupported provider metadata %j',
+      async (providers) => {
+        const project = candidate('a', { lastActivityAt: daysAgo(105) });
+        // Simulate unrecognized metadata at the runtime boundary without
+        // weakening the shared provider union or forcing a type cast.
+        Object.defineProperty(project, 'providers', { value: providers });
+        installApi(scan([project]));
+        await render();
+
+        expect(projectsText()).toContain(
+          'Found 1 project · last used 3 months ago',
+        );
+      },
+    );
+
+    it.each<[string, (string | null)[], string]>([
+      [
+        'equal buckets',
+        [daysAgo(95), daysAgo(110)],
+        ' · last used 3 months ago',
+      ],
+      [
+        'different units',
+        [daysAgo(340), daysAgo(400)],
+        ' · last used 11 months–1 year ago',
+      ],
+      ['plural years', [daysAgo(800)], ' · last used 2 years ago'],
+      [
+        'valid activity at the Unix epoch',
+        ['1970-01-01T00:00:00.000Z'],
+        ' · last used 56 years ago',
+      ],
+      [
+        'valid activity before the Unix epoch',
+        ['1960-01-01T00:00:00.000Z'],
+        ' · last used 66 years ago',
+      ],
+      ['empty activity', ['', null], ''],
+      [
+        'partly known activity',
+        [daysAgo(105), null, daysAgo(130)],
+        ' · known activity 3–4 months ago',
+      ],
+      [
+        'an invalid timestamp',
+        [daysAgo(105), 'not-a-date'],
+        ' · known activity 3 months ago',
+      ],
+      ['no activity', [null, 'not-a-date'], ''],
+    ])('describes the age range for %s', async (_name, stamps, suffix) => {
+      installApi(
+        scan(
+          stamps.map((lastActivityAt, i) =>
+            candidate(`p${i}`, { lastActivityAt }),
+          ),
+        ),
+      );
+      await render();
+      const count = stamps.length;
+      const found = `Found ${count} Claude ${count === 1 ? 'project' : 'projects'}`;
+      expect(projectsText()).toContain(`${found}${suffix}`);
+      expect(projectsText()).not.toContain('NaN');
+      expect(projectsText()).not.toContain('undefined');
+      if (suffix === '') expect(projectsText()).not.toContain(' · ');
+    });
+
+    it('shows only the recent project, checked, when some are recent', async () => {
+      installApi(scan(mixed()));
+      await render();
+
+      expect(rowIds()).toEqual(['fresh']);
+      expect(box('fresh').checked).toBe(true);
+      expect(queryTestId('first-run-import-select-all')).toBeNull();
+      expect(projectsText()).toContain('A project is a folder you work in');
+      expect(projectsText()).not.toContain('Found');
+      expect(byTestId('first-run-import-older').textContent).toBe(
+        'Show 2 older projects',
+      );
+
+      await click(byTestId('first-run-import-older'));
+      expect(rowIds()).toEqual(['fresh', 'invoice-api', 'ops-scripts']);
+      expect(queryTestId('first-run-import-select-all')).not.toBeNull();
+
+      await click(box('ops-scripts'));
+      await click(byTestId('first-run-import-older'));
+      expect(rowIds()).toEqual(['fresh', 'ops-scripts']);
+      expect(byTestId('first-run-import-older').textContent).toBe(
+        'Show 1 older project',
+      );
+    });
+
+    it('keeps the recent layout when every recent project is unchecked', async () => {
+      installApi(scan(mixed()));
+      await render();
+
+      await click(box('fresh'));
+
+      expect(submit().textContent).toBe('Select a project to import');
+      expect(submit().disabled).toBe(true);
+      expect(rowIds()).toEqual(['fresh']);
+      expect(byTestId('first-run-import-older').textContent).toBe(
+        'Show 2 older projects',
+      );
+      expect(projectsText()).not.toContain('Found');
+    });
+
+    it('removes the toggle when an expanded mixed result becomes all older', async () => {
+      installApi(scan(mixed()));
+      await render();
+      await click(byTestId('first-run-import-older'));
+      expect(rowIds()).toHaveLength(3);
+
+      jest.spyOn(Date, 'now').mockReturnValue(NOW + 100 * DAY_MS);
+      await render();
+
+      expect(rowIds()).toEqual(['fresh', 'invoice-api', 'ops-scripts']);
+      expect(queryTestId('first-run-import-older')).toBeNull();
+      expect(projectsText()).toContain('Found 3 Claude projects');
+      expect(box('fresh').checked).toBe(true);
+    });
+
+    it.each<[string, number, boolean]>([
+      ['just under 90 days', 90 * DAY_MS - 1, true],
+      ['exactly 90 days', 90 * DAY_MS, false],
+      ['just over 90 days', 90 * DAY_MS + 1, false],
+    ])('classifies a project %s old', async (_name, ageMs, recent) => {
+      installApi(
+        scan([
+          candidate('edge', {
+            lastActivityAt: new Date(NOW - ageMs).toISOString(),
+          }),
+          candidate('old', { lastActivityAt: daysAgo(150) }),
+        ]),
+      );
+      await render();
+
+      expect(box('edge').checked).toBe(recent);
+      expect(queryTestId('first-run-import-older') !== null).toBe(recent);
+      expect(rowIds()).toEqual(recent ? ['edge'] : ['edge', 'old']);
+    });
+
+    it('shows no found count or Select all when nothing is found', async () => {
       installApi(scan([]));
       await render();
-      const empty = byTestId('first-run-import-empty');
-      expect(empty.textContent).toContain(
-        'No Claude or Codex projects found on this computer',
+      expect(container.textContent).not.toContain('Found 0');
+      expect(queryTestId('first-run-import-select-all')).toBeNull();
+      expect(queryTestId('first-run-import-submit')).toBeNull();
+    });
+
+    it('shows no found count while the scan runs', async () => {
+      const api = installApi(scan([]));
+      api.discover.mockReturnValue(new Promise(() => undefined));
+      await render();
+      expect(container.textContent).not.toContain('Found');
+      expect(queryTestId('first-run-import-select-all')).toBeNull();
+      expect(queryTestId('first-run-import-submit')).toBeNull();
+    });
+
+    it('prompts for a selection after the picked folder is unchecked', async () => {
+      const api = installApi(scan([]));
+      api.pickFolder.mockResolvedValue('/Users/me/picked');
+      api.discover.mockResolvedValueOnce(scan([])).mockResolvedValueOnce(
+        scan([
+          candidate('picked', {
+            surfaces: ['custom-folder'],
+            providers: [],
+            lastActivityAt: null,
+          }),
+        ]),
       );
-      expect(empty.textContent).not.toContain('on this computer.');
-      expect(empty.textContent).toContain(
-        'Add any folder on this computer as a project.',
+      await render();
+      await click(byTestId('first-run-import-choose-folder'));
+      expect(submit().textContent).toBe('Import 1 project');
+
+      await click(box('picked'));
+
+      expect(submit().textContent).toBe('Select a project to import');
+      expect(submit().disabled).toBe(true);
+    });
+
+    it('reads Importing… while the import runs', async () => {
+      const api = installApi(scan(allOlder()));
+      api.importProjects.mockReturnValue(new Promise(() => undefined));
+      await render();
+      await click(box('dotfiles'));
+
+      await click(submit());
+
+      expect(submit().textContent).toBe('Importing…');
+      expect(submit().disabled).toBe(true);
+
+      await click(box('dotfiles'));
+      expect(submit().textContent).toBe('Importing…');
+      expect(submit().disabled).toBe(true);
+    });
+  });
+
+  describe('projects box (CAN-4679)', () => {
+    const actions = (): HTMLElement => byTestId('first-run-import-actions');
+    const actionIds = (): (string | null)[] =>
+      Array.from(actions().querySelectorAll('button')).map((button) =>
+        button.getAttribute('data-testid'),
       );
-      expect(empty.textContent).toContain('Choose a folder');
+
+    it('holds the box and Skip while the scan runs, then fills the list', async () => {
+      jest.useFakeTimers();
+      try {
+        const api = installApi(scan([]));
+        let finishScan: (
+          response: ExternalProjectDiscoverResponse,
+        ) => void = () => undefined;
+        api.discover.mockReturnValue(
+          new Promise((resolve) => {
+            finishScan = resolve;
+          }),
+        );
+        await render();
+
+        const box = byTestId('first-run-import-projects');
+        const footer = actions();
+        const skip = byTestId('first-run-import-skip');
+        skip.focus();
+        expect(document.activeElement).toBe(skip);
+        expect(box.textContent).toContain('Projects');
+        expect(actionIds()).toEqual(['first-run-import-skip']);
+        expect(queryTestId('first-run-import-submit')).toBeNull();
+        expect(container.textContent).not.toContain('Found');
+        const placeholder = (): Element | null =>
+          byTestId('first-run-import-list').querySelector(
+            '[data-testid="delayed-loading-placeholder"]',
+          );
+        expect(placeholder()?.getAttribute('data-visible')).toBe('false');
+        await act(async () => {
+          jest.advanceTimersByTime(LOADING_PLACEHOLDER_DELAY_MS);
+          await Promise.resolve();
+        });
+        expect(placeholder()?.getAttribute('data-visible')).toBe('true');
+
+        await act(async () => {
+          finishScan(scan([candidate('alpha'), candidate('beta')]));
+          await Promise.resolve();
+        });
+        await flush();
+
+        // The same box and footer stay mounted, so focus on Skip survives.
+        expect(byTestId('first-run-import-projects')).toBe(box);
+        expect(actions()).toBe(footer);
+        expect(byTestId('first-run-import-skip')).toBe(skip);
+        expect(document.activeElement).toBe(skip);
+        expect(queryTestId('first-run-import-projects-loading')).toBeNull();
+        const list = byTestId('first-run-import-list');
+        expect(
+          list.querySelector('[data-testid="first-run-import-select-all"]'),
+        ).not.toBeNull();
+        expect(
+          list.querySelector('[data-testid="first-run-import-row-alpha"]'),
+        ).not.toBeNull();
+        expect(actionIds()).toEqual([
+          'first-run-import-skip',
+          'first-run-import-submit',
+        ]);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('lists the empty state and puts Continue without a project in the footer', async () => {
+      installApi(scan([]));
+      await render();
+      const list = byTestId('first-run-import-list');
+      expect(
+        list.querySelector('[data-testid="first-run-import-empty"]'),
+      ).not.toBeNull();
+      expect(
+        list.querySelector('[data-testid="first-run-import-choose-folder"]'),
+      ).not.toBeNull();
+      expect(actionIds()).toEqual(['first-run-import-skip']);
+      expect(byTestId('first-run-import-skip').textContent).toBe(
+        'Continue without a project',
+      );
+    });
+
+    it('shows a failed import beside the actions and keeps the selection', async () => {
+      const api = installApi(scan([candidate('alpha'), candidate('beta')]));
+      api.importProjects
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce({ results: [result('alpha'), result('beta')] });
+      await render();
+
+      await click(byTestId('first-run-import-submit'));
+
+      expect(actions().textContent).toContain(
+        "Couldn't import projects. Try again.",
+      );
+      const submit = byTestId('first-run-import-submit');
+      expect(submit.textContent).toBe('Import 2 projects');
+      expect(submit.hasAttribute('disabled')).toBe(false);
+
+      await click(submit);
+      expect(api.importProjects).toHaveBeenCalledTimes(2);
+      expect(onDone).toHaveBeenCalled();
+    });
+
+    it('shows a failed scan beside Skip, with no loading list', async () => {
+      const api = installApi(scan([]));
+      api.discover.mockRejectedValue(new Error('denied'));
+      await render();
+
+      expect(actions().textContent).toContain(
+        "Couldn't look for Claude and Codex projects. Try again.",
+      );
+      expect(actionIds()).toEqual(['first-run-import-skip']);
+      expect(byTestId('first-run-import-skip').textContent).toBe(
+        'Skip for now',
+      );
+      expect(queryTestId('first-run-import-projects-loading')).toBeNull();
+      expect(queryTestId('first-run-import-empty')).toBeNull();
     });
   });
 
   describe('forward action', () => {
-    it('reads Continue as the primary action when nothing is importable', async () => {
-      installApi(scan([]));
+    it('finishes from Continue without a project without opening the picker', async () => {
+      const api = installApi(scan([]));
       await render();
-      const skip = byTestId('first-run-import-skip');
-      expect(skip.textContent).toBe('Continue');
-      expect(skip.className).toContain('bg-accent');
+      await click(byTestId('first-run-import-skip'));
+      expect(api.pickFolder).not.toHaveBeenCalled();
+      expect(onDone).toHaveBeenCalled();
     });
 
     it('reads Skip for now beside an import', async () => {
@@ -579,6 +1570,326 @@ describe('FirstRunImportPage', () => {
       expect(byTestId('first-run-import-skip').textContent).toBe(
         'Skip for now',
       );
+    });
+  });
+
+  describe('telemetry (CAN-4635)', () => {
+    type Call = unknown[];
+    type OperationMock = jest.Mock<void, unknown[]>;
+    const calls = (mock: OperationMock, name: string): Call[] =>
+      mock.mock.calls.filter((call: Call) => call[0] === name);
+    const contextOf = (call: Call | undefined): unknown => {
+      const options = call?.[call.length - 1];
+      return options && typeof options === 'object' && 'context' in options
+        ? options.context
+        : undefined;
+    };
+    const keyOf = (call: Call | undefined): unknown => {
+      const options = call?.[call.length - 1];
+      return options && typeof options === 'object' && 'operationKey' in options
+        ? options.operationKey
+        : undefined;
+    };
+    const visitEnds = (): Call[] =>
+      calls(succeedOperation, 'canopy.first_run_import');
+
+    it('reports confirmed sign-outs in the view, submission and completion', async () => {
+      mockClaudeStatus = {
+        authenticated: false,
+        error: 'Claude is not authenticated.',
+      };
+      mockCodexStatus = {
+        authenticated: false,
+        error: 'Codex is not authenticated.',
+      };
+      const api = installApi(scan([candidate('alpha')]));
+      api.importProjects.mockResolvedValue({ results: [result('alpha')] });
+      await render();
+      await click(byTestId('first-run-import-submit'));
+      for (const operation of [
+        'canopy.first_run_import_view',
+        'canopy.project_import',
+        'canopy.first_run_import',
+      ]) {
+        const emitted = calls(succeedOperation, operation);
+        expect(emitted).toHaveLength(1);
+        expect(contextOf(emitted[0])).toMatchObject({
+          claude_connection: 'not_connected',
+          codex_connection: 'not_connected',
+        });
+      }
+    });
+
+    it('views once per visit through effect replay, with unresolved auth unknown', async () => {
+      mockClaudeStatus = null;
+      mockCodexStatus = { authenticated: true };
+      installApi(scan([candidate('alpha')]));
+      await act(async () => {
+        root.render(
+          <StrictMode>
+            <FirstRunImportPage onDone={onDone} />
+          </StrictMode>,
+        );
+        await Promise.resolve();
+      });
+      await flush();
+
+      const views = calls(succeedOperation, 'canopy.first_run_import_view');
+      expect(views).toHaveLength(1);
+      expect(contextOf(views[0])).toEqual({
+        claude_connection: 'unknown',
+        codex_connection: 'connected',
+      });
+      expect(calls(startOperation, 'canopy.first_run_import')).toHaveLength(1);
+    });
+
+    it('starts a new visit on a real remount and completes nothing on unmount', async () => {
+      installApi(scan([candidate('alpha')]));
+      await render();
+      act(() => {
+        root.unmount();
+      });
+      root = createRoot(container);
+      await render();
+
+      const starts = calls(startOperation, 'canopy.first_run_import');
+      expect(starts).toHaveLength(2);
+      expect(keyOf(starts[0])).not.toBe(keyOf(starts[1]));
+      expect(visitEnds()).toHaveLength(0);
+    });
+
+    it('reports a skip with found projects once', async () => {
+      installApi(scan([candidate('alpha')]));
+      await render();
+      const skip = byTestId('first-run-import-skip');
+      await click(skip);
+      await click(skip);
+
+      expect(visitEnds()).toHaveLength(1);
+      expect(keyOf(visitEnds()[0])).toBe(
+        keyOf(calls(startOperation, 'canopy.first_run_import')[0]),
+      );
+      expect(contextOf(visitEnds()[0])).toEqual({
+        outcome: 'skipped',
+        scan_outcome: 'found',
+        claude_data_detected: true,
+        codex_data_detected: false,
+        claude_connection: 'not_connected',
+        codex_connection: 'not_connected',
+        found_count: 1,
+        credits_offered: true,
+        imported_count: 0,
+        submission_count: 0,
+        failed_submission_count: 0,
+        picked_folder: false,
+      });
+    });
+
+    it('reports continuing after an empty scan', async () => {
+      installApi(scan([]));
+      await render();
+      await click(byTestId('first-run-import-skip'));
+      expect(contextOf(visitEnds()[0])).toMatchObject({
+        outcome: 'continued_empty',
+        scan_outcome: 'empty',
+        found_count: 0,
+      });
+    });
+
+    it('completes with current provider facts and omits unresolved scan counts', async () => {
+      mockClaudeStatus = null;
+      const api = installApi(scan([]));
+      api.discover.mockReturnValue(new Promise(() => undefined));
+      await render();
+      mockClaudeStatus = { authenticated: true };
+      await render();
+      await click(byTestId('first-run-import-skip'));
+      expect(contextOf(visitEnds()[0])).toMatchObject({
+        outcome: 'skipped',
+        scan_outcome: 'unknown',
+        claude_connection: 'connected',
+      });
+      expect(contextOf(visitEnds()[0])).not.toHaveProperty('found_count');
+      expect(
+        calls(succeedOperation, 'canopy.first_run_import_view'),
+      ).toHaveLength(1);
+    });
+
+    it('reports a skip after a failed scan without scan facts', async () => {
+      const api = installApi(scan([]));
+      api.discover.mockRejectedValue(new Error('no access'));
+      await render();
+      await click(byTestId('first-run-import-skip'));
+      const context = contextOf(visitEnds()[0]);
+      expect(context).toMatchObject({
+        outcome: 'skipped',
+        scan_outcome: 'failed',
+      });
+      expect(context).not.toHaveProperty('found_count');
+      expect(context).not.toHaveProperty('claude_data_detected');
+    });
+
+    it('records each submission and completes once after a retry imports', async () => {
+      const api = installApi(scan([candidate('alpha'), candidate('beta')]));
+      api.importProjects
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce({
+          results: [
+            result('alpha', { status: 'failed', workspaceId: undefined }),
+            result('beta', { status: 'failed', workspaceId: undefined }),
+          ],
+        })
+        .mockResolvedValueOnce({
+          results: [
+            result('alpha'),
+            result('beta', { status: 'failed', workspaceId: undefined }),
+          ],
+        });
+      await render();
+      const submit = (): HTMLElement => byTestId('first-run-import-submit');
+
+      await click(submit());
+      await click(submit());
+      expect(onDone).not.toHaveBeenCalled();
+      expect(visitEnds()).toHaveLength(0);
+      await click(submit());
+      expect(onDone).toHaveBeenCalledTimes(1);
+
+      const failures = calls(failOperation, 'canopy.project_import');
+      expect(failures.map((call) => contextOf(call))).toEqual([
+        expect.objectContaining({
+          source: 'first_run',
+          outcome: 'request_failed',
+          selected_count: 2,
+          failed_count: 2,
+        }),
+        expect.objectContaining({ outcome: 'none_imported', failed_count: 2 }),
+      ]);
+      const successes = calls(succeedOperation, 'canopy.project_import');
+      expect(successes).toHaveLength(1);
+      expect(contextOf(successes[0])).toEqual({
+        source: 'first_run',
+        scan_outcome: 'found',
+        claude_data_detected: true,
+        codex_data_detected: false,
+        found_count: 2,
+        found_claude_count: 2,
+        found_codex_count: 0,
+        claude_connection: 'not_connected',
+        codex_connection: 'not_connected',
+        picked_folder: false,
+        outcome: 'partial',
+        selected_count: 2,
+        imported_count: 1,
+        imported_claude_count: 1,
+        imported_codex_count: 0,
+        failed_count: 1,
+        chats_imported_count: 0,
+      });
+      const submissionKeys = calls(startOperation, 'canopy.project_import').map(
+        keyOf,
+      );
+      expect(new Set(submissionKeys).size).toBe(3);
+
+      expect(visitEnds()).toHaveLength(1);
+      expect(contextOf(visitEnds()[0])).toMatchObject({
+        outcome: 'imported',
+        imported_count: 1,
+        submission_count: 3,
+        failed_submission_count: 2,
+      });
+      expect(JSON.stringify(succeedOperation.mock.calls)).not.toMatch(
+        /alpha|beta|scan-1|\/Users/,
+      );
+    });
+
+    it('records a picked folder but not a canceled pick', async () => {
+      const api = installApi(scan([]));
+      api.pickFolder.mockResolvedValueOnce(null);
+      await render();
+      const choose = byTestId('first-run-import-choose-folder');
+      await click(choose);
+      await click(byTestId('first-run-import-skip'));
+      expect(contextOf(visitEnds()[0])).toMatchObject({ picked_folder: false });
+    });
+
+    it('records a picked folder', async () => {
+      const api = installApi(scan([]));
+      api.pickFolder.mockResolvedValueOnce('/Users/me/picked');
+      await render();
+      await click(byTestId('first-run-import-choose-folder'));
+      await click(byTestId('first-run-import-skip'));
+      expect(contextOf(visitEnds()[0])).toMatchObject({ picked_folder: true });
+    });
+
+    it.each(['imported', 'failed'] as const)(
+      'records a %s submission after unmount without inventing completion',
+      async (status) => {
+        const api = installApi(scan([candidate('alpha')]));
+        let resolveImport: (
+          value: ExternalProjectImportResponse,
+        ) => void = () => undefined;
+        api.importProjects.mockReturnValue(
+          new Promise((resolve) => {
+            resolveImport = resolve;
+          }),
+        );
+        await render();
+        await click(byTestId('first-run-import-submit'));
+        act(() => {
+          root.unmount();
+        });
+        root = createRoot(container);
+        await act(async () => {
+          resolveImport({
+            results: [
+              result('alpha', {
+                status,
+                ...(status === 'failed' ? { workspaceId: undefined } : {}),
+              }),
+            ],
+          });
+          await Promise.resolve();
+        });
+        await flush();
+
+        expect(
+          calls(
+            status === 'failed' ? failOperation : succeedOperation,
+            'canopy.project_import',
+          ),
+        ).toHaveLength(1);
+        expect(visitEnds()).toHaveLength(0);
+      },
+    );
+
+    it('submits only once for clicks in the same batch, then permits a retry', async () => {
+      const api = installApi(scan([candidate('alpha')]));
+      let resolveImport: (value: ExternalProjectImportResponse) => void = () =>
+        undefined;
+      api.importProjects.mockReturnValue(
+        new Promise((resolve) => {
+          resolveImport = resolve;
+        }),
+      );
+      await render();
+      const submit = byTestId('first-run-import-submit');
+      act(() => {
+        submit.click();
+        submit.click();
+      });
+      expect(api.importProjects).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolveImport({
+          results: [
+            result('alpha', { status: 'failed', workspaceId: undefined }),
+          ],
+        });
+        await Promise.resolve();
+      });
+      await flush();
+      await click(submit);
+      expect(api.importProjects).toHaveBeenCalledTimes(2);
     });
   });
 });

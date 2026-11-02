@@ -33,6 +33,7 @@ import {
   useRetainedSessionValue,
   useSessionWriter,
 } from './details/pipelineDetailSession';
+import { Button } from '@canopy/ui-shared/components';
 
 interface PauseInputPanelProps {
   executionId: string;
@@ -318,22 +319,20 @@ export function PauseInputPanel({
       ) : null}
 
       <div className="mt-4 flex items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
           data-testid="pause-input-resume"
           disabled={submitting || errors.length > 0}
           onClick={() => void submit([responseFor(selected)])}
-          className="rounded-md bg-accent px-4 py-1.5 text-s font-medium fg-emphasis disabled:opacity-50"
         >
           {submitting
             ? 'Resuming…'
             : request
               ? 'Submit response'
               : 'Resume job'}
-        </button>
+        </Button>
         {checkpoints.length > 1 ? (
-          <button
-            type="button"
+          <Button
             data-testid="pause-input-submit-all"
             disabled={submitting || !allValid}
             onClick={() =>
@@ -341,10 +340,9 @@ export function PauseInputPanel({
                 checkpoints.map((checkpoint) => responseFor(checkpoint)),
               )
             }
-            className="rounded-md border px-4 py-1.5 text-s font-medium fg-primary disabled:opacity-50"
           >
             {submitting ? 'Resuming…' : 'Submit all responses'}
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>

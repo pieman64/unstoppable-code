@@ -155,7 +155,7 @@ function StatusReasonPanel({
       }
       const providerName = provider === 'claude' ? 'Claude' : 'Codex';
       const response = await createActivity({
-        name: `Resume pipeline after ${providerName} usage reset`,
+        name: `Resume workflow after ${providerName} usage reset`,
         schedule: { kind: 'one_time', runAt, timezone: 'local' },
         action: {
           type: 'pipeline_execution_resume',

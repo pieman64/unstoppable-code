@@ -69,7 +69,7 @@ function harness(
     order.push('start');
     signal = options.onSignal;
     signals.push(options.onSignal);
-    deny = options.onAccessDenied;
+    deny = options.onAccessDenied ?? ((): void => undefined);
     return {
       stop: (): void => {
         order.push('stop');

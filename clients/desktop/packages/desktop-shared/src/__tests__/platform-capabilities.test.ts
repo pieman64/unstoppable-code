@@ -4,6 +4,7 @@ import {
   isCliPathManagementPlatform,
   isVoiceDictationPlatform,
   isWakeLockSupportedPlatform,
+  usesNativeWindowFrame,
 } from '../platform-capabilities';
 
 describe('isVoiceDictationPlatform', () => {
@@ -36,8 +37,8 @@ describe('isCliPathManagementPlatform', () => {
     expect(isCliPathManagementPlatform('win32')).toBe(true);
   });
 
-  it('returns false on linux', () => {
-    expect(isCliPathManagementPlatform('linux')).toBe(false);
+  it('supports the per-user Linux launcher', () => {
+    expect(isCliPathManagementPlatform('linux')).toBe(true);
   });
 });
 
@@ -52,4 +53,13 @@ describe('isWakeLockSupportedPlatform', () => {
   it('does not claim support for other platforms', () => {
     expect(isWakeLockSupportedPlatform('freebsd')).toBe(false);
   });
+});
+
+describe('usesNativeWindowFrame', () => {
+  it.each<NodeJS.Platform>(['darwin', 'win32', 'linux'])(
+    'selects native chrome only on Linux (%s)',
+    (platform) => {
+      expect(usesNativeWindowFrame(platform)).toBe(platform === 'linux');
+    },
+  );
 });

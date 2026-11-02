@@ -29,6 +29,7 @@ import {
   saveExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
+import { relocateExecutionCheckout } from '../pipelines/execution-checkout-location';
 import { readChatTabsFile, readChatTabsFileForIndex } from './chat-tabs-reader';
 import { writeChatTabsFile } from './chat-tabs';
 import {
@@ -1396,13 +1397,19 @@ export async function migrateSplitPipelineExecutions(params: {
     params.workspaceId,
     params.worktreeId,
   );
+  const rewrites = params.targets.map((target) => ({
+    fromRoot: target.oldCheckoutPath,
+    toRoot: target.newCheckoutPath,
+  }));
   try {
     for (const summary of summaries) {
-      const target = params.targets.find(
-        (candidate) =>
-          summary.cwd &&
-          isPathInsideOrEqual(summary.cwd, candidate.oldCheckoutPath),
-      );
+      const target = [...params.targets]
+        .sort((a, b) => b.oldCheckoutPath.length - a.oldCheckoutPath.length)
+        .find(
+          (candidate) =>
+            summary.cwd &&
+            isPathInsideOrEqual(summary.cwd, candidate.oldCheckoutPath),
+        );
       if (!target) {
         continue;
       }
@@ -1411,39 +1418,18 @@ export async function migrateSplitPipelineExecutions(params: {
         continue;
       }
       snapshots.set(summary.id, state);
-      const rewritePath = (value: string): string =>
-        isPathInsideOrEqual(value, target.oldCheckoutPath)
-          ? `${target.newCheckoutPath}${value.slice(
-              target.oldCheckoutPath.length,
-            )}`
-          : value;
-      const nextTarget = ((): ExecutionState['target'] => {
-        if (!state.target || state.target.scope === 'global') {
-          return state.target;
-        }
-        if (state.target.scope === 'directory') {
-          return { ...state.target, path: rewritePath(state.target.path) };
-        }
-        return {
-          ...state.target,
-          workspace_id: target.destinationWorkspaceId,
-          worktree_id: target.destinationWorktreeId,
-          path: rewritePath(state.target.path),
-        };
-      })();
+      const relocated = relocateExecutionCheckout(state, {
+        sourceWorkspaceId: params.workspaceId,
+        sourceWorktreeId: params.worktreeId,
+        destinationWorkspaceId: target.destinationWorkspaceId,
+        destinationWorktreeId: target.destinationWorktreeId,
+        rewrites,
+      });
       await saveExecutionState(
         {
-          ...state,
+          ...relocated,
           project_id: target.destinationWorkspaceId,
           worktree_id: target.destinationWorktreeId,
-          cwd: rewritePath(state.cwd),
-          ...(state.repo_path
-            ? { repo_path: rewritePath(state.repo_path) }
-            : {}),
-          ...(state.pipeline_file_dir
-            ? { pipeline_file_dir: rewritePath(state.pipeline_file_dir) }
-            : {}),
-          ...(nextTarget ? { target: nextTarget } : {}),
         },
         executionsDir,
       );

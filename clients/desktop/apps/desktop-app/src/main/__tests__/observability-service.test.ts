@@ -13,44 +13,71 @@ const mockProxyUsageRead = jest.fn<
 >();
 const mockProxyInventoryListeners = new Set<() => void>();
 const mockPublishProxyStatus = jest.fn((): Promise<void> => Promise.resolve());
+const mockGetLastDailyCreditGrantStatus = jest.fn<string | undefined, []>(
+  () => undefined,
+);
+jest.mock('../lib/daily-credit-grant-telemetry', () => ({
+  getLastDailyCreditGrantStatus: (): string | undefined =>
+    mockGetLastDailyCreditGrantStatus(),
+}));
 jest.mock('../account-proxy/service', () => ({
-  getAccountProxyUsageInventory: mockProxyUsageInventory,
-  fetchAccountProxyUsage: mockProxyUsageRead,
+  get getAccountProxyUsageInventory(): typeof mockProxyUsageInventory {
+    return mockProxyUsageInventory;
+  },
+  get fetchAccountProxyUsage(): typeof mockProxyUsageRead {
+    return mockProxyUsageRead;
+  },
   onAccountProxyInventoryChanged: (listener: () => void): (() => void) => {
     mockProxyInventoryListeners.add(listener);
     return (): void => {
       mockProxyInventoryListeners.delete(listener);
     };
   },
-  publishAccountProxyStatus: mockPublishProxyStatus,
+  get publishAccountProxyStatus(): typeof mockPublishProxyStatus {
+    return mockPublishProxyStatus;
+  },
 }));
 const mockReadCopilotUsage = jest.fn();
 const mockCopilotEnabled = jest.fn(() => false);
-const mockLogMainProcessWarn = jest.fn();
 jest.mock('../copilot/account-usage', () => ({
-  readCopilotUsageSummary: mockReadCopilotUsage,
+  get readCopilotUsageSummary(): typeof mockReadCopilotUsage {
+    return mockReadCopilotUsage;
+  },
 }));
 jest.mock('../copilot/feature-flag', () => ({
-  isCopilotHarnessEnabled: mockCopilotEnabled,
+  get isCopilotHarnessEnabled(): typeof mockCopilotEnabled {
+    return mockCopilotEnabled;
+  },
 }));
 jest.mock('../lib/main-process-logging', () => ({
-  logMainProcessWarn: mockLogMainProcessWarn,
+  logMainProcessWarn: jest.fn(),
 }));
 import { notifyCopilotUsageChanged } from '../copilot/usage-events';
 import type { CostHistoryRepairOptions } from '../observability/cost-history-repair';
+import type { OpenAiPricingCacheState } from '../openai-pricing/pricing-client';
 import { CursorEventProjection } from '@canopy/desktop-shared/node/cursor/events';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as ts from 'typescript';
 import type { SessionDiagnosticRecord } from '../observability/service';
+import {
+  recordForPurgedWorktree,
+  startChatWaitOperation,
+  type ChatWaitScope,
+} from '../observability/chat-wait-diagnostics';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 const readCursorAccountUsageMock = jest.fn<Promise<unknown>, [AbortSignal]>();
 jest.mock('../cursor/account-usage', () => ({
-  readCursorAccountUsage: readCursorAccountUsageMock,
+  get readCursorAccountUsage(): typeof readCursorAccountUsageMock {
+    return readCursorAccountUsageMock;
+  },
 }));
 const mockCursorEnabled = jest.fn(() => true);
 const mockFlagListeners = new Set<() => void>();
 jest.mock('../cursor/feature-flag', () => ({
-  isCursorHarnessEnabled: mockCursorEnabled,
+  get isCursorHarnessEnabled(): typeof mockCursorEnabled {
+    return mockCursorEnabled;
+  },
 }));
 jest.mock('../feature-flags', () => ({
   getFeatureFlagService: (): {
@@ -65,6 +92,7 @@ jest.mock('../feature-flags', () => ({
   }),
 }));
 import { parseAgentTranscriptLines } from '@canopy/agent-transcript';
+import { projectPersistedChatTranscript } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 jest.mock('node:fs/promises', () => ({
   appendFile: jest.fn(),
   mkdir: jest.fn(),
@@ -76,14 +104,13 @@ jest.mock('node:fs/promises', () => ({
   writeFile: jest.fn(),
 }));
 
-const execFileMock = jest.fn();
 const fetchMock = jest.fn<
   Promise<Response>,
   [RequestInfo | URL, RequestInit?]
 >();
 
 jest.mock('node:child_process', () => ({
-  execFile: execFileMock,
+  execFile: jest.fn(),
 }));
 
 const readAccountMock = jest.fn();
@@ -120,10 +147,12 @@ const mockFailDesktopOperation = jest.fn<
     { context?: Record<string, unknown>; operationKey?: string }?,
   ]
 >();
-const mockGetOpenAiPricingForCostingSync = jest.fn(() => ({
-  loadedFrom: 'none',
-  stale: true,
-}));
+const mockGetOpenAiPricingForCostingSync = jest.fn<OpenAiPricingCacheState, []>(
+  () => ({
+    loadedFrom: 'none',
+    stale: true,
+  }),
+);
 const mockPrewarmOpenAiPricingCache = jest.fn();
 const mockRunCostHistoryRepair = jest.fn<
   Promise<{
@@ -149,10 +178,18 @@ jest.mock('@canopy/desktop-instrumentation', () => ({
 }));
 
 jest.mock('@canopy/desktop-instrumentation/electron/main', () => ({
-  captureDesktopInstrumentationError: mockCaptureDesktopInstrumentationError,
-  startDesktopOperation: mockStartDesktopOperation,
-  succeedDesktopOperation: mockSucceedDesktopOperation,
-  failDesktopOperation: mockFailDesktopOperation,
+  get captureDesktopInstrumentationError(): typeof mockCaptureDesktopInstrumentationError {
+    return mockCaptureDesktopInstrumentationError;
+  },
+  get startDesktopOperation(): typeof mockStartDesktopOperation {
+    return mockStartDesktopOperation;
+  },
+  get succeedDesktopOperation(): typeof mockSucceedDesktopOperation {
+    return mockSucceedDesktopOperation;
+  },
+  get failDesktopOperation(): typeof mockFailDesktopOperation {
+    return mockFailDesktopOperation;
+  },
 }));
 
 interface CitationTrackingOptions {
@@ -259,6 +296,7 @@ jest.mock('../lib/paths', () => ({
 
 jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(),
+  updatePreferencesFile: jest.fn(),
 }));
 
 jest.mock('../pipelines/config-paths', () => ({
@@ -267,12 +305,18 @@ jest.mock('../pipelines/config-paths', () => ({
 }));
 
 jest.mock('../observability/cost-history-repair', () => ({
-  runCostHistoryRepair: mockRunCostHistoryRepair,
+  get runCostHistoryRepair(): typeof mockRunCostHistoryRepair {
+    return mockRunCostHistoryRepair;
+  },
 }));
 
 jest.mock('../openai-pricing/pricing-client', () => ({
-  getOpenAiPricingForCostingSync: mockGetOpenAiPricingForCostingSync,
-  prewarmOpenAiPricingCache: mockPrewarmOpenAiPricingCache,
+  get getOpenAiPricingForCostingSync(): typeof mockGetOpenAiPricingForCostingSync {
+    return mockGetOpenAiPricingForCostingSync;
+  },
+  get prewarmOpenAiPricingCache(): typeof mockPrewarmOpenAiPricingCache {
+    return mockPrewarmOpenAiPricingCache;
+  },
 }));
 
 import type {
@@ -297,14 +341,39 @@ import {
 import { CANOPY_AUTH_FAILURE_EVENT_TYPE } from '@canopy/protocol/auth-recovery';
 import { projectCodexRuntimeEvent } from '@canopy/desktop-shared/node/codex-runtime';
 import type { StepResult } from '@canopy/desktop-shared/node/pipelines/executor';
-import { readPreferencesFile } from '../lib/preferences-store';
+import {
+  readPreferencesFile,
+  updatePreferencesFile,
+} from '../lib/preferences-store';
+import { isAiCreditsRoutingInEffect } from '@canopy/desktop-shared/ai-credits-routing-state';
+import {
+  clearAllProviderQuotaReached,
+  isProviderQuotaReached,
+  markProviderQuotaReached,
+} from '../agents/ai-credits-quota-state';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import {
   commandLooksLikePrCreate,
   ObservabilityService,
   resolveAuditContextWorkspaceId,
 } from '../observability/service';
+import { getObservabilityService } from '../observability';
 import * as providerAuthState from '../auth/provider-auth-state';
+import * as nativeAccountChange from '../agents/native-account-change';
+import {
+  initialChatTurnState,
+  serializeChatTurnState,
+  type ChatTurnRecord,
+} from '@canopy/agent-transcript/turn';
+import { installTurnStateAudit } from '../observability/turn-state-audit';
+import {
+  resetAuditStreamHooksForTest,
+  setAuditDayPruneGuard,
+} from '../observability/audit-stream-hooks';
+import type {
+  ChatTurnStateChange,
+  ChatTurnStateCommit,
+} from '../services/chat-turn-state-handoff';
 
 const mockedCheckClaudeAuthStatusObserved = jest.spyOn(
   providerAuthState,
@@ -326,6 +395,9 @@ interface FsPromisesMock {
 }
 
 const fsPromisesMock = jest.requireMock<FsPromisesMock>('node:fs/promises');
+const execFileMock = jest.requireMock<{ execFile: jest.Mock }>(
+  'node:child_process',
+).execFile;
 const mockedAppendFile = fsPromisesMock.appendFile;
 const mockedMkdir = fsPromisesMock.mkdir;
 const mockedReadFile = fsPromisesMock.readFile;
@@ -335,6 +407,7 @@ const mockedRm = fsPromisesMock.rm;
 const mockedStat = fsPromisesMock.stat;
 const mockedWriteFile = fsPromisesMock.writeFile;
 const mockedReadPreferencesFile = jest.mocked(readPreferencesFile);
+const mockedUpdatePreferencesFile = jest.mocked(updatePreferencesFile);
 
 describe('Cursor account usage overview', () => {
   beforeEach(() => {
@@ -422,7 +495,9 @@ const mockedGetEnhancedEnv = jest.mocked(getEnhancedEnv);
 const originalFetch = globalThis.fetch;
 
 function makePreferences(auditRetentionDays: number): PreferencesData {
-  return {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  const preferences: Partial<PreferencesData> = {};
+  Object.assign(preferences, {
     worktreePanelPercent: 32,
     activityPanelExpanded: false,
     activityPanelWidthPercent: 25,
@@ -577,7 +652,8 @@ function makePreferences(auditRetentionDays: number): PreferencesData {
     },
     autoDownloadUpdates: true,
     showDiagnosticsPill: true,
-  };
+  });
+  return preferences as PreferencesData;
 }
 
 function makeRunningPipelineState(): Parameters<
@@ -641,6 +717,10 @@ function makeCompletedPipelineState(): Parameters<
 
 // Session totals are durable production state, but each test owns its ledger.
 import * as claudeCostLedger from '../observability/claude-session-cost-ledger';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import { getAgentObservabilityTranscriptFilePath } from '../lib/paths';
+
+const mockLogMainProcessWarn = jest.mocked(logMainProcessWarn);
 beforeEach(() => {
   const ledger = new claudeCostLedger.ClaudeSessionCostLedger({
     filePath: '/audit/test-claude-session-costs.json',
@@ -748,6 +828,10 @@ function isoDay(isoTimestamp: string): string {
   return isoTimestamp.slice(0, 10);
 }
 
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function makeAuditEntry(
   id: string,
   startedAt: string,
@@ -780,6 +864,7 @@ function makeAuditEntry(
       read: 0,
       readLines: 0,
       writeEdit: 0,
+      plan: 0,
       fileEdit: 0,
       fileAdd: 0,
       fileDelete: 0,
@@ -798,12 +883,48 @@ function makeAuditEntry(
       scriptOutput: 0,
       watcher: 0,
       canopy: 0,
+      graph: 0,
       appAdvisor: 0,
       pipelineEditor: 0,
       mcp: 0,
       other: 0,
     },
     ...overrides,
+  };
+}
+
+function makeOpenAiPricingCacheState(): OpenAiPricingCacheState {
+  return {
+    payload: {
+      version: 1,
+      currency: 'usd',
+      tokenUnit: 'per_1m_tokens',
+      source: {
+        pricingUrl: 'https://example.invalid/api-pricing',
+        codexPricingUrl: 'https://example.invalid/codex-pricing',
+        codexSpeedUrl: 'https://example.invalid/codex-speed',
+        fetchedAt: '2026-06-18T00:00:00.000Z',
+        generatedBy: 'test',
+      },
+      cache: { maxAgeSeconds: 3600, staleWhileRevalidateSeconds: 86400 },
+      basis: {
+        tokenPricing: 'openai_api_standard',
+        fastModePricing: 'codex_credit_adjusted_standard_equivalent',
+        notes: ['test pricing'],
+      },
+      serviceTierAliases: {
+        default: 'standard',
+        standard: 'standard',
+        priority: 'fast',
+        fast: 'fast',
+      },
+      models: {},
+      unpricedModels: {},
+      billableTools: {},
+    },
+    fetchedAt: '2026-06-18T00:00:00.000Z',
+    loadedFrom: 'memory',
+    stale: false,
   };
 }
 
@@ -1309,6 +1430,68 @@ describe('ObservabilityService', () => {
     disposeCodexMonitorMock.mockImplementation(() => {});
   });
 
+  it.each([
+    ['in-turn internal-row pickup', false, 'internalRow'],
+    ['own-turn legacy pickup', true, 'managedDelegationDeliveryId'],
+    ['own-turn internal-row pickup', true, 'internalRow'],
+  ])(
+    'round-trips an internal %s audit prompt as hidden through Portal projection',
+    async (_label, startsTurn, marker) => {
+      installMockFilesystem();
+      const service = new ObservabilityService();
+      const privatePayload = 'Private delegated request payload';
+      if (!startsTurn) startClaudeChatTurn(service, 'chat-internal');
+
+      const internalRow = {
+        kind: 'delegation-request' as const,
+        delegationId: 'delegation-audit',
+        displayLine: 'Waiting for the parent',
+      };
+      const pickup = {
+        projectId: 'proj',
+        worktreeId: 'wt',
+        chatId: 'chat-internal',
+        provider: 'claude' as const,
+        userMessageId: 'internal-user-message',
+        originalUserText: privatePayload,
+        submittedText: privatePayload,
+        planMode: false,
+        initiationSource: 'user' as const,
+        startsTurn,
+        ...(marker === 'internalRow'
+          ? { internalRow, managedDelegationDeliveryId: 'delivery-audit' }
+          : { managedDelegationDeliveryId: 'legacy-delivery-audit' }),
+      };
+      service.observeSteeringInput(pickup);
+
+      const entry = loadRecentEntryForChat(service, 'chat-internal');
+      const transcript = await service.loadTranscript({
+        id: entry.id,
+        eventType: entry.eventType,
+        startedAt: entry.startedAt,
+      });
+      expect(transcript.type).toBe('success');
+      if (transcript.type !== 'success') {
+        throw new Error('Expected internal request audit transcript');
+      }
+      const hiddenLine = transcript.lines.find((line) =>
+        line.includes(privatePayload),
+      );
+      expect(hiddenLine).toContain('"canopy_hidden":true');
+
+      const parsed = parseAgentTranscriptLines(transcript.lines, 'claude');
+      const hiddenMessage = parsed.messages.find((message) => message.hidden);
+      expect(hiddenMessage).toBeDefined();
+      expect(JSON.stringify(hiddenMessage)).toContain(privatePayload);
+      const portalMessages = projectPersistedChatTranscript({
+        scope: 'worktree',
+        chatId: 'chat-internal',
+        messages: parsed.messages,
+      });
+      expect(JSON.stringify(portalMessages)).not.toContain(privatePayload);
+    },
+  );
+
   it('refreshes Cursor on live rollout enable and aborts on disable or disposal', async () => {
     mockCursorEnabled.mockReturnValue(false);
     readCursorAccountUsageMock.mockReset();
@@ -1414,10 +1597,6 @@ describe('ObservabilityService', () => {
         inputTokens: 11,
         outputTokens: 7,
         cacheReadInputTokens: 3,
-        observedCost: {
-          status: 'unpriced',
-          reason: 'pricing_unavailable',
-        },
         messageCount: 2,
         assistantMessageCount: 1,
       });
@@ -1675,16 +1854,38 @@ describe('ObservabilityService', () => {
   it('never assigns vendor-list-price cost to an organization gateway turn', () => {
     installMockFilesystem();
     mockGetOpenAiPricingForCostingSync.mockReturnValue({
-      version: 1,
-      currency: 'usd',
-      models: {
-        'org-model': {
-          model: 'org-model',
-          standard: { input: 1, cachedInput: 0.1, output: 2 },
+      payload: {
+        version: 1,
+        currency: 'usd',
+        tokenUnit: 'per_1m_tokens',
+        source: {
+          pricingUrl: 'https://example.invalid/api-pricing',
+          codexPricingUrl: 'https://example.invalid/codex-pricing',
+          codexSpeedUrl: 'https://example.invalid/codex-speed',
+          fetchedAt: '2026-06-18T00:00:00.000Z',
+          generatedBy: 'test',
         },
+        cache: { maxAgeSeconds: 3600, staleWhileRevalidateSeconds: 86400 },
+        basis: {
+          tokenPricing: 'openai_api_standard',
+          fastModePricing: 'codex_credit_adjusted_standard_equivalent',
+          notes: ['test pricing'],
+        },
+        serviceTierAliases: {
+          default: 'standard',
+          standard: 'standard',
+          priority: 'fast',
+          fast: 'fast',
+        },
+        models: {
+          'org-model': {
+            model: 'org-model',
+            standard: { input: 1, cachedInput: 0.1, output: 2 },
+          },
+        },
+        unpricedModels: {},
+        billableTools: {},
       },
-      unpricedModels: {},
-      billableTools: {},
       fetchedAt: '2026-06-18T00:00:00.000Z',
       loadedFrom: 'memory',
       stale: false,
@@ -1842,11 +2043,9 @@ describe('ObservabilityService', () => {
     jest.useFakeTimers();
     try {
       mockRunCostHistoryRepair.mockClear();
-      mockGetOpenAiPricingForCostingSync.mockReturnValue({
-        loadedFrom: 'cache',
-        stale: false,
-        payload: {},
-      });
+      mockGetOpenAiPricingForCostingSync.mockReturnValue(
+        makeOpenAiPricingCacheState(),
+      );
       const service = new ObservabilityService();
       await service.start();
       service.startChatTurn({
@@ -1924,11 +2123,9 @@ describe('ObservabilityService', () => {
       jest.advanceTimersByTime(60_000);
       expect(mockRunCostHistoryRepair).not.toHaveBeenCalled();
 
-      mockGetOpenAiPricingForCostingSync.mockReturnValue({
-        loadedFrom: 'cache',
-        stale: false,
-        payload: {},
-      });
+      mockGetOpenAiPricingForCostingSync.mockReturnValue(
+        makeOpenAiPricingCacheState(),
+      );
       jest.advanceTimersByTime(60_000);
       expect(mockRunCostHistoryRepair).toHaveBeenCalledTimes(1);
       expect(mockRunCostHistoryRepair.mock.calls[0]?.[0].markerPath).toContain(
@@ -2297,6 +2494,502 @@ describe('ObservabilityService', () => {
       ).toMatchObject({ is_ai_credits_routed: expected });
     },
   );
+
+  describe('chat turn failure category and trigger (CAN-4629)', () => {
+    const chatTurnStart = {
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      provider: 'codex',
+      originalUserText: 'Inspect the bug',
+      submittedText: 'Inspect the bug',
+      planMode: false,
+      isStandalone: false,
+    } as const;
+    const walletEmptyError = `unexpected status 402: {"error":{"canopy_proxy":"CANOPY_AI_CREDITS_PROXY","code":"no_billing_source","reason":"personal_wallet_empty","message":"AI Credits are unavailable for this request."}}`;
+
+    function failedChatTurnContext(): Record<string, unknown> | undefined {
+      expect(mockFailDesktopOperation).toHaveBeenCalledTimes(1);
+      expect(mockFailDesktopOperation.mock.calls[0]?.[0]).toBe(
+        'canopy.chat_turn',
+      );
+      return mockFailDesktopOperation.mock.calls[0]?.[2]?.context;
+    }
+
+    it('reports why a failed turn failed and who started it', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'codex',
+        event: { type: 'turn.failed', error: { message: walletEmptyError } },
+      });
+      service.completeChatTurn(
+        'proj',
+        'wt',
+        'chat',
+        'failure',
+        walletEmptyError,
+      );
+
+      expect(mockFailDesktopOperation.mock.calls[0]?.[1]).toBe('error');
+      const context = failedChatTurnContext();
+      expect(context).toMatchObject({
+        failure_category: 'no_credits',
+        failure_detail: 'personal_wallet_empty',
+        trigger_type: 'user',
+      });
+      expect(JSON.stringify(context)).not.toContain('AI Credits are');
+    });
+
+    it('lets the terminal Codex failure win over an earlier usage notice', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'codex',
+        event: { type: 'rate_limit.reached' },
+      });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'canopy_usage_limit_reached',
+        provider: 'codex',
+      });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          error: {
+            message: 'stream failed',
+            codexErrorInfo: 'responseStreamConnectionFailed',
+          },
+        },
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'failure');
+
+      expect(failedChatTurnContext()).toMatchObject({
+        failure_category: 'network',
+      });
+    });
+
+    it('lets the native Codex error result win over an earlier usage notice', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'codex',
+        event: { type: 'rate_limit.reached' },
+      });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'canopy_usage_limit_reached',
+        provider: 'codex',
+      });
+      // The shape codex-session emits when a turn fails.
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'result',
+        is_error: true,
+        result: 'stream failed',
+        subtype: 'codex_error',
+        codexErrorInfo: 'responseStreamConnectionFailed',
+        errors: ['stream failed'],
+      });
+      service.completeChatTurn(
+        'proj',
+        'wt',
+        'chat',
+        'failure',
+        'stream failed',
+      );
+
+      expect(failedChatTurnContext()).toMatchObject({
+        failure_category: 'network',
+      });
+    });
+
+    it('reports a Claude sub-agent failure apart from the root turn', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, provider: 'claude' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_child',
+        error: 'rate_limit',
+        message: { role: 'assistant', content: [] },
+      });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'canopy_usage_limit_reached',
+        provider: 'claude',
+        parent_tool_use_id: 'toolu_child',
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'cancelled');
+
+      const context = failedChatTurnContext();
+      expect(context).not.toHaveProperty('failure_category');
+      expect(context).toMatchObject({
+        sub_agent_failure_category: 'provider_quota',
+      });
+    });
+
+    it('reports a Codex sub-agent failure apart from a successful root turn', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, sdkSessionId: 'root-thread' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          thread_id: 'child-thread',
+          error: { message: 'limit', codexErrorInfo: 'usageLimitExceeded' },
+        },
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+
+      const context = mockSucceedDesktopOperation.mock.calls[0]?.[1]?.context;
+      expect(context).not.toHaveProperty('failure_category');
+      expect(context).toMatchObject({
+        sub_agent_failure_category: 'provider_quota',
+      });
+    });
+
+    it.each(['failure', 'cancelled'] as const)(
+      'keeps a derived child quota notice separate from root %s',
+      (outcome) => {
+        const service = new ObservabilityService();
+        service.startChatTurn({
+          ...chatTurnStart,
+          sdkSessionId: 'root-thread',
+        });
+        service.observeChatEvent('proj', 'wt', 'chat', {
+          type: 'canopy_usage_limit_reached',
+          provider: 'codex',
+          thread_id: 'child-thread',
+        });
+        if (outcome === 'failure') {
+          service.observeChatEvent('proj', 'wt', 'chat', {
+            type: 'result',
+            is_error: true,
+            subtype: 'codex_error',
+            result: 'stream failed',
+            codexErrorInfo: 'responseStreamConnectionFailed',
+          });
+        }
+        service.completeChatTurn('proj', 'wt', 'chat', outcome);
+        const context = failedChatTurnContext();
+        expect(context).toMatchObject({
+          sub_agent_failure_category: 'provider_quota',
+        });
+        if (outcome === 'failure') {
+          expect(context).toMatchObject({ failure_category: 'network' });
+        } else {
+          expect(context).not.toHaveProperty('failure_category');
+        }
+      },
+    );
+
+    it('keeps a derived child auth notice separate from root cancellation', () => {
+      const service = new ObservabilityService();
+      service.startChatTurn({ ...chatTurnStart, sdkSessionId: 'root-thread' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'canopy_auth_failure',
+        thread_id: 'child-thread',
+        failure: {
+          dependencyClass: 'provider',
+          dependencyId: 'codex',
+          displayName: 'Codex',
+          failureClass: 'unauthenticated',
+          recovery: { kind: 'provider_terminal', provider: 'codex' },
+        },
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'cancelled');
+      const context = failedChatTurnContext();
+      expect(context).not.toHaveProperty('failure_category');
+      expect(context).toMatchObject({
+        sub_agent_failure_category: 'provider_auth',
+      });
+    });
+
+    it('keeps a derived Claude child auth notice separate from root cancellation', () => {
+      const service = new ObservabilityService();
+      service.startChatTurn({ ...chatTurnStart, provider: 'claude' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_child',
+        error: 'authentication_failed',
+        message: { role: 'assistant', content: [] },
+      });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'canopy_auth_failure',
+        parent_tool_use_id: 'toolu_child',
+        failure: {
+          dependencyClass: 'provider',
+          dependencyId: 'claude',
+          displayName: 'Claude',
+          failureClass: 'unauthenticated',
+          recovery: { kind: 'provider_terminal', provider: 'claude' },
+        },
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'cancelled');
+      const context = failedChatTurnContext();
+      expect(context).not.toHaveProperty('failure_category');
+      expect(context).toMatchObject({
+        sub_agent_failure_category: 'provider_auth',
+      });
+    });
+
+    it('keeps root Codex failures as root evidence', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, sdkSessionId: 'root-thread' });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          thread_id: 'root-thread',
+          error: { message: 'limit', codexErrorInfo: 'usageLimitExceeded' },
+        },
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'failure');
+
+      const context = failedChatTurnContext();
+      expect(context).toMatchObject({ failure_category: 'provider_quota' });
+      expect(context).not.toHaveProperty('sub_agent_failure_category');
+    });
+
+    it('reports other for an unrecognized failure without a detail or its text', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'portal' });
+      service.completeChatTurn(
+        'proj',
+        'wt',
+        'chat',
+        'failure',
+        'Unexpected private failure in /Users/someone/project',
+      );
+
+      const context = failedChatTurnContext();
+      expect(context).toMatchObject({
+        failure_category: 'other',
+        trigger_type: 'portal',
+      });
+      expect(context).not.toHaveProperty('failure_detail');
+      expect(JSON.stringify(context)).not.toContain('/Users/someone');
+    });
+
+    it('reports setup for an unrecognized dispatch failure', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'hook' });
+      service.completeChatTurn(
+        'proj',
+        'wt',
+        'chat',
+        'failure',
+        'Could not prepare the worktree',
+        { setupFailure: true },
+      );
+
+      expect(failedChatTurnContext()).toMatchObject({
+        failure_category: 'setup',
+        trigger_type: 'hook',
+      });
+    });
+
+    it('keeps a recognized cause for a dispatch failure', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'hook' });
+      service.completeChatTurn(
+        'proj',
+        'wt',
+        'chat',
+        'failure',
+        walletEmptyError,
+        { setupFailure: true },
+      );
+
+      expect(failedChatTurnContext()).toMatchObject({
+        failure_category: 'no_credits',
+        failure_detail: 'personal_wallet_empty',
+      });
+    });
+
+    describe('daily credit grant status on no-credits failures (CAN-4633)', () => {
+      afterEach(() => {
+        mockGetLastDailyCreditGrantStatus.mockReturnValue(undefined);
+      });
+
+      it('adds the latest grant status to a no_credits failure', () => {
+        mockGetLastDailyCreditGrantStatus.mockReturnValue('blocked');
+        const service = new ObservabilityService();
+
+        service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
+        service.completeChatTurn(
+          'proj',
+          'wt',
+          'chat',
+          'failure',
+          walletEmptyError,
+        );
+
+        expect(failedChatTurnContext()).toMatchObject({
+          failure_category: 'no_credits',
+          daily_credit_grant_status: 'blocked',
+        });
+      });
+
+      it('leaves it off other failures', () => {
+        mockGetLastDailyCreditGrantStatus.mockReturnValue('blocked');
+        const service = new ObservabilityService();
+
+        service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
+        service.completeChatTurn(
+          'proj',
+          'wt',
+          'chat',
+          'failure',
+          'Could not prepare the worktree',
+          { setupFailure: true },
+        );
+
+        expect(failedChatTurnContext()).not.toHaveProperty(
+          'daily_credit_grant_status',
+        );
+      });
+
+      it('leaves it off when no status is known', () => {
+        const service = new ObservabilityService();
+
+        service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
+        service.completeChatTurn(
+          'proj',
+          'wt',
+          'chat',
+          'failure',
+          walletEmptyError,
+        );
+
+        expect(failedChatTurnContext()).not.toHaveProperty(
+          'daily_credit_grant_status',
+        );
+      });
+    });
+
+    it('omits failure properties from a successful turn', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'hook' });
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+
+      const context = mockSucceedDesktopOperation.mock.calls[0]?.[1]?.context;
+      expect(context).toMatchObject({ trigger_type: 'hook' });
+      expect(context).not.toHaveProperty('failure_category');
+      expect(context).not.toHaveProperty('failure_detail');
+      expect(context).not.toHaveProperty('sub_agent_failure_category');
+    });
+
+    it('reports an abandoned turn cause only when one was seen', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({ ...chatTurnStart, chatId: 'plain' });
+      service.completeChatTurn('proj', 'wt', 'plain', 'cancelled');
+      service.startChatTurn({ ...chatTurnStart, chatId: 'auth' });
+      service.observeChatEvent('proj', 'wt', 'auth', {
+        type: 'canopy_auth_failure',
+        failure: {
+          dependencyClass: 'provider',
+          dependencyId: 'codex',
+          displayName: 'Codex',
+          failureClass: 'expired',
+          recovery: { kind: 'provider_terminal', provider: 'codex' },
+        },
+      });
+      service.completeChatTurn('proj', 'wt', 'auth', 'interrupted');
+
+      expect(mockFailDesktopOperation).toHaveBeenCalledTimes(2);
+      const [plain, auth] = mockFailDesktopOperation.mock.calls;
+      expect(plain?.[1]).toBe('abandoned');
+      expect(plain?.[2]?.context).not.toHaveProperty('failure_category');
+      expect(auth?.[1]).toBe('abandoned');
+      expect(auth?.[2]?.context).toMatchObject({
+        failure_category: 'provider_auth',
+      });
+    });
+
+    it('reports the analytics trigger over the initiation source', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn({
+        ...chatTurnStart,
+        initiationSource: 'user',
+        turnTrigger: 'automation',
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+
+      expect(
+        mockSucceedDesktopOperation.mock.calls[0]?.[1]?.context,
+      ).toMatchObject({ trigger_type: 'automation' });
+    });
+
+    it('reports unknown when no initiation source was given', () => {
+      const service = new ObservabilityService();
+
+      service.startChatTurn(chatTurnStart);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+
+      expect(
+        mockSucceedDesktopOperation.mock.calls[0]?.[1]?.context,
+      ).toMatchObject({ trigger_type: 'unknown' });
+    });
+
+    it('reports an autonomous wake turn as automation', () => {
+      const service = new ObservabilityService();
+      service.enableTurnStateAudit();
+
+      service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      service.observeTurnState(
+        { projectId: 'proj', worktreeId: 'wt', chatId: 'chat' },
+        {
+          current: {
+            id: 'wake-1',
+            origin: 'autonomous',
+            startedAtMs: Date.now(),
+            pauses: [],
+          },
+        },
+      );
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'codex',
+        event: { type: 'turn.started' },
+      });
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+
+      expect(mockSucceedDesktopOperation).toHaveBeenCalledTimes(2);
+      expect(
+        mockSucceedDesktopOperation.mock.calls[1]?.[1]?.context,
+      ).toMatchObject({ trigger_type: 'automation' });
+    });
+
+    it('leaves agent task contexts without chat turn properties', () => {
+      const service = new ObservabilityService();
+      const startedAt = '2026-10-26T12:00:00.000Z';
+
+      service.startObservedTask('agent-task', {
+        ...makeAuditEntry('agent-task-entry', startedAt, {
+          eventType: 'pipeline_advisor',
+          status: 'running',
+          completedAt: undefined,
+          durationMs: undefined,
+        }),
+      });
+      service.finalizeObservedTask('agent-task', 'failure', walletEmptyError);
+
+      const context = mockFailDesktopOperation.mock.calls[0]?.[2]?.context;
+      expect(context).not.toHaveProperty('failure_category');
+      expect(context).not.toHaveProperty('failure_detail');
+      expect(context).not.toHaveProperty('trigger_type');
+    });
+  });
 
   it('forwards provider access denial as a warning operation with its bounded code', () => {
     const service = new ObservabilityService();
@@ -2839,7 +3532,7 @@ describe('ObservabilityService', () => {
           .split('\n')
           .map((line) => {
             const value: unknown = JSON.parse(line);
-            if (typeof value !== 'object' || value === null) {
+            if (!isJsonRecord(value)) {
               throw new Error('Expected persisted diagnostic record');
             }
             const field = diagnosticType === 'session' ? 'sessionKey' : 'error';
@@ -2930,8 +3623,7 @@ describe('ObservabilityService', () => {
             const value: unknown = JSON.parse(line);
             const field = family === 'index' ? 'entryId' : 'id';
             if (
-              typeof value !== 'object' ||
-              value === null ||
+              !isJsonRecord(value) ||
               !(field in value) ||
               typeof value[field] !== 'string'
             ) {
@@ -3400,6 +4092,38 @@ describe('ObservabilityService', () => {
 
     expect(mockedRename.mock.calls).toHaveLength(initialReplacements + 1);
     await service.dispose();
+  });
+
+  it('finds Workflow Editor entries by either the stored or the current label', async () => {
+    installMockFilesystem();
+    const service = new ObservabilityService();
+    const startedAt = new Date().toISOString();
+    // Entries persisted before the rename keep their stored label.
+    service.startObservedTask(
+      'legacy-editor-task',
+      makeAuditEntry('legacy-editor-entry', startedAt, {
+        eventType: 'pipeline_editor',
+        label: 'Pipeline Editor',
+      }),
+    );
+    service.startObservedTask(
+      'current-editor-task',
+      makeAuditEntry('current-editor-entry', startedAt, {
+        eventType: 'pipeline_editor',
+        label: 'Workflow Editor',
+      }),
+    );
+    try {
+      for (const search of ['workflow editor', 'pipeline editor']) {
+        const history = await service.loadHistory({ limit: 10, search });
+        expect(history.entries.map((entry) => entry.id).sort()).toEqual([
+          'current-editor-entry',
+          'legacy-editor-entry',
+        ]);
+      }
+    } finally {
+      await service.dispose();
+    }
   });
 
   it('preserves a Cursor audit entry through persistence and service reload', async () => {
@@ -4109,11 +4833,18 @@ describe('ObservabilityService', () => {
         limitId: 'weekly_scoped:Fable',
         limitName: '7-day Fable',
         planType: 'default_claude_max_20x',
+        scope: { model: { id: null, displayName: 'Fable' }, surface: null },
         primary: {
           usedPercent: 60,
           resetsAt: '2026-07-03T06:00:00.588Z',
           windowDurationMins: 10080,
         },
+      },
+      {
+        limitId: 'extra_usage',
+        limitName: 'Extra usage',
+        planType: 'default_claude_max_20x',
+        spend: { isEnabled: false },
       },
     ]);
     expect(
@@ -4123,7 +4854,7 @@ describe('ObservabilityService', () => {
     await service.dispose();
   });
 
-  it('preserves Claude Extra usage spend beside the derived remaining balance', async () => {
+  it('normalizes Claude Extra usage minor-unit spend and cap separately from credits', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -4133,8 +4864,10 @@ describe('ObservabilityService', () => {
           },
           extra_usage: {
             is_enabled: true,
-            monthly_limit: 50,
-            used_credits: 12.5,
+            monthly_limit: 5000,
+            used_credits: 1250,
+            currency: 'USD',
+            decimal_places: 2,
             utilization: 25,
           },
         }),
@@ -4157,8 +4890,9 @@ describe('ObservabilityService', () => {
       limitName: 'Extra usage',
       planType: 'default_claude_max_20x',
       primary: { usedPercent: 25 },
-      credits: { usedUsd: 12.5, totalUsd: 50, remainingUsd: 37.5 },
+      spend: { currency: 'USD', used: 12.5, limit: 50, isEnabled: true },
     });
+    expect(extraUsage?.credits).toBeUndefined();
 
     await service.dispose();
   });
@@ -4175,6 +4909,8 @@ describe('ObservabilityService', () => {
             is_enabled: true,
             monthly_limit: null,
             used_credits: 0,
+            currency: 'USD',
+            decimal_places: 2,
             utilization: null,
           },
         }),
@@ -4192,11 +4928,12 @@ describe('ObservabilityService', () => {
       .loadSnapshot()
       .usage.providers.find((entry) => entry.provider === 'claude')
       ?.rateLimits?.find((limit) => limit.limitId === 'extra_usage');
-    expect(extraUsage?.credits).toEqual({
-      usedUsd: 0,
-      totalUsd: undefined,
-      remainingUsd: undefined,
+    expect(extraUsage?.spend).toEqual({
+      currency: 'USD',
+      used: 0,
+      isEnabled: true,
     });
+    expect(extraUsage?.credits).toBeUndefined();
 
     await service.dispose();
   });
@@ -4385,6 +5122,7 @@ describe('ObservabilityService', () => {
       const summary = service
         .loadSnapshot()
         .usage.providers.find((entry) => entry.provider === 'claude');
+      if (!summary) throw new Error('Expected Claude provider usage summary');
       expect(summary).toMatchObject({
         authState: 'authenticated',
         accountLabel: 'user@example.com',
@@ -4802,6 +5540,411 @@ describe('ObservabilityService', () => {
   });
 
   describe('Claude usage fetch gate and SDK rate-limit events', () => {
+    it('keeps fallback when a newer SDK observation arrives during recovery persistence', async () => {
+      const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
+      nativeAccountChange.nativeAccountChangeTestSeams.reset();
+      clearAllProviderQuotaReached();
+      const service = new ObservabilityService();
+      await service.start();
+      const writeStarted = createDeferred<void>();
+      const releaseWrite = createDeferred<void>();
+      let stored = makePreferences(30);
+      let paused = false;
+      mockedUpdatePreferencesFile.mockImplementation(async (updater) => {
+        const patch = await updater(stored);
+        if (patch) stored = { ...stored, ...patch };
+        if (!paused && patch?.nativeProviderAccounts?.claude) {
+          paused = true;
+          writeStarted.resolve();
+          await releaseWrite.promise;
+        }
+        return stored;
+      });
+      const identity = jest
+        .spyOn(providerAuthState, 'peekProviderAccountIdentity')
+        .mockReturnValue({
+          providerAccountKey: 'claude:user@example.com',
+          accountEmail: 'user@example.com',
+          planType: 'max',
+        });
+      const billingKind = jest
+        .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
+        .mockReturnValue('subscription');
+      markProviderQuotaReached('claude');
+      const activatedAt = Date.now();
+      clock.advance(30_001);
+      fetchMock.mockResolvedValueOnce(createClaudeUsageResponse(10, 20));
+      const refresh = service.refreshProviderUsage('claude');
+      try {
+        await writeStarted.promise;
+        startClaudeChatTurn(service, 'sdk-pending-recovery');
+        service.observeChatEvent('proj', 'wt', 'sdk-pending-recovery', {
+          type: 'rate_limit_event',
+          rate_limit_info: {
+            status: 'rejected',
+            rateLimitType: 'five_hour',
+            utilization: 1,
+          },
+        });
+        expect(
+          service
+            .getUsageOverview()
+            .providers.find((entry) => entry.provider === 'claude')
+            ?.rateLimits?.find((limit) => limit.limitId === 'five_hour')
+            ?.primary?.usedPercent,
+        ).toBe(100);
+        releaseWrite.resolve();
+        await refresh;
+        expect(isProviderQuotaReached('claude')).toBe(true);
+        expect(
+          nativeAccountChange.getNativeSubscriptionRestoredAt('claude'),
+        ).toBeUndefined();
+        expect(
+          stored.nativeProviderAccounts?.claude?.subscriptionRestoredAt,
+        ).toBeUndefined();
+        expect(
+          isAiCreditsRoutingInEffect(
+            { active: true, scope: 'session', activatedAt },
+            {
+              now: Date.now(),
+              subscriptionRestoredAt:
+                nativeAccountChange.getNativeSubscriptionRestoredAt('claude'),
+            },
+          ),
+        ).toBe(true);
+
+        clock.advance(30_001);
+        fetchMock.mockResolvedValueOnce(createClaudeUsageResponse(10, 20));
+        await service.refreshProviderUsage('claude');
+        expect(isProviderQuotaReached('claude')).toBe(false);
+        expect(
+          stored.nativeProviderAccounts?.claude?.subscriptionRestoredAt,
+        ).toBe(Date.now());
+      } finally {
+        releaseWrite.resolve();
+        await refresh;
+        mockedUpdatePreferencesFile.mockReset();
+        identity.mockRestore();
+        billingKind.mockRestore();
+        nativeAccountChange.nativeAccountChangeTestSeams.reset();
+        clearAllProviderQuotaReached();
+        clock.restore();
+        await service.dispose();
+      }
+    });
+
+    it('does not expire an omitted window without a reliable reset', async () => {
+      const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
+      const restored = jest
+        .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
+        .mockResolvedValue(true);
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            five_hour: { utilization: 10 },
+            seven_day: { utilization: 100 },
+          }),
+          { status: 200 },
+        ),
+      );
+      const service = new ObservabilityService();
+      try {
+        await service.start();
+        restored.mockClear();
+        clock.advance(28 * 24 * 60 * 60 * 1000);
+        fetchMock.mockResolvedValueOnce(
+          new Response(JSON.stringify({ five_hour: { utilization: 10 } }), {
+            status: 200,
+          }),
+        );
+        await service.refreshProviderUsage('claude');
+        expect(restored).not.toHaveBeenCalled();
+      } finally {
+        restored.mockRestore();
+        clock.restore();
+        await service.dispose();
+      }
+    });
+
+    it('retires a permanently omitted window after its confirmed reset', async () => {
+      const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
+      const restored = jest
+        .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
+        .mockResolvedValue(true);
+      fetchMock.mockResolvedValueOnce(createClaudeUsageResponse(10, 100));
+      const service = new ObservabilityService();
+      try {
+        await service.start();
+        restored.mockClear();
+        clock.advance(30_001);
+        fetchMock.mockResolvedValueOnce(
+          new Response(JSON.stringify({ five_hour: { utilization: 10 } }), {
+            status: 200,
+          }),
+        );
+        await service.refreshProviderUsage('claude');
+        expect(restored).not.toHaveBeenCalled();
+        clock.advance(28 * 60 * 60 * 1000);
+        fetchMock.mockResolvedValueOnce(
+          new Response(JSON.stringify({ five_hour: { utilization: 10 } }), {
+            status: 200,
+          }),
+        );
+        await service.refreshProviderUsage('claude');
+        expect(restored).toHaveBeenCalledWith(
+          'claude',
+          'user@example.com',
+          Date.now(),
+          expect.any(Function),
+        );
+        expect(
+          service
+            .getUsageOverview()
+            .providers.find((provider) => provider.provider === 'claude')
+            ?.rateLimits?.some((limit) => limit.limitId === 'seven_day'),
+        ).toBe(false);
+      } finally {
+        restored.mockRestore();
+        clock.restore();
+        await service.dispose();
+      }
+    });
+
+    it.each(['modern to legacy', 'legacy to modern'])(
+      'recovers across equivalent %s window identifiers',
+      async (direction) => {
+        const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
+        const restored = jest
+          .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
+          .mockResolvedValue(true);
+        const modern = (percent: number): Response =>
+          new Response(
+            JSON.stringify({
+              limits: [
+                { kind: 'session', group: 'session', percent: 10, scope: null },
+                { kind: 'weekly_all', group: 'weekly', percent, scope: null },
+              ],
+            }),
+            { status: 200 },
+          );
+        fetchMock.mockResolvedValueOnce(
+          direction === 'modern to legacy'
+            ? modern(100)
+            : createClaudeUsageResponse(10, 100),
+        );
+        const service = new ObservabilityService();
+        try {
+          await service.start();
+          restored.mockClear();
+          clock.advance(30_001);
+          fetchMock.mockResolvedValueOnce(
+            direction === 'modern to legacy'
+              ? createClaudeUsageResponse(10, 20)
+              : modern(20),
+          );
+          await service.refreshProviderUsage('claude');
+          expect(restored).toHaveBeenCalledWith(
+            'claude',
+            'user@example.com',
+            Date.now(),
+            expect.any(Function),
+          );
+          expect(
+            service
+              .getUsageOverview()
+              .providers.find((provider) => provider.provider === 'claude')
+              ?.rateLimits,
+          ).toHaveLength(2);
+        } finally {
+          restored.mockRestore();
+          clock.restore();
+          await service.dispose();
+        }
+      },
+    );
+
+    it.each(
+      [
+        {
+          legacyId: 'seven_day_opus',
+          scope: { model: { id: 'claude-opus-4-6', display_name: 'Opus' } },
+        },
+        {
+          legacyId: 'seven_day_sonnet',
+          scope: { model: { id: 'claude-sonnet-4-6', display_name: 'Sonnet' } },
+        },
+        {
+          legacyId: 'seven_day_cowork',
+          scope: { surface: { display_name: 'Cowork' } },
+        },
+        {
+          legacyId: 'seven_day_oauth_apps',
+          scope: { surface: { display_name: 'OAuth apps' } },
+        },
+      ].flatMap((row) =>
+        ['modern to legacy', 'legacy to modern'].map((direction) => ({
+          ...row,
+          direction,
+        })),
+      ),
+    )(
+      'recovers $legacyId across $direction without duplicate scoped windows',
+      async ({ legacyId, scope, direction }) => {
+        const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
+        const restored = jest
+          .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
+          .mockResolvedValue(true);
+        const legacy = (percent: number): Response =>
+          new Response(
+            JSON.stringify({
+              five_hour: { utilization: 10 },
+              seven_day: { utilization: 20 },
+              [legacyId]: { utilization: percent, resets_at: null },
+            }),
+            { status: 200 },
+          );
+        const modern = (percent: number): Response =>
+          new Response(
+            JSON.stringify({
+              limits: [
+                { kind: 'session', percent: 10 },
+                { kind: 'weekly_all', percent: 20 },
+                { kind: 'weekly_scoped', percent, scope },
+              ],
+            }),
+            { status: 200 },
+          );
+        fetchMock.mockResolvedValueOnce(
+          direction === 'modern to legacy' ? modern(100) : legacy(100),
+        );
+        const service = new ObservabilityService();
+        try {
+          await service.start();
+          restored.mockClear();
+          clock.advance(30_001);
+          fetchMock.mockResolvedValueOnce(
+            direction === 'modern to legacy' ? legacy(10) : modern(10),
+          );
+          await service.refreshProviderUsage('claude');
+          const limits = service
+            .getUsageOverview()
+            .providers.find(
+              (provider) => provider.provider === 'claude',
+            )?.rateLimits;
+          expect(limits).toHaveLength(3);
+          expect(restored).toHaveBeenCalledWith(
+            'claude',
+            'user@example.com',
+            Date.now(),
+            expect.any(Function),
+          );
+        } finally {
+          restored.mockRestore();
+          clock.restore();
+          await service.dispose();
+        }
+      },
+    );
+
+    it('does not replace exhausted windows with another model or surface scope', async () => {
+      const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
+      const restored = jest
+        .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
+        .mockResolvedValue(true);
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            five_hour: { utilization: 10 },
+            seven_day: { utilization: 20 },
+            seven_day_opus: { utilization: 100 },
+            seven_day_cowork: { utilization: 100 },
+          }),
+          { status: 200 },
+        ),
+      );
+      const service = new ObservabilityService();
+      try {
+        await service.start();
+        restored.mockClear();
+        clock.advance(30_001);
+        fetchMock.mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              limits: [
+                { kind: 'session', percent: 10 },
+                { kind: 'weekly_all', percent: 20 },
+                {
+                  kind: 'weekly_scoped',
+                  percent: 10,
+                  scope: { model: { id: 'sonnet', display_name: 'Sonnet' } },
+                },
+                {
+                  kind: 'weekly_scoped',
+                  percent: 10,
+                  scope: { surface: 'OAuth apps' },
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+        );
+        await service.refreshProviderUsage('claude');
+        expect(restored).not.toHaveBeenCalled();
+        const limits = service
+          .getUsageOverview()
+          .providers.find(
+            (provider) => provider.provider === 'claude',
+          )?.rateLimits;
+        for (const id of ['seven_day_opus', 'seven_day_cowork']) {
+          expect(
+            limits?.find((limit) => limit.limitId === id)?.primary?.usedPercent,
+          ).toBe(100);
+        }
+      } finally {
+        restored.mockRestore();
+        clock.restore();
+        await service.dispose();
+      }
+    });
+
+    it('requires the omitted exhausted window after successive partial usage reads', async () => {
+      const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
+      const restored = jest
+        .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
+        .mockResolvedValue(true);
+      fetchMock.mockResolvedValueOnce(createClaudeUsageResponse(10, 100));
+      const service = new ObservabilityService();
+      try {
+        await service.start();
+        restored.mockClear();
+        fetchMock.mockClear();
+        for (let read = 0; read < 2; read += 1) {
+          clock.advance(30_001);
+          fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ five_hour: { utilization: 10 } }), {
+              status: 200,
+            }),
+          );
+          await service.refreshProviderUsage('claude');
+          expect(fetchMock).toHaveBeenCalledTimes(read + 1);
+          expect(restored).not.toHaveBeenCalled();
+        }
+        clock.advance(30_001);
+        fetchMock.mockResolvedValueOnce(createClaudeUsageResponse(10, 20));
+        await service.refreshProviderUsage('claude');
+        expect(restored).toHaveBeenCalledWith(
+          'claude',
+          'user@example.com',
+          Date.now(),
+          expect.any(Function),
+        );
+      } finally {
+        restored.mockRestore();
+        clock.restore();
+        await service.dispose();
+      }
+    });
+
     it('uses one same-account HTTP read for a burst after interactive freshness expires', async () => {
       const service = new ObservabilityService();
       await service.start();
@@ -5470,74 +6613,143 @@ describe('ObservabilityService', () => {
       }
     });
 
-    it('keeps SDK fields newer than an in-flight HTTP request while updating other windows', async () => {
-      const service = new ObservabilityService();
-      await service.start();
-      fetchMock.mockClear();
-      const identity = jest
-        .spyOn(providerAuthState, 'peekProviderAccountIdentity')
-        .mockReturnValue({
-          providerAccountKey: 'claude:user@example.com',
-          accountEmail: 'user@example.com',
-          planType: 'max',
-        });
-      const billingKind = jest
-        .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
-        .mockReturnValue('subscription');
-      const clock = installDateNowClock(Date.now());
-      clock.advance(30_001);
-      const deferredFetch = createDeferred<Response>();
-      fetchMock.mockReturnValueOnce(deferredFetch.promise);
+    it.each(
+      ['legacy', 'modern'].flatMap((format) =>
+        ['five_hour', 'seven_day_opus'].map((windowId) => ({
+          format,
+          windowId,
+        })),
+      ),
+    )(
+      'keeps SDK $windowId fields newer than an in-flight $format HTTP request while updating other windows',
+      async ({ format, windowId }) => {
+        const legacyPayload = {
+          five_hour: { utilization: 22 },
+          seven_day: { utilization: 75 },
+          seven_day_opus: { utilization: 22 },
+        };
+        if (windowId === 'seven_day_opus')
+          fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify(legacyPayload), { status: 200 }),
+          );
+        const service = new ObservabilityService();
+        await service.start();
+        fetchMock.mockClear();
+        const identity = jest
+          .spyOn(providerAuthState, 'peekProviderAccountIdentity')
+          .mockReturnValue({
+            providerAccountKey: 'claude:user@example.com',
+            accountEmail: 'user@example.com',
+            planType: 'max',
+          });
+        const billingKind = jest
+          .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
+          .mockReturnValue('subscription');
+        const clock = installDateNowClock(Date.now());
+        clock.advance(30_001);
+        const deferredFetch = createDeferred<Response>();
+        fetchMock.mockReturnValueOnce(deferredFetch.promise);
 
-      try {
-        const refresh = service.refreshProviderUsage('claude');
-        await waitForCondition(() => fetchMock.mock.calls.length === 1);
-        service.startChatTurn({
-          projectId: 'proj',
-          worktreeId: 'wt',
-          chatId: 'pending-http',
-          provider: 'claude',
-          originalUserText: 'Inspect limits',
-          submittedText: 'Inspect limits',
-          planMode: false,
-          isStandalone: false,
-        });
-        service.observeChatEvent('proj', 'wt', 'pending-http', {
-          type: 'rate_limit_event',
-          rate_limit_info: {
-            status: 'allowed_warning',
-            rateLimitType: 'five_hour',
-            utilization: 0.77,
-            resetsAt: 1_800_000_000,
-          },
-        });
+        try {
+          const refresh = service.refreshProviderUsage('claude');
+          await waitForCondition(() => fetchMock.mock.calls.length === 1);
+          service.startChatTurn({
+            projectId: 'proj',
+            worktreeId: 'wt',
+            chatId: 'pending-http',
+            provider: 'claude',
+            originalUserText: 'Inspect limits',
+            submittedText: 'Inspect limits',
+            planMode: false,
+            isStandalone: false,
+          });
+          service.observeChatEvent('proj', 'wt', 'pending-http', {
+            type: 'rate_limit_event',
+            rate_limit_info: {
+              status: 'allowed_warning',
+              rateLimitType: windowId,
+              utilization: 0.77,
+              resetsAt: 1_800_000_000,
+            },
+          });
 
-        deferredFetch.resolve(createClaudeUsageResponse(22, 75));
-        await refresh;
+          deferredFetch.resolve(
+            format === 'legacy'
+              ? windowId === 'five_hour'
+                ? createClaudeUsageResponse(22, 75)
+                : new Response(JSON.stringify(legacyPayload), { status: 200 })
+              : new Response(
+                  JSON.stringify({
+                    limits: [
+                      {
+                        kind: 'session',
+                        group: 'session',
+                        percent: 22,
+                        scope: null,
+                      },
+                      {
+                        kind: 'weekly_all',
+                        group: 'weekly',
+                        percent: 75,
+                        scope: null,
+                      },
+                      ...(windowId === 'five_hour'
+                        ? []
+                        : [
+                            {
+                              kind: 'weekly_scoped',
+                              percent: 22,
+                              scope: {
+                                model: {
+                                  id: 'claude-opus-4-6',
+                                  display_name: 'Opus',
+                                },
+                              },
+                            },
+                          ]),
+                    ],
+                  }),
+                  { status: 200 },
+                ),
+          );
+          await refresh;
 
-        const summary = service
-          .getUsageOverview()
-          .providers.find((entry) => entry.provider === 'claude');
-        expect(
-          summary?.rateLimits?.find((limit) => limit.limitId === 'five_hour'),
-        ).toMatchObject({
-          limitName: '5-hour window',
-          primary: {
-            usedPercent: 77,
-            resetsAt: new Date(1_800_000_000 * 1_000).toISOString(),
-          },
-        });
-        expect(
-          summary?.rateLimits?.find((limit) => limit.limitId === 'seven_day')
-            ?.primary?.usedPercent,
-        ).toBe(75);
-      } finally {
-        clock.restore();
-        identity.mockRestore();
-        billingKind.mockRestore();
-        await service.dispose();
-      }
-    });
+          const summary = service
+            .getUsageOverview()
+            .providers.find((entry) => entry.provider === 'claude');
+          expect(
+            summary?.rateLimits?.find(
+              (limit) =>
+                limit.limitId ===
+                (format === 'legacy'
+                  ? windowId
+                  : windowId === 'five_hour'
+                    ? 'session'
+                    : 'weekly_scoped:Opus'),
+            ),
+          ).toMatchObject({
+            limitName:
+              windowId === 'five_hour' ? '5-hour window' : '7-day Opus',
+            primary: {
+              usedPercent: 77,
+              resetsAt: new Date(1_800_000_000 * 1_000).toISOString(),
+            },
+          });
+          expect(
+            summary?.rateLimits?.find(
+              (limit) =>
+                limit.limitId ===
+                (format === 'legacy' ? 'seven_day' : 'weekly_all'),
+            )?.primary?.usedPercent,
+          ).toBe(75);
+        } finally {
+          clock.restore();
+          identity.mockRestore();
+          billingKind.mockRestore();
+          await service.dispose();
+        }
+      },
+    );
 
     it.each([
       {
@@ -5965,8 +7177,8 @@ describe('ObservabilityService', () => {
       authState: 'unauthenticated',
       accountLabel: undefined,
     });
-    expect(codexUsage?.error).toBeUndefined();
-    expect(codexUsage?.errorInfo).toBeUndefined();
+    expect(Reflect.get(codexUsage ?? {}, 'error')).toBeUndefined();
+    expect(Reflect.get(codexUsage ?? {}, 'errorInfo')).toBeUndefined();
     expect(readRateLimitsMock).not.toHaveBeenCalled();
 
     await service.dispose();
@@ -5995,9 +7207,9 @@ describe('ObservabilityService', () => {
   });
 
   it('does not let stale Codex usage errors overwrite a later successful refresh', async () => {
-    let rateLimitsUpdated: (() => void) | null = null;
+    const rateLimitsUpdatedListeners: Array<() => void> = [];
     onRateLimitsUpdatedMock.mockImplementation((listener: () => void) => {
-      rateLimitsUpdated = listener;
+      rateLimitsUpdatedListeners.push(listener);
     });
     const deferredRateLimits = createDeferred<{
       rateLimitsByLimitId: Record<string, never>;
@@ -6034,6 +7246,8 @@ describe('ObservabilityService', () => {
 
     // A newer read (the app-server's rate-limit notification) supersedes the
     // pending public refresh instead of joining it.
+    const rateLimitsUpdated =
+      rateLimitsUpdatedListeners[rateLimitsUpdatedListeners.length - 1];
     if (!rateLimitsUpdated) {
       throw new Error('Expected Codex rate-limit update listener');
     }
@@ -6210,9 +7424,9 @@ describe('ObservabilityService', () => {
   });
 
   it('starts a new Codex read for a public refresh after a newer read supersedes the pending one', async () => {
-    let rateLimitsUpdated: (() => void) | null = null;
+    const rateLimitsUpdatedListeners: Array<() => void> = [];
     onRateLimitsUpdatedMock.mockImplementation((listener: () => void) => {
-      rateLimitsUpdated = listener;
+      rateLimitsUpdatedListeners.push(listener);
     });
     const staleRateLimits = createDeferred<{
       rateLimitsByLimitId: Record<string, never>;
@@ -6230,6 +7444,8 @@ describe('ObservabilityService', () => {
       joinInFlight: true,
     });
     await waitForCondition(() => readRateLimitsMock.mock.calls.length === 1);
+    const rateLimitsUpdated =
+      rateLimitsUpdatedListeners[rateLimitsUpdatedListeners.length - 1];
     if (!rateLimitsUpdated) {
       throw new Error('Expected Codex rate-limit update listener');
     }
@@ -6421,9 +7637,9 @@ describe('ObservabilityService', () => {
   });
 
   it('does not dispose a newer Codex monitor from a stale invalidated-token refresh', async () => {
-    let accountUpdated: (() => void) | null = null;
+    const accountUpdatedListeners: Array<() => void> = [];
     onAccountUpdatedMock.mockImplementation((listener: () => void) => {
-      accountUpdated = listener;
+      accountUpdatedListeners.push(listener);
     });
     const deferredRateLimits = createDeferred<{
       rateLimitsByLimitId: Record<string, never>;
@@ -6459,6 +7675,8 @@ describe('ObservabilityService', () => {
     const staleRefresh = service.refreshProviderUsage('codex');
     await waitForCondition(() => readRateLimitsMock.mock.calls.length === 1);
 
+    const accountUpdated =
+      accountUpdatedListeners[accountUpdatedListeners.length - 1];
     if (!accountUpdated) {
       throw new Error('Expected Codex account update listener');
     }
@@ -6482,9 +7700,9 @@ describe('ObservabilityService', () => {
   });
 
   it('refreshes Codex usage with a fresh monitor after account update notifications', async () => {
-    let accountUpdated: (() => void) | null = null;
+    const accountUpdatedListeners: Array<() => void> = [];
     onAccountUpdatedMock.mockImplementation((listener: () => void) => {
-      accountUpdated = listener;
+      accountUpdatedListeners.push(listener);
     });
 
     const service = new ObservabilityService();
@@ -6512,6 +7730,8 @@ describe('ObservabilityService', () => {
       dispose: freshDispose,
     }));
 
+    const accountUpdated =
+      accountUpdatedListeners[accountUpdatedListeners.length - 1];
     if (!accountUpdated) {
       throw new Error('Expected Codex account update listener');
     }
@@ -6774,7 +7994,7 @@ describe('ObservabilityService', () => {
     const entry = loadOnlyRecentEntry(service);
     expect(entry).toMatchObject({
       eventType: 'app_advisor',
-      label: 'App Advisor',
+      label: 'Orchestrator',
       projectId: 'app-advisor',
       worktreeId: 'global',
       chatId: 'advisor-tab',
@@ -6788,7 +8008,7 @@ describe('ObservabilityService', () => {
     await service.dispose();
   });
 
-  it('labels Pipeline Editor chat turns with a Pipeline Editor audit target', async () => {
+  it('labels Workflow Editor chat turns with a Workflow Editor audit target', async () => {
     installMockFilesystem();
     const service = new ObservabilityService();
     await service.start();
@@ -6815,7 +8035,7 @@ describe('ObservabilityService', () => {
     const entry = loadOnlyRecentEntry(service);
     expect(entry).toMatchObject({
       eventType: 'pipeline_editor',
-      label: 'Pipeline Editor',
+      label: 'Workflow Editor',
       projectId: PIPELINE_EDITOR_PROJECT_ID,
       worktreeId: PIPELINE_EDITOR_WORKTREE_ID,
       chatId: 'pipeline-editor-tab',
@@ -7623,6 +8843,144 @@ describe('ObservabilityService', () => {
     expect(entry.tokens.cacheCreationInputTokens).toBe(5);
   });
 
+  it('does not label an unrecognized pipeline provider as Claude', async () => {
+    installMockFilesystem();
+    const service = new ObservabilityService();
+    try {
+      const state = makeRunningPipelineState();
+      // Persisted execution state can come from a newer app version.
+      Object.assign(state.jobs.job1.steps.step1, {
+        agent_provider: 'future-provider',
+        log_format_hint: 'agent',
+      });
+      service.syncPipelineExecutionState(state);
+      expect(service.loadSnapshot().recentEntries).toHaveLength(0);
+    } finally {
+      await service.dispose();
+    }
+  });
+
+  it.each([undefined, 'agent'] as const)(
+    'keeps Copilot pipeline attribution and replay separate from Claude with log hint %s',
+    async (logFormatHint) => {
+      installMockFilesystem();
+      const identitySpy = jest
+        .spyOn(providerAuthState, 'peekProviderAccountIdentity')
+        .mockReturnValue({
+          providerAccountKey: 'claude:native@example.com',
+          accountEmail: 'native@example.com',
+          planType: 'max',
+        });
+      const kindSpy = jest
+        .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
+        .mockReturnValue('subscription');
+      const service = new ObservabilityService();
+      try {
+        const state = makeRunningPipelineState();
+        const step: StepResult = {
+          ...state.jobs.job1.steps.step1,
+          log_format_hint: logFormatHint,
+          agent_provider: 'copilot',
+          agent_harness: 'copilot',
+          agent_model: 'copilot:fixture-model',
+        };
+        const pipeline = {
+          ...state,
+          jobs: { job1: { ...state.jobs.job1, steps: { step1: step } } },
+        };
+        service.syncPipelineExecutionState(pipeline);
+        expect(loadOnlyRecentEntry(service)).toMatchObject({
+          provider: 'copilot',
+          executionHarness: 'copilot',
+          billingBasis: 'unknown',
+        });
+
+        service.observePipelineOutput({
+          executionId: state.id,
+          jobId: 'job1',
+          stepId: 'step1',
+          attempt: 0,
+          data: [
+            {
+              type: 'system',
+              subtype: 'init',
+              provider: 'copilot',
+              session_id: 'copilot-pipeline-session',
+            },
+            {
+              type: 'canopy_assistant_patch',
+              provider: 'copilot',
+              messageId: 'copilot-answer',
+              timestamp: 1,
+              revision: 1,
+              patches: [
+                {
+                  index: 0,
+                  block: { type: 'text', text: 'Copilot pipeline answer' },
+                },
+              ],
+            },
+            {
+              type: 'result',
+              provider: 'copilot',
+              is_error: false,
+              result: '',
+              usage: {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_read_input_tokens: 4,
+                cache_creation_input_tokens: 2,
+              },
+            },
+          ]
+            .map((event) => JSON.stringify(event) + '\n')
+            .join(''),
+        });
+        step.status = 'success';
+        step.completed_at = '2026-03-26T10:00:30.000Z';
+        service.syncPipelineExecutionState(pipeline);
+        const entry = loadOnlyRecentEntry(service);
+        expect(entry).toMatchObject({
+          provider: 'copilot',
+          executionHarness: 'copilot',
+          status: 'success',
+          sdkSessionId: 'copilot-pipeline-session',
+          assistantMessageCount: 1,
+          billingBasis: 'unknown',
+          tokens: {
+            input: 20,
+            output: 10,
+            cacheReadInputTokens: 4,
+            cacheCreationInputTokens: 2,
+          },
+        });
+        expect(entry.providerAccountKey).toBeUndefined();
+        expect(entry.providerAccountEmail).toBeUndefined();
+        expect(entry.providerPlanType).toBeUndefined();
+        expect(entry.totalCostUsd).toBeUndefined();
+        expect(identitySpy).not.toHaveBeenCalled();
+        expect(kindSpy).not.toHaveBeenCalled();
+        await service.flush();
+        const transcript = await service.loadTranscript(entry);
+        expect(transcript.type).toBe('success');
+        if (transcript.type !== 'success')
+          throw new Error('Expected transcript');
+        expect(transcript.lines.join('\n')).toContain(
+          'Copilot pipeline answer',
+        );
+        expect(
+          (await service.loadHistory({ limit: 10 })).entries,
+        ).toContainEqual(
+          expect.objectContaining({ id: entry.id, provider: 'copilot' }),
+        );
+      } finally {
+        await service.dispose();
+        identitySpy.mockRestore();
+        kindSpy.mockRestore();
+      }
+    },
+  );
+
   it('tracks OpenCode pipeline identity, patches and reported usage', () => {
     installMockFilesystem();
     const service = new ObservabilityService();
@@ -8217,7 +9575,7 @@ describe('ObservabilityService', () => {
         provider: 'cursor',
         error,
       });
-      service.completeChatTurn('proj', 'wt', 'chat', 'failed', error);
+      service.completeChatTurn('proj', 'wt', 'chat', 'failure', error);
       const entry = loadOnlyRecentEntry(service);
       await service.flush();
       await service.dispose();
@@ -8838,6 +10196,80 @@ describe('ObservabilityService', () => {
     expect(transcript.lines.join('\n')).toContain('"status":"completed"');
   });
 
+  it('stores stream-backed delegation envelopes as locators, never accumulating child rows', async () => {
+    installMockFilesystem();
+    const service = new ObservabilityService();
+    service.startChatTurn({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      provider: 'codex',
+      userMessageId: 'turn',
+      originalUserText: 'Review',
+      submittedText: 'Review',
+      planMode: false,
+      isStandalone: false,
+    });
+    const entry = loadOnlyRecentEntry(service);
+    // A version 3 broker projects stream runs with an empty transcript.
+    const event = (
+      sequence: number,
+      status: string,
+    ): Record<string, unknown> => ({
+      type: 'canopy_delegation',
+      delegation: {
+        delegationId: 'stream-child',
+        runGeneration: 2,
+        sequence,
+        parentHarnessId: 'codex',
+        parentTurnId: 'turn',
+        parentToolCallId: 'call',
+        createdAt: 100,
+        transcriptStore: 'chat-stream-v2',
+        task: {
+          description: 'Review',
+          prompt: 'Inspect source',
+          executionMode: 'background',
+        },
+        snapshot: {
+          delegationId: 'stream-child',
+          status,
+          outputTruncated: false,
+          routeSnapshot: {
+            selectedModelId: 'reviewer',
+            runtimeModelId: 'runtime',
+            harnessId: 'claude',
+          },
+        },
+        transcript: [],
+      },
+    });
+    for (const [sequence, status] of [
+      [1, 'running'],
+      [2, 'running'],
+      [3, 'completed'],
+    ] as const)
+      service.observeChatEvent('proj', 'wt', 'chat', event(sequence, status));
+    await service.flush();
+    const transcript = await service.loadTranscript({
+      id: entry.id,
+      eventType: entry.eventType,
+      startedAt: entry.startedAt,
+    });
+    if (transcript.type !== 'success')
+      throw new Error('Expected the stream envelope transcript');
+    const lines = transcript.lines.filter((line) =>
+      line.includes('canopy_delegation'),
+    );
+    expect(lines).toHaveLength(3);
+    for (const line of lines) {
+      expect(line).toContain('"transcriptStore":"chat-stream-v2"');
+      expect(line).toContain('"delegationId":"stream-child"');
+      expect(line).toContain('"runGeneration":2');
+      expect(line).toContain('"transcript":[]');
+    }
+  });
+
   it('shares one transcript byte budget across late delegation sidecar states', async () => {
     installMockFilesystem();
     const service = new ObservabilityService();
@@ -9325,7 +10757,8 @@ describe('ObservabilityService', () => {
         toolUseCount: 0,
         subAgentCount: 0,
         hasTranscript: false,
-        toolCounts: {},
+        toolCounts: makeAuditEntry('helper-proxy', '2026-03-26T10:00:00.000Z')
+          .toolCounts,
       });
       // The helper learns its route after its audit entry started.
       service.markObservedTaskAccountProxyRouted('helper:proxy');
@@ -9467,8 +10900,8 @@ describe('ObservabilityService', () => {
 
     const flushPromise = service.flush();
 
-    await Promise.resolve();
-    await Promise.resolve();
+    // The append first checks the file's last byte, so wait for it to start.
+    await waitForCondition(() => transcriptAppendPending);
 
     if (!transcriptAppendPending) {
       throw new Error('Expected transcript append to be pending');
@@ -10520,6 +11953,7 @@ describe('ObservabilityService', () => {
       .recentEntries.find(
         (candidate) => candidate.eventType === 'pipeline_agent_turn',
       );
+    expect(entry?.label).toBe('Workflow Agent');
     expect(entry?.subagents).toHaveLength(1);
     expect(entry?.subagents).toMatchObject([
       {
@@ -10966,6 +12400,9 @@ describe('ObservabilityService', () => {
       throw new Error('Expected transcript append to be pending');
     };
     let delayFirstTranscriptAppend = true;
+    // Services from earlier tests can still flush into this mock, so only
+    // delay and read this turn's own transcript.
+    let ownTranscriptPath = '';
 
     mockedAppendFile.mockImplementation(
       (pathArg: unknown, payloadArg: unknown): Promise<void> => {
@@ -10976,10 +12413,7 @@ describe('ObservabilityService', () => {
         const payload =
           typeof payloadArg === 'string' ? payloadArg : String(payloadArg);
 
-        if (
-          delayFirstTranscriptAppend &&
-          pathArg.includes('/mock/observability/transcripts/')
-        ) {
+        if (delayFirstTranscriptAppend && pathArg === ownTranscriptPath) {
           delayFirstTranscriptAppend = false;
           return new Promise<void>((resolve) => {
             transcriptAppendPending = true;
@@ -11006,6 +12440,9 @@ describe('ObservabilityService', () => {
       planMode: false,
       isStandalone: false,
     });
+    ownTranscriptPath = getAgentObservabilityTranscriptFilePath(
+      loadOnlyRecentEntry(service),
+    );
     service.observeChatEvent('proj', 'wt', 'chat', {
       type: 'assistant',
       message: {
@@ -11020,8 +12457,8 @@ describe('ObservabilityService', () => {
 
     const flushPromise = service.flush();
 
-    await Promise.resolve();
-    await Promise.resolve();
+    // The append first checks the file's last byte, so wait for it to start.
+    await waitForCondition(() => transcriptAppendPending);
 
     if (!transcriptAppendPending) {
       throw new Error('Expected transcript append to be pending');
@@ -11043,16 +12480,14 @@ describe('ObservabilityService', () => {
     releaseTranscriptAppend();
     await flushPromise;
 
-    const transcriptFile = Array.from(files.entries()).find(([path]) =>
-      path.includes('/mock/observability/transcripts/'),
-    );
+    const transcript = files.get(ownTranscriptPath);
 
-    if (!transcriptFile) {
+    if (transcript === undefined) {
       throw new Error('Expected transcript file to be written');
     }
 
-    expect(transcriptFile[1]).toContain('First response');
-    expect(transcriptFile[1]).toContain('Second response');
+    expect(transcript).toContain('First response');
+    expect(transcript).toContain('Second response');
     expect(loadOnlyRecentEntry(service).status).toBe('success');
   });
 
@@ -11316,6 +12751,335 @@ describe('ObservabilityService', () => {
     }
   });
 
+  it('does not reopen a completed Claude chat turn for a late Claude child frame', async () => {
+    const service = new ObservabilityService();
+    service.startChatTurn({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      provider: 'claude',
+      originalUserText: 'Run the checks',
+      submittedText: 'Run the checks',
+      planMode: false,
+      isStandalone: false,
+    });
+    service.observeChatEvent('proj', 'wt', 'chat', {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'Initial result' }],
+      },
+    });
+    service.completeChatTurn('proj', 'wt', 'chat', 'success');
+    const completedEntry = loadOnlyRecentEntry(service);
+
+    service.observeChatEvent('proj', 'wt', 'chat', {
+      type: 'assistant',
+      parent_tool_use_id: 'child-1',
+      message: {
+        content: [{ type: 'text', text: 'Late child output' }],
+      },
+    });
+
+    const entry = loadOnlyRecentEntry(service);
+    expect(entry.status).toBe('success');
+    expect(entry.completedAt).toBe(completedEntry.completedAt);
+    expect(entry.assistantMessageCount).toBe(
+      completedEntry.assistantMessageCount,
+    );
+
+    await service.dispose();
+  });
+
+  it('records a late Claude child frame in the finalized transcript once', async () => {
+    const files = installMockFilesystem();
+    const service = new ObservabilityService();
+    service.startChatTurn({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat',
+      provider: 'claude',
+      originalUserText: 'Run the checks',
+      submittedText: 'Run the checks',
+      planMode: false,
+      isStandalone: false,
+    });
+    service.observeChatEvent('proj', 'wt', 'chat', {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'Initial result' }] },
+    });
+    service.completeChatTurn('proj', 'wt', 'chat', 'success');
+    await service.flush();
+    const completedEntry = loadOnlyRecentEntry(service);
+
+    const childFrame = {
+      type: 'assistant',
+      parent_tool_use_id: 'child-1',
+      message: { content: [{ type: 'text', text: 'Late child output' }] },
+    };
+    service.observeChatEvent('proj', 'wt', 'chat', childFrame);
+    await service.dispose();
+
+    const transcript = Array.from(files.values()).join('\n');
+    expect(transcript.split(JSON.stringify(childFrame)).length - 1).toBe(1);
+    const entry = loadOnlyRecentEntry(service);
+    expect(entry.status).toBe('success');
+    expect(entry.completedAt).toBe(completedEntry.completedAt);
+    expect(entry.assistantMessageCount).toBe(
+      completedEntry.assistantMessageCount,
+    );
+  });
+
+  describe('when canonical turn state decides autonomous audit entries', () => {
+    const scope = { projectId: 'proj', worktreeId: 'wt', chatId: 'chat' };
+
+    function record(
+      id: string,
+      origin: ChatTurnRecord['origin'],
+      ended?: ChatTurnRecord['outcome'],
+    ): ChatTurnRecord {
+      return {
+        id,
+        origin,
+        startedAtMs: Date.now(),
+        pauses: [],
+        ...(ended ? { endedAtMs: Date.now(), outcome: ended } : {}),
+      };
+    }
+
+    function state(turns: {
+      current?: ChatTurnRecord;
+      lastEnded?: ChatTurnRecord;
+    }): ChatTurnStateChange['state'] {
+      return serializeChatTurnState({ ...initialChatTurnState(), ...turns });
+    }
+
+    /** Receipt changes run ahead of the provider's frames; commits lag them. */
+    function canonicalChat(service: ObservabilityService): {
+      receipt(turns: {
+        current?: ChatTurnRecord;
+        lastEnded?: ChatTurnRecord;
+      }): void;
+      commit(
+        turns: { current?: ChatTurnRecord; lastEnded?: ChatTurnRecord },
+        transitions: readonly ['start' | 'end', string][],
+      ): void;
+    } {
+      const changes = new Set<(change: ChatTurnStateChange) => void>();
+      const commits = new Set<(commit: ChatTurnStateCommit) => void>();
+      // Commits still land in production; the audit must not depend on when.
+      const chatState = {
+        onTurnStateChange: (
+          listener: (change: ChatTurnStateChange) => void,
+        ): (() => void) => {
+          changes.add(listener);
+          return (): void => {
+            changes.delete(listener);
+          };
+        },
+        onTurnStateCommitted: (
+          listener: (commit: ChatTurnStateCommit) => void,
+        ): (() => void) => {
+          commits.add(listener);
+          return (): void => {
+            commits.delete(listener);
+          };
+        },
+      };
+      installTurnStateAudit(service, chatState);
+      return {
+        receipt(turns): void {
+          for (const listener of Array.from(changes))
+            listener({
+              scope,
+              state: state(turns),
+              effects: [],
+              generation: 1,
+              cause: 'lifecycle',
+            });
+        },
+        commit(turns, transitions): void {
+          for (const listener of Array.from(commits))
+            listener({
+              scope,
+              state: state(turns),
+              generation: 1,
+              lifecycle: transitions.map(([transition, turnId]) => ({
+                turnId,
+                generation: 1,
+                transition,
+                inputIds: [],
+              })),
+            });
+        },
+      };
+    }
+
+    function completeUserTurn(service: ObservabilityService): void {
+      service.startChatTurn({
+        ...scope,
+        provider: 'claude',
+        originalUserText: 'Run the checks',
+        submittedText: 'Run the checks',
+        planMode: false,
+        isStandalone: false,
+      });
+      service.observeChatEvent('proj', 'wt', 'chat', continuation('Initial'));
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+    }
+
+    function continuation(text: string): Record<string, unknown> {
+      return {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text }] },
+      };
+    }
+
+    it('never reopens an entry from a raw continuation item', async () => {
+      const service = new ObservabilityService();
+      canonicalChat(service);
+      completeUserTurn(service);
+      service.observeChatEvent('proj', 'wt', 'chat', continuation('Raw'));
+      const entry = loadOnlyRecentEntry(service);
+      expect(entry.status).toBe('success');
+      expect(entry.assistantMessageCount).toBe(1);
+      await service.dispose();
+    });
+
+    it("counts a wake's output that arrives before its commit", async () => {
+      const service = new ObservabilityService();
+      const chat = canonicalChat(service);
+      completeUserTurn(service);
+      chat.receipt({ current: record('wake', 'autonomous') });
+      service.observeChatEvent('proj', 'wt', 'chat', continuation('Woke up'));
+      chat.commit({ current: record('wake', 'autonomous') }, [
+        ['start', 'wake'],
+      ]);
+      chat.receipt({ lastEnded: record('wake', 'autonomous', 'completed') });
+      observeClaudeResult(service, 0.5);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      chat.commit({ lastEnded: record('wake', 'autonomous', 'completed') }, [
+        ['end', 'wake'],
+      ]);
+      const [wake, user] = service.loadSnapshot().recentEntries;
+      expect(wake).toMatchObject({
+        status: 'success',
+        provider: 'claude',
+        chatId: 'chat',
+        assistantMessageCount: 1,
+      });
+      expect(wake?.id).toContain(':wake');
+      expect(wake?.autonomous).toBe(true);
+      expect(user?.autonomous).toBeUndefined();
+      expect(user).toMatchObject({
+        status: 'success',
+        assistantMessageCount: 1,
+      });
+      await service.dispose();
+    });
+
+    it("records a wake's terminal result that arrives after its committed end", async () => {
+      const service = new ObservabilityService();
+      const chat = canonicalChat(service);
+      completeUserTurn(service);
+      chat.receipt({ current: record('wake', 'autonomous') });
+      chat.commit({ current: record('wake', 'autonomous') }, [
+        ['start', 'wake'],
+      ]);
+      service.observeChatEvent('proj', 'wt', 'chat', continuation('Woke up'));
+      chat.receipt({ lastEnded: record('wake', 'autonomous', 'completed') });
+      chat.commit({ lastEnded: record('wake', 'autonomous', 'completed') }, [
+        ['end', 'wake'],
+      ]);
+      observeClaudeResult(service, 0.5, { inputTokens: 7, outputTokens: 3 });
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const [wake] = service.loadSnapshot().recentEntries;
+      expect(wake?.id).toContain(':wake');
+      expect(wake?.status).toBe('success');
+      expect(wake?.tokens.input).toBe(7);
+      expect(wake?.tokens.output).toBe(3);
+      expect(wake?.totalCostUsd).toBeCloseTo(0.5);
+      await service.dispose();
+    });
+
+    it('gives each wake of one coalesced commit its own entry', async () => {
+      const service = new ObservabilityService();
+      const chat = canonicalChat(service);
+      completeUserTurn(service);
+      let lastEnded: ChatTurnRecord | undefined;
+      for (const id of ['first', 'second']) {
+        chat.receipt({
+          current: record(id, 'autonomous'),
+          ...(lastEnded ? { lastEnded } : {}),
+        });
+        service.observeChatEvent('proj', 'wt', 'chat', continuation(id));
+        lastEnded = record(id, 'autonomous', 'completed');
+        chat.receipt({ lastEnded });
+        observeClaudeResult(service, 0.5);
+        service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      }
+      chat.commit({ lastEnded: record('second', 'autonomous', 'completed') }, [
+        ['start', 'first'],
+        ['end', 'first'],
+        ['start', 'second'],
+        ['end', 'second'],
+      ]);
+      const [second, first] = service.loadSnapshot().recentEntries;
+      expect(first?.id).toContain(':first');
+      expect(second?.id).toContain(':second');
+      expect(first?.assistantMessageCount).toBe(1);
+      expect(second?.assistantMessageCount).toBe(1);
+      await service.dispose();
+    });
+
+    it('leaves a dispatched Claude turn, which starts autonomous, to its dispatcher', async () => {
+      const service = new ObservabilityService();
+      const chat = canonicalChat(service);
+      completeUserTurn(service);
+      service.startChatTurn({
+        ...scope,
+        provider: 'claude',
+        originalUserText: 'Next',
+        submittedText: 'Next',
+        planMode: false,
+        isStandalone: false,
+      });
+      chat.receipt({ current: record('sent', 'autonomous') });
+      service.observeChatEvent('proj', 'wt', 'chat', continuation('Next up'));
+      chat.receipt({ current: record('sent', 'user') });
+      chat.receipt({ lastEnded: record('sent', 'user', 'completed') });
+      observeClaudeResult(service, 0.5);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      service.observeChatEvent('proj', 'wt', 'chat', continuation('Late'));
+      const entries = service.loadSnapshot().recentEntries;
+      expect(entries).toHaveLength(2);
+      expect(entries.map((entry) => entry.status)).toEqual([
+        'success',
+        'success',
+      ]);
+      await service.dispose();
+    });
+
+    it('lets a wake with no root output give up its place', async () => {
+      const service = new ObservabilityService();
+      const chat = canonicalChat(service);
+      completeUserTurn(service);
+      chat.receipt({ current: record('silent', 'autonomous') });
+      chat.receipt({ lastEnded: record('silent', 'autonomous', 'failed') });
+      service.observeChatEvent('proj', 'wt', 'chat', {
+        type: 'result',
+        is_error: true,
+        result: 'Rate limited',
+      });
+      chat.receipt({ current: record('next', 'autonomous') });
+      service.observeChatEvent('proj', 'wt', 'chat', continuation('Next'));
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const [next] = service.loadSnapshot().recentEntries;
+      expect(next?.id).toContain(':next');
+      expect(next?.assistantMessageCount).toBe(1);
+      await service.dispose();
+    });
+  });
+
   it('reopens a completed Codex chat turn when an item arrives later', async () => {
     const identitySpy = jest
       .spyOn(providerAuthState, 'peekProviderAccountIdentity')
@@ -11463,8 +13227,8 @@ describe('ObservabilityService', () => {
 
     const flushPromise = service.flush();
 
-    await Promise.resolve();
-    await Promise.resolve();
+    // The append first checks the file's last byte, so wait for it to start.
+    await waitForCondition(() => transcriptAppendPending);
 
     if (!transcriptAppendPending) {
       throw new Error('Expected transcript append to be pending');
@@ -11687,6 +13451,7 @@ describe('ObservabilityService', () => {
         read: 0,
         readLines: 0,
         writeEdit: 1,
+        plan: 0,
         fileEdit: 0,
         fileAdd: 0,
         fileDelete: 0,
@@ -11704,6 +13469,8 @@ describe('ObservabilityService', () => {
         askUser: 0,
         scriptOutput: 0,
         watcher: 0,
+        canopy: 0,
+        graph: 0,
         appAdvisor: 0,
         pipelineEditor: 4,
         mcp: 0,
@@ -13907,6 +15674,200 @@ describe('ObservabilityService', () => {
     expect(mockedRename).toHaveBeenCalledWith(`${filePath}.tmp`, filePath);
   });
 
+  it.each([
+    {
+      kind: 'project',
+      scopeFor: (taskId: string): ChatWaitScope => ({
+        projectId: 'proj',
+        taskId,
+        chatId: 'chat',
+      }),
+      projectId: 'proj',
+    },
+    {
+      kind: 'Orchestrator bot',
+      scopeFor: (taskId: string): ChatWaitScope => ({
+        botId: 'app_advisor',
+        taskId,
+        chatId: 'chat',
+      }),
+      projectId: APP_ADVISOR_PROJECT_ID,
+    },
+  ])(
+    'purges chat wait records of a canonical $kind task scope with its worktree',
+    async ({ scopeFor, projectId }) => {
+      const files = installMockFilesystem();
+      const service = new ObservabilityService();
+      const recordFailedWait = (taskId: string): void =>
+        startChatWaitOperation({
+          name: 'watcher.setup',
+          scope: scopeFor(taskId),
+          queueDepth: 0,
+          stallTimer: false,
+          record: (record) => service.recordSessionDiagnostic(record),
+        }).finish('failed');
+      const sessionEvents = (): string =>
+        Array.from(files.entries())
+          .filter(([path]) => path.includes('/diagnostics/session-events/'))
+          .map(([, contents]) => contents)
+          .join('');
+
+      recordFailedWait('wt');
+      recordFailedWait('wt-kept');
+      await service.flush();
+      expect(sessionEvents()).toContain('"worktreeId":"wt",');
+
+      // A record whose append fails stays pending in memory through the purge.
+      const appendToFiles = mockedAppendFile.getMockImplementation();
+      mockedAppendFile.mockImplementation((pathArg, payloadArg) =>
+        String(pathArg).includes('/diagnostics/session-events/')
+          ? Promise.reject(new Error('disk full'))
+          : (appendToFiles?.(pathArg, payloadArg) ?? Promise.resolve()),
+      );
+      recordFailedWait('wt');
+      await service.purgeWorktreeData(projectId, 'wt');
+      if (appendToFiles) mockedAppendFile.mockImplementation(appendToFiles);
+      await service.flush();
+
+      expect(sessionEvents()).not.toContain('"worktreeId":"wt",');
+      expect(sessionEvents()).toContain(
+        `"projectId":"${projectId}","worktreeId":"wt-kept"`,
+      );
+    },
+  );
+
+  it('drops unwritten session diagnostics of a worktree in a persisted-only purge', async () => {
+    const files = installMockFilesystem();
+    const service = new ObservabilityService();
+    const recordFailedWait = (worktreeId: string): void =>
+      startChatWaitOperation({
+        name: 'watcher.cancel_local_scope',
+        scope: { projectId: 'proj', worktreeId },
+        queueDepth: 0,
+        stallTimer: false,
+        record: (record) => service.recordSessionDiagnostic(record),
+      }).finish('failed');
+    const sessionEvents = (): string =>
+      Array.from(files.entries())
+        .filter(([path]) => path.includes('/diagnostics/session-events/'))
+        .map(([, contents]) => contents)
+        .join('');
+
+    recordFailedWait('wt');
+    await service.flush();
+    expect(sessionEvents()).toContain('"worktreeId":"wt",');
+
+    const appendToFiles = mockedAppendFile.getMockImplementation();
+    mockedAppendFile.mockImplementation((pathArg, payloadArg) =>
+      String(pathArg).includes('/diagnostics/session-events/')
+        ? Promise.reject(new Error('disk full'))
+        : (appendToFiles?.(pathArg, payloadArg) ?? Promise.resolve()),
+    );
+    recordFailedWait('wt');
+    recordFailedWait('wt-kept');
+    await service.flush();
+    await service.purgePersistedWorktreeData('proj', 'wt');
+    if (appendToFiles) mockedAppendFile.mockImplementation(appendToFiles);
+    await service.flush();
+
+    expect(sessionEvents()).not.toContain('"worktreeId":"wt",');
+    expect(sessionEvents()).toContain('"worktreeId":"wt-kept"');
+  });
+
+  it.each([{ written: false }, { written: true }])(
+    'purges session diagnostics recorded after their worktree purge (written: $written)',
+    async ({ written }) => {
+      const files = installMockFilesystem();
+      const service = new ObservabilityService();
+      const late: SessionDiagnosticRecord[] = [];
+      const recordFailedWait = (worktreeId: string): void =>
+        startChatWaitOperation({
+          name: 'watcher.commit_local_scope_cancellation',
+          scope: { projectId: 'proj', worktreeId },
+          queueDepth: 0,
+          stallTimer: false,
+          record: (record) => {
+            if (record.worktreeId === 'wt') late.push(record);
+            service.recordSessionDiagnostic(record);
+          },
+        }).finish('failed');
+      const sessionEvents = (): string =>
+        Array.from(files.entries())
+          .filter(([path]) => path.includes('/diagnostics/session-events/'))
+          .map(([, contents]) => contents)
+          .join('');
+
+      recordFailedWait('wt');
+      recordFailedWait('wt-kept');
+      if (written) {
+        await service.flush();
+        expect(sessionEvents()).toContain('"worktreeId":"wt",');
+      }
+      mockedReaddir.mockClear();
+      await service.purgeLateWorktreeSessionDiagnostics(
+        'proj',
+        'wt',
+        late[0]?.waitOperationId ?? '',
+        late.length,
+      );
+      const purgeReads = mockedReaddir.mock.calls.map(([path]) => String(path));
+      await service.flush();
+
+      expect(sessionEvents()).not.toContain('"worktreeId":"wt",');
+      expect(sessionEvents()).toContain('"worktreeId":"wt-kept"');
+      // Audit and transcript data stay with the worktree purge that preceded.
+      expect(purgeReads).not.toContain('/mock/observability');
+      expect(
+        purgeReads.some((path) => path.includes('/diagnostics/session-events')),
+      ).toBe(written);
+    },
+  );
+
+  it('removes a purged worktree’s late operation records through the running service', async () => {
+    const files = installMockFilesystem();
+    const service = getObservabilityService();
+    const sessionEvents = (): string =>
+      Array.from(files.entries())
+        .filter(([path]) => path.includes('/diagnostics/session-events/'))
+        .map(([, contents]) => contents)
+        .join('');
+    const lateOperation = (
+      worktreeId: string,
+    ): {
+      wait: ReturnType<typeof startChatWaitOperation>;
+      diagnostics: ReturnType<typeof recordForPurgedWorktree>;
+    } => {
+      const diagnostics = recordForPurgedWorktree();
+      const wait = startChatWaitOperation({
+        name: 'watcher.commit_local_scope_cancellation',
+        scope: { projectId: 'proj', worktreeId },
+        queueDepth: 0,
+        stallTimer: false,
+        recordEnd: true,
+        record: diagnostics.record,
+      });
+      return { wait, diagnostics };
+    };
+    const deleted = lateOperation('wt');
+    const kept = lateOperation('wt-kept');
+
+    // A record written while the operation runs, then records still pending.
+    deleted.wait.claim();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await service.flush();
+      if (sessionEvents().includes('"worktreeId":"wt",')) break;
+    }
+    expect(sessionEvents()).toContain('"waitPhase":"recovery_acquired"');
+    deleted.wait.finish('completed');
+    kept.wait.finish('completed');
+    await deleted.diagnostics.purge();
+    await service.flush();
+
+    expect(sessionEvents()).not.toContain('"worktreeId":"wt",');
+    expect(sessionEvents()).toContain('"worktreeId":"wt-kept"');
+  });
+
   it('prunes expired transcript and diagnostic day files alongside audit day files', async () => {
     mockedReaddir.mockImplementation((pathArg: unknown): Promise<string[]> => {
       if (pathArg === '/mock/observability') {
@@ -13962,6 +15923,136 @@ describe('ObservabilityService', () => {
       },
     );
 
+    await service.dispose();
+  });
+
+  describe('audit retention against a late append', () => {
+    const auditPath = '/mock/observability/2020-01-01.jsonl';
+    let contents = '';
+    let mtimeMs = 0;
+    let deleted: string[] = [];
+    let restoreMocks = (): void => undefined;
+
+    beforeEach(() => {
+      const readdirImplementation = mockedReaddir.getMockImplementation();
+      const statImplementation = mockedStat.getMockImplementation();
+      const rmImplementation = mockedRm.getMockImplementation();
+      restoreMocks = (): void => {
+        mockedReaddir.mockImplementation(readdirImplementation);
+        mockedStat.mockImplementation(statImplementation);
+        mockedRm.mockImplementation(rmImplementation);
+      };
+      contents = '{"id":"consumed"}\n';
+      mtimeMs = 1_000;
+      deleted = [];
+      mockedReaddir.mockImplementation(
+        (pathArg: unknown): Promise<string[]> =>
+          Promise.resolve(
+            pathArg === '/mock/observability' ? ['2020-01-01.jsonl'] : [],
+          ),
+      );
+      mockedStat.mockImplementation(
+        (pathArg: unknown): Promise<{ size: number }> =>
+          pathArg === auditPath
+            ? Promise.resolve({
+                size: Buffer.byteLength(contents, 'utf8'),
+                mtimeMs,
+                ino: 77,
+              })
+            : Promise.reject(new Error(`ENOENT: ${String(pathArg)}`)),
+      );
+      mockedRm.mockImplementation((pathArg: unknown): Promise<void> => {
+        if (typeof pathArg === 'string') deleted.push(pathArg);
+        return Promise.resolve();
+      });
+    });
+
+    afterEach(() => {
+      resetAuditStreamHooksForTest();
+      restoreMocks();
+    });
+
+    it('keeps the day file and its new line when an entry is flushed after the reader verified it', async () => {
+      setAuditDayPruneGuard(() => {
+        const verified = {
+          size: Buffer.byteLength(contents, 'utf8'),
+          mtimeMs,
+          ino: 77,
+        };
+        // An entry for that day is flushed after the check, before the delete.
+        contents += '{"id":"late"}\n';
+        mtimeMs = 2_000;
+        return Promise.resolve(verified);
+      });
+
+      const service = new ObservabilityService();
+      await service.start();
+
+      expect(deleted).not.toContain(auditPath);
+      expect(contents).toContain('"late"');
+      await service.dispose();
+    });
+
+    it('deletes the day file when it still is the file the reader verified', async () => {
+      setAuditDayPruneGuard(() =>
+        Promise.resolve({
+          size: Buffer.byteLength(contents, 'utf8'),
+          mtimeMs,
+          ino: 77,
+        }),
+      );
+
+      const service = new ObservabilityService();
+      await service.start();
+
+      expect(deleted).toContain(auditPath);
+      await service.dispose();
+    });
+  });
+
+  it('skips day files whose names are not dates in every prune', async () => {
+    const dayAgo = (days: number): string =>
+      new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+    const expiredUsage = `${dayAgo(400)}.jsonl`;
+    const recentUsage = `${dayAgo(30)}.jsonl`;
+    const odd = '2026-05-26-extra.jsonl';
+    mockedReaddir.mockImplementation((pathArg: unknown): Promise<string[]> => {
+      switch (pathArg) {
+        case '/mock/observability':
+          return Promise.resolve([odd, 'notes.jsonl']);
+        case '/mock/observability/usage-events':
+          return Promise.resolve([odd, expiredUsage, recentUsage]);
+        case '/mock/observability/diagnostics/app-events':
+        case '/mock/observability/diagnostics/session-events':
+        case '/mock/observability/transcript-index':
+          return Promise.resolve([odd]);
+        case '/mock/observability/transcripts':
+          return Promise.resolve(['2026-05-26-extra', 'scratch']);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const service = new ObservabilityService();
+    await service.start();
+
+    const removed = mockedRm.mock.calls.map(([pathArg]) => String(pathArg));
+    expect(
+      removed.filter(
+        (removedPath) =>
+          removedPath.includes('extra') ||
+          removedPath.includes('notes') ||
+          removedPath.includes('scratch'),
+      ),
+    ).toEqual([]);
+    expect(removed).toContain(
+      `/mock/observability/usage-events/${expiredUsage}`,
+    );
+    expect(removed).not.toContain(
+      `/mock/observability/usage-events/${recentUsage}`,
+    );
     await service.dispose();
   });
 

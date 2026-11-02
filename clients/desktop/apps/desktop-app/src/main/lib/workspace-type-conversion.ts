@@ -14,6 +14,14 @@ import {
 } from './w5-composition-operation';
 import { runKeyedW5Operation, type W5KeyedAttempt } from './w5-keyed-operation';
 import type { W5CommitOptions } from './w5-commit-scope';
+import {
+  WorkspaceTypeConversionRefusedError,
+  type WorkspaceTypeConversionRefusal,
+} from './worktree-record-decision-apply';
+import {
+  applyWorkspaceIndexDecision,
+  applyWorkspaceManifestDecision,
+} from './workspace-record-decision-port';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BRAND } from '@canopy/brand/current';
@@ -33,9 +41,9 @@ import {
   resolveOptionalProjectInstructionFile,
   writeProjectInstructionFile,
 } from './instruction-files';
-import { mergeMultiRepoGuidance } from './multi-repo-guidance';
+import { MULTI_REPO_GUIDANCE_HEADINGS } from './multi-repo-guidance';
+import { regenerateProjectInstructions } from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import {
-  getWorkspaceIndexRepository,
   readAllSidebarItems,
   toSidebarItemWorkspaceConfig,
 } from './sidebar-items';
@@ -48,7 +56,6 @@ import {
 import {
   readWorkspaceConfigDetailed,
   readWorkspaceWorktreesDetailed,
-  updateWorkspaceConfig,
 } from './workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
 
@@ -67,24 +74,10 @@ export interface WorkspaceTypeConversionRequest extends W5BoundaryOptions {
   source: WorkspaceTypeConversionSource;
 }
 
-export type WorkspaceTypeConversionRefusal =
-  | 'not-found'
-  | 'organization-owned'
-  | 'has-worktrees'
-  | 'no-source-repository'
-  | 'configuration-unavailable'
-  | 'worktrees-unavailable';
-
-/** The conversion was refused before any project file was written. */
-export class WorkspaceTypeConversionRefusedError extends Error {
-  constructor(
-    readonly reason: WorkspaceTypeConversionRefusal,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'WorkspaceTypeConversionRefusedError';
-  }
-}
+export {
+  WorkspaceTypeConversionRefusedError,
+  type WorkspaceTypeConversionRefusal,
+} from './worktree-record-decision-apply';
 
 const ORG_PROJECT_CONVERT_REFUSAL =
   "Organization projects can't be converted. Create a Multi-Repo project and add this repository instead.";
@@ -200,18 +193,22 @@ async function toMultiRepo(
     repos: [],
   });
 
-  if (instructions) {
-    const defaultInstructions = getDefaultWorkspaceClaudeMd(project.name);
-    if (!instructions.exists || claudeMdMode === 'replace') {
-      await writeProjectInstructionFile(instructions, defaultInstructions);
-    } else if (claudeMdMode === 'update') {
-      const current = await readFile(instructions.filePath, 'utf8');
-      await writeProjectInstructionFile(
-        instructions,
-        mergeMultiRepoGuidance(current, defaultInstructions),
-      );
-    }
-  }
+  await regenerateProjectInstructions(
+    {
+      target: instructions,
+      // The request's mode is optional; without one, existing files stay.
+      mode:
+        claudeMdMode === 'replace' || claudeMdMode === 'update'
+          ? claudeMdMode
+          : 'keep',
+      defaultContent: getDefaultWorkspaceClaudeMd(project.name),
+      headings: MULTI_REPO_GUIDANCE_HEADINGS,
+    },
+    {
+      readText: (path) => readFile(path, 'utf8'),
+      write: writeProjectInstructionFile,
+    },
+  );
 
   return {
     type: 'multi-repo',
@@ -288,21 +285,18 @@ async function recordConversion(
   options: W5CommitOptions,
 ): Promise<void> {
   async function stageConversionRecords(): Promise<void> {
-    await getWorkspaceIndexRepository().update(({ entries }) => {
-      const target = entries.find((entry) => entry.id === converted.id);
-      // Deleted since the read; the repository refuses an unreadable index.
-      if (!target) throw notFound(converted.id);
-      return {
-        result: undefined,
-        entries: entries.map((entry) =>
-          entry === target ? { ...entry, type: converted.type } : entry,
-        ),
-      };
+    await applyWorkspaceIndexDecision({
+      kind: 'workspace.conversion.index',
+      workspaceId: converted.id,
+      type: converted.type,
     });
     const config = toSidebarItemWorkspaceConfig(converted);
-    await updateWorkspaceConfig(converted.id, (current, read): void => {
-      if (read.authority === 'absent') throw notFound(converted.id);
-      Object.assign(current, config);
+    await applyWorkspaceManifestDecision(converted.id, {
+      kind: 'workspace.conversion.manifest',
+      config,
+      clear: Object.entries(config)
+        .filter(([, value]) => value === undefined)
+        .map(([key]) => key),
     });
   }
   await withW5Commit(

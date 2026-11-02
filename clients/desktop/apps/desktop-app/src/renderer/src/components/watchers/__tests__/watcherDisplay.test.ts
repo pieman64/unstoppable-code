@@ -22,6 +22,15 @@ import {
   watcherTitleReplayClass,
 } from '@/components/watchers/watcherDisplay';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import * as sharedWatcherDisplay from '@canopy/desktop-shared/lib/watcher-display';
+
+it('desktop reuses the exact formatter used by the Portal adapter', () => {
+  expect(watcherTargetDisplay).toBe(sharedWatcherDisplay.watcherTargetDisplay);
+  expect(triggerTitle).toBe(sharedWatcherDisplay.triggerTitle);
+  expect(watcherOwnerDelegateDisplay).toBe(
+    sharedWatcherDisplay.watcherOwnerDelegateDisplay,
+  );
+});
 
 function githubTarget(args: {
   runCount: number;
@@ -67,36 +76,11 @@ describe('watcherDisplay.triggerTitle', () => {
     );
   });
 
-  it('uses the delegate completion category title', () => {
+  it('falls back for a retired delegate completion trigger', () => {
+    // @ts-expect-error -- a retired trigger can still arrive from an old store.
     expect(triggerTitle('managed_delegation_completion')).toBe(
-      'Delegate completion',
+      'managed_delegation_completion',
     );
-  });
-});
-
-describe('watcherDisplay managed delegation', () => {
-  it('shows mode, target count, deadline, and nested recipient without raw ids', () => {
-    const display = watcherTargetDisplay({
-      kind: 'managed_delegation',
-      projectId: 'project',
-      worktreeId: 'worktree',
-      mode: 'all',
-      deadlineAt: Date.parse('2026-09-21T12:00:00.000Z'),
-      targetCount: 2,
-      recipient: 'delegate',
-      outcome: 'timeout',
-    });
-    expect(display.title).toBe('Delegate watch timed out');
-    expect(display.subtitle).toBe('All delegates · 2 delegates');
-    expect(display.details).toEqual(
-      expect.arrayContaining([
-        { label: 'Mode', value: 'All delegates' },
-        { label: 'Targets', value: '2 delegates' },
-        { label: 'Recipient', value: 'Parent delegate' },
-      ]),
-    );
-    expect(JSON.stringify(display)).not.toContain('project');
-    expect(JSON.stringify(display)).not.toContain('worktree');
   });
 });
 

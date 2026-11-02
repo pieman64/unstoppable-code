@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
+import { FileSaveConflictError } from '@canopy/protocol/file-save-conflict';
 import {
   RemoteHostConnection,
   type HostConnectionOptions,
@@ -48,6 +49,8 @@ function setup(
   versions: { host?: RemoteVersion; laptop?: RemoteVersion } = {},
   extra: {
     connection?: Partial<HostConnectionOptions>;
+    /** The host release's dispositions; defaults to this release's. */
+    hostDisposition?: typeof getRemoteChannelDisposition;
     completeAccountProxySignIn?: (
       controllerDeviceId: string,
       callback: AccountProxySignInCallbackParams,
@@ -74,7 +77,7 @@ function setup(
         mainWindowPushes: new FakeMainWindow(),
         uploads: new RemoteUploadStore(uploadsDir),
         readFile: (): Promise<never> => Promise.reject(new Error('unused')),
-        disposition: getRemoteChannelDisposition,
+        disposition: extra.hostDisposition ?? getRemoteChannelDisposition,
         isAuthorized: (): boolean => true,
         version: versions.host ?? TEST_VERSION,
         hello: (): Pick<HelloResult, 'name' | 'platform'> => ({
@@ -124,6 +127,96 @@ afterEach(() => {
 });
 
 describe('RemoteHostConnection', () => {
+  it('preserves typed image-save name conflicts across the remote bridge', async () => {
+    const { connection, bridges } = setup();
+    try {
+      await connection.ensure();
+      bridges[0].handler = (): Promise<never> =>
+        Promise.reject(
+          new Error(
+            "Error invoking remote method 'file:save-content': FileNameConflictError: exists",
+          ),
+        );
+      await expect(
+        connection.invoke(IPC_CHANNELS.fileSaveContent, [{}]),
+      ).rejects.toMatchObject({
+        name: 'FileNameConflictError',
+        code: 'name_conflict',
+        message: 'exists',
+      });
+    } finally {
+      connection.release();
+    }
+  });
+
+  it('restores a named save conflict after the host bridge and RPC serialization', async () => {
+    const { connection, bridges } = setup();
+    try {
+      await connection.ensure();
+      bridges[0].handler = (): Promise<never> =>
+        Promise.reject(
+          new Error(
+            "Error invoking remote method 'file:save-content': FileSaveConflictError: changed",
+          ),
+        );
+      await expect(
+        connection.invoke(IPC_CHANNELS.fileSaveContent, [{}]),
+      ).rejects.toBeInstanceOf(FileSaveConflictError);
+      await expect(
+        connection.invoke(IPC_CHANNELS.fileSaveContent, [{}]),
+      ).rejects.toMatchObject({ message: 'changed' });
+      bridges[0].handler = (): Promise<never> =>
+        Promise.reject(
+          new Error(
+            "Error invoking remote method 'file:save-content': Error: permission denied",
+          ),
+        );
+      await expect(
+        connection.invoke(IPC_CHANNELS.fileSaveContent, [{}]),
+      ).rejects.toMatchObject({ name: 'RpcRemoteError' });
+    } finally {
+      connection.release();
+    }
+  });
+
+  it('reads a host release without the removal pre-check as unchecked, and only that', async () => {
+    const olderHost: typeof getRemoteChannelDisposition = (channel) =>
+      channel === IPC_CHANNELS.worktreeCheckRemovalAdmission ||
+      channel === TUNNEL_CHANNEL
+        ? 'local'
+        : getRemoteChannelDisposition(channel);
+    const { connection } = setup(undefined, {}, { hostDisposition: olderHost });
+    try {
+      await expect(
+        connection.invoke(IPC_CHANNELS.worktreeCheckRemovalAdmission, [{}]),
+      ).resolves.toEqual({ status: 'unchecked' });
+      await expect(
+        connection.invoke(TUNNEL_CHANNEL, [1]),
+      ).rejects.toMatchObject({ code: 'remote_channel_unavailable' });
+    } finally {
+      connection.release();
+    }
+  });
+
+  it('tunnels the removal pre-check to a current host and keeps its failures', async () => {
+    const { connection, bridges } = setup();
+    try {
+      await expect(
+        connection.invoke(IPC_CHANNELS.worktreeCheckRemovalAdmission, [1]),
+      ).resolves.toEqual({
+        echoed: IPC_CHANNELS.worktreeCheckRemovalAdmission,
+        args: [1],
+      });
+      bridges[0].handler = (): Promise<never> =>
+        Promise.reject(new Error('check failed'));
+      await expect(
+        connection.invoke(IPC_CHANNELS.worktreeCheckRemovalAdmission, [1]),
+      ).rejects.toMatchObject({ name: 'RpcRemoteError' });
+    } finally {
+      connection.release();
+    }
+  });
+
   it('connects, learns about the host and tunnels calls', async () => {
     const { connection } = setup();
     connection.keepConnected();

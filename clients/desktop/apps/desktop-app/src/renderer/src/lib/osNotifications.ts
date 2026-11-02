@@ -1,4 +1,5 @@
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import type {
   InAppNotificationPlacement,
   InAppNotificationPreferences,
@@ -25,7 +26,7 @@ import { noteOsNotificationOfferCompletion } from '@/lib/osNotificationOffer';
  * - OS notifications fail closed: `maybeFireOsNotification` never fires
  *   without an explicit opt-in category, because native notifications are
  *   intrusive and must not be smuggled through an unrelated category's
- *   preference (e.g. gating automation toasts behind the "Pipeline" toggle).
+ *   preference (e.g. gating automation toasts behind the "Workflow" toggle).
  * - In-app notifications fall back to the master toggle only:
  *   `shouldShowInAppNotification` returns `prefs.enabled`, so the toast
  *   still renders in-app (githubStore's `addToast` gates toast rendering on
@@ -88,6 +89,15 @@ export interface OsNotificationPayload {
    * check behind `skipWhenFocused`.
    */
   visible?: boolean;
+}
+
+/**
+ * The text a toast category renders as. `ToastCategory` values double as
+ * display strings, but the `Pipeline` member (kept as an identifier because it
+ * keys the `pipeline` preference) reads as the workflow item noun (CAN-4651).
+ */
+export function toastCategoryLabel(category: ToastCategory): string {
+  return category === 'Pipeline' ? WORKFLOW_ITEM_LABEL : category;
 }
 
 /** Categories whose completions can arm the notification offer. */
@@ -470,7 +480,7 @@ const CATEGORY_LABELS: Record<
   gitCommit: 'Git commit',
   gitPush: 'Git push',
   prCreate: 'Create PR',
-  pipeline: 'Pipeline',
+  pipeline: WORKFLOW_ITEM_LABEL,
   terminal: 'Terminal',
   runComment: 'Run comment',
   activation: 'Getting started',

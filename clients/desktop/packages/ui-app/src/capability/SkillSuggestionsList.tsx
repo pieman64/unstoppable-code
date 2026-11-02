@@ -120,9 +120,10 @@ function SkillSuggestionRow({
       </div>
       {hasExamples ? (
         <div>
-          <button
+          <Button
             type="button"
-            className="text-xs fg-secondary hover:fg-primary"
+            variant="ghost"
+            size="sm"
             aria-expanded={expanded}
             data-testid="skill-suggestions-row-examples-toggle"
             onClick={() => setExpanded((value) => !value)}
@@ -130,7 +131,7 @@ function SkillSuggestionRow({
             {expanded
               ? SKILL_SUGGESTION_COPY.hideExamples
               : SKILL_SUGGESTION_COPY.showExamples}
-          </button>
+          </Button>
           {expanded ? (
             <ul
               className={`mt-1.5 flex flex-col gap-1 ${REPLAY_BLOCK_CLASS}`}

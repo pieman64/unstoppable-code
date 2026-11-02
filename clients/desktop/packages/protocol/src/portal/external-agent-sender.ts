@@ -28,11 +28,27 @@ export const externalAgentSenderSchema = z.strictObject({
 export type ExternalAgentSender = z.infer<typeof externalAgentSenderSchema>;
 
 /**
- * Who submitted a tool-originated message. Only the external-agent branch
- * exists today; it is the first declaration of this union (provenance.md:
- * "whoever lands the shared union first owns its exact declaration").
+ * Trusted sender of a managed delegate's message to its root chat, such as a
+ * RequestSteering request. The desktop host derives every field from its own
+ * delegation record when it creates the internal chat request; no renderer,
+ * Portal payload or MCP client may supply it.
  */
-export type ToolMessageSender = ExternalAgentSender;
+export const managedDelegateSenderSchema = z.strictObject({
+  kind: z.literal('managed_delegate'),
+  /** Opaque host-issued delegation ID. */
+  delegationId: z.string().min(1).max(256),
+  /** The delegation's task description, as one plain line. */
+  title: z.string().min(1).max(200),
+});
+export type ManagedDelegateSender = z.infer<typeof managedDelegateSenderSchema>;
+
+/**
+ * Who submitted a tool-originated message: an external MCP agent, or a
+ * managed delegate writing to its root chat. This is the one declaration of
+ * the union (provenance.md: "whoever lands the shared union first owns its
+ * exact declaration"); later sender kinds extend it here.
+ */
+export type ToolMessageSender = ExternalAgentSender | ManagedDelegateSender;
 
 /**
  * Trusted attribution recorded on the message an agent submitted: another
@@ -49,18 +65,34 @@ export function isExternalAgentSent(
   return 'kind' in info && info.kind === 'external_agent';
 }
 
-/** The Canopy chat sender, or undefined for an external agent or none. */
+/** The Canopy chat sender, or undefined for a tool sender or none. */
 export function chatAgentSent(
   info: AgentSentInfo | undefined,
 ): ChatAgentSentInfo | undefined {
-  return info && !isExternalAgentSent(info) ? info : undefined;
+  // Only tool senders carry a top-level `kind`.
+  return info && !('kind' in info) ? info : undefined;
 }
 
-/** Parses either attribution, returning null when the value is neither. */
+const toolMessageSenderSchema = z.discriminatedUnion('kind', [
+  externalAgentSenderSchema,
+  managedDelegateSenderSchema,
+]);
+
+/** Parses a tool sender (external agent or managed delegate), or null. */
+export function parseToolMessageSender(
+  value: unknown,
+): ToolMessageSender | null {
+  const parsed = toolMessageSenderSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Parses a stored or projected message's sender, either attribution, returning
+ * null when it is malformed. Use {@link parseExternalAgentSender} for a
+ * command origin, which is only ever an external agent.
+ */
 export function parseAgentSentInfo(value: unknown): AgentSentInfo | null {
-  return (
-    parseExternalAgentSender(value) ?? parseChatAgentSentInfo(value) ?? null
-  );
+  return parseToolMessageSender(value) ?? parseChatAgentSentInfo(value) ?? null;
 }
 
 /** Parses a value as a trusted sender, returning null when it is malformed. */

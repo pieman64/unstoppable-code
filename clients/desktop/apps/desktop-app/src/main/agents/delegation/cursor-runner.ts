@@ -16,6 +16,10 @@ import type {
   ResolvedAgentRouteSnapshot,
   RunnerAvailability,
 } from '@canopy/desktop-shared/node/delegation';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptPort,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
 import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
 import type { CursorTurnGates } from '@canopy/desktop-shared/node/cursor/turn-driver';
 import {
@@ -30,7 +34,12 @@ import { buildCursorMcpServers } from '../../cursor/mcp-servers';
 import { getMcpHttpProxyService } from '../../mcp/http-proxy-service';
 import { buildCursorCapabilityProjection } from '../../plugins/plugin-resolver';
 import type { DelegationNativePolicy } from './native-policy';
-import { DelegationTranscriptRecorder } from './transcript-recorder';
+import {
+  DELEGATION_STREAM_PREVIEW_LIMITS,
+  DelegationTranscriptRecorder,
+} from './transcript-recorder';
+import { DelegationChildNormalizer } from './child-row-normalizers';
+import { delegationBlockId } from '@canopy/agent-transcript';
 import { childDelegationGuidance } from './child-tools';
 import {
   delegateAppToolGuidance,
@@ -113,6 +122,7 @@ export function createCursorDelegationRunner(options: {
   ): Promise<CursorDelegationPreparation>;
   delegation?(context: LocalDelegationContext): DelegationParent | undefined;
   reportError(error: unknown): void;
+  transcriptPort?: DelegationTranscriptPort;
 }): LocalDelegationRunner {
   return new LocalDelegationRunner(
     'cursor',
@@ -166,7 +176,25 @@ export function createCursorDelegationRunner(options: {
       const proxy = getMcpHttpProxyService();
       const key = `${request.parent.sessionKey}:cursor-delegate:${request.delegationId}:${request.runGeneration}`;
       const namespace = BRAND.tools.namespace;
-      const transcript = new DelegationTranscriptRecorder();
+      const appendChildChanges = context.appendChildChanges;
+      const childNormalizer = appendChildChanges
+        ? new DelegationChildNormalizer(
+            delegationBlockId(
+              context.request.delegationId,
+              context.request.runGeneration,
+            ),
+          )
+        : undefined;
+      const transcript = new DelegationTranscriptRecorder(
+        childNormalizer ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
+      );
+      const appendNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => {
+        if (!changes.length || !appendChildChanges) return;
+        await appendChildChanges(changes);
+        childNormalizer?.acknowledge(changes);
+      };
       let usage: AgentDelegationUsage | undefined;
       let lastTranscript = 0;
       const flush = async (): Promise<void> => {
@@ -186,244 +214,259 @@ export function createCursorDelegationRunner(options: {
       // Load the workspace-local ACP transport only for an active Cursor child.
       const { runCursorTurn } =
         await import('@canopy/desktop-shared/node/cursor/turn-driver');
-      const outcome = await runCursorTurn(
-        {
-          cwd: prepared.tools.cwd,
-          text: `Managed delegated task:\n${request.task.prompt}`,
-          launch: managed.launch,
-          env: buildDelegationCursorEnvironment(managed.env),
-          hookRuntime: path.join(
-            path.dirname(managed.launch.command),
-            managed.target.hookRuntime,
-          ),
-          profileDir: prepared.profileDir,
-          rawModelId: prepared.model,
-          model: request.route.runtimeModelId,
-          thinkingLevel: request.route.effectiveThinkingLevel,
-          sessionId: request.resumeSessionId,
-          requireExistingSession: Boolean(request.resumeSessionId),
-          signal: context.signal,
-        },
-        {
-          clientName: 'canopy-cursor-delegate',
-          planMode: false,
-          authorizeNative: (payload, native) =>
-            authorizeDelegatedCursorTool(
-              payload,
-              prepared.tools,
-              native.signal,
+      try {
+        const outcome = await runCursorTurn(
+          {
+            cwd: prepared.tools.cwd,
+            text: `Managed delegated task:\n${request.task.prompt}`,
+            launch: managed.launch,
+            env: buildDelegationCursorEnvironment(managed.env),
+            hookRuntime: path.join(
+              path.dirname(managed.launch.command),
+              managed.target.hookRuntime,
             ),
-          authorizeMcp: async (call, native) => {
-            if (native.signal.aborted) return { decision: 'deny' };
-            if (call.server === namespace) {
-              const known =
-                delegation?.ownsTool(call.tool) ||
-                prepared.appTools?.tools.some(
-                  (tool) => tool.name === call.tool,
-                );
-              // The private HTTP route performs execution-time policy checks.
-              return { decision: known ? 'allow' : 'deny' };
-            }
-            return {
-              // Every selected server uses a host-gated transport. ACP only
-              // admits it there; approval happens against live policy when
-              // the HTTP proxy or stdio broker receives the actual call.
-              decision: (await prepared.tools.canUseMcp(
-                call.server,
-                call.tool,
+            profileDir: prepared.profileDir,
+            rawModelId: prepared.model,
+            model: request.route.runtimeModelId,
+            thinkingLevel: request.route.effectiveThinkingLevel,
+            sessionId: request.resumeSessionId,
+            requireExistingSession: Boolean(request.resumeSessionId),
+            signal: context.signal,
+          },
+          {
+            clientName: 'canopy-cursor-delegate',
+            planMode: false,
+            authorizeNative: (payload, native) =>
+              authorizeDelegatedCursorTool(
+                payload,
+                prepared.tools,
                 native.signal,
-              ))
-                ? 'allow'
-                : 'deny',
-            };
-          },
-          prepareMcp: async (capabilities, gates) => {
-            prepared.bindMcpGates(gates);
-            if (capabilities?.http !== true)
-              throw new DelegationRunnerError({
-                code: 'capability_unavailable',
-                message:
-                  'Cursor did not provide the HTTP transport required for delegated tools.',
-                retryable: false,
-              });
-            const token = randomBytes(32).toString('base64url');
-            const definitions = [
-              ...(delegation?.projection.tools ?? []),
-              ...(prepared.appTools?.tools ?? []),
-            ].map((tool) => {
-              if (!isJsonValue(tool.inputSchema))
-                throw new Error('Invalid delegated tool schema');
+              ),
+            authorizeMcp: async (call, native) => {
+              if (native.signal.aborted) return { decision: 'deny' };
+              if (call.server === namespace) {
+                const known =
+                  delegation?.ownsTool(call.tool) ||
+                  prepared.appTools?.tools.some(
+                    (tool) => tool.name === call.tool,
+                  );
+                // The private HTTP route performs execution-time policy checks.
+                return { decision: known ? 'allow' : 'deny' };
+              }
               return {
-                name: tool.name,
-                description: tool.description,
-                inputSchema: tool.inputSchema,
+                // Every selected server uses a host-gated transport. ACP only
+                // admits it there; approval happens against live policy when
+                // the HTTP proxy or stdio broker receives the actual call.
+                decision: (await prepared.tools.canUseMcp(
+                  call.server,
+                  call.tool,
+                  native.signal,
+                ))
+                  ? 'allow'
+                  : 'deny',
               };
-            });
-            await proxy.registerCanopyWorktreeSessionRoute({
-              sessionKey: key,
-              projectId: request.parent.projectId,
-              worktreeId: request.parent.worktreeId,
-              chatId: request.parent.chatId,
-              cwd: prepared.tools.cwd,
-              sdkSessionId: key,
-              providerType: 'cursor',
-              toolSurface: 'cursor-acp',
-              authToken: token,
-              createdAt: Date.now(),
-              hookHandler: () => undefined,
-              managedDelegation: {
-                exclusive: true,
-                tools: definitions,
-                invoke: async (name, input, transport) => {
-                  if (!transport?.requestId || gates.signal.aborted)
-                    return {
-                      text: 'Delegated run is unavailable.',
-                      isError: true,
-                    };
-                  const callId = transport.requestId;
-                  const call = { server: namespace, tool: name, args: input };
-                  const appKey = resolveCursorCanopyToolKey(call);
-                  const identity = appKey
-                    ? gates.appToolCallIdentity(appKey, input)
-                    : gates.pluginCallIdentity(namespace, name, input);
-                  // ACP admission is advisory for this private route. Consume
-                  // its receipt, then enforce live policy at execution below.
-                  gates.consumeAllowance(identity);
-                  const appTool = prepared.appTools?.tools.find(
-                    (tool) => tool.name === name,
-                  );
-                  const readOnly = [
-                    'WatchDelegates',
-                    'GetDelegateOutput',
-                    'InspectDelegate',
-                    'ListDelegates',
-                  ].includes(name);
-                  const allowed =
-                    appTool && prepared.appTools
-                      ? await prepared.appTools.authorize(appTool, {
-                          callId,
-                          signal: gates.signal,
-                        })
-                      : delegation?.ownsTool(name) === true &&
-                        (await prepared.tools.authorizeAppTool(
-                          namespace,
-                          name,
-                          readOnly,
-                          callId,
-                          gates.signal,
-                        ));
-                  gates.recordGateDecision(
-                    identity,
-                    allowed ? 'allow' : 'deny',
-                  );
-                  if (!allowed || gates.signal.aborted)
-                    return { text: `${name} was denied.`, isError: true };
-                  if (appTool && prepared.appTools)
-                    return prepared.appTools.run(appTool, input, {
+            },
+            prepareMcp: async (capabilities, gates) => {
+              prepared.bindMcpGates(gates);
+              if (capabilities?.http !== true)
+                throw new DelegationRunnerError({
+                  code: 'capability_unavailable',
+                  message:
+                    'Cursor did not provide the HTTP transport required for delegated tools.',
+                  retryable: false,
+                });
+              const token = randomBytes(32).toString('base64url');
+              const definitions = [
+                ...(delegation?.projection.tools ?? []),
+                ...(prepared.appTools?.tools ?? []),
+              ].map((tool) => {
+                if (!isJsonValue(tool.inputSchema))
+                  throw new Error('Invalid delegated tool schema');
+                return {
+                  name: tool.name,
+                  description: tool.description,
+                  inputSchema: tool.inputSchema,
+                };
+              });
+              await proxy.registerCanopyWorktreeSessionRoute({
+                sessionKey: key,
+                projectId: request.parent.projectId,
+                worktreeId: request.parent.worktreeId,
+                chatId: request.parent.chatId,
+                cwd: prepared.tools.cwd,
+                sdkSessionId: key,
+                providerType: 'cursor',
+                toolSurface: 'cursor-acp',
+                authToken: token,
+                createdAt: Date.now(),
+                hookHandler: () => undefined,
+                managedDelegation: {
+                  exclusive: true,
+                  tools: definitions,
+                  invoke: async (name, input, transport) => {
+                    if (!transport?.requestId || gates.signal.aborted)
+                      return {
+                        text: 'Delegated run is unavailable.',
+                        isError: true,
+                      };
+                    const callId = transport.requestId;
+                    const call = { server: namespace, tool: name, args: input };
+                    const appKey = resolveCursorCanopyToolKey(call);
+                    const identity = appKey
+                      ? gates.appToolCallIdentity(appKey, input)
+                      : gates.pluginCallIdentity(namespace, name, input);
+                    // ACP admission is advisory for this private route. Consume
+                    // its receipt, then enforce live policy at execution below.
+                    gates.consumeAllowance(identity);
+                    const appTool = prepared.appTools?.tools.find(
+                      (tool) => tool.name === name,
+                    );
+                    const readOnly = [
+                      'GetDelegateOutput',
+                      'InspectDelegate',
+                      'ListDelegates',
+                    ].includes(name);
+                    const allowed =
+                      appTool && prepared.appTools
+                        ? await prepared.appTools.authorize(appTool, {
+                            callId,
+                            signal: gates.signal,
+                          })
+                        : delegation?.ownsTool(name) === true &&
+                          (await prepared.tools.authorizeAppTool(
+                            namespace,
+                            name,
+                            readOnly,
+                            callId,
+                            gates.signal,
+                          ));
+                    gates.recordGateDecision(
+                      identity,
+                      allowed ? 'allow' : 'deny',
+                    );
+                    if (!allowed || gates.signal.aborted)
+                      return { text: `${name} was denied.`, isError: true };
+                    if (appTool && prepared.appTools)
+                      return prepared.appTools.run(appTool, input, {
+                        callId,
+                        signal: gates.signal,
+                      });
+                    const turnId = delegation?.options.currentTurn();
+                    if (!delegation || !turnId)
+                      return {
+                        text: 'Delegated owner is unavailable.',
+                        isError: true,
+                      };
+                    const result = await delegation.invokeCursor(name, input, {
                       callId,
-                      signal: gates.signal,
+                      turnId,
                     });
-                  const turnId = delegation?.options.currentTurn();
-                  if (!delegation || !turnId)
                     return {
-                      text: 'Delegated owner is unavailable.',
-                      isError: true,
+                      text: JSON.stringify(result),
+                      isError: !result.ok,
                     };
-                  const result = await delegation.invokeCursor(name, input, {
-                    callId,
-                    turnId,
-                  });
-                  return { text: JSON.stringify(result), isError: !result.ok };
+                  },
                 },
-              },
-            });
-            const built = await buildCursorMcpServers({
-              canopy: null,
-              resolvedMcpServers: { ...prepared.mcpServers },
-              capabilities,
-              resolveExecutable: async (command, cwd) => {
-                const candidates = path.isAbsolute(command)
-                  ? [command]
-                  : command.includes('/') || command.includes('\\')
-                    ? [path.resolve(cwd ?? prepared.tools.cwd, command)]
-                    : (managed.env.PATH ?? '')
-                        .split(path.delimiter)
-                        .filter(Boolean)
-                        .map((dir) => path.join(dir, command));
-                for (const candidate of candidates) {
-                  try {
-                    if ((await stat(candidate)).isFile()) {
-                      await access(candidate, constants.X_OK);
-                      return candidate;
+              });
+              const built = await buildCursorMcpServers({
+                canopy: null,
+                resolvedMcpServers: { ...prepared.mcpServers },
+                capabilities,
+                resolveExecutable: async (command, cwd) => {
+                  const candidates = path.isAbsolute(command)
+                    ? [command]
+                    : command.includes('/') || command.includes('\\')
+                      ? [path.resolve(cwd ?? prepared.tools.cwd, command)]
+                      : (managed.env.PATH ?? '')
+                          .split(path.delimiter)
+                          .filter(Boolean)
+                          .map((dir) => path.join(dir, command));
+                  for (const candidate of candidates) {
+                    try {
+                      if ((await stat(candidate)).isFile()) {
+                        await access(candidate, constants.X_OK);
+                        return candidate;
+                      }
+                    } catch {
+                      /* Try the next captured PATH entry. */
                     }
-                  } catch {
-                    /* Try the next captured PATH entry. */
                   }
-                }
-                return null;
-              },
-            });
-            return {
-              servers: [
-                {
-                  type: 'http',
-                  name: namespace,
-                  url: proxy.getCanopyWorktreeMcpUrl(key),
-                  headers: [
-                    { name: 'Authorization', value: `Bearer ${token}` },
-                  ],
+                  return null;
                 },
-                ...built.servers,
-              ],
-              notes: built.notes,
-              notices: built.warnings,
-              appToolsAvailable: true,
-              pluginServerNames: built.servers.map((server) => server.name),
-            };
-          },
-          beforePrompt: async ({ sessionId, mcp }) => {
-            await context.emit({ type: 'started', nativeSessionId: sessionId });
-            return {
-              instructions: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'cursor')}\nUse native Read, Write, Delete, and Shell under the supplied grants. Grep, Glob, List, and ReadLints are unavailable because their results could expose private files. Read specific paths directly. Native Cursor subagents and detached background commands are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.\n${[...mcp.notes, ...mcp.notices].join('\n')}`,
-            };
-          },
-          emit: async (event) => {
-            transcript.cursor(event);
-            if (transcript.limitExceeded)
-              throw new Error(
-                'Delegated Cursor transcript exceeds retention limits.',
+              });
+              return {
+                servers: [
+                  {
+                    type: 'http',
+                    name: namespace,
+                    url: proxy.getCanopyWorktreeMcpUrl(key),
+                    headers: [
+                      { name: 'Authorization', value: `Bearer ${token}` },
+                    ],
+                  },
+                  ...built.servers,
+                ],
+                notes: built.notes,
+                notices: built.warnings,
+                appToolsAvailable: true,
+                pluginServerNames: built.servers.map((server) => server.name),
+              };
+            },
+            beforePrompt: async ({ sessionId, mcp }) => {
+              await context.emit({
+                type: 'started',
+                nativeSessionId: sessionId,
+              });
+              return {
+                instructions: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'cursor')}\nUse native Read, Write, Delete, and Shell under the supplied grants. Grep, Glob, List, and ReadLints are unavailable because their results could expose private files. Read specific paths directly. Native Cursor subagents and detached background commands are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.\n${[...mcp.notes, ...mcp.notices].join('\n')}`,
+              };
+            },
+            emit: async (event) => {
+              transcript.cursor(event);
+              await appendNormalizedChanges(
+                childNormalizer ? await childNormalizer.patch(event) : [],
               );
-            if (Date.now() - lastTranscript >= 100) {
-              lastTranscript = Date.now();
-              await flush();
-            }
+              if (transcript.limitExceeded && !childNormalizer)
+                throw new Error(
+                  'Delegated Cursor transcript exceeds retention limits.',
+                );
+              if (Date.now() - lastTranscript >= 100) {
+                lastTranscript = Date.now();
+                await flush();
+              }
+            },
+            onUsage: async (reported) => {
+              usage = {
+                inputTokens: reported.inputTokens,
+                outputTokens: reported.outputTokens,
+                cachedInputTokens: reported.cacheReadTokens,
+                cacheCreationInputTokens: reported.cacheWriteTokens,
+              };
+              await context.emit({ type: 'usage', usage });
+            },
+            cleanup,
           },
-          onUsage: async (reported) => {
-            usage = {
-              inputTokens: reported.inputTokens,
-              outputTokens: reported.outputTokens,
-              cachedInputTokens: reported.cacheReadTokens,
-              cacheCreationInputTokens: reported.cacheWriteTokens,
-            };
-            await context.emit({ type: 'usage', usage });
-          },
-          cleanup,
-        },
-      );
-      await flush();
-      if (outcome.cancelled) return { status: 'cancelled', usage };
-      if (outcome.isError)
-        return {
-          status: 'failed',
-          usage,
-          error: {
-            code: 'runtime_error',
-            message: outcome.message,
-            retryable: false,
-          },
-        };
-      return { status: 'completed', finalText: outcome.responseText, usage };
+        );
+        await flush();
+        if (outcome.cancelled) return { status: 'cancelled', usage };
+        if (outcome.isError)
+          return {
+            status: 'failed',
+            usage,
+            error: {
+              code: 'runtime_error',
+              message: outcome.message,
+              retryable: false,
+            },
+          };
+        return { status: 'completed', finalText: outcome.responseText, usage };
+      } finally {
+        await appendNormalizedChanges(
+          childNormalizer ? await childNormalizer.finish() : [],
+        );
+      }
     },
     (error) => options.reportError(error),
+    { transcriptPort: options.transcriptPort },
   );
 }

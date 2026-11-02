@@ -429,6 +429,7 @@ describe('workspace-service', () => {
     });
     const persistence: {
       readWorkspaceConfig: jest.Mock;
+      readWorkspaceConfigDetailed: jest.Mock;
       writeWorkspaceConfig: jest.Mock;
     } = jest.requireMock('../lib/workspace-persistence');
     // Disk is ahead of the snapshot.
@@ -470,6 +471,7 @@ describe('workspace-service', () => {
     });
     const persistence: {
       readWorkspaceConfig: jest.Mock;
+      readWorkspaceConfigDetailed: jest.Mock;
       writeWorkspaceConfig: jest.Mock;
     } = jest.requireMock('../lib/workspace-persistence');
     setPersistedConfig(persistence, {
@@ -559,6 +561,7 @@ describe('workspace-service', () => {
     );
     const persistence: {
       readWorkspaceConfig: jest.Mock;
+      readWorkspaceConfigDetailed: jest.Mock;
       writeWorkspaceConfig: jest.Mock;
     } = jest.requireMock('../lib/workspace-persistence');
     setPersistedConfig(persistence, {
@@ -631,6 +634,7 @@ describe('workspace-service', () => {
 
     const persistence: {
       readWorkspaceConfig: jest.Mock;
+      readWorkspaceConfigDetailed: jest.Mock;
       writeWorkspaceConfig: jest.Mock;
     } = jest.requireMock('../lib/workspace-persistence');
     setPersistedConfig(persistence, {
@@ -730,6 +734,7 @@ describe('workspace-service', () => {
         await new Promise<void>((release) => {
           releaseFirstWrite = release;
         });
+        return { version: 1, items };
       });
     });
     mockedReadAllSidebarItems.mockImplementation(() =>
@@ -842,6 +847,7 @@ describe('workspace-service', () => {
           releaseFirstWrite = resolve;
         });
       }
+      return { version: 1, items: persistedItems };
     });
 
     const first = findOrCreateSingleRepoWorkspaceForRepo(

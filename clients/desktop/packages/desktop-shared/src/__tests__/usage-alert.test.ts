@@ -192,7 +192,12 @@ function makeCreditsState(
     connected: true,
     email: 'user@example.com',
     subscription: null,
-    balance: { email: 'user@example.com', credits: 500, eligible: true },
+    balance: {
+      email: 'user@example.com',
+      credits: 500,
+      eligible: true,
+      source: 'canopy',
+    },
     noUdAccount: false,
     error: null,
     ...overrides,
@@ -200,7 +205,7 @@ function makeCreditsState(
 }
 
 // A provider window at/above the critical threshold — i.e. out of quota.
-const CRITICAL_LIMITS = [{ primary: { usedPercent: 99 } }];
+const CRITICAL_LIMITS = [{ primary: { usedPercent: 100 } }];
 
 describe('isAiCreditsActiveMethod', () => {
   it('is active when routing is on (always), regardless of other plans', () => {
@@ -318,7 +323,12 @@ describe('computeAiCreditsAlertLevel', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 0, eligible: false },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 0,
+            eligible: false,
+          },
         }),
         'off',
         anyUsage,
@@ -330,8 +340,13 @@ describe('computeAiCreditsAlertLevel', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          subscription: { email: 'e', active: true },
-          balance: { email: 'e', credits: 0, eligible: false },
+          subscription: { email: 'e', source: 'canopy', active: true },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 0,
+            eligible: false,
+          },
         }),
         'off',
         anyUsage,
@@ -347,6 +362,7 @@ describe('computeAiCreditsAlertLevel', () => {
         makeCreditsState({
           balance: {
             email: 'e',
+            source: 'canopy',
             credits: 0,
             eligible: false,
             orgPool: { orgId: 'org_1', orgName: 'Acme' },
@@ -366,6 +382,7 @@ describe('computeAiCreditsAlertLevel', () => {
         makeCreditsState({
           balance: {
             email: 'e',
+            source: 'canopy',
             credits: AI_CREDITS_LOW_BALANCE_WARNING - 1,
             eligible: true,
             orgPool: { orgId: 'org_1', orgName: 'Acme' },
@@ -381,7 +398,13 @@ describe('computeAiCreditsAlertLevel', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 0, eligible: false, orgPool: null },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 0,
+            eligible: false,
+            orgPool: null,
+          },
         }),
         routingOn,
         anyUsage,
@@ -393,7 +416,12 @@ describe('computeAiCreditsAlertLevel', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 0, eligible: false },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 0,
+            eligible: false,
+          },
         }),
         routingOn,
         anyUsage,
@@ -405,7 +433,12 @@ describe('computeAiCreditsAlertLevel', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 5, eligible: false },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 5,
+            eligible: false,
+          },
         }),
         routingOn,
         anyUsage,
@@ -417,7 +450,12 @@ describe('computeAiCreditsAlertLevel', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 0, eligible: false },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 0,
+            eligible: false,
+          },
         }),
         'on-quota',
         makeUsage({ rateLimits: [{ primary: { usedPercent: 30 } }] }),
@@ -429,7 +467,12 @@ describe('computeAiCreditsAlertLevel', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 0, eligible: false },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 0,
+            eligible: false,
+          },
         }),
         'on-quota',
         makeUsage({ rateLimits: CRITICAL_LIMITS }),
@@ -443,6 +486,7 @@ describe('computeAiCreditsAlertLevel', () => {
         makeCreditsState({
           balance: {
             email: 'e',
+            source: 'canopy',
             credits: AI_CREDITS_LOW_BALANCE_WARNING - 1,
             eligible: true,
           },
@@ -459,6 +503,7 @@ describe('computeAiCreditsAlertLevel', () => {
         makeCreditsState({
           balance: {
             email: 'e',
+            source: 'canopy',
             credits: AI_CREDITS_LOW_BALANCE_WARNING,
             eligible: true,
           },
@@ -664,7 +709,7 @@ describe('usage alerts with the account proxy', () => {
       { provider: 'codex', authState: 'unauthenticated' },
     );
     const emptyCredits = makeCreditsState({
-      balance: { email: 'e', credits: 0, eligible: false },
+      balance: { email: 'e', source: 'canopy', credits: 0, eligible: false },
     });
     expect(isAiCreditsActiveMethod('on-quota', usage, status)).toBe(false);
     expect(
@@ -688,7 +733,12 @@ describe('usage alerts with the account proxy', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 0, eligible: false },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 0,
+            eligible: false,
+          },
         }),
         'on-quota',
         usage,
@@ -720,7 +770,12 @@ describe('usage alerts with the account proxy', () => {
     expect(
       computeAiCreditsAlertLevel(
         makeCreditsState({
-          balance: { email: 'e', credits: 50, eligible: true },
+          balance: {
+            email: 'e',
+            source: 'canopy',
+            credits: 50,
+            eligible: true,
+          },
         }),
         'on',
         usage,
@@ -738,5 +793,30 @@ describe('usage alerts with the account proxy', () => {
     // `on-quota` and `off` keep the proxy, so its empty pool stays critical.
     expect(alert(usage, disabled, 'on-quota')).toBe('critical');
     expect(alert(usage, disabled, 'off')).toBe('critical');
+  });
+});
+
+describe('Claude included allowance precedes extra usage', () => {
+  it('does not raise a provider exhaustion alert for an exhausted overage cap', () => {
+    const usage = makeUsage({
+      rateLimits: [
+        { limitId: 'five_hour', primary: { usedPercent: 0 } },
+        { limitId: 'seven_day', primary: { usedPercent: 0 } },
+        { limitId: 'extra_usage', primary: { usedPercent: 122 } },
+      ],
+    });
+    expect(computeUsageAlertLevel(usage)).toBe('normal');
+    expect(isAiCreditsActiveMethod('on-quota', usage)).toBe(false);
+  });
+
+  it('keeps warning severity separate from actual exhaustion', () => {
+    const usage = makeUsage({
+      rateLimits: [
+        { limitId: 'five_hour', primary: { usedPercent: 98 } },
+        { limitId: 'seven_day', primary: { usedPercent: 30 } },
+      ],
+    });
+    expect(computeUsageAlertLevel(usage)).toBe('critical');
+    expect(isAiCreditsActiveMethod('on-quota', usage)).toBe(false);
   });
 });

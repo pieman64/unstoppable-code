@@ -24,6 +24,11 @@ jest.mock('../services/background-execution-context', () => ({
   scopeAutomationsToSelectedContext: (...args: unknown[]): unknown =>
     mockScopeAutomations(...args),
 }));
+// The chat automation pipelines experiment is off: saves stay native.
+jest.mock('../automations/chat-automation-experiment', () => ({
+  chatAutomationPipelinesEnabled: (): Promise<boolean> =>
+    Promise.resolve(false),
+}));
 jest.mock('../automations/service', () => ({
   getAutomationsService: jest.fn(() => service),
 }));
@@ -71,7 +76,7 @@ jest.mock('../automations/curated-automation-catalog', () => ({
 
 const mockAnalyzeAutomationCapabilityPackage = jest.fn<
   Promise<unknown>,
-  [unknown]
+  [unknown] | [unknown, unknown]
 >();
 const mockCancelPackageAnalysis = jest.fn<void, [string]>();
 const mockCreatePackagedAutomationCapabilityPackage = jest.fn<
@@ -98,9 +103,32 @@ const mockGetSharedPipelineAutomationInstallPin = jest.fn<
   Promise<unknown>,
   [string]
 >();
+const mockInstallAutomationPipelines = jest.fn<
+  Promise<unknown>,
+  [unknown, unknown]
+>();
+const mockPreviewAutomationPipelines = jest.fn<
+  Promise<unknown>,
+  [unknown, unknown]
+>();
+const RECORDED_PIPELINE_IDS = new Set(['88888888-8888-4888-8888-888888888888']);
+const mockPipelinesRecordedByAutomations = jest.fn<Set<string>, [unknown]>();
+jest.mock('../pipelines/automation-pipeline-install', () => ({
+  installAutomationPipelines: (
+    request: unknown,
+    options: unknown,
+  ): Promise<unknown> => mockInstallAutomationPipelines(request, options),
+  previewAutomationPipelines: (
+    request: unknown,
+    options: unknown,
+  ): Promise<unknown> => mockPreviewAutomationPipelines(request, options),
+  pipelinesRecordedByAutomations: (activities: unknown): Set<string> =>
+    mockPipelinesRecordedByAutomations(activities),
+}));
 jest.mock('../pipelines/pipeline-package-service', () => ({
-  analyzeAutomationCapabilityPackage: (request: unknown): Promise<unknown> =>
-    mockAnalyzeAutomationCapabilityPackage(request),
+  analyzeAutomationCapabilityPackage: (
+    ...args: [unknown] | [unknown, unknown]
+  ): Promise<unknown> => mockAnalyzeAutomationCapabilityPackage(...args),
   cancelPackageAnalysis: (analysisId: string): void =>
     mockCancelPackageAnalysis(analysisId),
   createPackagedAutomationCapabilityPackage: (
@@ -202,6 +230,7 @@ function accessors(): WindowAccessors {
       open: false,
       focused: false,
     })),
+    setAppAdvisorFloatingSize: () => ({ open: false, focused: false }),
     sendAppAdvisorWindowCommand: jest.fn(),
     sendChatWindowCommand: jest.fn(() => true),
     notifyStartupUnlocked: jest.fn(),
@@ -239,8 +268,14 @@ describe('automations IPC', () => {
       nextCursor: 'next',
       totalCount: 2,
     });
-    service.create.mockResolvedValue({ ok: true, activity: { id: 'a1' } });
-    service.update.mockResolvedValue({ ok: true, activity: { id: 'a1' } });
+    service.create.mockResolvedValue({
+      ok: true,
+      activity: { id: 'a1', action: { type: 'app_advisor_prompt' } },
+    });
+    service.update.mockResolvedValue({
+      ok: true,
+      activity: { id: 'a1', action: { type: 'app_advisor_prompt' } },
+    });
     service.delete.mockResolvedValue({ ok: true, activity: { id: 'a1' } });
     service.runNow.mockResolvedValue({ ok: true, run: { id: 'r1' } });
     service.approveSharedPipelineReview.mockResolvedValue({
@@ -276,6 +311,20 @@ describe('automations IPC', () => {
     await invoke(IPC_CHANNELS.automationsList, 'selected-context');
     expect(mockScopeAutomations).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])(
+    'preserves create provenance through IPC (%s)',
+    async (created) => {
+      service.create.mockResolvedValue({
+        ok: true,
+        activity: { id: 'a1', action: { type: 'app_advisor_prompt' } },
+        created,
+      });
+      await expect(
+        invoke(IPC_CHANNELS.automationsCreate, createRequest()),
+      ).resolves.toMatchObject({ ok: true, activity: { id: 'a1' }, created });
+    },
+  );
 
   it('registers handlers and delegates valid requests', async () => {
     const request = createRequest();
@@ -710,6 +759,168 @@ describe('automations IPC', () => {
       expect(
         service.clearActivityRemoteMetadataByRemoteId,
       ).toHaveBeenCalledWith(sharedDetail.id);
+    });
+
+    it('dispatches Stage A pipeline installs and Stage B automation installs', async () => {
+      const packageRequest = {
+        remoteId: sharedDetail.id,
+        packageRef: { version: 1 as const, digest: `pp:v1:${'A'.repeat(43)}` },
+      };
+      const stageAResponse = {
+        pipelines: [
+          {
+            key: 'action',
+            localPipelineId: '99999999-9999-4999-8999-999999999999',
+            pipelineContentHash: 'a'.repeat(64),
+            outcome: 'created' as const,
+          },
+        ],
+      };
+      mockInstallAutomationPipelines.mockResolvedValue(stageAResponse);
+      mockPipelinesRecordedByAutomations.mockReturnValue(RECORDED_PIPELINE_IDS);
+      mockInstallAutomationCapabilityPackage.mockResolvedValue();
+      const stageARequest = {
+        ...packageRequest,
+        stage: 'pipelines' as const,
+        existingPipelines: [],
+      };
+
+      await expect(
+        invoke(IPC_CHANNELS.automationsCapabilityPackageInstall, stageARequest),
+      ).resolves.toBe(stageAResponse);
+      await expect(
+        invoke(IPC_CHANNELS.automationsCapabilityPackageInstall, {
+          ...packageRequest,
+          localAutomationId: sharedDetail.id,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(mockInstallAutomationPipelines).toHaveBeenCalledTimes(1);
+      // Pipelines other installed automations record are never taken over.
+      expect(mockInstallAutomationPipelines).toHaveBeenCalledWith(
+        stageARequest,
+        { recordedPipelineIds: RECORDED_PIPELINE_IDS },
+      );
+      expect(mockPipelinesRecordedByAutomations).toHaveBeenCalledWith([]);
+      expect(mockInstallAutomationCapabilityPackage).toHaveBeenCalledTimes(1);
+      expect(mockInstallAutomationCapabilityPackage).toHaveBeenCalledWith({
+        ...packageRequest,
+        localAutomationId: sharedDetail.id,
+      });
+
+      await invoke(IPC_CHANNELS.automationsCapabilityPackageInstall, {
+        ...stageARequest,
+        source: 'curated',
+      });
+      expect(mockAssertCapability).toHaveBeenCalledWith(
+        'automation-catalog-v1',
+      );
+    });
+
+    it('dispatches the Stage A preview without installing anything', async () => {
+      const previewRequest = {
+        remoteId: sharedDetail.id,
+        packageRef: { version: 1 as const, digest: `pp:v1:${'A'.repeat(43)}` },
+        stage: 'pipelines-preview' as const,
+        existingPipelines: [
+          {
+            key: 'action',
+            localPipelineId: '99999999-9999-4999-8999-999999999999',
+            expectedContentHash: 'a'.repeat(64),
+          },
+        ],
+      };
+      const previewResponse = {
+        pipelines: [
+          {
+            key: 'action',
+            localPipelineId: '99999999-9999-4999-8999-999999999999',
+            pipelineContentHash: 'b'.repeat(64),
+            outcome: 'reused' as const,
+            rewrites: true,
+            rawPipeline: 'name: Entry\n',
+            assetChanges: [],
+          },
+        ],
+      };
+      mockPreviewAutomationPipelines.mockResolvedValue(previewResponse);
+      mockPipelinesRecordedByAutomations.mockReturnValue(RECORDED_PIPELINE_IDS);
+
+      await expect(
+        invoke(
+          IPC_CHANNELS.automationsCapabilityPackageInstall,
+          previewRequest,
+        ),
+      ).resolves.toBe(previewResponse);
+      expect(mockPreviewAutomationPipelines).toHaveBeenCalledWith(
+        previewRequest,
+        { recordedPipelineIds: RECORDED_PIPELINE_IDS },
+      );
+      expect(mockInstallAutomationPipelines).not.toHaveBeenCalled();
+      expect(mockInstallAutomationCapabilityPackage).not.toHaveBeenCalled();
+
+      await invoke(IPC_CHANNELS.automationsCapabilityPackageInstall, {
+        ...previewRequest,
+        source: 'curated',
+      });
+      expect(mockAssertCapability).toHaveBeenCalledWith(
+        'automation-catalog-v1',
+      );
+    });
+
+    it('packages the stored action pipeline only for a saved user or project worktree_pipeline', async () => {
+      const activityId = '66666666-6666-4666-8666-666666666666';
+      const pipelineId = '55555555-5555-4555-8555-555555555555';
+      service.list.mockResolvedValue({
+        activities: [
+          {
+            id: activityId,
+            action: {
+              type: 'worktree_pipeline',
+              workspaceId: 'workspace-1',
+              pipelineId,
+              pipelineSource: 'user',
+              pipelineName: 'Journey entry',
+            },
+          },
+        ],
+        recentRuns: [],
+      });
+      mockAnalyzeAutomationCapabilityPackage.mockResolvedValue({
+        analysisId: 'analysis',
+      });
+      const request = {
+        rawContent: '{"version":1}',
+        activityId,
+        pipelineContent: 'name: Journey entry\n',
+        // The renderer cannot supply trusted host facts.
+        actionPipeline: { source: 'user', pipelineId: 'injected' },
+        selections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        },
+      };
+
+      await invoke(IPC_CHANNELS.automationsCapabilityPackageAnalyze, request);
+
+      expect(mockAnalyzeAutomationCapabilityPackage).toHaveBeenCalledWith(
+        request,
+        {
+          actionPipeline: {
+            source: 'user',
+            pipelineId,
+            name: 'Journey entry',
+          },
+        },
+      );
+
+      service.list.mockResolvedValue({ activities: [], recentRuns: [] });
+      await invoke(IPC_CHANNELS.automationsCapabilityPackageAnalyze, request);
+      expect(mockAnalyzeAutomationCapabilityPackage).toHaveBeenLastCalledWith(
+        request,
+      );
     });
 
     it('exposes automation capability package operations to the renderer', async () => {

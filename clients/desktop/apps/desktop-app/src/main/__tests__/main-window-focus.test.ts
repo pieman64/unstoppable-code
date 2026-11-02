@@ -15,11 +15,15 @@ interface MockWindow {
 
 jest.mock('electron', () => ({
   app: {
-    focus: mockAppFocus,
+    get focus(): typeof mockAppFocus {
+      return mockAppFocus;
+    },
     isPackaged: false,
   },
   BrowserWindow: {
-    getFocusedWindow: mockGetFocusedWindow,
+    get getFocusedWindow(): typeof mockGetFocusedWindow {
+      return mockGetFocusedWindow;
+    },
   },
 }));
 
@@ -178,6 +182,42 @@ describe('main window focus', () => {
         getUiAutomationWindowWebPreferences(platform, true, false, {}),
       ).toEqual({});
     }
+  });
+
+  it('renders hidden Windows automation offscreen only when the launch opts in', () => {
+    const optIn = { CANOPY_E2E_OFFSCREEN_WINDOW: '1' };
+    expect(
+      getUiAutomationWindowWebPreferences('win32', true, false, optIn),
+    ).toEqual({ offscreen: true });
+    expect(
+      getUiAutomationWindowWebPreferences('win32', false, false, {
+        ...optIn,
+        CANOPY_E2E_ISOLATED_LOGGING: '1',
+      }),
+    ).toEqual({ offscreen: true });
+    expect(
+      getUiAutomationWindowWebPreferences('win32', true, false, {
+        ...optIn,
+        CANOPY_E2E_SHOW_WINDOW: '1',
+      }),
+    ).toEqual({});
+    expect(
+      getUiAutomationWindowWebPreferences('win32', false, false, optIn),
+    ).toEqual({});
+    expect(
+      getUiAutomationWindowWebPreferences('win32', false, true, {
+        ...optIn,
+        CANOPY_E2E_ISOLATED_LOGGING: '1',
+      }),
+    ).toEqual({});
+    expect(
+      getUiAutomationWindowWebPreferences('win32', true, false, {
+        CANOPY_E2E_OFFSCREEN_WINDOW: '0',
+      }),
+    ).toEqual({});
+    expect(
+      getUiAutomationWindowWebPreferences('darwin', true, false, optIn),
+    ).toEqual({});
   });
 
   it('does not steal the foreground unless asked to', () => {

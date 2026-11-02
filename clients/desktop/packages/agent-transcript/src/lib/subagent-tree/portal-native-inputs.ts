@@ -139,6 +139,22 @@ function codexReceivers(
   return Object.keys(receivers).length > 0 ? receivers : undefined;
 }
 
+function codexTimes(value: unknown): CodexNativeCallInput['receiverTimes'] {
+  if (!isRecord(value)) return undefined;
+  const times: Record<string, { startedAt?: number; settledAt?: number }> = {};
+  for (const [id, raw] of Object.entries(value)) {
+    if (!isRecord(raw)) continue;
+    const startedAt = finiteNumber(raw['startedAt']);
+    const settledAt = finiteNumber(raw['settledAt']);
+    if (startedAt === undefined && settledAt === undefined) continue;
+    times[id] = {
+      ...(startedAt === undefined ? {} : { startedAt }),
+      ...(settledAt === undefined ? {} : { settledAt }),
+    };
+  }
+  return Object.keys(times).length > 0 ? times : undefined;
+}
+
 /**
  * One Codex card's tree input, read like desktop's `codex_agent_call`
  * collector reads the persisted block. The card's display description is
@@ -173,6 +189,7 @@ function codexInputOf(
   const model = nonEmptyString(data['model']);
   const reasoningEffort = nonEmptyString(data['reasoningEffort']);
   const receiverAgents = codexReceivers(data['receiverAgents']);
+  const receiverTimes = codexTimes(data['receiverTimes']);
   const senderThreadId =
     parent !== null && parent.kind !== 'codex-native' && parent.id !== null
       ? parent.id
@@ -189,7 +206,33 @@ function codexInputOf(
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     agentsStates,
     ...(receiverAgents !== undefined ? { receiverAgents } : {}),
+    ...(receiverTimes !== undefined ? { receiverTimes } : {}),
     ...(time !== undefined ? { occurredAt: time } : {}),
+  };
+}
+
+/**
+ * A multi-receiver card as one receiver's own card: its child parts are the
+ * ones the host attributed to that receiver.
+ */
+function codexReceiverPart(
+  part: Record<string, unknown>,
+  data: Record<string, unknown>,
+  thread: string,
+): Record<string, unknown> | undefined {
+  const byReceiver = data['receiverSubBlocks'];
+  if (!isRecord(byReceiver)) return undefined;
+  const subBlocks = byReceiver[thread];
+  if (!Array.isArray(subBlocks)) return undefined;
+  return {
+    ...part,
+    data: {
+      ...Object.fromEntries(
+        Object.entries(data).filter(([key]) => key !== 'receiverSubBlocks'),
+      ),
+      receiverThreadIds: [thread],
+      subBlocks,
+    },
   };
 }
 
@@ -210,7 +253,10 @@ export function collectPortalNativeSubagentInputs(
     Readonly<Record<string, unknown>>
   >;
   readonly codexNative: readonly CodexNativeCallInput[];
-  /** The latest single-receiver Codex card of each receiver thread. */
+  /**
+   * The latest Codex card of each receiver thread: a single-receiver card,
+   * or a multi-receiver card narrowed to that receiver's own child parts.
+   */
   readonly codexNativeParts: ReadonlyMap<
     string,
     Readonly<Record<string, unknown>>
@@ -276,14 +322,31 @@ export function collectPortalNativeSubagentInputs(
             ? input.receiverThreadIds[0]
             : undefined;
         if (single !== undefined) codexNativeParts.set(single, part);
-        // Children of a multi-receiver card have no single owning thread;
-        // their parentage stays unresolved rather than taking receiver 0.
-        visit(
-          data['subBlocks'],
-          { kind: 'codex-native', id: single ?? null },
-          partTime,
-          depth + 1,
-        );
+        else
+          for (const thread of input.receiverThreadIds) {
+            const receiverPart = codexReceiverPart(part, data, thread);
+            if (receiverPart !== undefined)
+              codexNativeParts.set(thread, receiverPart);
+          }
+        // Children of a multi-receiver card belong to the receiver the host
+        // attributed them to; without that, their parentage stays
+        // unresolved rather than taking receiver 0.
+        const byReceiver = data['receiverSubBlocks'];
+        if (single === undefined && isRecord(byReceiver))
+          for (const thread of input.receiverThreadIds)
+            visit(
+              byReceiver[thread],
+              { kind: 'codex-native', id: thread },
+              partTime,
+              depth + 1,
+            );
+        else
+          visit(
+            data['subBlocks'],
+            { kind: 'codex-native', id: single ?? null },
+            partTime,
+            depth + 1,
+          );
         continue;
       }
       if (data['provider'] !== undefined && data['provider'] !== 'claude')

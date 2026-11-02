@@ -166,6 +166,7 @@ function stripForkLifecycleState(
   delete tab.attentionDismissedAt;
   delete tab.autoArchive;
   delete tab.unread;
+  delete tab.unreadMarkedManually;
   delete tab.codexReconstructionSeedId;
   delete tab.claudeTerminal;
   if (options.stripApprovalState) {

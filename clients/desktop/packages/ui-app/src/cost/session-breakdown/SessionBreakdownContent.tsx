@@ -58,7 +58,7 @@ const BACKGROUND_KIND_LABELS: Readonly<Record<CostHelperKind, string>> = {
   commit_message: 'Commit messages',
   entry_summary: 'Entry summary',
   pull_request_text: 'Pull request text',
-  pipeline_advisor: 'Pipeline Advisor',
+  pipeline_advisor: 'Workflow Advisor',
   other: 'Other',
 };
 

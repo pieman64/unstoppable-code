@@ -12,7 +12,6 @@ import { chatScopeKey } from '@/stores/chat/revisioned-sync';
 import { useBrowserStore } from '@/stores/browserStore';
 import { getWorkspaceLayoutMode } from '@/stores/workspaceLayoutModeStore';
 import { isCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
-import { initialFileTabViewMode } from '@/lib/file-viewer/initial-view-mode';
 import { openFileInBrowserPanel } from '@/lib/openFileInBrowserPanel';
 import { requestBrowserPanel } from '@/lib/browserPanelActivation';
 import { normalizeInAppBrowserInput } from '@/lib/browserUrl';
@@ -311,14 +310,9 @@ export async function maybeOpenStartPage(
   await withAutomaticLayoutChanges(async () => {
     const filename =
       absolutePath.replace(/\\/g, '/').split('/').pop() ?? absolutePath;
-    const tabId = useChatStore.getState().openFileTab(
-      {
-        absolutePath,
-        filename,
-        initialViewMode: initialFileTabViewMode(filename),
-      },
-      { projectId, worktreeId },
-    );
+    const tabId = useChatStore
+      .getState()
+      .openFileTab({ absolutePath, filename }, { projectId, worktreeId });
     if (!tabId) return;
     const instanceKey = `file-diff:${tabId}`;
     // `canActivateStartPage` no longer applies: opening the tab is what changed

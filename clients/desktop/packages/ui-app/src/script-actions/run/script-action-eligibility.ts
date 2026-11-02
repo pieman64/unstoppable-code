@@ -38,7 +38,8 @@ const DEFAULT_MESSAGES: Record<ScriptActionRunErrorCode, string> = {
 /** A run refused before any terminal work, or a reuse check that failed. */
 export class ScriptActionRunError extends Error {
   readonly code: ScriptActionRunErrorCode;
-  readonly cause: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause: unknown;
 
   constructor(
     code: ScriptActionRunErrorCode,

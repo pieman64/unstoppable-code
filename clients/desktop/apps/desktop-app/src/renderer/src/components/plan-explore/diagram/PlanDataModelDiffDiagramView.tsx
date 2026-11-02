@@ -20,7 +20,11 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { ThinkingSpinner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  SegmentedControl,
+  ThinkingSpinner,
+} from '@canopy/ui-shared/components';
 import type {
   DataModelCardinality,
   DataModelChangeType,
@@ -302,14 +306,15 @@ function SelectedEntityDetail({
             </span>
           )}
         </div>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onClose}
           aria-label="Close entity detail"
-          className="focus-ring shrink-0 rounded-md p-0.5 fg-secondary hover:bg-secondary hover:fg-primary"
         >
           <AppCatalogCloseIcon width="14" height="14" />
-        </button>
+        </Button>
       </div>
       {data.detail && (
         <p className="mb-2 whitespace-pre-wrap text-xs fg-primary">
@@ -433,36 +438,34 @@ function SelectedEntityDetail({
                 className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="flex items-center justify-end gap-1.5">
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={(): void => {
                     setComposing(false);
                     setBody('');
                   }}
-                  className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
                 >
                   Cancel
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="primary"
+                  size="compact"
                   onClick={handleSave}
                   disabled={body.trim().length === 0}
                   data-testid="plan-node-comment-save"
-                  className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
                 >
                   Save comment
-                </button>
+                </Button>
               </div>
             </div>
           ) : (
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={(): void => setComposing(true)}
               data-testid="plan-node-add-comment"
-              className="focus-ring rounded-md border px-2 py-1 text-xs fg-secondary transition hover:fg-primary"
             >
               + Add comment
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -512,30 +515,6 @@ function DataModelFlowGraph({
       <Background />
       <Controls showInteractive={false} />
     </ReactFlow>
-  );
-}
-
-function SegmentedButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-md px-2 py-1 text-xs transition ${
-        active
-          ? 'bg-fg-primary/[0.08] fg-primary'
-          : 'fg-secondary hover:fg-primary'
-      }`}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -886,15 +865,14 @@ export const PlanDataModelDiffDiagram = forwardRef<
         <CenteredMessage>
           <p className="text-s fg-secondary">No data model diagram yet.</p>
           {onGenerate && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               data-testid="plan-data-model-diff-generate"
               onClick={onGenerate}
               disabled={isGenerating}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.06] px-3 py-1.5 text-xs fg-primary transition hover:bg-fg-primary/[0.12] disabled:cursor-default disabled:opacity-60"
             >
               {isGenerating ? 'Generating…' : 'Generate diagram'}
-            </button>
+            </Button>
           )}
         </CenteredMessage>
       </div>
@@ -935,15 +913,14 @@ export const PlanDataModelDiffDiagram = forwardRef<
             <p className="max-w-sm text-xs fg-secondary">{artifact.error}</p>
           )}
           {onGenerate && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               data-testid="plan-data-model-diff-retry"
               onClick={onGenerate}
               disabled={isGenerating}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.06] px-3 py-1.5 text-xs fg-primary transition hover:bg-fg-primary/[0.12] disabled:cursor-default disabled:opacity-60"
             >
               {isGenerating ? 'Generating…' : 'Retry'}
-            </button>
+            </Button>
           )}
         </CenteredMessage>
       </div>
@@ -980,42 +957,35 @@ export const PlanDataModelDiffDiagram = forwardRef<
           data-testid="data-model-diff-view-toggle"
           className="flex items-center gap-1"
         >
-          <SegmentedButton
-            active={primaryView === 'current'}
-            onClick={(): void => setPrimaryView('current')}
-          >
-            Current
-          </SegmentedButton>
-          <SegmentedButton
-            active={primaryView === 'planned'}
-            onClick={(): void => setPrimaryView('planned')}
-          >
-            Planned
-          </SegmentedButton>
-          <SegmentedButton
-            active={primaryView === 'diff'}
-            onClick={(): void => setPrimaryView('diff')}
-          >
-            Diff
-          </SegmentedButton>
+          <SegmentedControl
+            label="Diagram view"
+            shape="capsule"
+            width="content"
+            value={primaryView}
+            onChange={setPrimaryView}
+            options={[
+              { value: 'current', label: 'Current' },
+              { value: 'planned', label: 'Planned' },
+              { value: 'diff', label: 'Diff' },
+            ]}
+          />
         </div>
         {primaryView === 'diff' && (
           <div
             data-testid="data-model-diff-presentation-toggle"
             className="flex items-center gap-1 border-l pl-2"
           >
-            <SegmentedButton
-              active={presentation === 'unified'}
-              onClick={(): void => setPresentation('unified')}
-            >
-              Unified
-            </SegmentedButton>
-            <SegmentedButton
-              active={presentation === 'split'}
-              onClick={(): void => setPresentation('split')}
-            >
-              Split
-            </SegmentedButton>
+            <SegmentedControl
+              label="Diff layout"
+              shape="capsule"
+              width="content"
+              value={presentation}
+              onChange={setPresentation}
+              options={[
+                { value: 'unified', label: 'Unified' },
+                { value: 'split', label: 'Split' },
+              ]}
+            />
           </div>
         )}
       </div>

@@ -10,7 +10,15 @@ import type {
   LedgerFeedPeriod,
   LedgerViewFilters,
 } from '@canopy/protocol/ledger-view';
-import { FilterIcon } from '../../icons/AppIcons';
+import {
+  ArchiveIcon,
+  CircleCheckIcon,
+  FilterIcon,
+  HistoryIcon,
+  ListFilterIcon,
+  PersonIcon,
+  SparkleIcon,
+} from '../../icons/AppIcons';
 import {
   LEDGER_ENTRY_TYPE_LABELS,
   LEDGER_STATUS_LABELS,
@@ -26,6 +34,7 @@ import {
   PickerMenuSection,
   PickerMenuSectionLabel,
 } from '../PickerMenu';
+import { FilterMenuButton, pageFilter } from '../PageSearchRow';
 import { RailIconButton } from '../RailIconButton';
 import { LedgerEntryTypeIcon } from './LedgerEntryTypeLabel';
 
@@ -229,6 +238,12 @@ export function isLedgerFeedFiltered(filters: LedgerFeedFilters): boolean {
 export interface LedgerFeedFilterMenuProps {
   filters: LedgerFeedFilters;
   onChange: (filters: LedgerFeedFilters) => void;
+  /**
+   * `icon` is the panel's filter glyph with a dot while a filter is on;
+   * `page` is the quiet `Filter · 2` dropdown after a page's search, a row
+   * per filter group, each opening its choices.
+   */
+  trigger?: 'icon' | 'page';
 }
 
 /**
@@ -238,7 +253,11 @@ export interface LedgerFeedFilterMenuProps {
 export function LedgerFeedFilterMenu({
   filters,
   onChange,
+  trigger = 'icon',
 }: LedgerFeedFilterMenuProps): JSX.Element {
+  if (trigger === 'page') {
+    return <LedgerFeedPageFilter filters={filters} onChange={onChange} />;
+  }
   return (
     <LedgerFilterMenu
       filters={filters}
@@ -309,5 +328,133 @@ export function LedgerFeedFilterMenu({
         </PickerMenuOption>
       </PickerMenuSection>
     </LedgerFilterMenu>
+  );
+}
+
+const OWNER_OPTIONS = [{ value: 'you', label: 'You' }] as const;
+
+/** The Feed's filters with nothing on. */
+const LEDGER_FEED_NO_FILTERS: LedgerFeedFilters = {
+  types: [],
+  statuses: [],
+  owner: 'anyone',
+  author: 'anyone',
+  period: 'any',
+  includeArchived: false,
+};
+
+/**
+ * The Feed's filters after its search: one quiet Filter dropdown with a row
+ * per group (Type, Status, Owner, Added by, Last changed, Archived), each
+ * naming its value and opening its choices as a submenu.
+ */
+function LedgerFeedPageFilter({
+  filters,
+  onChange,
+}: {
+  readonly filters: LedgerFeedFilters;
+  readonly onChange: (filters: LedgerFeedFilters) => void;
+}): JSX.Element {
+  const groups = [
+    pageFilter<LedgerEntryType>({
+      key: 'type',
+      title: 'Type',
+      groupIcon: <ListFilterIcon />,
+      anyLabel: 'Any type',
+      multiple: true,
+      options: TYPE_OPTIONS.map((type) => ({
+        value: type,
+        label: LEDGER_ENTRY_TYPE_LABELS[type],
+        icon: <LedgerEntryTypeIcon type={type} />,
+      })),
+      selected: filters.types,
+      onToggle: (type): void =>
+        onChange({ ...filters, types: toggled(filters.types, type) }),
+      onClear: (): void => onChange({ ...filters, types: [] }),
+      testId: 'ledger-filter-type',
+    }),
+    pageFilter<LedgerStatus>({
+      key: 'status',
+      title: 'Status',
+      groupIcon: <CircleCheckIcon />,
+      anyLabel: 'Any status',
+      multiple: true,
+      options: STATUS_OPTIONS.map((status) => ({
+        value: status,
+        label: LEDGER_STATUS_LABELS[status],
+      })),
+      selected: filters.statuses,
+      onToggle: (status): void =>
+        onChange({ ...filters, statuses: toggled(filters.statuses, status) }),
+      onClear: (): void => onChange({ ...filters, statuses: [] }),
+      testId: 'ledger-filter-status',
+    }),
+    pageFilter<'you'>({
+      key: 'owner',
+      title: 'Owner',
+      groupIcon: <PersonIcon />,
+      anyLabel: 'Anyone',
+      options: OWNER_OPTIONS,
+      selected: filters.owner === 'you' ? ['you'] : [],
+      onToggle: (): void =>
+        onChange({
+          ...filters,
+          owner: filters.owner === 'you' ? 'anyone' : 'you',
+        }),
+      onClear: (): void => onChange({ ...filters, owner: 'anyone' }),
+      testId: 'ledger-filter-owner',
+    }),
+    pageFilter<'you'>({
+      key: 'author',
+      title: 'Added by',
+      groupIcon: <SparkleIcon />,
+      anyLabel: 'Anyone',
+      options: OWNER_OPTIONS,
+      selected: filters.author === 'you' ? ['you'] : [],
+      onToggle: (): void =>
+        onChange({
+          ...filters,
+          author: filters.author === 'you' ? 'anyone' : 'you',
+        }),
+      onClear: (): void => onChange({ ...filters, author: 'anyone' }),
+      testId: 'ledger-filter-author',
+    }),
+    pageFilter<Exclude<LedgerFeedPeriod, 'any'>>({
+      key: 'period',
+      title: 'Last changed',
+      groupIcon: <HistoryIcon />,
+      anyLabel: 'Any time',
+      options: PERIOD_OPTIONS.flatMap(({ period, label }) =>
+        period === 'any' ? [] : [{ value: period, label }],
+      ),
+      selected: filters.period === 'any' ? [] : [filters.period],
+      onToggle: (period): void =>
+        onChange({
+          ...filters,
+          period: filters.period === period ? 'any' : period,
+        }),
+      onClear: (): void => onChange({ ...filters, period: 'any' }),
+      testId: 'ledger-filter-period',
+    }),
+    pageFilter<'archived'>({
+      key: 'archived',
+      title: 'Archived',
+      groupIcon: <ArchiveIcon />,
+      options: [{ value: 'archived', label: 'Show archived work' }],
+      multiple: true,
+      selected: filters.includeArchived ? ['archived'] : [],
+      onToggle: (): void =>
+        onChange({ ...filters, includeArchived: !filters.includeArchived }),
+      onClear: (): void => onChange({ ...filters, includeArchived: false }),
+      testId: 'ledger-filter-archived',
+    }),
+  ].map((filter) => filter.group);
+  return (
+    <FilterMenuButton
+      groups={groups}
+      onClearAll={(): void => onChange(LEDGER_FEED_NO_FILTERS)}
+      name="Filter entries"
+      testId="ledger-filter-trigger"
+    />
   );
 }

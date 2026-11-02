@@ -12,6 +12,8 @@ interface RegisteredPreparation extends PendingChatTurnPreparation {
 }
 
 const pendingPreparations = new Map<string, Set<RegisteredPreparation>>();
+/** The target of each key in `pendingPreparations`. */
+const preparationTargets = new Map<string, ChatCancelRequest>();
 function preparationKey(target: ChatCancelRequest): string {
   return JSON.stringify([target.projectId, target.worktreeId, target.chatId]);
 }
@@ -42,22 +44,48 @@ export function beginChatTurnPreparation(
     ...(onCancel ? { onCancel } : {}),
     finish: (): void => {
       pending.delete(preparation);
-      if (pending.size === 0 && pendingPreparations.get(key) === pending)
+      if (pending.size === 0 && pendingPreparations.get(key) === pending) {
         pendingPreparations.delete(key);
+        preparationTargets.delete(key);
+      }
     },
   };
   pending.add(preparation);
   pendingPreparations.set(key, pending);
+  preparationTargets.set(key, {
+    projectId: target.projectId,
+    worktreeId: target.worktreeId,
+    chatId: target.chatId,
+  });
   return preparation;
 }
 
+/** Each target with a send of this chat preparing now. */
+export function chatTurnPreparationTargets(
+  chatId: string,
+): ChatCancelRequest[] {
+  return Array.from(preparationTargets.values()).filter(
+    (target) => target.chatId === chatId,
+  );
+}
+
+/** The chat's preparations in flight now, for a Stop to own later. */
+export function snapshotChatTurnPreparations(
+  target: ChatCancelRequest,
+): ReadonlySet<PendingChatTurnPreparation> {
+  return new Set(pendingPreparations.get(preparationKey(target)));
+}
+
+/** Cancel the chat's preparations that `owns` selects (all by default). */
 export async function cancelChatTurnPreparations(
   target: ChatCancelRequest,
+  owns: (preparation: PendingChatTurnPreparation) => boolean = () => true,
 ): Promise<void> {
   const settlements: Promise<void>[] = [];
   for (const preparation of Array.from(
     pendingPreparations.get(preparationKey(target)) ?? [],
   )) {
+    if (!owns(preparation)) continue;
     const firstCancel = !preparation.cancelled;
     preparation.cancelled = true;
     if (firstCancel && preparation.onCancel)

@@ -7,6 +7,7 @@ import { registerIpcHandler } from './register';
 import { OPENCODE_CONNECTION_TIMEOUT_MS } from '@canopy/desktop-shared/types/opencode-connection';
 import { validateId } from '../lib/validation';
 import { sendToWebContents } from '../lib/web-contents-send';
+import { peekOpenCodeRuntimeAvailability } from '../opencode/runtime-availability';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
 import { notifyPortalModelCatalogChanged } from '../portal/portal-event-bus';
 
@@ -111,8 +112,11 @@ export async function shutdownOpenCodeConnections(): Promise<void> {
 export function registerOpenCodeConnectionHandlers(): void {
   registerIpcHandler(IPC_CHANNELS.opencodeConnectionStatus, async (event) => {
     assertOwner(event);
+    const before = peekOpenCodeRuntimeAvailability();
     const { opencodeConnectionStatus } = await import('../opencode/connection');
-    return opencodeConnectionStatus();
+    const status = await opencodeConnectionStatus();
+    if (before !== peekOpenCodeRuntimeAvailability()) publish();
+    return status;
   });
   registerIpcHandler(IPC_CHANNELS.opencodeConnectionModels, (event) =>
     owned(event, false, async (signal) => {

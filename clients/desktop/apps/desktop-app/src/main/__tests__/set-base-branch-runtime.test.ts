@@ -9,7 +9,9 @@ const mockRequestAppAdvisorRendererTool = jest.fn<
 >();
 
 jest.mock('../ipc/app-advisor', () => ({
-  requestAppAdvisorRendererTool: mockRequestAppAdvisorRendererTool,
+  get requestAppAdvisorRendererTool(): typeof mockRequestAppAdvisorRendererTool {
+    return mockRequestAppAdvisorRendererTool;
+  },
 }));
 
 import { setCurrentWorktreeBaseBranch } from '../canopy-tools/set-base-branch-runtime';

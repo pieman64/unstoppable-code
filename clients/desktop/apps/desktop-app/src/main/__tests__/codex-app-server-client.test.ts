@@ -1,9 +1,20 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unsafe-assignment */
 import { EventEmitter } from 'node:events';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import {
+  classifyProviderRunEvent,
+  getProviderRunDescriptor,
+} from '../lib/provider-run-reconciliation';
 import type * as NodeChildProcess from 'node:child_process';
 import type * as NodeCrypto from 'node:crypto';
 
@@ -13,7 +24,6 @@ const rejectAllForSessionMock = jest.fn();
 const rejectRequestMock = jest.fn();
 const upsertPendingQuestionMock = jest.fn(() => Promise.resolve());
 const consumePendingQuestionMock = jest.fn(() => Promise.resolve());
-const randomUUIDMock = jest.fn();
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
   process,
   'platform',
@@ -21,7 +31,9 @@ const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: spawnMock,
+  get spawn() {
+    return spawnMock;
+  },
 }));
 
 // Terminate fake children directly so their PIDs never reach the host's kill path.
@@ -36,7 +48,7 @@ jest.mock('@canopy/desktop-shared/node/lib/process-kill', () => ({
 
 jest.mock('node:crypto', () => ({
   ...jest.requireActual<typeof NodeCrypto>('node:crypto'),
-  randomUUID: randomUUIDMock,
+  randomUUID: jest.fn(),
 }));
 
 jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => ({
@@ -45,16 +57,31 @@ jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => ({
 }));
 
 jest.mock('../mcp/pending-requests', () => ({
-  createPendingRequest: createPendingRequestMock,
-  rejectAllForSession: rejectAllForSessionMock,
-  rejectRequest: rejectRequestMock,
+  get createPendingRequest() {
+    return createPendingRequestMock;
+  },
+  get rejectAllForSession() {
+    return rejectAllForSessionMock;
+  },
+  get rejectRequest() {
+    return rejectRequestMock;
+  },
 }));
 
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: () => ({
-    upsertPendingQuestion: upsertPendingQuestionMock,
-    consumePendingQuestion: consumePendingQuestionMock,
+    get upsertPendingQuestion() {
+      return upsertPendingQuestionMock;
+    },
+    get consumePendingQuestion() {
+      return consumePendingQuestionMock;
+    },
   }),
+}));
+
+jest.mock('../lib/main-process-logging', () => ({
+  logMainProcessError: jest.fn(),
+  logMainProcessWarn: jest.fn(),
 }));
 
 jest.mock('electron', () => ({
@@ -66,9 +93,14 @@ import {
   initAiGatewayModels,
   initCodexModels,
   type AgentModelConfig,
+  type ApprovalCheck,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import {
+  ASK_USER_HTTP_TIMEOUT_MS,
+  CANOPY_MCP_TOOL_TIMEOUT_MS,
+  CANOPY_INJECTED_TOOL_REGISTRY,
+} from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { PIPELINE_EDITOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import { getEnhancedEnv } from '@canopy/desktop-shared/pipelines/config-paths';
@@ -78,11 +110,22 @@ import {
   parseGetAccountResponsePayload,
   codexThreadProviderRouteIdentity,
 } from '../codex/app-server-client';
+import { CodexTurnLifecycleTracker } from '../agents/codex-turn-lifecycle';
+import {
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+  setTurnLifecycleSink,
+} from '../agents/provider-turn-lifecycle';
+import type { ChatTurnLifecycleEvent } from '@canopy/protocol/canopy-core';
+import { readCodexDeliveryHistory } from '../codex/delivery-history';
 import {
   buildCodexAppServerPoolKey,
   CodexAppServerConnection,
   CodexRecoverableProcessExitError,
   type CodexAppServerConnectionOwner,
+  type CodexIngestionLagChange,
+  type CodexIngestionLagSample,
+  type CodexIngestionLagSnapshot,
   type CodexAppServerPoolResourceSnapshot,
 } from '@canopy/desktop-shared/node/codex-runtime/connection';
 import { createCodexCapabilitySnapshotId } from '@canopy/desktop-shared/node/codex-runtime/capability-fingerprint';
@@ -105,7 +148,6 @@ import {
 import { buildLedgerPlanModeInstruction } from '../canopy-tools/prompting';
 import { requestAnswersFromRenderer } from '../canopy-tools/session-runtime';
 import type {
-  ApprovalCheck,
   ApprovalCheckDisplay,
   ApprovalOutcome,
   ApprovalSessionHandle,
@@ -113,6 +155,7 @@ import type {
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 import type { SendableBrowserWindow } from '../lib/window-send';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
+import * as mainProcessLogging from '../lib/main-process-logging';
 import { ChatEventOutputDelivery } from '../ipc/chat-event-output';
 import {
   sendToWebContents,
@@ -125,15 +168,29 @@ import {
 import { runtimeChatEventToPortalMessage } from '@canopy/desktop-shared/portal/runtime-chat-projection';
 import {
   applyCodexTranscriptEvent,
+  createEmptyTranscriptReducerState,
   type TranscriptReducerState,
 } from '@canopy/agent-transcript';
 import type { ChatEvent } from '@canopy/desktop-shared/types';
+import {
+  chatInputDeliveryFailure,
+  chatInputRefusal,
+  type ChatInputDeliveryFailureCode,
+  type ChatInputRefusalCode,
+} from '@canopy/protocol/portal/input-delivery';
 import {
   CODEX_PROJECT_DOC_THREAD_CONFIG,
   CodexCapabilityStore,
   resetCanonicalCodexHomeForTests,
   type CodexCapabilityLeaseStore,
 } from '@canopy/desktop-shared/node/codex-runtime';
+const mockLogMainProcessWarn = jest.mocked(
+  mainProcessLogging.logMainProcessWarn,
+);
+
+const randomUUIDMock = jest.mocked(
+  jest.requireMock<typeof NodeCrypto>('node:crypto').randomUUID,
+);
 
 /** The literal Codex keys, so a drifted shared constant fails here too. */
 const PROJECT_DOC_THREAD_CONFIG = {
@@ -318,6 +375,16 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function dispatchIngestionLagSample(
+  client: CodexAppServerClient,
+  sample: CodexIngestionLagSample,
+): boolean {
+  const report: unknown = Reflect.get(client, 'handleIngestionLagSample');
+  if (typeof report !== 'function') return false;
+  Reflect.apply(report, client, [sample]);
+  return true;
+}
+
 function getCodexAppServerPoolResourceSnapshots(): CodexAppServerPoolResourceSnapshot[] {
   return getCodexRuntimeService().admin().getResourceSnapshots();
 }
@@ -461,8 +528,14 @@ function createFakeApprovalSession(
   >;
 } {
   return {
-    check: jest.fn(() => Promise.resolve(outcome)),
+    check: jest.fn<
+      Promise<ApprovalOutcome>,
+      [ApprovalCheck, ApprovalCheckDisplay]
+    >(() => Promise.resolve(outcome)),
     setMode: jest.fn(),
+    reevaluatePendingApprovals: jest.fn<Promise<void>, []>(() =>
+      Promise.resolve(),
+    ),
     dispose: jest.fn(),
   };
 }
@@ -572,18 +645,103 @@ function createClient(
   });
 }
 
+interface ClientBackgroundTestApi {
+  hasLiveBackgroundWork?: () => boolean;
+  getBackgroundSnapshot?: () => unknown;
+  subscribeBackgroundWork?: (
+    listener: (snapshot: unknown) => void,
+  ) => () => void;
+}
+
+function readClientBackgroundApi(
+  client: CodexAppServerClient,
+): ClientBackgroundTestApi {
+  const hasLiveBackgroundWork = Reflect.get(client, 'hasLiveBackgroundWork');
+  const getBackgroundSnapshot = Reflect.get(client, 'getBackgroundSnapshot');
+  const subscribeBackgroundWork = Reflect.get(
+    client,
+    'subscribeBackgroundWork',
+  );
+  return {
+    ...(typeof hasLiveBackgroundWork === 'function'
+      ? {
+          hasLiveBackgroundWork: (): boolean => {
+            const result: unknown = Reflect.apply(
+              hasLiveBackgroundWork,
+              client,
+              [],
+            );
+            return result === true;
+          },
+        }
+      : {}),
+    ...(typeof getBackgroundSnapshot === 'function'
+      ? {
+          getBackgroundSnapshot: (): unknown =>
+            Reflect.apply(getBackgroundSnapshot, client, []),
+        }
+      : {}),
+    ...(typeof subscribeBackgroundWork === 'function'
+      ? {
+          subscribeBackgroundWork: (
+            listener: (snapshot: unknown) => void,
+          ): (() => void) => {
+            const result: unknown = Reflect.apply(
+              subscribeBackgroundWork,
+              client,
+              [listener],
+            );
+            return (): void => {
+              if (typeof result === 'function')
+                Reflect.apply(result, undefined, []);
+            };
+          },
+        }
+      : {}),
+  };
+}
+
+function readBackgroundWork(snapshot: unknown): Array<Record<string, unknown>> {
+  if (!isRecord(snapshot) || !Array.isArray(snapshot.work)) return [];
+  return snapshot.work.filter(isRecord);
+}
+
+async function collectClientMessagesUntil(
+  proc: MockChildProcess,
+  predicate: (messages: readonly Record<string, unknown>[]) => boolean,
+): Promise<Array<Record<string, unknown>>> {
+  const messages: Array<Record<string, unknown>> = [];
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    messages.push(...collectClientMessages(proc));
+    if (predicate(messages)) return messages;
+    await flush();
+  }
+  messages.push(...collectClientMessages(proc));
+  return messages;
+}
+
 async function startActiveTurn(
   client: CodexAppServerClient,
   proc: MockChildProcess,
   mcpServerNames: readonly string[] = [],
+  executionUserMessageId?: string,
+  submissionId?: string,
+  clientUserMessageId?: string,
+  userMessageId?: string,
+  nativeTurnStart?: NativeTurnStartFixture,
 ): Promise<{ turnPromise: Promise<CodexTurnTestResult> }> {
-  const turnPromise = client.startTurn({
+  const turnOptions: TurnStartOptionsWithShadowIds = {
     text: 'Run',
     cwd: '/tmp/repo',
     model: 'gpt-6-sol',
     thinkingLevel: 'high',
     planMode: false,
-  });
+    ...(executionUserMessageId ? { executionUserMessageId } : {}),
+    ...(submissionId ? { submissionId } : {}),
+    ...(clientUserMessageId ? { clientUserMessageId } : {}),
+    ...(userMessageId ? { userMessageId } : {}),
+  };
+  const turnPromise = client.startTurn(turnOptions);
 
   await flush();
   emitServerMessage(proc, {
@@ -621,13 +779,44 @@ async function startActiveTurn(
       ? turnStartMessages[turnStartMessages.length - 1]
       : { id: 3 };
   if (!turnStart) throw new Error('Expected initial turn/start request');
+  if (
+    nativeTurnStart?.notificationFirst === true &&
+    nativeTurnStart.notificationTurn
+  ) {
+    emitServerMessage(proc, {
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-1',
+        turn: nativeTurnStart.notificationTurn,
+      },
+    });
+    await flush();
+  }
   emitServerMessage(proc, {
     id: turnStart?.id,
     result: {
-      turn: { id: 'turn-1', items: [], status: 'inProgress', error: null },
+      turn: nativeTurnStart?.responseTurn ?? {
+        id: 'turn-1',
+        items: [],
+        status: 'inProgress',
+        error: null,
+      },
     },
   });
   await flush();
+  if (
+    nativeTurnStart?.notificationFirst !== true &&
+    nativeTurnStart?.notificationTurn
+  ) {
+    emitServerMessage(proc, {
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-1',
+        turn: nativeTurnStart.notificationTurn,
+      },
+    });
+    await flush();
+  }
 
   return { turnPromise };
 }
@@ -674,12 +863,53 @@ async function completeImmediateTurnRestartTool(
   await flush();
 }
 
-function completeRootTurn(proc: MockChildProcess, turnId = 'turn-1'): void {
+function completeRootTurn(
+  proc: MockChildProcess,
+  turnId = 'turn-1',
+  nativeTiming?: {
+    completedAt?: number | null;
+    durationMs?: number | null;
+  },
+): void {
   emitServerMessage(proc, {
     method: 'turn/completed',
     params: {
       threadId: 'thread-1',
-      turn: { id: turnId, items: [], status: 'completed', error: null },
+      turn: {
+        id: turnId,
+        items: [],
+        status: 'completed',
+        error: null,
+        ...nativeTiming,
+      },
+    },
+  });
+}
+
+async function startObservedRootRun(
+  client: CodexAppServerClient,
+  turnId: string,
+  threadId = 'thread-1',
+  items: readonly Record<string, unknown>[] = [],
+): Promise<void> {
+  await client.handleConnectionNotification('turn/started', {
+    params: {
+      threadId,
+      turn: { id: turnId, items, status: 'inProgress' },
+    },
+  });
+}
+
+async function completeObservedRootRun(
+  client: CodexAppServerClient,
+  turnId: string,
+  status: 'completed' | 'interrupted' = 'completed',
+  threadId = 'thread-1',
+): Promise<void> {
+  await client.handleConnectionNotification('turn/completed', {
+    params: {
+      threadId,
+      turn: { id: turnId, items: [], status, error: null },
     },
   });
 }
@@ -691,20 +921,66 @@ interface CodexTurnTestResult {
   proposedPlanText?: string;
 }
 
+interface NativeTurnStartFixture {
+  responseTurn: Record<string, unknown>;
+  notificationTurn?: Record<string, unknown>;
+  notificationFirst?: boolean;
+}
+
+type TurnLifecycleObservation =
+  | {
+      type: 'turn-started';
+      threadId: string;
+      turnId: string;
+      origin: 'user' | 'autonomous' | 'restart';
+      submissionId?: string;
+      userMessageId?: string;
+      merged?: boolean;
+    }
+  | {
+      type: 'input-bound';
+      threadId: string;
+      turnId: string;
+      submissionId?: string;
+      userMessageId?: string;
+    }
+  | {
+      type: 'turn-completed';
+      threadId: string;
+      turnId: string;
+      status: 'completed' | 'failed' | 'interrupted';
+      error?: string;
+    }
+  | {
+      type: 'session-state';
+      threadId: string;
+      turnId?: string;
+      state: 'running' | 'requires_action' | 'idle' | 'reconnecting';
+    };
+
+type TurnStartOptionsWithShadowIds = Parameters<
+  CodexAppServerClient['startTurn']
+>[0] & {
+  submissionId?: string;
+  userMessageId?: string;
+  clientUserMessageId?: string;
+};
+
 async function startTurnUntilThreadRequest(
   client: CodexAppServerClient,
   proc: MockChildProcess,
-): Promise<{
-  turnPromise: Promise<unknown>;
-  threadRequest: Record<string, unknown>;
-}> {
-  const turnPromise = client.startTurn({
+  options: TurnStartOptionsWithShadowIds = {
     text: 'Run',
     cwd: '/tmp/repo',
     model: 'gpt-6-sol',
     thinkingLevel: 'high',
     planMode: false,
-  });
+  },
+): Promise<{
+  turnPromise: Promise<unknown>;
+  threadRequest: Record<string, unknown>;
+}> {
+  const turnPromise = client.startTurn(options);
 
   await flush();
   emitServerMessage(proc, {
@@ -761,7 +1037,10 @@ describe('CodexAppServerClient', () => {
     hiddenConfigReads.realIdsByVisibleId.clear();
     deferredToolsReloadCoordinator.resetForTests();
     setPlatform('darwin');
-    randomUUIDMock.mockReturnValue('generated-request-id');
+    // Keep the stable synthetic id asserted by legacy ask-user tests at this mock boundary.
+    randomUUIDMock.mockReturnValue(
+      'generated-request-id' as ReturnType<typeof NodeCrypto.randomUUID>,
+    );
     proc = new MockChildProcess();
     spawnMock.mockReturnValue(proc);
   });
@@ -778,6 +1057,450 @@ describe('CodexAppServerClient', () => {
     if (originalPlatformDescriptor) {
       Object.defineProperty(process, 'platform', originalPlatformDescriptor);
     }
+  });
+
+  it('forwards ingestion lag changes to the optional client callback', () => {
+    const change: CodexIngestionLagChange = {
+      outcome: 'entered',
+      lagMs: 5_001,
+      peakLagMs: 5_250,
+      episodeMs: 250,
+      thresholdMs: 5_000,
+      source: 'receipt',
+    };
+    const onIngestionLagChange = jest.fn();
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: () => null,
+      onIngestionLagChange,
+    });
+
+    try {
+      client.handleIngestionLagChange(change);
+      expect(onIngestionLagChange).toHaveBeenCalledWith(change);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('forwards ingestion lag samples to the optional client callback only', () => {
+    const sample: CodexIngestionLagSample = {
+      lagMs: 5_100,
+      source: 'receipt',
+      sampledAtMs: Date.now(),
+      catchingUp: true,
+    };
+    const onEvent = jest.fn();
+    const onIngestionLagSample = jest.fn();
+    const clientOptions = {
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent,
+      getWindow: () => null,
+      onIngestionLagSample,
+    };
+    const client = new CodexAppServerClient(clientOptions);
+
+    try {
+      expect(dispatchIngestionLagSample(client, sample)).toBe(true);
+      expect(onIngestionLagSample).toHaveBeenCalledWith(sample);
+      expect(onEvent).not.toHaveBeenCalled();
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('isolates throwing and rejecting ingestion lag sample callbacks', async () => {
+    const sample: CodexIngestionLagSample = {
+      lagMs: 5_100,
+      source: 'provider',
+      sampledAtMs: Date.now(),
+      catchingUp: true,
+    };
+    let callbackCount = 0;
+    const onIngestionLagSample = jest.fn((): void | Promise<void> => {
+      callbackCount += 1;
+      if (callbackCount === 1) throw new Error('synchronous observer failure');
+      return Promise.reject(new Error('asynchronous observer failure'));
+    });
+    const clientOptions = {
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: () => null,
+      onIngestionLagSample,
+    };
+    const client = new CodexAppServerClient(clientOptions);
+
+    try {
+      expect(dispatchIngestionLagSample(client, sample)).toBe(true);
+      expect(
+        dispatchIngestionLagSample(client, {
+          ...sample,
+          sampledAtMs: sample.sampledAtMs + 1,
+        }),
+      ).toBe(true);
+      await flush();
+      expect(onIngestionLagSample).toHaveBeenCalledTimes(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('returns the connection ingestion lag snapshot', () => {
+    const snapshot: CodexIngestionLagSnapshot = {
+      lagMs: 5_001,
+      catchingUp: true,
+      source: 'provider',
+    };
+    const ingestionLag = jest
+      .spyOn(CodexAppServerConnection.prototype, 'ingestionLag')
+      .mockReturnValue(snapshot);
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: () => null,
+    });
+
+    try {
+      expect(client.getIngestionLag()).toEqual(snapshot);
+      expect(ingestionLag).toHaveBeenCalledWith(client);
+    } finally {
+      client.dispose();
+      ingestionLag.mockRestore();
+    }
+  });
+
+  it('isolates a throwing ingestion lag callback from the connection owner', () => {
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: () => null,
+      onIngestionLagChange: () => {
+        throw new Error('observer failure');
+      },
+    });
+
+    try {
+      expect(() =>
+        client.handleIngestionLagChange({
+          outcome: 'drained',
+          lagMs: 0,
+          peakLagMs: 5_250,
+          episodeMs: 1_500,
+          thresholdMs: 5_000,
+          source: 'provider',
+        }),
+      ).not.toThrow();
+    } finally {
+      client.dispose();
+    }
+  });
+
+  describe('dynamic call leases', () => {
+    async function fixture() {
+      const signals = new Map<string, AbortSignal | undefined>();
+      const releases = new Map<
+        string,
+        (value: { success: boolean; contentItems: [] }) => void
+      >();
+      let state = createEmptyTranscriptReducerState();
+      const client = new CodexAppServerClient({
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sessionKey: 'project/worktree/chat',
+        getWindow: () => null,
+        onEvent: (event) => {
+          if (!isRecord(event) || event.type !== 'codex') return;
+          const payload: unknown = event.event;
+          if (isRecord(payload))
+            state = applyCodexTranscriptEvent(state, payload, {
+              now: Date.now(),
+              createMessageId: () => 'message',
+              childToolLiveness: { kind: 'unknown' },
+            });
+        },
+        dynamicToolCallHandler: (call, options) => {
+          signals.set(call.callId, options?.signal);
+          return new Promise((resolve) => {
+            releases.set(call.callId, resolve);
+          });
+        },
+      });
+      const { turnPromise } = await startActiveTurn(client, proc);
+      collectClientMessages(proc);
+      function call(
+        id = 'call',
+        threadId = 'thread-1',
+        turnId = 'turn-1',
+        tool = 'canopy_dispatch_action',
+      ) {
+        const params = {
+          threadId,
+          turnId,
+          callId: id,
+          namespace: null,
+          tool,
+          arguments: {},
+        };
+        emitServerMessage(proc, {
+          method: 'item/started',
+          params: {
+            threadId,
+            turnId,
+            item: {
+              ...params,
+              id,
+              type: 'dynamicToolCall',
+              status: 'inProgress',
+              contentItems: [],
+              success: null,
+            },
+          },
+        });
+        emitServerMessage(proc, { id, method: 'item/tool/call', params });
+      }
+      return {
+        client,
+        turnPromise,
+        signals,
+        releases,
+        call,
+        state: () => state,
+      };
+    }
+
+    it('aborts a provider-resolved call without replying', async () => {
+      const f = await fixture();
+      f.call();
+      await flush();
+      emitServerMessage(proc, {
+        method: 'serverRequest/resolved',
+        params: { threadId: 'thread-1', requestId: 'call' },
+      });
+      await flush();
+      try {
+        expect(f.signals.get('call')?.aborted).toBe(true);
+        f.releases.get('call')?.({ success: true, contentItems: [] });
+        await flush();
+        expect(
+          collectClientMessages(proc).filter((m) => m.id === 'call'),
+        ).toEqual([]);
+      } finally {
+        f.releases.get('call')?.({ success: true, contentItems: [] });
+        completeRootTurn(proc);
+        await f.turnPromise;
+        f.client.dispose();
+      }
+    });
+
+    it.each([
+      'canopy_dispatch_action',
+      'canopy_ask_user_question',
+      APP_ADVISOR_TOOL_REGISTRY.ask_user_question.codexToolName,
+    ])(
+      'fails %s at its budget once and projects provider failure onto the row',
+      async (tool) => {
+        const f = await fixture();
+        jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+        try {
+          f.call('call', 'thread-1', 'turn-1', tool);
+          await flush();
+          const budget =
+            tool === 'canopy_ask_user_question' ||
+            tool === APP_ADVISOR_TOOL_REGISTRY.ask_user_question.codexToolName
+              ? ASK_USER_HTTP_TIMEOUT_MS
+              : CANOPY_MCP_TOOL_TIMEOUT_MS;
+          await jest.advanceTimersByTimeAsync(budget - 1);
+          expect(f.signals.get('call')?.aborted).toBe(false);
+          expect(
+            collectClientMessages(proc).filter((m) => m.id === 'call'),
+          ).toEqual([]);
+          await jest.advanceTimersByTimeAsync(1);
+          expect(f.signals.get('call')?.aborted).toBe(true);
+          const replies = collectClientMessages(proc).filter(
+            (m) => m.id === 'call',
+          );
+          expect(replies).toMatchObject([
+            {
+              result: {
+                success: false,
+                contentItems: [
+                  {
+                    text: expect.stringMatching(
+                      /time limit.*effects may be incomplete/i,
+                    ),
+                  },
+                ],
+              },
+            },
+          ]);
+          expect(replies).toHaveLength(1);
+          f.releases.get('call')?.({ success: true, contentItems: [] });
+          await flush();
+          expect(
+            collectClientMessages(proc).filter((m) => m.id === 'call'),
+          ).toEqual([]);
+          // The normal provider acknowledgement, not a synthetic replacement.
+          emitServerMessage(proc, {
+            method: 'item/completed',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              item: {
+                type: 'dynamicToolCall',
+                id: 'call',
+                namespace: null,
+                tool,
+                arguments: {},
+                status: 'completed',
+                ...(replies[0]?.result as object),
+              },
+            },
+          });
+          await flush();
+          expect(f.state().messages.flatMap((m) => m.blocks)).toContainEqual(
+            expect.objectContaining({
+              type: 'tool_result',
+              toolUseId: 'codex-call',
+              isError: true,
+            }),
+          );
+        } finally {
+          jest.useRealTimers();
+          f.releases.get('call')?.({ success: true, contentItems: [] });
+          completeRootTurn(proc);
+          await f.turnPromise;
+          f.client.dispose();
+        }
+      },
+    );
+
+    it.each(['root', 'child', 'fatal-error'])(
+      'aborts only the matching %s terminal thread at read before transcript drain',
+      async (control) => {
+        const f = await fixture();
+        emitServerMessage(proc, {
+          method: 'thread/started',
+          params: {
+            thread: {
+              id: 'child',
+              source: {
+                subAgent: { thread_spawn: { parent_thread_id: 'thread-1' } },
+              },
+            },
+          },
+        });
+        await flush();
+        f.call();
+        f.call('child-call', 'child', 'child-turn');
+        await flush();
+        let release: () => void = () => undefined;
+        const drain = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        void f.turnPromise.catch(() => undefined);
+        const targetThread = control === 'child' ? 'child' : 'thread-1';
+        const targetTurn = control === 'child' ? 'child-turn' : 'turn-1';
+        const terminal = f.client.handleConnectionNotification(
+          control === 'fatal-error' ? 'error' : 'turn/completed',
+          {
+            params: {
+              threadId: targetThread,
+              ...(control === 'fatal-error'
+                ? {
+                    turnId: targetTurn,
+                    willRetry: false,
+                    error: { message: 'failed' },
+                  }
+                : {
+                    turn: {
+                      id: targetTurn,
+                      items: [],
+                      status: 'completed',
+                      error: null,
+                    },
+                  }),
+            },
+          },
+          drain,
+        );
+        try {
+          expect(f.signals.get('call')?.aborted).toBe(control !== 'child');
+          expect(f.signals.get('child-call')?.aborted).toBe(
+            control === 'child',
+          );
+          release();
+          await terminal;
+          const cancelledId = control === 'child' ? 'child-call' : 'call';
+          expect(f.state().messages.flatMap((m) => m.blocks)).toContainEqual(
+            expect.objectContaining({
+              type: 'tool_result',
+              toolUseId: `codex-${cancelledId}`,
+              isError: true,
+            }),
+          );
+          // No provider completion arrived before the terminal. A stale later
+          // provider success must not replace the synthetic open-row failure.
+          emitServerMessage(proc, {
+            method: 'item/completed',
+            params: {
+              threadId: targetThread,
+              turnId: targetTurn,
+              item: {
+                type: 'dynamicToolCall',
+                id: cancelledId,
+                namespace: null,
+                tool: 'canopy_dispatch_action',
+                arguments: {},
+                status: 'completed',
+                success: true,
+                contentItems: [],
+              },
+            },
+          });
+          await flush();
+          expect(f.state().messages.flatMap((m) => m.blocks)).toContainEqual(
+            expect.objectContaining({
+              type: 'tool_result',
+              toolUseId: `codex-${cancelledId}`,
+              isError: true,
+            }),
+          );
+        } finally {
+          release();
+          await terminal;
+          if (control !== 'root') completeRootTurn(proc);
+          await f.turnPromise.catch(() => undefined);
+          f.releases.forEach((resolve) =>
+            resolve({ success: true, contentItems: [] }),
+          );
+          await flush();
+          f.client.dispose();
+        }
+      },
+    );
   });
 
   it('builds pool keys exclusively from immutable spawn profiles', () => {
@@ -1046,6 +1769,7 @@ describe('CodexAppServerClient', () => {
         text: 'Run',
         cwd: '/tmp/repo',
         model: 'gpt-6-sol',
+        thinkingLevel: 'medium',
         planMode: false,
       });
       // Observe rejection even when the behavioral assertion below is red.
@@ -1571,24 +2295,40 @@ describe('CodexAppServerClient', () => {
       thinkingLevel: 'high',
       planMode: false,
     });
-    const initializeRequest = await waitForClientRequest(proc, 'initialize');
-    emitServerMessage(proc, {
-      id: initializeRequest.id,
-      result: { userAgent: 'ua', codexHome },
-    });
-    const startRequest = await waitForClientRequest(proc, 'thread/start');
-    emitServerMessage(proc, {
-      id: startRequest.id,
-      result: makeThreadResult('thread-materialized'),
-    });
-    const injectRequest = await waitForClientRequest(
-      proc,
-      'thread/inject_items',
-    );
-    const injectedItems = getRequestParams(injectRequest).items;
-    emitServerMessage(proc, { id: injectRequest.id, result: {} });
-    await flush();
-    client.dispose();
+    // thread/start goes out only after the client reads the rollout from disk,
+    // which can take longer than a wall-clock deadline in the full suite. If a
+    // wait still fails, dispose and let the turn settle so it cannot outlive
+    // this spec and reject while a later spec runs.
+    void turnPromise.catch(() => undefined);
+    let injectedItems: unknown;
+    try {
+      const initializeRequest = await waitForClientRequestUnderLoad(
+        proc,
+        'initialize',
+      );
+      emitServerMessage(proc, {
+        id: initializeRequest.id,
+        result: { userAgent: 'ua', codexHome },
+      });
+      const startRequest = await waitForClientRequestUnderLoad(
+        proc,
+        'thread/start',
+      );
+      emitServerMessage(proc, {
+        id: startRequest.id,
+        result: makeThreadResult('thread-materialized'),
+      });
+      const injectRequest = await waitForClientRequestUnderLoad(
+        proc,
+        'thread/inject_items',
+      );
+      injectedItems = getRequestParams(injectRequest).items;
+      emitServerMessage(proc, { id: injectRequest.id, result: {} });
+      await flush();
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
     await expect(turnPromise).rejects.toThrow('session_destroyed');
     expect(injectedItems).toEqual([
       {
@@ -3348,6 +4088,7 @@ describe('CodexAppServerClient', () => {
         normalizedArguments: '{"labels":["bug"],"title":"Retry safety"}',
       },
       'mcp_tool_call',
+      expect.any(AbortSignal),
     );
     expect(collectClientMessages(proc)).toContainEqual({
       id: 'elicitation-1',
@@ -5204,7 +5945,9 @@ describe('CodexAppServerClient', () => {
         chatId: 'chat',
         sessionKey: 'project/worktree/chat',
         initialThreadId: 'thread-1',
-        onEvent: (event) => events.push(event),
+        onEvent: (event) => {
+          events.push(event);
+        },
         getWindow: (): null => null,
         ...(changedProfile
           ? { extraEnv: { CANOPY_TEST_PROFILE: 'replacement' } }
@@ -6162,6 +6905,9 @@ describe('CodexAppServerClient', () => {
       const approvalSession: ApprovalSessionHandle = {
         check: jest.fn(() => new Promise(() => {})),
         setMode: jest.fn(),
+        reevaluatePendingApprovals: jest.fn<Promise<void>, []>(() =>
+          Promise.resolve(),
+        ),
         dispose: jest.fn(),
       };
       const client = await startClientTurnForApproval(approvalSession);
@@ -6257,6 +7003,7 @@ describe('CodexAppServerClient', () => {
             inputSummary: 'Send input to the running test watcher',
           },
           toolUseId: 'codex-stdin-callback-1',
+          signal: expect.any(AbortSignal),
         },
       );
       expect(collectClientMessages(proc)).toContainEqual({
@@ -6311,6 +7058,37 @@ describe('CodexAppServerClient', () => {
       });
     });
 
+    it('keeps a native safety denial closed when the provider response has no denial-text field', async () => {
+      const message =
+        'Blocked by a safety rule (force-push). This call cannot be approved from a prompt. Do not retry or repackage the blocked operation. Choose a safe alternative or explain the block to the user.';
+      const approvalSession = createFakeApprovalSession({
+        decision: 'deny',
+        message,
+      });
+      await startClientTurnForApproval(approvalSession);
+      emitServerMessage(proc, {
+        id: 'native-safety-denial',
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          itemId: 'force-push',
+          command: 'git push --force origin HEAD',
+        },
+      });
+      await flush();
+      expect(approvalSession.check).toHaveBeenCalledWith(
+        { kind: 'command', command: 'git push --force origin HEAD' },
+        expect.objectContaining({ toolUseId: 'codex-force-push' }),
+      );
+      // The pinned native response contains only a decision. Do not invent a
+      // message field or replace a denial with a JSON-RPC error/extra user turn.
+      expect(collectClientMessages(proc)).toContainEqual({
+        id: 'native-safety-denial',
+        result: { decision: 'decline' },
+      });
+    });
+
     it('invalidates pending approvals before deny-and-stop interrupts sibling requests', async () => {
       const check = jest.fn(() =>
         Promise.resolve({ decision: 'deny' as const, stopTurn: true }),
@@ -6319,6 +7097,9 @@ describe('CodexAppServerClient', () => {
       const approvalSession: ApprovalSessionHandle = {
         check,
         setMode: jest.fn(),
+        reevaluatePendingApprovals: jest.fn<Promise<void>, []>(() =>
+          Promise.resolve(),
+        ),
         invalidatePending,
         dispose: jest.fn(),
       };
@@ -6770,6 +7551,9 @@ describe('CodexAppServerClient', () => {
           Promise.reject(new Error('rules file unreadable')),
         ),
         setMode: jest.fn(),
+        reevaluatePendingApprovals: jest.fn<Promise<void>, []>(() =>
+          Promise.resolve(),
+        ),
         dispose: jest.fn(),
       };
       await startClientTurnForApproval(approvalSession);
@@ -7086,6 +7870,9 @@ describe('CodexAppServerClient', () => {
       const approvalSession: ApprovalSessionHandle = {
         check: jest.fn(() => new Promise(() => {})),
         setMode: jest.fn(),
+        reevaluatePendingApprovals: jest.fn<Promise<void>, []>(() =>
+          Promise.resolve(),
+        ),
         dispose: jest.fn(),
       };
       const client = await startClientTurnForApproval(approvalSession);
@@ -8071,6 +8858,7 @@ describe('CodexAppServerClient', () => {
           gatewayOnly: false,
           contextWindow: 200_000,
           supportsPromptCaching: false,
+          family: 'gpt',
           supportedThinkingLevels: ['low', 'medium'],
           toolSchemaProfile: 'standard',
         },
@@ -11759,7 +12547,11 @@ describe('CodexAppServerClient', () => {
     await flush();
     completeRootTurn(proc, 'turn-1');
     await turnPromise;
-    expect(receipt.kind).toBe('rejected');
+    expect(receipt).toMatchObject({
+      kind: 'rejected',
+      fallback: 'ordinary',
+      refusal: chatInputRefusal('delivery-backlog'),
+    });
     expect(onEvent).toHaveBeenCalledWith(
       expect.objectContaining({ phase: 'picked-up', attemptId: 'input-0' }),
     );
@@ -11814,6 +12606,86 @@ describe('CodexAppServerClient', () => {
     ).resolves.toBe(false);
   });
 
+  it('returns a steering target only for an active steerable root turn', async () => {
+    const client = createSteeringClient();
+    expect(client.getSteeringTarget()).toBeUndefined();
+
+    await withActiveTurn(client, () => {
+      expect(client.getSteeringTarget()).toEqual({
+        sessionId: 'thread-1',
+        turnId: 'turn-1',
+      });
+    });
+
+    expect(client.getSteeringTarget()).toBeUndefined();
+  });
+
+  it.each([
+    ['thread', { sessionId: 'thread-old', turnId: 'turn-1' }],
+    ['turn', { sessionId: 'thread-1', turnId: 'turn-old' }],
+  ] as const)(
+    'refuses a steering target that drifted in its %s without sending a request',
+    async (_kind, target) => {
+      const onEvent = jest.fn();
+      const client = createSteeringClient(onEvent);
+      await withActiveTurn(client, async () => {
+        await expect(
+          client.submitSteeringInput('Full scope', 'drifted', target),
+        ).resolves.toEqual({
+          kind: 'rejected',
+          attemptId: 'drifted',
+          reason: 'The active turn no longer accepts steering',
+          fallback: 'ordinary',
+          refusal: chatInputRefusal('no-active-turn'),
+        });
+        expect(
+          collectClientMessages(proc).filter(
+            (message) => message.method === 'turn/steer',
+          ),
+        ).toEqual([]);
+        expect(
+          onEvent.mock.calls.filter(
+            ([event]) =>
+              isRecord(event) &&
+              event.type === 'canopy_input_delivery' &&
+              (event.phase === 'accepted' || event.phase === 'unknown'),
+          ),
+        ).toEqual([]);
+      });
+    },
+  );
+
+  it('steers when the captured target still matches the active root turn', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      const target = client.getSteeringTarget();
+      expect(target).toEqual({ sessionId: 'thread-1', turnId: 'turn-1' });
+      const steering = client.submitSteeringInput(
+        'Full scope',
+        'unchanged',
+        target,
+      );
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      expect(steer.params).toMatchObject({
+        threadId: 'thread-1',
+        expectedTurnId: 'turn-1',
+        clientUserMessageId: 'unchanged',
+      });
+      emitServerMessage(proc, { id: steer.id, result: { turnId: 'turn-1' } });
+      await expect(steering).resolves.toMatchObject({ kind: 'accepted' });
+      expect(
+        onEvent.mock.calls.filter(
+          ([event]) =>
+            isRecord(event) &&
+            event.type === 'canopy_input_delivery' &&
+            event.phase === 'accepted' &&
+            event.attemptId === 'unchanged',
+        ),
+      ).toHaveLength(1);
+    });
+  });
+
   it('does not project a malformed provider item id into delivery events', async () => {
     const onEvent = jest.fn<void, [unknown]>();
     const client = new CodexAppServerClient({
@@ -11857,28 +12729,430 @@ describe('CodexAppServerClient', () => {
     expect(pickup?.[0]).not.toHaveProperty('itemId');
   });
 
-  it.each([
-    'no active turn to steer',
-    'expected active turn id `turn-1` but found `turn-2`',
-    'cannot steer a compact turn',
-  ])('does not deliver a rejected user steer twice: %s', async (message) => {
-    const client = new CodexAppServerClient({
+  // Codex 0.159.0 `turn/steer` refusals; provenance in steer-refusal.ts.
+  const steerRefusals: ReadonlyArray<[string, ChatInputRefusalCode]> = [
+    ['no active turn to steer', 'no-active-turn'],
+    ['expected active turn id `turn-1` but found `turn-2`', 'turn-id-mismatch'],
+    ['cannot steer a compact turn', 'compact-turn'],
+    ['cannot steer a review turn', 'review-turn'],
+    ['active turn uses a different output schema', 'output-schema-mismatch'],
+    ['expectedTurnId must not be empty', 'empty-expected-turn-id'],
+    ['input must not be empty', 'empty-input'],
+    ['Server is draining; retry after reconnecting', 'not-steerable'],
+    ['thread not found: thread-1', 'not-steerable'],
+  ];
+
+  function createSteeringClient(
+    onEvent: jest.Mock = jest.fn(),
+  ): CodexAppServerClient {
+    return new CodexAppServerClient({
       cwd: '/tmp/repo',
       projectId: 'project',
       worktreeId: 'worktree',
       chatId: 'chat',
       sessionKey: 'project/worktree/chat',
-      onEvent: jest.fn(),
+      onEvent,
       getWindow: (): null => null,
     });
+  }
+
+  function unknownDeliveryEvents(
+    onEvent: jest.Mock,
+  ): Array<Record<string, unknown>> {
+    return onEvent.mock.calls
+      .map(([event]: unknown[]) => event)
+      .filter(
+        (event): event is Record<string, unknown> =>
+          isRecord(event) &&
+          event.type === 'canopy_input_delivery' &&
+          event.phase === 'unknown',
+      );
+  }
+
+  /** Settles the root turn even when `body` fails, so no rejection leaks. */
+  async function withActiveTurn(
+    client: CodexAppServerClient,
+    body: () => void | Promise<void>,
+  ): Promise<void> {
     const { turnPromise } = await startActiveTurn(client, proc);
-    const answer = client.steerActiveTurn('Full scope', 'answer-message');
-    const expectation = expect(answer).resolves.toBe(false);
-    const steer = await waitForClientRequest(proc, 'turn/steer');
-    emitServerMessage(proc, { id: steer.id, error: { code: -32600, message } });
-    completeRootTurn(proc, 'turn-1');
-    await turnPromise;
-    await expectation;
+    try {
+      await body();
+    } finally {
+      jest.useRealTimers();
+      completeRootTurn(proc, 'turn-1');
+      await turnPromise;
+    }
+  }
+
+  it.each(steerRefusals)(
+    'does not deliver a rejected user steer twice: %s',
+    async (message) => {
+      const client = createSteeringClient();
+      const { turnPromise } = await startActiveTurn(client, proc);
+      const answer = client.steerActiveTurn('Full scope', 'answer-message');
+      const expectation = expect(answer).resolves.toBe(false);
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      emitServerMessage(proc, {
+        id: steer.id,
+        error: { code: -32600, message },
+      });
+      completeRootTurn(proc, 'turn-1');
+      await turnPromise;
+      await expectation;
+    },
+  );
+
+  it.each(steerRefusals)(
+    'rejects a refused steering submission for ordinary delivery: %s',
+    async (message, code) => {
+      const onEvent = jest.fn();
+      const client = createSteeringClient(onEvent);
+      await withActiveTurn(client, async () => {
+        const steering = client.submitSteeringInput('Full scope', 'refused');
+        const steer = await waitForClientRequest(proc, 'turn/steer');
+        emitServerMessage(proc, {
+          id: steer.id,
+          error: { code: -32600, message },
+        });
+        await expect(steering).resolves.toEqual({
+          kind: 'rejected',
+          attemptId: 'refused',
+          reason: 'The active turn no longer accepts steering',
+          fallback: 'ordinary',
+          refusal: chatInputRefusal(code),
+        });
+        expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+
+        // The correlation was released, so the identity can be steered again.
+        const retry = client.submitSteeringInput('Full scope', 'refused');
+        const retrySteer = await waitForClientRequest(proc, 'turn/steer');
+        emitServerMessage(proc, {
+          id: retrySteer.id,
+          result: { turnId: 'turn-1' },
+        });
+        await expect(retry).resolves.toMatchObject({ kind: 'accepted' });
+      });
+    },
+  );
+
+  it('rejects a steering submission without an active turn as not steerable', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await expect(
+      client.submitSteeringInput('Full scope', 'idle'),
+    ).resolves.toEqual({
+      kind: 'rejected',
+      attemptId: 'idle',
+      reason: 'The active turn no longer accepts steering',
+      fallback: 'ordinary',
+      refusal: chatInputRefusal('not-steerable'),
+    });
+    expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+  });
+
+  it('reports a reused steering identity as a duplicate attempt', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      const first = client.submitSteeringInput('Full scope', 'reused');
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      emitServerMessage(proc, { id: steer.id, result: { turnId: 'turn-1' } });
+      await expect(first).resolves.toMatchObject({ kind: 'accepted' });
+
+      await expect(
+        client.submitSteeringInput('Full scope', 'reused'),
+      ).resolves.toEqual({
+        kind: 'unknown',
+        attemptId: 'reused',
+        reason: 'This submission identity was already used',
+        failure: chatInputDeliveryFailure('duplicate-attempt'),
+      });
+      // The original attempt is still pending; it must not be marked unknown.
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+    });
+  });
+
+  function expectUnconfirmedSteer(
+    onEvent: jest.Mock,
+    admission: unknown,
+    attemptId: string,
+    code: ChatInputDeliveryFailureCode,
+  ): void {
+    const failure = chatInputDeliveryFailure(code);
+    expect(admission).toEqual({
+      kind: 'unknown',
+      attemptId,
+      reason:
+        'Delivery was not confirmed. This message will not be resent automatically.',
+      failure,
+    });
+    expect(unknownDeliveryEvents(onEvent)).toEqual([
+      expect.objectContaining({ attemptId, providerTurnId: 'turn-1', failure }),
+    ]);
+  }
+
+  it('reports a novel steering error as an unconfirmed transport error', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      const steering = client.submitSteeringInput('Full scope', 'novel');
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      emitServerMessage(proc, {
+        id: steer.id,
+        error: { code: -32603, message: 'failed to steer turn: agent died' },
+      });
+      expectUnconfirmedSteer(
+        onEvent,
+        await steering,
+        'novel',
+        'transport-error',
+      );
+    });
+  });
+
+  it('keeps a timed-out correlated steer pending without an unknown event', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const steering = client.submitSteeringInput('Full scope', 'slow');
+      await waitForClientRequest(proc, 'turn/steer');
+      await jest.advanceTimersByTimeAsync(30_000);
+      const result = await steering;
+      expect(result).toMatchObject({ kind: 'pending', attemptId: 'slow' });
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+      if (result.kind !== 'pending' || !result.settlement)
+        throw new Error('Expected a pending steering settlement');
+      expect(typeof result.settlement.then).toBe('function');
+    });
+  });
+
+  it('settles a late steer refusal for ordinary delivery', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const steering = client.submitSteeringInput('Full scope', 'late-refusal');
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      await jest.advanceTimersByTimeAsync(30_000);
+      const result = await steering;
+      if (result.kind !== 'pending' || !result.settlement)
+        throw new Error('Expected a pending steering settlement');
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+
+      emitServerMessage(proc, {
+        id: steer.id,
+        error: { code: -32600, message: 'no active turn to steer' },
+      });
+      await expect(result.settlement).resolves.toEqual({
+        kind: 'rejected',
+        attemptId: 'late-refusal',
+        reason: 'The active turn no longer accepts steering',
+        fallback: 'ordinary',
+        refusal: chatInputRefusal('no-active-turn'),
+      });
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+    });
+  });
+
+  it('settles late steer success as accepted and emits accepted delivery', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const steering = client.submitSteeringInput('Full scope', 'late-success');
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      await jest.advanceTimersByTimeAsync(30_000);
+      const result = await steering;
+      if (result.kind !== 'pending' || !result.settlement)
+        throw new Error('Expected a pending steering settlement');
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+
+      emitServerMessage(proc, {
+        id: steer.id,
+        result: { turnId: 'turn-1' },
+      });
+      await expect(result.settlement).resolves.toEqual({
+        kind: 'accepted',
+        attemptId: 'late-success',
+        providerTurnId: 'turn-1',
+      });
+      expect(
+        onEvent.mock.calls.filter(
+          ([event]) =>
+            isRecord(event) &&
+            event.type === 'canopy_input_delivery' &&
+            event.phase === 'accepted' &&
+            event.attemptId === 'late-success',
+        ),
+      ).toHaveLength(1);
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+    });
+  });
+
+  it('settles pickup before the late answer as accepted exactly once', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const steering = client.submitSteeringInput('Full scope', 'picked-up');
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      await jest.advanceTimersByTimeAsync(30_000);
+      const result = await steering;
+      if (result.kind !== 'pending' || !result.settlement)
+        throw new Error('Expected a pending steering settlement');
+
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'picked-up-item',
+            type: 'userMessage',
+            clientId: 'picked-up',
+            content: [],
+          },
+        },
+      });
+      await flush();
+      await expect(result.settlement).resolves.toEqual({
+        kind: 'accepted',
+        attemptId: 'picked-up',
+        providerTurnId: 'turn-1',
+      });
+      emitServerMessage(proc, {
+        id: steer.id,
+        error: { code: -32600, message: 'no active turn to steer' },
+      });
+      await flush();
+      expect(
+        onEvent.mock.calls.filter(
+          ([event]) =>
+            isRecord(event) &&
+            event.type === 'canopy_input_delivery' &&
+            event.phase === 'accepted' &&
+            event.attemptId === 'picked-up',
+        ),
+      ).toHaveLength(1);
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+    });
+  });
+
+  it('settles a retained steer timeout as an unconfirmed steer timeout', async () => {
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    await withActiveTurn(client, async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const steering = client.submitSteeringInput('Full scope', 'expired');
+      await waitForClientRequest(proc, 'turn/steer');
+      await jest.advanceTimersByTimeAsync(30_000);
+      const result = await steering;
+      if (result.kind !== 'pending' || !result.settlement)
+        throw new Error('Expected a pending steering settlement');
+      expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+
+      await jest.advanceTimersByTimeAsync(600_000);
+      expectUnconfirmedSteer(
+        onEvent,
+        await result.settlement,
+        'expired',
+        'steer-timeout',
+      );
+    });
+  });
+
+  it('keeps uncorrelated internal steers on the hard request deadline', async () => {
+    const client = createSteeringClient();
+    await withActiveTurn(client, async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const steering = client.steerActiveTurn('Internal MCP refresh');
+      await waitForClientRequest(proc, 'turn/steer');
+      const rejected = expect(steering).rejects.toMatchObject({
+        name: 'CodexAppServerRequestTimeoutError',
+      });
+      await jest.advanceTimersByTimeAsync(30_000);
+      await rejected;
+    });
+  });
+
+  it('reports a process exit during steering as an unconfirmed process exit', async () => {
+    const firstProc = new MockChildProcess();
+    const secondProc = new MockChildProcess();
+    spawnMock
+      .mockReset()
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    const { turnPromise } = await startActiveTurn(client, firstProc);
+    // Teardown rejects the turn if an assertion below fails first.
+    void turnPromise.catch(() => undefined);
+    const steering = client.submitSteeringInput('Full scope', 'exited');
+    await waitForClientRequest(firstProc, 'turn/steer');
+    firstProc.emit('exit', 0, null);
+    expectUnconfirmedSteer(onEvent, await steering, 'exited', 'process-exit');
+
+    const initialize = await waitForClientRequest(secondProc, 'initialize');
+    emitServerMessage(secondProc, {
+      id: initialize.id,
+      result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+    });
+    const resume = await waitForClientRequest(secondProc, 'thread/resume');
+    emitServerMessage(secondProc, {
+      id: resume.id,
+      result: makeThreadResult('thread-1', [
+        { id: 'turn-1', items: [], status: 'completed', error: null },
+      ]),
+    });
+    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('settles a timed-out steering submission as process-exit unknown', async () => {
+    const firstProc = new MockChildProcess();
+    const secondProc = new MockChildProcess();
+    spawnMock
+      .mockReset()
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const onEvent = jest.fn();
+    const client = createSteeringClient(onEvent);
+    const { turnPromise } = await startActiveTurn(client, firstProc);
+    void turnPromise.catch(() => undefined);
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const steering = client.submitSteeringInput(
+      'Full scope',
+      'exit-after-timeout',
+    );
+    await waitForClientRequest(firstProc, 'turn/steer');
+    await jest.advanceTimersByTimeAsync(30_000);
+    const result = await steering;
+    if (result.kind !== 'pending' || !result.settlement)
+      throw new Error('Expected a pending steering settlement');
+    expect(unknownDeliveryEvents(onEvent)).toEqual([]);
+
+    firstProc.emit('exit', 0, null);
+    expectUnconfirmedSteer(
+      onEvent,
+      await result.settlement,
+      'exit-after-timeout',
+      'process-exit',
+    );
+
+    jest.useRealTimers();
+    const initialize = await waitForClientRequest(secondProc, 'initialize');
+    emitServerMessage(secondProc, {
+      id: initialize.id,
+      result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+    });
+    const resume = await waitForClientRequest(secondProc, 'thread/resume');
+    emitServerMessage(secondProc, {
+      id: resume.id,
+      result: makeThreadResult('thread-1', [
+        { id: 'turn-1', items: [], status: 'completed', error: null },
+      ]),
+    });
+    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
   });
 
   it('queues MCP reload and steers the exact active root turn', async () => {
@@ -12416,6 +13690,55 @@ describe('CodexAppServerClient', () => {
     });
 
     await turnPromise;
+  });
+
+  it('answers a throwing dynamic tool handler without forwarding its error text', async () => {
+    const handlerError = new Error(
+      'EACCES: /Users/someone/.canopy/workspaces/ws_secret/approval-rules.json',
+    );
+    const logError = jest
+      .spyOn(mainProcessLogging, 'logMainProcessError')
+      .mockImplementation(() => undefined);
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      dynamicTools: buildCanopyDynamicToolSpecs({ includeChatVisuals: false }),
+      dynamicToolCallHandler: (): Promise<never> =>
+        Promise.reject(handlerError),
+    });
+
+    const { turnPromise } = await startActiveTurn(client, proc);
+    void turnPromise.catch(() => {});
+    emitServerMessage(proc, {
+      id: 'server-req-throws',
+      method: 'item/tool/call',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        callId: 'call-throws',
+        namespace: null,
+        tool: 'canopy_get_script_output',
+        arguments: { scriptId: 'launch' },
+      },
+    });
+
+    const messages = await waitForClientResponse(proc, 'server-req-throws');
+    const response = messages.find(
+      (message) => message.id === 'server-req-throws',
+    );
+    expect(response?.result).toEqual({
+      contentItems: [{ type: 'inputText', text: 'Dynamic tool call failed' }],
+      success: false,
+    });
+    expect(JSON.stringify(response)).not.toContain('ws_secret');
+    expect(logError).toHaveBeenCalledWith(expect.any(String), handlerError);
+    logError.mockRestore();
+    client.dispose();
   });
 
   it('rejects dynamic tool call payloads with a non-string namespace', async () => {
@@ -13170,11 +14493,12 @@ describe('CodexAppServerClient', () => {
       }),
     );
     rejectRequestMock.mockImplementation(
-      (_requestId: string, reason: string): void => {
+      (_requestId: string, reason: string): boolean => {
         if (!rejectPendingAnswers) {
           throw new Error('Expected pending answer rejector');
         }
         rejectPendingAnswers(new Error(reason));
+        return true;
       },
     );
     const win: SendableBrowserWindow = {
@@ -13404,6 +14728,7 @@ describe('CodexAppServerClient', () => {
     const firstProc = new MockChildProcess();
     const secondProc = new MockChildProcess();
     const exits: unknown[] = [];
+    const onSteeringEligibilityChanged = jest.fn();
     const recoveries: unknown[] = [];
     spawnMock
       .mockReset()
@@ -13415,6 +14740,7 @@ describe('CodexAppServerClient', () => {
       worktreeId: 'worktree',
       chatId: 'chat',
       sessionKey: 'project/worktree/chat',
+      onSteeringEligibilityChanged,
       onEvent: jest.fn(),
       getWindow: (): null => null,
       onProcessExit: (details): void => {
@@ -13471,6 +14797,7 @@ describe('CodexAppServerClient', () => {
       result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
     });
     const resume = await waitForClientRequest(secondProc, 'thread/resume');
+    onSteeringEligibilityChanged.mockClear();
     emitServerMessage(secondProc, {
       id: resume.id,
       result: makeThreadResult('thread-1', [
@@ -13484,6 +14811,11 @@ describe('CodexAppServerClient', () => {
     });
 
     await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    // Recovered id assignment and active-record clearing each publish.
+    expect(
+      onSteeringEligibilityChanged.mock.calls.length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(client.getSteeringCapabilities().steer).toBe(false);
     await flush();
     expect(exits).toEqual([
       expect.objectContaining({
@@ -14091,7 +15423,129 @@ describe('CodexAppServerClient', () => {
       onProcessRecovery,
     });
 
-    const { turnPromise } = await startActiveTurn(client, firstProc);
+    const { turnPromise } = await startActiveTurn(
+      client,
+      firstProc,
+      [],
+      'host-message-original',
+      'submission-original',
+      'client-message-original',
+    );
+    try {
+      firstProc.emit('exit', 0, null);
+      const initialize = await waitForClientRequest(secondProc, 'initialize');
+      emitServerMessage(secondProc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resume = await waitForClientRequest(secondProc, 'thread/resume');
+      emitServerMessage(secondProc, {
+        id: resume.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'turn-1',
+            items: [],
+            status: 'interrupted',
+            error: null,
+          },
+        ]),
+      });
+      const continuation = await waitForClientRequest(secondProc, 'turn/start');
+      const continuationParams = getRequestParams(continuation);
+      expect(continuationParams.clientUserMessageId).toEqual(
+        expect.any(String),
+      );
+      expect(continuationParams.clientUserMessageId).not.toBe(
+        'client-message-original',
+      );
+      const continuationInput = continuationParams.input;
+      if (
+        !Array.isArray(continuationInput) ||
+        !isRecord(continuationInput[0])
+      ) {
+        throw new Error('Expected recovery continuation input');
+      }
+      expect(continuationInput[0].text).toEqual(
+        expect.stringContaining('do not repeat any operation'),
+      );
+      expect(continuationInput[0].text).not.toBe('Run');
+      emitServerMessage(secondProc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-2', items: [], status: 'completed', error: null },
+        },
+      });
+      await flush();
+      emitServerMessage(secondProc, {
+        id: continuation.id,
+        result: {
+          turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
+        },
+      });
+
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      await flush();
+      expect(onProcessRecovery).toHaveBeenCalledWith({
+        status: 'succeeded',
+        strategy: 'continued',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('places a fresh restart execution at its retained anchor without binding it as input', async () => {
+    const firstProc = new MockChildProcess();
+    const secondProc = new MockChildProcess();
+    spawnMock
+      .mockReset()
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const events: unknown[] = [];
+    const observations: TurnLifecycleObservation[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onTurnLifecycleObservation: (event): void => {
+        observations.push(event);
+      },
+      onEvent: (event): void => {
+        events.push(event);
+      },
+      getWindow: (): null => null,
+    });
+    const rootStarts = (): unknown[] =>
+      events.flatMap((event) =>
+        isRecord(event) &&
+        isRecord(event.event) &&
+        event.event.type === 'turn.started' &&
+        event.event.thread_id === 'thread-1'
+          ? [event.event.turn_id]
+          : [],
+      );
+
+    const { turnPromise } = await startActiveTurn(
+      client,
+      firstProc,
+      [],
+      'msg-1',
+    );
+    void turnPromise.catch(() => undefined);
+    emitServerMessage(firstProc, {
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-1',
+        turn: { id: 'turn-1', items: [], status: 'inProgress', error: null },
+      },
+    });
+    await flush();
+    expect(rootStarts()).toEqual(['turn-1']);
+
     firstProc.emit('exit', 0, null);
     const initialize = await waitForClientRequest(secondProc, 'initialize');
     emitServerMessage(secondProc, {
@@ -14102,24 +15556,10 @@ describe('CodexAppServerClient', () => {
     emitServerMessage(secondProc, {
       id: resume.id,
       result: makeThreadResult('thread-1', [
-        {
-          id: 'turn-1',
-          items: [],
-          status: 'interrupted',
-          error: null,
-        },
+        { id: 'turn-1', items: [], status: 'interrupted', error: null },
       ]),
     });
     const continuation = await waitForClientRequest(secondProc, 'turn/start');
-    const continuationParams = getRequestParams(continuation);
-    const continuationInput = continuationParams.input;
-    if (!Array.isArray(continuationInput) || !isRecord(continuationInput[0])) {
-      throw new Error('Expected recovery continuation input');
-    }
-    expect(continuationInput[0].text).toEqual(
-      expect.stringContaining('do not repeat any operation'),
-    );
-    expect(continuationInput[0].text).not.toBe('Run');
     emitServerMessage(secondProc, {
       id: continuation.id,
       result: {
@@ -14127,19 +15567,251 @@ describe('CodexAppServerClient', () => {
       },
     });
     emitServerMessage(secondProc, {
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-1',
+        turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
+      },
+    });
+    await flush();
+    // Routers and the session manager learn the new native root only here.
+    expect(rootStarts()).toEqual(['turn-1', 'turn-2']);
+    const restartedStart = events.find(
+      (event) =>
+        isRecord(event) &&
+        isRecord(event.event) &&
+        event.event.type === 'turn.started' &&
+        event.event.turn_id === 'turn-2',
+    );
+    expect(getProviderRunDescriptor(restartedStart)).toMatchObject({
+      turnId: 'turn-2',
+      executionUserMessageId: 'msg-1',
+    });
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        type: 'turn-started',
+        turnId: 'turn-2',
+        origin: 'restart',
+      }),
+    );
+    const restartedLifecycle = observations.find(
+      (event) => event.type === 'turn-started' && event.turnId === 'turn-2',
+    );
+    expect(restartedLifecycle).not.toHaveProperty('userMessageId');
+    expect(restartedLifecycle).not.toHaveProperty('submissionId');
+
+    emitServerMessage(secondProc, {
       method: 'turn/completed',
       params: {
         threadId: 'thread-1',
         turn: { id: 'turn-2', items: [], status: 'completed', error: null },
       },
     });
-
     await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
-    await flush();
-    expect(onProcessRecovery).toHaveBeenCalledWith({
-      status: 'succeeded',
-      strategy: 'continued',
+  });
+
+  it('lets a turn continued by recovery after a terminal read be steered again', async () => {
+    const firstProc = new MockChildProcess();
+    const secondProc = new MockChildProcess();
+    spawnMock
+      .mockReset()
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const onSteeringEligibilityChanged = jest.fn();
+    let release = (): void => undefined;
+    const admission = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onSteeringEligibilityChanged,
+      onEvent: (event): Promise<void> | undefined =>
+        typeof event === 'object' &&
+        event !== null &&
+        'event' in event &&
+        typeof event.event === 'object' &&
+        event.event !== null &&
+        'type' in event.event &&
+        event.event.type === 'item.started'
+          ? admission
+          : undefined,
+      getWindow: (): null => null,
+    });
+
+    const { turnPromise } = await startActiveTurn(client, firstProc);
+    try {
+      onSteeringEligibilityChanged.mockClear();
+      emitServerMessage(firstProc, {
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'command',
+            type: 'commandExecution',
+            command: 'echo test',
+            cwd: '/tmp/repo',
+            status: 'inProgress',
+            commandActions: [],
+          },
+        },
+      });
+      // The fatal error is read while the transcript before it is held, so
+      // the turn's steering closes, and the worker is lost before it drains.
+      emitServerMessage(firstProc, {
+        method: 'error',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          willRetry: false,
+          error: { message: 'stream failed' },
+        },
+      });
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+      onSteeringEligibilityChanged.mockClear();
+
+      firstProc.emit('exit', 0, null);
+      const initialize = await waitForClientRequest(secondProc, 'initialize');
+      emitServerMessage(secondProc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resume = await waitForClientRequest(secondProc, 'thread/resume');
+      emitServerMessage(secondProc, {
+        id: resume.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'turn-1',
+            items: [],
+            status: 'failed',
+            error: { message: 'stream failed' },
+          },
+        ]),
+      });
+      const continuation = await waitForClientRequest(secondProc, 'turn/start');
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+      onSteeringEligibilityChanged.mockClear();
+      emitServerMessage(secondProc, {
+        id: continuation.id,
+        result: {
+          turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(true);
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+
+      emitServerMessage(secondProc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-2', items: [], status: 'completed', error: null },
+        },
+      });
+      await expect(turnPromise).resolves.toMatchObject({
+        status: 'completed',
+      });
+    } finally {
+      release();
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('holds a recovery continuation fatal error after the lost turn held one', async () => {
+    const firstProc = new MockChildProcess();
+    const secondProc = new MockChildProcess();
+    spawnMock
+      .mockReset()
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+    });
+
+    const { turnPromise } = await startActiveTurn(client, firstProc);
+    try {
+      emitServerMessage(firstProc, {
+        method: 'error',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          willRetry: false,
+          error: { message: 'first failure' },
+        },
+      });
+      await flush();
+      // The worker is lost before the lost turn's failed completion arrives.
+      firstProc.emit('exit', 0, null);
+      const initialize = await waitForClientRequest(secondProc, 'initialize');
+      emitServerMessage(secondProc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resume = await waitForClientRequest(secondProc, 'thread/resume');
+      emitServerMessage(secondProc, {
+        id: resume.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'turn-1',
+            items: [],
+            status: 'failed',
+            error: { message: 'first failure' },
+          },
+        ]),
+      });
+      const continuation = await waitForClientRequest(secondProc, 'turn/start');
+      emitServerMessage(secondProc, {
+        id: continuation.id,
+        result: {
+          turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(true);
+
+      emitServerMessage(secondProc, {
+        method: 'error',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-2',
+          willRetry: false,
+          error: { message: 'second failure' },
+        },
+      });
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+
+      emitServerMessage(secondProc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-2', items: [], status: 'failed', error: null },
+        },
+      });
+      await expect(turnPromise).resolves.toMatchObject({
+        status: 'failed',
+        error: 'second failure',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
   });
 
   it('recovers a bystander turn when another chat forces a shared restart', async () => {
@@ -14698,48 +16370,30 @@ describe('CodexAppServerClient', () => {
       getWindow: (): null => null,
     });
 
-    const { turnPromise } = await startActiveTurn(client, firstProc);
-    firstProc.emit('exit', 0, null);
-    const initializeSecond = await waitForClientRequest(
-      secondProc,
-      'initialize',
+    const { turnPromise } = await startActiveTurn(
+      client,
+      firstProc,
+      [],
+      'host-message-original',
+      'submission-original',
+      'client-message-original',
     );
-    emitServerMessage(secondProc, {
-      id: initializeSecond.id,
-      result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
-    });
-    const resumeSecond = await waitForClientRequest(
-      secondProc,
-      'thread/resume',
-    );
-    emitServerMessage(secondProc, {
-      id: resumeSecond.id,
-      result: makeThreadResult('thread-1', [
-        {
-          id: 'turn-1',
-          items: [],
-          status: 'interrupted',
-          error: null,
-        },
-      ]),
-    });
-    const continuation = await waitForClientRequest(secondProc, 'turn/start');
-    const continuationInput = getRequestParams(continuation).input;
-    secondProc.emit('exit', 0, null);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    const initializeThird = await waitForClientRequest(thirdProc, 'initialize');
-    emitServerMessage(thirdProc, {
-      id: initializeThird.id,
-      result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
-    });
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const resumeThird = await waitForClientRequest(
-        thirdProc,
+    try {
+      firstProc.emit('exit', 0, null);
+      const initializeSecond = await waitForClientRequest(
+        secondProc,
+        'initialize',
+      );
+      emitServerMessage(secondProc, {
+        id: initializeSecond.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resumeSecond = await waitForClientRequest(
+        secondProc,
         'thread/resume',
       );
-      emitServerMessage(thirdProc, {
-        id: resumeThird.id,
+      emitServerMessage(secondProc, {
+        id: resumeSecond.id,
         result: makeThreadResult('thread-1', [
           {
             id: 'turn-1',
@@ -14749,25 +16403,69 @@ describe('CodexAppServerClient', () => {
           },
         ]),
       });
-      if (attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 800));
+      const continuation = await waitForClientRequest(secondProc, 'turn/start');
+      const continuationParams = getRequestParams(continuation);
+      expect(continuationParams.clientUserMessageId).toEqual(
+        expect.any(String),
+      );
+      expect(continuationParams.clientUserMessageId).not.toBe(
+        'client-message-original',
+      );
+      const continuationInput = continuationParams.input;
+      secondProc.emit('exit', 0, null);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const initializeThird = await waitForClientRequest(
+        thirdProc,
+        'initialize',
+      );
+      emitServerMessage(thirdProc, {
+        id: initializeThird.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const resumeThird = await waitForClientRequest(
+          thirdProc,
+          'thread/resume',
+        );
+        emitServerMessage(thirdProc, {
+          id: resumeThird.id,
+          result: makeThreadResult('thread-1', [
+            {
+              id: 'turn-1',
+              items: [],
+              status: 'interrupted',
+              error: null,
+            },
+          ]),
+        });
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 800));
+        }
       }
+
+      const replay = await waitForClientRequest(thirdProc, 'turn/start');
+      const replayParams = getRequestParams(replay);
+      expect(replayParams.clientUserMessageId).toEqual(
+        continuationParams.clientUserMessageId,
+      );
+      expect(replayParams.input).toEqual(continuationInput);
+      expect(replayParams.input).not.toEqual([
+        { type: 'text', text: 'Run', text_elements: [] },
+      ]);
+      emitServerMessage(thirdProc, {
+        id: replay.id,
+        result: {
+          turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
+        },
+      });
+      completeRootTurn(thirdProc, 'turn-2');
+
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
     }
-
-    const replay = await waitForClientRequest(thirdProc, 'turn/start');
-    expect(getRequestParams(replay).input).toEqual(continuationInput);
-    expect(getRequestParams(replay).input).not.toEqual([
-      { type: 'text', text: 'Run', text_elements: [] },
-    ]);
-    emitServerMessage(thirdProc, {
-      id: replay.id,
-      result: {
-        turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
-      },
-    });
-    completeRootTurn(thirdProc, 'turn-2');
-
-    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
   });
 
   it('replays an unanswered turn/start only after persisted history confirms no turn was created', async () => {
@@ -14778,6 +16476,7 @@ describe('CodexAppServerClient', () => {
       .mockReturnValueOnce(firstProc)
       .mockReturnValueOnce(secondProc);
     const onProcessRecovery = jest.fn();
+    const onSteeringEligibilityChanged = jest.fn();
     const client = new CodexAppServerClient({
       cwd: '/tmp/repo',
       projectId: 'project',
@@ -14787,73 +16486,94 @@ describe('CodexAppServerClient', () => {
       onEvent: jest.fn(),
       getWindow: (): null => null,
       onProcessRecovery,
+      onSteeringEligibilityChanged,
     });
-    const turnPromise = client.startTurn({
+    const startOptions: TurnStartOptionsWithShadowIds = {
       text: 'Run once',
       cwd: '/tmp/repo',
       model: 'gpt-6-sol',
       thinkingLevel: 'high',
       planMode: false,
-    });
+      clientUserMessageId: 'client-message-replay-original',
+    };
+    const turnPromise = client.startTurn(startOptions);
     void turnPromise.catch(() => {});
 
-    const initializeFirst = await waitForClientRequest(firstProc, 'initialize');
-    emitServerMessage(firstProc, {
-      id: initializeFirst.id,
-      result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
-    });
-    const threadStart = await waitForClientRequest(firstProc, 'thread/start');
-    emitServerMessage(firstProc, {
-      id: threadStart.id,
-      result: makeThreadResult('thread-1'),
-    });
-    await waitForClientRequest(firstProc, 'turn/start');
-    firstProc.emit('exit', 0, null);
-
-    const initializeSecond = await waitForClientRequest(
-      secondProc,
-      'initialize',
-    );
-    emitServerMessage(secondProc, {
-      id: initializeSecond.id,
-      result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
-    });
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const resume = await waitForClientRequest(secondProc, 'thread/resume');
-      emitServerMessage(secondProc, {
-        id: resume.id,
+    try {
+      const initializeFirst = await waitForClientRequest(
+        firstProc,
+        'initialize',
+      );
+      emitServerMessage(firstProc, {
+        id: initializeFirst.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const threadStart = await waitForClientRequest(firstProc, 'thread/start');
+      emitServerMessage(firstProc, {
+        id: threadStart.id,
         result: makeThreadResult('thread-1'),
       });
-      if (attempt < 2) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, attempt === 0 ? 300 : 800),
-        );
-      }
-    }
-    const replay = await waitForClientRequest(secondProc, 'turn/start');
-    expect(getRequestParams(replay).input).toEqual([
-      { type: 'text', text: 'Run once', text_elements: [] },
-    ]);
-    emitServerMessage(secondProc, {
-      id: replay.id,
-      result: {
-        turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
-      },
-    });
-    emitServerMessage(secondProc, {
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: { id: 'turn-2', items: [], status: 'completed', error: null },
-      },
-    });
+      await waitForClientRequest(firstProc, 'turn/start');
+      firstProc.emit('exit', 0, null);
 
-    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
-    await flush();
-    expect(onProcessRecovery).toHaveBeenCalledWith({
-      status: 'succeeded',
-      strategy: 'replayed',
-    });
+      const initializeSecond = await waitForClientRequest(
+        secondProc,
+        'initialize',
+      );
+      emitServerMessage(secondProc, {
+        id: initializeSecond.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const resume = await waitForClientRequest(secondProc, 'thread/resume');
+        emitServerMessage(secondProc, {
+          id: resume.id,
+          result: makeThreadResult('thread-1'),
+        });
+        if (attempt < 2) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, attempt === 0 ? 300 : 800),
+          );
+        }
+      }
+      const replay = await waitForClientRequest(secondProc, 'turn/start');
+      expect(getRequestParams(replay).clientUserMessageId).toBe(
+        'client-message-replay-original',
+      );
+      expect(getRequestParams(replay).input).toEqual([
+        { type: 'text', text: 'Run once', text_elements: [] },
+      ]);
+      emitServerMessage(secondProc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-2', items: [], status: 'completed', error: null },
+        },
+      });
+      await flush();
+      expect(client.hasActiveTurn()).toBe(true);
+      onSteeringEligibilityChanged.mockClear();
+      emitServerMessage(secondProc, {
+        id: replay.id,
+        result: {
+          turn: { id: 'turn-2', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(client.hasActiveTurn()).toBe(false);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      await flush();
+      expect(onProcessRecovery).toHaveBeenCalledWith({
+        status: 'succeeded',
+        strategy: 'replayed',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
   });
 
   it('does not retry a known terminal persistence failure as a transport failure', async () => {
@@ -15366,6 +17086,20 @@ describe('CodexAppServerClient', () => {
         error: { message: 'Provider failed', codexErrorInfo: null },
       },
     });
+    await flush();
+    expect(client.hasActiveTurn()).toBe(true);
+    emitServerMessage(firstProc, {
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: {
+          id: 'turn-1',
+          items: [],
+          status: 'failed',
+          error: { message: 'Provider failed' },
+        },
+      },
+    });
     await expect(failedTurnPromise).resolves.toMatchObject({
       status: 'failed',
     });
@@ -15633,11 +17367,20 @@ describe('CodexAppServerClient', () => {
     client.dispose();
   });
 
-  it('finishes the active turn when the app-server sends a non-retryable error notification', async () => {
+  it('holds a non-retryable root error until its matching failed terminal', async () => {
     const events: unknown[] = [];
     const client = createClient(events);
     const { turnPromise } = await startActiveTurn(client, proc);
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    let settled = false;
+    void turnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
 
     emitServerMessage(proc, {
       method: 'item/commandExecution/outputDelta',
@@ -15657,7 +17400,6 @@ describe('CodexAppServerClient', () => {
         delta: '-latest',
       },
     });
-
     emitServerMessage(proc, {
       method: 'error',
       params: {
@@ -15673,6 +17415,32 @@ describe('CodexAppServerClient', () => {
     });
 
     try {
+      await flush();
+      expect(settled).toBe(false);
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(
+        events.some(
+          (event) =>
+            isRecord(event) &&
+            event.type === 'codex' &&
+            isRecord(event.event) &&
+            event.event.type === 'error',
+        ),
+      ).toBe(false);
+
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: 'turn-1',
+            items: [],
+            status: 'failed',
+            error: { message: 'Codex request failed' },
+          },
+        },
+      });
       await expect(turnPromise).resolves.toEqual({
         status: 'failed',
         usage: undefined,
@@ -15681,12 +17449,30 @@ describe('CodexAppServerClient', () => {
       expect(events).toContainEqual({
         type: 'codex',
         event: {
-          type: 'error',
-          message: 'Codex request failed\nHTTP 500 from provider',
+          type: 'turn.failed',
+          error: { message: 'Codex request failed\nHTTP 500 from provider' },
           thread_id: 'thread-1',
           turn_id: 'turn-1',
         },
       });
+      expect(
+        events.filter(
+          (event) =>
+            isRecord(event) &&
+            event.type === 'codex' &&
+            isRecord(event.event) &&
+            event.event.type === 'turn.failed',
+        ),
+      ).toHaveLength(1);
+      expect(
+        events.some(
+          (event) =>
+            isRecord(event) &&
+            event.type === 'codex' &&
+            isRecord(event.event) &&
+            event.event.type === 'error',
+        ),
+      ).toBe(false);
       const commandUpdates = events.filter((event): boolean => {
         if (!isRecord(event) || event.type !== 'codex') {
           return false;
@@ -15712,6 +17498,317 @@ describe('CodexAppServerClient', () => {
     } finally {
       nowSpy.mockRestore();
       client.dispose();
+    }
+  });
+
+  it('does not let an early wrong-id root terminal close control after start identity arrives', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise, threadRequest } = await startTurnUntilThreadRequest(
+      client,
+      proc,
+      {
+        text: 'Run',
+        cwd: '/tmp/repo',
+        model: 'gpt-6-sol',
+        thinkingLevel: 'high',
+        planMode: false,
+        executionUserMessageId: 'host-message-1',
+        submissionId: 'submission-1',
+        clientUserMessageId: 'client-message-1',
+      },
+    );
+    let settled = false;
+    void turnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      emitServerMessage(proc, {
+        id: threadRequest.id,
+        result: makeThreadResult('thread-1'),
+      });
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'wrong-early-id', items: [], status: 'completed' },
+        },
+      });
+      await flush();
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(settled).toBe(false);
+      expect(
+        observations.some(
+          (observation) => observation.type === 'turn-completed',
+        ),
+      ).toBe(false);
+
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: { id: 'turn-1', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await client.handleConnectionNotification('turn/started', {
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1', items: [], status: 'inProgress' },
+        },
+      });
+      await flush();
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(client.getSteeringCapabilities().steer).toBe(true);
+      expect(client.getActiveTurnInterruptTarget()).toEqual({
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+      });
+      expect(settled).toBe(false);
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({
+          type: 'turn-completed',
+          turnId: 'wrong-early-id',
+        }),
+      );
+
+      completeRootTurn(proc, 'turn-1');
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      expect(observations).toContainEqual({
+        type: 'turn-completed',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        status: 'completed',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('accepts a matching early terminal only after the start response identifies its turn', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise, threadRequest } = await startTurnUntilThreadRequest(
+      client,
+      proc,
+    );
+    let settled = false;
+    void turnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      emitServerMessage(proc, {
+        id: threadRequest.id,
+        result: makeThreadResult('thread-1'),
+      });
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-early', items: [], status: 'completed' },
+        },
+      });
+      await flush();
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(settled).toBe(false);
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({
+          type: 'turn-completed',
+          turnId: 'turn-early',
+        }),
+      );
+
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: {
+            id: 'turn-early',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        },
+      });
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      expect(
+        observations.filter((entry) => entry.type === 'turn-started'),
+      ).toEqual([
+        {
+          type: 'turn-started',
+          threadId: 'thread-1',
+          turnId: 'turn-early',
+          origin: 'user',
+        },
+      ]);
+      expect(
+        observations.filter((entry) => entry.type === 'turn-completed'),
+      ).toEqual([
+        {
+          type: 'turn-completed',
+          threadId: 'thread-1',
+          turnId: 'turn-early',
+          status: 'completed',
+        },
+      ]);
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('accepts a matching early terminal after turn/started establishes the native identity', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise, threadRequest } = await startTurnUntilThreadRequest(
+      client,
+      proc,
+    );
+    let settled = false;
+    void turnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      emitServerMessage(proc, {
+        id: threadRequest.id,
+        result: makeThreadResult('thread-1'),
+      });
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: 'turn-from-notification',
+            items: [],
+            status: 'completed',
+          },
+        },
+      });
+      await flush();
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(settled).toBe(false);
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({
+          type: 'turn-completed',
+          turnId: 'turn-from-notification',
+        }),
+      );
+
+      emitServerMessage(proc, {
+        method: 'turn/started',
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: 'turn-from-notification',
+            items: [],
+            status: 'inProgress',
+          },
+        },
+      });
+      await flush();
+      expect(
+        observations.filter((entry) => entry.type === 'turn-started'),
+      ).toEqual([
+        {
+          type: 'turn-started',
+          threadId: 'thread-1',
+          turnId: 'turn-from-notification',
+          origin: 'user',
+        },
+      ]);
+      expect(
+        observations.filter((entry) => entry.type === 'turn-completed'),
+      ).toEqual([
+        {
+          type: 'turn-completed',
+          threadId: 'thread-1',
+          turnId: 'turn-from-notification',
+          status: 'completed',
+        },
+      ]);
+      expect(client.hasActiveTurn()).toBe(false);
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(settled).toBe(false);
+
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: {
+            id: 'turn-from-notification',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        },
+      });
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
     }
   });
 
@@ -16528,6 +18625,525 @@ describe('CodexAppServerClient', () => {
     expect(result.status).toBe('completed');
   });
 
+  it.each(['dispose', 'reject', 'error'] as const)(
+    'notifies steering eligibility when an active client is closed by %s',
+    async (action) => {
+      const onSteeringEligibilityChanged = jest.fn();
+      const client = new CodexAppServerClient({
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sessionKey: 'project/worktree/chat',
+        getWindow: (): null => null,
+        onEvent: jest.fn(),
+        onSteeringEligibilityChanged,
+      });
+      const { turnPromise } = await startActiveTurn(client, proc);
+      const outcome = turnPromise.catch(() => undefined);
+      try {
+        expect(client.getSteeringCapabilities().steer).toBe(true);
+        onSteeringEligibilityChanged.mockClear();
+        if (action === 'dispose') client.dispose();
+        else if (action === 'reject')
+          client.rejectActiveTurn(new Error('closed'));
+        else {
+          emitServerMessage(proc, {
+            method: 'error',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              willRetry: false,
+              error: { message: 'closed' },
+            },
+          });
+          await flush();
+          expect(client.hasActiveTurn()).toBe(true);
+          emitServerMessage(proc, {
+            method: 'turn/completed',
+            params: {
+              threadId: 'thread-1',
+              turn: {
+                id: 'turn-1',
+                items: [],
+                status: 'failed',
+                error: { message: 'closed' },
+              },
+            },
+          });
+          await flush();
+        }
+        expect(client.getSteeringCapabilities().steer).toBe(false);
+        expect(client.hasActiveTurn()).toBe(false);
+        expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+      } finally {
+        client.dispose();
+        await outcome;
+      }
+    },
+  );
+
+  it('notifies steering eligibility when the turn id arrives only in the start response', async () => {
+    const onSteeringEligibilityChanged = jest.fn();
+    const options = {
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      getWindow: (): null => null,
+      onEvent: jest.fn(),
+      onSteeringEligibilityChanged,
+    };
+    const client = new CodexAppServerClient(options);
+    const turnPromise = client.startTurn({
+      text: 'Run',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+    });
+    const outcome = turnPromise.catch(() => undefined);
+    try {
+      await flush();
+      emitServerMessage(proc, {
+        id: 1,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      await flush();
+      emitServerMessage(proc, { id: 2, result: makeThreadResult('thread-1') });
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      onSteeringEligibilityChanged.mockClear();
+      emitServerMessage(proc, {
+        id: 3,
+        result: {
+          turn: { id: 'turn-1', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(true);
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+      onSteeringEligibilityChanged.mockClear();
+      completeRootTurn(proc);
+      await turnPromise;
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+    } finally {
+      client.dispose();
+      await outcome;
+    }
+  });
+
+  it('updates turn lifecycle and steering immediately while transcript admission is held', async () => {
+    const onSteeringEligibilityChanged = jest.fn();
+    let release = (): void => undefined;
+    const admission = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: unknown[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onSteeringEligibilityChanged,
+      getWindow: (): null => null,
+      onEvent: (event): Promise<void> | undefined => {
+        events.push(event);
+        return typeof event === 'object' &&
+          event !== null &&
+          'event' in event &&
+          typeof event.event === 'object' &&
+          event.event !== null &&
+          'type' in event.event &&
+          event.event.type === 'item.started'
+          ? admission
+          : undefined;
+      },
+    });
+    const turnPromise = client.startTurn({
+      text: 'Run',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+    });
+    const outcome = turnPromise.catch(() => undefined);
+    try {
+      await flush();
+      emitServerMessage(proc, {
+        id: 1,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      await flush();
+      emitServerMessage(proc, { id: 2, result: makeThreadResult('thread-1') });
+      await flush();
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'command',
+            type: 'commandExecution',
+            command: 'echo test',
+            cwd: '/tmp/repo',
+            status: 'inProgress',
+            commandActions: [],
+          },
+        },
+      });
+      await flush();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'item.started' }),
+        }),
+      );
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      onSteeringEligibilityChanged.mockClear();
+      const startedAt = Date.now();
+      emitServerMessage(proc, {
+        method: 'turn/started',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await flush();
+      expect(client.getActiveTurnInterruptTarget()).toEqual({
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+      });
+      expect(client.getSteeringCapabilities().steer).toBe(true);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'turn.started' }),
+        }),
+      );
+      emitServerMessage(proc, {
+        id: 3,
+        result: {
+          turn: { id: 'turn-1', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await flush();
+      onSteeringEligibilityChanged.mockClear();
+      completeRootTurn(proc);
+      await flush();
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+      // The turn keeps the worker pinned until its held transcript is
+      // finalized: suspending or restarting it would drop those frames.
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(client.hasDispatchedTurn()).toBe(true);
+      expect(client.getActiveTurnInterruptTarget()).toEqual({
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+      });
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+      onSteeringEligibilityChanged.mockClear();
+      release();
+      await turnPromise;
+      expect(onSteeringEligibilityChanged).toHaveBeenCalled();
+      expect(client.hasActiveTurn()).toBe(false);
+      expect(client.getActiveTurnInterruptTarget()).toBeNull();
+    } finally {
+      release();
+      client.dispose();
+      await outcome;
+    }
+  });
+
+  it('closes steering at completion read but drains older transcript content before finalizing the turn', async () => {
+    let release = (): void => undefined;
+    const admission = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: unknown[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      getWindow: (): null => null,
+      onEvent: (event): Promise<void> | undefined => {
+        events.push(event);
+        return typeof event === 'object' &&
+          event !== null &&
+          'event' in event &&
+          typeof event.event === 'object' &&
+          event.event !== null &&
+          'type' in event.event &&
+          event.event.type === 'item.started'
+          ? admission
+          : undefined;
+      },
+    });
+    const { turnPromise } = await startActiveTurn(client, proc);
+    let settled = false;
+    void turnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'command',
+            type: 'commandExecution',
+            command: 'echo test',
+            cwd: '/tmp/repo',
+            status: 'inProgress',
+            commandActions: [],
+          },
+        },
+      });
+      emitServerMessage(proc, {
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          itemId: 'message',
+          delta: 'Retained answer',
+        },
+      });
+      completeRootTurn(proc);
+      await flush();
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(client.getSteeringCapabilities().steer).toBe(false);
+      expect(await client.steerActiveTurn('Too late')).toBe(false);
+      expect(settled).toBe(false);
+      release();
+      await turnPromise;
+      expect(client.hasActiveTurn()).toBe(false);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'item.completed',
+            item: expect.objectContaining({
+              id: 'message',
+              text: 'Retained answer',
+            }),
+          }),
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'turn.completed' }),
+        }),
+      );
+    } finally {
+      release();
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('delivers a subagent completion read after the root completion once the held transcript drains', async () => {
+    let release = (): void => undefined;
+    const admission = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: unknown[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      getWindow: (): null => null,
+      onEvent: (event): Promise<void> | undefined => {
+        events.push(event);
+        return typeof event === 'object' &&
+          event !== null &&
+          'event' in event &&
+          typeof event.event === 'object' &&
+          event.event !== null &&
+          'type' in event.event &&
+          event.event.type === 'item.started'
+          ? admission
+          : undefined;
+      },
+    });
+    const { turnPromise } = await startActiveTurn(client, proc);
+    try {
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'command',
+            type: 'commandExecution',
+            command: 'echo test',
+            cwd: '/tmp/repo',
+            status: 'inProgress',
+            commandActions: [],
+          },
+        },
+      });
+      completeRootTurn(proc);
+      // Read after the root completion, while both wait for the same drain.
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'sub-thread-1',
+          turn: {
+            id: 'sub-turn-1',
+            items: [],
+            status: 'failed',
+            error: { message: 'Late subagent failure' },
+          },
+        },
+      });
+      await flush();
+      release();
+      await expect(turnPromise).resolves.toMatchObject({
+        status: 'completed',
+      });
+      await flush();
+      expect(events).toContainEqual({
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          thread_id: 'sub-thread-1',
+          turn_id: 'sub-turn-1',
+          error: { message: 'Late subagent failure' },
+        },
+      });
+    } finally {
+      release();
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    'keeps the root turn unsettled until a stopped tool fallback row admission %s',
+    async (admissionOutcome) => {
+      let finishFallbackAdmission = (): void => undefined;
+      const fallbackAdmission = new Promise<void>((resolve, reject) => {
+        finishFallbackAdmission = (): void => {
+          if (admissionOutcome === 'reject') {
+            reject(new Error('fallback row admission failed'));
+          } else {
+            resolve();
+          }
+        };
+      });
+      let fallbackAdmissionRequested = false;
+      const client = new CodexAppServerClient({
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sessionKey: 'project/worktree/chat',
+        onEvent: (event): void | Promise<void> => {
+          if (
+            typeof event === 'object' &&
+            event !== null &&
+            'event' in event &&
+            typeof event.event === 'object' &&
+            event.event !== null &&
+            'type' in event.event &&
+            event.event.type === 'item.completed' &&
+            'item' in event.event &&
+            typeof event.event.item === 'object' &&
+            event.event.item !== null &&
+            'id' in event.event.item &&
+            event.event.item.id === 'call' &&
+            'status' in event.event.item &&
+            event.event.item.status === 'failed'
+          ) {
+            fallbackAdmissionRequested = true;
+            return fallbackAdmission;
+          }
+        },
+        dynamicToolCallHandler: () => new Promise<never>(() => undefined),
+        getWindow: (): null => null,
+      });
+      const { turnPromise } = await startActiveTurn(client, proc);
+      let settled = false;
+      void turnPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        const params = {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          callId: 'call',
+          namespace: null,
+          tool: 'canopy_dispatch_action',
+          arguments: {},
+        };
+        emitServerMessage(proc, {
+          method: 'item/started',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              ...params,
+              id: 'call',
+              type: 'dynamicToolCall',
+              status: 'inProgress',
+              contentItems: [],
+              success: null,
+            },
+          },
+        });
+        emitServerMessage(proc, {
+          id: 'call',
+          method: 'item/tool/call',
+          params,
+        });
+        await flush();
+        emitServerMessage(proc, {
+          method: 'serverRequest/resolved',
+          params: { threadId: 'thread-1', requestId: 'call' },
+        });
+        await flush();
+
+        completeRootTurn(proc);
+        await flush();
+        expect(fallbackAdmissionRequested).toBe(true);
+        expect(settled).toBe(false);
+
+        finishFallbackAdmission();
+        if (admissionOutcome === 'reject') {
+          await expect(turnPromise).rejects.toThrow(
+            'fallback row admission failed',
+          );
+        } else {
+          await expect(turnPromise).resolves.toMatchObject({
+            status: 'completed',
+          });
+        }
+        expect(settled).toBe(true);
+      } finally {
+        finishFallbackAdmission();
+        client.dispose();
+        await turnPromise.catch(() => undefined);
+      }
+    },
+  );
+
   it('does not report a root turn complete when terminal route admission fails', async () => {
     let rejectAdmission: (error: Error) => void = () => undefined;
     const admission = new Promise<void>((_resolve, reject) => {
@@ -16714,6 +19330,1511 @@ describe('CodexAppServerClient', () => {
     }
   });
 
+  it('forwards clientUserMessageId on an ordinary turn/start request', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      onTurnLifecycleObservation: (observation): void => {
+        observations.push(observation);
+      },
+    });
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'host-message-ordinary',
+      'submission-ordinary',
+      'client-message-ordinary',
+      'local-user-message-ordinary',
+    );
+    try {
+      const start = collectClientMessages(proc).find(
+        (message) => message.method === 'turn/start',
+      );
+      if (!start) throw new Error('Expected ordinary turn/start request');
+      expect(getRequestParams(start).clientUserMessageId).toBe(
+        'client-message-ordinary',
+      );
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      expect(observations).toContainEqual({
+        type: 'turn-started',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        origin: 'user',
+        submissionId: 'submission-ordinary',
+        userMessageId: 'local-user-message-ordinary',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('does not infer a local user message id from the wire fallback submission id', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      onTurnLifecycleObservation: (observation): void => {
+        observations.push(observation);
+      },
+    });
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'host-message-without-local-id',
+      'submission-without-local-id',
+      'submission-without-local-id',
+    );
+    try {
+      expect(observations).toContainEqual({
+        type: 'turn-started',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        origin: 'user',
+        submissionId: 'submission-without-local-id',
+      });
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({
+          userMessageId: 'submission-without-local-id',
+        }),
+      );
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('binds a picked-up steering attempt to the local user message id', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise } = await startActiveTurn(client, proc);
+    try {
+      const submitted = client.submitSteeringInput(
+        'Continue with this input',
+        'submission-steer-1',
+        undefined,
+        'local-user-message-1',
+      );
+      const steer = await waitForClientRequest(proc, 'turn/steer');
+      emitServerMessage(proc, { id: steer.id, result: {} });
+      await expect(submitted).resolves.toMatchObject({ kind: 'accepted' });
+
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'steering-user-item',
+            type: 'userMessage',
+            clientId: 'submission-steer-1',
+          },
+        },
+      });
+      expect(observations).toContainEqual({
+        type: 'input-bound',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        submissionId: 'submission-steer-1',
+        userMessageId: 'local-user-message-1',
+      });
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('maps root thread status to shadow session state and ignores child and unrecognized statuses', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise } = await startActiveTurn(client, proc);
+    try {
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'child-thread-1',
+          status: { type: 'active', activeFlags: [] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'thread-1',
+          status: { type: 'active', activeFlags: [] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'thread-1',
+          status: { type: 'active', activeFlags: ['waitingOnApproval'] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'thread-1',
+          status: { type: 'active', activeFlags: ['waitingOnUserInput'] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: { threadId: 'thread-1', status: { type: 'idle' } },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: { threadId: 'thread-1', status: { type: 'systemError' } },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: { threadId: 'thread-1', status: { type: 'notLoaded' } },
+      });
+      expect(
+        observations.filter((entry) => entry.type === 'session-state'),
+      ).toEqual([
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'running',
+        },
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'requires_action',
+        },
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'requires_action',
+        },
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'idle',
+        },
+      ]);
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({ threadId: 'child-thread-1' }),
+      );
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('maps a retryable root error to reconnecting without a terminal or error event', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const events: unknown[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: (event): void => {
+        events.push(event);
+      },
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise } = await startActiveTurn(client, proc);
+    let settled = false;
+    void turnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      await client.handleConnectionNotification('error', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          willRetry: true,
+          error: { message: 'reconnecting' },
+        },
+      });
+      expect(
+        observations.filter((entry) => entry.type === 'session-state'),
+      ).toEqual([
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'reconnecting',
+        },
+      ]);
+      expect(
+        observations.some((entry) => entry.type === 'turn-completed'),
+      ).toBe(false);
+      expect(
+        events.some(
+          (event) =>
+            isRecord(event) &&
+            event.type === 'codex' &&
+            isRecord(event.event) &&
+            event.event.type === 'error',
+        ),
+      ).toBe(false);
+      expect(settled).toBe(false);
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(client.getSteeringCapabilities().steer).toBe(true);
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('does not forward a wrong-id fatal error into a later failed root completion', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const { turnPromise } = await startActiveTurn(client, proc);
+    try {
+      emitServerMessage(proc, {
+        method: 'error',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'stale-turn',
+          willRetry: false,
+          error: { message: 'stale failure detail' },
+        },
+      });
+      await flush();
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            isRecord(event) &&
+            isRecord(event.event) &&
+            event.event.type === 'error',
+        ),
+      ).toBe(false);
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: 'turn-1',
+            items: [],
+            status: 'failed',
+            error: { message: 'authoritative failure' },
+          },
+        },
+      });
+      await expect(turnPromise).resolves.toMatchObject({
+        status: 'failed',
+        error: 'authoritative failure',
+      });
+      expect(JSON.stringify(events)).not.toContain('stale failure detail');
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('attaches submission and client message identities to an ordinary root start observation', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'host-message-ordinary-observation',
+      'submission-ordinary-observation',
+      'client-message-ordinary-observation',
+    );
+    try {
+      expect(observations).toContainEqual({
+        type: 'turn-started',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        origin: 'user',
+        submissionId: 'submission-ordinary-observation',
+        userMessageId: 'client-message-ordinary-observation',
+      });
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it.each([
+    {
+      label: 'turn/start response',
+      notificationFirst: false,
+      responseStartedAt: 1_700_000_000,
+      notificationStartedAt: 1_700_000_001,
+      expectedStartedAtMs: 1_700_000_000_000,
+      chatId: 'native-timing-response-first',
+    },
+    {
+      label: 'turn/started notification',
+      notificationFirst: true,
+      responseStartedAt: 1_700_000_002,
+      notificationStartedAt: 1_700_000_003,
+      expectedStartedAtMs: 1_700_000_003_000,
+      chatId: 'native-timing-notification-first',
+    },
+  ])(
+    'carries native timing from the first root start source ($label) through the tracker',
+    async ({
+      notificationFirst,
+      responseStartedAt,
+      notificationStartedAt,
+      expectedStartedAtMs,
+      chatId,
+    }) => {
+      const lifecycleScope = {
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId,
+      };
+      const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+      const tracker = new CodexTurnLifecycleTracker(
+        getTurnLifecycleProducer('codex', lifecycleScope),
+      );
+      setTurnLifecycleSink((event): void => {
+        lifecycleEvents.push(event);
+      });
+      const client = new CodexAppServerClient({
+        cwd: '/tmp/repo',
+        projectId: lifecycleScope.projectId,
+        worktreeId: lifecycleScope.worktreeId,
+        chatId: lifecycleScope.chatId,
+        sessionKey: `${lifecycleScope.projectId}/${lifecycleScope.worktreeId}/${lifecycleScope.chatId}`,
+        onEvent: jest.fn(),
+        getWindow: (): null => null,
+        onTurnLifecycleObservation: (observation): void =>
+          tracker.observe(observation),
+      });
+      let turnPromise: Promise<CodexTurnTestResult> | undefined;
+      try {
+        const started = await startActiveTurn(
+          client,
+          proc,
+          [],
+          'native-timing-execution-anchor',
+          'native-timing-submission',
+          'native-timing-user-message',
+          undefined,
+          {
+            responseTurn: {
+              id: 'turn-1',
+              items: [],
+              status: 'inProgress',
+              error: null,
+              startedAt: responseStartedAt,
+              completedAt: null,
+              durationMs: null,
+            },
+            notificationTurn: {
+              id: 'turn-1',
+              items: [],
+              status: 'inProgress',
+              error: null,
+              startedAt: notificationStartedAt,
+              completedAt: null,
+              durationMs: null,
+            },
+            notificationFirst,
+          },
+        );
+        turnPromise = started.turnPromise;
+
+        expect(lifecycleEvents).toHaveLength(1);
+        expect(lifecycleEvents[0]).toMatchObject({
+          type: 'TurnStarted',
+          provider: 'codex',
+          chatId: lifecycleScope.chatId,
+          providerSessionId: 'thread-1',
+          turnId: 'turn-1',
+          sequence: 1,
+          startedAtMs: expectedStartedAtMs,
+        });
+
+        completeRootTurn(proc, 'turn-1', {
+          completedAt: 1_700_000_010,
+          durationMs: 9_876,
+        });
+        await expect(turnPromise).resolves.toMatchObject({
+          status: 'completed',
+        });
+        expect(lifecycleEvents).toHaveLength(2);
+        expect(lifecycleEvents[1]).toMatchObject({
+          type: 'TurnEnded',
+          provider: 'codex',
+          chatId: lifecycleScope.chatId,
+          providerSessionId: 'thread-1',
+          turnId: 'turn-1',
+          sequence: 2,
+          endedAtMs: 1_700_000_010_000,
+          durationMs: 9_876,
+        });
+      } finally {
+        client.dispose();
+        await turnPromise?.catch(() => undefined);
+        setTurnLifecycleSink(null);
+        releaseTurnLifecycleProducer('codex', lifecycleScope);
+      }
+    },
+  );
+
+  it.each([
+    {
+      label: 'null',
+      nativeStartTiming: {
+        startedAt: null,
+        completedAt: null,
+        durationMs: null,
+      },
+      nativeCompletionTiming: { completedAt: null, durationMs: null },
+    },
+    {
+      label: 'missing',
+      nativeStartTiming: {},
+      nativeCompletionTiming: undefined,
+    },
+  ])(
+    'falls back to the observation clock for $label native timings through the tracker',
+    async ({ label, nativeStartTiming, nativeCompletionTiming }) => {
+      let currentTimeMs = 1_000;
+      const dateNow = jest
+        .spyOn(Date, 'now')
+        .mockImplementation(() => currentTimeMs);
+      const lifecycleScope = {
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: `native-timing-${label}`,
+      };
+      const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+      const tracker = new CodexTurnLifecycleTracker(
+        getTurnLifecycleProducer('codex', lifecycleScope),
+      );
+      setTurnLifecycleSink((event): void => {
+        lifecycleEvents.push(event);
+      });
+      const client = new CodexAppServerClient({
+        cwd: '/tmp/repo',
+        projectId: lifecycleScope.projectId,
+        worktreeId: lifecycleScope.worktreeId,
+        chatId: lifecycleScope.chatId,
+        sessionKey: `${lifecycleScope.projectId}/${lifecycleScope.worktreeId}/${lifecycleScope.chatId}`,
+        onEvent: jest.fn(),
+        getWindow: (): null => null,
+        onTurnLifecycleObservation: (observation): void =>
+          tracker.observe(observation),
+      });
+      let turnPromise: Promise<CodexTurnTestResult> | undefined;
+      try {
+        const started = await startActiveTurn(
+          client,
+          proc,
+          [],
+          'native-timing-null-anchor',
+          'native-timing-null-submission',
+          'native-timing-null-message',
+          undefined,
+          {
+            responseTurn: {
+              id: 'turn-1',
+              items: [],
+              status: 'inProgress',
+              error: null,
+              ...nativeStartTiming,
+            },
+            notificationTurn: {
+              id: 'turn-1',
+              items: [],
+              status: 'inProgress',
+              error: null,
+              ...nativeStartTiming,
+            },
+          },
+        );
+        turnPromise = started.turnPromise;
+        expect(lifecycleEvents[0]).toMatchObject({
+          type: 'TurnStarted',
+          startedAtMs: 1_000,
+        });
+
+        currentTimeMs = 4_000;
+        completeRootTurn(proc, 'turn-1', nativeCompletionTiming);
+        await expect(turnPromise).resolves.toMatchObject({
+          status: 'completed',
+        });
+        expect(lifecycleEvents[1]).toMatchObject({
+          type: 'TurnEnded',
+          endedAtMs: 4_000,
+        });
+        // The reducer derives 3 000 ms from these times, net of any pause.
+        expect(lifecycleEvents[1]).not.toHaveProperty('durationMs');
+      } finally {
+        client.dispose();
+        await turnPromise?.catch(() => undefined);
+        setTurnLifecycleSink(null);
+        releaseTurnLifecycleProducer('codex', lifecycleScope);
+        dateNow.mockRestore();
+      }
+    },
+  );
+
+  it('reports only root lifecycle and status observations, and ignores retryable errors as terminals', async () => {
+    const events: unknown[] = [];
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: (event): void => {
+        events.push(event);
+      },
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'host-message-1',
+      'submission-1',
+      'client-message-1',
+    );
+    let settled = false;
+    void turnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      const start = collectClientMessages(proc).find(
+        (message) => message.method === 'turn/start',
+      );
+      if (!start) throw new Error('Expected ordinary turn/start request');
+      expect(getRequestParams(start).clientUserMessageId).toBe(
+        'client-message-1',
+      );
+      expect(observations).toContainEqual({
+        type: 'turn-started',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        origin: 'user',
+        submissionId: 'submission-1',
+        userMessageId: 'client-message-1',
+      });
+
+      await client.handleConnectionNotification('turn/started', {
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1', items: [], status: 'inProgress' },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'child-thread-1',
+          status: { type: 'active', activeFlags: [] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'thread-1',
+          status: { type: 'active', activeFlags: [] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'thread-1',
+          status: { type: 'active', activeFlags: ['waitingOnApproval'] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'thread-1',
+          status: { type: 'active', activeFlags: ['waitingOnUserInput'] },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: { threadId: 'thread-1', status: { type: 'idle' } },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: { threadId: 'thread-1', status: { type: 'systemError' } },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: { threadId: 'thread-1', status: { type: 'notLoaded' } },
+      });
+      await client.handleConnectionNotification('turn/started', {
+        params: {
+          threadId: 'child-thread-1',
+          turn: { id: 'child-turn-1', items: [], status: 'inProgress' },
+        },
+      });
+      await client.handleConnectionNotification('error', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          willRetry: true,
+          error: { message: 'retrying connection' },
+        },
+      });
+      await client.handleConnectionNotification('error', {
+        params: {
+          threadId: 'child-thread-1',
+          turnId: 'child-turn-1',
+          willRetry: true,
+          error: { message: 'child retry' },
+        },
+      });
+      await flush();
+
+      expect(
+        observations.filter((entry) => entry.type === 'session-state'),
+      ).toEqual([
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'running',
+        },
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'requires_action',
+        },
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'requires_action',
+        },
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'idle',
+        },
+        {
+          type: 'session-state',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          state: 'reconnecting',
+        },
+      ]);
+      expect(
+        observations.some(
+          (entry) => 'threadId' in entry && entry.threadId === 'child-thread-1',
+        ),
+      ).toBe(false);
+      expect(
+        observations.some(
+          (entry) =>
+            entry.type === 'input-bound' || entry.type === 'turn-completed',
+        ),
+      ).toBe(false);
+      expect(
+        events.some(
+          (event) =>
+            isRecord(event) &&
+            event.type === 'codex' &&
+            isRecord(event.event) &&
+            event.event.type === 'error',
+        ),
+      ).toBe(false);
+      expect(settled).toBe(false);
+      expect(client.hasActiveTurn()).toBe(true);
+      expect(client.getSteeringCapabilities().steer).toBe(true);
+
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      expect(observations).toContainEqual({
+        type: 'turn-completed',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        status: 'completed',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('catches shadow lifecycle observer failures without changing turn delivery', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+        throw new Error('shadow sink unavailable');
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'host-message-throw',
+      'submission-throw',
+      'client-message-throw',
+    );
+    try {
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      expect(observations).toContainEqual({
+        type: 'turn-started',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        origin: 'user',
+        submissionId: 'submission-throw',
+        userMessageId: 'client-message-throw',
+      });
+      expect(observations).toContainEqual({
+        type: 'turn-completed',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        status: 'completed',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it.each([
+    { label: 'start response first', notificationFirst: false },
+    { label: 'turn/started notification first', notificationFirst: true },
+  ])(
+    'merges a resumed live root start when $label',
+    async ({ notificationFirst }) => {
+      const events: unknown[] = [];
+      const observations: TurnLifecycleObservation[] = [];
+      const lifecycleOptions = {
+        onTurnLifecycleObservation: (
+          observation: TurnLifecycleObservation,
+        ): void => {
+          observations.push(observation);
+        },
+      };
+      const client = new CodexAppServerClient({
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sessionKey: 'project/worktree/chat',
+        initialThreadId: 'thread-1',
+        initialExecutionUserMessageId: 'host-original-anchor',
+        onEvent: (event): void => {
+          events.push(event);
+        },
+        getWindow: (): null => null,
+        ...lifecycleOptions,
+      });
+      const { turnPromise, threadRequest } = await startTurnUntilThreadRequest(
+        client,
+        proc,
+        {
+          text: 'Follow-up input',
+          cwd: '/tmp/repo',
+          model: 'gpt-6-sol',
+          thinkingLevel: 'high',
+          planMode: false,
+          executionUserMessageId: 'host-follow-up',
+          submissionId: 'submission-follow-up',
+          clientUserMessageId: 'client-follow-up',
+        },
+      );
+      try {
+        expect(threadRequest.method).toBe('thread/resume');
+        emitServerMessage(proc, {
+          id: threadRequest.id,
+          result: makeThreadResult('thread-1', [
+            {
+              id: 'native-live-turn',
+              items: [
+                {
+                  id: 'original-user-item',
+                  type: 'userMessage',
+                  clientId: 'host-original-anchor',
+                },
+              ],
+              status: 'inProgress',
+              error: null,
+            },
+          ]),
+        });
+        const start = await waitForClientRequest(proc, 'turn/start');
+        if (notificationFirst) {
+          emitServerMessage(proc, {
+            method: 'turn/started',
+            params: {
+              threadId: 'thread-1',
+              turn: {
+                id: 'native-live-turn',
+                items: [],
+                status: 'inProgress',
+              },
+            },
+          });
+          await flush();
+        }
+        emitServerMessage(proc, {
+          id: start.id,
+          result: {
+            turn: {
+              id: 'native-live-turn',
+              items: [],
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        });
+        if (!notificationFirst) {
+          emitServerMessage(proc, {
+            method: 'turn/started',
+            params: {
+              threadId: 'thread-1',
+              turn: {
+                id: 'native-live-turn',
+                items: [],
+                status: 'inProgress',
+              },
+            },
+          });
+        }
+        await flush();
+
+        const startedEvent = events.find(
+          (event) =>
+            isRecord(event) &&
+            isRecord(event.event) &&
+            event.event.type === 'turn.started' &&
+            event.event.turn_id === 'native-live-turn',
+        );
+        expect(
+          getProviderRunDescriptor(startedEvent)?.executionUserMessageId,
+          // Events keep the dispatched anchor the host's turn owns; the merge
+          // is reported to the shadow stream only (phase 35 re-anchors).
+        ).toBe('host-follow-up');
+        expect(
+          observations.filter(
+            (entry) => entry.type === 'turn-started' && entry.merged === true,
+          ),
+        ).toEqual([
+          {
+            type: 'turn-started',
+            threadId: 'thread-1',
+            turnId: 'native-live-turn',
+            origin: 'user',
+            submissionId: 'submission-follow-up',
+            userMessageId: 'client-follow-up',
+            merged: true,
+          },
+        ]);
+
+        completeRootTurn(proc, 'native-live-turn');
+        await expect(turnPromise).resolves.toMatchObject({
+          status: 'completed',
+        });
+      } finally {
+        client.dispose();
+        await turnPromise.catch(() => undefined);
+      }
+    },
+  );
+
+  it('retains an exact live-turn anchor across client recreation when resume omits items', async () => {
+    const firstClient = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'anchor-retention-project',
+      worktreeId: 'anchor-retention-worktree',
+      chatId: 'anchor-retention-chat',
+      sessionKey:
+        'anchor-retention-project/anchor-retention-worktree/anchor-retention-chat',
+      initialThreadId: 'thread-1',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+    });
+    const { turnPromise: firstTurnPromise } = await startActiveTurn(
+      firstClient,
+      proc,
+      [],
+      'host-original-across-recreation',
+    );
+    firstClient.dispose();
+    await firstTurnPromise.catch(() => undefined);
+
+    const events: unknown[] = [];
+    const observations: TurnLifecycleObservation[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'anchor-retention-project',
+      worktreeId: 'anchor-retention-worktree',
+      chatId: 'anchor-retention-chat',
+      sessionKey:
+        'anchor-retention-project/anchor-retention-worktree/anchor-retention-chat',
+      initialThreadId: 'thread-1',
+      onEvent: (event): void => {
+        events.push(event);
+      },
+      getWindow: (): null => null,
+      onTurnLifecycleObservation: (observation): void => {
+        observations.push(observation);
+      },
+    });
+    const { turnPromise, threadRequest } = await startTurnUntilThreadRequest(
+      client,
+      proc,
+      {
+        text: 'Follow-up input after client recreation',
+        cwd: '/tmp/repo',
+        model: 'gpt-6-sol',
+        thinkingLevel: 'high',
+        planMode: false,
+        executionUserMessageId: 'host-follow-up-after-recreation',
+        submissionId: 'submission-follow-up-after-recreation',
+        clientUserMessageId: 'client-follow-up-after-recreation',
+      },
+    );
+    try {
+      expect(threadRequest.method).toBe('thread/resume');
+      emitServerMessage(proc, {
+        id: threadRequest.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'turn-1',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        ]),
+      });
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: { id: 'turn-1', items: [], status: 'inProgress', error: null },
+        },
+      });
+      await client.handleConnectionNotification('turn/started', {
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1', items: [], status: 'inProgress' },
+        },
+      });
+      await flush();
+
+      const startedEvent = events.find(
+        (event) =>
+          isRecord(event) &&
+          isRecord(event.event) &&
+          event.event.type === 'turn.started' &&
+          event.event.turn_id === 'turn-1',
+      );
+      expect(
+        getProviderRunDescriptor(startedEvent)?.executionUserMessageId,
+      ).toBe('host-follow-up-after-recreation');
+      expect(
+        observations.filter(
+          (entry) => entry.type === 'turn-started' && entry.merged === true,
+        ),
+      ).toContainEqual(
+        expect.objectContaining({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          merged: true,
+        }),
+      );
+      completeRootTurn(proc, 'turn-1');
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('does not merge a start into a known completed resume turn', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const events: unknown[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'host-original-anchor',
+      onEvent: (event): void => {
+        events.push(event);
+      },
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise, threadRequest } = await startTurnUntilThreadRequest(
+      client,
+      proc,
+      {
+        text: 'New input',
+        cwd: '/tmp/repo',
+        model: 'gpt-6-sol',
+        thinkingLevel: 'high',
+        planMode: false,
+        executionUserMessageId: 'host-new-message',
+        submissionId: 'submission-new',
+        clientUserMessageId: 'client-new-message',
+      },
+    );
+    try {
+      emitServerMessage(proc, {
+        id: threadRequest.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'already-completed',
+            items: [],
+            status: 'completed',
+            error: null,
+          },
+        ]),
+      });
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: {
+            id: 'already-completed',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        },
+      });
+      await client.handleConnectionNotification('turn/started', {
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'already-completed', items: [], status: 'inProgress' },
+        },
+      });
+      const startedEvent = events.find(
+        (event) =>
+          isRecord(event) &&
+          isRecord(event.event) &&
+          event.event.type === 'turn.started' &&
+          event.event.turn_id === 'already-completed',
+      );
+      expect(
+        getProviderRunDescriptor(startedEvent)?.executionUserMessageId,
+      ).toBe('host-new-message');
+      await flush();
+      expect(
+        observations.filter(
+          (entry) => entry.type === 'turn-started' && entry.merged === true,
+        ),
+      ).toEqual([]);
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({ type: 'input-bound' }),
+      );
+      completeRootTurn(proc, 'already-completed');
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('does not retain an unresolved resumed start as live-turn provenance', async () => {
+    const observations: TurnLifecycleObservation[] = [];
+    mockLogMainProcessWarn.mockClear();
+    const lifecycleOptions = {
+      onTurnLifecycleObservation: (
+        observation: TurnLifecycleObservation,
+      ): void => {
+        observations.push(observation);
+      },
+    };
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'unrelated-last-anchor',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+      ...lifecycleOptions,
+    });
+    const { turnPromise, threadRequest } = await startTurnUntilThreadRequest(
+      client,
+      proc,
+      {
+        text: 'Follow-up without an anchor',
+        cwd: '/tmp/repo',
+        model: 'gpt-6-sol',
+        thinkingLevel: 'high',
+        planMode: false,
+        submissionId: 'submission-unresolved',
+        clientUserMessageId: 'client-unresolved',
+      },
+    );
+    let recreatedClient: CodexAppServerClient | undefined;
+    let recreatedTurnPromise: Promise<unknown> | undefined;
+    try {
+      emitServerMessage(proc, {
+        id: threadRequest.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'native-live-unanchored',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        ]),
+      });
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: {
+            id: 'native-live-unanchored',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        },
+      });
+      await flush();
+      expect(mockLogMainProcessWarn).toHaveBeenCalledWith(
+        'Codex resumed start merge unresolved',
+        {
+          code: 'codex_start_merge_unresolved',
+          threadId: 'thread-1',
+          turnId: 'native-live-unanchored',
+        },
+      );
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({ merged: true }),
+      );
+      expect(observations).not.toContainEqual(
+        expect.objectContaining({ type: 'input-bound' }),
+      );
+      expect(client.hasActiveTurn()).toBe(true);
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+
+      const recreatedObservations: TurnLifecycleObservation[] = [];
+      recreatedClient = new CodexAppServerClient({
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sessionKey: 'project/worktree/chat',
+        initialThreadId: 'thread-1',
+        onEvent: jest.fn(),
+        getWindow: (): null => null,
+        onTurnLifecycleObservation: (observation): void => {
+          recreatedObservations.push(observation);
+        },
+      });
+      const recreatedStart = await startTurnUntilThreadRequest(
+        recreatedClient,
+        proc,
+        {
+          text: 'Another follow-up without original-turn evidence',
+          cwd: '/tmp/repo',
+          model: 'gpt-6-sol',
+          thinkingLevel: 'high',
+          planMode: false,
+          executionUserMessageId: 'next-message-anchor',
+          submissionId: 'submission-next',
+          clientUserMessageId: 'client-next',
+        },
+      );
+      recreatedTurnPromise = recreatedStart.turnPromise;
+      emitServerMessage(proc, {
+        id: recreatedStart.threadRequest.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'native-live-unanchored',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        ]),
+      });
+      const recreatedTurnStart = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        id: recreatedTurnStart.id,
+        result: {
+          turn: {
+            id: 'native-live-unanchored',
+            items: [],
+            status: 'inProgress',
+            error: null,
+          },
+        },
+      });
+      await flush();
+      expect(mockLogMainProcessWarn).toHaveBeenCalledTimes(2);
+      expect(recreatedObservations).not.toContainEqual(
+        expect.objectContaining({ merged: true }),
+      );
+      completeRootTurn(proc, 'native-live-unanchored');
+      await expect(recreatedTurnPromise).resolves.toMatchObject({
+        status: 'completed',
+      });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+      recreatedClient?.dispose();
+      await recreatedTurnPromise?.catch(() => undefined);
+    }
+  });
+
+  it('keeps later starts serialized behind an adopted provider-owned root run', async () => {
+    const client = createClient();
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'retained-anchor',
+    );
+    completeRootTurn(proc);
+    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    collectClientMessages(proc);
+    await startObservedRootRun(client, 'provider-owned-live');
+
+    const nextTurn = client.startTurn({
+      text: 'Do not overlap the provider-owned run',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+    });
+    void nextTurn.catch(() => undefined);
+    try {
+      await flush();
+      expect(client.hasProviderOwnedTurn()).toBe(true);
+      expect(
+        collectClientMessages(proc).filter(
+          (message) => message.method === 'turn/start',
+        ),
+      ).toHaveLength(0);
+
+      await completeObservedRootRun(client, 'provider-owned-live');
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: { id: 'turn-after-provider', items: [], status: 'inProgress' },
+        },
+      });
+      completeRootTurn(proc, 'turn-after-provider');
+      await expect(nextTurn).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await nextTurn.catch(() => undefined);
+    }
+  });
+
+  it('adopts and completes a provider-owned root run from the retained execution anchor', async () => {
+    const events: unknown[] = [];
+    const onProviderEventDropped = jest.fn();
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: (event): void => {
+        events.push(event);
+      },
+      onProviderEventDropped,
+      getWindow: (): null => null,
+    });
+
+    try {
+      const { turnPromise } = await startActiveTurn(
+        client,
+        proc,
+        [],
+        'msg-retained-anchor',
+      );
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({
+        status: 'completed',
+      });
+      collectClientMessages(proc);
+      events.length = 0;
+
+      await client.handleConnectionNotification('turn/started', {
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'provider-turn-1', items: [], status: 'inProgress' },
+        },
+      });
+      await client.handleConnectionNotification('turn/completed', {
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: 'provider-turn-1',
+            items: [],
+            status: 'completed',
+            error: null,
+          },
+        },
+      });
+
+      expect(events).toContainEqual({
+        type: 'codex',
+        event: {
+          type: 'turn.started',
+          thread_id: 'thread-1',
+          turn_id: 'provider-turn-1',
+        },
+      });
+      expect(events).toContainEqual({
+        type: 'codex',
+        event: {
+          type: 'turn.completed',
+          status: 'completed',
+          thread_id: 'thread-1',
+          turn_id: 'provider-turn-1',
+        },
+      });
+      expect(
+        events.filter((candidate): boolean => {
+          if (
+            !isRecord(candidate) ||
+            candidate.type !== 'codex' ||
+            !isRecord(candidate.event)
+          ) {
+            return false;
+          }
+          return (
+            candidate.event.type === 'turn.completed' &&
+            candidate.event.turn_id === 'provider-turn-1'
+          );
+        }),
+      ).toHaveLength(1);
+      expect(onProviderEventDropped).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          gate: 'codex_root_completion_stale',
+          providerTurnId: 'provider-turn-1',
+        }),
+      );
+      expect(
+        collectClientMessages(proc).filter(
+          (message): boolean => message.method === 'turn/start',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it('preserves interrupted status on routed subagent turn completions', async () => {
     const events: unknown[] = [];
     const client = createClient(events);
@@ -16745,6 +20866,1420 @@ describe('CodexAppServerClient', () => {
     completeRootTurn(proc);
     const result = await turnPromise;
     expect(result.status).toBe('completed');
+  });
+
+  it('exposes and observes native background work from raw child and terminal frames', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'background-work-anchor',
+    );
+
+    try {
+      const api = readClientBackgroundApi(client);
+      expect(api.hasLiveBackgroundWork).toEqual(expect.any(Function));
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      expect(api.subscribeBackgroundWork).toEqual(expect.any(Function));
+      if (!api.hasLiveBackgroundWork || !api.getBackgroundSnapshot) return;
+
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'subagent-activity',
+            type: 'subAgentActivity',
+            agentThreadId: 'background-child',
+          },
+        },
+      });
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'background-child',
+          turnId: 'background-child-turn',
+          item: {
+            id: 'background-terminal',
+            type: 'commandExecution',
+            processId: 'background-process',
+            command: 'private command text',
+            cwd: '/private/worktree/path',
+            status: 'inProgress',
+          },
+        },
+      });
+
+      const liveSnapshot = api.getBackgroundSnapshot();
+      expect(api.hasLiveBackgroundWork()).toBe(true);
+      expect(readBackgroundWork(liveSnapshot)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'child',
+            threadId: 'background-child',
+          }),
+          expect.objectContaining({
+            kind: 'terminal',
+            threadId: 'background-child',
+            processId: 'background-process',
+          }),
+        ]),
+      );
+
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      await flush();
+
+      await client.handleConnectionNotification('item/completed', {
+        params: {
+          threadId: 'background-child',
+          turnId: 'background-child-turn',
+          item: {
+            id: 'background-terminal',
+            type: 'commandExecution',
+            processId: 'background-process',
+            status: 'completed',
+          },
+        },
+      });
+      await client.handleConnectionNotification('thread/status/changed', {
+        params: {
+          threadId: 'background-child',
+          status: { type: 'idle' },
+        },
+      });
+
+      const terminalListRequests = collectClientMessages(proc).filter(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      expect(terminalListRequests).toHaveLength(1);
+      const terminalListRequest = terminalListRequests[0];
+      if (!terminalListRequest) return;
+      emitServerMessage(proc, {
+        id: terminalListRequest.id,
+        result: { data: [], nextCursor: null },
+      });
+      await flush();
+
+      expect(api.hasLiveBackgroundWork()).toBe(false);
+      expect(readBackgroundWork(api.getBackgroundSnapshot())).toEqual([]);
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('reconciles root terminal pages asynchronously across every cursor', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'root-terminal-anchor',
+    );
+    const api = readClientBackgroundApi(client);
+
+    try {
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'root-terminal',
+            type: 'commandExecution',
+            processId: 'root-process',
+            command: 'private command text',
+            cwd: '/private/worktree/path',
+            status: 'inProgress',
+          },
+        },
+      });
+
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      // The first page is intentionally left unanswered until after the root
+      // settles: reconciliation is observational and never owns the turn.
+      const firstPageRequests = collectClientMessages(proc).filter(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      expect(firstPageRequests).toHaveLength(1);
+      const firstPage = firstPageRequests[0];
+      if (!firstPage) return;
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      if (!api.getBackgroundSnapshot) return;
+      expect(getRequestParams(firstPage).threadId).toBe('thread-1');
+
+      emitServerMessage(proc, {
+        id: firstPage.id,
+        result: {
+          data: [{ itemId: 'terminal-page-one', processId: 'process-one' }],
+          nextCursor: 'cursor-two',
+        },
+      });
+      await flush();
+      const secondPageRequests = collectClientMessages(proc).filter(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      expect(secondPageRequests).toHaveLength(1);
+      const secondPage = secondPageRequests[0];
+      if (!secondPage) return;
+      expect(getRequestParams(secondPage)).toMatchObject({
+        threadId: 'thread-1',
+        cursor: 'cursor-two',
+      });
+      emitServerMessage(proc, {
+        id: secondPage.id,
+        result: {
+          data: [{ itemId: 'terminal-page-two', processId: 'process-two' }],
+          nextCursor: null,
+        },
+      });
+      await flush();
+      expect(readBackgroundWork(api.getBackgroundSnapshot())).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ itemId: 'terminal-page-one' }),
+          expect.objectContaining({ itemId: 'terminal-page-two' }),
+        ]),
+      );
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('keeps a listed null-process terminal attributed to its originating turn past later roots', async () => {
+    const events: unknown[] = [];
+    let releaseLateAdmission = (): void => undefined;
+    let lateAdmissionStarted = false;
+    const lateAdmission = new Promise<void>((resolve) => {
+      releaseLateAdmission = resolve;
+    });
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: (event): void | Promise<void> => {
+        events.push(event);
+        if (
+          isRecord(event) &&
+          isRecord(event.event) &&
+          event.event.type === 'item.completed' &&
+          isRecord(event.event.item) &&
+          event.event.item.id === 'original-null-process-terminal'
+        ) {
+          lateAdmissionStarted = true;
+          return lateAdmission;
+        }
+      },
+      getWindow: (): null => null,
+    });
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'original-null-process-anchor',
+    );
+    const api = readClientBackgroundApi(client);
+
+    try {
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'original-null-process-terminal',
+            type: 'commandExecution',
+            processId: null,
+            status: 'inProgress',
+          },
+        },
+      });
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+
+      await startObservedRootRun(client, 'terminal-list-trigger-turn');
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'terminal-list-trigger-turn',
+          item: {
+            id: 'terminal-list-trigger',
+            type: 'commandExecution',
+            processId: 'terminal-list-trigger-process',
+            status: 'inProgress',
+          },
+        },
+      });
+      await completeObservedRootRun(client, 'terminal-list-trigger-turn');
+
+      const listMessages = await collectClientMessagesUntil(proc, (messages) =>
+        messages.some(
+          (message) => message.method === 'thread/backgroundTerminals/list',
+        ),
+      );
+      const listRequest = listMessages.find(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      expect(listRequest).toBeDefined();
+      if (!listRequest) return;
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      if (!api.getBackgroundSnapshot) return;
+      emitServerMessage(proc, {
+        id: listRequest.id,
+        result: {
+          data: [
+            {
+              itemId: 'original-null-process-terminal',
+              processId: 'listed-original-process',
+            },
+          ],
+          nextCursor: null,
+        },
+      });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const snapshot = api.getBackgroundSnapshot();
+        if (isRecord(snapshot) && snapshot.reconciling === false) break;
+        await flush();
+      }
+      expect(readBackgroundWork(api.getBackgroundSnapshot())).toContainEqual(
+        expect.objectContaining({
+          itemId: 'original-null-process-terminal',
+          processId: 'listed-original-process',
+          spawnedByTurnId: 'turn-1',
+        }),
+      );
+
+      for (let index = 0; index < 65; index += 1) {
+        const turnId = `later-null-process-root-${index}`;
+        await startObservedRootRun(client, turnId);
+        await completeObservedRootRun(client, turnId);
+      }
+      const laterListRequests = collectClientMessages(proc).filter(
+        (message) =>
+          message.method === 'thread/backgroundTerminals/list' &&
+          message.id !== listRequest.id,
+      );
+      for (const request of laterListRequests) {
+        emitServerMessage(proc, {
+          id: request.id,
+          result: {
+            data: [
+              {
+                itemId: 'original-null-process-terminal',
+                processId: 'listed-original-process',
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+      }
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const snapshot = api.getBackgroundSnapshot();
+        if (isRecord(snapshot) && snapshot.reconciling === false) break;
+        await flush();
+      }
+
+      const lateNotification = Promise.resolve(
+        client.handleConnectionNotification('item/completed', {
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              id: 'original-null-process-terminal',
+              type: 'commandExecution',
+              processId: 'listed-original-process',
+              status: 'completed',
+              aggregatedOutput: 'late original output',
+            },
+          },
+        }),
+      );
+      for (
+        let attempt = 0;
+        attempt < 10 && !lateAdmissionStarted;
+        attempt += 1
+      ) {
+        await flush();
+      }
+      expect(lateAdmissionStarted).toBe(true);
+      const late = events.find(
+        (event) => getProviderRunDescriptor(event)?.phase === 'late',
+      );
+      expect(getProviderRunDescriptor(late)?.executionUserMessageId).toBe(
+        'original-null-process-anchor',
+      );
+
+      releaseLateAdmission();
+      await lateNotification;
+    } finally {
+      releaseLateAdmission();
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('does not request terminal pages for root completion without process evidence', async () => {
+    const client = createClient();
+    const { turnPromise } = await startActiveTurn(client, proc);
+    try {
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      await flush();
+      expect(
+        collectClientMessages(proc).filter(
+          (message) => message.method === 'thread/backgroundTerminals/list',
+        ),
+      ).toEqual([]);
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('fails root terminal reconciliation without blocking turn settlement', async () => {
+    const client = createClient();
+    const { turnPromise } = await startActiveTurn(client, proc);
+    const api = readClientBackgroundApi(client);
+
+    try {
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'root-terminal-failure',
+            type: 'commandExecution',
+            processId: 'root-process-failure',
+            status: 'inProgress',
+          },
+        },
+      });
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      const listRequest = collectClientMessages(proc).find(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      expect(listRequest).toBeDefined();
+      if (!listRequest) return;
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      if (!api.getBackgroundSnapshot) return;
+      emitServerMessage(proc, {
+        id: listRequest.id,
+        error: { message: 'terminal listing unavailable' },
+      });
+      await flush();
+      const snapshot = api.getBackgroundSnapshot();
+      expect(isRecord(snapshot) ? snapshot.reconciling : undefined).toBe(false);
+      expect(readBackgroundWork(snapshot)).toContainEqual(
+        expect.objectContaining({ itemId: 'root-terminal-failure' }),
+      );
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('reconciles terminal pages after a successful resume without waiting for them', async () => {
+    const events: unknown[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'resume-anchor',
+      onEvent: (event): void => {
+        events.push(event);
+      },
+      getWindow: (): null => null,
+    });
+    const api = readClientBackgroundApi(client);
+
+    const turnPromise = client.startTurn({
+      text: 'Resume',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+      executionUserMessageId: 'resume-anchor',
+    });
+    try {
+      const initialize = await waitForClientRequest(proc, 'initialize');
+      emitServerMessage(proc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resume = await waitForClientRequest(proc, 'thread/resume');
+      emitServerMessage(proc, {
+        id: resume.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'old-turn',
+            status: 'inProgress',
+            items: [
+              {
+                id: 'resumed-terminal',
+                type: 'commandExecution',
+                processId: 'resumed-process',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ]),
+      });
+      const resumeRequests = await collectClientMessagesUntil(
+        proc,
+        (messages) =>
+          messages.some(
+            (message) => message.method === 'thread/backgroundTerminals/list',
+          ) && messages.some((message) => message.method === 'turn/start'),
+      );
+      const firstPage = resumeRequests.find(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      const turnStart = resumeRequests.find(
+        (message) => message.method === 'turn/start',
+      );
+      expect(firstPage).toBeDefined();
+      expect(turnStart).toBeDefined();
+      if (!firstPage || !turnStart) return;
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      if (!api.getBackgroundSnapshot) return;
+      expect(getRequestParams(firstPage).threadId).toBe('thread-1');
+
+      emitServerMessage(proc, {
+        id: turnStart.id,
+        result: {
+          turn: { id: 'resumed-turn', items: [], status: 'inProgress' },
+        },
+      });
+      completeRootTurn(proc, 'resumed-turn');
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+
+      emitServerMessage(proc, {
+        id: firstPage.id,
+        result: {
+          data: [{ itemId: 'resume-page-one', processId: 'resume-one' }],
+          nextCursor: 'resume-cursor-two',
+        },
+      });
+      await flush();
+      const secondPage = collectClientMessages(proc).find(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      expect(secondPage).toBeDefined();
+      if (!secondPage) return;
+      expect(getRequestParams(secondPage).cursor).toBe('resume-cursor-two');
+      emitServerMessage(proc, {
+        id: secondPage.id,
+        result: {
+          data: [{ itemId: 'resume-page-two', processId: 'resume-two' }],
+          nextCursor: null,
+        },
+      });
+      await flush();
+      expect(readBackgroundWork(api.getBackgroundSnapshot())).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ itemId: 'resume-page-one' }),
+          expect.objectContaining({ itemId: 'resume-page-two' }),
+        ]),
+      );
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('does not request terminal pages after resume without background evidence', async () => {
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'resume-without-evidence-anchor',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+    });
+    const turnPromise = client.startTurn({
+      text: 'Resume without background work',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+      executionUserMessageId: 'resume-without-evidence-anchor',
+    });
+
+    try {
+      const initialize = await waitForClientRequest(proc, 'initialize');
+      emitServerMessage(proc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resume = await waitForClientRequest(proc, 'thread/resume');
+      emitServerMessage(proc, {
+        id: resume.id,
+        result: makeThreadResult('thread-1'),
+      });
+      const messages = await collectClientMessagesUntil(proc, (collected) =>
+        collected.some((message) => message.method === 'turn/start'),
+      );
+      const turnStart = messages.find(
+        (message) => message.method === 'turn/start',
+      );
+      expect(
+        messages.filter(
+          (message) => message.method === 'thread/backgroundTerminals/list',
+        ),
+      ).toEqual([]);
+      expect(turnStart).toBeDefined();
+      if (!turnStart) return;
+
+      emitServerMessage(proc, {
+        id: turnStart.id,
+        result: {
+          turn: {
+            id: 'resume-without-evidence-turn',
+            items: [],
+            status: 'inProgress',
+          },
+        },
+      });
+      completeRootTurn(proc, 'resume-without-evidence-turn');
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      expect(
+        collectClientMessages(proc).filter(
+          (message) => message.method === 'thread/backgroundTerminals/list',
+        ),
+      ).toEqual([]);
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('clears failed resume reconciliation while retaining terminal evidence', async () => {
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'resume-failure-anchor',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+    });
+    const api = readClientBackgroundApi(client);
+
+    const turnPromise = client.startTurn({
+      text: 'Resume',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+      executionUserMessageId: 'resume-failure-anchor',
+    });
+    try {
+      const initialize = await waitForClientRequest(proc, 'initialize');
+      emitServerMessage(proc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resume = await waitForClientRequest(proc, 'thread/resume');
+      emitServerMessage(proc, {
+        id: resume.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'old-turn',
+            status: 'inProgress',
+            items: [
+              {
+                id: 'resumed-terminal-failure',
+                type: 'commandExecution',
+                processId: 'resumed-process-failure',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ]),
+      });
+      const resumeRequests = await collectClientMessagesUntil(
+        proc,
+        (messages) =>
+          messages.some(
+            (message) => message.method === 'thread/backgroundTerminals/list',
+          ) && messages.some((message) => message.method === 'turn/start'),
+      );
+      const firstPage = resumeRequests.find(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      const turnStart = resumeRequests.find(
+        (message) => message.method === 'turn/start',
+      );
+      expect(firstPage).toBeDefined();
+      expect(turnStart).toBeDefined();
+      if (!firstPage || !turnStart) return;
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      if (!api.getBackgroundSnapshot) return;
+      emitServerMessage(proc, {
+        id: turnStart.id,
+        result: {
+          turn: { id: 'resume-failed-turn', items: [], status: 'inProgress' },
+        },
+      });
+      completeRootTurn(proc, 'resume-failed-turn');
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      emitServerMessage(proc, {
+        id: firstPage.id,
+        error: { message: 'resume terminal listing unavailable' },
+      });
+      await flush();
+      const snapshot = api.getBackgroundSnapshot();
+      expect(isRecord(snapshot) ? snapshot.reconciling : undefined).toBe(false);
+      expect(readBackgroundWork(snapshot)).toContainEqual(
+        expect.objectContaining({ itemId: 'resumed-terminal-failure' }),
+      );
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('keeps a resumed terminal from a closed turn in the background when listing fails', async () => {
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'resume-closed-anchor',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+    });
+    const api = readClientBackgroundApi(client);
+
+    const turnPromise = client.startTurn({
+      text: 'Resume',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+      executionUserMessageId: 'resume-closed-anchor',
+    });
+    try {
+      const initialize = await waitForClientRequest(proc, 'initialize');
+      emitServerMessage(proc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const resume = await waitForClientRequest(proc, 'thread/resume');
+      emitServerMessage(proc, {
+        id: resume.id,
+        result: makeThreadResult('thread-1', [
+          {
+            id: 'closed-turn',
+            status: 'completed',
+            items: [
+              {
+                id: 'resumed-closed-terminal',
+                type: 'commandExecution',
+                processId: 'resumed-closed-process',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ]),
+      });
+      const resumeRequests = await collectClientMessagesUntil(
+        proc,
+        (messages) =>
+          messages.some(
+            (message) => message.method === 'thread/backgroundTerminals/list',
+          ) && messages.some((message) => message.method === 'turn/start'),
+      );
+      const firstPage = resumeRequests.find(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      const turnStart = resumeRequests.find(
+        (message) => message.method === 'turn/start',
+      );
+      expect(firstPage).toBeDefined();
+      expect(turnStart).toBeDefined();
+      if (!firstPage || !turnStart) return;
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      if (!api.getBackgroundSnapshot) return;
+      emitServerMessage(proc, {
+        id: firstPage.id,
+        error: { message: 'resume terminal listing unavailable' },
+      });
+      await flush();
+      // The turn that started it already closed, so the command is background
+      // work even before (or without) Codex listing it.
+      const snapshot = api.getBackgroundSnapshot();
+      expect(readBackgroundWork(snapshot)).toContainEqual(
+        expect.objectContaining({ itemId: 'resumed-closed-terminal' }),
+      );
+      expect(readBackgroundWork(snapshot)).not.toContainEqual(
+        expect.objectContaining({
+          itemId: 'resumed-closed-terminal',
+          foreground: true,
+        }),
+      );
+      emitServerMessage(proc, {
+        id: turnStart.id,
+        result: {
+          turn: {
+            id: 'resume-closed-new-turn',
+            items: [],
+            status: 'inProgress',
+          },
+        },
+      });
+      completeRootTurn(proc, 'resume-closed-new-turn');
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('retires background work on process failure with privacy-safe abandonment diagnostics', async () => {
+    mockLogMainProcessWarn.mockClear();
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      onEvent: jest.fn(),
+      getWindow: (): null => null,
+    });
+    const api = readClientBackgroundApi(client);
+    expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+    if (!api.getBackgroundSnapshot) {
+      client.dispose();
+      return;
+    }
+
+    try {
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'private-terminal',
+            type: 'commandExecution',
+            processId: 'private-process',
+            command: 'secret command body',
+            cwd: '/Users/private/path',
+            status: 'inProgress',
+          },
+        },
+      });
+      const before = api.getBackgroundSnapshot();
+      expect(readBackgroundWork(before)).toHaveLength(1);
+      client.markProcessFailed();
+      const after = api.getBackgroundSnapshot();
+      expect(isRecord(before) ? before.epoch : undefined).not.toBe(
+        isRecord(after) ? after.epoch : undefined,
+      );
+      expect(api.hasLiveBackgroundWork?.()).toBe(false);
+      expect(readBackgroundWork(after)).toEqual([]);
+      const diagnosticText = JSON.stringify(mockLogMainProcessWarn.mock.calls);
+      expect(diagnosticText).toContain('codex_background_work_abandoned');
+      expect(diagnosticText).not.toContain('secret command body');
+      expect(diagnosticText).not.toContain('/Users/private/path');
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('keeps an original terminal run anchored past 64 later roots until late output is admitted', async () => {
+    const events: unknown[] = [];
+    let releaseLateAdmission = (): void => undefined;
+    let lateAdmissionStarted = false;
+    const lateAdmission = new Promise<void>((resolve) => {
+      releaseLateAdmission = resolve;
+    });
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      onEvent: (event): void | Promise<void> => {
+        events.push(event);
+        if (
+          isRecord(event) &&
+          isRecord(event.event) &&
+          event.event.type === 'item.completed' &&
+          isRecord(event.event.item) &&
+          event.event.item.id === 'original-background-terminal'
+        ) {
+          lateAdmissionStarted = true;
+          return lateAdmission;
+        }
+      },
+      getWindow: (): null => null,
+    });
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'original-background-anchor',
+    );
+    const api = readClientBackgroundApi(client);
+
+    try {
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'original-background-terminal',
+            type: 'commandExecution',
+            processId: 'original-background-process',
+            command: 'private command text',
+            cwd: '/private/worktree/path',
+            status: 'inProgress',
+          },
+        },
+      });
+      completeRootTurn(proc);
+      await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+      const terminalListRequest = collectClientMessages(proc).find(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      expect(terminalListRequest).toBeDefined();
+      if (!terminalListRequest) return;
+      expect(api.getBackgroundSnapshot).toEqual(expect.any(Function));
+      if (!api.getBackgroundSnapshot) return;
+      emitServerMessage(proc, {
+        id: terminalListRequest.id,
+        result: {
+          data: [
+            {
+              itemId: 'original-background-terminal',
+              processId: 'original-background-process',
+            },
+          ],
+          nextCursor: null,
+        },
+      });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const snapshot = api.getBackgroundSnapshot();
+        if (isRecord(snapshot) && snapshot.reconciling === false) break;
+        await flush();
+      }
+      expect(readBackgroundWork(api.getBackgroundSnapshot())).toContainEqual(
+        expect.objectContaining({
+          itemId: 'original-background-terminal',
+          processId: 'original-background-process',
+        }),
+      );
+      const reconciledSnapshot = api.getBackgroundSnapshot();
+      expect(
+        isRecord(reconciledSnapshot)
+          ? reconciledSnapshot.reconciling
+          : undefined,
+      ).toBe(false);
+
+      for (let index = 0; index < 65; index += 1) {
+        const turnId = `later-provider-root-${index}`;
+        await startObservedRootRun(client, turnId);
+        await completeObservedRootRun(client, turnId);
+      }
+      const laterTerminalListRequests = collectClientMessages(proc).filter(
+        (message) => message.method === 'thread/backgroundTerminals/list',
+      );
+      for (const request of laterTerminalListRequests) {
+        emitServerMessage(proc, {
+          id: request.id,
+          result: {
+            data: [
+              {
+                itemId: 'original-background-terminal',
+                processId: 'original-background-process',
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+      }
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const snapshot = api.getBackgroundSnapshot();
+        if (isRecord(snapshot) && snapshot.reconciling === false) break;
+        await flush();
+      }
+      const lateNotification = Promise.resolve(
+        client.handleConnectionNotification('item/completed', {
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              id: 'original-background-terminal',
+              type: 'commandExecution',
+              processId: 'original-background-process',
+              status: 'completed',
+              aggregatedOutput: 'late original output',
+            },
+          },
+        }),
+      );
+      for (
+        let attempt = 0;
+        attempt < 10 && !lateAdmissionStarted;
+        attempt += 1
+      ) {
+        await flush();
+      }
+      expect(lateAdmissionStarted).toBe(true);
+      expect(api.hasLiveBackgroundWork?.()).toBe(false);
+      const late = events.find(
+        (event) => getProviderRunDescriptor(event)?.phase === 'late',
+      );
+      expect(getProviderRunDescriptor(late)?.executionUserMessageId).toBe(
+        'original-background-anchor',
+      );
+      expect(classifyProviderRunEvent(late).kind).toBe('transcript_only');
+
+      releaseLateAdmission();
+      await lateNotification;
+      await flush();
+      expect(classifyProviderRunEvent(late)).toEqual({
+        kind: 'reject',
+        reason: 'unknown_run',
+      });
+    } finally {
+      releaseLateAdmission();
+      client.dispose();
+      await turnPromise.catch(() => undefined);
+    }
+  });
+
+  it('keeps an unanchored provider wake descriptorless without swallowing its items', async () => {
+    const events: unknown[] = [];
+    const drops = jest.fn();
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      getWindow: () => null,
+      onEvent: (event) => {
+        events.push(event);
+      },
+      onProviderEventDropped: drops,
+    });
+    try {
+      await startObservedRootRun(client, 'unanchored-wake');
+      await client.handleConnectionNotification('item/completed', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'unanchored-wake',
+          item: {
+            type: 'agentMessage',
+            id: 'wake-text',
+            text: 'legacy output',
+          },
+        },
+      });
+      expect(client.hasActiveTurn()).toBe(false);
+      expect(JSON.stringify(events)).toContain('legacy output');
+      expect(
+        events.every((event) => getProviderRunDescriptor(event) === undefined),
+      ).toBe(true);
+      expect(drops).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'no_execution_anchor' }),
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('adopts a provider wake on a recreated client using its retained bound anchor', async () => {
+    const events: unknown[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'retained-anchor',
+      getWindow: () => null,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    try {
+      await startObservedRootRun(client, 'recreated-wake');
+      expect(client.hasProviderOwnedTurn()).toBe(true);
+      expect(getProviderRunDescriptor(events[0])?.executionUserMessageId).toBe(
+        'retained-anchor',
+      );
+      await completeObservedRootRun(client, 'recreated-wake');
+      expect(client.hasActiveTurn()).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('accepts an anchored dispatched terminal read before its start response continuation', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const result = client.startTurn({
+      text: 'Run',
+      cwd: '/tmp/repo',
+      model: 'gpt-6-sol',
+      thinkingLevel: 'high',
+      planMode: false,
+      executionUserMessageId: 'same-read-anchor',
+    });
+    try {
+      const initialize = await waitForClientRequest(proc, 'initialize');
+      emitServerMessage(proc, {
+        id: initialize.id,
+        result: { userAgent: 'ua', codexHome: '/tmp/.codex' },
+      });
+      const thread = await waitForClientRequest(proc, 'thread/start');
+      emitServerMessage(proc, {
+        id: thread.id,
+        result: makeThreadResult('thread-1'),
+      });
+      const start = await waitForClientRequest(proc, 'turn/start');
+      emitServerMessage(proc, {
+        id: start.id,
+        result: {
+          turn: { id: 'same-read-turn', items: [], status: 'inProgress' },
+        },
+      });
+      completeRootTurn(proc, 'same-read-turn');
+      await expect(result).resolves.toMatchObject({ status: 'completed' });
+      const terminal = events.find(
+        (event) =>
+          isRecord(event) &&
+          isRecord(event.event) &&
+          event.event.type === 'turn.completed',
+      );
+      const classified = classifyProviderRunEvent(terminal);
+      expect(classified.kind).toBe('ordinary');
+      if (classified.kind === 'ordinary')
+        expect(classified.run?.executionUserMessageId).toBe('same-read-anchor');
+    } finally {
+      client.dispose();
+      await result.catch(() => undefined);
+    }
+  });
+
+  it('retires late reconciliation authority across transport replacement without settling its successor', async () => {
+    const events: unknown[] = [];
+    const client = new CodexAppServerClient({
+      cwd: '/tmp/repo',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      sessionKey: 'project/worktree/chat',
+      initialThreadId: 'thread-1',
+      initialExecutionUserMessageId: 'retained-anchor',
+      getWindow: () => null,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    try {
+      await startObservedRootRun(client, 'old-owned-run', 'thread-1', [
+        {
+          type: 'userMessage',
+          clientId: 'retained-anchor',
+        },
+      ]);
+      await client.handleConnectionNotification('item/started', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'old-owned-run',
+          item: {
+            id: 'cmd',
+            type: 'commandExecution',
+            command: 'printf output',
+            cwd: '/tmp/repo',
+            status: 'inProgress',
+            commandActions: [],
+            aggregatedOutput: '',
+            exitCode: null,
+          },
+        },
+      });
+      await completeObservedRootRun(client, 'old-owned-run');
+      await client.handleConnectionNotification('item/completed', {
+        params: {
+          threadId: 'thread-1',
+          turnId: 'old-owned-run',
+          item: {
+            id: 'cmd',
+            type: 'commandExecution',
+            command: 'printf output',
+            cwd: '/tmp/repo',
+            status: 'completed',
+            commandActions: [],
+            aggregatedOutput: 'exact output',
+            exitCode: 0,
+          },
+        },
+      });
+      const late = events.find(
+        (event) => getProviderRunDescriptor(event)?.phase === 'late',
+      );
+      expect(classifyProviderRunEvent(late).kind).toBe('transcript_only');
+      client.markProcessSuspended();
+      expect(classifyProviderRunEvent(late)).toEqual({
+        kind: 'reject',
+        reason: 'retired_generation',
+      });
+      await startObservedRootRun(client, 'successor');
+      await completeObservedRootRun(client, 'old-owned-run');
+      expect(client.hasProviderOwnedTurn()).toBe(true);
+      await completeObservedRootRun(client, 'successor');
+      expect(client.hasActiveTurn()).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('does not treat a duplicate provider-owned root start as a second run', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'msg-retained-anchor',
+    );
+    completeRootTurn(proc);
+    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    collectClientMessages(proc);
+    events.length = 0;
+
+    try {
+      await startObservedRootRun(client, 'provider-turn-2');
+      await startObservedRootRun(client, 'provider-turn-2');
+
+      expect(
+        events.filter((candidate): boolean => {
+          if (
+            !isRecord(candidate) ||
+            candidate.type !== 'codex' ||
+            !isRecord(candidate.event)
+          ) {
+            return false;
+          }
+          return (
+            candidate.event.type === 'turn.started' &&
+            candidate.event.thread_id === 'thread-1' &&
+            candidate.event.turn_id === 'provider-turn-2'
+          );
+        }),
+      ).toHaveLength(1);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('consumes a provider-owned root terminal exactly once', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'msg-retained-anchor',
+    );
+    completeRootTurn(proc);
+    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    collectClientMessages(proc);
+    events.length = 0;
+
+    try {
+      await startObservedRootRun(client, 'provider-turn-2');
+      await completeObservedRootRun(client, 'provider-turn-2');
+      await completeObservedRootRun(client, 'provider-turn-2');
+
+      expect(
+        events.filter((candidate): boolean => {
+          if (
+            !isRecord(candidate) ||
+            candidate.type !== 'codex' ||
+            !isRecord(candidate.event)
+          ) {
+            return false;
+          }
+          return (
+            candidate.event.type === 'turn.completed' &&
+            candidate.event.thread_id === 'thread-1' &&
+            candidate.event.turn_id === 'provider-turn-2'
+          );
+        }),
+      ).toHaveLength(1);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('keeps child completions separate and ignores an old terminal while a newer root is active', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'msg-retained-anchor',
+    );
+    completeRootTurn(proc);
+    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    collectClientMessages(proc);
+    events.length = 0;
+
+    try {
+      await startObservedRootRun(client, 'provider-turn-2');
+      await startObservedRootRun(client, 'child-turn-1', 'child-thread-1');
+      await completeObservedRootRun(
+        client,
+        'child-turn-1',
+        'completed',
+        'child-thread-1',
+      );
+      await completeObservedRootRun(client, 'provider-turn-2');
+
+      await startObservedRootRun(client, 'provider-turn-3');
+      await completeObservedRootRun(client, 'provider-turn-2');
+      expect(
+        events.filter((candidate): boolean => {
+          if (
+            !isRecord(candidate) ||
+            candidate.type !== 'codex' ||
+            !isRecord(candidate.event)
+          ) {
+            return false;
+          }
+          return (
+            candidate.event.type === 'turn.completed' &&
+            candidate.event.thread_id === 'thread-1' &&
+            candidate.event.turn_id === 'provider-turn-3'
+          );
+        }),
+      ).toHaveLength(0);
+      await completeObservedRootRun(client, 'provider-turn-3');
+
+      expect(events).toContainEqual({
+        type: 'codex',
+        event: {
+          type: 'turn.completed',
+          status: 'completed',
+          thread_id: 'child-thread-1',
+          turn_id: 'child-turn-1',
+        },
+      });
+      for (const turnId of ['provider-turn-2', 'provider-turn-3']) {
+        expect(
+          events.filter((candidate): boolean => {
+            if (
+              !isRecord(candidate) ||
+              candidate.type !== 'codex' ||
+              !isRecord(candidate.event)
+            ) {
+              return false;
+            }
+            return (
+              candidate.event.type === 'turn.completed' &&
+              candidate.event.thread_id === 'thread-1' &&
+              candidate.event.turn_id === turnId
+            );
+          }),
+        ).toHaveLength(1);
+      }
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('settles a matching interrupted provider-owned root once without canceling its successor', async () => {
+    const events: unknown[] = [];
+    const client = createClient(events);
+    const { turnPromise } = await startActiveTurn(
+      client,
+      proc,
+      [],
+      'msg-retained-anchor',
+    );
+    completeRootTurn(proc);
+    await expect(turnPromise).resolves.toMatchObject({ status: 'completed' });
+    collectClientMessages(proc);
+    events.length = 0;
+
+    try {
+      await startObservedRootRun(client, 'provider-turn-cancelled');
+      await completeObservedRootRun(
+        client,
+        'provider-turn-cancelled',
+        'interrupted',
+      );
+      await completeObservedRootRun(
+        client,
+        'provider-turn-cancelled',
+        'interrupted',
+      );
+      await startObservedRootRun(client, 'provider-turn-successor');
+      await completeObservedRootRun(
+        client,
+        'provider-turn-cancelled',
+        'interrupted',
+      );
+      await completeObservedRootRun(client, 'provider-turn-successor');
+
+      expect(events).toContainEqual({
+        type: 'codex',
+        event: {
+          type: 'turn.completed',
+          status: 'interrupted',
+          thread_id: 'thread-1',
+          turn_id: 'provider-turn-cancelled',
+        },
+      });
+      for (const turnId of [
+        'provider-turn-cancelled',
+        'provider-turn-successor',
+      ]) {
+        expect(
+          events.filter((candidate): boolean => {
+            if (
+              !isRecord(candidate) ||
+              candidate.type !== 'codex' ||
+              !isRecord(candidate.event)
+            ) {
+              return false;
+            }
+            return (
+              candidate.event.type === 'turn.completed' &&
+              candidate.event.thread_id === 'thread-1' &&
+              candidate.event.turn_id === turnId
+            );
+          }),
+        ).toHaveLength(1);
+      }
+    } finally {
+      client.dispose();
+    }
   });
 
   it('forwards late subagent turn completions after the root turn settles', async () => {
@@ -17541,6 +23076,7 @@ describe('CodexAppServerClient', () => {
         state = applyCodexTranscriptEvent(state, data.event, {
           now: 1,
           createMessageId: () => 'message',
+          childToolLiveness: { kind: 'unknown' },
         });
         if (isCommandUpdate(event)) committed.push(JSON.stringify(state));
       }
@@ -17959,11 +23495,13 @@ describe('CodexAppServerClient', () => {
     function emitFailure(kind: FailureKind, codexErrorInfo: string): void {
       const error = { message: 'Usage limit exceeded.', codexErrorInfo };
       if (kind === 'error') {
+        // A root error only settles at its turn/completed (turn-state 33a);
+        // a subagent's error is emitted as it arrives.
         emitServerMessage(proc, {
           method: 'error',
           params: {
-            threadId: 'thread-1',
-            turnId: 'turn-1',
+            threadId: 'child-thread',
+            turnId: 'child-turn',
             willRetry: false,
             error,
           },
@@ -18208,5 +23746,194 @@ describe('CodexAppServerClient', () => {
     await expect(turnPromise).resolves.toMatchObject({
       status: 'completed',
     });
+  });
+});
+
+describe('readCodexDeliveryHistory', () => {
+  const threadId = 'thread-history';
+  const turnId = 'turn-history';
+  const attemptId = 'attempt-history';
+  const byteBudget = 64 * 1024 * 1024;
+  let codexHome: string;
+
+  beforeEach(() => {
+    codexHome = mkdtempSync(join(tmpdir(), 'codex-delivery-history-'));
+  });
+
+  afterEach(() => {
+    rmSync(codexHome, { recursive: true, force: true });
+  });
+
+  function rolloutPath(name = `rollout-test-${threadId}.jsonl`): string {
+    const directory = join(codexHome, 'sessions', '2026', '10', '16');
+    mkdirSync(directory, { recursive: true });
+    return join(directory, name);
+  }
+
+  function writeRollout(records: unknown[], name?: string): string {
+    const path = rolloutPath(name);
+    writeFileSync(
+      path,
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    );
+    return path;
+  }
+
+  function makeQuery(
+    overrides: Partial<Parameters<typeof readCodexDeliveryHistory>[0]> = {},
+  ): Parameters<typeof readCodexDeliveryHistory>[0] {
+    return {
+      threadId,
+      turnId,
+      attemptId,
+      previousRun: true,
+      codexHome,
+      ...overrides,
+    };
+  }
+
+  const sessionMeta = { type: 'session_meta', payload: { id: threadId } };
+  const taskStarted = {
+    type: 'event_msg',
+    payload: { type: 'task_started', turn_id: turnId },
+  };
+  const completedItem = (clientId: string) => ({
+    type: 'event_msg',
+    payload: {
+      type: 'item_completed',
+      item: { type: 'userMessage', client_id: clientId },
+    },
+  });
+
+  it('finds a matching item_completed record even on a later line', async () => {
+    writeRollout([
+      sessionMeta,
+      taskStarted,
+      completedItem('another-attempt'),
+      completedItem(attemptId),
+    ]);
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe('found');
+  });
+
+  it('reports not-found only for a previous run with a start record', async () => {
+    writeRollout([sessionMeta, taskStarted, completedItem('another-attempt')]);
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'not-found',
+    );
+  });
+
+  it('does not prove not-found for a live run', async () => {
+    writeRollout([sessionMeta, taskStarted, completedItem('another-attempt')]);
+
+    await expect(
+      readCodexDeliveryHistory(makeQuery({ previousRun: false })),
+    ).resolves.toBe('unreadable');
+  });
+
+  it('does not prove not-found without a turn id', async () => {
+    writeRollout([sessionMeta, completedItem('another-attempt')]);
+
+    await expect(
+      readCodexDeliveryHistory(makeQuery({ turnId: undefined })),
+    ).resolves.toBe('unreadable');
+  });
+
+  it('returns unreadable when the rollout is missing', async () => {
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  });
+
+  it('returns unreadable when more than one rollout matches the thread', async () => {
+    writeRollout([sessionMeta, taskStarted], `rollout-one-${threadId}.jsonl`);
+    writeRollout([sessionMeta, taskStarted], `rollout-two-${threadId}.jsonl`);
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  });
+
+  it('returns unreadable when the rollout scan is capped', async () => {
+    const path = rolloutPath();
+    writeFileSync(
+      path,
+      `${JSON.stringify(sessionMeta)}\n${JSON.stringify(taskStarted)}\n`,
+    );
+    const crowded = join(codexHome, 'sessions', 'crowded');
+    mkdirSync(crowded, { recursive: true });
+    for (let batch = 0; batch < 10_001; batch += 100) {
+      const end = Math.min(batch + 100, 10_001);
+      await Promise.all(
+        Array.from({ length: end - batch }, (_, offset) =>
+          writeFile(join(crowded, `entry-${batch + offset}`), ''),
+        ),
+      );
+    }
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  }, 30_000);
+
+  it.each([
+    [
+      'torn final line',
+      `${JSON.stringify(sessionMeta)}\n${JSON.stringify(taskStarted)}\n{"type":"event_msg"`,
+    ],
+    ['invalid line', `${JSON.stringify(sessionMeta)}\nnot-json\n`],
+  ])('returns unreadable for a %s', async (_label, contents) => {
+    writeFileSync(rolloutPath(), contents);
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  });
+
+  it('returns unreadable when a later torn line follows a matching attempt', async () => {
+    writeRollout([sessionMeta, taskStarted, completedItem(attemptId)]);
+    writeFileSync(rolloutPath(), '{"type":"event_msg"', { flag: 'a' });
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  });
+
+  it('returns unreadable when the rollout exceeds the byte budget', async () => {
+    const path = rolloutPath();
+    writeFileSync(path, '');
+    truncateSync(path, byteBudget + 1);
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  }, 30_000);
+
+  it('returns unreadable when the rollout exceeds the line budget', async () => {
+    writeFileSync(rolloutPath(), '{}\n'.repeat(200_001));
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  });
+
+  it('returns unreadable when a previous-run rollout has no turn start record', async () => {
+    writeRollout([sessionMeta, completedItem('another-attempt')]);
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
+  });
+
+  it('returns unreadable when session_meta names a different thread', async () => {
+    writeRollout([
+      { type: 'session_meta', payload: { id: 'different-thread' } },
+      taskStarted,
+    ]);
+
+    await expect(readCodexDeliveryHistory(makeQuery())).resolves.toBe(
+      'unreadable',
+    );
   });
 });

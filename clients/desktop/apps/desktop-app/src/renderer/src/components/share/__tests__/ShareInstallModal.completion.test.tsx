@@ -118,6 +118,9 @@ jest.mock('../usePublicShareLanding', () => ({
     installProgress: '',
     installStatus: '',
     detecting: false,
+    verificationError: '',
+    needsRefresh: false,
+    refresh: jest.fn(),
     agentReadinessLoading: false,
     install: jest.fn(),
     snapshot: {
@@ -614,7 +617,11 @@ describe('ShareInstallModal automation completion handoff (CAN-3651)', () => {
                 expression: '0 2 * * *',
                 timezone: 'local',
               },
-              action: { type: 'app_advisor_prompt', prompt: 'Check the queue' },
+              action: {
+                type: 'app_advisor_prompt',
+                prompt: 'Check the queue',
+                plugins: [],
+              },
               hasRunCondition: false,
             },
           },

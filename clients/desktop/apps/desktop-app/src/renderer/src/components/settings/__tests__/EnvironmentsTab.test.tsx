@@ -411,10 +411,11 @@ describe('EnvironmentsTab', () => {
     expect(resolved?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(true);
 
     click(container, 'environments-delete');
-    const dialogText = Array.from(document.body.querySelectorAll('p')).find(
-      (element) => element.textContent?.startsWith('Delete Staging Secrets?'),
+    const dialogTitle = Array.from(document.body.querySelectorAll('h2')).find(
+      (element) =>
+        element.textContent === 'Delete environment “Staging Secrets”?',
     );
-    expect(dialogText).toBeDefined();
+    expect(dialogTitle).toBeDefined();
 
     act(() => root.unmount());
   });

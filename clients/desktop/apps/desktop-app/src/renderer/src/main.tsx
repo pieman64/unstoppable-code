@@ -3,6 +3,7 @@
 import '@xyflow/react/dist/style.css';
 import { OrgProjectDeepLinkBridge } from '@/lib/openOrgProjectDeepLink';
 import { OrgProjectAddStoreBridge } from '@/lib/orgProjectCatalogAdd';
+import { OnboardingTipsPreferencesBridge } from '@/components/onboarding-tips/OnboardingTipsPreferencesBridge';
 import './styles/globals.css';
 import type { ComponentType } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -46,13 +47,22 @@ import {
   initTerminalActivitySubscriptions,
 } from '@/stores/terminalActivityStore';
 import { CanopyClientProvider } from '@canopy/app-state';
+import { HostMermaidExportProvider } from '@canopy/ui-app/mermaid-image-clipboard';
+import { postDiagramExportToast } from './lib/diagram-export-toast';
 import { ensureReferencePreviewInvalidation } from './components/chat/referencePreviewDecoration';
 import {
   initializeChatEnrichmentModes,
   disposeChatEnrichmentModes,
 } from './lib/chat-enrichment-modes';
+import {
+  initializeMarkdownMathPreference,
+  disposeMarkdownMathPreference,
+} from './lib/markdown-math-preference';
 import { DesktopFileSessionRuntime } from './components/chat/DesktopFileSessionRuntime';
 import { ipcCanopyClient } from './client/ipc-canopy-client';
+import { LifecycleJournalQuarantineHost } from '@canopy/ui-app/lifecycle-journal';
+import { DesktopWorktreeDiscardHost } from './components/worktree/DesktopWorktreeDiscardHost';
+import { DesktopProjectDeletionDiscardHost } from './components/worktree/DesktopProjectDeletionDiscardHost';
 import { DesktopTerminalRuntime } from './client/DesktopTerminalRuntime';
 import { EarlyAccessUiProviders } from './components/EarlyAccessUiProviders';
 import { localPlatform } from '@/lib/local-platform';
@@ -100,25 +110,38 @@ export function startRenderer(
   ensureReferencePreviewInvalidation();
 
   import.meta.hot?.dispose(disposeChatEnrichmentModes);
+  import.meta.hot?.dispose(disposeMarkdownMathPreference);
   void Promise.all([
     initializeInstrumentationBeforeRender(surface).catch(() => false),
     initializeChatEnrichmentModes(),
+    initializeMarkdownMathPreference(),
   ]).then(([instrumentationEnabled]) => {
     const root = createRoot(rootElement);
     import.meta.hot?.dispose(() => root.unmount());
     root.render(
       <RootErrorBoundary>
         <CanopyClientProvider client={ipcCanopyClient}>
-          <EarlyAccessUiProviders>
-            <DesktopTerminalRuntime />
-            <OrgProjectDeepLinkBridge />
-            <OrgProjectAddStoreBridge />
-            {/* The desktop file-session controller owns file tabs only in
+          <HostMermaidExportProvider notify={postDiagramExportToast}>
+            <EarlyAccessUiProviders>
+              <DesktopTerminalRuntime />
+              <OrgProjectDeepLinkBridge />
+              <OrgProjectAddStoreBridge />
+              <OnboardingTipsPreferencesBridge />
+              {/* The desktop file-session controller owns file tabs only in
                   the main window; the standalone App Advisor renderer has
                   none. */}
-            {isMainSurface && <DesktopFileSessionRuntime />}
-            <RootApp />
-          </EarlyAccessUiProviders>
+              {isMainSurface && <DesktopFileSessionRuntime />}
+              {/* Deletion and archive refusals open this review (CAN-5335). */}
+              {isMainSurface && (
+                <LifecycleJournalQuarantineHost client={ipcCanopyClient} />
+              )}
+              {/* A refused single-row removal offers a discard (CAN-5336). */}
+              {isMainSurface && <DesktopWorktreeDiscardHost />}
+              {/* A refused project deletion offers its discards (CAN-5337). */}
+              {isMainSurface && <DesktopProjectDeletionDiscardHost />}
+              <RootApp />
+            </EarlyAccessUiProviders>
+          </HostMermaidExportProvider>
         </CanopyClientProvider>
       </RootErrorBoundary>,
     );

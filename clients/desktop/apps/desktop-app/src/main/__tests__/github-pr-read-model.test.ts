@@ -22,8 +22,11 @@ import {
 } from '../lib/github-broker/errors';
 import {
   getGitHubPullRequestStatus,
+  githubPullRequestDetailOf,
   invalidateGitHubPullRequest,
+  listGitHubPullRequestProjections,
   normalizeGitHubPullRequestStatus,
+  readGitHubPullRequestProjection,
   readGitHubPullRequestForWatcher,
   resetGitHubPullRequestReadModel,
   seedGitHubPullRequestStatus,
@@ -859,5 +862,386 @@ describe('consumers share the read model', () => {
       status: 'ok',
       preview: { itemType: 'pull', state: 'open', draft: false },
     });
+  });
+});
+
+// CAN-4109: the canonical `core.pullRequest.*` detail the same read carries.
+describe('pull request projection detail', () => {
+  const BASE_SHA = 'c'.repeat(40);
+
+  function page(hasNextPage: boolean, endCursor: string | null = null) {
+    return { hasNextPage, endCursor };
+  }
+
+  function contexts(nodes: unknown[], next: string | null = null) {
+    return {
+      nodes: [
+        {
+          commit: {
+            statusCheckRollup: {
+              state: 'FAILURE',
+              contexts: {
+                totalCount: nodes.length,
+                pageInfo: page(next !== null, next),
+                nodes,
+              },
+            },
+          },
+        },
+      ],
+    };
+  }
+
+  const CHECK_RUN = {
+    __typename: 'CheckRun',
+    id: 'CR_1',
+    name: 'build',
+    status: 'COMPLETED',
+    conclusion: 'STARTUP_FAILURE',
+    detailsUrl: 'https://ci.example/1',
+    completedAt: '2026-10-13T11:00:00Z',
+  };
+
+  function detailed(overrides: Record<string, unknown> = {}) {
+    return {
+      updatedAt: '2026-10-13T11:59:00Z',
+      title: '  Add   the thing ',
+      body: null,
+      baseRefOid: BASE_SHA,
+      comments: { totalCount: 4 },
+      reviewThreads: {
+        totalCount: 2,
+        pageInfo: page(false),
+        nodes: [{ isResolved: true }, { isResolved: false }],
+      },
+      commits: contexts([
+        CHECK_RUN,
+        {
+          __typename: 'CheckRun',
+          id: 'CR_2',
+          name: 'lint',
+          status: 'IN_PROGRESS',
+          conclusion: null,
+          detailsUrl: null,
+          completedAt: null,
+        },
+        {
+          __typename: 'CheckRun',
+          id: 'CR_3',
+          name: 'old',
+          status: 'COMPLETED',
+          conclusion: 'STALE',
+          detailsUrl: null,
+          completedAt: '2026-10-13T10:00:00Z',
+        },
+        {
+          __typename: 'StatusContext',
+          id: 'SC_1',
+          context: 'ci/legacy',
+          state: 'ERROR',
+          targetUrl: 'https://ci.example/legacy',
+          createdAt: '2026-10-13T09:00:00Z',
+        },
+        {
+          __typename: 'StatusContext',
+          id: 'SC_2',
+          context: 'deploy',
+          state: 'EXPECTED',
+          targetUrl: null,
+          createdAt: '2026-10-13T09:30:00Z',
+        },
+      ]),
+      ...overrides,
+    };
+  }
+
+  function body(pr: Record<string, unknown>, errors?: unknown[]) {
+    return {
+      data: { repository: { pullRequest: pullRequest(pr) } },
+      ...(errors ? { errors } : {}),
+    };
+  }
+
+  it('maps the canonical detail beside an unchanged view', () => {
+    const { view } = normalizeGitHubPullRequestStatus(body(detailed()), REF);
+    const plain = normalizeGitHubPullRequestStatus(body({}), REF).view;
+    expect(Object.keys(view)).toEqual(Object.keys(plain));
+    expect(view.title).toBe('Add the thing');
+    expect(githubPullRequestDetailOf(plain)).toBeUndefined();
+    expect(githubPullRequestDetailOf(view)).toEqual({
+      title: '  Add   the thing ',
+      body: '',
+      baseSha: BASE_SHA,
+      updatedAt: '2026-10-13T11:59:00Z',
+      commentCount: 4,
+      checks: [
+        {
+          checkId: 'CR_1',
+          name: 'build',
+          status: 'completed',
+          conclusion: 'failure',
+          url: 'https://ci.example/1',
+          completedAt: '2026-10-13T11:00:00Z',
+        },
+        {
+          checkId: 'CR_2',
+          name: 'lint',
+          status: 'in_progress',
+          conclusion: null,
+          url: null,
+          completedAt: null,
+        },
+        {
+          checkId: 'CR_3',
+          name: 'old',
+          status: 'completed',
+          conclusion: 'neutral',
+          url: null,
+          completedAt: '2026-10-13T10:00:00Z',
+        },
+        {
+          checkId: 'SC_1',
+          name: 'ci/legacy',
+          status: 'completed',
+          conclusion: 'failure',
+          url: 'https://ci.example/legacy',
+          completedAt: '2026-10-13T09:00:00Z',
+        },
+        {
+          checkId: 'SC_2',
+          name: 'deploy',
+          status: 'queued',
+          conclusion: null,
+          url: null,
+          completedAt: null,
+        },
+      ],
+      checksAfter: null,
+      reviewThreadCount: 2,
+      unresolvedReviewThreadCount: 1,
+      reviewThreadsAfter: null,
+    });
+  });
+
+  it('lists no checks when GitHub withholds them from the credential', () => {
+    const { view } = normalizeGitHubPullRequestStatus(
+      body(detailed({ commits: null }), [
+        {
+          type: 'FORBIDDEN',
+          path: ['repository', 'pullRequest', 'commits'],
+          message: 'Resource not accessible by integration',
+        },
+      ]),
+      REF,
+    );
+    expect(githubPullRequestDetailOf(view)).toMatchObject({
+      checks: [],
+      checksAfter: null,
+    });
+  });
+
+  it.each([
+    ['the update time', { updatedAt: null }],
+    ['the comment count', { comments: null }],
+    ['a check id', { commits: contexts([{ ...CHECK_RUN, id: null }]) }],
+    [
+      'a thread page cursor',
+      { reviewThreads: { totalCount: 101, pageInfo: page(true), nodes: [] } },
+    ],
+  ])('carries no detail when GitHub omits %s', (_label, overrides) => {
+    const { view } = normalizeGitHubPullRequestStatus(
+      body(detailed(overrides)),
+      REF,
+    );
+    expect(githubPullRequestDetailOf(view)).toBeUndefined();
+    expect(view.headSha).toBe(HEAD_SHA);
+  });
+
+  it('reads the check and review-thread pages past the first, then answers from the cache', async () => {
+    answer({
+      pr: detailed({
+        commits: contexts([CHECK_RUN], 'checks-1'),
+        reviewThreads: {
+          totalCount: 3,
+          pageInfo: page(true, 'threads-1'),
+          nodes: [{ isResolved: false }],
+        },
+      }),
+    });
+    answer({
+      body: {
+        data: {
+          repository: {
+            object: {
+              statusCheckRollup: {
+                contexts: {
+                  pageInfo: page(false),
+                  nodes: [{ ...CHECK_RUN, id: 'CR_9', name: 'e2e' }],
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    answer({
+      body: {
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: page(false),
+                nodes: [{ isResolved: false }, { isResolved: true }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const { view, detail } = await readGitHubPullRequestProjection(REF, {
+      refresh: false,
+      caller: 'core-pull-request-get',
+    });
+
+    expect(view.ref).toEqual(REF);
+    expect(detail.checks.map((check) => check.checkId)).toEqual([
+      'CR_1',
+      'CR_9',
+    ]);
+    expect(detail).toMatchObject({
+      checksAfter: null,
+      reviewThreadCount: 3,
+      unresolvedReviewThreadCount: 2,
+      reviewThreadsAfter: null,
+    });
+    expect(requests.map((request) => request.variables)).toEqual([
+      { owner: 'acme', name: 'api', number: 12 },
+      { owner: 'acme', name: 'api', oid: HEAD_SHA, after: 'checks-1' },
+      { owner: 'acme', name: 'api', number: 12, after: 'threads-1' },
+    ]);
+    expect(requests.map((request) => request.options.caller)).toEqual([
+      'core-pull-request-get',
+      'core-pull-request-get',
+      'core-pull-request-get',
+    ]);
+    // The completed detail answers within the view's TTL, with no reads.
+    await readGitHubPullRequestProjection(REF, { refresh: false });
+    expect(execute).toHaveBeenCalledTimes(3);
+    answer({ pr: detailed() });
+    await readGitHubPullRequestProjection(REF, { refresh: true });
+    expect(execute).toHaveBeenCalledTimes(4);
+  });
+
+  it('reads past a cached view that carries no detail, and shares its read with status readers', async () => {
+    await getGitHubPullRequestStatus(REF);
+    expect(execute).toHaveBeenCalledTimes(1);
+    answer({ pr: detailed() });
+
+    const { detail } = await readGitHubPullRequestProjection(REF, {
+      refresh: false,
+    });
+    expect(detail.commentCount).toBe(4);
+    expect(execute).toHaveBeenCalledTimes(2);
+    // The detailed read refreshed the shared view for every reader.
+    await getGitHubPullRequestStatus(REF);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails a read without detail as an invalid response', async () => {
+    await expect(
+      readGitHubPullRequestProjection(REF, { refresh: true }),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  function listed(
+    nodes: unknown[],
+    errors?: unknown[],
+    next: string | null = null,
+  ) {
+    return {
+      body: {
+        data: {
+          repository: {
+            pullRequests: { pageInfo: page(next !== null, next), nodes },
+          },
+        },
+        ...(errors ? { errors } : {}),
+      },
+    };
+  }
+
+  it('lists a page of projections without filling the shared cache', async () => {
+    answer(
+      listed(
+        [
+          pullRequest({ ...detailed(), number: 12 }),
+          pullRequest({
+            ...detailed(),
+            number: 13,
+            url: 'https://github.com/acme/api/pull/13',
+          }),
+        ],
+        [
+          {
+            type: 'FORBIDDEN',
+            path: ['repository', 'pullRequests', 'nodes', 1, 'commits'],
+          },
+        ],
+        'page-2',
+      ),
+    );
+
+    const result = await listGitHubPullRequestProjections(
+      { owner: 'acme', repo: 'api' },
+      { states: ['open', 'merged'], first: 25, after: 'page-1' },
+      { caller: 'core-pull-request-list' },
+    );
+
+    expect(result.endCursor).toBe('page-2');
+    expect(result.pullRequests.map(({ view }) => view.ref.number)).toEqual([
+      12, 13,
+    ]);
+    expect(result.pullRequests[0].detail.checks).toHaveLength(5);
+    expect(result.pullRequests[1].detail.checks).toEqual([]);
+    expect(requests[0].variables).toEqual({
+      owner: 'acme',
+      name: 'api',
+      states: ['OPEN', 'MERGED'],
+      first: 25,
+      after: 'page-1',
+    });
+    expect(requests[0].query).toContain(
+      'orderBy: { field: UPDATED_AT, direction: DESC }',
+    );
+    await getGitHubPullRequestStatus(REF);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      'a missing repository as not found',
+      {
+        body: {
+          data: { repository: null },
+          errors: [{ type: 'NOT_FOUND', path: ['repository'] }],
+        },
+      },
+      'not_found',
+    ],
+    [
+      'another error as an invalid response',
+      listed([], [{ type: 'INTERNAL', path: ['repository', 'pullRequests'] }]),
+      'invalid_response',
+    ],
+  ])('fails %s', async (_label, response, code) => {
+    answer(response);
+    await expect(
+      listGitHubPullRequestProjections(
+        { owner: 'acme', repo: 'api' },
+        { states: ['open'], first: 25, after: null },
+        {},
+      ),
+    ).rejects.toMatchObject({ code });
   });
 });

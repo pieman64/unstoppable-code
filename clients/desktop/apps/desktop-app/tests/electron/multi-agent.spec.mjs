@@ -218,6 +218,9 @@ test.describe('codex multi-agent', () => {
         const window = await electronApp.firstWindow();
         const app = new CanopyAppDriver(window);
         await app.waitForShell();
+        await window.evaluate(() =>
+          window.api.savePreferences({ chatDetail: 'detailed' }),
+        );
         await app.openMainPage();
         await app.selectWorktree('demo-main');
         for (const provider of ['claude', 'codex']) {
@@ -229,8 +232,8 @@ test.describe('codex multi-agent', () => {
           const header = panel.getByRole('button', {
             name:
               provider === 'claude'
-                ? /Agent.*Retained Claude child/
-                : /Agent.*Retained reviewer/,
+                ? /agent.*Retained Claude child/i
+                : /Retained reviewer.*agent/i,
           });
           await header.click();
           if (provider === 'claude') {
@@ -299,8 +302,8 @@ test.describe('codex multi-agent', () => {
               .codexMaxConcurrentSubagents,
         )
         .toBe(3);
-      await expect(limit).toHaveClass(/\bring-inset\b/);
-      await expect(limit).toHaveClass(/\bring-line-secondary\b/);
+      await expect(limit).toHaveClass(/\bshadow-field\b/);
+      await expect(limit).toHaveAttribute('aria-invalid', 'false');
     } finally {
       chmodSync(userDataDir, originalMode);
       await closeCanopy(electronApp, userDataDir);
@@ -402,6 +405,7 @@ test.describe('codex multi-agent', () => {
       const app = new CanopyAppDriver(window);
 
       await app.waitForShell({ timeout: 30_000 });
+
       await app.openSettings();
       await app.openSettingsSection('codex');
 
@@ -438,8 +442,10 @@ test('completed agent card refreshes after metadata-only activity', async () => 
   const launched = await launchCanopy({ userDataDir });
   try {
     const { panel } = await openActivityChat(launched.electronApp);
-    await panel.getByRole('button', { name: 'Agent steps: 1 agents' }).click();
-    const research = panel.getByRole('button', { name: /Agent · Tesla/ });
+    await panel
+      .getByRole('button', { name: 'Agent steps: Ran 1 agent' })
+      .click();
+    const research = panel.getByRole('button', { name: /Tesla agent/ });
     await expect(research).toContainText('Readme Review');
     await injectLateActivityMetadata(launched.electronApp);
     await assertLateActivityMetadata(panel);

@@ -21,19 +21,15 @@ function makeActivity(
     id: overrides.id ?? 'activity-1',
     name: overrides.name ?? 'Daily digest',
     enabled: overrides.enabled ?? true,
-    schedule:
-      overrides.schedule ??
-      ({
-        kind: 'cron',
-        expression: '0 9 * * *',
-        timezone: 'local',
-      } as ScheduledActivity['schedule']),
-    action:
-      overrides.action ??
-      ({
-        type: 'app_advisor_prompt',
-        prompt: 'hello',
-      } as ScheduledActivity['action']),
+    schedule: overrides.schedule ?? {
+      kind: 'cron',
+      expression: '0 9 * * *',
+      timezone: 'local',
+    },
+    action: overrides.action ?? {
+      type: 'app_advisor_prompt',
+      prompt: 'hello',
+    },
     createdAt: overrides.createdAt ?? new Date().toISOString(),
     updatedAt: overrides.updatedAt ?? new Date().toISOString(),
     failureCount: overrides.failureCount ?? 0,

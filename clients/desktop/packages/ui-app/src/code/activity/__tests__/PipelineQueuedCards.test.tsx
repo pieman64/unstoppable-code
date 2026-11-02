@@ -20,6 +20,11 @@ describe('PipelineQueuedCards', () => {
     const root = createRoot(container);
     const onCancelQueued = jest.fn();
     const onCancelPending = jest.fn();
+    const triggerSource = {
+      kind: 'hook',
+      hook_label: 'PR created',
+      triggered_at: '2026-07-26T10:00:00.000Z',
+    };
 
     act(() => {
       root.render(
@@ -28,11 +33,7 @@ describe('PipelineQueuedCards', () => {
             entry={{
               queueId: 'queue-1',
               pipelineName: 'Hook pipeline',
-              trigger_source: {
-                kind: 'hook',
-                hook_label: 'PR created',
-                triggered_at: '2026-07-26T10:00:00.000Z',
-              },
+              trigger_source: triggerSource,
             }}
             onCancel={onCancelQueued}
           />
@@ -49,7 +50,7 @@ describe('PipelineQueuedCards', () => {
     });
 
     expect(container.textContent).toContain(
-      'Queued — waiting for active pipeline runs to finish',
+      'Queued — waiting for active workflow runs to finish',
     );
     expect(container.textContent).toContain('Queued — waiting for setup');
     // The task prompt sits in a tooltip, which session replay blocks.
@@ -63,7 +64,7 @@ describe('PipelineQueuedCards', () => {
     ).not.toBeNull();
 
     const cancelButtons = container.querySelectorAll<HTMLButtonElement>(
-      '[aria-label="Cancel queued pipeline"]',
+      '[aria-label="Cancel queued workflow"]',
     );
     act(() => {
       cancelButtons[0]?.click();
@@ -110,7 +111,7 @@ describe('PipelineQueuedCards', () => {
     expect(container.textContent).toContain('Queue failed: Setup unavailable');
 
     const dismissButtons = container.querySelectorAll<HTMLButtonElement>(
-      '[aria-label="Dismiss failed queued pipeline"]',
+      '[aria-label="Dismiss failed queued workflow"]',
     );
     act(() => {
       dismissButtons[0]?.click();

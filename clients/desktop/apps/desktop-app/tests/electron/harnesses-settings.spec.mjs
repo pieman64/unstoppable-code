@@ -566,7 +566,7 @@ test('a Home-created chat captures the configured gateway harness before its set
     const panel = window.getByTestId('panel-content-chat');
     await expect(panel).toBeVisible({ timeout: 15_000 });
     await expect(
-      panel.getByText('Queued', { exact: true }).first(),
+      panel.getByRole('list', { name: 'Queued messages' }),
     ).toBeVisible({ timeout: 15_000 });
     await expect(
       panel.getByTestId('chat-model-picker-provider-icon'),
@@ -676,7 +676,15 @@ test('a reloaded renderer keeps the discovered Cursor list while refresh is pend
     await f.window.getByTestId('home-branch-picker-worktree-demo-main').click();
     await home.getByTestId('chat-model-picker').click();
     const group = f.window.getByRole('group', { name: 'Cursor', exact: true });
-    await expect(group.getByRole('menuitemradio')).toHaveCount(3);
+    // Third-party models retain their maker's section; Default is Cursor's own.
+    await expect(group.getByRole('menuitemradio')).toHaveCount(1);
+    await expect(
+      f.window
+        .getByRole('group', { name: 'Google', exact: true })
+        .getByTestId(
+          'chat-model-option-cursor:' + encodeURIComponent('gemini-3.1-pro[]'),
+        ),
+    ).toContainText('Gemini 3.1 Pro');
   } finally {
     await f.close();
   }
@@ -1034,7 +1042,7 @@ test('Home selects a gateway harness for one chat without changing the default',
     const panel = window.getByTestId('panel-content-chat');
     await expect(panel).toBeVisible({ timeout: 15_000 });
     await expect(
-      panel.getByText('Queued', { exact: true }).first(),
+      panel.getByRole('list', { name: 'Queued messages' }),
     ).toBeVisible({ timeout: 15_000 });
     await expect(
       panel.getByTestId('chat-model-picker-provider-icon'),

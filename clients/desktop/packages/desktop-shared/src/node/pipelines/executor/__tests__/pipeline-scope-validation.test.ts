@@ -158,7 +158,7 @@ describe('validatePipelineScopes', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Step "bad_target" in job "test" defines target but action "builtin/node-action" is not a pipeline action',
+      'Step "bad_target" in job "test" defines target but action "builtin/node-action" is not a workflow action',
     );
   });
 
@@ -196,7 +196,7 @@ describe('validatePipelineScopes', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Step "child" in job "test" targets scope "inherit" but child pipeline "inline-pipeline" supports [global]',
+      'Step "child" in job "test" targets scope "inherit" but child workflow "inline-pipeline" supports [global]',
     );
   });
 

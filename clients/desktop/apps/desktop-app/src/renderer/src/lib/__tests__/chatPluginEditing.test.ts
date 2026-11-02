@@ -15,6 +15,7 @@ import { createEmptyTab } from '@/stores/chat/tab-utils';
 import { useGlobalPluginDefaultsStore } from '@/stores/globalPluginDefaultsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
+import { queueDesktopTryItSelectionUpdate } from '../tryItContinuationRunner';
 import { setMcpHttpAuthPreference } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import type { McpHttpAuthTarget } from '@canopy/desktop-shared/types/mcp-servers';
 import {
@@ -357,7 +358,73 @@ describe('setChatAuthPreferencesFromEffective', () => {
     configId: 'default',
   };
 
-  it('stores the handler choice without copying inherited defaults', () => {
+  it('accepts a save whose canonical settings event arrives before its IPC response', async () => {
+    seedChat('project', 'worktree', {
+      pluginSelections: selections([EXTRA_TOOL]),
+    });
+    const { effective } = chatPluginEditingState(
+      useChatStore.getState(),
+      target,
+    );
+    updatePluginsMock.mockImplementationOnce((request) => {
+      // Main publishes the committed settings before replying to updatePlugins.
+      useChatStore.setState((state) => ({
+        worktreeChats: {
+          ...state.worktreeChats,
+          'project/worktree': {
+            ...state.worktreeChats['project/worktree'],
+            tabs: state.worktreeChats['project/worktree'].tabs.map((tab) =>
+              tab.id === target.chatId
+                ? { ...tab, pluginSelections: request.pluginSelections }
+                : tab,
+            ),
+          },
+        },
+      }));
+      return Promise.resolve({ pluginSelections: request.pluginSelections });
+    });
+
+    await expect(
+      setChatAuthPreferencesFromEffective(
+        useChatStore.getState,
+        target,
+        setMcpHttpAuthPreference(effective, PROXIED, 'canopy'),
+      ),
+    ).resolves.toBe(true);
+    expect(currentTab('project', 'worktree')?.pluginSelections).toEqual({
+      ...selections([EXTRA_TOOL]),
+      mcpHttpAuthPreferences: [{ target: PROXIED, handler: 'canopy' }],
+    });
+  });
+
+  it('refuses a late save response after a different selection was applied', async () => {
+    seedChat('project', 'worktree', {
+      pluginSelections: selections([EXTRA_TOOL]),
+    });
+    const { effective } = chatPluginEditingState(
+      useChatStore.getState(),
+      target,
+    );
+    updatePluginsMock.mockImplementationOnce((request) => {
+      seedChat('project', 'worktree', {
+        pluginSelections: selections([PROJECT_TOOL]),
+      });
+      return Promise.resolve({ pluginSelections: request.pluginSelections });
+    });
+
+    await expect(
+      setChatAuthPreferencesFromEffective(
+        useChatStore.getState,
+        target,
+        setMcpHttpAuthPreference(effective, PROXIED, 'canopy'),
+      ),
+    ).resolves.toBe(false);
+    expect(currentTab('project', 'worktree')?.pluginSelections).toEqual(
+      selections([PROJECT_TOOL]),
+    );
+  });
+
+  it('stores the handler choice without copying inherited defaults', async () => {
     seedChat('project', 'worktree', {
       pluginSelections: selections([EXTRA_TOOL]),
       inheritedPluginDefaultsVersion: 1,
@@ -367,7 +434,7 @@ describe('setChatAuthPreferencesFromEffective', () => {
       target,
     );
 
-    setChatAuthPreferencesFromEffective(
+    await setChatAuthPreferencesFromEffective(
       useChatStore.getState,
       target,
       setMcpHttpAuthPreference(effective, PROXIED, 'provider'),
@@ -379,7 +446,7 @@ describe('setChatAuthPreferencesFromEffective', () => {
     });
   });
 
-  it('leaves a choice that matches a default to the default', () => {
+  it('leaves a choice that matches a default to the default', async () => {
     seedProject({
       ...selections([PROJECT_TOOL]),
       mcpHttpAuthPreferences: [{ target: DEFAULTED, handler: 'canopy' }],
@@ -390,7 +457,7 @@ describe('setChatAuthPreferencesFromEffective', () => {
       target,
     );
 
-    setChatAuthPreferencesFromEffective(
+    await setChatAuthPreferencesFromEffective(
       useChatStore.getState,
       target,
       setMcpHttpAuthPreference(effective, PROXIED, 'canopy'),
@@ -405,7 +472,7 @@ describe('setChatAuthPreferencesFromEffective', () => {
     ).toEqual([]);
   });
 
-  it('writes the edited set as is on surfaces that do not inherit defaults', () => {
+  it('writes the edited set as is on surfaces that do not inherit defaults', async () => {
     seedChat(APP_ADVISOR_PROJECT_ID, APP_ADVISOR_WORKTREE_ID, {
       pluginSelections: selections([EXTRA_TOOL]),
     });
@@ -415,7 +482,7 @@ describe('setChatAuthPreferencesFromEffective', () => {
       'provider',
     );
 
-    setChatAuthPreferencesFromEffective(
+    await setChatAuthPreferencesFromEffective(
       useChatStore.getState,
       {
         projectId: APP_ADVISOR_PROJECT_ID,
@@ -430,4 +497,85 @@ describe('setChatAuthPreferencesFromEffective', () => {
         ?.pluginSelections,
     ).toEqual(next);
   });
+});
+
+describe('Activity edits queued behind Try it authorization', () => {
+  it.each(['remove', 'auth-inherited', 'auth-owned'])(
+    'preserves accepted selections and unrelated preferences for %s',
+    async (operation) => {
+      if (operation === 'auth-owned') {
+        seedProject(undefined);
+        useGlobalPluginDefaultsStore.setState({ hydrated: false });
+      }
+      seedChat('project', 'worktree', {
+        pluginSelections: selections([EXTRA_TOOL]),
+      });
+      const { effective } = chatPluginEditingState(
+        useChatStore.getState(),
+        target,
+      );
+      const selectedTarget: McpHttpAuthTarget = {
+        kind: 'standalone',
+        serverId: 'existing',
+        configId: 'default',
+      };
+      const resolvedTarget: McpHttpAuthTarget = {
+        kind: 'standalone',
+        serverId: 'resolved',
+        configId: 'default',
+      };
+      let release = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const authorization = queueDesktopTryItSelectionUpdate(
+        target,
+        async () => {
+          await gate;
+          seedChat('project', 'worktree', {
+            pluginSelections: {
+              ...selections([EXTRA_TOOL]),
+              mcpServerRefs: [{ serverId: 'resolved', configId: 'default' }],
+              mcpHttpAuthPreferences: [
+                { target: resolvedTarget, handler: 'canopy' },
+              ],
+            },
+          });
+        },
+      );
+      const edit =
+        operation === 'remove'
+          ? editChatPlugins(useChatStore.getState, target, (current) => ({
+              ...current,
+              pluginRefs: current.pluginRefs.filter(
+                (ref) => ref.pluginName !== EXTRA_TOOL.pluginName,
+              ),
+            }))
+          : setChatAuthPreferencesFromEffective(
+              useChatStore.getState,
+              target,
+              setMcpHttpAuthPreference(effective, selectedTarget, 'provider'),
+            );
+      release();
+      await Promise.all([authorization, edit]);
+      expect(lastUpdate()?.pluginSelections).toMatchObject({
+        pluginRefs: operation === 'remove' ? [] : [EXTRA_TOOL],
+        mcpServerRefs: [{ serverId: 'resolved', configId: 'default' }],
+      });
+      expect(
+        lastUpdate()?.pluginSelections.mcpHttpAuthPreferences,
+      ).toContainEqual({
+        target: resolvedTarget,
+        handler: 'canopy',
+      });
+      if (operation !== 'remove') {
+        expect(
+          lastUpdate()?.pluginSelections.mcpHttpAuthPreferences,
+        ).toContainEqual({
+          target: selectedTarget,
+          handler: 'provider',
+        });
+      }
+    },
+  );
 });

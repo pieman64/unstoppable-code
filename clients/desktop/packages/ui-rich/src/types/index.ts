@@ -83,8 +83,16 @@ export interface SlashCommandOption {
   displayName?: string;
   insertText?: string;
   category?: string;
-  /** Host-provided plugin namespace for scoped browsing. */
+  /**
+   * Host-provided plugin namespace for scoped browsing. Search also treats it
+   * as the row's plugin identity, including when `name` is flattened.
+   */
   namespace?: string;
+  /**
+   * Original member identity when `name` was projected for a harness, so
+   * search can match it independently of the invocation text.
+   */
+  memberName?: string;
   /** Selecting this row enters a namespace instead of invoking a command. */
   browseNamespace?: string;
   /** Display grouping independent of enablement state. */
@@ -108,7 +116,18 @@ export interface SlashCommandOption {
   data?: unknown;
   /** Present when discovery should show the row but prevent insertion. */
   disabledReason?: string;
+  /**
+   * The host must resolve this row before insertion and supply the text to
+   * insert; the row's own `insertText` is never used as a fallback.
+   */
+  requiresResolution?: boolean;
 }
+
+/**
+ * Host preparation result for a selected slash row: `false` blocks insertion,
+ * `true` inserts the row's own text, and `{ insertText }` inserts host text.
+ */
+export type SlashCommandPreparation = boolean | { insertText: string };
 
 /**
  * One row in the `@`-mention picker.

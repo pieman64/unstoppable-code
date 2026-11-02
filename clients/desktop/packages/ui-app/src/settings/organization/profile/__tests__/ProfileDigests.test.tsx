@@ -281,11 +281,11 @@ describe('ProfileDigestsSection', () => {
     const error = container.querySelector(
       '[data-testid="profile-digests-error"]',
     );
-    expect(error?.textContent).toContain("Couldn't load this. Try again.");
+    expect(error?.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
 
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     await act(async () => {
       retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

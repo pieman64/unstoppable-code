@@ -1,4 +1,8 @@
 import {
+  DesktopOrgSharedMultiRepoSetup,
+  useSharedMultiRepoRequired,
+} from './DesktopOrgSharedMultiRepoSetup';
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -12,7 +16,12 @@ import type {
   ExistingWorktreeJoinCandidate,
   ExistingWorktreeJoinWorkspaceGroup,
 } from '@canopy/desktop-shared/types';
-import { Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
 import { RefreshSpinnerIcon } from '@canopy/ui-shared/icons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useChatStore } from '@/stores/chatStore';
@@ -36,7 +45,21 @@ import { Tooltip } from '@canopy/ui-shared';
  */
 type PickerMode = 'new-worktrees' | 'existing-worktrees';
 
+const PICKER_MODE_OPTIONS: readonly SegmentedControlOption<PickerMode>[] = [
+  {
+    value: 'new-worktrees',
+    label: 'New worktrees',
+    dataTestId: 'add-repo-to-worktree-modal-pill-new',
+  },
+  {
+    value: 'existing-worktrees',
+    label: 'Existing worktrees',
+    dataTestId: 'add-repo-to-worktree-modal-pill-existing',
+  },
+];
+
 interface AddRepoToWorktreeModalProps {
+  onOpenSharedDestination?: (workspaceId: string) => void;
   /** Workspace that owns the source worktree the user just acted on. */
   sourceWorkspaceId: string;
   /** Worktree the user wants to combine into a multi-repo destination. */
@@ -101,6 +124,7 @@ function clearConsumedWorktreeSelection(
  * temporary.
  */
 export function AddRepoToWorktreeModal({
+  onOpenSharedDestination,
   sourceWorkspaceId,
   sourceWorktreeId,
   onClose,
@@ -157,6 +181,13 @@ export function AddRepoToWorktreeModal({
         : undefined,
     [existingGroups, selectedExisting],
   );
+
+  const sharedRequired = useSharedMultiRepoRequired([
+    sourceWorkspaceId,
+    ...(pickerMode === 'existing-worktrees' && selectedExisting
+      ? [selectedExisting.workspaceId]
+      : selectedWorkspaceIds),
+  ]);
 
   useCurrentUiStateReporter('worktree.adhocJoinModal', {
     open: true,
@@ -303,6 +334,7 @@ export function AddRepoToWorktreeModal({
     setErrorMessage(null);
     setSubmitting(true);
     try {
+      if (sharedRequired) return;
       // Flush any pending chat-tab persistence on the source so the migration
       // sees the latest state. Mirrors the chatStore migration contract.
       await flushWorktreeTabs(sourceWorkspaceId, sourceWorktreeId);
@@ -377,6 +409,7 @@ export function AddRepoToWorktreeModal({
     flushWorktreeTabs,
     migrateWorktreeTabsToAdhocWorkspace,
     mode,
+    sharedRequired,
     onClose,
     selectWorktree,
     selectedWorkspaceIds,
@@ -489,6 +522,40 @@ export function AddRepoToWorktreeModal({
     submitting,
   ]);
 
+  const selectedIds =
+    pickerMode === 'new-worktrees'
+      ? selectedWorkspaceIds
+      : selectedExisting
+        ? [selectedExisting.workspaceId]
+        : [];
+  const selectedSharedSources = [
+    sourceWorkspace,
+    ...selectedIds.map((id) => projects.find((project) => project.id === id)),
+  ].filter((project) => project !== undefined);
+  if (sharedRequired) {
+    return (
+      <DialogModal
+        onClose={onClose}
+        title="New shared multi-repo project"
+        titleId="shared-multi-repo-title"
+        maxWidth="xl"
+      >
+        <div className="space-y-4 p-5">
+          <DesktopOrgSharedMultiRepoSetup
+            mode="combine"
+            onClose={onClose}
+            sources={selectedSharedSources.map((project) => ({
+              kind: 'workspace',
+              id: project.id,
+              name: project.name,
+            }))}
+            onOpenDestination={onOpenSharedDestination}
+          />
+        </div>
+      </DialogModal>
+    );
+  }
+
   return (
     <DialogModal
       onClose={onClose}
@@ -501,47 +568,32 @@ export function AddRepoToWorktreeModal({
         data-testid="add-repo-to-worktree-modal"
       >
         <div className="flex items-center justify-between gap-2">
-          <div className="inline-flex items-center gap-1 rounded-lg border p-1">
-            <button
-              type="button"
-              aria-pressed={pickerMode === 'new-worktrees'}
-              onClick={() => {
+          <SegmentedControl<PickerMode>
+            label="Worktrees to add"
+            value={pickerMode}
+            width="content"
+            shape="capsule"
+            options={PICKER_MODE_OPTIONS}
+            onChange={(next) => {
+              if (next === 'new-worktrees') {
                 setPickerMode('new-worktrees');
                 setErrorMessage(null);
-              }}
-              className={`focus-ring rounded-md px-3 py-1 text-xs transition ${
-                pickerMode === 'new-worktrees'
-                  ? 'bg-secondary fg-primary'
-                  : 'fg-secondary hover:fg-primary'
-              }`}
-              data-testid="add-repo-to-worktree-modal-pill-new"
-            >
-              New worktrees
-            </button>
-            <button
-              type="button"
-              aria-pressed={pickerMode === 'existing-worktrees'}
-              onClick={showExistingPicker}
-              className={`focus-ring rounded-md px-3 py-1 text-xs transition ${
-                pickerMode === 'existing-worktrees'
-                  ? 'bg-secondary fg-primary'
-                  : 'fg-secondary hover:fg-primary'
-              }`}
-              data-testid="add-repo-to-worktree-modal-pill-existing"
-            >
-              Existing worktrees
-            </button>
-          </div>
+              } else {
+                showExistingPicker();
+              }
+            }}
+          />
           <Tooltip label="Refresh">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={handleRefreshPicker}
               disabled={
                 pickerMode === 'new-worktrees'
                   ? loadingOptions
                   : loadingExisting
               }
-              className="focus-ring rounded-md p-1.5 fg-secondary transition hover:bg-secondary hover:fg-primary disabled:opacity-60"
               data-testid="add-repo-to-worktree-modal-refresh"
               aria-label="Refresh"
             >
@@ -552,7 +604,7 @@ export function AddRepoToWorktreeModal({
                     : loadingExisting
                 }
               />
-            </button>
+            </Button>
           </Tooltip>
         </div>
 
@@ -668,7 +720,7 @@ export function AddRepoToWorktreeModal({
                 type="button"
                 onClick={() => setMode('temporary')}
                 aria-pressed={mode === 'temporary'}
-                className={`focus-ring flex-1 rounded-lg border px-3 py-2 text-left transition ${
+                className={`focus-ring flex-1 rounded-lg border px-3 py-2 text-left transition-colors ${
                   mode === 'temporary'
                     ? 'border-line-accent bg-accent-subtle fg-primary'
                     : 'bg-base fg-secondary hover:fg-primary'
@@ -685,7 +737,7 @@ export function AddRepoToWorktreeModal({
                 type="button"
                 onClick={() => setMode('update-source-workspace')}
                 aria-pressed={mode === 'update-source-workspace'}
-                className={`focus-ring flex-1 rounded-lg border px-3 py-2 text-left transition ${
+                className={`focus-ring flex-1 rounded-lg border px-3 py-2 text-left transition-colors ${
                   mode === 'update-source-workspace'
                     ? 'border-line-accent bg-accent-subtle fg-primary'
                     : 'bg-base fg-secondary hover:fg-primary'
@@ -702,17 +754,17 @@ export function AddRepoToWorktreeModal({
         )}
 
         <div className="flex items-center justify-end gap-2 pt-1">
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onClose}
             disabled={submitting}
-            className="focus-ring rounded-lg border px-3 py-1.5 text-xs fg-secondary hover:bg-secondary hover:fg-primary disabled:opacity-60"
             data-testid="add-repo-to-worktree-modal-cancel"
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() =>
               void (pickerMode === 'new-worktrees'
                 ? handleCombine()
@@ -726,7 +778,6 @@ export function AddRepoToWorktreeModal({
                   selectedWorkspaceIds.length === 0
                 : loadingExisting || !selectedExisting)
             }
-            className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
             data-testid="add-repo-to-worktree-modal-submit"
           >
             {pickerMode === 'new-worktrees'
@@ -736,7 +787,7 @@ export function AddRepoToWorktreeModal({
               : submitting
                 ? 'Joining…'
                 : 'Join worktree'}
-          </button>
+          </Button>
         </div>
 
         {errorMessage && (

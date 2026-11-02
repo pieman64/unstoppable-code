@@ -9,6 +9,7 @@ import {
 import { MarketplaceEntityHeader } from '@canopy/ui-app/capability';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { McpServerLogo } from '@/components/shared/McpServerLogo';
+import { formatDateOrEmpty } from '@/lib/format';
 import {
   agentBaseModelLabel,
   agentPluginLabels,
@@ -25,11 +26,6 @@ export interface LocalAgentMarketplaceDetailProps {
   /** The list's load failure and its Try again, above the detail. */
   notice?: ReactNode;
   onDelete: () => void;
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString();
 }
 
 function DetailFact({
@@ -101,7 +97,9 @@ export function LocalAgentMarketplaceDetail({
         <DetailFact label="Model ID">
           <span className="font-mono text-xs">{agent.id}</span>
         </DetailFact>
-        <DetailFact label="Updated">{formatDate(agent.updatedAt)}</DetailFact>
+        <DetailFact label="Updated">
+          {formatDateOrEmpty(agent.updatedAt) || '—'}
+        </DetailFact>
       </dl>
 
       {/* Instructions are prompt content, not a label. */}

@@ -5,6 +5,10 @@ import {
   CanopyErrorPayloadSchema,
   CanopyQueryRetryDirectiveSchema,
 } from '../shared';
+import {
+  PersistedToolOutputReferenceSchema,
+  TranscriptTargetSchema,
+} from './transcript';
 
 const ordinal = z.number().int().nonnegative();
 const safeId = z
@@ -22,16 +26,11 @@ export const CoreChatToolOutputReadParamsSchema = z
     }),
     archivedContainerId: z.string().min(1).max(512).optional(),
     standaloneHistory: z.literal(true).optional(),
+    /** Absent or `primary`: the chat's transcript; `delegation`: a child stream. */
+    target: TranscriptTargetSchema.optional(),
     messageId: z.string().min(1).max(512),
     toolUseId: z.string().min(1).max(512),
-    reference: z.strictObject({
-      version: z.literal(1),
-      artifactId: z.string().min(1),
-      byteLength: ordinal,
-      sha256: z.string().regex(/^[a-f0-9]{64}$/),
-      encoding: z.enum(['utf-8', 'utf-16le']),
-      mediaType: z.literal('text/plain'),
-    }),
+    reference: PersistedToolOutputReferenceSchema,
     offset: ordinal,
     limit: ordinal.min(4).max(65_536),
   })
@@ -47,6 +46,15 @@ export const CoreChatToolOutputReadParamsSchema = z
         code: 'custom',
         path: ['offset'],
         message: 'Offset exceeds the tool-output byte length.',
+      });
+    if (
+      params.target !== undefined &&
+      params.target.chatId !== params.scope.chatId
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['target', 'chatId'],
+        message: 'The read target must belong to the scope chat.',
       });
     if (params.standaloneHistory && params.archivedContainerId !== undefined)
       context.addIssue({

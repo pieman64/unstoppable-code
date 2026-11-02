@@ -149,6 +149,8 @@ function makeTab(
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     model: CLAUDE_MODEL,
     providerType: 'claude',
     ...overrides,
@@ -205,7 +207,7 @@ function findTab(
 
 beforeEach(() => {
   jest.clearAllMocks();
-  sendMessageMock.mockResolvedValue({ status: 'accepted' });
+  sendMessageMock.mockResolvedValue({});
   generateHandoffSummaryMock.mockResolvedValue({
     summary: 'The user asked to fix a flaky archive spec. It now passes.',
   });
@@ -357,6 +359,7 @@ describe('stale-session replacement keeps the context meter alive', () => {
         {
           modelId: CLAUDE_MODEL,
           gatewayId: `anthropic/${CLAUDE_MODEL}`,
+          family: 'anthropic',
           recommendedHarness: 'claude',
           gatewayOnly: false,
           contextWindow: 100_000,
@@ -469,6 +472,40 @@ describe('model change keeps the context meter accurate', () => {
     expect(tab?.model).toBe(CODEX_MODEL);
     expect(tab?.usage).toMatchObject(ZEROED_COUNTERS);
     expect(tab?.usage?.contextWindow).toBe(CODEX_CONTEXT_WINDOW);
+  });
+
+  it('does not repin an OpenCode chat when its model becomes policy-blocked', () => {
+    const { useChatStore } = loadChatStore();
+    seedWorktree(
+      useChatStore,
+      makeTab({
+        usage: SOURCE_USAGE,
+        sdkSessionId: 'opencode-sdk',
+        providerType: 'opencode',
+        executionHarness: 'opencode',
+      }),
+    );
+    useChatStore.getState().reconcileModelRegistry(
+      {
+        claude: [
+          { id: CLAUDE_MODEL, label: 'Sonnet' },
+          { id: CLAUDE_LARGE_MODEL, label: 'Opus' },
+        ],
+        codex: [],
+        ollama: [],
+        aliases: {},
+      },
+      new Set([CLAUDE_MODEL]),
+    );
+    expect(
+      findTab(useChatStore, (candidate) => candidate.id === 'chat'),
+    ).toMatchObject({
+      model: CLAUDE_MODEL,
+      providerType: 'opencode',
+      executionHarness: 'opencode',
+      sdkSessionId: 'opencode-sdk',
+    });
+    expect(changeModelMock).not.toHaveBeenCalled();
   });
 
   it('a policy-forced model replacement updates contextWindow as well', () => {

@@ -1,0 +1,39 @@
+name: Wait for Agent Reply
+description: Wait for a chat's turn to end and expose its final reply. Waits for the turn that answers message_id, or for the chat's running or latest turn. Runs in the desktop app.
+scope: [global, directory, worktree]
+inputs:
+  project_id:
+    description: Project that owns the chat. Exactly one of project_id or bot_id.
+    required: false
+  bot_id:
+    description: Bot that owns the chat (app_advisor). Exactly one of project_id or bot_id.
+    required: false
+  task_id:
+    description: The worktree or Work Entry that holds the chat. Required.
+    required: false
+  chat_id:
+    description: The chat to wait on. Required.
+    required: false
+  message_id:
+    description: The message_id from send-agent-message. Waits for the turn that answers it, including a turn it was steered into. Without it, waits for the chat's running turn, or returns its latest settled turn.
+    required: false
+  reply_timeout_minutes:
+    description: How long to wait for the reply. Default 60, at most 720. The step deadline is raised to fit it unless timeout_minutes is set.
+    required: false
+outputs:
+  reply_state:
+    description: completed, failed, cancelled, interrupted, none (the chat has no settled turn) or timed_out.
+  reply_message_id:
+    description: ID of the final assistant message, or empty.
+  turn_id:
+    description: ID of the watched turn (its opening user message), or empty. After a resume, reply_message_id comes from the resume that ended it.
+  reply_text:
+    description: The final assistant message, capped at 8,000 characters. Empty when the turn ended without a reply.
+  reply_truncated:
+    description: "'true' when reply_text was capped."
+  reply_file:
+    description: Absolute path to a file holding the full final message, never truncated. Empty when there is no reply.
+  failure_reason:
+    description: Typed reason when the step failed (not_found, advisor_access_disabled, owner_context_unavailable, validation_failed, needs_desktop, unsupported_action, reply_timed_out). Empty on success.
+runs:
+  using: host

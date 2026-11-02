@@ -39,6 +39,9 @@
       "path": "./packages/core-client"
     },
     {
+      "path": "./packages/code-graph"
+    },
+    {
       "path": "./packages/desktop-shared"
     },
     {
@@ -61,6 +64,15 @@
     },
     {
       "path": "./packages/mcp-oauth-core"
+    },
+    {
+      "path": "./packages/ui-app/test/tsconfig.json"
+    },
+    {
+      "path": "./apps/desktop-app/tests/electron/tsconfig.captures.json"
+    },
+    {
+      "path": "./apps/desktop-app/tests/benchmark"
     }
   ]
 }

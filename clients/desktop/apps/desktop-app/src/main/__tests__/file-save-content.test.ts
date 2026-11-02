@@ -62,6 +62,10 @@ import { validateAbsolutePath, validateId } from '../lib/validation';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { getWorkspaceType } from '../lib/workspace-registry';
 import { registerFilePreviewHandlers } from '../ipc/file-preview';
+import {
+  createDirectTextSaveDispatcher,
+  trustedSaveCaller,
+} from './file-preview-fixtures';
 
 const MAX_EDIT_TEXT_BYTES = 5 * 1024 * 1024;
 
@@ -142,6 +146,8 @@ function baseRequest(
   };
 }
 
+let dispatcher = createDirectTextSaveDispatcher();
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockedGetWorkspaceType.mockReturnValue(null);
@@ -160,7 +166,8 @@ beforeEach(() => {
     repos: [],
   });
   mockedWriteFile.mockResolvedValue(undefined);
-  registerFilePreviewHandlers();
+  dispatcher = createDirectTextSaveDispatcher();
+  registerFilePreviewHandlers(dispatcher, trustedSaveCaller);
 });
 
 describe('fileSaveContent handler', () => {
@@ -185,6 +192,24 @@ describe('fileSaveContent handler', () => {
 
     const result = await getSaveHandler()(undefined, request);
 
+    // The projection compares the exact version of the stat the check read.
+    expect(dispatcher.saves).toEqual([
+      [
+        {
+          projectId: 'proj-1',
+          worktreeId: 'worktree-1',
+          realPath: '/worktree-root/src/file.ts',
+          content: request.content,
+          expectedVersion: '22:1000',
+        },
+        {
+          caller: {
+            ...trustedSaveCaller(),
+            grants: ['worker.filesystem.write'],
+          },
+        },
+      ],
+    ]);
     expect(mockedWriteFile).toHaveBeenCalledWith(
       '/worktree-root/src/file.ts',
       request.content,
@@ -289,11 +314,35 @@ describe('fileSaveContent handler', () => {
     });
     setStatSequence([{ size: 22, mtimeMs: 1003 }]);
 
-    await expect(getSaveHandler()(undefined, baseRequest())).rejects.toThrow(
-      'File changed on disk since it was loaded',
-    );
+    await expect(
+      getSaveHandler()(undefined, baseRequest()),
+    ).rejects.toMatchObject({
+      name: 'FileSaveConflictError',
+      message: 'File changed on disk since it was loaded.',
+    });
     expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(touchWorkspaceTarget).not.toHaveBeenCalled();
   });
+
+  it.each(['EACCES', 'ENOENT', 'EIO'])(
+    'preserves an unrelated filesystem write error (%s)',
+    async (code) => {
+      setRealpathMap({
+        '/worktree-root/src/file.ts': '/worktree-root/src/file.ts',
+        '/worktree-root': '/worktree-root',
+        '/attachments-root': createFsError('ENOENT', 'missing attachments'),
+      });
+      setStatSequence([{ size: 22, mtimeMs: 1000 }]);
+      const error = createFsError(code, 'write failed');
+      mockedWriteFile.mockRejectedValueOnce(error);
+
+      await expect(getSaveHandler()(undefined, baseRequest())).rejects.toBe(
+        error,
+      );
+      expect(error.name).toBe('Error');
+      expect(mockedWriteFile).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('accepts a 1 ms mtime difference', async () => {
     const request = baseRequest({ expectedModifiedAtMs: 1000 });

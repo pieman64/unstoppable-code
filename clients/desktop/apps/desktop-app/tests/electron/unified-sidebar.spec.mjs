@@ -744,11 +744,9 @@ test.describe('unified sidebar', () => {
     }
   });
 
-  // At a narrow sidebar, the docked titlebar's control at the end of the row
-  // (Resources, or the activity bell) sits in the same seat as the collapsed
-  // corner's New Task. Hiding and showing the sidebar must hand that seat over
-  // at the sidebar's moving edge: never both icons drawn on top of each other,
-  // never an empty seat while one waits for the other.
+  // At the minimum sidebar width, shared Resources occupies New Task's seat.
+  // Legacy has no Activity button, so Resources sits farther right. Both must
+  // avoid overlapping icons while sliding; the shared seat must stay occupied.
   for (const shared of [false, true]) {
     test(`hands the titlebar seat between the sidebar and New Task at the sidebar edge (${shared ? 'shared' : 'legacy'})`, async () => {
       const userDataDir = mkdtempSync(
@@ -805,7 +803,7 @@ test.describe('unified sidebar', () => {
                 // The sidebar control sharing New Task's seat: whichever
                 // titlebar button overlaps it most.
                 let occupant = null;
-                let best = 0;
+                let best = -Infinity;
                 for (const button of row.querySelectorAll('button')) {
                   const b = button.getBoundingClientRect();
                   const overlap =
@@ -815,6 +813,11 @@ test.describe('unified sidebar', () => {
                     best = overlap;
                     occupant = button;
                   }
+                }
+                if (!occupant) {
+                  throw new Error(
+                    'The sidebar titlebar has no control to sample',
+                  );
                 }
                 const opacityChain = (element) => {
                   let value = 1;
@@ -850,7 +853,13 @@ test.describe('unified sidebar', () => {
                   .click();
                 const frame = () => {
                   samples.push(sample());
-                  if (performance.now() - start < 400) {
+                  const elapsed = performance.now() - start;
+                  // A loaded runner paints ~25 fps; keep sampling past 400 ms
+                  // until there are enough frames to judge the handover.
+                  if (
+                    elapsed < 400 ||
+                    (samples.length <= 10 && elapsed < 2000)
+                  ) {
                     requestAnimationFrame(frame);
                   } else {
                     resolve({ overlapPx: best, samples });
@@ -861,8 +870,15 @@ test.describe('unified sidebar', () => {
           );
 
         const expectCleanHandover = ({ overlapPx, samples }, label) => {
-          // Precondition: at the minimum width the two really share a seat.
-          expect(overlapPx, `${label}: shared seat`).toBeGreaterThan(14);
+          // At the 220px floor both macOS variants share the clipped seat.
+          const sharesSeat = process.platform === 'darwin';
+          if (sharesSeat) {
+            expect(overlapPx, `${label}: shared seat`).toBeGreaterThan(14);
+          } else {
+            expect(overlapPx, `${label}: separate seats`).toBeLessThanOrEqual(
+              0,
+            );
+          }
           expect(samples.length, `${label}: sampled frames`).toBeGreaterThan(
             10,
           );
@@ -886,11 +902,12 @@ test.describe('unified sidebar', () => {
               doubled,
               `${label} frame ${index}: icons overlap`,
             ).toBeLessThanOrEqual(4);
-            // An empty seat: neither icon is drawn.
-            expect(
-              occupant !== null || seat !== null,
-              `${label} frame ${index}: seat is empty`,
-            ).toBe(true);
+            if (sharesSeat) {
+              expect(
+                occupant !== null || seat !== null,
+                `${label} frame ${index}: seat is empty`,
+              ).toBe(true);
+            }
           });
         };
 
@@ -3881,42 +3898,50 @@ test.describe('unified sidebar', () => {
       expect(accountBox).not.toBeNull();
       expect(titlebarBox.y).toBeLessThan(accountBox.y);
 
-      // UI scale changes rem-sized content, but the shared titlebar controls
-      // keep their documented 28px chrome geometry. At maximum supported
-      // scale and minimum sidebar width, the icon-only resource control still
-      // preserves the documented 4px control-group gap after Forward.
-      const resizeHandle = window.getByTestId('sidebar-resize-handle');
-      const resizeHandleBox = await resizeHandle.boundingBox();
-      expect(resizeHandleBox).not.toBeNull();
-      await window.mouse.move(
-        resizeHandleBox.x + resizeHandleBox.width / 2,
-        resizeHandleBox.y + resizeHandleBox.height / 2,
-      );
-      await window.mouse.down();
-      await window.mouse.move(
-        0,
-        resizeHandleBox.y + resizeHandleBox.height / 2,
-      );
-      await window.mouse.up();
-      await expect
-        .poll(
-          async () =>
-            (await window.getByTestId('app-sidebar').boundingBox())?.width ?? 0,
-        )
-        .toBe(220);
-
-      await setUiScale(window, 150);
-      await expect(pill).toHaveAttribute('data-compact-layout', 'icon');
-      const forwardBox = await window
-        .getByTestId('nav-history-forward')
-        .boundingBox();
-      const scaledPillBox = await pill.boundingBox();
-      expect(forwardBox).not.toBeNull();
-      expect(scaledPillBox).not.toBeNull();
-      expect(forwardBox.width).toBe(28);
-      expect(
-        scaledPillBox.x - (forwardBox.x + forwardBox.width),
-      ).toBeGreaterThanOrEqual(4);
+      // At each supported scale, drag to the actual minimum and preserve
+      // both trailing targets as well as the gap after Forward.
+      for (const [scale, macMinimum] of [
+        [50, 292],
+        [100, 220],
+        [150, 220],
+        [200, 220],
+      ]) {
+        await setUiScale(window, scale);
+        // Hover waits for the resize handle to settle after the zoom/layout change.
+        await window.getByTestId('sidebar-resize-handle').hover();
+        const resizeHandleBox = await window
+          .getByTestId('sidebar-resize-handle')
+          .boundingBox();
+        expect(resizeHandleBox).not.toBeNull();
+        await window.mouse.move(
+          resizeHandleBox.x + resizeHandleBox.width / 2,
+          resizeHandleBox.y + resizeHandleBox.height / 2,
+        );
+        await window.mouse.down();
+        await window.mouse.move(
+          0,
+          resizeHandleBox.y + resizeHandleBox.height / 2,
+        );
+        await window.mouse.up();
+        await expect
+          .poll(
+            async () =>
+              (await window.getByTestId('app-sidebar').boundingBox())?.width ??
+              0,
+          )
+          .toBe(process.platform === 'darwin' ? macMinimum : 220);
+        await expect(pill).toHaveAttribute('data-compact-layout', 'icon');
+        const forwardBox = await window
+          .getByTestId('nav-history-forward')
+          .boundingBox();
+        const pillBox = await pill.boundingBox();
+        expect(forwardBox).not.toBeNull();
+        expect(pillBox).not.toBeNull();
+        expect(forwardBox.width).toBe(28);
+        expect(
+          pillBox.x - (forwardBox.x + forwardBox.width),
+        ).toBeGreaterThanOrEqual(4);
+      }
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

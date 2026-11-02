@@ -3,10 +3,7 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot } from 'react-dom/client';
-import type {
-  CanopyApi,
-  PreferencesSaveResult,
-} from '@canopy/desktop-shared/types';
+import type { PreferencesSaveResult } from '@canopy/desktop-shared/types';
 import type { InstalledItemSnapshot } from '@canopy/protocol/installed-items';
 import { useDesktopInstalledItemStatuses } from '../useDesktopInstalledItemStatuses';
 
@@ -49,7 +46,7 @@ test('rereads status when a preferences save syncs, not only on change events', 
         synced = callback;
         return (): void => undefined;
       },
-    } as Partial<CanopyApi> as CanopyApi,
+    },
   });
   const container = document.createElement('div');
   const root = createRoot(container);

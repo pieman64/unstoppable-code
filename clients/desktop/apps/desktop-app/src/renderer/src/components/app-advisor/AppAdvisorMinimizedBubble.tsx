@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX } from 'react';
 import { Tooltip } from '@canopy/ui-shared/components';
 import { AppAdvisorIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -22,10 +23,10 @@ export function AppAdvisorMinimizedBubble(): JSX.Element | null {
       // still frame the whole time, so it opts out of the layer default.
       data-canopy-browser-native-overlay="false"
     >
-      <Tooltip label="Open App Advisor" placement="left">
+      <Tooltip label={`Open ${ORCHESTRATOR_LABEL}`} placement="left">
         <button
           type="button"
-          aria-label="Open App Advisor"
+          aria-label={`Open ${ORCHESTRATOR_LABEL}`}
           data-testid="app-advisor-minimized-bubble"
           onClick={openDialog}
           className="focus-ring inline-flex size-10 items-center justify-center rounded-full bg-tertiary fg-secondary shadow-xl transition-colors hover:fg-primary"

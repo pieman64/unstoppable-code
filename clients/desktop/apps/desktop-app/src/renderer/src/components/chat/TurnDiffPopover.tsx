@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type JSX,
@@ -14,7 +15,10 @@ import type {
   TurnDiffTreeRef,
 } from '@canopy/desktop-shared/types';
 import { DiffContentView } from '../activity/DiffContentView';
-import { Tooltip } from '@canopy/ui-shared';
+import {
+  DiffTurnUnavailableState,
+  HeaderActionButton,
+} from '@canopy/ui-shared/components';
 import { PencilIcon as AppCatalogPencilIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 interface PopoverPosition {
@@ -90,33 +94,28 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
     FileDiffImagePreview | undefined
   >(undefined);
 
-  // Fetch diff on mount
+  const treeRefs = turnDiff.treeRefs;
+  const treeRef = useMemo(
+    () =>
+      treeRefs && treeRefs.length > 0 ? findTreeRef(file, treeRefs) : undefined,
+    [file, treeRefs],
+  );
+
+  // Only the turn's own trees: without them no other comparison stands in.
   useEffect(() => {
+    if (!treeRef) return;
     setLoading(true);
     let cancelled = false;
 
-    const treeRefs = turnDiff.treeRefs ?? [];
-    const treeRef =
-      treeRefs.length > 0 ? findTreeRef(file, treeRefs) : undefined;
-
-    const diffPromise = treeRef
-      ? window.api.activity.getTurnFileDiff({
-          projectId,
-          worktreeId,
-          filePath: file.path,
-          startTree: treeRef.startTree,
-          endTree: treeRef.endTree,
-          repoId: file.repoId,
-        })
-      : window.api.activity.getFileDiff({
-          projectId,
-          worktreeId,
-          filePath: file.path,
-          source: 'combined',
-          repoId: file.repoId,
-        });
-
-    void diffPromise
+    void window.api.activity
+      .getTurnFileDiff({
+        projectId,
+        worktreeId,
+        filePath: file.path,
+        startTree: treeRef.startTree,
+        endTree: treeRef.endTree,
+        repoId: file.repoId,
+      })
       .then((response) => {
         if (cancelled) return;
         setOldValue(response.oldValue);
@@ -139,7 +138,7 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
     return (): void => {
       cancelled = true;
     };
-  }, [file, projectId, worktreeId, turnDiff.treeRefs]);
+  }, [file, projectId, worktreeId, treeRef]);
 
   // Position calculation — uses fixed POPOVER_HEIGHT so position is stable
   const updatePosition = useCallback((): void => {
@@ -179,60 +178,64 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
   // Portaled to `document.body`, out of the transcript's replay block. The
   // header (file path, counts, actions) is recorded; `DiffContentView` blocks
   // the diff itself.
+  //
+  // The menu's floating surface (12px corners, menu shadow). Header actions
+  // and the diff well sit 4px in, with 8px corners nested in the card's 12px
+  // ones; the path lands on the preview cards' 12px text edge.
   return createPortal(
     <div
       ref={popoverRef}
+      data-testid="turn-diff-popover"
       data-canopy-browser-native-overlay="true"
-      className="flex flex-col overflow-hidden rounded-lg bg-popover shadow-xl"
+      className="flex flex-col gap-1 overflow-hidden rounded-lg bg-quaternary p-1 fg-primary shadow-xl"
       style={style}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between border-b px-3 py-1.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate text-xs font-medium fg-primary">
-            {file.path}
-          </span>
-          <span className="shrink-0 text-2xs font-medium tabular-nums">
-            <span className="fg-success">+{file.insertions}</span>
-            <span className="ml-1 fg-destructive">-{file.deletions}</span>
-          </span>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Tooltip label="Open full diff view">
-            <button
-              type="button"
-              onClick={onOpenModal}
-              className="rounded px-2 py-0.5 text-2xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-            >
-              Expand
-            </button>
-          </Tooltip>
-          <Tooltip label="Open file in editor">
-            <button
-              type="button"
-              onClick={onEdit}
-              className="flex items-center gap-1 rounded px-2 py-0.5 text-2xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-            >
-              <AppCatalogPencilIcon width="11" height="11" />
-              Edit
-            </button>
-          </Tooltip>
-        </div>
+      <div className="flex min-w-0 shrink-0 items-center gap-2 pl-2">
+        <span className="min-w-0 truncate text-xs font-medium fg-primary">
+          {file.path}
+        </span>
+        <span className="shrink-0 text-2xs font-medium tabular-nums">
+          <span className="fg-success">+{file.insertions}</span>
+          <span className="ml-1 fg-destructive">-{file.deletions}</span>
+        </span>
+        <span className="ml-auto flex shrink-0 items-center">
+          <HeaderActionButton
+            tone="neutral"
+            tooltipLabel="Open full diff view"
+            onClick={onOpenModal}
+          >
+            Expand
+          </HeaderActionButton>
+          <HeaderActionButton
+            tone="neutral"
+            tooltipLabel="Open file in editor"
+            onClick={onEdit}
+          >
+            <AppCatalogPencilIcon width="14" height="14" aria-hidden="true" />
+            Edit
+          </HeaderActionButton>
+        </span>
       </div>
 
-      {/* Diff content */}
-      <div className="diff-popover-compact flex min-h-0 flex-1">
-        <DiffContentView
-          oldValue={oldValue}
-          newValue={newValue}
-          viewMode="unified"
-          loading={loading}
-          truncated={truncated}
-          binary={binary}
-          imagePreview={imagePreview}
-        />
+      <div className="diff-popover-compact flex min-h-0 flex-1 overflow-hidden rounded-md bg-base">
+        {treeRef ? (
+          <DiffContentView
+            oldValue={oldValue}
+            newValue={newValue}
+            viewMode="unified"
+            loading={loading}
+            truncated={truncated}
+            binary={binary}
+            imagePreview={imagePreview}
+            variant="compact"
+          />
+        ) : (
+          <DiffTurnUnavailableState
+            action={<p>Expand to see all branch changes for this file.</p>}
+          />
+        )}
       </div>
     </div>,
     document.body,

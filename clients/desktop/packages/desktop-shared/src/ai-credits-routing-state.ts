@@ -25,15 +25,20 @@ export function providerAccountKey(
 
 /**
  * Whether stored routing still applies. Persistent routing always applies.
- * Session routing stops at its reset time, and after a native account change
- * recorded later than its activation (missing activation counts as older).
+ * Session routing stops at its reset time, after a native account change, or
+ * after a fresh successful observation of restored subscription allowance.
+ * Missing activation counts as older than either observation.
  */
 export function isAiCreditsRoutingInEffect(
   // Persisted legacy tabs can lack `activatedAt`, so it is optional here.
   routing:
     | (Omit<AiCreditsRoutingState, 'activatedAt'> & { activatedAt?: number })
     | undefined,
-  input: { now: number; accountChangedAt?: number },
+  input: {
+    now: number;
+    accountChangedAt?: number;
+    subscriptionRestoredAt?: number;
+  },
 ): boolean {
   if (!routing?.active) return false;
   if (routing.scope === 'persistent') return true;
@@ -48,6 +53,12 @@ export function isAiCreditsRoutingInEffect(
   if (
     input.accountChangedAt !== undefined &&
     (routing.activatedAt ?? 0) < input.accountChangedAt
+  ) {
+    return false;
+  }
+  if (
+    input.subscriptionRestoredAt !== undefined &&
+    (routing.activatedAt ?? 0) < input.subscriptionRestoredAt
   ) {
     return false;
   }

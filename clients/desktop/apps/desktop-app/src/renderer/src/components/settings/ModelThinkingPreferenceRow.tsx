@@ -12,6 +12,10 @@ import {
   ThinkingLevelControl,
   ThinkingLevelProviderHint,
 } from '@canopy/ui-shared';
+import {
+  SettingsSelect,
+  type SettingsSelectItem,
+} from '@canopy/ui-shared/components';
 import { useCursorChatAvailable } from '@/hooks/useCursorChatAvailable';
 import { useCursorModels } from '@/hooks/useCursorModels';
 import {
@@ -19,7 +23,7 @@ import {
   isNativeModelPreferenceOption,
   thinkingLevelForChosenModel,
 } from './model-thinking-preference';
-import { SettingsRow, SettingsSelect } from './SettingsLayout';
+import { SettingsRow } from './SettingsLayout';
 
 interface ModelThinkingPreferenceRowProps {
   /** Heading rendered on the left side of the row. */
@@ -105,6 +109,57 @@ export function ModelThinkingPreferenceRow({
   const thinkingSupported =
     provider !== 'cursor' && supportedThinkingLevels.length > 0;
 
+  const modelOptions: SettingsSelectItem[] = [];
+  if (!modelAvailable) {
+    modelOptions.push({
+      value: model,
+      label: `${model} (unavailable)`,
+      disabled: true,
+    });
+  }
+  // Custom Agent models (`agent_model_*`) are intentionally EXCLUDED here.
+  // These per-feature model preferences (chat description, cron generation,
+  // branch/PR/commit naming, plan parsing, worktree summaries, rebase
+  // resolution, …) run on utility execution paths that pass the selected
+  // model straight to a provider SDK and do NOT perform Agent resolution
+  // (instruction append + plugin merge). Only the real Claude/Codex/Ollama
+  // base models are offered; Agent models surface exclusively in the chat
+  // ModelPicker.
+  modelOptions.push(
+    {
+      label: 'Claude',
+      options: CLAUDE_MODELS.map((m) => ({
+        value: m,
+        label: getModelDisplayName(m),
+      })),
+    },
+    {
+      label: 'Codex',
+      options: CODEX_MODELS.map((m) => ({
+        value: m,
+        label: getModelDisplayName(m),
+      })),
+    },
+  );
+  if (includeOllama && OLLAMA_MODELS.length > 0) {
+    modelOptions.push({
+      label: 'Ollama',
+      options: OLLAMA_MODELS.map((m) => ({
+        value: m,
+        label: getModelDisplayName(m),
+      })),
+    });
+  }
+  if (cursorAvailable && cursorModels.length > 0) {
+    modelOptions.push({
+      label: 'Cursor',
+      options: cursorModels.map((entry) => ({
+        value: entry.id,
+        label: entry.label,
+      })),
+    });
+  }
+
   return (
     <SettingsRow
       label={title}
@@ -117,10 +172,10 @@ export function ModelThinkingPreferenceRow({
             <SettingsSelect
               width="fill"
               data-testid={testIdPrefix ? `${testIdPrefix}-model` : undefined}
+              options={modelOptions}
               value={model}
               disabled={disabled}
-              onChange={(event: React.ChangeEvent<HTMLSelectElement>): void => {
-                const newModel = event.target.value;
+              onValueChange={(newModel): void => {
                 // Every option is populated from a current provider registry.
                 onModelChange(
                   newModel,
@@ -130,55 +185,7 @@ export function ModelThinkingPreferenceRow({
                   ),
                 );
               }}
-            >
-              {!modelAvailable && (
-                <option value={model} disabled>
-                  {model} (unavailable)
-                </option>
-              )}
-              {/*
-            Custom Agent models (`agent_model_*`) are intentionally EXCLUDED
-            here. These per-feature model preferences (chat description, cron
-            generation, branch/PR/commit naming, plan parsing, worktree
-            summaries, rebase resolution, …) run on utility execution paths
-            that pass the selected model straight to a provider SDK and do NOT
-            perform Agent resolution (instruction append + plugin merge). Only
-            the real Claude/Codex/Ollama base models are offered; Agent models
-            surface exclusively in the chat ModelPicker.
-          */}
-              <optgroup label="Claude">
-                {CLAUDE_MODELS.map((m) => (
-                  <option key={m} value={m}>
-                    {getModelDisplayName(m)}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="Codex">
-                {CODEX_MODELS.map((m) => (
-                  <option key={m} value={m}>
-                    {getModelDisplayName(m)}
-                  </option>
-                ))}
-              </optgroup>
-              {includeOllama && OLLAMA_MODELS.length > 0 && (
-                <optgroup label="Ollama">
-                  {OLLAMA_MODELS.map((m) => (
-                    <option key={m} value={m}>
-                      {getModelDisplayName(m)}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {cursorAvailable && cursorModels.length > 0 && (
-                <optgroup label="Cursor">
-                  {cursorModels.map((entry) => (
-                    <option key={entry.id} value={entry.id}>
-                      {entry.label}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </SettingsSelect>
+            />
           </span>
           {thinkingSupported && (
             <div className="w-36">

@@ -76,6 +76,14 @@ describe.each(implementations)(
       expect(Object.isFrozen(services.secureFiles)).toBe(true);
       expect(Object.isFrozen(services.paths)).toBe(true);
       expect(Object.isFrozen(services.supervision)).toBe(true);
+      expect(Object.isFrozen(services.power)).toBe(true);
+      expect(services.power.mechanism).toBe(
+        {
+          darwin: 'power-assertion',
+          win32: 'thread-execution-state',
+          linux: 'logind-inhibitor',
+        }[os],
+      );
       expect(
         services.supervision.childProcessOptions({ lifetime: 'owned' }),
       ).toEqual({
@@ -132,6 +140,22 @@ it('preserves endpoint arguments, results, and failures', async () => {
   });
   expect(probe).toHaveBeenCalledWith(address);
   await expect(services.endpoints.bind(address)).rejects.toBe(failure);
+});
+
+it('passes a host-supplied Trash through and supplies none of its own', async () => {
+  const failure = new Error('trash refused');
+  const trash = { trashItem: jest.fn(() => Promise.reject(failure)) };
+  for (const [os, semantics] of implementations) {
+    expect(createPlatformServices(os, provider(semantics))).not.toHaveProperty(
+      'trash',
+    );
+    const services = createPlatformServices(os, provider(semantics), { trash });
+    expect(services.trash).toBe(trash);
+    await expect(services.trash?.trashItem('/data/a.txt')).rejects.toBe(
+      failure,
+    );
+  }
+  expect(trash.trashItem).toHaveBeenCalledWith('/data/a.txt');
 });
 
 it('selects the running host once at composition', () => {

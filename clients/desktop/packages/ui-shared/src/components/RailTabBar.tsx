@@ -49,7 +49,7 @@ export function RailTabBar<TId extends string>({
     touchTarget
       ? 'inline-flex min-h-11 min-w-11 items-center justify-center '
       : ''
-  }focus-ring text-2xs font-medium transition`;
+  }focus-ring text-2xs font-medium transition-colors`;
   return (
     <div className={rowClass}>
       <div className="flex items-center gap-3">

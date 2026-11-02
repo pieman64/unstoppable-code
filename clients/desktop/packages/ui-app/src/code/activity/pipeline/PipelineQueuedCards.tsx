@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { HookIcon } from '@canopy/ui-shared/icons';
 import { formatTimingTimestamp } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -102,17 +103,18 @@ export function QueuedHookPipelineCard({
           <HookTriggerBadge triggerSource={entry.trigger_source} />
         </div>
         <div className="truncate text-2xs fg-secondary">
-          Queued — waiting for active pipeline runs to finish
+          Queued — waiting for active workflow runs to finish
         </div>
       </div>
-      <button
+      <Button
         type="button"
+        variant="secondary"
+        size="compact"
         onClick={() => onCancel(entry.queueId)}
-        className="focus-ring shrink-0 rounded-md border px-2 py-1 text-2xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-        aria-label="Cancel queued pipeline"
+        aria-label="Cancel queued workflow"
       >
         Cancel
-      </button>
+      </Button>
     </div>
   );
 }
@@ -134,14 +136,15 @@ export function FailedQueuedHookPipelineCard({
           Queue failed: {entry.error}
         </div>
       </div>
-      <button
+      <Button
         type="button"
+        variant="secondary"
+        size="compact"
         onClick={() => onDismiss(entry.queueId)}
-        className="focus-ring shrink-0 rounded-md border px-2 py-1 text-2xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-        aria-label="Dismiss failed queued pipeline"
+        aria-label="Dismiss failed queued workflow"
       >
         Dismiss
-      </button>
+      </Button>
     </div>
   );
 }
@@ -164,14 +167,15 @@ export function PendingExecutionCard({
           Queued — waiting for setup
         </div>
       </div>
-      <button
+      <Button
         type="button"
+        variant="secondary"
+        size="compact"
         onClick={() => onCancel(entry.localId)}
-        className="focus-ring shrink-0 rounded-md border px-2 py-1 text-2xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-        aria-label="Cancel queued pipeline"
+        aria-label="Cancel queued workflow"
       >
         Cancel
-      </button>
+      </Button>
     </div>
   );
 }
@@ -190,14 +194,15 @@ export function FailedPendingExecutionCard({
           Queue failed: {entry.error}
         </div>
       </div>
-      <button
+      <Button
         type="button"
+        variant="secondary"
+        size="compact"
         onClick={() => onDismiss(entry.localId)}
-        className="focus-ring shrink-0 rounded-md border px-2 py-1 text-2xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-        aria-label="Dismiss failed queued pipeline"
+        aria-label="Dismiss failed queued workflow"
       >
         Dismiss
-      </button>
+      </Button>
     </div>
   );
 }

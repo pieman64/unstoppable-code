@@ -191,10 +191,10 @@ for (const { name, reported, failedFile, followUpFailure, earlierFork } of [
           // The completed first turn and active second turn each expose a
           // fork control. Choose the completed turn, before these counters.
           await expect(
-            panel.getByRole('button', { name: 'Fork Chat', exact: true }),
+            panel.getByRole('button', { name: 'Fork chat', exact: true }),
           ).toHaveCount(2);
           await panel
-            .getByRole('button', { name: 'Fork Chat', exact: true })
+            .getByRole('button', { name: 'Fork chat', exact: true })
             .first()
             .click();
           const saved = await window.evaluate(() =>

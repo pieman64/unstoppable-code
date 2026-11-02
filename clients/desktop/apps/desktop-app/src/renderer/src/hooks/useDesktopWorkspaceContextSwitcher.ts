@@ -9,6 +9,7 @@ import type {
   WorkspaceContext,
   WorkspaceContextOrganization,
 } from '@canopy/desktop-shared/types';
+import { usePendingSharedContainerInvitationsByContext } from '@/components/shared-containers/usePendingSharedContainerInvitationsByContext';
 import { useForeignActivityProjection } from '@/hooks/useForeignActivityProjection';
 import { useCanopyOrgProjectsEnabled } from '@/hooks/useCanopyOrgProjectsEnabled';
 import { useCanopyCloudAccountState } from '@/hooks/useCanopyCloudAccountState';
@@ -34,6 +35,11 @@ export interface DesktopWorkspaceContextSwitcher {
   readonly switching: boolean;
   /** Contexts with work left running, unread, or interrupted (CAN-2959). */
   readonly contextsWithUpdates: ReadonlySet<string>;
+  /**
+   * Pending share invitations per home context (CAN-4783), keyed like
+   * {@link contextsWithUpdates}. The switcher shows only other listed contexts.
+   */
+  readonly pendingSharesByContext: ReadonlyMap<string, number>;
   readonly select: (context: WorkspaceContext) => void;
 }
 
@@ -93,6 +99,10 @@ export function useDesktopWorkspaceContextSwitcher({
     () => contextKeysWithUpdates(foreignActivity),
     [foreignActivity],
   );
+  // CAN-4783: an invitation waiting in another context gets the same dot,
+  // with its count in the accessible names.
+  const pendingSharesByContext =
+    usePendingSharedContainerInvitationsByContext();
   const { context, organizations } = workspaceContext;
   return {
     available,
@@ -108,6 +118,7 @@ export function useDesktopWorkspaceContextSwitcher({
         : null,
     switching,
     contextsWithUpdates,
+    pendingSharesByContext,
     select: (next: WorkspaceContext): void => {
       setSwitching(true);
       void setWorkspaceContext(next)

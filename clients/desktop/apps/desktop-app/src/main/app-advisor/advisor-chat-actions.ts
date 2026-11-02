@@ -61,7 +61,7 @@ export async function dispatchAdvisorChatAction(
           if (!entryIds.includes(action.workEntryId)) {
             return failure(
               'invalid_target',
-              `Unknown App Advisor Work Entry ${action.workEntryId}.`,
+              `Unknown Orchestrator Work Entry ${action.workEntryId}.`,
             );
           }
         }
@@ -110,7 +110,7 @@ export async function dispatchAdvisorChatAction(
         if (action.chatId === source.chatId) {
           return failure(
             'invalid_target',
-            'Send to another App Advisor chat; this chat is already running.',
+            'Send to another Orchestrator chat; this chat is already running.',
           );
         }
         const owner = await resolveWorkEntryForChat(
@@ -121,8 +121,8 @@ export async function dispatchAdvisorChatAction(
           return failure(
             'invalid_target',
             owner.archivedInEntryId
-              ? `App Advisor chat ${action.chatId} is archived.`
-              : `Unknown App Advisor chat ${action.chatId}.`,
+              ? `Orchestrator chat ${action.chatId} is archived.`
+              : `Unknown Orchestrator chat ${action.chatId}.`,
           );
         }
         if (
@@ -131,7 +131,7 @@ export async function dispatchAdvisorChatAction(
         ) {
           return failure(
             'invalid_target',
-            `App Advisor chat ${action.chatId} belongs to Work Entry ${owner.entryId}.`,
+            `Orchestrator chat ${action.chatId} belongs to Work Entry ${owner.entryId}.`,
           );
         }
         await dispatchAgentChatSend(

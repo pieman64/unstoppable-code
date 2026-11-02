@@ -1,4 +1,4 @@
-import { LinearError, LinearErrorType, LinearGraphQLError } from '@linear/sdk';
+import { LinearApiError, type LinearIssuePreviewNode } from '../linear-api';
 import {
   createLinearReferencePreviewReader,
   type LinearReferencePreviewDeps,
@@ -6,7 +6,7 @@ import {
 
 const ANY_STRING: unknown = expect.any(String);
 
-const ISSUE = {
+const ISSUE: LinearIssuePreviewNode = {
   identifier: 'CAN-7',
   title: 'Preview tickets in transcripts',
   description:
@@ -24,42 +24,16 @@ function reader(
   return createLinearReferencePreviewReader({
     resolveToken: () => Promise.resolve('lin_api_token'),
     resolveAccountId: () => Promise.resolve('account-1'),
-    requestIssue: () => Promise.resolve({ issue: ISSUE }),
-    requestTeams: () => Promise.resolve(teamPage(['CAN'], null)),
+    requestIssue: () => Promise.resolve(ISSUE),
+    requestTeamKeys: () => Promise.resolve(['CAN']),
     now: () => 1_000,
     ...overrides,
   });
 }
 
-function teamPage(
-  keys: unknown[],
-  endCursor: string | null,
-): { teams: { nodes: { key: unknown }[]; pageInfo: object } } {
-  return {
-    teams: {
-      nodes: keys.map((key) => ({ key })),
-      pageInfo: { hasNextPage: endCursor !== null, endCursor },
-    },
-  };
-}
-
-function pagedTeams(
-  pages: unknown[][],
-): jest.Mock<Promise<unknown>, [string, string | null]> {
-  return jest.fn((_token: string, after: string | null) => {
-    const index = after === null ? 0 : Number(after);
-    return Promise.resolve(
-      teamPage(
-        pages[index] ?? [],
-        index + 1 < pages.length ? String(index + 1) : null,
-      ),
-    );
-  });
-}
-
 describe('createLinearReferencePreviewReader', () => {
   it('returns a bounded preview and an opaque scope without the token', async () => {
-    const requestIssue = jest.fn(() => Promise.resolve({ issue: ISSUE }));
+    const requestIssue = jest.fn(() => Promise.resolve(ISSUE));
     const result = await reader({ requestIssue }).readIssue({
       identifier: 'CAN-7',
     });
@@ -126,42 +100,65 @@ describe('createLinearReferencePreviewReader', () => {
 
   it.each([
     [
-      new LinearError(
-        undefined,
-        undefined,
-        LinearErrorType.AuthenticationError,
+      new LinearApiError(
+        'referencePreviewIssue',
+        'authentication',
+        401,
+        null,
+        false,
       ),
       { status: 'disconnected' },
     ],
     [
-      new LinearError(undefined, undefined, LinearErrorType.Forbidden),
-      { status: 'unavailable', scope: ANY_STRING },
-    ],
-    [
-      new LinearError(
-        undefined,
-        [
-          Object.assign(new LinearGraphQLError(), {
-            message: 'Entity not found: Issue',
-          }),
-        ],
-        LinearErrorType.GraphqlError,
+      new LinearApiError(
+        'referencePreviewIssue',
+        'forbidden',
+        403,
+        null,
+        false,
       ),
       { status: 'unavailable', scope: ANY_STRING },
     ],
     [
-      Object.assign(
-        new LinearError(undefined, undefined, LinearErrorType.Ratelimited),
-        { retryAfter: 30 },
+      new LinearApiError(
+        'referencePreviewIssue',
+        'feature_not_accessible',
+        200,
+        null,
+        false,
+      ),
+      { status: 'unavailable', scope: ANY_STRING },
+    ],
+    [
+      new LinearApiError(
+        'referencePreviewIssue',
+        'invalid_input',
+        null,
+        null,
+        false,
+      ),
+      { status: 'unavailable', scope: ANY_STRING },
+    ],
+    [
+      new LinearApiError(
+        'referencePreviewIssue',
+        'ratelimited',
+        429,
+        30_000,
+        false,
       ),
       { status: 'rate-limited', retryAfterMs: 30_000 },
     ],
     [
-      new LinearError(undefined, undefined, LinearErrorType.NetworkError),
+      new LinearApiError('referencePreviewIssue', 'unknown', 200, null, true),
+      { status: 'unavailable', scope: ANY_STRING },
+    ],
+    [
+      new LinearApiError('referencePreviewIssue', 'network', null, null, false),
       { status: 'failed' },
     ],
     [new Error('socket hang up'), { status: 'failed' }],
-  ])('maps provider failure %#', async (error, expected) => {
+  ])('maps issue preview failure %#', async (error, expected) => {
     expect(
       await reader({
         requestIssue: () => Promise.reject(error),
@@ -169,11 +166,11 @@ describe('createLinearReferencePreviewReader', () => {
     ).toEqual(expected);
   });
 
-  it('treats a malformed or empty payload as unavailable', async () => {
+  it('treats a null or mismatched payload as unavailable', async () => {
     expect(
       (
         await reader({
-          requestIssue: () => Promise.resolve({ issue: null }),
+          requestIssue: () => Promise.resolve(null),
         }).readIssue({ identifier: 'CAN-7' })
       ).status,
     ).toBe('unavailable');
@@ -182,7 +179,8 @@ describe('createLinearReferencePreviewReader', () => {
         await reader({
           requestIssue: () =>
             Promise.resolve({
-              issue: { ...ISSUE, url: 'https://evil.example/acme/issue/CAN-7' },
+              ...ISSUE,
+              url: 'https://evil.example/acme/issue/CAN-7',
             }),
         }).readIssue({ identifier: 'CAN-7' })
       ).status,
@@ -192,7 +190,7 @@ describe('createLinearReferencePreviewReader', () => {
   it('bounds a long title by code point and marks the cut', async () => {
     const title = '😀'.repeat(600);
     const result = await reader({
-      requestIssue: () => Promise.resolve({ issue: { ...ISSUE, title } }),
+      requestIssue: () => Promise.resolve({ ...ISSUE, title }),
     }).readIssue({ identifier: 'CAN-7' });
     expect(result.status).toBe('ok');
     const shown = result.status === 'ok' ? result.preview.title : '';
@@ -201,10 +199,11 @@ describe('createLinearReferencePreviewReader', () => {
   });
 
   it('coalesces identical concurrent issue reads across callers', async () => {
-    let resolve: (value: unknown) => void = () => undefined;
+    let resolve: (value: LinearIssuePreviewNode | null) => void = () =>
+      undefined;
     const requestIssue = jest.fn(
       () =>
-        new Promise<unknown>((done) => {
+        new Promise<LinearIssuePreviewNode | null>((done) => {
           resolve = done;
         }),
     );
@@ -212,7 +211,7 @@ describe('createLinearReferencePreviewReader', () => {
     const first = shared.readIssue({ identifier: 'CAN-7' });
     const second = shared.readIssue({ identifier: 'CAN-7' });
     await new Promise((done) => setImmediate(done));
-    resolve({ issue: ISSUE });
+    resolve(ISSUE);
     expect((await first).status).toBe('ok');
     expect(await second).toEqual(await first);
     expect(requestIssue).toHaveBeenCalledTimes(1);
@@ -220,97 +219,94 @@ describe('createLinearReferencePreviewReader', () => {
 });
 
 describe('readTeamKeys', () => {
-  it('follows every page and publishes deduplicated, validated keys', async () => {
-    const requestTeams = pagedTeams([
-      ['CAN', 'ecw'],
-      ['REG', 'CAN', 'bad key', 42, ''],
-      ['ZED9'],
-    ]);
-    const result = await reader({ requestTeams }).readTeamKeys();
+  it('normalizes, deduplicates and sorts validated keys', async () => {
+    const requestTeamKeys = jest.fn(() =>
+      Promise.resolve(['CAN', 'ecw', 'REG', 'CAN', 'bad key', '', 'ZED9']),
+    );
+    const result = await reader({ requestTeamKeys }).readTeamKeys();
+    expect(requestTeamKeys).toHaveBeenCalledWith('lin_api_token');
     expect(result).toEqual({
       status: 'ok',
       scope: ANY_STRING,
       keys: ['CAN', 'ECW', 'REG', 'ZED9'],
       fetchedAt: 1_000,
     });
-    expect(requestTeams.mock.calls.map(([, after]) => after)).toEqual([
-      null,
-      '1',
-      '2',
-    ]);
     expect(JSON.stringify(result)).not.toContain('lin_api_token');
   });
 
   it('publishes an empty catalog as complete', async () => {
     expect(
       await reader({
-        requestTeams: () => Promise.resolve(teamPage([], null)),
+        requestTeamKeys: () => Promise.resolve([]),
       }).readTeamKeys(),
     ).toMatchObject({ status: 'ok', keys: [] });
   });
 
-  it('fails closed when a later page fails or is malformed', async () => {
-    const failing = jest.fn((_token: string, after: string | null) =>
-      after === null
-        ? Promise.resolve(teamPage(['CAN'], '1'))
-        : Promise.reject(new Error('socket hang up')),
+  it('fails closed on an unknown team-key error without publishing keys', async () => {
+    const requestTeamKeys = jest.fn(() =>
+      Promise.reject(
+        new LinearApiError('referencePreviewTeams', 'unknown', 200, null, true),
+      ),
     );
-    expect(await reader({ requestTeams: failing }).readTeamKeys()).toEqual({
+    expect(await reader({ requestTeamKeys }).readTeamKeys()).toEqual({
       status: 'failed',
       scope: ANY_STRING,
     });
+    expect(requestTeamKeys).toHaveBeenCalledWith('lin_api_token');
+  });
+
+  it.each([
+    new LinearApiError('referencePreviewTeams', 'forbidden', 403, null, false),
+    new LinearApiError(
+      'referencePreviewTeams',
+      'invalid_input',
+      null,
+      null,
+      false,
+    ),
+    new LinearApiError('referencePreviewTeams', 'unknown', 200, null, true),
+    new Error('socket hang up'),
+  ])('maps team-key failure %# to failed with scope', async (error) => {
     expect(
       await reader({
-        requestTeams: () =>
-          Promise.resolve({
-            teams: { nodes: [{ key: 'CAN' }], pageInfo: { hasNextPage: true } },
-          }),
+        requestTeamKeys: () => Promise.reject(error),
       }).readTeamKeys(),
     ).toEqual({ status: 'failed', scope: ANY_STRING });
   });
 
-  it('fails closed past the page bound instead of publishing a prefix', async () => {
-    const requestTeams = jest.fn((_token: string, after: string | null) =>
-      Promise.resolve(teamPage(['CAN'], String(Number(after ?? 0) + 1))),
-    );
-    expect((await reader({ requestTeams }).readTeamKeys()).status).toBe(
-      'failed',
-    );
-    expect(requestTeams).toHaveBeenCalledTimes(20);
-  });
-
   it('maps disconnection and rate limits', async () => {
-    const requestTeams = jest.fn();
+    const requestTeamKeys = jest.fn();
     expect(
       await reader({
         resolveToken: () => Promise.resolve(''),
-        requestTeams,
+        requestTeamKeys,
       }).readTeamKeys(),
     ).toEqual({ status: 'disconnected' });
-    expect(requestTeams).not.toHaveBeenCalled();
+    expect(requestTeamKeys).not.toHaveBeenCalled();
     expect(
       await reader({
-        requestTeams: () =>
+        requestTeamKeys: () =>
           Promise.reject(
-            new LinearError(
-              undefined,
-              undefined,
-              LinearErrorType.AuthenticationError,
+            new LinearApiError(
+              'referencePreviewTeams',
+              'authentication',
+              401,
+              null,
+              false,
             ),
           ),
       }).readTeamKeys(),
     ).toEqual({ status: 'disconnected' });
     expect(
       await reader({
-        requestTeams: () =>
+        requestTeamKeys: () =>
           Promise.reject(
-            Object.assign(
-              new LinearError(
-                undefined,
-                undefined,
-                LinearErrorType.Ratelimited,
-              ),
-              { retryAfter: 12 },
+            new LinearApiError(
+              'referencePreviewTeams',
+              'ratelimited',
+              429,
+              12_000,
+              false,
             ),
           ),
       }).readTeamKeys(),
@@ -324,9 +320,9 @@ describe('readTeamKeys', () => {
   it('shares one load and a fresh catalog across callers, per credential', async () => {
     let now = 1_000;
     let token = 'lin_api_token';
-    const requestTeams = pagedTeams([['CAN'], ['ECW']]);
+    const requestTeamKeys = jest.fn(() => Promise.resolve(['CAN', 'ECW']));
     const shared = reader({
-      requestTeams,
+      requestTeamKeys,
       now: () => now,
       resolveToken: () => Promise.resolve(token),
     });
@@ -335,16 +331,16 @@ describe('readTeamKeys', () => {
       shared.readTeamKeys(),
     ]);
     expect(second).toEqual(first);
-    expect(requestTeams).toHaveBeenCalledTimes(2);
+    expect(requestTeamKeys).toHaveBeenCalledTimes(1);
     now += 4 * 60 * 1000;
     expect(await shared.readTeamKeys()).toEqual(first);
-    expect(requestTeams).toHaveBeenCalledTimes(2);
+    expect(requestTeamKeys).toHaveBeenCalledTimes(1);
     now += 2 * 60 * 1000;
     expect(await shared.readTeamKeys()).toMatchObject({ fetchedAt: now });
-    expect(requestTeams).toHaveBeenCalledTimes(4);
+    expect(requestTeamKeys).toHaveBeenCalledTimes(2);
     token = 'rotated';
     const rotated = await shared.readTeamKeys();
-    expect(requestTeams).toHaveBeenCalledTimes(6);
+    expect(requestTeamKeys).toHaveBeenCalledTimes(3);
     expect(rotated.status === 'ok' && rotated.scope).not.toBe(
       first.status === 'ok' && first.scope,
     );
@@ -352,21 +348,24 @@ describe('readTeamKeys', () => {
 
   it('holds back retries during the cooldown or provider retry-after', async () => {
     let now = 1_000;
-    const requestTeams = jest
-      .fn<Promise<unknown>, [string, string | null]>()
+    const requestTeamKeys = jest
+      .fn<Promise<string[]>, [string]>()
       .mockRejectedValueOnce(new Error('offline'))
       .mockRejectedValueOnce(
-        Object.assign(
-          new LinearError(undefined, undefined, LinearErrorType.Ratelimited),
-          { retryAfter: 120 },
+        new LinearApiError(
+          'referencePreviewTeams',
+          'ratelimited',
+          429,
+          120_000,
+          false,
         ),
       )
-      .mockResolvedValue(teamPage(['CAN'], null));
-    const shared = reader({ requestTeams, now: () => now });
+      .mockResolvedValue(['CAN']);
+    const shared = reader({ requestTeamKeys, now: () => now });
     expect((await shared.readTeamKeys()).status).toBe('failed');
     now += 59_000;
     expect((await shared.readTeamKeys()).status).toBe('failed');
-    expect(requestTeams).toHaveBeenCalledTimes(1);
+    expect(requestTeamKeys).toHaveBeenCalledTimes(1);
     now += 1_000;
     expect(await shared.readTeamKeys()).toMatchObject({
       status: 'rate-limited',
@@ -379,25 +378,25 @@ describe('readTeamKeys', () => {
     });
     now += 60_000;
     expect((await shared.readTeamKeys()).status).toBe('ok');
-    expect(requestTeams).toHaveBeenCalledTimes(3);
+    expect(requestTeamKeys).toHaveBeenCalledTimes(3);
   });
 
   it('stops calling Linear with a rejected credential until it changes or the window passes', async () => {
     let now = 1_000;
     let token = 'lin_api_token';
-    const requestIssue = jest.fn((): Promise<unknown> => {
-      throw new LinearError(
-        undefined,
-        undefined,
-        LinearErrorType.AuthenticationError,
+    const requestIssue = jest.fn((): Promise<LinearIssuePreviewNode | null> => {
+      throw new LinearApiError(
+        'referencePreviewIssue',
+        'authentication',
+        401,
+        null,
+        false,
       );
     });
-    const requestTeams = jest.fn(() =>
-      Promise.resolve(teamPage(['CAN'], null)),
-    );
+    const requestTeamKeys = jest.fn(() => Promise.resolve(['CAN']));
     const linear = reader({
       requestIssue,
-      requestTeams,
+      requestTeamKeys,
       resolveToken: () => Promise.resolve(token),
       now: () => now,
     });
@@ -412,7 +411,7 @@ describe('readTeamKeys', () => {
       status: 'disconnected',
     });
     expect(requestIssue).toHaveBeenCalledTimes(1);
-    expect(requestTeams).toHaveBeenCalledTimes(1);
+    expect(requestTeamKeys).toHaveBeenCalledTimes(1);
 
     token = 'lin_api_new';
     expect((await linear.readTeamKeys()).status).toBe('ok');

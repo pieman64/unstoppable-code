@@ -112,11 +112,14 @@ export function useLinearAvailability(): {
   tokenLoaded: boolean;
   /** A non-empty persisted token exists (it may still fail validation). */
   tokenPresent: boolean;
+  /** Failed secure-storage reads are unknown connection state. */
+  tokenReadFailed: boolean;
 } {
   const [tokenState, setTokenState] = useState<{
     loaded: boolean;
     token: string;
-  }>({ loaded: false, token: '' });
+    failed: boolean;
+  }>({ loaded: false, token: '', failed: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -130,6 +133,7 @@ export function useLinearAvailability(): {
             setTokenState({
               loaded: true,
               token: typeof next === 'string' ? next : '',
+              failed: typeof next !== 'string',
             });
           }
         })
@@ -139,7 +143,7 @@ export function useLinearAvailability(): {
           // would surface as a renderer error. The read still counts as
           // resolved so consumers stop reporting a loading state.
           if (!cancelled && sequence === reloadSequence) {
-            setTokenState({ loaded: true, token: '' });
+            setTokenState({ loaded: true, token: '', failed: true });
           }
         });
     };
@@ -160,5 +164,6 @@ export function useLinearAvailability(): {
     available: status?.authenticated === true,
     tokenLoaded: tokenState.loaded,
     tokenPresent: tokenState.token.length > 0,
+    tokenReadFailed: tokenState.failed,
   };
 }

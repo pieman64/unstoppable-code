@@ -23,6 +23,8 @@ import {
   isSharedContainerCreateRequest,
   isSharedContainerCapabilitySet,
   isSharedContainerDetail,
+  isSharedContainerRevisionPackage,
+  summarizeSharedContainerCapabilityPackage,
   isSharedContainerManifest,
   isSharedContainerRef,
   isSharedContainerSummary,
@@ -334,6 +336,8 @@ describe('shared-container protocol contract', () => {
       'shared-container-stage-already-committed',
       'shared-container-upload-target-refresh-exhausted',
       'shared-container-cleanup-in-progress',
+      'shared_container_package_upload_expired',
+      'shared_container_parent_package_unavailable',
       'cloud-chat-owner-organization-mismatch',
     ]);
     expect(MAX_SHARED_CONTAINER_CAPABILITIES).toBe(
@@ -1002,6 +1006,225 @@ describe('shared-container protocol contract', () => {
     ).toBe(false);
   });
 
+  it('rejects malformed package counts and unsafe executable paths', () => {
+    const metadata = {
+      digest: `pp:v1:${'A'.repeat(43)}`,
+      counts: { skills: 1, pipelines: 0, agents: 0, automations: 0, hooks: 0 },
+      executableFiles: ['skill/scripts/run.sh'],
+    };
+    expect(isSharedContainerRevisionPackage(metadata)).toBe(true);
+    for (const skills of [-1, 0.5, '1', Infinity, undefined]) {
+      expect(
+        isSharedContainerRevisionPackage({
+          ...metadata,
+          counts: { ...metadata.counts, skills },
+        }),
+      ).toBe(false);
+    }
+    expect(
+      isSharedContainerRevisionPackage({
+        ...metadata,
+        executableFiles: ['../run.sh'],
+      }),
+    ).toBe(false);
+  });
+
+  it('counts and discloses only what a copy installs, leaving plugin members out', () => {
+    const kinds = [
+      'standalone_skill',
+      'plugin_skill',
+      'plugin_command',
+      'plugin_agent',
+      'agent_definition',
+      'child_pipeline',
+      'pipeline_definition',
+      'automation_definition',
+      'hook_definition',
+      'pipeline_action',
+      'automation_pipeline',
+      'file_asset',
+    ] as const;
+    const resources = kinds.map((kind) => ({
+      id: kind,
+      kind,
+      displayName: kind,
+      sourceLabel: 'source',
+      sourceVisibility: 'private' as const,
+      invocationKeys: [],
+      dependencyResourceIds: [],
+      trees: [
+        {
+          provider: 'claude' as const,
+          runtimeKind: 'plugin_fragment' as const,
+          rootName: kind,
+          entries: [
+            {
+              path: 'file',
+              mode: 'execute' as const,
+              sha256: 'a'.repeat(64),
+              size: 1,
+            },
+          ],
+        },
+      ],
+    }));
+    expect(
+      summarizeSharedContainerCapabilityPackage(`pp:v1:${'A'.repeat(43)}`, {
+        version: 1,
+        pipelineContentHash: 'a'.repeat(64),
+        resources,
+        bindings: [],
+        environmentRequirements: [],
+        totalFiles: resources.length,
+        totalBytes: resources.length,
+      }),
+    ).toEqual({
+      digest: `pp:v1:${'A'.repeat(43)}`,
+      // A child pipeline installs inside its parent pipeline's package, not as
+      // its own library item, so only the definition and automation pipeline
+      // count. Plugin skills,
+      // commands and agents are not installed on the recipient's computer.
+      counts: { skills: 1, agents: 1, pipelines: 2, automations: 1, hooks: 1 },
+      executableFiles: [
+        'agent_definition/file',
+        'automation_definition/file',
+        'automation_pipeline/file',
+        'child_pipeline/file',
+        'file_asset/file',
+        'hook_definition/file',
+        'pipeline_action/file',
+        'pipeline_definition/file',
+        'standalone_skill/file',
+      ],
+    });
+  });
+
+  it("names a provider twin's script once by its readable root", () => {
+    const resources = (['claude', 'codex'] as const).map((provider) => ({
+      id: `opaque-${provider}`,
+      kind: 'standalone_skill' as const,
+      displayName: 'Helper',
+      sourceLabel: 'source',
+      sourceVisibility: 'private' as const,
+      invocationKeys: [provider === 'claude' ? '/helper' : '$helper'],
+      dependencyResourceIds: [],
+      trees: [
+        {
+          provider,
+          runtimeKind: 'standalone_skill' as const,
+          rootName: 'customer-helper',
+          entries: [
+            {
+              path: 'scripts/summarize.sh',
+              mode: 'execute' as const,
+              sha256: 'a'.repeat(64),
+              size: 1,
+            },
+          ],
+        },
+      ],
+    }));
+    expect(
+      summarizeSharedContainerCapabilityPackage(`pp:v1:${'A'.repeat(43)}`, {
+        version: 1,
+        pipelineContentHash: 'a'.repeat(64),
+        resources,
+        bindings: [],
+        environmentRequirements: [],
+        totalFiles: 2,
+        totalBytes: 2,
+      }).executableFiles,
+    ).toEqual(['customer-helper/scripts/summarize.sh']);
+  });
+
+  it('accepts the summary of a manifest at its path length limits', () => {
+    const longPath = Array.from({ length: 4 }, () => 'p'.repeat(255)).join('/');
+    const summary = summarizeSharedContainerCapabilityPackage(
+      `pp:v1:${'A'.repeat(43)}`,
+      {
+        version: 1,
+        pipelineContentHash: 'a'.repeat(64),
+        resources: [
+          {
+            id: 'r'.repeat(255),
+            kind: 'standalone_skill',
+            displayName: 'Skill',
+            sourceLabel: 'source',
+            sourceVisibility: 'private',
+            invocationKeys: [],
+            dependencyResourceIds: [],
+            trees: [
+              {
+                provider: 'claude',
+                runtimeKind: 'standalone_skill',
+                rootName: 's'.repeat(255),
+                entries: [
+                  {
+                    path: longPath,
+                    mode: 'execute',
+                    sha256: 'a'.repeat(64),
+                    size: 1,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        bindings: [],
+        environmentRequirements: [],
+        totalFiles: 1,
+        totalBytes: 1,
+      },
+    );
+    expect(summary.executableFiles[0]?.length).toBeGreaterThan(1_024);
+    expect(isSharedContainerRevisionPackage(summary)).toBe(true);
+  });
+
+  it('accepts exactly the three package attachment modes', () => {
+    const base = {
+      title: 'Share',
+      idempotencyKey: 'stage',
+      sourceDeviceId: 'device',
+      schemaVersion: 1,
+      artifacts: [],
+    };
+    const capabilityPackage = { version: 1, digest: `pp:v1:${'a'.repeat(43)}` };
+    expect(isSharedContainerStageRevisionRequest(base)).toBe(true);
+    expect(
+      isSharedContainerStageRevisionRequest({
+        ...base,
+        capabilityPackage,
+        committedPackageUploadId: 'upload',
+      }),
+    ).toBe(true);
+    expect(
+      isSharedContainerStageRevisionRequest({
+        ...base,
+        parentRevisionId: 'parent',
+        carryParentPackage: true,
+      }),
+    ).toBe(true);
+    for (const fields of [
+      { capabilityPackage },
+      { committedPackageUploadId: 'upload' },
+      { carryParentPackage: true },
+      { carryParentPackage: false },
+      {
+        parentRevisionId: 'parent',
+        carryParentPackage: true,
+        capabilityPackage,
+        committedPackageUploadId: 'upload',
+      },
+      {
+        capabilityPackage: { version: 1, digest: 'invalid' },
+        committedPackageUploadId: 'upload',
+      },
+    ])
+      expect(
+        isSharedContainerStageRevisionRequest({ ...base, ...fields }),
+      ).toBe(false);
+  });
+
   it('returns the artifact key bundle from stage and download responses', () => {
     const key = {
       scheme: 'AES_256_GCM_CHUNKED_V1' as const,
@@ -1491,6 +1714,41 @@ describe('shared-container protocol contract', () => {
       'shared-containers-v1',
     );
   });
+
+  it.each(['2026-09-08T12:00:00.000Z', '2026-09-08T08:00:00-04:00'])(
+    'preserves the source publication time %s',
+    (sourceRevisionCreatedAt) => {
+      const provenance = {
+        sourceContainerId: 'container-1',
+        sourceRevisionId: 'revision-2',
+        sourceOwnerDisplayName: 'Ada',
+        sourceRevisionCreatedAt,
+        forkedAt: '2026-09-09T12:00:00.000Z',
+      };
+      expect(isSharedContainerForkProvenance(provenance)).toBe(true);
+      expect(
+        isSharedContainerForkProvenance(JSON.parse(JSON.stringify(provenance))),
+      ).toBe(true);
+      expect(
+        isSharedContainerForkProvenance({ ...provenance, grantId: 'grant' }),
+      ).toBe(false);
+    },
+  );
+
+  it.each(['later', '', 42, null, {}, []])(
+    'rejects invalid source publication time %j',
+    (sourceRevisionCreatedAt) => {
+      expect(
+        isSharedContainerForkProvenance({
+          sourceContainerId: 'container-1',
+          sourceRevisionId: 'revision-2',
+          sourceOwnerDisplayName: 'Ada',
+          sourceRevisionCreatedAt,
+          forkedAt: '2026-09-09T12:00:00.000Z',
+        }),
+      ).toBe(false);
+    },
+  );
 
   it('validates fork provenance without accepting undeclared fields', () => {
     const provenance = {

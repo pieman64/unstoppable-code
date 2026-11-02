@@ -1,6 +1,6 @@
 import type { CodeGraphBuildOptions } from '../../types/code-graph';
 import { existsSync, mkdirSync } from 'node:fs';
-import { CodeGraphEngine } from './engine';
+import { CodeGraphEngine } from '@canopy/code-graph/engine';
 import type {
   CodeGraphBuildResult,
   CodeGraphRepositoryInput,

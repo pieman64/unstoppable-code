@@ -24,6 +24,7 @@ export const TSX_EXEC_ARGV: readonly string[] = ['--require', 'tsx/cjs'];
 export interface StartedWorker {
   readonly filename: string | URL;
   readonly workerData: unknown;
+  readonly exited: Promise<void>;
   exitCode: number | undefined;
 }
 
@@ -38,13 +39,19 @@ export function createTsxWorkerThreads(): typeof WorkerThreads {
     constructor(...args: ConstructorParameters<typeof actual.Worker>) {
       const [filename, options] = args;
       super(filename, { ...options, execArgv: [...TSX_EXEC_ARGV] });
+      let markExited = (): void => undefined;
+      const exited = new Promise<void>((resolve) => {
+        markExited = resolve;
+      });
       const started: StartedWorker = {
         filename,
         workerData: options?.workerData,
+        exited,
         exitCode: undefined,
       };
       this.once('exit', (exitCode: number): void => {
         started.exitCode = exitCode;
+        markExited();
       });
       startedWorkers.push(started);
     }

@@ -35,8 +35,20 @@ export function getNullDiffSourceForPlatform(
 
 const NULL_DIFF_SOURCE = getNullDiffSourceForPlatform();
 
-function normalizeStatus(value: string): PortalChangedFile['status'] {
-  switch (value.trim()[0]) {
+export function normalizeStatus(value: string): PortalChangedFile['status'] {
+  const status = value.trim();
+  switch (status) {
+    case 'DD':
+    case 'AU':
+    case 'UD':
+    case 'UA':
+    case 'DU':
+    case 'AA':
+    case 'UU':
+    case 'U':
+      return 'unmerged';
+  }
+  switch (status[0]) {
     case 'A':
       return 'added';
     case 'D':

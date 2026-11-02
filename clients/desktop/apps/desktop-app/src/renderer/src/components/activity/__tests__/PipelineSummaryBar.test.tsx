@@ -24,7 +24,11 @@ const STATE: ExecutionState = {
   version: 8,
   id: 'exec-1',
   pipeline_id: 'pipeline-1',
-  pipeline_snapshot: { name: 'Release check', jobs: {} },
+  pipeline_snapshot: {
+    name: 'Release check',
+    scope: ['directory'],
+    jobs: {},
+  },
   status: 'running',
   jobs: {},
   job_definitions: {},
@@ -35,7 +39,7 @@ const STATE: ExecutionState = {
   cwd: '/Users/someone/work/a-very-long-repository-name/packages/app',
   env: {},
   inputs: { target_environment: 'production-eu-west-1' },
-  event_name: 'manual',
+  event_name: 'dispatch',
 };
 
 describe('PipelineSummaryBar', () => {

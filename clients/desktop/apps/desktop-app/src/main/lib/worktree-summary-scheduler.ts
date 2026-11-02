@@ -36,6 +36,7 @@ import {
 import { readEffectiveWorkspaceConfig } from './workspace-source';
 import {
   readWorktreeSummary,
+  readWorktreeSummaryWriteAbortReason,
   writeWorktreeSummarySnapshot,
   emitWorktreeSummaryPortalDelta,
   type WorktreeSummaryWriteResult,
@@ -58,8 +59,11 @@ import { hasActiveChatTurnsForWorktree } from '../agents/session-manager';
 import {
   DESKTOP_SUMMARY_PUBLICATION_HOST,
   isSummaryScopePublishable,
+  reportAbortedSummaryWrite,
   reportDroppedSummarySnapshots,
+  reportInvalidSummarySnapshots,
   reportReplacedSummaryFile,
+  reportStrippedSummaryProvenance,
 } from '../ledger/summary-publication';
 import { publishPendingSummarySnapshots } from '../ledger/summary-reconciliation';
 
@@ -247,6 +251,16 @@ async function runSummaryGeneration(
     const chatTabs = await readChatTabsFile(projectId, worktreeId);
     const currentTurnCount = countUserTurns(chatTabs);
     if (currentTurnCount === 0) {
+      return;
+    }
+
+    // Skips the model call for a summary the write would discard.
+    const abortReason = await readWorktreeSummaryWriteAbortReason(
+      projectId,
+      worktreeId,
+    );
+    if (abortReason !== null) {
+      reportAbortedSummaryWrite({ projectId, worktreeId }, abortReason);
       return;
     }
 
@@ -503,6 +517,10 @@ async function runSummaryGeneration(
       provenance,
     );
     if (written === null) {
+      return;
+    }
+    if (written.kind === 'aborted') {
+      reportAbortedSummaryWrite({ projectId, worktreeId }, written.reason);
       return;
     }
     // The snapshot is in the journal now, so it publishes even if the run was
@@ -988,9 +1006,10 @@ function emitGenerating(
 
 /**
  * Publishes a new snapshot (with any earlier one still pending, in order) and
- * reports publishable snapshots the history cap dropped or a corrupt file
- * took with it. Never blocks the Summary panel; what does not publish now
- * waits for startup reconciliation.
+ * reports what the write discarded: publishable snapshots the history cap
+ * dropped, publishable provenance that did not validate, history entries that
+ * did not validate, or a corrupt file. Never blocks the Summary panel; what
+ * does not publish now waits for startup reconciliation.
  */
 function publishWrittenSnapshot(
   projectId: string,
@@ -1007,6 +1026,13 @@ function publishWrittenSnapshot(
       written.droppedPublishableSnapshotIds,
     );
   }
+  if (written.strippedPublishableSnapshotIds.length > 0) {
+    void reportStrippedSummaryProvenance(
+      scope,
+      written.strippedPublishableSnapshotIds,
+    );
+  }
+  reportInvalidSummarySnapshots(scope, written.droppedInvalidSnapshotCount);
   if (written.replacedCorruptFile) reportReplacedSummaryFile(scope);
 }
 

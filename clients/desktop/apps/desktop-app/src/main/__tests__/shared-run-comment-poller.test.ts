@@ -8,8 +8,9 @@ const appOffMock = jest.fn<void, [string, () => void]>();
 
 jest.mock('electron', () => ({
   app: {
-    on: (...args: unknown[]): unknown => appOnMock(...args),
-    removeListener: (...args: unknown[]): unknown => appOffMock(...args),
+    on: (...args: [string, () => void]): unknown => appOnMock(...args),
+    removeListener: (...args: [string, () => void]): unknown =>
+      appOffMock(...args),
   },
   BrowserWindow: { getAllWindows: (): unknown[] => [] },
 }));

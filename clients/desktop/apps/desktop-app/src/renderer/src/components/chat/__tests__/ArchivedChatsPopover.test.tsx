@@ -86,6 +86,7 @@ describe('ArchivedChatsPopover anchored to the body (tab strip)', () => {
               archivedAt: '2026-06-20T00:00:00.000Z',
               createdAt: '2026-06-19T00:00:00.000Z',
               restorable: true,
+              unread: false,
               providerType: 'claude',
             },
           ]}

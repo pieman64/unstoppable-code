@@ -11,16 +11,22 @@ import { join } from 'node:path';
 import { COMPACT_CHIPS_BREAKPOINT_REM } from '../ComposerLayout';
 
 const source = readFileSync(join(__dirname, '..', 'ChatInput.tsx'), 'utf8');
-const sendButtonSource = readFileSync(
-  join(__dirname, '..', 'ComposerSendButton.tsx'),
-  'utf8',
-);
 const layoutSource = readFileSync(
-  join(__dirname, '..', 'ComposerLayout.tsx'),
+  join(
+    __dirname,
+    '../../../../../../../../packages/ui-shared/src/components/ComposerLayout.tsx',
+  ),
   'utf8',
 );
 // Terminal mode's shell edge, label and run button are shared with every
 // composer host, so they live in ui-shared.
+const sendButtonSource = readFileSync(
+  join(
+    __dirname,
+    '../../../../../../../../packages/ui-shared/src/components/ComposerSendButton.tsx',
+  ),
+  'utf8',
+);
 const terminalModeSource = readFileSync(
   join(
     __dirname,
@@ -30,13 +36,36 @@ const terminalModeSource = readFileSync(
 );
 
 describe('ChatInput composer shell', () => {
+  it('mounts exactly one lifetime notice in the shared composer notice column', () => {
+    const column = source.match(
+      /data-testid="chat-input-notices"[\s\S]*?<\/ComposerNoticeStack>/,
+    )?.[0];
+    expect(column?.match(/<LifetimeLimitNotice\b/g)).toHaveLength(1);
+    expect(source.match(/<LifetimeLimitNotice\b/g)).toHaveLength(1);
+    expect(column).toMatch(/placement="chat"/);
+    expect(column).toMatch(/projectId=\{slashCommandTarget\.projectId\}/);
+    expect(column).toMatch(/worktreeId=\{slashCommandTarget\.worktreeId\}/);
+    expect(column).toMatch(/chatId=\{tabId\}/);
+  });
+
+  it('guards the lifetime composer mount against Home, cowork, App Advisor and missing chats', () => {
+    const column = source.match(
+      /data-testid="chat-input-notices"[\s\S]*?<\/ComposerNoticeStack>/,
+    )?.[0];
+    expect(column).toMatch(
+      /\{slashCommandTarget &&\s*!isCoworkChatTarget\(slashCommandTarget\.projectId\) &&\s*tabId \? \(\s*<LifetimeLimitNotice/,
+    );
+    // This existing target resolver honors split-panel overrides, not the selected worktree.
+    expect(source).toMatch(
+      /const slashCommandTarget = useMemo\([\s\S]{0,350}projectId: targetOverride\.projectId,[\s\S]{0,100}worktreeId: targetOverride\.worktreeId/,
+    );
+  });
+
   it('takes the composer box from the shared shell recipe', () => {
     // Anchored to the assignment, so a stray import elsewhere cannot satisfy it.
-    expect(source).toMatch(
-      /const shellClasses = [\s\S]{0,200}CHAT_COMPOSER_SHELL_CLASS/,
-    );
+    expect(source).toContain('<ChatComposerShell');
     expect(source).not.toContain(
-      "'relative rounded-2xl bg-[var(--bg-composer,var(--bg-tertiary))] shadow-lg transition'",
+      "'relative rounded-2xl bg-[var(--bg-composer,var(--bg-tertiary))] shadow-lg transition-colors'",
     );
   });
 
@@ -50,20 +79,10 @@ describe('ChatInput composer shell', () => {
     expect(readOnlyBranch?.match(/detail: handoffError/g)).toHaveLength(2);
   });
 
-  it('draws the send arrow at 16px in the shared glyph weight', () => {
-    // App glyphs are filled Material Symbols; their weight comes from the
-    // icon manifest, so the arrow takes no stroke override.
-    const sendIcon = sendButtonSource.match(/<ArrowUp[\s\S]*?\/>/)?.[0];
-
-    expect(sendIcon).toContain('width={16}');
-    expect(sendIcon).toContain('height={16}');
-    expect(sendIcon).not.toContain('strokeWidth');
-  });
-
   it('keeps the default box in terminal mode, with a dashed edge: warning, red on failure', () => {
-    expect(source).toMatch(
-      /const shellClasses = isTerminalMode\s*\?\s*`\$\{CHAT_COMPOSER_SHELL_CLASS\} \$\{\s*terminalModeError === null\s*\?\s*TERMINAL_MODE_SHELL_CLASS\s*:\s*TERMINAL_MODE_ERROR_SHELL_CLASS/,
-    );
+    expect(source).toContain('const shellDecoration = isTerminalMode');
+    expect(source).toContain('TERMINAL_MODE_SHELL_CLASS');
+    expect(source).toContain('TERMINAL_MODE_ERROR_SHELL_CLASS');
     expect(source).not.toContain('bg-fg-primary/[0.04]');
     expect(source).not.toContain('dashed var(--line-destructive)');
     expect(terminalModeSource).toMatch(
@@ -72,7 +91,7 @@ describe('ChatInput composer shell', () => {
     expect(terminalModeSource).toMatch(
       /TERMINAL_MODE_ERROR_SHELL_CLASS =\s*'outline-1 -outline-offset-1 outline-dashed outline-line-destructive'/,
     );
-    expect(layoutSource).toContain("from '@canopy/ui-shared'");
+    expect(layoutSource).toContain("from './TerminalComposerMode'");
     expect(source).toMatch(
       /kind="terminal"[\s\S]{0,200}failed=\{terminalModeError !== null\}/,
     );
@@ -146,16 +165,12 @@ describe('ChatInput composer shell', () => {
     );
   });
 
-  it('edits a queued message with capsule buttons inside the box, where send sits', () => {
-    const editing = source.match(
-      /trailingSlot=\{[\s\S]*?isEditingQueued && editingState \? \([\s\S]*?queued-message-edit-save[\s\S]*?<\/Button>/,
-    )?.[0];
-    // The shared Button's 32px pill, send's height.
-    expect(editing).toMatch(
-      /<Button\s+size="md"\s+variant="secondary"[\s\S]*?Cancel/,
+  it('edits a queued message with the shared Cancel and Save, where send sits', () => {
+    // The shared actions draw the 32px capsules at send's height, the same
+    // pair the web queued-message editor uses.
+    expect(source).toMatch(
+      /trailingSlot=\{[\s\S]*?isEditingQueued && editingState \? \(\s*<MessageEditCancelSave\s+onCancel=\{editingState\.onCancel\}\s+onSave=\{handleSend\}/,
     );
-    expect(editing).toMatch(/<Button\s+size="md"\s+variant="primary"/);
-    expect(editing).not.toContain('<button');
     // No row of its own under the box any more.
     expect(source).not.toMatch(/\{editingState && \(/);
   });
@@ -171,13 +186,13 @@ describe('ChatInput composer shell', () => {
       /const promptTextRow = voiceRecording \?[\s\S]{0,200}\{composerEditor\}\s*\{composerControls\}/,
     );
     expect(source).toMatch(
-      /: planCardOpen \? \(\s*<PlanApprovalPrompt[\s\S]{0,400}\{promptTextRow\}\s*<\/PlanApprovalPrompt>/,
+      /: planCardOpen \? \(\s*<PlanApprovalPromptWithComments[\s\S]{0,400}\{promptTextRow\}\s*<\/PlanApprovalPromptWithComments>/,
     );
     expect(source).toMatch(
       /label: planImplementationAllowed\s*\? 'Yes, implement this plan'\s*: 'Implementation unavailable',\s*onSelect: handleApprove,\s*disabled: planReviewClosed \|\| !planImplementationAllowed,/,
     );
     expect(source).toMatch(
-      /label: 'Run it as a pipeline',\s*onSelect: \(\): void => setPipelineModalOpen\(true\),/,
+      /label: 'Run it as a workflow',\s*onSelect: \(\): void => setPipelineModalOpen\(true\),/,
     );
     expect(source).toMatch(
       /planCardOpen\s*\?\s*'No, explain what to do differently'/,

@@ -98,6 +98,20 @@ export function openInstallReveal({
     return;
   }
   openInstalledResult(target);
+  announceInstall({ target, outcome, status, partial });
+}
+
+/**
+ * The finished install's notice alone, for a landing that must not move the
+ * user: they left for other work while it installed (CAN-5219).
+ */
+export function announceInstall({
+  target,
+  outcome,
+  status = '',
+  partial = false,
+}: InstallReveal): void {
+  if (target.entity === 'automation') return;
   useGitHubStore
     .getState()
     .addToast(

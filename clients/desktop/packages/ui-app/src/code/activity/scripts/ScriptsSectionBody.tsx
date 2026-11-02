@@ -4,6 +4,7 @@ import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
   ActivityItemRow,
   AnsiOutput,
+  Button,
   CompletedRunsDisclosure,
   ExecutionActionButton,
   LoadingSpinner,
@@ -13,11 +14,11 @@ import {
   useActivityItemDensity,
 } from '@canopy/ui-shared/components';
 import {
-  ChevronRightMediumIcon,
   ExternalIcon,
   TerminalBorderedIcon,
   TerminalIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { ScriptOutputModal } from './ScriptOutputModal';
 
@@ -242,19 +243,6 @@ function toggle<TValue extends string>(
   return next;
 }
 
-function EnlargeIcon(): JSX.Element {
-  return <ExternalIcon size={16} />;
-}
-
-function ChevronIcon({ open }: { open: boolean }): JSX.Element {
-  return (
-    <ChevronRightMediumIcon
-      size={16}
-      className={`transition-transform ${open ? 'rotate-90' : ''}`}
-    />
-  );
-}
-
 export function ScriptsSectionBody({
   identityKey,
   entries,
@@ -349,14 +337,16 @@ export function ScriptsSectionBody({
           spinner={<LoadingSpinner />}
           enlargeButton={
             !entry.script.interactive ? (
-              <button
+              <Button
                 type="button"
+                variant="ghost-accent"
+                size="compact"
+                iconOnly
                 onClick={(): void => setEnlargedKey(key)}
-                className="focus-ring rounded p-0.5 fg-accent/70 transition hover:fg-accent"
                 aria-label="Enlarge output"
               >
-                <EnlargeIcon />
-              </button>
+                <ExternalIcon size={14} />
+              </Button>
             ) : undefined
           }
           actionSlot={
@@ -498,7 +488,7 @@ export function ScriptsSectionBody({
                         )
                       }
                       aria-expanded={expanded}
-                      className="focus-ring rounded p-0.5 fg-secondary transition hover:fg-primary/80"
+                      className="focus-ring rounded p-0.5 fg-secondary transition-colors hover:fg-primary/80"
                       aria-label={`${expanded ? 'Collapse' : 'Expand'} project ${group.lifecycle} scripts`}
                     >
                       <ChevronIcon open={expanded} />
@@ -552,7 +542,7 @@ export function ScriptsSectionBody({
                 className={
                   compact
                     ? `focus-ring flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} fg-primary`
-                    : 'focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.05]'
+                    : 'focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition-colors hover:bg-fg-primary/[0.05]'
                 }
                 data-testid="activity-scripts-repo-toggle"
               >
@@ -622,10 +612,10 @@ export function ScriptsSectionBody({
                       <button
                         type="button"
                         onClick={(): void => setEnlargedKey(scriptKey)}
-                        className={`focus-ring rounded p-0.5 transition ${color}`}
+                        className={`focus-ring rounded p-0.5 transition-colors ${color}`}
                         aria-label="Enlarge output"
                       >
-                        <EnlargeIcon />
+                        <ExternalIcon size={14} />
                       </button>
                     }
                     <span className={`font-medium ${color}`}>{run.label}</span>

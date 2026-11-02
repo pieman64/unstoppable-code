@@ -1,9 +1,14 @@
+import type * as ModelCatalogProjection from '../model-catalog-projection';
+
 const mockIsEnabled = jest.fn<boolean, [string]>();
 const mockPeekCanopyCloudAccount = jest.fn<
   { capabilities: string[] } | null,
   []
 >();
-const mockBuildProjectedModelCatalog = jest.fn((): [] => []);
+const mockBuildProjectedModelCatalog = jest.fn<
+  ReturnType<typeof ModelCatalogProjection.buildProjectedModelCatalog>,
+  Parameters<typeof ModelCatalogProjection.buildProjectedModelCatalog>
+>(() => []);
 
 jest.mock('../../feature-flags', () => ({
   getFeatureFlagService: (): { isEnabled: typeof mockIsEnabled } => ({
@@ -18,7 +23,11 @@ jest.mock('../../auth/provider-auth-state', () => ({
   peekPortalProviderAvailability: (): Record<string, never> => ({}),
 }));
 jest.mock('../model-catalog-projection', () => ({
-  buildProjectedModelCatalog: (...args: unknown[]): [] =>
+  buildProjectedModelCatalog: (
+    ...args: Parameters<
+      typeof ModelCatalogProjection.buildProjectedModelCatalog
+    >
+  ): ReturnType<typeof ModelCatalogProjection.buildProjectedModelCatalog> =>
     mockBuildProjectedModelCatalog(...args),
 }));
 
@@ -48,6 +57,7 @@ describe('projectNewTaskControls model routing capability', () => {
       [worktree],
       'worktree-1',
       undefined,
+      undefined,
     )[0];
 
     expect(projected?.payload).not.toHaveProperty('modelRoutingSupported');
@@ -67,6 +77,7 @@ describe('projectNewTaskControls model routing capability', () => {
       [worktree],
       'worktree-1',
       owner,
+      undefined,
     )[0];
 
     expect(projected?.payload).toMatchObject({ modelRoutingSupported: true });

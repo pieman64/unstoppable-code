@@ -5104,6 +5104,8 @@ async function registeredBoundaryProducer(kind, options = {}) {
       startProcessTreeOwnerRefresh:
         options.startRefresh ?? (() => ({ stop() {} })),
       attachChildLifecycle,
+      describeSupervisorExit: supervisorModule.describeSupervisorExit,
+      describeWrapperClose: supervisorModule.describeWrapperClose,
       spawnWatchdog: () => undefined,
       releaseWindowsSupervisedChild:
         options.releaseLaunch ?? (async () => true),
@@ -5635,10 +5637,46 @@ test('registered supervisor propagates wrapper control failure after a successfu
         await new Promise((resolve) => setImmediate(resolve));
         assert.equal(f.host.exitCode, code || 125);
         assert.equal(checkpointCount, 1, 'cleanup remains memoized');
-        assert.deepEqual(f.errors, []);
+        assert.deepEqual(f.errors, [
+          `[e2e-supervisor] Exiting with code ${code || 125}: wrapper closed (code=125, signal=null); target exited (code=${code}, signal=null)\n`,
+        ]);
       },
     );
   }
+});
+
+test('registered Windows supervisor names a wrapper that closed without reporting its target, or a lost owner', async () => {
+  const unreported = await registeredBoundaryProducer('parent', {
+    manual: true,
+  });
+  unreported.child.send = (_message, callback) => callback();
+  unreported.child.emit('exit', 1, null);
+  unreported.child.emit('close', 1, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(unreported.host.exitCode, 1);
+  assert.deepEqual(unreported.errors, [
+    '[e2e-supervisor] Exiting with code 1: wrapper closed (code=1, signal=null); target exit not reported\n',
+  ]);
+
+  const ownerLost = await registeredBoundaryProducer('parent', {
+    manual: true,
+  });
+  ownerLost.child.send = (_message, callback) => callback();
+  await ownerLost.parentExit();
+  assert.equal(ownerLost.host.exitCode, 1);
+  assert.deepEqual(ownerLost.errors, [
+    '[e2e-supervisor] Exiting with code 1: owner process 1000 exited\n',
+  ]);
+
+  const clean = await registeredBoundaryProducer('parent', { manual: true });
+  clean.child.send = (_message, callback) => callback();
+  clean.child.emit('message', { type: 'target-exit', code: 0, signal: null });
+  await new Promise((resolve) => setImmediate(resolve));
+  clean.child.emit('exit', 0, null);
+  clean.child.emit('close', 0, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(clean.host.exitCode, 0);
+  assert.deepEqual(clean.errors, []);
 });
 
 test('registered supervisor preserves failed release control even after shutdown selected success', async () => {
@@ -5661,9 +5699,45 @@ test('registered supervisor preserves failed release control even after shutdown
     f.child.emit('close', 0, null);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(f.host.exitCode, code);
+    const selected = code
+      ? [
+          `[e2e-supervisor] Exiting with code ${code}: wrapper closed (code=0, signal=null); target exited (code=${code}, signal=null)\n`,
+        ]
+      : [];
+    assert.deepEqual(f.errors, selected);
     finishAck(new Error('late acknowledgement failure'));
     assert.equal(f.host.exitCode, code || 125);
+    assert.deepEqual(
+      f.errors,
+      code
+        ? selected
+        : [
+            '[e2e-supervisor] Exiting with code 125: wrapper closed (code=0, signal=null); target exited (code=0, signal=null); wrapper release unconfirmed\n',
+          ],
+      'a late acknowledgement failure names why success became 125',
+    );
   }
+  // An acknowledgement that fails before shutdown selects its result is
+  // reported once, by shutdown.
+  const early = await registeredBoundaryProducer('parent', {
+    manual: true,
+    createOwner: (_child, config) => ({
+      stop: async () => config.onCleanupSnapshot(true),
+      trackOwnedPid() {},
+      refresh: async () => true,
+    }),
+  });
+  early.child.send = (_message, callback) =>
+    callback(new Error('early acknowledgement failure'));
+  early.child.emit('message', { type: 'target-exit', code: 0, signal: null });
+  await new Promise((resolve) => setImmediate(resolve));
+  early.child.emit('exit', 0, null);
+  early.child.emit('close', 0, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(early.host.exitCode, 125);
+  assert.deepEqual(early.errors, [
+    '[e2e-supervisor] Exiting with code 125: wrapper closed (code=0, signal=null); target exited (code=0, signal=null); wrapper release unconfirmed\n',
+  ]);
 });
 
 test('registered Windows child releases only after target close and IPC flush', async () => {
@@ -5812,8 +5886,12 @@ test('registered supervisor handles cleanup rejection after wrapper close and pr
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(host.exitCode, code || 1);
     assert.equal(cleanups, 1);
-    assert.equal(errors.length, 1);
+    assert.equal(errors.length, 2);
     assert.match(errors[0], /original cleanup verification failure/);
+    assert.equal(
+      errors[1],
+      `[e2e-supervisor] Exiting with code ${code || 1}: wrapper closed (code=0, signal=null); target exited (code=${code}, signal=null); process cleanup failed; wrapper release unconfirmed\n`,
+    );
   }
 });
 
@@ -9679,3 +9757,40 @@ for (const crossTimeZone of [false, true]) {
     },
   );
 }
+
+test('Windows supervisor exit reasons name the path that selected a nonzero code', () => {
+  const { describeSupervisorExit, describeWrapperClose } = supervisorModule;
+  assert.equal(
+    describeWrapperClose({ code: 1, signal: null, targetExit: undefined }),
+    'wrapper closed (code=1, signal=null); target exit not reported',
+  );
+  assert.equal(
+    describeWrapperClose({
+      code: 0,
+      signal: null,
+      targetExit: { type: 'target-exit', code: 1, signal: null },
+    }),
+    'wrapper closed (code=0, signal=null); target exited (code=1, signal=null)',
+  );
+  assert.equal(
+    describeWrapperClose({
+      code: null,
+      signal: 'SIGKILL',
+      targetExit: { code: undefined, signal: 'SIGTERM' },
+    }),
+    'wrapper closed (code=null, signal=SIGKILL); target exited (code=null, signal=SIGTERM)',
+  );
+  assert.equal(
+    describeSupervisorExit({ exitCode: 1, cause: 'received SIGHUP' }),
+    '[e2e-supervisor] Exiting with code 1: received SIGHUP',
+  );
+  assert.equal(
+    describeSupervisorExit({
+      exitCode: 125,
+      cause: undefined,
+      cleanupFailed: true,
+      releaseUnconfirmed: true,
+    }),
+    '[e2e-supervisor] Exiting with code 125: unspecified cause; process cleanup failed; wrapper release unconfirmed',
+  );
+});

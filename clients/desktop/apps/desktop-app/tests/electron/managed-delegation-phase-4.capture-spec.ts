@@ -12,6 +12,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedAgentModels } from './seeders/index.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 const stage = process.env.DELEGATION_STAGE === 'before' ? 'before' : 'after';
 const directory = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -55,29 +56,32 @@ test('captures managed delegation settings', async () => {
       stage === 'after' &&
       (process.platform === 'darwin' || process.platform === 'win32')
     ) {
-      await window
-        .getByTestId('settings-managed-delegation-mode')
-        .selectOption('explicit-only');
+      await chooseSettingsOption(
+        window.getByTestId('settings-managed-delegation-mode'),
+        'explicit-only',
+      );
       await expect(
         window.getByTestId('settings-managed-delegation-mode'),
-      ).toHaveValue('explicit-only');
+      ).toHaveAttribute('data-value', 'explicit-only');
       await consultation.screenshot({
         path: path.join(directory, `consultation-explicit-${stage}.png`),
         animations: 'disabled',
       });
-      await window
-        .getByTestId('settings-managed-delegation-mode')
-        .selectOption('proactive');
+      await chooseSettingsOption(
+        window.getByTestId('settings-managed-delegation-mode'),
+        'proactive',
+      );
       await expect(
         window.getByTestId('settings-managed-delegation-mode'),
-      ).toHaveValue('proactive');
+      ).toHaveAttribute('data-value', 'proactive');
       await consultation.screenshot({
         path: path.join(directory, `consultation-proactive-${stage}.png`),
         animations: 'disabled',
       });
-      await window
-        .getByTestId('settings-managed-delegation-mode')
-        .selectOption('off');
+      await chooseSettingsOption(
+        window.getByTestId('settings-managed-delegation-mode'),
+        'off',
+      );
       await expect(
         window.getByRole('button', { name: 'Retry shutdown', exact: true }),
       ).toBeVisible();

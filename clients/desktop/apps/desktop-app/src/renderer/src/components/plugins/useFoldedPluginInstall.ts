@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/desktop-shared/types/plugins';
 import type { UnifiedEntryFoldedPlugin } from '@canopy/ui-shared';
-import { installOnboardingPlugin } from '../home/onboarding-suggestions/installOnboardingPlugin';
+import { installRecommendedPlugin } from '@/lib/plugins/installRecommendedPlugin';
 import { curatedPluginKey } from '@/lib/onboarding/curatedOnboardingPlugins';
 
 export interface FoldedPluginInstallState {
@@ -45,7 +45,7 @@ export function useFoldedPluginInstall(
       return;
     setPluginInstall({ status: 'installing' });
     try {
-      await installOnboardingPlugin([
+      await installRecommendedPlugin([
         curatedPluginKey(CURATED_PLUGIN_MARKETPLACE_ID, foldedPlugin.key),
       ]);
       if (mounted.current) setPluginInstall({ status: 'installed' });

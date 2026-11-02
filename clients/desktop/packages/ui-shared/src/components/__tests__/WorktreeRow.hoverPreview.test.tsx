@@ -160,7 +160,7 @@ describe('WorktreeRow hover preview', () => {
     [{ pipelineStatus: 'unseen' }, 'pipeline', 'fg-success'],
     [{ pipelineStatus: 'unseen-failure' }, 'pipeline', 'fg-destructive'],
     [{ splitStatus: 'review' }, 'split', 'fg-warning'],
-    [{ uiStatus: 'done' }, 'done', 'fg-purple'],
+    [{ uiStatus: 'done' }, 'done', 'fg-success-strong'],
   ])('keeps the %s preview icon on its sidebar color', (props, id, color) => {
     hover(renderRow({ ...props, hoverPreview: {} }));
     act(() => jest.advanceTimersByTime(PREVIEW_DELAY_MS));
@@ -197,10 +197,10 @@ describe('WorktreeRow hover preview', () => {
     [{ hasPendingToolApproval: true }, 'Approval needed'],
     [{ awaitingApproval: true }, 'Review plan'],
     [{ uiStatus: 'planning' }, 'Planning'],
-    [{ pipelineStatus: 'running' }, 'Pipeline running'],
-    [{ pipelineStatus: 'paused' }, 'Pipeline paused'],
-    [{ pipelineStatus: 'unseen' }, 'Pipeline completed'],
-    [{ pipelineStatus: 'unseen-failure' }, 'Pipeline failed'],
+    [{ pipelineStatus: 'running' }, 'Workflow running'],
+    [{ pipelineStatus: 'paused' }, 'Workflow paused'],
+    [{ pipelineStatus: 'unseen' }, 'Workflow completed'],
+    [{ pipelineStatus: 'unseen-failure' }, 'Workflow failed'],
     [{ terminalStatus: 'running' }, 'Terminal running'],
     [{ terminalStatus: 'unseen' }, 'Terminal completed'],
     [{ terminalStatus: 'unseen-failure' }, 'Terminal failed'],
@@ -580,7 +580,7 @@ describe('WorktreeRow hover preview', () => {
       }),
     );
     act(() => jest.advanceTimersByTime(PREVIEW_DELAY_MS));
-    expect(preview()?.textContent).toContain('Pipeline paused');
+    expect(preview()?.textContent).toContain('Workflow paused');
     expect(preview()?.textContent).not.toContain('Review plan');
     expect(preview()?.textContent).not.toContain('Planning');
   });

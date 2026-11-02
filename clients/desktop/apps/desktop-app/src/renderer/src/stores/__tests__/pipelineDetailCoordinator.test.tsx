@@ -14,6 +14,8 @@ import {
   isPipelineExecutionLeased,
   resetPipelineDetailLeasesForTests,
 } from '@/lib/pipelineDetailLeases';
+import { toPipelineRunRowState } from '@/lib/pipelineRunRowState';
+import { usePipelineExecutionDetailData } from '@/components/activity/details/usePipelineExecutionDetailData';
 import {
   acquirePipelineExecutionDetail,
   usePipelineExecutionDetailLease,
@@ -38,7 +40,13 @@ function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
     version: 1,
     id: 'execution-1',
     pipeline_id: 'pipeline-1',
-    pipeline_snapshot: { name: 'Pipeline 1', jobs: {}, env: {}, inputs: {} },
+    pipeline_snapshot: {
+      name: 'Pipeline 1',
+      scope: ['directory'],
+      jobs: {},
+      env: {},
+      inputs: {},
+    },
     status: 'running',
     jobs: {},
     job_definitions: {},
@@ -47,6 +55,8 @@ function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
     cwd: '/workspace',
     env: {},
     inputs: {},
+    pending_pauses: [],
+    status_reasons: [],
     event_name: 'dispatch',
     project_id: 'project-1',
     worktree_id: 'wt-2',
@@ -98,6 +108,7 @@ describe('pipelineDetailCoordinator', () => {
       currentWorktreeId: 'wt-1',
       summaries: [],
       statesById: {},
+      rowStatesById: {},
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -205,7 +216,7 @@ describe('pipelineDetailCoordinator', () => {
     releaseSecond();
   });
 
-  it('a non-lease caller joining an abandoned read still gets the snapshot installed', async () => {
+  it('a non-lease caller joining an abandoned read gets a transient snapshot', async () => {
     let resolveRead: (value: IPCResult<ExecutionState>) => void = () =>
       undefined;
     getExecution.mockReturnValue(
@@ -225,10 +236,10 @@ describe('pipelineDetailCoordinator', () => {
     expect(getExecution).toHaveBeenCalledTimes(1);
     expect(
       usePipelineRunsStore.getState().statesById['execution-1'],
-    ).toBeDefined();
+    ).toBeUndefined();
   });
 
-  it('does not evict detail that the selected run list still shows', async () => {
+  it('evicts full detail when the last lease closes while its listed row remains', async () => {
     const state = createState({ worktree_id: 'wt-1' });
     getExecution.mockResolvedValue({ success: true, data: state });
     usePipelineRunsStore.setState({
@@ -238,24 +249,32 @@ describe('pipelineDetailCoordinator', () => {
           pipeline_id: state.pipeline_id,
           pipeline_name: 'Pipeline 1',
           status: 'running',
+          status_reasons: [],
           started_at: state.started_at,
           cwd: state.cwd,
           project_id: 'project-1',
           worktree_id: 'wt-1',
         },
       ],
+      rowStatesById: { [state.id]: toPipelineRunRowState(state) },
     });
 
     const release = acquirePipelineExecutionDetail(OWNER_A, state.id);
     await flushAsyncWork();
     release();
 
-    expect(usePipelineRunsStore.getState().statesById[state.id]).toBe(state);
+    expect(
+      usePipelineRunsStore.getState().statesById[state.id],
+    ).toBeUndefined();
+    expect(usePipelineRunsStore.getState().rowStatesById[state.id]).toEqual(
+      toPipelineRunRowState(state),
+    );
   });
 
   it('reuses a complete cached snapshot instead of reading again', async () => {
     usePipelineRunsStore.setState({
       statesById: { 'execution-1': createState() },
+      rowStatesById: {},
     });
 
     const release = acquirePipelineExecutionDetail(OWNER_A, 'execution-1');
@@ -338,6 +357,33 @@ describe('pipelineDetailCoordinator', () => {
     ).toBeDefined();
   });
 
+  it('loads full detail when a row exists but the full cache is empty', async () => {
+    const state = createState();
+    usePipelineRunsStore.setState({
+      rowStatesById: { [state.id]: toPipelineRunRowState(state) },
+    });
+    expect(
+      usePipelineRunsStore.getState().statesById[state.id],
+    ).toBeUndefined();
+
+    await act(async () => {
+      root.render(
+        <LeaseHarness
+          executionId={state.id}
+          enabled
+          onResult={() => undefined}
+        />,
+      );
+      await flushAsyncWork();
+    });
+
+    expect(getExecution).toHaveBeenCalledTimes(1);
+    expect(usePipelineRunsStore.getState().statesById[state.id]).toBeDefined();
+    expect(usePipelineRunsStore.getState().rowStatesById[state.id]).toEqual(
+      toPipelineRunRowState(state),
+    );
+  });
+
   function SummaryHarness({ ids }: { ids: string[] }): JSX.Element {
     usePipelineExecutionSummaryInterest(ids);
     return <></>;
@@ -362,6 +408,139 @@ describe('pipelineDetailCoordinator', () => {
       root.render(<></>);
     });
     expect(hasPipelineSummaryInterest('execution-2')).toBe(false);
+  });
+
+  it('keeps a shared summary row when interest ids are re-keyed', async () => {
+    getExecution.mockImplementation((executionId) =>
+      Promise.resolve({
+        success: true,
+        data: createState({ id: executionId }),
+      }),
+    );
+
+    act(() => {
+      root.render(<SummaryHarness ids={['a', 'b']} />);
+    });
+    await act(async () => {
+      await usePipelineRunsStore.getState().loadExecutionRowState('b');
+    });
+    expect(getExecution).toHaveBeenCalledTimes(1);
+    expect(getExecution).toHaveBeenCalledWith('b');
+    usePipelineRunsStore.setState((state) => ({
+      summaries: [],
+      rowStatesById: {
+        ...state.rowStatesById,
+        a: toPipelineRunRowState(createState({ id: 'a' })),
+      },
+    }));
+
+    await act(async () => {
+      root.render(<SummaryHarness ids={['b', 'c']} />);
+      await Promise.resolve();
+    });
+
+    expect(usePipelineRunsStore.getState().rowStatesById.a).toBeUndefined();
+    expect(usePipelineRunsStore.getState().rowStatesById.b).toBeDefined();
+
+    await act(async () => {
+      await usePipelineRunsStore.getState().loadExecutionRowState('b');
+    });
+
+    expect(getExecution).toHaveBeenCalledTimes(1);
+    expect(getExecution).toHaveBeenCalledWith('b');
+  });
+
+  function DetailDataHarness({
+    activeExecutionId,
+    enabled,
+  }: {
+    activeExecutionId: string;
+    enabled: boolean;
+  }): JSX.Element {
+    usePipelineExecutionDetailData({
+      rootExecutionId: 'root',
+      activeExecutionId,
+      owner: OWNER_A,
+      enabled,
+    });
+    return <></>;
+  }
+
+  it('retains root detail while a child is active and releases it when disabled', async () => {
+    const rootState = createState({ id: 'root' });
+    const childState = createState({
+      id: 'child',
+      parent_execution_id: 'root',
+    });
+    usePipelineRunsStore.setState({
+      summaries: [],
+      statesById: { root: rootState, child: childState },
+      rowStatesById: {},
+    });
+
+    await act(async () => {
+      root.render(<DetailDataHarness activeExecutionId="child" enabled />);
+      await flushAsyncWork();
+    });
+
+    expect(getPipelineDetailLeaseCount('root')).toBe(1);
+    expect(usePipelineRunsStore.getState().statesById.root).toBe(rootState);
+
+    await act(async () => {
+      root.render(
+        <DetailDataHarness activeExecutionId="child" enabled={false} />,
+      );
+      await flushAsyncWork();
+    });
+
+    expect(getPipelineDetailLeaseCount('root')).toBe(0);
+    expect(usePipelineRunsStore.getState().statesById.root).toBeUndefined();
+  });
+
+  it('keeps root detail through active execution transitions', async () => {
+    const rootState = createState({ id: 'root' });
+    const childState = createState({
+      id: 'child',
+      parent_execution_id: 'root',
+    });
+    getExecution.mockImplementation((executionId) =>
+      Promise.resolve({
+        success: true,
+        data: executionId === 'root' ? rootState : childState,
+      }),
+    );
+    usePipelineRunsStore.setState({
+      summaries: [],
+      statesById: { root: rootState, child: childState },
+      rowStatesById: {},
+    });
+
+    await act(async () => {
+      root.render(<DetailDataHarness activeExecutionId="root" enabled />);
+      await flushAsyncWork();
+    });
+
+    expect(getPipelineDetailLeaseCount('root')).toBe(1);
+    expect(usePipelineRunsStore.getState().statesById.root).toBe(rootState);
+    expect(getExecution).not.toHaveBeenCalledWith('root');
+
+    await act(async () => {
+      root.render(<DetailDataHarness activeExecutionId="child" enabled />);
+      await flushAsyncWork();
+    });
+
+    expect(getPipelineDetailLeaseCount('root')).toBe(1);
+    expect(usePipelineRunsStore.getState().statesById.root).toBe(rootState);
+    expect(getExecution).not.toHaveBeenCalledWith('root');
+
+    await act(async () => {
+      root.render(<DetailDataHarness activeExecutionId="root" enabled />);
+      await flushAsyncWork();
+    });
+
+    expect(getPipelineDetailLeaseCount('root')).toBe(1);
+    expect(usePipelineRunsStore.getState().statesById.root).toBe(rootState);
+    expect(getExecution).not.toHaveBeenCalledWith('root');
   });
 
   function LogHarness({

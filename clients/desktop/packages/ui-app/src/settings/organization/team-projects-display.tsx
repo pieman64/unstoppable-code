@@ -1,7 +1,7 @@
 'use client';
 
-import type { JSX, RefObject } from 'react';
-import { GitIcon, SearchIcon } from '@canopy/ui-shared/icons/AppIcons';
+import type { JSX } from 'react';
+import { GitIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useSettingsPrivacy } from '../host';
 
 /**
@@ -54,52 +54,5 @@ export function RepositoryLabel({
         {owner}/{name}
       </span>
     </span>
-  );
-}
-
-interface SearchFieldProps {
-  value: string;
-  onChange: (value: string) => void;
-  label: string;
-  maxLength?: number;
-  inputRef?: RefObject<HTMLInputElement | null>;
-  'data-testid'?: string;
-}
-
-/** A labelled list filter: the search glyph leads, Escape clears the query. */
-export function SearchField({
-  value,
-  onChange,
-  label,
-  maxLength,
-  inputRef,
-  'data-testid': testId,
-}: SearchFieldProps): JSX.Element {
-  return (
-    <div className="relative w-full max-w-sm">
-      <SearchIcon
-        size={14}
-        aria-hidden="true"
-        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 fg-tertiary"
-      />
-      <input
-        ref={inputRef}
-        type="search"
-        data-testid={testId}
-        aria-label={label}
-        placeholder={label}
-        value={value}
-        maxLength={maxLength}
-        onChange={(event): void => onChange(event.target.value)}
-        onKeyDown={(event): void => {
-          if (event.key === 'Escape' && value !== '') {
-            event.preventDefault();
-            event.stopPropagation();
-            onChange('');
-          }
-        }}
-        className="focus-ring w-full rounded-lg bg-base py-2 pl-9 pr-3 text-s fg-primary inset-ring-1 inset-ring-line-base"
-      />
-    </div>
   );
 }

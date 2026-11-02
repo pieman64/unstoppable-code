@@ -9,7 +9,9 @@ jest.mock('../lib/paths', () => ({
   getCuratedPluginsCatalogFilePath: (): string => mockCatalogPath,
 }));
 jest.mock('../canopy-cloud/client', () => ({
-  requestCanopyCloudJson: mockCloudRequest,
+  get requestCanopyCloudJson(): typeof mockCloudRequest {
+    return mockCloudRequest;
+  },
 }));
 
 import {

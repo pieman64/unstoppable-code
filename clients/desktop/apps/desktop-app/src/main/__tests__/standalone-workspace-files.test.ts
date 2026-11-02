@@ -179,7 +179,9 @@ describe('standalone project file helpers', () => {
   it('removes a clipboard attachment when post-write verification fails', async () => {
     const attachmentsDir = join(rootDir, 'clipboard-attachments');
     const actualFs = jest.requireActual<typeof FsPromises>('node:fs/promises');
-    let writeClipboardAttachmentToDir: typeof WriteClipboardAttachmentToDir;
+    let writeClipboardAttachmentToDir:
+      | typeof WriteClipboardAttachmentToDir
+      | undefined;
 
     jest.isolateModules(() => {
       jest.doMock('node:fs/promises', () => ({
@@ -196,6 +198,9 @@ describe('standalone project file helpers', () => {
       ));
     });
 
+    if (!writeClipboardAttachmentToDir) {
+      throw new Error('Expected standalone workspace file module export');
+    }
     await expect(
       writeClipboardAttachmentToDir(attachmentsDir, {
         filename: 'notes.txt',

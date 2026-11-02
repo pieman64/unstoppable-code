@@ -1,8 +1,12 @@
 /**
  * @jest-environment jsdom
  */
-import type { ScheduledActivityRun } from '@canopy/desktop-shared/types';
+import type {
+  ScheduledActivityRun,
+  SidebarItem,
+} from '@canopy/desktop-shared/types';
 import {
+  automationRunDestinationLabel,
   openAutomationRunDestination,
   resolveAvailableAutomationRunDestination,
   resolveAutomationRunDestination,
@@ -13,6 +17,7 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import type { ChatTab } from '@/stores/chat/types';
 import {
   openPipelineExecutionPanel as openPipelineExecutionPanelImpl,
   type OpenPipelineExecutionResult,
@@ -30,6 +35,43 @@ const APPLIED: OpenPipelineExecutionResult = {
   panelId: 'panel-pipeline-exec-1',
   outcome: 'placed',
 };
+
+function makeChatTab(
+  id: string,
+  title: string,
+  overrides: Partial<ChatTab> = {},
+): ChatTab {
+  return {
+    id,
+    title,
+    messages: [],
+    status: 'idle',
+    error: null,
+    createdAt: '2026-09-11T09:00:00.000Z',
+    queuedMessages: [],
+    planMode: false,
+    proposalMode: 'optional',
+    thinkingLevel: 'high',
+    modelConfig: {
+      thinkingLevel: 'high',
+      speed: 'standard',
+      fastMode: false,
+    },
+    fastModeExplicit: false,
+    ...overrides,
+  };
+}
+
+function coworkItem(id: string, name: string): SidebarItem {
+  return {
+    id,
+    name,
+    type: 'cowork',
+    color: '#654321',
+    collapsed: false,
+    order: 0,
+  };
+}
 
 function makeRun(
   overrides: Partial<ScheduledActivityRun> = {},
@@ -127,6 +169,29 @@ describe('resolveAutomationRunDestination', () => {
     });
   });
 
+  // CAN-5381: a pipeline run that sent to a chat records it once the
+  // execution ends; the chat wins, and its turn comes along.
+  it('opens the chat a pipeline run sent to, over its execution', () => {
+    const run = makeRun({
+      result: {
+        projectId: 'p2',
+        worktreeId: 'w2',
+        chatId: 'sent-chat',
+        userMessageId: 'sent-input',
+        pipelineExecutionId: 'exec-1',
+      },
+    });
+    const destination = resolveAutomationRunDestination(run);
+    expect(destination).toEqual({
+      kind: 'worktree-chat',
+      projectId: 'p2',
+      worktreeId: 'w2',
+      chatId: 'sent-chat',
+      userMessageId: 'sent-input',
+    });
+    expect(automationRunDestinationLabel(destination)).toBe('Open chat');
+  });
+
   it('resolves a bare pipeline execution with no worktree', () => {
     expect(
       resolveAutomationRunDestination(
@@ -184,7 +249,7 @@ describe('openAutomationRunDestination', () => {
     openWindow.mockResolvedValue({ open: true, focused: true });
     loadTabs.mockResolvedValue({
       version: 1,
-      tabs: [{ id: 'chat-w', title: 'Chat' }],
+      tabs: [makeChatTab('chat-w', 'Chat')],
       activeTabId: 'chat-w',
     });
     loadArchives.mockResolvedValue([]);
@@ -200,7 +265,18 @@ describe('openAutomationRunDestination', () => {
         {
           id: 'workspace-1',
           name: 'Canopy',
-          worktrees: [{ id: 'worktree-1', branchName: 'feature/x' }],
+          type: 'single-repo',
+          repoPath: '/repo',
+          color: '#654321',
+          collapsed: false,
+          order: 0,
+          worktrees: [
+            {
+              id: 'worktree-1',
+              branchName: 'feature/x',
+              createdAt: '2026-09-11T09:00:00.000Z',
+            },
+          ],
         },
       ],
     });
@@ -210,7 +286,7 @@ describe('openAutomationRunDestination', () => {
       selectedWorktree: null,
       worktreeChats: {
         'workspace-1/worktree-1': {
-          tabs: [{ id: 'chat-w', title: 'Chat' }],
+          tabs: [makeChatTab('chat-w', 'Chat')],
           activeTabId: 'chat-w',
         },
       },
@@ -279,7 +355,7 @@ describe('openAutomationRunDestination', () => {
       }),
     ).resolves.toEqual({
       kind: 'none',
-      reason: 'That pipeline execution is no longer available.',
+      reason: 'That workflow execution is no longer available.',
     });
     expect(loadExecutionDetails).toHaveBeenCalledWith('deleted-execution');
   });
@@ -357,8 +433,8 @@ describe('openAutomationRunDestination', () => {
       worktreeChats: {
         [key]: {
           tabs: [
-            { id: 'unseen-chat', title: 'Unseen', unread: true },
-            { id: 'chat-w', title: 'Requested', unread: true },
+            makeChatTab('unseen-chat', 'Unseen', { unread: true }),
+            makeChatTab('chat-w', 'Requested', { unread: true }),
           ],
           activeTabId: 'unseen-chat',
         },
@@ -444,7 +520,7 @@ describe('openAutomationRunDestination', () => {
     const switchChatProject = jest.fn().mockResolvedValue(true);
     const selectChat = jest.fn().mockResolvedValue(true);
     useProjectsStore.setState({
-      projects: [{ id: 'cowork-1', name: 'Notes', type: 'cowork' }],
+      projects: [coworkItem('cowork-1', 'Notes')],
     });
     useStandaloneChatStore.setState({ switchChatProject, selectChat });
 
@@ -475,7 +551,7 @@ describe('openAutomationRunDestination', () => {
     const switchChatProject = jest.fn().mockResolvedValue(true);
     const selectChat = jest.fn().mockResolvedValue(true);
     useProjectsStore.setState({
-      projects: [{ id: 'cowork-1', name: 'Notes', type: 'cowork' }],
+      projects: [coworkItem('cowork-1', 'Notes')],
     });
     useStandaloneChatStore.setState({ switchChatProject, selectChat });
 
@@ -511,7 +587,7 @@ describe('openAutomationRunDestination', () => {
     const switchChatProject = jest.fn().mockResolvedValue(false);
     const selectChat = jest.fn().mockResolvedValue(true);
     useProjectsStore.setState({
-      projects: [{ id: 'cowork-1', name: 'Notes', type: 'cowork' }],
+      projects: [coworkItem('cowork-1', 'Notes')],
     });
     useStandaloneChatStore.setState({ switchChatProject, selectChat });
 
@@ -532,7 +608,7 @@ describe('openAutomationRunDestination', () => {
     const switchChatProject = jest.fn().mockResolvedValue(true);
     const selectChat = jest.fn().mockResolvedValue(false);
     useProjectsStore.setState({
-      projects: [{ id: 'cowork-1', name: 'Notes', type: 'cowork' }],
+      projects: [coworkItem('cowork-1', 'Notes')],
     });
     useStandaloneChatStore.setState({ switchChatProject, selectChat });
 
@@ -661,7 +737,7 @@ describe('openAutomationRunDestination', () => {
         }),
       ).resolves.toEqual({
         ok: false,
-        error: 'That pipeline execution is no longer available.',
+        error: 'That workflow execution is no longer available.',
       });
     },
   );
@@ -686,7 +762,7 @@ describe('openAutomationRunDestination', () => {
 
   it('preflights a Cowork pipeline owner without requiring a worktree', async () => {
     useProjectsStore.setState({
-      projects: [{ id: 'cowork-1', name: 'Notes', type: 'cowork' }],
+      projects: [coworkItem('cowork-1', 'Notes')],
     });
 
     await expect(
@@ -716,7 +792,7 @@ describe('openAutomationRunDestination', () => {
       }),
     ).resolves.toEqual({
       kind: 'none',
-      reason: 'That pipeline execution is no longer available.',
+      reason: 'That workflow execution is no longer available.',
     });
   });
 

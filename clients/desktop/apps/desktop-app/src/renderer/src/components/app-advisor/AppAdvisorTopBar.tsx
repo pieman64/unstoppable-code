@@ -24,6 +24,7 @@
  * No `CollapsedTitlebarToggle` (the popout has no collapsible main-window
  * titlebar) and no PrStatusBar/git chrome.
  */
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { memo, type JSX } from 'react';
 import { AppAdvisorIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
@@ -73,7 +74,7 @@ export const AppAdvisorTopBar = memo(function AppAdvisorTopBar({
       <div className="electron-drag flex min-w-0 flex-1 items-center gap-1.5 border-b bg-base/50 px-3">
         <AppAdvisorIcon className="h-3.5 w-3.5 shrink-0 fg-secondary" />
         <span className="select-none truncate text-xs font-medium fg-secondary">
-          App Advisor
+          {ORCHESTRATOR_LABEL}
         </span>
       </div>
       <div className="electron-drag flex shrink-0 items-center gap-1 border-b bg-base/50 pr-3">

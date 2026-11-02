@@ -10,10 +10,12 @@ import { createOpenCodeSchemaValidator } from '@canopy/desktop-shared/node/openc
 import { validateOpenCodeMcpSchema } from '../opencode/schema-validation';
 import { snapshotOpenCodeMcpTools } from '../opencode/capability-snapshot';
 import { DelegationNativePolicy } from '../agents/delegation/native-policy';
+import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
 import {
   authorizeDelegatedOpenCodeTool,
   createOpenCodeDelegationRunner,
 } from '../agents/delegation/opencode-runner';
+import { DELEGATION_TRANSCRIPT_RECORDER_LIMITS } from '../agents/delegation/transcript-recorder';
 import {
   runOpenCodeTurn,
   type OpenCodeTurnResult,
@@ -23,11 +25,23 @@ import {
   readOpenCodeCapabilityBinding,
 } from '@canopy/desktop-shared/node/opencode/capability-snapshot';
 import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
-import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
+import type {
+  AgentRunRequest,
+  NativeRunHandle,
+} from '@canopy/desktop-shared/node/delegation';
+import { InMemoryDelegationTranscriptPort } from '@canopy/desktop-shared/node/delegation/in-memory-transcript-port';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptTarget,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
+import { request as openCodeRequest } from './helpers/delegation-runner-fixtures/opencode';
 jest.mock('@canopy/desktop-shared/node/opencode/turn-driver', () => ({
   runOpenCodeTurn: jest.fn(),
 }));
 jest.mock('../opencode/connection', () => ({
+  assertOpenCodeModelAvailable: jest.fn(() =>
+    Promise.resolve({ supportedThinkingLevels: [] }),
+  ),
   openManagedOpenCodeRuntime: jest.fn((options: { signal: AbortSignal }) =>
     Promise.resolve({
       signal: options.signal,
@@ -126,7 +140,12 @@ beforeEach(async () => {
     delegationId: 'child',
     mode: (): 'full-access' => 'full-access',
     allowed: (): Promise<boolean> => Promise.resolve(allowed),
-    approval: { check, setMode: jest.fn(), dispose: jest.fn() },
+    approval: {
+      check,
+      setMode: jest.fn(),
+      reevaluatePendingApprovals: (): Promise<void> => Promise.resolve(),
+      dispose: jest.fn(),
+    },
     emit: (): Promise<void> => Promise.resolve(),
   });
   await writeFile(join(cwd, 'evidence.txt'), 'evidence');
@@ -134,6 +153,88 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
+
+function transcriptHarness(): {
+  port: InMemoryDelegationTranscriptPort;
+  admitted: DelegationTranscriptChange[];
+  firstAdmission: Promise<void>;
+} {
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  const admitted: DelegationTranscriptChange[] = [];
+  let admit: () => void = () => undefined;
+  const firstAdmission = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  const append = port.appendChanges.bind(port);
+  jest
+    .spyOn(port, 'appendChanges')
+    .mockImplementation(async (input, signal) => {
+      const result = await append(input, signal);
+      if (result.ok) {
+        admitted.push(...input.changes);
+        admit();
+      }
+      return result;
+    });
+  return { port, admitted, firstAdmission };
+}
+
+function transcriptRequest(original: AgentRunRequest): AgentRunRequest {
+  const target: DelegationTranscriptTarget = {
+    kind: 'delegation',
+    chatId: original.parent.chatId,
+    delegationId: original.delegationId,
+    runGeneration: original.runGeneration,
+  };
+  return { ...original, transcriptStream: { target } };
+}
+
+function retainedText(
+  changes: readonly DelegationTranscriptChange[],
+  text: string,
+): boolean {
+  return changes.some(
+    ({ row }) =>
+      row.final &&
+      row.blocks.some((block) => block.type === 'text' && block.text === text),
+  );
+}
+
+async function startStream(
+  transcriptPort: InMemoryDelegationTranscriptPort,
+): Promise<{
+  runner: ReturnType<typeof createOpenCodeDelegationRunner>;
+  handle: NativeRunHandle;
+  terminal: Promise<AgentDelegationEvent['event']>;
+}> {
+  const runner = createOpenCodeDelegationRunner({
+    available: () => Promise.resolve({ available: true }),
+    prepare: () =>
+      Promise.resolve({
+        model: 'fixture/model',
+        profileDir: join(cwd, 'profile'),
+        tools,
+        plugins: [],
+        mcpServers: {},
+      }),
+    reportError: jest.fn(),
+    transcriptPort,
+  });
+  let finish: (event: AgentDelegationEvent['event']) => void = () => undefined;
+  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
+    finish = resolve;
+  });
+  const handle = await runner.start(
+    transcriptRequest(openCodeRequest({ cwd, signal: abort.signal })),
+    ({ event }) => {
+      if (event.type === 'terminal') finish(event);
+      return Promise.resolve();
+    },
+  );
+  return { runner, handle, terminal };
+}
 const input = (
   toolName: string,
   toolArgs: Record<string, unknown>,
@@ -201,7 +302,12 @@ test('delegation resume identity binds file content and grants, not materializat
       delegationId: 'child',
       mode: (): 'full-access' => 'full-access',
       allowed: (): Promise<boolean> => Promise.resolve(true),
-      approval: { check, setMode: jest.fn(), dispose: jest.fn() },
+      approval: {
+        check,
+        setMode: jest.fn(),
+        reevaluatePendingApprovals: (): Promise<void> => Promise.resolve(),
+        dispose: jest.fn(),
+      },
       emit: (): Promise<void> => Promise.resolve(),
     });
     const reportError = jest.fn();
@@ -218,39 +324,13 @@ test('delegation resume identity binds file content and grants, not materializat
         }),
       reportError,
     });
-    const request: AgentRunRequest = {
-      delegationId: 'child',
-      runGeneration: 1,
-      launchKey: 'launch',
-      parent: {
-        harnessId: 'claude',
-        projectId: 'project',
-        worktreeId: 'worktree',
-        chatId: 'chat',
-        sessionKey: 'parent',
-        runtimeGeneration: 1,
-        depth: 0,
-        turnId: 'turn',
-        toolCallId: 'spawn',
-      },
-      task: {
-        modelId: 'opencode:fixture/model',
-        description: 'read',
-        prompt: 'read',
-        deliveryMode: 'background',
-      },
-      route: routeFixture({
-        harnessId: 'opencode',
-        runtimeKind: 'opencode-acp',
-        runtimeModelId: 'opencode:fixture/model',
-      }),
+    const request: AgentRunRequest = openCodeRequest({
       cwd,
-      effectivePermission: 'read-only',
+      signal: abort.signal,
       ...(mockTurn.mock.calls.length
         ? { resumeSessionId: 'opencode-fixture' }
         : {}),
-      signal: abort.signal,
-    };
+    });
     let finish = (): void => {};
     const terminal = new Promise<void>((resolve) => {
       finish = resolve;
@@ -459,15 +539,17 @@ test.each(['allowed', 'policy-denied', 'invalid-input', 'collision'])(
         toolCallId: 'spawn',
       },
       task: {
-        modelId: 'opencode:fixture/model',
+        modelId: 'opencode:fixture%2Fmodel',
         description: 'read',
         prompt: 'read',
-        deliveryMode: 'background',
+        contextPolicy: 'task_only',
+        isolation: 'shared_worktree',
+        executionMode: 'background',
       },
       route: routeFixture({
         harnessId: 'opencode',
         runtimeKind: 'opencode-acp',
-        runtimeModelId: 'opencode:fixture/model',
+        runtimeModelId: 'opencode:fixture%2Fmodel',
       }),
       cwd,
       effectivePermission: 'read-only',
@@ -497,3 +579,116 @@ test.each(['allowed', 'policy-denied', 'invalid-input', 'collision'])(
     } else expect(policy).not.toHaveBeenCalled();
   },
 );
+
+test('keeps stream-backed OpenCode rows when the legacy transcript preview budget is exceeded', async () => {
+  const text = 'x'.repeat(DELEGATION_TRANSCRIPT_RECORDER_LIMITS.itemBytes + 1);
+  const secondText = 'second canonical row';
+  jest.mocked(runOpenCodeTurn).mockImplementation(async (_turn, host) => {
+    await host.emit({
+      type: 'canopy_assistant_patch',
+      provider: 'opencode',
+      role: 'assistant',
+      messageId: 'large-answer',
+      timestamp: 0,
+      patches: [
+        { index: 0, block: { type: 'text', text } },
+        { index: 1, block: { type: 'text', text: secondText } },
+      ],
+    });
+    return {
+      responseText: 'done',
+      isError: false,
+      cancelled: false,
+      message: '',
+    };
+  });
+  const { port, admitted } = transcriptHarness();
+  const appendChanges = jest.spyOn(port, 'appendChanges');
+  const result = await startStream(port);
+
+  await expect(result.terminal).resolves.toMatchObject({ status: 'completed' });
+  expect(appendChanges).toHaveBeenCalled();
+  expect(retainedText(admitted, text)).toBe(true);
+  expect(retainedText(admitted, secondText)).toBe(true);
+});
+
+test('attributes rejected OpenCode row admission to fatal transcript storage failure', async () => {
+  jest.mocked(runOpenCodeTurn).mockImplementation(async (_turn, host) => {
+    await host.emit({
+      type: 'canopy_assistant_patch',
+      provider: 'opencode',
+      role: 'assistant',
+      messageId: 'storage-answer',
+      timestamp: 0,
+      patches: [{ index: 0, block: { type: 'text', text: 'pending' } }],
+    });
+    return {
+      responseText: 'done',
+      isError: false,
+      cancelled: false,
+      message: '',
+    };
+  });
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  const appendChanges = jest.spyOn(port, 'appendChanges');
+  appendChanges.mockResolvedValue({
+    ok: false,
+    error: {
+      code: 'storage_failure',
+      message: 'fixture storage failure',
+      retryable: false,
+    },
+  });
+  const result = await startStream(port);
+
+  await expect(result.terminal).resolves.toMatchObject({
+    status: 'failed',
+    error: {
+      code: 'runtime_error',
+      message:
+        'The delegated transcript could not be saved. Retained partial output is available.',
+      retryable: false,
+    },
+  });
+  expect(jest.mocked(runOpenCodeTurn)).toHaveBeenCalledTimes(1);
+  expect(appendChanges).toHaveBeenCalled();
+});
+
+test('finalizes OpenCode rows before a requested stop is acknowledged as cancellation', async () => {
+  const text = 'cancelled OpenCode partial';
+  let emitted: () => void = () => undefined;
+  const patchEmitted = new Promise<void>((resolve) => {
+    emitted = resolve;
+  });
+  jest.mocked(runOpenCodeTurn).mockImplementation(async (turn, host) => {
+    await host.emit({
+      type: 'canopy_assistant_patch',
+      provider: 'opencode',
+      role: 'assistant',
+      messageId: 'cancelled-answer',
+      timestamp: 0,
+      patches: [{ index: 0, block: { type: 'text', text } }],
+    });
+    emitted();
+    await new Promise<void>((resolve) =>
+      turn.signal.addEventListener('abort', () => resolve(), { once: true }),
+    );
+    return {
+      responseText: '',
+      isError: false,
+      cancelled: true,
+      message: 'Turn cancelled',
+    };
+  });
+  const { port, admitted } = transcriptHarness();
+  const result = await startStream(port);
+  await patchEmitted;
+  await expect(
+    result.runner.stop(result.handle, 'user_cancelled'),
+  ).resolves.toEqual({ stopped: true });
+
+  await expect(result.terminal).resolves.toMatchObject({ status: 'cancelled' });
+  expect(retainedText(admitted, text)).toBe(true);
+});

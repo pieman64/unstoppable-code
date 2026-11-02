@@ -8,9 +8,13 @@ import {
 import {
   mayPruneAuditDayFile,
   resetAuditStreamHooksForTest,
+  type AuditDayFileIdentity,
 } from '../../observability/audit-stream-hooks';
 
-const catchUpAndSealDay = jest.fn<Promise<boolean>, [string]>();
+const catchUpAndSealDay = jest.fn<
+  Promise<AuditDayFileIdentity | null>,
+  [string]
+>();
 const startCostIndexScheduler = jest.fn();
 jest.mock('../service', () => ({
   getDesktopCostIndexStore: () => ({ catchUpAndSealDay }),
@@ -31,7 +35,7 @@ describe('cost startup and first prune', () => {
   });
 
   it('guards the first prune without loading the scheduler and refuses an unconsumed day', async () => {
-    catchUpAndSealDay.mockResolvedValue(false);
+    catchUpAndSealDay.mockResolvedValue(null);
     registerCostRetentionGuard();
     expect(
       await mayPruneAuditDayFile({
@@ -40,10 +44,11 @@ describe('cost startup and first prune', () => {
         cutoffTime: Date.parse('2026-10-02'),
         retentionDays: 7,
       }),
-    ).toBe(false);
+    ).toEqual({ prune: false });
     expect(catchUpAndSealDay).toHaveBeenCalledWith('2026-10-01.jsonl');
     expect(startCostIndexScheduler).not.toHaveBeenCalled();
-    catchUpAndSealDay.mockResolvedValue(true);
+    const consumed = { size: 120, mtimeMs: 1_000, ino: 42 };
+    catchUpAndSealDay.mockResolvedValue(consumed);
     expect(
       await mayPruneAuditDayFile({
         dayFilename: '2026-10-01.jsonl',
@@ -51,7 +56,7 @@ describe('cost startup and first prune', () => {
         cutoffTime: Date.parse('2026-10-02'),
         retentionDays: 7,
       }),
-    ).toBe(true);
+    ).toEqual({ prune: true, verified: consumed });
   });
 
   it('defers even importing/starting the scheduler for at least sixty seconds', async () => {

@@ -1,10 +1,14 @@
 const mockShutdown = jest.fn((): Promise<void> => Promise.resolve());
 const mockCreateCodexRuntimeService = jest.fn(() => ({
-  shutdown: mockShutdown,
+  get shutdown(): typeof mockShutdown {
+    return mockShutdown;
+  },
 }));
 
 jest.mock('@canopy/desktop-shared/node/codex-runtime', () => ({
-  createCodexRuntimeService: mockCreateCodexRuntimeService,
+  get createCodexRuntimeService(): typeof mockCreateCodexRuntimeService {
+    return mockCreateCodexRuntimeService;
+  },
   resetCanonicalCodexHomeForTests: jest.fn(),
 }));
 jest.mock('../codex/runtime-host-adapter', () => ({}));
@@ -18,6 +22,29 @@ import {
   resetCodexRuntimeServiceForTests,
   shutdownCodexRuntimeService,
 } from '../codex/runtime-service';
+
+import type {
+  CodexIngestionLagSample,
+  CodexInteractiveOwner,
+} from '@canopy/desktop-shared/node/codex-runtime/runtime-service';
+
+describe('Codex runtime ingestion lag sample contract', () => {
+  it('reexports the sample type and keeps its handler on interactive owners', () => {
+    const sample: CodexIngestionLagSample = {
+      lagMs: 5_100,
+      source: 'provider',
+      sampledAtMs: 1_234,
+      catchingUp: true,
+    };
+    const handleIngestionLagSample: NonNullable<
+      CodexInteractiveOwner['handleIngestionLagSample']
+    > = jest.fn();
+
+    void handleIngestionLagSample(sample);
+
+    expect(handleIngestionLagSample).toHaveBeenCalledWith(sample);
+  });
+});
 
 describe('onCodexRuntimeServiceReplaced', () => {
   beforeEach(async () => {

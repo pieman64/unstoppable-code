@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { create } from 'zustand';
 import type {
   AppAdvisorWatcherChatFiringHoldRequest,
@@ -227,7 +228,7 @@ export const useAppAdvisorWatchersStore = create<AppAdvisorWatchersStore>(
         const message =
           error instanceof Error
             ? error.message
-            : 'Failed to load App Advisor watchers.';
+            : `Failed to load ${ORCHESTRATOR_LABEL} watchers.`;
         set({ loading: false, error: message });
       }
     },
@@ -240,7 +241,7 @@ export const useAppAdvisorWatchersStore = create<AppAdvisorWatchersStore>(
       if (!api?.deleteWatcher) {
         const result = {
           ok: false as const,
-          error: 'App Advisor IPC unavailable.',
+          error: `${ORCHESTRATOR_LABEL} IPC unavailable.`,
         };
         set((state) => ({
           deleteErrors: { ...state.deleteErrors, [watcherId]: result.error },
@@ -313,7 +314,7 @@ export const useAppAdvisorWatchersStore = create<AppAdvisorWatchersStore>(
       const api =
         typeof window !== 'undefined' ? window.api?.appAdvisor : undefined;
       if (!api?.createWatcher) {
-        return { ok: false, error: 'App Advisor IPC unavailable.' };
+        return { ok: false, error: `${ORCHESTRATOR_LABEL} IPC unavailable.` };
       }
       try {
         return await api.createWatcher(request);
@@ -334,7 +335,7 @@ export const useAppAdvisorWatchersStore = create<AppAdvisorWatchersStore>(
       const api =
         typeof window !== 'undefined' ? window.api?.appAdvisor : undefined;
       if (!api?.updateWatcher) {
-        return { ok: false, error: 'App Advisor IPC unavailable.' };
+        return { ok: false, error: `${ORCHESTRATOR_LABEL} IPC unavailable.` };
       }
       try {
         return await api.updateWatcher({ watcherId, followUpInstruction });

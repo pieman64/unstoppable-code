@@ -17,18 +17,28 @@ import {
   type Ref,
 } from 'react';
 import { AutomationAuthorTargetRequirement } from '@/components/automations/AutomationAuthorTargetRequirement';
+import { usePipelineTaskList } from '@/components/automations/usePipelineTaskList';
 import { ConfigurationChatComposer } from '@/components/shared/ConfigurationChatComposer';
 import { resolveAutomationComposerContext } from '@/lib/configurationComposerTargets';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
   AutomationTrigger,
   ChatInterfaceMode,
+  MultiRepoSidebarItem,
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
-import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  WORKSPACE_ROOT_REPO_ID,
+  WORKSPACE_ROOT_REPO_NAME,
+} from '@canopy/desktop-shared/types';
 import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { canonicalizeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
-import { CHAT_UNIT_LABEL, WORKTREE_UNIT_LABEL } from '@canopy/protocol';
+import {
+  CHAT_UNIT_LABEL,
+  ORCHESTRATOR_LABEL,
+  WORKTREE_UNIT_LABEL,
+} from '@canopy/protocol';
 import { brandText } from '@/lib/brand';
 import {
   AUTOMATION_IF_CMD_IDEMPOTENCY_KEY_VAR_NAMES,
@@ -48,9 +58,11 @@ import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { automationContextNoteMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
 import type { WorktreeSessionTarget } from '@/components/automations/worktreeSessionPrompt';
 import { AutomationSidebarGroupPicker } from '@/components/automations/AutomationSidebarGroupPicker';
+import { AutomationPipelineDependenciesField } from './AutomationPipelineDependenciesField';
 import {
   PipelineTriggerModal,
   type PipelinePluginCollectionRunContext,
+  type PipelineRepoChoice,
 } from '@/components/activity/PipelineTriggerModal';
 import { usePipelineWorktreeContext } from '@/components/activity/usePipelineWorktreeContext';
 import { CanopyLogo } from '@/components/CanopyLogo';
@@ -65,7 +77,17 @@ import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canop
 import type { AutomationScope } from '@/hooks/useAutomationScope';
 import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { Tooltip } from '@canopy/ui-shared';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  AutomationPipelineTargetFields,
+  isAutomationPipelineTaskStale,
+  Button,
+  Notice,
+  NoticeButton,
+  SegmentedControl as SharedSegmentedControl,
+} from '@canopy/ui-shared/components';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
+import { automationDestinationExecutionScope } from '@canopy/pipeline-interop/automation-target';
+import type { AutomationTargetResolution } from '@canopy/pipeline-interop/automation-target';
 import {
   SearchableSelect,
   type SearchableSelectOption,
@@ -81,13 +103,17 @@ import {
   applyAppAdvisorRunModeSelection,
   applyChatRunModeSelection,
   applyChatTargetSelection,
+  applyGlobalPipelineSelection,
+  applyPipelineRunInSelection,
   applyWorkspaceActionSelection,
   automationFormActionCategory,
   automationFormChatRunMode,
   automationFormChatTarget,
+  actionTypeTakesPipelineDependencies,
   automationFormSidebarGroupScope,
   buildAction,
   clearedPipelineSelection,
+  displayedPipelineRunIn,
   getAutomationWorktreeLabel,
   getPipelineModelAliasBlockingError,
   hasChatAuthoredPayload,
@@ -139,7 +165,8 @@ export interface ActivityFormBodyProps {
   scope?: Pick<
     AutomationScope,
     'context' | 'projectsInContext' | 'labelForWorkspace' | 'memberOfWorkspace'
-  >;
+  > &
+    Partial<Pick<AutomationScope, 'ownerLabel'>>;
   /**
    * A failed save (for example, turning on an automation whose target is in
    * another context), shown under the fields. With two bodies mounted, pass it
@@ -198,42 +225,28 @@ function WorkspaceActionModePill({
     },
     {
       value: 'pipeline',
-      label: 'Pipeline',
+      label: WORKFLOW_ITEM_LABEL,
       icon: <PipelineIcon width={14} height={14} aria-hidden="true" />,
     },
   ];
   return (
     <div className="flex flex-col gap-1 text-xs fg-secondary">
       <span>Type</span>
-      <div
-        role="radiogroup"
-        aria-label="Project action type"
-        data-testid="automations-form-workspace-action-mode"
-        className="inline-flex items-center gap-1 self-start rounded-full border bg-base p-1"
-      >
-        {options.map((option) => {
-          const active = value === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              disabled={disabled}
-              onClick={(): void => onChange(option.value)}
-              data-testid={`automations-form-workspace-action-mode-${option.value}`}
-              className={`focus-ring inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                active
-                  ? 'bg-accent fg-emphasis'
-                  : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-              }`}
-            >
-              {option.icon}
-              <span>{option.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      <SharedSegmentedControl
+        value={value}
+        options={options.map((option) => ({
+          value: option.value,
+          label: option.label,
+          leading: option.icon,
+          dataTestId: `automations-form-workspace-action-mode-${option.value}`,
+        }))}
+        onChange={onChange}
+        label="Project action type"
+        shape="capsule"
+        width="content"
+        disabled={disabled}
+        dataTestId="automations-form-workspace-action-mode"
+      />
     </div>
   );
 }
@@ -264,32 +277,35 @@ function InterfaceModePill({
   ];
 
   return (
-    <div
-      className="flex items-center gap-0.5 rounded-lg border bg-card/95 p-0.5"
-      role="group"
-      aria-label="Claude chat mode"
-      data-testid="automations-form-interface-mode"
-    >
-      {options.map((option) => {
-        const selected = value === option.value;
-        return (
-          <button
-            key={option.value || 'default'}
-            type="button"
-            onClick={(): void => onChange(option.value)}
-            aria-pressed={selected}
-            className={`focus-ring inline-flex h-7 items-center gap-1 rounded-md px-2 text-2xs transition-colors ${
-              selected
-                ? 'bg-accent-subtle fg-accent'
-                : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            {option.icon}
-            <span>{option.label}</span>
-          </button>
-        );
-      })}
-    </div>
+    <SharedSegmentedControl
+      value={value}
+      options={options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        leading: option.icon,
+      }))}
+      onChange={onChange}
+      label="Claude chat mode"
+      shape="capsule"
+      width="content"
+      dataTestId="automations-form-interface-mode"
+    />
+  );
+}
+
+/**
+ * The folder a multi-repo project-folder run uses, as main resolves it: the
+ * chosen repository, else the project's source root. With neither, the picker
+ * preselects the first repository, so discovery starts there.
+ */
+function projectFolderRepoPath(
+  project: Pick<MultiRepoSidebarItem, 'repos' | 'sourceRepoPath'>,
+  repoId: string | undefined,
+): string | undefined {
+  if (repoId && repoId !== WORKSPACE_ROOT_REPO_ID)
+    return project.repos.find((repo) => repo.id === repoId)?.repoPath;
+  return (
+    project.sourceRepoPath ?? (repoId ? undefined : project.repos[0]?.repoPath)
   );
 }
 
@@ -387,6 +403,68 @@ export function ActivityFormBody({
     ) ?? selectedProjectWorktrees[0];
   const isCoworkPipeline =
     state.actionType === 'worktree_pipeline' && selectedIsCowork;
+  const isGlobalPipeline = actionCategory === 'global';
+  // Where a pipeline on a project runs; a legacy cowork action shows Project
+  // folder, which is what it does.
+  const pipelineRunIn = displayedPipelineRunIn(state, selectedIsCowork);
+  const pipelineTaskWorktreeId =
+    state.actionType === 'worktree_pipeline' &&
+    pipelineRunIn === 'task' &&
+    state.pipelineTaskId
+      ? state.pipelineTaskId
+      : undefined;
+  // A task run discovers its project pipelines in that task, never another
+  // worktree, so the picker waits for a task.
+  const pipelineDiscoveryWorktreeId =
+    pipelineRunIn === 'task' ? pipelineTaskWorktreeId : baseWorktree?.id;
+  // The working directory chosen in the open picker, before it is saved.
+  const [pickerRepoId, setPickerRepoId] = useState<string | undefined>();
+  // A project-folder run on a code project needs no worktree; its project
+  // pipelines are discovered in the folder main runs it in: the selected
+  // repository on a multi-repo project, else the project's source root.
+  const codeProjectFolderCwd =
+    state.actionType === 'worktree_pipeline' &&
+    pipelineRunIn === 'project' &&
+    selectedProject !== undefined &&
+    selectedProject.type !== 'cowork'
+      ? selectedProject.type === 'single-repo'
+        ? selectedProject.repoPath
+        : projectFolderRepoPath(
+            selectedProject,
+            pickerRepoId !== undefined &&
+              (pickerRepoId === WORKSPACE_ROOT_REPO_ID ||
+                selectedProject.repos.some((repo) => repo.id === pickerRepoId))
+              ? pickerRepoId
+              : state.repoId,
+          )
+      : undefined;
+  // That run uses one of the project's own repositories, not a worktree's, so
+  // it offers them even when the project has no worktree.
+  const codeProjectFolderRepoChoices: PipelineRepoChoice[] | undefined =
+    state.actionType === 'worktree_pipeline' &&
+    pipelineRunIn === 'project' &&
+    selectedProject?.type === 'multi-repo'
+      ? [
+          ...(selectedProject.sourceRepoPath
+            ? [
+                {
+                  repoId: WORKSPACE_ROOT_REPO_ID,
+                  repoName: WORKSPACE_ROOT_REPO_NAME,
+                },
+              ]
+            : []),
+          ...selectedProject.repos.map((repo) => ({
+            repoId: repo.id,
+            repoName: repo.name,
+          })),
+        ]
+      : undefined;
+  const pipelineExecutionScope = automationDestinationExecutionScope(
+    isGlobalPipeline || state.pipelineTargetExplicit
+      ? state.pipelineTargetKind
+      : undefined,
+    selectedProject?.type,
+  );
   // The pipeline picker and the prompt editor live in the definition fields,
   // so a trigger-only body skips the reads that feed them.
   const pipelineWorktreeContext = usePipelineWorktreeContext(
@@ -398,12 +476,44 @@ export function ActivityFormBody({
     showDefinition &&
       state.actionType === 'worktree_pipeline' &&
       !selectedIsCowork
-      ? baseWorktree?.id
+      ? pipelineDiscoveryWorktreeId
       : undefined,
   );
   const coworkRootCwd = useCoworkRootCwd(
     showDefinition && isCoworkPipeline ? state.workspaceId : undefined,
   );
+  const pipelineTaskList = usePipelineTaskList(
+    showDefinition &&
+      state.actionType === 'worktree_pipeline' &&
+      pipelineRunIn === 'task'
+      ? selectedWorkspaceId || undefined
+      : undefined,
+  );
+  const pipelineTasks = pipelineTaskList.tasks;
+  const pipelineTaskStale =
+    state.actionType === 'worktree_pipeline' &&
+    pipelineRunIn === 'task' &&
+    isAutomationPipelineTaskStale(state.pipelineTaskId, pipelineTasks);
+  const ownerLabel =
+    scope?.ownerLabel?.(
+      state.mode === 'edit'
+        ? (state.executionContext ?? 'personal')
+        : undefined,
+    ) ?? 'Personal';
+  // The selected destination's verdict on the picked pipeline. `null` until
+  // the action can be built (no pipeline picked yet).
+  const [pipelineTargetStatus, setPipelineTargetStatus] = useState<
+    AutomationTargetResolution['status'] | null
+  >(null);
+  // An explicit destination saves only once the picked pipeline is verified
+  // to run there; a legacy destination keeps its existing save rules.
+  const pipelineTargetBlocked =
+    showDefinition &&
+    state.actionType === 'worktree_pipeline' &&
+    (pipelineTaskStale ||
+      ((isGlobalPipeline || state.pipelineTargetExplicit) &&
+        (pipelineTargetStatus === 'pending' ||
+          pipelineTargetStatus === 'error')));
   const [pipelinePickerOpen, setPipelinePickerOpen] = useState(false);
   const [cronAssistantOpen, setCronAssistantOpen] = useState(false);
   const [cronAssistantText, setCronAssistantText] = useState('');
@@ -593,6 +703,10 @@ export function ActivityFormBody({
     // The Run-in mode carries across targets; an existing destination does
     // not, because worktrees and Work Entries belong to one target.
     if (chatRunMode === 'existing_chat') setChatTargetStatus('incomplete');
+    if (category === 'global') {
+      onChange(applyGlobalPipelineSelection(state));
+      return;
+    }
     if (category === 'app_advisor') {
       onChange(
         applyAppAdvisorActionCategorySelection(
@@ -606,10 +720,11 @@ export function ActivityFormBody({
     // workspace selection survived the round trip through App Advisor. An
     // existing-chat automation parks its workspace on the session target, so
     // that is the third place worth looking.
+    // A pipeline with no project stays a pipeline on the chosen project.
     onChange(
       applyWorkspaceActionSelection(
         state,
-        'chat',
+        isGlobalPipeline ? 'pipeline' : 'chat',
         resolveWorkspaceSelection(
           state.workspaceId ||
             state.chatProjectId ||
@@ -717,9 +832,9 @@ export function ActivityFormBody({
 
   const handleSubmitForm = useCallback(async (): Promise<void> => {
     ifCommandGenerationRevisionRef.current += 1;
-    if (composerBlocked || chatTargetBlocked) return;
+    if (composerBlocked || chatTargetBlocked || pipelineTargetBlocked) return;
     await onSubmit?.();
-  }, [onSubmit, composerBlocked, chatTargetBlocked]);
+  }, [onSubmit, composerBlocked, chatTargetBlocked, pipelineTargetBlocked]);
 
   useImperativeHandle(
     handleRef,
@@ -826,7 +941,10 @@ export function ActivityFormBody({
     ? getPipelineModelAliasBlockingError(state)
     : undefined;
   const canSubmit =
-    !modelAliasBlockingError && !chatTargetBlocked && !composerBlocked;
+    !modelAliasBlockingError &&
+    !chatTargetBlocked &&
+    !composerBlocked &&
+    !pipelineTargetBlocked;
   // Before paint, so a host's Save button never shows a stale state.
   useLayoutEffect(() => {
     onSubmitAvailabilityChange?.(canSubmit);
@@ -995,8 +1113,10 @@ export function ActivityFormBody({
                   />
                   <span className="absolute right-1 top-1/2 -translate-y-1/2">
                     <Tooltip label="Generate cron expression">
-                      <button
-                        type="button"
+                      <Button
+                        variant="ghost"
+                        size="compact"
+                        iconOnly
                         aria-label="Generate cron expression"
                         disabled={cronGenerating}
                         onClick={(): void => {
@@ -1004,10 +1124,9 @@ export function ActivityFormBody({
                           setCronGenerationWarning(null);
                         }}
                         data-testid="automations-form-cron-assistant"
-                        className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-wait disabled:opacity-60"
                       >
                         <AppAdvisorIcon className="h-4 w-4" />
-                      </button>
+                      </Button>
                     </Tooltip>
                   </span>
                 </div>
@@ -1028,15 +1147,14 @@ export function ActivityFormBody({
                       data-testid="automations-form-cron-natural-language"
                       className="focus-ring min-w-0 flex-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
                     />
-                    <button
-                      type="button"
+                    <Button
+                      size="compact"
                       disabled={cronAssistantText.trim().length === 0}
                       onClick={() => void handleGenerateCron()}
                       data-testid="automations-form-cron-generate"
-                      className="focus-ring rounded-md border border-line-accent/40 bg-accent-subtle px-2.5 py-1.5 text-xs font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-default disabled:opacity-50"
                     >
                       Generate
-                    </button>
+                    </Button>
                   </div>
                 )}
                 {cronGenerating && (
@@ -1166,8 +1284,10 @@ export function ActivityFormBody({
                       />
                       <span className="absolute right-1 top-1">
                         <Tooltip label="Generate if command">
-                          <button
-                            type="button"
+                          <Button
+                            variant="ghost"
+                            size="compact"
+                            iconOnly
                             aria-label="Generate if command"
                             disabled={ifCommandGenerating}
                             onClick={(): void => {
@@ -1175,10 +1295,9 @@ export function ActivityFormBody({
                               setIfCommandWarning(null);
                             }}
                             data-testid="automations-form-if-command-assistant"
-                            className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-wait disabled:opacity-60"
                           >
                             <AppAdvisorIcon className="h-4 w-4" />
-                          </button>
+                          </Button>
                         </Tooltip>
                       </span>
                     </div>
@@ -1199,15 +1318,14 @@ export function ActivityFormBody({
                           data-testid="automations-form-if-command-natural-language"
                           className="focus-ring min-w-0 flex-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
                         />
-                        <button
-                          type="button"
+                        <Button
+                          size="compact"
                           disabled={ifCommandAssistantText.trim().length === 0}
                           onClick={() => void handleGenerateIfCommand()}
                           data-testid="automations-form-if-command-generate"
-                          className="focus-ring rounded-md border border-line-accent/40 bg-accent-subtle px-2.5 py-1.5 text-xs font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-default disabled:opacity-50"
                         >
                           Generate
-                        </button>
+                        </Button>
                       </div>
                     )}
                     {ifCommandGenerating && (
@@ -1234,17 +1352,28 @@ export function ActivityFormBody({
               label="Target"
               value={actionCategory}
               options={[
-                { label: 'App Advisor', value: 'app_advisor' },
+                { label: ORCHESTRATOR_LABEL, value: 'app_advisor' },
                 { label: 'Project', value: 'workspace' },
+                { label: 'No project', value: 'global' },
               ]}
               onChange={handleActionCategoryChange}
               testId="automations-form-action-type"
               disabled={destinationOnlyEdit}
             />
+            {isGlobalPipeline && (
+              <div
+                className="flex flex-col gap-1 text-xs fg-secondary"
+                data-testid="automations-form-global-owner"
+              >
+                <span className="fg-primary">Owner: {ownerLabel}</span>
+                <span>Runs without a project. Uses this workflow’s owner.</span>
+              </div>
+            )}
             <AutomationAuthorTargetRequirement
               action={buildAction(state).action}
               requirement={state.targetRequirement}
               installed={state.installed}
+              onStatusChange={setPipelineTargetStatus}
               onChange={(contexts): void =>
                 onChange({
                   ...state,
@@ -1290,9 +1419,35 @@ export function ActivityFormBody({
                   />
                 )}
                 {runInControls}
+                {state.actionType === 'worktree_pipeline' &&
+                  selectedProject && (
+                    <AutomationPipelineTargetFields
+                      projectKind={selectedIsCowork ? 'cowork' : 'code'}
+                      value={pipelineRunIn}
+                      onChange={(kind): void =>
+                        onChange(
+                          applyPipelineRunInSelection(
+                            state,
+                            kind,
+                            pipelineRunIn,
+                          ),
+                        )
+                      }
+                      taskId={state.pipelineTaskId}
+                      tasks={pipelineTasks}
+                      onTaskChange={(taskId): void =>
+                        onChange({ ...state, pipelineTaskId: taskId })
+                      }
+                      onRetryTasks={pipelineTaskList.retry}
+                      disabled={saving}
+                      testIdPrefix="automations-form"
+                    />
+                  )}
                 {selectedProject &&
                   chatRunMode !== 'existing_chat' &&
-                  !selectedIsCowork && (
+                  !selectedIsCowork &&
+                  (state.actionType !== 'worktree_pipeline' ||
+                    pipelineRunIn === 'new_worktree') && (
                     <Field label={`Base ${WORKTREE_UNIT_LABEL}`}>
                       <SearchableSelect
                         value={state.baseWorktreeId}
@@ -1442,91 +1597,111 @@ export function ActivityFormBody({
                   )}
               </Field>
             )}
-            {state.actionType === 'worktree_pipeline' && selectedProject && (
-              <>
-                <Field label="Pipeline">
-                  <div className="rounded-md border bg-base p-2">
-                    {state.pipelineId ? (
-                      <div className="mb-2 min-w-0">
-                        <div className="truncate text-s font-medium fg-primary">
-                          {state.pipelineName || state.pipelineId}
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-2xs fg-secondary">
-                          {state.pipelineSource && (
-                            <span className="rounded bg-fg-primary/[0.06] px-1.5 py-0.5">
-                              {state.pipelineSource}
-                            </span>
-                          )}
-                          {state.repoId && (
-                            <span className="rounded bg-fg-primary/[0.06] px-1.5 py-0.5">
-                              {state.repoId}
-                            </span>
-                          )}
-                          <span>
-                            {state.pipelineInputs.length === 1
-                              ? '1 input'
-                              : `${state.pipelineInputs.length} inputs`}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mb-2 text-xs fg-secondary">
-                        {!state.workspaceId
-                          ? 'Select a project to load pipelines.'
-                          : 'Select a dispatch pipeline and configure its inputs.'}
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      disabled={
-                        !state.workspaceId ||
-                        (isCoworkPipeline ? !coworkRootCwd : !baseWorktree)
-                      }
-                      onClick={(): void => setPipelinePickerOpen(true)}
-                      data-testid="automations-form-pipeline"
-                      className="focus-ring rounded-md border px-2.5 py-1.5 text-xs font-medium fg-primary transition hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {state.pipelineId ? 'Change pipeline' : 'Select pipeline'}
-                    </button>
-                    {modelAliasBlockingError && (
-                      <div
-                        role="alert"
-                        data-testid="automations-form-model-alias-error"
-                        className="mt-2 rounded-md border border-line-destructive/40 bg-destructive-subtle px-2 py-1.5 text-xs fg-primary"
-                      >
-                        {modelAliasBlockingError}
-                      </div>
-                    )}
-                  </div>
+            {actionTypeTakesPipelineDependencies(state.actionType) &&
+              (state.actionType === 'app_advisor_prompt' || selectedProject) &&
+              !formReadOnly && (
+                <Field label="Pipelines" as="div">
+                  <AutomationPipelineDependenciesField
+                    value={state.pipelineDependencies ?? []}
+                    disabled={saving}
+                    onChange={(pipelineDependencies) =>
+                      onFieldChange({ ...state, pipelineDependencies })
+                    }
+                  />
                 </Field>
-                {state.pipelineInputs.length > 0 && (
-                  <Field label="Inputs">
-                    <div
-                      className="space-y-1 rounded-md border bg-fg-primary/[0.02] p-2"
-                      data-testid="automations-form-pipeline-inputs"
-                    >
-                      {state.pipelineInputs.map((row) => (
-                        <div
-                          key={row.key}
-                          className="grid grid-cols-[minmax(0,0.4fr)_minmax(0,0.6fr)] gap-2 text-xs"
-                        >
-                          <span className="truncate fg-secondary">
-                            {row.key}
-                          </span>
-                          <span
-                            // Input values can carry the automation's prompt;
-                            // keys stay recorded.
-                            className={`${POSTHOG_REPLAY_BLOCK_CLASS} truncate fg-primary`}
-                          >
-                            {row.value || '(empty)'}
-                          </span>
+              )}
+            {state.actionType === 'worktree_pipeline' &&
+              (selectedProject || isGlobalPipeline) && (
+                <>
+                  <Field label="Workflow">
+                    <div className="rounded-md border bg-base p-2">
+                      {state.pipelineId ? (
+                        <div className="mb-2 min-w-0">
+                          <div className="truncate text-s font-medium fg-primary">
+                            {state.pipelineName || state.pipelineId}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-2xs fg-secondary">
+                            {state.pipelineSource && (
+                              <span className="rounded bg-fg-primary/[0.06] px-1.5 py-0.5">
+                                {state.pipelineSource}
+                              </span>
+                            )}
+                            {state.repoId && (
+                              <span className="rounded bg-fg-primary/[0.06] px-1.5 py-0.5">
+                                {state.repoId}
+                              </span>
+                            )}
+                            <span>
+                              {state.pipelineInputs.length === 1
+                                ? '1 input'
+                                : `${state.pipelineInputs.length} inputs`}
+                            </span>
+                          </div>
                         </div>
-                      ))}
+                      ) : (
+                        <div className="mb-2 text-xs fg-secondary">
+                          {!state.workspaceId && !isGlobalPipeline
+                            ? 'Select a project to load workflows.'
+                            : 'Select a dispatch workflow and configure its inputs.'}
+                        </div>
+                      )}
+                      <Button
+                        size="compact"
+                        disabled={
+                          !isGlobalPipeline &&
+                          (!state.workspaceId ||
+                            (isCoworkPipeline
+                              ? !coworkRootCwd
+                              : !codeProjectFolderCwd &&
+                                !pipelineDiscoveryWorktreeId &&
+                                !codeProjectFolderRepoChoices?.length))
+                        }
+                        onClick={(): void => setPipelinePickerOpen(true)}
+                        data-testid="automations-form-pipeline"
+                      >
+                        {state.pipelineId
+                          ? 'Change workflow'
+                          : 'Select workflow'}
+                      </Button>
+                      {modelAliasBlockingError && (
+                        <div
+                          role="alert"
+                          data-testid="automations-form-model-alias-error"
+                          className="mt-2 rounded-md border border-line-destructive/40 bg-destructive-subtle px-2 py-1.5 text-xs fg-primary"
+                        >
+                          {modelAliasBlockingError}
+                        </div>
+                      )}
                     </div>
                   </Field>
-                )}
-              </>
-            )}
+                  {state.pipelineInputs.length > 0 && (
+                    <Field label="Inputs">
+                      <div
+                        className="space-y-1 rounded-md border bg-fg-primary/[0.02] p-2"
+                        data-testid="automations-form-pipeline-inputs"
+                      >
+                        {state.pipelineInputs.map((row) => (
+                          <div
+                            key={row.key}
+                            className="grid grid-cols-[minmax(0,0.4fr)_minmax(0,0.6fr)] gap-2 text-xs"
+                          >
+                            <span className="truncate fg-secondary">
+                              {row.key}
+                            </span>
+                            <span
+                              // Input values can carry the automation's prompt;
+                              // keys stay recorded.
+                              className={`${POSTHOG_REPLAY_BLOCK_CLASS} truncate fg-primary`}
+                            >
+                              {row.value || '(empty)'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </Field>
+                  )}
+                </>
+              )}
           </>
         )}
       </div>
@@ -1572,19 +1747,31 @@ export function ActivityFormBody({
         <PipelineTriggerModal
           triggerType="dispatch"
           labels={{
-            title: 'Select dispatch pipeline',
-            selectSubtitle: 'Select a pipeline with dispatch trigger',
-            emptyMessage: 'No pipelines with dispatch trigger found',
+            title: 'Select dispatch workflow',
+            selectSubtitle: 'Select a workflow with dispatch trigger',
+            emptyMessage:
+              'No compatible workflows. Choose another destination or create a compatible workflow.',
           }}
-          cwd={isCoworkPipeline ? coworkRootCwd : pipelineWorktreeContext.cwd}
+          // A pipeline with no project discovers no project pipelines.
+          cwd={
+            isGlobalPipeline
+              ? undefined
+              : isCoworkPipeline
+                ? coworkRootCwd
+                : (codeProjectFolderCwd ?? pipelineWorktreeContext.cwd)
+          }
           repoChoices={
-            isCoworkPipeline ? [] : pipelineWorktreeContext.repoChoices
+            isGlobalPipeline || isCoworkPipeline
+              ? []
+              : (codeProjectFolderRepoChoices ??
+                pipelineWorktreeContext.repoChoices)
           }
           defaultRepoId={state.repoId || undefined}
-          executionScope={isCoworkPipeline ? 'directory' : 'worktree'}
+          onRepoChange={setPickerRepoId}
+          executionScope={pipelineExecutionScope}
           onClose={(): void => setPipelinePickerOpen(false)}
           onRun={applyPipelineSelection}
-          runLabel="Use pipeline"
+          runLabel="Use workflow"
           ownerDocument={ownerDocument}
         />
       )}
@@ -1647,7 +1834,7 @@ function SegmentedControl<T extends string>({
             disabled={disabled}
             data-testid={`${testId}-${option.value}`}
             onClick={(): void => onChange(option.value)}
-            className={`focus-ring rounded px-2.5 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`focus-ring rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               value === option.value
                 ? 'bg-card fg-primary'
                 : 'fg-secondary hover:fg-primary'

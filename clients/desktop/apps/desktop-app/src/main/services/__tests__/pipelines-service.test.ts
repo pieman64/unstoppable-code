@@ -1,7 +1,8 @@
 import * as hostPaths from '../../lib/paths';
-const mockGetSharedPipelineSaveImpact = jest.fn(() =>
-  Promise.resolve({ automations: [] }),
-);
+const mockGetSharedPipelineSaveImpact = jest.fn<
+  Promise<{ automations: Array<{ id: string; name: string; kind: string }> }>,
+  [remoteId: string]
+>(() => Promise.resolve({ automations: [] }));
 jest.mock('../../pipelines/shared-pipeline-save-impact', () => ({
   getSharedPipelineSaveImpact: (remoteId: string): Promise<unknown> =>
     mockGetSharedPipelineSaveImpact(remoteId),
@@ -16,7 +17,11 @@ import type {
   PersistedChatTab,
   PortalEventEnvelope,
 } from '@canopy/desktop-shared/types';
-import type { SharedPipelineSummary } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  PipelineInfo,
+  SharedPipelineDetail,
+  SharedPipelineSummary,
+} from '@canopy/desktop-shared/types/pipeline';
 import { PORTAL_EVENT_BATCH_MAX_BYTES } from '@canopy/protocol/portal';
 import type { PortalPipelineRunPayload } from '@canopy/protocol/portal';
 import {
@@ -34,6 +39,7 @@ import {
   retryPipeline,
   runPipeline,
   preparePipelineChatFollowUp,
+  readPipelineContent,
   getPortalExistingPipelineShare,
   sharePortalPipeline,
   stateToPortalRun,
@@ -94,6 +100,9 @@ import {
 } from '../../canopy-tools/worktree-actions';
 import { pinOrgProjectsFlagOff } from '../../__tests__/helpers/org-projects-flag';
 import { resourceContextEnabled } from '../../lib/resource-context';
+type SharedPipelineListPayload = Awaited<
+  ReturnType<typeof listSharedPipelines>
+>;
 jest.mock('../../lib/resource-context', () => ({
   resourceContextEnabled: jest.fn(() => false),
 }));
@@ -145,6 +154,14 @@ jest.mock('../../pipelines/canopy-server-client', () => ({
   updateSharedPipeline: jest.fn(),
 }));
 
+// CAN-4551: the user pipelines live automations own.
+const mockOwnedPipelineIds = jest.fn(
+  (): Promise<ReadonlySet<string>> => Promise.resolve(new Set()),
+);
+jest.mock('../../automations/owned-pipeline', () => ({
+  automationOwnedPipelineIds: (): Promise<ReadonlySet<string>> =>
+    mockOwnedPipelineIds(),
+}));
 jest.mock('../../pipelines/pipeline-service', () => ({
   writePipelineRemoteMetadata: jest.fn(() => ({ success: true })),
   writeProjectPipelineRemoteMetadata: jest.fn(() => ({ success: true })),
@@ -272,10 +289,13 @@ const mockChatStateService = {
 // unrelated Portal chat projections are stubbed.
 jest.mock('../chat-service', () => ({
   projectAppAdvisorChatSummaries: jest.fn(() => Promise.resolve()),
+  projectAppAdvisorChatSummariesStrict: jest.fn(() => Promise.resolve()),
   projectAppAdvisorChatSummaryRemovals: jest.fn(),
   projectWorktreeChatSummaries: jest.fn(() => Promise.resolve()),
+  projectWorktreeChatSummariesStrict: jest.fn(() => Promise.resolve()),
   projectWorktreeChatSummaryRemovals: jest.fn(),
   projectWorktreeChatTodos: jest.fn(() => Promise.resolve()),
+  projectWorktreeChatTodosStrict: jest.fn(() => Promise.resolve()),
   projectWorktreeChatTodoRemovals: jest.fn(),
 }));
 jest.mock('../../portal/adapters/mcp-adapter', () => ({
@@ -329,13 +349,58 @@ const mockedRetryExecution = jest.mocked(retryExecution);
 const actualFsPromises =
   jest.requireActual<typeof fsPromises>('node:fs/promises');
 
-function makeState(logFile: string): ExecutionState {
+function makePipelineInfo(overrides: Partial<PipelineInfo>): PipelineInfo {
   return {
+    id: 'pipeline',
+    name: 'Pipeline',
+    filename: 'pipeline.yaml',
+    description: '',
+    icon: '',
+    createdAt: '',
+    updatedAt: '',
+    source: 'project',
+    readonly: true,
+    ...overrides,
+  };
+}
+
+function sharedPipelineList(
+  data: SharedPipelineListPayload['data'],
+): SharedPipelineListPayload {
+  return { data, nextCursor: null };
+}
+
+function makeSharedPipelineDetail(
+  overrides: Partial<SharedPipelineDetail> = {},
+): SharedPipelineDetail {
+  return {
+    id: 'remote-1',
+    name: 'Ship it',
+    description: '',
+    icon: '',
+    version: '1',
+    triggerTypes: ['dispatch'],
+    createdBy: { id: 'user-1', name: 'User' },
+    shareScope: 'organization',
+    owner: { type: 'organization', id: 'org-1', name: 'Organization' },
+    createdAt: '',
+    updatedAt: '',
+    canUpdate: false,
+    canDelete: false,
+    rawPipeline: 'name: Ship it\njobs: {}',
+    contentHash: 'content-hash',
+    ...overrides,
+  };
+}
+
+function makeState(logFile: string): ExecutionState {
+  const state: ExecutionState = {
     version: 4,
     id: 'exec-1',
     pipeline_id: 'pipe-1',
     pipeline_snapshot: {
       name: 'Pipeline',
+      scope: ['directory'],
       jobs: {
         'job-1': {
           name: 'Build',
@@ -373,16 +438,23 @@ function makeState(logFile: string): ExecutionState {
         iteration_count: 1,
       },
     },
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
     started_at: '2026-05-06T00:00:00.000Z',
     cwd: '/tmp',
     project_id: 'ws-1',
     worktree_id: 'wt-1',
     env: {},
     inputs: {},
-    trigger_inputs: {},
-    execution_source: 'local',
     report_outputs: {},
-  } as ExecutionState;
+  };
+  // Preserve legacy fields in these v4 fixtures without widening the current
+  // ExecutionState contract.
+  Reflect.set(state, 'trigger_inputs', {});
+  Reflect.set(state, 'execution_source', 'local');
+  return state;
 }
 
 async function waitForEventCount(
@@ -463,7 +535,7 @@ describe('pipelines service portal projection', () => {
     resetSharedPipelineListCacheForTests();
     // `clearAllMocks` clears calls, not implementations, so the stored-pipeline
     // mocks are re-defaulted to "no bundled or user pipelines" per test.
-    mockedListSharedPipelines.mockResolvedValue({ data: [] });
+    mockedListSharedPipelines.mockResolvedValue(sharedPipelineList([]));
     mockedGetPackageReadiness.mockResolvedValue({
       status: 'ready',
       requirements: [],
@@ -556,11 +628,18 @@ describe('pipelines service portal projection', () => {
         .mockResolvedValue({
           authority: 'ok',
           ownerMalformed: false,
+          memoryMalformed: false,
           config: {
             version: 1,
             type: 'single-repo',
             repos: [],
-            owner: { type: 'organization', organizationId: 'org-a' },
+            owner: {
+              type: 'organization',
+              organizationId: 'org-a',
+              projectId: 'project-a',
+              instanceId: 'instance-a',
+              bindingGeneration: 1,
+            },
           },
         });
       jest
@@ -570,17 +649,21 @@ describe('pipelines service portal projection', () => {
             organization
               ? Promise.resolve()
               : Promise.reject(
-                  new Error('Pipeline unavailable (context-mismatch)'),
+                  new Error('Workflow unavailable (context-mismatch)'),
                 ),
         );
       mockedReadAllSidebarItems.mockResolvedValue({
+        version: 1,
         items: [
           {
             id: 'ws-1',
             type: 'single-repo',
             name: 'Org checkout',
             repoPath: dir,
+            color: '',
             worktrees: [],
+            collapsed: false,
+            order: 0,
           },
         ],
       });
@@ -595,15 +678,17 @@ describe('pipelines service portal projection', () => {
       });
       // Live target resolution uses the host checkout path.
       mockedReadAllSidebarItems.mockResolvedValue({
+        version: 1,
         items: [
           {
             id: 'ws-1',
             type: 'single-repo',
             name: 'Org checkout',
             repoPath: dir,
-            worktrees: [
-              { id: 'wt-1', path: dir, branch: 'main', createdAt: '' },
-            ],
+            color: '',
+            worktrees: [{ id: 'wt-1', branchName: 'main', createdAt: '' }],
+            collapsed: false,
+            order: 0,
           },
         ],
       });
@@ -661,14 +746,15 @@ describe('pipelines service portal projection', () => {
         icon: '',
         version: '1',
         triggerTypes: ['dispatch'],
-        createdBy: { id: 'user-a', name: null },
+        createdBy: { id: 'user-a', name: 'User A' },
         createdAt: '',
         updatedAt: '',
         canUpdate: false,
         canDelete: false,
         rawPipeline: 'name: Stored',
+        contentHash: 'hash',
         shareScope: 'organization',
-        owner: { type: 'organization', id: 'org-a', name: null },
+        owner: { type: 'organization', id: 'org-a', name: 'Org A' },
       });
       // Active Org A permits the row; a Personal execution target must still exclude it.
       jest
@@ -676,7 +762,7 @@ describe('pipelines service portal projection', () => {
         .mockImplementation((_resource, projectId): Promise<void> => {
           if (enabled && projectId === 'personal')
             return Promise.reject(
-              new Error('Pipeline unavailable (context-mismatch)'),
+              new Error('Workflow unavailable (context-mismatch)'),
             );
           return Promise.resolve();
         });
@@ -695,15 +781,17 @@ describe('pipelines service portal projection', () => {
         truncated: false,
       });
       mockedReadAllSidebarItems.mockResolvedValue({
+        version: 1,
         items: [
           {
             id: target,
             name: 'Target',
             type: 'single-repo',
             repoPath: dir,
-            worktrees: [
-              { id: 'wt-1', path: dir, branch: 'main', createdAt: '' },
-            ],
+            color: '',
+            worktrees: [{ id: 'wt-1', branchName: 'main', createdAt: '' }],
+            collapsed: false,
+            order: 0,
           },
         ],
       });
@@ -723,6 +811,26 @@ describe('pipelines service portal projection', () => {
   );
 
   describe('shared cloud pipelines (CAN-3021)', () => {
+    function teamPipelineOwner(): NonNullable<SharedPipelineSummary['owner']> {
+      const owner: NonNullable<SharedPipelineSummary['owner']> = {
+        type: 'organization',
+        id: 't-1',
+        name: 'Platform',
+      };
+      // Keep the team-owner wire shape exercised by this legacy fixture even
+      // though the current shared-summary type only accepts organization owners.
+      if (
+        !Reflect.set(owner, 'organization', {
+          id: 'org-1',
+          name: 'Example Org',
+        }) ||
+        !Reflect.set(owner, 'type', 'team')
+      ) {
+        throw new Error('Could not construct the team pipeline owner fixture.');
+      }
+      return owner;
+    }
+
     function sharedRow(
       overrides: Partial<SharedPipelineSummary> = {},
     ): SharedPipelineSummary {
@@ -735,7 +843,7 @@ describe('pipelines service portal projection', () => {
         triggerTypes: ['plan_ready'],
         createdBy: { id: 'u-1', name: 'Ada' },
         shareScope: 'team',
-        owner: { type: 'team', id: 't-1', name: 'Platform' },
+        owner: teamPipelineOwner(),
         createdAt: '2026-05-06T00:00:00.000Z',
         updatedAt: '2026-05-06T00:00:00.000Z',
         canUpdate: false,
@@ -767,6 +875,17 @@ describe('pipelines service portal projection', () => {
       '      - run: echo hi',
     ].join('\n');
 
+    function sharedDetail(
+      overrides: Partial<SharedPipelineDetail> = {},
+    ): SharedPipelineDetail {
+      return {
+        ...sharedRow(),
+        rawPipeline: SHARED_RAW_PIPELINE,
+        contentHash: 'content-hash',
+        ...overrides,
+      };
+    }
+
     beforeEach(() => {
       mockedDiscoverProjectPipelinesBounded.mockResolvedValue({
         pipelines: [],
@@ -777,6 +896,7 @@ describe('pipelines service portal projection', () => {
     it('appends shared rows to the live list with a shared origin and id', async () => {
       mockedListSharedPipelines.mockResolvedValue({
         data: [sharedRow(), sharedRow({ id: 'remote-2', name: 'Hotfix' })],
+        nextCursor: null,
       });
 
       const pipelines = await listPipelines({ projectId: 'ws-1' });
@@ -812,6 +932,7 @@ describe('pipelines service portal projection', () => {
         data: Array.from({ length: 60 }, (_unused, index) =>
           sharedRow({ id: `remote-${index}` }),
         ),
+        nextCursor: null,
       });
 
       const result = await listPipelinesStrict({
@@ -840,7 +961,9 @@ describe('pipelines service portal projection', () => {
       const check = jest
         .spyOn(pipelineResourceLanes, 'assertPipelineContextSnapshot')
         .mockResolvedValue();
-      mockedListSharedPipelines.mockResolvedValue({ data: [sharedRow()] });
+      mockedListSharedPipelines.mockResolvedValue(
+        sharedPipelineList([sharedRow()]),
+      );
       try {
         const first = await listPipelinesStrict({
           workspaceLocalId: 'ws-1',
@@ -865,7 +988,9 @@ describe('pipelines service portal projection', () => {
     it('fetches once per sync pass and stamps each target', async () => {
       // One pass walks every worktree; repeating the identical account-scoped
       // cloud read per worktree is what the memo exists to stop.
-      mockedListSharedPipelines.mockResolvedValue({ data: [sharedRow()] });
+      mockedListSharedPipelines.mockResolvedValue(
+        sharedPipelineList([sharedRow()]),
+      );
 
       const [first, second] = await Promise.all([
         listPipelinesStrict({
@@ -934,7 +1059,7 @@ describe('pipelines service portal projection', () => {
 
     it('fails every worktree after a Personal shared read context mismatch', async () => {
       mockedListSharedPipelines.mockRejectedValue(
-        new Error('Pipeline unavailable (context-mismatch)'),
+        new Error('Workflow unavailable (context-mismatch)'),
       );
 
       await expect(
@@ -976,6 +1101,7 @@ describe('pipelines service portal projection', () => {
       });
       mockedListSharedPipelines.mockResolvedValue({
         data: [sharedRow({ description: 'd'.repeat(40 * 1024) })],
+        nextCursor: null,
       });
 
       const result = await listPipelinesStrict({
@@ -995,23 +1121,24 @@ describe('pipelines service portal projection', () => {
     });
 
     it('getPipeline hydrates a shared row plan_ready inputs', async () => {
-      mockedGetSharedPipeline.mockResolvedValue({
-        ...sharedRow(),
-        rawPipeline: [
-          'name: Ship it',
-          'on:',
-          '  plan_ready:',
-          '    inputs:',
-          '      environment:',
-          '        type: choice',
-          '        required: true',
-          '        options: [staging, production]',
-          'jobs:',
-          '  build:',
-          '    steps:',
-          '      - run: echo hi',
-        ].join('\n'),
-      });
+      mockedGetSharedPipeline.mockResolvedValue(
+        sharedDetail({
+          rawPipeline: [
+            'name: Ship it',
+            'on:',
+            '  plan_ready:',
+            '    inputs:',
+            '      environment:',
+            '        type: choice',
+            '        required: true',
+            '        options: [staging, production]',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: echo hi',
+          ].join('\n'),
+        }),
+      );
 
       const result = await getPipeline({
         pipelineId: 'shared:canopy-cloud:remote-1',
@@ -1042,18 +1169,19 @@ describe('pipelines service portal projection', () => {
     });
 
     it('runPipeline dispatches a shared id with sharedPipeline and no file path', async () => {
-      mockedGetSharedPipeline.mockResolvedValue({
-        ...sharedRow(),
-        rawPipeline: [
-          'name: Ship it',
-          'on:',
-          '  plan_ready: {}',
-          'jobs:',
-          '  build:',
-          '    steps:',
-          '      - run: echo hi',
-        ].join('\n'),
-      });
+      mockedGetSharedPipeline.mockResolvedValue(
+        sharedDetail({
+          rawPipeline: [
+            'name: Ship it',
+            'on:',
+            '  plan_ready: {}',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: echo hi',
+          ].join('\n'),
+        }),
+      );
       const state = makeState(join(dir, 'step.log'));
       mockedStartPipelineExecutionFromMain.mockResolvedValue({
         success: true,
@@ -1083,10 +1211,9 @@ describe('pipelines service portal projection', () => {
 
     describe('runPipeline Codex speed', () => {
       function mockSharedRun(): void {
-        mockedGetSharedPipeline.mockResolvedValue({
-          ...sharedRow(),
-          rawPipeline: SHARED_RAW_PIPELINE,
-        });
+        mockedGetSharedPipeline.mockResolvedValue(
+          sharedDetail({ rawPipeline: SHARED_RAW_PIPELINE }),
+        );
         const state = makeState(join(dir, 'step.log'));
         mockedStartPipelineExecutionFromMain.mockResolvedValue({
           success: true,
@@ -1150,12 +1277,12 @@ describe('pipelines service portal projection', () => {
         [
           'Ultra fast',
           { modelConfig: { speed: 'ultrafast' } },
-          'Pipelines do not support Ultra fast. Choose Regular or Fast.',
+          'Workflows do not support Ultra fast. Choose Regular or Fast.',
         ],
         [
           'Ultra fast beside its derived boolean',
           { modelConfig: { speed: 'ultrafast', fastMode: false } },
-          'Pipelines do not support Ultra fast. Choose Regular or Fast.',
+          'Workflows do not support Ultra fast. Choose Regular or Fast.',
         ],
         [
           'a speed that contradicts its boolean',
@@ -1193,18 +1320,27 @@ describe('pipelines service portal projection', () => {
     it('runPipeline refuses before anything starts when the package is not ready', async () => {
       // Only a `package` share can be blocked on local setup, so the detail
       // that carries `distributionMode` is fetched first and drives the gate.
-      mockedGetSharedPipeline.mockResolvedValue({
-        ...sharedRow(),
-        distributionMode: 'package',
-        rawPipeline: SHARED_RAW_PIPELINE,
-      });
+      mockedGetSharedPipeline.mockResolvedValue(
+        sharedDetail({
+          distributionMode: 'package',
+          rawPipeline: SHARED_RAW_PIPELINE,
+        }),
+      );
       mockedGetSharedPackageReadinessFromDetail.mockResolvedValue({
         status: 'ready',
         distributionMode: 'package',
         requirements: [
-          { id: 'node', label: 'Node', required: true, status: 'missing' },
+          {
+            id: 'node',
+            kind: 'runtime',
+            displayName: 'Node',
+            required: true,
+            affectedSteps: [],
+            setupHint: 'Install Node.js.',
+            status: 'missing',
+          },
         ],
-      } as Awaited<ReturnType<typeof getSharedPackageReadinessFromDetail>>);
+      });
 
       await expect(
         runPipeline({
@@ -1217,7 +1353,7 @@ describe('pipelines service portal projection', () => {
       ).rejects.toMatchObject({
         code: 'invalid_payload',
         message:
-          'This pipeline needs setup finished in the desktop app before it can run.',
+          'This workflow needs setup finished in the desktop app before it can run.',
       });
       expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();
       // The detail is fetched once and handed to readiness directly. The
@@ -1233,11 +1369,12 @@ describe('pipelines service portal projection', () => {
     it('runPipeline refuses a package share when the readiness probe throws', async () => {
       // This is the terminal decision — there is no re-render to correct it
       // later — so a probe that failed must not read as "ready".
-      mockedGetSharedPipeline.mockResolvedValue({
-        ...sharedRow(),
-        distributionMode: 'package',
-        rawPipeline: SHARED_RAW_PIPELINE,
-      });
+      mockedGetSharedPipeline.mockResolvedValue(
+        sharedDetail({
+          distributionMode: 'package',
+          rawPipeline: SHARED_RAW_PIPELINE,
+        }),
+      );
       mockedGetSharedPackageReadinessFromDetail.mockRejectedValue(
         new Error('probe failed'),
       );
@@ -1253,7 +1390,7 @@ describe('pipelines service portal projection', () => {
       ).rejects.toMatchObject({
         code: 'invalid_payload',
         message:
-          'This pipeline needs setup finished in the desktop app before it can run.',
+          'This workflow needs setup finished in the desktop app before it can run.',
       });
       expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();
     });
@@ -1264,16 +1401,17 @@ describe('pipelines service portal projection', () => {
       // whenever packaging is unsupported. Gating on readiness alone refused
       // every plain shared pipeline with a message naming setup that does not
       // exist for it, which made the whole Remote Control feature unusable.
-      mockedGetSharedPipeline.mockResolvedValue({
-        ...sharedRow(),
-        distributionMode: 'definition_only',
-        rawPipeline: SHARED_RAW_PIPELINE,
-      });
+      mockedGetSharedPipeline.mockResolvedValue(
+        sharedDetail({
+          distributionMode: 'definition_only',
+          rawPipeline: SHARED_RAW_PIPELINE,
+        }),
+      );
       mockedGetSharedPackageReadinessFromDetail.mockResolvedValue({
         status: 'invalid',
         distributionMode: 'definition_only',
         requirements: [],
-      } as Awaited<ReturnType<typeof getSharedPackageReadinessFromDetail>>);
+      });
       const state = makeState(join(dir, 'step.log'));
       mockedStartPipelineExecutionFromMain.mockResolvedValue({
         success: true,
@@ -1329,7 +1467,9 @@ describe('pipelines service portal projection', () => {
       // These rows are stamped onto every worktree document and uploaded under
       // the CURRENT session. A memo filled by the previous account would
       // publish its pipeline names and descriptions under the new identity.
-      mockedListSharedPipelines.mockResolvedValue({ data: [sharedRow()] });
+      mockedListSharedPipelines.mockResolvedValue(
+        sharedPipelineList([sharedRow()]),
+      );
 
       await listPipelinesStrict({
         workspaceLocalId: 'ws-1',
@@ -1350,6 +1490,7 @@ describe('pipelines service portal projection', () => {
       emitCanopyCloudAccountChange();
       mockedListSharedPipelines.mockResolvedValue({
         data: [sharedRow({ id: 'remote-b', name: 'Other account pipeline' })],
+        nextCursor: null,
       });
 
       const after = await listPipelinesStrict({
@@ -1372,7 +1513,7 @@ describe('pipelines service portal projection', () => {
       // same cross-account leak the subscription exists to prevent, one step
       // later.
       let releaseFirst:
-        | ((value: { data: SharedPipelineSummary[] }) => void)
+        | ((value: SharedPipelineListPayload) => void)
         | undefined;
       mockedListSharedPipelines.mockReturnValueOnce(
         new Promise((resolve) => {
@@ -1392,12 +1533,14 @@ describe('pipelines service portal projection', () => {
       emitCanopyCloudAccountChange();
       releaseFirst?.({
         data: [sharedRow({ name: 'Previous account pipeline' })],
+        nextCursor: null,
       });
       await inFlight;
 
       // The next read must go back to the cloud rather than serve the memo...
       mockedListSharedPipelines.mockResolvedValue({
         data: [sharedRow({ id: 'remote-b', name: 'Current account pipeline' })],
+        nextCursor: null,
       });
       const after = await listPipelinesStrict({
         workspaceLocalId: 'ws-1',
@@ -1436,7 +1579,9 @@ describe('pipelines service portal projection', () => {
       rejectFirst?.(new Error('offline'));
       await inFlight;
 
-      mockedListSharedPipelines.mockResolvedValue({ data: [sharedRow()] });
+      mockedListSharedPipelines.mockResolvedValue(
+        sharedPipelineList([sharedRow()]),
+      );
       const after = await listPipelinesStrict({
         workspaceLocalId: 'ws-1',
         worktreeLocalId: 'wt-2',
@@ -1453,6 +1598,7 @@ describe('pipelines service portal projection', () => {
       // pipelines the reader cannot see.
       mockedListSharedPipelines.mockResolvedValue({
         data: [sharedRow({ description: 'd'.repeat(600 * 1024) })],
+        nextCursor: null,
       });
 
       const result = await listPipelinesStrict({
@@ -1503,6 +1649,7 @@ describe('pipelines service portal projection', () => {
           sharedRow({ id: 'a'.repeat(129), name: 'Too long' }),
           sharedRow({ id: 'remote-ok', name: 'Addressable' }),
         ],
+        nextCursor: null,
       });
 
       const result = await listPipelinesStrict({
@@ -1519,19 +1666,20 @@ describe('pipelines service portal projection', () => {
       // This path exists only to hydrate a plan-picker row, and only
       // plan_ready shares are listed — so it must not read back the definition
       // of any other cloud pipeline the account can see.
-      mockedGetSharedPipeline.mockResolvedValue({
-        ...sharedRow(),
-        distributionMode: 'definition_only',
-        rawPipeline: [
-          'name: Ship it',
-          'on:',
-          '  dispatch: {}',
-          'jobs:',
-          '  build:',
-          '    steps:',
-          '      - run: echo hi',
-        ].join('\n'),
-      });
+      mockedGetSharedPipeline.mockResolvedValue(
+        sharedDetail({
+          distributionMode: 'definition_only',
+          rawPipeline: [
+            'name: Ship it',
+            'on:',
+            '  dispatch: {}',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: echo hi',
+          ].join('\n'),
+        }),
+      );
 
       await expect(
         getPipeline({
@@ -1547,19 +1695,20 @@ describe('pipelines service portal projection', () => {
       // only plan_ready pipelines are ever listed — so without this check a
       // dispatch that omits eventName could run ANY cloud pipeline the
       // account can read.
-      mockedGetSharedPipeline.mockResolvedValue({
-        ...sharedRow(),
-        distributionMode: 'definition_only',
-        rawPipeline: [
-          'name: Ship it',
-          'on:',
-          '  dispatch: {}',
-          'jobs:',
-          '  build:',
-          '    steps:',
-          '      - run: echo hi',
-        ].join('\n'),
-      });
+      mockedGetSharedPipeline.mockResolvedValue(
+        sharedDetail({
+          distributionMode: 'definition_only',
+          rawPipeline: [
+            'name: Ship it',
+            'on:',
+            '  dispatch: {}',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: echo hi',
+          ].join('\n'),
+        }),
+      );
 
       await expect(
         runPipeline({
@@ -1569,7 +1718,7 @@ describe('pipelines service portal projection', () => {
         }),
       ).rejects.toMatchObject({
         code: 'invalid_payload',
-        message: 'The selected pipeline does not support plan_ready.',
+        message: 'The selected workflow does not support plan_ready.',
       });
       expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();
     });
@@ -1653,13 +1802,13 @@ describe('pipelines service portal projection', () => {
       error: 'EIO',
     });
     mockedDiscoverProjectPipelines.mockResolvedValue([
-      {
+      makePipelineInfo({
         id: 'pipe-1',
         name: 'Project Pipeline',
         filename: 'pipeline.yaml',
         filePath: join(dir, 'pipeline.yaml'),
         triggerTypes: ['dispatch'],
-      },
+      }),
     ]);
 
     await expect(listPipelines({ projectId: 'ws-1' })).resolves.toMatchObject([
@@ -1716,6 +1865,51 @@ describe('pipelines service portal projection', () => {
     expect(result.pipelines).toEqual([]);
     expect(result.truncated).toBe(true);
   });
+
+  it.each([
+    { required: true, expected: true },
+    { required: true, default: false, expected: false },
+    { required: false, expected: false },
+  ])(
+    'projects dispatch input requirements: %j',
+    async ({ expected, ...input }) => {
+      mockedDiscoverProjectPipelinesBounded.mockResolvedValue({
+        pipelines: [
+          {
+            id: 'pipe-1',
+            name: 'Pipeline',
+            description: '',
+            icon: '',
+            filename: 'pipeline.yaml',
+            createdAt: '',
+            updatedAt: '',
+            filePath: join(dir, 'pipeline.yaml'),
+            source: 'project',
+            readonly: true,
+            triggerTypes: ['dispatch'],
+            scopes: ['worktree'],
+          },
+        ],
+        truncated: false,
+      });
+      mockedLoadProjectPipelineFromDisk.mockResolvedValue({
+        name: 'Pipeline',
+        on: {
+          dispatch: { inputs: { confirm: { type: 'boolean', ...input } } },
+        },
+        jobs: { 'job-1': { steps: [] } },
+      });
+      const result = await listPipelinesStrict({
+        workspaceLocalId: 'ws-1',
+        worktreeLocalId: 'wt-1',
+        cwd: dir,
+      });
+      expect(
+        result.pipelines.find((row) => row.pipelineId === 'pipe-1')
+          ?.hasRequiredInputs,
+      ).toBe(expected);
+    },
+  );
 
   it('strict listing never syncs credential-like input metadata', async () => {
     const token = 'ghp_strict_list_leak_regression_0123456789';
@@ -1799,14 +1993,14 @@ describe('pipelines service portal projection', () => {
 
   it('projects task- and plan-ready trigger metadata for the portal picker', async () => {
     mockedDiscoverProjectPipelines.mockResolvedValue([
-      {
+      makePipelineInfo({
         id: 'pipe-1',
         name: 'Pipeline',
         filename: 'pipeline.yaml',
         filePath: join(dir, 'pipeline.yaml'),
         triggerTypes: ['task_ready', 'plan_ready'],
         scopes: ['global', 'worktree'],
-      },
+      }),
     ]);
     mockedLoadProjectPipelineFromDisk.mockResolvedValue({
       name: 'Pipeline',
@@ -1879,26 +2073,31 @@ describe('pipelines service portal projection', () => {
     expect(hostPaths.getWorktreeDir).not.toHaveBeenCalledWith('ws-1', 'wt-new');
   });
 
-  it('includes bundled and user pipelines alongside project ones (CAN-3019)', async () => {
-    // Remote Control could only ever see project pipelines, so the plan
-    // dispatch picker was empty on a worktree whose plan_ready pipelines are
-    // the bundled presets and the user's own stored ones.
+  it('marks a user pipeline an automation owns, so the Portal folds it (CAN-4551)', async () => {
     mockedListStoredPipelines.mockReturnValue({
       success: true,
       data: [
         {
-          id: 'refine-plan',
-          name: 'Refine Plan',
-          filename: 'refine-plan.yaml',
-          triggerTypes: ['plan_ready'],
-          source: 'bundled',
-          readonly: true,
+          id: 'owned-1',
+          name: 'Notes',
+          filename: 'owned-1.yaml',
+          description: '',
+          icon: '',
+          createdAt: '2026-10-29T00:00:00.000Z',
+          updatedAt: '2026-10-29T00:00:00.000Z',
+          triggerTypes: ['dispatch'],
+          source: 'user',
+          readonly: false,
         },
         {
-          id: 'my-method',
-          name: "Aaron's Multi-Provider Method",
-          filename: 'my-method.yaml',
-          triggerTypes: ['plan_ready'],
+          id: 'mine',
+          name: 'Mine',
+          filename: 'mine.yaml',
+          description: '',
+          icon: '',
+          createdAt: '2026-10-29T00:00:00.000Z',
+          updatedAt: '2026-10-29T00:00:00.000Z',
+          triggerTypes: ['dispatch'],
           source: 'user',
           readonly: false,
         },
@@ -1908,14 +2107,64 @@ describe('pipelines service portal projection', () => {
       success: true,
       data: join(dir, `${id}.yaml`),
     }));
+    mockedDiscoverProjectPipelines.mockResolvedValue([]);
+    mockedLoadProjectPipelineFromDisk.mockResolvedValue({
+      name: 'Pipeline',
+      on: { dispatch: {} },
+      jobs: { 'job-1': { steps: [] } },
+    });
+    mockOwnedPipelineIds.mockResolvedValueOnce(new Set(['owned-1']));
+
+    const summaries = await listPipelines({ projectId: 'ws-1' });
+
+    expect(
+      summaries.map((summary) => [
+        summary.pipelineId,
+        summary.ownedByAutomation,
+      ]),
+    ).toEqual([
+      ['owned-1', true],
+      ['mine', undefined],
+    ]);
+  });
+
+  it('includes bundled and user pipelines alongside project ones (CAN-3019)', async () => {
+    // Remote Control could only ever see project pipelines, so the plan
+    // dispatch picker was empty on a worktree whose plan_ready pipelines are
+    // the bundled presets and the user's own stored ones.
+    mockedListStoredPipelines.mockReturnValue({
+      success: true,
+      data: [
+        makePipelineInfo({
+          id: 'refine-plan',
+          name: 'Refine Plan',
+          filename: 'refine-plan.yaml',
+          triggerTypes: ['plan_ready'],
+          source: 'bundled',
+          readonly: true,
+        }),
+        makePipelineInfo({
+          id: 'my-method',
+          name: "Aaron's Multi-Provider Method",
+          filename: 'my-method.yaml',
+          triggerTypes: ['plan_ready'],
+          source: 'user',
+          readonly: false,
+        }),
+      ],
+    });
+    mockedGetStoredPipelinePath.mockImplementation((id: string) => ({
+      success: true,
+      data: join(dir, `${id}.yaml`),
+    }));
     mockedDiscoverProjectPipelines.mockResolvedValue([
-      {
+      makePipelineInfo({
         id: 'pipe-1',
         name: 'Project Pipeline',
         filename: 'pipeline.yaml',
         filePath: join(dir, 'pipeline.yaml'),
         triggerTypes: ['plan_ready'],
-      },
+      }),
     ]);
     mockedLoadProjectPipelineFromDisk.mockResolvedValue({
       name: 'Pipeline',
@@ -1941,24 +2190,24 @@ describe('pipelines service portal projection', () => {
     mockedListStoredPipelines.mockReturnValue({
       success: true,
       data: [
-        {
+        makePipelineInfo({
           id: 'shared-id',
           name: 'Bundled version',
           filename: 'bundled.yaml',
           triggerTypes: ['plan_ready'],
           source: 'bundled',
           readonly: true,
-        },
+        }),
       ],
     });
     mockedDiscoverProjectPipelines.mockResolvedValue([
-      {
+      makePipelineInfo({
         id: 'shared-id',
         name: 'Project version',
         filename: 'pipeline.yaml',
         filePath: join(dir, 'pipeline.yaml'),
         triggerTypes: ['plan_ready'],
-      },
+      }),
     ]);
     mockedLoadProjectPipelineFromDisk.mockResolvedValue({
       name: 'Project version',
@@ -1978,13 +2227,13 @@ describe('pipelines service portal projection', () => {
 
   it('loads trigger inputs for a plan-ready-only pipeline', async () => {
     mockedDiscoverProjectPipelines.mockResolvedValue([
-      {
+      makePipelineInfo({
         id: 'pipe-1',
         name: 'Plan pipeline',
         filename: 'pipeline.yaml',
         filePath: join(dir, 'pipeline.yaml'),
         triggerTypes: ['plan_ready'],
-      },
+      }),
     ]);
     mockedLoadProjectPipelineFromDisk.mockResolvedValue({
       name: 'Plan pipeline',
@@ -2013,13 +2262,13 @@ describe('pipelines service portal projection', () => {
     'reads pipeline definition %s into the portal-safe view model without canonical YAML',
     async (pipelineId) => {
       mockedDiscoverProjectPipelines.mockResolvedValueOnce([
-        {
+        makePipelineInfo({
           id: pipelineId,
           name: 'Pipeline',
           filename: pipelineId.slice('project--'.length),
           filePath: '/repo/.canopy/pipelines/ci.yml',
           triggerTypes: ['task_ready'],
-        },
+        }),
       ]);
       const result = await getPipeline({
         projectId: 'ws-1',
@@ -2040,13 +2289,13 @@ describe('pipelines service portal projection', () => {
     const literalSecret = 'ghp_portal_pipeline_leak_regression';
     const scriptSecret = 'bearer_portal_pipeline_run_leak_regression';
     mockedDiscoverProjectPipelines.mockResolvedValueOnce([
-      {
+      makePipelineInfo({
         id: 'project--ci.yml',
         name: 'Pipeline',
         filename: 'ci.yml',
         filePath: '/repo/.canopy/pipelines/ci.yml',
         triggerTypes: ['dispatch'],
-      },
+      }),
     ]);
     mockedLoadProjectPipelineFromDisk.mockResolvedValueOnce({
       name: 'Pipeline',
@@ -2134,11 +2383,13 @@ describe('pipelines service portal projection', () => {
       success: true,
       data: {
         info: {
-          id: 'review',
-          name: 'Review',
-          filename: 'review.yaml',
-          source: 'bundled',
-          readonly: true,
+          ...makePipelineInfo({
+            id: 'review',
+            name: 'Review',
+            filename: 'review.yaml',
+            source: 'bundled',
+            readonly: true,
+          }),
         },
         content: {
           name: 'Review',
@@ -2216,7 +2467,10 @@ describe('pipelines service portal projection', () => {
         projectId: 'ws-1',
         pipelineId: 'missing',
       }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    ).rejects.toMatchObject({
+      code: 'not_found',
+      message: 'Workflow not found.',
+    });
   });
 
   it('fails closed when the pipeline project is unknown', async () => {
@@ -2324,7 +2578,9 @@ describe('pipelines service portal projection', () => {
         mockedDiscoverProjectPipelines.mockResolvedValue(
           rows.map((row) => ({ ...row, source, id: 'local-a' })),
         );
-        mockedCreateSharedPipeline.mockResolvedValue({ id: 'remote-1' });
+        mockedCreateSharedPipeline.mockResolvedValue(
+          makeSharedPipelineDetail({ id: 'remote-1' }),
+        );
         await sharePortalPipeline({
           projectId: 'ws-1',
           pipelineId: 'local-a',
@@ -2340,9 +2596,16 @@ describe('pipelines service portal projection', () => {
 
     it('uploads the pipeline YAML verbatim and returns the public link', async () => {
       await primeShareablePipeline();
-      mockedCreateSharedPipeline.mockResolvedValue({ id: 'remote-1' });
+      mockedCreateSharedPipeline.mockResolvedValue(
+        makeSharedPipelineDetail({ id: 'remote-1' }),
+      );
       mockedPublishPipelinePublicShare.mockResolvedValue({
+        externalId: 'public-1',
+        pinnedContentHash: 'content-hash',
+        upToDate: true,
         sharePath: '/portal/plugins/pipelines/shared/abc',
+        createdAt: '',
+        updatedAt: '',
       });
 
       await expect(
@@ -2410,7 +2673,7 @@ describe('pipelines service portal projection', () => {
         ).resolves.toEqual({
           sharePath: '/portal/plugins/pipelines/shared/remote-1',
           message:
-            'People using this pipeline in their automations will need to approve your changes before they run again.',
+            'People using this workflow in their automations will need to approve your changes before they run again.',
         });
 
         expect(mockedUpdateSharedPipeline).toHaveBeenCalledWith(
@@ -2447,7 +2710,9 @@ describe('pipelines service portal projection', () => {
 
     it('keeps the private copy and reports a degraded share when publishing fails', async () => {
       await primeShareablePipeline();
-      mockedCreateSharedPipeline.mockResolvedValue({ id: 'remote-1' });
+      mockedCreateSharedPipeline.mockResolvedValue(
+        makeSharedPipelineDetail({ id: 'remote-1' }),
+      );
       mockedPublishPipelinePublicShare.mockRejectedValue(new Error('nope'));
 
       const outcome = await sharePortalPipeline({
@@ -2501,13 +2766,15 @@ describe('pipelines service portal projection', () => {
         }),
       ).resolves.toEqual({
         message:
-          'Pipeline shared privately, but the public link could not be created, and people using this pipeline in their automations will need to approve your changes before they run again.',
+          'Workflow shared privately, but the public link could not be created, and people using this workflow in their automations will need to approve your changes before they run again.',
       });
     });
 
     it('scopes a team share to the named team', async () => {
       await primeShareablePipeline();
-      mockedCreateSharedPipeline.mockResolvedValue({ id: 'remote-1' });
+      mockedCreateSharedPipeline.mockResolvedValue(
+        makeSharedPipelineDetail({ id: 'remote-1' }),
+      );
 
       const outcome = await sharePortalPipeline({
         projectId: 'ws-1',
@@ -2641,11 +2908,13 @@ describe('pipelines service portal projection', () => {
       success: true,
       data: {
         info: {
-          id: 'refine-plan',
-          name: 'Refine Plan',
-          filename: 'refine-plan.yaml',
-          source: 'bundled',
-          readonly: true,
+          ...makePipelineInfo({
+            id: 'refine-plan',
+            name: 'Refine Plan',
+            filename: 'refine-plan.yaml',
+            source: 'bundled',
+            readonly: true,
+          }),
         },
         content: {
           name: 'Refine Plan',
@@ -2693,13 +2962,13 @@ describe('pipelines service portal projection', () => {
   it('runs the project pipeline locator returned by portal inventory', async () => {
     const state = makeState(join(dir, 'step.log'));
     mockedDiscoverProjectPipelines.mockResolvedValueOnce([
-      {
+      makePipelineInfo({
         id: 'project--ci.yml',
         name: 'Pipeline',
         filename: 'ci.yml',
         filePath: join(dir, 'ci.yml'),
         triggerTypes: ['dispatch'],
-      },
+      }),
     ]);
     mockedStartPipelineExecutionFromMain.mockResolvedValue({
       success: true,
@@ -2798,13 +3067,13 @@ describe('pipelines service portal projection', () => {
   it('forwards plan_ready with planId and plan_text to the executor', async () => {
     const state = makeState(join(dir, 'step.log'));
     mockedDiscoverProjectPipelines.mockResolvedValue([
-      {
+      makePipelineInfo({
         id: 'pipe-1',
         name: 'Plan pipeline',
         filename: 'pipeline.yaml',
         filePath: join(dir, 'pipeline.yaml'),
         triggerTypes: ['plan_ready'],
-      },
+      }),
     ]);
     mockedLoadProjectPipelineFromDisk.mockResolvedValue({
       name: 'Plan pipeline',
@@ -2845,13 +3114,13 @@ describe('pipelines service portal projection', () => {
   it('validates and forwards a nested-only plan_ready planId', async () => {
     const state = makeState(join(dir, 'step.log'));
     mockedDiscoverProjectPipelines.mockResolvedValue([
-      {
+      makePipelineInfo({
         id: 'pipe-1',
         name: 'Plan pipeline',
         filename: 'pipeline.yaml',
         filePath: join(dir, 'pipeline.yaml'),
         triggerTypes: ['plan_ready'],
-      },
+      }),
     ]);
     mockedLoadProjectPipelineFromDisk.mockResolvedValue({
       name: 'Plan pipeline',
@@ -2927,7 +3196,7 @@ describe('pipelines service portal projection', () => {
       }),
     ).rejects.toMatchObject({
       code: 'invalid_payload',
-      message: 'The selected pipeline does not support plan_ready.',
+      message: 'The selected workflow does not support plan_ready.',
     });
     expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();
   });
@@ -3751,6 +4020,9 @@ describe('pipelines service portal projection', () => {
     const baselineBytes = portalEventByteLength(baseline[0]);
     const originalName =
       nearLimitState.pipeline_snapshot.jobs['job-1'].steps[0].name;
+    if (originalName === undefined) {
+      throw new Error('Expected the pipeline fixture to contain a named step.');
+    }
     nearLimitState.pipeline_snapshot.jobs['job-1'].steps[0].name = 'x'.repeat(
       PORTAL_EVENT_BATCH_MAX_BYTES -
         baselineBytes +
@@ -4836,7 +5108,7 @@ describe('pipeline run chat-turn links (CAN-3619)', () => {
       messages: [],
       createdAt: '2026-05-06T00:00:00.000Z',
       ...(carry ? { agentArtifactCarryByTurn: carry } : {}),
-    } as PersistedChatTab;
+    };
   }
 
   /**
@@ -5158,13 +5430,13 @@ describe('pipeline run chat-turn links (CAN-3619)', () => {
       changedTabIds: string[],
       removedTabIds: string[] = [],
     ): void => {
-      projectChatTabsMaterialization(
+      void projectChatTabsMaterialization(
         () => null,
         'ws-1',
         worktreeId,
         { version: 1, tabs, activeTabId: tabs[0]?.id ?? '' },
         { changedTabIds, removedTabIds },
-      );
+      ).catch(() => undefined);
     };
 
     await getPipelineExecution({
@@ -5340,14 +5612,26 @@ describe('pipeline run chat follow-up availability (CAN-3719)', () => {
         preparePipelineChatFollowUp({ ...request, output: 'plan' }),
       ).rejects.toMatchObject({
         code: 'not_found',
-        message: 'This pipeline run does not have a saved plan file.',
+        message: 'This workflow run does not have a saved plan file.',
       });
     });
 
     it('rejects a run whose owner worktree no longer exists', async () => {
       mockedReadAllSidebarItems.mockResolvedValue({
-        items: [{ id: 'ws-1', type: 'single-repo', worktrees: [] }],
-      } as Awaited<ReturnType<typeof readAllSidebarItems>>);
+        version: 1,
+        items: [
+          {
+            id: 'ws-1',
+            name: 'Workspace',
+            type: 'single-repo',
+            repoPath: '/repo',
+            color: '',
+            worktrees: [],
+            collapsed: false,
+            order: 0,
+          },
+        ],
+      });
       mockedLoadExecutionState.mockResolvedValue(
         followUpState({ report_outputs: { report_file: '/exec/report.md' } }),
       );
@@ -5358,5 +5642,142 @@ describe('pipeline run chat follow-up availability (CAN-3719)', () => {
         message: "This run's worktree is no longer available.",
       });
     });
+  });
+});
+
+describe('readPipelineContent (CAN-3717)', () => {
+  const executionsDir = '/tmp/canopy-test-data/pipeline-executions';
+  let dir: string;
+  const request = {
+    executionId: 'exec-1',
+    projectId: 'ws-1',
+    worktreeId: 'wt-1',
+  };
+  const stepSource = {
+    kind: 'step_output' as const,
+    jobId: 'job-1',
+    stepId: 'step-1',
+  };
+
+  beforeEach(async () => {
+    await mkdir(executionsDir, { recursive: true });
+    dir = await mkdtemp(join(executionsDir, 'canopy-pipeline-content-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function agentState(logFile: string, transcriptFile: string): ExecutionState {
+    const state = makeState(logFile);
+    const step = state.jobs['job-1']?.steps['step-1'];
+    if (!step) throw new Error('fixture step missing');
+    step.log_format_hint = 'agent';
+    step.agent_provider = 'claude';
+    step.outputs = { transcript_file: transcriptFile };
+    return state;
+  }
+
+  it('reads an agent step as its readable assistant text, not provider JSON', async () => {
+    const log = join(dir, 'step.log');
+    const transcript = join(dir, 'transcript.jsonl');
+    await writeFile(log, '{"type":"system","subtype":"init"}\n');
+    await writeFile(
+      transcript,
+      `${JSON.stringify({
+        type: 'assistant',
+        uuid: 'a-1',
+        message: {
+          id: 'm-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: '# Summary\n\nAll green.' }],
+        },
+      })}\n`,
+    );
+    mockedLoadExecutionState.mockResolvedValue(agentState(log, transcript));
+
+    await expect(
+      readPipelineContent({ ...request, source: stepSource }),
+    ).resolves.toMatchObject({
+      format: 'markdown',
+      content: '# Summary\n\nAll green.',
+      offset: 0,
+      nextOffset: 21,
+      length: 21,
+    });
+  });
+
+  it('keeps a command step log as plain text, beyond the streamed tail', async () => {
+    const log = join(dir, 'step.log');
+    const output = `first line\n${'x'.repeat(10_000)}\nlast line\n`;
+    await writeFile(log, output);
+    mockedLoadExecutionState.mockResolvedValue(makeState(log));
+
+    const page = await readPipelineContent({ ...request, source: stepSource });
+    expect(page).toMatchObject({ format: 'text', content: output });
+  });
+
+  it('reads the saved report as the desktop shows it', async () => {
+    const report = join(dir, 'report.md');
+    const json = join(dir, 'report.json');
+    await writeFile(report, '# Report');
+    await writeFile(json, '{"ok":true}');
+    mockedLoadExecutionState.mockResolvedValue({
+      ...makeState(join(dir, 'step.log')),
+      report_outputs: { report_file: report, report_json_file: json },
+    });
+
+    await expect(
+      readPipelineContent({ ...request, source: { kind: 'report' } }),
+    ).resolves.toMatchObject({
+      format: 'markdown',
+      content: '# Report\n\n## JSON report\n\n```json\n{\n  "ok": true\n}\n```',
+    });
+  });
+
+  it('reads an empty document for a run without a saved report', async () => {
+    mockedLoadExecutionState.mockResolvedValue(
+      makeState(join(dir, 'step.log')),
+    );
+    await expect(
+      readPipelineContent({ ...request, source: { kind: 'report' } }),
+    ).resolves.toMatchObject({ content: '', length: 0, nextOffset: 0 });
+  });
+
+  it('refuses a report file outside the executions directory', async () => {
+    mockedLoadExecutionState.mockResolvedValue({
+      ...makeState(join(dir, 'step.log')),
+      report_outputs: { report_file: '/etc/hosts' },
+    });
+    await expect(
+      readPipelineContent({ ...request, source: { kind: 'report' } }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('refuses a later page once the document changed', async () => {
+    const log = join(dir, 'step.log');
+    await writeFile(log, 'one');
+    mockedLoadExecutionState.mockResolvedValue(makeState(log));
+    const first = await readPipelineContent({ ...request, source: stepSource });
+    await writeFile(log, 'one two');
+
+    await expect(
+      readPipelineContent({
+        ...request,
+        source: stepSource,
+        offset: first.nextOffset,
+        revision: first.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'execution_failed' });
+  });
+
+  it('rejects a run owned by another worktree', async () => {
+    mockedLoadExecutionState.mockResolvedValue({
+      ...makeState(join(dir, 'step.log')),
+      worktree_id: 'wt-2',
+    });
+    await expect(
+      readPipelineContent({ ...request, source: { kind: 'report' } }),
+    ).rejects.toMatchObject({ code: 'not_found' });
   });
 });

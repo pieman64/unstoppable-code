@@ -167,7 +167,7 @@ function RepositoryRow({
         onClick={() => {
           if (!unavailable) onSelect(repository.id);
         }}
-        className={`focus-ring flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition ${tone}${
+        className={`focus-ring flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition-colors ${tone}${
           unavailable ? ' cursor-not-allowed' : ''
         }`}
       >
@@ -239,7 +239,7 @@ function PagingFooter({
       )}
       <Button
         variant="secondary"
-        size="control"
+        size="compact"
         data-testid={testId ? `${testId}-load-more` : undefined}
         aria-disabled={loadingMore || undefined}
         aria-busy={loadingMore || undefined}
@@ -366,13 +366,9 @@ export function GitHubRepositoryPicker({
             className="flex items-center justify-between gap-3 px-3 py-4"
           >
             <div className="text-xs fg-destructive">{error}</div>
-            <button
-              type="button"
-              onClick={onRetry}
-              className="focus-ring shrink-0 rounded-md border px-2 py-1 text-2xs font-medium fg-primary hover:bg-secondary"
-            >
+            <Button size="compact" onClick={onRetry}>
               Retry
-            </button>
+            </Button>
           </div>
         )}
 

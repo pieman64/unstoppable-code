@@ -1,3 +1,4 @@
+import { sanitizeAppDiagnosticRecord } from '../observability/app-diagnostic-privacy';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import type { ChatStorageActivityWindow } from '@canopy/desktop-shared/node/chat-storage-activity';
@@ -11,6 +12,7 @@ const ACTIVITY = {
   commits: 2,
   mutations: 5,
   bytesWritten: 184,
+  transcriptBytesWritten: 64,
   fileSyncs: 1,
   directorySyncs: 2,
   commitMsTotal: 60.4,
@@ -22,10 +24,12 @@ function activeWindow(): ChatStorageActivityWindow {
   return {
     scopes: [
       {
+        scopeKey: 'a'.repeat(16),
         identity: { projectId: 'w1', worktreeId: 'wt-1' },
         activity: ACTIVITY,
       },
       {
+        scopeKey: 'b'.repeat(16),
         identity: undefined,
         activity: { ...ACTIVITY, commits: 1, bytesWritten: 16 },
       },
@@ -70,6 +74,172 @@ describe('chat-storage activity diagnostics', () => {
       jest.advanceTimersByTime(1_000);
     }
   }
+
+  function rateWindow(
+    keys = ['a'.repeat(16)],
+    rate = 1_048_577,
+    ms = 60_000,
+  ): ChatStorageActivityWindow {
+    const activity = {
+      ...ACTIVITY,
+      transcriptBytesWritten: (rate * ms) / 1000,
+      bytesWritten: (rate * ms) / 1000,
+    };
+    return {
+      scopes: keys.map((scopeKey) => ({
+        scopeKey,
+        identity: undefined,
+        activity,
+      })),
+      total: activity,
+    };
+  }
+
+  function warnings(): AppDiagnosticRecord[] {
+    return apps.filter((record) => record.kind === 'resource_pressure_warning');
+  }
+
+  it('warns once per sustained episode and independently per opaque scope', () => {
+    const stop = start();
+    windows.push(rateWindow(['a'.repeat(16), 'b'.repeat(16)]));
+    advance(60_000);
+    windows.push(rateWindow(['a'.repeat(16), 'b'.repeat(16)]));
+    advance(60_000);
+    expect(warnings()).toEqual([]);
+    windows.push(
+      rateWindow(['a'.repeat(16), 'b'.repeat(16)]),
+      rateWindow(['a'.repeat(16), 'b'.repeat(16)]),
+    );
+    advance(120_000);
+    expect(warnings()).toHaveLength(2);
+    expect(sanitizeAppDiagnosticRecord(warnings()[0])).toMatchObject({
+      reason: 'chat_transcript_write_rate',
+      chatTranscriptWriteScopeDigest: 'a'.repeat(16),
+      chatTranscriptWriteRateBytesPerSecond: 1_048_577,
+      chatTranscriptWriteRateThresholdBytesPerSecond: 1_048_576,
+      chatTranscriptWriteRateObservedMs: 180_000,
+      chatTranscriptWriteRateSampleCount: 3,
+    });
+    stop();
+  });
+
+  it('keeps an episode across ticks that land a fraction of a millisecond early', () => {
+    const stop = start();
+    // Repeating timers fire on whole milliseconds, so the monotonic clock can
+    // measure a 60 s window as 59,999.5 ms.
+    for (let tick = 0; tick < 3; tick += 1) {
+      windows.push(rateWindow(['a'.repeat(16)], 1_048_577, 59_999.5));
+      nowMs += 59_999.5;
+      jest.advanceTimersByTime(60_000);
+    }
+    expect(warnings()).toHaveLength(1);
+    stop();
+  });
+
+  it.each(['equal', 'burst', 'quiet', 'missing', 'other-storage'])(
+    'does not warn for %s windows',
+    (mode) => {
+      const stop = start();
+      if (mode === 'equal')
+        windows.push(
+          ...Array.from({ length: 4 }, () => rateWindow(undefined, 1_048_576)),
+        );
+      else if (mode === 'other-storage') {
+        const window = rateWindow();
+        window.scopes[0].activity = {
+          ...window.scopes[0].activity,
+          transcriptBytesWritten: 0,
+        };
+        windows.push(window, window, window, window);
+      } else
+        windows.push(
+          rateWindow(),
+          mode === 'missing' ? undefined : rateWindow(undefined, 0),
+          rateWindow(),
+          rateWindow(),
+        );
+      advance(240_000);
+      expect(warnings()).toEqual([]);
+      stop();
+    },
+  );
+
+  it('normalizes a delayed tick by actual elapsed time and resets a long gap', () => {
+    const stop = start();
+    windows.push(rateWindow(), rateWindow());
+    advance(120_000);
+    windows.push(rateWindow(undefined, 1_048_577, 75_000));
+    nowMs += 15_000;
+    advance(60_000);
+    expect(warnings()[0]?.chatTranscriptWriteRateObservedMs).toBe(195_000);
+    windows.push(rateWindow(undefined, 1_048_577, 180_000));
+    nowMs += 120_000;
+    advance(60_000);
+    windows.push(rateWindow(), rateWindow());
+    advance(120_000);
+    expect(warnings()).toHaveLength(1);
+    windows.push(rateWindow());
+    advance(60_000);
+    expect(warnings()).toHaveLength(2);
+    stop();
+  });
+
+  it('cannot arm a warning on a partial stop flush or after restart', () => {
+    const stop = start();
+    windows.push(rateWindow(), rateWindow());
+    advance(120_000);
+    windows.push(rateWindow());
+    advance(30_000);
+    stop({ flush: true });
+    expect(warnings()).toEqual([]);
+    const restarted = start();
+    windows.push(rateWindow());
+    advance(60_000);
+    expect(warnings()).toEqual([]);
+    restarted();
+  });
+
+  it('bounds scope episodes and forgets evicted or absent scopes', () => {
+    const stop = start();
+    const keys = Array.from({ length: 300 }, (_, i) =>
+      i.toString(16).padStart(16, '0'),
+    );
+    windows.push(rateWindow(keys), rateWindow(keys), rateWindow(keys));
+    advance(180_000);
+    expect(warnings()).toHaveLength(256);
+    windows.push(
+      undefined,
+      rateWindow(keys.slice(0, 1)),
+      rateWindow(keys.slice(0, 1)),
+    );
+    advance(180_000);
+    expect(warnings()).toHaveLength(256);
+    windows.push(rateWindow(keys.slice(0, 1)));
+    advance(60_000);
+    expect(warnings()).toHaveLength(257);
+    stop();
+  });
+
+  it('contains a warning sink failure without retrying the episode', () => {
+    const sink = jest.fn((record: AppDiagnosticRecord) => {
+      void record;
+      throw new Error('sink');
+    });
+    const stop = startChatStorageActivityDiagnostics({
+      take: () => windows.shift(),
+      now: () => nowMs,
+      recordApp: sink,
+      recordSession: () => undefined,
+    });
+    windows.push(rateWindow(), rateWindow(), rateWindow(), rateWindow());
+    expect(() => advance(240_000)).not.toThrow();
+    expect(
+      sink.mock.calls.filter(
+        ([record]) => record.kind === 'resource_pressure_warning',
+      ),
+    ).toHaveLength(1);
+    stop();
+  });
 
   it('records nothing while chat storage is idle', () => {
     const stop = start();

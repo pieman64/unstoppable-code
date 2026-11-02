@@ -57,6 +57,9 @@ export type {
   PauseInputType,
   PipelineInputType,
   PipelineInputDef,
+  PipelineAssetInstallMode,
+  PipelineAssetDeclaration,
+  NormalizedPipelineAssetDeclaration,
 } from '@canopy/pipeline-interop/document';
 import { getTriggerTypes } from '@canopy/pipeline-interop/document';
 export {
@@ -145,9 +148,17 @@ export type {
   PipelinePackageBlockerCode,
   PipelinePackageInvocationDismissal,
   PipelinePackageLimit,
+  PipelinePackagePackagedPipeline,
   PipelinePackageProgressEvent,
+  PipelinePackagePromptSpan,
+  PipelinePackageReferenceDismissal,
+  PipelinePackageWithheldFile,
+  PipelinePackageWithheldReason,
 } from '@canopy/protocol/pipelines';
-import type { PipelinePackageInvocationDismissal } from '@canopy/protocol/pipelines';
+import type {
+  PipelinePackageInvocationDismissal,
+  PipelinePackageReferenceDismissal,
+} from '@canopy/protocol/pipelines';
 
 export interface RepoLocalInvocableEntry {
   id: string;
@@ -210,10 +221,11 @@ export type CapabilityPackageInstallOwnerKind =
   | 'skill'
   | 'agent'
   | 'collection'
-  | 'blueprint';
+  | 'blueprint'
+  | 'shared-container';
 
 export const CAPABILITY_PACKAGE_INSTALL_OWNER_KINDS: readonly CapabilityPackageInstallOwnerKind[] =
-  ['skill', 'agent', 'collection', 'blueprint'];
+  ['skill', 'agent', 'collection', 'blueprint', 'shared-container'];
 
 interface CapabilityPackageInstallRecordCommonV1 {
   owner: CapabilityPackageInstallOwner;
@@ -222,6 +234,8 @@ interface CapabilityPackageInstallRecordCommonV1 {
   localContentHash?: string;
   pipelineContentHash: string;
   installedAt: string;
+  /** False when recipient-modified supporting files prevented full materialization. */
+  supportingFilesComplete?: boolean;
 }
 
 export type CapabilityPackageInstallRecordV1 =
@@ -279,6 +293,11 @@ export interface PipelinePackageAnalyzeRequest {
   pipelineId?: string;
   worktree?: { projectId: string; worktreeId: string; repoId?: string };
   dismissedInvocations?: PipelinePackageInvocationDismissal[];
+  /**
+   * Reference blockers the publisher dismissed. A dismissed
+   * `child_pipeline_ref` shares the pipeline without that child.
+   */
+  dismissedReferences?: PipelinePackageReferenceDismissal[];
   /** Optional resource ids the publisher has opted in to including. */
   selectedOptionalResourceIds?: string[];
 }
@@ -801,9 +820,20 @@ export interface PipelineActionRuns {
   using: 'pipeline';
 }
 
-/** A desktop host action behind `ExecutionRuntime.pipelineHostActions`; bundled actions only. */
+/** Node entry point a bundled host action runs when no host port is present. */
+export interface HostActionNodeFallback {
+  using: 'node';
+  main: string;
+}
+
+/**
+ * A desktop host action behind `ExecutionRuntime.pipelineHostActions`; bundled
+ * actions only. With a `fallback`, runtimes without the host port run the Node
+ * entry point instead; a runtime with the port never runs the fallback.
+ */
 export interface HostActionRuns {
   using: 'host';
+  fallback?: HostActionNodeFallback;
 }
 
 export type ActionRuns =
@@ -1128,6 +1158,27 @@ export interface StepResult {
   pause_reasons?: PipelineStatusReason[];
   child_execution_id?: string;
   selected_child_reason_ids?: string[];
+  /**
+   * The chat send a `send-agent-message` host step recorded. Set whenever the
+   * host returned one, including on a failed step whose message was already
+   * accepted (a refused steer).
+   */
+  chat_send?: PipelineChatSendRecord;
+}
+
+/** A message a pipeline step sent to a project or bot chat. */
+export interface PipelineChatSendRecord {
+  version: 1;
+  address:
+    | { kind: 'project'; projectId: string; taskId: string; chatId: string }
+    | { kind: 'bot'; botId: string; taskId: string; chatId: string };
+  /** The accepted input id; `automation_run` watchers match it as `userMessageId`. */
+  userMessageId: string;
+  queuedMessageId?: string;
+  state: 'sent' | 'queued' | 'steered';
+  chatCreated: boolean;
+  acceptedAt: string;
+  turnId?: string;
 }
 
 export interface RetryAttempt {
@@ -1256,7 +1307,23 @@ export type PipelineExecutionInitiator =
   | { kind: 'user' }
   | { kind: 'hook' }
   | { kind: 'portal' }
-  | { kind: 'automation'; automationId: string; automationName?: string }
+  | {
+      kind: 'automation';
+      automationId: string;
+      automationName?: string;
+      /**
+       * The run's gate command output (`ifCommand` stdout, truncated), which
+       * `send-agent-message` puts into the prompt's gate tokens as the native
+       * chat actions do (CAN-4551). Host-only: expressions and step
+       * environments never read it, and summaries drop it.
+       */
+      ifCommandOutput?: string;
+      /**
+       * A scheduled run, whose chats stay behind the current tab as the
+       * native chat actions' did; absent for Run now (CAN-4551). Host-only.
+       */
+      background?: true;
+    }
   | { kind: 'app_advisor'; chat?: PipelineAgentChatAddress }
   | { kind: 'agent'; chat: PipelineAgentChatAddress };
 
@@ -1264,6 +1331,16 @@ export type PipelineExecutionInitiator =
 export interface PipelineAgentAuthor {
   chat: PipelineAgentChatAddress;
   recordedAt: string;
+}
+
+/** Run-time asset context; local paths only, never shared. */
+export interface PipelineAssetExecutionContext {
+  /** Resolved directory per declared asset id (`''` for a missing optional asset). */
+  asset_paths: Record<string, string>;
+  /** `<data>/pipeline-data/<key>/state`. */
+  pipeline_data_dir?: string;
+  /** `<data>/pipeline-data/<key>/assets`, the installed asset root. */
+  assets_dir?: string;
 }
 
 export interface ExecutionState {
@@ -1349,6 +1426,12 @@ export interface ExecutionState {
    */
   inputs: Record<string, PipelineInputValue>;
   pipeline_file_dir?: string;
+  /**
+   * Asset and data-dir paths main resolved before the run started. Persisted
+   * so resumes, retries and child runs read the same `assets` and
+   * `canopy.pipeline_data_dir` values as the original run.
+   */
+  pipeline_assets?: PipelineAssetExecutionContext;
   /** False when `inputs` was backfilled from a legacy execution that never persisted it. */
   inputs_persisted?: boolean;
   event_name?: PipelineTriggerType;
@@ -1357,6 +1440,8 @@ export interface ExecutionState {
   /** @deprecated Read only during migration. */
   codex_fast_mode_enabled?: boolean;
   repo_path?: string;
+  /** Retained checkout boundary; null means unavailable, never inferred from narrowed cwd. */
+  execution_checkout_root?: string | null;
   project_id?: string;
   worktree_id?: string;
   planId?: string;
@@ -1479,6 +1564,8 @@ export interface ExecutionSummary {
   trigger_source?: PipelineTriggerSource;
   /** Mirrors {@link ExecutionState.execution_context} for owner filing. */
   execution_context?: string;
+  /** Mirrors {@link ExecutionState.initiator} for initiator-scoped access. */
+  initiator?: PipelineExecutionInitiator;
 }
 
 // ---------------------------------------------------------------------------
@@ -1808,6 +1895,16 @@ export type MatrixIpcErrorCode =
   | 'matrix/running-variant-unowned'
   | 'matrix/retry-in-progress';
 
+/**
+ * A person's global start refused because the pipeline gained a saved owner
+ * after the Run dialog read it; the dialog re-reads the pipeline on it.
+ */
+export const PIPELINE_NOW_OWNED_MESSAGE =
+  'This pipeline now has an owner. Reopen it to run under that owner.';
+
+/** The start refusal that carries {@link PIPELINE_NOW_OWNED_MESSAGE}. */
+export const PIPELINE_NOW_OWNED_ERROR_CODE = 'pipeline_now_owned';
+
 export const MATRIX_IPC_ERROR_CODES = [
   'matrix/execution-not-terminal',
   'matrix/group-not-terminal',
@@ -1900,6 +1997,18 @@ export interface PipelineData {
   content: Pipeline;
   /** Exact stored document bytes, when the backing source exposes them. */
   rawContent?: string;
+  /**
+   * Saved local owner of a user pipeline (`personal` / `org:<uuid>`), set on
+   * the single-pipeline read. Absent for unowned or non-local definitions.
+   * Main-only metadata; never in YAML or shared publication payloads.
+   */
+  localRunOwner?: string;
+  /**
+   * Set instead of `localRunOwner` when saved owners can't be read, so the
+   * pipeline never appears unowned; the Run dialog blocks a run with no
+   * project, and main refuses one.
+   */
+  localRunOwnerUnreadable?: true;
 }
 
 export interface IPCResult<T = void> {
@@ -1915,7 +2024,9 @@ export type PipelineExecutionStartResult =
   | {
       success: false;
       error: string;
-      errorCode?: 'shared_pipeline_changed';
+      errorCode?:
+        | 'shared_pipeline_changed'
+        | typeof PIPELINE_NOW_OWNED_ERROR_CODE;
     };
 
 export interface PipelineSaveInput {
@@ -1932,6 +2043,11 @@ export interface PipelineSaveInput {
    * covers the serialization itself rather than only the parsed pipeline.
    */
   rawContent?: string;
+  /**
+   * Revision of the user pipeline the caller loaded. A save of an existing
+   * pipeline whose stored revision differs is refused as a conflict.
+   */
+  expectedRevision?: number;
 }
 
 export interface ProjectPipelineRequest {
@@ -2022,7 +2138,7 @@ export function createDefaultStep(): Step {
 }
 export function createDefaultPipeline(): Pipeline {
   return {
-    name: 'New Pipeline',
+    name: 'New workflow',
     version: '3.0',
     description: '',
     icon: '✨',

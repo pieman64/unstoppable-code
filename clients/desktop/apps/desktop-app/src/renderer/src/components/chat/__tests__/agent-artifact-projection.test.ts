@@ -1,6 +1,7 @@
 import type {
   AgentArtifactReceiptV1,
   AppAdvisorWatcherSummary,
+  BackgroundProcess,
   GitHubWorkflowRunWatchProgress,
   PersistedChatMessage,
   PipelineRunArtifactReceiptV1,
@@ -386,9 +387,11 @@ describe('agent artifact projection', () => {
         ),
       },
     });
-    expect(
-      projectAgentArtifacts(singularMessages).byTurn['turn-1']?.[0]?.name,
-    ).toBe('single');
+    const singularReceipt =
+      projectAgentArtifacts(singularMessages).byTurn['turn-1']?.[0];
+    if (singularReceipt?.kind !== 'skill')
+      throw new Error('missing singular skill receipt');
+    expect(singularReceipt.name).toBe('single');
 
     const legacyMessages = transcript([], {
       toolName: 'app_advisor_dispatch_action',
@@ -761,7 +764,15 @@ it('pins the latest active delegation generation after the parent settles and re
     blocks: [
       {
         type: 'delegated_agent_call',
+        agentBlockId: `child-${runGeneration}-${status}`,
         delegationId: 'child',
+        sequence: 0,
+        parentTurnId: 'parent-turn',
+        parentToolCallId: 'spawn-child',
+        createdAt: runGeneration,
+        selectedModelId: 'model',
+        runtimeModelId: 'model',
+        targetHarnessId: 'codex',
         runGeneration,
         status,
         parentHarnessId: 'codex',
@@ -820,7 +831,15 @@ it('does not pin a running foreground managed delegation', () => {
       blocks: [
         {
           type: 'delegated_agent_call',
+          agentBlockId: 'foreground-child-block',
           delegationId: 'foreground-child',
+          sequence: 0,
+          parentTurnId: 'parent-turn',
+          parentToolCallId: 'spawn-foreground-child',
+          createdAt: 1,
+          selectedModelId: 'model',
+          runtimeModelId: 'model',
+          targetHarnessId: 'codex',
           runGeneration: 1,
           status: 'running',
           parentHarnessId: 'codex',
@@ -843,6 +862,115 @@ it('does not pin a running foreground managed delegation', () => {
       'chat',
     ),
   ).toEqual([]);
+});
+
+it('pins a no-flag Claude Agent while its native background process is running', () => {
+  const agent = {
+    type: 'agent' as const,
+    toolUseId: 'no-flag-native-agent',
+    subagentType: 'Explore',
+    description: 'Inspect the background task',
+    prompt: 'Read the source',
+    runInBackground: false,
+    subBlocks: [],
+  };
+  const groups = [
+    {
+      kind: 'standalone' as const,
+      message: {
+        id: 'parent',
+        role: 'assistant' as const,
+        timestamp: 1,
+        blocks: [agent],
+      },
+    },
+  ];
+  const process: BackgroundProcess = {
+    id: 'native-agent',
+    chatId: 'chat',
+    toolUseId: agent.toolUseId,
+    toolName: 'Agent',
+    kind: 'agent',
+    description: agent.description,
+    status: 'running',
+    startedAt: 1,
+    updatedAt: 1,
+    outputLines: [],
+    canStop: true,
+  };
+
+  expect(selectActiveAgentBlocks(groups, [process], 'chat')).toEqual([agent]);
+});
+
+it('pins a no-flag Claude Agent from its async-launch result without native status', () => {
+  const agent = {
+    type: 'agent' as const,
+    toolUseId: 'no-flag-async-agent',
+    subagentType: 'Explore',
+    description: 'Inspect the async task',
+    prompt: 'Read the source',
+    runInBackground: false,
+    result: {
+      output: 'Async agent launched successfully. agentId: abc123',
+      isError: false,
+    },
+    subBlocks: [],
+  };
+  const groups = [
+    {
+      kind: 'standalone' as const,
+      message: {
+        id: 'parent',
+        role: 'assistant' as const,
+        timestamp: 1,
+        blocks: [agent],
+      },
+    },
+  ];
+
+  expect(selectActiveAgentBlocks(groups, [], 'chat')).toEqual([agent]);
+});
+
+it('lets a terminal native task status override an async-launch result', () => {
+  const agent = {
+    type: 'agent' as const,
+    toolUseId: 'completed-async-agent',
+    subagentType: 'Explore',
+    description: 'Inspect the completed task',
+    prompt: 'Read the source',
+    runInBackground: true,
+    result: {
+      output: 'Async agent launched successfully. agentId: abc123',
+      isError: false,
+    },
+    subBlocks: [],
+  };
+  const groups = [
+    {
+      kind: 'standalone' as const,
+      message: {
+        id: 'parent',
+        role: 'assistant' as const,
+        timestamp: 1,
+        blocks: [agent],
+      },
+    },
+  ];
+  const process: BackgroundProcess = {
+    id: 'native-agent',
+    chatId: 'chat',
+    toolUseId: agent.toolUseId,
+    toolName: 'Agent',
+    kind: 'agent',
+    description: agent.description,
+    status: 'completed',
+    startedAt: 1,
+    updatedAt: 2,
+    outputLines: [],
+    canStop: false,
+  };
+
+  expect(selectActiveAgentBlocks(groups, [process], 'chat')).toEqual([]);
 });
 
 it('pins merged native and managed agent blocks with transcripts, scoped live status, and terminal removal', () => {

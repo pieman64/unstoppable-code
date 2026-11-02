@@ -132,6 +132,28 @@ describe('Tooltip (portal)', () => {
     }
   });
 
+  it('describes a focusable span itself rather than its decorative children', () => {
+    const { container, root } = render(
+      <Tooltip label="Full setup explanation">
+        <span tabIndex={0} data-testid="status-trigger">
+          <span aria-hidden="true">Working</span>
+        </span>
+      </Tooltip>,
+    );
+    try {
+      const trigger = container.querySelector<HTMLElement>(
+        '[data-testid="status-trigger"]',
+      );
+      act(() => focusViaKeyboard(trigger));
+      expect(findPortalTooltip()).not.toBeNull();
+      expect(trigger?.getAttribute('aria-describedby')).toBe(
+        findPortalTooltip()?.id,
+      );
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it('does not open when focus follows a pointer press', () => {
     const { container, root } = render(
       <Tooltip label="release/next">
@@ -201,8 +223,12 @@ describe('Tooltip (portal)', () => {
       const tooltip = findPortalTooltip();
       expect(tooltip?.textContent).toBe('Add files and more@');
       expect(tooltip?.querySelector('kbd')?.textContent).toBe('@');
-      // A nested 4px corner, and `@` lifted to centre its low-sitting ink.
-      expect(tooltip?.querySelector('kbd')?.className).toContain('rounded-sm');
+      // A filled capsule with no border, and `@` lifted to centre its
+      // low-sitting ink.
+      const cap = tooltip?.querySelector('kbd');
+      expect(cap?.className).toContain('rounded-full');
+      expect(cap?.className).toContain('bg-muted');
+      expect(cap?.className).not.toMatch(/(^|\s)border(\s|$)/);
       expect(tooltip?.querySelector('kbd > span')?.className).toContain(
         '-translate-y-px',
       );
@@ -502,6 +528,42 @@ describe('Tooltip (portal)', () => {
       rectSpy.mockRestore();
       widthSpy.mockRestore();
       heightSpy.mockRestore();
+    }
+  });
+
+  it('marks a plain tip to draw above an in-app browser page, but not one with a link', () => {
+    const plain = render(
+      <Tooltip label="Plain tip">
+        <button type="button">trigger</button>
+      </Tooltip>,
+    );
+    try {
+      act(() => {
+        focusViaKeyboard(findTrigger(plain.container));
+      });
+      expect(
+        findPortalTooltip()?.getAttribute('data-canopy-above-browser'),
+      ).toBe('true');
+    } finally {
+      act(() => plain.root.unmount());
+    }
+    document.body.innerHTML = '';
+
+    // A tip with a link takes the pointer, which a copy above the page cannot.
+    const linked = render(
+      <Tooltip label="With link" link={{ href: 'https://example.com/docs' }}>
+        <button type="button">trigger</button>
+      </Tooltip>,
+    );
+    try {
+      act(() => {
+        focusViaKeyboard(findTrigger(linked.container));
+      });
+      expect(
+        findPortalTooltip()?.hasAttribute('data-canopy-above-browser'),
+      ).toBe(false);
+    } finally {
+      act(() => linked.root.unmount());
     }
   });
 

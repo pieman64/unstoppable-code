@@ -1,6 +1,7 @@
 import type {
   ExecutionState,
   ExecutionSummary,
+  NormalizedJob,
 } from '@canopy/desktop-shared/types/pipeline';
 import {
   buildAttemptViews,
@@ -9,41 +10,41 @@ import {
   resolveSelectedStep,
 } from '../lib/pipelineAttemptTimeline';
 
-function createState(): ExecutionState {
+function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
+  const buildJob: NormalizedJob = {
+    name: 'Build',
+    needs: [],
+    timeout_minutes: 360,
+    max_retries: 1,
+    max_iterations: 3,
+    continue_on_error: false,
+    steps: [
+      {
+        id: 'first',
+        run: 'echo first',
+        shell: 'bash',
+        continue_on_error: false,
+        timeout_minutes: 360,
+        skip_on_missing_action: false,
+      },
+      {
+        id: 'second',
+        run: 'echo second',
+        shell: 'bash',
+        continue_on_error: false,
+        timeout_minutes: 360,
+        skip_on_missing_action: false,
+      },
+    ],
+  };
   return {
     version: 2,
     id: 'execution-1',
     pipeline_id: 'attempt-timeline',
     pipeline_snapshot: {
       name: 'Attempt Timeline',
-      jobs: {
-        build: {
-          name: 'Build',
-          needs: [],
-          timeout_minutes: 360,
-          max_retries: 1,
-          max_iterations: 3,
-          continue_on_error: false,
-          steps: [
-            {
-              id: 'first',
-              run: 'echo first',
-              shell: 'bash',
-              continue_on_error: false,
-              timeout_minutes: 360,
-              skip_on_missing_action: false,
-            },
-            {
-              id: 'second',
-              run: 'echo second',
-              shell: 'bash',
-              continue_on_error: false,
-              timeout_minutes: 360,
-              skip_on_missing_action: false,
-            },
-          ],
-        },
-      },
+      scope: ['directory'],
+      jobs: { build: buildJob },
     },
     status: 'pending',
     jobs: {
@@ -67,11 +68,22 @@ function createState(): ExecutionState {
         iteration_count: 0,
       },
     },
+    job_definitions: {
+      build: {
+        physical_job_id: 'build',
+        logical_job_id: 'build',
+        ...buildJob,
+      },
+    },
+    job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
     started_at: '2026-03-26T08:59:00.000Z',
     cwd: '/tmp/canopy-tests',
     env: {},
     inputs: {},
     event_name: 'dispatch',
+    ...overrides,
   };
 }
 
@@ -241,13 +253,14 @@ describe('pipelineAttemptTimeline', () => {
   });
 
   it('resolves a selected step from the pipeline snapshot when normalized job definitions are absent', () => {
-    const state = createState();
-    state.job_definitions = undefined;
+    const legacyState = createState({ job_definitions: undefined });
 
-    const selected = findDefaultSelection(state);
+    const selected = findDefaultSelection(legacyState);
 
     expect(selected).not.toBeNull();
-    expect(resolveSelectedStep(state, selected)?.stepDef.id).toBe('first');
+    expect(resolveSelectedStep(legacyState, selected)?.stepDef.id).toBe(
+      'first',
+    );
   });
 
   it('matches child executions by parent iteration', () => {
@@ -257,6 +270,7 @@ describe('pipelineAttemptTimeline', () => {
         pipeline_id: 'child',
         pipeline_name: 'Child Iteration 1',
         status: 'success',
+        status_reasons: [],
         started_at: '2026-03-26T13:00:00.000Z',
         cwd: '/tmp/canopy-tests',
         parent_execution_id: 'execution-1',
@@ -269,6 +283,7 @@ describe('pipelineAttemptTimeline', () => {
         pipeline_id: 'child',
         pipeline_name: 'Child Iteration 2',
         status: 'success',
+        status_reasons: [],
         started_at: '2026-03-26T13:01:00.000Z',
         cwd: '/tmp/canopy-tests',
         parent_execution_id: 'execution-1',
@@ -293,6 +308,7 @@ describe('pipelineAttemptTimeline', () => {
         pipeline_id: 'child',
         pipeline_name: 'Child Retry View',
         status: 'success',
+        status_reasons: [],
         started_at: '2026-03-26T13:02:00.000Z',
         cwd: '/tmp/canopy-tests',
         parent_execution_id: 'execution-1',

@@ -7,8 +7,55 @@ import {
   TELEMETRY_USAGE_GROUP_BY,
   TELEMETRY_USAGE_SCOPES,
   classifyPipelineType,
+  type TelemetryUserLeaderboardRow,
   type TeamUsageResponse,
 } from '../index';
+
+const userRow: TelemetryUserLeaderboardRow = {
+  userId: 'user-uuid',
+  userName: 'Ada',
+  impactScore: 0,
+  prImpactRaw: 0,
+  deliveryImpactRaw: 0,
+  executionBonus: 0,
+  agentWorkBonus: 0,
+  agentTurns: 0,
+  agentWorkUnits: 0,
+  totalCostUsd: 1,
+  inputTokens: 1,
+  outputTokens: 1,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+  turnCount: 1,
+  toolUseCount: 0,
+  worktreesCreated: 0,
+  plansCreated: 0,
+  plansImplemented: 0,
+  prsCreated: 0,
+  prsMerged: 0,
+  prsOpen: 0,
+  linesChanged: 0,
+  changedFiles: 0,
+  avgCycleTimeMs: 0,
+  checksPassing: 0,
+  checksDecided: 0,
+  avgPrSize: 0,
+  prsWithTicket: 0,
+  pipelineAgentSteps: 0,
+  pipelineRuns: 0,
+  pipelineRunsSucceeded: 0,
+  pipelineRunsFailed: 0,
+  pipelineRunsCancelled: 0,
+  pipelineDistinctPipelines: 0,
+  pipelineRetries: 0,
+  pipelineAvgRunMs: 0,
+  deliveryEntries: 0,
+  deliveryArtifacts: 0,
+  deliveryExternalActions: 0,
+  deliveryEntriesWithTicket: 0,
+  deliveryEntriesDone: 0,
+  deliverySharedRuns: 0,
+};
 
 describe('telemetry read-side contracts (CAN-377)', () => {
   it('exports stable usage vocabularies', () => {
@@ -60,16 +107,7 @@ describe('telemetry read-side contracts (CAN-377)', () => {
       eventTypeStatusCounts: [
         { eventType: 'worktree_chat', status: 'success', count: 4 },
       ],
-      byUser: [
-        {
-          userId: 'user-uuid',
-          userName: 'Ada',
-          totalCostUsd: 1,
-          inputTokens: 1,
-          outputTokens: 1,
-          turnCount: 1,
-        },
-      ],
+      byUser: [userRow],
       impactByUser: [
         {
           bucketStartIso: '2026-06-01T00:00:00.000Z',

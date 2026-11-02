@@ -694,7 +694,8 @@ async function runPlanningLoop(
 
 /** Internal wrapper carrying the accumulated usage across a failed loop. */
 class PlanningLoopError extends Error {
-  readonly cause: Error;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause: Error;
   readonly usage: HelperUsage;
 
   constructor(cause: Error, usage: HelperUsage) {

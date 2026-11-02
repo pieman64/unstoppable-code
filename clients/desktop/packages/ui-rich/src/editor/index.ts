@@ -38,3 +38,4 @@ export {
   serializeEditorValue,
 } from './slate-utils';
 export { createEmptyValue } from '../types';
+export { appendDraftText, richDraftHasContent } from './append-draft-text';

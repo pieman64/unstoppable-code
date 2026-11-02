@@ -4,6 +4,7 @@
 // until the user closes it. Open/close (and the firing hold/release) are driven
 // by `watcherModalStore`.
 
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useMemo, type JSX } from 'react';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useWatcherModalStore } from '@/stores/watcherModalStore';
@@ -63,8 +64,7 @@ export function WatcherModalHost(): JSX.Element {
       target: { kind: 'worktree_chat', ...target },
       recipientGroups: availableRecipientGroups,
       heading: 'Watch this chat',
-      description:
-        'Notify an App Advisor chat when this chat finishes its current turn.',
+      description: `Notify an ${ORCHESTRATOR_LABEL} chat when this chat finishes its current turn.`,
     };
   }, [target, recipientGroups, watchers]);
 

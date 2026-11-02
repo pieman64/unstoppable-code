@@ -16,6 +16,7 @@ import {
 } from '@/stores/claudeTerminalStore';
 import { useCancelRunningChatShortcut } from './useCancelRunningChatShortcut';
 import type { ClaudeTerminalLaunchRequest } from '@canopy/desktop-shared/types';
+import { Button } from '@canopy/ui-shared/components';
 
 const COPY_STARTING = 'Starting Claude Code…';
 const COPY_LAUNCH_FAILED =
@@ -354,14 +355,13 @@ function StatusMessage({
         <span>{message}</span>
       </div>
       {actionLabel && onAction ? (
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={onAction}
-          className="focus-ring rounded-md border bg-fg-primary/[0.04] px-3 py-1 text-xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.08]"
           data-testid={`${testId}-action`}
         >
           {actionLabel}
-        </button>
+        </Button>
       ) : null}
     </div>
   );

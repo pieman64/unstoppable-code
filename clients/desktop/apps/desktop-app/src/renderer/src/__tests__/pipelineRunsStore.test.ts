@@ -3,7 +3,10 @@
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
+import {
+  summaryFromState,
+  usePipelineRunsStore,
+} from '@/stores/pipelineRunsStore';
 import {
   acquirePipelineDetailLease,
   acquirePipelineSummaryInterest,
@@ -11,6 +14,7 @@ import {
   releasePipelineDetailLease,
   resetPipelineDetailLeasesForTests,
 } from '@/lib/pipelineDetailLeases';
+import { toPipelineRunRowState } from '@/lib/pipelineRunRowState';
 import {
   acquireStepLogInterest,
   getStepLogView,
@@ -19,7 +23,11 @@ import {
   routeStepOutputEvents,
 } from '@/stores/pipelineStepLogStore';
 import type { SingleRepoSidebarItem } from '@canopy/desktop-shared/types';
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  NormalizedJob,
+  NormalizedPipeline,
+  Pipeline,
+} from '@canopy/desktop-shared/types/pipeline';
 import type {
   ExecutionEvent,
   ExecutionState,
@@ -59,34 +67,118 @@ function getFirstProjectFirstWorktree():
   return project.worktrees[0];
 }
 
-function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
+type ExecutionStateOverrides = Partial<
+  Omit<ExecutionState, 'pipeline_snapshot'>
+> & {
+  pipeline_snapshot?: Partial<NormalizedPipeline>;
+};
+
+function createState(overrides: ExecutionStateOverrides = {}): ExecutionState {
+  const { pipeline_snapshot: pipelineSnapshotOverrides, ...stateOverrides } =
+    overrides;
   return {
     version: 1,
     id: 'execution-1',
     pipeline_id: 'pipeline-1',
     pipeline_snapshot: {
-      name: 'Pipeline 1',
-      jobs: {},
-      env: {},
-      inputs: {},
+      ...pipelineSnapshotOverrides,
+      name: pipelineSnapshotOverrides?.name ?? 'Pipeline 1',
+      scope: pipelineSnapshotOverrides?.scope ?? ['directory'],
+      jobs: pipelineSnapshotOverrides?.jobs ?? {},
+      env: pipelineSnapshotOverrides?.env ?? {},
+      inputs: pipelineSnapshotOverrides?.inputs ?? {},
     },
     status: 'success',
     jobs: {},
     job_definitions: {},
     job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
     started_at: '2026-03-27T12:00:00.000Z',
     cwd: '/workspace',
     env: {},
     inputs: {},
     event_name: 'dispatch',
-    ...overrides,
+    ...stateOverrides,
   };
+}
+
+function createLargeState(id: string): ExecutionState {
+  const scriptSentinel = `W1B_STEP_SCRIPT_${id}_`.repeat(1_000);
+  const step: NormalizedJob['steps'][number] = {
+    id: 'build-step',
+    run: scriptSentinel,
+    shell: 'bash',
+    continue_on_error: false,
+    timeout_minutes: 0,
+    skip_on_missing_action: false,
+  };
+  const job: NormalizedJob = {
+    name: 'Build',
+    needs: [],
+    timeout_minutes: 0,
+    max_retries: 0,
+    continue_on_error: false,
+    steps: [step],
+  };
+  return createState({
+    id,
+    cwd: '/workspace',
+    project_id: 'project-1',
+    worktree_id: 'wt-1',
+    pipeline_snapshot: {
+      name: 'Pipeline 1',
+      jobs: { build: job },
+      env: {},
+      inputs: {},
+    },
+    jobs: {
+      build: {
+        status: 'running',
+        steps: {
+          'build-step': {
+            status: 'running',
+            outputs: { sentinel: scriptSentinel },
+            dynamic_env: {},
+          },
+        },
+        outputs: { sentinel: scriptSentinel },
+      },
+    },
+    job_definitions: {
+      build: {
+        physical_job_id: 'build',
+        logical_job_id: 'build',
+        ...job,
+      },
+    },
+    job_groups: {
+      build: {
+        job_id: 'build',
+        kind: 'single',
+        expansion: 'expanded',
+        variant_job_ids: ['build'],
+        status: 'running',
+      },
+    },
+  });
 }
 
 function flushAsyncWork(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function createExecutionEvent(
@@ -104,7 +196,10 @@ function createExecutionEvent(
 describe('pipelineRunsStore retry/rerun actions', () => {
   const retryExecution = jest.fn();
   const retryMatrixJob = jest.fn();
+  const cancelMatrixVariant = jest.fn();
   const rerunExecution = jest.fn();
+  const setExecutionHidden = jest.fn();
+  const resumeExecution = jest.fn();
   const listExecutions = jest.fn();
   const getExecution = jest.fn();
   const saveProjects = jest.fn();
@@ -124,7 +219,10 @@ describe('pipelineRunsStore retry/rerun actions', () => {
         getExecution,
         retryExecution,
         retryMatrixJob,
+        cancelMatrixVariant,
         rerunExecution,
+        setExecutionHidden,
+        resume: resumeExecution,
       },
     });
     Object.defineProperty(globalThis.window, 'api', {
@@ -140,6 +238,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       currentWorktreeId: null,
       summaries: [],
       statesById: {},
+      rowStatesById: {},
       isHydratingGlobalPipelineStatuses: false,
       hasHydratedGlobalPipelineStatuses: false,
       pendingGlobalExecutionStatesById: {},
@@ -156,11 +255,280 @@ describe('pipelineRunsStore retry/rerun actions', () => {
     });
   });
 
-  it('updates the existing summary when retry starts', async () => {
+  it('hydrates large listed executions as slim rows without retaining full sentinels', async () => {
+    const executions = [
+      createLargeState('execution-large-1'),
+      createLargeState('execution-large-2'),
+      createLargeState('execution-large-3'),
+    ];
+    const executionsById = new Map(
+      executions.map((execution) => [execution.id, execution]),
+    );
+    listExecutions.mockResolvedValue({
+      success: true,
+      data: executions.map(summaryFromState),
+    });
+    getExecution.mockImplementation((executionId: string) => {
+      const execution = executionsById.get(executionId);
+      if (!execution) throw new Error(`Unexpected execution ${executionId}`);
+      return Promise.resolve({ success: true, data: execution });
+    });
+
+    await usePipelineRunsStore.getState().loadExecutions({
+      cwd: '/workspace',
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+    });
+    const rows = await Promise.all(
+      executions.map(({ id }) =>
+        usePipelineRunsStore.getState().loadExecutionRowState(id),
+      ),
+    );
+
+    const state = usePipelineRunsStore.getState();
+    expect(rows).toEqual(executions.map(toPipelineRunRowState));
+    expect(Object.keys(state.statesById)).toEqual([]);
+    expect(Object.keys(state.rowStatesById).sort()).toEqual(
+      executions.map(({ id }) => id).sort(),
+    );
+    for (const row of Object.values(state.rowStatesById)) {
+      expect(row).not.toHaveProperty('job_definitions');
+    }
+    expect(JSON.stringify(state.rowStatesById)).not.toContain(
+      'W1B_STEP_SCRIPT_',
+    );
+  });
+
+  it('shares row and detail reads in either request order', async () => {
+    for (const order of ['row-first', 'detail-first'] as const) {
+      const execution = createState({
+        id: `execution-${order}`,
+        project_id: 'project-1',
+        worktree_id: 'wt-1',
+      });
+      const read = deferred<{ success: true; data: ExecutionState }>();
+      getExecution.mockReturnValue(read.promise);
+      usePipelineRunsStore.setState({
+        summaries: [summaryFromState(execution)],
+        statesById: {},
+        rowStatesById: {},
+      });
+      const lease = acquirePipelineDetailLease(null, execution.id);
+      const store = usePipelineRunsStore.getState();
+      const first =
+        order === 'row-first'
+          ? store.loadExecutionRowState(execution.id)
+          : store.loadExecutionDetails(execution.id);
+      const second =
+        order === 'row-first'
+          ? store.loadExecutionDetails(execution.id)
+          : store.loadExecutionRowState(execution.id);
+
+      expect(getExecution).toHaveBeenCalledTimes(1);
+      read.resolve({ success: true, data: execution });
+      await Promise.all([first, second]);
+
+      const rowResult = order === 'row-first' ? first : second;
+      const detailResult = order === 'row-first' ? second : first;
+      await expect(rowResult).resolves.toEqual(
+        toPipelineRunRowState(execution),
+      );
+      await expect(detailResult).resolves.toEqual(execution);
+      expect(usePipelineRunsStore.getState().statesById[execution.id]).toBe(
+        execution,
+      );
+      releasePipelineDetailLease(lease);
+      getExecution.mockClear();
+    }
+  });
+
+  it('buffers only global execution projections and clears them when hydration throws', async () => {
+    const largeState = createLargeState('execution-buffered');
+    const materializedDefinition = largeState.job_definitions.build;
+    if (!materializedDefinition) {
+      throw new Error('Expected a materialized build definition');
+    }
+    const eventState = createState({
+      ...largeState,
+      status: 'running',
+      job_definitions: {
+        build: { ...materializedDefinition, name: 'Authored Build' },
+      },
+    });
+    let rejectList: (error: Error) => void = () => undefined;
+    listExecutions.mockReturnValue(
+      new Promise<{ success: boolean; data: ExecutionSummary[] }>(
+        (resolve, reject) => {
+          rejectList = (error: Error): void => reject(error);
+        },
+      ),
+    );
+    const hydration = usePipelineRunsStore
+      .getState()
+      .loadGlobalPipelineStatuses();
+
+    usePipelineRunsStore
+      .getState()
+      .trackGlobalExecutionEvent(
+        createExecutionEvent(eventState.id, eventState),
+      );
+
+    const pending =
+      usePipelineRunsStore.getState().pendingGlobalExecutionStatesById[
+        eventState.id
+      ];
+    expect(pending).toMatchObject({
+      id: eventState.id,
+      name: 'Pipeline 1',
+      status: 'running',
+      runningJobs: ['Authored Build'],
+    });
+    expect(pending).not.toHaveProperty('pipeline_snapshot');
+    expect(JSON.stringify(pending)).not.toContain('W1B_STEP_SCRIPT_');
+
+    rejectList(new Error('global hydration unavailable'));
+    await hydration;
+    expect(
+      usePipelineRunsStore.getState().pendingGlobalExecutionStatesById,
+    ).toEqual({});
+    expect(
+      usePipelineRunsStore.getState().isHydratingGlobalPipelineStatuses,
+    ).toBe(false);
+  });
+
+  it('preserves a definition-less event over a pending row snapshot', async () => {
+    const execution = createState({
+      id: 'execution-pending-row',
+      cwd: '/other',
+      project_id: 'project-1',
+      worktree_id: 'wt-2',
+    });
+    const snapshot = createState({
+      ...execution,
+      pipeline_snapshot: {
+        name: 'Pipeline 1',
+        jobs: {
+          build: {
+            name: 'Build',
+            needs: [],
+            timeout_minutes: 0,
+            max_retries: 0,
+            continue_on_error: false,
+            steps: [
+              {
+                id: 'compile',
+                run: 'not retained in the row',
+                shell: 'bash',
+                continue_on_error: false,
+                timeout_minutes: 0,
+                skip_on_missing_action: false,
+              },
+            ],
+          },
+        },
+        env: {},
+        inputs: {},
+      },
+      job_definitions: {
+        build: {
+          physical_job_id: 'build',
+          logical_job_id: 'build',
+          name: 'Build',
+          needs: [],
+          timeout_minutes: 0,
+          max_retries: 0,
+          continue_on_error: false,
+          steps: [],
+        },
+      },
+      job_groups: {},
+    });
+    const read = deferred<{ success: true; data: ExecutionState }>();
+    getExecution.mockReturnValue(read.promise);
+    usePipelineRunsStore.setState({ summaries: [summaryFromState(snapshot)] });
+
+    const loading = usePipelineRunsStore
+      .getState()
+      .loadExecutionRowState(snapshot.id);
+    const latest = createState({
+      ...snapshot,
+      status: 'paused',
+      planId: 'plan-latest',
+      job_definitions: undefined,
+      job_groups: undefined,
+      jobs: { build: { status: 'running', steps: {}, outputs: {} } },
+    });
+    usePipelineRunsStore
+      .getState()
+      .handleExecutionEvent(createExecutionEvent(latest.id, latest));
+    read.resolve({ success: true, data: snapshot });
+
+    await expect(loading).resolves.toMatchObject({
+      status: 'paused',
+      planId: 'plan-latest',
+      pipeline_snapshot: {
+        jobs: { build: { steps: [{ id: 'compile' }] } },
+      },
+    });
+    expect(
+      usePipelineRunsStore.getState().statesById[snapshot.id],
+    ).toBeUndefined();
+  });
+
+  it('does not restore a row from a pending read after switching scopes', async () => {
+    const scopeARun = createState({
+      id: 'execution-scope-a',
+      cwd: '/workspace',
+      project_id: 'project-1',
+      worktree_id: 'wt-1',
+    });
+    const scopeBRun = createState({
+      id: 'execution-scope-b',
+      cwd: '/other',
+      project_id: 'project-1',
+      worktree_id: 'wt-2',
+    });
+    const read = deferred<{ success: true; data: ExecutionState }>();
+    getExecution.mockReturnValue(read.promise);
+    usePipelineRunsStore.setState({
+      summaries: [summaryFromState(scopeARun)],
+      currentCwd: '/workspace',
+      currentProjectId: 'project-1',
+      currentWorktreeId: 'wt-1',
+    });
+
+    const loadingRow = usePipelineRunsStore
+      .getState()
+      .loadExecutionRowState(scopeARun.id);
+    listExecutions.mockResolvedValue({
+      success: true,
+      data: [summaryFromState(scopeBRun)],
+    });
+    await usePipelineRunsStore.getState().loadExecutions({
+      cwd: '/other',
+      projectId: 'project-1',
+      worktreeId: 'wt-2',
+    });
+    read.resolve({ success: true, data: scopeARun });
+    await loadingRow;
+
+    expect(
+      usePipelineRunsStore.getState().summaries.map(({ id }) => id),
+    ).toEqual([scopeBRun.id]);
+    expect(
+      usePipelineRunsStore.getState().rowStatesById[scopeARun.id],
+    ).toBeUndefined();
+    expect(
+      usePipelineRunsStore.getState().statesById[scopeARun.id],
+    ).toBeUndefined();
+  });
+
+  it('updates the summary and row for an unleased retry without retaining detail', async () => {
     const failedSummary: ExecutionSummary = {
       id: 'execution-1',
       pipeline_id: 'pipeline-1',
       pipeline_name: 'Pipeline 1',
+      status_reasons: [],
       status: 'failure',
       started_at: '2026-03-27T12:00:00.000Z',
       completed_at: '2026-03-27T12:01:00.000Z',
@@ -190,9 +558,99 @@ describe('pipelineRunsStore retry/rerun actions', () => {
         status: 'running',
       }),
     ]);
-    expect(usePipelineRunsStore.getState().statesById['execution-1']).toEqual(
-      retriedState,
+    const state = usePipelineRunsStore.getState();
+    expect(state.statesById['execution-1']).toBeUndefined();
+    expect(state.rowStatesById['execution-1']).toEqual(
+      toPipelineRunRowState(retriedState),
     );
+  });
+
+  it('mutation and hide/show results retain full state only under a detail lease', async () => {
+    const actions = [
+      'resume',
+      'retry',
+      'retryMatrix',
+      'cancelMatrix',
+      'rerun',
+      'hideShow',
+    ] as const;
+
+    for (const leased of [false, true]) {
+      for (const action of actions) {
+        const hiddenValues = action === 'hideShow' ? [true, false] : [false];
+        for (const hidden of hiddenValues) {
+          const executionId = `execution-${action}-${hidden ? 'hidden' : 'shown'}-${leased ? 'leased' : 'row'}`;
+          const state = createState({
+            id: executionId,
+            cwd: '/workspace',
+            status: 'running',
+            hidden: action === 'hideShow' ? hidden : undefined,
+          });
+          const lease = leased
+            ? acquirePipelineDetailLease(null, executionId)
+            : null;
+          usePipelineRunsStore.setState({
+            summaries: [summaryFromState(state)],
+            statesById: {},
+            rowStatesById: {},
+          });
+
+          switch (action) {
+            case 'resume':
+              resumeExecution.mockResolvedValue({ success: true, data: state });
+              await usePipelineRunsStore
+                .getState()
+                .resumeExecution(executionId);
+              break;
+            case 'retry':
+              retryExecution.mockResolvedValue({ success: true, data: state });
+              await usePipelineRunsStore.getState().retryExecution(executionId);
+              break;
+            case 'retryMatrix':
+              retryMatrixJob.mockResolvedValue(state);
+              await usePipelineRunsStore.getState().retryMatrixJob({
+                executionId,
+                jobId: 'build',
+                mode: 'failed',
+              });
+              break;
+            case 'cancelMatrix':
+              cancelMatrixVariant.mockResolvedValue(state);
+              await usePipelineRunsStore.getState().cancelMatrixVariant({
+                executionId,
+                jobId: 'build',
+                variantJobId: 'build',
+              });
+              break;
+            case 'rerun':
+              rerunExecution.mockResolvedValue({ success: true, data: state });
+              await usePipelineRunsStore.getState().rerunExecution(executionId);
+              break;
+            case 'hideShow':
+              setExecutionHidden.mockResolvedValue({
+                success: true,
+                data: state,
+              });
+              await usePipelineRunsStore
+                .getState()
+                .setExecutionHidden(executionId, hidden);
+              break;
+          }
+
+          const stored = usePipelineRunsStore.getState();
+          expect(stored.statesById[executionId]).toBe(
+            leased ? state : undefined,
+          );
+          expect(stored.rowStatesById[executionId]).toEqual(
+            toPipelineRunRowState(state),
+          );
+          if (action === 'hideShow') {
+            expect(stored.summaries[0]?.hidden).toBe(hidden || undefined);
+          }
+          if (lease) releasePipelineDetailLease(lease);
+        }
+      }
+    }
   });
 
   it('resets joined step output before retrying a matrix job', async () => {
@@ -346,9 +804,12 @@ describe('pipelineRunsStore retry/rerun actions', () => {
         rerun_source_id: 'execution-1',
       }),
     ]);
-    expect(usePipelineRunsStore.getState().statesById['execution-2']).toEqual(
-      rerunState,
-    );
+    expect(
+      usePipelineRunsStore.getState().statesById['execution-2'],
+    ).toBeUndefined();
+    expect(
+      usePipelineRunsStore.getState().rowStatesById['execution-2'],
+    ).toEqual(toPipelineRunRowState(rerunState));
   });
 
   it('loads worktree-scoped executions from child repo directories', async () => {
@@ -359,6 +820,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-child',
           pipeline_id: 'pipeline-child',
           pipeline_name: 'Child Repo Pipeline',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:02:00.000Z',
           completed_at: '2026-03-27T12:05:00.000Z',
@@ -371,6 +833,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-root',
           pipeline_id: 'pipeline-root',
           pipeline_name: 'Root Pipeline',
+          status_reasons: [],
           status: 'running',
           started_at: '2026-03-27T12:01:00.000Z',
           cwd: '/workspace',
@@ -382,6 +845,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-other-worktree',
           pipeline_id: 'pipeline-other',
           pipeline_name: 'Other Worktree Pipeline',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:03:00.000Z',
           completed_at: '2026-03-27T12:06:00.000Z',
@@ -413,6 +877,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-match',
           pipeline_id: 'pipeline-match',
           pipeline_name: 'Matching Pipeline',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:02:00.000Z',
           completed_at: '2026-03-27T12:05:00.000Z',
@@ -425,6 +890,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-mismatch',
           pipeline_id: 'pipeline-mismatch',
           pipeline_name: 'Other Worktree Pipeline',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:03:00.000Z',
           completed_at: '2026-03-27T12:06:00.000Z',
@@ -437,6 +903,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-legacy',
           pipeline_id: 'pipeline-legacy',
           pipeline_name: 'Legacy Pipeline',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:01:00.000Z',
           completed_at: '2026-03-27T12:04:00.000Z',
@@ -465,6 +932,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       currentWorktreeId: 'wt-1',
       summaries: [],
       statesById: {},
+      rowStatesById: {},
     });
 
     usePipelineRunsStore.getState().handleExecutionEvent(
@@ -496,9 +964,19 @@ describe('pipelineRunsStore retry/rerun actions', () => {
     expect(usePipelineRunsStore.getState().summaries.map((s) => s.id)).toEqual([
       'execution-child',
     ]);
-    expect(
-      usePipelineRunsStore.getState().statesById['execution-child']?.cwd,
-    ).toBe('/workspace/repos/app');
+    const state = usePipelineRunsStore.getState();
+    expect(state.statesById['execution-child']).toBeUndefined();
+    expect(state.rowStatesById['execution-child']).toEqual(
+      toPipelineRunRowState(
+        createState({
+          id: 'execution-child',
+          cwd: '/workspace/repos/app',
+          project_id: 'project-1',
+          worktree_id: 'wt-1',
+          status: 'running',
+        }),
+      ),
+    );
   });
 
   it('projects global execution events into the currently selected run state', () => {
@@ -509,6 +987,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       worktree_id: 'wt-1',
       status: 'pending',
     });
+    const lease = acquirePipelineDetailLease(null, pending.id);
     usePipelineRunsStore.setState({
       currentCwd: '/workspace',
       currentProjectId: 'project-1',
@@ -531,7 +1010,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
     const running = createState({
       ...pending,
       status: 'running',
-      jobs: { build: { status: 'running', steps: {} } },
+      jobs: { build: { status: 'running', steps: {}, outputs: {} } },
     });
 
     usePipelineRunsStore
@@ -549,6 +1028,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
         'project-1/wt-1'
       ]?.[0]?.runningJobs,
     ).toEqual(['build']);
+    releasePipelineDetailLease(lease);
   });
 
   it('clears unseen failure severity when a retried execution succeeds', () => {
@@ -691,9 +1171,13 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       status: 'pending',
       job_definitions: {
         build: {
-          id: 'build',
+          physical_job_id: 'build',
+          logical_job_id: 'build',
           name: 'Build',
           needs: [],
+          timeout_minutes: 0,
+          max_retries: 0,
+          continue_on_error: false,
           steps: [],
         },
       },
@@ -706,11 +1190,12 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       summaries: [],
       statesById: { [complete.id]: complete },
     });
+    const lease = acquirePipelineDetailLease(null, complete.id);
 
     const incompleteUpdate = createState({
       ...complete,
       status: 'running',
-      jobs: { build: { status: 'running', steps: {} } },
+      jobs: { build: { status: 'running', steps: {}, outputs: {} } },
       job_definitions: undefined,
       job_groups: undefined,
     });
@@ -741,6 +1226,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
     expect(
       usePipelineRunsStore.getState().statesById[newIncomplete.id],
     ).toBeUndefined();
+    releasePipelineDetailLease(lease);
   });
 
   it('rehydrates persisted worktree pipeline summaries on startup', async () => {
@@ -751,6 +1237,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-running',
           pipeline_id: 'pipeline-running',
           pipeline_name: 'Build',
+          status_reasons: [],
           status: 'running',
           started_at: '2026-03-27T12:03:00.000Z',
           cwd: '/workspace',
@@ -762,6 +1249,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-failure',
           pipeline_id: 'pipeline-failure',
           pipeline_name: 'Release',
+          status_reasons: [],
           status: 'failure',
           started_at: '2026-03-27T12:02:00.000Z',
           completed_at: '2026-03-27T12:05:00.000Z',
@@ -774,6 +1262,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-success',
           pipeline_id: 'pipeline-success',
           pipeline_name: 'Deploy',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:01:00.000Z',
           completed_at: '2026-03-27T12:04:00.000Z',
@@ -871,22 +1360,28 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       project_id: 'project-1',
       worktree_id: 'wt-1',
       jobs: {
-        __matrix__review__0: { status: 'running', steps: {} },
-        __matrix__review__1: { status: 'failure', steps: {} },
+        __matrix__review__0: { status: 'running', steps: {}, outputs: {} },
+        __matrix__review__1: { status: 'failure', steps: {}, outputs: {} },
       },
       job_definitions: {
         __matrix__review__0: {
-          id: '__matrix__review__0',
+          physical_job_id: '__matrix__review__0',
           logical_job_id: 'review',
           name: 'Review (security)',
           needs: [],
+          timeout_minutes: 0,
+          max_retries: 0,
+          continue_on_error: false,
           steps: [],
         },
         __matrix__review__1: {
-          id: '__matrix__review__1',
+          physical_job_id: '__matrix__review__1',
           logical_job_id: 'review',
           name: 'Review (quality)',
           needs: [],
+          timeout_minutes: 0,
+          max_retries: 0,
+          continue_on_error: false,
           steps: [],
         },
       },
@@ -1002,7 +1497,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       status: 'running',
       project_id: 'project-1',
       worktree_id: 'wt-1',
-      jobs: { build: { status: 'running', steps: {} } },
+      jobs: { build: { status: 'running', steps: {}, outputs: {} } },
       job_definitions: undefined,
     });
 
@@ -1034,6 +1529,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-success',
           pipeline_id: 'pipeline-success',
           pipeline_name: 'Deploy',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:01:00.000Z',
           completed_at: '2026-03-27T12:04:00.000Z',
@@ -1070,6 +1566,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-success',
           pipeline_id: 'pipeline-success',
           pipeline_name: 'Deploy',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:01:00.000Z',
           completed_at: '2026-03-27T12:04:00.000Z',
@@ -1154,6 +1651,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-running',
           pipeline_id: 'pipeline-running',
           pipeline_name: 'Build',
+          status_reasons: [],
           status: 'running',
           started_at: '2026-03-27T12:03:00.000Z',
           cwd: '/workspace',
@@ -1165,6 +1663,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-failure',
           pipeline_id: 'pipeline-failure',
           pipeline_name: 'Release',
+          status_reasons: [],
           status: 'failure',
           started_at: '2026-03-27T12:02:00.000Z',
           completed_at: '2026-03-27T12:05:00.000Z',
@@ -1177,6 +1676,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-success',
           pipeline_id: 'pipeline-success',
           pipeline_name: 'Deploy',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:01:00.000Z',
           completed_at: '2026-03-27T12:04:00.000Z',
@@ -1230,25 +1730,32 @@ describe('pipelineRunsStore retry/rerun actions', () => {
       .getState()
       .loadGlobalPipelineStatuses();
 
-    usePipelineRunsStore.getState().trackGlobalExecutionEvent(
-      createExecutionEvent(
-        'execution-running',
-        createState({
-          id: 'execution-running',
-          pipeline_id: 'pipeline-running',
-          pipeline_snapshot: {
-            name: 'Build',
-            jobs: {},
-            env: {},
-            inputs: {},
-          },
-          status: 'failure',
-          completed_at: '2026-03-27T12:05:00.000Z',
-          project_id: 'project-1',
-          worktree_id: 'wt-1',
-        }),
-      ),
-    );
+    const largeState = createLargeState('execution-running');
+    const eventState = createState({
+      ...largeState,
+      pipeline_snapshot: {
+        ...largeState.pipeline_snapshot,
+        name: 'Build',
+      },
+      status: 'failure',
+      completed_at: '2026-03-27T12:05:00.000Z',
+    });
+    usePipelineRunsStore
+      .getState()
+      .trackGlobalExecutionEvent(
+        createExecutionEvent(eventState.id, eventState),
+      );
+
+    const pending =
+      usePipelineRunsStore.getState().pendingGlobalExecutionStatesById[
+        eventState.id
+      ];
+    expect(pending).toMatchObject({
+      status: 'failure',
+      runningJobs: ['Build'],
+    });
+    expect(pending).not.toHaveProperty('pipeline_snapshot');
+    expect(JSON.stringify(pending)).not.toContain('W1B_STEP_SCRIPT_');
 
     expect(resolveListExecutions).toBeDefined();
     if (!resolveListExecutions) {
@@ -1262,6 +1769,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-running',
           pipeline_id: 'pipeline-running',
           pipeline_name: 'Build',
+          status_reasons: [],
           status: 'running',
           started_at: '2026-03-27T12:03:00.000Z',
           cwd: '/workspace',
@@ -1339,6 +1847,7 @@ describe('pipelineRunsStore retry/rerun actions', () => {
           id: 'execution-success',
           pipeline_id: 'pipeline-success',
           pipeline_name: 'Deploy',
+          status_reasons: [],
           status: 'success',
           started_at: '2026-03-27T12:01:00.000Z',
           completed_at: '2026-03-27T12:04:00.000Z',
@@ -1668,6 +2177,7 @@ describe('pipelineRunsStore pendingExecutions queue (git-pending worktrees)', ()
           id: 'execution-1',
           pipeline_id: 'pipeline-1',
           pipeline_name: 'Build',
+          status_reasons: [],
           status: 'failure',
           started_at: '2026-03-27T12:00:00.000Z',
           cwd: '/workspace',
@@ -1675,9 +2185,18 @@ describe('pipelineRunsStore pendingExecutions queue (git-pending worktrees)', ()
         },
       ],
       statesById: { 'execution-1': createState() },
+      rowStatesById: {
+        'execution-1': toPipelineRunRowState(createState()),
+      },
       isHydratingGlobalPipelineStatuses: true,
       hasHydratedGlobalPipelineStatuses: true,
-      pendingGlobalExecutionStatesById: { 'execution-1': createState() },
+      pendingGlobalExecutionStatesById: {
+        'execution-1': {
+          id: 'execution-1',
+          name: 'Pipeline 1',
+          status: 'success',
+        },
+      },
       failedPendingExecutions: {
         'project-1/wt-pending': [
           {
@@ -1772,6 +2291,7 @@ describe('pipelineRunsStore hook-pipeline queue events', () => {
       currentWorktreeId: null,
       summaries: [],
       statesById: {},
+      rowStatesById: {},
       isHydratingGlobalPipelineStatuses: false,
       hasHydratedGlobalPipelineStatuses: false,
       pendingGlobalExecutionStatesById: {},
@@ -2075,6 +2595,7 @@ describe('pipelineRunsStore summary trigger source attribution', () => {
       currentWorktreeId: null,
       summaries: [],
       statesById: {},
+      rowStatesById: {},
       isHydratingGlobalPipelineStatuses: false,
       hasHydratedGlobalPipelineStatuses: false,
       pendingGlobalExecutionStatesById: {},
@@ -2201,6 +2722,7 @@ describe('pipelineRunsStore Pipeline Advisor snapshots', () => {
       currentWorktreeId: null,
       summaries: [],
       statesById: {},
+      rowStatesById: {},
       isHydratingGlobalPipelineStatuses: false,
       hasHydratedGlobalPipelineStatuses: false,
       pendingGlobalExecutionStatesById: {},
@@ -2228,6 +2750,7 @@ describe('pipelineRunsStore Pipeline Advisor snapshots', () => {
           id: 'execution-advisor-1',
           pipeline_id: 'pipeline-advisor-1',
           pipeline_name: 'Advisor Pipeline',
+          status_reasons: [],
           status: 'running',
           started_at: '2026-03-27T12:00:00.000Z',
           cwd: '/workspace',
@@ -2320,6 +2843,7 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
       id: state.id,
       pipeline_id: state.pipeline_id,
       pipeline_name: state.pipeline_snapshot.name,
+      status_reasons: [],
       status: state.status,
       started_at: state.started_at,
       cwd: state.cwd,
@@ -2376,6 +2900,7 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
       currentWorktreeId: 'wt-1',
       summaries: [summaryFor(inScope)],
       statesById: {},
+      rowStatesById: {},
       isHydratingGlobalPipelineStatuses: false,
       hasHydratedGlobalPipelineStatuses: true,
       pendingGlobalExecutionStatesById: {},
@@ -2396,8 +2921,11 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
     });
   });
 
-  it('keeps cached detail when the same scope reloads its run list', async () => {
-    usePipelineRunsStore.setState({ statesById: { [inScope.id]: inScope } });
+  it('keeps a listed row on same-scope reload without retaining full detail', async () => {
+    usePipelineRunsStore.setState({
+      statesById: { [inScope.id]: inScope },
+      rowStatesById: { [inScope.id]: toPipelineRunRowState(inScope) },
+    });
     listExecutions.mockResolvedValue({
       success: true,
       data: [summaryFor(inScope)],
@@ -2409,13 +2937,19 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
       worktreeId: 'wt-1',
     });
 
-    expect(usePipelineRunsStore.getState().statesById[inScope.id]).toBe(
-      inScope,
+    expect(
+      usePipelineRunsStore.getState().statesById[inScope.id],
+    ).toBeUndefined();
+    expect(usePipelineRunsStore.getState().rowStatesById[inScope.id]).toEqual(
+      toPipelineRunRowState(inScope),
     );
   });
 
-  it('a failed same-scope list reload does not wipe cached detail', async () => {
-    usePipelineRunsStore.setState({ statesById: { [inScope.id]: inScope } });
+  it('a failed same-scope list reload prunes unleased details and rows', async () => {
+    usePipelineRunsStore.setState({
+      statesById: { [inScope.id]: inScope },
+      rowStatesById: { [inScope.id]: toPipelineRunRowState(inScope) },
+    });
     listExecutions.mockResolvedValue({ success: false, error: 'nope' });
 
     await usePipelineRunsStore.getState().loadExecutions({
@@ -2425,18 +2959,26 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
     });
 
     expect(usePipelineRunsStore.getState().summaries).toEqual([]);
-    expect(usePipelineRunsStore.getState().statesById[inScope.id]).toBe(
-      inScope,
-    );
+    expect(
+      usePipelineRunsStore.getState().statesById[inScope.id],
+    ).toBeUndefined();
+    expect(
+      usePipelineRunsStore.getState().rowStatesById[inScope.id],
+    ).toBeUndefined();
   });
 
-  it('a scope switch resets the list and unleased detail, keeping leased and summary-interested states', async () => {
+  it('a scope switch keeps only leased detail and interested/listed rows', async () => {
     const chatCardRun = createState({ id: 'execution-chat-card' });
     usePipelineRunsStore.setState({
       statesById: {
         [inScope.id]: inScope,
         [otherWorktree.id]: otherWorktree,
         [chatCardRun.id]: chatCardRun,
+      },
+      rowStatesById: {
+        [inScope.id]: toPipelineRunRowState(inScope),
+        [otherWorktree.id]: toPipelineRunRowState(otherWorktree),
+        [chatCardRun.id]: toPipelineRunRowState(chatCardRun),
       },
     });
     const lease = acquirePipelineDetailLease(
@@ -2453,10 +2995,14 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
       worktreeId: 'wt-2',
     });
 
-    // The list projection resets at once; only unleased detail is dropped.
+    // Scope change clears old list demand; the detail lease and chat interest
+    // retain one full state and two lightweight rows respectively.
     expect(usePipelineRunsStore.getState().summaries).toEqual([]);
     expect(
       Object.keys(usePipelineRunsStore.getState().statesById).sort(),
+    ).toEqual([otherWorktree.id]);
+    expect(
+      Object.keys(usePipelineRunsStore.getState().rowStatesById).sort(),
     ).toEqual([chatCardRun.id, otherWorktree.id].sort());
 
     listed.resolve({ success: true, data: [summaryFor(otherWorktree)] });
@@ -2473,8 +3019,18 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
     const leased = createState({ id: 'execution-leased' });
     usePipelineRunsStore.setState({
       statesById: { [inScope.id]: inScope, [leased.id]: leased },
+      rowStatesById: {
+        [inScope.id]: toPipelineRunRowState(inScope),
+        [leased.id]: toPipelineRunRowState(leased),
+      },
       isHydratingGlobalPipelineStatuses: true,
-      pendingGlobalExecutionStatesById: { [pending.id]: pending },
+      pendingGlobalExecutionStatesById: {
+        [pending.id]: {
+          id: pending.id,
+          name: pending.pipeline_snapshot.name,
+          status: pending.status,
+        },
+      },
       queuedExecutionsByWorktree: {
         'project-1/wt-1': [
           {
@@ -2498,6 +3054,7 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
     expect(state.currentCwd).toBeNull();
     expect(state.summaries).toEqual([]);
     expect(Object.keys(state.statesById)).toEqual([leased.id]);
+    expect(Object.keys(state.rowStatesById)).toEqual([leased.id]);
     // Global hydration buffering, queue, and advisor state survive.
     expect(state.isHydratingGlobalPipelineStatuses).toBe(true);
     expect(Object.keys(state.pendingGlobalExecutionStatesById)).toEqual([
@@ -2556,15 +3113,23 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
       .handleExecutionEvent(createExecutionEvent(stranger.id, stranger));
 
     const state = usePipelineRunsStore.getState();
-    expect(state.statesById[otherWorktree.id]).toEqual(otherWorktree);
+    expect(state.statesById[otherWorktree.id]).toBeUndefined();
+    expect(state.rowStatesById[otherWorktree.id]).toEqual(
+      toPipelineRunRowState(otherWorktree),
+    );
     expect(state.statesById[stranger.id]).toBeUndefined();
+    expect(state.rowStatesById[stranger.id]).toBeUndefined();
     releaseInterest();
   });
 
   it('keeps an already cached state live when its events arrive out of scope', () => {
     usePipelineRunsStore.setState({
       statesById: { [otherWorktree.id]: otherWorktree },
+      rowStatesById: {
+        [otherWorktree.id]: toPipelineRunRowState(otherWorktree),
+      },
     });
+    const lease = acquirePipelineDetailLease(null, otherWorktree.id);
     const failed = createState({ ...otherWorktree, status: 'failure' });
 
     usePipelineRunsStore
@@ -2574,6 +3139,22 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
     expect(
       usePipelineRunsStore.getState().statesById[otherWorktree.id]?.status,
     ).toBe('failure');
+    releasePipelineDetailLease(lease);
+  });
+
+  it('updates an in-list unleased event as a row without retaining full detail', () => {
+    usePipelineRunsStore.setState({ summaries: [summaryFor(inScope)] });
+    const paused = createState({ ...inScope, status: 'paused' });
+
+    usePipelineRunsStore
+      .getState()
+      .handleExecutionEvent(createExecutionEvent(paused.id, paused));
+
+    const state = usePipelineRunsStore.getState();
+    expect(state.statesById[inScope.id]).toBeUndefined();
+    expect(state.rowStatesById).toEqual({
+      [inScope.id]: toPipelineRunRowState(paused),
+    });
   });
 
   it('rejects a late running snapshot that resolves after a newer terminal event', async () => {
@@ -2608,9 +3189,19 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
     const snapshot = createState({
       ...otherWorktree,
       job_definitions: {
-        build: { id: 'build', name: 'Build', needs: [], steps: [] },
+        build: {
+          physical_job_id: 'build',
+          logical_job_id: 'build',
+          name: 'Build',
+          needs: [],
+          timeout_minutes: 0,
+          max_retries: 0,
+          continue_on_error: false,
+          steps: [],
+        },
       },
     });
+    const lease = acquirePipelineDetailLease(null, otherWorktree.id);
 
     const loading = usePipelineRunsStore
       .getState()
@@ -2638,18 +3229,19 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
       status: 'paused',
       job_definitions: snapshot.job_definitions,
     });
+    releasePipelineDetailLease(lease);
   });
 
-  it('a snapshot with no newer event installs as read', async () => {
+  it('returns an unleased snapshot to its caller without retaining full detail', async () => {
     getExecution.mockResolvedValue({ success: true, data: otherWorktree });
 
-    await usePipelineRunsStore
-      .getState()
-      .loadExecutionDetails(otherWorktree.id);
+    await expect(
+      usePipelineRunsStore.getState().loadExecutionDetails(otherWorktree.id),
+    ).resolves.toBe(otherWorktree);
 
-    expect(usePipelineRunsStore.getState().statesById[otherWorktree.id]).toBe(
-      otherWorktree,
-    );
+    expect(
+      usePipelineRunsStore.getState().statesById[otherWorktree.id],
+    ).toBeUndefined();
   });
 
   it('shares one in-flight snapshot read between concurrent consumers', async () => {
@@ -2693,6 +3285,10 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
         [otherWorktree.id]: otherWorktree,
         [interested.id]: interested,
       },
+      rowStatesById: {
+        [inScope.id]: toPipelineRunRowState(inScope),
+        [interested.id]: toPipelineRunRowState(interested),
+      },
     });
     const releaseInterest = acquirePipelineSummaryInterest(interested.id);
 
@@ -2701,10 +3297,47 @@ describe('pipelineRunsStore list/detail lifecycle (phase 02)', () => {
     store.releaseExecutionDetail(otherWorktree.id);
     store.releaseExecutionDetail(interested.id);
 
-    expect(
-      Object.keys(usePipelineRunsStore.getState().statesById).sort(),
-    ).toEqual([inScope.id, interested.id].sort());
+    const state = usePipelineRunsStore.getState();
+    expect(Object.keys(state.statesById)).toEqual([]);
+    expect(Object.keys(state.rowStatesById).sort()).toEqual(
+      [inScope.id, interested.id].sort(),
+    );
     releaseInterest();
+  });
+
+  it('prunes after the last of two leases and two summary interests releases', async () => {
+    const state = createState({ id: 'execution-ref-counted' });
+    usePipelineRunsStore.setState({
+      summaries: [],
+      statesById: { [state.id]: state },
+      rowStatesById: { [state.id]: toPipelineRunRowState(state) },
+    });
+    const leaseA = acquirePipelineDetailLease(null, state.id);
+    const leaseB = acquirePipelineDetailLease(null, state.id);
+    const releaseInterestA = acquirePipelineSummaryInterest(state.id);
+    const releaseInterestB = acquirePipelineSummaryInterest(state.id);
+
+    releasePipelineDetailLease(leaseA);
+    releaseInterestA();
+    expect(usePipelineRunsStore.getState().statesById[state.id]).toBe(state);
+    expect(
+      usePipelineRunsStore.getState().rowStatesById[state.id],
+    ).toBeDefined();
+
+    releasePipelineDetailLease(leaseB);
+    await Promise.resolve();
+    expect(
+      usePipelineRunsStore.getState().statesById[state.id],
+    ).toBeUndefined();
+    expect(
+      usePipelineRunsStore.getState().rowStatesById[state.id],
+    ).toBeDefined();
+
+    releaseInterestB();
+    await Promise.resolve();
+    expect(
+      usePipelineRunsStore.getState().rowStatesById[state.id],
+    ).toBeUndefined();
   });
 
   it('owner cleanup releases every lease of that owner and evicts its detail', () => {

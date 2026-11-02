@@ -114,6 +114,7 @@ const detail: SharedPipelineDetail = {
   canUpdate: true,
   canDelete: true,
   rawPipeline: 'name: Release',
+  contentHash: 'a'.repeat(64),
   shareScope: 'organization',
   owner: {
     type: 'organization',
@@ -179,7 +180,7 @@ it('blocks revoked shared origins before reading local content', async () => {
   mockFindLocal.mockResolvedValue({ accountId: 'user-a', receipt });
   jest
     .mocked(getSharedPipeline)
-    .mockRejectedValueOnce(new Error('Pipeline unavailable (access-removed)'));
+    .mockRejectedValueOnce(new Error('Workflow unavailable (access-removed)'));
   await expect(assertStoredPipelineContext('local-a')).rejects.toThrow(
     'access-removed',
   );
@@ -245,7 +246,7 @@ describe.each(['install', 'local copy', 'shared copy'])(
           },
         );
         await expect(writeReceipt()).rejects.toThrow(
-          'Pipeline unavailable (access-removed)',
+          'Workflow unavailable (access-removed)',
         );
         expect(mockRecord).not.toHaveBeenCalled();
       },
@@ -283,7 +284,7 @@ it.each(['account', 'context'])(
       });
     await expect(
       copyPipelineInstallOrigin('shared:canopy-cloud:remote-a', 'destination'),
-    ).rejects.toThrow('Pipeline unavailable (access-removed)');
+    ).rejects.toThrow('Workflow unavailable (access-removed)');
     expect(mockRecord).not.toHaveBeenCalled();
   },
 );
@@ -305,7 +306,7 @@ it.each(['account', 'context'])(
     const rollback = jest.fn();
     await expect(
       recordSharedPipelineInstall(detail, 'destination', rollback),
-    ).rejects.toThrow('Pipeline unavailable (access-removed)');
+    ).rejects.toThrow('Workflow unavailable (access-removed)');
     expect(mockRecord).not.toHaveBeenCalled();
     expect(rollback).not.toHaveBeenCalled();
   },
@@ -331,7 +332,7 @@ it.each(['account', 'context'])(
     const rollback = jest.fn();
     await expect(
       copyPipelineInstallOrigin('local-a', 'destination', rollback),
-    ).rejects.toThrow('Pipeline unavailable (access-removed)');
+    ).rejects.toThrow('Workflow unavailable (access-removed)');
     expect(mockRecord).not.toHaveBeenCalled();
     expect(rollback).not.toHaveBeenCalled();
   },
@@ -391,7 +392,7 @@ it('fails closed for ambiguous ownership even when a legacy capability policy al
   const { assertPipelineContext, pipelineContextAllowed } =
     await import('../resource-lanes');
   await expect(assertPipelineContext({ owner: undefined })).rejects.toThrow(
-    'Pipeline unavailable (unknown-provenance)',
+    'Workflow unavailable (unknown-provenance)',
   );
   await expect(pipelineContextAllowed({ owner: undefined })).resolves.toBe(
     false,
@@ -424,6 +425,7 @@ it('loads project share bytes from the selected worktree file without consulting
   jest.mocked(readWorkspaceConfigDetailed).mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
+    memoryMalformed: false,
     config: { version: 1, type: 'single-repo', repoPath: root, repos: [] },
   });
   jest
@@ -478,8 +480,12 @@ it('refuses reformatted existing Advisor content without a source locator', asyn
       {
         id: 'local-a',
         name: 'Release',
+        filename: 'release.yaml',
         description: '',
         icon: '',
+        createdAt: '2026-09-23T00:00:00Z',
+        updatedAt: '2026-09-23T00:00:00Z',
+        readonly: false,
         source: 'user',
       },
     ],
@@ -553,8 +559,12 @@ it.each(['bundled', 'curated'])(
         filePath,
         id,
         name: 'Release',
+        filename: 'release.yaml',
         description: '',
         icon: '',
+        createdAt: '2026-09-23T00:00:00Z',
+        updatedAt: '2026-09-23T00:00:00Z',
+        readonly: true,
         source,
       },
       content: { name: 'Release', on: 'dispatch', jobs: {} },
@@ -607,6 +617,7 @@ it.each(['unreadable', 'absent', 'malformed'] as const)(
     jest.mocked(readWorkspaceConfigDetailed).mockResolvedValue({
       authority: state === 'malformed' ? 'ok' : state,
       ownerMalformed: state === 'malformed',
+      memoryMalformed: false,
       config: { version: 1, type: 'multi-repo', repos: [] },
     });
     await expect(
@@ -616,7 +627,7 @@ it.each(['unreadable', 'absent', 'malformed'] as const)(
         worktreeId: 'worktree-a',
         pipelineFilePath: '/unused.yaml',
       }),
-    ).rejects.toThrow('Pipeline unavailable (unknown-provenance)');
+    ).rejects.toThrow('Workflow unavailable (unknown-provenance)');
     expect(mockDecide).not.toHaveBeenCalled();
   },
 );
@@ -649,11 +660,18 @@ it('authorizes managed cowork project pipelines from the canonical home', async 
   jest.mocked(readWorkspaceConfigDetailed).mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
+    memoryMalformed: false,
     config: {
       version: 1,
       type: 'cowork',
       repos: [],
-      owner: { type: 'organization', organizationId: 'org-a' },
+      owner: {
+        type: 'organization',
+        organizationId: 'org-a',
+        projectId: 'project-a',
+        instanceId: 'instance-a',
+        bindingGeneration: 1,
+      },
     },
   });
   try {

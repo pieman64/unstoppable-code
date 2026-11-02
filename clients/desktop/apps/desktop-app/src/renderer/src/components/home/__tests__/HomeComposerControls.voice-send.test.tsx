@@ -7,9 +7,18 @@ import type { VoiceProviderHandlers } from '@/lib/voice/voice-types';
 import { HomeComposerControls } from '../HomeComposerControls';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
 import { useChatStore } from '@/stores/chatStore';
-import { useOnboardingSuggestionSurfaces } from '@/stores/onboardingSuggestionSurfacesStore';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+// The real hint store hydrates when the Home composer mounts.
+const preferences = { planModeHint: { version: 1, generation: 0 } };
+Object.defineProperty(window, 'api', {
+  value: {
+    loadPreferences: jest.fn().mockResolvedValue(preferences),
+    savePreferences: jest.fn().mockResolvedValue(preferences),
+    onPreferencesSynced: jest.fn(() => (): void => undefined),
+  },
+});
 
 // Keep the real Home store, provider resolver, action subscription, + menu,
 // and shared chip. Replace unrelated service hooks and setting pickers.
@@ -80,7 +89,6 @@ jest.mock('@/components/chat/ApprovalModePicker', () => ({
 
 const originalHome = useHomeComposerStore.getState();
 const originalChat = useChatStore.getState();
-const originalOnboarding = useOnboardingSuggestionSurfaces.getState();
 
 it.each(['final', 'stopped', 'error'] as const)(
   'Home sends only the completed %s take with keyboard edits',
@@ -101,13 +109,13 @@ it.each(['final', 'stopped', 'error'] as const)(
       ...originalHome,
       workspaceId: 'voice-test',
       model: 'opus[1m]',
-      approvalMode: 'default',
+      approvalMode: 'ask',
       loadDiscovery: jest.fn().mockResolvedValue(undefined),
     });
     useChatStore.setState({
-      approvalDefaultsCache: { 'voice-test': 'default' },
+      approvalDefaultsCache: { 'voice-test': 'ask' },
     });
-    useOnboardingSuggestionSurfaces.setState({ planModeHighlight: false });
+
     const click = async (testId: string): Promise<void> => {
       const button = document.querySelector(`[data-testid="${testId}"]`);
       if (!(button instanceof HTMLButtonElement))
@@ -176,7 +184,6 @@ it.each(['final', 'stopped', 'error'] as const)(
       container.remove();
       useHomeComposerStore.setState(originalHome, true);
       useChatStore.setState(originalChat, true);
-      useOnboardingSuggestionSurfaces.setState(originalOnboarding, true);
     }
   },
 );

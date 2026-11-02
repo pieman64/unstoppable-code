@@ -12,6 +12,37 @@ import {
   workspaceKind,
 } from '../sidebar-model';
 
+type PrSnapshot = NonNullable<Parameters<typeof derivePrBadgeStatus>[0]>;
+type PrStatus = NonNullable<PrSnapshot['repos'][number]['status']>;
+
+const makePrSnapshot = (
+  repos: readonly {
+    readonly repoId: string;
+    readonly status: Partial<PrStatus> | null;
+  }[],
+): PrSnapshot => ({
+  repos: repos.map(({ repoId, status }) => ({
+    repoId,
+    repoName: repoId,
+    status:
+      status === null
+        ? null
+        : {
+            state: 'open',
+            prNumber: 42,
+            prUrl: `https://github.com/example/${repoId}/pull/42`,
+            title: 'PR',
+            checkStatus: 'passing',
+            reviewStatus: 'approved',
+            hasConflicts: false,
+            commentCount: 0,
+            updatedAt: '2026-10-06T00:00:00.000Z',
+            ...status,
+          },
+  })),
+  lastCheckedAt: '2026-10-06T00:00:00.000Z',
+});
+
 function snapshot(): PortalSessionShellState {
   return {
     workspaces: [
@@ -21,7 +52,27 @@ function snapshot(): PortalSessionShellState {
       { localId: 'cowork', name: 'Cowork', type: 'cowork' },
     ],
     worktrees: [],
+    chatProjects: [],
     standaloneChats: [],
+    scriptDescriptors: [],
+    scriptRuns: [],
+    hookDescriptors: [],
+    hookRuns: [],
+    plans: [],
+    pipelines: [],
+    pipelineRuns: [],
+    chatMessages: [],
+    chatSummaries: [],
+    terminalSessions: [],
+    terminalBuffers: {},
+    changedFiles: {},
+    diffSnapshots: {},
+    prStatuses: {},
+    fileRoots: [],
+    fileTree: {},
+    filePreviews: {},
+    refreshing: false,
+    connectionStatus: 'active',
   };
 }
 
@@ -178,14 +229,14 @@ describe('sidebar model', () => {
   it.each(['merged', 'closed'] as const)(
     'preserves a %s PR through the shared projection and focused row',
     (state) => {
-      const badge = derivePrBadgeStatus({
-        repos: [
+      const badge = derivePrBadgeStatus(
+        makePrSnapshot([
           {
             repoId: 'r',
             status: { state, title: 'Terminal preview', prNumber: 42 },
           },
-        ],
-      });
+        ]),
+      );
       expect(badge).toMatchObject({
         state,
         title: 'Terminal preview',
@@ -205,25 +256,23 @@ describe('sidebar model', () => {
   );
 
   it('derives merged and open PR presentation', () => {
-    const merged = {
-      repos: [{ repoId: 'r', status: { state: 'merged' as const } }],
-    };
+    const merged = makePrSnapshot([
+      { repoId: 'r', status: { state: 'merged' } },
+    ]);
     expect(hasAllKnownPrsMerged(merged)).toBe(true);
-    const open = {
-      repos: [
-        {
-          repoId: 'r',
-          status: {
-            state: 'open' as const,
-            prNumber: 42,
-            title: 'Ship it',
-            checkStatus: 'passing' as const,
-            reviewStatus: 'approved' as const,
-            hasConflicts: false,
-          },
+    const open = makePrSnapshot([
+      {
+        repoId: 'r',
+        status: {
+          state: 'open',
+          prNumber: 42,
+          title: 'Ship it',
+          checkStatus: 'passing',
+          reviewStatus: 'approved',
+          hasConflicts: false,
         },
-      ],
-    };
+      },
+    ]);
     expect(derivePrBadgeStatus(open)).toMatchObject({
       label: 'PR #42',
       isMergeReady: true,
@@ -231,23 +280,21 @@ describe('sidebar model', () => {
   });
 
   it('uses unresolved review threads rather than total comments for the PR badge', () => {
-    const open = {
-      repos: [
-        {
-          repoId: 'r',
-          status: {
-            state: 'open' as const,
-            prNumber: 42,
-            title: 'Resolved feedback',
-            checkStatus: 'passing' as const,
-            reviewStatus: 'approved' as const,
-            hasConflicts: false,
-            commentCount: 1,
-            unresolvedReviewThreadCount: 0,
-          },
+    const open = makePrSnapshot([
+      {
+        repoId: 'r',
+        status: {
+          state: 'open',
+          prNumber: 42,
+          title: 'Resolved feedback',
+          checkStatus: 'passing',
+          reviewStatus: 'approved',
+          hasConflicts: false,
+          commentCount: 1,
+          unresolvedReviewThreadCount: 0,
         },
-      ],
-    };
+      },
+    ]);
 
     expect(derivePrBadgeStatus(open)).toMatchObject({
       unresolvedCommentCount: 0,
@@ -256,8 +303,8 @@ describe('sidebar model', () => {
 
   it('keeps pending in ciStatus while collapsing the compact check badge', () => {
     expect(
-      derivePrBadgeStatus({
-        repos: [
+      derivePrBadgeStatus(
+        makePrSnapshot([
           {
             repoId: 'r',
             status: {
@@ -268,14 +315,14 @@ describe('sidebar model', () => {
               hasConflicts: false,
             },
           },
-        ],
-      }),
+        ]),
+      ),
     ).toMatchObject({ checkStatus: 'none', ciStatus: 'pending' });
   });
 
   it('marks a queued PR as in the merge queue and not merge-ready', () => {
-    const badge = derivePrBadgeStatus({
-      repos: [
+    const badge = derivePrBadgeStatus(
+      makePrSnapshot([
         {
           repoId: 'r',
           status: {
@@ -288,8 +335,8 @@ describe('sidebar model', () => {
             mergeQueue: { inQueue: true, position: 2 },
           },
         },
-      ],
-    });
+      ]),
+    );
     expect(badge).toMatchObject({
       isMergeReady: false,
       inMergeQueue: true,
@@ -298,33 +345,30 @@ describe('sidebar model', () => {
   });
 
   it('leaves the queue fields off an unqueued PR or a null position', () => {
-    const status = {
-      state: 'open' as const,
+    const status: Partial<PrStatus> = {
+      state: 'open',
       prNumber: 42,
       title: 'Not queued',
       checkStatus: 'passing' as const,
       reviewStatus: 'approved' as const,
       hasConflicts: false,
     };
-    const notQueued = derivePrBadgeStatus({
-      repos: [
-        {
-          repoId: 'r',
-          status: { ...status, mergeQueue: { inQueue: false } },
-        },
-      ],
-    });
+    const notQueued = derivePrBadgeStatus(
+      makePrSnapshot([
+        { repoId: 'r', status: { ...status, mergeQueue: { inQueue: false } } },
+      ]),
+    );
     expect(notQueued).toMatchObject({ isMergeReady: true });
     expect(notQueued).not.toHaveProperty('inMergeQueue');
 
-    const unknownPosition = derivePrBadgeStatus({
-      repos: [
+    const unknownPosition = derivePrBadgeStatus(
+      makePrSnapshot([
         {
           repoId: 'r',
           status: { ...status, mergeQueue: { inQueue: true, position: null } },
         },
-      ],
-    });
+      ]),
+    );
     expect(unknownPosition).toMatchObject({ inMergeQueue: true });
     expect(unknownPosition).not.toHaveProperty('mergeQueuePosition');
   });
@@ -335,21 +379,29 @@ describe('sidebar model', () => {
     >['repos'][number];
     const repo = (repoId: string, inQueue: boolean): BadgeRepo => ({
       repoId,
+      repoName: repoId,
       status: {
         state: 'open' as const,
         prNumber: 1,
+        prUrl: `https://github.com/example/${repoId}/pull/1`,
         title: repoId,
         checkStatus: 'passing' as const,
         reviewStatus: 'approved' as const,
         hasConflicts: false,
+        commentCount: 0,
+        updatedAt: '2026-10-06T00:00:00.000Z',
         mergeQueue: { inQueue, position: 1 },
       },
     });
     expect(
-      derivePrBadgeStatus({ repos: [repo('a', true), repo('b', true)] }),
+      derivePrBadgeStatus({
+        repos: [repo('a', true), repo('b', true)],
+        lastCheckedAt: '2026-10-06T00:00:00.000Z',
+      }),
     ).toMatchObject({ inMergeQueue: true, label: '2 PRs' });
     const mixed = derivePrBadgeStatus({
       repos: [repo('a', true), repo('b', false)],
+      lastCheckedAt: '2026-10-06T00:00:00.000Z',
     });
     expect(mixed).not.toHaveProperty('inMergeQueue');
     expect(mixed).not.toHaveProperty('mergeQueuePosition');
@@ -379,9 +431,10 @@ describe('sidebar model', () => {
       expect(
         derivePrBadgeStatus({
           repos: [
-            { repoId: 'a', status: prStatus() },
-            { repoId: 'b', status },
+            { repoId: 'a', repoName: 'a', status: prStatus() },
+            { repoId: 'b', repoName: 'b', status },
           ],
+          lastCheckedAt: '2026-10-06T00:00:00.000Z',
         }),
       ).toMatchObject({
         reviewStatus: 'changes_requested',

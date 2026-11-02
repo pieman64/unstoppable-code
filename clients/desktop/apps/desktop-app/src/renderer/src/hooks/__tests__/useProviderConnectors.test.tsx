@@ -61,6 +61,15 @@ afterEach(() => {
 });
 
 describe('useProviderConnectors', () => {
+  it('exposes an unknown failed read and clears it after a successful refresh (CAN-4007)', async () => {
+    listProviderConnectors.mockRejectedValueOnce(new Error('Read failed'));
+    mount();
+    await flush();
+    expect(probe.error).toBe('Read failed');
+    act(() => probe.refresh());
+    await flush();
+    expect(probe.error).toBeNull();
+  });
   it('reads once on mount', async () => {
     mount();
     await flush();

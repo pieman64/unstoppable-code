@@ -12,6 +12,7 @@ import {
   type AgentSentReceivingContext,
 } from '../AgentSentTitle';
 import { REPLAY_MASK_CLASS } from '../../../lib/replay-privacy';
+import { WorkflowIcon } from '../../../icons/AppIcons';
 
 const project: ChatAgentSentInfo = {
   sender: {
@@ -29,15 +30,40 @@ const bot: ChatAgentSentInfo = {
   chatTitle: 'Weekly summary',
   projectLabel: 'App Advisor',
 };
+const pipeline: ChatAgentSentInfo = {
+  sender: {
+    kind: 'pipeline',
+    executionId: 'exec-1',
+    pipelineId: 'pipeline-1',
+    stepId: 'notify',
+    automationId: 'automation-1',
+  },
+  chatTitle: 'Nightly triage',
+  projectLabel: '',
+};
 function title(
   info: ChatAgentSentInfo,
   context: AgentSentReceivingContext,
+  options: { steering?: boolean; layout?: 'block' | 'inline' } = {},
 ): HTMLElement {
   const container = document.createElement('div');
   container.innerHTML = renderToString(
-    <AgentSentTitle agentSent={info} receivingContext={context} />,
+    <AgentSentTitle agentSent={info} receivingContext={context} {...options} />,
   );
   return container;
+}
+/** The chat sender's icon box in the same layout; a pipeline title matches it. */
+function chatIconStyle(layout: 'block' | 'inline'): string | null | undefined {
+  return title(project, { kind: 'project', projectId: 'project' }, { layout })
+    .querySelector('svg')
+    ?.getAttribute('style');
+}
+function workflowIconMarkup(size: number): string {
+  const container = document.createElement('div');
+  container.innerHTML = renderToString(
+    <WorkflowIcon width={size} height={size} />,
+  );
+  return container.querySelector('svg')?.innerHTML ?? '';
 }
 describe('AgentSentTitle', () => {
   it('shows only the captured chat title in the same project', () => {
@@ -88,6 +114,88 @@ describe('AgentSentTitle', () => {
     ]);
     expect(el.querySelector('[title], [aria-label]')).toBeNull();
     expect(el.innerHTML).not.toContain('Sent by');
+  });
+});
+
+describe('AgentSentTitle for a pipeline sender', () => {
+  it('shows the workflow icon and only the captured name, with the kind and no name in attributes', () => {
+    for (const context of [
+      { kind: 'project', projectId: 'project' },
+      { kind: 'bot', botId: 'app_advisor' },
+    ] satisfies AgentSentReceivingContext[]) {
+      const el = title({ ...pipeline, projectLabel: 'Never shown' }, context);
+      const row = el.querySelector('[data-testid="agent-sent-title"]');
+      expect(row?.getAttribute('data-sender')).toBe('pipeline');
+      expect(row?.tagName).toBe('SPAN');
+      expect(el.textContent).toBe('Nightly triage');
+      const icons = el.querySelectorAll('svg');
+      expect(icons).toHaveLength(1);
+      expect(icons[0]?.getAttribute('aria-hidden')).toBe('true');
+      expect(icons[0]?.getAttribute('style')).toBe(chatIconStyle('block'));
+      expect(icons[0]?.innerHTML).toBe(workflowIconMarkup(11));
+      const masked = el.querySelectorAll(`.${REPLAY_MASK_CLASS}`);
+      expect(Array.from(masked, (node) => node.textContent)).toEqual([
+        'Nightly triage',
+      ]);
+      const attributes = Array.from(el.querySelectorAll('*')).flatMap((node) =>
+        Array.from(node.attributes, (attribute) => attribute.value),
+      );
+      expect(attributes.join('\n')).not.toContain('Nightly triage');
+      expect(attributes.join('\n')).not.toContain('automation-1');
+    }
+  });
+
+  it('keeps the steering title beside it', () => {
+    const el = title(
+      pipeline,
+      { kind: 'project', projectId: 'project' },
+      { steering: true },
+    );
+    expect(
+      el.querySelector('[data-testid="agent-sent-title"]')?.textContent,
+    ).toBe('Nightly triage');
+    expect(el.querySelector('[data-testid="steering-title"]')).not.toBeNull();
+  });
+
+  it('uses the inline sizes and ink in the inline layout', () => {
+    const el = title(
+      pipeline,
+      { kind: 'project', projectId: 'project' },
+      { layout: 'inline' },
+    );
+    const row = el.querySelector('[data-testid="agent-sent-title"]');
+    expect(row?.classList.contains('fg-tertiary')).toBe(true);
+    expect(el.querySelector('svg')?.getAttribute('style')).toBe(
+      chatIconStyle('inline'),
+    );
+    expect(el.querySelector('svg')?.innerHTML).toBe(workflowIconMarkup(14));
+  });
+
+  // CAN-4549: an automation's own send names no run or step.
+  it('shows an automation-only sender like a pipeline step, in both layouts', () => {
+    const automation: ChatAgentSentInfo = {
+      sender: { kind: 'pipeline', automationId: 'automation-1' },
+      chatTitle: 'Morning report',
+      projectLabel: '',
+    };
+    for (const layout of ['block', 'inline'] as const) {
+      const el = title(
+        automation,
+        { kind: 'project', projectId: 'project' },
+        { layout },
+      );
+      const row = el.querySelector('[data-testid="agent-sent-title"]');
+      expect(row?.getAttribute('data-sender')).toBe('pipeline');
+      expect(row?.tagName).toBe('SPAN');
+      expect(el.textContent).toBe('Morning report');
+      expect(el.querySelector('svg')?.innerHTML).toBe(
+        workflowIconMarkup(layout === 'inline' ? 14 : 11),
+      );
+      const attributes = Array.from(el.querySelectorAll('*')).flatMap((node) =>
+        Array.from(node.attributes, (attribute) => attribute.value),
+      );
+      expect(attributes.join('\n')).not.toContain('automation-1');
+    }
   });
 });
 
@@ -146,6 +254,21 @@ describe('AgentSentTitle with a sender opener', () => {
       view.container.querySelector('[data-testid="agent-sent-title"]')
         ?.textContent,
     ).toBe(project.chatTitle);
+    view.unmount();
+  });
+
+  it('never asks the opener about a pipeline sender and stays plain text', () => {
+    const canOpen = jest.fn(() => true);
+    const open = jest.fn();
+    const view = rendered(pipeline, { canOpen, open });
+    expect(canOpen).not.toHaveBeenCalled();
+    expect(view.container.querySelector('button')).toBeNull();
+    const row = view.container.querySelector(
+      '[data-testid="agent-sent-title"]',
+    );
+    expect(row?.textContent).toBe('Nightly triage');
+    act(() => (row instanceof HTMLElement ? row.click() : undefined));
+    expect(open).not.toHaveBeenCalled();
     view.unmount();
   });
 });

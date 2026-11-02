@@ -1,17 +1,32 @@
+import { flushSync } from 'react-dom';
 import { requestAutomationProjectCreation } from '@/stores/automationInstallContinuationStore';
-import { useCallback, useEffect, useMemo, useRef, type JSX } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import type {
   DeepLinkShareOpenEvent,
   PublicShareSnapshot,
 } from '@canopy/desktop-shared/types';
 import {
+  SHARE_ATTRIBUTION_SEPARATOR,
+  SHARE_ATTRIBUTION_SHARER_PREFIX,
   shareInstallActionLabel,
   shareInstallDefaultDescription,
   shareInstallEntityNoun,
   shareInstallPlaceholderTitle,
+  shareInstallSkillEffectParts,
   shareInstallTypeLabel,
+  type ShareAttributionPart,
   type ShareInstallEntity,
 } from '@canopy/ui-app/sharing/share-install-copy';
+import { useResourceContext } from '@canopy/ui-app/capability';
+import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
 import { InstalledShareMenu } from '@canopy/ui-shared/components/InstalledShareMenu';
 import {
   ShareInstallDialog,
@@ -38,8 +53,30 @@ import {
   type PublicShareInstalledTarget,
   type PublicShareLanding,
 } from './usePublicShareLanding';
-import { shareLandingErrorCopy } from './shareLandingErrorCopy';
-import { openInstallReveal, openInstalledResult } from './installReveal';
+import {
+  shareLandingErrorCopy,
+  shareLandingRecovery,
+} from './shareLandingErrorCopy';
+import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
+import {
+  skillShareAttribution,
+  skillShareInstallScope,
+} from './shareInstallProvenance';
+import {
+  announceInstall,
+  openInstallReveal,
+  openInstalledResult,
+} from './installReveal';
+import { installRevealNotice } from './installRevealNotice';
+import {
+  captureShareChatTarget,
+  offerUseInChat,
+  isShareChatTargetCurrent,
+  notifyUseInChatFailure,
+  watchShareChatTarget,
+  type ShareChatTarget,
+} from './shareChatTarget';
+import { useChatStore } from '@/stores/chatStore';
 import { SharedContainerLinkLandingModal } from '@/components/shared-containers/SharedContainerLinkLandingModal';
 
 /**
@@ -47,7 +84,9 @@ import { SharedContainerLinkLandingModal } from '@/components/shared-containers/
  * from the web and an in-app Add or Install open the same small dialog. It
  * names the item, says who shared it, describes it in a line or three, and
  * offers exactly one primary action. Nothing installs without that click.
- * A finished install closes the review and lands on the result.
+ * A finished install closes the review and lands on the result, except a
+ * skill installed over a chat: the user stays in that chat and the notice
+ * offers **Use in this chat** (CAN-5219).
  *
  * All landing behavior lives in `usePublicShareLanding`; this shell only
  * renders its phases through the shared `ShareInstallDialog`.
@@ -113,7 +152,7 @@ function snapshotName(
 function installedStatus(
   installed: PublicShareInstalledTarget,
   installStatus: string,
-): string {
+): JSX.Element | string {
   if (installStatus !== '') return installStatus;
   if (installed.entity === 'workspace') return 'Added to your projects.';
   if (
@@ -123,7 +162,15 @@ function installedStatus(
     return 'Installed. An update is available.';
   }
   if (installed.entity === 'skill') {
-    return `Installed as “${installed.skillName}”.`;
+    return (
+      <>
+        Installed as “
+        <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+          {installed.skillName}
+        </span>
+        ”.{installed.updateAvailable === true && ' An update is available.'}
+      </>
+    );
   }
   return 'Installed.';
 }
@@ -141,6 +188,45 @@ function offersUninstall(installed: PublicShareInstalledTarget): boolean {
 }
 
 /**
+ * A skill's attribution parts, in order. The sharer is a person: replay
+ * records a box for the name only, keeping `Shared by` around it.
+ */
+function renderShareAttribution(
+  parts: readonly ShareAttributionPart[],
+): JSX.Element | undefined {
+  if (parts.length === 0) return undefined;
+  return (
+    <>
+      {parts.map((part, index) => (
+        <Fragment key={part.kind}>
+          {index > 0 && SHARE_ATTRIBUTION_SEPARATOR}
+          {part.kind === 'sharer' ? (
+            <>
+              {SHARE_ATTRIBUTION_SHARER_PREFIX}
+              <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{part.name}</span>
+            </>
+          ) : part.kind === 'owner' ? (
+            <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{part.name}</span>
+          ) : (
+            <>
+              {part.label}
+              {part.name && (
+                <>
+                  :{' '}
+                  <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+                    {part.name}
+                  </span>
+                </>
+              )}
+            </>
+          )}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
+/**
  * Every field of the two links matches: a repeat of the same request (a
  * second Install click on the web), not a new one.
  */
@@ -152,7 +238,111 @@ function isSameShareLink(
   return keys.every((key) => Reflect.get(a, key) === Reflect.get(b, key));
 }
 
+/**
+ * Where the user is: the page, the selected worktree, and its active tab. A
+ * skill landing that opened outside a chat reveals the installed skill only
+ * if this has not changed, so a finished install never pulls the user away
+ * from work they moved on to.
+ */
+function navigationContextKey(): string {
+  const navigation = useNavigationStore.getState();
+  const { selectedWorktree, worktreeChats } = useChatStore.getState();
+  const worktree =
+    selectedWorktree === null
+      ? ''
+      : `${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`;
+  return JSON.stringify([
+    navigation.activePage,
+    navigation.settingsOpen,
+    navigation.canopyPortalOpen,
+    worktree,
+    worktreeChats[worktree]?.activeTabId ?? '',
+  ]);
+}
+
+/**
+ * The chat this landing opened over, captured once, and whether it is still
+ * the one on screen. Once the user moves away the offer is gone for good: it
+ * is never retargeted to the chat they moved to.
+ */
+function useShareChatTarget(): {
+  target: ShareChatTarget | null;
+  current: boolean;
+  isUnchanged: () => boolean;
+} {
+  const [opened] = useState(() => ({
+    target: captureShareChatTarget(),
+    navigationKey: navigationContextKey(),
+  }));
+  const unchanged = useRef(true);
+  const mounted = useRef(true);
+  const [current, setCurrent] = useState(opened.target !== null);
+  useEffect(() => {
+    mounted.current = true;
+    const invalidate = (): void => {
+      unchanged.current = false;
+      setCurrent(false);
+    };
+    const check = (): void => {
+      if (navigationContextKey() !== opened.navigationKey) invalidate();
+    };
+    const stopTarget =
+      opened.target === null
+        ? (): void => undefined
+        : watchShareChatTarget(opened.target, invalidate);
+    const stopChat = useChatStore.subscribe(check);
+    const stopNavigation = useNavigationStore.subscribe(check);
+    check();
+    return (): void => {
+      mounted.current = false;
+      stopTarget();
+      stopChat();
+      stopNavigation();
+    };
+  }, [opened]);
+  const isUnchanged = useCallback(
+    (): boolean => mounted.current && unchanged.current,
+    [],
+  );
+  return { target: opened.target, current, isUnchanged };
+}
+
 /** Entities whose `intent=try` stages something after the install. */
+/**
+ * Sign in and Switch account open the connect gate or Settings, which this
+ * dialog would otherwise cover (CAN-5222). The dialog steps aside while that
+ * surface is open and returns when it closes, cancelled or not; the landing
+ * stays mounted throughout, so the share is never lost.
+ */
+function useStepAsideForAccount(): {
+  steppedAside: boolean;
+  stepAside: () => void;
+} {
+  const [requested, setRequested] = useState(false);
+  const settingsOpen = useNavigationStore((s) => s.settingsOpen);
+  const gateOpen = useCloudConnectGateStore((s) => s.pending !== null);
+  const surfaceOpen = settingsOpen || gateOpen;
+  // The surface opens a moment after the click (the gate reads the account
+  // first), so the dialog returns only once it has opened and closed again.
+  const seenOpenRef = useRef(false);
+  useEffect(() => {
+    if (!requested) return;
+    if (surfaceOpen) {
+      seenOpenRef.current = true;
+      return;
+    }
+    if (seenOpenRef.current) {
+      seenOpenRef.current = false;
+      setRequested(false);
+    }
+  }, [requested, surfaceOpen]);
+  const stepAside = useCallback((): void => {
+    seenOpenRef.current = false;
+    setRequested(true);
+  }, []);
+  return { steppedAside: requested && surfaceOpen, stepAside };
+}
+
 function hasTryNow(entity: DeepLinkShareOpenEvent['entity']): boolean {
   return (
     entity !== 'agent' &&
@@ -166,12 +356,13 @@ export function ShareInstallModal({
   link,
   origin,
   onClose,
-}: ShareInstallModalProps): JSX.Element {
+}: ShareInstallModalProps): JSX.Element | null {
   const landing = usePublicShareLanding(link, {
     onAutoNavigate: onClose,
     reportHandoffEvents: origin === 'deep-link',
   });
   const { snapshot, installReview } = landing;
+  const { personalOrganizationId } = useResourceContext();
   // Offer the same in-context projects as the Automations page (CAN-3448).
   const { projectsInContext } = useAutomationScope();
   const installWorkspaces = useMemo(
@@ -224,7 +415,9 @@ export function ShareInstallModal({
     const navigation = useNavigationStore.getState();
     const held = navigation.heldShareInstall;
     navigation.setShareInstallBusy(false);
-    if (held === undefined || isSameShareLink(held.link, link)) onClose();
+    if (held === undefined) onClose();
+    else if (isSameShareLink(held.link, link))
+      useNavigationStore.getState().consumeShareInstall();
   }, [link, onClose]);
   const handleInstallReviewDone = useCallback(
     (activityId?: string, outcome?: InstallAutomationOutcome): void => {
@@ -291,7 +484,18 @@ export function ShareInstallModal({
     [completeInstallReview, onClose],
   );
 
-  const handleInstall = useInstallAndLand(link, landing, onClose);
+  const chat = useShareChatTarget();
+  const { steppedAside, stepAside } = useStepAsideForAccount();
+  const handleInstall = useInstallAndLand(link, landing, onClose, chat);
+  // CAN-5307: replacing a copy with the user's edits (or with no install-time
+  // hash to rule them out) asks first. The answer belongs to the reviewed
+  // copy: a refreshed or replaced target needs a new confirmation.
+  const [confirmingReplace, setConfirmingReplace] =
+    useState<PublicShareInstalledTarget | null>(null);
+  const reviewedInstalled = landing.installed;
+  useEffect(() => {
+    setConfirmingReplace(null);
+  }, [reviewedInstalled]);
   // An uninstall from the ⋯ menu is a write too: a newer request waits for
   // it the same way it waits for an install.
   const { uninstall } = landing;
@@ -311,15 +515,21 @@ export function ShareInstallModal({
     useNavigationStore.getState().setShareInstallBusy(submitting);
   }, []);
 
-  // The author is a person: replay records a box for the name only.
-  const publisher = snapshot?.authorUsername ? (
-    <>
-      Shared by{' '}
-      <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
-        {snapshot.authorUsername}
-      </span>
-    </>
-  ) : undefined;
+  // The author is a person: replay records a box for the name only. A skill
+  // names who shared it, its owner and audience (CAN-5017).
+  const publisher =
+    snapshot?.entity === 'skill' ? (
+      renderShareAttribution(
+        skillShareAttribution(snapshot, personalOrganizationId),
+      )
+    ) : snapshot?.authorUsername ? (
+      <>
+        Shared by{' '}
+        <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+          {snapshot.authorUsername}
+        </span>
+      </>
+    ) : undefined;
 
   // Swap, not nest: two `DialogModal`s would stack two scrims, two focus
   // traps, and two Escape handlers over each other.
@@ -378,31 +588,66 @@ export function ShareInstallModal({
         shareInstallDefaultDescription(entity))
       : undefined;
 
+  // What installing does, from the same scope facts the install reads. An
+  // installed copy, or one whose receipt could not be verified, has nothing
+  // left to add.
+  const effect =
+    snapshot?.entity === 'skill' &&
+    state.phase === 'ready' &&
+    installed === null &&
+    landing.verificationError === ''
+      ? shareInstallSkillEffectParts(
+          skillShareInstallScope(snapshot, personalOrganizationId),
+        ).map((part, index) =>
+          part.kind === 'name' ? (
+            <span key={index} className={POSTHOG_REPLAY_BLOCK_CLASS}>
+              {part.text}
+            </span>
+          ) : (
+            part.text
+          ),
+        )
+      : undefined;
+
   let primary: ShareInstallDialogPrimary | undefined;
   let blocker: string | undefined;
   let status: JSX.Element | undefined;
   let menu: JSX.Element | undefined;
+  let replaceConfirm: JSX.Element | undefined;
 
   if (state.phase === 'error') {
-    blocker = shareLandingErrorCopy(state.reason);
-    if (state.reason === 'client-upgrade-required') {
+    blocker = shareLandingErrorCopy(state.reason, entity);
+    const recovery = shareLandingRecovery(state.reason, landing, {
+      onOpenAccountSurface: stepAside,
+    });
+    if (recovery !== undefined) {
       primary = {
-        label: 'Check for updates',
-        testId: 'deep-link-share-update-app',
-        onClick: (): void => {
-          void window.api.update.checkForUpdates().catch(() => {
-            // Best effort: the update surface reports its own errors.
-          });
-        },
+        label: recovery.label,
+        testId: recovery.testId,
+        onClick: recovery.onClick,
       };
     }
   } else if (state.phase === 'ready' && snapshot !== null) {
     const opensReview = landing.openingInstallReview;
     const updateAvailable =
       installed !== null &&
-      (installed.entity === 'pipeline' || installed.entity === 'automation') &&
+      (installed.entity === 'pipeline' ||
+        installed.entity === 'automation' ||
+        installed.entity === 'skill') &&
       installed.updateAvailable === true;
-    if (installed === null || updateAvailable) {
+    const confirmsReplace =
+      installed?.entity === 'skill' &&
+      installed.replacement?.locallyEdited === true;
+    if (landing.verificationError !== '' || landing.needsRefresh) {
+      // Neither Install nor Update can be trusted until the review is read
+      // again: one could duplicate the copy, the other overwrite unseen work.
+      primary = {
+        label: 'Try again',
+        testId: 'deep-link-share-retry',
+        disabled: detecting || installing || uninstalling,
+        onClick: landing.refresh,
+      };
+    } else if (installed === null || updateAvailable) {
       primary = {
         label: shareInstallActionLabel(
           entity,
@@ -422,7 +667,46 @@ export function ShareInstallModal({
           agentReviewLoading ||
           opensReview,
         onClick: (): void => {
+          if (confirmsReplace) {
+            setConfirmingReplace(installed);
+            return;
+          }
           void handleInstall(updateAvailable ? 'updated' : 'installed');
+        },
+      };
+    } else if (
+      installed.entity === 'skill' &&
+      chat.target !== null &&
+      chat.current
+    ) {
+      // Over a chat, an installed skill is put to use there; Manage in the
+      // ⋯ menu still opens it.
+      const chatTarget = chat.target;
+      primary = {
+        label: shareInstallActionLabel(entity, 'use-in-chat'),
+        testId: 'deep-link-share-use-in-chat',
+        disabled: uninstalling,
+        onClick: (): void => {
+          void landing
+            .insertInChat(installed, chatTarget)
+            .then((outcome): void => {
+              if (outcome !== 'inserted') {
+                notifyUseInChatFailure(outcome);
+                return;
+              }
+              // Commit dismissal and its focus-trap cleanup before restoring
+              // composer focus. No timer assumes when React will unmount.
+              flushSync(onClose);
+              if (
+                useNavigationStore.getState().pendingShareInstall ===
+                  undefined &&
+                isShareChatTargetCurrent(chatTarget)
+              ) {
+                document.dispatchEvent(
+                  new CustomEvent('canopy:focus-chat-input'),
+                );
+              }
+            });
         },
       };
     } else {
@@ -464,33 +748,74 @@ export function ShareInstallModal({
         />
       );
     }
+    if (
+      installed?.entity === 'skill' &&
+      confirmingReplace === installed &&
+      !installing
+    ) {
+      replaceConfirm = (
+        <ConfirmDialog
+          title="Replace your edits?"
+          message={
+            <>
+              Updating replaces the instructions in “
+              <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+                {installed.skillName}
+              </span>
+              ” with the shared version, including any changes you made.
+            </>
+          }
+          confirmLabel="Update"
+          destructive
+          dataTestId="deep-link-share-replace-dialog"
+          confirmTestId="deep-link-share-replace-confirm"
+          cancelTestId="deep-link-share-replace-cancel"
+          onCancel={(): void => {
+            setConfirmingReplace(null);
+          }}
+          onConfirm={(): void => {
+            setConfirmingReplace(null);
+            void handleInstall('updated');
+          }}
+        />
+      );
+    }
     if (installing && installProgress !== '') blocker = installProgress;
+    if (landing.verificationError !== '') blocker = landing.verificationError;
     if (installError !== '') blocker = installError;
   }
 
+  if (steppedAside) return null;
+
   return (
-    <ShareInstallDialog
-      title={title}
-      typeLabel={typeLabel}
-      publisher={publisher}
-      description={description}
-      loading={
-        state.phase === 'loading' ||
-        (state.phase === 'ready' && landing.openingInstallReview) ? (
-          <LoadingPlaceholder label={`Loading ${placeholder.toLowerCase()}…`} />
-        ) : undefined
-      }
-      blocker={blocker}
-      status={status}
-      statusTestId="share-install-status"
-      primary={primary}
-      menu={menu}
-      // An uninstall from the ⋯ menu is a write too; it is not abandoned.
-      busy={installing || uninstalling}
-      onClose={onClose}
-      titleId="deep-link-share-landing-title"
-      dataTestId="deep-link-share-landing"
-    />
+    <>
+      <ShareInstallDialog
+        title={title}
+        typeLabel={typeLabel}
+        publisher={publisher}
+        description={description}
+        effect={effect}
+        loading={
+          state.phase === 'loading' ||
+          (state.phase === 'ready' && landing.openingInstallReview) ? (
+            <LoadingPlaceholder
+              label={`Loading ${placeholder.toLowerCase()}…`}
+            />
+          ) : undefined
+        }
+        blocker={blocker}
+        status={status}
+        statusTestId="share-install-status"
+        primary={primary}
+        menu={menu}
+        // An uninstall from the ⋯ menu is a write too; it is not abandoned.
+        busy={installing || uninstalling}
+        onClose={onClose}
+        titleId="deep-link-share-landing-title"
+        dataTestId="deep-link-share-landing"
+      />
+      {replaceConfirm}
+    </>
   );
 }
 
@@ -503,8 +828,10 @@ function useInstallAndLand(
   link: DeepLinkShareOpenEvent,
   landing: PublicShareLanding,
   onClose: () => void,
+  chat: { target: ShareChatTarget | null; isUnchanged: () => boolean },
 ): (outcome: 'installed' | 'updated') => Promise<void> {
-  const { install } = landing;
+  const { install, insertInChat } = landing;
+  const { target: chatTarget, isUnchanged } = chat;
   return useCallback(
     async (outcome: 'installed' | 'updated'): Promise<void> => {
       // A try link from the web already chose Try: the landing stages it as
@@ -518,18 +845,69 @@ function useInstallAndLand(
       if (navigation.shareInstallBusy) return;
       navigation.setShareInstallBusy(true);
       let result: Awaited<ReturnType<typeof install>> = null;
+      let opensHeld = false;
+      let contextUnchanged = false;
+      const request = navigation.pendingShareInstall;
       try {
         result = await install();
       } finally {
         // Settling applies a request that arrived during the write. A repeat
         // of this same link is already served, so the review still closes.
         const held = useNavigationStore.getState().heldShareInstall;
+        contextUnchanged = isUnchanged();
         useNavigationStore.getState().setShareInstallBusy(false);
-        const opensHeld =
-          held !== undefined && !isSameShareLink(held.link, link);
-        if (result !== null && !opensHeld && !stagesTry) onClose();
+        opensHeld =
+          useNavigationStore.getState().pendingShareInstall !== request &&
+          (held === undefined || !isSameShareLink(held.link, link));
+        if (result !== null && !opensHeld && !stagesTry) {
+          if (held !== undefined && isSameShareLink(held.link, link)) {
+            useNavigationStore.getState().consumeShareInstall();
+          } else onClose();
+        }
       }
       if (result === null || stagesTry) return;
+      const installedTarget = result.target;
+      if (
+        opensHeld ||
+        (installedTarget.entity === 'skill' && !contextUnchanged)
+      ) {
+        announceInstall({
+          target: installedTarget,
+          outcome,
+          status: result.status,
+          partial: result.partial,
+        });
+        return;
+      }
+      // CAN-5219: a skill stays where the user is. Over the chat the landing
+      // opened on, the notice offers it there; if the user moved on, or a
+      // newer link took over, it only says what happened. A partial install
+      // keeps its reveal, where the warning and recovery live.
+      if (
+        installedTarget.entity === 'skill' &&
+        !result.partial &&
+        chatTarget !== null
+      ) {
+        const message = installRevealNotice('skill', outcome, result.status);
+        if (
+          useNavigationStore.getState().pendingShareInstall === undefined &&
+          isShareChatTargetCurrent(chatTarget)
+        ) {
+          offerUseInChat({
+            message,
+            target: chatTarget,
+            stage: () => insertInChat(installedTarget, chatTarget),
+          });
+          return;
+        }
+        announceInstall({
+          target: installedTarget,
+          outcome,
+          status: result.status,
+          partial: result.partial,
+        });
+        return;
+      }
       openInstallReveal({
         target: result.target,
         outcome,
@@ -537,8 +915,18 @@ function useInstallAndLand(
         partial: result.partial,
       });
     },
-    [install, link, onClose],
+    [install, insertInChat, link, onClose, chatTarget, isUnchanged],
   );
+}
+
+const shareLandingKeys = new WeakMap<PendingShareInstall, number>();
+let nextShareLandingKey = 0;
+function shareLandingInstanceKey(request: PendingShareInstall): number {
+  const existing = shareLandingKeys.get(request);
+  if (existing !== undefined) return existing;
+  nextShareLandingKey += 1;
+  shareLandingKeys.set(request, nextShareLandingKey);
+  return nextShareLandingKey;
 }
 
 /**
@@ -551,8 +939,10 @@ export function ShareInstallModalHost(): JSX.Element | null {
     (s) => s.pendingShareInstall,
   );
   const handleClose = useCallback((): void => {
-    useNavigationStore.getState().consumeShareInstall();
-  }, []);
+    const navigation = useNavigationStore.getState();
+    if (navigation.pendingShareInstall === pending)
+      navigation.consumeShareInstall();
+  }, [pending]);
   if (!pending) return null;
   const { link, origin } = pending;
   // A shared container's link is a capability, not a public share: it has its
@@ -570,7 +960,7 @@ export function ShareInstallModalHost(): JSX.Element | null {
     <ShareInstallModal
       // The same share under another audience resolves differently, so it
       // re-resolves rather than reusing this review.
-      key={`${link.entity}:${link.externalId}:${link.audience ?? 'PUBLIC'}`}
+      key={shareLandingInstanceKey(pending)}
       link={link}
       origin={origin}
       onClose={handleClose}

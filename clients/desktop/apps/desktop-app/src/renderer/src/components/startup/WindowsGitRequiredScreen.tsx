@@ -2,6 +2,10 @@ import type { JSX } from 'react';
 import { Button, DownloadIcon } from '@canopy/ui-shared';
 import { Folder, RefreshCw } from 'lucide-react';
 import { BrandLogo } from '@/components/BrandLogo';
+import {
+  GIT_LINUX_INSTALL_URL,
+  LinuxGitInstallInstructions,
+} from './LinuxGitInstallInstructions';
 import { brandText } from '@/lib/brand';
 import type { WindowsGitGateState } from '@/hooks/useWindowsGitRequirement';
 import { MonitorDownIcon as AppCatalogMonitorDownIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -26,7 +30,7 @@ export interface WindowsGitRequiredScreenProps {
   state: WindowsGitGateState;
   /** Force a fresh detection pass. */
   onRecheck: () => void;
-  /** Open a native picker for a manually installed git.exe. */
+  /** Open a native picker for an installed Git executable. */
   onBrowse: () => void;
   /** Kick off the winget-driven install. */
   onAutoInstall: () => void;
@@ -40,12 +44,6 @@ export interface WindowsGitRequiredScreenProps {
 function openExternal(url: string): void {
   void window.api.browser.openExternal({ url });
 }
-
-const PRIMARY_BUTTON_CLASS =
-  'focus-ring rounded-lg bg-accent px-4 py-1.5 text-s font-medium fg-emphasis transition hover:bg-accent/90 disabled:cursor-default disabled:opacity-60';
-
-const SECONDARY_BUTTON_CLASS =
-  'focus-ring rounded-lg border px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-secondary disabled:cursor-default disabled:opacity-60';
 
 /**
  * Horizontal rule that optionally frames a centered section header. Used to
@@ -79,7 +77,9 @@ function ScreenShell({ children }: ScreenShellProps): JSX.Element {
       data-testid={
         window.platform === 'darwin'
           ? 'mac-git-required-screen'
-          : 'windows-git-required-screen'
+          : window.platform === 'linux'
+            ? 'linux-git-required-screen'
+            : 'windows-git-required-screen'
       }
     >
       <div className="flex w-full max-w-md flex-col items-center gap-5 px-8 text-center">
@@ -111,6 +111,7 @@ function MissingGitView({
   onBrowse,
   onAutoInstall,
 }: MissingGitViewProps): JSX.Element {
+  const linux = window.platform === 'linux';
   return (
     <>
       <h1
@@ -119,24 +120,33 @@ function MissingGitView({
       >
         Git installation is required
       </h1>
-      <p className="text-s fg-secondary">
-        No{' '}
-        <a
-          href={GIT_HOMEPAGE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e): void => {
-            e.preventDefault();
-            openExternal(GIT_HOMEPAGE_URL);
-          }}
-          className="underline transition-colors hover:fg-primary"
-          data-testid="git-gate-git-link"
-        >
-          Git
-        </a>{' '}
-        installation was detected and it must be installed in order to use{' '}
-        {brandName}.
-      </p>
+      {linux ? (
+        <>
+          <p className="text-s fg-secondary">
+            No usable Git installation was found. Install Git to use {brandName}
+            .
+          </p>
+        </>
+      ) : (
+        <p className="text-s fg-secondary">
+          No{' '}
+          <a
+            href={GIT_HOMEPAGE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e): void => {
+              e.preventDefault();
+              openExternal(GIT_HOMEPAGE_URL);
+            }}
+            className="underline transition-colors hover:fg-primary"
+            data-testid="git-gate-git-link"
+          >
+            Git
+          </a>{' '}
+          installation was detected and it must be installed in order to use{' '}
+          {brandName}.
+        </p>
+      )}
       {errorText && (
         <p className="text-s fg-warning" data-testid="git-gate-error">
           {errorText}
@@ -145,26 +155,36 @@ function MissingGitView({
       <div className="flex w-full flex-col gap-4 text-left">
         <SectionDivider label="Install Git" />
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            className={`${PRIMARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
-            onClick={onAutoInstall}
-            disabled={!wingetAvailable}
-            data-testid="git-gate-auto"
-          >
-            <InstallDesktopIcon className="h-4 w-4" />
-            Install
-          </button>
-          <button
-            type="button"
-            className={`${SECONDARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
-            onClick={(): void => openExternal(GIT_WINDOWS_INSTALL_URL)}
-            data-testid="git-gate-manual"
-          >
-            <DownloadIcon className="h-4 w-4" />
-            Manual
-          </button>
-          {!wingetAvailable && (
+          {!linux && (
+            <Button
+              variant="primary"
+              onClick={onAutoInstall}
+              disabled={!wingetAvailable}
+              data-testid="git-gate-auto"
+            >
+              <InstallDesktopIcon className="h-4 w-4" />
+              Install
+            </Button>
+          )}
+          {linux ? (
+            <LinuxGitInstallInstructions
+              brandName={brandName}
+              recheckLabel="Recheck"
+              onOpenInstructions={(): void =>
+                openExternal(GIT_LINUX_INSTALL_URL)
+              }
+            />
+          ) : (
+            <Button
+              variant="secondary"
+              onClick={(): void => openExternal(GIT_WINDOWS_INSTALL_URL)}
+              data-testid="git-gate-manual"
+            >
+              <DownloadIcon className="h-4 w-4" />
+              Manual
+            </Button>
+          )}
+          {!linux && !wingetAvailable && (
             <p
               className="text-xs fg-secondary"
               data-testid="git-gate-winget-hint"
@@ -176,28 +196,26 @@ function MissingGitView({
 
         <SectionDivider label="Existing installation" />
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            className={`${SECONDARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
+          <Button
+            variant="secondary"
             onClick={onBrowse}
             data-testid="git-gate-browse"
           >
             <Folder className="h-4 w-4" />
             Browse
-          </button>
+          </Button>
         </div>
 
         <SectionDivider />
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            className={`${SECONDARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
+          <Button
+            variant="secondary"
             onClick={onRecheck}
             data-testid="git-gate-recheck"
           >
             <RefreshCw className="h-4 w-4" />
             Recheck
-          </button>
+          </Button>
         </div>
       </div>
     </>
@@ -237,63 +255,48 @@ function InstallingView({ message }: InstallingViewProps): JSX.Element {
       <div className="flex w-full flex-col gap-4 text-left">
         <SectionDivider label="Install Git" />
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            className={`${PRIMARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
-            disabled
-            data-testid="git-gate-auto"
-          >
+          <Button variant="primary" disabled data-testid="git-gate-auto">
             <InstallDesktopIcon className="h-4 w-4" />
             Install
-          </button>
-          <button
-            type="button"
-            className={`${SECONDARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
-            disabled
-            data-testid="git-gate-manual"
-          >
+          </Button>
+          <Button variant="secondary" disabled data-testid="git-gate-manual">
             <DownloadIcon className="h-4 w-4" />
             Manual
-          </button>
+          </Button>
         </div>
 
         <SectionDivider label="Existing installation" />
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            className={`${SECONDARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
-            disabled
-            data-testid="git-gate-browse"
-          >
+          <Button variant="secondary" disabled data-testid="git-gate-browse">
             <Folder className="h-4 w-4" />
             Browse
-          </button>
+          </Button>
         </div>
 
         <SectionDivider />
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            className={`${SECONDARY_BUTTON_CLASS} inline-flex w-full items-center justify-center gap-2`}
-            disabled
-            data-testid="git-gate-recheck"
-          >
+          <Button variant="secondary" disabled data-testid="git-gate-recheck">
             <RefreshCw className="h-4 w-4" />
             Recheck
-          </button>
+          </Button>
         </div>
       </div>
     </>
   );
 }
 
-/** Recheck-success view: detected path + the single `Continue` action. */
+/** Detected path and Continue; Linux can recheck before entering the app. */
 interface DetectedViewProps {
   path: string | null;
   onContinue: () => void;
+  onRecheck?: () => void;
 }
 
-function DetectedView({ path, onContinue }: DetectedViewProps): JSX.Element {
+function DetectedView({
+  path,
+  onContinue,
+  onRecheck,
+}: DetectedViewProps): JSX.Element {
   return (
     <>
       <h1
@@ -308,22 +311,31 @@ function DetectedView({ path, onContinue }: DetectedViewProps): JSX.Element {
       >
         {path ? `Git was detected at ${path}.` : 'Git was detected.'}
       </p>
-      <button
-        type="button"
-        className={PRIMARY_BUTTON_CLASS}
+      <Button
+        variant="primary"
         onClick={onContinue}
         data-testid="git-gate-continue"
       >
         Continue
-      </button>
+      </Button>
+      {onRecheck && (
+        <Button
+          variant="secondary"
+          className="w-full"
+          onClick={onRecheck}
+          data-testid="git-gate-recheck"
+        >
+          Recheck
+        </Button>
+      )}
     </>
   );
 }
 
 /**
- * Blocking, full-screen Windows Git requirement gate (not a modal). Rendered by
+ * Blocking, full-screen desktop Git requirement gate (not a modal). Rendered by
  * App.tsx after the hydration gate and before the onboarding overlay / main
- * shell whenever Git is required but not yet usable on a Windows build.
+ * shell whenever Git is required but not yet usable on a supported desktop build.
  */
 export function WindowsGitRequiredScreen({
   state,
@@ -428,7 +440,11 @@ export function WindowsGitRequiredScreen({
     case 'detected':
       return (
         <ScreenShell>
-          <DetectedView path={state.status.path} onContinue={onContinue} />
+          <DetectedView
+            path={state.status.path}
+            onContinue={onContinue}
+            {...(window.platform === 'linux' ? { onRecheck } : {})}
+          />
         </ScreenShell>
       );
     case 'error':
@@ -450,7 +466,9 @@ export function WindowsGitRequiredScreen({
           <MissingGitView
             wingetAvailable={state.status.wingetAvailable}
             brandName={brandName}
-            errorText={null}
+            errorText={
+              window.platform === 'linux' ? (state.status.error ?? null) : null
+            }
             onRecheck={onRecheck}
             onBrowse={onBrowse}
             onAutoInstall={onAutoInstall}

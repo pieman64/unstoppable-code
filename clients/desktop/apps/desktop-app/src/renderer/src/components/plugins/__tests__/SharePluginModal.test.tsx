@@ -397,9 +397,21 @@ describe('SharePluginModal', () => {
       } else {
         expect(revokePublicShare).not.toHaveBeenCalled();
       }
-      expect(onClose).toHaveBeenCalledTimes(1);
+      // The dialog stays open on its success notice until Done.
+      expect(onClose).not.toHaveBeenCalled();
+      expect(
+        document.querySelector('[data-testid="share-plugin-success"]')
+          ?.textContent,
+      ).toContain('Plugin shared with Acme');
       // Lists of shared plugins reload instead of waiting for a remount.
       expect(sharedPluginsChanged).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        document
+          .querySelector<HTMLButtonElement>('[data-testid="share-plugin-done"]')
+          ?.click();
+        await Promise.resolve();
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -525,12 +537,17 @@ describe('SharePluginModal', () => {
       });
       expect(updateShared).not.toHaveBeenCalled();
       expect(publishPublicShare).toHaveBeenCalledWith('share-id');
-      expect(onClose).toHaveBeenCalledTimes(1);
-      expect(mockPostShareToast).toHaveBeenCalledWith({
-        tone: 'success',
-        message: 'Plugin is now public',
-        link: 'https://example.test/share/plugins/share-id',
-      });
+      // The dialog stays open on its success notice with the link; no toast.
+      expect(onClose).not.toHaveBeenCalled();
+      expect(mockPostShareToast).not.toHaveBeenCalled();
+      expect(
+        document.querySelector('[data-testid="share-plugin-success"]')
+          ?.textContent,
+      ).toContain('Plugin is now public');
+      expect(
+        document.querySelector('[data-testid="share-plugin-link"]')
+          ?.textContent,
+      ).toBe('https://example.test/share/plugins/share-id');
     },
   );
 

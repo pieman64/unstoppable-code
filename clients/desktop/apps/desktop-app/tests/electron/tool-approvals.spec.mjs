@@ -9,6 +9,14 @@ import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
 import { injectApprovalRequestEvent } from './seeders/injectApprovalRequestEvent.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { readChatStorageIndexes } from './readChatStorage.mjs';
+import { setUiScale } from './uiScale.mjs';
+import {
+  BLOCKED_ROWS_REPLY,
+  BLOCKED_ROWS_SAFETY_MESSAGE,
+  BLOCKED_ROWS_USER_MESSAGE,
+  seedBlockedToolRows,
+} from './portal/fixtures/blocked-tool-rows.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 // ---------------------------------------------------------------------------
 // Task 12 — Electron UI automation coverage for the tool-approval flow
@@ -331,7 +339,10 @@ test.describe('tool approvals', () => {
 
       await app.openSettings();
       await window.getByTestId('settings-nav-approvals').click();
-      await window.getByTestId('approval-default-worktree').selectOption('ask');
+      await chooseSettingsOption(
+        window.getByTestId('approval-default-worktree'),
+        'ask',
+      );
       await expect
         .poll(() => readWorktreeApprovalDefault(userDataDir))
         .toBe('ask');
@@ -400,20 +411,25 @@ test.describe('tool approvals', () => {
       const window = await launched.electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell({ timeout: 30_000 });
+      // Lookups 1 and 3 stay pending until the test releases them, so the
+      // loading states are observed without racing a timer.
       await launched.electronApp.evaluate(({ ipcMain }) => {
+        const gates = [];
+        globalThis.__releaseApprovalDefaultLookup = () => gates.shift()?.();
         let lookupCount = 0;
         ipcMain.removeHandler('approval:resolved-default');
         ipcMain.handle('approval:resolved-default', async () => {
           lookupCount += 1;
-          if (lookupCount === 1) {
-            await new Promise((resolve) => setTimeout(resolve, 1_000));
-            return 'ask';
-          }
-          if (lookupCount === 2) return 'full-access';
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          return 'auto';
+          const lookup = lookupCount;
+          if (lookup === 2) return 'full-access';
+          await new Promise((resolve) => gates.push(resolve));
+          return lookup === 1 ? 'ask' : 'auto';
         });
       });
+      const releaseLookup = () =>
+        launched.electronApp.evaluate(() =>
+          globalThis.__releaseApprovalDefaultLookup(),
+        );
       const toggle = window.getByTestId(
         `sidebar-cowork-project-${coworkId}-toggle`,
       );
@@ -439,6 +455,12 @@ test.describe('tool approvals', () => {
       await expect(home.getByTestId('home-approval-mode-loading')).toHaveCount(
         0,
       );
+      // The superseded first lookup answers late and must not win.
+      await releaseLookup();
+      await expect(home.getByTestId('approval-mode-picker')).toHaveAttribute(
+        'aria-label',
+        'Tool approval mode, current mode Full access',
+      );
 
       await launched.electronApp.evaluate(({ BrowserWindow }) => {
         BrowserWindow.getAllWindows()[0]?.webContents.send(
@@ -450,6 +472,7 @@ test.describe('tool approvals', () => {
         home.getByTestId('home-approval-mode-loading'),
       ).toBeVisible();
       await expect(home.getByTestId('approval-mode-picker')).toHaveCount(0);
+      await releaseLookup();
       await expect(home.getByTestId('approval-mode-picker')).toHaveAttribute(
         'aria-label',
         'Tool approval mode, current mode Accept edits',
@@ -571,9 +594,10 @@ test.describe('tool approvals', () => {
       await app.openMainPage();
       await app.openSettings();
       await window.getByTestId('settings-nav-approvals').click();
-      await window
-        .getByTestId('approval-default-worktree')
-        .selectOption('full-access');
+      await chooseSettingsOption(
+        window.getByTestId('approval-default-worktree'),
+        'full-access',
+      );
       await expect
         .poll(() => readWorktreeApprovalDefault(userDataDir))
         .toBe('full-access');
@@ -696,6 +720,8 @@ test.describe('tool approvals', () => {
       if (!initialTabTestId) throw new Error('Initial chat tab is missing');
 
       await window.getByTestId('panel-add-tab-group-chat').click();
+
+      await window.getByTestId('panel-add-menu-item-new-chat').click();
       await expect(chatTabs).toHaveCount(2);
       await expect(picker).toHaveAttribute(
         'aria-label',
@@ -753,12 +779,18 @@ test.describe('tool approvals', () => {
         'approval-default-app-advisor',
       );
 
-      await expect(worktreeDefault).toHaveValue('full-access');
-      await expect(coworkDefault).toHaveValue('full-access');
-      await expect(appAdvisorDefault).toHaveValue('full-access');
+      await expect(worktreeDefault).toHaveAttribute(
+        'data-value',
+        'full-access',
+      );
+      await expect(coworkDefault).toHaveAttribute('data-value', 'full-access');
+      await expect(appAdvisorDefault).toHaveAttribute(
+        'data-value',
+        'full-access',
+      );
 
-      await worktreeDefault.selectOption('auto');
-      await expect(worktreeDefault).toHaveValue('auto');
+      await chooseSettingsOption(worktreeDefault, 'auto');
+      await expect(worktreeDefault).toHaveAttribute('data-value', 'auto');
 
       await window.screenshot({
         path: testInfo.outputPath('settings-approvals-defaults.png'),
@@ -788,15 +820,15 @@ test.describe('tool approvals', () => {
       await expect(
         window.getByTestId('settings-approvals-section'),
       ).toBeVisible();
-      await expect(window.getByTestId('approval-default-worktree')).toHaveValue(
-        'auto',
-      );
-      await expect(window.getByTestId('approval-default-cowork')).toHaveValue(
-        'full-access',
-      );
+      await expect(
+        window.getByTestId('approval-default-worktree'),
+      ).toHaveAttribute('data-value', 'auto');
+      await expect(
+        window.getByTestId('approval-default-cowork'),
+      ).toHaveAttribute('data-value', 'full-access');
       await expect(
         window.getByTestId('approval-default-app-advisor'),
-      ).toHaveValue('full-access');
+      ).toHaveAttribute('data-value', 'full-access');
 
       await window.screenshot({
         path: testInfo.outputPath('settings-approvals-persisted.png'),
@@ -821,15 +853,15 @@ test.describe('tool approvals', () => {
       await app.openSettings();
       await window.getByTestId('settings-nav-approvals').click();
 
-      await expect(window.getByTestId('approval-default-worktree')).toHaveValue(
-        'full-access',
-      );
-      await expect(window.getByTestId('approval-default-cowork')).toHaveValue(
-        'full-access',
-      );
+      await expect(
+        window.getByTestId('approval-default-worktree'),
+      ).toHaveAttribute('data-value', 'full-access');
+      await expect(
+        window.getByTestId('approval-default-cowork'),
+      ).toHaveAttribute('data-value', 'full-access');
       await expect(
         window.getByTestId('approval-default-app-advisor'),
-      ).toHaveValue('full-access');
+      ).toHaveAttribute('data-value', 'full-access');
       await expect
         .poll(() => readWorktreeApprovalDefault(userDataDir))
         .toBe('full-access');
@@ -837,4 +869,308 @@ test.describe('tool approvals', () => {
       await closeCanopy(launched.electronApp, userDataDir);
     }
   });
+});
+
+// CAN-4811: delayed canonical receipts must keep their original turn even
+// when a provider reuses an invocation ID in a later turn.
+test('a persisted safety receipt stays in its originating turn when tool IDs repeat', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-safety-origin-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const messages = [];
+  for (const turn of [1, 2]) {
+    messages.push(
+      {
+        id: `user-${turn}`,
+        role: 'user',
+        timestamp: turn * 1000,
+        blocks: [{ type: 'text', text: `Try push ${turn}` }],
+      },
+      {
+        id: `tool-${turn}`,
+        role: 'assistant',
+        timestamp: turn * 1000 + 1,
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'reused-call',
+            toolName: 'Bash',
+            input: '{"command":"git push --force origin HEAD"}',
+          },
+          {
+            type: 'tool_result',
+            toolUseId: 'reused-call',
+            toolName: 'Bash',
+            output: 'Blocked by a safety rule (force-push).',
+            isError: true,
+          },
+        ],
+      },
+      {
+        id: `reply-${turn}`,
+        role: 'assistant',
+        timestamp: turn * 1000 + 2,
+        blocks: [
+          { type: 'text', text: `Safe alternative for attempt ${turn}.` },
+        ],
+      },
+    );
+  }
+  messages.push({
+    id: 'late-receipt',
+    role: 'system',
+    timestamp: 3000,
+    blocks: [
+      {
+        type: 'approval_safety_denied_info',
+        receiptId: 'late-receipt',
+        timestamp: 3000,
+        reason: 'force-push',
+        command: 'git push --force origin HEAD',
+        mode: 'ask',
+        toolUseId: 'reused-call',
+        turnUserMessageId: 'user-1',
+      },
+    ],
+  });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    tabs: [{ id: 't1', title: 'Chat', approvalMode: 'ask', messages }],
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const notice = window.getByTestId('approval-safety-denied-notice');
+    await expect(notice).toHaveCount(1);
+    await expect(
+      window.getByText('Safe alternative for attempt 1.', { exact: true }),
+    ).toBeVisible();
+    expect(
+      await notice.evaluate((element) => {
+        const reply = document.querySelector(
+          '[data-chat-message-id="reply-1"]',
+        );
+        return (
+          reply !== null &&
+          Boolean(
+            element.compareDocumentPosition(reply) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+          )
+        );
+      }),
+    ).toBe(true);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-4809: a wrapped safety denial and a user denial render as blocked rows
+// that name their source, without the SDK hook wrapper; an ordinary error
+// stays an error.
+for (const { deferredUserOutput, nativeAgent } of [
+  { deferredUserOutput: false, nativeAgent: false },
+  { deferredUserOutput: true, nativeAgent: false },
+  { deferredUserOutput: false, nativeAgent: true },
+]) {
+  test(`denied tool calls render as blocked rows that name who blocked them (deferred: ${deferredUserOutput}, native agent: ${nativeAgent})`, async () => {
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-blocked-rows-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedBlockedToolRows({ userDataDir, deferredUserOutput, nativeAgent });
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      // Chat detail "Detailed": every step is its own row.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      await expect(
+        window.getByText(BLOCKED_ROWS_REPLY, { exact: true }),
+      ).toBeVisible();
+      // A finished turn folds its steps; opening it shows each call.
+      const turnSteps = window
+        .locator('button[aria-label^="Agent steps"]')
+        .first();
+      if ((await turnSteps.getAttribute('aria-expanded')) !== 'true') {
+        await turnSteps.click();
+      }
+
+      const blocked = window.locator('[data-tool-status="blocked"]');
+      await expect(blocked).toHaveCount(2);
+      await expect(
+        window.locator(
+          '[data-testid="chat-tool-call"][data-tool-status="error"]',
+        ),
+      ).toHaveCount(1);
+
+      const safetyRow = blocked.nth(0);
+      const userRow = blocked.nth(1);
+      // The clean step row names who blocked it in words, after the step.
+      await expect(safetyRow.getByTestId('tool-call-blocked')).toHaveText(
+        /^blocked by safety rule/,
+      );
+      await expect(userRow.getByTestId('tool-call-blocked')).toHaveText(
+        /^denied by you/i,
+      );
+
+      await safetyRow.locator('button').first().click();
+      await userRow.locator('button').first().click();
+      await expect(safetyRow).toContainText(BLOCKED_ROWS_SAFETY_MESSAGE);
+      await expect(safetyRow).not.toContainText('user denied');
+      await expect(userRow).toContainText(BLOCKED_ROWS_USER_MESSAGE);
+      if (deferredUserOutput) {
+        await userRow.getByTestId('chat-tool-output-open').click();
+        await expect(
+          userRow.getByTestId('chat-tool-output-text'),
+        ).toContainText('Not on this branch.');
+        await expect(
+          userRow.getByTestId('chat-tool-output-text'),
+        ).not.toContainText('PreToolUse:');
+      }
+      await expect(window.getByText(/PreToolUse:/)).toHaveCount(0);
+
+      // The safety notice appears once, beneath the safety row.
+      await expect(
+        window.getByTestId('approval-safety-denied-notice'),
+      ).toHaveCount(1);
+      expect(
+        await safetyRow.evaluate((row) => {
+          const element = document.querySelector(
+            '[data-testid="approval-safety-denied-notice"]',
+          );
+          return (
+            element !== null &&
+            Boolean(
+              row.compareDocumentPosition(element) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+            )
+          );
+        }),
+      ).toBe(true);
+      if (!deferredUserOutput) {
+        // Compact folds each run of steps into one line that counts them.
+        await window.evaluate(() =>
+          window.api.savePreferences({ chatDetail: 'compact' }),
+        );
+        await app.openMainPage();
+        await app.selectWorktree(WORKTREE_ID);
+        const header = window.getByTestId('turn-work-header');
+        const headerButton = header.locator('button').first();
+        if (
+          (await headerButton.count()) > 0 &&
+          (await headerButton.getAttribute('aria-expanded')) === 'false'
+        )
+          await headerButton.click();
+        else if (
+          (await header.count()) > 0 &&
+          (await header.getAttribute('aria-expanded')) === 'false'
+        )
+          await header.click();
+        const groups = window.getByTestId('chat-tool-step-group');
+        await expect(groups).toHaveCount(2);
+        const counts = async (id) =>
+          (await window.getByTestId(id).allTextContents()).reduce(
+            (sum, value) => sum + Number(value.match(/\d+/)?.[0] ?? 0),
+            0,
+          );
+        await expect.poll(() => counts('chat-tool-step-blocked')).toBe(2);
+        await expect.poll(() => counts('chat-tool-step-failed')).toBe(1);
+        for (const group of await groups.all()) {
+          const toggle = group.locator('button[aria-expanded]').first();
+          if ((await toggle.getAttribute('aria-expanded')) !== 'true')
+            await toggle.click();
+        }
+        await expect(
+          window.locator('[data-tool-status="blocked"]'),
+        ).toHaveCount(2);
+        await expect(
+          window.getByTestId('approval-safety-denied-notice'),
+        ).toHaveCount(1);
+        for (const group of await groups.all())
+          await group.locator('button[aria-expanded]').first().click();
+        await expect.poll(() => counts('chat-tool-step-blocked')).toBe(2);
+        await expect.poll(() => counts('chat-tool-step-failed')).toBe(1);
+      }
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
+
+test('approval mode descriptions fit at default and largest interface scale', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-approval-layout-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    tabs: [{ id: 't1', title: 'Chat', approvalMode: 'ask' }],
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    for (const scale of [100, 200]) {
+      await setUiScale(window, scale);
+      const picker = window.getByTestId('approval-mode-picker');
+      await picker.click();
+      const menu = window.getByTestId('approval-mode-menu');
+      await expect(menu).toBeVisible();
+      for (const mode of ['ask', 'auto', 'full-access']) {
+        const description = window.getByTestId(
+          `approval-mode-option-description-${mode}`,
+        );
+        await expect(description).toBeVisible();
+        expect(
+          await description.evaluate((element) => {
+            const menu = element.closest('[data-testid="approval-mode-menu"]');
+            if (!menu) return false;
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const text = range.getBoundingClientRect();
+            const bounds = menu.getBoundingClientRect();
+            return (
+              element.scrollWidth <= element.clientWidth + 1 &&
+              element.scrollHeight <= element.clientHeight + 1 &&
+              text.left >= bounds.left &&
+              text.right <= bounds.right + 1 &&
+              text.top >= bounds.top &&
+              text.bottom <= bounds.bottom + 1 &&
+              bounds.top >= 0 &&
+              bounds.bottom <= window.innerHeight + 1
+            );
+          }),
+          `description ${mode} clipped at ${scale}%`,
+        ).toBe(true);
+        expect(
+          await description.evaluate((element) => {
+            const lineHeight = parseFloat(getComputedStyle(element).lineHeight);
+            return element.getBoundingClientRect().height < lineHeight * 1.5;
+          }),
+          `description ${mode} wraps at ${scale}%`,
+        ).toBe(true);
+      }
+      await window.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+    }
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
 });

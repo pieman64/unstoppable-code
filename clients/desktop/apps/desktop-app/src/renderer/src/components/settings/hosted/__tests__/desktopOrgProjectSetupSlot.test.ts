@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type * as Zustand from 'zustand';
+import type { SidebarItem } from '@canopy/desktop-shared/types';
 import type { OrgProjectsStoreState } from '@canopy/app-state';
 import type {
   OrgProjectSetupProgress,
@@ -128,18 +129,16 @@ const project: OrgProjectSummary = {
   instance: null,
 };
 
-function localWorkspace(projectId: string): {
-  id: string;
-  owner: {
-    type: 'organization';
-    organizationId: string;
-    projectId: string;
-    instanceId: string;
-    bindingGeneration: number;
-  };
-} {
+function localWorkspace(projectId: string): SidebarItem {
   return {
     id: `ws-${projectId}`,
+    name: `Workspace ${projectId}`,
+    type: 'single-repo',
+    repoPath: `/workspace/${projectId}`,
+    color: '',
+    worktrees: [],
+    collapsed: false,
+    order: 0,
     owner: {
       type: 'organization',
       organizationId: 'org',
@@ -147,6 +146,19 @@ function localWorkspace(projectId: string): {
       instanceId: 'instance',
       bindingGeneration: 1,
     },
+  };
+}
+
+function personalWorkspace(id: string): SidebarItem {
+  return {
+    id,
+    name: `Workspace ${id}`,
+    type: 'single-repo',
+    repoPath: `/workspace/${id}`,
+    color: '',
+    worktrees: [],
+    collapsed: false,
+    order: 0,
   };
 }
 
@@ -211,7 +223,7 @@ describe('getLocalStatuses', () => {
     const slot = createDesktopOrgProjectSetupSlot(orgStore());
     const first = slot.getLocalStatuses('org');
     useProjectsStore.setState({
-      projects: [localWorkspace('p1'), { id: 'personal' }],
+      projects: [localWorkspace('p1'), personalWorkspace('personal')],
     });
     expect(slot.getLocalStatuses('org')).toBe(first);
     useProjectsStore.setState({ projects: [] });
@@ -411,7 +423,7 @@ describe('open', () => {
   it('opens the linked Personal checkout of a project with no bound one', async () => {
     useLinkedPersonalWorkspacesStore.getState().setProjectIds(['p1'], 'org');
     useProjectsStore.setState({
-      projects: [localWorkspace('other'), { id: 'personal-ws' }],
+      projects: [localWorkspace('other'), personalWorkspace('personal-ws')],
     });
     const slot = createDesktopOrgProjectSetupSlot(orgStore());
     await slot.open('org', project, signal());
@@ -426,7 +438,9 @@ describe('open', () => {
 
   it('keeps Settings open when the canonical open refuses a linked checkout', async () => {
     useLinkedPersonalWorkspacesStore.getState().setProjectIds(['p1'], 'org');
-    useProjectsStore.setState({ projects: [{ id: 'personal-ws' }] });
+    useProjectsStore.setState({
+      projects: [personalWorkspace('personal-ws')],
+    });
     mockOpen.mockResolvedValueOnce('unavailable');
     const slot = createDesktopOrgProjectSetupSlot(orgStore());
     await expect(slot.open('org', project, signal())).rejects.toThrow(

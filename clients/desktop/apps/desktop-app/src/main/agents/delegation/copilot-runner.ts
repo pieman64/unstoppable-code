@@ -25,6 +25,10 @@ import type {
   ResolvedAgentRouteSnapshot,
   RunnerAvailability,
 } from '@canopy/desktop-shared/node/delegation';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptPort,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
 import {
   copilotNativeOperations,
   isCopilotShellControl,
@@ -38,7 +42,6 @@ import {
 import { COPILOT_RUNTIME_VERSION } from '@canopy/desktop-shared/node/copilot/runtime-metadata';
 import { COPILOT_NATIVE_TOOLS } from '@canopy/desktop-shared/node/copilot/session-policy';
 import { getMcpHttpProxyService } from '../../mcp/http-proxy-service';
-import { runCopilotTurn } from '@canopy/desktop-shared/node/copilot/turn-driver';
 import {
   assertCopilotMcpServersConnected,
   collectCopilotMcpSecretValues,
@@ -58,7 +61,12 @@ import type { DelegationNativePolicy } from './native-policy';
 import type { DelegateCanopyTools } from './canopy-tools';
 import { delegateAppToolGuidance } from './canopy-tools';
 import { childDelegationGuidance } from './child-tools';
-import { DelegationTranscriptRecorder } from './transcript-recorder';
+import {
+  DELEGATION_STREAM_PREVIEW_LIMITS,
+  DelegationTranscriptRecorder,
+} from './transcript-recorder';
+import { DelegationChildNormalizer } from './child-row-normalizers';
+import { delegationBlockId } from '@canopy/agent-transcript';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -127,6 +135,7 @@ export function createCopilotDelegationRunner(options: {
   ): Promise<CopilotDelegationPreparation>;
   delegation?(context: LocalDelegationContext): DelegationParent | undefined;
   reportError(error: unknown): void;
+  transcriptPort?: DelegationTranscriptPort;
 }): LocalDelegationRunner {
   return new LocalDelegationRunner(
     'copilot',
@@ -265,7 +274,6 @@ export function createCopilotDelegationRunner(options: {
               BRAND.tools.namespace,
               definition.name,
               [
-                'WatchDelegates',
                 'GetDelegateOutput',
                 'InspectDelegate',
                 'ListDelegates',
@@ -337,112 +345,138 @@ export function createCopilotDelegationRunner(options: {
         );
       let nativeToolSnapshot: CopilotCapabilitySnapshot | undefined;
       const correlation = new CopilotToolCorrelation();
-      const transcript = new DelegationTranscriptRecorder();
+      const appendChildChanges = context.appendChildChanges;
+      const childNormalizer = appendChildChanges
+        ? new DelegationChildNormalizer(
+            delegationBlockId(
+              context.request.delegationId,
+              context.request.runGeneration,
+            ),
+          )
+        : undefined;
+      const transcript = new DelegationTranscriptRecorder(
+        childNormalizer ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
+      );
+      const appendNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => {
+        if (!changes.length || !appendChildChanges) return;
+        await appendChildChanges(changes);
+        childNormalizer?.acknowledge(changes);
+      };
       let lastFlush = 0;
       const flush = async (): Promise<void> => {
         const items = transcript.take();
         if (items) await context.emit({ type: 'transcript', items });
       };
-      const result = await runCopilotTurn({
-        runtime,
-        gitHubTokenProvider: runtime.auth.tokenProvider,
-        workingDirectory: prepared.tools.cwd,
-        configDirectory: prepared.profileDir,
-        model: prepared.model,
-        sessionId: request.resumeSessionId,
-        turnId: `${request.delegationId}:${request.runGeneration}`,
-        prompt: `Managed delegated task:\n${expandLeadingCursorCommand(request.task.prompt, commands)}`,
-        signal,
-        reasoningEffort:
-          request.route.effectiveThinkingLevel === 'off' ||
-          request.route.effectiveThinkingLevel === 'ultra'
-            ? undefined
-            : request.route.effectiveThinkingLevel,
-        systemPrompt: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'copilot')}\n${commandGuidance}\nUse native file tools under the supplied grants. Native grep, glob, and directory views are unavailable because their results could expose private files. Read specific files directly. Shell follows the parent's command approval policy; file grants do not sandbox shell commands. Native subagents, detached commands, user questions and schedulers are unavailable.`,
-        skillDirectories: selected.skillIds.length
-          ? [path.join(capabilityRoot, 'skills')]
-          : [],
-        tools,
-        mcpServers,
-        onEvent: (event) => correlation.observe(event),
-        authorize: async (input) => {
-          check();
-          const identity = correlation.take(input.toolName, input.toolArgs);
-          if (tools.some((tool) => tool.name === input.toolName))
-            return { decision: 'allow' }; // Execution handler enforces the grant.
-          if (identity?.server && identity.tool)
-            return {
-              decision:
-                mcpServers[identity.server] &&
-                (await prepared.tools.canUseMcp(
-                  identity.server,
-                  identity.tool,
-                  signal,
-                ))
-                  ? 'allow'
-                  : 'deny',
-            }; // Every retained transport has its own execution gate.
-          return authorizeDelegatedCopilotTool(
-            input,
-            prepared.tools,
-            signal,
-            identity?.id ?? randomUUID(),
-          );
-        },
-        onToolsReady: (snapshot, mcpReadiness) => {
-          check();
-          assertCopilotMcpServersConnected(
-            mcpReadiness,
-            collectCopilotMcpSecretValues(mcpServers),
-          );
-          if (
-            savedNativeSnapshot &&
-            savedNativeSnapshot.digest !== snapshot.digest
-          )
-            throw new Error(
-              "This Copilot task's tools changed. Start a new task.",
-            );
-          nativeToolSnapshot = snapshot;
-        },
-        onSession: async (sessionId) => {
-          if (!nativeToolSnapshot)
-            throw new Error(
-              'Copilot could not verify the initialized tool list.',
-            );
-          const temporary = `${bindingFile}.${randomUUID()}.tmp`;
-          try {
-            await writeFile(
-              temporary,
-              JSON.stringify({
-                version: 3,
-                sessionId,
-                cwd: prepared.tools.cwd,
-                account,
-                runtimeVersion: COPILOT_RUNTIME_VERSION,
-                capabilitySnapshot,
-                nativeToolSnapshot,
-              }),
-              { mode: 0o600, flag: 'wx' },
-            );
+      let result: Awaited<ReturnType<typeof runtime.runTurn>>;
+      try {
+        result = await runtime.runTurn({
+          workingDirectory: prepared.tools.cwd,
+          configDirectory: prepared.profileDir,
+          model: prepared.model,
+          sessionId: request.resumeSessionId,
+          turnId: `${request.delegationId}:${request.runGeneration}`,
+          prompt: `Managed delegated task:\n${expandLeadingCursorCommand(request.task.prompt, commands)}`,
+          signal,
+          reasoningEffort:
+            request.route.effectiveThinkingLevel === 'off' ||
+            request.route.effectiveThinkingLevel === 'ultra'
+              ? undefined
+              : request.route.effectiveThinkingLevel,
+          systemPrompt: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'copilot')}\n${commandGuidance}\nUse native file tools under the supplied grants. Native grep, glob, and directory views are unavailable because their results could expose private files. Read specific files directly. Shell follows the parent's command approval policy; file grants do not sandbox shell commands. Native subagents, detached commands, user questions and schedulers are unavailable.`,
+          skillDirectories: selected.skillIds.length
+            ? [path.join(capabilityRoot, 'skills')]
+            : [],
+          tools,
+          mcpServers,
+          onEvent: (event) => correlation.observe(event),
+          authorize: async (input) => {
             check();
-            await rename(temporary, bindingFile);
-          } finally {
-            await rm(temporary, { force: true });
-          }
-          await context.emit({ type: 'started', nativeSessionId: sessionId });
-        },
-        emit: async (event) => {
-          transcript.cursor(event);
-          if (transcript.limitExceeded)
-            throw new Error(
-              'Copilot task transcript exceeded retention limits.',
+            const identity = correlation.take(input.toolName, input.toolArgs);
+            if (tools.some((tool) => tool.name === input.toolName))
+              return { decision: 'allow' }; // Execution handler enforces the grant.
+            if (identity?.server && identity.tool)
+              return {
+                decision:
+                  mcpServers[identity.server] &&
+                  (await prepared.tools.canUseMcp(
+                    identity.server,
+                    identity.tool,
+                    signal,
+                  ))
+                    ? 'allow'
+                    : 'deny',
+              }; // Every retained transport has its own execution gate.
+            return authorizeDelegatedCopilotTool(
+              input,
+              prepared.tools,
+              signal,
+              identity?.id ?? randomUUID(),
             );
-          if (Date.now() - lastFlush >= 100) {
-            lastFlush = Date.now();
-            await flush();
-          }
-        },
-      });
+          },
+          onToolsReady: (snapshot, mcpReadiness) => {
+            check();
+            assertCopilotMcpServersConnected(
+              mcpReadiness,
+              collectCopilotMcpSecretValues(mcpServers),
+            );
+            if (
+              savedNativeSnapshot &&
+              savedNativeSnapshot.digest !== snapshot.digest
+            )
+              throw new Error(
+                "This Copilot task's tools changed. Start a new task.",
+              );
+            nativeToolSnapshot = snapshot;
+          },
+          onSession: async (sessionId) => {
+            if (!nativeToolSnapshot)
+              throw new Error(
+                'Copilot could not verify the initialized tool list.',
+              );
+            const temporary = `${bindingFile}.${randomUUID()}.tmp`;
+            try {
+              await writeFile(
+                temporary,
+                JSON.stringify({
+                  version: 3,
+                  sessionId,
+                  cwd: prepared.tools.cwd,
+                  account,
+                  runtimeVersion: COPILOT_RUNTIME_VERSION,
+                  capabilitySnapshot,
+                  nativeToolSnapshot,
+                }),
+                { mode: 0o600, flag: 'wx' },
+              );
+              check();
+              await rename(temporary, bindingFile);
+            } finally {
+              await rm(temporary, { force: true });
+            }
+            await context.emit({ type: 'started', nativeSessionId: sessionId });
+          },
+          emit: async (event) => {
+            transcript.cursor(event);
+            await appendNormalizedChanges(
+              childNormalizer ? await childNormalizer.patch(event) : [],
+            );
+            if (transcript.limitExceeded && !childNormalizer)
+              throw new Error(
+                'Copilot task transcript exceeded retention limits.',
+              );
+            if (Date.now() - lastFlush >= 100) {
+              lastFlush = Date.now();
+              await flush();
+            }
+          },
+        });
+      } finally {
+        await appendNormalizedChanges(
+          childNormalizer ? await childNormalizer.finish() : [],
+        );
+      }
       await flush();
       const usage = {
         inputTokens: result.usage.input_tokens,
@@ -454,5 +488,6 @@ export function createCopilotDelegationRunner(options: {
       return { status: 'completed', finalText: result.text, usage };
     },
     (error) => options.reportError(error),
+    { transcriptPort: options.transcriptPort },
   );
 }

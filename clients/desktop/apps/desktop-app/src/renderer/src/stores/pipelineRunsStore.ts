@@ -25,10 +25,17 @@ import type {
 } from '@canopy/desktop-shared/types/pipeline';
 import { decodeMatrixIpcErrorMessage } from '@canopy/desktop-shared/types/pipeline';
 import {
+  isPipelineExecutionLeased,
   isPipelineExecutionRetainedByInterest,
   pipelineDetailOwnerKey,
   releasePipelineDetailLeasesForOwner,
+  subscribePipelineInterestChanges,
 } from '../lib/pipelineDetailLeases';
+import {
+  mergePipelineRunRowEvent,
+  toPipelineRunRowState,
+  type PipelineRunRowState,
+} from '../lib/pipelineRunRowState';
 import { extractIpcErrorMessage } from '../lib/errors';
 import { resetStepLogsForExecution } from './pipelineStepLogStore';
 import { useChatStore } from './chatStore';
@@ -199,16 +206,16 @@ interface PipelineRunsState {
    * when the scope changes; never the owner of detail state.
    */
   summaries: ExecutionSummary[];
-  /**
-   * Execution state cache. Entries survive same-scope list reloads. A scope
-   * change or `clear()` drops only entries without a detail lease or summary
-   * interest (`lib/pipelineDetailLeases.ts`); leased and interested entries
-   * stay live under execution events regardless of the selected scope.
-   */
+  /** Full execution states are retained only while a detail lease exists. */
   statesById: Record<string, ExecutionState>;
+  /** Slim rows retained for listed or explicitly interested executions. */
+  rowStatesById: Record<string, PipelineRunRowState>;
   isHydratingGlobalPipelineStatuses: boolean;
   hasHydratedGlobalPipelineStatuses: boolean;
-  pendingGlobalExecutionStatesById: Record<string, ExecutionState>;
+  pendingGlobalExecutionStatesById: Record<
+    string,
+    GlobalPipelineExecutionRecord
+  >;
   runningExecutionsByWorktree: Record<string, Set<string>>;
   pausedExecutionsByWorktree: Record<string, Set<string>>;
   unseenPipelineWorktreeKeys: Set<string>;
@@ -259,6 +266,9 @@ interface PipelineRunsState {
   dismissFailedQueuedExecution: (queueId: string) => void;
   loadExecutions: (scope: PipelineExecutionScope) => Promise<void>;
   loadExecutionDetails: (executionId: string) => Promise<ExecutionState | null>;
+  loadExecutionRowState: (
+    executionId: string,
+  ) => Promise<PipelineRunRowState | null>;
   resumeExecution: (
     executionId: string,
     options?: {
@@ -301,11 +311,7 @@ interface PipelineRunsState {
    */
   handleAdvisorEvent: (event: PipelineAdvisorEvent) => void;
   markWorktreePipelineSeen: (worktreeKey: string) => void;
-  /**
-   * Evicts one execution's cached detail snapshot after its last detail lease
-   * was released, unless the selected list or another interest still retains
-   * it.
-   */
+  /** Prunes one execution after a lease or summary interest was released. */
   releaseExecutionDetail: (executionId: string) => void;
   /**
    * Owner cleanup (worktree archived or removed): releases every detail lease
@@ -356,6 +362,8 @@ export function summaryFromState(state: ExecutionState): ExecutionSummary {
     parent_iteration: state.parent_iteration,
     hidden: state.hidden,
     trigger_source: state.trigger_source,
+    execution_context: state.execution_context,
+    initiator: state.initiator,
   };
   return summary;
 }
@@ -427,16 +435,65 @@ function executionMatchesScope(
   return execution.cwd === scope.cwd;
 }
 
+function isExecutionListed(
+  summaries: readonly ExecutionSummary[],
+  executionId: string,
+): boolean {
+  return summaries.some((summary) => summary.id === executionId);
+}
+
+function isExecutionRowRetained(
+  summaries: readonly ExecutionSummary[],
+  executionId: string,
+): boolean {
+  return (
+    isExecutionListed(summaries, executionId) ||
+    isPipelineExecutionRetainedByInterest(executionId)
+  );
+}
+
+function withoutExecution<T>(
+  entries: Record<string, T>,
+  executionId: string,
+): Record<string, T> {
+  if (!Object.prototype.hasOwnProperty.call(entries, executionId)) {
+    return entries;
+  }
+  const next = { ...entries };
+  delete next[executionId];
+  return next;
+}
+
+/** Prunes full state to leased ids and row state to currently eligible ids. */
+function prunePipelineExecutionCaches(
+  state: Pick<PipelineRunsState, 'summaries' | 'statesById' | 'rowStatesById'>,
+): Pick<PipelineRunsState, 'statesById' | 'rowStatesById'> {
+  let statesById = state.statesById;
+  for (const executionId of Object.keys(statesById)) {
+    if (!isPipelineExecutionLeased(executionId)) {
+      statesById = withoutExecution(statesById, executionId);
+    }
+  }
+
+  let rowStatesById = state.rowStatesById;
+  for (const executionId of Object.keys(rowStatesById)) {
+    if (!isExecutionRowRetained(state.summaries, executionId)) {
+      rowStatesById = withoutExecution(rowStatesById, executionId);
+    }
+  }
+
+  return { statesById, rowStatesById };
+}
+
 /**
  * Fold an updated `ExecutionState` returned by a mutation back into the store,
- * matching how the existing execution mutations apply their results: upsert
- * the derived summary when the execution belongs to the current view, and
- * always refresh `statesById`.
+ * upsert the derived summary when the execution belongs to the current view,
+ * refresh an eligible row, and retain full detail only under a lease.
  */
 function mergeExecutionStateIntoStore(
   prev: PipelineRunsState,
   state: ExecutionState,
-): Pick<PipelineRunsState, 'summaries' | 'statesById'> {
+): Pick<PipelineRunsState, 'summaries' | 'statesById' | 'rowStatesById'> {
   noteExecutionStateObserved(state.id, state);
   const currentScope = currentExecutionScope(prev);
   const matchesCurrentView =
@@ -445,14 +502,23 @@ function mergeExecutionStateIntoStore(
     (state.parent_execution_id !== undefined &&
       prev.summaries.some((s) => s.id === state.parent_execution_id));
 
+  const summaries = matchesCurrentView
+    ? upsertSummary(prev.summaries, summaryFromState(state))
+    : prev.summaries;
+  const statesById = isPipelineExecutionLeased(state.id)
+    ? { ...prev.statesById, [state.id]: state }
+    : withoutExecution(prev.statesById, state.id);
+  let rowStatesById = prev.rowStatesById;
+  if (isExecutionRowRetained(summaries, state.id)) {
+    const row = mergePipelineRunRowEvent(rowStatesById[state.id], state);
+    if (row) {
+      rowStatesById = { ...rowStatesById, [state.id]: row };
+    }
+  }
+  const nextState = { summaries, statesById, rowStatesById };
   return {
-    summaries: matchesCurrentView
-      ? upsertSummary(prev.summaries, summaryFromState(state))
-      : prev.summaries,
-    statesById: {
-      ...prev.statesById,
-      [state.id]: state,
-    },
+    summaries,
+    ...prunePipelineExecutionCaches(nextState),
   };
 }
 
@@ -489,13 +555,6 @@ interface ExecutionDetailRead {
   superseded: boolean;
   /** Newest state observed while the read was in flight. */
   latestState: ExecutionState | null;
-  /**
-   * Its detail demand was released while it was in flight (the last lease
-   * went away and nothing else retains the execution). An abandoned read
-   * does not install its snapshot unless something wants it again by the
-   * time it resolves, so no orphaned entry keeps following live events.
-   */
-  abandoned: boolean;
 }
 
 const executionDetailReads = new Map<
@@ -514,20 +573,98 @@ function noteExecutionStateObserved(
   inFlight.read.latestState = state;
 }
 
-/** Keeps only the cached states a lease or summary interest retains. */
-function retainInterestedStates(
-  statesById: Record<string, ExecutionState>,
-): Record<string, ExecutionState> {
-  const retained: Record<string, ExecutionState> = {};
-  let dropped = false;
-  for (const [executionId, state] of Object.entries(statesById)) {
-    if (isPipelineExecutionRetainedByInterest(executionId)) {
-      retained[executionId] = state;
-    } else {
-      dropped = true;
+/** One shared snapshot read for row and detail callers. */
+function loadExecutionSnapshot(executionId: string): {
+  read: ExecutionDetailRead;
+  promise: Promise<ExecutionState | null>;
+} {
+  const inFlight = executionDetailReads.get(executionId);
+  if (inFlight) return inFlight;
+
+  const read: ExecutionDetailRead = { superseded: false, latestState: null };
+  const promise = (async (): Promise<ExecutionState | null> => {
+    try {
+      const result = await window.pipelines.getExecution(executionId);
+      if (!result.success || !result.data) return null;
+
+      const snapshot = result.data;
+      let installed: ExecutionState =
+        read.superseded && read.latestState
+          ? (mergeExecutionEventState(snapshot, read.latestState) ??
+            read.latestState)
+          : snapshot;
+
+      usePipelineRunsStore.setState((prev) => {
+        const latest = read.latestState;
+        const current = prev.statesById[executionId];
+        if (read.superseded && current) {
+          installed = current;
+        } else if (read.superseded && latest) {
+          installed = mergeExecutionEventState(snapshot, latest) ?? latest;
+        }
+
+        const statesById = isPipelineExecutionLeased(executionId)
+          ? { ...prev.statesById, [executionId]: installed }
+          : withoutExecution(prev.statesById, executionId);
+        const projectedRow =
+          read.superseded && latest
+            ? mergePipelineRunRowEvent(toPipelineRunRowState(snapshot), latest)
+            : toPipelineRunRowState(snapshot);
+        let rowStatesById = prev.rowStatesById;
+        if (
+          isExecutionRowRetained(prev.summaries, executionId) &&
+          projectedRow
+        ) {
+          rowStatesById = {
+            ...rowStatesById,
+            [executionId]: projectedRow,
+          };
+        }
+
+        const nextState = { ...prev, statesById, rowStatesById };
+        return prunePipelineExecutionCaches(nextState);
+      });
+
+      return installed;
+    } catch {
+      return null;
+    } finally {
+      if (executionDetailReads.get(executionId)?.read === read) {
+        executionDetailReads.delete(executionId);
+      }
     }
-  }
-  return dropped ? retained : statesById;
+  })();
+  const entry = { read, promise };
+  executionDetailReads.set(executionId, entry);
+  return entry;
+}
+
+const advisorSnapshotReads = new Map<string, Promise<void>>();
+
+function loadAdvisorSnapshot(executionId: string): Promise<void> {
+  const inFlight = advisorSnapshotReads.get(executionId);
+  if (inFlight) return inFlight;
+
+  const promise = (async (): Promise<void> => {
+    try {
+      if (typeof window.pipelines.getAdvisorSnapshot !== 'function') return;
+      const result = await window.pipelines.getAdvisorSnapshot(executionId);
+      if (!result.success || !result.data) return;
+      const snapshot = result.data;
+      usePipelineRunsStore.setState((prev) => ({
+        advisorSnapshotsByExecutionId: {
+          ...prev.advisorSnapshotsByExecutionId,
+          [executionId]: snapshot,
+        },
+      }));
+    } catch {
+      // Best-effort — detail consumers render without advisor data.
+    } finally {
+      advisorSnapshotReads.delete(executionId);
+    }
+  })();
+  advisorSnapshotReads.set(executionId, promise);
+  return promise;
 }
 
 function isWorktreeSelected(worktreeKey: string): boolean {
@@ -892,7 +1029,7 @@ function applyGlobalPipelineExecutionRecord(
 
 function buildGlobalPipelineStatusesSnapshot(
   summaries: readonly ExecutionSummary[],
-  pendingStatesById: Record<string, ExecutionState>,
+  pendingRecordsById: Record<string, GlobalPipelineExecutionRecord>,
   seenByWorktree: Record<string, Set<string>>,
 ): GlobalPipelineStatusesSnapshot {
   const records = new Map<string, GlobalPipelineExecutionRecord>();
@@ -903,9 +1040,8 @@ function buildGlobalPipelineStatusesSnapshot(
     );
   }
 
-  const pendingStates: ExecutionState[] = Object.values(pendingStatesById);
-  for (const state of pendingStates) {
-    records.set(state.id, createGlobalPipelineExecutionRecordFromState(state));
+  for (const record of Object.values(pendingRecordsById)) {
+    records.set(record.id, record);
   }
 
   const snapshot = createEmptyGlobalPipelineStatusesSnapshot();
@@ -932,6 +1068,7 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
   currentWorktreeId: null,
   summaries: [],
   statesById: {},
+  rowStatesById: {},
   isHydratingGlobalPipelineStatuses: false,
   hasHydratedGlobalPipelineStatuses: false,
   pendingGlobalExecutionStatesById: {},
@@ -1236,7 +1373,7 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
           });
           if (!result.success) {
             throw new Error(
-              result.error ?? 'Failed to start queued pipeline execution',
+              result.error ?? 'Failed to start queued workflow execution',
             );
           }
         } catch (error) {
@@ -1268,16 +1405,16 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
   loadExecutions: async (scope: PipelineExecutionScope): Promise<void> => {
     const previousScope = currentExecutionScope(get());
     if (!executionScopesEqual(previousScope, scope)) {
-      // A scope change resets the list projection and the detail it alone
-      // retained. Leased and summary-interested executions (another visible
-      // panel or window, a chat card) keep their state.
-      set((prev) => ({
-        currentCwd: scope.cwd,
-        currentProjectId: scope.projectId ?? null,
-        currentWorktreeId: scope.worktreeId ?? null,
-        summaries: [],
-        statesById: retainInterestedStates(prev.statesById),
-      }));
+      set((prev) => {
+        const nextState = {
+          ...prev,
+          currentCwd: scope.cwd,
+          currentProjectId: scope.projectId ?? null,
+          currentWorktreeId: scope.worktreeId ?? null,
+          summaries: [],
+        };
+        return { ...nextState, ...prunePipelineExecutionCaches(nextState) };
+      });
     }
 
     const emptyQueuedResult: {
@@ -1287,29 +1424,36 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
       success: true,
       data: [],
     };
-    const queuedResultPromise =
-      typeof window.pipelines.listQueuedExecutions === 'function'
-        ? window.pipelines.listQueuedExecutions()
-        : Promise.resolve(emptyQueuedResult);
+    const queuedResultPromise = Promise.resolve()
+      .then(() => {
+        if (typeof window.pipelines.listQueuedExecutions !== 'function') {
+          return emptyQueuedResult;
+        }
+        return window.pipelines.listQueuedExecutions();
+      })
+      .catch(() => emptyQueuedResult);
     const [result, queuedResult] = await Promise.all([
-      listExecutionsSingleFlight(),
+      Promise.resolve()
+        .then(listExecutionsSingleFlight)
+        .catch(() => null),
       queuedResultPromise,
     ]);
     const queuedExecutionsByWorktree =
       queuedResult.success && queuedResult.data
         ? groupQueuedExecutionsByWorktree(queuedResult.data)
         : {};
-    if (!result.success || !result.data) {
-      set((prev) =>
-        executionScopesEqual(currentExecutionScope(prev), scope)
-          ? {
-              summaries: [],
-              ...(queuedExecutionsByWorktree !== undefined
-                ? { queuedExecutionsByWorktree }
-                : {}),
-            }
-          : prev,
-      );
+    if (!result || !result.success || !result.data) {
+      set((prev) => {
+        if (!executionScopesEqual(currentExecutionScope(prev), scope)) {
+          return prev;
+        }
+        const nextState = {
+          ...prev,
+          summaries: [],
+          queuedExecutionsByWorktree,
+        };
+        return { ...nextState, ...prunePipelineExecutionCaches(nextState) };
+      });
       return;
     }
     const filtered = result.data.filter((s) => executionMatchesScope(s, scope));
@@ -1337,14 +1481,12 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
       if (!executionScopesEqual(currentExecutionScope(prev), scope)) {
         return prev;
       }
-      // Same-scope reloads refresh the list only. Cached detail stays; events
-      // keep it current.
-      return {
+      const nextState = {
+        ...prev,
         summaries: filtered,
-        ...(queuedExecutionsByWorktree !== undefined
-          ? { queuedExecutionsByWorktree }
-          : {}),
+        queuedExecutionsByWorktree,
       };
+      return { ...nextState, ...prunePipelineExecutionCaches(nextState) };
     });
 
     // Load Pipeline Advisor snapshots for the visible summaries so the
@@ -1359,91 +1501,53 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
   loadExecutionDetails: (
     executionId: string,
   ): Promise<ExecutionState | null> => {
-    // Single flight: concurrent consumers of one execution share one read.
-    const inFlight = executionDetailReads.get(executionId);
-    if (inFlight) {
-      // A new caller wants the result installed, even if an earlier holder's
-      // demand for it was released while it was in flight.
-      inFlight.read.abandoned = false;
-      return inFlight.promise;
+    const cached = get().statesById[executionId];
+    if (
+      !executionDetailReads.has(executionId) &&
+      cached &&
+      isPipelineExecutionLeased(executionId)
+    ) {
+      return Promise.resolve(cached);
     }
 
-    const read: ExecutionDetailRead = {
-      superseded: false,
-      latestState: null,
-      abandoned: false,
-    };
-    const promise = (async (): Promise<ExecutionState | null> => {
-      try {
-        const result = await window.pipelines.getExecution(executionId);
-        if (!result.success || !result.data) return null;
-        const snapshot = result.data;
-        if (
-          read.abandoned &&
-          !isPipelineExecutionRetainedByInterest(executionId) &&
-          !get().summaries.some((summary) => summary.id === executionId)
-        ) {
-          // Nobody wants this detail any more: hand it to the callers that
-          // awaited it without caching it, so no orphaned entry keeps
-          // following live events.
-          return snapshot;
-        }
-        let installed: ExecutionState = snapshot;
+    return loadExecutionSnapshot(executionId).promise.then(async (state) => {
+      if (state) await loadAdvisorSnapshot(executionId);
+      return state;
+    });
+  },
+
+  loadExecutionRowState: (
+    executionId: string,
+  ): Promise<PipelineRunRowState | null> => {
+    const current = get();
+    const rowRetained = isExecutionRowRetained(current.summaries, executionId);
+    if (!executionDetailReads.has(executionId) && rowRetained) {
+      const cachedRow = current.rowStatesById[executionId];
+      if (cachedRow) return Promise.resolve(cachedRow);
+
+      const cachedFull = current.statesById[executionId];
+      if (cachedFull) {
+        const row = toPipelineRunRowState(cachedFull);
         set((prev) => {
-          if (!read.superseded) {
-            return {
-              statesById: { ...prev.statesById, [executionId]: snapshot },
-            };
+          if (!isExecutionRowRetained(prev.summaries, executionId)) {
+            return prunePipelineExecutionCaches(prev);
           }
-          // A newer event or mutation result arrived while this read was in
-          // flight. It wins; the snapshot only supplies job structure the
-          // newer state does not carry.
-          const current = prev.statesById[executionId];
-          if (current) {
-            installed = current;
-            return prev;
-          }
-          const latest = read.latestState;
-          installed =
-            (latest ? mergeExecutionEventState(snapshot, latest) : snapshot) ??
-            latest ??
-            snapshot;
-          return {
-            statesById: { ...prev.statesById, [executionId]: installed },
+          const nextState = {
+            ...prev,
+            rowStatesById: {
+              ...prev.rowStatesById,
+              [executionId]: row,
+            },
           };
+          return prunePipelineExecutionCaches(nextState);
         });
-
-        // Fetch the latest advisor snapshot for this execution so the details
-        // modal has data even when the renderer was launched mid-execution.
-        if (typeof window.pipelines.getAdvisorSnapshot === 'function') {
-          try {
-            const advisorResult =
-              await window.pipelines.getAdvisorSnapshot(executionId);
-            if (advisorResult.success && advisorResult.data) {
-              const advisorSnapshot = advisorResult.data;
-              set((prev) => ({
-                advisorSnapshotsByExecutionId: {
-                  ...prev.advisorSnapshotsByExecutionId,
-                  [executionId]: advisorSnapshot,
-                },
-              }));
-            }
-          } catch {
-            // Best-effort — the modal still renders without advisor data.
-          }
-        }
-
-        return installed;
-      } catch {
-        return null;
-      } finally {
-        if (executionDetailReads.get(executionId)?.read === read) {
-          executionDetailReads.delete(executionId);
-        }
+        return Promise.resolve(row);
       }
-    })();
-    executionDetailReads.set(executionId, { read, promise });
-    return promise;
+    }
+
+    return loadExecutionSnapshot(executionId).promise.then((state) =>
+      state ? toPipelineRunRowState(state) : null,
+    );
   },
 
   resumeExecution: async (
@@ -1543,17 +1647,23 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
 
     const state = result.data;
     noteExecutionStateObserved(executionId, state);
-    set((prev) => ({
-      summaries: prev.summaries.map((summary) =>
+    set((prev) => {
+      const summaries = prev.summaries.map((summary) =>
         summary.id === executionId
           ? { ...summary, hidden: hidden || undefined }
           : summary,
-      ),
-      statesById: {
-        ...prev.statesById,
-        [executionId]: state,
-      },
-    }));
+      );
+      const statesById = isPipelineExecutionLeased(executionId)
+        ? { ...prev.statesById, [executionId]: state }
+        : withoutExecution(prev.statesById, executionId);
+      let rowStatesById = prev.rowStatesById;
+      if (isExecutionRowRetained(summaries, executionId)) {
+        const row = mergePipelineRunRowEvent(rowStatesById[executionId], state);
+        if (row) rowStatesById = { ...rowStatesById, [executionId]: row };
+      }
+      const nextState = { ...prev, summaries, statesById, rowStatesById };
+      return { summaries, ...prunePipelineExecutionCaches(nextState) };
+    });
 
     return { success: true };
   },
@@ -1568,44 +1678,51 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
       const scope = currentExecutionScope(prev);
       // The selected list projects in-scope executions and children of
       // listed runs.
+      const alreadyListed = isExecutionListed(prev.summaries, executionId);
+      const parentListed =
+        event.state.parent_execution_id !== undefined &&
+        isExecutionListed(prev.summaries, event.state.parent_execution_id);
       const inList =
-        scope !== null &&
-        (executionMatchesScope(event.state, scope) ||
-          (event.state.parent_execution_id !== undefined &&
-            prev.summaries.some(
-              (s) => s.id === event.state.parent_execution_id,
-            )));
-      // Cached detail stays live regardless of the selected scope: a leased
-      // or summary-interested execution, or any state already cached (a chat
-      // card or the overview loaded it), follows its events.
-      const cached = prev.statesById[executionId] !== undefined;
-      if (
-        !inList &&
-        !cached &&
-        !isPipelineExecutionRetainedByInterest(executionId)
-      ) {
-        return prev;
-      }
-
-      let statesById = prev.statesById;
-      const cachedState = mergeExecutionEventState(
-        prev.statesById[executionId],
-        event.state,
-      );
-      if (cachedState) {
-        statesById = { ...prev.statesById, [executionId]: cachedState };
-      } else if (cached) {
-        statesById = { ...prev.statesById };
-        delete statesById[executionId];
-      }
+        alreadyListed ||
+        (scope !== null &&
+          (executionMatchesScope(event.state, scope) || parentListed));
 
       const summaries = inList
         ? upsertSummary(prev.summaries, summaryFromState(event.state))
         : prev.summaries;
-      if (summaries === prev.summaries && statesById === prev.statesById) {
+
+      let statesById = prev.statesById;
+      if (isPipelineExecutionLeased(executionId)) {
+        const fullState = mergeExecutionEventState(
+          prev.statesById[executionId],
+          event.state,
+        );
+        statesById = fullState
+          ? { ...prev.statesById, [executionId]: fullState }
+          : withoutExecution(prev.statesById, executionId);
+      } else {
+        statesById = withoutExecution(prev.statesById, executionId);
+      }
+
+      let rowStatesById = prev.rowStatesById;
+      if (isExecutionRowRetained(summaries, executionId)) {
+        const row = mergePipelineRunRowEvent(
+          rowStatesById[executionId],
+          event.state,
+        );
+        if (row) rowStatesById = { ...rowStatesById, [executionId]: row };
+      } else {
+        rowStatesById = withoutExecution(rowStatesById, executionId);
+      }
+
+      if (
+        summaries === prev.summaries &&
+        statesById === prev.statesById &&
+        rowStatesById === prev.rowStatesById
+      ) {
         return prev;
       }
-      return { summaries, statesById };
+      return { summaries, statesById, rowStatesById };
     });
   },
 
@@ -1695,7 +1812,9 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
         prev.isHydratingGlobalPipelineStatuses
           ? {
               ...prev.pendingGlobalExecutionStatesById,
-              [execId]: event.state,
+              [execId]: createGlobalPipelineExecutionRecordFromState(
+                event.state,
+              ),
             }
           : prev.pendingGlobalExecutionStatesById;
       const currentEntries = prev.pipelineSummariesByWorktree[key];
@@ -1771,9 +1890,24 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
         pendingGlobalExecutionStatesById ===
           prev.pendingGlobalExecutionStatesById
       ) {
-        return prev;
+        const caches = prunePipelineExecutionCaches(prev);
+        return caches.statesById === prev.statesById &&
+          caches.rowStatesById === prev.rowStatesById
+          ? prev
+          : caches;
       }
 
+      const nextState = {
+        ...prev,
+        isHydratingGlobalPipelineStatuses:
+          prev.isHydratingGlobalPipelineStatuses,
+        pendingGlobalExecutionStatesById,
+        runningExecutionsByWorktree: running,
+        pausedExecutionsByWorktree: paused,
+        unseenPipelineWorktreeKeys: unseen,
+        unseenFailedPipelineWorktreeKeys: unseenFailed,
+        pipelineSummariesByWorktree: summaries,
+      };
       return {
         isHydratingGlobalPipelineStatuses:
           prev.isHydratingGlobalPipelineStatuses,
@@ -1783,6 +1917,7 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
         unseenPipelineWorktreeKeys: unseen,
         unseenFailedPipelineWorktreeKeys: unseenFailed,
         pipelineSummariesByWorktree: summaries,
+        ...prunePipelineExecutionCaches(nextState),
       };
     });
   },
@@ -1793,8 +1928,19 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
       pendingGlobalExecutionStatesById: {},
     });
 
-    const result = await listExecutionsSingleFlight();
-    if (!result.success || !result.data) {
+    let result: Awaited<ReturnType<typeof listExecutionsSingleFlight>> | null =
+      null;
+    try {
+      result = await listExecutionsSingleFlight();
+    } catch {
+      set({
+        isHydratingGlobalPipelineStatuses: false,
+        hasHydratedGlobalPipelineStatuses: true,
+        pendingGlobalExecutionStatesById: {},
+      });
+      return;
+    }
+    if (result === null || !result.success || !result.data) {
       set({
         isHydratingGlobalPipelineStatuses: false,
         hasHydratedGlobalPipelineStatuses: true,
@@ -1932,26 +2078,8 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
   },
 
   releaseExecutionDetail: (executionId: string): void => {
-    if (
-      isPipelineExecutionRetainedByInterest(executionId) ||
-      get().summaries.some((summary) => summary.id === executionId)
-    ) {
-      return;
-    }
-    // A snapshot read still in flight for the released demand must not
-    // install afterwards.
-    const inFlight = executionDetailReads.get(executionId);
-    if (inFlight) {
-      inFlight.read.abandoned = true;
-    }
-    set((prev) => {
-      if (prev.statesById[executionId] === undefined) {
-        return prev;
-      }
-      const statesById = { ...prev.statesById };
-      delete statesById[executionId];
-      return { statesById };
-    });
+    if (isPipelineExecutionLeased(executionId)) return;
+    set((prev) => prunePipelineExecutionCaches(prev));
   },
 
   releaseDetailOwner: (projectId: string, worktreeId: string): void => {
@@ -1961,15 +2089,36 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
     for (const executionId of unleased) {
       get().releaseExecutionDetail(executionId);
     }
+    set((prev) => prunePipelineExecutionCaches(prev));
   },
 
   clear: (): void => {
-    set((prev) => ({
-      currentCwd: null,
-      currentProjectId: null,
-      currentWorktreeId: null,
-      summaries: [],
-      statesById: retainInterestedStates(prev.statesById),
-    }));
+    set((prev) => {
+      const nextState = {
+        ...prev,
+        currentCwd: null,
+        currentProjectId: null,
+        currentWorktreeId: null,
+        summaries: [],
+      };
+      return { ...nextState, ...prunePipelineExecutionCaches(nextState) };
+    });
   },
 }));
+
+let pipelineInterestPrunePending = false;
+
+subscribePipelineInterestChanges(() => {
+  if (pipelineInterestPrunePending) return;
+  pipelineInterestPrunePending = true;
+  queueMicrotask(() => {
+    pipelineInterestPrunePending = false;
+    usePipelineRunsStore.setState((prev) => {
+      const caches = prunePipelineExecutionCaches(prev);
+      return caches.statesById === prev.statesById &&
+        caches.rowStatesById === prev.rowStatesById
+        ? prev
+        : caches;
+    });
+  });
+});

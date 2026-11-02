@@ -40,21 +40,21 @@ describe('resolveTryItRuntime', () => {
     ).toEqual({ status: 'model', selection: codexModel });
   });
 
-  it('keeps the default chat when the default harness is supported', () => {
+  it('pins the supported default model for a new chat beside an incompatible chat', () => {
     expect(
       resolveTryItRuntime({
         support: { claude: true, codex: false, cursor: false },
         defaults: claudeDefault,
         signedIn: { claude: null, codex: null, cursor: false },
       }),
-    ).toEqual({ status: 'default' });
+    ).toEqual({ status: 'model', selection: claudeModel });
     expect(
       resolveTryItRuntime({
         support: codexOnly,
         defaults: { ...claudeDefault, chatProvider: 'codex' },
         signedIn: allSignedIn,
       }),
-    ).toEqual({ status: 'default' });
+    ).toEqual({ status: 'model', selection: codexModel });
   });
 
   it('keeps the default chat for an unrestricted capability without waiting', () => {

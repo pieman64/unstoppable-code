@@ -243,6 +243,29 @@ export interface GitHubPullRequestSnapshot {
   observedAt: string;
 }
 
+/**
+ * Renderer-visible projection of one watched pull request, published on
+ * `AppAdvisorWatcherSummary.githubPullRequestProgress` from the backend-only
+ * runtime state, so the background drawer lists it without a GitHub request
+ * of its own. Its last snapshot only: never queued events, the delivery
+ * outbox, queue cursors, or retry state.
+ */
+export interface GitHubPullRequestWatchProgress {
+  repository: string;
+  number: number;
+  /** GitHub-provided URL; never constructed. */
+  url: string;
+  /** Untrusted, bounded PR title for display. */
+  title?: string;
+  state: GitHubPullRequestState;
+  baseRefName: string;
+  /** Merge queue phase and position; `null` when not queued. */
+  queue: { phase: PrMergeQueuePhase; position: number | null } | null;
+  observedAt: string;
+  /** Set once the pull request merged or closed and polling stopped for it. */
+  settledAt?: string;
+}
+
 interface GitHubPullRequestEventIdentity {
   repository: string;
   number: number;

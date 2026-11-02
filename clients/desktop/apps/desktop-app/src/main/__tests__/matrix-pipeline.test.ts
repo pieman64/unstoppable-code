@@ -3,16 +3,22 @@ jest.mock('@electron-toolkit/utils', () => ({ is: { dev: true } }));
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { initCopilotModels } from '@canopy/desktop-shared/types';
+import { resolveHostRepositoryPolicy } from '@canopy/desktop-shared/node/lib/repository-policy';
 import {
   executePipeline,
+  loadExecutionState,
   prepareMatrixJobRetryState,
   prepareMatrixVariantCancellation,
   prepareRetryState,
   retryMatrixJobExecution,
+  retryPipelineExecution,
+  rerunPipelineExecution,
   resumePipeline,
   saveExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor';
 import type {
+  CopilotPromptRunnerResult,
   ExecutionRuntime,
   ExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
@@ -594,11 +600,220 @@ describe('matrix pipeline execution', () => {
       retry_count: 1,
       steps: { check: { status: 'pending' } },
     });
-    expect(failed.job_definitions.__matrix__build__1.env.VALUE).toBe('fail');
-    expect(prepared.job_definitions.__matrix__build__1.env.VALUE).toBe(
+    expect(failed.job_definitions.__matrix__build__1.env?.VALUE).toBe('fail');
+    expect(prepared.job_definitions.__matrix__build__1.env?.VALUE).toBe(
       '${{ matrix.value }}',
     );
   });
+
+  it.each([
+    ...(
+      [
+        'retained root',
+        'legacy missing root',
+        'legacy missing target',
+        'unavailable root',
+        'host-supplied root',
+      ] as const
+    ).map((mode) => ({ mode, replay: 'matrix' as const })),
+    ...(['resume', 'retry', 'matrix', 'rerun'] as const).map((replay) => ({
+      mode: 'legacy top-level root' as const,
+      replay,
+    })),
+  ])(
+    'preserves repository policy scope on $replay with $mode',
+    async ({ mode, replay }) => {
+      const legacyTopLevel = mode === 'legacy top-level root';
+      const checkout = path.join(tempDir, 'checkout');
+      const desktop = path.join(checkout, 'desktop');
+      fs.mkdirSync(desktop, { recursive: true });
+      fs.writeFileSync(path.join(tempDir, 'CLAUDE.md'), 'ANCESTOR');
+      fs.writeFileSync(path.join(checkout, 'CLAUDE.md'), 'R');
+      fs.writeFileSync(path.join(desktop, 'AGENTS.md'), 'D');
+      runtime.bundledActionsDir = path.resolve(
+        'packages/desktop-shared/resources/actions',
+      );
+      initCopilotModels([
+        {
+          id: 'copilot:test',
+          rawModelId: 'test',
+          label: 'Copilot test',
+          supportsVision: false,
+          supportedThinkingLevels: [],
+        },
+      ]);
+      const prepared: Awaited<
+        ReturnType<typeof resolveHostRepositoryPolicy>
+      >[] = [];
+      const requests: { cwd: string; root: string | undefined }[] = [];
+      runtime.copilotPromptRunner = {
+        runCopilotPrompt: async (
+          request,
+        ): Promise<CopilotPromptRunnerResult> => {
+          requests.push({
+            cwd: request.cwd,
+            root:
+              request.repositoryPolicyScope?.kind === 'checkout'
+                ? request.repositoryPolicyScope.root
+                : undefined,
+          });
+          const policy = await resolveHostRepositoryPolicy(
+            request.repositoryPolicyScope,
+            request.cwd,
+          );
+          prepared.push(policy);
+          if (
+            prepared.length === 1 ||
+            (policy.status !== 'delivered' && policy.status !== 'absent')
+          ) {
+            return {
+              status: 'failure',
+              transcript: '',
+              failure: {
+                version: 1,
+                provider: 'copilot',
+                had_agent_activity: false,
+                message:
+                  policy.status === 'delivered' || policy.status === 'absent'
+                    ? 'Synthetic first-turn failure'
+                    : policy.message,
+              },
+            };
+          }
+          return {
+            status: 'success',
+            sessionId: 'matrix-policy-session',
+            rawText: 'done',
+            transcript: '',
+            usage: { inputTokens: 0, outputTokens: 0 },
+          };
+        },
+      };
+      try {
+        const handle = await executePipeline(
+          {
+            name: 'Matrix policy retry',
+            scope: 'directory',
+            on: 'dispatch',
+            jobs: {
+              review: {
+                strategy: { matrix: { value: ['one'] } },
+                steps: [
+                  {
+                    id: 'prompt',
+                    uses: 'builtin/agent-prompt',
+                    ...(legacyTopLevel ? { working_directory: 'desktop' } : {}),
+                    with: { model: 'copilot:test', prompt: 'Do it' },
+                  },
+                ],
+              },
+            },
+          },
+          {
+            cwd: legacyTopLevel ? checkout : desktop,
+            scope: 'directory',
+            target: {
+              scope: 'directory',
+              path: legacyTopLevel ? checkout : desktop,
+            },
+            executionCheckoutRoot: checkout,
+            repoPath: path.join(tempDir, 'not-the-execution-checkout'),
+            pipelineId: 'matrix-policy-retry',
+            executionId: 'matrix-policy-retry-execution',
+            runtime,
+          },
+        );
+        const failed = await handle.waitForCompletion();
+        expect(failed.status).toBe('failure');
+        expect(failed.execution_checkout_root).toBe(checkout);
+        expect(prepared).toHaveLength(1);
+        expect(prepared[0]).toMatchObject({ status: 'delivered' });
+        if (prepared[0].status !== 'delivered')
+          throw new Error('Expected initial repository policy');
+        expect(prepared[0].block).toContain('### CLAUDE.md\nR');
+        expect(prepared[0].block).toContain('### desktop/AGENTS.md\nD');
+        expect(prepared[0].block).not.toContain('ANCESTOR');
+
+        if (mode === 'unavailable root') failed.execution_checkout_root = null;
+        else if (mode !== 'retained root')
+          delete failed.execution_checkout_root;
+        if (mode === 'legacy missing root')
+          failed.parent_execution_id = 'legacy-parent';
+        if (mode === 'legacy missing target') delete failed.target;
+        if (replay === 'resume') {
+          failed.status = 'pending';
+          for (const job of Object.values(failed.jobs)) {
+            job.status = 'pending';
+            delete job.conclusion;
+            delete job.outcome;
+            job.steps.prompt = {
+              status: 'pending',
+              outputs: {},
+              dynamic_env: {},
+            };
+          }
+        }
+        await saveExecutionState(failed, runtime.executionsDir);
+        const options = {
+          cwd: tempDir,
+          runtime,
+          ...(mode === 'host-supplied root'
+            ? { executionCheckoutRoot: checkout }
+            : {}),
+        };
+        const retry =
+          replay === 'resume'
+            ? await resumePipeline(failed.id, options)
+            : replay === 'retry'
+              ? await retryPipelineExecution(failed.id, options)
+              : replay === 'rerun'
+                ? await rerunPipelineExecution(failed.id, options)
+                : await retryMatrixJobExecution(
+                    { executionId: failed.id, jobId: 'review', mode: 'failed' },
+                    options,
+                  );
+        const completed = await retry.waitForCompletion();
+        expect(prepared).toHaveLength(2);
+        const unavailable =
+          mode === 'legacy missing root' ||
+          mode === 'legacy missing target' ||
+          mode === 'unavailable root';
+        expect(requests).toEqual([
+          { cwd: desktop, root: checkout },
+          {
+            cwd: mode === 'legacy missing target' ? tempDir : desktop,
+            root: unavailable ? undefined : checkout,
+          },
+        ]);
+        expect(completed.status).toBe(unavailable ? 'failure' : 'success');
+        if (replay === 'matrix')
+          expect(completed.jobs.__matrix__review__0.retry_count).toBe(1);
+        expect(completed.execution_checkout_root).toBe(
+          unavailable ? null : checkout,
+        );
+        const persisted = await loadExecutionState(
+          completed.id,
+          runtime.executionsDir,
+        );
+        expect(persisted?.execution_checkout_root).toBe(
+          unavailable ? null : checkout,
+        );
+        if (unavailable) {
+          expect(prepared[1].status).toBe('unreadable');
+          if (prepared[1].status !== 'unreadable')
+            throw new Error('Expected unreadable repository policy');
+          expect(prepared[1].message).toContain('checkout is unknown');
+          expect(
+            completed.jobs.__matrix__review__0.steps.prompt.error,
+          ).toContain('checkout is unknown');
+        } else {
+          expect(prepared[1]).toEqual(prepared[0]);
+        }
+      } finally {
+        initCopilotModels([]);
+      }
+    },
+  );
 
   it('rejects expansion retry for migrated groups without a dynamic strategy', async () => {
     const handle = await executePipeline(

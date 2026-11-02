@@ -508,7 +508,13 @@ export class ForeignActivityCarryoverService {
           operation.operationId
         )
           this.operations.delete(key(operation));
-        if (tab?.transcript !== undefined && !tab.transcript.hasActiveSidecar) {
+        if (
+          tab?.transcript !== undefined &&
+          !(
+            tab.transcript.hasOrdinaryActiveRows ??
+            tab.transcript.hasActiveSidecar
+          )
+        ) {
           const resultToken = `${operation.operationId}:${tab.transcript.transcriptRevision}`;
           const savedRevision = Number(
             operation.resultToken?.slice(

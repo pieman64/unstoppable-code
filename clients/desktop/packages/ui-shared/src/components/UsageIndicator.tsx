@@ -5,6 +5,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   lazy,
   Suspense,
   useRef,
@@ -14,13 +15,16 @@ import {
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { getDocument } from '../panels/window-registry';
+import { aiCreditsLabel } from './aiCreditsLabel';
 import { formatCost, formatUsageResetWhen } from '../lib/format-usage';
 import {
   CircularProgress,
   type CircularProgressTone,
 } from './CircularProgress';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { InlineTextSkeleton } from './InlineTextSkeleton';
 
 import {
   UsageMeter,
@@ -86,10 +90,15 @@ export function createOpenCodeUsageResponse(
 const CREDIT_COUNT_FORMAT = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
+const SMALL_CREDIT_COUNT_FORMAT = new Intl.NumberFormat('en-US', {
+  maximumSignificantDigits: 2,
+});
 
 /** A balance counted in credits, not dollars: `62,500`, `12.5`. */
 export function formatCreditCount(credits: number): string {
-  return CREDIT_COUNT_FORMAT.format(credits);
+  return credits > 0 && credits < 0.005
+    ? SMALL_CREDIT_COUNT_FORMAT.format(credits)
+    : CREDIT_COUNT_FORMAT.format(credits);
 }
 
 /** A credit balance as a count: `62,500 credits left`, `1 credit left`. */
@@ -97,6 +106,139 @@ export function formatCreditsLeft(credits: number): string {
   return `${formatCreditCount(credits)} ${
     credits === 1 ? 'credit' : 'credits'
   } left`;
+}
+
+/**
+ * A whole AI Credits wallet balance as the composer shows it, as a plain
+ * fact: `12.5 AI Credits`, `0 AI Credits`, or `3.2 Free AI Credits` while
+ * the paying wallet has not made its first purchase. The product term stays
+ * plural like every other AI Credits label.
+ */
+export function formatAiCreditsCount(
+  credits: number,
+  access?: ModelLibraryAccess,
+): string {
+  return `${formatCreditCount(credits)} ${aiCreditsLabel(access)}`;
+}
+
+/**
+ * The popover's AI Credits section: one row, the label once with the
+ * figure and Manage across from it, as the Context and Cost rows read.
+ */
+function CreditBalanceRow({
+  balance,
+}: {
+  balance: UsageIndicatorCreditBalance;
+}): JSX.Element {
+  const label = aiCreditsLabel(balance.libraryAccess);
+  const pending = balance.credits === null;
+  return (
+    <section
+      data-testid="usage-indicator-account"
+      aria-label={`${label} balance`}
+      aria-busy={pending ? true : undefined}
+      className="flex items-baseline justify-between gap-3 text-xs"
+    >
+      <span className="fg-primary">{label}</span>
+      <span className="flex shrink-0 items-baseline gap-3">
+        <span className="fg-secondary">
+          <CreditBalanceFigure
+            testId="usage-indicator-account-credit-balance"
+            text={
+              balance.credits === null
+                ? null
+                : formatCreditCount(balance.credits)
+            }
+          />
+        </span>
+        {balance.onManage && (
+          <UsageTextAction
+            label="Manage"
+            onClick={balance.onManage}
+            ariaLabel="Manage AI Credits"
+          />
+        )}
+      </span>
+    </section>
+  );
+}
+
+/**
+ * The known balance of the wallet paying for this chat. Hosts pass it only
+ * for a credit-routed chat whose funding owner and balance they could verify;
+ * every other chat omits it rather than showing a guess.
+ */
+export interface UsageIndicatorCreditBalance {
+  /**
+   * The whole wallet balance, not what is left of today's grant. `null` holds
+   * the balance's place while a re-read replaces a figure the host withdrew
+   * (CAN-5026); the trigger and popover show a skeleton, never the old figure.
+   */
+  readonly credits: number | null;
+  /** Opens the host's AI Credits management view. */
+  readonly onManage?: () => void;
+  /**
+   * The paying wallet's model-library access, when the host knows it for
+   * this chat's owner. Before the first purchase the balance reads
+   * `Free AI Credits`; omitted or unknown access keeps the plain label.
+   */
+  readonly libraryAccess?: ModelLibraryAccess;
+}
+
+/**
+ * A finite, non-negative balance, or an explicit pending one; anything else
+ * is not shown.
+ */
+function isShowableCreditBalance(
+  balance: UsageIndicatorCreditBalance | undefined,
+): balance is UsageIndicatorCreditBalance {
+  if (balance === undefined) return false;
+  const { credits } = balance;
+  return credits === null || (Number.isFinite(credits) && credits >= 0);
+}
+
+/**
+ * The trigger's balance slot. A pending balance keeps the width the last
+ * figure occupied, so the capsule does not shrink and regrow around the
+ * re-read; with no figure measured yet it falls back to a typical width.
+ */
+function CreditBalanceFigure({
+  text,
+  testId,
+}: {
+  text: string | null;
+  testId: string;
+}): JSX.Element {
+  const figureRef = useRef<HTMLSpanElement>(null);
+  const [figureWidth, setFigureWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (text === null || figureRef.current === null) return;
+    const width = figureRef.current.getBoundingClientRect().width;
+    if (width > 0) setFigureWidth(width);
+  }, [text]);
+  if (text === null) {
+    return (
+      <span
+        data-testid={testId}
+        data-pending="true"
+        className="flex min-w-0 items-center"
+      >
+        <InlineTextSkeleton
+          className={figureWidth === null ? 'w-20 max-w-full' : 'max-w-full'}
+          style={figureWidth === null ? undefined : { width: figureWidth }}
+        />
+      </span>
+    );
+  }
+  return (
+    <span
+      ref={figureRef}
+      data-testid={testId}
+      className="min-w-0 truncate whitespace-nowrap tabular-nums"
+    >
+      {text}
+    </span>
+  );
 }
 
 export interface UsageIndicatorAccountSummaryProps {
@@ -579,6 +721,13 @@ export interface UsageIndicatorProps {
    * the session Cost figure. The popover imports no cost code itself.
    */
   readonly costPreview?: ReactNode;
+  /**
+   * The host bills every turn to AI Credits with no provider subscription, so
+   * no USD figure is shown: the session Cost row, the host's cost preview row
+   * and the per-response Estimated cost row stay out. Tokens, duration,
+   * turns, context and the credit balance are unaffected.
+   */
+  readonly hideCost?: boolean;
   /** Called as the popover opens and closes (hosts fetch fresh data on open). */
   onOpenChange?: (open: boolean) => void;
   /**
@@ -595,6 +744,14 @@ export interface UsageIndicatorProps {
   seedUsage?: UsageIndicatorUsage;
   /** Lines the popover's right edge up with this element (the composer box). */
   alignRef?: RefObject<HTMLElement | null>;
+  /**
+   * The AI Credits balance paying for this chat. The trigger shows it as
+   * `{N} AI Credits` (or `{N} Free AI Credits`) beside the context ring, and the popover's account
+   * section shows the same figure, in place of `accountUsage`: a credit-routed chat is not billed to
+   * a subscription. `credits: null` shows a pending skeleton in both places;
+   * an invalid figure is ignored.
+   */
+  creditBalance?: UsageIndicatorCreditBalance;
 }
 
 export function UsageIndicator({
@@ -607,9 +764,11 @@ export function UsageIndicator({
   onSeeDetails,
   contextBreakdown,
   costPreview,
+  hideCost = false,
   onOpenChange,
   capsule = false,
   alignRef,
+  creditBalance,
 }: UsageIndicatorProps): JSX.Element {
   // A tab with no usage yet still gets a usable meter: the host's seed when
   // one is known, otherwise an all-zero placeholder so the popover can at
@@ -682,28 +841,56 @@ export function UsageIndicator({
 
   const ringTone = getUsageRingTone(percentage);
 
+  // One figure for the trigger and the popover, so they never disagree.
+  const balance = isShowableCreditBalance(creditBalance)
+    ? creditBalance
+    : undefined;
+  const balancePending = balance?.credits === null;
+  const balanceText =
+    balance && balance.credits !== null
+      ? formatAiCreditsCount(balance.credits, balance.libraryAccess)
+      : null;
+  const accountSection = balance ? (
+    <CreditBalanceRow balance={balance} />
+  ) : (
+    accountUsage
+  );
+  const wideTrigger = responseUsage !== undefined || balance !== undefined;
+
   return (
     <div ref={containerRef} className="relative">
       <button
         type="button"
         ref={triggerRef}
         onClick={handleClick}
-        className={`focus-ring flex items-center text-2xs fg-secondary transition hover:bg-subtle hover:fg-primary ${
+        className={`focus-ring flex items-center text-2xs fg-secondary transition-colors hover:bg-subtle hover:fg-primary ${
           capsule
-            ? responseUsage
-              ? 'h-8 min-w-8 justify-center gap-1 rounded-full px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+            ? wideTrigger
+              ? 'h-8 min-w-8 max-w-full justify-center gap-1 rounded-full px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11'
               : 'h-8 w-8 justify-center rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11'
             : 'gap-1 rounded-md px-1.5 py-0.5'
         }`}
-        aria-label="Usage indicator"
+        // The name carries the visible balance, so voice control can say it.
+        aria-label={
+          balanceText ? `Usage indicator, ${balanceText}` : 'Usage indicator'
+        }
+        aria-busy={balancePending ? true : undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
         data-testid="usage-indicator"
       >
         {responseUsage ? (
-          'Usage'
+          balance ? null : (
+            'Usage'
+          )
         ) : (
           <CircularProgress percentage={percentage} tone={ringTone} />
+        )}
+        {balance && (
+          <CreditBalanceFigure
+            testId="usage-indicator-credit-balance"
+            text={balanceText}
+          />
         )}
       </button>
 
@@ -717,9 +904,10 @@ export function UsageIndicator({
               isCodex={isCodex}
               showContextWindow={showContextWindow}
               responseUsage={responseUsage}
-              accountUsage={accountUsage}
+              accountUsage={accountSection}
               contextBreakdown={contextBreakdown}
               costPreview={costPreview}
+              hideCost={hideCost}
               onSeeDetails={
                 onSeeDetails
                   ? (): void => {

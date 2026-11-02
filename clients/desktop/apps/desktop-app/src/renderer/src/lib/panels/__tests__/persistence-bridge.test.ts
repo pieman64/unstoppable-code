@@ -1,5 +1,4 @@
 /** @jest-environment jsdom */
-import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
 /**
  * Persistence bridge — Phase 9 popped-out window persistence. Covers the
@@ -18,6 +17,7 @@ import {
 } from '@canopy/protocol';
 import {
   getPanelLayoutViewModel,
+  setFixedSidePanelTabsClosable,
   makeWorktreePanelKey,
   usePanelLayoutStore,
 } from '@/stores/panelLayoutStore';
@@ -28,7 +28,6 @@ import { useChatStore, type ChatTab } from '@/stores/chatStore';
 import { bindTerminalClient } from '@canopy/app-state/terminal';
 import { ipcTerminalClient } from '@/client/ipc-terminal-client';
 import { useWorkspaceLayoutModeStore } from '@/stores/workspaceLayoutModeStore';
-import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeaturesStore';
 import {
   DEFAULT_ACTIVITY_GROUP_ID,
   DEFAULT_CHAT_GROUP_ID,
@@ -43,7 +42,6 @@ import {
   forkWorktreePanelLayout,
   flushPanelLayoutSaveForWorktree,
   flushPanelLayoutSavesForProject,
-  refreshLiveMinimalLayout,
   schedulePanelLayoutSave,
   resetLayoutToDefault,
   resetPanelLayoutPersistenceBridgeForTests,
@@ -170,12 +168,13 @@ let disposeTerminalClient: (() => void) | undefined;
 
 beforeEach(() => {
   jest.useFakeTimers();
+  setFixedSidePanelTabsClosable(true);
   jest.mocked(readRemoteControlContext).mockReturnValue({ mode: 'local' });
   loadWorktreeLayout.mockResolvedValue({ layout: null });
   saveWorktreeLayout.mockResolvedValue(undefined);
   loadDefaultLayout.mockResolvedValue({ layout: null });
   saveDefaultLayout.mockResolvedValue(undefined);
-  loadBrowserState.mockResolvedValue({ status: 'missing', state: null });
+  loadBrowserState.mockResolvedValue({ state: null });
   saveBrowserState.mockResolvedValue(undefined);
   loadWorktreeMode.mockResolvedValue({ mode: 'advanced' });
   saveWorktreeMode.mockResolvedValue(undefined);
@@ -223,6 +222,7 @@ afterEach(() => {
   for (const key of Object.keys(store.layouts)) {
     store.disposeLayout(key);
   }
+  setFixedSidePanelTabsClosable(false);
   jest.useRealTimers();
   jest.restoreAllMocks();
   jest.clearAllMocks();
@@ -521,7 +521,11 @@ describe('Minimal layout restore', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
       model: 'claude-sonnet-4-5-20250514',
       providerType: 'claude',
@@ -1001,42 +1005,6 @@ describe('New tab persistence', () => {
     expect(JSON.stringify(request.layout)).not.toContain('new-tab');
     expect(JSON.stringify(request.layout)).not.toContain(added ?? 'missing');
     expect(migratePanelLayout(request.layout)).not.toBeNull();
-  });
-});
-
-describe('refreshLiveMinimalLayout', () => {
-  afterEach(() => {
-    resetExperimentalFeaturesStoreForTest();
-  });
-
-  test('turning early access off drops New tabs and restores the Side Panel tabs', async () => {
-    loadWorktreeMode.mockResolvedValue({ mode: 'minimal' });
-    setTestEarlyAccessFeatures({
-      enabled: true,
-      hydrated: true,
-    });
-    await ensureWorktreePanelLayout(KEY);
-    const sideKinds = (): string[] =>
-      usePanelLayoutStore
-        .getState()
-        .layouts[
-          KEY
-        ]?.groups[DEFAULT_EXTRAS_GROUP_ID]?.tabs.map((tab) => tab.kind) ?? [];
-    // Early access: the Side Panel starts empty and holds a New tab.
-    expect(sideKinds()).toEqual([]);
-    usePanelLayoutStore
-      .getState()
-      .addTab(KEY, DEFAULT_EXTRAS_GROUP_ID, 'new-tab', {
-        instance: { newTabId: 'new-1' },
-        title: 'New tab',
-        activate: false,
-      });
-    expect(sideKinds()).toEqual(['new-tab']);
-
-    setTestEarlyAccessFeatures({ enabled: false });
-    refreshLiveMinimalLayout(KEY);
-
-    expect(sideKinds()).toEqual(['activity-section', 'file-explorer']);
   });
 });
 
@@ -2036,6 +2004,7 @@ describe('saved default layout', () => {
 
     const layout = usePanelLayoutStore.getState().serializeLayout(KEY);
     expect(layout).not.toBeNull();
+    if (!layout) throw new Error('Expected a serialized layout');
     const collectLeaves = (
       node: NonNullable<typeof layout>['grid']['root'],
     ): Array<Extract<typeof node, { type: 'leaf' }>> =>
@@ -2063,12 +2032,11 @@ describe('saved default layout', () => {
       return;
     }
     expect(side.size).toBe(layout.grid.width / 2);
-    // `auto` marks this as CANOPY's default collapse, so the Side Panel
-    // reopens itself once the worktree produces work (CAN-2836).
+    // Simplified Minimal defaults keep both optional regions hidden until
+    // the user opens them, including the initially empty Side Panel.
     expect(side.collapsed).toEqual({
       edge: 'right',
       expandedSize: layout.grid.width / 2,
-      auto: true,
     });
     expect(bottom.collapsed).toEqual({
       edge: 'bottom',
@@ -2120,6 +2088,7 @@ describe('saved default layout', () => {
 
     const layout = usePanelLayoutStore.getState().serializeLayout(KEY);
     expect(layout).not.toBeNull();
+    if (!layout) throw new Error('Expected a serialized layout');
     // The applied default carried the activity group + its collapse, and did
     // NOT fall back to the 3-group hardcoded default (no group-terminal).
     const groupIds = (layout?.mostRecentActiveGroupIds ?? []).concat(
@@ -2148,6 +2117,13 @@ describe('saved default layout', () => {
     expect(saveDefaultLayout).toHaveBeenCalledTimes(1);
     const arg = saveDefaultLayout.mock.calls[0][0];
     expect(arg.surface).toBe('code');
+    if (
+      typeof arg.layout !== 'object' ||
+      arg.layout === null ||
+      !('version' in arg.layout)
+    ) {
+      throw new Error('Expected a serialized default layout');
+    }
     expect(arg.layout.version).toBe(1);
     // Chat instance stripped from the template's group-chat leaf.
     const chatLeaf = JSON.stringify(arg.layout);

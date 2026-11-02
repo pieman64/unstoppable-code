@@ -19,9 +19,9 @@
 // verify: every `TelemetryEventType` appears as a mapped (non-null) value,
 // every non-null mapped value is a valid `TelemetryEventType`, and the set of
 // audit-only (null-mapped) types is exactly the explicit expected list — so
-// the next unmapped addition fails loudly here even under ts-jest's
-// `isolatedModules: true` (which skips type-checking, and thus skips the
-// `Equals<...>` assertions below).
+// the next unmapped addition fails loudly here even though Jest's SWC
+// transform skips type-checking (and thus the `Equals<...>` assertions
+// below).
 
 import {
   PR_CHECK_STATUSES,
@@ -69,7 +69,6 @@ type _ToolCategories = Equals<
 >;
 type _Statuses = Equals<AgentAuditStatus, TelemetryTurnStatus>;
 type _ChatModes = Equals<AgentAuditChatMode, TelemetryChatMode>;
-type _Providers = Equals<AgentProviderType, TelemetryProvider>;
 type _PrStates = Equals<PrState, PrStateValue>;
 type _CheckStatuses = Equals<CheckStatus, PrCheckStatusValue>;
 type _ReviewStatuses = Equals<ReviewStatus, PrReviewStatusValue>;
@@ -79,15 +78,39 @@ type _ReviewStatuses = Equals<ReviewStatus, PrReviewStatusValue>;
 // handle.
 type _ProhibitedScopes = Equals<TelemetryScopeKey, TelemetryProhibitedScopeKey>;
 
+// Desktop recognizes providers that the hosted telemetry protocol intentionally
+// excludes. Keep the two sets disjoint and require them to partition the full
+// desktop union so either contract's drift requires an explicit decision.
+const EXCLUDED_TELEMETRY_PROVIDERS = [
+  'cursor',
+  'copilot',
+  'opencode',
+] as const satisfies readonly Exclude<AgentProviderType, TelemetryProvider>[];
+type ExcludedTelemetryProvider = (typeof EXCLUDED_TELEMETRY_PROVIDERS)[number];
+type _ExcludedProvidersAreExact = Equals<
+  ExcludedTelemetryProvider,
+  Exclude<AgentProviderType, TelemetryProvider>
+>;
+type _HostedAndExcludedProvidersPartitionDesktop = Equals<
+  AgentProviderType,
+  TelemetryProvider | ExcludedTelemetryProvider
+>;
+type _HostedAndExcludedProvidersAreDisjoint = Equals<
+  Extract<TelemetryProvider, ExcludedTelemetryProvider>,
+  never
+>;
+
 const assertTrue = <T extends true>(value: T): T => value;
 assertTrue<_ToolCategories>(true);
 assertTrue<_Statuses>(true);
 assertTrue<_ChatModes>(true);
-assertTrue<_Providers>(true);
 assertTrue<_PrStates>(true);
 assertTrue<_CheckStatuses>(true);
 assertTrue<_ReviewStatuses>(true);
 assertTrue<_ProhibitedScopes>(true);
+assertTrue<_ExcludedProvidersAreExact>(true);
+assertTrue<_HostedAndExcludedProvidersPartitionDesktop>(true);
+assertTrue<_HostedAndExcludedProvidersAreDisjoint>(true);
 
 // --- Exhaustive sample literals (omitting/adding a key is a tsc error) -------
 
@@ -137,6 +160,15 @@ const CHAT_MODE_KEYS: Record<AgentAuditChatMode, true> = {
 };
 
 const PROVIDER_KEYS: Record<AgentProviderType, true> = {
+  claude: true,
+  codex: true,
+  ollama: true,
+  copilot: true,
+  cursor: true,
+  opencode: true,
+};
+
+const HOSTED_PROVIDER_KEYS: Record<TelemetryProvider, true> = {
   claude: true,
   codex: true,
   ollama: true,
@@ -232,10 +264,20 @@ describe('telemetry protocol fidelity', () => {
     );
   });
 
-  it('providers match AgentProviderType exactly', () => {
+  it('hosted telemetry providers are the declared subset of desktop providers', () => {
     expect(sorted(TELEMETRY_PROVIDERS)).toEqual(
-      sorted(Object.keys(PROVIDER_KEYS)),
+      sorted(Object.keys(HOSTED_PROVIDER_KEYS)),
     );
+    expect(
+      TELEMETRY_PROVIDERS.every((provider) =>
+        Object.hasOwn(PROVIDER_KEYS, provider),
+      ),
+    ).toBe(true);
+    expect(sorted(EXCLUDED_TELEMETRY_PROVIDERS)).toEqual([
+      'copilot',
+      'cursor',
+      'opencode',
+    ]);
   });
 
   it('PR unions match types/github exactly', () => {

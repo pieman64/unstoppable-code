@@ -1,6 +1,8 @@
 import {
+  defaultFileViewMode,
   fileExtension,
   fileRenderKindForMediaType,
+  isNotebookPath,
   isRichDocumentRenderKind,
   resolveFileRenderKind,
 } from '../file-kind';
@@ -97,6 +99,7 @@ describe('office render kinds (REG-2902)', () => {
     expect(isRichDocumentRenderKind('docx')).toBe(true);
     expect(isRichDocumentRenderKind('xlsx')).toBe(true);
     expect(isRichDocumentRenderKind('pptx')).toBe(true);
+    expect(isRichDocumentRenderKind('video')).toBe(true);
     expect(isRichDocumentRenderKind('image')).toBe(false);
     expect(isRichDocumentRenderKind('code')).toBe(false);
   });
@@ -118,10 +121,111 @@ describe('office render kinds (REG-2902)', () => {
         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       ),
     ).toBe('pptx');
+    expect(fileRenderKindForMediaType('video/mp4')).toBe('video');
+    expect(fileRenderKindForMediaType('video/webm')).toBe('video');
+    expect(fileRenderKindForMediaType('video/quicktime')).toBeUndefined();
     expect(fileRenderKindForMediaType('text/plain')).toBeUndefined();
     expect(
       fileRenderKindForMediaType('application/vnd.ms-excel'),
     ).toBeUndefined();
     expect(fileRenderKindForMediaType(undefined)).toBeUndefined();
+  });
+
+  it('lets the name decide only for generic application/octet-stream (CAN-3995)', () => {
+    expect(
+      fileRenderKindForMediaType('application/octet-stream', 'reel.mp4'),
+    ).toBe('video');
+    expect(
+      fileRenderKindForMediaType(
+        'Application/Octet-Stream; charset=binary',
+        'f/v/report.pdf',
+      ),
+    ).toBe('pdf');
+    expect(
+      fileRenderKindForMediaType('application/octet-stream', 'logo.png'),
+    ).toBeUndefined();
+    expect(
+      fileRenderKindForMediaType('application/octet-stream', 'archive.zip'),
+    ).toBeUndefined();
+    expect(
+      fileRenderKindForMediaType('application/octet-stream'),
+    ).toBeUndefined();
+    // A specific MIME type stays authoritative over a misleading name.
+    expect(
+      fileRenderKindForMediaType('text/plain', 'notes.pdf'),
+    ).toBeUndefined();
+  });
+});
+
+describe('video render kind (CAN-3995)', () => {
+  it.each(['reel.mp4', 'REEL.MP4', 'clips/a.m4v', 'b.webm?t=3'])(
+    'picks video for %s',
+    (path) => {
+      expect(resolveFileRenderKind({ path })).toBe('video');
+    },
+  );
+
+  it.each(['a.mov', 'a.mkv', 'a.avi'])('keeps %s on the code path', (path) => {
+    expect(resolveFileRenderKind({ path })).toBe('code');
+  });
+});
+
+describe('defaultFileViewMode', () => {
+  it.each([
+    'notes.md',
+    'NOTES.MD',
+    'notes.markdown',
+    'notes.mdx',
+    'page.html',
+    'page.HTM',
+  ])('starts %s formatted', (path) => {
+    expect(defaultFileViewMode(path)).toBe('preview');
+  });
+
+  it.each(['data.csv', 'Data.CSV'])('starts %s as a table', (path) => {
+    expect(defaultFileViewMode(path)).toBe('table');
+  });
+
+  it.each(['src/index.ts', 'README', 'archive.md.gz', 'image.png', ''])(
+    'leaves %s on the host raw fallback',
+    (path) => {
+      expect(defaultFileViewMode(path)).toBeUndefined();
+    },
+  );
+
+  it('reads only the last segment of POSIX and Windows paths', () => {
+    expect(defaultFileViewMode('/repo/docs/report.md')).toBe('preview');
+    expect(defaultFileViewMode('C:\\repo\\docs\\data.csv')).toBe('table');
+    expect(defaultFileViewMode('/repo/notes.md/index.ts')).toBeUndefined();
+    expect(defaultFileViewMode('C:\\repo\\data.csv\\Makefile')).toBeUndefined();
+  });
+
+  it.each(['analysis.ipynb', 'Analysis.IPYNB', '/repo/nb/run.ipynb'])(
+    'starts the %s notebook formatted (CAN-5012)',
+    (path) => {
+      expect(defaultFileViewMode(path)).toBe('preview');
+    },
+  );
+
+  it('ignores a notebook extension on a parent directory', () => {
+    expect(defaultFileViewMode('/repo/old.ipynb/notes.txt')).toBeUndefined();
+  });
+});
+
+describe('notebook paths (CAN-5012)', () => {
+  it('keeps notebooks on the code render kind', () => {
+    // The raw view is the JSON text; the notebook is a view mode over it.
+    expect(resolveFileRenderKind({ path: 'analysis.ipynb' })).toBe('code');
+  });
+
+  it.each([
+    ['analysis.ipynb', true],
+    ['dir/Analysis.IPYNB', true],
+    ['C:\\nb\\run.ipynb', true],
+    ['analysis.ipynb.bak', false],
+    ['old.ipynb/notes.txt', false],
+    ['ipynb', false],
+  ])('isNotebookPath(%s) is %s', (path, expected) => {
+    expect(isNotebookPath(path)).toBe(expected);
   });
 });

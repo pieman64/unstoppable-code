@@ -59,14 +59,13 @@ exports[`searchAppAdvisorActions ranking characterization ranks allowed types wi
 {
   "actionType": undefined,
   "actions": [
-    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
     "pipeline.list [pipeline] req= opt=projectId,worktreeId,query,runModes,includeDisabled,limit",
     "worktree.run_script [worktree] req=projectId,worktreeId,scriptId opt=repo,waitSeconds",
   ],
   "category": undefined,
   "query": "run pipeline",
-  "returned": 3,
-  "totalMatches": 3,
+  "returned": 2,
+  "totalMatches": 2,
 }
 `;
 
@@ -208,33 +207,29 @@ exports[`searchAppAdvisorActions ranking characterization ranks empty input 1`] 
   "category": undefined,
   "query": "",
   "returned": 12,
-  "totalMatches": 391,
+  "totalMatches": 390,
 }
 `;
 
 exports[`searchAppAdvisorActions ranking characterization ranks exact action type 1`] = `
 {
   "actionType": "pipeline.run",
-  "actions": [
-    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
-  ],
+  "actions": [],
   "category": undefined,
   "query": "",
-  "returned": 1,
-  "totalMatches": 1,
+  "returned": 0,
+  "totalMatches": 0,
 }
 `;
 
 exports[`searchAppAdvisorActions ranking characterization ranks exact action type outside category 1`] = `
 {
   "actionType": "pipeline.run",
-  "actions": [
-    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
-  ],
+  "actions": [],
   "category": "skills",
   "query": "",
-  "returned": 1,
-  "totalMatches": 1,
+  "returned": 0,
+  "totalMatches": 0,
 }
 `;
 
@@ -248,8 +243,8 @@ exports[`searchAppAdvisorActions ranking characterization ranks feature flag dis
     "projects.list [projects] req= opt=query,name,pageSize,cursor,sort,order,types,purposes,readiness,owner,includeDefault",
     "navigation.open_import_projects [navigation] req= opt=",
     "standalone-chat.switch_project [standalone-chat] req=projectId opt=",
-    "projects.create_task [projects] req=projectId opt=title,initialMessage",
-    "projects.create_task_chat [projects] req=projectId,taskId opt=initialMessage",
+    "projects.create_task [projects] req=projectId opt=title,initialMessage,model",
+    "projects.create_task_chat [projects] req=projectId,taskId opt=initialMessage,model",
     "projects.steer_queued_message [projects] req=projectId,taskId,chatId,queuedMessageId opt=",
     "projects.schedule_message [projects] req=projectId,taskId,chatId,text,runAt opt=timezone,name,attachments,inputMode",
     "projects.send_message [projects] req=projectId,taskId,chatId,text opt=queueForSetup,watchers",
@@ -258,7 +253,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks feature flag dis
   "category": undefined,
   "query": "org project",
   "returned": 12,
-  "totalMatches": 217,
+  "totalMatches": 216,
 }
 `;
 
@@ -297,7 +292,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks hook trigger phr
   "category": undefined,
   "query": "pause hook after setup worktree created",
   "returned": 12,
-  "totalMatches": 207,
+  "totalMatches": 206,
 }
 `;
 
@@ -325,7 +320,6 @@ exports[`searchAppAdvisorActions ranking characterization ranks multi word query
 {
   "actionType": undefined,
   "actions": [
-    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
     "pipeline.open_run [pipeline] req=executionId opt=jobId",
     "pipeline.debug_run [pipeline] req=executionId opt=",
     "pipeline.open_editor [pipeline] req= opt=pipelineId,cwd,filePath,projectId,worktreeId,repoId,sharedRemoteId,section",
@@ -337,11 +331,12 @@ exports[`searchAppAdvisorActions ranking characterization ranks multi word query
     "pipeline.execution_start_over [pipeline] req=executionId opt=",
     "pipeline.execution_chain [pipeline] req=executionId,pipelineId opt=inputs,repoId",
     "worktree.run_script [worktree] req=projectId,worktreeId,scriptId opt=repo,waitSeconds",
+    "worktree.run_git_action [worktree] req=projectId,worktreeId,action opt=repoIds,ignoreUnresolvedCommentsWarning",
   ],
   "category": undefined,
   "query": "run pipeline",
   "returned": 12,
-  "totalMatches": 120,
+  "totalMatches": 119,
 }
 `;
 
@@ -389,7 +384,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks normalized punct
   "category": undefined,
   "query": "Skills.LIST",
   "returned": 12,
-  "totalMatches": 118,
+  "totalMatches": 120,
 }
 `;
 
@@ -413,7 +408,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks partial action t
   "category": undefined,
   "query": "",
   "returned": 12,
-  "totalMatches": 43,
+  "totalMatches": 42,
 }
 `;
 
@@ -498,7 +493,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks segment-prefixed
   "category": undefined,
   "query": "view",
   "returned": 12,
-  "totalMatches": 57,
+  "totalMatches": 56,
 }
 `;
 
@@ -522,7 +517,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks short abbreviati
   "category": undefined,
   "query": "pr",
   "returned": 12,
-  "totalMatches": 264,
+  "totalMatches": 263,
 }
 `;
 
@@ -584,7 +579,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks short abbreviati
   "category": undefined,
   "query": "pr",
   "returned": 50,
-  "totalMatches": 264,
+  "totalMatches": 263,
 }
 `;
 
@@ -608,7 +603,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks single word quer
   "category": undefined,
   "query": "pipeline",
   "returned": 12,
-  "totalMatches": 51,
+  "totalMatches": 50,
 }
 `;
 
@@ -632,7 +627,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks two letter word 
   "category": undefined,
   "query": "me",
   "returned": 12,
-  "totalMatches": 197,
+  "totalMatches": 196,
 }
 `;
 
@@ -678,7 +673,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks watcher phrase 1
   "category": undefined,
   "query": "notify me when pipeline finished",
   "returned": 12,
-  "totalMatches": 239,
+  "totalMatches": 238,
 }
 `;
 

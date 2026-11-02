@@ -4,6 +4,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { WorktreeUiStatus } from '@/lib/worktree-status';
 import type { SettingsSection } from '@/components/settings/SettingsNav';
+import { WORKFLOW_TYPE_TAB_LABELS } from '@canopy/ui-shared/lib/workflow-labels';
 import type { CommandExecutionResult } from './paletteCommands';
 
 /**
@@ -143,8 +144,11 @@ export const PALETTE_SECTION_BY_KIND: Record<
   worktree: { id: 'worktrees', label: 'Worktrees' },
   archive: { id: 'archives', label: 'Archived and deleted' },
   plan: { id: 'plans', label: 'Plans' },
-  pipeline: { id: 'pipelines', label: 'Pipelines' },
-  automation: { id: 'automations', label: 'Automations' },
+  pipeline: { id: 'pipelines', label: WORKFLOW_TYPE_TAB_LABELS.pipeline },
+  automation: {
+    id: 'automations',
+    label: WORKFLOW_TYPE_TAB_LABELS.automation,
+  },
   watcher: { id: 'watchers', label: 'Watchers' },
   agent: { id: 'agents', label: 'Agents' },
   plugin: { id: 'plugins', label: 'Plugins' },

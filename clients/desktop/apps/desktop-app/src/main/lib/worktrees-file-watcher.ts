@@ -1,5 +1,8 @@
 import type { BrowserWindow } from 'electron';
-import { watch, type FSWatcher } from 'node:fs';
+import {
+  createWorktreeWatch,
+  type WorktreeWatch,
+} from './worktree-watch-recovery';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 import {
@@ -18,7 +21,9 @@ import {
 import { sendToWindow } from './window-send';
 
 interface WorktreesFileWatcherEntry {
-  watcher: FSWatcher;
+  watcher: WorktreeWatch | null;
+  lastContent: string | null;
+  readInFlight: Promise<string | null> | null;
   debounceTimer: ReturnType<typeof setTimeout> | null;
   /**
    * True when any event in the current debounce batch arrived with no recent
@@ -39,7 +44,27 @@ function closeWatcher(entry: WorktreesFileWatcherEntry): void {
     clearTimeout(entry.debounceTimer);
     entry.debounceTimer = null;
   }
-  entry.watcher.close();
+  entry.watcher?.close();
+}
+
+async function readContent(
+  entry: WorktreesFileWatcherEntry,
+  workspaceId: string,
+  afterPending = false,
+): Promise<string | null> {
+  if (afterPending && entry.readInFlight) await entry.readInFlight;
+  if (worktreesFileWatchers.get(workspaceId) !== entry) return null;
+  if (!entry.readInFlight) {
+    entry.readInFlight = readFile(
+      getWorkspaceWorktreesFilePath(workspaceId),
+      'utf8',
+    )
+      .catch(() => null)
+      .finally(() => {
+        entry.readInFlight = null;
+      });
+  }
+  return entry.readInFlight;
 }
 
 function scheduleChange(
@@ -80,10 +105,9 @@ function scheduleChange(
       // torn/partial read simply fails the compare and emits (the fail-open
       // direction), and a true self-write settles to a matching read on the
       // next debounce.
-      const content = await readFile(
-        getWorkspaceWorktreesFilePath(workspaceId),
-        'utf8',
-      ).catch(() => null);
+      const content = await readContent(entry, workspaceId, true);
+      if (worktreesFileWatchers.get(workspaceId) !== entry) return;
+      if (content !== null) entry.lastContent = content;
       const sawExternalEvent = entry.sawExternalEvent;
       entry.sawExternalEvent = false;
       if (
@@ -122,39 +146,52 @@ function startWatcher(
 ): void {
   const filePath = getWorkspaceWorktreesFilePath(workspaceId);
   const filenameToWatch = basename(filePath);
-  const watcher = watch(
-    dirname(filePath),
-    { persistent: false },
-    (_event, filename) => {
-      // `filename` may be absent depending on platform/event type — treat a
-      // missing name as a potential match (same convention as
-      // worktree-branch-watcher) so those events are debounced, not dropped.
-      if (filename && filename.toString() !== filenameToWatch) {
-        return;
-      }
-      // Attribute the event at arrival time: a change with no desktop write
-      // in the recent self-write window cannot be an echo of one, so the
-      // whole debounce batch must emit no matter what the file ends up
-      // containing (see sawExternalEvent).
-      const entry = worktreesFileWatchers.get(workspaceId);
-      if (entry && !wasRecentWorktreesSelfWrite(workspaceId)) {
-        entry.sawExternalEvent = true;
-      }
-      scheduleChange(workspaceId, getWindow, onExternalSnapshot);
-    },
-  );
-  watcher.on('error', () => {
-    const entry = worktreesFileWatchers.get(workspaceId);
-    if (entry) {
-      closeWatcher(entry);
-      worktreesFileWatchers.delete(workspaceId);
-    }
-  });
-  worktreesFileWatchers.set(workspaceId, {
-    watcher,
+  const entry: WorktreesFileWatcherEntry = {
+    watcher: null,
     debounceTimer: null,
     sawExternalEvent: false,
-  });
+    lastContent: null,
+    readInFlight: null,
+  };
+  worktreesFileWatchers.set(workspaceId, entry);
+  try {
+    entry.watcher = createWorktreeWatch({
+      path: dirname(filePath),
+      label: `worktrees:${workspaceId}`,
+      onChange: (_event, filename) => {
+        if (filename && filename.toString() !== filenameToWatch) return;
+        if (!wasRecentWorktreesSelfWrite(workspaceId))
+          entry.sawExternalEvent = true;
+        scheduleChange(workspaceId, getWindow, onExternalSnapshot);
+      },
+      poll: async () => {
+        const content = await readContent(entry, workspaceId);
+        if (
+          worktreesFileWatchers.get(workspaceId) !== entry ||
+          content === null
+        )
+          return;
+        if (content === entry.lastContent) return;
+        entry.lastContent = content;
+        if (isWorktreesSelfWriteContent(workspaceId, content)) return;
+        entry.sawExternalEvent = true;
+        scheduleChange(workspaceId, getWindow, onExternalSnapshot);
+      },
+      onFatal: () => {
+        closeWatcher(entry);
+        if (worktreesFileWatchers.get(workspaceId) === entry)
+          worktreesFileWatchers.delete(workspaceId);
+      },
+    });
+    // Seed a content baseline so unchanged polling cannot reload the sidebar.
+    void readContent(entry, workspaceId).then((content) => {
+      if (worktreesFileWatchers.get(workspaceId) === entry)
+        entry.lastContent = content;
+    });
+  } catch (error) {
+    worktreesFileWatchers.delete(workspaceId);
+    throw error;
+  }
 }
 
 export function syncWorktreesFileWatchers(

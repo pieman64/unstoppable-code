@@ -11,8 +11,11 @@
     ".": "./src/index.ts",
     "./types": "./src/types.ts",
     "./portal": "./src/portal/persisted-chat-projection.ts",
+    "./turn": "./src/turn/index.ts",
     "./*": "./src/*",
     "./lib/command-read-display": "./src/lib/command-read-display.ts",
+    "./lib/plan-tool-input": "./src/lib/plan-tool-input.ts",
+    "./lib/delegation-card-state": "./src/lib/delegation-card-state.ts",
     "./lib/visual-ref": "./src/lib/visual-ref.ts"
   },
   "dependencies": {

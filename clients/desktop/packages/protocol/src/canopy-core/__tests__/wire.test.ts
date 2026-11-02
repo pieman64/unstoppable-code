@@ -1,7 +1,10 @@
+import { z } from 'zod';
+
 import {
   CANOPY_ERROR_KINDS,
   CANOPY_JSON_RPC_ERROR_CODES,
   CANOPY_JSON_RPC_OPERATION_ERROR_CODES,
+  CanopyErrorPayloadSchema,
   CanopyEventSchema,
   CanopyJsonRpcErrorResponseSchema,
   CanopyJsonRpcNotificationSchema,
@@ -14,6 +17,7 @@ import {
   canopyStreamFrameType,
   composeCanopyOperationEnvelopes,
   decodeCanopyError,
+  defineCanopyInstruction,
   encodeCanopyError,
   isCanopySnapshotRequiredError,
   parseCanopyJsonRpcMessage,
@@ -272,6 +276,67 @@ describe('composed operation envelopes', () => {
     expect(ack.notification).toBeUndefined();
   });
 
+  it('adds request metadata to every object branch of union params', () => {
+    const create = z.strictObject({ entryId: z.null() });
+    const replace = z.strictObject({ ref: z.string() });
+    const envelopeFor = (
+      params: z.ZodType,
+      idempotency: 'keyed' | 'inherent',
+    ): z.ZodType =>
+      composeCanopyOperationEnvelopes(
+        'core.example.put',
+        defineCanopyInstruction({
+          plane: 'core',
+          domain: 'example',
+          version: 1,
+          placement: 'core-only',
+          params,
+          result: z.object({}),
+          error: CanopyErrorPayloadSchema,
+          idempotency,
+          requiredGrants: [],
+        }),
+      ).request;
+    const accepts = (envelope: z.ZodType, params: unknown): boolean =>
+      envelope.safeParse({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'core.example.put',
+        params,
+      }).success;
+    const key = { idempotencyKey: 'k' };
+    for (const params of [
+      z.union([create, replace]),
+      z.discriminatedUnion('kind', [
+        create.extend({ kind: z.literal('create') }),
+        replace.extend({ kind: z.literal('replace') }),
+      ]),
+    ]) {
+      const keyed = envelopeFor(params, 'keyed');
+      const first =
+        params instanceof z.ZodDiscriminatedUnion
+          ? { kind: 'create', entryId: null }
+          : { entryId: null };
+      const second =
+        params instanceof z.ZodDiscriminatedUnion
+          ? { kind: 'replace', ref: 'r' }
+          : { ref: 'r' };
+      for (const branch of [first, second]) {
+        expect(accepts(keyed, { ...branch, _meta: key })).toBe(true);
+        expect(accepts(keyed, branch)).toBe(false);
+        expect(accepts(keyed, { ...branch, _meta: {} })).toBe(false);
+        expect(accepts(keyed, { ...branch, extra: 1, _meta: key })).toBe(false);
+      }
+      const inherent = envelopeFor(params, 'inherent');
+      expect(accepts(inherent, first)).toBe(true);
+      expect(accepts(inherent, { ...first, _meta: key })).toBe(false);
+    }
+    // A union with a non-object branch is left as declared.
+    const mixed = envelopeFor(z.union([create, z.string()]), 'keyed');
+    expect(accepts(mixed, { entryId: null })).toBe(true);
+    expect(accepts(mixed, { entryId: null, _meta: key })).toBe(false);
+  });
+
   it('requires the build version and effective allowlists in the initialize result', () => {
     const { response } = composeCanopyOperationEnvelopes(
       'core.runtime.initialize',
@@ -344,7 +409,7 @@ describe('composed operation envelopes', () => {
     );
     const item = {
       jsonrpc: '2.0' as const,
-      method: `${name}.item`,
+      method: `${name}.item` as const,
       params: {
         subscriptionId: 'sub-1',
         cursor,
@@ -362,7 +427,7 @@ describe('composed operation envelopes', () => {
     };
     const end = {
       jsonrpc: '2.0' as const,
-      method: `${name}.end`,
+      method: `${name}.end` as const,
       params: {
         subscriptionId: 'sub-1',
         cursor,

@@ -1,10 +1,10 @@
 import { useEffect, useState, type JSX } from 'react';
-import { AudioWaveform, Tooltip } from '@canopy/ui-shared';
+import { AudioWaveform, ComposerSendButton, Tooltip } from '@canopy/ui-shared';
 import {
   CloseLargeIcon,
   StopFilledIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { ComposerSendButton } from './ComposerSendButton';
+import { Button } from '@canopy/ui-shared/components';
 
 /** A take's length as `m:ss`. */
 export function formatRecordingDuration(elapsedMs: number): string {
@@ -31,10 +31,6 @@ function RecordingDuration({ since }: { since: number | null }): JSX.Element {
     </span>
   );
 }
-
-/** The composer's secondary round control: the + button's recipe. */
-const SECONDARY_ROUND_BUTTON_CLASS =
-  'focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-subtle fg-primary ring-[length:var(--border-hairline)] ring-inset ring-line-tertiary transition enabled:hover:bg-muted enabled:active:scale-97';
 
 export interface VoiceRecordingRowProps {
   /** Loudest microphone level since the previous call (see useVoiceTranscription). */
@@ -68,15 +64,14 @@ export function VoiceRecordingRow({
       className="flex min-w-0 items-center gap-2 p-2"
     >
       <Tooltip label="Discard recording" shortcut="Esc" delay="long">
-        <button
-          type="button"
+        <Button
+          iconOnly
           onClick={onCancel}
           aria-label="Discard recording"
           data-testid="voice-recording-cancel"
-          className={SECONDARY_ROUND_BUTTON_CLASS}
         >
           <CloseLargeIcon size={16} />
-        </button>
+        </Button>
       </Tooltip>
       <AudioWaveform
         readLevel={readLevel}
@@ -84,15 +79,14 @@ export function VoiceRecordingRow({
       />
       <RecordingDuration since={listeningSince} />
       <Tooltip label="Stop recording" delay="long">
-        <button
-          type="button"
+        <Button
+          iconOnly
           onClick={onStop}
           aria-label="Stop recording"
           data-testid="voice-recording-stop"
-          className={SECONDARY_ROUND_BUTTON_CLASS}
         >
           <StopFilledIcon size={16} />
-        </button>
+        </Button>
       </Tooltip>
       <ComposerSendButton
         kind="send"

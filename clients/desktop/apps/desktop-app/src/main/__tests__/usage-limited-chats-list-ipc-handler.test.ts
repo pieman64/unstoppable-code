@@ -3,6 +3,7 @@ import {
   STANDALONE_CHAT_PROJECT_ID,
   type ChatActiveSessionInfo,
   type ChatTabsFile,
+  type PersistedChatMessage,
   type UsageLimitedChatEntry,
   type UsageLimitedChatTarget,
   type WorkspaceIndexEntry,
@@ -28,8 +29,12 @@ jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => {
   );
   return {
     ...actual,
-    listExecutionSummaries: mockListExecutionSummaries,
-    loadExecutionState: mockLoadExecutionState,
+    get listExecutionSummaries(): typeof mockListExecutionSummaries {
+      return mockListExecutionSummaries;
+    },
+    get loadExecutionState(): typeof mockLoadExecutionState {
+      return mockLoadExecutionState;
+    },
   };
 });
 jest.mock('../pipelines/execution-runtime', () => ({
@@ -89,6 +94,7 @@ import { readWorkEntriesFile } from '../lib/cowork-work-entries-file';
 import { resolveWorkEntryForChat } from '../lib/cowork-work-entries';
 import { getCodeReviewTarget } from '../lib/code-review-registry';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
+import { getWorkspaceWorktreeDir } from '../lib/paths';
 
 const mockedReadWorkEntriesFile = jest.mocked(readWorkEntriesFile);
 const mockedResolveWorkEntryForChat = jest.mocked(resolveWorkEntryForChat);
@@ -295,6 +301,7 @@ describe('handleListUsageLimitedIdleChats', () => {
             id: 'ws-c',
             name: 'Workspace C Live',
             type: 'single-repo',
+            color: 'blue',
             collapsed: false,
             order: 3,
           });
@@ -333,6 +340,252 @@ describe('handleListUsageLimitedIdleChats', () => {
     mockedGetCodeReviewTarget.mockResolvedValue(null);
     mockedClearUsageLimitedChat.mockResolvedValue(undefined);
   });
+
+  it('derives previews from a full chat-scoped read and refreshes them on each listing', async () => {
+    mockedReadUsageLimitedChats.mockResolvedValue([entry()]);
+    const messages: PersistedChatMessage[] = [
+      {
+        id: 'prompt',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Private prompt' }],
+        timestamp: 1,
+      },
+      {
+        id: 'step',
+        role: 'assistant',
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'edit',
+            toolName: 'Edit',
+            input: JSON.stringify({
+              file_path: `${getWorkspaceWorktreeDir('ws-a', 'wt-1')}/src/client.ts`,
+            }),
+          },
+        ],
+        timestamp: 2,
+      },
+      ...Array.from(
+        { length: 600 },
+        (_, index): PersistedChatMessage => ({
+          id: `timer-${index}`,
+          role: 'system',
+          blocks: [{ type: 'turn_timer', completedAt: 3 }],
+          timestamp: 3,
+        }),
+      ),
+      {
+        id: 'result',
+        role: 'system',
+        blocks: [
+          {
+            type: 'tool_result',
+            toolUseId: 'edit',
+            toolName: 'Edit',
+            output: 'done',
+            isError: false,
+          },
+        ],
+        timestamp: 4,
+      },
+    ];
+    mockedReadChatTabsFile.mockImplementation(
+      (_project, _worktree, selection): Promise<ChatTabsFile> => {
+        const file = tabsFileWith([{ id: 'chat-1', title: 'Fresh title' }]);
+        if (selection?.fullTranscript && selection.chatIds?.includes('chat-1'))
+          file.tabs[0].messages = messages;
+        return Promise.resolve(file);
+      },
+    );
+    const before = structuredClone(messages);
+    const result = await handleListUsageLimitedIdleSessions({
+      includeResumePreview: true,
+    });
+    expect(result[0].sessions[0]).toMatchObject({
+      resumePromptKind: 'continue',
+      lastStep: { toolName: 'Edit', detail: 'src/client.ts', finished: true },
+    });
+    expect(mockedReadChatTabsFile.mock.calls).toEqual([
+      ['ws-a', 'wt-1'],
+      ['ws-a', 'wt-1', { chatIds: ['chat-1'], fullTranscript: true }],
+    ]);
+    expect(messages).toEqual(before);
+    expect(JSON.stringify(result)).not.toContain('Private prompt');
+    expect(JSON.stringify(result)).not.toContain(
+      getWorkspaceWorktreeDir('ws-a', 'wt-1'),
+    );
+    expect(mockedClearUsageLimitedChat).not.toHaveBeenCalled();
+    messages.splice(1);
+    const refreshed = await handleListUsageLimitedIdleChats({
+      provider: 'claude',
+      includeResumePreview: true,
+    });
+    expect(refreshed[0].chats[0]).toMatchObject({
+      resumePromptKind: 'resend_user_message',
+    });
+    expect(refreshed[0].chats[0]).not.toHaveProperty('lastStep');
+  });
+
+  it('does not supply a worktree root for cowork chat previews', async () => {
+    mockedReadUsageLimitedChats.mockResolvedValue([
+      entry({ projectId: 'cowork-x', worktreeId: 'home', chatId: 'chat-6' }),
+    ]);
+    mockedReadChatTabsFile.mockImplementation(
+      (_project, _worktree, selection): Promise<ChatTabsFile> => {
+        const file = tabsFileWith([{ id: 'chat-6', title: 'Cowork' }]);
+        if (selection?.fullTranscript)
+          file.tabs[0].messages = [
+            {
+              id: 'prompt',
+              role: 'user',
+              blocks: [{ type: 'text', text: 'Fix it' }],
+              timestamp: 1,
+            },
+            {
+              id: 'step',
+              role: 'assistant',
+              blocks: [
+                {
+                  type: 'tool_use',
+                  toolUseId: 'read',
+                  toolName: 'Read',
+                  input: '{"path":"/private/workspace/src/file.ts"}',
+                },
+              ],
+              timestamp: 2,
+            },
+          ];
+        return Promise.resolve(file);
+      },
+    );
+    const result = await handleListUsageLimitedIdleChats({
+      provider: 'claude',
+      includeResumePreview: true,
+    });
+    expect(result[0].chats[0]).toMatchObject({
+      worktreeName: '',
+      resumePromptKind: 'continue',
+      lastStep: { toolName: 'Read', detail: 'file.ts' },
+    });
+  });
+
+  it.each(['success', 'error', 'missing'] as const)(
+    'serializes %s completion evidence only for preview listings',
+    async (status) => {
+      mockedReadUsageLimitedChats.mockResolvedValue([entry()]);
+      const messages: PersistedChatMessage[] = [
+        {
+          id: 'prompt',
+          role: 'user',
+          timestamp: 1,
+          blocks: [{ type: 'text', text: 'Fix it' }],
+        },
+        {
+          id: 'step',
+          role: 'assistant',
+          timestamp: 2,
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: 'edit',
+              toolName: 'Edit',
+              input: '{}',
+            },
+          ],
+        },
+      ];
+      if (status !== 'missing')
+        messages.push({
+          id: 'result',
+          role: 'system',
+          timestamp: 3,
+          blocks: [
+            {
+              type: 'tool_result',
+              toolUseId: 'edit',
+              toolName: 'Edit',
+              output: 'done',
+              isError: status === 'error',
+            },
+          ],
+        });
+      mockedReadChatTabsFile.mockImplementation(() => {
+        const file = tabsFileWith([{ id: 'chat-1', title: 'Fresh title' }]);
+        file.tabs[0].messages = messages;
+        return Promise.resolve(file);
+      });
+      const expected =
+        status === 'success'
+          ? { toolName: 'Edit', finished: true }
+          : { toolName: 'Edit' };
+      const chats = await handleListUsageLimitedIdleChats({
+        provider: 'claude',
+        includeResumePreview: true,
+      });
+      expect(JSON.parse(JSON.stringify(chats))).toEqual([
+        expect.objectContaining({
+          chats: [expect.objectContaining({ lastStep: expected })],
+        }),
+      ]);
+      const sessions = await handleListUsageLimitedIdleSessions({
+        includeResumePreview: true,
+      });
+      expect(JSON.parse(JSON.stringify(sessions))).toEqual([
+        expect.objectContaining({
+          sessions: [expect.objectContaining({ lastStep: expected })],
+        }),
+      ]);
+      mockedReadChatTabsFile.mockClear();
+      const plainChats = await handleListUsageLimitedIdleChats({
+        provider: 'claude',
+      });
+      const plainSessions = await handleListUsageLimitedIdleSessions({});
+      expect(plainChats[0].chats[0]).not.toHaveProperty('lastStep');
+      expect(plainSessions[0].sessions[0]).not.toHaveProperty('lastStep');
+      expect(
+        mockedReadChatTabsFile.mock.calls.every(
+          ([, , selection]) => !selection?.fullTranscript,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each(['missing', 'unreadable', 'empty', 'no-user'])(
+    'keeps %s transcript previews unknown without dropping the listed chat',
+    async (scenario) => {
+      mockedReadUsageLimitedChats.mockResolvedValue([entry()]);
+      mockedReadChatTabsFile.mockImplementation(
+        (_project, _worktree, selection): Promise<ChatTabsFile> => {
+          if (selection?.fullTranscript && scenario === 'unreadable')
+            return Promise.reject(new Error('unreadable transcript'));
+          if (selection?.fullTranscript && scenario === 'missing')
+            return Promise.resolve(emptyTabsFile);
+          const file = tabsFileWith([{ id: 'chat-1', title: 'Fresh title' }]);
+          if (scenario === 'no-user')
+            file.tabs[0].messages = [
+              {
+                id: 'assistant',
+                role: 'assistant',
+                blocks: [{ type: 'text', text: 'Hello' }],
+                timestamp: 1,
+              },
+            ];
+          return Promise.resolve(file);
+        },
+      );
+      const result = await handleListUsageLimitedIdleChats({
+        provider: 'claude',
+        includeResumePreview: true,
+      });
+      expect(result[0].chats[0]).toMatchObject({
+        chatId: 'chat-1',
+        chatTitle: 'Fresh title',
+      });
+      expect(result[0].chats[0]).not.toHaveProperty('resumePromptKind');
+      expect(result[0].chats[0]).not.toHaveProperty('lastStep');
+      expect(mockedClearUsageLimitedChat).not.toHaveBeenCalled();
+    },
+  );
 
   it('scopes to the requested provider, filters active turns, prunes missing chats, refreshes titles, and sources project display data correctly', async () => {
     const result = await handleListUsageLimitedIdleChats({
@@ -424,6 +677,7 @@ describe('handleListUsageLimitedIdleChats', () => {
           id: 'ws-a',
           name: 'Cowork',
           type: 'cowork',
+          color: 'purple',
           collapsed: false,
           order: 0,
         });
@@ -442,6 +696,7 @@ describe('handleListUsageLimitedIdleChats', () => {
         id: 'ws-a',
         name: 'Restored workspace',
         type: kind === 'removed-work-entry' ? 'cowork' : 'single-repo',
+        color: 'blue',
         collapsed: false,
         order: 0,
       });
@@ -494,14 +749,16 @@ describe('handleListUsageLimitedIdleChats', () => {
     ).toEqual([]);
   });
 
-  it('reads the registry and each chat scope once per all-provider listing', async () => {
+  it('reads registry and scope metadata once, and each eligible transcript once across providers', async () => {
     mockedReadUsageLimitedChats.mockResolvedValue([
       entry({ chatId: 'chat-1', provider: 'claude' }),
       entry({ chatId: 'chat-2', provider: 'codex' }),
     ]);
     mockedGetAllActiveSessionInfos.mockReturnValue([]);
 
-    const groups = await handleListUsageLimitedIdleSessions({});
+    const groups = await handleListUsageLimitedIdleSessions({
+      includeResumePreview: true,
+    });
 
     expect(
       groups
@@ -510,7 +767,65 @@ describe('handleListUsageLimitedIdleChats', () => {
         .sort(),
     ).toEqual(['chat-1', 'chat-2']);
     expect(mockedReadUsageLimitedChats).toHaveBeenCalledTimes(1);
-    expect(mockedReadChatTabsFile).toHaveBeenCalledTimes(1);
+    expect(mockedReadChatTabsFile.mock.calls).toEqual([
+      ['ws-a', 'wt-1'],
+      ['ws-a', 'wt-1', { chatIds: ['chat-1'], fullTranscript: true }],
+      ['ws-a', 'wt-1', { chatIds: ['chat-2'], fullTranscript: true }],
+    ]);
+  });
+
+  it('keeps count and dispatch listings metadata-only unless a preview is requested', async () => {
+    mockedReadUsageLimitedChats.mockResolvedValue([
+      entry({ chatId: 'chat-1', provider: 'claude' }),
+      entry({ chatId: 'chat-2', provider: 'codex' }),
+    ]);
+    mockedGetAllActiveSessionInfos.mockReturnValue([]);
+
+    const sessions = await handleListUsageLimitedIdleSessions({});
+    const chats = await handleListUsageLimitedIdleChats({
+      provider: 'claude',
+    });
+    const items = await resolveResumeQueueItems({
+      targets: [
+        {
+          kind: 'chat',
+          projectId: 'ws-a',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+      ],
+    });
+
+    expect(sessions.flatMap((group) => group.sessions)).toHaveLength(2);
+    expect(chats[0].chats).toHaveLength(1);
+    expect(items).toHaveLength(1);
+    for (const item of [
+      ...sessions.flatMap((group) => group.sessions),
+      ...chats[0].chats,
+    ]) {
+      expect(item).not.toHaveProperty('resumePromptKind');
+      expect(item).not.toHaveProperty('lastStep');
+    }
+    expect(
+      mockedReadChatTabsFile.mock.calls.filter((call) => call.length > 2),
+    ).toEqual([]);
+  });
+
+  it('rejects a non-boolean preview flag', async () => {
+    const includeResumePreview: unknown = 'yes';
+    await expect(
+      handleListUsageLimitedIdleSessions(
+        // @ts-expect-error -- IPC payloads are untyped at the boundary.
+        { includeResumePreview },
+      ),
+    ).rejects.toThrow('includeResumePreview must be a boolean');
+    await expect(
+      handleListUsageLimitedIdleChats({
+        provider: 'claude',
+        // @ts-expect-error -- IPC payloads are untyped at the boundary.
+        includeResumePreview,
+      }),
+    ).rejects.toThrow('includeResumePreview must be a boolean');
   });
 
   it('offers a retained legacy standalone chat from its migrated owning entry', async () => {
@@ -634,6 +949,7 @@ describe('handleListUsageLimitedIdleChats', () => {
             id: 'ws-z',
             name: 'Z Live',
             type: 'single-repo',
+            color: 'blue',
             collapsed: false,
             order: 0,
           });
@@ -642,6 +958,7 @@ describe('handleListUsageLimitedIdleChats', () => {
           id: 'ws-a',
           name: 'A Live',
           type: 'single-repo',
+          color: 'blue',
           collapsed: false,
           order: 1,
         });
@@ -724,6 +1041,7 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
         pipeline_id: 'pipeline',
         pipeline_snapshot: {
           name: id === 'claude-native' ? 'Claude pipeline' : `${id} pipeline`,
+          scope: ['directory'],
           jobs: {},
         },
         status: 'paused',
@@ -745,6 +1063,9 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
           },
         ],
         jobs: {},
+        job_definitions: {},
+        job_groups: {},
+        pending_pauses: [],
         started_at: '2026-01-01T00:00:00.000Z',
         cwd: '/tmp',
         env: {},
@@ -769,6 +1090,7 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
       id: 'cowork-x',
       name: 'Cowork',
       type: 'cowork',
+      color: 'purple',
       collapsed: false,
       order: 0,
     });
@@ -815,6 +1137,7 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
               id: 'ws-a',
               name: 'Workspace',
               type: kind === 'removed-work-entry' ? 'cowork' : 'single-repo',
+              color: 'blue',
               collapsed: false,
               order: 0,
             },
@@ -888,6 +1211,7 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
       id: 'ws-a',
       name: 'Workspace A',
       type: 'single-repo',
+      color: 'blue',
       collapsed: false,
       order: 0,
     });
@@ -919,6 +1243,7 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
         id: 'ws-a',
         name: 'Workspace A',
         type: 'single-repo',
+        color: 'blue',
         collapsed: false,
         order: 0,
       });
@@ -1078,7 +1403,7 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
     ).resolves.toEqual([
       expect.objectContaining({
         groupKind: 'local',
-        workspaceName: 'Local pipelines',
+        workspaceName: 'Local workflows',
         sessions: [
           expect.objectContaining({
             kind: 'pipeline',
@@ -1137,7 +1462,11 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
       version: 6,
       id: 'claude-auth',
       pipeline_id: 'pipeline',
-      pipeline_snapshot: { name: 'Claude auth pipeline', jobs: {} },
+      pipeline_snapshot: {
+        name: 'Claude auth pipeline',
+        scope: ['directory'],
+        jobs: {},
+      },
       status: 'paused',
       status_reasons: [
         {
@@ -1157,6 +1486,9 @@ describe('handleListUsageLimitedIdleSessions pipeline eligibility', () => {
         },
       ],
       jobs: {},
+      job_definitions: {},
+      job_groups: {},
+      pending_pauses: [],
       started_at: '2026-01-01T00:00:00.000Z',
       cwd: '/tmp',
       env: {},

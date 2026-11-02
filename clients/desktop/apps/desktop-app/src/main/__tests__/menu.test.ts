@@ -1,4 +1,4 @@
-import type { MenuItemConstructorOptions } from 'electron';
+import type { MenuItem, MenuItemConstructorOptions } from 'electron';
 import { Menu } from 'electron';
 import {
   buildApplicationMenuTemplate,
@@ -29,10 +29,14 @@ jest.mock('@electron-toolkit/utils', () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
+type MenuItemTemplateItem = MenuItem | MenuItemConstructorOptions;
+
 function flattenItems(
   items: MenuItemConstructorOptions[],
-): MenuItemConstructorOptions[] {
-  const flat: MenuItemConstructorOptions[] = [];
+): MenuItemConstructorOptions[];
+function flattenItems(items: MenuItemTemplateItem[]): MenuItemTemplateItem[];
+function flattenItems(items: MenuItemTemplateItem[]): MenuItemTemplateItem[] {
+  const flat: MenuItemTemplateItem[] = [];
   for (const item of items) {
     flat.push(item);
     if (Array.isArray(item.submenu)) {

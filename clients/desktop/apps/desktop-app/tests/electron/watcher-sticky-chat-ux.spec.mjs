@@ -638,13 +638,10 @@ test('watcher bubbles, sticky handoff, pinned summaries, and disclosure controls
     await tooltipScroller.press('Escape');
     await expect(combinedWatcherTooltip).toHaveCount(0);
     await expect(combinedWatcherTitle).toBeFocused();
-    await queuedWatcher.hover();
-    await expect(
-      queuedWatcher.getByTestId('queued-message-edit'),
-    ).toBeVisible();
-    await expect(
-      queuedWatcher.getByTestId('queued-message-cancel'),
-    ).toBeVisible();
+    await queuedWatcher.getByTestId('queued-message-more').click();
+    await expect(window.getByTestId('queued-message-edit')).toBeVisible();
+    await expect(window.getByTestId('queued-message-cancel')).toBeVisible();
+    await window.keyboard.press('Escape');
 
     await scrollAnchorToTop(
       window,
@@ -901,6 +898,79 @@ test('expanding a watcher-fired turn keeps that turn in view below its pinned se
       expect(geometry.bubbleBottom).toBeGreaterThan(geometry.viewportTop);
       expect(geometry.bubbleTop).toBeLessThan(geometry.viewportBottom);
     }).toPass({ timeout: 5_000 });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+async function composerText(editor) {
+  return editor.evaluate((element) =>
+    Array.from(element.children)
+      .filter((node) => node.getAttribute('data-slate-node') === 'element')
+      .map((node) => {
+        const line = node.cloneNode(true);
+        line
+          .querySelectorAll('[data-slate-placeholder]')
+          .forEach((placeholder) => placeholder.remove());
+        return (line.textContent ?? '').replace(/[\u200b\ufeff]/g, '');
+      })
+      .join('\n')
+      .trim(),
+  );
+}
+
+test('composer Up/Down history skips watcher-fired user turns', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-watcher-history-'),
+  );
+  seedDemoWorkspaces({
+    userDataDir,
+    apps: ['ts-pnpm-vite'],
+    checkRuntimes: false,
+  });
+  seedChat(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+
+    const chatPanel = window.getByTestId('panel-content-chat');
+    await expect(chatPanel).toBeVisible();
+    await expect(
+      window.getByText('REPLY-THREE paragraph 4', { exact: false }),
+    ).toBeVisible({ timeout: 20_000 });
+
+    const editor = window.getByRole('textbox').last();
+    await editor.click();
+    await expect.poll(() => composerText(editor)).toBe('');
+
+    // Seed order of typed prompts: LONG_PROMPT, the steer, "Watch the deploy
+    // pipeline", then "Summarize the rollout". The watcher turn sits between
+    // the last two and must never be recalled. Check after every press so an
+    // intermediate recall cannot hide behind a later overwrite.
+    const firstLongPromptLine = LONG_PROMPT.split('\n')[0];
+    const steps = [
+      ['ArrowUp', (text) => expect(text).toBe('Summarize the rollout')],
+      ['ArrowUp', (text) => expect(text).toBe('Watch the deploy pipeline')],
+      ['ArrowUp', (text) => expect(text).toBe('Steer the completed turn')],
+      ['ArrowUp', (text) => expect(text).toContain(firstLongPromptLine)],
+      ['ArrowDown', (text) => expect(text).toBe('Steer the completed turn')],
+      ['ArrowDown', (text) => expect(text).toBe('Watch the deploy pipeline')],
+      ['ArrowDown', (text) => expect(text).toBe('Summarize the rollout')],
+      ['ArrowDown', (text) => expect(text).toBe('')],
+    ];
+    for (const [key, assertText] of steps) {
+      await editor.press(key);
+      await expect(async () => {
+        const text = await composerText(editor);
+        expect(text).not.toContain('Canopy watcher fired.');
+        assertText(text);
+      }).toPass({ timeout: 5_000 });
+    }
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

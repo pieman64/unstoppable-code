@@ -272,3 +272,19 @@ it.each(['true', 1, null])('rejects invalid fast mode %s', (fast_mode) => {
     }),
   ).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
 });
+
+describe('lifetime refusal copy', () => {
+  it('distinguishes the lifetime gate from transient concurrency queueing in both schemas', () => {
+    for (const schema of [
+      CLAUDE_DELEGATION_SPAWN_SCHEMA,
+      CODEX_DELEGATION_SPAWN_SCHEMA,
+    ]) {
+      expect(schema.properties.if_busy.description).toContain(
+        'concurrency limit',
+      );
+      expect(schema.properties.if_busy.description).toContain(
+        'lifetime_limit_reached',
+      );
+    }
+  });
+});

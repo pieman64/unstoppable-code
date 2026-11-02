@@ -13,6 +13,10 @@ import {
   HOSTED_SETTINGS_VIEWER,
 } from './seeders/hostedSettingsCloud.mjs';
 import { defaultHostedSettingsOrganizations } from './mock-server/routes/hosted-settings-fixtures.mjs';
+import {
+  chooseSettingsScope,
+  openOrganizationsList,
+} from './hostedSettingsLocators.mjs';
 
 /**
  * Hosted account and organization settings in the desktop Settings overlay
@@ -131,7 +135,7 @@ async function selectedRailRows(window) {
     );
 }
 
-test('the app group leads the rail, the hosted Account group follows it, and picking an organization shows its group', async () => {
+test('the scope picker and the hosted Account rows lead the rail, and picking an organization switches the scope', async () => {
   test.setTimeout(120_000);
   const apiKey = 'csk_hosted_account_settings_rail';
   const { app, electronApp, userDataDir, window } = await launchSignedIn(
@@ -148,9 +152,8 @@ test('the app group leads the rail, the hosted Account group follows it, and pic
       window.getByTestId('settings-nav-group-account'),
     ).toBeVisible();
     expect(await railGroupIds(window)).toEqual([
-      'settings-nav-group-personal',
       'settings-nav-group-account',
-      'settings-nav-group-organizations',
+      'settings-nav-group-personal',
       'settings-nav-group-agents',
       'settings-nav-group-integrations',
       'settings-nav-group-workflow',
@@ -172,21 +175,24 @@ test('the app group leads the rail, the hosted Account group follows it, and pic
     );
     await expect(window.getByTestId('settings-nav-experiments')).toBeVisible();
     expect(await selectedRailRows(window)).toEqual(['settings-nav-canopy']);
-    // No organization is preselected from the workspace context.
+    // No organization is preselected from the workspace context: the rail
+    // opens on the account scope.
     await expect(
       window.getByTestId('settings-nav-group-organization'),
     ).toHaveCount(0);
+    await expect(window.getByTestId('settings-nav-scope-picker')).toContainText(
+      'Personal account',
+    );
 
-    // The Organizations list: one hosted row selected, still no group.
-    await window.getByTestId('settings-nav-organizations-list').click();
+    // The Organizations list opens from the scope menu; no rail row stands
+    // for it, and the rail keeps the account scope.
+    await chooseSettingsScope(window, 'all-organizations');
     const content = window.getByTestId('hosted-settings-content');
     await expect(content).toHaveAttribute(
       'data-hosted-settings-page',
       'organizations/list',
     );
-    expect(await selectedRailRows(window)).toEqual([
-      'settings-nav-organizations-list',
-    ]);
+    expect(await selectedRailRows(window)).toEqual([]);
     await expect(
       window.getByTestId('settings-nav-group-organization'),
     ).toHaveCount(0);
@@ -211,16 +217,22 @@ test('the app group leads the rail, the hosted Account group follows it, and pic
       organizationRows.filter({ hasText: HOSTED_SETTINGS_VIEWER.name }),
     ).toHaveCount(0);
 
-    // Picking an organization opens its Timeline and shows its group.
+    // Picking an organization opens its Timeline and switches the rail to
+    // its scope.
     await content
       .getByTestId('team-panel-org')
       .filter({ hasText: 'Northwind Labs' })
       .first()
       .click();
-    const organizationGroup = window.getByTestId(
-      'settings-nav-group-organization',
+    await expect(window.getByTestId('settings-nav-scope-title')).toHaveText(
+      'Northwind Labs',
     );
-    await expect(organizationGroup).toContainText('Northwind Labs');
+    await expect(
+      window.getByTestId('settings-nav-group-organization'),
+    ).toBeVisible();
+    await expect(window.getByTestId('settings-nav-group-account')).toHaveCount(
+      0,
+    );
     await expect(content).toHaveAttribute(
       'data-hosted-settings-page',
       'organization/feed',
@@ -236,19 +248,25 @@ test('the app group leads the rail, the hosted Account group follows it, and pic
       window.getByTestId('settings-nav-organization-feed'),
     ).toContainText('Timeline');
     await expect(
-      content.getByRole('heading', { name: 'Timeline', exact: true, level: 2 }),
+      content.getByRole('heading', { name: 'Timeline', exact: true, level: 1 }),
     ).toBeVisible();
+    // The page draws no switcher of its own: the rail's scope picker is it.
+    await expect(content.getByTestId('team-org-switcher')).toHaveCount(0);
 
-    await expect(content.getByTestId('team-org-switcher')).toHaveClass(
-      /\brounded-full\b/,
+    // The organization's Settings pages are rail rows of their own.
+    await window
+      .getByTestId('settings-nav-organization-settings-policies')
+      .click();
+    await expect(content.getByTestId('page-header-title')).toHaveText(
+      'Policies',
     );
-    await expect(content.getByTestId('team-org-switcher')).toHaveCSS(
-      'height',
-      '28px',
-    );
+    expect(await selectedRailRows(window)).toEqual([
+      'settings-nav-organization-settings-policies',
+    ]);
+    await expect(content.getByTestId('team-settings-tabs')).toHaveCount(0);
 
-    // A local row leaves hosted settings; its page shows and is the only
-    // selected row.
+    // App-wide pages belong to Personal, outside the organization's scope.
+    await chooseSettingsScope(window, 'account');
     await app.openSettingsSection('git');
     await expect(content).toHaveCount(0);
     expect(await selectedRailRows(window)).toEqual(['settings-nav-git']);
@@ -271,6 +289,68 @@ test('the app group leads the rail, the hosted Account group follows it, and pic
   }
 });
 
+test('the scope picker switches between the account and an organization, keeping Billing', async () => {
+  test.setTimeout(120_000);
+  const apiKey = 'csk_hosted_account_settings_scope_picker';
+  const { app, electronApp, userDataDir, window } = await launchSignedIn(
+    apiKey,
+    'hosted-settings-signed-in',
+  );
+  try {
+    await app.openSettings();
+    const content = window.getByTestId('hosted-settings-content');
+    await app.openAccountSettingsPage('billing');
+
+    // The menu lists your account and each organization with your role; the
+    // Personal organization is the account itself.
+    await window.getByTestId('settings-nav-scope-picker').click();
+    const menu = window.getByTestId('settings-nav-scope-menu');
+    await expect(menu).toBeVisible();
+    await expect(
+      menu.getByTestId('settings-nav-scope-option-account'),
+    ).toHaveAttribute('aria-checked', 'true');
+    // Your account, the three organizations and All organizations.
+    await expect(menu.getByRole('menuitemradio')).toHaveCount(5);
+    await expect(
+      menu.getByTestId(
+        `settings-nav-scope-option-${HOSTED_SETTINGS_ORG_IDS.owner}`,
+      ),
+    ).toContainText('Owner');
+
+    // Billing stays on Billing: the organization's Billing page.
+    await menu
+      .getByTestId(`settings-nav-scope-option-${HOSTED_SETTINGS_ORG_IDS.owner}`)
+      .click();
+    await expect(content).toHaveAttribute(
+      'data-hosted-settings-page',
+      'organization/settings',
+    );
+    await expect(content.getByTestId('page-header-title')).toHaveText(
+      'Billing',
+    );
+    await expect(window.getByTestId('settings-nav-scope-title')).toHaveText(
+      'Northwind Labs',
+    );
+    expect(await selectedRailRows(window)).toEqual([
+      'settings-nav-organization-settings-billing',
+    ]);
+    await expect(window.getByTestId('settings-nav-display')).toHaveCount(0);
+    await expect(window.getByTestId('settings-nav-account')).toHaveCount(0);
+    // Back to the account, still on Billing.
+    await chooseSettingsScope(window, 'account');
+    await expect(window.getByTestId('settings-nav-display')).toBeVisible();
+    await expect(content).toHaveAttribute(
+      'data-hosted-settings-page',
+      'account/billing',
+    );
+    expect(await selectedRailRows(window)).toEqual([
+      'settings-nav-account-billing',
+    ]);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('the Timeline sharing hint saves in place instead of handing off to the desktop app', async () => {
   test.setTimeout(120_000);
   const apiKey = 'csk_hosted_account_settings_timeline_opt_in';
@@ -284,7 +364,7 @@ test('the Timeline sharing hint saves in place instead of handing off to the des
   );
   try {
     await app.openSettings();
-    await window.getByTestId('settings-nav-organizations-list').click();
+    await openOrganizationsList(window);
     const content = window.getByTestId('hosted-settings-content');
     await content
       .getByTestId('team-panel-org')
@@ -319,7 +399,7 @@ test('the Timeline sharing hint saves in place instead of handing off to the des
   }
 });
 
-test('switching organization tabs keeps the organization header and loads under it', async () => {
+test('switching organization pages keeps a page header and loads under it', async () => {
   test.setTimeout(120_000);
   // Long enough that the next tab's placeholder shows (after 200 ms).
   const pageDataDelayMs = 900;
@@ -336,7 +416,7 @@ test('switching organization tabs keeps the organization header and loads under 
   );
   try {
     await app.openSettings();
-    await window.getByTestId('settings-nav-organizations-list').click();
+    await openOrganizationsList(window);
     await window
       .getByTestId('hosted-settings-content')
       .getByTestId('team-panel-org')
@@ -349,12 +429,12 @@ test('switching organization tabs keeps the organization header and loads under 
         '[data-testid="hosted-settings-content"][data-hosted-settings-page="organization/feed"]',
       ),
     ).toBeVisible();
-    await expect(
-      settingsContent.getByTestId('team-overview-section'),
-    ).toContainText('Northwind Labs');
+    await expect(window.getByTestId('settings-nav-scope-title')).toHaveText(
+      'Northwind Labs',
+    );
 
-    // Record, on every DOM change, whether the organization block is on
-    // screen and whether the page-level loading state shows any copy.
+    // Record, on every DOM change, whether a page header is on screen and
+    // whether the page-level loading state shows any copy.
     await window.evaluate(() => {
       const content = document.querySelector(
         '[data-testid="settings-content"]',
@@ -363,10 +443,7 @@ test('switching organization tabs keeps the organization header and loads under 
       const state = { blockMissing: 0, loadingCopy: [], records: 0 };
       const record = () => {
         state.records += 1;
-        if (
-          content.querySelector('[data-testid="team-overview-section"]') ===
-          null
-        )
+        if (content.querySelector('[data-testid="page-header"]') === null)
           state.blockMissing += 1;
         // Page-level loading only: panels inside a loaded page keep their
         // own loading states.
@@ -404,9 +481,9 @@ test('switching organization tabs keeps the organization header and loads under 
 
     await window.getByTestId('settings-nav-organization-members').click();
 
-    // Past the delay the tab's placeholder shows: the organization header,
-    // the Members page header and the Members list skeleton, never loading
-    // copy.
+    // Past the delay the tab's placeholder shows: the Members page header
+    // and the Members list skeleton, never loading copy. The rail keeps
+    // naming the organization.
     const placeholder = settingsContent.getByTestId(
       'organization-settings-loading',
     );
@@ -418,9 +495,9 @@ test('switching organization tabs keeps the organization header and loads under 
     await expect(
       placeholder.getByTestId('centered-loading-spinner'),
     ).toHaveCount(0);
-    await expect(
-      placeholder.getByTestId('team-overview-section'),
-    ).toContainText('Northwind Labs');
+    await expect(window.getByTestId('settings-nav-scope-title')).toHaveText(
+      'Northwind Labs',
+    );
     await expect(placeholder.getByTestId('page-header-title')).toHaveText(
       'Members',
     );
@@ -433,9 +510,7 @@ test('switching organization tabs keeps the organization header and loads under 
     await expect(members.getByTestId('page-header-title')).toHaveText(
       'Members',
     );
-    await expect(members.getByTestId('team-overview-section')).toContainText(
-      'Northwind Labs',
-    );
+    await expect(members.getByTestId('team-overview-section')).toHaveCount(0);
 
     const probe = await window.evaluate(() => {
       const { state, stop } = globalThis.__orgTabSwitchProbe;
@@ -496,9 +571,61 @@ test('an account page loads under its header with the page’s skeleton', async 
   }
 });
 
+test('a hosted page that could not load keeps its failure while Try again reads it again', async () => {
+  test.setTimeout(120_000);
+  const apiKey = 'csk_hosted_account_settings_try_again';
+  const { app, electronApp, userDataDir, window } = await launchSignedIn(
+    apiKey,
+    'hosted-settings-signed-in',
+    undefined,
+    {
+      overrides: {
+        // Every page read fails, slowly enough to see Try again spin.
+        operationErrors: { 'settings.pageData': { status: 500 } },
+        operationDelaysMs: { 'settings.pageData': 1_500 },
+      },
+    },
+  );
+  const pageReads = async () =>
+    (await readHostedSettingsRequests(apiKey)).requests.filter(
+      (request) => request.operation === 'settings.pageData',
+    ).length;
+  try {
+    await app.openSettings();
+    await window.getByTestId('settings-nav-account-digests').click();
+
+    const failed = window.getByTestId('hosted-settings-failed');
+    await expect(failed).toContainText(
+      "Couldn't load these settings. Check your connection.",
+    );
+    await expect(failed).not.toContainText('Scripted failure');
+    const retry = failed.getByRole('button', { name: 'Try again' });
+    await expect(retry).toBeEnabled();
+
+    // The failure stays while the read runs; its capsule spins in place
+    // instead of the page blanking to its skeleton.
+    const readsBeforeRetry = await pageReads();
+    await retry.click();
+    const busy = failed.getByRole('button', { name: 'Trying again…' });
+    await expect(busy).toBeVisible();
+    await expect(busy).toBeDisabled();
+    await expect(busy).toHaveAttribute('aria-busy', 'true');
+    await expect(window.getByTestId('settings-skeleton-cards')).toHaveCount(0);
+    await expect.poll(pageReads).toBeGreaterThan(readsBeforeRetry);
+
+    // The read failed again: the same failure, ready for another try.
+    await expect(
+      failed.getByRole('button', { name: 'Try again' }),
+    ).toBeEnabled();
+    await expect(failed).toContainText("Couldn't load these settings.");
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 /** Opens Northwind Labs (the team the viewer owns) from the Organizations list. */
 async function openOwnedOrganization(window) {
-  await window.getByTestId('settings-nav-organizations-list').click();
+  await openOrganizationsList(window);
   await window
     .getByTestId('hosted-settings-content')
     .getByTestId('team-panel-org')
@@ -525,7 +652,7 @@ async function expectMemoryView(memory, view) {
   }
 }
 
-test('organization memory renders under the organization header, with its views under the page header', async () => {
+test('organization memory renders under its page header, with its views below it', async () => {
   test.setTimeout(120_000);
   const apiKey = 'csk_hosted_account_settings_org_memory';
   const { app, electronApp, userDataDir, window } = await launchSignedIn(
@@ -537,14 +664,15 @@ test('organization memory renders under the organization header, with its views 
     await openOwnedOrganization(window);
     const memoryRow = window.getByTestId('settings-nav-organization-memory');
     const label = (await memoryRow.innerText()).trim();
-    expect(label).toBe('Organization memory');
+    expect(label).toBe('Memory');
     await memoryRow.click();
 
     const memory = window.locator(MEMORY_PAGE);
     await expect(memory).toBeVisible();
-    // The organization block and the page header the other tabs draw; no
-    // way "back" to the organization the viewer is already in.
-    await expect(memory.getByTestId('team-overview-section')).toContainText(
+    // The page header the other pages draw, with the rail naming the
+    // organization; no way "back" to the organization the viewer is in.
+    await expect(memory.getByTestId('team-overview-section')).toHaveCount(0);
+    await expect(window.getByTestId('settings-nav-scope-title')).toHaveText(
       'Northwind Labs',
     );
     await expect(memory.getByTestId('page-header-title')).toHaveText(label);
@@ -578,7 +706,7 @@ test('organization memory renders under the organization header, with its views 
     const back = memory.getByTestId('memory-fact-back');
     await expect(back).toHaveText('← Facts');
     await expectMemoryView(memory, 'facts');
-    await expect(memory.getByTestId('team-overview-section')).toContainText(
+    await expect(window.getByTestId('settings-nav-scope-title')).toHaveText(
       'Northwind Labs',
     );
     await back.click();
@@ -625,14 +753,17 @@ test('an organization with no memory yet explains where facts come from and link
     ).toHaveCount(0);
     await expect(memory.getByText('No matching memory facts.')).toHaveCount(0);
 
-    // The owner can edit Policies: the action opens that subtab in Settings.
+    // The owner can edit Policies: the action opens that page in Settings.
     await empty.getByTestId('memory-facts-empty-policies').click();
     const settingsPage = window.locator(
       '[data-testid="hosted-settings-content"][data-hosted-settings-page="organization/settings"]',
     );
+    await expect(settingsPage.getByTestId('page-header-title')).toHaveText(
+      'Policies',
+    );
     await expect(
-      settingsPage.getByTestId('team-settings-tab-policies'),
-    ).toHaveAttribute('aria-pressed', 'true');
+      window.getByTestId('settings-nav-organization-settings-policies'),
+    ).toHaveAttribute('aria-current', 'page');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -702,7 +833,7 @@ test('a server without hosted settings shows the newer-server state and local pa
   }
 });
 
-test('signed out, the Account and Organizations groups render and the content asks to sign in', async () => {
+test('signed out, the Account rows render without a scope picker and the content asks to sign in', async () => {
   const { electronApp, userDataDir } = await launchCanopy();
   try {
     const window = await electronApp.firstWindow();
@@ -712,9 +843,10 @@ test('signed out, the Account and Organizations groups render and the content as
     await expect(
       window.getByTestId('settings-nav-group-account'),
     ).toBeVisible();
-    await expect(
-      window.getByTestId('settings-nav-group-organizations'),
-    ).toBeVisible();
+    // No account or organization to switch between yet.
+    await expect(window.getByTestId('settings-nav-scope-picker')).toHaveCount(
+      0,
+    );
 
     await window.getByTestId('settings-nav-account-security').click();
     const signedOut = window.getByTestId('hosted-settings-signed-out');
@@ -764,15 +896,16 @@ test('payment CTAs open the authenticated billing page of the right wallet with 
 
     // Organization wallet: the owner's saved-card CTA targets that
     // organization's Settings billing subtab with the card modal requested.
-    await window.getByTestId('settings-nav-organizations-list').click();
+    await openOrganizationsList(window);
     const content = window.getByTestId('hosted-settings-content');
     await content
       .getByTestId('team-panel-org')
       .filter({ hasText: 'Northwind Labs' })
       .first()
       .click();
-    await window.getByTestId('settings-nav-organization-settings').click();
-    await content.getByTestId('team-settings-tab-billing').click();
+    await window
+      .getByTestId('settings-nav-organization-settings-billing')
+      .click();
     const manageCard = content.getByTestId(
       'team-billing-manage-payment-method',
     );
@@ -840,7 +973,7 @@ test('rail labels name the organization pages, Security draws its icon, and dial
     expect(iconBox?.height).toBeCloseTo(14, 0);
 
     // CAN-4558 G: Create organization has no Cancel; Escape closes it.
-    await window.getByTestId('settings-nav-organizations-list').click();
+    await openOrganizationsList(window);
     const content = window.getByTestId('hosted-settings-content');
     await content
       .getByTestId('page-header-actions')
@@ -861,14 +994,14 @@ test('rail labels name the organization pages, Security draws its icon, and dial
     await window.keyboard.press('Escape');
     await expect(createDialog).toHaveCount(0);
 
-    // CAN-4558 F: the organization rows say whose digests and memory they are.
+    // The scope picker names the organization, so its rows need not.
     await openOwnedOrganization(window);
     await expect(
       window.getByTestId('settings-nav-organization-digests'),
-    ).toHaveText('Organization digests');
+    ).toHaveText('Digests');
     await expect(
       window.getByTestId('settings-nav-organization-memory'),
-    ).toHaveText('Organization memory');
+    ).toHaveText('Memory');
 
     // CAN-4558 G: Add member has no Cancel either; Escape closes it.
     await window.getByTestId('settings-nav-organization-members').click();
@@ -922,32 +1055,37 @@ test('settings errors show friendly copy, never the server text, and a failed lo
     await openOwnedOrganization(window);
     const content = window.getByTestId('hosted-settings-content');
 
-    // The Timeline read failed: load copy with Retry, never the body.
-    await expect(content).toContainText("Couldn't load this. Try again.");
+    // The Timeline read failed: load copy with Try again, never the body.
+    await expect(content).toContainText("Couldn't load this.");
     await expect(content).not.toContainText(sentinel);
-    const retry = content.getByRole('button', { name: 'Retry' });
+    const retry = content.getByRole('button', { name: 'Try again' });
     await expect(retry).toBeVisible();
 
-    // Retry runs the read again. The script still fails it, so the same
+    // Try again runs the read again. The script still fails it, so the same
     // friendly copy comes back, still without the body.
     const readsBeforeRetry = await feedReads();
     await retry.click();
     await expect.poll(feedReads).toBeGreaterThan(readsBeforeRetry);
-    await expect(content).toContainText("Couldn't load this. Try again.");
-    await expect(content.getByRole('button', { name: 'Retry' })).toBeVisible();
+    await expect(content).toContainText("Couldn't load this.");
+    await expect(
+      content.getByRole('button', { name: 'Try again' }),
+    ).toBeVisible();
     await expect(content).not.toContainText(sentinel);
 
-    // Renaming is an action: its own copy, no Retry of its own, no body.
-    await content.getByTestId('team-name-edit').click();
+    // Renaming is an action on General: its own copy, no Try again, no body.
+    await window
+      .getByTestId('settings-nav-organization-settings-general')
+      .click();
     await content.getByTestId('team-name-input').fill('Northwind Renamed');
-    await content.getByRole('button', { name: 'Save name' }).click();
+    await content.getByTestId('team-name-input').press('Enter');
     await expect(content).toContainText(
       "Couldn't rename the organization. Try again.",
     );
     await expect(content).not.toContainText(sentinel);
-    // Only the Timeline's load banner offers Retry.
-    await expect(content.getByRole('button', { name: 'Retry' })).toHaveCount(1);
-    // The rename stays open with the typed name, so the owner can try again.
+    await expect(
+      content.getByRole('button', { name: 'Try again', exact: true }),
+    ).toHaveCount(0);
+    // The field keeps the typed name, so the owner can try again.
     await expect(content.getByTestId('team-name-input')).toHaveValue(
       'Northwind Renamed',
     );

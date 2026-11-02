@@ -49,6 +49,54 @@ function readBoolean(
   return typeof value === 'boolean' ? value : undefined;
 }
 
+/** SDK overage amounts are minor units of the reported currency. */
+function claudeExtraUsageMoney(extraUsage: Record<string, unknown>): {
+  currency?: string;
+  divisor?: number;
+} {
+  const currency = readString(extraUsage, 'currency');
+  if (
+    !currency ||
+    !/^[A-Z]{3}$/.test(currency) ||
+    new Intl.DisplayNames('en', {
+      type: 'currency',
+      fallback: 'none',
+    }).of(currency) === undefined
+  ) {
+    return {};
+  }
+  const currencyDigits = new Intl.NumberFormat('en', {
+    style: 'currency',
+    currency,
+  }).resolvedOptions().maximumFractionDigits;
+  if (currencyDigits === undefined) return {};
+  const reportedDigits = extraUsage.decimal_places;
+  if (
+    reportedDigits !== undefined &&
+    (typeof reportedDigits !== 'number' ||
+      !Number.isInteger(reportedDigits) ||
+      reportedDigits !== currencyDigits)
+  ) {
+    return {};
+  }
+  return { currency, divisor: 10 ** currencyDigits };
+}
+
+function legacyClaudeScope(key: string): ProviderRateLimitSnapshot['scope'] {
+  switch (key) {
+    case 'seven_day_sonnet':
+      return { model: { id: 'sonnet', displayName: 'Sonnet' } };
+    case 'seven_day_opus':
+      return { model: { id: 'opus', displayName: 'Opus' } };
+    case 'seven_day_cowork':
+      return { surface: 'cowork' };
+    case 'seven_day_oauth_apps':
+      return { surface: 'oauth_apps' };
+    default:
+      return undefined;
+  }
+}
+
 function readRecord(
   record: Record<string, unknown>,
   key: string,
@@ -98,7 +146,13 @@ function parseClaudeUsageLimitScope(
   value: Record<string, unknown>,
 ): ClaudeUsageLimit['scope'] {
   const model = readRecord(value, 'model');
-  const surface = value.surface === null ? null : readString(value, 'surface');
+  const surfaceRecord = readRecord(value, 'surface');
+  const surface =
+    value.surface === null
+      ? null
+      : surfaceRecord
+        ? readString(surfaceRecord, 'display_name')
+        : readString(value, 'surface');
   if (!model && surface === undefined) return null;
   return {
     ...(model
@@ -190,6 +244,7 @@ function parseClaudeUsageLimits(
       limitId: claudeUsageLimitId(limit),
       limitName: claudeUsageLimitName(limit),
       planType: rateLimitTier,
+      ...(limit.scope ? { scope: limit.scope } : {}),
       primary: {
         usedPercent: limit.percent,
         resetsAt: limit.resetsAt,
@@ -215,10 +270,12 @@ export function parseClaudeUsageDetails(
       const usedPercent = readNumber(value, 'utilization');
       const resetsAt = toIsoString(readString(value, 'resets_at'));
       if (usedPercent === undefined && resetsAt === undefined) continue;
+      const scope = legacyClaudeScope(key);
       rateLimits.push({
         limitId: key,
         limitName: formatClaudeUsageLimitName(key),
         planType: rateLimitTier,
+        ...(scope ? { scope } : {}),
         primary: { usedPercent, resetsAt },
       });
     }
@@ -226,18 +283,23 @@ export function parseClaudeUsageDetails(
 
   const extraUsage = readRecord(payload, 'extra_usage');
   if (extraUsage) {
-    const totalUsd = readNumber(extraUsage, 'monthly_limit');
-    const usedUsd = readNumber(extraUsage, 'used_credits');
+    const money = claudeExtraUsageMoney(extraUsage);
+    const reportedLimit = readNumber(extraUsage, 'monthly_limit');
+    const reportedUsed = readNumber(extraUsage, 'used_credits');
+    const monthlyLimit =
+      reportedLimit !== undefined && reportedLimit >= 0
+        ? reportedLimit
+        : undefined;
+    const usedCredits =
+      reportedUsed !== undefined && reportedUsed >= 0
+        ? reportedUsed
+        : undefined;
     const isEnabled = readBoolean(extraUsage, 'is_enabled');
     const usedPercent = readNumber(extraUsage, 'utilization');
-    const remainingUsd =
-      totalUsd !== undefined && usedUsd !== undefined
-        ? totalUsd - usedUsd
-        : undefined;
     if (
-      isEnabled === true ||
-      totalUsd !== undefined ||
-      usedUsd !== undefined ||
+      isEnabled !== undefined ||
+      reportedLimit !== undefined ||
+      reportedUsed !== undefined ||
       usedPercent !== undefined
     ) {
       rateLimits.push({
@@ -245,7 +307,16 @@ export function parseClaudeUsageDetails(
         limitName: 'Extra usage',
         planType: rateLimitTier,
         primary: usedPercent !== undefined ? { usedPercent } : undefined,
-        credits: { usedUsd, totalUsd, remainingUsd },
+        spend: {
+          ...(isEnabled === undefined ? {} : { isEnabled }),
+          ...(money.currency === undefined ? {} : { currency: money.currency }),
+          ...(money.divisor === undefined || usedCredits === undefined
+            ? {}
+            : { used: usedCredits / money.divisor }),
+          ...(money.divisor === undefined || monthlyLimit === undefined
+            ? {}
+            : { limit: monthlyLimit / money.divisor }),
+        },
       });
     }
   }

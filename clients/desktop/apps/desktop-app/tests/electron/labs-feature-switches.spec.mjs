@@ -6,18 +6,20 @@ import { launchCanopy, closeCanopy } from './launchCanopy.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedEarlyAccess } from './seeders/seedEarlyAccess.mjs';
 
-const FEATURE_IDS = ['activity-card', 'minimal-layout', 'comet-spinners'];
+const FEATURE_IDS = ['minimal-layout', 'comet-spinners'];
 // Independent experiments that were never part of Early access.
 const INDEPENDENT_IDS = [
   'chat-tab-previews',
   'subagents-view',
   'archived-chats-card',
-  'clean-chat',
+  'compact-queue',
   'proxy-account-cards',
   'pr-hover-cards',
+  'smooth-streaming',
 ];
 const SWITCH_IDS = [...FEATURE_IDS, ...INDEPENDENT_IDS];
 const GRADUATED_IDS = [
+  ...SWITCH_IDS,
   'pointer-menus',
   'stacked-notifications',
   'compact-tool-calls',
@@ -64,71 +66,25 @@ async function openLabs(launched) {
   }
   return page;
 }
-test('every feature starts off and changes independently through Labs, then survives restart', async () => {
-  test.setTimeout(180000);
+test('new users only see Files reads, chat automation pipelines and page experiments in Labs', async () => {
   const launched = await launchCanopy();
-  const expected = Object.fromEntries(SWITCH_IDS.map((id) => [id, false]));
   try {
     const page = await openLabs(launched);
-    expect(await snapshot(page)).toMatchObject(expected);
-    for (const id of SWITCH_IDS) {
-      const toggle = page.getByTestId(`labs-experiment-toggle-${id}`);
-      await toggle.scrollIntoViewIfNeeded();
-      await expect(toggle).toHaveAttribute('aria-checked', 'false');
-      await toggle.click();
-      expected[id] = true;
-      await expect.poll(() => snapshot(page)).toMatchObject(expected);
-      await toggle.click();
-      expected[id] = false;
-      await expect.poll(() => snapshot(page)).toMatchObject(expected);
-    }
-    for (const id of ['activity-card', 'comet-spinners', 'chat-tab-previews']) {
-      const toggle = page.getByTestId(`labs-experiment-toggle-${id}`);
-      await toggle.scrollIntoViewIfNeeded();
-      await toggle.click();
-      expected[id] = true;
-      await expect.poll(() => snapshot(page)).toMatchObject(expected);
-    }
-  } finally {
-    await closeCanopy(launched.electronApp, launched.userDataDir, {
-      keepUserData: true,
-    });
-  }
-  const restored = await launchCanopy({ userDataDir: launched.userDataDir });
-  try {
-    const page = await openLabs(restored);
-    expect(await snapshot(page)).toMatchObject(expected);
-  } finally {
-    await closeCanopy(restored.electronApp, restored.userDataDir);
-  }
-});
-
-test('an existing Early access opt-in is preserved for every feature without a master dependency', async () => {
-  test.setTimeout(90000);
-  const userDataDir = mkdtempSync(
-    path.join(os.tmpdir(), 'labs-feature-upgrade-'),
-  );
-  seedEarlyAccess({ userDataDir });
-  const launched = await launchCanopy({ userDataDir });
-  try {
-    const page = await openLabs(launched);
-    const expected = {
-      ...Object.fromEntries(FEATURE_IDS.map((id) => [id, true])),
-      // No extracted choice: the legacy opt-in does not switch these on.
-      ...Object.fromEntries(INDEPENDENT_IDS.map((id) => [id, false])),
-    };
-    expect(await snapshot(page)).toMatchObject(expected);
-    await page.evaluate(() =>
-      window.api.experiments.setChoice({
-        experimentId: 'early-access',
-        enabled: false,
-      }),
-    );
-    expect(await snapshot(page)).toMatchObject(expected);
-    const tools = page.getByTestId('labs-experiment-toggle-activity-card');
-    await tools.click();
-    expected['activity-card'] = false;
-    await expect.poll(() => snapshot(page)).toMatchObject(expected);
+    const ids = [
+      'daemon-files-reads',
+      'chat-automation-pipelines',
+      'overview-page',
+      'kanban-page',
+      'statistics-page',
+      'audit-trail-page',
+    ];
+    for (const id of ids)
+      await expect(
+        page.getByTestId(`labs-experiment-toggle-${id}`),
+      ).toHaveCount(1);
+    await expect(
+      page.locator('[data-testid^="labs-experiment-toggle-"]'),
+    ).toHaveCount(ids.length);
   } finally {
     await closeCanopy(launched.electronApp, launched.userDataDir);
   }
@@ -165,6 +121,28 @@ test('graduated presentation is standard for new accounts and existing opt-outs'
     ).toHaveCount(0);
     for (const id of GRADUATED_IDS)
       expect(await snapshot(page)).not.toHaveProperty(id);
+  } finally {
+    await closeCanopy(launched.electronApp, launched.userDataDir);
+  }
+});
+
+test('Activity card is configurable in Appearance and absent from Labs', async () => {
+  const launched = await launchCanopy();
+  try {
+    const page = await openLabs(launched);
+    await expect(
+      page.getByTestId('labs-experiment-toggle-activity-card'),
+    ).toHaveCount(0);
+    const app = new CanopyAppDriver(page);
+    await app.openSettingsSection('display');
+    const toggle = page.getByTestId('settings-activity-card-toggle');
+    await expect(toggle).toBeEnabled();
+    const before = await toggle.getAttribute('aria-checked');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute(
+      'aria-checked',
+      before === 'true' ? 'false' : 'true',
+    );
   } finally {
     await closeCanopy(launched.electronApp, launched.userDataDir);
   }

@@ -57,6 +57,7 @@ function makeEntry(
       read: 0,
       readLines: 0,
       writeEdit: 0,
+      plan: 0,
       fileEdit: 0,
       fileAdd: 0,
       fileDelete: 0,
@@ -68,6 +69,8 @@ function makeEntry(
       tasks: 0,
       taskStop: 0,
       skills: 0,
+      graph: 0,
+      pipelineEditor: 0,
       monitor: 0,
       claude: 0,
       scheduleWakeup: 0,
@@ -111,6 +114,9 @@ function makeUsageTimeseriesResponse(
           claude: { in: inputTokens, out: 2 },
           codex: { in: 0, out: 0 },
           ollama: { in: 0, out: 0 },
+          copilot: { in: 0, out: 0 },
+          cursor: { in: 0, out: 0 },
+          opencode: { in: 0, out: 0 },
         },
       },
     ],
@@ -417,6 +423,9 @@ describe('observabilityStore transcript cache', () => {
               claude: { in: 1, out: 2 },
               codex: { in: 0, out: 0 },
               ollama: { in: 0, out: 0 },
+              copilot: { in: 0, out: 0 },
+              cursor: { in: 0, out: 0 },
+              opencode: { in: 0, out: 0 },
             },
           },
         ],
@@ -1039,7 +1048,7 @@ describe('observabilityStore initialization', () => {
     expect(secondFinished).toBe(false);
     expect(loadSnapshot).toHaveBeenCalledTimes(1);
 
-    const snapshot = makeSnapshot(makeEntry('completed'));
+    const snapshot = makeSnapshot(makeEntry('success'));
     resolveSnapshot(snapshot);
     await Promise.all([first, second]);
     expect(secondFinished).toBe(true);
@@ -1174,11 +1183,11 @@ describe('observabilityStore refreshProviderUsageSnapshot', () => {
   });
 
   it('coalesces concurrent refreshProviderUsageDetails calls for the same provider', async () => {
-    let resolveRefresh: (() => void) | null = null;
+    const refreshControl: { resolve?: () => void } = {};
     const refreshUsage = jest.fn<Promise<void>, [string]>().mockImplementation(
       () =>
         new Promise<void>((resolve) => {
-          resolveRefresh = resolve;
+          refreshControl.resolve = resolve;
         }),
     );
     const snapshotUsage = {
@@ -1226,7 +1235,7 @@ describe('observabilityStore refreshProviderUsageSnapshot', () => {
     expect(refreshUsage).toHaveBeenCalledTimes(1);
     expect(loadSnapshot).not.toHaveBeenCalled();
 
-    resolveRefresh?.();
+    refreshControl.resolve?.();
     await expect(Promise.all([firstRefresh, secondRefresh])).resolves.toEqual([
       snapshotUsage,
       snapshotUsage,

@@ -1,6 +1,10 @@
 'use client';
 
 import {
+  Button,
+  ComposerTipArbiterProvider,
+} from '@canopy/ui-shared/components';
+import {
   useCallback,
   useMemo,
   useRef,
@@ -9,15 +13,17 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react';
+import { usePlanModeSuggestion } from './composer/usePlanModeSuggestion';
+import { usePlanModeHintStore } from './composer/PlanModeHintContext';
+import { PlanModeHint } from './composer/PlanModeHint';
+import { useComposerHintActivity } from './composer/useComposerHintActivity';
 import type { PortalChatThinkingLevel } from '@canopy/protocol/portal';
 import {
   normalizeThinkingForUi,
   THINKING_LEVEL_LABELS,
 } from '@canopy/protocol/thinking';
-import {
-  defaultChatPlaceholder,
-  resolveComposerThinking,
-} from './composer/composer-helpers';
+import { defaultChatPlaceholder } from '@canopy/ui-shared/lib';
+import { resolveComposerThinking } from './composer/composer-helpers';
 import {
   ChatComposerToolbar,
   PlanModeIcon,
@@ -60,12 +66,15 @@ type EditorValue = ReturnType<typeof createEmptyValue>;
  */
 export interface ChatComposerProps {
   /** Send the drafted text. Omit to disable sending (read-only host). */
-  readonly onSend?: (text: string) => void;
+  readonly onSend?: (text: string) => void | Promise<void>;
   /** Stop the in-flight turn. Shown in place of Send while `isStreaming`. */
   readonly onStop?: () => void;
   readonly isStreaming?: boolean;
   readonly planMode?: boolean;
   readonly onTogglePlanMode?: () => void;
+  readonly onEnablePlanMode?: () => boolean | Promise<boolean>;
+  readonly draftKey?: string;
+  readonly planAvailable?: boolean;
   readonly thinkingLevel?: PortalChatThinkingLevel;
   readonly onCycleThinking?: () => void;
   /**
@@ -133,12 +142,23 @@ const MAX_THINKING_ACTIVE_STYLE: CSSProperties = {
   color: 'var(--fg-warning)',
 };
 
-export function ChatComposer({
+export function ChatComposer(props: ChatComposerProps): JSX.Element {
+  return (
+    <ComposerTipArbiterProvider>
+      <ChatComposerContent {...props} />
+    </ComposerTipArbiterProvider>
+  );
+}
+
+function ChatComposerContent({
   onSend,
   onStop,
   isStreaming = false,
   planMode = false,
   onTogglePlanMode,
+  onEnablePlanMode,
+  draftKey = 'chat',
+  planAvailable = false,
   thinkingLevel,
   onCycleThinking,
   providerType,
@@ -197,7 +217,8 @@ export function ChatComposer({
     if (trimmed.length === 0 || onSend === undefined || disabled) {
       return;
     }
-    onSend(trimmed);
+    const sent = onSend(trimmed);
+    if (sent !== undefined) void sent.catch(() => undefined);
     const empty = createEmptyValue();
     valueRef.current = empty;
     setValue(empty);
@@ -222,16 +243,14 @@ export function ChatComposer({
       if (fileTypeahead.onKeyDown(event)) {
         return;
       }
+      // Show all is handled by the hook: Enter expands, Tab is consumed.
       if (
         slash.isOpen &&
-        slash.filteredCommands.length > 0 &&
+        slash.selectedCommand !== null &&
         (event.key === 'Enter' || event.key === 'Tab')
       ) {
         event.preventDefault();
-        const command = slash.filteredCommands[slash.selectedIndex];
-        if (command !== undefined) {
-          slash.selectCommand(command);
-        }
+        slash.selectCommand(slash.selectedCommand);
         return;
       }
       if (slash.onKeyDown(event)) {
@@ -249,6 +268,27 @@ export function ChatComposer({
     () => serializeEditorValue(value).text.trim(),
     [value],
   );
+  const hintRootRef = useRef<HTMLDivElement>(null);
+  const hintActivity = useComposerHintActivity(
+    hintRootRef,
+    !disabled && onSend !== undefined,
+  );
+  const hint = usePlanModeSuggestion({
+    text: draftText,
+    draftKey: `${draftKey}:${editorKey}`,
+    activationKey: providerType,
+    planMode,
+    planAvailable: planAvailable && onEnablePlanMode !== undefined,
+    planReadOnly: false,
+    pipelineMode: false,
+    ...hintActivity,
+    store: usePlanModeHintStore(),
+    onEnablePlanMode: onEnablePlanMode ?? ((): boolean => false),
+    focusComposer: () =>
+      hintRootRef.current
+        ?.querySelector<HTMLElement>('[contenteditable="true"]')
+        ?.focus(),
+  });
   const canSend = draftText.length > 0 && onSend !== undefined && !disabled;
 
   // `resolveComposerThinking` owns the provider fallback both hosts use (Codex
@@ -303,7 +343,15 @@ export function ChatComposer({
       : undefined;
 
   return (
-    <div className="border-t p-2" data-testid="chat-composer">
+    <div ref={hintRootRef} className="border-t p-2" data-testid="chat-composer">
+      {/* The composer's tip, as every host draws it. This plain box has no
+          elevated surface for a top drawer to tuck under, so the tip's row
+          sits on it directly. */}
+      {hint.visible ? (
+        <div className="mb-1">
+          <PlanModeHint hint={hint} />
+        </div>
+      ) : null}
       <div className="relative">
         {/* The menus self-position (absolute bottom-full … mb-1), so they are
             rendered directly in this relative container — no wrapper — and are
@@ -321,11 +369,15 @@ export function ChatComposer({
           <SlashCommandMenu
             commands={slash.filteredCommands}
             selectedIndex={slash.selectedIndex}
+            onHover={slash.setSelectedIndex}
             isDiscovering={slash.isDiscovering}
             itemLabel="command"
             title="Commands"
             onSelect={slash.selectCommand}
             onRefresh={onRefreshSlashCommands}
+            hiddenCount={slash.hiddenCount}
+            totalCount={slash.totalCount}
+            onShowAll={slash.showAll}
           />
         )}
         <SlateEditor
@@ -347,25 +399,25 @@ export function ChatComposer({
           thinking={thinkingChip}
           trailingSlot={
             isStreaming ? (
-              <button
-                type="button"
+              <Button
+                variant="ghost-destructive"
+                size="compact"
                 onClick={onStop}
                 disabled={onStop === undefined}
                 data-testid="chat-composer-stop"
-                className="rounded bg-destructive-subtle px-3 py-0.5 text-xs fg-destructive"
               >
                 Stop
-              </button>
+              </Button>
             ) : (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={send}
                 disabled={!canSend}
                 data-testid="chat-composer-send"
-                className="rounded bg-accent px-3 py-0.5 text-xs fg-emphasis disabled:opacity-40"
               >
                 Send
-              </button>
+              </Button>
             )
           }
         />

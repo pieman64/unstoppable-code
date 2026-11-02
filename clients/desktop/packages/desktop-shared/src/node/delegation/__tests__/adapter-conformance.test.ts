@@ -303,10 +303,12 @@ it('routes both third-harness modes through the durable broker and replays third
           finalText: `Finding ${index}`,
         },
       });
-      expect(broker.getOutput(owner, { delegationId: id })).toMatchObject({
-        ok: true,
-        value: { result: { resultIndex: 1, finalText: `Finding ${index}` } },
-      });
+      expect(await broker.getOutput(owner, { delegationId: id })).toMatchObject(
+        {
+          ok: true,
+          value: { result: { resultIndex: 1, finalText: `Finding ${index}` } },
+        },
+      );
     }
     await broker.close();
     expect(parent.notifications.size).toBe(0);
@@ -315,7 +317,14 @@ it('routes both third-harness modes through the durable broker and replays third
     try {
       const history = await recovered.transcripts(context);
       expect(
-        history.map((item) => item.snapshot.routeSnapshot.runtimeKind).sort(),
+        history
+          .map((item) => {
+            const routeSnapshot = item.snapshot.routeSnapshot;
+            if (!routeSnapshot)
+              throw new Error('Expected persisted route snapshot');
+            return routeSnapshot.runtimeKind;
+          })
+          .sort(),
       ).toEqual(['local-sdk', 'remote-test']);
       expect(
         history.every((item) => item.snapshot.status === 'completed'),

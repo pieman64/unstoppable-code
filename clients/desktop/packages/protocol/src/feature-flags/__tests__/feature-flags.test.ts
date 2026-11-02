@@ -79,7 +79,7 @@ describe('client feature flag registry', () => {
     ['not_configured', false],
     ['initializing', false],
     ['error', false],
-  ] as const)('launches daemon Files reads dark for %s', (status, expected) => {
+  ] as const)('keeps the old Files boolean off for %s', (status, expected) => {
     expect(
       getDefaultFeatureFlagSnapshot(status).values[
         'canopy-desktop-daemon-files-reads'
@@ -98,9 +98,12 @@ describe('client feature flag registry', () => {
       'canopy-desktop-labs-chat-tab-previews',
       'canopy-desktop-labs-subagents-view',
       'canopy-desktop-labs-archived-chats-card',
-      'canopy-desktop-labs-clean-chat',
+      'canopy-desktop-labs-compact-queue',
       'canopy-desktop-labs-proxy-account-cards',
       'canopy-desktop-labs-pr-hover-cards',
+      'canopy-desktop-labs-smooth-streaming',
+      'canopy-desktop-labs-daemon-files-reads',
+      'canopy-desktop-labs-chat-automation-pipelines',
       'canopy-desktop-labs-overview-page',
       'canopy-desktop-labs-kanban-page',
       'canopy-desktop-labs-statistics-page',
@@ -125,7 +128,9 @@ describe('client feature flag registry', () => {
       'canopy-desktop-cursor-harness',
       'canopy-desktop-cursor-harness-released',
       'canopy-desktop-copilot-harness',
+      'canopy-desktop-copilot-harness-released',
       'canopy-desktop-opencode-harness',
+      'canopy-desktop-opencode-harness-released',
       'canopy-desktop-claude-tui-workers',
       'canopy-desktop-claude-tui-chats',
       'canopy-desktop-workspace-code-graph',
@@ -564,9 +569,12 @@ describe('getDefaultFeatureFlagSnapshot', () => {
       'canopy-desktop-labs-chat-tab-previews': 'offered',
       'canopy-desktop-labs-subagents-view': 'offered',
       'canopy-desktop-labs-archived-chats-card': 'offered',
-      'canopy-desktop-labs-clean-chat': 'offered',
+      'canopy-desktop-labs-compact-queue': 'offered',
       'canopy-desktop-labs-proxy-account-cards': 'offered',
       'canopy-desktop-labs-pr-hover-cards': 'offered',
+      'canopy-desktop-labs-smooth-streaming': 'offered',
+      'canopy-desktop-labs-daemon-files-reads': 'offered',
+      'canopy-desktop-labs-chat-automation-pipelines': 'offered',
       'canopy-desktop-labs-overview-page': 'offered',
       'canopy-desktop-labs-kanban-page': 'offered',
       'canopy-desktop-labs-statistics-page': 'offered',
@@ -591,7 +599,9 @@ describe('getDefaultFeatureFlagSnapshot', () => {
       'canopy-desktop-cursor-harness': true,
       'canopy-desktop-cursor-harness-released': false,
       'canopy-desktop-copilot-harness': false,
+      'canopy-desktop-copilot-harness-released': false,
       'canopy-desktop-opencode-harness': true,
+      'canopy-desktop-opencode-harness-released': false,
       'canopy-desktop-claude-tui-workers': true,
       'canopy-desktop-claude-tui-chats': true,
       'canopy-desktop-workspace-code-graph': true,
@@ -809,6 +819,32 @@ it('keeps Cursor release off until explicitly enabled in either evaluation mode'
   expect(
     CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS[
       'canopy-desktop-cursor-harness-released'
+    ],
+  ).toBe(false);
+});
+
+it('keeps Copilot release off until explicitly enabled in either evaluation mode', () => {
+  expect(
+    CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS[
+      'canopy-desktop-copilot-harness-released'
+    ],
+  ).toBe(false);
+  expect(
+    CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS[
+      'canopy-desktop-copilot-harness-released'
+    ],
+  ).toBe(false);
+});
+
+it('keeps OpenCode release off until explicitly enabled in either evaluation mode', () => {
+  expect(
+    CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS[
+      'canopy-desktop-opencode-harness-released'
+    ],
+  ).toBe(false);
+  expect(
+    CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS[
+      'canopy-desktop-opencode-harness-released'
     ],
   ).toBe(false);
 });

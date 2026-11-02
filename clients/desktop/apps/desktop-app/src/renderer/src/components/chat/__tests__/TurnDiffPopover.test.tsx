@@ -91,3 +91,113 @@ describe('TurnDiffPopover session-replay privacy', () => {
     expect(popover?.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).toBeNull();
   });
 });
+
+// CAN-4070 rule: captured on unchanged code; CAN-4103 then removed the
+// turn-to-current-combined fallback (Q-A, narrow). With tree refs the popover
+// reads the turn's own trees; without matching ones it reads nothing and says
+// the turn's changes weren't saved, instead of showing the worktree's
+// current combined diff as if it were the turn's.
+describe('TurnDiffPopover turn refs', () => {
+  const START = 'a'.repeat(40);
+  const END = 'b'.repeat(40);
+
+  function renderPopover(
+    file: ChangedFileInfo,
+    turnDiff: TurnDiffData,
+  ): { getFileDiff: jest.Mock; getTurnFileDiff: jest.Mock } {
+    const getFileDiff = jest.fn(() => new Promise(() => undefined));
+    const getTurnFileDiff = jest.fn(() => new Promise(() => undefined));
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: { activity: { getFileDiff, getTurnFileDiff } },
+    });
+    const anchorRef = createRef<HTMLElement>();
+    act(() => {
+      root.render(
+        <>
+          <span ref={anchorRef} />
+          <TurnDiffPopover
+            file={file}
+            turnDiff={turnDiff}
+            projectId="proj-1"
+            worktreeId="wt-1"
+            anchorRef={anchorRef}
+            onMouseEnter={jest.fn()}
+            onMouseLeave={jest.fn()}
+            onOpenModal={jest.fn()}
+            onEdit={jest.fn()}
+          />
+        </>,
+      );
+    });
+    return { getFileDiff, getTurnFileDiff };
+  }
+
+  it('reads the turn trees when the turn recorded them', () => {
+    const calls = renderPopover(FILE, {
+      ...TURN_DIFF,
+      treeRefs: [{ startTree: START, endTree: END }],
+    });
+    expect(calls.getFileDiff).not.toHaveBeenCalled();
+    expect(calls.getTurnFileDiff.mock.calls).toEqual([
+      [
+        {
+          projectId: 'proj-1',
+          worktreeId: 'wt-1',
+          filePath: FILE.path,
+          startTree: START,
+          endTree: END,
+          repoId: undefined,
+        },
+      ],
+    ]);
+  });
+
+  it("matches a multi-repo file to its repository's trees", () => {
+    const file = { ...FILE, repoId: 'beta' };
+    const calls = renderPopover(file, {
+      ...TURN_DIFF,
+      files: [file],
+      treeRefs: [
+        { startTree: START, endTree: START, repoId: 'alpha' },
+        { startTree: START, endTree: END, repoId: 'beta' },
+      ],
+    });
+    expect(calls.getTurnFileDiff.mock.calls).toEqual([
+      [expect.objectContaining({ endTree: END, repoId: 'beta' })],
+    ]);
+  });
+
+  it('reads nothing and shows the unavailable state without matching tree refs', () => {
+    for (const turnDiff of [
+      TURN_DIFF,
+      { ...TURN_DIFF, treeRefs: [] },
+      {
+        ...TURN_DIFF,
+        treeRefs: [
+          { startTree: START, endTree: END, repoId: 'alpha' },
+          { startTree: START, endTree: END, repoId: 'beta' },
+        ],
+      },
+    ]) {
+      const calls = renderPopover(FILE, turnDiff);
+      expect(calls.getTurnFileDiff).not.toHaveBeenCalled();
+      expect(calls.getFileDiff).not.toHaveBeenCalled();
+      const popover = document.body.querySelector(
+        '[data-testid="turn-diff-popover"]',
+      );
+      expect(
+        popover?.querySelector(
+          '[data-testid="diff-viewer-notice-turn-unavailable"]',
+        )?.textContent,
+      ).toBe(
+        "This turn's changes weren't saved, so they can't be shown.Expand to see all branch changes for this file.",
+      );
+      expect(popover?.querySelector('[data-testid="diff-content"]')).toBeNull();
+      act(() => {
+        root.unmount();
+      });
+      root = createRoot(container);
+    }
+  });
+});

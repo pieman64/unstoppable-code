@@ -152,16 +152,67 @@ export async function captureTurnStart(
   }
 }
 
+/** Drop the baseline of a dispatch that parked: its turn never started. */
+export function discardTurnStart(sessionKey: string): void {
+  turnStartSnapshots.delete(sessionKey);
+}
+
+const endCaptureTails = new Map<string, Promise<TurnEndDiffs | null>>();
+/** Each repo's tree at the last end capture since that turn start. */
+const lastEndTrees = new WeakMap<TurnStartSnapshot, Map<string, string>>();
+
+/** The turn an end capture belongs to, as its caller attributes the diff. */
+export interface EndedTurn {
+  userMessageId: string;
+  /** A wake's own turn, whose diff files under it (turn-state phase 40f). */
+  wakeTurnId?: string;
+}
+
+interface TurnEndDiffs {
+  /** From the turn's start: the prompt's diff, including its wakes. */
+  turn: TurnDiffData;
+  /** From the previous end: a wake's own edits (turn-state phase 40f). */
+  sinceLastEnd?: TurnDiffData;
+}
+
+/**
+ * The start snapshot outlives the turn's end: a wake's own end diffs from its
+ * prompt's start, so the prompt's diff and "Reset to this point" cover the
+ * wake's edits. A later end also diffs from the previous end, which is the
+ * wake's own diff. The next turn's start replaces both, but an end capture
+ * keeps the baseline of the turn that ended even if it runs after that. A
+ * session's end captures run one at a time, so a later, larger diff is never
+ * overwritten by an earlier one that finishes after it.
+ */
+export function captureTurnEndAndDiffs(
+  sessionKey: string,
+  endedTurn?: EndedTurn,
+): Promise<TurnEndDiffs | null> {
+  const startSnapshot = turnStartSnapshots.get(sessionKey);
+  const previous = endCaptureTails.get(sessionKey) ?? Promise.resolve(null);
+  const capture = previous.then(() =>
+    startSnapshot ? diffAgainstTurnStart(startSnapshot, endedTurn) : null,
+  );
+  endCaptureTails.set(sessionKey, capture);
+  void capture.then(() => {
+    if (endCaptureTails.get(sessionKey) === capture)
+      endCaptureTails.delete(sessionKey);
+  });
+  return capture;
+}
+
 export async function captureTurnEndAndDiff(
   sessionKey: string,
+  endedTurn?: EndedTurn,
 ): Promise<TurnDiffData | null> {
-  const startSnapshot = turnStartSnapshots.get(sessionKey);
-  turnStartSnapshots.delete(sessionKey);
+  return (await captureTurnEndAndDiffs(sessionKey, endedTurn))?.turn ?? null;
+}
 
-  if (!startSnapshot) {
-    return null;
-  }
-
+async function diffAgainstTurnStart(
+  startSnapshot: TurnStartSnapshot,
+  endedTurn: EndedTurn | undefined,
+): Promise<TurnEndDiffs | null> {
+  const previousEnds = lastEndTrees.get(startSnapshot);
   try {
     const results = await Promise.all(
       startSnapshot.repos.map(
@@ -170,12 +221,18 @@ export async function captureTurnEndAndDiff(
         ): Promise<{
           files: ChangedFileInfo[];
           treeRef: TurnDiffTreeRef;
+          since?: { files: ChangedFileInfo[]; treeRef: TurnDiffTreeRef };
         }> => {
           const endTree = await captureRepoTree(
             repo.repoPath,
             startSnapshot.projectId,
             startSnapshot.worktreeId,
           );
+          const label = (file: ChangedFileInfo): ChangedFileInfo => ({
+            ...file,
+            ...(repo.repoId ? { repoId: repo.repoId } : {}),
+            ...(repo.repoName ? { repoName: repo.repoName } : {}),
+          });
           const treeRef: TurnDiffTreeRef = {
             startTree: repo.treeSha,
             endTree,
@@ -189,25 +246,57 @@ export async function captureTurnEndAndDiff(
             repo.treeSha,
             endTree,
           );
+          const previousEnd = previousEnds?.get(repo.repoPath);
+          const since =
+            previousEnd === undefined
+              ? undefined
+              : {
+                  files: (
+                    await diffTreeObjects(repo.repoPath, previousEnd, endTree)
+                  ).map(label),
+                  treeRef: {
+                    startTree: previousEnd,
+                    endTree,
+                    ...(repo.repoId ? { repoId: repo.repoId } : {}),
+                  },
+                };
           return {
-            files: files.map((file) => ({
-              ...file,
-              ...(repo.repoId ? { repoId: repo.repoId } : {}),
-              ...(repo.repoName ? { repoName: repo.repoName } : {}),
-            })),
+            files: files.map(label),
             treeRef,
+            ...(since === undefined ? {} : { since }),
           };
         },
       ),
     );
 
+    lastEndTrees.set(
+      startSnapshot,
+      new Map(
+        startSnapshot.repos.map((repo, index): [string, string] => [
+          repo.repoPath,
+          results[index]?.treeRef.endTree ?? repo.treeSha,
+        ]),
+      ),
+    );
     const treeRefs = results.map((r) => r.treeRef);
     const files = sortChangedFiles(results.flatMap((r) => r.files));
-    return summarizeTurnDiff(files, treeRefs);
+    const since = results.flatMap((r) => (r.since ? [r.since] : []));
+    return {
+      turn: summarizeTurnDiff(files, treeRefs),
+      ...(since.length === 0
+        ? {}
+        : {
+            sinceLastEnd: summarizeTurnDiff(
+              sortChangedFiles(since.flatMap((r) => r.files)),
+              since.map((r) => r.treeRef),
+            ),
+          }),
+    };
   } catch (error: unknown) {
     // eslint-disable-next-line no-console
     console.error(
       '[turn-diff-capture] failed to capture turn end diff:',
+      endedTurn ?? 'unattributed turn',
       error,
     );
     return null;

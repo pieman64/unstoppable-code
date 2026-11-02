@@ -247,9 +247,9 @@ function GroupRow({
   const headerContent = (
     <>
       {isSplit ? (
-        <SplitIcon className="shrink-0" />
+        <AppCatalogSplitIcon size={14} className="shrink-0" />
       ) : (
-        <TerminalIcon className="shrink-0" />
+        <AppCatalogTerminalIcon size={14} className="shrink-0" />
       )}
       {headerDisplayName !== null ? (
         <span className="min-w-0 truncate">{headerDisplayName}</span>
@@ -274,7 +274,7 @@ function GroupRow({
         {isHeaderEditing ? (
           <InlineRename
             className="text-2xs"
-            icon={<TerminalIcon className="shrink-0" />}
+            icon={<AppCatalogTerminalIcon size={14} className="shrink-0" />}
             initialValue={headerCustomName ?? ''}
             ariaLabel={`Rename ${ariaLabel}`}
             onCommit={commitHeaderName}
@@ -298,7 +298,7 @@ function GroupRow({
               aria-label={`Rename ${ariaLabel}`}
               onClick={(): void => onStartEditGroup(group.id)}
             >
-              <PencilIcon />
+              <AppCatalogPencilIcon size={14} />
             </button>
           </Tooltip>
         )}
@@ -310,7 +310,7 @@ function GroupRow({
               aria-label={`Close ${ariaLabel}`}
               onClick={(): void => onCloseGroup(group.id)}
             >
-              <CloseIcon />
+              <AppCatalogCloseIcon size={14} />
             </button>
           </Tooltip>
         )}
@@ -331,7 +331,7 @@ function GroupRow({
         {isHeaderEditing ? (
           <InlineRename
             className="text-2xs"
-            icon={<SplitIcon className="shrink-0" />}
+            icon={<AppCatalogSplitIcon size={14} className="shrink-0" />}
             initialValue={headerCustomName ?? ''}
             ariaLabel={`Rename ${ariaLabel}`}
             onCommit={commitHeaderName}
@@ -355,7 +355,7 @@ function GroupRow({
               aria-label={`Rename ${ariaLabel}`}
               onClick={(): void => onStartEditGroup(group.id)}
             >
-              <PencilIcon />
+              <AppCatalogPencilIcon size={14} />
             </button>
           </Tooltip>
         )}
@@ -367,7 +367,7 @@ function GroupRow({
               aria-label={`Close ${ariaLabel}`}
               onClick={(): void => onCloseGroup(group.id)}
             >
-              <CloseIcon />
+              <AppCatalogCloseIcon size={14} />
             </button>
           </Tooltip>
         )}
@@ -398,7 +398,9 @@ function GroupRow({
               {isPaneEditing ? (
                 <InlineRename
                   className="text-3xs"
-                  icon={<TerminalIcon className="shrink-0" />}
+                  icon={
+                    <AppCatalogTerminalIcon size={14} className="shrink-0" />
+                  }
                   initialValue={paneCustomName ?? ''}
                   ariaLabel={`Rename terminal ${paneNumber}`}
                   onCommit={(name): void => onCommitTerminalName(id, name)}
@@ -411,7 +413,7 @@ function GroupRow({
                   aria-label={`Terminal ${paneNumber}`}
                   className="flex min-w-0 flex-1 items-center gap-1.5 text-left font-mono text-3xs"
                 >
-                  <TerminalIcon className="shrink-0" />
+                  <AppCatalogTerminalIcon size={14} className="shrink-0" />
                   {paneDisplayName !== null ? (
                     <span className="min-w-0 truncate">{paneDisplayName}</span>
                   ) : (
@@ -431,7 +433,7 @@ function GroupRow({
                     aria-label={`Rename terminal ${paneNumber}`}
                     onClick={(): void => onStartEditTerminal(id)}
                   >
-                    <PencilIcon />
+                    <AppCatalogPencilIcon size={14} />
                   </button>
                 </Tooltip>
               )}
@@ -443,7 +445,7 @@ function GroupRow({
                     aria-label={`Close terminal ${paneNumber}`}
                     onClick={(): void => onCloseTerminal(id)}
                   >
-                    <CloseIcon />
+                    <AppCatalogCloseIcon size={14} />
                   </button>
                 </Tooltip>
               )}
@@ -577,38 +579,4 @@ function RunningDot(): JSX.Element {
       />
     </span>
   );
-}
-
-interface IconProps {
-  className?: string;
-}
-
-function TerminalIcon({ className }: IconProps): JSX.Element {
-  return (
-    <AppCatalogTerminalIcon
-      width="12"
-      height="12"
-      aria-hidden
-      className={className}
-    />
-  );
-}
-
-function SplitIcon({ className }: IconProps): JSX.Element {
-  return (
-    <AppCatalogSplitIcon
-      width="12"
-      height="12"
-      aria-hidden
-      className={className}
-    />
-  );
-}
-
-function PencilIcon(): JSX.Element {
-  return <AppCatalogPencilIcon width="10" height="10" aria-hidden />;
-}
-
-function CloseIcon(): JSX.Element {
-  return <AppCatalogCloseIcon width="10" height="10" aria-hidden />;
 }

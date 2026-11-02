@@ -35,6 +35,9 @@ function project(
     name: overrides.id,
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: null,
     state: 'ACTIVE',
@@ -43,7 +46,7 @@ function project(
     defaultListed: true,
     preference: 'FOLLOW_DEFAULTS',
     listed: true,
-    capabilities: { administer: false, use: true },
+    capabilities: { administer: false, manageCloud: false, use: true },
     instance: null,
     ...overrides,
   };
@@ -60,7 +63,7 @@ function snapshot(
 describe('computeOrgProjectListed', () => {
   it('applies use AND (ADDED OR (FOLLOW_DEFAULTS AND defaultListed))', () => {
     const usable = {
-      capabilities: { administer: true, use: true },
+      capabilities: { administer: true, manageCloud: false, use: true },
       defaultListed: false,
     };
     expect(computeOrgProjectListed(usable, 'ADDED')).toBe(true);
@@ -76,7 +79,7 @@ describe('computeOrgProjectListed', () => {
     ).toBe(false);
     // ADMINISTER never implies USE.
     const adminOnly = {
-      capabilities: { administer: true, use: false },
+      capabilities: { administer: true, manageCloud: false, use: false },
       defaultListed: true,
     };
     expect(computeOrgProjectListed(adminOnly, 'ADDED')).toBe(false);

@@ -12,13 +12,17 @@ const mockElectronApp: { getVersion?: jest.Mock<string, []> } = {
 };
 
 jest.mock('electron', () => ({
-  app: mockElectronApp,
+  get app(): typeof mockElectronApp {
+    return mockElectronApp;
+  },
 }));
 // The opener's E2E gate and loop guards are covered by open-external.test.ts.
 // Here the login only has to hand its authorize URL to the opener, so mock it
 // and the gate instead of depending on the __CANOPY_E2E__ global.
 jest.mock('../lib/open-external', () => ({
-  openExternalGuarded: mockOpenExternal,
+  get openExternalGuarded(): typeof mockOpenExternal {
+    return mockOpenExternal;
+  },
 }));
 jest.mock('../lib/e2e-gate', () => ({
   isE2eBuild: (): boolean => false,
@@ -32,11 +36,15 @@ jest.mock('../portal/portal-state-store', () => ({
   ),
 }));
 jest.mock('../lib/main-window-focus', () => ({
-  focusMainWindow: mockFocusMainWindow,
+  get focusMainWindow(): typeof mockFocusMainWindow {
+    return mockFocusMainWindow;
+  },
 }));
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    recordAppDiagnostic: mockRecordAppDiagnostic,
+    get recordAppDiagnostic(): typeof mockRecordAppDiagnostic {
+      return mockRecordAppDiagnostic;
+    },
   })),
 }));
 const mockSaveCanopyCloudAccount = jest.fn();
@@ -67,7 +75,9 @@ const mockApplyEnforcedSettings = jest.fn<
   [CanopyCloudAccountPublicState]
 >(() => Promise.resolve());
 jest.mock('../services/org-enforced-settings', () => ({
-  applyEnforcedSettings: mockApplyEnforcedSettings,
+  get applyEnforcedSettings(): typeof mockApplyEnforcedSettings {
+    return mockApplyEnforcedSettings;
+  },
 }));
 jest.mock('../lib/canopy-cloud-account-store', () => ({
   hasCanopyCloudIdentityChanged: (
@@ -77,8 +87,12 @@ jest.mock('../lib/canopy-cloud-account-store', () => ({
     previous !== null &&
     (previous.account?.id ?? previous.apiKey) !==
       (next.account?.id ?? next.apiKey),
-  saveCanopyCloudAccount: mockSaveCanopyCloudAccount,
-  loadCanopyCloudAccount: mockLoadCanopyCloudAccount,
+  get saveCanopyCloudAccount(): typeof mockSaveCanopyCloudAccount {
+    return mockSaveCanopyCloudAccount;
+  },
+  get loadCanopyCloudAccount(): typeof mockLoadCanopyCloudAccount {
+    return mockLoadCanopyCloudAccount;
+  },
   subscribeCanopyCloudAccountChanges: jest.fn(() => jest.fn()),
   toPublicCanopyCloudAccountState: jest.fn(
     (entry: SavedAccountEntry | null) => ({
@@ -102,10 +116,15 @@ jest.mock('../shared-containers/reconciliation-service', () => ({
       afterCleanup: () => Promise<unknown>,
     ) => Promise<unknown>;
   } => ({
-    purgeAll: mockPurgeSharedContainerReplicas,
-    withReplicaPurgeFence: mockWithSharedContainerReplicaPurgeFence,
-    reconcileOrganizationSnapshot:
-      mockReconcileSharedContainerOrganizationSnapshot,
+    get purgeAll(): typeof mockPurgeSharedContainerReplicas {
+      return mockPurgeSharedContainerReplicas;
+    },
+    get withReplicaPurgeFence(): typeof mockWithSharedContainerReplicaPurgeFence {
+      return mockWithSharedContainerReplicaPurgeFence;
+    },
+    get reconcileOrganizationSnapshot(): typeof mockReconcileSharedContainerOrganizationSnapshot {
+      return mockReconcileSharedContainerOrganizationSnapshot;
+    },
   }),
 }));
 
@@ -326,7 +345,7 @@ describe('Canopy Cloud OAuth login helper', () => {
       }
       return originalFetch(input);
     });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    global.fetch = fetchMock;
   });
 
   afterEach(() => {
@@ -1363,15 +1382,12 @@ describe('Canopy Cloud OAuth login helper', () => {
       await firstSaveStarted;
 
       queueTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
-        callback,
-        delay,
-      ) => {
+        callback: (...callbackArgs: unknown[]) => void,
+        delay: unknown,
+      ): ReturnType<typeof setTimeout> => {
         const delayValue = typeof delay === 'number' ? delay : undefined;
         const timeoutDelay = delayValue === 30_000 ? 25 : delayValue;
-        return realSetTimeout(
-          callback as (...callbackArgs: unknown[]) => void,
-          timeoutDelay,
-        );
+        return realSetTimeout(callback, timeoutDelay);
       }) as typeof setTimeout);
 
       const secondLogin = startCanopyCloudOAuthLogin();
@@ -1627,16 +1643,13 @@ describe('Canopy Cloud OAuth login helper', () => {
   it('times out an in-progress login and closes the local server', async () => {
     const realSetTimeout = global.setTimeout;
     const timeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
-      callback,
-      delay,
-    ) => {
+      callback: (...callbackArgs: unknown[]) => void,
+      delay: unknown,
+    ): ReturnType<typeof setTimeout> => {
       const delayValue = typeof delay === 'number' ? delay : undefined;
       const timeoutDelay = delayValue === 10 * 60_000 ? 25 : delayValue;
 
-      return realSetTimeout(
-        callback as (...callbackArgs: unknown[]) => void,
-        timeoutDelay,
-      );
+      return realSetTimeout(callback, timeoutDelay);
     }) as typeof setTimeout);
 
     try {

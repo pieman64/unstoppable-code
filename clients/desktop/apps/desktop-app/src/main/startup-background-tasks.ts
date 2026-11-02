@@ -1,5 +1,8 @@
 import { checkUpdates } from './skills/skill-service';
-import { refreshMarketplaces } from './plugins/plugin-service';
+import {
+  reconcileManagedMarketplaceReceiptsAtStartup,
+  refreshMarketplaces,
+} from './plugins/plugin-service';
 import { refreshInvocableInventoryAfterMutation } from './plugins/invocable-inventory-service';
 import { getObservabilityService } from './observability';
 import { flushTurnFeedbackOutbox } from './feedback/turn-feedback-client';
@@ -40,6 +43,7 @@ function recordStartupBackgroundTaskFailure(
   task:
     | 'skills_check_updates'
     | 'plugin_marketplace_refresh'
+    | 'plugin_marketplace_receipts'
     | 'blueprint_catalog_refresh'
     | 'ledger_scope_reconciliation'
     | 'ledger_summary_reconciliation',
@@ -78,6 +82,24 @@ async function reconcileLedgerScopes(): Promise<void> {
   } catch (error) {
     recordStartupBackgroundTaskFailure(
       'ledger_summary_reconciliation',
+      errorMessage(error),
+    );
+  }
+}
+
+/** Records receipts for managed marketplaces Claude has registered. */
+function reconcileManagedMarketplaceReceipts(): void {
+  try {
+    const outcome = reconcileManagedMarketplaceReceiptsAtStartup();
+    if (outcome.status === 'failed') {
+      recordStartupBackgroundTaskFailure(
+        'plugin_marketplace_receipts',
+        outcome.error,
+      );
+    }
+  } catch (error) {
+    recordStartupBackgroundTaskFailure(
+      'plugin_marketplace_receipts',
       errorMessage(error),
     );
   }
@@ -257,6 +279,7 @@ export function scheduleDeferredStartupBackgroundTasks(
       codexStagingSweepInterval.unref?.();
       // Local work that launches no provider CLI, so it also runs on Windows.
       void reconcileLedgerScopes();
+      reconcileManagedMarketplaceReceipts();
       // On Windows, provider CLIs launched by the refreshes can spawn their
       // own visible shell grandchildren. Keep only those provider refreshes
       // user-initiated; the local memory import does not launch provider CLIs.

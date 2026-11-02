@@ -3,7 +3,7 @@ import { getObservabilityService } from '../observability';
 import { getTelemetrySyncService } from '../services/telemetry-sync-service';
 import { stopTracking } from './github-poller';
 import { cancelScheduledGeneration } from './worktree-summary-scheduler';
-import { ptyManager } from '../terminal/pty-manager';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { getClaudeTerminalSessionService } from '../integration/claude-terminal-session-service';
 import { drainWorktreeShellScripts } from './script-runner';
 import { drainWorktreePipelines } from '../pipelines/worktree-cleanup';
@@ -20,7 +20,7 @@ export async function cleanupLiveWorktreeState(
   const results = await Promise.allSettled([
     getClaudeTerminalSessionService().cleanupWorktree(projectId, worktreeId),
     drainWorktreeShellScripts(projectId, worktreeId),
-    ptyManager.drainWorktreeTerminals(projectId, worktreeId),
+    workerTerminal.releaseWorktree({ projectId, worktreeId }),
     drainWorktreePipelines(
       projectId,
       worktreeId,

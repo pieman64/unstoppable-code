@@ -396,7 +396,11 @@ it.each([
           now.mockReturnValue(1_001);
           if (!rejects) return canonicalInitializeResult();
           const retry = { kind: 'never' } as const;
-          const denied = { kind: 'unauthenticated', message: 'No.', retry };
+          const denied: CanopyErrorPayload = {
+            kind: 'unauthenticated',
+            message: 'No.',
+            retry,
+          };
           return Promise.reject(new CanonicalCoreError(denied));
         },
       });

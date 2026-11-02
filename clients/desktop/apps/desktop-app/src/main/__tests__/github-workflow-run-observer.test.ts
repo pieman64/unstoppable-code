@@ -755,6 +755,8 @@ describe('GitHubWorkflowRunObserver', () => {
         runId: '1',
         runAttempt: 1,
         last: queuedSnapshot,
+        jobsRequired: false,
+        wantsDefinition: false,
       },
     ];
     let release!: (value: unknown) => void;

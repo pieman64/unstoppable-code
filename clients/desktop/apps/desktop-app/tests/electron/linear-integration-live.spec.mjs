@@ -16,22 +16,24 @@ import {
 // Doc 9 / Doc 3 G16 — Linear integration (HTTP-only, no chat turn).
 //
 // This spec exercises the LINEAR GraphQL mock surface end to end through the
-// app's real `LinearClient` (`apps/desktop-app/src/main/ipc/settings.ts`),
-// WITHOUT launching any agent. The full seam:
+// app's real Linear helper (`apps/desktop-app/src/main/lib/linear-api.ts`,
+// called from `apps/desktop-app/src/main/ipc/settings.ts`), WITHOUT launching
+// any agent. The full seam:
 //
 //   renderer (AccountTab / Home composer's Linear attach)
 //     → window.api.validateLinearToken / searchLinearIssues IPC
-//     → settings.ts createLinearViewerClient/createLinearSearchClient
-//     → @linear/sdk `LinearClient`, built with `buildLinearClientOptions`,
-//       which — under the build-time E2E gate (`if (__CANOPY_E2E__)`) — sets
-//       the SDK `apiUrl` to `process.env.CANOPY_LINEAR_API_BASE_URL`
+//     → settings.ts → linear-api.ts `readLinearViewer` / `searchLinearIssues`
+//       / `readLinearIssueAttachments`, whose endpoint — under the build-time
+//       E2E gate (`__CANOPY_E2E__`) — is
+//       `process.env.CANOPY_LINEAR_API_BASE_URL`
 //       (`http://127.0.0.1:4011/graphql`, injected by launchCanopy.mjs)
 //     → the shared mock server's `/graphql` route (mock-server/routes/linear.mjs)
 //     → `resolveLinearScenario` keys the scenario off the inbound request's
-//       `authorization` header. The @linear/sdk sends the RAW API key as the
-//       `authorization` header (no `Bearer` prefix), and the mock keys off it
-//       via `keyFromApiKey(request, { header: 'authorization' })`. So the
-//       scenario key == the exact Linear token value the app sends.
+//       `authorization` header. The helper sends the RAW API key as the
+//       `authorization` header (no `Bearer` prefix), as Linear documents, and
+//       the mock keys off it via `keyFromApiKey(request, { header:
+//       'authorization' })`. So the scenario key == the exact Linear token
+//       value the app sends.
 //
 // Token seeding: the Linear token is stored encrypted via Electron safeStorage.
 // We seed it THROUGH the app after launch (`window.api.saveLinearToken(token)`),

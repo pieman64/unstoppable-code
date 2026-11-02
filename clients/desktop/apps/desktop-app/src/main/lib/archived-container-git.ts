@@ -3,6 +3,7 @@ import {
   hasDestructiveLifecycle,
   refuseInterruptedArchiveJournal,
   assertNoLegacyArchiveRecovery,
+  readWorkspaceDestructiveRecoveries,
 } from './w5-destructive-recovery';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -87,6 +88,7 @@ import {
 } from './unmanaged-worktree-repository';
 import { runArchiveIoRequest } from '../archive/archive-io-runner';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
+import { removeAbsentWorktreeRegistrations } from './worktree-registration-removal';
 import {
   ARCHIVE_IO_GIT_RECOVERY_REQUIRED_CODE,
   type ArchiveIoOperationRequest,
@@ -228,6 +230,8 @@ export interface ArchivedContainerTeardownTarget {
   repoId: string;
   referenceRepoPath: string;
   quarantineRepoPath: string;
+  /** Where the checkout was before the quarantine move. */
+  preMoveRepoPath: string;
   branchName?: string;
   expectedBranchTip?: string;
 }
@@ -554,7 +558,12 @@ function isPrePullRequestReadyDescriptor(value: unknown): value is {
 export async function readArchivedGitStagedDescriptor(
   workspaceId: string,
   containerId: string,
-  options?: { recoveryOnly?: boolean },
+  /**
+   * `recoveryOnly` skips the pinned-repository check. `readOnly` returns a
+   * legacy ready descriptor normalized but leaves the file as it is, for
+   * admission checks that must run before any effect.
+   */
+  options?: { recoveryOnly?: boolean; readOnly?: boolean },
 ): Promise<ArchivedGitStagedDescriptor | null> {
   const filePath = getArchivedContainerGitStateStagedPath(
     workspaceId,
@@ -618,7 +627,9 @@ export async function readArchivedGitStagedDescriptor(
       if (!options?.recoveryOnly) {
         await validatePinnedRepositories(descriptor.repositories);
       }
-      await persistStagedDescriptor(workspaceId, containerId, descriptor);
+      if (!options?.readOnly) {
+        await persistStagedDescriptor(workspaceId, containerId, descriptor);
+      }
       return descriptor;
     }
     return {
@@ -709,6 +720,33 @@ export async function pinArchivedContainerSnapshotRef(args: {
   if (verified !== args.commit) {
     throw new Error(`Failed to pin archived Git ref ${args.refName}.`);
   }
+}
+
+/**
+ * CAN-5334: read-only. Where a recorded snapshot ref stands in `repoPath`,
+ * and whether that repository holds the recorded snapshot commit, which only
+ * the captured repository has. Git failures throw.
+ */
+export async function inspectArchivedContainerSnapshotRef(args: {
+  repoPath: string;
+  refName: string;
+  expectedCommit: string;
+}): Promise<{ ref: 'absent' | 'expected' | 'other'; commitPresent: boolean }> {
+  await assertValidRef(args.repoPath, args.refName);
+  const existing = await readRef(args.repoPath, args.refName);
+  const commitPresent =
+    GIT_OBJECT_ID_RE.test(args.expectedCommit) &&
+    (await readRef(args.repoPath, `${args.expectedCommit}^{commit}`)) ===
+      args.expectedCommit;
+  return {
+    ref:
+      existing === null
+        ? 'absent'
+        : existing === args.expectedCommit
+          ? 'expected'
+          : 'other',
+    commitPresent,
+  };
 }
 
 export async function deleteArchivedContainerSnapshotRef(args: {
@@ -1122,6 +1160,89 @@ async function buildArchiveGitCaptureInputs(args: {
   );
 }
 
+/**
+ * The repositories a Git capture of this worktree archives. Throws where the
+ * capture refuses its repository set, before any Git effect of its own.
+ */
+async function selectArchivedGitCaptureDefinitions(args: {
+  workspaceId: string;
+  containerId: string;
+  workspaceType: 'single-repo' | 'multi-repo';
+  canonicalPath: string;
+  persistedWorktree: WorktreeData;
+  staged: ArchivedGitStagedDescriptor | null;
+  allowEmptyRepositories?: boolean;
+}): Promise<ArchivedRepositoryDefinition[]> {
+  let definitions = await resolveRepositoryDefinitions({
+    workspaceId: args.workspaceId,
+    workspaceType: args.workspaceType,
+    worktreeRootPath: args.canonicalPath,
+  });
+  if (args.workspaceType === 'multi-repo') {
+    const includedRepoIds = args.persistedWorktree.includedRepoIds;
+    if (includedRepoIds) {
+      const included = new Set(includedRepoIds);
+      definitions = definitions.filter(
+        (definition) =>
+          definition.repoId === WORKSPACE_ROOT_REPO_ID ||
+          included.has(definition.repoId),
+      );
+    } else if (args.staged?.status === 'ready') {
+      definitions = capturedRepositoryDefinitions(
+        definitions,
+        args.staged.repositories,
+      );
+    } else {
+      const presentDefinitions: ArchivedRepositoryDefinition[] = [];
+      for (const definition of definitions) {
+        if (
+          definition.worktreeRepoPath &&
+          (await pathExists(definition.worktreeRepoPath))
+        ) {
+          presentDefinitions.push(definition);
+        }
+      }
+      definitions = presentDefinitions;
+    }
+  }
+  if (definitions.length === 0 && !args.allowEmptyRepositories) {
+    throw new Error('The worktree has no configured repositories to archive.');
+  }
+  if (args.staged?.status === 'ready') {
+    assertStateMatchesDefinitions({
+      workspaceId: args.workspaceId,
+      containerId: args.containerId,
+      repositories: args.staged.repositories,
+      definitions,
+    });
+  }
+  return definitions;
+}
+
+/**
+ * Read-only (CAN-4985): the source repositories a Git capture of this worktree
+ * would open, given its staged descriptor. Throws where that capture rejects
+ * its repository set: a configuration it cannot resolve, no repository, or a
+ * ready capture that no longer matches the configuration.
+ */
+export async function readArchivedGitCaptureSourceRepositories(args: {
+  workspaceId: string;
+  containerId: string;
+  workspaceType: 'single-repo' | 'multi-repo';
+  persistedWorktree: WorktreeData;
+  staged: ArchivedGitStagedDescriptor | null;
+}): Promise<string[]> {
+  validateId(args.workspaceId, 'workspaceId');
+  validateId(args.containerId, 'containerId');
+  const definitions = await selectArchivedGitCaptureDefinitions({
+    ...args,
+    canonicalPath: resolve(
+      getWorkspaceWorktreeDir(args.workspaceId, args.containerId),
+    ),
+  });
+  return definitions.map((definition) => definition.referenceRepoPath);
+}
+
 export async function captureArchivedContainerGitState(args: {
   workspaceId: string;
   containerId: string;
@@ -1166,49 +1287,17 @@ export async function captureArchivedContainerGitState(args: {
       throw new MissingWorktreeIncompleteArchivedGitCaptureError();
     }
   }
-  let definitions = await resolveRepositoryDefinitions({
+  const definitions = await selectArchivedGitCaptureDefinitions({
     workspaceId: args.workspaceId,
+    containerId: args.containerId,
     workspaceType: args.workspaceType,
-    worktreeRootPath: canonicalPath,
+    canonicalPath,
+    persistedWorktree: args.persistedWorktree,
+    staged: existing,
+    allowEmptyRepositories: args.allowEmptyRepositories,
   });
-  if (args.workspaceType === 'multi-repo') {
-    const includedRepoIds = args.persistedWorktree.includedRepoIds;
-    if (includedRepoIds) {
-      const included = new Set(includedRepoIds);
-      definitions = definitions.filter(
-        (definition) =>
-          definition.repoId === WORKSPACE_ROOT_REPO_ID ||
-          included.has(definition.repoId),
-      );
-    } else if (existing?.status === 'ready') {
-      definitions = capturedRepositoryDefinitions(
-        definitions,
-        existing.repositories,
-      );
-    } else {
-      const presentDefinitions: ArchivedRepositoryDefinition[] = [];
-      for (const definition of definitions) {
-        if (
-          definition.worktreeRepoPath &&
-          (await pathExists(definition.worktreeRepoPath))
-        ) {
-          presentDefinitions.push(definition);
-        }
-      }
-      definitions = presentDefinitions;
-    }
-  }
-  if (definitions.length === 0 && !args.allowEmptyRepositories) {
-    throw new Error('The worktree has no configured repositories to archive.');
-  }
 
   if (existing?.status === 'ready') {
-    assertStateMatchesDefinitions({
-      workspaceId: args.workspaceId,
-      containerId: args.containerId,
-      repositories: existing.repositories,
-      definitions,
-    });
     const quarantinePath = quarantinePathFor(canonicalPath);
     const [canonicalExists, quarantineExists] = await Promise.all([
       pathExists(canonicalPath),
@@ -1380,6 +1469,7 @@ function quarantinePathFor(canonicalPath: string): string {
 
 async function listArchivedContainerTeardownTargets(
   descriptor: ArchivedGitStagedDescriptor,
+  canonicalPath: string,
   quarantinePath: string,
   retainedRootPath: string,
 ): Promise<ArchivedContainerTeardownTarget[]> {
@@ -1419,6 +1509,7 @@ async function listArchivedContainerTeardownTargets(
       repoId: repository.repoId,
       referenceRepoPath: repository.referenceRepoPath,
       quarantineRepoPath: canonicalTargetPath,
+      preMoveRepoPath: join(canonicalPath, repository.relativePath),
       ...(repository.branchName
         ? {
             branchName: repository.branchName,
@@ -1490,6 +1581,7 @@ async function listArchivedContainerTeardownTargets(
       repoId: entry.name,
       referenceRepoPath,
       quarantineRepoPath: canonicalStalePath,
+      preMoveRepoPath: join(canonicalPath, 'repos', entry.name),
       ...(branchName ? { branchName } : {}),
       ...(expectedBranchTip ? { expectedBranchTip } : {}),
     });
@@ -1641,6 +1733,77 @@ async function snapshotsMatchAtPath(args: {
     }
   }
   return true;
+}
+
+/**
+ * CAN-5334: whether an unverified checkout quarantine still matches its
+ * pinned snapshots, as a project deletion's redo would decide, with Git
+ * failures kept apart from a mismatch. It runs the redo's own idempotent
+ * `git worktree repair` first; nothing else is written. `snapshotsMatchAtPath`
+ * keeps its boolean contract.
+ */
+export async function verifyArchivedGitQuarantineSnapshots(
+  workspaceId: string,
+  containerId: string,
+): Promise<'match' | 'mismatch' | 'error'> {
+  try {
+    const descriptor = await readArchivedGitStagedDescriptor(
+      workspaceId,
+      containerId,
+      { readOnly: true, recoveryOnly: true },
+    );
+    const canonicalPath = resolve(
+      getWorkspaceWorktreeDir(workspaceId, containerId),
+    );
+    const quarantinePath = quarantinePathFor(canonicalPath);
+    if (
+      !descriptor?.teardown ||
+      descriptor.repositories.length === 0 ||
+      resolve(descriptor.teardown.quarantinePath) !== quarantinePath
+    )
+      return 'error';
+    const config = await readWorkspaceConfig(workspaceId);
+    if (config.type !== 'single-repo' && config.type !== 'multi-repo')
+      return 'error';
+    const definitions = await resolveRepositoryDefinitions({
+      workspaceId,
+      workspaceType: config.type,
+    });
+    await repairMovedWorktrees(
+      capturedRepositoryDefinitions(definitions, descriptor.repositories),
+      quarantinePath,
+    );
+    for (const repository of descriptor.repositories) {
+      const repoPath =
+        repository.relativePath === '.'
+          ? quarantinePath
+          : join(quarantinePath, repository.relativePath);
+      await assertWorktreeSnapshotSupported(repoPath);
+      const [head, indexTree, worktreeTree, expectedIndex, expectedWorktree] =
+        await Promise.all([
+          captureHeadCommitSha(repoPath),
+          captureIndexTreeSha(repoPath),
+          captureWorkingTreeSha(repoPath),
+          runGit(repository.referenceRepoPath, [
+            'rev-parse',
+            `${repository.indexSnapshotCommit}^{tree}`,
+          ]),
+          runGit(repository.referenceRepoPath, [
+            'rev-parse',
+            `${repository.worktreeSnapshotCommit}^{tree}`,
+          ]),
+        ]);
+      if (
+        head !== repository.headCommit ||
+        indexTree !== expectedIndex ||
+        worktreeTree !== expectedWorktree
+      )
+        return 'mismatch';
+    }
+    return 'match';
+  } catch {
+    return 'error';
+  }
 }
 
 export async function assertArchivedGitQuarantineOwned(args: {
@@ -2097,6 +2260,7 @@ export async function prepareArchivedContainerTeardown(args: {
         alreadyRemoved: false,
         targets: await listArchivedContainerTeardownTargets(
           descriptor,
+          canonicalPath,
           quarantinePath,
           getArchivedContainerWorkspaceRootDir(
             args.workspaceId,
@@ -2328,6 +2492,7 @@ export async function prepareArchivedContainerTeardown(args: {
     alreadyRemoved: false,
     targets: await listArchivedContainerTeardownTargets(
       descriptor,
+      canonicalPath,
       quarantinePath,
       getArchivedContainerWorkspaceRootDir(args.workspaceId, args.containerId),
     ),
@@ -3054,6 +3219,7 @@ async function finishVerifiedTeardown(args: {
   workspaceId: string;
   containerId: string;
   descriptor: ArchivedGitStagedDescriptor;
+  canonicalPath: string;
   quarantinePath: string;
 }): Promise<void> {
   const descriptor = await retainUnmanagedClonePayload(args);
@@ -3063,6 +3229,7 @@ async function finishVerifiedTeardown(args: {
   // quarantine instead of preserving it for attention.
   const targets = await listArchivedContainerTeardownTargets(
     descriptor,
+    args.canonicalPath,
     args.quarantinePath,
     getArchivedContainerWorkspaceRootDir(args.workspaceId, args.containerId),
   );
@@ -3120,7 +3287,10 @@ async function finishVerifiedTeardown(args: {
         },
       });
     }
-    await runGit(target.referenceRepoPath, ['worktree', 'prune']);
+    await removeAbsentWorktreeRegistrations(
+      await getGitCommonDir(target.referenceRepoPath),
+      [target.quarantineRepoPath, target.preMoveRepoPath],
+    );
   }
   await removeWindowsWorktreeReparsePoints(args.quarantinePath);
   await removeTreeWithoutAsar(args.quarantinePath, {
@@ -3235,6 +3405,7 @@ export async function recoverArchivedGitTeardownsForWorkspace(
             workspaceId,
             containerId: entry.name,
             descriptor,
+            canonicalPath,
             quarantinePath,
           });
         }
@@ -3287,6 +3458,7 @@ export async function recoverArchivedGitTeardownsForWorkspace(
           workspaceId,
           containerId: entry.name,
           descriptor,
+          canonicalPath,
           quarantinePath,
         });
         await continueRecoveredArchive({
@@ -3330,11 +3502,27 @@ export async function reconcileArchivedGitRefsForWorkspace(
     workspaceId,
     workspaceType: config.type,
   });
+  // Lifecycle evidence can outlive both the child's row and archive directory.
+  const lifecycleProtectedPrefixes = new Set<string>();
+  for (const record of await readWorkspaceDestructiveRecoveries(workspaceId)) {
+    if (
+      record.worktreeId === undefined ||
+      (record.state === 'completed' && !record.cleanupRequired)
+    )
+      continue;
+    validateId(record.worktreeId, 'containerId');
+    lifecycleProtectedPrefixes.add(
+      `${ARCHIVE_REF_NAMESPACE}/${workspaceId}/${record.worktreeId}/`,
+    );
+  }
   const keepByRepoPath = new Map<string, Set<string>>();
   const protectedPrefixesByRepoPath = new Map<string, Set<string>>();
   for (const definition of definitions) {
     keepByRepoPath.set(definition.referenceRepoPath, new Set());
-    protectedPrefixesByRepoPath.set(definition.referenceRepoPath, new Set());
+    protectedPrefixesByRepoPath.set(
+      definition.referenceRepoPath,
+      new Set(lifecycleProtectedPrefixes),
+    );
   }
   // Keep this local import to break the archived-containers <-> archived-git
   // module cycle; reconciliation itself runs in packaged Electron builds.

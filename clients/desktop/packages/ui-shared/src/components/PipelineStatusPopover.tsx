@@ -244,12 +244,12 @@ export function PipelineStatusPopover({
         data-testid="pipeline-status-popover-header"
       >
         {entries.length > 0
-          ? `Pipelines ${statusLabel} (${String(entries.length)})`
-          : `Pipelines ${statusLabel}`}
+          ? `Workflows ${statusLabel} (${String(entries.length)})`
+          : `Workflows ${statusLabel}`}
       </div>
       {entries.length === 0 ? (
         <div id={listId} className="text-xs fg-secondary">
-          No pipeline details
+          No workflow details
         </div>
       ) : (
         <div
@@ -257,7 +257,7 @@ export function PipelineStatusPopover({
           id={listId}
           data-testid="pipeline-status-popover-list"
           data-scrollable={isScrollable ? 'true' : 'false'}
-          aria-label={isScrollable ? 'Pipeline runs' : undefined}
+          aria-label={isScrollable ? 'Workflow runs' : undefined}
           tabIndex={isScrollable ? 0 : undefined}
           className={`space-y-1.5${
             isScrollable ? ' pointer-events-auto overflow-y-auto pr-1' : ''

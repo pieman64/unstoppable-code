@@ -12,7 +12,8 @@
  * persistence ordering) belongs to `expandActivityRailFromContent` and is
  * pinned in `persistence-bridge.test.ts`. What is pinned HERE is the content
  * signal — which sections may reopen a rail and which must never — plus the
- * placement plumbing and the revision-driven retry.
+ * placement plumbing, the revision-driven retry, and the CAN-4793 rule that a
+ * Cowork rail never reopens itself on content.
  */
 
 import { act, type JSX } from 'react';
@@ -54,7 +55,7 @@ const RAIL_GROUP_ID = 'group-activity';
 const expandMock = jest.mocked(expandActivityRailFromContent);
 const placementMock = jest.mocked(usePanelPlacement);
 const layoutStore: UseBoundStore<StoreApi<FakeLayoutState>> =
-  usePanelLayoutStore as unknown as UseBoundStore<StoreApi<FakeLayoutState>>;
+  usePanelLayoutStore;
 
 function setRevision(revision: number): void {
   act(() => {
@@ -72,6 +73,11 @@ function Harness({
   useAutoExpandActivityRail({ surface, sectionHasContent });
   return null;
 }
+
+// Roots still mounted when a test ends. A failed expectation throws before the
+// test's own `cleanup()`, and a leaked root would keep answering later tests'
+// revision bumps and inflate their call counts.
+const mountedCleanups = new Set<() => void>();
 
 function render(
   sectionHasContent: Partial<Record<ActivitySectionId, boolean>>,
@@ -91,6 +97,14 @@ function render(
       <Harness sectionHasContent={sectionHasContent} surface={surface} />,
     );
   });
+  const cleanup = (): void => {
+    if (!mountedCleanups.delete(cleanup)) return;
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  };
+  mountedCleanups.add(cleanup);
   return {
     rerender: (next, nextSurface): void => {
       act(() => {
@@ -99,12 +113,7 @@ function render(
         );
       });
     },
-    cleanup: (): void => {
-      act(() => {
-        root.unmount();
-      });
-      container.remove();
-    },
+    cleanup,
   };
 }
 
@@ -116,6 +125,12 @@ beforeEach(() => {
     groupId: RAIL_GROUP_ID,
   });
   layoutStore.setState({ layouts: { [LAYOUT_KEY]: { revision: 1 } } });
+});
+
+afterEach(() => {
+  mountedCleanups.forEach((cleanup) => {
+    cleanup();
+  });
 });
 
 describe('useAutoExpandActivityRail', () => {
@@ -173,25 +188,92 @@ describe('useAutoExpandActivityRail', () => {
     cleanup();
   });
 
-  it('still reopens a cowork rail for a surface-visible section', () => {
-    const { cleanup } = render({ summary: true }, 'cowork');
+  describe('cowork (CAN-4793)', () => {
+    // Cowork keeps Canopy's seeded collapse: content never opens the rail, so
+    // a finished reply cannot narrow the chat. The user opens it by hand.
+    it.each([
+      'summary',
+      'changed-files',
+      'pull-request',
+      'plans',
+      'pipeline-runs',
+      'cost',
+      'background-processes',
+      'todo',
+      'attachments',
+    ])('does not reopen a cowork rail for %s', (sectionId) => {
+      const { cleanup } = render({ [sectionId]: true }, 'cowork');
 
-    expect(expandMock).toHaveBeenCalledWith(LAYOUT_KEY, RAIL_GROUP_ID);
-    cleanup();
-  });
+      expect(expandMock).not.toHaveBeenCalled();
+      cleanup();
+    });
 
-  it('does not reopen a cowork rail for attachments alone', () => {
-    // `resolveAgentAttachmentsDir` ignores `worktreeId` for cowork and returns
-    // ONE workspace-level directory, so a cowork workspace that already holds
-    // an attachment reports content on the first paint of every newly created
-    // Work Entry. Counting that as work would spring the rail open on every
-    // new entry — the same false positive notes/prompts/memory are excluded
-    // for. In a code workspace attachments really are per-worktree, so there
-    // it must still count (asserted below).
-    const { cleanup } = render({ attachments: true }, 'cowork');
+    it('does not reopen a cowork rail with every work section present', () => {
+      const { cleanup } = render(
+        {
+          summary: true,
+          'changed-files': true,
+          'pull-request': true,
+          plans: true,
+          'pipeline-runs': true,
+          cost: true,
+          'background-processes': true,
+          todo: true,
+          attachments: true,
+        },
+        'cowork',
+      );
 
-    expect(expandMock).not.toHaveBeenCalled();
-    cleanup();
+      expect(expandMock).not.toHaveBeenCalled();
+      cleanup();
+    });
+
+    it('does not reopen a cowork rail when work arrives after mount', () => {
+      const { rerender, cleanup } = render({ cost: false }, 'cowork');
+
+      rerender({ cost: true, summary: true });
+
+      expect(expandMock).not.toHaveBeenCalled();
+      cleanup();
+    });
+
+    it('does not retry on layout revisions while cowork work is present', () => {
+      const { cleanup } = render({ cost: true }, 'cowork');
+
+      setRevision(2);
+      setRevision(3);
+
+      expect(expandMock).not.toHaveBeenCalled();
+      cleanup();
+    });
+
+    it('applies the current surface when it changes', () => {
+      const { rerender, cleanup } = render({ summary: true }, 'cowork');
+      expect(expandMock).not.toHaveBeenCalled();
+
+      rerender({ summary: true }, 'worktree');
+      expect(expandMock).toHaveBeenCalledWith(LAYOUT_KEY, RAIL_GROUP_ID);
+
+      rerender({ summary: true }, 'cowork');
+      expandMock.mockClear();
+      rerender({ summary: true, cost: true }, 'cowork');
+      setRevision(2);
+
+      expect(expandMock).not.toHaveBeenCalled();
+      cleanup();
+    });
+
+    it('does not reopen a minimal-mode cowork rail', () => {
+      placementMock.mockReturnValue({
+        layoutKey: LAYOUT_KEY,
+        groupId: 'group-extras',
+      });
+
+      const { cleanup } = render({ cost: true }, 'cowork');
+
+      expect(expandMock).not.toHaveBeenCalled();
+      cleanup();
+    });
   });
 
   it('still reopens a code-workspace rail for attachments', () => {

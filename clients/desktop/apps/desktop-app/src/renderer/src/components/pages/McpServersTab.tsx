@@ -54,6 +54,7 @@ import {
   curatedMcpAddTarget,
   customAccountMcpPromotable,
   findAccountMcpRow,
+  type CreatedCustomItem,
 } from '@canopy/ui-app/capability';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { pointRefsAt } from '@/lib/mcpServerRefs';
@@ -97,6 +98,7 @@ import type {
   McpServerData,
   McpServerConfigData,
   McpServerCuratedMetadata,
+  McpServerFile,
   McpServerHealthCheckResult,
   McpServerIndexEntry,
   McpServerStatusEntry,
@@ -113,6 +115,7 @@ import {
   McpConnectionStatusBadge,
   Notice,
   overlayGeneration,
+  SegmentedControl,
   type ActionMenuItem,
 } from '@canopy/ui-shared/components';
 import {
@@ -436,7 +439,7 @@ function McpScopeControl({
             disabled={option.scope === 'cloud' && cloudDisabled}
             onClick={(): void => onChange(option.scope)}
             data-testid={`mcp-server-scope-${option.scope}`}
-            className={`focus-ring inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition disabled:opacity-50 ${
+            className={`focus-ring inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
               value === option.scope
                 ? 'bg-accent fg-emphasis'
                 : 'fg-secondary hover:bg-fg-primary/[0.06]'
@@ -505,14 +508,15 @@ function KeyValueEditor({
             readOnly
             className="flex-1 rounded-md border bg-secondary/50 px-2 py-1 text-xs fg-primary"
           />
-          <button
-            type="button"
+          <Button
+            variant="ghost-destructive"
+            size="compact"
+            iconOnly
             onClick={() => handleRemove(key)}
-            className="focus-ring rounded p-1 fg-secondary hover:fg-destructive transition-colors"
             aria-label={`Remove ${key}`}
           >
             <AppCatalogCloseIcon width="12" height="12" />
-          </button>
+          </Button>
         </div>
       ))}
       <div className="flex items-center gap-2">
@@ -534,14 +538,13 @@ function KeyValueEditor({
           placeholder={valuePlaceholder}
           className="focus-ring flex-1 rounded-md border bg-base px-2 py-1 text-xs"
         />
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={handleAdd}
           disabled={!newKey.trim() || !newValue.trim()}
-          className="focus-ring rounded-md px-2 py-1 text-xs font-medium bg-secondary fg-primary hover:bg-accent-subtle transition-colors disabled:opacity-50"
         >
           Add
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -583,10 +586,11 @@ function ConfigEditor({
         <span className="flex-1 text-sm fg-primary truncate">
           {config.name || 'Untitled config'}
         </span>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={() => setExpanded(!expanded)}
-          className="focus-ring rounded p-1 fg-secondary hover:fg-primary transition-colors"
           aria-label={expanded ? 'Collapse config' : 'Expand config'}
         >
           <AppCatalogChevronRightMediumIcon
@@ -594,7 +598,7 @@ function ConfigEditor({
             height="14"
             className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
           />
-        </button>
+        </Button>
       </div>
 
       {/* Expanded content */}
@@ -692,30 +696,22 @@ function ConfigEditor({
           {/* Delete config */}
           <div className="pt-1">
             {!confirmDelete ? (
-              <button
-                type="button"
+              <Button
+                variant="ghost-destructive"
+                size="compact"
                 onClick={() => setConfirmDelete(true)}
-                className="focus-ring rounded-md px-2 py-1 text-xs font-medium fg-destructive hover:bg-destructive-subtle transition-colors"
               >
                 Delete config
-              </button>
+              </Button>
             ) : (
               <span className="inline-flex items-center gap-2">
                 <span className="text-xs fg-secondary">Are you sure?</span>
-                <button
-                  type="button"
-                  onClick={onDelete}
-                  className="focus-ring rounded-md px-2 py-1 text-xs font-medium fg-emphasis bg-destructive hover:bg-destructive/90 transition-colors"
-                >
+                <Button variant="destructive" size="compact" onClick={onDelete}>
                   Confirm
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(false)}
-                  className="focus-ring rounded-md px-2 py-1 text-xs font-medium fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-                >
+                </Button>
+                <Button size="compact" onClick={() => setConfirmDelete(false)}>
                   Cancel
-                </button>
+                </Button>
               </span>
             )}
           </div>
@@ -733,6 +729,11 @@ interface McpServerDialogProps {
   serverId: string | null;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  /**
+   * Names the server a create-mode save added, so the Customize page can open
+   * its detail. Not called for edits, moves or a sign-in still in progress.
+   */
+  onCreated?: (server: CreatedCustomItem) => void;
   /** Skip the modal enter animation, e.g. when swapping in for another modal. */
   noEnterAnimation?: boolean;
   /**
@@ -790,6 +791,7 @@ export function McpServerDialog({
   serverId,
   onClose,
   onSaved,
+  onCreated,
   noEnterAnimation = false,
   initialCurated,
   curatedEntries = [],
@@ -947,6 +949,8 @@ export function McpServerDialog({
   onCloseRef.current = onClose;
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
+  const onCreatedRef = useRef(onCreated);
+  onCreatedRef.current = onCreated;
   const accountConnectionRef = useRef(accountConnection);
   accountConnectionRef.current = accountConnection;
   const accountConnectionKey = accountConnection?.id;
@@ -1345,7 +1349,9 @@ export function McpServerDialog({
     if (inCloud && curatedToPersist?.key) {
       await runEntityEditOperation(
         async (): Promise<void> => {
-          await window.mcpServers.saveServer(buildServerData(undefined));
+          reportCreatedDeviceServer(
+            await window.mcpServers.saveServer(buildServerData(undefined)),
+          );
         },
         {
           setSaving,
@@ -1390,7 +1396,9 @@ export function McpServerDialog({
     }
     await runEntityEditOperation(
       async (): Promise<void> => {
-        await window.mcpServers.saveServer(buildServerData(undefined));
+        reportCreatedDeviceServer(
+          await window.mcpServers.saveServer(buildServerData(undefined)),
+        );
       },
       {
         setSaving,
@@ -1399,6 +1407,17 @@ export function McpServerDialog({
         onClose: onCloseRef.current,
       },
     );
+  };
+
+  // A device save in create mode added this server; an edit reports nothing.
+  const reportCreatedDeviceServer = (saved: McpServerFile): void => {
+    if (serverId !== null || cloudConnection) return;
+    const { id, curated: savedCurated } = saved.server.definition;
+    onCreatedRef.current?.({
+      kind: 'mcp-server',
+      serverId: id,
+      ...(savedCurated?.key ? { curatedKey: savedCurated.key } : {}),
+    });
   };
 
   // Edits the cloud connection in place and keeps the device copy, when there
@@ -1544,6 +1563,12 @@ export function McpServerDialog({
           throw err;
         }
         bound = true;
+        if (serverId === null && !moving)
+          onCreatedRef.current?.({
+            kind: 'mcp-server',
+            serverId: connection.serverKey,
+            configId: connection.configId,
+          });
         if (moving) {
           await clearDeviceSignIns(moving);
           // The bound device copy still routes through the cloud, so a
@@ -2009,10 +2034,11 @@ export function McpServerDialog({
           )}
           <ErrorBanner error={error} />
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={onClose}>
+            <Button size="compact" onClick={onClose}>
               Cancel
             </Button>
             <Button
+              size="compact"
               variant="primary"
               onClick={connectAccount}
               disabled={!supportedFields}
@@ -2093,34 +2119,32 @@ export function McpServerDialog({
                   )}
                 </select>
               </label>
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => void handleHealthCheck()}
                 disabled={healthChecking || configs.length === 0}
-                className="focus-ring rounded-md px-3 py-1.5 text-xs font-medium bg-secondary fg-primary hover:bg-accent-subtle transition-colors disabled:opacity-50"
               >
                 {healthChecking ? 'Checking\u2026' : 'Health check'}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="compact"
                 onClick={() => void handleTestConnection()}
                 disabled={testRunning || configs.length === 0}
-                className="focus-ring rounded-md px-3 py-1.5 text-xs font-medium bg-secondary fg-primary hover:bg-accent-subtle transition-colors disabled:opacity-50"
               >
                 {testRunning ? 'Testing\u2026' : 'Test connection'}
-              </button>
+              </Button>
               {serverType === 'http' &&
                 effectiveAuthHandler !== 'account' &&
                 oauthForm.enabled && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="primary"
+                    size="compact"
                     onClick={() => void handleConnect()}
                     disabled={connecting || configs.length === 0}
                     data-testid="mcp-server-connect"
-                    className="focus-ring rounded-md px-3 py-1.5 text-xs font-medium bg-accent fg-emphasis hover:bg-accent/90 transition-colors disabled:opacity-50"
                   >
                     {connecting ? 'Connecting\u2026' : 'Connect'}
-                  </button>
+                  </Button>
                 )}
             </div>
           )}
@@ -2206,32 +2230,25 @@ export function McpServerDialog({
           {!cloudOnly && (
             <div className="text-sm">
               <span className="mb-1.5 block fg-secondary">Server type</span>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setServerType('command')}
-                  className={`focus-ring flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                    serverType === 'command'
-                      ? 'bg-accent fg-emphasis'
-                      : 'bg-secondary fg-primary hover:bg-accent-subtle'
-                  }`}
-                >
-                  <AppCatalogTerminalIcon width="14" height="14" />
-                  Command
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setServerType('http')}
-                  className={`focus-ring flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                    serverType === 'http'
-                      ? 'bg-accent fg-emphasis'
-                      : 'bg-secondary fg-primary hover:bg-accent-subtle'
-                  }`}
-                >
-                  <AppCatalogGlobeIcon width="14" height="14" />
-                  HTTP
-                </button>
-              </div>
+              <SegmentedControl<'command' | 'http'>
+                label="Server type"
+                value={serverType}
+                width="content"
+                shape="capsule"
+                options={[
+                  {
+                    value: 'command',
+                    label: 'Command',
+                    leading: <AppCatalogTerminalIcon width="14" height="14" />,
+                  },
+                  {
+                    value: 'http',
+                    label: 'HTTP',
+                    leading: <AppCatalogGlobeIcon width="14" height="14" />,
+                  },
+                ]}
+                onChange={setServerType}
+              />
             </div>
           )}
 
@@ -2706,20 +2723,20 @@ export function McpServerDialog({
                         {brandText.appName}.
                       </div>
 
-                      <button
-                        type="button"
+                      <Button
+                        size="compact"
                         onClick={(): void =>
                           setOauthForm({
                             ...oauthForm,
                             advancedOpen: !oauthForm.advancedOpen,
                           })
                         }
-                        className="focus-ring rounded-md border px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
+                        className="self-start"
                       >
                         {oauthForm.advancedOpen
                           ? 'Hide advanced OAuth overrides'
                           : 'Show advanced OAuth overrides'}
-                      </button>
+                      </Button>
 
                       {oauthForm.advancedOpen && (
                         <div className="space-y-3 rounded-md border bg-base/40 p-3">
@@ -2901,14 +2918,13 @@ export function McpServerDialog({
                 <span className="text-sm font-medium fg-primary">
                   Configurations
                 </span>
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={handleAddConfig}
                   data-testid="mcp-server-add-config"
-                  className="focus-ring rounded-md px-2 py-1 text-xs font-medium bg-secondary fg-primary hover:bg-accent-subtle transition-colors"
                 >
                   Add
-                </button>
+                </Button>
               </div>
 
               {configs.length === 0 && (
@@ -3375,18 +3391,17 @@ function McpStatusCell({
           : 'Connect in cloud'
         : undefined;
     return (
-      <button
-        type="button"
+      <Button
+        size="compact"
         onClick={(e) => {
           e.stopPropagation();
           onConnect();
         }}
         disabled={connecting}
         data-testid="mcp-server-connect-button"
-        className="px-2.5 py-1 text-2xs font-medium rounded-md bg-accent fg-emphasis hover:bg-accent/90 transition-colors focus-ring disabled:opacity-50"
       >
         {connecting ? 'Connecting…' : (accountAction ?? 'Connect')}
-      </button>
+      </Button>
     );
   }
   return <McpStatusBadge entry={entry} />;
@@ -3428,31 +3443,31 @@ function AddServerMenu({
 
   if (!hasCatalog) {
     return (
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="compact"
         onClick={onAddCustom}
         data-testid="mcp-add-custom"
-        className="px-3 py-1.5 text-xs font-medium rounded-md bg-accent fg-emphasis hover:bg-accent/90 transition-colors focus-ring"
       >
         Add custom
-      </button>
+      </Button>
     );
   }
 
   return (
     <div className="relative">
-      <button
+      <Button
+        variant="primary"
+        size="compact"
         ref={triggerRef}
-        type="button"
         onClick={() => setOpen((v) => !v)}
         data-testid="mcp-add-menu-trigger"
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md bg-accent fg-emphasis hover:bg-accent/90 transition-colors focus-ring"
       >
         Add
         <AppCatalogChevronDownMediumIcon width="10" height="10" />
-      </button>
+      </Button>
       <FloatingMenu
         open={open}
         onOpenChange={setOpen}
@@ -4278,21 +4293,22 @@ export function McpServersTab({
                             </>
                           ) : (
                             <Tooltip label="Edit server">
-                              <button
-                                type="button"
+                              <Button
+                                variant="ghost-quiet"
+                                size="compact"
+                                iconOnly
                                 onClick={(e): void => {
                                   e.stopPropagation();
                                   setDialogServerId(server.id);
                                 }}
                                 aria-label="Edit server"
                                 data-testid="mcp-server-edit-button"
-                                className="focus-ring rounded p-1 fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
                               >
                                 <AppCatalogDocumentPencilIcon
                                   width="14"
                                   height="14"
                                 />
-                              </button>
+                              </Button>
                             </Tooltip>
                           )}
                         </div>

@@ -4,6 +4,7 @@ import {
   type ChatCreationAction,
   type CreatedTaskChatReceipt,
 } from '@canopy/desktop-shared/lib/chat-send-actions';
+import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
 import {
   APP_ADVISOR_PROJECT_ID,
   type ChatCommand,
@@ -13,11 +14,16 @@ import {
   AgentChatSendError,
   canonicalSource,
   dispatchAgentChatSend,
+  pipelineDiscoveryCaller,
   type AgentChatSendContext,
+  type PipelineNewChatSeed,
 } from './send-orchestration';
+import type { AgentSenderRuntimeSource } from './sender-context';
+import { isAutomationRunSource } from './automation-run-source';
 import {
   isAgentSenderContextError,
   resolveAgentSenderIdentity,
+  revalidatePipelineAgentOrigin,
 } from './sender-context';
 import type { ProjectDiscoveryCaller } from '../project-discovery';
 import { requireAuthorizedProject } from '../project-discovery/owner-policy';
@@ -42,6 +48,53 @@ import {
   dispatchTrustedChatCommand,
 } from '../canopy-runtime/core-chat-command-adapter';
 import { getChatStateCommandPort } from '../ipc/chat-state';
+import type { CreationModelSelection } from './creation-model';
+
+/**
+ * Orchestrator chats keep their own runtime: only these seed settings apply.
+ * An automation's own chat (CAN-5380) also keeps the model, provider and
+ * plugins its native quick prompt set; no Orchestrator chat takes an
+ * interface mode.
+ */
+function seedAppliesToBotChat(
+  seed: PipelineNewChatSeed,
+  automationOwnChat: boolean,
+): boolean {
+  if (seed.interfaceMode !== undefined) return false;
+  return (
+    automationOwnChat ||
+    (seed.model === undefined &&
+      seed.providerType === undefined &&
+      seed.pluginSelections === undefined)
+  );
+}
+
+/** A seed's set fields: one present but undefined neither forces a new chat nor clears a default. */
+function definedSeed(
+  seed: PipelineNewChatSeed | undefined,
+): PipelineNewChatSeed | undefined {
+  if (!seed) return undefined;
+  const defined: PipelineNewChatSeed = {
+    ...(seed.model !== undefined ? { model: seed.model } : {}),
+    ...(seed.providerType !== undefined
+      ? { providerType: seed.providerType }
+      : {}),
+    ...(seed.modelConfig !== undefined
+      ? { modelConfig: seed.modelConfig }
+      : {}),
+    ...(seed.planMode !== undefined ? { planMode: seed.planMode } : {}),
+    ...(seed.approvalMode !== undefined
+      ? { approvalMode: seed.approvalMode }
+      : {}),
+    ...(seed.pluginSelections !== undefined
+      ? { pluginSelections: seed.pluginSelections }
+      : {}),
+    ...(seed.interfaceMode !== undefined
+      ? { interfaceMode: seed.interfaceMode }
+      : {}),
+  };
+  return Object.keys(defined).length > 0 ? defined : undefined;
+}
 
 /** Create without navigation; initial input uses the canonical trusted send path. */
 export async function dispatchAgentChatCreation(
@@ -85,24 +138,102 @@ async function create(
   if (!parsed.ok)
     throw new AgentChatSendError('validation_failed', parsed.message);
   const action = parsed.action;
-  const source = await canonicalSource(context.caller.source);
-  if (
-    (context.caller.kind === 'app_advisor') !==
-    (source.projectId === APP_ADVISOR_PROJECT_ID)
-  )
+  const trusted = context.caller;
+  // A creation's settings are its seed; a turn override is for existing chats.
+  if (context.turnOverride)
     throw new AgentChatSendError(
       'validation_failed',
-      'The trusted sender runtime is inconsistent.',
+      'A new chat takes its settings from its seed.',
     );
-  await resolveAgentSenderIdentity(source);
-  const caller: ProjectDiscoveryCaller =
-    context.caller.kind === 'app_advisor'
-      ? { kind: 'app_advisor', chatId: source.chatId }
-      : { kind: 'project_agent', ...source };
+  let source: AgentSenderRuntimeSource | undefined;
+  let caller: ProjectDiscoveryCaller;
+  const newChatSeed =
+    trusted.kind === 'pipeline' ? definedSeed(context.newChatSeed) : undefined;
+  const agentOriginated =
+    trusted.kind === 'pipeline' && trusted.source.agentOrigin !== undefined;
+  // CAN-5379: an automation's own chat keeps what its native send used: the
+  // Agent route the automations service resolved, and automatic billing.
+  const automationOwnChat =
+    trusted.kind === 'pipeline' &&
+    trusted.source.kind === 'automation' &&
+    !agentOriginated;
+  // CAN-4551: a converted automation's send step starts its chat as the
+  // automation's own send would, apart from the Agent route (the step
+  // resolves its own model).
+  const automationRun =
+    trusted.kind === 'pipeline' &&
+    isAutomationRunSource(trusted.source) &&
+    !agentOriginated;
+  if (trusted.kind === 'pipeline') {
+    caller = pipelineDiscoveryCaller(trusted.source);
+  } else {
+    source = await canonicalSource(trusted.source);
+    if (
+      (trusted.kind === 'app_advisor') !==
+      (source.projectId === APP_ADVISOR_PROJECT_ID)
+    )
+      throw new AgentChatSendError(
+        'validation_failed',
+        'The trusted sender runtime is inconsistent.',
+      );
+    await resolveAgentSenderIdentity(source);
+    caller =
+      trusted.kind === 'app_advisor'
+        ? { kind: 'app_advisor', chatId: source.chatId }
+        : { kind: 'project_agent', ...source };
+  }
   const projectAction =
     action.type === 'projects.create_task' ||
     action.type === 'projects.create_task_chat';
+  // D11: before any effect, the run's agent must still be current, keep the
+  // run's owner and, for an Orchestrator target, have its access, as a send's.
+  if (trusted.kind === 'pipeline' && trusted.source.agentOrigin)
+    await revalidatePipelineAgentOrigin(
+      trusted.source.agentOrigin,
+      trusted.source.owner,
+      projectAction ? action.projectId : requireBot(action.botId).projectId,
+    );
+  const actionModel =
+    action.type === 'projects.create_task' ||
+    action.type === 'projects.create_task_chat'
+      ? action.model
+      : undefined;
+  if (actionModel !== undefined && newChatSeed?.model !== undefined)
+    throw new AgentChatSendError(
+      'validation_failed',
+      'A new chat takes its model from the action or its seed, not both.',
+    );
+  // A seed's model gets the same checks as an explicit one.
+  const requestedModel = actionModel ?? newChatSeed?.model;
+  const taskId =
+    'taskId' in action
+      ? action.taskId
+      : trusted.kind === 'pipeline' && context.plannedTaskId !== undefined
+        ? context.plannedTaskId
+        : randomUUID();
+  if (
+    newChatSeed &&
+    !projectAction &&
+    !seedAppliesToBotChat(newChatSeed, automationRun)
+  )
+    throw new AgentChatSendError(
+      'unsupported_action',
+      'Orchestrator chats accept only thinking effort, fast mode, plan mode and approval mode.',
+    );
+  // D11 for a new chat: an agent-originated seed may set the model, plan mode
+  // and interface, but never plugins, and approvals only within the agent's.
+  if (
+    newChatSeed?.pluginSelections !== undefined &&
+    trusted.kind === 'pipeline' &&
+    trusted.source.agentOrigin
+  )
+    throw new AgentChatSendError(
+      'authorization_conflict',
+      'An agent-originated run cannot choose plugins for a new chat.',
+    );
+  let selection: CreationModelSelection | undefined;
   let projectId: string;
+  let codeProject = false;
   if (projectAction) {
     const project = await requireAuthorizedProject(action.projectId, caller);
     if (action.type === 'projects.create_task' && project.type !== 'cowork')
@@ -116,6 +247,7 @@ async function create(
         'The project is not ready.',
       );
     projectId = project.projectId;
+    codeProject = project.type !== 'cowork';
     if (
       action.type === 'projects.create_task_chat' &&
       !(await listDiscoverableTaskIds(projectId, project.type)).includes(
@@ -123,6 +255,16 @@ async function create(
       )
     )
       throw new AgentChatSendError('not_found', 'The task is not available.');
+    // Checked against the target before any scaffold, entry, tab or input.
+    if (requestedModel !== undefined) {
+      const { resolveCreationModelSelection } =
+        await import('./creation-model');
+      selection = await resolveCreationModelSelection(
+        requestedModel,
+        { projectId, taskId },
+        { acceptAgentRoute: automationOwnChat },
+      );
+    }
     // Renderer project selection awaits this scaffold through standaloneChat.init.
     // Agent creation bypasses selection, but the first turn needs the same cwd.
     if (project.type === 'cowork') await ensureCoworkHomeScaffold(projectId);
@@ -142,9 +284,44 @@ async function create(
   const taskCreated =
     action.type === 'projects.create_task' ||
     action.type === 'bots.create_task';
-  const taskId = 'taskId' in action ? action.taskId : randomUUID();
   let chatId: string | undefined;
-  if (!taskCreated) {
+  let replayedTab = false;
+  // A host-step replay finds the chat it already created.
+  const fixedTabId = context.fixedIds?.tabId;
+  if (!taskCreated && fixedTabId) {
+    const snapshot = await readTaskRuntimeSnapshot(projectId, taskId);
+    const replayed = snapshot.tabsFile.tabs.find(
+      (tab) => tab.id === fixedTabId && tab.kind !== 'file',
+    );
+    if (replayed) {
+      // A replay sends only where a fresh choice could: never into an
+      // archived or stale chat.
+      if (replayed.readOnly || replayed.staleSessionDetected !== undefined)
+        throw new AgentChatSendError(
+          'target_not_ready',
+          'The chat this step created is no longer available.',
+        );
+      chatId = fixedTabId;
+      replayedTab = true;
+    }
+  }
+  // An explicit model or any seed setting always gets a new chat: an empty
+  // tab's stored model is not its effective selection (mode, plugins, an
+  // older route base). So does `newChat`, and an automation run's starter
+  // replacement: the starter may hold a person's remembered billing choice,
+  // which the native send never took.
+  const replacesStarter =
+    context.reuseStarterChat === true &&
+    trusted.kind === 'pipeline' &&
+    isAutomationRunSource(trusted.source);
+  if (
+    !taskCreated &&
+    !selection &&
+    !replayedTab &&
+    !newChatSeed &&
+    context.newChat !== true &&
+    !replacesStarter
+  ) {
     const { isReusableEmptyChatTab } = await import('../services/chat-service');
     const snapshot = await readTaskRuntimeSnapshot(projectId, taskId);
     chatId = snapshot.tabsFile.tabs.find(
@@ -153,6 +330,7 @@ async function create(
         tab.staleSessionDetected === undefined &&
         tab.kind !== 'file' &&
         !(
+          source &&
           source.projectId === projectId &&
           source.worktreeId === taskId &&
           source.chatId === tab.id
@@ -160,11 +338,31 @@ async function create(
         isReusableEmptyChatTab(tab),
     )?.id;
   }
-  const chatCreated = chatId === undefined;
+  const chatCreated = replayedTab
+    ? context.fixedIds?.reusedTab !== true
+    : chatId === undefined;
+  // CAN-5379: an automation's own worktree may already hold the renderer's
+  // blank starter. A seed still needs its own chat, so the starter is replaced
+  // in the same commit and the task keeps one chat, as the native send did.
+  let starterTabId: string | undefined;
+  if (chatCreated && !replayedTab && !taskCreated && replacesStarter) {
+    const { isReusableEmptyChatTab } = await import('../services/chat-service');
+    const { tabs } = (await readTaskRuntimeSnapshot(projectId, taskId))
+      .tabsFile;
+    const [only] = tabs;
+    if (
+      tabs.length === 1 &&
+      only.kind !== 'file' &&
+      !only.readOnly &&
+      only.staleSessionDetected === undefined &&
+      isReusableEmptyChatTab(only)
+    )
+      starterTabId = only.id;
+  }
   let allocatedEntry = false;
   let ambiguousInput = false;
   try {
-    if (chatCreated) {
+    if (chatCreated && !replayedTab) {
       const port = getChatStateCommandPort();
       if (!port)
         throw new AgentChatSendError(
@@ -176,23 +374,86 @@ async function create(
         'type' | 'tabId'
       > = {};
       if (projectAction) {
-        const { resolveRemoteCreateTabSeed } =
-          await import('../portal/adapters/chat-adapter');
-        const defaults = await resolveRemoteCreateTabSeed(projectId);
+        const seedModel = selection?.model;
+        const defaults = seedModel
+          ? await (
+              await import('./creation-model')
+            ).resolveCreationModelSeed(projectId, seedModel)
+          : await (
+              await import('../portal/adapters/chat-adapter')
+            ).resolveRemoteCreateTabSeed(projectId);
         if ('noDispatchableModel' in defaults)
           throw new AgentChatSendError(
             'target_not_ready',
             'No model is available for a new chat.',
           );
-        seed = defaults;
+        // The provider follows the resolved model; a seed cannot split them.
+        if (
+          newChatSeed?.providerType !== undefined &&
+          newChatSeed.providerType !== defaults.providerType
+        )
+          throw new AgentChatSendError(
+            'validation_failed',
+            'A new chat’s provider must match its model.',
+          );
+        // The checked selection, not the seed's raw id, is the stored model.
+        const { model: _seedModel, ...seedSettings } = newChatSeed ?? {};
+        void _seedModel;
+        // The remembered interactive billing choice is for a person's new
+        // chat; an automation's native send never applied it.
+        const {
+          aiCreditsRouting: _routing,
+          subscriptionBillingOverride: _override,
+          ...unbilledDefaults
+        } = defaults;
+        void _routing;
+        void _override;
+        seed = {
+          ...(automationRun ? unbilledDefaults : defaults),
+          ...seedSettings,
+          // A partial seed config patches the defaults, as a send's does.
+          ...(newChatSeed?.modelConfig
+            ? {
+                modelConfig: mergeAgentModelConfig(
+                  defaults.modelConfig,
+                  newChatSeed.modelConfig,
+                ),
+              }
+            : {}),
+        };
         const started = await context.startAdmission?.(
           { workspaceId: projectId, worktreeId: taskId },
           action.initialMessage !== undefined,
         );
-        if (started) seed = { ...seed, approvalMode: started.approvalMode };
+        if (!started && agentOriginated && newChatSeed?.approvalMode)
+          throw new AgentChatSendError(
+            'authorization_conflict',
+            'An agent-originated run cannot choose approvals for a new chat.',
+          );
+        if (started) {
+          // D11: an agent-originated run starts within its agent's approvals.
+          if (
+            newChatSeed?.approvalMode !== undefined &&
+            newChatSeed.approvalMode !== started.approvalMode
+          )
+            throw new AgentChatSendError(
+              'authorization_conflict',
+              'An agent-originated run cannot start a chat with other approvals.',
+            );
+          seed = { ...seed, approvalMode: started.approvalMode };
+        }
+      } else if (newChatSeed) {
+        // D11: bot creation has no start admission to take approvals from.
+        if (agentOriginated && newChatSeed.approvalMode)
+          throw new AgentChatSendError(
+            'authorization_conflict',
+            'An agent-originated run cannot choose approvals for a new chat.',
+          );
+        // A pipeline's own bot settings; never project defaults.
+        seed = { ...newChatSeed };
       }
-      // Advisor resolves its own defaults at the required initial send, just
-      // like advisor-chat.create_entry. Do not stamp project defaults on bots.
+      // Advisor resolves its own defaults at its first send, just like
+      // advisor-chat.create_entry. Do not stamp project defaults on bots.
       if (taskCreated) {
         const title = 'title' in action ? action.title?.trim() : undefined;
         const created = await createWorkEntry(projectId, {
@@ -202,30 +463,70 @@ async function create(
         });
         allocatedEntry = !created.reusedExistingEmpty;
       }
-      const tabId = taskCreated ? taskId : randomUUID();
-      const envelope: ChatCommandEnvelope = {
-        schemaVersion: 1,
-        commandId: randomUUID(),
-        projectId,
-        worktreeId: taskId,
-        command: { type: 'chat.create_tab', tabId, ...seed },
-      };
-      const result = await dispatchTrustedChatCommand(envelope, {
-        ...createChatCommandDispatchOptions(port, getActiveDesktopRuntime(), {
-          principalId: 'local-desktop-user',
-          clientInstanceId: 'agent-chat-creation',
-          authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
-          interfaceKind: 'mcp',
-          grants: ['core.chat.write'],
-        }),
-        executionOptions: { preserveActiveTab: true },
-      });
-      if (result.outcome !== 'applied' && result.outcome !== 'already_applied')
-        throw new AgentChatSendError(
-          result.outcome === 'not_found' ? 'not_found' : 'target_not_ready',
-          result.reason ?? 'The target refused chat creation.',
+      // A created task's founding tab shares its id; the pipeline host journal relies on this (host-create-entry.ts).
+      const tabId = taskCreated ? taskId : (fixedTabId ?? randomUUID());
+      const createTab = { type: 'chat.create_tab' as const, tabId, ...seed };
+      const dispatchCommand = (
+        commandId: string,
+        command: ChatCommand,
+      ): ReturnType<typeof dispatchTrustedChatCommand> =>
+        dispatchTrustedChatCommand(
+          {
+            schemaVersion: 1,
+            commandId,
+            projectId,
+            worktreeId: taskId,
+            command,
+          } satisfies ChatCommandEnvelope,
+          {
+            ...createChatCommandDispatchOptions(
+              port,
+              getActiveDesktopRuntime(),
+              {
+                principalId: 'local-desktop-user',
+                clientInstanceId: 'agent-chat-creation',
+                authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+                interfaceKind: 'mcp',
+                grants: ['core.chat.write'],
+              },
+            ),
+            executionOptions: { preserveActiveTab: true },
+          },
         );
-      chatId = result.entityId;
+      if (starterTabId !== undefined) {
+        // Refused when the starter is no longer blank, and only creates the
+        // replacement in place of the task's last tab: either way the chat
+        // is then created beside the others.
+        const replaced = await dispatchCommand(randomUUID(), {
+          type: 'chat.close_tab',
+          tabId: starterTabId,
+          mode: 'discard_empty',
+          replacementTab: createTab,
+        });
+        if (
+          (replaced.outcome === 'applied' ||
+            replaced.outcome === 'already_applied') &&
+          (await readTaskRuntimeSnapshot(projectId, taskId)).tabsFile.tabs.some(
+            (tab) => tab.id === tabId,
+          )
+        )
+          chatId = tabId;
+      }
+      if (chatId === undefined) {
+        const result = await dispatchCommand(
+          context.fixedIds?.createTabCommandId ?? randomUUID(),
+          createTab,
+        );
+        if (
+          result.outcome !== 'applied' &&
+          result.outcome !== 'already_applied'
+        )
+          throw new AgentChatSendError(
+            result.outcome === 'not_found' ? 'not_found' : 'target_not_ready',
+            result.reason ?? 'The target refused chat creation.',
+          );
+        chatId = result.entityId;
+      }
       const snapshot = await readTaskRuntimeSnapshot(projectId, taskId);
       if (
         !chatId ||
@@ -246,6 +547,9 @@ async function create(
     const address = projectAction
       ? { projectId, taskId, chatId }
       : { botId: action.botId, taskId, chatId };
+    await context.onChatResolved?.({ chatId, created: chatCreated });
+    // Readback of an explicit selection: the stored model and any Agent.
+    const selected = selection ?? {};
     if (action.initialMessage !== undefined) {
       const sendAction = projectAction
         ? {
@@ -254,6 +558,10 @@ async function create(
             taskId,
             chatId,
             text: action.initialMessage,
+            // A pipeline's first message waits for a code task's setup.
+            ...(trusted.kind === 'pipeline' && codeProject
+              ? { queueForSetup: true }
+              : {}),
           }
         : {
             type: 'bots.send_message' as const,
@@ -264,7 +572,13 @@ async function create(
           };
       try {
         const accepted = await dispatchAgentChatSend(sendAction, context);
-        return { address, taskCreated, chatCreated, input: accepted };
+        return {
+          address,
+          taskCreated,
+          chatCreated,
+          ...selected,
+          input: accepted,
+        };
       } catch (error) {
         // Typed send refusals precede acceptance. An unconfirmed provider or
         // transport failure may have accepted the input: retain partial state.
@@ -272,7 +586,7 @@ async function create(
         throw error;
       }
     }
-    return { address, taskCreated, chatCreated };
+    return { address, taskCreated, chatCreated, ...selected };
   } catch (error) {
     if (allocatedEntry && !ambiguousInput) {
       // The available removal API only edits the registry, not chat storage.

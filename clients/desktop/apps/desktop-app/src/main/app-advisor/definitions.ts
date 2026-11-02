@@ -37,11 +37,15 @@ import {
 } from '@canopy/agent-actions/families/browser/command';
 import { editorSetupActionSchema } from '@canopy/agent-actions/families/editor-setup/actions';
 import {
+  appAdvisorPipelineRunActionSchema,
+  type AppAdvisorPipelineRunAction,
   installedItemActionSchema,
   installedItemDispatchJsonSchema,
   INSTALLED_ITEM_ACTION_TYPES,
   type InstalledItemAction,
   experimentActionSchema,
+  PIPELINES_ACTION_TYPES,
+  pipelinesDispatchJsonSchema,
   experimentDispatchJsonSchema,
   type ExperimentAction,
   EXPERIMENT_ACTION_TYPES,
@@ -49,6 +53,10 @@ import {
   settingsDispatchJsonSchema,
   type SettingsAction,
   SETTINGS_ACTION_TYPES,
+  TRANSCRIPT_READ_ACTION_TYPES,
+  transcriptReadActionSchema,
+  transcriptReadDispatchJsonSchema,
+  type TranscriptReadAction,
 } from '@canopy/agent-actions';
 import { isAbsolute } from 'node:path';
 import { SIDEBAR_ITEM_GROUP_COLORS } from '@canopy/protocol/sidebar';
@@ -157,7 +165,7 @@ export const GET_CURRENT_UI_STATE_DESCRIPTION = `Read the current sanitized ${ap
 
 export const DISPATCH_ACTION_DESCRIPTION = `Dispatch a typed ${appName} UI action. Use expectedUiRevision when acting on a state snapshot so stale actions can be rejected.`;
 
-export const SEARCH_ACTIONS_DESCRIPTION = `Search the typed ${appName} app actions, including read-only explicit-target project discovery and visible chat history reads that App Advisor can dispatch. Use this before dispatch_action when you are unsure which action type or payload fields are supported.`;
+export const SEARCH_ACTIONS_DESCRIPTION = `Search the typed ${appName} app actions, including read-only explicit-target project discovery and visible chat history reads that Orchestrator can dispatch. Use this before dispatch_action when you are unsure which action type or payload fields are supported.`;
 
 export const GET_PIPELINE_DEBUG_CONTEXT_DESCRIPTION = `Build a redacted debugging prompt for a failed ${appName} pipeline execution, including failure metadata, reports, and bounded log tails.`;
 
@@ -165,13 +173,13 @@ export const APP_ADVISOR_GET_SCRIPT_OUTPUT_DESCRIPTION = `Read output from a ${a
 
 export const APP_ADVISOR_READ_PIPELINE_YAML_DESCRIPTION = `Read the raw YAML definition for a ${appName} pipeline. Optional projectId and worktreeId override the current ${appName} UI selection; when omitted, the currently selected worktree from the sanitized UI snapshot is used. Supports full reads, line number ranges, and grep-like filtering options.`;
 
-export const APP_ADVISOR_SHOW_FILES_DESCRIPTION = `Open one or more files beside the App Advisor chat or in an explicitly targeted project. Always use this tool when the user asks to see a file or section of a file. Omit workspace to open in App Advisor's own Work Entry UX; provide workspace.projectId and workspace.worktreeId together to open in that project's main-window panel grid. Present requested deliverables and files the user should review; never automatically present internal workflow state, scheduling JSON, logs, caches, checkpoints, or temporary bookkeeping. Explicit requests to view internal files are supported. Automation-origin requests are deferred without opening panels; other agent requests during a browser handoff open in the background. Report the actual opened, activated, and deferred outcomes. Supports up to 10 files in requested tab order with the first valid file active for foreground requests, optional annotations (whose optional comments start threads), raw-file line scrolling, and rich/raw view selection. HTML pages open rendered in the in-app browser; pass view: "raw", a line, or annotations to show the page source instead.`;
+export const APP_ADVISOR_SHOW_FILES_DESCRIPTION = `Open one or more files beside the Orchestrator chat or in an explicitly targeted project. Always use this tool when the user asks to see a file or section of a file. Omit workspace to open in Orchestrator's own Work Entry UX; provide workspace.projectId and workspace.worktreeId together to open in that project's main-window panel grid. Present requested deliverables and files the user should review; never automatically present internal workflow state, scheduling JSON, logs, caches, checkpoints, or temporary bookkeeping. Explicit requests to view internal files are supported. Automation-origin requests are deferred without opening panels; other agent requests during a browser handoff open in the background. Report the actual opened, activated, and deferred outcomes. Supports up to 10 files in requested tab order with the first valid file active for foreground requests, optional annotations (whose optional comments start threads), raw-file line scrolling, and rich/raw view selection. HTML pages open rendered in the in-app browser; pass view: "raw", a line, or annotations to show the page source instead.`;
 
 export const APP_ADVISOR_GET_FILE_COMMENTS_DESCRIPTION =
-  "Read file annotation comment threads from App Advisor's own Work Entry or an explicitly targeted project, and — for an explicitly targeted project's worktree — its tracked-plan comment threads. Omit workspace for App Advisor's files; provide workspace.projectId and workspace.worktreeId for a target project. Provide threadId for full submitted history, or omit it to summarize open threads. Staged drafts are redacted.";
+  "Read file annotation comment threads from Orchestrator's own Work Entry or an explicitly targeted project, and — for an explicitly targeted project's worktree — its tracked-plan comment threads. Omit workspace for Orchestrator's files; provide workspace.projectId and workspace.worktreeId for a target project. Provide threadId for full submitted history, or omit it to summarize open threads. Staged drafts are redacted.";
 
 export const APP_ADVISOR_RESPOND_TO_FILE_COMMENT_DESCRIPTION =
-  "Reply to and optionally resolve a file annotation comment thread in App Advisor's own Work Entry or an explicitly targeted project, or — for an explicitly targeted project's worktree — a tracked-plan comment thread. Keep the workspace target identical to the ShowFiles/GetFileComments call that found the thread. Set resolve only after the comment is addressed.";
+  "Reply to and optionally resolve a file annotation comment thread in Orchestrator's own Work Entry or an explicitly targeted project, or — for an explicitly targeted project's worktree — a tracked-plan comment thread. Keep the workspace target identical to the ShowFiles/GetFileComments call that found the thread. Set resolve only after the comment is addressed.";
 
 const SAFE_WORKSPACE_ID_PATTERN = '^[a-z0-9][a-z0-9-]*$';
 const safeWorkspaceIdSchema = z
@@ -182,7 +190,7 @@ const safeWorkspaceIdSchema = z
   );
 const explicitWorkspaceProjectIdSchema = safeWorkspaceIdSchema.refine(
   (projectId) => projectId !== APP_ADVISOR_PROJECT_ID,
-  'The App Advisor project id cannot be used as an explicit project target',
+  'The Orchestrator project id cannot be used as an explicit project target',
 );
 
 const appAdvisorFileWorkspaceSchema = z.object({
@@ -229,7 +237,7 @@ export const appAdvisorShowFilesJsonSchema: JsonValue = {
     workspace: {
       type: 'object',
       description:
-        "Explicit target project. Omit to open in App Advisor's own Work Entry UX.",
+        "Explicit target project. Omit to open in Orchestrator's own Work Entry UX.",
       properties: {
         projectId: {
           type: 'string',
@@ -256,7 +264,7 @@ function withOptionalFileWorkspace(schema: JsonValue): JsonValue {
       workspace: {
         type: 'object',
         description:
-          "Explicit target project. Omit for App Advisor's own Work Entry.",
+          "Explicit target project. Omit for Orchestrator's own Work Entry.",
         properties: {
           projectId: {
             type: 'string',
@@ -281,10 +289,10 @@ export const appAdvisorRespondToFileCommentJsonSchema =
   withOptionalFileWorkspace(respondToFileCommentJsonSchema);
 
 export const SEARCH_WATCHERS_DESCRIPTION =
-  "Search the App Advisor watcher catalog and optionally list this chat's own active watchers with authorized canonical target IDs at both detail levels. Catalog query/limit (1–100) are separate from instance activeQuery (up to 500 characters), activePageSize (1–200, default 50), activeCursor, and targetProjectId/targetBotId/targetTaskId/targetChatId filters. Do not combine project and bot filters. Results retain catalog/activeWatchers and add activeReturned, activeTotalMatches, and optional activeNextCursor. Use this before setup_watchers to discover supported trigger types, target fields, and watcher-entry fields. Completion watchers observe future transitions only: by default an idle chat is rejected, but armForNextCompletion:true beside target arms its next completed turn. New-chat-started watchers observe future newly tracked chats in canonical project/bot scopes, optionally restricted to a task. Hook watchers observe future automatic worktree hook triggers, including paused or unconfigured hooks. Automation-run watchers observe a scheduled activity: failed/skipped runs notify immediately, successful runs notify when a dispatched chat turn ends or a dispatched pipeline completes. The destination App Advisor chat is captured server-side; never supply destination/session/chat ids to setup_watchers.";
+  "Search the Orchestrator watcher catalog and optionally list this chat's own active watchers with authorized canonical target IDs at both detail levels. Catalog query/limit (1–100) are separate from instance activeQuery (up to 500 characters), activePageSize (1–200, default 50), activeCursor, and targetProjectId/targetBotId/targetTaskId/targetChatId filters. Do not combine project and bot filters. Results retain catalog/activeWatchers and add activeReturned, activeTotalMatches, and optional activeNextCursor. Use this before setup_watchers to discover supported trigger types, target fields, and watcher-entry fields. Completion watchers observe future transitions only: by default an idle chat is rejected, but armForNextCompletion:true beside target arms its next completed turn. New-chat-started watchers observe future newly tracked chats in canonical project/bot scopes, optionally restricted to a task. Hook watchers observe future automatic worktree hook triggers, including paused or unconfigured hooks. Automation-run watchers observe a scheduled activity: failed/skipped runs notify immediately, successful runs notify when a dispatched chat turn ends or a dispatched pipeline completes. The destination Orchestrator chat is captured server-side; never supply destination/session/chat ids to setup_watchers.";
 
 export const SETUP_WATCHERS_DESCRIPTION =
-  'Create one or more App Advisor watchers for future chat completions, new-chat-started events, pipeline pause/completion events, automatic worktree hook triggers, or automation run outcomes. Use { watchers: [...] }. For project_task_chat_completion supply target {projectId,taskId,chatId}; for bot_task_chat_completion supply {botId,taskId,chatId}. For project_new_chat_started supply {projectId,taskId?}; for bot_new_chat_started supply {botId,taskId?}. Canonical chat targets must not include kind or destination fields. For worktree_pipeline_completion use {kind: "worktree_pipeline",projectId,worktreeId,executionId?,pipelineId?,terminalStatuses?}; for worktree_hook_triggered use {kind: "worktree_hook",projectId,worktreeId,triggerName,hookKey?,scope?,repoId?}; for automation_run use {kind: "automation",automationId}. Pipeline pause notifications leave the watcher active; matching terminal notifications consume it. Hook watchers fire for automatic triggers only and include hook variables in hidden context. Failed/skipped automation runs notify immediately; successful runs notify after the dispatched chat turn or pipeline completes. Copy canonical IDs from discovery results. Never provide targetKind, display metadata, destinationChatId, chatId outside target, sessionKey, requestId, or transport identifiers. Idle completion targets require armForNextCompletion:true beside target. Terminal executions and unknown automation IDs are rejected. Use SearchWatchers first.';
+  'Create one or more Orchestrator watchers for future chat completions, new-chat-started events, pipeline pause/completion events, automatic worktree hook triggers, or automation run outcomes. Use { watchers: [...] }. For project_task_chat_completion supply target {projectId,taskId,chatId}; for bot_task_chat_completion supply {botId,taskId,chatId}. For project_new_chat_started supply {projectId,taskId?}; for bot_new_chat_started supply {botId,taskId?}. Canonical chat targets must not include kind or destination fields. For worktree_pipeline_completion use {kind: "worktree_pipeline",projectId,worktreeId,executionId?,pipelineId?,terminalStatuses?}; for worktree_hook_triggered use {kind: "worktree_hook",projectId,worktreeId,triggerName,hookKey?,scope?,repoId?}; for automation_run use {kind: "automation",automationId}. Pipeline pause notifications leave the watcher active; matching terminal notifications consume it. Hook watchers fire for automatic triggers only and include hook variables in hidden context. Failed/skipped automation runs notify immediately; successful runs notify after the dispatched chat turn or pipeline completes. Copy canonical IDs from discovery results. Never provide targetKind, display metadata, destinationChatId, chatId outside target, sessionKey, requestId, or transport identifiers. Idle completion targets require armForNextCompletion:true beside target. Terminal executions and unknown automation IDs are rejected. Use SearchWatchers first.';
 
 export const WATCH_GITHUB_ITEMS_DESCRIPTION =
   'Create one durable watcher for 1–20 GitHub items of one kind, either GitHub Actions workflow runs or pull requests. Workflow runs: for every completed job use {"notifyOn":{"jobs":{"conclusions":"any"}}}; for whole-run changes use notifyOn.run.statuses and/or notifyOn.run.conclusions. The watcher captures the current run and job state as its baseline, ends this turn, and later notifies the subscribing chat only for selected future changes. A job URL only identifies its parent run and does not select job notifications. Pull requests: pass {"kind":"pull_request","target":"<PR URL or owner/repository#number>"}. The watcher always wakes when a PR merges, closes without merging, or is removed from the merge queue (with GitHub\'s reason when verifiable), and keeps watching after a removal. To also wake on queue entry or phase moves, add notifyOn.queue, for example {"notifyOn":{"queue":{"entered":true}}} or {"notifyOn":{"queue":{"phases":["unmergeable"]}}}; position-only changes never wake. notifyOn.run and notifyOn.jobs are for workflow runs only. A pull request that is already merged or closed is reported per item in the result and is not watched. Do not mix runs and pull requests in one call. Use this instead of gh run watch, gh pr view, repeated status checks, shell polling loops, or keeping a turn open. The destination is captured server-side; never supply destination, runtime, display, retry, or delivery state.';
@@ -314,9 +322,13 @@ export const APP_ADVISOR_UPDATE_LEDGER_ENTRY_DESCRIPTION =
 
 export const getCurrentUiStateSchema = z.object({});
 
-const appAdvisorActionTypeSchema = z.enum(
-  APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type),
-);
+export type AppAdvisorDispatchAction = AppAdvisorAction | TranscriptReadAction;
+
+const appAdvisorActionTypes = [
+  ...APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type),
+  ...TRANSCRIPT_READ_ACTION_TYPES,
+];
+const appAdvisorActionTypeSchema = z.enum(appAdvisorActionTypes);
 const visibleAppAdvisorActionTypes = APP_ADVISOR_ACTION_CATALOG.filter(
   (entry) => !entry.hidden,
 ).map((entry) => entry.type);
@@ -334,6 +346,7 @@ export const searchActionsSchema = z.object({
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
+      z.enum(PIPELINES_ACTION_TYPES),
     ])
     .optional(),
   limit: z.number().int().min(1).max(50).optional(),
@@ -345,6 +358,7 @@ export const searchActionsToolShape = {
   actionType: z
     .union([
       z.enum(visibleAppAdvisorActionTypes),
+      z.enum(TRANSCRIPT_READ_ACTION_TYPES),
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
@@ -2278,19 +2292,6 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
     includeYaml: z.boolean().optional(),
   }),
   z.object({
-    type: z.literal('pipeline.run'),
-    pipelineId: z.string(),
-    projectId: z.string(),
-    worktreeId: z.string(),
-    inputs: z.record(z.string(), z.string()).optional(),
-    runMode: pipelineRunModeSchema.optional(),
-    planPath: z.string().optional(),
-    taskPath: z.string().optional(),
-    planId: z.string().optional(),
-    repoId: z.string().optional(),
-    watchers: z.array(inlineWatcherSetupSchema).max(10).optional(),
-  }),
-  z.object({
     type: z.literal('pipeline.open_run'),
     executionId: z.string(),
     jobId: z.string().optional(),
@@ -2723,12 +2724,18 @@ export const appAdvisorActionSchema = z
   }) satisfies z.ZodType<AppAdvisorAction>;
 
 const appAdvisorDispatchPayloadSchema: z.ZodType<
-  AppAdvisorAction | InstalledItemAction | ExperimentAction | SettingsAction
+  | AppAdvisorDispatchAction
+  | InstalledItemAction
+  | ExperimentAction
+  | SettingsAction
+  | AppAdvisorPipelineRunAction
 > = z.union([
   appAdvisorActionSchema,
+  transcriptReadActionSchema,
   installedItemActionSchema,
   experimentActionSchema,
   settingsActionSchema,
+  appAdvisorPipelineRunActionSchema,
 ]);
 
 export const dispatchActionSchema = z.object({
@@ -2799,12 +2806,14 @@ export const searchActionsJsonSchema: JsonValue = {
       type: 'string',
       enum: [
         ...visibleAppAdvisorActionTypes,
+        ...TRANSCRIPT_READ_ACTION_TYPES,
         ...INSTALLED_ITEM_ACTION_TYPES,
         ...EXPERIMENT_ACTION_TYPES,
         ...SETTINGS_ACTION_TYPES,
+        ...PIPELINES_ACTION_TYPES,
       ],
       description:
-        'Optional exact AppAdvisorAction type to inspect, such as pipeline.debug_run.',
+        'Optional exact action type to inspect, such as pipeline.debug_run.',
     },
     limit: {
       type: 'integer',
@@ -2815,6 +2824,18 @@ export const searchActionsJsonSchema: JsonValue = {
   },
   additionalProperties: false,
 };
+
+// The installed-item target applies to its own types only: transcript reads
+// and file-tree actions carry other target shapes.
+const {
+  target: installedItemTargetJsonSchema,
+  ...installedItemFieldJsonSchemas
+} = installedItemDispatchJsonSchema.properties;
+// Other App Advisor actions declare their own `scope` (memory, sidebar
+// groups), so the pipelines family's global-only `scope` applies to
+// pipeline.run alone instead of every action.
+const { scope: pipelineRunScopeJsonSchema, ...pipelinesDispatchProperties } =
+  pipelinesDispatchJsonSchema.properties;
 
 export const dispatchActionJsonSchema: JsonValue = {
   type: 'object',
@@ -2828,7 +2849,7 @@ export const dispatchActionJsonSchema: JsonValue = {
     action: {
       type: 'object',
       description:
-        'One AppAdvisorAction payload. Use search_actions to discover the exact type and required fields.',
+        'One action payload. Use search_actions to discover the exact type and required fields.',
       required: ['type'],
       properties: {
         download: {
@@ -2836,20 +2857,42 @@ export const dispatchActionJsonSchema: JsonValue = {
           description:
             'For browser.wait_for, wait for this download id, or the next download when omitted. Cannot be combined with another wait condition, state, or frame.',
         },
-        ...installedItemDispatchJsonSchema.properties,
+        ...installedItemFieldJsonSchemas,
         ...experimentDispatchJsonSchema.properties,
         ...settingsDispatchJsonSchema.properties,
+        ...pipelinesDispatchProperties,
         ...scriptPreferencesDispatchJsonSchema.properties,
         type: {
           type: 'string',
           description: providerActionTypeDescription,
         },
       },
+      // Shared fields stay inside their discriminator conditionals so they do
+      // not constrain unrelated Advisor payloads that also use target/limit.
       allOf: [
+        ...(transcriptReadDispatchJsonSchema.allOf ?? []),
+        {
+          if: {
+            properties: { type: { enum: [...INSTALLED_ITEM_ACTION_TYPES] } },
+            required: ['type'],
+          },
+          then: { properties: { target: installedItemTargetJsonSchema } },
+        },
         ...browserWaitForJsonSchemaRules(),
         ...browserFrameJsonSchemaRules(),
         ...browserPointerViewportJsonSchemaRules('advisor'),
         ...browserTransferJsonSchemaRules(),
+        ...(pipelineRunScopeJsonSchema === undefined
+          ? []
+          : [
+              {
+                if: {
+                  properties: { type: { const: 'pipeline.run' } },
+                  required: ['type'],
+                },
+                then: { properties: { scope: pipelineRunScopeJsonSchema } },
+              },
+            ]),
       ],
       additionalProperties: true,
     },
@@ -3383,7 +3426,7 @@ const legacySetupWatchersJsonSchema: JsonValue = {
           allowDuplicate: {
             type: 'boolean',
             description:
-              'Usually omit. When false or omitted, identical active watchers for this App Advisor chat are deduped.',
+              'Usually omit. When false or omitted, identical active watchers for this Orchestrator chat are deduped.',
           },
           armForNextCompletion: {
             type: 'boolean',

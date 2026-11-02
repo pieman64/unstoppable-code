@@ -41,7 +41,7 @@ test('keeps parent Share when navigating to an installed plugin member skill', a
     await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('gamma-tool');
     await window
-      .getByTestId('plugins-entry-mkt:demo/market/gamma-tool')
+      .getByTestId('customize-row-mkt:demo/market/gamma-tool')
       .click();
     await expect(window.getByTestId('plugin-detail-share')).toBeVisible();
     await window.getByRole('button', { name: 'Review', exact: true }).click();
@@ -133,7 +133,8 @@ test('shares a plugin from its card and Suggested detail', async () => {
       );
       for (const edge of [
         detail,
-        detail.locator(':scope > p').first(),
+        // The description sits in a wrapper with "Also available from" (CAN-3653).
+        detail.locator(':scope > div > p').first(),
         detail
           .getByRole('heading', { name: 'Included', exact: true })
           .locator('..'),
@@ -224,9 +225,16 @@ test('shares a plugin from its card and Suggested detail', async () => {
     await expect(modal).toContainText(
       'Public source: codex-builtin:openai-curated',
     );
-    // One audience, so no selector: the dialog still says who can see the
-    // share, and the note says only what a plugin share is (CAN-3009).
-    await expect(modal.getByTestId('share-plugin-scope')).toHaveCount(0);
+    // Public is the only usable audience: every scope still shows, Team and
+    // Organization disabled and Public preselected. The dialog says who can
+    // see the share, and the note says only what a plugin share is (CAN-3009).
+    await expect(modal.getByTestId('share-plugin-scope-team')).toBeDisabled();
+    await expect(
+      modal.getByTestId('share-plugin-scope-organization'),
+    ).toBeDisabled();
+    await expect(
+      modal.getByTestId('share-plugin-scope-public'),
+    ).toHaveAttribute('aria-checked', 'true');
     await expect(
       modal.getByTestId('share-plugin-scope-description'),
     ).toHaveText(
@@ -282,7 +290,7 @@ test("shares the user's own automation from its Marketplace card and detail", as
       `customize-row-menu-${OWN_AUTOMATION_ENTRY_ID}-share`,
     );
     await expect(cardShare).toBeVisible({ timeout: 15_000 });
-    await expect(cardShare).toHaveAccessibleName('Share');
+    await expect(cardShare).toHaveAccessibleName('Share…');
 
     // The card opens the automation share dialog directly: no sign-in gate.
     await cardShare.click();
@@ -405,9 +413,9 @@ test('blocks plugin sharing after analysis failure and permits a successful retr
   }
 });
 
-// CAN-3704: unsupported plugins keep Share in both entry points. Keyboard
-// focus exposes the explanation and clicking never opens authentication.
-test('explains blocked Marketplace sharing on a card and detail at 900px', async () => {
+// CAN-3704: unsupported installed plugins explain blocked sharing from
+// the row menu and detail without opening authentication.
+test('explains blocked Marketplace sharing on an Installed row and detail at 900px', async () => {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can3704-blocked-'));
   seedPluginsCache({ userDataDir });
   const { electronApp } = await launchCanopy({
@@ -423,9 +431,14 @@ test('explains blocked Marketplace sharing on a card and detail at 900px', async
     await expect.poll(() => window.evaluate(() => innerWidth)).toBe(900);
     await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('delta-tool');
-    const card = window.getByTestId('plugins-entry-mkt:demo/market/delta-tool');
+    const row = window.getByTestId('customize-row-mkt:demo/market/delta-tool');
+    const menu = window.getByTestId(
+      'customize-row-menu-mkt:demo/market/delta-tool',
+    );
+    await expect(row).toBeVisible();
+    await menu.click();
     const share = window.getByTestId(
-      'plugins-entry-share-mkt:demo/market/delta-tool',
+      'customize-row-menu-mkt:demo/market/delta-tool-share',
     );
     await expect(share).toBeVisible();
     await expect(share).toHaveAttribute('aria-disabled', 'true');
@@ -433,25 +446,25 @@ test('explains blocked Marketplace sharing on a card and detail at 900px', async
       'aria-description',
       'This plugin has no public source to share.',
     );
-    await share.focus();
-    await window.keyboard.press('Shift+Tab');
-    await window.keyboard.press('Tab');
-    await expect(share).toBeFocused();
-    await expect(window.getByRole('tooltip')).toContainText(
-      'This plugin has no public source to share.',
+    // A reasoned action is natively disabled (CAN-4844), so the reason
+    // reaches assistive tech through its name and description, not focus.
+    await expect(share).toHaveJSProperty('disabled', true);
+    await expect(share).toHaveAccessibleName(
+      'Share…: This plugin has no public source to share.',
     );
-    const [cardBox, shareBox] = await Promise.all([
-      card.locator('..').boundingBox(),
-      share.boundingBox(),
+    const [rowBox, menuBox] = await Promise.all([
+      row.locator('..').boundingBox(),
+      menu.boundingBox(),
     ]);
-    expect(shareBox.x).toBeGreaterThanOrEqual(cardBox.x);
-    expect(shareBox.x + shareBox.width).toBeLessThanOrEqual(
-      cardBox.x + cardBox.width,
+    expect(menuBox.x).toBeGreaterThanOrEqual(rowBox.x);
+    expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(
+      rowBox.x + rowBox.width,
     );
     await share.click({ force: true });
     await expect(window.getByTestId('cloud-sync-modal')).toHaveCount(0);
     await expect(window.getByTestId('share-plugin-modal')).toHaveCount(0);
-    await card.click();
+    await window.keyboard.press('Escape');
+    await row.click();
     const detailShare = window.getByTestId('plugin-detail-share');
     await expect(detailShare).toHaveText('Share');
     await expect(detailShare).toHaveAttribute('aria-disabled', 'true');

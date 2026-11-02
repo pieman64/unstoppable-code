@@ -129,7 +129,7 @@ function ChatTabRenameDialog({
   if (tab === null) return null;
   return (
     <RenameDialog
-      title={`Rename ${CHAT_UNIT_LABEL}`}
+      title={`Rename ${CHAT_UNIT_LABEL.toLowerCase()}`}
       label="Name"
       initialValue={initialValue}
       placeholder={generatedChatTabLabel(tab)}

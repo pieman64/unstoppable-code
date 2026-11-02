@@ -2,11 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { isOrgTeamsLapsed } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import type { LedgerContainer } from '@canopy/protocol/canopy-core';
+import { LEDGER_GLOBAL_CAPABILITY } from '@canopy/protocol/canopy-server';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   LedgerWriterSessionSchema,
   type LedgerWriterSession,
 } from '@canopy/protocol/ledger-sync';
+import {
+  assertCanopyCloudCapability,
+  resolveCanopyCloudCredentialContext,
+} from '../canopy-cloud/client';
 import { getFeatureFlagService } from '../feature-flags';
 import { isE2eBuild } from '../lib/e2e-gate';
 import {
@@ -134,14 +139,41 @@ async function readLedgerSyncAccount(): Promise<LedgerSyncAccount | null> {
 export async function readLedgerWorkspaceOwner(
   container: LedgerContainer,
 ): Promise<LedgerWorkspaceOwner> {
-  // App Advisor entries belong to no workspace.
-  if (container.kind === 'advisor_entry') return { kind: 'personal' };
+  // App Advisor entries belong to no workspace; a global (workflow) Ledger's
+  // owner is its container's, never a workspace's.
+  if (container.kind === 'advisor_entry' || container.kind === 'global') {
+    return { kind: 'personal' };
+  }
   try {
     return toLedgerWorkspaceOwner(
       await readWorkspaceOwnership(container.workspaceId),
     );
   } catch {
     return { kind: 'unknown' };
+  }
+}
+
+/**
+ * Whether the mirror advertises `ledger-global-v1`: what the account stored,
+ * or the mirror's own answer, which `live` always asks for. Fails closed.
+ */
+async function ledgerMirrorSupportsGlobalScopes(options: {
+  readonly live: boolean;
+}): Promise<boolean> {
+  try {
+    if (options.live) {
+      // Without the stored list, the check asks the mirror itself.
+      const credentials = await resolveCanopyCloudCredentialContext();
+      await assertCanopyCloudCapability(LEDGER_GLOBAL_CAPABILITY, {
+        ...credentials,
+        capabilities: [],
+      });
+    } else {
+      await assertCanopyCloudCapability(LEDGER_GLOBAL_CAPABILITY);
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -254,8 +286,9 @@ export function getLedgerSyncService(): LedgerSyncService {
     readAccount: readLedgerSyncAccount,
     readSession: readLedgerWriterSession,
     readWorkspaceOwner: readLedgerWorkspaceOwner,
-    onScopeSyncChanged: (container): void => {
-      notifyLedgerSyncChanged({ kind: 'scope', container });
+    supportsGlobalScopes: ledgerMirrorSupportsGlobalScopes,
+    onScopeSyncChanged: (container, ledgerId): void => {
+      notifyLedgerSyncChanged({ kind: 'scope', container, ledgerId });
     },
     onProhibited: (): void => {
       reprobeEnforcedSettings();

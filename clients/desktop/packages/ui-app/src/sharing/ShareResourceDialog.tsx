@@ -21,13 +21,20 @@ import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { PersonalOrganizationUpgradePort } from '@canopy/app-state/personal-organization-upgrade';
 import { orgsWithoutActivePlanClause } from '@canopy/ui-shared/lib/org-lapse-sentence';
 import {
+  Button,
   Notice,
   NoticeButton,
   OrgTeamPicker,
   ShareAudienceSelector,
+  Tooltip,
   type ShareTarget,
+  type TooltipLink,
 } from '@canopy/ui-shared/components';
-import { CapabilityPackageDependencies } from './capability-package/CapabilityPackageDependencies';
+import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  CapabilityPackageDependencies,
+  type CapabilityPackagePipelineAdd,
+} from './capability-package/CapabilityPackageDependencies';
 import {
   buildCapabilityPackageRepairPrompt,
   buildCapabilityPackageRepairRequest,
@@ -49,7 +56,7 @@ import {
   type ShareDialogLink,
   type ShareNotify,
   sharePartialMessage,
-  shareSuccessToast,
+  shareSuccessNotice,
 } from './ShareDialogFrame';
 import {
   existingShareOwnerAudience,
@@ -294,8 +301,8 @@ export function existingShareLoadFailure(
  * shared. `shareResourceCopy` derives the standard set from the noun; hosts
  * override only where their resource genuinely differs. Control labels
  * (Share, Update, Done, Copy link) stay fixed so the dialog reads the
- * same everywhere, and so does the failure prefix. Success is a toast whose
- * copy comes from {@link shareSuccessToast}.
+ * same everywhere, and so does the failure prefix. Success is the dialog's
+ * own notice, whose copy comes from {@link shareSuccessNotice}.
  */
 export interface ShareResourceCopy {
   readonly accountLoading: string;
@@ -327,6 +334,8 @@ export interface ShareResourceCopy {
   readonly organizationHint: string;
   /** Under the selector when an organization member belongs to no team. */
   readonly teamHint: string;
+  /** Why Team and Organization are disabled in the Personal context. */
+  readonly personalContextHint: string;
   readonly organizationSetupAction: string;
   readonly organizationSetupFailed: string;
   readonly removePublicLink: string;
@@ -384,6 +393,8 @@ export function shareResourceCopy(
     organizationHint:
       'Team and organization sharing start with an organization.',
     teamHint: 'Team sharing starts with a team in your organization.',
+    personalContextHint:
+      'Switch to an organization to share with a team or organization.',
     organizationSetupAction: 'Set up an organization',
     organizationSetupFailed: 'Could not open that page. Try again.',
     removePublicLink: 'Remove public link',
@@ -475,6 +486,8 @@ export interface ShareResourceCapabilityPackage {
    * `inline`.
    */
   readonly placement?: 'inline' | 'host';
+  /** Offers an "Add pipeline" control in the review's Pipelines group. */
+  readonly pipelineAdd?: CapabilityPackagePipelineAdd;
 }
 
 /** What a render-function `extraOptions` receives. */
@@ -596,8 +609,10 @@ export interface ShareResourceDialogProps {
   readonly onSetUpOrganization?: () => Promise<boolean>;
   readonly copyText: (text: string) => Promise<boolean>;
   /**
-   * Posts the success toast after a share closes the dialog. Share toasts are
-   * feedback to a click: hosts show them even with in-app notifications off.
+   * Posts a toast for an outcome that closes the dialog: a removed public
+   * link or an unconfirmed delivery. A landed share never toasts; the dialog
+   * stays open on its success notice. Share toasts are feedback to a click:
+   * hosts show them even with in-app notifications off.
    */
   readonly notify: ShareNotify;
   /** Maps a thrown value to a user-facing sentence. */
@@ -609,15 +624,17 @@ export interface ShareResourceDialogProps {
   readonly onConnect?: () => void;
   /**
    * Informational: fires the moment a share succeeds, before `onCompleted`
-   * runs and the dialog closes. Hosts must not unmount it from here.
+   * runs. Hosts must not unmount the dialog from here.
    */
   readonly onShareSucceeded?: (result: {
     scope: ShareResourceScope;
     outcome: ShareResourceOutcome;
   }) => void;
   /**
-   * Runs after a successful share, before the dialog closes and toasts. If it
-   * throws, the dialog stays open with the error notice.
+   * Runs after a successful share, before the dialog shows its success
+   * notice. If it throws, the dialog shows the error notice instead. Either
+   * way the dialog stays open until the author dismisses it through
+   * `onClose`, so hosts must not unmount it from here.
    */
   readonly onCompleted?: () => void | Promise<void>;
   /** Fires whenever the audience or its target changes. */
@@ -636,6 +653,9 @@ type DialogState =
       outcome: ShareResourceOutcome;
       retryError?: string;
     }
+  // The share landed: the dialog stays open on the success notice, with the
+  // link and Copy link, until Done.
+  | { status: 'success'; completion: ShareCompletion }
   | {
       status: 'error';
       message: string;
@@ -649,8 +669,11 @@ interface ShareCompletion {
   readonly completedScope: ShareResourceScope | null;
   readonly outcome: ShareResourceOutcome;
   readonly wasUpdate: boolean;
-  /** Partial-share dismissal completes silently; ordinary shares still toast. */
-  readonly notifyOnSuccess: boolean;
+  /**
+   * Stay open on the success notice. A dismissal that completes the share
+   * (Done on a partial share or a failed completion) closes instead.
+   */
+  readonly showSuccess: boolean;
 }
 
 type PreflightState =
@@ -670,9 +693,6 @@ function defaultErrorMessage(error: unknown): string {
  * clear the organization the author just picked.
  */
 const NO_CONTEXT_ORGANIZATIONS: readonly ShareTargetSummary[] = [];
-
-const SECONDARY_BUTTON_CLASS_NAME =
-  'rounded-lg ring-1 ring-inset ring-line-base bg-base px-3 py-1.5 text-s font-medium fg-primary hover:bg-secondary transition-colors focus-ring';
 
 export function ShareResourceDialog({
   resourceNoun,
@@ -774,6 +794,9 @@ export function ShareResourceDialog({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [confirmingRemovePublic, setConfirmingRemovePublic] = useState(false);
   const [removingPublic, setRemovingPublic] = useState(false);
+  const [removePublicError, setRemovePublicError] = useState<string | null>(
+    null,
+  );
   const [organizationSetupFailed, setOrganizationSetupFailed] = useState(false);
   const [creatingTeam, setCreatingTeam] = useState(false);
   const [setupPersonalId, setSetupPersonalId] = useState<string | null>(null);
@@ -833,20 +856,26 @@ export function ShareResourceDialog({
 
   useEffect(() => {
     let cancelled = false;
+    // Reads can overlap (an ambient re-probe right after the dialog's own
+    // refresh); only the latest one issued applies.
+    let latest = 0;
     const reload = (): void => {
+      const read = ++latest;
+      const superseded = (): boolean => cancelled || read !== latest;
       setAccountLoading(true);
       loadAccount()
         .then((next) => {
-          if (cancelled) return;
+          if (superseded()) return;
           setAccount(next);
           lastAccountRefreshRef.current = Date.now();
           setRefusedOrganizationIds([]);
         })
-        .catch(() => {
-          if (!cancelled) setAccount(null);
-        })
+        // A failed read leaves the account as it was: a first read stays
+        // unavailable, and a failed re-read keeps the form the author is
+        // using instead of collapsing it. A sign-out resolves, so it clears.
+        .catch(() => undefined)
         .finally(() => {
-          if (!cancelled) setAccountLoading(false);
+          if (!superseded()) setAccountLoading(false);
         });
     };
     reload();
@@ -925,21 +954,26 @@ export function ShareResourceDialog({
   ]);
   const preflightReady = preflightState.status === 'ready';
 
-  const offeredScopes =
-    context?.kind === 'personal' && promotedTarget === null
-      ? scopes.filter(
-          (candidate) =>
-            (candidate !== 'team' && candidate !== 'organization') ||
-            existingTargetAudience === candidate ||
-            (candidate === 'organization' && existingPersonalOrganization),
-        )
-      : scopes;
+  // A Personal organization can't share with a team or organization until it
+  // becomes a team. Those scopes stay offered, disabled, so the author still
+  // sees every audience and which one Share will use.
+  const personalScopesLocked =
+    context?.kind === 'personal' && promotedTarget === null;
+  const personalLocks = (candidate: 'team' | 'organization'): boolean =>
+    personalScopesLocked &&
+    existingTargetAudience !== candidate &&
+    !(candidate === 'organization' && existingPersonalOrganization);
+  const offeredScopes = scopes;
   const availability: Partial<Record<ShareAudience, boolean>> = {
     ...audienceAvailability,
     ...(publicOwnerLocked ? { public: false } : {}),
     team:
-      hasTeamsCapability && !hasNoTeam && audienceAvailability?.team !== false,
+      !personalLocks('team') &&
+      hasTeamsCapability &&
+      !hasNoTeam &&
+      audienceAvailability?.team !== false,
     organization:
+      !personalLocks('organization') &&
       (existingPersonalOrganization ||
         (hasOrganizationsCapability && !hasNoOrganization)) &&
       audienceAvailability?.organization !== false,
@@ -968,27 +1002,45 @@ export function ShareResourceDialog({
   // No organization: Team and Organization wait on organization setup, not
   // on an upgrade, so the setup CTA replaces the upgrade hint.
   const needsOrganization =
-    hasNoOrganization && offersScopedAudience && !existingPersonalOrganization;
+    !personalScopesLocked &&
+    hasNoOrganization &&
+    offersScopedAudience &&
+    !existingPersonalOrganization;
   const hasUsableAudience = offeredScopes.some(
     (audience) => audience !== 'private' && availability[audience] !== false,
   );
+  // Nothing to share with until an organization exists: the setup statement
+  // replaces the selector.
+  const needsSetupGate = needsOrganization && !hasUsableAudience;
   // An organization member with no team: Team is disabled for a reason the
   // upgrade and organization hints don't cover, so say why.
   const needsTeam =
+    !personalScopesLocked &&
     !needsOrganization &&
     account?.hasTeam === false &&
     offeredScopes.includes('team') &&
     hasTeamsCapability;
-  const showUpgradeHint =
+  const teamNeedsUpgrade =
+    !personalScopesLocked &&
     !needsOrganization &&
-    ((offeredScopes.includes('team') &&
-      (!hasTeamsCapability || audienceAvailability?.team === false)) ||
-      (offeredScopes.includes('organization') &&
-        !existingPersonalOrganization &&
-        (!hasOrganizationsCapability ||
-          audienceAvailability?.organization === false)));
+    (!hasTeamsCapability || audienceAvailability?.team === false);
+  const organizationNeedsUpgrade =
+    !personalScopesLocked &&
+    !needsOrganization &&
+    !existingPersonalOrganization &&
+    (!hasOrganizationsCapability ||
+      audienceAvailability?.organization === false);
+  // A public share that just landed offers removal at once, like a reopened
+  // one: the host's existing share may still describe the audience the share
+  // replaced. Other finished states keep it hidden until the share settles.
   const canRemovePublicLink =
-    existingShare?.audience === 'public' && revokePublicLink !== undefined;
+    revokePublicLink !== undefined &&
+    (state.status === 'success'
+      ? state.completion.completedScope === 'public' &&
+        state.completion.outcome.shareUrl !== undefined
+      : state.status !== 'partial' &&
+        !(state.status === 'error' && state.completion !== undefined) &&
+        existingShare?.audience === 'public');
 
   const pkg = useCapabilityPackageShare({
     port: capabilityPackage?.port ?? null,
@@ -1193,7 +1245,11 @@ export function ShareResourceDialog({
   );
   const teams = useShareTargetSearch({
     resetKey: accountKey,
-    enabled: scope === 'team' && accountReady && hasTeamsCapability,
+    enabled:
+      scope === 'team' &&
+      availability.team !== false &&
+      accountReady &&
+      hasTeamsCapability,
     load: loadTeams,
     formatError: resolveErrorMessage,
   });
@@ -1201,6 +1257,7 @@ export function ShareResourceDialog({
     resetKey: accountKey,
     enabled:
       scope === 'organization' &&
+      availability.organization !== false &&
       accountReady &&
       hasOrganizationsCapability &&
       !existingPersonalOrganization,
@@ -1519,8 +1576,9 @@ export function ShareResourceDialog({
   notifyRef.current = notify;
 
   /**
-   * A share landed: run the host's completion hook, then close and toast. If
-   * the hook throws, stay open with the error notice.
+   * A share landed: run the host's completion hook, then show the success
+   * notice (or close, for a dismissal). If the hook throws, show the error
+   * notice instead.
    */
   const complete = useCallback(
     async (completion: ShareCompletion): Promise<void> => {
@@ -1541,28 +1599,13 @@ export function ShareResourceDialog({
       } finally {
         setFinishing(false);
       }
-      onClose();
-      if (completion.notifyOnSuccess) {
-        notifyRef.current(
-          shareSuccessToast({
-            noun: resourceNoun,
-            scope: completion.completedScope,
-            ...(targetName !== undefined ? { targetName } : {}),
-            // Capture this before the request starts. `onCompleted` commonly
-            // writes the new remote id into the host, which can re-render this
-            // still-mounted dialog as an existing share before the toast fires.
-            isUpdate: completion.wasUpdate,
-            ...(completion.outcome.message !== undefined
-              ? { message: completion.outcome.message }
-              : {}),
-            ...(completion.outcome.shareUrl !== undefined
-              ? { shareUrl: completion.outcome.shareUrl }
-              : {}),
-          }),
-        );
+      if (completion.showSuccess) {
+        setState({ status: 'success', completion });
+      } else {
+        onClose();
       }
     },
-    [describeError, onClose, onCompleted, resourceNoun, targetName],
+    [describeError, onClose, onCompleted, resourceNoun],
   );
 
   const handleShare = useCallback(async (): Promise<void> => {
@@ -1592,6 +1635,7 @@ export function ShareResourceDialog({
       return;
     }
     setValidationError(null);
+    setRemovePublicError(null);
     setCopied(false);
     pkg.resetProgress();
     const wasUpdate = updateModeRef.current;
@@ -1728,7 +1772,7 @@ export function ShareResourceDialog({
       completedScope: scope,
       outcome,
       wasUpdate,
-      notifyOnSuccess: true,
+      showSuccess: true,
     });
   }, [
     accountReady,
@@ -1776,13 +1820,13 @@ export function ShareResourceDialog({
           return;
         }
         // A retry is specifically completing public-link creation, so its
-        // success copy is "is now public" even though the scoped share now
-        // exists underneath it.
+        // success notice says "is now public" even though the scoped share
+        // now exists underneath it.
         await complete({
           completedScope: 'public',
           outcome,
           wasUpdate: false,
-          notifyOnSuccess: true,
+          showSuccess: true,
         });
       })
       .catch((error: unknown) => {
@@ -1802,28 +1846,32 @@ export function ShareResourceDialog({
 
   const handleRemovePublicLink = useCallback((): void => {
     if (!revokePublicLink) return;
+    setRemovePublicError(null);
     setRemovingPublic(true);
     setCopied(false);
     revokePublicLink()
       .then(() => {
+        // The host clears its public share, so the dialog stays open and
+        // falls back to the unshared state, including right after a share
+        // whose completion has already run.
         setConfirmingRemovePublic(false);
         setRemovingPublic(false);
-        onClose();
+        setState({ status: 'idle' });
         notifyRef.current({
           tone: 'success',
           message: PUBLIC_LINK_REMOVED_TOAST,
         });
       })
       .catch((error: unknown) => {
+        // The link is still there, so the dialog keeps its published state
+        // and the trash icon to try again.
         setConfirmingRemovePublic(false);
         setRemovingPublic(false);
-        setState({
-          status: 'error',
-          message:
-            `${copy.removePublicLinkFailed} ${describeError(error)}`.trim(),
-        });
+        setRemovePublicError(
+          `${copy.removePublicLinkFailed} ${describeError(error)}`.trim(),
+        );
       });
-  }, [copy.removePublicLinkFailed, describeError, onClose, revokePublicLink]);
+  }, [copy.removePublicLinkFailed, describeError, revokePublicLink]);
 
   const handleSetUpOrganization = useCallback((): void => {
     if (canCreateTeam && upgradePersonalId) {
@@ -1852,8 +1900,12 @@ export function ShareResourceDialog({
   // the remote mutation.
   const finishCommitted = useCallback(async (): Promise<void> => {
     if (finishing) return;
+    if (state.status === 'success') {
+      onClose();
+      return;
+    }
     if (state.status === 'error' && state.completion !== undefined) {
-      await complete(state.completion);
+      await complete({ ...state.completion, showSuccess: false });
       return;
     }
     if (state.status === 'partial') {
@@ -1861,10 +1913,10 @@ export function ShareResourceDialog({
         completedScope: scope,
         outcome: state.outcome,
         wasUpdate: updateModeRef.current,
-        notifyOnSuccess: false,
+        showSuccess: false,
       });
     }
-  }, [complete, finishing, scope, state]);
+  }, [complete, finishing, onClose, scope, state]);
 
   const packageGate = pkg.active && !pkg.ready;
   const destinationLapsed = destinationAccess.status === 'lapsed';
@@ -1908,33 +1960,83 @@ export function ShareResourceDialog({
     ...audienceDescriptions,
   };
 
+  const organizationSetupLabel = canCreateTeam
+    ? 'Create a team'
+    : copy.organizationSetupAction;
+  const organizationSetupError = (
+    <p
+      className="mt-2 text-xs fg-destructive"
+      role="alert"
+      data-testid={`${p}-set-up-organization-error`}
+    >
+      {copy.organizationSetupFailed}
+    </p>
+  );
   const organizationSetup = (
     <div className="mt-2 space-y-2" data-testid={`${p}-organization-setup`}>
       {(onSetUpOrganization || canCreateTeam) && (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="compact"
           data-testid={`${p}-set-up-organization`}
           onClick={handleSetUpOrganization}
           disabled={openingOrganizationSetup}
-          className={SECONDARY_BUTTON_CLASS_NAME}
         >
-          {canCreateTeam ? 'Create a team' : copy.organizationSetupAction}
-        </button>
+          {organizationSetupLabel}
+        </Button>
       )}
-      {organizationSetupFailed && (
-        <p
-          className="text-xs fg-destructive"
-          role="alert"
-          data-testid={`${p}-set-up-organization-error`}
-        >
-          {copy.organizationSetupFailed}
-        </p>
-      )}
+      {organizationSetupFailed && organizationSetupError}
     </div>
   );
+  // The setup step offered under a disabled Team or Organization pill.
+  const organizationSetupAction =
+    onSetUpOrganization || canCreateTeam
+      ? {
+          text: organizationSetupLabel,
+          onClick: handleSetUpOrganization,
+          testId: `${p}-set-up-organization`,
+        }
+      : undefined;
+  const withSetupAction = (
+    label: string,
+  ): { label: string; action?: TooltipLink } =>
+    organizationSetupAction !== undefined
+      ? { label, action: organizationSetupAction }
+      : { label };
+  const scopedReason = personalScopesLocked
+    ? canCreateTeam
+      ? withSetupAction(
+          `Create a team to share this ${resourceNoun} with teammates.`,
+        )
+      : { label: copy.personalContextHint }
+    : needsOrganization
+      ? withSetupAction(copy.organizationHint)
+      : undefined;
+  const upgradeReason = { label: copy.upgradeHint };
+  const teamReason =
+    scopedReason ??
+    (teamNeedsUpgrade
+      ? upgradeReason
+      : needsTeam
+        ? { label: copy.teamHint }
+        : undefined);
+  const organizationReason =
+    scopedReason ?? (organizationNeedsUpgrade ? upgradeReason : undefined);
+  const unavailableReasons: Partial<
+    Record<ShareAudience, { label: string; action?: TooltipLink }>
+  > = {
+    ...(teamReason !== undefined ? { team: teamReason } : {}),
+    ...(organizationReason !== undefined
+      ? { organization: organizationReason }
+      : {}),
+  };
 
   const gate = ((): ReactNode => {
-    if (accountLoading) {
+    // Only the first read replaces the form. Re-reading an account the dialog
+    // already has (an ambient re-probe, or its own access check) keeps the
+    // form mounted so nothing the author opened collapses; Share waits for it.
+    if (accountLoading && account === null) {
       return <p className="text-s fg-secondary">{copy.accountLoading}</p>;
     }
     if (isGuest) {
@@ -1942,14 +2044,15 @@ export function ShareResourceDialog({
         <div className="space-y-3" data-testid={`${p}-guest-cta`}>
           <p className="text-s fg-secondary">{copy.guestState}</p>
           {onConnect && (
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="compact"
               data-testid={`${p}-guest-cta-button`}
               onClick={onConnect}
-              className={SECONDARY_BUTTON_CLASS_NAME}
             >
               {copy.guestAction}
-            </button>
+            </Button>
           )}
         </div>
       );
@@ -1959,14 +2062,15 @@ export function ShareResourceDialog({
         <div className="space-y-3" data-testid={`${p}-account-unavailable`}>
           <p className="text-s fg-secondary">{accountUnavailableLabel}</p>
           {onOpenAccountSettings && (
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="compact"
               data-testid={`${p}-open-account-settings`}
               onClick={onOpenAccountSettings}
-              className={SECONDARY_BUTTON_CLASS_NAME}
             >
               {copy.emptyAction}
-            </button>
+            </Button>
           )}
         </div>
       );
@@ -1983,8 +2087,10 @@ export function ShareResourceDialog({
         <div className="space-y-3">
           {preflightState.body}
           {preflightState.action && (
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="compact"
               data-testid={`${p}-unavailable-action`}
               onClick={() => {
                 if (preflightState.action?.retry === true) {
@@ -1993,15 +2099,14 @@ export function ShareResourceDialog({
                 }
                 preflightState.action?.onClick?.();
               }}
-              className={SECONDARY_BUTTON_CLASS_NAME}
             >
               {preflightState.action.label}
-            </button>
+            </Button>
           )}
         </div>
       );
     }
-    if (needsOrganization && !hasUsableAudience) {
+    if (needsSetupGate) {
       return (
         <div className="space-y-1" data-testid={`${p}-organization-required`}>
           <p className="text-s fg-secondary">{copy.organizationRequired}</p>
@@ -2014,31 +2119,42 @@ export function ShareResourceDialog({
 
   const committed =
     state.status === 'partial' ||
+    state.status === 'success' ||
     (state.status === 'error' && state.completion !== undefined);
+  // Reopening Share on a resource that is already shared opens on the notice
+  // a share ends on: its link, Copy link and Done. Update stays offered, and
+  // a public link is removed from the trash icon on the link line; choosing
+  // another audience leaves the notice. A locked owner opens on its team or
+  // organization rather than Public, but its link is still the public one.
+  const reopenedAudience =
+    publicOwnerLocked && existingShare?.audience === 'public'
+      ? existingShare.targetAudience
+      : existingShare?.audience;
+  // A public share whose host has no link to show still opens here, so its
+  // link can be removed.
+  const reopenedShare =
+    state.status === 'idle' &&
+    gate === null &&
+    accountReady &&
+    preflightReady &&
+    existingShare !== undefined &&
+    scope === reopenedAudience &&
+    (existingShare.link !== undefined || canRemovePublicLink)
+      ? existingShare
+      : undefined;
   const scopeSection = (
     <>
-      {canCreateTeam &&
-        context?.kind === 'personal' &&
-        promotedTarget === null &&
-        scopes.some(
-          (candidate) => candidate === 'team' || candidate === 'organization',
-        ) && (
-          <div className="mb-3 text-s fg-secondary">
-            Create a team to share this {resourceNoun} with teammates.
-            {organizationSetup}
-          </div>
-        )}
       <ShareAudienceSelector
         offered={offeredScopes}
         availability={availability}
         value={scope}
         onChange={(next): void => {
+          setRemovePublicError(null);
           setAudience(next);
         }}
         legend={copy.scopeLegend}
         descriptions={descriptions}
-        {...(showUpgradeHint ? { upgradeHint: copy.upgradeHint } : {})}
-        {...(needsOrganization || needsTeam || showPublicLockedHint
+        {...(showPublicLockedHint || organizationSetupFailed
           ? {
               hint: (
                 <>
@@ -2051,30 +2167,17 @@ export function ShareResourceDialog({
                       {copy.publicLockedHint}
                     </p>
                   )}
-                  {needsOrganization ? (
-                    <div data-testid={`${p}-organization-hint`}>
-                      <p className="mt-2 text-xs fg-secondary">
-                        {copy.organizationHint}
-                      </p>
-                      {organizationSetup}
-                    </div>
-                  ) : needsTeam ? (
-                    <p
-                      className="mt-2 text-xs fg-secondary"
-                      data-testid={`${p}-team-hint`}
-                    >
-                      {copy.teamHint}
-                    </p>
-                  ) : null}
+                  {organizationSetupFailed && organizationSetupError}
                 </>
               ),
             }
           : {})}
+        // Every offered scope stays visible; one the account can't use yet
+        // is disabled, with its reason in the pill's tooltip.
+        keepDisabledVisible
+        unavailableReasons={unavailableReasons}
         {...(showPublicLockedHint
-          ? {
-              keepDisabledVisible: true,
-              optionDescribedBy: { public: publicLockedHintId },
-            }
+          ? { optionDescribedBy: { public: publicLockedHintId } }
           : {})}
         disabled={isBusy || committed}
         dataTestId={`${p}-scope`}
@@ -2188,6 +2291,14 @@ export function ShareResourceDialog({
       onRestoreInvocation={(dismissal): void =>
         pkg.restoreInvocation(dismissal)
       }
+      dismissedReferences={pkg.dismissedReferences}
+      onDismissReference={(dismissal): void => pkg.dismissReference(dismissal)}
+      onRestoreReference={(dismissal): void => pkg.restoreReference(dismissal)}
+      selectedPipelineKeys={pkg.selectedPipelineKeys}
+      onTogglePipeline={(key): void => pkg.togglePipeline(key)}
+      {...(capabilityPackage?.pipelineAdd
+        ? { pipelineAdd: capabilityPackage.pipelineAdd }
+        : {})}
       {...(capabilityPackage?.bindingLabelFor
         ? { bindingLabelFor: capabilityPackage.bindingLabelFor }
         : {})}
@@ -2206,16 +2317,20 @@ export function ShareResourceDialog({
   const packageNeedsAttention =
     pkg.failed ||
     (pkg.analysis?.blockers.length ?? 0) > 0 ||
-    pkg.dismissedInvocations.length > 0;
+    pkg.dismissedInvocations.length > 0 ||
+    pkg.dismissedReferences.length > 0;
   const hostPlacesPackageReview =
     capabilityPackage?.placement === 'host' && !packageNeedsAttention;
   // A host-placed review that finished with nothing to copy, nothing for
-  // recipients to set up, and nothing left out has nothing to say, so the
-  // host gets no section. A blocked analysis can report a null manifest.
+  // recipients to set up, nothing left out and no pipeline to add has nothing
+  // to say, so the host gets no section. A blocked analysis can report a null manifest.
   const packageManifest = pkg.analysis?.manifest;
   const packageReviewEmpty =
     !pkg.analyzing &&
     packageManifest?.resources.length === 0 &&
+    (pkg.analysis?.packagedPipelines?.length ?? 0) === 0 &&
+    (pkg.analysis?.withheldFiles?.length ?? 0) === 0 &&
+    (capabilityPackage?.pipelineAdd?.options.length ?? 0) === 0 &&
     packageManifest.environmentRequirements.length === 0 &&
     (pkg.analysis?.unpackageableSelectionLabels?.length ?? 0) === 0;
 
@@ -2242,18 +2357,6 @@ export function ShareResourceDialog({
                 : null,
           })
         : extraOptions}
-
-      {canRemovePublicLink && !committed && (
-        <button
-          type="button"
-          data-testid={`${p}-remove-public-link`}
-          onClick={(): void => setConfirmingRemovePublic(true)}
-          disabled={isBusy}
-          className="rounded-lg px-3 py-1.5 text-s font-medium fg-destructive transition hover:bg-fg-primary/[0.06] focus-ring disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {copy.removePublicLink}
-        </button>
-      )}
     </>
   );
 
@@ -2282,15 +2385,23 @@ export function ShareResourceDialog({
     ) : undefined;
 
   const sharingInProgress = state.status === 'sharing' || finishing;
-  const completedLink: ShareDialogLink | undefined =
-    state.status === 'error' && state.completion?.outcome.shareUrl
-      ? {
-          url: state.completion.outcome.shareUrl,
-          kind:
-            state.completion.completedScope === 'public' ? 'public' : 'scoped',
-        }
+  const completion =
+    state.status === 'success' || state.status === 'error'
+      ? state.completion
       : undefined;
-  const displayedLink = completedLink ?? existingShare?.link;
+  const completedLink: ShareDialogLink | undefined = completion?.outcome
+    .shareUrl
+    ? {
+        url: completion.outcome.shareUrl,
+        kind: completion.completedScope === 'public' ? 'public' : 'scoped',
+      }
+    : undefined;
+  // After a share, only the link it produced is offered: an earlier link of
+  // the resource may belong to the audience the share just replaced.
+  const displayedLink =
+    state.status === 'success'
+      ? completedLink
+      : (completedLink ?? existingShare?.link);
 
   useEffect(() => {
     if (!creatingTeam && promotedTarget && accountReady) {
@@ -2342,6 +2453,26 @@ export function ShareResourceDialog({
     );
   }
 
+  // Remove public link is the trash icon at the end of the published
+  // notice's link line, on a reopened public share or one that just landed.
+  const removePublicLinkAction =
+    canRemovePublicLink &&
+    (state.status === 'success' || reopenedShare !== undefined) ? (
+      <Tooltip label={copy.removePublicLink}>
+        <Button
+          variant="ghost"
+          size="sm"
+          iconOnly
+          aria-label={copy.removePublicLink}
+          data-testid={`${p}-remove-public-link`}
+          onClick={(): void => setConfirmingRemovePublic(true)}
+          disabled={isBusy}
+        >
+          <TrashIcon aria-hidden />
+        </Button>
+      </Tooltip>
+    ) : null;
+
   return (
     <ShareDialogFrame
       title={`Share ${resourceNoun}`}
@@ -2359,10 +2490,14 @@ export function ShareResourceDialog({
       lifecycle={{
         status: sharingInProgress
           ? 'sharing'
-          : state.status === 'partial' || state.status === 'error'
-            ? state.status
-            : 'idle',
-        committed,
+          : reopenedShare !== undefined
+            ? 'success'
+            : state.status === 'partial' ||
+                state.status === 'error' ||
+                state.status === 'success'
+              ? state.status
+              : 'idle',
+        committed: committed || reopenedShare !== undefined,
       }}
       busy={removingPublic}
       {...(gate !== null ? { gate } : {})}
@@ -2370,6 +2505,9 @@ export function ShareResourceDialog({
       scope={scopeSection}
       content={contentSection}
       {...(state.status === 'error' ? { errorMessage: state.message } : {})}
+      {...(removePublicError !== null && removePublicLinkAction !== null
+        ? { actionErrorMessage: removePublicError }
+        : {})}
       {...(state.status === 'error' &&
       state.recovery === 'sign-in' &&
       onOpenAccountSettings !== undefined
@@ -2389,13 +2527,45 @@ export function ShareResourceDialog({
             partialMessage: `${state.outcome.message ?? sharePartialMessage(resourceNoun, targetName)}${state.retryError ? ` ${state.retryError}` : ''}`,
           }
         : {})}
+      {...(state.status === 'success'
+        ? {
+            success: shareSuccessNotice({
+              noun: resourceNoun,
+              scope: state.completion.completedScope,
+              ...(targetName !== undefined ? { targetName } : {}),
+              // Captured before the request started. `onCompleted` commonly
+              // writes the new remote id into the host, which re-renders this
+              // dialog as an existing share.
+              isUpdate: state.completion.wasUpdate,
+              ...(state.completion.outcome.message !== undefined
+                ? { message: state.completion.outcome.message }
+                : {}),
+              ...(state.completion.outcome.shareUrl !== undefined
+                ? { shareUrl: state.completion.outcome.shareUrl }
+                : {}),
+            }),
+          }
+        : reopenedShare !== undefined
+          ? {
+              success: shareSuccessNotice({
+                noun: resourceNoun,
+                scope: reopenedShare.audience === 'public' ? 'public' : scope,
+                ...(targetName !== undefined ? { targetName } : {}),
+                isUpdate: false,
+                reopened: true,
+                ...(reopenedShare.link !== undefined
+                  ? { shareUrl: reopenedShare.link.url }
+                  : {}),
+              }),
+            }
+          : {})}
+      {...(removePublicLinkAction !== null
+        ? { successLinkAction: removePublicLinkAction }
+        : {})}
       {...(retryPublicLink ? { onRetryPublic: handleRetryPublic } : {})}
       retryingPublic={retryingPublic}
       showSubmit={
-        !committed &&
-        accountReady &&
-        preflightReady &&
-        !(needsOrganization && !hasUsableAudience)
+        !committed && accountReady && preflightReady && !needsSetupGate
       }
       submitLabel={isUpdate ? 'Update' : 'Share'}
       sharingLabel={isUpdate ? copy.updating : copy.sharing}
@@ -2416,7 +2586,14 @@ export function ShareResourceDialog({
           ownerDocument={ownerDocument}
           // A public share with a team or organization owner keeps that
           // audience; only a USER-owned one becomes private-only and hidden.
-          leavesSharedLists={existingShare?.target === undefined}
+          {...(existingShare?.target
+            ? {
+                remainingAudience: {
+                  name: existingShare.target.name,
+                  ...(existingPersonalOrganization ? { personal: true } : {}),
+                },
+              }
+            : {})}
           onCancel={(): void => setConfirmingRemovePublic(false)}
           onConfirm={handleRemovePublicLink}
         />

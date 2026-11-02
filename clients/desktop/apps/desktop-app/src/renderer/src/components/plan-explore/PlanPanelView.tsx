@@ -404,6 +404,7 @@ export const PlanPanelView = memo(function PlanPanelView({
         testIdPrefix="plan-panel"
         responsive
         onOpenExecution={actions.openExecution}
+        onOpenChat={actions.revealChat}
       />
       <RailTabBar
         tabs={combined ? DOCUMENT_AND_DIAGRAM_TABS : DOCUMENT_TABS}

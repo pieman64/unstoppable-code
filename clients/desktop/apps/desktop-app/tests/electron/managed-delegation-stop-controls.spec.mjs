@@ -3,19 +3,19 @@
 //
 // The delegation tree belongs to the root chat, not to its provider session:
 // the composer's Stop ends only the parent turn, delegates run on after the
-// parent goes idle, and the user stops them from the pinned Agent activity
-// section. While any delegate is queued or running the chat stays open and
+// parent goes idle, and the user stops them from the composer's background
+// drawer. While any delegate is queued or running the chat stays open and
 // shows as working.
 //
 //   * row-stop-subtree: the composer's Stop ends the parent turn while a
-//     delegate and the task it started keep running and stay listed in
-//     Agent activity; the delegate's row Stop then settles it `Cancelled` and
-//     its running child `Stopped by parent`.
+//     delegate and the task it started keep running and stay listed in the
+//     drawer; the delegate's row Stop then settles it `Cancelled` and its
+//     running child `Stopped by parent`.
 //   * stop-all: Stop all delegates asks inline, Keep running dismisses it,
 //     and Stop all stops a running and a queued delegation while the
 //     parent's own background process keeps running.
-//   * foreground-only-stop-all: Stop all stays available when a foreground
-//     delegation is the only Agent activity.
+//   * single-delegate-stop: a lone delegate stops from its drawer row; the
+//     drawer offers Stop all only beside two or more delegates.
 //   * busy-chat: with a delegate running and the parent idle, the chat tab
 //     shows the working spinner and withholds its ×, Cmd/Ctrl+W, the tab
 //     menu's Close and Close group leave it open with a notice, the sidebar
@@ -50,6 +50,8 @@ import {
 import path from 'node:path';
 import os from 'node:os';
 import { expect as baseExpect, test } from '@playwright/test';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { openBackgroundDrawer } from './backgroundDrawer.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import {
   seedDemoWorkspaces,
@@ -66,21 +68,17 @@ import { composerIdleAction } from './composerIdleAction.mjs';
 
 // Windows qualification runs under emulation, where native provider turns
 // take several times longer than on macOS. Mirrors managed-delegation.spec.mjs.
-const TIMEOUT_SCALE = process.platform === 'win32' ? 3 : 1;
+const hostPlatform = hostOperatingSystem();
+const TIMEOUT_SCALE = hostPlatform === 'win32' ? 3 : 1;
 const scaled = (ms) => ms * TIMEOUT_SCALE;
 const expect = baseExpect.configure({ timeout: scaled(15_000) });
-
-test.skip(
-  !['darwin', 'win32'].includes(process.platform),
-  'Managed delegation requires the macOS or Windows confined file boundary.',
-);
 
 const workspaceId = 'demo-ts-pnpm-vite';
 const worktreeId = 'demo-main';
 const chatId = 'delegating-parent';
 const chatPanelId = `panel-chat-${chatId}`;
 const CLOSE_NOTICE =
-  'Delegates are still running. Stop them in Agent activity to close this chat.';
+  'Delegates are still running. Open background work and stop them to close this chat.';
 
 function retainedRuns(userDataDir) {
   const directory = path.join(
@@ -145,12 +143,6 @@ function chainRole(ctx) {
   if (first.includes(ctx.markers.grandchild)) return 'grandchild';
   if (first.includes(ctx.markers.child)) return 'child';
   return ctx.role;
-}
-
-function firstDelegationId(text) {
-  return text.match(
-    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
-  )?.[0];
 }
 
 function deferred() {
@@ -223,6 +215,11 @@ async function setUpFixture({ caseId, script, maxConcurrent, maxDepth }) {
   return { userDataDir, fixture, demo, electronApp };
 }
 
+/** A delegate's drawer row. */
+function delegateRow(tray, delegationId) {
+  return tray.locator(`[data-tray-row="agent:managed:${delegationId}"]`);
+}
+
 async function openDelegatingChat(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
@@ -279,10 +276,10 @@ async function finish(testInfo, context, assertionsCompleted) {
   if (assertionsCompleted) cleanupDemoWorkspaces(demo);
 }
 
-test('stop-all: confirms inline, Keep running dismisses, and Stop all leaves the background process', async ({}, testInfo) => {
+test('stop-all: confirms in a dialog, Cancel dismisses, and Stop all leaves the background process', async ({}, testInfo) => {
   test.setTimeout(scaled(240_000));
   // Holds the parent turn open after its tool calls, so the turn's own
-  // background process shares the pinned Agent activity section with the
+  // background process shares the composer's background drawer with the
   // delegations.
   const parentHold = deferred();
   const context = await setUpFixture({
@@ -338,29 +335,28 @@ test('stop-all: confirms inline, Keep running dismisses, and Stop all leaves the
       })
       .toBe(true);
 
-    const pinned = panel.getByTestId('agent-activity-active');
-    await expect(pinned.getByTestId('chat-delegated-agent')).toHaveCount(2);
-    const process = pinned
-      .getByTestId('activity-bg-item')
+    const tray = await openBackgroundDrawer(panel, { timeout: scaled(30_000) });
+    await expect(tray.getByTestId('background-tray-agent')).toHaveCount(2);
+    const process = tray
+      .getByTestId('background-tray-row')
       .filter({ hasText: 'Keep the preview server running' });
     await expect(process).toBeVisible({ timeout: scaled(30_000) });
-    await expect(process).toContainText('running');
-    // Every live row, queued or running, has its own Stop.
-    await expect(pinned.getByTestId('delegated-agent-stop')).toHaveCount(2);
+    // Every live delegate row, queued or running, has its own Stop.
+    await expect(tray.getByTestId('background-tray-agent-stop')).toHaveCount(2);
 
-    // The header action asks inline before stopping anything.
-    const stopAll = pinned.getByTestId('agent-activity-stop-all');
+    // The heading action confirms in a dialog before stopping anything.
+    const stopAll = tray.getByTestId('background-tray-stop-all');
     await expect(stopAll).toHaveText('Stop all delegates');
     await stopAll.click();
-    const confirmation = pinned.getByTestId(
-      'agent-activity-stop-all-confirmation',
+    const confirmation = window.getByTestId(
+      'background-tray-stop-all-confirmation',
     );
     await expect(confirmation).toContainText('Stop 2 delegations?');
     await expect(
-      pinned.getByTestId('agent-activity-stop-all-confirm'),
+      window.getByTestId('background-tray-stop-all-confirm'),
     ).toHaveText('Stop all');
-    const keepRunning = pinned.getByTestId('agent-activity-stop-all-cancel');
-    await expect(keepRunning).toHaveText('Keep running');
+    const keepRunning = window.getByTestId('background-tray-stop-all-cancel');
+    await expect(keepRunning).toHaveAccessibleName('Cancel');
     // Focus moves to the safe choice.
     await expect(keepRunning).toBeFocused();
     await keepRunning.click();
@@ -373,7 +369,7 @@ test('stop-all: confirms inline, Keep running dismisses, and Stop all leaves the
     ).toEqual([]);
 
     await stopAll.click();
-    await pinned.getByTestId('agent-activity-stop-all-confirm').click();
+    await window.getByTestId('background-tray-stop-all-confirm').click();
     await expect
       .poll(
         () =>
@@ -402,11 +398,10 @@ test('stop-all: confirms inline, Keep running dismisses, and Stop all leaves the
     ).toBeLessThanOrEqual(2);
     // Nothing managed is live any more, so Stop all and the rows go; the
     // parent's own background process is untouched.
-    await expect(pinned.getByTestId('agent-activity-stop-all')).toHaveCount(0);
-    await expect(pinned.getByTestId('chat-delegated-agent')).toHaveCount(0);
+    await expect(tray.getByTestId('background-tray-stop-all')).toHaveCount(0);
+    await expect(tray.getByTestId('background-tray-agent')).toHaveCount(0);
     await expect(process).toBeVisible();
-    await expect(process).toContainText('running');
-    await expect(process.getByTestId('activity-bg-stop')).toBeVisible();
+    await expect(process.getByTestId('background-tray-row-stop')).toBeVisible();
     // A user stop reads `Cancelled` on each card.
     const transcript = panel.getByTestId('chat-message-list-content');
     for (const run of retainedRuns(userDataDir))
@@ -427,7 +422,7 @@ test('stop-all: confirms inline, Keep running dismisses, and Stop all leaves the
   }
 });
 
-test('foreground-only-stop-all: Stop all is visible with no other activity', async ({}, testInfo) => {
+test('single-delegate-stop: a lone delegate stops from its drawer row, with no Stop all', async ({}, testInfo) => {
   test.setTimeout(scaled(240_000));
   const parentHold = deferred();
   const context = await setUpFixture({
@@ -450,13 +445,13 @@ test('foreground-only-stop-all: Stop all is visible with no other activity', asy
     await sendParentMessage(window, fixture, 'Delegate an independent review.');
     await waitForChildBlocked(fixture);
 
-    const activity = panel.getByTestId('agent-activity-active');
-    await expect(activity.getByTestId('agent-activity-stop-all')).toBeVisible();
-    await expect(
-      activity.getByTestId('agent-activity-background-process-items'),
-    ).toHaveCount(0);
-    await activity.getByTestId('agent-activity-stop-all').click();
-    await activity.getByTestId('agent-activity-stop-all-confirm').click();
+    // The drawer offers Stop all only beside two or more delegates; a lone
+    // one stops from its row.
+    const tray = await openBackgroundDrawer(panel, { timeout: scaled(30_000) });
+    await expect(tray.getByTestId('background-tray-agent')).toHaveCount(1);
+    await expect(tray.getByTestId('background-tray-row')).toHaveCount(0);
+    await expect(tray.getByTestId('background-tray-stop-all')).toHaveCount(0);
+    await tray.getByTestId('background-tray-agent-stop').click();
     await expect
       .poll(() => retainedRuns(userDataDir)[0]?.state.status, {
         timeout: scaled(60_000),
@@ -552,18 +547,13 @@ test('row-stop-subtree: the composer Stop leaves delegates running, and a row St
       'running',
       'running',
     ]);
-    const pinned = panel.getByTestId('agent-activity-active');
-    const delegateRow = delegatedCard(
-      pinned,
-      delegate.state.delegationId,
-    ).first();
-    await expect(delegateRow).toBeVisible();
-    await expect(
-      delegatedCard(pinned, task.state.delegationId).first(),
-    ).toBeVisible();
+    const tray = await openBackgroundDrawer(panel, { timeout: scaled(30_000) });
+    const parentRow = delegateRow(tray, delegate.state.delegationId);
+    await expect(parentRow).toBeVisible();
+    await expect(delegateRow(tray, task.state.delegationId)).toBeVisible();
 
     // The delegate's Stop names what it will also end.
-    const rowStop = delegateRow.getByTestId('delegated-agent-stop').first();
+    const rowStop = parentRow.getByTestId('background-tray-agent-stop');
     await expect(rowStop).toHaveAccessibleName('Stop delegation');
     await rowStop.hover();
     await expect(
@@ -591,7 +581,7 @@ test('row-stop-subtree: the composer Stop leaves delegates running, and a row St
           "Stopped because you stopped 'Independent error handling review'.",
       },
     });
-    await expect(pinned).toHaveCount(0);
+    await expect(tray.getByTestId('background-tray-agent')).toHaveCount(0);
 
     // The user's own stop reads `Cancelled`; the task it ended reads
     // `Stopped by parent`.
@@ -659,7 +649,12 @@ test('busy-chat: a chat with a running delegate stays open and working until it 
     const row = window.locator(
       `[data-testid="worktree-row"][data-worktree-id="${worktreeId}"]`,
     );
+    // The parent's own turn has ended, so its delegate draws the row's
+    // background spinner, not the streaming one (turn-state 38a and 38b).
     const rowSpinner = row.getByTestId(
+      'worktree-row-classic-background-spinner',
+    );
+    const rowStreaming = row.getByTestId(
       'worktree-row-classic-streaming-spinner',
     );
     const notice = window
@@ -674,6 +669,7 @@ test('busy-chat: a chat with a running delegate stays open and working until it 
       await expect(spinner).toBeVisible();
       await expect(tabClose).toHaveCount(0);
       await expect(rowSpinner).toBeVisible();
+      await expect(rowStreaming).toHaveCount(0);
     };
     await expectBusy();
 
@@ -690,7 +686,7 @@ test('busy-chat: a chat with a running delegate stays open and working until it 
       suggestedTarget: { kind: 'command', pattern: 'git status' },
     });
     await expect(window.getByTestId('tool-approval-card')).toBeVisible();
-    await expect(rowSpinner).toHaveCount(0);
+    await expect(rowStreaming).toHaveCount(0);
     await row.hover();
     await row.getByTestId('worktree-actions-menu-button').click();
     await expect(
@@ -798,8 +794,9 @@ test('pending delegate input keeps Archive disabled for an idle parent chat', as
     const row = window.locator(
       `[data-testid="worktree-row"][data-worktree-id="${worktreeId}"]`,
     );
+    // An idle parent's live delegate is background work.
     await expect(
-      row.getByTestId('worktree-row-classic-streaming-spinner'),
+      row.getByTestId('worktree-row-classic-background-spinner'),
     ).toBeVisible();
     await injectApprovalRequestEvent(electronApp, {
       requestId: 'idle-parent-pending-approval',
@@ -890,9 +887,9 @@ test('deferred-auto-archive: auto-archive turned on during the run waits for the
     await expect(toggle).toHaveAttribute('data-delegates-live', 'true');
     await toggle.hover();
     await expect(
-      window
-        .getByRole('tooltip')
-        .filter({ hasText: 'Archives after its delegates finish.' }),
+      window.getByRole('tooltip').filter({
+        hasText: 'Archives after this turn and its delegates finish',
+      }),
     ).toBeVisible();
 
     // The parent turn completes; the running delegate keeps the chat open.
@@ -935,13 +932,13 @@ test('deferred-auto-archive: auto-archive turned on during the run waits for the
 });
 
 /**
- * The watch chain: the parent delegates a review and watches it; the review
- * makes a burst of reads, starts a nested task, watches it, and then ends its
+ * The automatic-notice chain: the parent delegates a review; the review
+ * makes a burst of reads, starts a nested task and then ends its
  * turn (or, given `childHold`, keeps it open until the hold settles). The
  * nested task holds on the fixture's barrier.
  */
+// Historical scenario IDs keep "watch-chain"; the flow now uses automatic notices.
 function watchChainScript({ evidencePath, childHold }) {
-  const watch = claudeToolName('WatchDelegates');
   const delegateTask = claudeToolName('DelegateTask');
   return async (ctx) => {
     const role = chainRole(ctx);
@@ -958,20 +955,7 @@ function watchChainScript({ evidencePath, childHold }) {
           ],
           stopReason: 'tool_use',
         });
-      if (!ctx.context.includes(watch))
-        return ctx.reply({
-          toolCalls: [
-            {
-              name: watch,
-              input: {
-                delegationIds: [firstDelegationId(ctx.results)],
-                mode: 'all',
-                timeoutMs: 1_800_000,
-              },
-            },
-          ],
-          stopReason: 'tool_use',
-        });
+
       return ctx.reply({ text: ctx.continued, stopReason: 'end_turn' });
     }
     if (role === 'child') {
@@ -1000,20 +984,7 @@ function watchChainScript({ evidencePath, childHold }) {
           ],
           stopReason: 'tool_use',
         });
-      if (!ctx.context.includes(watch))
-        return ctx.reply({
-          toolCalls: [
-            {
-              name: watch,
-              input: {
-                delegationIds: [firstDelegationId(ctx.results)],
-                mode: 'all',
-                timeoutMs: 1_800_000,
-              },
-            },
-          ],
-          stopReason: 'tool_use',
-        });
+
       if (childHold) await childHold;
       return ctx.reply({
         text: 'Waiting for the nested review.',
@@ -1053,13 +1024,13 @@ test('watch-chain: rows keep up with a nested chain, and a row Stop under an idl
     await sendParentMessage(
       window,
       fixture,
-      'Delegate a review that starts its own task, and watch it.',
+      'Delegate a review that starts its own task; use automatic completion notices.',
     );
     const byDepth = () =>
       Object.fromEntries(
         retainedRuns(userDataDir).map((run) => [run.depth, run]),
       );
-    // The delegate ends its turn to watch the task it started.
+    // The delegate ends its turn; its task will send an automatic notice.
     await expect
       .poll(() => [byDepth()[1]?.state.status, byDepth()[2]?.state.status], {
         timeout: scaled(120_000),
@@ -1067,14 +1038,15 @@ test('watch-chain: rows keep up with a nested chain, and a row Stop under an idl
       .toEqual(['completed', 'running']);
     const { 1: watching, 2: task } = byDepth();
 
-    // The chat keeps up: the idle delegate leaves the running rows promptly,
-    // so only the task it watches offers Stop.
-    const pinned = panel.getByTestId('agent-activity-active');
-    await expect(
-      delegatedCard(pinned, watching.state.delegationId),
-    ).toHaveCount(0, { timeout: scaled(5_000) });
-    const taskRow = delegatedCard(pinned, task.state.delegationId).first();
-    const taskStop = taskRow.getByTestId('delegated-agent-stop');
+    // The chat keeps up: the idle delegate leaves the drawer promptly, so
+    // only the task it watches offers Stop.
+    const tray = await openBackgroundDrawer(panel, { timeout: scaled(30_000) });
+    await expect(delegateRow(tray, watching.state.delegationId)).toHaveCount(
+      0,
+      { timeout: scaled(5_000) },
+    );
+    const taskRow = delegateRow(tray, task.state.delegationId);
+    const taskStop = taskRow.getByTestId('background-tray-agent-stop');
     await expect(taskStop).toBeVisible();
 
     // The row Stop ends the task, and the row settles rather than staying
@@ -1083,10 +1055,7 @@ test('watch-chain: rows keep up with a nested chain, and a row Stop under an idl
     await expect
       .poll(() => byDepth()[2]?.state.status, { timeout: scaled(30_000) })
       .toBe('cancelled');
-    await expect(delegatedCard(pinned, task.state.delegationId)).toHaveCount(
-      0,
-      { timeout: scaled(10_000) },
-    );
+    await expect(taskRow).toHaveCount(0, { timeout: scaled(10_000) });
     expect(byDepth()[2].state).toMatchObject({
       stopReason: 'user_cancelled',
       cancelledByUser: true,
@@ -1099,7 +1068,9 @@ test('watch-chain: rows keep up with a nested chain, and a row Stop under an idl
         { timeout: scaled(60_000) },
       )
       .toEqual([2, 'completed']);
-    await expect(pinned).toHaveCount(0, { timeout: scaled(10_000) });
+    await expect(panel.getByTestId('background-tray-agent')).toHaveCount(0, {
+      timeout: scaled(10_000),
+    });
     assertionsCompleted = true;
   } finally {
     await finish(testInfo, context, assertionsCompleted);
@@ -1121,7 +1092,7 @@ test('watch-chain-row-stop: a delegate stopped while it watches its task is not 
     await sendParentMessage(
       window,
       fixture,
-      'Delegate a review that starts its own task, and watch it.',
+      'Delegate a review that starts its own task; use automatic completion notices.',
     );
     await expect
       .poll(
@@ -1132,13 +1103,12 @@ test('watch-chain-row-stop: a delegate stopped while it watches its task is not 
         ],
         { timeout: scaled(120_000) },
       )
-      .toEqual(['running', 'running', 1]);
+      .toEqual(['running', 'running', 0]);
     const review = runsByDepth(userDataDir)[1];
 
-    const pinned = panel.getByTestId('agent-activity-active');
-    await delegatedCard(pinned, review.state.delegationId)
-      .first()
-      .getByTestId('delegated-agent-stop')
+    const tray = await openBackgroundDrawer(panel, { timeout: scaled(30_000) });
+    await delegateRow(tray, review.state.delegationId)
+      .getByTestId('background-tray-agent-stop')
       .click();
     await expect
       .poll(
@@ -1149,7 +1119,7 @@ test('watch-chain-row-stop: a delegate stopped while it watches its task is not 
         { timeout: scaled(30_000) },
       )
       .toEqual(['cancelled', 'cancelled']);
-    // Its watch on the task it started ends with it, so the task's stop
+    // Its tree teardown suppresses completion notices, so the task's stop
     // does not wake it into a new run.
     await expect
       .poll(() => pendingDelegateWatchers(userDataDir).length, {
@@ -1162,7 +1132,7 @@ test('watch-chain-row-stop: a delegate stopped while it watches its task is not 
       status: 'cancelled',
       stopReason: 'user_cancelled',
     });
-    await expect(pinned).toHaveCount(0);
+    await expect(tray.getByTestId('background-tray-agent')).toHaveCount(0);
     assertionsCompleted = true;
   } finally {
     childHold.resolve();
@@ -1180,9 +1150,9 @@ test('watch-chain-stop-all: Stop all ends a chain whose delegate idles on a watc
     await sendParentMessage(
       window,
       fixture,
-      'Delegate a review that starts its own task, and watch it.',
+      'Delegate a review that starts its own task; use automatic completion notices.',
     );
-    // The review idles on its watch while its task runs.
+    // The review idles while its task runs; no watch is registered.
     await expect
       .poll(
         () => [
@@ -1192,11 +1162,18 @@ test('watch-chain-stop-all: Stop all ends a chain whose delegate idles on a watc
         ],
         { timeout: scaled(120_000) },
       )
-      .toEqual(['completed', 'running', 1]);
+      .toEqual(['completed', 'running', 0]);
 
-    const pinned = panel.getByTestId('agent-activity-active');
-    await pinned.getByTestId('agent-activity-stop-all').click();
-    await pinned.getByTestId('agent-activity-stop-all-confirm').click();
+    // Only the task is listed, so the drawer offers no Stop all; stop the
+    // chain through the same Stop all request the drawer and App Advisor's
+    // `delegation.stop_all` send.
+    const tray = await openBackgroundDrawer(panel, { timeout: scaled(30_000) });
+    await expect(tray.getByTestId('background-tray-agent')).toHaveCount(1);
+    await expect(tray.getByTestId('background-tray-stop-all')).toHaveCount(0);
+    await window.evaluate(
+      (target) => window.api.managedDelegation.stopAll(target),
+      { projectId: workspaceId, worktreeId, chatId },
+    );
     await expect
       .poll(() => runsByDepth(userDataDir)[2]?.state.status, {
         timeout: scaled(30_000),
@@ -1213,7 +1190,7 @@ test('watch-chain-stop-all: Stop all ends a chain whose delegate idles on a watc
       runGeneration: 1,
       status: 'completed',
     });
-    await expect(pinned).toHaveCount(0);
+    await expect(tray.getByTestId('background-tray-agent')).toHaveCount(0);
     assertionsCompleted = true;
   } finally {
     await finish(testInfo, context, assertionsCompleted);

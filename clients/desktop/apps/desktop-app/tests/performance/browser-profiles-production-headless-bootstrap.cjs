@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const ADAPTER_VERSION = 'production-hidden-native-v1';
 const BASENAME = 'browser-profiles-production-headless-bootstrap.cjs';
 const SNAPSHOT_KEY = '__BROWSER_PROFILES_HEADLESS_SNAPSHOT__';
@@ -69,7 +70,7 @@ function buildExpectedArgv({
       executable,
       '--inspect=0',
       '--remote-debugging-port=0',
-      '--use-mock-keychain',
+      // Already normalized by platformElectronArgs in the launch harness.
       ...electronArgs,
       productMainEntryPath,
     ],
@@ -315,9 +316,10 @@ function consumeLaunchContract(entry, argv) {
 function installAdapter(
   { app, BrowserWindow },
   identity,
-  { limit = 2048, onActivity = () => {} } = {},
+  { limit = 2048, onActivity = () => {}, now = () => performance.now() } = {},
 ) {
   assert(Number.isInteger(limit) && limit > 0 && limit <= 2048);
+  const installedAtMs = now();
   const windows = new Map(),
     calls = [],
     events = [],
@@ -398,13 +400,22 @@ function installAdapter(
       return;
     }
     const initial = inspect(window);
-    const record = { window, initial, readyToShow: 0, listeners: [] };
+    const record = {
+      window,
+      initial,
+      createdAtMs: now(),
+      firstReadyToShowAtMs: null,
+      readyToShow: 0,
+      listeners: [],
+    };
     if (windows.has(window.id)) violation('Duplicate native window ID');
     windows.set(window.id, record);
     if (initial.visible || initial.focused)
       violation('Visible/focused at construction; capability unavailable');
     const onReadyToShow = () => {
       onActivity('ready-to-show');
+      if (record.firstReadyToShowAtMs === null)
+        record.firstReadyToShowAtMs = now();
       record.readyToShow++;
     };
     window.on('ready-to-show', onReadyToShow);
@@ -502,6 +513,14 @@ function installAdapter(
           events,
           violations,
           windows: observed,
+          timings: {
+            installedAtMs,
+            windows: [...windows.values()].map((record) => ({
+              id: record.window.id,
+              createdAtMs: record.createdAtMs,
+              firstReadyToShowAtMs: record.firstReadyToShowAtMs,
+            })),
+          },
           liveWindowIds: inventory,
         }),
       ),

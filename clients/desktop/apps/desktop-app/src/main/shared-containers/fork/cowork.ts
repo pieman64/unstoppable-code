@@ -1,3 +1,16 @@
+import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import {
+  assertForkWorkspaceOwner,
+  assertNewForkOwner,
+  validateForkDestination,
+} from './destination';
+import {
+  assertForkWorkspaceUnbound,
+  assertOrganizationForkEligible,
+  bindForkCoworkWorkspaceToOrganization,
+  releaseForkOrganizationBinding,
+  toOrganizationForkFailure,
+} from './org-destination';
 import { createHash } from 'node:crypto';
 import type { W5CommitOptions } from '../../lib/w5-commit-scope';
 import type { W5KeyedAttempt } from '../../lib/w5-keyed-operation';
@@ -179,6 +192,9 @@ export async function copyForkWorkspaceItems(options: {
 
 export async function forkSharedCoworkContainer(options: {
   request: SharedContainerForkRequest;
+  owner: WorkspaceContext;
+  /** The owning organization's display name, for refusals. */
+  organizationName?: string;
   provenance: SharedContainerForkProvenance;
   revisionRoot: string;
   layout:
@@ -190,126 +206,180 @@ export async function forkSharedCoworkContainer(options: {
   commit?: W5CommitOptions;
   attempt?: W5KeyedAttempt;
 }): Promise<SharedContainerForkResponse> {
+  const requestedDestination = validateForkDestination(
+    options.request.destination,
+  );
+  if (requestedDestination.kind === 'new-workspace') {
+    assertNewForkOwner(requestedDestination, options.owner);
+  }
   if (options.layout.containerType !== 'COWORK_WORK_ENTRY') {
     throw new Error('Shared-container fork type mismatch');
   }
   await assertNoPublishedPlans(options.store, options.revisionRoot);
-  return runWithSharedContainerForkRollback(async (rollback) => {
-    const workspace = await resolveCoworkWorkspace(
-      options.request,
-      options.layout.title,
-      options.commit,
-      options.attempt,
-    );
-    if (workspace.created) {
-      rollback.defer(() =>
-        deleteForkWorkspaceOrHide(
-          { source: 'cowork_fork', workspaceId: workspace.workspaceId },
-          () =>
-            deleteWorkspaceById(workspace.workspaceId, 'shared_container_fork'),
-        ),
-      );
-      if ('startPage' in options.layout && options.layout.startPage) {
-        const startPage = mapCoworkForkStartPage(options.layout.startPage);
-        await updateCoworkWorkspace(
-          {
-            projectId: workspace.workspaceId,
-            startPage,
-          },
-          options.commit,
-        );
-      }
-    }
-    options.attempt?.beforeEffects();
-    const created = await createWorkEntry(workspace.workspaceId, {
-      title: options.layout.title,
+  const newOrganizationCopy =
+    requestedDestination.kind === 'new-workspace' &&
+    options.owner.kind === 'organization';
+  const assertEligible = (): Promise<void> =>
+    assertOrganizationForkEligible({
+      owner: options.owner,
+      organizationName: options.organizationName,
+      shape: 'cowork',
     });
-    if (!workspace.created) {
-      // Finalize commits the rehydrated chats into canonical v2 storage
-      // (`chat-storage-v2/{entryId}/` + its manifest) through the chat state
-      // service, so the rollback must reclaim the same closure the Work Entry
-      // deletion path does: dispose the loaded scope, drop its search docs,
-      // and remove worktree-data — not just the legacy file paths.
-      rollback.defer(() =>
-        cleanupPersistedWorktreeData(workspace.workspaceId, created.entry.id),
-      );
-      rollback.defer(() =>
-        removeWorkEntryRow(workspace.workspaceId, created.entry.id),
-      );
-    }
-    const destinationRoot = getCoworkWorkspaceRootDir(workspace.workspaceId);
-    const publishedRootFiles = new Set(
-      options.layout.files.map((file) => file.path),
-    );
-    if (workspace.created) {
-      for (const scaffoldName of ['CLAUDE.md', 'AGENTS.md'] as const) {
-        if (publishedRootFiles.has(scaffoldName)) {
-          await rm(join(destinationRoot, scaffoldName), {
-            recursive: true,
-            force: true,
+  const run = (): Promise<SharedContainerForkResponse> =>
+    runWithSharedContainerForkRollback<SharedContainerForkResponse>(
+      async (rollback) => {
+        const workspace = await resolveCoworkWorkspace(
+          options.request,
+          options.layout.title,
+          options.commit,
+          options.attempt,
+        );
+        if (workspace.created) {
+          rollback.defer(async () => {
+            if (options.owner.kind === 'organization')
+              await assertForkWorkspaceUnbound(workspace.workspaceId);
+            await deleteForkWorkspaceOrHide(
+              { source: 'cowork_fork', workspaceId: workspace.workspaceId },
+              () =>
+                deleteWorkspaceById(
+                  workspace.workspaceId,
+                  'shared_container_fork',
+                ),
+            );
+          });
+          if (options.owner.kind === 'organization') {
+            // Registered before binding: the conversion can bind and then fail.
+            rollback.defer(() =>
+              releaseForkOrganizationBinding(workspace.workspaceId),
+            );
+            await bindForkCoworkWorkspaceToOrganization({
+              owner: options.owner,
+              organizationName: options.organizationName,
+              workspaceId: workspace.workspaceId,
+              containerId: options.request.containerId,
+              revisionId: options.request.revisionId,
+            });
+          }
+          if ('startPage' in options.layout && options.layout.startPage) {
+            const startPage = mapCoworkForkStartPage(options.layout.startPage);
+            await updateCoworkWorkspace(
+              {
+                projectId: workspace.workspaceId,
+                startPage,
+              },
+              options.commit,
+            );
+          }
+        }
+        await assertForkWorkspaceOwner(
+          workspace.workspaceId,
+          options.owner,
+          true,
+        );
+        options.attempt?.beforeEffects();
+        const created = await createWorkEntry(workspace.workspaceId, {
+          title: options.layout.title,
+        });
+        if (!workspace.created) {
+          // Finalize commits the rehydrated chats into canonical v2 storage
+          // (`chat-storage-v2/{entryId}/` + its manifest) through the chat state
+          // service, so the rollback must reclaim the same closure the Work Entry
+          // deletion path does: dispose the loaded scope, drop its search docs,
+          // and remove worktree-data — not just the legacy file paths.
+          rollback.defer(() =>
+            cleanupPersistedWorktreeData(
+              workspace.workspaceId,
+              created.entry.id,
+            ),
+          );
+          rollback.defer(() =>
+            removeWorkEntryRow(workspace.workspaceId, created.entry.id),
+          );
+        }
+        const destinationRoot = getCoworkWorkspaceRootDir(
+          workspace.workspaceId,
+        );
+        const publishedRootFiles = new Set(
+          options.layout.files.map((file) => file.path),
+        );
+        if (workspace.created) {
+          for (const scaffoldName of ['CLAUDE.md', 'AGENTS.md'] as const) {
+            if (publishedRootFiles.has(scaffoldName)) {
+              await rm(join(destinationRoot, scaffoldName), {
+                recursive: true,
+                force: true,
+              });
+            }
+          }
+        }
+        for (const file of options.layout.files) {
+          if (file.status === 'deleted') {
+            throw new Error('Cowork fork cannot contain deleted files');
+          }
+          await writeForkFileFromReplica({
+            store: options.store,
+            revisionRoot: options.revisionRoot,
+            source: options.store.resolvePathBelowForRead(
+              options.revisionRoot,
+              'content',
+              file.path,
+            ),
+            destinationRoot,
+            relativePath: file.path,
+            rollback,
           });
         }
-      }
-    }
-    for (const file of options.layout.files) {
-      if (file.status === 'deleted') {
-        throw new Error('Cowork fork cannot contain deleted files');
-      }
-      await writeForkFileFromReplica({
-        store: options.store,
-        revisionRoot: options.revisionRoot,
-        source: options.store.resolvePathBelowForRead(
-          options.revisionRoot,
-          'content',
-          file.path,
-        ),
-        destinationRoot,
-        relativePath: file.path,
-        rollback,
-      });
-    }
-    if (
-      workspace.created &&
-      publishedRootFiles.has('CLAUDE.md') &&
-      !publishedRootFiles.has('AGENTS.md')
-    ) {
-      await ensureAgentsMdSymlinkOrCopy(destinationRoot);
-    }
-    await copyForkWorkspaceItems({
-      store: options.store,
-      revisionRoot: options.revisionRoot,
-      layout: options.layout,
-      workspaceId: workspace.workspaceId,
-      sourceContainerId: options.provenance.sourceContainerId,
-      sourceRevisionId: options.provenance.sourceRevisionId,
-      rollback,
-    });
-    const attachments = await copyForkAttachments({
-      store: options.store,
-      revisionRoot: options.revisionRoot,
-      layout: options.layout,
-      projectId: workspace.workspaceId,
-      worktreeId: created.entry.id,
-      rollback,
-    });
-    const warnings = await rehydrateForkChats({
-      containerId: options.request.containerId,
-      revisionId: options.request.revisionId,
-      projectId: workspace.workspaceId,
-      worktreeId: created.entry.id,
-      attachments,
-    });
-    await writeForkProvenanceForDestination(
-      workspace.workspaceId,
-      created.entry.id,
-      options.provenance,
+        if (
+          workspace.created &&
+          publishedRootFiles.has('CLAUDE.md') &&
+          !publishedRootFiles.has('AGENTS.md')
+        ) {
+          await ensureAgentsMdSymlinkOrCopy(destinationRoot);
+        }
+        await copyForkWorkspaceItems({
+          store: options.store,
+          revisionRoot: options.revisionRoot,
+          layout: options.layout,
+          workspaceId: workspace.workspaceId,
+          sourceContainerId: options.provenance.sourceContainerId,
+          sourceRevisionId: options.provenance.sourceRevisionId,
+          rollback,
+        });
+        const attachments = await copyForkAttachments({
+          store: options.store,
+          revisionRoot: options.revisionRoot,
+          layout: options.layout,
+          projectId: workspace.workspaceId,
+          worktreeId: created.entry.id,
+          rollback,
+        });
+        const warnings = await rehydrateForkChats({
+          containerId: options.request.containerId,
+          revisionId: options.request.revisionId,
+          projectId: workspace.workspaceId,
+          worktreeId: created.entry.id,
+          attachments,
+        });
+        await writeForkProvenanceForDestination(
+          workspace.workspaceId,
+          created.entry.id,
+          options.provenance,
+        );
+        await assertForkWorkspaceOwner(workspace.workspaceId, options.owner);
+        return {
+          containerType: 'COWORK_WORK_ENTRY',
+          projectId: workspace.workspaceId,
+          worktreeId: created.entry.id,
+          warnings,
+          provenance: options.provenance,
+        };
+      },
     );
-    return {
-      containerType: 'COWORK_WORK_ENTRY',
-      projectId: workspace.workspaceId,
-      worktreeId: created.entry.id,
-      warnings,
-      provenance: options.provenance,
-    };
-  });
+  if (!newOrganizationCopy) return run();
+  try {
+    await assertEligible();
+    return await run();
+  } catch (error) {
+    throw toOrganizationForkFailure(error, options.organizationName);
+  }
 }

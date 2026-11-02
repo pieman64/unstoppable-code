@@ -15,6 +15,13 @@ jest.mock('../../lib/paths', () => ({
     join(mockDirectory, 'app-advisor-watchers.json'),
   getDataDir: (): string => mockDirectory,
 }));
+// A slow watcher mutation records a chat-wait diagnostic; keep it from
+// starting the real observability flush against the tiny paths mock above.
+jest.mock('../../observability', () => ({
+  getObservabilityService: (): object => ({
+    recordSessionDiagnostic: jest.fn(),
+  }),
+}));
 jest.mock('../../agents/session-manager', () => ({}));
 jest.mock('../../pipelines/pipeline-service', () => ({}));
 jest.mock('../../services/background-execution-context', () => ({

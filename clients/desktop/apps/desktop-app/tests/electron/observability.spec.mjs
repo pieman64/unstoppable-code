@@ -400,31 +400,43 @@ test('loads persisted audit entries, transcripts, filters, and usage', async ({}
       '$0.0042',
     );
 
-    await window.getByPlaceholder('Search').fill('Branch Name');
+    // The page search row: the search, then Provider, Status and Event as
+    // quiet dropdowns after it.
+    const auditSearch = window.getByTestId('audit-trail-search');
+    await expect(auditSearch).toHaveAttribute(
+      'placeholder',
+      'Search the audit trail',
+    );
+    await auditSearch.fill('Branch Name');
     await expect(window.getByText('Seeded Branch Name Failure')).toBeVisible();
     await expect(codexEntryLabel).toBeHidden();
 
-    await window.getByPlaceholder('Search').fill('');
-    await window.locator('select').nth(0).selectOption('codex');
-    await window.locator('select').nth(1).selectOption('success');
-    await window.locator('select').nth(2).selectOption('worktree_chat');
+    await auditSearch.fill('');
+    await expect(
+      window.getByTestId('page-audit').locator('select'),
+    ).toHaveCount(0);
+    await app.chooseAuditTrailFilter('provider', 'codex');
+    await app.chooseAuditTrailFilter('status', 'success');
+    await app.chooseAuditTrailFilter('event-type', 'worktree_chat');
+    await expect(window.getByTestId('audit-trail-provider-filter')).toHaveText(
+      'Codex',
+    );
     await expect(codexEntryLabel).toBeVisible();
     await expect(window.getByText('Seeded Branch Name Failure')).toBeHidden();
 
-    await window.locator('select').nth(0).selectOption('all');
-    await window.locator('select').nth(1).selectOption('all');
-    await window
-      .getByTestId('audit-trail-event-type-filter')
-      .selectOption('local_memory_consolidation');
+    await app.chooseAuditTrailFilter('provider', 'all');
+    await app.chooseAuditTrailFilter('status', 'all');
+    await app.chooseAuditTrailFilter(
+      'event-type',
+      'local_memory_consolidation',
+    );
     await expect(
       window.getByTestId('audit-cost-seeded-memory-consolidation'),
     ).toHaveText('$0.0007');
     await expect(codexEntryLabel).toBeHidden();
     await expect(window.getByText('Seeded Branch Name Failure')).toBeHidden();
 
-    await window
-      .getByTestId('audit-trail-event-type-filter')
-      .selectOption('all');
+    await app.chooseAuditTrailFilter('event-type', 'all');
     await expect(codexEntryLabel).toBeVisible();
 
     await window

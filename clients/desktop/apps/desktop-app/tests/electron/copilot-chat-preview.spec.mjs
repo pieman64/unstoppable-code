@@ -28,7 +28,11 @@ test('a Copilot chat keeps its GitHub identity in the sidebar preview', async ()
     );
     await expect(row).toBeVisible();
     await row.getByTestId('worktree-row-unread').focus();
-    const title = window.getByText('Copilot review', { exact: true });
+    // Home's Continue row also names the chat, so read the popover itself.
+    const popover = window
+      .getByText('Unread Chats', { exact: true })
+      .locator('..');
+    const title = popover.getByText('Copilot review', { exact: true });
     await expect(title).toBeVisible();
     // Identify the GitHub mark in the actual preview, so falling
     // through to another provider's logo cannot pass unnoticed.

@@ -26,6 +26,10 @@ import { mapWithConcurrency } from '../lib/concurrency';
 import { getWorktreeDeleteTimeoutMs } from '../lib/worktree-delete-config';
 import { removeWindowsWorktreeReparsePoints } from '../lib/windows-worktree-reparse-points';
 import {
+  isRegistrationCleanupLock,
+  removeAbsentWorktreeRegistrations,
+} from '../lib/worktree-registration-removal';
+import {
   measureDirectoryBytes,
   removeArchiveTree,
 } from './archive-file-operations';
@@ -682,6 +686,7 @@ export async function removeArchiveWorktree(args: {
   referenceRepoPath: string;
   expectedRepositoryIdentity: string;
   worktreePath: string;
+  preMoveWorktreePath?: string;
   signal: AbortSignal;
   child: ArchiveChildObserver;
 }): Promise<void> {
@@ -721,11 +726,16 @@ export async function removeArchiveWorktree(args: {
       if (index === 0 || fields.includes('bare')) {
         throw new Error('Archive removal cannot target the main worktree.');
       }
-      if (
-        fields.some(
-          (field) => field === 'locked' || field.startsWith('locked '),
+      const lock = fields.find(
+        (field) => field === 'locked' || field.startsWith('locked '),
+      );
+      if (lock !== undefined) {
+        // An interrupted registration cleanup's lock: it removes the entry.
+        if (
+          isRegistrationCleanupLock(lock.slice('locked '.length)) &&
+          !(await exists(args.worktreePath))
         )
-      ) {
+          break;
         throw new Error('Archive removal cannot target a locked worktree.');
       }
       isRegistered = true;
@@ -746,11 +756,13 @@ export async function removeArchiveWorktree(args: {
       timeoutMs: getWorktreeDeleteTimeoutMs(args.git.env),
     });
   }
-  await runArchiveGit({
-    ...args,
-    cwd: args.referenceRepoPath,
-    arguments: ['worktree', 'prune'],
-  });
+  await removeAbsentWorktreeRegistrations(
+    repositoryIdentity,
+    args.preMoveWorktreePath === undefined
+      ? [args.worktreePath]
+      : [args.worktreePath, args.preMoveWorktreePath],
+    { signal: args.signal },
+  );
 }
 
 /**

@@ -4,7 +4,9 @@ jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
 
 const mockSpawnClaudeCodeProcessOffMain = jest.fn();
 jest.mock('../agents/claude-process-host-runner', () => ({
-  spawnClaudeCodeProcessOffMain: mockSpawnClaudeCodeProcessOffMain,
+  get spawnClaudeCodeProcessOffMain(): typeof mockSpawnClaudeCodeProcessOffMain {
+    return mockSpawnClaudeCodeProcessOffMain;
+  },
 }));
 
 jest.mock('../pipelines/config-paths', () => ({
@@ -58,7 +60,11 @@ jest.mock('../lib/preferences-store', () => ({
 }));
 
 jest.mock('../integration/structured-helper-dispatch', () => ({
-  codexStructuredHelperRunner: { run: mockCodexStructuredRun },
+  codexStructuredHelperRunner: {
+    get run(): typeof mockCodexStructuredRun {
+      return mockCodexStructuredRun;
+    },
+  },
   runStructuredHelper: jest.fn(),
   structuredHelperReadOnlyPermission: jest.fn(() => ({
     approvalPolicy: 'never',
@@ -137,8 +143,9 @@ function makeQueryEvents(events: Record<string, unknown>[]): Query {
     }
   }
 
+  const iterator = generate();
   return {
-    ...generate(),
+    [Symbol.asyncIterator]: () => iterator,
     interrupt: jest.fn().mockResolvedValue(undefined),
     setPermissionMode: jest.fn().mockResolvedValue(undefined),
     setModel: jest.fn().mockResolvedValue(undefined),
@@ -444,6 +451,19 @@ describe('generateWorktreeSummary', () => {
       }),
     );
 
+    const pluginRuntimeInput: NonNullable<
+      Parameters<typeof generateWorktreeSummary>[0]['pluginRuntime']
+    > = {
+      claudePlugins: [{ type: 'local', path: '/plugins/summary' }],
+      claudeMcpServers: {
+        helper: { type: 'stdio', command: 'helper-mcp' },
+      },
+      codexCapabilityRoots: [],
+      codexMcpServers: {},
+    };
+    // Keep the legacy runtime field that this sanitizer test feeds to the helper.
+    Reflect.set(pluginRuntimeInput, 'codexProcessEnv', {});
+
     await generateWorktreeSummary({
       cwd: '/repo',
       model: 'claude-sonnet-4-6',
@@ -454,15 +474,7 @@ describe('generateWorktreeSummary', () => {
       gitDiff: 'diff --git a/file b/file',
       currentTurnCount: 5,
       isMultiRepo: false,
-      pluginRuntime: {
-        claudePlugins: [{ type: 'local', path: '/plugins/summary' }],
-        claudeMcpServers: {
-          helper: { type: 'stdio', command: 'helper-mcp' },
-        },
-        codexProcessEnv: {},
-        codexCapabilityRoots: [],
-        codexMcpServers: {},
-      },
+      pluginRuntime: pluginRuntimeInput,
     });
 
     const queryOptions = mockedClaudeQuery.mock.calls[0]?.[0]?.options;
@@ -491,6 +503,26 @@ describe('generateWorktreeSummary', () => {
       usage: { inputTokens: 1, outputTokens: 1 },
     });
 
+    const pluginRuntimeInput: NonNullable<
+      Parameters<typeof generateWorktreeSummary>[0]['pluginRuntime']
+    > = {
+      claudePlugins: [],
+      claudeMcpServers: {
+        claudeHelper: { type: 'stdio', command: 'claude-helper-mcp' },
+      },
+      codexCapabilityRoots: [],
+      codexMcpServers: {
+        codexHelper: { command: 'codex-helper-mcp' },
+      },
+    };
+    // Preserve the old input's missing capability roots and legacy secret fields.
+    Reflect.deleteProperty(pluginRuntimeInput, 'codexCapabilityRoots');
+    Reflect.set(pluginRuntimeInput, 'codexProcessEnv', {
+      CANOPY_TEST_PROFILE: 'summary-plugin',
+      PLUGIN_MCP_TOKEN: 'secret',
+    });
+    Reflect.set(pluginRuntimeInput, 'codexMcpEnvKeys', ['PLUGIN_MCP_TOKEN']);
+
     await generateWorktreeSummary({
       cwd: '/repo',
       model: 'claude-sonnet-4-6',
@@ -501,20 +533,7 @@ describe('generateWorktreeSummary', () => {
       gitDiff: 'diff --git a/file b/file',
       currentTurnCount: 5,
       isMultiRepo: false,
-      pluginRuntime: {
-        claudePlugins: [],
-        claudeMcpServers: {
-          claudeHelper: { type: 'stdio', command: 'claude-helper-mcp' },
-        },
-        codexProcessEnv: {
-          CANOPY_TEST_PROFILE: 'summary-plugin',
-          PLUGIN_MCP_TOKEN: 'secret',
-        },
-        codexMcpServers: {
-          codexHelper: { command: 'codex-helper-mcp' },
-        },
-        codexMcpEnvKeys: ['PLUGIN_MCP_TOKEN'],
-      },
+      pluginRuntime: pluginRuntimeInput,
     });
 
     expect(mockedRunStructuredHelper).toHaveBeenCalledWith(
@@ -836,6 +855,23 @@ describe('generateWorktreeSummary', () => {
       usage: { inputTokens: 3, outputTokens: 2 },
     });
 
+    const pluginRuntimeInput: NonNullable<
+      Parameters<typeof generateWorktreeSummary>[0]['pluginRuntime']
+    > = {
+      claudePlugins: [],
+      claudeMcpServers: {},
+      codexCapabilityRoots: [],
+      codexMcpServers: {
+        helper: { command: 'helper-mcp', args: [] },
+      },
+    };
+    // Keep legacy secrets in the untyped input that the sanitizer must remove.
+    Reflect.set(pluginRuntimeInput, 'codexProcessEnv', {
+      CANOPY_TEST_PROFILE: 'summary-plugin',
+      PLUGIN_MCP_TOKEN: 'secret',
+    });
+    Reflect.set(pluginRuntimeInput, 'codexMcpEnvKeys', ['PLUGIN_MCP_TOKEN']);
+
     const result = await generateWorktreeSummary({
       cwd: '/workspace/wt-1',
       model: 'gpt-5.5',
@@ -846,19 +882,7 @@ describe('generateWorktreeSummary', () => {
       gitDiff: 'diff --git a/file b/file',
       currentTurnCount: 6,
       isMultiRepo: false,
-      pluginRuntime: {
-        claudePlugins: [],
-        claudeMcpServers: {},
-        codexProcessEnv: {
-          CANOPY_TEST_PROFILE: 'summary-plugin',
-          PLUGIN_MCP_TOKEN: 'secret',
-        },
-        codexCapabilityRoots: [],
-        codexMcpServers: {
-          helper: { command: 'helper-mcp', args: [] },
-        },
-        codexMcpEnvKeys: ['PLUGIN_MCP_TOKEN'],
-      },
+      pluginRuntime: pluginRuntimeInput,
     });
 
     expect(result.summary?.title).toBe('Codex plugin summary');

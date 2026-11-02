@@ -1,3 +1,4 @@
+import { isNativeOpenCodeSelection } from '@canopy/desktop-shared/lib/chat-model-selection';
 import type {
   AgentProviderType,
   ChatModel,
@@ -146,6 +147,7 @@ export type ModelRowGate =
 export type VisibleModelRowGate = Exclude<ModelRowGate, { kind: 'hidden' }>;
 
 export interface ModelRowGateInput {
+  readonly selectedHarness?: ModelHarness;
   readonly model: ChatModel;
   /** Row provider. For an Agent row this is its BASE model's provider. */
   readonly provider: AgentProviderType;
@@ -458,6 +460,7 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
   // `!== undefined` half, which read as a second real condition when it was only
   // there to re-narrow the type.
   const rowHarness: ModelHarness =
+    input.selectedHarness ??
     (model === currentModel && executionHarnessExplicitlyChosen === true
       ? lockedHarness
       : undefined) ??
@@ -507,6 +510,29 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
   const lockedOtherProvider: AgentProviderType | undefined = harnessMismatch
     ? (lockedProvider ?? lockedHarness)
     : undefined;
+  if (
+    (effectiveLockedHarness === 'opencode' || lockedProvider === 'opencode') &&
+    rowHarness === 'opencode' &&
+    isNativeOpenCodeSelection(currentModel) !== isNativeOpenCodeSelection(model)
+  ) {
+    return {
+      kind: 'hard-disabled',
+      cause: 'locked-provider',
+      reason: 'Start a new chat to change the OpenCode billing selection.',
+    };
+  }
+  if (
+    lockedOtherProvider !== undefined &&
+    ((rowHarness === 'opencode' && !isNativeOpenCodeSelection(model)) ||
+      (lockedOtherProvider === 'opencode' &&
+        !isNativeOpenCodeSelection(currentModel)))
+  ) {
+    return {
+      kind: 'hard-disabled',
+      cause: 'locked-provider',
+      reason: 'Start a new chat to change its execution harness.',
+    };
+  }
   if (lockedOtherProvider !== undefined) {
     // Continuation stays a PROVIDER question: only Claude<->Codex chats carry
     // over. Fall back to the captured harness when the provider half is
@@ -599,18 +625,21 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
   // 6. Case A — nothing can pay for this provider's models. Credit-routed
   // models are enabled silently (no per-row badge); the account-level routing
   // status is surfaced by the shared chat banner instead.
-  const creditRouted =
-    !isOllama &&
-    !nativeAuth &&
-    !loading &&
-    creditsEligible &&
-    isGatewayRoutableModel(model);
+  const needsCreditsRoute =
+    !isOllama && !nativeAuth && !loading && isGatewayRoutableModel(model);
+  const creditRouted = needsCreditsRoute && creditsEligible;
   // CAN-3026 — the other half of "Canopy is paying": no provider subscription,
   // so this native-registry model bills AI Credits. This is why gating
   // gateway-only rows alone would be insufficient — `gpt-6-luna` is itself a
   // native Codex model that routes through credits for a guest with no Codex
   // login, and so is every expensive Claude model beside it.
-  if (creditRouted && libraryRecovery !== undefined) {
+  // CAN-5211: an unfunded guest still needs this account gate. Funding is
+  // what the offered guest fallback recovers; it cannot decide whether the
+  // advanced model's account requirement is shown in the first place.
+  if (
+    (creditRouted || (isGuest === true && needsCreditsRoute)) &&
+    libraryRecovery !== undefined
+  ) {
     return { kind: 'recoverable', recovery: libraryRecovery };
   }
   const availabilityDisabled = !(

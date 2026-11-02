@@ -1,8 +1,15 @@
 'use client';
 
+import {
+  SETTINGS_CARD_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
+  SETTINGS_CARD_ROW_CLASS,
+  SETTINGS_CARD_TITLE_CLASS,
+  SETTINGS_CARD_SUBTITLE_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 import { useState, type JSX } from 'react';
 import { Github } from '@canopy/ui-shared/icons/AppIcons';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner } from '@canopy/ui-shared/components';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { canEditOrg } from '@canopy/protocol/settings/organization-permissions';
 import {
@@ -119,77 +126,81 @@ export function TeamGitHubConnectionSection({
 
   return (
     <section
-      className="rounded-xl bg-card p-5 shadow-sm"
+      className={SETTINGS_CARD_CLASS}
       data-testid="team-github-connection-section"
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-          <Github size={18} />
-        </span>
-        <div className="flex-1">
-          <h2 className="text-m font-semibold fg-primary">GitHub connection</h2>
-          <p className="mt-1 text-s fg-secondary">
-            Connect the {brand.displayName} GitHub App so pull request merge
-            state and diff stats in the timeline are pulled straight from
-            GitHub, keeping them accurate and up to date.
-          </p>
-
-          <ErrorBanner className="mt-3" error={error} />
-
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2 className={SETTINGS_CARD_TITLE_CLASS}>GitHub connection</h2>
+        <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
+          Connect the {brand.displayName} GitHub App so pull request merge state
+          and diff stats in the timeline are pulled straight from GitHub,
+          keeping them accurate and up to date.
+        </p>
+      </div>
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <div className={SETTINGS_CARD_ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-3">
+            <Github size={16} className="shrink-0 fg-secondary" />
+            <div className="min-w-0">
+              <div className="text-s font-medium fg-primary">GitHub</div>
+              {connected ? (
+                <p
+                  className="text-xs text-pretty fg-secondary"
+                  data-testid="team-github-connected"
+                >
+                  {accountLogin ? `Connected to ${accountLogin}` : 'Connected'}
+                </p>
+              ) : continuingInBrowser ? (
+                <p
+                  className="text-xs text-pretty fg-secondary"
+                  data-testid="team-github-continue-in-browser"
+                >
+                  Continue in your browser.
+                </p>
+              ) : (
+                <p className="text-xs text-pretty fg-secondary">
+                  Not connected
+                </p>
+              )}
+            </div>
+          </div>
           {connected ? (
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <span
-                className="inline-flex items-center gap-2 rounded-md bg-success-subtle px-2.5 py-1 text-s font-medium fg-success"
-                data-testid="team-github-connected"
-              >
-                Connected
-                {accountLogin ? (
-                  <span className="font-normal fg-success">
-                    ({accountLogin})
-                  </span>
-                ) : null}
-              </span>
-              <button
-                type="button"
-                onClick={() => setConfirmingDisconnect(true)}
-                disabled={busy}
-                data-testid="team-github-disconnect"
-                className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Disconnect
-              </button>
-            </div>
-          ) : continuingInBrowser ? (
-            <div
-              className="mt-3 flex flex-wrap items-center gap-3"
-              data-testid="team-github-continue-in-browser"
+            <Button
+              size="compact"
+              variant="secondary"
+              onClick={() => setConfirmingDisconnect(true)}
+              disabled={busy}
+              data-testid="team-github-disconnect"
             >
-              <span className="text-s fg-secondary">
-                Continue in your browser.
-              </span>
-              <button
-                type="button"
-                onClick={() => void handleCheckAgain()}
-                disabled={checking}
-                data-testid="team-github-check-again"
-                className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {checking ? 'Checking…' : 'Check again'}
-              </button>
-            </div>
+              Disconnect
+            </Button>
+          ) : continuingInBrowser ? (
+            <Button
+              size="compact"
+              variant="secondary"
+              onClick={() => void handleCheckAgain()}
+              disabled={checking}
+              data-testid="team-github-check-again"
+            >
+              {checking ? 'Checking…' : 'Check again'}
+            </Button>
           ) : (
-            <button
-              type="button"
+            <Button
+              size="compact"
+              variant="secondary"
               onClick={() => void handleConnect()}
               disabled={busy}
               data-testid="team-github-connect"
-              className="mt-3 inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <Github size={15} />
               {busy ? 'Connecting…' : 'Connect GitHub'}
-            </button>
+            </Button>
           )}
         </div>
+        {error ? (
+          <div className="pb-3">
+            <ErrorBanner error={error} />
+          </div>
+        ) : null}
       </div>
 
       {confirmingDisconnect ? (

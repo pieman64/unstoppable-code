@@ -27,6 +27,8 @@ export interface CanopyDaemonLaunchOptions<T> {
     readonly executable: string;
     /** May not set `--data-root` or `--runtime-mode`; the launcher appends both. */
     readonly args?: readonly string[];
+    /** Trusted host requests fd 3; never a daemon argument supplied by a peer. */
+    readonly migrationChannel?: boolean;
   };
   readonly ports: {
     readonly descriptor: CanopyRuntimeDescriptorSource;
@@ -59,11 +61,19 @@ export interface CanopyDaemonLaunchResult<T> {
   readonly descriptor: CanopyRuntimeDescriptor;
   /** Whether this call spawned the daemon it attached to. */
   readonly started: boolean;
+  /** Present only for a host requesting the inherited channel; never implies endpoint access. */
+  readonly migration?: 'launcher' | 'not_launcher';
 }
 
 type Redact = (error: unknown) => CanopyClientError;
 const ignore = (): void => {};
-const RESERVED_SWITCHES = ['--data-root', '--runtime-mode'];
+const RESERVED_SWITCHES = [
+  '--data-root',
+  '--runtime-mode',
+  '--migration-channel',
+  // The W5 qualification host (W5b): only its packaged smoke passes it.
+  '--w5-host',
+];
 
 /** Port failures keep their kind but take fixed text: details may name paths or tokens. */
 const fixed =
@@ -85,6 +95,8 @@ const ambiguousClaim = (): CanopyClientError =>
     'failed_precondition',
     'Core startup claim state is ambiguous.',
   );
+const exitedBeforeReady = (): CanopyClientError =>
+  canopyConnectError('unavailable', 'Core exited before it was ready.');
 
 /** One monotonic deadline plus caller abort, bounding every awaited port call. */
 class Deadline {
@@ -120,6 +132,10 @@ class Deadline {
 
   remainingMs(): number {
     return Math.max(1, Math.ceil(this.expiresAt - performance.now()));
+  }
+
+  isBeforeExpiration(): boolean {
+    return !this.failure && performance.now() < this.expiresAt;
   }
 
   /** Once a failure wins, `late` owns the still-settling call. */
@@ -204,7 +220,14 @@ function validate<T>(options: CanopyDaemonLaunchOptions<T>): LaunchConfig {
   if (!windows && !ports.claim)
     invalid('A startup claim port is required off Windows.');
   return {
-    args: [...args, '--data-root', dataRoot, '--runtime-mode', runtimeMode],
+    args: [
+      ...args,
+      '--data-root',
+      dataRoot,
+      '--runtime-mode',
+      runtimeMode,
+      ...(daemon.migrationChannel ? ['--migration-channel'] : []),
+    ],
     versions,
     claim: windows ? undefined : ports.claim,
     timeoutMs: validateCanopyTimeout(options.timeoutMs ?? 30_000),
@@ -226,6 +249,8 @@ export async function attachOrStartCanopyDaemon<T>(
   let committed = false;
   let cleaned = false;
   let spawnCleanupUnconfirmed = false;
+  // An unclaimed child may have lost the bind; wait for the winner until the deadline.
+  let unclaimedExitBeforeDeadline = false;
   let rollback: Promise<void> | undefined;
   const rollbackChild = (owned: CanopySpawnedDaemon): Promise<void> => {
     rollback ??= (async (): Promise<void> => {
@@ -280,7 +305,16 @@ export async function attachOrStartCanopyDaemon<T>(
           );
         }
       }
-      return { value, descriptor, started };
+      return {
+        value,
+        descriptor,
+        started,
+        ...(options.daemon.migrationChannel && {
+          migration: started
+            ? ('launcher' as const)
+            : ('not_launcher' as const),
+        }),
+      };
     } catch (error) {
       if (
         deadline.failure ||
@@ -332,11 +366,9 @@ export async function attachOrStartCanopyDaemon<T>(
           const result = await attach(state.descriptor);
           if (result) return result;
         } else if (child) {
-          if (exitSeen)
-            throw canopyConnectError(
-              'unavailable',
-              'Core exited before it was ready.',
-            );
+          // Without a claim, a sibling launcher's daemon may hold the endpoint
+          // our child lost; probe for its descriptor until the deadline.
+          if (exitSeen && claim) throw exitedBeforeReady();
         } else if (acquired) {
           child = await deadline.run(
             (signal) =>
@@ -356,7 +388,11 @@ export async function attachOrStartCanopyDaemon<T>(
                 })),
             fixed('Core launch failed.'),
           );
-          child.exited.then(() => (exited = true), ignore);
+          child.exited.then(() => {
+            exited = true;
+            if (!claim && deadline.isBeforeExpiration())
+              unclaimedExitBeforeDeadline = true;
+          }, ignore);
         } else if (!claim) {
           acquired = true;
           continue;
@@ -438,6 +474,17 @@ export async function attachOrStartCanopyDaemon<T>(
       if (result) return result;
       await deadline.sleep(config.probeMs);
     }
+  } catch (error) {
+    // No attachable winner in time: report the child's exit, as with a claim.
+    const { failure } = deadline;
+    if (
+      unclaimedExitBeforeDeadline &&
+      failure !== undefined &&
+      error === failure &&
+      failure.payload.kind === 'deadline_exceeded'
+    )
+      throw exitedBeforeReady();
+    throw error;
   } finally {
     try {
       if (child && !committed) await rollbackChild(child);

@@ -1,3 +1,4 @@
+import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { TranscriptForkContext } from './transcript-fork-context';
 import { captureHomeCapabilities } from './delegation/capture-home-capabilities';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
@@ -31,7 +32,8 @@ import {
   expandLeadingCursorCommand,
 } from '@canopy/desktop-shared/lib/cursor-capabilities';
 import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
-import { runCopilotTurn } from '@canopy/desktop-shared/node/copilot/turn-driver';
+import type { CopilotTurnRequest } from '@canopy/desktop-shared/node/copilot/turn-driver';
+import { handleCopilotTurnCleanupError } from '@canopy/desktop-shared/node/copilot/turn-cleanup';
 import {
   collectCopilotMcpSecretValues,
   describeCopilotMcpServerError,
@@ -53,6 +55,7 @@ import {
 } from '@canopy/desktop-shared/node/copilot/tool-receipts';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
+import type { TurnBinding } from '@canopy/protocol/canopy-core';
 import {
   createApprovalSession,
   type ApprovalSessionHandle,
@@ -86,12 +89,14 @@ import { CursorEventBuffer } from './cursor-event-buffer';
 import {
   buildSessionKey,
   drainChatSessionEvents,
-  markTurnActive,
-  markTurnAwaitingUser,
-  markTurnIdle,
-  recordSessionEvent,
   registerSession,
 } from './session-manager';
+import { observeRoutedTurnBinding } from './session-event-router';
+import {
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+} from './provider-turn-lifecycle';
+import { createOwnedTurnState } from './owned-turn-state';
 import type { AgentProvider, AgentSession, AgentSessionOptions } from './types';
 
 /**
@@ -167,6 +172,16 @@ export class CopilotProvider implements AgentProvider {
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
+    const lifecycleScope = {
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+    };
+    const lifecycleProducer = getTurnLifecycleProducer(
+      'copilot',
+      lifecycleScope,
+    );
+    const turnState = createOwnedTurnState(key, () => session);
     const cowork = isCoworkWorkspace(opts.projectId);
     const codeGraphToolsAdvertised =
       !cowork &&
@@ -186,6 +201,8 @@ export class CopilotProvider implements AgentProvider {
     let planMode = opts.planMode === true;
     let approvalMode: ApprovalMode = opts.approvalMode ?? 'ask';
     let approval: ApprovalSessionHandle | undefined;
+    let awaitingUser = false;
+    let lifecycleProducerReleased = false;
     // Home-folder entries that could not be loaded are reported once per
     // session, not once per turn.
     const announcedNotices = new Set<string>();
@@ -201,6 +218,20 @@ export class CopilotProvider implements AgentProvider {
       data: Record<string, unknown>,
       userMessageId?: string,
     ): void | Promise<void> => {
+      if (
+        awaitingUser &&
+        data.type !== 'result' &&
+        data.type !== 'error' &&
+        currentTurn
+      ) {
+        awaitingUser = false;
+        lifecycleProducer.sessionState({
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          state: 'running',
+          source: 'provider',
+          observedDuringTurnId: currentTurn,
+        });
+      }
       const event = {
         ...data,
         provider: 'copilot',
@@ -209,7 +240,7 @@ export class CopilotProvider implements AgentProvider {
           : {}),
       };
       managedDelegation?.observe(event, userMessageId);
-      recordSessionEvent(key, event);
+      turnState.recordSessionEvent(event);
       return output && data.type !== 'result' && data.type !== 'error'
         ? output.push(event)
         : onEvent(event);
@@ -281,6 +312,7 @@ export class CopilotProvider implements AgentProvider {
       const receipts = new CopilotToolReceipts();
       const turnEmit = (event: Record<string, unknown>): void | Promise<void> =>
         emit(event, userMessageId);
+      let turnFailed = false;
       try {
         const availableModel = await assertCopilotModelAvailable(
           turnModel,
@@ -343,6 +375,7 @@ export class CopilotProvider implements AgentProvider {
         }
         const currentApproval = createApprovalSession({
           sessionKey: key,
+          getTurnUserMessageId: () => userMessageId,
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
@@ -667,6 +700,11 @@ export class CopilotProvider implements AgentProvider {
         ): Promise<boolean> => {
           assertCopilotConnectionGeneration(runtime.generation);
           if (abort.signal.aborted) return false;
+          if (
+            server === names.main &&
+            isWatchDelegatesCompatibilityName(tool, 'copilot')
+          )
+            return true;
           const nativeId = approved.take(server, tool, args);
           if (nativeId) {
             if (receiptRequired) {
@@ -763,7 +801,16 @@ export class CopilotProvider implements AgentProvider {
               }
             : {}),
           codeGraphToolsAdvertised,
-          onAwaitingUser: () => markTurnAwaitingUser(key),
+          onAwaitingUser: (): void => {
+            turnState.markTurnAwaitingUser();
+            awaitingUser = true;
+            lifecycleProducer.sessionState({
+              ...(sessionId ? { providerSessionId: sessionId } : {}),
+              state: 'requires_action',
+              source: 'provider',
+              observedDuringTurnId: turnId,
+            });
+          },
           onSetAutoArchive: (enabled) =>
             turnEmit({ type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE, enabled }),
           authorizeToolCall: (toolKey, args, call) => {
@@ -823,9 +870,7 @@ export class CopilotProvider implements AgentProvider {
         let inheritedContext = '';
         const userPrompt =
           managedDelegation?.applyPolicyGuidance(expanded) ?? expanded;
-        const config: Parameters<typeof runCopilotTurn>[0] = {
-          runtime,
-          gitHubTokenProvider: runtime.auth.tokenProvider,
+        const config: CopilotTurnRequest = {
           workingDirectory: opts.cwd,
           configDirectory: profile,
           model: rawModel,
@@ -857,7 +902,7 @@ export class CopilotProvider implements AgentProvider {
             opts.globalInstructionsSnapshot ?? opts.globalInstructionsBlock,
             opts.systemPromptAppend,
             serverMode === 'app-advisor'
-              ? 'Use the supplied App Advisor tools to help with the app.'
+              ? 'Use the supplied Orchestrator tools to help with the app.'
               : cowork
                 ? buildCoworkInjectedToolPrompt(
                     'copilot',
@@ -1073,7 +1118,16 @@ export class CopilotProvider implements AgentProvider {
               providerType: 'copilot',
               model: turnModel,
               signal: abort.signal,
-              onAwaitingUser: () => markTurnAwaitingUser(key),
+              onAwaitingUser: (): void => {
+                turnState.markTurnAwaitingUser();
+                awaitingUser = true;
+                lifecycleProducer.sessionState({
+                  ...(sessionId ? { providerSessionId: sessionId } : {}),
+                  state: 'requires_action',
+                  source: 'provider',
+                  observedDuringTurnId: turnId,
+                });
+              },
               questions: [
                 {
                   question: request.question,
@@ -1083,7 +1137,16 @@ export class CopilotProvider implements AgentProvider {
               ],
             });
             abort.signal.throwIfAborted();
-            markTurnActive(key, userMessageId);
+            turnState.markTurnActive(userMessageId);
+            if (awaitingUser) {
+              awaitingUser = false;
+              lifecycleProducer.sessionState({
+                ...(sessionId ? { providerSessionId: sessionId } : {}),
+                state: 'running',
+                source: 'provider',
+                observedDuringTurnId: turnId,
+              });
+            }
             const answer = answers[0];
             return {
               answer:
@@ -1119,21 +1182,30 @@ export class CopilotProvider implements AgentProvider {
             : 'explicit-only',
           mcpTable: 'complete-replacement-per-turn',
         });
-        const result = await runCopilotTurn(config);
+        const result = await runtime.runTurn(config);
         return {
           type: 'result',
           is_error: false,
           result: result.text,
           usage: result.usage,
         };
+      } catch (error) {
+        turnFailed = true;
+        throw error;
       } finally {
         receipts.close();
         approval?.invalidatePending?.();
         approval?.dispose();
         approval = undefined;
-        proxy.unregisterRoutesForSession(key);
-        proxy.unregisterCanopyWorktreeSessionRoute(key);
-        await runtime.close();
+        if (turnState.ownsKeyResources()) {
+          proxy.unregisterRoutesForSession(key);
+          proxy.unregisterCanopyWorktreeSessionRoute(key);
+        }
+        try {
+          await runtime.close();
+        } catch (error) {
+          handleCopilotTurnCleanupError(error, turnFailed);
+        }
       }
     };
 
@@ -1144,8 +1216,23 @@ export class CopilotProvider implements AgentProvider {
         if (active)
           throw new Error('Wait for the current Copilot turn to finish.');
         const abort = new AbortController();
-        const turnId = sendOptions?.userMessageId ?? randomUUID();
+        const turnId =
+          sendOptions?.lifecycleExecutionId ??
+          sendOptions?.userMessageId ??
+          randomUUID();
         currentTurn = turnId;
+        const startedAtMs = Date.now();
+        const lifecycleBinding: TurnBinding = {
+          turnId,
+          origin: 'user',
+          binding: sendOptions?.userMessageId ? 'bound' : 'unbound',
+          submissionIds: [],
+          userMessageIds: sendOptions?.userMessageId
+            ? [sendOptions.userMessageId]
+            : [],
+          providerUserMessageUuids: [],
+        };
+        awaitingUser = false;
         const buffer = new CursorEventBuffer(async (event) => {
           await onEvent(event);
           await drainChatSessionEvents(
@@ -1155,7 +1242,27 @@ export class CopilotProvider implements AgentProvider {
           );
         });
         output = buffer;
-        markTurnActive(key, sendOptions?.userMessageId);
+        turnState.markTurnActive(sendOptions?.userMessageId);
+        lifecycleProducer.turnStarted({
+          ...lifecycleBinding,
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          phase: 'start',
+          startedAtMs,
+        });
+        if (sendOptions?.userMessageId !== undefined)
+          observeRoutedTurnBinding(
+            lifecycleScope,
+            session,
+            [sendOptions.userMessageId],
+            undefined,
+            turnId,
+          );
+        lifecycleProducer.sessionState({
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          state: 'running',
+          source: 'provider',
+          observedDuringTurnId: turnId,
+        });
         const done = run(text, turnId, abort, sendOptions?.userMessageId)
           .catch((error: unknown) => ({
             type: 'result',
@@ -1184,10 +1291,34 @@ export class CopilotProvider implements AgentProvider {
                 ? error.message
                 : 'Copilot output could not be saved.',
           }))
-          .then(async (result) => {
+          .then(async (result: Record<string, unknown>) => {
             active = undefined;
             output = undefined;
-            markTurnIdle(key);
+            turnState.markTurnIdle();
+            awaitingUser = false;
+            const endedAtMs = Date.now();
+            lifecycleProducer.turnEnded({
+              ...lifecycleBinding,
+              ...(sessionId ? { providerSessionId: sessionId } : {}),
+              endedAtMs,
+              // The reducer derives the duration net of requires_action pauses.
+              outcome:
+                abort.signal.aborted || result.subtype === 'cancelled'
+                  ? 'cancelled'
+                  : result.is_error === true
+                    ? 'failed'
+                    : 'completed',
+              ...(typeof result.result === 'string'
+                ? { terminalReason: result.result }
+                : {}),
+              source: 'result',
+            });
+            lifecycleProducer.sessionState({
+              ...(sessionId ? { providerSessionId: sessionId } : {}),
+              state: 'idle',
+              source: 'result-fallback',
+              observedDuringTurnId: turnId,
+            });
             await emit(
               result.is_error
                 ? { type: 'error', error: result.result }
@@ -1208,8 +1339,15 @@ export class CopilotProvider implements AgentProvider {
       },
       destroy: async () => {
         lifetime.abort();
-        await session.cancel();
-        managedDelegation?.detach();
+        try {
+          await session.cancel();
+          managedDelegation?.detach();
+        } finally {
+          if (!lifecycleProducerReleased) {
+            lifecycleProducerReleased = true;
+            releaseTurnLifecycleProducer('copilot', lifecycleScope);
+          }
+        }
       },
       setManagedDelegationMode: (mode): Promise<void> => {
         opts.managedDelegationMode = mode;

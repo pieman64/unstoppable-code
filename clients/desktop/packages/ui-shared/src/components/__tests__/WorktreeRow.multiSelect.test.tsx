@@ -2,7 +2,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { WorktreeRow, type WorktreeRowProps } from '../WorktreeRow';
-import { WorkEntryRow } from '../WorkEntryRow';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -86,14 +85,5 @@ describe('WorktreeRow multi-select (CAN-3975)', () => {
     const row = render({ multiSelect: { selected: false } });
     expect(row.className).not.toContain('bg-accent-subtle');
     expect(row.className).toContain('hover:bg-subtle');
-  });
-
-  it('reserves no select column on a Chats row', () => {
-    act(() =>
-      root.render(<WorkEntryRow title="Chat" testId="entry" entryId="e1" />),
-    );
-    expect(
-      container.querySelector('[data-testid="entry-select-column"]'),
-    ).toBeNull();
   });
 });

@@ -7,8 +7,13 @@ import {
   rm,
   symlink,
 } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { isErrnoException } from './type-guards';
+import { join } from 'node:path';
+import {
+  ensureRelativeAlias,
+  ensureRelativeSymlink as ensureRelativeSymlinkWithPort,
+  hasExpectedRelativeAlias,
+  type InstructionAliasPort,
+} from '@canopy/core-runtime/node/workspace/instruction-files';
 
 export {
   isProjectInstructionFileReadable,
@@ -19,143 +24,71 @@ export {
   type ProjectInstructionFile,
 } from '@canopy/desktop-shared/node/lib/project-instruction-files';
 
-export async function ensureRelativeSymlink(
+// This module stays the writer of desktop AGENTS.md aliases; the alias policy
+// lives in core-runtime (CAN-4106).
+const aliasPort: InstructionAliasPort = {
+  lstat: (path) => lstat(path),
+  readlink: (path) => readlink(path),
+  readText: (path) => readFile(path, 'utf8'),
+  remove: (path) => rm(path, { recursive: true, force: true }),
+  symlink: (target, path) => symlink(target, path),
+  hardLink: (existingPath, path) => link(existingPath, path),
+  copyFile: (source, destination) => copyFile(source, destination),
+};
+
+export function ensureRelativeSymlink(
   linkPath: string,
   targetPath: string,
 ): Promise<void> {
-  try {
-    const existing = await lstat(linkPath);
-    if (existing.isSymbolicLink()) {
-      const existingTarget = await readlink(linkPath);
-      if (symlinkTargetsMatch(linkPath, existingTarget, targetPath)) {
-        return;
-      }
-    }
-
-    await rm(linkPath, { recursive: true, force: true });
-  } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') {
-      // Nothing to replace.
-    } else {
-      throw error;
-    }
-  }
-
-  try {
-    await symlink(targetPath, linkPath);
-  } catch (error) {
-    if (!isErrnoException(error) || error.code !== 'EEXIST') {
-      throw error;
-    }
-
-    const existing = await lstat(linkPath);
-    if (!existing.isSymbolicLink()) {
-      throw error;
-    }
-
-    const existingTarget = await readlink(linkPath);
-    if (!symlinkTargetsMatch(linkPath, existingTarget, targetPath)) {
-      throw error;
-    }
-  }
+  return ensureRelativeSymlinkWithPort(linkPath, targetPath, aliasPort);
 }
 
-export async function ensureRelativeSymlinkOrCopy(
+export function ensureRelativeSymlinkOrCopy(
   linkPath: string,
   targetPath: string,
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
-  if (platform === 'win32') {
-    await replaceWithHardlinkOrCopy(linkPath, targetPath);
-    return;
-  }
-
-  try {
-    await ensureRelativeSymlink(linkPath, targetPath);
-  } catch (error) {
-    if (
-      !isErrnoException(error) ||
-      (error.code !== 'EPERM' && error.code !== 'EACCES')
-    ) {
-      throw error;
-    }
-
-    await replaceWithHardlinkOrCopy(linkPath, targetPath);
-  }
+  return ensureRelativeAlias(
+    linkPath,
+    targetPath,
+    { platform, posixPermissionFallback: true },
+    aliasPort,
+  );
 }
 
-async function replaceWithHardlinkOrCopy(
-  linkPath: string,
-  targetPath: string,
-): Promise<void> {
-  const resolvedTargetPath = resolve(dirname(linkPath), targetPath);
-  await rm(linkPath, { recursive: true, force: true });
-  try {
-    await link(resolvedTargetPath, linkPath);
-  } catch {
-    await copyFile(resolvedTargetPath, linkPath);
-  }
-}
-
-export async function hasExpectedRelativeSymlinkOrCopy(
+export function hasExpectedRelativeSymlinkOrCopy(
   linkPath: string,
   targetPath: string,
 ): Promise<boolean> {
-  try {
-    const existing = await lstat(linkPath);
-    if (existing.isSymbolicLink()) {
-      const existingTarget = await readlink(linkPath);
-      return symlinkTargetsMatch(linkPath, existingTarget, targetPath);
-    }
-
-    const resolvedTargetPath = resolve(dirname(linkPath), targetPath);
-    const [linkContent, targetContent] = await Promise.all([
-      readFile(linkPath, 'utf8'),
-      readFile(resolvedTargetPath, 'utf8'),
-    ]);
-    return linkContent === targetContent;
-  } catch {
-    return false;
-  }
+  return hasExpectedRelativeAlias(linkPath, targetPath, aliasPort);
 }
 
-function symlinkTargetsMatch(
-  linkPath: string,
-  existingTarget: string,
-  expectedTarget: string,
-): boolean {
-  if (existingTarget === expectedTarget) {
-    return true;
-  }
-
-  const linkDir = dirname(linkPath);
-  return resolve(linkDir, existingTarget) === resolve(linkDir, expectedTarget);
-}
-
-export async function ensureAgentsMdSymlink(
+/** Windows hard links or copies; POSIX symlinks with no permission fallback. */
+export function ensureAgentsMdSymlink(
   dir: string,
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
-  const agentsMdPath = join(dir, 'AGENTS.md');
-  if (platform === 'win32') {
-    await ensureRelativeSymlinkOrCopy(agentsMdPath, 'CLAUDE.md', platform);
-    return;
-  }
-  await ensureRelativeSymlink(agentsMdPath, 'CLAUDE.md');
+  return ensureRelativeAlias(
+    join(dir, 'AGENTS.md'),
+    'CLAUDE.md',
+    { platform, posixPermissionFallback: false },
+    aliasPort,
+  );
 }
 
-export async function ensureAgentsMdSymlinkOrCopy(
+/** As {@link ensureAgentsMdSymlink}, but POSIX falls back after EPERM/EACCES. */
+export function ensureAgentsMdSymlinkOrCopy(
   dir: string,
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
-  await ensureRelativeSymlinkOrCopy(
+  return ensureRelativeSymlinkOrCopy(
     join(dir, 'AGENTS.md'),
     'CLAUDE.md',
     platform,
   );
 }
 
-export async function hasExpectedAgentsMdSymlinkOrCopy(
+export function hasExpectedAgentsMdSymlinkOrCopy(
   dir: string,
 ): Promise<boolean> {
   return hasExpectedRelativeSymlinkOrCopy(join(dir, 'AGENTS.md'), 'CLAUDE.md');

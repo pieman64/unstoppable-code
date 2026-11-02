@@ -39,6 +39,7 @@ describe('normalizePersistedUsage', () => {
         {
           modelId: 'native-with-gateway',
           gatewayId: 'anthropic/native-with-gateway',
+          family: 'anthropic',
           recommendedHarness: 'claude',
           gatewayOnly: false,
           contextWindow: 100_000,
@@ -48,6 +49,27 @@ describe('normalizePersistedUsage', () => {
         },
       ],
     );
+  });
+
+  it('uses the explicit OpenCode route window even when the source model is native', () => {
+    expect(
+      normalizePersistedUsage(usage, 'native-with-gateway', false, 'opencode')
+        ?.contextWindow,
+    ).toBe(100_000);
+    expect(
+      resolveTabUsageForModel(usage, 'native-with-gateway', false, 'opencode'),
+    ).toMatchObject({ contextWindow: 100_000, inputTokens: 10, numTurns: 1 });
+  });
+
+  it('does not substitute native capabilities when a captured OpenCode route is withdrawn', () => {
+    initAiGatewayModels([], []);
+    expect(
+      normalizePersistedUsage(usage, 'native-with-gateway', false, 'opencode'),
+    ).toBe(usage);
+    expect(
+      resolveTabUsageForModel(usage, 'native-with-gateway', false, 'opencode')
+        ?.contextWindow,
+    ).toBe(0);
   });
 
   it('uses the native context window for subscription sessions', () => {

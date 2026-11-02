@@ -106,7 +106,7 @@ function ExternalAgentsOverviewView({
           intent="attention"
           actions={
             <NoticeButton
-              variant="primary"
+              variant="secondary"
               data-testid="external-agents-retry"
               onClick={(): void => void state.load()}
             >

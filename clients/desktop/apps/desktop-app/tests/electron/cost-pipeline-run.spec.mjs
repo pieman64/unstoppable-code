@@ -118,7 +118,7 @@ test('pipeline cost appears in Summary, records retries and Advisor, and opens s
     ).toContainText('Agent verify');
     await expect(
       breakdown.getByTestId('pipeline-run-cost-advisor'),
-    ).toContainText('Pipeline Advisor');
+    ).toContainText('Workflow Advisor');
     await expect(
       breakdown.getByTestId(
         `pipeline-run-cost-child-${cost.ids.childExecution}`,

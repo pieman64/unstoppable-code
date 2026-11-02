@@ -6,8 +6,9 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
-// CAN-2687: preserve command shortcuts while removing hints and category pills.
-test('search palette omits footer hints and category pills but keeps shortcuts', async () => {
+// CAN-2687: preserve command shortcuts while removing word hints and category
+// pills. The keyboard-hints pattern brings the legend back as key caps only.
+test('search palette shows a caps-only key legend, no category pills, and keeps shortcuts', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-palette-declutter-'),
   );
@@ -23,6 +24,16 @@ test('search palette omits footer hints and category pills but keeps shortcuts',
     for (const hint of ['Enter to run', 'Esc to close', 'to navigate']) {
       await expect(palette).not.toContainText(hint);
     }
+    const legend = palette.getByTestId('key-hint-footer');
+    await expect(legend).toBeVisible();
+    await expect(legend.locator('kbd')).toHaveCount(4);
+    await expect(legend).toContainText('move');
+    await expect(legend).toContainText('open');
+    await expect(legend).toContainText('close');
+    // "Type > for commands" names its key as a cap.
+    await expect(
+      palette.getByTestId('command-palette-mode-hint').locator('kbd'),
+    ).toHaveText('>');
     await window.getByTestId('command-palette-input').fill('>');
     const row = palette
       .getByTestId('command-palette-result')

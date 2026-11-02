@@ -44,6 +44,8 @@ describe('browser type action', () => {
     );
 
     expect(result.status).toBe('executed');
+    if (result.status !== 'executed')
+      throw new Error('Expected typing to execute');
     expect(result.value).toMatchObject({
       completed: true,
       inputMode: 'trusted',
@@ -105,6 +107,8 @@ describe('browser type action', () => {
     );
 
     expect(result.status).toBe('executed');
+    if (result.status !== 'executed')
+      throw new Error('Expected typing to execute');
     expect(result.value).toMatchObject({ completed: true, focusLost: true });
     expect(chars).toEqual(['a']);
     expect(keepsFocus).toHaveBeenCalledTimes(1);

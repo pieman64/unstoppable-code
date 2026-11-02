@@ -81,6 +81,7 @@ export function OrganizationListPage({
           showCreateAction ? (
             <Button
               variant="secondary"
+              size="compact"
               onClick={startCreating}
               data-testid="team-panel-create"
             >

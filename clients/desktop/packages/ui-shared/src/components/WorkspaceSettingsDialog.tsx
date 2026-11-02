@@ -1,17 +1,27 @@
 'use client';
 
-import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import {
   DEFAULT_ARCHIVE_RETENTION_DAYS,
   MIN_ARCHIVE_RETENTION_DAYS,
   MAX_ARCHIVE_RETENTION_DAYS,
 } from '@canopy/protocol/archive-retention';
 import { WORKSPACE_LABEL } from '@canopy/protocol';
+import { Button } from './Button';
 import { ColorSwatchPicker } from './ColorSwatchPicker';
 import { DialogModal } from './DialogModal';
-import { Select } from './Field';
+import { Select, TextArea, TextInput } from './Field';
+import { SegmentedControl } from './SegmentedControl';
 import { SettingsDangerConfirmBlock } from './SettingsDangerConfirmBlock';
-import { SettingsTabBar, type SettingsTab } from './SettingsTabBar';
+import { SettingsSaveStatus } from './SettingsSaveStatus';
+import { SettingsRowsGroup, SettingsRowsRow } from './settings/SettingsRows';
 import { WORKSPACE_COLOR_PALETTE } from './workspace-color-palette';
 
 export { WORKSPACE_COLOR_PALETTE };
@@ -122,13 +132,19 @@ const DEFAULT_TABS: readonly WorkspaceSettingsTab[] = [
   'danger',
 ];
 
+interface WorkspaceSettingsPageTab {
+  readonly id: string;
+  readonly label: string;
+}
+
 const TAB_LABELS: Readonly<
-  Record<WorkspaceSettingsTab, SettingsTab<WorkspaceSettingsTab>>
+  Record<WorkspaceSettingsTab, WorkspaceSettingsPageTab>
 > = {
-  details: { id: 'details', label: 'Details' },
+  details: { id: 'details', label: 'General' },
   'claude-md': { id: 'claude-md', label: 'CLAUDE.md' },
   scripts: { id: 'scripts', label: 'Scripts' },
-  danger: { id: 'danger', label: 'Danger', danger: true },
+  // Removing lives in the last rows of General, not in a tab of its own.
+  danger: { id: 'danger', label: 'Danger' },
 };
 
 function isBuiltInTabId(id: string): id is WorkspaceSettingsTab {
@@ -140,6 +156,13 @@ function errorMessage(error: unknown, fallback: string): string {
     ? error.message
     : fallback;
 }
+
+/**
+ * The dialog's resting height, never more than DialogModal lets its card be
+ * (min(80vh, 85dvh)), so Save stays on a short screen. The built-in pages
+ * fit inside it, so switching between them does not resize the dialog.
+ */
+export const WORKSPACE_SETTINGS_DIALOG_MIN_HEIGHT = 'min(30rem, 80vh, 85dvh)';
 
 export function WorkspaceSettingsDialog({
   workspaceName,
@@ -166,22 +189,28 @@ export function WorkspaceSettingsDialog({
 }: WorkspaceSettingsDialogProps): JSX.Element {
   const validExtraTabs = extraTabs.filter((tab) => !isBuiltInTabId(tab.id));
   const builtInTabs = tabs
-    .filter((tab) => tab !== 'danger' || onDelete !== undefined)
+    .filter((tab) => tab !== 'danger')
     .map((tab) => ({
       ...TAB_LABELS[tab],
       label: tabLabels?.[tab] ?? TAB_LABELS[tab].label,
     }));
-  const visibleTabs: ReadonlyArray<SettingsTab<string>> = [
-    ...builtInTabs.filter((tab) => tab.id !== 'danger'),
+  const visibleTabs: ReadonlyArray<WorkspaceSettingsPageTab> = [
+    ...builtInTabs,
     ...validExtraTabs.map(({ id, label }) => ({ id, label })),
-    ...builtInTabs.filter((tab) => tab.id === 'danger'),
   ];
+  // The old Danger tab now opens General, where removing lives.
+  const requestedTab = initialTab === 'danger' ? 'details' : initialTab;
   const [activeTab, setActiveTab] = useState<string>(
-    (initialTab !== undefined &&
-    visibleTabs.some((tab) => tab.id === initialTab)
-      ? initialTab
+    (requestedTab !== undefined &&
+    visibleTabs.some((tab) => tab.id === requestedTab)
+      ? requestedTab
       : visibleTabs[0]?.id) ?? 'details',
   );
+  const idPrefix = useId();
+  const nameInputId = `${idPrefix}-name`;
+  const descriptionInputId = `${idPrefix}-description`;
+  const retentionInputId = `${idPrefix}-retention`;
+  const scriptInputIdPrefix = `${idPrefix}-script`;
   const [defaultModelDefinitionId, setDefaultModelDefinitionId] = useState(
     initialValues.defaultModelDefinitionId ?? null,
   );
@@ -340,6 +369,97 @@ export function WorkspaceSettingsDialog({
     }
   };
 
+  const activeLabel =
+    visibleTabs.find((tab) => tab.id === activeTab)?.label ?? '';
+  const showManage =
+    onDelete !== undefined &&
+    (activeTab === 'details' ||
+      (!visibleTabs.some((tab) => tab.id === 'details') &&
+        activeTab === visibleTabs[0]?.id));
+
+  const nameField = (
+    <TextInput
+      id={nameInputId}
+      density="settings"
+      value={name}
+      onChange={(event) => {
+        const nextName = event.target.value;
+        setJustSaved(false);
+        nameEditVersionRef.current += 1;
+        nameValueRef.current = nextName;
+        nameDirtyRef.current =
+          nextName.trim() !== metadataBaselineRef.current.name ||
+          (nameSavingVersionRef.current !== null &&
+            nameEditVersionRef.current !== nameSavingVersionRef.current);
+        setName(nextName);
+      }}
+      data-testid={testIds?.nameInput}
+    />
+  );
+
+  // Removing is the quiet last row of General: a danger text button that
+  // confirms in place, never a titled card of its own.
+  const removeRows = showManage ? (
+    <>
+      <div data-testid={testIds?.danger}>
+        <SettingsDangerConfirmBlock
+          surface="row"
+          title={dangerCopy?.title ?? `Delete ${WORKSPACE_LABEL.toLowerCase()}`}
+          description={
+            confirming
+              ? "This can't be undone."
+              : (dangerCopy?.description ??
+                `Removes it and every worktree, chat and summary it owns on the desktop.`)
+          }
+          triggerLabel={dangerCopy?.triggerLabel ?? 'Delete…'}
+          confirmLabel={dangerCopy?.confirmLabel ?? 'Delete'}
+          confirmInProgressLabel={
+            dangerCopy?.confirmInProgressLabel ?? 'Deleting…'
+          }
+          variant={dangerVariant}
+          triggerDisabled={working}
+          confirming={confirming}
+          onConfirmStart={() => setConfirming(true)}
+          onConfirmCancel={() => setConfirming(false)}
+          onConfirm={() => void remove()}
+          isWorking={deleting}
+        />
+      </div>
+      {secondaryDanger && (
+        <div data-testid={testIds?.secondaryDanger}>
+          <SettingsDangerConfirmBlock
+            surface="row"
+            title={secondaryDanger.copy.title ?? 'Delete workspace'}
+            description={secondaryDanger.copy.description}
+            triggerLabel={secondaryDanger.copy.triggerLabel ?? 'Delete…'}
+            confirmLabel={secondaryDanger.copy.confirmLabel ?? 'Delete'}
+            confirmInProgressLabel={
+              secondaryDanger.copy.confirmInProgressLabel ?? 'Deleting…'
+            }
+            triggerDisabled={working}
+            confirming={secondaryConfirming}
+            onConfirmStart={() => setSecondaryConfirming(true)}
+            onConfirmCancel={() => setSecondaryConfirming(false)}
+            isWorking={secondaryWorking}
+            onConfirm={() => {
+              if (working) return;
+              setSecondaryWorking(true);
+              setError(null);
+              void secondaryDanger
+                .onConfirm()
+                .then(onClose)
+                .catch((error: unknown) => {
+                  setError(errorMessage(error, "Couldn't delete workspace."));
+                  setSecondaryConfirming(false);
+                })
+                .finally(() => setSecondaryWorking(false));
+            }}
+          />
+        </div>
+      )}
+    </>
+  ) : null;
+
   return (
     <DialogModal
       onClose={working ? (): void => undefined : onClose}
@@ -348,317 +468,269 @@ export function WorkspaceSettingsDialog({
       title={`${WORKSPACE_LABEL} settings`}
       subtitle={workspaceName}
       maxWidth="2xl"
+      minHeight={WORKSPACE_SETTINGS_DIALOG_MIN_HEIGHT}
+      headerBorder={false}
+      headerSpacing="tight"
+      scrollableBody={false}
       dataTestId={testIds?.dialog}
     >
-      <SettingsTabBar
-        tabs={visibleTabs}
-        activeTab={activeTab}
-        onChange={(tab): void => {
-          setActiveTab(tab);
-          if (tab !== 'danger') setConfirming(false);
-        }}
-      />
-      <div className="flex flex-col gap-5 px-5 pb-5 pt-4">
-        {activeTab === 'details' && (
-          <div className="flex flex-col gap-3">
-            <label className="flex flex-col gap-1.5 text-s">
-              <span className="font-medium fg-primary">{`${WORKSPACE_LABEL} name`}</span>
-              <input
-                type="text"
-                value={name}
-                onChange={(event) => {
-                  const nextName = event.target.value;
-                  setJustSaved(false);
-                  nameEditVersionRef.current += 1;
-                  nameValueRef.current = nextName;
-                  nameDirtyRef.current =
-                    nextName.trim() !== metadataBaselineRef.current.name ||
-                    (nameSavingVersionRef.current !== null &&
-                      nameEditVersionRef.current !==
-                        nameSavingVersionRef.current);
-                  setName(nextName);
-                }}
-                data-testid={testIds?.nameInput}
-                className="rounded-md border bg-base px-3 py-2 text-s fg-primary outline-none focus:border-line-focus focus:ring-1 focus:ring-line-focus"
+      {/* Pages are simple tabs under the title; a phone-width screen scrolls
+          them sideways rather than wrapping. */}
+      {visibleTabs.length > 1 ? (
+        <div
+          className="shrink-0 overflow-x-auto border-b px-5 pb-3 pt-1"
+          data-testid="workspace-settings-pages"
+        >
+          <SegmentedControl
+            semantics="tabs"
+            label={`${WORKSPACE_LABEL} settings pages`}
+            width="content"
+            value={activeTab}
+            options={visibleTabs.map((tab) => ({
+              value: tab.id,
+              label: tab.label,
+            }))}
+            onChange={(next): void => {
+              setActiveTab(next);
+              setConfirming(false);
+              setSecondaryConfirming(false);
+            }}
+          />
+        </div>
+      ) : null}
+      <div
+        role="tabpanel"
+        aria-label={activeLabel}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-5 py-2"
+      >
+        <div className="flex flex-1 flex-col gap-4">
+          {activeTab === 'details' && (
+            <SettingsRowsGroup surface="plain">
+              <SettingsRowsRow
+                label="Name"
+                htmlFor={nameInputId}
+                control={<span className="inline-flex w-52">{nameField}</span>}
               />
-            </label>
-            {modelOptions !== undefined && (
-              <label className="flex flex-col gap-1.5 text-s">
-                <span className="font-medium fg-primary">Default model</span>
-                <span className="text-xs fg-secondary">
-                  Used for new chats. You can choose a different model in each
-                  chat.
-                </span>
-                <Select
-                  aria-label="Default model"
-                  value={defaultModelDefinitionId ?? ''}
-                  disabled={working || modelsLoading}
-                  onValueChange={(value): void => {
-                    setDefaultModelDefinitionId(value || null);
-                    setJustSaved(false);
-                  }}
-                  data-testid={testIds?.defaultModel}
-                  options={[
-                    {
-                      value: '',
-                      label: modelsLoading
-                        ? 'Loading models…'
-                        : 'Use account default',
-                    },
-                    ...(defaultModelDefinitionId !== null &&
-                    !modelOptions.some(
-                      (option) => option.id === defaultModelDefinitionId,
-                    )
-                      ? [
-                          {
-                            value: defaultModelDefinitionId,
-                            label: 'Saved model unavailable',
-                            disabled: true,
-                          },
-                        ]
-                      : []),
-                    ...modelOptions.map((option) => ({
-                      value: option.id,
-                      label: option.label,
-                      disabled: option.disabled,
-                    })),
-                  ]}
-                />
-                {modelsError && (
-                  <span role="alert" className="text-xs fg-destructive">
-                    {modelsError}
-                  </span>
-                )}
-              </label>
-            )}
-            {initialValues.deletionRetentionDays !== undefined && (
-              <label className="flex flex-col gap-1.5 text-s">
-                <span>Keep deleted chats for</span>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    aria-label="Keep deleted chats for"
-                    min={MIN_ARCHIVE_RETENTION_DAYS}
-                    max={MAX_ARCHIVE_RETENTION_DAYS}
-                    value={
-                      Number.isNaN(deletionRetentionDays)
-                        ? ''
-                        : deletionRetentionDays
-                    }
+              {includeDescription && (
+                <SettingsRowsRow
+                  label="Description"
+                  htmlFor={descriptionInputId}
+                >
+                  <TextArea
+                    id={descriptionInputId}
+                    rows={3}
+                    value={description}
                     onChange={(event) => {
                       setJustSaved(false);
-                      setDeletionRetentionDays(event.target.valueAsNumber);
+                      setDescription(event.target.value);
                     }}
-                    data-testid={testIds?.retentionInput}
-                    className="w-24 rounded-md border inset-ring-[length:var(--border-hairline)] inset-ring-line-base bg-base px-3 py-2 text-s fg-primary"
+                    data-testid={testIds?.descriptionInput}
                   />
-                  <span>days</span>
-                </div>
-                <span className="text-xs fg-secondary">
-                  Deleted chats are kept for {displayedRetentionDays} days, then
-                  removed. Archived chats are kept until you delete them.
-                </span>
-              </label>
-            )}
-            {includeDescription && (
-              <label className="flex flex-col gap-1.5 text-s">
-                <span className="font-medium fg-primary">Description</span>
-                <textarea
-                  value={description}
-                  onChange={(event) => {
-                    setJustSaved(false);
-                    setDescription(event.target.value);
-                  }}
-                  data-testid={testIds?.descriptionInput}
-                  className="h-20 w-full resize-y rounded-md border bg-base px-3 py-2 text-s fg-primary outline-none focus:border-line-focus focus:ring-1 focus:ring-line-focus"
+                </SettingsRowsRow>
+              )}
+              <SettingsRowsRow
+                label="Color"
+                control={
+                  <ColorSwatchPicker
+                    size="compact"
+                    value={color}
+                    palette={palette}
+                    testId={testIds?.colorSwatches}
+                    onChange={(swatch) => {
+                      setJustSaved(false);
+                      colorEditVersionRef.current += 1;
+                      colorValueRef.current = swatch;
+                      colorDirtyRef.current =
+                        swatch !== metadataBaselineRef.current.color ||
+                        (colorSavingVersionRef.current !== null &&
+                          colorEditVersionRef.current !==
+                            colorSavingVersionRef.current);
+                      setColor(swatch);
+                    }}
+                  />
+                }
+              />
+              {modelOptions !== undefined && (
+                <SettingsRowsRow
+                  label="Default model"
+                  description="Used for new chats. You can choose a different model in each chat."
+                  control={
+                    <span className="inline-flex w-52">
+                      <Select
+                        aria-label="Default model"
+                        value={defaultModelDefinitionId ?? ''}
+                        disabled={working || modelsLoading}
+                        onValueChange={(value): void => {
+                          setDefaultModelDefinitionId(value || null);
+                          setJustSaved(false);
+                        }}
+                        data-testid={testIds?.defaultModel}
+                        options={[
+                          {
+                            value: '',
+                            label: modelsLoading
+                              ? 'Loading models…'
+                              : 'Use account default',
+                          },
+                          ...(defaultModelDefinitionId !== null &&
+                          !modelOptions.some(
+                            (option) => option.id === defaultModelDefinitionId,
+                          )
+                            ? [
+                                {
+                                  value: defaultModelDefinitionId,
+                                  label: 'Saved model unavailable',
+                                  disabled: true,
+                                },
+                              ]
+                            : []),
+                          ...modelOptions.map((option) => ({
+                            value: option.id,
+                            label: option.label,
+                            disabled: option.disabled,
+                          })),
+                        ]}
+                      />
+                    </span>
+                  }
+                >
+                  {modelsError && (
+                    <span role="alert" className="text-xs fg-destructive">
+                      {modelsError}
+                    </span>
+                  )}
+                </SettingsRowsRow>
+              )}
+              {initialValues.deletionRetentionDays !== undefined && (
+                <SettingsRowsRow
+                  label="Keep deleted chats for"
+                  htmlFor={retentionInputId}
+                  description={`Deleted chats are kept for ${displayedRetentionDays} days, then removed. Archived chats are kept until you delete them.`}
+                  control={
+                    <>
+                      <span className="inline-flex w-20">
+                        <TextInput
+                          id={retentionInputId}
+                          density="settings"
+                          type="number"
+                          aria-label="Keep deleted chats for"
+                          min={MIN_ARCHIVE_RETENTION_DAYS}
+                          max={MAX_ARCHIVE_RETENTION_DAYS}
+                          value={
+                            Number.isNaN(deletionRetentionDays)
+                              ? ''
+                              : deletionRetentionDays
+                          }
+                          onChange={(event) => {
+                            setJustSaved(false);
+                            setDeletionRetentionDays(
+                              event.target.valueAsNumber,
+                            );
+                          }}
+                          data-testid={testIds?.retentionInput}
+                        />
+                      </span>
+                      <span className="text-s fg-secondary">days</span>
+                    </>
+                  }
                 />
-              </label>
-            )}
-            <div className="flex flex-col gap-1.5 text-s">
-              <span className="font-medium fg-primary">Color</span>
-              <ColorSwatchPicker
-                value={color}
-                palette={palette}
-                testId={testIds?.colorSwatches}
-                onChange={(swatch) => {
+              )}
+              {removeRows}
+            </SettingsRowsGroup>
+          )}
+          {activeTab === 'claude-md' && (
+            // The editor fills the page, so its insets match on every side.
+            <div className="my-2 flex min-h-48 flex-1 flex-col">
+              <TextArea
+                value={content}
+                aria-label={
+                  typeof claudeMdCopy?.title === 'string'
+                    ? claudeMdCopy.title
+                    : 'CLAUDE.md'
+                }
+                onChange={(event) => {
                   setJustSaved(false);
-                  colorEditVersionRef.current += 1;
-                  colorValueRef.current = swatch;
-                  colorDirtyRef.current =
-                    swatch !== metadataBaselineRef.current.color ||
-                    (colorSavingVersionRef.current !== null &&
-                      colorEditVersionRef.current !==
-                        colorSavingVersionRef.current);
-                  setColor(swatch);
+                  setContent(event.target.value);
                 }}
+                spellCheck={false}
+                data-testid={testIds?.claudeMdTextarea}
+                className="flex-1"
+                placeholder={
+                  claudeMdCopy?.placeholder ??
+                  `# ${WORKSPACE_LABEL} instructions\n\nGuidance for agents working in this ${WORKSPACE_LABEL.toLowerCase()}…`
+                }
               />
             </div>
-          </div>
-        )}
-        {activeTab === 'claude-md' && (
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-col gap-1">
-              <span className="text-s font-medium fg-primary">
-                {claudeMdCopy?.title ?? 'CLAUDE.md'}
-              </span>
-              <span className="text-xs fg-secondary">
-                {claudeMdCopy?.description ??
-                  `${WORKSPACE_LABEL} instructions shared with agents in this ${WORKSPACE_LABEL.toLowerCase()}.`}
-              </span>
-            </div>
-            <textarea
-              value={content}
-              onChange={(event) => {
-                setJustSaved(false);
-                setContent(event.target.value);
-              }}
-              spellCheck={false}
-              data-testid={testIds?.claudeMdTextarea}
-              className="h-56 w-full resize-y rounded-md border bg-base px-3 py-2 font-mono text-xs fg-primary outline-none focus:border-line-focus focus:ring-1 focus:ring-line-focus"
-              placeholder={
-                claudeMdCopy?.placeholder ??
-                `# ${WORKSPACE_LABEL} instructions\n\nGuidance for agents working in this ${WORKSPACE_LABEL.toLowerCase()}…`
-              }
-            />
-          </div>
-        )}
-        {activeTab === 'scripts' && (
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-col gap-1">
-              <span className="text-s font-medium fg-primary">Scripts</span>
-              <span className="text-xs fg-secondary">
-                {`Lifecycle commands run on the desktop for this ${WORKSPACE_LABEL.toLowerCase()}. Leave blank to clear.`}
-              </span>
-            </div>
-            {scriptPhases.map(({ key, label }) => (
-              <label key={key} className="flex items-center gap-2 text-s">
-                <span className="w-20 shrink-0 fg-secondary">{label}</span>
-                <input
-                  type="text"
-                  value={scripts[key] ?? ''}
-                  onChange={(event) => {
-                    setJustSaved(false);
-                    setScripts((previous) => ({
-                      ...previous,
-                      [key]: event.target.value,
-                    }));
-                  }}
-                  spellCheck={false}
-                  data-testid={testIds?.scriptInput?.(key)}
-                  placeholder={`${label} command…`}
-                  className="min-w-0 flex-1 rounded-md border bg-base px-3 py-2 font-mono text-xs fg-primary outline-none focus:border-line-focus focus:ring-1 focus:ring-line-focus"
-                />
-              </label>
-            ))}
-            {scriptsAccessory}
-          </div>
-        )}
-        {activeExtraTab &&
-          (typeof activeExtraTab.content === 'function'
-            ? activeExtraTab.content(currentValues)
-            : activeExtraTab.content)}
-        {activeTab === 'danger' && onDelete && (
-          <div className="space-y-4" data-testid={testIds?.danger}>
-            <SettingsDangerConfirmBlock
-              title={
-                dangerCopy?.title ?? `Delete ${WORKSPACE_LABEL.toLowerCase()}`
-              }
-              description={
-                dangerCopy?.description ??
-                `Deleting removes this ${WORKSPACE_LABEL.toLowerCase()} and every worktree, chat, and summary it owns on the desktop and can't be undone.`
-              }
-              triggerLabel={
-                dangerCopy?.triggerLabel ??
-                `Delete ${WORKSPACE_LABEL.toLowerCase()}…`
-              }
-              confirmLabel={dangerCopy?.confirmLabel ?? 'Confirm delete'}
-              confirmInProgressLabel={
-                dangerCopy?.confirmInProgressLabel ?? 'Deleting…'
-              }
-              variant={dangerVariant}
-              triggerDisabled={working}
-              confirming={confirming}
-              onConfirmStart={() => setConfirming(true)}
-              onConfirmCancel={() => setConfirming(false)}
-              onConfirm={() => void remove()}
-              isWorking={deleting}
-            />
-            {secondaryDanger && (
-              <div data-testid={testIds?.secondaryDanger}>
-                <SettingsDangerConfirmBlock
-                  title={secondaryDanger.copy.title ?? 'Delete workspace'}
-                  description={secondaryDanger.copy.description}
-                  triggerLabel={
-                    secondaryDanger.copy.triggerLabel ?? 'Delete workspace…'
+          )}
+          {activeTab === 'scripts' && (
+            <SettingsRowsGroup surface="plain">
+              {scriptPhases.map(({ key, label }) => (
+                <SettingsRowsRow
+                  key={key}
+                  label={label}
+                  htmlFor={`${scriptInputIdPrefix}-${key}`}
+                  control={
+                    <span className="inline-flex w-96 max-w-full">
+                      <TextInput
+                        id={`${scriptInputIdPrefix}-${key}`}
+                        density="settings"
+                        mono
+                        value={scripts[key] ?? ''}
+                        onChange={(event) => {
+                          setJustSaved(false);
+                          setScripts((previous) => ({
+                            ...previous,
+                            [key]: event.target.value,
+                          }));
+                        }}
+                        spellCheck={false}
+                        data-testid={testIds?.scriptInput?.(key)}
+                        placeholder={`${label} command…`}
+                      />
+                    </span>
                   }
-                  confirmLabel={secondaryDanger.copy.confirmLabel ?? 'Delete'}
-                  confirmInProgressLabel={
-                    secondaryDanger.copy.confirmInProgressLabel ?? 'Deleting…'
-                  }
-                  triggerDisabled={working}
-                  confirming={secondaryConfirming}
-                  onConfirmStart={() => setSecondaryConfirming(true)}
-                  onConfirmCancel={() => setSecondaryConfirming(false)}
-                  isWorking={secondaryWorking}
-                  onConfirm={() => {
-                    if (working) return;
-                    setSecondaryWorking(true);
-                    setError(null);
-                    void secondaryDanger
-                      .onConfirm()
-                      .then(onClose)
-                      .catch((error: unknown) => {
-                        setError(
-                          errorMessage(error, "Couldn't delete workspace."),
-                        );
-                        setSecondaryConfirming(false);
-                      })
-                      .finally(() => setSecondaryWorking(false));
-                  }}
                 />
-              </div>
-            )}
-          </div>
-        )}
-        {error && (
-          <div
-            role="alert"
-            className="text-xs fg-destructive"
-            data-testid={testIds?.error}
-          >
-            {error}
-          </div>
-        )}
-        {activeTab !== 'danger' && (
-          <div className="flex items-center justify-end gap-2">
-            {justSaved && !saving && (
-              <span
-                role="status"
-                className="mr-auto text-xs fg-secondary"
-                data-testid={testIds?.saved}
-              >
-                Saved
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={working}
-              className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+              ))}
+              {scriptsAccessory}
+            </SettingsRowsGroup>
+          )}
+          {activeExtraTab &&
+            (typeof activeExtraTab.content === 'function'
+              ? activeExtraTab.content(currentValues)
+              : activeExtraTab.content)}
+          {activeTab !== 'details' && removeRows && (
+            <SettingsRowsGroup surface="plain">{removeRows}</SettingsRowsGroup>
+          )}
+          {error && (
+            <div
+              role="alert"
+              className="text-xs fg-destructive"
+              data-testid={testIds?.error}
             >
-              Done
-            </button>
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={working || !trimmedName}
-              data-testid={testIds?.save}
-              className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        )}
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+      {/* One action: Save writes every page at once and keeps the dialog
+          open; the title bar's close button leaves. */}
+      <div className="flex shrink-0 items-center justify-end gap-3 border-t px-5 py-3">
+        <span className="mr-auto">
+          <SettingsSaveStatus
+            state={saving ? 'saving' : justSaved ? 'saved' : 'idle'}
+            idleLabel={null}
+            dataTestId={testIds?.saved ?? 'workspace-settings-saved'}
+          />
+        </span>
+        <Button
+          size="compact"
+          variant="primary"
+          onClick={() => void save()}
+          disabled={working || !trimmedName}
+          data-testid={testIds?.save}
+        >
+          Save
+        </Button>
       </div>
     </DialogModal>
   );

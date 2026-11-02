@@ -32,6 +32,15 @@ export const LIVE_DELEGATES_REMOVAL_REFUSAL =
 /** SetAutoArchive result when the archive waits for live delegates. */
 export const AUTO_ARCHIVE_DEFERRED_FOR_DELEGATES =
   'Auto-archive is on. This chat will be archived after its delegates finish.';
+/** Refusal for closing or archiving a chat whose provider agents or workflows are live. */
+export const BACKGROUND_WORK_CHAT_REFUSAL =
+  'Background agents or workflows are still running in this chat. Stop them first.';
+/** Refusal for removing a worktree, Work Entry or project with live provider agents or workflows. */
+export const BACKGROUND_WORK_REMOVAL_REFUSAL =
+  'Background agents or workflows are still running here. Stop them first.';
+/** SetAutoArchive result when the archive waits for provider agents or workflows. */
+export const AUTO_ARCHIVE_DEFERRED_FOR_BACKGROUND_WORK =
+  'Auto-archive is on. This chat will be archived after its background agents and workflows finish.';
 
 /**
  * A close, archive or removal refused because delegates are live. `code`

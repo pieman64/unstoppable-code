@@ -13,9 +13,11 @@ import type {
   LedgerFeedRequest,
   LedgerFeedRow,
   LedgerViewEntry,
+  LedgerTaskViewScope,
   LedgerViewResult,
   LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
+import { ledgerViewScopeKey } from '@canopy/protocol/ledger-view';
 import type {
   LedgerViewSelectOptions,
   LedgerViewStore,
@@ -97,8 +99,11 @@ export interface LedgerFeedComposerState {
   readonly shown: boolean;
   /** The project chosen; null until one is. */
   readonly projectId: string | null;
-  /** The task chosen, whose view holds the draft; null until one is. */
-  readonly scope: LedgerViewScope | null;
+  /**
+   * The task chosen, whose view holds the draft; null until one is. A new
+   * entry only ever goes to a task, never a global (workflow) scope.
+   */
+  readonly scope: LedgerTaskViewScope | null;
   /** The draft while no task holds it. */
   readonly draft: LedgerViewDraft | null;
   /**
@@ -236,7 +241,7 @@ export interface LedgerFeedState {
    * draft go. Independent correction drafts do not block this move.
    */
   readonly chooseTask: (
-    scope: LedgerViewScope,
+    scope: LedgerTaskViewScope,
     viewFor: LedgerViewStoreFor,
   ) => boolean;
   /** Sets the form aside; the draft stays. */
@@ -283,8 +288,7 @@ function sameScope(
   return (
     left !== null &&
     right !== null &&
-    left.projectId === right.projectId &&
-    left.worktreeId === right.worktreeId
+    ledgerViewScopeKey(left) === ledgerViewScopeKey(right)
   );
 }
 

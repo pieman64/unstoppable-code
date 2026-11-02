@@ -4,9 +4,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   SETTINGS_CARD_CLASS,
-  SETTINGS_CARD_ICON_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
+  SETTINGS_CARD_ROW_CLASS,
+  SETTINGS_CARD_SUBTITLE_CLASS,
   SETTINGS_CARD_TITLE_CLASS,
   SettingsCard,
+  SettingsCardSwitch,
 } from '../SettingsCard';
 import {
   expectNoLegacyCardShell,
@@ -16,14 +19,10 @@ import {
 } from './helpers/settings-card-assertions';
 
 describe('SettingsCard', () => {
-  it('renders the shell as a section carrying exactly the shared card class', () => {
+  it('renders the section as a section carrying exactly the shared class', () => {
     const root = parseMarkup(
       renderToStaticMarkup(
-        <SettingsCard
-          icon={<svg />}
-          title="Subscription plan"
-          testId="card-1"
-        />,
+        <SettingsCard title="Subscription plan" testId="card-1" />,
       ),
     );
 
@@ -33,7 +32,7 @@ describe('SettingsCard', () => {
   it('renders a plain h2 for a string title', () => {
     const root = parseMarkup(
       renderToStaticMarkup(
-        <SettingsCard icon={<svg />} title="AI credit pool" testId="card-2" />,
+        <SettingsCard title="AI credit pool" testId="card-2" />,
       ),
     );
 
@@ -44,7 +43,6 @@ describe('SettingsCard', () => {
     const root = parseMarkup(
       renderToStaticMarkup(
         <SettingsCard
-          icon={<svg />}
           title={
             <div className="flex items-center gap-2">
               <h2 className={SETTINGS_CARD_TITLE_CLASS}>Billing history</h2>
@@ -56,18 +54,16 @@ describe('SettingsCard', () => {
       ),
     );
 
-    // The card must not wrap a node title in a second heading.
+    // The section must not wrap a node title in a second heading.
     expectSettingsCardHeading(root, 'Billing history');
-    // Scoped to the heading row, since the icon medallion is also a `span`.
     const headingRow = root.querySelector('h2')?.parentElement;
     expect(headingRow?.querySelector('span')?.textContent).toBe('pill');
   });
 
-  it('renders the accent medallion, the subtitle, and the body', () => {
+  it('draws a text-only heading: no icon medallion, no card surface', () => {
     const root = parseMarkup(
       renderToStaticMarkup(
         <SettingsCard
-          icon={<span>icon</span>}
           title="Billing history"
           subtitle="Charges billed to your card in USD."
           testId="card-4"
@@ -77,26 +73,60 @@ describe('SettingsCard', () => {
       ),
     );
 
-    const medallion = root.querySelector(`[data-testid="card-4"] > div > span`);
-    expect(medallion?.getAttribute('class')).toBe(SETTINGS_CARD_ICON_CLASS);
+    const section = root.querySelector('[data-testid="card-4"]');
+    expect(section).toBeInstanceOf(Element);
+    // The heading block holds only the heading and its explanation.
+    const header = section?.firstElementChild;
+    expect(
+      Array.from(header?.children ?? []).map((child) => child.tagName),
+    ).toEqual(['H2', 'P']);
+    expect(section?.querySelector('.rounded-full')).toBeNull();
+    expect(section?.classList.contains('shadow-sm')).toBe(false);
 
-    const subtitle = root.querySelector('p.mt-1');
+    const subtitle = header?.querySelector('p');
+    expect(subtitle?.getAttribute('class')).toBe(SETTINGS_CARD_SUBTITLE_CLASS);
     expect(subtitle?.textContent).toBe('Charges billed to your card in USD.');
-
-    const body = root.querySelector('[data-testid="body"]');
-    expect(body?.parentElement?.getAttribute('class')).toBe('mt-4');
   });
 
-  it('omits the subtitle and body wrappers when neither is supplied', () => {
+  it('puts the body in one grouped box under the heading', () => {
     const root = parseMarkup(
       renderToStaticMarkup(
-        <SettingsCard icon={<svg />} title="Security" testId="card-5" />,
+        <SettingsCard title="Push notifications" testId="card-5">
+          <div className={SETTINGS_CARD_ROW_CLASS} data-testid="row-1" />
+          <div className={SETTINGS_CARD_ROW_CLASS} data-testid="row-2" />
+        </SettingsCard>,
       ),
     );
 
-    const card = root.querySelector('[data-testid="card-5"]');
-    expect(card?.querySelector('p')).toBeNull();
-    expect(card?.querySelector('div.mt-4')).toBeNull();
+    const box = root.querySelector('[data-testid="row-1"]')?.parentElement;
+    expect(box?.getAttribute('class')).toBe(SETTINGS_CARD_GROUP_CLASS);
+    expect(box?.parentElement?.getAttribute('data-testid')).toBe('card-5');
+    expect(root.querySelector('[data-testid="row-2"]')?.parentElement).toBe(
+      box,
+    );
+  });
+
+  it('omits the subtitle and the box when neither is supplied', () => {
+    const root = parseMarkup(
+      renderToStaticMarkup(<SettingsCard title="Security" testId="card-6" />),
+    );
+
+    const section = root.querySelector('[data-testid="card-6"]');
+    expect(section?.querySelector('p')).toBeNull();
+    expect(section?.children).toHaveLength(1);
+  });
+
+  it('splits rows with hairlines and lets rows set the box rhythm', () => {
+    expect(SETTINGS_CARD_ROW_CLASS.split(' ')).toEqual(
+      expect.arrayContaining(['settings-card-row', '[&+&]:border-t']),
+    );
+    expect(SETTINGS_CARD_ROW_CLASS).not.toContain('rounded');
+    expect(SETTINGS_CARD_GROUP_CLASS.split(' ')).toEqual(
+      expect.arrayContaining([
+        'has-[.settings-card-row,[data-settings-card-rows]]:py-0',
+        'bg-secondary',
+      ]),
+    );
   });
 
   it('catches the legacy shell whatever order its classes are written in', () => {
@@ -118,18 +148,32 @@ describe('SettingsCard', () => {
     }
   });
 
-  it('exports the shell class the bespoke-layout cards build on directly', () => {
-    // The two plan cards keep hand-rolled internals (an `mt-auto` CTA pinned
-    // diagonally opposite the actions menu), so they consume the constant
-    // instead of the component. It must stay in sync with what the component
-    // renders.
-    expect(SETTINGS_CARD_CLASS).toBe('rounded-xl bg-card p-5 shadow-sm');
-
-    const root = parseMarkup(
-      renderToStaticMarkup(<SettingsCard icon={<svg />} title="x" />),
-    );
+  it('exports the section class the component renders', () => {
+    const root = parseMarkup(renderToStaticMarkup(<SettingsCard title="x" />));
     expect(root.querySelector('section')?.getAttribute('class')).toBe(
       SETTINGS_CARD_CLASS,
     );
+  });
+});
+
+describe('SettingsCardSwitch', () => {
+  it('draws the shared 32x18 switch and reports busy', () => {
+    const root = parseMarkup(
+      renderToStaticMarkup(
+        <SettingsCardSwitch
+          checked
+          busy
+          label="Weekly"
+          onChange={() => undefined}
+          dataTestId="switch"
+        />,
+      ),
+    );
+
+    const button = root.querySelector('[data-testid="switch"]');
+    expect(button?.getAttribute('role')).toBe('switch');
+    expect(button?.getAttribute('aria-checked')).toBe('true');
+    expect(button?.getAttribute('aria-busy')).toBe('true');
+    expect(button?.querySelector('.h-4\\.5.w-8')).toBeInstanceOf(Element);
   });
 });

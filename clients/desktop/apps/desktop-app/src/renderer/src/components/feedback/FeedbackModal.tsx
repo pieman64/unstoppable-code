@@ -1,5 +1,6 @@
 import { type JSX, useEffect, useMemo, useState } from 'react';
 import { FeedbackDialog, type FeedbackDialogReportType } from '@canopy/ui-app';
+import { Button } from '@canopy/ui-shared';
 import {
   type FeedbackArea,
   type FeedbackContextSnapshot,
@@ -338,17 +339,17 @@ export function FeedbackModal({
         </div>
       }
       errorActions={
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
           onClick={(): void => {
             void handleSaveDiagnostics();
           }}
           disabled={saving}
           data-testid="feedback-modal-save-diagnostics"
-          className="focus-ring rounded-md border bg-base px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-60"
         >
           {saving ? 'Saving…' : 'Save diagnostics to Downloads'}
-        </button>
+        </Button>
       }
       note={
         savedMessage !== null ? (

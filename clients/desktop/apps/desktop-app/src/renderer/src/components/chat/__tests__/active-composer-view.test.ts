@@ -12,7 +12,7 @@ function makeTab(messages: ChatTab['messages']): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     model: 'gpt-6-sol',
     providerType: 'codex',

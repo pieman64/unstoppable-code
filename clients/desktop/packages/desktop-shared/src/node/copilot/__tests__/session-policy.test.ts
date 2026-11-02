@@ -54,7 +54,7 @@ describe('Copilot host policy boundary', () => {
     expect(config.disabledMcpServers).toEqual(['github-mcp-server']);
   });
 
-  it('does not disable a host-selected server that reuses a built-in name', () => {
+  it('disables a built-in name even when a host server reuses it', () => {
     const config = createCopilotSessionConfig({
       ...options,
       mcpServers: {
@@ -65,7 +65,7 @@ describe('Copilot host policy boundary', () => {
         },
       },
     });
-    expect(config.disabledMcpServers).toEqual([]);
+    expect(config.disabledMcpServers).toEqual(['github-mcp-server']);
   });
 
   it('explicitly denies a policy error because the SDK swallows thrown hook errors', async () => {

@@ -1,7 +1,10 @@
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { createHash } from 'node:crypto';
+import type { ChildSearchDocumentIdentity } from './child-text';
+import type { ChildSearchDirtyNotification } from '../services/chat-state-v2-repository';
+import type { ChatTabsWriteDelta } from '../lib/chat-tabs';
 import { getStandaloneHistoryStorage } from '../lib/standalone-history';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
-import { DELTA_JOURNAL_FILE_NAME } from '../lib/chat-delta-journal/format';
 import { ChatTranscriptIntegrityError } from '../lib/chat-transcript-log';
 import { ChatStateV2Backend } from '../services/chat-state-v2-backend';
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -58,6 +61,7 @@ import {
 import {
   type ChatSearchIndexer,
   buildChatSearchDoc,
+  buildChatChildSearchDoc,
   buildArchivedContainerEntityDoc,
   buildPlanSearchDoc,
   committedTranscriptFingerprint,
@@ -130,14 +134,27 @@ interface SourceDescriptor {
   worktreeId: string;
   worktreeGeneration: number;
   archiveContentEpoch?: number;
+  liveContentEpoch?: number;
   chatId?: string;
   fingerprint: SourceFingerprint;
 }
+
+/** Called once, without a failure when the update lands, is superseded or is cancelled. */
+type PendingUpdateWaiter = (failure?: { error: unknown }) => void;
 
 interface PendingUpdate {
   timer: ReturnType<typeof setTimeout>;
   task: () => Promise<void> | void;
   liveTabsUpdate?: PendingLiveTabsUpdate;
+  /** Carried to the update that replaces this one, which covers its changes. */
+  waiters: PendingUpdateWaiter[];
+}
+
+function settleWaiters(
+  waiters: readonly PendingUpdateWaiter[],
+  failure?: { error: unknown },
+): void {
+  for (const waiter of waiters) waiter(failure);
 }
 
 interface PendingLiveTabChanges {
@@ -145,12 +162,68 @@ interface PendingLiveTabChanges {
   generation: number;
   contentEpoch: number;
   tabsById: Map<string, PersistedChatTab | null>;
+  isSnapshotCurrent?: () => boolean;
+  /** Committed revision of the newest snapshot merged in. */
+  revision?: number;
+}
+
+/**
+ * Guards a live source fingerprint. A commit reaches disk before its
+ * projection is queued, so a fingerprint taken after indexing can already
+ * cover a newer commit; recorded, it would let the startup scan skip that
+ * commit once quit or a crash drops its update.
+ */
+interface LiveFingerprintFence {
+  contentEpoch: number;
+  /**
+   * False once a newer commit is published; absent when the caller cannot
+   * tell. A commit is durable before it is published, so `revision` closes
+   * the gap between the two.
+   */
+  isSnapshotCurrent?: () => boolean;
+  /**
+   * Committed revision of the indexed snapshot. The fingerprint is recorded
+   * only while it is still the scope's committed revision, read after the
+   * fingerprint. Absent for a caller without one, such as a legacy file.
+   */
+  revision?: number;
+  /** Taken before a reread, so the indexed content is at least as new. */
+  fingerprint?: SourceFingerprint | null;
+}
+
+/**
+ * Records that every stored live fingerprint passed the revision fence. Older
+ * builds recorded fingerprints without it, so a scan distrusts theirs once.
+ */
+const LIVE_FINGERPRINT_FENCE_METADATA_KEY = 'live_fingerprint_fence';
+
+/** An archive or restore reported outside a commit has no revision to check. */
+const UNVERIFIED_SNAPSHOT = (): boolean => false;
+
+/** Read behind every commit admitted before the call; undefined when unreadable. */
+async function readCommittedLiveRevision(
+  projectId: string,
+  worktreeId: string,
+): Promise<number | undefined> {
+  try {
+    const { getChatStateService } =
+      await import('../services/chat-state-service');
+    return await getChatStateService().getCommittedRevision({
+      projectId,
+      worktreeId,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 interface PendingFullLiveTabsUpdate {
   kind: 'full';
   generation: number;
   contentEpoch: number;
+  /** Absent when the update rereads the scope as it runs. */
+  data?: ChatTabsFile;
+  isSnapshotCurrent?: () => boolean;
 }
 
 type PendingLiveTabsUpdate = PendingLiveTabChanges | PendingFullLiveTabsUpdate;
@@ -415,6 +488,15 @@ function buildPreviewSearchDoc(
 export const CHAT_SEARCH_INDEXER_RECOVERY_DELAY_MS = 30_000;
 const CHAT_SEARCH_INDEXER_RECOVERY_MAX_DELAY_MS = 10 * 60_000;
 
+/** Bounded retries for a child set that changed while it was staged. */
+const CHILD_RECONCILE_RETRIES = 2;
+/** SQL narrowing a catalog page to the given chats, bound after the time. */
+function chatIdFilter(chatIds: readonly string[] | undefined): string {
+  return chatIds === undefined
+    ? ''
+    : ` AND chat_id IN (${chatIds.map(() => '?').join(', ')})`;
+}
+
 export class ChatSearchService {
   private db: DatabaseSync | null = null;
   private indexer: ChatSearchIndexer | ThreadedChatSearchIndexer | null = null;
@@ -430,11 +512,24 @@ export class ChatSearchService {
   private readonly broadcastDebounceMs: number;
   private readonly broadcastUpdated: () => void;
   private readonly pendingUpdates = new Map<string, PendingUpdate>();
+  /** Live-tab updates past their debounce whose task is still running. */
+  private readonly runningLiveUpdates = new Map<string, PendingUpdate>();
+  /**
+   * Live update keys whose whole scope this process has indexed. Only these
+   * let a per-chat update record the source fingerprint; elsewhere it would
+   * hide unindexed chats from the next scan.
+   */
+  private readonly syncedLiveScopes = new Set<string>();
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
   private initialScanPromise: Promise<void> | null = null;
   private activeScanPromise: Promise<void> | null = null;
   private activeScanSourceKeys: Set<string> | null = null;
   private closed = false;
+  private readonly childReads = new Set<{
+    projectId: string;
+    worktreeId: string;
+    controller: AbortController;
+  }>();
   private readonly deletedWorkspaces = new Set<string>();
   private readonly deletedWorktrees = new Set<string>();
   private readonly deletedCoworkArchives = new Set<string>();
@@ -494,12 +589,19 @@ export class ChatSearchService {
     }
   }
 
-  getCatalog(limit = DEFAULT_CATALOG_LIMIT): ChatSearchCatalogEntry[] {
+  /**
+   * The newest catalog rows, or with `chatIds` only those chats' rows (live
+   * and archived copies) however old they are, under the same visibility.
+   */
+  getCatalog(
+    limit = DEFAULT_CATALOG_LIMIT,
+    chatIds?: readonly string[],
+  ): ChatSearchCatalogEntry[] {
     if (this.closed) return [];
     const normalizedLimit = Number.isFinite(limit)
       ? Math.max(0, Math.trunc(limit))
       : DEFAULT_CATALOG_LIMIT;
-    if (normalizedLimit === 0) return [];
+    if (normalizedLimit === 0 || chatIds?.length === 0) return [];
     const database = this.getDatabase();
     const now = Date.now();
     return this.collectVisiblePage(normalizedLimit, (offset) => {
@@ -509,11 +611,11 @@ export class ChatSearchService {
                   document_kind, description, provider_type, updated_at, archived_at,
                   expires_at, message_count, review_status
            FROM chat_docs
-           WHERE expires_at IS NULL OR expires_at > ?
+           WHERE document_kind != 'chat-child' AND (expires_at IS NULL OR expires_at > ?)${chatIdFilter(chatIds)}
            ORDER BY updated_at DESC
            LIMIT ? OFFSET ?`,
         )
-        .all(now, normalizedLimit, offset);
+        .all(now, ...(chatIds ?? []), normalizedLimit, offset);
       return rows.map((row) => mapChatSearchCatalogRow(requireSqliteRow(row)));
     });
   }
@@ -522,13 +624,14 @@ export class ChatSearchService {
     context: WorkspaceContext | undefined,
     limit = DEFAULT_CATALOG_LIMIT,
     linkedPersonalWorkspaceIds: readonly string[] = [],
+    chatIds?: readonly string[],
   ): Promise<ChatSearchCatalogEntry[]> {
-    if (context === undefined) return this.getCatalog(limit);
+    if (context === undefined) return this.getCatalog(limit, chatIds);
     if (this.closed) return [];
     const normalizedLimit = Number.isFinite(limit)
       ? Math.max(0, Math.trunc(limit))
       : DEFAULT_CATALOG_LIMIT;
-    if (normalizedLimit === 0) return [];
+    if (normalizedLimit === 0 || chatIds?.length === 0) return [];
     const database = this.getDatabase();
     const now = Date.now();
     const isVisible = this.createContextVisibilityPredicate(
@@ -544,11 +647,11 @@ export class ChatSearchService {
                     document_kind, description, provider_type, updated_at, archived_at,
                     expires_at, message_count, review_status
              FROM chat_docs
-             WHERE expires_at IS NULL OR expires_at > ?
+             WHERE document_kind != 'chat-child' AND (expires_at IS NULL OR expires_at > ?)${chatIdFilter(chatIds)}
              ORDER BY updated_at DESC
              LIMIT ? OFFSET ?`,
           )
-          .all(now, normalizedLimit, offset);
+          .all(now, ...(chatIds ?? []), normalizedLimit, offset);
         return Promise.resolve(
           rows.map((row) => mapChatSearchCatalogRow(requireSqliteRow(row))),
         );
@@ -652,54 +755,7 @@ export class ChatSearchService {
     worktreeId: string,
     data: ChatTabsFile,
   ): void {
-    const scope = this.normalizeLiveScope(projectId, worktreeId);
-    this.reactivateScope(scope.projectId, scope.worktreeId);
-    const generation = this.worktreeGeneration(
-      scope.projectId,
-      scope.worktreeId,
-    );
-    const contentEpoch = this.advanceLiveContentEpoch(
-      scope.projectId,
-      scope.worktreeId,
-    );
-    const fileKey = this.liveFilePath(scope.projectId, scope.worktreeId);
-    this.activeScanSourceKeys?.add(fileKey);
-    this.enqueue(
-      this.liveUpdateKey(scope.projectId, scope.worktreeId),
-      async () => {
-        if (
-          !this.isWorktreeGenerationCurrent(
-            scope.projectId,
-            scope.worktreeId,
-            generation,
-          )
-        ) {
-          return;
-        }
-        await this.replaceLiveScope(
-          scope.projectId,
-          scope.worktreeId,
-          data,
-          contentEpoch,
-        );
-        if (
-          !this.isLiveContentEpochCurrent(
-            scope.projectId,
-            scope.worktreeId,
-            contentEpoch,
-          )
-        ) {
-          return;
-        }
-        await this.refreshFingerprint(
-          fileKey,
-          scope.projectId,
-          scope.worktreeId,
-          generation,
-        );
-      },
-      { kind: 'full', generation, contentEpoch },
-    );
+    this.queueLiveTabs(projectId, worktreeId, data);
   }
 
   indexLiveTabChanges(
@@ -709,8 +765,76 @@ export class ChatSearchService {
     changedTabIds: readonly string[],
     removedTabIds: readonly string[],
   ): void {
-    if (changedTabIds.length === 0 && removedTabIds.length === 0) return;
-    const scope = this.normalizeLiveScope(projectId, worktreeId);
+    this.queueLiveTabChanges(
+      projectId,
+      worktreeId,
+      data,
+      changedTabIds,
+      removedTabIds,
+    );
+  }
+
+  /**
+   * Indexes a committed chat materialization: the changed and removed tabs
+   * when a delta is known, else the whole scope. Resolves once the update is
+   * indexed, superseded by a newer one or cancelled with its scope; rejects
+   * when indexing fails, so the caller can retry. `isSnapshotCurrent` turns
+   * false once a newer commit is published, which withholds the fingerprint.
+   */
+  projectLiveTabs(
+    projectId: string,
+    worktreeId: string,
+    data: ChatTabsFile,
+    delta: ChatTabsWriteDelta | undefined,
+    isSnapshotCurrent?: () => boolean,
+  ): Promise<void> {
+    return new Promise<{ error: unknown } | undefined>((waiter) => {
+      if (delta) {
+        this.queueLiveTabChanges(
+          projectId,
+          worktreeId,
+          data,
+          delta.changedTabIds,
+          delta.removedTabIds,
+          waiter,
+          isSnapshotCurrent,
+        );
+      } else {
+        this.queueLiveTabs(
+          projectId,
+          worktreeId,
+          data,
+          waiter,
+          isSnapshotCurrent,
+        );
+      }
+    }).then((failure) => {
+      if (failure) throw failure.error;
+    });
+  }
+
+  private queueLiveTabs(
+    projectId: string,
+    worktreeId: string,
+    data: ChatTabsFile,
+    waiter?: PendingUpdateWaiter,
+    isSnapshotCurrent?: () => boolean,
+  ): void {
+    this.queueFullLiveUpdate(
+      this.normalizeLiveScope(projectId, worktreeId),
+      data,
+      waiter,
+      isSnapshotCurrent,
+    );
+  }
+
+  /** Replaces the scope's live documents from `data`, else from a reread. */
+  private queueFullLiveUpdate(
+    scope: { projectId: string; worktreeId: string },
+    data: ChatTabsFile | undefined,
+    waiter?: PendingUpdateWaiter,
+    isSnapshotCurrent?: () => boolean,
+  ): void {
     this.reactivateScope(scope.projectId, scope.worktreeId);
     const generation = this.worktreeGeneration(
       scope.projectId,
@@ -723,11 +847,167 @@ export class ChatSearchService {
     const fileKey = this.liveFilePath(scope.projectId, scope.worktreeId);
     this.activeScanSourceKeys?.add(fileKey);
     const updateKey = this.liveUpdateKey(scope.projectId, scope.worktreeId);
-    const pending = this.pendingUpdates.get(updateKey)?.liveTabsUpdate;
-    if (pending?.kind === 'full' && pending.generation === generation) {
-      this.indexLiveTabs(scope.projectId, scope.worktreeId, data);
+    // The whole scope covers whatever a superseded running update left.
+    const takenOver = this.takeOverRunningLiveUpdate(updateKey, generation);
+    const isCurrent = (): boolean =>
+      !this.closed &&
+      this.isWorktreeGenerationCurrent(
+        scope.projectId,
+        scope.worktreeId,
+        generation,
+      ) &&
+      this.isLiveContentEpochCurrent(
+        scope.projectId,
+        scope.worktreeId,
+        contentEpoch,
+      );
+    this.enqueue(
+      updateKey,
+      () =>
+        this.trackLiveScopeSync(updateKey, async () => {
+          if (!isCurrent()) return;
+          const rereadFingerprint =
+            data === undefined
+              ? await this.sourceFingerprint(
+                  fileKey,
+                  scope.projectId,
+                  scope.worktreeId,
+                )
+              : undefined;
+          const scopeData =
+            data ??
+            (await readChatTabsFileForIndex(scope.projectId, scope.worktreeId));
+          if (!isCurrent()) return;
+          await this.replaceLiveScope(
+            scope.projectId,
+            scope.worktreeId,
+            scopeData,
+            contentEpoch,
+          );
+          if (!isCurrent()) return;
+          this.syncedLiveScopes.add(updateKey);
+          await this.refreshFingerprint(
+            fileKey,
+            scope.projectId,
+            scope.worktreeId,
+            generation,
+            undefined,
+            {
+              contentEpoch,
+              isSnapshotCurrent,
+              revision: data?.revision,
+              ...(rereadFingerprint === undefined
+                ? {}
+                : { fingerprint: rereadFingerprint }),
+            },
+          );
+        }),
+      { kind: 'full', generation, contentEpoch, data, isSnapshotCurrent },
+      waiter,
+      takenOver?.waiters,
+    );
+  }
+
+  /** A failed live update leaves its scope partly indexed. */
+  private async trackLiveScopeSync(
+    updateKey: string,
+    task: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await task();
+    } catch (error) {
+      if (!(error instanceof StaleSearchProjectionError)) {
+        this.syncedLiveScopes.delete(updateKey);
+      }
+      throw error;
+    }
+  }
+
+  private queueLiveTabChanges(
+    projectId: string,
+    worktreeId: string,
+    data: ChatTabsFile,
+    changedTabIds: readonly string[],
+    removedTabIds: readonly string[],
+    waiter?: PendingUpdateWaiter,
+    isSnapshotCurrent?: () => boolean,
+  ): void {
+    if (changedTabIds.length === 0 && removedTabIds.length === 0) {
+      waiter?.();
       return;
     }
+    const scope = this.normalizeLiveScope(projectId, worktreeId);
+    this.reactivateScope(scope.projectId, scope.worktreeId);
+    const tabs = new Map(data.tabs.map((tab) => [tab.id, tab]));
+    const entries = new Map<string, PersistedChatTab | null>();
+    for (const chatId of changedTabIds) {
+      const tab = tabs.get(chatId);
+      if (tab && (tab.kind ?? 'chat') === 'chat') entries.set(chatId, tab);
+    }
+    for (const chatId of removedTabIds) entries.set(chatId, null);
+    this.queueLiveTabEntries(scope, entries, {
+      wholeScope: (): ChatTabsFile => data,
+      // `data` holds the newest state of chats a superseded run had left.
+      latestTab: (chatId) => {
+        const tab = tabs.get(chatId);
+        if (!tab) return null;
+        return (tab.kind ?? 'chat') === 'chat' ? tab : undefined;
+      },
+      waiter,
+      isSnapshotCurrent,
+      revision: data.revision,
+    });
+  }
+
+  /**
+   * Merges live-chat upserts (a tab) and deletions (`null`) into the scope's
+   * pending update. A pending or running whole-scope update is re-queued from
+   * `wholeScope(base)` instead, or rereads the scope when that has no base.
+   * A superseded running update stops at its next content-epoch check, so
+   * this one takes over its waiters and its chats, resolved through
+   * `latestTab` (`undefined` skips one). `uncommitted` entries have no
+   * revision: merged, they keep the update's fence; alone, they withhold the
+   * fingerprint.
+   */
+  private queueLiveTabEntries(
+    scope: { projectId: string; worktreeId: string },
+    entries: ReadonlyMap<string, PersistedChatTab | null>,
+    options: {
+      wholeScope: (base: ChatTabsFile | undefined) => ChatTabsFile | undefined;
+      latestTab: (
+        chatId: string,
+        superseded: PersistedChatTab | null,
+      ) => PersistedChatTab | null | undefined;
+      waiter?: PendingUpdateWaiter;
+      isSnapshotCurrent?: () => boolean;
+      revision?: number;
+      uncommitted?: true;
+    },
+  ): void {
+    const generation = this.worktreeGeneration(
+      scope.projectId,
+      scope.worktreeId,
+    );
+    const contentEpoch = this.advanceLiveContentEpoch(
+      scope.projectId,
+      scope.worktreeId,
+    );
+    const fileKey = this.liveFilePath(scope.projectId, scope.worktreeId);
+    this.activeScanSourceKeys?.add(fileKey);
+    const updateKey = this.liveUpdateKey(scope.projectId, scope.worktreeId);
+    const full = this.currentFullLiveUpdate(updateKey, generation);
+    if (full) {
+      this.queueFullLiveUpdate(
+        scope,
+        options.wholeScope(full.data),
+        options.waiter,
+        // Like a delta merge, an uncommitted change keeps the base's check.
+        options.isSnapshotCurrent ??
+          (options.uncommitted ? full.isSnapshotCurrent : undefined),
+      );
+      return;
+    }
+    const pending = this.pendingUpdates.get(updateKey)?.liveTabsUpdate;
     const changes =
       pending?.kind === 'delta' && pending.generation === generation
         ? pending
@@ -736,65 +1016,136 @@ export class ChatSearchService {
             generation,
             contentEpoch,
             tabsById: new Map<string, PersistedChatTab | null>(),
+            ...(options.uncommitted
+              ? { isSnapshotCurrent: UNVERIFIED_SNAPSHOT }
+              : {}),
           };
     changes.contentEpoch = contentEpoch;
-    const changedIds = new Set(changedTabIds);
-    for (const tab of data.tabs) {
-      if ((tab.kind ?? 'chat') === 'chat' && changedIds.has(tab.id)) {
-        changes.tabsById.set(tab.id, tab);
+    // A merge without a currency check keeps the earlier one: withholding a
+    // fingerprint only costs a rescan.
+    changes.isSnapshotCurrent =
+      options.isSnapshotCurrent ?? changes.isSnapshotCurrent;
+    changes.revision = options.revision ?? changes.revision;
+    const takenOver = this.takeOverRunningLiveUpdate(updateKey, generation);
+    if (takenOver?.update.kind === 'delta') {
+      for (const [chatId, superseded] of Array.from(
+        takenOver.update.tabsById.entries(),
+      )) {
+        if (changes.tabsById.has(chatId)) continue;
+        const tab = options.latestTab(chatId, superseded);
+        if (tab !== undefined) changes.tabsById.set(chatId, tab);
       }
     }
-    for (const chatId of removedTabIds) {
-      changes.tabsById.set(chatId, null);
-    }
+    entries.forEach((tab, chatId) => changes.tabsById.set(chatId, tab));
     this.enqueue(
       updateKey,
-      async () => {
-        const isCurrent = (): boolean =>
-          this.isWorktreeGenerationCurrent(
-            scope.projectId,
-            scope.worktreeId,
-            generation,
-          ) &&
-          this.isLiveContentEpochCurrent(
-            scope.projectId,
-            scope.worktreeId,
-            changes.contentEpoch,
-          );
-        if (!isCurrent()) return;
-        const indexer = this.getIndexer();
-        for (const [chatId, tab] of Array.from(changes.tabsById.entries())) {
-          await yieldToEventLoop();
-          if (!isCurrent()) return;
-          if (tab) {
-            await this.upsertLiveChat(
-              scope.projectId,
-              scope.worktreeId,
-              tab,
-              changes.contentEpoch,
-            );
-          } else {
-            this.activeTurnText.delete(
-              `${scope.projectId}/${scope.worktreeId}/${chatId}/live`,
-            );
-            await indexer.deleteChatDoc(
-              scope.projectId,
-              scope.worktreeId,
-              chatId,
-              'live',
-            );
-          }
-        }
-        if (!isCurrent()) return;
-        await this.refreshFingerprint(
-          fileKey,
+      () =>
+        this.trackLiveScopeSync(updateKey, () =>
+          this.applyLiveTabChanges(scope, generation, changes, fileKey),
+        ),
+      changes,
+      options.waiter,
+      takenOver?.waiters,
+    );
+  }
+
+  /** The scope's pending whole-scope update, else its running one. */
+  private currentFullLiveUpdate(
+    key: string,
+    generation: number,
+  ): PendingFullLiveTabsUpdate | undefined {
+    const pending = this.pendingUpdates.get(key)?.liveTabsUpdate;
+    if (pending?.generation === generation) {
+      return pending.kind === 'full' ? pending : undefined;
+    }
+    const running = this.runningLiveUpdates.get(key)?.liveTabsUpdate;
+    return running?.kind === 'full' && running.generation === generation
+      ? running
+      : undefined;
+  }
+
+  private async applyLiveTabChanges(
+    scope: { projectId: string; worktreeId: string },
+    generation: number,
+    changes: PendingLiveTabChanges,
+    fileKey: string,
+  ): Promise<void> {
+    const isCurrent = (): boolean =>
+      this.isWorktreeGenerationCurrent(
+        scope.projectId,
+        scope.worktreeId,
+        generation,
+      ) &&
+      this.isLiveContentEpochCurrent(
+        scope.projectId,
+        scope.worktreeId,
+        changes.contentEpoch,
+      );
+    if (!isCurrent()) return;
+    const indexer = this.getIndexer();
+    for (const [chatId, tab] of Array.from(changes.tabsById.entries())) {
+      await yieldToEventLoop();
+      if (!isCurrent()) return;
+      if (tab) {
+        await this.upsertLiveChat(
           scope.projectId,
           scope.worktreeId,
-          generation,
+          tab,
+          changes.contentEpoch,
         );
+      } else {
+        this.activeTurnText.delete(
+          `${scope.projectId}/${scope.worktreeId}/${chatId}/live`,
+        );
+        await indexer.deleteChatDoc(
+          scope.projectId,
+          scope.worktreeId,
+          chatId,
+          'live',
+        );
+      }
+    }
+    if (
+      !isCurrent() ||
+      !this.syncedLiveScopes.has(
+        this.liveUpdateKey(scope.projectId, scope.worktreeId),
+      )
+    ) {
+      return;
+    }
+    await this.refreshFingerprint(
+      fileKey,
+      scope.projectId,
+      scope.worktreeId,
+      generation,
+      undefined,
+      {
+        contentEpoch: changes.contentEpoch,
+        isSnapshotCurrent: changes.isSnapshotCurrent,
+        revision: changes.revision,
       },
-      changes,
     );
+  }
+
+  /**
+   * A live-tabs update queued after `key`'s running one advances the content
+   * epoch, which stops the running one at its next check. The new update
+   * takes over its unfinished chats and its waiters, so they settle with it.
+   */
+  private takeOverRunningLiveUpdate(
+    key: string,
+    generation: number,
+  ):
+    | { update: PendingLiveTabsUpdate; waiters: PendingUpdateWaiter[] }
+    | undefined {
+    const running = this.runningLiveUpdates.get(key);
+    if (!running?.liveTabsUpdate) return undefined;
+    this.runningLiveUpdates.delete(key);
+    if (running.liveTabsUpdate.generation !== generation) return undefined;
+    return {
+      update: running.liveTabsUpdate,
+      waiters: running.waiters.splice(0),
+    };
   }
 
   worktreeChatArchived(
@@ -803,22 +1154,28 @@ export class ChatSearchService {
     chatId: string,
   ): void {
     this.indexWorktreeArchives(projectId, worktreeId);
-    const generation = this.worktreeGeneration(projectId, worktreeId);
-    const contentEpoch = this.advanceLiveContentEpoch(projectId, worktreeId);
-    this.enqueue(this.liveUpdateKey(projectId, worktreeId), async () => {
-      if (
-        !this.isWorktreeGenerationCurrent(projectId, worktreeId, generation) ||
-        !this.isLiveContentEpochCurrent(projectId, worktreeId, contentEpoch)
-      ) {
-        return;
-      }
-      await this.getIndexer().deleteChatDoc(
-        projectId,
-        worktreeId,
-        chatId,
-        'live',
-      );
-    });
+    this.queueArchivedLiveChat(projectId, worktreeId, chatId);
+  }
+
+  /** Merged into the live update, so other chats' pending changes still land. */
+  private queueArchivedLiveChat(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ): void {
+    this.queueLiveTabEntries(
+      { projectId, worktreeId },
+      new Map([[chatId, null]]),
+      {
+        wholeScope: (data) =>
+          data && {
+            ...data,
+            tabs: data.tabs.filter((tab) => tab.id !== chatId),
+          },
+        latestTab: (_chatId, superseded) => superseded,
+        uncommitted: true,
+      },
+    );
   }
 
   worktreeChatRestored(
@@ -828,18 +1185,19 @@ export class ChatSearchService {
   ): void {
     this.reactivateScope(projectId, worktreeId);
     this.indexWorktreeArchives(projectId, worktreeId);
-    const generation = this.worktreeGeneration(projectId, worktreeId);
-    const contentEpoch = this.advanceLiveContentEpoch(projectId, worktreeId);
-    this.activeScanSourceKeys?.add(this.liveFilePath(projectId, worktreeId));
-    this.enqueue(this.liveUpdateKey(projectId, worktreeId), async () => {
-      if (
-        !this.isWorktreeGenerationCurrent(projectId, worktreeId, generation) ||
-        !this.isLiveContentEpochCurrent(projectId, worktreeId, contentEpoch)
-      ) {
-        return;
-      }
-      await this.upsertLiveChat(projectId, worktreeId, tab, contentEpoch);
-    });
+    this.queueLiveTabEntries(
+      { projectId, worktreeId },
+      new Map([[tab.id, tab]]),
+      {
+        wholeScope: (data) =>
+          data && {
+            ...data,
+            tabs: [...data.tabs.filter((other) => other.id !== tab.id), tab],
+          },
+        latestTab: (_chatId, superseded) => superseded,
+        uncommitted: true,
+      },
+    );
   }
 
   indexWorktreeArchives(projectId: string, worktreeId: string): void {
@@ -1058,18 +1416,7 @@ export class ChatSearchService {
       this.coworkArchiveKey(workspaceId, tab.id),
     );
     this.reactivateScope(workspaceId, COWORK_HOME_WORKTREE_ID);
-    this.enqueue(
-      this.liveUpdateKey(workspaceId, COWORK_HOME_WORKTREE_ID),
-      async () => {
-        if (this.isScopeDeleted(workspaceId, COWORK_HOME_WORKTREE_ID)) return;
-        await this.getIndexer().deleteChatDoc(
-          workspaceId,
-          COWORK_HOME_WORKTREE_ID,
-          tab.id,
-          'live',
-        );
-      },
-    );
+    this.queueArchivedLiveChat(workspaceId, COWORK_HOME_WORKTREE_ID, tab.id);
     const archiveDirectory = this.coworkArchiveDir(workspaceId, tab.id);
     this.activeScanSourceKeys?.add(archiveDirectory);
     this.enqueue(`cowork-archive:${workspaceId}/${tab.id}`, async () => {
@@ -1141,7 +1488,13 @@ export class ChatSearchService {
   }
 
   async deleteWorkspaceDocs(projectId: string): Promise<void> {
+    for (const read of Array.from(this.childReads))
+      if (read.projectId === projectId) read.controller.abort();
     this.deletedWorkspaces.add(projectId);
+    for (const key of Array.from(this.syncedLiveScopes)) {
+      if (key.startsWith(`live:${projectId}/`))
+        this.syncedLiveScopes.delete(key);
+    }
     this.cancelPending(
       (key) =>
         key.startsWith(`live:${projectId}/`) ||
@@ -1165,35 +1518,55 @@ export class ChatSearchService {
   }
 
   async flushPendingUpdates(): Promise<void> {
-    const pending = Array.from(this.pendingUpdates.values());
+    const pending = Array.from(this.pendingUpdates.entries());
     this.pendingUpdates.clear();
-    for (const update of pending) clearTimeout(update.timer);
+    for (const [, update] of pending) clearTimeout(update.timer);
     let completedAny = false;
+    // A failed batch retries every waiter in it, since reindexing is
+    // idempotent; updates a closing service skipped have nothing to retry.
+    let failure: { error: unknown } | undefined;
     try {
-      for (const update of pending) {
-        if (this.closed) return;
-        try {
-          await update.task();
-        } catch (error) {
-          if (!(error instanceof StaleSearchProjectionError)) throw error;
-          continue;
+      try {
+        for (const [key, update] of pending) {
+          if (this.closed) return;
+          // As in a debounced run, a newer live update takes this one over.
+          if (update.liveTabsUpdate) this.runningLiveUpdates.set(key, update);
+          try {
+            await update.task();
+          } catch (error) {
+            if (!(error instanceof StaleSearchProjectionError)) throw error;
+            continue;
+          } finally {
+            if (this.runningLiveUpdates.get(key) === update) {
+              this.runningLiveUpdates.delete(key);
+            }
+          }
+          completedAny = true;
         }
-        completedAny = true;
+      } catch (error) {
+        this.recoverFailedIndexer();
+        throw error;
+      } finally {
+        // An explicit flush is one batch. Scheduling after the batch prevents
+        // a slow later update from letting an earlier update's timer fire
+        // midway.
+        await this.flushIndexer();
+        if (completedAny) this.scheduleUpdatedBroadcast();
       }
     } catch (error) {
-      this.recoverFailedIndexer();
+      failure = { error };
       throw error;
     } finally {
-      // An explicit flush is one batch. Scheduling after the batch prevents a
-      // slow later update from letting an earlier update's timer fire midway.
-      await this.flushIndexer();
-      if (completedAny) this.scheduleUpdatedBroadcast();
+      for (const [key, update] of pending) {
+        this.settleRunningUpdate(key, update, failure);
+      }
     }
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    for (const read of Array.from(this.childReads)) read.controller.abort();
     if (this.indexerRecoveryTimer) {
       clearTimeout(this.indexerRecoveryTimer);
       this.indexerRecoveryTimer = null;
@@ -1250,6 +1623,189 @@ export class ChatSearchService {
       }
     }
     return this.db;
+  }
+
+  /** Child admissions do not publish a primary transcript mutation. */
+  childSearchDirty(event: ChildSearchDirtyNotification): void {
+    const { projectId, worktreeId } = event.scope;
+    if (this.closed || this.isScopeDeleted(projectId, worktreeId)) return;
+    const generation = this.worktreeGeneration(projectId, worktreeId);
+    this.enqueue(
+      `child:${JSON.stringify([projectId, worktreeId, event.parentChatId])}`,
+      async () => {
+        const isCurrent = (): boolean =>
+          !this.closed &&
+          this.isWorktreeGenerationCurrent(projectId, worktreeId, generation);
+        // A state read would readmit a scope deleted while this waited.
+        if (!isCurrent()) return;
+        const state = (
+          await import('../services/chat-state-service')
+        ).getChatStateService();
+        const snapshot = await state.getCompatibilityTabs(event.scope);
+        const tab = snapshot.tabs.find(
+          (candidate) => candidate.id === event.parentChatId,
+        );
+        if (tab && isCurrent()) {
+          await this.reconcileChildDocuments(
+            buildChatSearchDoc(
+              projectId,
+              worktreeId,
+              'live',
+              tab,
+              undefined,
+              undefined,
+              '',
+            ),
+            isCurrent,
+          );
+        } else if (isCurrent()) {
+          const archives = await state.getCompatibilityArchives(event.scope);
+          const entry = archives.archived.find(
+            (candidate) => candidate.tab.id === event.parentChatId,
+          );
+          if (entry)
+            await this.reconcileChildDocuments(
+              buildChatSearchDoc(
+                projectId,
+                worktreeId,
+                'worktree-archive',
+                entry.tab,
+                entry.archivedAt,
+                undefined,
+                '',
+              ),
+              isCurrent,
+            );
+        }
+      },
+    );
+  }
+
+  private async reconcileChildDocuments(
+    parent: ChatSearchDoc,
+    isCurrent: () => boolean,
+    attempt = 0,
+  ): Promise<void> {
+    // Inline/legacy fixtures and sources have no canonical child registry.
+    if (!parent.transcriptFingerprint) return;
+    const assertCurrent = staleProjectionGuard(isCurrent);
+    assertCurrent();
+    const scope = {
+      projectId: parent.projectId,
+      worktreeId: parent.worktreeId,
+    };
+    const state = (
+      await import('../services/chat-state-service')
+    ).getChatStateService();
+    let backend: ChatStateV2Backend | undefined;
+    if (parent.source === 'archived-container') {
+      backend = new ChatStateV2Backend(
+        await getArchivedContainerChatStorage(
+          parent.projectId,
+          parent.worktreeId,
+        ),
+      );
+    } else if (parent.source === 'cowork-archive') {
+      const store = await getStandaloneHistoryStorage(
+        parent.projectId,
+        parent.chatId,
+      );
+      if (!store) throw new StaleSearchProjectionError();
+      backend = new ChatStateV2Backend(store);
+    }
+    const read = { ...scope, controller: new AbortController() };
+    this.childReads.add(read);
+    const signal = read.controller.signal;
+    const enumerate = (): Promise<ChildSearchDocumentIdentity[]> =>
+      backend
+        ? backend.listChildSearchDocuments(parent.chatId, signal)
+        : state.listChildSearchDocuments(scope, parent.chatId, signal);
+    const indexer = this.getIndexer();
+    let stage: string | undefined;
+    try {
+      const identities = await enumerate();
+      assertCurrent();
+      stage = await indexer.beginChildDocumentStage(parent.docId);
+      for (const identity of identities) {
+        assertCurrent();
+        const metadata = buildChatChildSearchDoc(
+          parent,
+          identity.target,
+          identity.fingerprint,
+          '',
+        );
+        if (
+          await indexer.reuseChildDocument(
+            stage,
+            metadata.docId,
+            identity.fingerprint,
+          )
+        )
+          continue;
+        const document = backend
+          ? await backend.readChildSearchDocument(identity, signal)
+          : await state.readChildSearchDocument(scope, identity, signal);
+        assertCurrent();
+        await indexer.stageChildDocument(
+          stage,
+          buildChatChildSearchDoc(
+            parent,
+            identity.target,
+            document.fingerprint,
+            document.body,
+          ),
+        );
+      }
+      assertCurrent();
+      const latest = await enumerate();
+      if (
+        JSON.stringify(latest.map((identity) => identity.fingerprint)) !==
+        JSON.stringify(identities.map((identity) => identity.fingerprint))
+      )
+        throw new StaleSearchProjectionError();
+      assertCurrent();
+      const staged = stage;
+      const publish = async (): Promise<void> => {
+        if (!(await indexer.commitChildDocumentStage(staged)))
+          throw new StaleSearchProjectionError();
+      };
+      if (backend) await publish();
+      else if (
+        !(await state.commitChildSearchDocuments(
+          scope,
+          parent.chatId,
+          identities,
+          publish,
+          isCurrent,
+          signal,
+        ))
+      )
+        throw new StaleSearchProjectionError();
+      stage = undefined;
+    } catch (error) {
+      if (
+        error instanceof StaleSearchProjectionError ||
+        (error instanceof Error &&
+          error.message === 'Child search source was superseded')
+      ) {
+        // Archive or deletion removes the parent without changing the
+        // generation; its own reindex rebuilds children, so never chase it.
+        if (
+          isCurrent() &&
+          attempt < CHILD_RECONCILE_RETRIES &&
+          (await indexer.getIndexedCommittedFingerprint(parent.docId)) !== null
+        )
+          this.enqueue(`children-retry:${parent.docId}`, () =>
+            this.reconcileChildDocuments(parent, isCurrent, attempt + 1),
+          );
+        return;
+      }
+      if (!isCurrent()) return;
+      throw error;
+    } finally {
+      if (stage !== undefined) await indexer.discardChildDocumentStage(stage);
+      this.childReads.delete(read);
+    }
   }
 
   private async projectedChat(
@@ -1600,10 +2156,58 @@ export class ChatSearchService {
           '',
         ),
       ))
-    )
+    ) {
+      await this.reconcileChildDocuments(
+        buildChatSearchDoc(
+          projectId,
+          worktreeId,
+          'live',
+          tab,
+          undefined,
+          undefined,
+          '',
+        ),
+        isCurrent,
+      );
       return;
-    if (await this.replaceLiveActiveText(projectId, worktreeId, tab, isCurrent))
+    }
+    if (
+      await this.replaceLiveActiveText(projectId, worktreeId, tab, isCurrent)
+    ) {
+      await this.reconcileChildDocuments(
+        buildChatSearchDoc(
+          projectId,
+          worktreeId,
+          'live',
+          tab,
+          undefined,
+          undefined,
+          '',
+        ),
+        isCurrent,
+      );
       return;
+    }
+    const parent = await this.upsertProjectedLiveChat(
+      projectId,
+      worktreeId,
+      tab,
+      isCurrent,
+    );
+    if (parent) await this.reconcileChildDocuments(parent, isCurrent);
+  }
+
+  /**
+   * Indexes a live chat's projected text and returns its document without
+   * that text. Child reconciliation needs only the identity, and a long
+   * chat's body would otherwise stay alive across every child read.
+   */
+  private async upsertProjectedLiveChat(
+    projectId: string,
+    worktreeId: string,
+    tab: PersistedChatTab,
+    isCurrent: () => boolean,
+  ): Promise<ChatSearchDoc | null> {
     const doc = await this.projectedChat(
       projectId,
       worktreeId,
@@ -1613,7 +2217,9 @@ export class ChatSearchService {
       undefined,
       isCurrent,
     );
-    if (isCurrent()) await this.getIndexer().upsertDoc(doc);
+    if (!isCurrent()) return null;
+    await this.getIndexer().upsertDoc(doc);
+    return { ...doc, body: '', activeBody: undefined };
   }
 
   private async replaceLiveScope(
@@ -1650,6 +2256,20 @@ export class ChatSearchService {
       })(),
       isCurrent,
     );
+    for (const tab of data.tabs)
+      if ((tab.kind ?? 'chat') === 'chat')
+        await this.reconcileChildDocuments(
+          buildChatSearchDoc(
+            projectId,
+            worktreeId,
+            'live',
+            tab,
+            undefined,
+            undefined,
+            '',
+          ),
+          isCurrent,
+        );
   }
 
   private async replaceArchiveScope(
@@ -1660,6 +2280,10 @@ export class ChatSearchService {
   ): Promise<void> {
     const projectChat = this.projectedChat.bind(this);
     const generation = this.worktreeGeneration(projectId, worktreeId);
+    const isCurrent = (): boolean =>
+      !this.closed &&
+      this.isWorktreeGenerationCurrent(projectId, worktreeId, generation) &&
+      this.isArchiveContentEpochCurrent(projectId, worktreeId, contentEpoch);
     await this.getIndexer().replaceStreamedScope(
       projectId,
       worktreeId,
@@ -1674,11 +2298,21 @@ export class ChatSearchService {
             entry.archivedAt,
           );
       })(),
-      () =>
-        !this.closed &&
-        this.isWorktreeGenerationCurrent(projectId, worktreeId, generation) &&
-        this.isArchiveContentEpochCurrent(projectId, worktreeId, contentEpoch),
+      isCurrent,
     );
+    for (const entry of data.archived)
+      await this.reconcileChildDocuments(
+        buildChatSearchDoc(
+          projectId,
+          worktreeId,
+          'worktree-archive',
+          entry.tab,
+          entry.archivedAt,
+          undefined,
+          '',
+        ),
+        isCurrent,
+      );
   }
 
   private async replaceContainerScope(
@@ -1743,6 +2377,21 @@ export class ChatSearchService {
         !this.closed &&
         this.isWorktreeGenerationCurrent(projectId, worktreeId, generation),
     );
+    for (const entry of Array.from(entries.values()))
+      await this.reconcileChildDocuments(
+        buildChatSearchDoc(
+          projectId,
+          worktreeId,
+          'archived-container',
+          entry.tab,
+          entry.archivedAt,
+          expiresAt,
+          '',
+        ),
+        (): boolean =>
+          !this.closed &&
+          this.isWorktreeGenerationCurrent(projectId, worktreeId, generation),
+      );
   }
 
   private getIndexer(): ChatSearchIndexer | ThreadedChatSearchIndexer {
@@ -1780,6 +2429,8 @@ export class ChatSearchService {
       this.indexerRecoveryTimer = null;
       if (this.closed || this.indexer !== failed) return;
       this.indexer = null;
+      // The replacement may have rebuilt the index without these scopes.
+      this.syncedLiveScopes.clear();
       this.db?.close();
       this.db = null;
       this.workerDatabasePath = null;
@@ -1892,24 +2543,53 @@ export class ChatSearchService {
     key: string,
     task: () => Promise<void> | void,
     liveTabsUpdate?: PendingLiveTabsUpdate,
+    waiter?: PendingUpdateWaiter,
+    inheritedWaiters: readonly PendingUpdateWaiter[] = [],
   ): void {
-    if (this.closed) return;
+    if (this.closed) {
+      settleWaiters(inheritedWaiters);
+      waiter?.();
+      return;
+    }
     const existing = this.pendingUpdates.get(key);
     if (existing) clearTimeout(existing.timer);
+    const waiters = existing?.waiters ?? [];
+    waiters.push(...inheritedWaiters);
+    if (waiter) waiters.push(waiter);
     const timer = setTimeout(() => {
       const pending = this.pendingUpdates.get(key);
       if (!pending || pending.timer !== timer) return;
       this.pendingUpdates.delete(key);
-      void this.runIncrementalTask(pending.task).catch((error: unknown) => {
-        if (error instanceof StaleSearchProjectionError) return;
-        // The index is disposable derived data; persistence must not fail when
-        // an incremental refresh cannot complete.
-        // eslint-disable-next-line no-console
-        console.error('Chat search incremental update failed:', error);
-      });
+      if (pending.liveTabsUpdate) this.runningLiveUpdates.set(key, pending);
+      void this.runIncrementalTask(pending.task).then(
+        () => this.settleRunningUpdate(key, pending),
+        (error: unknown) => {
+          if (error instanceof StaleSearchProjectionError) {
+            this.settleRunningUpdate(key, pending);
+            return;
+          }
+          // The index is disposable derived data; persistence must not fail
+          // when an incremental refresh cannot complete. Waiters retry.
+          // eslint-disable-next-line no-console
+          console.error('Chat search incremental update failed:', error);
+          this.settleRunningUpdate(key, pending, { error });
+        },
+      );
     }, this.debounceMs);
     timer.unref?.();
-    this.pendingUpdates.set(key, { timer, task, liveTabsUpdate });
+    this.pendingUpdates.set(key, { timer, task, liveTabsUpdate, waiters });
+  }
+
+  /** Settles the waiters a newer update has not taken over. */
+  private settleRunningUpdate(
+    key: string,
+    update: PendingUpdate,
+    failure?: { error: unknown },
+  ): void {
+    if (this.runningLiveUpdates.get(key) === update) {
+      this.runningLiveUpdates.delete(key);
+    }
+    settleWaiters(update.waiters.splice(0), failure);
   }
 
   private cancelPending(predicate: (key: string) => boolean): void {
@@ -1917,6 +2597,14 @@ export class ChatSearchService {
       if (!predicate(key)) continue;
       clearTimeout(update.timer);
       this.pendingUpdates.delete(key);
+      // Its scope was removed or replaced, so there is nothing to retry.
+      settleWaiters(update.waiters);
+    }
+    // A workspace deletion keeps the generation, so a reactivated scope could
+    // otherwise take over its old incarnation's running update. The running
+    // task still settles its own waiters once it stops.
+    for (const key of Array.from(this.runningLiveUpdates.keys())) {
+      if (predicate(key)) this.runningLiveUpdates.delete(key);
     }
   }
 
@@ -1929,8 +2617,17 @@ export class ChatSearchService {
       for (const descriptor of descriptors) {
         sourceKeys.add(descriptor.fileKey);
       }
+      const liveFingerprintsFenced =
+        (await this.getIndexer().getMetadata(
+          LIVE_FINGERPRINT_FENCE_METADATA_KEY,
+        )) === '1';
       for (const descriptor of descriptors) {
         if (this.closed) return;
+        if (descriptor.kind === 'live' && !liveFingerprintsFenced) {
+          // Dropped first, so a reindex this scan skips or cannot finish
+          // leaves the next scan nothing to trust.
+          await this.getIndexer().deleteSourceFile(descriptor.fileKey);
+        }
         if (this.isScopeDeleted(descriptor.projectId, descriptor.worktreeId)) {
           continue;
         }
@@ -1939,8 +2636,30 @@ export class ChatSearchService {
         );
         if (
           previous?.mtimeMs === descriptor.fingerprint.mtimeMs &&
-          previous.sizeBytes === descriptor.fingerprint.sizeBytes
+          previous.sizeBytes === descriptor.fingerprint.sizeBytes &&
+          // A live update since enumeration may have indexed only its chats.
+          (descriptor.kind !== 'live' ||
+            this.syncedLiveScopes.has(
+              this.liveUpdateKey(descriptor.projectId, descriptor.worktreeId),
+            ) ||
+            this.isLiveContentEpochCurrent(
+              descriptor.projectId,
+              descriptor.worktreeId,
+              descriptor.liveContentEpoch ?? 0,
+            ))
         ) {
+          if (
+            descriptor.kind === 'live' &&
+            this.isWorktreeGenerationCurrent(
+              descriptor.projectId,
+              descriptor.worktreeId,
+              descriptor.worktreeGeneration,
+            )
+          ) {
+            this.syncedLiveScopes.add(
+              this.liveUpdateKey(descriptor.projectId, descriptor.worktreeId),
+            );
+          }
           await yieldToMainLoop();
           continue;
         }
@@ -1949,6 +2668,12 @@ export class ChatSearchService {
       }
       if (this.closed) return;
       await this.pruneMissingSources(sourceKeys);
+      if (!liveFingerprintsFenced) {
+        await this.getIndexer().setMetadata(
+          LIVE_FINGERPRINT_FENCE_METADATA_KEY,
+          '1',
+        );
+      }
       await this.getIndexer().setMetadata(
         'last_full_scan_at',
         String(Date.now()),
@@ -2098,6 +2823,10 @@ export class ChatSearchService {
         kind === 'worktree-archive'
           ? this.archiveContentEpoch(projectId, worktreeId)
           : undefined;
+      const liveContentEpoch =
+        kind === 'live'
+          ? this.liveContentEpoch(projectId, worktreeId)
+          : undefined;
       const fingerprint = await this.sourceFingerprint(
         fileKey,
         projectId,
@@ -2111,6 +2840,7 @@ export class ChatSearchService {
         worktreeId,
         worktreeGeneration,
         ...(archiveContentEpoch !== undefined ? { archiveContentEpoch } : {}),
+        ...(liveContentEpoch !== undefined ? { liveContentEpoch } : {}),
         fingerprint,
       });
     }
@@ -2143,39 +2873,7 @@ export class ChatSearchService {
     const indexer = this.getIndexer();
     const generation = descriptor.worktreeGeneration;
     if (descriptor.kind === 'live') {
-      const contentEpoch = this.liveContentEpoch(
-        descriptor.projectId,
-        descriptor.worktreeId,
-      );
-      const data = await readChatTabsFileForIndex(
-        descriptor.projectId,
-        descriptor.worktreeId,
-      );
-      if (
-        this.closed ||
-        !this.isWorktreeGenerationCurrent(
-          descriptor.projectId,
-          descriptor.worktreeId,
-          generation,
-        )
-      ) {
-        return;
-      }
-      await this.replaceLiveScope(
-        descriptor.projectId,
-        descriptor.worktreeId,
-        data,
-        contentEpoch,
-      );
-      if (
-        !this.isLiveContentEpochCurrent(
-          descriptor.projectId,
-          descriptor.worktreeId,
-          contentEpoch,
-        )
-      ) {
-        return;
-      }
+      if (!(await this.indexScannedLiveSource(descriptor))) return;
     } else if (descriptor.kind === 'worktree-archive') {
       const contentEpoch =
         descriptor.archiveContentEpoch ??
@@ -2288,11 +2986,54 @@ export class ChatSearchService {
         )) &&
       !this.isCoworkArchiveDeleted(descriptor.projectId, descriptor.chatId)
     ) {
+      if (descriptor.kind === 'live') {
+        this.syncedLiveScopes.add(
+          this.liveUpdateKey(descriptor.projectId, descriptor.worktreeId),
+        );
+      }
       await indexer.setSourceFingerprint(
         descriptor.fileKey,
         descriptor.fingerprint,
       );
     }
+  }
+
+  /**
+   * Replaces a scanned live scope; false when that did not complete. A newer
+   * live update that supersedes it may index only its own chats, so a scope
+   * not yet indexed whole is reread through the live update queue.
+   */
+  private async indexScannedLiveSource(
+    descriptor: SourceDescriptor,
+  ): Promise<boolean> {
+    const { projectId, worktreeId } = descriptor;
+    const generation = descriptor.worktreeGeneration;
+    const contentEpoch = this.liveContentEpoch(projectId, worktreeId);
+    try {
+      const data = await readChatTabsFileForIndex(projectId, worktreeId);
+      if (
+        this.closed ||
+        !this.isWorktreeGenerationCurrent(projectId, worktreeId, generation)
+      ) {
+        return false;
+      }
+      await this.replaceLiveScope(projectId, worktreeId, data, contentEpoch);
+    } catch (error) {
+      if (!(error instanceof StaleSearchProjectionError)) throw error;
+    }
+    if (this.isLiveContentEpochCurrent(projectId, worktreeId, contentEpoch)) {
+      return true;
+    }
+    const updateKey = this.liveUpdateKey(projectId, worktreeId);
+    if (
+      !this.closed &&
+      this.isWorktreeGenerationCurrent(projectId, worktreeId, generation) &&
+      !this.syncedLiveScopes.has(updateKey) &&
+      !this.currentFullLiveUpdate(updateKey, generation)
+    ) {
+      this.queueFullLiveUpdate({ projectId, worktreeId }, undefined);
+    }
+    return false;
   }
 
   private async indexCoworkArchiveSource(
@@ -2357,8 +3098,20 @@ export class ChatSearchService {
         generation,
       ) &&
       !this.isCoworkArchiveDeleted(descriptor.projectId, chatId)
-    )
+    ) {
       await this.getIndexer().upsertDoc(doc);
+      await this.reconcileChildDocuments(
+        doc,
+        (): boolean =>
+          !this.closed &&
+          this.isWorktreeGenerationCurrent(
+            descriptor.projectId,
+            descriptor.worktreeId,
+            generation,
+          ) &&
+          !this.isCoworkArchiveDeleted(descriptor.projectId, chatId),
+      );
+    }
   }
 
   private async pruneMissingSources(sourceKeys: Set<string>): Promise<void> {
@@ -2480,8 +3233,12 @@ export class ChatSearchService {
     projectId: string,
     worktreeId: string,
   ): number {
+    for (const read of Array.from(this.childReads))
+      if (read.projectId === projectId && read.worktreeId === worktreeId)
+        read.controller.abort();
     const generation = this.worktreeGeneration(projectId, worktreeId) + 1;
     this.worktreeGenerations.set(`${projectId}/${worktreeId}`, generation);
+    this.syncedLiveScopes.delete(this.liveUpdateKey(projectId, worktreeId));
     return generation;
   }
 
@@ -2529,6 +3286,8 @@ export class ChatSearchService {
       const store = new ChatStorageV2(
         dirname(dirname(this.liveFilePath(projectId, worktreeId))),
         worktreeId,
+        undefined,
+        { maxManifestVersion: 4 },
       );
       const format = await store.format();
       if (format !== 'v1') {
@@ -2538,16 +3297,47 @@ export class ChatSearchService {
             live ? 'live-index.json' : 'archive-index.json',
           ),
         );
-        if (format === 'v2' || !index) return index;
+        if (!index) return index;
+        const journalFile =
+          format === 'v2' ? undefined : await store.journalFile();
+        let childIdentity = 0;
+        if (format === 'v4') {
+          const state = (
+            await import('../services/chat-state-service')
+          ).getChatStateService();
+          const scope = { projectId, worktreeId };
+          const chats = live
+            ? (await state.getCompatibilityTabs(scope, { chatIds: [] })).tabs
+            : (
+                await state.getCompatibilityArchives(scope, { chatIds: [] })
+              ).archived.map((entry) => entry.tab);
+          const hash = createHash('sha256');
+          for (const chat of chats) {
+            const children = await state.listChildSearchDocuments(
+              scope,
+              chat.id,
+            );
+            hash.update(
+              JSON.stringify([
+                chat.id,
+                children.map((child) => child.fingerprint),
+              ]),
+            );
+          }
+          childIdentity = parseInt(hash.digest('hex').slice(0, 12), 16);
+        }
+        if (!journalFile)
+          return { ...index, sizeBytes: index.sizeBytes + childIdentity };
         // A delta-journal scope's index file is only its last checkpoint;
         // every commit appends to the journal, and a checkpoint replaces it.
         const journal = await safeFingerprint(
-          join(store.directory, DELTA_JOURNAL_FILE_NAME),
+          join(store.directory, journalFile),
         );
-        if (!journal) return index;
+        if (!journal)
+          return { ...index, sizeBytes: index.sizeBytes + childIdentity };
         return {
           mtimeMs: Math.max(index.mtimeMs, journal.mtimeMs),
-          sizeBytes: index.sizeBytes + journal.sizeBytes,
+          sizeBytes: index.sizeBytes + journal.sizeBytes + childIdentity,
         };
       }
     }
@@ -2560,14 +3350,13 @@ export class ChatSearchService {
     worktreeId: string,
     generation: number,
     archiveContentEpoch?: number,
+    live?: LiveFingerprintFence,
   ): Promise<void> {
-    const fingerprint = await this.sourceFingerprint(
-      fileKey,
-      projectId,
-      worktreeId,
-    );
-    if (
-      fingerprint &&
+    const fingerprint =
+      live?.fingerprint === undefined
+        ? await this.sourceFingerprint(fileKey, projectId, worktreeId)
+        : live.fingerprint;
+    const isCurrent = (): boolean =>
       !this.closed &&
       this.isWorktreeGenerationCurrent(projectId, worktreeId, generation) &&
       (archiveContentEpoch === undefined ||
@@ -2575,10 +3364,27 @@ export class ChatSearchService {
           projectId,
           worktreeId,
           archiveContentEpoch,
-        ))
+        )) &&
+      (live === undefined ||
+        (this.isLiveContentEpochCurrent(
+          projectId,
+          worktreeId,
+          live.contentEpoch,
+        ) &&
+          live.isSnapshotCurrent?.() !== false));
+    if (!fingerprint || !isCurrent()) return;
+    // Read after the fingerprint: a commit already on disk then was admitted
+    // before the read, so an unchanged revision means the files hold none.
+    if (
+      live?.fingerprint === undefined &&
+      live?.revision !== undefined &&
+      ((await readCommittedLiveRevision(projectId, worktreeId)) !==
+        live.revision ||
+        !isCurrent())
     ) {
-      await this.getIndexer().setSourceFingerprint(fileKey, fingerprint);
+      return;
     }
+    await this.getIndexer().setSourceFingerprint(fileKey, fingerprint);
   }
 
   private async runIncrementalTask(

@@ -1,12 +1,17 @@
 /**
  * @jest-environment jsdom
  */
-import { shareEnvelope } from '@/test-utils/shareOperation';
+import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ChatTabBar } from '../ChatTabBar';
 import { WorkspaceAccessContext } from '@/lib/workspace-access';
 import { ArchivedChatsControl } from '../ArchivedChatsControl';
+import type {
+  ArchivedChatSummary,
+  ShareRunRequest,
+  ShareRunResponse,
+} from '@canopy/desktop-shared/types';
 import {
   useChatStore,
   WORKTREE_CHAT_OPEN_ARCHIVE_TRANSCRIPT_EVENT,
@@ -21,10 +26,48 @@ import {
   resetDelegationActivityStoreForTests,
   useDelegationActivityStore,
 } from '@/stores/delegationActivityStore';
+import {
+  BACKGROUND_BLOCKS_CLOSE_TOOLTIP,
+  DELEGATES_BLOCK_CLOSE_TOOLTIP,
+} from '@/stores/chat/close-guard';
+import {
+  resetLiveBackgroundTaskStoreForTests,
+  useLiveBackgroundTaskStore,
+} from '@/stores/liveBackgroundTaskStore';
 
 const originalAddToast = useGitHubStore.getState().addToast;
 const mockShareSessionAction = jest.fn().mockResolvedValue(undefined);
-const mockShareRun = jest.fn().mockResolvedValue({ externalId: 'run-private' });
+const mockShareRun = jest
+  .fn<Promise<ShareRunResponse>, [request: ShareRunRequest]>()
+  .mockResolvedValue({ externalId: 'run-private' });
+
+type TestCanopyApi = {
+  chat: Partial<typeof window.api.chat>;
+  runs: Pick<typeof window.api.runs, 'share'>;
+  loadCanopyCloudAccount: typeof window.api.loadCanopyCloudAccount;
+};
+
+type TestPipelinesApi = Pick<
+  typeof window.pipelines,
+  'listSharedTeams' | 'listSharedOrganizations'
+>;
+
+function makeArchivedSummary(
+  chatId: string,
+  overrides: Partial<ArchivedChatSummary> = {},
+): ArchivedChatSummary {
+  return {
+    chatId,
+    title: 'Archived chat',
+    turnCount: 2,
+    archivedAt: '2026-06-20T00:00:00.000Z',
+    createdAt: '2026-06-19T00:00:00.000Z',
+    restorable: true,
+    providerType: 'claude',
+    unread: false,
+    ...overrides,
+  };
+}
 
 jest.mock('../ArchivedChatTranscriptModal', () => ({
   ArchivedChatTranscriptModal: (): null => null,
@@ -50,7 +93,7 @@ function makeTab(overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
@@ -68,33 +111,70 @@ describe('ChatTabBar current UI archive reporting', () => {
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
-    window.api = {
+    const apiForTest: TestCanopyApi = {
       chat: {},
-      runs: { share: shareEnvelope(mockShareRun) },
-      loadCanopyCloudAccount: jest.fn().mockResolvedValue({
-        hasApiKey: true,
-        authMode: 'oauth',
-        credentialSource: 'oauth_desktop',
-        capabilities: [
-          'session-exports-v1',
-          'runs-crud-v1',
-          'teams-v1',
-          'organizations-v1',
-        ],
-        account: { id: 'account-1', email: 'user@example.test' },
-        storageAvailable: true,
-      }),
-    } as typeof window.api;
-    window.pipelines = {
-      listSharedTeams: jest.fn().mockResolvedValue({
-        success: true,
-        data: { data: [] },
-      }),
-      listSharedOrganizations: jest.fn().mockResolvedValue({
-        success: true,
-        data: { data: [] },
-      }),
-    } as typeof window.pipelines;
+      runs: {
+        share: jest.fn<
+          ReturnType<typeof window.api.runs.share>,
+          Parameters<typeof window.api.runs.share>
+        >((request) =>
+          mockShareRun(request).then((value) => ({ ok: true, value })),
+        ),
+      },
+      loadCanopyCloudAccount: jest
+        .fn<
+          ReturnType<typeof window.api.loadCanopyCloudAccount>,
+          Parameters<typeof window.api.loadCanopyCloudAccount>
+        >()
+        .mockResolvedValue({
+          hasApiKey: true,
+          authMode: 'oauth',
+          credentialSource: 'oauth_desktop',
+          capabilities: [
+            'session-exports-v1',
+            'runs-crud-v1',
+            'teams-v1',
+            'organizations-v1',
+          ],
+          account: {
+            id: 'account-1',
+            name: 'Test user',
+            email: 'user@example.test',
+            role: 'DEVELOPER',
+          },
+          storageAvailable: true,
+        }),
+    };
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      writable: true,
+      value: apiForTest,
+    });
+    const pipelinesForTest: TestPipelinesApi = {
+      listSharedTeams: jest
+        .fn<
+          ReturnType<typeof window.pipelines.listSharedTeams>,
+          Parameters<typeof window.pipelines.listSharedTeams>
+        >()
+        .mockResolvedValue({
+          success: true,
+          data: { serverId: 'server-1', data: [] },
+        }),
+      listSharedOrganizations: jest
+        .fn<
+          ReturnType<typeof window.pipelines.listSharedOrganizations>,
+          Parameters<typeof window.pipelines.listSharedOrganizations>
+        >()
+        .mockResolvedValue({
+          success: true,
+          data: { serverId: 'server-1', data: [] },
+        }),
+    };
+    Object.defineProperty(window, 'pipelines', {
+      configurable: true,
+      writable: true,
+      value: pipelinesForTest,
+    });
     useChatStore.setState({
       selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
       worktreeChats: {
@@ -105,6 +185,7 @@ describe('ChatTabBar current UI archive reporting', () => {
       },
       archivedChats: {},
     });
+    resetLiveBackgroundTaskStoreForTests();
     useCurrentUiStateStore.setState({ revision: 0, slices: {} });
     useCurrentUiStateStore.getState().recomputeEnvelope();
     useCurrentUiStateStore.getState().updateSlice('chat.activeTab', {
@@ -123,9 +204,9 @@ describe('ChatTabBar current UI archive reporting', () => {
     });
     container.remove();
     resetDelegationActivityStoreForTests();
-    delete (window as typeof window & { api?: typeof window.api }).api;
-    delete (window as typeof window & { pipelines?: typeof window.pipelines })
-      .pipelines;
+    resetLiveBackgroundTaskStoreForTests();
+    Reflect.deleteProperty(window, 'api');
+    Reflect.deleteProperty(window, 'pipelines');
   });
 
   it('retries the self-heal whenever an empty worktree scope commits again', async () => {
@@ -271,7 +352,7 @@ describe('ChatTabBar current UI archive reporting', () => {
     expect(unreadTab?.querySelector('.fg-accent')).toBeNull();
   });
 
-  it('shows an idle chat with live delegates as working, with a disabled close that says why', async () => {
+  it('shows an idle chat with live delegates as background work, with a disabled close that says why', async () => {
     useChatStore.setState({
       worktreeChats: {
         'project/worktree': {
@@ -290,6 +371,13 @@ describe('ChatTabBar current UI archive reporting', () => {
       live: 1,
       queued: 0,
     });
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-1',
+      sessionActive: true,
+      liveTasks: [{ taskId: 'provider-agent', taskType: 'local_agent' }],
+    });
     await act(async () => {
       root.render(createElement(ChatTabBar));
       await Promise.resolve();
@@ -299,7 +387,14 @@ describe('ChatTabBar current UI archive reporting', () => {
       '[data-testid="chat-tab-chat-1"]',
     );
     expect(tab?.dataset.busy).toBe('true');
-    expect(tab?.querySelector('[aria-label="Thinking"]')).not.toBeNull();
+    // Its own turn ended: the only spinner is the quiet background glyph.
+    const glyph = tab?.querySelector(
+      '[role="img"][aria-label="2 background tasks running"]',
+    );
+    expect(glyph?.querySelector('[aria-label="Thinking"]')).toBeInstanceOf(
+      HTMLElement,
+    );
+    expect(tab?.querySelectorAll('[aria-label="Thinking"]')).toHaveLength(1);
     const close = container.querySelector<HTMLButtonElement>(
       '[data-testid="chat-tab-chat-1-close"]',
     );
@@ -311,9 +406,7 @@ describe('ChatTabBar current UI archive reporting', () => {
       );
       await Promise.resolve();
     });
-    expect(document.body.textContent).toContain(
-      'Stop its delegates to close this chat',
-    );
+    expect(document.body.textContent).toContain(DELEGATES_BLOCK_CLOSE_TOOLTIP);
 
     await act(async () => {
       close?.click();
@@ -340,6 +433,67 @@ describe('ChatTabBar current UI archive reporting', () => {
       document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
     ).find((item) => item.textContent === 'Close');
     expect(closeItem?.disabled).toBe(true);
+  });
+
+  it('disables close for provider background work with the background tooltip', async () => {
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-1',
+      sessionActive: true,
+      liveTasks: [{ taskId: 'provider-agent', taskType: 'local_agent' }],
+    });
+    await act(async () => {
+      root.render(createElement(ChatTabBar));
+      await Promise.resolve();
+    });
+
+    const close = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-tab-chat-1-close"]',
+    );
+    expect(close?.getAttribute('aria-disabled')).toBe('true');
+
+    await act(async () => {
+      close?.parentElement?.dispatchEvent(
+        new MouseEvent('mouseover', { bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).toContain(
+      BACKGROUND_BLOCKS_CLOSE_TOOLTIP,
+    );
+
+    const tab = container.querySelector<HTMLElement>(
+      '[data-testid="chat-tab-chat-1"]',
+    );
+    await act(async () => {
+      tab?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+      await Promise.resolve();
+    });
+    const closeItem = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === 'Close');
+    expect(closeItem?.disabled).toBe(true);
+  });
+
+  it('keeps the close enabled for shell-only background work', async () => {
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-1',
+      sessionActive: true,
+      liveTasks: [{ taskId: 'shell', taskType: 'local_bash' }],
+    });
+    await act(async () => {
+      root.render(createElement(ChatTabBar));
+      await Promise.resolve();
+    });
+
+    expect(
+      container
+        .querySelector('[data-testid="chat-tab-chat-1-close"]')
+        ?.getAttribute('aria-disabled'),
+    ).toBeNull();
   });
 
   it('returns a chat to its idle icon and enabled close when its delegates finish', async () => {
@@ -384,6 +538,70 @@ describe('ChatTabBar current UI archive reporting', () => {
     );
     expect(tab?.dataset.busy).toBeUndefined();
     expect(tab?.querySelector('[aria-label="Thinking"]')).toBeNull();
+    expect(
+      container
+        .querySelector('[data-testid="chat-tab-chat-1-close"]')
+        ?.getAttribute('aria-disabled'),
+    ).toBeNull();
+  });
+
+  it("keeps an unread chat's unread ink on its background spinner", async () => {
+    useChatStore.setState({
+      worktreeChats: {
+        'project/worktree': {
+          activeTabId: 'chat-2',
+          tabs: [
+            makeTab({ unread: true }),
+            makeTab({ id: 'chat-2', title: 'Other' }),
+          ],
+        },
+      },
+    });
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-1',
+      sessionActive: true,
+      liveTasks: [{ taskId: 'dev-server', taskType: 'local_bash' }],
+    });
+    await act(async () => {
+      root.render(createElement(ChatTabBar));
+      await Promise.resolve();
+    });
+    const spinner = container
+      .querySelector(
+        '[data-testid="chat-tab-chat-1"] [role="img"][aria-label="1 background task running"]',
+      )
+      ?.querySelector('[aria-label="Thinking"]');
+    expect(spinner).toBeInstanceOf(HTMLElement);
+    expect(spinner?.className).toContain(
+      OPERATIONAL_STATUS_COLORS.unread.foreground,
+    );
+  });
+
+  it('shows a shell-only chat as background work and keeps its close enabled', async () => {
+    useChatStore.setState({
+      worktreeChats: {
+        'project/worktree': { activeTabId: 'chat-1', tabs: [makeTab()] },
+      },
+    });
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-1',
+      sessionActive: true,
+      liveTasks: [{ taskId: 'dev-server', taskType: 'local_bash' }],
+    });
+    await act(async () => {
+      root.render(createElement(ChatTabBar));
+      await Promise.resolve();
+    });
+    const tab = container.querySelector<HTMLElement>(
+      '[data-testid="chat-tab-chat-1"]',
+    );
+    expect(
+      tab?.querySelector('[aria-label="1 background task running"]'),
+    ).not.toBeNull();
     expect(
       container
         .querySelector('[data-testid="chat-tab-chat-1-close"]')
@@ -444,14 +662,7 @@ describe('ChatTabBar current UI archive reporting', () => {
   });
 
   it('renders the archive control as a 28px icon button with a corner count badge', async () => {
-    const baseSummary = {
-      title: 'Archived chat',
-      turnCount: 2,
-      archivedAt: '2026-06-20T00:00:00.000Z',
-      createdAt: '2026-06-19T00:00:00.000Z',
-      restorable: true,
-      providerType: 'claude' as const,
-    };
+    const baseSummary = makeArchivedSummary('archived-base');
     useChatStore.setState({
       archivedChats: {
         'project/worktree': [
@@ -498,14 +709,7 @@ describe('ChatTabBar current UI archive reporting', () => {
   });
 
   it('renders the tab-strip archive button in the neutral ink with a blue unread dot', async () => {
-    const baseSummary = {
-      title: 'Archived chat',
-      turnCount: 2,
-      archivedAt: '2026-06-20T00:00:00.000Z',
-      createdAt: '2026-06-19T00:00:00.000Z',
-      restorable: true,
-      providerType: 'claude' as const,
-    };
+    const baseSummary = makeArchivedSummary('archived-base');
     const setArchives = async (unread: boolean): Promise<void> => {
       await act(async () => {
         useChatStore.setState({
@@ -523,10 +727,10 @@ describe('ChatTabBar current UI archive reporting', () => {
 
     await act(async () => {
       root.render(
-        createElement(ArchivedChatsControl, {
-          scope: { projectId: 'project', worktreeId: 'worktree' },
-          variant: 'tabStrip',
-        }),
+        <ArchivedChatsControl
+          scope={{ projectId: 'project', worktreeId: 'worktree' }}
+          variant="tabStrip"
+        />,
       );
       await Promise.resolve();
     });
@@ -539,6 +743,10 @@ describe('ChatTabBar current UI archive reporting', () => {
     expect(control?.classList.contains('w-7')).toBe(true);
     expect(control?.classList.contains('fg-secondary')).toBe(true);
     expect(control?.classList.contains('text-amber-400')).toBe(false);
+    // A tab row chrome control: it takes the row's nested corner radius.
+    expect(control?.classList.contains('canopy-panel-chrome-button')).toBe(
+      true,
+    );
     expect(control?.dataset.unread).toBe('true');
     expect(
       container.querySelector('[data-testid="chat-tab-archive-count"]'),
@@ -583,26 +791,16 @@ describe('ChatTabBar current UI archive reporting', () => {
     async (variant, portaled) => {
       useChatStore.setState({
         archivedChats: {
-          'project/worktree': [
-            {
-              chatId: 'archived-1',
-              title: 'Archived chat',
-              turnCount: 2,
-              archivedAt: '2026-06-20T00:00:00.000Z',
-              createdAt: '2026-06-19T00:00:00.000Z',
-              restorable: true,
-              providerType: 'claude',
-            },
-          ],
+          'project/worktree': [makeArchivedSummary('archived-1')],
         },
       });
 
       await act(async () => {
         root.render(
-          createElement(ArchivedChatsControl, {
-            scope: { projectId: 'project', worktreeId: 'worktree' },
-            variant,
-          }),
+          <ArchivedChatsControl
+            scope={{ projectId: 'project', worktreeId: 'worktree' }}
+            variant={variant}
+          />,
         );
         await Promise.resolve();
       });
@@ -648,30 +846,12 @@ describe('ChatTabBar current UI archive reporting', () => {
   it('reports archived transcript viewer state when a viewer is open', async () => {
     useChatStore.setState({
       archivedChats: {
-        'project/worktree': [
-          {
-            chatId: 'archived-1',
-            title: 'Archived chat',
-            turnCount: 2,
-            archivedAt: '2026-06-20T00:00:00.000Z',
-            createdAt: '2026-06-19T00:00:00.000Z',
-            restorable: true,
-            providerType: 'claude',
-          },
-        ],
+        'project/worktree': [makeArchivedSummary('archived-1')],
       },
     });
-    window.api.chat.loadArchives = jest.fn().mockResolvedValue([
-      {
-        chatId: 'archived-1',
-        title: 'Archived chat',
-        turnCount: 2,
-        archivedAt: '2026-06-20T00:00:00.000Z',
-        createdAt: '2026-06-19T00:00:00.000Z',
-        restorable: true,
-        providerType: 'claude',
-      },
-    ]);
+    window.api.chat.loadArchives = jest
+      .fn()
+      .mockResolvedValue([makeArchivedSummary('archived-1')]);
 
     await act(async () => {
       root.render(createElement(ChatTabBar));
@@ -705,15 +885,9 @@ describe('ChatTabBar current UI archive reporting', () => {
   });
 
   it('opens an archived transcript through a matching scoped control', async () => {
-    const archivedSummary = {
-      chatId: 'archived-cowork-chat',
+    const archivedSummary = makeArchivedSummary('archived-cowork-chat', {
       title: 'Archived Cowork chat',
-      turnCount: 2,
-      archivedAt: '2026-06-20T00:00:00.000Z',
-      createdAt: '2026-06-19T00:00:00.000Z',
-      restorable: true,
-      providerType: 'claude' as const,
-    };
+    });
     useChatStore.setState({
       archivedChats: {
         'cowork-project/work-entry': [archivedSummary],
@@ -727,12 +901,9 @@ describe('ChatTabBar current UI archive reporting', () => {
 
     await act(async () => {
       root.render(
-        createElement(ArchivedChatsControl, {
-          scope: {
-            projectId: 'cowork-project',
-            worktreeId: 'work-entry',
-          },
-        }),
+        <ArchivedChatsControl
+          scope={{ projectId: 'cowork-project', worktreeId: 'work-entry' }}
+        />,
       );
       await Promise.resolve();
     });
@@ -764,24 +935,18 @@ describe('ChatTabBar current UI archive reporting', () => {
 
     await act(async () => {
       root.render(
-        createElement(ArchivedChatsControl, {
-          scope: {
-            projectId: 'cowork-project',
-            worktreeId: 'work-entry',
-          },
-        }),
+        <ArchivedChatsControl
+          scope={{ projectId: 'cowork-project', worktreeId: 'work-entry' }}
+        />,
       );
       await Promise.resolve();
     });
 
     await act(async () => {
       root.render(
-        createElement(ArchivedChatsControl, {
-          scope: {
-            projectId: 'cowork-project',
-            worktreeId: 'work-entry',
-          },
-        }),
+        <ArchivedChatsControl
+          scope={{ projectId: 'cowork-project', worktreeId: 'work-entry' }}
+        />,
       );
       await Promise.resolve();
     });
@@ -795,12 +960,14 @@ describe('ChatTabBar current UI archive reporting', () => {
 
     await act(async () => {
       root.render(
-        createElement(ArchivedChatsControl, {
-          scope: {
-            projectId: 'cowork-project',
-            worktreeId: undefined,
-          } as unknown as { projectId: string; worktreeId: string },
-        }),
+        <ArchivedChatsControl
+          scope={
+            {
+              projectId: 'cowork-project',
+              worktreeId: undefined,
+            } as unknown as { projectId: string; worktreeId: string }
+          }
+        />,
       );
       await Promise.resolve();
     });
@@ -1259,7 +1426,14 @@ describe('ChatTabBar file-tab hover path', () => {
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
-    window.api = { chat: {} } as typeof window.api;
+    const apiForTest: { chat: Partial<typeof window.api.chat> } = {
+      chat: {},
+    };
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      writable: true,
+      value: apiForTest,
+    });
     useCurrentUiStateStore.setState({ revision: 0, slices: {} });
     useCurrentUiStateStore.getState().recomputeEnvelope();
     useGitHubStore.setState({
@@ -1274,7 +1448,7 @@ describe('ChatTabBar file-tab hover path', () => {
       root.unmount();
     });
     container.remove();
-    delete (window as typeof window & { api?: typeof window.api }).api;
+    Reflect.deleteProperty(window, 'api');
   });
 
   function seedFileTab(filePath: string): void {

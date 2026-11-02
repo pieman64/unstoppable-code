@@ -32,7 +32,11 @@ const mockChatState: {
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): Pick<
     ChatStateV2Repository,
-    'consumeTranscriptPreview' | 'activeTurnDelta'
+    | 'consumeTranscriptPreview'
+    | 'activeTurnDelta'
+    | 'listChildSearchDocuments'
+    | 'readChildSearchDocument'
+    | 'commitChildSearchDocuments'
   > => {
     const repository = mockChatState.repository;
     if (!repository) throw new Error('No repository under test');
@@ -40,6 +44,12 @@ jest.mock('../services/chat-state-service', () => ({
       consumeTranscriptPreview: (...args) =>
         repository.consumeTranscriptPreview(...args),
       activeTurnDelta: (...args) => repository.activeTurnDelta(...args),
+      listChildSearchDocuments: (...args) =>
+        repository.listChildSearchDocuments(...args),
+      readChildSearchDocument: (...args) =>
+        repository.readChildSearchDocument(...args),
+      commitChildSearchDocuments: (...args) =>
+        repository.commitChildSearchDocuments(...args),
     };
   },
 }));

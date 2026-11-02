@@ -201,64 +201,16 @@ export function baseManagedDelegationPreferences({
 const DELEGATION_ID_PATTERN =
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-function countOccurrences(haystack, needle) {
-  if (!needle) return 0;
-  let count = 0;
-  for (let index = haystack.indexOf(needle); index !== -1; ) {
-    count += 1;
-    index = haystack.indexOf(needle, index + needle.length);
-  }
-  return count;
-}
-
-/**
- * Drive a parent's post-spawn turn to completion with an explicit Watch
- * Delegates + Get Delegate Output round trip, then hand back to the
- * built-in state machine's own "finding already in history" check to
- * produce `ctx.integrated`.
- *
- * This mirrors the proven `needsWatcher` flow in `delegationRuntime.mjs`'s
- * built-in state machine (used by its `watch`/`isolation`/`resume*` actions),
- * which only activates for those specific action strings. A case using its
- * own unique `action` value gets none of that behavior for free — without an
- * explicit watch, `run_in_background: false` (`executionMode: 'foreground'`)
- * does not itself block the spawn tool call until settlement (the spawn
- * result comes back `pending` immediately either way), so the parent must
- * still watch and read the output like a background spawn does. Returns
- * `undefined` to fall through: to the built-in's own spawn (before a
- * `delegationId` exists) or its "finding already appeared" integration
- * check (once the read output carries the finding).
- *
- * A single watch/output pair is not always enough: `WatchDelegates` also
- * resolves on its own deadline (not only on completion), and the "Canopy
- * watcher fired." acknowledgement text stays part of the resent history
- * forever afterward, so checking only for that text would re-issue Get
- * Delegate Output on every later turn too. Count watch/output calls already
- * in this exact history instead: re-watch whenever a prior watch has already
- * been answered (an output call for it exists), and only ask for output once
- * per watch, so a still-running result correctly triggers one more
- * watch/output cycle rather than a busy retry loop.
- */
+/** End the spawn turn, then read output once per automatic completion notice. */
 export function driveParentWatchFlow(ctx) {
   if (!ctx.results.includes('delegationId')) return undefined;
   if (ctx.context.includes(ctx.finding)) return undefined;
   const id = ctx.results.match(DELEGATION_ID_PATTERN)?.[0];
   if (!id) return undefined;
-  const watchName = ctx.toolName('WatchDelegates', 'watch_delegates');
   const outputName = ctx.toolName('GetDelegateOutput', 'get_delegate_output');
-  const watchCalls = countOccurrences(ctx.context, watchName);
-  const outputCalls = countOccurrences(ctx.context, outputName);
-  if (watchCalls <= outputCalls)
-    return ctx.reply({
-      toolCalls: [
-        {
-          name: watchName,
-          input: { delegationIds: [id], mode: 'all', timeoutMs: 60_000 },
-        },
-      ],
-      stopReason: 'tool_use',
-    });
-  if (ctx.text.includes('watcher fired'))
+  const noticeCount = (ctx.context.match(/delegation_finished/g) ?? []).length;
+  const outputCount = ctx.context.split(outputName).length - 1;
+  if (noticeCount > outputCount)
     return ctx.reply({
       toolCalls: [{ name: outputName, input: { delegationId: id } }],
       stopReason: 'tool_use',

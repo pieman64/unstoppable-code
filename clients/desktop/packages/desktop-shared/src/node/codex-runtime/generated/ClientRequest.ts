@@ -13,6 +13,7 @@ import type { RequestId } from './RequestId';
 import type { AppsInstalledParams } from './v2/AppsInstalledParams';
 import type { AppsListParams } from './v2/AppsListParams';
 import type { AppsReadParams } from './v2/AppsReadParams';
+import type { BedrockCheckGovCloudRequirementsParams } from './v2/BedrockCheckGovCloudRequirementsParams';
 import type { BedrockDiscoverParams } from './v2/BedrockDiscoverParams';
 import type { BedrockSetupParams } from './v2/BedrockSetupParams';
 import type { CancelLoginAccountParams } from './v2/CancelLoginAccountParams';
@@ -33,6 +34,7 @@ import type { ExperimentalFeatureListParams } from './v2/ExperimentalFeatureList
 import type { ExternalAgentConfigDetectParams } from './v2/ExternalAgentConfigDetectParams';
 import type { ExternalAgentConfigImportHistoryRecordParams } from './v2/ExternalAgentConfigImportHistoryRecordParams';
 import type { ExternalAgentConfigImportParams } from './v2/ExternalAgentConfigImportParams';
+import type { FeedbackSaveParams } from './v2/FeedbackSaveParams';
 import type { FeedbackUploadParams } from './v2/FeedbackUploadParams';
 import type { FsCopyParams } from './v2/FsCopyParams';
 import type { FsCreateDirectoryParams } from './v2/FsCreateDirectoryParams';
@@ -102,6 +104,7 @@ import type { ThreadApproveGuardianDeniedActionParams } from './v2/ThreadApprove
 import type { ThreadArchiveParams } from './v2/ThreadArchiveParams';
 import type { ThreadAttachmentAddParams } from './v2/ThreadAttachmentAddParams';
 import type { ThreadAttachmentListParams } from './v2/ThreadAttachmentListParams';
+import type { ThreadAttachmentOwnerListParams } from './v2/ThreadAttachmentOwnerListParams';
 import type { ThreadAttachmentRemoveParams } from './v2/ThreadAttachmentRemoveParams';
 import type { ThreadBackgroundTerminalsCleanParams } from './v2/ThreadBackgroundTerminalsCleanParams';
 import type { ThreadBackgroundTerminalsListParams } from './v2/ThreadBackgroundTerminalsListParams';
@@ -116,10 +119,12 @@ import type { ThreadGoalSetParams } from './v2/ThreadGoalSetParams';
 import type { ThreadIncrementElicitationParams } from './v2/ThreadIncrementElicitationParams';
 import type { ThreadInjectItemsParams } from './v2/ThreadInjectItemsParams';
 import type { ThreadItemsListParams } from './v2/ThreadItemsListParams';
+import type { ThreadItemsReadParams } from './v2/ThreadItemsReadParams';
 import type { ThreadListParams } from './v2/ThreadListParams';
 import type { ThreadLoadedListParams } from './v2/ThreadLoadedListParams';
 import type { ThreadMemoryModeSetParams } from './v2/ThreadMemoryModeSetParams';
 import type { ThreadMetadataUpdateParams } from './v2/ThreadMetadataUpdateParams';
+import type { ThreadPredictionRequestParams } from './v2/ThreadPredictionRequestParams';
 import type { ThreadQueueAddParams } from './v2/ThreadQueueAddParams';
 import type { ThreadQueueDeleteParams } from './v2/ThreadQueueDeleteParams';
 import type { ThreadQueueListParams } from './v2/ThreadQueueListParams';
@@ -127,6 +132,7 @@ import type { ThreadQueueReorderParams } from './v2/ThreadQueueReorderParams';
 import type { ThreadQueueStartParams } from './v2/ThreadQueueStartParams';
 import type { ThreadQueueUpdateParams } from './v2/ThreadQueueUpdateParams';
 import type { ThreadReadParams } from './v2/ThreadReadParams';
+import type { ThreadReadStateUpdateParams } from './v2/ThreadReadStateUpdateParams';
 import type { ThreadRealtimeAppendAudioParams } from './v2/ThreadRealtimeAppendAudioParams';
 import type { ThreadRealtimeAppendSpeechParams } from './v2/ThreadRealtimeAppendSpeechParams';
 import type { ThreadRealtimeAppendTextParams } from './v2/ThreadRealtimeAppendTextParams';
@@ -135,6 +141,8 @@ import type { ThreadRealtimeStartParams } from './v2/ThreadRealtimeStartParams';
 import type { ThreadRealtimeStopParams } from './v2/ThreadRealtimeStopParams';
 import type { ThreadResumeParams } from './v2/ThreadResumeParams';
 import type { ThreadRevertParams } from './v2/ThreadRevertParams';
+import type { ThreadSampleCancelParams } from './v2/ThreadSampleCancelParams';
+import type { ThreadSampleParams } from './v2/ThreadSampleParams';
 import type { ThreadSearchOccurrencesParams } from './v2/ThreadSearchOccurrencesParams';
 import type { ThreadSearchParams } from './v2/ThreadSearchParams';
 import type { ThreadSectionCreateParams } from './v2/ThreadSectionCreateParams';
@@ -199,6 +207,12 @@ export type ClientRequest =
   | { method: 'thread/start'; id: RequestId; params: ThreadStartParams }
   | { method: 'thread/resume'; id: RequestId; params: ThreadResumeParams }
   | { method: 'thread/fork'; id: RequestId; params: ThreadForkParams }
+  | { method: 'thread/sample'; id: RequestId; params: ThreadSampleParams }
+  | {
+      method: 'thread/sample/cancel';
+      id: RequestId;
+      params: ThreadSampleCancelParams;
+    }
   | { method: 'thread/archive'; id: RequestId; params: ThreadArchiveParams }
   | { method: 'thread/delete'; id: RequestId; params: ThreadDeleteParams }
   | {
@@ -217,6 +231,11 @@ export type ClientRequest =
       params: ThreadDecrementElicitationParams;
     }
   | { method: 'thread/name/set'; id: RequestId; params: ThreadSetNameParams }
+  | {
+      method: 'thread/prediction/request';
+      id: RequestId;
+      params: ThreadPredictionRequestParams;
+    }
   | { method: 'thread/goal/set'; id: RequestId; params: ThreadGoalSetParams }
   | { method: 'thread/goal/get'; id: RequestId; params: ThreadGoalGetParams }
   | {
@@ -264,6 +283,11 @@ export type ClientRequest =
       method: 'thread/attachment/list';
       id: RequestId;
       params: ThreadAttachmentListParams;
+    }
+  | {
+      method: 'thread/attachmentOwner/list';
+      id: RequestId;
+      params: ThreadAttachmentOwnerListParams;
     }
   | {
       method: 'thread/attachment/remove';
@@ -361,6 +385,11 @@ export type ClientRequest =
     }
   | { method: 'thread/read'; id: RequestId; params: ThreadReadParams }
   | {
+      method: 'thread/readState/update';
+      id: RequestId;
+      params: ThreadReadStateUpdateParams;
+    }
+  | {
       method: 'thread/turns/list';
       id: RequestId;
       params: ThreadTurnsListParams;
@@ -369,6 +398,11 @@ export type ClientRequest =
       method: 'thread/items/list';
       id: RequestId;
       params: ThreadItemsListParams;
+    }
+  | {
+      method: 'thread/items/read';
+      id: RequestId;
+      params: ThreadItemsReadParams;
     }
   | {
       method: 'thread/inject_items';
@@ -616,6 +650,11 @@ export type ClientRequest =
       params: BedrockSetupParams;
     }
   | {
+      method: 'account/bedrock/checkGovCloudRequirements';
+      id: RequestId;
+      params: BedrockCheckGovCloudRequirementsParams;
+    }
+  | {
       method: 'account/login/cancel';
       id: RequestId;
       params: CancelLoginAccountParams;
@@ -647,6 +686,7 @@ export type ClientRequest =
       params: SendAddCreditsNudgeEmailParams;
     }
   | { method: 'feedback/upload'; id: RequestId; params: FeedbackUploadParams }
+  | { method: 'feedback/save'; id: RequestId; params: FeedbackSaveParams }
   | { method: 'command/exec'; id: RequestId; params: CommandExecParams }
   | {
       method: 'command/exec/write';

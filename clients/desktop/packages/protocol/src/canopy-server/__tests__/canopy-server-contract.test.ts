@@ -7,7 +7,7 @@ import {
 } from '../index';
 
 describe('canopy server protocol contract', () => {
-  it.each(['mcp-proxy-v1', 'mcp-connections-v1'])(
+  it.each(['mcp-proxy-v1', 'mcp-connections-v1', 'ledger-global-v1'])(
     'declares %s as optional',
     (capability) => {
       expect(CANOPY_SERVER_CAPABILITIES).toContain(capability);

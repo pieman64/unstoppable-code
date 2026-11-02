@@ -3,11 +3,13 @@
 import {
   appendFileSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import {
@@ -35,6 +37,10 @@ const accountReadFailurePath =
   process.env.CANOPY_E2E_CODEX_ACCOUNT_READ_FAILURE_PATH;
 let loginWatcher;
 let pendingLoginId;
+const watcherStartTurnIds = new Map();
+const lateSteerConversationTurnCounts = new Map();
+const scheduledTurnCompletions = new Set();
+const completedTurns = new Set();
 
 if (process.argv[2] === 'login' && accountPath && loginAccount) {
   writeFileSync(accountPath, `${loginAccount}\n`, 'utf8');
@@ -70,7 +76,26 @@ const reply =
     ? `Reply from Codex account ${accountAtStartup}`
     : 'Reply from the deterministic Codex app-server fixture');
 const mode = process.env.CANOPY_E2E_CODEX_MODE ?? 'normal';
+// The replay adapter imports the turn-state harness contract under scripts/,
+// which the public desktop export omits, so load it only for replay scenarios.
+// Keep this check in step with readCodexReplayScenarioOptions, which returns
+// {} when the variable is undefined.
+const codexScenarioOptions =
+  process.env.CANOPY_LIFECYCLE_REPLAY_SCENARIO_OPTIONS === undefined
+    ? {}
+    : (
+        await import('./lifecycle-replay-codex.mjs')
+      ).readCodexReplayScenarioOptions(process.env);
+const liveBackgroundTerminalsByThread = new Map();
+const liveThreadStatusesById = new Map();
+let conversationThreadId;
 let closingResumeCount = 0;
+// `watcher-start-held` withholds the conversation's turn/start response and
+// turn/started notification until this separate release file exists. It does
+// not use CANOPY_E2E_CODEX_RELEASE_PATH, which gates existing fixture modes.
+// Summary helpers bypass this gate; the released turn completes on a steer.
+// `watcher-steer-late-refusal` keeps the root turn active long enough to test a
+// turn/steer refusal that arrives after the Codex client's request deadline.
 // Process-local loaded state, including after unsubscribe. A fresh process
 // may apply resume configuration; an already loaded thread keeps its provider.
 const loadedThreadIds = new Set();
@@ -151,8 +176,310 @@ function log(entry) {
 }
 
 function send(message) {
+  updateLiveCodexListState(message);
   process.stdout.write(`${JSON.stringify(message)}\n`);
   log({ direction: 'server', message });
+}
+
+function updateLiveCodexListState(message) {
+  if (
+    !message ||
+    ![
+      'thread/started',
+      'thread/status/changed',
+      'item/started',
+      'item/completed',
+    ].includes(message.method)
+  ) {
+    return;
+  }
+  const params = message.params ?? {};
+  if (message.method === 'thread/started' && params.thread?.id) {
+    liveThreadStatusesById.set(
+      params.thread.id,
+      params.thread.status ?? { type: 'idle' },
+    );
+    return;
+  }
+  if (message.method === 'thread/status/changed' && params.threadId) {
+    liveThreadStatusesById.set(
+      params.threadId,
+      params.status ?? { type: 'idle' },
+    );
+    return;
+  }
+  const item = params.item;
+  if (item?.type !== 'commandExecution' || !params.threadId) return;
+  const threadId = params.threadId;
+  const itemId = String(item.id ?? '');
+  const commands = liveBackgroundTerminalsByThread.get(threadId) ?? new Map();
+  if (
+    message.method === 'item/started' &&
+    item.status === 'inProgress' &&
+    item.processId == null &&
+    codexScenarioOptions.syntheticProcessId &&
+    (codexScenarioOptions.threadId === undefined ||
+      codexScenarioOptions.threadId === threadId)
+  ) {
+    // Keep replay skeleton processIds null by default. Only opt-in scenarios
+    // replace the synthetic in-progress process id.
+    item.processId = codexScenarioOptions.syntheticProcessId;
+  }
+  if (
+    message.method === 'item/started' &&
+    item.status === 'inProgress' &&
+    typeof item.processId === 'string'
+  ) {
+    commands.set(itemId, {
+      itemId,
+      processId: item.processId,
+      command: item.command,
+      cwd: item.cwd,
+      osPid: null,
+      cpuPercent: null,
+      rssKb: null,
+    });
+    liveBackgroundTerminalsByThread.set(threadId, commands);
+    return;
+  }
+  if (message.method === 'item/completed' || item.status !== 'inProgress') {
+    commands.delete(itemId);
+    if (commands.size === 0) liveBackgroundTerminalsByThread.delete(threadId);
+    else liveBackgroundTerminalsByThread.set(threadId, commands);
+  }
+}
+
+function listThreadScope(method, params) {
+  if (method === 'thread/backgroundTerminals/list') return params.threadId;
+  return (
+    params.parentThreadId ?? params.ancestorThreadId ?? conversationThreadId
+  );
+}
+
+function codexListOverride(method, params) {
+  const threadId = listThreadScope(method, params);
+  if (
+    codexScenarioOptions.threadId !== undefined &&
+    threadId !== codexScenarioOptions.threadId
+  ) {
+    const result = { data: [], nextCursor: null };
+    return {
+      result:
+        method === 'thread/list'
+          ? { ...result, backwardsCursor: null }
+          : result,
+    };
+  }
+  if (codexScenarioOptions.listFailure) {
+    return { error: { ...codexScenarioOptions.listFailure } };
+  }
+  if (codexScenarioOptions.listPages) {
+    const page = codexScenarioOptions.listPages.find(
+      (candidate) => candidate.cursor === (params.cursor ?? null),
+    );
+    const result = page
+      ? {
+          data: structuredClone(page.data),
+          nextCursor: page.nextCursor,
+        }
+      : { data: [], nextCursor: null };
+    return {
+      result:
+        method === 'thread/list'
+          ? { ...result, backwardsCursor: null }
+          : result,
+    };
+  }
+  return undefined;
+}
+
+function paginateCodexList(data, params) {
+  const cursor = params.cursor ?? null;
+  const match =
+    typeof cursor === 'string' ? /^offset:(\d+)$/.exec(cursor) : null;
+  const offset = match ? Number(match[1]) : 0;
+  const limit =
+    Number.isSafeInteger(params.limit) && params.limit > 0
+      ? params.limit
+      : Math.max(1, data.length);
+  const page = data.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  return {
+    data: page,
+    nextCursor: nextOffset < data.length ? `offset:${nextOffset}` : null,
+  };
+}
+
+function listCodexThreads(state, params) {
+  const threads = Object.values(state.threads)
+    .filter((thread) => thread.purpose !== 'chat-summary')
+    .map((thread) => {
+      const row = threadPayload(thread).thread;
+      const status = liveThreadStatusesById.get(thread.id);
+      if (status) row.status = structuredClone(status);
+      if (thread.parentThreadId) row.parentThreadId = thread.parentThreadId;
+      return row;
+    });
+  let filtered = threads;
+  if (params.parentThreadId) {
+    filtered = filtered.filter(
+      (thread) => thread.parentThreadId === params.parentThreadId,
+    );
+  }
+  if (params.ancestorThreadId) {
+    const ancestor = params.ancestorThreadId;
+    const rowsById = new Map(threads.map((thread) => [thread.id, thread]));
+    filtered = filtered.filter((thread) => {
+      let parentId = thread.parentThreadId;
+      const visited = new Set();
+      while (parentId && !visited.has(parentId)) {
+        if (parentId === ancestor) return true;
+        visited.add(parentId);
+        parentId = rowsById.get(parentId)?.parentThreadId;
+      }
+      return false;
+    });
+  }
+  if (params.cwd !== undefined) {
+    const cwdValues = Array.isArray(params.cwd) ? params.cwd : [params.cwd];
+    filtered = filtered.filter((thread) => cwdValues.includes(thread.cwd));
+  }
+  return filtered;
+}
+
+function respondToCodexListRequest(message, state) {
+  const override = codexListOverride(message.method, message.params ?? {});
+  if (override) {
+    send({ id: message.id, ...override });
+    return;
+  }
+  const params = message.params ?? {};
+  const data =
+    message.method === 'thread/list'
+      ? listCodexThreads(state, params)
+      : Array.from(
+          liveBackgroundTerminalsByThread.get(params.threadId)?.values() ?? [],
+          (terminal) => structuredClone(terminal),
+        );
+  const page = paginateCodexList(data, params);
+  send({
+    id: message.id,
+    result:
+      message.method === 'thread/list'
+        ? { ...page, backwardsCursor: null }
+        : page,
+  });
+}
+
+let codexReplay;
+let pendingConversationInitialize;
+if (mode === 'replay' && process.env.CANOPY_LIFECYCLE_REPLAY_FIXTURE?.trim()) {
+  const replayModulePath = process.env.CANOPY_LIFECYCLE_REPLAY_MODULE?.trim();
+  if (!replayModulePath || !path.isAbsolute(replayModulePath)) {
+    throw new TypeError(
+      'CANOPY_LIFECYCLE_REPLAY_MODULE must be an absolute path in replay mode',
+    );
+  }
+  const replayAdapterPath = path.join(
+    path.dirname(replayModulePath),
+    'lifecycle-replay-codex.mjs',
+  );
+  const replayAdapter = await import(pathToFileURL(replayAdapterPath).href);
+  if (typeof replayAdapter.createCodexReplay !== 'function') {
+    throw new TypeError(
+      'lifecycle-replay-codex.mjs must export createCodexReplay',
+    );
+  }
+  codexReplay = replayAdapter.createCodexReplay({
+    env: process.env,
+    send,
+    onError(error) {
+      log({
+        direction: 'lifecycle-replay-error',
+        error: error?.stack ?? String(error),
+      });
+    },
+  });
+}
+
+function reportCodexReplayError(error) {
+  log({
+    direction: 'lifecycle-replay-error',
+    error: error?.stack ?? String(error),
+  });
+}
+
+function dispatchCodexReplayRequest(message, context) {
+  if (!codexReplay) return false;
+  try {
+    const result = codexReplay.handleRequest(message, context);
+    if (result && typeof result.then === 'function') {
+      void result.then((handled) => {
+        if (handled !== true) {
+          reportCodexReplayError(
+            new Error(`Codex replay did not handle ${message.method}`),
+          );
+        }
+      }, reportCodexReplayError);
+      return true;
+    }
+    return result === true;
+  } catch (error) {
+    reportCodexReplayError(error);
+    return true;
+  }
+}
+
+function dispatchCodexReplayResponse(message) {
+  if (!codexReplay) return false;
+  try {
+    const result = codexReplay.handleResponse(message);
+    if (result && typeof result.then === 'function') {
+      void result.catch(reportCodexReplayError);
+      return true;
+    }
+    return result === true;
+  } catch (error) {
+    reportCodexReplayError(error);
+    return true;
+  }
+}
+
+function appendRolloutRecord(threadId, record) {
+  if (process.env.CANOPY_E2E_CODEX_ROLLOUT_HISTORY !== '1') return;
+  if (loadState().threads[threadId]?.purpose === 'chat-summary') return;
+  const rolloutPath = path.join(
+    codexHome,
+    'sessions',
+    '2026',
+    '10',
+    '16',
+    `rollout-2026-10-16T00-00-00-${threadId}.jsonl`,
+  );
+  mkdirSync(path.dirname(rolloutPath), { recursive: true });
+  if (!existsSync(rolloutPath)) {
+    appendFileSync(
+      rolloutPath,
+      `${JSON.stringify({ type: 'session_meta', payload: { id: threadId } })}\n`,
+      'utf8',
+    );
+  }
+  appendFileSync(rolloutPath, `${JSON.stringify(record)}\n`, 'utf8');
+}
+
+function appendRolloutEvent(threadId, payload) {
+  appendRolloutRecord(threadId, { type: 'event_msg', payload });
+}
+
+function recordSteeredInputPickup(params) {
+  if (typeof params.clientUserMessageId !== 'string') return;
+  appendRolloutEvent(params.threadId, {
+    type: 'item_completed',
+    item: {
+      type: 'userMessage',
+      client_id: params.clientUserMessageId,
+    },
+  });
 }
 
 async function sendRespectingStdoutBackpressure(message) {
@@ -306,6 +633,28 @@ function threadPayload(thread) {
   };
 }
 
+// The app-server reports a steered input inside the turn it joined, as a
+// userMessage item that echoes the client's id. Main treats that item as the
+// pickup that writes the steered message to the transcript.
+function emitSteeredInputPickup(params, turnId) {
+  if (typeof params.clientUserMessageId !== 'string') return;
+  recordSteeredInputPickup(params);
+  if (process.env.CANOPY_E2E_CODEX_DROP_STEER_PICKUP === '1') return;
+  send({
+    method: 'item/completed',
+    params: {
+      threadId: params.threadId,
+      turnId,
+      item: {
+        type: 'userMessage',
+        id: `steer-input-${params.clientUserMessageId}`,
+        clientId: params.clientUserMessageId,
+        content: params.input,
+      },
+    },
+  });
+}
+
 function emitCompletedTurn(
   threadId,
   turnId,
@@ -329,12 +678,20 @@ function emitCompletedTurn(
   },
   announceStart = true,
 ) {
-  const item = {
-    type: 'agentMessage',
-    id: `message-${turnId}`,
-    text,
-    phase: 'final_answer',
-  };
+  const requestedHoldPath = process.env.CANOPY_E2E_CODEX_HOLD_ROOT_TURN_FILE;
+  const holdPath =
+    requestedHoldPath &&
+    loadState().threads[threadId]?.purpose === 'chat-summary'
+      ? undefined
+      : requestedHoldPath;
+  const holdEnabled = Boolean(holdPath);
+  const completionKey = `${threadId}\u0000${turnId}`;
+  if (
+    holdEnabled &&
+    (scheduledTurnCompletions.has(completionKey) ||
+      completedTurns.has(completionKey))
+  )
+    return;
   if (announceStart) {
     send({
       method: 'turn/started',
@@ -344,6 +701,34 @@ function emitCompletedTurn(
       },
     });
   }
+  const complete = () => {
+    if (holdEnabled) {
+      if (completedTurns.has(completionKey)) return;
+      completedTurns.add(completionKey);
+    }
+    emitCompletedTurnItems(threadId, turnId, text, tokenUsage);
+  };
+  if (!holdPath || existsSync(holdPath)) {
+    complete();
+    return;
+  }
+  scheduledTurnCompletions.add(completionKey);
+  const barrier = setInterval(() => {
+    if (!existsSync(holdPath)) return;
+    clearInterval(barrier);
+    scheduledTurnCompletions.delete(completionKey);
+    rmSync(holdPath, { force: true });
+    complete();
+  }, 25);
+}
+
+function emitCompletedTurnItems(threadId, turnId, text, tokenUsage) {
+  const item = {
+    type: 'agentMessage',
+    id: `message-${turnId}`,
+    text,
+    phase: 'final_answer',
+  };
   send({
     method: 'item/started',
     params: { threadId, turnId, item: { ...item, text: '' } },
@@ -369,6 +754,7 @@ function emitCompletedTurn(
       tokenUsage,
     },
   });
+  appendRolloutEvent(threadId, { type: 'task_complete', turn_id: turnId });
   send({
     method: 'turn/completed',
     params: {
@@ -502,6 +888,25 @@ function emitFailedTurn(threadId, turnId, error) {
       threadId,
       turn: { id: turnId, items: [], status: 'inProgress', error: null },
     },
+  });
+  send({
+    method: 'turn/completed',
+    params: {
+      threadId,
+      turn: { id: turnId, items: [], status: 'failed', error },
+    },
+  });
+}
+
+// Real Codex reports a fatal turn error as a non-retrying `error`
+// notification and then still finishes the turn: core's `on_task_finished`
+// emits the error before TurnComplete, and the app-server sends
+// `turn/completed` with status `failed` carrying that error as the turn's
+// last error.
+function emitNonRetryingTurnError(threadId, turnId, error) {
+  send({
+    method: 'error',
+    params: { threadId, turnId, willRetry: false, error },
   });
   send({
     method: 'turn/completed',
@@ -875,6 +1280,12 @@ function answerChatSummaryTurn(state, thread, message) {
 function handleRequest(message) {
   if (!message || typeof message !== 'object') return;
   if (!Object.prototype.hasOwnProperty.call(message, 'method')) {
+    if (Object.prototype.hasOwnProperty.call(message, 'id')) {
+      log({ direction: 'client-response', message });
+    }
+    if (mode === 'replay' && dispatchCodexReplayResponse(message)) {
+      return;
+    }
     if (!handleMcpElicitationResponse(message)) {
       handleToolResponse(message);
     }
@@ -891,11 +1302,18 @@ function handleRequest(message) {
 
   switch (message.method) {
     case 'initialize': {
-      const respond = () =>
-        send({
+      const respond = () => {
+        const response = {
           id: message.id,
           result: { userAgent: 'canopy-e2e', codexHome },
-        });
+        };
+        if (codexReplay) {
+          // Initialization belongs to a conversation only once a non-summary
+          // thread starts; summary-only app-server traffic is not replayed.
+          pendingConversationInitialize = { message, response };
+        }
+        send(response);
+      };
       // Deferred, not dropped: the handshake completes once the spec removes
       // the hold file, so a later connection can still start.
       const holdPath = process.env.CANOPY_E2E_CODEX_INITIALIZE_HOLD_PATH;
@@ -910,9 +1328,41 @@ function handleRequest(message) {
       }, 10);
       return;
     }
+    case 'thread/list':
+    case 'thread/backgroundTerminals/list': {
+      const threadId =
+        message.method === 'thread/backgroundTerminals/list'
+          ? params.threadId
+          : conversationThreadId;
+      if (
+        mode === 'replay' &&
+        dispatchCodexReplayRequest(message, {
+          threadId,
+          cwd: state.threads[threadId]?.cwd ?? process.cwd(),
+        })
+      ) {
+        return;
+      }
+      respondToCodexListRequest(message, state);
+      return;
+    }
     case 'thread/start': {
       const thread = allocateThread(state, params);
-      send({ id: message.id, result: threadPayload(thread) });
+      const response = { id: message.id, result: threadPayload(thread) };
+      if (!isChatSummaryThreadStartParams(params)) {
+        conversationThreadId ??= thread.id;
+      }
+      if (codexReplay && !isChatSummaryThreadStartParams(params)) {
+        if (pendingConversationInitialize) {
+          codexReplay.recordBootstrap(
+            pendingConversationInitialize.message,
+            pendingConversationInitialize.response,
+          );
+          pendingConversationInitialize = undefined;
+        }
+        codexReplay.recordBootstrap(message, response);
+      }
+      send(response);
       emitMcpStartup(thread);
       return;
     }
@@ -974,6 +1424,7 @@ function handleRequest(message) {
         }
         return;
       }
+      conversationThreadId ??= thread.id;
       if (
         params.config &&
         !(
@@ -1129,6 +1580,10 @@ function handleRequest(message) {
         : null;
       if (foreignReasoning) {
         const rejectedTurnId = `e2e-turn-${state.nextTurn++}`;
+        appendRolloutEvent(thread.id, {
+          type: 'task_started',
+          turn_id: rejectedTurnId,
+        });
         // Real Codex persists the user input to the rollout before the model
         // call, so a turn rejected by the Responses API still leaves its input
         // in thread history. Retain it here too: returning before this push
@@ -1160,6 +1615,7 @@ function handleRequest(message) {
       }
       thread.items.push(...(Array.isArray(params.input) ? params.input : []));
       const turnId = `e2e-turn-${state.nextTurn++}`;
+      appendRolloutEvent(thread.id, { type: 'task_started', turn_id: turnId });
       const serializedInput = JSON.stringify(params.input);
       const accountCutoverPipelineTurn =
         serializedInput.includes(
@@ -1181,6 +1637,48 @@ function handleRequest(message) {
         thread.items.push(gatewayReasoningItem(turnId));
       }
       saveState(state);
+      if (
+        mode === 'replay' &&
+        dispatchCodexReplayRequest(message, {
+          threadId: thread.id,
+          turnId,
+          cwd: thread.cwd,
+        })
+      ) {
+        return;
+      }
+      if (mode === 'watcher-start-held') {
+        const releasePath =
+          process.env.CANOPY_E2E_CODEX_TURN_START_RELEASE_PATH;
+        const turn = {
+          id: turnId,
+          items: [],
+          status: 'inProgress',
+          error: null,
+        };
+        log({
+          direction: 'turn-start-held',
+          threadId: thread.id,
+          turnId,
+        });
+        const barrier = setInterval(() => {
+          if (!releasePath || !existsSync(releasePath)) return;
+          clearInterval(barrier);
+          rmSync(releasePath, { force: true });
+          watcherStartTurnIds.set(thread.id, turnId);
+          log({
+            direction: 'turn-start-released',
+            threadId: thread.id,
+            turnId,
+          });
+          send({ id: message.id, result: { turn } });
+          send({
+            method: 'turn/started',
+            params: { threadId: thread.id, turn },
+          });
+        }, 25);
+        return;
+      }
       if (
         mode === 'auto-archive-async-question' &&
         serializedInput.includes('Q: Which scope?')
@@ -1223,6 +1721,39 @@ function handleRequest(message) {
           turn: { id: turnId, items: [], status: 'inProgress', error: null },
         },
       });
+      if (mode === 'watcher-steer-late-refusal') {
+        const conversationTurnCount =
+          (lateSteerConversationTurnCounts.get(thread.id) ?? 0) + 1;
+        lateSteerConversationTurnCounts.set(thread.id, conversationTurnCount);
+        if (conversationTurnCount === 1) {
+          const turn = {
+            id: turnId,
+            items: [],
+            status: 'inProgress',
+            error: null,
+          };
+          const rootTurnDelayMs = Number(
+            process.env.CANOPY_E2E_CODEX_ROOT_TURN_DELAY_MS ?? 50_000,
+          );
+          send({
+            method: 'turn/started',
+            params: { threadId: thread.id, turn },
+          });
+          log({
+            direction: 'turn-start-held-for-late-steer',
+            threadId: thread.id,
+            turnId,
+            delayMs: rootTurnDelayMs,
+          });
+          setTimeout(
+            () => emitCompletedTurn(thread.id, turnId, reply, undefined, false),
+            rootTurnDelayMs,
+          );
+        } else {
+          setTimeout(() => emitCompletedTurn(thread.id, turnId), 10);
+        }
+        return;
+      }
       if (mode === 'proxy-quota-notice') {
         send({
           method: 'account/rateLimits/updated',
@@ -1262,18 +1793,10 @@ function handleRequest(message) {
             turn: { id: turnId, items: [], status: 'inProgress', error: null },
           },
         });
-        send({
-          method: 'error',
-          params: {
-            threadId: thread.id,
-            turnId,
-            willRetry: false,
-            error: {
-              message:
-                "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more.",
-              codexErrorInfo: 'usageLimitExceeded',
-            },
-          },
+        emitNonRetryingTurnError(thread.id, turnId, {
+          message:
+            "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more.",
+          codexErrorInfo: 'usageLimitExceeded',
         });
         return;
       }
@@ -1282,8 +1805,9 @@ function handleRequest(message) {
         (mode === 'proxy-quota' &&
           !existsSync(process.env.CANOPY_E2E_CODEX_RELEASE_PATH))
       ) {
-        // Native Codex quota errors arrive as a non-retrying error notification,
-        // without turn/completed. Keep this distinct from an HTTP 429 mock.
+        // Native Codex quota errors arrive as a non-retrying error notification
+        // followed by turn/completed with status failed carrying the same
+        // error. Keep this distinct from an HTTP 429 mock.
         send({
           method: 'turn/started',
           params: {
@@ -1305,17 +1829,9 @@ function handleRequest(message) {
             },
           });
         }
-        send({
-          method: 'error',
-          params: {
-            threadId: thread.id,
-            turnId,
-            willRetry: false,
-            error: {
-              message: "You've hit your usage limit.",
-              codexErrorInfo: 'usageLimitExceeded',
-            },
-          },
+        emitNonRetryingTurnError(thread.id, turnId, {
+          message: "You've hit your usage limit.",
+          codexErrorInfo: 'usageLimitExceeded',
         });
         return;
       }
@@ -1703,6 +2219,78 @@ function handleRequest(message) {
       return;
     }
     case 'turn/steer':
+      if (
+        mode === 'replay' &&
+        dispatchCodexReplayRequest(message, {
+          threadId: params.threadId,
+          turnId: params.expectedTurnId,
+          cwd: state.threads[params.threadId]?.cwd ?? process.cwd(),
+        })
+      ) {
+        return;
+      }
+      if (mode === 'watcher-steer-late-refusal') {
+        const delayMs = Number(
+          process.env.CANOPY_E2E_CODEX_STEER_REFUSAL_DELAY_MS ?? 35_000,
+        );
+        log({
+          direction: 'turn-steer-refusal-held',
+          threadId: params.threadId,
+          turnId: params.expectedTurnId,
+          delayMs,
+        });
+        setTimeout(() => {
+          log({
+            direction: 'turn-steer-refusal-replied',
+            threadId: params.threadId,
+            turnId: params.expectedTurnId,
+          });
+          send({
+            id: message.id,
+            error: { code: -32600, message: 'no active turn to steer' },
+          });
+        }, delayMs);
+        return;
+      }
+      if (mode === 'watcher-start-held') {
+        const activeTurnId = watcherStartTurnIds.get(params.threadId);
+        if (!activeTurnId || params.expectedTurnId !== activeTurnId) {
+          send({
+            id: message.id,
+            error: { code: -32600, message: 'no active turn to steer' },
+          });
+          return;
+        }
+        send({ id: message.id, result: { turnId: activeTurnId } });
+        watcherStartTurnIds.delete(params.threadId);
+        // The real provider correlates pickup with the admission attempt,
+        // not the canonical watcher message id. Emit it before the terminal
+        // so main can commit the steered input inside this same root turn.
+        recordSteeredInputPickup(params);
+        if (process.env.CANOPY_E2E_CODEX_DROP_STEER_PICKUP !== '1') {
+          send({
+            method: 'item/completed',
+            params: {
+              threadId: params.threadId,
+              turnId: activeTurnId,
+              item: {
+                type: 'userMessage',
+                id: `watcher-input-${activeTurnId}`,
+                clientId: params.clientUserMessageId,
+                content: params.input,
+              },
+            },
+          });
+        }
+        emitCompletedTurn(
+          params.threadId,
+          activeTurnId,
+          reply,
+          undefined,
+          false,
+        );
+        return;
+      }
       if (mode === 'async-question-queued') {
         send({
           id: message.id,
@@ -1730,6 +2318,7 @@ function handleRequest(message) {
         return;
       }
       send({ id: message.id, result: { turnId: params.expectedTurnId } });
+      emitSteeredInputPickup(params, params.expectedTurnId);
       if (mode === 'async-question-timeline-active') {
         const barrier = setInterval(() => {
           if (!existsSync(process.env.CANOPY_E2E_CODEX_RELEASE_PATH)) return;
@@ -1741,6 +2330,16 @@ function handleRequest(message) {
       emitCompletedTurn(params.threadId, params.expectedTurnId);
       return;
     case 'turn/interrupt':
+      if (
+        mode === 'replay' &&
+        dispatchCodexReplayRequest(message, {
+          threadId: params.threadId,
+          turnId: params.turnId,
+          cwd: state.threads[params.threadId]?.cwd ?? process.cwd(),
+        })
+      ) {
+        return;
+      }
       send({ id: message.id, result: {} });
       if (process.env.CANOPY_E2E_CODEX_OMIT_INTERRUPT_COMPLETION === '1')
         return;

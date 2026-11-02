@@ -80,21 +80,29 @@ beforeEach(() => {
     rafQueue = rafQueue.filter((entry) => entry.id !== id);
   };
 
-  window.setTimeout = (handler: TimerHandler): number => {
-    timerSeq += 1;
-    if (typeof handler === 'function') {
-      timerQueue.push({
-        id: timerSeq,
-        cb: () => {
-          Reflect.apply(handler, undefined, []);
-        },
-      });
-    }
-    return timerSeq;
-  };
-  window.clearTimeout = (id?: number): void => {
-    timerQueue = timerQueue.filter((entry) => entry.id !== id);
-  };
+  Object.defineProperty(window, 'setTimeout', {
+    configurable: true,
+    writable: true,
+    value: (handler: TimerHandler): number => {
+      timerSeq += 1;
+      if (typeof handler === 'function') {
+        timerQueue.push({
+          id: timerSeq,
+          cb: () => {
+            Reflect.apply(handler, undefined, []);
+          },
+        });
+      }
+      return timerSeq;
+    },
+  });
+  Object.defineProperty(window, 'clearTimeout', {
+    configurable: true,
+    writable: true,
+    value: (id: number | undefined): void => {
+      timerQueue = timerQueue.filter((entry) => entry.id !== id);
+    },
+  });
 
   Element.prototype.scrollIntoView = scrollIntoView;
 });

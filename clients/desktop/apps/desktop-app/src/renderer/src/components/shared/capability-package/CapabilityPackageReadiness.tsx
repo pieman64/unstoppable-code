@@ -9,6 +9,7 @@ import {
   PIPELINE_PACKAGE_PUBLISHER_NOTE,
   PIPELINE_PACKAGE_SETUP_HEADING,
 } from '@canopy/ui-shared/lib/pipeline-package-display';
+import { Button } from '@/components/shared/Button';
 import type { PipelinePackageReadiness as PipelinePackageReadinessData } from '@canopy/desktop-shared/types/pipeline';
 
 /**
@@ -79,13 +80,15 @@ export function CapabilityPackageReadiness({
   const includedResources = readiness.includedResources ?? [];
   // A skill's requirements are what its instructions name, and none of them
   // blocks it, so the skill note does not claim it cannot run without them.
+  // `pipeline` is the subject id; users call it a workflow (CAN-4651).
+  const subjectNoun = subjectLabel === 'pipeline' ? 'workflow' : subjectLabel;
   const setupNote =
     subjectLabel === 'skill'
       ? 'This skill uses these. Set them up before you run it.'
       : subjectLabel === 'pipeline' || subjectLabel === 'automation'
-        ? `This ${subjectLabel} needs the following on this machine before it can run.`
-        : `This ${subjectLabel} needs the following setup on this machine before it can be used.`;
-  const invalidLabel = `This ${subjectLabel}’s packaged dependencies could not be verified.`;
+        ? `This ${subjectNoun} needs the following on this machine before it can run.`
+        : `This ${subjectNoun} needs the following setup on this machine before it can be used.`;
+  const invalidLabel = `This ${subjectNoun}’s packaged dependencies could not be verified.`;
   const showReadinessReview =
     readiness.status !== 'ready' ||
     actionable.length > 0 ||
@@ -110,7 +113,7 @@ export function CapabilityPackageReadiness({
             {PIPELINE_PACKAGE_INCLUDED_HEADING}
           </h3>
           <p className="mt-1 text-xs fg-secondary">
-            {`These capabilities are included with this ${subjectLabel}.`}
+            {`These capabilities are included with this ${subjectNoun}.`}
           </p>
           <ul className="mt-2 space-y-1">
             {includedResources.map((resource) => (
@@ -140,15 +143,15 @@ export function CapabilityPackageReadiness({
             <h3 className="text-s font-medium fg-primary">
               {PIPELINE_PACKAGE_SETUP_HEADING}
             </h3>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={focusSection}
               aria-expanded={expanded}
               data-testid="pipeline-trigger-modal-review-setup"
-              className="focus-ring rounded-md border px-2 py-1 text-xs fg-primary"
             >
               Review setup
-            </button>
+            </Button>
           </div>
           <p className="mt-1 text-xs fg-secondary">{setupNote}</p>
           {readiness.status === 'invalid' && (
@@ -161,7 +164,7 @@ export function CapabilityPackageReadiness({
               className="mt-1 text-xs fg-warning"
               data-testid="pipeline-trigger-modal-definition-only-note"
             >
-              {`This ${subjectLabel} was installed from a definition-only share, so its required dependencies are not included.`}
+              {`This ${subjectNoun} was installed from a definition-only share, so its required dependencies are not included.`}
             </p>
           )}
           <ul className="mt-2 space-y-1">

@@ -144,7 +144,8 @@ function resolvePlanFilePath(ref: PlanFileRef): string | null {
  * are unknown, so nothing may overwrite it or turn it into a revision.
  */
 class PlanFileReadError extends Error {
-  readonly cause: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause: unknown;
 
   constructor(filePath: string, cause: unknown) {
     super(`Could not read the plan file at ${filePath}`);

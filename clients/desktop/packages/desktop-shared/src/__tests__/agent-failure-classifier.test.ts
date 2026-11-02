@@ -1,4 +1,7 @@
-import { classifyAgentFailure } from '../agent-failures/classifier';
+import {
+  classifyAgentFailure,
+  hasDefinitiveTerminalFailureSignal,
+} from '../agent-failures/classifier';
 
 describe('classifyAgentFailure', () => {
   it('classifies Claude authentication before other signals', () => {
@@ -754,5 +757,83 @@ describe('classifyAgentFailure', () => {
         events: [{ type: 'assistant', error: 'billing_error' }],
       }),
     ).toBeNull();
+  });
+});
+
+describe('hasDefinitiveTerminalFailureSignal', () => {
+  const marker = `unexpected status 402: {"error":{"canopy_proxy":"CANOPY_AI_CREDITS_PROXY","code":"invalid_request"}}`;
+
+  it.each([
+    {
+      name: 'a structured Claude status',
+      provider: 'claude' as const,
+      error: { type: 'result', is_error: true, api_error_status: 400 },
+      expected: true,
+    },
+    {
+      name: 'a nested Codex status',
+      provider: 'codex' as const,
+      error: {
+        type: 'codex',
+        event: { type: 'turn.failed', error: { status: 400 } },
+      },
+      expected: true,
+    },
+    {
+      name: 'a Codex status in its message',
+      provider: 'codex' as const,
+      error: 'unexpected status 400 Bad Request: invalid input',
+      expected: true,
+    },
+    {
+      name: 'an AI Credits proxy code',
+      provider: 'claude' as const,
+      error: marker,
+      expected: true,
+    },
+    {
+      name: 'plain failure text',
+      provider: 'claude' as const,
+      error: 'Something odd happened',
+      expected: false,
+    },
+    {
+      name: 'no terminal error',
+      provider: 'codex' as const,
+      error: undefined,
+      expected: false,
+    },
+  ])(
+    'reports $name as definitive: $expected',
+    ({ provider, error, expected }) => {
+      expect(hasDefinitiveTerminalFailureSignal({ provider, error })).toBe(
+        expected,
+      );
+    },
+  );
+
+  it('matches the rule that keeps buffered events from explaining the failure', () => {
+    const error = { type: 'result', is_error: true, api_error_status: 400 };
+    const events = [{ type: 'assistant', error: 'rate_limit' }];
+
+    expect(
+      hasDefinitiveTerminalFailureSignal({ provider: 'claude', error }),
+    ).toBe(true);
+    expect(
+      classifyAgentFailure({
+        provider: 'claude',
+        accountScope: 'native',
+        events,
+        error,
+      }),
+    ).toBeNull();
+    expect(
+      classifyAgentFailure({
+        provider: 'claude',
+        accountScope: 'native',
+        events,
+        error: 'Something odd happened',
+      }),
+    ).toMatchObject({ kind: 'provider_usage_limit' });
   });
 });

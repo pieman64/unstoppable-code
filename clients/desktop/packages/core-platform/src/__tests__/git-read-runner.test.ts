@@ -1,8 +1,10 @@
 import { createWindowsClosureWitness } from '../supervision/windows-closure';
-import { spawn, type ChildProcess } from 'node:child_process';
+import childProcess, { spawn, type ChildProcess } from 'node:child_process';
 import { createHook, executionAsyncId } from 'node:async_hooks';
+import { getEventListeners } from 'node:events';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,10 +12,11 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createChildServices } from '../supervision/child';
 import { killProcessTree } from '../supervision/kill-tree';
 import type { SupervisionOperations } from '../supervision/shared';
@@ -27,7 +30,7 @@ import {
   type ScratchOperations,
 } from '../git-read/runner';
 import type { ExecutableProbe } from '../git-read/resolve';
-import type { GitReadCommand } from '../git-read/commands';
+import { executableIdentity, type GitReadCommand } from '../git-read/commands';
 
 const HOST =
   process.platform === 'darwin' || process.platform === 'linux'
@@ -388,6 +391,131 @@ posix('git read runner (POSIX only: sh fixtures, process groups)', () => {
       expect(await work).toEqual({ error: reason });
       expect(kills).toEqual([]);
       expect(groupAlive(rootOf(pidfile))).toBe(true);
+    });
+  });
+
+  // Node emits a child's 'close' after its stdio closes, and a spawn failure's
+  // 'close' a loop turn after its 'error'. Held pipes close only when the
+  // runner destroys them at the drain end, so each case aborts in that gap.
+  describe('an abort while settlement waits for close', () => {
+    let spawnSpy: jest.SpyInstance | undefined;
+    afterEach(() => spawnSpy?.mockRestore());
+
+    interface Gap {
+      readonly closed: boolean;
+      readonly stdioDestroyed: boolean;
+    }
+
+    /**
+     * Aborts `controller` at `file`'s first stdio 'close', or a microtask after
+     * its spawn 'error', and records whether that child had closed by then.
+     */
+    function abortInGap(
+      file: string,
+      controller: AbortController,
+      reason: unknown,
+    ): { readonly roots: ChildProcess[]; readonly gap: () => Gap | undefined } {
+      const realSpawn = childProcess.spawn;
+      const roots: ChildProcess[] = [];
+      let gap: Gap | undefined;
+      spawnSpy = jest
+        .spyOn(childProcess, 'spawn')
+        .mockImplementation((...args: Parameters<typeof realSpawn>) => {
+          const child = realSpawn(...args);
+          if (args[0] !== file) return child;
+          roots.push(child);
+          let closed = false;
+          child.once('close', () => (closed = true));
+          const abort = (): void => {
+            if (controller.signal.aborted) return;
+            gap = {
+              closed,
+              stdioDestroyed: Boolean(child.stdout?.destroyed && child.stderr?.destroyed), // prettier-ignore
+            };
+            controller.abort(reason);
+          };
+          child.stdout?.once('close', abort);
+          child.stderr?.once('close', abort);
+          child.once('error', () => queueMicrotask(abort));
+          return child;
+        });
+      return { roots, gap: () => gap };
+    }
+
+    it.each(['request', 'host'] as const)(
+      'rejects a drained success with a %s abort',
+      async (source) => {
+        const kills: Kill[] = [];
+        const { file, pidfile } = script('sleep 30 & echo done; exit 0');
+        const controller = new AbortController();
+        const reason = new Error('discard');
+        const { roots, gap } = abortInGap(file, controller, reason);
+        const r = runner({
+          hostSignal: source === 'host' ? controller.signal : undefined,
+          operations: { kill: recordingKill(kills) },
+        });
+        const outcome = await settle(
+          r.run(
+            { kind: 'git-version', executable: file },
+            request(pidfile, source === 'request' ? { signal: controller.signal } : {}), // prettier-ignore
+          ),
+        );
+        rootOf(pidfile);
+        expect(roots).toHaveLength(1);
+        expect(gap()).toEqual({ closed: false, stdioDestroyed: true });
+        expect(outcome).toEqual({ error: reason });
+        expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
+        expect(kills).toEqual([]);
+        expect(await r.whenIdle(AbortSignal.abort())).toBe('idle');
+      },
+    );
+
+    // The member overflows only after the runner saw the root exit, so the
+    // overflow settles at once, without a kill, while the member holds the pipes.
+    it('keeps an earlier output_limit', async () => {
+      const kills: Kill[] = [];
+      const { file, pidfile } = script(
+        `(while [ ! -e "$PIDFILE.go" ]; do sleep 0.05; done; head -c ${MiB + 1} /dev/zero; sleep 30) & exit 0`, // prettier-ignore
+      );
+      const controller = new AbortController();
+      const { roots, gap } = abortInGap(file, controller, new Error('late'));
+      const work = settle(
+        runner({
+          operations: { kill: recordingKill(kills) },
+          timing: { drainMs: 5000, cleanupReserveMs: 500 },
+        }).run(
+          { kind: 'git-version', executable: file },
+          request(pidfile, { signal: controller.signal }),
+        ),
+      );
+      await until(() => roots[0]?.exitCode === 0);
+      writeFileSync(`${pidfile}.go`, '');
+      const outcome = await work;
+      rootOf(pidfile);
+      expect(gap()).toEqual({ closed: false, stdioDestroyed: true });
+      expect(outcome).toMatchObject({
+        error: { code: 'output_limit', stream: 'stdout' },
+      });
+      expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
+      expect(kills).toEqual([]);
+    });
+
+    it('keeps a spawn failure', async () => {
+      const file = join(dir, 'missing-gap-git');
+      const controller = new AbortController();
+      const { roots, gap } = abortInGap(file, controller, new Error('late'));
+      const r = runner();
+      const outcome = await settle(
+        r.run(
+          { kind: 'git-version', executable: file },
+          request('', { signal: controller.signal }),
+        ),
+      );
+      expect(roots).toHaveLength(1);
+      expect(gap()).toMatchObject({ closed: false });
+      expect(outcome).toMatchObject({ error: { code: 'ENOENT' } });
+      expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
+      expect(await r.whenIdle(AbortSignal.abort())).toBe('idle');
     });
   });
 
@@ -1717,22 +1845,48 @@ posix(
       },
     );
 
+    // check-ignore is accepted only when its plan carries the fsmonitor
+    // discharge, which only Git for Windows' git.exe at an audited version gets.
     it.each([
-      ['git-version', true],
-      ['where-git', true],
-      ['git-check-ignore', false],
+      ['git-version', 'fake', undefined, true],
+      ['where-git', 'fake', undefined, true],
+      ['git-check-ignore', 'git.exe', 'git version 2.47.1.windows.2', true],
+      ['git-check-ignore', 'git.exe', 'git version 2.35.1.windows.1', false],
+      ['git-check-ignore', 'git.exe', 'git version 2.57.0.windows.1', false],
+      ['git-check-ignore', 'git.exe', 'git version 2.47.0.vfs.0.1', false],
+      [
+        'git-check-ignore',
+        'git.exe',
+        'git version 2.48.0-rc1.windows.1',
+        false,
+      ],
+      ['git-check-ignore', 'git.exe', undefined, false],
+      ['git-check-ignore', 'fake', 'git version 2.47.1.windows.2', false],
     ] as const)(
-      'accepts a natural %s only when it cannot leave an fsmonitor daemon (%s)',
-      async (kind, accepted) => {
+      'accepts a natural %s from %s (%s) only when it cannot leave an fsmonitor daemon (%s)',
+      async (kind, image, version, accepted) => {
         const witness = createWindowsClosureWitness();
         // Read stdin to EOF as `git check-ignore --stdin` does: exiting first
         // races the stdin write into the runner's EPIPE. PATH is only the
         // where.exe directory, so a bare `cat` is not found.
+        const drain =
+          kind === 'git-check-ignore' ? '/bin/cat >/dev/null; ' : '';
+        // Git for Windows sees the discharge, when planned, before its subcommand.
+        const argv = accepted
+          ? '-c core.fsmonitor=false check-ignore'
+          : 'check-ignore -z --stdin';
         const fake = script(
-          kind === 'git-check-ignore'
-            ? '/bin/cat >/dev/null; exit 0'
-            : 'exit 0',
+          image === 'git.exe'
+            ? `[ "$1 $2 $3" = "${argv}" ] || exit 9; ${drain}exit 0`
+            : `${drain}exit 0`,
         );
+        const executable =
+          image === 'git.exe' ? join(dir, `git-${serial}`, 'git.exe') : fake.file; // prettier-ignore
+        if (image === 'git.exe') {
+          mkdirSync(dirname(executable));
+          copyFileSync(fake.file, executable);
+          chmodSync(executable, 0o755);
+        }
         const whereDirectory = join(dir, `where-${serial}`);
         mkdirSync(whereDirectory);
         writeFileSync(join(whereDirectory, 'where.exe'), '#!/bin/sh\nexit 0\n');
@@ -1741,8 +1895,15 @@ posix(
           kind === 'where-git'
             ? { kind }
             : kind === 'git-version'
-              ? { kind, executable: `/${fake.file}` }
-              : { kind, executable: `/${fake.file}`, input: new Uint8Array(0) };
+              ? { kind, executable: `/${executable}` }
+              : {
+                  kind,
+                  executable: `/${executable}`,
+                  input: new Uint8Array(0),
+                  ...(version === undefined ? {} : { version }),
+                  // As validation recorded it for this file.
+                  identity: executableIdentity(statSync(executable)),
+                };
         await witness.run(async () => {
           const r = createGitReadRunner({
             os: 'win32',
@@ -1766,6 +1927,212 @@ posix(
         expect(witness.accepts(report)).toBe(accepted);
       },
     );
+
+    // The selected Git's version reaches the plan; a bare path carries none.
+    // The version vouches only for the file identity it was recorded with.
+    it.each([
+      [{ version: 'git version 2.47.1.windows.2', identity: 'recorded' }, true],
+      [{ version: 'git version 2.47.1.windows.2' }, false],
+      [
+        { version: 'git version 2.35.1.windows.1', identity: 'recorded' },
+        false,
+      ],
+      [{ version: undefined, identity: 'recorded' }, false],
+      ['a bare path', false],
+    ] as const)(
+      'a check-ignore selection of %j is accepted: %s',
+      async (selection, accepted) => {
+        const witness = createWindowsClosureWitness();
+        // Planning reads the version alone; acceptance also needs the identity.
+        const argv =
+          typeof selection !== 'string' && selection.version?.includes('2.47')
+            ? '-c core.fsmonitor=false check-ignore'
+            : 'check-ignore -z --stdin';
+        const fake = script(
+          `[ "$1 $2 $3" = "${argv}" ] || exit 9; /bin/cat >/dev/null; exit 1`,
+        );
+        const executable = `/${join(dir, `git-${serial}`, 'git.exe')}`;
+        mkdirSync(dirname(executable));
+        copyFileSync(fake.file, executable);
+        chmodSync(executable, 0o755);
+        const selected =
+          typeof selection === 'string'
+            ? executable
+            : {
+                executable,
+                version: selection.version,
+                ...('identity' in selection
+                  ? { identity: executableIdentity(statSync(executable)) }
+                  : {}),
+              };
+        await witness.run(async () => {
+          const r = createGitReadRunner({
+            os: 'win32',
+            timing: { drainMs: 10, cleanupReserveMs: 100 },
+          });
+          await expect(
+            r.checkIgnoredPathsSelected({
+              cwd: `/${dir}`,
+              paths: ['a.log'],
+              environment: {
+                SystemRoot: 'C:\\Windows',
+                PATH: 'C:\\Windows\\System32',
+                PIDFILE: fake.pidfile,
+              },
+              deadlineAt: performance.now() + 3000,
+              signal: new AbortController().signal,
+              executableForChunk: () => Promise.resolve(selected),
+            }),
+          ).resolves.toEqual(new Set());
+          expect(await r.whenIdle(AbortSignal.timeout(3000))).toBe('idle');
+        });
+        const report = witness.finalize();
+        expect(report).toMatchObject({ started: 1, pending: 0 });
+        expect(witness.accepts(report)).toBe(accepted);
+      },
+    );
+
+    // The audited version binds only the image whose stat identity validation
+    // recorded: one replaced before the spawn, or during it, stays unsafe.
+    it.each([
+      ['never', true],
+      ['before the spawn', false],
+      ['during the spawn', false],
+    ] as const)(
+      'accepts an audited check-ignore whose image is replaced %s: %s',
+      async (when, accepted) => {
+        const witness = createWindowsClosureWitness();
+        const fake = script(
+          '[ "$1 $2 $3" = "-c core.fsmonitor=false check-ignore" ] || exit 9; /bin/cat >/dev/null; exit 1', // prettier-ignore
+        );
+        const executable = `/${join(dir, `git-${serial}`, 'git.exe')}`;
+        mkdirSync(dirname(executable));
+        copyFileSync(fake.file, executable);
+        chmodSync(executable, 0o755);
+        // `before`: the file no longer has the recorded identity. `during`:
+        // it has it at the pre-spawn check and not after the spawn.
+        const looks: string[] = [];
+        const imageIdentity = (file: string): string => {
+          looks.push(file);
+          return when === 'never' ||
+            (when === 'during the spawn' && looks.length === 1)
+            ? 'recorded'
+            : 'replaced';
+        };
+        await witness.run(async () => {
+          const r = createGitReadRunner({
+            os: 'win32',
+            timing: { drainMs: 10, cleanupReserveMs: 100 },
+            imageIdentity,
+          });
+          await expect(
+            r.checkIgnoredPathsSelected({
+              cwd: `/${dir}`,
+              paths: ['a.log'],
+              environment: {
+                SystemRoot: 'C:\\Windows',
+                PATH: 'C:\\Windows\\System32',
+                PIDFILE: fake.pidfile,
+              },
+              deadlineAt: performance.now() + 3000,
+              signal: new AbortController().signal,
+              executableForChunk: () =>
+                Promise.resolve({
+                  executable,
+                  version: 'git version 2.47.1.windows.2',
+                  identity: 'recorded',
+                }),
+            }),
+          ).resolves.toEqual(new Set());
+          expect(await r.whenIdle(AbortSignal.timeout(3000))).toBe('idle');
+        });
+        const report = witness.finalize();
+        expect(report).toMatchObject({ started: 1, pending: 0 });
+        expect(witness.accepts(report)).toBe(accepted);
+        // The started file is the one looked at.
+        expect(looks.length).toBeGreaterThan(0);
+        expect(new Set(looks)).toEqual(new Set([executable]));
+      },
+    );
+
+    // The identity check costs a stat only for check-ignore in a closure run.
+    it('looks at no image outside a closure run or for other commands', async () => {
+      const fake = script('/bin/cat >/dev/null; exit 1');
+      const executable = `/${join(dir, `git-${serial}`, 'git.exe')}`;
+      mkdirSync(dirname(executable));
+      copyFileSync(fake.file, executable);
+      chmodSync(executable, 0o755);
+      const looks: string[] = [];
+      const r = createGitReadRunner({
+        os: 'win32',
+        timing: { drainMs: 10, cleanupReserveMs: 100 },
+        imageIdentity: (file) => {
+          looks.push(file);
+          return 'recorded';
+        },
+      });
+      const environment = {
+        SystemRoot: 'C:\\Windows',
+        PATH: 'C:\\Windows\\System32',
+        PIDFILE: fake.pidfile,
+      };
+      await expect(
+        r.checkIgnoredPathsSelected({
+          cwd: `/${dir}`,
+          paths: ['a.log'],
+          environment,
+          deadlineAt: performance.now() + 3000,
+          signal: new AbortController().signal,
+          executableForChunk: () =>
+            Promise.resolve({
+              executable,
+              version: 'git version 2.47.1.windows.2',
+              identity: 'recorded',
+            }),
+        }),
+      ).resolves.toEqual(new Set());
+      // git-version leaves stdin open, so its fake must not read it.
+      const version = script('exit 0');
+      const witness = createWindowsClosureWitness();
+      await witness.run(async () => {
+        await expect(
+          r.run(
+            { kind: 'git-version', executable: `/${version.file}` },
+            {
+              cwd: `/${dir}`,
+              environment: { ...environment, PIDFILE: version.pidfile },
+              deadlineAt: performance.now() + 3000,
+            },
+          ),
+        ).resolves.toMatchObject({ code: 0 });
+      });
+      expect(await r.whenIdle(AbortSignal.timeout(3000))).toBe('idle');
+      expect(looks).toEqual([]);
+    });
+
+    // The drain window ends before the held pipes close.
+    it('is idle at an abandoned settlement only once its edge has closed', async () => {
+      const witness = createWindowsClosureWitness();
+      const fake = script('/bin/sleep 2 & exit 0');
+      await witness.run(async () => {
+        const r = createGitReadRunner({
+          os: 'win32',
+          timing: { drainMs: 10, cleanupReserveMs: 100 },
+        });
+        await expect(
+          r.run(
+            { kind: 'git-version', executable: `/${fake.file}` },
+            {
+              cwd: `/${dir}`,
+              environment: { SystemRoot: 'C:\\Windows', PATH: 'C:\\Windows\\System32', PIDFILE: fake.pidfile }, // prettier-ignore
+              deadlineAt: performance.now() + 3000,
+            },
+          ),
+        ).resolves.toMatchObject({ code: 0, pipes: 'abandoned' });
+        expect(await r.whenIdle(AbortSignal.abort())).toBe('idle');
+      });
+      expect(witness.finalize()).toMatchObject({ started: 1, pending: 0 });
+    });
   },
 );
 
@@ -1773,23 +2140,35 @@ posix(
 // emits error then a negative close; a file as cwd fails at spawn.
 describe('finite Windows closure gate: spawn failures (every host)', () => {
   const rooted = (file: string): string => (HOST ? `/${file}` : file);
+  const probe = (
+    r: GitReadRunner,
+    file: string,
+    cwd = dir,
+  ): Promise<GitReadOutput> =>
+    r.run(
+      { kind: 'git-version', executable: rooted(file) },
+      {
+        cwd: rooted(cwd),
+        environment: { SystemRoot: 'C:\\Windows', PATH: 'C:\\Windows\\System32' }, // prettier-ignore
+        deadlineAt: performance.now() + 10_000,
+      },
+    );
+
+  // ENOENT emits 'error' a loop turn before the 'close' that closes its edge.
+  it('is idle at a spawn failure only once its edge has closed', async () => {
+    const witness = createWindowsClosureWitness();
+    await witness.run(async () => {
+      const r = createGitReadRunner({ os: 'win32' });
+      await expect(probe(r, join(dir, 'missing-git'))).rejects.toThrow();
+      expect(await r.whenIdle(AbortSignal.abort())).toBe('idle');
+    });
+    expect(witness.finalize()).toMatchObject({ started: 1, pending: 0 });
+  });
+
   it.each(['none', 'missing', 'not-a-directory'])(
     'records a spawn failure (%s) before a successful probe',
     async (mode) => {
       const witness = createWindowsClosureWitness();
-      const probe = (
-        r: GitReadRunner,
-        file: string,
-        cwd = dir,
-      ): Promise<GitReadOutput> =>
-        r.run(
-          { kind: 'git-version', executable: rooted(file) },
-          {
-            cwd: rooted(cwd),
-            environment: { SystemRoot: 'C:\\Windows', PATH: 'C:\\Windows\\System32' }, // prettier-ignore
-            deadlineAt: performance.now() + 10_000,
-          },
-        );
       await witness.run(async () => {
         const r = createGitReadRunner({ os: 'win32' });
         if (mode !== 'none')

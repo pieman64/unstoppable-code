@@ -1,0 +1,19 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "isolatedModules": true,
+    "types": ["node"],
+    "incremental": true,
+    "tsBuildInfoFile": "../../../../.cache/tsbuildinfo/tsconfig.benchmark.tsbuildinfo"
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.mts",
+    "../../src/brand-defines.d.ts",
+    "../../../../packages/desktop-shared/src/build-constants.d.ts",
+    "../../../../packages/desktop-instrumentation/src/build-constants.d.ts"
+  ]
+}

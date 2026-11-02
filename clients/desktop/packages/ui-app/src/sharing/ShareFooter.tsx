@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { LoadingButton } from '@canopy/ui-shared/components';
+import { Button, LoadingButton } from '@canopy/ui-shared/components';
 
 /** A second footer action between Cancel and the primary. */
 export interface ShareFooterSecondaryAction {
@@ -15,7 +15,6 @@ interface ShareFooterProps {
   cancelLabel?: string;
   cancelDisabled?: boolean;
   cancelTestId?: string;
-  cancelIntent?: 'default' | 'destructive';
   showPrimary: boolean;
   onSubmit: () => void;
   submitLabel: string;
@@ -35,20 +34,12 @@ interface ShareFooterProps {
   submitTestId?: string;
 }
 
-const QUIET_BUTTON_CLASS =
-  'rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40';
-const DESTRUCTIVE_QUIET_BUTTON_CLASS =
-  'rounded-lg px-4 py-1.5 text-s fg-destructive transition hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-40';
-const SECONDARY_BUTTON_CLASS =
-  'rounded-lg ring-1 ring-inset ring-line-base px-4 py-1.5 text-s fg-primary transition hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-40';
-
 export function ShareFooter({
   onCancel,
   showCancel = true,
   cancelLabel = 'Cancel',
   cancelDisabled = false,
   cancelTestId,
-  cancelIntent = 'default',
   showPrimary,
   onSubmit,
   submitLabel,
@@ -67,35 +58,33 @@ export function ShareFooter({
     >
       <div className="flex min-w-0 flex-1 items-center">{leading}</div>
       {showCancel && (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="compact"
           data-testid={cancelTestId}
           onClick={onCancel}
           disabled={cancelDisabled || loading}
-          className={
-            cancelIntent === 'destructive'
-              ? DESTRUCTIVE_QUIET_BUTTON_CLASS
-              : QUIET_BUTTON_CLASS
-          }
         >
           {cancelLabel}
-        </button>
+        </Button>
       )}
       {secondary && (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="compact"
           data-testid={secondary.testId}
           onClick={secondary.onClick}
           disabled={secondary.disabled === true || loading}
-          className={SECONDARY_BUTTON_CLASS}
         >
           {secondary.label}
-        </button>
+        </Button>
       )}
       {showPrimary && (
         <LoadingButton
           variant="primary"
-          size="md"
+          size="compact"
           data-testid={submitTestId ?? `${testIdPrefix}-submit`}
           onClick={onSubmit}
           disabled={submitDisabled}

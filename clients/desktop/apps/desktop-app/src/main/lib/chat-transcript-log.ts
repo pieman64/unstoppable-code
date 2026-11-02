@@ -5,10 +5,13 @@ import {
   type TranscriptTurnIndex,
 } from './chat-transcript-turn-index';
 import type {
+  TranscriptBodyField,
   TranscriptViewRequest,
   TranscriptTurnSummary,
 } from '@canopy/agent-transcript/transcript-storage';
 import { foldTranscriptTodoState } from '@canopy/agent-transcript';
+import type { DelegationChildRow } from '@canopy/agent-transcript';
+import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
@@ -23,6 +26,7 @@ import {
 } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type {
   PersistedChatBlock,
   PersistedChatMessage,
@@ -32,14 +36,27 @@ import type {
 import {
   isHumanAuthoredUserMessage,
   TRANSCRIPT_PAGE_SIZE,
+  transcriptBodyReferences,
   type TranscriptPage,
   type TranscriptDescriptor,
 } from '@canopy/agent-transcript/transcript-storage';
 import { ChatDelegationLogs } from './chat-delegation-log';
+import { chatChildDeleteFence } from './chat-child-delete-fence';
+import {
+  buildChildStreamSequenceIndex,
+  childStreamSequencePage,
+  findChildStreamSequenceEntry,
+  type ChildStreamSequenceEntry,
+} from './child-stream-sequence-index';
 import {
   ChatTranscriptArtifacts,
   assertTranscriptIdentity,
+  type TranscriptFieldPolicy,
 } from './chat-transcript-artifacts';
+import {
+  primaryTranscriptPaths,
+  type TranscriptStreamPaths,
+} from './transcript-stream-paths';
 import {
   artifactIdsOf,
   storedArtifactLocations,
@@ -58,8 +75,30 @@ import {
   MAX_TRANSCRIPT_ROW_BYTES,
   replaceSharedPrefix,
 } from './chat-transcript-prefix-replace';
+import {
+  checkActiveSidecarMessageRecordBudget,
+  decodeActiveRowAnchors,
+  encodeActiveRowAnchors,
+  parseActiveRowAnchor,
+  rankLogicalPlacement,
+  resolveLogicalPlacement,
+  validateActiveRowAnchors as validateActiveRowAnchorSet,
+  type ActiveRowAnchor,
+  type ActiveSidecarMessageRecord,
+  type LogicalPlacement,
+  type LogicalPlacementRanks,
+} from './chat-transcript-live-positions';
 
 const SPARSE_STRIDE = TRANSCRIPT_PAGE_SIZE;
+const MAX_COMMITTED_LOCATOR_IDENTITY_KEYS = 100_000;
+const COMPLETED_TURN_TAIL_SIZE = 16;
+const LIVE_RUN_CHILD_TAIL_SIZE = 16;
+const MAX_REDUCER_FRAME_TIMER_ROWS = 16;
+const MAX_REDUCER_FRAME_CARD_ROWS = 32;
+const MAX_REDUCER_FRAME_TOOL_ROWS = 64;
+const MAX_REDUCER_FRAME_TOOL_IDS = 512;
+const MAX_REDUCER_FRAME_TOOL_IDS_PER_ROW = 64;
+const MAX_REDUCER_FRAME_PENDING_RESULTS = 512;
 export { MAX_TRANSCRIPT_ROW_BYTES };
 /**
  * Seed of the committed-row hash chain. The chain identifies the committed
@@ -88,6 +127,63 @@ function errorFromUnknown(value: unknown): Error {
     : Object.assign(new Error(String(value)), { cause: value });
 }
 
+/**
+ * The body-field representation a scope transaction selected from the
+ * manifest it captured, passed with each write (never a store setting):
+ * - `legacy`: formats 2 and 3; only tool output is offloaded.
+ * - `format4`: prepare rows of a format 4 scope; final rows publish
+ *   generalized fields, open rows keep them inline.
+ * - `format4-verify`: re-apply rows a format 4 writer already prepared
+ *   (replay, checkpoint materialization, readers); never publishes.
+ * - `format4-committed`: `format4-verify` for rows the log already holds
+ *   (patch replay); keeps a field a format 3 writer committed inline and
+ *   whole before promotion. A checkpointed format 4 file transaction instead
+ *   prepares its whole rewrite, which offloads such a field.
+ */
+export type TranscriptFieldMode =
+  | 'legacy'
+  | 'format4'
+  | 'format4-verify'
+  | 'format4-committed';
+
+export function transcriptFieldPolicy(
+  mode: TranscriptFieldMode,
+  final: boolean,
+): TranscriptFieldPolicy {
+  switch (mode) {
+    case 'legacy':
+      return { kind: 'legacy' };
+    case 'format4':
+      return { kind: 'format4', final };
+    case 'format4-verify':
+      return { kind: 'format4-verify', final };
+    case 'format4-committed':
+      return { kind: 'format4-verify', final, committed: true };
+  }
+}
+
+/**
+ * Prepare `rows` in order where the last `activeTailCount` are open (the
+ * active projection) and the rest are final, holding only the tail.
+ */
+export async function* prepareRowsWithActiveTail(
+  rows: Iterable<PersistedChatMessage> | AsyncIterable<PersistedChatMessage>,
+  activeTailCount: number,
+  prepare: (
+    message: PersistedChatMessage,
+    final: boolean,
+  ) => Promise<PersistedChatMessage>,
+): AsyncGenerator<PersistedChatMessage> {
+  const tail: PersistedChatMessage[] = [];
+  for await (const row of iterateAsync(rows)) {
+    tail.push(row);
+    if (tail.length <= activeTailCount) continue;
+    const head = tail.shift();
+    if (head) yield await prepare(head, true);
+  }
+  for (const row of tail) yield await prepare(row, false);
+}
+
 async function directoryExists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -98,11 +194,14 @@ async function directoryExists(path: string): Promise<boolean> {
   }
 }
 
-function artifactIdsForBlock(block: PersistedChatBlock): string[] {
-  const ids: string[] = [];
-  for (const location of STORED_ARTIFACT_LOCATIONS)
-    ids.push(...artifactIdsOf(block, location.family));
-  return ids;
+/** Artifact ids an unpaged row keeps reachable: body references and visuals. */
+function rowArtifactIds(message: PersistedChatMessage): string[] {
+  return [
+    ...transcriptBodyReferences(message).map(
+      ({ reference }) => reference.artifactId,
+    ),
+    ...message.blocks.flatMap((block) => artifactIdsOf(block, 'visual')),
+  ];
 }
 
 const STORED_ARTIFACT_LOCATIONS = storedArtifactLocations();
@@ -118,18 +217,262 @@ export function assertTranscriptRowWithinLimit(
     throw new Error('Transcript row exceeds maximum size');
 }
 
+interface SparseReducerFrameReference {
+  id: string;
+  ordinal: number;
+  offset: number;
+}
+
+interface ReducerFrameToolResultWitness<Reference> {
+  toolUseId: string;
+  row: Reference;
+}
+
+interface ReducerFrameToolUseRow<Reference> {
+  row: Reference;
+  toolUseIds: string[];
+  resultWitnesses: Array<ReducerFrameToolResultWitness<Reference>>;
+}
+
+interface ReducerFrameCardRow<Reference> {
+  row: Reference;
+  carriesToolUses: boolean;
+}
+
+interface ReducerFrameFold<Reference extends { id: string; ordinal: number }> {
+  boundary?: Reference;
+  timers: Reference[];
+  cards: Array<ReducerFrameCardRow<Reference>>;
+  toolUses: Array<ReducerFrameToolUseRow<Reference>>;
+  pendingResults: Array<ReducerFrameToolResultWitness<Reference>>;
+}
+
+interface SparseReducerFrame extends ReducerFrameFold<SparseReducerFrameReference> {
+  version: 1;
+  /** Committed rows folded; a build that appends without folding leaves it behind. */
+  messageCount: number;
+}
+
 interface SparseIndex extends TranscriptDescriptor {
   version: 3;
   committedDigest: string;
   offsets: Array<{ ordinal: number; offset: number }>;
   latestHuman?: { ordinal: number; offset: number };
+  reducerFrame?: SparseReducerFrame;
+}
+
+type ReducerFrameViewRequest = TranscriptViewRequest & {
+  reducerFrame?: boolean;
+};
+
+interface ReducerFramePageReference {
+  id: string;
+  ordinal: number;
+  offset?: number;
+  message: PersistedChatMessage;
+  rank: number;
+}
+
+function emptyReducerFrameFold<
+  Reference extends { id: string; ordinal: number },
+>(): ReducerFrameFold<Reference> {
+  return { timers: [], cards: [], toolUses: [], pendingResults: [] };
+}
+
+function emptySparseReducerFrame(): SparseReducerFrame {
+  return {
+    version: 1,
+    messageCount: 0,
+    ...emptyReducerFrameFold<SparseReducerFrameReference>(),
+  };
+}
+
+function distinctToolUseIds(message: PersistedChatMessage): string[] {
+  const ids = new Set<string>();
+  for (const block of message.blocks)
+    if (block.type === 'tool_use') ids.add(block.toolUseId);
+  return Array.from(ids);
+}
+
+function distinctToolResultIds(message: PersistedChatMessage): string[] {
+  const ids = new Set<string>();
+  for (const block of message.blocks)
+    if (block.type === 'tool_result') ids.add(block.toolUseId);
+  return Array.from(ids);
+}
+
+function hasReducerFrameCard(message: PersistedChatMessage): boolean {
+  return message.blocks.some(
+    (block) =>
+      block.type === 'codex_agent_call' ||
+      block.type === 'delegated_agent_call' ||
+      (block.type === 'tool_use' &&
+        (block.toolName === 'Task' || block.toolName === 'Agent')),
+  );
+}
+
+function hasReducerFrameContent(message: PersistedChatMessage): boolean {
+  return (
+    isUserTurnBoundary(message) ||
+    message.blocks.some(
+      (block) =>
+        block.type === 'turn_timer' ||
+        block.type === 'codex_agent_call' ||
+        block.type === 'delegated_agent_call' ||
+        block.type === 'tool_use' ||
+        block.type === 'tool_result',
+    )
+  );
+}
+
+function addOrReplaceToolResultWitness<
+  Reference extends { id: string; ordinal: number },
+>(
+  witnesses: Array<ReducerFrameToolResultWitness<Reference>>,
+  toolUseId: string,
+  row: Reference,
+): Array<ReducerFrameToolResultWitness<Reference>> {
+  return [
+    ...witnesses.filter((witness) => witness.toolUseId !== toolUseId),
+    { toolUseId, row },
+  ].sort((left, right) => left.row.ordinal - right.row.ordinal);
+}
+
+/**
+ * Bounded reducer context folded as each committed row is recorded. Every cap
+ * evicts oldest context first; tool-use rows are evicted as coherent groups
+ * so their retained uses always carry result witnesses for every completed id.
+ */
+function foldReducerFrame<Reference extends { id: string; ordinal: number }>(
+  previous: ReducerFrameFold<Reference>,
+  message: PersistedChatMessage,
+  reference: Reference,
+): ReducerFrameFold<Reference> {
+  const boundary = isUserTurnBoundary(message);
+  const next: ReducerFrameFold<Reference> = boundary
+    ? {
+        ...emptyReducerFrameFold<Reference>(),
+        // A wake gets a timer only when the chat already has one; keep the
+        // latest earlier timer so a windowed view sees one too. It stays
+        // behind the boundary, so the new turn never reopens it.
+        timers: previous.timers.slice(-1),
+      }
+    : {
+        ...previous,
+        timers: [...previous.timers],
+        cards: [...previous.cards],
+        toolUses: previous.toolUses.map((entry) => ({
+          ...entry,
+          toolUseIds: [...entry.toolUseIds],
+          resultWitnesses: [...entry.resultWitnesses],
+        })),
+        pendingResults: [...previous.pendingResults],
+      };
+  if (boundary) next.boundary = reference;
+
+  if (message.blocks.some((block) => block.type === 'turn_timer'))
+    next.timers = [...next.timers, reference].slice(
+      -MAX_REDUCER_FRAME_TIMER_ROWS,
+    );
+
+  const toolUseIds = distinctToolUseIds(message);
+  if (
+    toolUseIds.length > 0 &&
+    toolUseIds.length <= MAX_REDUCER_FRAME_TOOL_IDS_PER_ROW
+  ) {
+    const existingResults = next.pendingResults.filter((witness) =>
+      toolUseIds.includes(witness.toolUseId),
+    );
+    next.toolUses = [
+      ...next.toolUses,
+      {
+        row: reference,
+        toolUseIds,
+        resultWitnesses: existingResults,
+      },
+    ].slice(-MAX_REDUCER_FRAME_TOOL_ROWS);
+    while (
+      next.toolUses.reduce((count, row) => count + row.toolUseIds.length, 0) >
+      MAX_REDUCER_FRAME_TOOL_IDS
+    )
+      next.toolUses.shift();
+  }
+
+  const resultIds = distinctToolResultIds(message);
+  for (const toolUseId of resultIds) {
+    next.toolUses = next.toolUses.map((entry) =>
+      entry.toolUseIds.includes(toolUseId)
+        ? {
+            ...entry,
+            resultWitnesses: addOrReplaceToolResultWitness(
+              entry.resultWitnesses,
+              toolUseId,
+              reference,
+            ),
+          }
+        : entry,
+    );
+    next.pendingResults = [
+      ...next.pendingResults.filter(
+        (witness) => witness.toolUseId !== toolUseId,
+      ),
+      { toolUseId, row: reference },
+    ].slice(-MAX_REDUCER_FRAME_PENDING_RESULTS);
+  }
+
+  const carriesToolUses = toolUseIds.length > 0;
+  if (hasReducerFrameCard(message)) {
+    const retainedToolRow = next.toolUses.some(
+      (entry) => entry.row.id === reference.id,
+    );
+    if (!carriesToolUses || retainedToolRow)
+      next.cards = [
+        ...next.cards.filter((entry) => entry.row.id !== reference.id),
+        { row: reference, carriesToolUses },
+      ].slice(-MAX_REDUCER_FRAME_CARD_ROWS);
+  }
+  const retainedToolRows = new Set(next.toolUses.map((entry) => entry.row.id));
+  next.cards = next.cards.filter(
+    (entry) => !entry.carriesToolUses || retainedToolRows.has(entry.row.id),
+  );
+  return next;
+}
+
+function sparseReducerFrameReferences(
+  frame: SparseReducerFrame,
+  pendingToolUseIds: ReadonlySet<string> = new Set(),
+): SparseReducerFrameReference[] {
+  const references = new Map<number, SparseReducerFrameReference>();
+  const add = (reference: SparseReducerFrameReference): void => {
+    const previous = references.get(reference.ordinal);
+    if (
+      previous &&
+      (previous.offset !== reference.offset || previous.id !== reference.id)
+    )
+      throw new ChatTranscriptIntegrityError(
+        'Reducer frame contains conflicting references for one ordinal',
+      );
+    references.set(reference.ordinal, reference);
+  };
+  if (frame.boundary) add(frame.boundary);
+  frame.timers.forEach(add);
+  frame.cards.forEach(({ row }) => add(row));
+  for (const tool of frame.toolUses) {
+    add(tool.row);
+    tool.resultWitnesses.forEach(({ row }) => add(row));
+  }
+  for (const witness of frame.pendingResults)
+    if (pendingToolUseIds.has(witness.toolUseId)) add(witness.row);
+  return Array.from(references.values()).sort(
+    (left, right) => left.ordinal - right.ordinal,
+  );
 }
 
 function extendCommittedDigest(previous: string, rowDigest: string): string {
   return createHash('sha256').update(previous).update(rowDigest).digest('hex');
 }
 
-function indexChecksum(index: SparseIndex): string {
+function indexChecksum(index: PersistedSparseIndex): string {
   return createHash('sha256').update(JSON.stringify(index)).digest('hex');
 }
 
@@ -138,20 +481,70 @@ interface ActiveSidecar {
   transcriptRevision: number;
   updatedAt: string;
   messages: PersistedChatMessage[];
-  finalizing?: { stagedId: string; byteOffset: number; messageIds: string[] };
+  activeRowAnchors?: Map<string, ActiveRowAnchor>;
+  finalizing?: {
+    stagedId: string;
+    byteOffset: number;
+    messageIds: string[];
+    child?: true;
+    stagedByteLength?: number;
+    stagedSha256?: string;
+  };
+}
+
+function cloneActiveSidecar(sidecar: ActiveSidecar): ActiveSidecar {
+  const cloned = structuredClone(sidecar);
+  if (!sidecar.activeRowAnchors || sidecar.activeRowAnchors.size === 0) {
+    delete cloned.activeRowAnchors;
+    return cloned;
+  }
+  const anchors = new Map<string, ActiveRowAnchor>();
+  for (const [id, anchor] of Array.from(sidecar.activeRowAnchors)) {
+    const fresh: ActiveRowAnchor = {
+      version: 1,
+      runId: anchor.runId,
+      after: anchor.after,
+      tie: anchor.tie,
+    };
+    Object.freeze(fresh);
+    anchors.set(id, fresh);
+  }
+  cloned.activeRowAnchors = anchors;
+  return cloned;
+}
+
+type AppendBoundary =
+  | 'prepared'
+  | 'appended'
+  | 'index-published'
+  | 'survivors-published'
+  | 'abandoned';
+
+type ReplaceBoundary = 'active-sidecar-removed';
+
+interface ChatTranscriptLogTestHooks {
+  onReplaceBoundary?: (boundary: ReplaceBoundary) => Promise<void>;
 }
 
 interface ActiveSidecarHeaderV2 {
   version: 2;
   transcriptRevision: number;
   updatedAt: string;
-  finalizing?: { stagedId: string; byteOffset: number };
+  finalizing?: {
+    stagedId: string;
+    byteOffset: number;
+    child?: true;
+    messageIds?: string[];
+    stagedByteLength?: number;
+    stagedSha256?: string;
+  };
 }
 
 interface ActiveSidecarMessageV2 {
   version: 2;
   kind: 'message';
   message: PersistedChatMessage;
+  anchor?: unknown;
   finalizing?: true;
 }
 
@@ -167,6 +560,8 @@ class BoundedTranscriptSnapshotCache<T extends object> {
     private readonly maxEntries: number,
     private readonly maxBytes: number,
     private readonly maxEntryBytes: number,
+    private readonly cloneValue: (value: T) => T = (value): T =>
+      structuredClone(value),
   ) {}
 
   public get(path: string, identity: string): T | undefined {
@@ -178,7 +573,23 @@ class BoundedTranscriptSnapshotCache<T extends object> {
     }
     this.entries.delete(path);
     this.entries.set(path, entry);
-    return structuredClone(entry.value);
+    return this.cloneValue(entry.value);
+  }
+
+  public getProjected<U>(
+    path: string,
+    identity: string,
+    project: (value: T) => U,
+  ): { hit: false } | { hit: true; value: U } {
+    const entry = this.entries.get(path);
+    if (!entry) return { hit: false };
+    if (entry.identity !== identity) {
+      this.delete(path);
+      return { hit: false };
+    }
+    this.entries.delete(path);
+    this.entries.set(path, entry);
+    return { hit: true, value: project(entry.value) };
   }
 
   public set(path: string, identity: string, bytes: number, value: T): void {
@@ -187,7 +598,7 @@ class BoundedTranscriptSnapshotCache<T extends object> {
     this.entries.set(path, {
       identity,
       bytes,
-      value: structuredClone(value),
+      value: this.cloneValue(value),
     });
     this.retainedBytes += bytes;
     while (
@@ -227,7 +638,46 @@ const activeSnapshots = new BoundedTranscriptSnapshotCache<ActiveSidecar>(
   8,
   4 * 1024 * 1024,
   1024 * 1024,
+  cloneActiveSidecar,
 );
+/**
+ * Record anchors of each active sidecar this process last wrote or parsed,
+ * keyed by its file identity. Writers that carry anchors forward use this
+ * instead of re-parsing a sidecar that `activeSnapshots` no longer holds: that
+ * cache is not refreshed on write and skips sidecars over 1 MiB.
+ */
+const knownActiveAnchors = new Map<
+  string,
+  { stamp: string; anchors: Map<string, ActiveRowAnchor> }
+>();
+const KNOWN_ACTIVE_ANCHOR_ENTRIES = 64;
+
+function rememberActiveAnchors(
+  path: string,
+  stamp: string,
+  anchors: ReadonlyMap<string, ActiveRowAnchor> | undefined,
+): void {
+  knownActiveAnchors.delete(path);
+  knownActiveAnchors.set(path, { stamp, anchors: new Map(anchors ?? []) });
+  while (knownActiveAnchors.size > KNOWN_ACTIVE_ANCHOR_ENTRIES) {
+    const oldest = knownActiveAnchors.keys().next().value;
+    if (oldest === undefined) break;
+    knownActiveAnchors.delete(oldest);
+  }
+}
+
+/** Best effort: a failed stat only costs the next writer a verified read. */
+async function rememberWrittenActiveAnchors(
+  path: string,
+  anchors: ReadonlyMap<string, ActiveRowAnchor>,
+): Promise<void> {
+  try {
+    rememberActiveAnchors(path, (await fileIdentity(path)).stamp, anchors);
+  } catch {
+    knownActiveAnchors.delete(path);
+  }
+}
+
 const recentCommittedPages =
   new BoundedTranscriptSnapshotCache<CommittedRecentPage>(
     8,
@@ -243,6 +693,7 @@ interface MaintenanceCommittedIndex extends Pick<
   | 'committedByteLength'
   | 'transcriptRevision'
   | 'hasActiveSidecar'
+  | 'hasOrdinaryActiveRows'
   | 'messageCount'
   | 'userMessageCount'
   | 'firstMessageAt'
@@ -255,6 +706,169 @@ const maintenanceIndexCache = new Map<
   string,
   { stamp: string; index: MaintenanceCommittedIndex }
 >();
+
+interface CommittedAnchorMetadata {
+  ordinal: number;
+  runId?: string;
+  isRunCard: boolean;
+}
+
+interface LogicalPlacementSnapshot {
+  committedStamp: string;
+  fingerprint: string;
+  placement: LogicalPlacement<{ id: string }>;
+  ranks: LogicalPlacementRanks;
+  committedById: Map<string, CommittedAnchorMetadata>;
+  estimatedBytes: number;
+}
+
+interface LogicalReadContext {
+  committedStamp: string;
+  fingerprint: string;
+  placement: LogicalPlacement<{ id: string }>;
+  ranks: LogicalPlacementRanks;
+  committedById: Map<string, CommittedAnchorMetadata>;
+  anchoredActiveIds: ReadonlySet<string>;
+  activeById: Map<string, PersistedChatMessage>;
+  activeByRank: Map<number, PersistedChatMessage>;
+  totalCount: number;
+}
+
+interface LogicalTurnSnapshot {
+  committedStamp: string;
+  fingerprint: string;
+  contentFingerprint: string;
+  turnIndex: TranscriptTurnIndex;
+  estimatedBytes: number;
+}
+
+const logicalPlacementSnapshots = new Map<string, LogicalPlacementSnapshot>();
+const logicalTurnSnapshots = new Map<string, LogicalTurnSnapshot>();
+const MAX_LOGICAL_SNAPSHOT_CHATS = 8;
+const MAX_LOGICAL_PLACEMENT_BYTES = 2 * 1024 * 1024;
+
+type TranscriptTodoState = ReturnType<typeof foldTranscriptTodoState>;
+/** The last committed row with an assistant preview, by committed identity. */
+const committedPreviewOrdinals = new Map<
+  string,
+  { stamp: string; ordinal?: number }
+>();
+interface LogicalTodoOperation {
+  ordinal: number;
+  message: PersistedChatMessage;
+}
+
+/** Committed TODO operations only, cached once for each committed identity. */
+const logicalTodoOperations = new Map<
+  string,
+  { stamp: string; operations: LogicalTodoOperation[] }
+>();
+
+function rememberLogicalSnapshot<T>(
+  cache: Map<string, T>,
+  path: string,
+  value: T,
+): void {
+  cache.delete(path);
+  cache.set(path, value);
+  while (cache.size > MAX_LOGICAL_SNAPSHOT_CHATS) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+/** Whether folding this row can change the TODO aggregates. */
+function affectsTodoState(message: PersistedChatMessage): boolean {
+  const state = foldTranscriptTodoState({}, message);
+  return state.todos !== undefined || state.taskTodos !== undefined;
+}
+
+/**
+ * A bounded cache of committed rows selected for anchored pages and affected
+ * turn rebuilds. It never retains active messages, and committed identity
+ * includes inode, size, mtime, and ctime so same-size edits invalidate it.
+ * One chat may retain at most 16 MiB and all chats together at most 32 MiB;
+ * exceptionally large affected turns above that limit are streamed again.
+ */
+class BoundedLogicalCommittedRows {
+  private readonly entries = new Map<
+    string,
+    {
+      identity: string;
+      rows: Map<number, PersistedChatMessage>;
+      bytes: number;
+    }
+  >();
+  private retainedBytes = 0;
+
+  public get(
+    path: string,
+    identity: string,
+    ordinal: number,
+  ): PersistedChatMessage | undefined {
+    const entry = this.entries.get(path);
+    if (!entry) return undefined;
+    if (entry.identity !== identity) {
+      this.delete(path);
+      return undefined;
+    }
+    const row = entry.rows.get(ordinal);
+    if (!row) return undefined;
+    this.entries.delete(path);
+    this.entries.set(path, entry);
+    return structuredClone(row);
+  }
+
+  public set(
+    path: string,
+    identity: string,
+    ordinal: number,
+    row: PersistedChatMessage,
+  ): void {
+    let entry = this.entries.get(path);
+    if (entry?.identity !== identity) {
+      this.delete(path);
+      entry = undefined;
+    }
+    if (!entry) {
+      entry = { identity, rows: new Map(), bytes: 0 };
+      this.entries.set(path, entry);
+    }
+    const previous = entry.rows.get(ordinal);
+    const serializedBytes = Buffer.byteLength(JSON.stringify(row), 'utf8');
+    const previousBytes = previous
+      ? Buffer.byteLength(JSON.stringify(previous), 'utf8')
+      : 0;
+    if (
+      serializedBytes > 16 * 1024 * 1024 ||
+      entry.bytes - previousBytes + serializedBytes > 16 * 1024 * 1024
+    )
+      return;
+    entry.rows.set(ordinal, structuredClone(row));
+    entry.bytes += serializedBytes - previousBytes;
+    this.retainedBytes += serializedBytes - previousBytes;
+    this.entries.delete(path);
+    this.entries.set(path, entry);
+    while (
+      this.entries.size > MAX_LOGICAL_SNAPSHOT_CHATS ||
+      this.retainedBytes > 32 * 1024 * 1024
+    ) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.delete(oldest);
+    }
+  }
+
+  public delete(path: string): void {
+    const entry = this.entries.get(path);
+    if (!entry) return;
+    this.entries.delete(path);
+    this.retainedBytes -= entry.bytes;
+  }
+}
+
+const logicalCommittedRows = new BoundedLogicalCommittedRows();
 
 function fileStatStamp(info: {
   dev: bigint;
@@ -289,7 +903,14 @@ function isActiveSidecar(value: unknown): value is ActiveSidecar {
         typeof value.finalizing.stagedId === 'string' &&
         Number.isSafeInteger(value.finalizing.byteOffset) &&
         Array.isArray(value.finalizing.messageIds) &&
-        value.finalizing.messageIds.every((id) => typeof id === 'string')))
+        value.finalizing.messageIds.every((id) => typeof id === 'string') &&
+        (value.finalizing.child === undefined ||
+          value.finalizing.child === true) &&
+        (value.finalizing.stagedByteLength === undefined ||
+          Number.isSafeInteger(value.finalizing.stagedByteLength)) &&
+        (value.finalizing.stagedSha256 === undefined ||
+          (typeof value.finalizing.stagedSha256 === 'string' &&
+            /^[a-f0-9]{64}$/.test(value.finalizing.stagedSha256)))))
   );
 }
 
@@ -304,7 +925,14 @@ function isActiveSidecarHeaderV2(
     (value.finalizing === undefined ||
       (isRecord(value.finalizing) &&
         typeof value.finalizing.stagedId === 'string' &&
-        Number.isSafeInteger(value.finalizing.byteOffset)))
+        Number.isSafeInteger(value.finalizing.byteOffset) &&
+        (value.finalizing.child === undefined ||
+          (value.finalizing.child === true &&
+            Array.isArray(value.finalizing.messageIds) &&
+            value.finalizing.messageIds.every((id) => typeof id === 'string') &&
+            Number.isSafeInteger(value.finalizing.stagedByteLength) &&
+            typeof value.finalizing.stagedSha256 === 'string' &&
+            /^[a-f0-9]{64}$/.test(value.finalizing.stagedSha256)))))
   );
 }
 
@@ -320,9 +948,117 @@ function isActiveSidecarMessageV2(
   );
 }
 
+/** A present invalid anchor makes the v2 sidecar malformed, never absent. */
+function parseSidecarRowAnchor(value: unknown): ActiveRowAnchor | undefined {
+  const parsed = parseActiveRowAnchor(value);
+  if (parsed.status === 'invalid')
+    throw new Error(
+      `Invalid active transcript sidecar anchor: ${parsed.reason}`,
+    );
+  return parsed.status === 'valid' ? parsed.anchor : undefined;
+}
+
+function copyActiveRowAnchors(
+  anchors: ReadonlyMap<string, ActiveRowAnchor> | undefined,
+): Map<string, ActiveRowAnchor> | undefined {
+  if (anchors === undefined) return undefined;
+  const decoded = decodeActiveRowAnchors(encodeActiveRowAnchors(anchors));
+  if (decoded.status === 'invalid')
+    throw new Error(`Invalid active row anchor map: ${decoded.reason}`);
+  return decoded.anchors;
+}
+
+function hasDelegatedAgentCall(message: PersistedChatMessage): boolean {
+  return message.blocks.some((block) => block.type === 'delegated_agent_call');
+}
+
+function runIdForActiveMessage(
+  message: PersistedChatMessage | undefined,
+): string | undefined {
+  if (!message) return undefined;
+  if (hasDelegatedAgentCall(message)) return message.id;
+  return message.parentBlockId;
+}
+
+function survivingActiveRowAnchors(
+  messages: readonly PersistedChatMessage[],
+  ...anchorMaps: Array<ReadonlyMap<string, ActiveRowAnchor> | undefined>
+): Map<string, ActiveRowAnchor> {
+  if (anchorMaps.every((anchors) => !anchors || anchors.size === 0))
+    return new Map<string, ActiveRowAnchor>();
+  const activeIds = new Set(messages.map((message) => message.id));
+  const merged = new Map<string, ActiveRowAnchor>();
+  for (const anchors of anchorMaps)
+    for (const [id, anchor] of Array.from(anchors ?? []))
+      if (activeIds.has(id)) merged.set(id, anchor);
+  return merged;
+}
+
+function sameActiveMessages(
+  left: readonly PersistedChatMessage[],
+  right: readonly PersistedChatMessage[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((message, index) => {
+      const other = right[index];
+      return other !== undefined && digest(message) === digest(other);
+    })
+  );
+}
+
+function sameActiveAnchors(
+  left: ReadonlyMap<string, ActiveRowAnchor> | undefined,
+  right: ReadonlyMap<string, ActiveRowAnchor>,
+): boolean {
+  const leftSize = left?.size ?? 0;
+  if (leftSize !== right.size) return false;
+  for (const [id, anchor] of Array.from(right)) {
+    const other = left?.get(id);
+    if (
+      !other ||
+      other.version !== anchor.version ||
+      other.runId !== anchor.runId ||
+      other.after !== anchor.after ||
+      other.tie !== anchor.tie
+    )
+      return false;
+  }
+  return true;
+}
+
+function assertActiveSidecarRecordBudgets(
+  messages: readonly PersistedChatMessage[],
+  anchors: ReadonlyMap<string, ActiveRowAnchor>,
+  finalizingIds: ReadonlySet<string> = new Set(),
+): void {
+  if (anchors.size === 0) return;
+  for (const message of messages) {
+    const rowAnchor = anchors.get(message.id);
+    if (rowAnchor === undefined) continue;
+    const record: ActiveSidecarMessageRecord = {
+      version: 2,
+      kind: 'message',
+      message,
+      ...(rowAnchor === undefined ? {} : { anchor: rowAnchor }),
+      ...(finalizingIds.has(message.id) ? { finalizing: true } : {}),
+    };
+    const budget = checkActiveSidecarMessageRecordBudget(record);
+    if (!budget.withinLimit)
+      throw new Error(
+        `Active sidecar message record exceeds maximum size (${budget.bytes} of ${budget.ceiling} bytes)`,
+      );
+  }
+}
+
+/** A persisted index whose reducer frame is not yet validated. */
+type PersistedSparseIndex = Omit<SparseIndex, 'reducerFrame'> & {
+  reducerFrame?: unknown;
+};
+
 function isSparseIndexWithChecksum(
   value: unknown,
-): value is SparseIndex & { checksum: string } {
+): value is PersistedSparseIndex & { checksum: string } {
   return (
     isRecord(value) &&
     value.version === 3 &&
@@ -330,10 +1066,14 @@ function isSparseIndexWithChecksum(
     typeof value.checksum === 'string' &&
     typeof value.committedDigest === 'string' &&
     /^[a-f0-9]{64}$/.test(value.committedDigest) &&
+    typeof value.committedMessageCount === 'number' &&
     Number.isSafeInteger(value.committedMessageCount) &&
+    typeof value.committedByteLength === 'number' &&
     Number.isSafeInteger(value.committedByteLength) &&
     Number.isSafeInteger(value.transcriptRevision) &&
     typeof value.hasActiveSidecar === 'boolean' &&
+    (value.hasOrdinaryActiveRows === undefined ||
+      typeof value.hasOrdinaryActiveRows === 'boolean') &&
     (value.lastMessageRole === undefined ||
       value.lastMessageRole === 'user' ||
       value.lastMessageRole === 'assistant') &&
@@ -351,6 +1091,174 @@ function isSparseIndexWithChecksum(
   );
 }
 
+/** Reference identity is its wire fields, not its in-memory object prototype. */
+export function sameToolOutputReference(
+  left: PersistedToolOutputReference,
+  right: PersistedToolOutputReference,
+): boolean {
+  return (
+    left.version === right.version &&
+    left.artifactId === right.artifactId &&
+    left.byteLength === right.byteLength &&
+    left.sha256 === right.sha256 &&
+    left.encoding === right.encoding &&
+    left.mediaType === right.mediaType
+  );
+}
+
+function isSparseReducerFrameReference(
+  value: unknown,
+  messageCount: number,
+  byteLength: number,
+): value is SparseReducerFrameReference {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    value.id.length <= 512 &&
+    typeof value.ordinal === 'number' &&
+    Number.isSafeInteger(value.ordinal) &&
+    value.ordinal >= 0 &&
+    value.ordinal < messageCount &&
+    typeof value.offset === 'number' &&
+    Number.isSafeInteger(value.offset) &&
+    value.offset >= 0 &&
+    value.offset < byteLength
+  );
+}
+
+function isSortedReducerFrameReferences(
+  references: readonly SparseReducerFrameReference[],
+): boolean {
+  for (let index = 1; index < references.length; index += 1) {
+    const previous = references[index - 1];
+    const current = references[index];
+    if (
+      previous === undefined ||
+      current === undefined ||
+      previous.ordinal > current.ordinal ||
+      previous.offset > current.offset
+    )
+      return false;
+  }
+  return true;
+}
+
+function isSparseReducerFrame(
+  value: unknown,
+  messageCount: number,
+  byteLength: number,
+): value is SparseReducerFrame {
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    value.messageCount !== messageCount ||
+    !Array.isArray(value.timers) ||
+    value.timers.length > MAX_REDUCER_FRAME_TIMER_ROWS ||
+    !Array.isArray(value.cards) ||
+    value.cards.length > MAX_REDUCER_FRAME_CARD_ROWS ||
+    !Array.isArray(value.toolUses) ||
+    value.toolUses.length > MAX_REDUCER_FRAME_TOOL_ROWS ||
+    !Array.isArray(value.pendingResults) ||
+    value.pendingResults.length > MAX_REDUCER_FRAME_PENDING_RESULTS ||
+    (value.boundary !== undefined &&
+      !isSparseReducerFrameReference(value.boundary, messageCount, byteLength))
+  )
+    return false;
+
+  const boundaryOrdinal = isSparseReducerFrameReference(
+    value.boundary,
+    messageCount,
+    byteLength,
+  )
+    ? value.boundary.ordinal
+    : 0;
+  const isReference = (
+    reference: unknown,
+  ): reference is SparseReducerFrameReference =>
+    isSparseReducerFrameReference(reference, messageCount, byteLength) &&
+    reference.ordinal >= boundaryOrdinal;
+  const timers = value.timers;
+  // The first timer may be the one foldReducerFrame carries across the boundary.
+  if (
+    !timers.every((timer: unknown, index: number) =>
+      index === 0
+        ? isSparseReducerFrameReference(timer, messageCount, byteLength)
+        : isReference(timer),
+    ) ||
+    !isSortedReducerFrameReferences(timers)
+  )
+    return false;
+
+  const cardRows: SparseReducerFrameReference[] = [];
+  for (const entry of value.cards) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.carriesToolUses !== 'boolean' ||
+      !isReference(entry.row)
+    )
+      return false;
+    cardRows.push(entry.row);
+  }
+  if (!isSortedReducerFrameReferences(cardRows)) return false;
+
+  const toolRows: SparseReducerFrameReference[] = [];
+  let toolIdCount = 0;
+  for (const entry of value.toolUses) {
+    if (
+      !isRecord(entry) ||
+      !isReference(entry.row) ||
+      !Array.isArray(entry.toolUseIds) ||
+      entry.toolUseIds.length === 0 ||
+      entry.toolUseIds.length > MAX_REDUCER_FRAME_TOOL_IDS_PER_ROW ||
+      !entry.toolUseIds.every(
+        (id: unknown) =>
+          typeof id === 'string' && id.length > 0 && id.length <= 512,
+      ) ||
+      new Set(entry.toolUseIds).size !== entry.toolUseIds.length ||
+      !Array.isArray(entry.resultWitnesses) ||
+      entry.resultWitnesses.length > entry.toolUseIds.length
+    )
+      return false;
+    toolIdCount += entry.toolUseIds.length;
+    const witnessedIds = new Set<string>();
+    for (const witness of entry.resultWitnesses) {
+      if (
+        !isRecord(witness) ||
+        typeof witness.toolUseId !== 'string' ||
+        !entry.toolUseIds.includes(witness.toolUseId) ||
+        witnessedIds.has(witness.toolUseId) ||
+        !isReference(witness.row)
+      )
+        return false;
+      witnessedIds.add(witness.toolUseId);
+    }
+    toolRows.push(entry.row);
+  }
+  if (
+    toolIdCount > MAX_REDUCER_FRAME_TOOL_IDS ||
+    !isSortedReducerFrameReferences(toolRows)
+  )
+    return false;
+
+  const pendingRows: SparseReducerFrameReference[] = [];
+  const pendingIds = new Set<string>();
+  for (const witness of value.pendingResults) {
+    if (
+      !isRecord(witness) ||
+      typeof witness.toolUseId !== 'string' ||
+      witness.toolUseId.length === 0 ||
+      witness.toolUseId.length > 512 ||
+      pendingIds.has(witness.toolUseId) ||
+      !isReference(witness.row)
+    )
+      return false;
+    pendingIds.add(witness.toolUseId);
+    pendingRows.push(witness.row);
+  }
+  return isSortedReducerFrameReferences(pendingRows);
+}
+
 function messageOwnsToolOutput(
   message: PersistedChatMessage,
   messageId: string,
@@ -363,14 +1271,153 @@ function messageOwnsToolOutput(
       (block) =>
         block.type === 'tool_result' &&
         block.toolUseId === toolUseId &&
-        block.fullOutputRef?.artifactId === reference.artifactId &&
-        block.fullOutputRef.sha256 === reference.sha256 &&
-        block.fullOutputRef.byteLength === reference.byteLength &&
-        block.fullOutputRef.encoding === reference.encoding &&
-        block.fullOutputRef.mediaType === reference.mediaType &&
-        block.fullOutputRef.version === reference.version,
+        block.fullOutputRef !== undefined &&
+        sameToolOutputReference(block.fullOutputRef, reference),
     )
   );
+}
+
+function blockOwnsToolOutput(
+  block: PersistedChatBlock,
+  toolUseId: string,
+  reference: PersistedToolOutputReference,
+): boolean {
+  return (
+    block.type === 'tool_result' &&
+    block.toolUseId === toolUseId &&
+    block.fullOutputRef !== undefined &&
+    sameToolOutputReference(block.fullOutputRef, reference)
+  );
+}
+
+async function pagedMessageOwnsToolOutput(
+  artifacts: ChatTranscriptArtifacts,
+  chatId: string,
+  message: PersistedChatMessage,
+  messageId: string,
+  toolUseId: string,
+  reference: PersistedToolOutputReference,
+): Promise<boolean> {
+  if (message.id !== messageId) return false;
+  for await (const block of artifacts.iterateBlocks(chatId, message)) {
+    if (blockOwnsToolOutput(block, toolUseId, reference)) return true;
+  }
+  return false;
+}
+
+function inlineBodyEncoding(text: string): 'utf8' | 'utf16le' {
+  return /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(
+    text,
+  )
+    ? 'utf16le'
+    : 'utf8';
+}
+
+function isUtf8ContinuationByte(value: number | undefined): boolean {
+  return value !== undefined && (value & 0xc0) === 0x80;
+}
+
+export function readInlineBodyRange(
+  text: string,
+  offset: number,
+  limit: number,
+): {
+  text: string;
+  nextOffset?: number;
+  byteLength: number;
+  encoding: 'utf8' | 'utf16le';
+} {
+  if (
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 4 ||
+    limit > 65_536
+  )
+    throw new Error('Invalid transcript content range');
+  const encoding = inlineBodyEncoding(text);
+  const bytes = Buffer.from(text, encoding === 'utf8' ? 'utf8' : 'utf16le');
+  if (offset > bytes.length)
+    throw new Error('Invalid transcript content range');
+  if (encoding === 'utf8') {
+    if (isUtf8ContinuationByte(bytes[offset]))
+      throw new Error('Transcript content offset splits a UTF-8 character');
+  } else {
+    if (offset % 2 !== 0)
+      throw new Error('Transcript content offset splits a UTF-16 code unit');
+    if (
+      offset >= 2 &&
+      offset < bytes.length &&
+      bytes.readUInt16LE(offset - 2) >= 0xd800 &&
+      bytes.readUInt16LE(offset - 2) <= 0xdbff &&
+      bytes.readUInt16LE(offset) >= 0xdc00 &&
+      bytes.readUInt16LE(offset) <= 0xdfff
+    )
+      throw new Error('Transcript content offset splits a UTF-16 code unit');
+  }
+
+  let end = Math.min(offset + limit, bytes.length);
+  if (encoding === 'utf8') {
+    while (
+      end > offset &&
+      end < bytes.length &&
+      isUtf8ContinuationByte(bytes[end])
+    )
+      end -= 1;
+  } else {
+    end -= (end - offset) % 2;
+    if (
+      end - offset >= 2 &&
+      end < bytes.length &&
+      bytes.readUInt16LE(end - 2) >= 0xd800 &&
+      bytes.readUInt16LE(end - 2) <= 0xdbff &&
+      bytes.readUInt16LE(end) >= 0xdc00 &&
+      bytes.readUInt16LE(end) <= 0xdfff
+    )
+      end -= 2;
+  }
+  const slice = bytes.subarray(offset, end);
+  return {
+    text: slice.toString(encoding === 'utf8' ? 'utf8' : 'utf16le'),
+    byteLength: bytes.length,
+    encoding,
+    ...(end < bytes.length ? { nextOffset: end } : {}),
+  };
+}
+
+export function inlineBodyField(
+  block: PersistedChatBlock,
+  field: TranscriptBodyField,
+): string | undefined {
+  if (field === 'output' && block.type === 'tool_result') return block.output;
+  if (field === 'input' && block.type === 'tool_use') return block.input;
+  if (field === 'text' && (block.type === 'text' || block.type === 'thinking'))
+    return block.text;
+  if (field === 'partialText' && block.type === 'delegated_agent_call')
+    return block.partialText;
+  if (field === 'finalText' && block.type === 'delegated_agent_call')
+    return block.finalText;
+  return undefined;
+}
+
+/** Resolve the selected canonical block, never a caller-supplied reference. */
+async function ownedBodyBlock(
+  artifacts: ChatTranscriptArtifacts,
+  chatId: string,
+  message: PersistedChatMessage,
+  selector: { blockOrdinal: number; field: TranscriptBodyField },
+  signal?: AbortSignal,
+): Promise<PersistedChatBlock | undefined> {
+  if (message.blocksRef === undefined)
+    return message.blocks[selector.blockOrdinal];
+  const [block] = await artifacts.readBlocks(
+    chatId,
+    message,
+    selector.blockOrdinal,
+    1,
+    signal,
+  );
+  return block;
 }
 
 function messageOwnsVisual(
@@ -412,6 +1459,9 @@ interface LoadedLog {
   index: SparseIndex;
   locatorStamp: string;
   locatorsComplete: boolean;
+  committedLocatorKeys?: Set<string>;
+  committedLocatorInventoryUnavailable?: boolean;
+  committedLocatorInventoryBuild?: Promise<Set<string> | undefined>;
   /**
    * Active row ids a read found absent from the committed history whose
    * digest is `committedDigest`, with locators as of `locatorStamp`, so
@@ -422,6 +1472,13 @@ interface LoadedLog {
     locatorStamp: string;
     ids: Set<string>;
   };
+}
+
+interface CommittedMessageStateReader {
+  committedMessageState(
+    message: PersistedChatMessage,
+  ): Promise<'absent' | 'identical' | 'different'>;
+  hasCommittedMessage(messageId: string): Promise<boolean>;
 }
 
 /**
@@ -499,6 +1556,16 @@ function digest(message: PersistedChatMessage): string {
   return createHash('sha256').update(JSON.stringify(message)).digest('hex');
 }
 
+async function fileDigest(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) {
+    if (!Buffer.isBuffer(chunk))
+      throw new Error('Staged append must contain bytes');
+    hash.update(chunk);
+  }
+  return hash.digest('hex');
+}
+
 async function atomicJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
@@ -520,6 +1587,10 @@ async function writeActiveSidecar(
 ): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const finalizing = new Set(sidecar.finalizing?.messageIds ?? []);
+  const anchorTuples = encodeActiveRowAnchors(
+    sidecar.activeRowAnchors ?? new Map<string, ActiveRowAnchor>(),
+  );
+  const anchors = new Map(anchorTuples);
   const header: ActiveSidecarHeaderV2 = {
     version: 2,
     transcriptRevision: sidecar.transcriptRevision,
@@ -529,6 +1600,14 @@ async function writeActiveSidecar(
           finalizing: {
             stagedId: sidecar.finalizing.stagedId,
             byteOffset: sidecar.finalizing.byteOffset,
+            ...(sidecar.finalizing.child
+              ? {
+                  child: sidecar.finalizing.child,
+                  messageIds: sidecar.finalizing.messageIds,
+                  stagedByteLength: sidecar.finalizing.stagedByteLength,
+                  stagedSha256: sidecar.finalizing.stagedSha256,
+                }
+              : {}),
           },
         }
       : {}),
@@ -542,12 +1621,25 @@ async function writeActiveSidecar(
         yield header;
         for (const message of sidecar.messages) {
           assertTranscriptRowWithinLimit(message);
-          yield {
+          const rowAnchor = anchors.get(message.id);
+          const record: ActiveSidecarMessageRecord = {
             version: 2,
             kind: 'message',
             message,
+            ...(rowAnchor === undefined ? {} : { anchor: rowAnchor }),
             ...(finalizing.has(message.id) ? { finalizing: true } : {}),
           };
+          if (rowAnchor !== undefined) {
+            const budget = checkActiveSidecarMessageRecordBudget(record);
+            if (!budget.withinLimit)
+              throw new Error(
+                `Active sidecar message record exceeds maximum size (${budget.bytes} of ${budget.ceiling} bytes)`,
+              );
+          }
+          // An unanchored message is already bounded to MAX_TRANSCRIPT_ROW_BYTES;
+          // the fixed v2 record wrapper (including finalizing) is well within
+          // the reader's additional 1024-byte allowance.
+          yield record;
         }
       })(),
       { pretty: false, separator: '\n', trailingSeparator: true },
@@ -556,6 +1648,7 @@ async function writeActiveSidecar(
     renamed = true;
     recordChatStorageAtomicReplacement(path);
     await fsyncDirectory(dirname(path));
+    await rememberWrittenActiveAnchors(path, anchors);
   } finally {
     if (!renamed) await rm(temporary, { force: true });
   }
@@ -950,6 +2043,7 @@ async function* capturedPreviewTextChunks(
 export interface TranscriptActiveProjection {
   messages: readonly PersistedChatMessage[];
   transcriptRevision: number;
+  anchors?: ReadonlyMap<string, ActiveRowAnchor>;
 }
 
 /**
@@ -960,7 +2054,12 @@ export type TranscriptActiveProjectionSource = (
   chatId: string,
 ) => TranscriptActiveProjection | undefined;
 
-/** Immutable file handles captured under the repository scope lease. */
+/**
+ * Immutable file handles captured under the repository scope lease. Search
+ * deliberately preserves physical committed-row order and active storage
+ * order: its index consumes those as two separate bodies. Logical anchoring
+ * belongs to the explicit transcript read projection, not this search input.
+ */
 export class CapturedTranscriptPreview {
   private readonly controller = new AbortController();
   private closePromise?: Promise<void>;
@@ -1106,6 +2205,7 @@ export class CapturedTranscriptPreview {
           throw new ChatTranscriptIntegrityError(
             'Invalid captured active message',
           );
+        parseSidecarRowAnchor(row.value);
         if (row.value.finalizing) finalizingRows += 1;
         yield row.value.message;
       }
@@ -1160,22 +2260,106 @@ export async function* readCompleteTranscriptMessages(
   for await (const row of lines(path)) yield row.message;
 }
 
-/** Main-owned per-chat storage. Scope transactions serialize operations using this store. */
-export class ChatTranscriptLog {
+export interface ChatTranscriptReplaceMeasurement {
+  chatId: string;
+  /** JSONL bytes written by the cooperative writer, excluding a cloned prefix. */
+  bytesWritten: number;
+  durationMs: number;
+}
+
+const MAX_REPLACE_OBSERVERS = 256;
+
+export function isDelegationChildRow(
+  value: unknown,
+): value is DelegationChildRow {
+  return (
+    isRecord(value) &&
+    isPersistedChatMessage(value) &&
+    Object.keys(value).every((key) =>
+      [
+        'id',
+        'role',
+        'timestamp',
+        'parentBlockId',
+        'delegationSequence',
+        'blocks',
+        'blocksRef',
+        'itemRevision',
+        'final',
+        'delegationAuthor',
+        'delegationDelivery',
+        'delegationSegment',
+      ].includes(key),
+    ) &&
+    (value.delegationSegment === undefined ||
+      (typeof value.delegationSegment === 'string' &&
+        value.delegationSegment.length > 0)) &&
+    Number.isSafeInteger(value.itemRevision) &&
+    typeof value.itemRevision === 'number' &&
+    value.itemRevision >= 0 &&
+    typeof value.final === 'boolean' &&
+    typeof value.parentBlockId === 'string' &&
+    Number.isSafeInteger(value.delegationSequence)
+  );
+}
+
+/** Target-neutral transcript mechanics. Scope transactions serialize operations using this store. */
+export class TranscriptStreamStore {
   public readonly artifacts: ChatTranscriptArtifacts;
-  public readonly delegations: ChatDelegationLogs;
   private readonly loaded = new Map<string, LoadedLog>();
   private readonly tails = new Map<string, Promise<unknown>>();
 
   public constructor(
-    private readonly root: string,
-    private readonly onAppendBoundary: (
-      boundary: 'prepared' | 'appended',
-    ) => Promise<void> = () => Promise.resolve(),
-    private readonly options: { readOnly?: boolean } = {},
+    private readonly paths: TranscriptStreamPaths,
+    artifacts: ChatTranscriptArtifacts,
+    private readonly onAppendBoundary?: (
+      boundary: AppendBoundary,
+    ) => Promise<void>,
+    private readonly options: {
+      readOnly?: boolean;
+      childMode?: boolean;
+      onChildStaged?: () => Promise<void>;
+      /** Monotonic clock; injectable for deterministic measurement tests. */
+      now?: () => number;
+      /** Test-only fault injection; production callers leave this unset. */
+      testHooks?: ChatTranscriptLogTestHooks;
+    } = {},
   ) {
-    this.artifacts = new ChatTranscriptArtifacts(root, options.readOnly);
-    this.delegations = new ChatDelegationLogs(root, options.readOnly);
+    this.artifacts = artifacts;
+  }
+
+  private readonly replaceObservers = new Set<
+    (measurement: ChatTranscriptReplaceMeasurement) => void
+  >();
+
+  /** Transaction-scoped observation; bounded and never allowed to reject storage work. */
+  public observeReplacements(
+    observer: (measurement: ChatTranscriptReplaceMeasurement) => void,
+  ): () => void {
+    if (this.replaceObservers.size >= MAX_REPLACE_OBSERVERS)
+      return (): void => undefined;
+    this.replaceObservers.add(observer);
+    return (): void => {
+      this.replaceObservers.delete(observer);
+    };
+  }
+
+  private reportReplacement(
+    chatId: string,
+    bytesWritten: number,
+    startedAt: number,
+  ): void {
+    const durationMs = Math.max(
+      0,
+      (this.options.now ?? ((): number => performance.now()))() - startedAt,
+    );
+    for (const observer of Array.from(this.replaceObservers)) {
+      try {
+        observer({ chatId, bytesWritten, durationMs });
+      } catch {
+        // Diagnostics cannot affect publication or derived indexes.
+      }
+    }
   }
 
   private activeProjection?: TranscriptActiveProjectionSource;
@@ -1199,24 +2383,127 @@ export class ChatTranscriptLog {
     return this.activeProjection?.(chatId);
   }
 
+  private async hasOrdinaryActiveRows(
+    chatId: string,
+    messages: readonly PersistedChatMessage[],
+    anchors: ReadonlyMap<string, ActiveRowAnchor> | undefined,
+  ): Promise<boolean> {
+    for (const message of messages) {
+      if (anchors?.has(message.id)) continue;
+      if ((await this.readCommittedMessage(chatId, message.id)) === undefined)
+        return true;
+    }
+    return false;
+  }
+
+  private async persistOrdinaryActiveMetadata(
+    chatId: string,
+    index: SparseIndex,
+    hasAnchors: boolean,
+    hasOrdinaryActiveRows: boolean,
+  ): Promise<void> {
+    let changed = false;
+    if (hasAnchors) {
+      if (index.hasOrdinaryActiveRows !== hasOrdinaryActiveRows) {
+        index.hasOrdinaryActiveRows = hasOrdinaryActiveRows;
+        changed = true;
+      }
+    } else if (index.hasOrdinaryActiveRows !== undefined) {
+      delete index.hasOrdinaryActiveRows;
+      changed = true;
+    }
+    if (changed) await this.writeIndex(chatId, index);
+  }
+
   private path(chatId: string, extension: string): string {
-    assertTranscriptIdentity(chatId);
-    return join(this.root, `${chatId}.${extension}`);
+    return this.paths.file(chatId, extension);
+  }
+
+  /**
+   * Whether an open row is the committed row with its id: the same stored
+   * row, or its format 4 final form, whose finalization offloaded fields the
+   * open form keeps inline. Replaying a turn's active write after the row
+   * was finalized therefore converges, as it does in formats 2 and 3.
+   */
+  private async matchesCommitted(
+    chatId: string,
+    open: PersistedChatMessage,
+    existing: PersistedChatMessage,
+  ): Promise<boolean> {
+    return (
+      digest(existing) === digest(open) ||
+      this.artifacts.isFinalFormOf(this.paths.owner(chatId), open, existing)
+    );
+  }
+
+  /**
+   * Verify rows a format 4 writer prepared, as a `format4-verify` write of
+   * them would, without writing anything.
+   */
+  public async verifyPrepared(
+    chatId: string,
+    rows: readonly PersistedChatMessage[],
+    final: boolean,
+  ): Promise<void> {
+    for (const row of rows)
+      await this.prepareRow(chatId, row, final, 'format4-verify');
+  }
+
+  /**
+   * Store form of one row under the caller's selected field mode. A child
+   * row's finality is its own; a primary row's is where the write puts it.
+   */
+  private prepareRow(
+    chatId: string,
+    message: PersistedChatMessage,
+    final: boolean,
+    fields: TranscriptFieldMode,
+  ): Promise<PersistedChatMessage> {
+    return this.artifacts.externalize(
+      this.paths.owner(chatId),
+      message,
+      undefined,
+      transcriptFieldPolicy(
+        fields,
+        this.options.childMode && isDelegationChildRow(message)
+          ? message.final
+          : final,
+      ),
+    );
   }
 
   private locatorDirectory(chatId: string): string {
-    assertTranscriptIdentity(chatId);
-    return join(this.root, 'message-index', chatId);
+    return this.paths.locatorDirectory(chatId);
+  }
+
+  private expandBlocks(
+    chatId: string,
+    message: PersistedChatMessage,
+    signal?: AbortSignal,
+  ): Promise<PersistedChatMessage> {
+    return this.artifacts.expandBlocks(
+      this.paths.owner(chatId),
+      message,
+      signal,
+    );
   }
 
   private locatorPath(chatId: string, messageId: string): string {
-    const key = createHash('sha256').update(messageId).digest('hex');
-    return join(this.locatorDirectory(chatId), `${key}.json`);
+    return this.paths.locatorFile(chatId, messageId);
+  }
+
+  private locatorKey(messageId: string): string {
+    return createHash('sha256').update(messageId).digest('hex');
   }
 
   private async locatorStamp(chatId: string): Promise<string> {
     try {
-      const info = await stat(this.locatorDirectory(chatId), { bigint: true });
+      const info = await stat(
+        this.options.childMode
+          ? this.path(chatId, 'jsonl')
+          : this.locatorDirectory(chatId),
+        { bigint: true },
+      );
       return `${info.dev}:${info.ino}:${info.mtimeNs}:${info.ctimeNs}`;
     } catch (error) {
       if (isErrnoException(error) && error.code === 'ENOENT') return 'missing';
@@ -1252,6 +2539,10 @@ export class ChatTranscriptLog {
       end: number;
     }>,
   ): Promise<void> {
+    if (this.options.childMode) {
+      await this.extendChildSequenceIndex(chatId, rows);
+      return;
+    }
     if (rows.length === 0) return;
     const directory = this.locatorDirectory(chatId);
     await mkdir(directory, { recursive: true });
@@ -1274,6 +2565,103 @@ export class ChatTranscriptLog {
     }
     await fsyncDirectory(directory);
     await fsyncDirectory(dirname(directory));
+  }
+
+  private isChildSequenceEntries(
+    value: unknown,
+  ): value is ChildStreamSequenceEntry[] {
+    if (!Array.isArray(value)) return false;
+    const ids = new Set<string>();
+    let previousSequence: number | undefined;
+    for (const entry of value) {
+      if (
+        !isRecord(entry) ||
+        typeof entry.id !== 'string' ||
+        entry.id.length === 0 ||
+        typeof entry.delegationSequence !== 'number' ||
+        !Number.isSafeInteger(entry.delegationSequence) ||
+        typeof entry.offset !== 'number' ||
+        !Number.isSafeInteger(entry.offset) ||
+        entry.offset < 0 ||
+        typeof entry.end !== 'number' ||
+        !Number.isSafeInteger(entry.end) ||
+        entry.end <= entry.offset ||
+        ids.has(entry.id) ||
+        (previousSequence !== undefined &&
+          entry.delegationSequence < previousSequence)
+      )
+        return false;
+      ids.add(entry.id);
+      previousSequence = entry.delegationSequence;
+    }
+    return true;
+  }
+
+  private async extendChildSequenceIndex(
+    streamKey: string,
+    rows: ReadonlyArray<{
+      message: PersistedChatMessage;
+      offset: number;
+      end: number;
+    }>,
+  ): Promise<void> {
+    if (rows.length === 0) return;
+    const indexPath = this.path(streamKey, 'sequence-index.json');
+    let previous: ChildStreamSequenceEntry[] | undefined;
+    try {
+      const saved: unknown = JSON.parse(await readFile(indexPath, 'utf8'));
+      if (
+        isRecord(saved) &&
+        saved.version === 1 &&
+        saved.logBytes === rows[0].offset &&
+        this.isChildSequenceEntries(saved.entries)
+      )
+        previous = saved.entries;
+    } catch (error) {
+      if (
+        !(error instanceof SyntaxError) &&
+        !(isErrnoException(error) && error.code === 'ENOENT')
+      )
+        throw error;
+    }
+    if (!previous && rows[0].offset !== 0) {
+      await this.childSequenceIndex(streamKey);
+      return;
+    }
+    const appended: Array<{
+      row: DelegationChildRow;
+      offset: number;
+      end: number;
+    }> = [];
+    for (const { message, offset, end } of rows) {
+      if (!isDelegationChildRow(message))
+        throw new Error('Invalid child transcript row');
+      appended.push({ row: message, offset, end });
+    }
+    const entries = [
+      ...(previous ?? []),
+      ...buildChildStreamSequenceIndex(appended),
+    ].sort(
+      (left, right) =>
+        left.delegationSequence - right.delegationSequence ||
+        left.id.localeCompare(right.id),
+    );
+    if (new Set(entries.map((entry) => entry.id)).size !== entries.length)
+      throw new Error('Duplicate child sequence index row');
+    const temporary = `${indexPath}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(
+        temporary,
+        JSON.stringify({
+          version: 1,
+          logBytes: rows[rows.length - 1].end,
+          entries,
+        }),
+      );
+      await rename(temporary, indexPath);
+    } finally {
+      await rm(temporary, { force: true });
+    }
   }
 
   /**
@@ -1301,7 +2689,12 @@ export class ChatTranscriptLog {
       };
     const absent = loaded.uncommitted.ids;
     if (absent.has(messageId)) return undefined;
-    const existing = await this.readCommittedMessage(chatId, messageId);
+    const existing = await this.readCommittedMessageForGeneration(
+      chatId,
+      loaded,
+      messageId,
+      false,
+    );
     if (existing === undefined) absent.add(messageId);
     return existing;
   }
@@ -1310,6 +2703,8 @@ export class ChatTranscriptLog {
     chatId: string,
     messageId: string,
   ): Promise<PersistedChatMessage | undefined> {
+    if (this.options.childMode)
+      return this.childStreamRowById(chatId, messageId);
     let parsed: unknown;
     try {
       parsed = JSON.parse(
@@ -1357,6 +2752,12 @@ export class ChatTranscriptLog {
       }
       if (bytes[length - 1] !== 10)
         throw new Error('Committed message locator is not row-aligned');
+      if (parsed.offset > 0) {
+        const boundary = Buffer.alloc(1);
+        await handle.read(boundary, 0, 1, parsed.offset - 1);
+        if (boundary[0] !== 10)
+          throw new Error('Committed message locator is not row-aligned');
+      }
       const value: unknown = JSON.parse(
         new TextDecoder('utf-8', { fatal: true }).decode(
           bytes.subarray(0, length - 1),
@@ -1374,6 +2775,1247 @@ export class ChatTranscriptLog {
     }
   }
 
+  private async buildCommittedLocatorKeys(
+    chatId: string,
+    loaded: LoadedLog,
+  ): Promise<Set<string> | undefined> {
+    if (
+      !loaded.locatorsComplete ||
+      loaded.committedLocatorInventoryUnavailable ||
+      this.loaded.get(chatId) !== loaded
+    )
+      return undefined;
+    if (loaded.committedLocatorKeys) return loaded.committedLocatorKeys;
+    if (
+      loaded.index.committedMessageCount > MAX_COMMITTED_LOCATOR_IDENTITY_KEYS
+    ) {
+      loaded.committedLocatorInventoryUnavailable = true;
+      return undefined;
+    }
+
+    const keys = new Set<string>();
+    let complete = true;
+    try {
+      for await (const entry of await opendir(this.locatorDirectory(chatId))) {
+        if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) {
+          complete = false;
+          break;
+        }
+        if (keys.size >= MAX_COMMITTED_LOCATOR_IDENTITY_KEYS) {
+          complete = false;
+          break;
+        }
+        keys.add(entry.name.slice(0, -5));
+        if (keys.size > loaded.index.committedMessageCount) {
+          complete = false;
+          break;
+        }
+      }
+    } catch (error) {
+      if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      complete = loaded.index.committedMessageCount === 0;
+    }
+    if (keys.size !== loaded.index.committedMessageCount) complete = false;
+
+    // The set is useful only for the exact directory generation validated by
+    // load(). The second stamp closes the race with external locator writers.
+    if (
+      !complete ||
+      (await this.locatorStamp(chatId)) !== loaded.locatorStamp ||
+      this.loaded.get(chatId) !== loaded
+    ) {
+      loaded.committedLocatorInventoryUnavailable = true;
+      return undefined;
+    }
+    loaded.committedLocatorKeys = keys;
+    return keys;
+  }
+
+  private async committedLocatorKeysForProbe(
+    chatId: string,
+    loaded: LoadedLog,
+  ): Promise<Set<string> | undefined> {
+    if (loaded.committedLocatorKeys) return loaded.committedLocatorKeys;
+    if (loaded.committedLocatorInventoryBuild)
+      return loaded.committedLocatorInventoryBuild;
+    const build = this.buildCommittedLocatorKeys(chatId, loaded);
+    loaded.committedLocatorInventoryBuild = build;
+    try {
+      return await build;
+    } finally {
+      delete loaded.committedLocatorInventoryBuild;
+    }
+  }
+
+  private async readCommittedMessageForGeneration(
+    chatId: string,
+    loaded: LoadedLog,
+    messageId: string,
+    buildIdentitySet: boolean,
+  ): Promise<PersistedChatMessage | undefined> {
+    let keys = loaded.committedLocatorKeys;
+    if (buildIdentitySet && !keys)
+      keys = await this.committedLocatorKeysForProbe(chatId, loaded);
+    if (keys && !keys.has(this.locatorKey(messageId))) return undefined;
+    return this.readCommittedMessage(chatId, messageId);
+  }
+
+  /** Read a locator without load(), repair, or transcript-wide fallback. */
+  private async readCommittedMessageAtLocator(
+    chatId: string,
+    messageId: string,
+  ): Promise<
+    { valid: true; message: PersistedChatMessage } | { valid: false }
+  > {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(this.locatorPath(chatId, messageId), 'utf8'),
+      );
+    } catch (error) {
+      if (
+        (isErrnoException(error) && error.code === 'ENOENT') ||
+        error instanceof SyntaxError
+      )
+        return { valid: false };
+      throw error;
+    }
+    if (!isMessageLocator(parsed) || parsed.messageId !== messageId)
+      return { valid: false };
+    const length = parsed.end - parsed.offset;
+    if (length < 2 || length > MAX_TRANSCRIPT_ROW_BYTES + 1)
+      return { valid: false };
+    let handle: FileHandle;
+    try {
+      handle = await open(this.path(chatId, 'jsonl'), 'r');
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT')
+        return { valid: false };
+      throw error;
+    }
+    try {
+      if (parsed.offset > 0) {
+        const previous = Buffer.alloc(1);
+        const result = await handle.read(previous, 0, 1, parsed.offset - 1);
+        if (result.bytesRead !== 1 || previous[0] !== 10)
+          return { valid: false };
+      }
+      const bytes = Buffer.alloc(length);
+      let read = 0;
+      while (read < length) {
+        const result = await handle.read(
+          bytes,
+          read,
+          length - read,
+          parsed.offset + read,
+        );
+        if (result.bytesRead === 0) return { valid: false };
+        read += result.bytesRead;
+      }
+      if (bytes[length - 1] !== 10) return { valid: false };
+      let value: unknown;
+      try {
+        value = JSON.parse(
+          new TextDecoder('utf-8', { fatal: true }).decode(
+            bytes.subarray(0, length - 1),
+          ),
+        );
+      } catch {
+        return { valid: false };
+      }
+      if (
+        !isPersistedChatMessage(value) ||
+        value.id !== messageId ||
+        digest(value) !== parsed.digest
+      )
+        return { valid: false };
+      return { valid: true, message: value };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /** Resolve an indexed committed row's zero-based ordinal from its locator. */
+  private async committedOrdinal(
+    chatId: string,
+    index: SparseIndex,
+    messageId: string,
+  ): Promise<number | undefined> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(this.locatorPath(chatId, messageId), 'utf8'),
+      );
+    } catch (error) {
+      if (
+        !(isErrnoException(error) && error.code === 'ENOENT') &&
+        !(error instanceof SyntaxError)
+      )
+        throw error;
+    }
+    if (isMessageLocator(parsed) && parsed.messageId === messageId) {
+      const checkpoint = [...index.offsets]
+        .reverse()
+        .find((entry) => entry.offset <= parsed.offset);
+      if (!checkpoint)
+        throw new Error('Committed locator has no sparse checkpoint');
+      let ordinal = checkpoint.ordinal;
+      for await (const row of lines(
+        this.path(chatId, 'jsonl'),
+        checkpoint.offset,
+      )) {
+        if (row.offset === parsed.offset) return ordinal;
+        if (row.offset > parsed.offset) break;
+        ordinal += 1;
+        if (ordinal - checkpoint.ordinal > SPARSE_STRIDE)
+          throw new Error('Committed locator exceeded its sparse checkpoint');
+      }
+      throw new Error('Committed locator offset is not indexed');
+    }
+
+    // Read-only archives may legitimately lack a complete locator inventory.
+    // This is the slow recovery fallback; normal indexed reads scan at most one
+    // sparse stride above.
+    let ordinal = 0;
+    for await (const row of lines(this.path(chatId, 'jsonl'))) {
+      if (row.message.id === messageId) return ordinal;
+      ordinal += 1;
+    }
+    return undefined;
+  }
+
+  /** Read a small set of physical ordinals, grouping seeks by sparse stride. */
+  private async committedRowsAt(
+    chatId: string,
+    index: SparseIndex,
+    identity: string,
+    ordinals: readonly number[],
+  ): Promise<Map<number, PersistedChatMessage>> {
+    const path = this.path(chatId, 'jsonl');
+    const unique = Array.from(new Set(ordinals)).sort(
+      (left, right) => left - right,
+    );
+    const result = new Map<number, PersistedChatMessage>();
+    const missingByStride = new Map<number, number[]>();
+    for (const ordinal of unique) {
+      const cached = logicalCommittedRows.get(path, identity, ordinal);
+      if (cached) {
+        result.set(ordinal, cached);
+        continue;
+      }
+      const stride = Math.floor(ordinal / SPARSE_STRIDE);
+      const missing = missingByStride.get(stride) ?? [];
+      missing.push(ordinal);
+      missingByStride.set(stride, missing);
+    }
+    const strideGroups: number[][] = [];
+    missingByStride.forEach((missing: number[]): void => {
+      strideGroups.push(missing);
+    });
+    for (const missing of strideGroups) {
+      const start = missing[0];
+      const last = missing[missing.length - 1];
+      if (start === undefined || last === undefined) continue;
+      let ordinal = start;
+      for await (const message of this.range(chatId, index, start, last + 1)) {
+        logicalCommittedRows.set(path, identity, ordinal, message);
+        result.set(ordinal, message);
+        ordinal += 1;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Full committed turn rows are retained only for turn ranges that anchors
+   * actually affect. This lets turn paging reuse a large affected turn without
+   * hydrating unrelated history; the bounded row cache documents the oversized
+   * range exception above.
+   */
+  private async committedRangeCached(
+    chatId: string,
+    index: SparseIndex,
+    identity: string,
+    start: number,
+    end: number,
+  ): Promise<PersistedChatMessage[]> {
+    if (start >= end) return [];
+    const path = this.path(chatId, 'jsonl');
+    const cached: PersistedChatMessage[] = [];
+    let complete = true;
+    for (let ordinal = start; ordinal < end; ordinal += 1) {
+      const message = logicalCommittedRows.get(path, identity, ordinal);
+      if (!message) {
+        complete = false;
+        break;
+      }
+      cached.push(message);
+    }
+    if (complete) return cached;
+
+    const rows: PersistedChatMessage[] = [];
+    let ordinal = start;
+    for await (const message of this.range(chatId, index, start, end)) {
+      rows.push(message);
+      logicalCommittedRows.set(path, identity, ordinal, message);
+      ordinal += 1;
+    }
+    if (rows.length !== end - start)
+      throw new Error('Committed transcript turn range is incomplete');
+    return rows;
+  }
+
+  /** Build or reuse a validated sparse placement for an anchored sidecar. */
+  private async logicalReadContext(
+    chatId: string,
+    index: SparseIndex,
+    activeRows: readonly PersistedChatMessage[],
+    anchors: ReadonlyMap<string, ActiveRowAnchor>,
+  ): Promise<LogicalReadContext> {
+    const committedPath = this.path(chatId, 'jsonl');
+    const committedIdentity = await fileIdentity(committedPath);
+    const activeById = new Map<string, PersistedChatMessage>();
+    const rowShape = activeRows.map((message) => {
+      if (activeById.has(message.id))
+        throw new Error(
+          `Invalid active row anchor: duplicate active row ${message.id}`,
+        );
+      activeById.set(message.id, message);
+      return [
+        message.id,
+        runIdForActiveMessage(message) ?? null,
+        hasDelegatedAgentCall(message),
+      ];
+    });
+    const anchorShape = Array.from(anchors.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, anchor]) => [id, anchor.runId, anchor.after, anchor.tie]);
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ rowShape, anchorShape }))
+      .digest('hex');
+    const cached = logicalPlacementSnapshots.get(committedPath);
+    if (
+      cached?.committedStamp === committedIdentity.stamp &&
+      cached.fingerprint === fingerprint
+    ) {
+      logicalPlacementSnapshots.delete(committedPath);
+      logicalPlacementSnapshots.set(committedPath, cached);
+      for (const message of activeRows) {
+        const committed = cached.committedById.get(message.id);
+        if (!committed) continue;
+        let persisted = logicalCommittedRows.get(
+          committedPath,
+          committedIdentity.stamp,
+          committed.ordinal,
+        );
+        if (!persisted) {
+          persisted = await this.readCommittedMessage(chatId, message.id);
+          if (!persisted)
+            throw new Error(`Committed active echo disappeared: ${message.id}`);
+          logicalCommittedRows.set(
+            committedPath,
+            committedIdentity.stamp,
+            committed.ordinal,
+            persisted,
+          );
+        }
+        if (digest(persisted) !== digest(message))
+          throw new Error('Active message conflicts with committed history');
+      }
+      const logicalActiveById = new Map<string, PersistedChatMessage>();
+      for (const message of activeRows)
+        if (!cached.committedById.has(message.id))
+          logicalActiveById.set(message.id, message);
+      const activeByRank = new Map<number, PersistedChatMessage>();
+      cached.ranks.activeRankById.forEach((rank: number, id: string): void => {
+        const message = logicalActiveById.get(id);
+        if (message) activeByRank.set(rank, message);
+      });
+      return {
+        committedStamp: committedIdentity.stamp,
+        fingerprint,
+        placement: cached.placement,
+        ranks: cached.ranks,
+        committedById: cached.committedById,
+        anchoredActiveIds: new Set(
+          Array.from(anchors.keys()).filter(
+            (id) => !cached.committedById.has(id),
+          ),
+        ),
+        activeById: logicalActiveById,
+        activeByRank,
+        totalCount: cached.ranks.bodyCount + cached.placement.tail.length,
+      };
+    }
+
+    const committedMessages = new Map<string, PersistedChatMessage>();
+    const committedById = new Map<string, CommittedAnchorMetadata>();
+    const rememberCommitted = async (
+      id: string,
+      message: PersistedChatMessage | undefined,
+    ): Promise<void> => {
+      if (!message) return;
+      const ordinal = await this.committedOrdinal(chatId, index, id);
+      if (ordinal === undefined) return;
+      committedMessages.set(id, message);
+      committedById.set(id, {
+        ordinal,
+        ...(runIdForActiveMessage(message)
+          ? { runId: runIdForActiveMessage(message) }
+          : {}),
+        isRunCard: hasDelegatedAgentCall(message),
+      });
+      logicalCommittedRows.set(
+        committedPath,
+        committedIdentity.stamp,
+        ordinal,
+        message,
+      );
+    };
+
+    for (const message of activeRows) {
+      const committed = await this.readCommittedMessage(chatId, message.id);
+      if (committed && digest(committed) !== digest(message))
+        throw new Error('Active message conflicts with committed history');
+      await rememberCommitted(message.id, committed);
+    }
+    const candidateIds = new Set<string>();
+    anchors.forEach((anchor: ActiveRowAnchor): void => {
+      if (!activeById.has(anchor.runId)) candidateIds.add(anchor.runId);
+      if (anchor.after !== null && !activeById.has(anchor.after))
+        candidateIds.add(anchor.after);
+    });
+    const orderedCandidateIds: string[] = [];
+    candidateIds.forEach((id: string): void => {
+      orderedCandidateIds.push(id);
+    });
+    for (const id of orderedCandidateIds) {
+      if (committedById.has(id)) continue;
+      await rememberCommitted(id, await this.readCommittedMessage(chatId, id));
+    }
+
+    const knownRunCardIds = new Set<string>();
+    for (const message of activeRows)
+      if (hasDelegatedAgentCall(message)) knownRunCardIds.add(message.id);
+    committedById.forEach(
+      (metadata: CommittedAnchorMetadata, id: string): void => {
+        if (metadata.isRunCard) knownRunCardIds.add(id);
+      },
+    );
+    const ordinalById = new Map<string, number>();
+    committedById.forEach((metadata: CommittedAnchorMetadata, id: string) =>
+      ordinalById.set(id, metadata.ordinal),
+    );
+
+    let placement: LogicalPlacement<{ id: string }>;
+    try {
+      placement = resolveLogicalPlacement({
+        activeRows: activeRows.map((message) => ({ id: message.id })),
+        anchors,
+        isCommittedMessage: (id) => committedById.has(id),
+        knownRunCardIds,
+        runIdForMessage: (id) =>
+          runIdForActiveMessage(
+            activeById.get(id) ?? committedMessages.get(id),
+          ),
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid active row anchor: ${reason}`);
+    }
+    const ranks = rankLogicalPlacement(
+      placement,
+      index.committedMessageCount,
+      ordinalById,
+    );
+    const logicalActiveById = new Map<string, PersistedChatMessage>();
+    for (const message of activeRows)
+      if (!committedById.has(message.id))
+        logicalActiveById.set(message.id, message);
+    const activeByRank = new Map<number, PersistedChatMessage>();
+    ranks.activeRankById.forEach((rank: number, id: string): void => {
+      const message = logicalActiveById.get(id);
+      if (message) activeByRank.set(rank, message);
+    });
+    const estimatedBytes = Buffer.byteLength(
+      JSON.stringify({ rowShape, anchorShape }),
+      'utf8',
+    );
+    const snapshot: LogicalPlacementSnapshot = {
+      committedStamp: committedIdentity.stamp,
+      fingerprint,
+      placement,
+      ranks,
+      committedById,
+      estimatedBytes,
+    };
+    logicalPlacementSnapshots.delete(committedPath);
+    if (estimatedBytes <= MAX_LOGICAL_PLACEMENT_BYTES) {
+      logicalPlacementSnapshots.set(committedPath, snapshot);
+      while (logicalPlacementSnapshots.size > MAX_LOGICAL_SNAPSHOT_CHATS) {
+        const oldest = logicalPlacementSnapshots.keys().next().value;
+        if (oldest === undefined) break;
+        logicalPlacementSnapshots.delete(oldest);
+      }
+    }
+    return {
+      committedStamp: committedIdentity.stamp,
+      fingerprint,
+      placement,
+      ranks,
+      committedById,
+      anchoredActiveIds: new Set(
+        Array.from(anchors.keys()).filter((id) => !committedById.has(id)),
+      ),
+      activeById: logicalActiveById,
+      activeByRank,
+      totalCount: ranks.bodyCount + placement.tail.length,
+    };
+  }
+
+  private logicalActiveMessages(
+    context: LogicalReadContext,
+    rows: readonly { id: string }[],
+  ): PersistedChatMessage[] {
+    const messages: PersistedChatMessage[] = [];
+    for (const row of rows) {
+      const message = context.activeById.get(row.id);
+      if (!message) throw new Error(`Logical active row is missing: ${row.id}`);
+      messages.push(message);
+    }
+    return messages;
+  }
+
+  private async latestLogicalHuman(
+    chatId: string,
+    index: SparseIndex,
+    context: LogicalReadContext,
+  ): Promise<PersistedChatMessage | undefined> {
+    let activeLatest: PersistedChatMessage | undefined;
+    let activeRank = -1;
+    context.activeByRank.forEach(
+      (message: PersistedChatMessage, rank: number): void => {
+        if (rank > activeRank && isHumanAuthoredUserMessage(message)) {
+          activeLatest = message;
+          activeRank = rank;
+        }
+      },
+    );
+    const committedOrdinal = index.latestHuman?.ordinal;
+    if (committedOrdinal === undefined) return activeLatest;
+    const committedRank =
+      context.ranks.committedRankByOrdinal(committedOrdinal);
+    if (activeLatest && activeRank > committedRank) return activeLatest;
+    const committed = await this.committedRowsAt(
+      chatId,
+      index,
+      context.committedStamp,
+      [committedOrdinal],
+    );
+    return committed.get(committedOrdinal);
+  }
+
+  /**
+   * Metadata for an anchored chat, read off its logical sequence. Counts skip
+   * committed echoes, and the last row, preview and TODO state follow logical
+   * order rather than sidecar order. Rows after all committed history fold
+   * onto the committed aggregates; a TODO tool before later committed rows
+   * instead merges with the cached committed TODO operations by logical rank.
+   */
+  private async logicalDescriptor(
+    chatId: string,
+    index: SparseIndex,
+    descriptor: TranscriptDescriptor,
+    context: LogicalReadContext,
+  ): Promise<TranscriptDescriptor> {
+    const { placement, ranks } = context;
+    const committedCount = index.committedMessageCount;
+    let afterCommittedHistory = placement.start;
+    if (committedCount > 0)
+      afterCommittedHistory =
+        (index.lastMessageId === undefined
+          ? undefined
+          : placement.afterCommitted.get(index.lastMessageId)) ?? [];
+    const trailing = this.logicalActiveMessages(context, [
+      ...afterCommittedHistory,
+      ...placement.tail,
+    ]);
+    const trailingIds = new Set(trailing.map((message) => message.id));
+    const activeRows = Array.from(context.activeById.values());
+
+    let newestPreview: { rank: number; text: string } | undefined;
+    for (const [rank, message] of Array.from(context.activeByRank)) {
+      if (newestPreview !== undefined && rank < newestPreview.rank) continue;
+      const text = assistantPreview(message);
+      if (text !== undefined) newestPreview = { rank, text };
+    }
+    let lastAssistantPreview = descriptor.lastAssistantPreview;
+    if (newestPreview !== undefined) {
+      const lastCommittedRank =
+        committedCount > 0
+          ? ranks.committedRankByOrdinal(committedCount - 1)
+          : -1;
+      const committedOrdinal =
+        newestPreview.rank > lastCommittedRank ||
+        lastAssistantPreview === undefined
+          ? undefined
+          : await this.lastCommittedPreviewOrdinal(
+              chatId,
+              index,
+              context.committedStamp,
+            );
+      if (
+        committedOrdinal === undefined ||
+        ranks.committedRankByOrdinal(committedOrdinal) < newestPreview.rank
+      )
+        lastAssistantPreview = newestPreview.text;
+    }
+
+    const todoState = activeRows.some(
+      (message) => !trailingIds.has(message.id) && affectsTodoState(message),
+    )
+      ? await this.logicalTodoState(chatId, context)
+      : trailing.reduce(foldTranscriptTodoState, {
+          todos: index.todos,
+          taskTodos: index.taskTodos,
+        });
+    const lastRow = trailing[trailing.length - 1];
+    const firstRow =
+      placement.start.length > 0 || committedCount === 0
+        ? context.activeByRank.get(0)
+        : undefined;
+    return {
+      ...descriptor,
+      ...todoState,
+      ...(lastAssistantPreview !== undefined ? { lastAssistantPreview } : {}),
+      messageCount: context.totalCount,
+      userMessageCount:
+        (index.userMessageCount ?? 0) +
+        activeRows.filter((message) => message.role === 'user').length,
+      hasOrdinaryActiveRows: activeRows.some(
+        (message) => !context.anchoredActiveIds.has(message.id),
+      ),
+      ...(lastRow
+        ? { lastMessageAt: lastRow.timestamp, lastMessageId: lastRow.id }
+        : {}),
+      ...(firstRow ? { firstMessageAt: firstRow.timestamp } : {}),
+    };
+  }
+
+  /**
+   * The ordinal of the last committed row with an assistant preview. Scans
+   * back one sparse stride at a time from the end, and caches the answer per
+   * committed file identity.
+   */
+  private async lastCommittedPreviewOrdinal(
+    chatId: string,
+    index: SparseIndex,
+    committedStamp: string,
+  ): Promise<number | undefined> {
+    const path = this.path(chatId, 'jsonl');
+    const cached = committedPreviewOrdinals.get(path);
+    if (cached?.stamp === committedStamp) return cached.ordinal;
+    let found: number | undefined;
+    for (
+      let stride = index.offsets.length - 1;
+      stride >= 0 && found === undefined;
+      stride -= 1
+    ) {
+      const start = index.offsets[stride]?.ordinal;
+      if (start === undefined) continue;
+      const end =
+        index.offsets[stride + 1]?.ordinal ?? index.committedMessageCount;
+      let ordinal = start;
+      for await (const message of this.range(chatId, index, start, end)) {
+        if (assistantPreview(message) !== undefined) found = ordinal;
+        ordinal += 1;
+      }
+    }
+    rememberLogicalSnapshot(committedPreviewOrdinals, path, {
+      stamp: committedStamp,
+      ...(found === undefined ? {} : { ordinal: found }),
+    });
+    return found;
+  }
+
+  /**
+   * TODO state folded over logical order when an active TODO row is placed
+   * before committed history. Committed operations are cached by committed
+   * identity; each active update only rank-merges its TODO-bearing rows.
+   */
+  private async logicalTodoState(
+    chatId: string,
+    context: LogicalReadContext,
+  ): Promise<TranscriptTodoState> {
+    const path = this.path(chatId, 'jsonl');
+    let cached = logicalTodoOperations.get(path);
+    if (cached?.stamp !== context.committedStamp) {
+      const operations: LogicalTodoOperation[] = [];
+      let ordinal = 0;
+      for await (const row of lines(path)) {
+        const message = row.message;
+        if (affectsTodoState(message))
+          operations.push({
+            ordinal,
+            message: {
+              ...message,
+              blocks: message.blocks.filter(
+                (block) =>
+                  block.type === 'tool_use' &&
+                  (block.toolName === 'TodoWrite' ||
+                    block.toolName === 'TaskCreate' ||
+                    block.toolName === 'TaskUpdate'),
+              ),
+            },
+          });
+        ordinal += 1;
+      }
+      cached = { stamp: context.committedStamp, operations };
+      rememberLogicalSnapshot(logicalTodoOperations, path, cached);
+    }
+    const ranked: Array<{ rank: number; message: PersistedChatMessage }> = [];
+    for (const operation of cached.operations)
+      ranked.push({
+        rank: context.ranks.committedRankByOrdinal(operation.ordinal),
+        message: operation.message,
+      });
+    for (const [rank, message] of Array.from(context.activeByRank))
+      if (affectsTodoState(message)) ranked.push({ rank, message });
+    ranked.sort((left, right) => left.rank - right.rank);
+    let state: TranscriptTodoState = {};
+    for (const operation of ranked)
+      state = foldTranscriptTodoState(state, operation.message);
+    return state;
+  }
+
+  private async logicalRawPage(
+    chatId: string,
+    index: SparseIndex,
+    context: LogicalReadContext,
+    before: number | undefined,
+    transcriptRevision: number,
+  ): Promise<TranscriptPage> {
+    const bodyCount = context.ranks.bodyCount;
+    const end = before ?? bodyCount;
+    if (!Number.isSafeInteger(end) || end < 0 || end > bodyCount)
+      throw new Error('Invalid transcript page cursor');
+    const start = Math.max(0, end - TRANSCRIPT_PAGE_SIZE);
+    const selectedByRank = new Map<number, PersistedChatMessage>();
+    const committedOrdinals: number[] = [];
+    for (let rank = start; rank < end; rank += 1) {
+      const active = context.activeByRank.get(rank);
+      if (active) {
+        selectedByRank.set(rank, active);
+        continue;
+      }
+      const ordinal = context.ranks.committedOrdinalByBodyRank(rank);
+      if (ordinal === undefined)
+        throw new Error(`Logical body rank ${rank} has no transcript row`);
+      committedOrdinals.push(ordinal);
+    }
+    const committed = await this.committedRowsAt(
+      chatId,
+      index,
+      context.committedStamp,
+      committedOrdinals,
+    );
+    for (const ordinal of committedOrdinals) {
+      const rank = context.ranks.committedRankByOrdinal(ordinal);
+      const message = committed.get(ordinal);
+      if (!message)
+        throw new Error(`Committed transcript ordinal is missing: ${ordinal}`);
+      selectedByRank.set(rank, message);
+    }
+    const messages: PersistedChatMessage[] = [];
+    for (let rank = start; rank < end; rank += 1) {
+      const message = selectedByRank.get(rank);
+      if (!message)
+        throw new Error(`Logical transcript row is missing at ${rank}`);
+      messages.push(message);
+    }
+    if (before === undefined)
+      messages.push(
+        ...this.logicalActiveMessages(context, context.placement.tail),
+      );
+    const latestHumanMessage = await this.latestLogicalHuman(
+      chatId,
+      index,
+      context,
+    );
+    return {
+      messages,
+      totalMessages: context.totalCount,
+      transcriptRevision,
+      ...(start > 0 ? { before: start } : {}),
+      ...(latestHumanMessage &&
+      !messages.some((message) => message.id === latestHumanMessage.id)
+        ? { latestHumanMessage }
+        : {}),
+    };
+  }
+
+  private async logicalTurnIndex(
+    chatId: string,
+    index: SparseIndex,
+    context: LogicalReadContext,
+  ): Promise<TranscriptTurnIndex> {
+    const path = this.path(chatId, 'jsonl');
+    const contentHasher = createHash('sha256');
+    context.activeById.forEach((message: PersistedChatMessage): void => {
+      contentHasher.update(digest(message));
+    });
+    const contentFingerprint = contentHasher.digest('hex');
+    const cached = logicalTurnSnapshots.get(path);
+    if (
+      cached?.committedStamp === context.committedStamp &&
+      cached.fingerprint === context.fingerprint &&
+      cached.contentFingerprint === contentFingerprint
+    ) {
+      logicalTurnSnapshots.delete(path);
+      logicalTurnSnapshots.set(path, cached);
+      return cached.turnIndex;
+    }
+
+    const committedIndex = await this.turnIndex(chatId, index);
+    const baseTurns = committedIndex.turns;
+    const affected = new Set<number>();
+    const receiptTurns = baseTurns.map((turn) => ({
+      id: turn.id,
+      deniedToolUseIds: [...turn.deniedToolUseIds],
+    }));
+    context.activeById.forEach((message: PersistedChatMessage): void => {
+      for (const block of message.blocks) {
+        if (
+          block.type !== 'approval_safety_denied_info' ||
+          !block.toolUseId ||
+          block.subagentId ||
+          block.turnUserMessageId === undefined
+        )
+          continue;
+        const owner = receiptTurns.findIndex(
+          (turn) => turn.id === block.turnUserMessageId,
+        );
+        if (owner < 0) continue;
+        affected.add(owner);
+        const turn = receiptTurns[owner];
+        if (!turn.deniedToolUseIds.includes(block.toolUseId))
+          turn.deniedToolUseIds.push(block.toolUseId);
+      }
+    });
+    if (context.placement.start.length > 0 && baseTurns.length > 0)
+      affected.add(0);
+    context.placement.afterCommitted.forEach(
+      (_rows: Array<{ id: string }>, predecessorId: string): void => {
+        const metadata = context.committedById.get(predecessorId);
+        if (!metadata)
+          throw new Error(
+            `Committed anchor predecessor is missing: ${predecessorId}`,
+          );
+        const turnIndex = baseTurns.findIndex(
+          (turn) =>
+            turn.start <= metadata.ordinal && metadata.ordinal < turn.end,
+        );
+        if (turnIndex < 0)
+          throw new Error(
+            `No turn owns committed anchor predecessor ${predecessorId}`,
+          );
+        affected.add(turnIndex);
+      },
+    );
+    if (context.placement.tail.length > 0 && baseTurns.length > 0)
+      affected.add(baseTurns.length - 1);
+
+    const turns: IndexedTurn[] = [];
+    if (baseTurns.length === 0) {
+      const activeRows = [
+        ...this.logicalActiveMessages(context, context.placement.start),
+        ...this.logicalActiveMessages(context, context.placement.tail),
+      ];
+      turns.push(...(await buildTurnIndex(activeRows, 0)));
+    } else {
+      for (
+        let turnPosition = 0;
+        turnPosition < baseTurns.length;
+        turnPosition += 1
+      ) {
+        const turn = baseTurns[turnPosition];
+        if (!turn) throw new Error(`Missing committed turn at ${turnPosition}`);
+        const startRank = context.ranks.committedRankByOrdinal(turn.start);
+        const endRank =
+          turn.end === index.committedMessageCount
+            ? context.ranks.bodyCount
+            : context.ranks.committedRankByOrdinal(turn.end);
+        if (!affected.has(turnPosition)) {
+          turns.push({
+            ...turn,
+            start: startRank,
+            end: endRank,
+            frame: turn.frame.map((ordinal) =>
+              context.ranks.committedRankByOrdinal(ordinal),
+            ),
+            retained: turn.retained.map((ordinal) =>
+              context.ranks.committedRankByOrdinal(ordinal),
+            ),
+          });
+          continue;
+        }
+
+        const committedRows = await this.committedRangeCached(
+          chatId,
+          index,
+          context.committedStamp,
+          turn.start,
+          turn.end,
+        );
+        const mergedRows: PersistedChatMessage[] = [];
+        const isFirstTurn = turnPosition === 0;
+        if (isFirstTurn && context.placement.start.length > 0)
+          mergedRows.push(
+            ...this.logicalActiveMessages(context, context.placement.start),
+          );
+        for (const message of committedRows) {
+          mergedRows.push(message);
+          const followers = context.placement.afterCommitted.get(message.id);
+          if (followers)
+            mergedRows.push(...this.logicalActiveMessages(context, followers));
+        }
+        if (turnPosition === baseTurns.length - 1)
+          mergedRows.push(
+            ...this.logicalActiveMessages(context, context.placement.tail),
+          );
+
+        const hasNextTurn = turnPosition < baseTurns.length - 1;
+        let sentinelRank: number | undefined;
+        if (hasNextTurn) {
+          const next = baseTurns[turnPosition + 1];
+          if (!next) throw new Error('Missing next committed turn');
+          const sentinel = await this.committedRangeCached(
+            chatId,
+            index,
+            context.committedStamp,
+            next.start,
+            next.start + 1,
+          );
+          const firstNextMessage = sentinel[0];
+          if (!firstNextMessage)
+            throw new Error('Missing next-turn completion boundary');
+          sentinelRank = context.ranks.committedRankByOrdinal(next.start);
+          mergedRows.push(firstNextMessage);
+        }
+        const buildStart =
+          isFirstTurn && context.placement.start.length > 0 ? 0 : startRank;
+        const rebuilt = await buildTurnIndex(
+          mergedRows,
+          buildStart,
+          receiptTurns,
+        );
+        turns.push(
+          ...rebuilt.filter(
+            (rebuiltTurn) =>
+              sentinelRank === undefined || rebuiltTurn.start < sentinelRank,
+          ),
+        );
+      }
+    }
+
+    // A live anchored run card is durable context for its owner turn. Keep the
+    // card visible in turn pages; logicalTurnPage also retains recent progress.
+    context.anchoredActiveIds.forEach((id: string): void => {
+      const message = context.activeById.get(id);
+      if (!message || !hasDelegatedAgentCall(message)) return;
+      const ordinal = context.ranks.activeRankById.get(id);
+      if (ordinal === undefined) return;
+      const owner = turns.find(
+        (turn) => turn.start <= ordinal && ordinal < turn.end,
+      );
+      if (!owner) throw new Error(`No turn owns delegated agent card: ${id}`);
+      if (!owner.retained.includes(ordinal))
+        owner.retained = [...owner.retained, ordinal].sort(
+          (left, right) => left - right,
+        );
+    });
+
+    const logicalIndex: TranscriptTurnIndex = {
+      version: 10,
+      committedByteLength: index.committedByteLength,
+      committedMessageCount: context.totalCount,
+      turns,
+    };
+    const estimatedBytes = Buffer.byteLength(
+      JSON.stringify(logicalIndex),
+      'utf8',
+    );
+    logicalTurnSnapshots.delete(path);
+    if (estimatedBytes <= MAX_LOGICAL_PLACEMENT_BYTES) {
+      logicalTurnSnapshots.set(path, {
+        committedStamp: context.committedStamp,
+        fingerprint: context.fingerprint,
+        contentFingerprint,
+        turnIndex: logicalIndex,
+        estimatedBytes,
+      });
+      while (logicalTurnSnapshots.size > MAX_LOGICAL_SNAPSHOT_CHATS) {
+        const oldest = logicalTurnSnapshots.keys().next().value;
+        if (oldest === undefined) break;
+        logicalTurnSnapshots.delete(oldest);
+      }
+    }
+    return logicalIndex;
+  }
+
+  private async logicalTurnPage(
+    chatId: string,
+    index: SparseIndex,
+    context: LogicalReadContext,
+    before: number | undefined,
+    options: TranscriptViewRequest,
+    transcriptRevision: number,
+  ): Promise<TranscriptPage> {
+    const records = (await this.logicalTurnIndex(chatId, index, context)).turns;
+    const end = before ?? context.totalCount;
+    if (!Number.isSafeInteger(end) || end < 0 || end > context.totalCount)
+      throw new Error('Invalid transcript page cursor');
+    const owner = options.turnId
+      ? records.find((turn) => turn.id === options.turnId)
+      : undefined;
+    if (options.turnId && !owner) throw new Error('Unknown transcript turn');
+    if (owner && (end <= owner.start || end > owner.end))
+      throw new Error('Invalid turn page cursor');
+    const selected = owner
+      ? [owner]
+      : records.filter((turn) => turn.start < end).slice(-100);
+    const historyBefore = selected[0]?.start;
+    const latestHumanMessage = await this.latestLogicalHuman(
+      chatId,
+      index,
+      context,
+    );
+    if (!owner && latestHumanMessage && historyBefore !== undefined) {
+      const activeLatestOrdinal = Array.from(
+        context.activeByRank.entries(),
+      ).find(([, message]) => message.id === latestHumanMessage.id)?.[0];
+      const latestOrdinal =
+        activeLatestOrdinal ??
+        (index.latestHuman
+          ? context.ranks.committedRankByOrdinal(index.latestHuman.ordinal)
+          : undefined);
+      if (latestOrdinal !== undefined && latestOrdinal < historyBefore) {
+        const stickyTurn = records.find(
+          (turn) => turn.start <= latestOrdinal && latestOrdinal < turn.end,
+        );
+        if (stickyTurn) selected.unshift(stickyTurn);
+      }
+    }
+
+    // Only active, anchored cards can be live. Passive committed copies must
+    // retain the ordinary historical compaction behavior, regardless of status.
+    const liveRuns = new Map<
+      string,
+      { cardOrdinal: number; childOrdinals: number[] }
+    >();
+    context.anchoredActiveIds.forEach((id: string): void => {
+      const message = context.activeById.get(id);
+      const cardOrdinal = context.ranks.activeRankById.get(id);
+      if (!message || cardOrdinal === undefined) return;
+      for (const block of message.blocks) {
+        if (
+          block.type === 'delegated_agent_call' &&
+          (block.status === 'pending' || block.status === 'running')
+        ) {
+          liveRuns.set(block.agentBlockId, { cardOrdinal, childOrdinals: [] });
+        }
+      }
+    });
+    // Ranks need not arrive in logical order. Keep a bounded, sorted suffix per
+    // run using the read context, without reading any additional transcript rows.
+    context.anchoredActiveIds.forEach((id: string): void => {
+      const message = context.activeById.get(id);
+      const ordinal = context.ranks.activeRankById.get(id);
+      if (!message?.parentBlockId || ordinal === undefined) return;
+      const run = liveRuns.get(message.parentBlockId);
+      if (!run) return;
+      const insertion = run.childOrdinals.findIndex((rank) => rank > ordinal);
+      if (insertion < 0) run.childOrdinals.push(ordinal);
+      else run.childOrdinals.splice(insertion, 0, ordinal);
+      if (run.childOrdinals.length > LIVE_RUN_CHILD_TAIL_SIZE)
+        run.childOrdinals.shift();
+    });
+
+    const ordinals = new Set<number>();
+    const pageTurns: TranscriptTurnSummary[] = [];
+    for (const turn of selected) {
+      const newest = turn === records[records.length - 1];
+      const tailStart = owner
+        ? Math.max(turn.start, end - TRANSCRIPT_PAGE_SIZE)
+        : newest || !turn.complete
+          ? Math.max(turn.start, turn.end - 1000)
+          : Math.max(turn.start, turn.end - COMPLETED_TURN_TAIL_SIZE);
+      const tailEnd = owner ? end : turn.end;
+      for (let ordinal = tailStart; ordinal < tailEnd; ordinal += 1)
+        ordinals.add(ordinal);
+      for (const ordinal of [...turn.frame, ...turn.retained])
+        ordinals.add(ordinal);
+      // Explicit turn pages load a contiguous history window; only compacted
+      // overview turns need their live progress gaps filled.
+      if (!owner && !newest && turn.complete) {
+        liveRuns.forEach((run): void => {
+          if (run.cardOrdinal < turn.start || run.cardOrdinal >= turn.end)
+            return;
+          for (const ordinal of run.childOrdinals) ordinals.add(ordinal);
+        });
+      }
+      let gapEnd = tailStart;
+      while (gapEnd > turn.start && ordinals.has(gapEnd - 1)) gapEnd -= 1;
+      let gapStart = turn.start;
+      while (gapStart < gapEnd && ordinals.has(gapStart)) gapStart += 1;
+      pageTurns.push({
+        id: turn.id,
+        start: turn.start,
+        end: turn.end,
+        complete: turn.complete,
+        summary: turn.summary,
+        outcomes: turn.outcomes,
+        deniedToolUseIds: turn.deniedToolUseIds,
+        finalMessageIds: turn.finalMessageIds,
+        files: turn.files,
+        ...(turn.frameTimer ? { frameTimer: turn.frameTimer } : {}),
+        ...(gapEnd > gapStart ? { before: gapEnd } : {}),
+        ...(turn.continuations ? { continuations: turn.continuations } : {}),
+      });
+    }
+
+    const ordered = Array.from(ordinals).sort((left, right) => left - right);
+    const committedOrdinals: number[] = [];
+    const activeMessagesByOrdinal = new Map<number, PersistedChatMessage>();
+    for (const ordinal of ordered) {
+      const active = context.activeByRank.get(ordinal);
+      if (active) activeMessagesByOrdinal.set(ordinal, active);
+      else {
+        const committedOrdinal =
+          context.ranks.committedOrdinalByBodyRank(ordinal);
+        if (committedOrdinal === undefined)
+          throw new Error(`Logical turn ordinal has no row: ${ordinal}`);
+        committedOrdinals.push(committedOrdinal);
+      }
+    }
+    const committedRows = await this.committedRowsAt(
+      chatId,
+      index,
+      context.committedStamp,
+      committedOrdinals,
+    );
+    const messages: PersistedChatMessage[] = [];
+    for (const ordinal of ordered) {
+      const active = activeMessagesByOrdinal.get(ordinal);
+      if (active) {
+        messages.push(active);
+        continue;
+      }
+      const committedOrdinal =
+        context.ranks.committedOrdinalByBodyRank(ordinal);
+      const message =
+        committedOrdinal === undefined
+          ? undefined
+          : committedRows.get(committedOrdinal);
+      if (!message)
+        throw new Error(`Logical turn row is missing at ordinal ${ordinal}`);
+      messages.push(message);
+    }
+    const messageOrdinals = Object.fromEntries(
+      messages.map((message, position) => [message.id, ordered[position]]),
+    );
+    return {
+      messages,
+      view: 'turns',
+      turns: pageTurns,
+      totalMessages: context.totalCount,
+      ...(options.turnId ? { turnId: options.turnId } : {}),
+      messageOrdinals,
+      transcriptRevision,
+      ...(!owner && historyBefore !== undefined && historyBefore > 0
+        ? { before: historyBefore }
+        : {}),
+    };
+  }
+
+  /**
+   * Check anchor semantics against active rows and committed membership.
+   * WAL validation uses verified locators first and scans only for candidate
+   * rows whose locator is missing or invalid; it never repairs the index.
+   */
+  private async validateActiveAnchorSet(
+    chatId: string,
+    messages: readonly PersistedChatMessage[],
+    anchors: ReadonlyMap<string, ActiveRowAnchor>,
+    readOnlyCommitted = false,
+  ): Promise<void> {
+    if (anchors.size === 0) return;
+    const normalized = copyActiveRowAnchors(anchors);
+    if (!normalized) return;
+
+    const activeById = new Map(
+      messages.map((message) => [message.id, message]),
+    );
+    const activeIds = new Set(activeById.keys());
+    const candidateIds = new Set<string>();
+    for (const rowAnchor of Array.from(normalized.values())) {
+      if (!activeIds.has(rowAnchor.runId)) candidateIds.add(rowAnchor.runId);
+      if (rowAnchor.after !== null && !activeIds.has(rowAnchor.after))
+        candidateIds.add(rowAnchor.after);
+    }
+
+    const committedById = new Map<string, PersistedChatMessage>();
+    if (readOnlyCommitted) {
+      if (candidateIds.size > 0) {
+        const fallbackIds = new Set<string>();
+        const candidateIdList: string[] = [];
+        candidateIds.forEach((id: string): void => {
+          candidateIdList.push(id);
+        });
+        for (const id of candidateIdList) {
+          const located = await this.readCommittedMessageAtLocator(chatId, id);
+          if (located.valid) committedById.set(id, located.message);
+          else fallbackIds.add(id);
+        }
+        if (fallbackIds.size > 0) {
+          try {
+            for await (const row of lines(this.path(chatId, 'jsonl'))) {
+              if (fallbackIds.has(row.message.id)) {
+                committedById.set(row.message.id, row.message);
+                fallbackIds.delete(row.message.id);
+                if (fallbackIds.size === 0) break;
+              }
+            }
+          } catch (error) {
+            if (!(isErrnoException(error) && error.code === 'ENOENT'))
+              throw error;
+          }
+        }
+      }
+    } else {
+      for (const id of Array.from(candidateIds)) {
+        const message = await this.readCommittedMessage(chatId, id);
+        if (message) committedById.set(id, message);
+      }
+    }
+
+    const knownRunCardIds = new Set<string>();
+    for (const message of Array.from(activeById.values()))
+      if (hasDelegatedAgentCall(message)) knownRunCardIds.add(message.id);
+    for (const message of Array.from(committedById.values()))
+      if (hasDelegatedAgentCall(message)) knownRunCardIds.add(message.id);
+
+    const result = validateActiveRowAnchorSet(normalized, {
+      isCommittedMessage: (id) => committedById.has(id),
+      activeIds,
+      runIdForMessage: (id) =>
+        runIdForActiveMessage(activeById.get(id) ?? committedById.get(id)),
+      knownRunCardIds,
+    });
+    if (!result.valid)
+      throw new Error(`Invalid active row anchor: ${result.reason}`);
+  }
+
   private async writeIndex(chatId: string, index: SparseIndex): Promise<void> {
     if (this.options.readOnly) return;
     await atomicJson(this.path(chatId, 'index.json'), {
@@ -1386,8 +4028,11 @@ export class ChatTranscriptLog {
     if (this.options.readOnly) throw new Error('Transcript store is read-only');
   }
 
-  private async serial<T>(chatId: string, work: () => Promise<T>): Promise<T> {
-    assertTranscriptIdentity(chatId);
+  protected async serial<T>(
+    chatId: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    this.paths.assertKey(chatId);
     const pending = (this.tails.get(chatId) ?? Promise.resolve())
       .catch(() => undefined)
       .then(work);
@@ -1404,7 +4049,7 @@ export class ChatTranscriptLog {
     }
   }
 
-  private async active(chatId: string): Promise<ActiveSidecar | undefined> {
+  protected async active(chatId: string): Promise<ActiveSidecar | undefined> {
     const path = this.path(chatId, 'active.json');
     for (let attempt = 0; attempt < 3; attempt += 1) {
       let before: { stamp: string; bytes: number };
@@ -1444,9 +4089,45 @@ export class ChatTranscriptLog {
         throw new Error('Active transcript sidecar changed during read');
       }
       activeSnapshots.set(path, after.stamp, after.bytes, parsed);
+      rememberActiveAnchors(path, after.stamp, parsed.activeRowAnchors);
       return parsed;
     }
     throw new Error('Active transcript sidecar changed during read');
+  }
+
+  /**
+   * Copy just cached anchors on write paths that already have their message
+   * projection. A cache miss falls back to the verified sidecar reader.
+   */
+  private async activeRowAnchorsForWrite(
+    chatId: string,
+  ): Promise<Map<string, ActiveRowAnchor>> {
+    const path = this.path(chatId, 'active.json');
+    try {
+      const identity = await fileIdentity(path);
+      const known = knownActiveAnchors.get(path);
+      if (known?.stamp === identity.stamp)
+        return (
+          copyActiveRowAnchors(known.anchors) ??
+          new Map<string, ActiveRowAnchor>()
+        );
+      const cached = activeSnapshots.getProjected(
+        path,
+        identity.stamp,
+        (sidecar) => copyActiveRowAnchors(sidecar.activeRowAnchors),
+      );
+      if (cached.hit) return cached.value ?? new Map<string, ActiveRowAnchor>();
+    } catch (error) {
+      if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      activeSnapshots.delete(path);
+      knownActiveAnchors.delete(path);
+      return new Map<string, ActiveRowAnchor>();
+    }
+    const active = await this.active(chatId);
+    return (
+      copyActiveRowAnchors(active?.activeRowAnchors) ??
+      new Map<string, ActiveRowAnchor>()
+    );
   }
 
   private async readActiveUncached(
@@ -1473,6 +4154,7 @@ export class ChatTranscriptLog {
     if (version === 2) {
       let header: ActiveSidecarHeaderV2 | undefined;
       const messages: PersistedChatMessage[] = [];
+      const anchorTuples: Array<[string, ActiveRowAnchor]> = [];
       const finalizingIds: string[] = [];
       for await (const row of activeRows(path)) {
         if (!header) {
@@ -1483,21 +4165,38 @@ export class ChatTranscriptLog {
         }
         if (!isActiveSidecarMessageV2(row))
           throw new Error('Invalid active transcript sidecar message');
+        const rowAnchor = parseSidecarRowAnchor(row);
         messages.push(row.message);
+        if (rowAnchor) anchorTuples.push([row.message.id, rowAnchor]);
         if (row.finalizing) finalizingIds.push(row.message.id);
       }
-      if (!header || finalizingIds.length > 0 !== !!header.finalizing)
+      if (
+        !header ||
+        (header.finalizing?.child
+          ? finalizingIds.length !== 0
+          : finalizingIds.length > 0 !== !!header.finalizing)
+      )
         throw new Error('Invalid active transcript finalization state');
+      const decodedAnchors = decodeActiveRowAnchors(anchorTuples);
+      if (decodedAnchors.status === 'invalid')
+        throw new Error(
+          `Invalid active transcript sidecar anchors: ${decodedAnchors.reason}`,
+        );
       return {
         version: 1,
         transcriptRevision: header.transcriptRevision,
         updatedAt: header.updatedAt,
         messages,
+        ...(decodedAnchors.anchors.size > 0
+          ? { activeRowAnchors: decodedAnchors.anchors }
+          : {}),
         ...(header.finalizing
           ? {
               finalizing: {
                 ...header.finalizing,
-                messageIds: finalizingIds,
+                messageIds: header.finalizing.child
+                  ? (header.finalizing.messageIds ?? [])
+                  : finalizingIds,
               },
             }
           : {}),
@@ -1596,7 +4295,8 @@ export class ChatTranscriptLog {
     const locatorStamp = await this.locatorStamp(chatId);
     if (!rebuildLocators && cached?.locatorStamp === locatorStamp)
       return cached;
-    if (!this.options.readOnly) await mkdir(this.root, { recursive: true });
+    if (!this.options.readOnly)
+      await mkdir(this.paths.directory(chatId), { recursive: true });
     // Only an explicit initializer may create a missing log. Missing files for
     // an indexed chat are recovery errors, never interpreted as empty history.
     let active = await this.active(chatId);
@@ -1660,7 +4360,39 @@ export class ChatTranscriptLog {
               candidate.latestHuman.ordinal >= 0 &&
               candidate.latestHuman.ordinal < candidate.committedMessageCount))
         ) {
-          persisted = candidate;
+          const {
+            version,
+            format,
+            committedMessageCount,
+            committedByteLength,
+            committedDigest,
+            transcriptRevision,
+            hasActiveSidecar,
+            offsets,
+            reducerFrame,
+            ...metadata
+          } = candidate;
+          // Match a freshly built index, even when an earlier loader moved
+          // the frame to the end. Reserve its slot before refolding, too:
+          // property order is part of the serialized bytes and checksum.
+          persisted = {
+            version,
+            format,
+            committedMessageCount,
+            committedByteLength,
+            committedDigest,
+            transcriptRevision,
+            hasActiveSidecar,
+            offsets,
+            reducerFrame: isSparseReducerFrame(
+              reducerFrame,
+              committedMessageCount,
+              committedByteLength,
+            )
+              ? reducerFrame
+              : undefined,
+            ...metadata,
+          };
         }
       } catch (error) {
         if (
@@ -1670,11 +4402,24 @@ export class ChatTranscriptLog {
           throw error;
       }
       if (persisted && !rebuildLocators) {
-        const locatorsComplete = await this.locatorsComplete(
-          chatId,
-          persisted.committedMessageCount,
-        );
+        const locatorsComplete =
+          this.options.childMode ||
+          (await this.locatorsComplete(
+            chatId,
+            persisted.committedMessageCount,
+          ));
         if (locatorsComplete || this.options.readOnly) {
+          // A frame that is missing (written before the frame existed),
+          // stale or malformed is folded again from the log; the index keeps
+          // its locators and revision.
+          if (!persisted.reducerFrame) {
+            persisted.reducerFrame = await this.foldReducerFrameFromLog(
+              chatId,
+              persisted.committedMessageCount,
+            );
+            if (!this.options.readOnly)
+              await this.writeIndex(chatId, persisted);
+          }
           const result = { index: persisted, locatorStamp, locatorsComplete };
           this.remember(chatId, result);
           if (active?.finalizing) await this.clearFinalized(chatId, active);
@@ -1691,6 +4436,7 @@ export class ChatTranscriptLog {
       transcriptRevision: 0,
       hasActiveSidecar: false,
       offsets: [],
+      reducerFrame: emptySparseReducerFrame(),
     };
     const activeIds = new Set(
       active?.messages.map((message) => message.id) ?? [],
@@ -1698,7 +4444,7 @@ export class ChatTranscriptLog {
     const committedActiveIds = new Set<string>();
     const locatorTemporary = `${this.locatorDirectory(chatId)}.${randomUUID()}.tmp`;
     const locatorBatch: Array<{ path: string; locator: MessageLocator }> = [];
-    if (!this.options.readOnly)
+    if (!this.options.readOnly && !this.options.childMode)
       await mkdir(locatorTemporary, { recursive: true });
     try {
       for await (const row of lines(this.path(chatId, 'jsonl'))) {
@@ -1706,7 +4452,7 @@ export class ChatTranscriptLog {
           locatorTemporary,
           `${createHash('sha256').update(row.message.id).digest('hex')}.json`,
         );
-        if (!this.options.readOnly) {
+        if (!this.options.readOnly && !this.options.childMode) {
           locatorBatch.push({
             path: locatorPath,
             locator: {
@@ -1721,41 +4467,96 @@ export class ChatTranscriptLog {
         }
         if (activeIds.has(row.message.id))
           committedActiveIds.add(row.message.id);
-        this.record(index, row.message, row.offset, row.end);
+        const logical = row.message.blocksRef
+          ? await this.expandBlocks(chatId, row.message)
+          : row.message;
+        this.record(
+          index,
+          row.message,
+          row.offset,
+          row.end,
+          undefined,
+          logical,
+        );
       }
-      if (!this.options.readOnly) {
+      if (!this.options.readOnly && !this.options.childMode) {
         await flushLocatorBatch(locatorBatch);
         await fsyncDirectory(locatorTemporary);
-        await mkdir(join(this.root, 'message-index'), { recursive: true });
+        await mkdir(this.paths.locatorParent(chatId), { recursive: true });
         await rm(this.locatorDirectory(chatId), {
           recursive: true,
           force: true,
         });
         await rename(locatorTemporary, this.locatorDirectory(chatId));
         recordChatStorageAtomicReplacement(this.locatorDirectory(chatId));
-        await fsyncDirectory(join(this.root, 'message-index'));
+        await fsyncDirectory(this.paths.locatorParent(chatId));
       }
     } finally {
-      if (!this.options.readOnly)
+      if (!this.options.readOnly && !this.options.childMode)
         await rm(locatorTemporary, { recursive: true, force: true });
     }
     index.hasActiveSidecar =
       active?.messages.some((message) => !committedActiveIds.has(message.id)) ??
       false;
+    const finalizingIds = new Set(active?.finalizing?.messageIds ?? []);
+    const survivingAnchors = survivingActiveRowAnchors(
+      active?.messages.filter((message) => !finalizingIds.has(message.id)) ??
+        [],
+      active?.activeRowAnchors,
+    );
+    if (survivingAnchors.size > 0) {
+      index.hasOrdinaryActiveRows =
+        active?.messages.some(
+          (message) =>
+            !committedActiveIds.has(message.id) &&
+            !finalizingIds.has(message.id) &&
+            !survivingAnchors.has(message.id),
+        ) ?? false;
+    }
     index.transcriptRevision = Math.max(
       persistedRevision,
       active?.transcriptRevision ?? 0,
       index.committedMessageCount,
     );
-    const result = Object.assign(cached ?? {}, {
+    const fresh: LoadedLog = {
       index,
       locatorStamp: await this.locatorStamp(chatId),
       locatorsComplete: !this.options.readOnly,
-    });
+    };
+    // Rebuild in place: a caller holding the cached object across a forced
+    // reload keeps writing the index this cache serves. No identity set
+    // survives into the new generation.
+    const result = cached ?? fresh;
+    if (cached) {
+      delete cached.committedLocatorKeys;
+      delete cached.committedLocatorInventoryUnavailable;
+      delete cached.committedLocatorInventoryBuild;
+      delete cached.uncommitted;
+      Object.assign(cached, fresh);
+    }
     await this.writeIndex(chatId, index);
     if (active?.finalizing) await this.clearFinalized(chatId, active);
     this.remember(chatId, result);
     return result;
+  }
+
+  private async foldReducerFrameFromLog(
+    chatId: string,
+    committedMessageCount: number,
+  ): Promise<SparseReducerFrame> {
+    let frame = emptyReducerFrameFold<SparseReducerFrameReference>();
+    let ordinal = 0;
+    if (committedMessageCount > 0)
+      for await (const row of lines(this.path(chatId, 'jsonl'))) {
+        frame = foldReducerFrame(frame, row.message, {
+          id: row.message.id,
+          ordinal,
+          offset: row.offset,
+        });
+        ordinal += 1;
+        if (ordinal >= committedMessageCount) break;
+      }
+    return { ...frame, version: 1, messageCount: ordinal };
   }
 
   private record(
@@ -1764,8 +4565,24 @@ export class ChatTranscriptLog {
     offset: number,
     end: number,
     rowDigest = digest(message),
+    logicalMessage: PersistedChatMessage = message,
   ): void {
     const ordinal = index.committedMessageCount;
+    const reference: SparseReducerFrameReference = {
+      id: message.id,
+      ordinal,
+      offset,
+    };
+    const foldedReducerFrame = foldReducerFrame(
+      index.reducerFrame ?? emptySparseReducerFrame(),
+      message,
+      reference,
+    );
+    index.reducerFrame = {
+      ...foldedReducerFrame,
+      version: 1,
+      messageCount: ordinal + 1,
+    };
     if (ordinal % SPARSE_STRIDE === 0) index.offsets.push({ ordinal, offset });
     if (isHumanAuthoredUserMessage(message))
       index.latestHuman = { ordinal, offset };
@@ -1774,9 +4591,9 @@ export class ChatTranscriptLog {
     index.lastMessageId = message.id;
     if (message.role === 'user' || message.role === 'assistant')
       index.lastMessageRole = message.role;
-    const preview = assistantPreview(message);
+    const preview = assistantPreview(logicalMessage);
     if (preview) index.lastAssistantPreview = preview;
-    Object.assign(index, foldTranscriptTodoState(index, message));
+    Object.assign(index, foldTranscriptTodoState(index, logicalMessage));
     index.committedMessageCount += 1;
     if (message.role === 'user')
       index.userMessageCount = (index.userMessageCount ?? 0) + 1;
@@ -1792,7 +4609,7 @@ export class ChatTranscriptLog {
     await this.serial(chatId, async () => {
       activeSnapshots.delete(this.path(chatId, 'active.json'));
       recentCommittedPages.delete(this.path(chatId, 'jsonl'));
-      await mkdir(this.root, { recursive: true });
+      await mkdir(this.paths.directory(chatId), { recursive: true });
       const handle = await open(this.path(chatId, 'jsonl'), 'ax', 0o600);
       try {
         await handle.sync();
@@ -1800,7 +4617,7 @@ export class ChatTranscriptLog {
       } finally {
         await handle.close();
       }
-      await fsyncDirectory(this.root);
+      await fsyncDirectory(this.paths.directory(chatId));
     });
   }
 
@@ -1810,28 +4627,64 @@ export class ChatTranscriptLog {
       const {
         offsets: _offsets,
         latestHuman: _human,
+        reducerFrame: _reducerFrame,
         version: _version,
         ...descriptor
       } = index;
       void _offsets;
       void _human;
+      void _reducerFrame;
       void _version;
       const projection = this.projectedActive(chatId);
+      const activeSidecar = projection ? undefined : await this.active(chatId);
       const active = projection
         ? [...projection.messages]
-        : ((await this.active(chatId))?.messages ?? []);
-      const preview = [...active]
-        .reverse()
-        .map(assistantPreview)
-        .find((value) => value !== undefined);
-      const lastMessageRole =
-        [...active]
-          .reverse()
-          .find(
-            (message) =>
-              message.role === 'user' || message.role === 'assistant',
-          )?.role ?? descriptor.lastMessageRole;
-      return {
+        : (activeSidecar?.messages ?? []);
+      const anchors = projection
+        ? survivingActiveRowAnchors(
+            active,
+            copyActiveRowAnchors(projection.anchors),
+          )
+        : activeSidecar?.activeRowAnchors;
+      if (anchors && anchors.size > 0) {
+        const logicalBase = projection
+          ? {
+              ...descriptor,
+              transcriptRevision: projection.transcriptRevision,
+              hasActiveSidecar: projection.messages.length > 0,
+            }
+          : descriptor;
+        const logical = await this.logicalDescriptor(
+          chatId,
+          index,
+          logicalBase,
+          await this.logicalReadContext(chatId, index, active, anchors),
+        );
+        if (!projection)
+          await this.persistOrdinaryActiveMetadata(
+            chatId,
+            index,
+            true,
+            logical.hasOrdinaryActiveRows === true,
+          );
+        return logical;
+      }
+      let preview: string | undefined;
+      let lastMessageRole = descriptor.lastMessageRole;
+      const todos = {
+        todos: descriptor.todos,
+        taskTodos: descriptor.taskTodos,
+      };
+      for (const message of active) {
+        if (message.role === 'user' || message.role === 'assistant')
+          lastMessageRole = message.role;
+        const logical = message.blocksRef
+          ? await this.expandBlocks(chatId, message)
+          : message;
+        Object.assign(todos, foldTranscriptTodoState(todos, logical));
+        preview = assistantPreview(logical) ?? preview;
+      }
+      const result: TranscriptDescriptor = {
         ...descriptor,
         ...(lastMessageRole === 'user' || lastMessageRole === 'assistant'
           ? { lastMessageRole }
@@ -1844,10 +4697,7 @@ export class ChatTranscriptLog {
               hasActiveSidecar: projection.messages.length > 0,
             }
           : {}),
-        ...active.reduce(foldTranscriptTodoState, {
-          todos: descriptor.todos,
-          taskTodos: descriptor.taskTodos,
-        }),
+        ...todos,
         ...(preview ? { lastAssistantPreview: preview } : {}),
         messageCount: index.committedMessageCount + active.length,
         userMessageCount:
@@ -1861,7 +4711,53 @@ export class ChatTranscriptLog {
             }
           : {}),
       };
+      if (anchors && anchors.size > 0)
+        result.hasOrdinaryActiveRows = await this.hasOrdinaryActiveRows(
+          chatId,
+          active,
+          anchors,
+        );
+      else delete result.hasOrdinaryActiveRows;
+      if (!projection)
+        await this.persistOrdinaryActiveMetadata(
+          chatId,
+          index,
+          anchors !== undefined && anchors.size > 0,
+          result.hasOrdinaryActiveRows === true,
+        );
+      return result;
     });
+  }
+
+  private async readActiveSnapshot(
+    chatId: string,
+    includeAnchors: boolean,
+  ): Promise<{
+    messages: PersistedChatMessage[];
+    anchors?: Map<string, ActiveRowAnchor>;
+  }> {
+    await this.load(chatId);
+    const projection = this.projectedActive(chatId);
+    if (projection) {
+      const anchors = includeAnchors
+        ? survivingActiveRowAnchors(
+            projection.messages,
+            copyActiveRowAnchors(projection.anchors),
+          )
+        : undefined;
+      return {
+        messages: [...projection.messages],
+        ...(anchors && anchors.size > 0 ? { anchors } : {}),
+      };
+    }
+    const active = await this.active(chatId);
+    const anchors = includeAnchors
+      ? copyActiveRowAnchors(active?.activeRowAnchors)
+      : undefined;
+    return {
+      messages: active?.messages ?? [],
+      ...(anchors && anchors.size > 0 ? { anchors } : {}),
+    };
   }
 
   public async activeMessages(chatId: string): Promise<PersistedChatMessage[]> {
@@ -1870,13 +4766,31 @@ export class ChatTranscriptLog {
       chatId,
     );
     return this.serial(chatId, async () => {
-      await this.load(chatId);
-      const projection = this.projectedActive(chatId);
-      const messages = projection
-        ? [...projection.messages]
-        : ((await this.active(chatId))?.messages ?? []);
+      const { messages } = await this.readActiveSnapshot(chatId, false);
       finishPerformanceStage({ loadedRows: messages.length });
       return messages;
+    });
+  }
+
+  /**
+   * Atomically snapshot the active rows plus their record anchors: what a
+   * checkpoint must preserve across finalization, and what tells an ordered
+   * read whether anchors place rows (`anchors` is absent when none do).
+   * Journal projections are authoritative for messages and their snapshot
+   * anchors, matching the durable sidecar shape after checkpoint.
+   */
+  public async activeSnapshot(chatId: string): Promise<{
+    messages: PersistedChatMessage[];
+    anchors?: Map<string, ActiveRowAnchor>;
+  }> {
+    const finishPerformanceStage = beginMainTranscriptPerformanceStage(
+      'active_tail_reconstruction',
+      chatId,
+    );
+    return this.serial(chatId, async () => {
+      const snapshot = await this.readActiveSnapshot(chatId, true);
+      finishPerformanceStage({ loadedRows: snapshot.messages.length });
+      return snapshot;
     });
   }
 
@@ -1889,19 +4803,101 @@ export class ChatTranscriptLog {
     return this.serial(chatId, async () => {
       await this.load(chatId);
       const committed = await this.readCommittedMessage(chatId, messageId);
-      if (
-        committed &&
-        messageOwnsToolOutput(committed, messageId, toolUseId, reference)
-      )
-        return true;
+      if (committed) {
+        if (committed.blocksRef === undefined) {
+          if (messageOwnsToolOutput(committed, messageId, toolUseId, reference))
+            return true;
+        } else if (
+          await pagedMessageOwnsToolOutput(
+            this.artifacts,
+            this.paths.owner(chatId),
+            committed,
+            messageId,
+            toolUseId,
+            reference,
+          )
+        )
+          return true;
+      }
       const active =
         this.projectedActive(chatId)?.messages ??
         (await this.active(chatId))?.messages ??
         [];
-      return active.some((message) =>
-        messageOwnsToolOutput(message, messageId, toolUseId, reference),
-      );
+      for (const message of active) {
+        if (message.id !== messageId) continue;
+        if (message.blocksRef === undefined) {
+          if (messageOwnsToolOutput(message, messageId, toolUseId, reference))
+            return true;
+          continue;
+        }
+        if (
+          await pagedMessageOwnsToolOutput(
+            this.artifacts,
+            this.paths.owner(chatId),
+            message,
+            messageId,
+            toolUseId,
+            reference,
+          )
+        )
+          return true;
+      }
+      return false;
     });
+  }
+
+  /**
+   * A verified byte range of one body field of a retained row. The row must
+   * carry a reference for exactly that field, unless logical mode opts into
+   * inline fallback. Foreign references and bad offsets still fail explicitly.
+   */
+  public async readFieldRange(
+    streamKey: string,
+    messageId: string,
+    selector: { blockOrdinal: number; field: TranscriptBodyField },
+    offset = 0,
+    limit = 65_536,
+    signal?: AbortSignal,
+    fieldSource?: 'stored' | 'logical',
+  ): Promise<{ text: string; nextOffset?: number; byteLength: number }> {
+    const row = await this.readMessage(streamKey, messageId);
+    const block = row
+      ? await ownedBodyBlock(
+          this.artifacts,
+          this.paths.owner(streamKey),
+          row,
+          selector,
+          signal,
+        )
+      : undefined;
+    const reference = block
+      ? transcriptBodyReferences({ blocks: [block] }).find(
+          (entry) => entry.field === selector.field,
+        )?.reference
+      : undefined;
+    if (reference) {
+      return this.artifacts.readRange(
+        this.paths.owner(streamKey),
+        reference,
+        offset,
+        limit,
+        signal,
+      );
+    }
+    const inline =
+      fieldSource === 'logical' && block
+        ? inlineBodyField(block, selector.field)
+        : undefined;
+    if (inline === undefined)
+      throw new Error('Transcript field has no stored body for this row');
+    const range = readInlineBodyRange(inline, offset, limit);
+    return {
+      text: range.text,
+      byteLength: range.byteLength,
+      ...(range.nextOffset === undefined
+        ? {}
+        : { nextOffset: range.nextOffset }),
+    };
   }
 
   public async ownsVisualReference(
@@ -1912,19 +4908,25 @@ export class ChatTranscriptLog {
   ): Promise<boolean> {
     return this.serial(chatId, async () => {
       await this.load(chatId);
+      // A paged row's blocks live in its pages.
+      const owns = async (message: PersistedChatMessage): Promise<boolean> =>
+        message.id === messageId &&
+        messageOwnsVisual(
+          message.blocksRef
+            ? await this.expandBlocks(chatId, message)
+            : message,
+          messageId,
+          toolUseId,
+          reference,
+        );
       const committed = await this.readCommittedMessage(chatId, messageId);
-      if (
-        committed &&
-        messageOwnsVisual(committed, messageId, toolUseId, reference)
-      )
-        return true;
+      if (committed && (await owns(committed))) return true;
       const active =
         this.projectedActive(chatId)?.messages ??
         (await this.active(chatId))?.messages ??
         [];
-      return active.some((message) =>
-        messageOwnsVisual(message, messageId, toolUseId, reference),
-      );
+      for (const message of active) if (await owns(message)) return true;
+      return false;
     });
   }
 
@@ -1932,14 +4934,47 @@ export class ChatTranscriptLog {
     chatId: string,
     message: PersistedChatMessage,
   ): Promise<'absent' | 'identical' | 'different'> {
+    return this.withCommittedMessageStates(chatId, (reader) =>
+      reader.committedMessageState(message),
+    );
+  }
+
+  /**
+   * Resolve committed identities against one loaded locator generation. The
+   * callback is serialized with every other operation for this chat, while
+   * repeated row checks reuse the same validated generation.
+   */
+  public async withCommittedMessageStates<T>(
+    chatId: string,
+    operation: (reader: CommittedMessageStateReader) => Promise<T> | T,
+  ): Promise<T> {
     return this.serial(chatId, async () => {
-      await this.load(chatId);
-      const existing = await this.readCommittedMessage(chatId, message.id);
-      return existing === undefined
-        ? 'absent'
-        : digest(existing) === digest(message)
-          ? 'identical'
-          : 'different';
+      const loaded = await this.load(chatId);
+      const reader: CommittedMessageStateReader = {
+        committedMessageState: async (
+          message: PersistedChatMessage,
+        ): Promise<'absent' | 'identical' | 'different'> => {
+          const existing = await this.readCommittedMessageForGeneration(
+            chatId,
+            loaded,
+            message.id,
+            true,
+          );
+          return existing === undefined
+            ? 'absent'
+            : digest(existing) === digest(message)
+              ? 'identical'
+              : 'different';
+        },
+        hasCommittedMessage: async (messageId: string): Promise<boolean> =>
+          (await this.readCommittedMessageForGeneration(
+            chatId,
+            loaded,
+            messageId,
+            true,
+          )) !== undefined,
+      };
+      return operation(reader);
     });
   }
 
@@ -1958,9 +4993,65 @@ export class ChatTranscriptLog {
     chatId: string,
     messageId: string,
   ): Promise<boolean> {
+    return this.withCommittedMessageStates(chatId, (reader) =>
+      reader.hasCommittedMessage(messageId),
+    );
+  }
+
+  /**
+   * The id of the last committed row, from the chat's index without reading
+   * the transcript. `undefined` when no row is committed, or when an older
+   * index does not record it.
+   */
+  public async lastCommittedMessageId(
+    chatId: string,
+  ): Promise<string | undefined> {
+    return this.serial(chatId, async () => {
+      const { index } = await this.load(chatId);
+      return index.committedMessageCount > 0 ? index.lastMessageId : undefined;
+    });
+  }
+
+  /**
+   * A committed row and the contiguous rows after it whose `parentBlockId` is
+   * its id (its direct-child group), read from the row's locator without
+   * scanning earlier history. `undefined` when the row is not committed.
+   */
+  public async readCommittedGroup(
+    chatId: string,
+    messageId: string,
+  ): Promise<PersistedChatMessage[] | undefined> {
     return this.serial(chatId, async () => {
       await this.load(chatId);
-      return (await this.readCommittedMessage(chatId, messageId)) !== undefined;
+      const head = await this.readCommittedMessage(chatId, messageId);
+      if (!head) return undefined;
+      const group = [head];
+      let end: number | undefined;
+      try {
+        const parsed: unknown = JSON.parse(
+          await readFile(this.locatorPath(chatId, messageId), 'utf8'),
+        );
+        if (isMessageLocator(parsed) && parsed.messageId === messageId)
+          end = parsed.end;
+      } catch (error) {
+        if (
+          !(isErrnoException(error) && error.code === 'ENOENT') &&
+          !(error instanceof SyntaxError)
+        )
+          throw error;
+      }
+      let inGroup = end !== undefined;
+      // Without a locator (read-only archives), find the row by scanning, as
+      // readCommittedMessage does.
+      for await (const row of lines(this.path(chatId, 'jsonl'), end ?? 0)) {
+        if (!inGroup) {
+          inGroup = row.message.id === messageId;
+          continue;
+        }
+        if (row.message.parentBlockId !== messageId) break;
+        group.push(row.message);
+      }
+      return group;
     });
   }
 
@@ -1983,6 +5074,78 @@ export class ChatTranscriptLog {
   }
 
   /**
+   * Snapshot the record-level active-row anchors before an ordered transcript
+   * replacement removes the sidecar. The returned map and values are fresh.
+   */
+  public async activeRowAnchors(
+    chatId: string,
+  ): Promise<Map<string, ActiveRowAnchor>> {
+    return this.serial(chatId, async () => {
+      await this.load(chatId);
+      const active = await this.active(chatId);
+      return (
+        copyActiveRowAnchors(active?.activeRowAnchors) ??
+        new Map<string, ActiveRowAnchor>()
+      );
+    });
+  }
+
+  /**
+   * Snapshot active messages for recovery validation without calling `load`.
+   * This is intentionally read-only: WAL validation must not repair indexes or
+   * replay/abandon a pending append before its replacement has been accepted.
+   */
+  public async activeMessagesForAnchorValidation(
+    chatId: string,
+  ): Promise<PersistedChatMessage[]> {
+    return this.serial(chatId, async () => {
+      const active = await this.active(chatId);
+      return active?.messages.map((message) => structuredClone(message)) ?? [];
+    });
+  }
+
+  /**
+   * Validate a proposed active projection before publishing it from the WAL.
+   * This read-only seam does not call `load`: malformed WAL validation must
+   * not replay/abandon an append or repair canonical indexes as a side effect.
+   * Explicit map shapes are checked before inactive IDs are filtered.
+   */
+  public async validateActiveRowAnchors(
+    chatId: string,
+    messages: readonly PersistedChatMessage[],
+    anchors: ReadonlyMap<string, ActiveRowAnchor>,
+  ): Promise<void> {
+    const explicitAnchors = copyActiveRowAnchors(anchors) ?? new Map();
+    await this.serial(chatId, async () => {
+      const effectiveAnchors = survivingActiveRowAnchors(
+        messages,
+        explicitAnchors,
+      );
+      await this.validateActiveAnchorSet(
+        chatId,
+        messages,
+        effectiveAnchors,
+        true,
+      );
+      for (const message of messages) {
+        const rowAnchor = effectiveAnchors.get(message.id);
+        if (!rowAnchor) continue;
+        const record: ActiveSidecarMessageRecord = {
+          version: 2,
+          kind: 'message',
+          message,
+          anchor: rowAnchor,
+        };
+        const budget = checkActiveSidecarMessageRecordBudget(record);
+        if (!budget.withinLimit)
+          throw new Error(
+            `Active sidecar message record exceeds maximum size (${budget.bytes} of ${budget.ceiling} bytes)`,
+          );
+      }
+    });
+  }
+
+  /**
    * Intentional one-chat rewrite (reset, amendment, import). The caller's
    * durable scope transaction retains the source until all indexes commit,
    * and replays this replacement after a crash. Never use a paged projection
@@ -2000,9 +5163,15 @@ export class ChatTranscriptLog {
       | Iterable<PersistedChatMessage>
       | AsyncIterable<PersistedChatMessage>,
     revision: number,
+    fields: TranscriptFieldMode = 'legacy',
   ): Promise<void> {
     this.assertWritable();
     await this.serial(chatId, async () => {
+      // Monotonic elapsed time inside the serialized operation: queue wait is
+      // excluded; publication, syncs and derived-index/cache work are included.
+      const startedAt = (
+        this.options.now ?? ((): number => performance.now())
+      )();
       const index: SparseIndex = {
         version: 3,
         format: 'complete-message-jsonl-v1',
@@ -2012,6 +5181,7 @@ export class ChatTranscriptLog {
         transcriptRevision: revision,
         hasActiveSidecar: false,
         offsets: [],
+        reducerFrame: emptySparseReducerFrame(),
       };
       const cached = this.loaded.get(chatId);
       const verifiedIndex =
@@ -2030,21 +5200,32 @@ export class ChatTranscriptLog {
         temporaryPath: this.path(chatId, `${randomUUID()}.rewrite.tmp`),
         locatorDirectory: this.locatorDirectory(chatId),
         messages,
-        externalize: (message) => this.artifacts.externalize(chatId, message),
+        // Every replaced row is committed, hence final.
+        externalize: (message) =>
+          this.prepareRow(chatId, message, true, fields),
         record: (message, offset, end, rowDigest) =>
-          this.record(index, message, offset, end, rowDigest),
+          message.blocksRef
+            ? this.expandBlocks(chatId, message).then((logical) =>
+                this.record(index, message, offset, end, rowDigest, logical),
+              )
+            : this.record(index, message, offset, end, rowDigest),
         verifiedIndex,
       });
       if (preserved.kind === 'preserved') {
         await this.writeIndex(chatId, index);
         await rm(this.path(chatId, 'active.json'), { force: true });
-        await fsyncDirectory(this.root);
+        if (this.options.testHooks?.onReplaceBoundary)
+          await this.options.testHooks.onReplaceBoundary(
+            'active-sidecar-removed',
+          );
+        await fsyncDirectory(this.paths.directory(chatId));
         await this.turnIndex(chatId, index, preserved.reusableTurns);
         this.remember(chatId, {
           index,
           locatorStamp: await this.locatorStamp(chatId),
           locatorsComplete: true,
         });
+        this.reportReplacement(chatId, preserved.bytesWritten, startedAt);
         return;
       }
       const replacement = preserved.messages;
@@ -2052,14 +5233,16 @@ export class ChatTranscriptLog {
       const locatorTemporary = `${this.locatorDirectory(chatId)}.${randomUUID()}.tmp`;
       const locatorBatch: Array<{ path: string; locator: MessageLocator }> = [];
       await mkdir(locatorTemporary, { recursive: true });
-      const artifacts = this.artifacts;
+      const prepareRow = this.prepareRow.bind(this);
+      const expandBlocks = this.expandBlocks.bind(this);
       const record = this.record.bind(this);
+      let bytesWritten = 0;
       try {
-        await writeJsonValuesCooperatively(
+        bytesWritten = await writeJsonValuesCooperatively(
           temporary,
           (async function* (): AsyncGenerator<PersistedChatMessage> {
             for await (const message of iterateAsync(replacement)) {
-              const stored = await artifacts.externalize(chatId, message);
+              const stored = await prepareRow(chatId, message, true, fields);
               if (!isPersistedChatMessage(stored))
                 throw new Error('Invalid or duplicate replacement message');
               const offset = index.committedByteLength;
@@ -2086,7 +5269,10 @@ export class ChatTranscriptLog {
               });
               if (locatorBatch.length === 64)
                 await flushLocatorBatch(locatorBatch);
-              record(index, stored, offset, end);
+              const logical = stored.blocksRef
+                ? await expandBlocks(chatId, stored)
+                : stored;
+              record(index, stored, offset, end, undefined, logical);
               yield stored;
             }
           })(),
@@ -2097,11 +5283,11 @@ export class ChatTranscriptLog {
         // silently describing the replacement log.
         await rm(this.path(chatId, 'turns.json'), { force: true });
         await rm(this.path(chatId, 'index.json'), { force: true });
-        await fsyncDirectory(this.root);
+        await fsyncDirectory(this.paths.directory(chatId));
         await rename(temporary, this.path(chatId, 'jsonl'));
         recordChatStorageAtomicReplacement(this.path(chatId, 'jsonl'));
-        await fsyncDirectory(this.root);
-        await mkdir(join(this.root, 'message-index'), { recursive: true });
+        await fsyncDirectory(this.paths.directory(chatId));
+        await mkdir(this.paths.locatorParent(chatId), { recursive: true });
         await fsyncDirectory(locatorTemporary);
         await rm(this.locatorDirectory(chatId), {
           recursive: true,
@@ -2109,10 +5295,14 @@ export class ChatTranscriptLog {
         });
         await rename(locatorTemporary, this.locatorDirectory(chatId));
         recordChatStorageAtomicReplacement(this.locatorDirectory(chatId));
-        await fsyncDirectory(join(this.root, 'message-index'));
+        await fsyncDirectory(this.paths.locatorParent(chatId));
         await this.writeIndex(chatId, index);
         await rm(this.path(chatId, 'active.json'), { force: true });
-        await fsyncDirectory(this.root);
+        if (this.options.testHooks?.onReplaceBoundary)
+          await this.options.testHooks.onReplaceBoundary(
+            'active-sidecar-removed',
+          );
+        await fsyncDirectory(this.paths.directory(chatId));
         await this.turnIndex(chatId, index);
         this.remember(chatId, {
           index,
@@ -2123,6 +5313,7 @@ export class ChatTranscriptLog {
         await rm(temporary, { force: true });
         await rm(locatorTemporary, { recursive: true, force: true });
       }
+      this.reportReplacement(chatId, bytesWritten, startedAt);
     });
   }
 
@@ -2137,32 +5328,45 @@ export class ChatTranscriptLog {
         'turns.json',
       ])
         await rm(this.path(chatId, extension), { force: true });
-      const affectedArtifactDirectories: string[] = [];
-      for (const { directory } of STORED_ARTIFACT_LOCATIONS) {
-        const familyDirectory = join(this.root, directory);
-        const chatArtifactDirectory = join(familyDirectory, chatId);
-        const existed = await directoryExists(chatArtifactDirectory);
-        await rm(chatArtifactDirectory, { recursive: true, force: true });
-        if (existed) affectedArtifactDirectories.push(familyDirectory);
-      }
-      await this.delegations.remove(chatId);
+      await this.removeOwnedContent(chatId);
       await rm(this.locatorDirectory(chatId), { recursive: true, force: true });
       this.loaded.delete(chatId);
       activeSnapshots.delete(this.path(chatId, 'active.json'));
       recentCommittedPages.delete(this.path(chatId, 'jsonl'));
-      for (const directory of affectedArtifactDirectories)
-        await fsyncDirectory(directory);
-      await fsyncDirectory(this.root);
+      await fsyncDirectory(this.paths.directory(chatId));
     });
+  }
+
+  protected removeOwnedContent(key: string): Promise<void> {
+    void key;
+    return Promise.resolve();
   }
 
   /** Append final rows before clearing any redundant active projection. */
   public async append(
     chatId: string,
     messages: readonly PersistedChatMessage[],
+    anchors?: ReadonlyMap<string, ActiveRowAnchor>,
+    activeTailCount?: number,
+    fields: TranscriptFieldMode = 'legacy',
   ): Promise<void> {
     this.assertWritable();
-    await this.serial(chatId, async () => this.appendLocked(chatId, messages));
+    if (
+      activeTailCount !== undefined &&
+      (!Number.isSafeInteger(activeTailCount) || activeTailCount < 0)
+    )
+      throw new Error('Invalid active transcript suffix count');
+    const explicitAnchors = copyActiveRowAnchors(anchors);
+    await this.serial(chatId, async () =>
+      this.appendLocked(
+        chatId,
+        messages,
+        fields,
+        undefined,
+        explicitAnchors,
+        activeTailCount,
+      ),
+    );
   }
 
   /**
@@ -2180,18 +5384,222 @@ export class ChatTranscriptLog {
     messages: readonly PersistedChatMessage[],
     active: readonly PersistedChatMessage[],
     transcriptRevision: number,
+    anchors?: ReadonlyMap<string, ActiveRowAnchor>,
+    fields: TranscriptFieldMode = 'legacy',
   ): Promise<void> {
     this.assertWritable();
+    const explicitAnchors = copyActiveRowAnchors(anchors);
     if (!Number.isSafeInteger(transcriptRevision) || transcriptRevision < 0)
       throw new Error('Invalid transcript revision');
     await this.serial(chatId, async () => {
       const loaded = await this.load(chatId);
       if (loaded.index.transcriptRevision > transcriptRevision) return;
-      await this.appendLocked(chatId, messages, {
-        messages: await this.uncommittedActiveRows(chatId, loaded, active),
-        transcriptRevision,
+      await this.appendLocked(
+        chatId,
+        messages,
+        fields,
+        {
+          messages: await this.uncommittedActiveRows(
+            chatId,
+            loaded,
+            active,
+            fields,
+          ),
+          transcriptRevision,
+        },
+        explicitAnchors,
+      );
+    });
+  }
+
+  /** Checkpoint child finals in finalization order, independent of display sequence. */
+  public async appendChildFinalRows(
+    streamKey: string,
+    finalized: readonly DelegationChildRow[],
+    open: readonly DelegationChildRow[],
+    streamRevision: number,
+    fields: TranscriptFieldMode = 'legacy',
+  ): Promise<void> {
+    if (!this.options.childMode) throw new Error('Child mode required');
+    if (
+      finalized.some((row) => !isDelegationChildRow(row) || !row.final) ||
+      open.some((row) => !isDelegationChildRow(row) || row.final)
+    )
+      throw new Error('Invalid child row finality');
+    this.assertWritable();
+    if (!Number.isSafeInteger(streamRevision) || streamRevision < 0)
+      throw new Error('Invalid transcript revision');
+    // Not appendAfterActive's revision guard: a rebuilt child index derives its
+    // revision from the row count, not the scope. Committed row IDs make this idempotent.
+    await this.serial(streamKey, async () => {
+      const loaded = await this.load(streamKey);
+      await this.appendLocked(streamKey, finalized, fields, {
+        messages: await this.uncommittedActiveRows(
+          streamKey,
+          loaded,
+          open,
+          fields,
+        ),
+        transcriptRevision: streamRevision,
       });
     });
+  }
+
+  /** Replace child active state with only still-open rows. */
+  public async writeChildOpenRows(
+    streamKey: string,
+    open: readonly DelegationChildRow[],
+    streamRevision: number,
+    fields: TranscriptFieldMode = 'legacy',
+  ): Promise<void> {
+    if (
+      !this.options.childMode ||
+      open.some((row) => !isDelegationChildRow(row) || row.final)
+    )
+      throw new Error('Invalid child open rows');
+    await this.writeActiveAtRevision(
+      streamKey,
+      open,
+      streamRevision,
+      undefined,
+      fields,
+    );
+  }
+
+  private async childSequenceIndex(
+    streamKey: string,
+  ): Promise<ChildStreamSequenceEntry[]> {
+    if (!this.options.childMode) throw new Error('Child mode required');
+    const logPath = this.path(streamKey, 'jsonl');
+    const indexPath = this.path(streamKey, 'sequence-index.json');
+    let size: number;
+    try {
+      size = (await stat(logPath)).size;
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') return [];
+      throw error;
+    }
+    try {
+      const saved: unknown = JSON.parse(await readFile(indexPath, 'utf8'));
+      if (
+        isRecord(saved) &&
+        saved.version === 1 &&
+        saved.logBytes === size &&
+        this.isChildSequenceEntries(saved.entries)
+      )
+        return saved.entries;
+    } catch (error) {
+      if (
+        !(error instanceof SyntaxError) &&
+        !(isErrnoException(error) && error.code === 'ENOENT')
+      )
+        throw error;
+    }
+    // Keep only the index fields; row bodies can be as large as the transcript.
+    const rows: Parameters<typeof buildChildStreamSequenceIndex>[0][number][] =
+      [];
+    for await (const entry of lines(logPath)) {
+      if (!isDelegationChildRow(entry.message))
+        throw new Error('Invalid child transcript row');
+      const { id, delegationSequence } = entry.message;
+      rows.push({
+        row: { id, delegationSequence },
+        offset: entry.offset,
+        end: entry.end,
+      });
+    }
+    const entries = buildChildStreamSequenceIndex(rows);
+    if (!this.options.readOnly)
+      await writeFile(
+        indexPath,
+        JSON.stringify({ version: 1, logBytes: size, entries }),
+      );
+    return entries;
+  }
+
+  /** Read sequence metadata without hydrating the committed row bodies. */
+  public async childStreamSequenceEntries(
+    streamKey: string,
+  ): Promise<ChildStreamSequenceEntry[]> {
+    return (await this.childSequenceIndex(streamKey)).map((entry) => ({
+      ...entry,
+    }));
+  }
+
+  private async childRowAt(
+    streamKey: string,
+    entry: ChildStreamSequenceEntry,
+  ): Promise<DelegationChildRow> {
+    const handle = await open(this.path(streamKey, 'jsonl'), 'r');
+    try {
+      const buffer = Buffer.alloc(entry.end - entry.offset);
+      let read = 0;
+      while (read < buffer.length) {
+        const result = await handle.read(
+          buffer,
+          read,
+          buffer.length - read,
+          entry.offset + read,
+        );
+        if (result.bytesRead === 0)
+          throw new Error('Damaged child transcript row');
+        read += result.bytesRead;
+      }
+      if (buffer[buffer.length - 1] !== 10)
+        throw new Error('Damaged child transcript row');
+      const value: unknown = JSON.parse(
+        new TextDecoder('utf-8', { fatal: true }).decode(
+          buffer.subarray(0, -1),
+        ),
+      );
+      if (
+        !isDelegationChildRow(value) ||
+        value.id !== entry.id ||
+        value.delegationSequence !== entry.delegationSequence
+      )
+        throw new Error('Child transcript index mismatch');
+      return value;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /** Read one row selected from the sequence index. */
+  public readChildStreamSequenceEntry(
+    streamKey: string,
+    entry: ChildStreamSequenceEntry,
+  ): Promise<DelegationChildRow> {
+    return this.childRowAt(streamKey, entry);
+  }
+
+  public async readChildStreamPage(
+    streamKey: string,
+    options: { before?: number; limit?: number } = {},
+  ): Promise<{ rows: readonly DelegationChildRow[]; nextBefore?: number }> {
+    const entries = await this.childSequenceIndex(streamKey);
+    const page = childStreamSequencePage(
+      entries,
+      options.before,
+      options.limit,
+    );
+    const rows: DelegationChildRow[] = [];
+    for (const entry of page.entries)
+      rows.push(await this.childRowAt(streamKey, entry));
+    return {
+      rows,
+      ...(page.before === undefined ? {} : { nextBefore: page.before }),
+    };
+  }
+
+  public async childStreamRowById(
+    streamKey: string,
+    rowId: string,
+  ): Promise<DelegationChildRow | undefined> {
+    const entry = findChildStreamSequenceEntry(
+      await this.childSequenceIndex(streamKey),
+      rowId,
+    );
+    return entry ? this.childRowAt(streamKey, entry) : undefined;
   }
 
   /**
@@ -2202,16 +5610,17 @@ export class ChatTranscriptLog {
     chatId: string,
     loaded: LoadedLog,
     messages: readonly PersistedChatMessage[],
+    fields: TranscriptFieldMode,
   ): Promise<PersistedChatMessage[]> {
     const stored: PersistedChatMessage[] = [];
     const ids = new Set<string>();
     for (const message of messages) {
       if (ids.has(message.id)) throw new Error('Duplicate active message');
       ids.add(message.id);
-      const next = await this.artifacts.externalize(chatId, message);
+      const next = await this.prepareRow(chatId, message, false, fields);
       const existing = await this.committedCopy(chatId, loaded, next.id);
       if (existing !== undefined) {
-        if (digest(existing) !== digest(next))
+        if (!(await this.matchesCommitted(chatId, next, existing)))
           throw new Error('Active message conflicts with committed history');
       } else stored.push(next);
     }
@@ -2225,49 +5634,188 @@ export class ChatTranscriptLog {
   private async appendLocked(
     chatId: string,
     messages: readonly PersistedChatMessage[],
-    before?: { messages: PersistedChatMessage[]; transcriptRevision: number },
+    fields: TranscriptFieldMode,
+    before?: {
+      messages: PersistedChatMessage[];
+      transcriptRevision: number;
+    },
+    explicitAnchors?: ReadonlyMap<string, ActiveRowAnchor>,
+    activeTailCount?: number,
   ): Promise<void> {
     const loaded = await this.load(chatId);
+    const suffixCount = activeTailCount ?? 0;
+    const suffixMode = activeTailCount !== undefined;
+    if (suffixMode && suffixCount > messages.length)
+      throw new Error('Active transcript suffix exceeds append payload');
+    const committedPayloadCount = suffixMode
+      ? messages.length - suffixCount
+      : messages.length;
     const prepared: PersistedChatMessage[] = [];
+    const activeSuffix: PersistedChatMessage[] = [];
     const ids = new Set<string>();
-    for (const message of messages) {
-      const stored = await this.artifacts.externalize(chatId, message);
+    for (let position = 0; position < messages.length; position += 1) {
+      const message = messages[position];
+      if (!message) throw new Error('Invalid append payload');
+      if (this.options.childMode && !isDelegationChildRow(message))
+        throw new Error('Invalid child transcript row');
+      // Appended rows are committed, hence final.
+      const stored = await this.prepareRow(chatId, message, true, fields);
       assertTranscriptRowWithinLimit(stored);
       const hash = digest(stored);
       const existing = await this.readCommittedMessage(chatId, stored.id);
       if (existing !== undefined) {
         if (digest(existing) !== hash)
           throw new Error(`Conflicting committed message ${stored.id}`);
+        if (suffixMode && position >= committedPayloadCount)
+          throw new Error(
+            `Active suffix message is already committed: ${stored.id}`,
+          );
         continue;
       }
       if (ids.has(stored.id)) throw new Error('Duplicate message in append');
       ids.add(stored.id);
-      prepared.push(stored);
+      if (suffixMode && position >= committedPayloadCount)
+        activeSuffix.push(stored);
+      else prepared.push(stored);
     }
-    if (prepared.length === 0) {
+    if (prepared.length === 0 && !suffixMode) {
+      const sidecar = before ? undefined : await this.active(chatId);
+      const active = before ?? sidecar;
+      const existingAnchors = before
+        ? await this.activeRowAnchorsForWrite(chatId)
+        : sidecar?.activeRowAnchors;
+      const effectiveAnchors = survivingActiveRowAnchors(
+        active?.messages ?? [],
+        existingAnchors,
+        explicitAnchors,
+      );
+      await this.validateActiveAnchorSet(
+        chatId,
+        active?.messages ?? [],
+        effectiveAnchors,
+      );
       if (before) {
         // Nothing to finalize: the run alone, as writeActiveAtRevision.
         loaded.index.transcriptRevision = before.transcriptRevision;
-        await this.persistActive(chatId, loaded, before.messages);
+        await this.persistActive(
+          chatId,
+          loaded,
+          before.messages,
+          effectiveAnchors,
+        );
         await this.writeIndex(chatId, loaded.index);
+      } else if (explicitAnchors && explicitAnchors.size > 0) {
+        await this.persistActive(
+          chatId,
+          loaded,
+          active?.messages ?? [],
+          effectiveAnchors,
+        );
       }
       return;
     }
-    const active = before ?? (await this.active(chatId));
-    const pendingIds: string[] = [];
+    if (prepared.length === 0 && suffixMode) {
+      const sidecar = before ? undefined : await this.active(chatId);
+      const active = before ?? sidecar;
+      const existingAnchors = before
+        ? await this.activeRowAnchorsForWrite(chatId)
+        : sidecar?.activeRowAnchors;
+      const effectiveAnchors = survivingActiveRowAnchors(
+        activeSuffix,
+        existingAnchors,
+        explicitAnchors,
+      );
+      await this.validateActiveAnchorSet(
+        chatId,
+        activeSuffix,
+        effectiveAnchors,
+      );
+      if (
+        sameActiveMessages(active?.messages ?? [], activeSuffix) &&
+        sameActiveAnchors(existingAnchors, effectiveAnchors)
+      )
+        return;
+      loaded.index.transcriptRevision =
+        (before?.transcriptRevision ?? loaded.index.transcriptRevision) + 1;
+      await this.persistActive(chatId, loaded, activeSuffix, effectiveAnchors);
+      await this.writeIndex(chatId, loaded.index);
+      return;
+    }
+    const sidecar = before ? undefined : await this.active(chatId);
+    const active = before ?? sidecar;
+    const existingAnchors = before
+      ? await this.activeRowAnchorsForWrite(chatId)
+      : sidecar?.activeRowAnchors;
+    const orderingAnchors = survivingActiveRowAnchors(
+      [...(active?.messages ?? []), ...prepared, ...activeSuffix],
+      existingAnchors,
+      explicitAnchors,
+    );
+    const ordinaryPendingIds: string[] = [];
     for (const message of active?.messages ?? [])
-      if (!(await this.readCommittedMessage(chatId, message.id)))
-        pendingIds.push(message.id);
+      if (
+        !orderingAnchors.has(message.id) &&
+        !(await this.readCommittedMessage(chatId, message.id))
+      )
+        ordinaryPendingIds.push(message.id);
+    const ordinaryPrepared = prepared.filter(
+      (message) => !orderingAnchors.has(message.id),
+    );
+    // An explicit suffix allows newly materialized rows ahead of retained
+    // ordinary rows. Rows already in the sidecar must still commit as a prefix
+    // of its ordinary order: retaining the first cannot finalize the second.
+    const ordinaryPendingSet = new Set(ordinaryPendingIds);
+    const orderedPrepared = suffixMode
+      ? ordinaryPrepared.filter((message) => ordinaryPendingSet.has(message.id))
+      : ordinaryPrepared;
     if (
-      prepared.some((message, index) =>
-        index < pendingIds.length ? message.id !== pendingIds[index] : false,
+      !this.options.childMode &&
+      orderedPrepared.some((message, index) =>
+        index < ordinaryPendingIds.length
+          ? message.id !== ordinaryPendingIds[index]
+          : false,
       )
     ) {
       throw new Error('Finalized messages must follow active transcript order');
     }
+    const committedPayloadIds = new Set<string>();
+    for (const message of prepared) {
+      const rowAnchor = orderingAnchors.get(message.id);
+      if (
+        rowAnchor?.after !== undefined &&
+        rowAnchor.after !== null &&
+        !committedPayloadIds.has(rowAnchor.after) &&
+        !(await this.readCommittedMessage(chatId, rowAnchor.after))
+      )
+        throw new Error(
+          `Invalid active row anchor predecessor: ${rowAnchor.after} must be committed or earlier in append payload`,
+        );
+      committedPayloadIds.add(message.id);
+    }
+    const pendingMessages = suffixMode
+      ? [...prepared, ...activeSuffix]
+      : [
+          ...prepared,
+          ...(active?.messages.filter((message) => !ids.has(message.id)) ?? []),
+        ];
+    const effectiveAnchors = survivingActiveRowAnchors(
+      pendingMessages,
+      existingAnchors,
+      explicitAnchors,
+    );
+    await this.validateActiveAnchorSet(
+      chatId,
+      pendingMessages,
+      effectiveAnchors,
+    );
+    assertActiveSidecarRecordBudgets(
+      pendingMessages,
+      effectiveAnchors,
+      new Set(prepared.map((message) => message.id)),
+    );
     const stagedId = randomUUID();
     await writeJsonValuesCooperatively(
-      this.path(chatId, `${stagedId}.append.tmp`),
+      this.paths.stagedAppendFile(chatId, stagedId),
       prepared,
       {
         pretty: false,
@@ -2275,50 +5823,113 @@ export class ChatTranscriptLog {
         trailingSeparator: true,
       },
     );
+    const stagedPath = this.paths.stagedAppendFile(chatId, stagedId);
+    const childIntent:
+      | Pick<
+          NonNullable<ActiveSidecar['finalizing']>,
+          'child' | 'stagedByteLength' | 'stagedSha256'
+        >
+      | undefined = this.options.childMode
+      ? {
+          child: true,
+          stagedByteLength: (await stat(stagedPath)).size,
+          stagedSha256: await fileDigest(stagedPath),
+        }
+      : undefined;
+    if (this.options.childMode) await this.options.onChildStaged?.();
     const pending: ActiveSidecar = {
       version: 1,
       transcriptRevision:
         (before?.transcriptRevision ?? loaded.index.transcriptRevision) + 1,
       updatedAt: new Date().toISOString(),
-      messages: [
-        ...prepared,
-        ...(active?.messages.filter((message) => !ids.has(message.id)) ?? []),
-      ],
+      // Child rows stay in the digest-pinned staged file, not the sidecar.
+      messages: this.options.childMode
+        ? pendingMessages.slice(prepared.length)
+        : pendingMessages,
+      ...(effectiveAnchors.size > 0
+        ? { activeRowAnchors: effectiveAnchors }
+        : {}),
       finalizing: {
         stagedId,
         byteOffset: loaded.index.committedByteLength,
-        messageIds: prepared.map((message) => message.id),
+        // Child rows stay in the digest-pinned staged file, not the sidecar.
+        messageIds: this.options.childMode
+          ? []
+          : prepared.map((message) => message.id),
+        ...childIntent,
       },
     };
     await writeActiveSidecar(this.path(chatId, 'active.json'), pending);
-    await this.onAppendBoundary('prepared');
+    await this.notifyAppendBoundary('prepared');
     await this.finishAppend(chatId, pending);
     const locatorRows: Array<{
       message: PersistedChatMessage;
       offset: number;
       end: number;
     }> = [];
+    let hasFinalTurnTimer = false;
     for (const message of prepared) {
       const offset = loaded.index.committedByteLength;
       const end =
         offset + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1;
       locatorRows.push({ message, offset, end });
-      this.record(loaded.index, message, offset, end);
+      const logical = message.blocksRef
+        ? await this.expandBlocks(chatId, message)
+        : message;
+      this.record(loaded.index, message, offset, end, undefined, logical);
+      if (
+        logical.blocks.some(
+          (block) => block.type === 'turn_timer' && block.completedAt != null,
+        )
+      )
+        hasFinalTurnTimer = true;
+    }
+    if (
+      loaded.committedLocatorKeys &&
+      (await this.locatorStamp(chatId)) !== loaded.locatorStamp
+    ) {
+      delete loaded.committedLocatorKeys;
+      loaded.committedLocatorInventoryUnavailable = true;
+      this.loaded.delete(chatId);
     }
     await this.writeLocators(chatId, locatorRows);
-    loaded.locatorStamp = await this.locatorStamp(chatId);
+    const nextLocatorStamp = await this.locatorStamp(chatId);
+    if (loaded.committedLocatorKeys) {
+      if (
+        loaded.committedLocatorKeys.size + prepared.length >
+        MAX_COMMITTED_LOCATOR_IDENTITY_KEYS
+      ) {
+        delete loaded.committedLocatorKeys;
+        loaded.committedLocatorInventoryUnavailable = true;
+      } else {
+        for (const message of prepared)
+          loaded.committedLocatorKeys.add(this.locatorKey(message.id));
+      }
+    }
+    loaded.locatorStamp = nextLocatorStamp;
     loaded.index.transcriptRevision = pending.transcriptRevision;
-    loaded.index.hasActiveSidecar = pending.messages.length > prepared.length;
+    loaded.index.hasActiveSidecar = this.options.childMode
+      ? pending.messages.length > 0
+      : pending.messages.length > prepared.length;
+    const finalizingIds = new Set(pending.finalizing?.messageIds ?? []);
+    const activeSurvivors = pending.messages.filter(
+      (message) => !finalizingIds.has(message.id),
+    );
+    const survivingAnchors = survivingActiveRowAnchors(
+      activeSurvivors,
+      effectiveAnchors,
+    );
+    if (survivingAnchors.size > 0)
+      loaded.index.hasOrdinaryActiveRows = await this.hasOrdinaryActiveRows(
+        chatId,
+        activeSurvivors,
+        survivingAnchors,
+      );
+    else delete loaded.index.hasOrdinaryActiveRows;
     await this.writeIndex(chatId, loaded.index);
+    await this.notifyAppendBoundary('index-published');
     await this.clearFinalized(chatId, pending);
-    if (
-      prepared.some((message) =>
-        message.blocks.some(
-          (block) => block.type === 'turn_timer' && block.completedAt != null,
-        ),
-      )
-    )
-      await this.turnIndex(chatId, loaded.index);
+    if (hasFinalTurnTimer) await this.turnIndex(chatId, loaded.index);
   }
 
   /**
@@ -2333,6 +5944,20 @@ export class ChatTranscriptLog {
   ): Promise<ActiveSidecar> {
     const intent = pending.finalizing;
     if (!intent) return pending;
+    const anchors =
+      copyActiveRowAnchors(pending.activeRowAnchors) ??
+      new Map<string, ActiveRowAnchor>();
+    await this.validateActiveAnchorSet(
+      chatId,
+      pending.messages,
+      survivingActiveRowAnchors(pending.messages, anchors),
+      true,
+    );
+    assertActiveSidecarRecordBudgets(
+      pending.messages,
+      anchors,
+      new Set(intent.messageIds),
+    );
     try {
       await this.finishAppend(chatId, pending);
       return pending;
@@ -2342,10 +5967,11 @@ export class ChatTranscriptLog {
       const { finalizing: _finalizing, ...settled } = pending;
       void _finalizing;
       await writeActiveSidecar(this.path(chatId, 'active.json'), settled);
-      await rm(this.path(chatId, `${intent.stagedId}.append.tmp`), {
+      await this.notifyAppendBoundary('abandoned');
+      await rm(this.paths.stagedAppendFile(chatId, intent.stagedId), {
         force: true,
       });
-      await fsyncDirectory(this.root);
+      await fsyncDirectory(this.paths.directory(chatId));
       return settled;
     }
   }
@@ -2356,25 +5982,22 @@ export class ChatTranscriptLog {
     referencedStagedId: string | undefined,
   ): Promise<void> {
     if (this.options.readOnly) return;
-    const prefix = `${chatId}.`;
-    const suffix = '.append.tmp';
     const referenced =
       referencedStagedId === undefined
         ? undefined
-        : `${prefix}${referencedStagedId}${suffix}`;
+        : this.paths.stagedAppendFile(chatId, referencedStagedId);
     let removed = false;
-    for await (const entry of await opendir(this.root)) {
+    for await (const entry of await opendir(this.paths.directory(chatId))) {
       if (
         !entry.isFile() ||
-        !entry.name.startsWith(prefix) ||
-        !entry.name.endsWith(suffix) ||
-        entry.name === referenced
+        !this.paths.isStagedAppend(chatId, entry.name) ||
+        join(this.paths.directory(chatId), entry.name) === referenced
       )
         continue;
-      await rm(join(this.root, entry.name), { force: true });
+      await rm(join(this.paths.directory(chatId), entry.name), { force: true });
       removed = true;
     }
-    if (removed) await fsyncDirectory(this.root);
+    if (removed) await fsyncDirectory(this.paths.directory(chatId));
   }
 
   /** Replays only a proved prefix of our staged append; unrelated corruption is preserved. */
@@ -2392,23 +6015,47 @@ export class ChatTranscriptLog {
     ) {
       throw new Error('Invalid transcript append intent');
     }
-    const stagedPath = this.path(chatId, `${intent.stagedId}.append.tmp`);
-    const stagedMessages: PersistedChatMessage[] = [];
-    for await (const row of lines(stagedPath)) stagedMessages.push(row.message);
+    const stagedPath = this.paths.stagedAppendFile(chatId, intent.stagedId);
     const finalizing = new Set(intent.messageIds);
-    if (
-      finalizing.size !== stagedMessages.length ||
-      !stagedMessages.every(
-        (message, i) =>
-          message.id === intent.messageIds[i] &&
-          pending.messages.some(
-            (candidate) =>
-              candidate.id === message.id &&
-              digest(candidate) === digest(message),
-          ),
+    if (intent.child) {
+      if (
+        !this.options.childMode ||
+        !Number.isSafeInteger(intent.stagedByteLength) ||
+        typeof intent.stagedSha256 !== 'string' ||
+        (await stat(stagedPath)).size !== intent.stagedByteLength ||
+        (await fileDigest(stagedPath)) !== intent.stagedSha256 ||
+        intent.messageIds.length !== 0
       )
-    ) {
-      throw new Error('Staged append differs from durable active projection');
+        throw new Error('Invalid child staged append intent');
+      const stagedIds = new Set<string>();
+      for await (const row of lines(stagedPath)) {
+        if (
+          !isDelegationChildRow(row.message) ||
+          !row.message.final ||
+          stagedIds.has(row.message.id)
+        )
+          throw new Error('Staged child append differs from intent');
+        stagedIds.add(row.message.id);
+      }
+      if (stagedIds.size === 0) throw new Error('Empty child staged append');
+    } else {
+      const stagedMessages: PersistedChatMessage[] = [];
+      for await (const row of lines(stagedPath))
+        stagedMessages.push(row.message);
+      if (
+        finalizing.size !== stagedMessages.length ||
+        !stagedMessages.every(
+          (message, i) =>
+            message.id === intent.messageIds[i] &&
+            pending.messages.some(
+              (candidate) =>
+                candidate.id === message.id &&
+                digest(candidate) === digest(message),
+            ),
+        )
+      ) {
+        throw new Error('Staged append differs from durable active projection');
+      }
     }
     const logPath = this.path(chatId, 'jsonl');
     const logHandle = await open(logPath, 'r+');
@@ -2493,7 +6140,11 @@ export class ChatTranscriptLog {
     } finally {
       await logHandle.close();
     }
-    await this.onAppendBoundary('appended');
+    await this.notifyAppendBoundary('appended');
+  }
+
+  private async notifyAppendBoundary(boundary: AppendBoundary): Promise<void> {
+    if (this.onAppendBoundary) await this.onAppendBoundary(boundary);
   }
 
   /** The committed sparse index and revision must be durable before clearing. */
@@ -2510,45 +6161,63 @@ export class ChatTranscriptLog {
     if (remaining.length) {
       const { finalizing: _finalizing, ...settled } = pending;
       void _finalizing;
+      const remainingAnchors = survivingActiveRowAnchors(
+        remaining,
+        pending.activeRowAnchors,
+      );
       await writeActiveSidecar(this.path(chatId, 'active.json'), {
         ...settled,
         messages: remaining,
+        activeRowAnchors: remainingAnchors,
       });
     } else {
       await rm(this.path(chatId, 'active.json'), { force: true });
-      await fsyncDirectory(this.root);
+      await fsyncDirectory(this.paths.directory(chatId));
     }
-    await rm(this.path(chatId, `${intent.stagedId}.append.tmp`), {
+    await this.notifyAppendBoundary('survivors-published');
+    await rm(this.paths.stagedAppendFile(chatId, intent.stagedId), {
       force: true,
     });
-    await fsyncDirectory(this.root);
+    await fsyncDirectory(this.paths.directory(chatId));
   }
 
   private async persistActive(
     chatId: string,
     loaded: LoadedLog,
     messages: PersistedChatMessage[],
+    activeRowAnchors?: ReadonlyMap<string, ActiveRowAnchor>,
   ): Promise<void> {
     if (messages.length === 0) {
       await rm(this.path(chatId, 'active.json'), { force: true });
-      await fsyncDirectory(this.root);
+      await fsyncDirectory(this.paths.directory(chatId));
     } else {
       await writeActiveSidecar(this.path(chatId, 'active.json'), {
         version: 1,
         transcriptRevision: loaded.index.transcriptRevision,
         updatedAt: new Date().toISOString(),
         messages,
+        ...(activeRowAnchors && activeRowAnchors.size > 0
+          ? { activeRowAnchors: new Map(activeRowAnchors) }
+          : {}),
       } satisfies ActiveSidecar);
     }
     loaded.index.hasActiveSidecar = messages.length > 0;
+    if (activeRowAnchors && activeRowAnchors.size > 0)
+      loaded.index.hasOrdinaryActiveRows = messages.some(
+        (message) => !activeRowAnchors.has(message.id),
+      );
+    else delete loaded.index.hasOrdinaryActiveRows;
   }
 
   private async updateActive(
     chatId: string,
     messages: readonly PersistedChatMessage[],
     allowRemoval: boolean,
+    fields: TranscriptFieldMode,
+    anchors?: ReadonlyMap<string, ActiveRowAnchor>,
   ): Promise<void> {
     this.assertWritable();
+    const explicitAnchors = copyActiveRowAnchors(anchors);
     await this.serial(chatId, async () => {
       const loaded = await this.load(chatId);
       const stored: PersistedChatMessage[] = [];
@@ -2556,10 +6225,15 @@ export class ChatTranscriptLog {
       for (const message of messages) {
         if (ids.has(message.id)) throw new Error('Duplicate active message');
         ids.add(message.id);
-        const next = await this.artifacts.externalize(chatId, message);
-        const existing = await this.readCommittedMessage(chatId, next.id);
+        const next = await this.prepareRow(chatId, message, false, fields);
+        const existing = await this.readCommittedMessageForGeneration(
+          chatId,
+          loaded,
+          next.id,
+          true,
+        );
         if (existing !== undefined) {
-          if (digest(existing) !== digest(next))
+          if (!(await this.matchesCommitted(chatId, next, existing)))
             throw new Error('Active message conflicts with committed history');
         } else stored.push(next);
       }
@@ -2568,13 +6242,24 @@ export class ChatTranscriptLog {
         for (const message of previous?.messages ?? [])
           if (
             !ids.has(message.id) &&
-            !(await this.readCommittedMessage(chatId, message.id))
+            !(await this.readCommittedMessageForGeneration(
+              chatId,
+              loaded,
+              message.id,
+              true,
+            ))
           )
             throw new Error(
               'Active transcript replacement would discard an uncommitted message',
             );
+      const effectiveAnchors = survivingActiveRowAnchors(
+        stored,
+        previous?.activeRowAnchors,
+        explicitAnchors,
+      );
+      await this.validateActiveAnchorSet(chatId, stored, effectiveAnchors);
       loaded.index.transcriptRevision += 1;
-      await this.persistActive(chatId, loaded, stored);
+      await this.persistActive(chatId, loaded, stored, effectiveAnchors);
       await this.writeIndex(chatId, loaded.index);
     });
   }
@@ -2582,16 +6267,20 @@ export class ChatTranscriptLog {
   public async writeActive(
     chatId: string,
     messages: readonly PersistedChatMessage[],
+    anchors?: ReadonlyMap<string, ActiveRowAnchor>,
+    fields: TranscriptFieldMode = 'legacy',
   ): Promise<void> {
-    await this.updateActive(chatId, messages, false);
+    await this.updateActive(chatId, messages, false, fields, anchors);
   }
 
   /** Explicitly replace the mutable sidecar without touching committed rows. */
   public async replaceActive(
     chatId: string,
     messages: readonly PersistedChatMessage[],
+    anchors?: ReadonlyMap<string, ActiveRowAnchor>,
+    fields: TranscriptFieldMode = 'legacy',
   ): Promise<void> {
-    await this.updateActive(chatId, messages, true);
+    await this.updateActive(chatId, messages, true, fields, anchors);
   }
 
   /**
@@ -2607,15 +6296,30 @@ export class ChatTranscriptLog {
     chatId: string,
     messages: readonly PersistedChatMessage[],
     transcriptRevision: number,
+    anchors?: ReadonlyMap<string, ActiveRowAnchor>,
+    fields: TranscriptFieldMode = 'legacy',
   ): Promise<void> {
     this.assertWritable();
+    const explicitAnchors = copyActiveRowAnchors(anchors);
     if (!Number.isSafeInteger(transcriptRevision) || transcriptRevision < 0)
       throw new Error('Invalid transcript revision');
     await this.serial(chatId, async () => {
       const loaded = await this.load(chatId);
-      const stored = await this.uncommittedActiveRows(chatId, loaded, messages);
+      const stored = await this.uncommittedActiveRows(
+        chatId,
+        loaded,
+        messages,
+        fields,
+      );
+      const previousAnchors = await this.activeRowAnchorsForWrite(chatId);
+      const effectiveAnchors = survivingActiveRowAnchors(
+        stored,
+        previousAnchors,
+        explicitAnchors,
+      );
+      await this.validateActiveAnchorSet(chatId, stored, effectiveAnchors);
       loaded.index.transcriptRevision = transcriptRevision;
-      await this.persistActive(chatId, loaded, stored);
+      await this.persistActive(chatId, loaded, stored, effectiveAnchors);
       await this.writeIndex(chatId, loaded.index);
     });
   }
@@ -2659,13 +6363,51 @@ export class ChatTranscriptLog {
       finishPerformanceStage({ reused: 1, turns: previous.turns.length });
       return previous;
     }
-    // Appends revisit only the last turn. Replacements remove this derived
-    // file before publishing the new log, so equal-size rewrites cannot reuse
+    // Appends normally revisit only the last turn. A delayed safety receipt
+    // also invalidates its explicit owner, even across a later user boundary.
+    // Replacements remove the derived file before publishing the new log,
+    // so equal-size rewrites cannot reuse
     // it; a prefix-preserving replacement passes the turns it cannot change.
-    const prefix =
+    let prefix =
       previous && previous.committedMessageCount < index.committedMessageCount
         ? previous.turns.slice(0, -1)
         : [...reusable];
+    if (
+      previous &&
+      previous.committedMessageCount < index.committedMessageCount &&
+      prefix.length > 0
+    ) {
+      const positions = new Map(
+        prefix.map((turn, position) => [turn.id, position]),
+      );
+      let reusableCount = prefix.length;
+      for await (const message of this.range(
+        chatId,
+        index,
+        previous.committedMessageCount,
+        index.committedMessageCount,
+      )) {
+        for (const block of message.blocks) {
+          if (
+            block.type !== 'approval_safety_denied_info' ||
+            !block.toolUseId ||
+            block.subagentId ||
+            block.turnUserMessageId === undefined
+          )
+            continue;
+          const owner = positions.get(block.turnUserMessageId);
+          if (owner !== undefined)
+            reusableCount = Math.min(reusableCount, owner);
+        }
+      }
+      prefix = prefix.slice(0, reusableCount);
+    } else if (!previous) {
+      // A replaced suffix can remove a late receipt owned by an earlier turn.
+      const owner = prefix.findIndex(
+        (turn) => turn.deniedToolUseIds.length > 0,
+      );
+      if (owner >= 0) prefix = prefix.slice(0, owner);
+    }
     const start = prefix[prefix.length - 1]?.end ?? 0;
     const source = this.range(
       chatId,
@@ -2674,16 +6416,29 @@ export class ChatTranscriptLog {
       index.committedMessageCount,
     );
     const artifacts = this.artifacts;
+    const owner = this.paths.owner(chatId);
     async function* withCanonicalReceipts(): AsyncGenerator<PersistedChatMessage> {
       for await (const row of source)
-        yield await artifacts.hydrateAgentArtifacts(chatId, row);
+        yield await artifacts.hydrateAgentArtifacts(owner, row);
     }
     const turns = [
       ...prefix,
-      ...(await buildTurnIndex(withCanonicalReceipts(), start)),
+      // A paged row has no inline blocks; hydrate them once expanded.
+      ...(await buildTurnIndex(
+        withCanonicalReceipts(),
+        start,
+        previous && previous.committedMessageCount < index.committedMessageCount
+          ? previous.turns
+          : [],
+        async (message) =>
+          artifacts.hydrateAgentArtifacts(
+            owner,
+            await this.expandBlocks(chatId, message),
+          ),
+      )),
     ];
     const next: TranscriptTurnIndex = {
-      version: 5,
+      version: 10,
       committedByteLength: index.committedByteLength,
       committedMessageCount: index.committedMessageCount,
       turns,
@@ -2732,9 +6487,26 @@ export class ChatTranscriptLog {
     const cached = await this.turnIndex(chatId, index);
     let records = cached.turns;
     // Active messages are already a provider-side projection. Fold only the
-    // current committed turn with its active suffix, never all past turns.
+    // current committed turn with its active suffix. A receipt can also name
+    // an earlier owner; start there and keep its canonical receipt correlation.
     let activeTail: PersistedChatMessage[] | undefined;
-    const activeStart = records[records.length - 1]?.start ?? 0;
+    let activeTurn = Math.max(0, records.length - 1);
+    for (const message of active) {
+      for (const block of message.blocks) {
+        if (
+          block.type !== 'approval_safety_denied_info' ||
+          !block.toolUseId ||
+          block.subagentId ||
+          block.turnUserMessageId === undefined
+        )
+          continue;
+        const owner = records.findIndex(
+          (turn) => turn.id === block.turnUserMessageId,
+        );
+        if (owner >= 0) activeTurn = Math.min(activeTurn, owner);
+      }
+    }
+    const activeStart = records[activeTurn]?.start ?? 0;
     if (active.length > 0) {
       activeTail = [];
       for await (const row of this.range(
@@ -2746,8 +6518,13 @@ export class ChatTranscriptLog {
         activeTail.push(row);
       activeTail.push(...active);
       records = [
-        ...records.slice(0, -1),
-        ...(await buildTurnIndex(activeTail, activeStart)),
+        ...records.slice(0, activeTurn),
+        ...(await buildTurnIndex(
+          activeTail,
+          activeStart,
+          cached.turns,
+          (message) => this.expandBlocks(chatId, message),
+        )),
       ];
     }
     const totalMessages = index.committedMessageCount + active.length;
@@ -2788,7 +6565,7 @@ export class ChatTranscriptLog {
         ? Math.max(turn.start, end - TRANSCRIPT_PAGE_SIZE)
         : newest || !turn.complete
           ? Math.max(turn.start, turn.end - 1000)
-          : Math.max(turn.start, turn.end - 16);
+          : Math.max(turn.start, turn.end - COMPLETED_TURN_TAIL_SIZE);
       const tailEnd = owner ? end : turn.end;
       for (let ordinal = tailStart; ordinal < tailEnd; ordinal += 1)
         ordinals.add(ordinal);
@@ -2804,10 +6581,13 @@ export class ChatTranscriptLog {
         end: turn.end,
         complete: turn.complete,
         summary: turn.summary,
+        outcomes: turn.outcomes,
+        deniedToolUseIds: turn.deniedToolUseIds,
         finalMessageIds: turn.finalMessageIds,
         files: turn.files,
         ...(turn.frameTimer ? { frameTimer: turn.frameTimer } : {}),
         ...(gapEnd > gapStart ? { before: gapEnd } : {}),
+        ...(turn.continuations ? { continuations: turn.continuations } : {}),
       });
     }
     const ordered = Array.from(ordinals).sort((a, b) => a - b);
@@ -2866,28 +6646,329 @@ export class ChatTranscriptLog {
     };
   }
 
+  private async readReducerFrameRow(
+    chatId: string,
+    reference: SparseReducerFrameReference,
+  ): Promise<PersistedChatMessage> {
+    for await (const row of lines(
+      this.path(chatId, 'jsonl'),
+      reference.offset,
+    )) {
+      if (row.offset !== reference.offset || row.message.id !== reference.id)
+        throw new ChatTranscriptIntegrityError(
+          `Reducer frame reference does not match transcript row ${reference.id}`,
+        );
+      return row.message;
+    }
+    throw new ChatTranscriptIntegrityError(
+      `Reducer frame transcript row is missing: ${reference.id}`,
+    );
+  }
+
+  private reducerFramePageRanks(
+    page: TranscriptPage,
+    index: SparseIndex,
+    before: number | undefined,
+    options: ReducerFrameViewRequest,
+    activeMessages: readonly PersistedChatMessage[],
+    context: LogicalReadContext | undefined,
+  ): Map<string, number> {
+    const ranks = new Map<string, number>();
+    if (page.messageOrdinals) {
+      for (const message of page.messages) {
+        const ordinal = page.messageOrdinals[message.id];
+        if (Number.isSafeInteger(ordinal)) ranks.set(message.id, ordinal);
+      }
+      if (ranks.size === page.messages.length) return ranks;
+      ranks.clear();
+    }
+
+    if (context) {
+      const end = before ?? context.ranks.bodyCount;
+      const start = Math.max(0, end - TRANSCRIPT_PAGE_SIZE);
+      const bodyPageLength = end - start;
+      page.messages.forEach((message, position) => {
+        if (position < bodyPageLength) {
+          ranks.set(message.id, start + position);
+          return;
+        }
+        const activeRank = context.ranks.activeRankById.get(message.id);
+        if (activeRank !== undefined) ranks.set(message.id, activeRank);
+      });
+      return ranks;
+    }
+
+    const end = before ?? index.committedMessageCount;
+    const start = Math.max(0, end - TRANSCRIPT_PAGE_SIZE);
+    const committedPageLength = end - start;
+    page.messages.forEach((message, position) => {
+      if (position < committedPageLength) {
+        ranks.set(message.id, start + position);
+        return;
+      }
+      const activePosition = activeMessages.findIndex(
+        (active) => active.id === message.id,
+      );
+      if (activePosition >= 0)
+        ranks.set(message.id, index.committedMessageCount + activePosition);
+    });
+    if (options.view === 'turns') return ranks;
+    return ranks;
+  }
+
+  /**
+   * Supplement a default reducer view with a bounded current-turn frame. Each
+   * selected committed offset is read as exactly one JSONL row; a long current
+   * turn is never rescanned. Anchored active rows rank through their logical
+   * placement so displaced timers/cards keep their user-visible order.
+   */
+  private async supplementReducerFrame(
+    chatId: string,
+    index: SparseIndex,
+    page: TranscriptPage,
+    before: number | undefined,
+    options: ReducerFrameViewRequest,
+    activeMessages: readonly PersistedChatMessage[],
+    context?: LogicalReadContext,
+  ): Promise<TranscriptPage> {
+    const persistedFrame = index.reducerFrame;
+    if (!options.reducerFrame || !persistedFrame || options.view === 'turns')
+      return page;
+
+    const activeReferences: ReducerFramePageReference[] = [];
+    if (context) {
+      const ranked = Array.from(context.activeByRank.entries()).sort(
+        ([left], [right]) => left - right,
+      );
+      for (const [rank, message] of ranked)
+        activeReferences.push({
+          id: message.id,
+          ordinal: rank,
+          message,
+          rank,
+        });
+    } else {
+      activeMessages.forEach((message, position) => {
+        const rank = index.committedMessageCount + position;
+        activeReferences.push({
+          id: message.id,
+          ordinal: rank,
+          message,
+          rank,
+        });
+      });
+    }
+
+    const committedBoundaryRank = persistedFrame.boundary
+      ? (context?.ranks.committedRankByOrdinal(
+          persistedFrame.boundary.ordinal,
+        ) ?? persistedFrame.boundary.ordinal)
+      : undefined;
+    let latestActiveBoundary: ReducerFramePageReference | undefined;
+    for (const reference of activeReferences)
+      if (
+        isUserTurnBoundary(reference.message) &&
+        (latestActiveBoundary === undefined ||
+          reference.rank > latestActiveBoundary.rank)
+      )
+        latestActiveBoundary = reference;
+    const activeBoundaryOwnsFrame =
+      latestActiveBoundary !== undefined &&
+      (committedBoundaryRank === undefined ||
+        latestActiveBoundary.rank > committedBoundaryRank);
+    const currentBoundaryRank =
+      activeBoundaryOwnsFrame && latestActiveBoundary
+        ? latestActiveBoundary.rank
+        : committedBoundaryRank;
+    const includeAfterBoundary = (rank: number, isBoundary: boolean): boolean =>
+      currentBoundaryRank === undefined ||
+      rank > currentBoundaryRank ||
+      (isBoundary && rank === currentBoundaryRank);
+
+    const activeEvents = activeReferences.filter(
+      (reference) =>
+        hasReducerFrameContent(reference.message) &&
+        includeAfterBoundary(
+          reference.rank,
+          isUserTurnBoundary(reference.message),
+        ),
+    );
+    const activeToolUseIds = new Set<string>();
+    for (const event of activeEvents)
+      for (const toolUseId of distinctToolUseIds(event.message))
+        activeToolUseIds.add(toolUseId);
+
+    const sparseReferences = sparseReducerFrameReferences(
+      persistedFrame,
+      activeToolUseIds,
+    );
+    const pageMessagesById = new Map(
+      page.messages.map((message) => [message.id, message]),
+    );
+    // The latest timer before the current boundary rides along: the reducer
+    // gives a wake a timer only when the chat already has one.
+    const timerKeys = new Set(
+      persistedFrame.timers.map((timer) => `${timer.ordinal}:${timer.id}`),
+    );
+    let carriedTimer: SparseReducerFrameReference | undefined;
+    if (currentBoundaryRank !== undefined)
+      for (const reference of sparseReferences) {
+        const rank =
+          context?.ranks.committedRankByOrdinal(reference.ordinal) ??
+          reference.ordinal;
+        if (
+          rank < currentBoundaryRank &&
+          timerKeys.has(`${reference.ordinal}:${reference.id}`)
+        )
+          carriedTimer = reference;
+      }
+    const committedEvents: ReducerFramePageReference[] = [];
+    for (const reference of sparseReferences) {
+      const rank =
+        context?.ranks.committedRankByOrdinal(reference.ordinal) ??
+        reference.ordinal;
+      const isBoundary =
+        persistedFrame.boundary?.ordinal === reference.ordinal &&
+        persistedFrame.boundary.id === reference.id;
+      if (
+        reference !== carriedTimer &&
+        !includeAfterBoundary(rank, isBoundary && !activeBoundaryOwnsFrame)
+      )
+        continue;
+      const inPage = pageMessagesById.get(reference.id);
+      const message =
+        inPage ?? (await this.readReducerFrameRow(chatId, reference));
+      committedEvents.push({
+        id: message.id,
+        ordinal: reference.ordinal,
+        offset: reference.offset,
+        message,
+        rank,
+      });
+    }
+
+    const events = [...committedEvents, ...activeEvents].sort(
+      (left, right) =>
+        left.rank - right.rank ||
+        left.ordinal - right.ordinal ||
+        left.id.localeCompare(right.id),
+    );
+    let foldedFrame = emptyReducerFrameFold<ReducerFramePageReference>();
+    for (const event of events)
+      foldedFrame = foldReducerFrame(foldedFrame, event.message, event);
+
+    const selectedFrameRows = new Map<string, ReducerFramePageReference>();
+    const addFrameRow = (reference: ReducerFramePageReference): void => {
+      selectedFrameRows.set(reference.id, reference);
+    };
+    if (foldedFrame.boundary) addFrameRow(foldedFrame.boundary);
+    foldedFrame.timers.forEach(addFrameRow);
+    foldedFrame.cards.forEach(({ row }) => addFrameRow(row));
+    for (const tool of foldedFrame.toolUses) {
+      addFrameRow(tool.row);
+      tool.resultWitnesses.forEach(({ row }) => addFrameRow(row));
+    }
+
+    const pageRanks = this.reducerFramePageRanks(
+      page,
+      index,
+      before,
+      options,
+      activeMessages,
+      context,
+    );
+    const orderedRows = new Map<
+      string,
+      { message: PersistedChatMessage; rank: number; insertion: number }
+    >();
+    page.messages.forEach((message, insertion) => {
+      const rank = pageRanks.get(message.id);
+      if (rank === undefined)
+        throw new ChatTranscriptIntegrityError(
+          `Transcript page row has no logical rank: ${message.id}`,
+        );
+      orderedRows.set(message.id, { message, rank, insertion });
+    });
+    for (const reference of Array.from(selectedFrameRows.values()))
+      if (!orderedRows.has(reference.id)) {
+        orderedRows.set(reference.id, {
+          message: reference.message,
+          rank: reference.rank,
+          insertion: reference.rank,
+        });
+      }
+    const messages = Array.from(orderedRows.values())
+      .sort(
+        (left, right) =>
+          left.rank - right.rank || left.insertion - right.insertion,
+      )
+      .map(({ message }) => message);
+    return { ...page, messages };
+  }
+
   private async readPageWithActive(
     chatId: string,
     before?: number,
-    options: TranscriptViewRequest = {},
+    options: ReducerFrameViewRequest = {},
   ): Promise<{
     page: TranscriptPage;
     activeMessages: PersistedChatMessage[];
+    anchored?: true;
   }> {
     return this.serial(chatId, async () => {
       const loaded = await this.load(chatId);
       const { index } = loaded;
       const projection = this.projectedActive(chatId);
+      const activeSidecar = projection ? undefined : await this.active(chatId);
       const activeMessages = projection
         ? [...projection.messages]
-        : ((await this.active(chatId))?.messages ?? []);
+        : (activeSidecar?.messages ?? []);
       const transcriptRevision =
         projection?.transcriptRevision ?? index.transcriptRevision;
+      const anchors = activeSidecar?.activeRowAnchors;
+      if (anchors && anchors.size > 0) {
+        const context = await this.logicalReadContext(
+          chatId,
+          index,
+          activeMessages,
+          anchors,
+        );
+        const page =
+          options.view === 'turns'
+            ? await this.logicalTurnPage(
+                chatId,
+                index,
+                context,
+                before,
+                options,
+                transcriptRevision,
+              )
+            : await this.logicalRawPage(
+                chatId,
+                index,
+                context,
+                before,
+                transcriptRevision,
+              );
+        return {
+          page: await this.supplementReducerFrame(
+            chatId,
+            index,
+            page,
+            before,
+            options,
+            activeMessages,
+            context,
+          ),
+          activeMessages,
+          anchored: true,
+        };
+      }
       const active: PersistedChatMessage[] = [];
       for (const message of activeMessages) {
         const existing = await this.committedCopy(chatId, loaded, message.id);
         if (existing === undefined) active.push(message);
-        else if (digest(existing) !== digest(message))
+        else if (!(await this.matchesCommitted(chatId, message, existing)))
           throw new Error('Active message conflicts with committed history');
       }
       if (options.view === 'turns')
@@ -2946,17 +7027,25 @@ export class ChatTranscriptLog {
           break;
         }
       }
+      const page: TranscriptPage = {
+        messages,
+        totalMessages,
+        transcriptRevision,
+        ...(start > 0 ? { before: start } : {}),
+        ...(latestHumanMessage &&
+        !messages.some((message) => message.id === latestHumanMessage.id)
+          ? { latestHumanMessage }
+          : {}),
+      };
       return {
-        page: {
-          messages,
-          totalMessages,
-          transcriptRevision,
-          ...(start > 0 ? { before: start } : {}),
-          ...(latestHumanMessage &&
-          !messages.some((message) => message.id === latestHumanMessage.id)
-            ? { latestHumanMessage }
-            : {}),
-        },
+        page: await this.supplementReducerFrame(
+          chatId,
+          index,
+          page,
+          before,
+          options,
+          active,
+        ),
         activeMessages,
       };
     });
@@ -2977,13 +7066,20 @@ export class ChatTranscriptLog {
     return result;
   }
 
+  /**
+   * The page plus the active rows it was built from. `anchored` is set when
+   * the sidecar's anchors placed rows, so the page is already in logical
+   * order; callers must not re-append active rows then. It is absent for an
+   * anchor-free chat, whose page is exactly today's.
+   */
   public async pageWithActiveMessages(
     chatId: string,
     before?: number,
-    options: TranscriptViewRequest = {},
+    options: ReducerFrameViewRequest = {},
   ): Promise<{
     page: TranscriptPage;
     activeMessages: PersistedChatMessage[];
+    anchored?: true;
   }> {
     const finishRangeRead = beginMainTranscriptPerformanceStage(
       'range_read',
@@ -2999,6 +7095,153 @@ export class ChatTranscriptLog {
     await this.load(chatId);
     for await (const row of lines(this.path(chatId, 'jsonl')))
       yield row.message;
+  }
+
+  /**
+   * Stream the complete logical transcript. The existing `iterate` and search
+   * preview APIs remain physical: callers that need the user-visible order
+   * opt into this projection explicitly.
+   */
+  public async *iterateLogical(
+    chatId: string,
+  ): AsyncGenerator<PersistedChatMessage> {
+    const { index } = await this.load(chatId);
+    const projection = this.projectedActive(chatId);
+    const sidecar = projection ? undefined : await this.active(chatId);
+    const activeRows = projection?.messages ?? sidecar?.messages ?? [];
+    const anchors = sidecar?.activeRowAnchors;
+    if (anchors && anchors.size > 0) {
+      const context = await this.logicalReadContext(
+        chatId,
+        index,
+        activeRows,
+        anchors,
+      );
+      for (const message of this.logicalActiveMessages(
+        context,
+        context.placement.start,
+      ))
+        yield message;
+      for await (const row of lines(this.path(chatId, 'jsonl'))) {
+        yield row.message;
+        const followers = context.placement.afterCommitted.get(row.message.id);
+        if (followers)
+          for (const message of this.logicalActiveMessages(context, followers))
+            yield message;
+      }
+      for (const message of this.logicalActiveMessages(
+        context,
+        context.placement.tail,
+      ))
+        yield message;
+      return;
+    }
+
+    const activeById = new Map<string, PersistedChatMessage[]>();
+    for (const message of activeRows) {
+      const rows = activeById.get(message.id) ?? [];
+      rows.push(message);
+      activeById.set(message.id, rows);
+    }
+    for await (const row of lines(this.path(chatId, 'jsonl'))) {
+      const activeEchoes = activeById.get(row.message.id);
+      if (activeEchoes) {
+        for (const message of activeEchoes)
+          if (digest(row.message) !== digest(message))
+            throw new Error('Active message conflicts with committed history');
+        activeById.delete(row.message.id);
+      }
+      yield row.message;
+    }
+    for (const message of activeRows) {
+      if (activeById.has(message.id)) yield message;
+    }
+  }
+
+  /** Read a run card and its anchored active rows in logical transcript order. */
+  public async readRunMessages(
+    chatId: string,
+    runId: string,
+  ): Promise<PersistedChatMessage[]> {
+    return this.serial(chatId, async () => {
+      const { index } = await this.load(chatId);
+      const projection = this.projectedActive(chatId);
+      const sidecar = projection ? undefined : await this.active(chatId);
+      const activeRows = projection?.messages ?? sidecar?.messages ?? [];
+      const anchors = sidecar?.activeRowAnchors;
+      if (!anchors || anchors.size === 0) {
+        const activeCard = activeRows.find(
+          (message) => message.id === runId && hasDelegatedAgentCall(message),
+        );
+        if (activeCard) {
+          const committed = await this.readCommittedMessage(chatId, runId);
+          if (committed && digest(committed) !== digest(activeCard))
+            throw new Error('Active message conflicts with committed history');
+          return [activeCard];
+        }
+        const committedCard = await this.readCommittedMessage(chatId, runId);
+        return committedCard && hasDelegatedAgentCall(committedCard)
+          ? [committedCard]
+          : [];
+      }
+      const context = await this.logicalReadContext(
+        chatId,
+        index,
+        activeRows,
+        anchors,
+      );
+
+      let card = activeRows.find(
+        (message) => message.id === runId && hasDelegatedAgentCall(message),
+      );
+      let cardRank = context.ranks.activeRankById.get(runId);
+      if (context.committedById.has(runId)) {
+        const metadata = context.committedById.get(runId);
+        if (!metadata?.isRunCard) return [];
+        cardRank = context.ranks.committedRankByOrdinal(metadata.ordinal);
+        card = logicalCommittedRows.get(
+          this.path(chatId, 'jsonl'),
+          context.committedStamp,
+          metadata.ordinal,
+        );
+        if (!card) {
+          card = await this.readCommittedMessage(chatId, runId);
+          if (!card) return [];
+          logicalCommittedRows.set(
+            this.path(chatId, 'jsonl'),
+            context.committedStamp,
+            metadata.ordinal,
+            card,
+          );
+        }
+      } else if (!card) {
+        const committedCard = await this.readCommittedMessage(chatId, runId);
+        if (!committedCard || !hasDelegatedAgentCall(committedCard)) return [];
+        const ordinal = await this.committedOrdinal(chatId, index, runId);
+        if (ordinal === undefined) return [];
+        cardRank = context.ranks.committedRankByOrdinal(ordinal);
+        card = committedCard;
+        logicalCommittedRows.set(
+          this.path(chatId, 'jsonl'),
+          context.committedStamp,
+          ordinal,
+          committedCard,
+        );
+      }
+      if (!card || cardRank === undefined) return [];
+
+      const runRows: Array<{ rank: number; message: PersistedChatMessage }> = [
+        { rank: cardRank, message: card },
+      ];
+      context.activeById.forEach((message: PersistedChatMessage): void => {
+        if (message.id === runId) return;
+        if (anchors.get(message.id)?.runId !== runId) return;
+        const rank = context.ranks.activeRankById.get(message.id);
+        if (rank !== undefined) runRows.push({ rank, message });
+      });
+      runRows.sort((left, right) => left.rank - right.rank);
+      return runRows.map(({ message }) => message);
+    });
   }
 
   /** Capture only file handles and a verified descriptor under the scope lease.
@@ -3036,6 +7279,10 @@ export class ChatTranscriptLog {
           'Transcript preview committed length mismatch',
         );
       const hasActiveSidecar = projection.messages.length > 0;
+      const anchors = survivingActiveRowAnchors(
+        projection.messages,
+        copyActiveRowAnchors(projection.anchors),
+      );
       const descriptor: TranscriptDescriptor = {
         ...canonical,
         format: index.format,
@@ -3045,9 +7292,17 @@ export class ChatTranscriptLog {
         transcriptRevision: projection.transcriptRevision,
         hasActiveSidecar,
       };
+      if (anchors.size > 0)
+        descriptor.hasOrdinaryActiveRows = await this.hasOrdinaryActiveRows(
+          chatId,
+          projection.messages,
+          anchors,
+        );
+      else delete descriptor.hasOrdinaryActiveRows;
       if (
         canonical.transcriptRevision !== projection.transcriptRevision ||
-        canonical.hasActiveSidecar !== hasActiveSidecar
+        canonical.hasActiveSidecar !== hasActiveSidecar ||
+        canonical.hasOrdinaryActiveRows !== descriptor.hasOrdinaryActiveRows
       ) {
         // The caller's descriptor describes another active generation.
         delete descriptor.messageCount;
@@ -3097,6 +7352,9 @@ export class ChatTranscriptLog {
             committedByteLength: candidate.committedByteLength,
             transcriptRevision: candidate.transcriptRevision,
             hasActiveSidecar: candidate.hasActiveSidecar,
+            ...(candidate.hasOrdinaryActiveRows === undefined
+              ? {}
+              : { hasOrdinaryActiveRows: candidate.hasOrdinaryActiveRows }),
             messageCount: candidate.messageCount,
             userMessageCount: candidate.userMessageCount,
             firstMessageAt: candidate.firstMessageAt,
@@ -3177,9 +7435,23 @@ export class ChatTranscriptLog {
               transcriptRevision: index.transcriptRevision,
               hasActiveSidecar: index.hasActiveSidecar,
             };
+            const activeSnapshot = activeHandle
+              ? await this.active(chatId)
+              : undefined;
+            const anchors = activeSnapshot?.activeRowAnchors;
+            if (anchors && anchors.size > 0)
+              descriptor.hasOrdinaryActiveRows =
+                await this.hasOrdinaryActiveRows(
+                  chatId,
+                  activeSnapshot.messages,
+                  anchors,
+                );
+            else delete descriptor.hasOrdinaryActiveRows;
             if (
               canonical.transcriptRevision !== index.transcriptRevision ||
-              canonical.hasActiveSidecar !== index.hasActiveSidecar
+              canonical.hasActiveSidecar !== index.hasActiveSidecar ||
+              canonical.hasOrdinaryActiveRows !==
+                descriptor.hasOrdinaryActiveRows
             ) {
               // An out-of-band active-sidecar replacement can advance the log
               // index before the scope summary. Its optional derived metadata
@@ -3267,6 +7539,9 @@ export class ChatTranscriptLog {
             committedByteLength: candidate.committedByteLength,
             transcriptRevision: candidate.transcriptRevision,
             hasActiveSidecar: candidate.hasActiveSidecar,
+            ...(candidate.hasOrdinaryActiveRows === undefined
+              ? {}
+              : { hasOrdinaryActiveRows: candidate.hasOrdinaryActiveRows }),
             messageCount: candidate.messageCount,
             userMessageCount: candidate.userMessageCount,
             firstMessageAt: candidate.firstMessageAt,
@@ -3310,44 +7585,111 @@ export class ChatTranscriptLog {
   ): Promise<ArtifactReferenceSlice> {
     return this.serial(chatId, async () => {
       const index = await this.maintenanceCommittedIndex(chatId, expected);
-      if (
-        !Number.isSafeInteger(offset) ||
-        offset < 0 ||
-        offset > index.committedByteLength ||
-        !Number.isSafeInteger(maxBytes) ||
-        maxBytes < 1 ||
-        maxBytes > 1024 * 1024
-      )
-        throw new Error('Invalid artifact reference scan cursor');
-      const path = this.path(chatId, 'jsonl');
-      const before = await fileIdentity(path);
-      const identity = `${index.committedDigest}:${index.committedMessageCount}:${index.committedByteLength}:${before.stamp}`;
-      let nextOffset = offset;
-      let scannedBytes = 0;
-      const artifactIds: string[] = [];
-      if (offset < index.committedByteLength)
-        for await (const row of lines(path, offset)) {
-          if (row.end > index.committedByteLength)
-            throw new Error('Artifact scan crossed committed transcript');
-          nextOffset = row.end;
-          scannedBytes += row.end - row.offset;
-          for (const block of row.message.blocks)
-            artifactIds.push(...artifactIdsForBlock(block));
-          if (scannedBytes >= maxBytes) break;
-        }
-      const after = await fileIdentity(path);
-      if (before.stamp !== after.stamp)
-        throw new Error('Committed transcript changed during artifact scan');
-      if (nextOffset === offset && offset < index.committedByteLength)
-        throw new Error('Artifact scan did not advance');
-      return {
-        identity,
-        nextOffset,
-        complete: nextOffset === index.committedByteLength,
-        scannedBytes,
-        artifactIds,
-      };
+      return this.committedReferenceSlice(
+        chatId,
+        offset,
+        maxBytes,
+        index.committedByteLength,
+        `${index.committedDigest}:${index.committedMessageCount}:${index.committedByteLength}`,
+      );
     });
+  }
+
+  /**
+   * {@link artifactReferenceSlice} for a child stream, bounded by its
+   * descriptor's committed length: the descriptor, not the store index, is
+   * a child stream's authority.
+   */
+  public async childArtifactReferenceSlice(
+    streamKey: string,
+    offset: number,
+    maxBytes: number,
+    committedByteLength: number,
+  ): Promise<ArtifactReferenceSlice> {
+    if (!this.options.childMode) throw new Error('Child mode required');
+    return this.serial(streamKey, async () => {
+      const log = await fileIdentity(this.path(streamKey, 'jsonl'));
+      if (log.bytes !== committedByteLength)
+        throw new ChatTranscriptIntegrityError(
+          'Artifact maintenance child transcript length mismatch',
+        );
+      return this.committedReferenceSlice(
+        streamKey,
+        offset,
+        maxBytes,
+        committedByteLength,
+        String(committedByteLength),
+      );
+    });
+  }
+
+  private async committedReferenceSlice(
+    chatId: string,
+    offset: number,
+    maxBytes: number,
+    committedByteLength: number,
+    committedIdentity: string,
+  ): Promise<ArtifactReferenceSlice> {
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      offset > committedByteLength ||
+      !Number.isSafeInteger(maxBytes) ||
+      maxBytes < 1 ||
+      maxBytes > 1024 * 1024
+    )
+      throw new Error('Invalid artifact reference scan cursor');
+    const path = this.path(chatId, 'jsonl');
+    const before = await fileIdentity(path);
+    const identity = `${committedIdentity}:${before.stamp}`;
+    let nextOffset = offset;
+    let scannedBytes = 0;
+    const artifactIds: string[] = [];
+    if (offset < committedByteLength)
+      for await (const row of lines(path, offset)) {
+        if (row.end > committedByteLength)
+          throw new Error('Artifact scan crossed committed transcript');
+        nextOffset = row.end;
+        scannedBytes += row.end - row.offset;
+        if (row.message.blocksRef) {
+          const references = await this.pagedArtifactIds(chatId, row.message);
+          artifactIds.push(...references.artifactIds);
+          scannedBytes += references.pageBytes;
+        } else artifactIds.push(...rowArtifactIds(row.message));
+        if (scannedBytes >= maxBytes) break;
+      }
+    const after = await fileIdentity(path);
+    if (before.stamp !== after.stamp)
+      throw new Error('Committed transcript changed during artifact scan');
+    if (nextOffset === offset && offset < committedByteLength)
+      throw new Error('Artifact scan did not advance');
+    return {
+      identity,
+      nextOffset,
+      complete: nextOffset === committedByteLength,
+      scannedBytes,
+      artifactIds,
+    };
+  }
+
+  /** A paged row's closure, with the bytes its traversal read. */
+  private async pagedArtifactIds(
+    chatId: string,
+    message: PersistedChatMessage,
+  ): Promise<{ artifactIds: string[]; pageBytes: number }> {
+    const artifactIds: string[] = [];
+    let pageBytes = 0;
+    for await (const reference of this.artifacts.referenceClosure(
+      this.paths.owner(chatId),
+      message,
+    )) {
+      artifactIds.push(reference.artifactId);
+      pageBytes += reference.byteLength;
+    }
+    // The closure covers tool output; visuals live on the paged blocks.
+    for (const block of (await this.expandBlocks(chatId, message)).blocks)
+      artifactIds.push(...artifactIdsOf(block, 'visual'));
+    return { artifactIds, pageBytes };
   }
 
   /** Bound the mutable sidecar pass as well as the committed-prefix pass. */
@@ -3410,11 +7752,14 @@ export class ChatTranscriptLog {
         const legacy = await readLegacyActiveSidecar(path);
         if (!isActiveSidecar(legacy))
           throw new Error('Invalid active transcript sidecar');
-        for (const message of legacy.messages)
-          for (const block of message.blocks)
-            artifactIds.push(...artifactIdsForBlock(block));
-        nextOffset = before.bytes;
         scannedBytes = before.bytes;
+        for (const message of legacy.messages)
+          if (message.blocksRef) {
+            const references = await this.pagedArtifactIds(chatId, message);
+            artifactIds.push(...references.artifactIds);
+            scannedBytes += references.pageBytes;
+          } else artifactIds.push(...rowArtifactIds(message));
+        nextOffset = before.bytes;
       } else if (version === 2) {
         if (offset < before.bytes)
           for await (const row of activeRowsWithOffsets(path, offset)) {
@@ -3427,9 +7772,16 @@ export class ChatTranscriptLog {
             } else {
               if (!isActiveSidecarMessageV2(row.value))
                 throw new Error('Invalid active transcript sidecar message');
+              parseSidecarRowAnchor(row.value);
               if (row.value.finalizing) activeFinalizingRows += 1;
-              for (const block of row.value.message.blocks)
-                artifactIds.push(...artifactIdsForBlock(block));
+              if (row.value.message.blocksRef) {
+                const references = await this.pagedArtifactIds(
+                  chatId,
+                  row.value.message,
+                );
+                artifactIds.push(...references.artifactIds);
+                scannedBytes += references.pageBytes;
+              } else artifactIds.push(...rowArtifactIds(row.value.message));
             }
             nextOffset = row.end;
             scannedBytes += row.end - row.offset;
@@ -3459,6 +7811,13 @@ export class ChatTranscriptLog {
   public async artifactReferenceIdentity(
     chatId: string,
     expected?: TranscriptDescriptor,
+    childInputs: readonly {
+      streamKey: string;
+      streamRevision: number;
+      committedSha256: string;
+      committedByteLength: number;
+      pendingJournalDigest?: string;
+    }[] = [],
   ): Promise<string> {
     return this.serial(chatId, async () => {
       const index = await this.maintenanceCommittedIndex(chatId, expected);
@@ -3469,7 +7828,93 @@ export class ChatTranscriptLog {
       } catch (error) {
         if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
       }
-      return `${index.committedDigest}:${index.committedMessageCount}:${index.committedByteLength}:${committed.stamp}:${active}`;
+      const child = [...childInputs].sort((left, right) =>
+        left.streamKey.localeCompare(right.streamKey),
+      );
+      const primary = `${index.committedDigest}:${index.committedMessageCount}:${index.committedByteLength}:${committed.stamp}:${active}`;
+      return child.length === 0
+        ? primary
+        : `${primary}:${createHash('sha256').update(JSON.stringify(child)).digest('hex')}`;
     });
+  }
+}
+
+/** Primary-chat facade preserves owner cleanup and the existing constructor. */
+export class ChatTranscriptLog extends TranscriptStreamStore {
+  public readonly delegations: ChatDelegationLogs;
+  public readonly childDeleteFence: ReturnType<typeof chatChildDeleteFence>;
+
+  public constructor(
+    root: string,
+    onAppendBoundary?: (boundary: AppendBoundary) => Promise<void>,
+    options: {
+      readOnly?: boolean;
+      now?: () => number;
+      testHooks?: ChatTranscriptLogTestHooks;
+    } = {},
+  ) {
+    super(
+      primaryTranscriptPaths(root),
+      new ChatTranscriptArtifacts(root, options.readOnly),
+      onAppendBoundary,
+      options,
+    );
+    this.delegations = new ChatDelegationLogs(root, options.readOnly);
+    this.childDeleteFence = chatChildDeleteFence(root);
+    this.root = root;
+  }
+
+  private readonly root: string;
+
+  /**
+   * Chat ids whose active sidecar holds at least one row anchor. Lists the
+   * sidecar files and parses only those, without loading or repairing logs.
+   */
+  public async anchoredChatIds(): Promise<string[]> {
+    const suffix = '.active.json';
+    const names: string[] = [];
+    try {
+      const directory = await opendir(this.root);
+      for await (const entry of directory)
+        if (entry.isFile() && entry.name.endsWith(suffix))
+          names.push(entry.name.slice(0, -suffix.length));
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') return [];
+      throw error;
+    }
+    const anchored: string[] = [];
+    for (const chatId of names.sort()) {
+      try {
+        assertTranscriptIdentity(chatId);
+      } catch {
+        continue;
+      }
+      const sidecar = await this.serial(chatId, () => this.active(chatId));
+      if (sidecar?.activeRowAnchors && sidecar.activeRowAnchors.size > 0)
+        anchored.push(chatId);
+    }
+    return anchored;
+  }
+
+  protected override async removeOwnedContent(chatId: string): Promise<void> {
+    for (const { directory } of STORED_ARTIFACT_LOCATIONS) {
+      const familyDirectory = join(this.root, directory);
+      const chatArtifactDirectory = join(familyDirectory, chatId);
+      const existed = await directoryExists(chatArtifactDirectory);
+      await rm(chatArtifactDirectory, { recursive: true, force: true });
+      if (existed) await fsyncDirectory(familyDirectory);
+    }
+    // A format-4 checkpoint records removal of v2 streams in its publishing
+    // marker and removes them only after the scope indexes no longer own the
+    // parent. Keep the whole delegation tree until that publication barrier,
+    // but fence appends now so none recreates it afterwards.
+    try {
+      await stat(join(this.root, 'delegations', chatId, 'v2'));
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
+      await this.delegations.remove(chatId);
+      return;
+    }
+    await this.delegations.retire(chatId);
   }
 }

@@ -40,7 +40,7 @@ describe('WatcherManagementModal session-replay privacy', () => {
     });
 
     const backdrop = document.body.querySelector(
-      ':scope > [data-testid="watcher-management-modal-backdrop"]',
+      ':scope > [data-canopy-overlay-root="modal"]',
     );
     const card = backdrop?.querySelector(
       '[data-testid="watcher-management-modal"]',
@@ -51,6 +51,27 @@ describe('WatcherManagementModal session-replay privacy', () => {
       false,
     );
     expect(card?.querySelector('h2')?.textContent).toBe('Pipeline watchers');
+  });
+
+  it('moves focus into the shared dialog and closes once on Escape', () => {
+    const onClose = jest.fn();
+    act(() =>
+      root.render(
+        <WatcherManagementModal
+          title="Pipeline watchers"
+          emptyMessage="No active watchers."
+          watchers={[]}
+          onClose={onClose}
+        />,
+      ),
+    );
+    expect(document.activeElement?.closest('[role="dialog"]')).not.toBeNull();
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('blocks the follow-up instruction but not the row controls', () => {

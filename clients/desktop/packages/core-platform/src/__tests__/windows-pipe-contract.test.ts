@@ -1,4 +1,8 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { execFileSync } from 'node:child_process';
+import { closeSync, constants, openSync, writeSync } from 'node:fs';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
+import type { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -7,6 +11,13 @@ import {
   loadWindowsPipeSecurity,
   type WindowsPipeSecurity,
 } from '../endpoints';
+import type { PlatformPipeEndpointServices } from '@canopy/core-runtime';
+import { openSecurePipe } from '../endpoints/windows-pipe';
+import {
+  captureWindowsClosureContext,
+  createWindowsClosureWitness,
+  observeWindowsClosure,
+} from '../supervision/windows-closure';
 
 // Fake-native contract tests: they prove fail-closed wiring on every host and
 // are not Windows security evidence (see windows-pipe-security.test.ts).
@@ -48,10 +59,14 @@ function fakeNative(overrides: Partial<WindowsPipeSecurity> = {}): {
   };
   return { native, closed: () => closes, accept: () => onConnection };
 }
-const pipes = (
-  native: WindowsPipeSecurity,
-): ReturnType<typeof createPlatformEndpointServices> =>
-  createPlatformEndpointServices('win32', { namedPipeSecurity: native });
+const pipes = (native: WindowsPipeSecurity): PlatformPipeEndpointServices => {
+  const endpoints = createPlatformEndpointServices('win32', {
+    namedPipeSecurity: native,
+  });
+  if (endpoints.semantics !== 'first-instance-pipe')
+    throw new Error('Windows must use named pipes.');
+  return endpoints;
+};
 
 describe('Windows pipe security contract (fake native)', () => {
   it.each<[string, string, string | null]>([
@@ -163,6 +178,111 @@ describe('Windows pipe security contract (fake native)', () => {
     fake.accept()?.(null, 3);
     expect(fake.closed()).toBe(1);
   });
+
+  // The addon's threadsafe callback arrives in whatever context Node gives it
+  // (an empty AsyncLocalStorage frame on Node 24); here the fake calls it from
+  // the wrong context on purpose. A FIFO stands in for the connected fd.
+  (process.platform === 'win32' ? it.skip : it)(
+    'admits and reads in the async context that opened the pipe, not the caller context',
+    async () => {
+      // `listener` names the context that opened the pipe; undefined means the
+      // callback ran somewhere else.
+      type Seen = { readonly edge: boolean; readonly listener?: string };
+      const marker = new AsyncLocalStorage<string>();
+      const directory = await mkdtemp(path.join(tmpdir(), 'pipe-context-'));
+      const sockets: Socket[] = [];
+      const writers: number[] = [];
+      try {
+        const connect = (fake: ReturnType<typeof fakeNative>): number => {
+          const accept = fake.accept();
+          if (!accept) throw new Error('The pipe is not listening.');
+          const fifo = path.join(directory, `fifo-${writers.length}`);
+          execFileSync('mkfifo', [fifo]);
+          const fd = openSync(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+          writers.push(
+            openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK),
+          );
+          const admitted = sockets.length;
+          accept(null, fd);
+          if (sockets.length === admitted) closeSync(fd);
+          return writers[writers.length - 1];
+        };
+        const serve = (): {
+          readonly fake: ReturnType<typeof fakeNative>;
+          readonly seen: Promise<[Seen, Seen]>;
+        } => {
+          const fake = fakeNative();
+          // Production's runner/host guard: a mismatch marks both runs unsafe.
+          const check = captureWindowsClosureContext();
+          const observe = (): Seen => {
+            const edge = observeWindowsClosure('git');
+            edge?.close();
+            check();
+            return { edge: edge !== undefined, listener: marker.getStore() };
+          };
+          let admitted!: (seen: Seen) => void;
+          let read!: (seen: Seen) => void;
+          const seen = Promise.all([
+            new Promise<Seen>((resolve) => (admitted = resolve)),
+            new Promise<Seen>((resolve) => (read = resolve)),
+          ]);
+          const server = openSecurePipe(fake.native, address.path, (socket) => {
+            sockets.push(socket);
+            admitted(observe());
+            socket.once('data', () => read(observe()));
+          });
+          if (server === 'in-use') throw new Error('Pipe name in use.');
+          return { fake, seen };
+        };
+
+        // Opened inside a run; delivered and written from outside any run.
+        const witness = createWindowsClosureWitness();
+        let finish!: () => void;
+        const finished = new Promise<void>((resolve) => (finish = resolve));
+        let opened!: (served: ReturnType<typeof serve>) => void;
+        const ready = new Promise<ReturnType<typeof serve>>(
+          (resolve) => (opened = resolve),
+        );
+        const run = witness.run(async () => {
+          opened(marker.run('run', serve));
+          await finished;
+        });
+        const inside = await ready;
+        expect(observeWindowsClosure('git')).toBeUndefined();
+        expect(marker.getStore()).toBeUndefined();
+        writeSync(connect(inside.fake), 'ping');
+        const seen = await inside.seen;
+        finish();
+        await run;
+        const report = witness.finalize();
+        expect(seen).toEqual([
+          { edge: true, listener: 'run' },
+          { edge: true, listener: 'run' },
+        ]);
+        expect(report).toMatchObject({ started: 2, pending: 0, unsafe: false });
+        expect(witness.accepts(report)).toBe(true);
+
+        // Control: opened outside any run, delivered from inside another run.
+        const outside = marker.run('control', serve);
+        const other = createWindowsClosureWitness();
+        await other.run(() =>
+          marker.run('caller', () => {
+            writeSync(connect(outside.fake), 'ping');
+          }),
+        );
+        expect(await outside.seen).toEqual([
+          { edge: false, listener: 'control' },
+          { edge: false, listener: 'control' },
+        ]);
+        expect(other.finalize()).toMatchObject({ started: 0, unsafe: false });
+      } finally {
+        for (const socket of sockets) socket.destroy();
+        for (const fd of writers) closeSync(fd);
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
 
   it('refuses a missing or non-addon module with fixed text', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'pipe-addon-'));

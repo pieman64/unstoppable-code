@@ -1,5 +1,6 @@
 import { runInNewContext } from 'node:vm';
 import { checkActionability } from '../actionability';
+import type { BrowserCdpSend } from '../actionability';
 
 function sample(overrides: Record<string, unknown> = {}): object {
   return {
@@ -143,7 +144,7 @@ describe('checkActionability', () => {
 
   it('checks focus attachment and enabled state without scrolling or focusing', async () => {
     jest.useFakeTimers();
-    const send = jest.fn(
+    const send = jest.fn<Promise<unknown>, Parameters<BrowserCdpSend>>(
       (): Promise<object> =>
         Promise.resolve(sample({ visible: false, enabled: true })),
     );
@@ -167,7 +168,7 @@ describe('checkActionability', () => {
 
   it('uses the border top-left plus requested offsets and hit-tests that point', async () => {
     jest.useFakeTimers();
-    const send = jest.fn(
+    const send = jest.fn<Promise<unknown>, Parameters<BrowserCdpSend>>(
       (method: string, params: Record<string, unknown>): Promise<object> => {
         if (method === 'DOM.getBoxModel')
           return Promise.resolve({
@@ -216,13 +217,15 @@ describe('checkActionability', () => {
 
   it('rejects an out-of-viewport position without clamping or a direct fallback', async () => {
     jest.useFakeTimers();
-    const send = jest.fn((method: string): Promise<object> => {
-      if (method === 'DOM.getBoxModel')
-        return Promise.resolve({
-          model: { border: [190, 150, 210, 150, 210, 170, 190, 170] },
-        });
-      return Promise.resolve(sample());
-    });
+    const send = jest.fn<Promise<unknown>, Parameters<BrowserCdpSend>>(
+      (method: string): Promise<object> => {
+        if (method === 'DOM.getBoxModel')
+          return Promise.resolve({
+            model: { border: [190, 150, 210, 150, 210, 170, 190, 170] },
+          });
+        return Promise.resolve(sample());
+      },
+    );
     const positionOptions = { position: { x: 20, y: 10 } };
     const pending = checkActionability({
       send,
@@ -247,7 +250,7 @@ describe('checkActionability', () => {
   // Real input on a native picker can open a modal OS menu, so position never
   // overrides the direct click there.
   it('clicks a positioned native picker directly and says position was not applied', async () => {
-    const send = jest.fn(
+    const send = jest.fn<Promise<unknown>, Parameters<BrowserCdpSend>>(
       (): Promise<object> =>
         Promise.resolve({
           result: { value: { attached: true, nativePicker: true } },

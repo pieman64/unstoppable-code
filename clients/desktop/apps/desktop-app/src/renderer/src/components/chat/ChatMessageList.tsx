@@ -1,11 +1,12 @@
 import type { TranscriptSearchSelection } from '@/hooks/useTranscriptSearch';
+import { omitRecoveredCreditHoldArtifacts } from '@canopy/ui-shared/lib';
 import {
   collectDesktopChatVisualOwners,
   createDesktopChatVisualHost,
   desktopChatVisualsKey,
 } from '@/lib/desktop-chat-visual-host';
+import { CHAT_TURN_FOCUS_HIGHLIGHT_MS } from './chat-call-focus';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { useActivityStore } from '@/stores/activityStore';
 import {
   useChatStore,
@@ -24,16 +25,17 @@ import type {
   AgentArtifactCarryByTurn,
   AgentArtifactReceiptV1,
   AgentUsage,
-  BackgroundProcess,
-  ChatAttachmentPromptContext,
   ChatToolOutputResponse,
-  FileReference,
+  PipelineRunArtifactReceiptV1,
   TurnDiffData,
 } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
   ChatVisualHostProvider,
+  QueuedMessageStack,
   useChatVisualsPublisher,
+  ToolOutputReaderContext,
+  type ToolOutputReader,
 } from '@canopy/ui-app';
 import {
   AgentSentReceivingContextProvider,
@@ -57,21 +59,20 @@ import {
   type JSX,
   type RefObject,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
-import { ChatBlockRenderer } from './ChatBlockRenderer';
-import {
-  ToolOutputReaderContext,
-  type ToolOutputReader,
-} from './DeferredToolOutput';
+import { WaitingDelegationsContext } from './ChatBlockRenderer';
 import { DelegationTranscriptSourceContext } from './delegated-agent-transcript';
-import { getDisplayBlockKey } from './display-block-keys';
 import { PinUserMessagesContext } from './pin-user-messages-context';
+import { placeSafetyDenialReceipts } from './safety-denial-placement';
+import { omitLegacySetupAnnotations } from './legacy-setup-annotation';
 
 import {
   SubagentEntryActionsContext,
   useSubagentEntryActionsValue,
 } from '@/components/subagents/subagent-entry-actions';
 import { useInvocableInventory } from '@/hooks/useInvocableInventory';
+import { useValueHeldWhile } from '@/hooks/useValueHeldWhile';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import { getCwdFromFileIndex } from '@/lib/file-reference-paths';
 import {
@@ -95,22 +96,51 @@ import {
   type TranscriptPerformanceFrameQueue,
 } from '@/lib/transcript-performance';
 import type { ScheduledQueuedMessage } from '@/lib/worktreeSessionPromptAutomations';
+import { getLockedHarness } from '@/lib/chatProviderLock';
 import { hydratedKeys } from '@/stores/chat/hydration';
+import {
+  EMPTY_WAITING_DELEGATION_IDS,
+  queuedRowForceAction,
+  queuedRowTurnPhase,
+} from '@/stores/chat/queue-mirror';
+import { localTurnActivity } from '@/stores/chat/turn-activity';
+import {
+  chatBackgroundWorkKey,
+  publishChatBackgroundAgents,
+  publishChatBackgroundRuns,
+  useChatHeldRunKeys,
+} from '@/stores/chatBackgroundWorkStore';
 import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   ChatMessageLinkActionsProvider,
+  ComposerTray,
   InputDeliveryList,
   OverlayScrollArea,
+  QUEUED_MESSAGE_EDITING_TOOLTIP,
+  QUEUED_MESSAGE_SENDING_TOOLTIP,
+  QUEUED_MESSAGE_SETUP_TOOLTIP,
   ScrollToBottomButton,
+  isCapabilityTileReceipt,
+  useCompactQueue,
+  type QueuedMessageSetupWait,
 } from '@canopy/ui-shared/components';
 import {
   PANEL_CONTENT_ADOPTED_EVENT,
   PANEL_CONTENT_HOST_ATTRIBUTE,
 } from '@canopy/ui-shared/panels';
-import { ActiveAgentActivitySection } from './ActiveAgentActivitySection';
+import { DesktopAgentActivitySection } from './DesktopAgentActivitySection';
+import { WatchedRunCarryRecorder } from './useRecordWatchedRunCarry';
+import { BackgroundTrayDelegateSteps } from './BackgroundTrayDelegateSteps';
+import { DELEGATION_TRANSCRIPT_CHAT_LOG } from '@canopy/protocol/delegation';
+import { backgroundTrayAgents } from './background-tray-agents';
+import { useLiveAgentRunKeys } from './useLiveAgentRunKeys';
+import {
+  placeAgentActivity,
+  type AgentActivityPlacement,
+} from '@canopy/protocol/agent-artifacts';
 import {
   createEmptyAgentArtifactProjectionCache,
   projectAgentArtifactsWithCarry,
@@ -126,20 +156,31 @@ import {
   shouldPreloadTranscriptFileIndex,
   shouldVirtualizeTranscript,
 } from './chat-message-list-state';
-import { ChatMessageItem } from './ChatMessageItem';
+import { ChatMessageItem, type SpawningCallTarget } from './ChatMessageItem';
 import { ForkedFromLink } from './ForkedFromLink';
 import {
   computeIncrementalTurnGroups,
   createEmptyTurnGroupCache,
   findLastForkableTurnGroupIndex,
+  searchTurnGroupId,
 } from './incremental-turn-groups';
 import {
   ManagedDelegationStopContext,
   selectManagedDelegationStopState,
   type ManagedDelegationStopControls,
 } from './managed-delegation-stop';
+import {
+  deriveNativeTaskStopTarget,
+  NativeTaskStopContext,
+  reportNativeTaskStopFailure,
+  type NativeTaskStopControls,
+  useReconcileNativeTaskStops,
+} from './native-task-stop';
 import { QueuedMessageBubble } from './QueuedMessageBubble';
-import { QueuedMessageEditor } from './QueuedMessageEditor';
+import { QueuedMessageCompactRow } from './QueuedMessageCompactRow';
+import { useComposerWorkDrawerLink } from './composer-work-drawer-context';
+import { scheduledMessageAsQueuedMessage } from './scheduledMessageAsQueuedMessage';
+import { useQueuedMessageKey } from './useQueuedMessageKey';
 import { computeRevertedUserMessageIds } from './revert-region';
 import {
   publishStickyUserHeight,
@@ -149,33 +190,88 @@ import {
   computeTranscriptStickySections,
   type TranscriptStickySection,
 } from './transcriptStickySections';
-import {
-  turnBackgroundProcesses,
-  useChatBackgroundProcessesByTurn,
-} from './turn-background-processes';
 import { TurnGroupRenderer } from './TurnGroupRenderer';
-import type {
-  ActiveComposerView,
-  TurnGroup,
-  TurnGroupOrMessage,
-} from './types';
+import type { TurnGroup, TurnGroupOrMessage } from './types';
+import {
+  activeContinuationPromptIds,
+  continuationDiffOwners,
+  continuationPromptId,
+  continuationTranscriptTurns,
+  promptTurnOwnerId,
+} from './continuation-transcript-turns';
 
 const EMPTY_AGENT_ARTIFACTS: readonly AgentArtifactReceiptV1[] = [];
-const EMPTY_BACKGROUND_PROCESSES: readonly BackgroundProcess[] = [];
+const NO_RUN_KEYS: ReadonlySet<string> = new Set();
 const NO_VIRTUAL_ITEMS: VirtualItem[] = [];
 const NO_MOUNTED_TRANSCRIPT_SECTIONS: ReadonlySet<number> = new Set();
 const NEAR_BOTTOM_THRESHOLD = 80;
 const TRANSCRIPT_OVERSCAN_ITEMS = 2;
 const MAX_VIRTUALIZED_STICKY_SECTION_ITEMS = 20;
-/**
- * How long a deep-linked turn keeps its highlight ring (ECW-8684). Applied as
- * a `data-*` attribute directly on the section wrapper — the transcript's
- * existing `data-stuck` / `data-pinned` idiom — so the highlight never forces
- * a React re-render of the transcript mid-scroll.
- */
-const CHAT_TURN_FOCUS_HIGHLIGHT_MS = 2400;
 /** Upper bound on history pages fetched while honoring one deep link. */
 const CHAT_TURN_FOCUS_MAX_PAGE_LOADS = 64;
+
+interface TranscriptMessageAnchor {
+  chatId: string;
+  messageId: string;
+  offset: number;
+  scrollTarget: ChatScrollPositionTarget;
+  scrollVersion: number;
+}
+
+function stickySectionContainsMessage(
+  section: TranscriptStickySection,
+  messageId: string,
+): boolean {
+  return section.items.some((item) =>
+    item.kind === 'turn-group'
+      ? item.userMessage.id === messageId ||
+        item.assistantMessages.some((message) => message.id === messageId) ||
+        item.timerMessage.id === messageId
+      : item.message.id === messageId,
+  );
+}
+
+/** The section, turn and message holding a tool call, when it is loaded. */
+function findToolCall(
+  sections: readonly TranscriptStickySection[],
+  toolUseId: string,
+): { sectionIndex: number; groupId: string; messageId: string } | undefined {
+  for (
+    let sectionIndex = 0;
+    sectionIndex < sections.length;
+    sectionIndex += 1
+  ) {
+    for (const item of sections[sectionIndex].items) {
+      if (item.kind !== 'turn-group') continue;
+      const message = item.assistantMessages.find((candidate) =>
+        candidate.blocks.some(
+          (block) =>
+            (block.type === 'tool_use' ||
+              block.type === 'agent' ||
+              block.type === 'workflow') &&
+            block.toolUseId === toolUseId,
+        ),
+      );
+      if (message)
+        return {
+          sectionIndex,
+          groupId: item.userMessage.id,
+          messageId: message.id,
+        };
+    }
+  }
+  return undefined;
+}
+
+function sameMessageOrder(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((messageId, index) => messageId === right[index])
+  );
+}
 
 interface StickyUserMessageHeaderProps {
   group: TurnGroup;
@@ -187,34 +283,6 @@ interface StickyUserMessageHeaderProps {
   chatId: string;
   forceExpandedUserMessage: boolean;
   onJumpToMessage?: (element: HTMLElement) => void;
-}
-
-/**
- * Assign a stable React key per queued message object. Switching the edit
- * target between two queued messages must remount the editor so its local
- * state (editor content, attachments) resets to the newly-selected message
- * rather than carrying over from the previous one. Keying off the message
- * object's identity also lets the editor stay mounted across local queue
- * index shifts. Host snapshots replace message objects, so host-owned rows
- * use their durable queue entry id to keep an in-progress edit mounted.
- */
-function useQueuedMessageKey(): (message: QueuedChatMessage) => string {
-  const keysRef = useRef<WeakMap<QueuedChatMessage, string> | null>(null);
-  if (keysRef.current === null) {
-    keysRef.current = new WeakMap();
-  }
-  const counterRef = useRef(0);
-  return useCallback((message: QueuedChatMessage): string => {
-    if (message.hostQueueEntryId) return `host-${message.hostQueueEntryId}`;
-    const cache = keysRef.current;
-    if (!cache) return 'qm-0';
-    const existing = cache.get(message);
-    if (existing !== undefined) return existing;
-    counterRef.current += 1;
-    const id = `qm-${counterRef.current}`;
-    cache.set(message, id);
-    return id;
-  }, []);
 }
 
 function isNearBottom(el: HTMLElement): boolean {
@@ -482,6 +550,9 @@ export function ChatMessageList({
   messages,
   loadedBytesEstimate = 0,
   pendingTurnTimerId,
+  startingTurnUserMessageId,
+  startingTurnPresentationKey,
+  waitingForApproval = false,
   queuedMessages,
   chatId,
   agentUsage,
@@ -490,15 +561,11 @@ export function ChatMessageList({
   onClearQueuedMessage,
   onForceQueuedMessage,
   onEditQueuedMessage,
-  onCancelEditQueuedMessage,
-  onSaveEditQueuedMessage,
   editingQueuedMessageIndex,
-  editingQueuedMessageFocusAllowed,
   pendingQueuedMessageEditId,
-  queuedMessageSchedulingEnabled = false,
-  composerTab,
   onResetToPoint,
   queuedForSetup = false,
+  setupWait,
   targetOverride: targetOverrideProp,
   archivedContainerId,
   standaloneHistory,
@@ -511,8 +578,6 @@ export function ChatMessageList({
   suppressAutoScroll = false,
   scheduledMessages = [],
   onEditScheduledMessage,
-  onCancelEditScheduledMessage,
-  onSaveEditScheduledMessage,
   onClearScheduledMessage,
   onInterruptScheduledMessage,
   editingScheduledMessageId = null,
@@ -528,6 +593,14 @@ export function ChatMessageList({
   messages: ChatMessage[];
   loadedBytesEstimate?: number;
   pendingTurnTimerId?: string;
+  /** User message whose turn shows the pending "Starting…" status. */
+  startingTurnUserMessageId?: string;
+  startingTurnPresentationKey?: string;
+  /**
+   * The chat has a pending tool approval (the dock's selector). Only the
+   * latest turn receives it, so historical turns keep their memoized props.
+   */
+  waitingForApproval?: boolean;
   queuedMessages: QueuedChatMessage[];
   chatId: string;
   agentUsage?: Record<string, AgentUsage>;
@@ -536,25 +609,12 @@ export function ChatMessageList({
   onClearQueuedMessage: (index: number) => void;
   onForceQueuedMessage?: (index: number) => void;
   onEditQueuedMessage?: (index: number, message?: QueuedChatMessage) => void;
-  onCancelEditQueuedMessage?: () => void;
-  onSaveEditQueuedMessage?: (
-    index: number,
-    text: string,
-    fileReferences: FileReference[],
-    attachmentPaths: string[],
-    attachmentPromptContexts: ChatAttachmentPromptContext[] | undefined,
-    inputMode: 'typed' | 'voice',
-    scheduledSendDraft: { runAt: string } | undefined,
-    expected?: QueuedChatMessage,
-  ) => void;
-  /** Index of the queued message currently being edited inline, if any. */
+  /**
+   * Index of the queued message being edited, if any. Its row steps out of
+   * the queue while the host renders the editor in the composer's place.
+   */
   editingQueuedMessageIndex?: number;
-  editingQueuedMessageFocusAllowed?: boolean;
   pendingQueuedMessageEditId?: string;
-  /** Allow queued-message inline editors to add/edit/remove a one-time schedule. */
-  queuedMessageSchedulingEnabled?: boolean;
-  /** Active composer tab — supplies model/plan/thinking context to the inline editor. */
-  composerTab?: ActiveComposerView | null;
   /**
    * Per-turn revert handler. Worktree chats only — eligibility is
    * gated on the turn having a captured snapshot in `turnDiffs`.
@@ -566,6 +626,8 @@ export function ChatMessageList({
    * generic "Queued" label for the more specific "queued — worktree setting up".
    */
   queuedForSetup?: boolean;
+  /** The setup wait the queued messages show while `queuedForSetup`. */
+  setupWait?: QueuedMessageSetupWait;
   archivedContainerId?: string;
   standaloneHistory?: boolean;
   targetOverride?: {
@@ -592,17 +654,6 @@ export function ChatMessageList({
    */
   scheduledMessages?: ScheduledQueuedMessage[];
   onEditScheduledMessage?: (automationId: string) => void;
-  onCancelEditScheduledMessage?: () => void;
-  onSaveEditScheduledMessage?: (
-    automationId: string,
-    text: string,
-    fileReferences: FileReference[],
-    attachmentPaths: string[],
-    attachmentPromptContexts: ChatAttachmentPromptContext[] | undefined,
-    inputMode: 'typed' | 'voice',
-    scheduledSendDraft: { runAt: string } | undefined,
-    expected?: QueuedChatMessage,
-  ) => void;
   onClearScheduledMessage?: (automationId: string) => void;
   onInterruptScheduledMessage?: (automationId: string) => void;
   editingScheduledMessageId?: string | null;
@@ -622,6 +673,31 @@ export function ChatMessageList({
       ),
     [scheduledMessages],
   );
+  const transcriptMessageIds = useMemo(
+    () => messages.map((message) => message.id),
+    [messages],
+  );
+  const renderedTranscriptIdentityRef = useRef<{
+    chatId: string;
+    messageIds: readonly string[];
+  } | null>(null);
+  const preMutationAnchorRef = useRef<TranscriptMessageAnchor | null>(null);
+  // The anchor whose scroll restore is still waiting for its rows to mount.
+  const pendingTranscriptAnchorRef = useRef<TranscriptMessageAnchor | null>(
+    null,
+  );
+  const userScrollVersionRef = useRef(0);
+  // One queued or scheduled message is edited at a time, in the composer's
+  // place, so no other row offers Edit while an edit is open or opening. A
+  // scheduled edit counts only while its message is still listed: one that
+  // fired or was deleted has no editor left to close.
+  const anyQueuedEditOpen =
+    editingQueuedMessageIndex !== undefined ||
+    pendingQueuedMessageEditId !== undefined ||
+    (editingScheduledMessageId !== null &&
+      oneTimeScheduledMessages.some(
+        (scheduled) => scheduled.automationId === editingScheduledMessageId,
+      ));
   const scrollRef = useRef<HTMLDivElement>(null);
   const performanceFrameQueueRef =
     useRef<TranscriptPerformanceFrameQueue | null>(null);
@@ -675,16 +751,31 @@ export function ChatMessageList({
   const outputWorktreeId = useChatStore(
     (state) => targetOverride?.worktreeId ?? state.selectedWorktree?.worktreeId,
   );
+  const outputWorktreeKey =
+    outputProjectId && outputWorktreeId
+      ? `${outputProjectId}/${outputWorktreeId}`
+      : undefined;
+  const waitingDelegationIds = useChatStore(
+    useShallow((state) => {
+      if (!outputWorktreeKey) return EMPTY_WAITING_DELEGATION_IDS;
+      return (
+        state.worktreeChats[outputWorktreeKey]?.tabs.find(
+          (tab) => tab.id === chatId,
+        )?.waitingDelegationIds ?? EMPTY_WAITING_DELEGATION_IDS
+      );
+    }),
+  );
+  const waitingDelegations = useMemo<ReadonlySet<string>>(
+    () => new Set(waitingDelegationIds),
+    [waitingDelegationIds],
+  );
   const readToolOutput = useMemo<ToolOutputReader | null>(
     () =>
       outputProjectId && outputWorktreeId && chatId
-        ? async (
-            messageId,
-            toolUseId,
-            reference,
-            offset,
-            signal,
-          ): Promise<ChatToolOutputResponse> => {
+        ? async (identity, offset, signal): Promise<ChatToolOutputResponse> => {
+            if (identity.kind !== 'reference')
+              throw new Error("Couldn't load full output in this view.");
+            const { messageId, toolUseId, reference } = identity;
             signal.throwIfAborted();
             const requestId = crypto.randomUUID();
             const cancel = (): void => {
@@ -795,6 +886,9 @@ export function ChatMessageList({
     ReadonlySet<string>
   >(() => new Set());
   const framedMessages = useMemo(() => {
+    const placedMessages = placeSafetyDenialReceipts(
+      omitRecoveredCreditHoldArtifacts(omitLegacySetupAnnotations(messages)),
+    );
     const frames = new Map(
       transcriptTurns?.flatMap((turn) =>
         // Inferred frames stabilize partially loaded legacy turns. Once all
@@ -805,14 +899,14 @@ export function ChatMessageList({
           : [],
       ),
     );
-    if (frames.size === 0) return messages;
+    if (frames.size === 0) return placedMessages;
     let owner: string | undefined;
-    for (const message of messages) {
+    for (const message of placedMessages) {
       if (isUserTurnBoundary(message)) owner = message.id;
       if (message.blocks.some((block) => block.type === 'turn_timer') && owner)
         frames.delete(owner);
     }
-    return messages.flatMap((message) => {
+    return placedMessages.flatMap((message) => {
       const frame = frames.get(message.id);
       return frame ? [message, frame] : [message];
     });
@@ -821,6 +915,14 @@ export function ChatMessageList({
     chatId,
     framedMessages,
     agentUsage,
+  );
+  const continuationDiffOwnerByPrompt = useMemo(
+    () => continuationDiffOwners(turnGroups),
+    [turnGroups],
+  );
+  const activeContinuationPrompts = useMemo(
+    () => activeContinuationPromptIds(turnGroups),
+    [turnGroups],
   );
   const lastTurnGroupIndex = useMemo(() => {
     for (let index = turnGroups.length - 1; index >= 0; index -= 1) {
@@ -831,6 +933,12 @@ export function ChatMessageList({
   const lastForkableTurnGroupIndex = useMemo(
     () => findLastForkableTurnGroupIndex(turnGroups),
     [turnGroups],
+  );
+  // Search reports a prompt's indexed turn, which also holds its wakes; the
+  // match's own display group is the one to expand.
+  const searchGroupId = useMemo(
+    () => searchTurnGroupId(turnGroups, searchSelection),
+    [turnGroups, searchSelection],
   );
   const selectedWorktree = useChatStore((s) => s.selectedWorktree);
   const worktreeTarget = targetOverride ?? selectedWorktree;
@@ -857,16 +965,20 @@ export function ChatMessageList({
         : null,
     [worktreeTarget, chatId],
   );
+  useReconcileNativeTaskStops(chatTarget);
   const linkActions = useChatMessageLinkActions(worktreeTarget);
   const {
     sourceSdkSessionId,
     sourceIsClaudeTerminal,
+    lockedHarness,
     forkedFrom,
     selectedRepoId,
     agentArtifactCarryByTurn,
     inputDelivery,
     steeringCapabilities,
+    localTurn,
     chatIsOpen,
+    tabReadOnly,
   } = useChatTabRenderState(
     chatTarget,
     useShallow(({ tab, runtime }) => {
@@ -874,10 +986,13 @@ export function ChatMessageList({
         return {
           sourceSdkSessionId: undefined,
           sourceIsClaudeTerminal: false,
+          lockedHarness: undefined,
           forkedFrom: undefined,
           selectedRepoId: undefined,
           agentArtifactCarryByTurn: undefined,
+          localTurn: 'idle' as const,
           chatIsOpen: false,
+          tabReadOnly: false,
         };
       }
       return {
@@ -885,12 +1000,18 @@ export function ChatMessageList({
         sourceIsClaudeTerminal:
           tab.interfaceMode === 'claude-code' ||
           tab.claudeTerminal !== undefined,
+        lockedHarness: Array.isArray(tab.messages)
+          ? getLockedHarness(tab)
+          : undefined,
         forkedFrom: tab.forkedFrom,
         selectedRepoId: tab.selectedRepoId,
         agentArtifactCarryByTurn: tab.agentArtifactCarryByTurn,
         chatIsOpen: true,
         inputDelivery: tab.inputDelivery,
         steeringCapabilities: runtime?.steeringCapabilities,
+        // Lease expiry writes the tab, so this re-reads at the deadline.
+        localTurn: localTurnActivity(tab, Date.now(), runtime),
+        tabReadOnly: tab.readOnly === true,
       };
     }),
   );
@@ -904,9 +1025,6 @@ export function ChatMessageList({
     messages,
     agentArtifactCarryByTurn,
   );
-  // The Subagents view experiment replaces the pinned Agent activity section
-  // with the top bar's running count and the Subagents panel.
-  const subagentsView = useLabsExperimentEnabled('subagents-view');
   const activeTurn = useMemo(
     () =>
       [...turnGroups]
@@ -914,67 +1032,142 @@ export function ChatMessageList({
         .find((item) => item.kind === 'turn-group' && !item.isComplete),
     [turnGroups],
   );
+  // The pinned section records watched-run carry into the streaming turn, or
+  // into the latest turn once every turn completed.
+  const lastTurnGroup =
+    lastTurnGroupIndex >= 0 ? turnGroups[lastTurnGroupIndex] : undefined;
+  const pinnedOwnerUserMessageId =
+    activeTurn?.kind === 'turn-group'
+      ? activeTurn.userMessage.id
+      : lastTurnGroup?.kind === 'turn-group'
+        ? lastTurnGroup.userMessage.id
+        : '';
   const backgroundProcesses = useActivityStore(
     useShallow((state) =>
-      worktreeTarget && !subagentsView
+      worktreeTarget
         ? state.bgProcesses[
             `${worktreeTarget.projectId}/${worktreeTarget.worktreeId}`
           ]
         : undefined,
     ),
   );
+  // Under both views: the composer's background drawer lists them even
+  // where the Subagents view replaces the pinned section.
   const activeAgents = useMemo(
     () =>
-      subagentsView
-        ? []
-        : selectActiveAgentBlocks(
-            turnGroups,
-            backgroundProcesses ?? [],
+      selectActiveAgentBlocks(turnGroups, backgroundProcesses ?? [], chatId),
+    [turnGroups, backgroundProcesses, chatId],
+  );
+  const artifactProjectId = worktreeTarget?.projectId;
+  const artifactWorktreeId = worktreeTarget?.worktreeId;
+  // Stable per chat, so the memoized pinned section and its watched-run memos
+  // skip list renders that change nothing they show (CAN-4690).
+  const artifactChatTarget = useMemo(
+    () =>
+      artifactProjectId !== undefined && artifactWorktreeId !== undefined
+        ? {
+            projectId: artifactProjectId,
+            worktreeId: artifactWorktreeId,
             chatId,
-          ),
-    [subagentsView, turnGroups, backgroundProcesses, chatId],
+          }
+        : undefined,
+    [artifactProjectId, artifactWorktreeId, chatId],
   );
-  const activeArtifacts =
-    activeTurn?.kind === 'turn-group'
-      ? (artifactProjection.byTurn[activeTurn.userMessage.id] ?? [])
-      : [];
-  // One activity-store subscription for the whole transcript. Each turn is
-  // handed its own slice below; see `useChatBackgroundProcessesByTurn`.
-  const backgroundProcessesByTurn = useChatBackgroundProcessesByTurn(
-    worktreeTarget?.projectId,
-    worktreeTarget?.worktreeId,
-    chatId,
-    turnGroups,
+  // Live run cards belong to the composer's drawer; completed records
+  // remain in their home turn (`placeAgentActivity`). The completed-work
+  // dialog provides a separate history view while other work is active.
+  const chatPipelineRuns = useMemo(
+    () =>
+      Object.values(artifactProjection.byTurn).flatMap((receipts) =>
+        receipts.filter(
+          (receipt): receipt is PipelineRunArtifactReceiptV1 =>
+            receipt.kind === 'pipeline_run',
+        ),
+      ),
+    [artifactProjection.byTurn],
   );
-  const activeBackgroundProcesses =
-    activeTurn?.kind === 'turn-group'
-      ? turnBackgroundProcesses(
-          backgroundProcessesByTurn,
-          activeTurn.userMessage.id,
+  const liveRunKeys = useLiveAgentRunKeys(
+    artifactChatTarget,
+    artifactProjection.chatInitiatedPipelineRuns,
+    chatPipelineRuns,
+  );
+  // The composer's background drawer lists the chat's runs and subagents
+  // from what is computed here, instead of projecting the messages again
+  // (background drawer Phases 04 to 06). Only a writable, open tab has a
+  // composer and so a drawer: not a read-only view or tab (a replaced stale
+  // session), nor a viewer with no live tab (an archived transcript).
+  const backgroundWorkChatKey =
+    !readOnlyScope && !tabReadOnly && chatIsOpen && worktreeTarget !== null
+      ? chatBackgroundWorkKey(
+          worktreeTarget.projectId,
+          worktreeTarget.worktreeId,
+          chatId,
         )
-      : EMPTY_BACKGROUND_PROCESSES;
-  const artifactChatTarget = worktreeTarget
-    ? {
-        projectId: worktreeTarget.projectId,
-        worktreeId: worktreeTarget.worktreeId,
-        chatId,
-      }
-    : undefined;
+      : null;
+  // Completed records stay in chat even when the active-work drawer hides.
+  // Only live runs are owned by the drawer's primary list.
+  const groupedWorkDrawer = useCompactQueue();
+  const heldRunKeys = useChatHeldRunKeys(backgroundWorkChatKey);
+  const drawerRunKeys = useMemo((): ReadonlySet<string> => {
+    if (backgroundWorkChatKey === null) return NO_RUN_KEYS;
+    if (groupedWorkDrawer || heldRunKeys.size === 0) return liveRunKeys;
+    const keys = new Set(liveRunKeys);
+    heldRunKeys.forEach((key) => keys.add(key));
+    return keys;
+  }, [backgroundWorkChatKey, groupedWorkDrawer, heldRunKeys, liveRunKeys]);
+  const placementRef = useRef<AgentActivityPlacement | undefined>(undefined);
+  const placement = useMemo(() => {
+    const turnIds = turnGroups.flatMap((item) =>
+      item.kind === 'turn-group' ? [item.userMessage.id] : [],
+    );
+    const next = placeAgentActivity(
+      artifactProjection.byTurn,
+      turnIds,
+      drawerRunKeys,
+      placementRef.current,
+    );
+    placementRef.current = next;
+    return next;
+  }, [artifactProjection.byTurn, drawerRunKeys, turnGroups]);
+  // While a turn streams, the pinned section lists the capability tiles it
+  // produced; its runs, agents and tasks are the drawer's (D2).
+  const pinnedTiles = useMemo(
+    () =>
+      activeTurn?.kind === 'turn-group'
+        ? (placement.byTurn[activeTurn.userMessage.id] ?? []).filter(
+            isCapabilityTileReceipt,
+          )
+        : EMPTY_AGENT_ARTIFACTS,
+    [activeTurn, placement.byTurn],
+  );
   // Every managed delegation queued or running in this chat, at any depth.
-  // The delegated cards get their Stop from this, and the pinned Agent
-  // activity section (or, under the Subagents view, the Subagents panel)
-  // its Stop all. Read-only views offer neither.
+  // The delegated cards and the drawer's delegate rows get their Stop from
+  // this; the drawer and, under the Subagents view, the Subagents panel get
+  // Stop all. Read-only views offer neither.
   const delegationStopState = useMemo(
     () => selectManagedDelegationStopState(turnGroups),
     [turnGroups],
   );
   const canStopDelegations = !readOnlyScope && worktreeTarget !== null;
-  const liveDelegationKey = delegationStopState.liveDelegationIds.join('\n');
-  const liveDelegationIds = useMemo(
-    () => (liveDelegationKey ? liveDelegationKey.split('\n') : []),
-    [liveDelegationKey],
-  );
+  useEffect(() => {
+    if (backgroundWorkChatKey === null) return;
+    publishChatBackgroundRuns(backgroundWorkChatKey, placement.live);
+  }, [backgroundWorkChatKey, placement.live]);
   const liveDescendantKey = delegationStopState.withLiveDescendants.join('\n');
+  const backgroundTrayAgentRows = useMemo(
+    () =>
+      backgroundTrayAgents(
+        activeAgents,
+        backgroundProcesses ?? [],
+        chatId,
+        new Set(liveDescendantKey ? liveDescendantKey.split('\n') : []),
+      ),
+    [activeAgents, backgroundProcesses, chatId, liveDescendantKey],
+  );
+  useEffect(() => {
+    if (backgroundWorkChatKey === null) return;
+    publishChatBackgroundAgents(backgroundWorkChatKey, backgroundTrayAgentRows);
+  }, [backgroundWorkChatKey, backgroundTrayAgentRows]);
   const stopTargetProjectId = worktreeTarget?.projectId;
   const stopTargetWorktreeId = worktreeTarget?.worktreeId;
   const delegationStopControls =
@@ -1003,6 +1196,35 @@ export function ChatMessageList({
       stopTargetProjectId,
       stopTargetWorktreeId,
     ]);
+  const nativeStopTargetProjectId = worktreeTarget?.projectId;
+  const nativeStopTargetWorktreeId = worktreeTarget?.worktreeId;
+  const nativeTaskStopControls = useMemo((): NativeTaskStopControls | null => {
+    const target = deriveNativeTaskStopTarget({
+      readOnly: readOnlyScope,
+      target:
+        nativeStopTargetProjectId !== undefined &&
+        nativeStopTargetWorktreeId !== undefined
+          ? {
+              projectId: nativeStopTargetProjectId,
+              worktreeId: nativeStopTargetWorktreeId,
+              chatId,
+            }
+          : null,
+      lockedHarness,
+    });
+    if (target === null) return null;
+    return {
+      target,
+      onError: (error: unknown): void =>
+        reportNativeTaskStopFailure(target, error),
+    };
+  }, [
+    chatId,
+    lockedHarness,
+    nativeStopTargetProjectId,
+    nativeStopTargetWorktreeId,
+    readOnlyScope,
+  ]);
   // Anchor the "Forked from conversation" divider to the fork point in the
   // timeline rather than the bottom of the transcript. `null` hides it (no
   // fork metadata, disabled, or the anchor message no longer exists — e.g.
@@ -1031,6 +1253,35 @@ export function ChatMessageList({
   }, [enableForkedFromLink, forkedFrom, turnGroups]);
 
   const getQueuedMessageKey = useQueuedMessageKey();
+  // Compact queue (Labs): queued messages leave the transcript tail for the
+  // one-line list above the composer; scheduled sends stay in the transcript.
+  // A switch waits for an open edit to close, so the queue doesn't move
+  // around the message being edited in the composer's place.
+  const compactQueue = useValueHeldWhile(
+    useCompactQueue(),
+    editingQueuedMessageIndex !== undefined,
+  );
+  const composerWorkDrawerLink = useComposerWorkDrawerLink();
+  const composerWorkDrawer = compactQueue ? composerWorkDrawerLink : null;
+  // The drawer's Queued tab counts the rows the list shows: the message
+  // open in the editor leaves the list.
+  const drawerQueuedCount =
+    composerWorkDrawer === null
+      ? 0
+      : queuedMessages.length -
+        (editingQueuedMessageIndex !== undefined &&
+        editingQueuedMessageIndex < queuedMessages.length
+          ? 1
+          : 0);
+  const setDrawerQueuedCount = composerWorkDrawerLink?.setQueuedCount;
+  useEffect(() => {
+    if (!setDrawerQueuedCount) return;
+    setDrawerQueuedCount(drawerQueuedCount);
+  }, [drawerQueuedCount, setDrawerQueuedCount]);
+  useEffect(
+    () => (): void => setDrawerQueuedCount?.(0),
+    [setDrawerQueuedCount],
+  );
   const invocableInventory = useInvocableInventory(null);
   const invocableMentionIndex = useMemo(
     () =>
@@ -1117,17 +1368,31 @@ export function ChatMessageList({
   // whose user message renders as a sticky header while the section's agent
   // output scrolls by. Watcher-fired turns continue the previous section, so
   // the previous real user message stays stuck through them.
-  const stickySections = useMemo(
-    () =>
-      computeTranscriptStickySections(
-        turnGroups,
-        revertedUserMessageIds,
-        virtualizationEnabled
-          ? MAX_VIRTUALIZED_STICKY_SECTION_ITEMS
-          : Number.POSITIVE_INFINITY,
-      ),
-    [turnGroups, revertedUserMessageIds, virtualizationEnabled],
-  );
+  const stickySections = useMemo((): TranscriptStickySection[] => {
+    const sections = computeTranscriptStickySections(
+      turnGroups,
+      revertedUserMessageIds,
+      virtualizationEnabled
+        ? MAX_VIRTUALIZED_STICKY_SECTION_ITEMS
+        : Number.POSITIVE_INFINITY,
+    );
+    if (
+      !startingTurnPresentationKey ||
+      startingTurnPresentationKey === startingTurnUserMessageId
+    )
+      return sections;
+    return sections.map((section) =>
+      section.key === startingTurnUserMessageId
+        ? { ...section, key: startingTurnPresentationKey }
+        : section,
+    );
+  }, [
+    turnGroups,
+    revertedUserMessageIds,
+    virtualizationEnabled,
+    startingTurnUserMessageId,
+    startingTurnPresentationKey,
+  ]);
   const scrollProjectId = worktreeTarget?.projectId;
   const scrollWorktreeId = worktreeTarget?.worktreeId;
   const scrollTarget = useMemo<ChatScrollPositionTarget>(
@@ -1149,9 +1414,13 @@ export function ChatMessageList({
     (index: number): string => {
       const item = turnGroups[index];
       if (!item) return `transcript-item-${index}`;
-      return item.kind === 'turn-group' ? item.userMessage.id : item.message.id;
+      const id =
+        item.kind === 'turn-group' ? item.userMessage.id : item.message.id;
+      return id === startingTurnUserMessageId
+        ? (startingTurnPresentationKey ?? id)
+        : id;
     },
-    [turnGroups],
+    [turnGroups, startingTurnUserMessageId, startingTurnPresentationKey],
   );
   const getStickySectionKey = useCallback(
     (index: number): string =>
@@ -1252,6 +1521,8 @@ export function ChatMessageList({
     indexes: ReadonlySet<number>;
   } | null>(null);
   const [transcriptOverscanPass, setTranscriptOverscanPass] = useState(0);
+  const [transcriptAnchorSectionIndex, setTranscriptAnchorSectionIndex] =
+    useState<number | null>(null);
   const extractTranscriptRange = useCallback(
     (range: Range): number[] => {
       if (materializeTranscriptItems) return allTranscriptIndexes;
@@ -1270,7 +1541,7 @@ export function ChatMessageList({
           if (
             section.items.some((item) =>
               item.kind === 'turn-group'
-                ? item.userMessage.id === searchSelection.turnId
+                ? item.userMessage.id === searchGroupId
                 : item.message.id === searchSelection.messageId,
             )
           )
@@ -1279,6 +1550,9 @@ export function ChatMessageList({
       for (const index of retainedInteractionIndexes) {
         indexes.add(index);
       }
+      if (transcriptAnchorSectionIndex !== null) {
+        indexes.add(transcriptAnchorSectionIndex);
+      }
       return Array.from(indexes).sort((left, right) => left - right);
     },
     // `transcriptOverscanPass` only changes the callback's identity, which is
@@ -1286,6 +1560,7 @@ export function ChatMessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       searchSelection,
+      searchGroupId,
       stickySections,
       allTranscriptIndexes,
       materializeTranscriptItems,
@@ -1293,6 +1568,7 @@ export function ChatMessageList({
       isTranscriptSectionMeasured,
       scrollTarget,
       transcriptOverscanPass,
+      transcriptAnchorSectionIndex,
     ],
   );
   const retainInteractiveTranscriptItem = useCallback(
@@ -1518,6 +1794,138 @@ export function ChatMessageList({
     [updateScrollState],
   );
 
+  const captureTranscriptAnchor = (
+    nextMessageIds: readonly string[],
+  ): TranscriptMessageAnchor | null => {
+    const el = scrollRef.current;
+    if (!el || isNearBottomRef.current) return null;
+    const survivingIds = new Set(nextMessageIds);
+    const viewport = el.getBoundingClientRect();
+    const rows = el.querySelectorAll<HTMLElement>('[data-chat-message-id]');
+    for (const row of Array.from(rows)) {
+      const messageId = row.dataset.chatMessageId;
+      // A row the next transcript drops cannot be found again.
+      if (!messageId || !survivingIds.has(messageId)) continue;
+      // A pinned prompt holds its viewport offset however the rows under it
+      // move, so it cannot stand for the row being read.
+      if (row.closest('[data-sticky-user-message-id]')) continue;
+      const rect = row.getBoundingClientRect();
+      if (rect.height === 0) continue;
+      if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue;
+      return {
+        chatId,
+        messageId,
+        offset: rect.top - viewport.top,
+        scrollTarget,
+        scrollVersion: userScrollVersionRef.current,
+      };
+    }
+    return null;
+  };
+
+  // The DOM still shows the previous transcript while this render runs, so
+  // this is the last point where the row being read can be measured where the
+  // reader left it: by the time an effect runs, React has moved the rows.
+  // Measuring here also keeps the work off the scroll path. An anchor whose
+  // restore is still waiting for its rows is kept, so a second reorder in the
+  // meantime restores the same position instead of the displaced one.
+  const renderedTranscript = renderedTranscriptIdentityRef.current;
+  if (
+    renderedTranscript?.chatId === chatId &&
+    !sameMessageOrder(renderedTranscript.messageIds, transcriptMessageIds)
+  ) {
+    const pendingAnchor = pendingTranscriptAnchorRef.current;
+    preMutationAnchorRef.current =
+      pendingAnchor?.chatId === chatId &&
+      pendingAnchor.scrollTarget === scrollTarget &&
+      pendingAnchor.scrollVersion === userScrollVersionRef.current &&
+      transcriptMessageIds.includes(pendingAnchor.messageId)
+        ? pendingAnchor
+        : captureTranscriptAnchor(transcriptMessageIds);
+  }
+
+  useLayoutEffect(() => {
+    const previous = renderedTranscriptIdentityRef.current;
+    const changedOrder =
+      previous?.chatId === chatId &&
+      !sameMessageOrder(previous.messageIds, transcriptMessageIds);
+    const candidate = changedOrder ? preMutationAnchorRef.current : null;
+    preMutationAnchorRef.current = null;
+    renderedTranscriptIdentityRef.current = {
+      chatId,
+      messageIds: transcriptMessageIds,
+    };
+
+    if (
+      candidate &&
+      candidate.chatId === chatId &&
+      candidate.scrollTarget === scrollTarget &&
+      candidate.scrollVersion === userScrollVersionRef.current &&
+      !isNearBottomRef.current
+    ) {
+      const sectionIndex = stickySections.findIndex((section) =>
+        stickySectionContainsMessage(section, candidate.messageId),
+      );
+      const restoreAnchor = (): boolean => {
+        const el = scrollRef.current;
+        const row = Array.from(
+          contentRef.current?.querySelectorAll<HTMLElement>(
+            '[data-chat-message-id]',
+          ) ?? [],
+        ).find(
+          (element) => element.dataset.chatMessageId === candidate.messageId,
+        );
+        if (!el || !row) return false;
+        const offset =
+          row.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        applyScrollTop(el, el.scrollTop + offset - candidate.offset);
+        return true;
+      };
+      if (sectionIndex >= 0 && virtualizationEnabled) {
+        // The virtualizer places the changed rows itself, so the restore
+        // waits a frame for that. Keep the row's section in the virtual range
+        // meanwhile, without scrolling first: scrollToIndex would emit a
+        // user-looking scroll and invalidate the anchor.
+        setTranscriptAnchorSectionIndex(sectionIndex);
+        pendingTranscriptAnchorRef.current = candidate;
+        const finishRestore = (): void => {
+          if (pendingTranscriptAnchorRef.current === candidate)
+            pendingTranscriptAnchorRef.current = null;
+          setTranscriptAnchorSectionIndex(null);
+        };
+        const restoreMountedAnchor = (remainingFrames: number): void => {
+          requestAnimationFrame(() => {
+            if (
+              // The list can switch chats before this frame, and a fork holds
+              // rows with the same ids.
+              candidate.scrollTarget !== activeScrollTargetRef.current ||
+              candidate.scrollVersion !== userScrollVersionRef.current ||
+              isNearBottomRef.current ||
+              restoreAnchor() ||
+              remainingFrames === 0
+            ) {
+              finishRestore();
+              return;
+            }
+            restoreMountedAnchor(remainingFrames - 1);
+          });
+        };
+        restoreMountedAnchor(4);
+      } else if (sectionIndex >= 0) {
+        restoreAnchor();
+      }
+    }
+  }, [
+    applyScrollTop,
+    chatId,
+    messages,
+    scrollTarget,
+    stickySections,
+    transcriptMessageIds,
+    transcriptVirtualizer,
+    virtualizationEnabled,
+  ]);
+
   const pinToBottom = useCallback(
     (el: HTMLElement, persist = true): void => {
       applyScrollTop(el, el.scrollHeight);
@@ -1604,6 +2012,7 @@ export function ChatMessageList({
       }
       pendingScrollTopRef.current = null;
       updateScrollState(el);
+      userScrollVersionRef.current += 1;
       saveChatScrollPosition(
         activeScrollTargetRef.current,
         el.scrollTop,
@@ -2017,6 +2426,10 @@ export function ChatMessageList({
       ),
     [transcriptTurns],
   );
+  const continuationTurnById = useMemo(
+    () => continuationTranscriptTurns(transcriptTurns),
+    [transcriptTurns],
+  );
 
   // --- Deep-linked turn focus (ECW-8684) -----------------------------------
   // An automation run row (and any future caller) can ask the transcript to
@@ -2034,6 +2447,7 @@ export function ChatMessageList({
     if (active) {
       window.clearTimeout(active.timer);
       delete active.element.dataset.chatTurnFocus;
+      delete active.element.dataset.chatCallFocus;
       turnFocusHighlightRef.current = null;
     }
     if (turnFocusFrameRef.current !== null) {
@@ -2042,12 +2456,17 @@ export function ChatMessageList({
     }
   }, []);
 
+  // `chatCallFocus` rings one row (a tool call or a prompt bubble) instead of
+  // its whole section.
   const highlightSectionElement = useCallback(
-    (element: HTMLElement): void => {
+    (
+      element: HTMLElement,
+      attribute: 'chatTurnFocus' | 'chatCallFocus' = 'chatTurnFocus',
+    ): void => {
       clearTurnFocusHighlight();
-      element.dataset.chatTurnFocus = 'true';
+      element.dataset[attribute] = 'true';
       const timer = window.setTimeout(() => {
-        delete element.dataset.chatTurnFocus;
+        delete element.dataset[attribute];
         turnFocusHighlightRef.current = null;
       }, CHAT_TURN_FOCUS_HIGHLIGHT_MS);
       turnFocusHighlightRef.current = { element, timer };
@@ -2067,9 +2486,25 @@ export function ChatMessageList({
   );
 
   const focusUserMessageById = useCallback(
-    (userMessageId: string): void => {
+    (userMessageId: string, bubbleOnly = false): void => {
       const el = scrollRef.current;
       if (!el) return;
+      const highlight = (sectionEl: HTMLElement): void => {
+        if (!bubbleOnly) {
+          highlightSectionElement(sectionEl);
+          return;
+        }
+        const bubble =
+          Array.from(
+            sectionEl.querySelectorAll<HTMLElement>(
+              '[data-sticky-user-message-id]',
+            ),
+          ).find(
+            (candidate) =>
+              candidate.dataset.stickyUserMessageId === userMessageId,
+          ) ?? sectionEl.querySelector<HTMLElement>('[data-role="user"]');
+        highlightSectionElement(bubble ?? sectionEl, 'chatCallFocus');
+      };
       // Only the canonical head section, never a `:continuation:` clone: a
       // continuation's key is `${headKey}:continuation:${itemId}`, so an exact
       // match on the bare message id can only resolve the head. Unlike
@@ -2111,14 +2546,14 @@ export function ChatMessageList({
             }
             if (stableFrames >= 2) {
               turnFocusFrameRef.current = null;
-              highlightSectionElement(sectionEl);
+              highlight(sectionEl);
               return;
             }
           }
           framesLeft -= 1;
           if (framesLeft <= 0) {
             turnFocusFrameRef.current = null;
-            if (sectionEl) highlightSectionElement(sectionEl);
+            if (sectionEl) highlight(sectionEl);
             return;
           }
           turnFocusFrameRef.current =
@@ -2141,7 +2576,7 @@ export function ChatMessageList({
       clearTurnFocusHighlight();
       turnFocusFrameRef.current = window.requestAnimationFrame(() => {
         turnFocusFrameRef.current = null;
-        highlightSectionElement(sectionEl);
+        highlight(sectionEl);
       });
     },
     [
@@ -2169,6 +2604,96 @@ export function ChatMessageList({
   // helpers rebuilt alongside them.
   const focusUserMessageByIdRef = useRef(focusUserMessageById);
   focusUserMessageByIdRef.current = focusUserMessageById;
+
+  // A wake's boundary row brings the tool call that started its task into
+  // view, opening the turn and step row that fold it away. Without the call
+  // loaded, it falls back to the prompt's bubble.
+  const [callReveal, setCallReveal] = useState<{
+    groupId: string;
+    request: { messageId: string };
+  } | null>(null);
+  const focusSpawningCall = (target: SpawningCallTarget): void => {
+    const el = scrollRef.current;
+    const { toolUseId, userMessageId } = target;
+    const fallBack = (): void => {
+      if (userMessageId !== undefined)
+        focusUserMessageById(userMessageId, true);
+    };
+    const call =
+      toolUseId === undefined
+        ? undefined
+        : findToolCall(stickySections, toolUseId);
+    if (!el || call === undefined) {
+      fallBack();
+      return;
+    }
+    // Opening the turn grows the transcript: leave bottom-follow so the
+    // resize cannot pin back to the bottom over this scroll.
+    isNearBottomRef.current = false;
+    setCallReveal({
+      groupId: call.groupId,
+      request: { messageId: call.messageId },
+    });
+    clearTurnFocusHighlight();
+    const mountSection = (): void => {
+      if (virtualizationEnabled)
+        transcriptVirtualizer.scrollToIndex(call.sectionIndex, {
+          align: 'start',
+        });
+    };
+    mountSection();
+    const finish = (row: HTMLElement): void => {
+      turnFocusFrameRef.current = null;
+      highlightSectionElement(row, 'chatCallFocus');
+    };
+    let framesLeft = 30;
+    let stableFrames = 0;
+    const settleCall = (): void => {
+      const row = Array.from(
+        el.querySelectorAll<HTMLElement>('[data-tool-use-id]'),
+      ).find((candidate) => candidate.dataset.toolUseId === toolUseId);
+      if (!row) {
+        mountSection();
+      } else {
+        const scrollerRect = el.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        const delta =
+          rowRect.top +
+          rowRect.height / 2 -
+          (scrollerRect.top + scrollerRect.height / 2);
+        if (!virtualizationEnabled) {
+          el.scrollTo({ top: el.scrollTop + delta, behavior: 'smooth' });
+          finish(row);
+          return;
+        }
+        // The virtualizer re-measures sections as they mount; settle first.
+        if (Math.abs(delta) > 1) {
+          el.scrollTop += delta;
+          stableFrames = 0;
+        } else {
+          stableFrames += 1;
+        }
+        if (stableFrames >= 2) {
+          finish(row);
+          return;
+        }
+      }
+      framesLeft -= 1;
+      if (framesLeft <= 0) {
+        turnFocusFrameRef.current = null;
+        if (row) finish(row);
+        else fallBack();
+        return;
+      }
+      turnFocusFrameRef.current = window.requestAnimationFrame(settleCall);
+    };
+    turnFocusFrameRef.current = window.requestAnimationFrame(settleCall);
+  };
+  const focusSpawningCallRef = useRef(focusSpawningCall);
+  focusSpawningCallRef.current = focusSpawningCall;
+  const showSpawningCall = useCallback((target: SpawningCallTarget): void => {
+    focusSpawningCallRef.current(target);
+  }, []);
   // One history request per pending deep link. A turn older than the loaded
   // window is fetched through `onLoadTurn`; the request stays pending until
   // its row renders or a completed load makes no progress.
@@ -2276,44 +2801,73 @@ export function ChatMessageList({
       suppressLeadingForkDivider?: boolean;
     },
   ): JSX.Element => {
+    // A tools-loaded continuation has no indexed turn of its own: its
+    // projection lives in its prompt's turn, whose span holds it, and it
+    // pages through that turn. An older index without the projection still
+    // pages through the prompt's turn.
+    const groupId = item.kind === 'turn-group' ? item.userMessage.id : '';
+    const ownTurn =
+      transcriptTurnById.get(groupId) ?? continuationTurnById.get(groupId);
+    const promptId =
+      item.kind === 'turn-group' && ownTurn === undefined
+        ? continuationPromptId(item.userMessage)
+        : undefined;
+    const historyTurn =
+      promptId === undefined ? undefined : transcriptTurnById.get(promptId);
+    const pagingId = ownTurn?.id ?? historyTurn?.id ?? groupId;
+    const diffMovedOn = continuationDiffOwnerByPrompt.has(groupId);
+    const diffTurnId =
+      item.kind === 'turn-group'
+        ? promptTurnOwnerId(item, continuationDiffOwnerByPrompt)
+        : groupId;
     const rendered =
       item.kind === 'turn-group' ? (
         <TurnGroupRenderer
-          searchMessageId={
-            searchSelection?.turnId === item.userMessage.id
-              ? (searchSelection.renderMessageId ?? searchSelection.messageId)
+          onShowSpawningCall={showSpawningCall}
+          revealRequest={
+            callReveal?.groupId === item.userMessage.id
+              ? callReveal.request
               : undefined
           }
-          transcriptTurn={transcriptTurnById.get(item.userMessage.id)}
+          searchMessageId={
+            searchGroupId === item.userMessage.id
+              ? (searchSelection?.renderMessageId ?? searchSelection?.messageId)
+              : undefined
+          }
+          transcriptTurn={ownTurn}
+          historyTurn={historyTurn}
           onLoadHistory={rowLoadHistory}
-          historyLoading={turnLoading && turnPageId === item.userMessage.id}
-          historyError={turnPageId === item.userMessage.id ? turnError : null}
+          historyLoading={turnLoading && turnPageId === pagingId}
+          historyError={turnPageId === pagingId ? turnError : null}
           historySuspended={turnLoading}
           chatId={chatId}
           group={item}
           pendingTimer={item.timerMessage.id === pendingTurnTimerId}
+          starting={item.userMessage.id === startingTurnUserMessageId}
+          waitingForApproval={
+            waitingForApproval && index === lastTurnGroupIndex
+          }
           chatPendingQuestions={chatPendingQuestions}
-          turnDiff={turnDiffs?.[item.userMessage.id]}
+          // A prompt's diff shows on its last tools-loaded continuation,
+          // where its work ends; its Undo still resets the prompt.
+          turnDiff={turnDiffs?.[diffTurnId]}
+          hideTurnDiffSummary={diffMovedOn}
+          continuationActive={activeContinuationPrompts.has(groupId)}
+          {...(diffTurnId !== groupId ? { resetTurnId: diffTurnId } : {})}
           appliedMemory={memoryByMessageId?.[item.userMessage.id]}
           isLastTurnGroup={index === lastTurnGroupIndex}
           isLastForkableTurnGroup={index === lastForkableTurnGroupIndex}
           onResetToPoint={onResetToPoint}
-          isReverted={revertedUserMessageIds.has(item.userMessage.id)}
+          isReverted={revertedUserMessageIds.has(diffTurnId)}
           targetOverride={targetOverride}
           hideBranchActions={hideBranchActions}
           sourceSdkSessionId={sourceSdkSessionId}
           suppressActiveForkAction={sourceIsClaudeTerminal}
           invocableMentionIndex={invocableMentionIndex}
           filePathMentionIndex={filePathMentionIndex}
-          agentArtifacts={
-            artifactProjection.byTurn[item.userMessage.id] ??
-            EMPTY_AGENT_ARTIFACTS
+          completedAgentArtifacts={
+            placement.byTurn[item.userMessage.id] ?? EMPTY_AGENT_ARTIFACTS
           }
-          backgroundProcesses={turnBackgroundProcesses(
-            backgroundProcessesByTurn,
-            item.userMessage.id,
-          )}
-          knownPipelineRuns={artifactProjection.chatInitiatedPipelineRuns}
           hideUserMessage={sectionOptions?.hideUserMessage === true}
           stickyTurnSummary={sectionOptions?.stickyTurnSummary === true}
           forceExpandedUserMessage={
@@ -2344,6 +2898,7 @@ export function ChatMessageList({
             )
           }
           onJumpToMessage={jumpToUserMessage}
+          onShowSpawningCall={showSpawningCall}
         />
       );
     const key =
@@ -2535,6 +3090,138 @@ export function ChatMessageList({
     transcriptVirtualItems.length,
   ]);
 
+  const queueSteeringSupported =
+    !sourceIsClaudeTerminal &&
+    !queuedForSetup &&
+    Boolean(worktreeTarget && steeringCapabilities?.steer);
+  const compactRows = compactQueue
+    ? queuedMessages.flatMap((message, index) =>
+        editingQueuedMessageIndex === index
+          ? []
+          : [{ message, index, id: getQueuedMessageKey(message) }],
+      )
+    : [];
+  const compactRowById = new Map(compactRows.map((row) => [row.id, row]));
+  // Every row keeps its handle while there is more than one. The host moves
+  // rows by entry id and holds the order while any row is open in an editor,
+  // so a row not queued yet, or every row during an edit, says why it can't
+  // move instead of the whole list losing its handles.
+  const compactQueueEditing =
+    anyQueuedEditOpen ||
+    compactRows.some(({ message }) => message.editLocked === true);
+  const compactMoveUnavailableReason = (id: string): string | undefined => {
+    const message = compactRowById.get(id)?.message;
+    if (!message) return undefined;
+    if (queuedForSetup) return QUEUED_MESSAGE_SETUP_TOOLTIP;
+    if (message.pendingSend === true || !message.hostQueueEntryId)
+      return QUEUED_MESSAGE_SENDING_TOOLTIP;
+    if (compactQueueEditing) return QUEUED_MESSAGE_EDITING_TOOLTIP;
+    return undefined;
+  };
+  // The row being edited leaves the list; its editor sits in the composer's
+  // place, as in the transcript queue.
+  // Inside a chat the queue is the Queued tab of the composer's work
+  // drawer: it renders into the tab's panel while that tab is open.
+  const inDrawer = composerWorkDrawer !== null;
+  const compactQueueStack =
+    compactRows.length > 0 ? (
+      <QueuedMessageStack
+        surface={inDrawer ? 'drawer' : 'tray'}
+        ids={compactRows.map((row) => row.id)}
+        moveUnavailableReason={compactMoveUnavailableReason}
+        onMove={
+          worktreeTarget
+            ? async (id, beforeId): Promise<void> => {
+                const entryId =
+                  compactRowById.get(id)?.message.hostQueueEntryId;
+                const beforeEntryId =
+                  beforeId === null
+                    ? null
+                    : compactRowById.get(beforeId)?.message.hostQueueEntryId;
+                if (!entryId || beforeEntryId === undefined)
+                  throw new Error('The queue changed.');
+                const result = await useChatStore
+                  .getState()
+                  .dispatchChatCommand(worktreeTarget, {
+                    type: 'chat.move_queued_message',
+                    chatId,
+                    queuedMessageId: entryId,
+                    beforeQueuedMessageId: beforeEntryId,
+                  });
+                if (result !== 'accepted')
+                  throw new Error('The queue changed.');
+              }
+            : undefined
+        }
+        renderRow={(id, reorder) => {
+          const row = compactRowById.get(id);
+          if (!row) return null;
+          const { message, index } = row;
+          const forceKind = queuedRowForceAction(message, localTurn);
+          // A submission awaiting host admission keeps its disabled control
+          // behind a streaming turn. It is not a forceable local queue row.
+          const waitingForHost =
+            message.pendingSend === true &&
+            localTurn === 'streaming' &&
+            queuedForSetup !== true;
+          return (
+            <QueuedMessageCompactRow
+              surface={inDrawer ? 'drawer' : 'tray'}
+              settingsHeld={message.restartHeldChanges}
+              message={message}
+              index={index}
+              reorder={reorder}
+              onClear={onClearQueuedMessage}
+              forceKind={forceKind}
+              // A renderer-local row has no force action while its turn
+              // dispatches or the tab has nothing to recover (CAN-5031).
+              onForce={
+                waitingForHost ||
+                (forceKind !== undefined &&
+                  (message.hostQueueEntryId !== undefined ||
+                    message.queuedHookQueueId !== undefined ||
+                    (index === 0 && queuedForSetup !== true)))
+                  ? onForceQueuedMessage
+                  : undefined
+              }
+              onSteer={
+                queueSteeringSupported &&
+                worktreeTarget &&
+                message.hostQueueEntryId &&
+                message.canSteer === true &&
+                !message.editLocked
+                  ? (): void => {
+                      if (!message.hostQueueEntryId) return;
+                      void useChatStore
+                        .getState()
+                        .dispatchChatCommand(worktreeTarget, {
+                          type: 'chat.steer_queued_message',
+                          chatId,
+                          queuedMessageId: message.hostQueueEntryId,
+                        });
+                    }
+                  : undefined
+              }
+              onEdit={onEditQueuedMessage}
+              steeringSupported={queueSteeringSupported}
+              // Host queues support any row; local eligibility is applied above.
+              canForce={queuedForSetup !== true}
+              queuedForSetup={queuedForSetup}
+              setupWait={queuedForSetup ? setupWait : undefined}
+              anyEditing={anyQueuedEditOpen}
+            />
+          );
+        }}
+      />
+    ) : null;
+  const compactQueueList =
+    compactQueueStack === null ? null : inDrawer ? (
+      composerWorkDrawer.queuedSlot === null ? null : (
+        createPortal(compactQueueStack, composerWorkDrawer.queuedSlot)
+      )
+    ) : (
+      <ComposerTray>{compactQueueStack}</ComposerTray>
+    );
   const messageList = (
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <div className="relative min-h-0 flex-1">
@@ -2544,8 +3231,15 @@ export function ChatMessageList({
           // composer box, or the first banner above it, before it fades.
           // `pb-2` gives that 8px back at rest: scrolled to the bottom, the
           // latest line still sits 8px clear of the box.
-          className="absolute inset-x-0 top-0 -bottom-2"
-          viewportClassName="overflow-x-hidden px-4 pt-2 pb-2"
+          //
+          // The Activity card's layout may pad the chat's right side and set a
+          // negative --chat-scrollbar-inset: the scroll area stretches over
+          // that padding to the pane's edge, so its rail sits there and its
+          // pointer hover (which reveals the rail) reaches it; the viewport
+          // pads the same amount back, so the reading column stays put
+          // (ActivityCardChatLayout).
+          className="absolute left-0 right-[var(--chat-scrollbar-inset,0px)] top-0 -bottom-2"
+          viewportClassName="overflow-x-hidden pl-4 pr-[calc(1rem-var(--chat-scrollbar-inset,0px))] pt-2 pb-2"
           viewportProps={{ 'data-testid': 'chat-message-list-scroll' }}
           viewportRef={setScrollRef}
           // The transcript's height always changes with its DOM, so the
@@ -2557,9 +3251,6 @@ export function ChatMessageList({
           // bottom nothing fades, so the latest line always reads in full.
           edgeFadeSize={16}
           edgeFadeEdges="bottom"
-          // The Activity card lies over the chat's right margin; its layout
-          // moves the scrollbar out from under it (ActivityCardChatLayout).
-          railClassName="right-[var(--chat-scrollbar-inset,0px)]"
         >
           {/* Session replay records this as a same-size placeholder: the
               surrounding panel and navigation stay visible, while the
@@ -2567,7 +3258,7 @@ export function ChatMessageList({
           <div
             ref={contentRef}
             data-testid="chat-message-list-content"
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition space-y-2`}
+            className={`${POSTHOG_REPLAY_BLOCK_CLASS} mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition space-y-2 [&_[data-chat-call-focus]]:rounded-lg [&_[data-chat-call-focus]]:ring-2 [&_[data-chat-call-focus]]:ring-line-accent`}
           >
             {/* Keep the loading lane stable: changing its height outside the
                 virtual window would move an otherwise correctly anchored row. */}
@@ -2678,36 +3369,30 @@ export function ChatMessageList({
               />
             )}
             {queuedMessages.map((message, i) => {
-              const isEditing = editingQueuedMessageIndex === i;
-              if (
-                isEditing &&
-                onCancelEditQueuedMessage &&
-                onSaveEditQueuedMessage
-              ) {
-                // Keying the editor by the queued message's identity makes
-                // switching edit targets remount the editor (resetting its
-                // content), while a queue-head drain that shifts indices
-                // preserves the same message object and keeps state intact.
-                return (
-                  <QueuedMessageEditor
-                    autoFocus={editingQueuedMessageFocusAllowed}
-                    key={`editor-${getQueuedMessageKey(message)}`}
-                    message={message}
-                    index={i}
-                    composerTab={composerTab ?? null}
-                    onCancel={onCancelEditQueuedMessage}
-                    onSave={onSaveEditQueuedMessage}
-                    scheduleEnabled={queuedMessageSchedulingEnabled}
-                  />
-                );
-              }
+              if (compactQueue) return null;
+              // The message being edited steps out of the queue: its editor
+              // takes the composer's place (CAN-3607).
+              if (editingQueuedMessageIndex === i) return null;
+              const forceAction = queuedRowForceAction(message, localTurn);
               return (
                 <QueuedMessageBubble
                   key={`bubble-${getQueuedMessageKey(message)}`}
+                  settingsHeld={message.restartHeldChanges}
                   message={message}
                   index={i}
                   onClear={onClearQueuedMessage}
-                  onForce={onForceQueuedMessage}
+                  turnPhase={queuedRowTurnPhase(message, localTurn)}
+                  onForce={
+                    forceAction === 'interrupt'
+                      ? onForceQueuedMessage
+                      : undefined
+                  }
+                  onRunNow={
+                    forceAction === 'run-now' ? onForceQueuedMessage : undefined
+                  }
+                  onRetry={
+                    forceAction === 'retry' ? onForceQueuedMessage : undefined
+                  }
                   onSteer={
                     !sourceIsClaudeTerminal &&
                     !queuedForSetup &&
@@ -2735,11 +3420,8 @@ export function ChatMessageList({
                     Boolean(worktreeTarget && steeringCapabilities?.steer)
                   }
                   canForce={i === 0 && queuedForSetup !== true}
-                  queuedForSetup={queuedForSetup}
-                  anyEditing={
-                    editingQueuedMessageIndex !== undefined ||
-                    pendingQueuedMessageEditId !== undefined
-                  }
+                  setupWait={queuedForSetup ? setupWait : undefined}
+                  anyEditing={anyQueuedEditOpen}
                 />
               );
             })}
@@ -2748,66 +3430,17 @@ export function ChatMessageList({
                 since a cron job always has a next run and would otherwise pin
                 its prompt under the conversation forever. */}
             {oneTimeScheduledMessages.map((scheduled) => {
-              const message: QueuedChatMessage = {
-                text: scheduled.text,
-                ...(scheduled.fileReferences
-                  ? { fileReferences: scheduled.fileReferences }
-                  : {}),
-                ...(scheduled.attachmentPaths
-                  ? { attachmentPaths: scheduled.attachmentPaths }
-                  : {}),
-                ...(scheduled.attachmentPromptContexts
-                  ? {
-                      attachmentPromptContexts:
-                        scheduled.attachmentPromptContexts,
-                    }
-                  : {}),
-                ...(scheduled.inputMode
-                  ? { inputMode: scheduled.inputMode }
-                  : {}),
-                scheduledSendDraft: { runAt: scheduled.scheduledAt },
-              };
-              if (
-                editingScheduledMessageId === scheduled.automationId &&
-                onCancelEditScheduledMessage &&
-                onSaveEditScheduledMessage
-              ) {
-                return (
-                  <QueuedMessageEditor
-                    key={`scheduled-editor-${scheduled.automationId}`}
-                    message={message}
-                    index={0}
-                    composerTab={composerTab ?? null}
-                    onCancel={onCancelEditScheduledMessage}
-                    onSave={(
-                      _index,
-                      text,
-                      fileReferences,
-                      attachmentPaths,
-                      attachmentPromptContexts,
-                      inputMode,
-                      scheduledSendDraft,
-                    ): void =>
-                      onSaveEditScheduledMessage(
-                        scheduled.automationId,
-                        text,
-                        fileReferences,
-                        attachmentPaths,
-                        attachmentPromptContexts,
-                        inputMode,
-                        scheduledSendDraft,
-                      )
-                    }
-                    scheduleEnabled={queuedMessageSchedulingEnabled}
-                  />
-                );
+              if (editingScheduledMessageId === scheduled.automationId) {
+                return null;
               }
+              const message = scheduledMessageAsQueuedMessage(scheduled);
               return (
                 <QueuedMessageBubble
                   key={`scheduled-${scheduled.automationId}`}
                   index={0}
                   message={message}
                   onClear={(): void => undefined}
+                  anyEditing={anyQueuedEditOpen}
                   scheduled={{
                     automationId: scheduled.automationId,
                     activityName: scheduled.activityName,
@@ -2837,41 +3470,38 @@ export function ChatMessageList({
           </div>
         )}
       </div>
-      {!subagentsView &&
-      (activeTurn?.kind === 'turn-group' || activeAgents.length > 0) &&
-      artifactChatTarget ? (
-        <ActiveAgentActivitySection
-          // Background delegates outlive the turn that started them. Keying
-          // the pinned section by turn remounted their cards, collapsing them,
-          // whenever the parent started or finished a turn.
+      {/* While a turn streams, the capability tiles it produced. Background
+          work is the composer drawer's; completed turns list their tiles and
+          the runs placed in them (background drawer D2 and D3). */}
+      {artifactChatTarget && pinnedTiles.length > 0 ? (
+        <DesktopAgentActivitySection
           key={chatId}
-          agentItems={activeAgents.map((block, index) => (
-            <ChatBlockRenderer
-              key={
-                // One card per delegation, so a follow-up run updates the
-                // open card in place instead of replacing it.
-                block.type === 'delegated_agent_call'
-                  ? `delegated-agent:${block.delegationId}`
-                  : getDisplayBlockKey(block, index)
-              }
-              block={block}
-              stripAgentCitations
-              originChatTabId={chatId}
-              chatPendingQuestions={chatPendingQuestions}
-              invocableMentionIndex={invocableMentionIndex}
-              filePathMentionIndex={filePathMentionIndex}
-            />
-          ))}
-          projectedArtifacts={activeArtifacts}
-          backgroundProcesses={activeBackgroundProcesses}
-          knownPipelineRuns={artifactProjection.chatInitiatedPipelineRuns}
-          ownerUserMessageId={
-            activeTurn?.kind === 'turn-group' ? activeTurn.userMessage.id : ''
-          }
+          artifacts={pinnedTiles}
+          variant="active"
+          ownerUserMessageId={pinnedOwnerUserMessageId}
           chatTarget={artifactChatTarget}
-          liveDelegationIds={canStopDelegations ? liveDelegationIds : undefined}
         />
       ) : null}
+      {backgroundWorkChatKey !== null &&
+        activeAgents.map((block) =>
+          block.type === 'delegated_agent_call' &&
+          block.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_LOG ? (
+            <BackgroundTrayDelegateSteps
+              key={block.delegationId}
+              chatKey={backgroundWorkChatKey}
+              block={block}
+            />
+          ) : null,
+        )}
+      {artifactChatTarget && pinnedOwnerUserMessageId ? (
+        <WatchedRunCarryRecorder
+          chatTarget={artifactChatTarget}
+          ownerUserMessageId={pinnedOwnerUserMessageId}
+          knownPipelineRuns={artifactProjection.chatInitiatedPipelineRuns}
+          carryByTurn={agentArtifactCarryByTurn}
+        />
+      ) : null}
+      {compactQueue ? compactQueueList : null}
     </div>
   );
   return (
@@ -2883,13 +3513,19 @@ export function ChatMessageList({
               <DelegationTranscriptSourceContext.Provider
                 value={delegationTranscriptSource}
               >
-                <ManagedDelegationStopContext.Provider
-                  value={delegationStopControls}
-                >
-                  <ChatMessageLinkActionsProvider value={linkActions}>
-                    {messageList}
-                  </ChatMessageLinkActionsProvider>
-                </ManagedDelegationStopContext.Provider>
+                <WaitingDelegationsContext.Provider value={waitingDelegations}>
+                  <NativeTaskStopContext.Provider
+                    value={nativeTaskStopControls}
+                  >
+                    <ManagedDelegationStopContext.Provider
+                      value={delegationStopControls}
+                    >
+                      <ChatMessageLinkActionsProvider value={linkActions}>
+                        {messageList}
+                      </ChatMessageLinkActionsProvider>
+                    </ManagedDelegationStopContext.Provider>
+                  </NativeTaskStopContext.Provider>
+                </WaitingDelegationsContext.Provider>
               </DelegationTranscriptSourceContext.Provider>
             </SubagentEntryActionsContext.Provider>
           </ChatVisualHostProvider>

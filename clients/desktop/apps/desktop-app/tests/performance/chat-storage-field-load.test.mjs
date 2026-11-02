@@ -1,10 +1,59 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   FIELD_LOAD_PROFILES,
   fieldLoadReplayPlan,
+  runFieldLoadReplay,
+  storageFormatOption,
 } from './chat-storage-field-load.mjs';
+
+test('d11-cards plans zero synthetic patches and the explicit lifecycle schedule', () => {
+  const plan = fieldLoadReplayPlan(capture, {
+    ...FIELD_LOAD_PROFILES.smoke,
+    cardPolicy: 'd11-cards',
+  });
+  assert.ok(plan.owners.every((owner) => owner.patchShare === 0));
+  assert.equal(plan.cardSeeding, 'broker');
+  assert.deepEqual(
+    plan.lifecycleSchedule?.map((step) => step.operation),
+    [
+      'parent-stop',
+      'follow_up',
+      'draft',
+      'fail',
+      'start',
+      'settle-apply',
+      'apply',
+      'settle-discard',
+      'discard',
+      'stop',
+      'follow_up-final',
+      'start-final',
+      'settle-final',
+      'foreground-resume',
+    ],
+  );
+});
+
+test('d11-cards refuses both older storage formats before opening a scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'd11-format-'));
+  try {
+    for (const storageFormat of ['v2', 'v3'])
+      await assert.rejects(
+        runFieldLoadReplay(
+          { cardPolicy: 'd11-cards', owners: [], durationMs: 1 },
+          { root, storageFormat },
+        ),
+        /d11-cards policy requires --storage-format v4/,
+      );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 const capture = JSON.parse(
   readFileSync(
@@ -15,6 +64,13 @@ const capture = JSON.parse(
     'utf8',
   ),
 );
+
+test('storage format flag defaults to v2 and validates opt-in variants', () => {
+  assert.equal(storageFormatOption(), 'v2');
+  assert.equal(storageFormatOption('v3'), 'v3');
+  assert.equal(storageFormatOption('v4'), 'v4');
+  assert.throws(() => storageFormatOption('v5'), /Unknown storage format/);
+});
 
 function chat(overrides = {}) {
   return {
@@ -209,4 +265,13 @@ test('the persisted-projection card policy patches no card during a replay', () 
   assert.equal(logged.cardPolicy, 'persisted-projection');
   assert.ok(legacy.owners.some((owner) => owner.patchShare > 0));
   assert.ok(logged.owners.every((owner) => owner.patchShare === 0));
+});
+
+test('stream-descriptor policy never schedules parent card rewrites', () => {
+  const plan = fieldLoadReplayPlan(capture, {
+    ...FIELD_LOAD_PROFILES.smoke,
+    cardPolicy: 'stream-descriptor',
+  });
+  assert.equal(plan.cardPolicy, 'stream-descriptor');
+  assert.ok(plan.owners.every((owner) => owner.patchShare === 0));
 });

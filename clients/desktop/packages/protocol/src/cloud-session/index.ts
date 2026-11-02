@@ -60,6 +60,17 @@ export interface CloudSessionFileLinkResolution {
   readonly relativePath: string | null;
 }
 
+/**
+ * Conditional writes use the version returned by the latest complete read.
+ * Core refuses a stale version with HTTP 409 / `FILE_CONFLICT`; the hosted
+ * route preserves it as `CloudSessionCodedError` (metadata becomes details).
+ * Other 409 codes are not file-save conflicts. The same FILE_CONFLICT code
+ * also covers create-only collisions: omitting expectedMtimeMs is create-only,
+ * never permission to overwrite. Recovery must send a confirmed version.
+ *
+ * Server contract evidence:
+ * https://github.com/unstoppabledomains/agentic-core/blob/c30e3894abd9d4ca13064cde947f7e55de8c48de/test/e2e/session-sandbox-files.e2e.spec.ts#L436-L485
+ */
 export interface CloudSessionFileWriteRequest {
   readonly path: string;
   readonly content: string;
@@ -130,6 +141,12 @@ export interface CloudSessionGitRepositoryChanges {
   readonly repoId: string;
   /** `owner/name`. */
   readonly repository?: string;
+  /**
+   * What a multi-repository worktree shows for it (REG-3023): the project
+   * root's name or its canopy.json `name`. Absent for one repository, which
+   * shows its `repository` name.
+   */
+  readonly repoName?: string;
   readonly scope: CloudSessionGitScope;
   /** The branch the range resolved against; `null` for `uncommitted`. */
   readonly base: string | null;
@@ -150,6 +167,8 @@ export type CloudSessionGitChangesEntry =
       readonly state: 'ERROR';
       readonly repoId: string;
       readonly repository?: string;
+      /** As `CloudSessionGitRepositoryChanges.repoName`. */
+      readonly repoName?: string;
       readonly error: { readonly code: string; readonly message: string };
     };
 

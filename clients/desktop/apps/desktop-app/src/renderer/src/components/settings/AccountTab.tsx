@@ -1,5 +1,9 @@
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { isCursorHarnessReleased } from '@/lib/cursor-settings';
+import { isCopilotHarnessReleased } from '@/lib/copilot-settings';
+import { isOpenCodeHarnessReleased } from '@/lib/opencode-settings';
+import { CopilotConnection } from './CopilotConnection';
+import { OpenCodeConnection } from './OpenCodeConnection';
 import { CursorConnection } from './CursorConnection';
 import { AccountProxyProviderRow } from './account-proxy/AccountProxyProviderRow';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
@@ -16,6 +20,7 @@ import {
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { LinearKeyRow } from './LinearKeyRow';
 import { useHostedSettingsAvailable } from './hosted/hosted-settings-availability';
+import { useGuestCredentialState } from '@/hooks/useIsGuestCredential';
 import { SettingsGroup, SettingsPage, SettingsSection } from './SettingsLayout';
 
 interface AccountSectionProps {
@@ -40,12 +45,17 @@ function AccountSection({ label, children }: AccountSectionProps): JSX.Element {
   );
 }
 
-/** The "LLM provider" section: org gateways, Claude, Codex, Cursor, proxy. */
+/**
+ * The "LLM provider" section: org gateways, Claude, Codex, Copilot, OpenCode,
+ * Cursor, proxy.
+ */
 function LlmProviderSection({
   cursorReleased,
 }: {
   cursorReleased: boolean;
 }): JSX.Element {
+  const copilotReleased = useFeatureFlagsStore(isCopilotHarnessReleased);
+  const opencodeReleased = useFeatureFlagsStore(isOpenCodeHarnessReleased);
   const accountProxyFlagEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key),
   );
@@ -76,6 +86,10 @@ function LlmProviderSection({
         ))}
         <ProviderAuthPanel provider="claude" layout="row" />
         <ProviderAuthPanel provider="codex" layout="row" />
+        {/* Released Copilot and OpenCode are provider rows too (and render
+            nothing while unsupported on this computer). */}
+        {copilotReleased && <CopilotConnection placement="row" />}
+        {opencodeReleased && <OpenCodeConnection placement="row" />}
         {/* Cursor is a provider row beside Claude and Codex (and renders
             nothing while unsupported). */}
         {cursorReleased && <CursorConnection placement="row" />}
@@ -88,17 +102,19 @@ function LlmProviderSection({
 
 /**
  * The Accounts tab. With hosted account settings available it is "Providers":
- * only the LLM providers, because the cloud account, daily credits, GitHub
- * and Linear live on the hosted Account, Billing and Integrations pages.
+ * the LLM providers, plus a guest's daily credits control. Signed-in accounts
+ * use the hosted Account, Billing and Integrations pages.
  */
 export function AccountTab(): JSX.Element {
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
   const hostedSettingsAvailable = useHostedSettingsAvailable();
+  const isGuest = useGuestCredentialState() === true;
 
   if (hostedSettingsAvailable) {
     return (
       <SettingsPage title="Providers" dataTestId="settings-tab-account">
         <LlmProviderSection cursorReleased={cursorReleased} />
+        {isGuest && <CloudDailyCreditDripSettings />}
         {cursorReleased && <CursorApprovalCheck collapsible />}
       </SettingsPage>
     );

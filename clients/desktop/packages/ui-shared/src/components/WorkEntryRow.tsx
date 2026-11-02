@@ -40,11 +40,12 @@ import {
   useContextMenuPlacement,
 } from './context-menu-placement';
 import { SidebarRowAge } from './SidebarRowAge';
+import { AgentStateGlyph, backgroundTasksLabel } from './AgentStateGlyph';
+import { ThinkingSpinner } from './ThinkingSpinner';
 import { SidebarPinMenuItem } from './SidebarPinMenuItem';
 import { SidebarPinnedBadge } from './SidebarPinnedBadge';
-import { ThinkingSpinner } from './ThinkingSpinner';
 import { Tooltip } from './Tooltip';
-import { DoneCheckIcon } from '../icons/DoneCheckIcon';
+import { StatusGlyph } from './StatusGlyph';
 import {
   ArchiveBoxIcon,
   ArchiveIcon,
@@ -58,12 +59,45 @@ import {
 } from '../icons/AppIcons';
 import { SIDEBAR_INDICATOR_BLUE } from '../lib/operational-status-colors';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import {
+  resolveSelectionClick,
+  resolveSelectionKey,
+  shiftMouseDownSuppressesTextSelection,
+} from '../lib/sidebar-row-selection-gestures';
 
 /** Surfaces that mount a visual copy of a selected row (CAN-3127). */
 export type WorkEntryRowPinnedSurface = 'pin-top' | 'pin-bottom';
 
 /** A Work Entry's user-driven completion state. */
 export type WorkEntryRowStatus = 'active' | 'done';
+
+/**
+ * Marks a row that handles its own clicks for the bulk selection. Same value
+ * as `@canopy/ui-app`'s `SIDEBAR_SELECTION_ROW_ATTR`, which this package
+ * cannot import.
+ */
+export const WORK_ENTRY_SELECTION_ROW_ATTR = 'data-worktree-selection-row';
+
+/**
+ * The row's part in the rail's bulk selection (CAN-3975). Command-click
+ * (Ctrl-click off macOS) toggles, Shift-click ranges, `x` toggles the focused
+ * row, Cmd/Ctrl+A selects the list, and Esc clears. A plain click opens the
+ * entry and ends an active selection.
+ */
+export interface WorkEntryRowMultiSelect {
+  /** This row is in the selection: the accent tint and an sr-only label. */
+  readonly selected: boolean;
+  /** The row can join the selection. */
+  readonly selectable: boolean;
+  /** Any row in the rail is selected: a plain click opens and clears. */
+  readonly active: boolean;
+  /** Esc clears the selection; off while a batch runs. */
+  readonly escapeClears: boolean;
+  readonly onToggle: () => void;
+  readonly onSelectRange: () => void;
+  readonly onSelectAll: () => void;
+  readonly onClear: () => void;
+}
 
 /** A viewport point, such as the position of a right-click. */
 export interface WorkEntryRowPoint {
@@ -136,6 +170,12 @@ export interface WorkEntryRowProps {
   selected?: boolean;
   /** A chat in the entry has a turn in flight: shows the Working spinner. */
   working?: boolean;
+  /**
+   * Live background tasks in the entry's chats: the neutral background
+   * spinner while no turn runs (turn-state D15). Hosts without the data omit
+   * it.
+   */
+  backgroundTasks?: number;
   /** An agent question waits for an answer: the orange dot. Beats unread. */
   hasPendingQuestion?: boolean;
   /** A chat in the entry has output the user has not viewed: the blue dot. */
@@ -180,6 +220,11 @@ export interface WorkEntryRowProps {
   touchTarget?: boolean;
   /** Makes the row a drag source. Omit for a static row. */
   drag?: WorkEntryRowDragBinding;
+  /**
+   * The bulk selection (CAN-3975). Omit where the host offers none; a pinned
+   * copy ignores it.
+   */
+  multiSelect?: WorkEntryRowMultiSelect;
   /** Opens the Work Entry. Runs on click, Enter, and Space. */
   onOpen?: () => void;
   /**
@@ -285,6 +330,7 @@ function WorkEntryRowImpl({
   statusPlacement = 'trailing',
   selected = false,
   working = false,
+  backgroundTasks = 0,
   hasPendingQuestion = false,
   hasUnread = false,
   sharedWithTeammates = false,
@@ -296,6 +342,7 @@ function WorkEntryRowImpl({
   removing = false,
   touchTarget = false,
   drag,
+  multiSelect: multiSelectProp,
   onOpen,
   onDelete,
   deleteDisabledReason,
@@ -310,27 +357,26 @@ function WorkEntryRowImpl({
 }: WorkEntryRowProps): JSX.Element {
   const isPinnedCopy = pinnedSurface !== undefined;
   const dragBinding = isPinnedCopy ? undefined : drag;
+  const multiSelect = isPinnedCopy || removing ? undefined : multiSelectProp;
+  const multiSelected = multiSelectProp?.selected === true && !isPinnedCopy;
   const testIdFor = useCallback(
     (suffix: string): string =>
       workEntryRowTestId(testId, suffix, pinnedSurface),
     [testId, pinnedSurface],
   );
   const isDone = status === 'done';
-  // Done outranks every other state, as it does on code-worktree rows: a
-  // finished entry shows only its leading checkmark. Otherwise the Working
-  // spinner coexists with ONE attention dot, question (orange) over unread
-  // (blue).
-  const attentionDot: 'question' | 'unread' | null = isDone
-    ? null
-    : hasPendingQuestion
-      ? 'question'
-      : hasUnread
-        ? 'unread'
-        : null;
+  const attentionDot = workEntryAttentionDot({
+    done: isDone,
+    hasPendingQuestion,
+    hasUnread,
+  });
   const showWorking = !isDone && working;
+  const shownBackgroundTasks = isDone || working ? 0 : backgroundTasks;
   const statusLeads = statusPlacement === 'leading';
   // The leading placement shows live state on finished entries too, as
-  // focused worktree rows do: question > running turn > unread > idle.
+  // focused worktree rows do: question > running turn > unread > background
+  // > idle. Background ranks below unread: a long-running server would
+  // otherwise hide it for good.
   const leadingStatus: WorkEntryRowLeadingStatus | null = !statusLeads
     ? null
     : hasPendingQuestion
@@ -339,9 +385,12 @@ function WorkEntryRowImpl({
         ? 'working'
         : hasUnread
           ? 'unread'
-          : 'idle';
+          : backgroundTasks > 0
+            ? 'background'
+            : 'idle';
   const hasTrailingStatus =
-    !statusLeads && (showWorking || attentionDot !== null);
+    !statusLeads &&
+    (showWorking || shownBackgroundTasks > 0 || attentionDot !== null);
 
   const hasMenu = renderMenu !== undefined || renderMenuItems !== undefined;
   const compactActions =
@@ -404,11 +453,42 @@ function WorkEntryRowImpl({
   );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
     if (!isOwnTarget(event.target, event.currentTarget)) return;
     // Enter on the ••• or Delete button activates that button, not the row.
     if (isInteractiveTarget(event.target, event.currentTarget)) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onOpen?.();
+      return;
+    }
+    if (multiSelect === undefined) return;
+    const intent = resolveSelectionKey(event, multiSelect);
+    if (intent === null) return;
     event.preventDefault();
+    if (intent === 'toggle') multiSelect.onToggle();
+    else if (intent === 'select-all') multiSelect.onSelectAll();
+    else multiSelect.onClear();
+  };
+
+  const handleClick = (event: MouseEvent<HTMLDivElement>): void => {
+    if (!isOwnTarget(event.target, event.currentTarget)) return;
+    if (multiSelect === undefined) {
+      onOpen?.();
+      return;
+    }
+    // A modified click on the row's own controls keeps their behavior.
+    if (isInteractiveTarget(event.target, event.currentTarget)) {
+      onOpen?.();
+      return;
+    }
+    const intent = resolveSelectionClick(event, multiSelect);
+    if (intent === 'toggle' || intent === 'range') {
+      event.preventDefault();
+      if (intent === 'toggle') multiSelect.onToggle();
+      else multiSelect.onSelectRange();
+      return;
+    }
+    if (intent === 'open-and-clear') multiSelect.onClear();
     onOpen?.();
   };
 
@@ -451,26 +531,46 @@ function WorkEntryRowImpl({
       data-testid={testIdFor('')}
       data-standalone-chat-id={isPinnedCopy ? undefined : entryId}
       data-sidebar-selected-item={selected && !isPinnedCopy ? '' : undefined}
+      aria-current={selected && !isPinnedCopy ? 'page' : undefined}
       data-sidebar-selected-pin-disabled={disableSelectedPin ? '' : undefined}
       data-sidebar-selected-pin-seat={selectedPinSeat}
       data-entry-status={isDone ? 'done' : 'active'}
-      onClick={(event): void => {
-        if (!isOwnTarget(event.target, event.currentTarget)) return;
-        onOpen?.();
-      }}
+      {...(multiSelect !== undefined
+        ? { [WORK_ENTRY_SELECTION_ROW_ATTR]: '' }
+        : {})}
+      data-multiselected={multiSelected || undefined}
+      onClick={handleClick}
+      onMouseDown={
+        multiSelect === undefined
+          ? undefined
+          : (event): void => {
+              // The browser selects text on a Shift-click's mousedown,
+              // before the click that extends the selection.
+              if (
+                shiftMouseDownSuppressesTextSelection(
+                  event,
+                  multiSelect.selectable,
+                )
+              ) {
+                event.preventDefault();
+              }
+            }
+      }
       onMouseLeave={hideUnreadPreview}
       onContextMenu={hasMenu ? handleContextMenu : undefined}
       onPointerDown={dragBinding ? handlePointerDown : undefined}
       onKeyDown={handleKeyDown}
-      className={`group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full cursor-default items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition ${
+      className={`group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full cursor-default items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition-opacity ${
         dragBinding ? 'touch-none select-none' : ''
-      } ${selected ? 'bg-muted fg-primary' : `fg-secondary hover:bg-subtle${menuOpen && marksRowWhileMenuOpen ? ' bg-subtle' : ''}`} ${
+      } ${multiSelected ? 'bg-accent-subtle fg-primary' : selected ? 'bg-muted fg-primary' : `fg-secondary hover:bg-subtle${menuOpen && marksRowWhileMenuOpen ? ' bg-subtle' : ''}`} ${
         removing ? 'pointer-events-none opacity-50' : ''
       } ${dragBinding?.isDragging === true ? 'opacity-50' : ''}`}
     >
+      {multiSelected && <span className="sr-only">Selected</span>}
       <WorkEntryRowLeadingSlot
         done={isDone && !statusLeads}
         status={leadingStatus}
+        backgroundTasks={backgroundTasks}
         testIdFor={testIdFor}
         onDotActivate={showUnreadPreview}
         onDotBlur={hideUnreadPreview}
@@ -529,6 +629,7 @@ function WorkEntryRowImpl({
       {hasTrailingStatus && (
         <WorkEntryRowTrailingStatus
           working={showWorking}
+          backgroundTasks={shownBackgroundTasks}
           attentionDot={attentionDot}
           actionCount={actionCount}
           testIdFor={testIdFor}
@@ -626,12 +727,18 @@ function compactTitleReserveClassName(
     : hover;
 }
 
-type WorkEntryRowLeadingStatus = 'needs-input' | 'working' | 'unread' | 'idle';
+type WorkEntryRowLeadingStatus =
+  | 'needs-input'
+  | 'working'
+  | 'unread'
+  | 'background'
+  | 'idle';
 
 interface WorkEntryRowLeadingSlotProps {
   done: boolean;
   /** The leading status indicator, or null for the trailing placement. */
   status: WorkEntryRowLeadingStatus | null;
+  backgroundTasks: number;
   testIdFor: (suffix: string) => string;
   /** Opens the unread preview from a hovered or focused dot. */
   onDotActivate: (element: HTMLElement) => void;
@@ -643,76 +750,93 @@ const LEADING_STATUS_LABELS: Record<WorkEntryRowLeadingStatus, string | null> =
     'needs-input': 'Question waiting',
     working: 'Working',
     unread: 'Unread messages',
+    background: null,
     idle: null,
   };
 
 /**
  * The same w-5 leading column code-worktree rows reserve. It holds the done
- * checkmark (purple, like a merged worktree); done titles keep full ink.
+ * checkmark (the shared Done status glyph); done titles keep full ink.
  */
 function WorkEntryRowLeadingSlot({
   done,
   status,
+  backgroundTasks,
   testIdFor,
   onDotActivate,
   onDotBlur,
 }: WorkEntryRowLeadingSlotProps): JSX.Element {
-  const label = status === null ? null : LEADING_STATUS_LABELS[status];
+  const label =
+    status === 'background'
+      ? backgroundTasksLabel(backgroundTasks)
+      : status === null
+        ? null
+        : LEADING_STATUS_LABELS[status];
   const opensPreview = status === 'needs-input' || status === 'unread';
+  const indicator =
+    status === null ? null : (
+      <span
+        className="focus-ring pointer-events-auto relative inline-flex h-5 w-5 items-center justify-center rounded-sm outline-none"
+        role={label === null ? undefined : 'img'}
+        aria-label={label ?? undefined}
+        tabIndex={opensPreview ? 0 : undefined}
+        onMouseEnter={
+          opensPreview
+            ? (event: MouseEvent<HTMLSpanElement>): void =>
+                onDotActivate(event.currentTarget)
+            : undefined
+        }
+        onFocus={
+          opensPreview
+            ? (event: FocusEvent<HTMLSpanElement>): void =>
+                onDotActivate(event.currentTarget)
+            : undefined
+        }
+        onBlur={opensPreview ? onDotBlur : undefined}
+        data-testid={testIdFor('-status')}
+        data-row-status={status}
+      >
+        {status === 'working' || status === 'background' ? (
+          // Follows Labs → Comet spinners; the comet keeps its 12px slot.
+          <ThinkingSpinner
+            tone={status === 'working' ? 'accent' : 'tertiary'}
+            sizePx={12}
+          />
+        ) : (
+          <span
+            className={`rounded-full h-1.5 w-1.5 ${
+              status === 'needs-input'
+                ? 'bg-fg-warning'
+                : status === 'unread'
+                  ? SIDEBAR_INDICATOR_BLUE.background
+                  : 'bg-fg-quaternary/50'
+            }`}
+            aria-hidden="true"
+          />
+        )}
+      </span>
+    );
   return (
     <span
       className="inline-flex h-5 w-5 shrink-0 items-center justify-center"
       aria-hidden={done || label !== null ? undefined : 'true'}
       data-testid={testIdFor('-leading-slot')}
     >
-      {status !== null && (
-        <span
-          className="focus-ring pointer-events-auto relative inline-flex h-5 w-5 items-center justify-center rounded-sm outline-none"
-          role={label === null ? undefined : 'img'}
-          aria-label={label ?? undefined}
-          tabIndex={opensPreview ? 0 : undefined}
-          onMouseEnter={
-            opensPreview
-              ? (event: MouseEvent<HTMLSpanElement>): void =>
-                  onDotActivate(event.currentTarget)
-              : undefined
-          }
-          onFocus={
-            opensPreview
-              ? (event: FocusEvent<HTMLSpanElement>): void =>
-                  onDotActivate(event.currentTarget)
-              : undefined
-          }
-          onBlur={opensPreview ? onDotBlur : undefined}
-          data-testid={testIdFor('-status')}
-          data-row-status={status}
-        >
-          {status === 'working' ? (
-            // Follows Labs → Comet spinners; the comet keeps its 12px slot.
-            <ThinkingSpinner tone="accent" sizePx={12} />
-          ) : (
-            <span
-              className={`rounded-full h-1.5 w-1.5 ${
-                status === 'needs-input'
-                  ? 'bg-fg-warning'
-                  : status === 'unread'
-                    ? SIDEBAR_INDICATOR_BLUE.background
-                    : 'bg-fg-quaternary/50'
-              }`}
-              aria-hidden="true"
-            />
-          )}
-        </span>
+      {/* Background work has no preview, so a tooltip names its count. */}
+      {status === 'background' && label !== null ? (
+        <Tooltip label={label}>{indicator}</Tooltip>
+      ) : (
+        indicator
       )}
       {done && (
         <Tooltip label="Done">
           <span
-            className="inline-flex h-4 w-4 items-center justify-center fg-purple"
+            className="inline-flex h-4 w-4 items-center justify-center"
             role="img"
             aria-label="Done"
             data-testid={testIdFor('-done')}
           >
-            <DoneCheckIcon width={16} height={16} aria-hidden="true" />
+            <StatusGlyph state="done" />
           </span>
         </Tooltip>
       )}
@@ -720,14 +844,33 @@ function WorkEntryRowLeadingSlot({
   );
 }
 
-interface WorkEntryRowTrailingStatusProps {
+/**
+ * Done outranks every other state, as it does on code-worktree rows: a
+ * finished entry shows only its leading checkmark. Otherwise the Working
+ * spinner coexists with ONE attention dot, question (orange) over unread
+ * (blue).
+ */
+export function workEntryAttentionDot(state: {
+  done: boolean;
+  hasPendingQuestion?: boolean;
+  hasUnread?: boolean;
+}): 'question' | 'unread' | null {
+  if (state.done) return null;
+  if (state.hasPendingQuestion) return 'question';
+  return state.hasUnread ? 'unread' : null;
+}
+
+export interface WorkEntryRowTrailingStatusProps {
   working: boolean;
+  /** Live background tasks: the neutral spinner when nothing is working. */
+  backgroundTasks?: number;
   attentionDot: 'question' | 'unread' | null;
+  /** Hover-revealed action buttons the cluster parks beside (0–2). */
   actionCount: number;
   testIdFor: (suffix: string) => string;
   /** Opens the unread preview from a hovered or focused dot. */
-  onDotActivate: (element: HTMLElement) => void;
-  onDotBlur: () => void;
+  onDotActivate?: (element: HTMLElement) => void;
+  onDotBlur?: () => void;
 }
 
 /**
@@ -736,24 +879,30 @@ interface WorkEntryRowTrailingStatusProps {
  * 24px button (-mr-0.5). A hover margin parks the cluster flush beside the
  * revealed buttons, so it stays visible next to them.
  */
-function WorkEntryRowTrailingStatus({
+export function WorkEntryRowTrailingStatus({
   working,
+  backgroundTasks = 0,
   attentionDot,
   actionCount,
   testIdFor,
   onDotActivate,
   onDotBlur,
 }: WorkEntryRowTrailingStatusProps): JSX.Element {
+  // A dot opens a preview only for a host that renders one.
   const dotProps = {
     className:
       'focus-ring pointer-events-auto relative inline-flex h-5 w-6 shrink-0 items-center justify-center rounded-sm outline-none',
     role: 'img',
-    tabIndex: 0,
-    onMouseEnter: (event: MouseEvent<HTMLSpanElement>): void =>
-      onDotActivate(event.currentTarget),
-    onFocus: (event: FocusEvent<HTMLSpanElement>): void =>
-      onDotActivate(event.currentTarget),
-    onBlur: onDotBlur,
+    ...(onDotActivate
+      ? {
+          tabIndex: 0,
+          onMouseEnter: (event: MouseEvent<HTMLSpanElement>): void =>
+            onDotActivate(event.currentTarget),
+          onFocus: (event: FocusEvent<HTMLSpanElement>): void =>
+            onDotActivate(event.currentTarget),
+          onBlur: onDotBlur,
+        }
+      : {}),
   };
   return (
     <span
@@ -766,20 +915,22 @@ function WorkEntryRowTrailingStatus({
       }
       data-testid={testIdFor('-status-slot')}
     >
-      {/* Rich tooltips, never native `title` (CAN-2799): the native tooltip
-          lags on macOS. The dots need none; they open the unread preview. */}
-      {working && (
-        <Tooltip label="Working">
-          <span
-            className="inline-flex h-5 w-6 shrink-0 items-center justify-center"
-            aria-label="Working"
-            data-testid={testIdFor('-thinking')}
-          >
-            <span className="inline-flex h-3 w-3 items-center justify-center">
-              <ThinkingSpinner tone="accent" />
-            </span>
-          </span>
-        </Tooltip>
+      {/* The dots need no tooltip; they open the unread preview. */}
+      {working ? (
+        <AgentStateGlyph
+          state="working"
+          slot="row"
+          testId={testIdFor('-thinking')}
+        />
+      ) : (
+        backgroundTasks > 0 && (
+          <AgentStateGlyph
+            state="background"
+            backgroundTasks={backgroundTasks}
+            slot="row"
+            testId={testIdFor('-background')}
+          />
+        )
       )}
       {attentionDot === 'question' && (
         <span
@@ -1081,6 +1232,11 @@ export interface WorkEntryRowMenuItemsProps {
   removalDisabledReason?: string;
   /** Organizing actions inserted directly after Pin. */
   afterPin?: ReactNode;
+  /**
+   * Rows inserted after the notifications and before the Archive and Delete
+   * group, such as the bulk selection's Select.
+   */
+  beforeRemoval?: ReactNode;
 }
 
 /**
@@ -1108,6 +1264,7 @@ export function WorkEntryRowMenuItems({
   deleteTitle,
   removalDisabledReason,
   afterPin,
+  beforeRemoval,
 }: WorkEntryRowMenuItemsProps): JSX.Element {
   const removalDisabled = removalDisabledReason !== undefined;
   const hasActionRows = Boolean(
@@ -1180,10 +1337,10 @@ export function WorkEntryRowMenuItems({
           separatorBefore={hasActionRows}
         />
       )}
+      {beforeRemoval}
       {/* Archive and Delete end the menu in their own group. */}
-      {(hasActionRows || notificationsShown) && (onArchive || onDelete) && (
-        <DropdownMenuDivider />
-      )}
+      {(hasActionRows || notificationsShown || beforeRemoval !== undefined) &&
+        (onArchive || onDelete) && <DropdownMenuDivider />}
       {onArchive && (
         <DropdownMenuItem
           onClick={run(onArchive)}

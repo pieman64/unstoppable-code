@@ -20,6 +20,7 @@ import { CHAT_LABEL } from '@canopy/protocol';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useMemoryReportStore } from '@/stores/memoryReportStore';
 import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
 import { formatCpuPercent, formatMemoryBytes } from './format';
 import {
@@ -33,6 +34,7 @@ import {
   OverlayScrollArea,
   RailIconButton,
 } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
   ChatIcon,
@@ -66,7 +68,7 @@ const GROUP_LABELS: Record<ResourceGroupId, string> = {
   codex: 'Codex',
   claude: 'Claude',
   chat: CHAT_LABEL,
-  pipelines: 'Pipelines',
+  pipelines: 'Workflows',
   terminal: 'Terminal',
   scripts: 'Script',
   other: 'Other',
@@ -664,7 +666,12 @@ export function ResourceDiagnosticsPopover({
       style={style}
       className="canopy-floating-menu w-80"
     >
-      <div className="flex flex-col gap-2">
+      {/* Portaled over titlebar/sidebar drag rects; app-region ignores
+          z-order, so the controls' container opts out. */}
+      <div
+        className="electron-no-drag flex flex-col gap-2"
+        data-testid="resource-diagnostics-popover-content"
+      >
         <div className="flex shrink-0 items-center gap-3">
           <h3 className="min-w-0 flex-1 truncate text-s font-normal fg-primary">
             Resources
@@ -798,8 +805,93 @@ export function ResourceDiagnosticsPopover({
             </span>
           </div>
         )}
+
+        <MemoryReportFooter onClose={onClose} />
       </div>
     </DropdownMenuSurface>
+  );
+}
+
+/**
+ * Creates a memory report, and opens the newest one's folder, while memory
+ * diagnostics are on in Performance settings. The report's confirmation and
+ * progress overlay are app-wide, so starting one closes this popover.
+ */
+function MemoryReportFooter({
+  onClose,
+}: {
+  onClose: () => void;
+}): JSX.Element | null {
+  const [enabled, setEnabled] = useState(false);
+  const [revealFailed, setRevealFailed] = useState(false);
+  const lastReport = useMemoryReportStore((state) => state.lastReport);
+  const setLastReport = useMemoryReportStore((state) => state.setLastReport);
+  const reportBusy = useMemoryReportStore(
+    (state) => state.checking || state.flow.phase !== 'idle',
+  );
+  const requestReport = useMemoryReportStore((state) => state.request);
+  const revealReport = useMemoryReportStore((state) => state.reveal);
+
+  useEffect(() => {
+    let active = true;
+    void (async (): Promise<void> => {
+      try {
+        const status = await window.api.memoryDiagnostics.getStatus();
+        if (!active) return;
+        setEnabled(status.enabled);
+        setLastReport(status.lastReport);
+      } catch {
+        // Without a status the footer stays hidden.
+      }
+    })();
+    return (): void => {
+      active = false;
+    };
+  }, [setLastReport]);
+
+  if (!enabled) return null;
+  return (
+    <div
+      className="flex shrink-0 items-center gap-2 border-t border-subtle pt-2 text-xs"
+      data-testid="resource-diagnostics-popover-memory-report"
+    >
+      <span
+        className={`min-w-0 flex-1 truncate ${
+          revealFailed ? 'fg-destructive' : 'fg-secondary'
+        }`}
+        role={revealFailed ? 'alert' : undefined}
+      >
+        {revealFailed ? "Couldn't open the folder" : 'Memory report'}
+      </span>
+      {lastReport ? (
+        <Button
+          size="compact"
+          variant="secondary"
+          data-testid="resource-diagnostics-popover-open-report"
+          onClick={() => {
+            void revealReport(lastReport.reportId).then((revealed) => {
+              setRevealFailed(!revealed);
+            });
+          }}
+        >
+          Open folder
+        </Button>
+      ) : null}
+      <Button
+        size="compact"
+        variant="secondary"
+        disabled={reportBusy}
+        data-testid="resource-diagnostics-popover-create-report"
+        // The row's label names the report, so the action can stay short.
+        aria-label="Create memory report"
+        onClick={() => {
+          onClose();
+          void requestReport();
+        }}
+      >
+        Create
+      </Button>
+    </div>
   );
 }
 

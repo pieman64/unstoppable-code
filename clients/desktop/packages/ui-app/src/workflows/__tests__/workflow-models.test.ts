@@ -10,16 +10,21 @@ import {
 import {
   EMPTY_WORKFLOW_LIBRARY_FILTERS,
   WORKFLOW_NO_PROJECT,
+  WORKFLOW_ROW_MENU_LABELS,
+  WORKFLOW_RUN_UNAVAILABLE_HERE,
   availableWorkflowTriggerKinds,
+  countActiveLibraryFacets,
   countLibraryFacets,
+  describeClearLibraryFilters,
   describeNoLibraryMatches,
   describePipelineTriggers,
   describeRunUnavailable,
   describeStepCount,
-  describeTriggerFilter,
   filterLibraryRows,
   menuWorkflowLibraryActions,
   pageLibraryRows,
+  withoutAutomationOwnedPipelines,
+  pipelineTriggerKinds,
   sortLibraryRows,
   truncateStepChain,
   type WorkflowLibraryRow,
@@ -34,7 +39,7 @@ import {
   workflowRunDurationLabel,
   workflowRunStatusFromPipeline,
   workflowRunStatusFromWatcher,
-  workflowRunStatusTone,
+  workflowRunStatusGlyphState,
   type WorkflowAutomationRunRow,
   type WorkflowRunRow,
 } from '../workflow-run-model';
@@ -157,11 +162,19 @@ describe('workflow run model', () => {
     );
   });
 
-  it('never tones a failure as a success', () => {
-    expect(workflowRunStatusTone('failure').tone).toBe('failed');
-    expect(workflowRunStatusTone('delivery-failed').tone).toBe('failed');
-    expect(workflowRunStatusTone('success').tone).toBe('success');
-    expect(workflowRunStatusTone('waiting').tone).toBe('warning');
+  it('maps every run status onto the shared status glyphs', () => {
+    expect(workflowRunStatusGlyphState('failure')).toBe('failed');
+    expect(workflowRunStatusGlyphState('delivery-failed')).toBe('failed');
+    expect(workflowRunStatusGlyphState('success')).toBe('done');
+    expect(workflowRunStatusGlyphState('fired')).toBe('done');
+    expect(workflowRunStatusGlyphState('waiting')).toBe('needs-you');
+    expect(workflowRunStatusGlyphState('running')).toBe('running');
+    expect(workflowRunStatusGlyphState('watching')).toBe('running');
+    expect(workflowRunStatusGlyphState('queued')).toBe('queued');
+    // A cancelled run gets its own stop glyph, never the finished check.
+    expect(workflowRunStatusGlyphState('canceled')).toBe('cancelled');
+    expect(workflowRunStatusGlyphState('skipped')).toBe('cancelled');
+    expect(workflowRunStatusGlyphState('missed')).toBe('cancelled');
   });
 
   it('pins running, waiting and watching rows above the rest, newest first', () => {
@@ -259,13 +272,39 @@ describe('run search', () => {
     ).toEqual(['a-fail']);
   });
 
+  it('still finds runs by the former kind names in free text (CAN-4651)', () => {
+    const keys = (query: string): string[] =>
+      filterWorkflowRunRows(rows, query, EMPTY_WORKFLOW_RUN_FILTERS).map(
+        (row) => row.key,
+      );
+    expect(keys('on demand')).toEqual(['pipeline:exec-1']);
+    expect(keys('pipeline')).toEqual(['pipeline:exec-1', 'a-fail']);
+    expect(keys('automation')).toEqual(['a-fail', 'a-ok']);
+  });
+
+  it('takes the Kind column words as kind tokens and keeps the former names as aliases (CAN-4651)', () => {
+    const keys = (query: string): string[] =>
+      filterWorkflowRunRows(rows, query, EMPTY_WORKFLOW_RUN_FILTERS).map(
+        (row) => row.key,
+      );
+    expect(keys('kind:scheduled')).toEqual(['a-fail', 'a-ok']);
+    expect(keys('kind:scheduled')).toEqual(keys('kind:schedule'));
+    expect(keys('kind:on-demand')).toEqual(['pipeline:exec-1']);
+    expect(keys('kind:automation')).toEqual(['a-fail', 'a-ok']);
+    expect(keys('kind:pipeline')).toEqual(['pipeline:exec-1']);
+    expect(parseRunSearch('kind:Scheduled').kinds).toEqual(['automation']);
+    expect(parseRunSearch('kind:On-demand').kinds).toEqual(['pipeline']);
+  });
+
   it('matches nothing for an unknown token value and names the valid ones, with no message otherwise', () => {
     expect(
       filterWorkflowRunRows(rows, 'status:fialed', EMPTY_WORKFLOW_RUN_FILTERS),
     ).toEqual([]);
     expect(runSearchHint('status:fialed')).toContain('status:fialed');
     expect(runSearchHint('status:fialed')).toContain('failed');
-    expect(runSearchHint('kind:robot')).toContain('automation');
+    expect(runSearchHint('kind:robot')).toBe(
+      'No match for kind:robot. Use kind: with scheduled, on-demand, watcher.',
+    );
     expect(runSearchHint('by:nobody')).toContain('schedule');
     expect(runSearchHint('')).toBeNull();
     expect(runSearchHint('nightly')).toBeNull();
@@ -584,9 +623,47 @@ describe('workflow library model', () => {
         source: 'shared',
       }),
     ).toBe('No workflows match "deploy" and these filters');
-    expect(describeTriggerFilter([])).toBe('Any trigger');
-    expect(describeTriggerFilter(['once'])).toBe('One time');
-    expect(describeTriggerFilter(['schedule', 'once'])).toBe('2 triggers');
+  });
+
+  it('counts the facets that are on, leaving the query out', () => {
+    expect(countActiveLibraryFacets(EMPTY_WORKFLOW_LIBRARY_FILTERS)).toBe(0);
+    expect(
+      countActiveLibraryFacets({
+        ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+        query: 'deploy',
+      }),
+    ).toBe(0);
+    expect(
+      countActiveLibraryFacets({
+        ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+        triggers: ['schedule', 'once'],
+        status: 'off',
+        project: WORKFLOW_NO_PROJECT,
+        source: 'shared',
+      }),
+    ).toBe(4);
+  });
+
+  it('names the empty state action by what it clears', () => {
+    expect(
+      describeClearLibraryFilters({
+        ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+        query: 'deploy',
+      }),
+    ).toBe('Clear search');
+    expect(
+      describeClearLibraryFilters({
+        ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+        status: 'off',
+      }),
+    ).toBe('Clear filters');
+    expect(
+      describeClearLibraryFilters({
+        ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+        query: '  deploy ',
+        triggers: ['manual'],
+      }),
+    ).toBe('Clear search and filters');
   });
 
   it('orders the More menu and keeps only applicable actions', () => {
@@ -640,5 +717,63 @@ describe('workflow time labels', () => {
     expect(formatRunDuration(47 * 60_000)).toBe('47m');
     expect(formatRunDuration(72 * 60_000)).toBe('1h 12m');
     expect(formatRunDuration(-1)).toBe('');
+  });
+});
+
+describe('Customize workflow row helpers (CAN-4845)', () => {
+  it('maps pipeline trigger types onto trigger kinds in Library order', () => {
+    expect(pipelineTriggerKinds([])).toEqual(['manual']);
+    expect(pipelineTriggerKinds(['plan_ready', 'dispatch'])).toEqual([
+      'manual',
+      'plan-approved',
+    ]);
+    expect(pipelineTriggerKinds(['task_ready'])).toEqual(['task-ready']);
+    expect(pipelineTriggerKinds(['dispatch'])).toEqual(['manual']);
+    expect(pipelineTriggerKinds(['plan_ready'])).toEqual(['plan-approved']);
+    expect(pipelineTriggerKinds(['plan_ready', 'task_ready'])).toEqual([
+      'plan-approved',
+      'task-ready',
+    ]);
+    expect(
+      pipelineTriggerKinds(['dispatch', 'plan_ready', 'task_ready']),
+    ).toEqual(['manual', 'plan-approved', 'task-ready']);
+    expect(
+      pipelineTriggerKinds(['dispatch', 'dispatch', 'plan_ready']),
+    ).toEqual(['manual', 'plan-approved']);
+  });
+
+  it('shares the run-unavailable fallback and the Library action labels', () => {
+    expect(describeRunUnavailable([])).toBe(WORKFLOW_RUN_UNAVAILABLE_HERE);
+    expect(WORKFLOW_ROW_MENU_LABELS).toEqual({
+      edit: 'Edit',
+      viewRuns: 'View runs',
+      runNow: 'Run now',
+      share: 'Share…',
+      delete: 'Delete…',
+    });
+  });
+});
+
+// CAN-4551: a converted automation's own pipeline folds into its row.
+describe('withoutAutomationOwnedPipelines', () => {
+  const pipelines = [
+    { id: 'owned-1', source: 'user' },
+    { id: 'mine', source: 'user' },
+    { id: 'owned-1', source: 'project' },
+  ];
+
+  it('hides only the user pipelines a live automation owns', () => {
+    expect(
+      withoutAutomationOwnedPipelines(pipelines, new Set(['owned-1'])),
+    ).toEqual([
+      { id: 'mine', source: 'user' },
+      { id: 'owned-1', source: 'project' },
+    ]);
+  });
+
+  it('keeps every pipeline when nothing is owned, as a stale marker reads', () => {
+    expect(withoutAutomationOwnedPipelines(pipelines, new Set())).toEqual(
+      pipelines,
+    );
   });
 });

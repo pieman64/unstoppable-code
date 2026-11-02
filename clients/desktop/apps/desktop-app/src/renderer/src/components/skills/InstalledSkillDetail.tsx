@@ -11,6 +11,7 @@ import {
 } from './useInstalledSkillActions';
 import { useEditSkillWithAI } from './useEditSkillWithAI';
 import { useSkillUpdateAppliedRevision } from './skillUpdateStatus';
+import { useInstalledShareProvenance } from './useInstalledShareProvenance';
 
 export interface InstalledSkillDetailProps {
   skill: { sourceId: string; name: string; filePath?: string };
@@ -154,6 +155,10 @@ export function InstalledSkillDetail({
         }
       : undefined;
 
+  const shareProvenance = useInstalledShareProvenance(
+    editing ? undefined : installedSkill,
+  );
+
   const editWithAI = useEditSkillWithAI();
   const startEditWithAI = (): void =>
     editWithAI.start({ sourceId: skill.sourceId, name: skill.name });
@@ -244,6 +249,7 @@ export function InstalledSkillDetail({
         removePending={actions.isRemoving(skill)}
         updateAction={updateAction}
         installedSkill={installedSkill}
+        shareProvenance={shareProvenance}
         loadErrorPrefix={
           updatedSkillKey === displayedKey
             ? SKILL_UPDATE_REFRESH_FAILED

@@ -2,6 +2,7 @@ import { DEFAULT_MERGE_QUEUE_AGENT_HANDLING } from '@canopy/desktop-shared/types
 import { GLOBAL_FOCUS_SHORTCUT_DEFAULT_ACCELERATOR } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
 import {
   createDefaultApprovalDefaults,
+  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
   DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CRON_GENERATION_MODEL,
@@ -84,6 +85,7 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     approvalDefaults: createDefaultApprovalDefaults(),
     globalApprovalRules: [],
     approvalsUpgradeNoticeDismissed: false,
+    onboardingTipsDismissed: {},
     summaryModel: defaultSummaryModel(),
     summaryThinkingLevel: 'off',
     handoffSummaryModel: DEFAULT_HANDOFF_SUMMARY_MODEL,
@@ -136,6 +138,8 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     scriptTimeoutMinutes: 5,
     codexAppServerIdleTimeoutMinutes:
       DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
+    claudeSessionIdleTimeoutMinutes:
+      DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
     defaultChatInterfaceMode: 'canopy',
     defaultStandaloneChatInterfaceMode: 'canopy',
     defaultAppAdvisorInterfaceMode: 'canopy',
@@ -236,7 +240,6 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     activationQuietHours: { enabled: true, startHour: 22, endHour: 8 },
     promotionalNotifications: {
       enabled: true,
-      gettingStarted: true,
       arbitrary: true,
     },
     branchNamingPluginSelections: createEmptySelections(),

@@ -50,6 +50,10 @@ export async function openLegacyPublicOwnerShare() {
     const modal = window.getByTestId('share-agent-modal');
     await modal.getByTestId('share-agent-scope-public').click();
     await modal.getByTestId('share-agent-submit').click();
+    await expect(modal.getByTestId('share-agent-success')).toContainText(
+      'Agent is now public',
+    );
+    await modal.getByTestId('share-agent-done').click();
     await expect(modal).toHaveCount(0);
     const detail = await window.evaluate(() =>
       window.agents.getShared('7c3f9e42-2f19-4bc4-a43f-95e780f2e68f'),

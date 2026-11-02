@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type * as nodeSqlite from 'node:sqlite';
 import { DatabaseSync as RealDatabaseSync } from 'node:sqlite';
-import { runCodeGraphMigrations } from '@canopy/desktop-shared/node/code-graph/store/migrations';
+import { runCodeGraphMigrations } from '@canopy/code-graph/store/migrations';
 
 type NodeSqliteModule = typeof nodeSqlite;
 

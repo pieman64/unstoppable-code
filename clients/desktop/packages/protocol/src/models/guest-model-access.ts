@@ -153,6 +153,31 @@ export function isGuestAllowedModelId(modelId: unknown): boolean {
 }
 
 /**
+ * Preferred guest alternative for a resolved vendor/model gateway id.
+ *
+ * Uses the first allowlist entry for the normalized vendor, including when the
+ * input is itself allowlisted. This is a preference lookup, not authorization
+ * or a registry lookup: callers must resolve the input gateway id and verify
+ * the candidate's registry mapping, selection identity and host availability.
+ * Bare client ids and malformed gateway ids have no preference.
+ */
+export function resolveGuestAllowedModelForGatewayId(
+  gatewayId: unknown,
+): GuestAllowedModel | undefined {
+  if (typeof gatewayId !== 'string') return undefined;
+
+  const [vendor, model, ...extraSegments] = gatewayId
+    .trim()
+    .toLowerCase()
+    .split('/');
+  if (!vendor || !model || extraSegments.length > 0) return undefined;
+
+  return GUEST_ALLOWED_MODELS.find(
+    (candidate) => candidate.gatewayId.split('/')[0] === vendor,
+  );
+}
+
+/**
  * `GPT 6 Luna, GPT 5.6 Luna, DeepSeek V4 Pro or Claude Haiku 5.5` — for
  * refusal and gate copy.
  *

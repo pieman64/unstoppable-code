@@ -4,6 +4,7 @@
   "beforeBuild": "./scripts/beforeBuild.js",
   "beforePack": "./scripts/beforePack.js",
   "afterPack": "./scripts/afterPack.js",
+  "afterSign": "./scripts/afterPack.js",
   "asar": true,
   "electronFuses": {
     "runAsNode": true,
@@ -113,7 +114,8 @@
         "schemes": ["http", "https"],
         "role": "Viewer"
       }
-    ]
+    ],
+    "sign": "<repo>/scripts/mac-sign.cjs"
   },
   "win": {
     "icon": "<repo>/.cache/brand/canopy/electron-resources/icon-full.ico",

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+import type { z } from 'zod';
 import type {
   CanopyQueryHandlerMap,
   CanopyQueryParams,
@@ -6,29 +8,65 @@ import type {
   CoreWorkspace,
   CoreWorktree,
 } from '@canopy/protocol/canopy-core';
-import { hasHostAbsolutePath } from '@canopy/protocol/canopy-core';
+import {
+  CoreWorkspaceSchema,
+  hasHostAbsolutePath,
+} from '@canopy/protocol/canopy-core';
 import type {
   SidebarItem,
   SidebarItemsFile,
   WorktreeData,
   WorkspaceConfigFile,
+  WorkspaceIndexEntry,
 } from '@canopy/desktop-shared/types';
-import { CanopyOperationError } from '@canopy/core-runtime';
+import { PROJECT_COLORS } from '@canopy/desktop-shared/constants/project-colors';
+import { isProjectStartPage } from '@canopy/protocol/start-page';
+import {
+  CanopyOperationError,
+  type CanopyHandlerContext,
+} from '@canopy/core-runtime';
 import {
   readAllSidebarItems,
   readAllSidebarItemsSnapshot,
   readWorkspaceIndexEntry,
+  readWorkspaceIndexEntryDetailed,
+  type SidebarWorkspaceReads,
+  type SidebarWorkspaceStoredFields,
 } from '../lib/sidebar-items';
 import {
   readWorkspaceConfig,
   readWorkspaceConfigDetailed,
   readWorkspaceWorktrees,
   readWorkspaceWorktreesDetailed,
+  type StoredWorkspaceManifestFields,
 } from '../lib/workspace-persistence';
-import type { WorkspaceIndexAuthority } from '../lib/workspace-index-repository';
+import type {
+  StoredWorkspaceIndexFields,
+  WorkspaceIndexAuthority,
+} from '../lib/workspace-index-repository';
 import { readEffectiveWorkspaceConfig } from '../lib/workspace-source';
 import { sanitizeRemoteUrl } from '../lib/plan-share-repos';
+import { runW5ReadView } from '../lib/w5-commit-log-file-store';
+import type { W5ReadViewOutcome } from '../lib/w5-read-view';
+import type { W5CaptureRequest } from '../w5-commit-log/commit-log-worker-contract';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
+import {
+  coreWorkspaceResourceKey,
+  isPartialPage,
+  projectReadProvenance,
+  publishableRevisions,
+  type CoreWorkspaceExternalField,
+  type CoreWorkspaceReadFilter,
+  type CoreWorkspaceReadProvenance,
+  type CoreWorkspaceResourceProjection,
+} from './core-workspace-read-provenance';
+import {
+  createCoreReadSnapshotStore,
+  type CoreReadSnapshotBinding,
+  type CoreReadSnapshotLimits,
+  type CoreReadSnapshotOperation,
+  type CoreReadSnapshotStore,
+} from '@canopy/core-runtime/node/workspace/core-workspace-read-snapshots';
 
 /** Authority of a persisted read: only `ok` proves the content is complete. */
 export type CoreWorkspaceReadAuthority = WorkspaceIndexAuthority;
@@ -48,16 +86,35 @@ export interface CoreWorkspaceReadServices {
     file: SidebarItemsFile;
     authority: CoreWorkspaceReadAuthority;
     indexAuthority?: CoreWorkspaceReadAuthority;
+    indexedWorkspaceIds?: readonly string[];
+    workspaceReads?: ReadonlyMap<string, SidebarWorkspaceReads>;
+    /** One per `file.items` entry, at the same position. */
+    storedFields?: readonly SidebarWorkspaceStoredFields[];
   }>;
+  /** {@link readWorkspaceIndexEntry} with the entry's stored fields. */
+  readWorkspaceIndexEntryDetailed?(workspaceId: string): Promise<{
+    entry: WorkspaceIndexEntry;
+    storedFields: StoredWorkspaceIndexFields;
+  } | null>;
   readWorkspaceConfigDetailed?(workspaceId: string): Promise<{
     config: WorkspaceConfigFile;
     authority: CoreWorkspaceReadAuthority;
     ownerMalformed: boolean;
+    storedFields?: StoredWorkspaceManifestFields;
   }>;
   readWorkspaceWorktreesDetailed?(workspaceId: string): Promise<{
     worktrees: WorktreeData[];
     authority: CoreWorkspaceReadAuthority;
+    recentlyRemovedWorktreeIds?: readonly string[];
   }>;
+  /**
+   * Serves every W5 read `work` makes from one capture of `request` and
+   * refuses its writes. Without it the readers above read as they are.
+   */
+  readView?<T>(
+    request: W5CaptureRequest,
+    work: (view: W5ReadViewOutcome) => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface CoreWorkspaceReadDetail {
@@ -69,6 +126,8 @@ export interface CoreWorkspaceReadDetail {
    */
   indexAuthority?: CoreWorkspaceReadAuthority;
   ownerMalformed?: boolean;
+  /** Per-file and per-resource evidence, kept apart from `authority`. */
+  provenance?: CoreWorkspaceReadProvenance;
 }
 
 export interface CoreWorkspaceProjectionCapture {
@@ -84,16 +143,58 @@ export interface CoreWorkspaceProjectionCapture {
     result: WorktreeData[],
     detail?: CoreWorkspaceReadDetail,
   ): void;
-  captureWorktree(result: WorktreeData): void;
+  captureWorktree(result: WorktreeData, detail?: CoreWorkspaceReadDetail): void;
 }
 
+/** Direct adapter calls (tests) have no dispatcher context. */
+type CoreWorkspaceReadContext =
+  | Pick<CanopyHandlerContext, 'caller'>
+  | undefined;
+
 type WorkspaceReadHandlers = Pick<
-  CanopyQueryHandlerMap,
+  CanopyQueryHandlerMap<CoreWorkspaceReadContext>,
   | 'core.workspace.list'
   | 'core.workspace.get'
   | 'core.worktree.list'
   | 'core.worktree.get'
 >;
+
+/** The legacy capture a listing published, republished with each later page. */
+type PinnedLegacyCapture =
+  | {
+      readonly kind: 'sidebar';
+      readonly result: SidebarItemsFile;
+      readonly detail?: CoreWorkspaceReadDetail;
+    }
+  | {
+      readonly kind: 'worktrees';
+      readonly result: WorktreeData[];
+      readonly detail?: CoreWorkspaceReadDetail;
+    };
+
+interface PinnedListBase<Operation extends CoreReadSnapshotOperation, Item> {
+  readonly operation: Operation;
+  readonly items: Item[];
+  readonly collectionRevision?: number;
+  readonly legacy: PinnedLegacyCapture;
+}
+
+export type CoreWorkspacePinnedList =
+  | PinnedListBase<'core.workspace.list', CoreWorkspace>
+  | PinnedListBase<'core.worktree.list', CoreWorktree>;
+
+export type CoreWorkspaceReadSnapshots =
+  CoreReadSnapshotStore<CoreWorkspacePinnedList>;
+
+/** Runtime-owned list snapshots; the owner calls `close()` at teardown. */
+export function createCoreWorkspaceReadSnapshots(
+  limits?: CoreReadSnapshotLimits,
+  now?: () => number,
+): CoreWorkspaceReadSnapshots {
+  return createCoreReadSnapshotStore<CoreWorkspacePinnedList>(limits, now);
+}
+
+const DEFAULT_PAGE_SIZE = 100;
 
 function checkScope(scope?: CanopyWorkspaceScope): void {
   if (
@@ -172,19 +273,24 @@ function worktreeNotFound(): CanopyOperationError {
   });
 }
 
-async function checkWorktreeWorkspaceId(
-  workspaceId: string,
-  services: CoreWorkspaceReadServices,
-): Promise<void> {
+/** Refuses traversal spellings before any capture or read. */
+function checkWorktreeWorkspaceIdSpelling(workspaceId: string): void {
   if (
     workspaceId === '.' ||
     workspaceId === '..' ||
     workspaceId.includes('/') ||
-    workspaceId.includes('\\') ||
-    !(await services.readWorkspaceIndexEntry(workspaceId))
+    workspaceId.includes('\\')
   ) {
     throw worktreeNotFound();
   }
+}
+
+async function checkWorktreeWorkspaceId(
+  workspaceId: string,
+  services: CoreWorkspaceReadServices,
+): Promise<void> {
+  if (!(await services.readWorkspaceIndexEntry(workspaceId)))
+    throw worktreeNotFound();
 }
 
 function projectRepositorySources(
@@ -204,7 +310,169 @@ function projectRepositorySources(
   });
 }
 
-function projectWorkspace(item: SidebarItem): CoreWorkspace {
+type CoreWorkspaceTypedFields = Pick<
+  CoreWorkspace,
+  | 'color'
+  | 'pinned'
+  | 'collapsed'
+  | 'itemSortMode'
+  | 'activitySectionOrder'
+  | 'alwaysShow'
+  | 'startPage'
+>;
+
+const TYPED_FIELD_SCHEMAS = CoreWorkspaceSchema.shape;
+
+/**
+ * A stored value outside the patch schema is omitted, never coerced: one the
+ * schema would rewrite (`z.url()` trims) would not be the stored edit baseline.
+ */
+function storedValue<T>(schema: z.ZodType<T>, value: unknown): T | undefined {
+  const parsed = schema.safeParse(value);
+  return parsed.success && isDeepStrictEqual(parsed.data, value)
+    ? parsed.data
+    : undefined;
+}
+
+/**
+ * What a typed field projects from: the stored value when the read reports
+ * one (`null` included), so a malformed value is omitted instead of read as
+ * the default the reader substitutes; otherwise the read's own value, and
+ * `whenUnset` when the field is unset.
+ */
+function fieldSource<Key extends string>(
+  key: Key,
+  read: Partial<Record<Key, unknown>>,
+  stored: Readonly<Partial<Record<Key, unknown>>> | undefined,
+  whenUnset?: unknown,
+): unknown {
+  const value = stored?.[key];
+  if (value !== undefined) return value;
+  return read[key] === undefined ? whenUnset : read[key];
+}
+
+/** Only palette colors: the update refuses any other (`Invalid project color`). */
+function isProjectColor(color: string): boolean {
+  return PROJECT_COLORS.some((candidate) => candidate === color);
+}
+
+/** Cowork has no activity section order. */
+function indexTypedFields(
+  index: Pick<
+    WorkspaceIndexEntry,
+    'type' | 'color' | 'collapsed' | 'pinned' | 'activitySectionOrder'
+  >,
+  stored: StoredWorkspaceIndexFields | undefined,
+): CoreWorkspaceTypedFields {
+  const fields: CoreWorkspaceTypedFields = {};
+  const source = (
+    key: keyof StoredWorkspaceIndexFields,
+    whenUnset?: unknown,
+  ): unknown => fieldSource(key, index, stored, whenUnset);
+  const color = storedValue(TYPED_FIELD_SCHEMAS.color, source('color'));
+  if (color !== undefined && isProjectColor(color)) fields.color = color;
+  const pinned = storedValue(
+    TYPED_FIELD_SCHEMAS.pinned,
+    source('pinned', false),
+  );
+  if (pinned !== undefined) fields.pinned = pinned;
+  const collapsed = storedValue(
+    TYPED_FIELD_SCHEMAS.collapsed,
+    source('collapsed'),
+  );
+  if (collapsed !== undefined) fields.collapsed = collapsed;
+  if (index.type === 'cowork') return fields;
+  // Repeated ids read as the rendered order, where the first one wins; an
+  // unknown id is omitted with the order, since dropping it would edit it.
+  const order = source('activitySectionOrder', []);
+  const sections = storedValue(
+    TYPED_FIELD_SCHEMAS.activitySectionOrder,
+    Array.isArray(order) ? Array.from(new Set(order)) : order,
+  );
+  if (sections !== undefined) fields.activitySectionOrder = sections;
+  return fields;
+}
+
+/** Cowork keeps its start page in its Cowork settings. */
+function manifestTypedFields(
+  type: WorkspaceIndexEntry['type'],
+  manifest: Pick<
+    WorkspaceConfigFile,
+    'itemSortMode' | 'alwaysShow' | 'startPage'
+  >,
+  stored: StoredWorkspaceManifestFields | undefined,
+): CoreWorkspaceTypedFields {
+  const fields: CoreWorkspaceTypedFields = {};
+  const source = (key: keyof StoredWorkspaceManifestFields): unknown =>
+    fieldSource(key, manifest, stored);
+  const sortMode = storedValue(
+    TYPED_FIELD_SCHEMAS.itemSortMode,
+    source('itemSortMode'),
+  );
+  if (sortMode !== undefined) fields.itemSortMode = sortMode;
+  // Unset only on a temporary combination: shown, but retired when empty.
+  const alwaysShow = storedValue(
+    TYPED_FIELD_SCHEMAS.alwaysShow,
+    source('alwaysShow'),
+  );
+  if (alwaysShow !== undefined) fields.alwaysShow = alwaysShow;
+  if (type === 'cowork') return fields;
+  // A set start page also passes the update's own rule (`isProjectStartPage`).
+  const page = source('startPage');
+  const startPage =
+    page === undefined
+      ? { kind: 'inherit' as const }
+      : page === null || isProjectStartPage(page)
+        ? storedValue(TYPED_FIELD_SCHEMAS.startPage, page)
+        : undefined;
+  if (startPage !== undefined) fields.startPage = startPage;
+  return fields;
+}
+
+interface TypedFieldReads {
+  index: Parameters<typeof indexTypedFields>[0];
+  indexStored?: StoredWorkspaceIndexFields;
+  /** Only from a read that proved the manifest. */
+  manifest?: Parameters<typeof manifestTypedFields>[1];
+  manifestStored?: StoredWorkspaceManifestFields;
+}
+
+/**
+ * The `core.workspace.update` patch fields as stored, so each is a valid edit
+ * baseline: the index entry's always, the manifest's only from a read that
+ * proved its contents (an absent or unreadable manifest reads as defaults).
+ * A field whose stored value the update would refuse is omitted.
+ */
+function projectTypedFields({
+  index,
+  indexStored,
+  manifest,
+  manifestStored,
+}: TypedFieldReads): CoreWorkspaceTypedFields {
+  return {
+    ...indexTypedFields(index, indexStored),
+    ...(manifest
+      ? manifestTypedFields(index.type, manifest, manifestStored)
+      : {}),
+  };
+}
+
+/**
+ * Plain reads report no authority; their manifest is projected as read. A
+ * reporting read without this manifest's authority has not proved it.
+ */
+function manifestProven(
+  authority: CoreWorkspaceReadAuthority | undefined,
+  reported: boolean,
+): boolean {
+  return reported ? authority === 'ok' : true;
+}
+
+function projectWorkspace(
+  item: SidebarItem,
+  manifestIsProven: boolean,
+  stored: SidebarWorkspaceStoredFields | undefined,
+): CoreWorkspace {
   const repos = item.type === 'multi-repo' ? item.repos : [];
   return {
     workspaceId: item.id,
@@ -212,6 +480,27 @@ function projectWorkspace(item: SidebarItem): CoreWorkspace {
     kind: item.type === 'cowork' ? 'cowork' : 'git',
     repositorySources: projectRepositorySources(repos),
     settings: {},
+    ...projectTypedFields({
+      index: {
+        type: item.type,
+        color: item.color,
+        collapsed: item.collapsed,
+        pinned: item.pinned,
+        activitySectionOrder:
+          item.type === 'cowork' ? undefined : item.activitySectionOrder,
+      },
+      indexStored: stored?.index,
+      ...(manifestIsProven
+        ? {
+            manifest: {
+              itemSortMode: item.itemSortMode,
+              alwaysShow: item.alwaysShow,
+              startPage: item.type === 'cowork' ? undefined : item.startPage,
+            },
+            manifestStored: stored?.manifest,
+          }
+        : {}),
+    }),
   };
 }
 
@@ -234,63 +523,235 @@ function projectWorktree(
   };
 }
 
-function paginate<T>(
-  items: T[],
-  pageSize = 100,
-  cursor?: string,
-): {
-  items: T[];
+function withRevision<T extends object>(item: T, revision?: number): T {
+  return revision === undefined ? item : { ...item, revision };
+}
+
+// A type literal, so it takes the result schema's catchall index signature.
+type ListPage<Item> = {
+  items: Item[];
   nextCursor: string | null;
-} {
-  const offset = cursor === undefined ? 0 : Number(cursor);
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset > items.length) {
-    throw new CanopyOperationError({
-      kind: 'invalid_argument',
-      message: 'Invalid workspace pagination cursor.',
-      retry: { kind: 'never' },
-    });
-  }
-  const page = items.slice(offset, offset + pageSize);
-  const nextOffset = offset + page.length;
+  collectionRevision?: number;
+};
+
+function listPage<Item>(
+  pinned: { readonly items: Item[]; readonly collectionRevision?: number },
+  offset: number,
+  pageSize: number,
+  nextCursor: string | null,
+): ListPage<Item> {
   return {
-    items: page,
-    nextCursor: nextOffset < items.length ? String(nextOffset) : null,
+    items: pinned.items.slice(offset, offset + pageSize),
+    nextCursor,
+    // Every page of a listing carries the first page's collection revision.
+    ...(pinned.collectionRevision === undefined
+      ? {}
+      : { collectionRevision: pinned.collectionRevision }),
   };
+}
+
+function listBinding(
+  operation: CoreReadSnapshotOperation,
+  params: { scope?: CanopyWorkspaceScope; pageSize?: number },
+  context: CoreWorkspaceReadContext,
+): CoreReadSnapshotBinding {
+  return {
+    operation,
+    scope: {
+      workspaceId: params.scope?.workspaceId,
+      organizationId: params.scope?.organizationId,
+      worktreeId: params.scope?.worktreeId,
+    },
+    pageSize: params.pageSize ?? DEFAULT_PAGE_SIZE,
+    ...(context?.caller ? { caller: context.caller } : {}),
+  };
+}
+
+function publishLegacy(
+  capture: CoreWorkspaceProjectionCapture | undefined,
+  legacy: PinnedLegacyCapture,
+): void {
+  if (legacy.kind === 'sidebar')
+    capture?.captureSidebar(legacy.result, legacy.detail);
+  else capture?.captureWorktrees(legacy.result, legacy.detail);
+}
+
+function differentListing(): CanopyOperationError {
+  return invalidArgument(
+    'This list cursor belongs to a different listing. Repeat the scope and page size it was issued for.',
+  );
+}
+
+interface SidebarRead {
+  file: SidebarItemsFile;
+  detail?: CoreWorkspaceReadDetail;
+  indexedWorkspaceIds?: readonly string[];
+  workspaceReads?: ReadonlyMap<string, SidebarWorkspaceReads>;
+  /** One per `file.items` entry, at the same position. */
+  storedFields?: readonly SidebarWorkspaceStoredFields[];
 }
 
 async function readSidebar(
   services: CoreWorkspaceReadServices,
-): Promise<{ file: SidebarItemsFile; detail?: CoreWorkspaceReadDetail }> {
+): Promise<SidebarRead> {
   if (!services.readAllSidebarItemsSnapshot)
     return { file: await services.readAllSidebarItems() };
-  const { file, authority, indexAuthority } =
-    await services.readAllSidebarItemsSnapshot();
+  const {
+    file,
+    authority,
+    indexAuthority,
+    indexedWorkspaceIds,
+    workspaceReads,
+    storedFields,
+  } = await services.readAllSidebarItemsSnapshot();
   return {
     file,
     detail: { authority, ...(indexAuthority ? { indexAuthority } : {}) },
+    ...(indexedWorkspaceIds ? { indexedWorkspaceIds } : {}),
+    ...(workspaceReads ? { workspaceReads } : {}),
+    ...(storedFields ? { storedFields } : {}),
   };
+}
+
+async function readIndexEntry(
+  services: CoreWorkspaceReadServices,
+  workspaceId: string,
+): Promise<{
+  entry: WorkspaceIndexEntry;
+  storedFields?: StoredWorkspaceIndexFields;
+} | null> {
+  if (services.readWorkspaceIndexEntryDetailed)
+    return services.readWorkspaceIndexEntryDetailed(workspaceId);
+  const entry = await services.readWorkspaceIndexEntry(workspaceId);
+  return entry ? { entry } : null;
 }
 
 async function readConfig(
   services: CoreWorkspaceReadServices,
   workspaceId: string,
-): Promise<{ config: WorkspaceConfigFile; detail?: CoreWorkspaceReadDetail }> {
+): Promise<{
+  config: WorkspaceConfigFile;
+  detail?: CoreWorkspaceReadDetail;
+  storedFields?: StoredWorkspaceManifestFields;
+}> {
   if (!services.readWorkspaceConfigDetailed)
     return { config: await services.readWorkspaceConfig(workspaceId) };
-  const { config, authority, ownerMalformed } =
+  const { config, authority, ownerMalformed, storedFields } =
     await services.readWorkspaceConfigDetailed(workspaceId);
-  return { config, detail: { authority, ownerMalformed } };
+  return {
+    config,
+    detail: { authority, ownerMalformed },
+    ...(storedFields ? { storedFields } : {}),
+  };
 }
 
 async function readWorktrees(
   services: CoreWorkspaceReadServices,
   workspaceId: string,
-): Promise<{ worktrees: WorktreeData[]; detail?: CoreWorkspaceReadDetail }> {
+): Promise<{
+  worktrees: WorktreeData[];
+  detail?: CoreWorkspaceReadDetail;
+  recentlyRemoved: boolean;
+}> {
   if (!services.readWorkspaceWorktreesDetailed)
-    return { worktrees: await services.readWorkspaceWorktrees(workspaceId) };
-  const { worktrees, authority } =
+    return {
+      worktrees: await services.readWorkspaceWorktrees(workspaceId),
+      recentlyRemoved: false,
+    };
+  const { worktrees, authority, recentlyRemovedWorktreeIds } =
     await services.readWorkspaceWorktreesDetailed(workspaceId);
-  return { worktrees, detail: { authority } };
+  return {
+    worktrees,
+    detail: { authority },
+    recentlyRemoved: (recentlyRemovedWorktreeIds?.length ?? 0) > 0,
+  };
+}
+
+const DISCOVER_WORKSPACES: W5CaptureRequest = {
+  files: [],
+  discoverWorkspaces: true,
+};
+
+/** The index and one workspace's `files`. */
+function workspaceCapture(
+  workspaceId: string,
+  files: readonly ('manifest' | 'worktrees')[],
+): W5CaptureRequest {
+  return {
+    discoverWorkspaces: false,
+    files: [{ kind: 'index' }, ...files.map((kind) => ({ kind, workspaceId }))],
+  };
+}
+
+function withReadView<T>(
+  services: CoreWorkspaceReadServices,
+  request: W5CaptureRequest,
+  work: (view?: W5ReadViewOutcome) => Promise<T>,
+): Promise<T> {
+  return services.readView ? services.readView(request, work) : work();
+}
+
+type Filters = readonly (CoreWorkspaceReadFilter | false | undefined)[];
+
+function withProvenance(
+  detail: CoreWorkspaceReadDetail | undefined,
+  view: W5ReadViewOutcome | undefined,
+  resultFilters: Filters,
+  resources: readonly CoreWorkspaceResourceProjection[],
+): CoreWorkspaceReadDetail | undefined {
+  if (!detail || !view) return detail;
+  return {
+    ...detail,
+    provenance: projectReadProvenance(view, resultFilters, resources),
+  };
+}
+
+/** A manifest read that could not prove its contents projects a default. */
+function manifestFilters(
+  authority: CoreWorkspaceReadAuthority | undefined,
+): Filters {
+  return [authority !== 'ok' && authority !== 'absent' && 'fallback'];
+}
+
+function listFilters(
+  authority: CoreWorkspaceReadAuthority | undefined,
+  recentlyRemoved: boolean,
+): Filters {
+  return [
+    recentlyRemoved && 'recently-removed',
+    authority === 'partial' && 'unreadable-entries',
+    (authority === undefined || authority === 'unreadable') && 'fallback',
+  ];
+}
+
+/** Index-level omissions; each workspace's own reads stay with its resources. */
+function sidebarFilters(sidebar: SidebarRead): Filters {
+  const index = sidebar.detail?.indexAuthority ?? sidebar.detail?.authority;
+  return [
+    (sidebar.indexedWorkspaceIds === undefined ||
+      sidebar.file.items.length < sidebar.indexedWorkspaceIds.length ||
+      (sidebar.file.warnings?.length ?? 0) > 0) &&
+      'unprojected',
+    index === 'partial' && 'unreadable-entries',
+    (index === undefined || index === 'unreadable') && 'fallback',
+  ];
+}
+
+/** Repository sources a source overlay can contribute (`readEffectiveWorkspaceConfig`). */
+function sourceOverlayFields(config: {
+  type?: string;
+  sourceRepoPath?: string;
+}): CoreWorkspaceExternalField[] {
+  return config.type !== 'single-repo' && config.sourceRepoPath !== undefined
+    ? ['repositorySources']
+    : [];
+}
+
+function worktreeResource(
+  workspaceId: string,
+  worktreeId: string,
+): CoreWorkspaceResourceProjection {
+  return { resource: { kind: 'worktree', workspaceId, worktreeId } };
 }
 
 export function createCoreWorkspaceAdapter(
@@ -300,6 +761,8 @@ export function createCoreWorkspaceAdapter(
       readAllSidebarItems({ persistRemovalCleanup: false }),
     readWorkspaceIndexEntry: (workspaceId) =>
       readWorkspaceIndexEntry(workspaceId),
+    readWorkspaceIndexEntryDetailed: (workspaceId) =>
+      readWorkspaceIndexEntryDetailed(workspaceId),
     readWorkspaceConfig: (workspaceId) => readWorkspaceConfig(workspaceId),
     readWorkspaceWorktrees: (workspaceId) =>
       readWorkspaceWorktrees(workspaceId, { persistRemovalCleanup: false }),
@@ -313,30 +776,107 @@ export function createCoreWorkspaceAdapter(
       readWorkspaceWorktreesDetailed(workspaceId, {
         persistRemovalCleanup: false,
       }),
+    readView: runW5ReadView,
   },
   capture?: CoreWorkspaceProjectionCapture,
+  snapshots: CoreWorkspaceReadSnapshots = createCoreWorkspaceReadSnapshots(),
 ): WorkspaceReadHandlers {
+  /** Pins a listing that spans pages and returns its first page. */
+  const firstPage = <Item>(
+    binding: CoreReadSnapshotBinding,
+    pinned: CoreWorkspacePinnedList & { readonly items: Item[] },
+  ): ListPage<Item> =>
+    listPage(
+      pinned,
+      0,
+      binding.pageSize,
+      snapshots.open(binding, pinned, pinned.items.length),
+    );
   return {
     'core.workspace.list': async (
       params: CanopyQueryParams<'core.workspace.list'>,
+      context: CoreWorkspaceReadContext,
     ): Promise<CanopyQueryResult<'core.workspace.list'>> => {
       checkScope(params.scope);
       checkWorkspaceScope(params.scope);
       checkWorkspaceIdSpelling(params.scope?.workspaceId);
-      const { file: sidebar, detail } = await readSidebar(services);
-      capture?.captureSidebar(sidebar, detail);
-      const items = sidebar.items.filter(
-        (item) =>
+      const binding = listBinding('core.workspace.list', params, context);
+      if (params.cursor !== undefined) {
+        // Refused before anything is published, so no legacy fallback applies.
+        const page = snapshots.resume(params.cursor, binding);
+        if (page.pinned.operation !== 'core.workspace.list')
+          throw differentListing();
+        publishLegacy(capture, page.pinned.legacy);
+        return listPage(
+          page.pinned,
+          page.offset,
+          binding.pageSize,
+          page.nextCursor,
+        );
+      }
+      return withReadView(services, DISCOVER_WORKSPACES, async (view) => {
+        const sidebar = await readSidebar(services);
+        // Paired by position, not id: duplicate-id rows keep their own fields.
+        const rows = sidebar.file.items.flatMap((item, position) =>
           (params.scope?.workspaceId === undefined ||
             item.id === params.scope.workspaceId) &&
           (params.scope?.organizationId === undefined ||
-            item.owner?.organizationId === params.scope.organizationId),
-      );
-      return paginate(
-        items.map(projectWorkspace),
-        params.pageSize,
-        params.cursor,
-      );
+            item.owner?.organizationId === params.scope.organizationId)
+            ? [{ item, stored: sidebar.storedFields?.[position] }]
+            : [],
+        );
+        const items = rows.map(({ item }) => item);
+        const filters: Filters = [
+          params.scope?.workspaceId !== undefined && 'workspace-scope',
+          params.scope?.organizationId !== undefined && 'organization',
+          ...sidebarFilters(sidebar),
+        ];
+        const detail = withProvenance(
+          sidebar.detail,
+          view,
+          [...filters, isPartialPage(items.length, binding.pageSize) && 'page'],
+          [
+            { resource: { kind: 'workspaces' }, filters },
+            ...items.map(
+              (item): CoreWorkspaceResourceProjection => ({
+                resource: { kind: 'workspace', workspaceId: item.id },
+                filters: manifestFilters(
+                  sidebar.workspaceReads?.get(item.id)?.manifest,
+                ),
+                external:
+                  item.type === 'multi-repo' ? sourceOverlayFields(item) : [],
+              }),
+            ),
+          ],
+        );
+        capture?.captureSidebar(sidebar.file, detail);
+        const revisions = publishableRevisions(detail?.provenance);
+        return firstPage(binding, {
+          operation: 'core.workspace.list',
+          items: rows.map(({ item, stored }) =>
+            withRevision(
+              projectWorkspace(
+                item,
+                manifestProven(
+                  sidebar.workspaceReads?.get(item.id)?.manifest,
+                  sidebar.detail !== undefined,
+                ),
+                stored,
+              ),
+              revisions.get(
+                coreWorkspaceResourceKey({
+                  kind: 'workspace',
+                  workspaceId: item.id,
+                }),
+              ),
+            ),
+          ),
+          collectionRevision: revisions.get(
+            coreWorkspaceResourceKey({ kind: 'workspaces' }),
+          ),
+          legacy: { kind: 'sidebar', result: sidebar.file, detail },
+        });
+      });
     },
     'core.workspace.get': async (
       params: CanopyQueryParams<'core.workspace.get'>,
@@ -351,76 +891,222 @@ export function createCoreWorkspaceAdapter(
       ) {
         throw workspaceNotFound();
       }
-      // The index lookup stays first: it keeps unknown ids off the config path.
-      const index = await services.readWorkspaceIndexEntry(params.workspaceId);
-      if (!index) throw workspaceNotFound();
-      const { config, detail } = await readConfig(services, params.workspaceId);
-      capture?.captureConfig(config, detail);
-      if (
-        params.scope?.organizationId !== undefined &&
-        config.owner?.organizationId !== params.scope.organizationId
-      ) {
-        throw workspaceNotFound();
-      }
-      const effective = await services.readEffectiveWorkspaceConfig(
-        params.workspaceId,
-        config,
+      const { workspaceId } = params;
+      return withReadView(
+        services,
+        workspaceCapture(workspaceId, ['manifest']),
+        async (view) => {
+          // The index lookup stays first: it keeps unknown ids off the config path.
+          const indexRead = await readIndexEntry(services, workspaceId);
+          if (!indexRead) throw workspaceNotFound();
+          const index = indexRead.entry;
+          const { config, detail, storedFields } = await readConfig(
+            services,
+            workspaceId,
+          );
+          const resource = { kind: 'workspace', workspaceId } as const;
+          const readDetail = withProvenance(
+            detail,
+            view,
+            [],
+            [
+              {
+                resource,
+                filters: manifestFilters(detail?.authority),
+                external: sourceOverlayFields(config),
+              },
+            ],
+          );
+          capture?.captureConfig(config, readDetail);
+          if (
+            params.scope?.organizationId !== undefined &&
+            config.owner?.organizationId !== params.scope.organizationId
+          ) {
+            throw workspaceNotFound();
+          }
+          const effective = await services.readEffectiveWorkspaceConfig(
+            workspaceId,
+            config,
+          );
+          return withRevision(
+            {
+              workspaceId,
+              name: index.name,
+              kind: index.type === 'cowork' ? 'cowork' : 'git',
+              repositorySources: projectRepositorySources(effective.repos),
+              settings: {},
+              ...projectTypedFields({
+                index,
+                indexStored: indexRead.storedFields,
+                ...(manifestProven(detail?.authority, detail !== undefined)
+                  ? { manifest: config, manifestStored: storedFields }
+                  : {}),
+              }),
+            },
+            publishableRevisions(readDetail?.provenance).get(
+              coreWorkspaceResourceKey(resource),
+            ),
+          );
+        },
       );
-      return {
-        workspaceId: params.workspaceId,
-        name: index.name,
-        kind: index.type === 'cowork' ? 'cowork' : 'git',
-        repositorySources: projectRepositorySources(effective.repos),
-        settings: {},
-      };
     },
     'core.worktree.list': async (
       params: CanopyQueryParams<'core.worktree.list'>,
+      context: CoreWorkspaceReadContext,
     ): Promise<CanopyQueryResult<'core.worktree.list'>> => {
       checkScope(params.scope);
       checkWorktreeScope(params.scope);
       const workspaceId = params.scope?.workspaceId;
-      if (workspaceId) {
-        await checkWorktreeWorkspaceId(workspaceId, services);
-        const { worktrees, detail } = await readWorktrees(
-          services,
-          workspaceId,
-        );
-        capture?.captureWorktrees(worktrees, detail);
-        const config = params.scope?.organizationId
-          ? await services.readWorkspaceConfig(workspaceId)
-          : undefined;
-        return paginate(
-          worktrees
-            .filter(
-              (worktree) =>
-                (params.scope?.worktreeId === undefined ||
-                  worktree.id === params.scope.worktreeId) &&
-                (params.scope?.organizationId === undefined ||
-                  config?.owner?.organizationId ===
-                    params.scope.organizationId),
-            )
-            .map((worktree) => projectWorktree(workspaceId, worktree)),
-          params.pageSize,
-          params.cursor,
+      const organizationId = params.scope?.organizationId;
+      const worktreeId = params.scope?.worktreeId;
+      if (workspaceId) checkWorktreeWorkspaceIdSpelling(workspaceId);
+      const binding = listBinding('core.worktree.list', params, context);
+      if (params.cursor !== undefined) {
+        // Refused before anything is published, so no legacy fallback applies.
+        const page = snapshots.resume(params.cursor, binding);
+        if (page.pinned.operation !== 'core.worktree.list')
+          throw differentListing();
+        publishLegacy(capture, page.pinned.legacy);
+        return listPage(
+          page.pinned,
+          page.offset,
+          binding.pageSize,
+          page.nextCursor,
         );
       }
-      const { file: sidebar, detail } = await readSidebar(services);
-      capture?.captureSidebar(sidebar, detail);
-      const items = sidebar.items.flatMap((item) =>
-        item.type === 'cowork' ||
-        (params.scope?.organizationId !== undefined &&
-          item.owner?.organizationId !== params.scope.organizationId)
-          ? []
-          : item.worktrees
-              .filter(
-                (worktree) =>
-                  params.scope?.worktreeId === undefined ||
-                  worktree.id === params.scope.worktreeId,
-              )
-              .map((worktree) => projectWorktree(item.id, worktree)),
-      );
-      return paginate(items, params.pageSize, params.cursor);
+      if (workspaceId) {
+        return withReadView(
+          services,
+          workspaceCapture(
+            workspaceId,
+            organizationId ? ['worktrees', 'manifest'] : ['worktrees'],
+          ),
+          async (view) => {
+            await checkWorktreeWorkspaceId(workspaceId, services);
+            const { worktrees, detail, recentlyRemoved } = await readWorktrees(
+              services,
+              workspaceId,
+            );
+            const config = organizationId
+              ? await services.readWorkspaceConfig(workspaceId)
+              : undefined;
+            const rows = worktrees.filter(
+              (worktree) =>
+                (worktreeId === undefined || worktree.id === worktreeId) &&
+                (organizationId === undefined ||
+                  config?.owner?.organizationId === organizationId),
+            );
+            const filters: Filters = [
+              worktreeId !== undefined && 'worktree-scope',
+              organizationId !== undefined && 'organization',
+              ...listFilters(detail?.authority, recentlyRemoved),
+            ];
+            const collection = { kind: 'worktrees', workspaceId } as const;
+            const readDetail = withProvenance(
+              detail,
+              view,
+              [
+                ...filters,
+                isPartialPage(rows.length, binding.pageSize) && 'page',
+              ],
+              [
+                { resource: collection, filters },
+                ...rows.map((row) => worktreeResource(workspaceId, row.id)),
+              ],
+            );
+            capture?.captureWorktrees(worktrees, readDetail);
+            const revisions = publishableRevisions(readDetail?.provenance);
+            return firstPage(binding, {
+              operation: 'core.worktree.list',
+              items: rows.map((row) =>
+                withRevision(
+                  projectWorktree(workspaceId, row),
+                  revisions.get(
+                    coreWorkspaceResourceKey(
+                      worktreeResource(workspaceId, row.id).resource,
+                    ),
+                  ),
+                ),
+              ),
+              collectionRevision: revisions.get(
+                coreWorkspaceResourceKey(collection),
+              ),
+              legacy: {
+                kind: 'worktrees',
+                result: worktrees,
+                detail: readDetail,
+              },
+            });
+          },
+        );
+      }
+      return withReadView(services, DISCOVER_WORKSPACES, async (view) => {
+        const sidebar = await readSidebar(services);
+        const included = sidebar.file.items.flatMap((item) =>
+          item.type === 'cowork' ||
+          (organizationId !== undefined &&
+            item.owner?.organizationId !== organizationId)
+            ? []
+            : [item],
+        );
+        const rows = included.flatMap((item) =>
+          item.worktrees
+            .filter(
+              (worktree) =>
+                worktreeId === undefined || worktree.id === worktreeId,
+            )
+            .map((worktree) => ({ workspaceId: item.id, worktree })),
+        );
+        // Each workspace's list is its own resource; no collection spans
+        // them, so this aggregation publishes no collection revision.
+        const collections = included.map(
+          (item): CoreWorkspaceResourceProjection => {
+            const reads = sidebar.workspaceReads?.get(item.id);
+            return {
+              resource: { kind: 'worktrees', workspaceId: item.id },
+              filters: [
+                worktreeId !== undefined && 'worktree-scope',
+                ...listFilters(
+                  reads?.worktrees,
+                  reads?.recentlyRemovedWorktreeIds !== undefined,
+                ),
+              ],
+            };
+          },
+        );
+        const detail = withProvenance(
+          sidebar.detail,
+          view,
+          [
+            organizationId !== undefined && 'organization',
+            ...sidebarFilters(sidebar),
+            ...collections.flatMap((collection) => collection.filters ?? []),
+            isPartialPage(rows.length, binding.pageSize) && 'page',
+          ],
+          [
+            ...collections,
+            ...rows.map((row) =>
+              worktreeResource(row.workspaceId, row.worktree.id),
+            ),
+          ],
+        );
+        capture?.captureSidebar(sidebar.file, detail);
+        const revisions = publishableRevisions(detail?.provenance);
+        return firstPage(binding, {
+          operation: 'core.worktree.list',
+          items: rows.map((row) =>
+            withRevision(
+              projectWorktree(row.workspaceId, row.worktree),
+              revisions.get(
+                coreWorkspaceResourceKey(
+                  worktreeResource(row.workspaceId, row.worktree.id).resource,
+                ),
+              ),
+            ),
+          ),
+          legacy: { kind: 'sidebar', result: sidebar.file, detail },
+        });
+      });
     },
     'core.worktree.get': async (
       params: CanopyQueryParams<'core.worktree.get'>,
@@ -433,50 +1119,81 @@ export function createCoreWorkspaceAdapter(
       )
         throw worktreeNotFound();
       const workspaceId = params.scope?.workspaceId;
+      const organizationId = params.scope?.organizationId;
       if (workspaceId) {
-        await checkWorktreeWorkspaceId(workspaceId, services);
-        if (params.scope?.organizationId !== undefined) {
-          const config = await services.readWorkspaceConfig(workspaceId);
-          if (config.owner?.organizationId !== params.scope.organizationId)
-            throw worktreeNotFound();
-        }
-        const worktrees = await services.readWorkspaceWorktrees(workspaceId);
-        const worktree = worktrees.find(
-          (entry) => entry.id === params.worktreeId,
+        checkWorktreeWorkspaceIdSpelling(workspaceId);
+        return withReadView(
+          services,
+          workspaceCapture(
+            workspaceId,
+            organizationId !== undefined
+              ? ['worktrees', 'manifest']
+              : ['worktrees'],
+          ),
+          async (view) => {
+            await checkWorktreeWorkspaceId(workspaceId, services);
+            if (organizationId !== undefined) {
+              const config = await services.readWorkspaceConfig(workspaceId);
+              if (config.owner?.organizationId !== organizationId)
+                throw worktreeNotFound();
+            }
+            const { worktrees, detail } = await readWorktrees(
+              services,
+              workspaceId,
+            );
+            const worktree = worktrees.find(
+              (entry) => entry.id === params.worktreeId,
+            );
+            if (!worktree) throw worktreeNotFound();
+            const projection = worktreeResource(workspaceId, worktree.id);
+            const readDetail = withProvenance(detail, view, [], [projection]);
+            capture?.captureWorktree(worktree, readDetail);
+            return withRevision(
+              projectWorktree(workspaceId, worktree),
+              publishableRevisions(readDetail?.provenance).get(
+                coreWorkspaceResourceKey(projection.resource),
+              ),
+            );
+          },
         );
-        if (worktree) {
-          capture?.captureWorktree(worktree);
-          return projectWorktree(workspaceId, worktree);
-        }
-        throw worktreeNotFound();
       }
-      const sidebar = await services.readAllSidebarItems();
-      let match: { workspaceId: string; worktree: WorktreeData } | undefined;
-      for (const item of sidebar.items) {
-        if (
-          item.type === 'cowork' ||
-          (params.scope?.organizationId !== undefined &&
-            item.owner?.organizationId !== params.scope.organizationId)
-        )
-          continue;
-        const worktree = item.worktrees.find(
-          (entry) => entry.id === params.worktreeId,
+      return withReadView(services, DISCOVER_WORKSPACES, async (view) => {
+        const sidebar = await readSidebar(services);
+        let match: { workspaceId: string; worktree: WorktreeData } | undefined;
+        for (const item of sidebar.file.items) {
+          if (
+            item.type === 'cowork' ||
+            (organizationId !== undefined &&
+              item.owner?.organizationId !== organizationId)
+          )
+            continue;
+          const worktree = item.worktrees.find(
+            (entry) => entry.id === params.worktreeId,
+          );
+          if (worktree) {
+            if (match)
+              throw new CanopyOperationError({
+                kind: 'invalid_argument',
+                message: 'Workspace scope required for ambiguous worktree ID.',
+                retry: { kind: 'never' },
+              });
+            match = { workspaceId: item.id, worktree };
+          }
+        }
+        if (!match) throw worktreeNotFound();
+        const projection = worktreeResource(
+          match.workspaceId,
+          match.worktree.id,
         );
-        if (worktree) {
-          if (match)
-            throw new CanopyOperationError({
-              kind: 'invalid_argument',
-              message: 'Workspace scope required for ambiguous worktree ID.',
-              retry: { kind: 'never' },
-            });
-          match = { workspaceId: item.id, worktree };
-        }
-      }
-      if (match) {
-        capture?.captureWorktree(match.worktree);
-        return projectWorktree(match.workspaceId, match.worktree);
-      }
-      throw worktreeNotFound();
+        const detail = withProvenance(sidebar.detail, view, [], [projection]);
+        capture?.captureWorktree(match.worktree, detail);
+        return withRevision(
+          projectWorktree(match.workspaceId, match.worktree),
+          publishableRevisions(detail?.provenance).get(
+            coreWorkspaceResourceKey(projection.resource),
+          ),
+        );
+      });
     },
   };
 }

@@ -99,6 +99,7 @@ function recordFixture(options: {
   childId: string;
   executionCwd: string;
   revision: string;
+  parentHarnessId?: string;
 }): StoredDelegation {
   return {
     version: 1,
@@ -107,7 +108,7 @@ function recordFixture(options: {
       projectId: 'p',
       worktreeId: 'w',
       chatId: 'c',
-      harnessId: 'claude',
+      harnessId: options.parentHarnessId ?? 'claude',
       turnId: 'turn',
       toolCallId: 'call',
       runtimeGeneration: 1,
@@ -271,8 +272,8 @@ it('uses the Cursor provider for a Cursor parent worktree approval session', asy
     childId,
     executionCwd: isolated.cwd,
     revision: isolated.revision,
+    parentHarnessId: 'cursor',
   });
-  record.parent.harnessId = 'cursor';
 
   await manageIsolatedDelegationWorkspace({
     record,

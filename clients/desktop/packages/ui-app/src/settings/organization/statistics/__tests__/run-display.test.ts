@@ -8,7 +8,9 @@ import {
 describe('formatEventTypeLabel', () => {
   it('maps known event types to friendly labels', () => {
     expect(formatEventTypeLabel('WORKTREE_CHAT')).toBe('Worktree chat');
-    expect(formatEventTypeLabel('PIPELINE_AGENT_TURN')).toBe('Pipeline');
+    expect(formatEventTypeLabel('PIPELINE_AGENT_TURN')).toBe('Workflow');
+    expect(formatEventTypeLabel('PIPELINE_EDITOR')).toBe('Workflow editor');
+    expect(formatEventTypeLabel('PIPELINE_ADVISOR')).toBe('Workflow Advisor');
     expect(formatEventTypeLabel('PR_GENERATION')).toBe('PR generation');
   });
 

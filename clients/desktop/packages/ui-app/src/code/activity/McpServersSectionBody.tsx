@@ -1,18 +1,23 @@
 'use client';
 
-import { useId, type JSX, type ReactNode } from 'react';
+import { type JSX, type ReactNode } from 'react';
 import {
-  MCP_ROW_ACTION_CLASS_NAME,
   mcpAuthConnectLabel,
   mcpAuthStatusBadgeClass,
   mcpRowSecondaryText,
+  mcpSignInStatusLabel,
   type McpCardAuthStatus,
   type McpCardDisplayServer,
 } from '@canopy/ui-shared/lib';
 import {
+  ActionTooltip,
+  Button,
+  MCP_SIGN_IN_WAITING_LABEL,
+  McpServerCardRow,
+  McpRowSettings,
+  type McpRowDestination,
   McpSignInPendingActions,
   McpSignInPendingStatus,
-  COMPACT_ACTIVITY_ITEM_CLASS_NAME,
   useActivityItemDensity,
 } from '@canopy/ui-shared/components';
 
@@ -32,6 +37,8 @@ export interface McpServersSectionItem extends McpCardDisplayServer {
    * row for hosts that connect one at a time.
    */
   readonly connecting?: boolean;
+  readonly waitingForSignIn?: boolean;
+  readonly canCancelSignIn?: boolean;
   /** This row's own disconnect is in flight; `disconnectingKey` still marks a single row. */
   readonly disconnecting?: boolean;
   readonly connectLabel?: string;
@@ -75,6 +82,12 @@ export interface McpServersSectionBodyProps {
     enabled: boolean,
   ) => void;
   readonly onOpenDetails?: (server: McpServersSectionItem) => void;
+  readonly getRowNavigation?: (
+    server: McpServersSectionItem,
+  ) => McpRowDestination | undefined;
+  readonly getRowSettings?: (
+    server: McpServersSectionItem,
+  ) => McpRowDestination | undefined;
   readonly emptyLabel?: string;
 }
 
@@ -96,6 +109,8 @@ export function McpServersSectionBody({
   onSetCanopyProxyEnabled,
   onOpenDetails,
   emptyLabel,
+  getRowNavigation,
+  getRowSettings,
 }: McpServersSectionBodyProps): JSX.Element | null {
   const compact = useActivityItemDensity() === 'compact';
   const body =
@@ -140,9 +155,7 @@ export function McpServersSectionBody({
             authConnectLabel === undefined
               ? undefined
               : (server.connectActionLabel ??
-                (authConnectLabel === 'Connect'
-                  ? 'Sign in'
-                  : authConnectLabel));
+                (server.authStatus === 'error' ? authConnectLabel : 'Sign in'));
           const isConnecting =
             server.connecting === true || connectingKey === server.key;
           const isDisconnecting =
@@ -186,134 +199,158 @@ export function McpServersSectionBody({
             ? 'Click to use agent provider auth.'
             : `Click to route this server through the ${brandAppName} proxy.`;
           return (
-            <li
+            <McpServerCardRow
               key={server.key}
-              className={
-                compact
-                  ? `group/mcp-row flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME}`
-                  : 'flex items-start justify-between gap-2 px-2.5 py-2'
+              name={server.displayName}
+              enabled={server.enabled}
+              compact={compact}
+              destination={
+                getRowNavigation?.(server) ??
+                (onOpenDetails === undefined
+                  ? undefined
+                  : {
+                      kind: 'button',
+                      onActivate: (): void => onOpenDetails(server),
+                    })
               }
-              data-testid="mcp-servers-card-row"
-              data-enabled={server.enabled ? 'true' : 'false'}
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  {onOpenDetails === undefined ? (
-                    <span
-                      data-testid="mcp-servers-card-name"
-                      className={
-                        compact
-                          ? 'truncate fg-primary'
-                          : 'truncate text-s font-medium fg-primary'
-                      }
-                    >
-                      {server.displayName}
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={(): void => onOpenDetails(server)}
-                      data-testid="mcp-servers-card-name"
-                      className={
-                        compact
-                          ? 'focus-ring truncate rounded text-left fg-primary hover:underline'
-                          : 'focus-ring truncate rounded text-left text-s font-medium fg-primary hover:underline'
-                      }
-                    >
-                      {server.displayName}
-                    </button>
-                  )}
-                  {compact && signInUrl === undefined ? (
+              status={
+                <>
+                  {compact &&
+                  signInUrl === undefined &&
+                  !server.waitingForSignIn ? (
                     compactStatusInk === null ? null : (
                       <span
-                        className={`shrink-0 ${compactStatusInk}`}
+                        role="status"
+                        className={`max-w-full break-words ${compactStatusInk}`}
                         data-testid="mcp-servers-card-badge"
                       >
-                        {server.authStatusLabel}
+                        {server.authStatus === 'connected'
+                          ? server.authStatusLabel
+                          : mcpSignInStatusLabel(server)}
                       </span>
                     )
-                  ) : signInUrl === undefined ? (
+                  ) : signInUrl === undefined && !server.waitingForSignIn ? (
                     <span
-                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-3xs font-medium ${mcpAuthStatusBadgeClass(server.authStatus, server.canRefresh)}`}
+                      role="status"
+                      className={`max-w-full ${mcpAuthStatusBadgeClass(server.authStatus, server.canRefresh)}`}
                       data-testid="mcp-servers-card-badge"
                     >
-                      {server.authStatusLabel}
+                      <span className="min-w-0 truncate">
+                        {server.authStatus === 'connected'
+                          ? server.authStatusLabel
+                          : mcpSignInStatusLabel(server)}
+                      </span>
                     </span>
                   ) : (
                     <McpSignInPendingStatus
+                      serviceName={server.displayName}
                       variant="pill"
                       dataTestId="mcp-servers-card-badge"
                     />
                   )}
-                </div>
-                {compact ? null : (
-                  <p className="truncate text-2xs fg-secondary">
-                    {mcpRowSecondaryText(server)}
-                  </p>
-                )}
-                {server.authStatus === 'error' && server.lastError && (
-                  <p className="mt-1 text-2xs fg-destructive">
-                    {server.lastError}
-                  </p>
-                )}
-                {renderRowExtra?.(server)}
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {showToggle && (
-                  <ProxyToggle
-                    active={proxyActive}
-                    updating={proxyUpdating}
-                    ariaLabel={toggleTitle}
-                    toggleClass={toggleClass}
-                    bordered={!compact}
-                    heading={toggleHeading}
-                    action={toggleAction}
-                    logo={proxyLogo}
-                    onToggle={(): void =>
-                      onSetCanopyProxyEnabled(server, !proxyActive)
-                    }
-                  />
-                )}
-                {signInUrl !== undefined && (
-                  <McpSignInPendingActions
-                    variant="compact"
-                    authorizationUrl={signInUrl}
-                    onCancel={
-                      onCancelSignIn === undefined
-                        ? undefined
-                        : (): void => onCancelSignIn(server)
-                    }
-                    dataTestId="mcp-servers-card-sign-in"
-                  />
-                )}
-                {signInUrl === undefined &&
-                  server.canConnect &&
-                  connectLabel &&
-                  onConnect !== undefined && (
-                    <button
-                      type="button"
-                      onClick={(): void => onConnect(server)}
-                      disabled={buttonDisabled}
-                      data-testid="mcp-servers-card-connect"
-                      className={`${MCP_ROW_ACTION_CLASS_NAME} bg-accent fg-emphasis`}
-                    >
-                      {isConnecting ? 'Connecting…' : connectLabel}
-                    </button>
+                </>
+              }
+              actions={
+                <>
+                  {showToggle && (
+                    <ProxyToggle
+                      active={proxyActive}
+                      updating={proxyUpdating}
+                      ariaLabel={toggleTitle}
+                      toggleClass={toggleClass}
+                      bordered={!compact}
+                      heading={toggleHeading}
+                      action={toggleAction}
+                      logo={proxyLogo}
+                      onToggle={(): void =>
+                        onSetCanopyProxyEnabled(server, !proxyActive)
+                      }
+                    />
                   )}
-                {server.canDisconnect === true &&
-                  onDisconnect !== undefined && (
-                    <button
-                      type="button"
-                      onClick={(): void => onDisconnect(server)}
-                      disabled={isDisconnecting || isConnecting}
-                      data-testid="mcp-servers-card-disconnect"
-                      className={`${MCP_ROW_ACTION_CLASS_NAME} fg-secondary ring-1 ring-inset ring-line-base hover:bg-fg-primary/[0.08] hover:fg-primary`}
-                    >
-                      {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-                    </button>
+                  {signInUrl !== undefined && (
+                    <McpSignInPendingActions
+                      serviceName={server.displayName}
+                      variant="compact"
+                      authorizationUrl={signInUrl}
+                      onCancel={
+                        onCancelSignIn === undefined
+                          ? undefined
+                          : (): void => onCancelSignIn(server)
+                      }
+                      dataTestId="mcp-servers-card-sign-in"
+                    />
                   )}
-              </div>
-            </li>
+                  {signInUrl === undefined &&
+                    server.canCancelSignIn === true &&
+                    isConnecting &&
+                    onCancelSignIn !== undefined && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="compact"
+                        aria-label={`Cancel ${server.displayName} sign-in`}
+                        data-testid="mcp-servers-card-sign-in-cancel"
+                        onClick={(): void => onCancelSignIn(server)}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                  {signInUrl === undefined &&
+                    server.canConnect &&
+                    connectLabel &&
+                    onConnect !== undefined && (
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="compact"
+                        onClick={(): void => onConnect(server)}
+                        disabled={buttonDisabled}
+                        aria-label={
+                          connectLabel === 'Sign in'
+                            ? `Sign in to ${server.displayName}`
+                            : undefined
+                        }
+                        data-testid="mcp-servers-card-connect"
+                      >
+                        {server.waitingForSignIn
+                          ? MCP_SIGN_IN_WAITING_LABEL
+                          : isConnecting
+                            ? 'Opening sign-in…'
+                            : connectLabel}
+                      </Button>
+                    )}
+                  {server.canDisconnect === true &&
+                    onDisconnect !== undefined && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="compact"
+                        onClick={(): void => onDisconnect(server)}
+                        disabled={isDisconnecting || isConnecting}
+                        data-testid="mcp-servers-card-disconnect"
+                      >
+                        {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+                      </Button>
+                    )}
+                </>
+              }
+            >
+              {compact ? null : (
+                <p className="truncate text-2xs fg-secondary">
+                  {mcpRowSecondaryText(server)}
+                </p>
+              )}
+              {server.authStatus === 'error' && server.lastError && (
+                <p className="mt-1 text-2xs fg-destructive">
+                  {server.lastError}
+                </p>
+              )}
+              <McpRowSettings
+                destination={getRowSettings?.(server)}
+                name={server.displayName}
+              />
+              {renderRowExtra?.(server)}
+            </McpServerCardRow>
           );
         })}
       </ul>
@@ -362,31 +399,19 @@ function ProxyToggle({
   logo,
   onToggle,
 }: ProxyToggleProps): JSX.Element {
-  const tooltipId = useId();
   return (
-    <span className="group/proxy relative inline-flex">
+    <ActionTooltip title={heading} description={action}>
       <button
         type="button"
         onClick={onToggle}
         disabled={updating}
         aria-label={ariaLabel}
         aria-pressed={active}
-        aria-describedby={tooltipId}
         data-testid="mcp-servers-card-proxy-toggle"
         className={`focus-ring relative inline-flex h-7 w-7 items-center justify-center rounded-md ${bordered ? 'border ' : ''}transition-colors before:absolute before:-inset-2 before:content-[''] disabled:opacity-60 ${toggleClass}`}
       >
         {logo}
       </button>
-      <span
-        id={tooltipId}
-        role="tooltip"
-        className="pointer-events-none absolute right-0 top-full z-tooltip mt-1.5 hidden w-max max-w-55 flex-col items-start rounded-md bg-popover px-2.5 py-1.5 font-normal shadow-tooltip fg-primary group-hover/proxy:flex group-focus-within/proxy:flex"
-      >
-        <span className="text-2xs font-normal leading-tight">{heading}</span>
-        <span className="mt-0.5 text-3xs leading-snug fg-secondary">
-          {action}
-        </span>
-      </span>
-    </span>
+    </ActionTooltip>
   );
 }

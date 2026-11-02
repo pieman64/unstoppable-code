@@ -12,6 +12,7 @@ import type {
   PersistedChatBlock,
 } from '@canopy/desktop-shared/types';
 import type { CanopyHandlerContext } from '@canopy/core-runtime';
+import { projectChatRuntime } from '../services/chat-state-projection';
 
 const LIVE_WINDOW = 128;
 const MAX_CURSOR_ALIASES = 128;
@@ -106,6 +107,8 @@ function projectEvent(event: ChatStateChangedEvent): object {
   return {
     ...event,
     changes: event.changes.map((change) => {
+      // Already portable; no host-path projection or synthetic message.
+      if (change.type === 'delegation.card_state_updated') return change;
       if (change.type === 'tab.upserted')
         return {
           ...change,
@@ -128,8 +131,9 @@ function projectEvent(event: ChatStateChangedEvent): object {
           messages: change.messages.map(projectMessage),
         };
       if (change.type === 'runtime.patched') {
-        const runtime = { ...change.runtime };
+        const runtime = projectChatRuntime(change.runtime);
         delete runtime.queuedMessages;
+        delete runtime.turn;
         return { ...change, runtime };
       }
       return change;

@@ -334,7 +334,7 @@ describe('SessionBreakdownView', () => {
       'Commit messages',
       'Entry summary',
       'Pull request text',
-      'Pipeline Advisor',
+      'Workflow Advisor',
       'Other',
     ]) {
       expect(renderer.container.textContent).toContain(label);

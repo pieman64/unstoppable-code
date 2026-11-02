@@ -70,6 +70,7 @@ import {
   writeWorkspaceConfig,
   writeWorkspaceWorktrees,
 } from '../lib/workspace-persistence';
+import { subscribeWorktreeLifecycleChanges } from '../lib/worktree-lifecycle-signals';
 import {
   getProjectPluginDefaultsRevision,
   subscribePluginDefaultsRevision,
@@ -799,17 +800,18 @@ describe('workspace-persistence', () => {
       expect(configReads('ws-unreadable')).toBe(2);
     });
 
-    it('rereads after a write that failed part way', async (): Promise<void> => {
+    it('preserves the rejection and rereads after a write that failed part way', async (): Promise<void> => {
+      const error = new Error('disk full');
       mockedReadFile.mockResolvedValue(JSON.stringify(configWith([pluginA])));
       await readProjectPluginDefaults('ws-failed-write');
       mockedWriteFile.mockImplementationOnce((): Promise<void> => {
         mockedReadFile.mockResolvedValue(JSON.stringify(configWith([pluginB])));
-        return Promise.reject(new Error('disk full'));
+        return Promise.reject(error);
       });
 
       await expect(
         writeWorkspaceConfig('ws-failed-write', configWith([pluginB])),
-      ).rejects.toThrow('disk full');
+      ).rejects.toBe(error);
 
       expect(
         (await readProjectPluginDefaults('ws-failed-write'))
@@ -1409,6 +1411,39 @@ describe('workspace-persistence', () => {
     expect(mockedWriteFile).not.toHaveBeenCalled();
   });
 
+  // CAN-4899: the branch observer rereads membership on this signal, so the
+  // GitHub poller's and the branch recorder's writes must not publish it.
+  it('signals worktree membership only for writes that change it', async () => {
+    let persisted = JSON.stringify(buildWorktreesFile());
+    mockedReadFile.mockImplementation(() => Promise.resolve(persisted));
+    mockedWriteFile.mockImplementation((_filePath, contents) => {
+      persisted = expectWrittenString(contents);
+      return Promise.resolve();
+    });
+    const changes: string[] = [];
+    const unsubscribe = subscribeWorktreeLifecycleChanges((change) =>
+      changes.push(change),
+    );
+    try {
+      await updateWorkspaceWorktree('ws-1', 'wt-1', (worktree) => ({
+        ...worktree,
+        branchName: 'feature/renamed',
+        lastKnownPrStatus: null,
+      }));
+      expect(changes).toEqual([]);
+
+      const [current] = buildWorktreesFile().worktrees;
+      if (!current) throw new Error('fixture has no worktree');
+      await writeWorkspaceWorktrees('ws-1', [
+        current,
+        { ...current, id: 'wt-2', setupPhase: 'git-pending' },
+      ]);
+      expect(changes).toEqual(['worktree-list-membership']);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('persists hidden worktree state and omits hidden when cleared', async () => {
     let persisted = JSON.stringify(buildWorktreesFile());
 
@@ -1812,7 +1847,7 @@ describe('workspace-persistence', () => {
     {
       current: {
         hidden: true,
-        branchGroupingOverride: 'ungroup',
+        branchGroupingOverride: 'ungroup' as const,
         label: 'Canonical label',
       },
       stale: {},
@@ -1821,7 +1856,7 @@ describe('workspace-persistence', () => {
       current: {},
       stale: {
         hidden: true,
-        branchGroupingOverride: 'group',
+        branchGroupingOverride: 'group' as const,
         label: 'Old label',
       },
     },
@@ -2460,7 +2495,17 @@ describe('workspace-persistence', () => {
         createdAt: '2026-07-06T00:00:00.000Z',
         description: 'Personal research',
         defaultModel: 'claude-fable-5',
-        presets: [{ id: 'p1', name: 'Default', pluginSelections: {} }],
+        presets: [
+          {
+            id: 'p1',
+            name: 'Default',
+            pluginSelections: {
+              collectionIds: [],
+              skillRefs: [],
+              pluginRefs: [],
+            },
+          },
+        ],
         archiveRetentionDays: 30,
         startPage: { kind: 'file', path: 'README.md' },
       },

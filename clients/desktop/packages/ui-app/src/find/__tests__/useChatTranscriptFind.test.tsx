@@ -58,7 +58,7 @@ function stubLayoutRects(): () => void {
   const rects = (): DOMRectList =>
     Object.assign([rect], {
       item: (): DOMRect => rect,
-    }) as unknown as DOMRectList;
+    });
   const targets: Array<[object, string]> = [
     [Element.prototype, 'getClientRects'],
     [Range.prototype, 'getClientRects'],

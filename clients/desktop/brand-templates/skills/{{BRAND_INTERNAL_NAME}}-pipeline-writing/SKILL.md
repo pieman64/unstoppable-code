@@ -19,6 +19,7 @@ Important runtime and authoring rules:
 - `plugin_collections` can define portable `skill`, `claude_plugin`, and `codex_plugin` defaults for `builtin/agent-prompt` and `builtin/agent-resume`
 - `model_aliases` can define named model slots for `builtin/agent-prompt` and `builtin/agent-resume`; use aliases for Agent-backed pipeline models instead of raw `agent_model_*` values in `with.model`
 - `log_format_hint: agent` is supported on action manifests and `uses` steps, but not on inline `run` steps
+- `assets` declare folders of files a pipeline reads, and `local_state` lists per-runner paths that never travel with a share; declare assets on the entry pipeline, not on child pipelines
 - inspect a bundled action's `action.yml` manifest when you need its exact inputs and outputs
 
 ## File Locations
@@ -111,6 +112,8 @@ pipeline:
 | `defaults.run.working_directory` | string           | no       | Default working directory                                                                                                                                                                 |
 | `plugin_collections`             | array            | no       | Portable skill/plugin defaults that agent steps can opt into with `with.plugin_collection_id`                                                                                             |
 | `model_aliases`                  | array            | no       | Named model slots that agent steps can use with `with.model`; supports inline `base`/`instructions`/`plugin_collection_id` or Agent-backed `agent_id` defaults                            |
+| `assets`                         | array            | no       | Folders of files the pipeline reads at run time, read as `${{ assets.<id>.path }}`. See [Assets and local state](#assets-and-local-state)                                                 |
+| `local_state`                    | array            | no       | Per-runner paths (databases, caches, checkouts) that must never travel with a share                                                                                                       |
 | `jobs`                           | map              | yes      | Job definitions keyed by ID                                                                                                                                                               |
 
 Set `hint-hide-ui-option: true` on a trigger input to hide it from UI input pickers when the input is optional or has a default.
@@ -218,6 +221,49 @@ Rules:
 - The app exposes model aliases as first-class run configuration, like plugin collections, so users can customize each alias before dispatch or automation setup.
 - CLI runs can provide alias preferences with `--model-alias-prefs-json <json>` or `--model-alias-prefs-file <path>`. Use `--save-model-alias-defaults` to save those preferences for a file-backed pipeline.
 - CLI preference entries are keyed by alias id and use `mode: inline`, `mode: agent`, or `mode: reset`. `reset` removes a saved override and falls back to YAML defaults.
+
+### Assets and local state
+
+Use `assets` for files a pipeline reads at run time, such as configs or prompts, and `local_state` for per-runner state that must stay on this machine:
+
+```yaml
+assets:
+  - id: specialists
+    path: ~/journeys/specialists
+    description: Specialist configs
+    required: true
+    install: seed
+local_state:
+  - ~/journeys/state.db
+  - ~/journeys/checkout
+
+jobs:
+  run:
+    steps:
+      - id: list
+        run: ls "${{ assets.specialists.path }}"
+      - id: remember
+        run: date >> "${{ {{BRAND_EXPRESSION_ROOT}}.pipeline_data_dir }}/runs.log"
+```
+
+Rules:
+
+- `id` starts with a lower-case letter and uses at most 32 lower-case letters, numbers, or underscores. Ids are unique in the pipeline.
+- `path` is the folder on the author's machine: an absolute path, or one starting with `~`. It must be inside the home folder to be shared.
+- `required` defaults to `true`. `install` defaults to `seed`, which adds only files the recipient doesn't have; `replace` overwrites them on every install.
+- `local_state` entries are paths that must never be shared. An asset folder can't overlap a `local_state` entry.
+- Declare assets on the entry pipeline, the one an automation or the user starts. Child pipelines started with `builtin/run-pipeline` read the root run's assets and data folder; a child's own `assets` are not resolved, and sharing blocks them.
+- Assets travel only when the automation that runs the pipeline is shared, and only with a team or organization. Sharing the pipeline by itself is blocked while it declares `assets`.
+
+What a run sees:
+
+| Expression                                           | Environment variable                     | Value                                                               |
+| ---------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------- |
+| `${{ assets.<id>.path }}`                            | `{{BRAND_ENV_PREFIX}}_ASSET_<ID>`        | The asset's folder, or an empty string for a missing optional asset |
+| `${{ {{BRAND_EXPRESSION_ROOT}}.pipeline_data_dir }}` | `{{BRAND_ENV_PREFIX}}_PIPELINE_DATA_DIR` | A folder the pipeline keeps across runs, for its own state          |
+| (none)                                               | `{{BRAND_ENV_PREFIX}}_ASSETS_DIR`        | The folder installed assets live in, when the pipeline has any      |
+
+`<ID>` is the asset id in upper case. Before the first step, an asset resolves to its installed copy when a share installed one, otherwise to its declared `path` when that folder exists. A missing required asset stops the run before any step and names the asset. A saved pipeline's data folder is `pipeline-data/<pipeline id>/state` in the app data folder (`~/{{BRAND_PROJECT_CONFIG_DIR}}/pipeline-data/` in production), and it is kept when the pipeline is deleted. Inline pipelines get no data folder. The CLI doesn't resolve assets or a data folder.
 
 ### Triggers (`on` field)
 
@@ -503,13 +549,14 @@ runs:
 
 ### Supported runtimes
 
-| Runtime         | `using` value | Entry point | Description                                               |
-| --------------- | ------------- | ----------- | --------------------------------------------------------- |
-| Node.js         | `node`        | `.js` file  | Runs with Node.js                                         |
-| Python          | `python`      | `.py` file  | Runs with `python3`                                       |
-| TypeScript      | `tsx`         | `.ts` file  | Runs directly via `tsx` and is useful for project actions |
-| Composite       | `composite`   | N/A         | Inline pipeline steps                                     |
-| Nested Pipeline | `pipeline`    | N/A         | Executes a child pipeline via `builtin/run-pipeline`      |
+| Runtime         | `using` value | Entry point | Description                                                 |
+| --------------- | ------------- | ----------- | ----------------------------------------------------------- |
+| Node.js         | `node`        | `.js` file  | Runs with Node.js                                           |
+| Python          | `python`      | `.py` file  | Runs with `python3`                                         |
+| TypeScript      | `tsx`         | `.ts` file  | Runs directly via `tsx` and is useful for project actions   |
+| Composite       | `composite`   | N/A         | Inline pipeline steps                                       |
+| Nested Pipeline | `pipeline`    | N/A         | Executes a child pipeline via `builtin/run-pipeline`        |
+| Host            | `host`        | N/A         | Performed by the desktop app; see [Host steps](#host-steps) |
 
 ### Composite actions
 
@@ -541,7 +588,7 @@ runs:
 
 In practice, bundled nested execution is usually exposed through `builtin/run-pipeline`, whose key inputs are:
 
-- `pipeline`: stored pipeline ID, bundled filename, or file path
+- `pipeline`: stored pipeline ID, bundled filename, or file path. To pick the child through `env`, define the ID as a literal in the pipeline or job `env` and write `pipeline: ${{ env.WORKER_PIPELINE }}`; a share then includes the child. A ref that reads an input, a step output, or a step-level `env` value is known only at run time, so a share can't include that child
 - `pipeline_yaml`: inline child pipeline text
 - `inputs`: JSON object of child pipeline inputs
 - `cwd`: optional child working directory relative to the parent step cwd
@@ -810,11 +857,21 @@ job.is_retry                      # true if current attempt is a retry
 job.retry_count                   # Current attempt number (0-based)
 job.max_retries                   # max_retries from job definition
 matrix.<axis>                     # Current matrix value for an authored axis
+assets.<id>.path                  # Resolved folder of a declared asset ('' when an optional one is missing)
+{{BRAND_EXPRESSION_ROOT}}.pipeline_data_dir          # The pipeline's own data folder, kept across runs
 {{BRAND_EXPRESSION_ROOT}}.event_name                 # Trigger that started this execution ('dispatch', 'plan_ready', or 'task_ready')
 {{BRAND_EXPRESSION_ROOT}}.event.plan_ready.plan_path # Path to shared plan file (writable by the pipeline)
 {{BRAND_EXPRESSION_ROOT}}.event.task_ready.task_path # Path to the task definition file
 {{BRAND_EXPRESSION_ROOT}}.event.task_ready.plan_path # Reserved writable plan path for generated plans
+{{BRAND_EXPRESSION_ROOT}}.project_id                 # The run's project, or '' in a run with no project
+{{BRAND_EXPRESSION_ROOT}}.task_id                    # The run's task (worktree), or '' in a run with no task
+{{BRAND_EXPRESSION_ROOT}}.owner                      # The run's owner: personal or org:<uuid>
+{{BRAND_EXPRESSION_ROOT}}.initiator.kind             # user, hook, portal, automation, app_advisor or agent
+{{BRAND_EXPRESSION_ROOT}}.initiator.automation_id    # The automation that started the run (automation only)
+{{BRAND_EXPRESSION_ROOT}}.initiator.chat_id          # The starting chat (agent, and app_advisor when known)
 ```
+
+The desktop app records the owner and initiator when a run starts; resume, retry and rerun keep them. `{{BRAND_EXPRESSION_ROOT}}.initiator.automation_name` is text a person or agent wrote, so never interpolate it into a `run:` command line.
 
 ### Operators
 
@@ -878,6 +935,7 @@ These actions ship with {{BRAND_DISPLAY_NAME}} and are referenced as `builtin/<n
 Inspect the specific `action.yml` file you plan to use for exact inputs, outputs, and log-format behavior. The current bundled catalog includes:
 
 - Orchestration and execution: `agent-prompt`, `agent-resume`, `agent-loop`, `parallel-agents`, `create-worktree`, `run-pipeline`, `router`, `quality-gate`, `condenser`, `{{BRAND_REPORT_ACTION_ID}}`
+- Projects and chats (host steps, desktop app only): `create-project-entry`, `create-bot-entry`, `send-agent-message`, `wait-for-agent-reply`, `move-to-group`
 - Memory and coordination: `memory-read`, `memory-write`, `memory`, `comms-setup`
 - Discovery and requirements: `discovery`, `context-discovery`, `historical-context`, `requirements-from-task`, `requirements-interactive`, `complexity-assessor`, `greenfield-detection`, `git-workspace-details`, `open-pr-details`
 - Spec and planning: `spec-researcher`, `spec-gatherer`, `spec-quick`, `spec-writer`, `spec-critic`, `spec-validation`, `planner`, `plan-validation`, `plan-path-validation`, `plan-with-review`
@@ -950,6 +1008,30 @@ jobs:
           prompt: Revise the plan to include verification steps and risks.
 ```
 
+### Host steps
+
+Host steps (`using: host`) are performed by the desktop app: they create tasks, chats and worktrees, send messages and wait for replies, and move tasks between sidebar groups. The CLI refuses them with `failure_reason: needs_desktop`, except `builtin/create-worktree`, which runs its Node fallback on the CLI unless a desktop-only input is set (`existing_branch`, `base_task_id` or `base_worktree_id`, `group`, or `worktree_setup: run` or `run_and_wait`). Every host step has a `failure_reason` output, empty on success and a typed code otherwise (for example `not_found`, `validation_failed`, `owner_context_unavailable`, `advisor_access_disabled`, `target_not_ready`, `authorization_conflict` or `needs_desktop`), so `continue_on_error` steps can branch on it. Group problems never fail a step; they report `grouped: 'false'` and a `not_grouped_reason`.
+
+| Action                         | What it does                                                                                         | Main inputs                                                                                                                                                                                                               | Main outputs                                                            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `builtin/create-worktree`      | Creates a worktree in a code project                                                                 | `project_id` (or `workspace_id`), `branch`, `base_branch`, `existing_branch`, `base_task_id`, `worktree_setup` (`skip`, `run` or `run_and_wait`), `group`                                                                 | `task_id` (same as `worktree_id`), `path`, `branch_name`, `setup_state` |
+| `builtin/create-project-entry` | Creates a task (a Work Entry with its first chat) in a cowork project                                | `project_id`, `title`, `group`                                                                                                                                                                                            | `task_id`, `chat_id`, `task_created`, `chat_created`                    |
+| `builtin/create-bot-entry`     | Creates an Orchestrator task with its first, empty chat                                              | `bot_id` (`app_advisor`), `title`, `group`                                                                                                                                                                                | `task_id`, `chat_id`                                                    |
+| `builtin/send-agent-message`   | Sends a message to a project or Orchestrator chat, creating the chat when no `chat_id` is given      | `project_id` or `bot_id`, `task_id`, `chat_id`, `text` or `text_file`, `mode` (`queue` or `steer`), `model`, `thinking_effort`, `plan_mode`, `approval_mode`, `plugins`, `literal_text`, `new_chat`, `replace_empty_chat` | `chat_id`, `message_id`, `state` (`sent`, `queued` or `steered`)        |
+| `builtin/wait-for-agent-reply` | Waits for the turn that answers `message_id` (or the chat's latest turn) and exposes its final reply | `project_id` or `bot_id`, `task_id`, `chat_id`, `message_id`, `reply_timeout_minutes` (default 60, at most 720)                                                                                                           | `reply_state`, `reply_text` (capped at 8,000 characters), `reply_file`  |
+| `builtin/move-to-group`        | Moves a worktree or Work Entry into a sidebar group, creating the group when missing                 | `project_id` or `bot_id`, `task_id`, `group` (or `group_id`; `none` removes it), `color`                                                                                                                                  | `group_id`, `group_name`, `grouped`, `not_grouped_reason`               |
+
+Rules:
+
+- Read each step's `action.yml` (GetBuiltinActionDefinition in the editor) for the full inputs and outputs before configuring it.
+- Pass `literal_text: 'true'` with `text` when the message must be sent exactly as written; otherwise `${{ }}` expressions in it are evaluated.
+- A run an agent started is agent-originated: `send-agent-message` can't change an existing chat's model, plan mode, plugins or approvals, and a chat it creates takes no plugins and only its agent's approvals.
+- `create-worktree` with `worktree_setup: run_and_wait` waits for the project's setup scripts and reports `setup_state` (`succeeded`, `failed`, `timed_out`, …); `run` starts them and continues.
+
+#### Runs with no project
+
+A pipeline with `scope: global` can run with no project or task (an automation's **No project** destination, `target: { kind: 'global' }`). It runs in a scratch folder that is deleted with the execution, can't use project actions or project pipelines, and runs as its owner (`{{BRAND_EXPRESSION_ROOT}}.owner`). Its steps name every project, task and chat with explicit IDs, usually through `inputs`, since there is no current project to default to.
+
 ## Examples
 
 ### Minimal pipeline
@@ -966,6 +1048,45 @@ pipeline:
         - id: hello
           run: echo "Hello from {{BRAND_DISPLAY_NAME}}!"
 ```
+
+### Chat automation as a global pipeline
+
+This is the workflow an automation owns when it starts a chat in a cowork project each run: create a task, send the prompt, wait for the reply. The project is an input, so the steps hold no local IDs, and `replace_empty_chat` keeps the new task to one chat in runs an automation starts.
+
+```yaml
+name: Morning check
+scope: global
+on:
+  dispatch:
+    inputs:
+      project_id:
+        required: false
+jobs:
+  chat:
+    steps:
+      - id: entry
+        uses: builtin/create-project-entry
+        with:
+          project_id: ${{ inputs.project_id }}
+      - id: send
+        uses: builtin/send-agent-message
+        with:
+          project_id: ${{ inputs.project_id }}
+          task_id: ${{ steps.entry.outputs.task_id }}
+          text: Organize my notes from today.
+          literal_text: 'true'
+          replace_empty_chat: 'true'
+      - id: reply
+        uses: builtin/wait-for-agent-reply
+        with:
+          project_id: ${{ inputs.project_id }}
+          task_id: ${{ steps.entry.outputs.task_id }}
+          chat_id: ${{ steps.send.outputs.chat_id }}
+          message_id: ${{ steps.send.outputs.message_id }}
+          reply_timeout_minutes: '720'
+```
+
+For a code project, `builtin/create-worktree` (with `project_id`) replaces `create-project-entry`; for the Orchestrator, `builtin/create-bot-entry` with `bot_id: app_advisor` does, and the send uses `bot_id`.
 
 ### Ticketing-system pipeline with builtin actions
 

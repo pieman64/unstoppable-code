@@ -28,7 +28,9 @@ jest.mock('@/hooks/useChatShareData', () => ({
   useChatShareData: (): Partial<ChatShareData> => ({ installedSkills: null }),
 }));
 
-const mockOpenNavigation = jest.fn(() => Promise.resolve());
+const mockOpenNavigation = jest.fn<Promise<void>, [target: unknown]>(() =>
+  Promise.resolve(),
+);
 jest.mock('../agent-artifact-navigation', () => ({
   openAgentArtifactNavigation: (target: unknown): Promise<void> =>
     mockOpenNavigation(target),

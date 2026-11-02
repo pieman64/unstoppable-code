@@ -1,4 +1,6 @@
 import {
+  APP_ADVISOR_PROJECT_ID,
+  STANDALONE_CHAT_PROJECT_ID,
   serializeWorkspaceContext,
   type WorkspaceContext,
   type WorktreeSelection,
@@ -15,12 +17,32 @@ import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { selectionBelongsToContext } from './standaloneChatSelection';
 
+let pendingSelectionRestorations = 0;
+const restorationListeners = new Set<() => void>();
+
+/** Focus waits until a context restore has released its transient selection. */
+export function isWorkspaceContextSelectionRestoring(): boolean {
+  return pendingSelectionRestorations > 0;
+}
+
+export function subscribeWorkspaceContextSelectionRestoration(
+  listener: () => void,
+): () => void {
+  restorationListeners.add(listener);
+  return (): void => {
+    restorationListeners.delete(listener);
+  };
+}
+
 /**
  * Keep the open Code worktree or Cowork task selection consistent with the Personal/organization
  * context (CAN-2954, plan chapter 03). Switching into a context clears the
  * selection that belonged to the previous one and restores the last selection
  * made in the new one, if any. Nothing running is stopped: selection is
  * navigation only, and the worktree or task keeps working in the background.
+ * A selection that does not belong to the departing context (a fork opened
+ * there for another context, for example) is never remembered for it
+ * (CAN-4781).
  */
 export function syncSelectionForContextChange(
   previous: WorkspaceContext,
@@ -33,10 +55,36 @@ export function syncSelectionForContextChange(
   }
   const chat = useChatStore.getState();
   const context = useWorkspaceContextStore.getState();
-  context.rememberSelection(previousKey, chat.selectedWorktree);
+  const departing = chat.selectedWorktree;
+  context.rememberSelection(
+    previousKey,
+    departing && selectionFitsContext(departing, previous) ? departing : null,
+  );
   clearCurrentSelection();
   closeShareViewerOutside(next);
-  restoreSelectionForContext(nextKey);
+  restoreSelectionForContext(nextKey, next);
+}
+
+/**
+ * A selection belongs to its workspace's owner. A Personal checkout linked to
+ * an organization still belongs to Personal (CAN-4781). The Personal
+ * standalone and global App Advisor sentinels can have no workspace row.
+ * A missing workspace was deleted and is not restorable.
+ */
+function selectionFitsContext(
+  selection: WorktreeSelection,
+  context: WorkspaceContext,
+): boolean {
+  const projects = useProjectsStore.getState().projects;
+  const project = projects.find((item) => item.id === selection.projectId);
+  if (!project) {
+    return (
+      selection.projectId === APP_ADVISOR_PROJECT_ID ||
+      (context.kind === 'personal' &&
+        selection.projectId === STANDALONE_CHAT_PROJECT_ID)
+    );
+  }
+  return selectionBelongsToContext(selection, projects, context);
 }
 
 /**
@@ -83,16 +131,46 @@ function clearCurrentSelection(): void {
   }
 }
 
-function restoreSelectionForContext(nextKey: string): void {
+function restoreSelectionForContext(
+  nextKey: string,
+  next: WorkspaceContext,
+): void {
   const chat = useChatStore.getState();
   const context = useWorkspaceContextStore.getState();
   const restored = context.lastSelectionByContext[nextKey] ?? null;
+  if (restored && !selectionFitsContext(restored, next)) {
+    // Remembered before this guard existed, or its workspace changed owner
+    // or was deleted since: forget it rather than reopen a foreign workspace.
+    context.rememberSelection(nextKey, null);
+    return;
+  }
   if (restored) {
     const project = useProjectsStore
       .getState()
       .projects.find((item) => item.id === restored.projectId);
     if (project?.type === 'cowork') {
-      void restoreCoworkSelection(nextKey, restored);
+      pendingSelectionRestorations += 1;
+      restorationListeners.forEach((listener): void => listener());
+      void restoreCoworkSelection(nextKey, restored).finally((): void => {
+        pendingSelectionRestorations -= 1;
+        if (pendingSelectionRestorations === 0) {
+          const navigation = useNavigationStore.getState();
+          const request = navigation.pendingForkedContainerFocus;
+          const selected = useChatStore.getState().selectedWorktree;
+          // No consumer may remain mounted after a user deselects during
+          // restoration. Retire that request before a later visit can focus it.
+          if (
+            request !== undefined &&
+            (request.accountEpoch !==
+              useWorkspaceContextStore.getState().accountEpoch ||
+              request.page !== navigation.activePage ||
+              selected?.projectId !== request.projectId ||
+              selected.worktreeId !== request.worktreeId)
+          )
+            navigation.consumeForkedContainerFocus(request.nonce);
+        }
+        restorationListeners.forEach((listener): void => listener());
+      });
       return;
     }
     chat.selectWorktree(restored.projectId, restored.worktreeId);
@@ -116,16 +194,9 @@ export function reconcileSelectionWithScoping(
     return;
   }
   const selected = useChatStore.getState().selectedWorktree;
-  if (
-    selected &&
-    !selectionBelongsToContext(
-      selected,
-      useProjectsStore.getState().projects,
-      context,
-    )
-  ) {
+  if (selected && !selectionFitsContext(selected, context)) {
     clearCurrentSelection();
-    restoreSelectionForContext(serializeWorkspaceContext(context));
+    restoreSelectionForContext(serializeWorkspaceContext(context), context);
   }
   closeShareViewerOutside(context);
 }

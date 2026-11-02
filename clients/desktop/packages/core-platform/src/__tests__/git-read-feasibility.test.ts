@@ -399,9 +399,11 @@ async function hostRequest(
             runner.checkIgnoredPathsSelected({
               ...request,
               executableForChunk: async (...args) => {
-                const executable = await request.executableForChunk(...args);
-                chunks.push(executable);
-                return executable;
+                const selected = await request.executableForChunk(...args);
+                chunks.push(
+                  typeof selected === 'string' ? selected : selected.executable,
+                );
+                return selected;
               },
             }),
         };

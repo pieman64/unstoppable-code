@@ -40,7 +40,13 @@ describe('desktop Auto model routing', () => {
             timestamp: 1,
             blocks: [
               { type: 'text', text: 'Use the existing service.' },
-              { type: 'tool_result', toolUseId: 't', content: 'secret output' },
+              {
+                type: 'tool_result',
+                toolUseId: 't',
+                toolName: 'tool',
+                output: 'secret output',
+                isError: false,
+              },
             ],
           },
         ],

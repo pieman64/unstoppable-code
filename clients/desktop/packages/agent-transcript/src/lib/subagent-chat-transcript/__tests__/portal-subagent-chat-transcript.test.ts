@@ -199,4 +199,71 @@ describe('buildPortalSubagentChatTranscript', () => {
       },
     ]);
   });
+
+  it('rebuilds pipeline agent-sent attribution and refuses mixed wire fields', () => {
+    const step = {
+      agentSentSenderKind: 'pipeline',
+      agentSentExecutionId: 'exec-1',
+      agentSentPipelineId: 'pipeline-1',
+      agentSentStepId: 'notify',
+      agentSentAutomationId: 'automation-1',
+      agentSentChatTitle: 'Nightly triage',
+      agentSentProjectLabel: '',
+    };
+    const part = (
+      value: string,
+      wire: Record<string, string>,
+    ): PortalChatPart => ({
+      kind: 'text',
+      data: { text: value, delegationAuthorKind: 'user', ...wire },
+    });
+    const { items } = buildPortalSubagentChatTranscript({
+      tree,
+      node,
+      runs: [
+        {
+          runGeneration: 1,
+          subBlocks: [
+            part('Step send', step),
+            part('Automation send', {
+              agentSentSenderKind: 'pipeline',
+              agentSentAutomationId: 'automation-1',
+              agentSentChatTitle: 'Nightly triage',
+              agentSentProjectLabel: '',
+            }),
+            part('Mixed', { ...step, agentSentChatId: 'chat-1' }),
+            part('Partial', {
+              agentSentSenderKind: 'pipeline',
+              agentSentExecutionId: 'exec-1',
+              agentSentChatTitle: 'Nightly triage',
+              agentSentProjectLabel: '',
+            }),
+          ],
+          subBlocksTruncated: false,
+          omittedSubBlocks: 0,
+        },
+      ],
+    });
+    const users = items.filter((item) => item.kind === 'user');
+    expect(users.map((item) => item.agentSent)).toEqual([
+      {
+        sender: {
+          kind: 'pipeline',
+          executionId: 'exec-1',
+          pipelineId: 'pipeline-1',
+          stepId: 'notify',
+          automationId: 'automation-1',
+        },
+        chatTitle: 'Nightly triage',
+        projectLabel: '',
+      },
+      {
+        sender: { kind: 'pipeline', automationId: 'automation-1' },
+        chatTitle: 'Nightly triage',
+        projectLabel: '',
+      },
+      undefined,
+      undefined,
+    ]);
+  });
 });

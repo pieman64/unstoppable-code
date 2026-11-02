@@ -11,6 +11,7 @@ import {
 import type {
   AdhocMultiRepoJoinOption,
   GitHubRepoSummary,
+  NavigationMode,
   OrgMemberFolderInspection,
   OrgRepositoryOwnerLookup,
   OrgRepositoryOwnerRequest,
@@ -346,10 +347,20 @@ function ChosenFolderPath({
 const TEMPORARY_WORKSPACE_DISABLED_TOOLTIP =
   'Add another project to use Temporary.';
 
+/** The non-catalog options in each navigation mode's order (CAN-5041). */
+const CHOICE_ORDER: Record<
+  NavigationMode,
+  readonly Exclude<AddWorkspaceMode, 'catalog'>[]
+> = {
+  work: ['existing', 'create', 'remote'],
+  code: ['remote', 'existing', 'create'],
+};
+
 /** What each Create new type makes, under the type control (CAN-3909). */
 const CREATE_TYPE_DESCRIPTIONS: Record<CreateWorkspaceType, string> = {
   'single-repo': 'Create a git repository with starter files.',
-  cowork: "For writing, research and other work that isn't code.",
+  cowork:
+    "A new folder for your documents, research and other work that isn't code.",
   'multi-repo':
     'For changes that touch several repositories at once. Add them after you create it.',
   temporary:
@@ -768,8 +779,18 @@ function AddRepoModalDraft({
   // member projects.
   const existingAvailable = !inOrganization || orgCreateAvailable;
   const navigationMode = useNavigationMode();
+  // Work mode leads with a folder and Cowork, Code with Clone and a
+  // repository (CAN-5041). Seeds and organizations' catalog come first.
+  const personalDefaultMode: AddWorkspaceMode =
+    navigationMode === 'work' ? 'existing' : 'remote';
+  const defaultCreateType: CreateWorkspaceType =
+    navigationMode === 'work' ? 'cowork' : 'single-repo';
   const [selectedMode, setMode] = useState<AddWorkspaceMode>(
-    initialProjectType ? 'create' : inOrganization ? 'catalog' : 'remote',
+    initialProjectType
+      ? 'create'
+      : inOrganization
+        ? 'catalog'
+        : personalDefaultMode,
   );
   const organization = useWorkspaceContextStore(
     (store): WorkspaceContextOrganization | undefined =>
@@ -842,15 +863,14 @@ function AddRepoModalDraft({
   // Cowork projects. Its default follows the navigation mode, and without the
   // Code capability every project is a Cowork one.
   const orgTypeChoice: CreateWorkspaceType =
-    workspaceTypeChoice ??
-    (navigationMode === 'work' ? 'cowork' : 'single-repo');
+    workspaceTypeChoice ?? defaultCreateType;
   const workspaceType: CreateWorkspaceType = inOrganization
     ? !orgCodeAvailable || orgTypeChoice === 'cowork'
       ? 'cowork'
       : orgTypeChoice === 'multi-repo'
         ? 'multi-repo'
         : 'single-repo'
-    : (workspaceTypeChoice ?? 'single-repo');
+    : (workspaceTypeChoice ?? defaultCreateType);
   const orgFolderInspection =
     orgFolderCheck?.status === 'checked' ? orgFolderCheck.inspection : null;
   // The organization project this folder's repository already belongs to.
@@ -2789,36 +2809,60 @@ function AddRepoModalDraft({
               description={orgCatalogOption.scopedSummary}
             />
           )}
-          {(!inOrganization || orgRemoteAvailable) && (
-            <ProjectChoiceCard
-              testId="add-workspace-mode-remote"
-              selected={mode === 'remote'}
-              onSelect={() => setMode('remote')}
-              icon={<GitHubIcon className="shrink-0" />}
-              title="Clone repository"
-              description="GitHub or a URL"
-            />
-          )}
-          {existingAvailable && (
-            <ProjectChoiceCard
-              testId="add-workspace-mode-existing"
-              selected={mode === 'existing'}
-              onSelect={() => setMode('existing')}
-              icon={<FolderIcon className="shrink-0" />}
-              title="Existing folder"
-              description="On this computer"
-            />
-          )}
-          {(!inOrganization || orgCreateAvailable) && (
-            <ProjectChoiceCard
-              testId="add-workspace-mode-create"
-              selected={mode === 'create'}
-              onSelect={() => setMode('create')}
-              icon={<FolderPlusIcon className="shrink-0" />}
-              title="Create new"
-              description="Start fresh"
-            />
-          )}
+          {CHOICE_ORDER[navigationMode].map((choice) => {
+            switch (choice) {
+              case 'remote':
+                return (
+                  (!inOrganization || orgRemoteAvailable) && (
+                    <ProjectChoiceCard
+                      key={choice}
+                      testId="add-workspace-mode-remote"
+                      selected={mode === 'remote'}
+                      onSelect={() => setMode('remote')}
+                      icon={<GitHubIcon className="shrink-0" />}
+                      title="Clone repository"
+                      description="GitHub or a URL"
+                    />
+                  )
+                );
+              case 'existing':
+                return (
+                  existingAvailable && (
+                    <ProjectChoiceCard
+                      key={choice}
+                      testId="add-workspace-mode-existing"
+                      selected={mode === 'existing'}
+                      onSelect={() => setMode('existing')}
+                      icon={<FolderIcon className="shrink-0" />}
+                      title={
+                        navigationMode === 'work'
+                          ? 'Use a folder'
+                          : 'Existing folder'
+                      }
+                      description={
+                        navigationMode === 'work'
+                          ? 'Work with files already on this computer'
+                          : 'On this computer'
+                      }
+                    />
+                  )
+                );
+              case 'create':
+                return (
+                  (!inOrganization || orgCreateAvailable) && (
+                    <ProjectChoiceCard
+                      key={choice}
+                      testId="add-workspace-mode-create"
+                      selected={mode === 'create'}
+                      onSelect={() => setMode('create')}
+                      icon={<FolderPlusIcon className="shrink-0" />}
+                      title="Create new"
+                      description="Start fresh"
+                    />
+                  )
+                );
+            }
+          })}
         </div>
 
         {context?.kind === 'organization' && mode === 'catalog' && (
@@ -2854,6 +2898,14 @@ function AddRepoModalDraft({
                 data-testid="add-workspace-existing-description"
               >
                 {`The folder is added as a ${CHAT_LABEL} project, and its files stay where they are. If it's a git repository, branches, worktrees and other git features aren't available.`}
+              </p>
+            )}
+            {!inOrganization && navigationMode === 'work' && (
+              <p
+                className="text-xs fg-secondary"
+                data-testid="add-workspace-existing-description"
+              >
+                Your files stay where they are.
               </p>
             )}
             {!existingFolderPending && (
@@ -3179,7 +3231,11 @@ function AddRepoModalDraft({
                     )
                       setOrgError(null);
                   }}
-                  placeholder="my-project"
+                  placeholder={
+                    navigationMode === 'work' && workspaceType !== 'single-repo'
+                      ? 'Thursday design review'
+                      : 'my-project'
+                  }
                 />
               </div>
             )}

@@ -63,6 +63,82 @@ describe('HookActionEditor Codex speed', () => {
     });
   }
 
+  function shellSelect(platform: string): HTMLSelectElement {
+    const element = container.querySelector(
+      `select[aria-label="Command action ${platform} shell"]`,
+    );
+    expect(element).not.toBeNull();
+    if (!(element instanceof HTMLSelectElement)) {
+      throw new Error(`Missing ${platform} shell selector`);
+    }
+    return element;
+  }
+
+  function changeShell(platform: string, value: string): void {
+    act(() => {
+      const element = shellSelect(platform);
+      element.value = value;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  it('edits Linux command shells without changing Windows or Mac overrides', async () => {
+    await renderHooks({
+      'pr:create': [
+        {
+          uiId: 'command-hook',
+          type: 'command',
+          command: 'echo hook',
+          shell: { windows: 'cmd', mac: 'bash', linux: 'zsh' },
+        },
+      ],
+    });
+    expect(shellSelect('Linux').value).toBe('zsh');
+    expect(
+      Array.from(shellSelect('Linux').options, ({ value, text }) => [
+        value,
+        text,
+      ]),
+    ).toEqual([
+      ['', 'Default (Bash)'],
+      ['bash', 'bash'],
+      ['zsh', 'zsh'],
+    ]);
+    changeShell('Linux', 'bash');
+    expect(latest['pr:create']?.[0]).toMatchObject({
+      shell: { windows: 'cmd', mac: 'bash', linux: 'bash' },
+    });
+    changeShell('Linux', '');
+    expect(latest['pr:create']?.[0]).toEqual({
+      uiId: 'command-hook',
+      type: 'command',
+      command: 'echo hook',
+      shell: { windows: 'cmd', mac: 'bash' },
+    });
+    changeShell('Linux', 'zsh');
+    changeShell('Windows', '');
+    changeShell('Mac', '');
+    expect(latest['pr:create']?.[0]).toMatchObject({ shell: { linux: 'zsh' } });
+    changeShell('Linux', '');
+    expect(latest['pr:create']?.[0]).toEqual({
+      uiId: 'command-hook',
+      type: 'command',
+      command: 'echo hook',
+    });
+  });
+
+  it('leaves optional shell settings absent until the user selects a shell', async () => {
+    await renderHooks({
+      'pr:create': [
+        { uiId: 'command-hook', type: 'command', command: 'echo hook' },
+      ],
+    });
+    expect(shellSelect('Linux').value).toBe('');
+    expect(latest['pr:create']?.[0]).not.toHaveProperty('shell');
+    changeShell('Linux', 'zsh');
+    expect(latest['pr:create']?.[0]).toMatchObject({ shell: { linux: 'zsh' } });
+  });
+
   it('hands a saved Ultra fast chat speed to the composer unchanged', async () => {
     await renderHooks({
       'pr:create': [

@@ -140,9 +140,14 @@ export function SidebarItemGroupRail({
           {...activatorProps}
           className="group/group-rail flex h-full w-2 items-stretch justify-center pointer-coarse:pointer-events-none"
         >
+          {/* Doubles 2px to 4px on hover and while expanded by `scale` on the
+              compositor, never by `width`; the doubled geometry lives with the
+              scrollbar's in `canopy-tokens-core.css`. */}
           <span
             aria-hidden="true"
-            className={`my-1 rounded-full transition-[width] ${expanded ? 'w-1' : 'w-0.5 group-hover/group-rail:w-1'}`}
+            data-group-rail-line=""
+            data-expanded={expanded ? 'true' : undefined}
+            className="my-1 w-0.5 rounded-full transition-[scale]"
             style={{ backgroundColor: sidebarItemGroupColor(color) }}
           />
         </button>
@@ -648,10 +653,11 @@ export function SidebarItemGroupEditor({
             commit();
           }}
           onKeyDown={(event): void => {
-            if (event.key === 'Enter') {
-              event.preventDefault();
-              commit();
-            }
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            // Enter that confirms an IME candidate is not a save.
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            close();
           }}
         />
         <div className="mt-2 flex items-center justify-between gap-2">

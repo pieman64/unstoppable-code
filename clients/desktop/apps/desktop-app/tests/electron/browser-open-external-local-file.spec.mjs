@@ -129,6 +129,8 @@ async function openBlankBrowserPanel({ earlyAccess, captureEnv }) {
 
 async function navigate(page, pane, url, title) {
   const input = pane.getByTestId('browser-url-input');
+  // Focus expands the display address to its full URL before replacing it.
+  await input.click();
   await input.fill(url);
   await input.press('Enter');
   // The outer panel tab takes the loaded page's title.
@@ -140,7 +142,7 @@ async function navigate(page, pane, url, title) {
 }
 
 test.describe('open a local file page in the external browser', () => {
-  test('classic bar: toolbar button opens file and http pages', async () => {
+  test('without early access: More-menu item opens file and http pages', async () => {
     test.setTimeout(240_000);
     const capture = await startExternalOpenCapture();
     const server = await pageServer();
@@ -151,18 +153,20 @@ test.describe('open a local file page in the external browser', () => {
         captureEnv: capture.env,
       });
       const { page, pane, fileUrl } = session;
-      await expect(pane.getByTestId('browser-bar')).not.toHaveAttribute(
+      await expect(pane.getByTestId('browser-bar')).toHaveAttribute(
         'data-variant',
         'address-bar',
       );
-      const external = pane.getByRole('button', {
-        name: 'Open in external browser',
-      });
+      const more = pane.getByTestId('browser-more');
+      const external = page.getByTestId('browser-more-open-external');
 
       // A blank tab has nothing to open.
+      await more.click();
       await expect(external).toBeDisabled();
+      await page.keyboard.press('Escape');
 
       await navigate(page, pane, fileUrl, FILE_PAGE_TITLE);
+      await more.click();
       await expect(external).toBeEnabled();
       await external.click();
       await expect.poll(() => capture.opened.length).toBe(1);
@@ -170,6 +174,7 @@ test.describe('open a local file page in the external browser', () => {
 
       // http pages keep opening externally.
       await navigate(page, pane, server.url, HTTP_PAGE_TITLE);
+      await more.click();
       await expect(external).toBeEnabled();
       await external.click();
       await expect.poll(() => capture.opened.length).toBe(2);

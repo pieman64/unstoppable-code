@@ -175,6 +175,7 @@ describe('worktree-level discovery persistence', () => {
         .mocked(sendToWindow)
         .mockImplementation((_window, _channel, event) => {
           if (isSettledDiscovery(event)) resolve(event);
+          return true;
         });
     });
     triggerDiscovery('project-1', 'wt-1', () => window);

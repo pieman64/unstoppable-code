@@ -21,18 +21,23 @@ import {
   type LedgerViewStore,
 } from '@canopy/app-state';
 import type { LedgerEntrySearchItem } from '@canopy/protocol/canopy-core';
-import type { LedgerViewFilters } from '@canopy/protocol/ledger-view';
+import {
+  isLedgerTaskViewScope,
+  type LedgerViewFilters,
+} from '@canopy/protocol/ledger-view';
 import {
   Button,
   EmptyState,
+  ErrorState,
   LedgerComposerPrompt,
   LedgerFilterMenu,
+  DelayedLoadingPlaceholder,
   LedgerThreadList,
-  LoadingPlaceholder,
+  LedgerThreadListSkeleton,
   Notice,
-  NoticeButton,
   TextInput,
   isLedgerViewFiltered,
+  useRetry,
   type LedgerEntrySlots,
 } from '@canopy/ui-shared/components';
 import { ledgerActorName } from '@canopy/ui-shared/lib';
@@ -40,6 +45,7 @@ import { LedgerComposer } from './LedgerComposer';
 import {
   createLedgerScopeActions,
   ledgerReadItem,
+  ledgerScopeKey,
   ledgerScopeOpenEntry,
   ledgerThreadRootIds,
   useLedgerCorrectionPlacements,
@@ -183,6 +189,19 @@ export function LedgerPanel({
   const rows = useLedgerScopeRowsState(store);
   const { selectedEntryId, detail, change, correctionIds } = rows;
   const [openError, setOpenError] = useState<LedgerOpenError | null>(null);
+  // Try again keeps the failed list on screen, its capsule spinning, until the
+  // read settles, instead of blanking to the loading line.
+  const listRetry = useRetry(() => store.getState().load());
+  const [retriedProblem, setRetriedProblem] = useState(list.problem);
+  // Only while the list is still loading: a newer read (a search, a filter)
+  // that settles first replaces the kept failure at once.
+  const listRetrying = listRetry.retrying && list.status === 'loading';
+  const shownProblem =
+    list.status === 'problem' && list.problem !== null
+      ? list.problem
+      : listRetrying
+        ? retriedProblem
+        : null;
   const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -328,7 +347,7 @@ export function LedgerPanel({
       correctionIds.map((entryId) => ({
         store,
         entryId,
-        scopeKey: `${scope.projectId}/${scope.worktreeId}`,
+        scopeKey: ledgerScopeKey(scope),
       })),
     [correctionIds, scope, store],
   );
@@ -382,25 +401,26 @@ export function LedgerPanel({
     list.loadMoreProblem === null ? null : "Couldn't load more entries.";
 
   let listBody: ReactNode;
-  if (list.status === 'problem' && list.problem !== null) {
-    const copy = problemCopy(list.problem, 'list');
+  if (shownProblem !== null) {
+    const copy = problemCopy(shownProblem, 'list');
     listBody = (
       <>
         {composer}
-        <Notice
-          data-testid="ledger-list-problem"
-          className="mt-3"
-          intent={copy.retry ? 'destructive' : 'neutral'}
-          actions={
-            copy.retry ? (
-              <NoticeButton onClick={() => void store.getState().load()}>
-                Try again
-              </NoticeButton>
-            ) : undefined
+        <ErrorState
+          testId="ledger-list-problem"
+          retryTestId="ledger-list-retry"
+          space="panel"
+          message={copy.message}
+          retrying={listRetrying}
+          onRetry={
+            copy.retry
+              ? (): void => {
+                  setRetriedProblem(shownProblem);
+                  listRetry.retry();
+                }
+              : undefined
           }
-        >
-          {copy.message}
-        </Notice>
+        />
       </>
     );
   } else if (!list.settled && list.entries.length === 0) {
@@ -408,7 +428,13 @@ export function LedgerPanel({
     listBody = (
       <>
         {composer}
-        <LoadingPlaceholder label="Loading entries…" space="section" />
+        {/* The placeholder fills only the room under the composer, so the
+            pane never scrolls and the composer keeps its width. */}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <DelayedLoadingPlaceholder slowNote="Still loading the Feed…">
+            <LedgerThreadListSkeleton density="panel" />
+          </DelayedLoadingPlaceholder>
+        </div>
       </>
     );
   } else if (placed.entries.length === 0 && placed.pinnedEntry === null) {
@@ -469,8 +495,12 @@ export function LedgerPanel({
   return (
     <div
       data-testid="ledger-panel"
-      data-project-id={scope.projectId}
-      data-worktree-id={scope.worktreeId}
+      {...(isLedgerTaskViewScope(scope)
+        ? {
+            'data-project-id': scope.projectId,
+            'data-worktree-id': scope.worktreeId,
+          }
+        : {})}
       className="flex min-h-0 min-w-0 flex-1 flex-col"
     >
       <PanelToolbar

@@ -18,7 +18,11 @@ import {
   toDiscoveryJson,
   validateCursor,
 } from './paging';
-import type { AppAdvisorActionResponse } from '@canopy/desktop-shared/types';
+import type {
+  AppAdvisorActionResponse,
+  ProjectOwnerContext,
+} from '@canopy/desktop-shared/types';
+import type { AgentSenderRuntimeSource } from '../agent-messaging/sender-context';
 
 export type ProjectDiscoveryCaller =
   | {
@@ -27,7 +31,17 @@ export type ProjectDiscoveryCaller =
       worktreeId: string;
       chatId: string;
     }
-  | { kind: 'app_advisor'; chatId: string };
+  | { kind: 'app_advisor'; chatId: string }
+  | {
+      /**
+       * A pipeline or automation run, authorized by the run's owner. An
+       * agent-originated run also carries the recording agent's chat (D11),
+       * whose own access applies to bot targets.
+       */
+      kind: 'pipeline';
+      owner: ProjectOwnerContext;
+      agentOrigin?: AgentSenderRuntimeSource;
+    };
 
 export { isProjectDiscoveryActionType } from '@canopy/desktop-shared/lib/project-discovery';
 

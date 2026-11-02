@@ -1,3 +1,9 @@
+import {
+  getChatHookActionOverlayKey,
+  normalizeHookInputMap,
+  type HookAction,
+  type HookOverrides,
+} from '@canopy/desktop-shared/hooks';
 import type {
   CoworkSidebarItem,
   CoworkWorkspaceSettings,
@@ -6,6 +12,7 @@ import type {
   WorkspaceIndexEntry,
   WorkspaceOwnerBinding,
   WorkspaceOwnershipTransfer,
+  WorkspaceRepoData,
   WorktreeChatBadgeChatRef,
   WorktreeChatBadgesSummary,
   WorktreeCompatibilitySymlink,
@@ -15,6 +22,13 @@ import type {
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types';
 import type {
+  SourceInitializationDecision,
+  WorkspaceConversionManifestDecision,
+  SourceChangeBindingsDecision,
+  SourceChangeTargetRecordDecision,
+  SourceChangeTargetRemovalDecision,
+  SplitDestinationDecision,
+  SplitDestinationRemovalDecision,
   AdoptedWorkspaceIndexReleaseDecision,
   AdoptedWorkspaceReleaseCheck,
   AdoptedWorkspaceReleaseDecision,
@@ -44,6 +58,16 @@ import type {
   CompositionSourceRecordDecision,
   CompositionSourceRecorded,
   CompositionSourceUndoDecision,
+  CoworkCreationAllocationDecision,
+  CoworkCreationDecision,
+  CoworkCreationManifestDecision,
+  CoworkDiscardDecision,
+  CoworkDiscardManifestRead,
+  CoworkDiscardStatus,
+  CoworkMetadataDecision,
+  CoworkPublishDecision,
+  CoworkPublishOutcome,
+  CoworkStageDecision,
   TemporaryCompositionManifestDecision,
   W5RecordReadAuthority,
   WorkspaceIndexDecision,
@@ -57,6 +81,18 @@ import type {
   WorktreeMergedBaseRetargetDecision,
   WorktreeRecoveryDecision,
   WorktreeRowDecision,
+  WorkspaceAdditionDecision,
+  WorkspaceCreationDecision,
+  WorkspaceSidebarWrite,
+  WorktreeBranchRenameDecision,
+  ArchiveRestoreRecordDecided,
+  ArchiveRestoreRecordDecision,
+  ArchiveRestoreRemovalDecision,
+  SharedContainerForkStartPageDecision,
+  WorktreeCreationReservationDecision,
+  WorktreeCreationReservationOutcome,
+  WorktreeCreationSetupDecision,
+  ArchiveJournalDecision,
 } from './worktree-record-decisions';
 
 // The pure apply of each record decision (W6-0): the logic of the record
@@ -151,7 +187,8 @@ function badgeRefsEqual(
       ref.chatId === other.chatId &&
       ref.title === other.title &&
       ref.providerType === other.providerType &&
-      ref.preview === other.preview
+      ref.preview === other.preview &&
+      ref.markedUnread === other.markedUnread
     );
   });
 }
@@ -1084,6 +1121,17 @@ export function applyWorkspaceIndexDecisionTo(
   authority: W5RecordReadAuthority,
   decision: WorkspaceIndexDecision,
 ): WorkspaceIndexEntry[] | null {
+  if (decision.kind === 'workspace.conversion.index') {
+    const target = entries.find((entry) => entry.id === decision.workspaceId);
+    if (!target)
+      throw new WorkspaceTypeConversionRefusedError(
+        'not-found',
+        `Project ${decision.workspaceId} not found`,
+      );
+    return entries.map((entry) =>
+      entry === target ? { ...entry, type: decision.type } : entry,
+    );
+  }
   if (authority === 'unreadable') return null;
   switch (decision.kind) {
     case 'composition.temporary.index': {
@@ -1623,4 +1671,1006 @@ export function markWorktreePipelineResultsSeen(
   if (next.length > 0) updated.seenPipelineExecutionIds = next;
   else delete updated.seenPipelineExecutionIds;
   return { worktree: updated, newlySeen };
+}
+
+// ---------------------------------------------------------------------------
+// remaining Cowork records (W6a2)
+// ---------------------------------------------------------------------------
+
+const COWORK_NOT_FOUND = 'Chat project not found';
+const COWORK_STAGED_UNAVAILABLE = 'The staged Cowork workspace is unavailable';
+
+/** The identities a new Cowork workspace may not take. */
+export function coworkCreationTaken(
+  entries: WorkspaceIndexEntry[],
+  decision: CoworkCreationAllocationDecision,
+): Set<string> {
+  return new Set([...entries.map((entry) => entry.id), ...decision.pendingIds]);
+}
+
+/** The item a create allocates at `id`, after the index's existing entries. */
+export function coworkCreationItemFor(
+  id: string,
+  index: Omit<CoworkIndexContext, 'entry'>,
+  decision: CoworkCreationAllocationDecision,
+): CoworkSidebarItem {
+  return {
+    id,
+    name: decision.name,
+    type: 'cowork',
+    color: index.color,
+    collapsed: false,
+    order: index.count,
+    externalPath: decision.externalPath,
+    installedFromTemplateExternalId: decision.installedFromTemplateExternalId,
+    cowork: { createdAt: decision.createdAt, archiveRetentionDays: 7 },
+    ...(decision.owner ? { owner: decision.owner } : {}),
+  };
+}
+
+/** The entries with the new identity appended; a taken id is refused. */
+export function applyCoworkCreationIndexTo(
+  entries: WorkspaceIndexEntry[],
+  decision: CoworkCreationDecision,
+): WorkspaceIndexEntry[] {
+  if (entries.some((entry) => entry.id === decision.item.id))
+    refuseCowork('identity-changed', COWORK_IDENTITY_IN_USE);
+  return [...entries, coworkEntryFor(decision.item)];
+}
+
+/** Whether a create scaffolds a managed home; an attached folder gets none. */
+export function coworkCreationScaffolds(
+  decision: CoworkCreationDecision,
+): boolean {
+  return !decision.item.externalPath;
+}
+
+/** Fills the default `config` of an absent manifest in place. */
+export function applyCoworkCreationManifestTo(
+  config: WorkspaceConfigFile,
+  read: W5ManifestRead,
+  decision: CoworkCreationManifestDecision,
+): void {
+  if (read.authority !== 'absent')
+    refuseCowork('identity-changed', COWORK_IDENTITY_IN_USE);
+  Object.assign(config, coworkConfigFor(decision.item));
+}
+
+/** The staged identity's entry, if any; another type at the id is refused. */
+export function admitCoworkStageEntry(
+  entries: WorkspaceIndexEntry[],
+  decision: CoworkStageDecision,
+): WorkspaceIndexEntry | undefined {
+  const indexed = entries.find((entry) => entry.id === decision.item.id);
+  if (indexed && indexed.type !== 'cowork')
+    refuseCowork('identity-changed', COWORK_IDENTITY_IN_USE);
+  return indexed;
+}
+
+/** Refuses an existing manifest this organization project does not hold. */
+export function admitCoworkStageManifest(
+  config: WorkspaceConfigFile,
+  read: W5ManifestRead,
+  decision: CoworkStageDecision,
+): void {
+  if (
+    read.authority !== 'absent' &&
+    (config.type !== 'cowork' ||
+      read.ownerMalformed ||
+      !sameCoworkOwner(config.owner, decision.owner))
+  )
+    refuseCowork('identity-changed', COWORK_IDENTITY_IN_USE);
+}
+
+/**
+ * Changes `config` in place; returns whether it created the manifest. An
+ * existing manifest is admitted, and its unknown Cowork fields restored,
+ * before this pass.
+ */
+export function applyCoworkStageManifestTo(
+  config: WorkspaceConfigFile,
+  read: W5ManifestRead,
+  indexed: boolean,
+  decision: CoworkStageDecision,
+): boolean {
+  if (read.authority !== 'absent') {
+    config.owner = decision.owner;
+    return false;
+  }
+  // An indexed workspace without a manifest has no owner to prove it belongs
+  // to this organization project; never claim it.
+  if (indexed) refuseCowork('identity-changed', COWORK_IDENTITY_IN_USE);
+  Object.assign(config, coworkConfigFor(decision.item));
+  config.ownershipTransfer = undefined;
+  return true;
+}
+
+/** The published entry, if any; another type at the id is refused. */
+export function admitCoworkPublishEntry(
+  entries: WorkspaceIndexEntry[],
+  decision: CoworkPublishDecision,
+): WorkspaceIndexEntry | undefined {
+  const entry = entries.find(
+    (candidate) => candidate.id === decision.workspaceId,
+  );
+  if (entry && entry.type !== 'cowork')
+    refuseCowork('identity-changed', COWORK_IDENTITY_IN_USE);
+  return entry;
+}
+
+/** Refuses a missing manifest or one this organization project does not hold. */
+export function admitCoworkPublishManifest(
+  config: WorkspaceConfigFile,
+  read: W5ManifestRead,
+  decision: CoworkPublishDecision,
+): void {
+  if (
+    read.authority === 'absent' ||
+    config.type !== 'cowork' ||
+    read.ownerMalformed ||
+    !sameCoworkOwner(config.owner, decision.owner)
+  )
+    refuseCowork('configuration-unavailable', COWORK_STAGED_UNAVAILABLE);
+}
+
+/**
+ * One pass of the publish manifest update, changing `config` in place. The
+ * manifest is admitted, and its unknown Cowork fields restored, before this
+ * pass; the item is projected before the owner changes.
+ */
+export function applyCoworkPublishManifestTo(
+  config: WorkspaceConfigFile,
+  index: CoworkIndexContext,
+  decision: CoworkPublishDecision,
+): CoworkPublishOutcome {
+  const { entry } = index;
+  const alreadyPublished =
+    entry?.name === decision.name &&
+    config.owner?.type === 'organization' &&
+    decision.owner.type === 'organization' &&
+    config.owner.instanceId === decision.owner.instanceId &&
+    config.owner.bindingGeneration === decision.owner.bindingGeneration;
+  const item = projectedCoworkItem(
+    entry ?? {
+      id: decision.workspaceId,
+      name: decision.name,
+      type: 'cowork',
+      color: index.color,
+      collapsed: false,
+      order: index.count,
+    },
+    config,
+  );
+  item.name = decision.name;
+  item.owner = decision.owner;
+  if (!alreadyPublished) {
+    config.owner = decision.owner;
+    config.ownershipTransfer = undefined;
+  }
+  return { item, changed: !alreadyPublished };
+}
+
+/** The entries after a publish, or `undefined` when it changed nothing. */
+export function applyCoworkPublishIndexTo(
+  entries: WorkspaceIndexEntry[],
+  entry: WorkspaceIndexEntry | undefined,
+  outcome: CoworkPublishOutcome,
+): WorkspaceIndexEntry[] | undefined {
+  if (!outcome.changed) return undefined;
+  return entry
+    ? entries.map((candidate) =>
+        candidate === entry ? { ...entry, name: outcome.item.name } : candidate,
+      )
+    : [...entries, coworkEntryFor(outcome.item)];
+}
+
+/** The changed workspace's Cowork entry; any other is refused. */
+export function admitCoworkMetadataEntry(
+  entries: WorkspaceIndexEntry[],
+  decision: CoworkMetadataDecision,
+): WorkspaceIndexEntry {
+  const entry = entries.find(
+    (candidate) =>
+      candidate.id === decision.workspaceId && candidate.type === 'cowork',
+  );
+  if (!entry) refuseCowork('not-found', COWORK_NOT_FOUND);
+  return entry;
+}
+
+/** Refuses a missing or non-Cowork manifest. */
+export function admitCoworkMetadataManifest(
+  config: WorkspaceConfigFile,
+  read: W5ManifestRead,
+): void {
+  if (read.authority === 'absent' || config.type !== 'cowork')
+    refuseCowork('not-found', COWORK_NOT_FOUND);
+}
+
+/**
+ * Changes `config` in place; `settings` are its Cowork settings with unknown
+ * fields restored. A change other than an import writes them back unchanged,
+ * so it never clears fields hidden from the sidebar projection.
+ */
+export function applyCoworkMetadataTo(
+  config: WorkspaceConfigFile,
+  settings: CoworkWorkspaceSettings,
+  decision: CoworkMetadataDecision,
+): void {
+  switch (decision.kind) {
+    case 'cowork.metadata.import':
+      if (decision.cowork !== undefined) {
+        const next = { ...settings, ...decision.cowork };
+        for (const key of COWORK_FIELDS) {
+          if (decision.cowork[key] === undefined) delete next[key];
+        }
+        config.cowork = next;
+      }
+      if (decision.defaultPluginSelections !== undefined)
+        config.defaultPluginSelections = decision.defaultPluginSelections;
+      return;
+    case 'cowork.metadata.install':
+      config.installedFromTemplateExternalId = decision.externalId;
+      config.installedFromTemplateContentHash = decision.contentHash;
+      config.cowork = settings;
+      return;
+    case 'cowork.metadata.blueprint':
+      config.seededFromBlueprintExternalId = decision.externalId;
+      config.cowork = settings;
+      return;
+  }
+}
+
+/** The entries after an import's name or color, or `undefined` when it has neither. */
+export function applyCoworkMetadataIndexTo(
+  entries: WorkspaceIndexEntry[],
+  entry: WorkspaceIndexEntry,
+  decision: CoworkMetadataDecision,
+): WorkspaceIndexEntry[] | undefined {
+  if (decision.kind !== 'cowork.metadata.import') return undefined;
+  const { name, color } = decision;
+  if (name === undefined && color === undefined) return undefined;
+  return entries.map((candidate) =>
+    candidate === entry
+      ? {
+          ...entry,
+          ...(name !== undefined ? { name: name.trim() } : {}),
+          ...(color !== undefined ? { color } : {}),
+        }
+      : candidate,
+  );
+}
+
+/**
+ * What the index read under its queue holds a discard to, or `null` when it
+ * proves the workspace unpublished.
+ */
+export function checkCoworkDiscardIndex(
+  authority: W5RecordReadAuthority,
+  entries: WorkspaceIndexEntry[],
+  decision: CoworkDiscardDecision,
+): Exclude<CoworkDiscardStatus, 'removed' | 'kept'> | null {
+  if (authority !== 'ok' && authority !== 'absent') return 'index-unavailable';
+  if (entries.some((entry) => entry.id === decision.workspaceId))
+    return 'published';
+  return null;
+}
+
+/**
+ * Whether the manifest read in its queue is this organization project's
+ * Cowork staging. The project decides, not the claim instance; an unreadable
+ * owner proves nothing.
+ */
+export function discardsCoworkStaging(
+  read: CoworkDiscardManifestRead,
+  decision: CoworkDiscardDecision,
+): boolean {
+  return (
+    read.authority === 'ok' &&
+    !read.ownerMalformed &&
+    read.type === 'cowork' &&
+    read.owner?.type === 'organization' &&
+    read.owner.projectId === decision.projectId
+  );
+}
+
+// ---------------------------------------------------------------------------
+// workspace-service staging (W6a1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sidebar write of a find-or-create addition. Only the addition binds an
+ * owner. A scoped write reserved only this workspace's files, so it keeps
+ * every other entry and preserves no other empty temporary workspace, which
+ * would read and write files outside its locks.
+ */
+export function workspaceAdditionWriteFor(
+  decision: WorkspaceAdditionDecision,
+): WorkspaceSidebarWrite {
+  const replaceOwnershipWorkspaceIds = [decision.item.id];
+  return decision.scope.kind === 'workspace'
+    ? {
+        items: [decision.item],
+        options: {
+          preserveEmptyTemporary: false,
+          preserveUnmentionedWorkspaceIds: true,
+          replaceOwnershipWorkspaceIds,
+        },
+      }
+    : {
+        items: [...decision.scope.previousItems, decision.item],
+        options: {
+          preserveWorkspaceIds: decision.scope.preserveWorkspaceIds,
+          replaceOwnershipWorkspaceIds,
+        },
+      };
+}
+
+/**
+ * The addition-only sidebar write of a publication, so observer edits made
+ * during provisioning survive. A create binds its owner; an import's projects
+ * keep the bindings on disk.
+ */
+export function workspaceCreationWriteFor(
+  decision: WorkspaceCreationDecision,
+): WorkspaceSidebarWrite {
+  switch (decision.kind) {
+    case 'workspace.create.publish':
+      return {
+        items: [decision.item],
+        options: {
+          preserveEmptyTemporary: false,
+          preserveUnmentionedWorkspaceIds: true,
+          replaceOwnershipWorkspaceIds: [decision.item.id],
+        },
+      };
+    case 'workspace.import.publish':
+      return {
+        items: [decision.workspace, ...decision.childWorkspaces],
+        options: {
+          preserveEmptyTemporary: false,
+          preserveUnmentionedWorkspaceIds: true,
+        },
+      };
+  }
+}
+
+/** The workspaces a publication writes, whose manifests and lists its creation step locks. */
+export function workspaceCreationIds(
+  decision: WorkspaceCreationDecision,
+): string[] {
+  return workspaceCreationWriteFor(decision).items.map((item) => item.id);
+}
+
+// ---------------------------------------------------------------------------
+// branch rename (W6f1)
+// ---------------------------------------------------------------------------
+
+/** The row after a branch rename, or the row itself when it already holds it. */
+export function applyWorktreeBranchRename(
+  current: WorktreeData,
+  decision: WorktreeBranchRenameDecision,
+): WorktreeData {
+  return applyWorktreeBranchChange(
+    current,
+    decision.branchName,
+    decision.updatesSidebarBranch,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// archive restore records (W6e1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The list after a restore record: the staged row after the current rows, or
+ * the list itself when its id is already held, by the same incarnation
+ * (`already-recorded`) or another one (`identity-changed`).
+ */
+export function applyArchiveRestoreRecordTo(
+  worktrees: WorktreeData[],
+  decision: ArchiveRestoreRecordDecision,
+): { worktrees: WorktreeData[]; decided: ArchiveRestoreRecordDecided } {
+  const existing = worktrees.find(
+    (worktree) => worktree.id === decision.worktree.id,
+  );
+  if (!existing)
+    return {
+      worktrees: [...worktrees, decision.worktree],
+      decided: { status: 'recorded', worktree: decision.worktree },
+    };
+  return {
+    worktrees,
+    decided: {
+      status:
+        existing.createdAt === decision.worktree.createdAt
+          ? 'already-recorded'
+          : 'identity-changed',
+      worktree: existing,
+    },
+  };
+}
+
+/** The list without the restore's destination row, or the list itself. */
+export function applyArchiveRestoreRemovalTo(
+  worktrees: WorktreeData[],
+  decision: ArchiveRestoreRemovalDecision,
+): { worktrees: WorktreeData[]; removed: boolean } {
+  const destination = worktrees.find(
+    (worktree) => worktree.id === decision.worktree.id,
+  );
+  if (!destination || !isSameIncarnation(destination, decision.worktree))
+    return { worktrees, removed: false };
+  return {
+    worktrees: worktrees.filter((worktree) => worktree !== destination),
+    removed: true,
+  };
+}
+
+// W6e2 (CAN-4927): shared-container fork metadata.
+export type SharedContainerForkMetadataRefusal =
+  | 'invalid-request'
+  | 'not-found'
+  | 'configuration-unavailable'
+  | 'index-unavailable';
+
+/** A fork metadata write was refused; nothing was written. */
+export class SharedContainerForkMetadataRefusedError extends Error {
+  constructor(
+    readonly reason: SharedContainerForkMetadataRefusal,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SharedContainerForkMetadataRefusedError';
+  }
+}
+
+/** Changes only startPage on the manifest read under its write lock. */
+export function applySharedContainerForkStartPageTo(
+  workspaceId: string,
+  config: WorkspaceConfigFile,
+  authority: W5RecordReadAuthority,
+  decision: SharedContainerForkStartPageDecision,
+): void {
+  if (authority === 'absent') {
+    throw new SharedContainerForkMetadataRefusedError(
+      'not-found',
+      `Fork destination project ${workspaceId} no longer exists`,
+    );
+  }
+  config.startPage = decision.startPage;
+}
+
+// W6d2 (CAN-4930): split record decisions. Tombstone observation stays host-side.
+export type SplitRecordRefusal =
+  | 'invalid-request'
+  | 'identity-changed'
+  | 'not-found'
+  | 'worktrees-unavailable'
+  | 'index-unavailable';
+
+export class SplitRecordRefusedError extends Error {
+  constructor(
+    readonly reason: SplitRecordRefusal,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SplitRecordRefusedError';
+  }
+}
+
+export function splitReservationNotFound(
+  workspaceId: string,
+  worktreeId: string,
+): SplitRecordRefusedError {
+  return new SplitRecordRefusedError(
+    'not-found',
+    `Split destination reservation ${workspaceId}/${worktreeId} disappeared before promotion.`,
+  );
+}
+
+export function applySplitDestinationTo(
+  workspaceId: string,
+  rows: WorktreeData[],
+  decision: SplitDestinationDecision,
+  recentlyRemoved: boolean,
+): WorktreeData[] {
+  const identity = decision.worktree;
+  const current = rows.find((row) => row.id === identity.id);
+  if (current && current.createdAt !== identity.createdAt)
+    throw new SplitRecordRefusedError(
+      'identity-changed',
+      `Destination worktree id "${identity.id}" is already reserved.`,
+    );
+  if (!current && recentlyRemoved)
+    throw splitReservationNotFound(workspaceId, identity.id);
+  switch (decision.kind) {
+    case 'split.destination.reserve':
+      return current ? rows : [...rows, decision.worktree];
+    case 'split.destination.recovery': {
+      const recovered: WorktreeData = {
+        ...(current ?? decision.fallbackWorktree),
+        splitRecoveryRequired: true,
+        healthIssue: decision.healthIssue,
+      };
+      delete recovered.hidden;
+      recovered.setupPhase = undefined;
+      return current
+        ? rows.map((row) => (row === current ? recovered : row))
+        : [...rows, recovered];
+    }
+    case 'split.destination.promote': {
+      if (!current) throw splitReservationNotFound(workspaceId, identity.id);
+      const ready: WorktreeData = {
+        ...current,
+        branchName: decision.branchName,
+        setupPhase: 'git-ready',
+      };
+      delete ready.splitRecoveryRequired;
+      return rows.map((row) => (row === current ? ready : row));
+    }
+    case 'split.destination.archive': {
+      const recorded: WorktreeData = current
+        ? { ...current, branchName: decision.worktree.branchName }
+        : { ...decision.worktree };
+      if (decision.worktree.status !== undefined)
+        recorded.status = decision.worktree.status;
+      delete recorded.hidden;
+      delete recorded.setupPhase;
+      delete recorded.splitRecoveryRequired;
+      return current
+        ? rows.map((row) => (row === current ? recorded : row))
+        : [...rows, recorded];
+    }
+  }
+}
+
+export function removesSplitDestination(
+  row: WorktreeData,
+  decision: SplitDestinationRemovalDecision,
+): boolean {
+  return (
+    row.id === decision.worktree.id &&
+    row.createdAt === decision.worktree.createdAt
+  );
+}
+
+// W6f2 (CAN-4942): pure source initialization and conversion apply.
+export type WorkspaceSourceRepoRefusal =
+  | 'invalid-request'
+  | 'not-found'
+  | 'temporary'
+  | 'already-initialized'
+  | 'configuration-unavailable';
+
+/**
+ * Admission and recording refusals share reasons. After provisioning starts,
+ * even a typed refusal retains the folder and keyed recovery state.
+ */
+export class WorkspaceSourceRepoRefusedError extends Error {
+  constructor(
+    readonly reason: WorkspaceSourceRepoRefusal,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'WorkspaceSourceRepoRefusedError';
+  }
+}
+
+export type WorkspaceTypeConversionRefusal =
+  | 'not-found'
+  | 'organization-owned'
+  | 'has-worktrees'
+  | 'no-source-repository'
+  | 'configuration-unavailable'
+  | 'worktrees-unavailable';
+
+/** The conversion was refused before any project file was written. */
+export class WorkspaceTypeConversionRefusedError extends Error {
+  constructor(
+    readonly reason: WorkspaceTypeConversionRefusal,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'WorkspaceTypeConversionRefusedError';
+  }
+}
+
+/** Checks the manifest read under the source record's write queue. */
+export function admitSourceInitializationRecord(
+  workspaceId: string,
+  config: WorkspaceConfigFile,
+  authority: W5RecordReadAuthority,
+): void {
+  if (authority === 'absent')
+    throw new WorkspaceSourceRepoRefusedError(
+      'not-found',
+      `Project ${workspaceId} not found`,
+    );
+  if (config.sourceRepoPath)
+    throw new WorkspaceSourceRepoRefusedError(
+      'already-initialized',
+      'Project already has a source repository',
+    );
+}
+
+/** Merges the locked read using host policy resolved after record admission. */
+export function applySourceInitializationTo(
+  config: WorkspaceConfigFile,
+  decision: SourceInitializationDecision,
+  pipelineBindingsEnabled: boolean,
+): void {
+  const localized = new Map(
+    decision.repositories.map((repo) => [repo.id, repo]),
+  );
+  config.repos = config.repos.map((repo) => {
+    const decided = localized.get(repo.id);
+    if (!decided) return repo;
+    return decided.source === 'manifest'
+      ? {
+          ...repo,
+          source: 'manifest',
+          manifestUrl: decided.manifestUrl,
+          scripts: undefined,
+          hooks: sourceInitializationHookOverlays(
+            repo.hooks,
+            pipelineBindingsEnabled,
+          ),
+        }
+      : { ...repo, source: 'local', manifestUrl: undefined };
+  });
+  config.scripts = undefined;
+  config.hooks = sourceInitializationHookOverlays(
+    config.hooks,
+    pipelineBindingsEnabled,
+  );
+  config.sourceRepoPath = decision.sourceRepoPath;
+}
+
+export function applyWorkspaceConversionManifestTo(
+  workspaceId: string,
+  config: WorkspaceConfigFile,
+  authority: W5RecordReadAuthority,
+  decision: WorkspaceConversionManifestDecision,
+): void {
+  if (authority === 'absent')
+    throw new WorkspaceTypeConversionRefusedError(
+      'not-found',
+      `Project ${workspaceId} not found`,
+    );
+  for (const key of decision.clear) Reflect.set(config, key, undefined);
+  Object.assign(config, decision.config);
+}
+
+export function sourceInitializationHookOverlays(
+  hooks: WorkspaceConfigFile['hooks'],
+  pipelineBindingsEnabled: boolean,
+): HookOverrides | undefined {
+  const normalized = normalizeHookInputMap(hooks);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const overlays: HookOverrides = {};
+  for (const [triggerName, actions] of Object.entries(normalized)) {
+    if (actions === null) {
+      overlays[triggerName] = null;
+      continue;
+    }
+    if (!Array.isArray(actions)) {
+      continue;
+    }
+
+    const actionOverlays: HookAction[] = actions.flatMap(
+      (action): HookAction[] => {
+        if (
+          action.type === 'pipeline' &&
+          action.executionContext !== undefined &&
+          pipelineBindingsEnabled
+        ) {
+          return [
+            {
+              type: 'pipeline',
+              source: action.source,
+              id: action.id,
+              executionContext: action.executionContext,
+              localExecutionContextOverlay: true,
+            },
+          ];
+        }
+        if (action.type !== 'chat') return [];
+        const hasExecutionContext =
+          action.executionContext !== undefined && pipelineBindingsEnabled;
+        const hasLocalPluginState =
+          action.pluginSelections ||
+          action.promptReferences?.some(
+            (reference) =>
+              reference.kind === 'plugin' &&
+              reference.plugin.kind === 'installed',
+          );
+        return hasExecutionContext || hasLocalPluginState
+          ? [
+              {
+                type: 'chat',
+                prompt: action.prompt,
+                ...(hasExecutionContext
+                  ? {
+                      executionContext: action.executionContext,
+                      localExecutionContextOverlay: true as const,
+                    }
+                  : {}),
+                ...(hasLocalPluginState
+                  ? {
+                      localPluginSelectionOverlay: true as const,
+                      localPluginSelectionOverlayKey:
+                        getChatHookActionOverlayKey(action),
+                    }
+                  : {}),
+                ...(action.pluginSelections
+                  ? { pluginSelections: action.pluginSelections }
+                  : {}),
+                ...(action.promptReferences
+                  ? { promptReferences: action.promptReferences }
+                  : {}),
+              },
+            ]
+          : [];
+      },
+    );
+    if (actionOverlays.length > 0) {
+      overlays[triggerName] = actionOverlays;
+    }
+  }
+
+  return Object.keys(overlays).length > 0 ? overlays : undefined;
+}
+
+// W6f3 (CAN-4943): pure source-change record apply (CAN-3819).
+export function applySourceChangeTargetRecordTo(
+  rows: WorktreeData[],
+  decision: SourceChangeTargetRecordDecision,
+): WorktreeData[] {
+  if (rows.some((row) => row.id === decision.worktree.id)) {
+    throw new Error(`Project worktree ${decision.worktree.id} already exists`);
+  }
+  return [...rows, decision.worktree];
+}
+
+export function removesSourceChangeTarget(
+  row: WorktreeData,
+  decision: SourceChangeTargetRemovalDecision,
+): boolean {
+  return row.id === decision.worktreeId;
+}
+
+/**
+ * Removed repositories become local; manifest repositories take its name and
+ * URL; a manifest repository without a binding is added only with a path.
+ */
+export function syncSourceChangeRepoBindings(
+  repos: WorkspaceRepoData[],
+  decision: SourceChangeBindingsDecision,
+): { repos: WorkspaceRepoData[]; updated: boolean } {
+  const manifestRepos = new Map(
+    decision.manifestRepositories.map((repo) => [repo.id, repo]),
+  );
+  const requestedAddsById = new Map(
+    decision.repositoryAdds.map((repo) => [repo.repoId, repo]),
+  );
+  const requestedRemovals = new Set(decision.repositoryRemovals);
+  const nextRepos: WorkspaceRepoData[] = repos.map(
+    (repo): WorkspaceRepoData => {
+      if (requestedRemovals.has(repo.id)) {
+        return {
+          ...repo,
+          source: 'local',
+          hooks: undefined,
+        };
+      }
+
+      const manifestRepo = manifestRepos.get(repo.id);
+      if (!manifestRepo) {
+        return repo;
+      }
+
+      return {
+        ...repo,
+        name: manifestRepo.name,
+        source: 'manifest',
+        manifestUrl: manifestRepo.url,
+      };
+    },
+  );
+
+  for (const manifestRepo of Array.from(manifestRepos.values())) {
+    if (nextRepos.some((repo) => repo.id === manifestRepo.id)) {
+      continue;
+    }
+
+    const repoPath = requestedAddsById.get(manifestRepo.id)?.repoPath;
+    if (!repoPath) {
+      continue;
+    }
+
+    nextRepos.push({
+      id: manifestRepo.id,
+      name: manifestRepo.name,
+      repoPath,
+      source: 'manifest',
+      manifestUrl: manifestRepo.url,
+    });
+  }
+
+  const updated = JSON.stringify(nextRepos) !== JSON.stringify(repos);
+  return { repos: updated ? nextRepos : repos, updated };
+}
+
+/** Whether to write: an absent manifest is not created (CAN-3819). */
+export function applySourceChangeBindingsTo(
+  config: WorkspaceConfigFile,
+  authority: W5RecordReadAuthority,
+  decision: SourceChangeBindingsDecision,
+): boolean {
+  if (authority === 'absent') return false;
+  const current = syncSourceChangeRepoBindings(config.repos, decision);
+  if (!current.updated) return false;
+  config.repos = current.repos;
+  return true;
+}
+
+// W6b (CAN-4947): pure worktree creation record apply (CAN-3810). A refusal
+// is returned for the port to throw inside its locked update, before it writes.
+export type WorktreeCreationRecordRefusal =
+  | { reason: 'branch-reserved'; branchName: string }
+  | { reason: 'checkout-reserved' };
+
+export function applyWorktreeCreationReservationTo(
+  rows: WorktreeData[],
+  decision: WorktreeCreationReservationDecision,
+):
+  | {
+      worktrees: WorktreeData[];
+      status: WorktreeCreationReservationOutcome['status'];
+    }
+  | { refusal: WorktreeCreationRecordRefusal } {
+  const { worktree } = decision;
+  if (rows.some((entry) => entry.id === worktree.id))
+    return { worktrees: rows, status: 'collision' };
+  if (rows.some((entry) => entry.branchName === worktree.branchName))
+    return {
+      refusal: { reason: 'branch-reserved', branchName: worktree.branchName },
+    };
+  const paths = new Set(
+    worktree.creation?.checkouts.map((checkout) => checkout.checkoutPath),
+  );
+  if (
+    rows.some((entry) =>
+      entry.creation?.checkouts.some((checkout) =>
+        paths.has(checkout.checkoutPath),
+      ),
+    )
+  )
+    return { refusal: { reason: 'checkout-reserved' } };
+  // New worktrees lead the manual order, so the one just created sits at the
+  // top of its project without recency reordering the rest.
+  return { worktrees: [worktree, ...rows], status: 'reserved' };
+}
+
+export function applyWorktreeCreationSetupTo(
+  row: WorktreeData,
+  decision: WorktreeCreationSetupDecision,
+): WorktreeData {
+  switch (decision.kind) {
+    case 'worktree.create.phase':
+      return {
+        ...row,
+        ...(row.creation
+          ? {
+              creation: {
+                ...row.creation,
+                state: decision.recoveryRequired
+                  ? 'recovery-required'
+                  : row.creation.state,
+                phase: decision.phase ?? row.creation.phase,
+              },
+            }
+          : {}),
+        ...(decision.healthIssue ? { healthIssue: decision.healthIssue } : {}),
+      };
+    case 'worktree.create.branch':
+      return { ...row, branchName: decision.branchName };
+    case 'worktree.create.promote':
+      return {
+        ...row,
+        branchName: decision.branchName,
+        ...(decision.workspaceKind === 'single-repo'
+          ? { trackedBaseBranch: decision.trackedBaseBranch }
+          : { trackedRepoBaseBranches: decision.trackedRepoBaseBranches }),
+        setupPhase: 'git-ready',
+        ...(row.creation
+          ? {
+              creation: {
+                ...row.creation,
+                state: 'complete',
+                phase: 'git-ready',
+              },
+            }
+          : {}),
+      };
+  }
+}
+
+/**
+ * Applies a setup record to the reserved incarnation only, keeping every other
+ * row. A changed branch another row holds is refused.
+ */
+export function applyReservedWorktreeRecordTo(
+  rows: WorktreeData[],
+  reserved: WorktreeIncarnation,
+  decision: WorktreeCreationSetupDecision,
+):
+  | { worktrees: WorktreeData[]; updated: boolean }
+  | { refusal: WorktreeCreationRecordRefusal } {
+  let updated = false;
+  // Always a new list: the record writes even when its incarnation is gone.
+  const worktrees: WorktreeData[] = [];
+  for (const row of rows) {
+    if (row.id !== reserved.id || row.createdAt !== reserved.createdAt) {
+      worktrees.push(row);
+      continue;
+    }
+    const next = applyWorktreeCreationSetupTo(row, decision);
+    if (
+      next.branchName !== row.branchName &&
+      rows.some(
+        (entry) => entry.id !== row.id && entry.branchName === next.branchName,
+      )
+    )
+      return {
+        refusal: { reason: 'branch-reserved', branchName: next.branchName },
+      };
+    updated = true;
+    worktrees.push(next);
+  }
+  return { worktrees, updated };
+}
+
+export function removesReservedWorktree(
+  row: WorktreeData,
+  reserved: WorktreeIncarnation,
+): boolean {
+  return row.id === reserved.id && row.createdAt === reserved.createdAt;
+}
+
+// W6c1 (CAN-4952): pure archive journal and row removal apply (CAN-3811).
+
+/**
+ * Always a new row, so the row writer writes whenever the row is found, as the
+ * legacy journal updaters did. A clear drops only its workspace kind's guard.
+ */
+export function applyArchiveJournalTo(
+  row: WorktreeData,
+  decision: ArchiveJournalDecision,
+): WorktreeData {
+  if (decision.kind === 'worktree.archive.journal.record')
+    return decision.workspaceKind === 'single-repo'
+      ? { ...row, pendingArchiveBranchDeletion: decision.pendingBranchDeletion }
+      : {
+          ...row,
+          pendingArchiveBranchDeletions: decision.pendingBranchDeletions,
+        };
+  if (decision.workspaceKind === 'single-repo') {
+    const { pendingArchiveBranchDeletion: _cleared, ...kept } = row;
+    void _cleared;
+    return kept;
+  }
+  const { pendingArchiveBranchDeletions: _cleared, ...kept } = row;
+  void _cleared;
+  return kept;
+}
+
+export function removesArchivedWorktree(
+  row: WorktreeData,
+  worktreeId: string,
+): boolean {
+  return row.id === worktreeId;
 }

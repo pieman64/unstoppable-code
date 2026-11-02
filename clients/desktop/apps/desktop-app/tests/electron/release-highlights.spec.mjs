@@ -8,11 +8,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
+import { seedWorktreeChat } from './seeders/index.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   mergeSeedPreferences,
   readPersistedPreferences,
 } from './seeders/mergePreferences.mjs';
+
+import {
+  exerciseReleaseHighlightsIdle,
+  seedReleaseHighlightsResume,
+  startDelayedReleaseFeed,
+} from './helpers/releaseHighlightsIdle.mjs';
 
 const FIXTURE_VERSION = '99.0.0';
 let E2E_WEB_ORIGIN;
@@ -147,6 +155,69 @@ async function expectAutomaticSettled(window) {
 }
 
 test.describe('release highlights', () => {
+  test('automatic notes hold both composer and Workflows tips after closing', async () => {
+    test.setTimeout(120_000);
+    const userDataDir = upgradedProfile();
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: 'demo-ts-pnpm-vite',
+      worktreeId: 'demo-main',
+      tabs: [],
+    });
+    const { electronApp } = await launchCanopy({
+      userDataDir,
+      freshOnboardingTips: true,
+      env: launchEnv(),
+    });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 60_000 });
+      await expect(
+        window.getByTestId('release-highlights-dialog'),
+      ).toBeVisible();
+      await window
+        .getByTestId('release-highlights-dialog')
+        .getByRole('button', { name: 'Got it' })
+        .click();
+      await expect(window.getByTestId('release-highlights-dialog')).toHaveCount(
+        0,
+      );
+      await app.openMainPage();
+      await app.selectWorktree('demo-main');
+      await expect(window.getByTestId('chat-input-plus-button')).toBeVisible();
+      await expect(window.getByTestId('chat-input-onboarding-tip')).toHaveCount(
+        0,
+      );
+      await app.openWorkflowsTab('runs');
+      await expect(window.getByTestId('page-workflows-runs')).toBeVisible();
+      await expect(window.getByTestId('workflows-onboarding-tip')).toHaveCount(
+        0,
+      );
+
+      // Creating a blank work area succeeds without accepting a user turn.
+      // Its Home completion must preserve the automatic notice hold.
+      await window.getByTestId('sidebar-create-task').click();
+      const home = window.getByTestId('page-home');
+      await expect(home.getByTestId('home-surface')).toHaveAttribute(
+        'data-workspace-selected',
+        'true',
+      );
+      await home.getByTestId('home-composer-editor').fill('   ');
+      await home.getByTestId('home-send-button').click();
+      await expect(home).toHaveCount(0);
+      await expect(window.getByTestId('chat-input-plus-button')).toBeVisible();
+      await app.openWorkflowsTab('runs');
+      await expect(window.getByTestId('page-workflows-runs')).toBeVisible();
+      await expect(window.getByTestId('workflows-onboarding-tip')).toHaveCount(
+        0,
+      );
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   test('a rollout cycle does not repeat dismissed notes', async () => {
     const userDataDir = upgradedProfile();
     let launched;
@@ -337,6 +408,14 @@ test.describe('release highlights', () => {
       await expect(dialog).toBeVisible({ timeout: 30_000 });
       await expect(dialog).toContainText(`Version ${FIXTURE_VERSION}`);
       await expect(dialog).toContainText('Fixture highlight one');
+      // The public changelog uses reading-sized highlights; the update dialog
+      // retains its compact default and its existing full-notes destination.
+      await expect(
+        dialog
+          .getByTestId('release-highlights-list')
+          .locator('li > span')
+          .first(),
+      ).toHaveCSS('font-size', '14px');
       await expect(
         window.getByRole('dialog', { name: /^What's new in / }),
       ).toBeVisible();
@@ -524,4 +603,29 @@ test.describe('release highlights', () => {
       await closeCanopy(electronApp, userDataDir);
     }
   });
+});
+
+// CAN-5006: a late response must not interrupt Continue or its resumed draft.
+test('delayed notes wait through Continue, typing and Home autofocus until idle blur', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = seedReleaseHighlightsResume();
+  const feed = await startDelayedReleaseFeed();
+  let launched;
+  try {
+    launched = await launchCanopy({
+      userDataDir,
+      env: feed.env,
+      ...(process.env.CAN5006_BASELINE_ROOT
+        ? { rootPath: process.env.CAN5006_BASELINE_ROOT }
+        : {}),
+    });
+    const window = await launched.electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell({ timeout: 60_000 });
+    await exerciseReleaseHighlightsIdle(window, userDataDir, feed);
+  } finally {
+    feed.release();
+    if (launched) await closeCanopy(launched.electronApp, userDataDir);
+    else rmSync(userDataDir, { recursive: true, force: true });
+    await feed.close();
+  }
 });

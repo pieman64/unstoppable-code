@@ -277,7 +277,8 @@ platform:
       "command": "npm install",
       "shell": {
         "windows": "powershell",
-        "mac": "zsh"
+        "mac": "zsh",
+        "linux": "bash"
       }
     }
   }
@@ -288,11 +289,18 @@ Supported values:
 
 - `windows`: `"powershell"`, `"cmd"`, or `"bash"`
 - `mac`: `"zsh"` or `"bash"`
+- `linux`: `"bash"` or `"zsh"` (Bash when omitted)
 
 Omit a platform key to use {{BRAND_DISPLAY_NAME}}'s platform default. Prefer
 native PowerShell or Cmd commands when a repository is clearly Windows-only;
 do not label a Bash command as PowerShell merely to make the config look
 cross-platform.
+
+Linux scripts and command hooks use Bash unless `shell.linux` selects zsh.
+The selected zsh must be installed on PATH; otherwise the command fails with an
+error naming `shell.linux` and the missing `zsh` binary. Install zsh or change
+`linux` to `"bash"`. This setting does not change interactive terminal profiles.
+Unsupported platform keys and shell values are rejected.
 
 ### `devServerPattern`
 

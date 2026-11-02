@@ -3,6 +3,7 @@ import {
   applyCodexTranscriptEvent,
   createEmptyTranscriptReducerState,
   parseAgentTranscriptLines,
+  type TranscriptReducerOptions,
 } from '../transcript-parser';
 
 const prompt = {
@@ -55,7 +56,11 @@ it('replays reported OpenCode turn usage without treating it as account spend or
 });
 
 it('clears a previous OpenCode report before an unsuccessful new turn', () => {
-  const options = { now: 1, createMessageId: (): string => 'prompt' };
+  const options: TranscriptReducerOptions = {
+    now: 1,
+    createMessageId: (): string => 'prompt',
+    childToolLiveness: { kind: 'unknown' },
+  };
   const reported = applyClaudeTranscriptEvent(
     createEmptyTranscriptReducerState(),
     usageEvent,
@@ -78,7 +83,11 @@ it.each([
 ])(
   'does not replace an authoritative report with malformed usage %#',
   (usage) => {
-    const options = { now: 1, createMessageId: (): string => 'prompt' };
+    const options: TranscriptReducerOptions = {
+      now: 1,
+      createMessageId: (): string => 'prompt',
+      childToolLiveness: { kind: 'unknown' },
+    };
     const reported = applyClaudeTranscriptEvent(
       createEmptyTranscriptReducerState(),
       usageEvent,
@@ -96,6 +105,7 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
     const state = reduce(createEmptyTranscriptReducerState(), prompt, {
       now: 1,
       createMessageId: () => 'prompt',
+      childToolLiveness: { kind: 'unknown' },
     });
     expect(state.providerType).toBe('opencode');
   },
@@ -105,7 +115,11 @@ it('streams OpenCode assistant patches through the live reducer', () => {
   const state = applyClaudeTranscriptEvent(
     createEmptyTranscriptReducerState(),
     patch,
-    { now: 2, createMessageId: () => 'unused' },
+    {
+      now: 2,
+      createMessageId: () => 'unused',
+      childToolLiveness: { kind: 'unknown' },
+    },
   );
   expect(state.providerType).toBe('opencode');
   expect(state.messages).toContainEqual(

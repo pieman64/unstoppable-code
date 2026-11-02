@@ -1,14 +1,16 @@
+import type { FileViewMode } from '@canopy/app-state';
 import type { PortalFilePreview } from '@canopy/protocol/portal';
 import {
   DOCX_MEDIA_TYPE,
   XLSX_MEDIA_TYPE,
 } from '@canopy/protocol/cloud-attachments';
+import { VIDEO_PREVIEW_EXTENSIONS } from '@canopy/protocol/document-preview';
 
 /**
  * How the shared {@link import('./FileViewer').FileViewer} should render a
  * file's text content. `image`/binary are out of scope for the neutral
  * text-only {@link PortalFilePreview} (its `content` is always a string), so a
- * non-previewable file falls through to `code`. `pdf`/`docx`/`xlsx`/`pptx`
+ * non-previewable file falls through to `code`. `pdf`/`docx`/`xlsx`/`pptx`/`video`
  * are rich-document kinds served by the host-injected byte resolver; hosts opt
  * in per kind through `supportedDocumentKinds`.
  */
@@ -20,12 +22,13 @@ export type FileRenderKind =
   | 'docx'
   | 'xlsx'
   | 'pptx'
+  | 'video'
   | 'code';
 
 /** Kinds routed through `resolveDocumentBytes` + `renderRichDocument`. */
 export type RichDocumentRenderKind = Extract<
   FileRenderKind,
-  'pdf' | 'docx' | 'xlsx' | 'pptx'
+  'pdf' | 'docx' | 'xlsx' | 'pptx' | 'video'
 >;
 
 const MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set([
@@ -51,7 +54,7 @@ const XLSX_EXTENSIONS: ReadonlySet<string> = new Set(['xlsx']);
 const PPTX_EXTENSIONS: ReadonlySet<string> = new Set(['pptx']);
 
 const RICH_DOCUMENT_KINDS: ReadonlySet<FileRenderKind> =
-  new Set<FileRenderKind>(['pdf', 'docx', 'xlsx', 'pptx']);
+  new Set<FileRenderKind>(['pdf', 'docx', 'xlsx', 'pptx', 'video']);
 
 const MEDIA_TYPE_RENDER_KINDS: ReadonlyMap<string, RichDocumentRenderKind> =
   new Map([
@@ -62,7 +65,19 @@ const MEDIA_TYPE_RENDER_KINDS: ReadonlyMap<string, RichDocumentRenderKind> =
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       'pptx',
     ],
+    ['video/mp4', 'video'],
+    ['video/webm', 'video'],
   ]);
+
+const PLAIN_TEXT_EXTENSIONS: ReadonlySet<string> = new Set(['txt', 'text']);
+
+/** Whether a file is prose (Markdown or plain text) rather than code. */
+export function isProseFilePath(path: string): boolean {
+  const extension = fileExtension(path);
+  return (
+    MARKDOWN_EXTENSIONS.has(extension) || PLAIN_TEXT_EXTENSIONS.has(extension)
+  );
+}
 
 /** Lower-cased extension (without the dot), or `''` for an extensionless path. */
 export function fileExtension(path: string): string {
@@ -82,13 +97,20 @@ export function isRichDocumentRenderKind(
 /**
  * Render kind for an attachment whose MIME type is authoritative (hosts pass
  * it as `requestRenderKind`); `undefined` for anything without a rich renderer.
+ * The generic `application/octet-stream` names no format, so a `filename`
+ * extension decides instead (agents often save videos with that type).
  */
 export function fileRenderKindForMediaType(
   mediaType: string | undefined,
+  filename?: string,
 ): RichDocumentRenderKind | undefined {
-  return mediaType === undefined
-    ? undefined
-    : MEDIA_TYPE_RENDER_KINDS.get(mediaType);
+  if (mediaType === undefined) return undefined;
+  const normalized = mediaType.split(';')[0].trim().toLowerCase();
+  if (normalized === 'application/octet-stream' && filename !== undefined) {
+    const kind = resolveFileRenderKind({ path: filename });
+    return isRichDocumentRenderKind(kind) ? kind : undefined;
+  }
+  return MEDIA_TYPE_RENDER_KINDS.get(mediaType);
 }
 
 /**
@@ -121,5 +143,39 @@ export function resolveFileRenderKind(
   if (PPTX_EXTENSIONS.has(extension)) {
     return 'pptx';
   }
+  if (VIDEO_PREVIEW_EXTENSIONS.has(extension)) {
+    return 'video';
+  }
   return 'code';
+}
+
+function lastPathSegment(path: string): string {
+  return path.slice(
+    Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1,
+  );
+}
+
+/**
+ * Whether a path names a Jupyter notebook. Notebooks keep the `code` render
+ * kind (their raw view is JSON text) and add a rendered view over the same
+ * text session, the way CSV adds its table.
+ */
+export function isNotebookPath(path: string): boolean {
+  return fileExtension(lastPathSegment(path)) === 'ipynb';
+}
+
+/**
+ * The view a newly opened file should start in, or `undefined` when the file
+ * has no rendered view and hosts keep their raw fallback. Markdown, HTML and
+ * Jupyter notebooks start formatted; `.csv` starts as a table. Only the last
+ * path segment counts, so a misleading extension on a parent directory never
+ * changes the result.
+ */
+export function defaultFileViewMode(path: string): FileViewMode | undefined {
+  const name = lastPathSegment(path);
+  const kind = resolveFileRenderKind({ path: name });
+  if (kind === 'markdown' || kind === 'html') return 'preview';
+  if (fileExtension(name) === 'csv') return 'table';
+  if (isNotebookPath(name)) return 'preview';
+  return undefined;
 }

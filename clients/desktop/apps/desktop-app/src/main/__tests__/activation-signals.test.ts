@@ -1,11 +1,15 @@
-const mockComputeState = jest.fn();
+const mockHasCapability = jest.fn();
+const mockMigrateLegacy = jest.fn();
 const mockReadJourneyState = jest.fn();
 const mockLatchSignal = jest.fn();
 const mockReaddir = jest.fn();
 const mockReadFile = jest.fn();
 
-jest.mock('../lib/onboarding-checklist-progress', () => ({
-  computeOnboardingChecklistState: (): unknown => mockComputeState(),
+jest.mock('../notifications/campaigns/installed-capability', () => ({
+  hasInstalledCapability: (): unknown => mockHasCapability(),
+}));
+jest.mock('../notifications/campaigns/legacy-checklist-migration', () => ({
+  migrateLegacyChecklistSignals: (): unknown => mockMigrateLegacy(),
 }));
 
 jest.mock('../notifications/campaigns/journey-state', () => ({
@@ -25,7 +29,6 @@ jest.mock('../lib/paths', () => ({
 }));
 
 import {
-  ACTIVATION_ITEM_IDS,
   hasEverPairedMobile,
   hasMeaningfullyActivated,
   hasSubmittedFirstTask,
@@ -33,25 +36,6 @@ import {
   latchFirstTaskSubmitted,
   resetActivationSignalsForTests,
 } from '../notifications/campaigns/activation-signals';
-import { ONBOARDING_CHECKLIST_ITEM_IDS } from '@canopy/desktop-shared/types';
-import type { OnboardingChecklistItemId } from '@canopy/desktop-shared/types';
-
-// Built from the real id list rather than a hardcoded copy: a hardcoded one
-// silently stopped covering `start-chat` when CAN-2663 changed the step set,
-// which made the parameterized activation test below fail for a fixture
-// reason rather than a behavior one.
-function checklist(complete: OnboardingChecklistItemId[]): unknown {
-  return {
-    items: ONBOARDING_CHECKLIST_ITEM_IDS.map((id) => ({
-      id,
-      complete: complete.includes(id),
-    })),
-    dismissedAt: null,
-    snoozedUntil: null,
-    providersNotUsed: [],
-  };
-}
-
 function journey(signals: Record<string, string> = {}): unknown {
   return {
     firstOpenAt: null,
@@ -65,7 +49,8 @@ function journey(signals: Record<string, string> = {}): unknown {
 beforeEach(() => {
   jest.clearAllMocks();
   resetActivationSignalsForTests();
-  mockComputeState.mockResolvedValue(checklist([]));
+  mockHasCapability.mockResolvedValue(false);
+  mockMigrateLegacy.mockResolvedValue(undefined);
   mockReadJourneyState.mockResolvedValue(journey());
   mockLatchSignal.mockResolvedValue({ changed: true });
   // Default: no workspaces on disk, so the backfill scan finds nothing.
@@ -77,18 +62,31 @@ describe('hasMeaningfullyActivated', () => {
     await expect(hasMeaningfullyActivated()).resolves.toBe(false);
   });
 
-  // Signing in is an account action, not evidence the user did anything with
-  // the product -- the same reason the retired `choose-role` item was excluded.
-  it('does not count creating an account as activation', async () => {
-    mockComputeState.mockResolvedValue(checklist(['create-account']));
-    await expect(hasMeaningfullyActivated()).resolves.toBe(false);
-  });
-
-  it.each(ACTIVATION_ITEM_IDS)('counts %s as activation', async (itemId) => {
-    mockComputeState.mockResolvedValue(checklist([itemId]));
+  it.each(['tool-connected', 'capability-installed', 'first-task-submitted'])(
+    'counts the independent %s latch',
+    async (signal) => {
+      mockReadJourneyState.mockResolvedValue(
+        journey({ [signal]: '2026-01-01T00:00:00.000Z' }),
+      );
+      await expect(hasMeaningfullyActivated()).resolves.toBe(true);
+    },
+  );
+  it('latches an observed canonical capability', async () => {
+    mockHasCapability.mockResolvedValue(true);
     await expect(hasMeaningfullyActivated()).resolves.toBe(true);
+    expect(mockLatchSignal).toHaveBeenCalledWith(
+      'capability-installed',
+      expect.any(String),
+    );
   });
-
+  it('preserves known activation when the legacy probe fails', async () => {
+    mockReadJourneyState.mockResolvedValue(
+      journey({ 'tool-connected': '2026-01-01T00:00:00.000Z' }),
+    );
+    mockMigrateLegacy.mockRejectedValue(new Error('legacy unavailable'));
+    await expect(hasMeaningfullyActivated()).resolves.toBe(true);
+    expect(mockMigrateLegacy).not.toHaveBeenCalled();
+  });
   it('counts a submitted task even with no checklist item complete', async () => {
     // The cowork-only case: many tasks, zero checklist items.
     mockReadJourneyState.mockResolvedValue(
@@ -97,13 +95,13 @@ describe('hasMeaningfullyActivated', () => {
     await expect(hasMeaningfullyActivated()).resolves.toBe(true);
   });
 
-  it('propagates a checklist read failure instead of swallowing it', async () => {
+  it('propagates a legacy read failure instead of swallowing it', async () => {
     // The fail-closed decision belongs to the caller's `safePredicate`, which
     // maps a rejection to the RETRYABLE `probe-failed`. Swallowing it here
     // returned `true`, which suppressed via the terminal `already-activated`
     // -- so one transient disk error retired the campaign for the session,
     // and `probe-failed` was unreachable in production.
-    mockComputeState.mockRejectedValue(new Error('boom'));
+    mockMigrateLegacy.mockRejectedValue(new Error('boom'));
     await expect(hasMeaningfullyActivated()).rejects.toThrow('boom');
   });
 });
@@ -191,7 +189,9 @@ describe('isCampaignEligible', () => {
   });
 
   it('blocks the marketplace campaign once a capability is installed', async () => {
-    mockComputeState.mockResolvedValue(checklist(['add-capability']));
+    mockReadJourneyState.mockResolvedValue(
+      journey({ 'capability-installed': '2026-01-01T00:00:00.000Z' }),
+    );
     await expect(isCampaignEligible('activation-marketplace')).resolves.toBe(
       false,
     );
@@ -231,12 +231,55 @@ describe('isCampaignEligible', () => {
     );
   });
 
-  it('propagates a checklist read failure instead of swallowing it', async () => {
+  it('propagates a legacy read failure instead of swallowing it', async () => {
     // Same reason as above: the gate turns this into `probe-failed`, not the
     // terminal `not-eligible`.
-    mockComputeState.mockRejectedValue(new Error('boom'));
+    mockMigrateLegacy.mockRejectedValue(new Error('boom'));
     await expect(isCampaignEligible('activation-marketplace')).rejects.toThrow(
       'boom',
     );
   });
+});
+
+it('keeps independent mobile eligibility available when historical migration fails', async () => {
+  mockMigrateLegacy.mockRejectedValue(new Error('legacy unavailable'));
+  await expect(isCampaignEligible('activation-mobile')).resolves.toBe(true);
+  expect(mockMigrateLegacy).not.toHaveBeenCalled();
+});
+it('keeps marketplace activation latched after uninstall', async () => {
+  mockReadJourneyState.mockResolvedValue(
+    journey({ 'capability-installed': '2026-01-01T00:00:00.000Z' }),
+  );
+  mockHasCapability.mockResolvedValue(false);
+  await expect(isCampaignEligible('activation-marketplace')).resolves.toBe(
+    false,
+  );
+});
+it('does not hide capability read failures as inactivity', async () => {
+  mockHasCapability.mockRejectedValue(new Error('capability unavailable'));
+  await expect(hasMeaningfullyActivated()).rejects.toThrow(
+    'capability unavailable',
+  );
+  await expect(isCampaignEligible('activation-marketplace')).rejects.toThrow(
+    'capability unavailable',
+  );
+});
+
+it('does not turn legacy uncertainty into an outage for the independent mobile campaign', async () => {
+  mockMigrateLegacy.mockRejectedValue(new Error('legacy unavailable'));
+  await expect(hasMeaningfullyActivated('activation-mobile')).resolves.toBe(
+    false,
+  );
+  await expect(
+    hasMeaningfullyActivated('activation-marketplace'),
+  ).rejects.toThrow('legacy unavailable');
+});
+
+it('keeps a positive canonical observation suppressing mobile even if its latch rejects', async () => {
+  mockHasCapability.mockResolvedValue(true);
+  mockLatchSignal.mockRejectedValue(new Error('latch unavailable'));
+  mockMigrateLegacy.mockRejectedValue(new Error('legacy unavailable'));
+  await expect(hasMeaningfullyActivated('activation-mobile')).resolves.toBe(
+    true,
+  );
 });

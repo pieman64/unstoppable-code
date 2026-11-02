@@ -55,12 +55,8 @@ import {
   isClaudeTuiWorkersEnabled,
 } from '../lib/claude-tui-workers';
 import { spawnManagedTerminal } from '../services/terminal-service';
-import {
-  ptyManager,
-  type TerminalEventChannel,
-  type TerminalEventPayload,
-} from '../terminal/pty-manager';
-import type { TerminalExitEvent } from '@canopy/desktop-shared/types';
+import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { getObservabilityService } from '../observability';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { getCachedClaudeAuthStatusObserved } from '../auth/provider-auth-state';
@@ -249,12 +245,6 @@ const SETTLED_CARD_TTL_MS = 1500;
  */
 const DEFAULT_WORKER_TIMEOUT_MS = 600_000;
 
-function isTerminalExitEvent(
-  payload: TerminalEventPayload,
-): payload is TerminalExitEvent {
-  return 'exitCode' in payload && 'signal' in payload;
-}
-
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -388,9 +378,9 @@ export class DefaultClaudeWorkerSessionService {
   private eventSender: EventSender = () => {};
 
   public constructor() {
-    if (typeof ptyManager.addEventListener === 'function') {
-      ptyManager.addEventListener((channel, payload) => {
-        this.handleTerminalEvent(channel, payload);
+    if (typeof workerTerminal.addEventListener === 'function') {
+      workerTerminal.addEventListener((event) => {
+        this.handleTerminalEvent(event);
       });
     }
   }
@@ -414,8 +404,8 @@ export class DefaultClaudeWorkerSessionService {
     record.cancelled = true;
     record.launchGeneration += 1;
     if (record.terminalId) {
-      ptyManager.kill(record.terminalId, {
-        signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      workerTerminal.kill(record.terminalId, {
+        signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
       });
     }
     await this.settle(record, 'cancelled', null);
@@ -471,8 +461,8 @@ export class DefaultClaudeWorkerSessionService {
     }
     if (record.terminalId) {
       this.terminalIndex.delete(record.terminalId);
-      ptyManager.kill(record.terminalId, {
-        signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      workerTerminal.kill(record.terminalId, {
+        signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
       });
       record.terminalId = undefined;
     }
@@ -574,7 +564,7 @@ export class DefaultClaudeWorkerSessionService {
       (resolve, reject) => {
         const record: RuntimeRecord = {
           workerId,
-          request: request as ClaudeWorkerRunRequest<unknown>,
+          request,
           card,
           runtimeDir,
           sessionKey: buildWorkerSessionKey(workerId),
@@ -1210,16 +1200,9 @@ export class DefaultClaudeWorkerSessionService {
     }
   }
 
-  private handleTerminalEvent(
-    channel: TerminalEventChannel,
-    payload: TerminalEventPayload,
-  ): void {
-    if (
-      channel !== IPC_CHANNELS.terminalExit ||
-      !isTerminalExitEvent(payload)
-    ) {
-      return;
-    }
+  private handleTerminalEvent(event: WorkerTerminalEvent): void {
+    if (event.type !== 'exit') return;
+    const payload = event.payload;
     const workerId = this.terminalIndex.get(payload.terminalId);
     if (!workerId) return;
     const record = this.records.get(workerId);
@@ -1328,8 +1311,8 @@ export class DefaultClaudeWorkerSessionService {
     }
     if (record.terminalId) {
       this.terminalIndex.delete(record.terminalId);
-      ptyManager.kill(record.terminalId, {
-        signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      workerTerminal.kill(record.terminalId, {
+        signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
       });
     }
     getDesktopIntegrationServer().unregisterCanopyWorktreeSessionRoute(

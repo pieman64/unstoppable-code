@@ -24,6 +24,11 @@ import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { ExperimentsTab } from '../ExperimentsTab';
+import * as discovery from '@canopy/protocol/delegation/discovery';
+import {
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 const DEFAULT_CODE_GRAPH: CodeGraphPreferences = {
   mode: 'enabled',
@@ -56,7 +61,7 @@ function installApi(codeGraph: CodeGraphPreferences): MockApi {
         credentialSource: null,
         capabilities: [],
         storageAvailable: true,
-        account: null,
+        account: undefined,
       }),
     savePreferences: jest.fn((patch) =>
       Promise.resolve(makeTestPreferences({ codeGraph, ...patch })),
@@ -95,6 +100,7 @@ describe('ExperimentsTab', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     useProjectsStore.setState({ projects: [] });
     useFeatureFlagsStore.setState({
       snapshot: getDefaultFeatureFlagSnapshot(),
@@ -104,6 +110,33 @@ describe('ExperimentsTab', () => {
       Object.defineProperty(window, 'api', originalApiDescriptor);
     } else {
       Reflect.deleteProperty(window, 'api');
+    }
+  });
+
+  it('hydrates the saved lifetime preference instead of the default under a higher test cap', async () => {
+    const normalize = discovery.normalizeManagedDelegationLifetimeLimit;
+    jest
+      .spyOn(discovery, 'managedDelegationLifetimeLimitChoices')
+      .mockReturnValue([512, 1024, 2048]);
+    jest
+      .spyOn(discovery, 'normalizeManagedDelegationLifetimeLimit')
+      .mockImplementation((value) => normalize(value, 2048));
+    const api = installApi(DEFAULT_CODE_GRAPH);
+    api.loadPreferences.mockResolvedValue(
+      makeTestPreferences({ managedDelegationLifetimeLimit: 2048 }),
+    );
+    const { container, cleanup } = await renderTab();
+    try {
+      expect(
+        settingsSelectValue(
+          settingsSelectTrigger(
+            container,
+            '[data-testid="settings-managed-delegation-lifetime-limit"]',
+          ),
+        ),
+      ).toBe('2048');
+    } finally {
+      cleanup();
     }
   });
 
@@ -123,9 +156,12 @@ describe('ExperimentsTab', () => {
       expect(section?.querySelector('h2')?.textContent).toBe(
         'Managed delegation',
       );
-      expect(section?.querySelector('select')?.value).toBe(
-        managedDelegationMode,
-      );
+      if (!section) throw new Error('Missing managed delegation section');
+      expect(
+        settingsSelectValue(
+          settingsSelectTrigger(section, 'button[role="combobox"]'),
+        ),
+      ).toBe(managedDelegationMode);
       cleanup();
     },
   );
@@ -225,19 +261,33 @@ describe('ExperimentsTab', () => {
     }
   });
 
-  it('hosts the live step window setting, off by default', async () => {
+  it('no longer offers the chat step switches, which Chat detail replaced', async () => {
     installApi(DEFAULT_CODE_GRAPH);
     const { container, cleanup } = await renderTab();
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(
-      container
-        .querySelector('[data-testid="chat-live-step-window-toggle"]')
-        ?.getAttribute('aria-checked'),
-    ).toBe('false');
-    cleanup();
+    try {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(
+        container.querySelector(
+          '[data-testid="settings-chat-live-step-window"]',
+        ),
+      ).toBeNull();
+      expect(
+        container.querySelector('[data-testid="chat-live-step-window-toggle"]'),
+      ).toBeNull();
+      expect(
+        container.querySelector('[data-testid="chat-group-tool-calls-toggle"]'),
+      ).toBeNull();
+      expect(container.textContent).not.toContain(
+        'Keep chats short while agents work',
+      );
+      expect(container.textContent).not.toContain('Show only recent steps');
+      expect(container.textContent).not.toContain('Group tool calls');
+    } finally {
+      cleanup();
+    }
   });
 
   it('no longer offers the chat storage experiment', async () => {
@@ -347,6 +397,80 @@ describe('ExperimentsTab', () => {
       });
       const { container, cleanup } = await renderTab();
       expect(container.querySelector(selector)).toBeNull();
+      cleanup();
+    });
+  });
+
+  describe('Copilot setup', () => {
+    function setCopilotFlags(harness: boolean, released: boolean): void {
+      const snapshot = getDefaultFeatureFlagSnapshot();
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...snapshot,
+          values: {
+            ...snapshot.values,
+            [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: harness,
+            [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]:
+              released,
+          },
+        },
+      });
+    }
+
+    it('stays in Labs while Copilot is not released', async () => {
+      installApi(DEFAULT_CODE_GRAPH);
+      setCopilotFlags(true, false);
+      const { container, cleanup } = await renderTab();
+      expect(
+        container.querySelector('[data-testid="copilot-connection"]'),
+      ).not.toBeNull();
+      cleanup();
+    });
+
+    it('leaves Labs once Copilot is released', async () => {
+      installApi(DEFAULT_CODE_GRAPH);
+      setCopilotFlags(true, true);
+      const { container, cleanup } = await renderTab();
+      expect(
+        container.querySelector('[data-testid="copilot-connection"]'),
+      ).toBeNull();
+      cleanup();
+    });
+  });
+
+  describe('OpenCode setup', () => {
+    function setOpenCodeFlags(harness: boolean, released: boolean): void {
+      const snapshot = getDefaultFeatureFlagSnapshot();
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...snapshot,
+          values: {
+            ...snapshot.values,
+            [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]: harness,
+            [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]:
+              released,
+          },
+        },
+      });
+    }
+
+    it('stays in Labs while OpenCode is not released', async () => {
+      installApi(DEFAULT_CODE_GRAPH);
+      setOpenCodeFlags(true, false);
+      const { container, cleanup } = await renderTab();
+      expect(
+        container.querySelector('[data-testid="opencode-connection"]'),
+      ).not.toBeNull();
+      cleanup();
+    });
+
+    it('leaves Labs once OpenCode is released', async () => {
+      installApi(DEFAULT_CODE_GRAPH);
+      setOpenCodeFlags(true, true);
+      const { container, cleanup } = await renderTab();
+      expect(
+        container.querySelector('[data-testid="opencode-connection"]'),
+      ).toBeNull();
       cleanup();
     });
   });

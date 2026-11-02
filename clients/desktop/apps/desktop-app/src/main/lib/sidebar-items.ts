@@ -35,6 +35,8 @@ import { validateId } from './validation';
 import { desktopW5FileStore } from './w5-commit-log-file-store';
 import {
   createWorkspaceIndexRepository,
+  type StoredWorkspaceIndexFields,
+  type StoredWorkspaceIndexRepository,
   type WorkspaceIndexAuthority,
   type WorkspaceIndexRepository,
 } from './workspace-index-repository';
@@ -52,6 +54,7 @@ import {
   WorktreeRegistryUnreadableError,
   writeWorkspaceWorktrees,
   type PersistedFileAuthority,
+  type StoredWorkspaceManifestFields,
   type WorkspaceConfigOwnershipWrite,
 } from './workspace-persistence';
 import {
@@ -99,7 +102,7 @@ function recordWorkspaceIndexWriteRefused(): void {
   }
 }
 
-function createDesktopWorkspaceIndexRepository(): WorkspaceIndexRepository {
+function createDesktopWorkspaceIndexRepository(): StoredWorkspaceIndexRepository {
   const repository = createWorkspaceIndexRepository({
     store: desktopW5FileStore,
     filePath: () => getWorkspaceIndexFilePath(),
@@ -167,13 +170,72 @@ function assertWorkspaceConfigReadable(
   }
 }
 
+/** One workspace's manifest reads in a sidebar snapshot, kept apart from the aggregate. */
+export interface SidebarWorkspaceReads {
+  manifest?: WorkspaceIndexAuthority;
+  worktrees?: WorkspaceIndexAuthority;
+  recentlyRemovedWorktreeIds?: string[];
+}
+
+/** One workspace's stored `core.workspace.update` fields in a sidebar snapshot. */
+export interface SidebarWorkspaceStoredFields {
+  index?: StoredWorkspaceIndexFields;
+  /** Only from a manifest read with authority `ok`. */
+  manifest?: StoredWorkspaceManifestFields;
+}
+
 /**
  * Records the authority of every manifest read (`workspace.json`,
  * `worktrees.json`) made while projecting one sidebar snapshot.
  */
 interface ManifestAuthorityCollector {
   readOptions?: { persistRemovalCleanup?: false };
-  record(authority: WorkspaceIndexAuthority): void;
+  record(
+    workspaceId: string,
+    read:
+      | {
+          file: 'manifest';
+          authority: WorkspaceIndexAuthority;
+          storedFields?: StoredWorkspaceManifestFields;
+          /** The read config's, whatever its authority. */
+          externalPath: string | undefined;
+        }
+      | {
+          file: 'worktrees';
+          authority: WorkspaceIndexAuthority;
+          recentlyRemovedWorktreeIds?: string[];
+        },
+  ): void;
+}
+
+function recordWorkspaceReads(
+  collector: ManifestAuthorityCollector | undefined,
+  workspaceId: string,
+  configRead: {
+    config: Pick<WorkspaceConfigFile, 'externalPath'>;
+    authority: PersistedFileAuthority;
+    storedFields?: StoredWorkspaceManifestFields;
+  },
+  worktreesRead: {
+    authority: WorkspaceIndexAuthority;
+    recentlyRemovedWorktreeIds?: string[];
+  },
+): void {
+  collector?.record(workspaceId, {
+    file: 'manifest',
+    authority: configRead.authority,
+    ...(configRead.storedFields
+      ? { storedFields: configRead.storedFields }
+      : {}),
+    externalPath: configRead.config.externalPath,
+  });
+  collector?.record(workspaceId, {
+    file: 'worktrees',
+    authority: worktreesRead.authority,
+    ...(worktreesRead.recentlyRemovedWorktreeIds
+      ? { recentlyRemovedWorktreeIds: worktreesRead.recentlyRemovedWorktreeIds }
+      : {}),
+  });
 }
 
 const AUTHORITY_RANK: Record<WorkspaceIndexAuthority, number> = {
@@ -205,6 +267,23 @@ export async function readWorkspaceIndexEntry(
 ): Promise<WorkspaceIndexEntry | null> {
   const index = await readWorkspaceIndex();
   return index.find((entry) => entry.id === workspaceId) ?? null;
+}
+
+/** {@link readWorkspaceIndexEntry} with the entry's stored fields. */
+export async function readWorkspaceIndexEntryDetailed(
+  workspaceId: string,
+): Promise<{
+  entry: WorkspaceIndexEntry;
+  storedFields: StoredWorkspaceIndexFields;
+} | null> {
+  const { entries, storedFields } = await workspaceIndexRepository.readStored();
+  // The first entry with the id, as in readWorkspaceIndexEntry.
+  const position = entries.findIndex(
+    (candidate) => candidate.id === workspaceId,
+  );
+  const entry = entries[position];
+  const fields = storedFields[position];
+  return entry && fields ? { entry, storedFields: fields } : null;
 }
 
 function toWorkspaceIndexEntry(item: SidebarItem): WorkspaceIndexEntry {
@@ -378,7 +457,14 @@ async function readCoworkWorkspace(
       readArchivedContainerCount(entry.id),
       readWorkEntrySidebarSummary(entry.id),
     ]);
-  collector?.record(configRead.authority);
+  collector?.record(entry.id, {
+    file: 'manifest',
+    authority: configRead.authority,
+    ...(configRead.storedFields
+      ? { storedFields: configRead.storedFields }
+      : {}),
+    externalPath: configRead.config.externalPath,
+  });
   const config = configRead.config;
   return {
     id: entry.id,
@@ -448,8 +534,7 @@ async function readSingleRepoWorkspace(
     readWorkspaceWorktreesDetailed(entry.id, collector?.readOptions),
     readArchivedContainerCount(entry.id),
   ]);
-  collector?.record(configRead.authority);
-  collector?.record(worktreesRead.authority);
+  recordWorkspaceReads(collector, entry.id, configRead, worktreesRead);
   assertWorkspaceConfigReadable(configRead.authority);
   const config = configRead.config;
   const worktrees = worktreesRead.worktrees;
@@ -532,8 +617,7 @@ async function readMultiRepoWorkspace(
     readWorkspaceConfigDetailed(entry.id),
     readArchivedContainerCount(entry.id),
   ]);
-  collector?.record(worktreesRead.authority);
-  collector?.record(configRead.authority);
+  recordWorkspaceReads(collector, entry.id, configRead, worktreesRead);
   assertWorkspaceConfigReadable(configRead.authority);
   const worktrees = worktreesRead.worktrees;
   const effectiveConfig = await readEffectiveWorkspaceConfig(
@@ -814,18 +898,54 @@ export async function readAllSidebarItems(options?: {
   return (await readAllSidebarItemsSnapshot(options)).file;
 }
 
+/** A registry refresh read the index or a manifest without authority. */
+export class WorkspaceRegistriesDegradedError extends Error {
+  constructor(
+    readonly indexAuthority: WorkspaceIndexAuthority,
+    /** Indexed workspaces whose manifest read was not authoritative. */
+    readonly workspaceIds: readonly string[],
+  ) {
+    super('Workspace registries were not refreshed from authoritative reads.');
+    this.name = 'WorkspaceRegistriesDegradedError';
+  }
+}
+
+/**
+ * Re-registers workspace types, external paths and known ids from a fresh
+ * read, without persisting removal cleanup, after another origin committed
+ * the index or a manifest (W5e, CAN-5497). External paths live in each
+ * workspace's config, so this is the full projection, not the index alone.
+ * Rejects, so the commit is retried, when the index was unreadable or an
+ * indexed workspace's manifest was unreadable or never read; the registration
+ * keeps what those reads could not decide. A `partial` index still resolves:
+ * its unreadable entries stay in the file on every write and register nothing.
+ */
+export async function refreshWorkspaceRegistries(): Promise<void> {
+  const snapshot = await readAllSidebarItemsSnapshot({
+    persistRemovalCleanup: false,
+  });
+  const degraded = snapshot.indexedWorkspaceIds.filter(
+    (workspaceId) =>
+      !isAuthoritative(snapshot.workspaceReads.get(workspaceId)?.manifest),
+  );
+  if (snapshot.indexAuthority === 'unreadable' || degraded.length > 0)
+    throw new WorkspaceRegistriesDegradedError(
+      snapshot.indexAuthority,
+      degraded,
+    );
+}
+
+function isAuthoritative(
+  authority: WorkspaceIndexAuthority | undefined,
+): boolean {
+  return authority === 'ok' || authority === 'absent';
+}
+
 /**
  * The sidebar items together with the authority of the reads they were
- * projected from: the workspace index and every workspace's `workspace.json`
- * and `worktrees.json`, all from this one projection, so a caller can never
- * pair items from one file state with the authority of another. Only `ok`
- * or `absent` proves that a workspace or worktree is gone; a workspace
- * that could not be projected from a readable config makes the snapshot
- * `partial`.
+ * projected from; see {@link readAllSidebarItemsSnapshot}.
  */
-export async function readAllSidebarItemsSnapshot(options?: {
-  persistRemovalCleanup?: false;
-}): Promise<{
+export interface SidebarItemsSnapshot {
   file: SidebarItemsFile;
   authority: WorkspaceIndexAuthority;
   /** Authority of the index read alone, without the manifest reads. */
@@ -835,14 +955,55 @@ export async function readAllSidebarItemsSnapshot(options?: {
    * projected into `file.items`.
    */
   indexedWorkspaceIds: string[];
-}> {
-  const { entries: index, authority: indexAuthority } =
-    await workspaceIndexRepository.read();
+  /** Each workspace's own reads, which `authority` folds together. */
+  workspaceReads: Map<string, SidebarWorkspaceReads>;
+  /**
+   * Each of `file.items`' stored fields, at the same position, from the same
+   * reads: the index fields of the item's own entry, even when another entry
+   * repeats its id.
+   */
+  storedFields: SidebarWorkspaceStoredFields[];
+}
+
+/**
+ * The sidebar items together with the authority of the reads they were
+ * projected from: the workspace index and every workspace's `workspace.json`
+ * and `worktrees.json`, all from this one projection, so a caller can never
+ * pair items from one file state with the authority of another. Only `ok`
+ * or `absent` proves that a workspace or worktree is gone; a workspace
+ * that could not be projected from a readable config makes the snapshot
+ * `partial`. It registers workspace types, external paths and known ids
+ * from the reads that can decide them, keeping the rest as registered.
+ */
+export async function readAllSidebarItemsSnapshot(options?: {
+  persistRemovalCleanup?: false;
+}): Promise<SidebarItemsSnapshot> {
+  const {
+    entries: index,
+    authority: indexAuthority,
+    storedFields: indexStoredFields,
+  } = await workspaceIndexRepository.readStored();
   let authority: WorkspaceIndexAuthority = indexAuthority;
+  const workspaceReads = new Map<string, SidebarWorkspaceReads>();
+  const manifestStoredFields = new Map<string, StoredWorkspaceManifestFields>();
+  const manifestExternalPaths = new Map<string, string | undefined>();
   const collector: ManifestAuthorityCollector = {
     readOptions: options,
-    record: (manifestAuthority): void => {
-      authority = weakerAuthority(authority, manifestAuthority);
+    record: (workspaceId, read): void => {
+      authority = weakerAuthority(authority, read.authority);
+      const reads = workspaceReads.get(workspaceId) ?? {};
+      workspaceReads.set(workspaceId, reads);
+      if (read.file === 'manifest') {
+        reads.manifest = read.authority;
+        manifestExternalPaths.set(workspaceId, read.externalPath);
+        if (read.storedFields)
+          manifestStoredFields.set(workspaceId, read.storedFields);
+        else manifestStoredFields.delete(workspaceId);
+      } else {
+        reads.worktrees = read.authority;
+        if (read.recentlyRemovedWorktreeIds)
+          reads.recentlyRemovedWorktreeIds = read.recentlyRemovedWorktreeIds;
+      }
     },
   };
   const loaded = await settleAll(
@@ -890,25 +1051,41 @@ export async function readAllSidebarItemsSnapshot(options?: {
   ) {
     authority = weakerAuthority(authority, 'partial');
   }
-  const items = loaded
-    .map((result) => result.item)
-    .filter((item): item is SidebarItem => item !== null)
-    .sort((left, right) => left.order - right.order)
-    .map((item, order) => ({ ...item, order }));
+  const projected = loaded
+    .flatMap(({ item }, position) =>
+      item ? [{ item, index: indexStoredFields[position] }] : [],
+    )
+    .sort((left, right) => left.item.order - right.item.order);
+  const items = projected.map(({ item }, order) => ({ ...item, order }));
+  const storedFields = projected.map(
+    ({ item, index: stored }): SidebarWorkspaceStoredFields => {
+      const manifest = manifestStoredFields.get(item.id);
+      return {
+        ...(stored ? { index: stored } : {}),
+        ...(manifest ? { manifest } : {}),
+      };
+    },
+  );
   const warnings: SidebarItemsLoadWarning[] = loaded
     .map((result) => result.warning)
     .filter(
       (warning): warning is SidebarItemsLoadWarning => warning !== undefined,
     );
 
-  const failedWorkspaceIds = new Set(
-    warnings.map((warning) => warning.workspaceId),
-  );
-  registerWorkspaceTypes(buildWorkspaceTypeMap(index));
-  registerWorkspaceExternalPaths(
-    buildWorkspaceExternalPathMap(items, failedWorkspaceIds),
-  );
-  rememberSidebarItemIds(index);
+  // An unreadable index lists nothing; registering it forgets everything.
+  if (indexAuthority !== 'unreadable') {
+    const externalPaths = new Map<string, string>();
+    for (const { id } of index) {
+      // Only an ok or absent manifest read decides; otherwise keep the last.
+      const externalPath = isAuthoritative(workspaceReads.get(id)?.manifest)
+        ? manifestExternalPaths.get(id)
+        : (getWorkspaceExternalPath(id) ?? undefined);
+      if (externalPath !== undefined) externalPaths.set(id, externalPath);
+    }
+    registerWorkspaceTypes(buildWorkspaceTypeMap(index));
+    registerWorkspaceExternalPaths(externalPaths);
+    rememberSidebarItemIds(index);
+  }
   return {
     file: {
       version: 1,
@@ -918,6 +1095,8 @@ export async function readAllSidebarItemsSnapshot(options?: {
     authority,
     indexAuthority,
     indexedWorkspaceIds: index.map((entry) => entry.id),
+    workspaceReads,
+    storedFields,
   };
 }
 

@@ -12,6 +12,7 @@ test('OpenCode ACP and approval subprocess scenarios', async () => {
         '--test',
         path.join(__dirname, 'approval-plugin.scenarios.ts'),
         path.join(__dirname, 'turn-driver.scenarios.ts'),
+        path.join(__dirname, 'inference.scenarios.ts'),
         path.join(__dirname, 'pipeline.scenarios.ts'),
         path.join(__dirname, 'mcp-snapshot.scenarios.ts'),
         path.join(__dirname, 'schema-validation.scenarios.ts'),

@@ -27,8 +27,13 @@ import {
   SidebarSurface,
   workspaceLayout,
   worktreeRemovalBlockedReason,
+  type GetWorkEntryBatchRemovalFacts,
+  type GetWorkEntryBulkState,
+  type RemoveWorkEntryInBatch,
+  type SidebarBatchRemovalUiState,
   type SidebarSelection,
   type SidebarSurfaceTestIds,
+  type WorkEntryMultiSelectBinding,
   type WorktreeBatchRemovalFacts,
   type WorktreeBatchRemovalOptions,
   type WorktreeBatchRemovalUiState,
@@ -57,10 +62,23 @@ import { useDesktopPendingProjects } from './desktopPendingProjects';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
 import { TeardownFailedError, useProjectsStore } from '@/stores/projectsStore';
 import { finishWorktreeArchive } from '@/components/worktree/finishWorktreeArchive';
+import {
+  WorktreeArchiveRefusalError,
+  WorktreeRemovalRefusedError,
+} from '@/lib/worktreeRemovalAdmission';
+import { worktreeDiscardBatchPointer } from '@canopy/ui-shared/lib/worktree-discard-copy';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useSidebarStore } from '@/stores/sidebarStore';
 import { createDiffStatsKey } from '@/stores/projectsStore.diffStats';
-import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import {
+  getSidebarProjectEntries,
+  useStandaloneChatStore,
+} from '@/stores/standaloneChatStore';
+import {
+  getWorktreeRemovalBlocker,
+  removalBlockedReason,
+} from '@/stores/chat/close-guard';
 import type {
   CoworkSidebarItem,
   DiffStats,
@@ -616,15 +634,18 @@ function DesktopChatsSectionRows({
   item,
   collapsed,
   listsNoneFoundWhenEmpty,
+  workEntryMultiSelect,
 }: {
   item: CoworkSidebarItem | undefined;
   collapsed: boolean;
   listsNoneFoundWhenEmpty: boolean;
+  workEntryMultiSelect: WorkEntryMultiSelectBinding | undefined;
 }): JSX.Element | null {
   if (!item) return null;
   return (
     <SidebarCoworkWorkspaceRow
       item={item}
+      workEntryMultiSelect={workEntryMultiSelect}
       hideWorkspaceHeader
       sectionCollapsed={collapsed}
       disableDrag
@@ -724,6 +745,8 @@ export const removeDesktopWorktreeInBatch = async (
     if (error instanceof TeardownFailedError) {
       throw new Error('Teardown script failed. Retry from the row menu.');
     }
+    const discard = await batchDiscardDescription(error, workspaceId);
+    if (discard) throw new Error(worktreeDiscardBatchPointer(discard));
     throw error;
   }
   finishWorktreeArchive({
@@ -731,6 +754,98 @@ export const removeDesktopWorktreeInBatch = async (
     worktreeId,
     refreshReferenceRepos: wasMerged,
   });
+};
+
+/**
+ * CAN-5336 Q4: the batch never discards; a discardable refusal's row reason
+ * points at the row menu instead. The source pre-check's refusal carries no
+ * description, so it is described here; a failed read keeps the refusal.
+ */
+async function batchDiscardDescription(
+  error: unknown,
+  workspaceId: string,
+): Promise<WorktreeDiscardDescription | null> {
+  if (error instanceof WorktreeArchiveRefusalError) return error.discard;
+  if (!(error instanceof WorktreeRemovalRefusedError)) return null;
+  try {
+    const description = await window.api.describeWorktreeDiscard({
+      projectId: workspaceId,
+      worktreeId: error.worktreeId,
+    });
+    return description.status === 'discardable' ? description : null;
+  } catch {
+    return null;
+  }
+}
+
+// Bulk removal of Work Entries: the same store call the single-row confirm
+// makes, awaited, so the runner removes one entry at a time.
+export const removeDesktopWorkEntryInBatch: RemoveWorkEntryInBatch = async (
+  workspaceId,
+  entryId,
+  { mode },
+) =>
+  useStandaloneChatStore.getState().deleteWorkEntry(entryId, workspaceId, {
+    lockAfterArchive: mode === 'archive',
+  });
+
+/**
+ * A Work Entry's batch facts, read live before each removal: gone when the
+ * store no longer lists it, blocked while delegates or close-blocking
+ * provider work still run in it. A chat that is only streaming does not
+ * block, as on the single row.
+ */
+export const desktopWorkEntryBatchRemovalFacts: GetWorkEntryBatchRemovalFacts =
+  (workspaceId, entryId) => {
+    const exists = getSidebarProjectEntries(
+      useStandaloneChatStore.getState(),
+      workspaceId,
+    ).some((entry) => entry.id === entryId);
+    if (!exists) return undefined;
+    const blockedReason = removalBlockedReason(
+      getWorktreeRemovalBlocker(workspaceId, entryId),
+    );
+    return blockedReason === undefined ? {} : { blockedReason };
+  };
+
+/** The single row's Pin to top, awaited, with its failure toast. */
+export const setDesktopWorkEntryPinned = (
+  workspaceId: string,
+  entryId: string,
+  pinned: boolean,
+): Promise<void> =>
+  useStandaloneChatStore
+    .getState()
+    .setWorkEntryPinned(entryId, pinned, workspaceId)
+    .catch(() => {
+      useGitHubStore
+        .getState()
+        .addToast(pinned ? 'Failed to pin' : 'Failed to unpin', 'error');
+    });
+
+/** The single row's Mark done / Mark active, awaited; failures stay quiet as there. */
+export const setDesktopWorkEntryStatus = (
+  workspaceId: string,
+  entryId: string,
+  status: 'active' | 'done',
+): Promise<void> =>
+  useStandaloneChatStore
+    .getState()
+    .setWorkEntryStatus(entryId, status, workspaceId)
+    .catch(() => undefined);
+
+/** A Work Entry's pin and done state, read live; gone when the store drops it. */
+export const desktopWorkEntryBulkState: GetWorkEntryBulkState = (
+  workspaceId,
+  entryId,
+) => {
+  const entry = getSidebarProjectEntries(
+    useStandaloneChatStore.getState(),
+    workspaceId,
+  ).find((candidate) => candidate.id === entryId);
+  return entry === undefined
+    ? undefined
+    : { pinned: entry.pinned === true, done: entry.status === 'done' };
 };
 
 export function DesktopSharedSidebarHost({
@@ -743,6 +858,7 @@ export function DesktopSharedSidebarHost({
   const model = useSidebarWorkspaces();
   const activity = useDesktopSidebarActivityHost(client);
   const groupsByScope = useSidebarItemGroupsStore((state) => state.byScope);
+  const orderByScope = useSidebarItemGroupsStore((state) => state.orderByScope);
   useEffect(
     () =>
       window.api.sidebarItemGroups?.onChanged((scope) => {
@@ -990,6 +1106,14 @@ export function DesktopSharedSidebarHost({
     'worktree.batchRemovalDialog',
     batchRemovalState === null ? null : { ...batchRemovalState },
   );
+  const [workEntryBatchState, setWorkEntryBatchState] =
+    useState<SidebarBatchRemovalUiState | null>(null);
+  // The App Advisor nav reports its own dialog under its own key, so this
+  // rail closing never clears the nav's open dialog, or the reverse.
+  useCurrentUiStateReporter(
+    'workEntry.batchRemovalDialog',
+    workEntryBatchState === null ? null : { ...workEntryBatchState },
+  );
   const requestRemovalRef = useRef(requestRemoval);
   requestRemovalRef.current = requestRemoval;
   useEffect(
@@ -1112,6 +1236,7 @@ export function DesktopSharedSidebarHost({
       overlaySidebarItemGroups(
         overlayStorePresentation(snapshot, storeProjects, pinnedWorkspaceIds),
         groupsByScope,
+        orderByScope,
       ),
       deferredEmptyWorkspaceIds,
     );
@@ -1150,6 +1275,7 @@ export function DesktopSharedSidebarHost({
     storeProjects,
     pinnedWorkspaceIds,
     groupsByScope,
+    orderByScope,
     chatsWorkspace,
     chatsWorkspaceState.pending,
     scopingContext,
@@ -1187,6 +1313,7 @@ export function DesktopSharedSidebarHost({
       pipelineUnseen: model.unseenPipelineWorktreeKeys,
       pipelineUnseenFailed: model.unseenFailedPipelineWorktreeKeys,
       pipelinePaused: model.pipelinePausedWorktreeKeys,
+      backgroundTasks: model.backgroundTaskCounts,
     }),
     [
       model.worktreeStatusMap,
@@ -1199,6 +1326,7 @@ export function DesktopSharedSidebarHost({
       model.unseenPipelineWorktreeKeys,
       model.unseenFailedPipelineWorktreeKeys,
       model.pipelinePausedWorktreeKeys,
+      model.backgroundTaskCounts,
     ],
   );
   useEffect(() => {
@@ -2085,6 +2213,19 @@ export function DesktopSharedSidebarHost({
         getWorktreeBatchRemovalFacts={worktreeBatchRemovalFacts}
         worktreeBatchBranchChoice
         onWorktreeBatchRemovalStateChange={setBatchRemovalState}
+        onRemoveWorkEntryInBatch={removeDesktopWorkEntryInBatch}
+        getWorkEntryBatchRemovalFacts={desktopWorkEntryBatchRemovalFacts}
+        getWorkEntryBulkState={desktopWorkEntryBulkState}
+        onSetWorkEntryPinned={setDesktopWorkEntryPinned}
+        onSetWorkEntryStatus={setDesktopWorkEntryStatus}
+        workEntryRetentionDaysFor={(workspaceId) =>
+          resolveArchiveRetentionDays(
+            'cowork',
+            model.sortedProjects.find((project) => project.id === workspaceId)
+              ?.archiveRetentionDays ?? undefined,
+          )
+        }
+        onWorkEntryBatchRemovalStateChange={setWorkEntryBatchState}
         onUpdateWorktree={(workspaceId, worktreeId, patch) => {
           if (patch.hidden !== undefined) {
             model.onSetWorktreeHidden(workspaceId, worktreeId, patch.hidden);
@@ -2373,10 +2514,11 @@ export function DesktopSharedSidebarHost({
         renderChatsSectionMenuItems={() => (
           <DesktopChatsSectionMenuItems item={chatsWorkspace} />
         )}
-        renderChatsSectionRows={({ collapsed }) => (
+        renderChatsSectionRows={({ collapsed, workEntryMultiSelect }) => (
           <DesktopChatsSectionRows
             item={chatsWorkspace}
             collapsed={collapsed}
+            workEntryMultiSelect={workEntryMultiSelect}
             // An organization's empty Chats reads like its empty Projects
             // list (CAN-3550).
             listsNoneFoundWhenEmpty={scopingContext?.kind === 'organization'}
@@ -2385,13 +2527,14 @@ export function DesktopSharedSidebarHost({
         chatsSectionHasSelectedRow={chatsSectionHasSelectedRow}
         // Main's count, so the "+" does not flicker while the list loads.
         chatsSectionEmpty={(chatsWorkspace?.workEntryCount ?? 0) === 0}
-        renderCoworkWorkspace={({ workspace }) => {
+        renderCoworkWorkspace={({ workspace, workEntryMultiSelect }) => {
           const item = model.sortedProjects.find(
             (project) => project.id === workspace.localId,
           );
           return item?.type === 'cowork' ? (
             <SidebarCoworkWorkspaceRow
               item={item}
+              workEntryMultiSelect={workEntryMultiSelect}
               // The shared list's DndContext hosts the row's sortable, so it
               // drags under the same rule as the legacy list.
               disableDrag={

@@ -1,10 +1,10 @@
-import { DeferredToolOutput } from './DeferredToolOutput';
+import { DeferredToolOutput } from '@canopy/ui-app';
 import { useState, type JSX } from 'react';
 import { useWorkflowRun } from '@/hooks/useWorkflowRun';
 import { WorkflowRunView } from '../activity/WorkflowRunView';
 import { WorkflowIcon } from '../activity/WorkflowIcon';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
-import { ChevronIcon } from '../activity/RunOutputControls';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import type { ToolResult } from './types';
 
 const TERMINAL_STATUSES = new Set([
@@ -16,6 +16,7 @@ const TERMINAL_STATUSES = new Set([
 ]);
 
 export function WorkflowBlock({
+  toolUseId,
   workflowName,
   summary,
   runId,
@@ -27,6 +28,8 @@ export function WorkflowBlock({
   runId?: string;
   transcriptDir?: string;
   result?: ToolResult;
+  /** The step's identity; a turn summary lands on its row by this id. */
+  toolUseId?: string;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   // The chat card has no Canopy process-status signal, so derive terminality
@@ -44,6 +47,7 @@ export function WorkflowBlock({
   return (
     <div
       data-testid="workflow-block"
+      data-tool-use-id={toolUseId}
       data-launched={launched ? 'true' : 'false'}
       className="my-1 rounded-lg border bg-fg-primary/[0.02]"
     >
@@ -100,10 +104,14 @@ export function WorkflowBlock({
         // full-output control, so it gets an empty preview.
         <div data-testid="chat-deferred-output-host">
           <DeferredToolOutput
-            reference={result.fullOutputRef}
+            identity={{
+              kind: 'reference',
+              reference: result.fullOutputRef,
+              messageId: result.messageId,
+              toolUseId: result.toolUseId,
+            }}
             preview=""
-            messageId={result.messageId}
-            toolUseId={result.toolUseId}
+            isError={result.isError}
           />
         </div>
       )}

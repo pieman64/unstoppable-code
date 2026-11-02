@@ -13,15 +13,14 @@ interface Deferred<T> {
   resolve: (value: T) => void;
 }
 
+type VoiceSystemAccess = {
+  microphone: 'granted' | 'denied' | 'restricted' | 'unavailable';
+  speechRecognition: 'authorized' | 'denied' | 'restricted' | 'unavailable';
+};
+
 interface VoiceApiMock {
   isSupported: jest.Mock<Promise<{ supported: boolean }>, []>;
-  requestSystemAccess: jest.Mock<
-    Promise<{
-      microphone: 'granted' | 'denied' | 'restricted' | 'unavailable';
-      speechRecognition: 'authorized' | 'denied' | 'restricted' | 'unavailable';
-    }>,
-    []
-  >;
+  requestSystemAccess: jest.Mock<Promise<VoiceSystemAccess>, []>;
   start: jest.Mock<Promise<void>, [{ sessionId: string }]>;
   cancel: jest.Mock<Promise<void>, [{ sessionId: string }]>;
   stop: jest.Mock<Promise<void>, [{ sessionId: string }]>;
@@ -294,12 +293,15 @@ describe('AppleSpeechBridgeProvider', () => {
         isSupported: jest.fn<Promise<{ supported: boolean }>, []>(() =>
           Promise.resolve({ supported: true }),
         ),
-        requestSystemAccess: jest.fn(() =>
-          Promise.resolve({
-            microphone,
+        requestSystemAccess: jest.fn<Promise<VoiceSystemAccess>, []>(() => {
+          const access: VoiceSystemAccess = {
+            microphone: 'denied',
             speechRecognition: 'authorized',
-          }),
-        ),
+          };
+          // Keep legacy and unknown OS statuses in this mapping regression test.
+          Reflect.set(access, 'microphone', microphone);
+          return Promise.resolve(access);
+        }),
         start: jest.fn<Promise<void>, [{ sessionId: string }]>(
           (request: { sessionId: string }) => {
             void request;

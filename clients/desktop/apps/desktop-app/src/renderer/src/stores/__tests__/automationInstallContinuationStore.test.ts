@@ -1,13 +1,17 @@
 /** @jest-environment jsdom */
 import { create } from 'zustand';
+import type { SidebarItem } from '@canopy/desktop-shared/types';
 import type { AutomationProjectCreationRequest } from '@/components/automations/InstallSharedAutomationModal';
-const mockLoadProjects = jest.fn();
-jest.mock('../projectsStore', () => ({
-  useProjectsStore: create(() => ({
-    projects: [] as Array<{ id: string; type: string }>,
-    loadProjects: mockLoadProjects,
-  })),
-}));
+jest.mock('../projectsStore', () => {
+  const mockLoadProjects = jest.fn();
+  const projects: SidebarItem[] = [];
+  return {
+    useProjectsStore: create(() => ({
+      projects,
+      loadProjects: mockLoadProjects,
+    })),
+  };
+});
 import { useProjectsStore } from '../projectsStore';
 import { useNavigationStore } from '../navigationStore';
 import {
@@ -17,7 +21,33 @@ import {
   resumeAutomationInstall,
   useAutomationInstallContinuationStore,
 } from '../automationInstallContinuationStore';
+const mockLoadProjects = jest.mocked(useProjectsStore.getState().loadProjects);
 const mockGetShared = jest.fn();
+
+function makeCoworkProject(id: string): SidebarItem {
+  return {
+    id,
+    type: 'cowork',
+    name: id,
+    color: '#123456',
+    collapsed: false,
+    order: 0,
+  };
+}
+
+function makeSingleRepoProject(id: string): SidebarItem {
+  return {
+    id,
+    type: 'single-repo',
+    name: id,
+    repoPath: `/tmp/${id}`,
+    color: '#123456',
+    worktrees: [],
+    collapsed: false,
+    order: 0,
+  };
+}
+
 function request(): AutomationProjectCreationRequest {
   return {
     context: 'cowork',
@@ -76,8 +106,8 @@ afterEach(() => {
 it('retains the draft in the retry state when inventory refresh fails after the default loader would resolve', async () => {
   const original = request();
   mockLoadProjects.mockImplementation(
-    (options: { requireSuccess?: boolean }) =>
-      options.requireSuccess
+    (options?: { silent?: boolean; requireSuccess?: boolean }) =>
+      options?.requireSuccess
         ? Promise.reject(new Error('inventory offline'))
         : Promise.resolve(),
   );
@@ -111,10 +141,7 @@ it('auto-selects one newly created compatible project after refreshing access an
   requestAutomationProjectCreation(request());
   mockLoadProjects.mockImplementation(() => {
     useProjectsStore.setState({
-      projects: [
-        { id: 'new', type: 'cowork' },
-        { id: 'code', type: 'single-repo' },
-      ],
+      projects: [makeCoworkProject('new'), makeSingleRepoProject('code')],
     });
     return Promise.resolve();
   });
@@ -135,10 +162,7 @@ it('leaves an ambiguous new-project choice explicit', async () => {
   requestAutomationProjectCreation(request());
   mockLoadProjects.mockImplementation(() => {
     useProjectsStore.setState({
-      projects: [
-        { id: 'one', type: 'cowork' },
-        { id: 'two', type: 'cowork' },
-      ],
+      projects: [makeCoworkProject('one'), makeCoworkProject('two')],
     });
     return Promise.resolve();
   });
@@ -189,7 +213,7 @@ it('does not treat a concurrently provisioned default project as creation after 
   requestAutomationProjectCreation(request());
   mockLoadProjects.mockImplementation(() => {
     useProjectsStore.setState({
-      projects: [{ id: 'cowork-default', type: 'cowork' }],
+      projects: [makeCoworkProject('cowork-default')],
     });
     return Promise.resolve();
   });

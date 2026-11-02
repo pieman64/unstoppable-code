@@ -1,7 +1,13 @@
 import {
   presentedMessages,
   presentedQueueMessages,
+  setupQueuedFirstSend,
 } from '@/stores/chat/optimistic-presentation';
+import {
+  startingTurnUserMessageId,
+  isProvisionalFirstSendAdmissionPending,
+} from '@/stores/chat/provisional-first-send';
+import type { ProvisionalFirstSendFailure } from '@/stores/chat/types';
 import { getLockedHarness, getLockedProvider } from '@/lib/chatProviderLock';
 import type {
   ChatMessage,
@@ -36,6 +42,10 @@ import {
 import { hasUnresolvedToolUseInCurrentTurn } from '@/stores/chat/messages';
 import { computeEmptyCompletionRecoveryView } from '@/stores/chat/empty-completion';
 import { presentableStoppedTurnResume } from '@/stores/chat/stopped-turn-resume';
+import {
+  presentableInterruptedTurnResume,
+  type InterruptedTurnResumePromptKind,
+} from '@/stores/chat/interrupted-turn-resume';
 
 // ---------------------------------------------------------------------------
 // Display types — tool_use blocks can carry an inlined result
@@ -54,6 +64,9 @@ export interface ActiveTranscriptView {
   id: string;
   messages: ChatMessage[];
   pendingTurnTimerId?: string;
+  /** User message whose turn shows the pending "Starting…" status. */
+  startingTurnUserMessageId?: string;
+  startingTurnPresentationKey?: string;
   queuedMessages: QueuedChatMessage[];
   agentUsage?: Record<string, AgentUsage>;
   turnDiffs?: Record<string, TurnDiffData>;
@@ -70,6 +83,19 @@ export interface ActiveTranscriptView {
 }
 
 export interface ActiveComposerView {
+  /** Keep drafting while the first send awaits preparation or acknowledgement. */
+  firstSendPreparing?: boolean;
+  /**
+   * A Home first send whose model was refused (CAN-5021): its recovery notice
+   * renders in the composer's notice stack, and an explicit replacement
+   * captures the failure the person saw before awaiting.
+   */
+  failedFirstSend?: Pick<
+    ProvisionalFirstSendFailure,
+    'failureId' | 'message'
+  > & {
+    userMessageId: string;
+  };
   queuedHookPlaceholder?: boolean;
   executionHarness?: ChatTab['executionHarness'];
   executionHarnessExplicitlyChosen?: boolean;
@@ -110,6 +136,13 @@ export interface ActiveComposerView {
   stoppedTurnResumeUserMessageId?: string;
   /** Actionable failure text from the last resume attempt. */
   stoppedTurnResumeError?: string;
+  /**
+   * User-message id of the latest turn an app close interrupted that can be
+   * resumed in place (CAN-5177). Flat for the same `useShallow` reason.
+   */
+  interruptedTurnResumeUserMessageId?: string;
+  /** What that resume sends; absent when the history cannot tell. */
+  interruptedTurnResumePromptKind?: InterruptedTurnResumePromptKind;
   staleSessionDetected?: StaleSessionInfo;
   pluginSelections?: ChatTabPluginSelections;
   /** Mirror of `ChatTab.disabledGlobalPluginSelections`. */
@@ -119,6 +152,8 @@ export interface ActiveComposerView {
   deferredToolsAllowed?: boolean;
   usage?: ChatTabUsage;
   trackedPlanId?: string;
+  /** Mirror of `ChatTab.latestRevisionNumber`, for the revised plan heading. */
+  latestRevisionNumber?: number;
   discovery?: WorktreeDiscovery;
   lastEventAt?: number;
   /** True while the transcript shows a tool/command that has not completed. */
@@ -126,6 +161,8 @@ export interface ActiveComposerView {
   lockedProvider?: AgentProviderType;
   /** Number of queued turns, projected without exposing the queue payload. */
   queuedMessageCount?: number;
+  /** A transient queue hold, projected without exposing prompt content. */
+  queuedCreditHeld?: boolean;
   lockedHarness?: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
   /** Selected repo for multi-repo workspace cwd resolution. */
   selectedRepoId?: string;
@@ -203,13 +240,21 @@ export function toActiveTranscriptView(tab: ChatTab): ActiveTranscriptView {
     messages: presentedMessages(tab),
     pendingTurnTimerId:
       tab.status !== 'error' ? tab.pendingTurn?.timerMessage.id : undefined,
+    ...(tab.provisionalFirstSend
+      ? {
+          startingTurnUserMessageId: startingTurnUserMessageId(tab),
+          startingTurnPresentationKey: tab.provisionalFirstSend.userMessageId,
+        }
+      : {}),
     queuedMessages: presentedQueueMessages(tab),
     ...(tab.agentUsage ? { agentUsage: tab.agentUsage } : {}),
     ...(tab.turnDiffs ? { turnDiffs: tab.turnDiffs } : {}),
     ...(tab.memoryByMessageId
       ? { memoryByMessageId: tab.memoryByMessageId }
       : {}),
-    ...(tab.queuedForSetup ? { queuedForSetup: true } : {}),
+    ...(tab.queuedForSetup || setupQueuedFirstSend(tab)
+      ? { queuedForSetup: true }
+      : {}),
     pendingQueuedMessageEditId: tab.pendingQueuedMessageEditId,
     ...(tab.editingQueuedMessageIndex !== undefined
       ? {
@@ -239,6 +284,7 @@ export function toActiveComposerView(
     tab.messages,
   );
   const stoppedTurnResume = presentableStoppedTurnResume(tab);
+  const interruptedTurnResume = presentableInterruptedTurnResume(tab);
 
   return {
     id: tab.id,
@@ -246,11 +292,20 @@ export function toActiveComposerView(
       ? { queuedHookPlaceholder: true }
       : {}),
     title: tab.title,
-    status:
-      (tab.pendingUserMessages?.length || tab.pendingTurn) &&
-      tab.status !== 'error'
-        ? 'streaming'
-        : tab.status,
+    firstSendPreparing:
+      tab.provisionalFirstSend?.phase !== 'failed' &&
+      isProvisionalFirstSendAdmissionPending(tab),
+    ...(tab.provisionalFirstSend?.phase === 'failed' &&
+    tab.provisionalFirstSend.failure
+      ? {
+          failedFirstSend: {
+            userMessageId: tab.provisionalFirstSend.userMessageId,
+            failureId: tab.provisionalFirstSend.failure.failureId,
+            message: tab.provisionalFirstSend.failure.message,
+          },
+        }
+      : {}),
+    status: tab.status,
     error: tab.error,
     ...(tab.readOnly ? { readOnly: true } : {}),
     planMode: tab.planMode,
@@ -285,6 +340,18 @@ export function toActiveComposerView(
             : {}),
         }
       : {}),
+    ...(interruptedTurnResume
+      ? {
+          interruptedTurnResumeUserMessageId:
+            interruptedTurnResume.userMessageId,
+          ...(interruptedTurnResume.promptKind
+            ? {
+                interruptedTurnResumePromptKind:
+                  interruptedTurnResume.promptKind,
+              }
+            : {}),
+        }
+      : {}),
     ...(tab.staleSessionDetected
       ? { staleSessionDetected: tab.staleSessionDetected }
       : {}),
@@ -300,6 +367,9 @@ export function toActiveComposerView(
       : {}),
     ...(tab.usage ? { usage: tab.usage } : {}),
     ...(tab.trackedPlanId ? { trackedPlanId: tab.trackedPlanId } : {}),
+    ...(tab.latestRevisionNumber !== undefined
+      ? { latestRevisionNumber: tab.latestRevisionNumber }
+      : {}),
     ...(tab.discovery ? { discovery: tab.discovery } : {}),
     ...(lastEventAt !== undefined ? { lastEventAt } : {}),
     hasActiveAgentStep:
@@ -308,6 +378,9 @@ export function toActiveComposerView(
       hasUnresolvedToolUseInCurrentTurn(tab.messages),
     ...(lockedProvider ? { lockedProvider } : {}),
     queuedMessageCount: presentedQueueMessages(tab).length,
+    queuedCreditHeld: presentedQueueMessages(tab).some(
+      (row) => row.retryBlockedReason === 'insufficient_credits',
+    ),
     ...(lockedHarness ? { lockedHarness } : {}),
     ...(tab.selectedRepoId ? { selectedRepoId: tab.selectedRepoId } : {}),
     ...(tab.interfaceMode ? { interfaceMode: tab.interfaceMode } : {}),

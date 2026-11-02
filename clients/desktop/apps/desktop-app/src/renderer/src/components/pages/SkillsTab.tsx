@@ -1,6 +1,9 @@
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import {
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
-import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import {
   type JSX,
   type ReactNode,
@@ -11,37 +14,23 @@ import {
 } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DetailBackChip } from '../shared/DetailBackChip';
-import { useSkillList } from '../../hooks/useSkillList';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { useNavigationStore } from '@/stores/navigationStore';
-import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
-import { useSharedSkillList } from '../../hooks/useSharedSkillList';
-import { useWorkspaceContextReset } from '@/hooks/useWorkspaceContextReset';
-import { parseGitHubRepo, formatDate } from '../../lib/format';
+import { parseGitHubRepo } from '../../lib/format';
 import { runCancellableModalLoad } from './entityEditModalUtils';
-import { ResourceTable } from './ResourceTable';
 import { readSkillContentForDisplay } from './skillContentUtils';
 import { parseSkillSource, serializeSkillSource } from '@/lib/skillFrontmatter';
-import { useInstalledSkillActions } from '../skills/useInstalledSkillActions';
-import { useEditSkillWithAI } from '../skills/useEditSkillWithAI';
 import { TryItPrimaryCta } from '../plugins/TryItPrimaryCta';
+import { sharedSkillDetailHeader } from '../plugins/sharedResourceDetailHeaders';
 import { buildTryItPrompt } from '@canopy/protocol/try-it';
 import {
-  notifySkillsChanged,
-  SKILLS_CHANGED_EVENT,
-  trackSkillsRefresh,
-} from '@/lib/skillsChanged';
-import {
   CUSTOM_SKILL_SOURCE_ID,
-  findInstalledSharedSkill,
+  lookupInstalledSharedSkill,
 } from '@/lib/sharedSkillImport';
-import { sharedResourceInstallLink } from '@/lib/sharedResourceInstallLink';
-import type { DeepLinkShareOpenEvent } from '@canopy/desktop-shared/types';
+import { SKILLS_CHANGED_EVENT, notifySkillsChanged } from '@/lib/skillsChanged';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
 import { brandText } from '@/lib/brand';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { resolveSharedSkillUrl } from '@/lib/share-links';
-import { useClipboardCopy } from '@/hooks/useClipboardCopy';
 import {
   isSkillEditorSaveEnabled,
   resolveSupportingFilePaths,
@@ -56,6 +45,7 @@ import type {
   AvailableSkill,
   FetchAvailableSkillsResponse,
   InstalledSkillInfo,
+  DesktopSharedSkillDetail,
   SharedSkillDetail,
   SharedSkillSummary,
   SkillContentResponse,
@@ -65,7 +55,6 @@ import {
   SkillFilePreview,
   SkillFileTabBar,
   SkillFileTree,
-  BusyLabel,
 } from '@canopy/ui-shared/components';
 import {
   skillFileLabel,
@@ -73,14 +62,18 @@ import {
   type SkillUpdateAction,
 } from '@canopy/ui-shared/lib';
 import { DialogModal } from '../shared';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
+import {
+  UnsavedChangesDialog,
+  type UnsavedChangesSaveResult,
+} from '@canopy/ui-app/workflows';
+import { useWorkflowEditGuard } from '../workflows/edit/useWorkflowEditGuard';
 import {
   MarkdownFrontmatterContent,
   SKILL_MAIN_FILE,
-  EDIT_WITH_AI_LABEL,
   SkillEditWithAIButton,
   SkillReadDetail,
   installedSkillDetailHeader,
+  type InstalledShareProvenanceOptions,
   type SkillEditWithAIState,
   type SkillReadDetailViewState,
 } from '@canopy/ui-app';
@@ -88,50 +81,37 @@ import {
   MarketplaceDetailPageShell,
   MarketplaceUnshareAction,
   useMarketplaceUnshare,
+  useResourceContext,
   type UseMarketplaceUnshareOptions,
 } from '@canopy/ui-app/capability';
+import { sharedByYouAudienceCount } from '@canopy/ui-app/sharing';
+import { marketplaceUnshareMenuLabel } from '@canopy/ui-shared/lib/marketplace-unshare';
 import {
   DetailActionBar,
   DetailActionSlotsProvider,
   DetailPageActions,
   MarketplaceShareButton,
+  Button,
   RiskBadge,
+  UninstallConfirmDialog,
   useDetailActionSlots,
   type DetailMoreMenuItem,
   type DetailPageActionsProps,
 } from '@canopy/ui-shared/components';
-import {
-  ErrorBanner,
-  LoadingPlaceholder,
-  EmptyState,
-  DeleteConfirmModal,
-} from '../shared';
-import { RefreshSpinner } from '../shared/loading/spinners/RefreshSpinner';
+import { ErrorBanner, LoadingPlaceholder } from '../shared';
 import { Tooltip } from '@canopy/ui-shared';
 import {
-  ShareIcon,
-  SparkleIcon,
   TrashIcon as AppCatalogTrashIcon,
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
   PlusIcon as AppCatalogPlusIcon,
   DocumentPencilIcon as AppCatalogDocumentPencilIcon,
-  CheckIcon as AppCatalogCheckIcon,
   Link as AppCatalogLink,
-  Download as AppCatalogDownload,
   ArrowUpRightIcon,
   CopyIcon,
   GlobeIcon,
   RefreshIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
-
-const SKILL_DELETE_CONFLICT_MESSAGE =
-  'This skill is used by one or more collections. Remove it from those collections before deleting it.';
-const SHARED_SKILL_DELETE_MESSAGE =
-  'Collections that reference this skill must remove it first.';
-
-const SKILL_OPEN_VIEWER_EVENT = 'canopy:skill-open-viewer';
 
 // ---------------------------------------------------------------------------
 // AddSkillsModal
@@ -355,14 +335,14 @@ export function AddSkillsModal({
                 autoFocus
               />
             </label>
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={handleFindSkills}
               disabled={!isSourceValid}
-              className="focus-ring inline-flex items-center rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis disabled:opacity-60"
             >
               Find skills
-            </button>
+            </Button>
           </>
         )}
 
@@ -385,16 +365,17 @@ export function AddSkillsModal({
                   skills directly.
                 </p>
                 {onAddMarketplace && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="primary"
+                    size="compact"
                     onClick={() => {
                       onAddMarketplace(modalStep.source);
                       onClose();
                     }}
-                    className="mt-2 focus-ring inline-flex items-center rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis hover:bg-accent/90 transition-colors"
+                    className="mt-2"
                   >
                     Add marketplace
-                  </button>
+                  </Button>
                 )}
               </div>
             )}
@@ -450,25 +431,25 @@ export function AddSkillsModal({
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
                 onClick={() => {
                   setError('');
                   setModalStep({ step: 'source' });
                 }}
-                className="focus-ring rounded-lg px-4 py-2 text-s font-medium fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
               >
                 Back
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={handleInstall}
                 disabled={selectedNames.size === 0}
-                className="focus-ring inline-flex items-center rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis disabled:opacity-60"
               >
                 Install {selectedNames.size} skill
                 {selectedNames.size !== 1 ? 's' : ''}
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -506,6 +487,7 @@ export function SkillDetailModal({
   updateAction,
   loadErrorPrefix,
   installedSkill,
+  shareProvenance,
   displayName,
   onNavigateBack,
   relatedContent,
@@ -518,6 +500,11 @@ export function SkillDetailModal({
    * (CAN-4264). The page shows the header without them until it resolves.
    */
   installedSkill?: InstalledSkillInfo;
+  /**
+   * A receipted shared install's live names, update state and source link
+   * (CAN-5018); without it the header shows the receipt's static facts.
+   */
+  shareProvenance?: InstalledShareProvenanceOptions;
   onClose: () => void;
   onEdit?: () => void;
   /** "Edit with AI" (CAN-1259); omit to hide it. */
@@ -688,6 +675,7 @@ export function SkillDetailModal({
               installedSkill,
               'skill-detail-modal-title',
               displayName,
+              shareProvenance,
             )
           : undefined
       }
@@ -1165,15 +1153,17 @@ function SkillEditorBody({
           />
         </label>
         <Tooltip label="Delete file">
-          <button
-            type="button"
+          <Button
+            variant="ghost-destructive"
+            size="compact"
+            iconOnly
             onClick={() => state.removeFile(activeFile.id)}
             aria-label="Delete file"
             data-testid="skill-file-delete"
-            className="focus-ring mb-0.5 rounded-lg border p-2 fg-secondary hover:fg-destructive hover:bg-secondary transition-colors"
+            className="mb-0.5"
           >
             <AppCatalogTrashIcon width="14" height="14" />
-          </button>
+          </Button>
         </Tooltip>
       </div>
       {activeFile.editable ? (
@@ -1268,10 +1258,10 @@ function SkillEditorBody({
       </label>
 
       <div>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           onClick={() => state.setShowAdvanced(!state.showAdvanced)}
-          className="focus-ring inline-flex items-center gap-1.5 text-xs font-medium fg-secondary hover:fg-primary transition-colors"
         >
           <AppCatalogChevronRightMediumIcon
             width="10"
@@ -1284,7 +1274,7 @@ function SkillEditorBody({
               {state.metadataRows.length}
             </span>
           )}
-        </button>
+        </Button>
 
         {state.showAdvanced && (
           <div className="mt-2 rounded-lg border bg-secondary/30 p-3 space-y-2">
@@ -1321,28 +1311,29 @@ function SkillEditorBody({
                   className="focus-ring flex-1 rounded border bg-base px-2 py-1 text-xs"
                 />
                 <Tooltip label="Remove field">
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost-destructive"
+                    size="compact"
+                    iconOnly
                     onClick={() => state.removeMetadataRow(row.id)}
                     aria-label="Remove field"
-                    className="focus-ring rounded p-1 fg-secondary hover:fg-destructive hover:bg-base transition-colors"
                   >
                     <AppCatalogCloseIcon width="12" height="12" />
-                  </button>
+                  </Button>
                 </Tooltip>
               </div>
             ))}
             {state.metadataKeyError && (
               <p className="text-xs fg-destructive">{state.metadataKeyError}</p>
             )}
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
               onClick={state.addMetadataRow}
-              className="focus-ring inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium fg-secondary hover:fg-primary hover:bg-base transition-colors"
             >
               <AppCatalogPlusIcon width="12" height="12" />
               Add field
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -1373,32 +1364,14 @@ function SkillEditorBody({
     <div className="px-5">
       <div className="flex items-center justify-between pb-3">
         <p className="text-xs fg-secondary">{headerHint}</p>
-        <div className="inline-flex items-center rounded-md border bg-secondary p-0.5 text-xs">
-          <button
-            type="button"
-            onClick={() => state.setShowPreview(false)}
-            data-testid="skill-editor-mode-edit"
-            className={`px-2.5 py-1 rounded transition-colors ${
-              !state.showPreview
-                ? 'bg-base fg-primary'
-                : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            onClick={() => state.setShowPreview(true)}
-            data-testid="skill-editor-mode-preview"
-            className={`px-2.5 py-1 rounded transition-colors ${
-              state.showPreview
-                ? 'bg-base fg-primary'
-                : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            Preview
-          </button>
-        </div>
+        <SegmentedControl<'edit' | 'preview'>
+          label="Skill editor view"
+          value={state.showPreview ? 'preview' : 'edit'}
+          width="content"
+          shape="capsule"
+          options={SKILL_EDITOR_VIEW_OPTIONS}
+          onChange={(next) => state.setShowPreview(next === 'preview')}
+        />
       </div>
 
       {enableFiles && (
@@ -1426,15 +1399,17 @@ function SkillEditorBody({
             }}
             trailing={
               <Tooltip label="Add file">
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
                   onClick={state.addFile}
                   aria-label="Add file"
                   data-testid="skill-editor-add-file"
-                  className="focus-ring ml-1 shrink-0 rounded-md border border-transparent p-1.5 fg-secondary transition-colors hover:fg-primary hover:bg-secondary/50"
+                  className="ml-1"
                 >
                   <AppCatalogPlusIcon width="12" height="12" />
-                </button>
+                </Button>
               </Tooltip>
             }
           />
@@ -1523,8 +1498,43 @@ export interface CustomSkillEditorProps {
 /** Why the edit page's "Edit with AI" waits (CAN-1259). */
 const EDIT_WITH_AI_UNSAVED_REASON = 'Save or cancel your changes first.';
 
-const PAGE_SECONDARY_ACTION_CLASS =
-  'focus-ring inline-flex items-center gap-1.5 rounded-md border bg-secondary px-2.5 py-1 text-xs font-medium fg-primary hover:bg-accent-subtle transition-colors disabled:opacity-50';
+const SKILL_EDITOR_VIEW_OPTIONS: readonly SegmentedControlOption<
+  'edit' | 'preview'
+>[] = [
+  { value: 'edit', label: 'Edit', dataTestId: 'skill-editor-mode-edit' },
+  {
+    value: 'preview',
+    label: 'Preview',
+    dataTestId: 'skill-editor-mode-preview',
+  },
+];
+
+/**
+ * The edit page's unsaved-changes guard: the one Workflows editors use, so
+ * the sidebar, shortcuts, history and closing the window ask the same way
+ * before the page's edits are lost. The dialog only opens while the page is
+ * mounted, since the authoring dialog already blocks navigation.
+ */
+function SkillEditPageUnsavedGuard({
+  editingName,
+  name,
+  isDirty,
+  save,
+}: {
+  /** The saved skill's name; null for a new one, whose name may change. */
+  readonly editingName: string | null;
+  readonly name: string;
+  readonly isDirty: boolean;
+  readonly save: () => Promise<UnsavedChangesSaveResult>;
+}): JSX.Element | null {
+  const { prompt } = useWorkflowEditGuard({
+    isDirty,
+    save,
+    // Stable while the name is typed, so a pending prompt survives it.
+    targetKey: editingName === null ? 'skill:new' : `skill:${editingName}`,
+  });
+  return prompt ? <UnsavedChangesDialog name={name} {...prompt} /> : null;
+}
 
 /**
  * Custom skill authoring: name, description, advanced metadata, SKILL.md
@@ -1697,8 +1707,15 @@ export function CustomSkillEditor({
     hasContent: editor.hasContent,
   });
 
-  const handleSave = async (): Promise<void> => {
-    if (!canSave) return;
+  const save = async (): Promise<UnsavedChangesSaveResult> => {
+    if (!canSave) {
+      // Said in place, since the prompt that asked has closed.
+      const message = editor.hasContent
+        ? 'This skill is still loading. Try again in a moment.'
+        : "This skill can't be saved yet. Check its name, description, instructions and files.";
+      setError(message);
+      return { ok: false, message };
+    }
     setSaving(true);
     setError('');
     try {
@@ -1723,14 +1740,21 @@ export function CustomSkillEditor({
           () => mountedRef.current,
         );
         if (presentation === 'modal') onClose();
-      } else {
-        setError(result.error || 'Failed to save skill.');
+        return { ok: true };
       }
+      const message = result.error || 'Failed to save skill.';
+      setError(message);
+      return { ok: false, message };
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      return { ok: false, message };
     } finally {
       setSaving(false);
     }
+  };
+  const handleSave = async (): Promise<void> => {
+    await save();
   };
 
   const title = isEdit ? `Edit skill: ${editingName}` : 'Create skill';
@@ -1773,6 +1797,12 @@ export function CustomSkillEditor({
         <h1 id="skill-editor-page-title" className="sr-only">
           {title}
         </h1>
+        <SkillEditPageUnsavedGuard
+          editingName={editingName}
+          name={editingName ?? (editor.skillName || 'New skill')}
+          isDirty={hasUnsavedChanges}
+          save={save}
+        />
         <div className="px-5">
           <DetailBackChip onNavigateBack={cancel} />
           <div
@@ -1793,24 +1823,23 @@ export function CustomSkillEditor({
                 dataTestId="skill-editor-edit-with-ai"
               />
             )}
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={cancel}
               disabled={saving}
               data-testid="skill-editor-cancel"
-              className={PAGE_SECONDARY_ACTION_CLASS}
             >
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
+              size="compact"
               onClick={() => void handleSave()}
               disabled={!canSave}
               data-testid="skill-editor-save"
-              className="focus-ring inline-flex items-center rounded-md bg-accent px-2.5 py-1 text-xs font-medium fg-emphasis disabled:opacity-60"
             >
               {saveLabel}
-            </button>
+            </Button>
           </div>
           <ErrorBanner error={error || (editWithAI?.error ?? '')} />
         </div>
@@ -1836,24 +1865,23 @@ export function CustomSkillEditor({
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onClose}
             disabled={saving}
             data-testid="skill-editor-cancel"
-            className="focus-ring rounded-lg px-4 py-2 text-s font-medium fg-secondary hover:fg-primary hover:bg-secondary transition-colors disabled:opacity-50"
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => void handleSave()}
             disabled={!canSave}
             data-testid="skill-editor-save"
-            className="focus-ring inline-flex items-center rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis disabled:opacity-60"
           >
             {saveLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>
@@ -1889,577 +1917,6 @@ export function CreateSkillModal({
 }
 
 // ---------------------------------------------------------------------------
-// SkillsTab
-// ---------------------------------------------------------------------------
-
-function renderSkillSource(skill: InstalledSkillInfo): JSX.Element {
-  if (skill.custom) {
-    return (
-      <span className="inline-flex items-center gap-1.5">
-        <span className="text-3xs bg-accent-subtle fg-accent px-1.5 py-0.5 rounded font-medium">
-          custom
-        </span>
-        <span>{brandText.appName}</span>
-      </span>
-    );
-  }
-  if (skill.builtIn) {
-    return (
-      <span className="inline-flex items-center gap-1.5">
-        <span className="text-3xs bg-accent-subtle fg-accent px-1.5 py-0.5 rounded font-medium">
-          built-in
-        </span>
-        <span>{brandText.appName}</span>
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span className="text-3xs bg-secondary px-1.5 py-0.5 rounded font-medium">
-        github
-      </span>
-      <a
-        href={`https://github.com/${skill.source}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="hover:underline hover:fg-primary transition-colors"
-      >
-        {skill.source}
-      </a>
-    </span>
-  );
-}
-
-export function SkillsTab({
-  onOpenSkill,
-  onAddMarketplace,
-  onOpenAccountSettings,
-}: {
-  /**
-   * Opens an installed skill's Marketplace detail page. The list no longer
-   * owns a skill viewer of its own (CAN-3483). `edit` opens the custom
-   * skill's edit page on top of that detail instead (CAN-3485).
-   */
-  onOpenSkill: (skill: {
-    sourceId: string;
-    name: string;
-    filePath?: string;
-    edit?: true;
-  }) => void;
-  onAddMarketplace?: (repo: string) => void;
-  /**
-   * Invoked when an empty-account-state CTA is clicked. The parent page
-   * opens the cloud account settings, where the cloud account is connected.
-   */
-  onOpenAccountSettings?: () => void;
-}): JSX.Element {
-  const { skills, loading, error, refresh, refreshOrThrow } = useSkillList();
-  const [addModalOpen, setAddModalOpen] = useState(false);
-  const [createSkillOpen, setCreateSkillOpen] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const editWithAI = useEditSkillWithAI();
-
-  // Shared-skill state — populated from the configured Canopy Cloud account
-  // when it advertises `skills-crud-v1`. The hook automatically skips the
-  // list when the capability is missing.
-  const sharedSkills = useSharedSkillList();
-  const skillActions = useInstalledSkillActions({
-    onSkillsChanged: refresh,
-    onUpdateInventoryRefresh: () =>
-      notifySkillsChanged({ rejectOnFailure: true }),
-    onShared: () => void sharedSkills.refreshShared(),
-    onPublicLinkRemoved: () => void sharedSkills.refreshShared(),
-    onOpenAccountSettings,
-    onUpdateCheckComplete: () => void notifySkillsChanged(),
-  });
-  const [sharedFlash, setSharedFlash] = useState<string | null>(null);
-  const [sharedSearch, setSharedSearch] = useState('');
-  const [sharedCreatedBy, setSharedCreatedBy] = useState<'me' | 'anyone'>(
-    'anyone',
-  );
-  const [sharedSkillModal, setSharedSkillModal] = useState<{
-    mode: 'view' | 'edit';
-    summary: SharedSkillSummary;
-  } | null>(null);
-  const [pendingSharedSkillDelete, setPendingSharedSkillDelete] = useState<{
-    summary: SharedSkillSummary;
-  } | null>(null);
-  const [sharedSkillDeleting, setSharedSkillDeleting] = useState(false);
-  const [sharedSkillDeleteError, setSharedSkillDeleteError] = useState<
-    string | null
-  >(null);
-  const [activeView, setActiveView] = useState<'local' | 'shared'>('local');
-
-  useWorkspaceContextReset((): void => {
-    setSharedFlash(null);
-    setSharedSearch('');
-    setSharedCreatedBy('anyone');
-    setSharedSkillModal(null);
-    setPendingSharedSkillDelete(null);
-    setSharedSkillDeleteError(null);
-  });
-
-  useCurrentUiStateReporter('plugins.sharedSkills', {
-    filters: {
-      ...(sharedSearch.trim() ? { query: sharedSearch.trim() } : {}),
-      createdBy: sharedCreatedBy,
-    },
-    shareModalOpen: skillActions.shareDialogOpen,
-    detailModal: sharedSkillModal
-      ? {
-          mode: sharedSkillModal.mode,
-          id: sharedSkillModal.summary.id,
-          name: sharedSkillModal.summary.name,
-        }
-      : null,
-  });
-
-  // Re-run filters / refresh first page when the user changes them. The hook
-  // owns debounce semantics; we just push new filters.
-  useEffect(() => {
-    sharedSkills.setFilters({
-      ...(sharedSearch.trim() ? { q: sharedSearch.trim() } : {}),
-      createdBy: sharedCreatedBy,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sharedSearch, sharedCreatedBy]);
-
-  const cloudSkillsReady =
-    isCanopyCloudConnected(sharedSkills.cloudAccount) &&
-    sharedSkills.cloudAccount?.capabilities.includes('skills-crud-v1') === true;
-
-  // Lazy-load the first page when the user enters the shared view and the
-  // Cloud account is ready.
-  useEffect(() => {
-    if (activeView !== 'shared') return;
-    if (!cloudSkillsReady) return;
-    if (sharedSkills.loaded || sharedSkills.loading) return;
-    void sharedSkills.refreshShared();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, cloudSkillsReady, sharedSkills.loaded, sharedSkills.loading]);
-
-  const skillKey = (sourceId: string, name: string): string =>
-    `${sourceId}/${name}`;
-
-  // Skills mutated elsewhere — including from an installed skill's detail
-  // page while this list waits hidden behind it (CAN-3483) — refresh both
-  // views; the Shared view only once it has loaded.
-  const sharedSkillsLoaded = sharedSkills.loaded;
-  const refreshSharedSkills = sharedSkills.refreshShared;
-  useEffect(() => {
-    const handleSkillsChanged = (event: Event): void => {
-      trackSkillsRefresh(event, refreshOrThrow());
-      if (sharedSkillsLoaded) void refreshSharedSkills();
-    };
-    window.addEventListener(SKILLS_CHANGED_EVENT, handleSkillsChanged);
-    return (): void => {
-      window.removeEventListener(SKILLS_CHANGED_EVENT, handleSkillsChanged);
-    };
-  }, [refreshOrThrow, refreshSharedSkills, sharedSkillsLoaded]);
-
-  useEffect(() => {
-    const handleOpenViewer = (event: Event): void => {
-      const detail = (
-        event as CustomEvent<{ sourceId?: string; skillName?: string }>
-      ).detail;
-      if (!detail?.sourceId || !detail.skillName) return;
-      onOpenSkill({ sourceId: detail.sourceId, name: detail.skillName });
-    };
-
-    window.addEventListener(SKILL_OPEN_VIEWER_EVENT, handleOpenViewer);
-    return (): void => {
-      window.removeEventListener(SKILL_OPEN_VIEWER_EVENT, handleOpenViewer);
-    };
-  }, [onOpenSkill]);
-
-  // Store-backed shared-skill deep link. Unlike the CustomEvent above — which
-  // is dropped if it fires before this tab mounts — the pending payload waits
-  // in the navigation store until this effect consumes it. Installed-skill
-  // links open the Marketplace detail page and are consumed by the page.
-  const pendingSkillViewer = useNavigationStore((s) => s.pendingSkillViewer);
-  useEffect(() => {
-    if (!pendingSkillViewer) return;
-    if ('kind' in pendingSkillViewer && pendingSkillViewer.kind === 'shared') {
-      setActiveView('shared');
-      let cancelled = false;
-      void window.skills
-        .getShared(pendingSkillViewer.skillId)
-        .then((detail) => {
-          if (!cancelled) {
-            setSharedSkillModal({ mode: 'view', summary: detail });
-          }
-        })
-        .catch((error: unknown) => {
-          if (!cancelled)
-            setActionError(resolveSharedResourceErrorMessage(error));
-        })
-        .finally(() => {
-          if (!cancelled) useNavigationStore.getState().consumeSkillViewer();
-        });
-      return (): void => {
-        cancelled = true;
-      };
-    }
-    return undefined;
-  }, [pendingSkillViewer]);
-
-  // -------------------------------------------------------------------------
-  // Shared skill row handlers.
-  // -------------------------------------------------------------------------
-  const handleSharedDelete = (summary: SharedSkillSummary): Promise<void> => {
-    setSharedSkillDeleteError(null);
-    setPendingSharedSkillDelete({ summary });
-    return Promise.resolve();
-  };
-
-  const confirmSharedSkillDelete = async (): Promise<void> => {
-    if (!pendingSharedSkillDelete || sharedSkillDeleting) return;
-    const { summary } = pendingSharedSkillDelete;
-    setSharedSkillDeleting(true);
-    setSharedSkillDeleteError(null);
-    setSharedFlash(null);
-    setActionError(null);
-    try {
-      await window.skills.deleteShared({ skillId: summary.id });
-      sharedSkills.removeSharedRow(summary.id);
-      setSharedFlash('Shared skill deleted.');
-      await sharedSkills.refreshShared();
-      setPendingSharedSkillDelete(null);
-    } catch (err) {
-      const message = resolveSharedResourceErrorMessage(err, {
-        deleteConflictMessage: SKILL_DELETE_CONFLICT_MESSAGE,
-      });
-      setSharedSkillDeleteError(`Failed to delete shared skill. ${message}`);
-    } finally {
-      setSharedSkillDeleting(false);
-    }
-  };
-
-  const handleSharedUpdated = async (
-    detail: SharedSkillDetail,
-  ): Promise<void> => {
-    setSharedFlash(`Shared skill "${detail.name}" updated.`);
-    await sharedSkills.refreshShared();
-  };
-
-  return (
-    <>
-      {/* Local / Shared view tabs */}
-      <div
-        className="canopy-tab-list mb-4 flex gap-1"
-        role="tablist"
-        data-testid="skills-view-tabs"
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeView === 'local'}
-          onClick={() => setActiveView('local')}
-          data-testid="skills-view-tab-local"
-          className={`canopy-tab-trigger px-4 py-2 text-s font-medium transition-colors ${
-            activeView === 'local'
-              ? 'fg-primary'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-        >
-          Local
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeView === 'shared'}
-          onClick={() => setActiveView('shared')}
-          data-testid="skills-view-tab-shared"
-          className={`canopy-tab-trigger px-4 py-2 text-s font-medium transition-colors ${
-            activeView === 'shared'
-              ? 'fg-primary'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-        >
-          Shared
-        </button>
-      </div>
-
-      {/* Toolbar \u2014 local view only. */}
-      {activeView === 'local' && (
-        <div className="flex items-center justify-between mb-4">
-          <p className="text-xs fg-secondary">
-            {skills.length > 0
-              ? `${skills.length} skill${skills.length !== 1 ? 's' : ''} installed`
-              : ''}
-          </p>
-          <div className="flex items-center gap-2">
-            {skills.length > 0 && (
-              <button
-                onClick={skillActions.checkUpdates}
-                disabled={skillActions.updatePending !== 'none'}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-secondary fg-primary hover:bg-accent-subtle transition-colors focus-ring disabled:opacity-50"
-              >
-                {skillActions.updatePending === 'checking'
-                  ? 'Checking\u2026'
-                  : 'Check for updates'}
-              </button>
-            )}
-            <button
-              onClick={() => setCreateSkillOpen(true)}
-              className="px-3 py-1.5 text-xs font-medium rounded-md bg-secondary fg-primary hover:bg-accent-subtle transition-colors focus-ring"
-            >
-              Create skill
-            </button>
-            <button
-              onClick={() => setAddModalOpen(true)}
-              className="px-3 py-1.5 text-xs font-medium rounded-md bg-accent fg-emphasis hover:bg-accent/90 transition-colors focus-ring"
-            >
-              Add skills
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Error */}
-      <ErrorBanner
-        error={
-          error ||
-          actionError ||
-          skillActions.updateErrorFor() ||
-          editWithAI.error ||
-          null
-        }
-      />
-
-      {/* Loading */}
-      {activeView === 'local' && loading && skills.length === 0 && (
-        <LoadingPlaceholder label="Loading skills…" space="page" />
-      )}
-
-      {/* Table */}
-      {activeView === 'local' && skills.length > 0 && (
-        <ResourceTable
-          headers={[
-            { label: 'Name', align: 'left' },
-            { label: 'Source', align: 'left' },
-            { label: 'Installed', align: 'left' },
-            { label: 'Actions', align: 'right' },
-          ]}
-        >
-          {skills
-            .slice()
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((skill) => {
-              const key = skillKey(skill.sourceId, skill.name);
-              const updateAvailable = skillActions.updateAvailable(skill);
-              return (
-                <tr
-                  key={key}
-                  className="border-b last:border-b-0 hover:bg-secondary/30 transition-colors"
-                >
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onOpenSkill({
-                          sourceId: skill.sourceId,
-                          name: skill.name,
-                        })
-                      }
-                      className="text-left group"
-                    >
-                      <span className="fg-primary font-medium group-hover:fg-accent transition-colors">
-                        {skill.name}
-                      </span>
-                      {skill.description && (
-                        <p className="text-xs fg-secondary mt-0.5 line-clamp-1">
-                          {skill.description}
-                        </p>
-                      )}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3 fg-secondary">
-                    {renderSkillSource(skill)}
-                  </td>
-                  <td className="px-4 py-3 fg-secondary">
-                    {skill.builtIn ? '\u2014' : formatDate(skill.installedAt)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {(skillActions.canRemove(skill) ||
-                      skillActions.canShare(skill)) && (
-                      <span className="inline-flex items-center gap-1">
-                        {skillActions.canShare(skill) && (
-                          <Tooltip label="Share">
-                            <button
-                              type="button"
-                              onClick={() => skillActions.requestShare(skill)}
-                              aria-label="Share skill"
-                              data-testid={`skill-share-${skill.sourceId}-${skill.name}`}
-                              className="focus-ring rounded p-1 fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-                            >
-                              <ShareIcon width={14} height={14} aria-hidden />
-                            </button>
-                          </Tooltip>
-                        )}
-                        {skill.custom && (
-                          <Tooltip label="Edit skill">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onOpenSkill({
-                                  sourceId: skill.sourceId,
-                                  name: skill.name,
-                                  edit: true,
-                                })
-                              }
-                              aria-label="Edit skill"
-                              data-testid={`skill-edit-${skill.sourceId}-${skill.name}`}
-                              className="focus-ring rounded p-1 fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-                            >
-                              <AppCatalogDocumentPencilIcon
-                                width="14"
-                                height="14"
-                              />
-                            </button>
-                          </Tooltip>
-                        )}
-                        {skill.custom && (
-                          <Tooltip label={EDIT_WITH_AI_LABEL}>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                editWithAI.start({
-                                  sourceId: skill.sourceId,
-                                  name: skill.name,
-                                })
-                              }
-                              aria-disabled={editWithAI.pending || undefined}
-                              aria-busy={editWithAI.pending || undefined}
-                              aria-label={EDIT_WITH_AI_LABEL}
-                              data-testid={`skill-edit-with-ai-${skill.sourceId}-${skill.name}`}
-                              className="focus-ring rounded p-1 fg-secondary hover:fg-primary hover:bg-secondary transition-colors aria-disabled:opacity-50"
-                            >
-                              <SparkleIcon width={14} height={14} aria-hidden />
-                            </button>
-                          </Tooltip>
-                        )}
-                        {skillActions.canUpdate(skill) && updateAvailable && (
-                          <Tooltip label="Update available">
-                            <button
-                              type="button"
-                              onClick={() => skillActions.applyUpdate(skill)}
-                              disabled={skillActions.updatePending !== 'none'}
-                              aria-label="Update available"
-                              className="focus-ring rounded p-1 fg-accent hover:bg-secondary transition-colors disabled:opacity-50"
-                            >
-                              <RefreshSpinner
-                                spinning={skillActions.isUpdating(skill)}
-                              />
-                            </button>
-                          </Tooltip>
-                        )}
-                        {skillActions.canRemove(skill) && (
-                          <Tooltip
-                            label={
-                              skill.custom ? 'Delete skill' : 'Remove skill'
-                            }
-                          >
-                            <button
-                              type="button"
-                              onClick={() => skillActions.requestRemove(skill)}
-                              disabled={skillActions.isRemoving(skill)}
-                              aria-label={
-                                skill.custom ? 'Delete skill' : 'Remove skill'
-                              }
-                              className="focus-ring rounded p-1 fg-secondary hover:fg-destructive hover:bg-secondary transition-colors disabled:opacity-50"
-                            >
-                              <AppCatalogTrashIcon width="14" height="14" />
-                            </button>
-                          </Tooltip>
-                        )}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-        </ResourceTable>
-      )}
-
-      {/* Empty state */}
-      {activeView === 'local' && !loading && skills.length === 0 && !error && (
-        <EmptyState
-          title="No skills installed"
-          subtitle="Add a GitHub source to discover and install skills"
-        />
-      )}
-
-      {/* Shared skills */}
-      {activeView === 'shared' && (
-        <SharedSkillsSection
-          sharedSkills={sharedSkills}
-          search={sharedSearch}
-          onSearchChange={setSharedSearch}
-          createdBy={sharedCreatedBy}
-          onCreatedByChange={setSharedCreatedBy}
-          flash={sharedFlash}
-          onView={(summary) => setSharedSkillModal({ mode: 'view', summary })}
-          onEdit={(summary) => setSharedSkillModal({ mode: 'edit', summary })}
-          onImport={(link) => {
-            // The shared install review (CAN-3710) installs the skill and
-            // lands on it.
-            useNavigationStore.getState().openShareInstall(link, 'in-app');
-          }}
-          onDelete={handleSharedDelete}
-          onOpenAccountSettings={onOpenAccountSettings}
-        />
-      )}
-
-      {sharedSkillModal && (
-        <SharedSkillDetailModal
-          mode={sharedSkillModal.mode}
-          summary={sharedSkillModal.summary}
-          onClose={() => setSharedSkillModal(null)}
-          onUpdated={(detail) => void handleSharedUpdated(detail)}
-          onSwitchToEdit={() =>
-            setSharedSkillModal({
-              mode: 'edit',
-              summary: sharedSkillModal.summary,
-            })
-          }
-        />
-      )}
-
-      {skillActions.dialogs}
-
-      <AddSkillsModal
-        isOpen={addModalOpen}
-        onClose={() => setAddModalOpen(false)}
-        onInstalled={refresh}
-        onAddMarketplace={onAddMarketplace}
-      />
-
-      <CreateSkillModal
-        isOpen={createSkillOpen}
-        onClose={() => setCreateSkillOpen(false)}
-        onSaved={refresh}
-      />
-
-      {pendingSharedSkillDelete && (
-        <DeleteConfirmModal
-          title={`Delete shared skill "${pendingSharedSkillDelete.summary.name}"?`}
-          message={SHARED_SKILL_DELETE_MESSAGE}
-          pending={sharedSkillDeleting}
-          error={sharedSkillDeleteError}
-          onCancel={() => {
-            if (sharedSkillDeleting) return;
-            setPendingSharedSkillDelete(null);
-            setSharedSkillDeleteError(null);
-          }}
-          onConfirm={() => void confirmSharedSkillDelete()}
-        />
-      )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // SharedSkillDetailModal
 // ---------------------------------------------------------------------------
 
@@ -2476,6 +1933,7 @@ export function SharedSkillDetailModal({
   shareAction,
   renderUnshare,
   unshareOptions,
+  renderSharedByYou,
 }: {
   mode: 'view' | 'edit';
   summary: SharedSkillSummary;
@@ -2510,19 +1968,42 @@ export function SharedSkillDetailModal({
   unshareOptions?: (
     detail: SharedSkillDetail,
   ) => UseMarketplaceUnshareOptions | null;
+  /**
+   * The owner's "Shared by you" section for the loaded detail (CAN-4842),
+   * with a re-read for after a public link is removed. Where it renders the
+   * public-link row it owns removing the link, so the legacy Remove public
+   * link controls step aside.
+   */
+  renderSharedByYou?: (
+    detail: SharedSkillDetail,
+    refresh: () => Promise<void>,
+  ) => ReactNode;
 }): JSX.Element {
-  const [detail, setDetail] = useState<SharedSkillDetail | null>(null);
-  const canAdd = onAdd !== undefined && mode === 'view';
-  // The installed copy of this share, when the arrival check finds one.
-  const [installed, setInstalled] = useState<{ skillName: string } | null>(
-    null,
+  const [detail, setDetail] = useState<DesktopSharedSkillDetail | null>(null);
+  const { personalOrganizationId } = useResourceContext();
+  const contextGeneration = useWorkspaceContextStore(
+    (store) => store.appliedGeneration,
   );
+  const canAdd = onAdd !== undefined && mode === 'view';
+  // The installed copy of this share, when the arrival check finds one. A
+  // receipted copy that differs from the share has an update (CAN-5307).
+  const [installed, setInstalled] = useState<{
+    skillName: string;
+    updateAvailable: boolean;
+  } | null>(null);
   const [checkingInstalled, setCheckingInstalled] = useState(canAdd);
+  // Why the installed copy could not be verified. While set, neither Install
+  // nor Update is offered: either could duplicate or overwrite a copy.
+  const [installCheckError, setInstallCheckError] = useState('');
+  // Rechecks after any skill install, update, or uninstall, and on retry.
+  const [installCheckCount, setInstallCheckCount] = useState(0);
+  const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [parsed, setParsed] = useState<{
     frontmatter: Record<string, unknown>;
     body: string;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sourceReadCount, setSourceReadCount] = useState(0);
   const [saving, setSaving] = useState(false);
   const [publicShareBusy, setPublicShareBusy] = useState(false);
   const [publicShareUrl, setPublicShareUrl] = useState<string | null>(null);
@@ -2534,6 +2015,19 @@ export function SharedSkillDetailModal({
   editorRef.current = editor;
 
   const isEdit = mode === 'edit' && summary.canUpdate;
+  // Shared by you renders the public-link row only outside edit mode and
+  // for a share the viewer can delete; otherwise the legacy control stays.
+  const sharedByYouOwnsPublicLink =
+    renderSharedByYou !== undefined && !isEdit && detail?.canDelete === true;
+  // Shared by you lists the owner's audiences, so the header leaves them out
+  // (CAN-5224). The row's facts stand in while the detail loads, avoiding a
+  // flash; the loaded detail decides, and a failed load renders no card.
+  const audienceFacts = detail ?? (loading ? summary : null);
+  const audienceListedBelow =
+    renderSharedByYou !== undefined &&
+    !isEdit &&
+    audienceFacts !== null &&
+    sharedByYouAudienceCount(audienceFacts, personalOrganizationId) > 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -2573,13 +2067,24 @@ export function SharedSkillDetailModal({
           setError(resolveSharedResourceErrorMessage(err));
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setSourceReadCount((count) => count + 1);
+        }
       }
     })();
     return (): void => {
       cancelled = true;
     };
-  }, [summary.id, summary.name, summary.description]);
+  }, [
+    summary.id,
+    summary.name,
+    summary.description,
+    summary.contentHash,
+    summary.updatedAt,
+    contextGeneration,
+    installCheckCount,
+  ]);
 
   // Arrival check, against the loaded share: a skill added earlier opens on
   // its outcome instead of offering Add again. Keyed on what decides the
@@ -2596,25 +2101,56 @@ export function SharedSkillDetailModal({
     : null;
   useEffect(() => {
     if (!canAdd) return undefined;
+    const recheck = (): void => setInstallCheckCount((count) => count + 1);
+    window.addEventListener(SKILLS_CHANGED_EVENT, recheck);
+    return (): void => {
+      window.removeEventListener(SKILLS_CHANGED_EVENT, recheck);
+    };
+  }, [canAdd]);
+  useEffect(() => {
+    if (!canAdd) return undefined;
     if (loading) {
       setInstalled(null);
+      setInstallCheckError('');
       setCheckingInstalled(true);
       return undefined;
     }
     const loaded = detailRef.current;
-    // A share that could not be read has nothing to compare: offer Add.
+    // A failed source read cannot establish that installing is safe.
     if (loaded === null) {
+      setInstalled(null);
+      setInstallCheckError('The shared skill could not be checked. Try again.');
       setCheckingInstalled(false);
       return undefined;
     }
     let cancelled = false;
     setCheckingInstalled(true);
-    findInstalledSharedSkill(loaded)
-      .then((skillName) => {
-        if (!cancelled) setInstalled(skillName === null ? null : { skillName });
+    // Source and receipt ids are reloaded together after events/context changes.
+    lookupInstalledSharedSkill(loaded)
+      .then((found) => {
+        if (cancelled) return;
+        setInstalled(
+          found.status === 'installed'
+            ? {
+                skillName: found.skillName,
+                updateAvailable: found.updateAvailable,
+              }
+            : null,
+        );
+        setInstallCheckError(
+          found.status === 'missing-copy'
+            ? 'Your installed copy of this skill is missing. Restore it, then try again.'
+            : found.status === 'unverified'
+              ? 'Your installed copy of this skill could not be checked. Try again.'
+              : '',
+        );
       })
       .catch(() => {
-        // Best-effort: an unreadable inventory leaves Add available.
+        if (cancelled) return;
+        setInstalled(null);
+        setInstallCheckError(
+          'Your installed copy of this skill could not be checked. Try again.',
+        );
       })
       .finally(() => {
         if (!cancelled) setCheckingInstalled(false);
@@ -2622,7 +2158,19 @@ export function SharedSkillDetailModal({
     return (): void => {
       cancelled = true;
     };
-  }, [canAdd, installCheckKey, loading]);
+  }, [canAdd, installCheckKey, loading, contextGeneration, sourceReadCount]);
+
+  const handleUninstallInstalled = async (): Promise<string | null> => {
+    if (!installed) return null;
+    const result = await window.skills.removeSkill(
+      CUSTOM_SKILL_SOURCE_ID,
+      installed.skillName,
+    );
+    if (!result.success)
+      return result.error ?? 'Failed to uninstall the skill.';
+    await notifySkillsChanged();
+    return null;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -2732,20 +2280,81 @@ export function SharedSkillDetailModal({
   };
 
   const showInstalled = onAdd !== undefined && installed !== null;
-  const showAdd = onAdd !== undefined && !showInstalled && !checkingInstalled;
+  const showUpdate = showInstalled && installed.updateAvailable;
+  const showInstallCheckError =
+    onAdd !== undefined && !checkingInstalled && installCheckError !== '';
+  const showAdd =
+    onAdd !== undefined &&
+    !showInstalled &&
+    !checkingInstalled &&
+    installCheckError === '';
+  const installedStatus = showInstalled ? (
+    <>
+      Installed on this device as “
+      <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{installed.skillName}</span>”
+      {showUpdate ? '. An update is available.' : ''}
+    </>
+  ) : null;
+  const uninstallButton = !isEdit && showInstalled && (
+    <Button
+      variant="secondary"
+      size="sm"
+      data-testid="shared-skill-detail-uninstall"
+      onClick={() => setConfirmingUninstall(true)}
+    >
+      Uninstall
+    </Button>
+  );
+  const uninstallDialog = confirmingUninstall && installed && (
+    <UninstallConfirmDialog
+      title="Uninstall this skill?"
+      message={
+        <>
+          “
+          <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+            {installed.skillName}
+          </span>
+          ” is removed from this device. You can install the shared skill again
+          later.
+        </>
+      }
+      dataTestId="shared-skill-detail-uninstall-dialog"
+      confirmTestId="shared-skill-detail-uninstall-confirm"
+      onConfirm={handleUninstallInstalled}
+      onCancel={() => setConfirmingUninstall(false)}
+      onUninstalled={() => setConfirmingUninstall(false)}
+    />
+  );
+  // A stale copy updates through the same review that installs; this page
+  // never writes the skill itself. Without that review, nothing is offered.
+  const updateOrRetryPrimary = showUpdate ? (
+    <Button
+      variant="primary"
+      size="sm"
+      data-testid="shared-skill-detail-update"
+      onClick={onAdd}
+    >
+      Update
+    </Button>
+  ) : showInstallCheckError ? (
+    <Button
+      variant="primary"
+      size="sm"
+      data-testid="shared-skill-detail-retry"
+      onClick={() => setInstallCheckCount((count) => count + 1)}
+    >
+      Try again
+    </Button>
+  ) : null;
 
   const page = presentation === 'page';
   const loadedUnshare =
     !loading && detail ? (unshareOptions?.(detail) ?? null) : null;
   const editButton = summary.canUpdate && (
-    <button
-      type="button"
-      onClick={onSwitchToEdit}
-      className={`${SECONDARY_ACTION_BUTTON_CLASS} gap-1.5`}
-    >
+    <Button size="compact" onClick={onSwitchToEdit}>
       <AppCatalogDocumentPencilIcon width="12" height="12" />
       Edit
-    </button>
+    </Button>
   );
   // A page shows only a Share it can use; a blocked one reads as clutter.
   const visibleShareAction =
@@ -2765,21 +2374,30 @@ export function SharedSkillDetailModal({
               <MarketplaceUnshareAction {...loadedUnshare} />
             )}
             {showInstalled && onOpenInstalled && (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 data-testid="shared-skill-detail-open"
                 onClick={() => onOpenInstalled(installed.skillName)}
-                className={SECONDARY_ACTION_BUTTON_CLASS}
               >
                 Open skill
-              </button>
+              </Button>
             )}
+            {uninstallButton}
             {showInstalled && (
               <span
                 data-testid="shared-skill-detail-installed-status"
                 className="min-w-0 break-words text-xs fg-secondary"
               >
-                {`Added as “${installed.skillName}”.`}
+                {installedStatus}
+                {showUpdate ? '' : '.'}
+              </span>
+            )}
+            {showInstallCheckError && (
+              <span
+                data-testid="shared-skill-detail-install-check-error"
+                className="min-w-0 break-words text-xs fg-secondary"
+              >
+                {installCheckError}
               </span>
             )}
             {editButton}
@@ -2793,7 +2411,7 @@ export function SharedSkillDetailModal({
             dataTestId="plugins-entry-detail-share"
           />
         ) : undefined,
-        primary: (
+        primary: updateOrRetryPrimary ?? (
           <TryItPrimaryCta
             capability={{
               kind: 'skill',
@@ -2831,14 +2449,13 @@ export function SharedSkillDetailModal({
             installDisabled={!onAdd}
             guestInstallAction={
               showAdd ? (
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   data-testid="shared-skill-detail-add"
                   onClick={onAdd}
-                  className={SECONDARY_ACTION_BUTTON_CLASS}
                 >
                   Install
-                </button>
+                </Button>
               ) : undefined
             }
           />
@@ -2863,15 +2480,14 @@ export function SharedSkillDetailModal({
               <span className="font-medium fg-primary">Public link</span>
               {!detail.publicShare ? (
                 summary.canUpdate && (
-                  <button
-                    type="button"
+                  <Button
+                    size="compact"
                     data-testid="shared-skill-publish-public-link"
                     disabled={publicShareBusy}
                     onClick={() => void handlePublishPublicShare()}
-                    className="focus-ring rounded border bg-base px-2 py-1 font-medium fg-primary hover:bg-accent-subtle disabled:opacity-50"
                   >
                     {publicShareBusy ? 'Publishing…' : 'Publish public link'}
-                  </button>
+                  </Button>
                 )
               ) : (
                 <>
@@ -2880,8 +2496,8 @@ export function SharedSkillDetailModal({
                       <span className="min-w-0 flex-1 truncate fg-secondary">
                         {publicShareLink}
                       </span>
-                      <button
-                        type="button"
+                      <Button
+                        size="compact"
                         data-testid="shared-skill-copy-public-link"
                         onClick={() => {
                           void copyTextToClipboard(publicShareLink).then(
@@ -2890,33 +2506,31 @@ export function SharedSkillDetailModal({
                             },
                           );
                         }}
-                        className="focus-ring rounded border bg-base px-2 py-1 font-medium fg-primary hover:bg-accent-subtle"
                       >
                         {publicShareCopied ? 'Copied' : 'Copy link'}
-                      </button>
+                      </Button>
                     </>
                   )}
                   {summary.canUpdate && !detail.publicShare.upToDate && (
-                    <button
-                      type="button"
+                    <Button
+                      size="compact"
                       data-testid="shared-skill-update-public-link"
                       disabled={publicShareBusy}
                       onClick={() => void handlePublishPublicShare()}
-                      className="focus-ring rounded border bg-base px-2 py-1 font-medium fg-primary hover:bg-accent-subtle disabled:opacity-50"
                     >
                       Update link to latest version
-                    </button>
+                    </Button>
                   )}
-                  {summary.canUpdate && (
-                    <button
-                      type="button"
+                  {summary.canUpdate && !sharedByYouOwnsPublicLink && (
+                    <Button
+                      variant="ghost-destructive"
+                      size="compact"
                       data-testid="shared-skill-remove-public-link"
                       disabled={publicShareBusy}
                       onClick={() => void handleRevokePublicShare()}
-                      className="focus-ring rounded px-2 py-1 font-medium fg-destructive hover:bg-destructive-subtle disabled:opacity-50"
                     >
                       Remove public link
-                    </button>
+                    </Button>
                   )}
                 </>
               )}
@@ -2969,26 +2583,26 @@ export function SharedSkillDetailModal({
             }
           />
         )}
+        {renderSharedByYou && !loading && detail && !isEdit && (
+          <div className="px-5 pt-6 empty:hidden">
+            {renderSharedByYou(detail, refreshDetail)}
+          </div>
+        )}
       </div>
       {/* View mode has no footer: a Close would duplicate the X. */}
       {presentation === 'modal' && isEdit && (
         <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            className="focus-ring rounded-lg px-4 py-2 text-s font-medium fg-secondary hover:fg-primary hover:bg-secondary transition-colors disabled:opacity-50"
-          >
+          <Button size="compact" onClick={onClose} disabled={saving}>
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => void handleSave()}
             disabled={loading || saving || !editor.hasContent}
-            className="focus-ring inline-flex items-center rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis disabled:opacity-60"
           >
             {saving ? 'Saving…' : 'Save changes'}
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -3006,6 +2620,15 @@ export function SharedSkillDetailModal({
         icon: <ArrowUpRightIcon width={14} height={14} aria-hidden />,
         testId: 'shared-skill-detail-open',
         onSelect: () => onOpenInstalled(installed.skillName),
+      });
+    if (!isEdit && showInstalled)
+      moreItems.push({
+        id: 'uninstall-installed',
+        label: 'Uninstall',
+        icon: <AppCatalogTrashIcon width={14} height={14} aria-hidden />,
+        testId: 'shared-skill-detail-uninstall',
+        destructive: true,
+        onSelect: () => setConfirmingUninstall(true),
       });
     if (!isEdit && !loading && detail) {
       if (!detail.publicShare && summary.canUpdate)
@@ -3042,7 +2665,7 @@ export function SharedSkillDetailModal({
           disabled: publicShareBusy,
           onSelect: () => void handlePublishPublicShare(),
         });
-      if (detail.publicShare && summary.canUpdate)
+      if (detail.publicShare && summary.canUpdate && !sharedByYouOwnsPublicLink)
         moreItems.push({
           id: 'remove-public-link',
           label: 'Remove public link',
@@ -3052,15 +2675,47 @@ export function SharedSkillDetailModal({
           onSelect: () => void handleRevokePublicShare(),
         });
     }
+    // Provenance reads the freshest facts: the loaded detail, else the row.
+    const provenance = sharedSkillDetailHeader(
+      detail ?? summary,
+      personalOrganizationId,
+      { audienceListedBelow },
+    );
     const header = {
+      ...provenance,
       description: summary.description,
       meta: [
+        ...(provenance.meta ?? []),
         showInstalled ? (
-          <span data-testid="shared-skill-detail-installed-status">
-            {`Added as “${installed.skillName}”`}
+          <span
+            key="installed"
+            data-testid="shared-skill-detail-installed-status"
+          >
+            {installedStatus}
           </span>
         ) : null,
-        !loading && detail?.publicShare ? 'Public link' : null,
+        showInstallCheckError ? (
+          <span
+            key="install-check-error"
+            data-testid="shared-skill-detail-install-check-error"
+          >
+            {installCheckError}
+          </span>
+        ) : null,
+        // The installed copy is one click away, not only in the ⋯ menu.
+        !isEdit && showInstalled && onOpenInstalled ? (
+          <button
+            type="button"
+            data-testid="shared-skill-detail-open-installed"
+            onClick={() => onOpenInstalled(installed.skillName)}
+            className="focus-ring rounded-sm fg-accent underline-offset-2 hover:underline"
+          >
+            Open
+          </button>
+        ) : null,
+        !loading && detail?.publicShare && !audienceListedBelow
+          ? 'Public link'
+          : null,
       ],
     };
     const shell = (items: readonly DetailMoreMenuItem[]): JSX.Element => (
@@ -3072,10 +2727,17 @@ export function SharedSkillDetailModal({
       >
         {pageActions && <DetailPageActions {...pageActions} />}
         {detailContent}
+        {uninstallDialog}
       </MarketplaceDetailPageShell>
     );
     return loadedUnshare ? (
-      <SharedSkillUnshareShell options={loadedUnshare} items={moreItems}>
+      <SharedSkillUnshareShell
+        options={loadedUnshare}
+        items={moreItems}
+        audienceCount={
+          detail ? sharedByYouAudienceCount(detail, personalOrganizationId) : 0
+        }
+      >
         {shell}
       </SharedSkillUnshareShell>
     ) : (
@@ -3095,6 +2757,7 @@ export function SharedSkillDetailModal({
       scrollableBody={isEdit}
     >
       {detailContent}
+      {uninstallDialog}
     </DialogModal>
   );
 }
@@ -3103,331 +2766,23 @@ export function SharedSkillDetailModal({
 function SharedSkillUnshareShell({
   options,
   items,
+  audienceCount,
   children,
 }: {
   options: UseMarketplaceUnshareOptions;
   items: readonly DetailMoreMenuItem[];
+  /** Shared by you rows; two read the item "Unshare all" (CAN-4842). */
+  audienceCount: number;
   children: (items: readonly DetailMoreMenuItem[]) => JSX.Element;
 }): JSX.Element {
   const unshare = useMarketplaceUnshare(options);
   return (
     <>
-      {children([...items, unshare.item])}
+      {children([
+        ...items,
+        { ...unshare.item, label: marketplaceUnshareMenuLabel(audienceCount) },
+      ])}
       {unshare.dialog}
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// SharedSkillsSection
-//
-// Renders the shared-skill list under the existing local-skills table. Backed
-// by the singleton {@link useSharedSkillList} that targets the configured
-// Canopy Cloud account. Capability gating happens inside the hook so the
-// section short-circuits when `skills-crud-v1` is missing.
-// ---------------------------------------------------------------------------
-
-interface SharedSkillsSectionProps {
-  sharedSkills: ReturnType<typeof useSharedSkillList>;
-  search: string;
-  onSearchChange: (next: string) => void;
-  createdBy: 'me' | 'anyone';
-  onCreatedByChange: (next: 'me' | 'anyone') => void;
-  flash: string | null;
-  onView: (summary: SharedSkillSummary) => void;
-  onEdit: (summary: SharedSkillSummary) => void;
-  onImport: (link: DeepLinkShareOpenEvent) => void;
-  onDelete: (summary: SharedSkillSummary) => Promise<void>;
-  onOpenAccountSettings?: () => void;
-}
-
-export function SharedSkillsSection({
-  sharedSkills,
-  search,
-  onSearchChange,
-  createdBy,
-  onCreatedByChange,
-  flash,
-  onView,
-  onEdit,
-  onImport,
-  onDelete,
-  onOpenAccountSettings,
-}: SharedSkillsSectionProps): JSX.Element {
-  const contextEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key),
-  );
-  const { copiedKey, copy } = useClipboardCopy();
-  const {
-    cloudAccount,
-    cloudLoading,
-    skills,
-    loading,
-    loadingMore,
-    nextCursor,
-    error,
-    refreshShared,
-    loadMoreShared,
-  } = sharedSkills;
-
-  if (cloudLoading) {
-    return (
-      <section>
-        <LoadingPlaceholder label="Loading shared skills…" space="section" />
-      </section>
-    );
-  }
-
-  const cloudReady = isCanopyCloudConnected(cloudAccount);
-  const hasSkillsCapability =
-    cloudAccount?.capabilities.includes('skills-crud-v1') === true;
-  const accountUnavailableLabel =
-    cloudReady && !hasSkillsCapability
-      ? `This ${brandText.appName} Cloud account does not support shared skills.`
-      : `No ${brandText.appName} Cloud account configured.`;
-
-  if (!cloudReady || !hasSkillsCapability) {
-    return (
-      <section>
-        <p className="text-s fg-secondary">{accountUnavailableLabel}</p>
-        {onOpenAccountSettings && (
-          <button
-            type="button"
-            onClick={onOpenAccountSettings}
-            className="mt-2 rounded-lg border bg-base px-3 py-1.5 text-s font-medium fg-primary hover:bg-secondary focus-ring"
-          >
-            Open account settings
-          </button>
-        )}
-      </section>
-    );
-  }
-
-  return (
-    <section data-testid="shared-skills-section">
-      <div className="flex items-center justify-end mb-3">
-        <button
-          type="button"
-          onClick={() => void refreshShared()}
-          disabled={loading}
-          className="px-3 py-1.5 text-xs font-medium rounded-md bg-secondary fg-primary hover:bg-accent-subtle transition-colors focus-ring disabled:opacity-50"
-        >
-          Refresh
-        </button>
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <input
-          type="search"
-          value={search}
-          onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="Search shared skills…"
-          className="focus-ring flex-1 min-w-50 rounded-md border bg-base px-2.5 py-1.5 text-xs"
-        />
-        <select
-          value={createdBy}
-          onChange={(e) => onCreatedByChange(e.target.value as 'me' | 'anyone')}
-          className="focus-ring rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
-        >
-          <option value="anyone">Created by anyone</option>
-          <option value="me">Created by me</option>
-        </select>
-      </div>
-
-      {flash && <p className="mb-3 text-xs fg-success">{flash}</p>}
-
-      {loading && skills.length === 0 && (
-        <LoadingPlaceholder label="Loading shared skills…" space="section" />
-      )}
-
-      {error && (
-        <div className="space-y-2">
-          <ErrorBanner error={error} />
-          <button
-            type="button"
-            onClick={() => void refreshShared()}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-secondary fg-primary hover:bg-accent-subtle focus-ring"
-          >
-            Retry
-          </button>
-        </div>
-      )}
-
-      {!loading && !error && skills.length === 0 && (
-        <EmptyState
-          testId={contextEnabled ? 'shared-skills-empty-state' : undefined}
-          title="No shared skills found."
-          subtitle=""
-        />
-      )}
-
-      {skills.length > 0 && (
-        <>
-          <ResourceTable
-            headers={[
-              { label: 'Name', align: 'left' },
-              { label: 'Owner', align: 'left' },
-              { label: 'Updated', align: 'left' },
-              { label: 'Actions', align: 'right' },
-            ]}
-          >
-            {skills.map((summary) => {
-              const installLink = sharedResourceInstallLink({
-                entity: 'skill',
-                externalId: summary.id,
-                scope: summary.shareScope,
-              });
-              const description = markdownDescriptionToPlainText(
-                summary.description,
-              );
-              return (
-                <tr
-                  key={summary.id}
-                  data-testid={
-                    contextEnabled
-                      ? `shared-skill-row-${summary.id}`
-                      : undefined
-                  }
-                  className="border-b last:border-b-0 hover:bg-secondary/30 transition-colors"
-                >
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => onView(summary)}
-                      className="text-left group"
-                    >
-                      <span className="fg-primary font-medium group-hover:fg-accent transition-colors">
-                        {summary.name}
-                      </span>
-                      {description && (
-                        <p className="text-xs fg-secondary mt-0.5 line-clamp-1">
-                          {description}
-                        </p>
-                      )}
-                      {summary.savedFrom && (
-                        <p
-                          data-testid={`shared-skill-saved-from-${summary.id}`}
-                          className="text-xs fg-secondary mt-0.5 line-clamp-1"
-                        >
-                          {summary.savedFrom.name
-                            ? `Saved from ${summary.savedFrom.name}`
-                            : 'Saved copy'}
-                          {summary.savedFrom.createdByName
-                            ? ` by ${summary.savedFrom.createdByName}`
-                            : ''}
-                        </p>
-                      )}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3 fg-secondary">
-                    {('name' in summary.owner ? summary.owner.name : null) ??
-                      summary.owner.type}
-                  </td>
-                  <td className="px-4 py-3 fg-secondary">
-                    {formatDate(summary.updatedAt)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <span className="inline-flex items-center gap-1">
-                      {summary.publicShare && (
-                        <Tooltip
-                          label={
-                            copiedKey === summary.id
-                              ? 'Copied'
-                              : 'Copy share link'
-                          }
-                        >
-                          <button
-                            type="button"
-                            data-testid={`shared-skill-copy-link-${summary.id}`}
-                            onClick={() => {
-                              void resolveSharedSkillUrl(
-                                summary.publicShare?.sharePath ?? '',
-                              ).then((url) =>
-                                copy(
-                                  url ?? summary.publicShare?.sharePath ?? '',
-                                  summary.id,
-                                ),
-                              );
-                            }}
-                            aria-label={
-                              copiedKey === summary.id
-                                ? 'Copied'
-                                : 'Copy share link'
-                            }
-                            className="focus-ring rounded p-1 fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-                          >
-                            {copiedKey === summary.id ? (
-                              <AppCatalogCheckIcon width="14" height="14" />
-                            ) : (
-                              <AppCatalogLink width="14" height="14" />
-                            )}
-                          </button>
-                        </Tooltip>
-                      )}
-                      {summary.canUpdate && (
-                        <Tooltip label="Edit shared skill">
-                          <button
-                            type="button"
-                            onClick={() => onEdit(summary)}
-                            aria-label="Edit shared skill"
-                            className="focus-ring rounded p-1 fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-                          >
-                            <AppCatalogDocumentPencilIcon
-                              width="14"
-                              height="14"
-                            />
-                          </button>
-                        </Tooltip>
-                      )}
-                      {/* A private skill resolves for its author only,
-                          so it has nothing to import from here. */}
-                      {installLink !== null && (
-                        <Tooltip label="Import skill">
-                          <button
-                            type="button"
-                            onClick={() => onImport(installLink)}
-                            aria-label="Import skill"
-                            className="focus-ring rounded p-1 fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-                          >
-                            <AppCatalogDownload width="14" height="14" />
-                          </button>
-                        </Tooltip>
-                      )}
-                      {summary.canDelete && (
-                        <Tooltip label="Delete shared skill">
-                          <button
-                            type="button"
-                            onClick={() => void onDelete(summary)}
-                            aria-label="Delete shared skill"
-                            className="focus-ring rounded p-1 fg-secondary hover:fg-destructive hover:bg-secondary transition-colors"
-                          >
-                            <AppCatalogTrashIcon width="14" height="14" />
-                          </button>
-                        </Tooltip>
-                      )}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </ResourceTable>
-          {nextCursor && (
-            <div className="mt-2 flex justify-center">
-              <button
-                type="button"
-                onClick={() => void loadMoreShared()}
-                disabled={loadingMore}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-secondary fg-primary hover:bg-accent-subtle focus-ring disabled:opacity-50"
-              >
-                <BusyLabel busy={loadingMore} busyText="Loading…">
-                  Load more
-                </BusyLabel>
-              </button>
-            </div>
-          )}
-        </>
-      )}
-    </section>
   );
 }

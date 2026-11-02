@@ -2,11 +2,15 @@
 import { act, type JSX, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
+  CanopyCloudAccountPublicState,
+  CanopyServerAccountInfo,
+} from '@canopy/desktop-shared/types';
+import type {
   McpServerData,
   SaveMcpServerRequest,
+  McpServerFile,
   McpServerStatusEntry,
   McpServerIndexEntry,
-  McpServerFile,
   McpServersIndexFile,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { McpServerDialog, McpServersTab } from '../McpServersTab';
@@ -59,9 +63,38 @@ const index: McpServersIndexFile = {
   version: 1,
   servers: [{ ...server.definition, configs: server.configs }],
 };
+function accountInfo(id: string): CanopyServerAccountInfo {
+  return {
+    id,
+    name: 'Test account',
+    email: 'test@example.test',
+    role: 'DEVELOPER',
+  };
+}
+function cloudAccountState(
+  hasApiKey: boolean,
+  account?: CanopyServerAccountInfo,
+): CanopyCloudAccountPublicState {
+  return {
+    hasApiKey,
+    authMode: hasApiKey ? 'oauth' : null,
+    credentialSource: hasApiKey ? 'oauth_desktop' : null,
+    capabilities: [],
+    storageAvailable: true,
+    ...(account === undefined ? {} : { account }),
+  };
+}
 const loadServer = jest.fn<Promise<McpServerFile>, [string]>();
 const loadIndex = jest.fn<Promise<McpServersIndexFile>, []>();
-const saveServer = jest.fn<Promise<unknown>, [SaveMcpServerRequest]>();
+const saveServer = jest.fn<Promise<McpServerFile>, [SaveMcpServerRequest]>(
+  (savedServer): Promise<McpServerFile> =>
+    Promise.resolve({ version: 1, server: savedServer }),
+);
+const loadPreferences = jest.fn<Promise<unknown>, []>();
+const loadCanopyCloudAccount = jest.fn<
+  Promise<CanopyCloudAccountPublicState>,
+  []
+>();
 const listAccountConnections = jest.fn();
 const startOAuthLogin = jest.fn();
 const listStatus = jest.fn();
@@ -87,6 +120,13 @@ beforeEach((): void => {
   root = createRoot(container);
   loadServer.mockResolvedValue({ version: 1, server });
   loadIndex.mockResolvedValue(index);
+  saveServer.mockResolvedValue({ version: 1, server });
+  loadPreferences.mockResolvedValue({
+    mcpHttpAuthDefaultHandler: 'account',
+  });
+  loadCanopyCloudAccount.mockResolvedValue(
+    cloudAccountState(true, accountInfo('acct-1')),
+  );
   listAccountConnections.mockResolvedValue([
     {
       id: 'account-1',
@@ -100,14 +140,15 @@ beforeEach((): void => {
   ]);
   Object.defineProperty(window, 'api', {
     configurable: true,
+    writable: true,
     value: {
-      loadPreferences: jest
-        .fn()
-        .mockResolvedValue({ mcpHttpAuthDefaultHandler: 'account' }),
+      loadPreferences,
+      loadCanopyCloudAccount,
     },
   });
   Object.defineProperty(window, 'mcpServers', {
     configurable: true,
+    writable: true,
     value: {
       loadServer,
       loadIndex,
@@ -126,11 +167,9 @@ afterEach(async (): Promise<void> => {
 it('keeps an unbound server on this device when the default is the cloud account', async (): Promise<void> => {
   const startAccountConnection = jest.fn();
   Object.assign(window.mcpServers, { startAccountConnection });
-  Object.assign(window.api, {
-    loadCanopyCloudAccount: jest
-      .fn()
-      .mockResolvedValue({ hasApiKey: true, account: { id: 'acct-1' } }),
-  });
+  loadCanopyCloudAccount.mockResolvedValue(
+    cloudAccountState(true, accountInfo('acct-1')),
+  );
   await update((): void =>
     root.render(
       <McpServerDialog
@@ -159,7 +198,7 @@ it.each([
 ] satisfies Partial<McpServerIndexEntry>[])(
   'shows index-owned account routing from %j',
   async (routing): Promise<void> => {
-    jest.mocked(window.api.loadPreferences).mockResolvedValue({
+    loadPreferences.mockResolvedValue({
       mcpHttpAuthDefaultHandler: 'canopy',
     });
     loadIndex.mockResolvedValue({
@@ -222,9 +261,9 @@ function handlerSelect(): HTMLSelectElement {
 it.each(['account', 'provider', 'canopy'] as const)(
   'preserves definition-owned %s routing ahead of the index',
   async (httpAuthHandler): Promise<void> => {
-    jest
-      .mocked(window.api.loadPreferences)
-      .mockResolvedValue({ mcpHttpAuthDefaultHandler: 'canopy' });
+    loadPreferences.mockResolvedValue({
+      mcpHttpAuthDefaultHandler: 'canopy',
+    });
     loadServer.mockResolvedValue({
       version: 1,
       server: {
@@ -278,7 +317,7 @@ it.each(['', 'provider', 'canopy'])(
       rewriteServerRefs,
       removeAccountConnection,
     });
-    jest.mocked(window.api.loadPreferences).mockResolvedValue({
+    loadPreferences.mockResolvedValue({
       mcpHttpAuthDefaultHandler: 'canopy',
     });
     loadIndex.mockResolvedValue({
@@ -331,7 +370,7 @@ it.each(['', 'provider', 'canopy'])(
 );
 
 it('does not clear routing on an unrelated editor save', async (): Promise<void> => {
-  jest.mocked(window.api.loadPreferences).mockResolvedValue({
+  loadPreferences.mockResolvedValue({
     mcpHttpAuthDefaultHandler: 'canopy',
   });
   await update((): void =>
@@ -432,7 +471,7 @@ it('defaults new custom servers to HTTP and still lets users choose Command', as
       />,
     ),
   );
-  expect(button('HTTP').classList.contains('bg-accent')).toBe(true);
+  expect(button('HTTP').getAttribute('aria-pressed')).toBe('true');
   expect(
     container.querySelector('input[placeholder="https://mcp.example.com/sse"]'),
   ).not.toBeNull();
@@ -457,18 +496,16 @@ it('preserves Command when editing an existing command server', async (): Promis
       />,
     ),
   );
-  expect(button('Command').classList.contains('bg-accent')).toBe(true);
+  expect(button('Command').getAttribute('aria-pressed')).toBe('true');
   expect(container.querySelector('input[placeholder="npx"]')).not.toBeNull();
 });
 
 it('opens the explicit move entry once and preserves unrelated saved fields (CAN-4265)', async () => {
   const onSaved = jest.fn().mockResolvedValue(undefined);
   const onClose = jest.fn();
-  Object.assign(window.api, {
-    loadCanopyCloudAccount: jest
-      .fn()
-      .mockResolvedValue({ account: { id: 'account' } }),
-  });
+  loadCanopyCloudAccount.mockResolvedValue(
+    cloudAccountState(true, accountInfo('account')),
+  );
   Object.assign(window.mcpServers, {
     rewriteServerRefs: jest.fn().mockResolvedValue({}),
     removeAccountConnection: jest.fn().mockResolvedValue({ removed: true }),
@@ -509,20 +546,16 @@ it('opens the explicit move entry once and preserves unrelated saved fields (CAN
 });
 
 it('waits for auth preferences before the explicit move confirmation (CAN-4265)', async () => {
-  let resolvePreferences:
-    | ((value: { mcpHttpAuthDefaultHandler: 'canopy' }) => void)
-    | undefined;
-  jest.mocked(window.api.loadPreferences).mockImplementationOnce(
+  let resolvePreferences: ((value: unknown) => void) | undefined;
+  loadPreferences.mockImplementationOnce(
     () =>
-      new Promise((resolve) => {
+      new Promise<unknown>((resolve): void => {
         resolvePreferences = resolve;
       }),
   );
-  Object.assign(window.api, {
-    loadCanopyCloudAccount: jest
-      .fn()
-      .mockResolvedValue({ account: { id: 'account' } }),
-  });
+  loadCanopyCloudAccount.mockResolvedValue(
+    cloudAccountState(true, accountInfo('account')),
+  );
   loadIndex.mockResolvedValue({
     version: 1,
     servers: [

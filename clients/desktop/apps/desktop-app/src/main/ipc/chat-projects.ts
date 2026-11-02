@@ -3,18 +3,12 @@ import {
   toShareOperationResult,
   withShareStage,
 } from '../sharing/share-operation-result';
-import {
-  assertNoLiveDelegationsInWorkspace,
-  assertNoLiveDelegationsInWorktree,
-} from '../agents/delegation/activity';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isChatTabPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import {
-  COWORK_HOME_WORKTREE_ID,
   IPC_CHANNELS,
-  STANDALONE_CHAT_PROJECT_ID,
   type ChatProjectClaudeMdRequest,
   type ChatProjectData,
   type ChatProjectListResponse,
@@ -37,14 +31,11 @@ import {
   type SaveChatProjectClaudeMdRequest,
   type UpdateChatProjectRequest,
 } from '@canopy/desktop-shared/types';
-import { destroyWorktreeSessions } from '../agents/session-manager';
-import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import { syncChatProjectAgentsMd } from '../lib/chat-project-utils';
 import {
   createCoworkWorkspace,
   createCoworkWorkspaceFromBlueprint,
   createCoworkWorkspaceFromTemplate,
-  deleteCoworkWorkspace,
   findCoworkWorkspaceTemplateInstall,
   listCoworkWorkspacesAsChatProjects,
   setCoworkWorkspaceTemplateInstallMetadata,
@@ -54,6 +45,7 @@ import {
   updateCoworkWorkspace,
 } from '../lib/cowork-workspace-crud';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
+import { deleteWorkspace } from '../lib/workspace-deletion';
 import { getCoworkWorkspaceRootDir } from '../lib/paths';
 import { validateId } from '../lib/validation';
 import { assertStartPageFeatureEnabled } from '../lib/start-page-feature-flag';
@@ -162,19 +154,15 @@ async function deleteChatProject(req: DeleteChatProjectRequest): Promise<void> {
   }
 
   const workspaceId = resolveCoworkWorkspaceId(req.projectId);
-  // A chat with live delegates keeps its project, under either session keying.
-  assertNoLiveDelegationsInWorkspace(workspaceId);
-  assertNoLiveDelegationsInWorktree(STANDALONE_CHAT_PROJECT_ID, workspaceId);
-  // Live agent sessions key (workspaceId, workEntryId, chatId) — tear down
-  // every entry's sessions plus the legacy 'home' slot and sentinel keying.
-  for (const worktreeId of [
-    ...(await listWorkEntryIds(workspaceId)),
-    COWORK_HOME_WORKTREE_ID,
-  ]) {
-    await destroyWorktreeSessions(workspaceId, worktreeId);
-  }
-  await destroyWorktreeSessions(STANDALONE_CHAT_PROJECT_ID, workspaceId);
-  await deleteCoworkWorkspace(workspaceId);
+  // The canonical deletion (W6c2) runs the delegate and background-work
+  // admission in the workspace and sentinel scopes, tears down sessions and
+  // removes the project. `coworkProject` refuses a code project or an
+  // unindexed id as "Chat project not found" before any effect.
+  await deleteWorkspace({
+    workspaceId,
+    source: 'chat_project_delete',
+    coworkProject: true,
+  });
   recordStandaloneProjectCrudTelemetry({
     action: 'delete',
     projectId: workspaceId,

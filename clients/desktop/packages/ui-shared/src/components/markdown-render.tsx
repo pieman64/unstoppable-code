@@ -21,6 +21,7 @@ import {
   restoreMarkdownMathSource,
   type MarkdownMathExpression,
 } from './markdown-math';
+import { isSingleDollarMathEnabled } from './markdown-math-settings';
 
 const SAFE_URL_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i;
 type AnchorProps = ComponentPropsWithoutRef<'a'>;
@@ -437,12 +438,31 @@ export interface PreparedMarkdownRender {
   readonly options: MarkdownOptions;
 }
 
+function fallbackDelimitedMathSource(
+  expression: MarkdownMathExpression,
+): string {
+  return expression.display
+    ? `$$${expression.source}$$`
+    : `\\(${expression.source}\\)`;
+}
+
+function fencedMathSource(text: string): string {
+  const source = text.endsWith('\r\n')
+    ? text.slice(0, -2)
+    : text.endsWith('\n')
+      ? text.slice(0, -1)
+      : text;
+  return `$$\n${source}\n$$`;
+}
+
 export function prepareMarkdownRender(
   markdown: string,
   options?: MarkdownOptions,
   streaming = false,
 ): PreparedMarkdownRender {
-  const preparedMath = prepareMarkdownMath(markdown);
+  const preparedMath = prepareMarkdownMath(markdown, {
+    singleDollar: isSingleDollarMathEnabled(),
+  });
   const preparedOptions = markdownOptions(undefined, options);
   // Keep ordinary prose on the existing fast path, but Mermaid-only documents
   // must still install the code-block rule when there is no math.
@@ -484,8 +504,14 @@ export function prepareMarkdownRender(
           );
         }
         let expression: MarkdownMathExpression | undefined;
+        let source: string | undefined;
         if (node.type === RuleType.codeInline) {
           expression = preparedMath.expressions.get(node.text);
+          if (expression) {
+            source =
+              preparedMath.originalSources.get(node.text) ??
+              fallbackDelimitedMathSource(expression);
+          }
         } else if (
           node.type === RuleType.codeBlock &&
           typeof node.lang === 'string' &&
@@ -495,12 +521,17 @@ export function prepareMarkdownRender(
           renderedExpressionCount < MAX_MATH_EXPRESSIONS_PER_DOCUMENT
         ) {
           expression = { source: node.text, display: true };
+          source = fencedMathSource(node.text);
           renderedExpressionCount += 1;
         }
 
-        if (expression) {
+        if (expression && source !== undefined) {
           return (
-            <DeferredMarkdownMath expression={expression} key={state.key} />
+            <DeferredMarkdownMath
+              expression={expression}
+              source={source}
+              key={state.key}
+            />
           );
         }
         return configuredRenderRule

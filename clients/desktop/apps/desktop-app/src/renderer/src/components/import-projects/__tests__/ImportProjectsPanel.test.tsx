@@ -16,6 +16,22 @@ import {
 } from '@canopy/protocol/feature-flags';
 import type { WorkspaceContextState } from '@canopy/protocol/workspace-context';
 
+const startOperation = jest.fn<void, unknown[]>();
+const succeedOperation = jest.fn<void, unknown[]>();
+const failOperation = jest.fn<void, unknown[]>();
+jest.mock('@canopy/desktop-instrumentation/client', () => ({
+  ...jest.requireActual<object>('@canopy/desktop-instrumentation/client'),
+  startClientOperation: (...args: unknown[]): void => {
+    startOperation(...args);
+  },
+  succeedClientOperation: (...args: unknown[]): void => {
+    succeedOperation(...args);
+  },
+  failClientOperation: (...args: unknown[]): void => {
+    failOperation(...args);
+  },
+}));
+
 const loadProjects = jest.fn(() => Promise.resolve());
 jest.mock('@/stores/projectsStore', () => ({
   useProjectsStore: {
@@ -31,12 +47,6 @@ const navigateAfterRepositoryWorkspaceCreated = jest.fn();
 jest.mock('@/lib/postWorkspaceCreateNavigation', () => ({
   navigateAfterRepositoryWorkspaceCreated: (workspaceId: string): void => {
     navigateAfterRepositoryWorkspaceCreated(workspaceId);
-  },
-}));
-const completeOnboardingSuggestionDurably = jest.fn();
-jest.mock('@/components/home/onboarding-suggestions/completionWriter', () => ({
-  completeOnboardingSuggestionDurably: (...args: unknown[]): void => {
-    completeOnboardingSuggestionDurably(...args);
   },
 }));
 
@@ -146,13 +156,18 @@ function scan(
 function createApi(discovered: ExternalProjectDiscoverResponse): MockApi {
   return {
     externalProjects: {
-      discover: jest.fn(() => Promise.resolve(discovered)),
-      importProjects: jest.fn(() => Promise.resolve({ results: [] })),
+      discover: jest.fn<Promise<ExternalProjectDiscoverResponse>, [unknown]>(
+        () => Promise.resolve(discovered),
+      ),
+      importProjects: jest.fn<
+        Promise<ExternalProjectImportResponse>,
+        [ExternalProjectImportRequest]
+      >(() => Promise.resolve({ results: [] })),
       pickFolder: jest.fn(() => Promise.resolve(null)),
-      onImportProgress: jest.fn(() => jest.fn()),
+      onImportProgress: jest.fn<() => void, [unknown]>(() => () => undefined),
     },
     loadPreferences: jest.fn(() => Promise.resolve({})),
-    savePreferences: jest.fn(() => Promise.resolve()),
+    savePreferences: jest.fn<Promise<void>, [unknown]>(() => Promise.resolve()),
   };
 }
 
@@ -189,13 +204,17 @@ describe('ImportProjectsPanel', () => {
     root = createRoot(container);
     loadProjects.mockClear();
     navigateAfterRepositoryWorkspaceCreated.mockClear();
-    completeOnboardingSuggestionDurably.mockClear();
+
     cursorRulesOfferProps.length = 0;
     openRepoRulesModal.mockClear();
+    startOperation.mockClear();
+    succeedOperation.mockClear();
+    failOperation.mockClear();
     useFeatureFlagsStore.setState({
       snapshot: {
         ...getDefaultFeatureFlagSnapshot(),
         values: {
+          ...getDefaultFeatureFlagSnapshot().values,
           [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]: true,
         },
       },
@@ -281,10 +300,6 @@ describe('ImportProjectsPanel', () => {
     expect(
       container.querySelector('[data-testid="import-projects-retry"]'),
     ).toBeNull();
-    expect(completeOnboardingSuggestionDurably).toHaveBeenCalledWith(
-      'import-projects',
-      'imported',
-    );
   });
 
   // CAN-2053: the Cursor rules offer targets each just-imported workspace by
@@ -489,10 +504,6 @@ describe('ImportProjectsPanel', () => {
     await flush();
     click(container, 'import-projects-skip');
     expect(onSkip).toHaveBeenCalledTimes(1);
-    expect(completeOnboardingSuggestionDurably).toHaveBeenCalledWith(
-      'import-projects',
-      'skipped',
-    );
   });
 
   it('leaves the checklist entry pending when the scan failed and the user skips', async () => {
@@ -518,7 +529,6 @@ describe('ImportProjectsPanel', () => {
     ).toBe(true);
     click(container, 'import-projects-skip');
     expect(onSkip).toHaveBeenCalledTimes(1);
-    expect(completeOnboardingSuggestionDurably).not.toHaveBeenCalled();
   });
 
   it('reports each phase to its host, including a failed scan', async () => {
@@ -570,13 +580,9 @@ describe('ImportProjectsPanel', () => {
     click(container, 'import-projects-submit');
     await flush();
     // A failed import completes nothing on its own...
-    expect(completeOnboardingSuggestionDurably).not.toHaveBeenCalled();
+
     // ...but finishing the flow does: the user chose to stop here.
     click(container, 'import-projects-done');
-    expect(completeOnboardingSuggestionDurably).toHaveBeenCalledWith(
-      'import-projects',
-      'finished',
-    );
   });
 
   function chooseNote(): HTMLParagraphElement | undefined {
@@ -600,7 +606,9 @@ describe('ImportProjectsPanel', () => {
   });
 
   it('omits the choose note when nothing can be added', async () => {
-    await mount(createApi(scan([candidate('alpha', { status: 'imported' })])));
+    await mount(
+      createApi(scan([candidate('alpha', { status: 'already-imported' })])),
+    );
     expect(chooseNote()).toBeUndefined();
     expect(container.textContent).not.toContain('Uncommitted or unpushed');
   });
@@ -696,5 +704,187 @@ describe('ImportProjectsPanel', () => {
         .querySelector('[data-testid="import-projects-plugins-error"]')
         ?.classList.contains('fg-destructive'),
     ).toBe(true);
+  });
+
+  describe('import telemetry (CAN-4635)', () => {
+    type Call = unknown[];
+    type OperationMock = jest.Mock<void, unknown[]>;
+    const ended = (mock: OperationMock): Call[] =>
+      mock.mock.calls.filter(
+        (call: Call) => call[0] === 'canopy.project_import',
+      );
+    const optionsOf = (
+      call: Call | undefined,
+    ): { operationKey?: unknown; context?: unknown } => {
+      const options = call?.[call.length - 1];
+      return options && typeof options === 'object' ? options : {};
+    };
+
+    async function mountFrom(
+      api: MockApi,
+      modalEntry?: 'invite' | 'settings' | 'app-advisor' | 'checklist',
+      onSkip: () => void = jest.fn(),
+    ): Promise<void> {
+      Object.defineProperty(window, 'api', { configurable: true, value: api });
+      await act(async () => {
+        root.render(
+          <ImportProjectsPanel
+            onSkip={onSkip}
+            onDone={jest.fn()}
+            {...(modalEntry ? { modalEntry } : {})}
+          />,
+        );
+        await Promise.resolve();
+      });
+      await flush();
+    }
+
+    it('submits only once for clicks before React updates the importing phase', async () => {
+      const api = createApi(scan([candidate('alpha')]));
+      api.externalProjects.importProjects.mockReturnValue(
+        new Promise(() => undefined),
+      );
+      await mountFrom(api, 'settings');
+      const submit = container.querySelector(
+        '[data-testid="import-projects-submit"]',
+      );
+      if (!(submit instanceof HTMLElement)) throw new Error('missing submit');
+      act(() => {
+        submit.click();
+        submit.click();
+      });
+      expect(api.externalProjects.importProjects).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports each submission and retry with the modal entry', async () => {
+      const api = createApi(
+        scan(
+          [
+            candidate('alpha', {
+              providers: ['claude', 'codex'],
+              importableSessionCount: 2,
+            }),
+            candidate('beta'),
+          ],
+          [],
+          { claude: true, codex: true },
+        ),
+      );
+      api.externalProjects.importProjects
+        .mockResolvedValueOnce({
+          results: [
+            result('alpha', { workspaceId: 'ws-alpha', chatsImported: 2 }),
+            result('beta', {
+              status: 'failed',
+              message: 'Disk full',
+              retryable: true,
+            }),
+          ],
+        })
+        .mockResolvedValueOnce({ results: [result('beta')] });
+      await mountFrom(api, 'app-advisor');
+
+      click(container, 'import-projects-submit');
+      await flush();
+      click(container, 'import-projects-retry');
+      await flush();
+
+      const successes = ended(succeedOperation);
+      expect(successes.map((call) => optionsOf(call).context)).toEqual([
+        {
+          source: 'import_modal',
+          modal_entry: 'app_advisor',
+          scan_outcome: 'found',
+          claude_data_detected: true,
+          codex_data_detected: true,
+          found_count: 2,
+          found_claude_count: 2,
+          found_codex_count: 1,
+          picked_folder: false,
+          outcome: 'partial',
+          selected_count: 2,
+          imported_count: 1,
+          imported_claude_count: 1,
+          imported_codex_count: 1,
+          failed_count: 1,
+          chats_imported_count: 2,
+        },
+        expect.objectContaining({
+          modal_entry: 'app_advisor',
+          outcome: 'imported',
+          selected_count: 1,
+          imported_count: 1,
+          imported_codex_count: 0,
+        }),
+      ]);
+      const keys = ended(startOperation).map(
+        (call) => optionsOf(call).operationKey,
+      );
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).not.toBe(keys[1]);
+      expect(successes.map((call) => optionsOf(call).operationKey)).toEqual(
+        keys,
+      );
+      expect(JSON.stringify(successes)).not.toMatch(
+        /alpha|beta|scan-1|ws-|Users/,
+      );
+    });
+
+    it('reports a thrown request and a zero import as failures', async () => {
+      const api = createApi(scan([candidate('alpha')]));
+      api.externalProjects.importProjects.mockRejectedValueOnce(
+        new Error('offline'),
+      );
+      await mountFrom(api, 'checklist');
+
+      click(container, 'import-projects-submit');
+      await flush();
+
+      expect(ended(succeedOperation)).toHaveLength(0);
+      const failures = ended(failOperation);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.[1]).toBe('error');
+      const context = optionsOf(failures[0]).context;
+      expect(context).toMatchObject({
+        source: 'import_modal',
+        outcome: 'request_failed',
+        selected_count: 1,
+        imported_count: 0,
+        failed_count: 1,
+        chats_imported_count: 0,
+      });
+      expect(context).not.toHaveProperty('modal_entry');
+    });
+
+    it('records a picked folder for the submission', async () => {
+      const api = createApi(scan([candidate('alpha')]));
+      api.externalProjects.pickFolder.mockResolvedValueOnce('/Users/me/x');
+      api.externalProjects.importProjects.mockResolvedValueOnce({
+        results: [result('alpha', { status: 'skipped' })],
+      });
+      await mountFrom(api, 'settings');
+
+      click(container, 'import-projects-pick-folder');
+      await flush();
+      await flush();
+      click(container, 'import-projects-submit');
+      await flush();
+
+      expect(optionsOf(ended(failOperation)[0]).context).toMatchObject({
+        modal_entry: 'settings',
+        picked_folder: true,
+        outcome: 'none_imported',
+      });
+    });
+
+    it('emits nothing when the flow is skipped', async () => {
+      const onSkip = jest.fn();
+      await mountFrom(createApi(scan([candidate('alpha')])), 'invite', onSkip);
+      click(container, 'import-projects-skip');
+      expect(onSkip).toHaveBeenCalled();
+      expect(ended(startOperation)).toHaveLength(0);
+      expect(ended(succeedOperation)).toHaveLength(0);
+      expect(ended(failOperation)).toHaveLength(0);
+    });
   });
 });

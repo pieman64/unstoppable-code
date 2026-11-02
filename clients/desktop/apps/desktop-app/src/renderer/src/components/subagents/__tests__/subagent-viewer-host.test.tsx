@@ -12,6 +12,10 @@ import type {
 } from '@canopy/agent-transcript';
 import { buildSubagentTree } from '@canopy/agent-transcript';
 import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
+import type { LifetimeLimitState } from '@canopy/app-state/delegation/lifetime-limit-store';
+import type { CanopyCapabilities } from '@canopy/app-core';
+import type { LifetimeLimitNoticeProps } from '@canopy/ui-app';
+import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import type {
   ManagedDelegationRootEntry,
   ManagedDelegationTreeEntry,
@@ -42,6 +46,46 @@ import { useSubagentTree } from '../useSubagentTree';
 import { useSubagentRootChats } from '../useSubagentRootChats';
 import type { SubagentHostScope } from '../subagent-scope';
 import { openSubagentChatPanel } from '@/lib/panels/subagent-panel-open';
+
+let mockLifetimeState: LifetimeLimitState = {
+  entries: {},
+  load: jest.fn(() => Promise.resolve()),
+  extend: jest.fn(() => Promise.resolve()),
+};
+const mockLifetimeNotice = jest.fn(
+  (props: LifetimeLimitNoticeProps): JSX.Element => {
+    void props;
+    return <div data-testid="lifetime-panel-mount" />;
+  },
+);
+jest.mock('@canopy/ui-app', () => ({
+  LifetimeLimitNotice: (props: LifetimeLimitNoticeProps): JSX.Element =>
+    mockLifetimeNotice(props),
+}));
+jest.mock('@canopy/app-state/delegation/lifetime-limit-store', () => ({
+  ...jest.requireActual<object>(
+    '@canopy/app-state/delegation/lifetime-limit-store',
+  ),
+  useLifetimeLimitStore: <T,>(selector: (state: LifetimeLimitState) => T): T =>
+    selector(mockLifetimeState),
+}));
+jest.mock('@canopy/app-state/CanopyClientProvider', () => ({
+  ...jest.requireActual<object>('@canopy/app-state/CanopyClientProvider'),
+  useWorkspaceCapabilities: (): CanopyCapabilities => ({
+    localExecution: false,
+    terminalPty: false,
+    fileSystemAccess: 'read',
+    voice: false,
+    settingsScope: 'api-keys-only',
+    pipelines: 'crud-only',
+    routing: 'url',
+    overviewNotifications: false,
+    delegationLifetimeLimitExtension: true,
+  }),
+}));
+jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
+  useCurrentUiStateReporter: jest.fn(),
+}));
 
 jest.mock(
   '../SubagentChangesDialog',
@@ -181,7 +225,7 @@ function makeChatTab(id: string, overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     ...overrides,
   };
@@ -298,6 +342,9 @@ function setOpenTabs(tabs: readonly ChatTab[]): void {
 }
 
 beforeEach(() => {
+  mockLifetimeState = { ...mockLifetimeState, entries: {} };
+  mockLifetimeNotice.mockClear();
+  jest.mocked(useCurrentUiStateReporter).mockClear();
   installApi();
   useChatStore.setState(useChatStore.getInitialState());
   useDelegationActivityStore.getState().reset();
@@ -326,6 +373,90 @@ afterEach(() => {
 });
 
 describe('desktop subagent viewer adapters', () => {
+  it('mounts the lifetime panel placement using the trusted IPC scope ids', () => {
+    installApi({});
+    mockLifetimeNotice.mockClear();
+    const mounted = mount(
+      <DesktopSubagentsPanelHost scope={SCOPE} isVisible isActive />,
+    );
+    expect(mockLifetimeNotice).toHaveBeenCalledWith({
+      projectId: SCOPE.projectId,
+      worktreeId: SCOPE.worktreeId,
+      placement: 'panel',
+    });
+    expect(
+      mounted.container.querySelectorAll(
+        '[data-testid="lifetime-panel-mount"]',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each(['none', 'full', 'full_at_cap', 'unavailable'] as const)(
+    'reports sanitized Advisor lifetime state %s',
+    (notice) => {
+      installApi({});
+      const status =
+        notice === 'unavailable'
+          ? { kind: 'unavailable' as const, reason: 'uncertain' as const }
+          : {
+              kind: 'available' as const,
+              occupied: notice === 'none' ? 511 : 512,
+              retained: 511,
+              limit: 512,
+              cap: notice === 'full_at_cap' ? 512 : 1024,
+              atLimit: notice !== 'none',
+              atCap: notice === 'full_at_cap',
+              canExtend: notice !== 'full_at_cap',
+              refusedChatIds: ['private-chat-id'],
+            };
+      mockLifetimeState = {
+        ...mockLifetimeState,
+        entries: {
+          '["project-one","worktree-one"]': {
+            status,
+            loading: false,
+            extension: 'idle',
+          },
+        },
+      };
+      // Scope is intentionally not encoded using the production key helper.
+      const scope = { projectId: 'project-one', worktreeId: 'worktree-one' };
+      mount(<DesktopSubagentsPanelHost scope={scope} isVisible isActive />);
+      expect(useCurrentUiStateReporter).toHaveBeenCalledWith(
+        'subagents.lifetimeLimit',
+        {
+          ...scope,
+          notice,
+          atLimit: notice === 'unavailable' ? null : notice !== 'none',
+          limit: notice === 'unavailable' ? null : 512,
+          canExtend: notice !== 'unavailable' && notice !== 'full_at_cap',
+        },
+      );
+      expect(
+        JSON.stringify(jest.mocked(useCurrentUiStateReporter).mock.calls),
+      ).not.toContain('private-chat-id');
+    },
+  );
+
+  it('does not mount or report a lifetime allowance for App Advisor', () => {
+    installApi({});
+    mockLifetimeNotice.mockClear();
+    jest.mocked(useCurrentUiStateReporter).mockClear();
+    mount(
+      <DesktopSubagentsPanelHost
+        scope={{ projectId: 'app-advisor', worktreeId: 'entry' }}
+        isVisible
+        isActive
+      />,
+    );
+    expect(mockLifetimeNotice).not.toHaveBeenCalled();
+    expect(
+      jest
+        .mocked(useCurrentUiStateReporter)
+        .mock.calls.filter(([key]) => key === 'subagents.lifetimeLimit'),
+    ).toEqual([]);
+  });
+
   it('collects mixed nested sources and retains run identity from the transcript', () => {
     const managedRoot = managedBlock('managed-root');
     const managedChild = managedBlock(
@@ -583,7 +714,6 @@ describe('desktop subagent viewer adapters', () => {
     ];
     const tree = buildSubagentTree({
       root: { id: ROOT_ID, title: 'Root' },
-      managed: [],
       ...collectLoadedSubagentInputs(messages),
     });
     expect(tree.nodes.get('failing-task')).toMatchObject({
@@ -831,6 +961,35 @@ describe('desktop subagent viewer adapters', () => {
       startedAt: 10,
       settledAt: 30,
     });
+    mounted.unmount();
+  });
+
+  it('rebuilds a Codex node when only its child turn times change (CAN-5203)', async () => {
+    const spawned = codexBlock('codex-timed', 'root-thread', ['codex-child']);
+    const tab = (block: CodexAgentCallBlock): ChatTab =>
+      makeChatTab(ROOT_ID, {
+        messages: [
+          chatMessage('codex-spawn', [block], 10, {
+            codexThreadId: 'root-thread',
+          }),
+        ],
+      });
+    setOpenTabs([tab(spawned)]);
+    const probe: TreeProbe = { current: null };
+    const mounted = mount(<TreeProbeHarness probe={probe} enabled />);
+    await flushPromises();
+    expect(probe.current?.tree?.nodes.get('codex-child')?.startedAt).toBe(10);
+
+    act(() =>
+      setOpenTabs([
+        tab({
+          ...spawned,
+          receiverTimes: { 'codex-child': { startedAt: 40 } },
+        }),
+      ]),
+    );
+    await flushPromises();
+    expect(probe.current?.tree?.nodes.get('codex-child')?.startedAt).toBe(40);
     mounted.unmount();
   });
 

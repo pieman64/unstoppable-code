@@ -1,10 +1,18 @@
-import { createReadStream, type Dirent, type Stats } from 'node:fs';
+import {
+  constants,
+  createReadStream,
+  type Dirent,
+  type Stats,
+  type ReadStream,
+  type WriteStream,
+} from 'node:fs';
 import {
   lstat,
   mkdir,
   open,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   type FileHandle,
@@ -28,7 +36,8 @@ import {
   sep,
 } from 'node:path';
 import { createInterface } from 'node:readline';
-import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
+import { finished, pipeline } from 'node:stream/promises';
 import { app } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
@@ -317,8 +326,25 @@ interface PipelineExecutionSummarySnapshot {
   trigger_source?: unknown;
 }
 
+type StaticFeedbackManifest = Omit<
+  FeedbackManifest,
+  'includedFiles' | 'skippedFiles'
+>;
+type BundleEntry =
+  | { kind: 'buffer'; path: string; bytes: Buffer; stats?: Stats }
+  | {
+      kind: 'file';
+      path: string;
+      source: string;
+      sourceRoot: string;
+      stats: Stats;
+    };
+
 class FeedbackBundleBuilder {
-  private readonly zip = new ZipFile();
+  private readonly entries: BundleEntry[] = [];
+  private manifest: StaticFeedbackManifest | undefined;
+  private state: 'collecting' | 'writing' | 'succeeded' | 'failed' =
+    'collecting';
   private readonly included = new Set<string>();
   private readonly reserved = new Set<string>();
   private readonly skipped: SkippedFile[] = [];
@@ -336,6 +362,7 @@ class FeedbackBundleBuilder {
     zipPath: string,
     options: AddFileOptions,
   ): Promise<void> {
+    this.assertCollecting();
     const normalizedZipPath = normalizeZipPath(zipPath);
     if (normalizedZipPath === null) {
       this.recordSkipped(zipPath, 'out-of-root');
@@ -380,11 +407,22 @@ class FeedbackBundleBuilder {
       return;
     }
 
-    this.zip.addReadStream(createReadStream(sourcePath), normalizedZipPath, {
-      mtime: fileStat.mtime,
-      mode: fileStat.mode,
-      size: fileStat.size,
-    });
+    this.entries.push(
+      fileStat.size === 0
+        ? {
+            kind: 'buffer',
+            path: normalizedZipPath,
+            bytes: Buffer.alloc(0),
+            stats: fileStat,
+          }
+        : {
+            kind: 'file',
+            path: normalizedZipPath,
+            source: sourcePath,
+            sourceRoot: options.sourceRoot,
+            stats: fileStat,
+          },
+    );
     this.included.add(normalizedZipPath);
   }
 
@@ -393,6 +431,7 @@ class FeedbackBundleBuilder {
     zipDir: string,
     options: AddFileOptions,
   ): Promise<void> {
+    this.assertCollecting();
     const normalizedZipDir = normalizeZipPath(zipDir);
     if (normalizedZipDir === null) {
       this.recordSkipped(zipDir, 'out-of-root');
@@ -460,14 +499,13 @@ class FeedbackBundleBuilder {
     );
   }
 
-  addManifest(manifest: FeedbackManifest): void {
-    this.zip.addBuffer(
-      Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'),
-      'feedback.json',
-    );
+  addManifest(manifest: StaticFeedbackManifest): void {
+    this.assertCollecting();
+    this.manifest = manifest;
   }
 
   addGeneratedJson(zipPath: string, value: unknown): void {
+    this.assertCollecting();
     const normalizedZipPath = normalizeZipPath(zipPath);
     if (normalizedZipPath === null) {
       this.recordSkipped(zipPath, 'out-of-root');
@@ -480,18 +518,168 @@ class FeedbackBundleBuilder {
     if (!this.reservePath(normalizedZipPath)) {
       return;
     }
-    this.zip.addBuffer(
-      Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'),
-      normalizedZipPath,
-    );
+    this.entries.push({
+      kind: 'buffer',
+      path: normalizedZipPath,
+      bytes: Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'),
+    });
     this.included.add(normalizedZipPath);
   }
 
   async writeTo(fileHandle: FileHandle): Promise<void> {
-    const output = fileHandle.createWriteStream();
-    const streamDone = pipeline(this.zip.outputStream, output);
-    this.zip.end();
+    this.assertCollecting();
+    this.state = 'writing';
+    const zip = new ZipFile();
+    const controller = new AbortController();
+    const sources = new Set<ReadStream>();
+    const pending = new Set<Promise<void>>();
+    let previousClosed = Promise.resolve();
+    let firstError: Error | undefined;
+    let output: WriteStream | undefined;
+    let outputClosed = Promise.resolve();
+    const fail = (error: unknown): void => {
+      if (firstError !== undefined) return;
+      firstError =
+        error instanceof Error ? error : new Error('Feedback archive failed');
+      this.state = 'failed';
+      controller.abort();
+      output?.destroy();
+      for (const source of Array.from(sources)) source.destroy();
+    };
+    // Lazy entry registration can start a producer immediately. All error
+    // listeners and the observed pipeline must exist before the first entry.
+    zip.on('error', fail);
+    let streamDone: Promise<void> = Promise.resolve();
+    try {
+      // eslint-disable-next-line admitted-writers/no-unadmitted-write -- streams into the reserved feedback zip, never preferences; remove when the bundle stops naming preferences.
+      output = fileHandle.createWriteStream({ autoClose: true });
+      output.on('error', fail);
+      outputClosed = new Promise<void>((resolveClosed) => {
+        output?.once('close', resolveClosed);
+      });
+      streamDone = pipeline(zip.outputStream, output, {
+        signal: controller.signal,
+      }).catch(fail);
+      for (const entry of this.entries) {
+        if (firstError !== undefined) break;
+        if (entry.kind === 'buffer') {
+          zip.addBuffer(
+            entry.bytes,
+            entry.path,
+            entry.stats === undefined
+              ? undefined
+              : {
+                  mtime: entry.stats.mtime,
+                  mode: entry.stats.mode,
+                },
+          );
+          continue;
+        }
+        zip.addReadStreamLazy(
+          entry.path,
+          { mtime: entry.stats.mtime, mode: entry.stats.mode },
+          (callback) => {
+            let settled = false;
+            const settle = (error: Error | null, source: Readable): void => {
+              if (settled) return;
+              settled = true;
+              callback(error, source);
+            };
+            const task = (async (): Promise<void> => {
+              // yazl sequences data, not asynchronous descriptor closure. Await
+              // the preceding source's close before opening another descriptor.
+              await previousClosed;
+              if (firstError !== undefined) {
+                settle(firstError, Readable.from([]));
+                return;
+              }
+              const opened = await openFeedbackSource(entry, controller.signal);
+              if (opened.status === 'skipped') {
+                this.included.delete(entry.path);
+                this.recordSkipped(entry.path, opened.reason);
+                settle(null, Readable.from([]));
+                return;
+              }
+              const handle = opened.handle;
+              if (firstError !== undefined) {
+                await closeFileHandle(handle);
+                settle(firstError, Readable.from([]));
+                return;
+              }
+              let source: ReadStream;
+              try {
+                source = handle.createReadStream({
+                  start: 0,
+                  end: entry.stats.size - 1,
+                  autoClose: true,
+                });
+              } catch (error) {
+                await closeFileHandle(handle);
+                throw error;
+              }
+              sources.add(source);
+              // Retain the listener even after close: late secondary errors must
+              // remain handled and must never replace the original failure.
+              source.on('error', fail);
+              previousClosed = new Promise<void>((resolveClosed) => {
+                source.once('close', () => {
+                  sources.delete(source);
+                  resolveClosed();
+                });
+              });
+              settle(null, source);
+            })().catch((error: unknown) => {
+              fail(error);
+              settle(
+                firstError ?? new Error('Feedback source failed'),
+                Readable.from([]),
+              );
+            });
+            pending.add(task);
+            void task.finally(() => pending.delete(task));
+          },
+        );
+      }
+      if (firstError === undefined) {
+        zip.addReadStreamLazy('feedback.json', (callback) => {
+          let settled = false;
+          try {
+            if (this.manifest === undefined)
+              throw new Error('Feedback manifest is required');
+            const manifest: FeedbackManifest = {
+              ...this.manifest,
+              includedFiles: this.includedFiles(),
+              skippedFiles: this.skippedFiles(),
+            };
+            const bytes = Buffer.from(
+              `${JSON.stringify(manifest, null, 2)}\n`,
+              'utf8',
+            );
+            settled = true;
+            callback(null, Readable.from([bytes]));
+          } catch (error) {
+            fail(error);
+            if (!settled) callback(firstError, Readable.from([]));
+          }
+        });
+        zip.end();
+      }
+    } catch (error) {
+      fail(error);
+    }
     await streamDone;
+    // Aborting settles the destination independently of source opens. Wait
+    // for those opens to transfer or close their handles before deletion.
+    await Promise.all(pending);
+    await previousClosed;
+    await outputClosed;
+    if (firstError !== undefined) throw firstError;
+    this.state = 'succeeded';
+  }
+
+  private assertCollecting(): void {
+    if (this.state !== 'collecting')
+      throw new Error('Feedback builder is single-use');
   }
 
   recordSkipped(path: string, reason: SkippedReason): void {
@@ -579,8 +767,6 @@ export async function prepareFeedbackBundle(
           ]),
         ),
       },
-      includedFiles: builder.includedFiles(),
-      skippedFiles: builder.skippedFiles(),
     });
     reservedOutput = await reserveFeedbackOutput(preparedAtDate, destination);
     try {
@@ -588,25 +774,144 @@ export async function prepareFeedbackBundle(
     } finally {
       await closeFileHandle(reservedOutput.fileHandle);
     }
+    const outputStat = await stat(reservedOutput.outputPath);
+    return {
+      filename: reservedOutput.filename,
+      absolutePath: reservedOutput.outputPath,
+      createdAt: preparedAt,
+      sizeBytes: outputStat.size,
+    };
   } catch (error) {
     if (reservedOutput !== null) {
-      await closeReservedOutput(reservedOutput);
+      await closeReservedOutput(reservedOutput).catch(() => undefined);
+      releaseTemporaryFeedbackBundle(reservedOutput.outputPath);
     }
     throw error;
   }
+}
 
-  if (reservedOutput === null) {
-    throw new Error('Feedback bundle output was not prepared');
+// Host-specific paths outside workspace roots have no portable identity or
+// daemon port yet (Phase 6). Keep this effect on the existing preparation
+// boundary; the inventory records this capability exception separately.
+const activeTemporaryOutputs = new Set<string>();
+const STALE_FEEDBACK_AGE_MS = 60 * 60 * 1000;
+const feedbackFilenamePattern = new RegExp(
+  `^${BRAND.internalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-feedback-\\d{8}T\\d{9}Z(?:-[1-9]\\d?)?\\.zip$`,
+);
+
+export function releaseTemporaryFeedbackBundle(outputPath: string): void {
+  activeTemporaryOutputs.delete(outputPath);
+}
+
+export async function cleanupStaleTemporaryFeedbackBundles(): Promise<void> {
+  try {
+    const directory = app.getPath('temp');
+    const downloads = app.getPath('downloads');
+    const downloadsRoot = await realpath(downloads).catch(() =>
+      resolve(downloads),
+    );
+    if (isPathWithinRoot(await realpath(directory), downloadsRoot)) return;
+    const cutoff = Date.now() - STALE_FEEDBACK_AGE_MS;
+    for (const name of await readdir(directory)) {
+      if (!feedbackFilenamePattern.test(name)) continue;
+      const path = join(directory, name);
+      try {
+        const metadata = await lstat(path);
+        // Recheck ownership after metadata I/O. Ownership lasts through upload,
+        // not merely until ZIP writing finishes. This is process-local only.
+        if (
+          metadata.isFile() &&
+          metadata.mtimeMs < cutoff &&
+          !activeTemporaryOutputs.has(path)
+        ) {
+          // eslint-disable-next-line admitted-writers/no-unadmitted-write -- removes a stale temporary feedback zip; remove when the bundle stops naming preferences.
+          await rm(path, { force: true });
+        }
+      } catch {
+        // Stale cleanup must never affect report creation.
+      }
+    }
+  } catch {
+    // Missing/unreadable temporary directories are best-effort too.
   }
-  const filename = reservedOutput.filename;
-  const outputPath = reservedOutput.outputPath;
-  const outputStat = await stat(outputPath);
-  return {
-    filename,
-    absolutePath: outputPath,
-    createdAt: preparedAt,
-    sizeBytes: outputStat.size,
-  };
+}
+
+async function openFeedbackSource(
+  entry: Extract<BundleEntry, { kind: 'file' }>,
+  signal: AbortSignal,
+): Promise<
+  | { status: 'opened'; handle: FileHandle }
+  | { status: 'skipped'; reason: SkippedReason }
+> {
+  let handle: FileHandle | undefined;
+  try {
+    // Reject symlinks at every component below the trusted root, including the
+    // root itself. realpath also checks containment; O_NOFOLLOW protects the
+    // final component on platforms that support it. Node has no portable
+    // openat traversal, so concurrent ancestor substitution is not atomic.
+    if (await feedbackSourceHasSymlink(entry))
+      return { status: 'skipped', reason: 'symlink' };
+    const root = await realpath(entry.sourceRoot);
+    if (!isPathWithinRoot(await realpath(entry.source), root))
+      return { status: 'skipped', reason: 'out-of-root' };
+    const before = await lstat(entry.source);
+    if (!before.isFile())
+      throw new Error('Feedback source is not a regular file');
+    signal.throwIfAborted();
+    // eslint-disable-next-line admitted-writers/no-unadmitted-write -- opens a bundle source such as preferences O_RDONLY to copy it into the zip; remove when the bundle stops naming preferences.
+    handle = await open(
+      entry.source,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
+    const opened = await handle.stat();
+    if (
+      !opened.isFile() ||
+      before.dev !== opened.dev ||
+      before.ino !== opened.ino
+    ) {
+      throw new Error('Feedback source changed identity during open');
+    }
+    if (await feedbackSourceHasSymlink(entry)) {
+      await closeFileHandle(handle);
+      return { status: 'skipped', reason: 'symlink' };
+    }
+    const after = await lstat(entry.source);
+    if (
+      !after.isFile() ||
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      !isPathWithinRoot(await realpath(entry.source), root)
+    ) {
+      throw new Error('Feedback source changed during validation');
+    }
+    return { status: 'opened', handle };
+  } catch (error) {
+    if (handle !== undefined) await closeFileHandle(handle);
+    const code = getErrorCode(error);
+    if (code === 'ENOENT' || code === 'ENOTDIR')
+      return { status: 'skipped', reason: 'missing' };
+    if (code === 'EACCES' || code === 'EPERM')
+      return { status: 'skipped', reason: 'inaccessible' };
+    if (code === 'ELOOP') return { status: 'skipped', reason: 'symlink' };
+    throw error;
+  }
+}
+
+async function feedbackSourceHasSymlink(
+  entry: Extract<BundleEntry, { kind: 'file' }>,
+): Promise<boolean> {
+  const parts = relative(
+    resolve(entry.sourceRoot),
+    resolve(entry.source),
+  ).split(sep);
+  let path = resolve(entry.sourceRoot);
+  for (const part of ['', ...parts]) {
+    if (part !== '') path = join(path, part);
+    if ((await lstat(path)).isSymbolicLink()) return true;
+  }
+  return false;
 }
 
 async function reserveFeedbackOutput(
@@ -622,11 +927,10 @@ async function reserveFeedbackOutput(
     const filename = formatFeedbackFilename(timestamp, attempt);
     const outputPath = join(outputDir, filename);
     try {
-      return {
-        filename,
-        outputPath,
-        fileHandle: await open(outputPath, 'wx'),
-      };
+      // eslint-disable-next-line admitted-writers/no-unadmitted-write -- reserves a new feedback zip; remove when the bundle stops naming preferences.
+      const fileHandle = await open(outputPath, 'wx');
+      if (destination === 'temp') activeTemporaryOutputs.add(outputPath);
+      return { filename, outputPath, fileHandle };
     } catch (error) {
       if (getErrorCode(error) === 'EEXIST') {
         continue;
@@ -650,6 +954,7 @@ async function closeReservedOutput(
   reservedOutput: ReservedFeedbackOutput,
 ): Promise<void> {
   await closeFileHandle(reservedOutput.fileHandle);
+  // eslint-disable-next-line admitted-writers/no-unadmitted-write -- removes the reserved feedback zip; remove when the bundle stops naming preferences.
   await rm(reservedOutput.outputPath, { force: true });
 }
 
@@ -1438,7 +1743,15 @@ function sanitizeChatBadgeRefs(value: unknown): unknown[] {
     const chatId = readStringField(ref, 'chatId');
     if (chatId === undefined) return [];
     const providerType = readStringField(ref, 'providerType');
-    return [{ chatId, ...(providerType ? { providerType } : {}) }];
+    // A read-state marker, not conversation content.
+    const markedUnread = readBooleanField(ref, 'markedUnread');
+    return [
+      {
+        chatId,
+        ...(providerType ? { providerType } : {}),
+        ...(markedUnread === true ? { markedUnread } : {}),
+      },
+    ];
   });
 }
 
@@ -2000,15 +2313,17 @@ async function includeMatchingTranscripts(
       continue;
     }
     const auditPath = join(auditDir, entry.name);
-    let lines: AsyncIterable<string>;
+    let source: ReadStream;
     try {
-      lines = createInterface({
-        input: createReadStream(auditPath, { encoding: 'utf8' }),
-        crlfDelay: Infinity,
-      });
+      source = createReadStream(auditPath, { encoding: 'utf8' });
     } catch {
       continue;
     }
+    // Observe open/read failures before constructing readline. Closing the
+    // interface unblocks iteration even when a source fails during addFile.
+    const sourceDone = finished(source).catch(() => undefined);
+    const lines = createInterface({ input: source, crlfDelay: Infinity });
+    source.on('error', () => lines.close());
     try {
       for await (const line of lines) {
         if (line.trim().length === 0) {
@@ -2038,7 +2353,11 @@ async function includeMatchingTranscripts(
         }
       }
     } catch {
-      continue;
+      // Unreadable audit logs do not prevent collecting other diagnostics.
+    } finally {
+      lines.close();
+      source.destroy();
+      await sourceDone;
     }
   }
 }

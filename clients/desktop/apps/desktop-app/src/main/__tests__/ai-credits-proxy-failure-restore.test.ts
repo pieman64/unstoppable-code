@@ -1,3 +1,4 @@
+import { classifyChatTurnFailure } from '../observability/chat-turn-failure';
 import { withProxyFailureRestored } from '../agents/ai-credits-proxy-failure-restore';
 import {
   applyClaudeTranscriptEvent,
@@ -17,9 +18,11 @@ const refusal: CanopyProxyError = {
   message,
   correlationId: null,
 };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 function record(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new Error('Expected record');
+  if (!isRecord(value)) throw new Error('Expected record');
   return value;
 }
 
@@ -63,6 +66,35 @@ describe('withProxyFailureRestored', () => {
     expect(event).toEqual(original);
   });
 
+  it.each<NonNullable<CanopyProxyError['reason']>>([
+    'personal_wallet_empty',
+    'organization_pool_unavailable',
+  ])(
+    'preserves restored Codex billing reason %s through classification',
+    (reason) => {
+      const restored = withProxyFailureRestored(
+        {
+          type: 'codex',
+          event: {
+            type: 'turn.failed',
+            error: { message: 'unexpected status 402' },
+          },
+        },
+        { ...refusal, reason },
+      );
+
+      expect(
+        classifyChatTurnFailure({
+          provider: 'codex',
+          terminalEvent: record(restored),
+        }),
+      ).toEqual({
+        category: 'no_credits',
+        detail: reason,
+      });
+    },
+  );
+
   it.each(['raw result', '', undefined])(
     'restores Claude result precedence (%s) and removes raw errors fallback',
     (result) => {
@@ -95,12 +127,18 @@ describe('withProxyFailureRestored', () => {
       const state = applyClaudeTranscriptEvent(
         createEmptyTranscriptReducerState(),
         persisted,
-        { now: 1, createMessageId: () => 'restored-message' },
+        {
+          now: 1,
+          createMessageId: () => 'restored-message',
+          childToolLiveness: { kind: 'unknown' },
+        },
       );
       expect(state.aiCreditsNoBillingSource).toMatchObject({
         provider: 'claude',
       });
-      expect(parseCanopyProxyError(state.error)).toEqual(refusal);
+      const stateError = state.error;
+      if (stateError === null) throw new Error('Expected restored error');
+      expect(parseCanopyProxyError(stateError)).toEqual(refusal);
       expect(
         classifyAgentFailure({
           provider: 'claude',
@@ -150,7 +188,11 @@ describe('withProxyFailureRestored', () => {
       const state = applyClaudeTranscriptEvent(
         createEmptyTranscriptReducerState(),
         normalized,
-        { now: 1, createMessageId: () => 'restored-message' },
+        {
+          now: 1,
+          createMessageId: () => 'restored-message',
+          childToolLiveness: { kind: 'unknown' },
+        },
       );
       expect(state.messages).toHaveLength(1);
       const block = state.messages[0]?.blocks[0];

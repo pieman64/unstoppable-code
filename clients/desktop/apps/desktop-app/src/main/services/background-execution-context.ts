@@ -48,6 +48,7 @@ import {
 import type {
   AutomationAction,
   AutomationsListResponse,
+  ScheduledActivity,
   WorkspaceType,
 } from '@canopy/desktop-shared/types';
 import {
@@ -56,6 +57,10 @@ import {
   type AutomationContextRefusalAction,
   type BackgroundContextMismatchDetails,
 } from '@canopy/desktop-shared/lib/automation-context-copy';
+import {
+  isGlobalPipelineAutomationAction,
+  resolveAutomationPipelineTarget,
+} from '@canopy/desktop-shared/lib/automation-pipeline-target';
 
 export function backgroundExecutionContextEnabled(): boolean {
   return getFeatureFlagService().isEnabled(
@@ -431,15 +436,24 @@ export function bindHookContextsWithCapturedContext(
 // Moved with the hook context rebind decision (W5c2).
 export { rebindHookExecutionContexts } from '../lib/worktree-record-decision-apply';
 
-/** The workspace destination an automation action runs against, if any. */
+/**
+ * The workspace destination an automation action runs against, if any. A
+ * pipeline with no project has none; its stored `workspaceId` is inert.
+ */
 export function automationActionDestination(
   action: AutomationAction,
 ): { projectId: string; worktreeId?: string } | null {
   switch (action.type) {
     case 'worktree_prompt':
     case 'worktree_session_prompt':
-    case 'worktree_pipeline':
       return { projectId: action.workspaceId };
+    case 'worktree_pipeline': {
+      const target = resolveAutomationPipelineTarget(action);
+      if (!target || target.kind === 'global') return null;
+      return target.kind === 'task'
+        ? { projectId: target.workspaceId, worktreeId: target.taskId }
+        : { projectId: target.workspaceId };
+    }
     case 'standalone_prompt':
       return { projectId: resolveCoworkWorkspaceId(action.chatProjectId) };
     case 'pipeline_execution_resume':
@@ -634,6 +648,23 @@ export async function automationTargetInContext(
 }
 
 /**
+ * Whether an automation belongs in `context`'s lists. A pipeline with no
+ * project is filed under its saved owner (absent reads as Personal), never
+ * by its inert `workspaceId` or the "show everywhere" App Advisor rule.
+ */
+export async function automationInContext(
+  activity: Pick<ScheduledActivity, 'action' | 'executionContext'>,
+  context: WorkspaceContext,
+): Promise<boolean> {
+  if (isGlobalPipelineAutomationAction(activity.action))
+    return (
+      (activity.executionContext ?? 'personal') ===
+      serializeWorkspaceContext(context)
+    );
+  return automationTargetInContext(activity.action, context);
+}
+
+/**
  * Narrow an automations list to the selected context, matching the Automations
  * page. Unchanged while org projects are off.
  */
@@ -649,12 +680,14 @@ export async function scopeAutomationsToSelectedContext(
   const keep = await Promise.all(
     list.activities.map((activity) => {
       const destination = automationActionDestination(activity.action);
-      const key = destination
-        ? `${destination.projectId}:${destination.worktreeId ?? ''}`
-        : '';
+      const key = isGlobalPipelineAutomationAction(activity.action)
+        ? `owner:${activity.executionContext ?? 'personal'}`
+        : destination
+          ? `${destination.projectId}:${destination.worktreeId ?? ''}`
+          : '';
       let verdict = verdicts.get(key);
       if (!verdict) {
-        verdict = automationTargetInContext(activity.action, context);
+        verdict = automationInContext(activity, context);
         verdicts.set(key, verdict);
       }
       return verdict;

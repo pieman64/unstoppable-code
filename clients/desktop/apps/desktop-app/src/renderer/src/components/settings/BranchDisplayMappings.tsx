@@ -27,6 +27,7 @@ import {
   ChevronRightIcon,
   CloseIcon,
   DragHandleIcon,
+  ForwardIcon,
   PlusIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -37,7 +38,6 @@ import {
   SettingsSubRow,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 interface BranchDisplayMappingsProps {
   mappings: BranchDisplayMapping[];
@@ -57,7 +57,6 @@ interface ExampleInputProps {
 }
 
 function ExampleInput({ onAdd }: ExampleInputProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [value, setValue] = useState('');
 
   const submit = useCallback((): void => {
@@ -84,7 +83,7 @@ function ExampleInput({ onAdd }: ExampleInputProps): JSX.Element {
         aria-label="Example branch"
       />
       <Button
-        size={settingsButtonSize}
+        size="compact"
         variant="secondary"
         onClick={submit}
         disabled={!value.trim()}
@@ -115,7 +114,6 @@ function MappingRow({
   onChange,
   onDelete,
 }: MappingRowProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const {
     attributes,
     listeners,
@@ -159,7 +157,7 @@ function MappingRow({
 
   return (
     <div ref={setNodeRef} style={style} className="flex flex-col gap-3">
-      <div className="flex min-h-7 items-center gap-2">
+      <div className="flex min-h-10 items-center gap-2">
         <span
           className="shrink-0 cursor-grab fg-secondary hover:fg-primary active:cursor-grabbing"
           {...attributes}
@@ -199,8 +197,8 @@ function MappingRow({
 
         {!mapping.builtin && (
           <Button
-            size={settingsButtonSize}
-            variant="ghost"
+            size="compact"
+            variant="secondary"
             iconOnly
             onClick={onDelete}
             aria-label="Delete mapping"
@@ -210,8 +208,8 @@ function MappingRow({
         )}
 
         <Button
-          size={settingsButtonSize}
-          variant="ghost"
+          size="compact"
+          variant="secondary"
           iconOnly
           onClick={(): void => setExpanded((v) => !v)}
           aria-expanded={expanded}
@@ -330,8 +328,8 @@ function MappingRow({
                         <span className="w-7 shrink-0" />
                       ) : (
                         <Button
-                          size={settingsButtonSize}
-                          variant="ghost"
+                          size="compact"
+                          variant="secondary"
                           iconOnly
                           onClick={(): void =>
                             onChange({
@@ -346,17 +344,24 @@ function MappingRow({
                           <CloseIcon size={10} />
                         </Button>
                       )}
-                      <span className="truncate fg-tertiary">
-                        {p.input}
+                      <span className="flex min-w-0 items-center gap-1 fg-tertiary">
+                        <span className="truncate">
+                          {p.input}
+                          {p.output === null && ' (no match)'}
+                        </span>
                         {p.output !== null && (
                           <>
-                            {' → '}
-                            <span className="font-medium fg-primary">
+                            <ForwardIcon
+                              size={12}
+                              aria-hidden
+                              className="shrink-0"
+                            />
+                            <span className="sr-only">becomes</span>
+                            <span className="truncate font-medium fg-primary">
                               {p.output}
                             </span>
                           </>
                         )}
-                        {p.output === null && ' (no match)'}
                       </span>
                     </div>
                   );
@@ -386,7 +391,6 @@ export function BranchDisplayMappings({
   mappings,
   onSave,
 }: BranchDisplayMappingsProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [localMappings, setLocalMappings] =
     useState<BranchDisplayMapping[]>(mappings);
   const [expanded, setExpanded] = useState(false);
@@ -477,7 +481,7 @@ export function BranchDisplayMappings({
                 <>
                   {expanded && (
                     <Button
-                      size={settingsButtonSize}
+                      size="compact"
                       variant="secondary"
                       onClick={handleAdd}
                     >
@@ -486,8 +490,8 @@ export function BranchDisplayMappings({
                     </Button>
                   )}
                   <Button
-                    size={settingsButtonSize}
-                    variant="ghost"
+                    size="compact"
+                    variant="secondary"
                     onClick={(): void => setExpanded((v) => !v)}
                     aria-expanded={expanded}
                     aria-label={rulesLabel}
@@ -516,7 +520,7 @@ export function BranchDisplayMappings({
                 description="Apply the current rules to every branch in the sidebar."
                 control={
                   <Button
-                    size={settingsButtonSize}
+                    size="compact"
                     variant="secondary"
                     onClick={(): void =>
                       useBranchDisplayStore.getState().invalidateCache()

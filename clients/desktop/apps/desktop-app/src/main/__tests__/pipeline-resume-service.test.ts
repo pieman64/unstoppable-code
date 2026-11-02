@@ -66,8 +66,12 @@ jest.mock('../pipelines/transient-error-retry-scheduler', () => ({
 const mockGetActiveExecutionHandle = jest.fn();
 const mockHasActiveExecution = jest.fn(() => false);
 jest.mock('../pipelines/pipeline-execution-registry', () => ({
-  getActiveExecutionHandle: mockGetActiveExecutionHandle,
-  hasActiveExecution: mockHasActiveExecution,
+  get getActiveExecutionHandle(): typeof mockGetActiveExecutionHandle {
+    return mockGetActiveExecutionHandle;
+  },
+  get hasActiveExecution(): typeof mockHasActiveExecution {
+    return mockHasActiveExecution;
+  },
   releaseExecutionReservation: jest.fn(),
   reserveExecution: jest.fn(),
   trackExecution: jest.fn(),
@@ -89,6 +93,18 @@ const mockedCancelPendingTransientRetryTimer = jest.mocked(
   cancelPendingTransientRetryTimer,
 );
 
+function emptyExecutionCollections(): Pick<
+  ExecutionState,
+  'job_definitions' | 'job_groups' | 'pending_pauses' | 'status_reasons'
+> {
+  return {
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
+  };
+}
+
 describe('pipeline resume service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -109,6 +125,7 @@ describe('pipeline resume service', () => {
         scope: ['global'],
         jobs: {},
       },
+      ...emptyExecutionCollections(),
       scope: 'global',
       execution_context: 'org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       status: 'paused',
@@ -150,6 +167,7 @@ describe('pipeline resume service', () => {
         id: 'execution-1',
         pipeline_id: 'pipeline-1',
         pipeline_snapshot: { name: 'Saved', scope: ['global'], jobs: {} },
+        ...emptyExecutionCollections(),
         scope: 'global',
         status: 'paused',
         jobs: {},
@@ -168,7 +186,7 @@ describe('pipeline resume service', () => {
       ).rejects.toThrow(message);
       expect(resumePipeline).not.toHaveBeenCalled();
       expect(state.status).toBe('paused');
-      if (decision.transient) {
+      if ('transient' in decision && decision.transient) {
         const resumedState = { ...state, status: 'success' as const };
         mockAuthorizeBackground.mockResolvedValueOnce({ allow: true });
         jest.mocked(resumePipeline).mockResolvedValueOnce({
@@ -221,7 +239,12 @@ describe('pipeline resume service', () => {
         version: 6,
         id: 'execution-1',
         pipeline_id: 'pipeline-1',
-        pipeline_snapshot: { name: 'Unsupported speed', jobs: {} },
+        pipeline_snapshot: {
+          name: 'Unsupported speed',
+          scope: ['directory'],
+          jobs: {},
+        },
+        ...emptyExecutionCollections(),
         status: 'paused',
         jobs: {},
         started_at: '2026-01-01T00:00:00.000Z',
@@ -256,7 +279,7 @@ describe('pipeline resume service', () => {
           getWindow: () => null,
         }),
       ).rejects.toThrow(
-        'Pipelines do not support Ultra fast. Choose Regular or Fast.',
+        'Workflows do not support Ultra fast. Choose Regular or Fast.',
       );
       expect(resumePaused).not.toHaveBeenCalled();
       expect(resumePipeline).not.toHaveBeenCalled();
@@ -274,6 +297,7 @@ describe('pipeline resume service', () => {
         scope: ['directory'],
         jobs: {},
       },
+      ...emptyExecutionCollections(),
       status: 'running',
       initiation_source: 'user',
       status_reasons: [
@@ -359,6 +383,7 @@ describe('pipeline resume service', () => {
           scope: ['directory'],
           jobs: {},
         },
+        ...emptyExecutionCollections(),
         status: 'running',
         initiation_source: 'user',
         status_reasons: [
@@ -461,6 +486,7 @@ describe('pipeline resume service', () => {
         scope: ['directory'],
         jobs: {},
       },
+      ...emptyExecutionCollections(),
       status: 'running',
       initiation_source: 'user',
       status_reasons: [
@@ -580,6 +606,7 @@ describe('pipeline resume service', () => {
         scope: ['directory'],
         jobs: {},
       },
+      ...emptyExecutionCollections(),
       status: 'paused',
       initiation_source: 'user',
       status_reasons: [],
@@ -729,6 +756,7 @@ describe('pipeline resume service', () => {
         scope: ['directory'],
         jobs: {},
       },
+      ...emptyExecutionCollections(),
       status: 'running',
       initiation_source: 'user',
       status_reasons: [
@@ -793,6 +821,7 @@ describe('pipeline resume service', () => {
         scope: ['directory'],
         jobs: {},
       },
+      ...emptyExecutionCollections(),
       status: 'running',
       status_reasons: [
         {
@@ -812,7 +841,7 @@ describe('pipeline resume service', () => {
         {
           id: inputReasonId,
           kind: 'input_required',
-          code: 'input_required',
+          code: 'input_requested',
           detected_at: '2026-01-01T00:00:00.000Z',
           source: {
             job_id: 'input',

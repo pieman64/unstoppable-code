@@ -1,3 +1,4 @@
+import { validateAcquisitionContextValue } from './acquisition-context';
 import type {
   DesktopInstrumentationContext,
   DesktopInstrumentationFailureReason,
@@ -48,6 +49,13 @@ const AUDIT_CONTEXT_KEYS = [
   'message_count',
   'total_cost_usd',
 ];
+const GIT_SHIPPING_CONTEXT_KEYS = [
+  'source',
+  'workspace_type',
+  'is_install_first',
+  'flow',
+  'repo_count',
+];
 const WORKSPACE_CONTEXT_KEYS = [
   'action',
   'source',
@@ -84,6 +92,135 @@ const STANDALONE_CONTEXT_KEYS = [
  * Handled errors never reach PostHog and are not operations.
  */
 export const DESKTOP_OPERATIONS = {
+  'canopy.first_run_import_view': {
+    kind: 'product',
+    posthogEvent: 'onboarding:first_run_import_view',
+    contextKeys: ['claude_connection', 'codex_connection'],
+  },
+  'canopy.first_run_import': {
+    kind: 'product',
+    posthogEvent: 'onboarding:first_run_import_end',
+    contextKeys: [
+      'outcome',
+      'scan_outcome',
+      'claude_data_detected',
+      'codex_data_detected',
+      'claude_connection',
+      'codex_connection',
+      'credits_offered',
+      'found_count',
+      'imported_count',
+      'submission_count',
+      'failed_submission_count',
+      'picked_folder',
+    ],
+  },
+  'canopy.project_import': {
+    kind: 'product',
+    posthogEvent: 'projects:import_end',
+    contextKeys: [
+      'source',
+      'modal_entry',
+      'scan_outcome',
+      'claude_data_detected',
+      'codex_data_detected',
+      'claude_connection',
+      'codex_connection',
+      'found_count',
+      'found_claude_count',
+      'found_codex_count',
+      'selected_count',
+      'imported_count',
+      'imported_claude_count',
+      'imported_codex_count',
+      'failed_count',
+      'chats_imported_count',
+      'picked_folder',
+      'outcome',
+    ],
+  },
+  'canopy.invite_send': {
+    kind: 'product',
+    posthogEvent: 'sharing:invite_send',
+    contextKeys: [
+      'invite_type',
+      'invite_ref',
+      'grant_ref',
+      'recipient_kind',
+      'share_audience',
+      'container_type',
+      'send_surface',
+      'delivery',
+    ],
+  },
+  'canopy.invite_accept': {
+    kind: 'product',
+    posthogEvent: 'sharing:invite_accept',
+    contextKeys: [
+      'invite_type',
+      'invite_ref',
+      'accept_surface',
+      'container_type',
+      'is_first_accept_on_install',
+      'install_age_days',
+    ],
+  },
+  'canopy.organization_create': {
+    kind: 'product',
+    posthogEvent: 'organization:create',
+    contextKeys: ['creation_method', 'invite_included', 'project_count'],
+  },
+  'canopy.remote_pairing_start': {
+    kind: 'product',
+    posthogEvent: 'remote:pairing_start',
+    contextKeys: [
+      'pairing_kind',
+      'pairing_entry',
+      'peer_platform',
+      'is_additional_device',
+    ],
+  },
+  'canopy.remote_pairing': {
+    kind: 'product',
+    posthogEvent: 'remote:pairing_end',
+    contextKeys: [
+      'pairing_kind',
+      'pairing_entry',
+      'peer_platform',
+      'is_additional_device',
+      'outcome',
+    ],
+  },
+
+  'canopy.git_commit': {
+    kind: 'product',
+    posthogEvent: 'git:commit_create',
+    contextKeys: GIT_SHIPPING_CONTEXT_KEYS,
+  },
+  'canopy.pull_request_open': {
+    kind: 'product',
+    posthogEvent: 'git:pull_request_open',
+    contextKeys: GIT_SHIPPING_CONTEXT_KEYS,
+  },
+  'canopy.pull_request_merge': {
+    kind: 'product',
+    posthogEvent: 'git:pull_request_merge',
+    contextKeys: GIT_SHIPPING_CONTEXT_KEYS,
+  },
+  'canopy.home_onboarding_suggestions': {
+    kind: 'product',
+    posthogEvent: 'home:onboarding_suggestion_update',
+    contextKeys: [
+      'action',
+      'entry',
+      'step',
+      'reason',
+      'role',
+      'count',
+      'surface',
+    ],
+    renamedContextKeys: { surface: 'composer_surface' },
+  },
   'canopy.model_recovery': {
     kind: 'product',
     posthogEvent: 'billing:model_recovery_view',
@@ -94,6 +231,28 @@ export const DESKTOP_OPERATIONS = {
     posthogEvent: 'billing:model_access_update',
     contextKeys: ['recovery_source', 'model_id', 'library_access'],
   },
+  'canopy.daily_credit_grant': {
+    kind: 'product',
+    posthogEvent: 'billing:daily_credit_grant_update',
+    // The server's grant outcome only (CAN-4633); never balances or account
+    // details.
+    contextKeys: [
+      'grant_status',
+      'grant_blocked_reason',
+      'grant_amount',
+      'grant_source',
+    ],
+  },
+  'canopy.credits_recovery': {
+    kind: 'product',
+    posthogEvent: 'billing:credits_recovery_view',
+    contextKeys: ['recovery_surface', 'recovery_trigger'],
+  },
+  'canopy.credits_recovery_action': {
+    kind: 'product',
+    posthogEvent: 'billing:credits_recovery_click',
+    contextKeys: ['recovery_surface', 'recovery_action'],
+  },
   'canopy.share_dialog': {
     kind: 'product',
     posthogEvent: 'sharing:dialog_open',
@@ -102,7 +261,33 @@ export const DESKTOP_OPERATIONS = {
   'canopy.chat_turn': {
     kind: 'product',
     posthogEvent: 'chat:turn_end',
-    contextKeys: AUDIT_CONTEXT_KEYS,
+    // Fixed values only: why a turn or one of its sub-agents failed, and who
+    // started it (CAN-4629).
+    contextKeys: [
+      ...AUDIT_CONTEXT_KEYS,
+      'failure_category',
+      'failure_detail',
+      'sub_agent_failure_category',
+      'trigger_type',
+      // The daily-drip outcome main last saw, on `no_credits` failures only
+      // (CAN-4633).
+      'daily_credit_grant_status',
+    ],
+  },
+  'canopy.chat_message_send': {
+    kind: 'product',
+    posthogEvent: 'chat:message_send',
+    // Fired when the user submits, before dispatch, so a send that fails
+    // before its turn starts is still counted. Never message content.
+    contextKeys: [
+      'chat_surface',
+      'composer_mode',
+      'is_suggested_prompt',
+      'provider',
+      'model',
+      'is_ai_credits_billed',
+      'is_first_message',
+    ],
   },
   'canopy.portal_chat_visual_read': {
     kind: 'product',
@@ -187,11 +372,6 @@ export const DESKTOP_OPERATIONS = {
     posthogEvent: 'activation:campaign_update',
     contextKeys: ['campaign_id', 'item_id', 'outcome', 'reason', 'destination'],
   },
-  'canopy.home_onboarding_suggestions': {
-    kind: 'product',
-    posthogEvent: 'home:onboarding_suggestion_update',
-    contextKeys: ['action', 'entry', 'step', 'reason', 'role', 'count'],
-  },
   'canopy.suggested_prompt': {
     kind: 'product',
     posthogEvent: 'chat:suggested_prompt_update',
@@ -213,7 +393,23 @@ export const DESKTOP_OPERATIONS = {
     kind: 'product',
     posthogEvent: 'provider:account_connect',
     // Never account details: no email, label, plan, or org.
-    contextKeys: ['provider', 'connect_source'],
+    contextKeys: [
+      'provider',
+      'connect_source',
+      'connection_method',
+      'is_first_connection',
+      'first_connected_provider',
+    ],
+  },
+  'canopy.provider_account_connect_fail': {
+    kind: 'product',
+    posthogEvent: 'provider:account_connect_fail',
+    contextKeys: [
+      'provider',
+      'connect_source',
+      'connection_method',
+      'failure_reason',
+    ],
   },
   'canopy.skill_suggestion': {
     kind: 'product',
@@ -267,7 +463,9 @@ export interface PostHogOperationTracker {
   start: (
     name: DesktopOperationName,
     options?: DesktopInstrumentationOperationOptions,
+    captureEligible?: boolean,
   ) => void;
+  discardAcquisitionStarts: () => void;
   finish: (
     name: DesktopOperationName,
     outcome: DesktopOperationOutcome,
@@ -278,6 +476,11 @@ export interface PostHogOperationTracker {
 
 /** Bounds start times for operations that never finish. */
 const MAX_TRACKED_OPERATION_STARTS = 500;
+const ACQUISITION_LIFECYCLES: ReadonlySet<string> = new Set([
+  'canopy.first_run_import',
+  'canopy.project_import',
+  'canopy.remote_pairing',
+]);
 
 function getProductOperationPolicy(
   name: DesktopOperationName,
@@ -290,11 +493,16 @@ function projectContextKeys(
   context: DesktopInstrumentationContext,
   approved: readonly string[],
   renamed: Readonly<Record<string, string>> | undefined,
+  name: DesktopOperationName,
 ): DesktopInstrumentationContext {
   const projected: DesktopInstrumentationContext = {};
   for (const key of approved) {
     const value = context[key];
-    if (value !== undefined) projected[renamed?.[key] ?? key] = value;
+    if (
+      value !== undefined &&
+      validateAcquisitionContextValue(name, key, value)
+    )
+      projected[renamed?.[key] ?? key] = value;
   }
   return projected;
 }
@@ -337,7 +545,8 @@ export function createPostHogOperationTracker({
   ): string => `${name}\u0000${options?.operationKey ?? ''}`;
 
   return {
-    start: (name, options): void => {
+    start: (name, options, captureEligible = true): void => {
+      if (ACQUISITION_LIFECYCLES.has(name) && !captureEligible) return;
       const policy = getProductOperationPolicy(name);
       if (
         !policy ||
@@ -353,6 +562,12 @@ export function createPostHogOperationTracker({
         if (!oldest.done) startedAt.delete(oldest.value);
       }
     },
+    discardAcquisitionStarts: (): void => {
+      for (const key of Array.from(startedAt.keys())) {
+        if (ACQUISITION_LIFECYCLES.has(key.slice(0, key.indexOf('\u0000'))))
+          startedAt.delete(key);
+      }
+    },
     finish: (
       name,
       outcome,
@@ -364,6 +579,8 @@ export function createPostHogOperationTracker({
       const key = keyOf(name, options);
       const started = startedAt.get(key);
       startedAt.delete(key);
+      if (ACQUISITION_LIFECYCLES.has(name) && started === undefined)
+        return undefined;
       const context = options?.context ?? {};
       if (policy.includes && !policy.includes(context)) return undefined;
       const durationMs = resolveDurationMs(context, started, now);
@@ -374,6 +591,7 @@ export function createPostHogOperationTracker({
             context,
             policy.contextKeys,
             policy.renamedContextKeys,
+            name,
           ),
           status: outcome.status,
           ...(outcome.status === 'failure'

@@ -1134,6 +1134,21 @@ function createBrowserBoundaryDiagnostic(electronApp, window, slug) {
   };
 }
 
+// The graduated address bar exposes profiles through More, not a toolbar chip.
+async function expectBrowserProfile(window, name, pane = window) {
+  await pane.getByTestId('browser-more').click();
+  await expect(window.getByTestId('browser-more-profile')).toContainText(name);
+  await window.keyboard.press('Escape');
+  await expect(window.getByTestId('browser-more-menu')).toBeHidden();
+}
+
+async function chooseBrowserProfile(window, profileId) {
+  await window.getByTestId('browser-more').click();
+  await window.getByTestId('browser-more-profile').hover();
+  await window.getByTestId(`browser-profile-option-${profileId}`).click();
+  await expect(window.getByTestId('browser-more-menu')).toBeHidden();
+}
+
 // Explicit opt-in works locally on macOS and in the selected Windows CI run.
 // Collection is cached metadata plus a bounded synchronous DOM evaluation only.
 function createOperationDiagnostic(electronApp, window, slug) {
@@ -1354,7 +1369,7 @@ test('named profile permissions are independent and Task enable stays fixed on',
   );
   const { electronApp, window, app } = owner;
   try {
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await window.getByTestId('panel-add-menu-item-browser').click();
     await expect(window.getByTestId('browser-bar')).toBeVisible();
     await app.openSettings();
@@ -1367,14 +1382,17 @@ test('named profile permissions are independent and Task enable stays fixed on',
     const selectedProfile = settings.locator(
       '[data-testid^="browser-profile-row-"][aria-pressed="true"]',
     );
-    await expect(selectedProfile).toHaveClass(/ring-line-accent/);
+    // The chosen profile carries the checkmark at the row's end, with no
+    // accent fill or ring.
+    await expect(selectedProfile).not.toHaveClass(/accent/);
+    await expect(selectedProfile.locator('svg')).toHaveCount(1);
     await expect
       .poll(() =>
         selectedProfile.evaluate(
           (element) => getComputedStyle(element).boxShadow,
         ),
       )
-      .not.toBe('none');
+      .toBe('none');
     const enable = detail.getByRole('switch', {
       name: 'Allow agent to enable this profile',
       exact: true,
@@ -1565,9 +1583,8 @@ test('cold saved tabs reject a different explicit profile before opening and ret
       .toContain('saved-account');
     await app.openMainPage();
     await app.selectWorktree('demo-main');
-    await expect(window.getByTestId('browser-profile-picker')).toContainText(
-      'Saved account',
-    );
+    await window.getByTestId(`panel-tab-panel-browser-${saved.id}`).click();
+    await expectBrowserProfile(window, 'Saved account');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -1589,7 +1606,7 @@ test('switches real account stores, fences stale commands, and enforces both mai
       );
     });
     const [work, personal] = profiles;
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await window.getByTestId('panel-add-menu-item-browser').click();
     const url = `${process.env.CANOPY_E2E_MOCK_BASE_URL ?? 'http://127.0.0.1:4011'}/browser-fixture/one?profiles=account-switch`;
     const input = window.getByTestId('browser-url-input');
@@ -1609,15 +1626,8 @@ test('switches real account stores, fences stale commands, and enforces both mai
     });
     const oldRef = oldInputs.result.inputSnapshot.inputs[0].ref;
     const choose = async (profile) => {
-      await window.getByTestId('browser-profile-picker').click();
-      await window
-        .getByTestId('browser-profile-selection')
-        .selectOption(profile.profileId);
-      await window.getByTestId('browser-profile-replace').click();
-      await expect(window.getByTestId('browser-profile-menu')).toHaveCount(0);
-      await expect(window.getByTestId('browser-profile-picker')).toContainText(
-        profile.displayName,
-      );
+      await chooseBrowserProfile(window, profile.profileId);
+      await expectBrowserProfile(window, profile.displayName);
       await expect
         .poll(async () => (await readTab()).profile.resolvedProfileId)
         .toBe(profile.profileId);
@@ -1808,7 +1818,7 @@ test('inspector browser dispatch isolates ambient context while native IPC and H
       allowEnable: false,
       allowClear: false,
     });
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await window.getByTestId('panel-add-menu-item-browser').click();
     const url = `${process.env.CANOPY_E2E_MOCK_BASE_URL ?? 'http://127.0.0.1:4011'}/browser-fixture/one?profiles=async-context`;
     await window.getByTestId('browser-url-input').fill(url);
@@ -2195,7 +2205,7 @@ test('a queued agent fill cannot edit the replacement profile after a user switc
         input: { displayName: 'Replacement' },
       }),
     );
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await window.getByTestId('panel-add-menu-item-browser').click();
     const url = `${process.env.CANOPY_E2E_MOCK_BASE_URL ?? 'http://127.0.0.1:4011'}/browser-fixture/one?profiles=queued-fill`;
     await window.getByTestId('browser-url-input').fill(url);
@@ -2385,15 +2395,8 @@ test('a queued agent fill cannot edit the replacement profile after a user switc
       });
     };
     await assertHeld('before-switch');
-    await window.getByTestId('browser-profile-picker').click();
-    await window
-      .getByTestId('browser-profile-selection')
-      .selectOption(named.profileId);
-    await window.getByTestId('browser-profile-replace').click();
-    await expect(window.getByTestId('browser-profile-menu')).toHaveCount(0);
-    await expect(window.getByTestId('browser-profile-picker')).toContainText(
-      'Replacement',
-    );
+    await chooseBrowserProfile(window, named.profileId);
+    await expectBrowserProfile(window, 'Replacement');
     await expect
       .poll(() =>
         fixtureCookies(electronApp, url)
@@ -2470,6 +2473,9 @@ test('a queued agent fill cannot edit the replacement profile after a user switc
   }
 });
 
+// Compatibility-only harness retained for the source-driven Node scenarios in
+// browser-profile-operation-diagnostics.test.mjs. Registered Electron cases
+// below use runGraduatedPendingSourceDialogCase; they do not execute this gate.
 function assertPendingPresentationOrdering(verdict) {
   expect(verdict.ok, JSON.stringify(verdict)).toBe(true);
   return verdict;
@@ -2582,7 +2588,7 @@ async function runPendingSourceDialogCase({
         input: { displayName: 'Dialog Work', allowEnable: true },
       }),
     );
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await window.getByTestId('panel-add-menu-item-browser').click();
     const url = `${process.env.CANOPY_E2E_MOCK_BASE_URL ?? 'http://127.0.0.1:4011'}/browser-fixture/one?profiles=beforeunload`;
     await window.getByTestId('browser-url-input').fill(url);
@@ -4431,12 +4437,873 @@ async function runPendingSourceDialogCase({
   if (cleanupErrors.length) throw new Error(JSON.stringify(cleanupErrors));
 }
 
+export { runPendingSourceDialogCase };
+
+// Graduation removed the asynchronous owner-read boundary from presentation.
+// The injected compatibility-path races remain in browser-service.test.ts;
+// these flows exercise the shipped IPC path and actual native/dialog state.
+async function runGraduatedPendingSourceDialogCase({
+  controlledLaterHide = false,
+} = {}) {
+  test.setTimeout(90_000);
+  const {
+    installPresentationRendererRouteRecorder,
+    waitForInitialNativeReadiness,
+  } = await import('./browser-profile-presentation-observer.mjs');
+  const selectionOwner = {};
+  const launchBoundary = createSelectedLaunchBoundary(
+    'presentation-ordering',
+    'pending-dialog',
+    {
+      close: closeCanopy,
+      owners: [{ projectId: 'demo-ts-pnpm-vite', worktreeId: 'demo-main' }],
+      firstProjectsLoad: !controlledLaterHide,
+    },
+  );
+  let seeded;
+  let electronApp;
+  let userDataDir;
+  let window;
+  let advisorRoute;
+  let boundaryDiagnostic;
+  let ownerRendererWebContentsId;
+  let presentationRecorder;
+  let rendererRouteHandle;
+  const controlledEvidence = controlledLaterHide
+    ? { stage: 'graduated-presentation-resize', rendererCheckpoints: [] }
+    : undefined;
+  let primaryError;
+  const cleanupErrors = [];
+  try {
+    seeded = await seedPanelWorktree({
+      ...launchBoundary.options,
+      onSetupFailure: retainSelectionFailureOwner(
+        selectionOwner,
+        launchBoundary.options.onSetupFailure,
+      ),
+    });
+    ({ electronApp, userDataDir, window } = seeded);
+    if (controlledLaterHide) {
+      // #4318 animates one-line expansion. Reduced motion keeps observation
+      // focused on the real resize without recording every animation frame.
+      await window.emulateMedia({ reducedMotion: 'reduce' });
+    }
+    if (!controlledLaterHide && launchBoundary.firstProjectsLoadFile) {
+      await expect
+        .poll(
+          () => {
+            try {
+              return readFileSync(launchBoundary.firstProjectsLoadFile, 'utf8')
+                .trim()
+                .split('\n')
+                .filter(Boolean)
+                .map((line) => JSON.parse(line).stage);
+            } catch {
+              return [];
+            }
+          },
+          { timeout: 5_000 },
+        )
+        .toEqual(
+          expect.arrayContaining([
+            'projects-load-main-entered',
+            'projects-load-main-resolved',
+            'projects-load-renderer-entered',
+            'projects-load-renderer-ipc-resolved',
+            'projects-load-renderer-applied',
+            'projects-load-renderer-completed',
+          ]),
+        );
+    }
+    // The app owns beforeunload. Prevent Playwright's automatic native-dialog dismissal.
+    electronApp.context().on('dialog', () => {});
+    boundaryDiagnostic = createBrowserBoundaryDiagnostic(
+      electronApp,
+      window,
+      'pending-dialog-boundary',
+    );
+    advisorRoute = await electronApp.evaluate(() =>
+      globalThis.__CANOPY_E2E_BROWSER_MCP_ROUTE__({
+        kind: 'create',
+        mode: 'app-advisor',
+      }),
+    );
+    const named = await window.evaluate(() =>
+      window.api.browser.profiles.create({
+        operationId: crypto.randomUUID(),
+        input: { displayName: 'Dialog Work', allowEnable: true },
+      }),
+    );
+    await window.getByTestId('panel-add-tab-group-terminal').click();
+    await window.getByTestId('panel-add-menu-item-browser').click();
+    const url = `${process.env.CANOPY_E2E_MOCK_BASE_URL ?? 'http://127.0.0.1:4011'}/browser-fixture/one?profiles=beforeunload`;
+    await window.getByTestId('browser-url-input').fill(url);
+    await window.getByTestId('browser-url-input').press('Enter');
+    await expect
+      .poll(() =>
+        fixtureCookies(electronApp, url, 'source-only').catch(() => []),
+      )
+      .toContain('source-only');
+    await electronApp.evaluate(async ({ webContents }, url) => {
+      const contents = webContents
+        .getAllWebContents()
+        .find((value) => value.getURL() === url);
+      await contents.executeJavaScript(
+        "window.onbeforeunload = event => { event.preventDefault(); event.returnValue = ''; }; document.querySelector('input').value = 'unsaved source text';",
+        true,
+      );
+      contents.sendInputEvent({
+        type: 'mouseDown',
+        x: 30,
+        y: 30,
+        button: 'left',
+        clickCount: 1,
+      });
+      contents.sendInputEvent({
+        type: 'mouseUp',
+        x: 30,
+        y: 30,
+        button: 'left',
+        clickCount: 1,
+      });
+    }, url);
+    const original = (
+      await dispatchProfileAction(electronApp, { type: 'browser.list' })
+    ).result.browsers[0];
+    const request = {
+      type: 'browser.profile.switch',
+      operationId: randomUUID(),
+      browserId: original.id,
+      expectedRuntimeGeneration: original.profile.runtimeGeneration,
+      selection: { kind: 'named', profileId: named.profileId },
+      mode: 'replace',
+    };
+    const first = await dispatchProfileAction(electronApp, request);
+    expect(first).toMatchObject({
+      ok: true,
+      result: { status: 'pending', dialog: { type: 'beforeunload' } },
+    });
+    const modal = window.getByTestId('browser-javascript-dialog');
+    await expect(modal).toBeVisible();
+    const boundaryIdentity = {
+      projectId: original.projectId,
+      worktreeId: original.worktreeId,
+      browserId: original.id,
+      profileId: original.profile.resolvedProfileId,
+      runtimeGeneration: original.profile.runtimeGeneration,
+      storageGeneration: original.profile.storageGeneration,
+      dialogId: first.result.dialog.id,
+      url,
+    };
+    if (boundaryDiagnostic)
+      await boundaryDiagnostic.checkpoint(
+        'pending-response-visible-modal',
+        boundaryIdentity,
+        { switchOperationId: request.operationId },
+      );
+
+    const initialNative = await electronApp.evaluate(
+      ({ BrowserWindow }, fixtureUrl) => {
+        const observedAtMs = Number(process.hrtime.bigint()) / 1_000_000;
+        const matches = BrowserWindow.getAllWindows().flatMap((win) =>
+          // A Browser page sits two views down in its frame (a window child),
+          // which carries its window bounds.
+          win.contentView.children
+            .map((frame) => ({
+              frame,
+              view: frame.webContents
+                ? frame
+                : (frame.children?.[0]?.children?.[0] ?? frame),
+            }))
+            .filter(({ view }) => view.webContents?.getURL() === fixtureUrl)
+            .map(({ frame, view }) => ({
+              observedAtMs,
+              webContentsId: view.webContents.id,
+              hostWindowId: win.id,
+              destroyed: view.webContents.isDestroyed(),
+              windowDestroyed: win.isDestroyed(),
+              visible: frame.getVisible() && view.getVisible(),
+              bounds: frame.getBounds(),
+            })),
+        );
+        return matches;
+      },
+      url,
+    );
+    if (controlledEvidence) controlledEvidence.initialNative = initialNative;
+    expect(initialNative).toHaveLength(1);
+    expect(initialNative[0]).toMatchObject({
+      destroyed: false,
+      windowDestroyed: false,
+    });
+    const ownerWindow = await electronApp.browserWindow(window);
+    try {
+      ownerRendererWebContentsId = await ownerWindow.evaluate(
+        (owner) => owner.webContents.id,
+      );
+    } finally {
+      await ownerWindow.dispose();
+    }
+    const initialNativeReadiness = await electronApp.evaluate(
+      waitForInitialNativeReadiness,
+      {
+        ...boundaryIdentity,
+        ownerRendererWebContentsId,
+        initialNative: initialNative[0],
+      },
+    );
+    if (controlledEvidence) {
+      controlledEvidence.initialNativeReadiness = initialNativeReadiness;
+    }
+    expect(initialNativeReadiness).toMatchObject({
+      status: 'ready',
+      reason: null,
+      identity: {
+        webContentsId: initialNative[0].webContentsId,
+        hostWindowId: initialNative[0].hostWindowId,
+        ownerRendererWebContentsId,
+      },
+      ready: {
+        ready: true,
+        classification: 'ready',
+        session: {
+          browserId: original.id,
+          profileId: original.profile.resolvedProfileId,
+          runtimeGeneration: original.profile.runtimeGeneration,
+          storageGeneration: original.profile.storageGeneration,
+          dialogId: first.result.dialog.id,
+          ownerRendererWebContentsId,
+          cachedVisible: false,
+        },
+        native: {
+          webContentsId: initialNative[0].webContentsId,
+          hostWindowId: initialNative[0].hostWindowId,
+          destroyed: false,
+          windowDestroyed: false,
+          visible: false,
+          diagnosticVisible: false,
+        },
+      },
+    });
+    const readyNative = initialNativeReadiness.ready;
+    expect(readyNative.native.bounds.width).toBeGreaterThan(0);
+    expect(readyNative.native.bounds.height).toBeGreaterThan(0);
+    await expect(modal).toBeVisible();
+    const inspectDialogControl = async (name) => {
+      const control = modal.getByRole('button', { name, exact: true });
+      await expect(control).toBeVisible();
+      await expect(control).toBeEnabled();
+      const usability = await control.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const point = element.ownerDocument.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        return {
+          bounds: {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          },
+          pointerTarget: point === element || element.contains(point),
+        };
+      });
+      expect(usability.bounds.width).toBeGreaterThan(0);
+      expect(usability.bounds.height).toBeGreaterThan(0);
+      expect(usability.pointerTarget).toBe(true);
+      return {
+        visible: true,
+        enabled: true,
+        ...usability,
+      };
+    };
+    const stayControl = await inspectDialogControl('Stay');
+    const leaveControl = await inspectDialogControl('Leave');
+    const readyBrowserBounds = await window
+      .getByTestId(`browser-pane-${original.id}`)
+      .boundingBox();
+    expect(readyBrowserBounds?.width).toBeGreaterThan(0);
+    expect(readyBrowserBounds?.height).toBeGreaterThan(0);
+    if (controlledEvidence) {
+      controlledEvidence.readyNative = readyNative;
+      controlledEvidence.rendererCheckpoints.push({
+        phase: 'initial-native-ready-before-installation',
+        time: await window.evaluate(() => performance.now()),
+        modalVisible: true,
+        stayEnabled: true,
+        leaveEnabled: true,
+        stayVisible: true,
+        leaveVisible: true,
+        controls: { stay: stayControl, leave: leaveControl },
+        browserBounds: readyBrowserBounds,
+      });
+    }
+
+    const assertPendingDialog = async () => {
+      const state = await electronApp.evaluate(waitForInitialNativeReadiness, {
+        ...boundaryIdentity,
+        ownerRendererWebContentsId,
+        initialNative: initialNative[0],
+      });
+      expect(state.status).toBe('ready');
+      expect(state.ready).toMatchObject({
+        session: {
+          browserId: original.id,
+          profileId: original.profile.resolvedProfileId,
+          runtimeGeneration: original.profile.runtimeGeneration,
+          storageGeneration: original.profile.storageGeneration,
+          dialogId: first.result.dialog.id,
+          cachedVisible: false,
+        },
+        native: {
+          webContentsId: initialNative[0].webContentsId,
+          hostWindowId: initialNative[0].hostWindowId,
+          destroyed: false,
+          windowDestroyed: false,
+          visible: false,
+        },
+      });
+      expect(state.ready.native.bounds.width).toBeGreaterThan(0);
+      expect(state.ready.native.bounds.height).toBeGreaterThan(0);
+      expect(
+        await dispatchProfileAction(electronApp, {
+          type: 'browser.get_dialog',
+          browserId: original.id,
+          expectedRuntimeGeneration: original.profile.runtimeGeneration,
+        }),
+      ).toMatchObject({
+        ok: true,
+        result: { dialog: { id: first.result.dialog.id } },
+      });
+      await inspectDialogControl('Stay');
+      await inspectDialogControl('Leave');
+    };
+    await window.evaluate(
+      async (target) => {
+        await window.api.browser.setBounds({
+          ...target,
+          bounds: { x: 20, y: 180, width: 640, height: 400 },
+          visible: true,
+        });
+        await window.api.browser.setVisible({ ...target, visible: false });
+      },
+      {
+        browserId: original.id,
+        expectedRuntimeGeneration: original.profile.runtimeGeneration,
+      },
+    );
+    await assertPendingDialog();
+
+    if (controlledLaterHide) {
+      // Observe real renderer IPC without delaying or replacing its semantics.
+      presentationRecorder = await electronApp.evaluateHandle(
+        ({ ipcMain }, target) => {
+          const channel = 'browser:set-visible';
+          const originalHandler = ipcMain._invokeHandlers.get(channel);
+          if (typeof originalHandler !== 'function')
+            throw new Error('Missing visibility handler');
+          const records = [];
+          let overflow = false;
+          const wrapped = async (event, request) => {
+            if (
+              event.sender.id !== target.rendererId ||
+              request.browserId !== target.browserId ||
+              request.expectedRuntimeGeneration !== target.runtimeGeneration
+            ) {
+              return originalHandler(event, request);
+            }
+            const row = { visible: request.visible, status: 'pending' };
+            if (records.length < 64) records.push(row);
+            else overflow = true;
+            try {
+              const result = await originalHandler(event, request);
+              row.status = 'fulfilled';
+              return result;
+            } catch (error) {
+              row.status = 'rejected';
+              throw error;
+            }
+          };
+          ipcMain.removeHandler(channel);
+          ipcMain.handle(channel, wrapped);
+          return {
+            report: () => ({ records, overflow }),
+            restore: () => {
+              if (ipcMain._invokeHandlers.get(channel) !== wrapped)
+                throw new Error(
+                  'Visibility handler changed during observation',
+                );
+              ipcMain.removeHandler(channel);
+              ipcMain.handle(channel, originalHandler);
+              return ipcMain._invokeHandlers.get(channel) === originalHandler;
+            },
+          };
+        },
+        {
+          rendererId: ownerRendererWebContentsId,
+          browserId: original.id,
+          runtimeGeneration: original.profile.runtimeGeneration,
+        },
+      );
+      const composer = window
+        .locator(
+          '[data-testid="panel-content-chat"][data-panel-id="panel-chat-seed-chat"]',
+        )
+        .getByRole('textbox')
+        .first();
+      await expect(composer).toBeEditable();
+      const composerElement = await composer.elementHandle();
+      try {
+        rendererRouteHandle = await window.evaluateHandle(
+          installPresentationRendererRouteRecorder,
+          composerElement,
+        );
+      } finally {
+        await composerElement?.dispose();
+      }
+      await expect
+        .poll(() =>
+          rendererRouteHandle.evaluate(
+            (recorder) =>
+              recorder.report().counters.initialResizeObserverNotifications,
+          ),
+        )
+        .toBe(1);
+      const rootHeight = () =>
+        composer.evaluate(
+          (element) =>
+            element.closest('[data-chat-composer-root]').getBoundingClientRect()
+              .height,
+        );
+      const beforeHeight = await rootHeight();
+      expect(beforeHeight).toBeGreaterThan(0);
+      const beforeCalls = await presentationRecorder.evaluate(
+        (recorder) => recorder.report().records.length,
+      );
+      const invalidationsBefore = await rendererRouteHandle.evaluate(
+        (recorder) => recorder.report().counters.boundsInvalidationEvents,
+      );
+      await rendererRouteHandle.evaluate((recorder) => recorder.noteTrigger());
+      await composer.fill(
+        'Presentation draft line one.\nPresentation draft line two.\nPresentation draft line three.\nPresentation draft line four.\nPresentation draft line five.\nPresentation draft line six.',
+      );
+      await expect.poll(rootHeight).toBeGreaterThan(beforeHeight);
+      await expect
+        .poll(() =>
+          rendererRouteHandle.evaluate(
+            (recorder) => recorder.report().counters.postTriggerSizeChanges,
+          ),
+        )
+        .toBeGreaterThan(0);
+      await expect
+        .poll(() =>
+          rendererRouteHandle.evaluate(
+            (recorder) => recorder.report().counters.boundsInvalidationEvents,
+          ),
+        )
+        .toBeGreaterThan(invalidationsBefore);
+      await expect
+        .poll(() =>
+          presentationRecorder.evaluate(
+            (recorder, cursor) =>
+              recorder
+                .report()
+                .records.slice(cursor)
+                .some(
+                  (row) => row.visible === false && row.status === 'fulfilled',
+                ),
+            beforeCalls,
+          ),
+        )
+        .toBe(true);
+      controlledEvidence.rendererRoute = await rendererRouteHandle.evaluate(
+        (recorder) => recorder.report(),
+      );
+      controlledEvidence.presentation = await presentationRecorder.evaluate(
+        (recorder) => recorder.report(),
+      );
+      expect(controlledEvidence.rendererRoute.incomplete).toBe(false);
+      expect(controlledEvidence.presentation.overflow).toBe(false);
+      await assertPendingDialog();
+    }
+
+    const clearWhileSwitching = async (profile) => {
+      const preview = await window.evaluate(
+        (profile) =>
+          window.api.browser.profiles.previewClear({
+            profileId: profile.profileId,
+            storageGeneration: profile.storageGeneration,
+            metadataRevision: profile.metadataRevision,
+            operation: { kind: 'cache' },
+          }),
+        profile,
+      );
+      const operationId = randomUUID();
+      const receipt = await window.evaluate(
+        (request) => window.api.browser.profiles.clear(request),
+        {
+          operationId,
+          token: preview.token,
+        },
+      );
+      return { operationId, receipt };
+    };
+    const sourceProfile = await window.evaluate(
+      (profileId) => window.api.browser.profiles.get({ profileId }),
+      original.profile.resolvedProfileId,
+    );
+    const conflictedClear = await clearWhileSwitching(sourceProfile);
+    await expect
+      .poll(
+        () =>
+          window.evaluate(
+            (jobId) => window.api.browser.profiles.jobGet({ jobId }),
+            conflictedClear.operationId,
+          ),
+        { timeout: 5000 },
+      )
+      .toMatchObject({ status: 'failed', retryable: false });
+    await expect(modal).toBeVisible();
+    if (boundaryDiagnostic)
+      await boundaryDiagnostic.checkpoint(
+        'source-clear-failed-visible-modal',
+        boundaryIdentity,
+        {
+          switchOperationId: request.operationId,
+          sourceClearOperationId: conflictedClear.operationId,
+        },
+      );
+    const unrelated = await window.evaluate(() =>
+      window.api.browser.profiles.create({
+        operationId: crypto.randomUUID(),
+        input: { displayName: 'Unrelated clear' },
+      }),
+    );
+    const unrelatedClear = await clearWhileSwitching(unrelated);
+    let lastUnrelatedJob = null;
+    try {
+      await expect
+        .poll(
+          async () => {
+            lastUnrelatedJob = await window.evaluate(
+              (jobId) => window.api.browser.profiles.jobGet({ jobId }),
+              unrelatedClear.operationId,
+            );
+            return lastUnrelatedJob;
+          },
+          { timeout: 15000 },
+        )
+        .toMatchObject({ status: 'complete' });
+    } catch (error) {
+      try {
+        const evidence = Buffer.from(
+          JSON.stringify(
+            {
+              createdUnrelatedProfile: unrelated,
+              operationId: unrelatedClear.operationId,
+              clearReceipt: unrelatedClear.receipt ?? null,
+              lastJobGet: lastUnrelatedJob,
+              cause:
+                lastUnrelatedJob?.message ===
+                'Browser data maintenance failed. Retry cleanup before using this profile.'
+                  ? 'unresolved: the job contains only the generic maintenance failure message'
+                  : lastUnrelatedJob?.message === undefined
+                    ? 'unresolved: the last job has no diagnostic message'
+                    : null,
+            },
+            null,
+            2,
+          ),
+        );
+        if (evidence.byteLength <= 32 * 1024) {
+          let attachmentTimeout;
+          try {
+            await Promise.race([
+              test.info().attach('unrelated-cache-clear-failure.json', {
+                body: evidence,
+                contentType: 'application/json',
+              }),
+              new Promise((resolve) => {
+                attachmentTimeout = setTimeout(resolve, 1000);
+              }),
+            ]);
+          } finally {
+            clearTimeout(attachmentTimeout);
+          }
+        }
+      } catch {
+        // Failure evidence must never replace the original poll error.
+      }
+      throw error;
+    }
+    await expect(modal).toBeVisible();
+    if (boundaryDiagnostic)
+      await boundaryDiagnostic.checkpoint(
+        'unrelated-clear-complete-visible-modal',
+        boundaryIdentity,
+        {
+          switchOperationId: request.operationId,
+          sourceClearOperationId: conflictedClear.operationId,
+          unrelatedClearOperationId: unrelatedClear.operationId,
+        },
+      );
+    await expect
+      .poll(async () => {
+        const observed = await electronApp.evaluate(
+          ({ BrowserWindow }, input) => {
+            const url = typeof input === 'string' ? input : input.url;
+            // A Browser page sits two views down in its frame.
+            const views = BrowserWindow.getAllWindows().flatMap((win) =>
+              win.contentView.children.map((frame) =>
+                frame.webContents
+                  ? frame
+                  : (frame.children?.[0]?.children?.[0] ?? frame),
+              ),
+            );
+            const visible = views
+              .find((view) => view.webContents?.getURL() === url)
+              ?.getVisible();
+            if (typeof input === 'string') return visible;
+            let evidence;
+            try {
+              const fixture =
+                globalThis.__CANOPY_E2E_PROFILE_OPERATION_DIAGNOSTICS__;
+              evidence =
+                typeof fixture === 'function'
+                  ? fixture({
+                      kind: 'browser-snapshot',
+                      scope: input,
+                      deadline: Date.now() + 2000,
+                    })
+                  : { status: 'unavailable' };
+            } catch {
+              evidence = {
+                status: 'unavailable',
+                reason: 'native-snapshot-failed',
+              };
+            }
+            return { visible, evidence };
+          },
+          boundaryDiagnostic ? boundaryIdentity : url,
+        );
+        if (!boundaryDiagnostic) return observed;
+        boundaryDiagnostic.poll({
+          identity: {
+            browserId: original.id,
+            profileId: original.profile.resolvedProfileId,
+            runtimeGeneration: original.profile.runtimeGeneration,
+            storageGeneration: original.profile.storageGeneration,
+            dialogId: first.result.dialog.id,
+            switchOperationId: request.operationId,
+            sourceClearOperationId: conflictedClear.operationId,
+            unrelatedClearOperationId: unrelatedClear.operationId,
+          },
+          firstUrlMatchVisible: observed.visible,
+          evidence: observed.evidence,
+        });
+        return observed.visible;
+      })
+      .toBe(false);
+    await modal.getByRole('button', { name: 'Stay', exact: true }).click();
+    await expect(modal).toHaveCount(0);
+    const cancelled = await dispatchProfileAction(electronApp, request);
+    expect(cancelled).toMatchObject({
+      ok: true,
+      result: { status: 'cancelled' },
+    });
+    expect(await fixtureCookies(electronApp, url)).toContain('source-only');
+    expect(
+      await electronApp.evaluate(
+        async ({ webContents }, url) =>
+          webContents
+            .getAllWebContents()
+            .find((value) => value.getURL() === url)
+            .executeJavaScript("document.querySelector('input').value"),
+        url,
+      ),
+    ).toBe('unsaved source text');
+    const secondRequest = { ...request, operationId: randomUUID() };
+    const second = await dispatchProfileMcpAction(advisorRoute, secondRequest);
+    expect(second).toMatchObject({ ok: true, result: { status: 'pending' } });
+    expect(
+      await dispatchProfileMcpAction(advisorRoute, {
+        type: 'browser.get_dialog',
+        browserId: original.id,
+        expectedRuntimeGeneration: original.profile.runtimeGeneration,
+      }),
+    ).toMatchObject({
+      ok: true,
+      result: { dialog: { id: second.result.dialog.id } },
+    });
+    await window.evaluate(
+      (profile) =>
+        window.api.browser.profiles.update({
+          operationId: crypto.randomUUID(),
+          profileId: profile.profileId,
+          expectedMetadataRevision: profile.metadataRevision,
+          patch: { allowEnable: false },
+        }),
+      named,
+    );
+    const handled = await dispatchProfileMcpAction(advisorRoute, {
+      type: 'browser.handle_dialog',
+      browserId: original.id,
+      expectedRuntimeGeneration: original.profile.runtimeGeneration,
+      dialogId: second.result.dialog.id,
+      accept: true,
+    });
+    expect(handled.ok).toBe(true);
+    await expect(modal).toHaveCount(0);
+    const failed = await dispatchProfileAction(electronApp, secondRequest);
+    expect(failed.ok ? failed.result.status : failed.error.code).toMatch(
+      /cancelled|agent_enable_denied/,
+    );
+    expect(await fixtureCookies(electronApp, url)).toContain('source-only');
+    expect(
+      (await dispatchProfileAction(electronApp, { type: 'browser.list' }))
+        .result.browsers[0].profile.resolvedProfileId,
+    ).toBe(original.profile.resolvedProfileId);
+    expect(
+      await electronApp.evaluate(
+        ({ webContents }, url) =>
+          webContents
+            .getAllWebContents()
+            .filter((value) => value.getURL() === url).length,
+        url,
+      ),
+    ).toBe(1);
+    const currentProfile = await window.evaluate(
+      (profileId) => window.api.browser.profiles.get({ profileId }),
+      named.profileId,
+    );
+    await window.evaluate(
+      (profile) =>
+        window.api.browser.profiles.update({
+          operationId: crypto.randomUUID(),
+          profileId: profile.profileId,
+          expectedMetadataRevision: profile.metadataRevision,
+          patch: { allowEnable: true },
+        }),
+      currentProfile,
+    );
+    const acceptedRequest = { ...request, operationId: randomUUID() };
+    const acceptedPending = await dispatchProfileAction(
+      electronApp,
+      acceptedRequest,
+    );
+    expect(acceptedPending).toMatchObject({
+      ok: true,
+      result: { status: 'pending' },
+    });
+    const accepted = await dispatchProfileAction(electronApp, {
+      type: 'browser.handle_dialog',
+      browserId: original.id,
+      expectedRuntimeGeneration: original.profile.runtimeGeneration,
+      dialogId: acceptedPending.result.dialog.id,
+      accept: true,
+    });
+    expect(accepted.ok).toBe(true);
+    await expect(modal).toHaveCount(0);
+    const completed = await dispatchProfileAction(electronApp, acceptedRequest);
+    expect(completed).toMatchObject({
+      ok: true,
+      result: {
+        status: 'complete',
+        browser: { profile: { resolvedProfileId: named.profileId } },
+      },
+    });
+    await expect
+      .poll(() => fixtureCookies(electronApp, url).catch(() => ['loading']))
+      .toEqual([]);
+    await expect
+      .poll(() =>
+        electronApp.evaluate(
+          ({ BrowserWindow }, url) =>
+            BrowserWindow.getAllWindows()
+              // A Browser page sits two views down in its frame.
+              .flatMap((win) =>
+                win.contentView.children.map((frame) =>
+                  frame.webContents
+                    ? frame
+                    : (frame.children?.[0]?.children?.[0] ?? frame),
+                ),
+              )
+              .find((view) => view.webContents?.getURL() === url)
+              ?.getVisible(),
+          url,
+        ),
+      )
+      .toBe(true);
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    const cleanup = async (phase, action) => {
+      try {
+        await action();
+      } catch (error) {
+        cleanupErrors.push({
+          phase,
+          message: boundedCleanupErrorMessage(error),
+        });
+      }
+    };
+    if (rendererRouteHandle) {
+      await cleanup('finalize-renderer-route', async () => {
+        controlledEvidence.rendererRoute = await rendererRouteHandle.evaluate(
+          (recorder) => recorder.finalize(),
+        );
+      });
+      await cleanup('dispose-renderer-route', () =>
+        rendererRouteHandle.dispose(),
+      );
+    }
+    if (presentationRecorder) {
+      await cleanup('restore-visibility-handler', async () => {
+        expect(
+          await presentationRecorder.evaluate((recorder) => recorder.restore()),
+        ).toBe(true);
+      });
+      await cleanup('dispose-presentation-recorder', () =>
+        presentationRecorder.dispose(),
+      );
+    }
+    if (controlledEvidence)
+      await cleanup('attach-resize-evidence', () =>
+        test.info().attach('graduated-presentation-resize.json', {
+          body: Buffer.from(JSON.stringify(controlledEvidence, null, 2)),
+          contentType: 'application/json',
+        }),
+      );
+    if (boundaryDiagnostic)
+      await cleanup('close-boundary-diagnostic', () =>
+        boundaryDiagnostic.close(),
+      );
+    if (advisorRoute && electronApp)
+      await cleanup('delete-advisor-route', () =>
+        electronApp.evaluate(
+          (_electron, sessionKey) =>
+            globalThis.__CANOPY_E2E_BROWSER_MCP_ROUTE__({
+              kind: 'delete',
+              sessionKey,
+            }),
+          advisorRoute.sessionKey,
+        ),
+      );
+    const owner = seeded ?? selectionOwner;
+    if (owner.electronApp && owner.userDataDir)
+      await cleanup('close-canopy', () => launchBoundary.close(owner));
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupErrors.length) throw new Error(JSON.stringify(cleanupErrors));
+}
+
 test('returns pending source dialogs to agents, honors veto, and rechecks enable on acceptance', async () => {
-  await runPendingSourceDialogCase();
+  await runGraduatedPendingSourceDialogCase();
 });
 
-test('controlled later renderer hide supersedes older presentations while retaining the pending source dialog', async () => {
-  await runPendingSourceDialogCase({ controlledLaterHide: true });
+test('composer resize retains the pending source dialog on the graduated presentation path', async () => {
+  await runGraduatedPendingSourceDialogCase({ controlledLaterHide: true });
 });
 
 terminalCleanupTest(
@@ -4987,7 +5854,7 @@ for (const stage of [
       let { electronApp, userDataDir, window, app } = owner;
       initialNavigationElectronApp = electronApp;
       try {
-        await window.getByTestId('panel-add-panel-group-terminal').click();
+        await window.getByTestId('panel-add-tab-group-terminal').click();
         await window.getByTestId('panel-add-menu-item-browser').click();
         const fixtureUrl = new URL(
           `${process.env.CANOPY_E2E_MOCK_BASE_URL ?? 'http://127.0.0.1:4011'}/browser-fixture/one`,
@@ -7707,9 +8574,7 @@ async function closeSavedTabDuringSharedProfileRestore({ closeVariant }) {
       panels.push(seededPanel);
       const pane = window.getByTestId(`browser-pane-${seededPanel.browser.id}`);
       await expect(pane).toBeVisible();
-      await expect(pane.getByTestId('browser-profile-picker')).toContainText(
-        profile.displayName,
-      );
+      await expectBrowserProfile(window, profile.displayName, pane);
     }
     const layout = await getLayout(window);
     const panelIds = panels.map((panel) => panel.panelId).sort();
@@ -8468,7 +9333,7 @@ test('duplicate profile names stay distinguishable and the delete prompt keeps k
   test.setTimeout(process.platform === 'win32' ? 120_000 : 90_000);
   const { electronApp, userDataDir, window, app } = await seedPanelWorktree();
   try {
-    await window.getByTestId('panel-add-panel-group-terminal').click();
+    await window.getByTestId('panel-add-tab-group-terminal').click();
     await window.getByTestId('panel-add-menu-item-browser').click();
     await expect(window.getByTestId('browser-bar')).toBeVisible();
 
@@ -8498,14 +9363,15 @@ test('duplicate profile names stay distinguishable and the delete prompt keeps k
     await expect(row(secondWork)).toContainText(short(secondWork));
     await expect(row(personal)).toHaveText('Personal');
 
-    // Same rule in the browser bar's picker, which is a native <select>.
+    // The profile submenu uses the same qualifiers as Settings.
     await app.closeSettings();
     await app.openMainPage();
     await app.selectWorktree('demo-main');
-    await window.getByTestId('browser-profile-picker').click();
+    await window.getByTestId('browser-more').click();
+    await window.getByTestId('browser-more-profile').hover();
     const options = window
-      .getByTestId('browser-profile-selection')
-      .locator('option');
+      .getByTestId('browser-profile-submenu')
+      .getByRole('menuitemradio');
     await expect(options.filter({ hasText: short(firstWork) })).toHaveCount(1);
     await expect(options.filter({ hasText: short(secondWork) })).toHaveCount(1);
     await expect(options.filter({ hasText: 'Personal' })).toHaveText(

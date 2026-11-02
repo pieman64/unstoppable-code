@@ -41,6 +41,7 @@ it('routes Portal workspace reads with session identity and exact legacy values'
         name: 'Workspace',
         type: 'single-repo',
       }),
+      readWorkspaceWorktrees: jest.fn().mockResolvedValue([]),
       readEffectiveWorkspaceConfig: jest.fn().mockResolvedValue({ repos: [] }),
     },
   });

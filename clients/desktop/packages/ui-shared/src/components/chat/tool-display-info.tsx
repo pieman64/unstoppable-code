@@ -10,6 +10,7 @@
  * projector + the web's `PortalChatPart` projection) so this helper can stay
  * a small lookup table here in `@canopy/ui-shared`.
  */
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { ComponentType, JSX, SVGProps } from 'react';
 import {
   AgentIcon,
@@ -99,8 +100,8 @@ const TOOL_FAMILY_REGISTRY: Record<PortalChatToolFamily, ToolFamilyEntry> = {
   watcher: { Icon: AppAdvisorWatcherIcon, label: 'Watcher' },
   canopy: { Icon: WrenchIcon, label: 'App' },
   graph: { Icon: GraphIcon, label: 'Code Graph' },
-  'app-advisor': { Icon: AppAdvisorIcon, label: 'App Advisor' },
-  'pipeline-editor': { Icon: PipelineIcon, label: 'Pipeline editor' },
+  'app-advisor': { Icon: AppAdvisorIcon, label: ORCHESTRATOR_LABEL },
+  'pipeline-editor': { Icon: PipelineIcon, label: 'Workflow editor' },
   'computer-use': { Icon: PickIcon, label: 'Computer use' },
   unknown: { Icon: WrenchIcon, label: 'Tool' },
 };

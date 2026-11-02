@@ -190,7 +190,11 @@ export async function startOrgMemoryDisclosureChat({
         timeout: 90_000,
       });
     }
-    await expect(panel.getByText(/Completed in/).first()).toBeVisible({
+    await expect(
+      panel
+        .locator('[data-testid="turn-timer"][data-state="completed"]')
+        .first(),
+    ).toBeVisible({
       timeout: 90_000,
     });
     return { ...running, window, panel };

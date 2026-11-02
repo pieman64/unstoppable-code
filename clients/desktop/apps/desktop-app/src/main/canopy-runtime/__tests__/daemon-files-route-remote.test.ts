@@ -167,6 +167,53 @@ describe('remote-control bridge Files reads (direct by decision)', () => {
     expect(harness.direct.directory).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps every bridge read direct on macOS with every read selectable', async () => {
+    h = await createRouteHarness({
+      platform: 'darwin',
+      selectable: new Set(['roots', 'directory', 'file', 'search', 'link']),
+    });
+    const harness = h;
+    const registry = new Map<number, string>();
+    const bridges = await remoteSession(registry);
+    const worktree = join(
+      harness.displayRoot,
+      'workspaces',
+      'single',
+      'worktrees',
+      'task',
+    );
+    for (const bridge of bridges) {
+      const caller = derivedCaller(bridge.sender, registry, []);
+      const ipc = { sender: bridge.sender };
+      await harness.roots(SINGLE, bridge.sender, caller);
+      // Selected for a local window, each of these would reach the daemon.
+      await harness.runtime.queryFileContentForLegacyIpc(
+        { scope: SINGLE, absolutePath: join(worktree, 'README.md') },
+        { caller },
+        ipc,
+      );
+      await harness.runtime.queryFileIndexForLegacyIpc(
+        { projectId: SINGLE.workspaceId, worktreeId: SINGLE.worktreeId },
+        { caller },
+        ipc,
+      );
+      await harness.runtime.queryLinkResolveForLegacyIpc(
+        {
+          scope: SINGLE,
+          mode: 'markdown',
+          href: './README.md',
+          baseFilePath: join(worktree, 'NOTES.md'),
+        },
+        { caller },
+        ipc,
+      );
+    }
+    expect(harness.connectionsFactory).not.toHaveBeenCalled();
+    expect(harness.hostContext).not.toHaveBeenCalled();
+    expect(harness.daemon.queries).toHaveLength(0);
+    expect(harness.direct.roots).toHaveBeenCalledTimes(2);
+  });
+
   it('still routes the local window, under its own caller, beside live bridges', async () => {
     h = await createRouteHarness();
     const harness = h;

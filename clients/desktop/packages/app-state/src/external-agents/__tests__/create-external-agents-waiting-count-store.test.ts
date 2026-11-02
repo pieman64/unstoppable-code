@@ -26,6 +26,7 @@ const detail: ExternalAgentConnectionDetail = {
     destructive: [],
     organizations: 'all',
     desktops: null,
+    managed: null,
   },
   revision: 1,
   from: null,
@@ -37,7 +38,11 @@ const detail: ExternalAgentConnectionDetail = {
     disabledTools: [],
     enabledDefaultOff: [],
     organizations: { mode: 'all', organizationIds: [] },
-    remotes: { mode: 'all', remoteIds: [] },
+    hosts: {
+      managed: false,
+      connected: { mode: 'all', remoteIds: [] },
+      exposeNames: false,
+    },
   },
   organizations: [],
   remoteControlEnabled: false,
@@ -54,6 +59,7 @@ const detail: ExternalAgentConnectionDetail = {
     pipeline: 'act',
   },
   waiting: [],
+  textContentCompatibility: false,
 };
 
 const overview: ExternalAgentsOverview = {

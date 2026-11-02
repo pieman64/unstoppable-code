@@ -31,6 +31,18 @@ export function inferExecutionScope(
   return options.projectId && options.worktreeId ? 'worktree' : 'directory';
 }
 
+export function getExecutionCheckoutRoot(
+  options: Pick<
+    ExecutionOptions,
+    'scope' | 'target' | 'executionCheckoutRoot' | 'cwd'
+  >,
+): string | null | undefined {
+  if (options.scope === 'global' || options.target?.scope === 'global')
+    return undefined;
+  if (options.executionCheckoutRoot === null) return null;
+  return options.executionCheckoutRoot ?? options.target?.path ?? options.cwd;
+}
+
 export function defaultTargetForExecution(
   scope: PipelineExecutionScope,
   cwd: string,

@@ -44,7 +44,7 @@ describe('PlanApprovalPrompt', () => {
         testId: 'chat-plan-implement',
       },
       {
-        label: 'Run it as a pipeline',
+        label: 'Run it as a workflow',
         onSelect: pipeline,
         disabled,
         testId: 'chat-plan-pipeline',
@@ -55,12 +55,28 @@ describe('PlanApprovalPrompt', () => {
   function render({
     onOpenPlan,
     disabled = false,
-  }: { onOpenPlan?: () => void; disabled?: boolean } = {}): void {
+    expanded = true,
+    unsentComments,
+    revised,
+  }: {
+    onOpenPlan?: () => void;
+    disabled?: boolean;
+    expanded?: boolean;
+    revised?: boolean;
+    unsentComments?: {
+      count: number;
+      onSend: () => void;
+      sending?: boolean;
+    };
+  } = {}): void {
     act(() => {
       root.render(
         <PlanApprovalPrompt
           options={options(disabled)}
+          expanded={expanded}
+          {...(revised !== undefined ? { revised } : {})}
           {...(onOpenPlan ? { onOpenPlan } : {})}
+          {...(unsentComments ? { unsentComments } : {})}
           onClose={close}
         >
           <textarea data-testid="note" />
@@ -96,7 +112,7 @@ describe('PlanApprovalPrompt', () => {
     const implementRow = byTestId('chat-plan-implement');
     const pipelineRow = byTestId('chat-plan-pipeline');
     expect(implementRow.textContent).toBe('1Yes, implement this plan');
-    expect(pipelineRow.textContent).toBe('2Run it as a pipeline');
+    expect(pipelineRow.textContent).toBe('2Run it as a workflow');
     // The group is named by the question.
     const group = prompt.querySelector('[role="group"]');
     const titleId = group?.getAttribute('aria-labelledby') ?? '';
@@ -111,6 +127,20 @@ describe('PlanApprovalPrompt', () => {
     expect(
       note.parentElement?.querySelector('[data-testid="composer-prompt-pen"]'),
     ).not.toBeNull();
+  });
+
+  it('asks about the revised plan only when the plan is a revision', () => {
+    const title = (): string | null | undefined => {
+      const group =
+        byTestId('chat-plan-approval').querySelector('[role="group"]');
+      return document.getElementById(
+        group?.getAttribute('aria-labelledby') ?? '',
+      )?.textContent;
+    };
+    render({ revised: true });
+    expect(title()).toBe('Implement the revised plan?');
+    render({ revised: false });
+    expect(title()).toBe('Implement this plan?');
   });
 
   it('acts on click, so no answer reads as selected beforehand', () => {
@@ -174,6 +204,86 @@ describe('PlanApprovalPrompt', () => {
     expect((implementRow as HTMLButtonElement).disabled).toBe(true);
     key(implementRow, '1');
     expect(implement).not.toHaveBeenCalled();
+  });
+
+  describe('unsent comments', () => {
+    function sendRow(): HTMLButtonElement | null {
+      return container.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-plan-send-comments"]',
+      );
+    }
+
+    it('offers to send unsent comments as one more answer', () => {
+      render({ unsentComments: { count: 1, onSend: jest.fn() } });
+      expect(sendRow()?.textContent).toBe('Address 1 comment first');
+      render({ unsentComments: { count: 2, onSend: jest.fn() } });
+      expect(sendRow()?.textContent).toBe('Address 2 comments first');
+      // It sits with the answers, after the numbered ones.
+      const rows = Array.from(
+        container.querySelectorAll('[role="group"] > button'),
+      ).map((row) => row.getAttribute('data-testid'));
+      expect(rows.at(-1)).toBe('chat-plan-send-comments');
+    });
+
+    it('shows no row without comments or while collapsed', () => {
+      render();
+      expect(sendRow()).toBeNull();
+      render({ unsentComments: { count: 0, onSend: jest.fn() } });
+      expect(sendRow()).toBeNull();
+      render({
+        expanded: false,
+        unsentComments: { count: 2, onSend: jest.fn() },
+      });
+      expect(sendRow()).toBeNull();
+    });
+
+    it('sends once without answering the plan, and keeps Implement enabled', () => {
+      const onSend = jest.fn();
+      render({ unsentComments: { count: 1, onSend } });
+      const send = byTestId('chat-plan-send-comments');
+      act(() => send.click());
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(implement).not.toHaveBeenCalled();
+      expect(pipeline).not.toHaveBeenCalled();
+      expect(
+        (byTestId('chat-plan-implement') as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+
+    it('disables the row while comments are sending', () => {
+      const onSend = jest.fn();
+      render({ unsentComments: { count: 1, onSend, sending: true } });
+      const send = byTestId('chat-plan-send-comments') as HTMLButtonElement;
+      expect(send.textContent).toBe('Sending…');
+      expect(send.disabled).toBe(true);
+      act(() => send.click());
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('joins the arrow keys without taking a number', () => {
+      const onSend = jest.fn();
+      render({ unsentComments: { count: 1, onSend } });
+      const send = byTestId('chat-plan-send-comments');
+      const implementRow = byTestId('chat-plan-implement');
+      act(() => byTestId('chat-plan-pipeline').focus());
+      key(document.activeElement as HTMLElement, 'ArrowDown');
+      expect(document.activeElement).toBe(send);
+      key(send, 'ArrowDown');
+      expect(document.activeElement).toBe(implementRow);
+      key(implementRow, 'ArrowUp');
+      expect(document.activeElement).toBe(send);
+      // Its glyph is a decorative icon, not a number; 3 picks nothing.
+      const glyph = send.querySelector('[aria-hidden]');
+      expect(glyph?.textContent).toBe('');
+      expect(glyph?.querySelector('svg')).not.toBeNull();
+      expect(glyph?.classList.contains('fg-warning')).toBe(true);
+      key(send, '3');
+      expect(onSend).not.toHaveBeenCalled();
+      // Escape still closes the prompt from the row.
+      key(send, 'Escape');
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(implement).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -85,6 +85,7 @@ import {
   WorkspacePluginsRefusedError,
   type WorkspacePluginsChange,
 } from '../workspace-plugin-defaults';
+import { defaultForkCapabilityInstallDependencies } from '../../shared-containers/capability-package/install';
 
 const WORKSPACE_ID = 'plugins-ws';
 
@@ -495,6 +496,125 @@ describe('workspace plugins boundary (real fs)', () => {
     });
   });
 
+  describe('removeSelections', () => {
+    const added = { sourceId: 'custom:app', skillName: 'helper' };
+    const mine = { sourceId: 'custom:app', skillName: 'mine' };
+
+    it('removes only the named selections and keeps every other field', async () => {
+      await seedManifest({
+        defaultPluginSelections: selections({
+          skillRefs: [added, mine],
+          pluginRefs: [{ marketplaceId: 'm', pluginName: 'kept' }],
+        }),
+      });
+
+      const outcome = await updateWorkspacePlugins({
+        workspaceId: WORKSPACE_ID,
+        change: {
+          kind: 'removeSelections',
+          selections: [{ kind: 'skill', ...added }],
+        },
+        source: 'shared_container_fork',
+      });
+
+      expect(outcome.written).toBe(true);
+      const manifest = await readManifest();
+      expect(manifest.defaultPluginSelections).toMatchObject({
+        skillRefs: [mine],
+        pluginRefs: [{ marketplaceId: 'm', pluginName: 'kept' }],
+      });
+      expect(manifest.futureManifestField).toEqual({ kept: true });
+      expect(recordWorkspaceCrudTelemetry).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when no named selection is a default', async () => {
+      await seedManifest({
+        defaultPluginSelections: selections({ skillRefs: [mine] }),
+      });
+      const before = await readFile(
+        getWorkspaceConfigPath(WORKSPACE_ID),
+        'utf8',
+      );
+
+      const outcome = await update({
+        kind: 'removeSelections',
+        selections: [{ kind: 'skill', ...added }],
+      });
+
+      expect(outcome.written).toBe(false);
+      expect(await readFile(getWorkspaceConfigPath(WORKSPACE_ID), 'utf8')).toBe(
+        before,
+      );
+    });
+
+    it('treats a fork destination that is gone as having nothing to remove', async () => {
+      await rm(getWorkspaceConfigPath(WORKSPACE_ID));
+
+      await expect(
+        defaultForkCapabilityInstallDependencies().removeDefaultSkills(
+          WORKSPACE_ID,
+          [added],
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        readFile(getWorkspaceConfigPath(WORKSPACE_ID), 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('keeps a defaults change committed while a fork compensation waited', async () => {
+      await seedManifest({
+        defaultPluginSelections: selections({ skillRefs: [added] }),
+      });
+      // Another writer adds a plugin default and holds the manifest queue
+      // until the fork's compensation is queued behind it.
+      const repository = getWorkspaceManifestRepository();
+      const original = repository.serialize.bind(repository);
+      let release = (): void => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let notifyQueued = (): void => undefined;
+      const queued = new Promise<void>((resolve) => {
+        notifyQueued = resolve;
+      });
+      let calls = 0;
+      jest
+        .spyOn(repository, 'serialize')
+        .mockImplementation(
+          <T>(workspaceId: string, work: () => Promise<T>) => {
+            calls += 1;
+            const result = original(workspaceId, work);
+            if (calls === 2) notifyQueued();
+            return result;
+          },
+        );
+      const held = updateWorkspaceConfig(
+        WORKSPACE_ID,
+        async (config): Promise<void> => {
+          await gate;
+          config.defaultPluginSelections = {
+            ...selections(config.defaultPluginSelections),
+            pluginRefs: [{ marketplaceId: 'm', pluginName: 'concurrent' }],
+          };
+        },
+      );
+
+      const pending =
+        defaultForkCapabilityInstallDependencies().removeDefaultSkills(
+          WORKSPACE_ID,
+          [added],
+        );
+      await queued;
+      release();
+      await Promise.all([held, pending]);
+
+      expect((await readManifest()).defaultPluginSelections).toMatchObject({
+        skillRefs: [],
+        pluginRefs: [{ marketplaceId: 'm', pluginName: 'concurrent' }],
+      });
+    });
+  });
+
   describe('pruneMarketplace', () => {
     it('removes the marketplace plugin refs and keeps unknown fields', async () => {
       await seedManifest({
@@ -557,6 +677,15 @@ describe('workspace plugins boundary (real fs)', () => {
         },
       ],
       ['pruneMarketplace', { kind: 'pruneMarketplace', marketplaceId: 'gone' }],
+      [
+        'removeSelections',
+        {
+          kind: 'removeSelections',
+          selections: [
+            { kind: 'skill', sourceId: 'custom:app', skillName: 'helper' },
+          ],
+        },
+      ],
     ];
 
     it.each(changes)(

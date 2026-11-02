@@ -5,7 +5,14 @@ import {
   clearPresentationTurn,
   presentationChatKey,
 } from '../canopy-tools/presentation-state';
-jest.mock('../opencode/connection', () => ({
+const mockOpenCodeSelection = jest.fn<Promise<unknown>, [unknown]>(() =>
+  Promise.resolve({ kind: 'native', supportedThinkingLevels: [] }),
+);
+jest.mock('../opencode/selection', (): unknown => ({
+  assertOpenCodeSelectionAvailable: (options: unknown) =>
+    mockOpenCodeSelection(options),
+}));
+jest.mock('../opencode/connection', (): unknown => ({
   assertOpenCodeModelAvailable: jest.fn(() =>
     Promise.resolve({
       id: 'opencode:fixture%2Fmodel',
@@ -19,6 +26,8 @@ jest.mock('../copilot/connection', () => ({
   ),
 }));
 import { cancelChatTurn } from '../lib/chat-turn-cancel';
+import { performance } from 'node:perf_hooks';
+import type { ProviderEventIngestResult } from '../services/provider-event-admission';
 const composeRepoRulesMock = jest.fn<Promise<string>, [string, string, string]>(
   () => Promise.resolve(''),
 );
@@ -30,12 +39,27 @@ jest.mock('../repo-rules/host', () => ({
 import type * as ChatTurnAuditModule from '../lib/chat-turn-audit';
 import type * as ChatSubmittedMessageModule from '../lib/chat-submitted-message';
 import type * as PlanFileSyncModule from '../lib/plan-file-sync';
-import type { PendingSystemInstruction } from '@canopy/desktop-shared/types';
+import type {
+  PendingSystemInstruction,
+  PreferencesData,
+} from '@canopy/desktop-shared/types';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type {
+  SessionRecreateReason,
+  SessionTurnSettings,
+} from '../agents/session-manager';
+import type { AgentSessionOptions } from '../agents/types';
+
+const assertCopilotModelAvailableMock = jest.fn(() => Promise.resolve());
+jest.mock('../copilot/connection', () => ({
+  assertCopilotModelAvailable: (): Promise<void> =>
+    assertCopilotModelAvailableMock(),
+}));
 
 const isDelegationDeliveryActiveMock = jest.fn<boolean, unknown[]>(() => false);
 const claimDelegationDeliveryMock = jest.fn<boolean, unknown[]>(() => false);
 const releaseDelegationDeliveryMock = jest.fn<void, unknown[]>();
+const retireDelegationDeliveryMock = jest.fn<void, unknown[]>();
 const resolveManagedDelegationModeMock = jest.fn(
   (mode: 'off' | 'explicit-only' | 'proactive' | undefined) =>
     mode ?? 'explicit-only',
@@ -47,6 +71,8 @@ jest.mock('../agents/delegation/lifecycle', () => ({
     claimDelegationDeliveryMock(...args),
   releaseDelegationDelivery: (...args: unknown[]): void =>
     releaseDelegationDeliveryMock(...args),
+  retireDelegationDelivery: (...args: unknown[]): void =>
+    retireDelegationDeliveryMock(...args),
 }));
 jest.mock('../agents/delegation/gate', () => ({
   resolveManagedDelegationMode: (
@@ -59,6 +85,7 @@ interface MockAgentSession {
   sendMessage: jest.Mock;
   setPlanMode: jest.Mock;
   setApprovalMode: jest.Mock;
+  setThinkingLevel: jest.Mock;
   getProviderSessionId: jest.Mock;
   isDisposed?: () => boolean;
   setSpeed?: jest.Mock;
@@ -80,6 +107,8 @@ const runWithScopeActivityMock = jest.fn(
     operation(),
 );
 const updateChatDescriptionMock = jest.fn(() => Promise.resolve());
+const releaseRuntimeHostMock = jest.fn();
+const holdRuntimeHostMock = jest.fn(() => releaseRuntimeHostMock);
 const commitInitialChatTitleMock = jest.fn(() => Promise.resolve(true));
 const getInitialChatTitlePromptMock = jest.fn<
   Promise<string | null>,
@@ -97,23 +126,23 @@ jest.mock('../resource-monitor', () => ({
 }));
 
 jest.mock('../services/chat-state-service', () => ({
-  getChatStateService: (): Record<string, jest.Mock> => ({
+  getChatStateService: (): Record<string, unknown> => ({
     runWithScopeActivity: runWithScopeActivityMock,
     updateChatDescription: updateChatDescriptionMock,
     commitInitialChatTitle: commitInitialChatTitleMock,
     getInitialChatTitlePrompt: getInitialChatTitlePromptMock,
     reconcileHostQueue: jest.fn(() => Promise.resolve()),
+    holdRuntimeHost: holdRuntimeHostMock,
     inputDelivery: {
-      stop: async (
-        _target: unknown,
-        operation: () => Promise<void>,
-      ): Promise<void> => operation(),
+      stop: (_target: unknown, operation: () => Promise<void>): Promise<void> =>
+        operation(),
     },
   }),
 }));
 
-const readPreferencesFileMock = jest.fn(() =>
-  Promise.resolve({ orgMemoryInjectionEnabled: false }),
+// A partial fixture: these tests rely on unset preferences staying undefined.
+const readPreferencesFileMock = jest.fn<Promise<Partial<PreferencesData>>, []>(
+  () => Promise.resolve({ orgMemoryInjectionEnabled: false }),
 );
 jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: async (): Promise<Record<string, unknown>> => {
@@ -121,22 +150,16 @@ jest.mock('../lib/preferences-store', () => ({
     const defaultChatModelByProvider = {
       claude: { model: 'claude-sonnet-4-6', thinkingLevel: 'high' },
       codex: { model: 'gpt-5.5', thinkingLevel: 'high' },
-      ...((preferences.defaultChatModelByProvider as Record<string, unknown>) ??
-        {}),
+      ...(preferences.defaultChatModelByProvider ?? {}),
     };
     const defaultWorktreeModelByProvider = {
       claude: { model: 'claude-sonnet-4-6', thinkingLevel: 'high' },
       codex: { model: 'gpt-5.5', thinkingLevel: 'high' },
-      ...((preferences.defaultWorktreeModelByProvider as Record<
-        string,
-        unknown
-      >) ?? {}),
+      ...(preferences.defaultWorktreeModelByProvider ?? {}),
     };
     return {
       defaultChatProvider: 'claude',
-      defaultChatModelByProvider,
       defaultWorktreeProvider: 'claude',
-      defaultWorktreeModelByProvider,
       ...preferences,
       defaultChatModelByProvider,
       defaultWorktreeModelByProvider,
@@ -176,8 +199,8 @@ jest.mock('../lib/default-model-lane-resolver', () => ({
     requireLaneAwareDefaultSelectionMock(preferences, scope, preferredProvider),
 }));
 
-jest.mock('../agents/agent-model-runtime', () => ({
-  resolveAgentModelRuntime: (options: {
+const resolveAgentModelRuntimeMock = jest.fn(
+  (options: {
     model: string;
     providerType?: 'claude' | 'codex' | 'ollama';
     systemPromptAppend?: string;
@@ -195,6 +218,11 @@ jest.mock('../agents/agent-model-runtime', () => ({
       pluginSelections: options.pluginSelections,
     });
   },
+);
+jest.mock('../agents/agent-model-runtime', () => ({
+  resolveAgentModelRuntime: (
+    options: Parameters<typeof resolveAgentModelRuntimeMock>[0],
+  ): Promise<Record<string, unknown>> => resolveAgentModelRuntimeMock(options),
 }));
 
 // Two orgs the account may search, A first: org memory must still search only
@@ -254,7 +282,9 @@ jest.mock('../memory/memory-client', () => {
   };
 });
 
-const persistOrgMemoryUsedForChatMock = jest.fn(() => Promise.resolve(true));
+const persistOrgMemoryUsedForChatMock = jest.fn<Promise<boolean>, unknown[]>(
+  () => Promise.resolve(true),
+);
 jest.mock('../lib/chat-tab-dispatch-utils', () => ({
   persistOrgMemoryUsedForChat: (...args: unknown[]): Promise<boolean> =>
     persistOrgMemoryUsedForChatMock(...args),
@@ -263,20 +293,30 @@ jest.mock('../lib/chat-tab-dispatch-utils', () => ({
 const sendMessageMock = jest.fn();
 const setPlanModeMock = jest.fn(() => Promise.resolve());
 const setApprovalModeMock = jest.fn(() => Promise.resolve());
+const setThinkingLevelMock = jest.fn(() => Promise.resolve());
+const setSessionTurnSettingsMock = jest.fn<
+  void,
+  [string, string, string, SessionTurnSettings]
+>();
 const getProviderSessionIdMock = jest.fn<string | undefined, []>();
+const getSessionTurnSettingsMock = jest.fn<
+  SessionTurnSettings | undefined,
+  []
+>();
 const makeMockSessionForEventHandler = (
   onEvent: (data: unknown) => void,
 ): MockAgentSession => ({
   sendMessage: sendMessageMock,
   setPlanMode: setPlanModeMock,
   setApprovalMode: setApprovalModeMock,
+  setThinkingLevel: setThinkingLevelMock,
   getProviderSessionId: getProviderSessionIdMock,
   __onEvent: onEvent,
 });
 const getOrCreateSessionMock = jest.fn(
   (
     ...args: [
-      unknown,
+      AgentSessionOptions,
       (data: unknown) => void,
       (() => unknown)?,
       MockSessionLifecycle?,
@@ -302,6 +342,21 @@ const canPreserveSessionCapabilitySnapshotMock = jest.fn<
   Promise<boolean>,
   [unknown]
 >(() => Promise.resolve(true));
+const shouldRecreateSessionOnNextTurnMock = jest.fn<
+  boolean,
+  [string, string, string]
+>(() => false);
+const getSessionRecreateReasonsMock = jest.fn<
+  readonly SessionRecreateReason[],
+  [string, string, string]
+>(() => []);
+const chatHasNativeBackgroundWorkMock = jest.fn<
+  boolean,
+  [string, string, string]
+>(() => false);
+const destroySessionMock = jest.fn<Promise<void>, unknown[]>(() =>
+  Promise.resolve(),
+);
 const releaseSessionTurnPreparationMock = jest.fn();
 const beginSessionTurnPreparationMock = jest.fn<() => void, [string]>(
   () => releaseSessionTurnPreparationMock,
@@ -310,20 +365,38 @@ const releaseSessionTurnPreparationOnActivationMock = jest.fn<
   void,
   [string, () => void]
 >();
+const restrictSessionApprovalRulesMock = jest.fn<
+  void,
+  [string, string, string, readonly unknown[]]
+>();
 
 jest.mock('../agents/session-manager', () => ({
+  restrictSessionApprovalRules: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    rules: readonly unknown[],
+  ): void =>
+    restrictSessionApprovalRulesMock(projectId, worktreeId, chatId, rules),
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
   getGlobalPluginDefaultsRevision: jest.fn(() => 0),
   getSessionGlobalPluginDefaultsRevision: jest.fn(() => undefined),
   getSessionPluginSelections: jest.fn(() => undefined),
   suppressCodexAuthenticationRecovery: jest.fn(),
   getSession: (): typeof cancellationSession => cancellationSession,
+  getChatSessionLiveness: (): {
+    foreground: boolean;
+    background: boolean;
+  } => ({ foreground: false, background: false }),
+  subscribeChatSessionActivity: (): (() => void) => () => undefined,
+  subscribeLiveBackgroundTasks: (): (() => void) => () => undefined,
+  hasPendingCodexContinuation: (): boolean => false,
   getSessionProviderType: (): 'claude' | 'codex' | 'cursor' | undefined =>
     getSessionProviderTypeMock(),
   drainChatSessionEvents: (): Promise<void> => drainChatSessionEventsMock(),
   getOrCreateSession: (
     ...args: [
-      unknown,
+      AgentSessionOptions,
       (data: unknown) => void,
       (() => unknown)?,
       MockSessionLifecycle?,
@@ -343,6 +416,15 @@ jest.mock('../agents/session-manager', () => ({
   getActiveSessionInfos: (): unknown[] => [],
   canReuseSession: (options: unknown): Promise<boolean> =>
     canReuseSessionMock(options),
+  setSessionTurnSettings: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    settings: SessionTurnSettings,
+  ): void =>
+    setSessionTurnSettingsMock(projectId, worktreeId, chatId, settings),
+  getSessionTurnSettings: (): SessionTurnSettings | undefined =>
+    getSessionTurnSettingsMock(),
   canPreserveSessionCapabilitySnapshot: (options: unknown): Promise<boolean> =>
     canPreserveSessionCapabilitySnapshotMock(options),
   getSessionCodeGraphToolsAdvertised: (
@@ -379,13 +461,32 @@ jest.mock('../agents/session-manager', () => ({
       'item.plan.delta',
     ].includes(typeof data.event.type === 'string' ? data.event.type : '');
   },
-  destroySession: (): Promise<void> => Promise.resolve(),
-  shouldRecreateSessionOnNextTurn: (): boolean => false,
+  destroySession: (...args: unknown[]): Promise<void> =>
+    destroySessionMock(...args),
+  shouldRecreateSessionOnNextTurn: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ): boolean =>
+    shouldRecreateSessionOnNextTurnMock(projectId, worktreeId, chatId),
+  getSessionRecreateReasons: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ): readonly SessionRecreateReason[] =>
+    getSessionRecreateReasonsMock(projectId, worktreeId, chatId),
+  chatHasNativeBackgroundWork: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ): boolean => chatHasNativeBackgroundWorkMock(projectId, worktreeId, chatId),
   isSessionAiCreditsRouted: (): boolean => false,
   isSessionAccountProxyRouted: (): boolean => false,
 }));
 
-const generateAndRenameBranchMock = jest.fn(() => Promise.resolve({}));
+const generateAndRenameBranchMock = jest.fn<Promise<unknown>, unknown[]>(() =>
+  Promise.resolve({}),
+);
 jest.mock('../lib/branch-namer', () => ({
   generateAndRenameBranch: (...args: unknown[]): Promise<unknown> =>
     generateAndRenameBranchMock(...args),
@@ -438,6 +539,9 @@ jest.mock('../lib/chat-turn-audit', () => ({
     }
     return ['assistant', 'user', 'codex'].includes(String(data.type));
   },
+  isClaudeChildFrame: jest.requireActual<typeof ChatTurnAuditModule>(
+    '../lib/chat-turn-audit',
+  ).isClaudeChildFrame,
   isCodexSubagentFollowupEvent: jest.requireActual<typeof ChatTurnAuditModule>(
     '../lib/chat-turn-audit',
   ).isCodexSubagentFollowupEvent,
@@ -468,13 +572,18 @@ jest.mock('../lib/chat-turn-audit', () => ({
   isRootTerminalChatEventData: jest.requireActual<typeof ChatTurnAuditModule>(
     '../lib/chat-turn-audit',
   ).isRootTerminalChatEventData,
+  isRootAgentContinuationEvent: jest.requireActual<typeof ChatTurnAuditModule>(
+    '../lib/chat-turn-audit',
+  ).isRootAgentContinuationEvent,
   isTerminalChatEventData: (data: unknown): boolean =>
     typeof data === 'object' &&
     data !== null &&
     'type' in data &&
     data.type === 'result',
 }));
-const mockResolveWorktreeCwd = jest.fn(() => '/mock/cowork-home');
+const mockResolveWorktreeCwd = jest.fn<string, unknown[]>(
+  () => '/mock/cowork-home',
+);
 const mockResolveWorktreeTargetIds = jest.fn(
   (projectId: string, worktreeId: string) => ({ projectId, worktreeId }),
 );
@@ -531,15 +640,31 @@ jest.mock('../lib/worktree-summary-scheduler', () => ({
   },
 }));
 
-const captureTurnStartMock = jest.fn(() => Promise.resolve());
+const captureTurnStartMock = jest.fn<Promise<void>, unknown[]>(() =>
+  Promise.resolve(),
+);
 const captureTurnEndAndDiffMock = jest.fn<Promise<unknown>, unknown[]>(() =>
   Promise.resolve(null),
 );
+const discardTurnStartMock = jest.fn<void, unknown[]>();
+/** A wake's own diff, from the previous end (turn-state phase 40f). */
+const sinceLastEndMock = jest.fn<unknown, unknown[]>(() => undefined);
 jest.mock('../lib/turn-diff-capture', () => ({
   captureTurnStart: (...args: unknown[]): Promise<void> =>
     captureTurnStartMock(...args),
   captureTurnEndAndDiff: (...args: unknown[]): Promise<unknown> =>
     captureTurnEndAndDiffMock(...args),
+  captureTurnEndAndDiffs: (...args: unknown[]): Promise<unknown> =>
+    captureTurnEndAndDiffMock(...args).then((turn) => {
+      const sinceLastEnd = sinceLastEndMock();
+      return turn
+        ? {
+            turn,
+            ...(sinceLastEnd === undefined ? {} : { sinceLastEnd }),
+          }
+        : null;
+    }),
+  discardTurnStart: (...args: unknown[]): void => discardTurnStartMock(...args),
 }));
 
 const scheduleCodeGraphBuildMock = jest.fn();
@@ -600,6 +725,24 @@ const mockReadPersistedChatDispatchMetadata = jest.fn<
   }>,
   []
 >(() => Promise.resolve({}));
+interface MockSavedChatTab {
+  approvalMode?: 'ask' | 'auto' | 'full-access';
+  sessionApprovalRules?: {
+    id: string;
+    behavior: 'allow' | 'deny';
+    target: { kind: 'command'; pattern: string };
+    createdAt: string;
+    origin: 'prompt';
+  }[];
+}
+/** The saved tab of chat-1, which a turn reads its approval authority from. */
+const mockReadSavedChatTab = jest.fn<Promise<MockSavedChatTab | undefined>, []>(
+  () => Promise.resolve(undefined),
+);
+/** The workspace and surface default for a chat without a saved mode. */
+const mockDefaultApprovalMode = jest.fn<'ask' | 'auto' | 'full-access', []>(
+  () => 'full-access',
+);
 jest.mock('../lib/chat-tabs-reader', () => ({
   readPersistedChatDispatchMetadata: (): Promise<{
     deferredToolsAllowed?: boolean;
@@ -609,6 +752,21 @@ jest.mock('../lib/chat-tabs-reader', () => ({
   }> => mockReadPersistedChatDispatchMetadata(),
   readPersistedChatExecutionContext: (): Promise<string | undefined> =>
     Promise.resolve(undefined),
+  readChatTabsFile: async (): Promise<{
+    tabs: (MockSavedChatTab & { id: string })[];
+  }> => {
+    const tab = await mockReadSavedChatTab();
+    return { tabs: tab ? [{ id: 'chat-1', ...tab }] : [] };
+  },
+}));
+jest.mock('../lib/approval-mode-resolution', () => ({
+  ...jest.requireActual<object>('../lib/approval-mode-resolution'),
+  resolvePersistedApprovalMode: (
+    _projectId: string,
+    _worktreeId: string,
+    tabMode?: 'ask' | 'auto' | 'full-access',
+  ): Promise<'ask' | 'auto' | 'full-access'> =>
+    Promise.resolve(tabMode ?? mockDefaultApprovalMode()),
 }));
 
 const mockBuildWorktreeInjectedToolPrompt = jest.fn<
@@ -754,8 +912,12 @@ jest.mock('../services/active-chat-input', () => {
     ),
   };
 });
-const handleCanonicalChatTerminalEventMock = jest.fn(() => Promise.resolve());
-const handleCanonicalChatStartedEventMock = jest.fn(() => Promise.resolve());
+const handleCanonicalChatTerminalEventMock = jest.fn<Promise<void>, unknown[]>(
+  () => Promise.resolve(),
+);
+const handleCanonicalChatStartedEventMock = jest.fn<Promise<void>, unknown[]>(
+  () => Promise.resolve(),
+);
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: (): Record<string, unknown> => ({
     handleCanonicalChatTerminalEvent: (...args: unknown[]): Promise<void> =>
@@ -765,7 +927,7 @@ jest.mock('../app-advisor/watchers', () => ({
   }),
 }));
 
-const readWorkspaceConfigMock = jest.fn(() =>
+const readWorkspaceConfigMock = jest.fn<Promise<unknown>, unknown[]>(() =>
   Promise.resolve({
     version: 1,
     type: 'single-repo',
@@ -802,13 +964,14 @@ jest.mock('../lib/workspace-persistence', () => ({
     readWorkspaceConfigDetailedMock(workspaceId),
 }));
 
-const generateChatSummaryForProjectMock = jest.fn(
-  (): Promise<{
+const generateChatSummaryForProjectMock = jest.fn<
+  Promise<{
     text: string;
     usage: Record<string, never>;
     fallback?: { reason: string; retryable?: boolean };
-  }> => Promise.resolve({ text: 'summary', usage: {} }),
-);
+  }>,
+  [string, Record<string, unknown>]
+>(() => Promise.resolve({ text: 'summary', usage: {} }));
 jest.mock('../ipc/standalone-chat', () => ({
   generateChatSummaryForProject: (
     ...args: [string, Record<string, unknown>]
@@ -820,6 +983,7 @@ jest.mock('../ipc/standalone-chat', () => ({
   updateChatMeta: (): Promise<void> => Promise.resolve(),
 }));
 
+const mockRecordSessionDiagnostic = jest.fn<void, [unknown]>();
 const startChatTurnMock = jest.fn<void, [Record<string, unknown>]>();
 const observeChatEventMock = jest.fn();
 const completeChatTurnMock = jest.fn();
@@ -831,7 +995,7 @@ jest.mock('../observability', () => ({
     observeChatEvent: observeChatEventMock,
     completeChatTurn: completeChatTurnMock,
     recordInjectedPromptForOpenChatTurn: jest.fn(),
-    recordSessionDiagnostic: jest.fn(),
+    recordSessionDiagnostic: mockRecordSessionDiagnostic,
     startObservedTask: startObservedTaskMock,
     finalizeObservedTask: finalizeObservedTaskMock,
   }),
@@ -851,11 +1015,30 @@ import {
   initModelAliases,
 } from '@canopy/desktop-shared/types';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
+import {
+  ChatDispatchAuthorizationRegistry,
+  getChatDispatchAuthorization,
+  type AuthorizedChatDispatch,
+} from '../services/chat-dispatch-authorization';
+import { getChatTurnOwnership } from '../services/chat-turn-ownership';
+import {
+  isCurrentTurnBindingFull,
+  resetTurnBindingSlotsForTests,
+} from '../services/chat-turn-binding-slots';
+import {
+  initialChatTurnState,
+  serializeChatTurnState,
+  type PersistedChatTurnState,
+} from '@canopy/agent-transcript/turn';
 import { backgroundHelperQueueTestExports } from '../lib/background-helper-queue';
 import type * as MemoryClientModule from '../memory/memory-client';
 import * as memoryContextModule from '../memory/memory-context';
 import * as chatQueueServiceModule from '../services/chat-queue-service';
 import { getStoppedTurnResumeService } from '../services/stopped-turn-resume-service';
+import {
+  ChatSendAdmissionRefusedError,
+  withChatSendAdmission,
+} from '../services/chat-send-admission';
 import {
   clearLiveApprovalMode,
   setLiveApprovalMode,
@@ -863,11 +1046,17 @@ import {
 import {
   clearActiveTurnUserMessageId,
   dispatchWorktreeChatTurn,
+  prepareWorktreeTurnSession,
   scheduleBranchNaming,
   scheduleChatSummary,
   worktreeChatTurnTestExports,
 } from '../lib/worktree-chat-turn';
-import { getRoutedSessionPressureSnapshot } from '../agents/session-event-router';
+import {
+  drainCurrentSessionEvents,
+  getTurnRootAcceptance,
+  getRoutedSessionPressureSnapshot,
+  sessionEventRouterTestExports,
+} from '../agents/session-event-router';
 
 initClaudeModels([
   { id: 'opus[1m]', label: 'Opus 1M' },
@@ -900,6 +1089,7 @@ initAiGatewayModels(
     {
       modelId: 'gateway-any-harness',
       gatewayId: 'provider/gateway-any-harness',
+      family: 'custom',
       recommendedHarness: 'claude',
       gatewayOnly: true,
       contextWindow: 100_000,
@@ -928,10 +1118,91 @@ function expectAckClientElapsedMs(callIndex: number): void {
   expect(typeof details.clientElapsedMs).toBe('number');
 }
 
+interface TurnDispatchDiagnosticPhase {
+  phase: string;
+  elapsedMs: number;
+}
+
+interface TurnDispatchSlowDiagnostic {
+  kind: 'turn_dispatch_slow';
+  totalMs: number;
+  endpoint: 'enqueued';
+  phases: TurnDispatchDiagnosticPhase[];
+}
+
+function isTurnDispatchSlowDiagnostic(
+  value: unknown,
+): value is TurnDispatchSlowDiagnostic {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('kind' in value) ||
+    value.kind !== 'turn_dispatch_slow' ||
+    !('totalMs' in value) ||
+    typeof value.totalMs !== 'number' ||
+    !('endpoint' in value) ||
+    value.endpoint !== 'enqueued' ||
+    !('phases' in value) ||
+    !Array.isArray(value.phases)
+  ) {
+    return false;
+  }
+  const phases: TurnDispatchDiagnosticPhase[] = [];
+  for (const rawCandidate of value.phases) {
+    const candidate: unknown = rawCandidate;
+    if (
+      typeof candidate !== 'object' ||
+      candidate === null ||
+      !('phase' in candidate) ||
+      typeof candidate.phase !== 'string' ||
+      !('elapsedMs' in candidate) ||
+      typeof candidate.elapsedMs !== 'number'
+    ) {
+      return false;
+    }
+    phases.push({ phase: candidate.phase, elapsedMs: candidate.elapsedMs });
+  }
+  return phases.length === value.phases.length;
+}
+
+/** Stands in for a queue-issued capability; every dispatch carries one. */
+const TEST_DISPATCH_AUTHORIZATION: AuthorizedChatDispatch = {
+  authorizationToken: Symbol('test dispatch'),
+  scope: { projectId: 'cowork-default', worktreeId: 'home', chatId: 'chat-1' },
+  dispatchOwner: Symbol('test dispatch owner'),
+  userMessageId: 'msg-1',
+  operationEpoch: 1,
+  kind: 'ordinary',
+};
+
+/** Authorize the test capability; any other goes to the real registry. */
+function authorizeTestDispatches(): void {
+  const registry = getChatDispatchAuthorization();
+  jest.spyOn(registry, 'consume').mockImplementation((authorization, target) =>
+    authorization === TEST_DISPATCH_AUTHORIZATION
+      ? {
+          kind: 'authorized',
+          ownership: {
+            kind: 'dispatch',
+            token: authorization.dispatchOwner,
+            userMessageId: target.userMessageId,
+            operationEpoch: authorization.operationEpoch,
+            reason: 'awaiting-start',
+          },
+        }
+      : ChatDispatchAuthorizationRegistry.prototype.consume.call(
+          registry,
+          authorization,
+          target,
+        ),
+  );
+}
+
 function baseOptions(
   overrides: Partial<Parameters<typeof dispatchWorktreeChatTurn>[0]> = {},
 ): Parameters<typeof dispatchWorktreeChatTurn>[0] {
   return {
+    authorization: TEST_DISPATCH_AUTHORIZATION,
     projectId: 'cowork-default',
     worktreeId: 'home',
     chatId: 'chat-1',
@@ -942,6 +1213,454 @@ function baseOptions(
     onBeforeChatEvent: (): Promise<void> => Promise.resolve(),
     ...overrides,
   };
+}
+
+describe('prepareWorktreeTurnSession', () => {
+  it('resolves an implicit lane default to the same session options as the explicit selection', async () => {
+    const implicit = await prepareWorktreeTurnSession(baseOptions());
+    const explicit = await prepareWorktreeTurnSession(
+      baseOptions({ model: 'claude-sonnet-4-6' }),
+    );
+    expect(implicit.buildSessionOptions()).toEqual(
+      explicit.buildSessionOptions(),
+    );
+  });
+
+  it('skips Copilot availability only for read-only preparation', async () => {
+    const options = baseOptions({ model: 'copilot:gpt-5' });
+    await prepareWorktreeTurnSession(options, undefined, {
+      checkModelAvailability: false,
+    });
+    expect(assertCopilotModelAvailableMock).not.toHaveBeenCalled();
+    await prepareWorktreeTurnSession(options);
+    expect(assertCopilotModelAvailableMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes reusable configuration refresh and builds from the current configuration', async () => {
+    mockIsCoworkWorkspace.mockReturnValue(false);
+    getSessionCodeGraphToolsAdvertisedMock.mockReturnValue(true);
+    mockIsEnabled.mockReturnValue(true);
+
+    const prepared = await prepareWorktreeTurnSession(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'prepare-chat',
+        selectedRepoId: 'repo-child',
+        model: 'gpt-5.5',
+        providerType: 'codex',
+        planMode: true,
+      }),
+    );
+
+    expect(prepared.cwd).toBe('/mock/cowork-home');
+    expect(prepared.sessionKey).toBe('my-project/wt-1/prepare-chat');
+    expect(prepared.existingCodeGraphToolsAdvertised).toBe(true);
+    expect(prepared.currentCodeGraphToolsAvailable).toBe(true);
+    expect(prepared.sessionConfiguration.codeGraphToolsAdvertised).toBe(true);
+    expect(prepared.buildSessionOptions()).toEqual(
+      expect.objectContaining({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'prepare-chat',
+        cwd: '/mock/cowork-home',
+        model: 'gpt-5.5',
+        selectedModel: 'gpt-5.5',
+        planMode: true,
+        codeGraphToolsAdvertised: true,
+      }),
+    );
+
+    prepared.sessionConfiguration =
+      await prepared.resolveSessionConfiguration(false);
+
+    expect(prepared.sessionConfiguration.codeGraphToolsAdvertised).toBe(false);
+    expect(prepared.buildSessionOptions().codeGraphToolsAdvertised).toBe(false);
+  });
+});
+
+describe('dispatchWorktreeChatTurn dispatch authorization', () => {
+  it('refuses a capability the queue never issued before any session work', async () => {
+    const forged = {
+      authorizationToken: Symbol('forged dispatch'),
+      scope: {
+        projectId: 'cowork-default',
+        worktreeId: 'home',
+        chatId: 'chat-1',
+      },
+      dispatchOwner: Symbol('forged owner'),
+      userMessageId: 'msg-1',
+      operationEpoch: 1,
+      kind: 'ordinary' as const,
+    };
+    await expect(
+      dispatchWorktreeChatTurn(baseOptions({ authorization: forged })),
+    ).rejects.toMatchObject({
+      outcome: {
+        kind: 'refused',
+        reason: 'authorization',
+        dispatchOwner: forged.dispatchOwner,
+      },
+    });
+    expect(getOrCreateSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a dispatch without a capability before any session work', async () => {
+    await expect(
+      dispatchWorktreeChatTurn(baseOptions({ authorization: undefined })),
+    ).rejects.toThrow('Chat dispatch requires an admitted capability.');
+    expect(getOrCreateSessionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatchWorktreeChatTurn live thinking level', () => {
+  it('applies the effective thinking level to a reused session at turn start', async () => {
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'thinking-level-chat',
+        model: 'claude-sonnet-4-6',
+        providerType: 'claude',
+        executionHarness: 'claude',
+        thinkingLevel: 'off',
+      }),
+    );
+
+    expect(getOrCreateSessionMock).toHaveBeenCalledTimes(1);
+    expect(setThinkingLevelMock).toHaveBeenCalledWith('off');
+    expect(setThinkingLevelMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      getOrCreateSessionMock.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+});
+
+describe('dispatchWorktreeChatTurn session turn settings snapshot', () => {
+  const snapshotFields = [
+    'model',
+    'modelSelectionMode',
+    'providerType',
+    'executionHarness',
+    'pluginSelections',
+    'planMode',
+    'modelConfig',
+    'thinkingLevel',
+    'approvalMode',
+    'sessionApprovalRules',
+    'codexProposalMode',
+    'codexFastModeEnabled',
+    'deferredToolsAllowed',
+    'selectedRepoId',
+  ];
+
+  it('retains the selected model and request plugins rather than Agent runtime expansions', async () => {
+    resolveAgentModelRuntimeMock.mockResolvedValueOnce({
+      selectedModel: 'claude-sonnet-4-6',
+      runtimeModel: 'claude-haiku-4-5-20251001',
+      providerType: 'claude',
+      executionHarness: 'claude',
+      systemPromptAppend: 'agent instructions',
+      pluginSelections: {
+        collectionIds: ['agent-plugins'],
+        skillRefs: [],
+        pluginRefs: [],
+      },
+    });
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          model: 'claude-sonnet-4-6',
+          providerType: 'claude',
+          executionHarness: 'claude',
+        }),
+      );
+      expect(setSessionTurnSettingsMock).toHaveBeenCalledWith(
+        'cowork-default',
+        'home',
+        'chat-1',
+        expect.objectContaining({
+          model: 'claude-sonnet-4-6',
+          pluginSelections: undefined,
+        }),
+      );
+    } finally {
+      resolveAgentModelRuntimeMock.mockClear();
+    }
+  });
+
+  it('captures explicit effective settings when creating a session', async () => {
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'settings-created-chat',
+        model: 'gpt-5.5',
+        providerType: 'codex',
+        executionHarness: 'codex',
+        planMode: true,
+        thinkingLevel: 'high',
+        selectedRepoId: 'repo-child',
+      }),
+    );
+
+    expect(getOrCreateSessionMock).toHaveBeenCalledTimes(1);
+    expect(setSessionTurnSettingsMock).toHaveBeenCalledTimes(1);
+    expect(setSessionTurnSettingsMock).toHaveBeenCalledWith(
+      'my-project',
+      'wt-1',
+      'settings-created-chat',
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        providerType: 'codex',
+        executionHarness: 'codex',
+        planMode: true,
+        thinkingLevel: 'high',
+        deferredToolsAllowed: true,
+        selectedRepoId: 'repo-child',
+      }),
+    );
+
+    const settings = setSessionTurnSettingsMock.mock.calls[0]?.[3];
+    expect(settings).toBeDefined();
+    expect(Object.keys(settings ?? {}).sort()).toEqual(
+      [...snapshotFields].sort(),
+    );
+    expect(settings).toHaveProperty('modelSelectionMode', undefined);
+    expect(settings).toHaveProperty('pluginSelections', undefined);
+    expect(settings).toHaveProperty('approvalMode', undefined);
+    expect(settings).toHaveProperty('sessionApprovalRules', undefined);
+    expect(settings).toHaveProperty('codexProposalMode', undefined);
+    expect(settings).toHaveProperty('codexFastModeEnabled', undefined);
+  });
+
+  it('captures settings for a matched reused session', async () => {
+    getSessionCodeGraphToolsAdvertisedMock.mockReturnValue(true);
+
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'settings-reused-chat',
+        model: 'claude-sonnet-4-6',
+        providerType: 'claude',
+        executionHarness: 'claude',
+        selectedRepoId: 'repo-child',
+      }),
+    );
+
+    expect(canReuseSessionMock).toHaveBeenCalled();
+    expect(setSessionTurnSettingsMock).toHaveBeenCalledTimes(1);
+    expect(setSessionTurnSettingsMock).toHaveBeenCalledWith(
+      'my-project',
+      'wt-1',
+      'settings-reused-chat',
+      expect.objectContaining({
+        model: 'claude-sonnet-4-6',
+        providerType: 'claude',
+        executionHarness: 'claude',
+        selectedRepoId: 'repo-child',
+      }),
+    );
+    expect(
+      setSessionTurnSettingsMock.mock.invocationCallOrder[0],
+    ).toBeGreaterThan(getOrCreateSessionMock.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('does not replace the turn settings snapshot for a hidden continuation', async () => {
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'settings-hidden-continuation-chat',
+        hiddenDeferredContinuation: true,
+      }),
+    );
+
+    expect(getOrCreateSessionMock).toHaveBeenCalledTimes(1);
+    expect(setSessionTurnSettingsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatchWorktreeChatTurn session recreation', () => {
+  it('defers approval-only recreation while native background work is active', async () => {
+    const options = baseOptions({
+      projectId: 'my-project',
+      worktreeId: 'wt-1',
+      chatId: 'approval-recreate-chat',
+    });
+    shouldRecreateSessionOnNextTurnMock.mockReturnValue(true);
+    getSessionRecreateReasonsMock.mockReturnValue(['approval']);
+    chatHasNativeBackgroundWorkMock.mockReturnValue(true);
+    getSessionCodeGraphToolsAdvertisedMock.mockReturnValue(true);
+
+    await dispatchWorktreeChatTurn(options);
+    await flushSessionEventCommits();
+
+    expect(destroySessionMock).not.toHaveBeenCalled();
+    expect(canReuseSessionMock).toHaveBeenCalled();
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'session_recreate_deferred',
+        recreateReasons: ['approval'],
+        changedOptions: ['approvalMode', 'sessionApprovalRules'],
+      }),
+    );
+  });
+
+  it('runs a live-settings turn on the live session and defers its settings markers', async () => {
+    shouldRecreateSessionOnNextTurnMock.mockReturnValue(true);
+    getSessionRecreateReasonsMock.mockReturnValue(['plugins', 'plan']);
+    chatHasNativeBackgroundWorkMock.mockReturnValue(true);
+    getSessionCodeGraphToolsAdvertisedMock.mockReturnValue(true);
+    getSessionTurnSettingsMock.mockReturnValue({
+      model: 'claude-haiku-4-5-20251001',
+      providerType: 'claude',
+      executionHarness: 'claude',
+      approvalMode: 'full-access',
+    });
+
+    const liveSettingsOptions = baseOptions({
+      projectId: 'my-project',
+      worktreeId: 'wt-1',
+      chatId: 'live-settings-chat',
+      model: 'claude-sonnet-4-6',
+      useLiveSessionSettings: true,
+    });
+    // Preserve the pre-existing unsupported sentinel as this test input.
+    Reflect.set(liveSettingsOptions, 'approvalMode', 'default');
+    await dispatchWorktreeChatTurn(liveSettingsOptions);
+    await flushSessionEventCommits();
+
+    expect(destroySessionMock).not.toHaveBeenCalled();
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'session_recreate_deferred',
+        recreateReasons: ['plugins', 'plan'],
+      }),
+    );
+    const sessionOptions = getOrCreateSessionMock.mock.calls[0]?.[0] as
+      | { model?: string; approvalMode?: string }
+      | undefined;
+    expect(sessionOptions?.model).toBe('claude-haiku-4-5-20251001');
+    expect(sessionOptions?.approvalMode).not.toBe('full-access');
+  });
+
+  it('still recreates a stopped session for a live-settings turn', async () => {
+    shouldRecreateSessionOnNextTurnMock.mockReturnValue(true);
+    getSessionRecreateReasonsMock.mockReturnValue(['plugins', 'stop']);
+    chatHasNativeBackgroundWorkMock.mockReturnValue(true);
+    getSessionTurnSettingsMock.mockReturnValue({
+      model: 'claude-haiku-4-5-20251001',
+    });
+
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'live-settings-stopped-chat',
+        useLiveSessionSettings: true,
+      }),
+    );
+
+    expect(destroySessionMock).toHaveBeenCalledWith(
+      'my-project',
+      'wt-1',
+      'live-settings-stopped-chat',
+      { retainDelegations: true },
+    );
+  });
+
+  it('recreates approval-only sessions without native background work', async () => {
+    shouldRecreateSessionOnNextTurnMock.mockReturnValue(true);
+    getSessionRecreateReasonsMock.mockReturnValue(['approval']);
+    chatHasNativeBackgroundWorkMock.mockReturnValue(false);
+
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'approval-recreate-chat',
+      }),
+    );
+
+    expect(destroySessionMock).toHaveBeenCalledWith(
+      'my-project',
+      'wt-1',
+      'approval-recreate-chat',
+      { retainDelegations: true },
+    );
+  });
+
+  it('always recreates stopped sessions even while native background work is active', async () => {
+    shouldRecreateSessionOnNextTurnMock.mockReturnValue(true);
+    getSessionRecreateReasonsMock.mockReturnValue(['stop']);
+    chatHasNativeBackgroundWorkMock.mockReturnValue(true);
+
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'stopped-recreate-chat',
+      }),
+    );
+
+    expect(destroySessionMock).toHaveBeenCalledWith(
+      'my-project',
+      'wt-1',
+      'stopped-recreate-chat',
+      { retainDelegations: true },
+    );
+  });
+});
+
+type ChatQueue = ReturnType<typeof chatQueueServiceModule.getChatQueueService>;
+
+function mockAcceptedTurnRootLease(): {
+  accept: jest.SpyInstance<
+    ReturnType<ChatQueue['acceptTurnRevival']>,
+    Parameters<ChatQueue['acceptTurnRevival']>
+  >;
+  confirm: jest.SpyInstance<
+    ReturnType<ChatQueue['confirmTurnRevival']>,
+    Parameters<ChatQueue['confirmTurnRevival']>
+  >;
+  rollback: jest.SpyInstance<
+    ReturnType<ChatQueue['rollbackTurnRevival']>,
+    Parameters<ChatQueue['rollbackTurnRevival']>
+  >;
+  restore: () => void;
+} {
+  const queue = chatQueueServiceModule.getChatQueueService();
+  const accept = jest
+    .spyOn(queue, 'acceptTurnRevival')
+    .mockImplementation((_target, rootId) => ({
+      accepted: true,
+      lease: { rootId, epoch: -1 },
+    }));
+  const confirm = jest.spyOn(queue, 'confirmTurnRevival').mockReturnValue(true);
+  const rollback = jest
+    .spyOn(queue, 'rollbackTurnRevival')
+    .mockReturnValue(true);
+  return {
+    accept,
+    confirm,
+    rollback,
+    restore: (): void => {
+      accept.mockRestore();
+      confirm.mockRestore();
+      rollback.mockRestore();
+    },
+  };
+}
+
+// A steady provider stream advances on real timers, which a loaded runner
+// slows; wait for the state instead of a fixed interval.
+async function until(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('Timed out waiting');
+    await new Promise<void>((resolve) => setTimeout(resolve, 3));
+  }
 }
 
 async function flushSessionEventCommits(): Promise<void> {
@@ -962,6 +1681,23 @@ function getMockSession(callIndex: number): MockAgentSession {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  resetTurnBindingSlotsForTests();
+  authorizeTestDispatches();
+  // This suite's queue has no bound ownership, so it would issue no
+  // capability; a reload continuation gets the test one.
+  jest
+    .spyOn(
+      chatQueueServiceModule.getChatQueueService(),
+      'admitDirectDispatchWhenAllowed',
+    )
+    .mockResolvedValue({
+      authorization: TEST_DISPATCH_AUTHORIZATION,
+      release: jest.fn(),
+    });
+  setPlanModeMock.mockReset();
+  setPlanModeMock.mockResolvedValue(undefined);
+  mockReadSavedChatTab.mockReset().mockResolvedValue(undefined);
+  mockDefaultApprovalMode.mockReset().mockReturnValue('full-access');
   composeRepoRulesMock.mockResolvedValue('');
   releaseSessionTurnPreparationMock.mockReset();
   cancellationSession = undefined;
@@ -1013,6 +1749,16 @@ beforeEach(() => {
   canReuseSessionMock.mockResolvedValue(true);
   canPreserveSessionCapabilitySnapshotMock.mockReset();
   canPreserveSessionCapabilitySnapshotMock.mockResolvedValue(true);
+  shouldRecreateSessionOnNextTurnMock.mockReset();
+  shouldRecreateSessionOnNextTurnMock.mockReturnValue(false);
+  getSessionRecreateReasonsMock.mockReset();
+  getSessionRecreateReasonsMock.mockReturnValue([]);
+  getSessionTurnSettingsMock.mockReset();
+  getSessionTurnSettingsMock.mockReturnValue(undefined);
+  chatHasNativeBackgroundWorkMock.mockReset();
+  chatHasNativeBackgroundWorkMock.mockReturnValue(false);
+  destroySessionMock.mockReset();
+  destroySessionMock.mockResolvedValue(undefined);
   mockReadPersistedChatDispatchMetadata.mockResolvedValue({});
   clearLiveApprovalMode('my-project', 'wt-1', 'chat-1');
   readPreferencesFileMock.mockResolvedValue({
@@ -1218,20 +1964,28 @@ describe('scheduleChatSummary configured model and fallback handling', () => {
   });
 
   it('uses the configured summary model even when it equals the default seed', async () => {
-    readPreferencesFileMock.mockResolvedValue({
+    const partialWorktreeModels: Partial<
+      PreferencesData['defaultWorktreeModelByProvider']
+    > = {
+      claude: {
+        model: 'claude-haiku-4-5-20251001',
+        thinkingLevel: 'off',
+      },
+      codex: { model: 'gpt-5.6-sol', thinkingLevel: 'high' },
+    };
+    const preferences: Partial<PreferencesData> = {
       summaryModel: 'claude-haiku-4-5-20251001',
       summaryModelSetByUser: true,
       summaryThinkingLevel: 'off',
       providerModelConfigDefaults: {},
       defaultWorktreeProvider: 'codex',
-      defaultWorktreeModelByProvider: {
-        claude: {
-          model: 'claude-haiku-4-5-20251001',
-          thinkingLevel: 'off',
-        },
-        codex: { model: 'gpt-5.6-sol', thinkingLevel: 'high' },
-      },
-    });
+    };
+    Reflect.set(
+      preferences,
+      'defaultWorktreeModelByProvider',
+      partialWorktreeModels,
+    );
+    readPreferencesFileMock.mockResolvedValue(preferences);
     scheduleChatSummary({
       projectId: 'my-project',
       worktreeId: 'wt-1',
@@ -1346,20 +2100,28 @@ describe('scheduleChatSummary configured model and fallback handling', () => {
   });
 
   it('uses the persisted summary model even when it equals the default seed', async () => {
-    readPreferencesFileMock.mockResolvedValue({
+    const partialWorktreeModels: Partial<
+      PreferencesData['defaultWorktreeModelByProvider']
+    > = {
+      claude: {
+        model: 'claude-haiku-4-5-20251001',
+        thinkingLevel: 'off',
+      },
+      codex: { model: 'gpt-5.6-sol', thinkingLevel: 'high' },
+    };
+    const preferences: Partial<PreferencesData> = {
       summaryModel: 'claude-haiku-4-5-20251001',
       summaryModelSetByUser: false,
       summaryThinkingLevel: 'off',
       providerModelConfigDefaults: {},
       defaultWorktreeProvider: 'codex',
-      defaultWorktreeModelByProvider: {
-        claude: {
-          model: 'claude-haiku-4-5-20251001',
-          thinkingLevel: 'off',
-        },
-        codex: { model: 'gpt-5.6-sol', thinkingLevel: 'high' },
-      },
-    });
+    };
+    Reflect.set(
+      preferences,
+      'defaultWorktreeModelByProvider',
+      partialWorktreeModels,
+    );
+    readPreferencesFileMock.mockResolvedValue(preferences);
     scheduleChatSummary({
       projectId: 'my-project',
       worktreeId: 'wt-1',
@@ -1565,6 +2327,43 @@ describe('dispatchWorktreeChatTurn acceptance callback', () => {
     ]);
   });
 
+  it('records a slow turn-dispatch diagnostic when enqueue exceeds two seconds', async (): Promise<void> => {
+    await dispatchWorktreeChatTurn(baseOptions());
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(mockRecordSessionDiagnostic).not.toHaveBeenCalled();
+
+    sendMessageMock.mockClear();
+    setPlanModeMock.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise<void>((resolve): void => {
+          setTimeout(resolve, 2_200);
+        }),
+    );
+    const startedAt = performance.now();
+    await dispatchWorktreeChatTurn(baseOptions({ userMessageId: 'slow-msg' }));
+    const elapsedMs = performance.now() - startedAt;
+    process.stdout.write(
+      `[turn-dispatch-diagnostics] slow session.setPlanMode ${elapsedMs.toFixed(1)}ms\n`,
+    );
+
+    expect(elapsedMs).toBeGreaterThan(2_000);
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledTimes(1);
+    const diagnosticValue: unknown =
+      mockRecordSessionDiagnostic.mock.calls[0]?.[0];
+    if (!isTurnDispatchSlowDiagnostic(diagnosticValue))
+      throw new Error('Expected one turn_dispatch_slow session diagnostic');
+    expect(diagnosticValue.totalMs).toBeGreaterThan(2_000);
+    expect(diagnosticValue.endpoint).toBe('enqueued');
+    const slowPhase = diagnosticValue.phases.find(
+      ({ phase }) => phase === 'live_setters',
+    );
+    expect(slowPhase?.elapsedMs).toBeGreaterThanOrEqual(2_000);
+    expect(diagnosticValue.phases).toEqual(
+      expect.arrayContaining([expect.objectContaining({ phase: 'enqueue' })]),
+    );
+  });
+
   it('releases the session hold when preparation fails before sending', async () => {
     setPlanModeMock.mockImplementationOnce(() =>
       Promise.reject(new Error('plan mode failed')),
@@ -1664,6 +2463,7 @@ describe('dispatchWorktreeChatTurn acceptance callback', () => {
 
     expect(beginPlanTurnMock).not.toHaveBeenCalled();
     expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(mockRecordSessionDiagnostic).not.toHaveBeenCalled();
     expect(completeChatTurnMock).toHaveBeenCalledWith(
       'my-project',
       'plan-1',
@@ -1707,6 +2507,22 @@ describe('dispatchWorktreeChatTurn acceptance callback', () => {
     );
 
     expect(order).toEqual(['send', 'accepted']);
+  });
+
+  it('retires a delegated delivery once the provider accepts its own turn', async () => {
+    isDelegationDeliveryActiveMock.mockReturnValue(true);
+    claimDelegationDeliveryMock.mockReturnValue(true);
+
+    await dispatchWorktreeChatTurn({
+      ...baseOptions(),
+      managedDelegationDeliveryId: 'msg-1',
+    });
+
+    expect(retireDelegationDeliveryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'chat-1' }),
+      'msg-1',
+    );
+    expect(releaseDelegationDeliveryMock).not.toHaveBeenCalled();
   });
 
   it('claims a delegated completion immediately before provider dispatch and releases a rejected send', async () => {
@@ -3224,6 +4040,8 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     const sharedSession: MockAgentSession = {
       sendMessage: sendMessageMock,
       setPlanMode: setPlanModeMock,
+      setThinkingLevel: setThinkingLevelMock,
+      setApprovalMode: setApprovalModeMock,
       getProviderSessionId: getProviderSessionIdMock,
       __onEvent: (data: unknown) => retainedProviderCallback?.(data),
     };
@@ -3596,6 +4414,36 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     },
   );
 
+  it('passes a marked zero-credit terminal to the host queue before it can drain', async () => {
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const terminal = jest.spyOn(queue, 'onTurnTerminal').mockImplementation();
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          userMessageId: 'msg-1',
+        }),
+      );
+      getMockSession(0).__onEvent({
+        type: 'result',
+        is_error: true,
+        result: 'No billing source',
+        canopy_ai_credits_no_billing_source: true,
+        canopy_turn_user_message_id: 'msg-1',
+      });
+      await flushSessionEventCommits();
+      expect(terminal).toHaveBeenCalledWith(
+        { projectId: 'project-1', worktreeId: 'worktree-1', chatId: 'chat-1' },
+        'error',
+        'msg-1',
+        'insufficient_credits',
+      );
+    } finally {
+      terminal.mockRestore();
+    }
+  });
+
   it('revives delivery for untagged agent continuation output after settlement', async () => {
     const turnHandler = jest.fn();
     const beforeEvent = jest.fn(() => Promise.resolve());
@@ -3648,6 +4496,59 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     } finally {
       onTurnTerminal.mockRestore();
       onTurnRevived.mockRestore();
+    }
+  });
+
+  it('delivers a late Claude child frame without reviving the settled turn or plan lease', async () => {
+    const queueService = chatQueueServiceModule.getChatQueueService();
+    const onTurnRevived = jest
+      .spyOn(queueService, 'onTurnRevived')
+      .mockReturnValue(true);
+    const onTurnTerminal = jest
+      .spyOn(queueService, 'onTurnTerminal')
+      .mockImplementation();
+    const turnHandler = jest.fn();
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'my-project',
+          worktreeId: 'wt-1',
+          onChatEvent: turnHandler,
+        }),
+      );
+      const session = getMockSession(0);
+      session.__onEvent({
+        type: 'result',
+        is_error: false,
+        canopy_turn_user_message_id: 'msg-1',
+      });
+      await flushSessionEventCommits();
+
+      const lateChildFrame = {
+        type: 'assistant',
+        parent_tool_use_id: 'child-1',
+        message: {
+          id: 'late-child-message',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Late child output' }],
+        },
+      };
+      session.__onEvent(lateChildFrame);
+      await flushSessionEventCommits();
+
+      expect(onTurnRevived).not.toHaveBeenCalled();
+      expect(beginPlanTurnMock).toHaveBeenCalledTimes(1);
+      expect(livePlanTurnCount()).toBe(0);
+      expect(turnHandler).toHaveBeenCalledTimes(2);
+      expect(turnHandler).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          data: lateChildFrame,
+          isTerminalEvent: false,
+        }),
+      );
+    } finally {
+      onTurnRevived.mockRestore();
+      onTurnTerminal.mockRestore();
     }
   });
 
@@ -3896,11 +4797,638 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     }
   });
 
+  it('keeps the queue revival lease attached to a routed starting pickup', async () => {
+    const committedEvents: unknown[] = [];
+    const beforeEvent = jest.fn(
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<{ outcome: 'applied'; pickup: 'accepted' }> => {
+        committedEvents.push(data);
+        return Promise.resolve({ outcome: 'applied', pickup: 'accepted' });
+      },
+    );
+
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'pickup-lease-project',
+        worktreeId: 'wt-1',
+        onBeforeChatEvent: beforeEvent,
+      }),
+    );
+    const session = getMockSession(0);
+    Object.assign(session, {
+      getSteeringCapabilities: () => ({
+        generation: 'g1',
+        provider: 'claude',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      }),
+    });
+    session.__onEvent({
+      type: 'canopy_input_delivery',
+      provider: 'claude',
+      generation: 'g1',
+      attemptId: 'pickup-lease-attempt',
+      phase: 'picked-up',
+      startsTurn: true,
+      userMessageId: 'picked-up-root',
+    });
+    await flushSessionEventCommits();
+
+    const pickup = committedEvents[0];
+    expect(getTurnRootAcceptance(pickup)?.lease).toEqual({
+      rootId: 'picked-up-root',
+      epoch: -1,
+    });
+  });
+
+  it('keeps a currently running initial root when canonical pickup acceptance rejects it', async () => {
+    const deliveredEvents: unknown[] = [];
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const revival = mockAcceptedTurnRootLease();
+    const onTurnTerminal = jest
+      .spyOn(queue, 'onTurnTerminal')
+      .mockImplementation();
+    let pickupCommitCount = 0;
+    const onBeforeChatEvent = jest.fn(
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<{
+        outcome: 'applied' | 'not-applied';
+        pickup?: 'rejected';
+      }> => {
+        if (
+          typeof data === 'object' &&
+          data !== null &&
+          'type' in data &&
+          data.type === 'canopy_input_delivery'
+        ) {
+          pickupCommitCount += 1;
+          return Promise.resolve({
+            outcome: 'not-applied',
+            pickup: 'rejected',
+          });
+        }
+        return Promise.resolve({ outcome: 'applied' });
+      },
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'same-initial-root-project',
+          worktreeId: 'wt-1',
+          userMessageId: 'msg-1',
+          onBeforeChatEvent,
+          onChatEvent: ({ data }) => deliveredEvents.push(data),
+        }),
+      );
+      const session = getMockSession(0);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
+      session.__onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'g1',
+        attemptId: 'unknown-attempt',
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: 'msg-1',
+      });
+      await flushSessionEventCommits();
+
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'msg-1',
+        message: { content: [{ type: 'text', text: 'Still running' }] },
+      });
+      session.__onEvent({
+        type: 'result',
+        is_error: false,
+        canopy_turn_user_message_id: 'msg-1',
+      });
+      await flushSessionEventCommits();
+
+      expect(pickupCommitCount).toBe(1);
+      expect(revival.rollback).not.toHaveBeenCalled();
+      expect(deliveredEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'assistant' }),
+          expect.objectContaining({ type: 'result' }),
+        ]),
+      );
+      expect(onTurnTerminal).toHaveBeenCalledWith(
+        {
+          projectId: 'same-initial-root-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        'complete',
+        'msg-1',
+      );
+    } finally {
+      revival.restore();
+      onTurnTerminal.mockRestore();
+    }
+  });
+
+  it('does not roll back a rejected repeated pickup for an already adopted root', async () => {
+    const deliveredEvents: unknown[] = [];
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const revival = mockAcceptedTurnRootLease();
+    const onTurnTerminal = jest
+      .spyOn(queue, 'onTurnTerminal')
+      .mockImplementation();
+    let pickupCommitCount = 0;
+    const onBeforeChatEvent = jest.fn(
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<{
+        outcome: 'applied' | 'not-applied';
+        pickup?: 'accepted' | 'rejected';
+      }> => {
+        if (
+          typeof data === 'object' &&
+          data !== null &&
+          'type' in data &&
+          data.type === 'canopy_input_delivery'
+        ) {
+          pickupCommitCount += 1;
+          return Promise.resolve(
+            pickupCommitCount === 1
+              ? { outcome: 'applied', pickup: 'accepted' }
+              : { outcome: 'not-applied', pickup: 'rejected' },
+          );
+        }
+        return Promise.resolve({ outcome: 'applied' });
+      },
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'same-adopted-root-project',
+          worktreeId: 'wt-1',
+          userMessageId: 'initial-root',
+          onBeforeChatEvent,
+          onChatEvent: ({ data }) => deliveredEvents.push(data),
+        }),
+      );
+      const session = getMockSession(0);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
+      const pickup = {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'g1',
+        attemptId: 'adopted-attempt',
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: 'adopted-root',
+      };
+      session.__onEvent(pickup);
+      await flushSessionEventCommits();
+      expect(revival.confirm).toHaveBeenCalledWith(
+        {
+          projectId: 'same-adopted-root-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        { rootId: 'adopted-root', epoch: -1 },
+      );
+      expect(
+        worktreeChatTurnTestExports.activeTurnUserMessageId(
+          'same-adopted-root-project',
+          'wt-1',
+          'chat-1',
+        ),
+      ).toBe('adopted-root');
+      session.__onEvent({ ...pickup, attemptId: 'repeated-attempt' });
+      await flushSessionEventCommits();
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'adopted-root',
+        message: { content: [{ type: 'text', text: 'Root output' }] },
+      });
+      session.__onEvent({
+        type: 'result',
+        is_error: false,
+        canopy_turn_user_message_id: 'adopted-root',
+      });
+      await flushSessionEventCommits();
+
+      expect(pickupCommitCount).toBe(2);
+      expect(revival.rollback).not.toHaveBeenCalled();
+      expect(deliveredEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'assistant' }),
+          expect.objectContaining({ type: 'result' }),
+        ]),
+      );
+      expect(onTurnTerminal).toHaveBeenCalledWith(
+        {
+          projectId: 'same-adopted-root-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        'complete',
+        'adopted-root',
+      );
+    } finally {
+      revival.restore();
+      onTurnTerminal.mockRestore();
+    }
+  });
+
+  it('confirms an already-accepted pickup lease even when its commit is not-applied', async () => {
+    const deliveredEvents: unknown[] = [];
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const revival = mockAcceptedTurnRootLease();
+    const onTurnTerminal = jest
+      .spyOn(queue, 'onTurnTerminal')
+      .mockImplementation();
+    const onBeforeChatEvent = jest.fn(
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<{
+        outcome: 'applied' | 'not-applied';
+        pickup?: 'already-accepted';
+      }> =>
+        Promise.resolve(
+          typeof data === 'object' &&
+            data !== null &&
+            'type' in data &&
+            data.type === 'canopy_input_delivery'
+            ? { outcome: 'not-applied', pickup: 'already-accepted' }
+            : { outcome: 'applied' },
+        ),
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'already-accepted-project',
+          worktreeId: 'wt-1',
+          userMessageId: 'initial-root',
+          onBeforeChatEvent,
+          onChatEvent: ({ data }) => deliveredEvents.push(data),
+        }),
+      );
+      const session = getMockSession(0);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
+      session.__onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'g1',
+        attemptId: 'already-accepted-attempt',
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: 'adopted-root',
+      });
+      await flushSessionEventCommits();
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'adopted-root',
+      });
+      await flushSessionEventCommits();
+      expect(
+        worktreeChatTurnTestExports.activeTurnUserMessageId(
+          'already-accepted-project',
+          'wt-1',
+          'chat-1',
+        ),
+      ).toBe('adopted-root');
+      session.__onEvent({
+        type: 'result',
+        is_error: false,
+        canopy_turn_user_message_id: 'adopted-root',
+      });
+      await flushSessionEventCommits();
+
+      expect(revival.accept).toHaveBeenCalledWith(
+        {
+          projectId: 'already-accepted-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        'adopted-root',
+      );
+      expect(revival.confirm).toHaveBeenCalledWith(
+        {
+          projectId: 'already-accepted-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        { rootId: 'adopted-root', epoch: -1 },
+      );
+      expect(deliveredEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'canopy_input_delivery' }),
+          expect.objectContaining({ type: 'assistant' }),
+          expect.objectContaining({ type: 'result' }),
+        ]),
+      );
+      expect(onTurnTerminal).toHaveBeenCalledWith(
+        {
+          projectId: 'already-accepted-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        'complete',
+        'adopted-root',
+      );
+    } finally {
+      revival.restore();
+      onTurnTerminal.mockRestore();
+    }
+  });
+
+  it('rolls back a rejected new root and releases the running gate on session removal', async () => {
+    const deliveredEvents: unknown[] = [];
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const revival = mockAcceptedTurnRootLease();
+    const onTurnTerminal = jest
+      .spyOn(queue, 'onTurnTerminal')
+      .mockImplementation();
+    const onBeforeChatEvent = jest.fn(
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<{
+        outcome: 'applied' | 'not-applied';
+        pickup?: 'rejected';
+      }> =>
+        Promise.resolve(
+          typeof data === 'object' &&
+            data !== null &&
+            'type' in data &&
+            data.type === 'canopy_input_delivery'
+            ? { outcome: 'not-applied', pickup: 'rejected' }
+            : { outcome: 'applied' },
+        ),
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'rejected-new-root-project',
+          worktreeId: 'wt-1',
+          userMessageId: 'running-root',
+          onBeforeChatEvent,
+          onChatEvent: ({ data }) => deliveredEvents.push(data),
+        }),
+      );
+      const session = getMockSession(0);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
+      session.__onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'g1',
+        attemptId: 'rejected-new-root-attempt',
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: 'rejected-root',
+      });
+      await flushSessionEventCommits();
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'rejected-root',
+      });
+      session.__onEvent({
+        type: 'result',
+        is_error: false,
+        canopy_turn_user_message_id: 'rejected-root',
+      });
+      await flushSessionEventCommits();
+
+      expect(revival.rollback).toHaveBeenCalledWith(
+        {
+          projectId: 'rejected-new-root-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        { rootId: 'rejected-root', epoch: -1 },
+      );
+      expect(deliveredEvents).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'assistant',
+            canopy_turn_user_message_id: 'rejected-root',
+          }),
+          expect.objectContaining({
+            type: 'result',
+            canopy_turn_user_message_id: 'rejected-root',
+          }),
+        ]),
+      );
+      getOrCreateSessionMock.mock.calls[0]?.[3]?.onRemoved?.();
+      await flushSessionEventCommits();
+      expect(onTurnTerminal).toHaveBeenCalledWith(
+        {
+          projectId: 'rejected-new-root-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        'cancelled',
+        'running-root',
+      );
+    } finally {
+      revival.restore();
+      onTurnTerminal.mockRestore();
+    }
+  });
+
+  it('rolls back a superseded pickup lease when confirmation fails', async () => {
+    const deliveredEvents: unknown[] = [];
+    const revival = mockAcceptedTurnRootLease();
+    revival.confirm.mockReturnValue(false);
+    const onBeforeChatEvent = jest.fn(
+      (): Promise<{ outcome: 'applied'; pickup: 'accepted' }> =>
+        Promise.resolve({ outcome: 'applied', pickup: 'accepted' }),
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'superseded-pickup-project',
+          worktreeId: 'wt-1',
+          userMessageId: 'running-root',
+          onBeforeChatEvent,
+          onChatEvent: ({ data }) => deliveredEvents.push(data),
+        }),
+      );
+      const session = getMockSession(0);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
+      session.__onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'g1',
+        attemptId: 'superseded-attempt',
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: 'superseded-root',
+      });
+      await flushSessionEventCommits();
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'running-root',
+      });
+      await flushSessionEventCommits();
+
+      expect(revival.confirm).toHaveBeenCalledWith(
+        {
+          projectId: 'superseded-pickup-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        { rootId: 'superseded-root', epoch: -1 },
+      );
+      expect(revival.rollback).toHaveBeenCalledWith(
+        {
+          projectId: 'superseded-pickup-project',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+        },
+        { rootId: 'superseded-root', epoch: -1 },
+      );
+      expect(
+        worktreeChatTurnTestExports.activeTurnUserMessageId(
+          'superseded-pickup-project',
+          'wt-1',
+          'chat-1',
+        ),
+      ).toBe('running-root');
+      expect(deliveredEvents).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'assistant',
+            canopy_turn_user_message_id: 'superseded-root',
+          }),
+        ]),
+      );
+    } finally {
+      revival.restore();
+    }
+  });
+
+  it('waits for an earlier terminal queue release before accepting a pickup root', async () => {
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const revival = mockAcceptedTurnRootLease();
+    const order: string[] = [];
+    revival.accept.mockImplementation((_target, rootId) => {
+      order.push(`accept:${rootId}`);
+      return { accepted: true, lease: { rootId, epoch: -1 } };
+    });
+    const onTurnTerminal = jest
+      .spyOn(queue, 'onTurnTerminal')
+      .mockImplementation(() => {
+        order.push('terminal-release');
+      });
+    const onBeforeChatEvent = jest.fn(
+      (): Promise<{ outcome: 'applied'; pickup: 'accepted' }> =>
+        Promise.resolve({ outcome: 'applied', pickup: 'accepted' }),
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'terminal-release-order-project',
+          worktreeId: 'wt-1',
+          userMessageId: 'previous-root',
+          onBeforeChatEvent,
+        }),
+      );
+      const session = getMockSession(0);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
+      session.__onEvent({
+        type: 'result',
+        is_error: false,
+        canopy_turn_user_message_id: 'previous-root',
+      });
+      session.__onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'g1',
+        attemptId: 'after-terminal-attempt',
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: 'next-root',
+      });
+      await flushSessionEventCommits();
+
+      expect(order.indexOf('terminal-release')).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf('accept:next-root')).toBeGreaterThan(
+        order.indexOf('terminal-release'),
+      );
+    } finally {
+      revival.restore();
+      onTurnTerminal.mockRestore();
+    }
+  });
+
   it('does not settle the root turn when a Codex subagent completes', async () => {
     const turnHandler = jest.fn(
       (
         event: Parameters<
-          Parameters<typeof dispatchWorktreeChatTurn>[0]['onChatEvent']
+          NonNullable<
+            Parameters<typeof dispatchWorktreeChatTurn>[0]['onChatEvent']
+          >
         >[0],
       ) => event.isTerminalEvent,
     );
@@ -4271,8 +5799,14 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
   });
 
   it('captures a new diff baseline for an autonomously picked up steering input', async () => {
+    const revival = mockAcceptedTurnRootLease();
     await dispatchWorktreeChatTurn(
-      baseOptions({ projectId: 'project-1', worktreeId: 'worktree-1' }),
+      baseOptions({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        onBeforeChatEvent: () =>
+          Promise.resolve({ outcome: 'applied', pickup: 'accepted' }),
+      }),
     );
     expect(captureTurnStartMock).toHaveBeenCalledTimes(1);
     const session = getMockSession(0);
@@ -4309,6 +5843,7 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     });
     await flushSessionEventCommits();
     expect(captureTurnEndAndDiffMock).toHaveBeenCalledTimes(2);
+    revival.restore();
   });
 
   it.each([
@@ -4363,6 +5898,8 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
         await flushSessionEventCommits();
         expect(queueService.isTurnActive(target)).toBe(false);
 
+        const rollback = jest.spyOn(queueService, 'rollbackTurnRevival');
+        const terminal = jest.spyOn(queueService, 'onTurnTerminal');
         session.__onEvent({
           type: 'canopy_input_delivery',
           provider: 'claude',
@@ -4378,7 +5915,10 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
           canopy_turn_user_message_id: 'upward-1',
         });
         await flushSessionEventCommits();
-        expect(queueService.isTurnActive(target)).toBe(true);
+        // The router armed the gate for the pickup root; canonical state did
+        // not apply the pickup, so its lease is rolled back at once.
+        expect(rollback).toHaveLastReturnedWith(true);
+        expect(queueService.isTurnActive(target)).toBe(false);
 
         if (trigger === 'terminal') {
           session.__onEvent({
@@ -4394,6 +5934,12 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
 
         // No provider turn remains, so queued messages must be able to drain.
         expect(queueService.isTurnActive(target)).toBe(false);
+        // The rolled-back root owes no second, backstop release.
+        expect(terminal).not.toHaveBeenCalledWith(
+          target,
+          expect.anything(),
+          'upward-1',
+        );
       } finally {
         queueService.resetForTests();
       }
@@ -4408,9 +5954,23 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     captureTurnEndAndDiffMock.mockReturnValueOnce(captureBlocked);
     const committedEvents: unknown[] = [];
     const onBeforeChatEvent = jest.fn(
-      ({ data }: { data: unknown }): Promise<void> => {
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<{
+        outcome: 'applied';
+        pickup?: 'accepted';
+      }> => {
         committedEvents.push(data);
-        return Promise.resolve();
+        return Promise.resolve(
+          typeof data === 'object' &&
+            data !== null &&
+            'type' in data &&
+            data.type === 'canopy_input_delivery'
+            ? { outcome: 'applied', pickup: 'accepted' }
+            : { outcome: 'applied' },
+        );
       },
     );
     const committedEvent = (type: string): unknown =>
@@ -4422,6 +5982,7 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
           data.type === type,
       );
 
+    const revival = mockAcceptedTurnRootLease();
     await dispatchWorktreeChatTurn(
       baseOptions({
         projectId: 'project-1',
@@ -4489,6 +6050,7 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
       type: 'assistant',
       canopy_turn_user_message_id: 'steered-1',
     });
+    revival.restore();
   });
 
   it('preserves a newer active turn when a late autonomous pickup is rejected', async () => {
@@ -4509,20 +6071,34 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     await flushSessionEventCommits();
 
     const secondTurnHandler = jest.fn();
+    const queueService = chatQueueServiceModule.getChatQueueService();
+    const acceptTurnRevival = jest
+      .spyOn(queueService, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: false });
+    const onBeforeChatEvent = jest.fn(
+      (): Promise<{ outcome: 'applied'; pickup: 'accepted' }> =>
+        Promise.resolve({ outcome: 'applied', pickup: 'accepted' }),
+    );
     await dispatchWorktreeChatTurn(
       baseOptions({
         projectId: 'my-project',
         worktreeId: 'wt-1',
         userMessageId: 'msg-2',
         onChatEvent: secondTurnHandler,
+        onBeforeChatEvent,
       }),
     );
-    const queueService = chatQueueServiceModule.getChatQueueService();
-    const onTurnRevived = jest
-      .spyOn(queueService, 'onTurnRevived')
-      .mockReturnValue(false);
     try {
       const session = getMockSession(1);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
       session.__onEvent({
         type: 'canopy_input_delivery',
         provider: 'claude',
@@ -4538,7 +6114,7 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
       });
       await flushSessionEventCommits();
 
-      expect(onTurnRevived).toHaveBeenCalledWith(
+      expect(acceptTurnRevival).toHaveBeenCalledWith(
         {
           projectId: 'my-project',
           worktreeId: 'wt-1',
@@ -4555,7 +6131,7 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
       ).toBe('msg-2');
       expect(secondTurnHandler).toHaveBeenCalledTimes(2);
     } finally {
-      onTurnRevived.mockRestore();
+      acceptTurnRevival.mockRestore();
     }
   });
 
@@ -4586,6 +6162,529 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     releaseCommit?.();
     await drainPromise;
     expect(drained).toBe(true);
+  });
+
+  it('drains a paired auth-failure commit from a pre-call tool result', async () => {
+    let releaseToolCommit = (): void => undefined;
+    const toolCommitBlocked = new Promise<void>((resolve) => {
+      releaseToolCommit = resolve;
+    });
+    let markToolCommitStarted = (): void => undefined;
+    const toolCommitStarted = new Promise<void>((resolve) => {
+      markToolCommitStarted = resolve;
+    });
+    let releaseAuthCommit = (): void => undefined;
+    const authCommitBlocked = new Promise<void>((resolve) => {
+      releaseAuthCommit = resolve;
+    });
+    let markAuthCommitStarted = (): void => undefined;
+    const authCommitStarted = new Promise<void>((resolve) => {
+      markAuthCommitStarted = resolve;
+    });
+    const pairedEvent = {
+      type: CANOPY_AUTH_FAILURE_EVENT_TYPE,
+      toolUseId: 'tool-use-1',
+      failure: {
+        dependencyClass: 'mcp',
+        dependencyId: 'server-1:config-1',
+        displayName: 'Production MCP server',
+        failureClass: 'expired',
+        recovery: {
+          kind: 'mcp_oauth',
+          serverId: 'server-1',
+          configId: 'config-1',
+        },
+      },
+    };
+    pairPendingAuthFailuresMock.mockReturnValueOnce([
+      { event: pairedEvent, toolName: 'mcp__prod__lookup-records' },
+    ]);
+    const onBeforeChatEvent = jest.fn(
+      ({ data }: { data: unknown }): Promise<void> => {
+        if (typeof data !== 'object' || data === null || !('type' in data)) {
+          return Promise.resolve();
+        }
+        if (data.type === 'user') {
+          markToolCommitStarted();
+          return toolCommitBlocked;
+        }
+        if (data.type === CANOPY_AUTH_FAILURE_EVENT_TYPE) {
+          markAuthCommitStarted();
+          return authCommitBlocked;
+        }
+        return Promise.resolve();
+      },
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(baseOptions({ onBeforeChatEvent }));
+      getMockSession(0).__onEvent({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool-use-1',
+              is_error: true,
+            },
+          ],
+        },
+      });
+      await toolCommitStarted;
+
+      const drain =
+        getOrCreateSessionMock.mock.calls[0]?.[3]?.drainEventsBeforeRemoval;
+      expect(drain).toEqual(expect.any(Function));
+      let drained = false;
+      const drainPromise = drain?.().then(() => {
+        drained = true;
+      });
+      expect(drained).toBe(false);
+
+      releaseToolCommit();
+      await authCommitStarted;
+      await flushSessionEventCommits();
+      expect(drained).toBe(false);
+
+      releaseAuthCommit();
+      await drainPromise;
+      expect(drained).toBe(true);
+    } finally {
+      releaseToolCommit();
+      releaseAuthCommit();
+    }
+  });
+
+  it('drains only the received prefix while a steady provider stream continues', async () => {
+    let releaseFirstCommit = (): void => undefined;
+    const firstCommitBlocked = new Promise<void>((resolve) => {
+      releaseFirstCommit = resolve;
+    });
+    const acceptedResult: {
+      outcome: 'applied';
+      pickup: 'accepted';
+    } = { outcome: 'applied', pickup: 'accepted' };
+    const onBeforeChatEvent = jest.fn(
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<{ outcome: 'applied'; pickup: 'accepted' }> => {
+        if (
+          typeof data === 'object' &&
+          data !== null &&
+          'sequence' in data &&
+          data.sequence === 0
+        ) {
+          return firstCommitBlocked.then(() => acceptedResult);
+        }
+        return Promise.resolve(acceptedResult);
+      },
+    );
+
+    await dispatchWorktreeChatTurn(baseOptions({ onBeforeChatEvent }));
+    const session = getMockSession(0);
+    session.__onEvent({
+      type: 'assistant',
+      canopy_turn_user_message_id: 'msg-1',
+      sequence: 0,
+    });
+
+    let drained = false;
+    const drainPromise = drainCurrentSessionEvents({
+      projectId: 'cowork-default',
+      worktreeId: 'home',
+      chatId: 'chat-1',
+    }).then(() => {
+      drained = true;
+    });
+    let sequence = 0;
+    const producer = setInterval(() => {
+      sequence += 1;
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'msg-1',
+        sequence,
+      });
+    }, 3);
+
+    try {
+      await until(() => sequence > 5);
+      expect(drained).toBe(false);
+      expect(onBeforeChatEvent).toHaveBeenCalledTimes(1);
+
+      releaseFirstCommit();
+      const outcome = await Promise.race([
+        drainPromise.then(() => 'drained' as const),
+        new Promise<'blocked'>((resolve) => {
+          setTimeout(() => resolve('blocked'), 2000);
+        }),
+      ]);
+      expect(outcome).toBe('drained');
+
+      const sequenceAtDrain = sequence;
+      await until(() => sequence > sequenceAtDrain);
+    } finally {
+      clearInterval(producer);
+      releaseFirstCommit();
+      await drainPromise;
+    }
+  });
+
+  it('drains a pre-call terminal through its durable turn-diff event while the stream continues', async () => {
+    let releaseTerminalCommit = (): void => undefined;
+    const terminalCommitBlocked = new Promise<void>((resolve) => {
+      releaseTerminalCommit = resolve;
+    });
+    let markTerminalCommitStarted = (): void => undefined;
+    const terminalCommitStarted = new Promise<void>((resolve) => {
+      markTerminalCommitStarted = resolve;
+    });
+    let releaseCapture: (value: unknown) => void = () => undefined;
+    const captureBlocked = new Promise<unknown>((resolve) => {
+      releaseCapture = resolve;
+    });
+    let markCaptureStarted = (): void => undefined;
+    const captureStarted = new Promise<void>((resolve) => {
+      markCaptureStarted = resolve;
+    });
+    let releaseDiffCommit = (): void => undefined;
+    const diffCommitBlocked = new Promise<void>((resolve) => {
+      releaseDiffCommit = resolve;
+    });
+    let markDiffCommitStarted = (): void => undefined;
+    const diffCommitStarted = new Promise<void>((resolve) => {
+      markDiffCommitStarted = resolve;
+    });
+    let releasePostCallCommit = (): void => undefined;
+    const postCallCommitBlocked = new Promise<void>((resolve) => {
+      releasePostCallCommit = resolve;
+    });
+    let markPostCallCommitStarted = (): void => undefined;
+    const postCallCommitStarted = new Promise<void>((resolve) => {
+      markPostCallCommitStarted = resolve;
+    });
+    captureTurnEndAndDiffMock.mockImplementationOnce(() => {
+      markCaptureStarted();
+      return captureBlocked;
+    });
+    const onBeforeChatEvent = jest.fn(
+      ({ data }: { data: unknown }): Promise<void> => {
+        if (typeof data !== 'object' || data === null || !('type' in data)) {
+          return Promise.resolve();
+        }
+        if (data.type === 'result') {
+          markTerminalCommitStarted();
+          return terminalCommitBlocked;
+        }
+        if (data.type === 'turn_diff') {
+          markDiffCommitStarted();
+          return diffCommitBlocked;
+        }
+        if (
+          data.type === 'assistant' &&
+          'drainBlocker' in data &&
+          data.drainBlocker === true
+        ) {
+          markPostCallCommitStarted();
+          return postCallCommitBlocked;
+        }
+        return Promise.resolve();
+      },
+    );
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const onTurnTerminal = jest
+      .spyOn(queue, 'onTurnTerminal')
+      .mockImplementation();
+
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        onBeforeChatEvent,
+      }),
+    );
+    const session = getMockSession(0);
+    session.__onEvent({
+      type: 'result',
+      is_error: false,
+      canopy_turn_user_message_id: 'msg-1',
+    });
+    session.__onEvent({
+      type: 'assistant',
+      message: 'Queued before the call-time drain',
+      canopy_turn_user_message_id: 'msg-1',
+    });
+
+    let drained = false;
+    const drainPromise = drainCurrentSessionEvents({
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    }).then(() => {
+      drained = true;
+    });
+    let sequence = 0;
+    const producer = setInterval(() => {
+      sequence += 1;
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'msg-1',
+        sequence,
+      });
+    }, 3);
+
+    try {
+      await terminalCommitStarted;
+      await until(() => sequence > 5);
+      expect(drained).toBe(false);
+      expect(onTurnTerminal).not.toHaveBeenCalled();
+
+      releaseTerminalCommit();
+      await captureStarted;
+      await flushSessionEventCommits();
+      expect(onTurnTerminal).toHaveBeenCalledTimes(1);
+      expect(drained).toBe(false);
+
+      releaseCapture({
+        files: [],
+        totalInsertions: 0,
+        totalDeletions: 0,
+        capturedAt: 1,
+        treeRefs: [],
+      });
+      // This event is linked immediately after the capture callback appends
+      // `turn_diff`. A call-time drain must not re-read the live tail and wait
+      // for this post-call commit, even though the derived commit itself is
+      // ordered ahead of it. The capture mock wraps its result in one more
+      // microtask, so the event follows one microtask later too.
+      queueMicrotask(() => {
+        queueMicrotask(() => {
+          session.__onEvent({
+            type: 'assistant',
+            canopy_turn_user_message_id: 'msg-1',
+            drainBlocker: true,
+          });
+        });
+      });
+      await diffCommitStarted;
+      expect(drained).toBe(false);
+
+      releaseDiffCommit();
+      await postCallCommitStarted;
+      const outcome = await Promise.race([
+        drainPromise.then(() => 'drained' as const),
+        new Promise<'blocked'>((resolve) => {
+          setTimeout(() => resolve('blocked'), 2000);
+        }),
+      ]);
+      expect(outcome).toBe('drained');
+      expect(sequence).toBeGreaterThan(5);
+    } finally {
+      clearInterval(producer);
+      releaseTerminalCommit();
+      releaseCapture({
+        files: [],
+        totalInsertions: 0,
+        totalDeletions: 0,
+        capturedAt: 1,
+        treeRefs: [],
+      });
+      releaseDiffCommit();
+      releasePostCallCommit();
+      await drainPromise;
+      onTurnTerminal.mockRestore();
+    }
+  });
+
+  it('processes a picked-up input received before the queue drain returns', async () => {
+    let releasePickupCommit = (): void => undefined;
+    const pickupCommitBlocked = new Promise<void>((resolve) => {
+      releasePickupCommit = resolve;
+    });
+    let markPickupCommitStarted = (): void => undefined;
+    const pickupCommitStarted = new Promise<void>((resolve) => {
+      markPickupCommitStarted = resolve;
+    });
+    const acceptedPickup: ProviderEventIngestResult = {
+      outcome: 'applied',
+      pickup: 'accepted',
+    };
+    const onBeforeChatEvent = jest.fn(
+      ({
+        data,
+      }: {
+        data: unknown;
+      }): Promise<ProviderEventIngestResult | void> => {
+        if (
+          typeof data === 'object' &&
+          data !== null &&
+          'type' in data &&
+          data.type === 'canopy_input_delivery'
+        ) {
+          markPickupCommitStarted();
+          return pickupCommitBlocked.then(() => acceptedPickup);
+        }
+        return Promise.resolve(acceptedPickup);
+      },
+    );
+    const queue = chatQueueServiceModule.getChatQueueService();
+    const acceptTurnRevival = jest.spyOn(queue, 'acceptTurnRevival');
+    const confirmTurnRevival = jest.spyOn(queue, 'confirmTurnRevival');
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          onBeforeChatEvent,
+        }),
+      );
+      const session = getMockSession(0);
+      Object.assign(session, {
+        getSteeringCapabilities: () => ({
+          generation: 'g1',
+          provider: 'claude',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        }),
+      });
+      session.__onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'g1',
+        attemptId: 'a1',
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: 'steered-1',
+      });
+
+      let drained = false;
+      const drainPromise = drainCurrentSessionEvents({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      }).then(() => {
+        drained = true;
+      });
+      await pickupCommitStarted;
+      expect(acceptTurnRevival).toHaveBeenCalledWith(
+        {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+        },
+        'steered-1',
+      );
+      expect(confirmTurnRevival).not.toHaveBeenCalled();
+      expect(drained).toBe(false);
+
+      releasePickupCommit();
+      await drainPromise;
+      expect(confirmTurnRevival).toHaveBeenCalledWith(
+        {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+        },
+        { rootId: 'steered-1', epoch: -1 },
+      );
+      expect(drained).toBe(true);
+    } finally {
+      releasePickupCommit();
+      acceptTurnRevival.mockRestore();
+      confirmTurnRevival.mockRestore();
+    }
+  });
+
+  it('drains only the received group-commit prefix while a provider stream continues', async () => {
+    let releaseFirstCommit = (): void => undefined;
+    const firstCommitBlocked = new Promise<void>((resolve) => {
+      releaseFirstCommit = resolve;
+    });
+    let markFirstCommitStarted = (): void => undefined;
+    const firstCommitStarted = new Promise<void>((resolve) => {
+      markFirstCommitStarted = resolve;
+    });
+    const onBeforeChatEvent = jest.fn(
+      ({
+        data,
+        onCommitQueued,
+      }: {
+        data: unknown;
+        onCommitQueued?: () => void;
+      }): Promise<void> => {
+        onCommitQueued?.();
+        if (
+          typeof data === 'object' &&
+          data !== null &&
+          'sequence' in data &&
+          data.sequence === 0
+        ) {
+          markFirstCommitStarted();
+          return firstCommitBlocked;
+        }
+        return Promise.resolve();
+      },
+    );
+
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          onBeforeChatEvent,
+        }),
+      );
+      const session = getMockSession(0);
+      session.__onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'msg-1',
+        sequence: 0,
+      });
+      await firstCommitStarted;
+
+      let drained = false;
+      const drainPromise = drainCurrentSessionEvents({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      }).then(() => {
+        drained = true;
+      });
+      let sequence = 0;
+      const producer = setInterval(() => {
+        sequence += 1;
+        session.__onEvent({
+          type: 'assistant',
+          canopy_turn_user_message_id: 'msg-1',
+          sequence,
+        });
+      }, 3);
+
+      try {
+        await until(() => sequence > 5);
+        expect(drained).toBe(false);
+
+        releaseFirstCommit();
+        const outcome = await Promise.race([
+          drainPromise.then(() => 'drained' as const),
+          new Promise<'blocked'>((resolve) => {
+            setTimeout(() => resolve('blocked'), 2000);
+          }),
+        ]);
+        expect(outcome).toBe('drained');
+        const sequenceAtDrain = sequence;
+        await until(() => sequence > sequenceAtDrain);
+      } finally {
+        clearInterval(producer);
+        releaseFirstCommit();
+        await drainPromise;
+      }
+    } finally {
+      releaseFirstCommit();
+    }
   });
 
   it('preserves a fast provider prefix behind a slow worktree commit', async () => {
@@ -4695,10 +6794,16 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
         onBeforeChatEvent,
       }),
     );
-    getMockSession(0).__onEvent({
+    const session = getMockSession(0);
+    session.__onEvent({
       type: 'result',
       is_error: false,
       result: 'ok',
+    });
+    session.__onEvent({
+      type: 'assistant',
+      message: 'Queued after the terminal before drain',
+      canopy_turn_user_message_id: 'msg-1',
     });
 
     const drain =
@@ -4729,8 +6834,14 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
       releaseDiffCommit?.();
     }
     await drainPromise;
-    expect(onBeforeChatEvent).toHaveBeenCalledTimes(2);
-    const durableTurnDiffCall: unknown = onBeforeChatEvent.mock.calls[1]?.[0];
+    expect(onBeforeChatEvent).toHaveBeenCalledTimes(3);
+    expect(onBeforeChatEvent.mock.calls[1]?.[0]).toMatchObject({
+      data: {
+        type: 'assistant',
+        message: 'Queued after the terminal before drain',
+      },
+    });
+    const durableTurnDiffCall: unknown = onBeforeChatEvent.mock.calls[2]?.[0];
     expect(durableTurnDiffCall).toMatchObject({
       data: {
         type: 'turn_diff',
@@ -4744,6 +6855,8 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     const sharedSession: MockAgentSession = {
       sendMessage: sendMessageMock,
       setPlanMode: setPlanModeMock,
+      setThinkingLevel: setThinkingLevelMock,
+      setApprovalMode: setApprovalModeMock,
       getProviderSessionId: getProviderSessionIdMock,
       __onEvent: (data: unknown) => retainedProviderCallback?.(data),
     };
@@ -4791,6 +6904,8 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
     const sharedSession: MockAgentSession = {
       sendMessage: sendMessageMock,
       setPlanMode: setPlanModeMock,
+      setThinkingLevel: setThinkingLevelMock,
+      setApprovalMode: setApprovalModeMock,
       getProviderSessionId: getProviderSessionIdMock,
       __onEvent: (data: unknown) => retainedProviderCallback?.(data),
     };
@@ -4915,9 +7030,9 @@ describe('dispatchWorktreeChatTurn reused-session event routing', () => {
   });
 
   it('removes the handler when session creation fails', async () => {
-    getOrCreateSessionMock.mockRejectedValueOnce(
-      new Error('session creation failed'),
-    );
+    getOrCreateSessionMock.mockImplementationOnce(() => {
+      throw new Error('session creation failed');
+    });
 
     await expect(dispatchWorktreeChatTurn(baseOptions())).rejects.toThrow(
       'session creation failed',
@@ -4980,6 +7095,43 @@ describe('dispatchWorktreeChatTurn cowork treatment for a real cowork project id
     } finally {
       onTurnRevived.mockRestore();
     }
+  });
+
+  it('refuses OpenCode admission before accepting or sending a turn', async () => {
+    const onTurnAccepted = jest.fn();
+    mockOpenCodeSelection.mockRejectedValueOnce(
+      new Error('The work owner cannot use this gateway.'),
+    );
+    await expect(
+      dispatchWorktreeChatTurn(
+        baseOptions({
+          providerType: 'opencode',
+          model: 'opencode:fixture%2Fmodel',
+          executionHarness: 'opencode',
+          onTurnAccepted,
+        }),
+      ),
+    ).rejects.toThrow('work owner');
+    expect(onTurnAccepted).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('binds OpenCode admission to the target chat before accepting a turn', async () => {
+    const options = baseOptions({
+      projectId: 'my-project',
+      providerType: 'opencode',
+      model: 'opencode:fixture%2Fmodel',
+      executionHarness: 'opencode',
+    });
+    await dispatchWorktreeChatTurn(options);
+    expect(mockOpenCodeSelection.mock.calls[0]?.[0]).toMatchObject({
+      model: options.model,
+      session: {
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+      },
+    });
   });
 
   it.each(['my-project', 'cowork-default'])(
@@ -5055,6 +7207,24 @@ describe('dispatchWorktreeChatTurn cowork treatment for a real cowork project id
     expect(systemPromptAppend).not.toBe('worktree-injected-prompt');
   });
 
+  it('passes the analytics trigger to the audit turn only when given (CAN-4629)', async () => {
+    await dispatchWorktreeChatTurn(
+      baseOptions({ initiationSource: 'user', turnTrigger: 'automation' }),
+    );
+    await dispatchWorktreeChatTurn(baseOptions({ initiationSource: 'hook' }));
+
+    expect(startChatTurnMock.mock.calls[0]?.[0]).toMatchObject({
+      initiationSource: 'user',
+      turnTrigger: 'automation',
+    });
+    expect(startChatTurnMock.mock.calls[1]?.[0]).toMatchObject({
+      initiationSource: 'hook',
+    });
+    expect(startChatTurnMock.mock.calls[1]?.[0]).not.toHaveProperty(
+      'turnTrigger',
+    );
+  });
+
   it('classifies real cowork turns as standalone with project navigation', async () => {
     await dispatchWorktreeChatTurn(baseOptions());
 
@@ -5103,6 +7273,40 @@ describe('dispatchWorktreeChatTurn cowork treatment for a real cowork project id
         sourceInputId: 'msg-1',
       }),
     );
+  });
+
+  it('holds the runtime host from acceptance until the provider has the message', async () => {
+    // A snapshot read while the hold is missing settles the starting runtime
+    // as interrupted by an app restart, and the reply is dropped.
+    const heldWhenStartedNotified: boolean[] = [];
+    handleCanonicalChatStartedEventMock.mockImplementationOnce(() => {
+      heldWhenStartedNotified.push(
+        holdRuntimeHostMock.mock.calls.length === 1 &&
+          releaseRuntimeHostMock.mock.calls.length === 0,
+      );
+      return Promise.resolve();
+    });
+    const heldWhenSent: boolean[] = [];
+    sendMessageMock.mockImplementationOnce(() => {
+      heldWhenSent.push(releaseRuntimeHostMock.mock.calls.length === 0);
+    });
+
+    await dispatchWorktreeChatTurn(baseOptions({ startsNewTrackedChat: true }));
+
+    expect(holdRuntimeHostMock).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'chat-1' }),
+    );
+    expect(heldWhenStartedNotified).toEqual([true]);
+    expect(heldWhenSent).toEqual([true]);
+    expect(releaseRuntimeHostMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the runtime host when dispatch fails before sending', async () => {
+    await expect(
+      dispatchWorktreeChatTurn(baseOptions({ onBeforeChatEvent: undefined })),
+    ).rejects.toThrow('durable chat-event commit hook');
+
+    expect(releaseRuntimeHostMock).toHaveBeenCalledTimes(1);
   });
 
   it('reports the App Advisor watcher scope as standalone on new-chat start', async () => {
@@ -5502,13 +7706,21 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
   });
 
   it('resolves an omitted model from the main-process worktree defaults', async () => {
-    readPreferencesFileMock.mockResolvedValue({
+    const partialWorktreeModels: Partial<
+      PreferencesData['defaultWorktreeModelByProvider']
+    > = {
+      claude: { model: 'opus[1m]', thinkingLevel: 'high' },
+    };
+    const preferences: Partial<PreferencesData> = {
       orgMemoryInjectionEnabled: false,
       defaultWorktreeProvider: 'claude',
-      defaultWorktreeModelByProvider: {
-        claude: { model: 'opus[1m]', thinkingLevel: 'high' },
-      },
-    });
+    };
+    Reflect.set(
+      preferences,
+      'defaultWorktreeModelByProvider',
+      partialWorktreeModels,
+    );
+    readPreferencesFileMock.mockResolvedValue(preferences);
 
     await dispatchWorktreeChatTurn(
       baseOptions({
@@ -5655,7 +7867,8 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
   });
 
   it('uses the live persisted approval mode when queued authority was revoked', async () => {
-    mockReadPersistedChatDispatchMetadata
+    // Narrowed while the session was being created.
+    mockReadSavedChatTab
       .mockResolvedValueOnce({ approvalMode: 'full-access' })
       .mockResolvedValue({ approvalMode: 'ask' });
 
@@ -5671,9 +7884,7 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
   });
 
   it('does not let stale persisted metadata restore a revoked live mode', async () => {
-    mockReadPersistedChatDispatchMetadata.mockResolvedValue({
-      approvalMode: 'full-access',
-    });
+    mockReadSavedChatTab.mockResolvedValue({ approvalMode: 'full-access' });
     setLiveApprovalMode('my-project', 'wt-1', 'chat-1', 'ask');
 
     await dispatchWorktreeChatTurn(
@@ -5685,6 +7896,239 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
     );
 
     expect(setApprovalModeMock).toHaveBeenLastCalledWith('ask');
+  });
+
+  describe('approval authority read from the saved tab when the turn starts (CAN-4469)', () => {
+    const grant = {
+      id: 'grant-npm-test',
+      behavior: 'allow' as const,
+      target: { kind: 'command' as const, pattern: 'npm test' },
+      createdAt: '2026-10-23T00:00:00.000Z',
+      origin: 'prompt' as const,
+    };
+    const deny = {
+      ...grant,
+      id: 'deny-rm',
+      behavior: 'deny' as const,
+      target: { kind: 'command' as const, pattern: 'rm -rf *' },
+    };
+    const target = { projectId: 'my-project', worktreeId: 'wt-1' };
+
+    it('R-S1: a send cannot hand its turn an allow rule or a wider mode the chat does not hold', async () => {
+      mockReadSavedChatTab.mockResolvedValue({
+        approvalMode: 'ask',
+        sessionApprovalRules: [],
+      });
+
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          ...target,
+          approvalMode: 'full-access',
+          sessionApprovalRules: [grant, deny],
+        }),
+      );
+
+      expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          // The send's deny rule still narrows the turn.
+          sessionApprovalRules: [deny],
+        }),
+      );
+      expect(setApprovalModeMock).toHaveBeenLastCalledWith('ask');
+    });
+
+    it('keeps the chat grants and lets a send narrow the mode', async () => {
+      mockReadSavedChatTab.mockResolvedValue({
+        approvalMode: 'full-access',
+        sessionApprovalRules: [grant],
+      });
+
+      await dispatchWorktreeChatTurn(
+        baseOptions({ ...target, approvalMode: 'auto' }),
+      );
+
+      expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'auto',
+          sessionApprovalRules: [grant],
+        }),
+      );
+    });
+
+    it('D-S3e: a grant removed while the turn prepares, after the send was committed, never reaches the session', async () => {
+      mockReadSavedChatTab.mockResolvedValue({
+        approvalMode: 'full-access',
+        sessionApprovalRules: [grant],
+      });
+      readPreferencesFileMock.mockImplementationOnce(() => {
+        mockReadSavedChatTab.mockResolvedValue({
+          approvalMode: 'ask',
+          sessionApprovalRules: [],
+        });
+        return Promise.resolve({});
+      });
+
+      // What the send read when it was committed.
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          ...target,
+          approvalMode: 'full-access',
+          sessionApprovalRules: [grant],
+        }),
+      );
+
+      expect(readPreferencesFileMock).toHaveBeenCalled();
+      expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          sessionApprovalRules: [],
+        }),
+      );
+    });
+
+    it('starts a chat without a saved tab with its defaults and no grants', async () => {
+      mockDefaultApprovalMode.mockReturnValue('auto');
+
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          ...target,
+          approvalMode: 'full-access',
+          sessionApprovalRules: [grant],
+        }),
+      );
+
+      expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'auto',
+          sessionApprovalRules: [],
+        }),
+      );
+    });
+
+    it('D-S3e: a grant removed while the existing session is checked for reuse never reaches the new session', async () => {
+      mockReadSavedChatTab.mockResolvedValue({
+        approvalMode: 'full-access',
+        sessionApprovalRules: [grant],
+      });
+      getSessionCodeGraphToolsAdvertisedMock.mockReturnValue(true);
+      canReuseSessionMock.mockImplementation(() => {
+        mockReadSavedChatTab.mockResolvedValue({
+          approvalMode: 'ask',
+          sessionApprovalRules: [],
+        });
+        return Promise.resolve(true);
+      });
+
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          ...target,
+          approvalMode: 'full-access',
+          sessionApprovalRules: [grant],
+        }),
+      );
+
+      expect(canReuseSessionMock).toHaveBeenCalled();
+      expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          sessionApprovalRules: [],
+        }),
+      );
+    });
+
+    it('D-S3-adm: stops the turn before any session when the send admission registered for it refuses the saved tab', async () => {
+      mockReadSavedChatTab.mockResolvedValue({
+        approvalMode: 'ask',
+        sessionApprovalRules: [],
+      });
+      const seen: (string | undefined)[] = [];
+
+      await expect(
+        withChatSendAdmission(
+          { ...target, chatId: 'chat-1', userMessageId: 'msg-1' },
+          (tab) => {
+            seen.push(tab.approvalMode);
+            return tab.approvalMode === 'full-access'
+              ? undefined
+              : 'The approval settings changed before the message was admitted.';
+          },
+          () => dispatchWorktreeChatTurn(baseOptions(target)),
+        ),
+      ).rejects.toThrow(ChatSendAdmissionRefusedError);
+
+      expect(seen).toEqual(['ask']);
+      expect(getOrCreateSessionMock).not.toHaveBeenCalled();
+      expect(sendMessageMock).not.toHaveBeenCalled();
+    });
+
+    it('narrows the live session to the rules the chat holds just before the prompt, as a reused session holds its own', async () => {
+      // Read as the session is created, then a grant removed and a deny
+      // rule added before the prompt is sent.
+      mockReadSavedChatTab
+        .mockResolvedValueOnce({
+          approvalMode: 'full-access',
+          sessionApprovalRules: [grant],
+        })
+        .mockResolvedValue({ approvalMode: 'auto', sessionApprovalRules: [] });
+
+      await dispatchWorktreeChatTurn(
+        baseOptions({ ...target, sessionApprovalRules: [deny] }),
+      );
+
+      expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({ sessionApprovalRules: [grant, deny] }),
+      );
+      expect(restrictSessionApprovalRulesMock).toHaveBeenCalledWith(
+        'my-project',
+        'wt-1',
+        'chat-1',
+        [deny],
+      );
+      expect(setApprovalModeMock).toHaveBeenLastCalledWith('auto');
+      const narrowedAt =
+        restrictSessionApprovalRulesMock.mock.invocationCallOrder[0] ?? 0;
+      const sentAt = sendMessageMock.mock.invocationCallOrder[0] ?? 0;
+      expect(narrowedAt).toBeGreaterThan(0);
+      expect(sentAt).toBeGreaterThan(narrowedAt);
+    });
+
+    it('never runs an admitted agent send with authority the chat gained after its admission', async () => {
+      const laterGrant = {
+        ...grant,
+        id: 'grant-lint',
+        target: { kind: 'command' as const, pattern: 'npm run lint' },
+      };
+      // Widened after the send was admitted at Ask with one grant.
+      mockReadSavedChatTab.mockResolvedValue({
+        approvalMode: 'full-access',
+        sessionApprovalRules: [grant, laterGrant],
+      });
+
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          ...target,
+          admittedApproval: {
+            approvalMode: 'ask',
+            sessionApprovalRules: [{ ...grant, id: 'grant-as-admitted' }],
+          },
+        }),
+      );
+
+      expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          sessionApprovalRules: [grant],
+        }),
+      );
+      expect(restrictSessionApprovalRulesMock).toHaveBeenCalledWith(
+        'my-project',
+        'wt-1',
+        'chat-1',
+        [grant],
+      );
+      expect(setApprovalModeMock).toHaveBeenLastCalledWith('ask');
+    });
   });
 
   it('reconciles a substitution against the CALLER persisted harness and drops its session id (round-3 finding 5)', async () => {
@@ -5759,6 +8203,347 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
     expect(getOrCreateSessionMock.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ sdkSessionId: 'codex-thread-abc' }),
     );
+  });
+
+  const wakeTurnState: PersistedChatTurnState = serializeChatTurnState({
+    ...initialChatTurnState(),
+    current: {
+      id: 'wake-turn',
+      origin: 'autonomous',
+      startedAtMs: 1,
+      pauses: [],
+    },
+  });
+  const idleTurnState = serializeChatTurnState(initialChatTurnState());
+
+  /** A queue-admitted dispatch; `turnState` is the live canonical state. */
+  async function dispatchAdmittedTurn(
+    turnState: () => PersistedChatTurnState,
+    providerType: 'codex' | 'claude' = 'codex',
+    reusesSession = false,
+  ): Promise<void> {
+    if (reusesSession) {
+      // A wake needs an earlier turn on the same session.
+      let earlier: MockAgentSession | undefined;
+      getOrCreateSessionMock.mockImplementationOnce((...args) => {
+        earlier = makeMockSessionForEventHandler(args[1]);
+        return earlier;
+      });
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'msg-0',
+          providerType,
+        }),
+      );
+      if (!earlier) throw new Error('The earlier dispatch created no session');
+      getOrCreateSessionMock.mockReturnValueOnce(earlier);
+      for (const mock of [sendMessageMock, startChatTurnMock]) mock.mockClear();
+      captureTurnStartMock.mockClear();
+    }
+    const owner = Symbol('owner');
+    const consume = jest
+      .spyOn(getChatDispatchAuthorization(), 'consume')
+      .mockReturnValue({
+        kind: 'authorized',
+        ownership: {
+          kind: 'dispatch',
+          token: owner,
+          userMessageId: 'msg-1',
+          operationEpoch: 1,
+          reason: 'awaiting-start',
+        },
+      });
+    const scope = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const serviceEpoch = Symbol('service');
+    const getSnapshot = jest
+      .spyOn(getChatTurnOwnership(), 'getSnapshot')
+      .mockImplementation(() => ({
+        scope,
+        serviceEpoch,
+        operationEpoch: 1,
+        knowledge: 'known',
+        receipt: { generation: 3, state: turnState() },
+        committed: { generation: 3, state: turnState() },
+        unacknowledgedLifecycle: [],
+        dispatchOwners: [
+          {
+            kind: 'dispatch',
+            token: owner,
+            userMessageId: 'msg-1',
+            operationEpoch: 1,
+            reason: 'awaiting-start',
+          },
+        ],
+        stopOwners: [],
+        hostQueuedInputCount: 0,
+        removalAwaitingSettle: false,
+        backgroundFreshness: 'fresh',
+      }));
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          ...scope,
+          providerType,
+          authorization: {
+            authorizationToken: Symbol('issued dispatch'),
+            scope,
+            dispatchOwner: owner,
+            userMessageId: 'msg-1',
+            operationEpoch: 1,
+            kind: 'ordinary',
+          },
+        }),
+      );
+    } finally {
+      consume.mockRestore();
+      getSnapshot.mockRestore();
+    }
+  }
+
+  it.each([
+    ['codex', false],
+    ['claude', true],
+  ] as const)(
+    'parks an admitted %s prompt behind a running wake before any turn side effect',
+    async (providerType, reusesSession) => {
+      await expect(
+        dispatchAdmittedTurn(() => wakeTurnState, providerType, reusesSession),
+      ).rejects.toMatchObject({
+        outcome: {
+          kind: 'parked',
+          blockedByTurnId: 'wake-turn',
+          receiptGeneration: 3,
+          promptCommitted: true,
+        },
+      });
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(startChatTurnMock).not.toHaveBeenCalled();
+      expect(captureTurnStartMock).not.toHaveBeenCalled();
+      expect(sessionEventRouterTestExports.pendingRouteCount()).toBe(0);
+    },
+  );
+
+  it('holds a binding slot for the prompt it sends', async () => {
+    const scope = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    await dispatchWorktreeChatTurn(
+      baseOptions({ ...scope, providerType: 'claude' }),
+    );
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    // The prompt's turn starts unbound; 63 other inputs already bind to it.
+    const ownership = getChatTurnOwnership();
+    const snapshot = ownership.getSnapshot(scope);
+    const state = serializeChatTurnState({
+      ...initialChatTurnState(),
+      current: {
+        id: 'prompt-turn',
+        origin: 'autonomous',
+        startedAtMs: 1,
+        pauses: [],
+        inputIds: Array.from({ length: 63 }, (_, index) => `bound-${index}`),
+      },
+    });
+    const getSnapshot = jest
+      .spyOn(ownership, 'getSnapshot')
+      .mockReturnValue({ ...snapshot, receipt: { generation: 1, state } });
+    try {
+      expect(isCurrentTurnBindingFull(scope)).toBe(true);
+    } finally {
+      getSnapshot.mockRestore();
+    }
+  });
+
+  it("does not park a Claude prompt behind its new session's startup turn", async () => {
+    // A Claude session can open a turn at its startup init, before any input.
+    await dispatchAdmittedTurn(() => wakeTurnState, 'claude');
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('undoes its audit turn and diff baseline when a wake starts after the early check', async () => {
+    let wakeStarted = false;
+    captureTurnStartMock.mockImplementationOnce(() => {
+      wakeStarted = true;
+      return Promise.resolve();
+    });
+    await expect(
+      dispatchAdmittedTurn(() => (wakeStarted ? wakeTurnState : idleTurnState)),
+    ).rejects.toMatchObject({
+      outcome: { kind: 'parked', blockedByTurnId: 'wake-turn' },
+    });
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(startChatTurnMock).toHaveBeenCalledTimes(1);
+    expect(completeChatTurnMock).toHaveBeenCalledWith(
+      'project-1',
+      'worktree-1',
+      'chat-1',
+      'interrupted',
+    );
+    expect(discardTurnStartMock).toHaveBeenCalledWith(expect.any(String));
+    expect(sessionEventRouterTestExports.pendingRouteCount()).toBe(0);
+  });
+
+  it.each([
+    ['codex', 0],
+    ['claude', 1],
+  ] as const)(
+    'keeps a queue-admitted %s destination pending while its prompt prepares',
+    async (providerType, currentRoutesAfterSend) => {
+      let currentRoutesWhilePreparing: number | undefined;
+      captureTurnStartMock.mockImplementationOnce(() => {
+        currentRoutesWhilePreparing =
+          worktreeChatTurnTestExports.currentSessionEventHandlerCount();
+        return Promise.resolve();
+      });
+      const owner = Symbol('owner');
+      const consume = jest
+        .spyOn(getChatDispatchAuthorization(), 'consume')
+        .mockReturnValue({
+          kind: 'authorized',
+          ownership: {
+            kind: 'dispatch',
+            token: owner,
+            userMessageId: 'msg-1',
+            operationEpoch: 1,
+            reason: 'awaiting-start',
+          },
+        });
+      const scope = {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      };
+      try {
+        await dispatchWorktreeChatTurn(
+          baseOptions({
+            ...scope,
+            providerType,
+            authorization: {
+              authorizationToken: Symbol('issued dispatch'),
+              scope,
+              dispatchOwner: owner,
+              userMessageId: 'msg-1',
+              operationEpoch: 1,
+              kind: 'ordinary',
+            },
+          }),
+        );
+        expect(sendMessageMock).toHaveBeenCalled();
+        // A wake that starts meanwhile keeps the session's output.
+        expect(currentRoutesWhilePreparing).toBe(0);
+        // Codex activates on its own start. A Claude start carries no binding
+        // receipt, so its destination activates at the send.
+        expect(
+          worktreeChatTurnTestExports.currentSessionEventHandlerCount(),
+        ).toBe(currentRoutesAfterSend);
+      } finally {
+        consume.mockRestore();
+      }
+    },
+  );
+
+  it('admits a deferred continuation in its own right instead of presenting the consumed capability', async () => {
+    const consume = jest
+      .spyOn(getChatDispatchAuthorization(), 'consume')
+      .mockReturnValue({
+        kind: 'authorized',
+        ownership: {
+          kind: 'dispatch',
+          token: Symbol('owner'),
+          userMessageId: 'msg-1',
+          operationEpoch: 1,
+          reason: 'awaiting-start',
+        },
+      });
+    const registerResumeHandler = jest.spyOn(
+      deferredToolsReloadCoordinator,
+      'registerResumeHandler',
+    );
+    const continuationAuthorization = {
+      authorizationToken: Symbol('continuation dispatch'),
+      scope: {
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      },
+      dispatchOwner: Symbol('continuation owner'),
+      userMessageId: 'msg-1',
+      operationEpoch: 2,
+      kind: 'ordinary' as const,
+    };
+    const admit = jest
+      .spyOn(
+        chatQueueServiceModule.getChatQueueService(),
+        'admitDirectDispatchWhenAllowed',
+      )
+      .mockResolvedValue({
+        authorization: continuationAuthorization,
+        release: jest.fn(),
+      });
+    try {
+      await dispatchWorktreeChatTurn(
+        baseOptions({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          providerType: 'codex',
+          authorization: {
+            authorizationToken: Symbol('issued dispatch'),
+            scope: {
+              projectId: 'project-1',
+              worktreeId: 'worktree-1',
+              chatId: 'chat-1',
+            },
+            dispatchOwner: Symbol('owner'),
+            userMessageId: 'msg-1',
+            operationEpoch: 1,
+            kind: 'ordinary',
+          },
+        }),
+      );
+      const resume = registerResumeHandler.mock.calls.find(
+        ([scope]) => scope.chatId === 'chat-1',
+      )?.[1];
+      if (!resume) throw new Error('Expected deferred-tools resume handler');
+      await resume({
+        scope: {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+        },
+        requestId: 'reload-request',
+        toolCallId: 'tool-call',
+        userMessageId: 'msg-1',
+        continuationText: '<system_instruction>Continue</system_instruction>',
+        enabledResources: [],
+        providerType: 'codex',
+        signal: new AbortController().signal,
+      });
+      // The continuation consumes its own admission, never the root's.
+      expect(admit).toHaveBeenCalledWith(
+        { projectId: 'project-1', worktreeId: 'worktree-1', chatId: 'chat-1' },
+        'msg-1',
+        expect.any(AbortSignal),
+        'reload-request',
+      );
+      expect(consume).toHaveBeenCalledTimes(2);
+      expect(consume).toHaveBeenLastCalledWith(
+        continuationAuthorization,
+        expect.objectContaining({ userMessageId: 'msg-1' }),
+      );
+    } finally {
+      admit.mockRestore();
+      consume.mockRestore();
+      registerResumeHandler.mockRestore();
+    }
   });
 
   it('uses the provider-owned thread id for a same-turn deferred continuation', async () => {
@@ -6267,6 +9052,60 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
     },
   );
 
+  it("files a wake's own diff under its turn, beside the prompt's (turn-state phase 40f)", async () => {
+    captureTurnEndAndDiffMock.mockResolvedValueOnce({
+      files: [{ path: 'src/app.ts', status: 'modified' }],
+      totalInsertions: 3,
+      totalDeletions: 0,
+      capturedAt: 1,
+      treeRefs: [],
+    });
+    sinceLastEndMock.mockReturnValueOnce({
+      files: [{ path: 'src/app.ts', status: 'modified' }],
+      totalInsertions: 1,
+      totalDeletions: 0,
+      capturedAt: 2,
+      treeRefs: [],
+    });
+    const committedEvents: unknown[] = [];
+    await dispatchWorktreeChatTurn(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        onBeforeChatEvent: ({ data }: { data: unknown }) => {
+          committedEvents.push(data);
+          return Promise.resolve({ outcome: 'applied' as const });
+        },
+      }),
+    );
+    getMockSession(0).__onEvent({
+      type: 'result',
+      is_error: false,
+      result: 'ok',
+      canopy_turn_user_message_id: 'msg-1',
+      canopy_wake_turn_id: 'wake-1',
+    });
+    await flushSessionEventCommits();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    const diffs = committedEvents.filter(
+      (data) =>
+        typeof data === 'object' &&
+        data !== null &&
+        'type' in data &&
+        data.type === 'turn_diff',
+    );
+    expect(diffs).toEqual([
+      expect.objectContaining({ userMessageId: 'msg-1', totalInsertions: 3 }),
+      expect.objectContaining({
+        userMessageId: 'wake-1:timer:wake',
+        totalInsertions: 1,
+      }),
+    ]);
+  });
+
   it.each([undefined, true, false])(
     'passes the effective Copilot graph snapshot to the provider (%s)',
     async (snapshot) => {
@@ -6321,6 +9160,8 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
       is_error: false,
       result: 'ok',
     });
+    // One more tick: the mock wraps the end capture's result.
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -6352,6 +9193,8 @@ describe('dispatchWorktreeChatTurn worktree (non-cowork) treatment is unchanged'
       }),
     );
     getMockSession(0).__onEvent({ type: 'result', result: 'ok' });
+    // One more tick: the mock wraps the end capture's result.
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -6665,6 +9508,163 @@ describe('dispatchWorktreeChatTurn commit overlap while chat storage group-commi
         ? event.data.message
         : 'result',
     );
+
+  function appliedIngestResult(mutationId: string): ProviderEventIngestResult {
+    return {
+      outcome: 'applied',
+      admission: {
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+        mutationId,
+        revision: 1,
+        tools: [],
+      },
+    };
+  }
+
+  async function dispatchWithBeforeResult(
+    options: Parameters<typeof dispatchWorktreeChatTurn>[0],
+    hook: (event: BeforeEvent) => Promise<unknown>,
+  ): Promise<void> {
+    // Exercise the runtime's widened completion contract against the old
+    // signature as a behavioral red, without making the baseline fail type
+    // checking before the assertion runs.
+    await Reflect.apply(dispatchWorktreeChatTurn, undefined, [
+      { ...options, onBeforeChatEvent: hook },
+    ]);
+  }
+
+  function deliveredField(event: DeliveredChatEvent, field: string): unknown {
+    return Reflect.get(event, field);
+  }
+
+  it('carries a serial hook result into its own live delivery', async () => {
+    const result = appliedIngestResult('serial-event');
+    const delivered = deliveries();
+    const beforeEvent = jest.fn(() => Promise.resolve(result));
+    await dispatchWithBeforeResult(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        onChatEvent: delivered,
+      }),
+      beforeEvent,
+    );
+
+    getMockSession(0).__onEvent({ type: 'result', is_error: false });
+    await flushSessionEventCommits();
+
+    expect(delivered).toHaveBeenCalledTimes(1);
+    const event = delivered.mock.calls[0]?.[0];
+    expect(event).toBeDefined();
+    if (!event) throw new Error('Expected the serial event to be delivered');
+    expect(deliveredField(event, 'beforeChatEventResult')).toBe(result);
+    expect(deliveredField(event, 'ingestResult')).toEqual(result);
+  });
+
+  it('keeps overlapped hook results attached to their own event after out-of-order completion', async () => {
+    const delivered = deliveries();
+    const firstResult = appliedIngestResult('first-event');
+    const secondResult = appliedIngestResult('second-event');
+    const commits: Array<{
+      event: BeforeEvent;
+      settle: (result: ProviderEventIngestResult) => void;
+    }> = [];
+    const hook = (event: BeforeEvent): Promise<unknown> =>
+      new Promise<ProviderEventIngestResult>((resolve) => {
+        commits.push({ event, settle: resolve });
+        event.onCommitQueued?.();
+      });
+    await dispatchWithBeforeResult(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        onChatEvent: delivered,
+      }),
+      hook,
+    );
+
+    const session = getMockSession(0);
+    session.__onEvent({ type: 'assistant', message: 'first' });
+    session.__onEvent({ type: 'assistant', message: 'second' });
+    await flushSessionEventCommits();
+    await flushSessionEventCommits();
+    expect(commits).toHaveLength(2);
+    commits[1]?.settle(secondResult);
+    await flushSessionEventCommits();
+    expect(delivered).not.toHaveBeenCalled();
+    commits[0]?.settle(firstResult);
+    await flushSessionEventCommits();
+    await flushSessionEventCommits();
+
+    expect(texts(delivered)).toEqual(['first', 'second']);
+    const firstEvent = delivered.mock.calls[0]?.[0];
+    const secondEvent = delivered.mock.calls[1]?.[0];
+    expect(firstEvent).toBeDefined();
+    expect(secondEvent).toBeDefined();
+    if (!firstEvent || !secondEvent)
+      throw new Error('Expected both overlapped events to be delivered');
+    expect(deliveredField(firstEvent, 'beforeChatEventResult')).toBe(
+      firstResult,
+    );
+    expect(deliveredField(secondEvent, 'beforeChatEventResult')).toBe(
+      secondResult,
+    );
+    expect(deliveredField(firstEvent, 'ingestResult')).toEqual(firstResult);
+    expect(deliveredField(secondEvent, 'ingestResult')).toEqual(secondResult);
+  });
+
+  it('suppresses a truthy not-applied hook result', async () => {
+    const notApplied: ProviderEventIngestResult = { outcome: 'not-applied' };
+    const delivered = deliveries();
+    await dispatchWithBeforeResult(
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        onChatEvent: delivered,
+      }),
+      () => Promise.resolve(notApplied),
+    );
+
+    getMockSession(0).__onEvent({ type: 'result', is_error: false });
+    await flushSessionEventCommits();
+
+    expect(delivered).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy true, void and false hook behavior', async () => {
+    const results: Array<boolean | undefined> = [true, undefined, false];
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index];
+      const delivered = deliveries();
+      await dispatchWithBeforeResult(
+        baseOptions({
+          projectId: 'my-project',
+          worktreeId: 'wt-1',
+          chatId: `chat-${index}`,
+          onChatEvent: delivered,
+        }),
+        () => Promise.resolve(result),
+      );
+
+      getMockSession(index).__onEvent({ type: 'result', is_error: false });
+      await flushSessionEventCommits();
+
+      expect(delivered).toHaveBeenCalledTimes(result === false ? 0 : 1);
+      const event = delivered.mock.calls[0]?.[0];
+      if (result === false) {
+        expect(event).toBeUndefined();
+        continue;
+      }
+      expect(event).toBeDefined();
+      if (!event) throw new Error('Expected the legacy event to be delivered');
+      expect(deliveredField(event, 'beforeChatEventResult')).toBe(result);
+      expect(deliveredField(event, 'ingestResult')).toEqual({
+        outcome: 'applied',
+      });
+    }
+  });
 
   it('starts the next streamed commit once the previous one is queued and delivers in order after durability', async () => {
     const delivered = deliveries();
@@ -7364,8 +10364,14 @@ describe('dispatchWorktreeChatTurn plan-file turn ownership', () => {
   });
 
   it('re-leases a turn started by a picked-up input', async () => {
+    const revival = mockAcceptedTurnRootLease();
     await dispatchWorktreeChatTurn(
-      baseOptions({ projectId: 'my-project', worktreeId: 'wt-1' }),
+      baseOptions({
+        projectId: 'my-project',
+        worktreeId: 'wt-1',
+        onBeforeChatEvent: () =>
+          Promise.resolve({ outcome: 'applied', pickup: 'accepted' }),
+      }),
     );
     const session = getMockSession(0);
     Object.assign(session, {
@@ -7410,6 +10416,7 @@ describe('dispatchWorktreeChatTurn plan-file turn ownership', () => {
     await flushSessionEventCommits();
     expect(endPlanTurnMock).toHaveBeenCalledTimes(2);
     expect(livePlanTurnCount()).toBe(0);
+    revival.restore();
   });
 
   it('re-leases a revived settled turn and ends it at its next terminal event', async () => {

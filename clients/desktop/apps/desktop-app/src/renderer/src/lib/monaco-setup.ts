@@ -5,6 +5,7 @@ import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
 import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+import { registerMathLanguages } from './monaco-math-languages';
 
 let configured = false;
 
@@ -180,4 +181,6 @@ export function configureMonaco(): void {
 
   loader.config({ monaco });
   configureStandaloneLanguageServices();
+  // Monaco ships no LaTeX, BibTeX or Lean grammar (CAN-5012).
+  registerMathLanguages(monaco);
 }

@@ -17,9 +17,8 @@ import { EyeIcon, EyeOffIcon, Globe } from '@canopy/ui-shared/icons/AppIcons';
 import type { ModelGatewayCredentialValidation } from '@canopy/desktop-shared/types';
 import type { OrgModelGateway } from '@/hooks/useOrgModelGateway';
 import { notifyModelGatewayCredentialChanged } from '@/lib/integrationConnectionEvents';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, ProviderStatusDot } from '@canopy/ui-shared/components';
 import { SettingsRow, SettingsTextField } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const SAVE_DEBOUNCE_MS = 600;
 
@@ -86,7 +85,6 @@ function OrgGatewayMark({
 export function ModelGatewayCredentialSection({
   gateway,
 }: ModelGatewayCredentialSectionProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const inputId = useId();
   const [value, setValue] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -330,10 +328,8 @@ export function ModelGatewayCredentialSection({
             <OrgGatewayMark name={gateway.organizationName} />
             {title}
             {loaded && !storageFailure && hasKey && validation ? (
-              <span
-                className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-                  validation.valid ? 'bg-success' : 'bg-destructive'
-                }`}
+              <ProviderStatusDot
+                tone={validation.valid ? 'connected' : 'failed'}
                 data-testid="model-gateway-key-status"
               />
             ) : null}
@@ -354,7 +350,7 @@ export function ModelGatewayCredentialSection({
               data-testid="settings-model-gateway-key-input"
             />
             <Button
-              size={settingsButtonSize}
+              size="compact"
               variant="ghost"
               iconOnly
               aria-label={visible ? 'Hide key' : 'Show key'}

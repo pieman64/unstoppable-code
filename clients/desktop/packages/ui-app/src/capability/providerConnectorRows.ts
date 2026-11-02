@@ -6,6 +6,19 @@ import type {
   ProviderConnectorRow,
 } from '@canopy/protocol/mcp-servers';
 
+/** Only display/link facts are needed by shared UI; hosts may redact CLI fields. */
+export type ProviderConnectorInput = Omit<
+  ProviderConnectorListResult,
+  'connectors'
+> & {
+  connectors: Array<
+    Pick<
+      ProviderConnectorListResult['connectors'][number],
+      'displayName' | 'connected' | 'installUrl'
+    >
+  >;
+};
+
 /** Order the provider columns consistently rather than by read-completion. */
 const PROVIDER_ORDER: readonly ProviderConnectorProvider[] = [
   'claude',
@@ -68,12 +81,12 @@ export function resolveProviderConnectorCatalog(
  * appended, so anything else already on the account still appears.
  */
 export function buildProviderConnectorRows(
-  results: readonly ProviderConnectorListResult[],
+  results: readonly ProviderConnectorInput[],
   entries: readonly CuratedMcpServerEntry[] = [],
 ): ProviderConnectorRow[] {
   const byProvider = new Map<
     ProviderConnectorProvider,
-    ProviderConnectorListResult
+    ProviderConnectorInput
   >();
   for (const result of results) byProvider.set(result.provider, result);
 
@@ -130,7 +143,7 @@ export function buildProviderConnectorRows(
 
 function resolveProviderEntry(
   provider: ProviderConnectorProvider,
-  result: ProviderConnectorListResult | undefined,
+  result: ProviderConnectorInput | undefined,
   matchName: string,
 ): ProviderConnectorRow['providers'][number] {
   const match = result?.connectors.find(

@@ -1,18 +1,11 @@
-import type {
-  CodeGraphReadFailure,
-  CodeGraphPathRequest,
-} from '@canopy/desktop-shared/types/code-graph-tools';
-import * as path from 'node:path';
-import { utilityProcess, type UtilityProcess } from 'electron';
-import type { ChangeImpactReport } from '@canopy/desktop-shared/node/code-graph/impact/change-impact';
-import type { CodeGraphBaseIdentity } from '@canopy/desktop-shared/node/code-graph/base-graph';
-import { parseGraphDiagnostics } from '@canopy/desktop-shared/node/code-graph/diagnostics';
+import { totalmem } from 'node:os';
+import type { CodeGraphReadFailure } from '@canopy/desktop-shared/types/code-graph-tools';
+import type { ExecutionHostProcess } from '@canopy/desktop-shared/node/execution-host/port';
+import { parseGraphDiagnostics } from '@canopy/code-graph/diagnostics';
 import {
   codeGraphSummaryProjectionV1Schema,
   type ReadCodeGraphSummaryProjectionResult,
-} from '@canopy/desktop-shared/node/code-graph/summary-projection';
-import type { ChangedSymbol } from '@canopy/desktop-shared/node/code-graph/impact/changed-symbols';
-import type { CodeGraphFingerprintMetadata } from '@canopy/desktop-shared/node/code-graph/store/database';
+} from '@canopy/code-graph/summary-projection';
 import {
   flushCodeGraphQueryTelemetry,
   flushCodeGraphReadDiagnostics,
@@ -21,140 +14,23 @@ import {
   type CodeGraphQueryKind,
   type CodeGraphQueryOutcome,
 } from '../lib/code-graph-telemetry';
+import { getExecutionHostPort } from '../execution-host/utility-process-host';
+import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
+import type {
+  CodeGraphWorkerReadTask,
+  CodeGraphWorkerReadRequest,
+  CodeGraphBaseIdentityReadResult,
+  CodeGraphWorkerReadResponse,
+} from '@canopy/code-graph/host/read-protocol';
 
-export type CodeGraphReadCall =
-  | { method: 'relationship-path'; options: CodeGraphPathRequest }
-  | { method: 'status' }
-  | { method: 'file-summary'; target: string; repoId?: string }
-  | { method: 'scripts-for-file'; target: string; repoId?: string }
-  | { method: 'ipc-channel'; target: string; repoId?: string }
-  | { method: 'derived-stats'; repoId?: string }
-  | { method: 'communities'; repoId?: string; limit: number }
-  | { method: 'flows'; repoId?: string; limit: number }
-  | {
-      method: 'flows-for-symbol';
-      target: string;
-      repoId?: string;
-      limit: number;
-    }
-  | { method: 'hubs'; repoId?: string; limit: number }
-  | {
-      method:
-        | 'callers'
-        | 'callees'
-        | 'importers'
-        | 'imports'
-        | 'children'
-        | 'tests-for'
-        | 'docs-for'
-        | 'rationale-for';
-      target: string;
-      repoId?: string;
-    }
-  | { method: 'search'; query: string; limit: number }
-  | { method: 'symbol-detail'; target: string; repoId?: string }
-  | { method: 'community-for-symbol'; target: string; repoId?: string }
-  | {
-      method: 'impact-radius';
-      target: string;
-      options: { maxDepth?: number; maxNodes?: number };
-    };
-
-export type CodeGraphWorkerReadTask =
-  | { kind: 'calls'; calls: readonly CodeGraphReadCall[] }
-  | { kind: 'readonly-summary' }
-  | {
-      kind: 'base-identity';
-      identity: CodeGraphBaseIdentity;
-      gitHead: string | null;
-    }
-  | { kind: 'fingerprint-metadata' }
-  /**
-   * The one write in this lane: the end-of-build worktree fingerprint. It
-   * shares the lane so worktree cleanup cancels it with the reads (same key)
-   * and Electron main never opens the database read-write.
-   */
-  | { kind: 'persist-fingerprint'; fingerprint: string }
-  /**
-   * Checks a published base generation's identifying rows before shadow
-   * maintenance trusts its manifest (skip as current, or seed the next build).
-   */
-  | {
-      kind: 'validate-base';
-      identity: CodeGraphBaseIdentity;
-      gitHead: string | null;
-    }
-  | {
-      kind: 'detect-changed';
-      repoId: string;
-      rootPath: string;
-      baseRef: string;
-    }
-  | {
-      kind: 'change-impact';
-      repoId: string;
-      rootPath: string;
-      baseRef: string;
-      resourcesDir: string;
-      maxDepth?: number;
-    };
-
-export interface CodeGraphWorkerReadRequest {
-  dbPath: string;
-  task: CodeGraphWorkerReadTask;
-}
-
-export type CodeGraphWorkerReadResult =
-  | { kind: 'calls'; value: unknown[] }
-  | { kind: 'readonly-summary'; value: ReadCodeGraphSummaryProjectionResult }
-  | { kind: 'base-identity'; value: CodeGraphBaseIdentityReadResult }
-  | { kind: 'fingerprint-metadata'; value: CodeGraphFingerprintMetadata }
-  | { kind: 'persist-fingerprint' }
-  | { kind: 'validate-base'; value: boolean }
-  | {
-      kind: 'detect-changed';
-      value: {
-        changed: ChangedSymbol[];
-        unmatchedFiles: string[];
-        lastBuildAt: number | null;
-      };
-    }
-  | {
-      kind: 'change-impact';
-      value: { report: ChangeImpactReport; lastBuildAt: number | null };
-    };
-
-/** Host utility-only identity check. No paths or raw marker text in results. */
-export type CodeGraphBaseIdentityReadResult =
-  | { state: 'missing' }
-  | {
-      state: 'readable';
-      matches: {
-        schema: boolean;
-        extractor: boolean;
-        canonicalRoot: boolean;
-        customLanguagesFingerprint: boolean;
-        repoId: boolean;
-        gitHead: boolean;
-        completed: boolean;
-      };
-      observed: {
-        schemaVersion: number | null;
-        extractorVersion: number | null;
-        lastBuildAt: number | null;
-        completedBuildAt: number | null;
-      };
-      repository: { repoId: string; gitHead: string | null } | null;
-    }
-  | {
-      state: 'error';
-      classification:
-        | 'permission-denied'
-        | 'busy'
-        | 'corrupt'
-        | 'unsupported-schema'
-        | 'io';
-    };
+export type {
+  CodeGraphReadCall,
+  CodeGraphWorkerReadTask,
+  CodeGraphWorkerReadRequest,
+  CodeGraphWorkerReadResult,
+  CodeGraphBaseIdentityReadResult,
+  CodeGraphWorkerReadResponse,
+} from '@canopy/code-graph/host/read-protocol';
 
 const READ_FAILURE_CODES: readonly CodeGraphReadFailure[] = [
   'queue-timeout',
@@ -200,10 +76,6 @@ export function codeGraphReadFailure(error: unknown): CodeGraphReadFailure {
   }
   return 'database-error';
 }
-
-export type CodeGraphWorkerReadResponse =
-  | { ok: true; result: CodeGraphWorkerReadResult }
-  | { ok: false; code: CodeGraphReadFailure; message: string };
 
 export type CodeGraphWorkerReadErrorReason =
   | 'timeout'
@@ -251,7 +123,7 @@ interface ReadRecord {
  */
 interface ReadWorker {
   key: string;
-  child: UtilityProcess;
+  child: ExecutionHostProcess;
   /** The request in flight, or null while idle. */
   current: ReadRecord | null;
   idleTimer: NodeJS.Timeout | null;
@@ -346,10 +218,6 @@ const fencedKeys = new Map<string, number>();
 const fencedWorkspaces = new Map<string, number>();
 let useCounter = 0;
 let shuttingDown = false;
-
-function workerEntryPath(): string {
-  return path.join(__dirname, WORKER_ENTRY_FILENAME);
-}
 
 function timeoutFor(record: ReadRecord): number {
   return record.request.task.kind === 'change-impact'
@@ -892,10 +760,14 @@ function handleWorkerExit(worker: ReadWorker, code: number): void {
 }
 
 function spawnWorker(key: string): ReadWorker | Error {
-  let child: UtilityProcess;
+  let child: ExecutionHostProcess;
   try {
-    child = utilityProcess.fork(workerEntryPath(), [], {
+    child = getExecutionHostPort().launch({
+      entry: WORKER_ENTRY_FILENAME,
       serviceName: WORKER_SERVICE_NAME,
+      budget: codeGraphHostBudget('read', {
+        totalMemoryBytes: totalmem(),
+      }),
     });
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error));

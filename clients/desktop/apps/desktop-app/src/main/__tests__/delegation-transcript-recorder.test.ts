@@ -1,9 +1,36 @@
 import {
+  DELEGATION_STREAM_PREVIEW_LIMITS,
   DELEGATION_TRANSCRIPT_RECORDER_LIMITS,
   DelegationTranscriptRecorder,
 } from '../agents/delegation/transcript-recorder';
 
 describe('delegation activity normalization', () => {
+  it('accepts custom retention limits while keeping stream preview limits explicit', () => {
+    expect(DELEGATION_STREAM_PREVIEW_LIMITS).toEqual({
+      items: 2_048,
+      itemBytes: 65_536,
+      totalBytes: 1_048_576,
+    });
+    expect(Object.isFrozen(DELEGATION_STREAM_PREVIEW_LIMITS)).toBe(true);
+
+    const recorder = new DelegationTranscriptRecorder({
+      items: 1,
+      itemBytes: 1_024,
+      totalBytes: 2_048,
+    });
+    recorder.codex({
+      method: 'item/completed',
+      params: { item: { type: 'agentMessage', id: 'first', text: 'small' } },
+    });
+    recorder.codex({
+      method: 'item/completed',
+      params: { item: { type: 'agentMessage', id: 'second', text: 'small' } },
+    });
+
+    expect(recorder.limitExceeded).toBe(true);
+    expect(recorder.snapshot()).toHaveLength(1);
+  });
+
   it('retains Cursor patches and pairs tools without copying tool output into text', () => {
     const recorder = new DelegationTranscriptRecorder();
     recorder.cursor({

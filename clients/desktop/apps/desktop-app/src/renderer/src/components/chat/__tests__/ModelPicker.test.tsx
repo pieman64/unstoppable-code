@@ -14,11 +14,14 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 import type * as SettingsDestinationsModule from '@/lib/navigation/settings-destinations';
 import type * as HostedSettingsAvailabilityModule from '@/components/settings/hosted/hosted-settings-availability';
 import type { SettingsRoute } from '@canopy/protocol/settings';
+import { BILLING_TOP_UP_MIN_USD } from '@canopy/protocol/billing';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { act, createElement, type ReactNode } from 'react';
 // Type-only: erased at runtime, so it is safe above the hoisted `jest.mock`
 // factory that uses it to keep `requireActual`'s spread typed.
 import type * as GuestCredentialModule from '@/hooks/useIsGuestCredential';
+import { useChatStore, type ChatTab } from '@/stores/chatStore';
+import { resolveChatBillingFramework } from '@/lib/chatBillingFramework';
 import { dispatchChatHarnessAction } from '@/lib/chat-harness-actions';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import {
@@ -27,14 +30,18 @@ import {
 } from '@/lib/openBillingPage';
 import { resetModelLibraryAccessForTests } from '@/lib/modelLibraryAccess';
 import {
+  clearModelUnlockIntent,
   resetModelUnlockIntentForTests,
   useModelUnlockIntentStore,
 } from '@/lib/modelUnlockIntent';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { createRoot, type Root } from 'react-dom/client';
+import { setRendererCodexAccountModels } from '@/stores/billingLaneRuntime';
 import {
   AGENT_MODELS,
   DEFAULT_OLLAMA_HARNESS,
+  clearCodexAccountModels,
+  setCodexAccountModels,
   getProviderForModel,
   initAgentModels,
   initAiGatewayModels,
@@ -45,6 +52,7 @@ import {
   initCopilotModels,
   initOpenCodeModels,
   getCopilotModelEntries,
+  getModelDisplayName,
   getModelPickerMappings,
   getOpenCodeModelEntries,
   initModelHarnessAssignments,
@@ -53,9 +61,12 @@ import {
 } from '@canopy/desktop-shared/types';
 import type {
   AiGatewayModelEntry,
+  ChatModel,
   GatewayRouteEntry,
+  ModelHarness,
   ModelHarnessAssignment,
   ModelRegistrySnapshot,
+  NativeAiCreditsAvailability,
 } from '@canopy/desktop-shared/types';
 import type { AgentModelRegistryEntry } from '@canopy/desktop-shared/types/agent-models';
 import { replaceModelFamilyMetadata } from '@canopy/desktop-shared/model-config';
@@ -89,15 +100,25 @@ jest.mock('@/components/settings/AuthLoginModal', () => ({
     ),
 }));
 
+let mockOpenCodeAvailable = false;
+jest.mock('@/hooks/useOpenCodeChatAvailable', () => ({
+  useOpenCodeChatAvailable: (enabled: boolean): boolean =>
+    enabled && mockOpenCodeAvailable,
+}));
+
+jest.mock('@/hooks/useOpenCodeModels', () => ({
+  useOpenCodeModels: (): { models: never[] } => ({ models: [] }),
+}));
+
 jest.mock('@/hooks/useCursorChatAvailable', () => ({
   useCursorChatAvailable: jest.fn((enabled: boolean) => enabled),
 }));
 
 jest.mock('@/hooks/useCopilotChatAvailable', () => ({
-  useCopilotChatAvailable: (enabled: boolean): boolean => enabled,
+  useCopilotChatAvailable: jest.fn((enabled: boolean): boolean => enabled),
 }));
 jest.mock('@/hooks/useOpenCodeChatAvailable', () => ({
-  useOpenCodeChatAvailable: (enabled: boolean): boolean => enabled,
+  useOpenCodeChatAvailable: jest.fn((enabled: boolean): boolean => enabled),
 }));
 jest.mock('@/hooks/useCopilotModels', () => ({
   useCopilotModels: (): {
@@ -174,12 +195,14 @@ import {
   type CloudConnectGateContext,
 } from '@/stores/cloudConnectGateStore';
 import { brandText } from '@/lib/brand';
-import type { ProviderAvailability } from '@/hooks/useProviderAvailability';
+import type {
+  ProviderAvailability,
+  ProviderModelAvailability,
+} from '@/hooks/useProviderAvailability';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import type { ChatBillingResolution } from '@/lib/chatBillingFramework';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
-import { useNavigationStore } from '@/stores/navigationStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 
 // Gateway-routable via the route table, plus a per-provider model with no
@@ -213,6 +236,7 @@ function gatewayRoute(
   return {
     modelId,
     gatewayId: `vendor/${modelId}`,
+    family: modelId,
     recommendedHarness,
     gatewayOnly,
     contextWindow: 100_000,
@@ -220,6 +244,14 @@ function gatewayRoute(
     supportedThinkingLevels: [],
     toolSchemaProfile: 'standard',
   };
+}
+
+function providerForModel(model: ChatModel): AgentProviderType {
+  const provider = getProviderForModel(model);
+  if (provider === undefined) {
+    throw new Error(`Expected a provider for model ${model}`);
+  }
+  return provider;
 }
 
 function apiGatewayEntry(
@@ -436,30 +468,40 @@ afterEach(() => {
   resetModelLibraryAccessForTests();
   resetModelUnlockIntentForTests();
   mockCursorMessage = undefined;
+  mockOpenCodeAvailable = false;
+});
+
+const unavailableProvider = (): ProviderModelAvailability => ({
+  selectable: false,
+  nativeAuth: false,
+  creditsEligible: false,
+  loading: false,
+});
+
+// Matches how `resolveModelRowGate` treats a provider with no availability
+// entry (available, not loading), which is what these fixtures had before the
+// harnesses became required keys.
+const unspecifiedProvider = (): ProviderModelAvailability => ({
+  selectable: true,
+  nativeAuth: true,
+  creditsEligible: false,
+  loading: false,
 });
 
 const availability = (
   overrides: Partial<ProviderAvailability>,
 ): ProviderAvailability => ({
-  claude: {
-    selectable: false,
-    nativeAuth: false,
-    creditsEligible: false,
-    loading: false,
-  },
-  codex: {
-    selectable: false,
-    nativeAuth: false,
-    creditsEligible: false,
-    loading: false,
-  },
-  ollama: {
+  claude: overrides.claude ?? unavailableProvider(),
+  codex: overrides.codex ?? unavailableProvider(),
+  ollama: overrides.ollama ?? {
     selectable: true,
     nativeAuth: true,
     creditsEligible: false,
     loading: false,
   },
-  ...overrides,
+  copilot: overrides.copilot ?? unspecifiedProvider(),
+  cursor: overrides.cursor ?? unspecifiedProvider(),
+  opencode: overrides.opencode ?? unspecifiedProvider(),
 });
 
 function renderPicker(
@@ -956,7 +998,9 @@ describe('ModelPicker availability gating', () => {
 
     act(() => {
       document
-        .querySelector('[data-testid="model-recovery-cancel"]')
+        .querySelector(
+          '[data-testid="model-recovery-modal"] button[aria-label="Close"]',
+        )
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
@@ -1122,7 +1166,9 @@ describe('ModelPicker gateway-only gating', () => {
 
     act(() => {
       document
-        .querySelector('[data-testid="model-recovery-cancel"]')
+        .querySelector(
+          '[data-testid="model-recovery-modal"] button[aria-label="Close"]',
+        )
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
@@ -1216,7 +1262,59 @@ describe('ModelPicker gateway-only gating', () => {
 });
 
 describe('ModelPicker vendor sections and AI Credits badges', () => {
-  it('labels Claude rows AI credits when credits pay for a signed-out Claude', () => {
+  it('keeps the AI Credits label for an unset Home billing preference', () => {
+    const onChange = jest.fn();
+    render(
+      createElement(ModelPicker, {
+        currentModel: CLAUDE_GATEWAY,
+        onModelChange: jest.fn(),
+        browserLayout: 'harnesses',
+        providerAvailability: availability({
+          claude: {
+            selectable: true,
+            nativeAuth: false,
+            creditsEligible: true,
+            loading: false,
+          },
+        }),
+        billing: { value: undefined, provider: 'claude', onChange },
+      }),
+    );
+    openPicker();
+    expect(option(CLAUDE_GATEWAY).textContent).toContain('AI Credits');
+  });
+
+  it('keeps unrelated signed-out Codex rows labelled AI Credits during Claude subscription billing', () => {
+    render(
+      createElement(ModelPicker, {
+        currentModel: CLAUDE_GATEWAY,
+        onModelChange: jest.fn(),
+        browserLayout: 'harnesses',
+        providerAvailability: availability({
+          codex: {
+            selectable: true,
+            nativeAuth: false,
+            creditsEligible: true,
+            loading: false,
+          },
+        }),
+        billing: {
+          value: 'subscription',
+          provider: 'claude',
+          allowUnverifiedSubscription: true,
+          onChange: jest.fn(),
+        },
+      }),
+    );
+    openPicker();
+    expect(
+      document.querySelector(
+        `[data-testid="chat-model-row-credits-${CODEX_GATEWAY}"]:not([hidden] *)`,
+      )?.textContent,
+    ).toBe('AI Credits');
+  });
+
+  it('labels Claude rows AI Credits when credits pay for a signed-out Claude', () => {
     renderPicker(
       availability({
         claude: {
@@ -1232,7 +1330,68 @@ describe('ModelPicker vendor sections and AI Credits badges', () => {
       document.querySelector(
         `[data-testid="chat-model-row-credits-${CLAUDE_GATEWAY}"]:not([hidden] *)`,
       )?.textContent,
-    ).toBe('AI credits');
+    ).toBe('AI Credits');
+  });
+
+  describe('CAN-5028 Free AI Credits tag', () => {
+    const ACME = '11111111-1111-4111-8111-111111111111';
+
+    function setContext(kind: 'personal' | 'organization'): void {
+      act(() => {
+        useWorkspaceContextStore.setState({
+          state: {
+            context:
+              kind === 'personal'
+                ? { kind: 'personal' }
+                : { kind: 'organization', organizationId: ACME },
+            revision: 1,
+            organizations: [{ id: ACME, name: 'Acme', role: 'MEMBER' }],
+          },
+          hydrated: true,
+        });
+      });
+    }
+
+    afterEach(() => {
+      act(() => {
+        useWorkspaceContextStore.setState(
+          useWorkspaceContextStore.getInitialState(),
+          true,
+        );
+      });
+    });
+
+    function creditsTag(): string | null | undefined {
+      return document.querySelector(
+        `[data-testid="chat-model-row-credits-${CLAUDE_GATEWAY}"]:not([hidden] *)`,
+      )?.textContent;
+    }
+
+    const creditsPaid = (): ProviderAvailability =>
+      availability({
+        claude: {
+          selectable: true,
+          nativeAuth: false,
+          creditsEligible: true,
+          loading: false,
+        },
+      });
+
+    it.each([
+      ['personal', 'needs_purchase', 'Free AI Credits'],
+      ['personal', 'unlocked', 'AI Credits'],
+      ['personal', undefined, 'AI Credits'],
+      // Organization work never shows the viewer's own pre-purchase state.
+      ['organization', 'needs_purchase', 'AI Credits'],
+    ] as const)(
+      'tags an available credit row in %s work with %s access as %s',
+      (context, access, label) => {
+        setContext(context);
+        mockLibraryAccess = access;
+        renderPicker(creditsPaid(), { browserLayout: 'harnesses' });
+        expect(creditsTag()).toBe(label);
+      },
+    );
   });
 
   it('keeps Claude rows unlabelled while Claude is signed in', () => {
@@ -1709,6 +1868,31 @@ describe('ModelPicker AI Credits registry composition', () => {
     }
   });
 
+  it('lists account-only Codex models and follows the account list (CAN-4716)', () => {
+    renderPicker(undefined);
+    expect(renderedModelIds()).not.toContain('gpt-6-free');
+    try {
+      // The lane sync registers the models, then publishes the id set.
+      act(() => {
+        setCodexAccountModels([
+          { id: 'gpt-6-free', model: 'gpt-6-free', displayName: 'Free 6' },
+        ]);
+        setRendererCodexAccountModels(new Set(['gpt-6-free']));
+      });
+      expect(renderedModelIds()).toContain('gpt-6-free');
+      expect(
+        document.querySelector('[data-testid="chat-model-option-gpt-6-free"]')
+          ?.textContent,
+      ).toContain('Free 6');
+    } finally {
+      act(() => {
+        clearCodexAccountModels();
+        setRendererCodexAccountModels(null);
+      });
+    }
+    expect(renderedModelIds()).not.toContain('gpt-6-free');
+  });
+
   it('renders the shared group headers with their stable test ids', () => {
     renderPicker(undefined);
     // Vendor-keyed since CAN-2701. Rows that declare no vendor share ONE
@@ -1895,7 +2079,7 @@ function renderBillingPicker(input: {
       billing: {
         value: input.value,
         onChange: input.onChange ?? ((): void => {}),
-        provider: getProviderForModel(input.currentModel),
+        provider: providerForModel(input.currentModel),
         ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
         ...(input.lockedReason !== undefined
           ? { lockedReason: input.lockedReason }
@@ -2057,10 +2241,9 @@ describe('ModelPicker billing framework toggle', () => {
     // else — but routability is not a question a free local model can fail,
     // and hiding it here contradicts both `resolveChatBillingFramework`
     // ("Ollama is local/free and never carries a billing concept") and case A's
-    // own Ollama carve-out. It also stranded users: with credits but no native
-    // login the billing toggle is `disabled`, so the note's "turn AI Credits
-    // off to see them" named a control they could not operate while their
-    // local models simply left the picker.
+    // own Ollama carve-out. It also stranded users in locked-billing states:
+    // the note could name a toggle they cannot operate while local models
+    // simply left the picker.
     expect(
       document.querySelector(
         '[data-testid="chat-model-group-label-provider:ollama"]',
@@ -2226,7 +2409,7 @@ describe('ModelPicker billing framework toggle', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('closes the menu when Get AI Credits opens Billing inside Settings (CAN-4691)', async () => {
+  it('buys in the browser even when Settings could open, keeping Check again in the menu (CAN-5160)', async () => {
     const realOpenAccountOrganizationSettings =
       useNavigationStore.getState().openAccountOrganizationSettings;
     const openAccountOrganizationSettings = jest.fn<
@@ -2278,13 +2461,16 @@ describe('ModelPicker billing framework toggle', () => {
         for (let i = 0; i < 20; i += 1) await Promise.resolve();
       });
 
-      expect(openAccountOrganizationSettings).toHaveBeenCalledTimes(1);
-      // The popover would otherwise sit above the Billing page just opened.
-      expect(
-        document.querySelector('[data-testid="chat-model-menu"]'),
-      ).toBeNull();
+      // Settings would end the hand-off, so the composer could never confirm
+      // the credits; the chat banners take the browser for the same reason.
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
       expect(recoveryModal()).toBeNull();
-      expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+      expect(
+        document.querySelector(
+          '[data-testid="chat-billing-get-credits-check-again"]',
+        ),
+      ).not.toBeNull();
     } finally {
       mockHostedSettingsOpenable.mockReturnValue(false);
       useNavigationStore.setState({
@@ -2825,7 +3011,9 @@ describe('ModelPicker billing framework toggle', () => {
 
     await act(async () => {
       document
-        .querySelector('[data-testid="model-recovery-cancel"]')
+        .querySelector(
+          '[data-testid="model-recovery-modal"] button[aria-label="Close"]',
+        )
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
@@ -3025,7 +3213,7 @@ describe('ModelPicker billing framework toggle', () => {
     const billingProp = {
       value: 'subscription' as const,
       onChange,
-      provider: getProviderForModel(CLAUDE_GATEWAY),
+      provider: providerForModel(CLAUDE_GATEWAY),
       disabled: true,
       lockedReason: 'No AI Credits available.',
       lockKind: 'no-credits' as const,
@@ -3293,7 +3481,7 @@ function agentEntry(
 
 function renderAgentPicker(input: {
   currentModel?: string;
-  lockedHarness?: AgentProviderType;
+  lockedHarness?: ModelHarness;
   providerAvailability?: ProviderAvailability;
   billing?: 'subscription' | 'ai-credits';
   inheritedDefaultModel?: string;
@@ -3315,9 +3503,7 @@ function renderAgentPicker(input: {
             billing: {
               value: input.billing,
               onChange: (): void => {},
-              provider: getProviderForModel(
-                input.currentModel ?? CLAUDE_GATEWAY,
-              ),
+              provider: providerForModel(input.currentModel ?? CLAUDE_GATEWAY),
             },
           }
         : {}),
@@ -3725,7 +3911,7 @@ describe('ModelPicker composer focus return', () => {
     // The shared cloud gate opens over everything.
     act(() => {
       useCloudConnectGateStore.setState({
-        pending: { context: 'ai-credits', proceed: (): void => {} },
+        pending: { context: {}, proceed: (): void => {} },
       });
     });
 
@@ -4290,12 +4476,14 @@ describe('ModelPicker — guest model gate (CAN-3026)', () => {
   });
 
   it.each([
-    ['needs_sign_in', 'Unlock with sign-in'],
+    ['needs_sign_in', 'Unlock with sign-in', 'Sign in'],
     [
       'needs_sign_in_then_purchase',
       'Unlock with sign-in and AI Credit purchase',
+      // CAN-5213: the visible label names both steps.
+      'Sign in and buy',
     ],
-  ] as const)('labels %s with the full hint', (access, hint) => {
+  ] as const)('labels %s with the full hint', (access, hint, label) => {
     mockIsGuest = true;
     mockLibraryAccess = access;
     stubFundedGuestAccount();
@@ -4312,7 +4500,7 @@ describe('ModelPicker — guest model gate (CAN-3026)', () => {
       { onModelChange: jest.fn(), currentModel: CLAUDE_NON_GATEWAY },
     );
 
-    expectLibraryLocked(CLAUDE_GATEWAY_ONLY, hint, 'Sign in');
+    expectLibraryLocked(CLAUDE_GATEWAY_ONLY, hint, label);
   });
 
   it('intercepts a guest selecting a credit-routed native model', async () => {
@@ -4337,6 +4525,69 @@ describe('ModelPicker — guest model gate (CAN-3026)', () => {
 
     await clickAndSettle(CLAUDE_GATEWAY);
 
+    expect(needsAccountBody()).not.toBeNull();
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it('does not relabel an explicit subscription attempt as AI Credits after negative auth', async () => {
+    mockIsGuest = true;
+    stubFundedGuestAccount();
+    const onModelChange = jest.fn();
+
+    render(
+      createElement(ModelPicker, {
+        currentModel: CLAUDE_NON_GATEWAY,
+        onModelChange,
+        providerAvailability: availability({
+          claude: {
+            selectable: true,
+            nativeAuth: false,
+            creditsEligible: true,
+            loading: false,
+          },
+        }),
+        billing: {
+          value: 'subscription',
+          onChange: jest.fn(),
+          provider: 'claude',
+          allowUnverifiedSubscription: true,
+        },
+      }),
+    );
+    openPicker();
+
+    expect(option(CLAUDE_GATEWAY).textContent).not.toContain('AI Credits');
+    await clickAndSettle(CLAUDE_GATEWAY);
+    expect(recoveryModal()).toBeNull();
+    expect(onModelChange).toHaveBeenCalledWith(CLAUDE_GATEWAY);
+  });
+
+  it('does not admit an unrelated Codex hosted row through the Claude subscription override', async () => {
+    mockIsGuest = true;
+    stubFundedGuestAccount();
+    const onModelChange = jest.fn();
+    render(
+      createElement(ModelPicker, {
+        currentModel: CLAUDE_GATEWAY,
+        onModelChange,
+        providerAvailability: availability({
+          codex: {
+            selectable: true,
+            nativeAuth: false,
+            creditsEligible: true,
+            loading: false,
+          },
+        }),
+        billing: {
+          value: 'subscription',
+          provider: 'claude',
+          allowUnverifiedSubscription: true,
+          onChange: jest.fn(),
+        },
+      }),
+    );
+    openPicker();
+    await clickAndSettle(CODEX_GATEWAY);
     expect(needsAccountBody()).not.toBeNull();
     expect(onModelChange).not.toHaveBeenCalled();
   });
@@ -4496,6 +4747,151 @@ describe('ModelPicker — guest model gate (CAN-3026)', () => {
 });
 
 /**
+ * CAN-5213 — availability cues for a library-locked viewer. A drip-off guest
+ * with no provider login sees which rows need free daily credits; once credits
+ * settle the same rows say Available. Neither cue changes selection, recovery,
+ * or the order of the list.
+ */
+describe('ModelPicker — guest availability cues (CAN-5213)', () => {
+  function stubGuestCredits(funded: boolean): void {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      writable: true,
+      value: {
+        loadNativeAiCreditsAvailability: jest.fn().mockResolvedValue({
+          personalEligible: funded,
+          orgSpendable: false,
+          inOrg: false,
+          orgCreditPoolCovered: false,
+          inconclusive: false,
+          dailyDripEnabled: funded,
+          pricingUrl: 'https://example.test/pricing',
+        }),
+        loadCanopyCloudAccount: jest.fn().mockResolvedValue(null),
+      },
+    });
+  }
+
+  function guestCodex(funded: boolean): ProviderAvailability {
+    return availability({
+      codex: {
+        selectable: funded,
+        nativeAuth: false,
+        creditsEligible: funded,
+        loading: false,
+        creditsLoading: false,
+        dailyCreditsEnabled: funded,
+      },
+    });
+  }
+
+  function rowOrder(): (string | null)[] {
+    return Array.from(document.querySelectorAll('[data-model-id]')).map((row) =>
+      row.getAttribute('data-model-id'),
+    );
+  }
+
+  it('asks a drip-off guest for free daily credits and recovers without selecting', async () => {
+    mockIsGuest = true;
+    stubGuestCredits(false);
+    const onModelChange = jest.fn();
+    renderPicker(guestCodex(false), { onModelChange });
+
+    const row = option(CODEX_GATEWAY_ONLY);
+    expect(row.getAttribute('data-locked')).toBe('true');
+    expect(row.hasAttribute('data-available')).toBe(false);
+    expect(
+      row.querySelector('[data-testid*="-option-lock-label"]')?.textContent,
+    ).toBe('Needs free daily credits');
+    expect(row.textContent).toContain(
+      'Turn on free daily credits to use this model.',
+    );
+
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it('names the Codex sign-in on a native-only row whatever the credits', async () => {
+    for (const funded of [false, true]) {
+      mockIsGuest = true;
+      stubGuestCredits(funded);
+      const onModelChange = jest.fn();
+      renderPicker(guestCodex(funded), { onModelChange });
+
+      // Credits can never run this model, so a sign-in is the only way in.
+      const row = option(CODEX_NON_GATEWAY);
+      expect(row.getAttribute('data-locked')).toBe('true');
+      expect(row.hasAttribute('data-available')).toBe(false);
+      expect(
+        row.querySelector('[data-testid*="-option-lock-label"]')?.textContent,
+      ).toBe('Needs Codex sign-in');
+      expect(row.textContent).toContain('Sign in to Codex to use this model.');
+
+      await act(async () => {
+        row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(onModelChange).not.toHaveBeenCalled();
+      act(() => root?.unmount());
+      root = null;
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('keeps the drip-off row where the funded list puts it', () => {
+    mockIsGuest = true;
+    stubGuestCredits(true);
+    renderPicker(guestCodex(true));
+    const funded = rowOrder();
+    act(() => root?.unmount());
+    root = null;
+    document.body.innerHTML = '';
+
+    stubGuestCredits(false);
+    renderPicker(guestCodex(false));
+    expect(rowOrder()).toEqual(funded);
+  });
+
+  it('marks a funded guest’s row Available and selects it normally', () => {
+    mockIsGuest = true;
+    stubGuestCredits(true);
+    const onModelChange = jest.fn<void, [string]>();
+    renderPicker(guestCodex(true), { onModelChange });
+
+    const row = option(CODEX_GATEWAY_ONLY);
+    expect(row.getAttribute('data-available')).toBe('true');
+    expect(row.hasAttribute('data-locked')).toBe(false);
+    expect(row.getAttribute('role')).toBe('menuitemradio');
+
+    clickOption(CODEX_GATEWAY_ONLY);
+    expect(onModelChange).toHaveBeenCalledTimes(1);
+    expect(onModelChange.mock.calls[0]?.[0]).toBe(CODEX_GATEWAY_ONLY);
+  });
+
+  it('adds no cue for an unlocked account', () => {
+    mockLibraryAccess = 'unlocked';
+    stubGuestCredits(true);
+    renderPicker(guestCodex(true));
+    const row = option(CODEX_GATEWAY_ONLY);
+    expect(row.hasAttribute('data-available')).toBe(false);
+    expect(row.hasAttribute('data-locked')).toBe(false);
+  });
+
+  it('adds no cue on a config surface without availability', () => {
+    mockIsGuest = true;
+    stubGuestCredits(false);
+    renderPicker(undefined);
+    expect(document.querySelector('[data-available]')).toBeNull();
+    expect(window.api.loadNativeAiCreditsAvailability).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * CAN-4028 — a SIGNED-IN account that has not made a card purchase. The same
  * allowlist applies, but the remedy is a purchase, and specifically not "any
  * spendable credit": every case here runs FUNDED, because the daily free
@@ -4503,14 +4899,15 @@ describe('ModelPicker — guest model gate (CAN-3026)', () => {
  */
 describe('ModelPicker — purchase unlock (CAN-4028)', () => {
   const ACCOUNT_KEY = 'account:acct_1';
-  let openAuthenticatedPortalPage: jest.Mock<Promise<boolean>, [string]>;
+  let paymentHandoff: jest.Mock;
+  const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 
   function stubFundedNonPayer(
     access: ModelLibraryAccess = 'needs_purchase',
   ): void {
-    openAuthenticatedPortalPage = jest
-      .fn<Promise<boolean>, [string]>()
-      .mockResolvedValue(true);
+    paymentHandoff = jest
+      .fn()
+      .mockResolvedValue({ ok: true, requestId: REQUEST_ID });
     Object.defineProperty(window, 'api', {
       configurable: true,
       writable: true,
@@ -4537,7 +4934,7 @@ describe('ModelPicker — purchase unlock (CAN-4028)', () => {
           workModelLibrary: { status: 'reported', access },
           modelLibraryOwnerKey: 'personal',
         }),
-        openAuthenticatedPortalPage,
+        accountOrganizationSettings: { paymentHandoff },
       },
     });
   }
@@ -4555,7 +4952,7 @@ describe('ModelPicker — purchase unlock (CAN-4028)', () => {
   /** The recovery read now awaits three reads in turn; let them all land. */
   async function settle(): Promise<void> {
     await act(async () => {
-      for (let i = 0; i < 12; i += 1) {
+      for (let i = 0; i < 40; i += 1) {
         await Promise.resolve();
       }
     });
@@ -4565,6 +4962,18 @@ describe('ModelPicker — purchase unlock (CAN-4028)', () => {
     act(() => {
       document
         .querySelector(`[data-testid="${testId}"]`)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await settle();
+  }
+
+  /** Dismiss the recovery modal through its X, its only dismiss. */
+  async function closeRecovery(): Promise<void> {
+    act(() => {
+      document
+        .querySelector(
+          '[data-testid="model-recovery-modal"] button[aria-label="Close"]',
+        )
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await settle();
@@ -4589,14 +4998,16 @@ describe('ModelPicker — purchase unlock (CAN-4028)', () => {
 
     await clickAndSettle(`chat-model-option-${CLAUDE_GATEWAY_ONLY}`);
 
-    expect(recoveryModal()?.textContent).toContain('Unlock advanced models');
+    // Named for the clicked row, not the composer's current model.
+    expect(recoveryModal()?.querySelector('h2')?.textContent).toBe(
+      'Unlock Claude Gateway Only',
+    );
     expect(bodyText('model-recovery-unlock')).toBe(
-      'Purchase AI Credits to unlock advanced models.',
+      `Free daily credits don't unlock advanced models. Purchase some AI Credits (minimum $${BILLING_TOP_UP_MIN_USD}) to unlock Sonnet, Opus, Fable and more. We'll switch to your selected model once the purchase is complete.`,
     );
-    expect(bodyText('model-recovery-unlock-purchase')).toBe(
-      'Purchase AI Credits',
-    );
-    expect(bodyText('model-recovery-cancel')).toBe('Not now');
+    expect(bodyText('model-recovery-unlock-purchase')).toBe('Get AI Credits');
+    // The dialog's X is the only dismiss.
+    expect(bodyText('model-recovery-cancel')).toBeNull();
     // Funded, and still not committed: spendable daily credits are not the
     // purchase, so the coverage auto-commit must not fire.
     expect(onModelChange).not.toHaveBeenCalled();
@@ -4613,24 +5024,27 @@ describe('ModelPicker — purchase unlock (CAN-4028)', () => {
     await clickAndSettle(`chat-model-option-${CLAUDE_GATEWAY_ONLY}`);
     await clickAndSettle('model-recovery-unlock-purchase');
 
-    expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
-    const [path] = openAuthenticatedPortalPage.mock.calls[0];
-    const url = new URL(path, 'https://billing.invalid');
-    expect(url.pathname).toBe('/account/billing');
-    expect(url.searchParams.get('topUp')).toBe('1');
-    expect(url.searchParams.get('reason')).toBe('unlock_models');
-    expect(url.searchParams.get('source')).toBe('desktop');
-    expect(url.searchParams.get('modelId')).toBe(CLAUDE_GATEWAY_ONLY);
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    expect(paymentHandoff).toHaveBeenCalledWith({
+      accountId: 'acct_1',
+      owner: { kind: 'personal' },
+      intent: {
+        kind: 'top-up',
+        reason: 'unlock_models',
+        source: 'desktop',
+        modelId: CLAUDE_GATEWAY_ONLY,
+      },
+    });
 
-    expect(bodyText('model-recovery-unlock-waiting')).toBe(
-      "Finish in your browser. We'll check when your payment completes.",
+    expect(bodyText('model-recovery-unlock-waiting')).toContain(
+      "Finish checkout in your browser. Closing this dialog won't cancel your purchase.",
     );
     // The attempt is remembered for THIS account and model, under the same
     // request id the browser was given.
     expect(useModelUnlockIntentStore.getState()).toMatchObject({
       phase: 'waiting',
       intent: {
-        requestId: url.searchParams.get('requestId'),
+        requestId: REQUEST_ID,
         accountId: ACCOUNT_KEY,
         owner: 'personal',
         modelId: CLAUDE_GATEWAY_ONLY,
@@ -4730,10 +5144,152 @@ describe('ModelPicker — purchase unlock (CAN-4028)', () => {
     await clickAndSettle('model-recovery-unlock-purchase');
 
     // The confirmed unlock applies the route, as a click on the row would.
-    expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
     expect(useModelUnlockIntentStore.getState().intent?.modelId).toBe(
       `${AGENT_ID}@${CLAUDE_GATEWAY}`,
     );
+  });
+
+  it('keeps the purchase action and never waits in the browser after strict handoff failure', async () => {
+    mockLibraryAccess = 'needs_purchase';
+    stubFundedNonPayer();
+    paymentHandoff.mockResolvedValue({ ok: false, reason: 'browser_failed' });
+    const onModelChange = jest.fn();
+    renderPicker(fundedNoProviderLogin(), {
+      onModelChange,
+      currentModel: CLAUDE_NON_GATEWAY,
+    });
+    await clickAndSettle(`chat-model-option-${CLAUDE_GATEWAY_ONLY}`);
+    await clickAndSettle('model-recovery-unlock-purchase');
+    expect(bodyText('model-recovery-unlock-failed')).toContain(
+      'couldn’t open your browser',
+    );
+    expect(bodyText('model-recovery-unlock-waiting')).toBeNull();
+    expect(bodyText('model-recovery-unlock-purchase')).toBe('Get AI Credits');
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  describe('after Close (CAN-5030)', () => {
+    /** Click a row, opening the picker first if closing the modal shut it. */
+    async function clickRow(model: string): Promise<void> {
+      if (
+        document.querySelector(`[data-testid="chat-model-option-${model}"]`) ===
+        null
+      ) {
+        openPicker();
+      }
+      await clickAndSettle(`chat-model-option-${model}`);
+    }
+
+    async function purchaseThenClose(): Promise<void> {
+      await clickRow(CLAUDE_GATEWAY_ONLY);
+      await clickAndSettle('model-recovery-unlock-purchase');
+      expect(paymentHandoff).toHaveBeenCalledTimes(1);
+      await closeRecovery();
+      expect(recoveryModal()).toBeNull();
+    }
+
+    function otherLockedRow(): string {
+      if (
+        document.querySelector('[data-testid^="chat-model-option-"]') === null
+      ) {
+        openPicker();
+      }
+      const ids = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid^="chat-model-option-"][data-locked="true"]',
+        ),
+      )
+        // A library lock, not an availability cue such as a provider sign-in.
+        .filter(
+          (row) =>
+            !/^Needs /.test(
+              row.querySelector('[data-testid*="-option-lock-label"]')
+                ?.textContent ?? '',
+            ),
+        )
+        .map((row) =>
+          (row.dataset.testid ?? '').slice('chat-model-option-'.length),
+        )
+        .filter((id) => id !== CLAUDE_GATEWAY_ONLY);
+      const other = ids[0];
+      if (other === undefined) throw new Error('no second locked row');
+      return other;
+    }
+
+    it('resumes the waiting purchase when the same locked row is clicked again', async () => {
+      mockLibraryAccess = 'needs_purchase';
+      stubFundedNonPayer();
+      renderPicker(fundedNoProviderLogin(), {
+        currentModel: CLAUDE_NON_GATEWAY,
+      });
+      await purchaseThenClose();
+
+      await clickRow(CLAUDE_GATEWAY_ONLY);
+
+      expect(bodyText('model-recovery-unlock-waiting')).toContain(
+        "Closing this dialog won't cancel your purchase.",
+      );
+      expect(bodyText('model-recovery-unlock-check-now')).toBe('Check again');
+      expect(bodyText('model-recovery-unlock-purchase')).toBeNull();
+      expect(paymentHandoff).toHaveBeenCalledTimes(1);
+      expect(useModelUnlockIntentStore.getState()).toMatchObject({
+        phase: 'waiting',
+        intent: { requestId: REQUEST_ID, modelId: CLAUDE_GATEWAY_ONLY },
+      });
+    });
+
+    it('resumes the original purchase and model from a different locked row', async () => {
+      mockLibraryAccess = 'needs_purchase';
+      stubFundedNonPayer();
+      renderPicker(fundedNoProviderLogin(), {
+        currentModel: CLAUDE_NON_GATEWAY,
+      });
+      await purchaseThenClose();
+
+      const other = otherLockedRow();
+      await clickRow(other);
+
+      const copy = bodyText('model-recovery-unlock-waiting') ?? '';
+      expect(copy).toContain("Closing this dialog won't cancel your purchase.");
+      expect(copy).not.toContain(getModelDisplayName(other));
+      expect(bodyText('model-recovery-unlock-purchase')).toBeNull();
+      expect(paymentHandoff).toHaveBeenCalledTimes(1);
+      expect(useModelUnlockIntentStore.getState().intent).toMatchObject({
+        requestId: REQUEST_ID,
+        modelId: CLAUDE_GATEWAY_ONLY,
+      });
+    });
+
+    it('offers an explicit new purchase after a timeout, and a fresh one once dismissed', async () => {
+      mockLibraryAccess = 'needs_purchase';
+      stubFundedNonPayer();
+      renderPicker(fundedNoProviderLogin(), {
+        currentModel: CLAUDE_NON_GATEWAY,
+      });
+      await purchaseThenClose();
+      act(() => {
+        useModelUnlockIntentStore.setState({ phase: 'timed-out' });
+      });
+
+      await clickRow(CLAUDE_GATEWAY_ONLY);
+      expect(bodyText('model-recovery-unlock-timed-out')).toContain(
+        "Starting a new purchase won't cancel the previous one.",
+      );
+      expect(bodyText('model-recovery-unlock-new-purchase')).toBe(
+        'Start a new purchase',
+      );
+      expect(bodyText('model-recovery-unlock-purchase')).toBeNull();
+      await closeRecovery();
+
+      // The composer notice's Dismiss forgets only this purchase.
+      act(() => clearModelUnlockIntent(REQUEST_ID));
+      await clickRow(CLAUDE_GATEWAY_ONLY);
+
+      expect(bodyText('model-recovery-unlock-purchase')).toBe('Get AI Credits');
+      expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('draws no purchase lock while access is unknown', () => {
@@ -4745,6 +5301,412 @@ describe('ModelPicker — purchase unlock (CAN-4028)', () => {
       currentModel: CLAUDE_NON_GATEWAY,
     });
     expect(option(CLAUDE_GATEWAY_ONLY).getAttribute('data-locked')).toBeNull();
+  });
+});
+
+/**
+ * CAN-4703 — the guest gate offers the same vendor's allowed model and selects
+ * it in one click on the chat that raised the gate.
+ *
+ * The baseline fixture spells every gateway id `vendor/…`, which matches no
+ * allowlist vendor, so this block re-seeds the DeepSeek routes with real
+ * vendor ids: Flash is gated for a guest, Pro is allowlisted.
+ */
+describe('ModelPicker — guest fallback (CAN-4703)', () => {
+  const DEEPSEEK_ROUTES: GatewayRouteEntry[] = GATEWAY_ROUTES.map((route) =>
+    route.modelId === CODEX_GATEWAY_ONLY || route.modelId === DEEPSEEK_FLASH
+      ? { ...route, gatewayId: `deepseek/${route.modelId}` }
+      : route,
+  );
+
+  beforeEach(() => {
+    mockIsGuest = true;
+    initAiGatewayModels(API_GATEWAY_ENTRIES, DEEPSEEK_ROUTES);
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      writable: true,
+      value: {
+        loadNativeAiCreditsAvailability: jest.fn().mockResolvedValue({
+          personalEligible: true,
+          orgSpendable: false,
+          inOrg: false,
+          orgCreditPoolCovered: false,
+          inconclusive: false,
+          pricingUrl: 'https://example.test/pricing',
+        }),
+        loadCanopyCloudAccount: jest.fn().mockResolvedValue(null),
+      },
+    });
+  });
+
+  afterEach(() => {
+    registerModelRegistries();
+  });
+
+  const codexCredits = (): ProviderAvailability =>
+    availability({
+      codex: {
+        selectable: true,
+        nativeAuth: false,
+        creditsEligible: true,
+        loading: false,
+      },
+    });
+
+  function renderGuestPicker(extra: {
+    readonly currentModel: string;
+    readonly onModelChange: (model: string) => void;
+    readonly onRestoreFocus?: () => void;
+    readonly onRecoveryCommit?: (model: string) => Promise<boolean>;
+  }): void {
+    render(
+      createElement(ModelPicker, {
+        currentModel: extra.currentModel,
+        onModelChange: extra.onModelChange,
+        providerAvailability: codexCredits(),
+        ...(extra.onRestoreFocus
+          ? { onRestoreFocus: extra.onRestoreFocus }
+          : {}),
+        ...(extra.onRecoveryCommit
+          ? {
+              onRecoveryCommit: extra.onRecoveryCommit,
+              recoveryChatKey: 'chat-1',
+            }
+          : {}),
+      }),
+    );
+    openPicker();
+  }
+
+  async function settle(run: () => void): Promise<void> {
+    await act(async () => {
+      run();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  function fallbackButton(): HTMLButtonElement | null {
+    return document.querySelector<HTMLButtonElement>(
+      '[data-testid="model-recovery-guest-fallback"]',
+    );
+  }
+
+  it('selects the allowed sibling in one click, closes, and restores focus once', async () => {
+    const onModelChange = jest.fn();
+    const onRestoreFocus = jest.fn();
+    renderGuestPicker({
+      currentModel: CLAUDE_NON_GATEWAY,
+      onModelChange,
+      onRestoreFocus,
+    });
+
+    await settle(() => option(DEEPSEEK_FLASH).click());
+    expect(
+      document.querySelector('[data-testid="model-recovery-needs-account"]')
+        ?.textContent,
+    ).toContain('As a guest you can use DeepSeek V4 Pro right now.');
+    expect(fallbackButton()?.textContent).toBe('Use DeepSeek V4 Pro (free)');
+
+    await settle(() => fallbackButton()?.click());
+
+    expect(onModelChange).toHaveBeenCalledTimes(1);
+    expect(onModelChange).toHaveBeenCalledWith(CODEX_GATEWAY_ONLY);
+    expect(recoveryModal()).toBeNull();
+    expect(onRestoreFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits through the originating chat’s acknowledged path', async () => {
+    const onModelChange = jest.fn();
+    const onRecoveryCommit = jest.fn(() => Promise.resolve(true));
+    renderGuestPicker({
+      currentModel: CLAUDE_NON_GATEWAY,
+      onModelChange,
+      onRecoveryCommit,
+    });
+
+    await settle(() => option(DEEPSEEK_FLASH).click());
+    await settle(() => fallbackButton()?.click());
+
+    expect(onRecoveryCommit).toHaveBeenCalledTimes(1);
+    expect(onRecoveryCommit).toHaveBeenCalledWith(CODEX_GATEWAY_ONLY);
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(recoveryModal()).toBeNull();
+  });
+
+  it('does not carry the gated row’s explicit harness into the fallback route', async () => {
+    const onRecoveryCommit = jest.fn(() => Promise.resolve(true));
+    render(
+      createElement(ModelPicker, {
+        currentModel: CLAUDE_NON_GATEWAY,
+        onModelChange: jest.fn(),
+        onRecoveryCommit,
+        recoveryChatKey: 'chat-1',
+        providerAvailability: codexCredits(),
+        browserLayout: 'harnesses',
+      }),
+    );
+    openPicker();
+    await settle(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="chat-model-harness-tab-codex"]',
+        )
+        ?.click(),
+    );
+    await settle(() => option(DEEPSEEK_FLASH).click());
+    expect(fallbackButton()).not.toBeNull();
+    await settle(() => fallbackButton()?.click());
+    expect(onRecoveryCommit).toHaveBeenCalledWith(CODEX_GATEWAY_ONLY);
+  });
+
+  it('keeps the gate open with the row’s reason when the chat refuses', async () => {
+    const onRecoveryCommit = jest.fn(() => Promise.resolve(false));
+    renderGuestPicker({
+      currentModel: CLAUDE_NON_GATEWAY,
+      onModelChange: jest.fn(),
+      onRecoveryCommit,
+    });
+
+    await settle(() => option(DEEPSEEK_FLASH).click());
+    await settle(() => fallbackButton()?.click());
+
+    expect(recoveryModal()).not.toBeNull();
+    expect(
+      document.querySelector('[data-testid="model-recovery-fallback-blocked"]'),
+    ).not.toBeNull();
+    expect(fallbackButton()?.disabled).toBe(false);
+  });
+
+  it.each(['refused', 'rejected'] as const)(
+    'preserves the original harness after a %s fallback and sign-in',
+    async (failure) => {
+      const onRecoveryCommit = jest.fn(() => Promise.resolve(true));
+      if (failure === 'refused') onRecoveryCommit.mockResolvedValueOnce(false);
+      else onRecoveryCommit.mockRejectedValueOnce(new Error('Commit failed'));
+      render(
+        createElement(ModelPicker, {
+          currentModel: CLAUDE_NON_GATEWAY,
+          onModelChange: jest.fn(),
+          onRecoveryCommit,
+          recoveryChatKey: 'chat-1',
+          providerAvailability: codexCredits(),
+          browserLayout: 'harnesses',
+        }),
+      );
+      openPicker();
+      await settle(() =>
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="chat-model-harness-tab-codex"]',
+          )
+          ?.click(),
+      );
+      await settle(() => option(DEEPSEEK_FLASH).click());
+      await settle(() => fallbackButton()?.click());
+      expect(onRecoveryCommit).toHaveBeenNthCalledWith(1, CODEX_GATEWAY_ONLY);
+      expect(recoveryModal()).not.toBeNull();
+
+      await settle(() =>
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="model-recovery-account-sign-in"]',
+          )
+          ?.click(),
+      );
+      expect(useCloudConnectGateStore.getState().pending).not.toBeNull();
+      jest.spyOn(window.api, 'loadCanopyCloudAccount').mockResolvedValue({
+        hasApiKey: true,
+        account: {
+          id: 'acct_1',
+          name: 'Account',
+          email: 'test@example.com',
+          role: 'DEVELOPER',
+        },
+        authMode: 'oauth',
+        credentialSource: 'oauth_desktop',
+        capabilities: [],
+        storageAvailable: true,
+        orgBillingStates: [],
+      });
+      await settle(() => useCloudConnectGateStore.getState().resolve());
+
+      expect(onRecoveryCommit).toHaveBeenCalledTimes(2);
+      expect(onRecoveryCommit).toHaveBeenNthCalledWith(
+        2,
+        DEEPSEEK_FLASH,
+        undefined,
+        'codex',
+      );
+      expect(recoveryModal()).toBeNull();
+    },
+  );
+
+  it('offers no fallback when the chat already uses it', async () => {
+    renderGuestPicker({
+      currentModel: CODEX_GATEWAY_ONLY,
+      onModelChange: jest.fn(),
+    });
+
+    await settle(() => option(DEEPSEEK_FLASH).click());
+
+    expect(
+      document.querySelector('[data-testid="model-recovery-needs-account"]')
+        ?.textContent,
+    ).toContain('Your guest work comes with you, nothing is lost.');
+    expect(fallbackButton()).toBeNull();
+  });
+
+  it('offers no fallback for a vendor without an allowed model', async () => {
+    renderGuestPicker({
+      currentModel: CLAUDE_NON_GATEWAY,
+      onModelChange: jest.fn(),
+    });
+
+    await settle(() => option(KIMI_K3).click());
+
+    expect(
+      document.querySelector('[data-testid="model-recovery-needs-account"]'),
+    ).not.toBeNull();
+    expect(fallbackButton()).toBeNull();
+  });
+
+  it('preserves the previous selection on Not now', async () => {
+    const onModelChange = jest.fn();
+    const onRestoreFocus = jest.fn();
+    renderGuestPicker({
+      currentModel: CLAUDE_NON_GATEWAY,
+      onModelChange,
+      onRestoreFocus,
+    });
+
+    await settle(() => option(DEEPSEEK_FLASH).click());
+    await settle(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="model-recovery-modal"] button[aria-label="Close"]',
+        )
+        ?.click(),
+    );
+
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(recoveryModal()).toBeNull();
+    expect(onRestoreFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['switch', 'unmount'] as const)(
+    'does not restore focus after a pending commit and %s',
+    async (change) => {
+      let finish: (accepted: boolean) => void = () => undefined;
+      const onRecoveryCommit = jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const onRestoreFocus = jest.fn();
+      const onModelChange = jest.fn();
+      renderGuestPicker({
+        currentModel: CLAUDE_NON_GATEWAY,
+        onModelChange,
+        onRecoveryCommit,
+        onRestoreFocus,
+      });
+      await settle(() => option(DEEPSEEK_FLASH).click());
+      await settle(() => fallbackButton()?.click());
+      expect(onRecoveryCommit).toHaveBeenCalledTimes(1);
+      await settle(() => {
+        if (change === 'unmount') {
+          root?.unmount();
+          root = null;
+        } else {
+          root?.render(
+            createElement(ModelPicker, {
+              currentModel: CLAUDE_NON_GATEWAY,
+              onModelChange,
+              onRecoveryCommit: jest.fn(),
+              onRestoreFocus,
+              providerAvailability: codexCredits(),
+              recoveryChatKey: 'chat-2',
+            }),
+          );
+        }
+      });
+      await settle(() => finish(true));
+      expect(onRestoreFocus).not.toHaveBeenCalled();
+      expect(onModelChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('redirects changed eligibility without committing, then uses the original chat binding', async () => {
+    const originCommit = jest.fn(() => Promise.resolve(true));
+    const otherCommit = jest.fn(() => Promise.resolve(true));
+    const onRestoreFocus = jest.fn();
+    renderGuestPicker({
+      currentModel: CLAUDE_NON_GATEWAY,
+      onModelChange: jest.fn(),
+      onRecoveryCommit: originCommit,
+      onRestoreFocus,
+    });
+    await settle(() => option(DEEPSEEK_FLASH).click());
+
+    let finishRead: (value: NativeAiCreditsAvailability) => void = () =>
+      undefined;
+    const accountRead = new Promise<NativeAiCreditsAvailability>((resolve) => {
+      finishRead = resolve;
+    });
+    const readSpy = jest
+      .spyOn(window.api, 'loadNativeAiCreditsAvailability')
+      .mockReturnValue(accountRead);
+    invalidateSharedAiCreditsRead();
+    const noCredits = availability({
+      codex: {
+        selectable: false,
+        nativeAuth: false,
+        creditsEligible: false,
+        loading: false,
+      },
+    });
+    const renderChat = (chatKey: string): void => {
+      root?.render(
+        createElement(ModelPicker, {
+          currentModel: CLAUDE_NON_GATEWAY,
+          onModelChange: jest.fn(),
+          onRecoveryCommit: otherCommit,
+          onRestoreFocus,
+          recoveryChatKey: chatKey,
+          providerAvailability: noCredits,
+        }),
+      );
+    };
+    try {
+      await settle(() => renderChat('chat-1'));
+      await settle(() => fallbackButton()?.click());
+      expect(fallbackButton()).toBeNull();
+      expect(recoveryModal()).not.toBeNull();
+      expect(originCommit).not.toHaveBeenCalled();
+      expect(onRestoreFocus).not.toHaveBeenCalled();
+
+      await settle(() => renderChat('chat-2'));
+      await settle(() =>
+        finishRead({
+          personalEligible: true,
+          orgSpendable: false,
+          inOrg: false,
+          orgCreditPoolCovered: false,
+          inconclusive: false,
+          pricingUrl: 'https://example.test/pricing',
+        }),
+      );
+      expect(originCommit).toHaveBeenCalledTimes(1);
+      expect(originCommit).toHaveBeenCalledWith(CODEX_GATEWAY_ONLY);
+      expect(otherCommit).not.toHaveBeenCalled();
+      expect(onRestoreFocus).not.toHaveBeenCalled();
+      expect(recoveryModal()).toBeNull();
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 });
 
@@ -5093,7 +6055,444 @@ describe('ModelPicker harness picker Cursor tab', () => {
   );
 });
 
+describe('ModelPicker harness picker Copilot tab', () => {
+  it.each([
+    { released: false, section: 'experiments' },
+    { released: true, section: 'account' },
+  ])(
+    'connects disconnected Copilot in $section when released=$released',
+    ({ released, section }) => {
+      const copilotMock = jest.requireMock<{
+        useCopilotChatAvailable: jest.Mock;
+      }>('@/hooks/useCopilotChatAvailable');
+      copilotMock.useCopilotChatAvailable.mockReturnValue(false);
+      const snapshot = useFeatureFlagsStore.getState().snapshot;
+      useFeatureFlagsStore.getState().setSnapshot({
+        ...snapshot,
+        values: {
+          ...snapshot.values,
+          'canopy-desktop-copilot-harness': true,
+          'canopy-desktop-copilot-harness-released': released,
+        },
+      });
+      const openSettings = jest.fn();
+      const previous = useNavigationStore.getState().openSettings;
+      useNavigationStore.setState({ openSettings });
+      try {
+        render(
+          createElement(ModelPicker, {
+            currentModel: CLAUDE_GATEWAY,
+            onModelChange: (): void => {},
+            browserLayout: 'harnesses',
+            allowCopilot: true,
+          }),
+        );
+        openPicker();
+        const tab = document.querySelector<HTMLElement>(
+          '[data-testid="chat-model-harness-tab-copilot"]',
+        );
+        expect(tab?.getAttribute('aria-label')).toContain('Connect');
+        act(() => tab?.click());
+        act(() =>
+          document
+            .querySelector<HTMLElement>(
+              '[data-testid="chat-model-connect-harness"]',
+            )
+            ?.click(),
+        );
+        expect(openSettings).toHaveBeenCalledWith(section);
+      } finally {
+        useFeatureFlagsStore.getState().setSnapshot(snapshot);
+        useNavigationStore.setState({ openSettings: previous });
+        copilotMock.useCopilotChatAvailable.mockImplementation(
+          (enabled: boolean) => enabled,
+        );
+      }
+    },
+  );
+});
+
+describe('ModelPicker harness picker OpenCode tab', () => {
+  it.each([
+    { released: false, section: 'experiments' },
+    { released: true, section: 'account' },
+  ])(
+    'connects disconnected OpenCode in $section when released=$released',
+    ({ released, section }) => {
+      const opencodeMock = jest.requireMock<{
+        useOpenCodeChatAvailable: jest.Mock;
+      }>('@/hooks/useOpenCodeChatAvailable');
+      opencodeMock.useOpenCodeChatAvailable.mockReturnValue(false);
+      const snapshot = useFeatureFlagsStore.getState().snapshot;
+      useFeatureFlagsStore.getState().setSnapshot({
+        ...snapshot,
+        values: {
+          ...snapshot.values,
+          'canopy-desktop-opencode-harness': true,
+          'canopy-desktop-opencode-harness-released': released,
+        },
+      });
+      const openSettings = jest.fn();
+      const previous = useNavigationStore.getState().openSettings;
+      useNavigationStore.setState({ openSettings });
+      try {
+        render(
+          createElement(ModelPicker, {
+            currentModel: CLAUDE_GATEWAY,
+            onModelChange: (): void => {},
+            browserLayout: 'harnesses',
+            allowOpenCode: true,
+          }),
+        );
+        openPicker();
+        const tab = document.querySelector<HTMLElement>(
+          '[data-testid="chat-model-harness-tab-opencode"]',
+        );
+        expect(tab?.getAttribute('aria-label')).toContain('Connect');
+        act(() => tab?.click());
+        act(() =>
+          document
+            .querySelector<HTMLElement>(
+              '[data-testid="chat-model-connect-harness"]',
+            )
+            ?.click(),
+        );
+        expect(openSettings).toHaveBeenCalledWith(section);
+      } finally {
+        useFeatureFlagsStore.getState().setSnapshot(snapshot);
+        useNavigationStore.setState({ openSettings: previous });
+        opencodeMock.useOpenCodeChatAvailable.mockImplementation(
+          (enabled: boolean) => enabled,
+        );
+      }
+    },
+  );
+});
+
 describe('ModelPicker harness picker billing', () => {
+  it.each(['claude', 'codex'] as const)(
+    'opens the %s sign-in remedy from a credits-locked harness picker (CAN-5349)',
+    (provider) => {
+      const model = provider === 'claude' ? CLAUDE_GATEWAY : CODEX_GATEWAY;
+      const providers = availability({
+        [provider]: {
+          selectable: true,
+          nativeAuth: false,
+          nativeAuthInconclusive: false,
+          creditsEligible: true,
+          loading: false,
+        },
+      });
+      const resolution = resolveChatBillingFramework({
+        model,
+        provider,
+        availability: providers[provider],
+        aiCreditsRoutingActive: true,
+        subscriptionBillingOverride: false,
+        routingActiveForChat: false,
+      });
+      const onChange = jest.fn();
+      render(
+        createElement(ModelPicker, {
+          currentModel: model,
+          onModelChange: jest.fn(),
+          browserLayout: 'harnesses',
+          providerAvailability: providers,
+          billing: {
+            value: 'ai-credits',
+            provider,
+            disabled: resolution.toggleDisabled,
+            lockKind: resolution.lockKind,
+            lockedReason: resolution.lockedReason,
+            onChange,
+          },
+        }),
+      );
+      openPicker();
+      const cta = document.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-billing-sign-in"]',
+      );
+      expect(cta).not.toBeNull();
+      expect(cta?.textContent).toContain(
+        provider === 'claude' ? 'Sign in to Claude' : 'Sign in to Codex',
+      );
+      act(() => cta?.click());
+      const modal = document.querySelector('[data-testid="auth-login-modal"]');
+      expect(modal?.getAttribute('data-provider')).toBe(provider);
+      expect(
+        document.querySelector('[data-testid="chat-billing-sign-in"]'),
+      ).toBeNull();
+      expect(onChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('persists an explicit equal-value subscription choice after negative auth with no credits', async () => {
+    const previous = useChatStore.getState();
+    const target = {
+      projectId: 'billing-project',
+      worktreeId: 'billing-worktree',
+      chatId: 'billing-chat',
+    };
+    const tab: ChatTab = {
+      id: target.chatId,
+      title: 'Chat',
+      messages: [],
+      status: 'idle',
+      error: null,
+      createdAt: '2026-10-27T00:00:00.000Z',
+      queuedMessages: [],
+      planMode: false,
+      proposalMode: 'optional',
+      thinkingLevel: 'high',
+      modelConfig: {
+        thinkingLevel: 'high',
+        fastMode: false,
+        speed: 'standard',
+      },
+      fastModeExplicit: false,
+      model: CLAUDE_GATEWAY,
+      providerType: 'claude',
+    };
+    const dispatchChatCommand = jest
+      .fn<
+        ReturnType<typeof previous.dispatchChatCommand>,
+        Parameters<typeof previous.dispatchChatCommand>
+      >()
+      .mockResolvedValue('accepted');
+    const rememberBillingFramework = jest.fn();
+    const providers = availability({});
+    const resolution = resolveChatBillingFramework({
+      model: tab.model,
+      provider: 'claude',
+      availability: providers.claude,
+      aiCreditsRoutingActive: false,
+      subscriptionBillingOverride: false,
+      routingActiveForChat: false,
+    });
+    expect(resolution).toMatchObject({
+      framework: 'subscription',
+      toggleDisabled: true,
+      lockKind: 'no-credits',
+    });
+    act(() =>
+      useChatStore.setState({
+        worktreeChats: {
+          'billing-project/billing-worktree': {
+            activeTabId: tab.id,
+            tabs: [tab],
+          },
+        },
+        chatStateSync: {
+          'billing-project/billing-worktree': { phase: 'live', revision: 1 },
+        },
+        dispatchChatCommand,
+        rememberBillingFramework,
+      }),
+    );
+    const onChange = jest.fn((framework: 'subscription' | 'ai-credits') => {
+      useChatStore.getState().selectBillingFramework(framework, target);
+    });
+    try {
+      render(
+        createElement(ModelPicker, {
+          currentModel: CLAUDE_GATEWAY,
+          onModelChange: jest.fn(),
+          browserLayout: 'harnesses',
+          providerAvailability: providers,
+          billing: {
+            value: 'subscription',
+            provider: 'claude',
+            disabled: resolution.toggleDisabled,
+            lockKind: resolution.lockKind,
+            onChange,
+          },
+        }),
+      );
+      openPicker();
+      const visible = (id: string): HTMLElement | null =>
+        document.querySelector(`[data-testid="${id}"]:not([hidden] *)`);
+      act(() =>
+        (
+          visible(`chat-model-billing-${CLAUDE_GATEWAY}`) ??
+          visible(`chat-model-harness-control-${CLAUDE_GATEWAY}`)
+        )?.click(),
+      );
+      const subscription = visible(
+        `chat-model-billing-subscription-${CLAUDE_GATEWAY}`,
+      );
+      expect(subscription).not.toBeNull();
+      await act(async () => {
+        subscription?.click();
+        await Promise.resolve();
+      });
+      expect(onChange).toHaveBeenCalledWith('subscription');
+      expect(
+        useChatStore.getState().worktreeChats[
+          'billing-project/billing-worktree'
+        ]?.tabs[0],
+      ).toMatchObject({
+        subscriptionBillingOverride: true,
+        billingExplicitlyChosen: true,
+      });
+      const rollbackMatcher: unknown = expect.any(Function);
+      expect(dispatchChatCommand).toHaveBeenCalledWith(
+        { projectId: target.projectId, worktreeId: target.worktreeId },
+        {
+          type: 'chat.patch_tab_settings',
+          tabId: tab.id,
+          patch: {
+            subscriptionBillingOverride: true,
+            aiCreditsRouting: null,
+            billingExplicitlyChosen: true,
+          },
+        },
+        expect.objectContaining({ rollback: rollbackMatcher }),
+      );
+      expect(
+        dispatchChatCommand.mock.calls.every(
+          ([, command]) => command.type === 'chat.patch_tab_settings',
+        ),
+      ).toBe(true);
+    } finally {
+      act(() => useChatStore.setState(previous, true));
+    }
+  });
+
+  it('keeps the hosted credits gate when the no-credits subscription menu is reachable', async () => {
+    const onChange = jest.fn();
+    const onModelChange = jest.fn();
+    const previousApi = window.api;
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      writable: true,
+      value: {
+        loadNativeAiCreditsAvailability: jest.fn().mockResolvedValue({
+          personalEligible: false,
+          orgSpendable: false,
+          inOrg: false,
+          orgCreditPoolCovered: false,
+          inconclusive: false,
+          pricingUrl: 'https://example.test/pricing',
+        }),
+        loadCanopyCloudAccount: jest.fn().mockResolvedValue({
+          hasApiKey: true,
+          account: { id: 'acct_1' },
+          authMode: 'account',
+          credentialSource: 'account',
+          orgBillingStates: [],
+        }),
+      },
+    });
+    try {
+      render(
+        createElement(ModelPicker, {
+          currentModel: CLAUDE_GATEWAY,
+          onModelChange,
+          browserLayout: 'harnesses',
+          providerAvailability: availability({}),
+          billing: {
+            value: 'subscription',
+            provider: 'claude',
+            disabled: true,
+            lockKind: 'no-credits',
+            onChange,
+          },
+        }),
+      );
+      openPicker();
+      const visible = (id: string): HTMLElement | null =>
+        document.querySelector(`[data-testid="${id}"]:not([hidden] *)`);
+      act(() =>
+        (
+          visible(`chat-model-billing-${CLAUDE_GATEWAY}`) ??
+          visible(`chat-model-harness-control-${CLAUDE_GATEWAY}`)
+        )?.click(),
+      );
+      const credits = visible(`chat-model-billing-credits-${CLAUDE_GATEWAY}`);
+      expect(credits).not.toBeNull();
+      await act(async () => {
+        credits?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(recoveryModal()).not.toBeNull();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(onModelChange).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        writable: true,
+        value: previousApi,
+      });
+    }
+  });
+
+  it.each([
+    ['confirmed native auth', CLAUDE_GATEWAY, 'no-credits', true, false],
+    [
+      'already explicit subscription',
+      CLAUDE_GATEWAY,
+      'no-credits',
+      false,
+      true,
+    ],
+    [
+      'gateway-only lock',
+      CLAUDE_GATEWAY_ONLY,
+      'gateway-only-model',
+      false,
+      false,
+    ],
+    [
+      'non-routable lock',
+      CLAUDE_NON_GATEWAY,
+      'model-not-routable',
+      false,
+      false,
+    ],
+    ['another billing lock', CLAUDE_GATEWAY, undefined, false, false],
+  ] as const)(
+    'does not reopen the subscription action for %s',
+    (_label, model, lockKind, nativeAuth, allowUnverifiedSubscription) => {
+      render(
+        createElement(ModelPicker, {
+          currentModel: model,
+          onModelChange: jest.fn(),
+          browserLayout: 'harnesses',
+          providerAvailability: availability({
+            claude: {
+              selectable: nativeAuth,
+              nativeAuth,
+              creditsEligible: false,
+              loading: false,
+            },
+          }),
+          billing: {
+            value: 'subscription',
+            provider: 'claude',
+            disabled: true,
+            lockKind,
+            allowUnverifiedSubscription,
+            onChange: jest.fn(),
+          },
+        }),
+      );
+      openPicker();
+      act(() =>
+        document
+          .querySelector<HTMLElement>(
+            `[data-testid="chat-model-harness-control-${model}"]:not([hidden] *)`,
+          )
+          ?.click(),
+      );
+      expect(
+        document.querySelector(
+          `[data-testid="chat-model-billing-subscription-${model}"]:not([hidden] *)`,
+        ),
+      ).toBeNull();
+    },
+  );
+
   it('keeps the Auto row like the lab: no menu, and no chat-wide footer', () => {
     render(
       createElement(ModelPicker, {
@@ -5543,6 +6942,252 @@ describe('ModelPicker harness browser offers Cursor inside the picker', () => {
   });
 });
 
+describe('ModelPicker OpenCode captured harness', () => {
+  const visible = (id: string): HTMLElement | null =>
+    document.querySelector(`[data-testid="${id}"]:not([hidden])`);
+
+  function renderOpenCodeRecovery(onModelChange: jest.Mock): void {
+    mockOpenCodeAvailable = true;
+    const assignments: ModelHarnessAssignment[] = [
+      {
+        modelId: CLAUDE_GATEWAY,
+        source: 'claude-managed',
+        harness: 'claude',
+        defaultHarness: 'claude',
+        configurable: false,
+        overridden: false,
+        availableHarnesses: ['claude'],
+        chatHarnesses: ['claude', 'opencode'],
+      },
+    ];
+    initModelHarnessAssignments({ revision: 1, assignments });
+    useModelCatalogStore.setState({
+      harnessAssignments: { revision: 1, assignments },
+    });
+    render(
+      createElement(ModelPicker, {
+        currentModel: CLAUDE_NON_GATEWAY,
+        onModelChange,
+        allowOpenCode: true,
+        browserLayout: 'harnesses',
+        providerAvailability: availability({
+          claude: {
+            selectable: true,
+            nativeAuth: false,
+            creditsEligible: true,
+            loading: false,
+          },
+        }),
+      }),
+    );
+    openPicker();
+    act(() => visible('chat-model-harness-tab-opencode')?.click());
+  }
+
+  function stubOpenCodeRecoveryAccount(access: ModelLibraryAccess): void {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      writable: true,
+      value: {
+        loadNativeAiCreditsAvailability: jest.fn().mockResolvedValue({
+          personalEligible: true,
+          orgSpendable: false,
+          inOrg: false,
+          orgCreditPoolCovered: false,
+          inconclusive: false,
+          pricingUrl: 'https://example.test/pricing',
+        }),
+        loadCanopyCloudAccount: jest.fn().mockResolvedValue({
+          hasApiKey: true,
+          account: { id: 'acct_1' },
+          authMode: 'oauth',
+          credentialSource: 'oauth',
+          orgBillingStates: [],
+        }),
+        loadCanopyCloudEntitlements: jest.fn().mockResolvedValue({
+          resolved: true,
+          modelLibrary: { status: 'reported', access },
+          modelLibraryAccountKey: 'account:acct_1',
+          workModelLibrary: { status: 'reported', access },
+          modelLibraryOwnerKey: 'personal',
+        }),
+      },
+    });
+  }
+
+  it('keeps managed OpenCode purchase-gated for a funded non-payer', async () => {
+    mockLibraryAccess = 'needs_purchase';
+    stubOpenCodeRecoveryAccount('needs_purchase');
+    const previous = useModelCatalogStore.getState().harnessAssignments;
+    try {
+      const onModelChange = jest.fn();
+      renderOpenCodeRecovery(onModelChange);
+      const row = visible(`chat-model-option-${CLAUDE_GATEWAY}`);
+      expect(row).not.toBeNull();
+      expect(row?.getAttribute('data-locked')).toBe('true');
+      await act(async () => {
+        row?.click();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+      });
+      expect(recoveryModal()?.querySelector('h2')?.textContent).toBe(
+        'Unlock Opus',
+      );
+      expect(onModelChange).not.toHaveBeenCalled();
+    } finally {
+      act(() =>
+        useModelCatalogStore.setState({ harnessAssignments: previous }),
+      );
+    }
+  });
+
+  it('retains OpenCode when a library unlock completes after the row was rendered', async () => {
+    mockIsGuest = true;
+    // The row still reflects the guest. Recovery reads the signed-in account
+    // that has since gained library access, and must retain the chosen harness.
+    stubOpenCodeRecoveryAccount('unlocked');
+    const previous = useModelCatalogStore.getState().harnessAssignments;
+    try {
+      const onModelChange = jest.fn();
+      renderOpenCodeRecovery(onModelChange);
+      const row = visible(`chat-model-option-${CLAUDE_GATEWAY}`);
+      expect(row?.getAttribute('data-locked')).toBe('true');
+      await act(async () => {
+        row?.click();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+      });
+      expect(onModelChange).toHaveBeenCalledWith(
+        CLAUDE_GATEWAY,
+        undefined,
+        'opencode',
+      );
+    } finally {
+      act(() =>
+        useModelCatalogStore.setState({ harnessAssignments: previous }),
+      );
+    }
+  });
+
+  it('selects a funded inherited Agent on its pinned OpenCode route', () => {
+    mockOpenCodeAvailable = true;
+    initAgentModels([agentEntry({ baseModel: 'default' })]);
+    const previous = useModelCatalogStore.getState().harnessAssignments;
+    const assignments: ModelHarnessAssignment[] = [
+      {
+        modelId: CLAUDE_GATEWAY,
+        source: 'claude-managed',
+        harness: 'claude',
+        defaultHarness: 'claude',
+        configurable: false,
+        overridden: false,
+        availableHarnesses: ['claude'],
+        chatHarnesses: ['claude', 'opencode'],
+      },
+    ];
+    initModelHarnessAssignments({ revision: 1, assignments });
+    useModelCatalogStore.setState({
+      harnessAssignments: { revision: 1, assignments },
+    });
+    try {
+      const onModelChange = jest.fn();
+      render(
+        createElement(ModelPicker, {
+          currentModel: CLAUDE_GATEWAY,
+          inheritedDefaultModel: CLAUDE_GATEWAY,
+          onModelChange,
+          allowOpenCode: true,
+          browserLayout: 'harnesses',
+          providerAvailability: availability({
+            claude: {
+              selectable: true,
+              nativeAuth: false,
+              creditsEligible: true,
+              loading: false,
+            },
+          }),
+        }),
+      );
+      openPicker();
+      act(() => visible('chat-model-harness-tab-opencode')?.click());
+      const row = visible(`chat-model-option-${AGENT_ID}`);
+      expect(row).not.toBeNull();
+      act(() => row?.click());
+      expect(onModelChange).toHaveBeenCalledWith(
+        AGENT_ID,
+        undefined,
+        'opencode',
+      );
+      expect(
+        document.querySelector('[data-testid="model-recovery-modal"]'),
+      ).toBeNull();
+    } finally {
+      act(() =>
+        useModelCatalogStore.setState({ harnessAssignments: previous }),
+      );
+      initAgentModels([]);
+    }
+  });
+
+  it.each([true, false])(
+    'keeps a same-model native choice behind the started-chat lock: %s',
+    (started) => {
+      mockOpenCodeAvailable = true;
+      const previous = useModelCatalogStore.getState().harnessAssignments;
+      const assignments: ModelHarnessAssignment[] = [
+        {
+          modelId: CLAUDE_GATEWAY,
+          source: 'claude-managed',
+          harness: 'claude',
+          defaultHarness: 'claude',
+          configurable: false,
+          overridden: false,
+          availableHarnesses: ['claude'],
+          chatHarnesses: ['claude', 'opencode'],
+        },
+      ];
+      initModelHarnessAssignments({ revision: 1, assignments });
+      useModelCatalogStore.setState({
+        harnessAssignments: { revision: 1, assignments },
+      });
+      try {
+        const onModelChange = jest.fn();
+        render(
+          createElement(ModelPicker, {
+            currentModel: CLAUDE_GATEWAY,
+            onModelChange,
+            executionHarness: 'opencode',
+            executionHarnessExplicitlyChosen: true,
+            ...(started
+              ? {
+                  lockedHarness: 'opencode' as const,
+                  lockedProvider: 'opencode' as const,
+                }
+              : {}),
+            allowOpenCode: true,
+            browserLayout: 'harnesses',
+          }),
+        );
+        openPicker();
+        act(() => visible('chat-model-harness-tab-claude')?.click());
+        const row = visible(`chat-model-option-${CLAUDE_GATEWAY}`);
+        expect(row).not.toBeNull();
+        expect(row?.getAttribute('aria-disabled') === 'true').toBe(started);
+        act(() => row?.click());
+        if (started) expect(onModelChange).not.toHaveBeenCalled();
+        else
+          expect(onModelChange).toHaveBeenCalledWith(
+            CLAUDE_GATEWAY,
+            undefined,
+            'claude',
+          );
+      } finally {
+        act(() =>
+          useModelCatalogStore.setState({ harnessAssignments: previous }),
+        );
+      }
+    },
+  );
+});
+
 describe.each(['cursor', 'copilot', 'opencode'] as const)(
   'ModelPicker %s shared-model recovery',
   (harness) => {
@@ -5553,12 +7198,6 @@ describe.each(['cursor', 'copilot', 'opencode'] as const)(
           ? CLAUDE_GATEWAY
           : `anthropic/${CLAUDE_GATEWAY}`;
     const id = `${harness}:${encodeURIComponent(raw)}`;
-    const init =
-      harness === 'cursor'
-        ? initCursorModels
-        : harness === 'copilot'
-          ? initCopilotModels
-          : initOpenCodeModels;
     let previousFlags = useFeatureFlagsStore.getState().snapshot;
     beforeEach(() => {
       previousFlags = useFeatureFlagsStore.getState().snapshot;
@@ -5571,21 +7210,48 @@ describe.each(['cursor', 'copilot', 'opencode'] as const)(
         },
       });
       mockUseRegisteredCursorModels = harness === 'cursor';
-      init([
-        {
-          id,
-          rawModelId: raw,
-          label: 'Account Opus',
-          supportsVision: false,
-          supportedThinkingLevels: [],
-        },
-      ]);
+      if (harness === 'cursor') {
+        initCursorModels([
+          {
+            id,
+            rawModelId: raw,
+            label: 'Account Opus',
+            supportedThinkingLevels: [],
+          },
+        ]);
+      } else if (harness === 'copilot') {
+        initCopilotModels([
+          {
+            id,
+            rawModelId: raw,
+            label: 'Account Opus',
+            supportsVision: false,
+            supportedThinkingLevels: [],
+          },
+        ]);
+      } else {
+        initOpenCodeModels([
+          {
+            id,
+            rawModelId: raw,
+            label: 'Account Opus',
+            supportsVision: false,
+            supportedThinkingLevels: [],
+          },
+        ]);
+      }
     });
     afterEach(() => {
       act(() => {
         useFeatureFlagsStore.getState().setSnapshot(previousFlags);
         mockUseRegisteredCursorModels = false;
-        init([]);
+        if (harness === 'cursor') {
+          initCursorModels([]);
+        } else if (harness === 'copilot') {
+          initCopilotModels([]);
+        } else {
+          initOpenCodeModels([]);
+        }
         registerModelRegistries();
       });
     });
@@ -5641,7 +7307,15 @@ describe.each(['cursor', 'copilot', 'opencode'] as const)(
           expect(onStartNewChat).toHaveBeenCalledWith(id);
         } else {
           act(() => {
-            if (action === 'account removed') init([]);
+            if (action === 'account removed') {
+              if (harness === 'cursor') {
+                initCursorModels([]);
+              } else if (harness === 'copilot') {
+                initCopilotModels([]);
+              } else {
+                initOpenCodeModels([]);
+              }
+            }
             useModelCatalogStore.setState({
               policy: new Set(
                 action === 'policy blocked'
@@ -6031,7 +7705,7 @@ describe.each(['copilot', 'opencode'] as const)(
       expect(visible(`chat-model-option-${hostedId}`)).toBeNull();
       expect(visible(`chat-model-option-${GLM}`)).not.toBeNull();
       expect(visible(`chat-model-option-${GLM}`)?.textContent).not.toContain(
-        'AI credits',
+        'AI Credits',
       );
       act(() => visible(`chat-model-option-${GLM}`)?.click());
       expect(onModelChange).toHaveBeenLastCalledWith(hostedId);

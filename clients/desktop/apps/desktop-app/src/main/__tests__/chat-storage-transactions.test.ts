@@ -10,14 +10,26 @@ import {
   truncate,
   writeFile,
 } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ModuleKind, ScriptTarget, transpileModule } from 'typescript';
+import { Buffer } from 'node:buffer';
+import { TextDecoder, TextEncoder } from 'node:util';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
 import {
   ChatStorageTransactions,
   type ChatStorageIndexes,
+  type ChatStorageTransactionsOptions,
+  type ChatTranscriptWrite,
 } from '../lib/chat-storage-transactions';
+import {
+  ChatTranscriptLog,
+  type TranscriptDescriptor,
+} from '../lib/chat-transcript-log';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
+import { delegationTranscriptMessages } from '@canopy/agent-transcript';
+import type { AgentDelegationTranscript } from '@canopy/protocol/delegation';
 import {
   resetWorkCounters,
   snapshotWorkCounters,
@@ -26,8 +38,206 @@ import { isRecord } from '../lib/type-guards';
 import * as directorySync from '../lib/fsync-directory';
 import * as cooperativeJson from '../lib/cooperative-json';
 import type * as FsPromises from 'node:fs/promises';
+import { DELTA_JOURNAL_V2_FILE_NAME } from '../lib/chat-delta-journal/format';
+import {
+  activeSidecarMessageRecordBytes,
+  type ActiveRowAnchor,
+  type ActiveSidecarMessageRecord,
+} from '../lib/chat-transcript-live-positions';
+import { MAX_TRANSCRIPT_ROW_BYTES } from '../lib/chat-transcript-prefix-replace';
+import { isPersistedChatMessage } from '../lib/persisted-chat-message-validation';
+import {
+  indexChecksum as frozenBaselineIndexChecksum,
+  isSparseIndexWithChecksum as isFrozenBaselineSparseIndex,
+} from './fixtures/active-anchor-golden/sparse-index-validator.baseline-339153a';
 
 const fsPromises = jest.requireActual<typeof FsPromises>('node:fs/promises');
+const ACTIVE_ANCHOR_GOLDEN_DIRECTORY = join(
+  __dirname,
+  'fixtures',
+  'active-anchor-golden',
+);
+const FROZEN_BASELINE_TRANSACTION_SHA256 =
+  'f71268cecbd77aa6cccc33f39f4417b8497533fb7d0005ae42ba5cf97b3395fc';
+const FROZEN_BASELINE_TRANSCRIPT_LOG_SHA256 =
+  'ce2bc15a62b8fc2acdad03cece60a877e9e0ce1f5cea3dd811c79f3555a78905';
+const FROZEN_BASELINE_INDEX_VALIDATOR_SHA256 =
+  'a115652b2d8db997f16967a67bdf36d791c4bfd5f028228f5543128e1384f90b';
+
+interface FrozenBaselineTranscriptLogInstance {
+  activeMessages(chatId: string): Promise<PersistedChatMessage[]>;
+  descriptor(chatId: string): Promise<TranscriptDescriptor>;
+  initialize(chatId: string): Promise<void>;
+  page(chatId: string): Promise<{ messages: PersistedChatMessage[] }>;
+  append(
+    chatId: string,
+    messages: readonly PersistedChatMessage[],
+  ): Promise<void>;
+  capturePreview(
+    chatId: string,
+    canonical: TranscriptDescriptor,
+  ): Promise<{
+    descriptor: TranscriptDescriptor;
+    messages(): AsyncGenerator<PersistedChatMessage>;
+    close(): Promise<void>;
+  }>;
+  artifactReferenceSlice(
+    chatId: string,
+    offset: number,
+    maxBytes: number,
+    expected?: TranscriptDescriptor,
+  ): Promise<{
+    identity: string;
+    nextOffset: number;
+    complete: boolean;
+    scannedBytes: number;
+    artifactIds: string[];
+  }>;
+  artifactActiveReferenceSlice(
+    chatId: string,
+    offset: number,
+    maxBytes: number,
+  ): Promise<{
+    identity: string;
+    nextOffset: number;
+    complete: boolean;
+    scannedBytes: number;
+    artifactIds: string[];
+    activeHeaderFinalizing?: boolean;
+    activeFinalizingRows: number;
+  }>;
+  remove(chatId: string): Promise<void>;
+  writeActive(
+    chatId: string,
+    messages: readonly PersistedChatMessage[],
+  ): Promise<void>;
+}
+
+interface FrozenBaselineTranscriptLogExports {
+  ChatTranscriptLog: new (
+    root: string,
+    onAppendBoundary?: (boundary: string) => Promise<void>,
+  ) => FrozenBaselineTranscriptLogInstance;
+}
+
+interface FrozenBaselineTransactionInstance {
+  transcripts: FrozenBaselineTranscriptLogInstance;
+  load(): Promise<ChatStorageIndexes>;
+  commit(
+    expectedRevision: number,
+    next: ChatStorageIndexes,
+    writes: readonly ChatTranscriptWrite[],
+  ): Promise<ChatStorageIndexes>;
+}
+
+interface FrozenBaselineTransactionExports {
+  ChatStorageTransactions: new (
+    store: ChatStorageV2,
+  ) => FrozenBaselineTransactionInstance;
+}
+
+function isFrozenBaselineTranscriptLogExports(
+  value: unknown,
+): value is FrozenBaselineTranscriptLogExports {
+  return isRecord(value) && typeof value.ChatTranscriptLog === 'function';
+}
+
+function isFrozenBaselineTransactionExports(
+  value: unknown,
+): value is FrozenBaselineTransactionExports {
+  return isRecord(value) && typeof value.ChatStorageTransactions === 'function';
+}
+
+/** Execute the whole unchanged baseline chat-transcript-log.ts source. */
+async function loadFrozenBaselineTranscriptLog(): Promise<FrozenBaselineTranscriptLogExports> {
+  const source = await readFile(
+    join(
+      ACTIVE_ANCHOR_GOLDEN_DIRECTORY,
+      'chat-transcript-log.baseline-339153a.ts.txt',
+    ),
+    'utf8',
+  );
+  const sourceHash = createHash('sha256').update(source).digest('hex');
+  if (sourceHash !== FROZEN_BASELINE_TRANSCRIPT_LOG_SHA256)
+    throw new Error('Frozen baseline transcript log source hash mismatch');
+  const compiled = transpileModule(source, {
+    compilerOptions: {
+      module: ModuleKind.CommonJS,
+      target: ScriptTarget.ES2022,
+    },
+  });
+  const baselineModule: { exports: Record<string, unknown> } = {
+    exports: {},
+  };
+  runInNewContext(compiled.outputText, {
+    exports: baselineModule.exports,
+    module: baselineModule,
+    Buffer,
+    AbortController,
+    TextDecoder,
+    TextEncoder,
+    structuredClone,
+    require: (specifier: string): unknown =>
+      jest.requireActual(
+        specifier.startsWith('./') ? `../lib/${specifier.slice(2)}` : specifier,
+      ),
+  });
+  if (!isFrozenBaselineTranscriptLogExports(baselineModule.exports))
+    throw new Error('Frozen baseline transcript log module did not load');
+  return baselineModule.exports;
+}
+
+/**
+ * Execute the complete, source-frozen baseline transaction module. Its
+ * transaction and log implementations are frozen to their baseline source;
+ * unrelated relative imports are bound to current shared dependencies.
+ */
+async function loadFrozenBaselineTransaction(
+  store: ChatStorageV2,
+): Promise<FrozenBaselineTransactionInstance> {
+  const sourcePath = join(
+    ACTIVE_ANCHOR_GOLDEN_DIRECTORY,
+    'chat-storage-transactions.baseline-339153a.ts.txt',
+  );
+  const source = await readFile(sourcePath, 'utf8');
+  const sourceHash = createHash('sha256').update(source).digest('hex');
+  if (sourceHash !== FROZEN_BASELINE_TRANSACTION_SHA256)
+    throw new Error('Frozen baseline transaction source hash mismatch');
+  const compiled = transpileModule(source, {
+    compilerOptions: {
+      module: ModuleKind.CommonJS,
+      target: ScriptTarget.ES2022,
+    },
+  });
+  const baselineModule: { exports: Record<string, unknown> } = {
+    exports: {},
+  };
+  const frozenTranscriptLog = await loadFrozenBaselineTranscriptLog();
+  runInNewContext(compiled.outputText, {
+    exports: baselineModule.exports,
+    module: baselineModule,
+    require: (specifier: string): unknown => {
+      if (specifier === './chat-transcript-log') return frozenTranscriptLog;
+      return jest.requireActual(
+        specifier.startsWith('./') ? `../lib/${specifier.slice(2)}` : specifier,
+      );
+    },
+  });
+  if (!isFrozenBaselineTransactionExports(baselineModule.exports))
+    throw new Error('Frozen baseline transaction module did not load');
+  return new baselineModule.exports.ChatStorageTransactions(store);
+}
+
+async function recoverWithFrozenBaselineTransaction(
+  store: ChatStorageV2,
+): Promise<{
+  indexes: ChatStorageIndexes;
+  transcripts: FrozenBaselineTranscriptLogInstance;
+}> {
+  const transaction = await loadFrozenBaselineTransaction(store);
+  const indexes = await transaction.load();
+  return { indexes, transcripts: transaction.transcripts };
+}
 
 const message = (id: string): PersistedChatMessage => ({
   id,
@@ -35,6 +245,161 @@ const message = (id: string): PersistedChatMessage => ({
   timestamp: 1,
   blocks: [{ type: 'text', text: id }],
 });
+
+/**
+ * Observe the real transcript lookup path while a commit validates admission.
+ * Reflection lets this test observe the upcoming transcript API without
+ * replacing its implementation or adding a source-level dependency on it.
+ */
+function observeAdmissionLookups(
+  transaction: ChatStorageTransactions,
+  isAdmission: () => boolean,
+): {
+  scopeChatIds: string[];
+  loadedChatIds: string[];
+  locatedMessageIds: string[];
+  loadsInScope: number[];
+  restore(): void;
+} {
+  const scopeChatIds: string[] = [];
+  const loadedChatIds: string[] = [];
+  const locatedMessageIds: string[] = [];
+  const loadsInScope: number[] = [];
+  const firstPrototype = Reflect.getPrototypeOf(transaction.transcripts);
+  if (firstPrototype === null)
+    throw new Error('Transcript prototype is missing');
+  // The log's methods may live on a shared base store's prototype.
+  const ownerOf = (name: string): object => {
+    for (
+      let candidate: object | null = firstPrototype;
+      candidate !== null;
+      candidate = Reflect.getPrototypeOf(candidate)
+    )
+      if (Object.getOwnPropertyDescriptor(candidate, name)) return candidate;
+    return firstPrototype;
+  };
+  const descriptors = new Map<string, [object, PropertyDescriptor]>();
+  let insideScope = false;
+  let scopedLoads = 0;
+  type ReflectedMethod = (this: unknown, ...args: unknown[]) => unknown;
+
+  const wrap = (
+    name: string,
+    replacement: (invoke: ReflectedMethod) => ReflectedMethod,
+  ): void => {
+    const prototype = ownerOf(name);
+    const original: unknown = Reflect.get(prototype, name);
+    if (typeof original !== 'function') return;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+    if (!descriptor) return;
+    descriptors.set(name, [prototype, descriptor]);
+    const invoke: ReflectedMethod = function (
+      this: unknown,
+      ...args: unknown[]
+    ): unknown {
+      const result: unknown = Reflect.apply(original, this, args);
+      return result;
+    };
+    Reflect.set(prototype, name, replacement(invoke));
+  };
+
+  wrap(
+    'load',
+    (invoke) =>
+      function (this: unknown, ...args: unknown[]): unknown {
+        if (isAdmission() && typeof args[0] === 'string') {
+          loadedChatIds.push(args[0]);
+          if (insideScope) scopedLoads += 1;
+        }
+        return Reflect.apply(invoke, this, args);
+      },
+  );
+  wrap(
+    'readCommittedMessage',
+    (invoke) =>
+      function (this: unknown, ...args: unknown[]): unknown {
+        if (
+          isAdmission() &&
+          typeof args[0] === 'string' &&
+          typeof args[1] === 'string'
+        )
+          locatedMessageIds.push(args[1]);
+        return Reflect.apply(invoke, this, args);
+      },
+  );
+  wrap(
+    'withCommittedMessageStates',
+    (invoke) =>
+      async function (this: unknown, ...args: unknown[]): Promise<unknown> {
+        const observedScope =
+          isAdmission() && typeof args[0] === 'string' ? args[0] : undefined;
+        const observesScope = observedScope !== undefined;
+        if (observesScope) {
+          scopeChatIds.push(observedScope);
+          scopedLoads = 0;
+          insideScope = true;
+        }
+        try {
+          return await Reflect.apply(invoke, this, args);
+        } finally {
+          if (observesScope) {
+            insideScope = false;
+            loadsInScope.push(scopedLoads);
+          }
+        }
+      },
+  );
+
+  return {
+    scopeChatIds,
+    loadedChatIds,
+    locatedMessageIds,
+    loadsInScope,
+    restore(): void {
+      descriptors.forEach(
+        (
+          [prototype, descriptor]: [object, PropertyDescriptor],
+          name: string,
+        ): void => {
+          Object.defineProperty(prototype, name, descriptor);
+        },
+      );
+    },
+  };
+}
+
+function transactionWithAdmissionTrace(
+  store: ChatStorageV2,
+  options: ChatStorageTransactionsOptions = {},
+): {
+  transaction: ChatStorageTransactions;
+  observations: ReturnType<typeof observeAdmissionLookups>;
+  restore(): void;
+} {
+  let validatingAdmission = false;
+  const transaction = new ChatStorageTransactions(
+    store,
+    (point) => {
+      if (point === 'prepared') validatingAdmission = true;
+      if (point === 'journal') validatingAdmission = false;
+      return Promise.resolve();
+    },
+    options,
+  );
+  const observations = observeAdmissionLookups(
+    transaction,
+    () => validatingAdmission,
+  );
+  return {
+    transaction,
+    observations,
+    restore(): void {
+      validatingAdmission = false;
+      observations.restore();
+    },
+  };
+}
+
 async function* rows(
   messages: PersistedChatMessage[],
 ): AsyncGenerator<PersistedChatMessage> {
@@ -59,6 +424,169 @@ const pathText = (path: unknown): string =>
   typeof path === 'string' ? path : '';
 const artifactName = (output: string): string =>
   `sha256-v1-${createHash('sha256').update(output, 'utf8').digest('hex')}.txt`;
+
+function activeAnchor(
+  runId: string,
+  after: string | null,
+  tie = 0,
+): ActiveRowAnchor {
+  return { version: 1, runId, after, tie };
+}
+
+function anchorTuple(
+  id: string,
+  anchor: ActiveRowAnchor,
+): [string, ActiveRowAnchor] {
+  return [id, anchor];
+}
+
+function delegatedCard(delegationId: string): PersistedChatMessage {
+  const event: AgentDelegationTranscript = {
+    delegationId,
+    runGeneration: 1,
+    sequence: 1,
+    parentHarnessId: 'parent-harness',
+    parentTurnId: 'a',
+    parentToolCallId: 'parent-tool-call',
+    createdAt: 2,
+    task: {
+      description: 'A deterministic delegated task',
+      prompt: 'Return a deterministic result.',
+      executionMode: 'background',
+    },
+    snapshot: {
+      delegationId,
+      runGeneration: 1,
+      requestedModelId: 'test-model',
+      status: 'pending',
+      outputTruncated: false,
+    },
+    transcript: [],
+  };
+  const card = delegationTranscriptMessages(event)[0];
+  if (!card) throw new Error('Missing generated delegation card');
+  if (!isPersistedChatMessage(card))
+    throw new Error(`Invalid generated card: ${JSON.stringify(card)}`);
+  return card;
+}
+
+function delegatedChild(id: string, runId: string): PersistedChatMessage {
+  return {
+    ...message(id),
+    parentBlockId: runId,
+  };
+}
+
+/** Seed the anchor-bearing v2 JSONL sidecar without using the new log API. */
+async function seedActiveSidecar(
+  store: ChatStorageV2,
+  chatId: string,
+  messages: readonly {
+    message: PersistedChatMessage;
+    anchor?: unknown;
+    finalizing?: true;
+  }[],
+  transcriptRevision: number,
+): Promise<void> {
+  const header = {
+    version: 2,
+    transcriptRevision,
+    updatedAt: '2026-10-08T12:00:00.000Z',
+  };
+  const records: Record<string, unknown>[] = messages.map((row) => ({
+    version: 2,
+    kind: 'message',
+    message: row.message,
+    ...(row.anchor !== undefined ? { anchor: row.anchor } : {}),
+    ...(row.finalizing ? { finalizing: true } : {}),
+  }));
+  await writeFile(
+    join(store.directory, 'transcripts', `${chatId}.active.json`),
+    `${[header, ...records].map((row) => JSON.stringify(row)).join('\n')}\n`,
+  );
+}
+
+async function commitDelegationCard(
+  transaction: ChatStorageTransactions,
+  card: PersistedChatMessage,
+): Promise<void> {
+  const next = await transaction.load();
+  const revision = next.live.revision;
+  next.live.revision = revision + 1;
+  next.archive.revision = revision + 1;
+  await transaction.commit(revision, next, [
+    { chatId: 'chat', kind: 'append', messages: [message('a'), card] },
+  ]);
+}
+
+function parseActiveSidecarRecords(text: string): unknown[] {
+  const records: unknown[] = [];
+  for (const line of text.split('\n').filter(Boolean).slice(1)) {
+    const parsed: unknown = JSON.parse(line);
+    records.push(parsed);
+  }
+  return records;
+}
+
+async function activeSidecarAnchor(
+  store: ChatStorageV2,
+  chatId: string,
+  messageId: string,
+): Promise<unknown> {
+  const text = await readFile(
+    join(store.directory, 'transcripts', `${chatId}.active.json`),
+    'utf8',
+  );
+  for (const record of parseActiveSidecarRecords(text))
+    if (
+      isRecord(record) &&
+      isRecord(record.message) &&
+      record.message.id === messageId
+    )
+      return record.anchor;
+  return undefined;
+}
+
+function exactBudgetMessage(
+  id: string,
+  anchor: ActiveRowAnchor,
+  finalizing: boolean,
+  ceiling: number,
+): PersistedChatMessage {
+  const baseMessage = message(id);
+  const base: ActiveSidecarMessageRecord = {
+    version: 2,
+    kind: 'message',
+    message: { ...baseMessage, blocks: [{ type: 'text', text: '' }] },
+    anchor,
+    ...(finalizing ? { finalizing: true } : {}),
+  };
+  let fillerLength = ceiling - activeSidecarMessageRecordBytes(base);
+  if (fillerLength < 0) throw new Error('Active sidecar base exceeds ceiling');
+  let candidate: PersistedChatMessage = {
+    ...baseMessage,
+    parentBlockId: anchor.runId,
+    blocks: [{ type: 'text', text: 'x'.repeat(fillerLength) }],
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const record: ActiveSidecarMessageRecord = {
+      version: 2,
+      kind: 'message',
+      message: candidate,
+      anchor,
+      ...(finalizing ? { finalizing: true } : {}),
+    };
+    const delta = ceiling - activeSidecarMessageRecordBytes(record);
+    if (delta === 0) return candidate;
+    fillerLength += delta;
+    candidate = {
+      ...baseMessage,
+      parentBlockId: anchor.runId,
+      blocks: [{ type: 'text', text: 'x'.repeat(fillerLength) }],
+    };
+  }
+  return candidate;
+}
 
 // These tests do real filesystem and git work. Under a loaded multi-worker
 // Jest run they have exceeded Jest's default 5 s, so leave headroom here.
@@ -90,10 +618,19 @@ describe('v2 scope transactions', () => {
       }),
     );
   });
+
+  it('defers maintenance when a format-4 journal has uncheckpointed records', async () => {
+    const transactions = new ChatStorageTransactions(store);
+    jest
+      .spyOn(store, 'journalFile')
+      .mockResolvedValue(DELTA_JOURNAL_V2_FILE_NAME);
+    transactions.setDeltaJournalClear(() => false);
+    expect(await transactions.journalIsClear()).toBe(false);
+  });
   afterEach(async () => {
     jest.restoreAllMocks();
     await rm(root, { recursive: true, force: true });
-  });
+  }, 30_000); // Full transaction fixtures include a disk-backed 300-row history.
 
   it('publishes a metadata-only commit without staging a transcript directory or syncing each index separately', async () => {
     const transaction = new ChatStorageTransactions(store);
@@ -120,6 +657,120 @@ describe('v2 scope transactions', () => {
     expect(
       (await new ChatStorageTransactions(store).load()).live.tabs[0].title,
     ).toBe('Runtime metadata');
+  });
+
+  it('loads admission state once while streaming payload and omitted-active checks', async () => {
+    const traced = transactionWithAdmissionTrace(store, {
+      retainedPayloadBytes: 0,
+    });
+    const { transaction, observations } = traced;
+    try {
+      // The active row is already committed. A complete-empty append may omit
+      // it only after admission confirms its committed state.
+      await seedActiveSidecar(store, 'chat', [{ message: message('a') }], 1);
+      const next = await transaction.load();
+      next.live.revision = next.archive.revision = 1;
+
+      const committed = await transaction.commit(0, next, [
+        {
+          chatId: 'chat',
+          kind: 'append',
+          messages: rows([message('b'), message('c')]),
+          activeTailCount: 0,
+        },
+      ]);
+
+      // One active snapshot and one admission scope load. The two new payload
+      // identities are answered from the complete inventory; the committed
+      // omitted active row still gets its digest-checked locator read.
+      expect(committed.live.revision).toBe(1);
+      expect(committed.archive.revision).toBe(1);
+      expect((await transaction.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        message('b'),
+        message('c'),
+      ]);
+      expect(await transaction.transcripts.activeMessages('chat')).toEqual([]);
+      expect(observations.loadedChatIds).toEqual(['chat', 'chat']);
+      expect(observations.scopeChatIds).toEqual(['chat']);
+      expect(observations.loadsInScope).toEqual([1]);
+      expect(observations.locatedMessageIds).toEqual(['a']);
+    } finally {
+      traced.restore();
+    }
+  });
+
+  it('keeps conflicting committed-message rejection inside the one admission scope', async () => {
+    const traced = transactionWithAdmissionTrace(store, {
+      retainedPayloadBytes: 0,
+    });
+    const { transaction, observations } = traced;
+    const conflicting = {
+      ...message('a'),
+      blocks: [{ type: 'text' as const, text: 'conflicting content' }],
+    };
+    try {
+      const next = await transaction.load();
+      next.live.revision = next.archive.revision = 1;
+
+      await expect(
+        transaction.commit(0, next, [
+          { chatId: 'chat', kind: 'append', messages: [conflicting] },
+        ]),
+      ).rejects.toThrow('Conflicting committed message a');
+      traced.restore();
+
+      expect(
+        await readFile(join(store.directory, 'metadata-journal.jsonl'), 'utf8'),
+      ).toBe('');
+      expect((await transaction.load()).live.revision).toBe(0);
+      expect((await transaction.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+      ]);
+      expect(observations.scopeChatIds).toEqual(['chat']);
+      expect(observations.loadsInScope).toEqual([1]);
+      expect(observations.locatedMessageIds).toEqual(['a']);
+    } finally {
+      traced.restore();
+    }
+  });
+
+  it('keeps uncommitted active rows from being discarded by an empty append suffix', async () => {
+    const traced = transactionWithAdmissionTrace(store, {
+      retainedPayloadBytes: 0,
+    });
+    const { transaction, observations } = traced;
+    try {
+      await transaction.transcripts.writeActive('chat', [message('pending')]);
+      const next = await transaction.load();
+      next.live.revision = next.archive.revision = 1;
+
+      await expect(
+        transaction.commit(0, next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: rows([message('b')]),
+            activeTailCount: 0,
+          },
+        ]),
+      ).rejects.toThrow('Active update would discard uncommitted messages');
+      traced.restore();
+
+      expect(
+        await readFile(join(store.directory, 'metadata-journal.jsonl'), 'utf8'),
+      ).toBe('');
+      expect((await transaction.load()).live.revision).toBe(0);
+      expect(await transaction.transcripts.activeMessages('chat')).toEqual([
+        message('pending'),
+      ]);
+      expect(observations.loadedChatIds).toEqual(['chat', 'chat']);
+      expect(observations.scopeChatIds).toEqual(['chat']);
+      expect(observations.loadsInScope).toEqual([1]);
+      expect(observations.locatedMessageIds).toEqual([]);
+    } finally {
+      traced.restore();
+    }
   });
 
   it('does not remove temporary files that were already renamed into place', async () => {
@@ -296,8 +947,9 @@ describe('v2 scope transactions', () => {
     jest
       .spyOn(cooperativeJson, 'writeJsonValuesCooperatively')
       .mockImplementation(async (path, values, options) => {
-        await writeValues(path, values, options);
+        const bytesWritten = await writeValues(path, values, options);
         if (path.includes('metadata-journal.jsonl.')) authorized = false;
+        return bytesWritten;
       });
 
     await expect(
@@ -785,7 +1437,7 @@ describe('v2 scope transactions', () => {
       await transaction.commit(0, next, [
         { chatId: 'chat', kind: 'append', messages: rows(history) },
       ]);
-    });
+    }, 30_000); // Disk-backed setup seeds 300 rows for each replacement case.
 
     it('rewrites only the locators of the changed suffix', async () => {
       const transaction = new ChatStorageTransactions(store);
@@ -844,6 +1496,50 @@ describe('v2 scope transactions', () => {
       ]);
       await expectLocatorsMatchLog(committed);
     });
+
+    // Coverage-green-first: compare the 301-row fault path against unchanged
+    // transaction and log source, with a justified timeout for full rebuild.
+    it('replays a 301-row replacement interrupted before the sparse index on frozen baseline sources', async () => {
+      // This case performs a full-log replacement, locator rebuild, sparse
+      // index rebuild, and recovery across 301 committed rows; allow the
+      // deliberately heavy disk-backed fixture more than Jest's 5s default.
+      const transaction = await loadFrozenBaselineTransaction(store);
+      const next = await transaction.load();
+      const revision = next.live.revision;
+      next.live.revision = revision + 1;
+      next.archive.revision = revision + 1;
+      const replacement = patch(
+        committed.filter((row) => row.id !== 'row-297'),
+        'row-294',
+      );
+      const rename = fsPromises.rename;
+      jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementation(async (source, destination) => {
+          if (String(destination).endsWith('chat.index.json'))
+            throw new Error('injected frozen baseline failure');
+          await rename(source, destination);
+        });
+      await expect(
+        transaction.commit(revision, next, [
+          { chatId: 'chat', kind: 'replace', messages: rows(replacement) },
+        ]),
+      ).rejects.toThrow('injected frozen baseline failure');
+      jest.restoreAllMocks();
+
+      const recovered = await loadFrozenBaselineTransaction(store);
+      const indexes = await recovered.load();
+      expect(indexes.live.revision).toBe(revision + 1);
+      expect((await recovered.transcripts.page('chat')).messages).toEqual(
+        replacement,
+      );
+      expect(
+        await readFile(join(store.directory, 'metadata-journal.jsonl'), 'utf8'),
+      ).toBe('');
+      expect(
+        await readdir(join(store.directory, 'pending-transcripts')),
+      ).toEqual([]);
+    }, 30_000);
 
     it('commits a turn start without rewriting the committed history', async () => {
       // The planner commits the new prompt and keeps its open timer active in
@@ -1023,7 +1719,2210 @@ describe('v2 scope transactions', () => {
           ).resolves.toBe('identical');
         await expectLocatorsMatchLog(replacement);
       },
+      30_000, // These crash cases replace and rebuild indexes for 301 rows.
     );
+  });
+
+  describe('active-row anchors in transcript transactions', () => {
+    const anchorPath = (): string =>
+      join(store.directory, 'transcripts', 'chat.active.json');
+    const logPath = (): string =>
+      join(store.directory, 'transcripts', 'chat.jsonl');
+    const journalPath = (): string =>
+      join(store.directory, 'metadata-journal.jsonl');
+    const seedAnchoredChat = async (
+      delegationId = 'card',
+      childId = 'child',
+      childRunId?: string,
+      rowAnchor?: ActiveRowAnchor,
+    ): Promise<{
+      card: PersistedChatMessage;
+      child: PersistedChatMessage;
+      transaction: ChatStorageTransactions;
+    }> => {
+      const transaction = new ChatStorageTransactions(store);
+      const card = delegatedCard(delegationId);
+      await commitDelegationCard(transaction, card);
+      const effectiveRunId = childRunId ?? card.id;
+      const child = delegatedChild(childId, effectiveRunId);
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [
+          {
+            message: child,
+            anchor: rowAnchor ?? activeAnchor(effectiveRunId, 'a'),
+          },
+        ],
+        1,
+      );
+      return { card, child, transaction };
+    };
+
+    const nextRevision = (indexes: ChatStorageIndexes): number => {
+      const revision = indexes.live.revision;
+      indexes.live.revision = revision + 1;
+      indexes.archive.revision = revision + 1;
+      return revision;
+    };
+
+    const readPending = async (): Promise<Record<string, unknown>> => {
+      const pending: unknown = JSON.parse(
+        await readFile(journalPath(), 'utf8'),
+      );
+      if (!isRecord(pending)) throw new Error('Missing pending transaction');
+      return pending;
+    };
+
+    async function seedCompleteAppend(): Promise<{
+      card: PersistedChatMessage;
+      payload: PersistedChatMessage[];
+    }> {
+      const card = delegatedCard('complete-run');
+      await commitDelegationCard(new ChatStorageTransactions(store), card);
+      const first = message('ordinary-first');
+      const second = message('ordinary-second');
+      const runA = delegatedChild('run-a', card.id);
+      const runB = delegatedChild('run-b', card.id);
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [
+          { message: runA, anchor: activeAnchor(card.id, second.id) },
+          { message: first },
+          { message: runB, anchor: activeAnchor(card.id, first.id) },
+          { message: second },
+        ],
+        1,
+      );
+      return { card, payload: [first, runB, second, runA] };
+    }
+
+    it('admits an explicit-zero append with interleaved anchored rows and clears all active rows', async () => {
+      const { card, payload } = await seedCompleteAppend();
+      const transaction = new ChatStorageTransactions(store);
+      const next = await transaction.load();
+      await transaction.commit(nextRevision(next), next, [
+        {
+          chatId: 'chat',
+          kind: 'append',
+          messages: payload,
+          activeTailCount: 0,
+        },
+      ]);
+      expect((await transaction.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        card,
+        ...payload,
+      ]);
+      expect(await transaction.transcripts.activeMessages('chat')).toEqual([]);
+      expect(await transaction.transcripts.activeRowAnchors('chat')).toEqual(
+        new Map(),
+      );
+      await expect(stat(anchorPath())).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    });
+
+    it('replays an empty explicit-zero append payload with the complete WAL encoding', async () => {
+      const transaction = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await transaction.load();
+      await expect(
+        transaction.commit(nextRevision(next), next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [],
+            activeTailCount: 0,
+          },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing empty complete WAL');
+      expect(pending.writes[0]).toMatchObject({
+        kind: 'active-replace',
+        count: 0,
+        appendCommittedCount: 0,
+      });
+      expect(pending.writes[0]).not.toHaveProperty('activeTailCount');
+      const recovered = new ChatStorageTransactions(store);
+      await recovered.load();
+      await recovered.load();
+      expect((await recovered.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+      ]);
+      expect(await recovered.transcripts.activeMessages('chat')).toEqual([]);
+    });
+
+    it('keeps the absent-suffix physical-order rejection for the same interleaved payload', async () => {
+      const { payload } = await seedCompleteAppend();
+      const transaction = new ChatStorageTransactions(store);
+      const next = await transaction.load();
+      await expect(
+        transaction.commit(nextRevision(next), next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: payload,
+          },
+        ]),
+      ).rejects.toThrow(
+        'Finalized messages must follow active transcript order',
+      );
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+    });
+
+    it('rejects an explicit-zero append omitting an uncommitted sidecar row before WAL publication', async () => {
+      const { child, transaction } = await seedAnchoredChat();
+      const first = message('ordinary-first');
+      const anchors = await transaction.transcripts.activeRowAnchors('chat');
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [{ message: first }, { message: child, anchor: anchors.get(child.id) }],
+        1,
+      );
+      const next = await transaction.load();
+      await expect(
+        transaction.commit(nextRevision(next), next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [first],
+            activeTailCount: 0,
+          },
+        ]),
+      ).rejects.toThrow('Active update would discard uncommitted messages');
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+      expect(
+        await readdir(join(store.directory, 'pending-transcripts')),
+      ).toEqual([]);
+    });
+
+    it('rejects reordered ordinary rows in an explicit-zero append before WAL publication', async () => {
+      const { payload } = await seedCompleteAppend();
+      const transaction = new ChatStorageTransactions(store);
+      const next = await transaction.load();
+      await expect(
+        transaction.commit(nextRevision(next), next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [payload[2], payload[1], payload[0], payload[3]],
+            activeTailCount: 0,
+          },
+        ]),
+      ).rejects.toThrow(
+        'Finalized messages must follow active transcript order',
+      );
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+    });
+
+    it.each(['prepared', 'journal', 'transcripts', 'indexes'] as const)(
+      'recovers an explicit-zero append at the %s transaction boundary idempotently',
+      async (boundary) => {
+        const { card, payload } = await seedCompleteAppend();
+        const transaction = new ChatStorageTransactions(store, (point) =>
+          point === boundary
+            ? Promise.reject(new Error(`interrupt at ${boundary}`))
+            : Promise.resolve(),
+        );
+        const next = await transaction.load();
+        const revision = nextRevision(next);
+        const write: ChatTranscriptWrite = {
+          chatId: 'chat',
+          kind: 'append',
+          messages: payload,
+          activeTailCount: 0,
+        };
+        await expect(
+          transaction.commit(revision, next, [write]),
+        ).rejects.toThrow(`interrupt at ${boundary}`);
+        if (boundary !== 'prepared') {
+          const pending = await readPending();
+          if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+            throw new Error('Missing complete append WAL');
+          expect(pending.writes[0]).toMatchObject({
+            kind: 'active-replace',
+            appendCommittedCount: payload.length,
+            count: payload.length,
+          });
+          expect(pending.writes[0]).not.toHaveProperty('activeTailCount');
+          expect(pending.writes[0]).not.toHaveProperty('anchors');
+        } else {
+          expect(await readFile(journalPath(), 'utf8')).toBe('');
+        }
+        const recovered = new ChatStorageTransactions(store);
+        const loaded = await recovered.load();
+        if (boundary === 'prepared') {
+          expect(loaded.live.revision).toBe(revision);
+          await recovered.commit(revision, next, [write]);
+        }
+        await recovered.load();
+        await new ChatStorageTransactions(store).load();
+        expect((await recovered.transcripts.page('chat')).messages).toEqual([
+          message('a'),
+          card,
+          ...payload,
+        ]);
+        expect(await recovered.transcripts.activeMessages('chat')).toEqual([]);
+        expect(await recovered.transcripts.activeRowAnchors('chat')).toEqual(
+          new Map(),
+        );
+        await expect(stat(anchorPath())).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect(await readFile(journalPath(), 'utf8')).toBe('');
+        expect(
+          await readdir(join(store.directory, 'pending-transcripts')),
+        ).toEqual([]);
+      },
+    );
+
+    it('replays the explicit-zero WAL on frozen old sources and commits every row on old parent settle', async () => {
+      const { card, payload } = await seedCompleteAppend();
+      const transaction = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await transaction.load();
+      await expect(
+        transaction.commit(nextRevision(next), next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: payload,
+            activeTailCount: 0,
+          },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+      const old = await loadFrozenBaselineTransaction(store);
+      const recovered = await old.load();
+      expect(await old.transcripts.activeMessages('chat')).toEqual(payload);
+      expect(
+        (await readFile(logPath(), 'utf8')).split('\n').filter(Boolean),
+      ).toHaveLength(2);
+      expect((await old.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        card,
+        ...payload,
+      ]);
+      await old.commit(nextRevision(recovered), recovered, [
+        { chatId: 'chat', kind: 'append', messages: payload },
+      ]);
+      expect(await old.transcripts.activeMessages('chat')).toEqual([]);
+      expect((await old.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        card,
+        ...payload,
+      ]);
+      expect(
+        (await readFile(logPath(), 'utf8')).split('\n').filter(Boolean),
+      ).toHaveLength(2 + payload.length);
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+      expect(
+        await readdir(join(store.directory, 'pending-transcripts')),
+      ).toEqual([]);
+    });
+
+    // Coverage-green-first: pin the unchanged reader's acceptance of both
+    // optional descriptor states and the legacy anchor-free shape.
+    it('accepts the frozen transcript index descriptor without hasOrdinaryActiveRows', async () => {
+      const frozenIndexValidatorSource = await readFile(
+        join(
+          ACTIVE_ANCHOR_GOLDEN_DIRECTORY,
+          'sparse-index-validator.baseline-339153a.ts',
+        ),
+        'utf8',
+      );
+      expect(
+        createHash('sha256').update(frozenIndexValidatorSource).digest('hex'),
+      ).toBe(FROZEN_BASELINE_INDEX_VALIDATOR_SHA256);
+      const frozenLog = await loadFrozenBaselineTranscriptLog();
+      const legacyDirectory = join(root, 'legacy-transcript-index');
+      const oldReader = new frozenLog.ChatTranscriptLog(legacyDirectory);
+      await oldReader.initialize('legacy');
+      const legacyIndex = await readFile(
+        join(ACTIVE_ANCHOR_GOLDEN_DIRECTORY, 'legacy-empty-index.json'),
+        'utf8',
+      );
+      const legacyIndexValue: unknown = JSON.parse(legacyIndex);
+      if (!isRecord(legacyIndexValue))
+        throw new Error('Invalid frozen legacy transcript index');
+      expect(legacyIndexValue).not.toHaveProperty('hasOrdinaryActiveRows');
+      expect(isFrozenBaselineSparseIndex(legacyIndexValue)).toBe(true);
+      await writeFile(join(legacyDirectory, 'legacy.index.json'), legacyIndex);
+
+      const descriptor = await oldReader.descriptor('legacy');
+      expect(descriptor).toMatchObject({
+        committedMessageCount: 0,
+        hasActiveSidecar: false,
+      });
+      expect(descriptor).not.toHaveProperty('hasOrdinaryActiveRows');
+
+      for (const [file, ordinaryActive] of [
+        ['anchored-index-with-ordinary-flag.json', false],
+        ['anchored-index-with-ordinary-active-rows.json', true],
+      ] as const) {
+        const anchoredIndex: unknown = JSON.parse(
+          await readFile(join(ACTIVE_ANCHOR_GOLDEN_DIRECTORY, file), 'utf8'),
+        );
+        if (!isFrozenBaselineSparseIndex(anchoredIndex))
+          throw new Error(`Frozen baseline rejected ${file}`);
+        expect(anchoredIndex.hasActiveSidecar).toBe(true);
+        expect(anchoredIndex.hasOrdinaryActiveRows).toBe(ordinaryActive);
+        const { checksum, ...candidate } = anchoredIndex;
+        expect(checksum).toBe(frozenBaselineIndexChecksum(candidate));
+        await writeFile(
+          join(legacyDirectory, 'legacy.index.json'),
+          JSON.stringify(anchoredIndex),
+        );
+        const actualOldReader = new frozenLog.ChatTranscriptLog(
+          legacyDirectory,
+        );
+        await expect(
+          actualOldReader.descriptor('legacy'),
+        ).resolves.toMatchObject({
+          committedMessageCount: 0,
+        });
+      }
+    });
+
+    // Coverage-green-first: verify old source drops unknown anchor fields.
+    it('runs the anchored sidecar fixture through the unchanged old reader and writer', async () => {
+      const frozenLog = await loadFrozenBaselineTranscriptLog();
+      const directory = join(root, 'frozen-sidecar-reader');
+      const oldReader = new frozenLog.ChatTranscriptLog(directory);
+      await oldReader.initialize('chat');
+      const input = await readFile(
+        join(ACTIVE_ANCHOR_GOLDEN_DIRECTORY, 'active-sidecar.input.jsonl'),
+        'utf8',
+      );
+      await writeFile(join(directory, 'chat.active.json'), input);
+
+      const accepted = await oldReader.activeMessages('chat');
+      expect(accepted.map((row) => row.id)).toEqual([
+        'delegated-agent-anchor-golden',
+        'delegated-agent-anchor-golden:child-answer',
+      ]);
+      await oldReader.writeActive('chat', accepted);
+
+      const rewritten = await readFile(
+        join(directory, 'chat.active.json'),
+        'utf8',
+      );
+      expect(rewritten).not.toContain('"anchor"');
+      expect(
+        (await oldReader.activeMessages('chat')).map((row) => row.id),
+      ).toEqual(accepted.map((row) => row.id));
+    });
+
+    // Coverage-green-first: use the old source's capture and artifact-scan APIs.
+    it('runs capture and maintenance reads through the unchanged old transcript source', async () => {
+      const frozenLog = await loadFrozenBaselineTranscriptLog();
+      const oldReader = new frozenLog.ChatTranscriptLog(
+        join(root, 'frozen-capture'),
+      );
+      await oldReader.initialize('chat');
+      await oldReader.append('chat', [message('captured-row')]);
+      const canonical = await oldReader.descriptor('chat');
+      const captured = await oldReader.capturePreview('chat', canonical);
+      const capturedRows: PersistedChatMessage[] = [];
+      try {
+        for await (const row of captured.messages()) capturedRows.push(row);
+      } finally {
+        await captured.close();
+      }
+      expect(capturedRows.map((row) => row.id)).toEqual(['captured-row']);
+
+      // The unchanged maintenance APIs must inspect the same committed index
+      // and active sidecar the frozen capture path just read.
+      await oldReader.writeActive('chat', [message('active-row')]);
+      await expect(
+        oldReader.artifactReferenceSlice('chat', 0, 1024 * 1024, canonical),
+      ).resolves.toMatchObject({ complete: true, artifactIds: [] });
+      await expect(
+        oldReader.artifactActiveReferenceSlice('chat', 0, 1024 * 1024),
+      ).resolves.toMatchObject({
+        complete: true,
+        artifactIds: [],
+        activeHeaderFinalizing: false,
+        activeFinalizingRows: 0,
+      });
+    });
+
+    // Coverage-green-first: pin the bounded known-effect encoding and payload.
+    it('pins the frozen old-reader active-replace WAL encoding and payload', async () => {
+      const fixtureValue: unknown = JSON.parse(
+        await readFile(
+          join(
+            ACTIVE_ANCHOR_GOLDEN_DIRECTORY,
+            'append-active-tail.intent.json',
+          ),
+          'utf8',
+        ),
+      );
+      if (
+        !isRecord(fixtureValue) ||
+        !isRecord(fixtureValue.write) ||
+        !Array.isArray(fixtureValue.payload)
+      )
+        throw new Error('Invalid frozen append-active-tail fixture');
+      const write = fixtureValue.write;
+      expect(write.kind).toBe('active-replace');
+      expect(write.appendCommittedCount).toBe(1);
+      expect(write).not.toHaveProperty('activeTailCount');
+
+      const payload: PersistedChatMessage[] = [];
+      const hash = createHash('sha256');
+      for (const row of fixtureValue.payload) {
+        if (!isPersistedChatMessage(row))
+          throw new Error('Invalid frozen append-active-tail row');
+        payload.push(row);
+        hash.update(JSON.stringify(row)).update('\n');
+      }
+      expect(payload.map((row) => row.id)).toEqual([
+        'ready-run',
+        'ordinary-parent-tail',
+      ]);
+      expect(write.sha256).toBe(hash.digest('hex'));
+      expect(payload.map((row) => row.id)).toEqual([
+        'ready-run',
+        'ordinary-parent-tail',
+      ]);
+    });
+
+    // Coverage-green-first: exercise old transaction validation, apply, and
+    // settle with both anchor-bearing and ordinary-only suffixes.
+    it.each(['anchored', 'unanchored'] as const)(
+      'completes the %s suffix WAL through the exact frozen transaction recovery path',
+      async (suffixKind) => {
+        const readyRun = message(`ready-run-${suffixKind}`);
+        const parentTail = message(`parent-tail-${suffixKind}`);
+        let payload: PersistedChatMessage[];
+        let anchors: [string, ActiveRowAnchor][] | undefined;
+        if (suffixKind === 'anchored') {
+          const card = delegatedCard('frozen-card');
+          const cardTransaction = new ChatStorageTransactions(store);
+          await commitDelegationCard(cardTransaction, card);
+          const child = delegatedChild('frozen-child', card.id);
+          await seedActiveSidecar(
+            store,
+            'chat',
+            [
+              {
+                message: child,
+                anchor: activeAnchor(card.id, 'a'),
+              },
+            ],
+            1,
+          );
+          payload = [parentTail, child];
+          anchors = [[child.id, activeAnchor(card.id, 'a')]];
+        } else {
+          await seedActiveSidecar(store, 'chat', [{ message: parentTail }], 1);
+          payload = [readyRun, parentTail];
+        }
+
+        const transaction = new ChatStorageTransactions(store, (point) =>
+          point === 'journal'
+            ? Promise.reject(new Error('interrupt after WAL publish'))
+            : Promise.resolve(),
+        );
+        const next = await transaction.load();
+        const expectedRevision = nextRevision(next);
+        await expect(
+          transaction.commit(expectedRevision, next, [
+            {
+              chatId: 'chat',
+              kind: 'append',
+              messages: payload,
+              activeTailCount: 1,
+            },
+          ]),
+        ).rejects.toThrow('interrupt after WAL publish');
+
+        const pending = await readPending();
+        if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+          throw new Error('Missing prepared append');
+        expect(pending.writes[0]).toMatchObject({
+          kind: 'active-replace',
+          appendCommittedCount: 1,
+        });
+        expect(pending.writes[0]).not.toHaveProperty('activeTailCount');
+        if (anchors) expect(pending.writes[0].anchors).toEqual(anchors);
+        else expect(pending.writes[0]).not.toHaveProperty('anchors');
+
+        const recovered = await recoverWithFrozenBaselineTransaction(store);
+        expect(recovered.indexes.live.revision).toBe(expectedRevision + 1);
+        expect(await readFile(journalPath(), 'utf8')).toBe('');
+        const activeIds = (
+          await recovered.transcripts.activeMessages('chat')
+        ).map((row) => row.id);
+        expect(activeIds.sort()).toEqual(payload.map((row) => row.id).sort());
+        const pageIds = (await recovered.transcripts.page('chat')).messages.map(
+          (row) => row.id,
+        );
+        expect(pageIds.sort()).toEqual(
+          [
+            message('a').id,
+            ...(suffixKind === 'anchored'
+              ? [delegatedCard('frozen-card').id]
+              : []),
+            ...payload.map((row) => row.id),
+          ].sort(),
+        );
+        expect(new Set(pageIds).size).toBe(pageIds.length);
+        expect(
+          await readdir(join(store.directory, 'pending-transcripts')),
+        ).toEqual([]);
+
+        // Coverage-green-first: the unchanged parent settle must commit the
+        // entire downgraded active payload, for anchored and ordinary suffixes.
+        const oldParentSettle = await loadFrozenBaselineTransaction(store);
+        const settleIndexes = await oldParentSettle.load();
+        const settleRevision = settleIndexes.live.revision;
+        settleIndexes.live.revision = settleRevision + 1;
+        settleIndexes.archive.revision = settleRevision + 1;
+        await oldParentSettle.commit(settleRevision, settleIndexes, [
+          { chatId: 'chat', kind: 'append', messages: payload },
+        ]);
+        expect(
+          await oldParentSettle.transcripts.activeMessages('chat'),
+        ).toEqual([]);
+        const settledIds = (
+          await oldParentSettle.transcripts.page('chat')
+        ).messages.map((row) => row.id);
+        expect(settledIds.sort()).toEqual(pageIds.sort());
+        expect(new Set(settledIds).size).toBe(settledIds.length);
+        expect(await readFile(journalPath(), 'utf8')).toBe('');
+      },
+    );
+
+    // Coverage-green-first: ensure the frozen old source replays reordered
+    // anchored survivors after new apply has partially committed.
+    it.each(['index-published', 'survivors-published'] as const)(
+      'keeps reordered anchored suffix rows replayable by frozen recovery after %s',
+      async (boundary) => {
+        const card = delegatedCard('reordered-card');
+        const setup = new ChatStorageTransactions(store);
+        await commitDelegationCard(setup, card);
+        const runA = delegatedChild('run-a', card.id);
+        const ordinary = message('ordinary-middle');
+        const runB = delegatedChild('run-b', card.id);
+        const runAAnchor = activeAnchor(card.id, card.id, 0);
+        const runBAnchor = activeAnchor(card.id, card.id, 2);
+        await seedActiveSidecar(
+          store,
+          'chat',
+          [
+            { message: runA, anchor: runAAnchor },
+            { message: ordinary },
+            { message: runB, anchor: runBAnchor },
+          ],
+          1,
+        );
+
+        const transaction = new ChatStorageTransactions(store);
+        const next = await transaction.load();
+        const expectedRevision = nextRevision(next);
+        const directory = join(store.directory, 'transcripts');
+        jest
+          .spyOn(transaction.transcripts, 'append')
+          .mockImplementation(
+            async (chatId, messages, anchors, activeTailCount) =>
+              new ChatTranscriptLog(directory, (point) =>
+                point === boundary
+                  ? Promise.reject(new Error(`interrupt at ${boundary}`))
+                  : Promise.resolve(),
+              ).append(chatId, messages, anchors, activeTailCount),
+          );
+
+        await expect(
+          transaction.commit(expectedRevision, next, [
+            {
+              chatId: 'chat',
+              kind: 'append',
+              messages: [ordinary, runB, runA],
+              activeTailCount: 2,
+            },
+          ]),
+        ).rejects.toThrow(`interrupt at ${boundary}`);
+
+        const pending = await readPending();
+        if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+          throw new Error('Missing prepared reordered append');
+        expect(pending.writes[0]).toMatchObject({
+          kind: 'active-replace',
+          appendCommittedCount: 1,
+        });
+        expect(pending.writes[0].anchors).toEqual([
+          [runB.id, runBAnchor],
+          [runA.id, runAAnchor],
+        ]);
+
+        const recovered = await recoverWithFrozenBaselineTransaction(store);
+        expect(recovered.indexes.live.revision).toBe(expectedRevision + 1);
+        expect(await readFile(journalPath(), 'utf8')).toBe('');
+        const recoveredRows = (await recovered.transcripts.page('chat'))
+          .messages;
+        const recoveredIds = recoveredRows.map((row) => row.id);
+        expect(recoveredIds.sort()).toEqual(
+          [message('a').id, card.id, ordinary.id, runB.id, runA.id].sort(),
+        );
+        expect(new Set(recoveredIds).size).toBe(recoveredIds.length);
+        expect(
+          await readdir(join(store.directory, 'pending-transcripts')),
+        ).toEqual([]);
+      },
+    );
+
+    // Coverage-green-first: start from each new append checkpoint, then use
+    // only frozen transaction/log code for old recovery and parent settle.
+    it.each([
+      'prepared',
+      'appended',
+      'index-published',
+      'survivors-published',
+    ] as const)(
+      'replays the unanchored suffix WAL through frozen recovery after new-append %s',
+      async (boundary) => {
+        const parentTail = message('ordinary-parent-tail');
+        const readyRun = message('ready-run');
+        await seedActiveSidecar(store, 'chat', [{ message: parentTail }], 1);
+        const transaction = new ChatStorageTransactions(store);
+        const next = await transaction.load();
+        const expectedRevision = nextRevision(next);
+        const directory = join(store.directory, 'transcripts');
+        jest
+          .spyOn(transaction.transcripts, 'append')
+          .mockImplementation(
+            async (chatId, messages, anchors, activeTailCount) =>
+              new ChatTranscriptLog(directory, (point) =>
+                point === boundary
+                  ? Promise.reject(new Error(`interrupt at ${boundary}`))
+                  : Promise.resolve(),
+              ).append(chatId, messages, anchors, activeTailCount),
+          );
+
+        await expect(
+          transaction.commit(expectedRevision, next, [
+            {
+              chatId: 'chat',
+              kind: 'append',
+              messages: [readyRun, parentTail],
+              activeTailCount: 1,
+            },
+          ]),
+        ).rejects.toThrow(`interrupt at ${boundary}`);
+
+        const recovered = await recoverWithFrozenBaselineTransaction(store);
+        expect(recovered.indexes.live.revision).toBe(expectedRevision + 1);
+        expect(await readFile(journalPath(), 'utf8')).toBe('');
+        // Old load recovers the v2 active-sidecar append intent first, so even
+        // the staged/prepared boundary may commit this prefix before WAL apply.
+        const expectedActiveIds = [parentTail.id];
+        expect(
+          (await recovered.transcripts.activeMessages('chat')).map(
+            (row) => row.id,
+          ),
+        ).toEqual(expectedActiveIds);
+        await expect(
+          recovered.transcripts.artifactActiveReferenceSlice(
+            'chat',
+            0,
+            1024 * 1024,
+          ),
+        ).resolves.toMatchObject({
+          complete: true,
+          activeHeaderFinalizing: false,
+          activeFinalizingRows: 0,
+        });
+        const recoveredPageIds = (
+          await recovered.transcripts.page('chat')
+        ).messages.map((row) => row.id);
+        expect(recoveredPageIds.sort()).toEqual(
+          [message('a').id, readyRun.id, parentTail.id].sort(),
+        );
+        expect(new Set(recoveredPageIds).size).toBe(recoveredPageIds.length);
+        expect(
+          await readdir(join(store.directory, 'pending-transcripts')),
+        ).toEqual([]);
+
+        if (boundary === 'prepared') {
+          const oldParentSettle = await loadFrozenBaselineTransaction(store);
+          const settleIndexes = await oldParentSettle.load();
+          const settleRevision = settleIndexes.live.revision;
+          settleIndexes.live.revision = settleRevision + 1;
+          settleIndexes.archive.revision = settleRevision + 1;
+          await oldParentSettle.commit(settleRevision, settleIndexes, [
+            {
+              chatId: 'chat',
+              kind: 'append',
+              messages: [readyRun, parentTail],
+            },
+          ]);
+          expect(
+            (await oldParentSettle.transcripts.page('chat')).messages.map(
+              (row) => row.id,
+            ),
+          ).toEqual([message('a').id, readyRun.id, parentTail.id]);
+          expect(
+            await oldParentSettle.transcripts.activeMessages('chat'),
+          ).toEqual([]);
+          expect(await readFile(journalPath(), 'utf8')).toBe('');
+        }
+      },
+    );
+
+    // Coverage-green-first: prove the unchanged transaction applies an active
+    // clear through the unchanged transcript log's replaceActive/remove path.
+    it('clears the active sidecar through the frozen old transaction and log sources', async () => {
+      const oldTransaction = await loadFrozenBaselineTransaction(store);
+      await oldTransaction.transcripts.writeActive('chat', [
+        message('old-active-row'),
+      ]);
+      const next = await oldTransaction.load();
+      const expectedRevision = next.live.revision;
+      next.live.revision = expectedRevision + 1;
+      next.archive.revision = expectedRevision + 1;
+
+      await oldTransaction.commit(expectedRevision, next, [
+        { chatId: 'chat', kind: 'active-replace', messages: [] },
+      ]);
+
+      await expect(stat(anchorPath())).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(
+        oldTransaction.transcripts.activeMessages('chat'),
+      ).resolves.toEqual([]);
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+    });
+
+    // Coverage-green-first: the old delete effect must continue to remove the
+    // complete transcript closure after recovery.
+    it('deletes a pending transcript through the unchanged old transaction and log sources', async () => {
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      next.live.tabs = [];
+      next.live.activeTabId = '';
+
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          { chatId: 'chat', kind: 'delete' },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const recovered = await recoverWithFrozenBaselineTransaction(store);
+      expect(recovered.indexes.live.revision).toBe(expectedRevision + 1);
+      expect(recovered.indexes.live.tabs).toEqual([]);
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+      await expect(
+        stat(join(store.directory, 'transcripts', 'chat.jsonl')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(
+        await readdir(join(store.directory, 'pending-transcripts')),
+      ).toEqual([]);
+    });
+
+    it('rejects active replacement that would discard journal-projected rows', async () => {
+      const transaction = new ChatStorageTransactions(store);
+      const card = delegatedCard('card');
+      await commitDelegationCard(transaction, card);
+      const projected = message('projected-active');
+      transaction.transcripts.setActiveProjection(() => ({
+        messages: [projected],
+        transcriptRevision: 1,
+      }));
+      const snapshot = jest.spyOn(transaction.transcripts, 'activeSnapshot');
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        transaction.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'active',
+            messages: [message('replacement')],
+          },
+        ]),
+      ).rejects.toThrow('Active update would discard uncommitted messages');
+      expect(snapshot).toHaveBeenCalledTimes(1);
+    });
+
+    it('checks append ordering against journal-projected active rows', async () => {
+      const transaction = new ChatStorageTransactions(store);
+      const card = delegatedCard('card');
+      await commitDelegationCard(transaction, card);
+      const projected = message('projected-active');
+      transaction.transcripts.setActiveProjection(() => ({
+        messages: [projected],
+        transcriptRevision: 1,
+      }));
+      const snapshot = jest.spyOn(transaction.transcripts, 'activeSnapshot');
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        transaction.commit(expectedRevision, next, [
+          { chatId: 'chat', kind: 'append', messages: [message('later')] },
+        ]),
+      ).rejects.toThrow(
+        'Finalized messages must follow active transcript order',
+      );
+      expect(snapshot).toHaveBeenCalledTimes(1);
+    });
+
+    // Red-first: before the fix, current log rejected only after the WAL had
+    // been published; admission now rejects without a durable journal.
+    it('rejects reordered ordinary active rows before publishing an append WAL', async () => {
+      const first = message('ordinary-first');
+      const second = message('ordinary-second');
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [{ message: first }, { message: second }],
+        1,
+      );
+      const transaction = new ChatStorageTransactions(store);
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        transaction.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [second, first],
+            activeTailCount: 1,
+          },
+        ]),
+      ).rejects.toThrow(
+        'Finalized messages must follow active transcript order',
+      );
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+      expect(
+        (await transaction.transcripts.activeMessages('chat')).map(
+          (row) => row.id,
+        ),
+      ).toEqual([first.id, second.id]);
+    });
+
+    // Coverage-green-first: guard against rejecting a genuinely new ready row
+    // while preserving the existing ordinary-row order check.
+    it('allows a new ready prefix before a retained ordinary active tail', async () => {
+      const first = message('ordinary-first');
+      const second = message('ordinary-second');
+      const ready = message('ready-prefix');
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [{ message: first }, { message: second }],
+        1,
+      );
+      const transaction = new ChatStorageTransactions(store);
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+
+      await transaction.commit(expectedRevision, next, [
+        {
+          chatId: 'chat',
+          kind: 'append',
+          messages: [ready, first, second],
+          activeTailCount: 1,
+        },
+      ]);
+
+      expect((await transaction.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        ready,
+        first,
+        second,
+      ]);
+      expect(await transaction.transcripts.activeMessages('chat')).toEqual([
+        second,
+      ]);
+    });
+
+    it('preserves an existing anchor across replacement of the active suffix', async () => {
+      const { card, child, transaction } = await seedAnchoredChat();
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+
+      await transaction.commit(expectedRevision, next, [
+        {
+          chatId: 'chat',
+          kind: 'replace',
+          messages: [message('a'), card, child],
+          activeTailCount: 1,
+        },
+      ]);
+
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        activeAnchor(card.id, 'a'),
+      );
+      // Anchor metadata is a sidecar projection, never part of message JSONL.
+      expect(
+        (await readFile(logPath(), 'utf8')).split('\n').filter(Boolean),
+      ).toEqual([message('a'), card].map((row) => JSON.stringify(row)));
+    });
+
+    // Red-first: this positive anchored-suffix case first failed admission
+    // before append learned the complete active-tail contract.
+    it('commits an ordinary append prefix while retaining its complete anchored suffix', async () => {
+      const { card, child } = await seedAnchoredChat();
+      const ordinary = message('parent-tail');
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [ordinary, child],
+            activeTailCount: 1,
+          },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared append');
+      expect(pending.writes[0]).toMatchObject({
+        kind: 'active-replace',
+        appendCommittedCount: 1,
+      });
+      expect(pending.writes[0]).not.toHaveProperty('activeTailCount');
+      expect(pending.writes[0].anchors).toEqual([
+        [child.id, activeAnchor(card.id, 'a')],
+      ]);
+
+      const recovered = new ChatStorageTransactions(store);
+      await expect(recovered.load()).resolves.toMatchObject({
+        live: { revision: 2 },
+      });
+      expect((await recovered.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        child,
+        card,
+        ordinary,
+      ]);
+      expect(await recovered.transcripts.activeMessages('chat')).toEqual([
+        child,
+      ]);
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        activeAnchor(card.id, 'a'),
+      );
+    });
+
+    // Coverage-green-first: pin replay through both transaction checkpoints.
+    it.each(['transcripts', 'indexes'] as const)(
+      'replays the anchored append suffix after the %s transaction checkpoint',
+      async (boundary) => {
+        const { card, child } = await seedAnchoredChat();
+        const ordinary = message(`parent-tail-${boundary}`);
+        const interrupted = new ChatStorageTransactions(store, (point) =>
+          point === boundary
+            ? Promise.reject(new Error(`interrupt at ${boundary}`))
+            : Promise.resolve(),
+        );
+        const next = await interrupted.load();
+        const expectedRevision = nextRevision(next);
+
+        await expect(
+          interrupted.commit(expectedRevision, next, [
+            {
+              chatId: 'chat',
+              kind: 'append',
+              messages: [ordinary, child],
+              activeTailCount: 1,
+            },
+          ]),
+        ).rejects.toThrow(`interrupt at ${boundary}`);
+
+        const recovered = new ChatStorageTransactions(store);
+        await expect(recovered.load()).resolves.toMatchObject({
+          live: { revision: 2 },
+        });
+        const committed = (await readFile(logPath(), 'utf8'))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            const row: unknown = JSON.parse(line);
+            if (!isRecord(row) || typeof row.id !== 'string')
+              throw new Error('Invalid committed transcript row');
+            return row.id;
+          });
+        expect(committed).toEqual([message('a').id, card.id, ordinary.id]);
+        expect(await recovered.transcripts.activeMessages('chat')).toEqual([
+          child,
+        ]);
+        expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+          activeAnchor(card.id, 'a'),
+        );
+      },
+    );
+
+    // Coverage-green-first: assert the no-crash path materializes only prefix.
+    it('successfully commits an anchored append while retaining its suffix', async () => {
+      const { card, child, transaction } = await seedAnchoredChat();
+      const ordinary = message('successful-parent-tail');
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+
+      await transaction.commit(expectedRevision, next, [
+        {
+          chatId: 'chat',
+          kind: 'append',
+          messages: [ordinary, child],
+          activeTailCount: 1,
+        },
+      ]);
+
+      expect(
+        (await readFile(logPath(), 'utf8')).split('\n').filter(Boolean),
+      ).toHaveLength(3);
+      expect(await transaction.transcripts.activeMessages('chat')).toEqual([
+        child,
+      ]);
+      expect(await transaction.transcripts.descriptor('chat')).toMatchObject({
+        hasOrdinaryActiveRows: false,
+      });
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        activeAnchor(card.id, 'a'),
+      );
+    });
+
+    // Coverage-green-first: complete suffix membership must retain every row.
+    it('rejects an append suffix that would omit an uncommitted active row', async () => {
+      const { child, transaction } = await seedAnchoredChat();
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        transaction.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [message('replacement-tail')],
+            activeTailCount: 1,
+          },
+        ]),
+      ).rejects.toThrow('Active update would discard uncommitted messages');
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+      expect(await transaction.transcripts.activeMessages('chat')).toEqual([
+        child,
+      ]);
+    });
+
+    // Red-first: the unanchored ready-prefix case exposed the log append
+    // prefix-order failure before the fourth append argument was implemented.
+    it('keeps an unanchored parent tail active after committing a ready-run prefix', async () => {
+      const readyRun = delegatedCard('ready-run');
+      const parentTail = message('ordinary-parent-tail');
+      await seedActiveSidecar(store, 'chat', [{ message: parentTail }], 1);
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [readyRun, parentTail],
+            activeTailCount: 1,
+          },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared append');
+      expect(pending.writes[0]).toMatchObject({
+        kind: 'active-replace',
+        appendCommittedCount: 1,
+      });
+      expect(pending.writes[0]).not.toHaveProperty('activeTailCount');
+      expect(pending.writes[0]).not.toHaveProperty('anchors');
+
+      const recovered = new ChatStorageTransactions(store);
+      await expect(recovered.load()).resolves.toMatchObject({
+        live: { revision: 1 },
+      });
+      expect((await recovered.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        readyRun,
+        parentTail,
+      ]);
+      expect(await recovered.transcripts.activeMessages('chat')).toEqual([
+        parentTail,
+      ]);
+      expect(await recovered.transcripts.descriptor('chat')).not.toHaveProperty(
+        'hasOrdinaryActiveRows',
+      );
+    });
+
+    it('captures existing anchors as JSON tuples in the WAL and replays them with zero payload retention', async () => {
+      const { card, child } = await seedAnchoredChat();
+      const interrupted = new ChatStorageTransactions(
+        store,
+        (point) =>
+          point === 'journal'
+            ? Promise.reject(new Error('interrupt after WAL publish'))
+            : Promise.resolve(),
+        { retainedPayloadBytes: 0 },
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      const expectedAnchor = activeAnchor(card.id, 'a');
+
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'replace',
+            messages: [message('a'), card, child],
+            activeTailCount: 1,
+          },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const journalBytes = await readFile(journalPath(), 'utf8');
+      const pending = await readPending();
+      const writes = pending.writes;
+      if (!Array.isArray(writes) || !isRecord(writes[0]))
+        throw new Error('Missing prepared transcript write');
+      expect(writes[0].anchors).toEqual([[child.id, expectedAnchor]]);
+      expect(Array.isArray(writes[0].anchors)).toBe(true);
+      expect(writes[0].anchors).not.toBeInstanceOf(Map);
+      expect(journalBytes).toBe(`${JSON.stringify(pending)}\n`);
+
+      // Recovery uses a different transaction instance and must not rely on
+      // retaining the payload rows parsed during admission.
+      const recovered = new ChatStorageTransactions(store, undefined, {
+        retainedPayloadBytes: 0,
+      });
+      await expect(recovered.load()).resolves.toMatchObject({
+        live: { revision: 2 },
+      });
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        expectedAnchor,
+      );
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+    });
+
+    it('lets explicit anchors override captured anchors for surviving rows', async () => {
+      const { card, child, transaction } = await seedAnchoredChat();
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+      const explicit: [string, ActiveRowAnchor][] = [
+        [child.id, activeAnchor(card.id, card.id, -1)],
+      ];
+      const write = {
+        chatId: 'chat',
+        kind: 'replace' as const,
+        messages: [message('a'), card, child],
+        activeTailCount: 1,
+        anchors: explicit,
+      };
+
+      await transaction.commit(expectedRevision, next, [write]);
+
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        explicit[0]?.[1],
+      );
+    });
+
+    it.each([
+      [
+        'malformed anchor shape',
+        { version: 1, runId: 'card', after: 'a', tie: 0.5 },
+        'child',
+        /anchor/i,
+      ],
+      [
+        'unknown run card context',
+        activeAnchor('missing-card', 'a'),
+        'missing-card',
+        /anchor|run|card/i,
+      ],
+    ] as const)(
+      'rejects %s before WAL publication without changing transcript files',
+      async (_label, invalidAnchor, childRunId, reason) => {
+        const { child, transaction } = await seedAnchoredChat();
+        const beforeSidecar = await readFile(anchorPath());
+        const beforeLog = await readFile(logPath());
+        const beforeIndex = await readFile(
+          join(store.directory, 'live-index.json'),
+        );
+        const next = await transaction.load();
+        const expectedRevision = nextRevision(next);
+
+        const write = {
+          chatId: 'chat',
+          kind: 'active' as const,
+          messages: [child],
+          anchors: [anchorTuple(child.id, invalidAnchor)],
+        };
+        const candidate =
+          childRunId === 'missing-card'
+            ? {
+                ...write,
+                anchors: [anchorTuple(child.id, activeAnchor(childRunId, 'a'))],
+              }
+            : write;
+        await expect(
+          transaction.commit(expectedRevision, next, [candidate]),
+        ).rejects.toThrow(reason);
+
+        expect(await readFile(anchorPath())).toEqual(beforeSidecar);
+        expect(await readFile(logPath())).toEqual(beforeLog);
+        expect(
+          await readFile(join(store.directory, 'live-index.json')),
+        ).toEqual(beforeIndex);
+        expect(await readFile(journalPath(), 'utf8')).toBe('');
+      },
+    );
+
+    it('keeps only surviving anchors when an active replacement removes a row', async () => {
+      const transaction = new ChatStorageTransactions(store);
+      const card = delegatedCard('card');
+      await commitDelegationCard(transaction, card);
+      const first = delegatedChild('first', card.id);
+      const removed = delegatedChild('removed', card.id);
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [
+          { message: first, anchor: activeAnchor(card.id, 'a') },
+          { message: removed, anchor: activeAnchor(card.id, 'a', -1) },
+        ],
+        1,
+      );
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+      const snapshot = jest.spyOn(transaction.transcripts, 'activeSnapshot');
+
+      await transaction.commit(expectedRevision, next, [
+        { chatId: 'chat', kind: 'active-replace', messages: [first] },
+      ]);
+      expect(snapshot).toHaveBeenCalledTimes(1);
+
+      expect(await activeSidecarAnchor(store, 'chat', first.id)).toEqual(
+        activeAnchor(card.id, 'a'),
+      );
+      expect(
+        parseActiveSidecarRecords(await readFile(anchorPath(), 'utf8')),
+      ).toHaveLength(1);
+    });
+
+    it('carries an anchor through append finalization in WAL then removes it from the active sidecar', async () => {
+      const { card, child } = await seedAnchoredChat();
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      const write = {
+        chatId: 'chat',
+        kind: 'append' as const,
+        messages: [child],
+        anchors: [anchorTuple(child.id, activeAnchor(card.id, 'a'))],
+      };
+
+      await expect(
+        interrupted.commit(expectedRevision, next, [write]),
+      ).rejects.toThrow('interrupt after WAL publish');
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared append');
+      expect(pending.writes[0].anchors).toEqual([
+        [child.id, activeAnchor(card.id, 'a')],
+      ]);
+
+      const recovered = new ChatStorageTransactions(store);
+      await expect(recovered.load()).resolves.toMatchObject({
+        live: { revision: 2 },
+      });
+      await expect(stat(anchorPath())).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect((await recovered.transcripts.page('chat')).messages).toEqual([
+        message('a'),
+        card,
+        child,
+      ]);
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+    });
+
+    it('captures append survivors absent from the payload and applies explicit survivor overrides', async () => {
+      const transaction = new ChatStorageTransactions(store);
+      const card = delegatedCard('card');
+      await commitDelegationCard(transaction, card);
+      const finalizing = delegatedChild('finalizing', card.id);
+      const survivor = delegatedChild('survivor', card.id);
+      const survivorAnchor = activeAnchor(card.id, 'a', -1);
+      const explicitSurvivorAnchor = activeAnchor(card.id, 'a', -2);
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [
+          { message: finalizing, anchor: activeAnchor(card.id, 'a') },
+          { message: survivor, anchor: survivorAnchor },
+        ],
+        1,
+      );
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [finalizing],
+            anchors: [anchorTuple(survivor.id, explicitSurvivorAnchor)],
+          },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared append');
+      expect(pending.writes[0].anchors).toEqual([
+        [finalizing.id, activeAnchor(card.id, 'a')],
+        [survivor.id, explicitSurvivorAnchor],
+      ]);
+
+      await new ChatStorageTransactions(store).load();
+      expect(await activeSidecarAnchor(store, 'chat', survivor.id)).toEqual(
+        explicitSurvivorAnchor,
+      );
+      expect(await activeSidecarAnchor(store, 'chat', finalizing.id)).toBe(
+        undefined,
+      );
+    });
+
+    it('omits committed idempotent append payload anchors from the WAL', async () => {
+      const initial = new ChatStorageTransactions(store);
+      const card = delegatedCard('card');
+      await commitDelegationCard(initial, card);
+      const child = delegatedChild('already-committed', card.id);
+      const committed = await initial.load();
+      const committedRevision = nextRevision(committed);
+      await initial.commit(committedRevision, committed, [
+        { chatId: 'chat', kind: 'append', messages: [child] },
+      ]);
+      const childAnchor = activeAnchor(card.id, 'a');
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [{ message: child, anchor: childAnchor }],
+        2,
+      );
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          { chatId: 'chat', kind: 'append', messages: [child] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared append');
+      expect(pending.writes[0]).not.toHaveProperty('anchors');
+
+      await new ChatStorageTransactions(store).load();
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        childAnchor,
+      );
+    });
+
+    const mutableWriteKinds: Array<'active' | 'active-replace'> = [
+      'active',
+      'active-replace',
+    ];
+    it.each(mutableWriteKinds)(
+      'omits committed %s payload anchors from the WAL',
+      async (kind) => {
+        const { card, child, transaction } = await seedAnchoredChat();
+        const finalized = await transaction.load();
+        const finalizeRevision = nextRevision(finalized);
+        await transaction.commit(finalizeRevision, finalized, [
+          { chatId: 'chat', kind: 'append', messages: [child] },
+        ]);
+        const interrupted = new ChatStorageTransactions(store, (point) =>
+          point === 'journal'
+            ? Promise.reject(new Error('interrupt after WAL publish'))
+            : Promise.resolve(),
+        );
+        const next = await interrupted.load();
+        const revision = nextRevision(next);
+        await expect(
+          interrupted.commit(revision, next, [
+            {
+              chatId: 'chat',
+              kind,
+              messages: [child],
+              anchors: [[child.id, activeAnchor(card.id, 'a')]],
+            },
+          ]),
+        ).rejects.toThrow('interrupt after WAL publish');
+        const pending = await readPending();
+        if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+          throw new Error('Missing prepared active write');
+        expect(pending.writes[0]).not.toHaveProperty('anchors');
+      },
+    );
+
+    it('fails closed on a malformed append survivor sidecar before recovery effects', async () => {
+      const transaction = new ChatStorageTransactions(store);
+      const card = delegatedCard('card');
+      await commitDelegationCard(transaction, card);
+      const finalizing = delegatedChild('finalizing', card.id);
+      const survivor = delegatedChild('survivor', card.id);
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [
+          { message: finalizing, anchor: activeAnchor(card.id, 'a') },
+          { message: survivor, anchor: activeAnchor(card.id, 'a', -1) },
+        ],
+        1,
+      );
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          { chatId: 'chat', kind: 'append', messages: [finalizing] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const malformedSidecar = '{"version":2}\nnot-json\n';
+      await writeFile(anchorPath(), malformedSidecar);
+      const beforeLog = await readFile(logPath());
+      const beforeLiveIndex = await readFile(
+        join(store.directory, 'live-index.json'),
+      );
+      const beforeJournal = await readFile(journalPath());
+
+      await expect(new ChatStorageTransactions(store).load()).rejects.toThrow();
+      expect(await readFile(anchorPath(), 'utf8')).toBe(malformedSidecar);
+      expect(await readFile(logPath())).toEqual(beforeLog);
+      expect(await readFile(join(store.directory, 'live-index.json'))).toEqual(
+        beforeLiveIndex,
+      );
+      expect(await readFile(journalPath())).toEqual(beforeJournal);
+    });
+
+    // The exact 16 MiB UTF-8 boundary fixture takes longer than Jest's 5 s default.
+    it.each([0, 1])(
+      'checks the complete escaped-ID finalizing row at ceiling delta %s before WAL publication',
+      async (delta) => {
+        const delegationId = '🌲"\\'.repeat(123);
+        const childId = `child-${'🌲"\\'.repeat(120)}`;
+        const card = delegatedCard(delegationId);
+        const transaction = new ChatStorageTransactions(store);
+        await commitDelegationCard(transaction, card);
+        const predecessor = message('🌲"\\'.repeat(128));
+        const withPredecessor = await transaction.load();
+        const predecessorRevision = nextRevision(withPredecessor);
+        await transaction.commit(predecessorRevision, withPredecessor, [
+          { chatId: 'chat', kind: 'append', messages: [predecessor] },
+        ]);
+        const rowAnchor = activeAnchor(card.id, predecessor.id);
+        const ceiling = MAX_TRANSCRIPT_ROW_BYTES + 1024;
+        const child = exactBudgetMessage(
+          childId,
+          rowAnchor,
+          true,
+          ceiling + delta,
+        );
+        const expectedBytes = activeSidecarMessageRecordBytes({
+          version: 2,
+          kind: 'message',
+          message: child,
+          anchor: rowAnchor,
+          finalizing: true,
+        });
+        expect(
+          expectedBytes -
+            activeSidecarMessageRecordBytes({
+              version: 2,
+              kind: 'message',
+              message: child,
+            }),
+        ).toBeGreaterThan(1024);
+        expect(expectedBytes).toBe(ceiling + delta);
+        expect(
+          Buffer.byteLength(JSON.stringify(child), 'utf8'),
+        ).toBeLessThanOrEqual(MAX_TRANSCRIPT_ROW_BYTES);
+        const next = await transaction.load();
+        const expectedRevision = nextRevision(next);
+        const write = {
+          chatId: 'chat',
+          kind: 'append' as const,
+          messages: [child],
+          anchors: [anchorTuple(childId, rowAnchor)],
+        };
+
+        if (delta === 0) {
+          await expect(
+            transaction.commit(expectedRevision, next, [write]),
+          ).resolves.toBeDefined();
+        } else {
+          const beforeLog = await readFile(logPath());
+          await expect(
+            transaction.commit(expectedRevision, next, [write]),
+          ).rejects.toThrow(/active.*row|sidecar.*size|budget/i);
+          await expect(stat(anchorPath())).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+          expect(await readFile(logPath())).toEqual(beforeLog);
+          expect(await readFile(journalPath(), 'utf8')).toBe('');
+        }
+      },
+      30_000,
+    );
+
+    it('keeps the legacy anchor-free WAL keys, omissions, order, and bytes', async () => {
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      next.live.revision = next.archive.revision = 1;
+      const messagePayload = message('b');
+
+      await expect(
+        interrupted.commit(0, next, [
+          { chatId: 'chat', kind: 'append', messages: [messagePayload] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const journalBytes = await readFile(journalPath(), 'utf8');
+      const pending = await readPending();
+      const writes = pending.writes;
+      if (!Array.isArray(writes) || !isRecord(writes[0]))
+        throw new Error('Missing prepared transcript write');
+      expect(Object.keys(pending)).toEqual([
+        'v',
+        'transactionId',
+        'expectedRevision',
+        'indexes',
+        'writes',
+      ]);
+      expect(Object.keys(writes[0])).toEqual([
+        'chatId',
+        'kind',
+        'create',
+        'count',
+        'sha256',
+      ]);
+      const expected = {
+        v: 2,
+        transactionId: pending.transactionId,
+        expectedRevision: 0,
+        indexes: pending.indexes,
+        writes: [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            create: false,
+            count: 1,
+            sha256: createHash('sha256')
+              .update(JSON.stringify(messagePayload))
+              .update('\n')
+              .digest('hex'),
+          },
+        ],
+      };
+      expect(journalBytes).toBe(`${JSON.stringify(expected)}\n`);
+    });
+
+    // Red-first: explicit zero uses the same downgrade-compatible effect as a positive suffix.
+    it('encodes an explicit zero append suffix as a complete active-replace WAL', async () => {
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      next.live.revision = next.archive.revision = 1;
+      const messagePayload = message('b');
+
+      await expect(
+        interrupted.commit(0, next, [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            messages: [messagePayload],
+            activeTailCount: 0,
+          },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const journalBytes = await readFile(journalPath(), 'utf8');
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared transcript write');
+      const expected = {
+        v: 2,
+        transactionId: pending.transactionId,
+        expectedRevision: 0,
+        indexes: pending.indexes,
+        writes: [
+          {
+            chatId: 'chat',
+            kind: 'active-replace',
+            create: false,
+            count: 1,
+            sha256: createHash('sha256')
+              .update(JSON.stringify(messagePayload))
+              .update('\n')
+              .digest('hex'),
+            appendCommittedCount: 1,
+          },
+        ],
+      };
+      expect(Object.keys(pending.writes[0])).toEqual([
+        'chatId',
+        'kind',
+        'create',
+        'count',
+        'sha256',
+        'appendCommittedCount',
+      ]);
+      expect(journalBytes).toBe(`${JSON.stringify(expected)}\n`);
+    });
+
+    it('omits an explicitly empty anchor tuple array from the inert WAL shape', async () => {
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      next.live.revision = next.archive.revision = 1;
+      const messagePayload = message('b');
+      const emptyAnchors: [string, ActiveRowAnchor][] = [];
+      const write = {
+        chatId: 'chat',
+        kind: 'append' as const,
+        messages: [messagePayload],
+        anchors: emptyAnchors,
+      };
+
+      await expect(interrupted.commit(0, next, [write])).rejects.toThrow(
+        'interrupt after WAL publish',
+      );
+
+      const journalBytes = await readFile(journalPath(), 'utf8');
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared transcript write');
+      expect(Object.keys(pending.writes[0])).toEqual([
+        'chatId',
+        'kind',
+        'create',
+        'count',
+        'sha256',
+      ]);
+      const expected = {
+        v: 2,
+        transactionId: pending.transactionId,
+        expectedRevision: 0,
+        indexes: pending.indexes,
+        writes: [
+          {
+            chatId: 'chat',
+            kind: 'append',
+            create: false,
+            count: 1,
+            sha256: createHash('sha256')
+              .update(JSON.stringify(messagePayload))
+              .update('\n')
+              .digest('hex'),
+          },
+        ],
+      };
+      expect(journalBytes).toBe(`${JSON.stringify(expected)}\n`);
+    });
+
+    it('recovers from a fault immediately after replacing the active sidecar and preserves its captured anchor', async () => {
+      const { card, child, transaction } = await seedAnchoredChat();
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+      const remove = fsPromises.rm;
+      let injected = false;
+      jest.spyOn(fsPromises, 'rm').mockImplementation(async (path, options) => {
+        await remove(path, options);
+        if (!injected && pathText(path).endsWith('chat.active.json')) {
+          injected = true;
+          throw new Error('after active sidecar deletion');
+        }
+      });
+
+      await expect(
+        transaction.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'replace',
+            messages: [message('a'), card, child],
+            activeTailCount: 1,
+          },
+        ]),
+      ).rejects.toThrow('after active sidecar deletion');
+      expect(injected).toBe(true);
+      jest.restoreAllMocks();
+
+      const recovered = new ChatStorageTransactions(store);
+      await expect(recovered.load()).resolves.toMatchObject({
+        live: { revision: 2 },
+      });
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        activeAnchor(card.id, 'a'),
+      );
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+    });
+
+    it('preserves replacement anchors through a suffix-restore fault and repeated recovery replay', async () => {
+      const { card, child, transaction } = await seedAnchoredChat();
+      const next = await transaction.load();
+      const expectedRevision = nextRevision(next);
+      const rename = fsPromises.rename;
+      let injected = false;
+      jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementation(async (source, destination) => {
+          await rename(source, destination);
+          if (!injected && pathText(destination).endsWith('chat.active.json')) {
+            injected = true;
+            throw new Error('during active suffix restoration');
+          }
+        });
+
+      await expect(
+        transaction.commit(expectedRevision, next, [
+          {
+            chatId: 'chat',
+            kind: 'replace',
+            messages: [message('a'), card, child],
+            activeTailCount: 1,
+          },
+        ]),
+      ).rejects.toThrow('during active suffix restoration');
+      expect(injected).toBe(true);
+      jest.restoreAllMocks();
+
+      const interruptedReplay = new ChatStorageTransactions(store, (point) =>
+        point === 'transcripts'
+          ? Promise.reject(new Error('interrupt after suffix replay'))
+          : Promise.resolve(),
+      );
+      await expect(interruptedReplay.load()).rejects.toThrow(
+        'interrupt after suffix replay',
+      );
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        activeAnchor(card.id, 'a'),
+      );
+      expect(await readFile(journalPath(), 'utf8')).not.toBe('');
+
+      const replayedAgain = new ChatStorageTransactions(store);
+      await expect(replayedAgain.load()).resolves.toMatchObject({
+        live: { revision: 2 },
+      });
+      expect(await activeSidecarAnchor(store, 'chat', child.id)).toEqual(
+        activeAnchor(card.id, 'a'),
+      );
+      expect(await readFile(journalPath(), 'utf8')).toBe('');
+    });
+
+    it('uses the replacement payload committed prefix, not stale old history, to validate replay anchors', async () => {
+      const transaction = new ChatStorageTransactions(store);
+      const oldCard = delegatedCard('old-card');
+      await commitDelegationCard(transaction, oldCard);
+      const newCard = delegatedCard('new-card');
+      const child = delegatedChild('child', newCard.id);
+      await seedActiveSidecar(
+        store,
+        'chat',
+        [
+          {
+            message: delegatedChild('child', oldCard.id),
+            anchor: activeAnchor(oldCard.id, 'a'),
+          },
+        ],
+        1,
+      );
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      const validAnchors: [string, ActiveRowAnchor][] = [
+        [child.id, activeAnchor(newCard.id, 'a')],
+      ];
+      const write = {
+        chatId: 'chat',
+        kind: 'replace' as const,
+        messages: [message('a'), newCard, child],
+        activeTailCount: 1,
+        anchors: validAnchors,
+      };
+      await expect(
+        interrupted.commit(expectedRevision, next, [write]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared replacement');
+      const writeRecord = pending.writes[0];
+      const changedPayload = [
+        message('a'),
+        delegatedChild('child', oldCard.id),
+      ];
+      const payloadPath = join(
+        store.directory,
+        'pending-transcripts',
+        String(pending.transactionId),
+        '0.jsonl',
+      );
+      await writeFile(
+        payloadPath,
+        `${changedPayload.map((row) => JSON.stringify(row)).join('\n')}\n`,
+      );
+      Reflect.set(writeRecord, 'count', changedPayload.length);
+      Reflect.set(
+        writeRecord,
+        'sha256',
+        createHash('sha256')
+          .update(changedPayload.map((row) => JSON.stringify(row)).join('\n'))
+          .update('\n')
+          .digest('hex'),
+      );
+      Reflect.set(writeRecord, 'anchors', [
+        ['child', activeAnchor(oldCard.id, 'a')],
+      ]);
+      await writeFile(journalPath(), `${JSON.stringify(pending)}\n`);
+      const beforeLog = await readFile(logPath());
+      const beforeSidecar = await readFile(anchorPath());
+      const beforeJournal = await readFile(journalPath());
+
+      await expect(new ChatStorageTransactions(store).load()).rejects.toThrow(
+        /anchor|run|card/i,
+      );
+      expect(await readFile(logPath())).toEqual(beforeLog);
+      expect(await readFile(anchorPath())).toEqual(beforeSidecar);
+      expect(await readFile(journalPath())).toEqual(beforeJournal);
+    });
+
+    it('rejects malformed WAL anchors during recovery without mutating files', async () => {
+      const { child } = await seedAnchoredChat();
+      const interrupted = new ChatStorageTransactions(
+        store,
+        (point) =>
+          point === 'journal'
+            ? Promise.reject(new Error('interrupt after WAL publish'))
+            : Promise.resolve(),
+        { retainedPayloadBytes: 0 },
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          { chatId: 'chat', kind: 'active', messages: [child] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared active write');
+      Reflect.set(pending.writes[0], 'anchors', [
+        ['child', { version: 1, runId: 'card', after: 'a', tie: 0.5 }],
+      ]);
+      await writeFile(journalPath(), `${JSON.stringify(pending)}\n`);
+      const beforeSidecar = await readFile(anchorPath());
+      const beforeLog = await readFile(logPath());
+      const beforeIndex = await readFile(
+        join(store.directory, 'live-index.json'),
+      );
+      const beforeJournal = await readFile(journalPath());
+
+      await expect(
+        new ChatStorageTransactions(store, undefined, {
+          retainedPayloadBytes: 0,
+        }).load(),
+      ).rejects.toThrow(/anchor|tuple/i);
+      expect(await readFile(anchorPath())).toEqual(beforeSidecar);
+      expect(await readFile(logPath())).toEqual(beforeLog);
+      expect(await readFile(join(store.directory, 'live-index.json'))).toEqual(
+        beforeIndex,
+      );
+      expect(await readFile(journalPath())).toEqual(beforeJournal);
+    });
+
+    it('rejects WAL anchors with invalid active/card context during recovery', async () => {
+      const { child } = await seedAnchoredChat();
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          { chatId: 'chat', kind: 'active', messages: [child] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared active write');
+      Reflect.set(pending.writes[0], 'anchors', [
+        ['child', activeAnchor('missing-card', 'missing-predecessor')],
+      ]);
+      await writeFile(journalPath(), `${JSON.stringify(pending)}\n`);
+      const beforeSidecar = await readFile(anchorPath());
+      const beforeLog = await readFile(logPath());
+      const beforeJournal = await readFile(journalPath());
+
+      await expect(new ChatStorageTransactions(store).load()).rejects.toThrow(
+        /anchor|run|card|predecessor/i,
+      );
+      expect(await readFile(anchorPath())).toEqual(beforeSidecar);
+      expect(await readFile(logPath())).toEqual(beforeLog);
+      expect(await readFile(journalPath())).toEqual(beforeJournal);
+    });
+
+    // The exact 16 MiB UTF-8 boundary fixture takes longer than Jest's 5 s default.
+    it('rejects an over-budget finalizing anchor record during recovery before any durable effects', async () => {
+      const delegationId = '🌲"\\'.repeat(123);
+      const card = delegatedCard(delegationId);
+      const transaction = new ChatStorageTransactions(store);
+      await commitDelegationCard(transaction, card);
+      const predecessor = message('🌲"\\'.repeat(128));
+      const withPredecessor = await transaction.load();
+      const predecessorRevision = nextRevision(withPredecessor);
+      await transaction.commit(predecessorRevision, withPredecessor, [
+        { chatId: 'chat', kind: 'append', messages: [predecessor] },
+      ]);
+      const rowAnchor = activeAnchor(card.id, predecessor.id);
+      const child = exactBudgetMessage(
+        'overflow-child',
+        rowAnchor,
+        true,
+        MAX_TRANSCRIPT_ROW_BYTES + 1025,
+      );
+      expect(
+        activeSidecarMessageRecordBytes({
+          version: 2,
+          kind: 'message',
+          message: child,
+          anchor: rowAnchor,
+          finalizing: true,
+        }),
+      ).toBe(MAX_TRANSCRIPT_ROW_BYTES + 1025);
+      expect(
+        activeSidecarMessageRecordBytes({
+          version: 2,
+          kind: 'message',
+          message: child,
+          anchor: rowAnchor,
+          finalizing: true,
+        }) -
+          activeSidecarMessageRecordBytes({
+            version: 2,
+            kind: 'message',
+            message: child,
+          }),
+      ).toBeGreaterThan(1024);
+      expect(
+        Buffer.byteLength(JSON.stringify(child), 'utf8'),
+      ).toBeLessThanOrEqual(MAX_TRANSCRIPT_ROW_BYTES);
+
+      const interrupted = new ChatStorageTransactions(
+        store,
+        (point) =>
+          point === 'journal'
+            ? Promise.reject(new Error('interrupt after WAL publish'))
+            : Promise.resolve(),
+        { retainedPayloadBytes: 0 },
+      );
+      const next = await interrupted.load();
+      const expectedRevision = nextRevision(next);
+      await expect(
+        interrupted.commit(expectedRevision, next, [
+          { chatId: 'chat', kind: 'append', messages: [child] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared append');
+      Reflect.set(pending.writes[0], 'anchors', [[child.id, rowAnchor]]);
+      await writeFile(journalPath(), `${JSON.stringify(pending)}\n`);
+
+      const beforeLog = await readFile(logPath());
+      const beforeLiveIndex = await readFile(
+        join(store.directory, 'live-index.json'),
+      );
+      const beforeArchiveIndex = await readFile(
+        join(store.directory, 'archive-index.json'),
+      );
+      const beforeRecoveryIndex = await readFile(
+        join(store.directory, 'recovery-index.json'),
+      );
+      const beforeJournal = await readFile(journalPath());
+
+      await expect(
+        new ChatStorageTransactions(store, undefined, {
+          retainedPayloadBytes: 0,
+        }).load(),
+      ).rejects.toThrow(/active.*row|sidecar.*size|budget/i);
+      expect(await readFile(logPath())).toEqual(beforeLog);
+      expect(await readFile(join(store.directory, 'live-index.json'))).toEqual(
+        beforeLiveIndex,
+      );
+      expect(
+        await readFile(join(store.directory, 'archive-index.json')),
+      ).toEqual(beforeArchiveIndex);
+      expect(
+        await readFile(join(store.directory, 'recovery-index.json')),
+      ).toEqual(beforeRecoveryIndex);
+      await expect(stat(anchorPath())).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(await readFile(journalPath())).toEqual(beforeJournal);
+    }, 30_000);
+
+    it('rejects recovery effect kinds outside the durable transcript-effect set', async () => {
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      next.live.revision = next.archive.revision = 1;
+      await expect(
+        interrupted.commit(0, next, [
+          { chatId: 'chat', kind: 'append', messages: [message('b')] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared write');
+      Reflect.set(pending.writes[0], 'kind', 'unknown-effect');
+      await writeFile(journalPath(), `${JSON.stringify(pending)}\n`);
+      const beforeLog = await readFile(logPath());
+      const beforeIndex = await readFile(
+        join(store.directory, 'live-index.json'),
+      );
+      const beforeJournal = await readFile(journalPath());
+
+      await expect(new ChatStorageTransactions(store).load()).rejects.toThrow(
+        /journal|effect/i,
+      );
+      expect(await readFile(logPath())).toEqual(beforeLog);
+      expect(await readFile(join(store.directory, 'live-index.json'))).toEqual(
+        beforeIndex,
+      );
+      expect(await readFile(journalPath())).toEqual(beforeJournal);
+    });
+
+    it('rejects duplicate per-chat transcript effects in recovery before replay', async () => {
+      const interrupted = new ChatStorageTransactions(store, (point) =>
+        point === 'journal'
+          ? Promise.reject(new Error('interrupt after WAL publish'))
+          : Promise.resolve(),
+      );
+      const next = await interrupted.load();
+      next.live.revision = next.archive.revision = 1;
+      await expect(
+        interrupted.commit(0, next, [
+          { chatId: 'chat', kind: 'append', messages: [message('b')] },
+        ]),
+      ).rejects.toThrow('interrupt after WAL publish');
+      const pending = await readPending();
+      if (!Array.isArray(pending.writes) || !isRecord(pending.writes[0]))
+        throw new Error('Missing prepared write');
+      const transactionId = pending.transactionId;
+      if (typeof transactionId !== 'string')
+        throw new Error('Missing pending transaction ID');
+      await writeFile(
+        join(store.directory, 'pending-transcripts', transactionId, '1.jsonl'),
+        await readFile(
+          join(
+            store.directory,
+            'pending-transcripts',
+            transactionId,
+            '0.jsonl',
+          ),
+        ),
+      );
+      pending.writes.push({ ...pending.writes[0] });
+      await writeFile(journalPath(), `${JSON.stringify(pending)}\n`);
+      const beforeLog = await readFile(logPath());
+      const beforeIndex = await readFile(
+        join(store.directory, 'live-index.json'),
+      );
+      const beforeJournal = await readFile(journalPath());
+
+      await expect(new ChatStorageTransactions(store).load()).rejects.toThrow(
+        /one transcript effect|duplicate/i,
+      );
+      expect(await readFile(logPath())).toEqual(beforeLog);
+      expect(await readFile(join(store.directory, 'live-index.json'))).toEqual(
+        beforeIndex,
+      );
+      expect(await readFile(journalPath())).toEqual(beforeJournal);
+    });
   });
 
   it('validates prepared message bytes before replaying a durable journal', async () => {

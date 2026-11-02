@@ -1,3 +1,5 @@
+import { ORCHESTRATOR_LABEL } from '../ui-labels';
+
 /** Host-independent desktop command/panel reservations. Keep the drift guard green when commands change. */
 export const SCRIPT_ACTION_RESERVED_SHORTCUTS = [
   {
@@ -116,13 +118,13 @@ export const SCRIPT_ACTION_RESERVED_SHORTCUTS = [
   },
   {
     id: 'open-app-advisor',
-    title: 'Open App Advisor',
+    title: `Open ${ORCHESTRATOR_LABEL}`,
     darwin: 'Command+L',
     other: 'Control+L',
   },
   {
     id: 'open-app-advisor-quick-prompt',
-    title: 'App Advisor Quick Prompt',
+    title: `${ORCHESTRATOR_LABEL} Quick Prompt`,
     darwin: 'Command+Shift+L',
     other: 'Control+Shift+L',
   },
@@ -269,6 +271,31 @@ export const SCRIPT_ACTION_RESERVED_SHORTCUTS = [
     title: 'Even Panel Group Sizes',
     darwin: 'Command+Shift+E',
     other: 'Control+Shift+E',
+  },
+  {
+    id: 'panel-select-next-tab',
+    title: 'Select Next Tab',
+    darwin: 'Command+Shift+]',
+    other: 'Control+Tab',
+  },
+  {
+    id: 'panel-select-previous-tab',
+    title: 'Select Previous Tab',
+    darwin: 'Command+Shift+[',
+    other: 'Control+Shift+Tab',
+  },
+  // Windows/Linux alternates; darwin repeats the primary chord.
+  {
+    id: 'panel-select-next-tab-alternate',
+    title: 'Select Next Tab',
+    darwin: 'Command+Shift+]',
+    other: 'Control+PageDown',
+  },
+  {
+    id: 'panel-select-previous-tab-alternate',
+    title: 'Select Previous Tab',
+    darwin: 'Command+Shift+[',
+    other: 'Control+PageUp',
   },
   {
     id: 'dictation',

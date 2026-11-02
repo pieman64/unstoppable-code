@@ -1,3 +1,15 @@
+import { createHash } from 'node:crypto';
+import {
+  TOOL_SETTLEMENT_OUTPUT,
+  type ToolInterruptionReason,
+} from '@canopy/protocol/portal';
+import {
+  persistedInterruptedSettlementTime,
+  persistedInterruptedTurnRange,
+  isSyntheticSettlementMessage,
+  supersedeToolInterruptions,
+} from '@canopy/agent-transcript/settlement';
+import { isRootUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import type {
   ChatCoreMutation,
   ChatRuntimeState,
@@ -5,6 +17,19 @@ import type {
   PersistedChatMessage,
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
+import {
+  hydrateChatTurnState,
+  initialChatTurnState,
+  serializeChatTurnState,
+  settleChatTurnForRestart,
+} from '@canopy/agent-transcript/turn';
+
+/** Whether persisted reducer state still records a live turn, irrespective of
+ * the legacy runtime status. Host reconciliation owns the liveness decision.
+ */
+export function hasOpenPersistedChatTurn(value: unknown): boolean {
+  return hydrateChatTurnState(value)?.current !== undefined;
+}
 import { withInterruptedTurn } from './chat-turn-succession';
 
 /**
@@ -25,7 +50,34 @@ export function closeOpenPersistedTurnTimers(
       }
       changed = true;
       messageChanged = true;
-      return { ...block, completedAt };
+      const startedAt =
+        typeof block.startedAt === 'number' &&
+        Number.isFinite(block.startedAt) &&
+        block.startedAt >= 0
+          ? block.startedAt
+          : completedAt;
+      const elapsed = Math.max(0, completedAt - startedAt);
+      const accumulatedPause = block.accumulatedPausedDurationMs;
+      const pausedAt = block.pausedAt;
+      const pausedDuration =
+        (typeof accumulatedPause === 'number' &&
+        Number.isFinite(accumulatedPause)
+          ? Math.max(0, accumulatedPause)
+          : 0) +
+        (typeof pausedAt === 'number' && Number.isFinite(pausedAt)
+          ? Math.max(0, completedAt - pausedAt)
+          : 0);
+      return {
+        ...block,
+        completedAt,
+        ...(block.pausedAt !== undefined ? { pausedAt: null } : {}),
+        ...(block.accumulatedPausedDurationMs !== undefined ||
+        block.pausedAt != null
+          ? {
+              accumulatedPausedDurationMs: Math.min(elapsed, pausedDuration),
+            }
+          : {}),
+      };
     });
     return messageChanged ? { ...message, blocks } : message;
   });
@@ -52,6 +104,24 @@ function settleToolResultGroupKey(message: PersistedChatMessage): string {
   ].join('|');
 }
 
+/** Background child results can arrive after another root prompt. */
+function collectChildToolResultIds(
+  messages: readonly PersistedChatMessage[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    if (!message.parentBlockId && !message.parentToolUseId) continue;
+    for (const block of message.blocks) {
+      if (block.type === 'tool_result') {
+        ids.add(
+          JSON.stringify([settleToolResultGroupKey(message), block.toolUseId]),
+        );
+      }
+    }
+  }
+  return ids;
+}
+
 /**
  * Append error `tool_result` blocks for every `tool_use` that never received
  * one, grouped so nested/codex results keep their parent identity. `output`
@@ -60,13 +130,62 @@ function settleToolResultGroupKey(message: PersistedChatMessage): string {
 export function closeOpenPersistedToolUses(
   messages: PersistedChatMessage[],
   completedAt: number,
-  output = 'Cancelled',
+  output: string = TOOL_SETTLEMENT_OUTPUT.stopped,
+  reason: ToolInterruptionReason = output === TOOL_SETTLEMENT_OUTPUT.app_restart
+    ? 'app_restart'
+    : output === TOOL_SETTLEMENT_OUTPUT.fork
+      ? 'fork'
+      : 'stopped',
 ): PersistedChatMessage[] {
+  // Resolve tools within each owning turn, including later result messages.
+  messages = supersedeToolInterruptions(messages);
+  const childResultIds = collectChildToolResultIds(messages);
+  const boundaries = messages.flatMap((message, index) =>
+    index > 0 && isRootUserTurnBoundary(message) ? [index] : [],
+  );
+  if (boundaries.length) {
+    let start = 0;
+    let changed = false;
+    const result: PersistedChatMessage[] = [];
+    for (const end of [...boundaries, messages.length]) {
+      const turn = messages.slice(start, end);
+      const settled = closeOpenPersistedToolUsesInTurn(
+        turn,
+        completedAt,
+        output,
+        reason,
+        childResultIds,
+      );
+      changed ||= settled !== turn;
+      result.push(...settled);
+      start = end;
+    }
+    return changed ? result : messages;
+  }
+  return closeOpenPersistedToolUsesInTurn(
+    messages,
+    completedAt,
+    output,
+    reason,
+    childResultIds,
+  );
+}
+
+function closeOpenPersistedToolUsesInTurn(
+  messages: PersistedChatMessage[],
+  completedAt: number,
+  output: string,
+  reason: ToolInterruptionReason,
+  childResultIds: ReadonlySet<string>,
+): PersistedChatMessage[] {
+  messages = supersedeToolInterruptions(messages);
   const toolResultIds = new Set<string>();
   for (const message of messages) {
     for (const block of message.blocks) {
       if (block.type === 'tool_result') {
-        toolResultIds.add(block.toolUseId);
+        toolResultIds.add(
+          JSON.stringify([settleToolResultGroupKey(message), block.toolUseId]),
+        );
       }
     }
   }
@@ -75,7 +194,16 @@ export function closeOpenPersistedToolUses(
   const unmatchedGroups: SettleToolResultGroup[] = [];
   for (const message of messages) {
     for (const block of message.blocks) {
-      if (block.type !== 'tool_use' || toolResultIds.has(block.toolUseId)) {
+      if (block.type !== 'tool_use') continue;
+      const resultKey = JSON.stringify([
+        settleToolResultGroupKey(message),
+        block.toolUseId,
+      ]);
+      if (
+        toolResultIds.has(resultKey) ||
+        ((message.parentBlockId || message.parentToolUseId) &&
+          childResultIds.has(resultKey))
+      ) {
         continue;
       }
       const key = settleToolResultGroupKey(message);
@@ -103,6 +231,7 @@ export function closeOpenPersistedToolUses(
         toolName: block.toolName,
         output,
         isError: true,
+        interruption: { reason, at: completedAt },
       });
     }
   }
@@ -115,7 +244,18 @@ export function closeOpenPersistedToolUses(
   let index = 0;
   for (const entry of unmatchedGroups) {
     result.push({
-      id: `archive-cancel-${completedAt}-${index}`,
+      id: `archive-cancel-${completedAt}-${createHash('sha256')
+        .update(
+          JSON.stringify([
+            messages[0]?.id,
+            index,
+            entry.blocks.flatMap((block) =>
+              block.type === 'tool_result' ? [block.toolUseId] : [],
+            ),
+          ]),
+        )
+        .digest('hex')
+        .slice(0, 20)}`,
       role: 'system',
       timestamp: completedAt,
       ...(entry.parentToolUseId
@@ -143,7 +283,7 @@ export function settlePersistedForkMessages(
   return closeOpenPersistedToolUses(
     closeOpenPersistedTurnTimers(messages, completedAt),
     completedAt,
-    'Interrupted by fork',
+    TOOL_SETTLEMENT_OUTPUT.fork,
   );
 }
 
@@ -160,30 +300,73 @@ export function buildPersistedTurnInterruptedMutations(
   queuedMessageIds: string[] = runtime.queuedMessageIds,
   tab?: Pick<PersistedChatTab, 'id' | 'interruptedTurns'>,
 ): ChatCoreMutation[] {
-  const settledMessages = closeOpenPersistedToolUses(
-    closeOpenPersistedTurnTimers(messages, completedAt),
+  const currentTurn = hydrateChatTurnState(runtime.turn)?.current;
+  if (
+    currentTurn?.userMessageId &&
+    runtime.activeTurn &&
+    currentTurn.userMessageId !== runtime.activeTurn.userMessageId
+  )
+    return [];
+  const activeTurn =
+    runtime.activeTurn ??
+    (currentTurn?.userMessageId
+      ? {
+          userMessageId: currentTurn.userMessageId,
+          startedAt: currentTurn.startedAtMs,
+        }
+      : undefined);
+  const settlementRuntime = activeTurn ? { ...runtime, activeTurn } : runtime;
+  const range = persistedInterruptedTurnRange(
+    messages,
+    activeTurn?.userMessageId,
+  );
+  const interrupted = messages.slice(range.start, range.end);
+  completedAt = persistedInterruptedSettlementTime(
+    messages,
     completedAt,
-    'Interrupted by app restart',
+    settlementRuntime,
+  );
+  const reconciledInterrupted = supersedeToolInterruptions(messages).slice(
+    range.start,
+    range.end,
+  );
+  const settledMessages = closeOpenPersistedToolUsesInTurn(
+    closeOpenPersistedTurnTimers(reconciledInterrupted, completedAt),
+    completedAt,
+    TOOL_SETTLEMENT_OUTPUT.app_restart,
+    'app_restart',
+    collectChildToolResultIds(messages),
   );
   const mutations: ChatCoreMutation[] = settledMessages.flatMap(
     (message, index) =>
-      message === messages[index]
+      message === interrupted[index]
         ? []
-        : [{ type: 'message.upserted' as const, chatId, message }],
+        : [
+            {
+              type: 'message.upserted' as const,
+              chatId,
+              message,
+              ...(index >= interrupted.length && interrupted.length
+                ? { afterMessageId: settledMessages[index - 1].id }
+                : {}),
+            },
+          ],
   );
-  if (tab && runtime.activeTurn) {
+  if (tab && activeTurn) {
     mutations.push({
       type: 'tab.metadata_patched',
       tabId: tab.id,
       patch: {
         interruptedTurns: withInterruptedTurn(
           tab.interruptedTurns,
-          runtime.activeTurn.userMessageId,
+          activeTurn.userMessageId,
         ),
       },
     });
   }
   const settledRuntime = { ...runtime };
+  const turn = hydrateChatTurnState(runtime.turn) ?? initialChatTurnState();
+  const settledTurn = settleChatTurnForRestart(turn, completedAt);
   delete settledRuntime.activeTurn;
   delete settledRuntime.deferredToolsReload;
   mutations.push({
@@ -191,6 +374,7 @@ export function buildPersistedTurnInterruptedMutations(
     chatId,
     runtime: {
       ...settledRuntime,
+      turn: serializeChatTurnState(settledTurn.state),
       status: 'interrupted',
       queuedMessageIds,
       lastActivityAt: completedAt,
@@ -205,36 +389,71 @@ export function buildPersistedTurnInterruptedMutations(
   return mutations;
 }
 
-/** Migration counterpart: retain one body at a time and only tool identities
- * between passes. The factory must return the same recovered source each time.
- */
-export async function* settlePersistedInterruptedStream(
-  messages: () => AsyncIterable<PersistedChatMessage>,
-  completedAt: number,
-): AsyncGenerator<PersistedChatMessage> {
-  const completed = new Set<string>();
-  for await (const message of messages()) {
-    for (const block of message.blocks) {
-      if (block.type === 'tool_result') completed.add(block.toolUseId);
-    }
+/** Archive/restore settlement uses original activity rather than the archive action time. */
+export function settlePersistedInterruptedMessages(
+  messages: PersistedChatMessage[],
+  detectedAt: number,
+  runtime?: ChatRuntimeState,
+): PersistedChatMessage[] {
+  messages = supersedeToolInterruptions(messages);
+  const childResultIds = collectChildToolResultIds(messages);
+  const boundaries = messages.flatMap((message, index) =>
+    index > 0 && isRootUserTurnBoundary(message) ? [index] : [],
+  );
+  let start = 0;
+  let changed = false;
+  const result: PersistedChatMessage[] = [];
+  for (const end of [...boundaries, messages.length]) {
+    const turn = messages.slice(start, end);
+    const turnRuntime =
+      runtime?.activeTurn &&
+      turn.some((message) => message.id === runtime.activeTurn?.userMessageId)
+        ? runtime
+        : undefined;
+    const completedAt =
+      runtime &&
+      ['starting', 'streaming', 'awaiting_input', 'completing'].includes(
+        runtime.status,
+      )
+        ? detectedAt
+        : persistedInterruptedSettlementTime(turn, detectedAt, turnRuntime);
+    const timed = closeOpenPersistedTurnTimers(turn, completedAt);
+    const settled = closeOpenPersistedToolUsesInTurn(
+      timed,
+      completedAt,
+      runtime?.status === 'interrupted'
+        ? TOOL_SETTLEMENT_OUTPUT.app_restart
+        : TOOL_SETTLEMENT_OUTPUT.stopped,
+      runtime?.status === 'interrupted' ? 'app_restart' : 'stopped',
+      childResultIds,
+    );
+    changed ||= settled !== turn;
+    result.push(...settled);
+    start = end;
   }
-  const unmatched: PersistedChatMessage[] = [];
-  for await (const message of messages()) {
-    const blocks: PersistedChatBlock[] = [];
-    for (const block of message.blocks) {
-      if (block.type === 'tool_use' && !completed.has(block.toolUseId)) {
-        // Settlement needs routing and identity, never the potentially huge
-        // tool input or the surrounding message body.
-        blocks.push({
-          type: 'tool_use',
-          toolUseId: block.toolUseId,
-          toolName: block.toolName,
-          input: '{}',
-        });
-      }
-    }
-    if (blocks.length)
-      unmatched.push({
+  return changed ? result : messages;
+}
+
+/** Retain turn anchors, timer state, tool identities and one activity stamp per
+ * turn. Never retain transcript text or tool bodies during legacy migration. */
+export async function collectPersistedSettlementEvidence(
+  messages: AsyncIterable<PersistedChatMessage>,
+  detectedAt: number,
+): Promise<PersistedChatMessage[]> {
+  const evidence: PersistedChatMessage[] = [];
+  let activity: PersistedChatMessage | undefined;
+  for await (const message of messages) {
+    if (isRootUserTurnBoundary(message)) activity = undefined;
+    const blocks: PersistedChatBlock[] = message.blocks.flatMap(
+      (block): PersistedChatBlock[] => {
+        if (block.type === 'turn_timer') return [block];
+        if (block.type === 'tool_use') return [{ ...block, input: '{}' }];
+        if (block.type === 'tool_result') return [{ ...block, output: '' }];
+        return [];
+      },
+    );
+    if (isRootUserTurnBoundary(message) || blocks.length)
+      evidence.push({
         id: message.id,
         role: message.role,
         timestamp: message.timestamp,
@@ -244,12 +463,79 @@ export async function* settlePersistedInterruptedStream(
         codexTurnId: message.codexTurnId,
         blocks,
       });
-    yield closeOpenPersistedTurnTimers([message], completedAt)[0];
+    if (
+      !isSyntheticSettlementMessage(message) &&
+      Number.isFinite(message.timestamp) &&
+      message.timestamp <= detectedAt
+    ) {
+      if (!activity) {
+        activity = {
+          id: `settlement-evidence-${message.id}`,
+          role: 'assistant',
+          timestamp: message.timestamp,
+          blocks: [],
+        };
+        evidence.push(activity);
+      } else
+        activity.timestamp = Math.max(activity.timestamp, message.timestamp);
+    }
   }
-  const settled = closeOpenPersistedToolUses(
-    unmatched,
-    completedAt,
-    'Interrupted by app restart',
+  return evidence;
+}
+
+/** Two-pass migration: emit original bodies once, settling each owning turn
+ * before emitting the next user boundary. */
+export async function* settlePersistedInterruptedStream(
+  messages: () => AsyncIterable<PersistedChatMessage>,
+  detectedAt: number,
+  runtime?: ChatRuntimeState,
+): AsyncGenerator<PersistedChatMessage> {
+  const evidence = await collectPersistedSettlementEvidence(
+    messages(),
+    detectedAt,
   );
-  for (let i = unmatched.length; i < settled.length; i++) yield settled[i];
+  const childResultIds = collectChildToolResultIds(evidence);
+  const settlements = new Map<
+    string,
+    { at: number; results: PersistedChatMessage[] }
+  >();
+  const boundaries = evidence.flatMap((message, index) =>
+    isRootUserTurnBoundary(message) ? [index] : [],
+  );
+  let start = 0;
+  for (const end of [
+    ...boundaries.filter((index) => index > 0),
+    evidence.length,
+  ]) {
+    const turn = evidence.slice(start, end);
+    const turnRuntime =
+      runtime?.activeTurn &&
+      turn.some((message) => message.id === runtime.activeTurn?.userMessageId)
+        ? runtime
+        : undefined;
+    const at = persistedInterruptedSettlementTime(
+      turn,
+      detectedAt,
+      turnRuntime,
+    );
+    const settled = closeOpenPersistedToolUsesInTurn(
+      turn,
+      at,
+      TOOL_SETTLEMENT_OUTPUT.app_restart,
+      'app_restart',
+      childResultIds,
+    );
+    const key = turn.find(isRootUserTurnBoundary)?.id ?? '';
+    settlements.set(key, { at, results: settled.slice(turn.length) });
+    start = end;
+  }
+  let current = settlements.get('');
+  for await (const message of messages()) {
+    if (isRootUserTurnBoundary(message)) {
+      if (current) for (const result of current.results) yield result;
+      current = settlements.get(message.id);
+    }
+    yield closeOpenPersistedTurnTimers([message], current?.at ?? detectedAt)[0];
+  }
+  if (current) for (const result of current.results) yield result;
 }

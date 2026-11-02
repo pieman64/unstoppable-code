@@ -1,6 +1,7 @@
 import type { LedgerNavigator } from '@canopy/app-core';
 import type { LedgerFileRef } from '@canopy/protocol/canopy-core';
 import type {
+  LedgerTaskViewScope,
   LedgerViewOpenResult,
   LedgerViewScope,
   LedgerViewSourceTarget,
@@ -111,12 +112,16 @@ async function openSource(
   let destination: AutomationRunDestination;
   if (target.kind === 'pipeline') {
     // At the exact job the agent ran in; the run's page selects a job, not
-    // a step or attempt.
+    // a step or attempt. A global or directory run has no task to open in.
     destination = {
       kind: 'pipeline-execution',
       executionId: target.executionId,
-      projectId: target.projectId,
-      worktreeId: target.worktreeId,
+      ...(target.projectId === undefined
+        ? {}
+        : { projectId: target.projectId }),
+      ...(target.worktreeId === undefined
+        ? {}
+        : { worktreeId: target.worktreeId }),
       ...(target.jobId === undefined ? {} : { jobId: target.jobId }),
     };
   } else {
@@ -172,7 +177,7 @@ function joinWithinRoot(root: string, relativePath: string): string | null {
 }
 
 async function openFile(
-  scope: LedgerViewScope,
+  scope: LedgerTaskViewScope,
   file: LedgerFileRef,
 ): Promise<LedgerViewOpenResult> {
   const target = { projectId: scope.projectId, worktreeId: scope.worktreeId };

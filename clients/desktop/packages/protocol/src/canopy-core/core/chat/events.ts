@@ -1,4 +1,6 @@
+import { approvalSafetyDeniedInfoSchema } from '../../approval-safety';
 import { z } from 'zod';
+import { CardStateV2Schema } from './transcript';
 import { mcpActivationRecordSchema } from '../../mcp-availability';
 import {
   CanopyStreamCursorSchema,
@@ -10,6 +12,7 @@ import {
 const id = z.string().min(1).max(512);
 const extension = z.unknown();
 const portableBlock = z.discriminatedUnion('type', [
+  approvalSafetyDeniedInfoSchema,
   z.strictObject({
     type: z.literal('mcp_activation'),
     record: mcpActivationRecordSchema,
@@ -83,6 +86,15 @@ const tab = z
   })
   .catchall(extension);
 const chatChange = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('delegation.card_state_updated'),
+    chatId: id,
+    delegationId: id,
+    runGeneration: z.number().int().nonnegative().safe(),
+    cardRevision: z.number().int().nonnegative().safe(),
+    streamRevision: z.number().int().nonnegative().safe(),
+    cardState: CardStateV2Schema,
+  }),
   z
     .strictObject({
       type: z.literal('transcript.updated'),

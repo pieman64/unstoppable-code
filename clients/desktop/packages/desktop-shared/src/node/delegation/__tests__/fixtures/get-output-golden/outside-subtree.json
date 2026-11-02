@@ -1,0 +1,21 @@
+{
+  "invocation": {
+    "ok": false,
+    "error": {
+      "code": "parent_unavailable",
+      "message": "That delegation is not one of your descendants.",
+      "retryable": false
+    }
+  },
+  "serializedInvocation": "{\"ok\":false,\"error\":{\"code\":\"parent_unavailable\",\"message\":\"That delegation is not one of your descendants.\",\"retryable\":false}}",
+  "codexResponse": {
+    "success": false,
+    "contentItems": [
+      {
+        "type": "inputText",
+        "text": "{\"ok\":false,\"error\":{\"code\":\"parent_unavailable\",\"message\":\"That delegation is not one of your descendants.\",\"retryable\":false}}"
+      }
+    ]
+  },
+  "serializedCodexResponse": "{\"success\":false,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"parent_unavailable\\\",\\\"message\\\":\\\"That delegation is not one of your descendants.\\\",\\\"retryable\\\":false}}\"}]}"
+}

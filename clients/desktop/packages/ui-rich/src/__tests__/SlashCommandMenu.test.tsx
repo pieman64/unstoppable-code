@@ -62,6 +62,10 @@ describe('SlashCommandMenu', () => {
     itemLabel?: string;
     title?: string;
     pendingCommand?: SlashCommandOption;
+    hiddenCount?: number;
+    totalCount?: number;
+    onShowAll?: () => void;
+    onSelect?: (command: SlashCommandOption) => void;
   }): void {
     act(() => {
       root.render(
@@ -71,8 +75,11 @@ describe('SlashCommandMenu', () => {
           isDiscovering={props.isDiscovering ?? false}
           itemLabel={props.itemLabel ?? 'commands'}
           title={props.title ?? 'Commands'}
-          onSelect={(): void => undefined}
+          onSelect={props.onSelect ?? ((): void => undefined)}
           pendingCommand={props.pendingCommand}
+          hiddenCount={props.hiddenCount}
+          totalCount={props.totalCount}
+          onShowAll={props.onShowAll}
         />,
       );
     });
@@ -84,38 +91,27 @@ describe('SlashCommandMenu', () => {
     );
   }
 
-  it('renders an "Available to enable" divider before the available rows', () => {
+  it('CAN-5271 renders available tags only on available rows without headings', () => {
     render({ commands: [...DISCOVERED, ...AVAILABLE] });
-
-    const divider = container.querySelector('[role="presentation"]');
-    expect(divider?.textContent).toBe('Available to enable');
-  });
-
-  it('treats every command as a selectable option and the divider as a non-option', () => {
-    render({ commands: [...DISCOVERED, ...AVAILABLE] });
-
-    // One option per command — the divider is not counted.
+    expect(container.querySelector('[role="presentation"]')).toBeNull();
     expect(optionButtons()).toHaveLength(4);
-
-    const listbox = container.querySelector('[role="listbox"]');
-    const children = Array.from(listbox?.children ?? []);
-    // Order: discovered, discovered, divider, available, available.
-    expect(children[2]?.getAttribute('role')).toBe('presentation');
-    expect(children[0]?.getAttribute('role')).toBe('option');
-    expect(children[1]?.getAttribute('role')).toBe('option');
-    expect(children[3]?.getAttribute('role')).toBe('option');
+    expect(
+      optionButtons().map(
+        (row) =>
+          row.querySelector('[data-testid="slash-command-availability-tag"]')
+            ?.textContent ?? null,
+      ),
+    ).toEqual([null, null, 'Available · enable', 'Available · enable']);
   });
 
-  it('keeps the selection index aligned with options across the divider', () => {
-    // selectedIndex 2 == the first available row (third command overall).
+  it('CAN-5271 keeps the flat selection index aligned with every option', () => {
     render({ commands: [...DISCOVERED, ...AVAILABLE], selectedIndex: 2 });
-
     const options = optionButtons();
-    expect(options[2]?.getAttribute('aria-selected')).toBe('true');
+    expect(
+      options.map((option) => option.getAttribute('aria-selected')),
+    ).toEqual(['false', 'false', 'true', 'false']);
     expect(options[2]?.textContent).toContain('/plugin:summarize');
-    // The divider carries no selection state.
-    const divider = container.querySelector('[role="presentation"]');
-    expect(divider?.getAttribute('aria-selected')).toBeNull();
+    expect(container.querySelector('[role="presentation"]')).toBeNull();
   });
 
   it('renders the muted source label for available rows', () => {
@@ -171,5 +167,57 @@ describe('SlashCommandMenu', () => {
 
     render({ commands: [], isDiscovering: false, itemLabel: 'commands' });
     expect(container.textContent).toContain('No matching commands');
+  });
+
+  it('CAN-5271 preserves interleaved relevance order without section headings', () => {
+    const [review, plan] = DISCOVERED;
+    const [summarize, translate] = AVAILABLE;
+    if (!review || !plan || !summarize || !translate)
+      throw new Error('fixture');
+    render({
+      commands: [
+        { ...review, menuGroup: 'Actions' },
+        summarize,
+        { ...plan, menuGroup: 'Actions' },
+        translate,
+      ],
+    });
+    expect(container.querySelector('[role="presentation"]')).toBeNull();
+    expect(optionButtons().map((option) => option.textContent)).toEqual([
+      expect.stringContaining('/review'),
+      expect.stringContaining('/plugin:summarize'),
+      expect.stringContaining('/plan'),
+      expect.stringContaining('/plugin:translate'),
+    ]);
+  });
+
+  it('renders Show all as the last option and expands without selecting', () => {
+    const onShowAll = jest.fn();
+    const onSelect = jest.fn();
+    render({
+      commands: DISCOVERED,
+      hiddenCount: 3,
+      totalCount: 5,
+      selectedIndex: 2,
+      onShowAll,
+      onSelect,
+    });
+    const showAll = container.querySelector<HTMLElement>(
+      '[data-testid="slash-command-show-all"]',
+    );
+    expect(showAll?.textContent).toBe('Show all 5');
+    const options = optionButtons();
+    expect(options[options.length - 1]).toBe(showAll);
+    expect(showAll?.getAttribute('aria-selected')).toBe('true');
+    act(() => showAll?.click());
+    expect(onShowAll).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('omits Show all when nothing is hidden', () => {
+    render({ commands: DISCOVERED, hiddenCount: 0, onShowAll: jest.fn() });
+    expect(
+      container.querySelector('[data-testid="slash-command-show-all"]'),
+    ).toBeNull();
   });
 });

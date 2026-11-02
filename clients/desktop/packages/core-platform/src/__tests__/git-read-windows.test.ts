@@ -18,6 +18,11 @@ import {
   NODE_SUPERVISION,
   type SupervisionOperations,
 } from '../supervision/shared';
+import { parseGitVersion } from '@canopy/core-runtime/node';
+import {
+  fsmonitorDischargeAudited,
+  type SelectedGit,
+} from '../git-read/commands';
 import {
   createGitReadRunner,
   type GitReadOutput,
@@ -84,6 +89,8 @@ let emptyConfig = '';
 let systemRoot = '';
 let system32 = '';
 let gitPath = '';
+/** `gitPath` with the version production's selection parses from it. */
+let selectedGit: SelectedGit = { executable: '', version: undefined };
 let serial = 0;
 let suiteSince = '';
 let processes: FixtureProcesses | undefined;
@@ -286,11 +293,17 @@ beforeAll(async () => {
   emptyConfig = join(dir, 'empty.gitconfig');
   writeFileSync(emptyConfig, '');
   gitPath = locateGit();
+  const gitVersion = execFileSync(gitPath, ['--version'], { env: gitEnv() })
+    .toString()
+    .trim();
+  selectedGit = {
+    executable: gitPath,
+    version: parseGitVersion(gitVersion) ?? undefined,
+  };
   evidence.recordSuite('host', {
     gitPath,
-    gitVersion: execFileSync(gitPath, ['--version'], { env: gitEnv() })
-      .toString()
-      .trim(),
+    gitVersion,
+    fsmonitorDischargeAudited: fsmonitorDischargeAudited(selectedGit.version),
   });
 });
 
@@ -1279,7 +1292,7 @@ nativeDescribe(
         const repo = repository('*.log\n');
         const input = paths(10_001);
         const result = await runner().checkIgnoredPathsWith(
-          gitPath,
+          selectedGit,
           repo,
           input,
           gitEnv(),
@@ -1293,7 +1306,7 @@ nativeDescribe(
       it('treats exit 1 (nothing ignored) as empty', async () => {
         const repo = repository('*.log\n');
         const result = await runner().checkIgnoredPathsWith(
-          gitPath,
+          selectedGit,
           repo,
           ['a.txt', 'b'],
           gitEnv(),
@@ -1308,7 +1321,7 @@ nativeDescribe(
         const observed: Record<string, string[]> = {};
         for (const locale of ['C', 'en_US.UTF-8']) {
           const result = await runner().checkIgnoredPathsWith(
-            gitPath,
+            selectedGit,
             repo,
             input,
             gitEnv({ LANG: locale, LC_ALL: locale }),
@@ -1332,7 +1345,7 @@ nativeDescribe(
       // race the stdin failure; it must read this path before rejecting it.
       it('rejects a small input Git has read with exit 128', async () => {
         const outcome = await settle(
-          runner().checkIgnoredPathsWith(gitPath, repository(''), ['../outside'], gitEnv()), // prettier-ignore
+          runner().checkIgnoredPathsWith(selectedGit, repository(''), ['../outside'], gitEnv()), // prettier-ignore
         );
         expect(outcome).toMatchObject({
           error: { code: 'exit_status', exitCode: 128 },
@@ -1345,7 +1358,7 @@ nativeDescribe(
       it('records the stdin failure (EOF on Windows) versus exit 128 for 4 MiB outside a repository', async () => {
         const long = paths(5000).map((name) => `${name}-${'x'.repeat(900)}`);
         const outcome = await settle(
-          runner().checkIgnoredPathsWith(gitPath, fixture('outside'), long, gitEnv()), // prettier-ignore
+          runner().checkIgnoredPathsWith(selectedGit, fixture('outside'), long, gitEnv()), // prettier-ignore
         );
         const error: unknown = Reflect.get(Object(outcome), 'error');
         const syscall: unknown = Reflect.get(Object(error), 'syscall');
@@ -1357,12 +1370,74 @@ nativeDescribe(
         expect(['EOF', 'EPIPE', 'exit_status']).toContain(errorCode(error));
       });
 
-      it('builtin fsmonitor daemon: outlives the request where Git supports it', async () => {
+      // C1 discharge for the ignored listing (CAN-5037): ls-files reads the
+      // working tree, so it may start the daemon check-ignore may start.
+      it('lists ignored paths with the discharge, and the listing starts no fsmonitor daemon', async () => {
+        expect(fsmonitorDischargeAudited(selectedGit.version)).toBe(true);
+        const env = gitEnv();
+        const repo = repository('*.log\nbuild/\n', [
+          ['core.fsmonitor', 'true'],
+          ['core.useBuiltinFSMonitor', 'true'],
+        ]);
+        writeFileSync(join(repo, 'a.log'), '');
+        writeFileSync(join(repo, 'keep.txt'), '');
+        mkdirSync(join(repo, 'build'));
+        writeFileSync(join(repo, 'build', 'out.js'), '');
+        const listed = await runner().listIgnoredPathsSelected({
+          cwd: repo,
+          environment: env,
+          deadlineAt: performance.now() + 30_000,
+          signal: new AbortController().signal,
+          selectExecutable: () => Promise.resolve(selectedGit),
+        });
+        const status = (): string =>
+          String(
+            spawnSync(gitPath, ['-C', repo, 'fsmonitor--daemon', 'status'], {
+              env,
+              encoding: 'utf8',
+            }).stdout,
+          );
+        const end = performance.now() + 3000;
+        let watching = false;
+        while (!watching && performance.now() < end) {
+          watching = /is watching/.test(status());
+          await delay(100);
+        }
+        evidence.record('ls-files ignored listing', { listed, watching });
+        try {
+          expect([...listed].sort()).toEqual(['a.log', 'build/']);
+          expect(watching).toBe(false);
+        } finally {
+          if (watching)
+            spawnSync(gitPath, ['-C', repo, 'fsmonitor--daemon', 'stop'], { env }); // prettier-ignore
+        }
+      });
+
+      // C1 discharge: both enabling keys set; only raw Git starts the daemon.
+      it('builtin fsmonitor daemon: the discharged runner never starts one; raw check-ignore outlives the request where Git supports it', async () => {
+        // Production plans the discharge only for an audited Git for Windows.
+        expect(fsmonitorDischargeAudited(selectedGit.version)).toBe(true);
         const env = gitEnv();
         const options = execFileSync(gitPath, ['version', '--build-options'], { env }); // prettier-ignore
         const supported = options.toString().includes('fsmonitor--daemon');
-        const repo = repository('*.log\n', [['core.fsmonitor', 'true']]);
+        const repo = repository('*.log\n', [
+          ['core.fsmonitor', 'true'],
+          ['core.useBuiltinFSMonitor', 'true'],
+        ]);
         const since = filetimeAt(Date.now() - 1000);
+        const daemonRows = (): { rows: string[] } | { failure: unknown } => {
+          const table = fx().processTable();
+          if ('failure' in table) return table;
+          return {
+            rows: table.rows
+              .filter(
+                (row) =>
+                  row.commandLine.includes('fsmonitor--daemon') &&
+                  createdSince(row, since),
+              ) // prettier-ignore
+              .map(({ name, pid }) => `${name} ${pid}`),
+          };
+        };
         const status = (): ReturnType<typeof spawnSync> =>
           spawnSync(gitPath, ['-C', repo, 'fsmonitor--daemon', 'status'], {
             env,
@@ -1386,19 +1461,31 @@ nativeDescribe(
             await delay(100);
           }
         };
+        /** Polls `status` for up to 5 s; true once a daemon is watching. */
+        const watchingWithin = async (): Promise<boolean> => {
+          const end = performance.now() + 5000;
+          while (supported && performance.now() < end) {
+            if (/is watching/.test(String(status().stdout))) return true;
+            await delay(100);
+          }
+          return false;
+        };
         try {
           const result = await runner().checkIgnoredPathsWith(
-            gitPath,
+            selectedGit,
             repo,
             ['a.log', 'b'],
             env,
           );
-          let watching = false;
-          const end = performance.now() + 5000;
-          while (supported && !watching && performance.now() < end) {
-            watching = /is watching/.test(String(status().stdout));
-            if (!watching) await delay(100);
-          }
+          const dischargedWatching = await watchingWithin();
+          const dischargedRows = daemonRows();
+          // Control: the same request without the discharge.
+          const raw = spawnSync(
+            gitPath,
+            ['-C', repo, 'check-ignore', '-z', '--stdin'],
+            { env, input: 'a.log\0b\0', encoding: 'utf8' },
+          );
+          const watching = await watchingWithin();
           const last = status();
           // Tracked so cleanup confirms the daemon gone even if stop fails.
           let daemons: NativeProcess[] = [];
@@ -1416,6 +1503,8 @@ nativeDescribe(
           const stopping = watching ? await stop() : null;
           evidence.record('fsmonitor daemon', {
             supported,
+            discharged: { watching: dischargedWatching, rows: dischargedRows },
+            rawExit: raw.status,
             watchingAfterSettle: watching,
             statusExit: last.status,
             daemons: daemons.map(({ label, pid, start }) => ({ label, pid, tracked: start !== null })), // prettier-ignore
@@ -1423,6 +1512,9 @@ nativeDescribe(
             stopping,
           });
           expect(result).toEqual(new Set(['a.log']));
+          expect(dischargedWatching).toBe(false);
+          expect(dischargedRows).toEqual({ rows: [] });
+          expect(raw.stdout).toBe('a.log\0');
           if (supported) {
             expect(watching).toBe(true);
             expect(discoveryFailure).toBeNull();

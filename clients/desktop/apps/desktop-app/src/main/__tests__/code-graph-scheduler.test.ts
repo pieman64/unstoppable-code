@@ -405,6 +405,25 @@ describe('code graph scheduler', () => {
     });
   });
 
+  it('does not rebuild over a graph written by a newer schema', async () => {
+    mockPersistedSchemaVersion.mockReturnValue(CODE_GRAPH_SCHEMA_VERSION + 1);
+    mockPersistedCompleted.mockReturnValue(true);
+
+    scheduleCodeGraphBuild({
+      projectId: 'newer-schema-project',
+      worktreeId: 'newer-schema-worktree',
+      reason: 'refresh',
+      source: 'turn-diff',
+      debounceMs: 0,
+    });
+    await flushMicrotasks();
+
+    expect(mockRunWorktreeCodeGraphBuild).not.toHaveBeenCalled();
+    expect(mockRecordCodeGraphRefreshTelemetry).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'build-started' }),
+    );
+  });
+
   it('rebuilds an unchanged worktree whose derived analysis was left pending (phase 20)', async () => {
     mockReadPersistedCodeGraphWorktreeFingerprint.mockReturnValue(
       'current-fingerprint',

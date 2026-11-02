@@ -83,7 +83,10 @@ jest.mock('../agents/session-manager', () => ({
 
 const recordUsageMetricEventMock = jest.fn();
 const recordSessionDiagnosticMock = jest.fn();
-const runArchiveIoRequestMock = jest.fn<Promise<unknown>, [unknown]>();
+const runArchiveIoRequestMock = jest.fn<
+  Promise<unknown>,
+  [ArchiveIoOperationRequest]
+>();
 const eagerSeedNewWorktreeCodeGraphMock = jest.fn(() =>
   Promise.resolve({ status: 'no-compatible-source' }),
 );
@@ -94,23 +97,30 @@ const deferCodeGraphRefreshUntilPostCreateSetupMock = jest.fn(
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    recordUsageMetricEvent: recordUsageMetricEventMock,
-    recordSessionDiagnostic: recordSessionDiagnosticMock,
+    get recordUsageMetricEvent(): typeof recordUsageMetricEventMock {
+      return recordUsageMetricEventMock;
+    },
+    get recordSessionDiagnostic(): typeof recordSessionDiagnosticMock {
+      return recordSessionDiagnosticMock;
+    },
   })),
 }));
 
 jest.mock('../lib/code-graph-eager-seed', () => ({
-  eagerSeedNewWorktreeCodeGraph: eagerSeedNewWorktreeCodeGraphMock,
+  get eagerSeedNewWorktreeCodeGraph(): typeof eagerSeedNewWorktreeCodeGraphMock {
+    return eagerSeedNewWorktreeCodeGraphMock;
+  },
 }));
 
 jest.mock('../lib/code-graph-scheduler', () => ({
-  deferCodeGraphRefreshUntilPostCreateSetup:
-    deferCodeGraphRefreshUntilPostCreateSetupMock,
+  get deferCodeGraphRefreshUntilPostCreateSetup(): typeof deferCodeGraphRefreshUntilPostCreateSetupMock {
+    return deferCodeGraphRefreshUntilPostCreateSetupMock;
+  },
 }));
 
 jest.mock('../archive/archive-io-runner', () => ({
-  runArchiveIoRequest: (...args: [unknown]): Promise<unknown> =>
-    runArchiveIoRequestMock(...args),
+  runArchiveIoRequest: (request: ArchiveIoOperationRequest): Promise<unknown> =>
+    runArchiveIoRequestMock(request),
 }));
 
 jest.mock('../lib/git-executable', () => ({
@@ -302,19 +312,27 @@ const runWithScopeDeletionLifecycleMock = jest.fn(
 const commitWorktreeQueueDeletionMock = jest.fn();
 const rollbackWorktreeQueueDeletionMock = jest.fn();
 const beginWorktreeQueueDeletionMock = jest.fn(() => ({
-  commit: commitWorktreeQueueDeletionMock,
-  rollback: rollbackWorktreeQueueDeletionMock,
+  get commit(): typeof commitWorktreeQueueDeletionMock {
+    return commitWorktreeQueueDeletionMock;
+  },
+  get rollback(): typeof rollbackWorktreeQueueDeletionMock {
+    return rollbackWorktreeQueueDeletionMock;
+  },
 }));
 
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): unknown => ({
-    runWithScopeDeletionLifecycle: runWithScopeDeletionLifecycleMock,
+    get runWithScopeDeletionLifecycle(): typeof runWithScopeDeletionLifecycleMock {
+      return runWithScopeDeletionLifecycleMock;
+    },
   }),
 }));
 
 jest.mock('../services/chat-queue-service', () => ({
   getChatQueueService: (): unknown => ({
-    beginWorktreeDeletion: beginWorktreeQueueDeletionMock,
+    get beginWorktreeDeletion(): typeof beginWorktreeQueueDeletionMock {
+      return beginWorktreeQueueDeletionMock;
+    },
   }),
 }));
 
@@ -335,9 +353,15 @@ const commitLocalScopeCancellationMock = jest.fn();
 const cancelLocalScopeMock = jest.fn(() => Promise.resolve());
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: (): unknown => ({
-    cancelLocalScope: cancelLocalScopeMock,
-    releaseLocalScopeFence: releaseLocalScopeFenceMock,
-    commitLocalScopeCancellation: commitLocalScopeCancellationMock,
+    get cancelLocalScope(): typeof cancelLocalScopeMock {
+      return cancelLocalScopeMock;
+    },
+    get releaseLocalScopeFence(): typeof releaseLocalScopeFenceMock {
+      return releaseLocalScopeFenceMock;
+    },
+    get commitLocalScopeCancellation(): typeof commitLocalScopeCancellationMock {
+      return commitLocalScopeCancellationMock;
+    },
   }),
 }));
 
@@ -354,6 +378,9 @@ jest.mock('../lib/archived-containers', () => ({
   countArchivedContainerExecutions: jest.fn(() => Promise.resolve(0)),
   countArchivedContainers: jest.fn(() => Promise.resolve(0)),
   readArchivedContainerManifest: jest.fn(() =>
+    Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' })),
+  ),
+  readArchivedContainerManifestIncludingExpired: jest.fn(() =>
     Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' })),
   ),
   withArchivedWorkspaceOperationLock: jest.fn(
@@ -449,7 +476,9 @@ jest.mock('../lib/archived-container-git', () => ({
 const mockWorktreeContainerArchived = jest.fn();
 jest.mock('../chat-search/service', () => ({
   getChatSearchService: jest.fn(() => ({
-    worktreeContainerArchived: mockWorktreeContainerArchived,
+    get worktreeContainerArchived(): typeof mockWorktreeContainerArchived {
+      return mockWorktreeContainerArchived;
+    },
   })),
 }));
 
@@ -480,7 +509,9 @@ const initializePanelLayoutModeMock = jest.fn(() =>
 );
 jest.mock('../panels/layout-mode-persistence', () => ({
   panelLayoutModePersistenceStore: {
-    initialize: initializePanelLayoutModeMock,
+    get initialize(): typeof initializePanelLayoutModeMock {
+      return initializePanelLayoutModeMock;
+    },
   },
 }));
 
@@ -491,9 +522,8 @@ jest.mock('../portal/portal-structural-sync', () => ({
   },
 }));
 
-const logMainProcessWarnMock = jest.fn();
 jest.mock('../lib/main-process-logging', () => ({
-  logMainProcessWarn: logMainProcessWarnMock,
+  logMainProcessWarn: jest.fn(),
 }));
 
 jest.mock('@canopy/desktop-shared/node/pipelines/cli-runtime', () => ({
@@ -517,6 +547,7 @@ import type { Dirent } from 'node:fs';
 import { lstat, readdir, readlink, rm } from 'node:fs/promises';
 import type {
   MultiRepoSidebarItem,
+  PreferencesData,
   SidebarItem,
   SingleRepoSidebarItem,
   UsageMetricEvent,
@@ -565,6 +596,7 @@ import {
   withWorktreeRemovalLock,
 } from '../lib/git';
 import { listWorkspaceItems } from '../lib/workspace-service';
+import { WorktreeCreationRefusedError } from '../lib/worktree-creation-selection';
 import {
   resolveEffectiveBaseBranchForRepo,
   resolveEffectiveBaseBranchesForWorktree,
@@ -644,6 +676,7 @@ import {
   readArchivedContainerRecovery,
 } from '../lib/archived-container-recovery';
 import { KeyedAsyncLock } from '../lib/keyed-async-lock';
+import { currentLocalFenceHolder } from '../app-advisor/local-fence-holder';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
   captureArchivedContainerGitState,
@@ -660,6 +693,9 @@ import {
   restoreStagedMacosWorktreeDirectory,
   stageExactMacosWorktreeDirectoryForRemoval,
 } from '../lib/macos-worktree-directory-cleanup';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+
+const logMainProcessWarnMock = jest.mocked(logMainProcessWarn);
 
 const mockedLstat = jest.mocked(lstat);
 const mockedReaddir = jest.mocked(readdir);
@@ -1080,6 +1116,36 @@ function directoryEntry(name: string): Dirent {
   };
 }
 
+// The test fixtures model readdir's default string encoding, not its buffer overload.
+const mockedStringReaddir = mockedReaddir as unknown as jest.MockedFunction<
+  (path: Parameters<typeof readdir>[0]) => Promise<Dirent[] | string[]>
+>;
+
+function mockReaddirImplementation(
+  implementation: (
+    path: Parameters<typeof readdir>[0],
+  ) => Promise<Dirent[] | string[]>,
+): void {
+  mockedStringReaddir.mockImplementation(implementation);
+}
+
+function makePartialPreferences(
+  overrides: Partial<PreferencesData>,
+): PreferencesData {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  const preferences: Partial<PreferencesData> = { ...overrides };
+  return preferences as PreferencesData;
+}
+
+function mockNoContainerRetentionDays(): void {
+  const legacyNoRetention = { days: 0 };
+  // Preserve the legacy null result these tests use to exercise no-retention behavior.
+  Reflect.set(legacyNoRetention, 'days', null);
+  mockedResolveContainerRetentionDays.mockImplementation(() =>
+    Promise.resolve(legacyNoRetention.days),
+  );
+}
+
 describe('worktree-service', () => {
   it.each([
     [
@@ -1145,10 +1211,12 @@ describe('worktree-service', () => {
       Promise.resolve(`${repoPath}/.git`),
     );
     mockedIsAncestor.mockResolvedValue(true);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: false,
-      workspaceDefaultLayoutMode: 'minimal',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({
+        deleteBranchOnArchive: false,
+        workspaceDefaultLayoutMode: 'minimal',
+      }),
+    );
     initializePanelLayoutModeMock.mockResolvedValue('minimal');
     mockedResolveContainerRetentionDays.mockResolvedValue(7);
     mockedCaptureArchivedContainerProviderState.mockResolvedValue([]);
@@ -1270,10 +1338,12 @@ describe('worktree-service', () => {
       'generated-worktree',
     );
     mockedPruneWorktrees.mockResolvedValue(undefined);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: false,
-      workspaceDefaultLayoutMode: 'minimal',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({
+        deleteBranchOnArchive: false,
+        workspaceDefaultLayoutMode: 'minimal',
+      }),
+    );
     mockedCleanupPersistedWorktreeData.mockResolvedValue([]);
     mockedQueueOrphanedMacosWorktreeDirectory.mockResolvedValue(undefined);
     mockedRemoveExactMacosWorktreeDirectory.mockResolvedValue(undefined);
@@ -1507,12 +1577,13 @@ describe('worktree-service', () => {
         return persistedWorktrees;
       },
     );
-    mockedReaddir.mockImplementation((path) =>
-      Promise.resolve(
-        String(path) === '/archives/project-1'
-          ? [directoryEntry('generated-worktree')]
-          : [],
-      ),
+    mockReaddirImplementation(
+      (path): Promise<Dirent[] | string[]> =>
+        Promise.resolve(
+          String(path) === '/archives/project-1'
+            ? [directoryEntry('generated-worktree')]
+            : [],
+        ),
     );
 
     const created = await createSingleRepoWorktree({
@@ -1556,6 +1627,66 @@ describe('worktree-service', () => {
     expect(mockedRm).toHaveBeenCalledWith(
       '/data/worktree-data/project-1/generated-worktree',
       { recursive: true, force: true },
+    );
+  });
+
+  it('names a single-repo default branch after the generated worktree id when asked', async () => {
+    let persistedWorktrees: WorktreeData[] = [];
+    mockedReadWorkspaceWorktrees.mockImplementation(() =>
+      Promise.resolve(persistedWorktrees),
+    );
+    mockedUpdateWorkspaceWorktrees.mockImplementation(
+      async (_workspaceId, updater) => {
+        persistedWorktrees = await updater(persistedWorktrees);
+        return persistedWorktrees;
+      },
+    );
+    // Only the bare id is checked, so the first id's branch being taken
+    // skips to the next id rather than adding a timestamp.
+    mockedIsBranchNameAvailable.mockImplementation((_repoPath, branchName) =>
+      Promise.resolve(branchName !== 'generated-worktree'),
+    );
+    mockedCreateWorktree.mockImplementation(
+      (_repoPath, _worktreePath, branch) => Promise.resolve(branch),
+    );
+
+    const created = await createSingleRepoWorktree({
+      workspaceId: 'project-1',
+      existingWorktreeIds: [],
+      defaultBranchNaming: 'worktree-id',
+    });
+
+    expect(created.id).toBe('generated-worktree-2');
+    expect(created.branchName).toBe('generated-worktree-2');
+    expect(
+      mockedIsBranchNameAvailable.mock.calls.map(([, name]) => name),
+    ).toEqual(['generated-worktree', 'generated-worktree-2']);
+    expect(mockedCreateWorktree).toHaveBeenCalledWith(
+      '/repos/project-1',
+      '/worktrees/project-1/generated-worktree-2',
+      'generated-worktree-2',
+    );
+    expect(persistedWorktrees[0]).toMatchObject({
+      id: 'generated-worktree-2',
+      branchName: 'generated-worktree-2',
+    });
+  });
+
+  it('keeps the timestamped single-repo default branch when no naming is requested', async () => {
+    mockedCreateWorktree.mockImplementation(
+      (_repoPath, _worktreePath, branch) => Promise.resolve(branch),
+    );
+
+    const created = await createSingleRepoWorktree({
+      workspaceId: 'project-1',
+      existingWorktreeIds: [],
+    });
+
+    expect(created.id).toBe('generated-worktree');
+    expect(created.branchName).toMatch(/^generated-worktree-\d{13}$/);
+    expect(mockedIsBranchNameAvailable).toHaveBeenCalledWith(
+      '/repos/project-1',
+      created.branchName,
     );
   });
 
@@ -1638,6 +1769,91 @@ describe('worktree-service', () => {
       'main',
     );
     expect(created.trackedBaseBranch).toBe('main');
+  });
+
+  it('starts from the commit of a tag or other commit-ish base, as git worktree add did', async () => {
+    mockedDoesLocalBranchExist.mockResolvedValue(false);
+    mockedDoesRemoteBranchExist.mockResolvedValue(false);
+    mockedResolveRefSha.mockResolvedValue(
+      '2222222222222222222222222222222222222222',
+    );
+    mockedCreateWorktreeFromStartPoint.mockResolvedValue('feature/from-tag');
+
+    const created = await createSingleRepoWorktree({
+      workspaceId: 'project-1',
+      branchName: 'feature/from-tag',
+      baseBranch: 'v1.2.0',
+    });
+
+    expect(mockedResolveRefSha).toHaveBeenCalledWith(
+      '/repos/project-1',
+      'v1.2.0^{commit}',
+    );
+    expect(mockedCreateWorktreeFromStartPoint).toHaveBeenCalledWith(
+      '/repos/project-1',
+      '/worktrees/project-1/generated-worktree',
+      'feature/from-tag',
+      '2222222222222222222222222222222222222222',
+    );
+    expect(created.trackedBaseBranch).toBe('v1.2.0');
+  });
+
+  it('still refuses a base that names no branch, tag or commit', async () => {
+    mockedDoesLocalBranchExist.mockResolvedValue(false);
+    mockedDoesRemoteBranchExist.mockResolvedValue(false);
+    mockedResolveRefSha.mockRejectedValue(new Error('unknown revision'));
+
+    await expect(
+      createSingleRepoWorktree({
+        workspaceId: 'project-1',
+        branchName: 'feature/missing-base',
+        baseBranch: 'no-such-ref',
+      }),
+    ).rejects.toThrow('Base branch "no-such-ref" was not found');
+    expect(mockedCreateWorktreeFromStartPoint).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing base or a detached base task with a typed refusal', async () => {
+    mockedDoesLocalBranchExist.mockResolvedValue(false);
+    mockedDoesRemoteBranchExist.mockResolvedValue(false);
+    mockedResolveRefSha.mockRejectedValue(new Error('unknown revision'));
+    const missing = createSingleRepoWorktree({
+      workspaceId: 'project-1',
+      branchName: 'feature/missing-base',
+      baseBranch: 'no-such-ref',
+    });
+    await expect(missing).rejects.toBeInstanceOf(WorktreeCreationRefusedError);
+    await expect(missing).rejects.toMatchObject({ reason: 'base-not-found' });
+
+    mockedGetCurrentBranch.mockResolvedValue('HEAD');
+    const detached = createSingleRepoWorktree({
+      workspaceId: 'project-1',
+      branchName: 'feature/detached-base',
+      baseWorktreeId: 'base',
+    });
+    await expect(detached).rejects.toBeInstanceOf(WorktreeCreationRefusedError);
+    await expect(detached).rejects.toMatchObject({
+      reason: 'base-task-detached',
+      message: 'Cannot determine a branch name for worktree "base"',
+    });
+    expect(mockedCreateWorktreeFromStartPoint).not.toHaveBeenCalled();
+  });
+
+  it('never passes a dash-prefixed base to git as a revision', async () => {
+    mockedDoesLocalBranchExist.mockResolvedValue(false);
+    mockedDoesRemoteBranchExist.mockResolvedValue(false);
+
+    await expect(
+      createSingleRepoWorktree({
+        workspaceId: 'project-1',
+        branchName: 'feature/dash-base',
+        baseBranch: '--all',
+      }),
+    ).rejects.toThrow('Base branch "--all" was not found');
+    expect(mockedResolveRefSha).not.toHaveBeenCalledWith(
+      '/repos/project-1',
+      expect.stringContaining('--all'),
+    );
   });
 
   it('fetches an explicit remote base even when a same-named local branch exists', async () => {
@@ -1836,6 +2052,89 @@ describe('worktree-service', () => {
     );
   });
 
+  it('names a multi-repo default branch after the generated worktree id when asked', async () => {
+    let persistedWorktrees: WorktreeData[] = [];
+    mockedListWorkspaceItems.mockResolvedValue([buildMultiRepoWorkspace()]);
+    mockedReadWorkspaceWorktrees.mockImplementation(() =>
+      Promise.resolve(persistedWorktrees),
+    );
+    mockedUpdateWorkspaceWorktrees.mockImplementation(
+      async (_workspaceId, updater) => {
+        persistedWorktrees = await updater(persistedWorktrees);
+        return persistedWorktrees;
+      },
+    );
+    mockedIsBranchNameAvailable.mockImplementation((repoPath, branchName) =>
+      Promise.resolve(
+        !(repoPath === '/repos/repo-b' && branchName === 'generated-worktree'),
+      ),
+    );
+    mockedCreateWorktree.mockImplementation(
+      (_repoPath, _worktreePath, branch) => Promise.resolve(branch),
+    );
+
+    const created = await createMultiRepoWorktree({
+      workspaceId: 'workspace-1',
+      existingWorktreeIds: [],
+      defaultBranchNaming: 'worktree-id',
+    });
+    if (created.needsRepair) {
+      throw new Error('Expected a successful create response');
+    }
+
+    expect(created.id).toBe('generated-worktree-2');
+    expect(created.branchName).toBe('generated-worktree-2');
+    expect(
+      new Set(mockedIsBranchNameAvailable.mock.calls.map(([, name]) => name)),
+    ).toEqual(new Set(['generated-worktree', 'generated-worktree-2']));
+    for (const [repoPath, worktreePath] of [
+      [
+        '/refs/source',
+        '/workspace-worktrees/workspace-1/generated-worktree-2/root',
+      ],
+      [
+        '/repos/repo-a',
+        '/workspace-worktrees/workspace-1/generated-worktree-2/repos/repo-a',
+      ],
+      [
+        '/repos/repo-b',
+        '/workspace-worktrees/workspace-1/generated-worktree-2/repos/repo-b',
+      ],
+    ]) {
+      expect(mockedCreateWorktree).toHaveBeenCalledWith(
+        repoPath,
+        worktreePath,
+        'generated-worktree-2',
+      );
+    }
+    expect(persistedWorktrees[0]).toMatchObject({
+      id: 'generated-worktree-2',
+      branchName: 'generated-worktree-2',
+    });
+  });
+
+  it('keeps the timestamped multi-repo default branch when no naming is requested', async () => {
+    mockedListWorkspaceItems.mockResolvedValue([buildMultiRepoWorkspace()]);
+    mockedCreateWorktree.mockImplementation(
+      (_repoPath, _worktreePath, branch) => Promise.resolve(branch),
+    );
+
+    const created = await createMultiRepoWorktree({
+      workspaceId: 'workspace-1',
+      existingWorktreeIds: [],
+    });
+    if (created.needsRepair) {
+      throw new Error('Expected a successful create response');
+    }
+
+    expect(created.id).toBe('generated-worktree');
+    expect(created.branchName).toMatch(/^generated-worktree-\d{13}$/);
+    expect(mockedIsBranchNameAvailable).toHaveBeenCalledWith(
+      '/repos/repo-a',
+      created.branchName,
+    );
+  });
+
   it('builds source-backed usage repo scopes with project root and child repos', async () => {
     mockedListWorkspaceItems.mockResolvedValue([buildMultiRepoWorkspace()]);
 
@@ -2016,6 +2315,7 @@ describe('worktree-service', () => {
         {
           repoId: '__single_repo__',
           referenceRepoPath: '/repos/project-1',
+          preMoveRepoPath: '/worktrees/project-1/wt-1',
           quarantineRepoPath: '/worktrees/project-1/.wt-1.archive-quarantine',
           branchName: 'feature/retained',
         },
@@ -2043,8 +2343,7 @@ describe('worktree-service', () => {
       await expect(archiveSingleRepoWorktree(request)).rejects.toBe(timeout);
       expect(
         runArchiveIoRequestMock.mock.calls.filter(
-          ([operation]) =>
-            (operation as ArchiveIoOperationRequest).type === 'remove-worktree',
+          ([operation]) => operation.type === 'remove-worktree',
         ),
       ).toHaveLength(1);
       expect(mockedPrepareArchivedContainerTeardown).toHaveBeenCalledTimes(1);
@@ -2196,6 +2495,10 @@ describe('worktree-service', () => {
         targets: [
           {
             repoId,
+            preMoveRepoPath:
+              repoId === WORKSPACE_ROOT_REPO_ID
+                ? '/workspace-worktrees/workspace-1/wt-1'
+                : '/workspace-worktrees/workspace-1/wt-1/repos/repo-a',
             referenceRepoPath:
               repoId === WORKSPACE_ROOT_REPO_ID
                 ? '/refs/source'
@@ -2227,9 +2530,7 @@ describe('worktree-service', () => {
         await expect(archiveMultiRepoWorktree(request)).rejects.toBe(timeout);
         expect(
           runArchiveIoRequestMock.mock.calls.filter(
-            ([operation]) =>
-              (operation as ArchiveIoOperationRequest).type ===
-              'remove-worktree',
+            ([operation]) => operation.type === 'remove-worktree',
           ),
         ).toHaveLength(1);
         expect(
@@ -2288,7 +2589,7 @@ describe('worktree-service', () => {
   );
 
   it('fences no-retention watcher commands before single-repo Git teardown', async () => {
-    mockedResolveContainerRetentionDays.mockResolvedValue(null);
+    mockNoContainerRetentionDays();
 
     await archiveSingleRepoWorktree({
       workspaceId: 'project-1',
@@ -2302,6 +2603,65 @@ describe('worktree-service', () => {
       mockedRemoveWorktree.mock.invocationCallOrder[0] ??
         Number.POSITIVE_INFINITY,
     );
+  });
+
+  it('fences and commits watcher cancellation as its own fence holder (CAN-4989)', async () => {
+    mockNoContainerRetentionDays();
+    const holders: unknown[] = [];
+    const record = (): Promise<void> => {
+      holders.push(currentLocalFenceHolder());
+      return Promise.resolve();
+    };
+    cancelLocalScopeMock.mockImplementation(record);
+    commitLocalScopeCancellationMock.mockImplementation(record);
+    try {
+      await archiveSingleRepoWorktree({
+        workspaceId: 'project-1',
+        worktreeId: 'wt-1',
+        repoPath: '/repos/project-1',
+        retainAsArchivedContainer: false,
+      });
+    } finally {
+      cancelLocalScopeMock.mockImplementation(() => Promise.resolve());
+      commitLocalScopeCancellationMock.mockReset();
+    }
+
+    expect(holders).toHaveLength(2);
+    expect(new Set(holders).size).toBe(1);
+    expect(holders[0]).not.toBe(currentLocalFenceHolder());
+  });
+
+  it('fences and commits multi-repo watcher cancellation as its own fence holder (CAN-4989)', async () => {
+    const workspace = buildMultiRepoWorkspace();
+    mockedListWorkspaceItems.mockResolvedValue([workspace]);
+    mockedReadWorkspaceConfig.mockResolvedValue({
+      version: 1,
+      type: 'multi-repo',
+      sourceRepoPath: workspace.sourceRepoPath,
+      repos: workspace.repos,
+    });
+    mockNoContainerRetentionDays();
+    const holders: unknown[] = [];
+    const record = (): Promise<void> => {
+      holders.push(currentLocalFenceHolder());
+      return Promise.resolve();
+    };
+    cancelLocalScopeMock.mockImplementation(record);
+    commitLocalScopeCancellationMock.mockImplementation(record);
+    try {
+      await archiveMultiRepoWorktree({
+        workspaceId: 'workspace-1',
+        worktreeId: 'wt-1',
+        retainAsArchivedContainer: false,
+      });
+    } finally {
+      cancelLocalScopeMock.mockImplementation(() => Promise.resolve());
+      commitLocalScopeCancellationMock.mockReset();
+    }
+
+    expect(holders).toHaveLength(2);
+    expect(new Set(holders).size).toBe(1);
+    expect(holders[0]).not.toBe(currentLocalFenceHolder());
   });
 
   it.each(['single', 'multi'])(
@@ -2491,6 +2851,33 @@ describe('worktree-service', () => {
   });
 
   describe('removal-pending mark', () => {
+    it.each(['single-repo', 'multi-repo'] as const)(
+      'CAN-5158 internal %s removal still marks pending synchronously',
+      async (kind) => {
+        runWithScopeDeletionLifecycleMock.mockRejectedValueOnce(
+          new Error('scope lifecycle failed'),
+        );
+        const archive =
+          kind === 'single-repo'
+            ? archiveSingleRepoWorktree
+            : archiveMultiRepoWorktree;
+        const operation = archive({
+          workspaceId: 'project-1',
+          worktreeId: 'wt-1',
+        });
+        const pendingAtReturn = isWorkspaceTargetRemovalPending(
+          'project-1',
+          'wt-1',
+        );
+
+        await expect(operation).rejects.toThrow('scope lifecycle failed');
+        expect(pendingAtReturn).toBe(true);
+        expect(isWorkspaceTargetRemovalPending('project-1', 'wt-1')).toBe(
+          false,
+        );
+      },
+    );
+
     // Records whether the target was marked each time a structural sync was
     // scheduled: `true` is the edge that hides the row, `false` the edge that
     // lets a failed archive show it again.
@@ -3577,9 +3964,9 @@ describe('worktree-service', () => {
   it('deletes the local branch when the archive action explicitly requests it', async () => {
     mockedResolveContainerRetentionDays.mockResolvedValue(7);
     mockedForceDeleteBranch.mockResolvedValue(undefined);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: false,
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({ deleteBranchOnArchive: false }),
+    );
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       {
         id: 'wt-1',
@@ -3981,6 +4368,64 @@ describe('worktree-service', () => {
     );
   });
 
+  it.each(['ENOENT', 'EACCES', 'ENOTDIR', 'symlink'])(
+    'CAN-5158 excluded child cleanup treats %s as absent only for ENOENT',
+    async (childState) => {
+      const workspace = buildMultiRepoWorkspace();
+      mockedListWorkspaceItems.mockResolvedValue([workspace]);
+      mockedReadWorkspaceConfig.mockResolvedValue({
+        version: 1,
+        type: 'multi-repo',
+        repos: workspace.repos,
+      });
+      mockedReadWorkspaceWorktrees.mockResolvedValue([
+        {
+          id: 'wt-1',
+          branchName: 'feature/root',
+          createdAt: '2026-04-20T00:00:00.000Z',
+          includedRepoIds: ['repo-a'],
+        },
+      ]);
+      const childPath = '/workspace-worktrees/workspace-1/wt-1/repos/repo-b';
+      const childError = Object.assign(new Error(`child path: ${childState}`), {
+        code: childState,
+      });
+      mockedLstat.mockImplementation((candidatePath) => {
+        if (String(candidatePath) !== childPath)
+          return Promise.resolve(makeLstatResult(false));
+        return childState === 'symlink'
+          ? Promise.resolve(makeLstatResult(true))
+          : Promise.reject(childError);
+      });
+
+      const removal = archiveMultiRepoWorktree({
+        workspaceId: 'workspace-1',
+        worktreeId: 'wt-1',
+        retainAsArchivedContainer: false,
+        deleteBranch: false,
+      });
+      if (childState === 'EACCES' || childState === 'ENOTDIR') {
+        await expect(removal).rejects.toThrow(childError.message);
+      } else {
+        await expect(removal).resolves.toMatchObject({ success: true });
+      }
+      expect(mockedLstat).toHaveBeenCalledWith(childPath);
+      if (childState === 'symlink') {
+        expect(mockedRemoveWorktree).toHaveBeenCalledWith(
+          '/repos/repo-b',
+          childPath,
+        );
+      } else {
+        expect(mockedRemoveWorktree).not.toHaveBeenCalledWith(
+          '/repos/repo-b',
+          childPath,
+        );
+      }
+      expect(mockedDeleteBranchIfMatches).not.toHaveBeenCalled();
+      expect(mockedForceDeleteBranch).not.toHaveBeenCalled();
+    },
+  );
+
   it('removes a temporary clone as owned files during non-retained teardown', async () => {
     const workspace = buildMultiRepoWorkspace();
     mockedListWorkspaceItems.mockResolvedValue([workspace]);
@@ -4107,9 +4552,9 @@ describe('worktree-service', () => {
       },
     ]);
     mockedResolveContainerRetentionDays.mockResolvedValue(7);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: true,
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({ deleteBranchOnArchive: true }),
+    );
     mockedCaptureArchivedContainerGitState.mockResolvedValueOnce(
       buildMultiRepoArchiveCapture({
         root: 'feature/root',
@@ -4125,6 +4570,7 @@ describe('worktree-service', () => {
         {
           repoId: 'repo-a',
           referenceRepoPath: '/repos/repo-a',
+          preMoveRepoPath: '/workspace-worktrees/workspace-1/wt-1/repos/repo-a',
           quarantineRepoPath:
             '/workspace-worktrees/workspace-1/wt-1/repos/repo-a',
           branchName: 'feature/repo-a',
@@ -4132,6 +4578,8 @@ describe('worktree-service', () => {
         {
           repoId: 'stale-repo',
           referenceRepoPath: '/repos/stale',
+          preMoveRepoPath:
+            '/workspace-worktrees/workspace-1/wt-1/repos/stale-repo',
           quarantineRepoPath:
             '/workspace-worktrees/workspace-1/wt-1/repos/stale-repo',
           branchName: 'unrelated/stale',
@@ -4162,9 +4610,9 @@ describe('worktree-service', () => {
     mockedForceDeleteBranch.mockRejectedValue(
       new Error('branch is locked by another process'),
     );
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: false,
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({ deleteBranchOnArchive: false }),
+    );
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       {
         id: 'wt-1',
@@ -4213,6 +4661,7 @@ describe('worktree-service', () => {
           {
             repoId: '__single_repo__',
             referenceRepoPath: '/repos/project-1',
+            preMoveRepoPath: '/worktrees/project-1/wt-1',
             quarantineRepoPath: '/worktrees/project-1/.wt-1.archive-quarantine',
             branchName: 'feature/retained',
           },
@@ -4255,9 +4704,9 @@ describe('worktree-service', () => {
 
   it('replays the persisted merged-only policy after quarantine removal', async () => {
     mockedResolveContainerRetentionDays.mockResolvedValue(7);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: true,
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({ deleteBranchOnArchive: true }),
+    );
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       {
         id: 'wt-1',
@@ -4338,6 +4787,7 @@ describe('worktree-service', () => {
           {
             repoId: '__single_repo__',
             referenceRepoPath: '/repos/project-1',
+            preMoveRepoPath: '/worktrees/project-1/wt-1',
             quarantineRepoPath: '/worktrees/project-1/.wt-1.archive-quarantine',
             branchName: 'feature/retained',
           },
@@ -4940,9 +5390,9 @@ describe('worktree-service', () => {
 
   it('preserves the local branch when the archive action explicitly requests it', async () => {
     mockedResolveContainerRetentionDays.mockResolvedValue(7);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: true,
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({ deleteBranchOnArchive: true }),
+    );
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       {
         id: 'wt-1',
@@ -4965,9 +5415,9 @@ describe('worktree-service', () => {
   it('uses merged-only deletion for the saved archive preference', async () => {
     mockedResolveContainerRetentionDays.mockResolvedValue(7);
     mockedDeleteBranch.mockResolvedValue(undefined);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: true,
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({ deleteBranchOnArchive: true }),
+    );
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       {
         id: 'wt-1',
@@ -4991,9 +5441,9 @@ describe('worktree-service', () => {
 
   it('treats an unmerged merged-only branch as a no-op', async () => {
     mockedResolveContainerRetentionDays.mockResolvedValue(7);
-    mockedReadPreferencesFile.mockResolvedValue({
-      deleteBranchOnArchive: true,
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      makePartialPreferences({ deleteBranchOnArchive: true }),
+    );
     mockedDeleteBranch.mockRejectedValueOnce(new Error('branch is unmerged'));
     mockedIsAncestor.mockResolvedValue(false);
     mockedReadWorkspaceWorktrees.mockResolvedValue([
@@ -5239,10 +5689,11 @@ describe('worktree-service', () => {
         restoredFromFilesOnlyArchiveId: 'original-archive',
       },
     ]);
-    mockedReaddir.mockImplementation((candidatePath) =>
-      Promise.resolve(
-        String(candidatePath).endsWith('/repos') ? ['repo-a', 'repo-b'] : [],
-      ),
+    mockReaddirImplementation(
+      (candidatePath): Promise<Dirent[] | string[]> =>
+        Promise.resolve(
+          String(candidatePath).endsWith('/repos') ? ['repo-a', 'repo-b'] : [],
+        ),
     );
     mockedLstat.mockImplementation((candidatePath) => {
       if (String(candidatePath).endsWith('/.git')) {
@@ -5290,10 +5741,11 @@ describe('worktree-service', () => {
         restoredFromFilesOnlyArchiveId: 'original-archive',
       },
     ]);
-    mockedReaddir.mockImplementation((candidatePath) =>
-      Promise.resolve(
-        String(candidatePath).endsWith('/repos') ? ['repo-a', 'repo-b'] : [],
-      ),
+    mockReaddirImplementation(
+      (candidatePath): Promise<Dirent[] | string[]> =>
+        Promise.resolve(
+          String(candidatePath).endsWith('/repos') ? ['repo-a', 'repo-b'] : [],
+        ),
     );
     mockedLstat.mockImplementation((candidatePath) =>
       String(candidatePath).endsWith('/repos/repo-a/.git')
@@ -5728,7 +6180,7 @@ describe('worktree-service', () => {
         repoPath: '/repos/project-1',
       }),
     ).rejects.toThrow(
-      'Failed to archive pipeline execution artifacts: exec-failed',
+      'Failed to archive workflow execution artifacts: exec-failed',
     );
 
     expect(mockedCommitArchivedContainer).not.toHaveBeenCalled();
@@ -7009,6 +7461,7 @@ describe('worktree-service', () => {
         pipeline_id: 'pipeline-match',
         pipeline_name: 'Matching Pipeline',
         status: 'success',
+        status_reasons: [],
         project_id: 'project-1',
         worktree_id: 'wt-1',
         started_at: '2026-04-20T00:00:00.000Z',
@@ -7019,6 +7472,7 @@ describe('worktree-service', () => {
         pipeline_id: 'pipeline-other-worktree',
         pipeline_name: 'Other Worktree',
         status: 'success',
+        status_reasons: [],
         project_id: 'project-1',
         worktree_id: 'wt-2',
         started_at: '2026-04-20T00:00:00.000Z',
@@ -7029,6 +7483,7 @@ describe('worktree-service', () => {
         pipeline_id: 'pipeline-other-project',
         pipeline_name: 'Other Project',
         status: 'success',
+        status_reasons: [],
         project_id: 'project-2',
         worktree_id: 'wt-1',
         started_at: '2026-04-20T00:00:00.000Z',
@@ -9258,6 +9713,38 @@ describe('worktree-service', () => {
       ).rejects.toThrow(/already checked out/i);
     });
 
+    it('refuses a checked-out or missing branch with a typed refusal', async () => {
+      mockedListCheckedOutBranches.mockResolvedValue(
+        new Map([['feature/foo', '/Users/me/repo']]),
+      );
+      const checkedOut = createSingleRepoWorktree({
+        workspaceId: 'ws-1',
+        existingBranch: 'feature/foo',
+      });
+      await expect(checkedOut).rejects.toBeInstanceOf(
+        WorktreeCreationRefusedError,
+      );
+      await expect(checkedOut).rejects.toMatchObject({
+        reason: 'branch-checked-out',
+        message:
+          'Branch "feature/foo" is already checked out at /Users/me/repo',
+      });
+
+      mockedDoesLocalBranchExist.mockResolvedValue(false);
+      mockedDoesRemoteBranchExist.mockResolvedValue(false);
+      const missing = createSingleRepoWorktree({
+        workspaceId: 'ws-1',
+        existingBranch: 'missing',
+      });
+      await expect(missing).rejects.toBeInstanceOf(
+        WorktreeCreationRefusedError,
+      );
+      await expect(missing).rejects.toMatchObject({
+        reason: 'branch-not-found',
+        message: 'Branch "missing" was not found',
+      });
+    });
+
     it('rejects a branch that does not exist locally or on origin', async () => {
       mockedDoesLocalBranchExist.mockResolvedValue(false);
       mockedDoesRemoteBranchExist.mockResolvedValue(false);
@@ -9330,6 +9817,24 @@ describe('worktree-service', () => {
       ).rejects.toThrow(
         'Branch "missing" was not found, and origin could not be refreshed',
       );
+    });
+  });
+
+  describe('createSingleRepoWorktree with an invalid branch name', () => {
+    it('refuses the name with a typed refusal', async () => {
+      mockedValidateBranchName.mockResolvedValue(false);
+      const created = createSingleRepoWorktree({
+        workspaceId: 'ws-1',
+        branchName: 'bad..name',
+      });
+      await expect(created).rejects.toBeInstanceOf(
+        WorktreeCreationRefusedError,
+      );
+      await expect(created).rejects.toMatchObject({
+        reason: 'invalid-branch-name',
+        message: 'Invalid branch name: "bad..name"',
+      });
+      expect(mockedCreateWorktree).not.toHaveBeenCalled();
     });
   });
 

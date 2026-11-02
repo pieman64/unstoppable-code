@@ -94,7 +94,7 @@ export function usePipelineList(
         setError(null);
       } catch (err) {
         setError(
-          getErrorMessage(err, 'Failed to update pipeline enabled state'),
+          getErrorMessage(err, 'Failed to update workflow enabled state'),
         );
       }
     },
@@ -142,7 +142,7 @@ export function usePipelineList(
         observeArtifactPipelines(storedResult.data, artifactScope);
       } else {
         setStoredPipelines([]);
-        errors.push(storedResult.error || 'Failed to load pipelines');
+        errors.push(storedResult.error || 'Failed to load workflows');
       }
 
       if (projectResult.success && projectResult.data) {
@@ -160,7 +160,7 @@ export function usePipelineList(
             'error' in projectResult && typeof projectResult.error === 'string'
               ? projectResult.error
               : undefined;
-          errors.push(projectError || 'Failed to load project pipelines');
+          errors.push(projectError || 'Failed to load project workflows');
         }
       }
 
@@ -175,7 +175,7 @@ export function usePipelineList(
             contextGeneration)
       )
         return;
-      setError(getErrorMessage(err, 'Failed to load pipelines'));
+      setError(getErrorMessage(err, 'Failed to load workflows'));
     } finally {
       if (requestId === refreshIdRef.current) {
         setLoading(false);
@@ -206,9 +206,9 @@ export function usePipelineList(
           await refresh();
           return true;
         }
-        setError(result.error || 'Failed to delete pipeline');
+        setError(result.error || 'Failed to delete workflow');
       } catch (err) {
-        setError(getErrorMessage(err, 'Failed to delete pipeline'));
+        setError(getErrorMessage(err, 'Failed to delete workflow'));
       }
       return false;
     },
@@ -240,9 +240,9 @@ export function usePipelineList(
           await refresh();
           return result.data;
         }
-        setError(result.error || 'Failed to duplicate pipeline');
+        setError(result.error || 'Failed to duplicate workflow');
       } catch (err) {
-        setError(getErrorMessage(err, 'Failed to duplicate pipeline'));
+        setError(getErrorMessage(err, 'Failed to duplicate workflow'));
       }
       return null;
     },
@@ -257,9 +257,9 @@ export function usePipelineList(
           shared.removeSharedRow(remoteId);
           return true;
         }
-        setError(result.error || 'Failed to delete shared pipeline');
+        setError(result.error || 'Failed to delete shared workflow');
       } catch (err) {
-        setError(getErrorMessage(err, 'Failed to delete shared pipeline'));
+        setError(getErrorMessage(err, 'Failed to delete shared workflow'));
       }
       return false;
     },

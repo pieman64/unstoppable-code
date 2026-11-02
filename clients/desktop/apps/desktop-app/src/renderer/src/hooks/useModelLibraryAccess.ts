@@ -2,7 +2,10 @@ import { useEffect } from 'react';
 import type { AiCreditsScopeRequest } from '@canopy/desktop-shared/types';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
-import { useStableAiCreditsScope } from '@/lib/aiCreditsScope';
+import {
+  APP_ADVISOR_AI_CREDITS_SCOPE,
+  useStableAiCreditsScope,
+} from '@/lib/aiCreditsScope';
 import {
   ensureModelLibraryAccessSubscribed,
   refreshWorkModelLibraryAccess,
@@ -54,4 +57,15 @@ export function useWorkModelLibraryAccess(
     };
   }, [accountKey, enabled, key, stableScope]);
   return enabled && read?.accountKey === accountKey ? read?.access : undefined;
+}
+
+/**
+ * The signed-in person's own access, whatever context is selected (CAN-5028).
+ * App Advisor work is always Personal, so its scoped read names the person's
+ * wallet and shares the work store, account reset, and purchase watch above.
+ */
+export function usePersonalModelLibraryAccess(
+  enabled = true,
+): ModelLibraryAccess | undefined {
+  return useWorkModelLibraryAccess(APP_ADVISOR_AI_CREDITS_SCOPE, enabled);
 }

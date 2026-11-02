@@ -2,6 +2,7 @@
 import { act, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { OrgProjectSummary } from '@canopy/protocol/org-projects';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { OrgProjectRow } from '../OrgProjectRow';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
@@ -67,6 +68,39 @@ describe('OrgProjectRow', () => {
     if (row === null) throw new Error('row not rendered');
     return row;
   }
+
+  it('names a multi-repo definition by its distinct project identity', () => {
+    const row = render({
+      project: { ...project, topology: 'multi-repo', name: 'Canopy + Core' },
+    });
+    expect(row.textContent).toContain('Canopy + Core');
+  });
+
+  it('previews the complete repository list and keeps shared project names out of replay attributes', () => {
+    if (!project.repository) throw new Error('Repository fixture missing');
+    const row = render({
+      project: {
+        ...project,
+        topology: 'multi-repo',
+        name: 'Canopy + Core',
+        materializationVersion: 1,
+        repositoriesComplete: true,
+        repositoryCount: 2,
+        repositories: [
+          project.repository,
+          { ...project.repository, name: 'core', providerRepoId: '2' },
+        ],
+      },
+      onActivate: jest.fn(),
+    });
+    expect(row.textContent).toContain('2 repositories');
+    expect(row.textContent).toContain('acme/canopy, acme/core');
+    expect(row.getAttribute('aria-label')).toBeNull();
+    const labelId = row.getAttribute('aria-labelledby');
+    expect(document.getElementById(labelId ?? '')?.className).toContain(
+      REPLAY_MASK_CLASS,
+    );
+  });
 
   it('prefixes every test id', () => {
     render();

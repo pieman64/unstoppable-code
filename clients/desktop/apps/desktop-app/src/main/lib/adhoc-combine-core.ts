@@ -21,7 +21,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, relative, resolve, sep } from 'node:path';
+import { basename, dirname, relative, resolve } from 'node:path';
 import {
   WORKSPACE_ROOT_REPO_ID,
   type AdhocMultiRepoCombineResponse,
@@ -41,6 +41,7 @@ import {
 } from '../ledger/lifecycle';
 import { worktreeLedgerIncarnation } from '../ledger/lifecycle-containers';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
+import { relocateExecutionCheckout } from '../pipelines/execution-checkout-location';
 import {
   listExecutionSummaries,
   loadExecutionState,
@@ -60,6 +61,7 @@ import {
   moveWorktree,
 } from './git';
 import { ensureAgentsMdSymlink } from './instruction-files';
+import { scaffoldWorkspaceInstructions } from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import { normalizeRemoteUrl, remoteUrlsMatch } from './repo-url-matcher';
 import {
   getWorktreeDir,
@@ -69,6 +71,7 @@ import {
 } from './paths';
 import { pathExists } from './fs-utils';
 import { safeRemoveWorktree } from './safe-remove-worktree';
+import { listTrackedShellScriptsForWorktree } from './script-runner';
 import { cleanupCompositionDestination } from './workspace-composition-records';
 export {
   buildDestinationWorktree,
@@ -762,12 +765,21 @@ export async function assertNoActiveWorktreeWork(
   worktreeId: string,
   messages: {
     activeChats: string;
+    runningScripts: string;
     runningPipelines: string;
     blockedPipelineStatuses?: ReadonlySet<ExecutionSummary['status']>;
   },
 ): Promise<void> {
   if (getActiveChatIds(workspaceId, worktreeId).length > 0) {
     throw new Error(messages.activeChats);
+  }
+  // Scripts (including automatic setup) keep writing to the checkout's
+  // original absolute path after it moves.
+  if (
+    listTrackedShellScriptsForWorktree({ projectId: workspaceId, worktreeId })
+      .length > 0
+  ) {
+    throw new Error(messages.runningScripts);
   }
   const summaries = await listExecutionSummaries(
     createElectronExecutionRuntime().executionsDir,
@@ -831,21 +843,6 @@ export async function assertSourceCheckoutsExist(
   }
 }
 
-function rewritePath(
-  value: string,
-  rewrites: Array<{ fromRoot: string; toRoot: string }>,
-): string {
-  for (const rewrite of rewrites) {
-    if (
-      value === rewrite.fromRoot ||
-      value.startsWith(`${rewrite.fromRoot}${sep}`)
-    ) {
-      return `${rewrite.toRoot}${value.slice(rewrite.fromRoot.length)}`;
-    }
-  }
-  return value;
-}
-
 export async function migratePipelineExecutions(params: {
   sourceWorkspaceId: string;
   sourceWorktreeId: string;
@@ -870,10 +867,9 @@ export async function migratePipelineExecutions(params: {
     snapshots.set(summary.id, structuredClone(state));
     await saveExecutionState(
       {
-        ...state,
+        ...relocateExecutionCheckout(state, params),
         project_id: params.destinationWorkspaceId,
         worktree_id: params.destinationWorktreeId,
-        cwd: rewritePath(state.cwd, params.rewrites),
       },
       executionsDir,
     );
@@ -1348,12 +1344,17 @@ export async function scaffoldDestinationRoot(
   workspaceName: string,
 ): Promise<void> {
   await mkdir(`${destinationRoot}/repos`, { recursive: true });
-  await writeFile(
-    `${destinationRoot}/CLAUDE.md`,
-    getDefaultWorkspaceClaudeMd(workspaceName),
-    'utf8',
+  await scaffoldWorkspaceInstructions(
+    {
+      content: getDefaultWorkspaceClaudeMd(workspaceName),
+      agentsMdAlias: true,
+    },
+    {
+      writeClaudeMd: (content) =>
+        writeFile(`${destinationRoot}/CLAUDE.md`, content, 'utf8'),
+      ensureAgentsMdAlias: () => ensureAgentsMdSymlink(destinationRoot),
+    },
   );
-  await ensureAgentsMdSymlink(destinationRoot);
 }
 
 /**
@@ -1384,7 +1385,7 @@ export async function restoreConsumedRoot(
 /**
  * Rollback helper: move successfully-moved checkouts back from the
  * destination to their original paths, in reverse order. Each reversal only
- * runs when the destination copy exists and the original path is free;
+ * runs when the destination copy exists; an occupied original path and other
  * failures are pushed into `rollbackErrors`.
  */
 export async function reverseMovedCheckouts(
@@ -1392,17 +1393,25 @@ export async function reverseMovedCheckouts(
   rollbackErrors: unknown[],
 ): Promise<void> {
   for (const entry of [...moved].reverse()) {
-    if (
-      (await pathExists(entry.newPath)) &&
-      !(await pathExists(entry.oldPath))
-    ) {
-      await mkdir(dirname(entry.oldPath), { recursive: true }).catch(
-        (rollbackError) => rollbackErrors.push(rollbackError),
-      );
-      await moveWorktree(entry.repoPath, entry.newPath, entry.oldPath).catch(
-        (rollbackError) => rollbackErrors.push(rollbackError),
-      );
+    if (!(await pathExists(entry.newPath))) {
+      continue;
     }
+    // Something (e.g. a still-running script) recreated the original path.
+    // Reporting it keeps the destination, which holds the only checkout copy.
+    if (await pathExists(entry.oldPath)) {
+      rollbackErrors.push(
+        new Error(
+          `Cannot move ${entry.newPath} back because ${entry.oldPath} already exists`,
+        ),
+      );
+      continue;
+    }
+    await mkdir(dirname(entry.oldPath), { recursive: true }).catch(
+      (rollbackError) => rollbackErrors.push(rollbackError),
+    );
+    await moveWorktree(entry.repoPath, entry.newPath, entry.oldPath).catch(
+      (rollbackError) => rollbackErrors.push(rollbackError),
+    );
   }
 }
 

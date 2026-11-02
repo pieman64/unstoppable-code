@@ -36,6 +36,43 @@ function fakeIpc(reply: unknown = { ok: true, result: null }): {
 }
 
 describe('account organization settings preload bridge', () => {
+  it('preserves unlock attribution and the server-generated correlation id', async () => {
+    const { ipc, invoke } = fakeIpc({ ok: true, requestId: 'main-request-1' });
+    const request = {
+      accountId: 'acct-1',
+      owner: { kind: 'personal' as const },
+      intent: {
+        kind: 'top-up' as const,
+        reason: 'unlock_models' as const,
+        source: 'picker' as const,
+        modelId: 'provider/model:1',
+        chatId: 'chat-1',
+      },
+    };
+    await expect(
+      createAccountOrganizationSettingsApi(ipc).paymentHandoff(request),
+    ).resolves.toEqual({ ok: true, requestId: 'main-request-1' });
+    expect(invoke).toHaveBeenCalledWith(
+      IPC_CHANNELS.accountOrganizationSettingsPaymentHandoff,
+      request,
+    );
+  });
+
+  it('rejects a correlation id on a failure reply', async () => {
+    const { ipc } = fakeIpc({
+      ok: false,
+      reason: 'browser_failed',
+      requestId: 'main-request-1',
+    });
+    await expect(
+      createAccountOrganizationSettingsApi(ipc).paymentHandoff({
+        accountId: 'acct-1',
+        owner: { kind: 'personal' },
+        intent: { kind: 'top-up', reason: 'unlock_models' },
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'failed' });
+  });
+
   it('forwards only the named call envelope', async () => {
     const { ipc, invoke } = fakeIpc({ ok: true, result: { a: 1 } });
     const api = createAccountOrganizationSettingsApi(ipc);

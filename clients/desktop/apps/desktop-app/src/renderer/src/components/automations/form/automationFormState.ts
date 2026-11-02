@@ -10,6 +10,8 @@ import type {
   ApprovalMode,
   AutomationAction,
   AutomationCreateRequest,
+  AutomationDependencies,
+  AutomationPipelineDependency,
   AutomationTrigger,
   AutomationUpdateRequest,
   ChatAttachmentPromptContext,
@@ -27,7 +29,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { canonicalizeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
-import { CHAT_LABEL } from '@canopy/protocol';
+import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-prompt-references';
 import {
   normalizeSidebarItemGroupName,
@@ -47,6 +49,12 @@ import {
 } from '@/components/automations/worktreeSessionPrompt';
 import { AUTOMATION_CHAT_TARGET_INCOMPLETE_ERROR } from '@/components/automations/AutomationChatTargetPicker';
 import type { AutomationDraftSeed } from '@/lib/workflows/edit-target';
+import {
+  PIPELINE_TARGET_GLOBAL_PROJECT_PIPELINE_ERROR,
+  pipelineAutomationWorkspaceId,
+  resolveAutomationPipelineTarget,
+} from '@canopy/desktop-shared/lib/automation-pipeline-target';
+import type { AutomationPipelineTargetKind } from '@canopy/protocol/automations';
 
 type ActionType = AutomationAction['type'];
 type TriggerKind = AutomationTrigger['kind'];
@@ -55,9 +63,10 @@ type TriggerKind = AutomationTrigger['kind'];
  * `app_advisor_prompt` wire type; `project` covers the unified
  * workspace-targeted actions (`worktree_prompt`, `worktree_pipeline`,
  * `standalone_prompt`) whose concrete wire type is derived from the selected
- * workspace kind plus the Chat/Pipeline mode.
+ * workspace kind plus the Chat/Pipeline mode; `global` is a
+ * `worktree_pipeline` that runs with no project.
  */
-export type ActionCategory = 'app_advisor' | 'workspace';
+export type ActionCategory = 'app_advisor' | 'workspace' | 'global';
 /** Chat vs Pipeline mode of the `project` action category. */
 export type WorkspaceActionMode = 'chat' | 'pipeline';
 type WorktreePipelineAction = Extract<
@@ -152,7 +161,67 @@ export interface FormState {
   chatAuthoredPayload: boolean;
   ifCommand: string;
   targetRequirement?: ScheduledActivity['targetRequirement'];
+  /**
+   * Local pipelines a prompt automation runs, so sharing packages them.
+   * Undefined until the automation has or the author adds one.
+   */
+  pipelineDependencies?: AutomationPipelineDependency[];
   installed: boolean;
+  /**
+   * Where a `worktree_pipeline` runs. A legacy action with no saved `target`
+   * loads as `new_worktree` with `pipelineTargetExplicit` false, which runs
+   * in the project folder on a cowork project.
+   */
+  pipelineTargetKind: AutomationPipelineTargetKind;
+  /** Existing worktree or Work Entry for a `task` destination; '' otherwise. */
+  pipelineTaskId: string;
+  /**
+   * Whether the saved action carries `target`. An unchanged legacy action
+   * saves without one; choosing a destination makes it explicit.
+   */
+  pipelineTargetExplicit: boolean;
+  /** The saved owner of an existing automation; read-only here. */
+  executionContext?: string;
+}
+
+/** The prompt actions whose editor offers pipeline dependencies. */
+export function actionTypeTakesPipelineDependencies(
+  actionType: AutomationAction['type'],
+): boolean {
+  return (
+    actionType === 'app_advisor_prompt' ||
+    actionType === 'standalone_prompt' ||
+    actionType === 'worktree_prompt'
+  );
+}
+
+function savedPipelineDependencies(
+  state: FormState,
+): AutomationPipelineDependency[] {
+  return actionTypeTakesPipelineDependencies(state.actionType)
+    ? (state.pipelineDependencies ?? [])
+    : [];
+}
+
+/** The `dependencies` a create writes: only a non-empty list. */
+function createDependenciesField(state: FormState): {
+  dependencies?: AutomationDependencies;
+} {
+  const pipelines = savedPipelineDependencies(state);
+  return pipelines.length > 0 ? { dependencies: { pipelines } } : {};
+}
+
+/**
+ * The `dependencies` an edit writes. An edit that loaded or changed the list
+ * always sends it, `null` clearing it (including when the action is no
+ * longer a prompt).
+ */
+function updateDependenciesField(state: FormState): {
+  dependencies?: AutomationDependencies | null;
+} {
+  if (state.pipelineDependencies === undefined) return {};
+  const pipelines = savedPipelineDependencies(state);
+  return { dependencies: pipelines.length > 0 ? { pipelines } : null };
 }
 
 export function emptyFormState(): FormState {
@@ -195,12 +264,43 @@ export function emptyFormState(): FormState {
     chatProjectId: '',
     chatAuthoredPayload: false,
     ifCommand: '',
+    pipelineTargetKind: 'new_worktree',
+    pipelineTaskId: '',
+    pipelineTargetExplicit: false,
+  };
+}
+
+/** The destination fields a saved pipeline action loads as. */
+function pipelineTargetFormFields(
+  action: AutomationAction,
+): Pick<
+  FormState,
+  'pipelineTargetKind' | 'pipelineTaskId' | 'pipelineTargetExplicit'
+> {
+  const resolved =
+    action.type === 'worktree_pipeline'
+      ? resolveAutomationPipelineTarget(action)
+      : null;
+  if (!resolved)
+    return {
+      pipelineTargetKind: 'new_worktree',
+      pipelineTaskId: '',
+      pipelineTargetExplicit: false,
+    };
+  return {
+    pipelineTargetKind: resolved.kind,
+    pipelineTaskId: resolved.kind === 'task' ? resolved.taskId : '',
+    pipelineTargetExplicit:
+      resolved.kind !== 'new_worktree' || resolved.explicit,
   };
 }
 
 export function activityToFormState(activity: ScheduledActivity): FormState {
   const base: FormState = {
     targetRequirement: activity.targetRequirement,
+    ...(activity.dependencies
+      ? { pipelineDependencies: activity.dependencies.pipelines }
+      : {}),
     installed: activity.installedFrom !== undefined,
     mode: 'edit',
     id: activity.id,
@@ -218,10 +318,11 @@ export function activityToFormState(activity: ScheduledActivity): FormState {
         ? ''
         : (activity.action.prompt ?? ''),
     workspaceId:
-      activity.action.type === 'worktree_prompt' ||
-      activity.action.type === 'worktree_pipeline'
+      activity.action.type === 'worktree_prompt'
         ? activity.action.workspaceId
-        : '',
+        : activity.action.type === 'worktree_pipeline'
+          ? (pipelineAutomationWorkspaceId(activity.action) ?? '')
+          : '',
     baseWorktreeId:
       (activity.action.type === 'worktree_prompt' ||
         activity.action.type === 'worktree_pipeline') &&
@@ -360,6 +461,10 @@ export function activityToFormState(activity: ScheduledActivity): FormState {
         (activity.action.attachmentPaths?.length ?? 0) > 0 ||
         (activity.action.fileReferences?.length ?? 0) > 0),
     ifCommand: activity.ifCommand ?? '',
+    ...pipelineTargetFormFields(activity.action),
+    ...(activity.executionContext !== undefined
+      ? { executionContext: activity.executionContext }
+      : {}),
     ...(activity.action.type === 'worktree_session_prompt'
       ? {
           worktreeSessionTarget: {
@@ -490,6 +595,12 @@ export function automationFormActionCategory(
 ): ActionCategory | undefined {
   if (state.actionType === 'worktree_session_prompt') {
     return isAppAdvisorSessionPrompt(state) ? 'app_advisor' : 'workspace';
+  }
+  if (
+    state.actionType === 'worktree_pipeline' &&
+    state.pipelineTargetKind === 'global'
+  ) {
+    return 'global';
   }
   return actionCategoryForType(state.actionType);
 }
@@ -819,7 +930,106 @@ export function applyWorkspaceActionSelection(
     existingWorktreeId: '',
     workEntryId: '',
     ...workspaceScopedReset,
+    ...projectPipelineTarget(state, workspaceChanged, isCowork),
   };
+}
+
+/**
+ * The pipeline destination once a project is (re)selected. A task belongs to
+ * one project, so a project change drops it. Leaving "No project" restores
+ * the default project destination (no saved `target`), which adapts to the
+ * project kind; an explicit new worktree each run never applies to a cowork
+ * project, so it becomes the project folder.
+ */
+function projectPipelineTarget(
+  state: FormState,
+  workspaceChanged: boolean,
+  isCowork: boolean,
+): Pick<
+  FormState,
+  'pipelineTargetKind' | 'pipelineTaskId' | 'pipelineTargetExplicit'
+> {
+  const kind = state.pipelineTargetKind;
+  if (kind === 'global')
+    return {
+      pipelineTargetKind: 'new_worktree',
+      pipelineTaskId: '',
+      pipelineTargetExplicit: false,
+    };
+  if (kind === 'new_worktree' && isCowork && state.pipelineTargetExplicit)
+    return {
+      pipelineTargetKind: 'project',
+      pipelineTaskId: '',
+      pipelineTargetExplicit: true,
+    };
+  return {
+    pipelineTargetKind: kind,
+    pipelineTaskId: workspaceChanged ? '' : state.pipelineTaskId,
+    pipelineTargetExplicit: state.pipelineTargetExplicit,
+  };
+}
+
+/**
+ * Change the form target to a pipeline with no project. Project-only fields
+ * are cleared (the project, base worktree, repository, and run restriction),
+ * and so is a project pipeline, which needs a project. Name, schedule, and a
+ * pipeline that can run anywhere carry over.
+ */
+export function applyGlobalPipelineSelection(state: FormState): FormState {
+  const projectPipeline = state.pipelineSource === 'project';
+  return {
+    ...state,
+    actionType: 'worktree_pipeline',
+    pipelineTargetKind: 'global',
+    pipelineTaskId: '',
+    pipelineTargetExplicit: true,
+    workspaceId: '',
+    chatProjectId: '',
+    worktreeSessionTarget: undefined,
+    existingWorktreeId: '',
+    workEntryId: '',
+    baseWorktreeId: '',
+    baseBranch: '',
+    sidebarGroupName: '',
+    targetRequirement: undefined,
+    ...(projectPipeline
+      ? clearedPipelineSelection()
+      : { repoId: '', projectPipelineFilename: '' }),
+  };
+}
+
+/**
+ * Choose where a pipeline on a project runs. Choosing makes the destination
+ * explicit, except re-choosing what a legacy action already does.
+ */
+export function applyPipelineRunInSelection(
+  state: FormState,
+  kind: Exclude<AutomationPipelineTargetKind, 'global'>,
+  displayed: Exclude<AutomationPipelineTargetKind, 'global'>,
+): FormState {
+  if (kind === displayed) return state;
+  return {
+    ...state,
+    pipelineTargetKind: kind,
+    pipelineTargetExplicit: true,
+    pipelineTaskId: kind === 'task' ? state.pipelineTaskId : '',
+    // A base worktree only seeds a new worktree each run.
+    ...(kind === 'new_worktree' ? {} : { baseWorktreeId: '', baseBranch: '' }),
+  };
+}
+
+/**
+ * The destination a pipeline on a project displays. A legacy action runs in
+ * the project folder on a cowork project and in a new worktree otherwise.
+ */
+export function displayedPipelineRunIn(
+  state: Pick<FormState, 'pipelineTargetKind' | 'pipelineTargetExplicit'>,
+  isCowork: boolean,
+): Exclude<AutomationPipelineTargetKind, 'global'> {
+  const kind = state.pipelineTargetKind;
+  if (kind === 'global') return isCowork ? 'project' : 'new_worktree';
+  if (!state.pipelineTargetExplicit && isCowork) return 'project';
+  return kind;
 }
 
 /**
@@ -984,7 +1194,8 @@ export function buildAction(state: FormState): {
   const referencePayload = promptReferences?.length ? { promptReferences } : {};
   switch (state.actionType) {
     case 'app_advisor_prompt':
-      if (!prompt) return { error: 'Enter a prompt for App Advisor.' };
+      if (!prompt)
+        return { error: `Enter a prompt for ${ORCHESTRATOR_LABEL}.` };
       return {
         action: {
           type: 'app_advisor_prompt',
@@ -1043,19 +1254,30 @@ export function buildAction(state: FormState): {
             : {}),
         },
       };
-    case 'worktree_pipeline':
-      if (!state.workspaceId) return { error: 'Pick a project.' };
-      if (!state.pipelineId) return { error: 'Pick a pipeline to run.' };
+    case 'worktree_pipeline': {
+      const global = state.pipelineTargetKind === 'global';
+      if (!global && !state.workspaceId) return { error: 'Pick a project.' };
+      if (
+        state.pipelineTargetKind === 'task' &&
+        state.pipelineTargetExplicit &&
+        !state.pipelineTaskId
+      )
+        return { error: AUTOMATION_PIPELINE_TASK_REQUIRED_ERROR };
+      if (!state.pipelineId) return { error: 'Pick a workflow to run.' };
+      if (global && state.pipelineSource === 'project')
+        return { error: PIPELINE_TARGET_GLOBAL_PROJECT_PIPELINE_ERROR };
       {
         const modelAliasError = getPipelineModelAliasBlockingError(state);
         if (modelAliasError) return { error: modelAliasError };
       }
       {
         const modelAliasPreferences = getFilteredModelAliasPreferences(state);
+        // A base worktree only seeds a new worktree each run.
+        const seedsWorktree = state.pipelineTargetKind === 'new_worktree';
         return {
           action: {
             type: 'worktree_pipeline',
-            workspaceId: state.workspaceId,
+            ...pipelineTargetPayload(state),
             pipelineId: state.pipelineId,
             ...(state.pipelineSource
               ? { pipelineSource: state.pipelineSource }
@@ -1067,10 +1289,10 @@ export function buildAction(state: FormState): {
             ...(state.sharedPipeline
               ? { sharedPipeline: state.sharedPipeline }
               : {}),
-            ...(state.baseWorktreeId
+            ...(seedsWorktree && state.baseWorktreeId
               ? { baseWorktreeId: state.baseWorktreeId }
               : {}),
-            ...(state.repoId ? { repoId: state.repoId } : {}),
+            ...(!global && state.repoId ? { repoId: state.repoId } : {}),
             ...(state.pipelineInputs.length > 0
               ? {
                   inputs: Object.fromEntries(
@@ -1091,6 +1313,7 @@ export function buildAction(state: FormState): {
           },
         };
       }
+    }
     case 'worktree_session_prompt':
       // The "Existing chat" Run-in mode (CAN-2937). `purpose` and the
       // attachment payload of a chat-composer-authored activity are preserved
@@ -1124,9 +1347,31 @@ export function buildAction(state: FormState): {
       });
     case 'pipeline_execution_resume':
       return {
-        error: 'Scheduled pipeline resumes cannot be edited.',
+        error: 'Scheduled workflow resumes cannot be edited.',
       };
   }
+}
+
+export const AUTOMATION_PIPELINE_TASK_REQUIRED_ERROR =
+  'Pick a task to run the workflow in.';
+
+/**
+ * The destination fields of a saved pipeline action. A pipeline with no
+ * project omits `workspaceId`; an unchanged legacy action omits `target`.
+ */
+function pipelineTargetPayload(
+  state: FormState,
+): Pick<WorktreePipelineAction, 'target' | 'workspaceId'> {
+  if (state.pipelineTargetKind === 'global')
+    return { target: { kind: 'global' } };
+  if (!state.pipelineTargetExplicit) return { workspaceId: state.workspaceId };
+  return {
+    workspaceId: state.workspaceId,
+    target:
+      state.pipelineTargetKind === 'task'
+        ? { kind: 'task', taskId: state.pipelineTaskId }
+        : { kind: state.pipelineTargetKind },
+  };
 }
 
 /**
@@ -1228,7 +1473,9 @@ function actionErrorField(state: FormState): AutomationFormField | undefined {
     case 'worktree_prompt':
       return state.workspaceId ? 'prompt' : 'workspace';
     case 'worktree_pipeline':
-      return state.workspaceId ? 'pipeline' : 'workspace';
+      return state.pipelineTargetKind === 'global' || state.workspaceId
+        ? 'pipeline'
+        : 'workspace';
     case 'worktree_session_prompt':
       return !state.worktreeSessionTarget?.worktreeId ||
         !state.worktreeSessionTarget.chatId
@@ -1278,6 +1525,7 @@ export function buildAutomationMutationRequest(
         ...(state.targetRequirement
           ? { targetRequirement: state.targetRequirement }
           : {}),
+        ...createDependenciesField(state),
         enabled: state.enabled,
         ...(state.ifCommand.trim()
           ? { ifCommand: state.ifCommand.trim() }
@@ -1306,6 +1554,7 @@ export function buildAutomationMutationRequest(
       ...(!state.installed
         ? { targetRequirement: state.targetRequirement ?? null }
         : {}),
+      ...updateDependenciesField(state),
       enabled: state.enabled,
       ifCommand: state.ifCommand.trim(),
     },
@@ -1359,19 +1608,22 @@ export function automationFormSnapshot(state: FormState): string {
         : undefined,
       pipelineModelAliases: undefined,
       pipelinePluginCollectionIds: undefined,
+      pipelineDependencies: state.pipelineDependencies?.length
+        ? state.pipelineDependencies
+        : undefined,
     }),
   );
 }
 
 /**
- * The form state a new automation opens with. Without a seed it is the
- * blank form; with one it targets the seed's project in Chat mode, and a
- * non-Cowork seed with a worktree opens in "Existing chat" with a new chat on
- * that worktree each run, instead of provisioning a fresh one. A seed's name
- * and prompt prefill those fields.
+ * The form state a new automation opens with. Without a seed it is a
+ * pipeline workflow with no project; with one it targets the seed's project
+ * in Chat mode, and a non-Cowork seed with a worktree opens in "Existing
+ * chat" with a new chat on that worktree each run, instead of provisioning a
+ * fresh one. A seed's name and prompt prefill those fields.
  */
 export function automationDraftFromSeed(seed?: AutomationDraftSeed): FormState {
-  if (!seed) return emptyFormState();
+  if (!seed) return applyGlobalPipelineSelection(emptyFormState());
   const selected = applyWorkspaceActionSelection(emptyFormState(), 'chat', {
     id: seed.projectId,
     isCowork: seed.isCowork,

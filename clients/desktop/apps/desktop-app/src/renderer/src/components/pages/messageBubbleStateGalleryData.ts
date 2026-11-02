@@ -1,6 +1,7 @@
 import type { QueuedChatMessage } from '@/stores/chatStore';
 import type { ScheduledQueuedMessage } from '@/lib/worktreeSessionPromptAutomations';
 import type { DisplayMessage } from '../chat/types';
+import type { QueuedMessageSetupWait } from '@canopy/ui-shared/components';
 
 /**
  * Fixture data for the dev-only Message Bubble States gallery page. Every
@@ -24,9 +25,12 @@ export interface QueuedGalleryState {
   title: string;
   description: string;
   message: QueuedChatMessage;
-  queuedForSetup?: boolean;
+  /** The setup wait shown, read at {@link GALLERY_FIXED_NOW}. */
+  setupWait?: QueuedMessageSetupWait;
   canForce?: boolean;
   scheduled?: boolean;
+  /** The row offers Steer as well as Interrupt. */
+  steerable?: boolean;
 }
 
 /**
@@ -178,32 +182,90 @@ export const QUEUED_BUBBLE_STATES: QueuedGalleryState[] = [
       'Message waiting for the current turn to finish. Interrupt is available; hover for actions.',
     message: {
       text: 'After that, also update the dark-mode captures.',
+      hostQueueEntryId: 'demo-host-queue-entry',
+      turnPhase: 'foreground',
+      enqueuedAtMs: NOW,
+    },
+    canForce: true,
+  },
+  {
+    id: 'queued-settings-held',
+    title: 'Queued while new settings wait',
+    description:
+      'The model and plugins changed while background work runs. A warning before Steer and Interrupt names them and explains that Steer joins the current reply without them, and Interrupt still waits for the background work.',
+    message: {
+      text: 'Use the new model to review the migration.',
+      hostQueueEntryId: 'demo-host-queue-entry-settings-held',
+      turnPhase: 'foreground',
+      canSteer: true,
+      restartHeldChanges: ['model', 'plugins'],
+      enqueuedAtMs: NOW,
+    },
+    canForce: true,
+    steerable: true,
+  },
+  {
+    id: 'queued-background',
+    title: 'Still queued with no turn running',
+    description:
+      'The turn has ended and only background agents are working, so there is nothing to steer or interrupt. Retry sends the message now.',
+    message: {
+      text: 'Then summarize what the agents found.',
+      hostQueueEntryId: 'demo-host-queue-entry-background',
+      turnPhase: 'background',
       enqueuedAtMs: NOW,
     },
     canForce: true,
   },
   {
     id: 'queued-setup',
-    title: 'Queued for worktree setup',
+    title: 'Queued for setup, first time',
     description:
-      'Two-phase worktree creation still running — the header switches to the setup-specific label.',
+      "The chat's copy of the project is still being set up and this project has no earlier setup to estimate from: the setup sentence and the promise that the message sends by itself, then a spinner with the elapsed time, then the message quoted under a left rule.",
     message: {
       text: 'Start by mapping the existing coverage.',
-      enqueuedAtMs: NOW,
+      enqueuedAtMs: NOW - 12_000,
     },
-    queuedForSetup: true,
+    setupWait: { projectName: 'canopy', startedAtMs: NOW - 12_000 },
+  },
+  {
+    id: 'queued-setup-estimate',
+    title: 'Queued for setup, with an estimate',
+    description:
+      'An earlier setup of the same project finished, so the clock on its own row under the setup sentence counts down an estimate, rounded up to five seconds, until it runs out. The message stays quoted under a left rule.',
+    message: {
+      text: 'Start by mapping the existing coverage.',
+      enqueuedAtMs: NOW - 10_000,
+    },
+    setupWait: {
+      projectName: 'canopy',
+      startedAtMs: NOW - 10_000,
+      estimateMs: 25_000,
+    },
   },
   {
     id: 'queued-hook',
     title: 'Hook-queue placeholder',
     description:
-      'Hook-chat concurrency queue: a reason line renders under the header and Edit is hidden.',
+      'Hook-chat concurrency queue: a reason line renders under the header, Edit is hidden, and Run now starts it without waiting.',
     message: {
       text: 'Triage the failing pre-commit hook output.',
       reason: 'Waiting for active chat sessions to finish.',
       queuedHookQueueId: 'demo-hook-queue-entry',
       enqueuedAtMs: NOW,
     },
+    canForce: true,
+  },
+  {
+    id: 'queued-retry',
+    title: 'Kept after a failed launch',
+    description:
+      'The Claude Code terminal did not start, so the prompt stays queued on this device. Retry sends it again.',
+    message: {
+      text: 'Rerun the migration check.',
+      enqueuedAtMs: NOW,
+    },
+    canForce: true,
   },
   {
     id: 'scheduled',

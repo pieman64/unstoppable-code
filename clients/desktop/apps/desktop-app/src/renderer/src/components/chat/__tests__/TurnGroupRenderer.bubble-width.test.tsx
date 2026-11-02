@@ -5,6 +5,7 @@ import type { TurnGroup, TurnMessage } from '../types';
 import { TurnGroupRenderer } from '../TurnGroupRenderer';
 import type * as ChatRenderStoresTestUtils from '@/test-utils/chatRenderStores';
 import type * as UiSharedComponents from '@canopy/ui-shared/components';
+import { ChatLookProvider } from '@canopy/ui-shared/components/chat-look';
 
 let mockEarlyAccess = true;
 let mockIsPhone = true;
@@ -120,7 +121,7 @@ function completedTurn(): TurnGroup {
 }
 
 function renderBanner(): {
-  banner: HTMLButtonElement;
+  banner: HTMLElement;
   cleanup: () => void;
 } {
   const host = document.createElement('div');
@@ -128,18 +129,22 @@ function renderBanner(): {
   const root = createRoot(host);
   act(() =>
     root.render(
-      <div data-chat-turn-group="user">
-        <TurnGroupRenderer
-          group={completedTurn()}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-        />
-      </div>,
+      <ChatLookProvider value="classic">
+        <div data-chat-turn-group="user">
+          <TurnGroupRenderer
+            group={completedTurn()}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </div>
+      </ChatLookProvider>,
     ),
   );
-  const banner = host.querySelector<HTMLButtonElement>(
-    '[aria-label^="Agent steps:"]',
-  );
+  // The whole row takes the width: its toggle, outcome and chips (CAN-5056).
+  const banner = host
+    .querySelector('[aria-label^="Agent steps:"]')
+    ?.closest<HTMLElement>('[data-turn-summary-row]');
   if (!banner) throw new Error('Missing steps banner');
   return {
     banner,

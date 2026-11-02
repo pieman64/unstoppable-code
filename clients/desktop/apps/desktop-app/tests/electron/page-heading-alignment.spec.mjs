@@ -9,15 +9,24 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 async function readHeadingMetrics(window, pageTestId, title) {
   const page = window.getByTestId(pageTestId);
   const heading = page.getByRole('heading', { name: title, exact: true });
-  const subtitle = heading.locator('xpath=following-sibling::p[1]');
+  // The shared PageHeader: the title row, then its one-line description.
+  const header = heading.locator('xpath=ancestor::header[1]');
+  const subtitle = header.getByTestId('page-header-description');
 
   await expect(heading).toBeVisible();
+  await expect(heading).toHaveAttribute('data-testid', 'page-header-title');
   await expect(subtitle).toBeVisible();
 
   return heading.evaluate((element, rootTestId) => {
-    const subtitleElement = element.nextElementSibling;
-    if (!(subtitleElement instanceof HTMLParagraphElement)) {
-      throw new Error('Expected the page subtitle directly after the heading');
+    const sharedHeading = element.closest('[data-testid="page-header"]');
+    if (!(sharedHeading instanceof HTMLElement)) {
+      throw new Error('Expected the heading inside the shared page header');
+    }
+    const subtitleElement = sharedHeading.querySelector(
+      ':scope > [data-testid="page-header-description"]',
+    );
+    if (!(subtitleElement instanceof HTMLElement)) {
+      throw new Error('Expected the page description under the title row');
     }
 
     const pageElement = document.querySelector(`[data-testid="${rootTestId}"]`);
@@ -30,9 +39,7 @@ async function readHeadingMetrics(window, pageTestId, title) {
     const subtitleRect = subtitleElement.getBoundingClientRect();
     const headingStyle = getComputedStyle(element);
     const subtitleStyle = getComputedStyle(subtitleElement);
-    const sharedHeading = element.closest('[data-testid="page-heading"]');
-    const contentElement =
-      sharedHeading?.parentElement ?? element.parentElement?.parentElement;
+    const contentElement = sharedHeading.parentElement;
     if (!(contentElement instanceof HTMLElement)) {
       throw new Error('Expected the heading to be inside a page container');
     }
@@ -49,7 +56,9 @@ async function readHeadingMetrics(window, pageTestId, title) {
       ),
       scrollbarWidth: pageElement.offsetWidth - pageElement.clientWidth,
       titleFontSize: headingStyle.fontSize,
+      titleFontWeight: headingStyle.fontWeight,
       subtitleFontSize: subtitleStyle.fontSize,
+      subtitleColor: subtitleStyle.color,
       titleSubtitleGap: Math.round(subtitleRect.top - headingRect.bottom),
     };
   }, pageTestId);
@@ -93,17 +102,39 @@ test('top-level utility pages share one page-heading rhythm', async () => {
       'Workflows',
     );
 
+    // The page's actions sit at the end of the title row, centred on it.
+    const runsHeader = window
+      .getByTestId('page-workflows-runs')
+      .getByTestId('page-header');
+    const [titleBox, actionsBox] = await Promise.all([
+      runsHeader.getByTestId('page-header-title').boundingBox(),
+      runsHeader.getByTestId('page-header-actions').boundingBox(),
+    ]);
+    expect(actionsBox.x).toBeGreaterThan(titleBox.x + titleBox.width);
+    expect(
+      Math.abs(
+        actionsBox.y +
+          actionsBox.height / 2 -
+          (titleBox.y + titleBox.height / 2),
+      ),
+    ).toBeLessThanOrEqual(1);
+    await expect(runsHeader.getByTestId('workflows-new-manual')).toHaveCSS(
+      'height',
+      '28px',
+    );
+
     await app.openPluginsPage();
     const marketplace = await readHeadingMetrics(
       window,
       'page-plugins',
       'Customize',
     );
+    // The search row (the field and its status filter) spans the header.
     const marketplaceWidthDelta = await window
-      .getByTestId('plugins-search')
+      .getByTestId('customize-search-row')
       .evaluate((searchElement) => {
         const headingElement = document.querySelector(
-          '[data-testid="page-plugins"] [data-testid="page-heading"]',
+          '[data-testid="page-plugins"] [data-testid="page-header"]',
         );
         if (!(headingElement instanceof HTMLElement)) {
           throw new Error('Expected the Marketplace page heading');
@@ -148,6 +179,25 @@ test('top-level utility pages share one page-heading rhythm', async () => {
     // CAN-4266 retired the Agents page; agents are a Marketplace tab, so the
     // Marketplace measurement above covers them.
 
+    // A settings page's title sits at the same window height as a page's,
+    // so opening Settings from a page never moves the title.
+    const usageTitleTop = await window
+      .getByTestId('page-usage')
+      .getByTestId('page-header-title')
+      .evaluate((element) => Math.round(element.getBoundingClientRect().top));
+    await app.openSettings();
+    const settingsTitle = window
+      .getByTestId('settings-overlay')
+      .getByTestId('page-header-title')
+      .first();
+    await expect(settingsTitle).toBeVisible();
+    expect(
+      await settingsTitle.evaluate((element) =>
+        Math.round(element.getBoundingClientRect().top),
+      ),
+    ).toBe(usageTitleTop);
+    await app.closeSettings();
+
     const centeredPages = [
       ['Customize', marketplace],
       ['Workflows › Library', pipelines],
@@ -165,7 +215,11 @@ test('top-level utility pages share one page-heading rhythm', async () => {
       expect(metrics.scrollbarWidth).toBe(automations.scrollbarWidth);
     }
     expect(automations.titleFontSize).toBe('20px');
-    expect(automations.top).toBe(88);
+    // One top offset: the 40px title bar, then the header's page inset, which
+    // the inset window layout (the default) keeps at 16px because its card
+    // already starts below the window's empty top row. The settings check
+    // above holds the title at a settings page's title height.
+    expect(automations.top).toBe(56);
     expect(Math.abs(automations.containerCenterOffset)).toBeLessThanOrEqual(8);
     expect(marketplace.left).toBe(automations.left);
     expect(marketplace.containerWidthDelta).toBe(

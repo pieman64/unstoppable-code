@@ -20,6 +20,8 @@ import {
   type UsageIndicatorContextBreakdown,
   type UsageIndicatorUsage,
   buildPlanModeChip,
+  ComposerSendButton,
+  defaultChatPlaceholder,
 } from '@canopy/ui-shared';
 import {
   THINKING_LEVELS as CANONICAL_THINKING_LEVELS,
@@ -40,7 +42,6 @@ import {
 import { searchFileMentions } from '@/lib/fileMentionSearch';
 import { ApprovalModePicker } from '@/components/chat/ApprovalModePicker';
 import { ComposerPlusMenu } from '@/components/shared/ComposerPlusMenu';
-import { ComposerSendButton } from '@/components/chat/ComposerSendButton';
 import { VoiceInputButton } from '@/components/shared/VoiceInputButton';
 import { createSlateVoiceTarget } from '@/lib/voice/insert-into-slate';
 import { useVoiceTranscription } from '@/hooks/useVoiceTranscription';
@@ -818,7 +819,7 @@ export function ComposerStatusLabPage(): JSX.Element {
                     placeholder={
                       voiceRecording
                         ? 'Start talking…'
-                        : '@ to mention, / skills and commands'
+                        : defaultChatPlaceholder(true, true)
                     }
                     density="minimal"
                     className={
@@ -909,6 +910,7 @@ export function ComposerStatusLabPage(): JSX.Element {
                               pending={false}
                               armed={false}
                               shortcutReady
+                              dataTestId="chat-stop-generation"
                             />
                           </>
                         ) : hasDraftText ? (

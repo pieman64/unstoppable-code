@@ -2,6 +2,7 @@ import { dialog } from 'electron';
 import { IPC_CHANNELS, type RepoSelection } from '@canopy/desktop-shared/types';
 import { registerIpcHandler } from '../ipc/register';
 import { isGitRepo, getRepoName } from '../lib/git';
+import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
 
 jest.mock('electron', () => ({
   dialog: {
@@ -62,14 +63,14 @@ describe('repos IPC: browsing a folder for the add-workspace flow', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     const { registerRepoHandlers } = await import('../ipc/repos');
-    registerRepoHandlers();
+    registerRepoHandlers(unusedGitReadRuntime());
   });
 
   it('with allowNonGit: true, resolves a non-git folder without throwing, using the folder name', async () => {
     mockedDialog.showOpenDialog.mockResolvedValue({
       canceled: false,
       filePaths: ['/Users/demo/plain-folder'],
-    } as never);
+    });
     mockedIsGitRepo.mockResolvedValue(false);
 
     const handler = getHandler(IPC_CHANNELS.repoBrowse);
@@ -86,7 +87,7 @@ describe('repos IPC: browsing a folder for the add-workspace flow', () => {
     mockedDialog.showOpenDialog.mockResolvedValue({
       canceled: false,
       filePaths: ['/Users/demo/some-repo'],
-    } as never);
+    });
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetRepoName.mockResolvedValue('some-repo');
 
@@ -103,7 +104,7 @@ describe('repos IPC: browsing a folder for the add-workspace flow', () => {
     mockedDialog.showOpenDialog.mockResolvedValue({
       canceled: false,
       filePaths: ['/Users/demo/plain-folder'],
-    } as never);
+    });
     mockedIsGitRepo.mockResolvedValue(false);
 
     const handler = getHandler(IPC_CHANNELS.repoBrowse);
@@ -118,7 +119,7 @@ describe('repos IPC: browsing a folder for the add-workspace flow', () => {
     mockedDialog.showOpenDialog.mockResolvedValue({
       canceled: false,
       filePaths: ['/Users/demo/some-repo'],
-    } as never);
+    });
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetRepoName.mockResolvedValue('some-repo');
 
@@ -135,7 +136,7 @@ describe('repos IPC: browsing a folder for the add-workspace flow', () => {
     mockedDialog.showOpenDialog.mockResolvedValue({
       canceled: true,
       filePaths: [],
-    } as never);
+    });
 
     const handler = getHandler(IPC_CHANNELS.repoBrowse);
     const result = await handler(undefined, { allowNonGit: true });

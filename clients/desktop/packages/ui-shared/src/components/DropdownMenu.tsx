@@ -278,7 +278,9 @@ export const DropdownMenuItem = forwardRef<
       ref={ref}
       type={type}
       role={role}
-      className={`canopy-dropdown-menu-item focus-ring ${geometryClassName} text-left ${textClassName} font-normal transition-colors focus-visible:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled disabled:opacity-100 disabled:hover:bg-transparent ${surfaceClassName} ${status ? ITEM_STATUS_CLASS_NAMES[status] : ''} ${touchTarget ? 'min-h-11' : ''} ${className}`}
+      // Keyboard focus paints the row like hover (`focus-visible:bg-subtle`)
+      // rather than drawing the accent ring around it.
+      className={`canopy-dropdown-menu-item outline-none ${geometryClassName} text-left ${textClassName} font-normal transition-colors focus-visible:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled disabled:opacity-100 disabled:hover:bg-transparent ${surfaceClassName} ${status ? ITEM_STATUS_CLASS_NAMES[status] : ''} ${touchTarget ? 'min-h-11' : ''} ${className}`}
       {...props}
     >
       <PlainRowContext.Provider value={plainRow}>

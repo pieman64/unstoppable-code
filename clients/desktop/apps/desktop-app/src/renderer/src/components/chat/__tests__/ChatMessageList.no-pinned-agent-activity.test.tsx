@@ -7,8 +7,10 @@
  * ChatMessageList.active-agent-expansion.test.tsx covers the pinned section
  * while the experiment is off.
  */
+import { CanopyClientProvider } from '@canopy/app-state';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { ChatMessageList } from '../ChatMessageList';
 import type { ChatMessage } from '@/stores/chatStore';
 import type * as ChatRenderStoresTestUtils from '@/test-utils/chatRenderStores';
@@ -19,7 +21,7 @@ jest.mock('@/stores/labsExperimentsStore', () => ({
   ...jest.requireActual<Record<string, unknown>>(
     '@/stores/labsExperimentsStore',
   ),
-  useLabsExperimentEnabled: (id: string): boolean => id === 'subagents-view',
+  useLabsExperimentEnabled: (): boolean => false,
 }));
 
 jest.mock('@/stores/chatStore', () => {
@@ -52,6 +54,7 @@ jest.mock('@/stores/chatStore', () => {
 jest.mock('@/stores/appAdvisorWatchersStore', () => {
   const state = {
     watchers: [],
+    completedWatchers: [],
     hydrated: true,
     loading: false,
     subscribeBridge: (): (() => void) => () => undefined,
@@ -61,7 +64,10 @@ jest.mock('@/stores/appAdvisorWatchersStore', () => {
     selector: (value: typeof state) => unknown,
   ): unknown => selector(state);
   useAppAdvisorWatchersStore.getState = (): typeof state => state;
-  return { useAppAdvisorWatchersStore };
+  return {
+    useAppAdvisorWatchersStore,
+    retainAppAdvisorWatchersBridge: (): (() => void) => () => undefined,
+  };
 });
 
 jest.mock('@/stores/pipelineRunsStore', () => ({
@@ -208,18 +214,21 @@ function renderList(messages: ChatMessage[]): {
   mountedRoots.push(root);
   const render = (rows: ChatMessage[]): void => {
     act(() => {
+      // The list stops native tasks through the client (turn-state D5).
       root.render(
-        <ChatMessageList
-          messages={rows}
-          queuedMessages={[]}
-          chatId={mockChatId}
-          targetOverride={{
-            projectId: 'project',
-            worktreeId: 'worktree',
-            chatId: mockChatId,
-          }}
-          onClearQueuedMessage={(): void => undefined}
-        />,
+        <CanopyClientProvider client={ipcCanopyClient}>
+          <ChatMessageList
+            messages={rows}
+            queuedMessages={[]}
+            chatId={mockChatId}
+            targetOverride={{
+              projectId: 'project',
+              worktreeId: 'worktree',
+              chatId: mockChatId,
+            }}
+            onClearQueuedMessage={(): void => undefined}
+          />
+        </CanopyClientProvider>,
       );
     });
   };

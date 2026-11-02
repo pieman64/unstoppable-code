@@ -3,13 +3,19 @@ import { performance } from 'node:perf_hooks';
 import { buildPortalSnapshot } from '../portal-snapshot-builders';
 import { acquirePortalOverviewSnapshot } from '../portal-overview-build';
 import {
+  capturePortalEmissionContext,
+  enqueuePortalEventIfCurrent,
+  invalidatePortalEmissionContexts,
+  isPortalEmissionContextCurrent,
   emitWorktreeDiffStatsDelta,
   notifyPortalStructureChanged,
   notifyPortalModelCatalogChanged,
   pushPortalOverviewSnapshot,
   recordPublishedWorktreeDiffStats,
   setCanopyPortalEventSink,
+  type PortalEmissionContext,
 } from '../portal-event-bus';
+import * as portalEventBus from '../portal-event-bus';
 
 const mockRecordAppDiagnostic = jest.fn();
 jest.mock('../../observability/index', () => ({
@@ -142,6 +148,14 @@ const mockedGetWorkspacePortalWorktreeRuntimeStatus = jest.mocked(
   getWorkspacePortalWorktreeRuntimeStatus,
 );
 
+function requirePortalEmissionContext(): PortalEmissionContext {
+  const context = capturePortalEmissionContext();
+  if (context === undefined) {
+    throw new Error('Expected an installed Portal emission context');
+  }
+  return context;
+}
+
 describe('portal structural event bus', () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -177,6 +191,142 @@ describe('portal structural event bus', () => {
   afterEach(() => {
     setCanopyPortalEventSink(null);
     jest.useRealTimers();
+  });
+
+  it('does not deliver a delayed emit through a replaced Portal sink', () => {
+    const oldSink = jest.fn<void, [PortalEventEnvelope]>();
+    const newSink = jest.fn<void, [PortalEventEnvelope]>();
+    setCanopyPortalEventSink(oldSink);
+
+    const capture = Reflect.get(portalEventBus, 'capturePortalEmissionContext');
+    const context: unknown =
+      typeof capture === 'function'
+        ? Reflect.apply(capture, portalEventBus, [])
+        : undefined;
+    const event = portalEventBus.createPortalEvent('portal.heartbeat', {
+      delayed: true,
+    });
+
+    setCanopyPortalEventSink(newSink);
+    const enqueueIfCurrent = Reflect.get(
+      portalEventBus,
+      'enqueuePortalEventIfCurrent',
+    );
+    if (typeof enqueueIfCurrent === 'function' && context !== undefined) {
+      expect(
+        Reflect.apply(enqueueIfCurrent, portalEventBus, [context, event]),
+      ).toBe(false);
+    } else {
+      // Exercise the current public fallback to pin the baseline bug without
+      // importing an export that the implementation has not added yet.
+      portalEventBus.enqueuePortalEvent(event);
+    }
+
+    expect(newSink).not.toHaveBeenCalled();
+  });
+
+  it('does not deliver a delayed emit after explicit session invalidation', () => {
+    const sink = jest.fn<void, [PortalEventEnvelope]>();
+    setCanopyPortalEventSink(sink);
+
+    const capture = Reflect.get(portalEventBus, 'capturePortalEmissionContext');
+    const context: unknown =
+      typeof capture === 'function'
+        ? Reflect.apply(capture, portalEventBus, [])
+        : undefined;
+    const event = portalEventBus.createPortalEvent('portal.heartbeat', {
+      delayed: true,
+    });
+
+    const invalidate = Reflect.get(
+      portalEventBus,
+      'invalidatePortalEmissionContexts',
+    );
+    if (typeof invalidate === 'function') {
+      Reflect.apply(invalidate, portalEventBus, []);
+    }
+    const enqueueIfCurrent = Reflect.get(
+      portalEventBus,
+      'enqueuePortalEventIfCurrent',
+    );
+    if (typeof enqueueIfCurrent === 'function' && context !== undefined) {
+      expect(
+        Reflect.apply(enqueueIfCurrent, portalEventBus, [context, event]),
+      ).toBe(false);
+    } else {
+      // Until the fence exists, the normal enqueue path still targets this
+      // same sink; the assertion below records that unsafe baseline.
+      portalEventBus.enqueuePortalEvent(event);
+    }
+
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it('exposes the generation-scoped Portal emission context port', () => {
+    expect(Reflect.get(portalEventBus, 'capturePortalEmissionContext')).toEqual(
+      expect.any(Function),
+    );
+    expect(
+      Reflect.get(portalEventBus, 'isPortalEmissionContextCurrent'),
+    ).toEqual(expect.any(Function));
+    expect(Reflect.get(portalEventBus, 'enqueuePortalEventIfCurrent')).toEqual(
+      expect.any(Function),
+    );
+    expect(
+      Reflect.get(portalEventBus, 'invalidatePortalEmissionContexts'),
+    ).toEqual(expect.any(Function));
+  });
+
+  it('captures a frozen context that changes only on replacement or invalidation', () => {
+    const sink = jest.fn<void, [PortalEventEnvelope]>();
+    setCanopyPortalEventSink(sink);
+
+    const context = requirePortalEmissionContext();
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(isPortalEmissionContextCurrent(context)).toBe(true);
+
+    // Reinstalling the same sink is not a replacement, just as a
+    // same-account settings save does not invalidate the manager's token.
+    setCanopyPortalEventSink(sink);
+    expect(isPortalEmissionContextCurrent(context)).toBe(true);
+
+    const event = portalEventBus.createPortalEvent('portal.heartbeat', {
+      current: true,
+    });
+    expect(enqueuePortalEventIfCurrent(context, event)).toBe(true);
+    expect(sink).toHaveBeenCalledWith(event);
+
+    invalidatePortalEmissionContexts();
+    expect(isPortalEmissionContextCurrent(context)).toBe(false);
+    expect(enqueuePortalEventIfCurrent(context, event)).toBe(false);
+    expect(sink).toHaveBeenCalledTimes(1);
+
+    const refreshedContext = requirePortalEmissionContext();
+    expect(refreshedContext.generation).toBe(context.generation + 1);
+  });
+
+  it('does not capture or enqueue without an installed Portal sink', () => {
+    setCanopyPortalEventSink(null);
+
+    expect(capturePortalEmissionContext()).toBeUndefined();
+    expect(
+      enqueuePortalEventIfCurrent(
+        { generation: 0 },
+        portalEventBus.createPortalEvent('portal.heartbeat', {}),
+      ),
+    ).toBe(false);
+  });
+
+  it('advances the emission generation once when the sink is replaced', () => {
+    const oldSink = jest.fn<void, [PortalEventEnvelope]>();
+    const replacement = jest.fn<void, [PortalEventEnvelope]>();
+    setCanopyPortalEventSink(oldSink);
+    const oldContext = requirePortalEmissionContext();
+
+    setCanopyPortalEventSink(replacement);
+    const newContext = requirePortalEmissionContext();
+
+    expect(newContext.generation).toBe(oldContext.generation + 1);
   });
 
   it('discovers the selected account catalog when Portal attaches to a restarted desktop', async () => {

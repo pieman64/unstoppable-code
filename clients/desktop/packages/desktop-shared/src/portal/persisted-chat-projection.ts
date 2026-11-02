@@ -1,3 +1,4 @@
+import { isRootUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { extractCanonicalAgentArtifacts } from '../lib/agent-artifacts';
 /**
  * Desktop-shared portal chat projection.
@@ -19,6 +20,7 @@ import type {
   PortalChatPart,
   PortalTurnTimerAutoRoutedModel,
 } from '@canopy/protocol/portal';
+import { pairToolResultOccurrences } from '@canopy/protocol/portal';
 import {
   PORTAL_CHAT_UNBOUNDED_LIMITS,
   isRecord,
@@ -76,13 +78,18 @@ function hasUnboundedProjectionLimits(
 }
 
 function projectedChildPartCount(message: PersistedChatMessage): number {
-  const toolUseIds = new Set(
-    message.blocks.flatMap((block) =>
-      block.type === 'tool_use' ? [block.toolUseId] : [],
-    ),
+  const pairs = pairToolResultOccurrences(message.blocks, (block) =>
+    block.type === 'tool_use' || block.type === 'tool_result'
+      ? { kind: block.type, toolUseId: block.toolUseId }
+      : undefined,
   );
-  return message.blocks.reduce((count, block) => {
-    if (block.type === 'tool_result' && toolUseIds.has(block.toolUseId)) {
+  const matchedResults = new Set(pairs.values());
+  return message.blocks.reduce((count, block, blockIndex) => {
+    if (
+      block.type === 'tool_result' &&
+      matchedResults.has(blockIndex) &&
+      block.visualRef === undefined
+    ) {
       return count;
     }
     if (
@@ -192,7 +199,8 @@ function projectDelegationPartsOnWire(
         : part;
     const projected = projectPortalDelegationPart(prepared);
     changed = true;
-    return projected === null ? [part] : [projected];
+    // This is already a managed card: never restore stale/unbounded children.
+    return projected === null ? [] : [projected];
   });
   return changed ? { ...message, parts } : message;
 }
@@ -209,6 +217,8 @@ export function persistedMessageToPortalMessage(
     chatId: string;
     message: PersistedChatMessage;
     relatedMessages?: readonly PersistedChatMessage[];
+    /** False for live/synthetic rows that cannot support canonical reads. */
+    outputLocators?: boolean;
   },
   limits?: PortalChatProjectionLimits,
 ): PortalChatMessage {
@@ -229,6 +239,9 @@ export function persistedMessageToPortalMessage(
     // publish path, which calls the core projection, leaves them out.
     {
       ...limits,
+      ...(input.outputLocators === undefined
+        ? {}
+        : { outputLocators: input.outputLocators }),
       includeAccountProxySwitches: true,
       extractAgentArtifacts: extractCanonicalAgentArtifacts,
     },
@@ -278,14 +291,17 @@ function withAutoRoutedModel(
  * True when a persisted message is a turn-timer carrier: the renderer persists
  * each turn's timer as its own `system` message holding a completed
  * `turn_timer` block. Used by {@link projectPersistedChatTranscript} to re-key
- * those rows into the wire timer namespace.
+ * those rows into the wire timer namespace. A canonical timer (one carrying
+ * its turn id) already has the id the live projection uses, so it is left out.
  */
 function isCompletedTurnTimerMessage(message: PersistedChatMessage): boolean {
   return (
     message.role === 'system' &&
     message.blocks.some(
       (block) =>
-        block.type === 'turn_timer' && typeof block.completedAt === 'number',
+        block.type === 'turn_timer' &&
+        block.turnId === undefined &&
+        typeof block.completedAt === 'number',
     )
   );
 }
@@ -294,8 +310,8 @@ function isCompletedTurnTimerMessage(message: PersistedChatMessage): boolean {
  * Project a persisted transcript into neutral portal messages, converging each
  * turn's persisted timer row onto the LIVE wire timer id.
  *
- * The live turn timer (`createPortalTurnTimer` in the desktop main process) is
- * emitted under `` `${userMessageId}:turn-timer` ``, while the renderer
+ * The legacy live turn timer (`createPortalTurnTimer`, removed in turn-state
+ * phases 42h and 43i) was emitted under `` `${userMessageId}:turn-timer` ``, while the renderer
  * persists its own timer row under a renderer-minted message id. Projecting
  * the persisted row under that minted id put the SAME logical timer on the
  * wire under two different messageIds, so the browser's upsert-by-id could not
@@ -332,6 +348,7 @@ export function projectPersistedChatTranscript(input: {
   /** Main-owned outcomes, keyed by the turn's user message, retained on reload. */
   turnEnds?: PersistedChatTab['turnEnds'];
   unacceptedTurnEnds?: PersistedChatTab['unacceptedTurnEnds'];
+  interruptedTurns?: PersistedChatTab['interruptedTurns'];
 }): PortalChatMessage[] {
   const limits: PortalChatProjectionLimits | undefined =
     input.fidelity === 'local'
@@ -348,13 +365,14 @@ export function projectPersistedChatTranscript(input: {
   const visibleMessages = input.messages.filter(isVisiblePersistedChatMessage);
   const rootMessages = delegationRootMessages(visibleMessages);
   const liveTurnStart = rootMessages.reduce(
-    (start, message, index) => (message.role === 'user' ? index : start),
+    (start, message, index) =>
+      isRootUserTurnBoundary(message) ? index : start,
     0,
   );
   let turnUserMessageId: string | undefined;
   let turnTimerConverged = false;
   const projected = rootMessages.map((message, index) => {
-    if (message.role === 'user') {
+    if (isRootUserTurnBoundary(message)) {
       turnUserMessageId = message.id;
       turnTimerConverged = false;
     }
@@ -379,28 +397,35 @@ export function projectPersistedChatTranscript(input: {
       // name its user message.
       turnTimerAutoRoutedModelData(input.autoRoutedModels, turnUserMessageId),
     );
-    const outcome =
-      turnUserMessageId === undefined
-        ? undefined
-        : (input.turnEnds?.[turnUserMessageId]?.outcome ??
-          input.unacceptedTurnEnds?.[turnUserMessageId]);
-    if (
-      isCompletedTurnTimerMessage(message) &&
-      (outcome === 'failed' || outcome === 'cancelled')
-    ) {
+    if (projected.parts?.some((part) => part.kind === 'turn_timer')) {
       projected = {
         ...projected,
-        parts: projected.parts?.map((part) =>
-          part.kind === 'turn_timer'
-            ? {
-                ...part,
-                data: {
-                  ...(isRecord(part.data) ? part.data : {}),
-                  endReason: outcome,
-                },
-              }
-            : part,
-        ),
+        parts: projected.parts.map((part) => {
+          if (
+            part.kind !== 'turn_timer' ||
+            !isRecord(part.data) ||
+            typeof part.data.completedAt !== 'number'
+          )
+            return part;
+          // Canonical timers retain their owner even on a page without its prompt.
+          const owner =
+            typeof part.data.userMessageId === 'string'
+              ? part.data.userMessageId
+              : turnUserMessageId;
+          if (owner === undefined) return part;
+          const recorded =
+            input.turnEnds?.[owner]?.outcome ??
+            input.unacceptedTurnEnds?.[owner];
+          const outcome =
+            recorded === 'failed' || recorded === 'cancelled'
+              ? recorded
+              : input.interruptedTurns?.[owner] !== undefined
+                ? 'interrupted'
+                : undefined;
+          return outcome === undefined
+            ? part
+            : { ...part, data: { ...part.data, endReason: outcome } };
+        }),
       };
     }
     if (

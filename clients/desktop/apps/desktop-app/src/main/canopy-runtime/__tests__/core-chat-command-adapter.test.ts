@@ -9,6 +9,7 @@ import type {
   ChatCommandResult,
   ChatStateCommandPort,
 } from '@canopy/desktop-shared/types';
+import type { DispatchChatCommandOptions } from '../core-chat-command-adapter';
 import {
   CoreChatCreateParamsSchema,
   CoreChatLifecycleResultSchema,
@@ -34,12 +35,13 @@ jest.mock('../../services/files-service', () => ({
   listFileTreeRoots: jest.fn(),
 }));
 
+const grants: 'core.chat.write'[] = ['core.chat.write'];
 const caller = {
   principalId: 'local-desktop-user',
   clientInstanceId: 'test',
   authorityId: 'local-desktop',
   interfaceKind: 'desktop' as const,
-  grants: ['core.chat.write'],
+  grants,
 };
 
 function makePort(): {
@@ -59,6 +61,7 @@ function makePort(): {
     command,
     getState: jest.fn(),
     getTranscriptPage: jest.fn(),
+    readVisual: jest.fn(),
     readToolOutput: jest.fn(),
     searchTranscript: jest.fn(),
     subscribe: jest.fn(() => () => undefined),
@@ -111,13 +114,18 @@ describe('core chat command router', () => {
       'chat.mark_archive_read',
       'chat.mark_read',
       'chat.mark_unread',
+      'chat.move_queued_message',
       'chat.patch_tab_settings',
       'chat.reorder_tabs',
       'chat.restore_archive',
       'chat.send_message',
+      'chat.set_approval_mode',
       'chat.set_model',
       'chat.steer_queued_message',
     ]);
+    expect(CHAT_COMMAND_ROUTES['chat.set_approval_mode']?.instruction).toBe(
+      'core.chat.update',
+    );
     expect(CHAT_COMMAND_ROUTES['chat.create_tab']?.instruction).toBe(
       'core.chat.create',
     );
@@ -346,13 +354,15 @@ describe('core chat command router', () => {
             });
         }),
     );
-    const options = {
+    const options: DispatchChatCommandOptions = {
       port,
       caller,
-      instruction: (
-        name: 'core.chat.create' | 'core.chat.update',
-        params: unknown,
-      ): Promise<ChatCommandResult> => adapter.instructions[name](params),
+      instruction: (name, params): Promise<unknown> => {
+        if (name !== 'core.chat.create' && name !== 'core.chat.update') {
+          throw new Error(`Unexpected chat instruction: ${name}`);
+        }
+        return adapter.instructions[name](params);
+      },
     };
     const first = dispatchTrustedChatCommand(
       {
@@ -473,13 +483,15 @@ describe('core chat command router', () => {
               });
           }),
       );
-    const options = {
+    const options: DispatchChatCommandOptions = {
       port,
       caller,
-      instruction: (
-        name: 'core.chat.create' | 'core.chat.update',
-        params: unknown,
-      ): Promise<ChatCommandResult> => adapter.instructions[name](params),
+      instruction: (name, params): Promise<unknown> => {
+        if (name !== 'core.chat.create' && name !== 'core.chat.update') {
+          throw new Error(`Unexpected chat instruction: ${name}`);
+        }
+        return adapter.instructions[name](params);
+      },
     };
     const scope = { projectId: 'project', worktreeId: 'worktree' };
     const steer = dispatchTrustedChatCommand(
@@ -504,12 +516,18 @@ describe('core chat command router', () => {
       },
       options,
     );
+    const legacyMarkReadCommand: ChatCommand = {
+      type: 'chat.mark_read',
+      chatId: 'tab',
+    };
+    Reflect.deleteProperty(legacyMarkReadCommand, 'chatId');
+    Reflect.set(legacyMarkReadCommand, 'tabId', 'tab');
     const markRead = await dispatchTrustedChatCommand(
       {
         schemaVersion: 1,
         commandId: 'read',
         ...scope,
-        command: { type: 'chat.mark_read', tabId: 'tab' },
+        command: legacyMarkReadCommand,
       },
       options,
     );
@@ -685,7 +703,7 @@ describe('core chat command router', () => {
   });
 
   it('returns keyed retry guidance when chat state is unavailable', async () => {
-    const adapter = createCoreChatCommandAdapter(() => undefined);
+    const adapter = createCoreChatCommandAdapter(() => null);
     await expect(
       adapter.instructions['core.chat.create']({
         projectId: 'project',
@@ -886,6 +904,33 @@ describe('core chat command router', () => {
     expect(getUnsupportedChatHostPathFallthroughCount()).toBe(before + 1);
   });
 
+  it('routes file view mode removal through core.chat.update without a compatibility fallback', async () => {
+    const { port, command } = makePort();
+    const instruction = jest.fn().mockResolvedValue({
+      commandId: 'clear-file-mode',
+      revision: 7,
+      outcome: 'applied',
+    });
+    const request: ChatCommandRequest = {
+      schemaVersion: 1,
+      commandId: 'clear-file-mode',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      command: {
+        type: 'chat.patch_tab_settings',
+        tabId: 'file',
+        patch: { fileViewMode: null },
+      },
+    };
+    await dispatchTrustedChatCommand(request, { port, caller, instruction });
+    expect(instruction).toHaveBeenCalledWith(
+      'core.chat.update',
+      expect.objectContaining({ action: request.command }),
+      { caller, metadata: { idempotencyKey: request.commandId } },
+    );
+    expect(command).not.toHaveBeenCalled();
+  });
+
   it('preserves legacy plugin tombstones and large JSON payloads on the direct port', async () => {
     const { port, command } = makePort();
     const instruction = jest.fn();
@@ -996,6 +1041,158 @@ describe('core chat command router', () => {
       await adapter.instructions['core.chat.update'](params);
       expect(command.mock.calls[index]?.[0].command).toMatchObject({ patch });
     }
+  });
+
+  it('routes a trusted approval-mode change through its dedicated core action', async () => {
+    const { port, command } = makePort();
+    const adapter = createCoreChatCommandAdapter(() => port);
+    const request: ChatCommandRequest = {
+      schemaVersion: 1,
+      commandId: 'approval-mode',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      command: {
+        type: 'chat.set_approval_mode',
+        tabId: 'tab',
+        approvalMode: 'full-access',
+      },
+    };
+    const instruction = jest.fn((name: string, params: unknown) => {
+      expect(name).toBe('core.chat.update');
+      expect(CoreChatUpdateParamsSchema.parse(params).action).toEqual(
+        request.command,
+      );
+      return adapter.instructions['core.chat.update'](params);
+    });
+    const before = getIncompatibleLegacyChatPayloadFallthroughCount();
+    await dispatchTrustedChatCommand(request, { port, caller, instruction });
+    expect(instruction).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith(request);
+    expect(getIncompatibleLegacyChatPayloadFallthroughCount()).toBe(before);
+  });
+
+  it('admits a trusted approval-mode change through the canonical dispatcher', async () => {
+    const { port, command } = makePort();
+    setChatStateCommandPort(port);
+    const runtime = createDesktopRuntime({ chatCommandPort: port });
+    const request: ChatCommandRequest = {
+      schemaVersion: 1,
+      commandId: 'dispatched-approval-mode',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      command: {
+        type: 'chat.set_approval_mode',
+        tabId: 'tab',
+        approvalMode: 'auto',
+      },
+    };
+    try {
+      await expect(
+        dispatchTrustedChatCommand(
+          request,
+          createChatCommandDispatchOptions(port, runtime, caller),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(command).toHaveBeenCalledWith(request);
+      await expect(
+        runtime.instruction(
+          'core.chat.update',
+          CoreChatUpdateParamsSchema.parse({
+            projectId: 'project',
+            worktreeId: 'worktree',
+            commandId: 'relay-approval-mode',
+            _meta: { idempotencyKey: 'relay-approval-mode' },
+            action: request.command,
+          }),
+          { caller, metadata: { idempotencyKey: 'relay-approval-mode' } },
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+      expect(command).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.shutdown();
+      setChatStateCommandPort(null);
+    }
+  });
+
+  it('rejects direct canonical approval-mode changes outside the setter', async () => {
+    const { port, command } = makePort();
+    const adapter = createCoreChatCommandAdapter(() => port);
+    const params = (commandId: string, action: unknown): unknown => ({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      commandId,
+      _meta: { idempotencyKey: commandId },
+      action,
+    });
+    await expect(
+      adapter.instructions['core.chat.update'](
+        params('direct-mode', {
+          type: 'chat.set_approval_mode',
+          tabId: 'tab',
+          approvalMode: 'full-access',
+        }),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+    expect(() =>
+      adapter.instructions['core.chat.update'](
+        params('patched-mode', {
+          type: 'chat.patch_tab_settings',
+          tabId: 'tab',
+          patch: { approvalMode: 'full-access' },
+        }),
+      ),
+    ).toThrow('approvalMode');
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it('refuses an approval-mode change that differs from the trusted capture', async () => {
+    const { port, command } = makePort();
+    const adapter = createCoreChatCommandAdapter(() => port);
+    const request: ChatCommandRequest = {
+      schemaVersion: 1,
+      commandId: 'captured-mode',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      command: {
+        type: 'chat.set_approval_mode',
+        tabId: 'tab',
+        approvalMode: 'ask',
+      },
+    };
+    const instruction = jest.fn((_name: string, params: unknown) =>
+      adapter.instructions['core.chat.update']({
+        ...CoreChatUpdateParamsSchema.parse(params),
+        action: { ...request.command, approvalMode: 'full-access' },
+      }),
+    );
+    await expect(
+      dispatchTrustedChatCommand(request, { port, caller, instruction }),
+    ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+    expect(instruction).toHaveBeenCalledTimes(1);
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it('keeps a trusted settings patch carrying approval mode off the core route', async () => {
+    const { port, command } = makePort();
+    const request: ChatCommandRequest = {
+      schemaVersion: 1,
+      commandId: 'trusted-patched-mode',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      command: {
+        type: 'chat.patch_tab_settings',
+        tabId: 'tab',
+        // A typed caller cannot build this patch; the port refuses it.
+        patch: Object.assign({ title: 'Patched' }, { approvalMode: 'auto' }),
+      },
+    };
+    const instruction = jest.fn();
+    const before = getIncompatibleLegacyChatPayloadFallthroughCount();
+    await dispatchTrustedChatCommand(request, { port, caller, instruction });
+    expect(instruction).not.toHaveBeenCalled();
+    expect(command).toHaveBeenCalledWith(request);
+    expect(getIncompatibleLegacyChatPayloadFallthroughCount()).toBe(before + 1);
   });
 
   it('returns invalid_argument for a malformed direct canonical seed', async () => {

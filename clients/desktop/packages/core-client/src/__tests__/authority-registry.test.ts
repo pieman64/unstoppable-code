@@ -155,6 +155,22 @@ describe('createCanopyAuthorityRegistry construction', () => {
     expect(registry.authorityIds()).toEqual(['A']);
   });
 
+  it('accepts a connection that carries only an authority and profile', () => {
+    const controller = new AbortController();
+    const minimal = {
+      identity: { authorityId: 'web', profile: 'core+worker' },
+      signal: controller.signal,
+    } satisfies CanopyAuthorityConnection;
+    const registry = createCanopyAuthorityRegistry({ primary: minimal });
+    expect(
+      registry.resolve({ mode: 'authority', authorityId: 'web' }).client,
+    ).toBe(minimal);
+    controller.abort();
+    expect(
+      kindOf(() => registry.resolve({ mode: 'authority', authorityId: 'web' })),
+    ).toBe('unavailable');
+  });
+
   it('rejects a closed client as unavailable', async () => {
     const { client: closed } = await authority('B');
     await closed.close();

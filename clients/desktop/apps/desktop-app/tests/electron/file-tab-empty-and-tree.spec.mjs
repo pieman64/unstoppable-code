@@ -178,7 +178,7 @@ test('File creates a closable Open file tab; the embedded tree fills it and stay
     await app.selectWorktree(WORKTREE_ID);
 
     // Add-panel menu → File (the resulting empty tab is "Open file").
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     const addMenu = window.getByTestId('panel-add-menu');
     await expect(addMenu).toBeVisible();
     const fileMenuItem = window.getByTestId('panel-add-menu-item-new-file');
@@ -195,8 +195,32 @@ test('File creates a closable Open file tab; the embedded tree fills it and stay
     await expect(
       emptyState.locator('..').locator(':scope > div').first(),
     ).toContainText('Open file');
-    await expect(emptyState).toContainText('Select a file from the project');
-    await expect(emptyState).toContainText('to quickly open a file');
+    await expect(emptyState).toContainText('No file open');
+    await expect(emptyState).toContainText(
+      'Pick one in the file tree, or search by name.',
+    );
+    // The quick-open shortcut sits inside the button that does the same
+    // thing: one filled chip, hidden from the button's accessible name.
+    const openFile = emptyState.getByRole('button', {
+      name: 'Open file',
+      exact: true,
+    });
+    await expect(openFile).toBeVisible();
+    await expect(openFile.getByTestId('kbd-chip')).toHaveText(
+      process.platform === 'darwin' ? '⌘P' : 'Ctrl P',
+    );
+    await expect(emptyState).not.toContainText('Press');
+    // The button opens file search, whose footer names its keys as caps.
+    await openFile.click();
+    const fileSearch = window.getByTestId('file-search-palette');
+    await expect(fileSearch).toBeVisible();
+    const legend = fileSearch.getByTestId('key-hint-footer');
+    await expect(legend).toContainText('move');
+    await expect(legend).toContainText('open');
+    await expect(legend).toContainText('close');
+    await expect(fileSearch).not.toContainText('to navigate');
+    await window.keyboard.press('Escape');
+    await expect(fileSearch).toHaveCount(0);
     const tree = window.getByTestId('file-tab-tree');
     await expect(tree).toBeVisible();
 
@@ -277,7 +301,7 @@ test('File creates a closable Open file tab; the embedded tree fills it and stay
 
     // Assigning a duplicate basename into another empty tab remains
     // disambiguated after the canonical metadata patch is committed.
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-item-new-file').click();
     const duplicateTree = window
       .getByTestId('panel-group-body-group-chat')
@@ -488,7 +512,7 @@ test('embedded tree reveals and highlights the current file once, then jumps bac
 
     // The standalone explorer starts from its own expansion state instead of
     // inheriting the parent chain revealed by this embedded tree.
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-item-file-explorer').click();
     const standalonePanel = window.getByTestId('panel-content-file-explorer');
     const standaloneTree = standalonePanel.getByTestId('files-tree-tab');

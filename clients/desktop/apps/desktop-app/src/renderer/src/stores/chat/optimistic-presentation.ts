@@ -76,14 +76,58 @@ export function reconcilePendingQueueMessages(
       : undefined;
 }
 
+/**
+ * The echo of a Home first send whose new worktree is still setting up. It
+ * is presented as the setup queue row it is about to become, so the chat
+ * never shows a starting turn that the queue then replaces.
+ */
+export function setupQueuedFirstSend(tab: ChatTab): ChatMessage | undefined {
+  const record = tab.provisionalFirstSend;
+  if (
+    !record?.queuedForSetup ||
+    record.phase !== 'preparing' ||
+    tab.status === 'error'
+  )
+    return undefined;
+  return tab.pendingUserMessages?.find(
+    (message) => message.id === record.userMessageId,
+  );
+}
+
+// One row per echo, so the bubble keeps its identity across tab updates.
+const setupQueueRows = new WeakMap<ChatMessage, QueuedChatMessage>();
+function setupQueueRow(echo: ChatMessage): QueuedChatMessage {
+  const cached = setupQueueRows.get(echo);
+  if (cached) return cached;
+  const fileReferences = echo.blocks.flatMap((block) =>
+    block.type === 'file_references' ? block.references : [],
+  );
+  const row: QueuedChatMessage = {
+    text: echo.blocks
+      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+      .join('\n'),
+    ...(fileReferences.length ? { fileReferences } : {}),
+    ...(echo.attachmentPaths?.length
+      ? { attachmentPaths: echo.attachmentPaths }
+      : {}),
+    // Its controls belong to the real row that replaces it.
+    pendingSend: true,
+  };
+  setupQueueRows.set(echo, row);
+  return row;
+}
+
 const projectedQueues = new WeakMap<ChatTab, QueuedChatMessage[]>();
 export function presentedQueueMessages(tab: ChatTab): QueuedChatMessage[] {
-  if (!tab.pendingQueueMessages?.length) return tab.queuedMessages;
+  const setupEcho = setupQueuedFirstSend(tab);
+  if (!tab.pendingQueueMessages?.length && !setupEcho)
+    return tab.queuedMessages;
   const cached = projectedQueues.get(tab);
   if (cached) return cached;
   const result = [
     ...tab.queuedMessages,
-    ...tab.pendingQueueMessages.map((entry) => entry.message),
+    ...(tab.pendingQueueMessages ?? []).map((entry) => entry.message),
+    ...(setupEcho ? [setupQueueRow(setupEcho)] : []),
   ];
   projectedQueues.set(tab, result);
   return result;
@@ -123,7 +167,66 @@ export function reconcilePendingTurn<
   };
 }
 
+/** A removed prompt never runs, so its bridge and live timer retire with it. */
+export function retireRemovedPendingTurn(
+  tab: ChatTab,
+  userMessageId: string,
+): ChatTab {
+  const pending = tab.pendingTurn;
+  if (pending?.userMessageId !== userMessageId) return tab;
+  const users = tab.pendingUserMessages?.filter(
+    (message) => message.id !== userMessageId,
+  );
+  return {
+    ...tab,
+    pendingTurn: undefined,
+    pendingUserMessages: users?.length ? users : undefined,
+    messages: tab.messages.filter(
+      (message) => message.id !== pending.timerMessage.id,
+    ),
+  };
+}
+
 const projectedMessages = new WeakMap<ChatTab, ChatMessage[]>();
+function firstSendTimestamps(tab: ChatTab): ChatMessage[] {
+  const firstSend = tab.provisionalFirstSend;
+  if (!firstSend || firstSend.phase === 'queued') return tab.messages;
+  const start = tab.messages.findIndex(
+    (message) =>
+      message.id ===
+      (firstSend.terminalUserMessageId ?? firstSend.userMessageId),
+  );
+  if (start < 0) return tab.messages;
+  let messages = tab.messages;
+  const user = messages[start];
+  if (user.timestamp !== firstSend.submittedAt) {
+    messages = [...messages];
+    messages[start] = { ...user, timestamp: firstSend.submittedAt };
+  }
+  for (let index = start + 1; index < tab.messages.length; index += 1) {
+    const message = tab.messages[index];
+    if (message.role === 'user') break;
+    if (
+      !message.blocks.some(
+        (block) =>
+          block.type === 'turn_timer' &&
+          block.startedAt !== firstSend.submittedAt,
+      )
+    )
+      continue;
+    if (messages === tab.messages) messages = [...tab.messages];
+    messages[index] = {
+      ...message,
+      blocks: message.blocks.map((block) =>
+        block.type === 'turn_timer'
+          ? { ...block, startedAt: firstSend.submittedAt }
+          : block,
+      ),
+    };
+  }
+  return messages;
+}
+
 export function presentedMessages(tab: ChatTab): ChatMessage[] {
   if (
     tab.queuedHookPlaceholder === true &&
@@ -132,19 +235,35 @@ export function presentedMessages(tab: ChatTab): ChatMessage[] {
   ) {
     return presentedQueuedHookBanner(tab, tab.queuedHookInfo);
   }
-  if (!tab.pendingTurn || tab.status === 'error') return tab.messages;
+  if (tab.status === 'error') return tab.messages;
   const cached = projectedMessages.get(tab);
   if (cached) return cached;
+  const setupEcho = setupQueuedFirstSend(tab);
+  if (setupEcho) {
+    // The echo shows as a queue row; its turn has not started.
+    const messages = tab.messages.filter(
+      (message) =>
+        message.id !== setupEcho.id &&
+        message.id !== tab.pendingTurn?.timerMessage.id,
+    );
+    projectedMessages.set(tab, messages);
+    return messages;
+  }
+  const base = firstSendTimestamps(tab);
+  if (!tab.pendingTurn) {
+    projectedMessages.set(tab, base);
+    return base;
+  }
   const timer = tab.pendingTurn.timerMessage;
-  const messages = tab.messages.some((message) => message.id === timer.id)
-    ? tab.messages
-    : [...tab.messages, timer];
+  const messages = base.some((message) => message.id === timer.id)
+    ? base
+    : [...base, timer];
   projectedMessages.set(tab, messages);
   return messages;
 }
 
-/** Queue ids are not transcript ids. Match only a new canonical user message,
- * never an earlier identical prompt, then transfer the pending timer to it. */
+/** Reused prompts reconcile by the host's canonical identity. Ordinary queue
+ * entries match only a new user message, never an earlier identical prompt. */
 export function reconcileQueueDispatch<
   T extends {
     messages: ChatMessage[];
@@ -171,8 +290,10 @@ export function reconcileQueueDispatch<
     (message) =>
       message.role === 'user' &&
       message.id !== pending.message.id &&
-      !pending.previousMessageIds.includes(message.id) &&
-      payload(message) === expected,
+      (pending.supersedesUserMessageId !== undefined
+        ? message.id === pending.supersedesUserMessageId
+        : !pending.previousMessageIds.includes(message.id) &&
+          payload(message) === expected),
   );
   if (!accepted) return tab;
   return {
@@ -197,6 +318,16 @@ export function presentDequeuedMessage(
   timestamp: number,
 ): ChatTab {
   if (!row.hostQueueEntryId) return tab;
+  // Credit Retry keeps its canonical prompt. A synthetic echo could never
+  // reconcile against that already-present identity and would remain twice.
+  if (
+    row.supersedesUserMessageId !== undefined &&
+    tab.messages.some(
+      (message) =>
+        message.role === 'user' && message.id === row.supersedesUserMessageId,
+    )
+  )
+    return tab;
   const user: ChatMessage = {
     id: `pending-queue-user:${row.hostQueueEntryId}`,
     role: 'user',
@@ -219,6 +350,7 @@ export function presentDequeuedMessage(
     pendingUserMessages: [...(tab.pendingUserMessages ?? []), user],
     pendingQueueDispatch: {
       entryId: row.hostQueueEntryId,
+      supersedesUserMessageId: row.supersedesUserMessageId,
       message: user,
       previousMessageIds: tab.messages.map((message) => message.id),
     },

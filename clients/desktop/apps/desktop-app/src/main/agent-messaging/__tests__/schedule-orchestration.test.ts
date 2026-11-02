@@ -286,3 +286,21 @@ it('reads the root admission for the resolved target and stores nothing when it 
   });
   expect(mockCreate).not.toHaveBeenCalled();
 });
+it('refuses a pipeline caller before resolving a target', async () => {
+  await expect(
+    dispatchAgentChatSchedule(action, {
+      caller: {
+        kind: 'pipeline',
+        source: {
+          executionId: 'exec-1',
+          pipelineId: 'pipeline-1',
+          pipelineName: 'Pipeline',
+          stepId: 'schedule',
+          owner: { kind: 'personal' },
+        },
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'unsupported_action' });
+  expect(mockResolve).not.toHaveBeenCalled();
+  expect(mockCreate).not.toHaveBeenCalled();
+});

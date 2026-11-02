@@ -17,17 +17,21 @@ const ZEN = '22222222-2222-4222-8222-222222222222';
 
 function availability(
   organizationId: string,
-  balance: number | null,
+  balance: number | null | undefined,
 ): NativeAiCreditsAvailability {
-  return {
+  const result: NativeAiCreditsAvailability = {
     personalEligible: true,
     inOrg: true,
     orgCreditPoolCovered: true,
     orgSpendable: true,
     ownerOrganization: { id: organizationId, name: 'Pool' },
-    ownerOrganizationBalanceCredits: balance,
     pricingUrl: 'https://cloud.example.com/pricing',
   };
+  // A wire null is outside the declared type; set it as parsed JSON would.
+  if (balance !== undefined) {
+    Reflect.set(result, 'ownerOrganizationBalanceCredits', balance);
+  }
+  return result;
 }
 
 interface Deferred {
@@ -129,6 +133,34 @@ describe('useOrgCreditPoolBalance', () => {
     expect(latest()?.balanceCredits).toBe(100);
     await settle(1, availability(ACME, 90));
     expect(latest()?.balanceCredits).toBe(90);
+  });
+
+  it.each([undefined, null, NaN, Infinity])(
+    'clears a known balance after a redacted or invalid read: %p',
+    async (value) => {
+      render(organization(ACME));
+      await settle(0, availability(ACME, 0));
+      expect(latest()?.balanceCredits).toBe(0);
+      act(() => latest()?.refresh());
+      await settle(1, availability(ACME, value));
+      expect(latest()?.balanceCredits).toBeNull();
+    },
+  );
+
+  it('fences departed reads across A to B to A and loss then restoration of eligibility', async () => {
+    render(organization(ACME));
+    render(organization(ZEN));
+    render(organization(ACME));
+    await settle(2, availability(ACME, 7));
+    await settle(0, availability(ACME, 99));
+    await settle(1, availability(ZEN, 88));
+    expect(latest()?.balanceCredits).toBe(7);
+    act(() => latest()?.refresh());
+    render({ kind: 'personal' });
+    render(organization(ACME));
+    await settle(4, availability(ACME, 0));
+    await settle(3, availability(ACME, 77));
+    expect(latest()?.balanceCredits).toBe(0);
   });
 
   it('lets the latest read win across refresh and focus', async () => {

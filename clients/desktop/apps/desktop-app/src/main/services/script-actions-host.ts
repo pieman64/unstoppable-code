@@ -33,10 +33,7 @@ import {
   listWorktreeScriptEntries,
   getScriptSourceInfo,
 } from './scripts-service';
-import {
-  prewarmLinuxTerminalShell,
-  getDefaultTerminalShellBasename,
-} from '../terminal/pty-manager';
+import { workerTerminal } from '../terminal/worker-terminal';
 import {
   ScriptActionsError,
   ScriptActionsService,
@@ -73,7 +70,7 @@ async function resolveCheckouts(
       'invalid_target',
       'Workspace repository identities are conflicting.',
     );
-  await prewarmLinuxTerminalShell();
+  await workerTerminal.prewarmShell();
   if (config.type === 'single-repo')
     return [
       {
@@ -115,7 +112,7 @@ async function resolveRepositorySources(
       'invalid_target',
       'Workspace repository identities are conflicting.',
     );
-  await prewarmLinuxTerminalShell();
+  await workerTerminal.prewarmShell();
   if (config.type === 'single-repo' && config.repoPath)
     return [
       {
@@ -186,7 +183,8 @@ export const scriptActionsService = new ScriptActionsService({
     (__CANOPY_E2E__ && process.env.CANOPY_E2E_SCRIPT_ALIAS_HOME) || homedir(),
   platform: hostPlatformOperatingSystem(),
   shell: (): ScriptTerminalShell => {
-    const shell = getDefaultTerminalShellBasename()
+    const shell = workerTerminal
+      .defaultShellBasename()
       .replace(/\.exe$/i, '')
       .toLowerCase();
     if (

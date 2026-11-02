@@ -141,7 +141,7 @@ describe('desktop runtime kernel over in-memory framing', () => {
     await settle();
     const params = { scope: { workspaceId: 'project-1', worktreeId: 'wt-1' } };
     const read = {
-      caller: { ...caller, grants: ['worker.filesystem.read'] },
+      caller: { ...caller, grants: ['worker.filesystem.read' as const] },
     };
     const admitted = runtime.queryFileTreeRootsForLegacyIpc(params, read);
     const stopping = runtime.shutdown();

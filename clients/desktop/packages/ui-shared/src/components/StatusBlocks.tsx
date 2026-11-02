@@ -1,24 +1,41 @@
 import type { CSSProperties, JSX, ReactNode } from 'react';
 
+import { WarningIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { LoadingButton } from './LoadingButton';
 import { LoadingSpinner } from './LoadingSpinner';
 import { useLoadingIndicatorStyle } from './LoadingIndicatorStyle';
 import { Notice, NoticeButton } from './Notice';
+import { TRY_AGAIN_LABEL, TRYING_AGAIN_LABEL } from './useRetry';
 
-// Pure display components for inline error banners, loading placeholders, and
-// empty states. `ErrorBanner` is the destructive `Notice`; the other two rely
-// on the shared Tailwind utilities and semantic roles used by the desktop
-// renderer and the web app.
+// Pure display components for inline error banners, failed places, loading
+// placeholders, and empty states. `ErrorBanner` is the destructive `Notice`;
+// the others rely on the shared Tailwind utilities and semantic roles used by
+// the desktop renderer and the web app.
 
-/** The default label of an {@link ErrorBanner}'s retry action. */
-const ERROR_BANNER_RETRY_LABEL = 'Retry';
+/**
+ * A message's closing `Try again.`, which the banner's own Try again button
+ * already says.
+ */
+const TRAILING_TRY_AGAIN = /\s*Try again\.$/;
+
+/**
+ * The copy beside a Try again button: without a closing `Try again.`, which
+ * the button already says (`Couldn't load this. Try again.` reads
+ * `Couldn't load this.`). A message that is only that sentence stays.
+ */
+function besideTryAgain(message: string): string {
+  const trimmed = message.trim();
+  return trimmed.replace(TRAILING_TRY_AGAIN, '') || trimmed;
+}
 
 export function ErrorBanner({
   className = 'mb-4',
   error,
   blockMessageFromReplay = false,
   onRetry,
-  retryLabel = ERROR_BANNER_RETRY_LABEL,
+  retryLabel = TRY_AGAIN_LABEL,
+  retrying = false,
 }: {
   className?: string;
   error: string | null | undefined;
@@ -32,23 +49,43 @@ export function ErrorBanner({
    * running the failed step again can fix the failure.
    */
   onRetry?: () => void;
-  /** The retry action's label. Defaults to `Retry`. */
+  /**
+   * The retry action's label. Defaults to `Try again`, the one retry verb;
+   * name a different action only when it does something else (`Rescan`).
+   */
   retryLabel?: string;
+  /**
+   * The retry is running: its capsule spins in place (`Trying again…` for a
+   * `Try again` action) while the banner stays, so nothing blanks.
+   */
+  retrying?: boolean;
 }): JSX.Element | null {
   if (!error) return null;
   const actions = onRetry ? (
-    <NoticeButton onClick={onRetry}>{retryLabel}</NoticeButton>
+    <NoticeButton
+      onClick={onRetry}
+      busy={retrying}
+      busyLabel={
+        retryLabel === TRY_AGAIN_LABEL ? TRYING_AGAIN_LABEL : undefined
+      }
+    >
+      {retryLabel}
+    </NoticeButton>
   ) : undefined;
   // Errors that can quote command output put the block class on the title
   // and message.
   const textClass = blockMessageFromReplay ? REPLAY_BLOCK_CLASS : '';
+  // With its own Try again button, the message does not also say it.
+  const trimmed =
+    onRetry && retryLabel === TRY_AGAIN_LABEL
+      ? besideTryAgain(error)
+      : error.trim();
   // An error string is usually "what failed. what to do." — lead with the
   // first sentence as the title and let the rest follow it in the quieter
   // ink, so every caller gets the title-then-explanation shape for free.
   // The second sentence must open like one (a capital, a digit, or a
   // quote), so an abbreviation such as "e.g. timeouts" does not end the
   // title early.
-  const trimmed = error.trim();
   const split = /^(.*?[.!?])\s+((?=[A-Z0-9"'\u2018\u201C])\S[\s\S]*)$/.exec(
     trimmed,
   );
@@ -70,6 +107,86 @@ export function ErrorBanner({
     >
       <span className={textClass}>{message}</span>
     </Notice>
+  );
+}
+
+/** Room a failed place holds: a page's list, or a side panel's body. */
+export type ErrorStateSpace = 'page' | 'panel';
+
+const ERROR_STATE_SPACE_CLASS_NAMES: Record<ErrorStateSpace, string> = {
+  page: 'py-16',
+  panel: 'py-12',
+};
+
+/**
+ * A whole place that couldn't load: a page's list or a side panel's body.
+ * It takes the place of the content only; the page title, tabs, and toolbar
+ * around it stay.
+ *
+ * The shared {@link EmptyState} with the warning glyph: the glyph alone in
+ * the quiet ink with no tile behind it, one sentence that opens with
+ * `Couldn't…`, and at most one `Try again` capsule, so a failed place reads
+ * like an empty one (`SearchEmptyState`) apart from its glyph. While
+ * `retrying`, the capsule spins in place (`Trying again…`) and the state
+ * stays on screen, so the place never blanks between tries. A failure
+ * retrying cannot fix passes no `onRetry`.
+ *
+ * Part of a page failing is not this: use one `ErrorBanner` above what did
+ * load. A failed action is a toast with a `Try again` action.
+ */
+export function ErrorState({
+  message,
+  onRetry,
+  retrying = false,
+  space = 'page',
+  testId,
+  retryTestId,
+}: {
+  /** One sentence: `Couldn't load workflows.` */
+  message: ReactNode;
+  /** Shows `Try again`. Omit when trying again can't fix it. */
+  onRetry?: () => void;
+  retrying?: boolean;
+  space?: ErrorStateSpace;
+  testId?: string;
+  retryTestId?: string;
+}): JSX.Element {
+  return (
+    <div
+      data-testid={testId}
+      data-error-state={space}
+      className={`px-4 ${ERROR_STATE_SPACE_CLASS_NAMES[space]}`}
+    >
+      <EmptyState
+        inset="none"
+        spacing="relaxed"
+        titleWeight="normal"
+        icon={
+          <WarningIcon size={24} aria-hidden="true" className="fg-tertiary" />
+        }
+        title={
+          <span role="alert" className="text-pretty">
+            {onRetry && typeof message === 'string'
+              ? besideTryAgain(message)
+              : message}
+          </span>
+        }
+        action={
+          onRetry ? (
+            <LoadingButton
+              variant="secondary"
+              size="sm"
+              loading={retrying}
+              loadingLabel={TRYING_AGAIN_LABEL}
+              onClick={onRetry}
+              data-testid={retryTestId}
+            >
+              {TRY_AGAIN_LABEL}
+            </LoadingButton>
+          ) : undefined
+        }
+      />
+    </div>
   );
 }
 

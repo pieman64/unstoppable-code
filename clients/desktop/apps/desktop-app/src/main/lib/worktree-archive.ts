@@ -1,5 +1,7 @@
+import { WorktreeArchiveRefusedError } from './worktree-archive-refusal';
 import {
   assertNoDestructiveRecovery,
+  assertNoLegacyArchiveRecovery,
   readDestructiveRecovery,
   findCompletedDestructiveArchive,
   destructiveArchiveOutcomeSchema,
@@ -15,18 +17,24 @@ import {
   W5RevisionConflictError,
   type W5CommitOptions,
 } from './w5-commit-log-file-store';
-import type { W5KeyedAttempt } from './w5-keyed-operation';
+import {
+  admitLifecycleJournals,
+  type W5KeyedAttempt,
+} from './w5-keyed-operation';
 import { access } from 'node:fs/promises';
 import type {
   ArchiveWorktreeResponse,
   ArchivedContainerManifest,
+  CheckWorktreeRemovalAdmissionRequest,
+  CheckWorktreeRemovalAdmissionResponse,
 } from '@canopy/desktop-shared/types';
-import { assertNoLiveDelegationsInWorktree } from '../agents/delegation/activity';
+import { assertWorktreeCanBeRemoved } from '../agents/background-work';
 import {
   assertNotSplitDestinationWorktreeClaimed,
   assertNotSplitLocked,
 } from '../services/split-lock-service';
 import { listArchivedContainerManifests } from './archived-containers';
+import { isWorktreeArchiveSourceUnavailable } from './archived-container-recovery';
 import { recordWorktreeCrudTelemetry } from './desktop-telemetry';
 import { queueTrackedGitHubWorktreeSync } from './post-archive-sync';
 import { getWorkspaceWorktreeDir } from './paths';
@@ -48,6 +56,8 @@ import {
 import {
   archiveMultiRepoWorktree,
   archiveSingleRepoWorktree,
+  findWorktreeArchiveSourceRefusal,
+  WORKTREE_ARCHIVE_SOURCE_UNAVAILABLE_MESSAGE,
 } from './worktree-service';
 
 /** The caller of an archive, recorded in worktree CRUD telemetry. */
@@ -93,22 +103,10 @@ export type WorktreeArchiveOutcome = ArchiveWorktreeResponse & {
   status: 'archived' | 'already-archived';
 };
 
-export type WorktreeArchiveRefusal =
-  | 'unsupported-workspace'
-  | 'kind-mismatch'
-  | 'not-found'
-  | 'busy';
-
-/** An admission check refused the archive before any effect. */
-export class WorktreeArchiveRefusedError extends Error {
-  constructor(
-    readonly reason: WorktreeArchiveRefusal,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'WorktreeArchiveRefusedError';
-  }
-}
+export {
+  WorktreeArchiveRefusedError,
+  type WorktreeArchiveRefusal,
+} from './worktree-archive-refusal';
 
 function archivedThisIncarnation(
   manifest: ArchivedContainerManifest,
@@ -259,9 +257,8 @@ export async function deleteWorktree(
     },
     (outcome) => archiveOutcomeSchema.parse(outcome),
     async (options, attempt) => {
-      const pending = await readDestructiveRecovery(
-        request.workspaceId,
-        request.worktreeId,
+      const pending = await admitLifecycleJournals(attempt, () =>
+        readDestructiveRecovery(request.workspaceId, request.worktreeId),
       );
       if (!pending || pending.state === 'completed') {
         await checkW5ExpectedRevision(
@@ -301,17 +298,25 @@ async function archiveWorktreeTransition(
     });
   }
 
-  const unfinished = await readDestructiveRecovery(workspaceId, worktreeId);
+  // Read-only journal refusals release a keyed reservation; the locked
+  // service's own refusals follow its fences and keep it.
+  const journals = <T>(read: () => Promise<T>): Promise<T> =>
+    admitLifecycleJournals(attempt, read);
+  const unfinished = await journals(() =>
+    readDestructiveRecovery(workspaceId, worktreeId),
+  );
   const needsCleanupRecovery =
     unfinished !== null && unfinished.state !== 'completed';
   // The locked service validates recovery before any effects; ordinary admission
   // and completed-outcome replay keep the existing refusal behavior.
   if (!needsCleanupRecovery)
-    await assertNoDestructiveRecovery(workspaceId, worktreeId);
-  const recovery = await findCompletedDestructiveArchive(
-    workspaceId,
-    worktreeId,
-    request.expectedCreatedAt,
+    await journals(() => assertNoDestructiveRecovery(workspaceId, worktreeId));
+  const recovery = await journals(() =>
+    findCompletedDestructiveArchive(
+      workspaceId,
+      worktreeId,
+      request.expectedCreatedAt,
+    ),
   );
   const { config, authority } = await readWorkspaceConfigDetailed(workspaceId);
   // An unreadable config reads as a default multi-repo one, so only an
@@ -331,12 +336,9 @@ async function archiveWorktreeTransition(
       'Cannot archive the worktree because the project is not the expected kind.',
     );
   }
-  const rows =
-    request.expectedRevision === undefined && !needsCleanupRecovery
-      ? await readWorkspaceWorktrees(workspaceId)
-      : await readWorkspaceWorktrees(workspaceId, {
-          persistRemovalCleanup: false,
-        });
+  const rows = await readWorkspaceWorktrees(workspaceId, {
+    persistRemovalCleanup: false,
+  });
   const current = rows.find((worktree) => worktree.id === worktreeId);
   if (!current && !needsCleanupRecovery) {
     // A row can leave the list while its checkout stays, as a needs-repair
@@ -399,8 +401,8 @@ async function archiveWorktreeTransition(
       worktreeId,
       'archiving the worktree',
     );
-    // A chat with live delegates keeps its worktree (the row shows working).
-    assertNoLiveDelegationsInWorktree(workspaceId, worktreeId);
+    // Live delegates or close-blocking background work keep the worktree.
+    assertWorktreeCanBeRemoved(workspaceId, worktreeId);
   });
 
   // Archive journals may advance the row during teardown. The caller revision
@@ -448,6 +450,7 @@ async function archiveWorktreeTransition(
             request.expectedRemainingWorktreeOrder,
         }
       : {}),
+    sourceAdmission: 'required' as const,
     observabilityMode: 'live-service' as const,
     liveServices: {
       cleanupLiveState: cleanupLiveWorktreeState,
@@ -487,6 +490,86 @@ async function archiveWorktreeTransition(
     source: request.source,
   });
   return { status: 'archived', ...response };
+}
+
+/**
+ * The source admission {@link archiveWorktree} and {@link deleteWorktree} run
+ * (CAN-5158), read-only, for several worktrees at once, so the renderer can
+ * refuse before its own removal effects (CAN-5333). It reserves nothing: the
+ * archive admits again. Other refusals stay with the archive.
+ */
+export async function checkWorktreeRemovalAdmission(
+  request: CheckWorktreeRemovalAdmissionRequest,
+): Promise<CheckWorktreeRemovalAdmissionResponse> {
+  const { workspaceId, worktreeIds } = request;
+  validateId(workspaceId, 'workspaceId');
+  worktreeIds.forEach((id, index) => {
+    validateId(id, `worktreeIds[${index}]`);
+  });
+  if (worktreeIds.length === 0) return { status: 'admitted' };
+  const { config, authority } = await readWorkspaceConfigDetailed(workspaceId);
+  // The same kind decision as the archive transition.
+  const kind =
+    authority === 'ok' ? config.type : (request.expectedKind ?? config.type);
+  if (kind === 'cowork') return { status: 'admitted' };
+  const refused = await findWorktreeArchiveSourceRefusal(
+    workspaceId,
+    worktreeIds,
+    kind,
+  );
+  return refused === undefined
+    ? { status: 'admitted' }
+    : {
+        status: 'refused',
+        worktreeId: refused,
+        reason: 'source-unavailable',
+        message: WORKTREE_ARCHIVE_SOURCE_UNAVAILABLE_MESSAGE,
+      };
+}
+
+/**
+ * Read-only admission for {@link archiveWorkspaceWorktrees} (CAN-4985):
+ * whether a worktree it would archive needs a source repository that Git
+ * cannot open.
+ */
+export async function hasWorkspaceWorktreeWithUnavailableSource(
+  workspaceId: string,
+  kind: 'single-repo' | 'multi-repo',
+): Promise<boolean> {
+  const available = new Set<string>();
+  for (const worktree of await readWorkspaceWorktrees(workspaceId, {
+    persistRemovalCleanup: false,
+  })) {
+    if (
+      await isWorktreeArchiveSourceUnavailable(
+        workspaceId,
+        worktree,
+        kind,
+        available,
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
+/**
+ * Read-only admission for {@link archiveWorkspaceWorktrees} (CAN-4985): each
+ * archive refuses an interrupted legacy archive before its lifecycle, and so
+ * does this, for every worktree at once. A later worktree's refusal would
+ * otherwise follow an earlier one's effects and leave the deletion's journal
+ * requiring recovery.
+ */
+export async function assertWorkspaceWorktreesHaveNoLegacyArchiveRecovery(
+  workspaceId: string,
+): Promise<void> {
+  for (const worktree of await readWorkspaceWorktrees(workspaceId, {
+    persistRemovalCleanup: false,
+  }))
+    await assertNoLegacyArchiveRecovery(workspaceId, worktree.id, {
+      admitMissingCheckoutCapture: true,
+      readOnly: true,
+    });
 }
 
 /**

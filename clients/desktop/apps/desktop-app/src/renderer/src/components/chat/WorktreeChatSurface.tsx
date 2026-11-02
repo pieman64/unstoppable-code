@@ -1,9 +1,11 @@
+import { ComposerWorkDrawerProvider } from './composer-work-drawer-context';
 import {
   memo,
   useEffect,
   useMemo,
   useRef,
   type JSX,
+  type ReactElement,
   type ReactNode,
 } from 'react';
 import {
@@ -35,10 +37,6 @@ import { isCoworkChatTarget } from '@/lib/cowork';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useBlueprintCatalog } from '@/hooks/useBlueprintCatalog';
-import { useOnboardingSuggestionSurfaces } from '@/stores/onboardingSuggestionSurfacesStore';
-import { ChatOnboardingChecklistHost } from '@/components/home/onboarding-suggestions/ChatOnboardingChecklistHost';
-import { buildOnboardingChatBlueprintContext } from '@/components/home/onboarding-suggestions/blueprintContext';
-import { useChatBlueprintPublication } from '@/components/home/onboarding-suggestions/useChatBlueprintPublication';
 import { ChatInterfaceModeToggle } from './ChatInterfaceModeToggle';
 import type { ChatInterfaceModeControl } from './chatInterfaceModes';
 import { ClaudeTerminalForkButton } from './ClaudeTerminalForkButton';
@@ -50,7 +48,9 @@ import { TryItSetupPaneHost } from './TryItSetupPaneHost';
 import { extractUserMessageHistory } from './message-history';
 import type { ActiveComposerView, ActiveTranscriptView } from './types';
 import { useWorktreeChatTabSurfaceState } from './useWorktreeChatSurfaceState';
+import { useQueuedMessageComposerEditor } from './useQueuedMessageComposerEditor';
 import { SHARED_CHAT_TRANSCRIPT_PROJECTION_ENABLED } from './shared-chat-projection-gate';
+import { markSuggestedPromptInserted } from '@/lib/chatMessageSendTelemetry';
 
 const NO_PROJECTED_MESSAGES: ReturnType<typeof projectPersistedChatTranscript> =
   [];
@@ -83,7 +83,6 @@ interface WorktreeChatSurfaceProps {
   /**
    * Host content for a chat with no messages, at the bottom of the empty
    * transcript above the composer (the floating App Advisor's recent chats).
-   * The onboarding checklist takes the slot while it shows.
    */
   emptyStateCenter?: ReactNode;
 }
@@ -173,10 +172,26 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
     () => extractUserMessageHistory(transcript?.messages ?? []),
     [transcript?.messages],
   );
+  // The queued or scheduled message being edited takes the composer's place
+  // in the shared panel (CAN-3607).
+  const queuedMessageEditor = useQueuedMessageComposerEditor({
+    queuedMessages: transcript?.queuedMessages,
+    editingQueuedMessageIndex: transcript?.editingQueuedMessageIndex,
+    autoFocus: transcript?.editingQueuedMessageFocusAllowed,
+    ...(readOnly
+      ? {}
+      : {
+          onCancelEditQueuedMessage: (): void => handleEditQueuedMessage(null),
+          onSaveEditQueuedMessage: handleSaveQueuedMessage,
+          onCancelEditScheduledMessage: (): void => setEditingScheduledId(null),
+          onSaveEditScheduledMessage: handleSaveScheduledMessage,
+        }),
+    scheduledMessages,
+    editingScheduledMessageId: editingScheduledId,
+    composerTab,
+    scheduleEnabled: true,
+  });
 
-  // New-chat tabs use the same getting-started queue as Home and the sidebar.
-  // Cowork resumes its project starter prompts once the checklist is done;
-  // Code chat prompt chips remain deliberately disabled after onboarding.
   // Recurring automations surface as a composer notice, not transcript
   // content, so only one-time sends keep the chat out of its empty state
   // (same rule as ChatContent).
@@ -193,22 +208,7 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
   const composerHasText = useChatStore(
     (s) => s.composerTextPresent[chatTabId] === true,
   );
-  const onboardingVisible = useOnboardingSuggestionSurfaces((s) => s.visible);
-  const onboardingQueueStatus = useOnboardingSuggestionSurfaces(
-    (s) => s.queueStatus,
-  );
   const isCoworkChat = isCoworkChatTarget(selectedWorktree?.projectId ?? '');
-  // This chat is the active empty chat the checklist may center itself in.
-  const checklistEligible =
-    onboardingVisible &&
-    transcriptEmpty &&
-    !composerHasText &&
-    visible &&
-    isActivePanel &&
-    !readOnly &&
-    !isClaudeCodeChatMode &&
-    Boolean(selectedWorktree) &&
-    selectedWorktree?.projectId !== APP_ADVISOR_PROJECT_ID;
   const resolvedSelections = useResolvedChatPluginSelections(
     selectedWorktree?.projectId ?? null,
     selectedWorktree?.worktreeId ?? null,
@@ -229,10 +229,7 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
   const projectStarterPrompts = coworkProject?.starterPrompts;
   const seededFromBlueprintExternalId =
     coworkProject?.seededFromBlueprintExternalId;
-  // A seeded project reads its cached template for the composer's starter
-  // prompts (when it owns none) and for the tailored checklist (CAN-3032),
-  // which needs the template's plugins regardless. The read is the prefetched
-  // cache over IPC, never a network fetch.
+  // Read the cached template's starter prompts when the project owns none.
   const blueprintCatalog = useBlueprintCatalog(
     coworkProjectId !== null && seededFromBlueprintExternalId !== undefined,
   );
@@ -244,37 +241,6 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
         );
   const seedingBlueprintStarterPrompts =
     seedingBlueprint?.document.starterPrompts;
-  const chatBlueprint = useMemo(
-    () =>
-      coworkProject === undefined
-        ? null
-        : buildOnboardingChatBlueprintContext(coworkProject, seedingBlueprint),
-    [coworkProject, seedingBlueprint],
-  );
-  // Until the cache read settles the checklist would draw the general rows
-  // and then swap them for the tailored ones; hold it instead.
-  const seededProject =
-    coworkProjectId !== null && seededFromBlueprintExternalId !== undefined;
-  const chatBlueprintPending = seededProject && !blueprintCatalog.resolved;
-  // A seeded project's template context goes to the shared runtime from
-  // here, for as long as this is the active empty chat. The centered slot
-  // below mounts only while the shared queue has rows, so it cannot be the
-  // publisher: a finished user's general queue is exhausted, and the
-  // template rows are exactly what would give it rows again.
-  const templatePublished = useChatBlueprintPublication({
-    chatTabId,
-    active: checklistEligible && seededProject,
-    blueprint: chatBlueprint,
-    pending: chatBlueprintPending,
-  });
-  // Until the publication lands, the queue status still describes the
-  // general rows alone; neither the checklist nor the chips draw on it.
-  const templateSettling =
-    checklistEligible && seededProject && !templatePublished;
-  const showOnboardingCenter =
-    checklistEligible &&
-    !templateSettling &&
-    onboardingQueueStatus !== 'exhausted';
   const suggestionsEnabled =
     suggestedPromptsFlagEnabled &&
     !readOnly &&
@@ -284,8 +250,6 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
     selectedWorktree?.projectId !== APP_ADVISOR_PROJECT_ID &&
     !isClaudeCodeChatMode &&
     transcriptEmpty &&
-    !showOnboardingCenter &&
-    !templateSettling &&
     // Hidden panels must not fetch inventory or record impressions; the
     // hidden -> visible flip also refetches so eligibility picks up MCP
     // auth changes made elsewhere.
@@ -416,100 +380,90 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
             {/* The Claude interface modes live in the composer's + menu (via
               ChatContent's interfaceModeControl) rather than floating over
               the transcript. */}
-            <DesktopSharedChatPanelBridge
-              chatId={chatTabId}
-              selectedWorktree={selectedWorktree}
-              transcript={transcript}
-              composerTab={composerTab}
-              onSend={(text): void => {
-                void sendMessage(text, undefined, targetOverride);
-              }}
-              onStop={(): void => {
-                void cancelSession(targetOverride);
-              }}
-              renderTranscript={() => (
-                <ChatContent
-                  allowCursor={allowCursor}
-                  transcript={transcript}
-                  composerTab={composerTab}
-                  targetOverride={targetOverride}
-                  nativeSessionComposer
-                  hideComposer
-                  hideBranchActions={readOnly}
-                  searchShortcutActive={isActivePanel}
-                  findSurfaceVisible={isVisiblePanel}
-                  interfaceModeControl={interfaceModeControl}
-                  // A projected published chat carries no queue; the required
-                  // clear handler stays wired, every other turn action is off.
-                  onClearQueuedMessage={handleClearQueuedMessage}
-                  {...(readOnly
-                    ? {}
-                    : {
-                        onForceQueuedMessage: handleForceQueuedMessage,
-                        onEditQueuedMessage: handleEditQueuedMessage,
-                        onCancelEditQueuedMessage: (): void =>
-                          handleEditQueuedMessage(null),
-                        onSaveEditQueuedMessage: handleSaveQueuedMessage,
-                        onResetToPoint: handleResetToPoint,
-                      })}
-                  scheduledMessages={scheduledMessages}
-                  onEditScheduledMessage={setEditingScheduledId}
-                  onCancelEditScheduledMessage={(): void =>
-                    setEditingScheduledId(null)
-                  }
-                  onSaveEditScheduledMessage={handleSaveScheduledMessage}
-                  onClearScheduledMessage={handleClearScheduledMessage}
-                  onInterruptScheduledMessage={handleInterruptScheduledMessage}
-                  editingScheduledMessageId={editingScheduledId}
-                  runningScheduledMessageId={runningScheduledId}
-                  scheduledMessageError={scheduledMessageError}
-                  queuedMessageSchedulingEnabled
-                  emptyStateCenter={
-                    showOnboardingCenter ? (
-                      <ChatOnboardingChecklistHost
-                        chatTabId={chatTabId}
-                        projectId={selectedWorktree.projectId}
-                        worktreeId={selectedWorktree.worktreeId}
-                      />
-                    ) : (
-                      hostEmptyStateCenter
-                    )
-                  }
-                  emptyStateSuggestions={
-                    suggestionsEnabled && suggestedPrompts.length > 0 ? (
-                      <SuggestedPromptChips
-                        prompts={suggestedPrompts}
-                        surface={coworkProjectId === null ? 'chat' : 'cowork'}
-                        onSelect={(prompt): void => {
-                          const detail: InsertChatTextDetail = {
-                            text: prompt.text,
-                            targetTabId: chatTabId,
-                          };
-                          document.dispatchEvent(
-                            new CustomEvent(INSERT_CHAT_TEXT_EVENT, { detail }),
-                          );
-                        }}
-                      />
-                    ) : undefined
-                  }
-                />
-              )}
-              renderComposer={() =>
-                readOnly ? null : (
-                  <ChatInput
+            <ComposerWorkDrawerProvider>
+              <DesktopSharedChatPanelBridge
+                chatId={chatTabId}
+                selectedWorktree={selectedWorktree}
+                transcript={transcript}
+                composerTab={composerTab}
+                onSend={(text): void => {
+                  void sendMessage(text, undefined, targetOverride);
+                }}
+                onStop={(): void => {
+                  void cancelSession(targetOverride);
+                }}
+                hostQueuedMessageEditor={queuedMessageEditor}
+                renderTranscript={() => (
+                  <ChatContent
                     allowCursor={allowCursor}
-                    tab={composerTab}
-                    userMessageHistory={userMessageHistory}
-                    interfaceModeControl={interfaceModeControl}
+                    transcript={transcript}
+                    composerTab={composerTab}
                     targetOverride={targetOverride}
                     nativeSessionComposer
-                    composerShortcutsEnabled={isActivePanel}
-                    cancelShortcutOwnerDocument={cancelShortcutOwnerDocument}
-                    cancelShortcutTargetRootRef={cancelShortcutTargetRootRef}
+                    hideComposer
+                    hideBranchActions={readOnly}
+                    searchShortcutActive={isActivePanel}
+                    findSurfaceVisible={isVisiblePanel}
+                    interfaceModeControl={interfaceModeControl}
+                    // A projected published chat carries no queue; the required
+                    // clear handler stays wired, every other turn action is off.
+                    onClearQueuedMessage={handleClearQueuedMessage}
+                    {...(readOnly
+                      ? {}
+                      : {
+                          onForceQueuedMessage: handleForceQueuedMessage,
+                          onEditQueuedMessage: handleEditQueuedMessage,
+                          onResetToPoint: handleResetToPoint,
+                        })}
+                    scheduledMessages={scheduledMessages}
+                    onEditScheduledMessage={setEditingScheduledId}
+                    onClearScheduledMessage={handleClearScheduledMessage}
+                    onInterruptScheduledMessage={
+                      handleInterruptScheduledMessage
+                    }
+                    editingScheduledMessageId={editingScheduledId}
+                    runningScheduledMessageId={runningScheduledId}
+                    scheduledMessageError={scheduledMessageError}
+                    emptyStateCenter={hostEmptyStateCenter}
+                    emptyStateSuggestions={
+                      suggestionsEnabled && suggestedPrompts.length > 0 ? (
+                        <SuggestedPromptChips
+                          prompts={suggestedPrompts}
+                          surface={coworkProjectId === null ? 'chat' : 'cowork'}
+                          onSelect={(prompt): void => {
+                            const detail: InsertChatTextDetail = {
+                              text: prompt.text,
+                              targetTabId: chatTabId,
+                            };
+                            document.dispatchEvent(
+                              new CustomEvent(INSERT_CHAT_TEXT_EVENT, {
+                                detail,
+                              }),
+                            );
+                            markSuggestedPromptInserted(chatTabId);
+                          }}
+                        />
+                      ) : undefined
+                    }
                   />
-                )
-              }
-            />
+                )}
+                renderComposer={() =>
+                  readOnly ? null : (
+                    <ChatInput
+                      allowCursor={allowCursor}
+                      tab={composerTab}
+                      userMessageHistory={userMessageHistory}
+                      interfaceModeControl={interfaceModeControl}
+                      targetOverride={targetOverride}
+                      nativeSessionComposer
+                      composerShortcutsEnabled={isActivePanel}
+                      cancelShortcutOwnerDocument={cancelShortcutOwnerDocument}
+                      cancelShortcutTargetRootRef={cancelShortcutTargetRootRef}
+                    />
+                  )
+                }
+              />
+            </ComposerWorkDrawerProvider>
           </div>
         )}
         <TryItSetupPaneHost
@@ -530,6 +484,7 @@ interface DesktopSharedChatPanelBridgeProps {
   composerTab: ActiveComposerView | null;
   onSend: (text: string) => void;
   onStop: () => void;
+  hostQueuedMessageEditor: ReactElement | null;
   renderTranscript: (controls: ChatTranscriptHostControls) => ReactNode;
   renderComposer: (controls: ChatComposerHostControls) => ReactNode;
 }
@@ -546,6 +501,7 @@ export function DesktopSharedChatPanelBridge({
   composerTab,
   onSend,
   onStop,
+  hostQueuedMessageEditor,
   renderTranscript,
   renderComposer,
 }: DesktopSharedChatPanelBridgeProps): JSX.Element {
@@ -634,6 +590,7 @@ export function DesktopSharedChatPanelBridge({
         onSend(text);
       }}
       onStop={onStop}
+      hostQueuedMessageEditor={hostQueuedMessageEditor}
       renderTranscript={renderTranscript}
       renderComposer={renderComposer}
     />

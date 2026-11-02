@@ -38,6 +38,7 @@ const EMPTY_TOOL_COUNTS: AgentAuditEntry['toolCounts'] = {
   tasks: 0,
   taskStop: 0,
   skills: 0,
+  monitor: 0,
   claude: 0,
   scheduleWakeup: 0,
   askUser: 0,
@@ -275,6 +276,7 @@ describe('cost read model aggregates', () => {
     const summary = buildSummary(LOCATION, [], unattachedFile([codexStep]), {
       updatedAt: codexStep.completedAt ?? codexStep.startedAt,
       retentionDays: 7,
+      revision: 1,
     });
     const run = buildPipelineRunViews([codexStep])[0];
     const step = run?.steps[0];

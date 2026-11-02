@@ -2,7 +2,11 @@
 
 import { useState, type JSX } from 'react';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
-import { DialogModal, RefreshSpinner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DialogModal,
+  RefreshSpinner,
+} from '@canopy/ui-shared/components';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -83,15 +87,16 @@ export function SummarySectionBody({
                 </p>
               </div>
               {refreshEnabled && onRefresh ? (
-                <button
+                <Button
                   type="button"
+                  variant="secondary"
+                  size="compact"
                   onClick={onRefresh}
                   disabled={generating}
-                  className="focus-ring inline-flex items-center gap-2 rounded-lg border bg-base px-3 py-1.5 text-s fg-primary transition hover:bg-secondary disabled:cursor-default disabled:opacity-70"
                 >
                   <RefreshSpinner spinning={generating} tone="accent" />
                   {generating ? 'Refreshing…' : 'Refresh'}
-                </button>
+                </Button>
               ) : null}
             </div>
 

@@ -75,13 +75,11 @@ describe('keyed marketplace prune stays dormant (CAN-4717)', () => {
 
   it('drops a fan-out request ID from the plugins:removeMarketplace payload', async () => {
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
-    jest
-      .mocked(registerIpcHandler)
-      .mockImplementation(
-        (channel, handler: (...args: unknown[]) => unknown) => {
-          handlers.set(channel, handler);
-        },
+    jest.mocked(registerIpcHandler).mockImplementation((channel, handler) => {
+      handlers.set(channel, (...args: unknown[]): unknown =>
+        Reflect.apply(handler, undefined, args),
       );
+    });
     const remove = jest.mocked(pluginService.removeMarketplace);
     remove.mockResolvedValue({ success: false, error: 'not found' });
 

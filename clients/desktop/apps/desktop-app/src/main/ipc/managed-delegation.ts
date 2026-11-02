@@ -7,6 +7,8 @@ import {
   type ManagedDelegationTranscriptPageResult,
   type ManagedDelegationRootsResult,
   type ManagedDelegationWorktreeSummaryResult,
+  type ManagedDelegationExtendLifetimeLimitResult,
+  type ManagedDelegationLifetimeStatus,
   type ManagedDelegationChangesResult,
   type ManagedDelegationTranscriptResult,
   type ManagedDelegationStopAllResult,
@@ -22,6 +24,7 @@ import { validateId } from '../lib/validation';
 import { sendToAllWindows } from '../lib/window-send';
 import { scheduleDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
 import { registerIpcHandler } from './register';
+import { managedDelegationLifetimeStatus } from '../agents/delegation/lifetime-status';
 
 /**
  * Managed delegation is not a migrated `core.*` slice, so its user stop
@@ -141,8 +144,15 @@ function listChatDelegationActivity(): ChatDelegationActivity[] {
 }
 
 let unsubscribeActivity: (() => void) | null = null;
+let unsubscribeLifetime: (() => void) | null = null;
 
 export function registerManagedDelegationHandlers(): void {
+  unsubscribeLifetime?.();
+  unsubscribeLifetime = managedDelegationLifetimeStatus.subscribe(
+    (scope): void => {
+      sendToAllWindows(IPC_CHANNELS.managedDelegationLifetimeChanged, scope);
+    },
+  );
   // Registration replaces handlers; replace the broadcast subscription too.
   unsubscribeActivity?.();
   unsubscribeActivity = subscribeDelegationActivity((entry): void => {
@@ -247,6 +257,44 @@ export function registerManagedDelegationHandlers(): void {
       } catch {
         throw new Error("Couldn't read chats with delegations.");
       }
+    },
+  );
+  registerIpcHandler<[unknown], ManagedDelegationLifetimeStatus>(
+    IPC_CHANNELS.managedDelegationLifetimeStatus,
+    async (_event, raw): Promise<ManagedDelegationLifetimeStatus> => {
+      let scope: z.infer<typeof scopeSchema>;
+      try {
+        scope = scopeSchema.parse(raw);
+        validateId(scope.projectId, 'projectId');
+        validateId(scope.worktreeId, 'worktreeId');
+      } catch {
+        return { kind: 'error', reason: 'invalid_request' };
+      }
+      const { getManagedDelegationLifetimeStatus } =
+        await import('../agents/delegation/service');
+      return getManagedDelegationLifetimeStatus(scope);
+    },
+  );
+  registerIpcHandler<[unknown], ManagedDelegationExtendLifetimeLimitResult>(
+    IPC_CHANNELS.managedDelegationExtendLifetimeLimit,
+    async (
+      _event,
+      raw,
+    ): Promise<ManagedDelegationExtendLifetimeLimitResult> => {
+      let scope: z.infer<typeof scopeSchema>;
+      try {
+        scope = scopeSchema.parse(raw);
+        validateId(scope.projectId, 'projectId');
+        validateId(scope.worktreeId, 'worktreeId');
+      } catch {
+        return { ok: false, reason: 'invalid_request' };
+      }
+      const { extendManagedDelegationLifetimeLimit } =
+        await import('../agents/delegation/service');
+      return extendManagedDelegationLifetimeLimit({
+        projectId: scope.projectId,
+        worktreeId: scope.worktreeId,
+      });
     },
   );
   registerIpcHandler<[unknown], ManagedDelegationWorktreeSummaryResult>(

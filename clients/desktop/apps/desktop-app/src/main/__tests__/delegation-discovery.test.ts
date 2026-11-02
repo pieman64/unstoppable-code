@@ -11,6 +11,27 @@ const mockRouting = jest.fn<Promise<{ reason: string } | null>, []>(() =>
   Promise.resolve(null),
 );
 const mockEnvironment: Record<string, string> = {};
+let mockPlatform = 'darwin';
+jest.mock('@canopy/core-platform/host-platform', () => ({
+  hostOperatingSystem: (): string => mockPlatform,
+}));
+jest.mock('../opencode/feature-flag', () => ({
+  isOpenCodeHarnessEnabled: (): boolean => true,
+}));
+jest.mock('../copilot/feature-flag', () => ({
+  isCopilotHarnessEnabled: (): boolean => true,
+}));
+jest.mock('../lib/preferences-store', () => ({
+  readPreferencesFile: (): Promise<object> =>
+    Promise.resolve({
+      cursorEnabled: true,
+      copilotEnabled: true,
+      opencodeEnabled: true,
+    }),
+}));
+jest.mock('../cursor/connection', () => ({
+  peekCursorAccount: (): object => ({ id: 'fixture-account' }),
+}));
 let mockAgentPluginSelections: { mcpServerRefs?: string[] } | undefined;
 const mockMaterializeAgentPlugins = jest.fn(() =>
   Promise.resolve({ files: {}, toolNames: ['read', 'search'] }),
@@ -21,7 +42,8 @@ const mockResolveAgentModelRuntime = jest.fn(({ model }: { model: string }) => {
   return Promise.resolve({
     selectedModel: model,
     runtimeModel: model === 'agent' ? 'native' : model,
-    executionHarness: 'codex',
+    executionHarness:
+      models.find((entry) => entry.id === model)?.defaultHarness ?? 'codex',
     providerType: 'codex',
     pluginSelections: model === 'agent' ? mockAgentPluginSelections : undefined,
   });
@@ -58,17 +80,27 @@ jest.mock('../agents/agent-model-store', () => ({
     Promise.resolve([{ id: 'agent', name: 'Reviewer' }]),
 }));
 jest.mock('../agents/agent-model-runtime', () => ({
-  resolveAgentModelRuntime: mockResolveAgentModelRuntime,
+  get resolveAgentModelRuntime(): typeof mockResolveAgentModelRuntime {
+    return mockResolveAgentModelRuntime;
+  },
 }));
 jest.mock('../agents/delegation/file-process', () => ({
-  delegationFileBoundaryAvailable: mockBoundary,
+  DELEGATION_FILE_HELPER_MISSING_MESSAGE:
+    'The bundled delegated file helper is missing or invalid. Reinstall the app to restore it.',
+  get delegationFileBoundaryAvailable(): typeof mockBoundary {
+    return mockBoundary;
+  },
   openDelegationFiles: jest.fn(),
 }));
 jest.mock('../agents/delegation/agent-projection', () => ({
-  materializeDelegationAgentPlugins: mockMaterializeAgentPlugins,
+  get materializeDelegationAgentPlugins(): typeof mockMaterializeAgentPlugins {
+    return mockMaterializeAgentPlugins;
+  },
 }));
 jest.mock('../lib/model-policy-state', () => ({
-  isModelBlockedByStoredPolicy: mockBlocked,
+  get isModelBlockedByStoredPolicy(): typeof mockBlocked {
+    return mockBlocked;
+  },
 }));
 jest.mock('../lib/user-environment-runtime', () => ({
   resolveCodexRuntimeEnvironmentProfile: (): {
@@ -78,12 +110,20 @@ jest.mock('../lib/user-environment-runtime', () => ({
   }),
 }));
 jest.mock('../auth/provider-auth-state', () => ({
-  isProviderNativelyAuthenticatedForRouting: mockAuth,
-  peekFreshProviderNativeAuthAvailability: mockPeekAuth,
-  peekProviderAccountIdentity: mockAccountIdentity,
+  get isProviderNativelyAuthenticatedForRouting(): typeof mockAuth {
+    return mockAuth;
+  },
+  get peekFreshProviderNativeAuthAvailability(): typeof mockPeekAuth {
+    return mockPeekAuth;
+  },
+  get peekProviderAccountIdentity(): typeof mockAccountIdentity {
+    return mockAccountIdentity;
+  },
 }));
 jest.mock('../agents/ai-credits-routing', () => ({
-  resolveAiCreditsRoutingAttempt: mockRouting,
+  get resolveAiCreditsRoutingAttempt(): typeof mockRouting {
+    return mockRouting;
+  },
 }));
 jest.mock('@canopy/desktop-shared/node/e2e-mock-env', () => ({
   resolveAnthropicMockEnvOverride: (): undefined => undefined,
@@ -104,6 +144,7 @@ const owner = {
 };
 beforeEach(() => {
   jest.clearAllMocks();
+  mockPlatform = 'darwin';
   models.splice(2);
   mockAuth.mockResolvedValue(true);
   mockPeekAuth.mockReturnValue({ ollama: true, codex: true });
@@ -120,6 +161,55 @@ beforeEach(() => {
     toolNames: ['read', 'search'],
   });
   for (const key of Object.keys(mockEnvironment)) delete mockEnvironment[key];
+});
+it.each(['cursor', 'copilot', 'opencode'])(
+  'reports the unpinned Linux %s managed runtime without launching it',
+  async (harness) => {
+    mockPlatform = 'linux';
+    models.push({
+      ...models[0],
+      id: harness,
+      label: harness,
+      defaultHarness: harness,
+    });
+    const result = await discoverManagedDelegationModels(owner);
+    expect(
+      result.models.find((entry) => entry.modelId === harness),
+    ).toMatchObject({
+      availability: 'unavailable',
+      disabledReason: expect.stringContaining(
+        'no pinned managed runtime for Linux',
+      ) as unknown,
+    });
+    expect(mockAuth).not.toHaveBeenCalled();
+  },
+);
+it('reports an unpinned Linux Cursor runtime even with a cached account', async () => {
+  mockPlatform = 'linux';
+  models.push({
+    ...models[0],
+    id: 'cursor',
+    label: 'Cursor',
+    defaultHarness: 'cursor',
+  });
+  const result = await discoverManagedDelegationModels(owner);
+  expect(
+    result.models.find((entry) => entry.modelId === 'cursor'),
+  ).toMatchObject({
+    availability: 'unavailable',
+    disabledReason: expect.stringContaining(
+      'no pinned managed runtime for Linux',
+    ) as unknown,
+  });
+});
+it('reports a Linux Codex route whose bundled sandbox helper is not staged beside the binary', async () => {
+  mockPlatform = 'linux';
+  const result = await discoverManagedDelegationModels(owner);
+  const native = result.models.find((entry) => entry.modelId === 'native');
+  expect(native?.availability).toBe('unavailable');
+  expect(native?.disabledReason).toContain('sandbox helper');
+  // A static prerequisite check only — never probes native auth.
+  expect(mockAuth).not.toHaveBeenCalled();
 });
 it('surfaces disabled authoritative models with their configured metadata', async () => {
   models.push({
@@ -229,7 +319,13 @@ it('reports safe actionable capability failures without exposing resolver diagno
   expect(JSON.stringify(result)).not.toContain('PRIVATE_TOKEN');
 });
 it('keeps cold-cache provider authentication unknown without probing', async () => {
-  mockPeekAuth.mockReturnValue({ ollama: true });
+  const partialAuth: { ollama: boolean; codex: boolean } = {
+    ollama: true,
+    codex: false,
+  };
+  // This cold-cache fixture deliberately omits Codex auth state.
+  Reflect.deleteProperty(partialAuth, 'codex');
+  mockPeekAuth.mockReturnValue(partialAuth);
 
   const result = await discoverManagedDelegationModels(owner);
 
@@ -242,6 +338,12 @@ it('keeps cold-cache provider authentication unknown without probing', async () 
 });
 it('does not advertise an unvalidated boundary or environment-only Codex route', async () => {
   mockBoundary.mockResolvedValue(false);
+  const unavailable = await discoverManagedDelegationModels(owner);
+  expect(unavailable.models[0]).toMatchObject({
+    availability: 'unavailable',
+    disabledReason: expect.stringContaining('delegated file helper') as unknown,
+  });
+  expect(unavailable.models[0].disabledReason).toMatch(/Reinstall|restage/);
   expect(
     (await discoverManagedDelegationModels(owner)).models.every(
       (model) => model.availability === 'unavailable',

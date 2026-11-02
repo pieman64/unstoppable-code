@@ -5,9 +5,17 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ApprovalRequestEvent } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { ToolApprovalCard } from '../ToolApprovalCard';
+import {
+  ToolApprovalCard,
+  type ToolApprovalCardHandle,
+} from '../ToolApprovalCard';
 
 const respondToApprovalMock = jest.fn();
+let mockIsMac = true;
+
+jest.mock('@/lib/keyboardShortcuts', () => ({
+  isMacPlatform: (): boolean => mockIsMac,
+}));
 
 jest.mock('@/stores/chatStore', () => ({
   useChatStore: (selector: (state: unknown) => unknown): unknown =>
@@ -174,7 +182,7 @@ describe('ToolApprovalCard', () => {
     });
   });
 
-  it('asks the user to choose files or decline, with the agent purpose quoted and no rule options', () => {
+  it('asks the user to choose files or decline, with the agent purpose quoted and no rule options', async () => {
     const pending = makePending({
       title: 'Choose a file for upload.example',
       details: {
@@ -205,8 +213,10 @@ describe('ToolApprovalCard', () => {
       '[data-testid="tool-approval-choose-files"]',
     );
     expect(choose?.textContent).toBe('Choose file…');
-    act(() => {
+    // Settle the first response before the second: one is in flight at once.
+    await act(async () => {
       click(choose);
+      await Promise.resolve();
     });
     expect(respondToApprovalMock).toHaveBeenLastCalledWith('req-1', {
       behavior: 'allow',
@@ -441,9 +451,7 @@ describe('ToolApprovalCard', () => {
     });
 
     act(() => {
-      click(
-        container.querySelector('[aria-label="More allow options"]') as Element,
-      );
+      click(container.querySelector('[aria-label="More allow options"]'));
     });
 
     const menu = document.querySelector(
@@ -496,9 +504,7 @@ describe('ToolApprovalCard', () => {
     });
 
     act(() => {
-      click(
-        container.querySelector('[aria-label="More deny options"]') as Element,
-      );
+      click(container.querySelector('[aria-label="More deny options"]'));
     });
 
     const menu = document.querySelector(
@@ -510,7 +516,7 @@ describe('ToolApprovalCard', () => {
     expect(stopItem).toBeDefined();
 
     act(() => {
-      click(stopItem as Element);
+      click(stopItem);
     });
 
     expect(respondToApprovalMock).toHaveBeenCalledWith('req-1', {
@@ -779,6 +785,251 @@ describe('ToolApprovalCard', () => {
     });
   });
 
+  describe('file-write requests (CAN-5165)', () => {
+    const ABSOLUTE_PATH =
+      '/private/var/folders/xy/abcdefghijklmnop/T/canopy-worktrees/lizard/src/components/very/deeply/nested/Widget.tsx';
+    const RELATIVE_PATH = 'src/components/very/deeply/nested/Widget.tsx';
+
+    function fileWritePending(
+      details: Extract<ApprovalRequestEvent['details'], { kind: 'file-write' }>,
+      overrides?: Partial<ApprovalRequestEvent>,
+    ): ApprovalRequestEvent {
+      return makePending({
+        title: 'Edit file',
+        details,
+        suggestedTarget: { kind: 'file-write', path: ABSOLUTE_PATH },
+        ...overrides,
+      });
+    }
+
+    function renderCard(pending: ApprovalRequestEvent): void {
+      act(() => {
+        root.render(createElement(ToolApprovalCard, { pending }));
+      });
+    }
+
+    function query(testId: string): HTMLElement | null {
+      return document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+    }
+
+    it('shows the relative target on one line and the proposed edit, without the absolute path', () => {
+      renderCard(
+        fileWritePending({
+          kind: 'file-write',
+          path: ABSOLUTE_PATH,
+          displayPath: RELATIVE_PATH,
+          change: {
+            kind: 'edit',
+            oldText: 'const a = 1;',
+            newText: 'const a = 2;',
+          },
+        }),
+      );
+
+      const target = query('tool-approval-file-target');
+      expect(target?.textContent).toBe(RELATIVE_PATH);
+      const label = query('tool-approval-file-target-label');
+      expect(label?.classList.contains('truncate')).toBe(true);
+      expect(label?.classList.contains('whitespace-nowrap')).toBe(true);
+      expect(label?.className).not.toMatch(/break-(all|words)/);
+      expect(label?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).not.toBeNull();
+
+      const card = query('tool-approval-card');
+      expect(card?.textContent).not.toContain(ABSOLUTE_PATH);
+      expect(card?.textContent).toContain('Edit file');
+      const preview = query('approval-file-change-preview');
+      expect(preview?.textContent).toContain('const a = 1;');
+      expect(preview?.textContent).toContain('const a = 2;');
+      expect(preview?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(
+        true,
+      );
+      // The previous path-only preview and its view-full trigger are gone.
+      expect(query('tool-approval-content-preview')).toBeNull();
+    });
+
+    it('discloses the full path from a keyboard-reachable control', () => {
+      renderCard(
+        fileWritePending({
+          kind: 'file-write',
+          path: ABSOLUTE_PATH,
+          displayPath: RELATIVE_PATH,
+          change: { kind: 'write', content: 'x' },
+        }),
+      );
+      const target = query('tool-approval-file-target');
+      expect(target?.tagName).toBe('BUTTON');
+      expect(target?.getAttribute('aria-expanded')).toBe('false');
+      expect(query('tool-approval-file-target-full')).toBeNull();
+
+      act(() => {
+        target?.focus();
+        click(target);
+      });
+
+      expect(target?.getAttribute('aria-expanded')).toBe('true');
+      const full = query('tool-approval-file-target-full');
+      expect(full?.textContent).toBe(ABSOLUTE_PATH);
+      expect(target?.getAttribute('aria-controls')).toBe(full?.id);
+      expect(full?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).not.toBeNull();
+    });
+
+    it('shows a legacy path-only request on one line with the full path disclosure', () => {
+      renderCard(fileWritePending({ kind: 'file-write', path: ABSOLUTE_PATH }));
+      expect(query('tool-approval-file-target')?.textContent).toBe(
+        ABSOLUTE_PATH,
+      );
+      expect(query('approval-file-change-preview')).toBeNull();
+      expect(query('tool-approval-content-view-full')).toBeNull();
+      act(() => {
+        click(query('tool-approval-file-target'));
+      });
+      expect(query('tool-approval-file-target-full')?.textContent).toBe(
+        ABSOLUTE_PATH,
+      );
+    });
+
+    it('renders no target block when the request has no path', () => {
+      renderCard(
+        fileWritePending({ kind: 'file-write', reason: 'Needs write access' }),
+      );
+      expect(query('tool-approval-file-target')).toBeNull();
+      expect(query('tool-approval-card')?.textContent).toContain(
+        'Needs write access',
+      );
+    });
+
+    it('opens the available change in the modal with a persistent warning and no further expansion', () => {
+      const content = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join(
+        '\n',
+      );
+      renderCard(
+        fileWritePending({
+          kind: 'file-write',
+          path: ABSOLUTE_PATH,
+          displayPath: RELATIVE_PATH,
+          change: { kind: 'write', content, truncated: true },
+        }),
+      );
+      expect(query('approval-file-change-source-truncated')).not.toBeNull();
+      const expand = query('approval-file-change-expand');
+      expect(expand?.textContent).toBe('View available change');
+      expect(query('approval-file-change-preview')?.textContent).not.toContain(
+        'row 30',
+      );
+
+      act(() => {
+        expand?.focus();
+        click(expand);
+      });
+
+      const modal = query('tool-approval-content-modal');
+      expect(modal?.textContent).toContain('Available change');
+      const body = query('tool-approval-content-modal-body');
+      expect(body?.textContent).toContain('row 30');
+      expect(
+        body?.querySelector(
+          '[data-testid="approval-file-change-source-truncated"]',
+        ),
+      ).not.toBeNull();
+      expect(
+        body?.querySelector('[data-testid="approval-file-change-expand"]'),
+      ).toBeNull();
+      expect(body?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).not.toBeNull();
+      const subtitle = query('tool-approval-content-modal-subtitle');
+      expect(subtitle?.textContent).toBe(ABSOLUTE_PATH);
+      expect(subtitle?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(
+        true,
+      );
+      expect(modal?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);
+
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+        );
+      });
+      expect(query('tool-approval-content-modal')).toBeNull();
+      expect(document.activeElement).toBe(expand);
+    });
+
+    it('names the full change when only the compact display was shortened', () => {
+      const content = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join(
+        '\n',
+      );
+      renderCard(
+        fileWritePending({
+          kind: 'file-write',
+          path: ABSOLUTE_PATH,
+          change: { kind: 'write', content },
+        }),
+      );
+      expect(query('approval-file-change-source-truncated')).toBeNull();
+      const expand = query('approval-file-change-expand');
+      expect(expand?.textContent).toBe('View full change');
+      act(() => {
+        click(expand);
+      });
+      expect(query('tool-approval-content-modal')?.textContent).toContain(
+        'Full change',
+      );
+    });
+
+    it('escapes hostile-looking code and paths inside the modal portal', () => {
+      const hostile = '<img src=x onerror="alert(1)">';
+      renderCard(
+        fileWritePending({
+          kind: 'file-write',
+          path: `/repo/${hostile}`,
+          change: { kind: 'write', content: `${hostile}\n${'x'.repeat(201)}` },
+        }),
+      );
+      act(() => click(query('approval-file-change-expand')));
+      const modal = query('tool-approval-content-modal');
+      expect(modal?.querySelector('img')).toBeNull();
+      expect(query('tool-approval-content-modal-body')?.textContent).toContain(
+        hostile,
+      );
+      expect(
+        query('tool-approval-content-modal-subtitle')?.textContent,
+      ).toContain(hostile);
+    });
+
+    it('closes the modal when the card switches to another request', () => {
+      const content = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join(
+        '\n',
+      );
+      renderCard(
+        fileWritePending({
+          kind: 'file-write',
+          path: ABSOLUTE_PATH,
+          change: { kind: 'write', content },
+        }),
+      );
+      act(() => {
+        click(query('approval-file-change-expand'));
+      });
+      expect(query('tool-approval-content-modal')).not.toBeNull();
+
+      renderCard(
+        fileWritePending(
+          {
+            kind: 'file-write',
+            path: ABSOLUTE_PATH,
+            change: { kind: 'write', content: 'other' },
+          },
+          { requestId: 'req-2' },
+        ),
+      );
+      expect(query('tool-approval-content-modal')).toBeNull();
+      act(() => {
+        click(query('tool-approval-allow'));
+      });
+      expect(respondToApprovalMock).toHaveBeenCalledWith('req-2', {
+        behavior: 'allow',
+        scope: 'once',
+      });
+    });
+  });
+
   it('opening the deny menu closes the allow menu', () => {
     act(() => {
       root.render(createElement(ToolApprovalCard, { pending: makePending() }));
@@ -796,5 +1047,266 @@ describe('ToolApprovalCard', () => {
     expect(
       document.querySelector('[data-testid="tool-approval-deny-menu"]'),
     ).not.toBeNull();
+  });
+  describe('keyboard focus and reason field (CAN-4997)', () => {
+    function reasonToggle(): HTMLButtonElement | null {
+      return container.querySelector(
+        '[data-testid="tool-approval-reason-toggle"]',
+      );
+    }
+
+    function reasonField(): HTMLTextAreaElement | null {
+      return container.querySelector('[data-testid="tool-approval-reason"]');
+    }
+
+    function typeReason(text: string): void {
+      act(() => {
+        const input = reasonField() as HTMLTextAreaElement;
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype,
+          'value',
+        )?.set;
+        setter?.call(input, text);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+
+    function pressInReason(init: KeyboardEventInit): void {
+      act(() => {
+        reasonField()?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            cancelable: true,
+            ...init,
+          }),
+        );
+      });
+    }
+
+    function openReason(pending = makePending()): void {
+      act(() => {
+        root.render(createElement(ToolApprovalCard, { pending }));
+      });
+      act(() => {
+        reasonToggle()?.focus();
+        click(reasonToggle());
+      });
+    }
+
+    afterEach(() => {
+      mockIsMac = true;
+    });
+
+    it('names the card group by its title and description', () => {
+      act(() => {
+        root.render(
+          createElement(ToolApprovalCard, {
+            pending: makePending({ description: 'Cleans the build folder' }),
+          }),
+        );
+      });
+      const card = container.querySelector(
+        '[data-testid="tool-approval-card"]',
+      );
+      expect(card?.getAttribute('role')).toBe('group');
+      const titleId = card?.getAttribute('aria-labelledby') ?? '';
+      const descriptionId = card?.getAttribute('aria-describedby') ?? '';
+      expect(document.getElementById(titleId)?.textContent).toBe('Run command');
+      expect(document.getElementById(descriptionId)?.textContent).toBe(
+        'Cleans the build folder',
+      );
+
+      act(() => {
+        root.render(
+          createElement(ToolApprovalCard, { pending: makePending() }),
+        );
+      });
+      expect(card?.hasAttribute('aria-describedby')).toBe(false);
+    });
+
+    it('never takes focus on its own without a host handle', () => {
+      act(() => {
+        root.render(
+          createElement(ToolApprovalCard, { pending: makePending() }),
+        );
+      });
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it('focuses Allow once, or Choose file… for a browser file request', () => {
+      const handle: { current: ToolApprovalCardHandle | null } = {
+        current: null,
+      };
+      act(() => {
+        root.render(
+          createElement(ToolApprovalCard, {
+            pending: makePending(),
+            focusHandleRef: handle,
+          }),
+        );
+      });
+      act(() => handle.current?.focusPrimaryAction());
+      expect(
+        (document.activeElement as HTMLElement | null)?.dataset.testid,
+      ).toBe('tool-approval-allow');
+
+      act(() => {
+        root.render(
+          createElement(ToolApprovalCard, {
+            pending: makePending({
+              requestId: 'req-2',
+              details: {
+                kind: 'browser-file-request',
+                origin: 'https://upload.example',
+                multiple: false,
+              },
+              suggestedTarget: undefined,
+            }),
+            focusHandleRef: handle,
+          }),
+        );
+      });
+      act(() => handle.current?.focusPrimaryAction());
+      expect(
+        (document.activeElement as HTMLElement | null)?.dataset.testid,
+      ).toBe('tool-approval-choose-files');
+    });
+
+    it('falls back to the labelled card when its primary action is disabled', () => {
+      const handle: { current: ToolApprovalCardHandle | null } = {
+        current: null,
+      };
+      act(() =>
+        root.render(
+          createElement(ToolApprovalCard, {
+            pending: makePending(),
+            focusHandleRef: handle,
+          }),
+        ),
+      );
+      const primary = container.querySelector<HTMLButtonElement>(
+        '[data-testid="tool-approval-allow"]',
+      );
+      if (!primary) throw new Error('Missing primary action');
+      primary.disabled = true;
+      act(() => handle.current?.focusPrimaryAction());
+      expect(document.activeElement).toBe(
+        container.querySelector('[data-testid="tool-approval-card"]'),
+      );
+      primary.disabled = false;
+    });
+
+    it('opens a labelled reason field with focus and returns focus to the toggle on close', () => {
+      openReason();
+      const toggle = reasonToggle();
+      const field = reasonField();
+      expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+      expect(toggle?.getAttribute('aria-controls')).toBe(field?.id);
+      expect(document.activeElement).toBe(field);
+      expect(
+        container.querySelector(`label[for="${field?.id ?? ''}"]`)?.textContent,
+      ).toBe('Reason for denying');
+
+      act(() => {
+        click(toggle);
+      });
+      expect(reasonField()).toBeNull();
+      expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+      expect(toggle?.hasAttribute('aria-controls')).toBe(false);
+      expect(document.activeElement).toBe(toggle);
+    });
+
+    it('does not carry a reason over to another request', () => {
+      openReason();
+      typeReason('Not now');
+      act(() => {
+        root.render(
+          createElement(ToolApprovalCard, {
+            pending: makePending({ requestId: 'req-2' }),
+          }),
+        );
+      });
+      expect(reasonField()).toBeNull();
+      act(() => {
+        click(reasonToggle());
+      });
+      expect(reasonField()?.value).toBe('');
+    });
+
+    it('Cmd+Enter on macOS denies once with the reason and stops at the field', () => {
+      // Document-level shortcuts (the composer's send and Escape handling)
+      // never see the handled chord.
+      const documentKeydown = jest.fn();
+      document.addEventListener('keydown', documentKeydown);
+      openReason();
+      typeReason('Not safe to run right now');
+      pressInReason({ metaKey: true });
+      expect(respondToApprovalMock).toHaveBeenCalledTimes(1);
+      expect(respondToApprovalMock).toHaveBeenCalledWith('req-1', {
+        behavior: 'deny',
+        scope: 'once',
+        message: 'Not safe to run right now',
+      });
+      expect(documentKeydown).not.toHaveBeenCalled();
+      document.removeEventListener('keydown', documentKeydown);
+    });
+
+    it('Ctrl+Enter submits elsewhere, and the other platform modifier does not', () => {
+      mockIsMac = false;
+      openReason();
+      typeReason('No');
+      pressInReason({ metaKey: true });
+      expect(respondToApprovalMock).not.toHaveBeenCalled();
+      pressInReason({ ctrlKey: true });
+      expect(respondToApprovalMock).toHaveBeenCalledTimes(1);
+      expect(respondToApprovalMock).toHaveBeenCalledWith('req-1', {
+        behavior: 'deny',
+        scope: 'once',
+        message: 'No',
+      });
+    });
+
+    it('plain Enter, IME Enter, key repeat, and extra modifiers never submit', () => {
+      openReason();
+      typeReason('Not now');
+      pressInReason({});
+      pressInReason({ metaKey: true, isComposing: true });
+      pressInReason({ metaKey: true, repeat: true });
+      pressInReason({ metaKey: true, shiftKey: true });
+      pressInReason({ metaKey: true, altKey: true });
+      pressInReason({ metaKey: true, ctrlKey: true });
+      expect(respondToApprovalMock).not.toHaveBeenCalled();
+    });
+
+    it('sends one response while one is in flight, and allows a retry after a failure', async () => {
+      // The chat store resolves without removing the request when main
+      // rejects the response; the card stays for a retry.
+      let settleFirst: () => void = () => undefined;
+      respondToApprovalMock.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            settleFirst = resolve;
+          }),
+      );
+      openReason();
+      typeReason('Not now');
+      pressInReason({ metaKey: true });
+      pressInReason({ metaKey: true });
+      act(() => {
+        click(container.querySelector('[data-testid="tool-approval-deny"]'));
+      });
+      expect(respondToApprovalMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        settleFirst();
+        await Promise.resolve();
+      });
+      expect(reasonField()).not.toBeNull();
+      expect(document.activeElement).toBe(reasonField());
+      pressInReason({ metaKey: true });
+      expect(respondToApprovalMock).toHaveBeenCalledTimes(2);
+    });
   });
 });

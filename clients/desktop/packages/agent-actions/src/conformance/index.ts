@@ -21,3 +21,5 @@ export {
   runAgentActionLimitsConformance,
   type MakeAgentConformanceLimits,
 } from './limits';
+
+export { createConformanceTranscriptStore } from './transcript-store';

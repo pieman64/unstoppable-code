@@ -53,7 +53,7 @@ export function PipelinePluginCollectionsSection({
         Plugin collections
       </label>
       <p className="text-xs fg-secondary">
-        Pipeline defaults are shown with a Pipeline badge. Local collections and
+        Workflow defaults are shown with a Workflow badge. Local collections and
         other extras are saved only on this machine.
       </p>
 

@@ -16,9 +16,16 @@ import {
   resolveWorkflowEditPlan,
   type UnsavedChangesSaveResult,
 } from '@canopy/ui-app/workflows';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  NoticeButton,
+  StartChatSummary,
+} from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import type { AutomationDraftSeed } from '@/lib/workflows/edit-target';
+import { startChatSummaryView } from '@/lib/workflows/start-chat-summary';
+import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -44,6 +51,17 @@ import { useWorkflowEditGuard } from './useWorkflowEditGuard';
 import { WorkflowEditNotFound } from './WorkflowEditNotFound';
 
 const NO_RUNS_YET = 'No runs yet';
+const OWNED_PIPELINE_EDITED =
+  'Its workflow was changed by hand, so you edit it there.';
+
+/** Opens an automation's own pipeline, coming back to the automation. */
+function openOwnedPipeline(pipelineId: string, activityId: string): void {
+  useNavigationStore.getState().openWorkflowEdit({
+    kind: 'pipeline',
+    pipelineId,
+    returnTo: { kind: 'automation', activityId },
+  });
+}
 const DEFINITION_BLOCKS_SAVE = 'Fix the issues in Definition, then save.';
 const LATEST_EDITS_UNSAVED =
   "Your latest edits aren't saved yet. Save again to keep them.";
@@ -448,7 +466,55 @@ function AutomationEditor({
       );
     }
     const fieldGroup = id === 'definition' ? 'definition' : 'trigger';
-    return (
+    // CAN-4551: a converted chat automation's Definition opens with the
+    // workflow it runs as; a hand-edited workflow is changed there instead.
+    const owned = id === 'definition' ? activity?.ownedPipeline : undefined;
+    if (owned && activity && !owned.chatEditable) {
+      return (
+        <Notice
+          intent="neutral"
+          data-testid="start-chat-summary-hand-edited"
+          actions={
+            <NoticeButton
+              data-testid="start-chat-summary-open-workflow"
+              onClick={(): void =>
+                openOwnedPipeline(owned.pipelineId, activity.id)
+              }
+            >
+              Open workflow
+            </NoticeButton>
+          }
+        >
+          {OWNED_PIPELINE_EDITED}
+        </Notice>
+      );
+    }
+    const openWorkflow =
+      owned && activity ? (
+        <Button
+          variant="secondary"
+          size="compact"
+          data-testid="start-chat-summary-open-workflow"
+          onClick={(): void => openOwnedPipeline(owned.pipelineId, activity.id)}
+        >
+          Open workflow
+        </Button>
+      ) : undefined;
+    const built = owned ? buildAutomationMutationRequest(state) : undefined;
+    const summary =
+      owned && activity
+        ? startChatSummaryView(
+            state.name,
+            built?.ok && built.request.action
+              ? built.request.action
+              : activity.action,
+            (projectId) => {
+              const project = projects.find((entry) => entry.id === projectId);
+              return project ? getWorkspaceDisplayName(project) : undefined;
+            },
+          )
+        : null;
+    const body = (
       <ActivityFormBody
         state={state}
         saving={saving}
@@ -470,6 +536,18 @@ function AutomationEditor({
             }
           : { handleRef: triggerRef })}
       />
+    );
+    return summary ? (
+      <div className="flex flex-col gap-6">
+        <StartChatSummary
+          destination={summary.destination}
+          steps={summary.steps}
+          actions={openWorkflow}
+        />
+        {body}
+      </div>
+    ) : (
+      body
     );
   };
 

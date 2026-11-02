@@ -1,3 +1,7 @@
+import {
+  resetChatStorageActivityForTests,
+  takeChatStorageActivity,
+} from '../chat-storage-activity';
 import { serialize } from 'node:v8';
 import {
   WORK_COUNTERS_QUERY_KEY,
@@ -18,6 +22,7 @@ import {
   recordChatStorageIndexSerializations,
   recordChatStorageMutations,
   recordChatStoragePayloadPass,
+  recordDelegationSnapshot,
   recordIpcInvoke,
   recordIpcSend,
   recordProviderEventApplied,
@@ -91,6 +96,55 @@ describe('work counters', () => {
     expect(estimateIpcPayloadBytes(args)).toBe(bytes);
   });
 
+  it('counts delegation snapshot stages and estimates bytes only when enabled in E2E', () => {
+    const transcript = { detail: '🌲 delegated snapshot' };
+    const bytes = Buffer.byteLength(JSON.stringify(transcript), 'utf8');
+
+    recordDelegationSnapshot('offered', transcript);
+    recordDelegationSnapshot('published', transcript);
+    recordDelegationSnapshot('admitted', transcript);
+    expect(snapshotWorkCounters().provider).toEqual({
+      'delegationSnapshots.offered': 1,
+      'delegationSnapshots.published': 1,
+      'delegationSnapshots.admitted': 1,
+    });
+
+    // Production ignores byte requests; E2E defaults off after a reset.
+    resetWorkCounters({ estimateDelegationBytes: true });
+    recordDelegationSnapshot('offered', transcript);
+    setE2eBuild(true);
+    resetWorkCounters();
+    recordDelegationSnapshot('published', transcript);
+    expect(snapshotWorkCounters().provider).toEqual({
+      'delegationSnapshots.published': 1,
+    });
+
+    resetWorkCounters({ estimateDelegationBytes: true });
+    recordDelegationSnapshot('offered', transcript);
+    recordDelegationSnapshot('published', transcript);
+    recordDelegationSnapshot('admitted', transcript);
+    expect(snapshotWorkCounters().provider).toEqual({
+      'delegationSnapshots.offered': 1,
+      'delegationSnapshots.offered.bytes': bytes,
+      'delegationSnapshots.published': 1,
+      'delegationSnapshots.published.bytes': bytes,
+      'delegationSnapshots.admitted': 1,
+      'delegationSnapshots.admitted.bytes': bytes,
+    });
+  });
+
+  it('keeps delegation counts when snapshot JSON serialization fails', () => {
+    setE2eBuild(true);
+    resetWorkCounters({ estimateDelegationBytes: true });
+    const transcript: Record<string, unknown> = {};
+    transcript.self = transcript;
+
+    expect(() => recordDelegationSnapshot('offered', transcript)).not.toThrow();
+    expect(snapshotWorkCounters().provider).toEqual({
+      'delegationSnapshots.offered': 1,
+    });
+  });
+
   it('never lets an unserializable payload fail the send it describes', () => {
     setE2eBuild(true);
     resetWorkCounters({ estimateIpcBytes: true });
@@ -101,6 +155,14 @@ describe('work counters', () => {
     expect(snapshotWorkCounters().ipc).toEqual({
       'send.bad.main.messages': 1,
     });
+  });
+
+  it('forwards only transcript classes as transcript scope bytes', () => {
+    resetChatStorageActivityForTests();
+    recordChatStorageFileWrite(`${SCOPE}/transcripts/c.jsonl`, 4, false);
+    recordChatStorageFileWrite(`${SCOPE}/transcripts/c.append.tmp`, 6, true);
+    recordChatStorageFileWrite(`${SCOPE}/transcripts/c.active.json`, 100, true);
+    expect(takeChatStorageActivity()?.total.transcriptBytesWritten).toBe(10);
   });
 
   it('classifies chat storage files by the role they play in a v2 scope', () => {
@@ -323,15 +385,30 @@ describe('production Files projection', () => {
     resetWorkCounters();
     recordIpcInvoke('file-tree:roots');
     recordIpcInvoke('file-tree:directory');
+    recordIpcInvoke('file:read-content');
+    recordIpcInvoke('file-index:get');
+    recordIpcInvoke('file-reference:resolve');
+    recordIpcInvoke('file-reference:resolve');
     recordIpcInvoke('/private/credential');
     recordFilesRouteSelected('roots', 'daemon');
+    recordFilesRouteSelected('file', 'direct');
+    recordFilesRouteSelected('search', 'direct');
+    recordFilesRouteSelected('search', 'direct');
+    recordFilesRouteSelected('link', 'direct');
     recordFilesRouteOutcome('roots', 'daemon.served');
     recordFilesRouteOutcome('directory', 'daemon.failed.permission_denied');
     const evidence = snapshotFilesWorkCounters();
     expect(evidence).toMatchObject({
-      invocations: { roots: 1, directory: 1 },
+      invocations: { roots: 1, directory: 1, file: 1, search: 1, link: 2 },
       overflow: 0,
     });
+    expect(evidence.route['files.file.direct']).toBe(1);
+    expect(evidence.route['files.link.direct']).toBe(1);
+    expect(evidence.route['files.link.daemon']).toBe(0);
+    expect(evidence.route['files.file.daemon']).toBe(0);
+    // One index call searched two roots.
+    expect(evidence.route['files.search.direct']).toBe(2);
+    expect(evidence.route['files.search.daemon']).toBe(0);
     expect(evidence.route['files.roots.daemon']).toBe(1);
     expect(evidence.route['files.roots.daemon.served']).toBe(1);
     expect(

@@ -40,6 +40,16 @@ function render(
   return renderToStaticMarkup(out);
 }
 
+function renderVisible(
+  props: Partial<ChatInterfaceModeToggleProps> = {},
+): string {
+  const markup = render(props);
+  if (markup === null) {
+    throw new Error('Expected the chat interface mode toggle to render');
+  }
+  return markup;
+}
+
 /**
  * Mount the toggle, hover one option, and return the rich tooltip text. Hover
  * help comes from the shared `Tooltip` (never a native `title`, CAN-2799), so
@@ -101,7 +111,7 @@ describe('ChatInterfaceModeToggle', () => {
   });
 
   it('renders all three options for Claude chats', () => {
-    const html = render({ mode: 'canopy' });
+    const html = renderVisible({ mode: 'canopy' });
     expect(html).toContain('chat-interface-mode-toggle-canopy');
     expect(html).toContain('chat-interface-mode-toggle-auto');
     expect(html).toContain('chat-interface-mode-toggle-claude-code');
@@ -130,7 +140,7 @@ describe('ChatInterfaceModeToggle', () => {
   });
 
   it('disables the toggle while Canopy-native turn is busy and shows the documented tooltip', () => {
-    const html = render({
+    const html = renderVisible({
       mode: 'canopy',
       canopyNativeBusy: true,
     });
@@ -156,7 +166,7 @@ describe('ChatInterfaceModeToggle', () => {
   });
 
   it('disables "Canopy" while Claude Code terminal turn is running and shows the documented tooltip', () => {
-    const html = render({
+    const html = renderVisible({
       mode: 'claude-code',
       claudeTerminalTurnState: 'running',
     });
@@ -173,7 +183,7 @@ describe('ChatInterfaceModeToggle', () => {
 
   it('disables "Canopy" while Claude Code terminal is starting or cleaning up', () => {
     for (const turnState of ['starting', 'cleaning_up'] as const) {
-      const html = render({
+      const html = renderVisible({
         mode: 'claude-code',
         claudeTerminalTurnState: turnState,
       });
@@ -184,7 +194,7 @@ describe('ChatInterfaceModeToggle', () => {
   });
 
   it('lets the caller lock "Canopy" for an error state that still owns a terminal', () => {
-    const html = render({
+    const html = renderVisible({
       mode: 'claude-code',
       claudeTerminalTurnState: 'error',
       claudeTerminalBusy: true,
@@ -204,7 +214,7 @@ describe('ChatInterfaceModeToggle', () => {
   });
 
   it('aria-pressed mirrors the active mode', () => {
-    const canopyActive = render({ mode: 'canopy' });
+    const canopyActive = renderVisible({ mode: 'canopy' });
     const canopyButton = extractButton(
       canopyActive ?? '',
       'chat-interface-mode-toggle-canopy',
@@ -212,7 +222,7 @@ describe('ChatInterfaceModeToggle', () => {
     expect(canopyButton).toContain('aria-pressed="true"');
     expect(canopyButton).not.toContain('transition-');
     expect(canopyActive).toContain('transform:translateX(0px)');
-    const claudeActive = render({ mode: 'claude-code' });
+    const claudeActive = renderVisible({ mode: 'claude-code' });
     const claudeButton = extractButton(
       claudeActive ?? '',
       'chat-interface-mode-toggle-claude-code',
@@ -220,9 +230,9 @@ describe('ChatInterfaceModeToggle', () => {
     expect(claudeButton).toContain('aria-pressed="true"');
     expect(claudeButton).not.toContain('transition-');
     expect(claudeActive).toContain('transform:translateX(56px)');
-    const autoActive = render({ mode: 'auto' });
+    const autoActive = renderVisible({ mode: 'auto' });
     const autoButton = extractButton(
-      autoActive ?? '',
+      autoActive,
       'chat-interface-mode-toggle-auto',
     );
     expect(autoButton).toContain('aria-pressed="true"');
@@ -231,7 +241,7 @@ describe('ChatInterfaceModeToggle', () => {
   });
 
   it('keeps Auto and Claude Code switchable while the terminal turn runs', () => {
-    const html = render({
+    const html = renderVisible({
       mode: 'auto',
       claudeTerminalTurnState: 'running',
     });

@@ -228,10 +228,9 @@ export function useShareRunAction(
         if (isCoworkChatTarget(projectId)) {
           void useStandaloneChatStore.getState().refreshWorkEntries();
         }
-        // The share dialog raises the success toast (with the link) itself
-        // once this completion hook returns.
+        // The share dialog stays open on its success notice (with the link)
+        // once this completion hook returns; Done closes it through `close`.
       }
-      setTarget(null);
     },
     [projectId, unshareRun, worktreeId, target],
   );

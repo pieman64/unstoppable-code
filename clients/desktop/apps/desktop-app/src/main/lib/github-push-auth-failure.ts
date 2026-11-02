@@ -6,7 +6,8 @@ import { isGitHubBrokerError } from './github-broker/errors';
  * name ends in `Error` so the renderer can recognise it across IPC.
  */
 export class GitHubAuthFailureError extends Error {
-  readonly cause: Error;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause: Error;
   constructor(error: unknown) {
     const cause = error instanceof Error ? error : new Error(String(error));
     super(cause.message);

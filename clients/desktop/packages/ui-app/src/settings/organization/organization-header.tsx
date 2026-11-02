@@ -1,11 +1,6 @@
 'use client';
 
 import { useMemo, type JSX, type ReactNode } from 'react';
-import { Pencil } from '@canopy/ui-shared/icons/AppIcons';
-import {
-  InlineTextSkeleton,
-  SettingsControlSelect,
-} from '@canopy/ui-shared/components';
 import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import {
   selectSettingsBootstrap,
@@ -16,30 +11,29 @@ import {
   type OrganizationDetail,
   type OrganizationRole,
   type OrganizationSettingsRoute,
-  type OrganizationSummary,
   type SettingsOrganizationMembership,
   type SettingsRoute,
 } from '@canopy/protocol/settings';
-import { canEditOrg } from '@canopy/protocol/settings/organization-permissions';
 import { OrganizationInviteButton } from '../../sharing/OrganizationInviteButton';
 import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 import { SettingsPageNotice } from '../layout/settings-page-notice';
 import { settingsPageSkeleton } from '../pages/loading-skeletons';
 import {
+  organizationSettingsSubtabItem,
+  resolveOrganizationSettingsSubtab,
   teamNavItem,
+  type OrganizationSettingsSubtabItem,
+  type TeamNavItem,
   type TeamTab,
 } from '../navigation/organization-nav-items';
-import { SettingsLink } from '../host';
-import { OrganizationLogo } from './OrganizationLogo';
-import { OrganizationLogoEditor } from './OrganizationLogoEditor';
-import { TeamRoleBadge } from './team-role-badge';
+import { organizationSettingsSubtabsFromBootstrap } from '../navigation/settings-nav-bootstrap';
 
 /**
- * The organization header every organization tab draws above its page
- * header: the switcher, then the organization's identity (or the Personal
- * header). `TeamPage` renders it live; {@link OrganizationSettingsPlaceholder}
- * renders the same markup read-only while a tab loads, so the header keeps
- * its place when the viewer moves between tabs.
+ * What an organization tab draws above its page header. The settings rail's
+ * scope picker names the organization, so only the Personal organization
+ * draws a header of its own. `TeamPage` renders it live;
+ * {@link OrganizationSettingsPlaceholder} renders the same markup read-only
+ * while a tab loads, so nothing moves when the page replaces it.
  */
 
 /** What the header shows for an organization, from the best source known. */
@@ -49,16 +43,12 @@ export interface OrganizationHeaderModel {
   readonly logoUrl: string | null;
   readonly viewerRole: OrganizationRole;
   readonly isPersonal: boolean;
-  /** `null` until the organization's detail is known. */
-  readonly memberCount: number | null;
-  /** `null` until the organization's detail is known. */
-  readonly teamCount: number | null;
 }
 
 /**
- * The header for an organization: from its detail when known (a tab loaded
- * it, or a change updated it), otherwise from the bootstrap membership (no
- * counts), otherwise `null`, which renders placeholders.
+ * What is known about an organization: from its detail when known (a tab
+ * loaded it, or a change updated it), otherwise from the bootstrap
+ * membership, otherwise `null`.
  */
 export function organizationHeaderModel(
   organizationId: string,
@@ -72,8 +62,6 @@ export function organizationHeaderModel(
       logoUrl: detail.logoUrl,
       viewerRole: detail.viewerRole,
       isPersonal: detail.isPersonal === true,
-      memberCount: detail.members.length,
-      teamCount: detail.subTeams.length,
     };
   const membership = memberships.find(
     (candidate) => candidate.id === organizationId,
@@ -85,8 +73,6 @@ export function organizationHeaderModel(
     logoUrl: membership.logoUrl ?? null,
     viewerRole: membership.role,
     isPersonal: membership.isPersonal,
-    memberCount: null,
-    teamCount: null,
   };
 }
 
@@ -112,6 +98,17 @@ export function organizationTabForRoute(route: SettingsRoute): TeamTab | null {
     case 'memory':
       return route.page;
   }
+}
+
+/**
+ * Timeline, Statistics and Memory hold feeds, charts, a graph and wide
+ * tables, so they keep the wide column; every other organization page is a
+ * settings page in the shared 640px column.
+ */
+export function organizationTabColumnWidth(tab: TeamTab): 'settings' | 'wide' {
+  return tab === 'feed' || tab === 'statistics' || tab === 'memory'
+    ? 'wide'
+    : 'settings';
 }
 
 const NO_MEMBERSHIPS: readonly SettingsOrganizationMembership[] = [];
@@ -170,224 +167,51 @@ export function PersonalOverviewHeader({
   );
 }
 
-export interface OrgSwitcherProps {
-  readonly organizations: readonly Pick<OrganizationSummary, 'id' | 'name'>[];
-  readonly currentOrgId: string;
-  /** A switch is resolving the destination's tabs. */
-  readonly switching: boolean;
-  readonly onSelect: (orgId: string) => void;
-}
-
-export function OrgSwitcher({
-  organizations,
-  currentOrgId,
-  switching,
-  onSelect,
-}: OrgSwitcherProps): JSX.Element {
-  const current = organizations.find((org) => org.id === currentOrgId);
-  return (
-    // Fixed height: a 20px label line, a 4px gap and a 36px field row, so the
-    // organization block below never moves while the switcher settles.
-    <label className="flex h-15 shrink-0 flex-col gap-1 text-s fg-secondary">
-      <span className="h-5 font-medium leading-5 fg-primary">Organization</span>
-      <div className="relative inline-flex h-9 max-w-xs items-center">
-        <SettingsControlSelect
-          value={currentOrgId}
-          disabled={switching}
-          onChange={(e) => {
-            if (e.target.value !== currentOrgId) {
-              onSelect(e.target.value);
-            }
-          }}
-          data-testid="team-org-switcher"
-          fill
-        >
-          {organizations.map((org) => (
-            <option key={org.id} value={org.id}>
-              {org.name}
-            </option>
-          ))}
-        </SettingsControlSelect>
-        <span className="sr-only">
-          {current?.name ?? 'Select an organization'}
-        </span>
-      </div>
-    </label>
-  );
-}
-
-/** The rename control beside the organization name, for editors. */
-export function OrganizationRenameButton({
-  onClick,
-}: {
-  readonly onClick: () => void;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label="Edit organization name"
-      data-testid="team-name-edit"
-      className="rounded-md p-1.5 fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
-    >
-      <Pencil size={15} />
-    </button>
-  );
-}
-
-const COUNT_LINK_CLASS =
-  'rounded-sm transition-colors hover:fg-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-line-focus';
-
-export interface OrganizationIdentityProps {
-  readonly organizationId: string;
-  /** `null` while unknown: a placeholder bar holds the name's line. */
-  readonly name: string | null;
-  readonly viewerRole: OrganizationRole | null;
-  readonly memberCount: number | null;
-  readonly teamCount: number | null;
-  /** The 64px logo, or the logo editor for editors. */
-  readonly logo: ReactNode;
-  /** Shown in place of the name line, for the inline rename form. */
-  readonly nameEditor?: ReactNode;
-  /** After the name, for the rename control. */
-  readonly nameAction?: ReactNode;
-}
-
 /**
- * The organization's identity: logo, name, the viewer's role, and member and
- * team counts that link to their tabs. Presentational; the organization tabs
- * and the loading placeholder both draw it, so it sits in the same place.
- */
-export function OrganizationIdentity({
-  organizationId,
-  name,
-  viewerRole,
-  memberCount,
-  teamCount,
-  logo,
-  nameEditor,
-  nameAction,
-}: OrganizationIdentityProps): JSX.Element {
-  return (
-    <header data-testid="team-overview-section">
-      <div className="flex items-start gap-4">
-        {logo}
-
-        <div className="min-w-0 flex-1">
-          {nameEditor ?? (
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-2xl font-semibold fg-primary">
-                {name ?? <InlineTextSkeleton className="w-48" />}
-              </h1>
-              {nameAction}
-            </div>
-          )}
-
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-s fg-secondary">
-            <span className="inline-flex items-center gap-1.5">
-              Your role
-              {viewerRole === null ? (
-                <InlineTextSkeleton className="w-14" />
-              ) : (
-                <TeamRoleBadge role={viewerRole} />
-              )}
-            </span>
-            <span aria-hidden="true">·</span>
-            {memberCount === null ? (
-              <InlineTextSkeleton className="w-20" />
-            ) : (
-              <SettingsLink
-                href={`/organization/${organizationId}/members`}
-                data-testid="team-overview-member-count"
-                className={COUNT_LINK_CLASS}
-              >
-                {memberCount} {memberCount === 1 ? 'member' : 'members'}
-              </SettingsLink>
-            )}
-            <span aria-hidden="true">·</span>
-            {teamCount === null ? (
-              <InlineTextSkeleton className="w-16" />
-            ) : (
-              <SettingsLink
-                href={`/organization/${organizationId}/teams`}
-                data-testid="team-overview-group-count"
-                className={COUNT_LINK_CLASS}
-              >
-                {teamCount} {teamCount === 1 ? 'team' : 'teams'}
-              </SettingsLink>
-            )}
-          </div>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-/** Size of the organization logo in the header. */
-export const ORGANIZATION_HEADER_LOGO_SIZE = 64;
-
-const noop = (): void => undefined;
-
-/**
- * The read-only header a loading tab draws: the same switcher and identity
- * markup as the live page, with the editor controls the viewer's role gets,
- * so nothing moves or changes shape when the page replaces it.
+ * The read-only header a loading tab draws: the Personal header for the
+ * Personal organization (inert), nothing for any other organization.
  */
 function OrganizationHeaderPreview({
   organizationId,
 }: {
   readonly organizationId: string;
-}): JSX.Element {
+}): JSX.Element | null {
   const model = useOrganizationHeaderModel(organizationId);
-  const memberships = useOrganizationMemberships(organizationId);
-  if (model?.isPersonal === true)
-    return <PersonalOverviewHeader onInvite={noop} />;
-  const editable = model !== null && canEditOrg(model.viewerRole);
-  const logo =
-    model === null ? (
-      <span
-        aria-hidden="true"
-        className="size-16 shrink-0 rounded-lg bg-muted"
-      />
-    ) : editable ? (
-      <OrganizationLogoEditor
-        name={model.name}
-        logoUrl={model.logoUrl}
-        size={ORGANIZATION_HEADER_LOGO_SIZE}
-        busy={false}
-        error={null}
-        onPick={noop}
-      />
-    ) : (
-      <OrganizationLogo
-        name={model.name}
-        logoUrl={model.logoUrl}
-        size={ORGANIZATION_HEADER_LOGO_SIZE}
-      />
-    );
-  return (
-    <>
-      {memberships.length > 1 && (
-        <OrgSwitcher
-          organizations={memberships}
-          currentOrgId={organizationId}
-          switching={false}
-          onSelect={noop}
-        />
-      )}
-      <OrganizationIdentity
-        organizationId={organizationId}
-        name={model?.name ?? null}
-        viewerRole={model?.viewerRole ?? null}
-        memberCount={model?.memberCount ?? null}
-        teamCount={model?.teamCount ?? null}
-        logo={logo}
-        nameAction={
-          editable ? <OrganizationRenameButton onClick={noop} /> : undefined
-        }
-      />
-    </>
+  return model?.isPersonal === true ? (
+    <PersonalOverviewHeader onInvite={noop} />
+  ) : null;
+}
+
+const noop = (): void => undefined;
+
+/**
+ * The page a placeholder names, as the loaded page will: a bare or hidden
+ * `?tab=` opens the viewer's first Settings page, and with free access on
+ * Billing is named for its AI credits. Without the organization's bootstrap
+ * yet, the route's own page.
+ */
+function usePlaceholderPageItem(
+  route: OrganizationSettingsRoute,
+  tab: TeamTab,
+): TeamNavItem | OrganizationSettingsSubtabItem {
+  const bootstrap = useOptionalSettingsStore(
+    (state) => selectSettingsBootstrap(state, route.organizationId).data,
   );
+  if (route.page !== 'settings') return teamNavItem(tab);
+  const organization =
+    bootstrap?.organization?.id === route.organizationId
+      ? bootstrap.organization
+      : null;
+  if (organization === null)
+    return organizationSettingsSubtabItem(route.subtab ?? 'general');
+  const subtab =
+    resolveOrganizationSettingsSubtab(
+      route.subtab ?? null,
+      organizationSettingsSubtabsFromBootstrap(organization),
+    ) ??
+    route.subtab ??
+    'general';
+  return organizationSettingsSubtabItem(subtab, organization.freeAccess);
 }
 
 export interface OrganizationSettingsPlaceholderProps {
@@ -412,16 +236,23 @@ export function OrganizationSettingsPlaceholder({
   body,
   skeletonDelayMs,
 }: OrganizationSettingsPlaceholderProps): JSX.Element {
-  const item = teamNavItem(organizationTabForRoute(route) ?? route.page);
+  const tab = organizationTabForRoute(route) ?? route.page;
+  const item = usePlaceholderPageItem(route, tab);
+  const personal =
+    useOrganizationHeaderModel(route.organizationId)?.isPersonal === true;
   return (
     // `contents` keeps the column a direct child of the host's frame.
     <div className="contents" data-testid="organization-settings-loading">
-      <SettingsPageColumn className="relative">
+      <SettingsPageColumn
+        className="relative"
+        width={organizationTabColumnWidth(tab)}
+      >
         <div className="contents" inert>
           <OrganizationHeaderPreview organizationId={route.organizationId} />
         </div>
         <PageHeader
-          headingLevel="h2"
+          inset="none"
+          headingLevel={personal ? 'h2' : 'h1'}
           reserveActions
           title={item.label}
           description={item.description}

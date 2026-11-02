@@ -114,6 +114,7 @@ test.describe('Sticky approval default', () => {
 
       // Chat 1: created while the default is still Full, so it is stamped Full.
       await window.getByTestId('panel-add-tab-group-chat').click();
+      await window.getByTestId('panel-add-menu-item-new-chat').click();
       await expect(chatTabs).toHaveCount(2);
       const firstTabTestId = await chatTabs.last().getAttribute('data-testid');
       if (!firstTabTestId) throw new Error('First added chat tab is missing');
@@ -149,6 +150,7 @@ test.describe('Sticky approval default', () => {
 
       // Chat 2 is created after the write-back, so it opens in Ask.
       await window.getByTestId('panel-add-tab-group-chat').click();
+      await window.getByTestId('panel-add-menu-item-new-chat').click();
       await expect(chatTabs).toHaveCount(3);
       const secondTabTestId = await chatTabs.last().getAttribute('data-testid');
       if (!secondTabTestId) throw new Error('Second added chat tab is missing');
@@ -188,15 +190,15 @@ test.describe('Sticky approval default', () => {
       await expect(
         window.getByTestId('settings-approvals-section'),
       ).toBeVisible();
-      await expect(window.getByTestId('approval-default-worktree')).toHaveValue(
-        'ask',
-      );
-      await expect(window.getByTestId('approval-default-cowork')).toHaveValue(
-        'full-access',
-      );
+      await expect(
+        window.getByTestId('approval-default-worktree'),
+      ).toHaveAttribute('data-value', 'ask');
+      await expect(
+        window.getByTestId('approval-default-cowork'),
+      ).toHaveAttribute('data-value', 'full-access');
       await expect(
         window.getByTestId('approval-default-app-advisor'),
-      ).toHaveValue('full-access');
+      ).toHaveAttribute('data-value', 'full-access');
 
       // A sticky change from the App Advisor BrowserWindow broadcasts the new
       // canonical preferences to every window. The already-mounted Settings
@@ -210,7 +212,7 @@ test.describe('Sticky approval default', () => {
         .toBe('ask');
       await expect(
         window.getByTestId('approval-default-app-advisor'),
-      ).toHaveValue('ask');
+      ).toHaveAttribute('data-value', 'ask');
     } finally {
       if (launched) {
         await closeCanopy(launched.electronApp, userDataDir);

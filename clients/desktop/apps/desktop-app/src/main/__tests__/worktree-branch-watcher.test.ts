@@ -1,46 +1,13 @@
 import type { BrowserWindow } from 'electron';
-import type { FSWatcher } from 'node:fs';
-import type { SidebarItem, WorktreeData } from '@canopy/desktop-shared/types';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
+  type SidebarItem,
+  type SidebarItemsFile,
+  type WorktreeData,
 } from '@canopy/desktop-shared/types';
-
-interface MockWatcher {
-  close: jest.Mock<void, []>;
-  emitChange: (filename?: string | Buffer) => void;
-  emitError: (error?: Error) => void;
-  on: jest.Mock<MockWatcher, [string, (...args: unknown[]) => void]>;
-}
-
-const watchers: MockWatcher[] = [];
-
-jest.mock('node:fs', () => ({
-  watch: jest.fn(
-    (
-      _path: string,
-      _options: unknown,
-      listener: (_event: string, filename: string | Buffer | null) => void,
-    ) => {
-      const handlers = new Map<string, (...args: unknown[]) => void>();
-      const watcher: MockWatcher = {
-        close: jest.fn<void, []>(),
-        emitChange(filename?: string | Buffer): void {
-          listener('change', filename ?? 'HEAD');
-        },
-        emitError(error = new Error('watch failed')): void {
-          handlers.get('error')?.(error);
-        },
-        on: jest.fn((event, handler) => {
-          handlers.set(event, handler);
-          return watcher;
-        }),
-      };
-      watchers.push(watcher);
-      return watcher as unknown as FSWatcher;
-    },
-  ),
-}));
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 
 jest.mock('../lib/git', () => ({
   getCurrentBranchDisplayName: jest.fn(),
@@ -54,10 +21,6 @@ jest.mock('../lib/paths', () => ({
   ),
 }));
 
-jest.mock('../lib/workspace-persistence', () => ({
-  updateWorkspaceWorktree: jest.fn(() => Promise.resolve(true)),
-}));
-
 jest.mock('../lib/worktree-repo-entries', () => ({
   listWorkspaceWorktreeRepoEntries: jest.fn(),
 }));
@@ -66,51 +29,118 @@ jest.mock('../lib/worktree-service', () => ({
   invalidateWorktreeStats: jest.fn(),
 }));
 
+jest.mock('../lib/worktree-git-observations', () => ({
+  observeWorktreeGit: jest.fn(() => Promise.resolve({ status: 'recorded' })),
+}));
+
 jest.mock('../lib/window-send', () => ({
   sendToWindow: jest.fn(),
 }));
 
-import { watch } from 'node:fs';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import { getCurrentBranchDisplayName, getGitHeadWatchState } from '../lib/git';
-import { updateWorkspaceWorktree } from '../lib/workspace-persistence';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { invalidateWorktreeStats } from '../lib/worktree-service';
+import { observeWorktreeGit } from '../lib/worktree-git-observations';
 import { sendToWindow } from '../lib/window-send';
+import { WorktreeRecordRefusedError } from '../lib/worktree-repair';
+import { publishWorktreeGitReady } from '../lib/worktree-git-ready-hooks';
+import { publishWorktreeLifecycleChange } from '../lib/worktree-lifecycle-signals';
 import {
-  ensureWorktreeBranchWatchers,
+  recordWorktreeBranchChange,
+  startWorktreeBranchEnrollment,
+  startWorktreeBranchObserver,
   stopWorktreeBranchWatchers,
-  syncWorktreeBranchWatchers,
 } from '../lib/worktree-branch-watcher';
 
-const mockedWatch = jest.mocked(watch);
+interface FakeStream {
+  params: { scope: unknown; fileRootId: string };
+  caller: CanopyCallerDescriptor;
+  emit(): void;
+  end(): void;
+  close: jest.Mock;
+}
+
+const mockedGetGitHeadWatchState = jest.mocked(getGitHeadWatchState);
 const mockedGetCurrentBranchDisplayName = jest.mocked(
   getCurrentBranchDisplayName,
 );
-const mockedGetGitHeadWatchState = jest.mocked(getGitHeadWatchState);
-const mockedUpdateWorkspaceWorktree = jest.mocked(updateWorkspaceWorktree);
-const mockedListWorkspaceWorktreeRepoEntries = jest.mocked(
-  listWorkspaceWorktreeRepoEntries,
-);
-const mockedInvalidateWorktreeStats = jest.mocked(invalidateWorktreeStats);
-const mockedSendToWindow = jest.mocked(sendToWindow);
+const mockedRepoEntries = jest.mocked(listWorkspaceWorktreeRepoEntries);
+const mockedObserve = jest.mocked(observeWorktreeGit);
+const mockedSend = jest.mocked(sendToWindow);
 
 const windowRef = {} as BrowserWindow;
+const getWindow = (): BrowserWindow => windowRef;
 
-function createDeferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
+let listing: SidebarItemsFile;
+let streams: FakeStream[];
+let listCallers: CanopyCallerDescriptor[];
+let attachFailure: CanopyOperationError | null;
+const live = new Map<string, string | null>();
+
+function createDispatcher(): DesktopCanopyDispatcher {
+  const dispatcher = {
+    queryWorktreeListForLegacyIpc: jest.fn(
+      (_params: unknown, options: { caller: CanopyCallerDescriptor }) => {
+        listCallers.push(options.caller);
+        return Promise.resolve({
+          canonicalResult: null,
+          legacyResult: listing,
+        });
+      },
+    ),
+    openGitHeadWatchForBranchObserver: jest.fn(
+      (
+        params: FakeStream['params'],
+        options: {
+          caller: CanopyCallerDescriptor;
+          onFrame: (frame: unknown) => void;
+        },
+      ) => {
+        if (attachFailure) {
+          const error = attachFailure;
+          attachFailure = null;
+          const attached = Promise.reject(error);
+          return Promise.resolve({ handle: { close: jest.fn() }, attached });
+        }
+        const close = jest.fn();
+        streams.push({
+          params,
+          caller: options.caller,
+          close,
+          emit: () =>
+            options.onFrame({
+              kind: 'item',
+              cursor: { daemonEpoch: 'e', sequence: 1 },
+              item: { kind: 'modified', relativePath: 'HEAD' },
+            }),
+          end: () =>
+            options.onFrame({
+              kind: 'end',
+              cursor: { daemonEpoch: 'e', sequence: 1 },
+              outcome: 'error',
+              error: {
+                kind: 'resource_exhausted',
+                message: 'buffer',
+                retry: { kind: 'never' },
+              },
+            }),
+        });
+        return Promise.resolve({
+          handle: { close },
+          attached: Promise.resolve(),
+        });
+      },
+    ),
+  };
+  return dispatcher as unknown as DesktopCanopyDispatcher;
 }
 
-function singleRepoItem(
-  id = 'ws-1',
-  worktreeId = 'wt-1',
-  worktree: Partial<WorktreeData> = {},
+function singleRepo(
+  id: string,
+  worktrees: WorktreeData[] = [
+    { id: 'wt-1', branchName: 'main', createdAt: '2026-10-01T00:00:00Z' },
+  ],
 ): SidebarItem {
   return {
     type: 'single-repo',
@@ -118,83 +148,72 @@ function singleRepoItem(
     name: id,
     repoPath: `/repos/${id}`,
     color: '#123456',
-    worktrees: [
-      {
-        id: worktreeId,
-        branchName: 'main',
-        createdAt: '2026-05-22T00:00:00.000Z',
-        ...worktree,
-      },
-    ],
     collapsed: false,
     order: 0,
+    worktrees,
   };
 }
 
-function multiRepoItem(worktree: Partial<WorktreeData> = {}): SidebarItem {
+function multiRepo(id: string): SidebarItem {
   return {
     type: 'multi-repo',
-    id: 'ws-1',
-    name: 'ws-1',
+    id,
+    name: id,
     color: '#123456',
     repos: [],
-    worktrees: [
-      {
-        id: 'wt-1',
-        branchName: 'main',
-        createdAt: '2026-05-22T00:00:00.000Z',
-        ...worktree,
-      },
-    ],
     collapsed: false,
-    order: 0,
+    order: 1,
+    worktrees: [
+      { id: 'wt-2', branchName: 'feature', createdAt: '2026-10-01T00:00:00Z' },
+    ],
   };
 }
 
-const DEFAULT_BRANCH = 'mink-2-1792088684150';
-const RENAMED_BRANCH = 'qrtp/fix-left-nav-title-update';
-
-/** HEAD (both the watch state and a later read) is on `branchName`. */
-function mockLiveBranch(branchName: string | null): void {
-  mockedGetGitHeadWatchState.mockImplementation((repoPath) =>
-    Promise.resolve({ headPath: `${repoPath}/.git/HEAD`, branchName }),
-  );
-  mockedGetCurrentBranchDisplayName.mockResolvedValue(branchName);
+function openStreams(): FakeStream[] {
+  return streams.filter((stream) => stream.close.mock.calls.length === 0);
 }
 
-function persistedRow(): WorktreeData {
-  return {
-    id: 'wt-1',
-    branchName: DEFAULT_BRANCH,
-    createdAt: '2026-05-22T00:00:00.000Z',
-    lastKnownPrStatus: null,
-  };
+async function flush(): Promise<void> {
+  for (let index = 0; index < 100; index += 1) await Promise.resolve();
 }
 
-function branchChangedEvents(): unknown[] {
-  return mockedSendToWindow.mock.calls
-    .filter(([, channel]) => channel === IPC_CHANNELS.worktreeBranchChanged)
-    .map(([, , event]) => event);
-}
-
-async function sync(items: SidebarItem[]): Promise<void> {
-  await syncWorktreeBranchWatchers(items, () => windowRef);
+/** Starts the observer and enrolls through main's first-paint fallback. */
+function startEnrolledObserver(): void {
+  startWorktreeBranchObserver({ dispatcher: createDispatcher(), getWindow });
+  startWorktreeBranchEnrollment();
 }
 
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
-  watchers.length = 0;
-  stopWorktreeBranchWatchers();
+  streams = [];
+  listCallers = [];
+  attachFailure = null;
+  live.clear();
+  listing = { version: 1, items: [singleRepo('ws-1')] };
   mockedGetGitHeadWatchState.mockImplementation((repoPath) =>
     Promise.resolve({
       headPath: `${repoPath}/.git/HEAD`,
-      branchName: 'main',
+      branchName: live.get(repoPath) ?? 'main',
     }),
   );
-  mockedGetCurrentBranchDisplayName.mockResolvedValue('main');
-  mockedUpdateWorkspaceWorktree.mockResolvedValue(true);
-  mockedListWorkspaceWorktreeRepoEntries.mockResolvedValue([]);
+  mockedGetCurrentBranchDisplayName.mockImplementation((repoPath) =>
+    Promise.resolve(live.get(repoPath) ?? 'main'),
+  );
+  mockedRepoEntries.mockImplementation((_projectId, worktreePath) =>
+    Promise.resolve([
+      {
+        repoId: WORKSPACE_ROOT_REPO_ID,
+        repoName: 'Workspace',
+        repoPath: worktreePath,
+      },
+      {
+        repoId: 'api',
+        repoName: 'api',
+        repoPath: `${worktreePath}/repos/api`,
+      },
+    ]),
+  );
 });
 
 afterEach(() => {
@@ -202,537 +221,227 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-describe('worktree branch watchers', () => {
-  it('starts and retires watchers as synced worktrees change', async () => {
-    await sync([singleRepoItem('ws-1', 'wt-1')]);
+describe('main branch observer composition', () => {
+  it('enrolls nothing until the first projects load, then reads membership itself', async () => {
+    startWorktreeBranchObserver({ dispatcher: createDispatcher(), getWindow });
+    publishWorktreeLifecycleChange('projects-saved');
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(listCallers).toEqual([]);
 
-    expect(mockedWatch).toHaveBeenCalledWith(
-      '/mock/workspaces/ws-1/worktrees/wt-1/.git',
-      { persistent: false },
-      expect.any(Function),
-    );
-    expect(watchers).toHaveLength(1);
+    publishWorktreeLifecycleChange('projects-loaded');
+    await flush();
+    publishWorktreeLifecycleChange('projects-loaded');
+    await flush();
 
-    await sync([singleRepoItem('ws-2', 'wt-2')]);
-
-    expect(watchers[0]?.close).not.toHaveBeenCalled();
-    expect(watchers).toHaveLength(2);
-    expect(mockedWatch).toHaveBeenLastCalledWith(
-      '/mock/workspaces/ws-2/worktrees/wt-2/.git',
-      { persistent: false },
-      expect.any(Function),
-    );
-  });
-
-  it('ignores a retired watcher after the same target is re-added', async () => {
-    await sync([singleRepoItem()]);
-    await sync([]);
-    await sync([singleRepoItem()]);
-
-    watchers[0]?.emitChange('HEAD');
-    await jest.advanceTimersByTimeAsync(100);
-    expect(mockedGetCurrentBranchDisplayName).not.toHaveBeenCalled();
-
-    watchers[1]?.emitChange('HEAD');
-    await jest.advanceTimersByTimeAsync(100);
-    expect(mockedGetCurrentBranchDisplayName).toHaveBeenCalledTimes(1);
-  });
-
-  it('retains watchers for projects preserved after a partial load', async () => {
-    await sync([singleRepoItem('ws-1', 'wt-1')]);
-
-    await syncWorktreeBranchWatchers([], () => windowRef, new Set(['ws-1']));
-
-    expect(watchers[0]?.close).not.toHaveBeenCalled();
-    expect(mockedWatch).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not install a stale watcher after a newer sync completes', async () => {
-    const staleHead = createDeferred<{
-      headPath: string;
-      branchName: string;
-    }>();
-    mockedGetGitHeadWatchState
-      .mockImplementationOnce(() => staleHead.promise)
-      .mockResolvedValueOnce({
-        headPath: '/mock/workspaces/ws-2/worktrees/wt-2/.git/HEAD',
-        branchName: 'main',
-      });
-
-    const staleSync = sync([singleRepoItem('ws-1', 'wt-1')]);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mockedGetGitHeadWatchState).toHaveBeenCalledTimes(1);
-    await sync([singleRepoItem('ws-2', 'wt-2')]);
-
-    staleHead.resolve({
-      headPath: '/mock/workspaces/ws-1/worktrees/wt-1/.git/HEAD',
-      branchName: 'main',
-    });
-    await staleSync;
-
-    expect(mockedWatch).toHaveBeenCalledTimes(1);
-    expect(mockedWatch).toHaveBeenCalledWith(
-      '/mock/workspaces/ws-2/worktrees/wt-2/.git',
-      { persistent: false },
-      expect.any(Function),
-    );
-  });
-
-  it('debounces HEAD changes and emits only actual branch changes', async () => {
-    mockedGetCurrentBranchDisplayName.mockResolvedValueOnce('feature/new-name');
-
-    await sync([singleRepoItem()]);
-
-    watchers[0]?.emitChange('index');
-    watchers[0]?.emitChange('HEAD');
-    watchers[0]?.emitChange('HEAD');
-
-    await jest.advanceTimersByTimeAsync(99);
-    expect(mockedGetCurrentBranchDisplayName).not.toHaveBeenCalled();
-
-    await jest.advanceTimersByTimeAsync(1);
-
-    expect(mockedGetCurrentBranchDisplayName).toHaveBeenCalledTimes(1);
-    expect(mockedInvalidateWorktreeStats).toHaveBeenCalledWith('ws-1', 'wt-1');
-    expect(mockedUpdateWorkspaceWorktree).toHaveBeenCalledWith(
-      'ws-1',
-      'wt-1',
-      expect.any(Function),
-    );
-    const persistBranchChange =
-      mockedUpdateWorkspaceWorktree.mock.calls[0]?.[2];
-    expect(
-      persistBranchChange?.({
-        id: 'wt-1',
-        branchName: 'main',
-        createdAt: '2026-05-22T00:00:00.000Z',
-        status: 'done',
-        lastKnownPrStatus: {
-          repos: [],
-          lastCheckedAt: '2026-05-22T00:00:00.000Z',
-        },
-      }),
-    ).toEqual({
-      id: 'wt-1',
-      branchName: 'feature/new-name',
-      createdAt: '2026-05-22T00:00:00.000Z',
-      lastKnownPrStatus: null,
-    });
-    expect(mockedSendToWindow).toHaveBeenCalledWith(
-      windowRef,
-      IPC_CHANNELS.worktreeBranchChanged,
+    expect(listCallers).toEqual([
+      expect.objectContaining({ grants: ['core.worktree.read'] }),
+    ]);
+    expect(streams.map((stream) => stream.params)).toEqual([
       {
-        projectId: 'ws-1',
-        worktreeId: 'wt-1',
-        branchName: 'feature/new-name',
-      },
-    );
-  });
-
-  it('records nothing when a watched checkout detaches', async () => {
-    await sync([singleRepoItem()]);
-
-    // Git reports a detached HEAD as the literal `HEAD`.
-    mockedGetCurrentBranchDisplayName.mockResolvedValue('HEAD');
-    watchers[0]?.emitChange('HEAD');
-    await jest.advanceTimersByTimeAsync(100);
-
-    expect(mockedUpdateWorkspaceWorktree).not.toHaveBeenCalled();
-    expect(mockedSendToWindow).not.toHaveBeenCalled();
-  });
-
-  it('records the change through the Git observation and keeps a row already in that state', async () => {
-    mockedGetCurrentBranchDisplayName.mockResolvedValueOnce('feature/new-name');
-
-    await sync([singleRepoItem()]);
-    watchers[0]?.emitChange('HEAD');
-    await jest.advanceTimersByTimeAsync(100);
-
-    const persistBranchChange =
-      mockedUpdateWorkspaceWorktree.mock.calls[0]?.[2];
-    const alreadyRecorded = {
-      id: 'wt-1',
-      branchName: 'feature/new-name',
-      createdAt: '2026-05-22T00:00:00.000Z',
-      lastKnownPrStatus: null,
-    };
-    // The same row back is the persistence layer's "no write".
-    expect(persistBranchChange?.(alreadyRecorded)).toBe(alreadyRecorded);
-  });
-
-  it('still tells the renderer about the branch when its persistence fails', async () => {
-    mockedGetCurrentBranchDisplayName.mockResolvedValueOnce('feature/new-name');
-    mockedUpdateWorkspaceWorktree.mockRejectedValueOnce(new Error('disk full'));
-
-    await sync([singleRepoItem()]);
-    watchers[0]?.emitChange('HEAD');
-    await jest.advanceTimersByTimeAsync(100);
-
-    expect(mockedSendToWindow).toHaveBeenCalledWith(
-      windowRef,
-      IPC_CHANNELS.worktreeBranchChanged,
-      {
-        projectId: 'ws-1',
-        worktreeId: 'wt-1',
-        branchName: 'feature/new-name',
-      },
-    );
-  });
-
-  it('does not persist or emit when the branch name is unchanged', async () => {
-    mockedGetCurrentBranchDisplayName.mockResolvedValue('main');
-
-    await sync([singleRepoItem()]);
-    watchers[0]?.emitChange('HEAD');
-
-    await jest.advanceTimersByTimeAsync(100);
-
-    expect(mockedUpdateWorkspaceWorktree).not.toHaveBeenCalled();
-    expect(mockedInvalidateWorktreeStats).not.toHaveBeenCalled();
-    expect(mockedSendToWindow).not.toHaveBeenCalled();
-  });
-
-  it('clears stale PR metadata without changing the sidebar branch for child repo branch changes', async () => {
-    mockedListWorkspaceWorktreeRepoEntries.mockResolvedValue([
-      {
-        repoId: WORKSPACE_ROOT_REPO_ID,
-        repoPath: '/mock/workspaces/ws-1/worktrees/wt-1',
-      },
-      {
-        repoId: 'repo-a',
-        repoPath: '/mock/workspaces/ws-1/worktrees/wt-1/repos/repo-a',
+        scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+        fileRootId: 'ws-1',
       },
     ]);
-    mockedGetCurrentBranchDisplayName.mockResolvedValueOnce('feature/repo-a');
+    expect(streams[0]?.caller.grants).toEqual(['worker.filesystem.read']);
+  });
 
-    await sync([multiRepoItem()]);
+  it('enrolls once from the first-paint fallback, and a later load only rereads', async () => {
+    startWorktreeBranchObserver({ dispatcher: createDispatcher(), getWindow });
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(listCallers).toEqual([]);
 
-    watchers[1]?.emitChange('HEAD');
-    await jest.advanceTimersByTimeAsync(100);
+    startWorktreeBranchEnrollment();
+    startWorktreeBranchEnrollment();
+    await flush();
+    expect(listCallers).toHaveLength(1);
 
-    expect(mockedInvalidateWorktreeStats).toHaveBeenCalledWith('ws-1', 'wt-1');
-    expect(mockedUpdateWorkspaceWorktree).toHaveBeenCalledWith(
+    // The load after the fallback is a debounced reread, not a second start.
+    publishWorktreeLifecycleChange('projects-loaded');
+    await flush();
+    expect(listCallers).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(250);
+    await flush();
+    expect(listCallers).toHaveLength(2);
+    expect(openStreams()).toHaveLength(1);
+  });
+
+  it('maps single-repo, multi-repo and pending worktrees to checkouts', async () => {
+    listing = {
+      version: 1,
+      items: [
+        singleRepo('ws-1', [
+          { id: 'wt-1', branchName: 'main', createdAt: '2026-10-01T00:00:00Z' },
+          {
+            id: 'wt-3',
+            branchName: 'pending',
+            createdAt: '2026-10-01T00:00:00Z',
+            setupPhase: 'git-pending',
+          },
+        ]),
+        multiRepo('ws-2'),
+      ],
+    };
+    startEnrolledObserver();
+    await flush();
+
+    expect(streams.map((stream) => stream.params.fileRootId)).toEqual([
       'ws-1',
-      'wt-1',
-      expect.any(Function),
-    );
-    const persistBranchChange =
-      mockedUpdateWorkspaceWorktree.mock.calls[0]?.[2];
-    expect(
-      persistBranchChange?.({
-        id: 'wt-1',
-        branchName: 'main',
-        createdAt: '2026-05-22T00:00:00.000Z',
-        status: 'done',
-        lastKnownPrStatus: {
-          repos: [],
-          lastCheckedAt: '2026-05-22T00:00:00.000Z',
-        },
-      }),
-    ).toEqual({
-      id: 'wt-1',
-      branchName: 'main',
-      createdAt: '2026-05-22T00:00:00.000Z',
-      lastKnownPrStatus: null,
-    });
-    expect(mockedSendToWindow).toHaveBeenCalledWith(
-      windowRef,
-      IPC_CHANNELS.worktreeBranchChanged,
-      {
-        projectId: 'ws-1',
-        worktreeId: 'wt-1',
-        repoId: 'repo-a',
-        branchName: 'feature/repo-a',
-      },
-    );
+      WORKSPACE_ROOT_REPO_ID,
+      'api',
+    ]);
   });
 
-  it('forgets stopped watchers after fs.watch errors', async () => {
-    await sync([singleRepoItem()]);
+  it('rereads membership on later lifecycle signals, debounced', async () => {
+    startEnrolledObserver();
+    await flush();
 
-    watchers[0]?.emitError();
+    listing = { version: 1, items: [] };
+    publishWorktreeLifecycleChange('worktree-removal-settled');
+    publishWorktreeLifecycleChange('external-snapshot');
+    publishWorktreeLifecycleChange('workspace-deleted');
+    await jest.advanceTimersByTimeAsync(250);
+    await flush();
 
-    expect(watchers[0]?.close).not.toHaveBeenCalled();
-
-    await sync([singleRepoItem()]);
-
-    expect(watchers).toHaveLength(2);
-    expect(watchers[1]?.close).not.toHaveBeenCalled();
+    expect(listCallers).toHaveLength(2);
+    expect(openStreams()).toEqual([]);
   });
 
-  describe('catch-up on start', () => {
-    it('records a branch renamed while nothing watched the checkout', async () => {
-      mockLiveBranch(RENAMED_BRANCH);
+  // A split promotes its destination row without git-ready; before CAN-4899
+  // the renderer's reload re-synced, so later loads and list writes still do.
+  it('watches a checkout that arrives without git-ready on a later load or list write', async () => {
+    startEnrolledObserver();
+    await flush();
 
-      await sync([
-        singleRepoItem('ws-1', 'wt-1', { branchName: DEFAULT_BRANCH }),
-      ]);
-
-      expect(watchers).toHaveLength(1);
-      expect(mockedUpdateWorkspaceWorktree).toHaveBeenCalledTimes(1);
-      expect(mockedUpdateWorkspaceWorktree).toHaveBeenCalledWith(
-        'ws-1',
-        'wt-1',
-        expect.any(Function),
-      );
-      const updater = mockedUpdateWorkspaceWorktree.mock.calls[0]?.[2];
-      expect(updater?.(persistedRow())).toMatchObject({
-        branchName: RENAMED_BRANCH,
-      });
-      expect(mockedInvalidateWorktreeStats).toHaveBeenCalledWith(
-        'ws-1',
-        'wt-1',
-      );
-      expect(branchChangedEvents()).toEqual([
-        { projectId: 'ws-1', worktreeId: 'wt-1', branchName: RENAMED_BRANCH },
-      ]);
-    });
-
-    it('writes and sends nothing when the recorded branch is current', async () => {
-      mockLiveBranch(DEFAULT_BRANCH);
-
-      await sync([
-        singleRepoItem('ws-1', 'wt-1', { branchName: DEFAULT_BRANCH }),
-      ]);
-
-      expect(watchers).toHaveLength(1);
-      expect(mockedGetCurrentBranchDisplayName).not.toHaveBeenCalled();
-      expect(mockedUpdateWorkspaceWorktree).not.toHaveBeenCalled();
-      expect(mockedSendToWindow).not.toHaveBeenCalled();
-    });
-
-    it.each([
-      // Git reports a detached HEAD as the literal `HEAD`.
-      ['a detached HEAD', 'HEAD'],
-      ['a failed branch read', null],
-    ])(
-      'skips %s but still watches it',
-      async (_label, liveBranch: string | null) => {
-        mockLiveBranch(liveBranch);
-
-        await sync([
-          singleRepoItem('ws-1', 'wt-1', { branchName: DEFAULT_BRANCH }),
-        ]);
-
-        expect(watchers).toHaveLength(1);
-        expect(mockedUpdateWorkspaceWorktree).not.toHaveBeenCalled();
-        expect(mockedSendToWindow).not.toHaveBeenCalled();
-
-        // A HEAD event while still detached records nothing either.
-        watchers[0]?.emitChange('HEAD');
-        await jest.advanceTimersByTimeAsync(100);
-        expect(mockedUpdateWorkspaceWorktree).not.toHaveBeenCalled();
-        expect(mockedSendToWindow).not.toHaveBeenCalled();
-      },
-    );
-
-    it.each([
-      [
-        'not found',
-        (): void => void mockedUpdateWorkspaceWorktree.mockResolvedValue(false),
+    listing = {
+      version: 1,
+      items: [
+        singleRepo('ws-1', [
+          { id: 'wt-1', branchName: 'main', createdAt: '2026-10-01T00:00:00Z' },
+          {
+            id: 'wt-4',
+            branchName: 'split',
+            createdAt: '2026-10-02T00:00:00Z',
+          },
+        ]),
       ],
-      [
-        'failed',
-        (): void =>
-          void mockedUpdateWorkspaceWorktree.mockRejectedValue(
-            new Error('disk full'),
-          ),
-      ],
-    ])(
-      'keeps watching when the catch-up write is %s',
-      async (_label, arrangeWrite) => {
-        mockLiveBranch(RENAMED_BRANCH);
-        arrangeWrite();
+    };
+    publishWorktreeLifecycleChange('projects-loaded');
+    await jest.advanceTimersByTimeAsync(250);
+    await flush();
+    expect(openStreams().map((stream) => stream.params.scope)).toEqual([
+      { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+      { workspaceId: 'ws-1', worktreeId: 'wt-4' },
+    ]);
 
-        await sync([
-          singleRepoItem('ws-1', 'wt-1', { branchName: DEFAULT_BRANCH }),
-        ]);
-
-        expect(watchers).toHaveLength(1);
-        expect(branchChangedEvents()).toHaveLength(1);
-
-        // The entry now holds the live name, so the same HEAD is a no-op.
-        mockedUpdateWorkspaceWorktree.mockClear();
-        mockedSendToWindow.mockClear();
-        watchers[0]?.emitChange('HEAD');
-        await jest.advanceTimersByTimeAsync(100);
-        expect(mockedUpdateWorkspaceWorktree).not.toHaveBeenCalled();
-        expect(mockedSendToWindow).not.toHaveBeenCalled();
-      },
-    );
-
-    it('treats later HEAD events against the caught-up branch', async () => {
-      mockLiveBranch(RENAMED_BRANCH);
-      await sync([
-        singleRepoItem('ws-1', 'wt-1', { branchName: DEFAULT_BRANCH }),
-      ]);
-      mockedSendToWindow.mockClear();
-
-      watchers[0]?.emitChange('HEAD');
-      await jest.advanceTimersByTimeAsync(100);
-      expect(mockedSendToWindow).not.toHaveBeenCalled();
-
-      mockedGetCurrentBranchDisplayName.mockResolvedValue('feature/next');
-      watchers[0]?.emitChange('HEAD');
-      await jest.advanceTimersByTimeAsync(100);
-      expect(branchChangedEvents()).toEqual([
-        { projectId: 'ws-1', worktreeId: 'wt-1', branchName: 'feature/next' },
-      ]);
-    });
-
-    it('catches up the root repo of a multi-repo worktree but never a child', async () => {
-      const rootPath = '/mock/workspaces/ws-1/worktrees/wt-1';
-      const childPath = `${rootPath}/repos/repo-a`;
-      mockedListWorkspaceWorktreeRepoEntries.mockResolvedValue([
-        { repoId: WORKSPACE_ROOT_REPO_ID, repoPath: rootPath },
-        { repoId: 'repo-a', repoPath: childPath },
-      ]);
-      const liveBranch = (repoPath: string): string =>
-        repoPath === childPath ? 'feature/repo-a' : RENAMED_BRANCH;
-      mockedGetGitHeadWatchState.mockImplementation((repoPath) =>
-        Promise.resolve({
-          headPath: `${repoPath}/.git/HEAD`,
-          branchName: liveBranch(repoPath),
-        }),
-      );
-      mockedGetCurrentBranchDisplayName.mockImplementation((repoPath) =>
-        Promise.resolve(liveBranch(repoPath)),
-      );
-
-      await sync([multiRepoItem({ branchName: DEFAULT_BRANCH })]);
-
-      expect(watchers).toHaveLength(2);
-      expect(mockedUpdateWorkspaceWorktree).toHaveBeenCalledTimes(1);
-      expect(branchChangedEvents()).toEqual([
-        {
-          projectId: 'ws-1',
-          worktreeId: 'wt-1',
-          repoId: WORKSPACE_ROOT_REPO_ID,
-          branchName: RENAMED_BRANCH,
-        },
-      ]);
-    });
-
-    it('does not watch or read a checkout that is still being created', async () => {
-      await sync([
-        singleRepoItem('ws-1', 'wt-1', { setupPhase: 'git-pending' }),
-      ]);
-
-      expect(mockedGetGitHeadWatchState).not.toHaveBeenCalled();
-      expect(watchers).toHaveLength(0);
-    });
+    listing = { version: 1, items: [singleRepo('ws-1')] };
+    publishWorktreeLifecycleChange('worktree-list-membership');
+    await jest.advanceTimersByTimeAsync(250);
+    await flush();
+    expect(openStreams().map((stream) => stream.params.scope)).toEqual([
+      { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+    ]);
   });
 
-  describe('ensureWorktreeBranchWatchers', () => {
-    const target = {
+  it('starts a ready worktree from the git-ready hook, and stops listening on stop', async () => {
+    const dispatcher = createDispatcher();
+    startWorktreeBranchObserver({ dispatcher, getWindow });
+    const ready = {
       projectId: 'ws-1',
-      worktreeId: 'wt-1',
-      workspaceKind: 'single-repo' as const,
+      worktreeId: 'wt-9',
       branchName: 'main',
+      worktreeEffective: {},
+      workspaceKind: 'single-repo' as const,
     };
 
-    async function ensure(
-      overrides: Partial<typeof target> = {},
-    ): Promise<void> {
-      await ensureWorktreeBranchWatchers(
-        { ...target, ...overrides },
-        () => windowRef,
-      );
-    }
+    await publishWorktreeGitReady(ready);
+    expect(streams.map((stream) => stream.params)).toEqual([
+      {
+        scope: { workspaceId: 'ws-1', worktreeId: 'wt-9' },
+        fileRootId: 'ws-1',
+      },
+    ]);
 
-    it('starts one watcher for a single-repo worktree, once', async () => {
-      await ensure();
-      await ensure();
+    stopWorktreeBranchWatchers();
+    expect(openStreams()).toEqual([]);
+    await publishWorktreeGitReady(ready);
+    expect(streams).toHaveLength(1);
+  });
 
-      expect(mockedWatch).toHaveBeenCalledTimes(1);
-      expect(mockedWatch).toHaveBeenCalledWith(
-        '/mock/workspaces/ws-1/worktrees/wt-1/.git',
-        { persistent: false },
-        expect.any(Function),
-      );
+  it('records a HEAD change through the writer, push and stats invalidation', async () => {
+    startEnrolledObserver();
+    await flush();
+
+    live.set('/mock/workspaces/ws-1/worktrees/wt-1', 'renamed');
+    streams[0]?.emit();
+    await jest.advanceTimersByTimeAsync(100);
+    await flush();
+
+    expect(mockedObserve).toHaveBeenCalledWith({
+      kind: 'branch',
+      workspaceId: 'ws-1',
+      worktreeId: 'wt-1',
+      branchName: 'renamed',
     });
+    expect(invalidateWorktreeStats).toHaveBeenCalledWith('ws-1', 'wt-1');
+    expect(mockedSend).toHaveBeenCalledWith(
+      windowRef,
+      IPC_CHANNELS.worktreeBranchChanged,
+      { projectId: 'ws-1', worktreeId: 'wt-1', branchName: 'renamed' },
+    );
+    // The observer's own recording never rereads membership.
+    expect(listCallers).toHaveLength(1);
+  });
 
-    it('records a branch renamed before the checkout became ready', async () => {
-      mockLiveBranch(RENAMED_BRANCH);
+  it('holds a branch the branch namer recorded', async () => {
+    startEnrolledObserver();
+    await flush();
 
-      await ensure({ branchName: DEFAULT_BRANCH });
+    await recordWorktreeBranchChange(
+      { projectId: 'ws-1', worktreeId: 'wt-1', branchName: 'named' },
+      getWindow,
+    );
+    live.set('/mock/workspaces/ws-1/worktrees/wt-1', 'named');
+    streams[0]?.emit();
+    await jest.advanceTimersByTimeAsync(100);
+    await flush();
 
-      expect(branchChangedEvents()).toEqual([
-        { projectId: 'ws-1', worktreeId: 'wt-1', branchName: RENAMED_BRANCH },
-      ]);
+    expect(mockedObserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a refused write but still tells the renderer', async () => {
+    mockedObserve.mockRejectedValueOnce(
+      new WorktreeRecordRefusedError('invalid-request', 'gone'),
+    );
+
+    await recordWorktreeBranchChange(
+      { projectId: 'ws-1', worktreeId: 'wt-1', branchName: 'x' },
+      getWindow,
+    );
+
+    expect(mockedSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('reopens a stream that ends and polls a checkout whose watch cannot attach', async () => {
+    attachFailure = new CanopyOperationError({
+      kind: 'internal',
+      message: 'ENOSPC',
+      retry: { kind: 'never' },
     });
+    listing = { version: 1, items: [singleRepo('ws-1'), singleRepo('ws-2')] };
+    startEnrolledObserver();
+    await flush();
+    expect(streams).toHaveLength(1);
 
-    it('opens one handle when a sync starts the same key concurrently', async () => {
-      const head = createDeferred<{ headPath: string; branchName: string }>();
-      mockedGetGitHeadWatchState.mockImplementationOnce(() => head.promise);
+    live.set('/mock/workspaces/ws-1/worktrees/wt-1', 'polled');
+    await jest.advanceTimersByTimeAsync(2_000);
+    await flush();
+    expect(mockedObserve).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-1', branchName: 'polled' }),
+    );
 
-      const ensured = ensure();
-      await Promise.resolve();
-      await Promise.resolve();
-      const synced = sync([
-        singleRepoItem('ws-1', 'wt-1'),
-        singleRepoItem('ws-2', 'wt-2'),
-      ]);
-      await Promise.resolve();
-      head.resolve({
-        headPath: '/mock/workspaces/ws-1/worktrees/wt-1/.git/HEAD',
-        branchName: 'main',
-      });
-      await Promise.all([ensured, synced]);
-
-      const ws1Watches = mockedWatch.mock.calls.filter(
-        ([path]) => path === '/mock/workspaces/ws-1/worktrees/wt-1/.git',
-      );
-      expect(ws1Watches).toHaveLength(1);
-      expect(watchers).toHaveLength(2);
-      expect(watchers[0]?.close).not.toHaveBeenCalled();
-    });
-
-    it('is kept by a sync whose snapshot predates git-ready', async () => {
-      await ensure();
-
-      await sync([
-        singleRepoItem('ws-1', 'wt-1', { setupPhase: 'git-pending' }),
-      ]);
-      watchers[0]?.emitChange('HEAD');
-      await jest.advanceTimersByTimeAsync(100);
-
-      expect(mockedGetCurrentBranchDisplayName).toHaveBeenCalledTimes(1);
-    });
-
-    it('starts one watcher per repo of a multi-repo worktree', async () => {
-      mockedListWorkspaceWorktreeRepoEntries.mockResolvedValue([
-        {
-          repoId: WORKSPACE_ROOT_REPO_ID,
-          repoPath: '/mock/workspaces/ws-1/worktrees/wt-1',
-        },
-        {
-          repoId: 'repo-a',
-          repoPath: '/mock/workspaces/ws-1/worktrees/wt-1/repos/repo-a',
-        },
-      ]);
-
-      await ensure({ workspaceKind: 'multi-repo' });
-
-      expect(watchers).toHaveLength(2);
-    });
-
-    it('installs nothing after the watchers stop', async () => {
-      const head = createDeferred<{ headPath: string; branchName: string }>();
-      mockedGetGitHeadWatchState.mockImplementationOnce(() => head.promise);
-
-      const ensured = ensure();
-      await Promise.resolve();
-      await Promise.resolve();
-      stopWorktreeBranchWatchers();
-      head.resolve({
-        headPath: '/mock/workspaces/ws-1/worktrees/wt-1/.git/HEAD',
-        branchName: 'main',
-      });
-      await ensured;
-
-      expect(mockedWatch).not.toHaveBeenCalled();
-    });
+    streams[0]?.end();
+    await jest.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(streams).toHaveLength(2);
   });
 });

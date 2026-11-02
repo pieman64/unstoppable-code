@@ -33,6 +33,7 @@ describe('WorkEntryRow leading status', () => {
     ['question', { hasPendingQuestion: true }, 'needs-input', 'bg-fg-warning'],
     ['working', { working: true }, 'working', null],
     ['unread', { hasUnread: true }, 'unread', null],
+    ['background', { backgroundTasks: 2 }, 'background', null],
   ])('shows the %s state in the leading slot', (_name, props, status, dot) => {
     const html = render(props);
     expect(leadingStatus(html)).toBe(status);
@@ -65,6 +66,18 @@ describe('WorkEntryRow leading status', () => {
     ).toBe('needs-input');
     expect(leadingStatus(render({ working: true, hasUnread: true }))).toBe(
       'working',
+    );
+  });
+
+  it('names background work, below unread so a long-running server never hides it', () => {
+    expect(render({ backgroundTasks: 2 })).toContain(
+      'aria-label="2 background tasks running"',
+    );
+    expect(leadingStatus(render({ working: true, backgroundTasks: 2 }))).toBe(
+      'working',
+    );
+    expect(leadingStatus(render({ hasUnread: true, backgroundTasks: 2 }))).toBe(
+      'unread',
     );
   });
 

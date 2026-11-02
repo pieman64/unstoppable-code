@@ -55,8 +55,6 @@ declare global {
     devInfo: {
       isDev: boolean;
       branch: string | null;
-      /** E2E-only hold-back for the onboarding suggestions module. */
-      hideOnboardingSuggestions?: boolean;
     };
   }
 }

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import type * as ProviderAuthStateModule from '../auth/provider-auth-state';
 import type * as ShareablePluginResolution from '../plugins/shareable-plugin-resolution';
 // Capability summaries use a local fixture rather than provider discovery.
 jest.mock('../plugins/shareable-plugin-resolution', () => ({
@@ -69,6 +71,16 @@ jest.mock('../services/background-execution-context', () => ({
     { owner: { shareScope: 'private' } },
   ]),
 }));
+// The account has an organization, so Personal is a person's choice.
+jest.mock('../lib/workspace-context-service', () => ({
+  getWorkspaceContextService: (): unknown => ({
+    initialize: (): Promise<void> => Promise.resolve(),
+    whenIdle: (): Promise<void> => Promise.resolve(),
+    getState: (): unknown => ({
+      organizations: [{ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }],
+    }),
+  }),
+}));
 const mockResolveProjectSavedOwner = jest.fn<Promise<unknown>, [unknown]>(() =>
   Promise.resolve({ kind: 'personal' }),
 );
@@ -86,13 +98,18 @@ const mockPipelineMetadata = new Map<
   string,
   { owner?: string; agentAuthor?: unknown }
 >();
-jest.mock('../pipelines/pipeline-local-metadata-store', () => ({
-  isPipelineLocalMetadataReadable: (): boolean => true,
-  readPipelineLocalMetadata: (locator: { value: string }): unknown =>
-    mockPipelineMetadata.get(locator.value) ?? {},
-  recordUserPipelineOwner: (id: string, owner: string): void => {
+let mockPipelineMetadataReadable = true;
+const mockRecordUserPipelineOwner = jest.fn(
+  (id: string, owner: string): void => {
     mockPipelineMetadata.set(id, { ...mockPipelineMetadata.get(id), owner });
   },
+);
+jest.mock('../pipelines/pipeline-local-metadata-store', () => ({
+  isPipelineLocalMetadataReadable: (): boolean => mockPipelineMetadataReadable,
+  readPipelineLocalMetadata: (locator: { value: string }): unknown =>
+    mockPipelineMetadata.get(locator.value) ?? {},
+  recordUserPipelineOwner: (id: string, owner: string): void =>
+    mockRecordUserPipelineOwner(id, owner),
   setUserPipelineAgentAuthor: (id: string, author: unknown): void => {
     const entry = { ...mockPipelineMetadata.get(id) };
     delete entry.agentAuthor;
@@ -141,6 +158,17 @@ jest.mock('@electron-toolkit/utils', () => ({
   is: { dev: true },
 }));
 
+jest.mock(
+  '../canopy-runtime/pipeline-definition-dispatch',
+  (): object =>
+    jest.requireActual<{ pipelineWriteDispatchFake: object }>(
+      './helpers/pipeline-write-dispatch-fake',
+    ).pipelineWriteDispatchFake,
+);
+// The run-admission golden drives core; here a run keeps its caller copy.
+jest.mock('../pipelines/run-definition-admission', () => ({
+  admitStoredRunDefinition: (): Promise<null> => Promise.resolve(null),
+}));
 jest.mock('../pipelines/pipeline-service', () => ({
   listPipelines: jest.fn(),
   listPipelineCapabilityData: jest.fn(),
@@ -207,6 +235,7 @@ jest.mock('../automations/canopy-server-client', () => ({
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
+import { getPipelineDataDir } from '../lib/paths';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { BrowserWindow } from 'electron';
@@ -217,10 +246,12 @@ import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-
 import type {
   ScheduledActivity,
   UsageMetricEvent,
+  WorkspaceOwnerBinding,
 } from '@canopy/desktop-shared/types';
 import { commitWholeStepLog } from '@canopy/desktop-shared/node/pipelines/executor/step-log-positions';
 import type {
   IPCResult,
+  Pipeline,
   PipelineSaveInput,
   SharedPipelineDetail,
   SharedPipelinePublicShareInfo,
@@ -257,6 +288,7 @@ import type {
   saveExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor';
 import * as pipelineService from '../pipelines/pipeline-service';
+import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import * as mainProcessLogging from '../lib/main-process-logging';
 import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
 import type {
@@ -295,21 +327,22 @@ const mockRegisterIpcHandler = jest.fn(
   },
 );
 jest.mock('../ipc/register', () => ({
-  registerIpcHandler: mockRegisterIpcHandler,
+  get registerIpcHandler(): typeof mockRegisterIpcHandler {
+    return mockRegisterIpcHandler;
+  },
 }));
 
 const mockSendToAllWindows = jest.fn();
 jest.mock('../lib/window-send', () => ({
-  sendToAllWindows: mockSendToAllWindows,
+  get sendToAllWindows(): typeof mockSendToAllWindows {
+    return mockSendToAllWindows;
+  },
 }));
 
-const mockWithWorkspaceTargetRuntimeStartReservation = jest.fn(
-  async <T>(
-    _projectId: string,
-    _worktreeId: string,
-    operation: () => Promise<T>,
-  ): Promise<T> => operation(),
-);
+const mockWithWorkspaceTargetRuntimeStartReservation = jest.fn<
+  void,
+  [projectId: string, worktreeId: string, operation: () => Promise<unknown>]
+>();
 jest.mock('../lib/workspace-target-exclusion', () => {
   const actual = jest.requireActual<typeof WorkspaceTargetExclusionModule>(
     '../lib/workspace-target-exclusion',
@@ -320,12 +353,14 @@ jest.mock('../lib/workspace-target-exclusion', () => {
       projectId: string,
       worktreeId: string,
       operation: () => Promise<T>,
-    ): Promise<T> =>
+    ): Promise<T> => {
       mockWithWorkspaceTargetRuntimeStartReservation(
         projectId,
         worktreeId,
         operation,
-      ),
+      );
+      return operation();
+    },
   };
 });
 
@@ -335,10 +370,18 @@ const mockRecordUsageMetricEvent = jest.fn<void, [UsageMetricEvent]>();
 const mockRecordAppDiagnostic = jest.fn();
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    syncPipelineExecutionState: mockSyncPipelineExecutionState,
-    observePipelineOutput: mockObservePipelineOutput,
-    recordUsageMetricEvent: mockRecordUsageMetricEvent,
-    recordAppDiagnostic: mockRecordAppDiagnostic,
+    get syncPipelineExecutionState(): typeof mockSyncPipelineExecutionState {
+      return mockSyncPipelineExecutionState;
+    },
+    get observePipelineOutput(): typeof mockObservePipelineOutput {
+      return mockObservePipelineOutput;
+    },
+    get recordUsageMetricEvent(): typeof mockRecordUsageMetricEvent {
+      return mockRecordUsageMetricEvent;
+    },
+    get recordAppDiagnostic(): typeof mockRecordAppDiagnostic {
+      return mockRecordAppDiagnostic;
+    },
   })),
 }));
 
@@ -357,7 +400,9 @@ jest.mock('../services/plans-service', () => ({
 const mockHandlePipelineTerminalEvent = jest.fn();
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: jest.fn(() => ({
-    handlePipelineTerminalEvent: mockHandlePipelineTerminalEvent,
+    get handlePipelineTerminalEvent(): typeof mockHandlePipelineTerminalEvent {
+      return mockHandlePipelineTerminalEvent;
+    },
   })),
 }));
 
@@ -371,32 +416,44 @@ const mockRunForExistingExecution = jest.fn<
 >();
 jest.mock('../pipelines/pipeline-advisor', () => ({
   getPipelineAdvisorService: jest.fn(() => ({
-    watchExecution: mockWatchExecution,
-    runForExistingExecution: mockRunForExistingExecution,
+    get watchExecution(): typeof mockWatchExecution {
+      return mockWatchExecution;
+    },
+    get runForExistingExecution(): typeof mockRunForExistingExecution {
+      return mockRunForExistingExecution;
+    },
   })),
 }));
 
 const mockResolveLinearToken = jest.fn();
 jest.mock('../lib/linear-auth', () => ({
-  resolveLinearToken: mockResolveLinearToken,
+  get resolveLinearToken(): typeof mockResolveLinearToken {
+    return mockResolveLinearToken;
+  },
 }));
 
-const mockResolveWorktreeCwd = jest.fn();
 jest.mock('../lib/resolve-worktree', () => ({
-  resolveWorktreeCwd: mockResolveWorktreeCwd,
+  resolveWorktreeCwd: jest.fn(),
 }));
 
 const mockEnqueueKnownPrFastRefresh = jest.fn(() => Promise.resolve(false));
 jest.mock('../lib/github-poller', () => ({
-  enqueueKnownPrFastRefresh: mockEnqueueKnownPrFastRefresh,
+  get enqueueKnownPrFastRefresh(): typeof mockEnqueueKnownPrFastRefresh {
+    return mockEnqueueKnownPrFastRefresh;
+  },
 }));
 
 const mockReadPreferencesFile = jest.fn();
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
-const mockGetCachedClaudeAuthStatusObserved = jest.fn(() =>
+const mockGetCachedClaudeAuthStatusObserved = jest.fn<
+  ReturnType<typeof ProviderAuthStateModule.getCachedClaudeAuthStatusObserved>,
+  Parameters<typeof ProviderAuthStateModule.getCachedClaudeAuthStatusObserved>
+>(() =>
   Promise.resolve({
     authenticated: true,
     accountLabel: 'dev@example.com',
@@ -405,7 +462,9 @@ const mockGetCachedClaudeAuthStatusObserved = jest.fn(() =>
   }),
 );
 jest.mock('../auth/provider-auth-state', () => ({
-  getCachedClaudeAuthStatusObserved: mockGetCachedClaudeAuthStatusObserved,
+  get getCachedClaudeAuthStatusObserved(): typeof mockGetCachedClaudeAuthStatusObserved {
+    return mockGetCachedClaudeAuthStatusObserved;
+  },
 }));
 
 const mockReleasePipelineResourceGuard = jest.fn();
@@ -414,7 +473,9 @@ const mockReservePipelineExecutionStart = jest.fn(() => ({
 }));
 jest.mock('../resource-monitor', () => ({
   getResourceMonitorService: jest.fn(() => ({
-    reservePipelineExecutionStart: mockReservePipelineExecutionStart,
+    get reservePipelineExecutionStart(): typeof mockReservePipelineExecutionStart {
+      return mockReservePipelineExecutionStart;
+    },
   })),
 }));
 
@@ -424,17 +485,22 @@ const mockIsFeatureFlagEnabled = jest.fn(
 jest.mock('../feature-flags', () => ({
   getFeatureFlagService: jest.fn(() => ({
     isEnabled: mockIsFeatureFlagEnabled,
+    onSnapshotChanged: jest.fn(() => (): void => undefined),
   })),
 }));
 
 const mockReadEnvironmentConfig = jest.fn();
 jest.mock('../lib/user-environment-store', () => ({
-  readEnvironmentConfig: mockReadEnvironmentConfig,
+  get readEnvironmentConfig(): typeof mockReadEnvironmentConfig {
+    return mockReadEnvironmentConfig;
+  },
 }));
 
 const mockBuildPipelineBaseBranchEnv = jest.fn();
 jest.mock('../pipelines/worktree-base-branch-env', () => ({
-  buildPipelineBaseBranchEnv: mockBuildPipelineBaseBranchEnv,
+  get buildPipelineBaseBranchEnv(): typeof mockBuildPipelineBaseBranchEnv {
+    return mockBuildPipelineBaseBranchEnv;
+  },
 }));
 
 let runtime: ExecutionRuntime;
@@ -461,40 +527,69 @@ const mockRetryMatrixJobExecution: jest.MockedFunction<RetryMatrixJobExecutionFn
   jest.fn();
 const mockRerunPipelineExecution: jest.MockedFunction<RerunPipelineExecutionFn> =
   jest.fn();
-const actualExecutorModule: typeof ExecutorModule = jest.requireActual(
-  '@canopy/desktop-shared/node/pipelines/executor',
-);
-jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => ({
-  ...actualExecutorModule,
-  executePipeline: (
-    ...args: Parameters<ExecutePipelineFn>
-  ): ReturnType<ExecutePipelineFn> => mockExecutePipeline(...args),
-  cancelPipelineExecution: (
-    ...args: Parameters<CancelPipelineExecutionFn>
-  ): ReturnType<CancelPipelineExecutionFn> =>
-    mockCancelPipelineExecution(...args),
-  loadExecutionState: (
-    ...args: Parameters<LoadExecutionStateFn>
-  ): ReturnType<LoadExecutionStateFn> => mockLoadExecutionState(...args),
-  saveExecutionState: (
-    ...args: Parameters<SaveExecutionStateFn>
-  ): ReturnType<SaveExecutionStateFn> => mockSaveExecutionState(...args),
-  resumePipeline: (
-    ...args: Parameters<ResumePipelineFn>
-  ): ReturnType<ResumePipelineFn> => mockResumePipeline(...args),
-  retryPipelineExecution: (
-    ...args: Parameters<RetryPipelineExecutionFn>
-  ): ReturnType<RetryPipelineExecutionFn> =>
-    mockRetryPipelineExecution(...args),
-  retryMatrixJobExecution: (
-    ...args: Parameters<RetryMatrixJobExecutionFn>
-  ): ReturnType<RetryMatrixJobExecutionFn> =>
-    mockRetryMatrixJobExecution(...args),
-  rerunPipelineExecution: (
-    ...args: Parameters<RerunPipelineExecutionFn>
-  ): ReturnType<RerunPipelineExecutionFn> =>
-    mockRerunPipelineExecution(...args),
-}));
+jest.mock('@canopy/desktop-shared/node/pipelines/executor', () => {
+  const actual = jest.requireActual<typeof ExecutorModule>(
+    '@canopy/desktop-shared/node/pipelines/executor',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      executePipeline: {
+        value: (
+          ...args: Parameters<ExecutePipelineFn>
+        ): ReturnType<ExecutePipelineFn> => mockExecutePipeline(...args),
+        enumerable: true,
+      },
+      cancelPipelineExecution: {
+        value: (
+          ...args: Parameters<CancelPipelineExecutionFn>
+        ): ReturnType<CancelPipelineExecutionFn> =>
+          mockCancelPipelineExecution(...args),
+        enumerable: true,
+      },
+      loadExecutionState: {
+        value: (
+          ...args: Parameters<LoadExecutionStateFn>
+        ): ReturnType<LoadExecutionStateFn> => mockLoadExecutionState(...args),
+        enumerable: true,
+      },
+      saveExecutionState: {
+        value: (
+          ...args: Parameters<SaveExecutionStateFn>
+        ): ReturnType<SaveExecutionStateFn> => mockSaveExecutionState(...args),
+        enumerable: true,
+      },
+      resumePipeline: {
+        value: (
+          ...args: Parameters<ResumePipelineFn>
+        ): ReturnType<ResumePipelineFn> => mockResumePipeline(...args),
+        enumerable: true,
+      },
+      retryPipelineExecution: {
+        value: (
+          ...args: Parameters<RetryPipelineExecutionFn>
+        ): ReturnType<RetryPipelineExecutionFn> =>
+          mockRetryPipelineExecution(...args),
+        enumerable: true,
+      },
+      retryMatrixJobExecution: {
+        value: (
+          ...args: Parameters<RetryMatrixJobExecutionFn>
+        ): ReturnType<RetryMatrixJobExecutionFn> =>
+          mockRetryMatrixJobExecution(...args),
+        enumerable: true,
+      },
+      rerunPipelineExecution: {
+        value: (
+          ...args: Parameters<RerunPipelineExecutionFn>
+        ): ReturnType<RerunPipelineExecutionFn> =>
+          mockRerunPipelineExecution(...args),
+        enumerable: true,
+      },
+    },
+  );
+});
 
 import {
   cancelMatrixVariantFromMain,
@@ -516,6 +611,21 @@ import {
   trackExecution,
   tryReserveExecution,
 } from '../pipelines/pipeline-execution-registry';
+import * as pipelineExecutionRegistry from '../pipelines/pipeline-execution-registry';
+import {
+  GLOBAL_RUN_OWNER_CHECK_FAILED_MESSAGE,
+  GLOBAL_RUN_TARGET_MESSAGE,
+} from '../pipelines/pipeline-global-start';
+import {
+  CHOOSE_RUN_OWNER_MESSAGE,
+  RUN_OWNER_UNAVAILABLE_MESSAGE,
+} from '../pipelines/pipeline-owner-policy';
+import { PIPELINE_NOW_OWNED_MESSAGE } from '@canopy/desktop-shared/types/pipeline';
+
+const actualExecutorModule: typeof ExecutorModule = jest.requireActual(
+  '@canopy/desktop-shared/node/pipelines/executor',
+);
+const mockResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
 
 afterEach(() => {
   resetPipelineExecutionEventBroadcasterForTests();
@@ -539,6 +649,23 @@ const mockedDeleteSharedPipeline = jest.mocked(deleteSharedPipeline);
 const mockedListSharedOrganizations = jest.mocked(listSharedOrganizations);
 const mockedListSharedTeams = jest.mocked(listSharedTeams);
 
+function sparseWorkspaceOwnerBinding(
+  organizationId: string,
+): WorkspaceOwnerBinding {
+  const owner: WorkspaceOwnerBinding = {
+    type: 'organization',
+    organizationId,
+    projectId: 'project-a',
+    instanceId: 'instance-a',
+    bindingGeneration: 1,
+  };
+  // Preserve the intentionally sparse legacy owner payload used by these tests.
+  Reflect.deleteProperty(owner, 'projectId');
+  Reflect.deleteProperty(owner, 'instanceId');
+  Reflect.deleteProperty(owner, 'bindingGeneration');
+  return owner;
+}
+
 function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
   return {
     version: 1,
@@ -546,6 +673,7 @@ function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
     pipeline_id: 'pipeline-1',
     pipeline_snapshot: {
       name: 'Pipeline 1',
+      scope: ['directory'],
       jobs: {},
       env: {},
       inputs: {},
@@ -554,6 +682,8 @@ function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
     jobs: {},
     job_definitions: {},
     job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
     started_at: '2026-03-27T12:00:00.000Z',
     cwd: '/stored/cwd',
     env: {
@@ -564,6 +694,12 @@ function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
     event_name: 'dispatch',
     ...overrides,
   };
+}
+
+function pipelineWithoutTrigger(pipeline: Pipeline): Pipeline {
+  // Preserve sparse legacy curated fixtures that intentionally omit `on`.
+  Reflect.deleteProperty(pipeline, 'on');
+  return pipeline;
 }
 
 function createHandle(
@@ -643,12 +779,15 @@ function createSharedPipelineDetail(
     canUpdate: true,
     canDelete: true,
     rawPipeline,
+    contentHash: createHash('sha256').update(rawPipeline).digest('hex'),
     ...overrides,
   };
 }
 
 interface PipelinePreferenceFixture {
   gitExecutablePath: string;
+  canopyBackgroundProcessesMode?: 'canopy' | 'terminal';
+  pipelinesMode?: 'canopy' | 'terminal';
   prGenerationModel: string;
   prGenerationThinkingLevel: string;
   prInstructions: string;
@@ -659,6 +798,7 @@ interface PipelinePreferenceFixture {
   commitInstructionMode: string;
   rtkEnabled: boolean;
   codexMultiAgentPipelinesEnabled: boolean;
+  codexMaxConcurrentSubagents?: number | null;
   localMemoryEnabled: boolean;
 }
 
@@ -748,6 +888,7 @@ describe('project pipeline handlers', () => {
       (key: string) => key !== 'canopy-shared-org-projects-enabled',
     );
     registeredHandlers.clear();
+    mockPipelineMetadataReadable = true;
     mockBackgroundEnabled.mockReturnValue(false);
     mockCaptureBackgroundContext.mockResolvedValue(undefined);
     mockAuthorizeBackground.mockResolvedValue({ allow: true });
@@ -783,12 +924,17 @@ describe('project pipeline handlers', () => {
           pipeline_id: 'project--deploy.yaml',
           pipeline_snapshot: {
             name: 'Captured',
+            scope: ['directory'],
             jobs: {},
             env: {},
             inputs: {},
           },
           status: 'success',
           jobs: {},
+          job_definitions: {},
+          job_groups: {},
+          pending_pauses: [],
+          status_reasons: [],
           started_at: new Date().toISOString(),
           cwd: repoPath,
           env: {},
@@ -800,12 +946,17 @@ describe('project pipeline handlers', () => {
         pipeline_id: 'project--deploy.yaml',
         pipeline_snapshot: {
           name: 'Captured',
+          scope: ['directory'],
           jobs: {},
           env: {},
           inputs: {},
         },
         status: 'running',
         jobs: {},
+        job_definitions: {},
+        job_groups: {},
+        pending_pauses: [],
+        status_reasons: [],
         started_at: new Date().toISOString(),
         cwd: repoPath,
         env: {},
@@ -818,12 +969,17 @@ describe('project pipeline handlers', () => {
           pipeline_id: 'project--deploy.yaml',
           pipeline_snapshot: {
             name: 'Captured',
+            scope: ['directory'],
             jobs: {},
             env: {},
             inputs: {},
           },
           status: 'success',
           jobs: {},
+          job_definitions: {},
+          job_groups: {},
+          pending_pauses: [],
+          status_reasons: [],
           started_at: new Date().toISOString(),
           cwd: repoPath,
           env: {},
@@ -921,11 +1077,12 @@ describe('project pipeline handlers', () => {
         updatedAt: '',
         filePath: '/managed/hash/pipeline.yaml',
       },
-      content: {
+      content: pipelineWithoutTrigger({
         name: 'Review',
+        on: 'dispatch',
         readonly: true,
         jobs: { check: { steps: [{ run: 'echo verified' }] } },
-      },
+      }),
     };
     jest.mocked(getManagedCuratedPipeline).mockResolvedValue(managed);
     expect(
@@ -962,7 +1119,11 @@ describe('project pipeline handlers', () => {
         updatedAt: '',
         curatedContentHash: 'b'.repeat(64),
       },
-      content: { name: 'Updated', jobs: {} },
+      content: pipelineWithoutTrigger({
+        name: 'Updated',
+        on: 'dispatch',
+        jobs: {},
+      }),
     });
     const result = await getHandler(PIPELINE_CHANNELS.EXECUTE)(
       undefined,
@@ -981,7 +1142,7 @@ describe('project pipeline handlers', () => {
     expect(result).toMatchObject({
       success: false,
       error:
-        'This curated pipeline changed after you opened it. Reopen the launch dialog to review its updated inputs and try again.',
+        'This curated workflow changed after you opened it. Reopen the launch dialog to review its updated inputs and try again.',
     });
     expect(mockExecutePipeline).not.toHaveBeenCalled();
   });
@@ -1010,7 +1171,7 @@ describe('project pipeline handlers', () => {
     ).toMatchObject({
       success: false,
       error:
-        'This curated pipeline no longer supports the selected trigger. Reopen the launch dialog and choose another pipeline.',
+        'This curated workflow no longer supports the selected trigger. Reopen the launch dialog and choose another workflow.',
     });
     expect(mockExecutePipeline).not.toHaveBeenCalled();
   });
@@ -1032,10 +1193,11 @@ describe('project pipeline handlers', () => {
         curatedContentHash: 'a'.repeat(64),
         curatedRevision: 1,
       },
-      content: {
+      content: pipelineWithoutTrigger({
         name: 'Current verified',
+        on: 'dispatch',
         jobs: { check: { steps: [{ run: 'echo verified' }] } },
-      },
+      }),
     };
     jest.mocked(getManagedCuratedPipeline).mockResolvedValue(managed);
     const result = await getHandler(PIPELINE_CHANNELS.EXECUTE)(
@@ -1332,13 +1494,14 @@ describe('project pipeline handlers', () => {
         .mockResolvedValue({
           authority: 'ok',
           ownerMalformed: false,
+          memoryMalformed: false,
           config: {
             version: 1,
             type: 'single-repo',
             repos: [],
             repoPath,
             ...(organization
-              ? { owner: { type: 'organization', organizationId: 'org-a' } }
+              ? { owner: sparseWorkspaceOwnerBinding('org-a') }
               : {}),
           },
         });
@@ -1365,7 +1528,7 @@ describe('project pipeline handlers', () => {
         if (location === 'symlink') {
           expect(result).toEqual({
             success: false,
-            error: 'Pipeline unavailable (unsupported-target)',
+            error: 'Workflow unavailable (unsupported-target)',
           });
           expect(mockedSavePipeline).not.toHaveBeenCalled();
           return;
@@ -1469,13 +1632,14 @@ describe('project pipeline handlers', () => {
       pipeline: { name: 'Unsupported speed', on: 'dispatch', jobs: {} },
       options: {
         cwd: repoPath,
+        pipelineId: 'unsupported-speed',
         modelConfig: { speed: 'ultrafast', fastMode: false },
       },
       getWindow: () => null,
     });
     expect(result).toEqual({
       success: false,
-      error: 'Pipelines do not support Ultra fast. Choose Regular or Fast.',
+      error: 'Workflows do not support Ultra fast. Choose Regular or Fast.',
     });
     expect(mockReservePipelineExecutionStart).not.toHaveBeenCalled();
     expect(mockExecutePipeline).not.toHaveBeenCalled();
@@ -1494,11 +1658,11 @@ describe('project pipeline handlers', () => {
       mockRerunPipelineExecution.mockResolvedValue(createHandle(state));
       mockRetryMatrixJobExecution.mockResolvedValue(createHandle(state));
       const error =
-        'Pipelines do not support Ultra fast. Choose Regular or Fast.';
+        'Workflows do not support Ultra fast. Choose Regular or Fast.';
       if (kind === 'matrix') {
         await expect(
           retryMatrixJobFromMain({
-            request: { executionId: state.id, jobId: 'build' },
+            request: { executionId: state.id, jobId: 'build', mode: 'failed' },
             getWindow: () => null,
           }),
         ).rejects.toThrow(error);
@@ -1518,6 +1682,61 @@ describe('project pipeline handlers', () => {
       expect(mockRerunPipelineExecution).not.toHaveBeenCalled();
       expect(mockRetryMatrixJobExecution).not.toHaveBeenCalled();
       expect(mockSaveExecutionState).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['retry', 'rerun'] as const)(
+    'keeps a global %s global under its recorded owner and refuses it after access is removed',
+    async (kind) => {
+      const executionContext = 'org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const state = createState({
+        status: 'failure',
+        scope: 'global',
+        execution_context: executionContext,
+        initiator: { kind: 'user' },
+      });
+      mockLoadExecutionState.mockResolvedValue(state);
+      mockRetryPipelineExecution.mockResolvedValue(createHandle(state));
+      mockRerunPipelineExecution.mockResolvedValue(createHandle(state));
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockAuthorizeBackground.mockResolvedValue({ allow: true });
+      const replay =
+        kind === 'retry'
+          ? retryPipelineExecutionFromMain
+          : rerunPipelineExecutionFromMain;
+      const replayMock =
+        kind === 'retry'
+          ? mockRetryPipelineExecution
+          : mockRerunPipelineExecution;
+
+      await expect(
+        replay({ executionId: state.id, getWindow: () => null }),
+      ).resolves.toMatchObject({ success: true });
+      expect(mockAuthorizeBackground).toHaveBeenCalledWith(
+        executionContext,
+        expect.any(Array),
+        { scope: 'global' },
+        expect.any(Array),
+      );
+      // A replay never recaptures the selected context or gains a target.
+      expect(mockCaptureBackgroundContext).not.toHaveBeenCalled();
+      const replayOptions = replayMock.mock.calls[0]?.[1];
+      expect(replayOptions).toMatchObject({ executionContext });
+      expect(replayOptions).not.toHaveProperty('projectId');
+      expect(replayOptions).not.toHaveProperty('worktreeId');
+
+      replayMock.mockClear();
+      mockAuthorizeBackground.mockResolvedValue({
+        allow: false,
+        reason: 'access-removed',
+      });
+      await expect(
+        replay({ executionId: state.id, getWindow: () => null }),
+      ).resolves.toMatchObject({
+        success: false,
+        error: backgroundExecutionDeniedMessage('access-removed'),
+      });
+      expect(replayMock).not.toHaveBeenCalled();
     },
   );
 
@@ -1587,12 +1806,17 @@ describe('project pipeline handlers', () => {
     mockAuthorizeBackground.mockResolvedValue({ allow: true });
     try {
       const result = await startPipelineExecutionFromMain({
-        pipeline: { name: 'Global', on: 'dispatch', jobs: {} },
+        pipeline: {
+          name: 'Global',
+          on: 'dispatch',
+          scope: ['global'],
+          jobs: {},
+        },
         options: {
-          cwd: repoPath,
           scope: 'global',
           pipelineId: 'global-pipeline',
           initiationSource: 'user',
+          requestedOwner: executionContext,
         },
         getWindow: () => null,
       });
@@ -1606,7 +1830,7 @@ describe('project pipeline handlers', () => {
         expect.any(Object),
         expect.objectContaining({ executionContext }),
       );
-      // A global run works in its own folder, never the caller's cwd.
+      // A global run works in its own folder.
       const options = mockExecutePipeline.mock.calls[0]?.[1];
       expect(options?.cwd).toBe(
         path.join(
@@ -1651,15 +1875,76 @@ describe('project pipeline handlers', () => {
       return options;
     }
 
+    type StartArgs = Parameters<typeof startPipelineExecutionFromMain>[0];
+    const RUN_PIPELINE: StartArgs['pipeline'] = {
+      name: 'Run',
+      on: 'dispatch',
+      jobs: {},
+    };
+    const GLOBAL_RUN_PIPELINE: StartArgs['pipeline'] = {
+      name: 'Run',
+      on: 'dispatch',
+      scope: ['global'],
+      jobs: {},
+    };
+
     async function start(
-      options: Parameters<typeof startPipelineExecutionFromMain>[0]['options'],
+      options: StartArgs['options'],
+      pipeline: StartArgs['pipeline'] = options.scope === 'global'
+        ? GLOBAL_RUN_PIPELINE
+        : RUN_PIPELINE,
     ): ReturnType<typeof startPipelineExecutionFromMain> {
       return startPipelineExecutionFromMain({
-        pipeline: { name: 'Run', on: 'dispatch', jobs: {} },
+        pipeline,
         options,
         getWindow: () => null,
       });
     }
+
+    describe('pipeline assets', () => {
+      function assetPipeline(assetPath: string): Pipeline {
+        return {
+          name: 'Assets',
+          on: 'dispatch',
+          assets: [{ id: 'specialists', path: assetPath }],
+          jobs: {},
+        };
+      }
+
+      it('fails the start before any step when a required asset is missing', async () => {
+        mockLocalUserPipelineIds.add('asset-user');
+        const result = await startPipelineExecutionFromMain({
+          pipeline: assetPipeline(path.join(repoPath, 'missing-specialists')),
+          options: { cwd: repoPath, pipelineId: 'asset-user' },
+          getWindow: () => null,
+        });
+        expect(result).toMatchObject({
+          success: false,
+          error: textContaining('"specialists"'),
+        });
+        expect(mockExecutePipeline).not.toHaveBeenCalled();
+      });
+
+      it('passes resolved assets and a created data dir to the executor', async () => {
+        mockLocalUserPipelineIds.add('asset-user');
+        const specialists = path.join(repoPath, 'specialists');
+        fs.mkdirSync(specialists, { recursive: true });
+        await expect(
+          startPipelineExecutionFromMain({
+            pipeline: assetPipeline(specialists),
+            options: { cwd: repoPath, pipelineId: 'asset-user' },
+            getWindow: () => null,
+          }),
+        ).resolves.toMatchObject({ success: true });
+        const dataDir = getPipelineDataDir('asset-user');
+        expect(executedOptions()).toMatchObject({
+          assetPaths: { specialists },
+          pipelineDataDir: dataDir,
+        });
+        expect(executedOptions().assetsDir).toBeUndefined();
+        expect(fs.statSync(dataDir).isDirectory()).toBe(true);
+      });
+    });
 
     it('records a Personal owner and a user initiator with the flag off', async () => {
       await expect(
@@ -1789,14 +2074,48 @@ describe('project pipeline handlers', () => {
       );
     });
 
-    it("drops a caller's project root from a global run", async () => {
-      await expect(
-        start({ scope: 'global', pipelineId: 'run', cwd: repoPath, repoPath }),
-      ).resolves.toMatchObject({ success: true });
-      const options = executedOptions();
-      expect(options.repoPath).toBeUndefined();
-      expect(options.cwd).not.toBe(repoPath);
-    });
+    it.each<[string, Partial<StartArgs['options']>]>([
+      ['a working directory', { cwd: '/repo' }],
+      ['a project root', { cwd: '/repo', repoPath: '/repo' }],
+      ['a project', { projectId: 'project-1' }],
+      ['a project and task', { projectId: 'project-1', worktreeId: 'task-1' }],
+    ])(
+      'refuses a global run naming %s before reserving it',
+      async (_label, overrides) => {
+        mockBackgroundEnabled.mockReturnValue(true);
+        mockCaptureBackgroundContext.mockResolvedValue('personal');
+        mockLocalUserPipelineIds.add('legacy');
+        const tryReserve = jest.spyOn(
+          pipelineExecutionRegistry,
+          'tryReserveExecution',
+        );
+        try {
+          await expect(
+            start({
+              scope: 'global',
+              pipelineId: 'legacy',
+              initiationSource: 'user',
+              requestedOwner: ORG_B,
+              ...overrides,
+            }),
+          ).resolves.toEqual({
+            success: false,
+            error: GLOBAL_RUN_TARGET_MESSAGE,
+          });
+          expect(tryReserve).not.toHaveBeenCalled();
+        } finally {
+          tryReserve.mockRestore();
+        }
+        expect(
+          mockWithWorkspaceTargetRuntimeStartReservation,
+        ).not.toHaveBeenCalled();
+        expect(mockReservePipelineExecutionStart).not.toHaveBeenCalled();
+        expect(mockExecutePipeline).not.toHaveBeenCalled();
+        expect(mockAccountMayRunIn).not.toHaveBeenCalled();
+        expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+        expect(mockPipelineMetadata.get('legacy')).toBeUndefined();
+      },
+    );
 
     it('refuses a global project pipeline and a project run without cwd', async () => {
       await expect(
@@ -1807,9 +2126,7 @@ describe('project pipeline handlers', () => {
         }),
       ).resolves.toMatchObject({
         success: false,
-        error: textContaining(
-          "Project pipelines aren't available in a run with no project",
-        ),
+        error: GLOBAL_RUN_TARGET_MESSAGE,
       });
       await expect(
         start({
@@ -1824,14 +2141,14 @@ describe('project pipeline handlers', () => {
       expect(mockExecutePipeline).not.toHaveBeenCalled();
     });
 
-    it('authorizes an explicit organization owner on a foreground global run', async () => {
+    it('authorizes a chosen organization owner on a foreground global run', async () => {
       mockBackgroundEnabled.mockReturnValue(true);
       mockCaptureBackgroundContext.mockResolvedValue('personal');
       const options = {
         scope: 'global' as const,
         pipelineId: 'run',
         initiationSource: 'user' as const,
-        executionContext: ORG_B,
+        requestedOwner: ORG_B,
       };
 
       await expect(start(options)).resolves.toMatchObject({ success: true });
@@ -1844,10 +2161,16 @@ describe('project pipeline handlers', () => {
         expect.any(Array),
         { scope: 'global' },
       );
+      expect(executedOptions()).toMatchObject({ executionContext: ORG_B });
 
       mockExecutePipeline.mockClear();
+      mockAuthorizeBackground.mockClear();
       mockAccountMayRunIn.mockResolvedValue(false);
-      await expect(start(options)).resolves.toMatchObject({ success: false });
+      await expect(start(options)).resolves.toMatchObject({
+        success: false,
+        error: textContaining('no longer have access'),
+      });
+      expect(mockAuthorizeBackground).not.toHaveBeenCalled();
       expect(mockExecutePipeline).not.toHaveBeenCalled();
     });
 
@@ -1870,7 +2193,7 @@ describe('project pipeline handlers', () => {
       });
     });
 
-    it('binds a global user pipeline run to a selected organization over its stored owner', async () => {
+    it("keeps a global user pipeline's saved owner over a selected organization", async () => {
       mockBackgroundEnabled.mockReturnValue(true);
       mockCaptureBackgroundContext.mockResolvedValue(ORG_A);
       mockLocalUserPipelineIds.add('personal-owned');
@@ -1883,14 +2206,794 @@ describe('project pipeline handlers', () => {
           initiationSource: 'user',
         }),
       ).resolves.toMatchObject({ success: true });
-      // Plan decision 1: a foreground dispatch in a selected organization is an
-      // explicit binding, ahead of a global run's stored pipeline owner.
-      expect(executedOptions()).toMatchObject({ executionContext: ORG_A });
+      // A person's global run takes its saved owner, never the selected
+      // organization (the foreground org dispatch binding is for project runs).
+      expect(executedOptions()).toMatchObject({ executionContext: 'personal' });
+      expect(mockAuthorizeBackground).not.toHaveBeenCalled();
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+    });
+
+    it('keeps a saved organization owner over a different selected organization', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue(ORG_A);
+      mockLocalUserPipelineIds.add('org-owned');
+      mockPipelineMetadata.set('org-owned', { owner: ORG_B });
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'org-owned',
+          initiationSource: 'portal',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(executedOptions()).toMatchObject({ executionContext: ORG_B });
+      expect(mockAccountMayRunIn).toHaveBeenCalledWith({
+        kind: 'organization',
+        organizationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+      });
       expect(mockAuthorizeBackground).toHaveBeenCalledWith(
-        ORG_A,
+        ORG_B,
         expect.any(Array),
         { scope: 'global' },
       );
+      expect(mockAuthorizeBackground).not.toHaveBeenCalledWith(
+        ORG_A,
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("binds an unowned user pipeline to a person's chosen owner and records it on the run", async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: ORG_B,
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(mockRecordUserPipelineOwner).toHaveBeenCalledTimes(1);
+      expect(mockRecordUserPipelineOwner).toHaveBeenCalledWith('legacy', ORG_B);
+      expect(mockPipelineMetadata.get('legacy')).toEqual({ owner: ORG_B });
+      expect(executedOptions()).toMatchObject({
+        executionContext: ORG_B,
+        initiator: { kind: 'user' },
+      });
+      // The binding follows authorization.
+      expect(mockAuthorizeBackground.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRecordUserPipelineOwner.mock.invocationCallOrder[0] ?? 0,
+      );
+
+      // The next run reads the binding and needs no choice.
+      mockExecutePipeline.mockClear();
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(executedOptions()).toMatchObject({ executionContext: ORG_B });
+      expect(mockRecordUserPipelineOwner).toHaveBeenCalledTimes(1);
+    });
+
+    it('binds a Personal choice without organization authorization', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue(ORG_A);
+      mockLocalUserPipelineIds.add('legacy');
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: 'personal',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(mockPipelineMetadata.get('legacy')).toEqual({ owner: 'personal' });
+      expect(executedOptions()).toMatchObject({ executionContext: 'personal' });
+      expect(mockAuthorizeBackground).not.toHaveBeenCalled();
+    });
+
+    it('returns a refusal, not a throw, when the owner check fails to read', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockRejectedValue(new Error('offline'));
+      mockLocalUserPipelineIds.add('legacy');
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: ORG_B,
+        }),
+      ).resolves.toEqual({
+        success: false,
+        error: GLOBAL_RUN_OWNER_CHECK_FAILED_MESSAGE,
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it('does not bind an owner when authorization refuses the run', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+      mockAuthorizeBackground.mockResolvedValue({
+        allow: false,
+        reason: 'access-removed',
+      });
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: ORG_B,
+        }),
+      ).resolves.toMatchObject({ success: false });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockPipelineMetadata.get('legacy')).toBeUndefined();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it('keeps the owner binding when the start fails after it', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+      mockExecutePipeline.mockRejectedValueOnce(new Error('executor failed'));
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: ORG_B,
+        }),
+      ).resolves.toMatchObject({ success: false });
+      // Binding is an ownership decision, not a leftover of the failed start.
+      expect(mockPipelineMetadata.get('legacy')).toEqual({ owner: ORG_B });
+
+      mockExecutePipeline.mockClear();
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(executedOptions()).toMatchObject({ executionContext: ORG_B });
+      expect(mockRecordUserPipelineOwner).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives concurrent global starts of one pipeline their own executions and folders', async () => {
+      const [first, second] = await Promise.all([
+        start({ scope: 'global', pipelineId: 'run' }),
+        start({ scope: 'global', pipelineId: 'run' }),
+      ]);
+      expect(first).toMatchObject({ success: true });
+      expect(second).toMatchObject({ success: true });
+      const started = mockExecutePipeline.mock.calls.map((call) => call[1]);
+      expect(started).toHaveLength(2);
+      const [a, b] = started;
+      expect(a?.executionId).toBeDefined();
+      expect(a?.executionId).not.toBe(b?.executionId);
+      expect(a?.cwd).not.toBe(b?.cwd);
+      for (const options of started)
+        expect(options.cwd).toBe(
+          path.join(
+            runtime.executionsDir,
+            options.executionId ?? '',
+            'workspace',
+          ),
+        );
+    });
+
+    it("refuses the run when a binding can't be confirmed", async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+      mockRecordUserPipelineOwner.mockImplementationOnce(() => undefined);
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: 'personal',
+        }),
+      ).resolves.toMatchObject({
+        success: false,
+        error: textContaining("Couldn't confirm where"),
+      });
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it("authorizes a global run's stored pipeline against its owner, not the selected context", async () => {
+      mockIsFeatureFlagEnabled.mockReturnValue(true);
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('owned');
+      mockPipelineMetadata.set('owned', { owner: ORG_A });
+      const resource = {
+        owner: { type: 'user' as const, id: 'me', name: null },
+      };
+      const stored = jest
+        .spyOn(pipelineInstallContext, 'assertStoredPipelineContext')
+        .mockResolvedValue();
+      const read = jest
+        .spyOn(pipelineInstallContext, 'readStoredPipelineContext')
+        .mockResolvedValue(resource);
+      const authorize = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContext')
+        .mockResolvedValue();
+      const snapshot = jest
+        .spyOn(pipelineResourceLanes, 'pipelineContextSnapshot')
+        .mockResolvedValue('snapshot');
+      const snapshotCheck = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContextSnapshot')
+        .mockResolvedValue();
+      try {
+        await expect(
+          start({
+            scope: 'global',
+            pipelineId: 'owned',
+            initiationSource: 'user',
+          }),
+        ).resolves.toMatchObject({ success: true });
+        expect(stored).not.toHaveBeenCalled();
+        expect(read).toHaveBeenCalledWith('owned', ORG_A);
+        expect(authorize).toHaveBeenCalledWith(resource, undefined, ORG_A);
+
+        // A definition outside the owner is refused before anything starts.
+        authorize.mockRejectedValueOnce(
+          new Error('Workflow unavailable (context-mismatch)'),
+        );
+        mockExecutePipeline.mockClear();
+        await expect(
+          start({
+            scope: 'global',
+            pipelineId: 'owned',
+            initiationSource: 'user',
+          }),
+        ).resolves.toMatchObject({ success: false });
+        expect(mockExecutePipeline).not.toHaveBeenCalled();
+      } finally {
+        stored.mockRestore();
+        read.mockRestore();
+        authorize.mockRestore();
+        snapshot.mockRestore();
+        snapshotCheck.mockRestore();
+      }
+    });
+
+    it("authorizes a global run's shared definition against its owner, not the selected context", async () => {
+      mockIsFeatureFlagEnabled.mockReturnValue(true);
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      const detail = createSharedPipelineDetail({ id: 'remote-global' });
+      mockedGetSharedPipeline.mockClear();
+      mockedGetSharedPipelineForExecutionContext.mockResolvedValueOnce(detail);
+      const authorize = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContext')
+        .mockResolvedValue();
+      const snapshot = jest
+        .spyOn(pipelineResourceLanes, 'pipelineContextSnapshot')
+        .mockResolvedValue('snapshot');
+      const snapshotCheck = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContextSnapshot')
+        .mockResolvedValue();
+      try {
+        await expect(
+          start({
+            scope: 'global',
+            pipelineId: 'shared:canopy-cloud:remote-global',
+            sharedPipeline: {
+              serverId: 'canopy-cloud',
+              remoteId: 'remote-global',
+            },
+            initiationSource: 'user',
+            requestedOwner: ORG_B,
+          }),
+        ).resolves.toMatchObject({ success: true });
+        // Never the navigation-scoped read or check.
+        expect(mockedGetSharedPipeline).not.toHaveBeenCalled();
+        expect(authorize).toHaveBeenCalledWith(
+          { owner: detail.owner },
+          undefined,
+          ORG_B,
+        );
+        for (const call of authorize.mock.calls) expect(call[2]).toBe(ORG_B);
+        expect(executedOptions()).toMatchObject({ executionContext: ORG_B });
+      } finally {
+        authorize.mockRestore();
+        snapshot.mockRestore();
+        snapshotCheck.mockRestore();
+      }
+    });
+
+    it("doesn't bind an owner when saved owners became unreadable during authorization", async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+      mockAuthorizeBackground.mockImplementationOnce(() => {
+        mockPipelineMetadataReadable = false;
+        return Promise.resolve({ allow: true });
+      });
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: ORG_B,
+        }),
+      ).resolves.toEqual({
+        success: false,
+        error: textContaining("Couldn't confirm where"),
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it('refuses a chosen owner when another start binds the pipeline while it is authorized', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+      let releaseAuthorization: () => void = () => undefined;
+      mockAuthorizeBackground.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseAuthorization = (): void => resolve({ allow: true });
+          }),
+      );
+
+      // The organization start reads the pipeline unowned, then waits on
+      // authorization while a Personal start binds it.
+      const organizationStart = start({
+        scope: 'global',
+        pipelineId: 'legacy',
+        initiationSource: 'user',
+        requestedOwner: ORG_B,
+      });
+      while (mockAuthorizeBackground.mock.calls.length === 0)
+        await new Promise((resolve) => setImmediate(resolve));
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: 'personal',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      releaseAuthorization();
+
+      await expect(organizationStart).resolves.toEqual({
+        success: false,
+        error: PIPELINE_NOW_OWNED_MESSAGE,
+        errorCode: 'pipeline_now_owned',
+      });
+      expect(mockRecordUserPipelineOwner).toHaveBeenCalledTimes(1);
+      expect(mockPipelineMetadata.get('legacy')).toEqual({ owner: 'personal' });
+      expect(mockExecutePipeline).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks a person to choose an owner for an unowned global pipeline', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue(ORG_A);
+      mockLocalUserPipelineIds.add('legacy');
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+        }),
+      ).resolves.toEqual({ success: false, error: CHOOSE_RUN_OWNER_MESSAGE });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it('refuses a stale chosen owner after the pipeline became owned, without rewriting it', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+      // Another start bound the pipeline after this dialog read it unowned.
+      mockPipelineMetadata.set('legacy', { owner: ORG_A });
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: ORG_B,
+        }),
+      ).resolves.toEqual({
+        success: false,
+        error: PIPELINE_NOW_OWNED_MESSAGE,
+        errorCode: 'pipeline_now_owned',
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockPipelineMetadata.get('legacy')).toEqual({ owner: ORG_A });
+      expect(mockReservePipelineExecutionStart).not.toHaveBeenCalled();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it("refuses a person's global run while saved owners can't be read", async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockLocalUserPipelineIds.add('legacy');
+      mockPipelineMetadataReadable = false;
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'legacy',
+          initiationSource: 'user',
+          requestedOwner: 'personal',
+        }),
+      ).resolves.toMatchObject({
+        success: false,
+        error: textContaining("Couldn't confirm where"),
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it('keeps only a valid chosen owner from the renderer and drops forged identity', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue(ORG_A);
+      const handler = getHandler(PIPELINE_CHANNELS.EXECUTE);
+      const forged = {
+        pipelineId: 'run',
+        scope: 'global',
+        executionContext: ORG_A,
+        initiator: { kind: 'agent', chat: AGENT_CHAT },
+        agentOrigin: AGENT_CHAT,
+        executionId: 'forged-execution-id',
+        allowUnverifiedForegroundChildren: true,
+      };
+
+      await expect(
+        handler(undefined, GLOBAL_RUN_PIPELINE, {
+          ...forged,
+          requestedOwner: 'personal',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      const options = executedOptions();
+      expect(options.executionContext).toBe('personal');
+      expect(options.initiator).toEqual({ kind: 'user' });
+      expect(options.agentOrigin).toBeUndefined();
+      expect(options.executionId).not.toBe('forged-execution-id');
+      expect(options).not.toHaveProperty('allowUnverifiedForegroundChildren');
+      expect(options).not.toHaveProperty('requestedOwner');
+      expect(mockAuthorizeBackground).not.toHaveBeenCalled();
+
+      // A malformed owner is dropped, so the person is asked to choose.
+      mockExecutePipeline.mockClear();
+      await expect(
+        handler(undefined, GLOBAL_RUN_PIPELINE, {
+          ...forged,
+          requestedOwner: 'org:not-a-uuid',
+        }),
+      ).resolves.toEqual({ success: false, error: CHOOSE_RUN_OWNER_MESSAGE });
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it("treats a renderer global start claiming App Advisor as a person's", async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue(ORG_A);
+      mockLocalUserPipelineIds.add('legacy');
+      const handler = getHandler(PIPELINE_CHANNELS.EXECUTE);
+
+      // App Advisor's global runs start in main, never from the renderer.
+      await expect(
+        handler(undefined, GLOBAL_RUN_PIPELINE, {
+          pipelineId: 'legacy',
+          scope: 'global',
+          initiationSource: 'app_advisor',
+        }),
+      ).resolves.toEqual({ success: false, error: CHOOSE_RUN_OWNER_MESSAGE });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+
+      await expect(
+        handler(undefined, GLOBAL_RUN_PIPELINE, {
+          pipelineId: 'legacy',
+          scope: 'global',
+          initiationSource: 'app_advisor',
+          requestedOwner: 'personal',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(executedOptions().initiator).toEqual({ kind: 'user' });
+    });
+
+    describe('single-pipeline read owner', () => {
+      beforeEach(() => {
+        mockBackgroundEnabled.mockReturnValue(true);
+      });
+
+      function pipelineData(
+        id: string,
+        source: 'user' | 'bundled',
+      ): ReturnType<typeof pipelineService.getPipeline> {
+        return {
+          success: true,
+          data: {
+            info: {
+              id,
+              name: id,
+              description: '',
+              icon: '',
+              source,
+              readonly: source === 'bundled',
+              filename: `${id}.yaml`,
+              createdAt: '2026-03-27T12:00:00.000Z',
+              updatedAt: '2026-03-27T12:00:00.000Z',
+            },
+            content: { name: id, on: 'dispatch', jobs: {} },
+          },
+        };
+      }
+
+      it('annotates a user pipeline with its saved owner', async () => {
+        mockPipelineMetadata.set('owned', { owner: ORG_B });
+        jest
+          .mocked(pipelineService.getPipeline)
+          .mockReturnValue(pipelineData('owned', 'user'));
+        mockedGetStoredPipelineBySource.mockReturnValue(
+          pipelineData('owned', 'user'),
+        );
+
+        await expect(
+          getHandler(PIPELINE_CHANNELS.GET)(undefined, 'owned'),
+        ).resolves.toMatchObject({
+          success: true,
+          data: { info: { id: 'owned' }, localRunOwner: ORG_B },
+        });
+        await expect(
+          getHandler(PIPELINE_CHANNELS.GET)(undefined, {
+            source: 'user',
+            id: 'owned',
+          }),
+        ).resolves.toMatchObject({
+          success: true,
+          data: { localRunOwner: ORG_B },
+        });
+        expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      });
+
+      it('leaves unowned and bundled pipelines unannotated', async () => {
+        mockPipelineMetadata.set('bundled', { owner: ORG_B });
+        jest
+          .mocked(pipelineService.getPipeline)
+          .mockReturnValueOnce(pipelineData('legacy', 'user'))
+          .mockReturnValueOnce(pipelineData('bundled', 'bundled'));
+
+        const legacy = await getHandler(PIPELINE_CHANNELS.GET)(
+          undefined,
+          'legacy',
+        );
+        expect(legacy).toMatchObject({ success: true });
+        expect(legacy).not.toHaveProperty('data.localRunOwner');
+        const bundled = await getHandler(PIPELINE_CHANNELS.GET)(
+          undefined,
+          'bundled',
+        );
+        expect(bundled).toMatchObject({ success: true });
+        expect(bundled).not.toHaveProperty('data.localRunOwner');
+        // Reading never binds a legacy pipeline.
+        expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      });
+
+      it("marks a user pipeline's owner unreadable instead of failing the read", async () => {
+        mockPipelineMetadataReadable = false;
+        mockPipelineMetadata.set('owned', { owner: ORG_B });
+        jest
+          .mocked(pipelineService.getPipeline)
+          .mockReturnValue(pipelineData('owned', 'user'));
+        mockedGetStoredPipelineBySource.mockReturnValue(
+          pipelineData('owned', 'user'),
+        );
+
+        // The editor and other reads keep working; the pipeline never
+        // appears unowned, and the Run dialog blocks a run with no project.
+        for (const request of ['owned', { source: 'user', id: 'owned' }]) {
+          const read = await getHandler(PIPELINE_CHANNELS.GET)(
+            undefined,
+            request,
+          );
+          expect(read).toMatchObject({
+            success: true,
+            data: { localRunOwnerUnreadable: true },
+          });
+          expect(read).not.toHaveProperty('data.localRunOwner');
+        }
+      });
+
+      it('neither annotates nor fails a read with organization projects off', async () => {
+        // Every run is Personal then, so the saved owner is never used.
+        mockBackgroundEnabled.mockReturnValue(false);
+        mockPipelineMetadataReadable = false;
+        mockPipelineMetadata.set('owned', { owner: ORG_B });
+        jest
+          .mocked(pipelineService.getPipeline)
+          .mockReturnValue(pipelineData('owned', 'user'));
+
+        const read = await getHandler(PIPELINE_CHANNELS.GET)(
+          undefined,
+          'owned',
+        );
+        expect(read).toMatchObject({ success: true });
+        expect(read).not.toHaveProperty('data.localRunOwner');
+      });
+
+      it('passes through a failed read and a bundled read while owners are unreadable', async () => {
+        mockPipelineMetadataReadable = false;
+        jest
+          .mocked(pipelineService.getPipeline)
+          .mockReturnValueOnce({ success: false, error: 'Pipeline not found' })
+          .mockReturnValueOnce(pipelineData('bundled', 'bundled'));
+
+        await expect(
+          getHandler(PIPELINE_CHANNELS.GET)(undefined, 'missing'),
+        ).resolves.toEqual({ success: false, error: 'Pipeline not found' });
+        await expect(
+          getHandler(PIPELINE_CHANNELS.GET)(undefined, 'bundled'),
+        ).resolves.toMatchObject({ success: true });
+      });
+    });
+
+    it('refuses an organization choice with organization projects off', async () => {
+      mockLocalUserPipelineIds.add('legacy');
+      await expect(
+        getHandler(PIPELINE_CHANNELS.EXECUTE)(undefined, GLOBAL_RUN_PIPELINE, {
+          pipelineId: 'legacy',
+          scope: 'global',
+          requestedOwner: ORG_B,
+        }),
+      ).resolves.toEqual({
+        success: false,
+        error: RUN_OWNER_UNAVAILABLE_MESSAGE,
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it("authorizes an automation run with no project and its children against the automation's owner", async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      const record = {
+        request: 'child',
+        identity: 'local',
+        contentHash: 'a'.repeat(64),
+      };
+      mockAuthorizeBackground.mockImplementation(
+        (_context, _resources, _destination, records) => {
+          records?.push(record);
+          return Promise.resolve({ allow: true });
+        },
+      );
+      const options = {
+        scope: 'global' as const,
+        pipelineId: 'run',
+        initiationSource: 'automation' as const,
+        initiator: {
+          kind: 'automation' as const,
+          automationId: 'automation-1',
+          automationName: 'Nightly',
+        },
+        executionContext: ORG_B,
+      };
+
+      await expect(start(options)).resolves.toMatchObject({ success: true });
+      expect(mockAuthorizeBackground).toHaveBeenCalledWith(
+        ORG_B,
+        expect.any(Array),
+        { scope: 'global' },
+        [record],
+      );
+      expect(executedOptions()).toMatchObject({
+        executionContext: ORG_B,
+        childPipelineAuthorizations: [record],
+      });
+      expect(executedOptions()).not.toHaveProperty(
+        'allowUnverifiedForegroundChildren',
+      );
+
+      mockExecutePipeline.mockClear();
+      mockAuthorizeBackground.mockResolvedValue({
+        allow: false,
+        reason: 'access-removed',
+      });
+      await expect(start(options)).resolves.toMatchObject({
+        success: false,
+        error: backgroundExecutionDeniedMessage('access-removed'),
+      });
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    });
+
+    it("checks a stored pipeline in an automation run with no project as the automation's owner", async () => {
+      mockIsFeatureFlagEnabled.mockReturnValue(true);
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockAuthorizeBackground.mockResolvedValue({ allow: true });
+      const stored = jest
+        .spyOn(pipelineInstallContext, 'assertStoredPipelineContext')
+        .mockResolvedValue();
+      const definition = { owner: { type: 'system' as const } };
+      const resource = jest
+        .spyOn(pipelineInstallContext, 'readStoredPipelineContext')
+        .mockResolvedValue(definition);
+      const authorize = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContext')
+        .mockResolvedValue();
+      const snapshot = jest
+        .spyOn(pipelineResourceLanes, 'pipelineContextSnapshot')
+        .mockResolvedValue('current');
+      const fence = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContextSnapshot')
+        .mockResolvedValue(undefined);
+      try {
+        await expect(
+          start({
+            scope: 'global',
+            pipelineId: 'run',
+            initiationSource: 'automation',
+            initiator: {
+              kind: 'automation',
+              automationId: 'automation-1',
+              automationName: 'Nightly',
+            },
+            executionContext: ORG_B,
+          }),
+        ).resolves.toMatchObject({ success: true });
+        // Checked once against the automation's owner, never navigation.
+        expect(stored).not.toHaveBeenCalled();
+        expect(resource).toHaveBeenCalledWith('run', ORG_B);
+        expect(authorize).toHaveBeenCalledWith(definition, undefined, ORG_B);
+      } finally {
+        stored.mockRestore();
+        resource.mockRestore();
+        authorize.mockRestore();
+        snapshot.mockRestore();
+        fence.mockRestore();
+      }
+    });
+
+    it('authorizes a shared pipeline in an automation run with no project', async () => {
+      mockBackgroundEnabled.mockReturnValue(true);
+      mockCaptureBackgroundContext.mockResolvedValue('personal');
+      mockAuthorizeBackground.mockResolvedValue({ allow: true });
+      mockedGetSharedPipeline.mockResolvedValue(
+        createSharedPipelineDetail({ id: 'remote-exec' }),
+      );
+
+      await expect(
+        start({
+          scope: 'global',
+          pipelineId: 'shared:canopy-cloud:remote-exec',
+          initiationSource: 'automation',
+          initiator: {
+            kind: 'automation',
+            automationId: 'automation-1',
+            automationName: 'Nightly',
+          },
+          executionContext: ORG_B,
+          sharedPipeline: { serverId: 'canopy-cloud', remoteId: 'remote-exec' },
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(mockAuthorizeBackground).toHaveBeenCalledWith(
+        ORG_B,
+        expect.any(Array),
+        { scope: 'global' },
+        [],
+      );
+      expect(executedOptions()).toMatchObject({ executionContext: ORG_B });
     });
 
     it('keeps an agent initiator and takes its chat as the agent origin', async () => {
@@ -2157,13 +3260,14 @@ describe('project pipeline handlers', () => {
         .mockResolvedValue({
           authority: 'ok',
           ownerMalformed: false,
+          memoryMalformed: false,
           config: {
             version: 1,
             type: 'single-repo',
             repos: [],
             repoPath,
             ...(organization
-              ? { owner: { type: 'organization', organizationId: 'org-a' } }
+              ? { owner: sparseWorkspaceOwnerBinding('org-a') }
               : {}),
           },
         });
@@ -2193,7 +3297,7 @@ describe('project pipeline handlers', () => {
         if (location === 'symlink') {
           expect(result).toEqual({
             success: false,
-            error: 'Pipeline unavailable (unsupported-target)',
+            error: 'Workflow unavailable (unsupported-target)',
           });
           expect(mockedSavePipeline).not.toHaveBeenCalled();
           return;
@@ -2201,7 +3305,7 @@ describe('project pipeline handlers', () => {
         if (organization) {
           expect(result).toEqual({
             success: false,
-            error: 'Pipeline unavailable (context-mismatch)',
+            error: 'Workflow unavailable (context-mismatch)',
           });
           expect(mockedSavePipeline).not.toHaveBeenCalled();
         } else {
@@ -2453,12 +3557,13 @@ describe('project pipeline handlers', () => {
         .mockResolvedValue({
           authority,
           ownerMalformed,
+          memoryMalformed: false,
           config: {
             version: 1,
             type: 'multi-repo',
             repos: [],
             ...(organizationId
-              ? { owner: { type: 'organization', organizationId } }
+              ? { owner: sparseWorkspaceOwnerBinding(organizationId) }
               : {}),
           },
         });
@@ -2490,7 +3595,7 @@ describe('project pipeline handlers', () => {
           });
           if (!decision.allow)
             return Promise.reject(
-              new Error(`Pipeline unavailable (${decision.reason})`),
+              new Error(`Workflow unavailable (${decision.reason})`),
             );
           return Promise.resolve();
         });
@@ -2531,7 +3636,7 @@ describe('project pipeline handlers', () => {
         if (error) {
           expect(result).toEqual({
             success: false,
-            error: `Pipeline unavailable (${error})`,
+            error: `Workflow unavailable (${error})`,
           });
           expect(mockExecutePipeline).not.toHaveBeenCalled();
         } else {
@@ -2551,6 +3656,117 @@ describe('project pipeline handlers', () => {
           expect(policy).not.toHaveBeenCalled();
           expect(mockResolveWorktreeCwd).not.toHaveBeenCalled();
         }
+      } finally {
+        read.mockRestore();
+        snapshot.mockRestore();
+        fence.mockRestore();
+        policy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ['project folder', undefined],
+    ['cwd outside the project folder', 'unsupported-target'],
+    ['symlinked cwd', 'unsupported-target'],
+    ['no worktree and no directory scope', 'unsupported-target'],
+    ['target outside the project folder', 'unsupported-target'],
+  ] as const)(
+    'authorizes a project-file dispatch with no worktree: %s',
+    async (label, error): Promise<void> => {
+      mockIsFeatureFlagEnabled.mockReturnValue(true);
+      jest.mocked(readAllSidebarItems).mockResolvedValue({
+        version: 1,
+        items: [
+          {
+            type: 'single-repo',
+            id: 'project-a',
+            name: 'Project',
+            repoPath,
+            worktrees: [],
+            color: '',
+            collapsed: false,
+            order: 0,
+          },
+        ],
+      });
+      const read = jest
+        .spyOn(workspacePersistence, 'readWorkspaceConfigDetailed')
+        .mockResolvedValue({
+          authority: 'ok',
+          ownerMalformed: false,
+          memoryMalformed: false,
+          config: {
+            version: 1,
+            type: 'multi-repo',
+            repos: [],
+            owner: {
+              type: 'organization',
+              organizationId: 'org-a',
+              projectId: 'project-a',
+              instanceId: 'instance-a',
+              bindingGeneration: 1,
+            },
+          },
+        });
+      const snapshot = jest
+        .spyOn(pipelineResourceLanes, 'pipelineContextSnapshot')
+        .mockResolvedValue('current');
+      const fence = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContextSnapshot')
+        .mockResolvedValue(undefined);
+      const policy = jest
+        .spyOn(pipelineResourceLanes, 'assertPipelineContext')
+        .mockResolvedValue(undefined);
+      const pipelinePath = path.join(pipelinesDir, 'deploy.yaml');
+      fs.writeFileSync(pipelinePath, 'name: Fresh\non: dispatch\njobs: {}\n');
+      let cwd = repoPath;
+      if (label === 'cwd outside the project folder') cwd = tempDir;
+      if (label === 'symlinked cwd') {
+        const outside = path.join(tempDir, 'outside');
+        fs.mkdirSync(outside);
+        cwd = path.join(repoPath, 'linked');
+        fs.symlinkSync(outside, cwd);
+      }
+
+      try {
+        const result = await startPipelineExecutionFromMain({
+          pipeline: { name: 'Stale', on: 'dispatch', jobs: {} },
+          options: {
+            cwd,
+            repoPath,
+            projectId: 'project-a',
+            ...(label === 'no worktree and no directory scope'
+              ? {}
+              : {
+                  scope: 'directory' as const,
+                  target: {
+                    scope: 'directory' as const,
+                    path:
+                      label === 'target outside the project folder'
+                        ? tempDir
+                        : cwd,
+                  },
+                }),
+            pipelineId: 'project--deploy.yaml',
+            pipelineFilePath: pipelinePath,
+          },
+          getWindow: () => null,
+        });
+        if (error) {
+          expect(result).toEqual({
+            success: false,
+            error: `Workflow unavailable (${error})`,
+          });
+          expect(mockExecutePipeline).not.toHaveBeenCalled();
+        } else {
+          expect(result).toMatchObject({ success: true });
+          expect(mockExecutePipeline).toHaveBeenCalledWith(
+            expect.objectContaining({ name: 'Fresh' }),
+            expect.anything(),
+          );
+        }
+        expect(mockResolveWorktreeCwd).not.toHaveBeenCalled();
       } finally {
         read.mockRestore();
         snapshot.mockRestore();
@@ -2588,7 +3804,13 @@ describe('project pipeline handlers', () => {
             id: 'project-a',
             name: 'Org A',
             repoPath,
-            owner: { type: 'organization', organizationId: 'org-a' },
+            owner: {
+              type: 'organization',
+              organizationId: 'org-a',
+              projectId: 'project-a',
+              instanceId: 'instance-a',
+              bindingGeneration: 1,
+            },
             worktrees: [{ id: 'wt-a', branchName: 'a', createdAt: '' }],
             color: '',
             collapsed: false,
@@ -2611,10 +3833,17 @@ describe('project pipeline handlers', () => {
       mockResolveWorktreeCwd.mockImplementation((projectId: string): string =>
         projectId === 'project-a' ? repoPath : personalPath,
       );
+      const sparseSharedOwner: NonNullable<SharedPipelineDetail['owner']> = {
+        type: 'organization',
+        id: 'org-a',
+        name: 'Org A',
+      };
+      // Preserve the legacy null organization name returned by this fixture.
+      Reflect.set(sparseSharedOwner, 'name', null);
       mockedGetSharedPipeline.mockResolvedValue(
         createSharedPipelineDetail({
           id: 'remote-exec',
-          owner: { type: 'organization', id: 'org-a', name: null },
+          owner: sparseSharedOwner,
         }),
       );
       const snapshot = jest
@@ -2700,7 +3929,7 @@ describe('project pipeline handlers', () => {
         } else {
           expect(result).toEqual({
             success: false,
-            error: 'Pipeline unavailable (unsupported-target)',
+            error: 'Workflow unavailable (unsupported-target)',
           });
           expect(mockExecutePipeline).not.toHaveBeenCalled();
           expect(shared).not.toHaveBeenCalled();
@@ -2722,7 +3951,7 @@ describe('project pipeline handlers', () => {
       .mockResolvedValue('current');
     const check = jest
       .spyOn(pipelineInstallContext, 'assertStoredPipelineContext')
-      .mockRejectedValue(new Error('Pipeline unavailable (context-mismatch)'));
+      .mockRejectedValue(new Error('Workflow unavailable (context-mismatch)'));
     try {
       const result = await startPipelineExecutionFromMain({
         pipeline: { name: 'Installed', on: 'dispatch', jobs: {} },
@@ -2731,7 +3960,7 @@ describe('project pipeline handlers', () => {
       });
       expect(result).toEqual({
         success: false,
-        error: 'Pipeline unavailable (context-mismatch)',
+        error: 'Workflow unavailable (context-mismatch)',
       });
       expect(mockExecutePipeline).not.toHaveBeenCalled();
     } finally {
@@ -2884,13 +4113,13 @@ describe('project pipeline handlers', () => {
       const check = jest
         .spyOn(pipelineInstallContext, 'assertStoredPipelineContext')
         .mockRejectedValue(
-          new Error('Pipeline unavailable (context-mismatch)'),
+          new Error('Workflow unavailable (context-mismatch)'),
         );
       try {
         const result = await getHandler(channel)(undefined, 'installed-org-a');
         expect(result).toMatchObject({
           success: false,
-          error: 'Pipeline unavailable (context-mismatch)',
+          error: 'Workflow unavailable (context-mismatch)',
         });
         expect(check).toHaveBeenCalledWith('installed-org-a');
         expect(mockedSavePipeline).not.toHaveBeenCalled();
@@ -2904,7 +4133,7 @@ describe('project pipeline handlers', () => {
     mockIsFeatureFlagEnabled.mockReturnValue(true);
     const check = jest
       .spyOn(pipelineInstallContext, 'assertStoredPipelineContext')
-      .mockRejectedValue(new Error('Pipeline unavailable (context-mismatch)'));
+      .mockRejectedValue(new Error('Workflow unavailable (context-mismatch)'));
     try {
       const result = await getHandler(PIPELINE_CHANNELS.SAVE)(undefined, {
         id: 'installed-org-a',
@@ -2930,9 +4159,13 @@ describe('project pipeline handlers', () => {
       data: {
         id: input.id ?? '',
         name: 'Copy',
+        filename: `${input.id ?? ''}.yaml`,
         description: '',
         icon: '',
         source: 'user',
+        readonly: false,
+        createdAt: '',
+        updatedAt: '',
       },
     }));
     jest
@@ -3086,9 +4319,13 @@ describe('project pipeline handlers', () => {
           info: {
             id: 'original',
             name: 'Original',
+            filename: 'original.yaml',
             description: '',
             icon: '',
             source: 'user',
+            readonly: false,
+            createdAt: '',
+            updatedAt: '',
           },
           content: { name: 'Original', on: 'dispatch', jobs: {} },
         },
@@ -3494,19 +4731,18 @@ describe('project pipeline handlers', () => {
       id: string,
       name: string,
       extra: Partial<ScheduledActivity>,
-    ): ScheduledActivity =>
-      ({
-        version: 1,
-        id,
-        name,
-        enabled: true,
-        schedule: { kind: 'cron', expression: '0 * * * *', timezone: 'local' },
-        action: { type: 'app_advisor_prompt', prompt: 'Review' },
-        createdAt: '2026-09-26T12:00:00.000Z',
-        updatedAt: '2026-09-26T12:00:00.000Z',
-        failureCount: 0,
-        ...extra,
-      }) as ScheduledActivity;
+    ): ScheduledActivity => ({
+      version: 1,
+      id,
+      name,
+      enabled: true,
+      schedule: { kind: 'cron', expression: '0 * * * *', timezone: 'local' },
+      action: { type: 'app_advisor_prompt', prompt: 'Review' },
+      createdAt: '2026-09-26T12:00:00.000Z',
+      updatedAt: '2026-09-26T12:00:00.000Z',
+      failureCount: 0,
+      ...extra,
+    });
     const remote = (remoteId: string): ScheduledActivity['remote'] => ({
       remoteId,
       contentHash: 'c'.repeat(64),
@@ -4053,6 +5289,28 @@ describe('project pipeline handlers', () => {
     expect(mockedGetSharedPipeline).not.toHaveBeenCalled();
   });
 
+  it('keeps a queued project run file locator without its file path', async () => {
+    await getHandler(PIPELINE_CHANNELS.EXECUTE)(
+      undefined,
+      { name: 'Queued', on: 'dispatch', jobs: { build: { steps: [] } } },
+      {
+        cwd: repoPath,
+        repoPath,
+        pipelineId: 'project--queued.yaml',
+        pipelinePreferenceLocator: {
+          type: 'file',
+          value: '/source/.canopy/pipelines/queued.yaml',
+        },
+      },
+    );
+    expect(mockExecutePipeline.mock.calls[0]?.[1]).toMatchObject({
+      pipelinePreferenceLocator: {
+        type: 'file',
+        value: '/source/.canopy/pipelines/queued.yaml',
+      },
+    });
+  });
+
   it('fetches and caches a shared pipeline before execute', async () => {
     const detail = createSharedPipelineDetail({
       id: 'remote-exec',
@@ -4125,7 +5383,7 @@ describe('project pipeline handlers', () => {
     },
     {
       failure: 'an account change during the read',
-      error: new Error('Pipeline unavailable (access-removed)'),
+      error: new Error('Workflow unavailable (access-removed)'),
       expected: backgroundExecutionDeniedMessage('access-removed'),
     },
   ])(
@@ -5444,7 +6702,7 @@ describe('pipeline-handlers', () => {
   });
 
   it('reapplies replay guards and base-branch env for matrix retries', async () => {
-    const normalized = normalizePipeline({
+    const legacyPipeline: Pipeline = {
       name: 'Matrix retry',
       on: 'dispatch',
       jobs: {
@@ -5453,45 +6711,47 @@ describe('pipeline-handlers', () => {
           steps: [{ id: 'review', run: 'echo review' }],
         },
       },
-      job_definitions: {
-        build: {
-          name: 'Build',
-          needs: [],
-          timeout_minutes: 360,
-          max_retries: 0,
-          continue_on_error: false,
-          physical_job_id: 'build',
-          logical_job_id: 'build',
-          steps: [
-            {
-              id: 'agent',
-              uses: 'builtin/agent-prompt',
-              shell: 'bash',
-              continue_on_error: false,
-              timeout_minutes: 360,
-              skip_on_missing_action: false,
-            },
-            {
-              id: 'hinted',
-              uses: 'project/custom-agent',
-              log_format_hint: 'agent',
-              shell: 'bash',
-              continue_on_error: false,
-              timeout_minutes: 360,
-              skip_on_missing_action: false,
-            },
-            {
-              id: 'shell',
-              run: 'echo ok',
-              shell: 'bash',
-              continue_on_error: false,
-              timeout_minutes: 360,
-              skip_on_missing_action: false,
-            },
-          ],
-        },
+    };
+    // Preserve legacy replay metadata supplied to normalization at runtime.
+    Reflect.set(legacyPipeline, 'job_definitions', {
+      build: {
+        name: 'Build',
+        needs: [],
+        timeout_minutes: 360,
+        max_retries: 0,
+        continue_on_error: false,
+        physical_job_id: 'build',
+        logical_job_id: 'build',
+        steps: [
+          {
+            id: 'agent',
+            uses: 'builtin/agent-prompt',
+            shell: 'bash',
+            continue_on_error: false,
+            timeout_minutes: 360,
+            skip_on_missing_action: false,
+          },
+          {
+            id: 'hinted',
+            uses: 'project/custom-agent',
+            log_format_hint: 'agent',
+            shell: 'bash',
+            continue_on_error: false,
+            timeout_minutes: 360,
+            skip_on_missing_action: false,
+          },
+          {
+            id: 'shell',
+            run: 'echo ok',
+            shell: 'bash',
+            continue_on_error: false,
+            timeout_minutes: 360,
+            skip_on_missing_action: false,
+          },
+        ],
       },
     });
+    const normalized = normalizePipeline(legacyPipeline);
     const state = actualExecutorModule.createInitialState(
       normalized,
       {
@@ -5857,6 +7117,7 @@ describe('pipeline-handlers', () => {
     onEvent({
       executionId: runningState.id,
       type: 'execution.updated',
+      timestamp: runningState.started_at,
       state: runningState,
     });
 
@@ -5888,6 +7149,7 @@ describe('pipeline-handlers', () => {
     onEvent({
       executionId: pausedState.id,
       type: 'execution.paused',
+      timestamp: pausedState.started_at,
       state: pausedState,
     });
 
@@ -5924,6 +7186,7 @@ describe('pipeline-handlers', () => {
     onEvent({
       executionId: pausedState.id,
       type: 'execution.updated',
+      timestamp: pausedState.started_at,
       state: pausedState,
     });
 
@@ -5940,6 +7203,7 @@ describe('pipeline-handlers', () => {
       event_name: 'plan_ready',
       pipeline_snapshot: {
         name: 'Pipeline 1',
+        scope: ['directory'],
         jobs: {
           build: {
             name: 'Build',
@@ -6065,6 +7329,7 @@ describe('pipeline-handlers', () => {
       completed_at: '2026-05-26T12:05:00.000Z',
       pipeline_snapshot: {
         name: 'Pipeline 1',
+        scope: ['directory'],
         jobs: {
           build: {
             name: 'Build',
@@ -6416,6 +7681,7 @@ describe('pipeline-handlers', () => {
     expectLastAdvisorWatchExecution(sourceState.id);
 
     resumeCall?.[1]?.onEvent?.({
+      executionId: sourceState.id,
       type: 'execution.started',
       timestamp: sourceState.started_at,
       state: sourceState,
@@ -6606,7 +7872,10 @@ describe('pipeline-handlers', () => {
           target,
         ): ReturnType<typeof authorizeBackgroundExecution> =>
           Promise.resolve(
-            binding === context && target?.projectId
+            binding === context &&
+              target !== undefined &&
+              'projectId' in target &&
+              target.projectId
               ? { allow: true }
               : { allow: false, reason: 'context-mismatch' },
           ),

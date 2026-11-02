@@ -72,7 +72,7 @@ export async function confirmWorktreeDeletion(window, row) {
   await row.hover();
   await row.getByTestId('worktree-actions-menu-button').click();
   await window.getByTestId('worktree-actions-menu-delete').click();
-  const dialog = window.getByRole('dialog', { name: 'Delete worktree?' });
+  const dialog = window.getByRole('dialog', { name: /^Delete worktree/ });
   await dialog.waitFor({ state: 'visible' });
   await dialog.getByTestId('worktree-removal-preserve-branch').click();
 }

@@ -7,9 +7,14 @@ import type {
   DirectoryReadPreferenceSource,
 } from './directory-read-preferences';
 import {
+  buildFileExplorerGlobMatcher,
   buildFileGlobMatcher,
   type FileIndexingMatchPolicy,
 } from './file-indexing';
+import type {
+  FilesystemSearchInputs,
+  FilesystemSearchPurpose,
+} from './file-search';
 
 export type GitIgnoreHostFailureCode =
   | 'git_unavailable'
@@ -60,11 +65,29 @@ export interface GitIgnoreCheckRequest {
   readonly signal: AbortSignal;
 }
 
+export interface GitIgnoredListingRequest {
+  /** Trusted catalog root; the `ls-files` working directory. */
+  readonly root: string;
+  /** P2 value, untrimmed; called once before the listing selects a Git. */
+  readonly readSavedExecutablePath: (signal: AbortSignal) => Promise<string>;
+  /** An aborted request rejects with `signal.reason`, never with a code. */
+  readonly signal: AbortSignal;
+}
+
 export interface GitIgnoreHostPort {
   checkIgnoredPaths(
     this: void,
     request: GitIgnoreCheckRequest,
   ): Promise<Set<string>>;
+  /**
+   * Ignored untracked paths under `root`, one entry per wholly ignored
+   * directory (ending in `/`), as `git ls-files --others --ignored
+   * --exclude-standard --directory -z` lists them.
+   */
+  listIgnoredPathEntries(
+    this: void,
+    request: GitIgnoredListingRequest,
+  ): Promise<string[]>;
 }
 
 type ReadOnlyDirectoryReadOptions = DirectoryReadOptions & {
@@ -76,6 +99,15 @@ export interface ReadOnlyDirectoryInputs {
     this: void,
     signal: AbortSignal,
   ): Promise<ReadOnlyDirectoryReadOptions>;
+  /**
+   * One new search walk's inputs from a single preference read: the
+   * purpose's matcher and the Git ignored-path listing.
+   */
+  searchOptions(
+    this: void,
+    signal: AbortSignal,
+    purpose: FilesystemSearchPurpose,
+  ): Promise<FilesystemSearchInputs>;
 }
 
 export interface ReadOnlyDirectoryInputsOptions {
@@ -92,6 +124,44 @@ export function createReadOnlyDirectoryInputs(
   options: ReadOnlyDirectoryInputsOptions,
 ): ReadOnlyDirectoryInputs {
   const { preferences, matchPolicy, git } = options;
+  /**
+   * The saved Git path for one request's selections. The first reuses the
+   * request's snapshot; later ones reread so an edit mid-request reaches the
+   * next selection.
+   */
+  const savedExecutablePath = (
+    signal: AbortSignal,
+    snapshot: DirectoryReadPreferenceSnapshot,
+  ): ((readSignal: AbortSignal) => Promise<string>) => {
+    let snapshotPathUsed = false;
+    return async (readSignal) => {
+      signal.throwIfAborted();
+      readSignal.throwIfAborted();
+      if (!snapshotPathUsed) {
+        snapshotPathUsed = true;
+        return snapshot.preferences.gitExecutablePath;
+      }
+      // Either signal cancels the read, so a request abort stops it even when
+      // the host's selection signal is not derived from the request. Both
+      // outcomes recheck the request first: the combined signal's reason is
+      // whichever aborted first, which would break that precedence.
+      let fresh: DirectoryReadPreferenceSnapshot;
+      try {
+        fresh = await preferences.read(
+          readSignal === signal
+            ? signal
+            : AbortSignal.any([signal, readSignal]),
+        );
+      } catch (error) {
+        signal.throwIfAborted();
+        readSignal.throwIfAborted();
+        throw error;
+      }
+      signal.throwIfAborted();
+      readSignal.throwIfAborted();
+      return fresh.preferences.gitExecutablePath;
+    };
+  };
   return {
     async readOptions(signal): Promise<ReadOnlyDirectoryReadOptions> {
       const snapshot = await preferences.read(signal);
@@ -100,39 +170,7 @@ export function createReadOnlyDirectoryInputs(
         snapshot.preferences.fileIndexing,
         matchPolicy,
       );
-
-      // The first selection reuses this request's snapshot; later chunks
-      // reread so an edit mid-request reaches the next selection.
-      let snapshotPathUsed = false;
-      const readSavedExecutablePath = async (
-        readSignal: AbortSignal,
-      ): Promise<string> => {
-        signal.throwIfAborted();
-        readSignal.throwIfAborted();
-        if (!snapshotPathUsed) {
-          snapshotPathUsed = true;
-          return snapshot.preferences.gitExecutablePath;
-        }
-        // Either signal cancels the read, so a request abort stops it even when
-        // the host's selection signal is not derived from the request. Both
-        // outcomes recheck the request first: the combined signal's reason is
-        // whichever aborted first, which would break that precedence.
-        let fresh: DirectoryReadPreferenceSnapshot;
-        try {
-          fresh = await preferences.read(
-            readSignal === signal
-              ? signal
-              : AbortSignal.any([signal, readSignal]),
-          );
-        } catch (error) {
-          signal.throwIfAborted();
-          readSignal.throwIfAborted();
-          throw error;
-        }
-        signal.throwIfAborted();
-        readSignal.throwIfAborted();
-        return fresh.preferences.gitExecutablePath;
-      };
+      const readSavedExecutablePath = savedExecutablePath(signal, snapshot);
 
       // The engine turns any port rejection into an empty ignore set, so this
       // abort does not reach the listing caller. The host directory handler
@@ -159,6 +197,40 @@ export function createReadOnlyDirectoryInputs(
       };
 
       return { matchingRules, gitIgnore };
+    },
+    async searchOptions(signal, purpose): Promise<FilesystemSearchInputs> {
+      const snapshot = await preferences.read(signal);
+      signal.throwIfAborted();
+      const readSavedExecutablePath = savedExecutablePath(signal, snapshot);
+      return {
+        matcher:
+          purpose === 'file-explorer'
+            ? buildFileExplorerGlobMatcher(matchPolicy)
+            : buildFileGlobMatcher(
+                snapshot.preferences.fileIndexing,
+                matchPolicy,
+              ),
+        policy: matchPolicy,
+        // A rejection marks nothing ignored, so the host handler rechecks its
+        // signal after the search, as for directory reads.
+        listIgnoredPathEntries: async (root): Promise<string[]> => {
+          signal.throwIfAborted();
+          let entries: string[];
+          try {
+            entries = await git.listIgnoredPathEntries({
+              root,
+              readSavedExecutablePath,
+              signal,
+            });
+          } catch (error) {
+            // A host failure that races an abort reports the abort reason.
+            signal.throwIfAborted();
+            throw error;
+          }
+          signal.throwIfAborted();
+          return entries;
+        },
+      };
     },
   };
 }

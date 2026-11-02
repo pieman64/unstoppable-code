@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { focusMenuRow } from '../lib/input-modality';
 import { DropdownMenuSurface } from './DropdownMenu';
 import {
   ActionMenuItems,
@@ -123,9 +124,11 @@ export function TabContextMenu({
 
   useEffect(() => {
     if (!focusOnOpen) return;
-    menuRef.current
-      ?.querySelector<HTMLElement>(ENABLED_ITEM_SELECTOR)
-      ?.focus({ preventScroll: true });
+    // A right-click open leaves the row unpainted; see `focusMenuRow`.
+    const first = menuRef.current?.querySelector<HTMLElement>(
+      ENABLED_ITEM_SELECTOR,
+    );
+    if (first) focusMenuRow(first, { preventScroll: true });
   }, [focusOnOpen]);
 
   useEffect(() => {

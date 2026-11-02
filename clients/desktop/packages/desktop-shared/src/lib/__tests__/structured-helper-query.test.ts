@@ -20,14 +20,19 @@ import {
   runClaudeStructuredHelperQuery,
 } from '../structured-helper-query';
 
-const mockedClaudeQuery = jest.mocked(claudeQuery);
+interface ClaudeQueryTestDouble extends AsyncIterable<unknown> {
+  close(): void;
+}
 
-function makeQuery(): AsyncGenerator<Record<string, unknown>, void, void> {
-  async function* generate(): AsyncGenerator<
-    Record<string, unknown>,
-    void,
-    void
-  > {
+type ClaudeQueryMock = (
+  ...args: Parameters<typeof claudeQuery>
+) => ClaudeQueryTestDouble;
+
+const mockedClaudeQuery: jest.MockedFunction<ClaudeQueryMock> =
+  jest.mocked(claudeQuery);
+
+function makeQuery(): ClaudeQueryTestDouble {
+  async function* generate(): AsyncGenerator<Record<string, unknown>, void> {
     await Promise.resolve();
     yield {
       type: 'assistant',
@@ -46,19 +51,11 @@ function makeQuery(): AsyncGenerator<Record<string, unknown>, void, void> {
     };
   }
 
-  return generate();
+  return Object.assign(generate(), { close: () => undefined });
 }
 
-function makeSuccessQuery(): AsyncGenerator<
-  Record<string, unknown>,
-  void,
-  void
-> {
-  async function* generate(): AsyncGenerator<
-    Record<string, unknown>,
-    void,
-    void
-  > {
+function makeSuccessQuery(): ClaudeQueryTestDouble {
+  async function* generate(): AsyncGenerator<Record<string, unknown>, void> {
     await Promise.resolve();
     yield {
       type: 'result',
@@ -71,7 +68,7 @@ function makeSuccessQuery(): AsyncGenerator<
     };
   }
 
-  return generate();
+  return Object.assign(generate(), { close: () => undefined });
 }
 
 function runValueQuery(

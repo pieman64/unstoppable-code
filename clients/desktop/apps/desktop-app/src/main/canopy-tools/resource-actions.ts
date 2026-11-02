@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { AgentArtifactChangedField } from '@canopy/protocol/agent-artifacts';
 import { randomUUID } from 'node:crypto';
 import {
@@ -18,6 +19,7 @@ import {
   authorizeProjectPipelineRequest,
   assertStoredPipelineContext,
   copyPipelineInstallOrigin,
+  readStoredPipelineContext,
 } from '../pipelines/pipeline-install-context';
 import { readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -45,6 +47,10 @@ import {
   validateAgentAutomationRunPolicy,
   validateAgentAutomationUpdatePolicy,
 } from '@canopy/desktop-shared/lib/agent-automation-policy';
+import {
+  isGlobalPipelineAutomationAction,
+  pipelineAutomationTargetSummary,
+} from '@canopy/desktop-shared/lib/automation-pipeline-target';
 import { validateAgentPipelineMutationPolicy } from '@canopy/desktop-shared/lib/agent-pipeline-policy';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
@@ -71,6 +77,11 @@ import {
   CanopyCloudClientError,
 } from '../canopy-cloud/client';
 import { isPathInside } from '../lib/path-safety';
+import { projectOwnedChatAutomation } from '../automations/owned-chat-projection';
+import {
+  isOwnedPipelineHiddenFromAgent,
+  ownsOrchestratorPromptPipeline,
+} from '../automations/owned-pipeline';
 import { scopeAutomationsToSelectedContext } from '../services/background-execution-context';
 import {
   ADVISOR_ACCESS_DISABLED,
@@ -88,7 +99,10 @@ import {
 } from '../lib/project-owner';
 import { isClaudeTuiChatsEnabled } from '../lib/claude-tui-chats';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
-import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import {
+  serializeWorkspaceContext,
+  type WorkspaceContext,
+} from '@canopy/protocol/workspace-context';
 import {
   readPreferencesFile,
   updatePreferencesFile,
@@ -96,9 +110,15 @@ import {
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import * as pipelineStore from '../pipelines/pipeline-service';
 import {
+  deleteUserPipeline,
+  PIPELINE_DEFINITION_AGENT_CALLER,
+  saveUserPipeline,
+} from '../canopy-runtime/pipeline-definition-dispatch';
+import {
   createSharedPipeline,
   deleteSharedPipeline,
   getSharedPipeline,
+  getSharedPipelineForExecutionContext,
 } from '../pipelines/canopy-server-client';
 import {
   discoverProjectPipelines,
@@ -108,9 +128,7 @@ import {
   withPipelineCrudTelemetry,
   type PipelineCrudTelemetryContext,
 } from '../pipelines/instrumentation';
-import { deletePipelinePluginCollectionPreferences } from '../pipelines/plugin-collection-store';
 import {
-  deleteUserPipelineLocalMetadata,
   recordUserPipelineOwner,
   setUserPipelineAgentAuthor,
 } from '../pipelines/pipeline-local-metadata-store';
@@ -228,7 +246,7 @@ async function duplicateScopedAgentPipeline(
   try {
     if (project) {
       if (!project.info.filePath)
-        throw new Error('Pipeline unavailable (unknown-provenance)');
+        throw new Error('Workflow unavailable (unknown-provenance)');
       const { owner, projectId } = await authorizeProjectPipelineRequest({
         id: sourceId,
         cwd: project.runtime.cwd,
@@ -238,7 +256,7 @@ async function duplicateScopedAgentPipeline(
         projectId !== project.runtime.projectId ||
         owner.type === 'organization'
       )
-        throw new Error('Pipeline unavailable (context-mismatch)');
+        throw new Error('Workflow unavailable (context-mismatch)');
     } else {
       await copyPipelineInstallOrigin(sourceId, id, (undo): void => {
         undoReceipt = undo;
@@ -668,7 +686,10 @@ async function skillAction(
     }
     case 'skills.delete_custom': {
       await assertStoredSkillContext(`${CUSTOM_SOURCE_ID}/${action.name}`);
-      const result = skillService.removeSkill(CUSTOM_SOURCE_ID, action.name);
+      const result = await skillService.removeSkillForContext(
+        CUSTOM_SOURCE_ID,
+        action.name,
+      );
       if (!result.success)
         return ipcFailure(result.error ?? 'Failed to delete skill.');
       refreshInvocableInventoryAfterMutation('agent:skills:delete-custom');
@@ -931,6 +952,8 @@ export async function loadAgentPipelineById(
       : pipelineStore.getPipeline(id);
   if (stored?.success && stored.data) {
     await assertStoredPipelineContext(id, runtime.projectId);
+    // Hidden like the Orchestrator automation that owns it (CAN-4551).
+    if (await isOwnedPipelineHiddenFromAgent(id, runtime)) return null;
     return stored.data;
   }
   const projects = await discoverProjectPipelines(cwd).catch(() => []);
@@ -942,11 +965,56 @@ export async function loadAgentPipelineById(
       filePath: info.filePath,
     });
     if (projectId !== runtime.projectId)
-      throw new Error('Pipeline unavailable (context-mismatch)');
+      throw new Error('Workflow unavailable (context-mismatch)');
   }
   return info?.filePath
     ? { info, content: await loadProjectPipelineFromDisk(info.filePath) }
     : null;
+}
+
+/**
+ * A pipeline an agent runs with no project: curated, authorized shared,
+ * bundled, or local user. Project pipelines are never discovered, so one is
+ * reported as not found.
+ */
+export async function loadAgentGlobalPipelineById(
+  id: string,
+  executionContext: string,
+): Promise<PipelineData | null> {
+  if (id.startsWith('curated:')) {
+    const { getManagedCuratedPipeline } =
+      await import('../pipelines/curated-pipeline-catalog');
+    return getManagedCuratedPipeline(id);
+  }
+  const remoteId = id.startsWith('shared:')
+    ? sharedPipelineRemoteId(id)
+    : undefined;
+  if (remoteId) {
+    await assertPipelinesCapability();
+    // Read for the account, not the selected navigation context; the run's
+    // owner is authorized next.
+    const detail = await getSharedPipelineForExecutionContext(remoteId);
+    if (pipelineResourceContextEnabled())
+      await assertPipelineContext(
+        { owner: detail.owner },
+        undefined,
+        executionContext,
+      );
+    return materializeSharedPipeline(detail);
+  }
+  if (id.startsWith('project--')) return null;
+  const stored = pipelineStore.getPipeline(id);
+  if (!stored.success || !stored.data || stored.data.info.source === 'project')
+    return null;
+  // Authorize against the run's owner, like the shared branch, never the
+  // selected navigation context.
+  if (pipelineResourceContextEnabled())
+    await assertPipelineContext(
+      await readStoredPipelineContext(id, executionContext),
+      undefined,
+      executionContext,
+    );
+  return stored.data;
 }
 
 async function readMutationYaml(
@@ -1087,7 +1155,10 @@ async function pipelineAction(
           );
           if (ownerError) return failure('validation_failed', ownerError);
           const saveData = pipelineSaveData(content, action);
-          const saved = pipelineStore.savePipeline(saveData);
+          const saved = await saveUserPipeline(
+            saveData,
+            PIPELINE_DEFINITION_AGENT_CALLER,
+          );
           if (!saved.success || !saved.data)
             return ipcFailure(saved.error ?? 'Failed to create pipeline.');
           recordAgentPipelineWrite(saved.data.id, runtime, owner.owner);
@@ -1133,9 +1204,14 @@ async function pipelineAction(
           );
           if (ownerError) return failure('validation_failed', ownerError);
           const saveData = pipelineSaveData(content, action);
-          const saved = pipelineStore.updatePipeline(
-            action.pipelineId,
-            saveData,
+          // The revision read above refuses an edit that landed meanwhile.
+          const saved = await saveUserPipeline(
+            {
+              ...saveData,
+              id: action.pipelineId,
+              expectedRevision: current.info.revision ?? 0,
+            },
+            PIPELINE_DEFINITION_AGENT_CALLER,
           );
           if (!saved.success || !saved.data)
             return ipcFailure(saved.error ?? 'Failed to update pipeline.');
@@ -1168,15 +1244,13 @@ async function pipelineAction(
               'read_only_source',
               `${current.info.source} pipelines are read-only.`,
             );
-          const deleted = pipelineStore.deletePipeline(action.pipelineId);
-          if (deleted.success) {
-            deletePipelinePluginCollectionPreferences({
-              type: 'stored',
-              source: 'user',
-              value: action.pipelineId,
-            });
-            deleteUserPipelineLocalMetadata(action.pipelineId);
-          }
+          // Core deletes it with its preferences, local metadata,
+          // subscription ledger entry and package install.
+          const deleted = await deleteUserPipeline(
+            action.pipelineId,
+            current.info.revision ?? 0,
+            PIPELINE_DEFINITION_AGENT_CALLER,
+          );
           return deleted.success
             ? ok({ pipelineId: action.pipelineId, deleted: true })
             : ipcFailure(deleted.error ?? 'Failed to delete pipeline.');
@@ -1428,7 +1502,7 @@ function automationTarget(activity: ScheduledActivity): string {
   const action = activity.action;
   switch (action.type) {
     case 'app_advisor_prompt':
-      return 'App Advisor';
+      return ORCHESTRATOR_LABEL;
     case 'standalone_prompt':
       return `cowork project ${action.chatProjectId}`;
     case 'worktree_prompt':
@@ -1436,7 +1510,7 @@ function automationTarget(activity: ScheduledActivity): string {
     case 'worktree_session_prompt':
       return `chat ${action.workspaceId}/${action.worktreeId}/${action.chatId}`;
     case 'worktree_pipeline':
-      return `pipeline ${action.pipelineId} in project ${action.workspaceId}`;
+      return pipelineAutomationTargetSummary(action);
     case 'pipeline_execution_resume':
       return `pipeline execution ${action.executionId}`;
   }
@@ -1460,7 +1534,7 @@ function automationInterfaceModeFailure(): AppAdvisorActionResponse {
 }
 
 const APP_ADVISOR_OWNER_UNKNOWN_MESSAGE =
-  'The project owner could not be confirmed, so App Advisor access is unavailable for agents in this project.';
+  'The project owner could not be confirmed, so Orchestrator access is unavailable for agents in this project.';
 
 function appAdvisorAccessFailure(
   decision: AppAdvisorAccessDecision,
@@ -1508,18 +1582,36 @@ function automationOwnerDecisionFailure(
   return automationOwnerUnavailable();
 }
 
+/**
+ * The action an agent's access and policy checks see. A converted chat
+ * automation (CAN-4551) is checked as the chat action its owned pipeline
+ * stands for, so converting it changes neither.
+ */
+function agentPolicyAction(
+  activity: ScheduledActivity,
+): ScheduledActivity['action'] {
+  return projectOwnedChatAutomation(activity).action;
+}
+
+function isAppAdvisorAutomation(activity: ScheduledActivity): boolean {
+  return (
+    agentPolicyAction(activity).type === 'app_advisor_prompt' ||
+    ownsOrchestratorPromptPipeline(activity)
+  );
+}
+
 function hideAppAdvisorAutomations(
   state: AutomationsListResponse,
 ): AutomationsListResponse {
   const advisorIds = new Set(
     state.activities
-      .filter((activity) => activity.action.type === 'app_advisor_prompt')
+      .filter(isAppAdvisorAutomation)
       .map((activity) => activity.id),
   );
   return {
     ...state,
     activities: state.activities.filter(
-      (activity) => activity.action.type !== 'app_advisor_prompt',
+      (activity) => !advisorIds.has(activity.id),
     ),
     recentRuns: state.recentRuns.filter(
       (run) => !advisorIds.has(run.activityId),
@@ -1607,9 +1699,13 @@ async function automationAction(
         ),
     };
   };
+  // A pipeline with no project belongs to the owner it is saved with.
+  const globalOwnerOf = (activity: ScheduledActivity): string =>
+    activity.executionContext ?? 'personal';
   const decideOwnerForAction = (
     automationAction: ScheduledActivity['action'],
     view: OwnerView = initialView,
+    globalOwner?: string,
   ): Promise<SameOwnerDecision> => {
     if (automationAction.type === 'app_advisor_prompt') {
       return Promise.resolve({ kind: 'allowed' });
@@ -1618,6 +1714,15 @@ async function automationAction(
       return Promise.resolve({ kind: 'allowed' });
     }
     const target = resolveAutomationTargetProject(automationAction);
+    if (target.kind === 'global') {
+      const callerOwnerContext = automationOwnerContext(view.callerOwner);
+      return Promise.resolve(
+        callerOwnerContext !== undefined &&
+          globalOwner === serializeWorkspaceContext(callerOwnerContext)
+          ? { kind: 'allowed' }
+          : { kind: 'hidden' },
+      );
+    }
     if (target.kind !== 'project') {
       return Promise.resolve({ kind: 'hidden' });
     }
@@ -1631,7 +1736,7 @@ async function automationAction(
     operation: 'update' | 'disable' | 'delete' | 'run_now',
     view: OwnerView = initialView,
   ): Promise<AppAdvisorActionResponse | null> => {
-    if (current.action.type === 'app_advisor_prompt') {
+    if (isAppAdvisorAutomation(current)) {
       const advisorFailure = await view.advisorFailure();
       if (!advisorFailure) return null;
       if (operation === 'delete') {
@@ -1645,7 +1750,11 @@ async function automationAction(
     if (view.callerOwner.kind === 'unknown') {
       return automationOwnerUnavailable();
     }
-    const decision = await decideOwnerForAction(current.action, view);
+    const decision = await decideOwnerForAction(
+      current.action,
+      view,
+      globalOwnerOf(current),
+    );
     if (operation === 'delete' && decision.kind === 'hidden') {
       return failure('not_found', 'Activity not found.');
     }
@@ -1675,7 +1784,7 @@ async function automationAction(
     const patch =
       operation === 'disable' ? { enabled: false } : (updatePatch ?? {});
     const policyError = validateAgentAutomationUpdatePolicy(
-      current.action,
+      agentPolicyAction(current),
       patch,
       current.ifCommand,
       Boolean(current.agentScheduledSend),
@@ -1683,6 +1792,7 @@ async function automationAction(
     return policyError ? failure('validation_failed', policyError) : null;
   };
   const patchTargetFailure = async (
+    current: ScheduledActivity,
     patch: Extract<AgentResourceAction, { type: 'automation.update' }>['patch'],
     view: OwnerView = initialView,
   ): Promise<AppAdvisorActionResponse | null> => {
@@ -1692,7 +1802,7 @@ async function automationAction(
       if (advisorFailure) return advisorFailure;
     }
     return automationOwnerDecisionFailure(
-      await decideOwnerForAction(patch.action, view),
+      await decideOwnerForAction(patch.action, view, globalOwnerOf(current)),
     );
   };
   const respondMutation = async (
@@ -1742,7 +1852,11 @@ async function automationAction(
         const visibleActivities: ScheduledActivity[] = [];
         const visibleActivityIds = new Set<string>();
         for (const activity of advisorState.activities) {
-          const decision = await decideOwnerForAction(activity.action);
+          const decision = await decideOwnerForAction(
+            activity.action,
+            initialView,
+            globalOwnerOf(activity),
+          );
           if (decision.kind === 'allowed') {
             visibleActivities.push(activity);
             visibleActivityIds.add(activity.id);
@@ -1768,15 +1882,16 @@ async function automationAction(
       if (!activity) {
         return hiddenAutomationNotFound(action.id);
       }
-      if (
-        activity.action.type === 'app_advisor_prompt' &&
-        deniedAdvisorAccess
-      ) {
+      if (isAppAdvisorAutomation(activity) && deniedAdvisorAccess) {
         return hiddenAutomationNotFound(action.id);
       }
       if (callerOwner.kind === 'unknown') return automationOwnerUnavailable();
       const ownerFailure = automationOwnerDecisionFailure(
-        await decideOwnerForAction(activity.action),
+        await decideOwnerForAction(
+          activity.action,
+          initialView,
+          globalOwnerOf(activity),
+        ),
         action.id,
       );
       if (ownerFailure) return ownerFailure;
@@ -1819,8 +1934,17 @@ async function automationAction(
         return deniedAdvisorAccess;
       }
       if (callerOwner.kind === 'unknown') return automationOwnerUnavailable();
+      // A pipeline with no project is owned by the caller's project (the
+      // selected context for App Advisor), never by a caller-supplied value.
+      let owner: string | undefined;
+      if (isGlobalPipelineAutomationAction(action.input.action)) {
+        const resolved = await agentPipelineOwnerContext(runtime);
+        if ('refusal' in resolved)
+          return failure('validation_failed', resolved.refusal);
+        owner = resolved.owner;
+      }
       const ownerFailure = automationOwnerDecisionFailure(
-        await decideOwnerForAction(action.input.action),
+        await decideOwnerForAction(action.input.action, initialView, owner),
       );
       if (ownerFailure) return ownerFailure;
       const policyError = validateAgentAutomationCreatePolicy(action.input);
@@ -1844,14 +1968,23 @@ async function automationAction(
         }
         guardRefusal =
           automationOwnerDecisionFailure(
-            await decideOwnerForAction(action.input.action, view),
+            await decideOwnerForAction(action.input.action, view, owner),
           ) ?? undefined;
         return guardRefusal === undefined;
       };
-      const response = await service.create(action.input, {
-        authorize,
-        agentAuthor: agentAuthorForRuntime(runtime),
-      });
+      // CAN-4551 7c: converted while the chat automation pipelines
+      // experiment is on.
+      const { createAutomationForAgent } =
+        await import('../automations/chat-automation-save');
+      const response = await createAutomationForAgent(
+        action.input,
+        {
+          authorize,
+          agentAuthor: agentAuthorForRuntime(runtime),
+          ...(owner === undefined ? {} : { owner }),
+        },
+        service,
+      );
       if (guardRefusal) return guardRefusal;
       return respondMutation(action.type, response, true);
     }
@@ -1860,10 +1993,10 @@ async function automationAction(
       if (!current) return hiddenAutomationNotFound(action.id);
       const existingFailure = await currentActivityFailure(current, 'update');
       if (existingFailure) return existingFailure;
-      const targetFailure = await patchTargetFailure(action.patch);
+      const targetFailure = await patchTargetFailure(current, action.patch);
       if (targetFailure) return targetFailure;
       const policyError = validateAgentAutomationUpdatePolicy(
-        current.action,
+        agentPolicyAction(current),
         action.patch,
         current.ifCommand,
         Boolean(current.agentScheduledSend),
@@ -1883,7 +2016,7 @@ async function automationAction(
           (await currentActivityFailure(fresh, 'update', view)) ?? undefined;
         if (guardRefusal) return false;
         guardRefusal =
-          (await patchTargetFailure(action.patch, view)) ?? undefined;
+          (await patchTargetFailure(fresh, action.patch, view)) ?? undefined;
         if (guardRefusal) return false;
         guardRefusal =
           currentPolicyFailure(fresh, 'update', action.patch) ?? undefined;
@@ -1898,11 +2031,26 @@ async function automationAction(
         }
         return true;
       };
-      const response = await service.update(
+      // CAN-4551 7c: a converted automation stays converted, or converts
+      // back once its agent-authored runs would be refused.
+      const { updateAutomationForAgent } =
+        await import('../automations/chat-automation-save');
+      const response = await updateAutomationForAgent(
         { id: action.id, ...action.patch },
-        authorize,
-        callerContext,
-        { agentAuthor: agentAuthorForRuntime(runtime) },
+        {
+          authorize,
+          ...(callerContext ? { callerContext } : {}),
+          agentAuthor: agentAuthorForRuntime(runtime),
+          // Converting back writes an Orchestrator prompt natively, which
+          // needs the caller's Orchestrator access, as a native create does.
+          authorizeNative: async (native): Promise<boolean> => {
+            if (native.type !== 'app_advisor_prompt') return true;
+            guardRefusal =
+              (await (await freshOwnerView()).advisorFailure()) ?? undefined;
+            return guardRefusal === undefined;
+          },
+        },
+        service,
       );
       if (guardRefusal) return guardRefusal;
       if (!response.ok && response.error === 'Activity not found.') {

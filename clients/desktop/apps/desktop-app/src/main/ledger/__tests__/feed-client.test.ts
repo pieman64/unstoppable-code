@@ -52,6 +52,30 @@ describe('createLedgerMirrorReader', () => {
     expect(sent[0]?.init.credentialContext?.apiKey).toBe('key-a');
   });
 
+  it('negotiates version-2 reads, so global (workflow) rows carry their owner', async () => {
+    const sent: SentRequest[] = [];
+    const reader = createLedgerMirrorReader(
+      (pathname, init) => {
+        sent.push({ pathname, init });
+        return Promise.resolve({
+          entries: [],
+          actors: [],
+          nextCursor: null,
+          hasMore: false,
+        });
+      },
+      () => Promise.resolve(credentials(ACCOUNT_A, 'key-a')),
+    );
+
+    await reader.search({ audience: 'teammates' }, ACCOUNT_A);
+    await reader.getEntry(ENTRY_ID, {}, ACCOUNT_A);
+
+    expect(sent.map((request) => request.init.headers)).toEqual([
+      { 'X-Canopy-Ledger-Version': '2' },
+      { 'X-Canopy-Ledger-Version': '2' },
+    ]);
+  });
+
   it('sends nothing for an account that is no longer the one signed in', async () => {
     const sent: SentRequest[] = [];
     const request = (

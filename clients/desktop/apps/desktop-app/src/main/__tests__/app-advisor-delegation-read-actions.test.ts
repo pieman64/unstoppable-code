@@ -51,6 +51,42 @@ describe('App Advisor delegation reads', () => {
       }),
     ).toMatchObject({ ok: false, error: { code: 'invalid_target' } });
   });
+  it.each(['invalid_request', 'not_found', 'failed'])(
+    'keeps returned transcript %s failures invalid_target',
+    async (code) => {
+      mockTranscript.mockResolvedValueOnce({
+        ok: false,
+        code,
+        error: 'Transcript unavailable.',
+      });
+      await expect(
+        dispatchDelegationReadAction({
+          type: 'delegation.transcript',
+          ...target,
+          delegationId: 'child',
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { code: 'invalid_target', message: 'Transcript unavailable.' },
+      });
+    },
+  );
+  it('maps thrown transcript lookup failures to sanitized execution_failed', async () => {
+    mockTranscript.mockRejectedValueOnce(new Error('/private/registry/file'));
+    await expect(
+      dispatchDelegationReadAction({
+        type: 'delegation.transcript',
+        ...target,
+        delegationId: 'child',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'execution_failed',
+        message: "Couldn't read the delegation.",
+      },
+    });
+  });
   it('forwards the requested run of a transcript', async () => {
     mockTranscript.mockResolvedValueOnce({
       ok: true,

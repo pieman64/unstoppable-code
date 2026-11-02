@@ -5,7 +5,12 @@ import {
   invalidatePullRequestListingCache,
 } from '../lib/github-pr-listing';
 import { getRemoteUrl } from '../lib/git';
-import { getGitHubClient } from '../lib/github-client';
+import type { Octokit } from '@octokit/rest';
+import {
+  getGitHubClient,
+  type GitHubClient,
+  type GitHubClientEnqueueOptions,
+} from '../lib/github-client';
 
 jest.mock('../lib/git', () => ({
   getRemoteUrl: jest.fn(),
@@ -17,6 +22,11 @@ jest.mock('../lib/github-client', () => ({
 
 const mockGetRemoteUrl = jest.mocked(getRemoteUrl);
 const mockGetGitHubClient = jest.mocked(getGitHubClient);
+
+function asTestOctokit(client: object): Octokit {
+  // These client stubs implement only the endpoint exercised by each test.
+  return client as unknown as Octokit;
+}
 
 interface MockPullRequestListItem {
   number: number;
@@ -30,10 +40,14 @@ interface MockPullRequestListItem {
 
 function mockClientListing(items: MockPullRequestListItem[]): jest.Mock {
   const pullsList = jest.fn().mockResolvedValue({ data: items });
-  mockGetGitHubClient.mockReturnValue({
-    enqueue: <T>(fn: (octokit: unknown) => Promise<T>): Promise<T> =>
-      fn({ pulls: { list: pullsList } }),
-  });
+  const octokit = asTestOctokit({ pulls: { list: pullsList } });
+  const enqueue: GitHubClient['enqueue'] = <T>(
+    fn: (
+      client: Octokit,
+      conditionalHeaders: Record<string, string>,
+    ) => Promise<T>,
+  ): Promise<T> => fn(octokit, {});
+  mockGetGitHubClient.mockReturnValue({ enqueue });
   return pullsList;
 }
 
@@ -264,10 +278,28 @@ describe('searchOpenPullRequestsForRepo', () => {
     const graphql: MockGraphql = jest
       .fn<Promise<unknown>, [string, { q: string }]>()
       .mockResolvedValue({ search: { nodes } });
-    const enqueue = jest.fn((fn: (client: unknown) => Promise<unknown>) =>
-      fn({ graphql }),
-    );
-    mockGetGitHubClient.mockReturnValue({ enqueue });
+    const enqueue = jest.fn<
+      void,
+      [
+        fn: Parameters<GitHubClient['enqueue']>[0],
+        priority?: 'high' | 'normal',
+        options?: unknown,
+      ]
+    >();
+    const client: GitHubClient = {
+      enqueue: <T>(
+        fn: (
+          octokit: Octokit,
+          conditionalHeaders: Record<string, string>,
+        ) => Promise<T>,
+        priority?: 'high' | 'normal',
+        options?: GitHubClientEnqueueOptions<T>,
+      ): Promise<T> => {
+        enqueue(fn, priority, options);
+        return fn(asTestOctokit({ graphql }), {});
+      },
+    };
+    mockGetGitHubClient.mockReturnValue(client);
     return { graphql, enqueue };
   }
 

@@ -100,7 +100,11 @@ import {
   createSingleRepoWorktree,
 } from '../lib/worktree-service';
 import { claimWorktreeGitSetup } from '../lib/worktree-git-setup';
-import { renameWorktreeBranch } from '../lib/worktree-branch-rename';
+import {
+  renameWorktreeBranch,
+  type WorktreeBranchRenameGit,
+} from '../lib/worktree-branch-rename';
+import { inProcessBranchRenameGit } from './helpers/in-process-branch-rename-git';
 import { recordWorktreeDiscovery } from '../lib/worktree-repair';
 import { reconcileGitPendingWorktrees } from '../lib/worktree-boot-recovery';
 import { updateWorkspaceMetadata } from '../lib/workspace-metadata';
@@ -476,20 +480,35 @@ describe('composite operation admission', () => {
   afterEach(() => rm(sources, { recursive: true, force: true }));
 
   const archived = { workspaceId: WORKSPACE_ID, worktreeId: 'wt-1' };
-  const target = { mode: 'new', existingWorktreeIds: [] } as const;
+  const target = { mode: 'new' as const, existingWorktreeIds: [] };
   type Operation = [string, () => Promise<unknown>];
   const op = (namespace: string, run: () => Promise<unknown>): Operation => [
     namespace,
     run,
   ];
+  // The rename's injected `worker.git.branch.rename` port (CAN-5516):
+  // admission comes first, so a refusal never reaches it.
+  const renameEffects: string[] = [];
+  const recordedRenameGit: WorktreeBranchRenameGit = {
+    renameCheckoutBranch: (target, name) => {
+      renameEffects.push(`${target.workspaceId}/${target.worktreeId}:${name}`);
+      return inProcessBranchRenameGit.renameCheckoutBranch(target, name);
+    },
+  };
+  beforeEach(() => {
+    renameEffects.length = 0;
+  });
   const operations: Record<string, Operation> = {
     'worktree:rename-branch': op(LIST, () =>
-      renameWorktreeBranch({
-        source: 'desktop',
-        workspaceId: WORKSPACE_ID,
-        worktreeId: 'wt-1',
-        newBranchName: 'feature/renamed',
-      }),
+      renameWorktreeBranch(
+        {
+          source: 'desktop',
+          workspaceId: WORKSPACE_ID,
+          worktreeId: 'wt-1',
+          newBranchName: 'feature/renamed',
+        },
+        recordedRenameGit,
+      ),
     ),
     archive: op(LIST, () => archiveSingleRepoWorktree(archived)),
     'multi-repo archive': op(LIST, () => archiveMultiRepoWorktree(archived)),
@@ -583,8 +602,32 @@ describe('composite operation admission', () => {
         ).trim(),
       ).toBe('branch-wt-1');
       expect(await snapshot(dataDir, sources)).toEqual(before);
+      expect(renameEffects).toEqual([]);
     },
   );
+
+  it('admits the rename before its worker.git port, which runs once admitted', async () => {
+    mockOwners.set(LIST, 'daemon');
+    await expect(
+      operations['worktree:rename-branch']?.[1](),
+    ).rejects.toMatchObject(daemonOwned);
+    expect(renameEffects).toEqual([]);
+    mockOwners.delete(LIST);
+    await operations['worktree:rename-branch']?.[1]();
+    expect(renameEffects).toEqual([`${WORKSPACE_ID}/wt-1:feature/renamed`]);
+    expect(
+      execFileSync(
+        'git',
+        [
+          '-C',
+          getWorktreeDir(WORKSPACE_ID, 'wt-1'),
+          'branch',
+          '--show-current',
+        ],
+        { encoding: 'utf8' },
+      ).trim(),
+    ).toBe('feature/renamed');
+  });
 
   it('refuses a type conversion before its repository files change', async () => {
     const items = await readAllSidebarItems();
@@ -893,6 +936,7 @@ describe('composite operation admission', () => {
     mockBeforeWrite.mockImplementation((filePath) => {
       if (String(filePath).includes('ws-repo'))
         throw new Error('list unavailable');
+      return Promise.resolve();
     });
     const project = (
       id: string,

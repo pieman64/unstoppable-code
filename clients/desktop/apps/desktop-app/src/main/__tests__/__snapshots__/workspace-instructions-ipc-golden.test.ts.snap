@@ -1,0 +1,389 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`CAN-4106 workspace instructions IPC golden pins a missing request payload 1`] = `
+{
+  "load": {
+    "error": {
+      "message": "Cannot read properties of undefined (reading 'workspaceId')",
+      "name": "TypeError",
+    },
+  },
+  "save": {
+    "error": {
+      "message": "Cannot read properties of undefined (reading 'workspaceId')",
+      "name": "TypeError",
+    },
+  },
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden propagates a non-ENOENT read error instead of returning empty content 1`] = `
+{
+  "load": {
+    "error": {
+      "code": "EISDIR",
+      "message": "EISDIR: illegal operation on a directory, read",
+      "name": "Error",
+    },
+  },
+  "save": {
+    "error": {
+      "code": "EISDIR",
+      "message": "EISDIR: illegal operation on a directory, open '<root>/data/workspaces/broken-ws/CLAUDE.md'",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden reads and writes an unknown workspace through the default local path 1`] = `
+{
+  "load": {
+    "result": "",
+  },
+  "reload": {
+    "result": "# Ghost",
+  },
+  "save": {
+    "result": undefined,
+  },
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed agents-escape layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "# Outside",
+    "CLAUDE.md": "unreadable: ENOENT",
+  },
+  "loaded": {
+    "error": {
+      "message": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+      "name": "Error",
+    },
+  },
+  "saved": {
+    "error": {
+      "message": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+      "name": "Error",
+    },
+  },
+  "telemetry": [],
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed agents-link layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "# New",
+    "CLAUDE.md": "# New",
+  },
+  "loaded": {
+    "result": "# C",
+  },
+  "saved": {
+    "result": undefined,
+  },
+  "telemetry": [
+    [
+      {
+        "action": "update",
+        "source": "claude_md",
+        "workspaceId": "source-ws",
+      },
+    ],
+  ],
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed agents-only layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "# New",
+    "CLAUDE.md": "unreadable: ENOENT",
+  },
+  "loaded": {
+    "result": "# A",
+  },
+  "saved": {
+    "result": undefined,
+  },
+  "telemetry": [
+    [
+      {
+        "action": "update",
+        "source": "claude_md",
+        "workspaceId": "source-ws",
+      },
+    ],
+  ],
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed claude-directory layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "unreadable: ENOENT",
+    "CLAUDE.md": "unreadable: EISDIR",
+  },
+  "loaded": {
+    "error": {
+      "message": "CLAUDE.md must be a regular file.",
+      "name": "Error",
+    },
+  },
+  "saved": {
+    "error": {
+      "message": "CLAUDE.md must be a regular file.",
+      "name": "Error",
+    },
+  },
+  "telemetry": [],
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed claude-escape layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "unreadable: ENOENT",
+    "CLAUDE.md": "# Outside",
+  },
+  "loaded": {
+    "error": {
+      "message": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+      "name": "Error",
+    },
+  },
+  "saved": {
+    "error": {
+      "message": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+      "name": "Error",
+    },
+  },
+  "telemetry": [],
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed claude-only layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "unreadable: ENOENT",
+    "CLAUDE.md": "# New",
+  },
+  "loaded": {
+    "result": "# C",
+  },
+  "saved": {
+    "result": undefined,
+  },
+  "telemetry": [
+    [
+      {
+        "action": "update",
+        "source": "claude_md",
+        "workspaceId": "source-ws",
+      },
+    ],
+  ],
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed equal-mirror layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "# New",
+    "CLAUDE.md": "# New",
+  },
+  "loaded": {
+    "result": "# Same",
+  },
+  "saved": {
+    "result": undefined,
+  },
+  "telemetry": [
+    [
+      {
+        "action": "update",
+        "source": "claude_md",
+        "workspaceId": "source-ws",
+      },
+    ],
+  ],
+}
+`;
+
+exports[`CAN-4106 workspace instructions IPC golden routes a source-backed none layout 1`] = `
+{
+  "files": {
+    "../outside.md": "# Outside",
+    "AGENTS.md": "# New",
+    "CLAUDE.md": "unreadable: ENOENT",
+  },
+  "loaded": {
+    "result": "",
+  },
+  "saved": {
+    "result": undefined,
+  },
+  "telemetry": [
+    [
+      {
+        "action": "update",
+        "source": "claude_md",
+        "workspaceId": "source-ws",
+      },
+    ],
+  ],
+}
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed get for malformed id 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Invalid workspaceId: must be lowercase alphanumeric with hyphens",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed get for missing id 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "Invalid CLAUDE.md get payload: workspaceId is required.",
+        "retryable": undefined,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed get for non-object 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "Invalid CLAUDE.md get payload: workspaceId is required.",
+        "retryable": undefined,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed get for source-backed escape 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed get for unreadable copy 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "EISDIR",
+        "message": "EISDIR: illegal operation on a directory, read",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed save for malformed id 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Invalid workspaceId: must be lowercase alphanumeric with hyphens",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed save for missing content 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "Invalid CLAUDE.md save payload: workspaceId and content are required.",
+        "retryable": undefined,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed save for source-backed escape 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4106 workspace instructions Portal golden pins a failed save for unreadable copy 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "EISDIR",
+        "message": "EISDIR: illegal operation on a directory, open '<root>/data/workspaces/broken-ws/CLAUDE.md'",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;

@@ -1,0 +1,40 @@
+import type { WorktreeDiscardDescription } from './worktree-discard';
+
+/**
+ * Wire contract for discarding what keeps a project's deletion from finishing
+ * (CAN-5337, CAN-4995 E). The desktop lists every worktree whose ordinary
+ * removal can't finish, each with its own worktree discard description
+ * (CAN-5334), and the interrupted deletion a confirmed deletion supersedes.
+ * Clients discard each item through `worktree.discard` with its own token,
+ * then run the ordinary deletion again. Nothing here discards anything.
+ */
+
+export interface ProjectDeletionDiscardItem {
+  /** The row's name; absent for an interrupted discard whose row is gone. */
+  worktreeName?: string;
+  description: WorktreeDiscardDescription;
+}
+
+/** An interrupted deletion of this project whose index removal never ran. */
+export interface ProjectDeletionInterruptedDeletion {
+  /** Sent back as the deletion's `supersedeInterruptedDeletion`. */
+  operationId: string;
+}
+
+export interface ProjectDeletionDiscardDescription {
+  version: 1;
+  workspaceId: string;
+  /**
+   * `discardable` only when these items are all that keep the deletion from
+   * finishing. `refused` lists nothing: the deletion's own refusal stands.
+   */
+  status: 'discardable' | 'refused';
+  /** Each a `discardable` worktree description, in list order. */
+  items: ProjectDeletionDiscardItem[];
+  interruptedDeletion?: ProjectDeletionInterruptedDeletion;
+}
+
+/** Payload for `portal.workspace.delete.discard.describe`; read-only. */
+export interface PortalProjectDeletionDiscardDescribePayload {
+  workspaceId: string;
+}

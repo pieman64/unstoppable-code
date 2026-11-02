@@ -2,6 +2,7 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { copyFile, mkdir, open, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import type { ChatJournalRecord } from '@canopy/desktop-shared/types';
 import { getChatJournalQuarantineFilePath } from './paths';
 import { writePrettyJsonCooperatively } from './chat-tabs';
@@ -385,17 +386,9 @@ export async function replaceSnapshotWithBackup(
   await rename(tempPath, targetPath);
 }
 
+/** The shared D1 directory flush, without the chat-storage work counter. */
 export async function fsyncDirectory(directoryPath: string): Promise<void> {
-  // Windows does not support opening directories through Node. Atomic rename
-  // remains the write-through boundary there; POSIX additionally fsyncs the
-  // containing directory so rename ordering survives power loss.
-  if (process.platform === 'win32') return;
-  const handle = await open(directoryPath, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await flushDirectory(directoryPath);
 }
 
 export async function preserveSnapshotConflict(

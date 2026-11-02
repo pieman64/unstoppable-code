@@ -1,11 +1,25 @@
 import path from 'node:path';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
-import { windowsExecutable } from '../supervision/shared';
+import {
+  GIT_CONVENTIONAL_DEFAULT_BRANCHES,
+  GIT_OBJECT_ID_PATTERN,
+  gitChangeSetReadArgs,
+  isGitChangeSetRevision,
+  type GitChangeSetRange,
+  type GitChangeSetRead,
+  type GitConventionalDefaultBranch,
+  type GitRepositoryRead,
+} from '@canopy/core-runtime/node/git';
+import { LIBUV_REQUIRED_KEYS, windowsExecutable } from '../supervision/shared';
 
 /** Always caller-supplied; the runner never reads ambient `process.env`. */
 export type GitReadEnvironment = Readonly<Record<string, string>>;
 
-/** The fixed command set. Nothing else can be expressed. */
+/**
+ * The fixed command set. Nothing else can be expressed: the only arguments a
+ * request supplies are a conventional branch and the change-set reads'
+ * revisions, each `HEAD` or a full object id.
+ */
 export type GitReadCommand =
   | { readonly kind: 'git-version'; readonly executable: string }
   /** macOS only: `init --bare` into a fresh directory under `temporaryRoot`. */
@@ -18,6 +32,21 @@ export type GitReadCommand =
       readonly kind: 'git-check-ignore';
       readonly executable: string;
       readonly input: Uint8Array;
+      /** The `git version` text parsed when `executable` was validated. */
+      readonly version?: string;
+      /** `executableIdentity` of the file `version` was parsed from. */
+      readonly identity?: string;
+    }
+  /**
+   * `ls-files --others --ignored --exclude-standard --directory -z`: one
+   * listing of a working tree's ignored untracked paths, run in the request's
+   * `cwd`. Versioned as `git-check-ignore`, for the same discharge.
+   */
+  | {
+      readonly kind: 'git-ls-files-ignored';
+      readonly executable: string;
+      readonly version?: string;
+      readonly identity?: string;
     }
   | { readonly kind: 'xcode-select-print-path' }
   /** macOS: `$SHELL || /bin/zsh` from the supplied environment. */
@@ -26,9 +55,89 @@ export type GitReadCommand =
   | { readonly kind: 'linux-login-shell-path'; readonly shell: string }
   | { readonly kind: 'getent-passwd'; readonly uid: number }
   /** Windows: `where.exe`, resolved through the supplied PATH only. */
-  | { readonly kind: 'where-git' };
+  | { readonly kind: 'where-git' }
+  /** POSIX repository reads for the `worker.git.*` queries (D10). */
+  | { readonly kind: 'git-branch-refs'; readonly executable: string }
+  | { readonly kind: 'git-common-dir'; readonly executable: string }
+  | { readonly kind: 'git-worktree-list'; readonly executable: string }
+  | { readonly kind: 'git-origin-url'; readonly executable: string }
+  | { readonly kind: 'git-remote-names'; readonly executable: string }
+  | { readonly kind: 'git-dir'; readonly executable: string }
+  /** Contacts `origin`: non-interactive, under the request deadline. */
+  | { readonly kind: 'git-remote-head'; readonly executable: string }
+  | { readonly kind: 'git-origin-head'; readonly executable: string }
+  | {
+      readonly kind: 'git-origin-branch';
+      readonly executable: string;
+      readonly branch: GitConventionalDefaultBranch;
+    }
+  | { readonly kind: 'git-inside-work-tree'; readonly executable: string }
+  /** POSIX change-set reads for `worker.git.diff.get` (CAN-4103). */
+  | {
+      readonly kind: 'git-diff-name-status';
+      readonly executable: string;
+      readonly range: GitChangeSetRange;
+    }
+  | {
+      readonly kind: 'git-diff-numstat';
+      readonly executable: string;
+      readonly range: GitChangeSetRange;
+    }
+  | { readonly kind: 'git-untracked-files'; readonly executable: string }
+  | { readonly kind: 'git-unmerged-files'; readonly executable: string }
+  | {
+      readonly kind: 'git-object-exists';
+      readonly executable: string;
+      readonly object: string;
+    };
 
 export type GitReadCommandKind = GitReadCommand['kind'];
+
+/** The POSIX repository reads' command kinds. */
+type RepositoryCommandKind =
+  | 'git-branch-refs'
+  | 'git-common-dir'
+  | 'git-worktree-list'
+  | 'git-origin-url'
+  | 'git-remote-names'
+  | 'git-dir'
+  | 'git-remote-head'
+  | 'git-origin-head'
+  | 'git-origin-branch'
+  | 'git-inside-work-tree'
+  | 'git-diff-name-status'
+  | 'git-diff-numstat'
+  | 'git-untracked-files'
+  | 'git-unmerged-files'
+  | 'git-object-exists';
+
+/** A selected Git and the `git version` text its validation parsed. */
+export interface SelectedGit {
+  readonly executable: string;
+  readonly version: string | undefined;
+  /**
+   * `executableIdentity` of the file `version` was parsed from. Without it,
+   * or once the started file no longer has it, the version authorizes no
+   * fsmonitor discharge.
+   */
+  readonly identity?: string;
+}
+
+/** The `stat` fields that identify one executable file. */
+export interface ExecutableStats {
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}
+
+/** Changes when the file at a path is replaced or rewritten. */
+export function executableIdentity(found: ExecutableStats): string {
+  return [found.dev, found.ino, found.size, found.mtimeMs, found.ctimeMs].join(
+    ':',
+  );
+}
 
 /** How one command runs. `maxBuffer` limits each stream separately (C7). */
 export interface GitReadPlan {
@@ -93,9 +202,18 @@ export class GitReadError extends Error {
 
 // Desktop's values (git-executable.ts, config-paths.ts, git.ts).
 const VALIDATION_TIMEOUT_MS = 5_000;
+// desktop-shared git.ts REMOTE_DEFAULT_BRANCH_TIMEOUT_MS and MAX_BUFFER_BYTES;
+// worktree-health.ts GIT_HEALTH_TIMEOUT_MS.
+const DEFAULT_BRANCH_TIMEOUT_MS = 30_000;
+const REPOSITORY_MAX_BUFFER = 8 * 1024 * 1024;
+// Desktop's gitChangeSetReads (git.ts), so a large comparison fails alike.
+const CHANGE_SET_MAX_BUFFER = 32 * 1024 * 1024;
+const HEALTH_TIMEOUT_MS = 5_000;
 const LOGIN_SHELL_TIMEOUT_MS = 10_000;
 const GETENT_TIMEOUT_MS = 1_000;
 const NODE_DEFAULT_MAX_BUFFER = 1024 * 1024;
+// Desktop's IGNORED_LISTING_MAX_BUFFER_BYTES (git.ts).
+const IGNORED_LISTING_MAX_BUFFER = 64 * 1024 * 1024;
 const LINUX_PATH_MARKER = '__CANOPY_LOGIN_PATH__';
 
 /** Pinned against desktop-shared's `sanitizeEnvVars` by a golden test (C3). */
@@ -148,18 +266,177 @@ export function bareInitEnvironment(
   });
 }
 
+/**
+ * The repository reads run only where their closure is audited: no Win32
+ * fsmonitor or helper closure has been shown for them (D10, CAN-4732).
+ */
+const POSIX: readonly PlatformOperatingSystem[] = ['darwin', 'linux'];
+
 const AVAILABLE: Readonly<
   Record<GitReadCommandKind, readonly PlatformOperatingSystem[]>
 > = {
   'git-version': ['darwin', 'linux', 'win32'],
   'git-bare-init-smoke': ['darwin'],
   'git-check-ignore': ['darwin', 'linux', 'win32'],
+  'git-ls-files-ignored': ['darwin', 'linux', 'win32'],
   'xcode-select-print-path': ['darwin'],
   'macos-login-shell-path': ['darwin'],
   'linux-login-shell-path': ['linux'],
   'getent-passwd': ['linux'],
   'where-git': ['win32'],
+  'git-branch-refs': POSIX,
+  'git-common-dir': POSIX,
+  'git-worktree-list': POSIX,
+  'git-origin-url': POSIX,
+  'git-remote-names': POSIX,
+  'git-dir': POSIX,
+  'git-remote-head': POSIX,
+  'git-origin-head': POSIX,
+  'git-origin-branch': POSIX,
+  'git-inside-work-tree': POSIX,
+  'git-diff-name-status': POSIX,
+  'git-diff-numstat': POSIX,
+  'git-untracked-files': POSIX,
+  'git-unmerged-files': POSIX,
+  'git-object-exists': POSIX,
 };
+
+/**
+ * Repository reads add Git's own non-interactive switches to the supplied
+ * environment, so `origin` contact never waits on a terminal or credential
+ * prompt (D8).
+ */
+export function nonInteractiveEnvironment(
+  environment: GitReadEnvironment,
+): GitReadEnvironment {
+  return Object.freeze({
+    ...environment,
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+  });
+}
+
+/**
+ * Before each change-set read's subcommand. An empty `core.fsmonitor` turns a
+ * hook or the builtin monitor off on every Git (before 2.36, `false` names a
+ * hook), so no fsmonitor process runs for, or outlives, the read.
+ * `--no-optional-locks` does not stop `diff`'s index stat refresh.
+ */
+export const GIT_CHANGE_SET_COMMAND_PREFIX: readonly string[] = Object.freeze([
+  '--no-optional-locks',
+  '-c',
+  'core.fsmonitor=',
+]);
+
+/**
+ * A change-set read's environment: a partial clone's missing objects fail the
+ * read instead of being fetched from its promisor remote (Git 2.44 and later;
+ * earlier Git ignores the variable and fetches, as in process).
+ */
+function changeSetEnvironment(
+  environment: GitReadEnvironment,
+): GitReadEnvironment {
+  return Object.freeze({
+    ...nonInteractiveEnvironment(environment),
+    GIT_NO_LAZY_FETCH: '1',
+  });
+}
+
+/**
+ * The command a repository read runs with `executable`. Validates the read
+ * and its host first, so a refused read never waits for a selection.
+ */
+export function gitRepositoryCommandFor(
+  os: PlatformOperatingSystem,
+  read: unknown,
+): (executable: string) => GitReadCommand {
+  const field = (key: string): unknown => Reflect.get(Object(read), key);
+  const kind = field('kind');
+  const command =
+    typeof kind === 'string' ? REPOSITORY_COMMANDS.get(kind) : undefined;
+  if (command === undefined) throw invalid();
+  const available = (): void => {
+    if (!AVAILABLE[command].includes(os))
+      throw new GitReadError('unsupported_command');
+  };
+  // Arguments are validated, and copied, before the host check.
+  switch (command) {
+    case 'git-origin-branch': {
+      const branch = conventionalBranch(field('branch'));
+      available();
+      return (file) => ({ kind: command, executable: file, branch });
+    }
+    case 'git-diff-name-status':
+    case 'git-diff-numstat': {
+      const range = changeSetRange(field('range'));
+      available();
+      return (file) => ({ kind: command, executable: file, range });
+    }
+    case 'git-object-exists': {
+      const object = revision(field('object'));
+      available();
+      return (file) => ({ kind: command, executable: file, object });
+    }
+    default:
+      available();
+      return (file) => ({ kind: command, executable: file });
+  }
+}
+
+/**
+ * Win32 `check-ignore` and `ls-files` turn fsmonitor off, so no fsmonitor
+ * daemon outlives the request. Command-scope config is read last, and a boolean
+ * `core.fsmonitor` settles the mode before Git for Windows consults
+ * `core.useBuiltinFSMonitor` or `feature.manyFiles`. Source-audited for the
+ * `AUDITED_GIT_FOR_WINDOWS` releases only; see
+ * docs/bundled-runtime-maintenance.md.
+ */
+export const WINDOWS_FSMONITOR_DISCHARGE: readonly string[] = Object.freeze([
+  '-c',
+  'core.fsmonitor=false',
+]);
+
+/** Git for Windows 2.<min> through 2.<max>: the discharge's audited minors. */
+export const AUDITED_GIT_FOR_WINDOWS = Object.freeze({ min: 36, max: 56 });
+
+/**
+ * `parseGitVersion` text naming an audited Git for Windows release. Any other
+ * build (microsoft/git, a release candidate, a snapshot) is unaudited.
+ */
+export function fsmonitorDischargeAudited(version: unknown): boolean {
+  if (typeof version !== 'string') return false;
+  const minor = /^git version 2\.(\d+)\.\d+\.windows\.\d+$/.exec(version)?.[1];
+  return (
+    minor !== undefined &&
+    Number(minor) >= AUDITED_GIT_FOR_WINDOWS.min &&
+    Number(minor) <= AUDITED_GIT_FOR_WINDOWS.max
+  );
+}
+
+/** The commands that read the working tree, and so may start fsmonitor. */
+export function readsWorkingTree(kind: GitReadCommandKind): boolean {
+  return kind === 'git-check-ignore' || kind === 'git-ls-files-ignored';
+}
+
+/** The plan's arguments start with the audited fsmonitor discharge. */
+export function dischargesFsmonitor(args: readonly string[]): boolean {
+  return WINDOWS_FSMONITOR_DISCHARGE.every((arg, index) => args[index] === arg);
+}
+
+/**
+ * The audit covers Git for Windows, whose image Win32 selection accepts only
+ * as `git.exe`, at an audited version. Any other image or version keeps
+ * desktop's argv and stays unsafe.
+ */
+function dischargeApplies(
+  executable: string,
+  version: string | undefined,
+): boolean {
+  const name = path.win32.basename(executable).toLowerCase();
+  return (
+    (name === 'git.exe' || name === 'git') && fsmonitorDischargeAudited(version)
+  );
+}
 
 const hasNul = (value: string): boolean => value.includes('\0');
 const invalid = (): GitReadError => new GitReadError('invalid_request');
@@ -192,6 +469,59 @@ function linuxShell(shell: unknown): string {
     throw invalid();
   return shell;
 }
+
+function conventionalBranch(branch: unknown): GitConventionalDefaultBranch {
+  const found = GIT_CONVENTIONAL_DEFAULT_BRANCHES.find(
+    (candidate) => candidate === branch,
+  );
+  if (found === undefined) throw invalid();
+  return found;
+}
+
+/**
+ * `HEAD` or a full object id: never a branch, an expression, an option or a
+ * path. With no `--`, Git refuses one that also names a root file.
+ */
+function revision(value: unknown): string {
+  if (!isGitChangeSetRevision(value)) throw invalid();
+  return value;
+}
+
+/** A fresh, frozen copy, so a caller's getters cannot change it later. */
+function changeSetRange(value: unknown): GitChangeSetRange {
+  const field = (key: string): unknown => Reflect.get(Object(value), key);
+  const kind = field('kind');
+  if (kind === 'worktree')
+    return Object.freeze({ kind, base: revision(field('base')) });
+  if (kind === 'objects') {
+    const base = field('base');
+    if (typeof base !== 'string' || !GIT_OBJECT_ID_PATTERN.test(base))
+      throw invalid();
+    return Object.freeze({ kind, base, head: revision(field('head')) });
+  }
+  throw invalid();
+}
+
+const REPOSITORY_COMMANDS: ReadonlyMap<string, RepositoryCommandKind> = new Map<
+  GitRepositoryRead['kind'],
+  RepositoryCommandKind
+>([
+  ['branch-refs', 'git-branch-refs'],
+  ['common-dir', 'git-common-dir'],
+  ['worktree-list', 'git-worktree-list'],
+  ['origin-url', 'git-origin-url'],
+  ['remote-names', 'git-remote-names'],
+  ['git-dir', 'git-dir'],
+  ['remote-head', 'git-remote-head'],
+  ['origin-head', 'git-origin-head'],
+  ['origin-branch', 'git-origin-branch'],
+  ['inside-work-tree', 'git-inside-work-tree'],
+  ['diff-name-status', 'git-diff-name-status'],
+  ['diff-numstat', 'git-diff-numstat'],
+  ['untracked-files', 'git-untracked-files'],
+  ['unmerged-files', 'git-unmerged-files'],
+  ['object-exists', 'git-object-exists'],
+]);
 
 function accountUid(uid: unknown): string {
   if (typeof uid !== 'number' || !Number.isSafeInteger(uid) || uid < 0)
@@ -307,21 +637,6 @@ function requireResolvable(
   return plan;
 }
 
-/** libuv v1.51 `src/win/process.c` `required_vars`. */
-const LIBUV_REQUIRED_KEYS = [
-  'HOMEDRIVE',
-  'HOMEPATH',
-  'LOGONSERVER',
-  'PATH',
-  'SYSTEMDRIVE',
-  'SYSTEMROOT',
-  'TEMP',
-  'USERDOMAIN',
-  'USERNAME',
-  'USERPROFILE',
-  'WINDIR',
-] as const;
-
 function usableSystemRoot(value: string): boolean {
   try {
     windowsExecutable(value, 'taskkill.exe');
@@ -399,6 +714,45 @@ export function planGitReadCommand(
         ...fields,
       }),
     );
+  // Desktop's argv and limits; `undefined` leaves only the request deadline.
+  const repository = (
+    { executable: file }: { readonly executable: unknown },
+    args: readonly string[],
+    {
+      timeoutMs,
+      maxBuffer = REPOSITORY_MAX_BUFFER,
+      killMode = 'graceful',
+      env = nonInteractiveEnvironment(environment),
+    }: Partial<
+      Pick<GitReadPlan, 'timeoutMs' | 'maxBuffer' | 'killMode' | 'env'>
+    > = {},
+  ): GitReadPlan =>
+    plan(executable(file), args, {
+      env,
+      maxBuffer,
+      timeoutMs,
+      killMode,
+    });
+  // The engine's argv after the prefix; diffs run no external diff driver,
+  // and no read fetches.
+  const changeSet = (
+    command: { readonly executable: unknown },
+    read: GitChangeSetRead,
+  ): GitReadPlan =>
+    repository(
+      command,
+      [
+        ...GIT_CHANGE_SET_COMMAND_PREFIX,
+        ...gitChangeSetReadArgs(read),
+        ...(read.kind === 'diff-name-status' || read.kind === 'diff-numstat'
+          ? ['--no-ext-diff']
+          : []),
+      ],
+      {
+        maxBuffer: CHANGE_SET_MAX_BUFFER,
+        env: changeSetEnvironment(environment),
+      },
+    );
   switch (command.kind) {
     case 'git-version':
       // Linux validation runs with the probe environment and SIGKILL.
@@ -424,12 +778,37 @@ export function planGitReadCommand(
     case 'git-check-ignore':
       return plan(
         executable(command.executable),
-        ['check-ignore', '-z', '--stdin'],
+        [
+          ...(os === 'win32' &&
+          dischargeApplies(command.executable, command.version)
+            ? WINDOWS_FSMONITOR_DISCHARGE
+            : []),
+          'check-ignore',
+          '-z',
+          '--stdin',
+        ],
         {
           maxBuffer: 8 * 1024 * 1024,
           timeoutMs: undefined,
           input: inputBytes(command.input),
         },
+      );
+    case 'git-ls-files-ignored':
+      return plan(
+        executable(command.executable),
+        [
+          ...(os === 'win32' &&
+          dischargeApplies(command.executable, command.version)
+            ? WINDOWS_FSMONITOR_DISCHARGE
+            : []),
+          'ls-files',
+          '--others',
+          '--ignored',
+          '--exclude-standard',
+          '--directory',
+          '-z',
+        ],
+        { maxBuffer: IGNORED_LISTING_MAX_BUFFER, timeoutMs: undefined },
       );
     case 'xcode-select-print-path':
       return plan('/usr/bin/xcode-select', ['--print-path'], {
@@ -461,5 +840,83 @@ export function planGitReadCommand(
       });
     case 'where-git':
       return plan('where.exe', ['git']);
+    case 'git-branch-refs':
+      return repository(command, [
+        'for-each-ref',
+        '--format=%(refname)%09%(refname:short)%(HEAD)',
+        'refs/heads/',
+        'refs/remotes/origin/',
+      ]);
+    case 'git-common-dir':
+      return repository(command, ['rev-parse', '--git-common-dir']);
+    case 'git-worktree-list':
+      return repository(command, ['worktree', 'list', '--porcelain']);
+    case 'git-origin-url':
+      return repository(command, ['remote', 'get-url', 'origin']);
+    case 'git-remote-names':
+      return repository(command, ['remote']);
+    case 'git-dir':
+      return repository(command, ['rev-parse', '--git-dir']);
+    // SIGKILL for the group: a graceful stop ends Git, and the forced
+    // escalation then skips the group, so an ssh or credential helper that
+    // ignores SIGTERM would outlive the request.
+    case 'git-remote-head':
+      return repository(command, ['ls-remote', '--symref', 'origin', 'HEAD'], {
+        timeoutMs: DEFAULT_BRANCH_TIMEOUT_MS,
+        killMode: 'force',
+      });
+    case 'git-origin-head':
+      return repository(command, ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
+        timeoutMs: DEFAULT_BRANCH_TIMEOUT_MS,
+        killMode: 'force',
+      });
+    case 'git-origin-branch':
+      return repository(
+        command,
+        [
+          'rev-parse',
+          '--verify',
+          `refs/remotes/origin/${conventionalBranch(command.branch)}`,
+        ],
+        { timeoutMs: DEFAULT_BRANCH_TIMEOUT_MS },
+      );
+    case 'git-inside-work-tree':
+      return repository(command, ['rev-parse', '--is-inside-work-tree'], {
+        timeoutMs: HEALTH_TIMEOUT_MS,
+        maxBuffer: NODE_DEFAULT_MAX_BUFFER,
+      });
+    default:
+      return changeSet(command, changeSetReadOf(command));
+  }
+}
+
+type ChangeSetCommand = Extract<
+  GitReadCommand,
+  {
+    kind:
+      | 'git-diff-name-status'
+      | 'git-diff-numstat'
+      | 'git-untracked-files'
+      | 'git-unmerged-files'
+      | 'git-object-exists';
+  }
+>;
+
+/** The engine read a change-set command runs, its arguments revalidated. */
+function changeSetReadOf(command: ChangeSetCommand): GitChangeSetRead {
+  switch (command.kind) {
+    case 'git-diff-name-status':
+      return {
+        kind: 'diff-name-status',
+        range: changeSetRange(command.range),
+      };
+    case 'git-diff-numstat':
+      return { kind: 'diff-numstat', range: changeSetRange(command.range) };
+    case 'git-untracked-files':
+      return { kind: 'untracked-files' };
+    case 'git-unmerged-files':
+      return { kind: 'unmerged-files' };
+    case 'git-object-exists':
+      return { kind: 'object-exists', object: revision(command.object) };
   }
 }

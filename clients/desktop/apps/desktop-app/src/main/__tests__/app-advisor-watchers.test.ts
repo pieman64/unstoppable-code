@@ -1,3 +1,4 @@
+import type * as SessionManagerModule from '../agents/session-manager';
 import type {
   InlineChatWatcherReservationInput,
   InlineChatWatcherReservationPort,
@@ -5,11 +6,13 @@ import type {
   AgentSendAcceptanceFacts,
 } from '@canopy/desktop-shared/lib/chat-send-actions';
 import type { ResourceOwner } from '@canopy/protocol/resource-owner';
+import type { ChatInputDeliveryLedger } from '@canopy/protocol/portal';
 import type { ProjectPluginDefaults } from '../plugins/project-plugin-defaults-cache';
 import type * as PluginServiceModule from '../plugins/plugin-service';
 import type {
   MarketplaceInfo,
   PluginInfo,
+  PluginsCache,
 } from '@canopy/desktop-shared/types/plugins';
 import type {
   ResourceContextDecision,
@@ -19,6 +22,7 @@ import type { AppAdvisorAccessDecision } from '../lib/app-advisor-project-agent-
 import type { ProjectOwnerTarget } from '../lib/project-owner';
 import type {
   ActiveChatInputProvider,
+  ChatObservationCursor,
   CanonicalChatWatcherEntry,
   CanonicalChatTerminalEvent,
   ResolvedChatWatcherTarget,
@@ -26,6 +30,7 @@ import type {
   UnresolvedLegacyChatWatcher,
 } from '@canopy/desktop-shared/lib/chat-watcher-contracts';
 import { legacyChatWatcherToCanonical } from '@canopy/desktop-shared/lib/chat-watcher-contracts';
+import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
 import type {
   LegacyChatWatcherAccessResolution,
   ChatWatcherAccessDecision,
@@ -33,6 +38,8 @@ import type {
 } from '../app-advisor/chat-watcher-access';
 import type { PersistedChatMessage } from '@canopy/agent-transcript';
 import type { ChatReadContext } from '../project-discovery/chat-target';
+import { resetChatWaitRecordBudgetForTests } from '../observability/chat-wait-diagnostics';
+import type { SessionDiagnosticRecord } from '../observability/service';
 import { readCanonicalWatcherStore } from '../app-advisor/chat-watcher-storage';
 import {
   noteWatcherDeliveryAuthorityChange,
@@ -282,10 +289,13 @@ import {
   type AppAdvisorWatcherSummary,
   type AppAdvisorWatcher,
   type AppAdvisorWindowCommand,
+  type ChatSendMessageRequest,
   type ChatActiveSessionInfo,
   type ChatWindowCommand,
   type SetupAppAdvisorWatchersInput,
+  type WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
+import type { WatcherChatDelivery } from '../services/watcher-chat-delivery';
 import type * as TimersPromises from 'node:timers/promises';
 import {
   getAppAdvisorWatcherService,
@@ -293,6 +303,11 @@ import {
   retryTransientWatcherAuthorization,
 } from '../app-advisor/watchers';
 import { getGitHubWorkflowRunObserver } from '../lib/github-workflow-run-observer';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../canopy-runtime/desktop-runtime';
+import { setDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { getGitHubPullRequestObserver } from '../lib/github-pull-request-observer';
 import type {
   AppAdvisorAutomationRunEvent,
@@ -308,6 +323,13 @@ import {
   getChatStateService,
   resetChatStateServiceForTests,
 } from '../services/chat-state-service';
+import type { ChatTurnStateChange } from '../services/chat-turn-state-handoff';
+import {
+  observeTurn,
+  turnEnded,
+  turnStarted,
+} from './helpers/turn-lifecycle-events';
+import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
 import { getChatQueueService } from '../services/chat-queue-service';
 import { ChatStateV2Backend } from '../services/chat-state-v2-backend';
 import { ChatStateV2Repository } from '../services/chat-state-v2-repository';
@@ -323,8 +345,6 @@ import {
   LocalWatcherScheduler,
   WatcherRecipientNotReadyError,
 } from '../app-advisor/local-watcher-scheduler';
-import { FileDelegationStorage } from '@canopy/desktop-shared/node/delegation/storage';
-import type { StoredDelegation } from '@canopy/desktop-shared/node/delegation/broker';
 
 type DelegateDeliveryArgs = [
   { projectId: string; worktreeId: string },
@@ -461,6 +481,24 @@ jest.mock('../lib/paths', () => ({
 
 jest.mock('../agents/session-manager', () => ({
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
+  subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
+  hasPendingCodexContinuation: jest.fn(() => false),
+  getChatSessionLiveness: jest.fn(
+    (projectId: string, worktreeId: string, chatId: string) => {
+      const { getSession, getActiveChatIds } = jest.requireMock<
+        typeof SessionManagerModule
+      >('../agents/session-manager');
+      const session = getSession(projectId, worktreeId, chatId);
+      return {
+        foreground:
+          session?.isDisposed?.() !== true &&
+          (session?.hasPendingSteeringInput?.() === true ||
+            getActiveChatIds(projectId, worktreeId).includes(chatId)),
+        background: false,
+      };
+    },
+  ),
   getGlobalPluginDefaultsRevision: jest.fn(() => 0),
   getSessionGlobalPluginDefaultsRevision: jest.fn(() => undefined),
   getSession: jest.fn(() => undefined),
@@ -483,8 +521,17 @@ jest.mock('../integration/claude-terminal-session-service', () => ({
 
 // Chat-state diagnostics are unrelated to watcher delivery. Keep this fixture
 // from initializing the real observability timers with its intentionally tiny paths mock.
+const mockRecordSessionDiagnostic = jest.fn<void, [SessionDiagnosticRecord]>();
+const mockPurgeLateWorktreeSessionDiagnostics = jest.fn<
+  Promise<void>,
+  [string, string, string, number]
+>(() => Promise.resolve());
 jest.mock('../observability', () => ({
-  getObservabilityService: () => ({ recordSessionDiagnostic: jest.fn() }),
+  getObservabilityService: () => ({
+    recordSessionDiagnostic: mockRecordSessionDiagnostic,
+    purgeLateWorktreeSessionDiagnostics:
+      mockPurgeLateWorktreeSessionDiagnostics,
+  }),
 }));
 
 jest.mock('../lib/cowork-work-entries', () => ({
@@ -505,10 +552,14 @@ jest.mock('../lib/cowork-work-entries', () => ({
   ),
 }));
 
-const mockIsWorkspaceWorktreeCurrent = jest.fn(() => Promise.resolve(true));
-const mockGetWorkspaceWorktreeCreatedAt = jest.fn(() =>
-  Promise.resolve('2026-01-01T00:00:00.000Z'),
-);
+const mockIsWorkspaceWorktreeCurrent = jest.fn<
+  Promise<boolean>,
+  [workspaceId: string, worktreeId: string, expectedCreatedAt?: string]
+>(() => Promise.resolve(true));
+const mockGetWorkspaceWorktreeCreatedAt = jest.fn<
+  Promise<string | null>,
+  [workspaceId: string, worktreeId: string]
+>(() => Promise.resolve('2026-01-01T00:00:00.000Z'));
 const mockReadProjectPluginDefaults = jest.fn<
   Promise<ProjectPluginDefaults>,
   [string]
@@ -517,13 +568,20 @@ jest.mock('../lib/workspace-persistence', () => ({
   readProjectPluginDefaults: (workspaceId: string) =>
     mockReadProjectPluginDefaults(workspaceId),
   readWorkspaceConfigDetailed: (
-    ...args: Parameters<typeof mockDestinationRead>
+    workspaceId: string,
   ): ReturnType<typeof readWorkspaceConfigDetailed> =>
-    mockDestinationRead(...args),
-  isWorkspaceWorktreeCurrent: (...args: unknown[]) =>
-    mockIsWorkspaceWorktreeCurrent(...args),
-  getWorkspaceWorktreeCreatedAt: (...args: unknown[]) =>
-    mockGetWorkspaceWorktreeCreatedAt(...args),
+    mockDestinationRead(workspaceId),
+  isWorkspaceWorktreeCurrent: (
+    workspaceId: string,
+    worktreeId: string,
+    expectedCreatedAt?: string,
+  ): Promise<boolean> =>
+    mockIsWorkspaceWorktreeCurrent(workspaceId, worktreeId, expectedCreatedAt),
+  getWorkspaceWorktreeCreatedAt: (
+    workspaceId: string,
+    worktreeId: string,
+  ): Promise<string | null> =>
+    mockGetWorkspaceWorktreeCreatedAt(workspaceId, worktreeId),
 }));
 
 const mockedResolveWorkEntryForChat = jest.mocked(resolveWorkEntryForChat);
@@ -557,8 +615,11 @@ let mockAutomationActivities: Array<{
 const mockHiddenAutomationIds = new Set<string>();
 let mockAutomationRecentRuns: Array<Record<string, unknown>> = [];
 
+const mockAutomationRunNow = jest.fn();
+
 jest.mock('../automations/service', () => ({
   getAutomationsService: () => ({
+    runNow: mockAutomationRunNow,
     list: () =>
       Promise.resolve({
         activities: mockAutomationActivities.filter(
@@ -592,6 +653,55 @@ function destination(chatId = 'advisor-chat'): AppAdvisorWatcherDestination {
     worktreeId: APP_ADVISOR_WORKTREE_ID,
     chatId,
   };
+}
+
+type GitHubWatcherSetupResult = Awaited<
+  ReturnType<ReturnType<typeof getAppAdvisorWatcherService>['watchGitHubItems']>
+>;
+
+function getCreatedOrDedupedWatcherId(
+  result: GitHubWatcherSetupResult,
+): string {
+  if (
+    !result.ok ||
+    (result.status !== 'created' && result.status !== 'deduped')
+  ) {
+    throw new Error('Expected a created or deduped GitHub watcher');
+  }
+  return result.watcherId;
+}
+
+// Persisted compatibility fixtures intentionally omit fields added later.
+function preserveLegacyMissingField<T extends object>(
+  value: T,
+  field: keyof T,
+): T {
+  Reflect.deleteProperty(value, field);
+  return value;
+}
+
+function workspaceConfig(
+  overrides: Partial<WorkspaceConfigFile> = {},
+): WorkspaceConfigFile {
+  return { version: 1, type: 'multi-repo', repos: [], ...overrides };
+}
+
+function legacyPipelineResourceOwner(
+  shareScope: 'private' | 'organization',
+  organizationId?: string,
+): ResourceOwner {
+  const owner: ResourceOwner = { type: 'system' };
+  Reflect.deleteProperty(owner, 'type');
+  Reflect.set(owner, 'shareScope', shareScope);
+  if (organizationId !== undefined) {
+    Reflect.set(owner, 'organizationId', organizationId);
+  }
+  return owner;
+}
+
+function requireHiddenContextText(value: string | undefined): string {
+  if (value === undefined) throw new Error('Expected hidden context text');
+  return value;
 }
 
 function worktreeDestination(
@@ -744,6 +854,133 @@ async function readPersistedWatchersFile(): Promise<
   return parsePersistedWatchersFile(await readFile(watchersFilePath, 'utf8'));
 }
 
+async function seedRegistrationStore(watchers: unknown[]): Promise<void> {
+  await mkdir(dirname(watchersFilePath), { recursive: true });
+  await writeFile(
+    watchersFilePath,
+    JSON.stringify({
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      watchers,
+    }),
+    'utf8',
+  );
+}
+
+function legacyManagedWatcher(
+  id: string,
+  status: AppAdvisorWatcher['status'],
+  options: {
+    resultIndex?: number | null;
+    projectId?: string;
+    worktreeId?: string;
+    pendingDelivery?: boolean;
+    cancellationPending?: boolean;
+    createdAt?: string;
+    firedAt?: string;
+    recipient?: 'root' | 'delegate';
+    delegationId?: string;
+    chatId?: string;
+  } = {},
+) {
+  const resultIndex =
+    options.resultIndex === undefined ? 4 : options.resultIndex;
+  const projectId = options.projectId ?? 'project-1';
+  const worktreeId = options.worktreeId ?? 'worktree-1';
+  const deadlineAt = Date.now() + 60_000;
+  const delegationId = options.delegationId ?? `delegate-${id}`;
+  const recipient = options.recipient ?? 'root';
+  const chatId = options.chatId ?? 'legacy-parent';
+  const runtimeTarget = {
+    delegationId,
+    runGeneration: 2,
+    status:
+      resultIndex === null ? ('running' as const) : ('completed' as const),
+    resultIndex,
+    ...(resultIndex === null
+      ? {}
+      : {
+          settledAt: Date.parse(options.createdAt ?? new Date().toISOString()),
+        }),
+  };
+  const eventTargets = [
+    {
+      delegationId,
+      runGeneration: 2,
+      status: runtimeTarget.status,
+      resultIndex,
+    },
+  ];
+  const outcome =
+    status === 'fired'
+      ? ('completed' as const)
+      : status === 'delivery_failed'
+        ? ('timeout' as const)
+        : undefined;
+  return {
+    version: 1,
+    id,
+    trigger: 'managed_delegation_completion' as const,
+    status,
+    label: 'Delegate completion',
+    target: {
+      kind: 'managed_delegation' as const,
+      projectId,
+      worktreeId,
+      mode: 'all',
+      deadlineAt,
+      targetCount: 1,
+      recipient,
+      ...(outcome ? { outcome } : {}),
+    },
+    destination: {
+      ...worktreeDestination(chatId),
+      ...(recipient === 'delegate' ? { delegationId } : {}),
+    },
+    createdAt: options.createdAt ?? new Date().toISOString(),
+    updatedAt: options.createdAt ?? new Date().toISOString(),
+    ...(options.firedAt ? { firedAt: options.firedAt } : {}),
+    dedupeKey: `legacy-${id}`,
+    runtimeState: {
+      kind: 'managed_delegation' as const,
+      nextAttemptAt: new Date().toISOString(),
+      requestHash: `hash-${id}`,
+      invocationKey: `invocation-${id}`,
+      recipient:
+        recipient === 'delegate'
+          ? { kind: 'delegate', delegationId }
+          : { kind: 'root' },
+      targets: [runtimeTarget],
+      ...(options.cancellationPending
+        ? {
+            cancellationPending: {
+              previousStatus:
+                status === 'firing' ? ('firing' as const) : ('active' as const),
+            },
+          }
+        : {}),
+      ...(options.pendingDelivery
+        ? {
+            pendingDelivery: {
+              eventId: `event-${id}`,
+              attempts: 0,
+              event: {
+                watcherId: id,
+                outcome:
+                  resultIndex === null
+                    ? ('timeout' as const)
+                    : ('completed' as const),
+                mode: 'all' as const,
+                deadlineAt,
+                targets: eventTargets,
+              },
+            },
+          }
+        : {}),
+    },
+  };
+}
+
 function countOccurrences(text: string, search: string): number {
   return text.split(search).length - 1;
 }
@@ -860,18 +1097,101 @@ function parseWatcherEventContext(
 }
 
 describe('App Advisor watcher service', () => {
+  type RecordedWatcherMessage = WatcherChatDelivery & {
+    type: 'send_watcher_message';
+  };
+  const deliveredWatcherMessages: RecordedWatcherMessage[] = [];
   const ensureAppAdvisorWindow = jest.fn(() =>
     Promise.resolve({ open: true, focused: false }),
   );
   const sendAppAdvisorWindowCommand = jest.fn<
     void,
-    [AppAdvisorWindowCommand]
+    [AppAdvisorWindowCommand | RecordedWatcherMessage]
   >();
   const sendChatWindowCommand = jest.fn<boolean, [ChatWindowCommand]>();
+  const deliverWatcherMessage = jest.fn<
+    Promise<'submitted' | 'already_delivered' | 'terminal_presenter'>,
+    [WatcherChatDelivery]
+  >();
   const onChange = jest.fn();
+  // A timed-out test skips its `finally`; afterEach releases its holds before
+  // draining, or the shared mutation queue stalls every later test.
+  const unreleasedHolds = new Set<() => void>();
+  /** A gate that holds a dependency until `release`, or until afterEach. */
+  function holdUntilReleased(): { held: Promise<void>; release: () => void } {
+    let open = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const release = (): void => {
+      unreleasedHolds.delete(release);
+      open();
+    };
+    unreleasedHolds.add(release);
+    return { held, release };
+  }
+  function releaseUnreleasedHolds(): void {
+    for (const release of Array.from(unreleasedHolds)) release();
+  }
+  let workspaceRuntime: DesktopCanopyDispatcher | null = null;
+  /**
+   * Serves project-1 and its worktree-1 only through the W5 workspace reads,
+   * so display metadata read from the files directly would be missing.
+   */
+  function useWorkspaceReads(): void {
+    workspaceRuntime = createDesktopRuntime({
+      workspaceServices: {
+        readAllSidebarItems: jest.fn().mockResolvedValue({
+          version: 1,
+          items: [],
+        }),
+        readWorkspaceIndexEntry: jest.fn((workspaceId: string) =>
+          Promise.resolve(
+            workspaceId === 'project-1'
+              ? {
+                  id: 'project-1',
+                  name: ' Canopy ',
+                  type: 'multi-repo',
+                  color: 'blue',
+                  collapsed: false,
+                  order: 0,
+                }
+              : null,
+          ),
+        ),
+        readWorkspaceConfig: jest
+          .fn()
+          .mockResolvedValue({ version: 1, type: 'multi-repo', repos: [] }),
+        readWorkspaceWorktrees: jest.fn().mockResolvedValue([
+          {
+            id: 'worktree-1',
+            branchName: 'feature/watchers',
+            createdAt: '2026-05-24T00:00:00.000Z',
+          },
+        ]),
+        readEffectiveWorkspaceConfig: jest
+          .fn()
+          .mockResolvedValue({ repos: [] }),
+      },
+    });
+    setDesktopCanopyRuntime(workspaceRuntime);
+  }
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // Earlier tests' records share the per-minute diagnostic budget.
+    resetChatWaitRecordBudgetForTests();
+    ensureAppAdvisorWindow
+      .mockReset()
+      .mockResolvedValue({ open: true, focused: false });
+    sendAppAdvisorWindowCommand.mockReset();
+    sendChatWindowCommand.mockReset();
+    deliverWatcherMessage.mockReset();
+    mockedResolveWorkEntryForChat.mockReset().mockResolvedValue({
+      entryId: 'entry-app-advisor',
+      archivedInEntryId: null,
+    });
+    deliveredWatcherMessages.length = 0;
     mockStandaloneProjects.clear();
     mockCanonicalInput = undefined;
     mockCanonicalContext = undefined;
@@ -928,6 +1248,7 @@ describe('App Advisor watcher service', () => {
     mockAutomationActivities = [{ id: 'auto-1', name: 'Nightly triage' }];
     mockHiddenAutomationIds.clear();
     mockAutomationRecentRuns = [];
+    mockAutomationRunNow.mockReset();
     mockFetchGitHubWorkflowRun.mockReset();
     mockFetchGitHubWorkflowRunJobs.mockReset();
     mockResolveGitHubWorkflowRunJob.mockReset();
@@ -965,28 +1286,24 @@ describe('App Advisor watcher service', () => {
     });
     mockFetchGitHubWorkflowDefinitionGraph.mockReset();
     mockFetchGitHubWorkflowDefinitionGraph.mockResolvedValue(null);
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        queueMicrotask(() => {
-          getAppAdvisorWatcherService().acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: true },
-          );
-        });
-      }
+    sendAppAdvisorWindowCommand.mockImplementation(() => {
+      // Direct deliveries are recorded by the new surface below. This mock
+      // accepts the old command-shaped assertion format, not an App Advisor
+      // window delivery route or acknowledgement.
     });
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        queueMicrotask(() => {
-          getAppAdvisorWatcherService().acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: true },
-          );
-        });
+    sendChatWindowCommand.mockImplementation(() => true);
+    deliverWatcherMessage.mockImplementation((delivery) => {
+      const recorded: RecordedWatcherMessage = {
+        ...delivery,
+        type: 'send_watcher_message',
+      };
+      deliveredWatcherMessages.push(recorded);
+      if (delivery.projectId === APP_ADVISOR_PROJECT_ID) {
+        sendAppAdvisorWindowCommand(recorded);
+      } else {
+        sendChatWindowCommand(recorded);
       }
-      return true;
+      return Promise.resolve('submitted');
     });
     getAppAdvisorWatcherService().configure({
       getMainWindow: () => null,
@@ -994,6 +1311,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
     getGitHubWorkflowRunObserver().stop();
@@ -1002,6 +1320,10 @@ describe('App Advisor watcher service', () => {
 
   afterEach(async () => {
     jest.useRealTimers();
+    releaseUnreleasedHolds();
+    setDesktopCanopyRuntime(null);
+    await workspaceRuntime?.shutdown();
+    workspaceRuntime = null;
     resetWorkspaceTargetExclusionsForTests();
     jest.restoreAllMocks();
     getAppAdvisorWatcherService().shutdown();
@@ -1026,6 +1348,982 @@ describe('App Advisor watcher service', () => {
       'releaseChatDeliveryAuthority',
     ])
       expect(typeof Reflect.get(service, method)).toBe('function');
+  });
+
+  describe('CAN-4492 persistence characterization', () => {
+    const canonicalPath = (): string =>
+      join(dataDirPath, 'app-advisor-watchers-canonical.json');
+
+    beforeEach(async () => {
+      const service = getAppAdvisorWatcherService();
+      // The outer fixture starts recovery; drain alone does not join that scan.
+      await service.reconcileAtStartup();
+      service.shutdown();
+      await service.drain();
+      await service.whenChatDeliveriesSettled();
+    });
+
+    describe.each([
+      'write',
+      'file-sync',
+      'file-close',
+      'rename',
+      'directory-sync',
+    ])('legacy %s failure', (failure) => {
+      const testCase =
+        failure === 'directory-sync' && process.platform === 'win32'
+          ? it.skip
+          : it;
+      testCase(
+        'distinguishes installed bytes from acknowledgement',
+        async () => {
+          const service = getAppAdvisorWatcherService();
+          const first = await service.setup(worktreeChatInput(), destination());
+          if (!first.ok) throw new Error(first.error);
+          const before = await readFile(watchersFilePath, 'utf8');
+          const cached = await service.list();
+          expect(cached).toHaveLength(1);
+          const realOpen = fsPromises.open;
+          const realRename = fsPromises.rename;
+          const publishedPaths: string[] = [];
+          const openSpy = jest
+            .spyOn(fsPromises, 'open')
+            .mockImplementation(async (...args) => {
+              const handle = await realOpen(...args);
+              const isLegacyTemp =
+                args[1] === 'wx' &&
+                dirname(String(args[0])) === dataDirPath &&
+                String(args[0]).includes(
+                  `.app-advisor-watchers-${process.pid}-`,
+                );
+              if (isLegacyTemp) {
+                expect(args[2]).toBe(0o600);
+                if (failure === 'write')
+                  jest
+                    .spyOn(handle, 'writeFile')
+                    .mockRejectedValue(new Error('injected write failure'));
+                if (failure === 'file-sync')
+                  jest
+                    .spyOn(handle, 'sync')
+                    .mockRejectedValue(new Error('injected file-sync failure'));
+                if (failure === 'file-close') {
+                  const close = handle.close.bind(handle);
+                  jest.spyOn(handle, 'close').mockImplementation(async () => {
+                    await close();
+                    throw new Error('injected file-close failure');
+                  });
+                }
+              }
+              if (
+                args[1] === 'r' &&
+                args[0] === dataDirPath &&
+                publishedPaths.includes(watchersFilePath) &&
+                failure === 'directory-sync'
+              )
+                jest
+                  .spyOn(handle, 'sync')
+                  .mockRejectedValue(
+                    new Error('injected directory-sync failure'),
+                  );
+              return handle;
+            });
+          const renameSpy = jest
+            .spyOn(fsPromises, 'rename')
+            .mockImplementation(async (from, to) => {
+              if (to === watchersFilePath && failure === 'rename')
+                throw new Error('injected rename failure');
+              await realRename(from, to);
+              publishedPaths.push(String(to));
+            });
+          try {
+            await expect(
+              service.setup(
+                worktreeChatInput({ allowDuplicate: true }),
+                destination(),
+              ),
+            ).rejects.toThrow(`injected ${failure} failure`);
+          } finally {
+            openSpy.mockRestore();
+            renameSpy.mockRestore();
+          }
+          const committed = failure === 'directory-sync';
+          expect(publishedPaths).toEqual([
+            canonicalPath(),
+            ...(committed ? [watchersFilePath] : []),
+          ]);
+          const raw = await readPersistedWatchersFile();
+          expect(raw.watchers).toHaveLength(committed ? 2 : 1);
+          if (!committed)
+            expect(await readFile(watchersFilePath, 'utf8')).toBe(before);
+          expect(
+            (await fsPromises.readdir(dataDirPath)).filter((name) =>
+              name.endsWith('.tmp'),
+            ),
+          ).toEqual([]);
+          // A rejected write must not publish its private rows into the warm cache.
+          // A post-rename rejection must not hide the bytes that actually replaced it.
+          const visible = await service.list();
+          expect(visible.map((row) => row.id).sort()).toEqual(
+            raw.watchers.map((row) => row.id).sort(),
+          );
+          expect(deliverWatcherMessage).not.toHaveBeenCalled();
+          const next = await service.setup(
+            worktreeChatInput({ allowDuplicate: true }),
+            destination(),
+          );
+          expect(next.ok).toBe(true);
+          expect(await service.list()).toHaveLength(committed ? 3 : 2);
+        },
+      );
+    });
+
+    it('invalidates warm legacy and sidecar views across unlink and recreation', async () => {
+      const service = getAppAdvisorWatcherService();
+      await service.setup(worktreeChatInput(), destination());
+      const canonical = await service.setupCanonicalChatWatchers({
+        destination: destination(),
+        recipient: { kind: 'root' },
+        watchers: [
+          { trigger: 'bot_new_chat_started', target: { botId: 'app_advisor' } },
+        ],
+      });
+      if (!canonical.ok) throw new Error(canonical.error);
+      const legacyBytes = await readFile(watchersFilePath, 'utf8');
+      const canonicalBytes = await readFile(canonicalPath(), 'utf8');
+      const ids = (await service.list()).map((row) => row.id).sort();
+      expect(ids).toHaveLength(2);
+      await fsPromises.unlink(watchersFilePath);
+      expect((await service.list()).map((row) => row.id)).toEqual([
+        canonical.results[0].watcher.id,
+      ]);
+      await fsPromises.unlink(canonicalPath());
+      expect(await service.list()).toEqual([]);
+      await writeFile(watchersFilePath, legacyBytes);
+      await writeFile(canonicalPath(), canonicalBytes);
+      expect((await service.list()).map((row) => row.id).sort()).toEqual(ids);
+    });
+
+    it('keeps an unstaged canonical addition visible when the later legacy rename fails', async () => {
+      const service = getAppAdvisorWatcherService();
+      await service.setup(worktreeChatInput(), destination());
+      const before = await readFile(watchersFilePath, 'utf8');
+      expect(await service.list()).toHaveLength(1);
+      const rename = fsPromises.rename;
+      const spy = jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementation(async (from, to) => {
+          if (to === watchersFilePath)
+            throw new Error('legacy publication failed');
+          await rename(from, to);
+        });
+      try {
+        await expect(
+          service.setupCanonicalChatWatchers({
+            destination: destination(),
+            recipient: { kind: 'root' },
+            watchers: [
+              {
+                trigger: 'bot_new_chat_started',
+                target: { botId: 'app_advisor' },
+              },
+            ],
+          }),
+        ).rejects.toThrow('legacy publication failed');
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await readFile(watchersFilePath, 'utf8')).toBe(before);
+      const rows = await readCanonicalWatcherStore(canonicalPath());
+      expect(rows).toEqual([
+        expect.objectContaining({
+          trigger: 'bot_new_chat_started',
+          status: 'active',
+        }),
+      ]);
+      expect(JSON.stringify(rows)).not.toContain('chatWatcherBatch');
+      expect(await service.list()).toHaveLength(2);
+      expect(deliverWatcherMessage).not.toHaveBeenCalled();
+      const retry = await service.setupCanonicalChatWatchers({
+        destination: destination(),
+        recipient: { kind: 'root' },
+        watchers: [
+          { trigger: 'bot_new_chat_started', target: { botId: 'app_advisor' } },
+        ],
+      });
+      expect(retry).toMatchObject({
+        ok: true,
+        results: [{ status: 'deduped' }],
+      });
+      expect(await service.list()).toHaveLength(2);
+    });
+
+    it.each(['sidecar', 'legacy'])(
+      'projects an existing canonical edit after %s rename failure',
+      async (failure) => {
+        const service = getAppAdvisorWatcherService();
+        const legacy = await service.setup(worktreeChatInput(), destination());
+        if (!legacy.ok) throw new Error(legacy.error);
+        const canonical = await service.setupCanonicalChatWatchers({
+          destination: destination(),
+          recipient: { kind: 'root' },
+          watchers: [
+            {
+              trigger: 'bot_new_chat_started',
+              target: { botId: 'app_advisor' },
+            },
+          ],
+        });
+        if (!canonical.ok) throw new Error(canonical.error);
+        const id = canonical.results[0].watcher.id;
+        const beforeLegacy = await readFile(watchersFilePath, 'utf8');
+        const beforeCanonical = await readFile(canonicalPath(), 'utf8');
+        expect(await service.list()).toHaveLength(2);
+        const rename = fsPromises.rename;
+        const publications: string[] = [];
+        const failedPath =
+          failure === 'sidecar' ? canonicalPath() : watchersFilePath;
+        const spy = jest
+          .spyOn(fsPromises, 'rename')
+          .mockImplementation(async (from, to) => {
+            if (to === failedPath)
+              throw new Error('injected publication failure');
+            await rename(from, to);
+            publications.push(String(to));
+          });
+        try {
+          await expect(
+            service.updateWatcherFollowUp(id, 'Edited follow-up'),
+          ).rejects.toThrow('injected publication failure');
+        } finally {
+          spy.mockRestore();
+        }
+        expect(publications).toEqual(
+          failure === 'legacy' ? [canonicalPath()] : [],
+        );
+        expect(await readFile(watchersFilePath, 'utf8')).toBe(beforeLegacy);
+        if (failure === 'sidecar')
+          expect(await readFile(canonicalPath(), 'utf8')).toBe(beforeCanonical);
+        const expectedFollowUp =
+          failure === 'legacy' ? 'Edited follow-up' : undefined;
+        const persisted = await readCanonicalWatcherStore(canonicalPath());
+        expect(persisted).toHaveLength(1);
+        expect(persisted[0]).toEqual(expect.objectContaining({ id }));
+        const persistedRow = persisted[0];
+        if (!persistedRow || typeof persistedRow !== 'object')
+          throw new Error('Expected a persisted canonical row');
+        expect(
+          'followUpInstruction' in persistedRow
+            ? persistedRow.followUpInstruction
+            : undefined,
+        ).toBe(expectedFollowUp);
+        const visible = await service.list();
+        expect(visible).toHaveLength(2);
+        expect(visible.find((row) => row.id === id)?.followUpInstruction).toBe(
+          expectedFollowUp,
+        );
+        expect(deliverWatcherMessage).not.toHaveBeenCalled();
+        expect(
+          (await fsPromises.readdir(dataDirPath)).filter((name) =>
+            name.endsWith('.tmp'),
+          ),
+        ).toEqual([]);
+        await expect(
+          service.updateWatcherFollowUp(id, 'Retry follow-up'),
+        ).resolves.toEqual({ ok: true });
+        expect(
+          (await service.list()).find((row) => row.id === id)
+            ?.followUpInstruction,
+        ).toBe('Retry follow-up');
+      },
+    );
+
+    it('aborts legacy registration after sidecar publication without publishing legacy rows', async () => {
+      const service = getAppAdvisorWatcherService();
+      await service.setup(worktreeChatInput(), destination());
+      const before = await readFile(watchersFilePath, 'utf8');
+      const opaque = { kind: 'future-row', payload: { retain: true } };
+      await writeJsonFile(canonicalPath(), {
+        version: 1,
+        watchers: [opaque],
+        additive: true,
+      });
+      expect(await service.list()).toHaveLength(1);
+      const controller = new AbortController();
+      const rename = fsPromises.rename;
+      let sidecarPublished = false;
+      const spy = jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementation(async (from, to) => {
+          await rename(from, to);
+          if (to === canonicalPath()) {
+            sidecarPublished = true;
+            controller.abort();
+          }
+        });
+      try {
+        await expect(
+          service.setup(
+            worktreeChatInput({ allowDuplicate: true }),
+            destination(),
+            {
+              signal: controller.signal,
+            },
+          ),
+        ).rejects.toMatchObject({ name: 'AbortError' });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(sidecarPublished).toBe(true);
+      expect(await readFile(watchersFilePath, 'utf8')).toBe(before);
+      expect(await readCanonicalWatcherStore(canonicalPath())).toEqual([
+        opaque,
+      ]);
+      expect(JSON.parse(await readFile(canonicalPath(), 'utf8'))).toMatchObject(
+        { additive: true },
+      );
+      expect(await service.list()).toHaveLength(1);
+      expect(
+        (await fsPromises.readdir(dataDirPath)).filter((name) =>
+          name.endsWith('.tmp'),
+        ),
+      ).toEqual([]);
+      expect(
+        (
+          await service.setup(
+            worktreeChatInput({ allowDuplicate: true }),
+            destination(),
+          )
+        ).ok,
+      ).toBe(true);
+      expect(await service.list()).toHaveLength(2);
+    });
+
+    it.each(['current', 'prior'] as const)(
+      'keeps a %s-process legacy managed outbox inert during startup recovery',
+      async (processAge) => {
+        const service = getAppAdvisorWatcherService();
+        service.shutdown();
+        const createdAt = new Date(
+          processAge === 'prior'
+            ? Date.now() - process.uptime() * 1000 - 60_000
+            : Date.now(),
+        ).toISOString();
+        const row = legacyManagedWatcher('startup-outbox', 'firing', {
+          resultIndex: null,
+          pendingDelivery: true,
+          cancellationPending: true,
+          createdAt,
+        });
+        const deadlineAt = Date.parse(createdAt) + 1_000;
+        row.updatedAt = createdAt;
+        if (
+          row.target.kind !== 'managed_delegation' ||
+          row.runtimeState?.kind !== 'managed_delegation' ||
+          !row.runtimeState.pendingDelivery
+        )
+          throw new Error('Expected a persisted managed outbox');
+        row.target.deadlineAt = deadlineAt;
+        row.runtimeState.pendingDelivery.event.deadlineAt = deadlineAt;
+        await seedRegistrationStore([row]);
+        const before = await readFile(watchersFilePath, 'utf8');
+
+        service.configure(
+          {
+            getMainWindow: () => null,
+            getAppAdvisorWindow: () => null,
+            ensureAppAdvisorWindow,
+            sendAppAdvisorWindowCommand,
+            sendChatWindowCommand,
+            deliverWatcherMessage,
+            onChange,
+          },
+          { deferStartupRecovery: true },
+        );
+        const start = jest.spyOn(LocalWatcherScheduler.prototype, 'start');
+        await service.reconcileAtStartup();
+        await service.drain();
+        await service.whenChatDeliveriesSettled();
+        service.shutdown();
+
+        expect(await readFile(watchersFilePath, 'utf8')).toBe(before);
+        expect(start).toHaveBeenCalledTimes(1);
+        expect(deliverWatcherMessage).not.toHaveBeenCalled();
+        expect(sendChatWindowCommand).not.toHaveBeenCalled();
+        expect(mockDeliverToDelegate).not.toHaveBeenCalled();
+        await expect(service.listCompleted()).resolves.toEqual([]);
+        await expect(
+          service.listLegacyDelegateWatchers({
+            projectId: 'project-1',
+            worktreeId: 'worktree-1',
+          }),
+        ).resolves.toHaveLength(1);
+      },
+    );
+  });
+
+  it('names a non-chat watcher mutation and records its inventory read count', async () => {
+    const setup = await getAppAdvisorWatcherService().watchGitHubItems(
+      {
+        items: [{ kind: 'workflow_run', repository: 'acme/api', runId: '1' }],
+        notifyOn: { conclusions: ['failure'] },
+      },
+      destination(),
+    );
+    expect(setup.ok).toBe(true);
+    expect(
+      await waitForImmediateCondition(() =>
+        mockRecordSessionDiagnostic.mock.calls.some(
+          ([record]) =>
+            record.waitOperation === 'watcher.watch_git_hub_items' &&
+            record.waitPhase === 'end',
+        ),
+      ),
+    ).toBe(true);
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        waitOperation: 'watcher.watch_git_hub_items',
+        waitPhase: 'end',
+        waitScope: destination(),
+        waitProjectInventoryCalls: expect.any(Number),
+      }),
+    );
+  });
+
+  it('attributes GitHub job resolution before queue entry to the registration operation', async () => {
+    const service = getAppAdvisorWatcherService();
+    let releaseQueue = (): void => undefined;
+    const queueHeld = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
+    const queue = service as unknown as {
+      enqueueMutation: (...args: unknown[]) => Promise<unknown>;
+    };
+    const blocker = queue.enqueueMutation(() => queueHeld);
+    // The storage read before queue entry is real I/O that fake time cannot
+    // advance, so the queue stall is timed only once the registration queues.
+    const enqueue = queue.enqueueMutation.bind(service);
+    let queued = (): void => undefined;
+    const registrationQueued = new Promise<void>((resolve) => {
+      queued = resolve;
+    });
+    jest
+      .spyOn(queue, 'enqueueMutation')
+      .mockImplementation((...args: unknown[]) => {
+        const next = enqueue(...args);
+        const diagnostics = args[2];
+        if (
+          typeof diagnostics === 'object' &&
+          diagnostics !== null &&
+          'name' in diagnostics &&
+          diagnostics.name === 'watcher.watch_git_hub_items'
+        )
+          queued();
+        return next;
+      });
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const resolving = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const resolveJob = mockResolveGitHubWorkflowRunJob.getMockImplementation();
+    if (!resolveJob) throw new Error('Missing GitHub job resolution fixture');
+    mockResolveGitHubWorkflowRunJob.mockImplementationOnce(
+      async (...args: unknown[]) => {
+        entered();
+        await held;
+        return resolveJob(...args);
+      },
+    );
+    let registration: Promise<unknown> | undefined;
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      registration = service.watchGitHubItems(
+        {
+          items: ['https://github.com/acme/api/actions/runs/3/job/30'],
+          notifyOn: { conclusions: ['failure'] },
+        },
+        destination(),
+      );
+      await resolving;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const stalled = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation === 'watcher.watch_git_hub_items' &&
+            record.waitPhase === 'target_resolution' &&
+            record.waitOutcome === 'stalled',
+        );
+      expect(stalled).toMatchObject({
+        waitScope: destination(),
+        waitElapsedMs: 1_000,
+        waitQueueDepth: expect.any(Number),
+      });
+      release();
+      // A registration that settles without queueing fails below, not by timeout.
+      await Promise.race([registrationQueued, registration]);
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'queue_wait',
+          waitOutcome: 'stalled',
+          waitElapsedMs: 1_000,
+        }),
+      );
+      releaseQueue();
+      await blocker;
+      await registration;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'end',
+          waitPhaseDurationsMs: expect.objectContaining({
+            target_resolution: expect.any(Number),
+            queue_wait: expect.any(Number),
+          }),
+        }),
+      );
+    } finally {
+      release();
+      releaseQueue();
+      await blocker.catch(() => undefined);
+      await registration?.catch(() => undefined);
+      jest.useRealTimers();
+    }
+  });
+
+  it('attributes local command scope resolution before queue entry', async () => {
+    const service = getAppAdvisorWatcherService();
+    const scope = worktreeDestination();
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const resolving = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    mockGetWorkspaceWorktreeCreatedAt.mockImplementationOnce(async () => {
+      entered();
+      await held;
+      return '2026-01-01T00:00:00.000Z';
+    });
+    let registration: Promise<unknown> | undefined;
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      registration = service.createLocalWatcher(
+        {
+          kind: 'command_watch',
+          command: 'true',
+          cwd: '/repo',
+          intervalSeconds: 5,
+          maxAttempts: 1,
+        },
+        scope,
+        'held-scope',
+        undefined,
+        scope,
+      );
+      await resolving;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const stalled = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation === 'watcher.create_local_watcher' &&
+            record.waitPhase === 'scope_resolution' &&
+            record.waitOutcome === 'stalled',
+        );
+      expect(stalled).toMatchObject({
+        waitScope: scope,
+        waitElapsedMs: 1_000,
+      });
+      release();
+      await registration;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'end',
+          waitPhaseDurationsMs: expect.objectContaining({
+            scope_resolution: expect.any(Number),
+            queue_wait: expect.any(Number),
+          }),
+        }),
+      );
+    } finally {
+      release();
+      await registration?.catch(() => undefined);
+      jest.useRealTimers();
+    }
+  });
+
+  it('attributes the in-queue execution scope recheck, not the generic mutation phase', async () => {
+    const service = getAppAdvisorWatcherService();
+    const scope = worktreeDestination();
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const rechecking = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    mockIsWorkspaceWorktreeCurrent.mockImplementationOnce(async () => {
+      entered();
+      await held;
+      return true;
+    });
+    let registration: Promise<unknown> | undefined;
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      registration = service.createLocalWatcher(
+        {
+          kind: 'command_watch',
+          command: 'true',
+          cwd: '/repo',
+          intervalSeconds: 5,
+          maxAttempts: 1,
+        },
+        scope,
+        'held-scope-recheck',
+        undefined,
+        scope,
+      );
+      await rechecking;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const records = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .filter(
+          (record) => record.waitOperation === 'watcher.create_local_watcher',
+        );
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          waitPhase: 'scope_resolution',
+          waitOutcome: 'stalled',
+          waitElapsedMs: 1_000,
+        }),
+      );
+      expect(records).not.toContainEqual(
+        expect.objectContaining({ waitPhase: 'mutation' }),
+      );
+      release();
+      await registration;
+    } finally {
+      release();
+      await registration?.catch(() => undefined);
+      jest.useRealTimers();
+    }
+  });
+
+  it('attributes a held local scheduler rescan after persistence to the registration operation', async () => {
+    const service = getAppAdvisorWatcherService();
+    await service.reconcileAtStartup();
+    const scheduler = (
+      service as unknown as {
+        localScheduler: { rescan: () => Promise<void> };
+      }
+    ).localScheduler;
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const rescanning = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const rescan = jest
+      .spyOn(scheduler, 'rescan')
+      .mockImplementationOnce(async () => {
+        entered();
+        await held;
+      });
+    let registration: Promise<unknown> | undefined;
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      registration = service.createLocalWatcher(
+        { kind: 'scheduled_wakeup', delaySeconds: 60, scheduledFor: '' },
+        destination(),
+        'held-local-rescan',
+      );
+      await rescanning;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const stalled = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation === 'watcher.create_local_watcher' &&
+            record.waitPhase === 'scheduler_rescan' &&
+            record.waitOutcome === 'stalled',
+        );
+      expect(stalled).toMatchObject({
+        waitScope: destination(),
+        waitElapsedMs: 1_000,
+      });
+      release();
+      await registration;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'end',
+          waitPhaseDurationsMs: expect.objectContaining({
+            queue_wait: expect.any(Number),
+            scheduler_rescan: expect.any(Number),
+          }),
+        }),
+      );
+    } finally {
+      release();
+      await registration?.catch(() => undefined);
+      rescan.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('resolves the canonical scope of a watcher-ID update', async () => {
+    const service = getAppAdvisorWatcherService();
+    const result = await service.setup(worktreeChatInput(), destination());
+    if (!result.ok) throw new Error(result.error);
+    const watcherId = result.results[0]?.watcher.id;
+    if (!watcherId) throw new Error('Expected watcher ID');
+
+    await service.updateWatcherFollowUp(watcherId, 'Reply briefly.');
+    expect(
+      await waitForImmediateCondition(() =>
+        mockRecordSessionDiagnostic.mock.calls.some(
+          ([record]) =>
+            record.waitOperation === 'watcher.update_watcher_follow_up' &&
+            record.waitPhase === 'end',
+        ),
+      ),
+    ).toBe(true);
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        waitOperation: 'watcher.update_watcher_follow_up',
+        waitPhase: 'end',
+        waitScope: destination(),
+      }),
+    );
+  });
+
+  it('attributes a held store read to storage, not the generic mutation phase', async () => {
+    const service = getAppAdvisorWatcherService();
+    const result = await service.setup(worktreeChatInput(), destination());
+    if (!result.ok) throw new Error(result.error);
+    const watcherId = result.results[0]?.watcher.id;
+    if (!watcherId) throw new Error('Expected watcher ID');
+    const internal = service as unknown as {
+      loadCanonicalRows: () => Promise<unknown[]>;
+    };
+    const loadCanonicalRows = internal.loadCanonicalRows.bind(service);
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const read = jest
+      .spyOn(internal, 'loadCanonicalRows')
+      .mockImplementationOnce(async () => {
+        entered();
+        await held;
+        return loadCanonicalRows();
+      });
+    let update: Promise<unknown> | undefined;
+    try {
+      update = service.updateWatcherFollowUp(watcherId, 'Reply briefly.');
+      await reading;
+      release();
+      await expect(update).resolves.toEqual({ ok: true });
+      const end = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation === 'watcher.update_watcher_follow_up' &&
+            record.waitPhase === 'end',
+        );
+      expect(end?.waitOutcome).toBe('completed');
+      expect(end?.waitPhaseDurationsMs).toEqual(
+        expect.objectContaining({
+          queue_wait: expect.any(Number),
+          storage_read: expect.any(Number),
+          mutation: expect.any(Number),
+          // The body's own label keeps the later write.
+          storage: expect.any(Number),
+        }),
+      );
+      expect(end?.waitPhaseDurationsMs).not.toHaveProperty('persistence');
+    } finally {
+      release();
+      await update?.catch(() => undefined);
+      read.mockRestore();
+    }
+  });
+
+  it('closes a slow store read that rejects as failed', async () => {
+    const service = getAppAdvisorWatcherService();
+    const result = await service.setup(worktreeChatInput(), destination());
+    if (!result.ok) throw new Error(result.error);
+    const watcherId = result.results[0]?.watcher.id;
+    if (!watcherId) throw new Error('Expected watcher ID');
+    const internal = service as unknown as {
+      loadCanonicalRows: () => Promise<unknown[]>;
+    };
+    let fail: (error: Error) => void = () => undefined;
+    const held = new Promise<never>((_resolve, reject) => {
+      fail = reject;
+    });
+    let entered = (): void => undefined;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const read = jest
+      .spyOn(internal, 'loadCanonicalRows')
+      .mockImplementationOnce(() => {
+        entered();
+        return held;
+      });
+    let queuedSettled = false;
+    let queued: Promise<unknown> | undefined;
+    try {
+      const update = service.updateWatcherFollowUp(watcherId, 'Reply briefly.');
+      const failed = expect(update).rejects.toThrow('store read failed');
+      await reading;
+      queued = service
+        .updateWatcherFollowUp(watcherId, 'Reply again.')
+        .finally(() => {
+          queuedSettled = true;
+        });
+      // This operation times phases natively, so the hold is real time.
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const heldRecords = (): SessionDiagnosticRecord[] => {
+        const calls = mockRecordSessionDiagnostic.mock.calls.map(
+          ([record]) => record,
+        );
+        const stall = calls.find(
+          (record) =>
+            record.waitOperation === 'watcher.update_watcher_follow_up' &&
+            record.waitPhase === 'storage_read' &&
+            record.waitOutcome === 'stalled',
+        );
+        return calls.filter(
+          (record) =>
+            stall !== undefined &&
+            record.waitOperationId === stall.waitOperationId,
+        );
+      };
+      expect(heldRecords()).not.toEqual([]);
+      // A stall observation leaves the held mutation in the queue lane.
+      expect(queuedSettled).toBe(false);
+      fail(new Error('store read failed'));
+      await failed;
+      expect(
+        heldRecords()
+          .filter((record) => record.waitPhase === 'storage_read')
+          .map((record) => record.waitOutcome),
+      ).toEqual(['stalled', 'failed']);
+      expect(heldRecords().at(-1)).toMatchObject({
+        waitPhase: 'end',
+        waitOutcome: 'failed',
+      });
+      // The failed mutation released the queue lane to the queued one.
+      await expect(queued).resolves.toEqual({ ok: true });
+    } finally {
+      fail(new Error('store read failed'));
+      await queued?.catch(() => undefined);
+      read.mockRestore();
+    }
+  });
+
+  it('names the owner of ID-only operations queued before the first store read', async () => {
+    const service = getAppAdvisorWatcherService();
+    // Settle startup recovery, so its writes cannot take the one-shot hold.
+    await service.reconcileAtStartup();
+    await service.drain();
+    const result = await service.setup(worktreeChatInput(), destination());
+    if (!result.ok) throw new Error(result.error);
+    const watcherId = result.results[0]?.watcher.id;
+    if (!watcherId) throw new Error('Expected watcher ID');
+    const internal = service as unknown as {
+      snapshot: unknown;
+      canonicalSnapshot: unknown;
+      writeFile: (file: unknown) => Promise<void>;
+      markDelivered: (id: string) => Promise<void>;
+      markActiveAfterDelivery: (id: string) => Promise<void>;
+      markDeliveryFailed: (id: string, error: string) => Promise<void>;
+    };
+    // A fresh process holds no store read yet.
+    internal.snapshot = null;
+    internal.canonicalSnapshot = null;
+    const writeFile = internal.writeFile.bind(service);
+    const { held, release } = holdUntilReleased();
+    let entered = (): void => undefined;
+    const writing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const write = jest
+      .spyOn(internal, 'writeFile')
+      .mockImplementationOnce(async (file) => {
+        entered();
+        await held;
+        return writeFile(file);
+      });
+    const pending: Promise<unknown>[] = [];
+    try {
+      pending.push(service.updateWatcherFollowUp(watcherId, 'Hold.'));
+      await writing;
+      internal.snapshot = null;
+      internal.canonicalSnapshot = null;
+      pending.push(
+        service.updateWatcherFollowUp(watcherId, 'Queued.'),
+        internal.markDelivered(watcherId),
+        internal.markActiveAfterDelivery(watcherId),
+        internal.markDeliveryFailed(watcherId, 'Queued failure.'),
+      );
+      // These operations time phases natively, so the hold is real time.
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const records = mockRecordSessionDiagnostic.mock.calls.map(
+        ([record]) => record,
+      );
+      const holder = records.find(
+        (record) =>
+          record.waitOperation === 'watcher.update_watcher_follow_up' &&
+          record.waitPhase === 'storage' &&
+          record.waitOutcome === 'stalled',
+      );
+      expect(holder?.waitScope).toEqual(destination());
+      for (const name of [
+        'watcher.update_watcher_follow_up',
+        'watcher.mark_delivered',
+        'watcher.mark_active_after_delivery',
+        'watcher.mark_delivery_failed',
+      ])
+        expect(
+          records.find(
+            (record) =>
+              record.waitOperation === name &&
+              record.waitPhase === 'queue_wait' &&
+              record.waitOutcome === 'stalled',
+          ),
+        ).toMatchObject({
+          waitScope: destination(),
+          waitQueueOwnerOperationId: holder?.waitOperationId,
+        });
+      release();
+      await Promise.all(pending);
+    } finally {
+      release();
+      await Promise.allSettled(pending);
+      write.mockRestore();
+    }
   });
 
   describe('canonical chat watcher delivery', () => {
@@ -1078,6 +2376,439 @@ describe('App Advisor watcher service', () => {
       if (!id) throw new Error('Missing id');
       return id;
     }
+
+    describe('wait phase diagnostics', () => {
+      const records = (): SessionDiagnosticRecord[] =>
+        mockRecordSessionDiagnostic.mock.calls
+          .map(([record]) => record)
+          .filter((record) => record.kind === 'chat_wait_phase');
+      const deferred = (): { promise: Promise<void>; resolve: () => void } => {
+        let resolve = (): void => undefined;
+        const promise = new Promise<void>((done) => {
+          resolve = done;
+        });
+        return { promise, resolve };
+      };
+
+      it('separates held authorization from another registration waiting for the mutation queue', async () => {
+        const service = getAppAdvisorWatcherService();
+        mockCanonicalInput = { state: 'active', inputId: 'input-1' };
+        const decide = mockChatAccess.getMockImplementation();
+        if (!decide) throw new Error('Missing access decision fixture');
+        const { promise: held, resolve: release } = deferred();
+        const { promise: entered, resolve: authorizationEntered } = deferred();
+        mockChatAccess.mockImplementationOnce((recipient, resolved) => {
+          authorizationEntered();
+          return held.then(() => decide(recipient, resolved));
+        });
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+        try {
+          const first = service.setupCanonicalChatWatchers({
+            ...recipient(),
+            watchers: [watch()],
+          });
+          await entered;
+          const second = service.setupCanonicalChatWatchers({
+            ...recipient(),
+            watchers: [watch()],
+          });
+          const moreQueued = Array.from({ length: 19 }, () =>
+            service.setupCanonicalChatWatchers({
+              ...recipient(),
+              watchers: [watch()],
+            }),
+          );
+          await jest.advanceTimersByTimeAsync(1_000);
+          expect(records()).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                waitOperation: 'watcher.setup_canonical_chat',
+                waitPhase: 'authorization',
+                waitOutcome: 'stalled',
+                waitElapsedMs: 1_000,
+                waitScope: destination(),
+              }),
+              expect.objectContaining({
+                waitOperation: 'watcher.setup_canonical_chat',
+                waitPhase: 'queue_wait',
+                waitOutcome: 'stalled',
+                waitElapsedMs: 1_000,
+                waitQueueDepth: 1,
+                waitScope: destination(),
+              }),
+            ]),
+          );
+          const authorization = records().find(
+            (record) =>
+              record.waitPhase === 'authorization' &&
+              record.waitOutcome === 'stalled',
+          );
+          const queued = records().find(
+            (record) =>
+              record.waitPhase === 'queue_wait' &&
+              record.waitOutcome === 'stalled',
+          );
+          expect(queued).toMatchObject({
+            waitQueueOwnerOperationId: authorization?.waitOperationId,
+            waitQueueOwnerOperation: 'watcher.setup_canonical_chat',
+          });
+          await jest.advanceTimersByTimeAsync(10_000);
+          expect(
+            records().filter((record) => record.waitOutcome === 'stalled'),
+          ).toHaveLength(21);
+          release();
+          await Promise.all([first, second, ...moreQueued]);
+          expect(records().length).toBeLessThanOrEqual(21 * 3);
+        } finally {
+          release();
+          jest.useRealTimers();
+        }
+      });
+
+      it('names the queue holder for an operation that opened its wait before queueing', async () => {
+        const service = getAppAdvisorWatcherService();
+        const id = await setup();
+        const decide = mockChatAccess.getMockImplementation();
+        if (!decide) throw new Error('Missing access decision fixture');
+        const { promise: held, resolve: release } = deferred();
+        const { promise: entered, resolve: authorizationEntered } = deferred();
+        mockChatAccess.mockImplementationOnce((recipient, resolved) => {
+          authorizationEntered();
+          return held.then(() => decide(recipient, resolved));
+        });
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+        try {
+          const holder = service.setupCanonicalChatWatchers({
+            ...recipient(),
+            watchers: [watch()],
+          });
+          await entered;
+          const deletion = service.deleteWatcher(id, {
+            notifySubscriber: false,
+          });
+          await jest.advanceTimersByTimeAsync(1_000);
+          const authorization = records().find(
+            (record) =>
+              record.waitPhase === 'authorization' &&
+              record.waitOutcome === 'stalled',
+          );
+          expect(authorization?.waitOperationId).toBeDefined();
+          expect(records()).toContainEqual(
+            expect.objectContaining({
+              waitOperation: 'watcher.delete_watcher',
+              waitPhase: 'queue_wait',
+              waitOutcome: 'stalled',
+              waitQueueOwnerOperationId: authorization?.waitOperationId,
+              waitQueueOwnerOperation: 'watcher.setup_canonical_chat',
+            }),
+          );
+          release();
+          await Promise.all([holder, deletion]);
+        } finally {
+          release();
+          jest.useRealTimers();
+        }
+      });
+
+      it('scopes every operation on a cross-worktree watcher to its owning chat', async () => {
+        const service = getAppAdvisorWatcherService();
+        // The owner chat is in worktree-2; the watched chat is in worktree-1.
+        const owner: AppAdvisorWatcherDestination = {
+          projectId: 'project-1',
+          worktreeId: 'worktree-2',
+          chatId: 'owner-chat',
+        };
+        const ownerScope = {
+          projectId: owner.projectId,
+          worktreeId: owner.worktreeId,
+          chatId: owner.chatId,
+        };
+        const setupFromOwner = (): ReturnType<
+          typeof service.setupCanonicalChatWatchers
+        > =>
+          service.setupCanonicalChatWatchers({
+            destination: owner,
+            recipient: { kind: 'root' },
+            watchers: [watch()],
+          });
+        const holdNextAuthorization = (): {
+          entered: Promise<void>;
+          release: () => void;
+        } => {
+          const decide = mockChatAccess.getMockImplementation();
+          if (!decide) throw new Error('Missing access decision fixture');
+          const { held, release } = holdUntilReleased();
+          const { promise: entered, resolve: authorizationEntered } =
+            deferred();
+          mockChatAccess.mockImplementationOnce((recipient, resolved) => {
+            authorizationEntered();
+            return held.then(() => decide(recipient, resolved));
+          });
+          return { entered, release };
+        };
+        const stalled = (
+          operation: string,
+          phase: string,
+        ): SessionDiagnosticRecord | undefined =>
+          records().find(
+            (record) =>
+              record.waitOperation === operation &&
+              record.waitPhase === phase &&
+              record.waitOutcome === 'stalled',
+          );
+        mockCanonicalInput = { state: 'active', inputId: 'input-1' };
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+        const holds: Array<() => void> = [];
+        try {
+          const registration = holdNextAuthorization();
+          holds.push(registration.release);
+          const created = setupFromOwner();
+          await registration.entered;
+          await jest.advanceTimersByTimeAsync(1_000);
+          // Worktree purges match the top-level IDs, so the owner's worktree
+          // deletion removes these records.
+          expect(
+            stalled('watcher.setup_canonical_chat', 'authorization'),
+          ).toMatchObject({
+            projectId: owner.projectId,
+            worktreeId: owner.worktreeId,
+            chatId: owner.chatId,
+            waitScope: ownerScope,
+          });
+          registration.release();
+          const result = await created;
+          if (!result.ok) throw new Error(result.error);
+          const watcherId = result.results[0]?.watcher.id;
+          if (!watcherId) throw new Error('Missing id');
+
+          // Operations that name only the watcher ID used to record no scope.
+          const holder = holdNextAuthorization();
+          holds.push(holder.release);
+          const holding = setupFromOwner();
+          await holder.entered;
+          const followUp = service.updateWatcherFollowUp(
+            watcherId,
+            'Reply briefly.',
+          );
+          const deletion = service.deleteWatcher(watcherId, {
+            notifySubscriber: false,
+          });
+          await jest.advanceTimersByTimeAsync(1_000);
+          // Attributed before the deletion reads the store.
+          expect(stalled('watcher.delete_watcher', 'queue_wait')).toMatchObject(
+            {
+              worktreeId: owner.worktreeId,
+              chatId: owner.chatId,
+              waitScope: ownerScope,
+            },
+          );
+          holder.release();
+          await Promise.all([holding, followUp, deletion]);
+          // The follow-up edit times natively, so only its end record shows.
+          expect(
+            records().find(
+              (record) =>
+                record.waitOperation === 'watcher.update_watcher_follow_up' &&
+                record.waitPhase === 'end',
+            ),
+          ).toMatchObject({ waitScope: ownerScope });
+          for (const record of records())
+            expect(record).toMatchObject({
+              worktreeId: owner.worktreeId,
+              chatId: owner.chatId,
+            });
+        } finally {
+          for (const release of holds) release();
+          jest.useRealTimers();
+        }
+      });
+
+      it('names a held watcher store write without retaining watcher content', async () => {
+        const service = getAppAdvisorWatcherService();
+        mockCanonicalInput = { state: 'active', inputId: 'input-1' };
+        const rename = fsPromises.rename;
+        const { promise: held, resolve: release } = deferred();
+        const { promise: entered, resolve: storageEntered } = deferred();
+        const spy = jest
+          .spyOn(fsPromises, 'rename')
+          .mockImplementation(async (from, to) => {
+            if (to === watchersFilePath) {
+              storageEntered();
+              await held;
+            }
+            await rename(from, to);
+          });
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+        try {
+          const setupPromise = service.setupCanonicalChatWatchers({
+            ...recipient(),
+            watchers: [{ ...watch(), followUpInstruction: 'PRIVATE-PROMPT' }],
+          });
+          await entered;
+          await jest.advanceTimersByTimeAsync(1_000);
+          expect(records()).toContainEqual(
+            expect.objectContaining({
+              waitOperation: 'watcher.setup_canonical_chat',
+              waitPhase: 'storage',
+              waitOutcome: 'stalled',
+              waitScope: destination(),
+            }),
+          );
+          expect(JSON.stringify(records())).not.toContain('PRIVATE-PROMPT');
+          release();
+          await setupPromise;
+        } finally {
+          release();
+          spy.mockRestore();
+          jest.useRealTimers();
+        }
+      });
+
+      it('attributes a batched registration wait to its owning chat while a later target is authorized', async () => {
+        const service = getAppAdvisorWatcherService();
+        mockCanonicalInput = { state: 'active', inputId: 'input-1' };
+        const secondTarget = { ...target, chatId: 'chat-2' };
+        const decide = mockChatAccess.getMockImplementation();
+        if (!decide) throw new Error('Missing access decision fixture');
+        const { promise: held, resolve: release } = deferred();
+        const { promise: entered, resolve: authorizationEntered } = deferred();
+        mockChatAccess.mockImplementation((recipient, resolved) => {
+          if (
+            !('chatId' in resolved.address) ||
+            resolved.address.chatId !== secondTarget.chatId
+          )
+            return decide(recipient, resolved);
+          authorizationEntered();
+          return held.then(() => decide(recipient, resolved));
+        });
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+        try {
+          const setupPromise = service.setupCanonicalChatWatchers({
+            ...recipient(),
+            watchers: [watch(), watch({ target: secondTarget })],
+          });
+          await entered;
+          await jest.advanceTimersByTimeAsync(1_000);
+          expect(records()).toContainEqual(
+            expect.objectContaining({
+              waitOperation: 'watcher.setup_canonical_chat',
+              waitPhase: 'authorization',
+              waitOutcome: 'stalled',
+              waitScope: destination(),
+              chatId: destination().chatId,
+            }),
+          );
+          // Authorizing a target never re-scopes the registration to it.
+          expect(
+            records().filter(
+              (record) =>
+                record.waitOperation === 'watcher.setup_canonical_chat' &&
+                record.chatId !== destination().chatId,
+            ),
+          ).toEqual([]);
+          release();
+          await setupPromise;
+        } finally {
+          release();
+          jest.useRealTimers();
+        }
+      });
+
+      it('attributes a stalled bot task registration to its owning chat, not the bot task', async () => {
+        const service = getAppAdvisorWatcherService();
+        mockCanonicalInput = { state: 'active', inputId: 'input-1' };
+        const botTarget = {
+          botId: 'app_advisor',
+          taskId: 'bot-task',
+          chatId: 'bot-chat',
+        };
+        const { promise: held, resolve: release } = deferred();
+        const { promise: entered, resolve: authorizationEntered } = deferred();
+        mockChatAccess.mockImplementationOnce(async (_recipient, resolved) => {
+          authorizationEntered();
+          await held;
+          return {
+            allowed: true,
+            target: resolved,
+            caller: { kind: 'app_advisor', chatId: 'advisor-chat' },
+            accountEpoch: 0,
+            sourceOwner: { kind: 'personal' },
+            resourceIncarnation: 'bot-incarnation',
+          };
+        });
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+        const setupPromise = service.setupCanonicalChatWatchers({
+          ...recipient(),
+          watchers: [
+            { trigger: 'bot_task_chat_completion', target: botTarget },
+          ],
+        });
+        try {
+          await entered;
+          await jest.advanceTimersByTimeAsync(1_000);
+          expect(records()).toContainEqual(
+            expect.objectContaining({
+              waitPhase: 'authorization',
+              waitOutcome: 'stalled',
+              waitScope: destination(),
+              sessionKey: `${APP_ADVISOR_PROJECT_ID}/${APP_ADVISOR_WORKTREE_ID}/advisor-chat`,
+            }),
+          );
+          release();
+          await setupPromise;
+        } finally {
+          release();
+          await setupPromise.catch(() => undefined);
+          jest.useRealTimers();
+        }
+      });
+
+      it('attributes response projection after durable watcher storage', async () => {
+        const service = getAppAdvisorWatcherService();
+        mockCanonicalInput = { state: 'active', inputId: 'input-1' };
+        const decide = mockChatAccess.getMockImplementation();
+        if (!decide) throw new Error('Missing access decision fixture');
+        const rename = fsPromises.rename;
+        let stored = false;
+        const spy = jest
+          .spyOn(fsPromises, 'rename')
+          .mockImplementation(async (from, to) => {
+            await rename(from, to);
+            if (to === watchersFilePath) stored = true;
+          });
+        const { promise: held, resolve: release } = deferred();
+        const { promise: entered, resolve: projectionEntered } = deferred();
+        mockChatAccess.mockImplementation((recipient, resolved) => {
+          if (!stored) return decide(recipient, resolved);
+          projectionEntered();
+          return held.then(() => decide(recipient, resolved));
+        });
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+        try {
+          const setupPromise = service.setupCanonicalChatWatchers({
+            ...recipient(),
+            watchers: [watch()],
+          });
+          await entered;
+          expect(stored).toBe(true);
+          await jest.advanceTimersByTimeAsync(1_000);
+          expect(records()).toContainEqual(
+            expect.objectContaining({
+              waitOperation: 'watcher.setup_canonical_chat',
+              waitPhase: 'response_projection',
+              waitOutcome: 'stalled',
+              waitScope: destination(),
+            }),
+          );
+          release();
+          await setupPromise;
+        } finally {
+          release();
+          spy.mockRestore();
+          jest.useRealTimers();
+        }
+      });
+    });
     const summaryCounts: TranscriptTurnSummary['summary'] = {
       messages: 0,
       thinking: 0,
@@ -1183,6 +2914,91 @@ describe('App Advisor watcher service', () => {
         },
       };
     }
+    it('names an Orchestrator bot task completion in its top-level IDs', async () => {
+      const service = getAppAdvisorWatcherService();
+      const internal = service as unknown as {
+        loadCanonicalRows: () => Promise<unknown[]>;
+        activeMutationWait?: { name: string; currentPhase: string };
+      };
+      const loadCanonicalRows = internal.loadCanonicalRows.bind(service);
+      // Startup recovery reads the same store in the background; settle it
+      // first, so no earlier mutation queues ahead of the terminal.
+      await service.reconcileAtStartup();
+      await service.drain();
+      const { held, release } = holdUntilReleased();
+      // Every read is held once the terminal starts, so its storage phase
+      // cannot finish early, whichever background read arrives first.
+      let holding = false;
+      const read = jest
+        .spyOn(internal, 'loadCanonicalRows')
+        .mockImplementation(async () => {
+          if (holding) await held;
+          return loadCanonicalRows();
+        });
+      const terminalRecords = (): SessionDiagnosticRecord[] =>
+        mockRecordSessionDiagnostic.mock.calls
+          .map(([record]) => record)
+          .filter(
+            (record) => record.waitOperation === 'watcher.canonical_terminal',
+          );
+      let handled: Promise<void> | undefined;
+      jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+      try {
+        holding = true;
+        handled = service.handleCanonicalChatTerminalEvent(
+          completion({
+            address: {
+              botId: 'app_advisor',
+              taskId: 'bot-task',
+              chatId: 'bot-chat',
+            },
+          }),
+        );
+        expect(
+          await waitForImmediateCondition(
+            () =>
+              internal.activeMutationWait?.name ===
+                'watcher.canonical_terminal' &&
+              internal.activeMutationWait.currentPhase === 'storage',
+          ),
+        ).toBe(true);
+        await jest.advanceTimersByTimeAsync(1_000);
+        // Still held: the stall is the only record, and the operation is open.
+        expect(terminalRecords()).toEqual([
+          expect.objectContaining({
+            waitPhase: 'storage',
+            waitOutcome: 'stalled',
+            waitElapsedMs: expect.any(Number),
+            projectId: APP_ADVISOR_PROJECT_ID,
+            worktreeId: 'bot-task',
+            chatId: 'bot-chat',
+            waitScope: {
+              botId: 'app_advisor',
+              taskId: 'bot-task',
+              chatId: 'bot-chat',
+            },
+          }),
+        ]);
+        expect(terminalRecords()[0].waitElapsedMs).toBeGreaterThanOrEqual(
+          1_000,
+        );
+        // Settle on real timers, so cleanup never waits on a fake clock.
+        jest.useRealTimers();
+        release();
+        await handled;
+        expect(terminalRecords().map((record) => record.waitPhase)).toEqual([
+          'storage',
+          'storage',
+          'end',
+        ]);
+      } finally {
+        holding = false;
+        release();
+        jest.useRealTimers();
+        await handled?.catch(() => undefined);
+        read.mockRestore();
+      }
+    });
     async function savedRow(id: string): Promise<AppAdvisorWatcher> {
       const rows = [
         ...(await readPersistedWatchersFile()).watchers,
@@ -1196,11 +3012,44 @@ describe('App Advisor watcher service', () => {
       if (!row) throw new Error('Missing row');
       return row;
     }
+    async function savedObservation(
+      id: string,
+    ): Promise<ChatObservationCursor | undefined> {
+      const row = await savedRow(id);
+      if (!('observation' in row)) return undefined;
+      const observation = row.observation;
+      if (
+        typeof observation !== 'object' ||
+        observation === null ||
+        !('mode' in observation) ||
+        (observation.mode !== 'current' && observation.mode !== 'next') ||
+        !('armedAt' in observation) ||
+        typeof observation.armedAt !== 'string' ||
+        ('boundInputId' in observation &&
+          observation.boundInputId !== undefined &&
+          typeof observation.boundInputId !== 'string')
+      ) {
+        throw new Error('Invalid saved chat observation');
+      }
+      if (
+        'boundInputId' in observation &&
+        typeof observation.boundInputId === 'string'
+      ) {
+        return {
+          mode: observation.mode,
+          armedAt: observation.armedAt,
+          boundInputId: observation.boundInputId,
+        };
+      }
+      return { mode: observation.mode, armedAt: observation.armedAt };
+    }
     describe('inline send reservations', () => {
       beforeEach(async () => {
         await getAppAdvisorWatcherService().reconcileAtStartup();
       });
       afterEach(async () => {
+        // Inner hooks run first, so release before this drain too.
+        releaseUnreleasedHolds();
         const service = getAppAdvisorWatcherService();
         await service.reconcileAtStartup();
         await service.whenChatDeliveriesSettled();
@@ -1429,6 +3278,7 @@ describe('App Advisor watcher service', () => {
             ensureAppAdvisorWindow,
             sendAppAdvisorWindowCommand,
             sendChatWindowCommand,
+            deliverWatcherMessage,
             onChange,
           },
           { deferStartupRecovery: true },
@@ -1501,27 +3351,33 @@ describe('App Advisor watcher service', () => {
           await service.handleCanonicalChatTerminalEvent(completion());
           mockCanonicalContext = context();
           if (evidence === 'ledger')
-            mockCanonicalContext.tab.inputDelivery = {
-              version: 1,
-              rows: [
-                {
-                  id: 'input-1',
-                  revision: 1,
-                  createdAt: Date.now(),
-                  state: 'queued',
-                  text: 'sent',
-                  payload: {
-                    projectId: target.projectId,
-                    worktreeId: target.taskId,
-                    chatId: target.chatId,
+            mockCanonicalContext.tab.inputDelivery = preserveLegacyMissingField<
+              ChatInputDeliveryLedger<ChatSendMessageRequest>
+            >(
+              {
+                version: 1,
+                epoch: 1,
+                rows: [
+                  {
+                    id: 'input-1',
+                    revision: 1,
+                    createdAt: Date.now(),
+                    state: 'queued',
                     text: 'sent',
-                    userMessageId: 'input-1',
+                    payload: {
+                      projectId: target.projectId,
+                      worktreeId: target.taskId,
+                      chatId: target.chatId,
+                      text: 'sent',
+                      userMessageId: 'input-1',
+                    },
+                    settingsKey: 'k',
+                    attempts: [],
                   },
-                  settingsKey: 'k',
-                  attempts: [],
-                },
-              ],
-            };
+                ],
+              },
+              'epoch',
+            );
           if (evidence === 'queue')
             mockCanonicalContext.snapshot.runtimeByChatId[target.chatId] = {
               status: 'idle',
@@ -1608,6 +3464,74 @@ describe('App Advisor watcher service', () => {
         ).toEqual([]);
         expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
         expect(readPage).not.toHaveBeenCalled();
+        expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+          expect.objectContaining({
+            waitOperation: 'watcher.cancel_inline_chat_watchers',
+            waitPhase: 'end',
+            waitScope: destination(),
+          }),
+        );
+      });
+      it('names the reservation owner of an inline cancel queued after a restart', async () => {
+        const service = getAppAdvisorWatcherService();
+        const old = await setup();
+        // Deduplicated only: no stored watcher carries the reservation ID.
+        const reservation = await reserve();
+        expect(reservation.receipts).toEqual([
+          { watcherId: old, disposition: 'deduplicated' },
+        ]);
+        restart();
+        const internal = service as unknown as {
+          snapshot: unknown;
+          canonicalSnapshot: unknown;
+          writeFile: (file: unknown) => Promise<void>;
+        };
+        const writeFile = internal.writeFile.bind(service);
+        const { held, release } = holdUntilReleased();
+        let entered = (): void => undefined;
+        const writing = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const write = jest
+          .spyOn(internal, 'writeFile')
+          .mockImplementationOnce(async (file) => {
+            entered();
+            await held;
+            return writeFile(file);
+          });
+        const pending: Promise<unknown>[] = [];
+        try {
+          pending.push(service.updateWatcherFollowUp(old, 'Hold.'));
+          await writing;
+          // The new process has read nothing yet.
+          internal.snapshot = null;
+          internal.canonicalSnapshot = null;
+          pending.push(
+            service.cancelInlineChatWatchers(reservation.reservationId),
+          );
+          // This operation times phases natively, so the hold is real time.
+          await new Promise((resolve) => setTimeout(resolve, 1_100));
+          expect(
+            mockRecordSessionDiagnostic.mock.calls
+              .map(([record]) => record)
+              .find(
+                (record) =>
+                  record.waitOperation ===
+                    'watcher.cancel_inline_chat_watchers' &&
+                  record.waitPhase === 'queue_wait' &&
+                  record.waitOutcome === 'stalled',
+              ),
+          ).toMatchObject({
+            waitScope: destination(),
+            waitQueueOwnerOperation: 'watcher.update_watcher_follow_up',
+          });
+          release();
+          await Promise.all(pending);
+        } finally {
+          release();
+          await Promise.allSettled(pending);
+          write.mockRestore();
+        }
       });
       it('startup never cancels this process’s in-flight dispatch reservation', async () => {
         restart();
@@ -1632,39 +3556,45 @@ describe('App Advisor watcher service', () => {
         const reservation = await reserve();
         mockCanonicalContext = context();
         const now = Date.now();
-        mockCanonicalContext.tab.inputDelivery = {
-          version: 1,
-          rows: [
-            {
-              id: 'input-1',
-              revision: 1,
-              createdAt: now,
-              state: 'picked-up',
-              text: 'sent',
-              payload: {
-                projectId: target.projectId,
-                worktreeId: target.taskId,
-                chatId: target.chatId,
+        mockCanonicalContext.tab.inputDelivery = preserveLegacyMissingField<
+          ChatInputDeliveryLedger<ChatSendMessageRequest>
+        >(
+          {
+            version: 1,
+            epoch: 1,
+            rows: [
+              {
+                id: 'input-1',
+                revision: 1,
+                createdAt: now,
+                state: 'picked-up',
                 text: 'sent',
-                userMessageId: 'input-1',
-              },
-              settingsKey: 'k',
-              attempts: [
-                {
-                  id: 'root-attempt',
-                  generation: 'managed-terminal',
-                  provider: 'codex',
-                  createdAt: now,
-                  admittedAt: now,
-                  pickedUpAt: now,
-                  rootUserMessageId: 'input-1',
-                  turnOutcome: 'completed',
-                  turnSettledAt: now + 1,
+                payload: {
+                  projectId: target.projectId,
+                  worktreeId: target.taskId,
+                  chatId: target.chatId,
+                  text: 'sent',
+                  userMessageId: 'input-1',
                 },
-              ],
-            },
-          ],
-        };
+                settingsKey: 'k',
+                attempts: [
+                  {
+                    id: 'root-attempt',
+                    generation: 'managed-terminal',
+                    provider: 'codex',
+                    createdAt: now,
+                    admittedAt: now,
+                    pickedUpAt: now,
+                    rootUserMessageId: 'input-1',
+                    turnOutcome: 'completed',
+                    turnSettledAt: now + 1,
+                  },
+                ],
+              },
+            ],
+          },
+          'epoch',
+        );
         jest
           .spyOn(TranscriptReader.prototype, 'readPage')
           .mockResolvedValue(turnPage('Recovered final'));
@@ -1709,27 +3639,33 @@ describe('App Advisor watcher service', () => {
           },
         ];
         mockCanonicalContext = context();
-        mockCanonicalContext.tab.inputDelivery = {
-          version: 1,
-          rows: [
-            {
-              id: 'input-1',
-              revision: 1,
-              createdAt: Date.now(),
-              state: 'queued',
-              text: 'sent',
-              payload: {
-                projectId: target.projectId,
-                worktreeId: target.taskId,
-                chatId: target.chatId,
+        mockCanonicalContext.tab.inputDelivery = preserveLegacyMissingField<
+          ChatInputDeliveryLedger<ChatSendMessageRequest>
+        >(
+          {
+            version: 1,
+            epoch: 1,
+            rows: [
+              {
+                id: 'input-1',
+                revision: 1,
+                createdAt: Date.now(),
+                state: 'queued',
                 text: 'sent',
-                userMessageId: 'input-1',
+                payload: {
+                  projectId: target.projectId,
+                  worktreeId: target.taskId,
+                  chatId: target.chatId,
+                  text: 'sent',
+                  userMessageId: 'input-1',
+                },
+                settingsKey: 'k',
+                attempts: [],
               },
-              settingsKey: 'k',
-              attempts: [],
-            },
-          ],
-        };
+            ],
+          },
+          'epoch',
+        );
         restart();
         await service.reconcileAtStartup();
         await service.whenChatDeliveriesSettled();
@@ -2280,11 +4216,245 @@ describe('App Advisor watcher service', () => {
       expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
       expect((await savedRow(id)).status).toBe('fired');
     });
-    it('binds next mode only from durable input acceptance after arming', async () => {
+    describe('next completion event-time boundary', () => {
+      async function arm(
+        state: 'active' | 'unknown' | 'idle',
+      ): Promise<string> {
+        mockCanonicalInput =
+          state === 'active' ? { state, inputId: 'input-1' } : { state };
+        const result =
+          await getAppAdvisorWatcherService().setupCanonicalChatWatchers({
+            ...recipient(),
+            watchers: [watch({ armForNextCompletion: true })],
+          });
+        if (!result.ok) throw new Error(result.error);
+        const id = result.results[0]?.watcher.id;
+        if (!id) throw new Error('Missing id');
+        expect(await savedRow(id)).toMatchObject({
+          observation: { mode: 'next' },
+        });
+        expect((await savedObservation(id))?.boundInputId).toBeUndefined();
+        return id;
+      }
+
+      it.each(['active', 'unknown'] as const)(
+        'fires for an input dispatched before arming when activity is %s',
+        async (state) => {
+          const acceptedAt = new Date(Date.now() - 60_000).toISOString();
+          const id = await arm(state);
+          const service = getAppAdvisorWatcherService();
+          await service.handleCanonicalChatTerminalEvent(
+            completion({ sourceInputAcceptedAt: acceptedAt }),
+          );
+          await service.whenChatDeliveriesSettled();
+          expect((await savedRow(id)).status).toBe('fired');
+          expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+        },
+      );
+
+      it('fires after automation.run_now dispatches a chat before the canonical arm', async () => {
+        const { dispatchAgentResourceAction } =
+          await import('../canopy-tools/resource-actions');
+        mockAutomationActivities = [
+          {
+            id: 'auto-1',
+            name: 'Nightly triage',
+            action: {
+              type: 'worktree_prompt',
+              workspaceId: target.projectId,
+              prompt: 'Run triage',
+            },
+          },
+        ];
+        const acceptedAt = new Date(Date.now() - 60_000).toISOString();
+        mockAutomationRunNow.mockImplementation(() => {
+          // Automation founding input is not present in the active-input ledger.
+          mockCanonicalInput = { state: 'unknown' };
+          return Promise.resolve({
+            ok: true,
+            run: {
+              id: 'run-1',
+              activityId: 'auto-1',
+              activityName: 'Nightly triage',
+              status: 'success',
+              manual: true,
+              scheduledFor: acceptedAt,
+              startedAt: acceptedAt,
+              completedAt: acceptedAt,
+              result: {
+                projectId: target.projectId,
+                worktreeId: target.taskId,
+                chatId: target.chatId,
+              },
+            },
+          });
+        });
+        const response = await dispatchAgentResourceAction(
+          { type: 'automation.run_now', id: 'auto-1' },
+          { ...destination(), cwd: dataDirPath, getWindow: () => null },
+        );
+        expect(response.ok).toBe(true);
+        expect(mockAutomationRunNow).toHaveBeenCalledTimes(1);
+        expect(mockCanonicalInput).toEqual({ state: 'unknown' });
+        const id = await arm('unknown');
+        const service = getAppAdvisorWatcherService();
+        await service.handleCanonicalChatTerminalEvent(
+          completion({ sourceInputAcceptedAt: acceptedAt }),
+        );
+        await service.whenChatDeliveriesSettled();
+        expect((await savedRow(id)).status).toBe('fired');
+        expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it('ignores an autonomous terminal before arming and accepts one exactly at arming', async () => {
+        const id = await arm('idle');
+        const armedAt = (await savedObservation(id))?.armedAt;
+        if (!armedAt) throw new Error('Missing arm time');
+        const service = getAppAdvisorWatcherService();
+        await service.handleCanonicalChatTerminalEvent(
+          completion({
+            eventId: 'before-arm',
+            occurredAt: new Date(Date.parse(armedAt) - 1).toISOString(),
+          }),
+        );
+        await service.whenChatDeliveriesSettled();
+        expect((await savedRow(id)).status).toBe('active');
+        expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
+        await service.handleCanonicalChatTerminalEvent(
+          completion({
+            eventId: 'at-arm',
+            occurredAt: armedAt,
+            sourceInputAcceptedAt: new Date(
+              Date.parse(armedAt) - 60_000,
+            ).toISOString(),
+          }),
+        );
+        await service.whenChatDeliveriesSettled();
+        expect((await savedRow(id)).status).toBe('fired');
+        expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it('fires once for an autonomous terminal without a preceding start event', async () => {
+        const id = await arm('unknown');
+        const service = getAppAdvisorWatcherService();
+        const event = completion({
+          sourceInputAcceptedAt: '2000-01-01T00:00:00.000Z',
+        });
+        await service.handleCanonicalChatTerminalEvent(event);
+        await service.whenChatDeliveriesSettled();
+        expect(await savedRow(id)).toMatchObject({
+          status: 'fired',
+          observation: { boundInputId: 'input-1' },
+        });
+        expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+        await service.handleCanonicalChatTerminalEvent(event);
+        await service.handleCanonicalChatTerminalEvent(
+          completion({ eventId: 'later', sourceInputId: 'input-2' }),
+        );
+        await service.whenChatDeliveriesSettled();
+        expect((await savedRow(id)).status).toBe('fired');
+        expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it('chooses the earliest completion when concurrent inputs finish out of acceptance order', async () => {
+        const id = await arm('unknown');
+        const armedAt = (await savedObservation(id))?.armedAt;
+        if (!armedAt) throw new Error('Missing arm time');
+        const service = getAppAdvisorWatcherService();
+        await Promise.all([
+          service.handleCanonicalChatTerminalEvent(
+            completion({
+              eventId: 'later-completion',
+              sourceInputId: 'earlier-input',
+              sourceInputAcceptedAt: new Date(
+                Date.parse(armedAt) - 60_000,
+              ).toISOString(),
+              occurredAt: new Date(Date.parse(armedAt) + 2_000).toISOString(),
+            }),
+          ),
+          service.handleCanonicalChatTerminalEvent(
+            completion({
+              eventId: 'earlier-completion',
+              sourceInputId: 'later-input',
+              sourceInputAcceptedAt: new Date(
+                Date.parse(armedAt) - 30_000,
+              ).toISOString(),
+              occurredAt: new Date(Date.parse(armedAt) + 1_000).toISOString(),
+            }),
+          ),
+        ]);
+        await service.whenChatDeliveriesSettled();
+        expect((await savedObservation(id))?.boundInputId).toBe('later-input');
+        expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it.each<Partial<CanonicalChatTerminalEvent>>([
+        { endReason: 'unaccepted' },
+        { endReason: 'abandoned' },
+        { sourceInputId: '' },
+        { occurredAt: 'invalid' },
+      ])(
+        'does not consume an unbound watcher for an excluded terminal %j',
+        async (overrides) => {
+          const id = await arm('unknown');
+          const service = getAppAdvisorWatcherService();
+          await service.handleCanonicalChatTerminalEvent(completion(overrides));
+          await service.whenChatDeliveriesSettled();
+          expect((await savedRow(id)).status).toBe('active');
+          expect((await savedObservation(id))?.boundInputId).toBeUndefined();
+          expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
+        },
+      );
+
+      it('uses the same completion boundary for a bot chat', async () => {
+        const address = {
+          botId: 'app_advisor',
+          taskId: 'task-A',
+          chatId: 'bot-chat',
+        };
+        const id = await setup({
+          trigger: 'bot_task_chat_completion',
+          target: address,
+          armForNextCompletion: true,
+        });
+        const service = getAppAdvisorWatcherService();
+        await service.handleCanonicalChatTerminalEvent(
+          completion({
+            address,
+            sourceInputAcceptedAt: '2000-01-01T00:00:00.000Z',
+          }),
+        );
+        await service.whenChatDeliveriesSettled();
+        expect((await savedRow(id)).status).toBe('fired');
+        expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps the event-time boundary when a legacy spelling dedupes into the canonical row', async () => {
+        const id = await arm('active');
+        const service = getAppAdvisorWatcherService();
+        expect(
+          await service.setup(
+            worktreeChatInput({ armForNextCompletion: true }),
+            destination(),
+          ),
+        ).toMatchObject({
+          ok: true,
+          results: [{ status: 'deduped', watcher: { id } }],
+        });
+        await service.handleCanonicalChatTerminalEvent(
+          completion({ sourceInputAcceptedAt: '2000-01-01T00:00:00.000Z' }),
+        );
+        await service.whenChatDeliveriesSettled();
+        expect((await savedRow(id)).status).toBe('fired');
+        expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('binds next mode only from a terminal at or after arming', async () => {
       const id = await setup(watch({ armForNextCompletion: true }));
       const service = getAppAdvisorWatcherService();
       await service.handleCanonicalChatTerminalEvent(
-        completion({ sourceInputAcceptedAt: '2000-01-01T00:00:00.000Z' }),
+        completion({ occurredAt: '2000-01-01T00:00:00.000Z' }),
       );
       await service.whenChatDeliveriesSettled();
       expect((await savedRow(id)).status).toBe('active');
@@ -2601,16 +4771,14 @@ describe('App Advisor watcher service', () => {
       ).resolves.toEqual({ allowed: true });
       const id = await setup();
       let deliveryId = '';
-      sendAppAdvisorWindowCommand.mockImplementation((command) => {
-        if (command.type !== 'send_watcher_message') return;
-        deliveryId = command.deliveryId;
-        queueMicrotask(() => {
-          service.acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: false, error: 'Watcher delivery is held.' },
-          );
+      // Main's ingress holds the input, as a held acknowledgement did.
+      deliverWatcherMessage.mockImplementation((delivery) => {
+        deliveryId = delivery.deliveryId;
+        sendAppAdvisorWindowCommand({
+          ...delivery,
+          type: 'send_watcher_message',
         });
+        return Promise.reject(new Error('Watcher delivery is held.'));
       });
       await service.handleCanonicalChatTerminalEvent(completion());
       await service.whenChatDeliveriesSettled();
@@ -2650,16 +4818,14 @@ describe('App Advisor watcher service', () => {
           target: botAddress,
         });
         let deliveryId = '';
-        sendAppAdvisorWindowCommand.mockImplementation((command) => {
-          if (command.type !== 'send_watcher_message') return;
-          deliveryId = command.deliveryId;
-          queueMicrotask(() =>
-            service.acknowledgeWatcherMessageDelivery(
-              command.watcherId,
-              command.deliveryId,
-              { ok: false, error: 'Watcher delivery is held.' },
-            ),
-          );
+        // Main's ingress holds the input, as a held acknowledgement did.
+        deliverWatcherMessage.mockImplementation((delivery) => {
+          deliveryId = delivery.deliveryId;
+          sendAppAdvisorWindowCommand({
+            ...delivery,
+            type: 'send_watcher_message',
+          });
+          return Promise.reject(new Error('Watcher delivery is held.'));
         });
         await service.handleCanonicalChatTerminalEvent(
           completion({
@@ -2682,15 +4848,12 @@ describe('App Advisor watcher service', () => {
         });
         expect(JSON.stringify(held)).not.toContain('accountEpoch');
         epoch = restart ? 0 : 78;
-        sendAppAdvisorWindowCommand.mockImplementation((command) => {
-          if (command.type === 'send_watcher_message')
-            queueMicrotask(() =>
-              service.acknowledgeWatcherMessageDelivery(
-                command.watcherId,
-                command.deliveryId,
-                { ok: true },
-              ),
-            );
+        deliverWatcherMessage.mockImplementation((delivery) => {
+          sendAppAdvisorWindowCommand({
+            ...delivery,
+            type: 'send_watcher_message',
+          });
+          return Promise.resolve('submitted');
         });
         if (restart) {
           service.shutdown();
@@ -2701,6 +4864,7 @@ describe('App Advisor watcher service', () => {
               ensureAppAdvisorWindow,
               sendAppAdvisorWindowCommand,
               sendChatWindowCommand,
+              deliverWatcherMessage,
               onChange,
             },
             { deferStartupRecovery: true },
@@ -2720,16 +4884,14 @@ describe('App Advisor watcher service', () => {
       const service = getAppAdvisorWatcherService();
       const id = await setup();
       let deliveryId = '';
-      sendAppAdvisorWindowCommand.mockImplementation((command) => {
-        if (command.type !== 'send_watcher_message') return;
-        deliveryId = command.deliveryId;
-        queueMicrotask(() => {
-          service.acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: false, error: 'Watcher delivery is held.' },
-          );
+      // Main's ingress holds the input, as a held acknowledgement did.
+      deliverWatcherMessage.mockImplementation((delivery) => {
+        deliveryId = delivery.deliveryId;
+        sendAppAdvisorWindowCommand({
+          ...delivery,
+          type: 'send_watcher_message',
         });
+        return Promise.reject(new Error('Watcher delivery is held.'));
       });
       await service.handleCanonicalChatTerminalEvent(completion());
       await service.whenChatDeliveriesSettled();
@@ -2765,15 +4927,12 @@ describe('App Advisor watcher service', () => {
           resourceIncarnation: 'project-incarnation',
         }),
       );
-      sendAppAdvisorWindowCommand.mockImplementation((command) => {
-        if (command.type === 'send_watcher_message')
-          queueMicrotask(() =>
-            service.acknowledgeWatcherMessageDelivery(
-              command.watcherId,
-              command.deliveryId,
-              { ok: true },
-            ),
-          );
+      deliverWatcherMessage.mockImplementation((delivery) => {
+        sendAppAdvisorWindowCommand({
+          ...delivery,
+          type: 'send_watcher_message',
+        });
+        return Promise.resolve('submitted');
       });
       await service.resumeHeldChatWatcherDeliveries();
       expect((await savedRow(id)).status).toBe('fired');
@@ -2817,6 +4976,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         },
         { deferStartupRecovery: true },
@@ -3059,14 +5219,8 @@ describe('App Advisor watcher service', () => {
     it('releases authority on an explicit failed ACK before queue admission', async () => {
       const service = getAppAdvisorWatcherService();
       const id = await setup();
-      sendAppAdvisorWindowCommand.mockImplementation((command) => {
-        if (command.type === 'send_watcher_message')
-          service.acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: false, error: 'queue refused input' },
-          );
-      });
+      // Main's delivery refuses the input before the chat's queue takes it.
+      deliverWatcherMessage.mockRejectedValue(new Error('queue refused input'));
       await service.handleCanonicalChatTerminalEvent(completion());
       await service.whenChatDeliveriesSettled();
       expect((await savedRow(id)).status).toBe('delivery_failed');
@@ -3084,7 +5238,9 @@ describe('App Advisor watcher service', () => {
         watchers: [watch()],
       });
       if (!result.ok) throw new Error(result.error);
-      sendChatWindowCommand.mockReturnValue(false);
+      deliverWatcherMessage.mockRejectedValue(
+        new Error('Main window is not available.'),
+      );
       const delivery = service.handleCanonicalChatTerminalEvent(completion());
       await delivery;
       await getAppAdvisorWatcherService().whenChatDeliveriesSettled();
@@ -3115,15 +5271,17 @@ describe('App Advisor watcher service', () => {
         );
       const deletion = service.deleteWatcher(id);
       await cancelling;
+      // Hold the delivery at root authorization, before its send.
+      mockBackgroundEnabled = true;
       let windowEntered: (() => void) | undefined;
       const opening = new Promise<void>((resolve) => {
         windowEntered = resolve;
       });
       let finishWindow: (() => void) | undefined;
-      ensureAppAdvisorWindow.mockImplementationOnce(
+      mockAuthorizeBackground.mockImplementationOnce(
         () =>
           new Promise((resolve) => {
-            finishWindow = () => resolve({ open: true, focused: false });
+            finishWindow = () => resolve({ allow: true });
             windowEntered?.();
           }),
       );
@@ -3167,21 +5325,17 @@ describe('App Advisor watcher service', () => {
         watchers: [watch()],
       });
       if (!result.ok) throw new Error(result.error);
-      sendChatWindowCommand.mockImplementation((command) => {
-        if (command.type === 'send_watcher_message')
-          service.acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: false, error: 'Watcher delivery is held.' },
-          );
-        return true;
-      });
+      deliverWatcherMessage.mockRejectedValue(
+        new Error('Watcher delivery is held.'),
+      );
       await service.handleCanonicalChatTerminalEvent(completion());
       await service.whenChatDeliveriesSettled();
       expect((await savedRow(result.results[0].watcher.id)).status).toBe(
         'firing',
       );
-      sendChatWindowCommand.mockReturnValue(false);
+      deliverWatcherMessage.mockRejectedValue(
+        new Error('Main window is not available.'),
+      );
       await service.resumeHeldChatWatcherDeliveries();
       expect(await authorityReceipts()).toHaveLength(1);
       expect(await authorityReceipts()).not.toMatchObject([{ released: true }]);
@@ -3195,29 +5349,40 @@ describe('App Advisor watcher service', () => {
       const sending = new Promise<void>((resolve) => {
         sent = resolve;
       });
-      sendAppAdvisorWindowCommand.mockImplementation(() => {
+      // A main delivery that never settles reaches the watcher deadline.
+      deliverWatcherMessage.mockImplementation(() => {
         sent?.();
+        return new Promise(() => undefined);
       });
-      const delivery = service.handleCanonicalChatTerminalEvent(completion());
-      await sending;
-      await jest.advanceTimersByTimeAsync(30_001);
-      await delivery;
-      await getAppAdvisorWatcherService().whenChatDeliveriesSettled();
-      expect((await savedRow(id)).status).toBe('delivery_failed');
-      await service.deleteWatcher(id);
-      expect(await authorityReceipts()).toHaveLength(1);
-      expect(await authorityReceipts()).not.toMatchObject([{ released: true }]);
+      try {
+        const delivery = service.handleCanonicalChatTerminalEvent(completion());
+        await sending;
+        // Main delivery waits for its completion deadline.
+        await jest.advanceTimersByTimeAsync(30 * 60_000 + 1);
+        await delivery;
+        await getAppAdvisorWatcherService().whenChatDeliveriesSettled();
+        expect((await savedRow(id)).status).toBe('delivery_failed');
+        await service.deleteWatcher(id);
+        expect(await authorityReceipts()).toHaveLength(1);
+        expect(await authorityReceipts()).not.toMatchObject([
+          { released: true },
+        ]);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('keeps authority on a held delivery', async () => {
       const service = getAppAdvisorWatcherService();
       const id = await setup();
-      ensureAppAdvisorWindow.mockImplementationOnce(() => {
+      // Access is revoked while root authorization runs, before the send.
+      mockBackgroundEnabled = true;
+      mockAuthorizeBackground.mockImplementationOnce(() => {
         mockChatAccess.mockResolvedValue({
           allowed: false,
           reason: 'owner_boundary',
         });
-        return Promise.resolve({ open: true, focused: false });
+        return Promise.resolve({ allow: true });
       });
       await service.handleCanonicalChatTerminalEvent(completion());
       await service.whenChatDeliveriesSettled();
@@ -3305,20 +5470,22 @@ describe('App Advisor watcher service', () => {
 
     it('chooses eventId order for same-millisecond concurrent next terminals', async () => {
       const id = await setup(watch({ armForNextCompletion: true }));
-      const acceptedAt = new Date().toISOString();
+      const at = new Date().toISOString();
       await Promise.all([
         getAppAdvisorWatcherService().handleCanonicalChatTerminalEvent(
           completion({
             eventId: 'z-event',
             sourceInputId: 'input-z',
-            sourceInputAcceptedAt: acceptedAt,
+            sourceInputAcceptedAt: at,
+            occurredAt: at,
           }),
         ),
         getAppAdvisorWatcherService().handleCanonicalChatTerminalEvent(
           completion({
             eventId: 'a-event',
             sourceInputId: 'input-a',
-            sourceInputAcceptedAt: acceptedAt,
+            sourceInputAcceptedAt: at,
+            occurredAt: at,
           }),
         ),
       ]);
@@ -3399,12 +5566,16 @@ describe('App Advisor watcher service', () => {
               createdAt: now - 1000,
               state: 'picked-up',
               text: 'first',
-              payload: {
-                projectId: 'project-1',
-                worktreeId: 'worktree-1',
-                chatId: 'chat-1',
-                text: 'first',
-              },
+              payload: preserveLegacyMissingField<ChatSendMessageRequest>(
+                {
+                  projectId: 'project-1',
+                  worktreeId: 'worktree-1',
+                  chatId: 'chat-1',
+                  text: 'first',
+                  userMessageId: 'input-1',
+                },
+                'userMessageId',
+              ),
               settingsKey: 'k',
               attempts: [
                 {
@@ -3457,6 +5628,7 @@ describe('App Advisor watcher service', () => {
             ensureAppAdvisorWindow,
             sendAppAdvisorWindowCommand,
             sendChatWindowCommand,
+            deliverWatcherMessage,
             onChange,
           },
           { deferStartupRecovery: true },
@@ -3493,6 +5665,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         },
         { deferStartupRecovery: true },
@@ -3526,15 +5699,12 @@ describe('App Advisor watcher service', () => {
     it('delivers a matched event after its source chat is archived', async () => {
       const id = await setup();
       const service = getAppAdvisorWatcherService();
-      sendAppAdvisorWindowCommand.mockImplementationOnce((command) => {
-        if (command.type !== 'send_watcher_message') return;
-        queueMicrotask(() => {
-          service.acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: false, error: 'Watcher delivery is held.' },
-          );
+      deliverWatcherMessage.mockImplementationOnce((delivery) => {
+        sendAppAdvisorWindowCommand({
+          ...delivery,
+          type: 'send_watcher_message',
         });
+        return Promise.reject(new Error('Watcher delivery is held.'));
       });
       await service.handleCanonicalChatTerminalEvent(completion());
       await service.whenChatDeliveriesSettled();
@@ -3586,12 +5756,16 @@ describe('App Advisor watcher service', () => {
             createdAt: now - 10_000,
             state: 'picked-up',
             text: 'early',
-            payload: {
-              projectId: 'project-1',
-              worktreeId: 'worktree-1',
-              chatId: 'chat-1',
-              text: 'early',
-            },
+            payload: preserveLegacyMissingField<ChatSendMessageRequest>(
+              {
+                projectId: 'project-1',
+                worktreeId: 'worktree-1',
+                chatId: 'chat-1',
+                text: 'early',
+                userMessageId: 'early',
+              },
+              'userMessageId',
+            ),
             settingsKey: 'k',
             attempts: [
               {
@@ -3618,6 +5792,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         },
         { deferStartupRecovery: true },
@@ -3725,6 +5900,86 @@ describe('App Advisor watcher service', () => {
       expect((await savedRow(id)).status).toBe('fired');
       expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
     });
+    it('replays held next terminals in completion order, not arrival order', async () => {
+      const id = await setup(watch({ armForNextCompletion: true }));
+      const service = getAppAdvisorWatcherService();
+      const hold = {
+        scope: 'worktree' as const,
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      };
+      const acceptedAt = new Date().toISOString();
+      service.holdChatFiring(hold);
+      // The later completion is observed first while the modal is open.
+      await service.handleCanonicalChatTerminalEvent(
+        completion({
+          eventId: 'a-late',
+          sourceInputId: 'input-late',
+          sourceInputAcceptedAt: acceptedAt,
+          occurredAt: new Date(Date.now() + 2000).toISOString(),
+        }),
+      );
+      await service.handleCanonicalChatTerminalEvent(
+        completion({
+          eventId: 'z-early',
+          sourceInputId: 'input-early',
+          sourceInputAcceptedAt: acceptedAt,
+          occurredAt: new Date(Date.now() + 1000).toISOString(),
+        }),
+      );
+      await service.whenChatDeliveriesSettled();
+      expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
+      await service.releaseChatFiring(hold);
+      await service.whenChatDeliveriesSettled();
+      expect(await savedRow(id)).toMatchObject({
+        status: 'fired',
+        observation: { boundInputId: 'input-early' },
+      });
+      expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+    });
+    it('orders a held canonical end that replaced its raw end in place', async () => {
+      const id = await setup(watch({ armForNextCompletion: true }));
+      const service = getAppAdvisorWatcherService();
+      const hold = {
+        scope: 'worktree' as const,
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      };
+      const acceptedAt = new Date().toISOString();
+      service.holdChatFiring(hold);
+      await service.handleCanonicalChatTerminalEvent(
+        completion({
+          eventId: 'a-late',
+          sourceInputId: 'input-late',
+          sourceInputAcceptedAt: acceptedAt,
+          occurredAt: new Date(Date.now() + 2000).toISOString(),
+        }),
+      );
+      await service.handleChatTerminalEvent({
+        ...hold,
+        status: 'success',
+        data: { type: 'result', sourceInputId: 'input-early' },
+        receivedAt: new Date().toISOString(),
+      });
+      // The same turn's canonical end takes the raw end's arrival slot.
+      await service.handleCanonicalChatTerminalEvent(
+        completion({
+          eventId: 'z-early',
+          sourceInputId: 'input-early',
+          sourceInputAcceptedAt: acceptedAt,
+          occurredAt: new Date(Date.now() + 1000).toISOString(),
+        }),
+      );
+      await service.releaseChatFiring(hold);
+      await service.whenChatDeliveriesSettled();
+      expect(await savedRow(id)).toMatchObject({
+        status: 'fired',
+        observation: { boundInputId: 'input-early' },
+      });
+      expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(1);
+    });
     async function restartWithInputLedger(
       rows: Array<{
         id: string;
@@ -3754,12 +6009,16 @@ describe('App Advisor watcher service', () => {
           createdAt: row.admittedAt,
           state: 'picked-up',
           text: row.id,
-          payload: {
-            projectId: 'project-1',
-            worktreeId: 'worktree-1',
-            chatId: 'chat-1',
-            text: row.id,
-          },
+          payload: preserveLegacyMissingField<ChatSendMessageRequest>(
+            {
+              projectId: 'project-1',
+              worktreeId: 'worktree-1',
+              chatId: 'chat-1',
+              text: row.id,
+              userMessageId: row.rootUserMessageId,
+            },
+            'userMessageId',
+          ),
           settingsKey: 'k',
           attempts: [
             {
@@ -3794,6 +6053,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         },
         { deferStartupRecovery: true },
@@ -3866,8 +6126,7 @@ describe('App Advisor watcher service', () => {
         JSON.stringify(sendAppAdvisorWindowCommand.mock.calls[0]),
       ).toContain('interrupted');
     });
-    // Decision 4: a dialog-held watcher with no selected turn binds the next
-    // input accepted after it was armed, not one that ended while held.
+    // A dialog-held watcher with no selected turn uses the terminal event time.
     it('binds a watcher armed during a dialog hold to the next eligible completion', async () => {
       const service = getAppAdvisorWatcherService();
       const hold = {
@@ -3888,12 +6147,13 @@ describe('App Advisor watcher service', () => {
       await service.releaseChatFiring(hold);
       await service.whenChatDeliveriesSettled();
       expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
-      // An input accepted before the watcher was armed does not satisfy it.
+      // A terminal before the watcher was armed does not satisfy it.
       await service.handleCanonicalChatTerminalEvent(
         completion({
           eventId: 'terminal-earlier',
           sourceInputId: 'input-earlier',
           sourceInputAcceptedAt: new Date(Date.now() - 60_000).toISOString(),
+          occurredAt: new Date(Date.now() - 30_000).toISOString(),
         }),
       );
       await service.whenChatDeliveriesSettled();
@@ -3989,6 +6249,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         },
         { deferStartupRecovery: true },
@@ -4164,8 +6425,8 @@ describe('App Advisor watcher service', () => {
                 ? {
                     authority: 'ok',
                     ownerMalformed: false,
-                    config: {
-                      repos: [],
+                    memoryMalformed: false,
+                    config: workspaceConfig({
                       owner: {
                         type: 'organization',
                         organizationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -4173,12 +6434,13 @@ describe('App Advisor watcher service', () => {
                         instanceId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
                         bindingGeneration: 1,
                       },
-                    },
+                    }),
                   }
                 : {
                     authority: 'unreadable',
                     ownerMalformed: false,
-                    config: { repos: [] },
+                    memoryMalformed: false,
+                    config: workspaceConfig(),
                   },
             ),
         );
@@ -4221,6 +6483,9 @@ describe('App Advisor watcher service', () => {
           : ['project-1', 'worktree-1']),
       );
     },
+    // The first tab update loads the deferred chat-state repository graph;
+    // a cold CI transform cache takes several seconds.
+    30_000,
   );
 
   it.each([42, { kind: 'personal' }])(
@@ -4343,7 +6608,8 @@ describe('App Advisor watcher service', () => {
     mockDestinationRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
-      config: { repos: [] },
+      memoryMalformed: false,
+      config: workspaceConfig(),
     });
     mockResourceContextDecide.mockImplementation((input) =>
       Promise.resolve(decideResourceContext(input, { strict: true })),
@@ -4386,15 +6652,17 @@ describe('App Advisor watcher service', () => {
       },
       validProviders: ['claude'],
     };
+    const pluginCache: PluginsCache = {
+      version: 2,
+      lastRefreshed: '2026-05-28T11:00:00.000Z',
+      marketplaces: [marketplace],
+    };
+    // Keep these legacy cache fields at the untrusted input boundary.
+    Reflect.set(pluginCache, 'sourceInputId', 'input-1');
+    Reflect.set(pluginCache, 'sourceInputAcceptedAt', new Date().toISOString());
     mockLoadMarketplaces.mockResolvedValue({
       success: true,
-      data: {
-        sourceInputId: 'input-1',
-        sourceInputAcceptedAt: new Date().toISOString(),
-        version: 2,
-        lastRefreshed: '2026-05-28T11:00:00.000Z',
-        marketplaces: [marketplace],
-      },
+      data: pluginCache,
     });
     await writeJsonFile(
       join(dataDirPath, 'workspaces', 'project-1', 'chats', 'worktree-1.json'),
@@ -4867,6 +7135,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     };
     service.configure(surfaces);
@@ -4888,6 +7157,7 @@ describe('App Advisor watcher service', () => {
   it('retries an interrupted local delivery with its original durable identity', async () => {
     const service = getAppAdvisorWatcherService();
     await service.setup(worktreeChatInput(), worktreeDestination());
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
     sendChatWindowCommand.mockImplementation(() => true);
     const delivery = service.handleChatTerminalEvent({
       scope: 'worktree',
@@ -4929,6 +7199,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
     expect(
@@ -4946,10 +7217,8 @@ describe('App Advisor watcher service', () => {
 
   describe('startup replay of pending local deliveries', () => {
     function sentWatcherMessages(): Array<
-      Extract<
-        AppAdvisorWindowCommand | ChatWindowCommand,
-        { type: 'send_watcher_message' }
-      >
+      | RecordedWatcherMessage
+      | Extract<ChatWindowCommand, { type: 'send_watcher_message' }>
     > {
       return [
         ...sendChatWindowCommand.mock.calls.map(([command]) => command),
@@ -4959,26 +7228,6 @@ describe('App Advisor watcher service', () => {
       );
     }
 
-    function acknowledgeWatcherMessages(): void {
-      const acknowledge = (
-        command: AppAdvisorWindowCommand | ChatWindowCommand,
-      ): void => {
-        if (command.type !== 'send_watcher_message') return;
-        queueMicrotask(() =>
-          getAppAdvisorWatcherService().acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { ok: true },
-          ),
-        );
-      };
-      sendChatWindowCommand.mockImplementation((command) => {
-        acknowledge(command);
-        return true;
-      });
-      sendAppAdvisorWindowCommand.mockImplementation(acknowledge);
-    }
-
     /** Leave one consuming delivery durably pending, as a quit mid-delivery does. */
     async function interruptDelivery(
       target: AppAdvisorWatcherDestination,
@@ -4986,8 +7235,17 @@ describe('App Advisor watcher service', () => {
       const service = getAppAdvisorWatcherService();
       const result = await service.setup(worktreeChatInput(), target);
       if (!result.ok) throw new Error(result.error);
-      sendChatWindowCommand.mockImplementation(() => true);
-      sendAppAdvisorWindowCommand.mockImplementation(() => undefined);
+      let releaseDirectDelivery: (() => void) | undefined;
+      deliverWatcherMessage.mockImplementationOnce(
+        (delivery) =>
+          new Promise((resolve) => {
+            sendAppAdvisorWindowCommand({
+              ...delivery,
+              type: 'send_watcher_message',
+            });
+            releaseDirectDelivery = () => resolve('submitted');
+          }),
+      );
       const delivery = service.handleChatTerminalEvent({
         scope: 'worktree',
         projectId: 'project-1',
@@ -5007,13 +7265,13 @@ describe('App Advisor watcher service', () => {
       const deliveryId = sentWatcherMessages()[0]?.deliveryId;
       if (!deliveryId) throw new Error('Expected a watcher delivery');
       service.shutdown();
+      releaseDirectDelivery?.();
       await delivery;
       const persisted = (await readPersistedWatchersFile()).watchers[0];
       expect(persisted?.status).toBe('firing');
       expect(persisted?.pendingLocalDelivery?.deliveryId).toBe(deliveryId);
       sendChatWindowCommand.mockClear();
       sendAppAdvisorWindowCommand.mockClear();
-      acknowledgeWatcherMessages();
       return deliveryId;
     }
 
@@ -5026,6 +7284,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -5096,6 +7355,7 @@ describe('App Advisor watcher service', () => {
         worktreeDestination(),
       );
       if (!result.ok) throw new Error(result.error);
+      deliverWatcherMessage.mockResolvedValue('terminal_presenter');
       sendChatWindowCommand.mockImplementation((command) => {
         if (command.type === 'send_watcher_message')
           queueMicrotask(() =>
@@ -5127,7 +7387,6 @@ describe('App Advisor watcher service', () => {
       expect(persisted?.pendingLocalDelivery).toBeUndefined();
 
       sendChatWindowCommand.mockClear();
-      acknowledgeWatcherMessages();
       await restart();
       expect(sentWatcherMessages()).toEqual([]);
     });
@@ -5212,6 +7471,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         });
         await service.reconcileAtStartup();
@@ -5250,6 +7510,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -5302,6 +7563,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     };
     service.shutdown();
@@ -5357,6 +7619,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
     await service.reconcileAtStartup();
@@ -5401,6 +7664,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
     await service.reconcileAtStartup();
@@ -5475,6 +7739,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -5566,6 +7831,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -5662,6 +7928,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
     await service.reconcileAtStartup();
@@ -5687,6 +7954,7 @@ describe('App Advisor watcher service', () => {
       },
       worktreeDestination(),
     );
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
     sendChatWindowCommand.mockImplementation(() => true);
     const pause = pipelineEvent('paused');
     pause.type = 'execution.paused';
@@ -5721,6 +7989,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
     await service.reconcileAtStartup();
@@ -5745,6 +8014,7 @@ describe('App Advisor watcher service', () => {
       },
       worktreeDestination(),
     );
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
     sendChatWindowCommand.mockImplementation(() => true);
     const pause = pipelineEvent('paused');
     pause.type = 'execution.paused';
@@ -5777,6 +8047,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
     const recovery = service.reconcileAtStartup();
@@ -5848,8 +8119,12 @@ describe('App Advisor watcher service', () => {
 
   it('captures destination from runtime and dedupes identical active watchers', async () => {
     const service = getAppAdvisorWatcherService();
-    const first = await service.setup(worktreeChatInput(), destination());
-    const second = await service.setup(worktreeChatInput(), destination());
+    const first = await service.setup(worktreeChatInput(), destination(), {
+      toolUseId: 'setup-first',
+    });
+    const second = await service.setup(worktreeChatInput(), destination(), {
+      toolUseId: 'setup-retry',
+    });
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
@@ -5858,6 +8133,36 @@ describe('App Advisor watcher service', () => {
     expect(second.results[0]?.status).toBe('deduped');
     expect(second.results[0]?.watcher.id).toBe(first.results[0]?.watcher.id);
     expect(first.results[0]?.watcher.destination).toEqual(destination());
+    expect((await readPersistedWatchersFile()).watchers).toHaveLength(1);
+  });
+
+  it('allows a new identical wakeup after the first has fired', async () => {
+    const service = getAppAdvisorWatcherService();
+    service.shutdown();
+    const target = {
+      kind: 'scheduled_wakeup' as const,
+      delaySeconds: 60,
+      scheduledFor: '',
+    };
+    const first = await service.createLocalWatcher(
+      target,
+      worktreeDestination(),
+      'first-wakeup',
+    );
+    await seedRegistrationStore(
+      (await readPersistedWatchersFile()).watchers.map((w) => ({
+        ...w,
+        status: 'fired',
+        firedAt: new Date().toISOString(),
+      })),
+    );
+    const next = await service.createLocalWatcher(
+      target,
+      worktreeDestination(),
+      'next-wakeup',
+    );
+    expect(next.id).not.toBe(first.id);
+    expect((await readPersistedWatchersFile()).watchers).toHaveLength(2);
   });
 
   it('persists wakeup deadlines and deduplicates retried tool invocations', async () => {
@@ -5883,7 +8188,9 @@ describe('App Advisor watcher service', () => {
       worktreeDestination(),
       'different-transport-call',
     );
-    expect(independentWakeup.id).not.toBe(first.id);
+    expect(independentWakeup.id).toBe(first.id);
+    expect(independentWakeup.target).toEqual(first.target);
+    expect((await readPersistedWatchersFile()).watchers).toHaveLength(1);
     expect(independentWakeup.target).toMatchObject({
       kind: 'scheduled_wakeup',
       scheduledFor: expect.any(String),
@@ -5967,11 +8274,8 @@ describe('App Advisor watcher service', () => {
       dest,
       'after-failed-delete',
     );
-    expect(retry.id).not.toBe(watcher.id);
-    await service.deleteAgentWatchers(
-      { watcherIds: [watcher.id, retry.id] },
-      dest,
-    );
+    expect(retry.id).toBe(watcher.id);
+    await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
   });
 
   it('restores removed local watchers when a scope deletion fails', async () => {
@@ -5995,6 +8299,130 @@ describe('App Advisor watcher service', () => {
       expect.objectContaining({ id: watcher.id, status: 'active' }),
     ]);
     await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+  });
+
+  it('names the worktree of a pending scope deletion commit, then purges its records', async () => {
+    const service = getAppAdvisorWatcherService();
+    const dest = worktreeDestination('scope-commit-chat');
+    await service.createLocalWatcher(
+      { kind: 'scheduled_wakeup', delaySeconds: 60, scheduledFor: '' },
+      dest,
+      'scope-commit-tool',
+    );
+    const commitRecords = (): SessionDiagnosticRecord[] =>
+      mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .filter(
+          (record) =>
+            record.waitOperation === 'watcher.commit_local_scope_cancellation',
+        );
+    await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+    mockRecordSessionDiagnostic.mockClear();
+    mockPurgeLateWorktreeSessionDiagnostics.mockClear();
+    let releaseQueue = (): void => undefined;
+    const queueHeld = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
+    const queue = service as unknown as {
+      enqueueMutation: (fn: () => Promise<void>) => Promise<void>;
+    };
+    const blocker = queue.enqueueMutation(() => queueHeld);
+    let commit: Promise<void> | undefined;
+    try {
+      commit = service.commitLocalScopeCancellation(
+        dest.projectId,
+        dest.worktreeId,
+      );
+      expect(
+        await waitForTimedCondition(() =>
+          commitRecords().some((record) => record.waitOutcome === 'stalled'),
+        ),
+      ).toBe(true);
+      // While the commit waits, its stall names the worktree being deleted.
+      expect(commitRecords()).toEqual([
+        expect.objectContaining({
+          projectId: dest.projectId,
+          worktreeId: dest.worktreeId,
+          waitScope: { projectId: dest.projectId, worktreeId: dest.worktreeId },
+          waitPhase: 'queue_wait',
+          waitOutcome: 'stalled',
+        }),
+      ]);
+      expect(mockPurgeLateWorktreeSessionDiagnostics).not.toHaveBeenCalled();
+      releaseQueue();
+      await blocker;
+      await commit;
+    } finally {
+      releaseQueue();
+      await blocker.catch(() => undefined);
+      await commit?.catch(() => undefined);
+    }
+
+    const records = commitRecords();
+    expect(records.at(-1)).toMatchObject({
+      waitPhase: 'end',
+      worktreeId: dest.worktreeId,
+    });
+    // The completed commit's records go with the worktree its caller purged.
+    expect(mockPurgeLateWorktreeSessionDiagnostics.mock.calls).toEqual([
+      [
+        dest.projectId,
+        dest.worktreeId,
+        records[0]?.waitOperationId,
+        records.length,
+      ],
+    ]);
+    const { calls, invocationCallOrder } = mockRecordSessionDiagnostic.mock;
+    const lastRecordOrder = Math.max(
+      ...calls.flatMap(([record], index) =>
+        record.waitOperation === 'watcher.commit_local_scope_cancellation'
+          ? [invocationCallOrder[index] ?? 0]
+          : [],
+      ),
+    );
+    expect(
+      mockPurgeLateWorktreeSessionDiagnostics.mock.invocationCallOrder[0],
+    ).toBeGreaterThan(lastRecordOrder);
+  });
+
+  it('releases a scope deletion commit’s fence before its diagnostics purge settles', async () => {
+    const service = getAppAdvisorWatcherService();
+    const dest = worktreeDestination('scope-commit-fence-chat');
+    await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+    mockPurgeLateWorktreeSessionDiagnostics.mockClear();
+    let releasePurge = (): void => undefined;
+    mockPurgeLateWorktreeSessionDiagnostics.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releasePurge = resolve;
+        }),
+    );
+    let committed = false;
+    const commit = service
+      .commitLocalScopeCancellation(dest.projectId, dest.worktreeId)
+      .then(() => {
+        committed = true;
+      });
+    try {
+      expect(
+        await waitForTimedCondition(
+          () => mockPurgeLateWorktreeSessionDiagnostics.mock.calls.length > 0,
+        ),
+      ).toBe(true);
+      // A held observability write never keeps the scope fenced.
+      await expect(
+        service.createLocalWatcher(
+          { kind: 'scheduled_wakeup', delaySeconds: 60, scheduledFor: '' },
+          dest,
+          'scope-commit-fence-tool',
+        ),
+      ).resolves.toMatchObject({ status: 'active' });
+      expect(committed).toBe(false);
+    } finally {
+      releasePurge();
+      await commit;
+    }
+    expect(committed).toBe(true);
   });
 
   it('keys App Advisor command cancellation to its approved execution scope', async () => {
@@ -6044,6 +8472,435 @@ describe('App Advisor watcher service', () => {
       expect.objectContaining({ id: watcher.id }),
     ]);
     await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+  });
+
+  describe('a failed project deletion releases only its own fence (CAN-4976)', () => {
+    async function crossProjectWatcher(
+      chatId: string,
+    ): Promise<{ dest: AppAdvisorWatcherDestination; id: string }> {
+      const dest = worktreeDestination(chatId);
+      const watcher = await getAppAdvisorWatcherService().createLocalWatcher(
+        {
+          kind: 'command_watch',
+          command: 'printf ready',
+          cwd: '/approved/worktree',
+          intervalSeconds: 5,
+          maxAttempts: 1,
+        },
+        dest,
+        `${chatId}-tool`,
+        undefined,
+        { projectId: 'approved-project', worktreeId: 'approved-worktree' },
+      );
+      return { dest, id: watcher.id };
+    }
+
+    it('keeps a watcher cancelled while another scope fence holds its execution scope', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const { dest, id } = await crossProjectWatcher('cross-scope-fence-chat');
+
+      await service.cancelLocalWorkspace(dest.projectId);
+      await service.cancelLocalScope('approved-project', 'approved-worktree');
+      await service.releaseLocalWorkspaceFence(dest.projectId);
+      expect(await service.list(dest)).toEqual([]);
+
+      await service.releaseLocalScopeFence(
+        'approved-project',
+        'approved-worktree',
+      );
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [id] }, dest);
+    });
+
+    it('hands a watcher to the other project deletion that still fences it', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const { dest, id } = await crossProjectWatcher('cross-workspace-chat');
+
+      await service.cancelLocalWorkspace(dest.projectId);
+      await service.cancelLocalWorkspace('approved-project');
+      await service.releaseLocalWorkspaceFence(dest.projectId);
+      expect(await service.list(dest)).toEqual([]);
+
+      await service.releaseLocalWorkspaceFence('approved-project');
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [id] }, dest);
+    });
+
+    it.each(['read', 'write'] as const)(
+      'keeps its fence for a retry after a store %s failure during release',
+      async (failure) => {
+        const service = getAppAdvisorWatcherService();
+        service.shutdown();
+        const dest = {
+          ...worktreeDestination('release-store-failure-chat'),
+          projectId: 'release-store-failure-project',
+          worktreeId: 'release-store-failure-entry',
+        };
+        const target = {
+          kind: 'scheduled_wakeup' as const,
+          delaySeconds: 60,
+          scheduledFor: '',
+        };
+        const watcher = await service.createLocalWatcher(
+          target,
+          dest,
+          'before-delete',
+        );
+        const otherDest = worktreeDestination('release-store-failure-other');
+        const other = await service.createLocalWatcher(
+          target,
+          otherDest,
+          'other-project',
+        );
+        await service.cancelLocalWorkspace(dest.projectId);
+        const storeError = new Error(`release ${failure} failed`);
+        const isWatchersFile = (path: unknown): boolean =>
+          String(path) === watchersFilePath;
+        const { stat, rename } = fsPromises;
+        const fail =
+          failure === 'read'
+            ? jest
+                .spyOn(fsPromises, 'stat')
+                .mockImplementation((path, options) =>
+                  isWatchersFile(path)
+                    ? Promise.reject(storeError)
+                    : stat(path, options),
+                )
+            : jest
+                .spyOn(fsPromises, 'rename')
+                .mockImplementation((from, to) =>
+                  isWatchersFile(to)
+                    ? Promise.reject(storeError)
+                    : rename(from, to),
+                );
+        await expect(
+          service.releaseLocalWorkspaceFence(dest.projectId),
+        ).rejects.toBe(storeError);
+        fail.mockRestore();
+
+        // Still fenced: the watcher stays cancelled and admission stays shut.
+        expect(await service.list(dest)).toEqual([]);
+        await expect(
+          service.createLocalWatcher(target, dest, 'during-failed-release'),
+        ).rejects.toThrow('removed or archived');
+        // Other projects are unaffected.
+        expect(await service.list(otherDest)).toEqual([
+          expect.objectContaining({ id: other.id, status: 'active' }),
+        ]);
+        const otherDuring = await service.createLocalWatcher(
+          target,
+          otherDest,
+          'other-during-failed-release',
+        );
+        expect(otherDuring).toMatchObject({ status: 'active' });
+
+        await service.releaseLocalWorkspaceFence(dest.projectId);
+        expect(await service.list(dest)).toEqual([
+          expect.objectContaining({ id: watcher.id, status: 'active' }),
+        ]);
+        await expect(
+          service.createLocalWatcher(target, dest, 'after-retried-release'),
+        ).resolves.toMatchObject({ status: 'active' });
+        await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+        await service.deleteAgentWatchers(
+          { watcherIds: [other.id, otherDuring.id] },
+          otherDest,
+        );
+      },
+    );
+  });
+
+  describe('a scope fence release restores only its own watchers (CAN-4987)', () => {
+    const target = {
+      kind: 'scheduled_wakeup' as const,
+      delaySeconds: 60,
+      scheduledFor: '',
+    };
+
+    it('keeps the cancellations of an in-flight deletion of the same project', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const dest = worktreeDestination('scope-release-during-deletion');
+      const watcher = await service.createLocalWatcher(
+        target,
+        dest,
+        'scope-release-during-deletion-tool',
+      );
+
+      await service.cancelLocalWorkspace(dest.projectId);
+      await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+      await service.releaseLocalScopeFence(dest.projectId, dest.worktreeId);
+      expect(await service.list(dest)).toEqual([]);
+      await expect(
+        service.createLocalWatcher(target, dest, 'during-deletion'),
+      ).rejects.toThrow('removed or archived');
+
+      await service.releaseLocalWorkspaceFence(dest.projectId);
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id: watcher.id, status: 'active' }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+    });
+
+    it('hands its own watcher to an in-flight deletion that still fences it', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const dest = worktreeDestination('scope-hand-off-to-deletion');
+      const watcher = await service.createLocalWatcher(
+        target,
+        dest,
+        'scope-hand-off-to-deletion-tool',
+      );
+
+      await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+      await service.cancelLocalWorkspace(dest.projectId);
+      await service.releaseLocalScopeFence(dest.projectId, dest.worktreeId);
+      expect(await service.list(dest)).toEqual([]);
+
+      await service.releaseLocalWorkspaceFence(dest.projectId);
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id: watcher.id, status: 'active' }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+    });
+
+    it('hands its own watcher to another scope fence on its execution scope', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const dest = worktreeDestination('scope-hand-off-to-scope');
+      const watcher = await service.createLocalWatcher(
+        {
+          kind: 'command_watch',
+          command: 'printf ready',
+          cwd: '/approved/worktree',
+          intervalSeconds: 5,
+          maxAttempts: 1,
+        },
+        dest,
+        'scope-hand-off-to-scope-tool',
+        undefined,
+        { projectId: 'approved-project', worktreeId: 'approved-worktree' },
+      );
+
+      await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+      await service.cancelLocalScope('approved-project', 'approved-worktree');
+      await service.releaseLocalScopeFence(dest.projectId, dest.worktreeId);
+      expect(await service.list(dest)).toEqual([]);
+
+      await service.releaseLocalScopeFence(
+        'approved-project',
+        'approved-worktree',
+      );
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id: watcher.id }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+    });
+
+    it('keeps a fence taken behind a queued release of its key up until its own release', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const dest = worktreeDestination('scope-fence-behind-release');
+      const watcher = await service.createLocalWatcher(
+        target,
+        dest,
+        'scope-fence-behind-release-tool',
+      );
+
+      const earlierRelease = service.releaseLocalScopeFence(
+        dest.projectId,
+        dest.worktreeId,
+      );
+      await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+      await earlierRelease;
+      expect(await service.list(dest)).toEqual([]);
+      await expect(
+        service.createLocalWatcher(target, dest, 'behind-release'),
+      ).rejects.toThrow('removed or archived');
+
+      await service.releaseLocalScopeFence(dest.projectId, dest.worktreeId);
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id: watcher.id, status: 'active' }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+    });
+
+    it('hands a watcher to a fence taken behind a queued release of its key', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const dest = worktreeDestination('scope-hand-off-behind-release');
+      const watcher = await service.createLocalWatcher(
+        {
+          kind: 'command_watch',
+          command: 'printf ready',
+          cwd: '/approved/worktree',
+          intervalSeconds: 5,
+          maxAttempts: 1,
+        },
+        dest,
+        'scope-hand-off-behind-release-tool',
+        undefined,
+        { projectId: 'approved-project', worktreeId: 'approved-worktree' },
+      );
+
+      await service.cancelLocalScope('approved-project', 'approved-worktree');
+      const earlierRelease = service.releaseLocalScopeFence(
+        dest.projectId,
+        dest.worktreeId,
+      );
+      await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+      await earlierRelease;
+      await service.releaseLocalScopeFence(
+        'approved-project',
+        'approved-worktree',
+      );
+      expect(await service.list(dest)).toEqual([]);
+
+      await service.releaseLocalScopeFence(dest.projectId, dest.worktreeId);
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id: watcher.id }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+    });
+
+    it('keeps a deletion fence taken behind a queued release of its project up until its own release', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const dest = worktreeDestination('workspace-fence-behind-release');
+      const watcher = await service.createLocalWatcher(
+        target,
+        dest,
+        'workspace-fence-behind-release-tool',
+      );
+
+      const earlierRelease = service.releaseLocalWorkspaceFence(dest.projectId);
+      await service.cancelLocalWorkspace(dest.projectId);
+      await earlierRelease;
+      expect(await service.list(dest)).toEqual([]);
+      await expect(
+        service.createLocalWatcher(target, dest, 'behind-workspace-release'),
+      ).rejects.toThrow('removed or archived');
+
+      await service.releaseLocalWorkspaceFence(dest.projectId);
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id: watcher.id, status: 'active' }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+    });
+
+    it('keeps a watcher cancelled until the last of its fences releases, in any order', async () => {
+      const service = getAppAdvisorWatcherService();
+      const dest = worktreeDestination('every-fence-order');
+      // Both scope keys and the destination project's deletion cover it.
+      const fences = {
+        destinationScope: {
+          fence: () =>
+            service.cancelLocalScope(dest.projectId, dest.worktreeId),
+          release: () =>
+            service.releaseLocalScopeFence(dest.projectId, dest.worktreeId),
+        },
+        executionScope: {
+          fence: () =>
+            service.cancelLocalScope('approved-project', 'approved-worktree'),
+          release: () =>
+            service.releaseLocalScopeFence(
+              'approved-project',
+              'approved-worktree',
+            ),
+        },
+        destinationDeletion: {
+          fence: () => service.cancelLocalWorkspace(dest.projectId),
+          release: () => service.releaseLocalWorkspaceFence(dest.projectId),
+        },
+      };
+      type FenceName = keyof typeof fences;
+      const orders = (names: FenceName[]): FenceName[][] =>
+        names.length <= 1
+          ? [names]
+          : names.flatMap((name, index) =>
+              orders(names.filter((_, other) => other !== index)).map(
+                (rest) => [name, ...rest],
+              ),
+            );
+      const names: FenceName[] = [
+        'destinationScope',
+        'executionScope',
+        'destinationDeletion',
+      ];
+      const failures: string[] = [];
+      for (const fenceOrder of orders(names)) {
+        for (const releaseOrder of orders(names)) {
+          service.shutdown();
+          const watcher = await service.createLocalWatcher(
+            {
+              kind: 'command_watch',
+              command: 'printf ready',
+              cwd: '/approved/worktree',
+              intervalSeconds: 5,
+              maxAttempts: 1,
+            },
+            dest,
+            `every-fence-order-${fenceOrder.join()}-${releaseOrder.join()}`,
+            undefined,
+            { projectId: 'approved-project', worktreeId: 'approved-worktree' },
+          );
+          for (const name of fenceOrder) await fences[name].fence();
+          const listed: number[] = [];
+          for (const name of releaseOrder) {
+            await fences[name].release();
+            listed.push((await service.list(dest)).length);
+          }
+          if (listed.join() !== '0,0,1')
+            failures.push(
+              `fence ${fenceOrder.join()} release ${releaseOrder.join()}: ${listed.join()}`,
+            );
+          await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+        }
+      }
+      expect(failures).toEqual([]);
+    });
+
+    it('keeps its fence and watchers for a retry after a store write failure', async () => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      const dest = worktreeDestination('scope-release-store-failure');
+      const watcher = await service.createLocalWatcher(
+        target,
+        dest,
+        'scope-release-store-failure-tool',
+      );
+      await service.cancelLocalScope(dest.projectId, dest.worktreeId);
+      const storeError = new Error('scope release write failed');
+      const { rename } = fsPromises;
+      const fail = jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementation((from, to) =>
+          String(to) === watchersFilePath
+            ? Promise.reject(storeError)
+            : rename(from, to),
+        );
+      await expect(
+        service.releaseLocalScopeFence(dest.projectId, dest.worktreeId),
+      ).rejects.toBe(storeError);
+      fail.mockRestore();
+
+      expect(await service.list(dest)).toEqual([]);
+      await expect(
+        service.createLocalWatcher(target, dest, 'during-failed-release'),
+      ).rejects.toThrow('removed or archived');
+
+      await service.releaseLocalScopeFence(dest.projectId, dest.worktreeId);
+      expect(await service.list(dest)).toEqual([
+        expect.objectContaining({ id: watcher.id, status: 'active' }),
+      ]);
+      await service.deleteAgentWatchers({ watcherIds: [watcher.id] }, dest);
+    });
   });
 
   it('also cancels an App Advisor command watcher when its destination is deleted', async () => {
@@ -6153,6 +9010,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
 
@@ -6220,6 +9078,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
 
@@ -6249,6 +9108,7 @@ describe('App Advisor watcher service', () => {
       ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand,
       sendChatWindowCommand,
+      deliverWatcherMessage,
       onChange,
     });
 
@@ -6484,7 +9344,13 @@ describe('App Advisor watcher service', () => {
       dedupeKey: `dedupe-${id}`,
     });
 
-    async function seedStore(watchers: AppAdvisorWatcher[]): Promise<void> {
+    // configure() starts this unawaited. Its reads, and the managed-delegation
+    // reconcile it starts, must not straddle a test's seedStore() write.
+    beforeEach(async () => {
+      await getAppAdvisorWatcherService().reconcileAtStartup();
+    });
+
+    async function seedStore(watchers: readonly unknown[]): Promise<void> {
       await mkdir(dirname(watchersFilePath), { recursive: true });
       await writeFile(
         watchersFilePath,
@@ -6668,8 +9534,195 @@ describe('App Advisor watcher service', () => {
       await service.deleteWatcher('delete-again');
       expect(await readCanonicalWatcherStore(path)).toEqual([]);
       clock.mockRestore();
-      await expect(service.checkDeliveryIngress('unknown')).resolves.toEqual({
-        allowed: true,
+      await expect(
+        service.checkDeliveryIngress('unknown', null),
+      ).resolves.toEqual({ allowed: true });
+    });
+
+    describe('authority release owner', () => {
+      const owner = worktreeDestination('receipt-owner');
+      const canonicalPath = (): string =>
+        join(dataDirPath, 'app-advisor-watchers-canonical.json');
+      // Only the receipt names the owner: its watcher row is gone.
+      const receipt = (id: string): Record<string, unknown> => ({
+        kind: 'chat_delivery_authority',
+        watcher: {
+          ...storedWatcher(id, 'fired', new Date().toISOString()),
+          destination: owner,
+          chatDeliveryId: `delivery-${id}`,
+        },
+      });
+      const gate = (): { wait: Promise<void>; open: () => void } => {
+        const { held, release } = holdUntilReleased();
+        return { wait: held, open: release };
+      };
+      const queueStall = (): SessionDiagnosticRecord | undefined =>
+        mockRecordSessionDiagnostic.mock.calls
+          .map(([record]) => record)
+          .find(
+            (record) =>
+              record.waitOperation ===
+                'watcher.release_chat_delivery_authority' &&
+              record.waitPhase === 'queue_wait' &&
+              record.waitOutcome === 'stalled',
+          );
+      type StoreInternals = {
+        canonicalSnapshot: unknown;
+        loadSnapshot: () => Promise<unknown>;
+        loadCanonicalRows: () => Promise<unknown[]>;
+      };
+
+      /** Holds the queue in a release whose store read waits on `held`. */
+      async function holdQueue(
+        service: ReturnType<typeof getAppAdvisorWatcherService>,
+        held: Promise<void>,
+      ): Promise<{ holder: Promise<void> }> {
+        const internal = service as unknown as StoreInternals;
+        const load = internal.loadCanonicalRows.bind(service);
+        const reading = gate();
+        jest
+          .spyOn(internal, 'loadCanonicalRows')
+          .mockImplementationOnce(async () => {
+            reading.open();
+            await held;
+            return load();
+          });
+        const holder = service.releaseChatDeliveryAuthority('delivery-holder');
+        await reading.wait;
+        return { holder };
+      }
+
+      beforeEach(async () => {
+        const service = getAppAdvisorWatcherService();
+        service.shutdown();
+        await service.drain();
+        await writeJsonFile(canonicalPath(), {
+          version: 1,
+          watchers: [receipt('holder'), receipt('queued')],
+        });
+        await seedStore([]);
+        // Both stores are loaded, as after any earlier read.
+        await service.list();
+      });
+
+      it('names the receipt owner from its queue wait to its end', async () => {
+        const service = getAppAdvisorWatcherService();
+        const held = gate();
+        const pending: Promise<unknown>[] = [];
+        try {
+          pending.push((await holdQueue(service, held.wait)).holder);
+          pending.push(service.releaseChatDeliveryAuthority('delivery-queued'));
+          // These operations time phases natively, so the hold is real time.
+          await new Promise((resolve) => setTimeout(resolve, 1_100));
+          expect(queueStall()).toMatchObject({
+            worktreeId: owner.worktreeId,
+            chatId: owner.chatId,
+            waitScope: owner,
+            waitQueueOwnerOperation: 'watcher.release_chat_delivery_authority',
+          });
+          held.open();
+          await Promise.all(pending);
+          expect(
+            mockRecordSessionDiagnostic.mock.calls
+              .map(([record]) => record)
+              .filter(
+                (record) =>
+                  record.waitOperation ===
+                    'watcher.release_chat_delivery_authority' &&
+                  record.waitPhase === 'end',
+              ),
+          ).toEqual([
+            expect.objectContaining({ waitScope: owner }),
+            expect.objectContaining({ waitScope: owner }),
+          ]);
+          expect(
+            (await readCanonicalWatcherStore(canonicalPath())).every(
+              (row) =>
+                typeof row === 'object' &&
+                row !== null &&
+                'released' in row &&
+                row.released === true,
+            ),
+          ).toBe(true);
+        } finally {
+          held.open();
+          await Promise.allSettled(pending);
+        }
+      });
+
+      it('names the owner when the loaded cache predates the receipt', async () => {
+        const service = getAppAdvisorWatcherService();
+        await writeJsonFile(canonicalPath(), {
+          version: 1,
+          watchers: [receipt('holder')],
+        });
+        // Both caches load without the queued receipt.
+        await service.list();
+        // Another writer then adds it.
+        await writeJsonFile(canonicalPath(), {
+          version: 1,
+          watchers: [receipt('holder'), receipt('queued')],
+        });
+        const held = gate();
+        const pending: Promise<unknown>[] = [];
+        try {
+          pending.push((await holdQueue(service, held.wait)).holder);
+          pending.push(service.releaseChatDeliveryAuthority('delivery-queued'));
+          // These operations time phases natively, so the hold is real time.
+          await new Promise((resolve) => setTimeout(resolve, 1_100));
+          expect(queueStall()).toMatchObject({ waitScope: owner });
+          held.open();
+          await Promise.all(pending);
+        } finally {
+          held.open();
+          await Promise.allSettled(pending);
+        }
+      });
+
+      it('names the owner from its own load when a queued write invalidates the cache', async () => {
+        const service = getAppAdvisorWatcherService();
+        const internal = service as unknown as StoreInternals;
+        const loadCanonicalRows = internal.loadCanonicalRows.bind(service);
+        const held = gate();
+        const legacyRead = gate();
+        const canonicalRead = gate();
+        const pending: Promise<unknown>[] = [];
+        try {
+          pending.push((await holdQueue(service, held.wait)).holder);
+          // A queued write drops the canonical cache before it writes.
+          internal.canonicalSnapshot = null;
+          const loadSnapshot = internal.loadSnapshot.bind(service);
+          jest
+            .spyOn(internal, 'loadSnapshot')
+            .mockImplementationOnce(async () => {
+              await legacyRead.wait;
+              return loadSnapshot();
+            });
+          // The lookup's canonical read is real I/O, so await it, not a tick count.
+          jest
+            .spyOn(internal, 'loadCanonicalRows')
+            .mockImplementationOnce(async () => {
+              try {
+                return await loadCanonicalRows();
+              } finally {
+                canonicalRead.open();
+              }
+            });
+          pending.push(service.releaseChatDeliveryAuthority('delivery-queued'));
+          await canonicalRead.wait;
+          expect(internal.canonicalSnapshot).not.toBeNull();
+          // The write ahead invalidates it again while the lookup still reads.
+          internal.canonicalSnapshot = null;
+          legacyRead.open();
+          await new Promise((resolve) => setTimeout(resolve, 1_100));
+          expect(queueStall()).toMatchObject({ waitScope: owner });
+          held.open();
+          await Promise.all(pending);
+        } finally {
+          legacyRead.open();
+          held.open();
+          await Promise.allSettled(pending);
+        }
       });
     });
 
@@ -6740,56 +9793,29 @@ describe('App Advisor watcher service', () => {
       expect(completed[0]?.id).toBe('fired-0');
     });
 
-    it('keeps recent tool-call receipts past the completed limit so retried calls replay', async () => {
+    it('preserves legacy managed completions while compacting ordinary history', async () => {
       const service = getAppAdvisorWatcherService();
-      const parent = {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-1',
-        toolCallId: 'watch-call-1',
-        runtimeGeneration: 7,
-        depth: 0,
-      };
-      const request = {
-        delegationIds: ['11111111-1111-4111-8111-111111111111'],
-        mode: 'all' as const,
-        timeoutMs: 60_000,
-      };
-      const targets = [
-        {
-          delegationId: request.delegationIds[0],
-          runGeneration: 3,
-          status: 'running' as const,
-          resultIndex: null,
-        },
-      ];
-      const created = await service.createManagedDelegationWatcher(
-        parent,
-        request,
-        targets,
-        'request-hash',
+      const old = '2000-01-01T00:00:00.000Z';
+      const legacyFired = legacyManagedWatcher('legacy-fired', 'fired', {
+        createdAt: old,
+        firedAt: old,
+      });
+      const legacyFailed = legacyManagedWatcher(
+        'legacy-failed',
+        'delivery_failed',
+        { createdAt: old, firedAt: old },
       );
-      if (!created.ok) throw new Error(created.error.message);
-      const now = Date.now();
-      const at = (msAgo: number): string => new Date(now - msAgo).toISOString();
-      const persisted = await readPersistedWatchersFile();
       await seedStore([
-        ...persisted.watchers.map((watcher) => ({
-          ...watcher,
-          status: 'fired' as const,
-          firedAt: at(2 * 60 * 60_000),
-          updatedAt: at(2 * 60 * 60_000),
-        })),
-        {
-          ...storedWatcher('expired-receipt', 'fired', at(25 * 60 * 60_000)),
-          createdByToolUseId: 'old-call',
-        },
-        storedWatcher('active-1', 'active', at(60_000)),
-        ...Array.from({ length: 210 }, (_, index) =>
-          storedWatcher(`fired-${index}`, 'fired', at(index * 1_000)),
+        storedWatcher('active-1', 'active', old),
+        storedWatcher('active-2', 'active', old),
+        legacyFired,
+        legacyFailed,
+        ...Array.from({ length: 260 }, (_, index) =>
+          storedWatcher(
+            `fired-${index}`,
+            index % 2 === 0 ? 'fired' : 'delivery_failed',
+            new Date(Date.parse(old) + index * 60_000).toISOString(),
+          ),
         ),
       ]);
 
@@ -6798,28 +9824,12 @@ describe('App Advisor watcher service', () => {
       const ids = (await readPersistedWatchersFile()).watchers.map(
         (watcher) => watcher.id,
       );
-      expect(ids).toContain(created.value.watcherId);
-      expect(ids).not.toContain('expired-receipt');
-      expect(ids).not.toContain('fired-209');
-      await expect(
-        service.createManagedDelegationWatcher(
-          parent,
-          request,
-          targets,
-          'request-hash',
-        ),
-      ).resolves.toEqual(created);
-      await expect(
-        service.createManagedDelegationWatcher(
-          parent,
-          request,
-          targets,
-          'different-hash',
-        ),
-      ).resolves.toMatchObject({
-        ok: false,
-        error: { code: 'invalid_request' },
-      });
+      expect(ids).toHaveLength(203);
+      expect(ids).toContain('active-2');
+      expect(ids).toContain(legacyFired.id);
+      expect(ids).toContain(legacyFailed.id);
+      expect(ids).toContain('fired-259');
+      expect(ids).not.toContain('fired-59');
     });
 
     it('writes the store as compact JSON', async () => {
@@ -6923,7 +9933,12 @@ describe('App Advisor watcher service', () => {
     const validLocalWatcher = file.watchers.find(
       (watcher) => 'id' in watcher && watcher.id === validWatcher.id,
     );
-    if (!validLocalWatcher || !('runtimeState' in validLocalWatcher)) {
+    if (
+      !validLocalWatcher ||
+      !('runtimeState' in validLocalWatcher) ||
+      typeof validLocalWatcher.runtimeState !== 'object' ||
+      validLocalWatcher.runtimeState === null
+    ) {
       throw new Error('Expected a persisted local watcher.');
     }
     file.watchers.push(
@@ -6974,32 +9989,7 @@ describe('App Advisor watcher service', () => {
   });
 
   it('captures friendly display metadata for worktree chat watchers', async () => {
-    await writeJsonFile(join(dataDirPath, 'workspaces', 'index.json'), {
-      version: 1,
-      workspaces: [
-        {
-          id: 'project-1',
-          name: 'Canopy',
-          type: 'multi-repo',
-          color: 'blue',
-          collapsed: false,
-          order: 0,
-        },
-      ],
-    });
-    await writeJsonFile(
-      join(dataDirPath, 'workspaces', 'project-1', 'worktrees.json'),
-      {
-        version: 1,
-        worktrees: [
-          {
-            id: 'worktree-1',
-            branchName: 'feature/watchers',
-            createdAt: '2026-05-24T00:00:00.000Z',
-          },
-        ],
-      },
-    );
+    useWorkspaceReads();
     await writeJsonFile(
       join(dataDirPath, 'workspaces', 'project-1', 'chats', 'worktree-1.json'),
       {
@@ -7038,32 +10028,7 @@ describe('App Advisor watcher service', () => {
   });
 
   it('captures friendly display metadata for exact pipeline watchers', async () => {
-    await writeJsonFile(join(dataDirPath, 'workspaces', 'index.json'), {
-      version: 1,
-      workspaces: [
-        {
-          id: 'project-1',
-          name: 'Canopy',
-          type: 'multi-repo',
-          color: 'blue',
-          collapsed: false,
-          order: 0,
-        },
-      ],
-    });
-    await writeJsonFile(
-      join(dataDirPath, 'workspaces', 'project-1', 'worktrees.json'),
-      {
-        version: 1,
-        worktrees: [
-          {
-            id: 'worktree-1',
-            branchName: 'feature/watchers',
-            createdAt: '2026-05-24T00:00:00.000Z',
-          },
-        ],
-      },
-    );
+    useWorkspaceReads();
     const executionsDir = join(dataDirPath, 'pipeline-executions');
     await writeJsonFile(join(executionsDir, 'exec-running.json'), {
       ...pipelineEvent('running', { id: 'exec-running' }).state,
@@ -7675,7 +10640,7 @@ describe('App Advisor watcher service', () => {
         ],
       },
       {
-        projectId: 'project-1' as typeof APP_ADVISOR_PROJECT_ID,
+        projectId: 'project-1',
         worktreeId: APP_ADVISOR_WORKTREE_ID,
         chatId: 'advisor-chat',
       },
@@ -8170,10 +11135,18 @@ describe('App Advisor watcher service', () => {
       .mockResolvedValue(undefined);
 
     await expect(
-      service.deleteAgentWatchers({ watcherIds: [setup.watcherId] }, dest),
+      service.deleteAgentWatchers(
+        { watcherIds: [getCreatedOrDedupedWatcherId(setup)] },
+        dest,
+      ),
     ).resolves.toEqual({
       ok: true,
-      results: [{ watcherId: setup.watcherId, status: 'deleted' }],
+      results: [
+        {
+          watcherId: getCreatedOrDedupedWatcherId(setup),
+          status: 'deleted',
+        },
+      ],
     });
 
     expect(observerRescan).toHaveBeenCalledTimes(1);
@@ -8182,6 +11155,9 @@ describe('App Advisor watcher service', () => {
 
   it('notifies an App Advisor subscriber before deleting a watcher', async () => {
     const service = getAppAdvisorWatcherService();
+    ensureAppAdvisorWindow.mockRejectedValueOnce(
+      new Error('No App Advisor window should be opened.'),
+    );
     const result = await service.setup(worktreeChatInput(), destination());
     if (!result.ok) throw new Error(result.error);
     const watcherId = result.results[0]?.watcher.id ?? '';
@@ -8191,7 +11167,16 @@ describe('App Advisor watcher service', () => {
       service.deleteWatcher(watcherId, { notifySubscriber: true }),
     ).resolves.toBe(true);
 
-    expect(ensureAppAdvisorWindow).toHaveBeenCalledTimes(1);
+    expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
+    expect(deliverWatcherMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-app-advisor',
+        chatId: 'advisor-chat',
+        watcherId,
+      }),
+    );
+    expect(sendChatWindowCommand).not.toHaveBeenCalled();
     const command = sendAppAdvisorWindowCommand.mock.calls[0]?.[0];
     expect(command).toMatchObject({
       type: 'send_watcher_message',
@@ -8283,7 +11268,8 @@ describe('App Advisor watcher service', () => {
 
   it('keeps the watcher when delete notification delivery fails', async () => {
     const service = getAppAdvisorWatcherService();
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
+    sendChatWindowCommand.mockImplementation((command) => {
       if (command.type === 'send_watcher_message') {
         queueMicrotask(() => {
           service.acknowledgeWatcherMessageDelivery(
@@ -8296,8 +11282,12 @@ describe('App Advisor watcher service', () => {
           );
         });
       }
+      return true;
     });
-    const result = await service.setup(worktreeChatInput(), destination());
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination(),
+    );
     if (!result.ok) throw new Error(result.error);
     const watcherId = result.results[0]?.watcher.id ?? '';
 
@@ -8310,13 +11300,9 @@ describe('App Advisor watcher service', () => {
     expect(visible[0]?.id).toBe(watcherId);
   });
 
-  it('cancels pending delete delivery when App Advisor send throws', async () => {
+  it('keeps an App Advisor watcher when direct delete delivery throws', async () => {
     const service = getAppAdvisorWatcherService();
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        throw new Error('send failed');
-      }
-    });
+    deliverWatcherMessage.mockRejectedValue(new Error('send failed'));
     const result = await service.setup(worktreeChatInput(), destination());
     if (!result.ok) throw new Error(result.error);
     const watcherId = result.results[0]?.watcher.id ?? '';
@@ -8335,21 +11321,26 @@ describe('App Advisor watcher service', () => {
 
   it('keeps a received watcher delivery pending until the renderer confirms completion', async () => {
     const service = getAppAdvisorWatcherService();
-    const result = await service.setup(worktreeChatInput(), destination());
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination(),
+    );
     if (!result.ok) throw new Error(result.error);
     const watcherId = result.results[0]?.watcher.id ?? '';
     let resolveDeliveryId: (deliveryId: string) => void = () => undefined;
     const deliveryIdPromise = new Promise<string>((resolve) => {
       resolveDeliveryId = resolve;
     });
-    sendAppAdvisorWindowCommand.mockImplementation((nextCommand) => {
-      if (nextCommand.type !== 'send_watcher_message') return;
+    sendChatWindowCommand.mockImplementation((nextCommand) => {
+      if (nextCommand.type !== 'send_watcher_message') return false;
       resolveDeliveryId(nextCommand.deliveryId);
       service.acknowledgeWatcherMessageDelivery(
         nextCommand.watcherId,
         nextCommand.deliveryId,
         { ok: true, stage: 'received' },
       );
+      return true;
     });
 
     const deletion = service.deleteWatcher(watcherId, {
@@ -8369,21 +11360,26 @@ describe('App Advisor watcher service', () => {
   it('keeps delete notification completion bounded by the short ack timeout', async () => {
     jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
     const service = getAppAdvisorWatcherService();
-    const result = await service.setup(worktreeChatInput(), destination());
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination(),
+    );
     if (!result.ok) throw new Error(result.error);
     const watcherId = result.results[0]?.watcher.id ?? '';
     let resolveReceivedAcknowledgement: (() => void) | undefined;
     const receivedAcknowledgement = new Promise<void>((resolve) => {
       resolveReceivedAcknowledgement = resolve;
     });
-    sendAppAdvisorWindowCommand.mockImplementation((nextCommand) => {
-      if (nextCommand.type !== 'send_watcher_message') return;
+    sendChatWindowCommand.mockImplementation((nextCommand) => {
+      if (nextCommand.type !== 'send_watcher_message') return false;
       const receivedAcknowledged = service.acknowledgeWatcherMessageDelivery(
         nextCommand.watcherId,
         nextCommand.deliveryId,
         { ok: true, stage: 'received' },
       );
       if (receivedAcknowledged) resolveReceivedAcknowledgement?.();
+      return true;
     });
 
     let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
@@ -8416,7 +11412,11 @@ describe('App Advisor watcher service', () => {
     const startedAt = Date.now();
     const dateNow = jest.spyOn(Date, 'now').mockReturnValue(startedAt);
     const service = getAppAdvisorWatcherService();
-    const result = await service.setup(worktreeChatInput(), destination());
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination(),
+    );
     if (!result.ok) throw new Error(result.error);
     const watcherId = result.results[0]?.watcher.id ?? '';
     let deliveryId: string | undefined;
@@ -8424,8 +11424,8 @@ describe('App Advisor watcher service', () => {
     const commandSent = new Promise<void>((resolve) => {
       resolveCommandSent = resolve;
     });
-    sendAppAdvisorWindowCommand.mockImplementation((nextCommand) => {
-      if (nextCommand.type !== 'send_watcher_message') return;
+    sendChatWindowCommand.mockImplementation((nextCommand) => {
+      if (nextCommand.type !== 'send_watcher_message') return false;
       deliveryId = nextCommand.deliveryId;
       service.acknowledgeWatcherMessageDelivery(
         nextCommand.watcherId,
@@ -8433,6 +11433,7 @@ describe('App Advisor watcher service', () => {
         { ok: true, stage: 'received' },
       );
       resolveCommandSent?.();
+      return true;
     });
 
     const firing = service.handleChatTerminalEvent({
@@ -8486,7 +11487,7 @@ describe('App Advisor watcher service', () => {
     });
     await service.whenChatDeliveriesSettled();
 
-    expect(ensureAppAdvisorWindow).toHaveBeenCalledTimes(1);
+    expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
     const command = sendAppAdvisorWindowCommand.mock.calls[0]?.[0];
     if (command?.type !== 'send_watcher_message') {
       throw new Error('Expected send_watcher_message command');
@@ -8667,7 +11668,7 @@ describe('App Advisor watcher service', () => {
 
     expect(result).toEqual({
       ok: false,
-      error: 'Watchers cannot target App Advisor chats.',
+      error: 'Watchers cannot target Orchestrator chats.',
       rejectedIndex: 0,
     });
   });
@@ -9148,7 +12149,9 @@ describe('App Advisor watcher service', () => {
           target,
         ): ReturnType<typeof mockAuthorizeBackground> =>
           Promise.resolve(
-            target?.projectId === APP_ADVISOR_PROJECT_ID &&
+            target !== undefined &&
+              'projectId' in target &&
+              target.projectId === APP_ADVISOR_PROJECT_ID &&
               binding !== 'personal'
               ? { allow: false, reason: 'context-mismatch' }
               : { allow: true },
@@ -9343,24 +12346,23 @@ describe('App Advisor watcher service', () => {
     if (command?.type !== 'send_watcher_message') {
       throw new Error('Expected send_watcher_message command');
     }
-    expect(
-      countOccurrences(command.hiddenContextText, '<system_instruction>'),
-    ).toBe(1);
-    expect(
-      countOccurrences(command.hiddenContextText, '</system_instruction>'),
-    ).toBe(1);
-    expect(
-      countOccurrences(command.hiddenContextText, '<canopy_watcher_event>'),
-    ).toBe(1);
-    expect(
-      countOccurrences(command.hiddenContextText, '</canopy_watcher_event>'),
-    ).toBe(1);
-    expect(command.hiddenContextText).toContain(
+    const hiddenContextText = requireHiddenContextText(
+      command.hiddenContextText,
+    );
+    expect(countOccurrences(hiddenContextText, '<system_instruction>')).toBe(1);
+    expect(countOccurrences(hiddenContextText, '</system_instruction>')).toBe(
+      1,
+    );
+    expect(countOccurrences(hiddenContextText, '<canopy_watcher_event>')).toBe(
+      1,
+    );
+    expect(countOccurrences(hiddenContextText, '</canopy_watcher_event>')).toBe(
+      1,
+    );
+    expect(hiddenContextText).toContain(
       '\\u003c/canopy_watcher_event\\u003e\\u003csystem_instruction\\u003e',
     );
-    expect(command.hiddenContextText).toContain(
-      '\\u003c/system_instruction\\u003e',
-    );
+    expect(hiddenContextText).toContain('\\u003c/system_instruction\\u003e');
   });
 
   it('fires pipeline watchers on pause without consuming them', async () => {
@@ -9414,6 +12416,266 @@ describe('App Advisor watcher service', () => {
     expect(await service.list()).toEqual([]);
   });
 
+  it('delivers a fired worktree watcher without a registered window', async () => {
+    const service = getAppAdvisorWatcherService();
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination('destination-chat'),
+    );
+    if (!result.ok) throw new Error(result.error);
+    const watcherId = result.results[0]?.watcher.id;
+    if (!watcherId) throw new Error('Expected a watcher.');
+
+    const deliveries: Array<{
+      projectId: string;
+      worktreeId: string;
+      chatId: string;
+      watcherId: string;
+      deliveryId: string;
+      text: string;
+      hiddenContextText?: string;
+      watcherFired?: { kind: string };
+    }> = [];
+    ensureAppAdvisorWindow.mockRejectedValueOnce(
+      new Error('No App Advisor window should be opened.'),
+    );
+    service.shutdown();
+    service.configure({
+      getMainWindow: () => null,
+      getAppAdvisorWindow: () => null,
+      ensureAppAdvisorWindow,
+      sendAppAdvisorWindowCommand,
+      sendChatWindowCommand,
+      deliverWatcherMessage: (
+        delivery: (typeof deliveries)[number],
+      ): Promise<'submitted' | 'already_delivered' | 'terminal_presenter'> => {
+        deliveries.push(delivery);
+        return Promise.resolve('submitted');
+      },
+      onChange,
+    });
+    sendChatWindowCommand.mockReturnValue(false);
+
+    await service.handleChatTerminalEvent({
+      scope: 'worktree',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      data: { type: 'result', result: 'done' },
+      status: 'success',
+      receivedAt: '2026-05-23T00:00:00.000Z',
+    });
+
+    const [persistedWatcher] = (await readPersistedWatchersFile()).watchers;
+    expect(persistedWatcher?.deliveryError).toBeUndefined();
+    expect(persistedWatcher?.status).toBe('fired');
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'destination-chat',
+      watcherId,
+    });
+    expect(sendChatWindowCommand).not.toHaveBeenCalled();
+    expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
+    expect(await service.list(worktreeDestination('destination-chat'))).toEqual(
+      [],
+    );
+  });
+
+  it('routes an App Advisor delivery to its resolved Work Entry without opening the window', async () => {
+    const service = getAppAdvisorWatcherService();
+    ensureAppAdvisorWindow.mockRejectedValueOnce(
+      new Error('No App Advisor window should be opened.'),
+    );
+    const deliveries: WatcherChatDelivery[] = [];
+    deliverWatcherMessage.mockImplementationOnce((delivery) => {
+      deliveries.push(delivery);
+      return Promise.resolve('submitted');
+    });
+    const advisorDestination = destination('advisor-no-window');
+    const result = await service.setup(worktreeChatInput(), advisorDestination);
+    if (!result.ok) throw new Error(result.error);
+
+    await service.handleChatTerminalEvent({
+      scope: 'worktree',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      data: { type: 'result', result: 'done' },
+      status: 'success',
+      receivedAt: '2026-05-23T00:00:00.000Z',
+    });
+
+    expect(mockedResolveWorkEntryForChat).toHaveBeenCalledWith(
+      APP_ADVISOR_PROJECT_ID,
+      advisorDestination.chatId,
+    );
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: 'entry-app-advisor',
+      chatId: advisorDestination.chatId,
+    });
+    expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
+    expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
+  });
+
+  it('routes Cowork watcher delivery without either chat window', async () => {
+    const service = getAppAdvisorWatcherService();
+    ensureAppAdvisorWindow.mockRejectedValueOnce(
+      new Error('No App Advisor window should be opened.'),
+    );
+    mockActiveSessionInfos = [
+      activeChatSession(),
+      activeChatSession('cowork-1', 'entry-1', 'cowork-destination'),
+    ];
+    const deliveries: WatcherChatDelivery[] = [];
+    deliverWatcherMessage.mockImplementationOnce((delivery) => {
+      deliveries.push(delivery);
+      return Promise.resolve('submitted');
+    });
+    const coworkDestination = {
+      projectId: 'cowork-1',
+      worktreeId: 'entry-1',
+      chatId: 'cowork-destination',
+    };
+    const result = await service.setup(worktreeChatInput(), coworkDestination);
+    if (!result.ok) throw new Error(result.error);
+
+    await service.handleChatTerminalEvent({
+      scope: 'worktree',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      data: { type: 'result', result: 'done' },
+      status: 'success',
+      receivedAt: '2026-05-23T00:00:00.000Z',
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject(coworkDestination);
+    expect(sendChatWindowCommand).not.toHaveBeenCalled();
+    expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
+  });
+
+  it('treats already_delivered as a successful local watcher delivery', async () => {
+    const service = getAppAdvisorWatcherService();
+    ensureAppAdvisorWindow.mockRejectedValueOnce(
+      new Error('No App Advisor window should be opened.'),
+    );
+    deliverWatcherMessage.mockResolvedValueOnce('already_delivered');
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination('already-delivered'),
+    );
+    if (!result.ok) throw new Error(result.error);
+
+    await service.handleChatTerminalEvent({
+      scope: 'worktree',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      data: { type: 'result', result: 'done' },
+      status: 'success',
+      receivedAt: '2026-05-23T00:00:00.000Z',
+    });
+
+    expect((await readPersistedWatchersFile()).watchers[0]).toMatchObject({
+      status: 'fired',
+    });
+    expect(
+      (await readPersistedWatchersFile()).watchers[0]?.deliveryError,
+    ).toBeUndefined();
+    expect(deliverWatcherMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'already-delivered',
+      }),
+    );
+    expect(sendChatWindowCommand).not.toHaveBeenCalled();
+    expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
+  });
+
+  it('marks a fired watcher delivery failed when the main delivery surface throws', async () => {
+    const service = getAppAdvisorWatcherService();
+    deliverWatcherMessage.mockImplementation((delivery) => {
+      if (delivery.chatId === 'failed-main-delivery') {
+        return Promise.reject(new Error('Main chat delivery failed.'));
+      }
+      return Promise.resolve('submitted');
+    });
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination('failed-main-delivery'),
+    );
+    if (!result.ok) throw new Error(result.error);
+
+    await service.handleChatTerminalEvent({
+      scope: 'worktree',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      data: { type: 'result', result: 'done' },
+      status: 'success',
+      receivedAt: '2026-05-23T00:00:00.000Z',
+    });
+
+    expect((await readPersistedWatchersFile()).watchers[0]).toMatchObject({
+      status: 'delivery_failed',
+      deliveryError: 'Main chat delivery failed.',
+    });
+  });
+
+  it('bounds the fired watcher delivery helper by the existing long timeout', async () => {
+    const service = getAppAdvisorWatcherService();
+    const originalSetTimeout = globalThis.setTimeout;
+    const requestedTimeouts: number[] = [];
+    jest
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((callback, delay, ...args) => {
+        if (delay === 30 * 60_000) {
+          requestedTimeouts.push(delay);
+          return originalSetTimeout(callback, 1, ...args);
+        }
+        return originalSetTimeout(callback, delay, ...args);
+      });
+    deliverWatcherMessage.mockImplementation((delivery) =>
+      delivery.chatId === 'timed-out-main-delivery'
+        ? new Promise(() => {})
+        : Promise.resolve('submitted'),
+    );
+    const result = await service.setup(
+      {
+        watchers: [
+          {
+            trigger: 'worktree_hook_triggered',
+            target: {
+              kind: 'worktree_hook',
+              projectId: 'project-1',
+              worktreeId: 'worktree-1',
+              triggerName: 'pr:checks:fail',
+            },
+          },
+        ],
+      },
+      destination('timed-out-main-delivery'),
+    );
+    if (!result.ok) throw new Error(result.error);
+
+    const firing = service.handleHookTriggeredEvent(hookEvent());
+    await firing;
+
+    expect(deliverWatcherMessage).toHaveBeenCalledTimes(1);
+    expect(requestedTimeouts).toContain(30 * 60_000);
+    expect((await readPersistedWatchersFile()).watchers[0]).toMatchObject({
+      status: 'delivery_failed',
+      deliveryError: 'Watcher message delivery timed out.',
+    });
+    expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
+  });
+
   it('retries a non-consuming watcher on a later pause after delivery fails', async () => {
     const service = getAppAdvisorWatcherService();
     const executionsDir = join(dataDirPath, 'pipeline-executions');
@@ -9442,18 +12704,9 @@ describe('App Advisor watcher service', () => {
       destination(),
     );
     if (!result.ok) throw new Error(result.error);
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type !== 'send_watcher_message') return;
-      queueMicrotask(() =>
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          sendAppAdvisorWindowCommand.mock.calls.length === 1
-            ? { ok: false, error: 'Renderer unavailable' }
-            : { ok: true },
-        ),
-      );
-    });
+    deliverWatcherMessage.mockRejectedValueOnce(
+      new Error('Renderer unavailable'),
+    );
 
     await service.handlePipelineTerminalEvent({
       ...pipelineEvent('paused', {
@@ -9476,7 +12729,7 @@ describe('App Advisor watcher service', () => {
       type: 'execution.paused',
     });
 
-    expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(2);
+    expect(deliverWatcherMessage).toHaveBeenCalledTimes(2);
     expect(await service.list()).toEqual([
       expect.objectContaining({ status: 'active' }),
     ]);
@@ -9484,6 +12737,11 @@ describe('App Advisor watcher service', () => {
 
   it('delivers worktree destination pipeline watchers to the main chat window', async () => {
     const service = getAppAdvisorWatcherService();
+    const deliveries: WatcherChatDelivery[] = [];
+    deliverWatcherMessage.mockImplementationOnce((delivery) => {
+      deliveries.push(delivery);
+      return Promise.resolve('submitted');
+    });
     const executionsDir = join(dataDirPath, 'pipeline-executions');
     await mkdir(executionsDir, { recursive: true });
     await writeFile(
@@ -9518,18 +12776,18 @@ describe('App Advisor watcher service', () => {
 
     expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
     expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
-    expect(sendChatWindowCommand).toHaveBeenCalledTimes(1);
-    expect(sendChatWindowCommand.mock.calls[0]?.[0]).toMatchObject({
-      type: 'send_watcher_message',
+    expect(sendChatWindowCommand).not.toHaveBeenCalled();
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({
       projectId: 'project-1',
       worktreeId: 'worktree-1',
       chatId: 'destination-chat',
       watcherId,
       text: 'Canopy watcher fired.\nWorktree pipeline completion: exec-main-window',
     });
-    expect(
-      sendChatWindowCommand.mock.calls[0]?.[0].hiddenContextText,
-    ).toContain('<canopy_watcher_event>');
+    expect(deliveries[0]?.hiddenContextText).toContain(
+      '<canopy_watcher_event>',
+    );
     expect(await service.list(worktreeDestination('destination-chat'))).toEqual(
       [],
     );
@@ -9537,7 +12795,20 @@ describe('App Advisor watcher service', () => {
 
   it('retries worktree destination delivery when the main chat window is briefly unavailable', async () => {
     const service = getAppAdvisorWatcherService();
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
     sendChatWindowCommand.mockImplementationOnce(() => false);
+    sendChatWindowCommand.mockImplementation((command) => {
+      if (command.type === 'send_watcher_message') {
+        queueMicrotask(() =>
+          service.acknowledgeWatcherMessageDelivery(
+            command.watcherId,
+            command.deliveryId,
+            { ok: true },
+          ),
+        );
+      }
+      return true;
+    });
     const executionsDir = join(dataDirPath, 'pipeline-executions');
     await mkdir(executionsDir, { recursive: true });
     await writeFile(
@@ -9575,6 +12846,10 @@ describe('App Advisor watcher service', () => {
       watcherId,
       chatId: 'destination-chat',
     });
+    expect(deliverWatcherMessage).toHaveBeenCalledTimes(1);
+    expect(deliverWatcherMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ watcherId, chatId: 'destination-chat' }),
+    );
     expect(await service.list(worktreeDestination('destination-chat'))).toEqual(
       [],
     );
@@ -9723,9 +12998,10 @@ describe('App Advisor watcher service', () => {
     expect(result.error).toContain('Watcher target execution does not belong');
   });
 
-  it('moves a renderer-rejected watcher into completed history', async () => {
+  it('moves a terminal-presenter-rejected watcher into completed history', async () => {
     const service = getAppAdvisorWatcherService();
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
+    deliverWatcherMessage.mockResolvedValue('terminal_presenter');
+    sendChatWindowCommand.mockImplementation((command) => {
       if (command.type === 'send_watcher_message') {
         queueMicrotask(() => {
           service.acknowledgeWatcherMessageDelivery(
@@ -9738,8 +13014,12 @@ describe('App Advisor watcher service', () => {
           );
         });
       }
+      return true;
     });
-    const result = await service.setup(worktreeChatInput(), destination());
+    const result = await service.setup(
+      worktreeChatInput(),
+      worktreeDestination(),
+    );
     if (!result.ok) throw new Error(result.error);
 
     await service.handleChatTerminalEvent({
@@ -10175,7 +13455,6 @@ describe('App Advisor watcher service', () => {
     expect((await service.list())[0]?.followUpInstruction).toBe(
       'Reply with a haiku.',
     );
-
     const cleared = await service.updateWatcherFollowUp(watcherId, '   ');
     expect(cleared).toEqual({ ok: true });
     expect((await service.list())[0]?.followUpInstruction).toBeUndefined();
@@ -10209,13 +13488,14 @@ describe('App Advisor watcher service', () => {
         notifyOn: { conclusions: 'any', statuses: ['in_progress'] },
       },
       destination(),
+      { toolUseId: 'tool-retry' },
     );
 
     expect(first).toMatchObject({ ok: true, status: 'created', itemCount: 2 });
     expect(second).toMatchObject({
       ok: true,
       status: 'deduped',
-      watcherId: first.ok ? first.watcherId : undefined,
+      watcherId: first.ok ? getCreatedOrDedupedWatcherId(first) : undefined,
     });
     expect(mockFetchGitHubWorkflowRun).toHaveBeenCalledTimes(2);
     expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
@@ -10252,7 +13532,9 @@ describe('App Advisor watcher service', () => {
         destination(),
       );
       expect(result).toMatchObject({ ok: true, status: 'created' });
-      if (index === 1 && result.ok) firstWatcherId = result.watcherId;
+      if (index === 1 && result.ok) {
+        firstWatcherId = getCreatedOrDedupedWatcherId(result);
+      }
     }
     mockFetchGitHubWorkflowRun.mockClear();
 
@@ -10299,17 +13581,19 @@ describe('App Advisor watcher service', () => {
       status: 'created',
       itemCount: 1,
     });
-    expect(second.watcherId).not.toBe(first.watcherId);
+    expect(getCreatedOrDedupedWatcherId(second)).not.toBe(
+      getCreatedOrDedupedWatcherId(first),
+    );
     expect(await service.list(destination())).toEqual([
       expect.objectContaining({
-        id: second.watcherId,
+        id: getCreatedOrDedupedWatcherId(second),
         status: 'active',
       }),
     ]);
     expect(await service.listCompleted()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: first.watcherId,
+          id: getCreatedOrDedupedWatcherId(first),
           status: 'delivery_failed',
         }),
       ]),
@@ -10352,7 +13636,11 @@ describe('App Advisor watcher service', () => {
         },
       ]),
     });
-    expect(persisted.watchers[0].runtimeState?.items).toEqual(
+    const runtimeState = persisted.watchers[0].runtimeState;
+    if (runtimeState?.kind !== 'github_workflow_runs') {
+      throw new Error('Expected GitHub workflow run runtime state');
+    }
+    expect(runtimeState.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: 'acme/api/2/2', runAttempt: 2 }),
       ]),
@@ -10626,7 +13914,7 @@ describe('App Advisor watcher service', () => {
     expect(resumed).not.toHaveProperty('githubRateLimitedUntil');
   });
 
-  it('does not block observation polling on renderer delivery acknowledgements', async () => {
+  it('does not block observation polling while main delivery outcomes are pending', async () => {
     const service = getAppAdvisorWatcherService();
     const watcherIds: string[] = [];
     for (const chatId of ['advisor-chat-1', 'advisor-chat-2']) {
@@ -10642,8 +13930,14 @@ describe('App Advisor watcher service', () => {
         throw new Error('Expected a watcher.');
       watcherIds.push(setup.watcherId);
     }
-    sendAppAdvisorWindowCommand.mockClear();
-    sendAppAdvisorWindowCommand.mockImplementation(() => undefined);
+    deliverWatcherMessage.mockClear();
+    const finishDeliveries: Array<() => void> = [];
+    deliverWatcherMessage.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishDeliveries.push(() => resolve('submitted'));
+        }),
+    );
 
     const application = service.applyGitHubWorkflowObservation({
       observations: [
@@ -10664,34 +13958,15 @@ describe('App Advisor watcher service', () => {
     });
     await application;
     const deliveredWatcherIds = new Set(
-      sendAppAdvisorWindowCommand.mock.calls.flatMap(([command]) =>
-        command.type === 'send_watcher_message' ? [command.watcherId] : [],
-      ),
+      deliverWatcherMessage.mock.calls.map(([delivery]) => delivery.watcherId),
     );
     const deliveredIndependently = watcherIds.every((watcherId) =>
       deliveredWatcherIds.has(watcherId),
     );
 
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      }
-    });
-    for (const [command] of sendAppAdvisorWindowCommand.mock.calls) {
-      if (command.type === 'send_watcher_message') {
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      }
-    }
-
     expect(deliveredIndependently).toBe(true);
+    expect(finishDeliveries).toHaveLength(2);
+    finishDeliveries.forEach((finish) => finish());
     expect(
       await waitForAsyncTimedCondition(async () => {
         const watchers = await service.list();
@@ -10810,12 +14085,12 @@ describe('App Advisor watcher service', () => {
     expect(
       await waitForAsyncImmediateCondition(async () =>
         (await service.listCompleted()).some(
-          (watcher) => watcher.id === setup.watcherId,
+          (watcher) => watcher.id === getCreatedOrDedupedWatcherId(setup),
         ),
       ),
     ).toBe(true);
     const completed = (await service.listCompleted()).find(
-      (watcher) => watcher.id === setup.watcherId,
+      (watcher) => watcher.id === getCreatedOrDedupedWatcherId(setup),
     );
     expect(completed?.githubProgress?.runs[0]).toMatchObject({
       state: { kind: 'terminal', conclusion: 'success' },
@@ -10830,18 +14105,13 @@ describe('App Advisor watcher service', () => {
   });
 
   it('exposes a firing GitHub watcher final state while its delivery is pending', async () => {
-    // The renderer receives the delivery but has not finished it yet.
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        queueMicrotask(() => {
-          getAppAdvisorWatcherService().acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            command.deliveryId,
-            { stage: 'received', ok: true },
-          );
-        });
-      }
-    });
+    let finishDelivery: (() => void) | undefined;
+    deliverWatcherMessage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishDelivery = () => resolve('submitted');
+        }),
+    );
     const service = getAppAdvisorWatcherService();
     const setup = await service.watchGitHubItems(
       {
@@ -10875,12 +14145,12 @@ describe('App Advisor watcher service', () => {
     expect(
       await waitForAsyncImmediateCondition(async () =>
         (await service.listCompleted()).some(
-          (watcher) => watcher.id === setup.watcherId,
+          (watcher) => watcher.id === getCreatedOrDedupedWatcherId(setup),
         ),
       ),
     ).toBe(true);
     const firing = (await service.listCompleted()).find(
-      (watcher) => watcher.id === setup.watcherId,
+      (watcher) => watcher.id === getCreatedOrDedupedWatcherId(setup),
     );
     expect(firing?.status).toBe('firing');
     expect(firing).not.toHaveProperty('completedAt');
@@ -10888,6 +14158,16 @@ describe('App Advisor watcher service', () => {
       state: { kind: 'terminal', conclusion: 'success' },
     });
     expect(await service.list()).toEqual([]);
+    finishDelivery?.();
+    expect(
+      await waitForAsyncTimedCondition(async () =>
+        (await service.listCompleted()).some(
+          (watcher) =>
+            watcher.id === getCreatedOrDedupedWatcherId(setup) &&
+            watcher.status === 'fired',
+        ),
+      ),
+    ).toBe(true);
   });
 
   it('captures a job baseline and delivers each future completed job with its name', async () => {
@@ -10993,7 +14273,6 @@ describe('App Advisor watcher service', () => {
     );
     if (!setup.ok) throw new Error(setup.message);
     sendAppAdvisorWindowCommand.mockClear();
-    const timerCountBeforeDelivery = jest.getTimerCount();
     let resolveSecondDelivery!: () => void;
     const secondDelivery = new Promise<void>((resolve) => {
       resolveSecondDelivery = resolve;
@@ -11007,27 +14286,20 @@ describe('App Advisor watcher service', () => {
         resolveDeliveryComplete();
       }
     });
-    let firstDeliveryId: string | undefined;
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type !== 'send_watcher_message') return;
-      if (firstDeliveryId === undefined) {
-        firstDeliveryId = command.deliveryId;
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      } else {
-        expect(command.deliveryId).not.toBe(firstDeliveryId);
-        expect(
-          service.acknowledgeWatcherMessageDelivery(
-            command.watcherId,
-            firstDeliveryId,
-            { ok: true },
-          ),
-        ).toBe(false);
-        resolveSecondDelivery();
-      }
+    const deliveries: WatcherChatDelivery[] = [];
+    let resolveSecondOutcome!: (outcome: 'submitted') => void;
+    const secondOutcome = new Promise<'submitted'>((resolve) => {
+      resolveSecondOutcome = resolve;
+    });
+    deliverWatcherMessage.mockImplementation((delivery) => {
+      deliveries.push(delivery);
+      sendAppAdvisorWindowCommand({
+        ...delivery,
+        type: 'send_watcher_message',
+      });
+      if (deliveries.length === 1) return Promise.resolve('submitted');
+      resolveSecondDelivery();
+      return secondOutcome;
     });
 
     await service.applyGitHubWorkflowObservation({
@@ -11058,28 +14330,20 @@ describe('App Advisor watcher service', () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    expect(jest.getTimerCount()).toBe(timerCountBeforeDelivery + 1);
-    const secondCommand = sendAppAdvisorWindowCommand.mock.calls[1]?.[0];
-    if (secondCommand?.type === 'send_watcher_message') {
-      service.acknowledgeWatcherMessageDelivery(
-        secondCommand.watcherId,
-        secondCommand.deliveryId,
-        { ok: true },
-      );
-    }
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[1]?.deliveryId).not.toBe(deliveries[0]?.deliveryId);
+    resolveSecondOutcome('submitted');
     await deliveryComplete;
-    expect(jest.getTimerCount()).toBe(timerCountBeforeDelivery);
 
-    expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(2);
-    const eventCounts = sendAppAdvisorWindowCommand.mock.calls.map(
-      ([command]) =>
-        command.type === 'send_watcher_message'
-          ? countOccurrences(
-              command.hiddenContextText,
-              '"kind":"workflow_job_completed"',
-            )
-          : 0,
-    );
+    const eventCounts = deliveries.map((delivery) => {
+      const hiddenContextText = requireHiddenContextText(
+        delivery.hiddenContextText,
+      );
+      return countOccurrences(
+        hiddenContextText,
+        '"kind":"workflow_job_completed"',
+      );
+    });
     expect(eventCounts).toEqual([20, 1]);
     expect((await service.list(destination()))[0]?.status).toBe('active');
   });
@@ -11480,8 +14744,8 @@ describe('App Advisor watcher service', () => {
       mockDestinationRead.mockResolvedValue({
         authority: mode === 'unreadable' ? 'unreadable' : 'ok',
         ownerMalformed: false,
-        config: {
-          repos: [],
+        memoryMalformed: false,
+        config: workspaceConfig({
           owner: {
             type: 'organization',
             organizationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -11489,7 +14753,7 @@ describe('App Advisor watcher service', () => {
             instanceId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
             bindingGeneration: 1,
           },
-        },
+        }),
       });
       const actual = jest.requireActual<typeof BackgroundContextModule>(
         '../services/background-execution-context',
@@ -11576,8 +14840,8 @@ describe('App Advisor watcher service', () => {
       mockDestinationRead.mockResolvedValue({
         authority: 'ok',
         ownerMalformed: false,
-        config: {
-          repos: [],
+        memoryMalformed: false,
+        config: workspaceConfig({
           owner: {
             type: 'organization',
             organizationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -11585,7 +14849,7 @@ describe('App Advisor watcher service', () => {
             instanceId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
             bindingGeneration: 1,
           },
-        },
+        }),
       });
       const actual = jest.requireActual<typeof BackgroundContextModule>(
         '../services/background-execution-context',
@@ -11668,8 +14932,8 @@ describe('App Advisor watcher service', () => {
     ): Awaited<ReturnType<typeof mockDestinationRead>> => ({
       authority: 'ok',
       ownerMalformed: false,
-      config: {
-        repos: [],
+      memoryMalformed: false,
+      config: workspaceConfig({
         owner: {
           type: 'organization',
           organizationId,
@@ -11677,7 +14941,7 @@ describe('App Advisor watcher service', () => {
           instanceId: organizationId,
           bindingGeneration: 1,
         },
-      },
+      }),
     });
     mockDestinationRead.mockResolvedValue(
       ownedBy('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
@@ -11736,8 +15000,8 @@ describe('App Advisor watcher service', () => {
     mockDestinationRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
-      config: {
-        repos: [],
+      memoryMalformed: false,
+      config: workspaceConfig({
         owner: {
           type: 'organization',
           organizationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
@@ -11745,7 +15009,7 @@ describe('App Advisor watcher service', () => {
           instanceId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
           bindingGeneration: 1,
         },
-      },
+      }),
     });
     const actual = jest.requireActual<typeof BackgroundContextModule>(
       '../services/background-execution-context',
@@ -11923,18 +15187,9 @@ describe('App Advisor watcher service', () => {
         firstFailurePersistedDeferred.resolve();
       }
     });
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        deliveryAttemptTimes.push(Date.now());
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          {
-            ok: false,
-            error: 'Renderer rejected delivery.',
-          },
-        );
-      }
+    deliverWatcherMessage.mockImplementation(() => {
+      deliveryAttemptTimes.push(Date.now());
+      return Promise.reject(new Error('Main chat delivery failed.'));
     });
     await service.applyGitHubWorkflowObservation({
       observations: [
@@ -11963,7 +15218,7 @@ describe('App Advisor watcher service', () => {
       const persisted = new Promise<void>((resolve) => {
         onChange.mockImplementationOnce(() => resolve());
       });
-      while (sendAppAdvisorWindowCommand.mock.calls.length < expectedAttempts) {
+      while (deliverWatcherMessage.mock.calls.length < expectedAttempts) {
         await jest.advanceTimersToNextTimerAsync();
       }
       await persisted;
@@ -11981,7 +15236,7 @@ describe('App Advisor watcher service', () => {
         pendingDelivery: { eventId, attempts: 4 },
       },
     });
-    expect(sendAppAdvisorWindowCommand).toHaveBeenCalledTimes(4);
+    expect(deliverWatcherMessage).toHaveBeenCalledTimes(4);
     expect(
       deliveryAttemptTimes.slice(1).map((attemptAt, index) => {
         const previousAttemptAt = deliveryAttemptTimes[index];
@@ -12042,7 +15297,7 @@ describe('App Advisor watcher service', () => {
       observations: [
         {
           kind: 'snapshot',
-          subscriberIds: [runOnly.watcherId],
+          subscriberIds: [getCreatedOrDedupedWatcherId(runOnly)],
           repository: 'acme/api',
           runId: '1',
           pinnedRunAttempt: 1,
@@ -12055,7 +15310,7 @@ describe('App Advisor watcher service', () => {
         },
         {
           kind: 'source_failure',
-          subscriberIds: [jobsRequired.watcherId],
+          subscriberIds: [getCreatedOrDedupedWatcherId(jobsRequired)],
           repository: 'acme/api',
           runId: '1',
           pinnedRunAttempt: 1,
@@ -12065,7 +15320,7 @@ describe('App Advisor watcher service', () => {
 
     expect(await service.list(destination('run-only-chat'))).toEqual([
       expect.objectContaining({
-        id: runOnly.watcherId,
+        id: getCreatedOrDedupedWatcherId(runOnly),
         status: 'active',
         githubProgress: {
           runs: [
@@ -12080,7 +15335,7 @@ describe('App Advisor watcher service', () => {
     expect(await service.listCompleted()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: jobsRequired.watcherId,
+          id: getCreatedOrDedupedWatcherId(jobsRequired),
           status: 'delivery_failed',
           failureKind: 'source',
         }),
@@ -12187,10 +15442,13 @@ describe('App Advisor watcher service', () => {
       });
       sendAppAdvisorWindowCommand.mockClear();
       let resolveSentCommand!: (
-        command: AppAdvisorWindowCommand | ChatWindowCommand,
+        command:
+          | AppAdvisorWindowCommand
+          | RecordedWatcherMessage
+          | ChatWindowCommand,
       ) => void;
       const sentCommand = new Promise<
-        AppAdvisorWindowCommand | ChatWindowCommand
+        AppAdvisorWindowCommand | RecordedWatcherMessage | ChatWindowCommand
       >((resolve) => {
         resolveSentCommand = resolve;
       });
@@ -12202,8 +15460,8 @@ describe('App Advisor watcher service', () => {
         mockDestinationRead.mockResolvedValue({
           authority: 'ok',
           ownerMalformed: false,
-          config: {
-            repos: [],
+          memoryMalformed: false,
+          config: workspaceConfig({
             owner: {
               type: 'organization',
               organizationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
@@ -12211,7 +15469,7 @@ describe('App Advisor watcher service', () => {
               instanceId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
               bindingGeneration: 1,
             },
-          },
+          }),
         });
         mockAuthorizeBackground.mockImplementation(
           jest.requireActual<typeof BackgroundContextModule>(
@@ -12230,6 +15488,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await observerConfigured;
@@ -12464,6 +15723,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
       });
       const watcherId = await armWorktreeAutomationWatcher();
       await service.list(worktreeDestination());
@@ -12598,6 +15858,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -12692,6 +15953,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         });
         await service.reconcileAtStartup();
@@ -12755,6 +16017,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -12812,6 +16075,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -12835,6 +16099,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await service.reconcileAtStartup();
@@ -12975,11 +16240,11 @@ describe('App Advisor watcher service', () => {
         if ('deleted' in scenario && scenario.deleted)
           mockAutomationActivities = [];
         mockDispatchedPipelineOwner = mismatch
-          ? {
-              shareScope: 'organization',
-              organizationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-            }
-          : { shareScope: 'private' };
+          ? legacyPipelineResourceOwner(
+              'organization',
+              'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+            )
+          : legacyPipelineResourceOwner('private');
         mockAuthorizeBackground.mockClear();
         mockAuthorizeBackground.mockImplementation(
           (_context, resources): ReturnType<typeof mockAuthorizeBackground> => {
@@ -13030,6 +16295,274 @@ describe('App Advisor watcher service', () => {
         expect(sentWatcherCommands()).toHaveLength(mismatch ? 0 : 1);
       },
     );
+
+    it('correlates a run with no project by its pipeline execution id', async (): Promise<void> => {
+      mockAutomationActivities[0].action = {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId: 'review',
+        pipelineSource: 'bundled',
+      };
+      await armWorktreeAutomationWatcher();
+      // A run with no project records neither id.
+      const state = pipelineEvent('running', {
+        id: 'exec-global',
+        cwd: '/tmp/scratch',
+      }).state;
+      delete state.project_id;
+      delete state.worktree_id;
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-global.json'),
+        state,
+      );
+      await getAppAdvisorWatcherService().handleAutomationRunEvent(
+        automationRunEvent({
+          dispatched: { pipelineExecutionId: 'exec-global' },
+        }),
+      );
+      expect(sentWatcherCommands()).toHaveLength(0);
+      const completedState = { ...state, status: 'success' as const };
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-global.json'),
+        completedState,
+      );
+      await getAppAdvisorWatcherService().handlePipelineTerminalEvent({
+        type: 'execution.updated',
+        executionId: 'exec-global',
+        timestamp: '2026-05-23T00:00:01.000Z',
+        state: completedState,
+      });
+      expect(sentWatcherCommands()).toHaveLength(1);
+    });
+
+    it('carries the chat its pipeline sent to on the correlated event (CAN-5381)', async (): Promise<void> => {
+      await armWorktreeAutomationWatcher();
+      const running = pipelineEvent('running').state;
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-1.json'),
+        running,
+      );
+      // Chat fields beside the execution don't change what it waits on.
+      await getAppAdvisorWatcherService().handleAutomationRunEvent(
+        automationRunEvent({
+          dispatched: {
+            pipelineExecutionId: 'exec-1',
+            projectId: 'project-2',
+            worktreeId: 'worktree-2',
+            chatId: 'sent-chat',
+          },
+        }),
+      );
+      expect(sentWatcherCommands()).toHaveLength(0);
+      const completed = pipelineEvent('success', {
+        jobs: {
+          notify: {
+            status: 'success',
+            outputs: {},
+            steps: {
+              send: {
+                status: 'success',
+                outputs: {},
+                dynamic_env: {},
+                completed_at: '2026-05-23T00:00:01.000Z',
+                chat_send: {
+                  version: 1,
+                  address: {
+                    kind: 'project',
+                    projectId: 'project-2',
+                    taskId: 'worktree-2',
+                    chatId: 'sent-chat',
+                  },
+                  userMessageId: 'sent-input',
+                  state: 'sent',
+                  chatCreated: true,
+                  acceptedAt: '2026-05-23T00:00:01.000Z',
+                },
+              },
+            },
+          },
+        },
+      });
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-1.json'),
+        completed.state,
+      );
+      await getAppAdvisorWatcherService().handlePipelineTerminalEvent(
+        completed,
+      );
+      // Correlation still waits on the execution, and fires once.
+      expect(sentWatcherCommands()).toHaveLength(1);
+      const command = sentWatcherCommands()[0];
+      if (command?.type !== 'send_watcher_message')
+        throw new Error('No watcher message was sent.');
+      expect(command.hiddenContextText).toContain('"chatId": "sent-chat"');
+      expect(command.hiddenContextText).toContain(
+        '"userMessageId": "sent-input"',
+      );
+      expect(command.hiddenContextText).toContain(
+        '"pipelineExecutionId": "exec-1"',
+      );
+    });
+
+    function orchestratorSendCompletion(): ExecutionEvent {
+      return pipelineEvent('success', {
+        jobs: {
+          notify: {
+            status: 'success',
+            outputs: {},
+            steps: {
+              send: {
+                status: 'success',
+                outputs: {},
+                dynamic_env: {},
+                completed_at: '2026-05-23T00:00:01.000Z',
+                chat_send: {
+                  version: 1,
+                  address: {
+                    kind: 'bot',
+                    botId: 'app_advisor',
+                    taskId: 'advisor-entry',
+                    chatId: 'advisor-chat',
+                  },
+                  userMessageId: 'advisor-input',
+                  state: 'sent',
+                  chatCreated: true,
+                  acceptedAt: '2026-05-23T00:00:01.000Z',
+                },
+              },
+            },
+          },
+        },
+      });
+    }
+
+    async function dispatchPipelineRun(): Promise<void> {
+      mockAutomationActivities[0].action = {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId: 'review',
+        pipelineSource: 'bundled',
+      };
+      await armWorktreeAutomationWatcher();
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-1.json'),
+        pipelineEvent('running').state,
+      );
+      await getAppAdvisorWatcherService().handleAutomationRunEvent(
+        automationRunEvent({ dispatched: { pipelineExecutionId: 'exec-1' } }),
+      );
+    }
+
+    it('checks Orchestrator access for a pipeline that sent to the Orchestrator (CAN-5381)', async (): Promise<void> => {
+      await dispatchPipelineRun();
+      const completed = orchestratorSendCompletion();
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-1.json'),
+        completed.state,
+      );
+      mockDecideAppAdvisorAccess.mockResolvedValue({
+        allowed: false,
+        reason: 'advisor_access_disabled',
+      });
+      await getAppAdvisorWatcherService().handlePipelineTerminalEvent(
+        completed,
+      );
+      expect(mockDecideAppAdvisorAccess).toHaveBeenCalled();
+      expect(sentWatcherCommands()).toHaveLength(0);
+    });
+
+    it('keeps the Orchestrator classification on the queued delivery (CAN-5381)', async (): Promise<void> => {
+      await dispatchPipelineRun();
+      const completed = orchestratorSendCompletion();
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-1.json'),
+        completed.state,
+      );
+      // A replay after a restart reads this flag to recheck access.
+      let queued: unknown;
+      sendChatWindowCommand.mockImplementation((command) => {
+        if (command.type === 'send_watcher_message')
+          queued = parsePersistedWatchersFile(
+            readFileSync(watchersFilePath, 'utf8'),
+          ).watchers[0]?.pendingLocalDelivery;
+        return true;
+      });
+      await getAppAdvisorWatcherService().handlePipelineTerminalEvent(
+        completed,
+      );
+      expect(sentWatcherCommands()).toHaveLength(1);
+      expect(queued).toMatchObject({ appAdvisorPrompt: true });
+    });
+
+    it('carries the chat when the pipeline ended before its run was recorded (CAN-5381)', async (): Promise<void> => {
+      await armWorktreeAutomationWatcher();
+      const snapshot = normalizePipeline({
+        name: 'exec-1',
+        on: 'dispatch',
+        jobs: { notify: { steps: [{ id: 'send', run: 'echo sent' }] } },
+      });
+      // A structurally complete v10 snapshot, as saveExecutionState writes it.
+      const completed = pipelineEvent('success', {
+        version: 10,
+        pipeline_snapshot: snapshot,
+        job_definitions: {
+          notify: {
+            ...snapshot.jobs.notify,
+            physical_job_id: 'notify',
+            logical_job_id: 'notify',
+          },
+        },
+        job_groups: {
+          notify: {
+            job_id: 'notify',
+            kind: 'single',
+            expansion: 'expanded',
+            variant_job_ids: ['notify'],
+            status: 'success',
+          },
+        },
+        pending_pauses: [],
+        jobs: {
+          notify: {
+            status: 'success',
+            outputs: {},
+            steps: {
+              send: {
+                status: 'success',
+                outputs: {},
+                dynamic_env: {},
+                completed_at: '2026-05-23T00:00:01.000Z',
+                chat_send: {
+                  version: 1,
+                  address: {
+                    kind: 'project',
+                    projectId: 'project-2',
+                    taskId: 'worktree-2',
+                    chatId: 'sent-chat',
+                  },
+                  userMessageId: 'sent-input',
+                  state: 'sent',
+                  chatCreated: true,
+                  acceptedAt: '2026-05-23T00:00:01.000Z',
+                },
+              },
+            },
+          },
+        },
+      });
+      await writeJsonFile(
+        join(dataDirPath, 'pipeline-executions', 'exec-1.json'),
+        completed.state,
+      );
+      await getAppAdvisorWatcherService().handleAutomationRunEvent(
+        automationRunEvent({ dispatched: { pipelineExecutionId: 'exec-1' } }),
+      );
+      expect(sentWatcherCommands()).toHaveLength(1);
+      const command = sentWatcherCommands()[0];
+      if (command?.type !== 'send_watcher_message')
+        throw new Error('No watcher message was sent.');
+      expect(command.hiddenContextText).toContain('"chatId": "sent-chat"');
+    });
 
     it.each(['project', undefined] as const)(
       'delivers a pre-dispatch project pipeline failure for source %s',
@@ -13260,8 +16793,8 @@ describe('App Advisor watcher service', () => {
         mockDestinationRead.mockResolvedValue({
           authority: mode === 'unreadable' ? 'unreadable' : 'ok',
           ownerMalformed: false,
-          config: {
-            repos: [],
+          memoryMalformed: false,
+          config: workspaceConfig({
             owner: {
               type: 'organization',
               organizationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
@@ -13269,7 +16802,7 @@ describe('App Advisor watcher service', () => {
               instanceId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
               bindingGeneration: 1,
             },
-          },
+          }),
         });
         const actual = jest.requireActual<typeof BackgroundContextModule>(
           '../services/background-execution-context',
@@ -13886,6 +17419,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
 
@@ -13943,6 +17477,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
 
@@ -14018,6 +17553,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
 
@@ -14075,6 +17611,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
 
@@ -14136,6 +17673,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
 
@@ -14151,15 +17689,22 @@ describe('App Advisor watcher service', () => {
     });
 
     it('creates a fresh watcher when the deduped one is stuck firing', async () => {
-      // A watcher firing (awaiting delivery ack) can never be claimed by a
+      // A watcher firing (awaiting main delivery) can never be claimed by a
       // future run event; deduping a new arm onto it would drop that run's
-      // outcome. Swallow the delivery ack so the watcher stays in `firing`.
+      // outcome. Hold the main outcome so the watcher stays in `firing`.
       sendChatWindowCommand.mockImplementation(() => true);
+      let completeDelivery: (() => void) | undefined;
+      deliverWatcherMessage.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completeDelivery = () => resolve('submitted');
+          }),
+      );
       const service = getAppAdvisorWatcherService();
       await armWorktreeAutomationWatcher();
 
-      // Not awaited: with the ack swallowed, delivery blocks on its 30s ack
-      // timeout — the watcher persists as `firing` almost immediately.
+      // Not awaited: the direct outcome is held so the watcher persists as
+      // `firing` while its main delivery is in flight.
       void service.handleAutomationRunEvent(
         automationRunEvent({ status: 'failure', message: 'boom' }),
       );
@@ -14168,6 +17713,11 @@ describe('App Advisor watcher service', () => {
         return file.watchers[0]?.status === 'firing';
       });
       expect(stuckFiring).toBe(true);
+      expect(
+        await waitForAsyncTimedCondition(() =>
+          Promise.resolve(deliverWatcherMessage.mock.calls.length === 1),
+        ),
+      ).toBe(true);
 
       const second = await service.setup(
         automationWatcherInput(),
@@ -14177,16 +17727,10 @@ describe('App Advisor watcher service', () => {
       if (!second.ok) return;
       expect(second.results[0]?.status).toBe('created');
 
-      // Settle the swallowed delivery inside this test's sandbox so its
+      // Settle the held delivery inside this test's sandbox so its
       // trailing mutation cannot bleed into the next test's data dir.
-      const pendingCommand = sentWatcherCommands()[0];
-      if (pendingCommand?.type === 'send_watcher_message') {
-        service.acknowledgeWatcherMessageDelivery(
-          pendingCommand.watcherId,
-          pendingCommand.deliveryId,
-          { ok: true },
-        );
-      }
+      if (!completeDelivery) throw new Error('Expected pending delivery');
+      completeDelivery();
       await waitForAsyncImmediateCondition(async () => {
         const file = await readPersistedWatchersFile();
         return file.watchers.some((watcher) => watcher.status === 'fired');
@@ -14301,6 +17845,7 @@ describe('App Advisor watcher service', () => {
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -14388,6 +17933,7 @@ describe('App Advisor watcher service', () => {
         activeChatSession('project-2', 'worktree-9', 'spawned-chat'),
       ];
       const service = getAppAdvisorWatcherService();
+      await service.reconcileAtStartup();
       const watcherId = await armWorktreeAutomationWatcher();
 
       await service.handleAutomationRunEvent(
@@ -14421,19 +17967,21 @@ describe('App Advisor watcher service', () => {
       await writeFile(watchersFilePath, JSON.stringify(file, null, 2), 'utf8');
 
       service.shutdown();
+      const reconcile = jest.spyOn(service, 'reconcileAtStartup');
       service.configure({
         getMainWindow: () => null,
         getAppAdvisorWindow: () => null,
         ensureAppAdvisorWindow,
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
         onChange,
       });
 
-      const fired = await waitForTimedCondition(
-        () => sentWatcherCommands().length === 1,
-      );
-      expect(fired).toBe(true);
+      // Recovery includes real filesystem work; await its completion rather
+      // than imposing a separate three-second deadline on a loaded runner.
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      await service.reconcileAtStartup();
       const commands = sentWatcherCommands();
       expect(commands).toHaveLength(1);
       expect(commands[0]).toMatchObject({ watcherId });
@@ -14993,7 +18541,7 @@ describe('App Advisor watcher service', () => {
         const commands = deliveredWatcherCommands();
         expect(commands).toHaveLength(1);
         return commands[0]?.type === 'send_watcher_message'
-          ? commands[0].hiddenContextText
+          ? requireHiddenContextText(commands[0].hiddenContextText)
           : '';
       }
 
@@ -15088,6 +18636,7 @@ describe('App Advisor watcher service', () => {
             ensureAppAdvisorWindow,
             sendAppAdvisorWindowCommand,
             sendChatWindowCommand,
+            deliverWatcherMessage,
             onChange,
           },
           { deferStartupRecovery: true },
@@ -15167,6 +18716,7 @@ describe('App Advisor watcher service', () => {
             ensureAppAdvisorWindow,
             sendAppAdvisorWindowCommand,
             sendChatWindowCommand,
+            deliverWatcherMessage,
             onChange,
           },
           { deferStartupRecovery: true },
@@ -15317,6 +18867,15 @@ describe('App Advisor watcher service', () => {
                 canopy_turn_user_message_id: turn,
               },
             });
+            await observeTurn(
+              chatState,
+              turnStarted(chat, {
+                sequence: turn === 'turn-a' ? 1 : 3,
+                turnId: `canonical-${turn}`,
+                atMs: turn === 'turn-a' ? 10 : 30,
+                userMessageIds: [turn],
+              }),
+            );
           };
           await run('turn-a');
           await chatState.ingestProviderEvent({
@@ -15324,6 +18883,17 @@ describe('App Advisor watcher service', () => {
             mutationId: 'turn-a:end',
             data: end,
           });
+          // The canonical turn end records how turn-a ended.
+          await observeTurn(
+            chatState,
+            turnEnded(chat, {
+              sequence: 2,
+              turnId: 'canonical-turn-a',
+              atMs: 20,
+              userMessageIds: ['turn-a'],
+              outcome: status === 'failure' ? 'failed' : 'cancelled',
+            }),
+          );
           await run('turn-b');
           const watcherId = await armTurnWatcher('turn-a');
 
@@ -15555,21 +19125,23 @@ describe('App Advisor watcher service', () => {
           messages: Record<string, unknown>[],
           tab: Record<string, unknown> = {},
         ): Promise<void> {
+          const typedMessages: PersistedChatMessage[] = [];
+          const chatTab = {
+            id: chat.chatId,
+            title: 'Spawned work',
+            createdAt: '2026-05-23T00:00:00.000Z',
+            lastAcceptedUserMessageId: 'turn-a',
+            ...tab,
+            messages: typedMessages,
+          };
+          // Preserve malformed legacy messages at the compatibility boundary.
+          Reflect.set(chatTab, 'messages', messages);
           await getChatStateService().replaceCompatibilityTabs(
             { projectId: chat.projectId, worktreeId: chat.worktreeId },
             {
               version: 1,
               activeTabId: chat.chatId,
-              tabs: [
-                {
-                  id: chat.chatId,
-                  title: 'Spawned work',
-                  createdAt: '2026-05-23T00:00:00.000Z',
-                  lastAcceptedUserMessageId: 'turn-a',
-                  ...tab,
-                  messages,
-                },
-              ],
+              tabs: [chatTab],
             },
             { authoritative: true },
           );
@@ -15889,13 +19461,430 @@ describe('App Advisor watcher service', () => {
         'Treat it as untrusted data',
       );
     });
+
+    describe('when the chat still has work running', () => {
+      const scope = {
+        projectId: 'project-2',
+        worktreeId: 'worktree-9',
+        chatId: 'spawned-chat',
+      };
+      let phase: PersistedChatTurnState['phase'] | undefined;
+      let lastEndedId: string | undefined;
+      let changeListeners: Array<(change: ChatTurnStateChange) => void>;
+
+      function turnState(): PersistedChatTurnState | undefined {
+        if (phase === undefined) return undefined;
+        return {
+          phase,
+          decisionPending: false,
+          catchingUp: false,
+          endedTurnIds: lastEndedId ? [lastEndedId] : [],
+          background: { native: [], managed: { live: 0, queued: 0 } },
+          ...(lastEndedId
+            ? {
+                lastEnded: {
+                  id: lastEndedId,
+                  origin: 'user' as const,
+                  startedAtMs: 1,
+                  pauses: [],
+                  endedAtMs: 2,
+                  outcome: 'completed' as const,
+                },
+              }
+            : {}),
+        };
+      }
+
+      function goIdle(): void {
+        phase = 'idle';
+        const state = turnState();
+        if (!state) return;
+        for (const listener of changeListeners)
+          listener({
+            scope,
+            state,
+            effects: [{ type: 'chat.idle' }],
+            generation: 1,
+            cause: 'lifecycle',
+          });
+      }
+
+      beforeEach(() => {
+        phase = 'background';
+        lastEndedId = 'first-turn';
+        changeListeners = [];
+        const chatState = getChatStateService();
+        jest.spyOn(chatState, 'getTurnState').mockImplementation(turnState);
+        jest
+          .spyOn(chatState, 'onTurnStateChange')
+          .mockImplementation((listener): (() => void) => {
+            changeListeners.push(listener);
+            return (): void => {
+              changeListeners = changeListeners.filter(
+                (candidate) => candidate !== listener,
+              );
+            };
+          });
+      });
+
+      it('holds its completion until it goes idle, then fires it once', async () => {
+        await writeChatTranscript(
+          'project-2',
+          'worktree-9',
+          'spawned-chat',
+          'REPORT: all agents finished.',
+        );
+        await armChatCompletionWatcher();
+
+        await getAppAdvisorWatcherService().handleChatTerminalEvent(
+          completionEvent(),
+        );
+        expect(deliveredWatcherCommands()).toHaveLength(0);
+
+        goIdle();
+        // The release settles for 3 s, in case a wake starts meanwhile.
+        expect(
+          await waitForTimedCondition(
+            () => deliveredWatcherCommands().length > 0,
+            10_000,
+          ),
+        ).toBe(true);
+        const commands = deliveredWatcherCommands();
+        expect(commands).toHaveLength(1);
+        if (commands[0]?.type !== 'send_watcher_message') return;
+        expect(commands[0].hiddenContextText).toContain(
+          'REPORT: all agents finished.',
+        );
+      }, 20_000);
+
+      it('drops a second completion for a turn whose completion already fired', async () => {
+        phase = 'idle';
+        await writeChatTranscript(
+          'project-2',
+          'worktree-9',
+          'spawned-chat',
+          'REPORT: done.',
+        );
+        await armChatCompletionWatcher();
+        await getAppAdvisorWatcherService().handleChatTerminalEvent(
+          completionEvent(),
+        );
+        expect(deliveredWatcherCommands()).toHaveLength(1);
+
+        await armChatCompletionWatcher();
+        await getAppAdvisorWatcherService().handleChatTerminalEvent(
+          completionEvent(),
+        );
+        expect(deliveredWatcherCommands()).toHaveLength(1);
+
+        lastEndedId = 'second-turn';
+        await getAppAdvisorWatcherService().handleChatTerminalEvent(
+          completionEvent(),
+        );
+        expect(deliveredWatcherCommands()).toHaveLength(2);
+      });
+
+      it('fires a completion the watcher modal deferred mid-read once it closes', async () => {
+        phase = 'idle';
+        await writeChatTranscript(
+          'project-2',
+          'worktree-9',
+          'spawned-chat',
+          'REPORT: done.',
+        );
+        await armChatCompletionWatcher();
+        const service = getAppAdvisorWatcherService();
+        const modal = { scope: 'worktree' as const, ...scope };
+        const chatState = getChatStateService();
+        const readTurn = chatState.turnReplyMessages.bind(chatState);
+        // The modal opens during the first read only.
+        jest
+          .spyOn(chatState, 'turnReplyMessages')
+          .mockImplementationOnce((target) => {
+            service.holdChatFiring(modal);
+            return readTurn(target);
+          });
+
+        await service.handleChatTerminalEvent(completionEvent());
+        expect(deliveredWatcherCommands()).toHaveLength(0);
+        await service.releaseChatFiring(modal);
+        // A replayed canonical terminal delivers off the release call.
+        await service.whenChatDeliveriesSettled();
+        expect(deliveredWatcherCommands()).toHaveLength(1);
+      });
+
+      it("keeps a held turn's completion for its automation run when a later turn completes first", async () => {
+        await writeChatTranscript(
+          'project-2',
+          'worktree-9',
+          'spawned-chat',
+          'REPORT: both turns done.',
+        );
+        mockActiveSessionInfos = [
+          activeChatSession(),
+          activeChatSession('project-2', 'worktree-9', 'spawned-chat'),
+        ];
+        const service = getAppAdvisorWatcherService();
+        const setupResult = await service.setup(
+          {
+            watchers: [
+              {
+                trigger: 'automation_run',
+                target: { kind: 'automation', automationId: 'auto-1' },
+              },
+            ],
+          },
+          worktreeDestination(),
+        );
+        if (!setupResult.ok) throw new Error(setupResult.error);
+        await service.handleAutomationRunEvent({
+          kind: 'automation_run',
+          activityId: 'auto-1',
+          activityName: 'Nightly triage',
+          runId: 'run-1',
+          manual: false,
+          status: 'success',
+          completedAt: new Date(Date.now() + 1000).toISOString(),
+          dispatched: { ...scope, userMessageId: 'turn-a' },
+        });
+        const stamped = (turn: string): AppAdvisorChatTerminalEvent => ({
+          ...completionEvent(),
+          data: { type: 'result', canopy_turn_user_message_id: turn },
+        });
+
+        await service.handleChatTerminalEvent(stamped('turn-a'));
+        await service.handleChatTerminalEvent(stamped('turn-b'));
+        expect(deliveredWatcherCommands()).toHaveLength(0);
+
+        goIdle();
+        expect(
+          await waitForTimedCondition(
+            () => deliveredWatcherCommands().length > 0,
+            10_000,
+          ),
+        ).toBe(true);
+        const commands = deliveredWatcherCommands();
+        expect(commands).toHaveLength(1);
+        if (commands[0]?.type !== 'send_watcher_message') return;
+        expect(commands[0].hiddenContextText).toContain('automation_run');
+      }, 20_000);
+
+      it('fires at each terminal for a chat with no canonical turn state', async () => {
+        phase = undefined;
+        await writeChatTranscript(
+          'project-2',
+          'worktree-9',
+          'spawned-chat',
+          'REPORT: done.',
+        );
+        await armChatCompletionWatcher();
+        await getAppAdvisorWatcherService().handleChatTerminalEvent(
+          completionEvent(),
+        );
+        expect(deliveredWatcherCommands()).toHaveLength(1);
+      });
+    });
   });
 
-  it.each(['creation', 'live', 'restart'])(
-    'binds and authorizes managed delegate delivery: %s',
-    async (mode): Promise<void> => {
+  it('does not authorize or replay a persisted legacy managed delivery', async () => {
+    const service = getAppAdvisorWatcherService();
+    service.shutdown();
+    mockBackgroundEnabled = true;
+    const context = 'org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const row = {
+      ...legacyManagedWatcher('legacy-bound-delivery', 'firing', {
+        resultIndex: null,
+        pendingDelivery: true,
+        cancellationPending: true,
+      }),
+      executionContext: context,
+    };
+    await seedRegistrationStore([row]);
+    const before = await readFile(watchersFilePath, 'utf8');
+    service.configure(
+      {
+        getMainWindow: () => null,
+        getAppAdvisorWindow: () => null,
+        ensureAppAdvisorWindow,
+        sendAppAdvisorWindowCommand,
+        sendChatWindowCommand,
+        deliverWatcherMessage,
+        onChange,
+      },
+      { deferStartupRecovery: true },
+    );
+    await service.reconcileAtStartup();
+    await service.drain();
+
+    expect(mockAuthorizeBackground).not.toHaveBeenCalled();
+    expect(mockDeliverToDelegate).not.toHaveBeenCalled();
+    expect(deliverWatcherMessage).not.toHaveBeenCalled();
+    expect(sendChatWindowCommand).not.toHaveBeenCalled();
+    expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
+    expect(await readFile(watchersFilePath, 'utf8')).toBe(before);
+  });
+
+  describe('legacy managed delegation watcher migration', () => {
+    const scope = { projectId: 'project-1', worktreeId: 'worktree-1' };
+    const otherRow = (id: string): AppAdvisorWatcher => ({
+      version: 1,
+      id,
+      trigger: 'worktree_chat_completion',
+      status: 'fired',
+      label: id,
+      target: {
+        kind: 'worktree_chat',
+        projectId: scope.projectId,
+        worktreeId: scope.worktreeId,
+        chatId: 'chat-1',
+      },
+      destination: worktreeDestination('chat-1'),
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+      firedAt: '2020-01-01T00:00:00.000Z',
+      dedupeKey: `other-${id}`,
+    });
+
+    const invoke = (
+      service: ReturnType<typeof getAppAdvisorWatcherService>,
+      methodName: string,
+      args: unknown[],
+    ): Promise<unknown> => {
+      const method: unknown = Reflect.get(service, methodName);
+      expect(typeof method).toBe('function');
+      if (typeof method !== 'function') return Promise.resolve(undefined);
+      return Promise.resolve(Reflect.apply(method, service, args));
+    };
+
+    it('excludes legacy delegate rows from active reads and discovery', async () => {
       const service = getAppAdvisorWatcherService();
+      await service.drain();
       service.shutdown();
+      await seedRegistrationStore([legacyManagedWatcher('hidden', 'active')]);
+      expect(await service.list()).toEqual([]);
+    });
+
+    it('lists raw legacy rows from both stores and decodes unsettled and delivered targets', async () => {
+      const service = getAppAdvisorWatcherService();
+      await service.drain();
+      service.shutdown();
+      const old = '2000-01-01T00:00:00.000Z';
+      const legacy = [
+        legacyManagedWatcher('active-unsettled', 'active', {
+          resultIndex: null,
+          createdAt: old,
+        }),
+        legacyManagedWatcher('firing-pending', 'firing', {
+          pendingDelivery: true,
+          createdAt: old,
+          firedAt: old,
+        }),
+        legacyManagedWatcher('fired-with-pending-state', 'fired', {
+          pendingDelivery: true,
+          createdAt: old,
+          firedAt: old,
+        }),
+        legacyManagedWatcher('failed-old', 'delivery_failed', {
+          createdAt: old,
+          firedAt: old,
+        }),
+        legacyManagedWatcher('other-scope', 'active', {
+          projectId: 'project-2',
+          createdAt: old,
+        }),
+        ...Array.from({ length: 205 }, (_, index) => {
+          const row = otherRow(`retained-${index}`);
+          row.firedAt = '2020-01-01T00:00:00.000Z';
+          return row;
+        }),
+      ];
+      await seedRegistrationStore(legacy);
+      const sidecarPath = join(
+        dataDirPath,
+        'app-advisor-watchers-canonical.json',
+      );
+      await writeJsonFile(sidecarPath, {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        watchers: [
+          legacyManagedWatcher('sidecar-pending', 'firing', {
+            pendingDelivery: true,
+            createdAt: old,
+          }),
+        ],
+      });
+
+      const result = await invoke(service, 'listLegacyDelegateWatchers', [
+        scope,
+      ]);
+      expect(result).toEqual([
+        {
+          id: 'active-unsettled',
+          targets: [
+            {
+              delegationId: 'delegate-active-unsettled',
+              runGeneration: 2,
+              resultIndex: null,
+            },
+          ],
+          delivered: false,
+        },
+        {
+          id: 'firing-pending',
+          targets: [
+            {
+              delegationId: 'delegate-firing-pending',
+              runGeneration: 2,
+              resultIndex: 4,
+            },
+          ],
+          delivered: false,
+        },
+        {
+          id: 'fired-with-pending-state',
+          targets: [
+            {
+              delegationId: 'delegate-fired-with-pending-state',
+              runGeneration: 2,
+              resultIndex: 4,
+            },
+          ],
+          delivered: true,
+        },
+        {
+          id: 'failed-old',
+          targets: [
+            {
+              delegationId: 'delegate-failed-old',
+              runGeneration: 2,
+              resultIndex: 4,
+            },
+          ],
+          delivered: false,
+        },
+        {
+          id: 'sidecar-pending',
+          targets: [
+            {
+              delegationId: 'delegate-sidecar-pending',
+              runGeneration: 2,
+              resultIndex: 4,
+            },
+          ],
+          delivered: false,
+        },
+      ]);
+    });
+
+    it('keeps persisted managed cancellation and firing state unchanged during startup recovery', async () => {
+      const service = getAppAdvisorWatcherService();
+      await service.drain();
+      service.shutdown();
+      const row = legacyManagedWatcher('startup-pending', 'firing', {
+        pendingDelivery: true,
+        cancellationPending: true,
+      });
+      await seedRegistrationStore([row]);
       service.configure(
         {
           getMainWindow: () => null,
@@ -15903,1185 +19892,261 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         },
         { deferStartupRecovery: true },
       );
-      mockBackgroundEnabled = true;
-      const context = 'org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-      await writeJsonFile(
-        join(
-          dataDirPath,
-          'workspaces',
-          'project-1',
-          'chats',
-          'worktree-1.json',
-        ),
-        {
-          version: 1,
-          activeTabId: 'chat-1',
-          tabs: [
-            {
-              id: 'chat-1',
-              title: 'Parent',
-              messages: [],
-              createdAt: '2026-05-24T00:00:00.000Z',
-              executionContext: context,
-            },
-          ],
-        },
-      );
-      const created = await service.createManagedDelegationWatcher(
-        {
-          harnessId: 'claude',
-          projectId: 'project-1',
-          worktreeId: 'worktree-1',
-          chatId: 'chat-1',
-          sessionKey: 'project-1/worktree-1/chat-1',
-          turnId: 'turn-1',
-          toolCallId: 'bound-delegate',
-          runtimeGeneration: 1,
-          depth: 1,
-          parentDelegationId: '99999999-9999-4999-8999-999999999999',
-        },
-        {
-          delegationIds: ['11111111-1111-4111-8111-111111111111'],
-          mode: 'all',
-          timeoutMs: 0,
-        },
-        [
-          {
-            delegationId: '11111111-1111-4111-8111-111111111111',
-            runGeneration: 1,
-            status: 'running',
-            resultIndex: null,
-          },
-        ],
-        'bound-hash',
-      );
-      expect(created.ok).toBe(true);
-      const file = await readPersistedWatchersFile();
-      if (mode === 'creation') {
-        expect(file.watchers[0]?.executionContext).toBe(context);
-        return;
-      }
-      // Seed the binding independently so this delivery regression does not depend on creation.
-      const watcher = file.watchers[0];
-      if (!watcher) throw new Error('Expected managed watcher');
-      watcher.executionContext = context;
-      await writeJsonFile(watchersFilePath, file);
-      mockDestinationRead.mockResolvedValue({
-        authority: 'ok',
-        ownerMalformed: false,
-        config: {
-          repos: [],
-          owner: {
-            type: 'organization',
-            organizationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-            projectId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-            instanceId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-            bindingGeneration: 1,
-          },
-        },
-      });
-      mockAuthorizeBackground.mockImplementation(
-        jest.requireActual<typeof BackgroundContextModule>(
-          '../services/background-execution-context',
-        ).authorizeBackgroundExecution,
-      );
-      if (mode === 'restart') {
-        service.shutdown();
-        service.configure(
-          {
-            getMainWindow: () => null,
-            getAppAdvisorWindow: () => null,
-            ensureAppAdvisorWindow,
-            sendAppAdvisorWindowCommand,
-            sendChatWindowCommand,
-            onChange,
-          },
-          { deferStartupRecovery: true },
-        );
-      }
+      const before = await readFile(watchersFilePath, 'utf8');
       await service.reconcileAtStartup();
       await service.drain();
-      expect(mockAuthorizeBackground).toHaveBeenCalledWith(
-        context,
-        expect.any(Array),
-        expect.objectContaining(worktreeDestination('chat-1')),
-      );
-      expect(mockDeliverToDelegate).not.toHaveBeenCalled();
+      expect(await readFile(watchersFilePath, 'utf8')).toBe(before);
+      expect(deliverWatcherMessage).not.toHaveBeenCalled();
       expect(sendChatWindowCommand).not.toHaveBeenCalled();
-      expect(sendAppAdvisorWindowCommand).not.toHaveBeenCalled();
-      expect((await readPersistedWatchersFile()).watchers[0]).toMatchObject({
-        deliveryError: expect.stringContaining(
-          'This is in a different Personal or organization context',
-        ),
+    });
+
+    it('force-removes firing and cancelled managed rows silently without deleting other watcher kinds', async () => {
+      const service = getAppAdvisorWatcherService();
+      await service.drain();
+      service.shutdown();
+      const active = legacyManagedWatcher('remove-active', 'active', {
+        cancellationPending: true,
       });
+      const firing = legacyManagedWatcher('remove-firing', 'firing', {
+        pendingDelivery: true,
+        cancellationPending: true,
+      });
+      Reflect.set(firing, 'pendingLocalDelivery', {
+        deliveryId: 'local-event-remove-firing',
+        text: 'legacy pending local delivery',
+        hiddenContextText: 'legacy hidden context',
+        firedKind: 'chat_completion',
+        consume: true,
+      });
+      Reflect.set(firing, 'chatDeliveryId', 'chat-event-remove-firing');
+      const other = otherRow('keep-ordinary');
+      await seedRegistrationStore([active, firing, other]);
+      const sidecarPath = join(
+        dataDirPath,
+        'app-advisor-watchers-canonical.json',
+      );
+      await writeJsonFile(sidecarPath, {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        watchers: [
+          legacyManagedWatcher('remove-sidecar', 'firing', {
+            pendingDelivery: true,
+          }),
+          { kind: 'future-row', value: 'keep' },
+        ],
+      });
+
+      service.configure(
+        {
+          getMainWindow: () => null,
+          getAppAdvisorWindow: () => null,
+          ensureAppAdvisorWindow,
+          sendAppAdvisorWindowCommand,
+          sendChatWindowCommand,
+          deliverWatcherMessage,
+          onChange,
+        },
+        { deferStartupRecovery: true },
+      );
+      const pendingAck = invoke(service, 'waitForWatcherDelivery', [
+        firing.id,
+        'event-remove-firing',
+      ]);
+      await invoke(service, 'scheduleDelegateDeliveryRetry', [firing.id]);
+
+      const localDeliveries: unknown = Reflect.get(
+        service,
+        'localDeliveriesInFlight',
+      );
+      const unsubmitted: unknown = Reflect.get(
+        service,
+        'unsubmittedChatDeliveries',
+      );
+      const retries: unknown = Reflect.get(
+        service,
+        'delegateDeliveryRetryTimers',
+      );
+      const generation: unknown = Reflect.get(
+        service,
+        'configurationGeneration',
+      );
+      if (
+        !(localDeliveries instanceof Set) ||
+        !(unsubmitted instanceof Set) ||
+        !(retries instanceof Map) ||
+        typeof generation !== 'number'
+      )
+        throw new Error('Expected watcher delivery state stores');
+      const inFlightKey = `${generation}:${firing.id}`;
+      localDeliveries.add(inFlightKey);
+      unsubmitted.add('event-remove-firing');
+      unsubmitted.add('local-event-remove-firing');
+      unsubmitted.add('chat-event-remove-firing');
+      expect(retries.has(firing.id)).toBe(true);
+
+      await invoke(service, 'removeLegacyDelegateWatchers', [
+        [active.id, firing.id, 'remove-sidecar', other.id, 'missing'],
+      ]);
+
+      expect(
+        (await readPersistedWatchersFile()).watchers.map(({ id }) => id),
+      ).toEqual(['keep-ordinary']);
+      expect(await readCanonicalWatcherStore(sidecarPath)).toEqual([
+        { kind: 'future-row', value: 'keep' },
+      ]);
+      expect(deliverWatcherMessage).not.toHaveBeenCalled();
+      expect(sendChatWindowCommand).not.toHaveBeenCalled();
+      await expect(pendingAck).resolves.toMatchObject({
+        ok: false,
+        queueOutcome: 'unknown',
+      });
+      expect(
+        service.acknowledgeWatcherMessageDelivery(
+          firing.id,
+          'event-remove-firing',
+          { ok: true },
+        ),
+      ).toBe(false);
+      expect(retries.has(firing.id)).toBe(false);
+      expect(localDeliveries.has(inFlightKey)).toBe(false);
+      expect(unsubmitted.has('event-remove-firing')).toBe(false);
+      expect(unsubmitted.has('local-event-remove-firing')).toBe(false);
+      expect(unsubmitted.has('chat-event-remove-firing')).toBe(false);
+    });
+  });
+
+  it('checks cancellation after awaited execution-context resolution before committing', async () => {
+    const service = getAppAdvisorWatcherService();
+    service.shutdown();
+    mockBackgroundEnabled = true;
+    const controller = new AbortController();
+    mockSourceContext.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve('org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    });
+    await expect(
+      service.createLocalWatcher(
+        { kind: 'scheduled_wakeup', delaySeconds: 60, scheduledFor: '' },
+        worktreeDestination(),
+        'cancel-in-context',
+        undefined,
+        undefined,
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(await service.list()).toEqual([]);
+  });
+
+  it('dedupes identical active command registrations across call identities', async () => {
+    const service = getAppAdvisorWatcherService();
+    service.shutdown();
+    const target = {
+      kind: 'command_watch' as const,
+      command: 'test -f ready',
+      cwd: '/repo',
+      intervalSeconds: 5,
+      maxAttempts: 2,
+    };
+    const first = await service.createLocalWatcher(
+      target,
+      worktreeDestination(),
+      'command-first',
+      'resume',
+    );
+    const second = await service.createLocalWatcher(
+      target,
+      worktreeDestination(),
+      'command-retry',
+      'resume',
+    );
+    expect(second).toEqual(first);
+    expect((await readPersistedWatchersFile()).watchers).toHaveLength(1);
+  });
+
+  it.each(['setup', 'wakeup', 'command', 'github'] as const)(
+    'rejects an aborted %s registration queued behind a mutation without persisting',
+    async (kind) => {
+      const service = getAppAdvisorWatcherService();
+      service.shutdown();
+      let release: () => void = () => undefined;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const queue = service as unknown as {
+        enqueueMutation: (
+          fn: () => Promise<unknown>,
+          signal?: AbortSignal,
+        ) => Promise<unknown>;
+      };
+      const first = queue.enqueueMutation(() => blocked);
+      let markQueued: () => void = () => undefined;
+      const queued = new Promise<void>((resolve) => {
+        markQueued = resolve;
+      });
+      const originalEnqueue = queue.enqueueMutation.bind(queue);
+      const enqueue = jest
+        .spyOn(queue, 'enqueueMutation')
+        .mockImplementation((fn, signal) => {
+          markQueued();
+          return originalEnqueue(fn, signal);
+        });
+      const controller = new AbortController();
+      const context = { toolUseId: 'cancelled', signal: controller.signal };
+      const register =
+        kind === 'setup'
+          ? service.setup(worktreeChatInput(), destination(), context)
+          : kind === 'github'
+            ? service.watchGitHubItems(
+                {
+                  items: [
+                    {
+                      kind: 'workflow_run',
+                      repository: 'acme/api',
+                      runId: '1',
+                    },
+                  ],
+                  notifyOn: { conclusions: 'any' },
+                },
+                destination(),
+                context,
+              )
+            : service.createLocalWatcher(
+                kind === 'wakeup'
+                  ? {
+                      kind: 'scheduled_wakeup',
+                      delaySeconds: 60,
+                      scheduledFor: '',
+                    }
+                  : {
+                      kind: 'command_watch',
+                      command: 'true',
+                      cwd: '/repo',
+                      intervalSeconds: 5,
+                      maxAttempts: 1,
+                    },
+                worktreeDestination(),
+                'cancelled',
+                undefined,
+                undefined,
+                context,
+              );
+      await queued;
+      enqueue.mockRestore();
+      const assertion = expect(register).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      controller.abort();
+      release();
+      await first;
+      await assertion;
+      expect(await service.list()).toEqual([]);
     },
   );
-
-  it('persists managed delegation watches in the canonical watcher store and deduplicates the authenticated invocation', async () => {
-    const service = getAppAdvisorWatcherService();
-    const parent = {
-      harnessId: 'claude',
-      projectId: 'project-1',
-      worktreeId: 'worktree-1',
-      chatId: 'chat-1',
-      sessionKey: 'project-1/worktree-1/chat-1',
-      turnId: 'turn-1',
-      toolCallId: 'watch-call-1',
-      runtimeGeneration: 7,
-      depth: 0,
-    };
-    const request = {
-      delegationIds: ['11111111-1111-4111-8111-111111111111'],
-      mode: 'all' as const,
-      timeoutMs: 60_000,
-    };
-    const targets = [
-      {
-        delegationId: request.delegationIds[0],
-        runGeneration: 3,
-        status: 'running' as const,
-        resultIndex: null,
-      },
-    ];
-
-    const created = await service.createManagedDelegationWatcher(
-      parent,
-      request,
-      targets,
-      'request-hash',
-    );
-    expect(created.ok).toBe(true);
-    const repeated = await service.createManagedDelegationWatcher(
-      parent,
-      request,
-      targets,
-      'request-hash',
-    );
-    expect(repeated).toEqual(created);
-    const changed = await service.createManagedDelegationWatcher(
-      parent,
-      request,
-      targets,
-      'different-hash',
-    );
-    expect(changed).toMatchObject({
-      ok: false,
-      error: { code: 'invalid_request' },
-    });
-    if (!created.ok) return;
-
-    const persisted = await readPersistedWatchersFile();
-    expect(persisted.watchers).toHaveLength(1);
-    expect(persisted.watchers[0]).toMatchObject({
-      id: created.value.watcherId,
-      trigger: 'managed_delegation_completion',
-      target: {
-        kind: 'managed_delegation',
-        mode: 'all',
-        targetCount: 1,
-      },
-      runtimeState: {
-        kind: 'managed_delegation',
-        targets: [
-          {
-            delegationId: request.delegationIds[0],
-            runGeneration: 3,
-          },
-        ],
-      },
-    });
-    expect(await service.list(worktreeDestination('chat-1'))).toEqual([
-      expect.objectContaining({ id: created.value.watcherId }),
-    ]);
-
-    await expect(
-      service.deleteAgentWatchers(
-        { watcherIds: [created.value.watcherId] },
-        worktreeDestination('chat-1'),
-      ),
-    ).resolves.toEqual({
-      ok: true,
-      results: [{ watcherId: created.value.watcherId, status: 'deleted' }],
-    });
-    expect(await service.list(worktreeDestination('chat-1'))).toEqual([]);
-  });
-
-  it('resolves an already-settled managed delegation watch immediately at registration', async () => {
-    jest.useFakeTimers();
-    const service = getAppAdvisorWatcherService();
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      }
-      return true;
-    });
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    await service.reconcileAtStartup();
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-settled',
-        toolCallId: 'watch-call-settled',
-        runtimeGeneration: 11,
-        depth: 0,
-      },
-      {
-        delegationIds: ['55555555-5555-4555-8555-555555555555'],
-        mode: 'all',
-        timeoutMs: 60_000,
-      },
-      [
-        {
-          delegationId: '55555555-5555-4555-8555-555555555555',
-          runGeneration: 2,
-          status: 'completed',
-          resultIndex: 2,
-          settledAt: Date.now(),
-        },
-      ],
-      'settled-hash',
-    );
-    expect(created.ok).toBe(true);
-    await jest.advanceTimersByTimeAsync(1);
-    await service.drain();
-
-    expect(sendChatWindowCommand).toHaveBeenCalledTimes(1);
-    await expect(service.list(worktreeDestination('chat-1'))).resolves.toEqual(
-      [],
-    );
-  });
-
-  it('catches up an overdue managed delegation watch through the shared scheduler after restart', async () => {
-    jest.useFakeTimers();
-    const service = getAppAdvisorWatcherService();
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      }
-      return true;
-    });
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'codex',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-1',
-        toolCallId: 'watch-call-overdue',
-        runtimeGeneration: 9,
-        depth: 0,
-      },
-      {
-        delegationIds: ['22222222-2222-4222-8222-222222222222'],
-        mode: 'any',
-        timeoutMs: 0,
-      },
-      [
-        {
-          delegationId: '22222222-2222-4222-8222-222222222222',
-          runGeneration: 1,
-          status: 'running',
-          resultIndex: null,
-        },
-      ],
-      'overdue-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    await service.reconcileAtStartup();
-    await jest.advanceTimersByTimeAsync(1);
-    await service.drain();
-
-    const afterRestart = await readPersistedWatchersFile();
-    expect(afterRestart.watchers).toEqual([
-      expect.objectContaining({
-        id: created.value.watcherId,
-        status: 'fired',
-      }),
-    ]);
-    const commands = sendChatWindowCommand.mock.calls
-      .map(([command]) => command)
-      .filter((command) => command.type === 'send_watcher_message');
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      type: 'send_watcher_message',
-      watcherId: created.value.watcherId,
-      chatId: 'chat-1',
-    });
-    if (commands[0]?.type !== 'send_watcher_message') return;
-    expect(commands[0].hiddenContextText).toContain(
-      'managed_delegation_completion',
-    );
-    expect(commands[0].hiddenContextText).toContain('\"outcome\": \"timeout\"');
-    expect(commands[0].hiddenContextText).not.toContain('finalText');
-    await expect(service.list(worktreeDestination('chat-1'))).resolves.toEqual(
-      [],
-    );
-    await expect(service.listCompleted()).resolves.toEqual([
-      expect.objectContaining({
-        id: created.value.watcherId,
-        status: 'fired',
-      }),
-    ]);
-  });
-
-  it('reports a queued phase on a timeout event target still waiting for admission', async () => {
-    jest.useFakeTimers();
-    const service = getAppAdvisorWatcherService();
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const delegationId = '33333333-3333-4333-8333-333333333333';
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'codex',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-queued-phase',
-        toolCallId: 'watch-call-queued-phase',
-        runtimeGeneration: 16,
-        depth: 0,
-      },
-      {
-        delegationIds: [delegationId],
-        mode: 'any',
-        timeoutMs: 0,
-      },
-      [
-        {
-          delegationId,
-          runGeneration: 1,
-          status: 'pending',
-          resultIndex: null,
-        },
-      ],
-      'queued-phase-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    const queuedRecord: StoredDelegation = {
-      version: 1,
-      parent: {
-        harnessId: 'codex',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        turnId: 'turn-queued-phase',
-        toolCallId: 'watch-call-queued-phase',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        runtimeGeneration: 16,
-        depth: 0,
-      },
-      task: {
-        modelId: 'logical-review-model',
-        description: 'Review',
-        prompt: 'Inspect source',
-        contextPolicy: 'task_only',
-        isolation: 'shared_worktree',
-        executionMode: 'background',
-      },
-      callKey: 'queued-phase-key',
-      requestHash: 'queued-phase-hash',
-      createdAt: Date.now(),
-      state: {
-        delegationId,
-        runGeneration: 1,
-        sequence: 1,
-        status: 'pending',
-        outputTruncated: false,
-      },
-      admission: {
-        runGeneration: 1,
-        state: 'waiting',
-        queuedAt: Date.now(),
-      },
-      launch: {
-        version: 1,
-        delegationId,
-        runGeneration: 1,
-        launchKey: 'queued-phase-key',
-        phase: 'reserved',
-      },
-      delivery: { status: 'unclaimed' },
-    };
-    jest
-      .spyOn(FileDelegationStorage.prototype, 'load')
-      .mockResolvedValue([queuedRecord]);
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message')
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      return true;
-    });
-    await service.reconcileAtStartup();
-    await jest.advanceTimersByTimeAsync(1);
-    await service.drain();
-    const delivered = sendChatWindowCommand.mock.calls
-      .map(([command]) => command)
-      .find((command) => command.type === 'send_watcher_message');
-    expect(delivered?.hiddenContextText).toContain('"outcome": "timeout"');
-    expect(delivered?.hiddenContextText).toContain('"phase": "queued"');
-  });
-
-  it('replaces a persisted firing timeout when a qualifying delegate settles', async () => {
-    jest.useRealTimers();
-    const service = getAppAdvisorWatcherService();
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const delegationId = '66666666-6666-4666-8666-666666666666';
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-firing',
-        toolCallId: 'watch-call-firing',
-        runtimeGeneration: 12,
-        depth: 0,
-      },
-      { delegationIds: [delegationId], mode: 'all', timeoutMs: 60_000 },
-      [
-        {
-          delegationId,
-          runGeneration: 1,
-          status: 'running',
-          resultIndex: null,
-        },
-      ],
-      'firing-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    service.shutdown();
-    const file = await readPersistedWatchersFile();
-    const row = file.watchers.find(
-      (watcher) => watcher.id === created.value.watcherId,
-    );
-    if (
-      !row ||
-      row.target.kind !== 'managed_delegation' ||
-      row.runtimeState?.kind !== 'managed_delegation'
-    )
-      throw new Error('Expected managed watcher');
-    const deadlineAt = Date.now() - 1000;
-    row.target.deadlineAt = deadlineAt;
-    row.target.outcome = 'timeout';
-    row.status = 'firing';
-    row.runtimeState.nextAttemptAt = new Date(deadlineAt).toISOString();
-    row.runtimeState.pendingDelivery = {
-      eventId: 'firing-timeout',
-      attempts: 0,
-      event: {
-        watcherId: row.id,
-        mode: 'all',
-        outcome: 'timeout',
-        deadlineAt,
-        targets: [
-          {
-            delegationId,
-            runGeneration: 1,
-            status: 'running',
-            resultIndex: null,
-          },
-        ],
-      },
-    };
-    await writeJsonFile(watchersFilePath, file);
-    let attempts = 0;
-    let settlement: Promise<void> | undefined;
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type !== 'send_watcher_message') return true;
-      attempts += 1;
-      if (attempts === 1) {
-        settlement = service.handleManagedDelegationSettled(
-          { projectId: 'project-1', worktreeId: 'worktree-1' },
-          delegationId,
-          {
-            resultIndex: 1,
-            runGeneration: 1,
-            status: 'completed',
-            settledAt: deadlineAt,
-            outputTruncated: false,
-          },
-        );
-        return false;
-      }
-      service.acknowledgeWatcherMessageDelivery(
-        command.watcherId,
-        command.deliveryId,
-        { ok: true },
-      );
-      return true;
-    });
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    await service.reconcileAtStartup();
-    await settlement;
-    await service.drain();
-    const deliveredEvents = sendChatWindowCommand.mock.calls
-      .map(([command]) => command)
-      .filter((command) => command.type === 'send_watcher_message');
-    expect(deliveredEvents).toHaveLength(2);
-    expect(deliveredEvents[0]).toMatchObject({
-      hiddenContextText: expect.stringContaining('"outcome": "timeout"'),
-    });
-    expect(deliveredEvents[1]).toMatchObject({
-      hiddenContextText: expect.stringContaining('"outcome": "completed"'),
-    });
-    expect(deliveredEvents[1]).toMatchObject({
-      hiddenContextText: expect.stringContaining('"phase": "idle"'),
-    });
-    const persisted = (await readPersistedWatchersFile()).watchers.find(
-      (watcher) => watcher.id === created.value.watcherId,
-    );
-    expect(persisted?.runtimeState).toMatchObject({
-      pendingDelivery: {
-        event: {
-          outcome: 'completed',
-          targets: [{ delegationId, resultIndex: 1, phase: 'idle' }],
-        },
-      },
-    });
-  });
-
-  it('reports a late delegate settlement status without exposing a late result', async () => {
-    const service = getAppAdvisorWatcherService();
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const delegationId = '77777777-7777-4777-8777-777777777777';
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-late',
-        toolCallId: 'watch-call-late',
-        runtimeGeneration: 13,
-        depth: 0,
-      },
-      { delegationIds: [delegationId], mode: 'all', timeoutMs: 0 },
-      [
-        {
-          delegationId,
-          runGeneration: 1,
-          status: 'running',
-          resultIndex: null,
-        },
-      ],
-      'late-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    const file = await readPersistedWatchersFile();
-    const watcher = file.watchers.find(
-      (entry) => entry.id === created.value.watcherId,
-    );
-    if (
-      !watcher ||
-      watcher.target.kind !== 'managed_delegation' ||
-      watcher.runtimeState?.kind !== 'managed_delegation'
-    )
-      throw new Error('Expected managed watch');
-    const deadlineAt = watcher.target.deadlineAt;
-    watcher.status = 'firing';
-    watcher.target.outcome = 'timeout';
-    watcher.runtimeState.pendingDelivery = {
-      eventId: 'late-timeout',
-      attempts: 0,
-      event: {
-        watcherId: watcher.id,
-        outcome: 'timeout',
-        mode: 'all',
-        deadlineAt,
-        targets: [
-          {
-            delegationId,
-            runGeneration: 1,
-            status: 'running',
-            resultIndex: null,
-          },
-        ],
-      },
-    };
-    await writeJsonFile(watchersFilePath, file);
-    await service.handleManagedDelegationSettled(
-      { projectId: 'project-1', worktreeId: 'worktree-1' },
-      delegationId,
-      {
-        resultIndex: 4,
-        runGeneration: 1,
-        status: 'completed',
-        settledAt: deadlineAt + 1,
-        outputTruncated: false,
-      },
-    );
-    const persisted = (await readPersistedWatchersFile()).watchers.find(
-      (watcher) => watcher.id === created.value.watcherId,
-    );
-    expect(persisted?.runtimeState).toMatchObject({
-      targets: [{ delegationId, status: 'completed', resultIndex: null }],
-      pendingDelivery: {
-        event: {
-          outcome: 'timeout',
-          targets: [{ delegationId, status: 'completed', resultIndex: null }],
-        },
-      },
-    });
-  });
-
-  it('reconciles a late delegate status into a timeout after restart', async () => {
-    jest.useFakeTimers();
-    const service = getAppAdvisorWatcherService();
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const delegationId = '88888888-8888-4888-8888-888888888888';
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'codex',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-restart-late',
-        toolCallId: 'watch-call-restart-late',
-        runtimeGeneration: 14,
-        depth: 0,
-      },
-      { delegationIds: [delegationId], mode: 'all', timeoutMs: 0 },
-      [
-        {
-          delegationId,
-          runGeneration: 1,
-          status: 'running',
-          resultIndex: null,
-        },
-      ],
-      'restart-late-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    const watcher = (await readPersistedWatchersFile()).watchers.find(
-      (entry) => entry.id === created.value.watcherId,
-    );
-    if (watcher?.target.kind !== 'managed_delegation')
-      throw new Error('Expected managed watch');
-    jest.spyOn(FileDelegationStorage.prototype, 'load').mockResolvedValue([
-      {
-        state: { delegationId },
-        results: [
-          {
-            runGeneration: 1,
-            status: 'completed',
-            resultIndex: 4,
-            settledAt: watcher.target.deadlineAt + 1,
-          },
-        ],
-      },
-    ] as Awaited<ReturnType<FileDelegationStorage['load']>>);
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message')
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      return true;
-    });
-    await service.reconcileAtStartup();
-    await jest.advanceTimersByTimeAsync(1);
-    await service.drain();
-    const delivered = sendChatWindowCommand.mock.calls
-      .map(([command]) => command)
-      .find((command) => command.type === 'send_watcher_message');
-    expect(delivered?.hiddenContextText).toContain('"status": "completed"');
-    expect(delivered?.hiddenContextText).toContain('"resultIndex": null');
-    expect(delivered?.hiddenContextText).toContain('"phase": "idle"');
-  });
-
-  it('fires a generation-pinned any watch once with metadata only', async () => {
-    jest.useFakeTimers();
-    const service = getAppAdvisorWatcherService();
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') {
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      }
-      return true;
-    });
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-any',
-        toolCallId: 'watch-call-any',
-        runtimeGeneration: 10,
-        depth: 0,
-      },
-      {
-        delegationIds: [
-          '33333333-3333-4333-8333-333333333333',
-          '44444444-4444-4444-8444-444444444444',
-        ],
-        mode: 'any',
-        timeoutMs: 60_000,
-      },
-      [
-        {
-          delegationId: '33333333-3333-4333-8333-333333333333',
-          runGeneration: 1,
-          status: 'running',
-          resultIndex: null,
-        },
-        {
-          delegationId: '44444444-4444-4444-8444-444444444444',
-          runGeneration: 4,
-          status: 'running',
-          resultIndex: null,
-        },
-      ],
-      'any-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    await service.reconcileAtStartup();
-
-    await service.handleManagedDelegationSettled(
-      { projectId: 'project-1', worktreeId: 'worktree-1' },
-      '33333333-3333-4333-8333-333333333333',
-      {
-        resultIndex: 2,
-        runGeneration: 2,
-        status: 'completed',
-        settledAt: Date.now(),
-        finalText: 'wrong generation and private',
-        outputTruncated: false,
-      },
-    );
-    await jest.advanceTimersByTimeAsync(1);
-    await service.drain();
-    expect(sendChatWindowCommand).not.toHaveBeenCalled();
-
-    await service.handleManagedDelegationSettled(
-      { projectId: 'project-1', worktreeId: 'worktree-1' },
-      '44444444-4444-4444-8444-444444444444',
-      {
-        resultIndex: 4,
-        runGeneration: 4,
-        status: 'failed',
-        settledAt: Date.now(),
-        partialText: 'private partial output',
-        outputTruncated: false,
-        error: {
-          code: 'runtime_error',
-          message: 'private error',
-          retryable: false,
-        },
-      },
-    );
-    await jest.advanceTimersByTimeAsync(1);
-    await service.drain();
-
-    const commands = sendChatWindowCommand.mock.calls
-      .map(([command]) => command)
-      .filter((command) => command.type === 'send_watcher_message');
-    expect(commands).toHaveLength(1);
-    if (commands[0]?.type !== 'send_watcher_message') return;
-    expect(commands[0].hiddenContextText).toContain(
-      '\"outcome\": \"completed\"',
-    );
-    expect(commands[0].hiddenContextText).toContain('\"resultIndex\": 4');
-    expect(commands[0].hiddenContextText).not.toContain('private partial');
-    expect(commands[0].hiddenContextText).not.toContain('private error');
-
-    await service.handleManagedDelegationSettled(
-      { projectId: 'project-1', worktreeId: 'worktree-1' },
-      '33333333-3333-4333-8333-333333333333',
-      {
-        resultIndex: 1,
-        runGeneration: 1,
-        status: 'completed',
-        settledAt: Date.now(),
-        outputTruncated: false,
-      },
-    );
-    await jest.advanceTimersByTimeAsync(120_000);
-    expect(
-      sendChatWindowCommand.mock.calls.filter(
-        ([command]) => command.type === 'send_watcher_message',
-      ),
-    ).toHaveLength(1);
-  });
-
-  it('reports why a stopped delegate settled as a content-free exit reason', async () => {
-    jest.useFakeTimers();
-    const service = getAppAdvisorWatcherService();
-    sendChatWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message')
-        service.acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      return true;
-    });
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const delegationId = '99999999-9999-4999-8999-999999999999';
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-exit',
-        toolCallId: 'watch-call-exit',
-        runtimeGeneration: 15,
-        depth: 0,
-      },
-      { delegationIds: [delegationId], mode: 'all', timeoutMs: 60_000 },
-      [
-        {
-          delegationId,
-          runGeneration: 1,
-          status: 'running',
-          resultIndex: null,
-        },
-      ],
-      'exit-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    await service.reconcileAtStartup();
-    const settledAt = Date.now();
-    const privateError = {
-      code: 'terminated_by_parent' as const,
-      message: "Stopped because you stopped 'Private plan'.",
-      retryable: false,
-    };
-    const callKey = 'a'.repeat(64);
-    const record: StoredDelegation = {
-      version: 2,
-      parent: {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-exit',
-        toolCallId: 'spawn-call-exit',
-        runtimeGeneration: 15,
-        depth: 0,
-      },
-      task: {
-        modelId: 'review-model',
-        description: 'Check one fixture',
-        prompt: 'Private prompt',
-        executionMode: 'background',
-        contextPolicy: 'task_only',
-        isolation: 'shared_worktree',
-      },
-      callKey,
-      requestHash: 'b'.repeat(64),
-      createdAt: settledAt,
-      state: {
-        delegationId,
-        runGeneration: 1,
-        sequence: 2,
-        status: 'cancelled',
-        finishedAt: settledAt,
-        outputTruncated: false,
-        stopReason: 'ancestor_stopped',
-        cancelledByUser: false,
-        stoppedBy: { kind: 'user' },
-        error: privateError,
-      },
-      results: [
-        {
-          resultIndex: 1,
-          runGeneration: 1,
-          status: 'cancelled',
-          settledAt,
-          outputTruncated: false,
-          error: privateError,
-          stopReason: 'ancestor_stopped',
-        },
-      ],
-      launch: {
-        version: 1,
-        delegationId,
-        launchKey: callKey,
-        runGeneration: 1,
-        phase: 'settled',
-        terminalStatus: 'cancelled',
-      },
-      delivery: { status: 'suppressed', reason: 'automatic_delivery_removed' },
-    };
-    jest
-      .spyOn(FileDelegationStorage.prototype, 'load')
-      .mockResolvedValue([record]);
-    const [result] = record.results ?? [];
-    if (!result) throw new Error('Expected a settled result');
-    await service.handleManagedDelegationSettled(
-      { projectId: 'project-1', worktreeId: 'worktree-1' },
-      delegationId,
-      result,
-    );
-    await jest.advanceTimersByTimeAsync(1);
-    await service.drain();
-    const delivered = sendChatWindowCommand.mock.calls
-      .map(([command]) => command)
-      .find((command) => command.type === 'send_watcher_message');
-    if (delivered?.type !== 'send_watcher_message')
-      throw new Error('Expected a delivered watch event');
-    expect(delivered.hiddenContextText).toContain(
-      '"exitReason": "ancestor_stopped"',
-    );
-    expect(delivered.hiddenContextText).toContain('"status": "cancelled"');
-    expect(delivered.hiddenContextText).not.toContain('Private plan');
-    expect(delivered.hiddenContextText).not.toContain('terminated_by_parent');
-  });
-
-  it('carries the exit reason into a timeout event a late stop completes', async () => {
-    const service = getAppAdvisorWatcherService();
-    service.shutdown();
-    service.configure(
-      {
-        getMainWindow: () => null,
-        getAppAdvisorWindow: () => null,
-        ensureAppAdvisorWindow,
-        sendAppAdvisorWindowCommand,
-        sendChatWindowCommand,
-        onChange,
-      },
-      { deferStartupRecovery: true },
-    );
-    const delegationId = '66666666-6666-4666-8666-666666666666';
-    const created = await service.createManagedDelegationWatcher(
-      {
-        harnessId: 'claude',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        sessionKey: 'project-1/worktree-1/chat-1',
-        turnId: 'turn-late-stop',
-        toolCallId: 'watch-call-late-stop',
-        runtimeGeneration: 16,
-        depth: 0,
-      },
-      { delegationIds: [delegationId], mode: 'all', timeoutMs: 60_000 },
-      [
-        {
-          delegationId,
-          runGeneration: 1,
-          status: 'running',
-          resultIndex: null,
-        },
-      ],
-      'late-stop-hash',
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    const file = await readPersistedWatchersFile();
-    const watcher = file.watchers.find(
-      (entry) => entry.id === created.value.watcherId,
-    );
-    if (
-      !watcher ||
-      watcher.target.kind !== 'managed_delegation' ||
-      watcher.runtimeState?.kind !== 'managed_delegation'
-    )
-      throw new Error('Expected managed watch');
-    watcher.status = 'firing';
-    watcher.target.outcome = 'timeout';
-    watcher.runtimeState.pendingDelivery = {
-      eventId: 'late-stop-timeout',
-      attempts: 0,
-      event: {
-        watcherId: watcher.id,
-        outcome: 'timeout',
-        mode: 'all',
-        deadlineAt: watcher.target.deadlineAt,
-        targets: [
-          {
-            delegationId,
-            runGeneration: 1,
-            status: 'running',
-            resultIndex: null,
-          },
-        ],
-      },
-    };
-    await writeJsonFile(watchersFilePath, file);
-    await service.handleManagedDelegationSettled(
-      { projectId: 'project-1', worktreeId: 'worktree-1' },
-      delegationId,
-      {
-        resultIndex: 1,
-        runGeneration: 1,
-        status: 'cancelled',
-        settledAt: Date.now(),
-        outputTruncated: false,
-        stopReason: 'stopped_by_parent',
-      },
-    );
-    const persisted = (await readPersistedWatchersFile()).watchers.find(
-      (entry) => entry.id === created.value.watcherId,
-    );
-    expect(persisted?.runtimeState).toMatchObject({
-      pendingDelivery: {
-        event: {
-          outcome: 'completed',
-          targets: [
-            {
-              delegationId,
-              status: 'cancelled',
-              resultIndex: 1,
-              exitReason: 'stopped_by_parent',
-            },
-          ],
-        },
-      },
-    });
-  });
 
   describe('managed delegate recipients', () => {
     const root = (): AppAdvisorWatcherDestination =>
@@ -17158,6 +20223,7 @@ describe('App Advisor watcher service', () => {
           ensureAppAdvisorWindow,
           sendAppAdvisorWindowCommand,
           sendChatWindowCommand,
+          deliverWatcherMessage,
           onChange,
         },
         { deferStartupRecovery: true },
@@ -17287,53 +20353,26 @@ describe('App Advisor watcher service', () => {
       expect((await service.setup(batch(1), root())).ok).toBe(true);
     });
 
-    it('treats a delegate Watch Delegates watcher as that delegate’s', async () => {
+    it('hides persisted legacy watches from both root and delegate recipients', async () => {
       const service = getAppAdvisorWatcherService();
-      const created = await service.createManagedDelegationWatcher(
-        {
-          harnessId: 'claude',
-          projectId: 'project-1',
-          worktreeId: 'worktree-1',
-          chatId: 'root-chat',
-          sessionKey: 'project-1/worktree-1/root-chat',
-          turnId: 'turn-nested',
-          toolCallId: 'watch-nested',
-          runtimeGeneration: 21,
-          depth: 1,
-          parentDelegationId: 'delegate-1',
-          parentRunGeneration: 1,
-        },
-        {
-          delegationIds: ['99999999-9999-4999-8999-999999999999'],
-          mode: 'all',
-          timeoutMs: 60_000,
-        },
-        [
-          {
-            delegationId: '99999999-9999-4999-8999-999999999999',
-            runGeneration: 1,
-            status: 'running',
-            resultIndex: null,
-          },
-        ],
-        'nested-hash',
-      );
-      if (!created.ok) throw new Error(created.error.message);
-      const active = async (
+      const watcher = legacyManagedWatcher('legacy-nested-watch', 'active', {
+        resultIndex: null,
+        recipient: 'delegate',
+        delegationId: 'delegate-1',
+        chatId: 'root-chat',
+      });
+      await seedRegistrationStore([watcher]);
+
+      const activeIds = async (
         recipient: AppAdvisorWatcherDestination,
       ): Promise<string[]> =>
         (await service.search({}, recipient)).activeWatchers.map(
-          (watcher) => watcher.id,
+          (entry) => entry.id,
         );
-      await expect(active(root())).resolves.toEqual([]);
-      await expect(active(delegate('delegate-1'))).resolves.toEqual([
-        created.value.watcherId,
-      ]);
+      await expect(activeIds(root())).resolves.toEqual([]);
+      await expect(activeIds(delegate('delegate-1'))).resolves.toEqual([]);
       await expect(
-        service.deleteAgentWatchers(
-          { watcherIds: [created.value.watcherId] },
-          root(),
-        ),
+        service.deleteAgentWatchers({ watcherIds: [watcher.id] }, root()),
       ).resolves.toMatchObject({ results: [{ status: 'not_found' }] });
     });
 
@@ -17364,50 +20403,13 @@ describe('App Advisor watcher service', () => {
         },
         'wake-call',
       );
-      const nested = await service.createManagedDelegationWatcher(
-        {
-          harnessId: 'claude',
-          projectId: 'project-1',
-          worktreeId: 'worktree-1',
-          chatId: 'root-chat',
-          sessionKey: 'project-1/worktree-1/root-chat',
-          turnId: 'turn-owner',
-          toolCallId: 'watch-owner',
-          runtimeGeneration: 21,
-          depth: 2,
-          parentDelegationId: 'delegate-1',
-          parentRunGeneration: 1,
-          parentDescription: 'Review auth flow',
-        },
-        {
-          delegationIds: ['99999999-9999-4999-8999-999999999999'],
-          mode: 'all',
-          timeoutMs: 60_000,
-        },
-        [
-          {
-            delegationId: '99999999-9999-4999-8999-999999999999',
-            runGeneration: 1,
-            status: 'running',
-            resultIndex: null,
-          },
-        ],
-        'owner-hash',
-      );
-      if (!nested.ok) throw new Error(nested.error.message);
-
       const byId = async (): Promise<Map<string, AppAdvisorWatcherSummary>> =>
         new Map(
           (await service.list(root())).map((watcher) => [watcher.id, watcher]),
         );
       const expectOwners = async (): Promise<void> => {
         const watchers = await byId();
-        for (const id of [
-          rootId,
-          delegateId,
-          wakeup.id,
-          nested.value.watcherId,
-        ])
+        for (const id of [rootId, delegateId, wakeup.id])
           expect(watchers.get(id)?.destination.chatTitle).toBe('Root chat');
         expect(watchers.get(rootId)?.ownerDelegate).toBeUndefined();
         expect(watchers.get(delegateId)?.ownerDelegate).toEqual({
@@ -17419,11 +20421,6 @@ describe('App Advisor watcher service', () => {
           delegationId: 'delegate-2',
           description: 'Fix tests',
           depth: 1,
-        });
-        expect(watchers.get(nested.value.watcherId)?.ownerDelegate).toEqual({
-          delegationId: 'delegate-1',
-          description: 'Review auth flow',
-          depth: 2,
         });
       };
       await expectOwners();
@@ -17812,6 +20809,9 @@ describe('App Advisor watcher service', () => {
         expect(
           await waitForAsyncImmediateCondition(async () => {
             await service.drain();
+            // drain() does not join a timer-started rescan that is still
+            // reading the watcher file, so give that real I/O wall-clock time.
+            await realDelay(10);
             return delegateDeliveries().length >= expected;
           }),
         ).toBe(true);

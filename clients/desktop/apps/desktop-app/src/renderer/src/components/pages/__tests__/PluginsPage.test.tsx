@@ -8,15 +8,19 @@ import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import { useGitHubStore } from '@/stores/githubStore';
+import { SHARED_PLUGINS_CHANGED_EVENT } from '@/hooks/useSharedMarketplaceShares';
 import {
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
-import { act, type JSX, useEffect } from 'react';
+import { act, type JSX, type ReactNode, useEffect } from 'react';
+import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
+import { computePluginShareableRef } from '@canopy/desktop-shared/plugin-refs';
 import { createRoot, type Root } from 'react-dom/client';
+import { createIpcMarketplaceSourcesClient } from '@/client/ipc-marketplace-sources-client';
 import type { MarketplaceSourcesClient } from '@canopy/app-core/client';
 import type {
-  IPCResult,
   MarketplaceInfo,
   MarketplaceOperationProgress,
   MarketplaceRemovalResult,
@@ -38,8 +42,12 @@ import type {
   McpServerData,
   McpServerIndexEntry,
   McpServerStatusEntry,
+  McpServerToolsCacheEntry,
 } from '@canopy/desktop-shared/types/mcp-servers';
-import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  IPCResult,
+  PipelineInfo,
+} from '@canopy/desktop-shared/types/pipeline';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import type {
@@ -47,12 +55,11 @@ import type {
   CuratedPipelineSummary,
 } from '@canopy/protocol/pipeline-catalog';
 import type * as UiAppModule from '@canopy/ui-app';
-import {
-  buildUnifiedPluginEntries,
-  curatedCatalogFromMarketplaces,
-} from '@canopy/ui-app';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
-import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  desktopSectionRoot,
+  useNavigationStore,
+} from '@/stores/navigationStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeaturesStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -62,13 +69,14 @@ import type {
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
 import { useAutomationsStore } from '@/stores/automationsStore';
+import { useChatStore } from '@/stores/chatStore';
+import { useExecutionFeedStore } from '@/lib/workflows/execution-feed';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
 import type { CuratedAutomationSummary } from '@canopy/protocol/automation-catalog';
 import type { UnifiedLocalAutomationInput } from '@canopy/ui-app/capability';
 import { TITLEBAR_BUTTON_CLASSNAME } from '../../sidebar/sidebar-styles';
 import type * as SkillsTabModule from '../SkillsTab';
 import type * as EditSkillWithAIModule from '@/lib/editSkillWithAI';
-import type * as McpServersTabModule from '../McpServersTab';
 import { brandText } from '@/lib/brand';
 import { CuratedMcpConnectionDetail } from '../../plugins/CuratedMcpConnectionDetail';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -146,6 +154,7 @@ const mockCapabilityMarketplaceInventory: CapabilityMarketplaceInventory = {
     onRefresh: jest.fn(),
     onLoadMore: jest.fn(),
     onSelect: jest.fn(),
+    onSelectKey: jest.fn(),
     onBack: jest.fn(),
     onImport: jest.fn(),
   },
@@ -156,6 +165,8 @@ const mockCapabilityMarketplaceInventory: CapabilityMarketplaceInventory = {
   disabledPipelineIds: new Set<string>(),
   curatedReady: true,
   setPipelineEnabled: jest.fn(() => Promise.resolve()),
+  deletePipeline: jest.fn(() => Promise.resolve(true)),
+  deleteSharedPipeline: jest.fn(() => Promise.resolve(true)),
   localCollections: [],
   sharedSkills: [],
   sharedCollections: [],
@@ -177,6 +188,7 @@ const mockCapabilityMarketplaceInventory: CapabilityMarketplaceInventory = {
   sharedAgents: [],
   refreshSharedAgents: jest.fn(),
   sharedPlugins: [],
+  ownSharedPlugins: [],
   sharedBlueprints: [],
   curatedAutomations: {
     rows: [],
@@ -314,7 +326,9 @@ jest.mock('../../agents/ShareAgentModal', () => ({
 }));
 
 const mockAgentsStore = {
-  save: jest.fn<Promise<void>, [unknown]>(() => Promise.resolve()),
+  save: jest.fn<Promise<{ id: string } | undefined>, [unknown]>(() =>
+    Promise.resolve(undefined),
+  ),
   remove: jest.fn<Promise<void>, [string]>(() => Promise.resolve()),
 };
 jest.mock('@/stores/agentsStore', () => ({
@@ -352,20 +366,57 @@ let mockMarketplaceSourcesClient: MarketplaceSourcesClient | undefined;
 let mockOwnedSharesCapability = true;
 // Shared collection Edit (CAN-4263 AC2), on for desktop.
 let mockSharedCollectionEditCapability = true;
+// Custom skill Edit from the Customize row (CAN-4844), on for desktop.
+let mockCustomSkillEditCapability = true;
+// Customize Workflows row actions (CAN-4845), on for desktop.
+let mockWorkflowManagementCapability = true;
 jest.mock('@canopy/app-state', () => ({
   ...jest.requireActual<Record<string, unknown>>('@canopy/app-state'),
   useCapabilities: (): Record<string, unknown> => ({
     marketplaceOwnedAutomationShares: mockOwnedAutomationSharesCapability,
     marketplaceOwnedShares: mockOwnedSharesCapability,
     marketplaceSharedCollectionEdit: mockSharedCollectionEditCapability,
+    pipelines: 'execute',
+    automations: true,
+    workflowManagement: mockWorkflowManagementCapability,
   }),
   // No source client: the Marketplaces tab stays hidden unless a test wires one.
   useCanopyClient: (): Record<string, unknown> => ({
     capabilities: mockMarketplaceSourcesClient
-      ? { marketplaceSources: true, marketplaceSourcePluginInstall: true }
+      ? {
+          marketplaceSources: true,
+          marketplaceSourcePluginInstall: true,
+          marketplaceSourceAdd: true,
+        }
       : {},
     marketplaceSources: mockMarketplaceSourcesClient,
   }),
+  // The shared Customize row reads its Edit gate without requiring a provider.
+  useOptionalCanopyClient: (): Record<string, unknown> => ({
+    capabilities: { customSkillEdit: mockCustomSkillEditCapability },
+  }),
+}));
+
+// The Run modal owns its own flow; rows only open it (CAN-4845).
+const mockOpenWorkflowsRunModal = jest.fn();
+jest.mock('../../activity/useDispatchPipelineModal', () => ({
+  ...jest.requireActual<Record<string, unknown>>(
+    '../../activity/useDispatchPipelineModal',
+  ),
+  useDispatchPipelineModal: (): Record<string, unknown> => ({
+    openWorkflowsRunModal: mockOpenWorkflowsRunModal,
+    openDispatchPipelineModal: jest.fn(),
+    dispatchPipelineModal: null,
+  }),
+}));
+jest.mock('../../automations/AutomationUpdateModal', () => ({
+  AutomationUpdateModal: ({
+    update,
+  }: {
+    update: { activity: { id: string } };
+  }): JSX.Element => (
+    <div data-testid="automation-update-modal">{update.activity.id}</div>
+  ),
 }));
 
 // This suite does not exercise the shared content renderer.
@@ -378,6 +429,7 @@ let mockPluginDetailViewProps: {
   marketplace: MarketplaceInfo;
   onBack: () => void;
   onPluginUpdated: (plugin: PluginInfo) => void;
+  sharedContent?: ReactNode;
 } | null = null;
 const mockSharedDetailMounts = { skill: 0, collection: 0 };
 // `PluginDetailView` owns install/uninstall, provider facets, and the Codex
@@ -391,88 +443,21 @@ jest.mock('../PluginDetailView', () => ({
     marketplace: MarketplaceInfo;
     onBack: () => void;
     onPluginUpdated: (plugin: PluginInfo) => void;
+    sharedContent?: ReactNode;
   }): JSX.Element => {
     mockPluginDetailViewProps = props;
-    return <div data-testid="mock-plugin-detail-view">{props.plugin.name}</div>;
+    return (
+      <div data-testid="mock-plugin-detail-view">
+        {props.plugin.name}
+        {props.sharedContent}
+      </div>
+    );
   },
 }));
-/**
- * Commit-phase mount/unmount tallies for the stubbed tab components.
- *
- * Counted through a *stable* ref callback rather than a render counter on
- * purpose: refs attach during commit, so a render React discards (the
- * derive-during-render section correction in `PluginsManagementView`) never
- * registers, while a section that genuinely reaches the DOM always does. A
- * stable callback identity also keeps React from re-running detach/attach on
- * every re-render.
- */
-const mockTabLifecycle: Record<
-  'skills' | 'mcp' | 'collections',
-  { mounts: number; unmounts: number }
-> = {
-  skills: { mounts: 0, unmounts: 0 },
-  mcp: { mounts: 0, unmounts: 0 },
-  collections: { mounts: 0, unmounts: 0 },
-};
-
-function mockTabLifecycleRef(
-  key: 'skills' | 'mcp' | 'collections',
-): (node: HTMLDivElement | null) => void {
-  return (node: HTMLDivElement | null): void => {
-    if (node) {
-      mockTabLifecycle[key].mounts += 1;
-    } else {
-      mockTabLifecycle[key].unmounts += 1;
-    }
-  };
-}
-
-const mockSkillsTabRef = mockTabLifecycleRef('skills');
-const mockMcpServersTabRef = mockTabLifecycleRef('mcp');
-const mockCollectionsTabRef = mockTabLifecycleRef('collections');
-
-// The management view mounts the moved tab components. They own heavy IPC and
-// Canopy Cloud state this suite does not exercise, so the tab components are
-// stubbed while the dialogs the discovery dropdown opens (`AddSkillsModal`,
-// `CreateSkillModal`, `McpServerDialog`) stay real.
+// The shared skill detail is stubbed; the dialogs the discovery dropdown opens
+// (`AddSkillsModal`, `CreateSkillModal`) stay real.
 jest.mock('../SkillsTab', () => ({
   ...jest.requireActual<typeof SkillsTabModule>('../SkillsTab'),
-  // The stub keeps the real `onOpenSkill` contract so the page-level detail
-  // routing (CAN-3483) is exercised without SkillsTab's own IPC.
-  SkillsTab: ({
-    onOpenSkill,
-  }: {
-    onOpenSkill?: (skill: {
-      sourceId: string;
-      name: string;
-      edit?: true;
-    }) => void;
-  }): JSX.Element => (
-    <div data-testid="mock-skills-tab" ref={mockSkillsTabRef}>
-      <button
-        type="button"
-        data-testid="mock-skills-tab-open-review-checklist"
-        onClick={() =>
-          onOpenSkill?.({ sourceId: 'custom:app', name: 'review-checklist' })
-        }
-      >
-        review-checklist
-      </button>
-      <button
-        type="button"
-        data-testid="mock-skills-tab-edit-review-checklist"
-        onClick={() =>
-          onOpenSkill?.({
-            sourceId: 'custom:app',
-            name: 'review-checklist',
-            edit: true,
-          })
-        }
-      >
-        Edit skill
-      </button>
-    </div>
-  ),
   SharedSkillDetailModal: ({
     mode,
     summary,
@@ -480,6 +465,7 @@ jest.mock('../SkillsTab', () => ({
     onAdd,
     onUpdated,
     onSwitchToEdit,
+    shareAction,
   }: {
     mode: 'view' | 'edit';
     summary: SharedSkillSummary;
@@ -487,6 +473,7 @@ jest.mock('../SkillsTab', () => ({
     onAdd?: () => Promise<void>;
     onUpdated?: (updated: SharedSkillSummary) => void;
     onSwitchToEdit: () => void;
+    shareAction?: unknown;
   }): JSX.Element => {
     useEffect(() => {
       mockSharedDetailMounts.skill += 1;
@@ -496,6 +483,7 @@ jest.mock('../SkillsTab', () => ({
         data-testid="plugins-entry-detail"
         data-presentation={presentation}
         data-content-hash={summary.contentHash}
+        data-share-action={shareAction === undefined ? 'none' : 'present'}
       >
         {summary.name}
         {onAdd && (
@@ -529,12 +517,6 @@ jest.mock('../SkillsTab', () => ({
     );
   },
 }));
-jest.mock('../McpServersTab', () => ({
-  ...jest.requireActual<typeof McpServersTabModule>('../McpServersTab'),
-  McpServersTab: (): JSX.Element => (
-    <div data-testid="mock-mcp-servers-tab" ref={mockMcpServersTabRef} />
-  ),
-}));
 jest.mock('../CollectionsTab', () => ({
   resolveSharedCollectionImport: (detail: {
     collection: {
@@ -555,9 +537,6 @@ jest.mock('../CollectionsTab', () => ({
       })),
       plugins: [],
     }),
-  CollectionsTab: (): JSX.Element => (
-    <div data-testid="mock-collections-tab" ref={mockCollectionsTabRef} />
-  ),
   // Serves both the detail page (`presentation="page"`) and the create-mode
   // dialog the Marketplace opens from "Add custom" and the empty Collections
   // tab. Only its identity and its close/save callbacks matter here.
@@ -802,7 +781,7 @@ function makeMcpStatus(
     transport: 'http',
     connectionStatus: 'auth_required',
     reachability: 'unknown',
-    configs: [{ configId: 'cfg-1', authStatus: 'required' }],
+    configs: [{ configId: 'cfg-1', authStatus: 'not_connected' }],
     ...overrides,
   };
 }
@@ -905,6 +884,7 @@ interface SkillsApiMock {
   readFile: jest.Mock;
   saveCustomSkill: jest.Mock;
   removeSkill: jest.Mock;
+  getShared: jest.Mock;
 }
 
 interface McpServersApiMock {
@@ -920,6 +900,10 @@ interface McpServersApiMock {
   deleteServer: jest.Mock;
   checkHealth: jest.Mock;
   testConnection: jest.Mock;
+  getTools: jest.Mock<
+    Promise<McpServerToolsCacheEntry | null>,
+    [serverId: string, configId?: string]
+  >;
   startOAuthLogin: jest.Mock;
   cancelOAuthLogin: jest.Mock;
   startAccountConnection: jest.Mock;
@@ -969,6 +953,16 @@ function requireElement(node: Element | null, label: string): HTMLElement {
   return node;
 }
 
+function requireInputElement(
+  node: Element | null,
+  label: string,
+): HTMLInputElement {
+  if (!(node instanceof HTMLInputElement)) {
+    throw new Error(`${label} not found or wrong element type`);
+  }
+  return node;
+}
+
 function requireButton(node: Element | null, label: string): HTMLButtonElement {
   if (!(node instanceof HTMLButtonElement)) {
     throw new Error(`${label} not found or wrong element type`);
@@ -1012,20 +1006,14 @@ describe('PluginsPage discovery', () => {
     >;
   };
   /**
-   * Every `onMarketplaceOperationProgress` subscriber. `useMarketplaceList`,
-   * `AddMarketplaceModal`, and `RemoveConfirmDialog` each subscribe, so a test
-   * emitting progress must reach all of them, not just the newest.
+   * Every `onMarketplaceOperationProgress` subscriber. More than one surface
+   * can subscribe, so a test emitting progress must reach all of them, not
+   * just the newest.
    */
   let marketplaceProgressCallbacks: ((
     progress: MarketplaceOperationProgress,
   ) => void)[] = [];
   const originalWindowValues = new Map<string, unknown>();
-
-  function emitMarketplaceProgress(
-    progress: MarketplaceOperationProgress,
-  ): void {
-    marketplaceProgressCallbacks.forEach((callback) => callback(progress));
-  }
 
   function defineWindowApi(key: string, value: unknown): void {
     if (!originalWindowValues.has(key)) {
@@ -1041,6 +1029,8 @@ describe('PluginsPage discovery', () => {
     mockOwnedAutomationSharesCapability = true;
     mockOwnedSharesCapability = true;
     mockSharedCollectionEditCapability = true;
+    mockWorkflowManagementCapability = true;
+    mockOpenWorkflowsRunModal.mockClear();
     mockInventoryOptions = undefined;
     mockCapabilityMarketplaceInventory.error = null;
     mockCapabilityMarketplaceInventory.loadErrors = [];
@@ -1080,6 +1070,7 @@ describe('PluginsPage discovery', () => {
     mockAgentsStore.save.mockReset().mockResolvedValue(undefined);
     mockAgentsStore.remove.mockReset().mockResolvedValue(undefined);
     mockCapabilityMarketplaceInventory.sharedPlugins = [];
+    mockCapabilityMarketplaceInventory.ownSharedPlugins = [];
     mockCapabilityMarketplaceInventory.sharedBlueprints = [];
     mockCapabilityMarketplaceInventory.sharedAutomationNextCursor = null;
     mockCapabilityMarketplaceInventory.sharedAutomationsLoadingMore = false;
@@ -1117,6 +1108,7 @@ describe('PluginsPage discovery', () => {
     );
     useCurrentUiStateStore.setState({ revision: 0, slices: {} });
     useNavigationStore.setState({
+      pluginsPresentation: undefined,
       pendingSkillViewer: undefined,
       pendingPluginsNavigation: undefined,
       pluginsBrowseSectionId: null,
@@ -1127,10 +1119,6 @@ describe('PluginsPage discovery', () => {
     mockSharedDetailMounts.collection = 0;
     mockRequestShare.mockReset();
     marketplaceProgressCallbacks = [];
-    Object.values(mockTabLifecycle).forEach((counts) => {
-      counts.mounts = 0;
-      counts.unmounts = 0;
-    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -1169,6 +1157,7 @@ describe('PluginsPage discovery', () => {
       readFile: jest.fn(),
       saveCustomSkill: jest.fn(),
       removeSkill: jest.fn(),
+      getShared: jest.fn(),
     };
     authChangedListeners = new Set();
     mcpServersApi = {
@@ -1192,6 +1181,15 @@ describe('PluginsPage discovery', () => {
       deleteServer: jest.fn(),
       checkHealth: jest.fn(),
       testConnection: jest.fn(),
+      getTools: jest.fn<
+        Promise<McpServerToolsCacheEntry | null>,
+        [serverId: string, configId?: string]
+      >(() =>
+        Promise.resolve({
+          tools: ['create_issue'],
+          discoveredAt: '2026-05-01T00:00:00.000Z',
+        }),
+      ),
       startOAuthLogin: jest.fn().mockResolvedValue({ status: 'completed' }),
       cancelOAuthLogin: jest.fn().mockResolvedValue(undefined),
       startAccountConnection: jest.fn(),
@@ -1202,7 +1200,6 @@ describe('PluginsPage discovery', () => {
           authChangedListeners.delete(listener);
         };
       }),
-      getTools: jest.fn().mockResolvedValue({ tools: ['create_issue'] }),
       resolveRemoteImage: jest.fn(),
     };
     collectionsApi = {
@@ -1253,6 +1250,9 @@ describe('PluginsPage discovery', () => {
       listCapabilityRefs: jest
         .fn()
         .mockResolvedValue(okResult({ pipelines: [] })),
+      // The Customize Workflows rows read last runs from the run feed.
+      listExecutions: jest.fn().mockResolvedValue({ success: true, data: [] }),
+      onExecutionEvent: jest.fn(() => (): void => undefined),
     });
   });
 
@@ -1261,7 +1261,9 @@ describe('PluginsPage discovery', () => {
       root.unmount();
     });
     mockMarketplaceSourcesClient = undefined;
+    mockCustomSkillEditCapability = true;
     useNavigationStore.setState({
+      pluginsPresentation: undefined,
       pendingSkillViewer: undefined,
       pendingPluginsNavigation: undefined,
       pluginsBrowseSectionId: null,
@@ -1317,7 +1319,7 @@ describe('PluginsPage discovery', () => {
     });
   }
 
-  async function mountFullFixture(): Promise<void> {
+  async function mountFullFixture(overrides: MountOptions = {}): Promise<void> {
     await mount({
       marketplaces: [
         makeCuratedMarketplace(CURATED_PLUGINS),
@@ -1339,6 +1341,7 @@ describe('PluginsPage discovery', () => {
           categories: ['productivity'],
         }),
       ],
+      ...overrides,
     });
   }
 
@@ -1354,6 +1357,7 @@ describe('PluginsPage discovery', () => {
       .map((node) => node.getAttribute('data-testid') ?? '')
       .filter(
         (testId) =>
+          !testId.startsWith('plugins-entry-status-') &&
           !testId.startsWith('plugins-entry-menu-') &&
           !testId.startsWith('plugins-entry-add-') &&
           !testId.startsWith('plugins-entry-share-') &&
@@ -1398,20 +1402,6 @@ describe('PluginsPage discovery', () => {
     await settle();
   }
 
-  /** Open a card's ⋯ menu and return the card's menu surface. */
-  async function openEntryMenu(entryId: string): Promise<HTMLElement> {
-    await press(
-      container.querySelector(`[data-testid="plugins-entry-menu-${entryId}"]`),
-      `Card menu trigger for ${entryId}`,
-    );
-    return requireElement(
-      document.querySelector(
-        `[data-testid="plugins-entry-menu-surface-${entryId}"]`,
-      ),
-      `Card menu surface for ${entryId}`,
-    );
-  }
-
   async function typeQuery(value: string): Promise<void> {
     const input = container.querySelector('[data-testid="plugins-search"]');
     if (!(input instanceof HTMLInputElement)) {
@@ -1422,6 +1412,23 @@ describe('PluginsPage discovery', () => {
     });
     await settle();
   }
+
+  // The Customize row clicked on the Customize home puts the root back as
+  // entered: the search the user typed goes with the type filter.
+  it('clears the search when the section resets in place', async () => {
+    await renderPage();
+    await typeQuery('writing');
+    const reset = desktopSectionRoot.current();
+    expect(reset?.atRoot()).toBe(true);
+
+    act(() => {
+      reset?.resetInPlace();
+    });
+    await settle();
+
+    const input = container.querySelector('[data-testid="plugins-search"]');
+    expect(input instanceof HTMLInputElement ? input.value : null).toBe('');
+  });
 
   it('keeps shared project templates visible in All and search', async () => {
     mockCapabilityMarketplaceInventory.sharedBlueprints = [
@@ -1624,11 +1631,18 @@ describe('PluginsPage discovery', () => {
       'Skills',
     );
     await typeQuery('writing-guide');
+    // The provenance-matched install is the publisher skill's one Installed
+    // row; its catalog copy is not repeated in Browse (CAN-5272).
+    expect(
+      container.querySelector(
+        '[data-testid="customize-row-public-share:skill:publisher-guide"]',
+      ),
+    ).not.toBeNull();
     expect(
       container.querySelector(
         '[data-testid="plugins-entry-public-share:skill:publisher-guide"]',
       ),
-    ).not.toBeNull();
+    ).toBeNull();
     expect(
       container.querySelector(
         '[data-testid="customize-row-skill:custom:app:writing-guide"]',
@@ -1712,6 +1726,8 @@ describe('PluginsPage discovery', () => {
   async function mountMarketplaces(
     marketplaces: MarketplaceInfo[],
   ): Promise<void> {
+    mockMarketplaceSourcesClient =
+      createIpcMarketplaceSourcesClient(pluginsApi);
     await mount({ marketplaces });
     await openManagement('marketplaces');
   }
@@ -1719,7 +1735,7 @@ describe('PluginsPage discovery', () => {
   async function openMarketplaceRow(marketplaceId: string): Promise<void> {
     await click(
       container.querySelector(
-        `[data-testid="marketplace-row-${marketplaceId}"]`,
+        `[data-source-id="${marketplaceId}"] [data-testid="marketplace-source-open"]`,
       ),
       `Marketplace row ${marketplaceId}`,
     );
@@ -1739,10 +1755,6 @@ describe('PluginsPage discovery', () => {
     ReturnType<typeof useCurrentUiStateStore.getState>['envelope']['snapshot']
   >['plugins'] {
     return useCurrentUiStateStore.getState().envelope.snapshot.plugins;
-  }
-
-  function marketplaceModalSnapshot(): unknown {
-    return pluginsSnapshot()?.marketplaceModal;
   }
 
   // -------------------------------------------------------------------------
@@ -1772,6 +1784,49 @@ describe('PluginsPage discovery', () => {
   // Page shell
   // -------------------------------------------------------------------------
 
+  it('applies the Customize status filter beside the search and resets it on a tab change (CAN-4838)', async () => {
+    await mountFullFixture();
+    const trigger = (): HTMLButtonElement =>
+      requireButton(
+        container.querySelector(
+          '[data-testid="customize-installed-status-filter"]',
+        ),
+        'Status filter',
+      );
+    expect(trigger().getAttribute('data-status')).toBe('any');
+    act(() => trigger().click());
+    act(() =>
+      requireButton(
+        document.querySelector(
+          '[data-testid="customize-installed-status-filter-option-disabled"]',
+        ),
+        'Disabled option',
+      ).click(),
+    );
+    expect(trigger().getAttribute('data-status')).toBe('disabled');
+    // A filter expands Installed, so the rail row mounts the page fresh
+    // rather than resetting it in place; either way the filter goes.
+    expect(desktopSectionRoot.current()?.atRoot()).toBe(false);
+    act(() =>
+      requireButton(
+        container.querySelector('[data-testid="plugins-type-tab-skill"]'),
+        'Skills type tab',
+      ).click(),
+    );
+    expect(trigger().getAttribute('data-status')).toBe('any');
+    act(() =>
+      requireButton(
+        container.querySelector('[data-testid="plugins-type-tab-workflow"]'),
+        'Workflows type tab',
+      ).click(),
+    );
+    expect(
+      container.querySelector(
+        '[data-testid="customize-installed-status-filter"]',
+      ),
+    ).toBeNull();
+  });
+
   it('renders the discovery shell: root, search, installed row, add-custom menu', async () => {
     await mountFullFixture();
 
@@ -1781,12 +1836,18 @@ describe('PluginsPage discovery', () => {
     );
     expect(page.className).toContain('page-scroll-gutter');
     expect(page.className).toContain('marketplace-page-scroll');
-    const marketplaceSearch = requireElement<HTMLInputElement>(
+    const marketplaceSearch = requireInputElement(
       container.querySelector('[data-testid="plugins-search"]'),
       'Customize search',
     );
-    expect(marketplaceSearch.parentElement?.className).toContain('-ml-4');
-    expect(marketplaceSearch.placeholder).toBe('Search…');
+    // The shared md SearchField: a 32px capsule whose placeholder names
+    // what it searches.
+    expect(
+      marketplaceSearch
+        .closest('[data-search-field]')
+        ?.getAttribute('data-search-field'),
+    ).toBe('md');
+    expect(marketplaceSearch.placeholder).toBe('Search all capabilities');
     expect(
       container.querySelector('[data-testid="customize-section-installed"]'),
     ).not.toBeNull();
@@ -1794,8 +1855,10 @@ describe('PluginsPage discovery', () => {
       container.querySelector('[data-testid="plugins-add-custom-menu"]'),
       'Add custom menu',
     );
-    expect(addCustomMenu.classList).toContain('gap-1');
-    expect(addCustomMenu.classList).not.toContain('gap-1.5');
+    // The shared Button's 6px gap, pulled back so the chevron sits 2px past
+    // the label.
+    expect(addCustomMenu.classList).toContain('gap-1.5');
+    expect(addCustomMenu.querySelector('svg')?.classList).toContain('-ml-1');
     const mcpTab = requireButton(
       container.querySelector('[data-testid="plugins-type-tab-app"]'),
       'MCP servers type tab',
@@ -1886,7 +1949,7 @@ describe('PluginsPage discovery', () => {
     );
 
     expect(container.textContent).toContain(
-      `Showing saved catalog metadata. Connect to ${brandText.appName} Cloud to preview or add a pipeline.`,
+      `Showing saved catalog metadata. Connect to ${brandText.appName} Cloud to preview or add a workflow.`,
     );
     // One filter control beside the tabs; no native selects, row counts, or
     // manual refresh under the list.
@@ -1897,9 +1960,9 @@ describe('PluginsPage discovery', () => {
     expect(
       container.querySelector('[data-testid="curated-pipeline-load-more"]')
         ?.textContent,
-    ).toBe('Show more pipelines');
+    ).toBe('Show more workflows');
     expect(container.textContent).not.toContain('loaded pipelines');
-    expect(container.textContent).not.toContain('Refresh pipelines');
+    expect(container.textContent).not.toContain('Refresh workflows');
   });
 
   it('explains a curated pipeline catalog load error', async () => {
@@ -1919,7 +1982,7 @@ describe('PluginsPage discovery', () => {
       const notice = container.querySelector(
         '[data-testid="plugins-curated-pipelines-error"]',
       );
-      expect(notice?.textContent).toContain("Couldn't load curated pipelines.");
+      expect(notice?.textContent).toContain("Couldn't load curated workflows.");
       expect(notice?.textContent).toContain(
         'Catalog unavailable for acme-private',
       );
@@ -2010,6 +2073,163 @@ describe('PluginsPage discovery', () => {
     ).toBeNull();
   });
 
+  it('keeps the restored category and its query behind a detail (CAN-4267)', async () => {
+    const plugins = Array.from({ length: 13 }, (_, index) =>
+      makePlugin({
+        name: `curated-tool-${index}`,
+        displayName: `Curated Tool ${index}`,
+        marketplaceId: 'curated/cloud',
+        curated: true,
+      }),
+    );
+    await mount({ marketplaces: [makeCuratedMarketplace(plugins)] });
+    await click(
+      container.querySelector(
+        '[data-testid="plugins-section-heading-category-other"]',
+      ),
+      'Other category',
+    );
+    const search = requireInputElement(
+      container.querySelector('[data-testid="plugins-category-search"]'),
+      'Category search',
+    );
+    act(() => setInputValue(search, 'Tool'));
+    await settle();
+    await openEntry('curated:curated-tool-0');
+    const location = useNavigationStore.getState().pluginsPresentation;
+    const section = useNavigationStore.getState().pluginsBrowseSectionId;
+    if (!location || !section)
+      throw new Error('Expected saved category detail');
+    act(() => root.render(null));
+    useNavigationStore.setState({
+      pluginsPresentation: location,
+      pluginsBrowseSectionId: section,
+      pendingPluginsNavigation: { kind: 'restore', location },
+    });
+    await renderPage();
+    const category = container.querySelector(
+      '[data-testid="plugins-entry-detail-breadcrumb-category"]',
+    );
+    expect(category).not.toBeNull();
+    await click(category, 'Category return');
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '[data-testid="plugins-category-search"]',
+      )?.value,
+    ).toBe('Tool');
+  });
+
+  it('restores workflow filters after Customize remounts (CAN-4267)', async () => {
+    await mount();
+    await click(
+      container.querySelector('[data-testid="plugins-type-tab-workflow"]'),
+      'Workflows',
+    );
+    await click(
+      container.querySelector('[data-testid="plugins-pipeline-filter-source"]'),
+      'Source filter',
+    );
+    await click(
+      document.querySelector(
+        '[data-testid="plugins-pipeline-filter-source-user"]',
+      ),
+      'Custom workflows',
+    );
+    act(() => root.render(null));
+    await renderPage();
+    expect(
+      container.querySelector('[data-testid="plugins-pipeline-filter-source"]')
+        ?.textContent,
+    ).toContain('Custom');
+  });
+
+  it('restores the Installed origin and related detail stack on remount (CAN-4267)', async () => {
+    await mountFullFixture();
+    act(() => root.render(null));
+    useNavigationStore.getState().setPluginsPresentation({
+      browse: { query: '', tab: 'skill', installedExpanded: true },
+      entry: {
+        id: 'skill:custom:app:review-checklist',
+        stack: ['curated:writer-toolkit'],
+        fromInstalled: true,
+      },
+    });
+    await renderPage();
+    expect(
+      container.querySelector(
+        '[data-testid="plugins-entry-detail-breadcrumb-installed"]',
+      ),
+    ).not.toBeNull();
+    expect(pluginsSnapshot()?.page).toMatchObject({
+      detailHistoryDepth: 1,
+      detailBackTarget: 'entry',
+    });
+  });
+
+  it('restores a supporting-file deep link after Customize remounts (CAN-4267)', async () => {
+    skillsApi.readContent.mockResolvedValue(
+      okResult({
+        frontmatter: { name: 'review-checklist', description: 'Checklist' },
+        body: '# Review Checklist',
+      }),
+    );
+    skillsApi.listFiles.mockResolvedValue(
+      okResult({
+        files: ['SKILL.md', 'references/checklist.md'],
+        truncated: false,
+      }),
+    );
+    skillsApi.readFile.mockResolvedValue(
+      okResult({
+        path: 'references/checklist.md',
+        content: '# Supporting checklist',
+      }),
+    );
+    await mountFullFixture();
+    act(() =>
+      useNavigationStore.getState().openSkillViewer({
+        kind: 'installed',
+        sourceId: 'custom:app',
+        skillName: 'review-checklist',
+        filePath: 'references/checklist.md',
+      }),
+    );
+    await settle();
+    expect(skillsApi.readFile).toHaveBeenCalled();
+    skillsApi.readFile.mockClear();
+    act(() => root.render(null));
+    await renderPage();
+    expect(skillsApi.readFile).toHaveBeenCalledWith(
+      'custom:app',
+      'review-checklist',
+      'references/checklist.md',
+    );
+  });
+
+  it('preserves the pipeline Back target when a detail remounts (CAN-4267)', async () => {
+    await mountFullFixture();
+    act(() =>
+      useNavigationStore.getState().openPluginsNavigation({
+        kind: 'entry-detail',
+        entryId: 'skill:custom:app:review-checklist',
+        from: {
+          kind: 'pipeline',
+          pipelineId: 'review-workflow',
+          source: 'user',
+        },
+      }),
+    );
+    await settle();
+    expect(pluginsSnapshot()?.page).toMatchObject({
+      detailBackTarget: 'pipeline',
+    });
+    act(() => root.render(null));
+    await renderPage();
+    expect(pluginsSnapshot()?.page).toMatchObject({
+      detailBackTarget: 'pipeline',
+    });
+  });
+
   it('refreshes only the Pipelines tab from one compact control and ignores repeat clicks', async () => {
     const curated = mockCapabilityMarketplaceInventory.curated;
     if (!curated) throw new Error('Expected curated pipeline inventory');
@@ -2048,7 +2268,7 @@ describe('PluginsPage discovery', () => {
     );
     // Icon-only, labelled, and on the list heading beside the filters.
     expect(button.textContent).toBe('');
-    expect(button.getAttribute('aria-label')).toBe('Refresh pipelines');
+    expect(button.getAttribute('aria-label')).toBe('Refresh workflows');
     expect(button.disabled).toBe(false);
     // The shared Tooltip names it on hover, in place of a native title.
     expect(button.hasAttribute('title')).toBe(false);
@@ -2062,7 +2282,7 @@ describe('PluginsPage discovery', () => {
       Array.from(document.querySelectorAll('[role="tooltip"]'), (node) =>
         node.textContent?.trim(),
       ),
-    ).toEqual(['Refresh pipelines']);
+    ).toEqual(['Refresh workflows']);
 
     await act(async () => {
       button.click();
@@ -2077,7 +2297,7 @@ describe('PluginsPage discovery', () => {
     );
     expect(busy.disabled).toBe(true);
     expect(busy.getAttribute('aria-label')).toBe(
-      'Refresh pipelines (in progress)',
+      'Refresh workflows (in progress)',
     );
     busy.click();
     expect(refreshPipelines).toHaveBeenCalledTimes(1);
@@ -2092,7 +2312,7 @@ describe('PluginsPage discovery', () => {
       'Pipelines refresh',
     );
     expect(idle.disabled).toBe(false);
-    expect(idle.getAttribute('aria-label')).toBe('Refresh pipelines');
+    expect(idle.getAttribute('aria-label')).toBe('Refresh workflows');
   });
 
   it('shows the Pipelines refresh as busy while the curated catalog loads', async () => {
@@ -2619,7 +2839,24 @@ describe('PluginsPage discovery', () => {
   });
 
   it('omits Suggested when no role pick is in the catalog', async () => {
-    await mountFullFixture();
+    // GitHub is not installed here, so its catalog card stays in Browse to
+    // fill Developer tools (CAN-5272).
+    await mountFullFixture({
+      mcpServers: [],
+      mcpStatuses: [],
+      marketplaces: [
+        makeCuratedMarketplace(
+          CURATED_PLUGINS.map((plugin) => ({
+            ...plugin,
+            globalInstallStatus: undefined,
+          })),
+        ),
+        makeMarketplace({
+          pluginCount: MARKETPLACE_PLUGINS.length,
+          plugins: MARKETPLACE_PLUGINS,
+        }),
+      ],
+    });
 
     expect(
       container.querySelector('[data-testid="plugins-section-suggested"]'),
@@ -2667,6 +2904,7 @@ describe('PluginsPage discovery', () => {
     );
     expect(other.querySelector('h2')?.textContent).toBe('Other');
     // A recommended entry that is not a role pick stays in its category.
+    // This fixture is explicitly uninstalled so Browse remains exercised (CAN-5272).
     expect(entryTestIdsWithin(other)).toEqual([
       'plugins-entry-curated:installed-helper',
       'plugins-entry-curated:writer-toolkit',
@@ -2789,12 +3027,16 @@ describe('PluginsPage discovery', () => {
       container.querySelector('[data-testid="plugins-category-page"]'),
     ).not.toBeNull();
 
-    const categorySearch = requireElement<HTMLInputElement>(
+    const categorySearch = requireInputElement(
       categoryPage.querySelector('[data-testid="plugins-category-search"]'),
       'Category search',
     );
-    expect(categorySearch.parentElement?.className).toContain('-ml-4');
-    expect(categorySearch.placeholder).toBe('Search…');
+    expect(
+      categorySearch
+        .closest('[data-search-field]')
+        ?.getAttribute('data-search-field'),
+    ).toBe('md');
+    expect(categorySearch.placeholder).toMatch(/^Search /);
     act(() => setInputValue(categorySearch, 'Tool 8'));
     await settle();
     expect(entryTestIdsWithin(categoryPage)).toEqual([
@@ -2869,8 +3111,7 @@ describe('PluginsPage discovery', () => {
       ),
       'Writer Toolkit card',
     );
-    // The tile is the card's leading element; the trailing "Recommended"
-    // badge remains its own pill.
+    // The tile is the card's leading element.
     const tile = requireElement(card.firstElementChild, 'Card icon tile');
     expect(tile.className).toContain('rounded-full');
     expect(tile.className).not.toContain('rounded-xl');
@@ -2905,67 +3146,14 @@ describe('PluginsPage discovery', () => {
   it('opens installed settings directly from the gear', async () => {
     await mountFullFixture();
     await openInstalledSettings();
-
-    const managementView = requireElement(
-      container.querySelector('[data-testid="plugins-management-view"]'),
-      'Management view',
-    );
-    const installedSection = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-installed"]',
-      ),
-      'Installed management section',
-    );
-    const installedHeading = requireElement(
-      installedSection.querySelector('h1'),
-      'Installed management heading',
-    );
-    expect(installedHeading.textContent).toBe('Installed plugins');
-    expect(installedHeading.className).toContain('text-xl');
-    expect(installedSection.className).toContain('max-w-6xl');
-    expect(installedSection.closest('.page-scroll-gutter')).not.toBeNull();
-    expect(managementView.getAttribute('data-open')).toBe('true');
     expect(
-      container.querySelector('[data-testid="plugins-installed-gear-surface"]'),
-    ).toBeNull();
-
-    const sidebar = requireElement(
-      container.querySelector('[data-testid="plugins-management-sidebar"]'),
-      'Plugin management sidebar',
-    );
-    expect(sidebar.className).toContain('app-sidebar-material');
-    expect(sidebar.className).toContain('sidebar-resizable-surface');
-    expect(sidebar.className).toContain('sidebar-instant-interactions');
-    expect(
-      container.querySelector('[data-testid="plugins-management-back"]'),
-    ).not.toBeNull();
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-management-sidebar-resize-handle"]',
-      ),
+      container.querySelector('#customize-section-installed'),
     ).not.toBeNull();
     expect(
       container
-        .querySelector('[data-testid="plugins-management-nav-installed"]')
-        ?.hasAttribute('data-sidebar-nav-row'),
-    ).toBe(true);
-    for (const section of [
-      'installed',
-      'skills',
-      'mcp',
-      'collections',
-      'marketplaces',
-    ]) {
-      const icon = container
-        .querySelector(`[data-testid="plugins-management-nav-${section}"]`)
-        ?.querySelector('svg');
-      expect(icon?.getAttribute('data-app-icon')).toBe('true');
-      expect(icon?.getAttribute('width')).toBe('14px');
-      expect(icon?.getAttribute('height')).toBe('14px');
-    }
-    expect(
-      container.querySelector('[data-testid="plugins-management-close"]'),
-    ).toBeNull();
+        .querySelector('[data-testid="plugins-type-tab-all"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
   });
 
   it('keeps the capped browse preview when returning from a category page', async () => {
@@ -3081,7 +3269,10 @@ describe('PluginsPage discovery', () => {
 
   it('search filters Installed and Browse while preserving their headings', async () => {
     await mountFullFixture();
-    await typeQuery('github');
+    // "helper" matches the installed helper and the uninstalled marketplace
+    // helpers. An installed item never repeats in Browse (CAN-5272), so the
+    // query must reach an uninstalled one to keep Browse.
+    await typeQuery('helper');
     expect(
       container.querySelector('[data-testid="customize-section-installed"]'),
     ).not.toBeNull();
@@ -3143,7 +3334,7 @@ describe('PluginsPage discovery', () => {
       'Other category section',
     );
     expect(other.getAttribute('data-virtualized')).toBe('false');
-    expect(other.getAttribute('data-row-count')).toBe('4');
+    expect(other.getAttribute('data-row-count')).toBe('3');
   });
 
   it('keeps the complete flat search list in the page flow', async () => {
@@ -3202,26 +3393,6 @@ describe('PluginsPage discovery', () => {
     sections.forEach((section) => {
       expect(section.getAttribute('data-virtualized')).toBe('false');
     });
-  });
-
-  it('does not create a nested scroller for a large search section', async () => {
-    const many: PluginInfo[] = Array.from({ length: 150 }, (_unused, index) =>
-      makePlugin({
-        name: `search-tool-${String(index).padStart(3, '0')}`,
-        displayName: `Search Tool ${String(index).padStart(3, '0')}`,
-        category: 'utilities',
-      }),
-    );
-    await mount({
-      marketplaces: [
-        makeMarketplace({ pluginCount: many.length, plugins: many }),
-      ],
-    });
-    await typeQuery('search tool');
-
-    const body = sectionBody('plugins-and-mcp');
-    expect(body.className).not.toContain('overflow-auto');
-    expect(body.className).toContain('grid');
   });
 
   it('resolves untrusted discovery logos through the safe remote-image bridge', async () => {
@@ -3343,21 +3514,22 @@ describe('PluginsPage discovery', () => {
     ]);
   });
 
-  it('labels only installed rows that need attention', async () => {
+  it('labels only installed rows with a pending sign-in', async () => {
     await mountFullFixture();
     const installed = container.querySelector(
       '[data-testid="customize-section-installed"]',
     );
     expect(
       installed?.querySelector(
-        '[data-testid="customize-row-mcp-catalog:github"]',
+        '[data-testid="customize-row-sign-in-mcp-catalog:github"]',
       )?.textContent,
-    ).toContain('Needs attention');
+    ).toContain('sign-in pending');
     expect(
       installed?.querySelector(
-        '[data-testid="customize-row-curated:installed-helper"]',
-      )?.textContent,
-    ).not.toContain('Needs attention');
+        '[data-testid="customize-row-sign-in-curated:installed-helper"]',
+      ),
+    ).toBeNull();
+    expect(installed?.textContent).not.toContain('Needs attention');
   });
 
   it('omits every badge when nothing needs attention', async () => {
@@ -3428,13 +3600,11 @@ describe('PluginsPage discovery', () => {
 
   it('keeps management reachable through its compatibility event only', async () => {
     await mountFullFixture();
-    expect(
-      container.querySelector('[data-testid="plugins-installed-row"]'),
-    ).toBeNull();
     await openManagement();
+    expect(pluginsSnapshot()?.page).toMatchObject({ view: 'discovery' });
     expect(
-      useCurrentUiStateStore.getState().slices['plugins.page'],
-    ).toMatchObject({ view: 'management', managementSection: 'installed' });
+      container.querySelector('#customize-section-installed'),
+    ).not.toBeNull();
   });
 
   it('reports search activity and result counts without the query text', async () => {
@@ -3476,6 +3646,8 @@ describe('PluginsPage discovery', () => {
   // -------------------------------------------------------------------------
 
   it('opens the existing Add marketplace dialog from the dropdown', async () => {
+    mockMarketplaceSourcesClient =
+      createIpcMarketplaceSourcesClient(pluginsApi);
     await mountFullFixture();
     await openAddCustomMenu();
     expect(
@@ -3485,7 +3657,7 @@ describe('PluginsPage discovery', () => {
     await clickMenuItem('plugins-add-custom-marketplace');
 
     expect(
-      document.querySelector('[aria-labelledby="add-marketplace-modal-title"]'),
+      document.querySelector('[data-testid="marketplace-source-add-dialog"]'),
     ).not.toBeNull();
   });
 
@@ -3528,9 +3700,9 @@ describe('PluginsPage discovery', () => {
       document.querySelector('[aria-labelledby="collection-modal-title"]'),
     ).not.toBeNull();
 
-    // A deep link into management (App Advisor, Cmd+K) keeps the page
+    // A legacy management deep link (App Advisor, Cmd+K) keeps the page
     // mounted, so the editor has to be closed like every other page-owned
-    // dialog, or its overlay stays over the management view.
+    // dialog, or its overlay stays over the new destination.
     await act(async () => {
       window.dispatchEvent(
         new CustomEvent('canopy:plugins-open-management', {
@@ -3577,6 +3749,8 @@ describe('PluginsPage discovery', () => {
   });
 
   it('adds a marketplace through the dropdown dialog without a full refresh', async () => {
+    mockMarketplaceSourcesClient =
+      createIpcMarketplaceSourcesClient(pluginsApi);
     await mount({ marketplaces: [] });
     const added = makeMarketplace({
       id: 'new/plugins',
@@ -3595,6 +3769,17 @@ describe('PluginsPage discovery', () => {
     pluginsApi.addMarketplace.mockResolvedValue(
       okResult({ marketplace: added, providerOutcomes: added.providerStatus }),
     );
+    pluginsApi.addMarketplace.mockImplementation(() => {
+      pluginsApi.loadMarketplaces.mockResolvedValue(
+        okResult(makeCache([added])),
+      );
+      return Promise.resolve(
+        okResult({
+          marketplace: added,
+          providerOutcomes: added.providerStatus,
+        }),
+      );
+    });
 
     await openAddCustomMenu();
     await clickMenuItem('plugins-add-custom-marketplace');
@@ -3625,7 +3810,10 @@ describe('PluginsPage discovery', () => {
 
     expect(pluginsApi.addMarketplace).toHaveBeenCalledWith('new/plugins');
     expect(pluginsApi.refreshMarketplaces).not.toHaveBeenCalled();
-    expect(entryIds()).toContain('mkt:new/plugins/new-tool');
+    expect(
+      container.querySelector('[data-testid="marketplace-source-detail"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain('New Plugins');
   });
 
   // -------------------------------------------------------------------------
@@ -3974,14 +4162,301 @@ describe('PluginsPage discovery', () => {
       ).toBeNull();
     });
 
-    it('keeps one canonical local install alongside its catalog copy and uses the update marker', async () => {
+    describe('Customize workflow rows (CAN-4845)', () => {
+      const ROW = 'automation:local:standup';
+      const storeActions = {
+        updateActivity: jest.fn(),
+        runNow: jest.fn(),
+        deleteActivity: jest.fn(),
+      };
+      let originalStoreActions: Partial<
+        ReturnType<typeof useAutomationsStore.getState>
+      > = {};
+
+      beforeEach(() => {
+        const state = useAutomationsStore.getState();
+        originalStoreActions = {
+          updateActivity: state.updateActivity,
+          runNow: state.runNow,
+          deleteActivity: state.deleteActivity,
+        };
+        storeActions.updateActivity = jest.fn(() =>
+          Promise.resolve({ ok: true }),
+        );
+        storeActions.runNow = jest.fn(() => Promise.resolve({ ok: true }));
+        storeActions.deleteActivity = jest.fn(() =>
+          Promise.resolve({ ok: true }),
+        );
+        useAutomationsStore.setState(storeActions);
+        mockCapabilityMarketplaceInventory.localAutomations = [
+          localAutomation({
+            workflow: {
+              triggerText: 'Daily · 09:00',
+              summary: 'App Advisor prompt: Summarize yesterday',
+              enabled: true,
+              lastRun: null,
+            },
+          }),
+        ];
+        mockCapabilityMarketplaceInventory.automationActivities = [
+          automationActivity('standup'),
+        ];
+      });
+
+      afterEach(() => {
+        useAutomationsStore.setState(originalStoreActions);
+      });
+
+      function toggle(): HTMLButtonElement | null {
+        return container.querySelector<HTMLButtonElement>(
+          `[data-testid="customize-workflow-toggle-${ROW}"]`,
+        );
+      }
+
+      async function openRowMenu(id: string): Promise<void> {
+        await click(
+          container.querySelector(
+            `#customize-section-installed [data-testid="customize-row-menu-${id}"]`,
+          ),
+          `${id} row menu`,
+        );
+      }
+
+      it('shows the schedule, omits a never-run line and shows the footnote', async () => {
+        await mount();
+        await selectAutomationsTab();
+        expect(
+          container.querySelector(
+            `[data-testid="customize-row-trigger-${ROW}"]`,
+          )?.textContent,
+        ).toBe('Daily · 09:00');
+        expect(
+          container.querySelector(
+            `[data-testid="customize-row-last-run-line-${ROW}"]`,
+          ),
+        ).toBeNull();
+        expect(
+          container.querySelector(
+            '[data-testid="customize-installed-footnote"]',
+          )?.textContent,
+        ).toBe(
+          'Pipelines run when you start them or their trigger fires. Automations run on their schedule.',
+        );
+      });
+
+      it('turns an automation off through the automations store', async () => {
+        await mount();
+        await selectAutomationsTab();
+        await click(toggle(), 'automation switch');
+        expect(storeActions.updateActivity).toHaveBeenCalledWith({
+          id: 'standup',
+          enabled: false,
+        });
+      });
+
+      it('reports a failed switch and leaves it on', async () => {
+        const originalAddToast = useGitHubStore.getState().addToast;
+        const addToast = jest.fn();
+        useGitHubStore.setState({ addToast });
+        storeActions.updateActivity.mockImplementation(() =>
+          Promise.resolve({ ok: false, error: 'boom' }),
+        );
+        await mount();
+        await selectAutomationsTab();
+        await click(toggle(), 'automation switch');
+        await settle();
+        useGitHubStore.setState({ addToast: originalAddToast });
+        // Rows show the title-cased display name.
+        expect(addToast).toHaveBeenCalledWith(
+          "Couldn't turn off Morning Standup",
+          'error',
+        );
+        expect(toggle()?.disabled).toBe(false);
+        expect(toggle()?.getAttribute('aria-checked')).toBe('true');
+      });
+
+      it('runs an automation now from the row menu', async () => {
+        await mount();
+        await selectAutomationsTab();
+        await openRowMenu(ROW);
+        await clickMenuItem(`customize-row-menu-${ROW}-run-now`);
+        expect(storeActions.runNow).toHaveBeenCalledWith('standup');
+      });
+
+      it('opens the editor instead of running when a shared pipeline needs review', async () => {
+        mockCapabilityMarketplaceInventory.automationActivities = [
+          {
+            ...automationActivity('standup'),
+            sharedPipelineReview: {
+              remoteId: 'shared-1',
+              detectedAt: '2026-08-20T00:00:00.000Z',
+            },
+          },
+        ];
+        const originalOpenAutomationEdit =
+          useNavigationStore.getState().openAutomationEdit;
+        const openAutomationEdit = jest.fn();
+        useNavigationStore.setState({ openAutomationEdit });
+        await mount();
+        await selectAutomationsTab();
+        await openRowMenu(ROW);
+        await clickMenuItem(`customize-row-menu-${ROW}-run-now`);
+        useNavigationStore.setState({
+          openAutomationEdit: originalOpenAutomationEdit,
+        });
+        expect(openAutomationEdit).toHaveBeenCalledWith({
+          activityId: 'standup',
+        });
+        expect(storeActions.runNow).not.toHaveBeenCalled();
+      });
+
+      it('deletes an automation after Delete… is confirmed', async () => {
+        await mount();
+        await selectAutomationsTab();
+        await openRowMenu(ROW);
+        await clickMenuItem(`customize-row-menu-${ROW}-delete`);
+        await click(
+          document.querySelector(
+            '[data-testid="customize-workflow-delete-confirm"]',
+          ),
+          'Delete confirm',
+        );
+        expect(storeActions.deleteActivity).toHaveBeenCalledWith('standup');
+      });
+
+      it.each([null, { projectId: 'project-a', worktreeId: 'worktree-a' }])(
+        'opens the Run modal with the selected target %j',
+        async (selectedWorktree) => {
+          const previousSelection = useChatStore.getState().selectedWorktree;
+          useChatStore.setState({ selectedWorktree });
+          try {
+            mockCapabilityMarketplaceInventory.pipelines = [
+              {
+                id: 'nightly',
+                name: 'Nightly build',
+                filename: 'nightly.yaml',
+                description: 'Builds every night.',
+                icon: '',
+                createdAt: '2026-08-01T00:00:00.000Z',
+                updatedAt: '2026-08-01T00:00:00.000Z',
+                source: 'user',
+                readonly: false,
+                triggerTypes: ['dispatch'],
+              },
+            ];
+            await mount();
+            await selectAutomationsTab();
+            await click(
+              container.querySelector(
+                '[data-testid="customize-workflow-run-pipeline:user:nightly"]',
+              ),
+              'pipeline Run',
+            );
+            expect(mockOpenWorkflowsRunModal).toHaveBeenCalledWith({
+              initialPipelineId: 'nightly',
+              ...(selectedWorktree ? { currentTarget: selectedWorktree } : {}),
+            });
+          } finally {
+            act(() => {
+              useChatStore.setState({ selectedWorktree: previousSelection });
+            });
+          }
+        },
+      );
+
+      it('hides a pipeline’s last run until the run feed first loads', async () => {
+        useExecutionFeedStore.setState({
+          executions: [],
+          loaded: false,
+          loading: false,
+          error: null,
+        });
+        let land: (result: { success: boolean; data: [] }) => void = () =>
+          undefined;
+        mockCapabilityMarketplaceInventory.pipelines = [
+          {
+            id: 'nightly',
+            name: 'Nightly build',
+            filename: 'nightly.yaml',
+            description: 'Builds every night.',
+            icon: '',
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+            source: 'user',
+            readonly: false,
+            triggerTypes: ['dispatch'],
+          },
+        ];
+        Object.assign(window.pipelines, {
+          listExecutions: jest.fn(
+            () =>
+              new Promise((resolve) => {
+                land = resolve;
+              }),
+          ),
+        });
+        await mount();
+        await selectAutomationsTab();
+        const trigger = (): string | null | undefined =>
+          container.querySelector(
+            '[data-testid="customize-row-trigger-pipeline:user:nightly"]',
+          )?.textContent;
+        // Not `Not run yet` before the feed has said so.
+        expect(trigger()).toBe('Manual');
+        expect(
+          container.querySelector(
+            '[data-testid="customize-row-last-run-line-pipeline:user:nightly"]',
+          ),
+        ).toBeNull();
+        await act(async () => {
+          land({ success: true, data: [] });
+          await Promise.resolve();
+        });
+        await settle();
+        expect(trigger()).toBe('Manual');
+        expect(
+          container.querySelector(
+            '[data-testid="customize-row-last-run-line-pipeline:user:nightly"]',
+          ),
+        ).toBeNull();
+      });
+
+      it('applies an automation update in the install wizard instead of opening its detail', async () => {
+        const installedFrom = {
+          remoteId: 'triage',
+          contentHash: 'old',
+          installedAt: '2026-08-19T00:00:00Z',
+        };
+        mockCapabilityMarketplaceInventory.localAutomations = [
+          localAutomation({ installedFrom, sourceContentHash: 'new' }),
+        ];
+        mockCapabilityMarketplaceInventory.automationActivities = [
+          { ...automationActivity('standup'), installedFrom },
+        ];
+        await mount();
+        Object.assign(window.api, {
+          automations: { getShared: jest.fn().mockResolvedValue({}) },
+        });
+        await selectAutomationsTab();
+        await click(
+          container.querySelector(`[data-testid="customize-update-${ROW}"]`),
+          'automation Update',
+        );
+        await settle();
+        expect(
+          document.querySelector('[data-testid="automation-update-modal"]')
+            ?.textContent,
+        ).toBe('standup');
+        expect(entryDetail()).toBeNull();
+      });
+    });
+
+    it('keeps one canonical local install alongside its catalog copy and offers an Update icon', async () => {
       const local = localAutomation({
         installedFrom: {
           remoteId: 'triage',
           contentHash: 'old',
-          installedAt: '2026-08-19T00:00:00Z',
         },
-        contentHash: 'old',
         sourceContentHash: 'new',
       });
       mockCapabilityMarketplaceInventory.localAutomations = [local];
@@ -3995,14 +4470,16 @@ describe('PluginsPage discovery', () => {
           '#customize-section-installed [data-marketplace-entry="true"]',
         ),
       ).toHaveLength(1);
+      // The catalog copy of the installed automation stays out of Browse
+      // (CAN-5272).
       expect(
         container.querySelector(
           '#customize-section-browse [data-testid="plugins-entry-automation:shared:triage"]',
         ),
-      ).not.toBeNull();
+      ).toBeNull();
       expect(
         container.querySelector(
-          '#customize-section-installed [data-testid="customize-row-update-marker-automation:local:standup"]',
+          '#customize-section-installed [data-testid="customize-update-automation:local:standup"]',
         ),
       ).not.toBeNull();
       expect(
@@ -4529,11 +5006,6 @@ describe('PluginsPage discovery', () => {
 
     expect(entryDetail()?.getAttribute('data-presentation')).toBe('page');
     expect(
-      container
-        .querySelector('[data-testid="plugins-management-view"]')
-        ?.getAttribute('data-open'),
-    ).toBe('false');
-    expect(
       container.querySelector(
         '[data-testid="plugins-entry-detail-breadcrumb-current"]',
       )?.textContent,
@@ -4666,7 +5138,6 @@ describe('PluginsPage discovery', () => {
       skillCount: 1,
       pluginCount: 0,
       mcpServerCount: 0,
-      createdAt: '2026-08-28T00:00:00.000Z',
       updatedAt: '2026-08-28T00:00:00.000Z',
     };
     mockCapabilityMarketplaceInventory.localCollections = [collection];
@@ -4675,11 +5146,6 @@ describe('PluginsPage discovery', () => {
     await openEntry('collection:local:release-collection');
 
     expect(entryDetail()?.getAttribute('data-presentation')).toBe('page');
-    expect(
-      container
-        .querySelector('[data-testid="plugins-management-view"]')
-        ?.getAttribute('data-open'),
-    ).toBe('false');
     expect(
       container.querySelector(
         '[data-testid="plugins-entry-detail-breadcrumb-current"]',
@@ -4701,21 +5167,17 @@ describe('PluginsPage discovery', () => {
     expect(entryDetail()).toBeNull();
   });
 
-  it('offers Connect in the card menu only for entries that need auth', async () => {
+  it('keeps entries that need auth out of Browse and offers Connect in Installed', async () => {
     await mountFullFixture();
     await typeQuery('github');
-
-    const menu = await openEntryMenu('mcp-catalog:github');
-    const connect = requireButton(
-      menu.querySelector(
-        '[data-testid="plugins-menu-connect-mcp-catalog:github"]',
-      ),
-      'GitHub Connect menu item',
-    );
-    expect(connect.textContent).toContain('Connect');
     expect(
-      menu.querySelector(
-        '[data-testid="plugins-menu-view-mcp-catalog:github"]',
+      container.querySelector(
+        '[data-testid="plugins-entry-mcp-catalog:github"]',
+      ),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="customize-row-sign-in-mcp-catalog:github"]',
       ),
     ).not.toBeNull();
   });
@@ -4742,19 +5204,18 @@ describe('PluginsPage discovery', () => {
     ).not.toBeNull();
   });
 
-  it('closes an open card menu when the add-custom menu is opened', async () => {
+  it('does not render an installed card menu when the add-custom menu is opened', async () => {
     await mountFullFixture();
     await typeQuery('github');
-    await openEntryMenu('mcp-catalog:github');
     await openAddCustomMenu();
 
     expect(
       document.querySelector(
-        '[data-testid="plugins-entry-menu-surface-mcp-catalog:github"]',
+        '[data-testid="customize-row-menu-mcp-catalog:github-surface"]',
       ),
     ).toBeNull();
     expect(
-      document.querySelector('[data-testid="plugins-add-custom-marketplace"]'),
+      document.querySelector('[data-testid="plugins-add-custom-mcp"]'),
     ).not.toBeNull();
   });
 
@@ -4796,238 +5257,89 @@ describe('PluginsPage discovery', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Management view — shell, navigation, deep links
+  // Legacy management compatibility — navigation, deep links
   // -------------------------------------------------------------------------
 
-  it('opens the management view at the installed section from the installed row', async () => {
+  it('routes the default management event to Installed', async () => {
     await mountFullFixture();
-    const closedView = requireElement(
-      container.querySelector('[data-testid="plugins-management-view"]'),
-      'Closed management view',
-    );
-    expect(closedView.getAttribute('data-open')).toBe('false');
-    expect(closedView.hasAttribute('inert')).toBe(true);
-    expect(closedView.className).toContain('invisible');
+    await openManagement();
     expect(
-      closedView.querySelector('.settings-sidebar-content'),
+      container.querySelector('#customize-section-installed'),
     ).not.toBeNull();
-    expect(
-      closedView.querySelector(
-        '[data-testid="plugins-management-section-installed"]',
-      ),
-    ).toBeNull();
-
-    await openManagement('installed');
-
-    expect(
-      container.querySelector('[data-testid="plugins-management-view"]'),
-    ).toBe(closedView);
-    const section = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-installed"]',
-      ),
-      'Installed management section',
-    );
-    // Installed + needs-attention entries: the curated helper, the custom
-    // skill, and the auth-required GitHub app.
-    const ids = entryTestIdsWithin(section);
-    expect(ids).toContain('plugins-entry-curated:installed-helper');
-    expect(ids).toContain('plugins-entry-skill:custom:app:review-checklist');
-    expect(ids).toContain('plugins-entry-mcp-catalog:github');
-    expect(ids).not.toContain('plugins-entry-curated:data-cruncher');
+    expect(installedTileIds().length).toBeGreaterThan(0);
   });
 
-  it('closes the management view and returns to discovery', async () => {
-    await mountFullFixture();
-    await openManagement('installed');
-
-    await click(
-      container.querySelector('[data-testid="plugins-management-back"]'),
-      'Management back button',
-    );
-
-    const exitingView = requireElement(
-      container.querySelector('[data-testid="plugins-management-view"]'),
-      'Exiting management view',
-    );
-    expect(exitingView.getAttribute('data-open')).toBe('false');
-    expect(exitingView.hasAttribute('inert')).toBe(true);
-    expect(
-      container.querySelector('[data-testid="plugins-search"]'),
-    ).not.toBeNull();
-    expect(
-      useCurrentUiStateStore.getState().slices['plugins.page'],
-    ).toMatchObject({ view: 'discovery', managementSection: null });
-  });
-
-  it('closes the management view on Escape', async () => {
-    await mountFullFixture();
-    await openManagement('installed');
-
-    await act(async () => {
-      document.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
-      );
-      await Promise.resolve();
-    });
-    await settle();
-
-    const exitingView = requireElement(
-      container.querySelector('[data-testid="plugins-management-view"]'),
-      'Exiting management view',
-    );
-    expect(exitingView.getAttribute('data-open')).toBe('false');
-    expect(exitingView.hasAttribute('inert')).toBe(true);
-  });
-
-  it('mounts each moved tab component from the management rail', async () => {
+  it('returns to All after a management event selects Skills', async () => {
     await mountFullFixture();
     await openManagement('skills');
-    const skillsSection = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-skills"]',
-      ),
-      'Skills management section',
-    );
-    expect(
-      skillsSection.querySelector('[data-testid="page-heading"]'),
-    ).not.toBeNull();
-    expect(skillsSection.querySelector('h1')?.textContent).toBe('Skills');
-    expect(
-      container.querySelector('[data-testid="mock-skills-tab"]'),
-    ).not.toBeNull();
-
     await click(
-      container.querySelector('[data-testid="plugins-management-nav-mcp"]'),
-      'MCP rail item',
-    );
-    const mcpSection = requireElement(
-      container.querySelector('[data-testid="plugins-management-section-mcp"]'),
-      'MCP management section',
+      container.querySelector('[data-testid="plugins-type-tab-all"]'),
+      'All',
     );
     expect(
-      mcpSection.querySelector('[data-testid="page-heading"]'),
-    ).not.toBeNull();
-    expect(mcpSection.querySelector('h1')?.textContent).toBe('MCP servers');
-    expect(
-      container.querySelector('[data-testid="mock-mcp-servers-tab"]'),
-    ).not.toBeNull();
-
-    await click(
-      container.querySelector(
-        '[data-testid="plugins-management-nav-collections"]',
-      ),
-      'Collections rail item',
-    );
-    const collectionsSection = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-collections"]',
-      ),
-      'Collections management section',
-    );
-    expect(
-      collectionsSection.querySelector('[data-testid="page-heading"]'),
-    ).not.toBeNull();
-    expect(collectionsSection.querySelector('h1')?.textContent).toBe(
-      'Collections',
-    );
-    expect(
-      container.querySelector('[data-testid="mock-collections-tab"]'),
-    ).not.toBeNull();
-
-    await click(
-      container.querySelector(
-        '[data-testid="plugins-management-nav-marketplaces"]',
-      ),
-      'Customizes rail item',
-    );
-    const marketplacesSection = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-marketplaces"]',
-      ),
-      'Customizes management section',
-    );
-    expect(
-      marketplacesSection.querySelector('[data-testid="page-heading"]'),
-    ).not.toBeNull();
-    expect(marketplacesSection.querySelector('h1')?.textContent).toBe(
-      'Marketplaces',
-    );
-    expect(
-      container.querySelector('[data-testid="marketplace-row-curated/cloud"]'),
-    ).not.toBeNull();
+      container
+        .querySelector('[data-testid="plugins-type-tab-all"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
   });
 
-  it('never mounts the previous section when reopening at another section', async () => {
+  it('routes the mcp management section to MCP servers', async () => {
     await mountFullFixture();
     await openManagement('mcp');
-    expect(mockTabLifecycle.mcp.mounts).toBe(1);
-
-    await click(
-      container.querySelector('[data-testid="plugins-management-back"]'),
-      'Management back button',
-    );
-    expect(mockTabLifecycle.mcp.unmounts).toBe(1);
-
-    // Reopening at `installed` must not transiently commit the previous
-    // session's MCP section: `McpServersTab`'s mount effects kick a
-    // `listStatus()` plus a sequential `checkHealth` sweep of every configured
-    // server, which the user never asked for.
-    await openManagement('installed');
-
-    expect(mockTabLifecycle.mcp.mounts).toBe(1);
     expect(
-      container.querySelector(
-        '[data-testid="plugins-management-section-installed"]',
-      ),
-    ).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="mock-mcp-servers-tab"]'),
-    ).toBeNull();
+      container
+        .querySelector('[data-testid="plugins-type-tab-app"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
   });
 
-  it('unmounts the previous section when navigating the rail', async () => {
+  it('routes each management section to its Customize tab', async () => {
     await mountFullFixture();
-    await openManagement('mcp');
-    expect(mockTabLifecycle.mcp.mounts - mockTabLifecycle.mcp.unmounts).toBe(1);
-
-    await click(
-      container.querySelector(
-        '[data-testid="plugins-management-nav-collections"]',
-      ),
-      'Collections rail item',
-    );
-
-    // Steady state: exactly one section component is mounted at a time.
-    expect(mockTabLifecycle.mcp.mounts - mockTabLifecycle.mcp.unmounts).toBe(0);
-    expect(
-      container.querySelector('[data-testid="mock-mcp-servers-tab"]'),
-    ).toBeNull();
-    expect(
-      mockTabLifecycle.collections.mounts -
-        mockTabLifecycle.collections.unmounts,
-    ).toBe(1);
-    expect(mockTabLifecycle.skills.mounts).toBe(0);
+    for (const [section, tab] of [
+      ['skills', 'skill'],
+      ['mcp', 'app'],
+      ['collections', 'collection'],
+    ] as const) {
+      await openManagement(section);
+      expect(
+        container
+          .querySelector('[data-testid="plugins-type-tab-' + tab + '"]')
+          ?.getAttribute('aria-selected'),
+      ).toBe('true');
+      expect(
+        container.querySelector('#customize-section-installed'),
+      ).not.toBeNull();
+    }
   });
 
-  it('reports the active management section for App Advisor', async () => {
+  it('switches to Collections when a second management event targets collections', async () => {
+    await mountFullFixture();
+    await openManagement('skills');
+    await openManagement('collections');
+    expect(
+      container
+        .querySelector('[data-testid="plugins-type-tab-collection"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
+  });
+
+  it('reports discovery to App Advisor after a management event', async () => {
     await mountFullFixture();
     await openManagement('mcp');
-
-    expect(
-      useCurrentUiStateStore.getState().slices['plugins.page'],
-    ).toMatchObject({ view: 'management', managementSection: 'mcp' });
+    expect(pluginsSnapshot()?.page).toMatchObject({ view: 'discovery' });
   });
 
   it.each([
-    ['mcp', 'mcp'],
-    ['skills', 'skills'],
-    ['collections', 'collections'],
-    ['bundles', 'collections'],
-    ['marketplace', 'marketplaces'],
+    ['mcp', 'app'],
+    ['skills', 'skill'],
+    ['collections', 'collection'],
+    ['bundles', 'collection'],
+    ['marketplace', 'sources'],
   ])(
-    'opens the management view at the mapped section for a %s deep link',
+    'opens the mapped Customize destination for a %s deep link',
     async (tab: string, section: string) => {
+      mockMarketplaceSourcesClient =
+        createIpcMarketplaceSourcesClient(pluginsApi);
       await mountFullFixture();
 
       await act(async () => {
@@ -5040,7 +5352,7 @@ describe('PluginsPage discovery', () => {
 
       expect(
         container.querySelector(
-          `[data-testid="plugins-management-section-${section}"]`,
+          `[data-testid="plugins-type-tab-${section}"][aria-selected="true"]`,
         ),
       ).not.toBeNull();
     },
@@ -5071,16 +5383,11 @@ describe('PluginsPage discovery', () => {
     await settle();
 
     // CAN-3483: the page itself consumes installed-skill links and opens the
-    // detail page directly, without flashing the management overlay first.
+    // detail page directly.
     expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
     expect(
       container.querySelector('[data-testid="plugins-entry-detail-page"]'),
     ).not.toBeNull();
-    expect(
-      container
-        .querySelector('[data-testid="plugins-management-view"]')
-        ?.getAttribute('data-open'),
-    ).toBe('false');
     expect(
       container.querySelector(
         '[data-testid="plugins-entry-detail-breadcrumb-installed"]',
@@ -5097,9 +5404,7 @@ describe('PluginsPage discovery', () => {
       container.querySelector('[data-testid="plugins-entry-detail-page"]'),
     ).toBeNull();
     expect(
-      container.querySelector(
-        '[data-testid="plugins-management-section-skills"]',
-      ),
+      container.querySelector('[data-testid="customize-section-installed"]'),
     ).not.toBeNull();
   });
 
@@ -5134,27 +5439,332 @@ describe('PluginsPage discovery', () => {
     ).toBe('Not Yet Listed');
   });
 
-  it('opens the management view at Skills for a pending shared skill deep link', async () => {
+  it('opens a shared skill deep link the filtered inventory does not list', async () => {
+    // The shared inventory is filtered server-side by the page's search, so
+    // a link can name a skill the current results omit. The link reads the
+    // skill by id instead.
+    const skill: SharedSkillSummary = {
+      id: 'hidden-skill',
+      name: 'Hidden Skill',
+      description: 'Not in the current search results.',
+      contentHash: 'hidden-skill-hash',
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+      createdBy: { id: 'author', name: 'Author', email: null },
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      canUpdate: false,
+      canDelete: false,
+      publicShare: null,
+    };
+    const detail = createDeferred<SharedSkillSummary & { rawSkill: string }>();
+    skillsApi.getShared.mockReturnValue(detail.promise);
+    mockCapabilityMarketplaceInventory.sharedSkills = [];
     await mountFullFixture();
 
-    await act(async () => {
-      useNavigationStore.setState({
-        pendingSkillViewer: { kind: 'shared', skillId: 'shared-skill-1' },
-      });
-      await Promise.resolve();
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'hidden-skill' });
+    });
+    await settle();
+    expect(skillsApi.getShared).toHaveBeenCalledWith('hidden-skill');
+    // The request stays pending until its detail can open.
+    expect(useNavigationStore.getState().pendingSkillViewer).toEqual({
+      kind: 'shared',
+      skillId: 'hidden-skill',
+    });
+
+    detail.resolve({ ...skill, rawSkill: '# Hidden Skill' });
+    await settle();
+
+    expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
+    expect(entryDetail()?.getAttribute('data-presentation')).toBe('page');
+    expect(entryDetail()?.getAttribute('data-content-hash')).toBe(
+      'hidden-skill-hash',
+    );
+    expect(
+      container.querySelector(
+        '[data-testid="plugins-entry-detail-breadcrumb-current"]',
+      )?.textContent,
+    ).toBe('Hidden Skill');
+  });
+
+  it('reads a shared skill deep link once while the inventory refreshes', async () => {
+    const detail = createDeferred<SharedSkillSummary & { rawSkill: string }>();
+    skillsApi.getShared.mockReturnValue(detail.promise);
+    await mountFullFixture();
+
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'hidden-skill' });
+    });
+    await settle();
+    // An inventory load rebuilds the page's entries while the read is pending.
+    mockCapabilityMarketplaceInventory.sharedSkills = [
+      {
+        id: 'listed-skill',
+        name: 'Listed Skill',
+        description: 'Arrived while the link was pending.',
+        contentHash: 'listed-skill-hash',
+        shareScope: 'organization',
+        owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+        createdBy: { id: 'author', name: 'Author', email: null },
+        createdAt: '2026-08-28T00:00:00.000Z',
+        updatedAt: '2026-08-28T00:00:00.000Z',
+        canUpdate: false,
+        canDelete: false,
+        publicShare: null,
+      },
+    ];
+    await renderPage();
+    await settle();
+
+    expect(skillsApi.getShared).toHaveBeenCalledTimes(1);
+    detail.resolve({
+      id: 'hidden-skill',
+      name: 'Hidden Skill',
+      description: 'Not in the current search results.',
+      contentHash: 'hidden-skill-hash',
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+      createdBy: { id: 'author', name: 'Author', email: null },
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      canUpdate: false,
+      canDelete: false,
+      publicShare: null,
+      rawSkill: '# Hidden Skill',
+    });
+    await settle();
+    expect(entryDetail()?.getAttribute('data-content-hash')).toBe(
+      'hidden-skill-hash',
+    );
+    expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
+  });
+
+  it('drops a shared skill deep link read under the previous Cloud account', async () => {
+    const detail = createDeferred<SharedSkillSummary & { rawSkill: string }>();
+    skillsApi.getShared.mockReturnValue(detail.promise);
+    await mountFullFixture();
+
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'hidden-skill' });
+    });
+    await settle();
+    act(() => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    });
+    detail.resolve({
+      id: 'hidden-skill',
+      name: 'Hidden Skill',
+      description: 'Shared with the previous account.',
+      contentHash: 'hidden-skill-hash',
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+      createdBy: { id: 'author', name: 'Author', email: null },
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      canUpdate: false,
+      canDelete: false,
+      publicShare: null,
+      rawSkill: '# Hidden Skill',
+    });
+    await settle();
+
+    expect(entryDetail()).toBeNull();
+    expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
+  });
+
+  it('offers the share action on a linked shared skill the search hides', async () => {
+    const skill: SharedSkillSummary = {
+      id: 'hidden-skill',
+      name: 'Hidden Skill',
+      description: 'Not in the current search results.',
+      contentHash: 'hidden-skill-hash',
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+      createdBy: { id: 'author', name: 'Author', email: null },
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      canUpdate: false,
+      canDelete: false,
+      publicShare: null,
+    };
+    // Listed, the skill's detail carries the share action (its blocked
+    // reason for a non-owner). Hidden by the search, its link must too.
+    mockCapabilityMarketplaceInventory.sharedSkills = [skill];
+    await mountFullFixture();
+    await openEntry('skill:shared:hidden-skill');
+    expect(entryDetail()?.getAttribute('data-share-action')).toBe('present');
+    await leaveDetailByCrumb('root', 'Shared skill detail root crumb');
+
+    mockCapabilityMarketplaceInventory.sharedSkills = [];
+    await renderPage();
+    skillsApi.getShared.mockResolvedValue({ ...skill, rawSkill: '# Hidden' });
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'hidden-skill' });
+    });
+    await settle();
+
+    expect(entryDetail()?.getAttribute('data-content-hash')).toBe(
+      'hidden-skill-hash',
+    );
+    expect(entryDetail()?.getAttribute('data-share-action')).toBe('present');
+  });
+
+  it('keeps an entry the user opens while a shared skill deep link is read', async () => {
+    skillsApi.readContent.mockResolvedValue(
+      okResult({
+        frontmatter: { name: 'review-checklist', description: 'Checklist' },
+        body: '# Review Checklist',
+      }),
+    );
+    skillsApi.listFiles.mockResolvedValue(
+      okResult({ files: ['SKILL.md'], truncated: false }),
+    );
+    const detail = createDeferred<SharedSkillSummary & { rawSkill: string }>();
+    skillsApi.getShared.mockReturnValue(detail.promise);
+    await mountFullFixture();
+
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'hidden-skill' });
+    });
+    await settle();
+    await openEntry('skill:custom:app:review-checklist');
+    expect(
+      container.querySelector(
+        '[data-testid="plugins-entry-detail-breadcrumb-current"]',
+      )?.textContent,
+    ).toBe('Review Checklist');
+
+    detail.resolve({
+      ...{
+        id: 'hidden-skill',
+        name: 'Hidden Skill',
+        description: 'Not in the current search results.',
+        contentHash: 'hidden-skill-hash',
+        shareScope: 'organization',
+        owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+        createdBy: { id: 'author', name: 'Author', email: null },
+        createdAt: '2026-08-28T00:00:00.000Z',
+        updatedAt: '2026-08-28T00:00:00.000Z',
+        canUpdate: false,
+        canDelete: false,
+        publicShare: null,
+      },
+      rawSkill: '# Hidden Skill',
     });
     await settle();
 
     expect(
       container.querySelector(
-        '[data-testid="plugins-management-section-skills"]',
-      ),
-    ).not.toBeNull();
-    // Shared links are forwarded, not consumed, by the page: SkillsTab still
-    // owns consumption once it mounts inside the section.
-    expect(
-      useNavigationStore.getState().pendingSkillViewer,
-    ).not.toBeUndefined();
+        '[data-testid="plugins-entry-detail-breadcrumb-current"]',
+      )?.textContent,
+    ).toBe('Review Checklist');
+    expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
+  });
+
+  it('drops a shared skill deep link when Customize navigates during the read', async () => {
+    const detail = createDeferred<SharedSkillSummary & { rawSkill: string }>();
+    skillsApi.getShared.mockReturnValue(detail.promise);
+    await mountFullFixture();
+
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'hidden-skill' });
+    });
+    await settle();
+    act(() =>
+      useNavigationStore.getState().openPluginsNavigation({
+        kind: 'marketplace-browse',
+        query: '',
+        tab: 'skill',
+      }),
+    );
+    await settle();
+    detail.resolve({
+      id: 'hidden-skill',
+      name: 'Hidden Skill',
+      description: 'Not in the current search results.',
+      contentHash: 'hidden-skill-hash',
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+      createdBy: { id: 'author', name: 'Author', email: null },
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      canUpdate: false,
+      canDelete: false,
+      publicShare: null,
+      rawSkill: '# Hidden Skill',
+    });
+    await settle();
+
+    expect(entryDetail()).toBeNull();
+    expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
+  });
+
+  it('does not replay a shared skill deep link pending when Customize closes', async () => {
+    const detail = createDeferred<SharedSkillSummary & { rawSkill: string }>();
+    skillsApi.getShared.mockReturnValue(detail.promise);
+    await mountFullFixture();
+
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'hidden-skill' });
+    });
+    await settle();
+    act(() => root.render(null));
+    detail.resolve({
+      id: 'hidden-skill',
+      name: 'Hidden Skill',
+      description: 'Not in the current search results.',
+      contentHash: 'hidden-skill-hash',
+      shareScope: 'organization',
+      owner: { type: 'organization', id: 'canopy', name: 'Canopy' },
+      createdBy: { id: 'author', name: 'Author', email: null },
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      canUpdate: false,
+      canDelete: false,
+      publicShare: null,
+      rawSkill: '# Hidden Skill',
+    });
+    await settle();
+
+    // The user left before the skill opened; a later visit starts fresh.
+    expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
+    await renderPage();
+    await settle();
+    expect(entryDetail()).toBeNull();
+    expect(skillsApi.getShared).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a shared skill deep link that cannot be read', async () => {
+    skillsApi.getShared.mockRejectedValue(
+      new Error('Shared skill not found (404)'),
+    );
+    await mountFullFixture();
+    act(() => {
+      useNavigationStore
+        .getState()
+        .openSkillViewer({ kind: 'shared', skillId: 'missing' });
+    });
+    await settle();
+    expect(useNavigationStore.getState().pendingSkillViewer).toBeUndefined();
+    expect(entryDetail()).toBeNull();
+    expect(container.textContent).toContain(
+      'This shared resource was not found.',
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -5162,866 +5772,272 @@ describe('PluginsPage discovery', () => {
   // page-level marketplace UX suite; see task-2-report.md Finding 1)
   // -------------------------------------------------------------------------
 
-  it('never frames the marketplaces section as a "Claude Marketplace"', async () => {
-    await mountMarketplaces([makeBuiltInMarketplace()]);
-    const section = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-marketplaces"]',
-      ),
-      'Customizes section',
-    );
-    expect(section.textContent).not.toMatch(/Claude Marketplace/);
-    expect(section.textContent).toContain('Marketplaces');
-  });
-
-  it('renders the built-in marketplace row with a Built-in source badge and the brand name', async () => {
-    const builtIn = makeBuiltInMarketplace();
-    await mountMarketplaces([builtIn]);
-
-    const row = container.querySelector(
-      `[data-testid="marketplace-row-${builtIn.id}"]`,
-    );
-    expect(row).not.toBeNull();
-    expect(row?.textContent).toContain('Built-in');
-    expect(row?.textContent).toContain('Canopy');
-    // Built-in source must not be a clickable GitHub link.
-    expect(row?.querySelector('a')).toBeNull();
-    // Provider icons still render for the built-in row.
-    expect(
-      row?.querySelector('[data-testid="provider-support-icons"]'),
-    ).not.toBeNull();
-  });
-
-  it('does not offer a remove action for the built-in marketplace row', async () => {
-    const builtIn = makeBuiltInMarketplace();
-    await mountMarketplaces([builtIn]);
-
-    const row = container.querySelector(
-      `[data-testid="marketplace-row-${builtIn.id}"]`,
-    );
-    expect(row).not.toBeNull();
-    expect(
-      row?.querySelector('button[aria-label="More marketplace actions"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="remove-marketplace-action"]'),
-    ).toBeNull();
-  });
-
-  it('renders the curated marketplace row with a Curated source badge and the brand name', async () => {
-    const curated = makeCuratedMarketplace([]);
-    await mountMarketplaces([curated]);
-
-    const row = container.querySelector(
-      `[data-testid="marketplace-row-${curated.id}"]`,
-    );
-    expect(row).not.toBeNull();
-    expect(row?.textContent).toContain('Curated');
-    expect(row?.textContent).toContain('Canopy');
-    expect(row?.querySelector('a')).toBeNull();
-  });
-
-  it('does not offer a remove action for the curated marketplace row', async () => {
-    const curated = makeCuratedMarketplace([]);
-    await mountMarketplaces([curated]);
-
-    const row = container.querySelector(
-      `[data-testid="marketplace-row-${curated.id}"]`,
-    );
-    expect(row).not.toBeNull();
-    expect(
-      row?.querySelector('button[aria-label="More marketplace actions"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="remove-marketplace-action"]'),
-    ).toBeNull();
-  });
-
-  it('does not offer a "Check for updates" action for the curated marketplace row', async () => {
-    const curated = makeCuratedMarketplace([]);
-    await mountMarketplaces([curated]);
-
-    const row = container.querySelector(
-      `[data-testid="marketplace-row-${curated.id}"]`,
-    );
-    expect(row).not.toBeNull();
-    expect(
-      row?.querySelector('button[aria-label="Check for updates"]'),
-    ).toBeNull();
-    expect(pluginsApi.updateMarketplace).not.toHaveBeenCalled();
-  });
-
-  it('still offers a "Check for updates" action for the built-in marketplace row', async () => {
-    const builtIn = makeBuiltInMarketplace();
-    await mountMarketplaces([builtIn]);
-
-    const row = container.querySelector(
-      `[data-testid="marketplace-row-${builtIn.id}"]`,
-    );
-    expect(row).not.toBeNull();
-    expect(
-      row?.querySelector('button[aria-label="Check for updates"]'),
-    ).not.toBeNull();
-  });
-
-  it('updates a marketplace row in place when "Check for updates" succeeds', async () => {
-    const builtIn = makeBuiltInMarketplace({ pluginCount: 1 });
-    await mountMarketplaces([builtIn]);
-    pluginsApi.updateMarketplace.mockResolvedValue(
-      okResult(makeBuiltInMarketplace({ pluginCount: 7 })),
-    );
-
-    await click(
-      container.querySelector(
-        `[data-testid="marketplace-row-${builtIn.id}"] button[aria-label="Check for updates"]`,
-      ),
-      'Check for updates button',
-    );
-
-    expect(pluginsApi.updateMarketplace).toHaveBeenCalledWith(builtIn.id);
-    expect(pluginsApi.refreshMarketplaces).not.toHaveBeenCalled();
-    expect(
-      container.querySelector(`[data-testid="marketplace-row-${builtIn.id}"]`)
-        ?.textContent,
-    ).toContain('7');
-  });
-
-  it('groups personalized curated recommendations ahead of the remaining plugins', async () => {
-    const curated = makeCuratedMarketplace([
-      makePlugin({ name: 'alpha-tool', marketplaceId: 'curated/cloud' }),
-      makePlugin({
-        name: 'zeta-recommended',
-        marketplaceId: 'curated/cloud',
-        recommended: true,
-      }),
-      makePlugin({
-        name: 'beta-recommended',
-        marketplaceId: 'curated/cloud',
-        recommended: true,
-      }),
-    ]);
-    await mountMarketplaces([curated]);
-    await openMarketplaceRow(curated.id);
-
-    expect(
-      container.querySelector('[data-testid="recommended-plugins-section"]')
-        ?.textContent,
-    ).toContain('Recommended for you');
-    expect(
-      container.querySelector(
-        '[data-testid="plugin-recommendation-badge-zeta-recommended"]',
-      ),
-    ).not.toBeNull();
-
-    expect(
-      container.querySelector('[data-testid="plugin-row-alpha-tool"]')
-        ?.textContent,
-    ).toContain('Alpha Tool');
-    expect(
-      container.querySelector('[data-testid="plugin-row-alpha-tool"]')
-        ?.textContent,
-    ).not.toContain('alpha-tool');
-
-    const rows = Array.from(
-      container.querySelectorAll('[data-testid^="plugin-row-"]'),
-    ).map((row) => row.getAttribute('data-testid'));
-    expect(rows).toEqual([
-      'plugin-row-beta-recommended',
-      'plugin-row-zeta-recommended',
-      'plugin-row-alpha-tool',
-    ]);
-  });
-
-  it.each([
-    ['dbt', 'dbt labs', 'dbt labs'],
-    ['crowdstrike-falcon-foundry', undefined, 'CrowdStrike Falcon Foundry'],
-  ])(
-    'lists resolved plugin name %s verbatim',
-    async (name, displayName, expected): Promise<void> => {
-      const curated = makeCuratedMarketplace([
-        makePlugin({ name, displayName, marketplaceId: 'curated/cloud' }),
-      ]);
-      const entries = buildUnifiedPluginEntries({
-        curatedPlugins: curatedCatalogFromMarketplaces([curated]),
-        marketplaces: [curated],
-        installedSkills: [],
-        mcpServers: [],
-        mcpStatuses: [],
-        curatedMcpServers: [],
-        providerConnectors: [],
-      });
-      expect(entries.find((entry) => entry.kind === 'plugin')?.name).toBe(
-        expected,
-      );
-      await mountMarketplaces([curated]);
-      await openMarketplaceRow(curated.id);
+  describe('Customize marketplace source replacements (CAN-4267)', () => {
+    it('preserves protected source permissions on the shared rows', async () => {
+      const builtIn = makeBuiltInMarketplace();
+      const curated = makeCuratedMarketplace([]);
+      await mountMarketplaces([builtIn, curated]);
+      for (const source of [builtIn, curated]) {
+        const row = container.querySelector(`[data-source-id="${source.id}"]`);
+        expect(row).not.toBeNull();
+        expect(
+          row?.querySelector('[data-testid="marketplace-source-remove"]'),
+        ).toBeNull();
+      }
       expect(
-        container.querySelector(`[data-testid="plugin-row-${name}"] td span`)
-          ?.textContent,
-      ).toBe(expected);
-    },
-  );
-
-  it('renders and searches curated plugins by display name while retaining the key', async () => {
-    const curated = makeCuratedMarketplace([
-      makePlugin({
-        name: 'writer-toolkit',
-        displayName: 'Writer Toolkit',
-        marketplaceId: 'curated/cloud',
-      }),
-    ]);
-    await mountMarketplaces([curated]);
-    await openMarketplaceRow(curated.id);
-
-    const row = container.querySelector(
-      '[data-testid="plugin-row-writer-toolkit"]',
-    );
-    expect(row?.textContent).toContain('Writer Toolkit');
-
-    const input = container.querySelector<HTMLInputElement>(
-      'input[placeholder="Search by name…"]',
-    );
-    if (!input) {
-      throw new Error('Customize plugin search input not found');
-    }
-    act(() => {
-      setInputValue(input, 'Writer');
+        container.querySelector(
+          `[data-source-id="${builtIn.id}"] [data-testid="marketplace-source-update"]`,
+        ),
+      ).not.toBeNull();
+      expect(
+        container.querySelector(
+          `[data-source-id="${curated.id}"] [data-testid="marketplace-source-update"]`,
+        ),
+      ).toBeNull();
     });
-    expect(
-      container.querySelector('[data-testid="plugin-row-writer-toolkit"]'),
-    ).not.toBeNull();
-  });
 
-  it('shows background marketplace refresh progress and reloads cache on completion', async () => {
-    const initialMarketplace = makeMarketplace({ pluginCount: 1 });
-    const refreshedMarketplace = makeMarketplace({ pluginCount: 2 });
-    configureApis({});
-    pluginsApi.loadMarketplaces
-      .mockReset()
-      .mockResolvedValueOnce(okResult(makeCache([initialMarketplace])))
-      .mockResolvedValueOnce(okResult(makeCache([refreshedMarketplace])));
-    await renderPage();
-    await openManagement('marketplaces');
+    it('updates a source through IPC and patches its shared row without a full refresh', async () => {
+      const source = makeMarketplace();
+      await mountMarketplaces([source]);
+      pluginsApi.updateMarketplace.mockResolvedValue(
+        okResult(
+          makeMarketplace({
+            pluginCount: 7,
+            plugins: Array.from({ length: 7 }, (_, index) =>
+              makePlugin({ name: `plugin-${index}` }),
+            ),
+          }),
+        ),
+      );
+      pluginsApi.loadMarketplaces.mockResolvedValue(
+        okResult(
+          makeCache([
+            makeMarketplace({
+              plugins: Array.from({ length: 7 }, (_, index) =>
+                makePlugin({ name: `plugin-${index}` }),
+              ),
+              pluginCount: 7,
+            }),
+          ]),
+        ),
+      );
+      await click(
+        container.querySelector('[data-testid="marketplace-source-update"]'),
+        'Update source',
+      );
+      expect(pluginsApi.updateMarketplace).toHaveBeenCalledWith(source.id);
+      expect(pluginsApi.refreshMarketplaces).not.toHaveBeenCalled();
+      expect(
+        container.querySelector(`[data-source-id="${source.id}"]`)?.textContent,
+      ).toContain('7 plugins');
+    });
 
-    expect(marketplaceProgressCallbacks.length).toBeGreaterThan(0);
-
-    act(() => {
-      emitMarketplaceProgress({
-        operation: 'refresh',
-        status: 'running',
-        message: 'Checking installed marketplaces…',
+    it('keeps provider-invalid sources visible with recovery and removal controls', async () => {
+      const source = makeMarketplace({
+        validProviders: [],
+        providerStatus: {
+          claude: {
+            provider: 'claude',
+            state: 'invalid',
+            accepted: false,
+            pluginCount: 0,
+            lastCheckedAt: '2026-05-01T00:00:00.000Z',
+            error: 'Claude rejected the source',
+          },
+          codex: {
+            provider: 'codex',
+            state: 'invalid',
+            accepted: false,
+            pluginCount: 0,
+            lastCheckedAt: '2026-05-01T00:00:00.000Z',
+            error: 'Codex rejected the source',
+          },
+        },
       });
+      await mountMarketplaces([source]);
+      expect(
+        container.querySelector('[data-source-state="invalid"]'),
+      ).not.toBeNull();
+      expect(container.textContent).toContain('Claude rejected the source');
+      expect(
+        container.querySelector('[data-testid="marketplace-source-remove"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="marketplace-source-update"]'),
+      ).not.toBeNull();
     });
 
-    expect(
-      container.querySelector('[data-testid="marketplace-list-progress"]')
-        ?.textContent,
-    ).toContain('Checking installed marketplaces…');
+    it('shows a normalized GitHub location and provider support in the shared source row', async () => {
+      await mountMarketplaces([
+        makeMarketplace({ sourceUrl: 'https://github.com/acme/plugins' }),
+      ]);
+      const row = container.querySelector(
+        '[data-testid="marketplace-source-row"]',
+      );
+      expect(row?.textContent).toContain('acme/plugins');
+      expect(row?.textContent).not.toContain('github.com/https://');
+    });
 
-    await act(async () => {
-      emitMarketplaceProgress({
-        operation: 'refresh',
-        status: 'complete',
-        message: 'Customize refresh complete.',
+    it('filters source plugins and returns from the existing plugin detail to the same source', async () => {
+      const source = makeMarketplace({
+        plugins: [
+          makePlugin({ name: 'alpha-tool' }),
+          makePlugin({ name: 'beta-tool' }),
+        ],
+        pluginCount: 2,
       });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await settle();
-
-    expect(pluginsApi.loadMarketplaces).toHaveBeenCalledTimes(2);
-    expect(
-      container.querySelector('[data-testid="marketplace-list-progress"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector(
-        `[data-testid="marketplace-row-${refreshedMarketplace.id}"]`,
-      )?.textContent,
-    ).toContain('2');
-  });
-
-  it('shows marketplace helper text mentioning optional provider install', async () => {
-    await mountMarketplaces([]);
-    const section = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-marketplaces"]',
-      ),
-      'Customizes section',
-    );
-    expect(section.textContent).toContain('includes a built-in marketplace');
-    expect(section.textContent).toContain(
-      'installing them to Claude or Codex is optional',
-    );
-  });
-
-  it('shows provider icons on a dual-valid marketplace row', async () => {
-    const marketplace = makeMarketplace();
-    await mountMarketplaces([marketplace]);
-
-    const row = container.querySelector(
-      `[data-testid="marketplace-row-${marketplace.id}"]`,
-    );
-    expect(row).not.toBeNull();
-    expect(
-      row?.querySelector('[data-testid="provider-support-icons"]'),
-    ).not.toBeNull();
-    expect(
-      row?.querySelector('[data-testid="provider-support-icon-claude"]'),
-    ).not.toBeNull();
-    expect(
-      row?.querySelector('[data-testid="provider-support-icon-codex-native"]'),
-    ).not.toBeNull();
-  });
-
-  it('renders full GitHub source URLs without duplicating the host', async () => {
-    await mountMarketplaces([
-      makeMarketplace({ sourceUrl: 'https://github.com/acme/plugins' }),
-    ]);
-
-    expect(
-      container.querySelector('a[href="https://github.com/acme/plugins"]'),
-    ).not.toBeNull();
-    expect(container.innerHTML).not.toContain(
-      'https://github.com/https://github.com/acme/plugins',
-    );
-  });
-
-  it('displays GitHub source as owner/repo even when stored as a full URL', async () => {
-    await mountMarketplaces([
-      makeMarketplace({ sourceUrl: 'https://github.com/acme/plugins' }),
-    ]);
-
-    const link = container.querySelector(
-      'a[href="https://github.com/acme/plugins"]',
-    );
-    expect(link?.textContent).toBe('acme/plugins');
-  });
-
-  it('renders the inline error banner with Retry refresh + Remove when both providers are invalid', async () => {
-    const broken = makeMarketplace({
-      id: 'mkt-broken',
-      validProviders: [],
-      providerStatus: {
-        claude: {
-          provider: 'claude',
-          state: 'invalid',
-          accepted: false,
-          pluginCount: 0,
-          lastCheckedAt: '2026-05-01T00:00:00.000Z',
-          error: 'Provider rejected',
-        },
-        codex: {
-          provider: 'codex',
-          state: 'invalid',
-          accepted: false,
-          pluginCount: 0,
-          lastCheckedAt: '2026-05-01T00:00:00.000Z',
-          error: 'Provider rejected',
-        },
-      },
-    });
-    await mountMarketplaces([broken]);
-
-    expect(
-      container.querySelector(
-        `[data-testid="marketplace-error-banner-${broken.id}"]`,
-      ),
-    ).not.toBeNull();
-    const banner = container.querySelector(
-      `[data-testid="marketplace-error-banner-${broken.id}"]`,
-    );
-    const providerErrors = Array.from(
-      banner?.querySelectorAll('li span') ?? [],
-    ).filter((el) => el.textContent === 'Provider rejected');
-    expect(providerErrors).toHaveLength(2);
-    expect(banner?.textContent).toContain('This marketplace is not available.');
-    expect(
-      container.querySelector(`[data-testid="marketplace-retry-${broken.id}"]`),
-    ).not.toBeNull();
-    expect(
-      container.querySelector(
-        `[data-testid="marketplace-remove-${broken.id}"]`,
-      ),
-    ).not.toBeNull();
-  });
-
-  it('explains suppressed Codex rechecks when the marketplace is structurally invalid', async () => {
-    const broken = makeMarketplace({
-      id: 'mkt-codex-structural',
-      validProviders: [],
-      providerStatus: {
-        claude: {
-          provider: 'claude',
-          state: 'invalid',
-          accepted: false,
-          pluginCount: 0,
-          lastCheckedAt: '2026-05-01T00:00:00.000Z',
-          error: 'Customize is available only through Codex.',
-        },
-        codex: {
-          provider: 'codex',
-          state: 'invalid',
-          accepted: false,
-          pluginCount: 0,
-          lastCheckedAt: '2026-05-01T00:00:00.000Z',
-          error: 'Repository did not contain .codex-plugin/plugin.json',
-          structurallyInvalidAtRevision: 'abc123',
-        },
-      },
-    });
-    await mountMarketplaces([broken]);
-
-    const note = container.querySelector(
-      `[data-testid="marketplace-codex-structural-note-${broken.id}"]`,
-    );
-    expect(note).not.toBeNull();
-    expect(note?.textContent).toContain('Retry refresh');
-  });
-
-  it('omits the structural Codex note for a transient provider failure', async () => {
-    const broken = makeMarketplace({
-      id: 'mkt-transient',
-      validProviders: [],
-      providerStatus: {
-        claude: {
-          provider: 'claude',
-          state: 'invalid',
-          accepted: false,
-          pluginCount: 0,
-          lastCheckedAt: '2026-05-01T00:00:00.000Z',
-          error: 'Provider rejected',
-        },
-        codex: {
-          provider: 'codex',
-          state: 'invalid',
-          accepted: false,
-          pluginCount: 0,
-          lastCheckedAt: '2026-05-01T00:00:00.000Z',
-          error: 'Request timed out',
-        },
-      },
-    });
-    await mountMarketplaces([broken]);
-
-    expect(
-      container.querySelector(
-        `[data-testid="marketplace-codex-structural-note-${broken.id}"]`,
-      ),
-    ).toBeNull();
-  });
-
-  // -------------------------------------------------------------------------
-  // Management view — marketplace plugin modal
-  // -------------------------------------------------------------------------
-
-  it('disables row installs while a bulk install is running', async () => {
-    const firstInstall = createDeferred<IPCResult<PluginInfo>>();
-    const alpha = makePlugin({ name: 'alpha-tool' });
-    const beta = makePlugin({
-      name: 'beta-tool',
-      externalSource: { source: 'github', url: 'https://github.com/acme/beta' },
-    });
-    pluginsApi.installPlugin.mockImplementation(
-      (
-        _marketplaceId: string,
-        pluginName: string,
-      ): Promise<IPCResult<PluginInfo>> => {
-        if (pluginName === 'alpha-tool') {
-          return firstInstall.promise;
-        }
-        return Promise.resolve(
-          okResult(makePlugin({ name: pluginName, details: emptyDetails })),
-        );
-      },
-    );
-
-    const marketplace = makeMarketplace({
-      pluginCount: 2,
-      plugins: [alpha, beta],
-    });
-    await mountMarketplaces([marketplace]);
-    await openMarketplaceRow(marketplace.id);
-
-    const bulkButton = requireButton(
-      container.querySelector('[data-testid="bulk-install-plugins"]'),
-      'Bulk install button',
-    );
-    await act(async () => {
-      bulkButton.click();
-      await Promise.resolve();
-    });
-
-    const queuedInstallButton = requireButton(
-      container.querySelector('[data-testid="plugin-install-beta-tool"]'),
-      'Queued install button',
-    );
-    expect(queuedInstallButton.disabled).toBe(true);
-
-    act(() => {
-      queuedInstallButton.click();
-    });
-    expect(pluginsApi.installPlugin).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      firstInstall.resolve(
-        okResult(makePlugin({ name: 'alpha-tool', details: emptyDetails })),
+      await mountMarketplaces([source]);
+      await openMarketplaceRow(source.id);
+      const search = container.querySelector(
+        '[data-testid="marketplace-source-search"]',
       );
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(pluginsApi.installPlugin).toHaveBeenCalledTimes(2);
-    expect(pluginsApi.installPlugin).toHaveBeenNthCalledWith(
-      2,
-      marketplace.id,
-      'beta-tool',
-      'https://github.com/acme/beta',
-    );
-  });
-
-  it('excludes already installing plugins from bulk install progress', async () => {
-    const firstInstall = createDeferred<IPCResult<PluginInfo>>();
-    const alpha = makePlugin({ name: 'alpha-tool' });
-    const beta = makePlugin({
-      name: 'beta-tool',
-      externalSource: { source: 'github', url: 'https://github.com/acme/beta' },
-    });
-    pluginsApi.installPlugin.mockImplementation(
-      (
-        _marketplaceId: string,
-        pluginName: string,
-      ): Promise<IPCResult<PluginInfo>> => {
-        if (pluginName === 'alpha-tool') {
-          return firstInstall.promise;
-        }
-        return Promise.resolve(
-          okResult(makePlugin({ name: pluginName, details: emptyDetails })),
-        );
-      },
-    );
-
-    const marketplace = makeMarketplace({
-      pluginCount: 2,
-      plugins: [alpha, beta],
-    });
-    await mountMarketplaces([marketplace]);
-    await openMarketplaceRow(marketplace.id);
-
-    const alphaButton = requireButton(
-      container.querySelector('[data-testid="plugin-install-alpha-tool"]'),
-      'Alpha install button',
-    );
-    await act(async () => {
-      alphaButton.click();
-      await Promise.resolve();
-    });
-
-    const bulkButton = requireButton(
-      container.querySelector('[data-testid="bulk-install-plugins"]'),
-      'Bulk install button',
-    );
-    await act(async () => {
-      bulkButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(bulkButton.disabled).toBe(true);
-    expect(pluginsApi.installPlugin).toHaveBeenCalledTimes(1);
-    expect(container.textContent).not.toContain('failed');
-
-    await act(async () => {
-      firstInstall.resolve(
-        okResult(makePlugin({ name: 'alpha-tool', details: emptyDetails })),
+      if (!(search instanceof HTMLInputElement))
+        throw new Error('Source search missing');
+      act(() => setInputValue(search, 'alpha'));
+      await settle();
+      expect(
+        container.querySelectorAll('[data-testid="marketplace-source-plugin"]'),
+      ).toHaveLength(1);
+      await click(
+        container.querySelector('[data-plugin-key="alpha-tool"] button'),
+        'Source plugin',
       );
-      await Promise.resolve();
-    });
-  });
-
-  it('reports marketplace modal install state for App Advisor', async () => {
-    const firstInstall = createDeferred<IPCResult<PluginInfo>>();
-    const alpha = makePlugin({ name: 'alpha-tool' });
-    const beta = makePlugin({
-      name: 'beta-tool',
-      externalSource: { source: 'github', url: 'https://github.com/acme/beta' },
-    });
-    pluginsApi.installPlugin.mockImplementation(
-      (
-        _marketplaceId: string,
-        pluginName: string,
-      ): Promise<IPCResult<PluginInfo>> => {
-        if (pluginName === 'alpha-tool') {
-          return firstInstall.promise;
-        }
-        return Promise.resolve(
-          okResult(makePlugin({ name: pluginName, details: emptyDetails })),
-        );
-      },
-    );
-
-    const marketplace = makeMarketplace({
-      pluginCount: 2,
-      plugins: [alpha, beta],
-    });
-    await mountMarketplaces([marketplace]);
-    await openMarketplaceRow(marketplace.id);
-
-    // Asserted at the SNAPSHOT level, which is what App Advisor actually
-    // reads. Task 2 had to drop to the raw slice while
-    // `buildCurrentUiStateSnapshot` still gated all of `snapshot.plugins` on
-    // the removed `activeTab`; Task 4 rewrote that gate, so the original
-    // assertion is restored.
-    expect(marketplaceModalSnapshot()).toMatchObject({
-      open: true,
-      marketplaceId: marketplace.id,
-      marketplaceName: marketplace.name,
-      pluginCount: 2,
-      filteredPluginCount: 2,
-      missingPluginCount: 2,
-      selectedPlugin: null,
-      bulkInstall: { installing: false, cancelling: false },
-    });
-
-    const bulkButton = requireButton(
-      container.querySelector('[data-testid="bulk-install-plugins"]'),
-      'Bulk install button',
-    );
-    await act(async () => {
-      bulkButton.click();
-      await Promise.resolve();
-    });
-
-    expect(marketplaceModalSnapshot()).toMatchObject({
-      bulkInstall: {
-        installing: true,
-        cancelling: false,
-        progress: { done: 0, total: 2 },
-      },
-    });
-
-    act(() => {
-      bulkButton.click();
-    });
-    await settle();
-
-    expect(marketplaceModalSnapshot()).toMatchObject({
-      bulkInstall: { installing: true, cancelling: true },
-    });
-
-    await act(async () => {
-      firstInstall.resolve(
-        okResult(makePlugin({ name: 'alpha-tool', details: emptyDetails })),
+      expect(entryDetail()).not.toBeNull();
+      await click(
+        container.querySelector(
+          '[data-testid="plugins-entry-detail-breadcrumb-source"]',
+        ),
+        'Source breadcrumb',
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      expect(
+        container.querySelector('[data-testid="marketplace-source-detail"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector<HTMLInputElement>(
+          '[data-testid="marketplace-source-search"]',
+        )?.value,
+      ).toBe('alpha');
     });
-    await settle();
 
-    expect(marketplaceModalSnapshot()).toMatchObject({
-      bulkInstall: {
-        installing: false,
-        cancelling: false,
-        summary: 'Installed 1 of 2 (cancelled)',
-      },
-    });
-  });
-
-  it('keeps detail updates keyed by the original marketplace plugin name', async () => {
-    const marketplace = makeMarketplace({
-      pluginCount: 1,
-      plugins: [makePlugin({ name: 'marketplace-name' })],
-    });
-    await mountMarketplaces([marketplace]);
-    await openMarketplaceRow(marketplace.id);
-    await click(
-      container.querySelector('[data-testid="plugin-row-marketplace-name"]'),
-      'Customize plugin row',
-    );
-
-    expect(requirePluginDetailViewProps().plugin.name).toBe('marketplace-name');
-
-    act(() => {
-      requirePluginDetailViewProps().onPluginUpdated(
-        makePlugin({ name: 'manifest-name', details: emptyDetails }),
+    it('installs a source-scoped plugin through the existing IPC and keeps its catalog key', async () => {
+      const source = makeMarketplace({
+        plugins: [makePlugin()],
+        pluginCount: 1,
+      });
+      await mountMarketplaces([source]);
+      await openMarketplaceRow(source.id);
+      pluginsApi.installPlugin.mockResolvedValue(
+        okResult(
+          makePlugin({
+            name: 'manifest-display-name',
+            sourcePath: '/installed/alpha',
+            details: emptyDetails,
+          }),
+        ),
       );
-    });
-    await settle();
-
-    expect(requirePluginDetailViewProps().plugin.name).toBe('manifest-name');
-
-    act(() => {
-      const props = requirePluginDetailViewProps();
-      props.onPluginUpdated({ ...props.plugin, codexCompatDisabled: true });
-    });
-    await settle();
-
-    expect(requirePluginDetailViewProps().plugin.codexCompatDisabled).toBe(
-      true,
-    );
-  });
-
-  // -------------------------------------------------------------------------
-  // Management view — marketplace removal
-  // -------------------------------------------------------------------------
-
-  it('renders the marketplace overflow menu outside the clipping table', async () => {
-    const marketplace = makeMarketplace();
-    await mountMarketplaces([marketplace]);
-
-    await click(
-      container.querySelector('button[aria-label="More marketplace actions"]'),
-      'Overflow menu button',
-    );
-
-    const removeAction = requireElement(
-      document.querySelector('[data-testid="remove-marketplace-action"]'),
-      'Remove Marketplace menu item',
-    );
-    // The removal row keeps its red tone and leads with an icon.
-    expect(removeAction.firstElementChild?.querySelector('svg')).toBeInstanceOf(
-      Element,
-    );
-    // The table wrapper clips overflow, so an in-row menu on the last row is
-    // cut off. The menu must portal out of the table.
-    expect(
-      container
-        .querySelector(`[data-testid="marketplace-row-${marketplace.id}"]`)
-        ?.closest('table')
-        ?.contains(removeAction),
-    ).toBe(false);
-
-    await click(removeAction, 'Remove Marketplace menu item');
-
-    // A portaled click still bubbles through the React tree; it must not
-    // also open the marketplace row behind the menu.
-    expect(document.body.textContent).toContain(
-      'Canopy will remove this marketplace from Claude and Codex.',
-    );
-    expect(
-      useCurrentUiStateStore.getState().slices['plugins.managementView'],
-    ).toMatchObject({ section: 'marketplaces' });
-    expect(
-      container.querySelector(
-        `[data-testid="marketplace-row-${marketplace.id}"]`,
-      ),
-    ).not.toBeNull();
-  });
-
-  it('confirms removal and drops the row when removeMarketplace returns marketplace: null', async () => {
-    const marketplace = makeMarketplace();
-    await mountMarketplaces([marketplace]);
-
-    await click(
-      container.querySelector('button[aria-label="More marketplace actions"]'),
-      'Overflow menu button',
-    );
-    await click(
-      document.querySelector('[data-testid="remove-marketplace-action"]'),
-      'Remove Marketplace menu item',
-    );
-
-    expect(document.body.textContent).toContain(
-      'Canopy will remove this marketplace from Claude and Codex.',
-    );
-    // The removal-confirm state moved off `plugins.page` (now discovery-scoped)
-    // onto the management view's own slice.
-    expect(
-      useCurrentUiStateStore.getState().slices['plugins.managementView'],
-    ).toMatchObject({
-      section: 'marketplaces',
-      removeMarketplaceModal: {
-        marketplaceId: marketplace.id,
-        marketplaceName: marketplace.name,
-      },
+      await click(
+        container.querySelector('[data-testid="plugin-install-alpha-tool"]'),
+        'Install source plugin',
+      );
+      expect(pluginsApi.installPlugin).toHaveBeenCalledWith(
+        source.id,
+        'alpha-tool',
+        'https://github.com/acme/tool',
+      );
+      expect(
+        container.querySelector('[data-plugin-key="alpha-tool"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="plugin-install-alpha-tool"]'),
+      ).toBeNull();
     });
 
-    const removalResult: MarketplaceRemovalResult = {
-      marketplace: null,
-      removedProviders: ['claude', 'codex'],
-      providerOutcomes: {
-        claude: { removed: true, alreadyAbsent: false },
-        codex: { removed: true, alreadyAbsent: false },
-      },
-    };
-    pluginsApi.removeMarketplace.mockResolvedValue(okResult(removalResult));
-
-    const confirmButton = requireButton(
-      document.querySelector(
-        '[data-testid="remove-marketplace-confirm-button"]',
-      ),
-      'Remove confirmation button',
-    );
-    await act(async () => {
-      confirmButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await settle();
-
-    expect(pluginsApi.removeMarketplace).toHaveBeenCalledWith(marketplace.id);
-    expect(pluginsApi.refreshMarketplaces).not.toHaveBeenCalled();
-    expect(pluginsApi.loadMarketplaces).toHaveBeenCalledTimes(1);
-    expect(
-      container.querySelector(
-        `[data-testid="marketplace-row-${marketplace.id}"]`,
-      ),
-    ).toBeNull();
-  });
-
-  it('surfaces partial-failure toast when one provider returns an error', async () => {
-    const marketplace = makeMarketplace();
-    await mountMarketplaces([marketplace]);
-
-    await click(
-      container.querySelector('button[aria-label="More marketplace actions"]'),
-      'Overflow menu button',
-    );
-    await click(
-      document.querySelector('[data-testid="remove-marketplace-action"]'),
-      'Remove Marketplace menu item',
-    );
-
-    const partial: MarketplaceRemovalResult = {
-      marketplace,
-      removedProviders: ['claude'],
-      providerOutcomes: {
-        claude: { removed: true, alreadyAbsent: false },
-        codex: {
-          removed: false,
-          alreadyAbsent: false,
-          error: 'Codex refused removal',
+    it('confirms removal through IPC and removes the shared source row', async () => {
+      const source = makeMarketplace();
+      await mountMarketplaces([source]);
+      const removal: MarketplaceRemovalResult = {
+        marketplace: null,
+        removedProviders: ['claude', 'codex'],
+        providerOutcomes: {
+          claude: { removed: true, alreadyAbsent: false },
+          codex: { removed: true, alreadyAbsent: false },
         },
-      },
-    };
-    pluginsApi.removeMarketplace.mockResolvedValue(okResult(partial));
-
-    const confirmButton = requireButton(
-      document.querySelector(
-        '[data-testid="remove-marketplace-confirm-button"]',
-      ),
-      'Remove confirmation button',
-    );
-    await act(async () => {
-      confirmButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
+      };
+      pluginsApi.removeMarketplace.mockResolvedValue(okResult(removal));
+      pluginsApi.loadMarketplaces.mockResolvedValue(
+        okResult(makeCache(removal.marketplace ? [removal.marketplace] : [])),
+      );
+      await click(
+        container.querySelector('[data-testid="marketplace-source-remove"]'),
+        'Remove source',
+      );
+      expect(document.body.textContent).toContain('Claude and Codex');
+      await click(
+        document.querySelector(
+          '[data-testid="marketplace-source-remove-confirm"]',
+        ),
+        'Confirm removal',
+      );
+      expect(pluginsApi.removeMarketplace).toHaveBeenCalledWith(source.id);
+      expect(
+        container.querySelector(`[data-source-id="${source.id}"]`),
+      ).toBeNull();
     });
-    await settle();
 
-    const toast = container.querySelector(
-      '[data-testid="marketplace-removal-toast"]',
-    );
-    expect(toast?.textContent).toContain('Codex refused removal');
-    expect(
-      container.querySelector(
-        `[data-testid="marketplace-row-${marketplace.id}"]`,
-      ),
-    ).not.toBeNull();
-    expect(pluginsApi.refreshMarketplaces).not.toHaveBeenCalled();
+    it('keeps a partial-removal survivor and its provider error', async () => {
+      const source = makeMarketplace();
+      await mountMarketplaces([source]);
+      const survivor = makeMarketplace({ validProviders: ['codex'] });
+      const removal: MarketplaceRemovalResult = {
+        marketplace: survivor,
+        removedProviders: ['claude'],
+        providerOutcomes: {
+          claude: { removed: true, alreadyAbsent: false },
+          codex: {
+            removed: false,
+            alreadyAbsent: false,
+            error: 'Codex still uses this source',
+          },
+        },
+      };
+      pluginsApi.removeMarketplace.mockResolvedValue(okResult(removal));
+      pluginsApi.loadMarketplaces.mockResolvedValue(
+        okResult(makeCache(removal.marketplace ? [removal.marketplace] : [])),
+      );
+      await click(
+        container.querySelector('[data-testid="marketplace-source-remove"]'),
+        'Remove source',
+      );
+      await click(
+        document.querySelector(
+          '[data-testid="marketplace-source-remove-confirm"]',
+        ),
+        'Confirm removal',
+      );
+      expect(
+        container.querySelector(`[data-source-id="${source.id}"]`),
+      ).not.toBeNull();
+      expect(container.textContent).toContain('Codex still uses this source');
+    });
+
+    it('resolves a compatibility plugin request by source and plugin identity', async () => {
+      mockMarketplaceSourcesClient =
+        createIpcMarketplaceSourcesClient(pluginsApi);
+      useNavigationStore.getState().openPluginsNavigation({
+        kind: 'marketplace-source',
+        target: 'detail',
+        sourceId: 'mkt-1',
+        pluginKey: 'alpha-tool',
+      });
+      await mount({
+        marketplaces: [
+          makeMarketplace({ plugins: [makePlugin()], pluginCount: 1 }),
+        ],
+      });
+      expect(entryDetail()).not.toBeNull();
+      expect(requirePluginDetailViewProps().plugin.name).toBe('alpha-tool');
+    });
   });
-  // -------------------------------------------------------------------------
-  // Unified entry detail wrapper (Task 4 / spec section 4)
-  // -------------------------------------------------------------------------
 
   it('opens the polished catalog detail for a Suggested plugin entry', async () => {
     await mount({
@@ -6127,6 +6143,7 @@ describe('PluginsPage discovery', () => {
         globalInstallStatus: {
           claude: { available: true, installed: false },
           codex: { available: true, installed: false },
+          checkedAt: '2026-05-01T00:00:00.000Z',
         },
       });
       act(() => requirePluginDetailViewProps().onPluginUpdated(installed));
@@ -6177,7 +6194,7 @@ describe('PluginsPage discovery', () => {
     );
 
     expect(entryDetail()).toBeNull();
-    const search = requireElement<HTMLInputElement>(
+    const search = requireInputElement(
       container.querySelector('[data-testid="plugins-search"]'),
       'Customize search',
     );
@@ -6632,7 +6649,7 @@ describe('PluginsPage discovery', () => {
           configs: [
             {
               configId: 'cfg-1',
-              authStatus: startingRevision ? 'error' : 'required',
+              authStatus: startingRevision ? 'error' : 'not_connected',
               authErrorRevision: startingRevision,
               lastError: startingRevision
                 ? 'Previous attempt failed'
@@ -7125,15 +7142,11 @@ describe('PluginsPage discovery', () => {
     // browse mode only shows recommended/curated/marketplace.
     await typeQuery('github');
 
-    // `github` is installed locally with `connectionStatus: auth_required`, so
-    // its card menu offers "Connect", which must land on the existing auth flow
-    // (the server editor), not the catalog detail.
-    const menu = await openEntryMenu('mcp-catalog:github');
     await click(
-      menu.querySelector(
-        '[data-testid="plugins-menu-connect-mcp-catalog:github"]',
+      container.querySelector(
+        '[data-testid="customize-row-sign-in-mcp-catalog:github"]',
       ),
-      'GitHub Connect menu item',
+      'GitHub Connect action',
     );
 
     expect(mcpServerDialog()).toBeNull();
@@ -8005,7 +8018,37 @@ describe('PluginsPage discovery', () => {
     },
   );
 
-  it('renders a marketplace skill as a breadcrumb sub-page and restores browse scroll', async () => {
+  it('coalesces scroll writes and keeps the last offset when the page unmounts (CAN-4267)', async () => {
+    await mount({});
+    const page = requireElement(
+      container.querySelector('[data-testid="page-plugins"]'),
+      'Customize page',
+    );
+    const offsets: number[] = [];
+    const unsubscribe = useNavigationStore.subscribe((state, previous) => {
+      const top = state.pluginsPresentation?.scrollTop;
+      if (top !== undefined && top !== previous.pluginsPresentation?.scrollTop)
+        offsets.push(top);
+    });
+    try {
+      act(() => {
+        for (const top of [40, 80, 120, 160, 200]) {
+          page.scrollTop = top;
+          page.dispatchEvent(new Event('scroll'));
+        }
+      });
+      // A scroll burst must not write the global store once per event.
+      expect(offsets.length).toBeLessThanOrEqual(1);
+      act(() => root.render(null));
+      expect(useNavigationStore.getState().pluginsPresentation?.scrollTop).toBe(
+        200,
+      );
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('restores detail-return scroll after history remounts a marketplace skill (CAN-4267)', async () => {
     skillsApi.readContent.mockResolvedValue(
       okResult({
         frontmatter: { name: 'release-notes', description: 'Release notes' },
@@ -8025,7 +8068,7 @@ describe('PluginsPage discovery', () => {
       ],
     });
     await typeQuery('release-notes');
-    const page = requireElement<HTMLElement>(
+    const page = requireElement(
       container.querySelector('[data-testid="page-plugins"]'),
       'Customize page',
     );
@@ -8048,6 +8091,12 @@ describe('PluginsPage discovery', () => {
       'release-notes',
     );
 
+    act(() => root.render(null));
+    await renderPage();
+    const restoredPage = requireElement(
+      container.querySelector('[data-testid="page-plugins"]'),
+      'Restored Customize page',
+    );
     await click(
       container.querySelector(
         '[data-testid="plugins-entry-detail-breadcrumb-root"]',
@@ -8056,7 +8105,7 @@ describe('PluginsPage discovery', () => {
     );
 
     expect(entryDetail()).toBeNull();
-    expect(page.scrollTop).toBe(240);
+    expect(restoredPage.scrollTop).toBe(240);
   });
 
   describe('installed skill detail page (CAN-3483)', () => {
@@ -8088,19 +8137,12 @@ describe('PluginsPage discovery', () => {
       skillsApi.loadSkills.mockResolvedValue(
         okResult([makeSkill({ custom: true })]),
       );
+      act(() => {
+        window.dispatchEvent(new Event('canopy:skills-changed'));
+      });
+      await settle();
       await openManagement('skills');
-      await click(
-        container.querySelector(
-          '[data-testid="mock-skills-tab-open-review-checklist"]',
-        ),
-        'Installed Skills row',
-      );
-    }
-
-    function managementOpen(): string | null | undefined {
-      return container
-        .querySelector('[data-testid="plugins-management-view"]')
-        ?.getAttribute('data-open');
+      await openEntry('skill:custom:app:review-checklist');
     }
 
     it('opens the skill as a Marketplace page under Installed > Skills', async () => {
@@ -8110,7 +8152,6 @@ describe('PluginsPage discovery', () => {
         container.querySelector('[data-testid="plugins-entry-detail-page"]'),
       ).not.toBeNull();
       expect(entryDetail()?.getAttribute('role')).not.toBe('dialog');
-      expect(managementOpen()).toBe('false');
       expect(breadcrumbLabels()).toEqual([
         'Customize',
         'Installed',
@@ -8135,28 +8176,17 @@ describe('PluginsPage discovery', () => {
       ).toContain('Delete');
     });
 
-    it('keeps the Skills list mounted behind the page so Back restores it', async () => {
+    it('restores the Installed section when the page leaves by its type crumb', async () => {
       await openSkillFromInstalledSkills();
-      // The list stays mounted (hidden) while its detail page shows, so its
-      // tab, filters, and scroll survive the round trip.
-      expect(mockTabLifecycle.skills.unmounts).toBe(0);
-      const mountsBefore = mockTabLifecycle.skills.mounts;
-
       await leaveDetailByCrumb('type', 'Skill detail Skills crumb');
 
-      expect(managementOpen()).toBe('true');
       expect(
-        container.querySelector(
-          '[data-testid="plugins-management-section-skills"]',
-        ),
+        container.querySelector('[data-testid="customize-section-installed"]'),
       ).not.toBeNull();
-      expect(mockTabLifecycle.skills.mounts).toBe(mountsBefore);
-      expect(mockTabLifecycle.skills.unmounts).toBe(0);
     });
 
     it('returns to the same Skills list from the Skills breadcrumb', async () => {
       await openSkillFromInstalledSkills();
-      const mountsBefore = mockTabLifecycle.skills.mounts;
 
       await click(
         container.querySelector(
@@ -8165,19 +8195,13 @@ describe('PluginsPage discovery', () => {
         'Skills breadcrumb',
       );
 
-      expect(managementOpen()).toBe('true');
       expect(
-        container.querySelector(
-          '[data-testid="plugins-management-section-skills"]',
-        ),
+        container.querySelector('[data-testid="customize-section-installed"]'),
       ).not.toBeNull();
-      expect(mockTabLifecycle.skills.mounts).toBe(mountsBefore);
-      expect(mockTabLifecycle.skills.unmounts).toBe(0);
     });
 
     it('treats Escape on the page like Back', async () => {
       await openSkillFromInstalledSkills();
-      const mountsBefore = mockTabLifecycle.skills.mounts;
 
       await act(async () => {
         document.dispatchEvent(
@@ -8190,12 +8214,12 @@ describe('PluginsPage discovery', () => {
       expect(
         container.querySelector('[data-testid="plugins-entry-detail-page"]'),
       ).toBeNull();
-      expect(managementOpen()).toBe('true');
-      expect(mockTabLifecycle.skills.mounts).toBe(mountsBefore);
-      expect(mockTabLifecycle.skills.unmounts).toBe(0);
+      expect(
+        container.querySelector('[data-testid="customize-section-installed"]'),
+      ).not.toBeNull();
     });
 
-    it('releases the hidden list when the page leaves for the Marketplace root', async () => {
+    it('leaves the page for the Customize root from the root crumb', async () => {
       await openSkillFromInstalledSkills();
 
       await click(
@@ -8205,8 +8229,9 @@ describe('PluginsPage discovery', () => {
         'Customize breadcrumb',
       );
 
-      expect(managementOpen()).toBe('false');
-      expect(mockTabLifecycle.skills.unmounts).toBe(1);
+      expect(
+        container.querySelector('[data-testid="plugins-entry-detail-page"]'),
+      ).toBeNull();
     });
 
     describe('custom skill edit page (CAN-3485)', () => {
@@ -8309,12 +8334,22 @@ describe('PluginsPage discovery', () => {
         skillsApi.loadSkills.mockResolvedValue(
           okResult([makeSkill({ custom: true })]),
         );
+        act(() => {
+          window.dispatchEvent(new Event('canopy:skills-changed'));
+        });
+        await settle();
         await openManagement('skills');
         await click(
           container.querySelector(
-            '[data-testid="mock-skills-tab-edit-review-checklist"]',
+            '[data-testid="customize-row-menu-skill:custom:app:review-checklist"]',
           ),
-          'Installed Skills row Edit',
+          'Skill row menu',
+        );
+        await click(
+          document.querySelector(
+            '[data-testid="customize-row-menu-skill:custom:app:review-checklist-edit"]',
+          ),
+          'Skill row Edit',
         );
 
         expect(editorPage()).not.toBeNull();
@@ -8333,7 +8368,6 @@ describe('PluginsPage discovery', () => {
         );
         expect(editorPage()).toBeNull();
         expect(detailContent()).not.toBeNull();
-        expect(managementOpen()).toBe('false');
       });
 
       it('returns to the details from Cancel, Back, the name crumb, and Escape', async () => {
@@ -8413,7 +8447,11 @@ describe('PluginsPage discovery', () => {
         expect(
           container.querySelector('[data-testid="plugins-entry-detail-page"]'),
         ).toBeNull();
-        expect(managementOpen()).toBe('true');
+        expect(
+          container.querySelector(
+            '[data-testid="customize-section-installed"]',
+          ),
+        ).not.toBeNull();
       });
 
       it('shows validation inline and keeps Save disabled', async () => {
@@ -8796,7 +8834,6 @@ describe('PluginsPage discovery', () => {
       expect(
         container.querySelector('[data-testid="plugins-entry-detail-page"]'),
       ).not.toBeNull();
-      expect(managementOpen()).toBe('false');
 
       reload.resolve(okResult([]));
       await settle();
@@ -8804,7 +8841,9 @@ describe('PluginsPage discovery', () => {
       expect(
         container.querySelector('[data-testid="plugins-entry-detail-page"]'),
       ).toBeNull();
-      expect(managementOpen()).toBe('true');
+      expect(
+        container.querySelector('[data-testid="customize-section-installed"]'),
+      ).not.toBeNull();
     });
 
     it('deletes the skill from the page and returns to the Skills list', async () => {
@@ -8836,10 +8875,14 @@ describe('PluginsPage discovery', () => {
         expect(
           container.querySelector('[data-testid="plugins-entry-detail-page"]'),
         ).toBeNull();
-        expect(managementOpen()).toBe('true');
         expect(
           container.querySelector(
-            '[data-testid="plugins-management-section-skills"]',
+            '[data-testid="customize-section-installed"]',
+          ),
+        ).not.toBeNull();
+        expect(
+          container.querySelector(
+            '[data-testid="customize-section-installed"]',
           ),
         ).not.toBeNull();
       } finally {
@@ -9060,6 +9103,45 @@ describe('PluginsPage discovery', () => {
       }),
     );
 
+    // CAN-5224: the owner's Shared by you lists the audience, so the header
+    // keeps only who shared it and the owning organization.
+    it(
+      "leaves the owner's audience to Shared by you on a shared agent",
+      withAgentsFlag(true, async () => {
+        seedSharedRows();
+        const [owned] = mockCapabilityMarketplaceInventory.sharedAgents ?? [];
+        if (!owned) throw new Error('Expected a seeded shared agent');
+        mockCapabilityMarketplaceInventory.sharedAgents = [
+          { ...owned, canDelete: true },
+        ];
+        await mount();
+        await click(
+          container.querySelector(
+            '[data-testid="plugins-entry-agent:shared:agent-1"]',
+          ),
+          'Shared agent card',
+        );
+
+        const header = requireElement(
+          document.querySelector('[data-testid="plugins-entry-detail-header"]'),
+          'Shared agent header',
+        );
+        expect(
+          document.querySelector('[data-testid="shared-by-you-row-account"]')
+            ?.textContent,
+        ).toContain('Growth');
+        expect(
+          header.querySelector('[data-testid="shared-agent-detail-audience"]'),
+        ).toBeNull();
+        expect(
+          header.querySelector(
+            '[data-testid="shared-agent-detail-audience-author"]',
+          ),
+        ).not.toBeNull();
+        expect(header.textContent).not.toContain('Team: Growth');
+      }),
+    );
+
     it(
       'opens a shared plugin detail that names its source',
       withAgentsFlag(true, async () => {
@@ -9086,6 +9168,329 @@ describe('PluginsPage discovery', () => {
         expect(detail.textContent).toContain('acme/tools');
       }),
     );
+  });
+
+  describe('Shared by you on shared plugin details (CAN-4842)', () => {
+    const ownedPlugin = {
+      owner: { type: 'organization', id: 'org-1', name: 'Acme' },
+      shareScope: 'organization',
+      createdBy: { id: 'user-1', name: 'Aaron' },
+      externalId: 'plugin-share-1',
+      refKey: 'plugin:github:acme/tools:deploy',
+      ref: {
+        type: 'plugin',
+        marketplace: { type: 'github', repo: 'acme/tools' },
+        plugin_name: 'deploy',
+      },
+      name: 'Deploy tools',
+      description: 'Ship from chat.',
+      marketplaceOrigin: 'acme/tools',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+      canDelete: true,
+    } as const;
+
+    async function openSharedPlugin(
+      share: Record<string, unknown> = {},
+    ): Promise<void> {
+      mockCapabilityMarketplaceInventory.sharedPlugins = [
+        { ...ownedPlugin, ...share },
+      ];
+      await mount();
+      await click(
+        container.querySelector(
+          '[data-testid="plugins-entry-plugin:shared:plugin-share-1"]',
+        ),
+        'Shared plugin card',
+      );
+    }
+
+    async function moreItemLabel(): Promise<string | null | undefined> {
+      await click(
+        document.querySelector('[data-testid="plugins-entry-detail-more"]'),
+        'More actions',
+      );
+      return document.querySelector('[data-testid="marketplace-unshare"]')
+        ?.textContent;
+    }
+
+    function sharedPluginsChanged(): jest.Mock {
+      const listener = jest.fn();
+      window.addEventListener(SHARED_PLUGINS_CHANGED_EVENT, listener);
+      return listener;
+    }
+
+    it('lists an owned organization share with its Unshare', async () => {
+      await openSharedPlugin();
+      const section = document.querySelector('[data-testid="shared-by-you"]');
+      expect(section?.textContent).toContain('Shared by you');
+      expect(
+        document.querySelectorAll('[data-testid^="shared-by-you-row-"]'),
+      ).toHaveLength(1);
+      expect(
+        document.querySelector('[data-testid="shared-by-you-row-account"]')
+          ?.textContent,
+      ).toContain('Acme');
+      expect(await moreItemLabel()).toBe('Unshare');
+    });
+
+    it('lists the public link too and names the ⋯ item Unshare all', async () => {
+      await openSharedPlugin({
+        publicShare: {
+          externalId: 'pub-1',
+          upToDate: true,
+          createdAt: '2026-09-02T00:00:00.000Z',
+        },
+      });
+      expect(
+        document.querySelectorAll('[data-testid^="shared-by-you-row-"]'),
+      ).toHaveLength(2);
+      expect(await moreItemLabel()).toBe('Unshare all');
+    });
+
+    // CAN-5224: the header keeps provenance and leaves the audiences here.
+    it('keeps author and organization in the header and drops its audience', async () => {
+      await openSharedPlugin({
+        publicShare: {
+          externalId: 'pub-1',
+          upToDate: true,
+          createdAt: '2026-09-02T00:00:00.000Z',
+        },
+      });
+      const header = requireElement(
+        document.querySelector('[data-testid="plugins-entry-detail-header"]'),
+        'Shared plugin header',
+      );
+      expect(
+        header.querySelector(
+          '[data-testid="shared-plugin-detail-audience-author"]',
+        )?.textContent,
+      ).toBe('By Aaron');
+      expect(
+        header.querySelector(
+          '[data-testid="shared-plugin-detail-audience-organization"]',
+        )?.textContent,
+      ).toBe('Acme');
+      expect(
+        header.querySelector('[data-testid="shared-plugin-detail-audience"]'),
+      ).toBeNull();
+      expect(header.textContent).not.toContain('Public');
+    });
+
+    it("keeps a recipient's header audience", async () => {
+      await openSharedPlugin({ canDelete: false });
+      expect(
+        document.querySelector(
+          '[data-testid="plugins-entry-detail-header"] [data-testid="shared-plugin-detail-audience"]',
+        )?.textContent,
+      ).toBe('Organization');
+    });
+
+    it('shows no section on a share the viewer cannot delete', async () => {
+      await openSharedPlugin({ canDelete: false });
+      expect(
+        document.querySelector('[data-testid="shared-by-you"]'),
+      ).toBeNull();
+      expect(
+        document.querySelector('[data-testid="plugins-entry-detail-more"]'),
+      ).toBeNull();
+    });
+
+    it('unshares the account audience once, refreshes, notifies and closes', async () => {
+      const deleteShared = jest.fn().mockResolvedValue({ success: true });
+      Object.assign(pluginsApi, { deleteShared });
+      const changed = sharedPluginsChanged();
+      try {
+        await openSharedPlugin();
+        await click(
+          document.querySelector(
+            '[data-testid="shared-by-you-unshare-account"]',
+          ),
+          'Unshare account audience',
+        );
+        expect(
+          document.querySelector(
+            '[data-testid="shared-by-you-unshare-account-dialog"]',
+          )?.textContent,
+        ).toContain('that link stops working too');
+        await click(
+          document.querySelector(
+            '[data-testid="shared-by-you-unshare-account-confirm"]',
+          ),
+          'Confirm unshare',
+        );
+        await settle();
+        expect(deleteShared).toHaveBeenCalledTimes(1);
+        expect(deleteShared).toHaveBeenCalledWith(
+          expect.objectContaining({ remoteId: 'plugin-share-1' }),
+        );
+        expect(changed).toHaveBeenCalled();
+        expect(
+          useGitHubStore
+            .getState()
+            .toasts.some((toast) => toast.message.includes('Deploy tools')),
+        ).toBe(true);
+        expect(
+          document.querySelector(
+            '[data-testid="shared-plugin-marketplace-detail"]',
+          ),
+        ).toBeNull();
+      } finally {
+        window.removeEventListener(SHARED_PLUGINS_CHANGED_EVENT, changed);
+      }
+    });
+
+    it('removes only the public link and keeps the detail open', async () => {
+      const revokePublicShare = jest.fn().mockResolvedValue({ success: true });
+      const deleteShared = jest.fn();
+      Object.assign(pluginsApi, { revokePublicShare, deleteShared });
+      const changed = sharedPluginsChanged();
+      try {
+        await openSharedPlugin({
+          publicShare: { externalId: 'pub-1', upToDate: true },
+        });
+        await click(
+          document.querySelector(
+            '[data-testid="shared-by-you-unshare-public"]',
+          ),
+          'Remove public link',
+        );
+        await click(
+          document.querySelector(
+            '[data-testid="shared-by-you-remove-public-link-confirm-action"]',
+          ),
+          'Confirm remove link',
+        );
+        await settle();
+        expect(revokePublicShare).toHaveBeenCalledWith('plugin-share-1');
+        expect(deleteShared).not.toHaveBeenCalled();
+        expect(changed).toHaveBeenCalled();
+        expect(
+          document.querySelector(
+            '[data-testid="shared-plugin-marketplace-detail"]',
+          ),
+        ).not.toBeNull();
+      } finally {
+        window.removeEventListener(SHARED_PLUGINS_CHANGED_EVENT, changed);
+      }
+    });
+  });
+
+  describe('Shared by you on the installed plugin page (CAN-4842)', () => {
+    function alphaRefKey(): string {
+      const marketplace = makeMarketplace({
+        pluginCount: MARKETPLACE_PLUGINS.length,
+        plugins: MARKETPLACE_PLUGINS,
+      });
+      const [alpha] = MARKETPLACE_PLUGINS;
+      const ref = alpha
+        ? computePluginShareableRef(alpha, marketplace)
+        : undefined;
+      if (!ref) throw new Error('Expected a shareable alpha-tool');
+      return getShareablePluginRefKey(ref);
+    }
+
+    function seedOwnShare(overrides: Record<string, unknown> = {}): void {
+      // The hook lists the viewer's own deletable shares in ownSharedPlugins.
+      mockCapabilityMarketplaceInventory.ownSharedPlugins = [
+        {
+          owner: { type: 'organization', id: 'org-1', name: 'Acme' },
+          shareScope: 'organization',
+          createdBy: { id: 'user-1', name: 'Aaron' },
+          externalId: 'alpha-share',
+          refKey: alphaRefKey(),
+          ref: {
+            type: 'claude_plugin',
+            marketplace: { type: 'github', repo: 'acme/plugins' },
+            plugin_name: 'alpha-tool',
+          },
+          name: 'Alpha Tool',
+          description: 'Alpha Tool',
+          marketplaceOrigin: 'acme/plugins',
+          createdAt: '2026-09-01T00:00:00.000Z',
+          updatedAt: '2026-09-01T00:00:00.000Z',
+          canDelete: true,
+          ...overrides,
+        },
+      ];
+    }
+
+    it('shows the owned share of the installed plugin and stays open after Unshare', async () => {
+      seedOwnShare();
+      const deleteShared = jest.fn().mockResolvedValue({ success: true });
+      Object.assign(pluginsApi, { deleteShared });
+      await mountFullFixture();
+      await openEntry('mkt:mkt-1/alpha-tool');
+      expect(requirePluginDetailViewProps().sharedContent).toBeDefined();
+      expect(
+        document.querySelector('[data-testid="shared-by-you-row-account"]'),
+      ).not.toBeNull();
+      await click(
+        document.querySelector('[data-testid="shared-by-you-unshare-account"]'),
+        'Unshare account audience',
+      );
+      await click(
+        document.querySelector(
+          '[data-testid="shared-by-you-unshare-account-confirm"]',
+        ),
+        'Confirm unshare',
+      );
+      await settle();
+      expect(deleteShared).toHaveBeenCalledTimes(1);
+      expect(
+        document.querySelector('[data-testid="mock-plugin-detail-view"]'),
+      ).not.toBeNull();
+    });
+
+    it('shows a plugin shared only by public link', async () => {
+      seedOwnShare({
+        owner: { type: 'user', id: 'user-1', name: 'Aaron' },
+        shareScope: 'private',
+        publicShare: {
+          externalId: 'link-1',
+          upToDate: true,
+          createdAt: '2026-10-01T00:00:00.000Z',
+        },
+      });
+      await mountFullFixture();
+      await openEntry('mkt:mkt-1/alpha-tool');
+      expect(
+        document.querySelector('[data-testid="shared-by-you-row-public"]'),
+      ).not.toBeNull();
+      expect(
+        document.querySelector('[data-testid="shared-by-you-row-account"]'),
+      ).toBeNull();
+    });
+
+    it.each([
+      ['an installed plugin', 'mkt:mkt-1/alpha-tool', true],
+      ['a curated plugin', 'curated:writer-toolkit', true],
+      ['a skill', 'skill:custom:app:review-checklist', false],
+    ])(
+      'loads shared plugins for %s detail under another type filter: %s',
+      async (_label, entryId, enabled) => {
+        await mountFullFixture();
+        act(() => root.render(null));
+        useNavigationStore.getState().setPluginsPresentation({
+          browse: { query: '', tab: 'skill', installedExpanded: false },
+          entry: { id: entryId, stack: [], fromInstalled: false },
+        });
+        await renderPage();
+        expect(mockInventoryOptions).toMatchObject({
+          sharedPluginsEnabled: enabled,
+        });
+      },
+    );
+
+    it.each([
+      ['another plugin', { refKey: 'plugin:github:acme/other:deploy' }],
+      ['a share the viewer cannot delete', { canDelete: false }],
+    ])('shows no section for %s', async (_label, overrides) => {
+      seedOwnShare(overrides);
+      await mountFullFixture();
+      await openEntry('mkt:mkt-1/alpha-tool');
+      expect(requirePluginDetailViewProps().sharedContent).toBeUndefined();
+    });
   });
 
   describe('local agents (CAN-4266)', () => {
@@ -9226,6 +9631,8 @@ describe('PluginsPage discovery', () => {
     });
 
     it('offers New agent in Add custom and opens the editor in create mode', async () => {
+      seedLocalAgent();
+      mockAgentsStore.save.mockResolvedValueOnce(localDefinition);
       await mount();
       await openAddCustomMenu();
       await clickMenuItem('plugins-add-custom-agent');
@@ -9237,6 +9644,11 @@ describe('PluginsPage discovery', () => {
       );
       expect(mockAgentsStore.save).toHaveBeenCalledWith({ name: 'Saved' });
       expect(modal()).toBeNull();
+      // The new agent opens its detail, as clicking its row does.
+      expect(
+        document.querySelector('[data-testid="local-agent-marketplace-detail"]')
+          ?.textContent,
+      ).toContain('agent_model_reviewer');
     });
 
     it('hydrates local definitions when New agent opens from another type tab', async () => {
@@ -9329,7 +9741,7 @@ describe('PluginsPage discovery', () => {
         'Delete agent',
       );
       expect(document.body.textContent).toContain(
-        'Existing chats and pipelines that use agent_model_reviewer will fail until another model is selected.',
+        'Existing chats and workflows that use agent_model_reviewer will fail until another model is selected.',
       );
       const confirm = (): Element | null =>
         Array.from(document.querySelectorAll('button')).find(
@@ -9836,6 +10248,48 @@ describe('PluginsPage discovery', () => {
       ).toBe('standup');
     });
 
+    it('closes a row Share dialog when the context changes', async () => {
+      const previousContext = useWorkspaceContextStore.getState();
+      useWorkspaceContextStore.setState({ hydrated: true });
+      try {
+        ownAutomation();
+        await mount();
+        await press(
+          container.querySelector(
+            '[data-testid="customize-row-menu-automation:local:standup"]',
+          ),
+          'Row menu',
+        );
+        await click(
+          document.querySelector(
+            '[data-testid="customize-row-menu-automation:local:standup-share"]',
+          ),
+          'Standup Share button',
+        );
+        expect(
+          document.querySelector('[data-testid="mock-share-automation-modal"]'),
+        ).not.toBeNull();
+
+        // The retired Skills and Collections lists closed their Share dialog
+        // on a Personal/organization switch; Customize rows must too.
+        act(() => {
+          useWorkspaceContextStore.setState((state) => ({
+            appliedGeneration: state.appliedGeneration + 1,
+          }));
+        });
+        await settle();
+
+        expect(
+          document.querySelector('[data-testid="mock-share-automation-modal"]'),
+        ).toBeNull();
+      } finally {
+        useWorkspaceContextStore.setState({
+          hydrated: previousContext.hydrated,
+          appliedGeneration: previousContext.appliedGeneration,
+        });
+      }
+    });
+
     it('offers Share in the header of a local automation detail', async () => {
       ownAutomation();
       await mount();
@@ -9864,8 +10318,11 @@ describe('PluginsPage discovery', () => {
           name: 'Release',
           description: 'Ship it.',
           icon: '',
-          version: '1',
+          filename: 'release.yml',
+          createdAt: '2026-08-28T00:00:00.000Z',
+          updatedAt: '2026-08-28T00:00:00.000Z',
           source: 'user',
+          readonly: false,
         },
       ];
       await mount();
@@ -9896,11 +10353,9 @@ describe('PluginsPage discovery', () => {
         {
           id: 'triage',
           name: 'Triage inbox',
-          description: null,
+          description: '',
           triggerKind: 'cron',
-          cronExpression: '0 9 * * 1-5',
           actionType: 'app_advisor_prompt',
-          pipelineSource: null,
           contentHash: 'hash',
           shareScope: 'team',
           owner: {
@@ -9935,12 +10390,22 @@ describe('PluginsPage discovery', () => {
   // A plugin without a public source keeps a visible Share that explains
   // why, instead of losing the action; it never opens a gate or a dialog.
   describe('Share on every plugin card (CAN-3704)', () => {
+    const notInstalled = {
+      installed: false,
+      parked: false,
+      globalInstallStatus: {
+        claude: { available: true, installed: false },
+        codex: { available: true, installed: false },
+        checkedAt: '2026-05-01T00:00:00.000Z',
+      },
+    };
+
     function shareMarketplaces(): MarketplaceInfo[] {
       return [
         makeMarketplace({
           sourceUrl: 'https://github.com/acme/plugins',
           pluginCount: 1,
-          plugins: [makePlugin({ externalSource: undefined })],
+          plugins: [makePlugin({ externalSource: undefined, ...notInstalled })],
         }),
         makeMarketplace({
           id: 'local',
@@ -9953,6 +10418,7 @@ describe('PluginsPage discovery', () => {
               name: 'local-tool',
               marketplaceId: 'local',
               externalSource: undefined,
+              ...notInstalled,
             }),
           ],
         }),
@@ -9963,80 +10429,51 @@ describe('PluginsPage discovery', () => {
       await mount({ marketplaces: shareMarketplaces() });
     }
 
-    it('shows an enabled Share on an uninstalled plugin with a public source', async () => {
+    it('keeps installed marketplace plugins out of Browse', async () => {
       await mountSharePlugins();
-      const share = requireButton(
+      expect(
         container.querySelector(
           '[data-testid="plugins-entry-share-mkt:mkt-1/alpha-tool"]',
         ),
-        'Alpha Share button',
-      );
-      expect(share.getAttribute('aria-disabled')).toBeNull();
-      await click(share, 'Alpha Share button');
-      expect(mockRequestShare).toHaveBeenCalledTimes(1);
+      ).toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="customize-row-mkt:mkt-1/alpha-tool"]',
+        ),
+      ).not.toBeNull();
     });
 
-    it('still shares when the inventory snapshot changes while the share resolves', async () => {
+    it('keeps installed marketplace plugins out of Browse after an inventory refresh', async () => {
       await mountSharePlugins();
-      const pendingCache = createDeferred<IPCResult<PluginsCache>>();
-      pluginsApi.loadMarketplacesCacheOnly.mockReturnValueOnce(
-        pendingCache.promise,
-      );
-      const originalSharedSkills =
-        mockCapabilityMarketplaceInventory.sharedSkills;
-      try {
-        await click(
-          container.querySelector(
-            '[data-testid="plugins-entry-share-mkt:mkt-1/alpha-tool"]',
-          ),
-          'Alpha Share button',
-        );
-        // An unrelated inventory refresh lands mid-resolution, as opening a
-        // detail page does. The click must not be dropped.
-        mockCapabilityMarketplaceInventory.sharedSkills = [];
-        await renderPage();
-        await act(async () => {
-          pendingCache.resolve(okResult(makeCache(shareMarketplaces())));
-          await Promise.resolve();
-        });
-        await settle();
-        expect(mockRequestShare).toHaveBeenCalledTimes(1);
-      } finally {
-        mockCapabilityMarketplaceInventory.sharedSkills = originalSharedSkills;
-      }
+      await renderPage();
+      expect(
+        container.querySelector(
+          '[data-testid="plugins-entry-share-mkt:mkt-1/alpha-tool"]',
+        ),
+      ).toBeNull();
     });
 
-    it('does not open sharing when the current cache no longer contains the rendered plugin', async () => {
+    it('does not render a Browse Share action for an installed plugin missing from cache', async () => {
       await mountSharePlugins();
       pluginsApi.loadMarketplacesCacheOnly.mockResolvedValue(
         okResult(makeCache([])),
       );
-      const share = requireButton(
+      expect(
         container.querySelector(
           '[data-testid="plugins-entry-share-mkt:mkt-1/alpha-tool"]',
         ),
-        'Alpha Share button',
-      );
-      await click(share, 'Alpha Share button');
-      expect(pluginsApi.loadMarketplacesCacheOnly).toHaveBeenCalled();
+      ).toBeNull();
       expect(mockRequestShare).not.toHaveBeenCalled();
     });
 
-    it('explains an uninstalled plugin with no public source and never activates it', async () => {
+    it('does not render contradictory Browse actions for an installed local plugin', async () => {
       await mountSharePlugins();
-      const share = requireButton(
+      expect(
         container.querySelector(
           '[data-testid="plugins-entry-share-mkt:local/local-tool"]',
         ),
-        'Local Share button',
-      );
-      expect(share.getAttribute('aria-disabled')).toBe('true');
-      expect(share.getAttribute('aria-description')).toBe(
-        'This plugin has no public source to share.',
-      );
-      await click(share, 'Local Share button');
+      ).toBeNull();
       expect(mockRequestShare).not.toHaveBeenCalled();
-      // Nor did the click open the card's detail.
       expect(
         document.querySelector('[data-testid="plugins-entry-detail-share"]'),
       ).toBeNull();
@@ -10045,7 +10482,7 @@ describe('PluginsPage discovery', () => {
 
   describe('detail breadcrumb entity type (CAN-3484)', () => {
     function breadcrumbLabels(): string[] {
-      const nav = requireElement<HTMLElement>(
+      const nav = requireElement(
         container.querySelector(
           '[data-testid="plugins-entry-detail-breadcrumbs"]',
         ),
@@ -10087,7 +10524,7 @@ describe('PluginsPage discovery', () => {
         'Skills',
         'Release Notes',
       ]);
-      const typeCrumb = requireElement<HTMLElement>(
+      const typeCrumb = requireElement(
         container.querySelector(
           '[data-testid="plugins-entry-detail-breadcrumb-type"]',
         ),
@@ -10196,34 +10633,21 @@ describe('PluginsPage discovery', () => {
       );
       expect(entryDetail()).toBeNull();
       expect(
-        container.querySelector(
-          '[data-testid="plugins-management-section-installed"]',
-        ),
+        container.querySelector('[data-testid="customize-section-installed"]'),
       ).not.toBeNull();
     });
 
     it('returns Back to the installed management section that opened the detail', async () => {
       await mountReleaseNotesSkill();
       await openManagement();
-      const managementView = requireElement<HTMLElement>(
-        container.querySelector('[data-testid="plugins-management-view"]'),
-        'Plugin management view',
-      );
-      await click(
-        managementView.querySelector(
-          '[data-testid="plugins-entry-skill:plugin:release-tools:release-notes"]',
-        ),
-        'Installed management skill',
-      );
+      await openEntry('skill:plugin:release-tools:release-notes');
 
       expect(entryDetail()).not.toBeNull();
       await leaveDetailByCrumb('installed', 'Detail Installed crumb');
 
       expect(entryDetail()).toBeNull();
       expect(
-        container.querySelector(
-          '[data-testid="plugins-management-section-installed"]',
-        ),
+        container.querySelector('[data-testid="customize-section-installed"]'),
       ).not.toBeNull();
     });
 
@@ -10253,9 +10677,7 @@ describe('PluginsPage discovery', () => {
       ]);
       await leaveDetailByCrumb('installed', 'Detail Installed crumb');
       expect(
-        container.querySelector(
-          '[data-testid="plugins-management-section-installed"]',
-        ),
+        container.querySelector('[data-testid="customize-section-installed"]'),
       ).not.toBeNull();
     });
   });
@@ -10346,34 +10768,23 @@ describe('PluginsPage discovery', () => {
 
   it('closes an open entry detail before opening management from a deep link', async () => {
     await mountFullFixture();
-    await openEntry('curated:writer-toolkit');
-    expect(entryDetail()).not.toBeNull();
-
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent('canopy:plugins-open-management', {
-          detail: { section: 'marketplaces' },
-        }),
-      );
-      await Promise.resolve();
-    });
-    await settle();
-
+    await openEntry('skill:custom:app:review-checklist');
+    await openManagement('mcp');
     expect(entryDetail()).toBeNull();
-    expect(container.textContent).toContain('Marketplaces');
     expect(
-      container.querySelector(
-        '[data-testid="plugins-management-section-marketplaces"]',
-      ),
-    ).not.toBeNull();
+      container
+        .querySelector('[data-testid="plugins-type-tab-app"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
   });
 
   it('points the installed empty state to Customize', async () => {
-    await mount({ marketplaces: [], skills: [], mcpServers: [] });
-    await openManagement('installed');
-    expect(container.textContent).toContain(
-      'Nothing is installed yet. Browse Customize to get started.',
-    );
+    await mount();
+    await openManagement();
+    expect(
+      container.querySelector('[data-testid="customize-installed-empty"]')
+        ?.textContent,
+    ).toContain('Nothing is installed yet');
   });
 
   it('surfaces skill and MCP inventory failures instead of an empty inventory', async () => {
@@ -10460,55 +10871,211 @@ describe('PluginsPage discovery', () => {
     expect(container.textContent).not.toContain('No workflows yet');
   });
 
-  it('opens the entry detail from the management view installed section', async () => {
+  it('opens the entry detail from the Installed destination', async () => {
     await mountFullFixture();
-    await openManagement('installed');
-
-    const section = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-installed"]',
-      ),
-      'Installed management section',
-    );
-    await click(
-      section.querySelector(
-        '[data-testid="plugins-entry-curated:installed-helper"]',
-      ),
-      'Installed-section entry card',
-    );
-
+    await openManagement();
+    await openEntry('skill:custom:app:review-checklist');
     expect(entryDetail()).not.toBeNull();
-    const props = requirePluginDetailViewProps();
-    expect(props.plugin.name).toBe('installed-helper');
-    expect(props.marketplace.id).toBe('curated/cloud');
-    // The management view stays open behind the detail so closing returns
-    // the user to where they were.
-    expect(
-      container.querySelector('[data-testid="plugins-management-view"]'),
-    ).not.toBeNull();
   });
 
   it('keeps the management installed section to one heading and offers Connect', async () => {
     await mountFullFixture();
-    await openManagement('installed');
-
-    const section = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-management-section-installed"]',
-      ),
-      'Installed management section',
-    );
-    // The section already has its own "Installed plugins" heading; the list
-    // must not stack a second "Installed" on top of it.
-    expect(section.querySelectorAll('h2')).toHaveLength(0);
-
-    // Needs-auth entries here need the same Connect shortcut discovery has.
-    const menu = await openEntryMenu('mcp-catalog:github');
+    await openManagement('mcp');
     expect(
-      menu.querySelector(
-        '[data-testid="plugins-menu-connect-mcp-catalog:github"]',
-      ),
-    ).not.toBeNull();
+      container.querySelectorAll('#customize-section-installed h2'),
+    ).toHaveLength(1);
+  });
+
+  describe('CAN-4840 — Customize row removal, sign-in chip and Unshare', () => {
+    const skillTarget = {
+      kind: 'skill' as const,
+      sourceId: 'custom:app',
+      skillName: 'review-checklist',
+    };
+
+    function stubInstalledItems(): jest.Mock {
+      const uninstall = jest.fn(() =>
+        Promise.resolve({
+          success: true,
+          snapshot: { items: [] },
+          removed: [skillTarget],
+          errors: [],
+        }),
+      );
+      defineWindowApi('installedItems', {
+        listStatus: jest.fn(() =>
+          Promise.resolve({
+            items: [
+              {
+                target: skillTarget,
+                status: 'available',
+                removable: true,
+                uninstallTarget: skillTarget,
+                uninstallDescription: 'Deletes the skill files.',
+                notices: [],
+              },
+            ],
+          }),
+        ),
+        setStatus: jest.fn(),
+        uninstall,
+        onChanged: jest.fn(() => jest.fn()),
+      });
+      return uninstall;
+    }
+
+    it('deletes a custom skill from its row menu and refreshes skills', async () => {
+      const uninstall = stubInstalledItems();
+      await mount({ skills: [makeSkill({ custom: true })] });
+      await settle();
+      await click(
+        container.querySelector(
+          '[data-testid="customize-row-menu-skill:custom:app:review-checklist"]',
+        ),
+        'Skill row menu',
+      );
+      const remove = document.querySelector(
+        '[data-testid="customize-row-menu-skill:custom:app:review-checklist-remove"]',
+      );
+      expect(remove?.textContent).toBe('Delete…');
+      await click(remove, 'Skill row Delete');
+      const dialog = document.querySelector(
+        '[data-testid="customize-row-remove-dialog"]',
+      );
+      expect(dialog?.textContent).toContain('Delete Review Checklist?');
+      expect(dialog?.textContent).toContain('Deletes the skill files.');
+      skillsApi.loadSkills.mockClear();
+      await click(
+        document.querySelector('[data-testid="customize-row-remove-confirm"]'),
+        'Delete confirm',
+      );
+      await settle();
+      expect(uninstall).toHaveBeenCalledWith({ target: skillTarget });
+      expect(skillsApi.loadSkills).toHaveBeenCalled();
+      expect(
+        document.querySelector('[data-testid="customize-row-remove-dialog"]'),
+      ).toBeNull();
+    });
+
+    it('opens the connect flow from the pending sign-in chip', async () => {
+      mcpServersApi.loadServer.mockResolvedValue({
+        server: {
+          definition: {
+            id: 'srv-github',
+            name: 'GitHub',
+            description: 'GitHub MCP server.',
+            type: 'http',
+            url: 'https://mcp.github.com',
+            updatedAt: '2026-05-01T00:00:00.000Z',
+          },
+          configs: [],
+        },
+      });
+      await mountFullFixture();
+      const chip = container.querySelector(
+        '[data-testid="customize-section-installed"] [data-testid="customize-row-sign-in-mcp-catalog:github"]',
+      );
+      expect(chip?.tagName).toBe('BUTTON');
+      await click(chip, 'GitHub sign-in chip');
+      expect(mcpServersApi.loadServer).toHaveBeenCalledWith('srv-github');
+      expect(
+        document.querySelector('[data-testid="mcp-browse-detail"]'),
+      ).not.toBeNull();
+    });
+
+    function seedOwnedSharedSkill(canDelete: boolean): void {
+      mockCapabilityMarketplaceInventory.viewerId = 'viewer-1';
+      mockCapabilityMarketplaceInventory.sharedSkills = [
+        {
+          id: 's1',
+          name: 'Shared helper',
+          description: 'Helps.',
+          contentHash: 'shared-helper-hash',
+          shareScope: 'organization',
+          owner: { type: 'organization', id: 'o1', name: 'Northwind' },
+          createdBy: { id: 'viewer-1', name: 'Me', email: null },
+          createdAt: '2026-10-12T00:00:00.000Z',
+          updatedAt: '2026-10-12T00:00:00.000Z',
+          canUpdate: true,
+          canDelete,
+          publicShare: null,
+        },
+      ];
+    }
+
+    it('unshares a Shared by me row inline', async () => {
+      seedOwnedSharedSkill(true);
+      const deleteShared = jest.fn(() => Promise.resolve());
+      defineWindowApi('skills', { ...skillsApi, deleteShared });
+      await mount();
+      const section = container.querySelector(
+        '[data-testid="customize-section-shared-by-me"]',
+      );
+      const line = section?.querySelector(
+        '[data-testid="customize-row-subtitle-skill:shared:s1"]',
+      );
+      expect(line?.textContent).toContain('Northwind');
+      // CAN-5220: a named audience omits its redundant kind.
+      expect(line?.textContent).not.toContain('Organization');
+      expect(line?.textContent).toContain('Since');
+      expect(line?.textContent).not.toContain('Shared by');
+      const unshare = section?.querySelector(
+        '[data-testid="customize-row-unshare-skill:shared:s1"]',
+      );
+      expect(unshare?.tagName).toBe('BUTTON');
+      expect(unshare?.getAttribute('aria-label')).toBe('Unshare');
+      expect(unshare?.textContent).toBe('');
+      expect(
+        container.querySelector(
+          '[data-testid="customize-section-installed"] [data-testid="customize-row-unshare-skill:shared:s1"]',
+        ),
+      ).toBeNull();
+      await click(unshare ?? null, 'Row Unshare');
+      expect(
+        document.querySelector(
+          '[data-testid="customize-row-unshare-skill:shared:s1-dialog"]',
+        ),
+      ).not.toBeNull();
+      await click(
+        document.querySelector(
+          '[data-testid="customize-row-unshare-skill:shared:s1-confirm"]',
+        ),
+        'Unshare confirm',
+      );
+      await settle();
+      expect(deleteShared).toHaveBeenCalledWith({ skillId: 's1' });
+      expect(
+        mockCapabilityMarketplaceInventory.removeSharedResource,
+      ).toHaveBeenCalledWith('skill', 's1');
+      expect(
+        mockCapabilityMarketplaceInventory.refreshSharedSkills,
+      ).toHaveBeenCalled();
+    });
+
+    it('offers no row Unshare without the delete verdict, and no removal item', async () => {
+      seedOwnedSharedSkill(false);
+      await mount();
+      const section = container.querySelector(
+        '[data-testid="customize-section-shared-by-me"]',
+      );
+      expect(section).not.toBeNull();
+      expect(
+        section?.querySelector(
+          '[data-testid="customize-row-unshare-skill:shared:s1"]',
+        ),
+      ).toBeNull();
+      await click(
+        section?.querySelector(
+          '[data-testid="customize-row-menu-skill:shared:s1"]',
+        ) ?? null,
+        'Shared row menu',
+      );
+      expect(
+        document.querySelector(
+          '[data-testid="customize-row-menu-skill:shared:s1-remove"]',
+        ),
+      ).toBeNull();
+    });
   });
 
   it('reports the open entry detail for App Advisor without leaking source data', async () => {
@@ -10530,45 +11097,11 @@ describe('PluginsPage discovery', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Discovery projection refresh after management-view mutations (API-2153
-  // final whole-branch review, finding 1). The page's `useSkillList()` /
-  // `useMcpServerList()` are separate hook instances from the ones the
-  // management view's `SkillsTab`/`McpServersTab` own (those are stubbed in
-  // this suite, so their IPC calls don't run here) — a mutation made through
-  // them only reaches discovery if the page refreshes its own instances.
+  // Discovery projection refresh after skill mutations made outside the page
+  // (API-2153 final whole-branch review, finding 1). The page's
+  // `useSkillList()` is its own hook instance, so a mutation made elsewhere
+  // only reaches discovery if the page refreshes it.
   // -------------------------------------------------------------------------
-
-  it('refreshes the skills and MCP servers projection when the management view closes', async () => {
-    await mount({ marketplaces: [], skills: [], mcpServers: [] });
-
-    // Nothing installed yet, so the strip (and its row) is hidden entirely.
-    expect(
-      container.querySelector('[data-testid="plugins-installed-strip"]'),
-    ).toBeNull();
-    expect(skillsApi.loadSkills).toHaveBeenCalledTimes(1);
-    expect(mcpServersApi.loadIndex).toHaveBeenCalledTimes(1);
-
-    await openManagement('skills');
-
-    // Simulate a skill install + MCP server add made through the management
-    // view's own (here-stubbed) SkillsTab/McpServersTab instances: the
-    // underlying IPC now reflects the mutation, mirroring what those real
-    // components' own hook instances would have already persisted.
-    skillsApi.loadSkills.mockResolvedValue(okResult([makeSkill()]));
-    mcpServersApi.loadIndex.mockResolvedValue({
-      version: 1,
-      servers: [makeMcpServer()],
-    });
-
-    await click(
-      container.querySelector('[data-testid="plugins-management-back"]'),
-      'Management back button',
-    );
-
-    expect(skillsApi.loadSkills).toHaveBeenCalledTimes(2);
-    expect(mcpServersApi.loadIndex).toHaveBeenCalledTimes(2);
-    expect(installedTileIds()).toHaveLength(2);
-  });
 
   it('refreshes skills when a `canopy:skills-changed` event fires', async () => {
     await mount({ marketplaces: [], skills: [] });
@@ -10578,8 +11111,8 @@ describe('PluginsPage discovery', () => {
     ).toBeNull();
     expect(skillsApi.loadSkills).toHaveBeenCalledTimes(1);
 
-    // Dispatched (no detail) by App Advisor skill actions and SkillsTab's own
-    // mutations — see `dispatcher.ts` / `SkillsTab.tsx`.
+    // Dispatched (no detail) by App Advisor skill actions and installed-skill
+    // mutations — see `dispatcher.ts` / `lib/skillsChanged.ts`.
     skillsApi.loadSkills.mockResolvedValue(okResult([makeSkill()]));
     await act(async () => {
       window.dispatchEvent(new Event('canopy:skills-changed'));
@@ -10619,13 +11152,6 @@ describe('PluginsPage discovery', () => {
     expect(
       container.querySelector('[data-testid="plugins-kind-chip-app"]'),
     ).toBeNull();
-    // Discovery owns curated browse now — the management view must stay shut.
-    const managementView = requireElement(
-      container.querySelector('[data-testid="plugins-management-view"]'),
-      'Closed management view',
-    );
-    expect(managementView.getAttribute('data-open')).toBe('false');
-    expect(managementView.className).toContain('invisible');
     expect(
       useCurrentUiStateStore.getState().slices['plugins.page'],
     ).toMatchObject({ view: 'discovery', resultCount: 2 });
@@ -10654,43 +11180,27 @@ describe('PluginsPage discovery', () => {
 
   it('opens the management view at a section for the management deep link', async () => {
     await mountFullFixture();
-
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent('canopy:plugins-open-management', {
-          detail: { section: 'marketplaces' },
-        }),
-      );
-      await Promise.resolve();
-    });
-    await settle();
-
+    await openManagement('mcp');
     expect(
-      container.querySelector(
-        '[data-testid="plugins-management-section-marketplaces"]',
-      ),
+      container
+        .querySelector('[data-testid="plugins-type-tab-app"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(
+      container.querySelector('#customize-section-installed'),
     ).not.toBeNull();
-    expect(
-      useCurrentUiStateStore.getState().slices['plugins.page'],
-    ).toMatchObject({ view: 'management', managementSection: 'marketplaces' });
   });
 
   it('consumes a durable management destination after the page mounts', async () => {
-    useNavigationStore.setState({
-      activePage: 'plugins',
-      pendingPluginsNavigation: {
-        kind: 'management',
-        section: 'marketplaces',
-      },
-    });
-
+    useNavigationStore
+      .getState()
+      .openPluginsNavigation({ kind: 'management', section: 'skills' });
     await mountFullFixture();
-
     expect(
-      container.querySelector(
-        '[data-testid="plugins-management-section-marketplaces"]',
-      ),
-    ).not.toBeNull();
+      container
+        .querySelector('[data-testid="plugins-type-tab-skill"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
     expect(
       useNavigationStore.getState().pendingPluginsNavigation,
     ).toBeUndefined();
@@ -10717,11 +11227,6 @@ describe('PluginsPage discovery', () => {
     const discoveryIds = entryIds();
     expect(discoveryIds).toContain('mcp-catalog:linear');
     expect(discoveryIds.some((id) => id.startsWith('mkt:'))).toBe(true);
-    expect(
-      container
-        .querySelector('[data-testid="plugins-management-view"]')
-        ?.getAttribute('data-open'),
-    ).toBe('false');
     expect(
       useNavigationStore.getState().pendingPluginsNavigation,
     ).toBeUndefined();
@@ -10806,13 +11311,270 @@ describe('PluginsPage discovery', () => {
     });
   });
 
-  it('projects the management view slice into the App Advisor snapshot', async () => {
+  it('omits the retired management view slice from the App Advisor snapshot', async () => {
     await mountFullFixture();
     await openManagement('mcp');
+    expect(pluginsSnapshot()?.page).toMatchObject({ view: 'discovery' });
+    expect(pluginsSnapshot()?.managementView).toBeUndefined();
+  });
+  it('receives a cold legacy management event before the lazy page mounts (CAN-4267)', async () => {
+    window.dispatchEvent(
+      new CustomEvent('canopy:plugins-open-management', {
+        detail: { section: 'skills' },
+      }),
+    );
+    expect(
+      useNavigationStore.getState().pendingPluginsNavigation,
+    ).toMatchObject({
+      kind: 'marketplace-browse',
+      tab: 'skill',
+      focusSection: 'installed',
+    });
+    await mountFullFixture();
+    expect(
+      container
+        .querySelector('[data-testid="plugins-type-tab-skill"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
+  });
 
-    expect(pluginsSnapshot()).toMatchObject({
-      page: { view: 'management', managementSection: 'mcp' },
-      managementView: { section: 'mcp' },
+  it('does not consume a newer navigation request while settling an older one (CAN-4267)', () => {
+    useNavigationStore
+      .getState()
+      .openPluginsNavigation({ kind: 'management', section: 'skills' });
+    const old = useNavigationStore.getState().pendingPluginsNavigation;
+    useNavigationStore
+      .getState()
+      .openPluginsNavigation({ kind: 'management', section: 'mcp' });
+    useNavigationStore.getState().consumePluginsNavigation(old);
+    expect(
+      useNavigationStore.getState().pendingPluginsNavigation,
+    ).toMatchObject({ kind: 'marketplace-browse', tab: 'app' });
+  });
+  it('restores source filters from a pipeline return context (CAN-4267)', async () => {
+    mockMarketplaceSourcesClient =
+      createIpcMarketplaceSourcesClient(pluginsApi);
+    const navigation = useNavigationStore.getState();
+    navigation.openPluginsNavigation({
+      kind: 'entry-detail',
+      entryId: 'mkt:mkt-1/alpha-tool',
+      from: {
+        kind: 'entry-context',
+        stack: [],
+        marketplace: {
+          query: '',
+          tab: 'sources',
+          source: {
+            sourceId: 'mkt-1',
+            filters: { query: 'alpha', category: null, author: null },
+          },
+        },
+      },
+    });
+    await mount({
+      marketplaces: [
+        makeMarketplace({ plugins: [makePlugin()], pluginCount: 1 }),
+      ],
+    });
+    expect(entryDetail()).not.toBeNull();
+    await click(
+      container.querySelector(
+        '[data-testid="plugins-entry-detail-breadcrumb-source"]',
+      ),
+      'Source return breadcrumb',
+    );
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '[data-testid="marketplace-source-search"]',
+      )?.value,
+    ).toBe('alpha');
+  });
+
+  it('closes a retained source plugin detail when authoritative inventory removes that plugin (CAN-4267)', async () => {
+    await mountMarketplaces([
+      makeMarketplace({ plugins: [makePlugin()], pluginCount: 1 }),
+    ]);
+    await openMarketplaceRow('mkt-1');
+    await click(
+      container.querySelector('[data-plugin-key="alpha-tool"] button'),
+      'Source plugin',
+    );
+    expect(entryDetail()).not.toBeNull();
+    pluginsApi.updateMarketplace.mockResolvedValue(
+      okResult(makeMarketplace({ plugins: [], pluginCount: 0 })),
+    );
+    await act(async () => {
+      await mockMarketplaceSourcesClient?.update('mkt-1');
+    });
+    await settle();
+    expect(
+      container.querySelector('[data-testid="plugins-entry-detail-page"]'),
+    ).toBeNull();
+    expect(container.textContent).toContain(
+      'This plugin is no longer available.',
+    );
+  });
+
+  it('does not replay an unavailable source destination when capability returns (CAN-4267)', async () => {
+    await mountFullFixture();
+    await act(async () => {
+      useNavigationStore.getState().openPluginsNavigation({
+        kind: 'marketplace-source',
+        target: 'detail',
+        sourceId: 'mkt-1',
+      });
+      await Promise.resolve();
+    });
+    mockMarketplaceSourcesClient =
+      createIpcMarketplaceSourcesClient(pluginsApi);
+    await renderPage();
+    expect(
+      container.querySelector('[data-testid="marketplace-source-detail"]'),
+    ).toBeNull();
+    expect(
+      container
+        .querySelector('[data-testid="plugins-type-tab-all"]')
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
+  });
+  describe('CAN-4844 — custom and bundled skill rows', () => {
+    const customId = 'skill:custom:app:review-checklist';
+    const bundledId = 'plugin-skill:mkt-1/slack:summarize-channel';
+    const slack = makePlugin({
+      name: 'slack',
+      displayName: 'Slack',
+      details: {
+        ...emptyDetails,
+        skills: [
+          {
+            name: 'summarize-channel',
+            description: 'Summarize a channel',
+            path: 'skills/summarize-channel/SKILL.md',
+          },
+        ],
+      },
+      globalInstallStatus: {
+        checkedAt: '2026-10-28T00:00:00.000Z',
+        claude: { available: true, installed: true },
+        codex: { available: true, installed: false },
+      },
+    });
+
+    async function mountBundled(): Promise<void> {
+      defineWindowApi('installedItems', {
+        listStatus: jest.fn().mockResolvedValue({
+          items: [
+            {
+              target: {
+                kind: 'plugin',
+                marketplaceId: 'mkt-1',
+                pluginName: 'slack',
+              },
+              status: 'available',
+              removable: false,
+              notices: [],
+            },
+          ],
+        }),
+        setStatus: jest.fn(),
+        onChanged: jest.fn(() => jest.fn()),
+      });
+      await mount({
+        marketplaces: [makeMarketplace({ plugins: [slack], pluginCount: 1 })],
+      });
+      await openManagement('skills');
+    }
+
+    function menuLabels(id: string): string[] {
+      return Array.from(
+        document.querySelectorAll(
+          `[data-testid="customize-row-menu-${id}-surface"] [data-testid^="customize-row-menu-${id}-"]`,
+        ),
+      ).map((node) => node.textContent ?? '');
+    }
+
+    it('custom skill row shares the avatar badge and Updated metadata', async () => {
+      await mount({
+        skills: [
+          makeSkill({ custom: true, updatedAt: '2026-10-10T12:00:00.000Z' }),
+        ],
+      });
+      await openManagement('skills');
+      const q = (part: string): Element | null =>
+        container.querySelector(
+          `[data-testid="customize-row-${part}-${customId}"]`,
+        );
+      expect(q('creator')).toBeNull();
+      expect(q('edited')?.textContent?.replace(/\s/g, ' ')).toMatch(
+        /^Updated \d+[smhd] ago$/,
+      );
+      const marker = q('custom');
+      expect(marker?.getAttribute('aria-label')).toBe('Custom skill');
+      expect(q('name-line')?.contains(marker)).toBe(false);
+      expect(marker?.classList.contains('bg-fg-primary')).toBe(true);
+    });
+
+    it('disables Edit when the host does not report customSkillEdit', async () => {
+      mockCustomSkillEditCapability = false;
+      await mount({ skills: [makeSkill({ custom: true })] });
+      await openManagement('skills');
+      await click(
+        container.querySelector(
+          `[data-testid="customize-row-menu-${customId}"]`,
+        ),
+        'Skill row menu',
+      );
+      const edit = document.querySelector(
+        `[data-testid="customize-row-menu-${customId}-edit"]`,
+      );
+      expect(edit?.getAttribute('aria-disabled')).toBe('true');
+      expect(edit?.getAttribute('title')).toBe(
+        'Edit this skill in the desktop app.',
+      );
+      await click(edit, 'Disabled Edit');
+      expect(
+        container.querySelector('[data-testid="skill-editor-page-actions"]'),
+      ).toBeNull();
+    });
+
+    it('bundled skill row follows its plugin and opens the plugin', async () => {
+      await mountBundled();
+      const inherited = container.querySelector(
+        `[data-testid="plugins-entry-status-${bundledId}"]`,
+      );
+      expect(inherited?.getAttribute('data-status')).toBe('available');
+      expect(inherited?.getAttribute('aria-disabled')).toBe('true');
+      expect(inherited?.classList.contains('fg-disabled')).toBe(true);
+      expect(inherited?.querySelector('svg')).toBeNull();
+      expect(
+        container.querySelector('[data-testid="customize-installed-footnote"]')
+          ?.textContent,
+      ).toBe("A skill that comes with a plugin follows that plugin's status.");
+      await click(
+        container.querySelector(
+          `[data-testid="customize-row-menu-${bundledId}"]`,
+        ),
+        'Bundled skill row menu',
+      );
+      expect(menuLabels(bundledId)).toEqual([
+        'Open details',
+        'Open the Slack plugin',
+      ]);
+      await click(
+        document.querySelector(
+          `[data-testid="customize-row-menu-${bundledId}-details"]`,
+        ),
+        'Bundled skill Open details',
+      );
+      expect(requirePluginDetailViewProps().plugin.name).toBe('slack');
+    });
+
+    it('search by plugin name finds its bundled skill', async () => {
+      await mountBundled();
+      await typeQuery('Slack');
+      expect(
+        container.querySelector(`[data-testid="customize-row-${bundledId}"]`),
+      ).not.toBeNull();
     });
   });
 });

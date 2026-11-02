@@ -1,10 +1,13 @@
 import { open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { type Stats } from 'node:fs';
-import { DOCUMENT_PREVIEW_MAX_BYTES } from '@canopy/protocol/document-preview';
-import { basename, extname, join, relative, sep } from 'node:path';
+import { documentPreviewMaxBytes } from '@canopy/protocol/document-preview';
+import { FileSaveConflictError } from '@canopy/protocol/file-save-conflict';
+import { FileSaveValidationError } from '@canopy/protocol/file-image-save';
+import { createImageFile, decodeImageSave } from '../lib/create-image-file';
+import { basename, extname, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { shell } from 'electron';
+import { nativeImage, shell, type IpcMainInvokeEvent } from 'electron';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type {
@@ -19,6 +22,7 @@ import type {
   OpenExternalFileRequest,
   SaveFileContentRequest,
   SaveFileContentResponse,
+  ShowFilesWorkspaceTarget,
   ShowInFinderRequest,
 } from '@canopy/desktop-shared/types';
 import { getCodexRuntimeService } from '../codex/runtime-service';
@@ -28,7 +32,6 @@ import {
   openAuthorizedRegularFile,
 } from '../lib/authorized-file-open';
 import { assertExternalFileOpenAllowed } from '../lib/external-file-open';
-import { hasGitPathSegment } from '../lib/file-glob-matcher';
 import { openExternalGuarded } from '../lib/open-external';
 import { isPathInside } from '../lib/path-safety';
 import {
@@ -44,105 +47,42 @@ import {
 } from '../lib/read-only-scope';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { getWorkspaceType } from '../lib/workspace-registry';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  WORKER_FILESYSTEM_GRANTS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import {
+  classifyFileContentKind,
+  fileUrlToAbsolutePath,
+  hasGitPathSegment,
+  markdownLinkCandidatePath,
+} from '@canopy/core-runtime/node';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { toLegacyFileSaveError } from '../canopy-runtime/worker-filesystem-mutation-adapter';
+import { canonicalFileContent } from '../canopy-runtime/worker-filesystem-read-adapter';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 import {
   readSharedContainerViewerFile,
   resolveSharedContainerViewerFileForRead,
 } from '../shared-containers/read/viewer-root';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
+import { resolvePortalFileLink } from '../services/files-service';
 
 type FileContentKind = FilePreviewResponse['kind'];
 
-const IMAGE_EXTENSIONS = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.webp',
-  '.svg',
-  '.bmp',
-]);
-
-const MARKDOWN_EXTENSIONS = new Set(['.md', '.mdx']);
-
-const HTML_EXTENSIONS = new Set(['.html', '.htm']);
-
-const KNOWN_BINARY_EXTENSIONS = new Set([
-  '.exe',
-  '.dll',
-  '.so',
-  '.dylib',
-  '.a',
-  '.o',
-  '.lib',
-  '.obj',
-  '.class',
-  '.jar',
-  '.war',
-  '.pyc',
-  '.pyo',
-  '.wasm',
-  '.zip',
-  '.tar',
-  '.gz',
-  '.tgz',
-  '.bz2',
-  '.xz',
-  '.7z',
-  '.rar',
-  '.iso',
-  '.dmg',
-  '.pkg',
-  '.deb',
-  '.rpm',
-  '.pdf',
-  '.doc',
-  '.docx',
-  '.xls',
-  '.xlsx',
-  '.ppt',
-  '.pptx',
-  '.odt',
-  '.ods',
-  '.odp',
-  '.rtf',
-  '.ico',
-  '.icns',
-  '.ttf',
-  '.otf',
-  '.woff',
-  '.woff2',
-  '.eot',
-  '.mp3',
+const VIDEO_EXTENSIONS = new Set([
   '.mp4',
-  '.m4a',
   '.m4v',
   '.mov',
-  '.avi',
-  '.mkv',
   '.webm',
-  '.wav',
-  '.flac',
-  '.ogg',
-  '.opus',
-  '.aac',
-  '.wma',
-  '.psd',
-  '.ai',
-  '.sketch',
-  '.fig',
-  '.blend',
-  '.fbx',
-  '.stl',
-  '.db',
-  '.sqlite',
-  '.sqlite3',
-  '.mdb',
-  '.bin',
-  '.dat',
-  '.pack',
-  '.idx',
+  '.mkv',
+  '.avi',
 ]);
+
+/** A queued attachment tile is 24px; 96px covers 2x and 3x displays. */
+const VIDEO_FRAME_SIZE = { width: 96, height: 96 };
 
 const IMAGE_MIME_MAP: Record<string, string> = {
   '.png': 'image/png',
@@ -159,23 +99,9 @@ const MAX_PREVIEW_TEXT_BYTES = 2048;
 const MAX_FULL_TEXT_BYTES = 5 * 1024 * 1024;
 const MAX_EDIT_TEXT_BYTES = MAX_FULL_TEXT_BYTES;
 
+/** The engine's classification, shared with `worker.filesystem.file.read`. */
 function classifyExtension(absolutePath: string): FileContentKind {
-  const extension = extname(absolutePath).toLowerCase();
-  if (IMAGE_EXTENSIONS.has(extension)) {
-    return 'image';
-  }
-  if (MARKDOWN_EXTENSIONS.has(extension)) {
-    return 'markdown';
-  }
-  if (HTML_EXTENSIONS.has(extension)) {
-    return 'html';
-  }
-  if (KNOWN_BINARY_EXTENSIONS.has(extension)) {
-    return 'unsupported';
-  }
-  // Unknown extensions default to text; a null-byte sniff later rejects
-  // misnamed binary files before they render in the viewer.
-  return 'text';
+  return classifyFileContentKind(absolutePath);
 }
 
 async function readTextSlice(
@@ -307,145 +233,146 @@ function createFileUrlFromAbsolutePath(pathValue: string): URL {
   });
 }
 
-export function fileUrlToAbsolutePath(url: URL): string {
-  const pathname = decodeURIComponent(url.pathname);
-  if (/^\/[a-zA-Z]:($|\/)/.test(pathname)) {
-    return pathname.slice(1);
-  }
-  return url.host ? `//${url.host}${pathname}` : pathname;
-}
+// Moved into the `worker.filesystem.link.resolve` engine (CAN-5038).
+export { fileUrlToAbsolutePath };
 
-function resolveMarkdownHref(
-  baseFilePath: string,
-  href: string,
-  roots: Awaited<ReturnType<typeof getFileBrowserRoots>>['roots'],
-): string | null {
-  if (href.length === 0 || href.startsWith('#') || href.startsWith('//')) {
-    return null;
-  }
-
-  try {
-    const normalizedHref = href.replace(/\\/g, '/');
-    const [firstSegment, ...remainingSegments] = normalizedHref.split('/');
-    if (
-      firstSegment &&
-      remainingSegments.length > 0 &&
-      !firstSegment.includes(':') &&
-      !normalizedHref.startsWith('/')
-    ) {
-      const matchingRoot = roots.find(
-        (root) =>
-          root.repoName === firstSegment || root.repoId === firstSegment,
-      );
-      if (matchingRoot) {
-        const lastIndex = remainingSegments.length - 1;
-        const targetSegments = remainingSegments.map((segment, index) =>
-          decodeURIComponent(
-            index === lastIndex ? segment.replace(/[?#].*$/, '') : segment,
-          ),
-        );
-        return join(matchingRoot.absolutePath, ...targetSegments);
-      }
-    }
-
-    const baseUrl = createFileUrlFromAbsolutePath(baseFilePath);
-    const resolvedUrl = new URL(href, baseUrl);
-    if (resolvedUrl.protocol !== 'file:') {
-      return null;
-    }
-    return fileUrlToAbsolutePath(resolvedUrl);
-  } catch {
-    return null;
-  }
-}
-
-async function resolveAllowedFileReference(
+/**
+ * The sealed shared-container viewer keeps its no-follow replica reader; it
+ * shares only the engine's link-to-path rule.
+ */
+async function resolveViewerFileReference(
   request: FileReferenceResolveRequest,
 ): Promise<FileReferenceResolveResponse> {
   const { roots } = await getFileBrowserRoots(
     request.projectId,
     request.worktreeId,
   );
-  const resolvedPath = resolveMarkdownHref(
+  const resolvedPath = markdownLinkCandidatePath(
     request.baseFilePath,
     request.href,
-    roots,
+    roots.map((root) => ({
+      id: root.repoId,
+      name: root.repoName,
+      absolutePath: root.absolutePath,
+    })),
   );
   if (!resolvedPath || hasGitPathSegment(resolvedPath)) {
     return null;
   }
-
-  if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
-    try {
-      const resolved = await resolveSharedContainerViewerFileForRead(
-        request.worktreeId,
-        resolvedPath,
-      );
-      const info = await getSharedContainerReader().store.lstatEntryForRead(
-        resolved.root.revisionRoot,
-        resolved.target,
-      );
-      if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) {
-        return null;
-      }
-      return {
-        absolutePath: resolved.target,
-        filename: basename(resolved.target),
-        kind: info.isDirectory() ? 'directory' : 'file',
-      };
-    } catch {
+  try {
+    const resolved = await resolveSharedContainerViewerFileForRead(
+      request.worktreeId,
+      resolvedPath,
+    );
+    const info = await getSharedContainerReader().store.lstatEntryForRead(
+      resolved.root.revisionRoot,
+      resolved.target,
+    );
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) {
       return null;
     }
-  }
-
-  let resolvedFilePath: string;
-  try {
-    resolvedFilePath = await realpath(resolvedPath);
+    return {
+      absolutePath: resolved.target,
+      filename: basename(resolved.target),
+      kind: info.isDirectory() ? 'directory' : 'file',
+    };
   } catch {
     return null;
   }
-  if (hasGitPathSegment(resolvedFilePath)) {
-    return null;
-  }
+}
 
-  let targetStat: Awaited<ReturnType<typeof stat>>;
-  try {
-    targetStat = await stat(resolvedFilePath);
-  } catch {
-    return null;
+/**
+ * `mode: 'transcript'` (CAN-5038): agent transcript link text matched to one
+ * file across the roots, for `IpcCanopyClient`'s `file.resolveLink`. The
+ * sealed viewer answers through the Portal resolver's replica branch.
+ */
+async function resolveTranscriptFileReference(
+  dispatcher: FilePreviewDispatcher,
+  resolveCaller: DesktopIpcCallerResolver,
+  event: IpcMainInvokeEvent,
+  request: FileReferenceResolveRequest,
+): Promise<FileReferenceResolveResponse> {
+  if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+    const link = await resolvePortalFileLink(request);
+    if (!link) return null;
+    const { rootMap } = await getFileBrowserRoots(
+      request.projectId,
+      request.worktreeId,
+    );
+    const root = rootMap.get(link.fileRootLocalId);
+    if (!root) return null;
+    const absolutePath = join(
+      root.absolutePath,
+      ...link.relativePath.split('/'),
+    );
+    const filename = basename(absolutePath);
+    return {
+      absolutePath,
+      filename,
+      kind: 'file',
+      canonical: {
+        fileRootId: link.fileRootLocalId,
+        relativePath: link.relativePath,
+        name: filename,
+        kind: 'file',
+      },
+    };
   }
-  const kind = targetStat.isDirectory()
-    ? 'directory'
-    : targetStat.isFile()
-      ? 'file'
-      : null;
-  if (kind === null) return null;
+  const { canonicalResult, legacyResult } =
+    await dispatcher.queryLinkResolveForLegacyIpc(
+      {
+        scope: {
+          workspaceId: request.projectId,
+          worktreeId: request.worktreeId,
+        },
+        mode: 'transcript',
+        href: request.href,
+      },
+      { caller: resolveCaller(event) },
+      { sender: event.sender },
+    );
+  if (!legacyResult || !canonicalResult) return null;
+  return {
+    ...legacyResult,
+    canonical: {
+      fileRootId: canonicalResult.fileRootId,
+      relativePath: canonicalResult.relativePath,
+      name: canonicalResult.name,
+      kind: canonicalResult.kind,
+    },
+  };
+}
 
-  for (const root of roots) {
-    let resolvedRootPath: string;
-    try {
-      resolvedRootPath = await realpath(root.absolutePath);
-    } catch {
-      continue;
-    }
-    if (
-      !hasGitPathSegment(resolvedRootPath) &&
-      isPathInsideRoot(resolvedFilePath, resolvedRootPath)
-    ) {
-      return {
-        // Authorization uses real paths, but the file panel addresses files
-        // relative to its advertised root (which may itself be a symlink).
-        absolutePath: join(
-          root.absolutePath,
-          relative(resolvedRootPath, resolvedFilePath),
-        ),
-        filename: basename(resolvedFilePath),
-        kind,
-      };
-    }
-  }
-
-  return null;
+/**
+ * Markdown links: a projection over `worker.filesystem.link.resolve` on the
+ * desktop dispatcher (CAN-5038). Every link failure answers `null`.
+ */
+async function resolveFileReference(
+  dispatcher: FilePreviewDispatcher,
+  resolveCaller: DesktopIpcCallerResolver,
+  event: IpcMainInvokeEvent,
+  request: FileReferenceResolveRequest,
+): Promise<FileReferenceResolveResponse> {
+  if (request.mode === 'transcript')
+    return resolveTranscriptFileReference(
+      dispatcher,
+      resolveCaller,
+      event,
+      request,
+    );
+  if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID)
+    return resolveViewerFileReference(request);
+  const { legacyResult } = await dispatcher.queryLinkResolveForLegacyIpc(
+    {
+      scope: { workspaceId: request.projectId, worktreeId: request.worktreeId },
+      mode: 'markdown',
+      href: request.href,
+      baseFilePath: request.baseFilePath,
+    },
+    { caller: resolveCaller(event) },
+    { sender: event.sender },
+  );
+  return legacyResult;
 }
 
 async function openWorkspaceDocumentFile(
@@ -463,61 +390,6 @@ async function openWorkspaceDocumentFile(
   validateId(target.worktreeId, 'worktreeId');
   const roots = await getAuthorizedFileRoots(target);
   return openAuthorizedRegularFile(request.absolutePath, roots);
-}
-
-async function openWorkspaceReadFile(request: FileContentRequest): Promise<{
-  absolutePath: string;
-  fileHandle: FileHandle;
-  fileStat: Stats;
-}> {
-  const target = request.workspaceTarget;
-  if (!target) {
-    throw new Error('A project target is required for a scoped file read');
-  }
-
-  validateId(target.projectId, 'projectId');
-  validateId(target.worktreeId, 'worktreeId');
-  const { roots } = await getFileBrowserRoots(
-    target.projectId,
-    target.worktreeId,
-  );
-  const fileHandle = await open(request.absolutePath, 'r');
-  try {
-    const [fileStat, resolvedFilePath] = await Promise.all([
-      fileHandle.stat(),
-      realpath(request.absolutePath),
-    ]);
-
-    let contained = false;
-    for (const root of roots) {
-      let resolvedRootPath: string;
-      try {
-        resolvedRootPath = await realpath(root.absolutePath);
-      } catch {
-        continue;
-      }
-      if (isPathInsideRoot(resolvedFilePath, resolvedRootPath)) {
-        contained = true;
-        break;
-      }
-    }
-    if (!contained) {
-      throw new Error('Cannot read file outside the target project roots');
-    }
-
-    const currentPathStat = await stat(resolvedFilePath);
-    if (
-      fileStat.dev !== currentPathStat.dev ||
-      fileStat.ino !== currentPathStat.ino
-    ) {
-      throw new Error('Cannot read a file that changed while being validated');
-    }
-
-    return { absolutePath: resolvedFilePath, fileHandle, fileStat };
-  } catch (error) {
-    await fileHandle.close();
-    throw error;
-  }
 }
 
 async function openCodexGeneratedImage(absolutePath: string): Promise<{
@@ -642,6 +514,38 @@ async function readImageContent(
   };
 }
 
+/**
+ * A video's first frame as an image, from the operating system's thumbnailer
+ * (QuickLook on macOS, the shell thumbnail cache on Windows). Linux has none,
+ * and a file the OS cannot thumbnail stays unsupported.
+ */
+async function readVideoFrame(
+  absolutePath: string,
+  filename: string,
+  sizeBytes: number,
+  modifiedAtMs: number,
+): Promise<FilePreviewResponse> {
+  try {
+    const image = await nativeImage.createThumbnailFromPath(
+      absolutePath,
+      VIDEO_FRAME_SIZE,
+    );
+    if (image.isEmpty()) {
+      return buildUnsupportedResponse(filename, sizeBytes, modifiedAtMs);
+    }
+    return {
+      kind: 'image',
+      content: image.toDataURL(),
+      filename,
+      sizeBytes,
+      truncated: false,
+      modifiedAtMs,
+    };
+  } catch {
+    return buildUnsupportedResponse(filename, sizeBytes, modifiedAtMs);
+  }
+}
+
 async function readTextContent(
   absolutePath: string,
   filename: string,
@@ -720,16 +624,75 @@ async function readViewerFileContent(
   };
 }
 
-export function registerFilePreviewHandlers(): void {
+/** The legacy text of a canonical read failure: its runtime cause, as before. */
+function rethrowLegacyFileReadError(error: unknown): never {
+  if (error instanceof CanopyOperationError) {
+    if (error.runtimeCause instanceof Error) throw error.runtimeCause;
+    throw new Error(error.payload.message);
+  }
+  throw error;
+}
+
+type FilePreviewDispatcher = Pick<
+  DesktopCanopyDispatcher,
+  | 'queryFileContentForLegacyIpc'
+  | 'queryLinkResolveForLegacyIpc'
+  | 'saveTextFileForLegacyIpc'
+>;
+
+/**
+ * The scoped workspace branch: a projection over
+ * `worker.filesystem.file.read` on the desktop dispatcher (CAN-4099).
+ */
+async function readScopedFileContent(
+  dispatcher: FilePreviewDispatcher,
+  resolveCaller: DesktopIpcCallerResolver,
+  event: IpcMainInvokeEvent,
+  request: FileContentRequest,
+  target: ShowFilesWorkspaceTarget,
+): Promise<FileContentResponse> {
+  validateId(target.projectId, 'projectId');
+  validateId(target.worktreeId, 'worktreeId');
+  try {
+    const { canonicalResult, legacyResult } =
+      await dispatcher.queryFileContentForLegacyIpc(
+        {
+          scope: {
+            workspaceId: target.projectId,
+            worktreeId: target.worktreeId,
+          },
+          absolutePath: request.absolutePath,
+          ...(request.file && {
+            file: {
+              fileRootId: request.file.fileRootId,
+              relativePath: request.file.relativePath,
+            },
+          }),
+        },
+        { caller: resolveCaller(event) },
+        { sender: event.sender },
+      );
+    return request.file && canonicalResult
+      ? { ...legacyResult, canonical: canonicalFileContent(canonicalResult) }
+      : legacyResult;
+  } catch (error) {
+    return rethrowLegacyFileReadError(error);
+  }
+}
+
+export function registerFilePreviewHandlers(
+  dispatcher: FilePreviewDispatcher,
+  resolveCaller: DesktopIpcCallerResolver,
+): void {
   registerIpcHandler(
     IPC_CHANNELS.fileReferenceResolve,
     async (
-      _event,
+      event,
       request: FileReferenceResolveRequest,
     ): Promise<FileReferenceResolveResponse> => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
-      return resolveAllowedFileReference(request);
+      return resolveFileReference(dispatcher, resolveCaller, event, request);
     },
   );
 
@@ -764,6 +727,17 @@ export function registerFilePreviewHandlers(): void {
       const sizeBytes = fileStat.size;
       const modifiedAtMs = fileStat.mtimeMs;
       const filename = basename(request.absolutePath);
+      if (
+        request.videoFrame === true &&
+        VIDEO_EXTENSIONS.has(extname(request.absolutePath).toLowerCase())
+      ) {
+        return readVideoFrame(
+          request.absolutePath,
+          filename,
+          sizeBytes,
+          modifiedAtMs,
+        );
+      }
       const kind = classifyExtension(request.absolutePath);
 
       if (kind === 'unsupported') {
@@ -796,6 +770,7 @@ export function registerFilePreviewHandlers(): void {
       _event,
       request: FileDocumentBytesRequest,
     ): Promise<FileDocumentBytesResponse> => {
+      const maxBytes = documentPreviewMaxBytes(request.absolutePath);
       if (
         request.workspaceTarget?.projectId ===
         SHARED_CONTAINER_VIEWER_PROJECT_ID
@@ -805,10 +780,10 @@ export function registerFilePreviewHandlers(): void {
             request.workspaceTarget.worktreeId,
             request.absolutePath,
           );
-          if (opened.sizeBytes > DOCUMENT_PREVIEW_MAX_BYTES) {
+          if (opened.sizeBytes > maxBytes) {
             return {
               status: 'too-large',
-              maxBytes: DOCUMENT_PREVIEW_MAX_BYTES,
+              maxBytes,
               sizeBytes: opened.sizeBytes,
             };
           }
@@ -829,18 +804,18 @@ export function registerFilePreviewHandlers(): void {
         const opened = await openWorkspaceDocumentFile(request);
         fileHandle = opened.fileHandle;
         const { absolutePath, fileStat } = opened;
-        if (fileStat.size > DOCUMENT_PREVIEW_MAX_BYTES) {
+        if (fileStat.size > maxBytes) {
           return {
             status: 'too-large',
-            maxBytes: DOCUMENT_PREVIEW_MAX_BYTES,
+            maxBytes,
             sizeBytes: fileStat.size,
           };
         }
         const chunks: Uint8Array[] = [];
         let sizeBytes = 0;
-        while (sizeBytes <= DOCUMENT_PREVIEW_MAX_BYTES) {
+        while (sizeBytes <= maxBytes) {
           const buffer = Buffer.allocUnsafe(
-            Math.min(64 * 1024, DOCUMENT_PREVIEW_MAX_BYTES + 1 - sizeBytes),
+            Math.min(64 * 1024, maxBytes + 1 - sizeBytes),
           );
           const { bytesRead } = await fileHandle.read(
             buffer,
@@ -850,11 +825,11 @@ export function registerFilePreviewHandlers(): void {
           );
           if (bytesRead === 0) break;
           sizeBytes += bytesRead;
-          if (sizeBytes > DOCUMENT_PREVIEW_MAX_BYTES) {
+          if (sizeBytes > maxBytes) {
             // This is the observed lower bound, not the stale stat size.
             return {
               status: 'too-large',
-              maxBytes: DOCUMENT_PREVIEW_MAX_BYTES,
+              maxBytes,
               sizeBytes,
             };
           }
@@ -892,7 +867,7 @@ export function registerFilePreviewHandlers(): void {
   registerIpcHandler(
     IPC_CHANNELS.fileReadContent,
     async (
-      _event,
+      event,
       request: FileContentRequest,
     ): Promise<FileContentResponse> => {
       validateAbsolutePath(request.absolutePath, 'absolutePath');
@@ -909,17 +884,24 @@ export function registerFilePreviewHandlers(): void {
           throw error;
         }
       }
+      if (
+        request.allowedRoot !== 'codex-generated-images' &&
+        request.workspaceTarget
+      ) {
+        return readScopedFileContent(
+          dispatcher,
+          resolveCaller,
+          event,
+          request,
+          request.workspaceTarget,
+        );
+      }
       let absolutePath = request.absolutePath;
       let fileHandle: FileHandle | undefined;
       let fileStat: Stats;
       try {
         if (request.allowedRoot === 'codex-generated-images') {
           const opened = await openCodexGeneratedImage(request.absolutePath);
-          absolutePath = opened.absolutePath;
-          fileHandle = opened.fileHandle;
-          fileStat = opened.fileStat;
-        } else if (request.workspaceTarget) {
-          const opened = await openWorkspaceReadFile(request);
           absolutePath = opened.absolutePath;
           fileHandle = opened.fileHandle;
           fileStat = opened.fileStat;
@@ -976,7 +958,7 @@ export function registerFilePreviewHandlers(): void {
   registerIpcHandler(
     IPC_CHANNELS.fileSaveContent,
     async (
-      _event,
+      event,
       request: SaveFileContentRequest,
     ): Promise<SaveFileContentResponse> => {
       const { withWorkspaceTargetRuntimeStartReservation } =
@@ -989,6 +971,25 @@ export function registerFilePreviewHandlers(): void {
           validateId(request.worktreeId, 'worktreeId');
           assertWritableScope(request.projectId);
           validateAbsolutePath(request.absolutePath, 'absolutePath');
+
+          if (request.createOnly === true || request.encoding === 'base64') {
+            const bytes = decodeImageSave(request);
+            const roots = await buildAllowedSaveRoots(
+              request.projectId,
+              request.worktreeId,
+            );
+            const { touchWorkspaceTarget } =
+              await import('../lib/workspace-activity');
+            return createImageFile(request, bytes, roots, () =>
+              touchWorkspaceTarget(request.projectId, request.worktreeId),
+            );
+          }
+          if (
+            (request.encoding !== undefined && request.encoding !== 'utf8') ||
+            (request.createOnly !== undefined && request.createOnly !== false)
+          ) {
+            throw new FileSaveValidationError('Invalid file save options.');
+          }
 
           const kind = classifyExtension(request.absolutePath);
           if (kind === 'image' || kind === 'unsupported') {
@@ -1005,6 +1006,12 @@ export function registerFilePreviewHandlers(): void {
             throw new Error('File content cannot contain null bytes');
           }
 
+          let caller: CanopyCallerDescriptor;
+          try {
+            caller = resolveCaller(event);
+          } catch (error) {
+            throw toLegacyFileSaveError(error);
+          }
           const allowedRoots = await buildAllowedSaveRoots(
             request.projectId,
             request.worktreeId,
@@ -1015,17 +1022,38 @@ export function registerFilePreviewHandlers(): void {
           );
 
           const currentStat = await stat(resolvedSavePath);
+          // `NaN` (a preview without `modifiedAt`) saves unconditionally.
           if (
             typeof request.expectedModifiedAtMs === 'number' &&
             Math.abs(currentStat.mtimeMs - request.expectedModifiedAtMs) > 1
           ) {
-            throw new Error('File changed on disk since it was loaded.');
+            throw new FileSaveConflictError();
           }
 
-          const { touchWorkspaceTarget } =
-            await import('../lib/workspace-activity');
-          await touchWorkspaceTarget(request.projectId, request.worktreeId);
-          await writeFile(resolvedSavePath, request.content, 'utf8');
+          // The instruction compares the exact version of the stat this
+          // check accepted, never one built from the renderer's stamp.
+          const saved = await dispatcher.saveTextFileForLegacyIpc(
+            {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              realPath: resolvedSavePath,
+              content: request.content,
+              expectedVersion: `${currentStat.size}:${Math.round(currentStat.mtimeMs)}`,
+            },
+            {
+              caller: { ...caller, grants: [WORKER_FILESYSTEM_GRANTS.write] },
+            },
+          );
+          if (saved === 'unrouted') {
+            // Save-only roots, unresolved managed targets, unreadable roots
+            // and POSIX names the write path check refuses keep the direct
+            // write (CAN-4100 debt).
+            const { touchWorkspaceTarget } =
+              await import('../lib/workspace-activity');
+            await touchWorkspaceTarget(request.projectId, request.worktreeId);
+            await writeFile(resolvedSavePath, request.content, 'utf8');
+          }
+          // Stat after the write, as before: the renderer's next stamp.
           const savedStat = await stat(resolvedSavePath);
           return {
             filename: basename(request.absolutePath),

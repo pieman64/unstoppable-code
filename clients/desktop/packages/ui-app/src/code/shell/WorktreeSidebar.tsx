@@ -2,6 +2,7 @@
 
 import { type JSX, type ReactNode } from 'react';
 import { useActivityStore, useCapabilities } from '@canopy/app-state';
+import { Button } from '@canopy/ui-shared/components';
 import { WorkspacesSidebarSections } from './WorkspacesSidebarSections';
 import { SidebarChrome } from './sidebar';
 import { partitionWorkspaces } from './workspace-sections-model';
@@ -102,22 +103,14 @@ export function WorktreeSidebar({
         >
           {workspaceActions}
           {onAddWorkspace && (
-            <button
-              type="button"
-              className="rounded px-2 py-1 text-xs"
-              onClick={onAddWorkspace}
-            >
+            <Button size="compact" onClick={onAddWorkspace}>
               Add project
-            </button>
+            </Button>
           )}
           {onCreateTask && (
-            <button
-              type="button"
-              className="rounded px-2 py-1 text-xs"
-              onClick={onCreateTask}
-            >
+            <Button size="compact" onClick={onCreateTask}>
               Create task
-            </button>
+            </Button>
           )}
         </div>
       )}

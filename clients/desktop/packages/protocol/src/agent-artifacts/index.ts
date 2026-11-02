@@ -282,6 +282,8 @@ export type AgentArtifactCarryByTurn = Record<
 >;
 
 export * from './validation';
+export * from './collapse';
+export * from './placement';
 
 /** Existing scheduler enums, shared without depending on the desktop runtime. */
 export type AutomationRunStatus =

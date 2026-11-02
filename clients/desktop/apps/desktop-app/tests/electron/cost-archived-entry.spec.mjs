@@ -56,7 +56,7 @@ test('archived cost is sealed, restored unchanged, and removed on permanent dele
     await worktreeRow.click({ button: 'right' });
     await window.getByTestId('worktree-actions-menu-archive').click();
     const archiveDialog = window.getByRole('dialog', {
-      name: 'Archive worktree?',
+      name: /^Archive worktree/,
     });
     await expect(archiveDialog).toBeVisible();
     await archiveDialog.getByTestId('worktree-removal-preserve-branch').click();
@@ -140,7 +140,7 @@ test('archived cost is sealed, restored unchanged, and removed on permanent dele
     await restoredRow.click({ button: 'right' });
     await window.getByTestId('worktree-actions-menu-delete').click();
     const deleteDialog = window.getByRole('dialog', {
-      name: 'Delete worktree?',
+      name: /^Delete worktree/,
     });
     const needsConfirmation = await deleteDialog
       .waitFor({ state: 'visible', timeout: 2_000 })

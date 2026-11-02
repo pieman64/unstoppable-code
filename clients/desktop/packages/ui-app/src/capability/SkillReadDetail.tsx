@@ -7,6 +7,7 @@ import type {
   SkillContentResponse,
 } from '@canopy/protocol';
 import {
+  Button,
   DetailHeader,
   DetailMoreMenu,
   DetailPageActions,
@@ -36,13 +37,16 @@ import {
   type MarketplaceShareAction,
   type SkillUpdateAction,
 } from '@canopy/ui-shared/lib';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
 import { MarkdownFrontmatterContent } from '../code/file/MarkdownFrontmatterContent';
 import {
   EDIT_WITH_AI_LABEL,
   SkillEditWithAIButton,
   type SkillEditWithAIState,
 } from './SkillEditWithAIButton';
+import {
+  installedShareProvenance,
+  type InstalledShareProvenanceOptions,
+} from './installed-share-provenance';
 
 export { SKILL_MAIN_FILE } from '@canopy/ui-shared/lib';
 
@@ -78,6 +82,10 @@ const UPDATED_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
  * The installed skill page's header on every host (CAN-4264): the list's
  * title, the frontmatter description, then where it came from, its version
  * and when it last changed. Facts the host does not know are left out.
+ *
+ * A receipted shared install names its source instead of `Custom`
+ * (CAN-5018): its attribution, `One-time copy`, any live `Update available`,
+ * the date, then `View shared skill` from `provenance.source`.
  */
 export function installedSkillDetailHeader(
   name: string,
@@ -85,12 +93,18 @@ export function installedSkillDetailHeader(
   installed:
     | Pick<
         InstalledSkillInfo,
-        'source' | 'updatedAt' | 'builtIn' | 'custom' | 'description'
+        | 'source'
+        | 'updatedAt'
+        | 'builtIn'
+        | 'custom'
+        | 'description'
+        | 'installedFromShare'
       >
     | undefined,
   titleId?: string,
   /** The list's display name, so title, list row and breadcrumb match. */
   displayName?: string,
+  provenance?: InstalledShareProvenanceOptions,
 ): SkillReadDetailHeader {
   const frontmatterDescription = content?.frontmatter.description;
   const description =
@@ -99,11 +113,19 @@ export function installedSkillDetailHeader(
       : installed?.description || undefined;
   const version = content?.frontmatter.version;
   const updated = installed ? new Date(installed.updatedAt) : null;
+  const shared =
+    installed && !installed.builtIn && installed.installedFromShare
+      ? installedShareProvenance(installed.installedFromShare, provenance)
+      : null;
   const source = installed?.builtIn
     ? 'Built-in'
     : installed?.custom
       ? 'Custom'
       : installed?.source;
+  const updatedFact =
+    updated && Number.isFinite(updated.getTime())
+      ? `Updated ${UPDATED_DATE_FORMAT.format(updated)}`
+      : undefined;
   return {
     title: displayName?.trim() || marketplaceTitleCase(name),
     ...(titleId ? { titleId } : {}),
@@ -111,12 +133,15 @@ export function installedSkillDetailHeader(
     ...(typeof version === 'string' || typeof version === 'number'
       ? { version: `v${String(version).replace(/^v/i, '')}` }
       : {}),
-    meta: [
-      source,
-      updated && Number.isFinite(updated.getTime())
-        ? `Updated ${UPDATED_DATE_FORMAT.format(updated)}`
-        : undefined,
-    ].filter((fact): fact is string => typeof fact === 'string' && fact !== ''),
+    meta: shared
+      ? [
+          ...shared.facts,
+          ...(updatedFact ? [updatedFact] : []),
+          ...(shared.sourceLink ? [shared.sourceLink] : []),
+        ]
+      : [source, updatedFact].filter(
+          (fact): fact is string => typeof fact === 'string' && fact !== '',
+        ),
   };
 }
 
@@ -402,7 +427,6 @@ export function SkillReadDetail({
   }, [files, initialFilePath, skill.sourceId, skill.name]);
 
   const isMultiFile = files.length > 1;
-  const secondaryActionClass = `${SECONDARY_ACTION_BUTTON_CLASS} gap-1.5`;
   const removeLabel = removeKind === 'delete' ? 'Delete' : 'Remove';
   const editWithAIButton = editWithAI ? (
     <SkillEditWithAIButton
@@ -411,15 +435,15 @@ export function SkillReadDetail({
     />
   ) : null;
   const editButton = onEdit ? (
-    <button
+    <Button
       type="button"
+      size="compact"
       onClick={onEdit}
       data-testid="skill-read-detail-edit"
-      className={secondaryActionClass}
     >
       <AppCatalogDocumentPencilIcon width="12" height="12" aria-hidden />
       Edit
-    </button>
+    </Button>
   ) : null;
   const shareButton = shareAction ? (
     <MarketplaceShareButton
@@ -543,16 +567,17 @@ export function SkillReadDetail({
             <>
               {menu(checkItem ? [checkItem] : [])}
               {onRemove && (
-                <button
+                <Button
                   type="button"
+                  variant="ghost-destructive"
+                  size="compact"
                   onClick={onRemove}
                   disabled={removePending}
                   data-testid="skill-read-detail-remove"
-                  className={`${secondaryActionClass} hover:fg-destructive disabled:opacity-50`}
                 >
                   <TrashIcon width={12} height={12} aria-hidden />
                   {removeLabel}
-                </button>
+                </Button>
               )}
               {editWithAIButton}
               {editButton}

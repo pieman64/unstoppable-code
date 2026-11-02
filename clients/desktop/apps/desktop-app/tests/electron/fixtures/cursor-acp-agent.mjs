@@ -621,6 +621,8 @@ if (process.argv.includes('login')) {
       const server = mcpServers.find((entry) => !entry.name.endsWith('_ui'));
       const listed = server && (await mcpRequest(server, 'tools/list', {}));
       const names = listed?.result?.tools?.map((tool) => tool.name) ?? [];
+      if (names.includes('WatchDelegates'))
+        throw new Error('Fresh tool list includes WatchDelegates');
       if (!names.includes('DelegateTask')) {
         update({
           sessionUpdate: 'agent_message_chunk',
@@ -650,17 +652,6 @@ if (process.argv.includes('login')) {
           await writeFile(
             path.join(process.env.CURSOR_DATA_DIR, 'fixture-delegate-id'),
             spawned.value.delegationId,
-          );
-          await mcpToolCall(
-            'delegate-watch',
-            server,
-            'WatchDelegates',
-            {
-              delegationIds: [spawned.value.delegationId],
-              mode: 'all',
-              timeoutMs: 60000,
-            },
-            { requestPermission: false },
           );
         }
       }
@@ -816,13 +807,7 @@ if (process.argv.includes('login')) {
           },
           { requestPermission: false },
         );
-        await mcpToolCall(
-          'delegate-watch-next',
-          server,
-          'WatchDelegates',
-          { delegationIds: [delegateId], mode: 'all', timeoutMs: 60000 },
-          { requestPermission: false },
-        );
+
         if (text.includes('CURSOR_DELEGATION_STOP'))
           await new Promise(() => {});
         if (!cancelled) reply(id, { stopReason: 'end_turn' });

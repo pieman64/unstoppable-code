@@ -11,6 +11,10 @@ export {
 export type * from '../types/agent-failures';
 export { toAuthDependencyFailure } from './auth-recovery-projection';
 export {
+  classifyCodexAccountModelRejection,
+  type CodexAccountModelRejection,
+} from './codex-account-model-rejection';
+export {
   classifyMcpAuthFailure,
   type McpAuthFailureInput,
 } from './mcp-auth-classifier';

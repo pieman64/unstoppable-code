@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
 import { ChatStateV2Repository } from '../services/chat-state-v2-repository';
 import { ChatStateService } from '../services/chat-state-service';
+import {
+  observeTurn,
+  turnEnded,
+  turnStarted,
+} from './helpers/turn-lifecycle-events';
 
 jest.mock('../observability', () => ({
   getObservabilityService: () => ({ observeSteeringInput: jest.fn() }),
@@ -23,6 +28,7 @@ const REPLAYED = 'watcher-delivery-1';
 const LATER = 'later-turn';
 const NOW = 1_790_795_411_486;
 const REPLAYED_MUTATION = `${CHAT_ID}:${REPLAYED}:user-prompt`;
+const CHAT = { ...SCOPE, chatId: CHAT_ID };
 /** The id main minted for the delivery's timer when it first ran, days ago. */
 const HISTORICAL_TIMER_ID = `${CHAT_ID}:${REPLAYED_MUTATION}:0`;
 
@@ -86,7 +92,6 @@ async function chatWithDeliveredWatcher() {
     now: () => clock.now,
     createId: () => 'event-id',
     dispatch: async () => undefined,
-    steer: async () => false,
     onInputPickup: async () => undefined,
     authorizeSend: async () => undefined,
     cleanupSession: async () => undefined,
@@ -132,6 +137,15 @@ async function chatWithDeliveredWatcher() {
     mutationId: `${CHAT_ID}:${LATER}:user-prompt`,
     data: promptEvent(LATER, 'Later work'),
   });
+  await observeTurn(
+    target,
+    turnStarted(CHAT, {
+      sequence: 1,
+      turnId: 'later-execution',
+      atMs: clock.now,
+      userMessageIds: [LATER],
+    }),
+  );
   clock.now += 1_000;
   const tagged = { canopy_turn_user_message_id: LATER };
   let sequence = 0;
@@ -153,9 +167,18 @@ async function chatWithDeliveredWatcher() {
     },
   });
   clock.now += 1_000;
+  await observeTurn(
+    target,
+    turnEnded(CHAT, {
+      sequence: 2,
+      turnId: 'later-execution',
+      atMs: clock.now,
+      userMessageIds: [LATER],
+    }),
+  );
   await ingestLater({ type: 'result', subtype: 'success', result: 'ok' });
   const read = async () => {
-    const state = await target.getState(SCOPE, { chatIds: [CHAT_ID] });
+    const state = await target.getState(SCOPE);
     return {
       status: state.runtimeByChatId[CHAT_ID]?.status,
       messages: state.tabsFile.tabs[0].messages,
@@ -189,6 +212,15 @@ describe('re-processed user prompt turn timer ids', () => {
         data: promptEvent(REPLAYED, 'Watcher fired'),
       }),
     ).resolves.toBe(true);
+    await observeTurn(
+      f.target,
+      turnStarted(CHAT, {
+        sequence: 3,
+        turnId: 'resent-execution',
+        atMs: resentAt,
+        userMessageIds: [REPLAYED],
+      }),
+    );
 
     const { messages } = await f.read();
     const ids = messages.map((message) => message.id);
@@ -201,10 +233,16 @@ describe('re-processed user prompt turn timer ids', () => {
     // new turn; every other timer stays completed.
     const promptIndex = ids.indexOf(REPLAYED);
     expect(promptIndex).toBe(messages.length - 2);
+    // Canonical timer ids come from the turn, so a re-sent prompt can't
+    // collide with the timer its first run committed.
     const timer = messages[messages.length - 1];
-    expect(timer.id).toBe(`${CHAT_ID}:${REPLAYED_MUTATION}:1`);
+    expect(timer.id).toBe('resent-execution:timer');
     expect(timer.blocks).toEqual([
-      { type: 'turn_timer', startedAt: resentAt, completedAt: null },
+      expect.objectContaining({
+        type: 'turn_timer',
+        startedAt: resentAt,
+        completedAt: null,
+      }),
     ]);
     const openTimers = messages.filter(
       (message) =>

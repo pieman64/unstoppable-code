@@ -16,6 +16,7 @@ import {
 } from './chat-transcript-artifacts';
 import { fsyncDirectory } from './fsync-directory';
 import { isErrnoException } from './type-guards';
+import { chatChildDeleteFence } from './chat-child-delete-fence';
 
 /** One delegate run generation, as its card names it. */
 export interface DelegationRun {
@@ -115,12 +116,14 @@ export class ChatDelegationLogs {
    * one already under way when its chat is deleted must not recreate the
    * directory; a run copied back into the chat (a restore) lifts this.
    */
-  private readonly removed = new Set<string>();
+  private readonly deleteFence: ReturnType<typeof chatChildDeleteFence>;
 
   public constructor(
     private readonly transcriptsRoot: string,
     private readonly readOnly = false,
-  ) {}
+  ) {
+    this.deleteFence = chatChildDeleteFence(transcriptsRoot);
+  }
 
   private directory(chatId: string): string {
     assertTranscriptIdentity(chatId);
@@ -223,7 +226,7 @@ export class ChatDelegationLogs {
         throw new Error('Invalid delegation transcript item');
     const path = this.path(chatId, run);
     await this.serial(path, async () => {
-      if (this.removed.has(chatId)) return;
+      if (this.deleteFence.isDeleted(chatId)) return;
       const stats = await this.loadStats(path);
       const lines = items.map(serializeLine);
       // Never extend a torn final line: it would swallow the first item.
@@ -331,7 +334,7 @@ export class ChatDelegationLogs {
     const items = await this.read(sourceChatId, run);
     if (items.length === 0) return;
     const target = destination.path(targetChatId, run);
-    destination.removed.delete(targetChatId);
+    destination.deleteFence.restore(targetChatId);
     await destination.serial(target, async () => {
       const made = await destination.makeDirectory(targetChatId);
       const existed = await stat(target).then(
@@ -350,11 +353,20 @@ export class ChatDelegationLogs {
    * them already under way; later appends for the chat write nothing.
    */
   public async remove(chatId: string): Promise<void> {
+    await this.retire(chatId);
+    await rm(this.directory(chatId), { recursive: true, force: true });
+  }
+
+  /**
+   * Stops a deleted chat's appends and waits out any under way, keeping its
+   * files for a caller that removes them later (a format-4 checkpoint).
+   */
+  public async retire(chatId: string): Promise<void> {
     this.assertWritable();
     const directory = this.directory(chatId);
     const inChat = (path: string): boolean =>
       path.startsWith(`${directory}/`) || path.startsWith(`${directory}\\`);
-    this.removed.add(chatId);
+    await this.deleteFence.retire(chatId);
     await Promise.allSettled(
       Array.from(this.tails)
         .filter(([path]) => inChat(path))
@@ -362,6 +374,5 @@ export class ChatDelegationLogs {
     );
     for (const path of Array.from(this.stats.keys()))
       if (inChat(path)) this.stats.delete(path);
-    await rm(directory, { recursive: true, force: true });
   }
 }

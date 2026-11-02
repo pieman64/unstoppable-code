@@ -47,6 +47,13 @@ export const PROJECTS_HEADER_SELECTOR = '[data-sidebar-projects-header]';
 export const PROJECTS_PIN_SELECTOR = '[data-sidebar-projects-pin-bottom]';
 
 /**
+ * Where a rail that owns scrolling seats the surface's footer callout: in its
+ * footer stack, outside the viewport, so the callout never scrolls away.
+ */
+export const SIDEBAR_FOOTER_CALLOUT_HOST_SELECTOR =
+  '[data-sidebar-footer-callout-host]';
+
+/**
  * Trailing padding of a section header seated in a host rail.
  *
  * The host's 8px content gutter covers overlay scrollbars. Classic rails are

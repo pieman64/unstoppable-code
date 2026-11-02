@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
+import { Button } from '@/components/shared/Button';
 
 interface LazyLoadErrorBoundaryProps {
   children: ReactNode;
@@ -71,21 +72,17 @@ export class LazyLoadErrorBoundary extends Component<
             </div>
             <div className="flex items-center justify-end gap-2">
               {onClose ? (
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition hover:bg-secondary"
-                >
+                <Button variant="secondary" size="compact" onClick={onClose}>
                   Close
-                </button>
+                </Button>
               ) : null}
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={this.handleRetry}
-                className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition hover:opacity-90"
               >
                 Try again
-              </button>
+              </Button>
             </div>
           </div>
         </div>

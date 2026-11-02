@@ -12,6 +12,8 @@ import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { CanopyClientProvider } from '@canopy/app-state';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { ChatMessageList } from '../ChatMessageList';
 import { PinUserMessagesContext } from '../pin-user-messages-context';
 import type { ChatMessage } from '@/stores/chatStore';
@@ -120,9 +122,6 @@ jest.mock('../ChatMessageItem', () => ({
 jest.mock('../QueuedMessageBubble', () => ({
   QueuedMessageBubble: (): null => null,
 }));
-jest.mock('../QueuedMessageEditor', () => ({
-  QueuedMessageEditor: (): null => null,
-}));
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
@@ -225,19 +224,21 @@ function renderList(
   const render = (): void => {
     act(() => {
       root.render(
-        <PinUserMessagesContext.Provider value={pinUserMessages}>
-          <ChatMessageList
-            messages={messages}
-            queuedMessages={[]}
-            chatId={mockChatId}
-            targetOverride={{
-              projectId: 'project-sticky-geometry',
-              worktreeId: 'worktree-sticky-geometry',
-              chatId: mockChatId,
-            }}
-            onClearQueuedMessage={(): void => undefined}
-          />
-        </PinUserMessagesContext.Provider>,
+        <CanopyClientProvider client={ipcCanopyClient}>
+          <PinUserMessagesContext.Provider value={pinUserMessages}>
+            <ChatMessageList
+              messages={messages}
+              queuedMessages={[]}
+              chatId={mockChatId}
+              targetOverride={{
+                projectId: 'project-sticky-geometry',
+                worktreeId: 'worktree-sticky-geometry',
+                chatId: mockChatId,
+              }}
+              onClearQueuedMessage={(): void => undefined}
+            />
+          </PinUserMessagesContext.Provider>
+        </CanopyClientProvider>,
       );
     });
   };

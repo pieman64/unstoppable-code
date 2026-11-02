@@ -8,6 +8,7 @@ import {
   type ExternalAgentServerAddress,
   type ExternalAgentToolGroup,
 } from '@canopy/protocol/external-agents';
+import { MANAGED_HOST_ID } from './access-model';
 
 export const EXTERNAL_AGENT_SERVER_COPY: Record<
   ExternalAgentServer,
@@ -19,9 +20,28 @@ export const EXTERNAL_AGENT_SERVER_COPY: Record<
   },
   tasks: {
     title: 'Tasks',
-    line: 'Projects and tasks in the cloud and on your desktops.',
+    line: 'Projects and tasks in the cloud and on your devices.',
   },
 };
+
+/**
+ * The brand's cloud product name, which labels the Cloud agents switch.
+ * `brandDisplayName` comes from the host's brand helpers, never a literal.
+ */
+export function cloudProductName(brandDisplayName: string): string {
+  return `${brandDisplayName} Cloud`;
+}
+
+/** Labels the Cloud agents switch outside a branded host. */
+export const CLOUD_AGENTS_FALLBACK_LABEL = 'Cloud agents';
+
+/** The text compatibility switch, on consent and on an agent's page. */
+export const TEXT_CONTENT_COMPATIBILITY_COPY = {
+  title: 'Compatibility',
+  label: 'Text content compatibility',
+  description:
+    'Turn this on only if the agent sees a brief text summary instead of the full tool result. It repeats each result’s data in its text, which can increase the token cost of every tool result. Use it only for agents that need it.',
+} as const;
 
 const GROUP_NOUNS: Record<ExternalAgentToolGroup, string> = {
   account: 'account',
@@ -32,8 +52,7 @@ const GROUP_NOUNS: Record<ExternalAgentToolGroup, string> = {
   library: 'the library',
   work: 'work records',
   memory: 'memory',
-  cloud: 'cloud tasks',
-  remote: 'desktop tasks',
+  tasks: 'tasks',
 };
 
 function list(items: readonly string[]): string {
@@ -42,11 +61,31 @@ function list(items: readonly string[]): string {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-function groupNouns(groups: readonly ExternalAgentToolGroup[]): string[] {
+function deviceCount(desktops: ExternalAgentAccessSummary['desktops']): string {
+  if (desktops === null || desktops === 0) return '';
+  if (desktops === 'all') return 'all devices';
+  return desktops === 1 ? '1 device' : `${desktops} devices`;
+}
+
+/** "linux-managed and 2 devices": the hosts a Tasks connection reaches, without host codes. */
+function hostsPhrase(summary: ExternalAgentAccessSummary): string {
+  const hosts: string[] = [];
+  if (summary.managed === true) hosts.push(MANAGED_HOST_ID);
+  const devices = deviceCount(summary.desktops);
+  if (devices !== '') hosts.push(devices);
+  return list(hosts);
+}
+
+function groupNouns(
+  groups: readonly ExternalAgentToolGroup[],
+  hosts: string,
+): string[] {
   const selected = new Set(groups);
-  return EXTERNAL_AGENT_TOOL_GROUPS.flatMap((group) =>
-    selected.has(group) ? [GROUP_NOUNS[group]] : [],
-  );
+  return EXTERNAL_AGENT_TOOL_GROUPS.flatMap((group) => {
+    if (!selected.has(group)) return [];
+    if (group === 'tasks' && hosts !== '') return [`tasks on ${hosts}`];
+    return [GROUP_NOUNS[group]];
+  });
 }
 
 function organizationLine(
@@ -59,20 +98,16 @@ function organizationLine(
   return `${organizations} organizations.`;
 }
 
-function desktopLine(
-  desktops: ExternalAgentAccessSummary['desktops'],
-): string | null {
-  if (desktops === null) return null;
-  if (desktops === 'all') return 'All desktops.';
-  if (desktops === 0) return 'No desktops.';
-  if (desktops === 1) return '1 desktop.';
-  return `${desktops} desktops.`;
-}
-
+/**
+ * One list row's access, e.g. "Reads account. Writes tasks on linux-managed
+ * and 2 devices." A Tasks row names the managed host and counts devices; it
+ * never lists host codes.
+ */
 export function accessSummaryLine(summary: ExternalAgentAccessSummary): string {
   const lines: string[] = [];
-  const reads = list(groupNouns(summary.read));
-  const writes = list(groupNouns(summary.write));
+  const hosts = hostsPhrase(summary);
+  const reads = list(groupNouns(summary.read, hosts));
+  const writes = list(groupNouns(summary.write, hosts));
   const destructive = new Set(summary.destructive);
 
   if (reads !== '') lines.push(`Reads ${reads}.`);
@@ -88,8 +123,9 @@ export function accessSummaryLine(summary: ExternalAgentAccessSummary): string {
   }
   const organizations = organizationLine(summary.organizations);
   if (organizations !== null) lines.push(organizations);
-  const desktops = desktopLine(summary.desktops);
-  if (desktops !== null) lines.push(desktops);
+  const tasksGranted =
+    summary.read.includes('tasks') || summary.write.includes('tasks');
+  if (tasksGranted && hosts === '') lines.push('No hosts.');
 
   return lines.length === 0 ? 'No access.' : lines.join(' ');
 }
@@ -120,12 +156,58 @@ export function cursorMcpSnippet(
   return JSON.stringify({ mcpServers }, null, 2);
 }
 
+/*
+ * Per-agent setup commands. Each names the server by its key, as the Cursor
+ * snippet does. None pass a client ID: these agents sign in with their own
+ * Client ID Metadata Document, which the authorization server accepts.
+ */
+
+export function claudeCodeAddCommand(
+  server: ExternalAgentServerAddress,
+): string {
+  return `claude mcp add --transport http --scope user ${server.server} ${server.url}`;
+}
+
+export function codexAddCommand(server: ExternalAgentServerAddress): string {
+  return `codex mcp add ${server.server} --url ${server.url}`;
+}
+
+export function openCodeConfigSnippet(
+  servers: readonly ExternalAgentServerAddress[],
+): string {
+  const mcp: Partial<
+    Record<ExternalAgentServer, { type: 'remote'; url: string; enabled: true }>
+  > = {};
+  for (const server of servers) {
+    mcp[server.server] = { type: 'remote', url: server.url, enabled: true };
+  }
+  return JSON.stringify(
+    { $schema: 'https://opencode.ai/config.json', mcp },
+    null,
+    2,
+  );
+}
+
+export function openCodeAuthCommand(
+  server: ExternalAgentServerAddress,
+): string {
+  return `opencode mcp auth ${server.server}`;
+}
+
+export function hermesAddCommand(server: ExternalAgentServerAddress): string {
+  return `hermes mcp add ${server.server} --url ${server.url} --auth oauth\nhermes mcp login ${server.server}`;
+}
+
+export function openClawAddCommand(server: ExternalAgentServerAddress): string {
+  return `openclaw mcp add ${server.server} --url ${server.url} --transport streamable-http --auth oauth\nopenclaw mcp login ${server.server}`;
+}
+
 function activityTargetFallback(
   kind: ExternalAgentActivityTarget['kind'],
 ): string {
   if (kind === 'organization') return 'an organization';
   if (kind === 'project') return 'a project';
-  if (kind === 'remote') return 'a desktop';
+  if (kind === 'remote') return 'a device';
   return 'a task';
 }
 

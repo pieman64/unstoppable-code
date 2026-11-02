@@ -1,0 +1,25 @@
+% Ramsey numbers: a short note
+\documentclass[11pt]{amsart}
+\usepackage{amsmath,amsthm}
+\newtheorem{theorem}{Theorem}
+
+\begin{document}
+\section{Small Ramsey numbers}
+
+\begin{theorem}[Greenwood--Gleason]
+  Every two-colouring of $K_6$ has a monochromatic triangle, so $R(3,3) = 6$.
+\end{theorem}
+
+\begin{proof}
+  Fix a vertex $v$. Of its five edges, at least \(\lceil 5/2 \rceil = 3\)
+  share a colour, and the bound costs 100\% of the cases:
+  \[
+    \sum_{k=1}^{n} k = \frac{n(n+1)}{2}.
+  \]
+  $$\binom{n}{2} \leq \alpha$$
+\end{proof}
+
+\begin{verbatim}
+\notACommand {raw} $text$ % not a comment
+\end{verbatim}
+\end{document}

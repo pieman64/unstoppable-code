@@ -152,7 +152,7 @@ test('gates worktree-only commands when no worktree is selected', async ({}, tes
     // availability gating, and the unprefixed unified index also fuzzy-matches
     // non-command items. Plugin descriptions are indexed as subtitle fields
     // and can fuzzy-match command queries after marketplace ingest, causing a
-    // Plugins row to suppress the "No results found" empty state. Commands-only
+    // Plugins row to suppress the search empty state. Commands-only
     // scoping keeps the gating assertions deterministic across description
     // changes.
 
@@ -168,27 +168,21 @@ test('gates worktree-only commands when no worktree is selected', async ({}, tes
     await expect(window.getByRole('option', { name: 'New tab' })).toHaveCount(
       0,
     );
-    await expect(
-      window.getByTestId('command-palette').getByText('No results found'),
-    ).toBeVisible();
+    await expect(window.getByTestId('command-palette-empty')).toBeVisible();
 
     // requiresWorktree command — gated out entirely.
     await typeQuery(window, '>Open Worktree Scripts');
     await expect(
       window.getByRole('option', { name: 'Open Worktree Scripts' }),
     ).toHaveCount(0);
-    await expect(
-      window.getByTestId('command-palette').getByText('No results found'),
-    ).toBeVisible();
+    await expect(window.getByTestId('command-palette-empty')).toBeVisible();
 
     // requiresWorktree + requiresActiveChatTab command — gated out entirely.
     await typeQuery(window, '>Close tab');
     await expect(window.getByRole('option', { name: 'Close tab' })).toHaveCount(
       0,
     );
-    await expect(
-      window.getByTestId('command-palette').getByText('No results found'),
-    ).toBeVisible();
+    await expect(window.getByTestId('command-palette-empty')).toBeVisible();
 
     await window.screenshot({
       path: testInfo.outputPath('command-palette-gated.png'),

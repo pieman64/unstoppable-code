@@ -16,14 +16,13 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { stripOpaqueAgentCitationMarkers } from '../lib/agent-citations';
 import { isFocusReturnTarget } from '../lib/focusable';
-import { markdownToClipboardText } from '../lib/markdown-clipboard-text';
 import {
   copyTextToClipboard,
   DEFAULT_COPIED_DURATION_MS,
 } from './copy-to-clipboard';
 import { DropdownMenuStatusRow, DropdownMenuSurface } from './DropdownMenu';
+import { selectionTextWithMathSource } from './markdown-math-copy';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
 import { CopyIcon, GlobeIcon, LinkIcon } from '../icons/AppIcons';
 
@@ -107,20 +106,13 @@ export function ChatMessageContextMenuScope({
 export interface UseChatMessageContextMenuOptions {
   /** The message's identity. An open menu belongs to this id only. */
   messageId: string;
-  /**
-   * The message's original Markdown. Called only while the menu is open and
-   * again when an action is chosen, so a streaming message copies the text it
-   * has then; never while the row renders closed. Opaque provider citation
-   * markers, which the transcript never shows, are removed before copying.
-   */
-  getMarkdown: () => string;
   /** Clipboard writer; defaults to {@link copyTextToClipboard}. */
   writeText?: ChatMessageClipboardWriter;
   /**
-   * Whether the row becomes a Tab stop for the keyboard menu. Hosts pass
-   * `false` for rows with no whole-message text, so long transcripts do not
-   * gain stops that open only disabled actions. Right-click still opens the
-   * menu there, for a selection. Defaults to `true`.
+   * Whether the row becomes a Tab stop for the keyboard menu, which reaches
+   * Copy selection and the link actions. Hosts pass `false` for rows with no
+   * message text, so long transcripts do not gain stops with nothing to
+   * select. Right-click still opens the menu there. Defaults to `true`.
    */
   focusable?: boolean;
 }
@@ -257,10 +249,11 @@ interface CopyFeedbackState {
   readonly y: number;
 }
 
+/** The selection's text, with each rendered formula as its TeX source. */
 function capturedSelection(ownerDocument: Document): string {
   const selection = ownerDocument.getSelection();
   if (!selection || selection.isCollapsed) return '';
-  return selection.toString();
+  return selectionTextWithMathSource(selection);
 }
 
 function isKeyboardMenuShortcut(event: KeyboardEvent<HTMLElement>): boolean {
@@ -282,9 +275,10 @@ function anchorPoint(element: HTMLElement): { x: number; y: number } {
 }
 
 /**
- * The right-click menu for one chat message (CAN-4277): Copy (the selection
- * captured when it opened), Copy message (plain text) and Copy message as
- * Markdown. On an http(s) link, or an element that declares one with
+ * The right-click menu for one chat message (CAN-4277): Copy selection, which
+ * copies the plain-text selection captured when the menu opened and is
+ * disabled when there was none (CAN-4870). Whole-message copies live in the
+ * row's footer, not here. On an http(s) link, or an element that declares one with
  * {@link CHAT_MESSAGE_LINK_URL_ATTRIBUTE}, it first lists Copy link and the
  * open actions from {@link ChatMessageLinkActionsProvider} (CAN-2632). Hosts call it
  * unconditionally in the row, spread `targetProps` onto the message element,
@@ -298,7 +292,6 @@ function anchorPoint(element: HTMLElement): { x: number; y: number } {
  */
 export function useChatMessageContextMenu({
   messageId,
-  getMarkdown,
   writeText = copyTextToClipboard,
   focusable = true,
 }: UseChatMessageContextMenuOptions): UseChatMessageContextMenuResult {
@@ -488,7 +481,6 @@ export function useChatMessageContextMenu({
     menu = (
       <ChatMessageContextMenu
         state={openMenu}
-        getMarkdown={getMarkdown}
         onCopy={copy}
         onClose={closeMenu}
       />
@@ -511,33 +503,16 @@ function stopPropagation(event: SyntheticEvent): void {
 
 export function ChatMessageContextMenu({
   state,
-  getMarkdown,
   onCopy,
   onClose,
 }: {
   state: OpenMenuState;
-  getMarkdown: () => string;
   onCopy: (text: string, state: OpenMenuState) => void;
   onClose: () => void;
 }): JSX.Element | null {
-  // The transcript hides opaque provider citation markers, so copies never
-  // include them either.
-  const readSource = useCallback(
-    (): string => stripOpaqueAgentCitationMarkers(getMarkdown()),
-    [getMarkdown],
-  );
-  // Re-read on every render while open, so a streaming message updates the
-  // enabled state; closed rows never reach this.
-  const markdown = readSource();
-  const plainText = useMemo(
-    () => markdownToClipboardText(markdown),
-    [markdown],
-  );
   const linkActions = useContext(ChatMessageLinkActionsContext);
 
   const items = useMemo((): TabContextMenuItem[] => {
-    const hasMarkdown = markdown.length > 0;
-    const hasPlainText = plainText.length > 0;
     const { linkUrl } = state;
     const linkItems: TabContextMenuItem[] = [];
     if (linkUrl !== null) {
@@ -568,52 +543,23 @@ export function ChatMessageContextMenu({
         });
       }
     }
-    // Copy selection is offered only when text was selected as the menu
-    // opened; the whole-message copies follow it in the same group.
-    const copyItems: TabContextMenuItem[] = [
-      ...(state.selection.length > 0
-        ? [
-            {
-              key: 'copy-selection',
-              label: 'Copy selection',
-              icon: <CopyIcon />,
-              testId: 'chat-message-copy-selection',
-              onSelect: (): void => onCopy(state.selection, state),
-            },
-          ]
-        : []),
-      {
-        key: 'copy-message',
-        label: 'Copy message',
-        icon: <CopyIcon />,
-        testId: 'chat-message-copy-plain',
-        disabled: !hasPlainText,
-        onSelect: (): void => {
-          const latest = markdownToClipboardText(readSource());
-          onCopy(latest, state);
-        },
-      },
-      {
-        key: 'copy-markdown',
-        label: 'Copy as Markdown',
-        icon: <CopyIcon />,
-        testId: 'chat-message-copy-markdown',
-        disabled: !hasMarkdown,
-        onSelect: (): void => {
-          const latest = readSource();
-          onCopy(latest, state);
-        },
-      },
-    ];
+    // Copy selection is always listed, so its place never shifts; it copies
+    // the selection captured as the menu opened and is disabled without one.
+    const copySelection: TabContextMenuItem = {
+      key: 'copy-selection',
+      label: 'Copy selection',
+      icon: <CopyIcon />,
+      testId: 'chat-message-copy-selection',
+      disabled: state.selection.length === 0,
+      onSelect: (): void => onCopy(state.selection, state),
+    };
     return [
       ...linkItems,
-      ...copyItems.map((item, index) =>
-        index === 0 && linkItems.length > 0
-          ? { ...item, separatorBefore: true }
-          : item,
-      ),
+      linkItems.length > 0
+        ? { ...copySelection, separatorBefore: true }
+        : copySelection,
     ];
-  }, [linkActions, markdown, onCopy, plainText, readSource, state]);
+  }, [linkActions, onCopy, state]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>): void => {
@@ -629,6 +575,25 @@ export function ChatMessageContextMenu({
     },
     [onClose],
   );
+
+  // With no enabled item, focus stays outside the menu, where a trigger can
+  // consume Escape itself (a hover card's dismissal does). The open menu is
+  // the topmost layer, so it takes Escape first there.
+  useEffect((): (() => void) => {
+    const { ownerDocument } = state;
+    const handleEscape = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      const active = ownerDocument.activeElement;
+      if (active?.closest('[data-testid="chat-message-context-menu"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    ownerDocument.addEventListener('keydown', handleEscape, true);
+    return (): void => {
+      ownerDocument.removeEventListener('keydown', handleEscape, true);
+    };
+  }, [state, onClose]);
 
   const body = state.ownerDocument.body;
   if (!body) return null;

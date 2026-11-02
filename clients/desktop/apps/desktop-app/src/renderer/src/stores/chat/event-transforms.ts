@@ -1,5 +1,6 @@
 // Chat-event application to tabs: turn timers, tool-use closing, terminal
 // field cleanup, and App Advisor mirror tab transforms.
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { appendSentAsMessageFallbackMarker } from '@canopy/desktop-shared/lib/ask-user-answers';
 import {
   applyClaudeTranscriptEvent,
@@ -11,7 +12,12 @@ export {
   resumePausedTurnTimer,
   resumeTurnTimerBlock,
 } from '@/lib/transcript-parser';
-import { attachAuthFailureToMessages } from '@canopy/agent-transcript';
+import {
+  attachAuthFailureToMessages,
+  indexCodexAgentCallBlocks,
+  shouldCloseToolUseMessage,
+  type ChildToolLiveness,
+} from '@canopy/agent-transcript';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import {
   AI_CREDITS_ROUTING_STATUS_EVENT_TYPE,
@@ -20,6 +26,13 @@ import {
   type PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import { isCanopyAuthFailureEventData } from '@canopy/protocol/auth-recovery';
+import type { ToolInterruptionReason } from '@canopy/protocol/portal';
+import { TOOL_SETTLEMENT_OUTPUT } from '@canopy/protocol/portal';
+import {
+  persistedInterruptedSettlementTime,
+  supersedeToolInterruptions,
+} from '@canopy/agent-transcript/settlement';
+import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { normalizePersistedUsage } from '@/lib/chatUsageNormalization';
 import type { ChatBlock, ChatMessage, ChatTab, PendingQuestion } from './types';
@@ -119,7 +132,13 @@ export function applyTabEvent(
           ...tab,
           aiCreditsRouted: routingStatus,
           accountProxyRouted: data.accountProxyRouted === true,
-          usage: normalizePersistedUsage(tab.usage, tab.model, routingStatus),
+          usage: normalizePersistedUsage(
+            tab.usage,
+            tab.model,
+            routingStatus,
+            tab.executionHarness ??
+              (tab.providerType === 'opencode' ? 'opencode' : undefined),
+          ),
         };
   const persistedPromptMessages =
     type === 'canopy_user_prompt' ? getPersistedPromptMessages(data) : [];
@@ -147,6 +166,9 @@ export function applyTabEvent(
         now,
         createMessageId: nextMsgId,
         aiCreditsRouted,
+        // The live view only displays a preview; main stores the full output.
+        codexToolResults: 'preview',
+        childToolLiveness: { kind: 'unknown' },
       },
     );
     return reduced === tabWithPersistedPromptMessages
@@ -161,6 +183,7 @@ export function applyTabEvent(
       now,
       createMessageId: nextMsgId,
       aiCreditsRouted,
+      childToolLiveness: { kind: 'unknown' },
     },
   );
   const applied =
@@ -280,7 +303,7 @@ export function applyAppAdvisorMirrorNavFields(
 export function createAppAdvisorMirrorTab(chatId: string): ChatTab {
   return {
     id: chatId,
-    title: 'App Advisor',
+    title: ORCHESTRATOR_LABEL,
     messages: [],
     status: 'idle',
     error: null,
@@ -360,6 +383,8 @@ export function completeTurnTimer(
     const timerBlock = msg.blocks.find(
       (b): b is ChatBlock & { type: 'turn_timer' } => b.type === 'turn_timer',
     );
+    // Main closes a canonical timer through its committed turn effects.
+    if (timerBlock?.turnId !== undefined) return messages;
     if (
       timerBlock &&
       timerBlock.completedAt === null &&
@@ -443,23 +468,79 @@ export function appendStaleAskUserAnswerResult(
 
 /**
  * Add synthetic tool_result blocks for any tool_use that never received a
- * result (e.g. because the session was cancelled mid-execution).
+ * result (e.g. because the session was cancelled mid-execution). Each carries
+ * typed interruption metadata, so it renders interrupted rather than as a
+ * success or a failure; the stored output text stays as before.
  */
 export function closeOpenToolUseBlocks(
   messages: ChatMessage[],
   options: {
+    liveness: ChildToolLiveness;
+    codexRootThreadId?: string;
     output?: string;
     isError?: boolean;
-  } = {},
+    /** Why the calls ended; `unknown` when the caller cannot say. */
+    interruption?: ToolInterruptionReason;
+    /**
+     * When the interruption happened. Defaults to now, for a stop or fork
+     * happening now; restore paths pass the historical settlement time.
+     */
+    at?: number;
+  },
 ): ChatMessage[] {
-  const output = options.output ?? 'Cancelled';
-  const isError = options.isError ?? false;
+  messages = supersedeToolInterruptions(messages);
+  const boundaries = messages.flatMap((message, index) =>
+    index > 0 &&
+    isUserTurnBoundary(message) &&
+    !message.parentBlockId &&
+    !message.parentToolUseId
+      ? [index]
+      : [],
+  );
+  if (boundaries.length) {
+    let start = 0;
+    let changed = false;
+    const result: ChatMessage[] = [];
+    for (const end of [...boundaries, messages.length]) {
+      const turn = messages.slice(start, end);
+      const closed = closeOpenToolUseBlocks(turn, options);
+      changed ||= closed !== turn;
+      result.push(...closed);
+      start = end;
+    }
+    return changed ? result : messages;
+  }
+  const output = options.output ?? TOOL_SETTLEMENT_OUTPUT.stopped;
+  // Interrupted results count as failures for failure-oriented consumers.
+  const isError = options.isError ?? true;
+  const interruption = {
+    reason: options.interruption ?? 'unknown',
+    at: options.at ?? Date.now(),
+  };
+  const agentCallBlocksById = indexCodexAgentCallBlocks(messages);
+  const closeContext = {
+    liveness: options.liveness,
+    ...(options.codexRootThreadId !== undefined
+      ? { codexRootThreadId: options.codexRootThreadId }
+      : {}),
+    agentCallBlocksById,
+  };
+  const messagesToClose = messages.filter((message) =>
+    shouldCloseToolUseMessage(message, closeContext),
+  );
   // Collect all tool_result IDs (including from subagent messages)
   const toolResultIds = new Set<string>();
+  const resultKey = (message: ChatMessage, id: string): string =>
+    JSON.stringify([
+      message.parentBlockId ?? message.parentToolUseId ?? '',
+      message.codexThreadId ?? '',
+      message.codexTurnId ?? '',
+      id,
+    ]);
   for (const msg of messages) {
     for (const block of msg.blocks) {
       if (block.type === 'tool_result') {
-        toolResultIds.add(block.toolUseId);
+        toolResultIds.add(resultKey(msg, block.toolUseId));
       }
     }
   }
@@ -470,10 +551,12 @@ export function closeOpenToolUseBlocks(
     {
       parentToolUseId?: string;
       parentBlockId?: string;
+      codexThreadId?: string;
+      codexTurnId?: string;
       blocks: ChatBlock[];
     }
   >();
-  for (const msg of messages) {
+  for (const msg of messagesToClose) {
     for (const block of msg.blocks) {
       // `codex_agent_call` blocks intentionally pass through unchanged —
       // they are Codex-native display blocks whose lifecycle is driven by
@@ -483,16 +566,26 @@ export function closeOpenToolUseBlocks(
       if (block.type === 'codex_agent_call') {
         continue;
       }
-      if (block.type === 'tool_use' && !toolResultIds.has(block.toolUseId)) {
+      if (
+        block.type === 'tool_use' &&
+        !toolResultIds.has(resultKey(msg, block.toolUseId))
+      ) {
         const key =
-          msg.parentBlockId !== undefined
-            ? `block:${msg.parentBlockId}|tool:${msg.parentToolUseId ?? ''}`
-            : `tool:${msg.parentToolUseId ?? ''}`;
+          `${msg.codexTurnId ?? ''}|` +
+          (msg.parentBlockId !== undefined
+            ? `block:${msg.parentBlockId}|tool:${msg.parentToolUseId ?? ''}|thread:${msg.codexThreadId ?? ''}`
+            : `tool:${msg.parentToolUseId ?? ''}|thread:${msg.codexThreadId ?? ''}`);
         const entry = unmatchedByParent.get(key) ?? {
           ...(msg.parentToolUseId
             ? { parentToolUseId: msg.parentToolUseId }
             : {}),
           ...(msg.parentBlockId ? { parentBlockId: msg.parentBlockId } : {}),
+          ...(msg.codexThreadId !== undefined
+            ? { codexThreadId: msg.codexThreadId }
+            : {}),
+          ...(msg.codexTurnId !== undefined
+            ? { codexTurnId: msg.codexTurnId }
+            : {}),
           blocks: [],
         };
         entry.blocks.push({
@@ -501,6 +594,7 @@ export function closeOpenToolUseBlocks(
           toolName: block.toolName,
           output,
           isError,
+          interruption,
         });
         unmatchedByParent.set(key, entry);
       }
@@ -516,11 +610,17 @@ export function closeOpenToolUseBlocks(
       id: nextMsgId(),
       role: 'system',
       blocks: entry.blocks,
-      timestamp: Date.now(),
+      timestamp: interruption.at,
       ...(entry.parentToolUseId
         ? { parentToolUseId: entry.parentToolUseId }
         : {}),
       ...(entry.parentBlockId ? { parentBlockId: entry.parentBlockId } : {}),
+      ...(entry.codexThreadId !== undefined
+        ? { codexThreadId: entry.codexThreadId }
+        : {}),
+      ...(entry.codexTurnId !== undefined
+        ? { codexTurnId: entry.codexTurnId }
+        : {}),
     };
     result.push(syntheticMsg);
   });
@@ -581,8 +681,10 @@ export function settleForkSnapshotMessages(
     closeOpenToolUseBlocks(
       closeOpenTurnTimers(messages, { closePaused: true }),
       {
-        output: 'Interrupted by fork',
+        liveness: { kind: 'no-live-session' },
+        output: TOOL_SETTLEMENT_OUTPUT.fork,
         isError: true,
+        interruption: 'fork',
       },
     ),
   );
@@ -591,7 +693,8 @@ export function settleForkSnapshotMessages(
 /** Close ALL open turn_timer blocks (used when restoring persisted state). */
 export function closeOpenTurnTimers(
   messages: ChatMessage[],
-  options?: { closePaused?: boolean },
+  /** `at` settles at a historical time instead of now (restore paths). */
+  options?: { closePaused?: boolean; at?: number },
 ): ChatMessage[] {
   let changed = false;
   const result = messages.map((msg) => {
@@ -609,13 +712,80 @@ export function closeOpenTurnTimers(
         if (b.type !== 'turn_timer' || b.completedAt !== null) {
           return b;
         }
+        if (options?.at !== undefined) {
+          const startedAt =
+            typeof b.startedAt === 'number' &&
+            Number.isFinite(b.startedAt) &&
+            b.startedAt >= 0
+              ? b.startedAt
+              : options.at;
+          const at = Math.max(options.at, startedAt);
+          const elapsed = Math.max(0, at - startedAt);
+          const accumulatedPause = b.accumulatedPausedDurationMs;
+          const pausedAt = b.pausedAt;
+          const paused =
+            (typeof accumulatedPause === 'number' &&
+            Number.isFinite(accumulatedPause)
+              ? Math.max(0, accumulatedPause)
+              : 0) +
+            (typeof pausedAt === 'number' && Number.isFinite(pausedAt)
+              ? Math.max(0, at - pausedAt)
+              : 0);
+          return {
+            ...b,
+            completedAt: at,
+            ...(b.pausedAt !== undefined ? { pausedAt: null } : {}),
+            ...(b.accumulatedPausedDurationMs !== undefined ||
+            b.pausedAt != null
+              ? {
+                  accumulatedPausedDurationMs: Math.min(
+                    elapsed,
+                    Number.isFinite(paused) ? Math.max(0, paused) : 0,
+                  ),
+                }
+              : {}),
+          };
+        }
         if (b.pausedAt != null && b.resumedAt == null) {
           return options?.closePaused ? { ...b, completedAt: b.pausedAt } : b;
         }
-        return { ...b, completedAt: Date.now() };
+        const at = options?.at ?? Date.now();
+        // Never complete before the timer started.
+        return { ...b, completedAt: Math.max(at, b.startedAt ?? at) };
       }),
     };
   });
+  return changed ? result : messages;
+}
+
+/** Restore is only a projection; each abandoned turn keeps its own history. */
+export function settleRestoredInterruptedMessages(
+  messages: ChatMessage[],
+  detectedAt: number,
+  options: { liveness: ChildToolLiveness; codexRootThreadId?: string },
+): ChatMessage[] {
+  let start = 0;
+  let changed = false;
+  const result: ChatMessage[] = [];
+  for (let index = 1; index <= messages.length; index++) {
+    const message = messages[index];
+    if (
+      index < messages.length &&
+      (!isUserTurnBoundary(message) ||
+        message.parentBlockId ||
+        message.parentToolUseId)
+    )
+      continue;
+    const turn = messages.slice(start, index);
+    const at = persistedInterruptedSettlementTime(turn, detectedAt);
+    const settled = closeOpenToolUseBlocks(
+      closeOpenTurnTimers(turn, { at, closePaused: true }),
+      { ...options, at, interruption: 'app_restart' },
+    );
+    changed ||= settled !== turn;
+    result.push(...settled);
+    start = index;
+  }
   return changed ? result : messages;
 }
 

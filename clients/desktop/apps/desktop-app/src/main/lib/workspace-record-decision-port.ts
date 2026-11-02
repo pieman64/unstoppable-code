@@ -3,13 +3,23 @@ import {
   removeWorkspaceIndexEntry,
 } from './sidebar-items';
 import { WorkspaceIndexUnreadableError } from './workspace-index-repository';
+import { pipelineHookBindingsEnabled } from './workspace-source-record-policy';
 import {
+  isWorkspaceWorktreeRecentlyRemoved,
   removeWorkspaceWorktrees,
   updateWorkspaceConfig,
   updateWorkspaceWorktrees,
   WorkspaceConfigUnreadableError,
 } from './workspace-persistence';
 import {
+  applySourceChangeBindingsTo,
+  applySourceChangeTargetRecordTo,
+  removesSourceChangeTarget,
+  admitSourceInitializationRecord,
+  applySourceInitializationTo,
+  applyWorkspaceConversionManifestTo,
+  applySplitDestinationTo,
+  removesSplitDestination,
   admitCompositionPromotion,
   admitTemporaryCompositionList,
   applyCompositionJoinRecordTo,
@@ -21,6 +31,7 @@ import {
   applyCompositionSourceUndoTo,
   applyTemporaryCompositionManifestTo,
   applyPipelineResultsSeenTo,
+  applySharedContainerForkStartPageTo,
   applyWorkspaceIndexDecisionTo,
   CompositionRecordRefusedError,
   removesCompositionRow,
@@ -86,6 +97,27 @@ export async function applyWorktreeListUpdate(
   | WorktreeListUpdateOutcome
 > {
   switch (decision.kind) {
+    case 'split.destination.reserve':
+    case 'split.destination.recovery':
+    case 'split.destination.promote':
+    case 'split.destination.archive':
+      return {
+        worktrees: await updateWorkspaceWorktrees(
+          workspaceId,
+          (rows) =>
+            applySplitDestinationTo(
+              workspaceId,
+              rows,
+              decision,
+              isWorkspaceWorktreeRecentlyRemoved(
+                workspaceId,
+                decision.worktree.id,
+                decision.worktree.createdAt,
+              ),
+            ),
+          preconditions,
+        ),
+      };
     case 'pipelineResults.markSeen': {
       // W5c2: only a pass that found the incarnation reports what it saw.
       let newlySeen: string[] = [];
@@ -150,6 +182,14 @@ export async function applyWorktreeListUpdate(
           preconditions,
         ),
       };
+    case 'workspace.sourceChanges.target.record':
+      return {
+        worktrees: await updateWorkspaceWorktrees(
+          workspaceId,
+          (rows) => applySourceChangeTargetRecordTo(rows, decision),
+          preconditions,
+        ),
+      };
     case 'composition.temporary.create':
       // The manifest is read and written under the list lock, so a list that
       // appears meanwhile refuses the create before any manifest exists.
@@ -193,7 +233,14 @@ export async function applyWorktreeListRemoval(
     workspaceId,
     (row) => {
       order.push(row.id);
-      return removesCompositionRow(row, decision);
+      switch (decision.kind) {
+        case 'split.destination.remove':
+          return removesSplitDestination(row, decision);
+        case 'composition.row.remove':
+          return removesCompositionRow(row, decision);
+        case 'workspace.sourceChanges.target.remove':
+          return removesSourceChangeTarget(row, decision);
+      }
     },
     undefined,
     undefined,
@@ -212,6 +259,44 @@ export async function applyWorkspaceManifestDecision(
   decision: WorkspaceManifestDecision,
 ): Promise<void> {
   switch (decision.kind) {
+    case 'workspace.source.initialize':
+      await updateWorkspaceConfig(workspaceId, (config, read) => {
+        admitSourceInitializationRecord(workspaceId, config, read.authority);
+        applySourceInitializationTo(
+          config,
+          decision,
+          pipelineHookBindingsEnabled(),
+        );
+      });
+      return;
+    case 'workspace.conversion.manifest':
+      await updateWorkspaceConfig(workspaceId, (config, read) =>
+        applyWorkspaceConversionManifestTo(
+          workspaceId,
+          config,
+          read.authority,
+          decision,
+        ),
+      );
+      return;
+    case 'workspace.sourceChanges.bindings':
+      await updateWorkspaceConfig(
+        workspaceId,
+        (config, read) =>
+          applySourceChangeBindingsTo(config, read.authority, decision),
+        { shouldWrite: Boolean },
+      );
+      return;
+    case 'sharedContainer.fork.start-page':
+      await updateWorkspaceConfig(workspaceId, (config, read) =>
+        applySharedContainerForkStartPageTo(
+          workspaceId,
+          config,
+          read.authority,
+          decision,
+        ),
+      );
+      return;
     case 'composition.repositories.undo':
       await updateWorkspaceConfig(
         workspaceId,
@@ -285,7 +370,10 @@ export async function applyWorkspaceIndexRemoval(
   decision: WorkspaceIndexRemovalDecision,
 ): Promise<boolean> {
   switch (decision.kind) {
+    case 'split.created-workspace.cleanup':
+    case 'sharedContainer.fork.hide':
     case 'composition.destination.cleanup':
+    case 'workspace.delete.index':
       return removeWorkspaceIndexEntry(workspaceId);
   }
 }

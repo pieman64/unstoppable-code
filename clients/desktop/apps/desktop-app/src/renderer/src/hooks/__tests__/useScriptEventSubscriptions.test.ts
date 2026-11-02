@@ -45,15 +45,25 @@ jest.mock('@/stores/terminalStore', () => ({
       markTerminalLive: typeof markTerminalLive;
     } => ({ addGroupWithTerminal, markTerminalLive }),
   },
-  ensureTerminalWorktreeHydrated,
-  selectBucket,
+  get ensureTerminalWorktreeHydrated(): typeof ensureTerminalWorktreeHydrated {
+    return ensureTerminalWorktreeHydrated;
+  },
+  get selectBucket(): typeof selectBucket {
+    return selectBucket;
+  },
 }));
 
 jest.mock('@/lib/panels/terminal-panel-activation', () => ({
-  ensureTerminalPanelVisible,
+  get ensureTerminalPanelVisible(): typeof ensureTerminalPanelVisible {
+    return ensureTerminalPanelVisible;
+  },
 }));
 
-jest.mock('@/stores/panelLayoutStore', () => ({ makeWorktreePanelKey }));
+jest.mock('@/stores/panelLayoutStore', () => ({
+  get makeWorktreePanelKey(): typeof makeWorktreePanelKey {
+    return makeWorktreePanelKey;
+  },
+}));
 
 jest.mock('@/stores/githubStore', () => ({
   useGitHubStore: {

@@ -840,7 +840,12 @@ describe('native browser profile authority', () => {
 
   it('retries existing native session initialization after transient metadata storage contention', async () => {
     const resolved = await service.resolve('code', 'first');
-    await mkdir(service.nativePath(resolved.partition), { recursive: true });
+    const native = join(
+      service.sessionRoot,
+      'Partitions',
+      resolved.partition.slice('persist:'.length).toLowerCase(),
+    );
+    await mkdir(native, { recursive: true });
     const recordNativePath = jest
       .spyOn(service.repository, 'recordNativePath')
       .mockRejectedValueOnce(
@@ -894,7 +899,11 @@ describe('native browser profile authority', () => {
       active.profileId,
       active.storageGeneration,
     );
-    const native = service.nativePath(partition);
+    const native = join(
+      service.sessionRoot,
+      'Partitions',
+      partition.slice('persist:'.length).toLowerCase(),
+    );
     await mkdir(native, { recursive: true });
     await writeFile(join(native, 'sentinel'), 'active login');
     const catalogPath = join(dataRoot, 'browser-profiles', 'catalog.json');

@@ -4,11 +4,14 @@ import { createRoot, type Root } from 'react-dom/client';
 import {
   useTranscriptSearch,
   type TranscriptSearchPageSource,
+  type TranscriptSearchPageTab,
 } from '../useTranscriptSearch';
 import type {
   ChatTranscriptSearchResult,
   ChatTranscriptSearchRequest,
+  PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
+import { computeTurnSummary } from '@canopy/desktop-shared/lib/turn-utils';
 import type * as ChatRenderStoresTestUtils from '@/test-utils/chatRenderStores';
 import type * as DomSearchHighlight from '@/lib/dom-search-highlight';
 
@@ -218,16 +221,34 @@ describe('canonical transcript search lifecycle', () => {
     expect(result.totalCount).toBe(0);
   });
   it('loads a selected match through a local transcript page source', async () => {
-    let tab = {
-      messages: [{ id: 'recent' }],
+    const message = (id: string): PersistedChatMessage => ({
+      id,
+      role: 'assistant',
+      blocks: [],
+      timestamp: 1,
+    });
+    let tab: TranscriptSearchPageTab = {
+      messages: [message('recent')],
       transcriptWindow: {
-        turns: [{ id: 'old-turn', before: 500 }],
+        turns: [
+          {
+            id: 'old-turn',
+            start: 0,
+            end: 600,
+            complete: true,
+            summary: computeTurnSummary([]),
+            finalMessageIds: ['recent'],
+            before: 500,
+          },
+        ],
+        totalMessages: 600,
+        transcriptRevision: 1,
       },
     };
     const pageSource: TranscriptSearchPageSource = {
       currentTab: () => tab,
       loadPage: jest.fn(() => {
-        tab = { ...tab, messages: [...tab.messages, { id: 'old' }] };
+        tab = { ...tab, messages: [...tab.messages, message('old')] };
         return Promise.resolve();
       }),
     };

@@ -207,9 +207,8 @@ describe('getUnreadChatToastContext (cowork)', () => {
     };
     const context = getUnreadChatToastContext(COWORK_OPTIONS);
     expect(context.worktreeName).toBe('Q3 planning session');
-    expect(context.message).toBe(
-      'Q3 planning session: Weekly report: Report drafted.',
-    );
+    // The chat's own label is its description, so it is not repeated.
+    expect(context.message).toBe('Q3 planning session: Report drafted.');
   });
 
   it('falls back to the chat title without repeating it as the label', () => {
@@ -223,7 +222,8 @@ describe('cowork toast + OS notification delivery', () => {
   it('shows an in-app toast with a navigable cowork target', () => {
     showUnreadChatToast(COWORK_OPTIONS);
     expect(addToastMock).toHaveBeenCalledTimes(1);
-    expect(capturedToasts[0]?.message).toBe('Weekly report: Report drafted.');
+    // The headline names the work entry, so the message is the reply alone.
+    expect(capturedToasts[0]?.message).toBe('Report drafted.');
     expect(capturedToasts[0]?.type).toBe('info');
     expect(capturedToasts[0]?.meta).toMatchObject({
       category: 'Chat',

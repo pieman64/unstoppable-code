@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import type { VoiceSessionState } from '../../lib/voice/voice-types';
 import { LoadingSpinner } from './loading/spinners/LoadingSpinner';
-import { Tooltip } from '@canopy/ui-shared';
+import { Button, Tooltip } from '@canopy/ui-shared';
 import { MicIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ComposerIconButton,
@@ -84,18 +84,18 @@ export function VoiceInputButton({
         label={tooltipLabel}
         {...(tooltipShortcut ? { shortcut: tooltipShortcut } : {})}
       >
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          iconOnly
           data-testid="voice-input-button"
           data-emphasis="primary"
           onClick={handleClick}
           disabled={disabled}
           aria-label={title}
           aria-pressed={false}
-          className="focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent fg-emphasis transition enabled:hover:bg-accent/90 enabled:active:scale-97 disabled:cursor-not-allowed disabled:bg-muted disabled:fg-tertiary"
         >
           <MicIcon width={16} height={16} />
-        </button>
+        </Button>
       </Tooltip>
     );
   }

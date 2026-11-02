@@ -9,9 +9,13 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-jest.mock('@/components/memory/MemoryExplorer', () => ({
-  MemoryExplorer: ({ scope }: { scope: string }): JSX.Element => (
-    <div data-memory-scope={scope} />
+jest.mock('@canopy/ui-app/local-memory', () => ({
+  MemoryPanel: ({
+    scopes,
+  }: {
+    scopes: { scope: { scope: string } }[];
+  }): JSX.Element => (
+    <div data-memory-scope={scopes.map(({ scope }) => scope.scope).join(',')} />
   ),
 }));
 

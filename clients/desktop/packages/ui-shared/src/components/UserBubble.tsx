@@ -1,12 +1,9 @@
 import {
-  useCallback,
   type JSX,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from 'react';
-import { CheckIcon } from '../icons/CheckIcon';
-import { CopyIcon } from '../icons/CopyIcon';
 import {
   BUBBLE_ACTION_BADGE_CLASS,
   BUBBLE_ACTION_GLYPH_PX,
@@ -16,9 +13,7 @@ import {
   BUBBLE_SURFACE_CLASS,
 } from './bubble-badge';
 import type { ChatMessageContextMenuTargetProps } from './ChatMessageContextMenu';
-import { CLEAN_FOOTER_ICON_BUTTON_CLASS, useCleanChatLook } from './chat-look';
-import { ChatCopyAction } from './chat/ChatCopyAction';
-import { useCopyToClipboard } from './copy-to-clipboard';
+import { BubbleCopyBadge } from './BubbleCopyBadge';
 import { getWindow } from '../panels/window-registry';
 import { Tooltip } from './Tooltip';
 import { useIsPhone } from './useMediaQuery';
@@ -227,15 +222,13 @@ export function UserBubble({
   // `actionsOnCorner` keeps the corner overhang at every tier: the host
   // vouches that its transcript's horizontal padding (16px on the desktop and
   // the App Advisor panel) leaves room for it beside a flush-right bubble.
-  // The clean chat look puts them in one quiet row under the bubble's right
-  // edge instead, as ChatGPT does, shown on hover and on keyboard focus. The
-  // row hangs into the gap under the prompt, so it never moves the answer.
-  const clean = useCleanChatLook();
-  const badgeClusterClass = clean
-    ? 'absolute right-0 top-full z-10 flex items-center gap-0.5 pt-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'
-    : isPhone && !actionsOnCorner
-      ? 'absolute right-1 top-1 z-10 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 pointer-coarse:opacity-100'
-      : 'absolute -right-2 -top-2 z-10 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 pointer-coarse:opacity-100';
+  // The clean chat look keeps the same corner badges: a row under the bubble
+  // sat beside the turn's "Worked for" line and read as a stray control.
+  // Keyboard focus reveals them too, so a tabbed-to badge is never invisible.
+  const badgeClusterClass =
+    isPhone && !actionsOnCorner
+      ? 'absolute right-1 top-1 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'
+      : 'absolute -right-2 -top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100';
 
   // CLEARANCE FOR THE IN-BUBBLE CLUSTER. Once the cluster moves inside the
   // bubble's bounds on the phone tier, it overlaps the text: the bubble shrinks
@@ -260,7 +253,7 @@ export function UserBubble({
   //
   // Both candidates are spelled out literally so Tailwind's scanner emits them.
   const phoneBadgeClearanceClass =
-    clean || !isPhone || actionsOnCorner ? '' : onRevert ? ' pr-17' : ' pr-9';
+    !isPhone || actionsOnCorner ? '' : onRevert ? ' pr-17' : ' pr-9';
 
   return (
     <div
@@ -282,29 +275,24 @@ export function UserBubble({
         </span>
       )}
       <div className={badgeClusterClass} data-bubble-actions="">
-        {clean && <ChatCopyAction text={copyText} />}
         {onRevert && (
           <Tooltip label="Revert this turn">
             <button
               type="button"
               onClick={onRevert}
               aria-label="Revert this turn"
-              className={
-                clean
-                  ? CLEAN_FOOTER_ICON_BUTTON_CLASS
-                  : BUBBLE_ACTION_BADGE_CLASS
-              }
+              className={BUBBLE_ACTION_BADGE_CLASS}
               data-testid="reset-to-point-button"
             >
               <AppCatalogRevertIcon
-                width={clean ? 14 : BUBBLE_ACTION_GLYPH_PX}
-                height={clean ? 14 : BUBBLE_ACTION_GLYPH_PX}
+                width={BUBBLE_ACTION_GLYPH_PX}
+                height={BUBBLE_ACTION_GLYPH_PX}
                 aria-hidden="true"
               />
             </button>
           </Tooltip>
         )}
-        {!clean && <BubbleCopyBadge copyText={copyText} />}
+        <BubbleCopyBadge copyText={copyText} dataTestId="user-bubble-copy" />
       </div>
       <div
         className={
@@ -336,46 +324,5 @@ function isFromBubbleActions(
   return (
     target instanceof view.Element &&
     target.closest(BUBBLE_ACTIONS_SELECTOR) !== null
-  );
-}
-
-/**
- * The bubble's corner copy action. It shares the copy behavior with
- * `CopyButton` but keeps the bubble badge chrome, the same as the revert
- * badge beside it, instead of the app Button.
- */
-function BubbleCopyBadge({ copyText }: { copyText: string }): JSX.Element {
-  const { copied, copy } = useCopyToClipboard();
-  const handleClick = useCallback(
-    (event: MouseEvent<HTMLButtonElement>): void => {
-      event.stopPropagation();
-      event.preventDefault();
-      void copy(copyText);
-    },
-    [copy, copyText],
-  );
-  const name = copied ? 'Copied' : 'Copy to clipboard';
-  return (
-    <Tooltip label={name}>
-      <button
-        type="button"
-        onClick={handleClick}
-        className={BUBBLE_ACTION_BADGE_CLASS}
-        aria-label={name}
-      >
-        {copied ? (
-          <CheckIcon
-            width={BUBBLE_ACTION_GLYPH_PX}
-            height={BUBBLE_ACTION_GLYPH_PX}
-            aria-hidden="true"
-          />
-        ) : (
-          <CopyIcon
-            width={BUBBLE_ACTION_GLYPH_PX}
-            height={BUBBLE_ACTION_GLYPH_PX}
-          />
-        )}
-      </button>
-    </Tooltip>
   );
 }

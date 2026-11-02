@@ -96,7 +96,7 @@ export function pipelineStatusReasonCopy(reason: PipelineStatusReason): {
     };
   }
   return {
-    heading: 'This run was paused by a pipeline action.',
+    heading: 'This run was paused by a workflow action.',
     helper: 'Resume when you are ready to continue.',
   };
 }

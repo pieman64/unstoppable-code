@@ -84,6 +84,19 @@ describe('ChatPanel', () => {
     expect(out).toContain('data-testid="chat-composer-send"');
   });
 
+  it('marks the whole chat, transcript and composer, as a chat window', () => {
+    const out = renderToString(
+      <CanopyClientProvider client={mockClient()}>
+        <ChatPanel chatId="c1" onSend={() => {}} />
+      </CanopyClientProvider>,
+    );
+    // The shared stylesheet keeps plain line breaks inside it.
+    const root = out.match(/^<div [^>]*>/)?.[0] ?? '';
+    expect(root).toContain('data-testid="chat-panel"');
+    expect(root).toContain('data-chat-window');
+    expect(out.indexOf('data-testid="chat-composer"')).toBeGreaterThan(0);
+  });
+
   it('keeps a host footer status on screen while the transcript chunk loads', () => {
     const out = renderToString(
       <CanopyClientProvider client={mockClient()}>

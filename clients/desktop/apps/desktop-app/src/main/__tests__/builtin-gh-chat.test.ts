@@ -100,8 +100,8 @@ function setupDefaults(provider: 'codex' | 'claude' | 'ollama'): void {
     model: 'model-x',
     thinkingLevel: 'medium',
   } as any);
-  mockedResolveKnownModel.mockReturnValue('model-x' as any);
-  mockedNormalizeThinking.mockReturnValue('medium' as any);
+  mockedResolveKnownModel.mockReturnValue('model-x');
+  mockedNormalizeThinking.mockReturnValue('medium');
   mockedGetProviderForModel.mockReturnValue(provider);
   mockedRequireProviderForModel.mockReturnValue(provider);
   mockedGetExecutionHarnessForModel.mockReturnValue(
@@ -122,8 +122,8 @@ describe('launchMergeConflictResolutionChat', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedReadAllSidebarItems.mockResolvedValue({ items: [] } as any);
-    mockedDispatchTurn.mockResolvedValue(undefined as any);
-    mockedUpsert.mockResolvedValue(undefined as any);
+    mockedDispatchTurn.mockResolvedValue(undefined);
+    mockedUpsert.mockResolvedValue(undefined);
     mockedResolveApprovalMode.mockResolvedValue('auto');
   });
 
@@ -186,6 +186,17 @@ describe('launchMergeConflictResolutionChat', () => {
     );
   });
 
+  it('starts a chat without a launcher turn timer row', async () => {
+    setupDefaults('claude');
+    await launchMergeConflictResolutionChat(baseArgs);
+    const tab = mockedUpsert.mock.calls[0][0].tab;
+    expect(
+      tab.messages.some((message: any) =>
+        message.blocks.some((block: any) => block.type === 'turn_timer'),
+      ),
+    ).toBe(false);
+  });
+
   it('persists a tab with the merge-conflict marker block', async () => {
     setupDefaults('claude');
 
@@ -198,6 +209,8 @@ describe('launchMergeConflictResolutionChat', () => {
       ),
     );
     expect(markerMessage).toBeDefined();
+    if (!markerMessage)
+      throw new Error('Expected a merge-conflict marker message');
     const marker = markerMessage.blocks.find(
       (block: any) => block.type === 'builtin_gh_chat_info',
     );
@@ -323,7 +336,7 @@ describe('launchMergeQueueChat', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedReadAllSidebarItems.mockResolvedValue({ items: [] } as any);
-    mockedDispatchTurn.mockResolvedValue(undefined as any);
+    mockedDispatchTurn.mockResolvedValue(undefined);
     mockedResolveApprovalMode.mockResolvedValue('auto');
     jest.mocked(sendToWindow).mockReturnValue(true);
   });

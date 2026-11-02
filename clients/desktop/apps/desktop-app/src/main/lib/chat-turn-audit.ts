@@ -238,7 +238,21 @@ export function isAgentContinuationEvent(data: unknown): boolean {
   );
 }
 
-export function readDiagnosticProviderType(
+/** A Claude stream-json assistant/user frame owned by a child tool use. */
+export function isClaudeChildFrame(data: unknown): boolean {
+  return (
+    isRecord(data) &&
+    (data.type === 'assistant' || data.type === 'user') &&
+    typeof data.parent_tool_use_id === 'string'
+  );
+}
+
+/** Continuations that may revive the root turn, excluding Claude child frames. */
+export function isRootAgentContinuationEvent(data: unknown): boolean {
+  return isAgentContinuationEvent(data) && !isClaudeChildFrame(data);
+}
+
+function readDiagnosticProviderType(
   value: unknown,
 ): AgentProviderType | undefined {
   return value === 'claude' || value === 'codex' || value === 'ollama'

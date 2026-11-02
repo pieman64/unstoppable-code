@@ -71,16 +71,26 @@ jest.mock('../canopy-cloud/oauth-login', () => ({
 }));
 jest.mock('../observability', () => ({
   getObservabilityService: (): unknown => ({
-    subscribe: subscribeMock,
-    loadTranscript: loadTranscriptMock,
-    loadHistory: loadHistoryMock,
-    recordAppDiagnostic: recordAppDiagnosticMock,
-    recordSessionDiagnostic: recordSessionDiagnosticMock,
+    get subscribe(): typeof subscribeMock {
+      return subscribeMock;
+    },
+    get loadTranscript(): typeof loadTranscriptMock {
+      return loadTranscriptMock;
+    },
+    get loadHistory(): typeof loadHistoryMock {
+      return loadHistoryMock;
+    },
+    get recordAppDiagnostic(): typeof recordAppDiagnosticMock {
+      return recordAppDiagnosticMock;
+    },
+    get recordSessionDiagnostic(): typeof recordSessionDiagnosticMock {
+      return recordSessionDiagnosticMock;
+    },
   }),
 }));
 
 const requestCanopyCloudJsonMock = jest.fn<
-  TelemetryIngestResponse,
+  Promise<TelemetryIngestResponse>,
   [string, { body: string }]
 >();
 // Minimal stand-in matching the real `CanopyCloudClientError` shape the service
@@ -102,13 +112,19 @@ class MockCanopyCloudClientError extends Error {
   }
 }
 jest.mock('../canopy-cloud/client', () => ({
-  requestCanopyCloudJson: requestCanopyCloudJsonMock,
-  CanopyCloudClientError: MockCanopyCloudClientError,
+  get requestCanopyCloudJson(): typeof requestCanopyCloudJsonMock {
+    return requestCanopyCloudJsonMock;
+  },
+  get CanopyCloudClientError(): typeof MockCanopyCloudClientError {
+    return MockCanopyCloudClientError;
+  },
 }));
 
 const getCanopyCloudCredentialsMock = jest.fn();
 jest.mock('../lib/canopy-cloud-account-store', () => ({
-  getCanopyCloudCredentials: getCanopyCloudCredentialsMock,
+  get getCanopyCloudCredentials(): typeof getCanopyCloudCredentialsMock {
+    return getCanopyCloudCredentialsMock;
+  },
 }));
 
 const getWorkspaceContextStateMock = jest.fn<
@@ -143,8 +159,12 @@ const updatePreferencesFileMock = jest.fn<
   [PreferencesUpdaterForTest]
 >();
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: readPreferencesFileMock,
-  updatePreferencesFile: updatePreferencesFileMock,
+  get readPreferencesFile(): typeof readPreferencesFileMock {
+    return readPreferencesFileMock;
+  },
+  get updatePreferencesFile(): typeof updatePreferencesFileMock {
+    return updatePreferencesFileMock;
+  },
   peekPreferencesLoadError: (): null => null,
 }));
 
@@ -176,7 +196,9 @@ jest.mock('../ipc/settings', () => ({
 
 const readWorkspaceIndexEntryMock = jest.fn();
 jest.mock('../lib/sidebar-items', () => ({
-  readWorkspaceIndexEntry: readWorkspaceIndexEntryMock,
+  get readWorkspaceIndexEntry(): typeof readWorkspaceIndexEntryMock {
+    return readWorkspaceIndexEntryMock;
+  },
 }));
 
 const readWorkspaceWorktreesMock = jest.fn();
@@ -199,8 +221,12 @@ const readWorkspaceConfigDetailedMock = jest.fn<
   [string]
 >();
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceWorktrees: readWorkspaceWorktreesMock,
-  readWorkspaceConfigDetailed: readWorkspaceConfigDetailedMock,
+  get readWorkspaceWorktrees(): typeof readWorkspaceWorktreesMock {
+    return readWorkspaceWorktreesMock;
+  },
+  get readWorkspaceConfigDetailed(): typeof readWorkspaceConfigDetailedMock {
+    return readWorkspaceConfigDetailedMock;
+  },
 }));
 
 jest.mock('../lib/plan-persistence', () => ({
@@ -253,6 +279,7 @@ jest.mock('../lib/cowork-work-entries-file', () => ({
 jest.mock('@canopy/brand/current', () => ({
   BRAND: {
     web: { apiNamespace: 'canopy' },
+    tools: { namespace: 'canopy' },
     environment: { prefixes: ['CANOPY'] },
     storage: {
       dataDirNames: {
@@ -332,6 +359,7 @@ function zeroToolCounts(): AgentAuditToolCounts {
     grep: 0,
     web: 0,
     agent: 0,
+    graph: 0,
     workflow: 0,
     tasks: 0,
     taskStop: 0,
@@ -654,7 +682,8 @@ beforeEach(() => {
   });
   loadStoredOrgBillingStatesMock.mockResolvedValue([]);
   requestCanopyCloudJsonMock.mockImplementation(
-    (_path: string, init: { body: string }) => buildIngestSuccessResponse(init),
+    (_path: string, init: { body: string }) =>
+      Promise.resolve(buildIngestSuccessResponse(init)),
   );
   loadStoredTelemetryEnforcementByOrganizationMock.mockResolvedValue(
     noEnforcement(),
@@ -986,7 +1015,7 @@ describe('TelemetrySyncService debounce + upload', () => {
         throw new MockCanopyCloudClientError('http-error', 'server error', 500);
       })
       .mockImplementation((_path: string, init: { body: string }) =>
-        buildIngestSuccessResponse(init),
+        Promise.resolve(buildIngestSuccessResponse(init)),
       );
     const service = await startService();
     resolveLocalMemoryPolicyMock.mockResolvedValueOnce({
@@ -1455,7 +1484,7 @@ describe('TelemetrySyncService debounce + upload', () => {
     // And the turn is still queued: it uploads as soon as the network returns.
     requestCanopyCloudJsonMock.mockImplementation(
       (_path: string, init: { body: string }) =>
-        buildIngestSuccessResponse(init),
+        Promise.resolve(buildIngestSuccessResponse(init)),
     );
     await jest.advanceTimersByTimeAsync(TELEMETRY_SYNC_DEBOUNCE_MS);
     expect(
@@ -1617,7 +1646,7 @@ describe('TelemetrySyncService debounce + upload', () => {
             500,
           );
         }
-        return buildIngestSuccessResponse(init);
+        return Promise.resolve(buildIngestSuccessResponse(init));
       },
     );
     const service = await startService();
@@ -1666,7 +1695,7 @@ describe('TelemetrySyncService debounce + upload', () => {
             500,
           );
         }
-        return buildIngestSuccessResponse(init);
+        return Promise.resolve(buildIngestSuccessResponse(init));
       },
     );
     const service = await startService();
@@ -1715,7 +1744,7 @@ describe('TelemetrySyncService debounce + upload', () => {
             400,
           );
         }
-        return buildIngestSuccessResponse(init);
+        return Promise.resolve(buildIngestSuccessResponse(init));
       },
     );
     const service = await startService();
@@ -1850,7 +1879,7 @@ describe('TelemetrySyncService owner scope (CAN-3515)', () => {
       commentCount: 0,
       openedAt: '2026-09-20T00:00:00.000Z',
       mergedAt: '2026-09-22T00:00:00.000Z',
-      updatedAt: '2026-09-22T00:00:00.000Z',
+      prUpdatedAt: '2026-09-22T00:00:00.000Z',
     };
   }
 
@@ -2238,7 +2267,7 @@ describe('TelemetrySyncService owner scope (CAN-3515)', () => {
         id: 'org-plan',
         projectId: 'proj-1',
         worktreeId: 'wt-1',
-        source: 'agent',
+        source: 'claude',
         title: 'Org plan',
         content: 'Org plan',
         reviewStatus: 'pending',
@@ -2348,7 +2377,7 @@ describe('TelemetrySyncService owner scope (CAN-3515)', () => {
         });
         writes.push(worktree.branchName);
       }
-      return buildIngestSuccessResponse(init);
+      return Promise.resolve(buildIngestSuccessResponse(init));
     });
     const service = await startService();
     async function enqueueVersion(
@@ -2367,7 +2396,7 @@ describe('TelemetrySyncService owner scope (CAN-3515)', () => {
         id: 'same-plan',
         projectId: 'proj-1',
         worktreeId: 'wt-1',
-        source: 'agent',
+        source: 'claude',
         title: label,
         content: label,
         reviewStatus: 'pending',
@@ -2450,7 +2479,7 @@ describe('TelemetrySyncService owner scope (CAN-3515)', () => {
             TELEMETRY_OWNER_SCOPE_CONFLICT_CODE,
           );
         }
-        return buildIngestSuccessResponse(init);
+        return Promise.resolve(buildIngestSuccessResponse(init));
       },
     );
     const service = await startService();
@@ -2613,7 +2642,7 @@ describe('TelemetrySyncService scope mapping', () => {
           id: 'owner-plan',
           projectId: 'proj-1',
           worktreeId: 'wt-1',
-          source: 'agent',
+          source: 'claude',
           title: 'Owner plan',
           content: 'Plan content',
           reviewStatus: 'pending',
@@ -2879,7 +2908,7 @@ describe('TelemetrySyncService scope mapping', () => {
     it('treats the tracked-source-organization-target refusal as terminal', async (): Promise<void> => {
       readPreferencesFileMock.mockResolvedValue(uniformSharing('organization'));
       requestCanopyCloudJsonMock.mockImplementation(
-        (_path, options): TelemetryIngestResponse => {
+        (_path, options): Promise<TelemetryIngestResponse> => {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- parsing the test transport request.
           const request: TelemetryIngestRequest = JSON.parse(options.body);
           if (request.organizationId === 'org-1') {
@@ -2890,7 +2919,7 @@ describe('TelemetrySyncService scope mapping', () => {
               'tracked-source-organization-target',
             );
           }
-          return buildIngestSuccessResponse(options);
+          return Promise.resolve(buildIngestSuccessResponse(options));
         },
       );
       const service = await startService();
@@ -3371,7 +3400,7 @@ describe('TelemetrySyncService scope mapping', () => {
             409,
           );
         }
-        return buildIngestSuccessResponse(init);
+        return Promise.resolve(buildIngestSuccessResponse(init));
       },
     );
     const service = await startService();
@@ -3411,7 +3440,7 @@ describe('TelemetrySyncService scope mapping', () => {
             500,
           );
         }
-        return buildIngestSuccessResponse(init);
+        return Promise.resolve(buildIngestSuccessResponse(init));
       },
     );
     const service = await startService();
@@ -3669,6 +3698,7 @@ describe('TelemetrySyncService status surface', () => {
             turns: [{ clientTurnId: 'turn-1', externalId: 'turn-ext-turn-1' }],
             plans: [],
             pullRequests: [],
+            pipelineRuns: [],
           },
         ],
       },
@@ -4930,7 +4960,7 @@ describe('TelemetrySyncService org-enforced prohibitions', () => {
       id: 'blocked-plan',
       projectId: 'proj-1',
       worktreeId: 'wt-1',
-      source: 'agent',
+      source: 'claude',
       title: 'Blocked plan',
       content: 'Blocked plan',
       reviewStatus: 'pending',
@@ -4954,7 +4984,7 @@ describe('TelemetrySyncService org-enforced prohibitions', () => {
         commentCount: 0,
         openedAt: '2026-09-20T00:00:00.000Z',
         mergedAt: '2026-09-22T00:00:00.000Z',
-        updatedAt: '2026-09-22T00:00:00.000Z',
+        prUpdatedAt: '2026-09-22T00:00:00.000Z',
       },
     ]);
     await drainQueuedTurns();
@@ -5127,7 +5157,7 @@ describe('TelemetrySyncService org-enforced prohibitions', () => {
       id,
       projectId: 'proj-1',
       worktreeId: 'wt-1',
-      source: 'agent',
+      source: 'claude',
       title: id,
       content: id,
       reviewStatus: 'pending',
@@ -5462,7 +5492,7 @@ describe('TelemetrySyncService org-enforced prohibitions', () => {
             'telemetry_scope_prohibited',
           );
         }
-        return buildIngestSuccessResponse(init);
+        return Promise.resolve(buildIngestSuccessResponse(init));
       },
     );
     const service = await startService();
@@ -6137,7 +6167,9 @@ describe('TelemetrySyncService PR ownership claim', () => {
             title: 'fix: something',
             state: 'merged',
             checkStatus: 'passing',
+            checkDetails: [],
             reviewStatus: 'approved',
+            reviewers: [],
             hasConflicts: false,
             commentCount: 0,
             updatedAt: '2026-08-28T11:00:00.000Z',
@@ -6459,7 +6491,9 @@ describe('TelemetrySyncService PR ownership claim', () => {
               title: 'feat: tapir pipeline chain',
               state: 'open',
               checkStatus: 'passing',
+              checkDetails: [],
               reviewStatus: 'approved',
+              reviewers: [],
               hasConflicts: false,
               commentCount: 0,
               updatedAt: '2026-09-21T11:00:00.000Z',
@@ -6873,7 +6907,9 @@ describe('TelemetrySyncService PR ownership claim', () => {
                 title: 'feat: tapir pipeline chain',
                 state: 'open',
                 checkStatus: 'passing',
+                checkDetails: [],
                 reviewStatus: 'none',
+                reviewers: [],
                 hasConflicts: false,
                 commentCount: 0,
                 updatedAt: '2026-09-21T11:00:00.000Z',

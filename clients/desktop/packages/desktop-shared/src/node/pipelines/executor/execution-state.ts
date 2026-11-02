@@ -7,9 +7,12 @@ import {
   snapshotRetryAttempt,
 } from './retry-utils';
 import { normalizeAgentModelConfig } from '../../../types';
+import type { AgentProviderType } from '../../../types';
+import { isModelHarness } from '../../../model-harnesses';
 import { brandEnvName } from '../../../brand/env';
 import { redactSecrets } from '../../../lib/redaction';
 import { validateId } from '../../lib/validation';
+import { writeFileAtomically } from '../../lib/atomic-file';
 import type {
   AgentRecoveryCheckpoint,
   ExecutionRerunContext,
@@ -129,6 +132,20 @@ function isPipelineStatusReasonKind(
     case 'provider_authentication_required':
     case 'provider_usage_limit':
     case 'provider_temporarily_unavailable':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isAgentProviderType(value: unknown): value is AgentProviderType {
+  switch (value) {
+    case 'claude':
+    case 'codex':
+    case 'ollama':
+    case 'cursor':
+    case 'opencode':
+    case 'copilot':
       return true;
     default:
       return false;
@@ -304,12 +321,12 @@ function normalizeStatusReason(
   ) {
     return undefined;
   }
-  const provider =
-    value.provider === 'claude' ||
-    value.provider === 'codex' ||
-    value.provider === 'ollama'
-      ? value.provider
-      : undefined;
+  const provider = isAgentProviderType(value.provider)
+    ? value.provider
+    : undefined;
+  const harness = isModelHarness(value.agent_harness)
+    ? value.agent_harness
+    : undefined;
   const accountScope =
     value.account_scope === 'native' ||
     value.account_scope === 'ai_credits' ||
@@ -321,6 +338,11 @@ function normalizeStatusReason(
     kind: value.kind,
     code: value.code,
     ...(provider ? { provider } : {}),
+    ...(harness ? { agent_harness: harness } : {}),
+    ...(typeof value.authentication_attempt_id === 'string' &&
+    value.authentication_attempt_id
+      ? { authentication_attempt_id: value.authentication_attempt_id }
+      : {}),
     ...(accountScope ? { account_scope: accountScope } : {}),
     ...(typeof value.account_proxy_connection_id === 'string' &&
     value.account_proxy_connection_id
@@ -866,7 +888,7 @@ function migrateExecutionStateV7ToV8(state: ExecutionState): ExecutionState {
         conclusion: 'failure',
         outcome: 'failure',
         error:
-          'Legacy foreach expansion was not materialized before migration. Convert the source pipeline to strategy.matrix and start a new execution.',
+          'Legacy foreach expansion was not materialized before migration. Convert the source workflow to strategy.matrix and start a new execution.',
         completed_at: legacyResult?.completed_at,
         legacy_foreach_v7: true,
       };
@@ -1151,7 +1173,19 @@ function toSummary(state: ExecutionState): ExecutionSummary {
     hidden: state.hidden,
     trigger_source: state.trigger_source,
     execution_context: state.execution_context,
+    initiator: summaryInitiator(state.initiator),
   };
+}
+
+/** The initiator without its host-only gate output and presentation. */
+function summaryInitiator(
+  initiator: PipelineExecutionInitiator | undefined,
+): PipelineExecutionInitiator | undefined {
+  if (initiator?.kind !== 'automation') return initiator;
+  const { ifCommandOutput, background, ...rest } = initiator;
+  void ifCommandOutput;
+  void background;
+  return rest;
 }
 
 export async function saveExecutionState(
@@ -1160,7 +1194,6 @@ export async function saveExecutionState(
 ): Promise<void> {
   await fs.mkdir(executionsDir, { recursive: true });
   const targetPath = getExecutionStatePath(state.id, executionsDir);
-  const tmpPath = targetPath + '.tmp';
   const currentState =
     state.version === CURRENT_EXECUTION_STATE_VERSION
       ? state
@@ -1179,23 +1212,13 @@ export async function saveExecutionState(
     ...persistedState.env,
     ...modelConfigEnv(persistedState),
   };
-  validateExecutionStateV8(persistedState, executionsDir);
+  validateCurrentExecutionState(persistedState, executionsDir);
   const content = JSON.stringify(persistedState, null, 2);
-  try {
-    await fs.writeFile(tmpPath, content, 'utf8');
-    try {
-      await fs.rename(tmpPath, targetPath);
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-        await fs.unlink(targetPath);
-        await fs.rename(tmpPath, targetPath);
-      } else {
-        throw err;
-      }
-    }
-  } finally {
-    await fs.unlink(tmpPath).catch(() => {});
-  }
+  // Preserve the non-fsync policy; atomic installation is not writer coordination.
+  await writeFileAtomically(targetPath, content, {
+    encoding: 'utf8',
+    durable: false,
+  });
 }
 
 function assertPathInsideExecution(
@@ -1348,11 +1371,25 @@ function validateForeachState(
   }
 }
 
-function validateExecutionStateV8(
+/** Structural checks for the physical/logical shape introduced in version 8. */
+function validateCurrentExecutionState(
   state: ExecutionState,
   executionsDir: string,
 ): void {
-  if (state.version !== 8) return;
+  // Callers validate after migration, so every supported version reaches here.
+  if (state.version !== CURRENT_EXECUTION_STATE_VERSION) {
+    throw new Error(
+      `Execution state version ${String(state.version)} was not migrated before validation`,
+    );
+  }
+  for (const key of ['jobs', 'job_definitions', 'job_groups'] as const) {
+    if (!isRecord(state[key])) {
+      throw new Error(`Execution state has no ${key} record`);
+    }
+  }
+  if (!Array.isArray(state.pending_pauses)) {
+    throw new Error('Execution state has no pending_pauses list');
+  }
   const definitionIds = Object.keys(state.job_definitions).sort();
   const resultIds = Object.keys(state.jobs).sort();
   if (definitionIds.join('\0') !== resultIds.join('\0')) {
@@ -1362,6 +1399,11 @@ function validateExecutionStateV8(
   for (const [logicalJobId, group] of Object.entries(state.job_groups)) {
     if (!state.pipeline_snapshot.jobs[logicalJobId]) {
       throw new Error(`Job group "${logicalJobId}" has no logical definition`);
+    }
+    if (!Array.isArray(group.variant_job_ids)) {
+      throw new Error(
+        `Job group "${logicalJobId}" has no variant_job_ids list`,
+      );
     }
     for (let index = 0; index < group.variant_job_ids.length; index += 1) {
       const physicalJobId = group.variant_job_ids[index];
@@ -1493,7 +1535,7 @@ export async function loadExecutionState(
     }
     const migrated = migrateExecutionStateToCurrent(typedState);
     normalizeRecoveryCheckpoints(migrated, executionsDir);
-    validateExecutionStateV8(migrated, executionsDir);
+    validateCurrentExecutionState(migrated, executionsDir);
     return migrated;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1553,9 +1595,15 @@ function normalizeExecutionInitiator(
       const automationId = nonEmptyString(value.automationId);
       if (!automationId) return undefined;
       const automationName = nonEmptyString(value.automationName);
-      return automationName
-        ? { kind: 'automation', automationId, automationName }
-        : { kind: 'automation', automationId };
+      return {
+        kind: 'automation',
+        automationId,
+        ...(automationName ? { automationName } : {}),
+        ...(typeof value.ifCommandOutput === 'string'
+          ? { ifCommandOutput: value.ifCommandOutput }
+          : {}),
+        ...(value.background === true ? { background: true } : {}),
+      };
     }
     case 'app_advisor': {
       const chat = normalizeAgentChatAddress(value.chat);
@@ -2864,6 +2912,16 @@ function applyExecutionResumeSelection(
     job.conclusion = undefined;
     job.outcome = undefined;
   }
+  // Every selected reason requeued its job; a job that is no longer paused has
+  // no pause checkpoint (see syncPendingPauseForJob).
+  const requeuedJobIds = new Set(
+    prepared.status_reasons
+      .filter((reason) => selectedIds.has(reason.id))
+      .map((reason) => reason.source.job_id),
+  );
+  prepared.pending_pauses = prepared.pending_pauses.filter(
+    (checkpoint) => !requeuedJobIds.has(checkpoint.job_id),
+  );
   prepared.status_reasons = prepared.status_reasons.filter(
     (reason) => !selectedIds.has(reason.id),
   );

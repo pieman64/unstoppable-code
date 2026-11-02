@@ -3,7 +3,7 @@
  * worktree?" and nothing in the dialog reflected the requested branch choice,
  * while Advisor told the user to "Choose Archive mode" (the dialog has no mode
  * switch). `worktree.archive` now opens the confirmation in the requested
- * mode and marks the requested item in the confirm button's branch menu; the
+ * mode with its Keep the local branch switch set to the request; the
  * user still makes the final choice.
  */
 import { mkdtempSync } from 'node:fs';
@@ -67,7 +67,7 @@ test('App Advisor opens the requested removal mode with the requested branch cho
     );
     await expect(row).toBeVisible();
 
-    // Default mode: the Delete confirmation, with Delete local marked.
+    // Default mode: the Delete confirmation, its branch switch set to delete.
     const deleteResponse = await dispatchAdvisorAction(
       electronApp,
       'advisor-worktree-delete-e2e',
@@ -83,21 +83,28 @@ test('App Advisor opens the requested removal mode with the requested branch cho
       result: { confirmationOpened: true, mode: 'delete' },
     });
     const deleteDialog = window.getByRole('dialog', {
-      name: 'Delete worktree?',
+      name: /^Delete worktree/,
     });
     await expect(deleteDialog).toBeVisible();
-    await expect(deleteDialog).toContainText('Advisor suggested Delete local.');
+    // 'Orchestrator' is ORCHESTRATOR_LABEL; .mjs specs cannot import it.
+    await expect(deleteDialog).toContainText(
+      'Orchestrator suggested deleting it.',
+    );
+    await expect(
+      deleteDialog.getByTestId('worktree-removal-keep-branch'),
+    ).toHaveAttribute('aria-checked', 'false');
     await expect(
       window.getByTestId('worktree-removal-delete-branch'),
-    ).toHaveAttribute('data-requested', 'true');
+    ).toHaveAccessibleName('Delete worktree');
     await expect(
       window.getByTestId('worktree-removal-preserve-branch'),
-    ).not.toHaveAttribute('data-requested', 'true');
+    ).toHaveCount(0);
     await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(deleteDialog).toHaveCount(0);
     await expect(row).toBeVisible();
 
-    // Archive mode: the Archive confirmation, with Preserve local marked. Choosing it archives the worktree.
+    // Archive mode: the Archive confirmation, its switch keeping the branch.
+    // Confirming archives the worktree.
     const archiveResponse = await dispatchAdvisorAction(
       electronApp,
       'advisor-worktree-archive-e2e',
@@ -114,17 +121,22 @@ test('App Advisor opens the requested removal mode with the requested branch cho
       result: { confirmationOpened: true, mode: 'archive' },
     });
     const archiveDialog = window.getByRole('dialog', {
-      name: 'Archive worktree?',
+      name: /^Archive worktree/,
     });
     await expect(archiveDialog).toBeVisible();
     await expect(archiveDialog).toContainText(
-      'Advisor suggested Preserve local.',
+      'Orchestrator suggested keeping it.',
     );
+    await expect(
+      archiveDialog.getByTestId('worktree-removal-keep-branch'),
+    ).toHaveAttribute('aria-checked', 'true');
     const preserve = window.getByTestId('worktree-removal-preserve-branch');
-    await expect(preserve).toHaveAttribute('data-requested', 'true');
+    // Archive keeps the work, so it is the Enter default and carries the key.
+    await expect(preserve).toHaveAccessibleName('Archive worktree');
+    await expect(preserve.getByTestId('kbd-chip')).toBeVisible();
     await expect(
       window.getByTestId('worktree-removal-delete-branch'),
-    ).not.toHaveAttribute('data-requested', 'true');
+    ).toHaveCount(0);
     await preserve.click();
     await expect(archiveDialog).toHaveCount(0);
     await expect(row).toHaveCount(0, { timeout: 30_000 });

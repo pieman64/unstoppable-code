@@ -10,12 +10,11 @@ import {
 } from '@canopy/ui-shared';
 import {
   SubagentsList,
+  SubagentsListHeader,
   SubagentsListRow,
   type SubagentsListColumns,
 } from '../SubagentsList';
 import { subagentStatusInk } from '../../common/SubagentStatusGlyph';
-import { subagentStatusDetail } from '../../subagent-copy';
-import { SubagentsViewProvider } from '../../subagents-view';
 
 /** A control's accessible name from the elements its aria-labelledby lists. */
 function labelledName(control: Element | null | undefined): string {
@@ -46,37 +45,38 @@ function makeNode(depth: number): SubagentNode {
 
 describe('Subagents list display pieces', () => {
   it.each([
-    ['full', true, 6],
-    ['full', false, 5],
-    ['no-workspace', true, 4],
-    ['compact', true, 3],
-    ['minimal', true, 2],
+    ['full', true, 7, 'Workspace', 'Changes'],
+    ['full', false, 6, 'Workspace', null],
+    ['no-workspace', true, 5, null, null],
+    ['compact', true, 4, null, null],
+    ['minimal', true, 3, null, null],
   ] as const)(
-    'renders the %s D9 column set (changes %s) without a header row',
-    (columns: SubagentsListColumns, showChanges: boolean, cells: number) => {
+    'renders the %s D9 column set (changes %s)',
+    (
+      columns: SubagentsListColumns,
+      showChanges: boolean,
+      count: number,
+      workspace: string | null,
+      changes: string | null,
+    ) => {
       const markup = renderToStaticMarkup(
-        <SubagentsListRow
-          node={makeNode(1)}
-          depth={0}
-          absoluteDepth={1}
-          hasChildren={false}
-          selected={false}
-          columns={columns}
-          showChanges={showChanges}
-          showWorkspaceDetails
-          now={0}
-          changeTotals={{ additions: 1, deletions: 0, filesChanged: 1 }}
-          onSelect={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />,
+        <SubagentsListHeader columns={columns} showChanges={showChanges} />,
       );
 
-      expect(markup).not.toContain('columnheader');
-      expect(markup.match(/role="gridcell"/g) ?? []).toHaveLength(cells);
+      expect(markup.match(/role="columnheader"/g) ?? []).toHaveLength(count);
+      if (workspace) expect(markup).toContain(workspace);
+      else expect(markup).not.toContain('Workspace');
+      if (changes) expect(markup).toContain(changes);
+      else expect(markup).not.toContain('Changes');
     },
   );
 
   it('drops the Status column in the minimal set but keeps the status for assistive technology', () => {
+    const header = renderToStaticMarkup(
+      <SubagentsListHeader columns="minimal" showChanges={false} />,
+    );
+    expect(header).not.toContain('Status');
+
     const row = renderToStaticMarkup(
       <SubagentsListRow
         node={makeNode(2)}
@@ -95,160 +95,7 @@ describe('Subagents list display pieces', () => {
     expect(row.match(/role="gridcell"/g) ?? []).toHaveLength(2);
     expect(row).toContain('class="sr-only"');
     expect(row).toContain('Task 2');
-    expect(row).toContain('h-10 shrink-0');
-  });
-
-  it('names a settled status beside the title in the minimal set', () => {
-    const row = renderToStaticMarkup(
-      <SubagentsListRow
-        node={{ ...makeNode(1), status: 'failed' }}
-        depth={0}
-        absoluteDepth={1}
-        hasChildren={false}
-        selected={false}
-        columns="minimal"
-        showChanges={false}
-        showWorkspaceDetails
-        now={0}
-        onSelect={(): void => undefined}
-        onOpenChat={(): void => undefined}
-      />,
-    );
-    expect(row).toContain('>Failed</span>');
-    // Shown, so the title does not repeat it for assistive technology.
-    expect(row).not.toContain(', Failed');
-  });
-
-  function renderRow(
-    node: SubagentNode,
-    extra: { readonly showStatus?: boolean } = {},
-  ): HTMLElement {
-    const host = document.createElement('div');
-    host.innerHTML = renderToStaticMarkup(
-      <SubagentsListRow
-        node={node}
-        depth={0}
-        absoluteDepth={node.depth}
-        hasChildren={false}
-        selected={false}
-        columns="compact"
-        showChanges={false}
-        showWorkspaceDetails
-        now={0}
-        onSelect={(): void => undefined}
-        onOpenChat={(): void => undefined}
-        {...extra}
-      />,
-    );
-    const row = host.querySelector<HTMLElement>(
-      `[data-testid="subagents-list-row-${node.id}"]`,
-    );
-    if (!row) throw new Error('row not rendered');
-    return row;
-  }
-
-  it('puts the shared spinner before a running title, in the 14px icon slot', () => {
-    const row = renderRow(makeNode(1));
-    const slot = row.querySelector<HTMLElement>(
-      '[data-testid="subagents-list-status-node-1"]',
-    );
-    // The chat tab's thinking spinner, sized to the 14px icon column.
-    const spinner = slot?.firstElementChild;
-    expect(spinner).not.toBeNull();
-    expect(spinner?.getAttribute('style')).toBe('gap:4px');
-    expect(slot?.className).toContain('w-3.5');
-    // The spinner says it runs; the title is not also shimmered.
-    const title = row.querySelector(
-      '[data-testid="subagents-list-title-node-1"]',
-    );
-    expect(title?.className).not.toContain('canopy-text-shimmer');
-  });
-
-  it('keeps the slot empty for a settled task, so titles still line up', () => {
-    const row = renderRow({ ...makeNode(1), status: 'completed' });
-    const slot = row.querySelector<HTMLElement>(
-      '[data-testid="subagents-list-status-node-1"]',
-    );
-    expect(slot?.className).toContain('w-3.5');
-    expect(slot?.childElementCount).toBe(0);
-    expect(
-      row.querySelector('[data-testid="subagents-list-title-node-1"]')
-        ?.className,
-    ).not.toContain('canopy-text-shimmer');
-  });
-
-  it('shows Running in neutral secondary text, keeping intent ink for failure', () => {
-    const running = renderRow(makeNode(1));
-    const runningStatus = Array.from(
-      running.querySelectorAll('[role="gridcell"]'),
-    ).find((cell) => cell.textContent === 'Running');
-    expect(runningStatus?.className).toContain('fg-secondary');
-    expect(runningStatus?.className).not.toContain(
-      subagentStatusInk('running'),
-    );
-
-    const failed = renderRow({ ...makeNode(1), status: 'failed' });
-    const failedStatus = Array.from(
-      failed.querySelectorAll('[role="gridcell"]'),
-    ).find((cell) => cell.textContent === 'Failed');
-    expect(failedStatus?.className).toContain(subagentStatusInk('failed'));
-  });
-
-  it.each(['queued', 'approval'] as const)(
-    'still names a %s row beside its title when the Active filter hides the Status column',
-    (status) => {
-      const row = renderRow({ ...makeNode(1), status }, { showStatus: false });
-      // No spinner for a task that is not running yet, so the words say it.
-      expect(
-        row.querySelector('[data-testid="subagents-list-status-node-1"]')
-          ?.childElementCount,
-      ).toBe(0);
-      const visible = Array.from(row.querySelectorAll('span')).find(
-        (span) =>
-          !span.classList.contains('sr-only') &&
-          span.className.includes('truncate') &&
-          span.textContent !== '' &&
-          span.textContent !== 'Task 1' &&
-          !span.className.includes('text-right'),
-      );
-      expect(visible?.textContent).toBe(
-        subagentStatusDetail({ status, liveDescendantCount: 0 }),
-      );
-    },
-  );
-
-  it('drops the Status column when the list hides it', () => {
-    const row = renderRow(makeNode(1), { showStatus: false });
-    expect(row.querySelectorAll('[role="gridcell"]')).toHaveLength(2);
-    // Still announced to assistive technology.
-    expect(row.querySelector('.sr-only')?.textContent).toContain('Running');
-  });
-
-  it('lines up the time column at one fixed width on every row', () => {
-    for (const columns of [
-      'full',
-      'no-workspace',
-      'compact',
-      'minimal',
-    ] as const) {
-      const markup = renderToStaticMarkup(
-        <SubagentsListRow
-          node={makeNode(1)}
-          depth={0}
-          absoluteDepth={1}
-          hasChildren={false}
-          selected={false}
-          columns={columns}
-          showChanges={false}
-          showWorkspaceDetails
-          now={0}
-          onSelect={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />,
-      );
-      expect(markup).toContain('_3rem_1.75rem]');
-      expect(markup).not.toContain('_auto_');
-    }
+    expect(row).toContain('h-9 shrink-0');
   });
 
   it.each([1, 2, 3, 4])('indents depth %i without a depth number', (depth) => {
@@ -297,7 +144,7 @@ describe('Subagents list display pieces', () => {
     },
   );
 
-  it('keeps hidden-ancestor lineage out of the row', () => {
+  it('shows the hidden-ancestor note after a matching row title', () => {
     const hidden: SubagentNode = {
       ...makeNode(1),
       id: 'hidden',
@@ -321,25 +168,23 @@ describe('Subagents list display pieces', () => {
       complete: true,
     };
     const markup = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={tree}
-          projection={projectSubagentSkipEdges(tree, 'active')}
-          selectedId={null}
-          columns="full"
-          showWorkspaceDetails
-          now={0}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={tree}
+        projection={projectSubagentSkipEdges(tree, 'active')}
+        selectedId={null}
+        columns="full"
+        showWorkspaceDetails
+        now={0}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+      />,
     );
 
+    const titleIndex = markup.indexOf('Live child</span></button>');
+    const viaIndex = markup.indexOf('via Finished parent');
     expect(markup).toContain('data-testid="subagents-list-row-visible"');
-    expect(markup).toContain('Live child');
-    // Lineage stays in the details card, not on the row.
-    expect(markup).not.toContain('via Finished parent');
-    expect(markup).not.toContain('Finished parent');
+    expect(titleIndex).toBeGreaterThanOrEqual(0);
+    expect(viaIndex).toBeGreaterThan(titleIndex);
   });
 
   function familyTree(): SubagentTree {
@@ -461,17 +306,15 @@ describe('Subagents list display pieces', () => {
 
   it('lists subagents without a root chat row, starting flush left', () => {
     const markup = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={familyTree()}
-          selectedId={null}
-          columns="full"
-          showWorkspaceDetails
-          now={0}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={familyTree()}
+        selectedId={null}
+        columns="full"
+        showWorkspaceDetails
+        now={0}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+      />,
     );
     expect(markup).not.toContain('subagents-list-root');
     expect(markup).not.toContain('Root chat');
@@ -491,19 +334,17 @@ describe('Subagents list display pieces', () => {
     const render = (collapsed: ReadonlySet<string>): void =>
       act((): void =>
         root.render(
-          <SubagentsViewProvider value>
-            <SubagentsList
-              tree={familyTree()}
-              selectedId={null}
-              columns="full"
-              showWorkspaceDetails
-              now={0}
-              collapsedIds={collapsed}
-              onToggleCollapsed={onToggleCollapsed}
-              onSelectNode={(): void => undefined}
-              onOpenChat={(): void => undefined}
-            />
-          </SubagentsViewProvider>,
+          <SubagentsList
+            tree={familyTree()}
+            selectedId={null}
+            columns="full"
+            showWorkspaceDetails
+            now={0}
+            collapsedIds={collapsed}
+            onToggleCollapsed={onToggleCollapsed}
+            onSelectNode={(): void => undefined}
+            onOpenChat={(): void => undefined}
+          />,
         ),
       );
     try {
@@ -536,61 +377,26 @@ describe('Subagents list display pieces', () => {
     }
   });
 
-  it('renders the classic list, with its column header, while the Subagents view is off', () => {
-    const props = {
-      tree: familyTree(),
-      selectedId: null,
-      columns: 'full' as const,
-      showWorkspaceDetails: true,
-      now: 0,
-      onSelectNode: (): void => undefined,
-      onOpenChat: (): void => undefined,
-    };
-    const classic = renderToStaticMarkup(<SubagentsList {...props} />);
-    expect(classic).toContain('role="columnheader"');
-    expect(classic).not.toContain('subagents-list-status-');
-
-    const view = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList {...props} />
-      </SubagentsViewProvider>,
-    );
-    expect(view).not.toContain('role="columnheader"');
-    expect(view).toContain('subagents-list-status-');
-  });
-
   it('shows the Changes column only when a listed task has changes', () => {
     const list = (withChanges: boolean): string =>
       renderToStaticMarkup(
-        <SubagentsViewProvider value>
-          <SubagentsList
-            tree={familyTree()}
-            selectedId={null}
-            columns="full"
-            showWorkspaceDetails
-            changeTotals={(node) =>
-              withChanges && node.id === 'child'
-                ? { additions: 3, deletions: 1, filesChanged: 1 }
-                : undefined
-            }
-            now={0}
-            onSelectNode={(): void => undefined}
-            onOpenChat={(): void => undefined}
-          />
-        </SubagentsViewProvider>,
+        <SubagentsList
+          tree={familyTree()}
+          selectedId={null}
+          columns="full"
+          showWorkspaceDetails
+          changeTotals={(node) =>
+            withChanges && node.id === 'child'
+              ? { additions: 3, deletions: 1, filesChanged: 1 }
+              : undefined
+          }
+          now={0}
+          onSelectNode={(): void => undefined}
+          onOpenChat={(): void => undefined}
+        />,
       );
-    const parentCells = (markup: string): number => {
-      const host = document.createElement('div');
-      host.innerHTML = markup;
-      return (
-        host
-          .querySelector('[data-testid="subagents-list-row-parent"]')
-          ?.querySelectorAll('[role="gridcell"]').length ?? -1
-      );
-    };
-    // One task with changes adds the column to every row, empty where a
-    // task has none.
-    expect(parentCells(list(true))).toBe(parentCells(list(false)) + 1);
+    expect(list(false)).not.toContain('Changes');
+    expect(list(true)).toContain('Changes');
   });
 
   it('renders workflow run progress, short status, time, and an optional open action', () => {
@@ -605,18 +411,16 @@ describe('Subagents list display pieces', () => {
     try {
       act((): void =>
         root.render(
-          <SubagentsViewProvider value>
-            <SubagentsList
-              tree={tree}
-              selectedId={null}
-              columns="full"
-              showWorkspaceDetails
-              now={61_000}
-              onSelectNode={onSelectNode}
-              onOpenChat={onOpenChat}
-              onOpenWorkflow={onOpenWorkflow}
-            />
-          </SubagentsViewProvider>,
+          <SubagentsList
+            tree={tree}
+            selectedId={null}
+            columns="full"
+            showWorkspaceDetails
+            now={61_000}
+            onSelectNode={onSelectNode}
+            onOpenChat={onOpenChat}
+            onOpenWorkflow={onOpenWorkflow}
+          />,
         ),
       );
 
@@ -643,17 +447,15 @@ describe('Subagents list display pieces', () => {
       expect(onSelectNode).toHaveBeenCalledWith(run);
 
       const noWorkflowAction = renderToStaticMarkup(
-        <SubagentsViewProvider value>
-          <SubagentsList
-            tree={tree}
-            selectedId={null}
-            columns="full"
-            showWorkspaceDetails
-            now={61_000}
-            onSelectNode={(): void => undefined}
-            onOpenChat={(): void => undefined}
-          />
-        </SubagentsViewProvider>,
+        <SubagentsList
+          tree={tree}
+          selectedId={null}
+          columns="full"
+          showWorkspaceDetails
+          now={61_000}
+          onSelectNode={(): void => undefined}
+          onOpenChat={(): void => undefined}
+        />,
       );
       expect(noWorkflowAction).not.toContain(
         'data-testid="subagents-list-open-workflow-run-1"',
@@ -667,17 +469,15 @@ describe('Subagents list display pieces', () => {
     const tree = workflowTree('completed', 'failed');
     const container = document.createElement('div');
     container.innerHTML = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={tree}
-          selectedId={null}
-          columns="full"
-          showWorkspaceDetails
-          now={61_000}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={tree}
+        selectedId={null}
+        columns="full"
+        showWorkspaceDetails
+        now={61_000}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+      />,
     );
     const runRow = container.querySelector(
       '[data-testid="subagents-list-row-workflow-run-1"]',
@@ -701,18 +501,16 @@ describe('Subagents list display pieces', () => {
     try {
       act((): void =>
         root.render(
-          <SubagentsViewProvider value>
-            <SubagentsList
-              tree={tree}
-              selectedId={null}
-              columns="full"
-              showWorkspaceDetails
-              now={61_000}
-              onToggleCollapsed={onToggleCollapsed}
-              onSelectNode={onSelectNode}
-              onOpenChat={onOpenChat}
-            />
-          </SubagentsViewProvider>,
+          <SubagentsList
+            tree={tree}
+            selectedId={null}
+            columns="full"
+            showWorkspaceDetails
+            now={61_000}
+            onToggleCollapsed={onToggleCollapsed}
+            onSelectNode={onSelectNode}
+            onOpenChat={onOpenChat}
+          />,
         ),
       );
 
@@ -744,17 +542,15 @@ describe('Subagents list display pieces', () => {
   it('keeps workflow agents as selectable chat rows with the provider workspace label', () => {
     const tree = workflowTree();
     const markup = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={tree}
-          selectedId={null}
-          columns="full"
-          showWorkspaceDetails
-          now={61_000}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={tree}
+        selectedId={null}
+        columns="full"
+        showWorkspaceDetails
+        now={61_000}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+      />,
     );
     const agentRow = markup.slice(
       markup.indexOf('data-testid="subagents-list-row-workflow-agent-1"'),
@@ -771,17 +567,15 @@ describe('Subagents list display pieces', () => {
     const tree = workflowTree();
     const container = document.createElement('div');
     container.innerHTML = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={tree}
-          selectedId={null}
-          columns="full"
-          showWorkspaceDetails
-          now={61_000}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={tree}
+        selectedId={null}
+        columns="full"
+        showWorkspaceDetails
+        now={61_000}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+      />,
     );
     const maskedTitle = (rowId: string): string | null | undefined =>
       container.querySelector(
@@ -800,19 +594,17 @@ describe('Subagents list display pieces', () => {
     const tree = workflowTree();
     const container = document.createElement('div');
     container.innerHTML = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={tree}
-          selectedId={null}
-          columns="full"
-          showWorkspaceDetails
-          now={61_000}
-          onToggleCollapsed={(): void => undefined}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-          onOpenWorkflow={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={tree}
+        selectedId={null}
+        columns="full"
+        showWorkspaceDetails
+        now={61_000}
+        onToggleCollapsed={(): void => undefined}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+        onOpenWorkflow={(): void => undefined}
+      />,
     );
     const accessibleName = (testId: string): string => {
       const control = container.querySelector(`[data-testid="${testId}"]`);
@@ -840,39 +632,35 @@ describe('Subagents list display pieces', () => {
   it('folds a workflow run in All and ignores group folding under a projection', () => {
     const tree = workflowTree();
     const collapsed = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={tree}
-          selectedId={null}
-          columns="full"
-          collapsedIds={new Set(['workflow-run-1'])}
-          onToggleCollapsed={(): void => undefined}
-          showWorkspaceDetails
-          now={61_000}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={tree}
+        selectedId={null}
+        columns="full"
+        collapsedIds={new Set(['workflow-run-1'])}
+        onToggleCollapsed={(): void => undefined}
+        showWorkspaceDetails
+        now={61_000}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+      />,
     );
     expect(collapsed).toContain('subagents-list-row-workflow-run-1');
     expect(collapsed).not.toContain('subagents-list-row-workflow-phase-1');
     expect(collapsed).not.toContain('subagents-list-row-workflow-agent-1');
 
     const projected = renderToStaticMarkup(
-      <SubagentsViewProvider value>
-        <SubagentsList
-          tree={tree}
-          projection={projectSubagentSkipEdges(tree, 'active')}
-          selectedId={null}
-          columns="full"
-          collapsedIds={new Set(['workflow-run-1', 'workflow-phase-1'])}
-          onToggleCollapsed={(): void => undefined}
-          showWorkspaceDetails
-          now={61_000}
-          onSelectNode={(): void => undefined}
-          onOpenChat={(): void => undefined}
-        />
-      </SubagentsViewProvider>,
+      <SubagentsList
+        tree={tree}
+        projection={projectSubagentSkipEdges(tree, 'active')}
+        selectedId={null}
+        columns="full"
+        collapsedIds={new Set(['workflow-run-1', 'workflow-phase-1'])}
+        onToggleCollapsed={(): void => undefined}
+        showWorkspaceDetails
+        now={61_000}
+        onSelectNode={(): void => undefined}
+        onOpenChat={(): void => undefined}
+      />,
     );
     expect(projected).toContain('subagents-list-row-workflow-run-1');
     expect(projected).toContain('subagents-list-row-workflow-phase-1');
@@ -889,17 +677,15 @@ describe('Subagents list display pieces', () => {
     const trees = [familyTree(), workflowTree()];
     const rows = trees.flatMap((tree) => {
       const markup = renderToStaticMarkup(
-        <SubagentsViewProvider value>
-          <SubagentsList
-            tree={tree}
-            selectedId={null}
-            columns="full"
-            showWorkspaceDetails
-            now={0}
-            onSelectNode={(): void => undefined}
-            onOpenChat={(): void => undefined}
-          />
-        </SubagentsViewProvider>,
+        <SubagentsList
+          tree={tree}
+          selectedId={null}
+          columns="full"
+          showWorkspaceDetails
+          now={0}
+          onSelectNode={(): void => undefined}
+          onOpenChat={(): void => undefined}
+        />,
       );
       return (
         markup.match(

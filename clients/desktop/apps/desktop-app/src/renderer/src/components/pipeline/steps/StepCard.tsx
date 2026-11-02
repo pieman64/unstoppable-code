@@ -3,6 +3,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Step } from '@canopy/desktop-shared/types/pipeline';
 import { PipelineDragHandleIcon } from './PipelinePanelPrimitives';
+import { Button } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -83,7 +84,7 @@ export function StepCard({
       ref={setNodeRef}
       style={style}
       onClick={onSelect}
-      className={`card-surface flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-all ${
+      className={`card-surface flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-[border-color,box-shadow,opacity] ${
         selected
           ? 'ring-2 ring-line-accent border-line-accent'
           : 'hover:border-line-accent/30'
@@ -123,15 +124,18 @@ export function StepCard({
 
       {/* Delete */}
       {!readonly && (
-        <button
+        <Button
+          variant="ghost-quiet"
+          size="compact"
+          iconOnly
           onClick={(e): void => {
             e.stopPropagation();
             onDelete();
           }}
-          className="shrink-0 p-1 fg-secondary hover:fg-destructive transition-colors rounded"
+          aria-label="Delete step"
         >
           <AppCatalogCloseIcon width="14" height="14" />
-        </button>
+        </Button>
       )}
     </div>
   );

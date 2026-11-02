@@ -52,7 +52,7 @@ describe('useOpenFileDiffTarget changed-file refresh', () => {
       value: {
         activity: { getChangedFiles },
         getWorktreePath: jest.fn().mockResolvedValue('/work/tree'),
-      } as unknown as Window['api'],
+      },
     });
     useActivityStore.setState({ changedFiles: {} });
     useProjectsStore.setState({

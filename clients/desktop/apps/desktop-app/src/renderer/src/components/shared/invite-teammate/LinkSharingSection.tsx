@@ -191,20 +191,21 @@ export function LinkSharingSection({
           {status}
           {link.link && (
             <>
-              <button
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 ref={moreRef}
-                type="button"
                 aria-label={LINK_MORE_OPTIONS_LABEL}
                 title={LINK_MORE_OPTIONS_LABEL}
                 aria-haspopup="menu"
                 aria-expanded={moreOpen}
                 disabled={locked}
                 onClick={() => setMoreOpen((open) => !open)}
-                className="focus-ring flex h-6 w-6 items-center justify-center rounded-md fg-secondary transition hover:bg-subtle hover:fg-primary disabled:opacity-40"
                 data-testid={`${TEST_ID}-more`}
               >
                 <MoreHorizontalIcon width={16} height={16} />
-              </button>
+              </Button>
               <FloatingMenu
                 open={moreOpen}
                 onOpenChange={setMoreOpen}

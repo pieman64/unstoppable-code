@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, type ChangeEvent, type JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { Camera, ImagePlus } from '@canopy/ui-shared/icons/AppIcons';
 import { ALLOWED_AVATAR_MIME_TYPES } from '@canopy/protocol/settings/account';
 import { OrganizationLogo } from './OrganizationLogo';
@@ -54,6 +55,7 @@ export function OrganizationLogoEditor({
       {logoUrl ? (
         <button
           type="button"
+          data-settings-control="media"
           data-testid="org-logo-edit"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
@@ -76,6 +78,7 @@ export function OrganizationLogoEditor({
       ) : (
         <button
           type="button"
+          data-settings-control="media"
           data-testid="org-logo-edit"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
@@ -99,15 +102,15 @@ export function OrganizationLogoEditor({
         onChange={handleChange}
       />
       {logoUrl && onRemove && (
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
           data-testid="org-logo-remove"
           onClick={onRemove}
           disabled={busy}
-          className="text-xs font-medium fg-secondary transition-colors hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           Remove logo
-        </button>
+        </Button>
       )}
       {error && (
         <p className="max-w-48 text-center text-xs fg-destructive" role="alert">

@@ -42,6 +42,7 @@ function accountRoutePath(route: AccountSettingsRoute): string {
     case 'integrations':
     case 'security':
     case 'labs':
+    case 'appearance':
       return `/account/${route.page}`;
   }
 }

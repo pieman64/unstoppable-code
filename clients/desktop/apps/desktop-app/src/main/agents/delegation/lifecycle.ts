@@ -34,7 +34,7 @@ export function releaseDelegationDelivery(
 ): void {
   installed?.releaseDelivery(target, deliveryId);
 }
-/** Forget a delivery that will never be claimed for a queued dispatch. */
+/** Permanently prevents an ambiguous or abandoned delivery from being replayed. */
 export function retireDelegationDelivery(
   target: ChatQueueTarget,
   deliveryId: string,

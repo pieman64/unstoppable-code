@@ -103,6 +103,9 @@ export async function openActivityChat(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
+  await window.evaluate(() =>
+    window.api.savePreferences({ chatDetail: 'detailed' }),
+  );
   await app.openMainPage();
   await app.selectWorktree('demo-main');
   await window.getByTestId(`panel-tab-panel-chat-${ACTIVITY_CHAT_ID}`).click();
@@ -176,7 +179,7 @@ export async function injectLateActivityMetadata(electronApp) {
 }
 
 export async function assertLateActivityMetadata(panel) {
-  const research = panel.getByRole('button', { name: /Agent · Tesla/ });
+  const research = panel.getByRole('button', { name: /Tesla agent/ });
   await expect(research).toContainText('Final Review');
   await research.click();
   const configuration = panel.getByTestId('agent-block-configuration').first();
@@ -186,7 +189,7 @@ export async function assertLateActivityMetadata(panel) {
 }
 
 export async function assertActivityCards(panel, nested = true) {
-  const research = panel.getByRole('button', { name: /Agent · Tesla/ });
+  const research = panel.getByRole('button', { name: /Tesla agent/ });
   await expect(research).toBeVisible();
   await expect(research).toContainText('Readme Review');
   await expect(
@@ -206,7 +209,7 @@ export async function assertActivityCards(panel, nested = true) {
   await expect(
     panel.getByText('Catalog research is ready.', { exact: true }),
   ).toBeVisible();
-  const desktop = panel.getByRole('button', { name: /Agent · Raman/ });
+  const desktop = panel.getByRole('button', { name: /Raman agent/ });
   await expect(desktop).toBeVisible();
   await expect(desktop).toContainText('Desktop Install');
   if (nested) {
@@ -246,9 +249,13 @@ export async function assertActivityFollowup(electronApp, panel) {
   await injectTurn('root', 'turn.started');
   await injectTurn('research', 'turn.started');
   const card = panel.getByTestId('agent-block').first();
-  await expect(card.getByLabel('Thinking', { exact: true })).toBeVisible();
+  await expect(
+    card.locator('[data-step-row-words].canopy-text-shimmer-strong'),
+  ).toBeVisible();
   await injectTurn('research', 'turn.completed');
-  await expect(card.getByLabel('Thinking', { exact: true })).toHaveCount(0);
+  await expect(
+    card.locator('[data-step-row-words].canopy-text-shimmer-strong'),
+  ).toHaveCount(0);
   await injectTurn('root', 'turn.completed');
   await expect(panel.getByTestId('agent-block')).toHaveCount(1);
 }

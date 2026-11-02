@@ -1,5 +1,6 @@
 import {
   CanopyErrorPayloadSchema,
+  CanopyRequestMetadataSchema,
   CanopyStreamCursorSchema,
   CanopyStreamEndSchema,
   defineCanopyInstruction,
@@ -35,6 +36,9 @@ const instructions = defineCanopyInstructionRegistry('core', {
     ...shared,
     plane: 'core',
     idempotency: 'keyed',
+    params: CanopyStreamCursorSchema.extend({
+      _meta: CanopyRequestMetadataSchema.required({ idempotencyKey: true }),
+    }),
     result: CanopyStreamCursorSchema,
   }),
 });
@@ -82,18 +86,26 @@ describe('createOperationRegistry', () => {
   it('returns frozen metadata for every definition with its owner', () => {
     const registry = build();
     expect(registry).toEqual([
-      { name: 'core.example.read', kind: 'query', plane: 'core', owner: 'a' },
+      {
+        name: 'core.example.read',
+        kind: 'query',
+        plane: 'core',
+        owner: 'a',
+        declaresMeta: false,
+      },
       {
         name: 'core.example.write',
         kind: 'instruction',
         plane: 'core',
         owner: 'a',
+        declaresMeta: true,
       },
       {
         name: 'core.example.events',
         kind: 'stream',
         plane: 'core',
         owner: 'b',
+        declaresMeta: false,
       },
     ]);
     expect(Object.isFrozen(registry)).toBe(true);

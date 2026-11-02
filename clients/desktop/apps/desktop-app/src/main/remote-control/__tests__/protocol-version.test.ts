@@ -1,3 +1,4 @@
+import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import {
   compatibleRemoteVersions,
   currentRemoteVersion,
@@ -71,4 +72,18 @@ describe('remote protocol version', () => {
       ).toBe(REMOTE_PROTOCOL_VERSION);
     }
   });
+});
+
+it.each([
+  'get-state',
+  'dismiss',
+  'snooze',
+  'restore',
+  'set-provider-not-used',
+  'mark-item-complete',
+  'changed',
+])('blocks the retired checklist %s channel', (suffix) => {
+  expect(getRemoteChannelDisposition(`onboarding-checklist:${suffix}`)).toBe(
+    'blocked',
+  );
 });

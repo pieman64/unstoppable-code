@@ -2,6 +2,7 @@ import type { LedgerClient } from '@canopy/app-core';
 import type {
   LedgerActorRef,
   LedgerEntriesSearchResult,
+  LedgerErrorReason,
   LedgerEntry,
   LedgerOwnerCandidate,
   LedgerStatus,
@@ -14,7 +15,7 @@ import type {
   LedgerViewOwnersRequest,
   LedgerViewReceipt,
   LedgerViewResult,
-  LedgerViewScope,
+  LedgerTaskViewScope,
   LedgerViewSearchRequest,
   LedgerViewUpdateRequest,
 } from '@canopy/protocol/ledger-view';
@@ -28,7 +29,10 @@ import {
   type LedgerViewDraft,
 } from '../ledger-view-writes';
 
-const SCOPE: LedgerViewScope = { projectId: 'project-1', worktreeId: 'wt-1' };
+const SCOPE: LedgerTaskViewScope = {
+  projectId: 'project-1',
+  worktreeId: 'wt-1',
+};
 const LEDGER_ID = '00000000-0000-4000-8000-0000000000f1';
 const ENTRY_ID = '00000000-0000-4000-8000-000000000101';
 const YOU: LedgerActorRef = {
@@ -115,7 +119,9 @@ function receipt(value: LedgerEntry): LedgerViewResult<LedgerViewReceipt> {
   };
 }
 
-function failure(reason: string): LedgerViewResult<never> {
+function failure(
+  reason: LedgerErrorReason | 'UNKNOWN',
+): LedgerViewResult<never> {
   return { status: 'error', reason, message: `${reason} happened` };
 }
 

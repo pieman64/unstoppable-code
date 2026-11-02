@@ -13,8 +13,6 @@ import {
   SubagentsInspector,
   type SubagentsDetailsProps,
 } from '../SubagentsDetails';
-import { SECONDARY_SURFACE_CLASS } from '../../../../../lib/row-chips';
-import { SubagentsViewProvider } from '../../subagents-view';
 
 interface MountedView {
   readonly container: HTMLDivElement;
@@ -156,11 +154,7 @@ function nodeFromTree(tree: SubagentTree, id: string): SubagentNode {
 function mount(element: JSX.Element): MountedView {
   const container = document.createElement('div');
   const root = createRoot(container);
-  // These cover the Subagents view's card; SubagentsDetailsClassic.test.tsx
-  // covers the classic one.
-  act((): void =>
-    root.render(<SubagentsViewProvider value>{element}</SubagentsViewProvider>),
-  );
+  act((): void => root.render(element));
   return {
     container,
     unmount: (): void => act((): void => root.unmount()),
@@ -455,181 +449,6 @@ describe('subagents details', () => {
       expect(rowValue(view.container, 'Workspace')?.textContent).toBe(
         'Workflow agent',
       );
-    } finally {
-      view.unmount();
-    }
-  });
-
-  function taskTree(): {
-    readonly tree: SubagentTree;
-    readonly parent: SubagentNode;
-    readonly task: SubagentNode;
-  } {
-    const parent: SubagentNode = {
-      id: 'parent',
-      kind: 'managed',
-      parentId: null,
-      depth: 1,
-      title: 'Finished parser review',
-      status: 'completed',
-      childIds: ['task'],
-      liveDescendantCount: 1,
-      approvalPending: false,
-      runs: [],
-    };
-    const child: SubagentNode = {
-      id: 'child',
-      kind: 'managed',
-      parentId: 'task',
-      depth: 3,
-      title: 'Live nested parser check',
-      status: 'running',
-      childIds: [],
-      liveDescendantCount: 0,
-      approvalPending: false,
-      runs: [],
-    };
-    const task: SubagentNode = {
-      id: 'task',
-      kind: 'managed',
-      parentId: 'parent',
-      depth: 2,
-      title: 'Live parser cause check',
-      status: 'running',
-      childIds: ['child'],
-      liveDescendantCount: 1,
-      approvalPending: false,
-      runs: [],
-      modelLabel: 'Claude Sonnet 4.6',
-      workspace: 'shared',
-      startedAt: 1_000_000,
-    };
-    return {
-      tree: {
-        root: { id: 'root-chat-id', title: 'Demo parser subagent tree' },
-        nodes: new Map([
-          [parent.id, parent],
-          [task.id, task],
-          [child.id, child],
-        ]),
-        rootChildIds: [parent.id],
-        complete: true,
-      },
-      parent,
-      task,
-    };
-  }
-
-  it('labels the start time Started and the child tasks Started tasks', () => {
-    const { tree, task } = taskTree();
-    const view = renderInspector(tree, task, { now: 1_000_000 + 4 * 60_000 });
-    try {
-      // `Started` used to list the child task titles; it is now the time.
-      expect(rowValue(view.container, 'Started')?.textContent).toBe('4m ago');
-      expect(rowValue(view.container, 'Started tasks')?.textContent).toBe(
-        'Live nested parser check',
-      );
-      expect(rowValue(view.container, 'Lineage')?.textContent).toBe(
-        'Demo parser subagent treeFinished parser review',
-      );
-      const labels = Array.from(view.container.querySelectorAll('dt')).map(
-        (label) => label.textContent,
-      );
-      expect(labels).toEqual([
-        'Model',
-        'Workspace',
-        'Lineage',
-        'Started',
-        'Started tasks',
-      ]);
-    } finally {
-      view.unmount();
-    }
-  });
-
-  it('says None for a task that started nothing and omits Started without a time', () => {
-    const { tree, parent } = taskTree();
-    const leaf: SubagentNode = { ...parent, childIds: [] };
-    const view = renderInspector(tree, leaf);
-    try {
-      expect(rowValue(view.container, 'Started tasks')?.textContent).toBe(
-        'None',
-      );
-      expect(rowValue(view.container, 'Started')).toBeNull();
-    } finally {
-      view.unmount();
-    }
-  });
-
-  it('keys every row to one fixed label column in one text size', () => {
-    const { tree, task } = taskTree();
-    const view = renderInspector(tree, task);
-    try {
-      const list = view.container.querySelector('dl');
-      expect(list?.className).toContain('grid-cols-[6rem_minmax(0,1fr)]');
-      expect(list?.className).toContain('text-xs');
-      for (const label of Array.from(view.container.querySelectorAll('dt'))) {
-        expect(label.className).toContain('fg-tertiary');
-      }
-    } finally {
-      view.unmount();
-    }
-  });
-
-  it('shimmers a running title with no separate status line or glyph', () => {
-    const { tree, task } = taskTree();
-    const view = renderInspector(tree, task);
-    try {
-      const title = view.container.querySelector(
-        '[data-testid="subagents-inspector-title"]',
-      );
-      expect(title?.querySelector('.canopy-text-shimmer')?.textContent).toBe(
-        'Live parser cause check',
-      );
-      expect(
-        view.container.querySelector(
-          '[data-testid="subagents-inspector-status"]',
-        ),
-      ).toBeNull();
-      expect(view.container.querySelector('[data-status]')).toBeNull();
-    } finally {
-      view.unmount();
-    }
-  });
-
-  it('gives a settled task one neutral status line and no shimmer', () => {
-    const { tree, parent } = taskTree();
-    const view = renderInspector(tree, parent);
-    try {
-      const status = view.container.querySelector(
-        '[data-testid="subagents-inspector-status"]',
-      );
-      expect(status?.textContent).toBe('Done');
-      expect(status?.className).toContain('fg-secondary');
-      expect(view.container.querySelector('.canopy-text-shimmer')).toBeNull();
-    } finally {
-      view.unmount();
-    }
-  });
-
-  it('draws Open chat as the secondary Button and Stop as the ghost Button', () => {
-    const { tree, task } = taskTree();
-    const view = renderInspector(tree, task, { onStop: jest.fn() });
-    try {
-      const openChat = view.container.querySelector(
-        '[data-testid="subagents-inspector-open-chat"]',
-      );
-      const stop = view.container.querySelector(
-        '[data-testid="subagents-inspector-stop"]',
-      );
-      // The shared Button's secondary surface and its ghost treatment.
-      expect(openChat?.className).toContain(SECONDARY_SURFACE_CLASS);
-      expect(openChat?.className).not.toContain('bg-accent');
-      expect(stop?.className).toContain('bg-transparent');
-      expect(stop?.className).toContain('fg-secondary');
-      expect(stop?.className).not.toContain('fg-destructive');
-      expect(stop?.textContent).toBe('Stop');
-      expect(stop?.getAttribute('aria-label')).toBe('Stop delegation');
     } finally {
       view.unmount();
     }

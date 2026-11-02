@@ -132,8 +132,8 @@ async function readWorktreeSummaryFileNormalized(
   try {
     const filePath = resolveWorktreeSummaryFilePath(projectId, worktreeId);
     const raw = await readFile(filePath, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    return normalizeWorktreeSummaryFile(parsed);
+    const parsed = parseWorktreeSummaryFile(JSON.parse(raw));
+    return parsed.kind === 'present' ? parsed.file : null;
   } catch {
     return null;
   }
@@ -141,10 +141,8 @@ async function readWorktreeSummaryFileNormalized(
 
 /** The summary file as a write reads it. */
 type WorktreeSummaryFileRead =
-  | { readonly kind: 'present'; readonly file: WorktreeSummaryFile }
+  | ParsedWorktreeSummaryFile
   | { readonly kind: 'missing' }
-  /** It exists but does not parse as a summary file. */
-  | { readonly kind: 'corrupt' }
   /** Reading it failed for another reason, perhaps only for now. */
   | { readonly kind: 'unreadable' };
 
@@ -164,8 +162,7 @@ async function readWorktreeSummaryFileForWrite(
       : { kind: 'unreadable' };
   }
   try {
-    const file = normalizeWorktreeSummaryFile(JSON.parse(raw));
-    return file === null ? { kind: 'corrupt' } : { kind: 'present', file };
+    return parseWorktreeSummaryFile(JSON.parse(raw));
   } catch {
     return { kind: 'corrupt' };
   }
@@ -193,6 +190,7 @@ export async function readWorktreeSummaryFile(
 
 /** What a summary write did to the history. */
 export interface WorktreeSummaryWriteResult {
+  readonly kind: 'written';
   /** The latest snapshot: the new one, or the unchanged one it matched. */
   readonly snapshot: WorktreeSummarySnapshot;
   readonly isNewSnapshot: boolean;
@@ -202,10 +200,54 @@ export interface WorktreeSummaryWriteResult {
    */
   readonly droppedPublishableSnapshotIds: readonly string[];
   /**
+   * Ledger-publishable snapshots whose provenance did not validate, so this
+   * write kept them unpublishable. One that never published never will.
+   */
+  readonly strippedPublishableSnapshotIds: readonly string[];
+  /** History entries that did not validate, so this write dropped them. */
+  readonly droppedInvalidSnapshotCount: number;
+  /**
    * The previous file did not parse, so this write replaced it, history and
    * all. Whatever it held could not have been published.
    */
   readonly replacedCorruptFile: boolean;
+}
+
+/** Why a summary write left the existing file untouched. */
+export type WorktreeSummaryWriteAbortReason =
+  /** Reading it failed, perhaps only for now. */
+  | 'unreadable'
+  /** A newer app wrote it; this one cannot keep what it holds. */
+  | 'future_version';
+
+export interface WorktreeSummaryWriteAborted {
+  readonly kind: 'aborted';
+  readonly reason: WorktreeSummaryWriteAbortReason;
+}
+
+function writeAbortReason(
+  existing: WorktreeSummaryFileRead,
+): WorktreeSummaryWriteAbortReason | null {
+  return existing.kind === 'unreadable' || existing.kind === 'future_version'
+    ? existing.kind
+    : null;
+}
+
+/**
+ * Why a summary write would abort now, or null when it would proceed, so a
+ * caller can skip generating a summary it cannot write. The write still
+ * checks again.
+ */
+export async function readWorktreeSummaryWriteAbortReason(
+  projectId: string,
+  worktreeId: string,
+): Promise<WorktreeSummaryWriteAbortReason | null> {
+  try {
+    const filePath = resolveWorktreeSummaryFilePath(projectId, worktreeId);
+    return writeAbortReason(await readWorktreeSummaryFileForWrite(filePath));
+  } catch {
+    return null;
+  }
 }
 
 export async function writeWorktreeSummary(
@@ -213,10 +255,12 @@ export async function writeWorktreeSummary(
   worktreeId: string,
   summary: WorktreeSummaryData,
 ): Promise<boolean> {
-  return (
-    (await writeWorktreeSummarySnapshot(projectId, worktreeId, summary)) !==
-    null
+  const written = await writeWorktreeSummarySnapshot(
+    projectId,
+    worktreeId,
+    summary,
   );
+  return written?.kind === 'written';
 }
 
 /**
@@ -224,22 +268,24 @@ export async function writeWorktreeSummary(
  * `provenance` is recorded only on a new snapshot; an unchanged summary
  * keeps the snapshot (and provenance) it matched. The file is replaced
  * atomically and durably, so it can serve as the Ledger publication journal.
- * A file that exists but cannot be read aborts the write, so its pending
- * snapshots are never replaced. Null when the write failed or was aborted.
+ * A file that exists but cannot be read, or that a newer app version wrote,
+ * aborts the write, so its pending snapshots are never replaced. Null when
+ * the write failed.
  */
 export async function writeWorktreeSummarySnapshot(
   projectId: string,
   worktreeId: string,
   summary: WorktreeSummaryData,
   provenance?: WorktreeSummaryProvenance,
-): Promise<WorktreeSummaryWriteResult | null> {
+): Promise<WorktreeSummaryWriteResult | WorktreeSummaryWriteAborted | null> {
   try {
     const filePath = resolveWorktreeSummaryFilePath(projectId, worktreeId);
     const summaryDir = dirname(filePath);
     await mkdir(summaryDir, { recursive: true });
 
     const existing = await readWorktreeSummaryFileForWrite(filePath);
-    if (existing.kind === 'unreadable') return null;
+    const abortReason = writeAbortReason(existing);
+    if (abortReason !== null) return { kind: 'aborted', reason: abortReason };
     const history: WorktreeSummarySnapshot[] =
       existing.kind === 'present' ? [...existing.file.history] : [];
 
@@ -294,9 +340,16 @@ export async function writeWorktreeSummarySnapshot(
       isNewSnapshot,
     );
     return {
+      kind: 'written',
       snapshot,
       isNewSnapshot,
       droppedPublishableSnapshotIds,
+      strippedPublishableSnapshotIds:
+        existing.kind === 'present'
+          ? existing.strippedPublishableSnapshotIds
+          : [],
+      droppedInvalidSnapshotCount:
+        existing.kind === 'present' ? existing.droppedInvalidSnapshotCount : 0,
       replacedCorruptFile: existing.kind === 'corrupt',
     };
   } catch {
@@ -392,47 +445,93 @@ function withValidProvenance(
   return withoutProvenance;
 }
 
+/** Whether invalid provenance still marks its snapshot as publishable. */
+function claimsLedgerPublishable(provenance: unknown): boolean {
+  return isRecord(provenance) && provenance.ledgerPublishable === true;
+}
+
+/** A parsed summary file, with what normalizing it discarded. */
+type ParsedWorktreeSummaryFile =
+  | {
+      readonly kind: 'present';
+      readonly file: WorktreeSummaryFile;
+      readonly droppedInvalidSnapshotCount: number;
+      readonly strippedPublishableSnapshotIds: readonly string[];
+    }
+  /** It does not validate as a summary file of a known version. */
+  | { readonly kind: 'corrupt' }
+  /** Its version is newer than this app knows. */
+  | { readonly kind: 'future_version' };
+
+const WORKTREE_SUMMARY_FILE_VERSION = 2;
+
 /**
  * Normalize an unknown parsed JSON value to the current v2 file shape. Accepts
  * both v1 (single latest snapshot) and v2 (latest + history) on-disk formats.
- * Returns null when neither form validates.
+ * History entries that do not validate are dropped and invalid provenance is
+ * stripped; both are counted so a write can report what it discards.
  */
-function normalizeWorktreeSummaryFile(
-  value: unknown,
-): WorktreeSummaryFile | null {
+function parseWorktreeSummaryFile(value: unknown): ParsedWorktreeSummaryFile {
   if (!isRecord(value)) {
-    return null;
+    return { kind: 'corrupt' };
+  }
+
+  if (
+    typeof value.version === 'number' &&
+    value.version > WORKTREE_SUMMARY_FILE_VERSION
+  ) {
+    return { kind: 'future_version' };
   }
 
   if (value.version === 2) {
     if (!isWorktreeSummaryData(value.summary)) {
-      return null;
+      return { kind: 'corrupt' };
     }
-    const rawHistory = value.history;
+    const rawHistory: unknown = value.history;
     if (!Array.isArray(rawHistory)) {
-      return null;
+      return { kind: 'corrupt' };
     }
-    const history = rawHistory
-      .filter(isWorktreeSummarySnapshot)
-      .map(withValidProvenance);
-    return { version: 2, summary: value.summary, history };
+    const validHistory = rawHistory.filter(isWorktreeSummarySnapshot);
+    const strippedPublishableSnapshotIds = validHistory
+      .filter(
+        (snapshot) =>
+          snapshot.provenance !== undefined &&
+          !isWorktreeSummaryProvenance(snapshot.provenance) &&
+          claimsLedgerPublishable(snapshot.provenance),
+      )
+      .map((snapshot) => snapshot.snapshotId);
+    return {
+      kind: 'present',
+      file: {
+        version: 2,
+        summary: value.summary,
+        history: validHistory.map(withValidProvenance),
+      },
+      droppedInvalidSnapshotCount: rawHistory.length - validHistory.length,
+      strippedPublishableSnapshotIds,
+    };
   }
 
   if (value.version === 1 && isWorktreeSummaryData(value.summary)) {
     const summary = value.summary;
     return {
-      version: 2,
-      summary,
-      history: [
-        {
-          snapshotId: `legacy-${fnv1aHex(summary.generatedAt)}`,
-          summary,
-        },
-      ],
+      kind: 'present',
+      file: {
+        version: 2,
+        summary,
+        history: [
+          {
+            snapshotId: `legacy-${fnv1aHex(summary.generatedAt)}`,
+            summary,
+          },
+        ],
+      },
+      droppedInvalidSnapshotCount: 0,
+      strippedPublishableSnapshotIds: [],
     };
   }
 
-  return null;
+  return { kind: 'corrupt' };
 }
 
 function isWorktreeRepoSummary(value: unknown): value is WorktreeRepoSummary {

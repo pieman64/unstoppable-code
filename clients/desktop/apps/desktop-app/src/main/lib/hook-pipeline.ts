@@ -82,7 +82,7 @@ interface QueuedHookPipelineInvocation {
   pipelineId: string;
   pipelineName: string;
   pipeline: Pipeline;
-  options: ExecutePipelineRequestOptions & { executionId: string };
+  options: ExecutePipelineRequestOptions & { cwd: string; executionId: string };
   triggerSource: PipelineTriggerSource;
   getWindow: () => BrowserWindow | null;
   enqueuedAt: string;
@@ -130,7 +130,7 @@ async function resolveHookPipeline(args: {
 }): Promise<ResolvedHookPipeline> {
   const id = args.action.id.trim();
   if (!id) {
-    throw new Error('Pipeline hook action id must not be empty');
+    throw new Error('Workflow hook action id must not be empty');
   }
 
   if (args.action.source === 'curated') {
@@ -159,7 +159,7 @@ async function resolveHookPipeline(args: {
       id,
     );
     if (!result.success || !result.data) {
-      throw new Error(result.error || `Pipeline not found: ${id}`);
+      throw new Error(result.error || `Workflow not found: ${id}`);
     }
     return {
       pipeline: result.data,
@@ -176,7 +176,7 @@ async function resolveHookPipeline(args: {
 
   if (!isSafeProjectPipelineRelativePath(id)) {
     throw new Error(
-      'Project pipeline hook id must be a safe relative .yml or .yaml path',
+      'Project workflow hook id must be a safe relative .yml or .yaml path',
     );
   }
 
@@ -208,7 +208,7 @@ async function resolveHookPipeline(args: {
 
   if (!validated?.success) {
     throw new Error(
-      validated?.error ?? 'Project pipeline could not be resolved',
+      validated?.error ?? 'Project workflow could not be resolved',
     );
   }
 
@@ -297,7 +297,7 @@ function getDispatchInputDefinitions(args: {
 }): Record<string, PipelineInputDef> | undefined {
   if (!getTriggerTypes(args.pipeline.on).includes('dispatch')) {
     throw new Error(
-      `Pipeline "${args.label}" does not define a dispatch trigger`,
+      `Workflow "${args.label}" does not define a dispatch trigger`,
     );
   }
 
@@ -486,7 +486,7 @@ async function resolveHookPipelineModelConfig(
     ) ?? DEFAULT_CODEX_SPEED;
   if (defaultSpeed === 'ultrafast') {
     throw new Error(
-      'Pipeline hooks do not support Ultra fast. Choose Regular or Fast for this hook, or change the Codex default speed.',
+      'Workflow hooks do not support Ultra fast. Choose Regular or Fast for this hook, or change the Codex default speed.',
     );
   }
   return withCodexSpeed(undefined, defaultSpeed);
@@ -521,7 +521,10 @@ export async function launchHookPipeline(args: {
   });
 
   const executionId = createPipelineExecutionId();
-  const options: ExecutePipelineRequestOptions & { executionId: string } = {
+  const options: ExecutePipelineRequestOptions & {
+    cwd: string;
+    executionId: string;
+  } = {
     cwd: args.cwd,
     pipelineId: resolved.pipelineId,
     repoPath: resolved.repoPath,

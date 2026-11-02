@@ -40,11 +40,15 @@ function rejectedSubmitMessage(
  * The message carries this plan as its active plan, with `viewedRevision`
  * (the older revision on screen, or `null` for the latest) as captured when
  * the submit starts, so the agent is pointed at the plan's working file.
+ *
+ * `targetChatId`, when given, names the chat to send to (the chat waiting on
+ * the plan) instead of the worktree's active editable chat.
  */
 export function usePlanPanelCommentSubmit(
   plan: Pick<TrackedPlanData, 'projectId' | 'worktreeId' | 'id'>,
   submit: UsePlanComments['submit'],
   viewedRevision: number | null,
+  targetChatId?: string,
 ): () => void {
   const { projectId, worktreeId, id: planId } = plan;
   const addToast = useGitHubStore((state) => state.addToast);
@@ -66,7 +70,9 @@ export function usePlanPanelCommentSubmit(
         scope,
         message,
         hiddenContext,
-        { activePlan },
+        targetChatId !== undefined
+          ? { activePlan, chatId: targetChatId }
+          : { activePlan },
       );
       dispatch.current = result;
       // A refused dispatch acknowledges nothing: every comment stays pending.
@@ -95,5 +101,13 @@ export function usePlanPanelCommentSubmit(
     void submit(send).then(settle, () => {
       showError(PLAN_COMMENTS_SEND_REJECTED_MESSAGE);
     });
-  }, [projectId, worktreeId, planId, viewedRevision, submit, addToast]);
+  }, [
+    projectId,
+    worktreeId,
+    planId,
+    viewedRevision,
+    targetChatId,
+    submit,
+    addToast,
+  ]);
 }

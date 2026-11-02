@@ -10,6 +10,7 @@ import type {
   ChatModel,
   ChatSendMessageRequest,
   ChatTabPluginSelections,
+  ChatTurnPhase,
   ChatWatcherFiredInfo,
   ClaudeTerminalLaunchRequest,
   DeferredToolsReloadLifecycle,
@@ -20,13 +21,69 @@ import type {
   PersistedChatBlock,
   PersistedChatMessage,
   PersistedChatTab,
+  QueuedMessageRetryBlockedReason,
+  QueuedMessageWaitingReason,
   ResolvedAgentModelConfig,
   StaleSessionInfo,
   ThinkingLevel,
   TodoItem,
   WorktreeSelection,
+  SettingsHeldChange,
 } from '@canopy/desktop-shared/types';
 export type { AppliedOrgMemoryTurn } from '@canopy/desktop-shared/types';
+
+/**
+ * CAN-4742: a Home first send shown in its new chat before dispatch. The
+ * echo, its turn bridge and its title patch are renderer-only presentation;
+ * `sendMessage` adopts them under the same user-message id.
+ */
+export interface ProvisionalFirstSend {
+  userMessageId: string;
+  /** When Home accepted the send; the adopted turn keeps this start. */
+  submittedAt: number;
+  /**
+   * `preparing` until `sendMessage` installs the turn, `dispatched` while
+   * waiting for output, `queued` once a setup or host queue row holds it.
+   * `failed` when its model was refused: the unsent prompt and
+   * title stay, with recovery offered in place (CAN-5021).
+   */
+  phase: 'preparing' | 'dispatched' | 'queued' | 'failed';
+  /**
+   * The current preparation attempt. A retry starts a new one, so a stale
+   * completion of an earlier attempt cannot fail the newer one.
+   */
+  attemptId?: string;
+  /** Present only while `failed`. */
+  failure?: ProvisionalFirstSendFailure;
+  /** Synchronous guard while the matching send prepares its real turn. */
+  dispatchClaimed?: boolean;
+  /**
+   * The destination worktree was still setting up when Home presented this
+   * send. While `preparing`, it is shown as the setup queue row it is about
+   * to become, never as a starting turn. Dropped once a queue row holds it.
+   */
+  queuedForSetup?: true;
+  /** Outbound live-terminal prompt, used only to reconcile this first send. */
+  terminalPromptText?: string;
+  /** Canonical terminal import identity; the submission id stays the UI key. */
+  terminalUserMessageId?: string;
+  /** The title this submission applied, when it applied one. */
+  ownedTitle?: Pick<ChatTab, 'title' | 'automaticTitleState'>;
+  /** The title the tab had before, restored only while the patch is owned. */
+  priorTitle?: Pick<ChatTab, 'title' | 'automaticTitleState'>;
+}
+
+/** Why a provisional first send could not be dispatched (display only). */
+export interface ProvisionalFirstSendFailure {
+  /** An accepted picker choice may equal the tab's already retained model. */
+  recoveryModelSelectionAccepted?: true;
+  /** Unique per failure, so a repeated identical failure still takes focus. */
+  failureId: string;
+  /** The model the send attempted to apply. */
+  model: string;
+  /** User-facing explanation, naming that model. */
+  message: string;
+}
 
 export interface StreamingTabVerificationResult {
   projectId: string;
@@ -110,11 +167,37 @@ export interface QueuedChatMessage {
   /** Presentation only; queue controls become available after host acceptance. */
   pendingSend?: boolean;
   hostQueueEntryId?: string;
+  /** Existing canonical prompt reused when a host credit Retry dequeues. */
+  supersedesUserMessageId?: string;
   origin?: 'desktop' | 'portal';
   enqueuedAtMs?: number;
+  /**
+   * Host-reported turn phase of the chat, present only on host-mirror rows.
+   * Transient: never persisted. Renderer-local rows leave it unset.
+   */
+  turnPhase?: ChatTurnPhase;
+  /**
+   * Host-reported reason a queued row is waiting. Present only on host-mirror
+   * rows. Transient: never persisted. Renderer-local rows leave it unset.
+   */
+  waitingReason?: QueuedMessageWaitingReason;
+  /**
+   * Host-reported reason an explicit retry cannot send yet. Present only on
+   * host-mirror rows. Transient: never persisted.
+   */
+  retryBlockedReason?: QueuedMessageRetryBlockedReason;
+  /** A held row still requires explicit Retry after funding is confirmed. */
+  retryable?: boolean;
+  /**
+   * Host-reported background-work hold marker. Present only on host-mirror
+   * rows. Transient: never persisted. Renderer-local rows leave it unset.
+   */
+  blockedByBackgroundWork?: true;
   editLocked?: boolean;
   canSteer?: boolean;
   steerBlockedByCapabilityChange?: boolean;
+  /** Host: sending now would wait for background work to apply these settings. */
+  restartHeldChanges?: readonly SettingsHeldChange[];
   text: string;
   fileReferences?: FileReference[];
   attachmentPaths?: string[];
@@ -157,6 +240,8 @@ export interface QueuedChatMessage {
 export type QueuedWithoutDispatchLocation = 'renderer' | 'host';
 
 export interface SendMessageDispatchOptions {
+  /** Renderer-only intent: a composer submission deliberately replaces this unsent failure. */
+  replaceFailedFirstSend?: { userMessageId: string; failureId: string };
   planMode?: boolean;
   assistantMode?: ChatSendMessageRequest['assistantMode'];
   hiddenContext?: ChatSendMessageRequest['hiddenContext'];
@@ -177,10 +262,12 @@ export interface SendMessageDispatchOptions {
   packageOverlay?: ChatSendMessageRequest['packageOverlay'];
   /** Caller-assigned id for an exact link to the user-authored turn. */
   userMessageId?: string;
+  /** Renderer submission time, retained through first-send adoption. */
+  submittedAt?: number;
   watcherFired?: ChatSendMessageRequest['watcherFired'];
   /**
-   * Stable watcher event id used as the durable user-message id. Main-process
-   * persistence can then reject a replay after this renderer is reloaded.
+   * Stable event id for a watcher send presented by a terminal-backed Claude
+   * chat. Main delivers watcher messages for every other chat directly.
    */
   watcherDeliveryId?: string;
   /**
@@ -198,6 +285,12 @@ export interface SendMessageDispatchOptions {
   reservedRevertAttachmentPath?: string;
   throwOnDispatchFailure?: boolean;
   onDispatchAccepted?: () => void;
+  /**
+   * Observed execution handoff, after the provider accepted or the terminal
+   * consumed this input. Queue admission and idempotent replays do not call
+   * this renderer-local observer.
+   */
+  onDispatchStarted?: () => void;
   onDispatchRejected?: () => void;
   /**
    * Called only when dispatch is rejected before the message is queued or
@@ -223,10 +316,9 @@ export interface SendMessageDispatchOptions {
    * Create Task → Chat / Plan flows set this because they create the worktree
    * and send in one user action: the worktree starts `git-pending`, but Phase B
    * `git-ready` can win the race before `sendMessage` runs, which would
-   * otherwise skip the `pending_setup_info` intro block and queued bubble.
+   * otherwise skip the queued bubble.
    * When set and the worktree has already advanced past `git-pending`,
-   * `sendMessage` queues the message (with the intro block) and then
-   * immediately flushes so the message is not stranded. This field is
+   * `sendMessage` queues the message and then immediately flushes so the message is not stranded. This field is
    * intentionally excluded from {@link QueuedChatDispatchOptions} so the flush's
    * re-dispatch does not re-enter the queue path.
    */
@@ -300,6 +392,22 @@ export interface StoppedTurnResumeState {
   error?: string;
 }
 
+/**
+ * A send the renderer shows as starting before main confirms it. It ends when
+ * canonical runtime shows the turn (acknowledged) or at its deadline (expired).
+ */
+export interface SendingLease {
+  /** Correlates the optimistic state with main's acknowledgement. */
+  userMessageId: string;
+  kind: 'send' | 'resume' | 'hook';
+  issuedAt: number;
+  /** `issuedAt` plus `SENDING_LEASE_MS`; the lease is expired after it. */
+  deadline: number;
+  state: 'pending' | 'acknowledged' | 'expired';
+}
+
+export const SENDING_LEASE_MS = 15_000;
+
 export interface ChatTab extends Omit<
   PersistedChatTab,
   'messages' | 'planMode' | 'thinkingLevel' | 'proposalMode' | 'modelConfig'
@@ -316,15 +424,22 @@ export interface ChatTab extends Omit<
   accountProxyRouted?: boolean;
   error: string | null;
   queuedMessages: QueuedChatMessage[];
+  /** Host-reported delegations waiting in this tab's queue; transient and never persisted. */
+  waitingDelegationIds?: readonly string[];
+  /** Host-reported settings restart hold; transient and never persisted. */
+  restartHeldByBackgroundWork?: true;
   /** User echoes awaiting canonical message delivery; never persisted. */
   pendingUserMessages?: ChatMessage[];
   /** Presentation-only bridge from submission to its canonical turn timer. */
   pendingTurn?: { userMessageId: string; timerMessage: ChatMessage };
+  /** Optimistic sending state until main acknowledges the turn; never persisted. */
+  sendingLease?: SendingLease;
   /** Dequeued prompt awaiting its canonical user id; presentation only. */
   pendingQueueDispatch?: {
     entryId: string;
     message: ChatMessage;
     previousMessageIds: string[];
+    supersedesUserMessageId?: string;
   };
   /** Host submissions awaiting their queue mirror; never dispatched locally. */
   pendingQueueMessages?: Array<{
@@ -332,6 +447,8 @@ export interface ChatTab extends Omit<
     message: QueuedChatMessage;
     previousHostIds: string[];
   }>;
+  /** Home first send presented before dispatch (CAN-4742); never persisted. */
+  provisionalFirstSend?: ProvisionalFirstSend;
   /** Starter for a confirmed new worktree, awaiting initial canonical creation. */
   pendingInitialCreation?: boolean;
   /**
@@ -405,6 +522,11 @@ export interface ChatTab extends Omit<
   ignoreNextCancellationTerminal?: boolean;
   /** Tab has new activity the user hasn't seen yet. */
   unread?: boolean;
+  /**
+   * The current `unread` came from the user's "Mark as unread" rather than
+   * unseen output. Meaningful only while `unread` is true; persisted.
+   */
+  unreadMarkedManually?: boolean;
   /**
    * The current `unread` was raised by an unanswered ask-user question on a
    * non-visible tab, not by a completed turn. Answering the last unanswered
@@ -490,8 +612,8 @@ export interface PendingQuestion {
    * Optional deterministic correlation id carried over from the IPC event.
    * Used by the transcript matcher to pair this pending card with a
    * specific `tool_use` block (Codex dynamic + built-in ask-user paths).
-   * When absent (Claude MCP path), the renderer falls back to the
-   * "first un-answered pending question for this chat" heuristic.
+   * When absent (Claude MCP path), the renderer matches by identical ordered
+   * question text, and attaches nothing when several records match.
    */
   toolUseId?: string;
 }
@@ -526,4 +648,10 @@ export interface WorktreeChatOpenArchiveTranscriptDetail {
   projectId: string;
   worktreeId: string;
   chatId: string;
+}
+
+/** Renderer-only invalidation state; canonical transcript revisions remain server-owned. */
+export interface DelegationStreamScopeHints {
+  epoch: number;
+  runs: Record<string, { streamRevision: number; cardRevision: number }>;
 }

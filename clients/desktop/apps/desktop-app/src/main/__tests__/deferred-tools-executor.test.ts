@@ -254,8 +254,20 @@ function marketplace(plugins: PluginInfo[]): MarketplaceInfo {
     pluginCount: plugins.length,
     plugins,
     providerStatus: {
-      claude: { state: 'valid' },
-      codex: { state: 'valid' },
+      claude: {
+        provider: 'claude',
+        state: 'valid',
+        accepted: true,
+        pluginCount: plugins.length,
+        lastCheckedAt: '2025-01-01T00:00:00.000Z',
+      },
+      codex: {
+        provider: 'codex',
+        state: 'valid',
+        accepted: true,
+        pluginCount: plugins.length,
+        lastCheckedAt: '2025-01-01T00:00:00.000Z',
+      },
     },
     validProviders: ['claude', 'codex'],
   };
@@ -293,9 +305,14 @@ function setupCatalog(options: {
   });
   loadMarketplacesCacheOnlyMock.mockResolvedValue({
     success: true,
-    data: { marketplaces: [marketplace(options.plugins ?? [])] },
+    data: {
+      version: 2,
+      lastRefreshed: '2025-01-01T00:00:00.000Z',
+      marketplaces: [marketplace(options.plugins ?? [])],
+    },
   });
   resolveEffectivePluginSelectionRefsMock.mockResolvedValue({
+    disabledRefs: [],
     skillRefs: options.enabledSkillRefs ?? [],
     pluginRefs: [],
     mcpServerRefs: [],

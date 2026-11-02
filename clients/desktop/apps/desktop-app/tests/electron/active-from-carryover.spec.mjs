@@ -11,6 +11,7 @@ import {
   connectMockCloudAccount,
   DEFAULT_MOCK_BASE_URL,
   injectChatEvent,
+  publishTurnLifecycle,
   registerScenario,
   seedOrgContextScoping,
   ORG_CONTEXT_A,
@@ -90,6 +91,7 @@ test('a foreign running turn marks its context with a dot until completed carryo
         canopy_turn_user_message_id: 'carryover-turn',
       },
     });
+    await publishTurnLifecycle(electronApp, { ...target, phase: 'start' });
     await selectWorkspaceContext(window, ORG_CONTEXT_A);
     await expectContextDot(window, 'personal', true);
     await expect(window.getByText('Active from Personal')).toHaveCount(0);
@@ -104,6 +106,7 @@ test('a foreign running turn marks its context with a dot until completed carryo
         },
       },
     });
+    await publishTurnLifecycle(electronApp, { ...target, phase: 'end' });
     await injectChatEvent(electronApp, {
       ...target,
       data: {

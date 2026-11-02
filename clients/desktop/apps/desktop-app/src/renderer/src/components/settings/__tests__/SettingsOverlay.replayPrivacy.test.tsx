@@ -40,14 +40,16 @@ jest.mock(
     const actual: typeof ReplaySurfaces = jest.requireActual(
       '@canopy/desktop-instrumentation/posthog-replay-surfaces',
     );
-    return {
-      ...actual,
-      SETTINGS_SECTION_REPLAY_PRIVACY: Object.freeze({
+    const mockedModule: typeof ReplaySurfaces = { ...actual };
+    Object.defineProperty(mockedModule, 'SETTINGS_SECTION_REPLAY_PRIVACY', {
+      configurable: true,
+      value: Object.freeze({
         ...actual.SETTINGS_SECTION_REPLAY_PRIVACY,
         git: 'blocked',
         account: 'blocked',
       }),
-    };
+    });
+    return mockedModule;
   },
 );
 jest.mock('../CanopyTab', () => ({
@@ -131,21 +133,20 @@ describe('SettingsOverlay session-replay classification (CAN-3119)', () => {
   }
 
   /**
-   * A section's classification lands on its page content; the page root and
-   * its header (the title) stay recorded either way.
+   * A section's classification lands on its page content (the root's last
+   * child); the page root and its header (the first child, with the title)
+   * stay recorded either way.
    */
   function isBlocked(testId: string): boolean {
     const root = page(testId);
     expect(root?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);
     expect(
-      root
-        ?.querySelector(':scope > header')
-        ?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`) ?? null,
+      root?.firstElementChild?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`) ??
+        null,
     ).toBeNull();
     return (
-      root
-        ?.querySelector(':scope > div')
-        ?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS) ?? false
+      root?.lastElementChild?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS) ??
+      false
     );
   }
 
@@ -188,8 +189,13 @@ describe('SettingsOverlay session-replay classification (CAN-3119)', () => {
     const root = page('canopy-tab');
     expect(root).not.toBeNull();
     expect(isBlocked('canopy-tab')).toBe(false);
-    const header = root?.querySelector(':scope > header');
-    const content = root?.querySelector(':scope > div');
+    const header = root?.firstElementChild;
+    const content = root?.lastElementChild;
+    // The header block holds the back row (on drill-in pages) and the shared
+    // page header, which renders the page's `header` element.
+    expect(
+      header?.querySelector('header[data-testid="page-header"]'),
+    ).not.toBeNull();
     expect(header).not.toBeNull();
     expect(content).not.toBeNull();
     expect(header?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);

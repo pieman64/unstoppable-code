@@ -11,6 +11,7 @@ import {
   emptyWorktreeChat,
   resolveTabProviderType,
 } from './tab-utils';
+import { persistableProvisionalFirstSendView } from './provisional-first-send';
 import { hasAnyTombstones } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   getProviderForModel,
@@ -39,7 +40,10 @@ import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-ava
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { normalizeAgentArtifactCarryByTurn } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { readCodexSpeedRecord } from '@canopy/desktop-shared/lib/codex-speed';
-import { readLegacyUsageLimitBannerFields } from '@/lib/chatTabPersistence';
+import {
+  persistedRowExtensionFields,
+  readLegacyUsageLimitBannerFields,
+} from '@/lib/chatTabPersistence';
 import {
   codexSpeedFields,
   retainedCodexSpeedFields,
@@ -85,6 +89,7 @@ export function toPersistedMessage(msg: ChatMessage): PersistedChatMessage {
       ? (parseAgentSentInfo(msg.agentSent) ?? undefined)
       : undefined;
   return {
+    ...persistedRowExtensionFields(msg),
     id: msg.id,
     role: msg.role,
     ...(msg.hidden ? { hidden: true } : {}),
@@ -105,6 +110,7 @@ export function toPersistedMessage(msg: ChatMessage): PersistedChatMessage {
     ...(msg.userMessageSource
       ? { userMessageSource: msg.userMessageSource }
       : {}),
+    ...(msg.autoResume ? { autoResume: msg.autoResume } : {}),
     ...(agentSent ? { agentSent } : {}),
     // Load-bearing both ways: this projection also runs on the way IN from
     // main (`fromPersistedTab`), so dropping the Claude chain uuid here would
@@ -149,20 +155,23 @@ export function toPersistedTab(tab: ChatTab): PersistedChatTab {
       tab.pendingClaudeTerminalWatcherMessages,
     );
 
+  // A Home first send that has not dispatched yet is presentation only.
+  const persistable = persistableProvisionalFirstSendView(tab);
+
   return {
     id: tab.id,
-    title: tab.title,
+    title: persistable.title,
     ...(tab.kind === 'file' ? { kind: tab.kind } : {}),
     ...(tab.filePath ? { filePath: tab.filePath } : {}),
     ...(tab.fileViewMode ? { fileViewMode: tab.fileViewMode } : {}),
     ...(tab.fileDiffContext ? { fileDiffContext: tab.fileDiffContext } : {}),
     ...(tab.pinned ? { pinned: true } : {}),
     ...(tab.customTitle ? { customTitle: tab.customTitle } : {}),
-    ...(tab.automaticTitleState
-      ? { automaticTitleState: tab.automaticTitleState }
+    ...(persistable.automaticTitleState
+      ? { automaticTitleState: persistable.automaticTitleState }
       : {}),
     ...(tab.description ? { description: tab.description } : {}),
-    messages: sanitizePersistedChatMessages(tab.messages).map(
+    messages: sanitizePersistedChatMessages(persistable.messages).map(
       toPersistedMessage,
     ),
     ...(persistedMemory ? { memoryByMessageId: persistedMemory } : {}),
@@ -210,6 +219,9 @@ export function toPersistedTab(tab: ChatTab): PersistedChatTab {
       ? { unacceptedTurnEnds: tab.unacceptedTurnEnds }
       : {}),
     ...(tab.unread === true ? { unread: true } : {}),
+    ...(tab.unread === true && tab.unreadMarkedManually === true
+      ? { unreadMarkedManually: true }
+      : {}),
     ...(tab.pendingPlanExit ? { pendingPlanExit: tab.pendingPlanExit } : {}),
     ...(tab.pendingPlanExitRequestId
       ? { pendingPlanExitRequestId: tab.pendingPlanExitRequestId }
@@ -511,7 +523,13 @@ export function fromPersistedTab(
     pt.aiCreditsRouted ??
     (pt.aiCreditsRouting?.active === true ||
       (validModel !== undefined && isGatewayOnlyModel(validModel)));
-  const usage = normalizePersistedUsage(pt.usage, validModel, aiCreditsRouted);
+  const usage = normalizePersistedUsage(
+    pt.usage,
+    validModel,
+    aiCreditsRouted,
+    pt.executionHarness ??
+      (pt.providerType === 'opencode' ? 'opencode' : undefined),
+  );
   const messages = sanitizePersistedChatMessages(pt.messages).map(
     toPersistedMessage,
   );
@@ -649,10 +667,18 @@ export function fromPersistedTab(
       ? { modelSelectionMode: 'auto' as const }
       : {}),
     ...(pt.autoRoutedModels ? { autoRoutedModels: pt.autoRoutedModels } : {}),
+    // Main owns this anchor. Retain it on read so completion presentation can
+    // correlate the canonical end without inferring success from idle state.
+    ...(pt.lastAcceptedUserMessageId !== undefined
+      ? { lastAcceptedUserMessageId: pt.lastAcceptedUserMessageId }
+      : {}),
     ...(pt.turnEnds ? { turnEnds: pt.turnEnds } : {}),
     ...(pt.unacceptedTurnEnds
       ? { unacceptedTurnEnds: pt.unacceptedTurnEnds }
       : {}),
+    // Main-owned restart evidence drives interrupted outcomes and the resume
+    // offer. The renderer reads it without writing it back.
+    ...(pt.interruptedTurns ? { interruptedTurns: pt.interruptedTurns } : {}),
     ...(pt.modelExplicitlyChosen ? { modelExplicitlyChosen: true } : {}),
     ...(pt.billingExplicitlyChosen ? { billingExplicitlyChosen: true } : {}),
     ...(hydratedDefaultStampModel
@@ -664,6 +690,9 @@ export function fromPersistedTab(
       ? { executionHarnessExplicitlyChosen: true }
       : {}),
     ...(pt.unread === true ? { unread: true } : {}),
+    ...(pt.unread === true && pt.unreadMarkedManually === true
+      ? { unreadMarkedManually: true }
+      : {}),
     ...(pt.pendingPlanExit ? { pendingPlanExit: pt.pendingPlanExit } : {}),
     ...(pt.pendingPlanExitRequestId
       ? { pendingPlanExitRequestId: pt.pendingPlanExitRequestId }

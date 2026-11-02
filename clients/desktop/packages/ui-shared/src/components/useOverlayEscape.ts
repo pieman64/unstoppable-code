@@ -8,6 +8,7 @@ import { useEffect, useRef } from 'react';
 let nextOverlayId = 0;
 const escapeEnabledOverlayStacks = new WeakMap<Document, number[]>();
 const overlayGenerations = new WeakMap<Document, number>();
+const overlayStackListeners = new WeakMap<Document, Set<() => void>>();
 // Stack entries registered with `layer: 'page'`, per document.
 const pageLayerOverlays = new WeakMap<Document, Set<number>>();
 
@@ -24,6 +25,9 @@ function bumpOverlayGeneration(ownerDocument: Document): void {
     ownerDocument,
     (overlayGenerations.get(ownerDocument) ?? 0) + 1,
   );
+  const listeners = overlayStackListeners.get(ownerDocument);
+  if (!listeners) return;
+  for (const listener of Array.from(listeners)) listener();
 }
 
 const escapeBoundarySelector = [
@@ -90,6 +94,26 @@ function isTopmostEscapeEnabledOverlay(
  */
 export function overlayGeneration(ownerDocument: Document): number {
   return overlayGenerations.get(ownerDocument) ?? 0;
+}
+
+/**
+ * Calls `listener` after an overlay that owns Escape opens or closes in this
+ * document, including closures that leave the DOM's direct children alone.
+ */
+export function subscribeOverlayStack(
+  ownerDocument: Document,
+  listener: () => void,
+): () => void {
+  let listeners = overlayStackListeners.get(ownerDocument);
+  if (!listeners) {
+    listeners = new Set();
+    overlayStackListeners.set(ownerDocument, listeners);
+  }
+  const registered = listeners;
+  registered.add(listener);
+  return (): void => {
+    registered.delete(listener);
+  };
 }
 
 /** Whether this document currently has an overlay that owns Escape. */

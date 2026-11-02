@@ -44,16 +44,10 @@ import {
   latchActivationSignal,
   latchCampaignSent,
   drainActivationJourneyWrites,
-  clearSequenceSuppressed,
   latchCampaignSuppressed,
   releaseDeliveryFailures,
   unlatchCampaignDeliveryFailure,
-  latchSequenceStepClicked,
-  latchSequenceStepSent,
-  latchSequenceStepSuppressed,
-  latchSequenceSuppressed,
   readActivationJourneyState,
-  unlatchSequenceStepDeliveryFailure,
   recordActivity,
   recordFirstOpen,
   resetActivationJourneyStateForTests,
@@ -331,158 +325,58 @@ describe('campaign latches', () => {
   });
 });
 
-describe('getting started sequence latches (CAN-3013)', () => {
-  const NOW = '2026-01-02T00:00:00.000Z';
-  const LATER = '2026-01-03T00:00:00.000Z';
-
-  it('reads a file written before the sequence existed as an empty sequence', async () => {
+describe('retired checklist history', () => {
+  it('retains only valid legacy send timestamps across an ordinary save', async () => {
     mockReadFile.mockResolvedValue(
       JSON.stringify({
         version: 1,
-        firstOpenAt: NOW,
-        lastActiveAt: null,
-        holdout: null,
-        campaigns: { 'activation-mobile': { sentAt: NOW } },
-        signals: {},
-      }),
-    );
-    const state = await readActivationJourneyState();
-    expect(state.gettingStarted).toEqual({ steps: {} });
-    // The pre-existing latch must survive: losing it would re-fire a campaign.
-    expect(state.campaigns['activation-mobile']?.sentAt).toBe(NOW);
-  });
-
-  it('latches a step send once and persists it', async () => {
-    expect((await latchSequenceStepSent('start-chat', NOW)).changed).toBe(true);
-    expect((await latchSequenceStepSent('start-chat', LATER)).changed).toBe(
-      false,
-    );
-    await drainActivationJourneyWrites();
-
-    const written: unknown = JSON.parse(
-      mockWriteFile.mock.calls.at(-1)?.[1] ?? '{}',
-    );
-    expect(written).toMatchObject({
-      gettingStarted: { steps: { 'start-chat': { sentAt: NOW } } },
-    });
-  });
-
-  it('does not let a suppression overwrite a step that sent', async () => {
-    await latchSequenceStepSent('start-chat', NOW);
-    const result = await latchSequenceStepSuppressed(
-      'start-chat',
-      'not-eligible',
-      LATER,
-    );
-    expect(result.changed).toBe(false);
-  });
-
-  it('clears the sequence-level block when a step sends', async () => {
-    await latchSequenceSuppressed('quiet-hours', NOW);
-    expect((await latchSequenceSuppressed('quiet-hours', LATER)).changed).toBe(
-      false,
-    );
-    await latchSequenceStepSent('create-account', LATER);
-
-    const state = await readActivationJourneyState();
-    expect(state.gettingStarted?.suppressedReason).toBeUndefined();
-    // Tomorrow's quiet-hours block is a new funnel event, not a duplicate.
-    expect((await latchSequenceSuppressed('quiet-hours', LATER)).changed).toBe(
-      true,
-    );
-  });
-
-  it('counts a repeat dismissal once the block was cleared', async () => {
-    // Restore -> (not yet due) -> re-dismiss: without the clear, the second
-    // dismissal dedupes against the first and emits no funnel event.
-    await latchSequenceSuppressed('checklist-dismissed', NOW);
-    expect((await clearSequenceSuppressed()).changed).toBe(true);
-    expect((await clearSequenceSuppressed()).changed).toBe(false);
-    expect(
-      (await readActivationJourneyState()).gettingStarted?.suppressedReason,
-    ).toBeUndefined();
-    expect(
-      (await latchSequenceSuppressed('checklist-dismissed', LATER)).changed,
-    ).toBe(true);
-  });
-
-  it('releases delivery-failed holds only once they are old enough', async () => {
-    const DAY = 24 * 60 * 60 * 1000;
-    await latchCampaignSent('activation-marketplace', NOW);
-    await unlatchCampaignDeliveryFailure('activation-marketplace', NOW);
-    await latchSequenceStepSent('start-chat', NOW);
-    await unlatchSequenceStepDeliveryFailure('start-chat', NOW);
-
-    // Too young: the focus-anchor write must not re-ask a denied OS.
-    const soon = new Date(Date.parse(NOW) + 60_000).toISOString();
-    expect((await releaseDeliveryFailures(soon, DAY)).changed).toBe(false);
-    const held = await readActivationJourneyState();
-    expect(held.campaigns['activation-marketplace']?.suppressedReason).toBe(
-      'delivery-failed',
-    );
-    expect(held.gettingStarted?.steps['start-chat']?.suppressedReason).toBe(
-      'delivery-failed',
-    );
-
-    // Old enough: both sides release together.
-    const later = new Date(Date.parse(NOW) + DAY).toISOString();
-    expect((await releaseDeliveryFailures(later, DAY)).changed).toBe(true);
-    const released = await readActivationJourneyState();
-    expect(
-      released.campaigns['activation-marketplace']?.suppressedReason,
-    ).toBeUndefined();
-    expect(
-      released.gettingStarted?.steps['start-chat']?.suppressedReason,
-    ).toBeUndefined();
-    // Other reasons are not touched.
-    await latchCampaignSuppressed('activation-mobile', 'quiet-hours', later);
-    expect((await releaseDeliveryFailures(later, DAY)).changed).toBe(false);
-  });
-
-  it('unlatches only a step that is currently latched as sent', async () => {
-    expect(
-      (await unlatchSequenceStepDeliveryFailure('start-chat', NOW)).changed,
-    ).toBe(false);
-    await latchSequenceStepSent('start-chat', NOW);
-    const result = await unlatchSequenceStepDeliveryFailure(
-      'start-chat',
-      LATER,
-    );
-    expect(result.changed).toBe(true);
-    expect(result.state.gettingStarted?.steps['start-chat']).toMatchObject({
-      suppressedReason: 'delivery-failed',
-    });
-  });
-
-  it('records a click once', async () => {
-    expect((await latchSequenceStepClicked('start-chat', NOW)).changed).toBe(
-      true,
-    );
-    expect((await latchSequenceStepClicked('start-chat', LATER)).changed).toBe(
-      false,
-    );
-  });
-
-  it('drops a step id the checklist no longer defines', async () => {
-    mockReadFile.mockResolvedValue(
-      JSON.stringify({
-        version: 1,
-        firstOpenAt: NOW,
-        lastActiveAt: null,
-        holdout: null,
-        campaigns: {},
-        signals: {},
         gettingStarted: {
           steps: {
-            'run-pipeline': { sentAt: NOW },
-            'start-chat': { sentAt: NOW },
+            'start-chat': {
+              sentAt: '2026-01-01T00:00:00.000Z',
+              clickedAt: 'old',
+              suppressedReason: 'quiet-hours',
+            },
+            'create-account': { sentAt: 'invalid' },
+            unknown: { sentAt: '2026-01-02T00:00:00.000Z' },
           },
+          suppressedReason: 'checklist-dismissed',
         },
       }),
     );
+    await recordActivity('2026-01-03T00:00:00.000Z');
+    await drainActivationJourneyWrites();
     const state = await readActivationJourneyState();
-    expect(Object.keys(state.gettingStarted?.steps ?? {})).toEqual([
-      'start-chat',
-    ]);
+    expect(state.gettingStarted).toEqual({
+      steps: {
+        'start-chat': { sentAt: '2026-01-01T00:00:00.000Z' },
+      },
+    });
+    expect(JSON.parse(mockWriteFile.mock.lastCall?.[1] ?? '{}')).toHaveProperty(
+      'gettingStarted',
+      state.gettingStarted,
+    );
   });
+});
+
+it('retains the ordinary campaign delivery-failure hold until an event after the daily window', async () => {
+  const at = '2026-10-20T00:00:00.000Z';
+  await latchCampaignSent('activation-mobile', at);
+  await unlatchCampaignDeliveryFailure('activation-mobile', at);
+  expect(
+    (await releaseDeliveryFailures('2026-10-20T01:00:00.000Z', 86400000))
+      .changed,
+  ).toBe(false);
+  expect(
+    (await readActivationJourneyState()).campaigns['activation-mobile']
+      ?.suppressedReason,
+  ).toBe('delivery-failed');
+  expect(
+    (await releaseDeliveryFailures('2026-10-21T01:00:00.000Z', 86400000))
+      .changed,
+  ).toBe(true);
+  expect(
+    (await readActivationJourneyState()).campaigns['activation-mobile']
+      ?.suppressedReason,
+  ).toBeUndefined();
 });

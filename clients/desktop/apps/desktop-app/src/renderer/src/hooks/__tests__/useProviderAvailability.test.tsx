@@ -103,6 +103,15 @@ describe('useProviderAvailability', () => {
       routeClaude: true,
       routeCodex: true,
       refreshedAt: null,
+      local: {
+        phase: 'not-installed',
+        version: null,
+        install: null,
+        port: null,
+        startWithApp: true,
+        message: null,
+      },
+      signIn: null,
     };
     getClaudeAuthStatusMock.mockReset();
     getCodexAuthStatusMock.mockReset();
@@ -189,6 +198,179 @@ describe('useProviderAvailability', () => {
     // the billing toggle hides instead of locking the user out.
     expect(probe.current?.claude.loading).toBe(true);
     expect(probe.current?.claude.selectable).toBe(true);
+    expect(probe.current?.claude.nativeAuthInconclusive).toBe(true);
+  });
+
+  it('reports native auth as inconclusive while its probe is still loading', async () => {
+    getClaudeAuthStatusMock.mockImplementation(
+      () => new Promise<AgentProviderAuthStatus>(() => undefined),
+    );
+
+    const probe: HookProbe = { current: null };
+    await act(async () => {
+      root.render(<HookHarness probe={probe} />);
+      await flushAsyncEffects();
+    });
+
+    expect(probe.current?.claude.nativeAuth).toBe(false);
+    expect(probe.current?.claude.nativeAuthInconclusive).toBe(true);
+    // Auth is provider-specific: Codex's settled sign-out stays conclusive.
+    expect(probe.current?.codex.nativeAuthInconclusive).toBe(false);
+  });
+
+  it('keeps a settled sign-out conclusive while only the credits read is loading', async () => {
+    // CAN-5349: a balance refresh raises aggregate `loading`, but must not
+    // make a confirmed sign-out look like an unresolved auth probe.
+    getClaudeAuthStatusMock.mockResolvedValue(unauthenticated('Claude'));
+    loadNativeAiCreditsAvailabilityMock.mockImplementation(
+      () => new Promise<NativeAiCreditsAvailability>(() => undefined),
+    );
+
+    const probe: HookProbe = { current: null };
+    await act(async () => {
+      root.render(<HookHarness probe={probe} />);
+      await flushAsyncEffects();
+    });
+
+    expect(probe.current?.claude.nativeAuth).toBe(false);
+    expect(probe.current?.claude.loading).toBe(true);
+    expect(probe.current?.claude.creditsLoading).toBe(true);
+    expect(probe.current?.claude.nativeAuthInconclusive).toBe(false);
+    expect(probe.current?.codex.nativeAuthInconclusive).toBe(false);
+  });
+
+  it('withdraws settled credit evidence during an account refresh without changing selection', async () => {
+    getClaudeAuthStatusMock.mockResolvedValue(unauthenticated('Claude'));
+    loadNativeAiCreditsAvailabilityMock.mockResolvedValue({
+      ...noNativeCredits,
+      personalEligible: true,
+      dailyDripEnabled: false,
+    });
+    const probe: HookProbe = { current: null };
+    await act(async () => {
+      root.render(<HookHarness probe={probe} />);
+      await flushAsyncEffects();
+    });
+    expect(probe.current?.claude.creditsEligible).toBe(true);
+    expect(probe.current?.claude.creditsInconclusive).toBe(false);
+
+    let finishRead: ((value: NativeAiCreditsAvailability) => void) | undefined;
+    loadNativeAiCreditsAvailabilityMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    await act(async () => {
+      window.dispatchEvent(new Event('canopy:cloud-account-changed'));
+      await flushAsyncEffects();
+    });
+    // The old balance may still drive the existing optimistic selection gate,
+    // but it must no longer establish Available or an opt-in promise.
+    expect(probe.current?.claude.selectable).toBe(true);
+    expect(probe.current?.claude.creditsInconclusive).toBe(true);
+
+    await act(async () => {
+      finishRead?.({ ...noNativeCredits, dailyDripEnabled: true });
+      await flushAsyncEffects();
+    });
+    expect(probe.current?.claude.creditsEligible).toBe(false);
+    expect(probe.current?.claude.creditsInconclusive).toBe(false);
+    expect(probe.current?.claude.dailyCreditsEnabled).toBe(true);
+  });
+
+  it('expires cue evidence and refreshes without reopening the picker', async () => {
+    jest.useFakeTimers();
+    try {
+      getClaudeAuthStatusMock.mockResolvedValue(unauthenticated('Claude'));
+      loadNativeAiCreditsAvailabilityMock.mockResolvedValue({
+        ...noNativeCredits,
+        personalEligible: true,
+        dailyDripEnabled: false,
+      });
+      const probe: HookProbe = { current: null };
+      await act(async () => {
+        root.render(<HookHarness probe={probe} />);
+        await flushAsyncEffects();
+      });
+      expect(probe.current?.codex.creditsInconclusive).toBe(false);
+      let finishRead:
+        | ((value: NativeAiCreditsAvailability) => void)
+        | undefined;
+      loadNativeAiCreditsAvailabilityMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRead = resolve;
+          }),
+      );
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(probe.current?.codex.creditsInconclusive).toBe(true);
+      expect(loadNativeAiCreditsAvailabilityMock).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        finishRead?.({ ...noNativeCredits, dailyDripEnabled: false });
+        await flushAsyncEffects();
+      });
+      expect(probe.current?.codex.creditsInconclusive).toBe(false);
+      expect(probe.current?.codex.creditsEligible).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('still refreshes when a render observes expiry before the timer runs', async () => {
+    jest.useFakeTimers();
+    try {
+      getClaudeAuthStatusMock.mockResolvedValue(unauthenticated('Claude'));
+      loadNativeAiCreditsAvailabilityMock.mockResolvedValue({
+        ...noNativeCredits,
+        personalEligible: true,
+      });
+      const probe: HookProbe = { current: null };
+      await act(async () => {
+        root.render(<HookHarness probe={probe} />);
+        await flushAsyncEffects();
+      });
+      // Background windows can render an IPC update before overdue timers
+      // are dispatched. Detecting stale evidence must not cancel its refresh.
+      jest.setSystemTime(Date.now() + 60_001);
+      act(() => {
+        root.render(<HookHarness probe={probe} />);
+      });
+      expect(probe.current?.codex.creditsInconclusive).toBe(true);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(loadNativeAiCreditsAvailabilityMock).toHaveBeenCalledTimes(2);
+      expect(probe.current?.codex.creditsInconclusive).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('counts user-supplied provider credentials as native billing paths', async () => {
+    getClaudeAuthStatusMock.mockResolvedValue({
+      ...unauthenticated('Claude'),
+      userSuppliedCredential: true,
+    });
+    getCodexAuthStatusMock.mockResolvedValue({
+      ...unauthenticated('Codex'),
+      userSuppliedCredential: true,
+    });
+
+    const probe: HookProbe = { current: null };
+    await act(async () => {
+      root.render(<HookHarness probe={probe} />);
+      await flushAsyncEffects();
+    });
+
+    expect(probe.current?.claude.nativeAuth).toBe(true);
+    expect(probe.current?.claude.selectable).toBe(true);
+    expect(probe.current?.claude.creditsEligible).toBe(false);
+    expect(probe.current?.codex.nativeAuth).toBe(true);
+    expect(probe.current?.codex.selectable).toBe(true);
+    expect(probe.current?.codex.creditsEligible).toBe(false);
   });
 
   it('counts a ready account proxy as a way to pay for its harness', async () => {

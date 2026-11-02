@@ -148,6 +148,9 @@ jest.mock('@/stores/browserStore', () => ({
   useBrowserStore: {
     getState: (): unknown => mockGetBrowserState(),
   },
+  // The resume queue's session opener loads browser-panel-migration, which
+  // registers its hydration recovery handler at import.
+  setBrowserHydrationRecoveryHandler: jest.fn(),
 }));
 
 const mockRequestBrowserUrlFocus = jest.fn<void, [string]>();
@@ -228,7 +231,7 @@ describe('AppAdvisorWindowApp command handling', () => {
   let syncWindowStateMock: jest.Mock<void, [unknown]>;
   let closeDialogMock: jest.Mock<void, []>;
   let initializeScopedMock: jest.Mock<Promise<boolean>, [string]>;
-  let selectChatMock: jest.Mock<Promise<void>, [string]>;
+  let selectChatMock: jest.Mock<Promise<boolean>, [string]>;
   let closeArchiveOverlayMock: jest.Mock<void, []>;
   let createWorkEntryChatWithMessageMock: jest.Mock<
     Promise<string>,
@@ -239,7 +242,15 @@ describe('AppAdvisorWindowApp command handling', () => {
   let resolveChatMock: jest.Mock;
   let acknowledgeWatcherMessageDeliveryMock: jest.Mock<
     Promise<{ ok: true }>,
-    [{ watcherId: string; deliveryId: string; ok: boolean; error?: string }]
+    [
+      {
+        watcherId: string;
+        deliveryId: string;
+        stage: 'completed';
+        ok: boolean;
+        error?: string;
+      },
+    ]
   >;
   let browserBackMock: jest.Mock;
   let browserForwardMock: jest.Mock;
@@ -272,8 +283,8 @@ describe('AppAdvisorWindowApp command handling', () => {
       .fn<Promise<boolean>, [string]>()
       .mockResolvedValue(true);
     selectChatMock = jest
-      .fn<Promise<void>, [string]>()
-      .mockResolvedValue(undefined);
+      .fn<Promise<boolean>, [string]>()
+      .mockResolvedValue(false);
     closeArchiveOverlayMock = jest.fn<void, []>();
     createWorkEntryChatWithMessageMock = jest
       .fn<Promise<string>, [Record<string, unknown>]>()
@@ -294,7 +305,15 @@ describe('AppAdvisorWindowApp command handling', () => {
     acknowledgeWatcherMessageDeliveryMock = jest
       .fn<
         Promise<{ ok: true }>,
-        [{ watcherId: string; ok: boolean; error?: string }]
+        [
+          {
+            watcherId: string;
+            deliveryId: string;
+            stage: 'completed';
+            ok: boolean;
+            error?: string;
+          },
+        ]
       >()
       .mockResolvedValue({ ok: true });
     browserBackMock = jest.fn().mockResolvedValue({ id: 'browser-1' });
@@ -603,7 +622,10 @@ describe('AppAdvisorWindowApp command handling', () => {
 
     expect(hydrateFeatureFlagsMock).toHaveBeenCalledTimes(1);
 
-    const snapshot: FeatureFlagSnapshot = { status: 'ready', values: {} };
+    const snapshot: FeatureFlagSnapshot = {
+      ...getDefaultFeatureFlagSnapshot(),
+      status: 'ready',
+    };
     act(() => {
       featureFlagSnapshotListener(snapshot);
     });
@@ -726,7 +748,7 @@ describe('AppAdvisorWindowApp command handling', () => {
       getStandaloneStateMock.mockReturnValue({
         ...getStandaloneStateMock(),
         activeChatProjectId: 'other',
-      } as unknown as ReturnType<typeof useStandaloneChatStore.getState>);
+      });
       await renderApp();
 
       pressCloseChord();
@@ -741,7 +763,7 @@ describe('AppAdvisorWindowApp command handling', () => {
       getStandaloneStateMock.mockReturnValue({
         ...getStandaloneStateMock(),
         activeWorkEntryId: null,
-      } as unknown as ReturnType<typeof useStandaloneChatStore.getState>);
+      });
       await renderApp();
 
       pressCloseChord();
@@ -783,7 +805,7 @@ describe('AppAdvisorWindowApp command handling', () => {
             getStandaloneStateMock.mockReturnValue({
               ...getStandaloneStateMock(),
               archiveOverlayChatId: 'chat-archived',
-            } as unknown as ReturnType<typeof useStandaloneChatStore.getState>);
+            });
           },
         ],
       ])(
@@ -825,7 +847,7 @@ describe('AppAdvisorWindowApp command handling', () => {
     getStandaloneStateMock.mockReturnValue({
       ...getStandaloneStateMock(),
       startNewChat: startNewChatMock,
-    } as unknown as ReturnType<typeof useStandaloneChatStore.getState>);
+    });
     act(() => {
       root.render(createElement(AppAdvisorWindowApp));
     });
@@ -980,18 +1002,27 @@ describe('AppAdvisorWindowApp command handling', () => {
     unmarked.className = 'xterm';
     container.appendChild(unmarked);
     const controllers: FindController[] = [
-      { mode: 'chat', scopeKey: 'advisor-chat', anchor: chat },
-      { mode: 'terminal', scopeKey: 'term-1', anchor: pane },
-    ].map(({ mode, scopeKey, anchor }) => ({
-      mode,
-      scopeKey,
-      title: scopeKey,
-      anchor,
-      setQuery: jest.fn(),
-      next: jest.fn(),
-      previous: jest.fn(),
-      close: jest.fn(),
-    }));
+      {
+        mode: 'chat',
+        scopeKey: 'advisor-chat',
+        title: 'advisor-chat',
+        anchor: chat,
+        setQuery: jest.fn<void, [string]>(),
+        next: jest.fn<void, []>(),
+        previous: jest.fn<void, []>(),
+        close: jest.fn<void, []>(),
+      },
+      {
+        mode: 'terminal',
+        scopeKey: 'term-1',
+        title: 'term-1',
+        anchor: pane,
+        setQuery: jest.fn<void, [string]>(),
+        next: jest.fn<void, []>(),
+        previous: jest.fn<void, []>(),
+        close: jest.fn<void, []>(),
+      },
+    ];
     act(() => {
       for (const controller of controllers) {
         useSurfaceFindStore.getState().registerController(controller);
@@ -1314,237 +1345,5 @@ describe('AppAdvisorWindowApp command handling', () => {
         replaceActiveEmpty: false,
       }),
     );
-  });
-
-  it('resolves the entry and sends watcher messages without changing selection', async () => {
-    act(() => {
-      root.render(createElement(AppAdvisorWindowApp));
-    });
-    await flushPromises();
-
-    act(() => {
-      commandListener({
-        type: 'send_watcher_message',
-        chatId: 'advisor-1',
-        watcherId: 'watch-1',
-        deliveryId: 'delivery-1',
-        text: 'pipeline finished',
-        hiddenContextText: '<system_instruction>hidden</system_instruction>',
-        watcherFired: { kind: 'Pipeline completion (Deploy)' },
-      });
-    });
-    await flushPromises();
-
-    expect(resolveChatMock).toHaveBeenCalledWith({
-      projectId: 'app-advisor',
-      chatId: 'advisor-1',
-    });
-    expect(chatSendMessageMock).toHaveBeenCalledTimes(1);
-    expect(chatSendMessageMock).toHaveBeenCalledWith(
-      'pipeline finished',
-      undefined,
-      {
-        projectId: 'app-advisor',
-        worktreeId: 'entry-1',
-        chatId: 'advisor-1',
-      },
-      undefined,
-      expect.objectContaining({
-        assistantMode: 'app-advisor',
-        hiddenContext: {
-          kind: 'canopy-watcher-event',
-          text: '<system_instruction>hidden</system_instruction>',
-        },
-        watcherFired: { kind: 'Pipeline completion (Deploy)' },
-        watcherDeliveryId: 'delivery-1',
-        throwOnDispatchFailure: true,
-      }),
-    );
-    expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledWith({
-      watcherId: 'watch-1',
-      deliveryId: 'delivery-1',
-      stage: 'completed',
-      ok: true,
-    });
-    // Watcher delivery never changes the selected entry/chat.
-    expect(selectChatMock).not.toHaveBeenCalled();
-  });
-
-  it('preserves command acceptance order before host-queue consolidation', async () => {
-    const watcherResolvers: Array<() => void> = [];
-    chatSendMessageMock.mockImplementation(
-      (): Promise<void> =>
-        new Promise<void>((resolve) => {
-          watcherResolvers.push(resolve);
-        }),
-    );
-
-    act(() => {
-      root.render(createElement(AppAdvisorWindowApp));
-    });
-    await flushPromises();
-
-    act(() => {
-      commandListener({
-        type: 'send_watcher_message',
-        chatId: 'advisor-1',
-        watcherId: 'w-1',
-        deliveryId: 'delivery-1',
-        text: 'first',
-      });
-      commandListener({
-        type: 'send_watcher_message',
-        chatId: 'advisor-1',
-        watcherId: 'w-2',
-        deliveryId: 'delivery-2',
-        text: 'second',
-      });
-    });
-    await flushPromises();
-
-    expect(chatSendMessageMock).toHaveBeenCalledTimes(1);
-    expect(chatSendMessageMock.mock.calls[0][0]).toBe('first');
-
-    await act(async (): Promise<void> => {
-      watcherResolvers[0]?.();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(chatSendMessageMock).toHaveBeenCalledTimes(2);
-    expect(chatSendMessageMock.mock.calls[1][0]).toBe('second');
-  });
-
-  it('deduplicates a retried watcher delivery while the first send is pending', async () => {
-    let resolveSend: (() => void) | undefined;
-    chatSendMessageMock.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveSend = resolve;
-        }),
-    );
-
-    act(() => {
-      root.render(createElement(AppAdvisorWindowApp));
-    });
-    await flushPromises();
-
-    const command = {
-      type: 'send_watcher_message' as const,
-      chatId: 'advisor-1',
-      watcherId: 'watch-retry',
-      deliveryId: 'delivery-retry',
-      text: 'pipeline finished',
-    };
-    act(() => {
-      commandListener(command);
-      commandListener(command);
-    });
-    await flushPromises();
-    expect(chatSendMessageMock).toHaveBeenCalledTimes(1);
-
-    await act(async (): Promise<void> => {
-      resolveSend?.();
-      await flushPromises();
-    });
-    expect(chatSendMessageMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('acknowledges failure when the watcher recipient cannot be resolved', async () => {
-    resolveChatMock.mockResolvedValueOnce({
-      entryId: null,
-      archivedInEntryId: null,
-    });
-
-    act(() => {
-      root.render(createElement(AppAdvisorWindowApp));
-    });
-    await flushPromises();
-
-    act(() => {
-      commandListener({
-        type: 'send_watcher_message',
-        chatId: 'missing-chat',
-        watcherId: 'w-fallback',
-        deliveryId: 'delivery-fallback',
-        text: 'fallback delivery',
-      });
-    });
-    await flushPromises();
-
-    expect(chatSendMessageMock).not.toHaveBeenCalled();
-    expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledWith({
-      watcherId: 'w-fallback',
-      deliveryId: 'delivery-fallback',
-      stage: 'completed',
-      ok: false,
-      error:
-        'Cannot deliver watcher message because App Advisor chat missing-chat was not found.',
-    });
-  });
-
-  it('acknowledges failure when watcher scoped initialization rejects', async () => {
-    initializeScopedMock.mockRejectedValueOnce(new Error('scope unavailable'));
-
-    act(() => {
-      root.render(createElement(AppAdvisorWindowApp));
-    });
-    await flushPromises();
-
-    act(() => {
-      commandListener({
-        type: 'send_watcher_message',
-        chatId: 'advisor-1',
-        watcherId: 'w-init-failure',
-        deliveryId: 'delivery-init-failure',
-        text: 'pipeline finished',
-      });
-    });
-    await flushPromises();
-
-    expect(chatSendMessageMock).not.toHaveBeenCalled();
-    expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledWith({
-      watcherId: 'w-init-failure',
-      deliveryId: 'delivery-init-failure',
-      stage: 'completed',
-      ok: false,
-      error: 'scope unavailable',
-    });
-  });
-
-  it('acknowledges watcher delivery failure when the send rejects', async () => {
-    chatSendMessageMock.mockRejectedValueOnce(new Error('missing tab'));
-
-    act(() => {
-      root.render(createElement(AppAdvisorWindowApp));
-    });
-    await flushPromises();
-
-    let unexpectedError: unknown = null;
-    try {
-      act(() => {
-        commandListener({
-          type: 'send_watcher_message',
-          chatId: 'advisor-1',
-          watcherId: 'w-missing',
-          deliveryId: 'delivery-missing',
-          text: 'noop',
-        });
-      });
-      await flushPromises();
-    } catch (error) {
-      unexpectedError = error;
-    }
-
-    expect(unexpectedError).toBeNull();
-    expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledWith({
-      watcherId: 'w-missing',
-      deliveryId: 'delivery-missing',
-      stage: 'completed',
-      ok: false,
-      error: 'missing tab',
-    });
   });
 });

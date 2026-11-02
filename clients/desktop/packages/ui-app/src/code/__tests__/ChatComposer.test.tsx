@@ -223,7 +223,7 @@ describe('ChatComposer', () => {
       renderToString(
         <ChatComposer onSend={() => {}} slashCommands={[{ name: 'plan' }]} />,
       ),
-    ).toContain('Send a message, / for skills and commands');
+    ).toContain('Send a message, / skills and commands');
     expect(
       renderToString(
         <ChatComposer
@@ -232,6 +232,6 @@ describe('ChatComposer', () => {
           fileSearch={() => []}
         />,
       ),
-    ).toContain('Send a message, @ to mention, / for skills and commands');
+    ).toContain('@ to mention, / skills and commands');
   });
 });

@@ -230,6 +230,8 @@ describe('isLedgerStorageMethod', () => {
     'getAuthorityId',
     'bindScope',
     'findScope',
+    'bindGlobalScope',
+    'findGlobalScope',
     'getScope',
     'registerActor',
     'listActors',
@@ -275,6 +277,19 @@ describe('isLedgerStorageArguments', () => {
     );
     // The fields of an input are the repository's to validate.
     expect(isLedgerStorageArguments('bindScope', [{ unknown: 1 }])).toBe(true);
+    expect(
+      isLedgerStorageArguments('bindGlobalScope', [
+        { authorityId: 'a', owner: { kind: 'personal' }, accountId: null },
+      ]),
+    ).toBe(true);
+    expect(
+      isLedgerStorageArguments('findGlobalScope', [
+        { owner: { kind: 'personal' }, accountId: null },
+      ]),
+    ).toBe(true);
+    expect(isLedgerStorageArguments('findGlobalScope', ['personal'])).toBe(
+      false,
+    );
     expect(
       isLedgerStorageArguments('searchEntries', [
         runInNewContext('({ ledgerId: "l" })'),

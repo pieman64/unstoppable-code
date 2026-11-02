@@ -4,6 +4,7 @@ import {
   scheduleWakeupSchema,
   watchCommandSchema,
 } from './local-watcher-definitions';
+import type { LocalWatcherTarget } from '@canopy/desktop-shared/types/local-watchers';
 import type {
   McpQuestion,
   McpQuestionAnswer,
@@ -59,11 +60,12 @@ import type {
   PipelineYamlReadResult,
 } from './pipeline-yaml-reader';
 import {
+  AUTO_ARCHIVE_DEFERRED_FOR_BACKGROUND_WORK,
   AUTO_ARCHIVE_DEFERRED_FOR_DELEGATES,
-  chatHasLiveDelegations,
 } from '../agents/delegation/activity';
 import type { ScriptOutputSnapshot } from '../mcp/script-output';
 import type { WorktreeActionRuntime } from './worktree-actions';
+import type { BrowserWindow } from 'electron';
 import type { SendableBrowserWindow } from '../lib/window-send';
 import {
   buildOrUpdateCodeGraph,
@@ -177,6 +179,16 @@ export interface CanopyInjectedToolRuntime {
    * their action runtime's window instead.
    */
   settingsWindow?: () => SendableBrowserWindow | null;
+  /**
+   * App Advisor only: the window its pipeline runs report to. Worktree chats
+   * use their action runtime's window instead.
+   */
+  appAdvisorPipelineWindow?: () => BrowserWindow | null;
+  /**
+   * App Advisor only, for one `pipeline.run` in a task: the task main
+   * validated before dispatch. The Advisor chat stays the run's initiator.
+   */
+  appAdvisorPipelineTarget?: { projectId: string; worktreeId: string };
   worktreeWatcherRuntime?: {
     projectId: string;
     worktreeId: string;
@@ -279,7 +291,6 @@ export async function executeCanopyInjectedTool(
   }
   switch (canonicalKey) {
     case 'delegate_task':
-    case 'watch_delegates':
     case 'get_delegate_output':
     case 'inspect_delegate':
     case 'list_delegates':
@@ -779,7 +790,7 @@ async function executeLocalWatcher(
   key: 'watch_command' | 'schedule_wakeup',
   rawArgs: unknown,
   runtime: CanopyInjectedToolRuntime,
-  context?: { toolUseId?: string },
+  context?: CanopyInjectedToolContext,
 ): Promise<CanopyInjectedToolTextResult> {
   const parsed = (
     key === 'watch_command' ? watchCommandSchema : scheduleWakeupSchema
@@ -816,7 +827,7 @@ async function executeLocalWatcher(
     // not need its persistence and process-lifecycle initialization graph.
     const { getAppAdvisorWatcherService } =
       await import('../app-advisor/watchers');
-    const watcher = await getAppAdvisorWatcherService().createLocalWatcher(
+    const target: LocalWatcherTarget =
       'command' in input
         ? {
             kind: 'command_watch',
@@ -829,11 +840,24 @@ async function executeLocalWatcher(
             kind: 'scheduled_wakeup',
             delaySeconds: input.delaySeconds,
             scheduledFor: '',
-          },
-      destination,
-      context?.toolUseId ?? randomUUID(),
-      input.followUpInstruction,
-    );
+          };
+    const toolUseId = context?.toolUseId ?? randomUUID();
+    const service = getAppAdvisorWatcherService();
+    const watcher = context?.signal
+      ? await service.createLocalWatcher(
+          target,
+          destination,
+          toolUseId,
+          input.followUpInstruction,
+          undefined,
+          { signal: context.signal },
+        )
+      : await service.createLocalWatcher(
+          target,
+          destination,
+          toolUseId,
+          input.followUpInstruction,
+        );
     return {
       text: JSON.stringify({
         ok: true,
@@ -895,7 +919,7 @@ function publishGitHubIntegrationAuthFailure(
 async function executeWatchGitHubItems(
   rawArgs: unknown,
   runtime: CanopyInjectedToolRuntime,
-  context?: { toolUseId?: string },
+  context?: CanopyInjectedToolContext,
 ): Promise<CanopyInjectedToolTextResult> {
   const parsed = watchGitHubItemsSchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -937,6 +961,7 @@ async function executeWatchGitHubItems(
     destination,
     {
       toolUseId: context?.toolUseId,
+      ...(context?.signal ? { signal: context.signal } : {}),
       repositoryCandidates,
     },
   );
@@ -971,14 +996,19 @@ async function executeSetAutoArchive(
   }
 
   await runtime.setAutoArchiveForCurrentChat(parsed.data.enabled);
-  // The flag stays set; the archive waits until the chat's delegates finish.
+  // The flag stays set; the archive waits until close-blocking work finishes.
   const chat = runtime.worktreeWatcherRuntime;
-  if (
-    parsed.data.enabled &&
-    chat !== undefined &&
-    chatHasLiveDelegations(chat.projectId, chat.worktreeId, chat.chatId)
-  ) {
-    return { text: AUTO_ARCHIVE_DEFERRED_FOR_DELEGATES };
+  if (parsed.data.enabled && chat !== undefined) {
+    const { chatCloseBlockReason } = await import('../agents/background-work');
+    const reason = chatCloseBlockReason(
+      chat.projectId,
+      chat.worktreeId,
+      chat.chatId,
+    );
+    if (reason === 'delegates')
+      return { text: AUTO_ARCHIVE_DEFERRED_FOR_DELEGATES };
+    if (reason === 'background')
+      return { text: AUTO_ARCHIVE_DEFERRED_FOR_BACKGROUND_WORK };
   }
   return {
     text: parsed.data.enabled

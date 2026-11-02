@@ -11,8 +11,12 @@ import type { CreateWorktreeServiceOptions } from '../lib/worktree-service';
 jest.mock('../agents/session-event-router', () => ({
   drainCurrentSessionEvents: jest.fn(() => Promise.resolve()),
 }));
-const mockCurrentBranch = jest.fn(() => Promise.resolve('source-feature'));
-jest.mock('../lib/git', () => ({ getCurrentBranch: mockCurrentBranch }));
+jest.mock('../lib/git', () => ({
+  getCurrentBranch: jest.fn(() => Promise.resolve('source-feature')),
+}));
+const mockCurrentBranch = jest.requireMock<{
+  getCurrentBranch: jest.Mock<Promise<string>, []>;
+}>('../lib/git').getCurrentBranch;
 const mockResolveWorktreeTargetIds = jest.fn(
   (projectId: string, worktreeId: string) => ({ projectId, worktreeId }),
 );
@@ -88,12 +92,16 @@ const mockSend = jest.fn<
 >(() => Promise.resolve({ ok: true, chatId: 'unused' }));
 const mockDestroySession = jest.fn(() => Promise.resolve());
 jest.mock('../agents/session-manager', () => ({
-  destroySession: mockDestroySession,
+  get destroySession(): typeof mockDestroySession {
+    return mockDestroySession;
+  },
 }));
 const mockIngestProviderEvent = jest.fn(() => Promise.resolve());
 const mockLogWarn = jest.fn();
 jest.mock('../lib/main-process-logging', () => ({
-  logMainProcessWarn: mockLogWarn,
+  get logMainProcessWarn(): typeof mockLogWarn {
+    return mockLogWarn;
+  },
 }));
 const createWorktree = async (
   options: CreateWorktreeServiceOptions,
@@ -121,14 +129,20 @@ const createWorktree = async (
 };
 const mockCreateSingle = jest.fn(createWorktree);
 const mockCreateMulti = jest.fn(createWorktree);
-const mockForkCodex = jest.fn(() => Promise.resolve('forked-thread'));
-const mockForkOpenCode = jest.fn(() => Promise.resolve('forked-opencode'));
+const mockForkOpenCode = jest.fn<
+  Promise<{ sessionId: string; executionContext?: string }>,
+  [unknown]
+>(() => Promise.resolve({ sessionId: 'forked-opencode' }));
 const mockDiscardOpenCode = jest.fn(() => Promise.resolve());
 jest.mock(
   '../opencode/fork-session',
   () => ({
-    forkOpenCodeSessionByIdViaOneShot: mockForkOpenCode,
-    discardUnpublishedOpenCodeFork: mockDiscardOpenCode,
+    get forkOpenCodeSessionByIdViaOneShot(): typeof mockForkOpenCode {
+      return mockForkOpenCode;
+    },
+    get discardUnpublishedOpenCodeFork(): typeof mockDiscardOpenCode {
+      return mockDiscardOpenCode;
+    },
   }),
   { virtual: true },
 );
@@ -141,23 +155,36 @@ type RendererSendRequest = {
     text: string;
     queueForSetup: boolean;
   };
+  hostSend?: 'start_branched_agent';
 };
 const mockRendererSend = jest.fn<
   Promise<{ ok: boolean }>,
   [RendererSendRequest, unknown]
 >(() => Promise.resolve({ ok: true }));
 jest.mock('../ipc/app-advisor', () => ({
-  requestAppAdvisorRendererTool: mockRendererSend,
+  get requestAppAdvisorRendererTool(): typeof mockRendererSend {
+    return mockRendererSend;
+  },
 }));
 const mockConfig = jest.fn(() => Promise.resolve({ type: 'single-repo' }));
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): unknown => ({
-    getCompatibilityTabs: mockGetCompatibilityTabs,
-    command: mockCommand,
-    copyStorageChats: mockCopyStorageChats,
-    ingestProviderEvent: mockIngestProviderEvent,
+    get getCompatibilityTabs(): typeof mockGetCompatibilityTabs {
+      return mockGetCompatibilityTabs;
+    },
+    get command(): typeof mockCommand {
+      return mockCommand;
+    },
+    get copyStorageChats(): typeof mockCopyStorageChats {
+      return mockCopyStorageChats;
+    },
+    get ingestProviderEvent(): typeof mockIngestProviderEvent {
+      return mockIngestProviderEvent;
+    },
     settleRejectedStartup: jest.fn(() => Promise.resolve()),
-    updateCompatibilityTab: mockUpdateCompatibilityTab,
+    get updateCompatibilityTab(): typeof mockUpdateCompatibilityTab {
+      return mockUpdateCompatibilityTab;
+    },
     updateCompatibilityTabs: (
       { worktreeId }: { worktreeId: string },
       update: (current: ChatTabsFile) => ChatTabsFile,
@@ -185,21 +212,31 @@ jest.mock('../services/chat-service', () => ({
       claudeForkSession: tab?.claudeForkSessionOnNextSend,
     });
   },
-  sendWorktreeChatMessage: mockSend,
+  get sendWorktreeChatMessage(): typeof mockSend {
+    return mockSend;
+  },
 }));
 const SPLIT_CALL_UUID = '11111111-2222-4333-8444-555555555555';
 jest.mock('../lib/worktree-service', () => ({
-  createSingleRepoWorktree: mockCreateSingle,
-  createMultiRepoWorktree: mockCreateMulti,
+  get createSingleRepoWorktree(): typeof mockCreateSingle {
+    return mockCreateSingle;
+  },
+  get createMultiRepoWorktree(): typeof mockCreateMulti {
+    return mockCreateMulti;
+  },
 }));
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceConfig: mockConfig,
+  get readWorkspaceConfig(): typeof mockConfig {
+    return mockConfig;
+  },
   readWorkspaceWorktrees: (): Promise<unknown[]> => Promise.resolve([]),
 }));
 jest.mock('../lib/resolve-worktree', () => ({
   resolveWorktreeCwd: (_project: string, worktreeId: string): string =>
     `/worktrees/${worktreeId}`,
-  resolveWorktreeTargetIds: mockResolveWorktreeTargetIds,
+  get resolveWorktreeTargetIds(): typeof mockResolveWorktreeTargetIds {
+    return mockResolveWorktreeTargetIds;
+  },
 }));
 jest.mock('../lib/project-worktree-runtime', () => ({
   startProjectWorktreePostCreateSetup: jest.fn(),
@@ -208,8 +245,13 @@ jest.mock('../lib/workspace-worktree-runtime', () => ({
   startWorkspaceWorktreePostCreateSetup: jest.fn(),
 }));
 jest.mock('../codex/fork-thread', () => ({
-  forkCodexThreadByIdViaOneShot: mockForkCodex,
+  forkCodexThreadByIdViaOneShot: jest.fn(() =>
+    Promise.resolve('forked-thread'),
+  ),
 }));
+const mockForkCodex = jest.requireMock<{
+  forkCodexThreadByIdViaOneShot: jest.Mock<Promise<string>, unknown[]>;
+}>('../codex/fork-thread').forkCodexThreadByIdViaOneShot;
 
 import { startSplitAgent } from '../canopy-tools/start-split-agent-runtime';
 
@@ -1056,7 +1098,7 @@ it('keeps branching code-only and rejects the legacy Advisor global slot', async
         worktreeId: APP_ADVISOR_WORKTREE_ID,
       },
     ),
-  ).rejects.toThrow('App Advisor');
+  ).rejects.toThrow('Orchestrator');
   expect(mockCommand).not.toHaveBeenCalled();
   expect(mockSend).not.toHaveBeenCalled();
 });
@@ -1293,7 +1335,7 @@ it('cancels a copied OpenCode fork before publication and removes only the unpub
   const controller = new AbortController();
   mockForkOpenCode.mockImplementationOnce(() => {
     controller.abort(new Error('Stop requested'));
-    return Promise.resolve('forked-opencode');
+    return Promise.resolve({ sessionId: 'forked-opencode' });
   });
   await expect(
     startSplitAgent(
@@ -1365,6 +1407,29 @@ it('closes a published OpenCode tab without starting it when Stop races canonica
     ),
   ).toBe(true);
   expect(mockDiscardOpenCode).not.toHaveBeenCalled();
+});
+
+it('carries managed fork funding context through canonical publication and startup', async () => {
+  source.providerType = 'opencode';
+  source.executionHarness = 'opencode';
+  source.model = 'gateway-model';
+  const executionContext = 'org:123e4567-e89b-12d3-a456-426614174000';
+  // The host fork owns authority resolution; the split path must retain its result.
+  const next = { sessionId: 'forked-opencode', executionContext };
+  mockForkOpenCode.mockResolvedValueOnce(next);
+  const result = await startSplitAgent(
+    'start_forked_agent',
+    { followUpInstruction: 'Continue' },
+    runtime,
+  );
+  expect(mockForkOpenCode.mock.calls[0]?.[0]).toMatchObject({
+    model: 'gateway-model',
+  });
+  const target = mockTabs
+    .get('source')
+    ?.tabs.find((tab) => tab.id === result.chatId);
+  expect(target?.executionContext).toBe(executionContext);
+  expect(target?.sdkSessionId).toBe('forked-opencode');
 });
 
 it.each(['start_forked_agent', 'start_branched_agent'] as const)(

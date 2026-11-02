@@ -1,5 +1,9 @@
 import type { JSX } from 'react';
-import { CUSTOMIZE_LABEL, REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import {
+  CUSTOMIZE_LABEL,
+  ORCHESTRATOR_LABEL,
+  REMOTE_CONTROL_LABEL,
+} from '@canopy/protocol';
 import type { SidebarNavItemKey } from '@canopy/protocol/sidebar';
 import {
   AppAdvisorIcon,
@@ -51,7 +55,7 @@ export function getSidebarNavItemDefs(
   return {
     'app-advisor': {
       key: 'app-advisor',
-      label: 'Advisor',
+      label: ORCHESTRATOR_LABEL,
       icon: <AppAdvisorIcon size={iconSize} />,
     },
     // One row for the Automations, Pipelines and Watchers panels (CAN-3980).

@@ -58,27 +58,23 @@ function makeWatcher(
     trigger: overrides.trigger ?? 'worktree_chat_completion',
     status: overrides.status ?? 'active',
     label: overrides.label ?? 'Sample watcher',
-    target:
-      overrides.target ??
-      ({
-        kind: 'worktree_chat',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        workspaceName: 'Canopy',
-        worktreeBranchName: 'feature/watchers',
-        chatTitle: 'Source chat',
-        chatDescription: 'Review the active branch',
-        providerType: 'codex',
-        model: 'gpt-6-sol',
-      } as AppAdvisorWatcherSummary['target']),
-    destination:
-      overrides.destination ??
-      ({
-        projectId: APP_ADVISOR_PROJECT_ID,
-        worktreeId: APP_ADVISOR_WORKTREE_ID,
-        chatId: 'advisor-1',
-      } as AppAdvisorWatcherSummary['destination']),
+    target: overrides.target ?? {
+      kind: 'worktree_chat',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      workspaceName: 'Canopy',
+      worktreeBranchName: 'feature/watchers',
+      chatTitle: 'Source chat',
+      chatDescription: 'Review the active branch',
+      providerType: 'codex',
+      model: 'gpt-6-sol',
+    },
+    destination: overrides.destination ?? {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: APP_ADVISOR_WORKTREE_ID,
+      chatId: 'advisor-1',
+    },
     ...(overrides.followUpInstruction
       ? { followUpInstruction: overrides.followUpInstruction }
       : {}),
@@ -109,6 +105,7 @@ function makeGitHubWatcher(
     notifyOn: {
       statuses: [...GITHUB_WORKFLOW_RUN_INTERMEDIATE_STATUSES],
       conclusions: ['failure', 'success'],
+      jobConclusions: [],
     },
     display: {
       repositories: ['acme/api', 'acme/web'],
@@ -116,30 +113,35 @@ function makeGitHubWatcher(
         {
           repository: 'acme/api',
           runId: '1',
+          runAttempt: 1,
           workflowName: 'Build',
           runNumber: 11,
         },
         {
           repository: 'acme/web',
           runId: '2',
+          runAttempt: 1,
           workflowName: 'Lint',
           runNumber: 22,
         },
         {
           repository: 'acme/api',
           runId: '3',
+          runAttempt: 1,
           workflowName: 'Test',
           runNumber: 33,
         },
         {
           repository: 'acme/web',
           runId: '4',
+          runAttempt: 1,
           workflowName: 'Deploy',
           runNumber: 44,
         },
         {
           repository: 'acme/api',
           runId: '5',
+          runAttempt: 1,
           workflowName: 'E2E',
           runNumber: 55,
         },

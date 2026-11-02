@@ -8,9 +8,12 @@ import type {
 import { deriveWorktreeChatName } from '@canopy/desktop-shared/lib/worktree-chat-name';
 import { isWorkEntryWorkspace } from './workspace-registry';
 import { readChatTabsFile } from './chat-tabs-reader';
+import { IdentifierValidationError } from './validation';
 import {
   CHAT_BADGES_SUMMARY_VERSION,
   recordWorktreeChatBadges,
+  WorktreeObserverRecordRefusedError,
+  type WorktreeChatBadgesRecordOutcome,
 } from './worktree-observer-records';
 import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 
@@ -58,6 +61,9 @@ function toBadgeChatRef(
     ...(title ? { title } : {}),
     ...(tab.providerType ? { providerType: tab.providerType } : {}),
     ...(preview ? { preview } : {}),
+    ...(tab.unread === true && tab.unreadMarkedManually === true
+      ? { markedUnread: true }
+      : {}),
   };
 }
 
@@ -105,30 +111,45 @@ export function deriveWorktreeChatBadgesSummary(
 
 /**
  * Chat-tabs write observer: keep the owning worktree's `chatBadges` summary in
- * `worktrees.json` in sync with every persisted chat write. Fire-and-forget
- * and never throws — badge metadata must not be able to break chat saves.
- * Cowork/app-managed chat targets have no worktrees.json and are skipped;
- * unknown worktree ids no-op inside `recordWorktreeChatBadges`.
+ * `worktrees.json` in sync with every persisted chat write. The write starts
+ * as tracked detached work and never throws synchronously, so badge metadata
+ * cannot break a chat save. The returned promise rejects on a transient write
+ * failure so the projection can retry it. Cowork/app-managed chat targets have
+ * no worktrees.json and are skipped; unknown worktree ids and deleted
+ * workspaces no-op inside `recordWorktreeChatBadges`.
  */
 export function syncWorktreeChatBadgesFromWrite(
   projectId: string,
   worktreeId: string,
   data: ChatTabsFile,
-): void {
+): Promise<void> {
   if (isWorkEntryWorkspace(projectId)) {
-    return;
+    return Promise.resolve();
   }
-  trackDetachedWork(() =>
-    recordWorktreeChatBadges({
-      source: 'chat_commit',
-      workspaceId: projectId,
-      worktreeId,
-      summary: deriveWorktreeChatBadgesSummary(data),
-    }).catch(() => {
-      // Non-worktree targets (plan-explore scopes, deleted workspaces) and
-      // transient IO failures are ignored; the next save re-derives.
-    }),
-  );
+  return new Promise<{ error: unknown } | undefined>((settle) => {
+    trackDetachedWork(() =>
+      // Async so a derivation error rejects instead of leaving this pending.
+      (async (): Promise<WorktreeChatBadgesRecordOutcome> =>
+        recordWorktreeChatBadges({
+          source: 'chat_commit',
+          workspaceId: projectId,
+          worktreeId,
+          summary: deriveWorktreeChatBadgesSummary(data),
+        }))().then(
+        () => settle(undefined),
+        (error: unknown) =>
+          settle(
+            // Non-worktree targets, such as plan-explore scopes, never record.
+            error instanceof IdentifierValidationError ||
+              error instanceof WorktreeObserverRecordRefusedError
+              ? undefined
+              : { error },
+          ),
+      ),
+    );
+  }).then((failure) => {
+    if (failure) throw failure.error;
+  });
 }
 
 /**

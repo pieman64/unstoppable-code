@@ -19,14 +19,14 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
 });
 
-import { act, createElement } from 'react';
+import { act, createElement, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ModelRecoveryModal } from '../ModelRecoveryModal';
 import { invalidateSharedAiCreditsRead } from '@/lib/openBillingPage';
 import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
 
 jest.mock('@/components/settings/AuthLoginModal', () => ({
-  AuthLoginModal: ({ onClose }: { onClose: () => void }): JSX.Element => (
+  AuthLoginModal: ({ onClose }: { onClose: () => void }): ReactElement => (
     <button data-testid="auth-login-modal-stub" onClick={onClose}>
       Close provider sign-in
     </button>
@@ -180,8 +180,10 @@ it('shows the routes-loading shell instead of a branch whose button no-ops', asy
   expect(
     document.querySelector('[data-testid="model-recovery-try-again"]'),
   ).toBeNull();
-  // Cancel stays reachable: a loading state must never trap the user.
+  // The X stays reachable: a loading state must never trap the user.
   expect(
-    document.querySelector('[data-testid="model-recovery-cancel"]'),
+    document.querySelector(
+      '[data-testid="model-recovery-modal"] button[aria-label="Close"]',
+    ),
   ).not.toBeNull();
 });

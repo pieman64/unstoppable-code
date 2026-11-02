@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { readdir, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import {
+  access,
+  copyFile,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+} from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import type {
   ScriptDescriptor,
   ScriptRunResponse,
@@ -11,13 +19,13 @@ import {
   MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH,
   MAX_SCRIPT_DEV_SERVER_PATTERNS,
 } from '@canopy/desktop-shared/scripts';
+import { logMainProcessWarn } from './main-process-logging';
 import { buildScriptRunFileStem, resolveScriptRunDir } from './paths';
 import {
   appendRunLogLines,
   completeRunLogFiles,
   createRunLogCoordinator,
-  MAX_RUN_LOG_LINES,
-  parseLogLines,
+  readRunLogTailLines,
   startRunLogFiles,
 } from './run-log-store';
 import { isRecord } from './type-guards';
@@ -233,6 +241,63 @@ async function readMeta(
   }
 }
 
+function isUnreadableMetaText(raw: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return true;
+  }
+  return !isPersistedScriptRunFile(parsed);
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return isRecord(error) && error.code === 'ENOENT';
+}
+
+/**
+ * Keep metadata this version cannot read, with its log, as
+ * `{stem}.json.unreadable-<ms>` / `{stem}.log.unreadable-<ms>` instead of
+ * overwriting it. Only the newest pair is kept per script.
+ */
+async function setAsideUnreadableScriptRun(paths: {
+  dirPath: string;
+  metaPath: string;
+  logPath: string;
+}): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readFile(paths.metaPath, 'utf8');
+  } catch {
+    return;
+  }
+  if (!isUnreadableMetaText(raw)) {
+    return;
+  }
+
+  const metaAsidePrefix = `${basename(paths.metaPath)}.unreadable-`;
+  const logAsidePrefix = `${basename(paths.logPath)}.unreadable-`;
+  const names = await readdir(paths.dirPath);
+  await Promise.all(
+    names
+      .filter(
+        (name) =>
+          name.startsWith(metaAsidePrefix) || name.startsWith(logAsidePrefix),
+      )
+      .map((name) => rm(join(paths.dirPath, name), { force: true })),
+  );
+
+  const suffix = `.unreadable-${Date.now()}`;
+  await rename(paths.metaPath, `${paths.metaPath}${suffix}`);
+  try {
+    await rename(paths.logPath, `${paths.logPath}${suffix}`);
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+  }
+}
+
 export async function startScriptRunLog(args: {
   projectId: string;
   worktreeId: string;
@@ -267,6 +332,16 @@ export async function startScriptRunLog(args: {
     runId,
     paths: { dirPath, metaPath, logPath },
     meta: payload,
+    beforeStart: async () => {
+      await setAsideUnreadableScriptRun({ dirPath, metaPath, logPath }).catch(
+        (error: unknown) => {
+          logMainProcessWarn(
+            '[script-log-store] Failed to set aside unreadable script run metadata',
+            { error: error instanceof Error ? error.message : String(error) },
+          );
+        },
+      );
+    },
   });
 
   return {
@@ -359,16 +434,7 @@ export async function readScriptRunLogTail(args: {
     return { meta: null, lines: [] };
   }
 
-  const safeMaxLines = Math.max(0, Math.min(args.maxLines, MAX_RUN_LOG_LINES));
-  if (safeMaxLines === 0) {
-    return { meta, lines: [] };
-  }
-
-  const raw = await readFile(logPath, 'utf8').catch(() => '');
-  const allLines = parseLogLines(raw);
-  const lines =
-    allLines.length > safeMaxLines ? allLines.slice(-safeMaxLines) : allLines;
-  return { meta, lines };
+  return { meta, lines: await readRunLogTailLines(logPath, args.maxLines) };
 }
 
 export async function listScriptRunLogTails(args: {
@@ -385,7 +451,6 @@ export async function listScriptRunLogTails(args: {
   const entries = await readdir(dirPath, { withFileTypes: true }).catch(
     () => [],
   );
-  const safeMaxLines = Math.max(0, Math.min(args.maxLines, MAX_RUN_LOG_LINES));
 
   const runs = await Promise.all(
     entries
@@ -407,13 +472,10 @@ export async function listScriptRunLogTails(args: {
           dirPath,
           `${entry.name.slice(0, -'.json'.length)}.log`,
         );
-        const raw = await readFile(logPath, 'utf8').catch(() => '');
-        const allLines = safeMaxLines === 0 ? [] : parseLogLines(raw);
-        const lines =
-          allLines.length > safeMaxLines
-            ? allLines.slice(-safeMaxLines)
-            : allLines;
-        return { meta, lines };
+        return {
+          meta,
+          lines: await readRunLogTailLines(logPath, args.maxLines),
+        };
       }),
   );
 
@@ -430,4 +492,118 @@ export async function deleteScriptRunLogsForWorktree(
       force: true,
     });
   });
+}
+
+export type ScriptRunLogSnapshotResult =
+  | { status: 'copied' }
+  | { status: 'superseded' }
+  | { status: 'missing' }
+  | { status: 'error'; message: string };
+
+function describeFileError(error: unknown): string {
+  if (isRecord(error) && typeof error.code === 'string') {
+    return error.code;
+  }
+  return error instanceof Error ? error.name : 'unknown error';
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy one script run's canonical log to `targetPath` without letting a later
+ * run substitute its output.
+ *
+ * - Runs on the script key's write chain, so pending appends and completion
+ *   for this run land first, and no new run can replace the log mid-copy.
+ * - `superseded` when the canonical metadata now names a different run;
+ *   `missing` when no metadata or log exists (or the worktree's logs are
+ *   being deleted). A running script yields a partial copy.
+ * - The copy is written to a sibling temp file and renamed into place. An
+ *   existing `targetPath` is never overwritten: finalized copies are
+ *   immutable, so the call returns `error` and leaves the file untouched.
+ *   Callers use a fresh target per attempt; the existence check and rename are
+ *   not atomic against a concurrent writer of the same target.
+ * - Any filesystem failure, including a source the writer holds open on
+ *   Windows (`EBUSY`/`EPERM`), resolves as `error` with the error code; it
+ *   never throws. Messages carry error codes only, never paths or log text.
+ */
+export async function snapshotScriptRunLog(args: {
+  ref: ScriptRunLogRef;
+  targetPath: string;
+}): Promise<ScriptRunLogSnapshotResult> {
+  const { projectId, worktreeId, script, runId } = args.ref;
+  const { metaPath, logPath } = getScriptRunPaths(
+    projectId,
+    worktreeId,
+    script.scriptKey,
+  );
+  const tempPath = join(
+    dirname(args.targetPath),
+    `.${basename(args.targetPath)}.${randomUUID()}.tmp`,
+  );
+  try {
+    if (runLogs.isDeletingWorktreeLogs(projectId, worktreeId)) {
+      return { status: 'missing' };
+    }
+    return await runLogs.withWriteChain(
+      runLogs.getWriteKey(projectId, worktreeId, script.scriptKey),
+      async (): Promise<ScriptRunLogSnapshotResult> => {
+        if (runLogs.isDeletingWorktreeLogs(projectId, worktreeId)) {
+          return { status: 'missing' };
+        }
+        const meta = await readMeta(metaPath);
+        if (!meta) {
+          return { status: 'missing' };
+        }
+        if (meta.runId !== runId) {
+          return { status: 'superseded' };
+        }
+        if (!(await pathExists(logPath))) {
+          return { status: 'missing' };
+        }
+        if (await pathExists(args.targetPath)) {
+          return {
+            status: 'error',
+            message: 'script log copy target already exists',
+          };
+        }
+        await mkdir(dirname(args.targetPath), { recursive: true });
+        await copyFile(logPath, tempPath);
+        await rename(tempPath, args.targetPath);
+        return { status: 'copied' };
+      },
+    );
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    return {
+      status: 'error',
+      message: `script log copy failed: ${describeFileError(error)}`,
+    };
+  }
+}
+
+/**
+ * Read a script key's canonical run metadata after its pending writes settle.
+ * Callers compare `runId` with their recorded run and read `status`
+ * (`running` until completion) and `exitCode`.
+ */
+export async function readScriptRunMeta(
+  ref: Pick<ScriptRunLogRef, 'projectId' | 'worktreeId'> & {
+    scriptKey: string;
+  },
+): Promise<PersistedScriptRunFile | null> {
+  await runLogs.awaitPendingWrite(ref.projectId, ref.worktreeId, ref.scriptKey);
+  const { metaPath } = getScriptRunPaths(
+    ref.projectId,
+    ref.worktreeId,
+    ref.scriptKey,
+  );
+  return readMeta(metaPath);
 }

@@ -1,5 +1,12 @@
 import { spawn } from 'node:child_process';
-import { copyFile, access, lstat, unlink } from 'node:fs/promises';
+import {
+  copyFile,
+  access,
+  lstat,
+  stat,
+  unlink,
+  utimes,
+} from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -663,7 +670,13 @@ export async function captureWorkingTreeSha(repoPath: string): Promise<string> {
   try {
     let absentSkipWorktreePaths: string[] = [];
     if (await pathExists(repoIndexPath)) {
+      // Git rehashes entries no older than the index file's own mtime. A copy
+      // gets a new mtime, so keep the source's: same-size edits made in the
+      // same timestamp tick as its last write would otherwise look clean. Read
+      // it before copying, so a concurrent rewrite only makes it older.
+      const sourceIndex = await stat(repoIndexPath);
       await copyFile(repoIndexPath, indexPath);
+      await utimes(indexPath, sourceIndex.atime, sourceIndex.mtime);
       const unmergedEntries = await runGitWithEnv(
         repoPath,
         ['ls-files', '--unmerged'],

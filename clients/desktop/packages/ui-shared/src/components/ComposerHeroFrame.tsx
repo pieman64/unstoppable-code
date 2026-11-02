@@ -1,4 +1,7 @@
-import type { JSX, ReactNode } from 'react';
+'use client';
+
+import { useRef, type JSX, type ReactNode } from 'react';
+import { HomeSections } from './HomeSection';
 
 export type ComposerHeroFrameRhythm = 'spacious' | 'compact';
 
@@ -24,8 +27,8 @@ const ROWS_CLASSNAME: Record<ComposerHeroFrameRhythm, string> = {
 };
 
 const BELOW_CLASSNAME: Record<ComposerHeroFrameRhythm, string> = {
-  spacious: 'mt-16 flex w-full flex-col gap-16',
-  compact: 'mt-5 flex w-full flex-col gap-5 sm:mt-6 sm:gap-6',
+  spacious: 'mt-16 flex w-full flex-col gap-12',
+  compact: 'mt-5 flex w-full flex-col gap-12 sm:mt-6',
 };
 
 export interface ComposerHeroFrameProps {
@@ -82,6 +85,7 @@ export function ComposerHeroFrame({
   shellTestId,
   hangingTestId,
 }: ComposerHeroFrameProps): JSX.Element {
+  const composerFocusTarget = useRef<HTMLDivElement>(null);
   // The column keeps every wrapper and lets the ones that only position the
   // centred frame drop out of layout with `contents`.
   const column = layout === 'column';
@@ -112,7 +116,17 @@ export function ComposerHeroFrame({
           </div>
           {/* Above the rows that hang after it, so the composer's own menus
               open over them. */}
-          <div className={column ? 'relative z-10 w-full' : 'relative z-10'}>
+          <div
+            ref={composerFocusTarget}
+            tabIndex={-1}
+            role="group"
+            aria-label="Chat composer"
+            className={
+              column
+                ? 'focus-ring relative z-10 w-full'
+                : 'focus-ring relative z-10'
+            }
+          >
             {composer}
           </div>
           <div className={column ? 'contents' : ROWS_CLASSNAME[rhythm]}>
@@ -123,7 +137,9 @@ export function ComposerHeroFrame({
               {hanging}
             </div>
             <div className={column ? 'contents' : BELOW_CLASSNAME[rhythm]}>
-              {below}
+              <HomeSections fallbackFocusRef={composerFocusTarget}>
+                {below}
+              </HomeSections>
             </div>
           </div>
         </div>

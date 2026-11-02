@@ -116,6 +116,13 @@ export type BrowserHandoffEventOutcome =
   | 'released'
   | 'ignored';
 
+export interface OpenBrowserOptions {
+  url?: string;
+  themeMode?: BrowserThemeMode;
+  /** An id main allocated for the tab, as for a page's new-window open. */
+  browserId?: string;
+}
+
 interface BrowserState {
   /** Current global URL policy preference for in-app browser navigation. */
   localServersOnly: boolean;
@@ -206,7 +213,7 @@ interface BrowserState {
   openBrowser: (
     projectId: string,
     worktreeId: string,
-    options?: { url?: string; themeMode?: BrowserThemeMode },
+    options?: OpenBrowserOptions,
   ) => PendingBrowserOpen | null;
   /**
    * Publishes a placeholder for a session the MAIN process is creating
@@ -958,7 +965,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
       return null;
     }
     const key = worktreeKey(projectId, worktreeId);
-    const browserId = crypto.randomUUID();
+    const browserId = options?.browserId ?? crypto.randomUUID();
     const url = options?.url ?? '';
     const record = newPendingOpenRecord();
     pendingOpens.set(browserId, record);

@@ -1,3 +1,7 @@
+import {
+  isWatchDelegatesCompatibilityName,
+  watchDelegatesCompatibilityResult,
+} from './watch-delegates-tombstone';
 import type { DelegationModelDiscovery } from '@canopy/protocol/delegation/discovery';
 import { createHash, type UUID } from 'node:crypto';
 import type {
@@ -22,7 +26,11 @@ import {
   DELEGATION_APPLY_RESPONSE_WAIT_MS,
   type AgentDelegationBroker,
 } from './broker';
-import type { DelegationParentContext, DelegationStopReason } from './types';
+import {
+  hasValidDelegationLineage,
+  type DelegationParentContext,
+  type DelegationStopReason,
+} from './types';
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -47,6 +55,10 @@ function unavailable(): AgentDelegationResult<never> {
 
 export type DelegationParentBroker = DelegationProjectionBroker &
   Pick<AgentDelegationBroker, 'closeOwner'>;
+
+type DelegationParentCallContext = DelegationParentContext & {
+  readonly signal?: AbortSignal;
+};
 
 /**
  * Host-generated hidden messages a parent admitted to its chat queue. A root
@@ -115,6 +127,11 @@ export class DelegationParent {
       names: DelegationProjectionNames;
       broker: DelegationParentBroker;
       currentTurn: () => string | undefined;
+      /**
+       * Transcript message that anchors delegate cards. When omitted, the
+       * card anchors to `currentTurn()` as before.
+       */
+      currentMessage?: () => string | undefined;
       removeQueued: (ids: readonly string[]) => Promise<void>;
       reportError: (error: unknown) => void;
       responseBudgetMs?: number;
@@ -180,14 +197,19 @@ export class DelegationParent {
   context(
     turnId = this.options.currentTurn(),
     toolCallId = 'host',
-  ): DelegationParentContext | undefined {
+    signal?: AbortSignal,
+  ): DelegationParentCallContext | undefined {
     return this.active && turnId
       ? {
           ...this.options.owner,
           turnId,
           toolCallId,
+          ...(signal !== undefined ? { signal } : {}),
           userMessageId:
-            this.options.owner.userMessageId ?? this.options.currentTurn(),
+            this.options.owner.userMessageId ??
+            (this.options.currentMessage
+              ? this.options.currentMessage()
+              : this.options.currentTurn()),
         }
       : undefined;
   }
@@ -207,7 +229,8 @@ export class DelegationParent {
     if (
       !context ||
       agentId ||
-      !this.ownsTool(name) ||
+      (!isWatchDelegatesCompatibilityName(name, this.options.harness) &&
+        !this.ownsTool(name)) ||
       !record(input) ||
       '_hostCorrelation' in input
     )
@@ -221,7 +244,7 @@ export class DelegationParent {
         calls: new DelegationCallBindings(context, this.controller.signal),
       };
     }
-    const bound = this.binding.calls.bind(callId, request.value);
+    const bound = this.binding.calls.bind(callId, request.value, context);
     return bound.ok
       ? { ok: true, value: { ...input, _hostCorrelation: bound.value } }
       : bound;
@@ -250,7 +273,12 @@ export class DelegationParent {
   invokeCodex(
     name: string,
     input: unknown,
-    native: { callId: string; turnId: string; threadId: string },
+    native: {
+      callId: string;
+      turnId: string;
+      threadId: string;
+      signal?: AbortSignal;
+    },
     rootThreadId: string | undefined,
     rootTurnId: string | undefined,
   ): Promise<AgentDelegationResult<unknown>> {
@@ -261,7 +289,13 @@ export class DelegationParent {
       native.turnId !== rootTurnId
     )
       return Promise.resolve(unavailable());
-    const parent = this.context(native.turnId, native.callId);
+    const parent = this.context(
+      native.turnId,
+      native.callId,
+      isWatchDelegatesCompatibilityName(name, this.options.harness)
+        ? native.signal
+        : undefined,
+    );
     return parent
       ? this.invoke(parent, name, input)
       : Promise.resolve(unavailable());
@@ -356,7 +390,7 @@ export class DelegationParent {
   }
 
   private invoke(
-    parent: DelegationParentContext,
+    parent: DelegationParentCallContext,
     name: string,
     input: unknown,
   ): Promise<AgentDelegationResult<unknown>> {
@@ -403,11 +437,19 @@ export class DelegationParent {
   }
 
   private async invokeOwned(
-    parent: DelegationParentContext,
+    parent: DelegationParentCallContext,
     name: string,
     input: unknown,
   ): Promise<AgentDelegationResult<unknown>> {
-    if (!this.active || !this.ownsTool(name)) return unavailable();
+    if (
+      !this.active ||
+      parent.signal?.aborted ||
+      !hasValidDelegationLineage(parent)
+    )
+      return unavailable();
+    if (isWatchDelegatesCompatibilityName(name, this.options.harness))
+      return watchDelegatesCompatibilityResult(input);
+    if (!this.ownsTool(name)) return unavailable();
     if (
       (name === this.options.names.manageWorktree ||
         name === this.options.names.message) &&
@@ -453,7 +495,11 @@ export class DelegationParent {
   ): AgentDelegationResult<AgentDelegationSpawnRequest> {
     if (name === this.options.names.spawn)
       return parseClaudeDelegationSpawn(input);
-    if (!this.ownsTool(name)) return unavailable();
+    if (
+      !isWatchDelegatesCompatibilityName(name, this.options.harness) &&
+      !this.ownsTool(name)
+    )
+      return unavailable();
     return {
       ok: true,
       value: {

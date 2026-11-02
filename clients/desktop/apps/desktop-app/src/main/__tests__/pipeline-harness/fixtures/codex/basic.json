@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "scenario": "handwritten-basic-codex",
+  "provider": "codex",
+  "tier": "fast",
+  "profile": "codex-chat",
+  "provenance": {
+    "binaryVersion": "handwritten-not-recorded"
+  },
+  "semantics": ["synthetic-bootstrap", "root-output-terminal"],
+  "steps": [
+    {
+      "kind": "control",
+      "action": "send",
+      "ids": {
+        "message": "m1"
+      }
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "response:initialize",
+      "ids": {
+        "request": "r1"
+      },
+      "template": "codex.response"
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "response:thread/start",
+      "ids": {
+        "thread": "h1",
+        "request": "r2"
+      },
+      "template": "codex.response"
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "notification:thread/started",
+      "ids": {
+        "thread": "h1"
+      },
+      "template": "codex.notification"
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "response:turn/start",
+      "ids": {
+        "turn": "t1",
+        "request": "r3"
+      },
+      "template": "codex.response"
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "notification:turn/started",
+      "ids": {
+        "thread": "h1",
+        "turn": "t1"
+      },
+      "fields": {
+        "turnStatus": "inProgress"
+      },
+      "template": "codex.notification"
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "notification:item/completed",
+      "shape": ["agentMessage"],
+      "ids": {
+        "thread": "h1",
+        "turn": "t1",
+        "item": "i1"
+      },
+      "template": "codex.notification"
+    },
+    {
+      "kind": "frame",
+      "lane": "root",
+      "type": "notification:turn/completed",
+      "ids": {
+        "thread": "h1",
+        "turn": "t1"
+      },
+      "fields": {
+        "turnStatus": "completed"
+      },
+      "template": "codex.notification"
+    }
+  ]
+}

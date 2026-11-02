@@ -334,12 +334,7 @@ describe('AttentionTracker', () => {
 
     // Use the desired four-argument API through a narrow test cast so this
     // regression fails on behavior before the production signature changes.
-    (tracker.clear as (...args: string[]) => void)(
-      'p1',
-      'wt1',
-      'c1',
-      'approval-1',
-    );
+    tracker.clear('p1', 'wt1', 'c1', 'approval-1');
     await advancePastGrace();
 
     expect(tracker.isTracked('p1', 'wt1', 'c1')).toBe(true);

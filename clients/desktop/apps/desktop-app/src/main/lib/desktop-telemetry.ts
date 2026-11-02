@@ -1,3 +1,15 @@
+import {
+  recordPostHogProviderConnection,
+  recordPostHogShippingMilestone,
+  readPostHogIdentityKey,
+  recordPostHogInviteAcceptance,
+  type PostHogShippingKind,
+} from './anonymous-id';
+import { randomUUID } from 'node:crypto';
+import {
+  subscribeProviderConnections,
+  type ProviderConnectionEvent,
+} from './provider-connection-events';
 import { readFile } from 'node:fs/promises';
 import {
   createDesktopInstrumentationOperationKey,
@@ -12,13 +24,18 @@ import {
   type SidebarItem,
 } from '@canopy/desktop-shared/types';
 import {
+  isDesktopPostHogOperationCaptureEnabled,
   startDesktopOperation,
   succeedDesktopOperation,
+  failDesktopOperation,
 } from '@canopy/desktop-instrumentation/electron/main';
+import { validateAcquisitionContextValue } from '@canopy/desktop-instrumentation/acquisition-context';
 import type {
-  ConfirmedProviderAuthEvent,
-  ProviderAccountConnectSource,
-} from '../auth/provider-auth-state';
+  PairingTelemetryAttempt,
+  PairingTelemetryContext,
+} from '@canopy/desktop-instrumentation/pairing';
+import { invitationReference } from './invitation-reference';
+import type { ConfirmedProviderAuthEvent } from '../auth/provider-auth-state';
 import type { ConfirmedCursorAccountEvent } from '../cursor/connection';
 import { getChatProjectsFilePath } from './paths';
 import { readAllSidebarItems } from './sidebar-items';
@@ -397,12 +414,6 @@ export function recordOnboardingProfileTelemetry(options: {
  */
 export function recordActivationCampaignTelemetry(options: {
   campaignId: string;
-  /**
-   * Checklist item id for Getting Started sequence events (CAN-3013), so
-   * delivery rate and click-through can be measured per step. A bounded enum
-   * id like every other attribute here -- never notification copy.
-   */
-  itemId?: string;
   outcome: 'delivered' | 'suppressed' | 'clicked';
   reason?: string;
   destination?: string;
@@ -410,12 +421,9 @@ export function recordActivationCampaignTelemetry(options: {
   scheduleTelemetry(() => {
     emitTelemetryOperation(
       ACTIVATION_CAMPAIGN_OPERATION,
-      [options.campaignId, options.itemId, options.outcome]
-        .filter((part): part is string => part !== undefined)
-        .join(':'),
+      `${options.campaignId}:${options.outcome}`,
       {
         campaign_id: options.campaignId,
-        ...(options.itemId !== undefined ? { item_id: options.itemId } : {}),
         outcome: options.outcome,
         ...(options.reason !== undefined ? { reason: options.reason } : {}),
         ...(options.destination !== undefined
@@ -427,23 +435,130 @@ export function recordActivationCampaignTelemetry(options: {
   });
 }
 
-/**
- * Emit a confirmed Claude, Codex, or Cursor sign-in (CAN-4015). Context carries
- * only the provider and how the sign-in came about; the account's email,
- * label, plan, and org must never reach instrumentation.
- */
-export function recordProviderAccountConnectTelemetry(options: {
-  provider: 'claude' | 'codex' | 'cursor';
-  connectSource: ProviderAccountConnectSource;
-}): void {
-  const { provider, connectSource } = options;
-  scheduleTelemetry(() => {
+export interface GitShippingTelemetryInput {
+  /** Internal workspace lookup only; never sent or used in operation keys. */
+  projectId: string;
+  source?: unknown;
+  flow:
+    | 'commit'
+    | 'commit_and_push'
+    | 'pull_request'
+    | 'split_pr'
+    | 'portal'
+    | 'merge';
+  repoCount: number;
+}
+
+/** Untrusted request attribution is metadata, never an authorization input. */
+function normalizeGitShippingSource(
+  source: unknown,
+): 'manual' | 'chat' | 'pipeline' {
+  return source === 'chat' || source === 'pipeline' ? source : 'manual';
+}
+
+function recordGitShippingTelemetry(
+  kind: PostHogShippingKind,
+  name: DesktopOperationName,
+  options: GitShippingTelemetryInput,
+): void {
+  try {
+    // Snapshot before scheduling; callers may continue with unrelated work.
+    const { projectId, flow, repoCount } = options;
+    const source = normalizeGitShippingSource(options.source);
+    if (
+      !Number.isSafeInteger(repoCount) ||
+      repoCount <= 0 ||
+      ![
+        'commit',
+        'commit_and_push',
+        'pull_request',
+        'split_pr',
+        'portal',
+        'merge',
+      ].includes(flow)
+    )
+      return;
+    scheduleTelemetry(async () => {
+      if (!isDesktopPostHogOperationCaptureEnabled()) return;
+      const totals = await collectWorkspaceTotals(projectId).catch(
+        () => undefined,
+      );
+      const type = totals?.workspace_type;
+      const workspaceType =
+        type === 'single-repo' || type === 'multi-repo' || type === 'cowork'
+          ? type
+          : 'unknown';
+      // Recheck after asynchronous lookup before consuming the durable claim.
+      if (!isDesktopPostHogOperationCaptureEnabled()) return;
+      const first = await recordPostHogShippingMilestone(kind).catch(
+        () => undefined,
+      );
+      emitTelemetryOperation(name, randomUUID(), {
+        source,
+        workspace_type: workspaceType,
+        flow,
+        repo_count: repoCount,
+        ...(first === undefined ? {} : { is_install_first: first }),
+      });
+    });
+  } catch {
+    // Scheduler and malformed input failures cannot change a git outcome.
+  }
+}
+
+export function recordGitCommitTelemetry(
+  options: GitShippingTelemetryInput,
+): void {
+  recordGitShippingTelemetry('commit', 'canopy.git_commit', options);
+}
+
+export function recordPullRequestOpenedTelemetry(
+  options: GitShippingTelemetryInput,
+): void {
+  recordGitShippingTelemetry(
+    'pull_request',
+    'canopy.pull_request_open',
+    options,
+  );
+}
+
+export function recordPullRequestMergedTelemetry(
+  options: GitShippingTelemetryInput,
+): void {
+  recordGitShippingTelemetry('merge', 'canopy.pull_request_merge', options);
+}
+
+/** A confirmed connection; startup observations only establish a baseline. */
+export function recordProviderAccountConnectTelemetry(
+  options: ProviderConnectionEvent,
+): void {
+  scheduleTelemetry(async () => {
+    const { provider, connectionMethod, connectSource, failureReason } =
+      options;
+    if (failureReason) {
+      emitTelemetryOperation('canopy.provider_account_connect_fail', provider, {
+        provider,
+        connection_method: connectionMethod,
+        connect_source: connectSource,
+        failure_reason: failureReason,
+      });
+      return;
+    }
+    const firstConnection = await recordPostHogProviderConnection(
+      provider,
+      connectSource === 'at_startup',
+    ).catch(() => undefined);
+    if (connectSource === 'at_startup') return;
     emitTelemetryOperation(
       PROVIDER_ACCOUNT_CONNECT_OPERATION,
       `${provider}:${connectSource}`,
-      { provider, connect_source: connectSource },
+      {
+        provider,
+        connect_source: connectSource,
+        connection_method: connectionMethod,
+        ...(firstConnection ?? {}),
+      },
     );
-    return Promise.resolve();
   });
 }
 
@@ -496,15 +611,22 @@ export function startProviderAccountConnectTelemetry(feeds: {
     recordProviderAccountConnectTelemetry({
       provider: event.provider,
       connectSource: event.connectSource,
+      connectionMethod:
+        event.status.accountKind === 'api_key' ? 'api_key' : 'native_login',
     });
   });
   const unsubscribeCursorAccount = feeds.subscribeCursorAccount((event) => {
     recordProviderAccountConnectTelemetry({
       provider: 'cursor',
       connectSource: event.connectSource,
+      connectionMethod: 'native_login',
     });
   });
+  const unsubscribeConnections = subscribeProviderConnections(
+    recordProviderAccountConnectTelemetry,
+  );
   return (): void => {
+    unsubscribeConnections();
     unsubscribeProviderAuth();
     unsubscribeCursorAccount();
   };
@@ -590,4 +712,228 @@ export function recordStandaloneFeatureTelemetry(options: {
       },
     );
   });
+}
+
+export type InviteSendTelemetryInput =
+  | {
+      inviteType: 'organization';
+      inviteId: string;
+      recipientKind: 'email';
+      sendSurface: 'invite_dialog' | 'members_tab';
+      delivery?:
+        | 'sent'
+        | 'resent'
+        | 'deferred-for-payment'
+        | 'email-suppressed';
+    }
+  | {
+      inviteType: 'teammate_share';
+      /** Container identity; acceptance is per container, not per grant. */
+      inviteId: string;
+      grantId: string;
+      recipientKind: 'member' | 'email';
+      sendSurface: 'share_dialog';
+      shareAudience: 'team' | 'organization' | 'public';
+      containerType: 'WORKTREE' | 'COWORK' | 'CLOUD_CHAT';
+    };
+
+function validAcquisitionContext(
+  name: DesktopOperationName,
+  context: DesktopInstrumentationContext,
+): boolean {
+  return Object.entries(context).every(([key, value]) =>
+    validateAcquisitionContextValue(name, key, value),
+  );
+}
+
+function scheduleAcquisitionTask(task: () => void): void {
+  scheduleTelemetry(() => Promise.resolve().then(task));
+}
+
+function scheduleAcquisitionOperation(
+  name: DesktopOperationName,
+  context: DesktopInstrumentationContext,
+): void {
+  if (
+    !isDesktopPostHogOperationCaptureEnabled() ||
+    !validAcquisitionContext(name, context)
+  )
+    return;
+  scheduleAcquisitionTask(() => {
+    if (!isDesktopPostHogOperationCaptureEnabled()) return;
+    emitTelemetryOperation(name, randomUUID(), context);
+  });
+}
+
+export function recordInviteSendTelemetry(
+  input: InviteSendTelemetryInput,
+): void {
+  try {
+    if (!isDesktopPostHogOperationCaptureEnabled()) return;
+    const context: DesktopInstrumentationContext = {
+      invite_type: input.inviteType,
+      invite_ref: invitationReference(input.inviteType, input.inviteId),
+      recipient_kind: input.recipientKind,
+      send_surface: input.sendSurface,
+      ...(input.inviteType === 'organization'
+        ? input.delivery === undefined
+          ? {}
+          : { delivery: input.delivery }
+        : {
+            grant_ref: invitationReference(
+              'teammate_share_grant',
+              input.grantId,
+            ),
+            share_audience: input.shareAudience,
+            container_type: input.containerType,
+          }),
+    };
+    scheduleAcquisitionOperation('canopy.invite_send', context);
+  } catch {
+    /* Telemetry never changes a confirmed invitation. */
+  }
+}
+
+export interface InviteAcceptTelemetryInput {
+  inviteType: 'organization' | 'teammate_share';
+  inviteId: string;
+  acceptSurface: 'desktop_switcher' | 'desktop_share_accept';
+  containerType?: 'WORKTREE' | 'COWORK' | 'CLOUD_CHAT';
+}
+
+let inviteAcceptanceOrder: Promise<void> = Promise.resolve();
+
+export function recordInviteAcceptTelemetry(
+  input: InviteAcceptTelemetryInput,
+): void {
+  try {
+    if (!isDesktopPostHogOperationCaptureEnabled()) return;
+    const context: DesktopInstrumentationContext = {
+      invite_type: input.inviteType,
+      invite_ref: invitationReference(input.inviteType, input.inviteId),
+      accept_surface: input.acceptSurface,
+      ...(input.inviteType === 'teammate_share' &&
+      input.containerType !== undefined
+        ? { container_type: input.containerType }
+        : {}),
+    };
+    if (!validAcquisitionContext('canopy.invite_accept', context)) return;
+    // Begin a read now, never identity creation. Fence deferred work against reset.
+    const observedIdentity = readPostHogIdentityKey().catch(() => undefined);
+    const observedAt = Date.now();
+    scheduleTelemetry(async () => {
+      const record = async (): Promise<void> => {
+        if (!isDesktopPostHogOperationCaptureEnabled()) return;
+        const key = await observedIdentity;
+        if (key !== undefined && (await readPostHogIdentityKey()) !== key)
+          return;
+        if (!isDesktopPostHogOperationCaptureEnabled()) return;
+        const milestone =
+          key === undefined
+            ? undefined
+            : await recordPostHogInviteAcceptance(
+                key,
+                observedAt,
+                isDesktopPostHogOperationCaptureEnabled,
+              ).catch(() => undefined);
+        if (!isDesktopPostHogOperationCaptureEnabled()) return;
+        if (key !== undefined && (await readPostHogIdentityKey()) !== key)
+          return;
+        emitTelemetryOperation('canopy.invite_accept', randomUUID(), {
+          ...context,
+          ...milestone,
+        });
+      };
+      const next = inviteAcceptanceOrder.then(record, record);
+      inviteAcceptanceOrder = next.catch(() => undefined);
+      await next;
+    });
+  } catch {
+    /* Metadata, hashing and scheduling are all best effort. */
+  }
+}
+
+export function recordOrganizationCreateTelemetry(input: {
+  creationMethod: 'create' | 'promote_personal';
+  inviteIncluded: boolean;
+  projectCount: number;
+}): void {
+  try {
+    scheduleAcquisitionOperation('canopy.organization_create', {
+      creation_method: input.creationMethod,
+      invite_included: input.inviteIncluded,
+      project_count: input.projectCount,
+    });
+  } catch {
+    /* Preserve the authoritative creation result. */
+  }
+}
+
+export function startRemotePairingTelemetry(
+  input: PairingTelemetryContext,
+): PairingTelemetryAttempt | undefined {
+  try {
+    if (!isDesktopPostHogOperationCaptureEnabled()) return undefined;
+    const context: DesktopInstrumentationContext = {
+      pairing_kind: input.pairing_kind,
+      pairing_entry: input.pairing_entry,
+      peer_platform: input.peer_platform,
+      ...(input.pairing_kind === 'phone_code' &&
+      input.is_additional_device !== undefined
+        ? { is_additional_device: input.is_additional_device }
+        : {}),
+    };
+    if (!validAcquisitionContext('canopy.remote_pairing', context))
+      return undefined;
+    const operationKey = createDesktopInstrumentationOperationKey(randomUUID());
+    let started = false;
+    let ended = false;
+    scheduleAcquisitionTask(() => {
+      if (!isDesktopPostHogOperationCaptureEnabled()) return;
+      startDesktopOperation('canopy.remote_pairing', { operationKey, context });
+      started = true;
+      emitTelemetryOperation(
+        'canopy.remote_pairing_start',
+        randomUUID(),
+        context,
+      );
+    });
+    return {
+      end: (outcome): void => {
+        if (ended) return;
+        ended = true;
+        try {
+          if (
+            !validateAcquisitionContextValue(
+              'canopy.remote_pairing',
+              'outcome',
+              outcome,
+            )
+          )
+            return;
+          scheduleAcquisitionTask(() => {
+            if (!started || !isDesktopPostHogOperationCaptureEnabled()) return;
+            started = false;
+            const options = { operationKey, context: { ...context, outcome } };
+            if (outcome === 'approved')
+              succeedDesktopOperation('canopy.remote_pairing', options);
+            else
+              failDesktopOperation(
+                'canopy.remote_pairing',
+                outcome === 'failed'
+                  ? 'error'
+                  : outcome === 'rejected' || outcome === 'declined'
+                    ? 'other'
+                    : 'abandoned',
+                options,
+              );
+          });
+        } catch {
+          /* First terminal transition still wins when capture fails. */
+        }
+      },
+    };
+  } catch {
+    return undefined;
+  }
 }

@@ -80,6 +80,41 @@ function fixture(
 }
 
 describe('finalVisibleAssistantMessage shared turn selector', () => {
+  test("returns a completed tools-loaded continuation's answer, not the prompt's loading message", () => {
+    const { page, turn } = fixture(
+      [
+        message('a-load', 'Loading Slack.'),
+        message('a-answer', 'Here is the report.'),
+      ],
+      ['a-load'],
+    );
+    expect(
+      finalVisibleAssistantMessage(page, {
+        ...turn,
+        continuations: {
+          'turn-2:timer:wake': {
+            complete: true,
+            summary: emptyCounts,
+            finalMessageIds: ['a-answer'],
+          },
+        },
+      }),
+    ).toMatchObject({ messageId: 'a-answer', text: 'Here is the report.' });
+    // A continuation still running has no answer yet: the prompt's stands.
+    expect(
+      finalVisibleAssistantMessage(page, {
+        ...turn,
+        continuations: {
+          'turn-2:timer:wake': {
+            complete: false,
+            summary: emptyCounts,
+            finalMessageIds: [],
+          },
+        },
+      }),
+    ).toMatchObject({ messageId: 'a-load' });
+  });
+
   test('returns final visible text from the bound turn, ignoring thinking, tools, children and a newer turn', () => {
     const { page, turn } = fixture(
       [

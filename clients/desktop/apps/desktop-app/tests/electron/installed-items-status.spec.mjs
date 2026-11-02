@@ -85,8 +85,10 @@ test('installed statuses persist for every item kind and uninstall preserves col
       `mcp-local:${id}`,
       `collection:local:${collectionId}`,
     ];
+    // Browse cards repeat an installed item's status control; use Installed's.
+    const installed = window.getByTestId('customize-section-installed');
     for (const entry of entries) {
-      const picker = window.getByTestId(`plugins-entry-status-${entry}`);
+      const picker = installed.getByTestId(`plugins-entry-status-${entry}`);
       await expect(picker).toHaveAttribute('data-status', 'available');
       for (const status of [
         'active',
@@ -102,17 +104,22 @@ test('installed statuses persist for every item kind and uninstall preserves col
         await expect(picker).toHaveAttribute('data-status', status);
       }
     }
-    await window.getByTestId('plugins-management-back').click();
     await app.openSettings();
     await app.openSettingsSection('plugins');
     await expect(window.getByTestId('active-items-summary-counts')).toHaveText(
       'Nothing is active yet.',
     );
     await window.getByTestId('active-items-summary-manage').click();
-    await expect(
-      window.getByTestId('plugins-installed-status-filter'),
-    ).toBeVisible();
-    await window.getByTestId('plugins-installed-status-filter-clear').click();
+    // Settings Manage lands on Customize Installed filtered to Active.
+    const statusFilter = window.getByTestId(
+      'customize-installed-status-filter',
+    );
+    await expect(statusFilter).toHaveAttribute('data-status', 'active');
+    await statusFilter.click();
+    await window
+      .getByTestId('customize-installed-status-filter-option-any')
+      .click();
+    await expect(statusFilter).toHaveAttribute('data-status', 'any');
   } finally {
     await closeCanopy(launch.electronApp, userDataDir, { keepUserData: true });
   }
@@ -133,8 +140,8 @@ test('installed statuses persist for every item kind and uninstall preserves col
     await app.openPluginsPage();
     await app.openPluginsTab('installed');
     await window
-      .getByTestId('plugins-section-body-installed')
-      .getByTestId(`plugins-entry-collection:local:${collectionId}`)
+      .getByTestId('customize-section-installed')
+      .getByTestId(`customize-row-collection:local:${collectionId}`)
       .click();
     const section = window.getByTestId('plugins-entry-detail-status');
     await expect(section).toBeVisible();

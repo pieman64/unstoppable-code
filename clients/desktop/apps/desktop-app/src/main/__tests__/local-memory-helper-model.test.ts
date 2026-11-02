@@ -23,14 +23,15 @@ type HelperPreferences = Pick<
 function preferences(
   overrides: Partial<HelperPreferences> = {},
 ): HelperPreferences {
-  return {
+  const preferences: Partial<HelperPreferences> = {
     localMemoryModel: DEFAULT_LOCAL_MEMORY_MODEL,
     localMemoryThinkingLevel: 'medium',
-    providerModelConfigDefaults: undefined,
     summaryModel: 'claude-haiku-4-5-20251001',
     summaryThinkingLevel: 'off',
     ...overrides,
   };
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as HelperPreferences;
 }
 
 describe('resolveLocalMemoryHelperModel', () => {

@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
-test('local Collections table renders a share icon for each row', async ({}, testInfo) => {
+test('local Collections row offers Share in its actions menu', async ({}, testInfo) => {
   const { electronApp, userDataDir } = await launchCanopy();
 
   try {
@@ -14,25 +14,42 @@ test('local Collections table renders a share icon for each row', async ({}, tes
     await app.openPluginsTab('collections');
     await app.expectPluginsTab('collections');
 
-    // Create a local Collection so we can see the Share icon in its row.
-    await window.getByRole('button', { name: 'Add', exact: true }).click();
+    // Create a local Collection through Add custom so its Customize row
+    // (CAN-4267: the former Collections table is gone) has a Share action.
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-collection').click();
     await expect(window.locator('#collection-modal-title')).toBeVisible();
     await window.getByPlaceholder('My collection').fill('Demo Collection');
     await window.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(window.locator('#collection-modal-title')).toBeHidden({
       timeout: 5000,
     });
+    // Saving opens the new collection's detail; its row is on the list
+    // behind it.
+    await app.expectCreatedCustomizeDetail('Demo Collection');
+    await app.closeMarketplaceEntryDetail();
+
+    const row = window
+      .getByTestId('customize-section-installed')
+      .locator('[data-testid^="customize-row-collection:local:"]')
+      .filter({ hasText: 'Demo Collection' });
+    await expect(row).toBeVisible();
 
     await window.screenshot({
       path: testInfo.outputPath('collections-table-with-share-icon.png'),
       fullPage: true,
     });
 
-    // The share icon is exposed via its accessible name "Share collection"
-    // (CAN-2799: a rich tooltip, not a native title, explains it on hover).
-    await expect(
-      window.getByRole('button', { name: 'Share collection' }).first(),
-    ).toBeVisible();
+    // The former per-row share icon is now the row's ⋯ menu Share item.
+    const menuTestId = (await row.getAttribute('data-testid')).replace(
+      /^customize-row-/,
+      'customize-row-menu-',
+    );
+    await window.getByTestId(menuTestId).click();
+    const share = window.getByTestId(`${menuTestId}-share`);
+    await expect(share).toBeVisible();
+    await expect(share).toHaveAccessibleName('Share…');
+    await expect(share).toBeEnabled();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

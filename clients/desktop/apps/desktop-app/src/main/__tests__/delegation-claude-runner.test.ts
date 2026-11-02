@@ -47,14 +47,22 @@ function hasSelectedMcpHookOptions(
     )
   );
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: (...args: unknown[]): unknown => queryMock(...args),
+  query: (...args: unknown[]): unknown => queryMock(args[0]),
   createSdkMcpServer: jest.fn(() => ({ type: 'sdk' })),
   tool: jest.fn((name: string) => ({ name })),
 }));
 
 jest.mock('../agents/claude-process-host-runner', () => ({
   spawnClaudeCodeProcessOffMain: jest.fn(),
+}));
+
+jest.mock('../agents/claude-process-diagnostics', () => ({
+  recordHostedClaudeProcessDiagnostic: jest.fn(),
 }));
 
 jest.mock('../lib/main-process-logging', () => ({
@@ -80,7 +88,6 @@ jest.mock('../observability/claude-session-cost-ledger', () => {
   };
 });
 
-import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -96,15 +103,26 @@ import { BRAND } from '@canopy/brand/current';
 import { DEFERRED_TOOLS_RELOAD_CONTINUATION_TEMPLATE } from '@canopy/desktop-shared/types';
 import { DelegationCapabilityReloadController } from '../agents/delegation/capability-reload';
 import {
-  createClaudeDelegationRunner,
+  createClaudeDelegationRunner as createProductionClaudeDelegationRunner,
   type ClaudeDelegationPreparation,
 } from '../agents/delegation/claude-runner';
+import type { DelegationNativePolicy } from '../agents/delegation/native-policy';
 import type { ChildLedgerTools } from '../agents/delegation/ledger-tools';
 import {
   DelegationParent,
   type DelegationParentBroker,
 } from '@canopy/desktop-shared/node/delegation/parent';
 import { DELEGATION_TRANSCRIPT_RECORDER_LIMITS } from '../agents/delegation/transcript-recorder';
+import { InMemoryDelegationTranscriptPort } from '@canopy/desktop-shared/node/delegation/in-memory-transcript-port';
+import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptTarget,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
+import {
+  request,
+  successfulQuery,
+} from './helpers/delegation-runner-fixtures/claude';
 import { ClaudeSessionCostLedger } from '../observability/claude-session-cost-ledger';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -119,7 +137,11 @@ import {
   type LocalDelegationContext,
 } from '@canopy/desktop-shared/node/delegation/local-runner';
 import type { NativeRunHandle } from '@canopy/desktop-shared/node/delegation/types';
-import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-runner';
+import {
+  spawnClaudeCodeProcessOffMain,
+  type HostedClaudeProcessOwner,
+} from '../agents/claude-process-host-runner';
+import { recordHostedClaudeProcessDiagnostic } from '../agents/claude-process-diagnostics';
 import { reportDelegationError } from '../agents/delegation/report-error';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
@@ -131,6 +153,50 @@ import {
   failure,
   reportedCleanupDiagnostics,
 } from './helpers/delegation-cleanup-records';
+
+interface ClaudeRunnerNativePolicyDouble {
+  readonly authorize: (...args: never[]) => Promise<boolean>;
+  readonly mode: 'auto';
+  readonly instructions: (...args: never[]) => string;
+  readonly [key: string]: unknown;
+}
+
+type ClaudeRunnerPreparationDouble = Omit<
+  ClaudeDelegationPreparation,
+  'tools'
+> & {
+  readonly tools: ClaudeRunnerNativePolicyDouble;
+};
+
+type ClaudeRunnerOptions = Omit<
+  Parameters<typeof createProductionClaudeDelegationRunner>[0],
+  'prepare'
+> & {
+  readonly prepare: (
+    context: LocalDelegationContext,
+  ) => Promise<ClaudeRunnerPreparationDouble>;
+};
+
+function asClaudeDelegationPreparation(
+  preparation: ClaudeRunnerPreparationDouble,
+): ClaudeDelegationPreparation {
+  // These tests intentionally stub only the native-policy members they exercise.
+  // Keep the test double's old SDK-facing shape at this one boundary.
+  return {
+    ...preparation,
+    tools: preparation.tools as unknown as DelegationNativePolicy,
+  };
+}
+
+function createClaudeDelegationRunner(
+  options: ClaudeRunnerOptions,
+): ReturnType<typeof createProductionClaudeDelegationRunner> {
+  return createProductionClaudeDelegationRunner({
+    ...options,
+    prepare: async (context) =>
+      asClaudeDelegationPreparation(await options.prepare(context)),
+  });
+}
 
 let ledgerTempDirectory: string | undefined;
 
@@ -153,71 +219,45 @@ afterEach(async () => {
   mockClaudeSessionCostLedger = undefined;
 });
 
-function successfulQuery(): AsyncGenerator<
-  Record<string, unknown>,
-  void,
-  void
-> & { close: jest.Mock } {
-  async function* events(): AsyncGenerator<Record<string, unknown>> {
-    await Promise.resolve();
-    yield {
-      type: 'result',
-      subtype: 'success',
-      is_error: false,
-      result: 'done',
-      total_cost_usd: 0,
-      usage: { input_tokens: 1, output_tokens: 1 },
-    };
-  }
-  return Object.assign(events(), { close: jest.fn() });
+function transcriptHarness(): {
+  port: InMemoryDelegationTranscriptPort;
+  admitted: DelegationTranscriptChange[];
+} {
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  const admitted: DelegationTranscriptChange[] = [];
+  const append = port.appendChanges.bind(port);
+  jest
+    .spyOn(port, 'appendChanges')
+    .mockImplementation(async (input, signal): ReturnType<typeof append> => {
+      const result = await append(input, signal);
+      if (result.ok) admitted.push(...input.changes);
+      return result;
+    });
+  return { port, admitted };
 }
 
-const request = {
-  delegationId: 'delegation-1',
-  runGeneration: 1,
-  launchKey: 'launch-1',
-  parent: {
-    harnessId: 'codex',
-    projectId: 'project',
-    worktreeId: 'worktree',
-    chatId: 'chat',
-    sessionKey: 'session',
-    turnId: 'turn',
-    toolCallId: 'call',
-    runtimeGeneration: 1,
-    depth: 0,
-  },
-  task: {
-    modelId: 'claude-test',
-    description: 'Inspect code',
-    prompt: 'Inspect the requested code.',
-    executionMode: 'foreground',
-    contextPolicy: 'task_only',
-    isolation: 'shared_worktree',
-  },
-  route: {
-    selectedModelId: 'claude-test',
-    runtimeModelId: 'claude-test',
-    harnessId: 'claude',
-    runtimeKind: 'claude-sdk',
-    runnerRegistrationId: 'claude-local',
-    runtimeVersion: '1',
-    adapterVersion: '1',
-    modelSource: 'test',
-    providerType: 'subscription',
-    assignmentRevision: 'assignment-1',
-    billingAuthority: 'subscription',
-    aiCreditsRouted: false,
-    capabilities: ['read'],
-    supportedThinkingLevels: [],
-    capabilitySnapshotHash: 'hash',
-    capabilityGeneration: 1,
-    policyRevision: 'read-only-1',
-  },
-  cwd: '/worktree',
-  effectivePermission: 'read-only',
-  signal: new AbortController().signal,
-} satisfies AgentRunRequest;
+function streamRequest(original: AgentRunRequest): AgentRunRequest {
+  const target: DelegationTranscriptTarget = {
+    kind: 'delegation',
+    chatId: original.parent.chatId,
+    delegationId: original.delegationId,
+    runGeneration: original.runGeneration,
+  };
+  return { ...original, transcriptStream: { target } };
+}
+
+function retainedText(
+  changes: readonly DelegationTranscriptChange[],
+  text: string,
+): boolean {
+  return changes.some(
+    ({ row }) =>
+      row.final &&
+      row.blocks.some((block) => block.type === 'text' && block.text === text),
+  );
+}
 
 async function failureTerminal(
   events: Iterable<Record<string, unknown>>,
@@ -953,7 +993,14 @@ describe('a steer queued when the Claude turn ends', () => {
   function steeredQuery(
     afterResult: (uuid: unknown) => Record<string, unknown>[],
   ): {
-    query: AsyncGenerator<Record<string, unknown>> & Record<string, unknown>;
+    query: AsyncGenerator<Record<string, unknown>> & {
+      close: () => void;
+      cancelAsyncMessage: () => void;
+      interrupt: () => void;
+      streamInput: (
+        input: AsyncIterable<Record<string, unknown>>,
+      ) => Promise<void>;
+    };
     sent: Promise<Record<string, unknown>>;
   } {
     let resolveSent: (message: Record<string, unknown>) => void = () =>
@@ -1302,10 +1349,17 @@ describe('a steer queued when the Claude turn ends', () => {
       ).resolves.toMatchObject({ kind: 'accepted' });
       await expect(terminal).resolves.toMatchObject({ status: 'completed' });
       expect(waitForQuotaRecovery).toHaveBeenCalledTimes(1);
-      expect(queryMock.mock.calls[1]?.[0]?.prompt).toContain(
+      const resumedQuery = queryMock.mock.calls[1]?.[0];
+      if (!isRecord(resumedQuery))
+        throw new Error('Expected a resumed Claude query input');
+      if (typeof resumedQuery.prompt !== 'string')
+        throw new Error(
+          'Expected the resumed Claude query to include a prompt',
+        );
+      expect(resumedQuery.prompt).toContain(
         'Keep the migration backwards compatible.',
       );
-      expect(queryMock.mock.calls[1]?.[0]?.options).toMatchObject({
+      expect(resumedQuery.options).toMatchObject({
         resume: 'native-session',
       });
     } finally {
@@ -1408,6 +1462,94 @@ it('routes steering after the Claude result to an ordinary follow-up', async () 
   expect(streamInput).not.toHaveBeenCalled();
   await runner.close(handle);
 });
+
+it.each([
+  ['a fresh run without a session id', {}],
+  ['a resumed run', { runGeneration: 2, resumeSessionId: 'native-session' }],
+])(
+  'lets steering of %s before the SDK reports its session fall back to an ordinary follow-up',
+  async (_label, overrides) => {
+    let initialize: () => void = () => undefined;
+    const initialized = new Promise<void>((resolve) => {
+      initialize = resolve;
+    });
+    async function* events(): AsyncGenerator<Record<string, unknown>> {
+      // The SDK has not reported its session or steering capabilities yet.
+      await initialized;
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'native-session',
+        capabilities: [
+          'msg_lifecycle_v1',
+          'interrupt_receipt_v1',
+          'interrupt_cancel_queued_v1',
+        ],
+      };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'done',
+        total_cost_usd: 0,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    }
+    const streamInput = jest.fn(() => Promise.resolve());
+    queryMock.mockReturnValue(
+      Object.assign(events(), {
+        close: jest.fn(),
+        cancelAsyncMessage: jest.fn(),
+        interrupt: jest.fn(),
+        streamInput,
+      }),
+    );
+    const runner = createClaudeDelegationRunner({
+      available: () => Promise.resolve({ available: true }),
+      prepare: () =>
+        Promise.resolve({
+          model: 'claude-test',
+          environment: { PATH: '' },
+          tools: {
+            authorize: () => Promise.resolve(true),
+            mode: 'auto',
+            instructions: () => '',
+          },
+        }),
+      reportError: jest.fn(),
+    });
+    const handle = await runner.start({ ...request, ...overrides }, () =>
+      Promise.resolve(),
+    );
+    // The query exists, so the run has bound its steering handler.
+    for (
+      let tries = 0;
+      queryMock.mock.calls.length === 0 && tries < 100;
+      tries++
+    )
+      await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    const attemptId = '123e4567-e89b-42d3-a456-426614174009';
+    try {
+      await expect(
+        runner.steer(handle, {
+          delegationId: request.delegationId,
+          runGeneration: request.runGeneration,
+          attemptId,
+          message: 'A child finished.',
+        }),
+      ).resolves.toMatchObject({
+        kind: 'rejected',
+        attemptId,
+        fallback: 'ordinary',
+      });
+      expect(streamInput).not.toHaveBeenCalled();
+    } finally {
+      initialize();
+      await runner.close(handle);
+    }
+  },
+);
 
 it('rejects steering when the Claude SDK refuses the input stream', async () => {
   let finish: () => void = () => undefined;
@@ -1714,6 +1856,267 @@ it('stops the native Claude turn when transcript retention exceeds its budget', 
   );
 });
 
+it('keeps stream-backed Claude rows when the legacy transcript preview budget is exceeded', async () => {
+  const text = 'x'.repeat(DELEGATION_TRANSCRIPT_RECORDER_LIMITS.itemBytes + 1);
+  const secondText = 'second canonical row';
+  async function* events(): AsyncGenerator<
+    Record<string, unknown>,
+    void,
+    void
+  > {
+    await Promise.resolve();
+    yield {
+      type: 'assistant',
+      message: {
+        id: 'large-assistant',
+        content: [
+          { type: 'text', text },
+          { type: 'text', text: secondText },
+        ],
+      },
+    };
+    yield {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'done',
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+  }
+  queryMock.mockReturnValue(Object.assign(events(), { close: jest.fn() }));
+  const { port, admitted } = transcriptHarness();
+  const reportError = jest.fn();
+  const runner = createClaudeDelegationRunner({
+    available: () => Promise.resolve({ available: true }),
+    prepare: () =>
+      Promise.resolve({
+        model: 'claude-test',
+        environment: { PATH: '' },
+        tools: {
+          authorize: () => Promise.resolve(true),
+          mode: 'auto',
+          instructions: () => '',
+        },
+      }),
+    reportError,
+    transcriptPort: port,
+  });
+  let finish: (event: AgentDelegationEvent['event']) => void = () => undefined;
+  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
+    finish = resolve;
+  });
+  await runner.start(streamRequest(request), (event) => {
+    if (event.event.type === 'terminal') finish(event.event);
+    return Promise.resolve();
+  });
+
+  await expect(terminal).resolves.toMatchObject({ status: 'completed' });
+  expect(retainedText(admitted, text)).toBe(true);
+  expect(retainedText(admitted, secondText)).toBe(true);
+  expect(reportError).not.toHaveBeenCalled();
+});
+
+it('finalizes and admits pending Claude rows before a post-loop quota failure becomes terminal', async () => {
+  const text = 'pending before quota recovery';
+  async function* events(): AsyncGenerator<
+    Record<string, unknown>,
+    void,
+    void
+  > {
+    await Promise.resolve();
+    yield { type: 'system', subtype: 'init', session_id: 'quota-session' };
+    yield {
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'pending-assistant' } },
+    };
+    yield {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      },
+    };
+    yield {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text },
+      },
+    };
+    yield {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      api_error_status: 429,
+      errors: ['Quota reached'],
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 0 },
+    };
+  }
+  queryMock.mockReturnValue(Object.assign(events(), { close: jest.fn() }));
+  const { port, admitted } = transcriptHarness();
+  const waitForQuotaRecovery = jest.fn(
+    (): Promise<never> => Promise.reject(new Error('quota recovery failed')),
+  );
+  const runner = createClaudeDelegationRunner({
+    available: () => Promise.resolve({ available: true }),
+    prepare: () =>
+      Promise.resolve({
+        model: 'claude-test',
+        environment: { PATH: '' },
+        waitForQuotaRecovery,
+        tools: {
+          authorize: () => Promise.resolve(true),
+          mode: 'auto',
+          instructions: () => '',
+        },
+      }),
+    reportError: jest.fn(),
+    transcriptPort: port,
+  });
+  let finish: (event: AgentDelegationEvent['event']) => void = () => undefined;
+  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
+    finish = resolve;
+  });
+  await runner.start(streamRequest(request), (event) => {
+    if (event.event.type === 'terminal') finish(event.event);
+    return Promise.resolve();
+  });
+
+  await expect(terminal).resolves.toMatchObject({
+    status: 'failed',
+    error: {
+      message:
+        'The delegated runner failed. Retained partial output is available.',
+    },
+  });
+  expect(waitForQuotaRecovery).toHaveBeenCalledTimes(1);
+  expect(retainedText(admitted, text)).toBe(true);
+});
+
+it('attributes rejected Claude row admission to fatal transcript storage failure', async () => {
+  async function* events(): AsyncGenerator<
+    Record<string, unknown>,
+    void,
+    void
+  > {
+    await Promise.resolve();
+    yield {
+      type: 'assistant',
+      message: {
+        id: 'storage-assistant',
+        content: [{ type: 'text', text: 'pending' }],
+      },
+    };
+  }
+  queryMock.mockReturnValue(Object.assign(events(), { close: jest.fn() }));
+  const port = new InMemoryDelegationTranscriptPort({
+    owns: (): boolean => true,
+  });
+  jest.spyOn(port, 'appendChanges').mockResolvedValue({
+    ok: false,
+    error: {
+      code: 'storage_failure',
+      message: 'fixture storage failure',
+      retryable: false,
+    },
+  });
+  const runner = createClaudeDelegationRunner({
+    available: () => Promise.resolve({ available: true }),
+    prepare: () =>
+      Promise.resolve({
+        model: 'claude-test',
+        environment: { PATH: '' },
+        tools: {
+          authorize: () => Promise.resolve(true),
+          mode: 'auto',
+          instructions: () => '',
+        },
+      }),
+    reportError: jest.fn(),
+    transcriptPort: port,
+  });
+  let finish: (event: AgentDelegationEvent['event']) => void = () => undefined;
+  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
+    finish = resolve;
+  });
+  await runner.start(streamRequest(request), (event) => {
+    if (event.event.type === 'terminal') finish(event.event);
+    return Promise.resolve();
+  });
+
+  await expect(terminal).resolves.toMatchObject({
+    status: 'failed',
+    error: {
+      code: 'runtime_error',
+      message:
+        'The delegated transcript could not be saved. Retained partial output is available.',
+      retryable: false,
+    },
+  });
+});
+
+it('finalizes pending Claude rows before a requested stop is acknowledged as cancellation', async () => {
+  const text = 'cancelled Claude partial';
+  let release: () => void = () => undefined;
+  let indicate: () => void = () => undefined;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const observed = new Promise<void>((resolve) => {
+    indicate = resolve;
+  });
+  async function* events(): AsyncGenerator<
+    Record<string, unknown>,
+    void,
+    void
+  > {
+    yield {
+      type: 'assistant',
+      message: { id: 'cancelled-assistant', content: [{ type: 'text', text }] },
+    };
+    indicate();
+    await waiting;
+  }
+  const close = jest.fn(() => release());
+  queryMock.mockReturnValue(Object.assign(events(), { close }));
+  const { port, admitted } = transcriptHarness();
+  const runner = createClaudeDelegationRunner({
+    available: () => Promise.resolve({ available: true }),
+    prepare: () =>
+      Promise.resolve({
+        model: 'claude-test',
+        environment: { PATH: '' },
+        tools: {
+          authorize: () => Promise.resolve(true),
+          mode: 'auto',
+          instructions: () => '',
+        },
+      }),
+    reportError: jest.fn(),
+    transcriptPort: port,
+  });
+  let finish: (event: AgentDelegationEvent['event']) => void = () => undefined;
+  const terminal = new Promise<AgentDelegationEvent['event']>((resolve) => {
+    finish = resolve;
+  });
+  const handle = await runner.start(streamRequest(request), (event) => {
+    if (event.event.type === 'terminal') finish(event.event);
+    return Promise.resolve();
+  });
+  await observed;
+  await expect(runner.stop(handle, 'user_cancelled')).resolves.toEqual({
+    stopped: true,
+  });
+
+  await expect(terminal).resolves.toMatchObject({ status: 'cancelled' });
+  expect(close).toHaveBeenCalled();
+  expect(retainedText(admitted, text)).toBe(true);
+});
+
 describe('provider-gated MCP servers', () => {
   it('gates a provider-selected server through one shared decision per tool-use id in the hook and canUseTool, honouring both an allow and a deny decision', async () => {
     queryMock.mockReturnValue(successfulQuery());
@@ -1994,7 +2397,7 @@ describe('in-run capability reload', () => {
     };
     const execute = jest.fn(() => Promise.resolve({ text: 'loaded' }));
     const controller = new DelegationCapabilityReloadController();
-    const preparation = (): ClaudeDelegationPreparation => ({
+    const preparation = (): ClaudeRunnerPreparationDouble => ({
       model: 'claude-test',
       environment: { PATH: '' },
       appTools: {
@@ -2013,7 +2416,9 @@ describe('in-run capability reload', () => {
         instructions: () => '',
       },
     });
-    const apply = jest.fn(() => Promise.resolve(preparation()));
+    const apply = jest.fn(() =>
+      Promise.resolve(asClaudeDelegationPreparation(preparation())),
+    );
     const restore = jest.fn(() => Promise.reject(new Error('unused')));
     const interrupt = jest.fn(() => Promise.resolve());
 
@@ -2126,26 +2531,17 @@ describe('Agent Ledger tools for a delegated Claude run', () => {
     };
     const broker: DelegationParentBroker = {
       spawn: () => Promise.resolve({ ok: true, value: snapshot }),
-      watch: () =>
+      getOutput: () =>
         Promise.resolve({
           ok: true,
           value: {
-            watcherId: 'watcher',
-            mode: 'any',
-            deadlineAt: 1,
-            targets: [],
+            delegationId: 'grandchild',
+            currentRunGeneration: 1,
+            currentStatus: 'pending',
+            latestResultIndex: null,
+            result: null,
           },
         }),
-      getOutput: () => ({
-        ok: true,
-        value: {
-          delegationId: 'grandchild',
-          currentRunGeneration: 1,
-          currentStatus: 'pending',
-          latestResultIndex: null,
-          result: null,
-        },
-      }),
       inspect: () => undefined,
       list: () => [],
       stop: () => ({ ok: true, value: snapshot }),
@@ -2169,7 +2565,6 @@ describe('Agent Ledger tools for a delegated Claude run', () => {
         spawn: 'DelegateTask',
         inspect: 'InspectDelegate',
         list: 'ListDelegates',
-        watch: 'WatchDelegates',
         output: 'GetDelegateOutput',
         stop: 'StopDelegate',
         requestSteering: 'RequestSteering',
@@ -2812,5 +3207,60 @@ describe('local cleanup failure diagnostics', () => {
     const late = cleanupRecord({ failures: [rejected] });
     expect(cleanupRecords(warn)).toEqual([timeout, timeout, late]);
     expect(temporary).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports its native CLI's lifecycle under the parent chat without an owner kill (CAN-4835)", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      killed: false,
+      exitCode: null,
+      kill: jest.fn(() => true),
+    });
+    let owner: HostedClaudeProcessOwner | undefined;
+    let spawned = (): void => undefined;
+    const spawn = new Promise<void>((resolve) => {
+      spawned = resolve;
+    });
+    jest
+      .mocked(spawnClaudeCodeProcessOffMain)
+      .mockImplementationOnce((_options, processOwner) => {
+        owner = processOwner;
+        spawned();
+        return child;
+      });
+    queryMock.mockImplementation((input: unknown) => {
+      const spawnProcess = spawnOption(input);
+      if (isSpawn(spawnProcess))
+        spawnProcess({
+          command: '/fake/claude',
+          args: [],
+          env: {},
+          signal: new AbortController().signal,
+        });
+      return successfulQuery();
+    });
+    const runner = cleanupRunner(() => undefined);
+    const { handle } = await launch(runner);
+    await spawn;
+
+    expect(owner).toMatchObject({
+      sessionKey: 'session',
+      delegationId: 'delegation-1',
+    });
+    // Delegated runs outlive their parent's session, so no owner check.
+    expect(owner?.isRegistered).toBeUndefined();
+    owner?.recordDiagnostic({ kind: 'claude_process_started', pid: 4242 });
+    expect(recordHostedClaudeProcessDiagnostic).toHaveBeenCalledWith(
+      {
+        sessionKey: 'session',
+        delegationId: 'delegation-1',
+        providerType: 'claude',
+      },
+      { kind: 'claude_process_started', pid: 4242 },
+    );
+
+    child.emit('exit', 0, null);
+    await runner.close(handle);
   });
 });

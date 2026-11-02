@@ -1,6 +1,10 @@
 import { lstat, opendir, readlink, realpath } from 'node:fs/promises';
 import { join, posix, relative, sep, win32 } from 'node:path';
 import type { RepoRuleSkipped } from '@canopy/protocol/repo-rules';
+import type {
+  RepoRuleCheckout,
+  RepoRulesRead,
+} from '@canopy/core-runtime/node/workspace/repo-rules';
 import { listTrackedFiles } from '../lib/git';
 import { isProjectInstructionFileReadable } from '../lib/instruction-files';
 import { eligibility, eligible } from './eligibility';
@@ -15,16 +19,8 @@ import {
 } from './safety';
 
 /** Worker-owned trusted checkout descriptor. Never crosses IPC. */
-export interface RepoCheckout {
-  repoId: string;
-  root: string;
-  prefix: string;
-}
-export interface RulesRead {
-  rules: ReadRepoRule[];
-  skipped: RepoRuleSkipped[];
-  nestedDirectories: Record<string, string[]>;
-}
+export type RepoCheckout = RepoRuleCheckout;
+export type RulesRead = RepoRulesRead;
 export function isRulePath(path: string): boolean {
   return (
     path === '.cursorrules' || /(?:^|\/)\.cursor\/rules\/.+\.mdc$/.test(path)

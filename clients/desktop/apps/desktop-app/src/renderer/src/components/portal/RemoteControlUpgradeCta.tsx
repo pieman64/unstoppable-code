@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { orgsWithoutActivePlanClause } from '@canopy/ui-shared/lib/org-lapse-sentence';
-import { MODAL_BUTTON_PRIMARY } from '@/components/portal/portal-button-styles';
+import { Button } from '@/components/shared/Button';
 
 interface RemoteControlUpgradeCtaProps {
   /**
@@ -168,14 +168,14 @@ export function RemoteControlUpgradeCta({
           {REMOTE_CONTROL_LABEL} is included with the Pro and Business plans.
         </p>
       )}
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="compact"
         onClick={onUpgrade}
         data-testid="canopy-portal-upgrade-cta-button"
-        className={`shrink-0 ${MODAL_BUTTON_PRIMARY}`}
       >
         {namedPlan ? `Get ${namedPlan}` : 'Upgrade to unlock'}
-      </button>
+      </Button>
     </div>
   );
 }

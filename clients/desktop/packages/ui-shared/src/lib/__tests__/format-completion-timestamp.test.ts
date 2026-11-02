@@ -1,4 +1,7 @@
-import { formatCompletionTimestamp } from '../format-completion-timestamp';
+import {
+  completionStampTooltip,
+  formatCompletionTimestamp,
+} from '../format-completion-timestamp';
 
 describe('formatCompletionTimestamp', () => {
   beforeEach(() => {
@@ -95,5 +98,40 @@ describe('formatCompletionTimestamp', () => {
   it('falls back to "just now" for future or invalid timestamps', () => {
     expect(formatCompletionTimestamp(now() + 60_000)).toBe('just now');
     expect(formatCompletionTimestamp(Number.NaN)).toBe('just now');
+  });
+});
+
+describe('completionStampTooltip', () => {
+  const now = new Date(2026, 9, 22, 12, 0).getTime();
+  const at = (date: Date): number => date.getTime();
+
+  it('adds the exact time behind a relative or time-only label', () => {
+    expect(completionStampTooltip(now - 2 * 60_000, undefined, now)).toMatch(
+      /Oct 22, 2026/,
+    );
+    expect(
+      completionStampTooltip(at(new Date(2026, 9, 22, 9, 15)), undefined, now),
+    ).toMatch(/Oct 22, 2026/);
+    expect(
+      completionStampTooltip(at(new Date(2026, 9, 19, 9, 15)), undefined, now),
+    ).toMatch(/Oct 19, 2026/);
+  });
+
+  it('shows nothing when the label already has the date and time', () => {
+    expect(
+      completionStampTooltip(at(new Date(2026, 9, 9, 14, 23)), undefined, now),
+    ).toBeUndefined();
+    expect(
+      completionStampTooltip(at(new Date(2025, 9, 9, 14, 23)), undefined, now),
+    ).toBeUndefined();
+  });
+
+  it('keeps the model, which the label never shows', () => {
+    expect(
+      completionStampTooltip(at(new Date(2026, 9, 9, 14, 23)), 'Opus 5.5', now),
+    ).toBe('Opus 5.5');
+    expect(completionStampTooltip(now - 60_000, 'Opus 5.5', now)).toMatch(
+      /Oct 22, 2026.* · Opus 5\.5$/,
+    );
   });
 });

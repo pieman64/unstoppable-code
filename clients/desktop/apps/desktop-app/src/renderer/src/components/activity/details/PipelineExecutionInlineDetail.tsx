@@ -30,7 +30,7 @@ import {
   getPipelineJobStatusBadgeClassName,
   getPipelineJobStatusDotClassName,
 } from '../utils';
-import { DetailChevronIcon } from './DetailChevronIcon';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { TerminalModeBanner } from './TerminalModeBanner';
 import { KeyValueTable, TimingSummaryGrid } from './PipelineStepDetailParts';
 import { PipelinePauseResumeContent } from './PipelinePauseResumeContent';
@@ -287,9 +287,9 @@ function ChildPipelineToggle({
       <button
         type="button"
         onClick={(): void => onToggle(stepInstanceKey)}
-        className="mt-1 flex items-center gap-1 rounded-md px-2.5 py-1 text-2xs fg-info/80 transition hover:bg-fg-primary/[0.04] hover:fg-info"
+        className="mt-1 flex items-center gap-1 rounded-md px-2.5 py-1 text-2xs fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
       >
-        <DetailChevronIcon open={expandedChildSteps.has(stepInstanceKey)} />
+        <ChevronIcon open={expandedChildSteps.has(stepInstanceKey)} />
         {child.pipeline_name}
       </button>
       {expandedChildSteps.has(stepInstanceKey) && (
@@ -582,16 +582,14 @@ export function PipelineExecutionInlineDetail({
                                             setSelectedStep(stepRef);
                                           }
                                         }}
-                                        className={`focus-ring flex w-full items-start justify-between gap-3 rounded-md border px-2.5 py-2 text-left transition ${
+                                        className={`focus-ring flex w-full items-start justify-between gap-3 rounded-md border px-2.5 py-2 text-left transition-colors ${
                                           isSelected
                                             ? 'border-fg-info/50 bg-info-subtle'
                                             : 'bg-fg-primary/[0.02] hover:bg-fg-primary/[0.04]'
                                         }`}
                                       >
                                         <div className="min-w-0 flex items-center gap-1.5">
-                                          <DetailChevronIcon
-                                            open={isSelected}
-                                          />
+                                          <ChevronIcon open={isSelected} />
                                           <div>
                                             <div className="truncate text-s fg-primary/80">
                                               {step.name ?? step.id}

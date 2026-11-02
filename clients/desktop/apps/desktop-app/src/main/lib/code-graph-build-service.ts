@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { fingerprintCustomLanguageInputs } from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+import { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
 import { getCodeGraphWorktreeService } from '@canopy/desktop-shared/node/code-graph/service';
 import {
   getWorktreeCodeGraphDbPath,
@@ -15,7 +15,7 @@ import type {
   CodeGraphRepositoryInput,
 } from '@canopy/desktop-shared/types/code-graph';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
-import type { CodeGraphSeedSource } from '@canopy/desktop-shared/node/code-graph/base-graph';
+import type { CodeGraphSeedSource } from '@canopy/code-graph/base-graph';
 import type {
   CodeGraphBuildSchedulingOptions,
   CodeGraphWorkerBuildRequest,

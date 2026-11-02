@@ -1,5 +1,15 @@
 import { SecureStorageNotice } from '@/components/auth/SecureStorageNotice';
-import { Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  type SettingsSaveState,
+} from '@canopy/ui-shared/components';
+import { ArrowUpRightIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  SettingsGroup,
+  SettingsRow,
+  SettingsSection,
+} from '@/components/settings/SettingsLayout';
 import {
   type JSX,
   useCallback,
@@ -35,8 +45,8 @@ const RUNTIME_META: Record<
     helper: 'Interactive agent sessions and helper agents.',
   },
   pipeline: {
-    label: 'Pipeline runtime',
-    helper: 'Pipeline runs and agent steps launched inside pipelines.',
+    label: 'Workflow runtime',
+    helper: 'Workflow runs and agent steps launched inside workflows.',
   },
 };
 
@@ -45,6 +55,44 @@ export interface WorkspaceEnvironmentTabProps {
   workspaceName: string;
   workspaceKind?: 'code' | 'cowork';
   onManageEnvironments: () => void;
+  /**
+   * `panel` is the modal tab with its own Save button. `settings` is a page
+   * of grouped rows where each choice saves as it is made.
+   */
+  layout?: 'panel' | 'settings';
+  /** Reports each save, for a page that shows one save line. */
+  onSaveStateChange?: (state: SettingsSaveState) => void;
+  /**
+   * Whether a choice is waiting and cannot be written now: a failed save,
+   * or one held while secure storage waits for Retry.
+   */
+  onUnsavedChange?: (unsaved: boolean) => void;
+  /**
+   * Gives the page a function that waits for running saves and resolves
+   * false when the last one failed with a choice still waiting, so closing
+   * the page can wait for it. Called with null on unmount.
+   */
+  onRegisterFlush?: (flush: (() => Promise<boolean>) | null) => void;
+}
+
+/** Settings-page copy: "workflow" in the interface, never "pipeline". */
+const SETTINGS_RUNTIME_LABELS: Record<EnvironmentRuntime, string> = {
+  canopy: `${brandText.shortName} runtime`,
+  agent: 'Agent runtime',
+  pipeline: 'Workflow runtime',
+};
+
+function settingsRuntimeHelper(
+  runtime: EnvironmentRuntime,
+  workspaceKind: 'code' | 'cowork',
+): string {
+  if (runtime === 'pipeline') {
+    return 'Workflow runs and the agent steps inside them.';
+  }
+  if (runtime === 'canopy' && workspaceKind === 'code') {
+    return 'Scripts, hooks, terminals and background processes.';
+  }
+  return runtimeHelper(runtime, workspaceKind);
 }
 
 function runtimeHelper(
@@ -103,6 +151,10 @@ export function WorkspaceEnvironmentTab({
   workspaceName,
   workspaceKind = 'code',
   onManageEnvironments,
+  layout = 'panel',
+  onSaveStateChange,
+  onUnsavedChange,
+  onRegisterFlush,
 }: WorkspaceEnvironmentTabProps): JSX.Element {
   const data = useEnvironmentsStore((s) => s.data);
   const status = useEnvironmentsStore((s) => s.status);
@@ -127,6 +179,50 @@ export function WorkspaceEnvironmentTab({
   >('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const savedTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const onSaveStateChangeRef = useRef(onSaveStateChange);
+  onSaveStateChangeRef.current = onSaveStateChange;
+  const handleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  // The save running now (a follow-up replaces it), and whether the last
+  // save failed.
+  const savingRef = useRef<Promise<void> | null>(null);
+  const lastSaveFailedRef = useRef(false);
+  const runSave = useCallback((): Promise<void> => {
+    const run = handleSaveRef.current();
+    savingRef.current = run;
+    void run.finally(() => {
+      if (savingRef.current === run) savingRef.current = null;
+    });
+    return run;
+  }, []);
+  const onRegisterFlushRef = useRef(onRegisterFlush);
+  onRegisterFlushRef.current = onRegisterFlush;
+  useEffect(() => {
+    const flush = async (): Promise<boolean> => {
+      for (;;) {
+        while (savingRef.current !== null) await savingRef.current;
+        const waiting = Object.keys(pendingOverridesRef.current).length > 0;
+        if (!waiting) return true;
+        if (lastSaveFailedRef.current) return false;
+        // A choice made during the last save: write it now rather than
+        // leave it to an autosave that may not run before the page closes.
+        // One held for secure storage Retry is reported through
+        // onUnsavedChange instead.
+        const store = useEnvironmentsStore.getState();
+        if (store.secureStorageFailure !== null || store.pendingSave !== null) {
+          return true;
+        }
+        const before = pendingOverridesRef.current;
+        await runSave();
+        // Nothing could be written (no loaded config): do not spin.
+        if (pendingOverridesRef.current === before) return false;
+      }
+    };
+    onRegisterFlushRef.current?.(flush);
+    return (): void => onRegisterFlushRef.current?.(null);
+  }, [runSave]);
 
   useEffect(() => {
     if (status === 'idle') {
@@ -134,14 +230,15 @@ export function WorkspaceEnvironmentTab({
     }
   }, [load, status]);
 
-  useEffect(
-    () => (): void => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return (): void => {
+      mountedRef.current = false;
       if (savedTimerRef.current !== null) {
         window.clearTimeout(savedTimerRef.current);
       }
-    },
-    [],
-  );
+    };
+  }, []);
 
   const assignment = useMemo(
     () => (data ? findAssignment(data, workspaceId) : undefined),
@@ -204,6 +301,9 @@ export function WorkspaceEnvironmentTab({
 
   const handleSave = useCallback(async (): Promise<void> => {
     if (!data) return;
+    // The choices this save writes. A choice made meanwhile stays pending
+    // and is written by the next save.
+    const writing = pendingOverridesRef.current;
     setSaveStatus('saving');
     setSaveError(null);
 
@@ -228,8 +328,8 @@ export function WorkspaceEnvironmentTab({
           ...persistedAssignment?.runtimes,
         };
       for (const runtime of RUNTIMES) {
-        if (runtime in pendingOverrides) {
-          const next = pendingOverrides[runtime] ?? null;
+        if (runtime in writing) {
+          const next = writing[runtime] ?? null;
           if (next === null) {
             delete mergedRuntimes[runtime];
           } else {
@@ -266,16 +366,33 @@ export function WorkspaceEnvironmentTab({
       await saveWorkspaceAssignments(nextConfig);
       const remaining = { ...pendingOverridesRef.current };
       for (const runtime of RUNTIMES) {
-        if (
-          runtime in pendingOverrides &&
-          remaining[runtime] === pendingOverrides[runtime]
-        ) {
+        if (runtime in writing && remaining[runtime] === writing[runtime]) {
           delete remaining[runtime];
         }
       }
       pendingOverridesRef.current = remaining;
       setPendingOverrides(remaining);
-      setSaveStatus(Object.keys(remaining).length === 0 ? 'saved' : 'idle');
+      lastSaveFailedRef.current = false;
+      const queued = Object.keys(remaining).length > 0;
+      if (!mountedRef.current) {
+        // The page moved on while this save ran: nothing else will pick up a
+        // choice made meanwhile, so write it now and report to the page.
+        // Only where choices save as they are made; with a Save button, a
+        // choice the user never saved is dropped on leaving, as before.
+        const store = useEnvironmentsStore.getState();
+        if (
+          queued &&
+          layoutRef.current === 'settings' &&
+          store.secureStorageFailure === null &&
+          store.pendingSave === null
+        ) {
+          void runSave();
+          return;
+        }
+        onSaveStateChangeRef.current?.(queued ? 'idle' : 'saved');
+        return;
+      }
+      setSaveStatus(queued ? 'idle' : 'saved');
       if (savedTimerRef.current !== null) {
         window.clearTimeout(savedTimerRef.current);
       }
@@ -284,6 +401,8 @@ export function WorkspaceEnvironmentTab({
         setSaveStatus((current) => (current === 'saved' ? 'idle' : current));
       }, 1500);
     } catch (err) {
+      lastSaveFailedRef.current = true;
+      if (!mountedRef.current) onSaveStateChangeRef.current?.('error');
       setSaveStatus('error');
       setSaveError(
         err instanceof Error
@@ -291,7 +410,37 @@ export function WorkspaceEnvironmentTab({
           : 'Could not save environment assignments.',
       );
     }
-  }, [data, pendingOverrides, saveWorkspaceAssignments, workspaceId]);
+  }, [data, runSave, saveWorkspaceAssignments, workspaceId]);
+  handleSaveRef.current = handleSave;
+
+  // On a settings page each choice saves as it is made. A failed save keeps
+  // the choice pending until the next change, so it does not retry in a loop.
+  // While a failed environment save waits for Retry, the choice stays
+  // pending: writing assignments then would replace the waiting save and
+  // drop the environment it holds. It saves once Retry clears the failure.
+  const storageBlocked = secureStorageFailure !== null || pendingSave !== null;
+  const autosaveRef = useRef({ handleSave, saving: false });
+  autosaveRef.current = { handleSave, saving: saveStatus === 'saving' };
+  useEffect(() => {
+    if (layout !== 'settings' || storageBlocked) return;
+    if (Object.keys(pendingOverrides).length === 0) return;
+    if (autosaveRef.current.saving) return;
+    void runSave();
+  }, [layout, pendingOverrides, runSave, storageBlocked]);
+
+  useEffect(() => {
+    onSaveStateChangeRef.current?.(saveStatus === 'idle' ? 'idle' : saveStatus);
+  }, [saveStatus]);
+
+  const unsaved =
+    Object.keys(pendingOverrides).length > 0 &&
+    (storageBlocked || saveStatus === 'error');
+  const onUnsavedChangeRef = useRef(onUnsavedChange);
+  onUnsavedChangeRef.current = onUnsavedChange;
+  useEffect(() => {
+    onUnsavedChangeRef.current?.(unsaved);
+  }, [unsaved]);
+  useEffect(() => (): void => onUnsavedChangeRef.current?.(false), []);
 
   if (!data) {
     return (
@@ -313,16 +462,15 @@ export function WorkspaceEnvironmentTab({
             >
               Could not load environment assignments.
             </p>
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={() => {
                 void useEnvironmentsStore.getState().load();
               }}
               data-testid="workspace-environment-retry"
-              className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-accent-subtle"
             >
               Retry
-            </button>
+            </Button>
           </div>
         ) : (
           <p
@@ -336,35 +484,102 @@ export function WorkspaceEnvironmentTab({
     );
   }
 
+  const storageNotice = (
+    <SecureStorageNotice
+      failure={secureStorageFailure}
+      retrying={saveStatus === 'saving' || status === 'loading'}
+      onRetry={(): void => {
+        void retryStorageFailure()
+          .then(() => {
+            setSaveStatus(
+              pendingSave?.kind === 'workspaceAssignments' &&
+                Object.keys(pendingOverridesRef.current).length === 0
+                ? 'saved'
+                : 'idle',
+            );
+            setSaveError(null);
+          })
+          .catch((err: unknown) => {
+            setSaveStatus('error');
+            setSaveError(
+              err instanceof Error
+                ? err.message
+                : 'Could not save environment assignments.',
+            );
+          });
+      }}
+    />
+  );
+
+  if (layout === 'settings') {
+    return (
+      <div
+        className="flex flex-col gap-10"
+        data-testid={`workspace-environment-tab-${workspaceId}`}
+      >
+        {storageNotice}
+        <SettingsSection title="Runtimes">
+          <SettingsGroup>
+            {RUNTIMES.map((runtime) => {
+              const fallback = getFallbackEnvironment(data, runtime);
+              return (
+                <SettingsRow
+                  key={runtime}
+                  label={SETTINGS_RUNTIME_LABELS[runtime]}
+                  description={settingsRuntimeHelper(runtime, workspaceKind)}
+                  control={
+                    <EnvironmentRuntimeSelect
+                      variant="settings"
+                      environments={sortedEnvironments}
+                      value={resolveValue(runtime)}
+                      onChange={(next) => handleChange(runtime, next)}
+                      fallbackOption={{
+                        id: null,
+                        label: `Default (${fallback?.name ?? 'unassigned'})`,
+                      }}
+                      testId={`workspace-environment-${runtime}`}
+                      ariaLabel={`${SETTINGS_RUNTIME_LABELS[runtime]} assignment`}
+                    />
+                  }
+                />
+              );
+            })}
+          </SettingsGroup>
+          {saveStatus === 'error' && !secureStorageFailure && (
+            <Notice
+              intent="attention"
+              data-testid="workspace-environment-error"
+            >
+              {saveError ?? 'Could not save environment assignments.'}
+            </Notice>
+          )}
+        </SettingsSection>
+        <SettingsGroup>
+          <SettingsRow
+            label="Environments"
+            description="Add or edit Docker and remote environments in Settings."
+            control={
+              <Button
+                size="compact"
+                onClick={onManageEnvironments}
+                data-testid="workspace-environment-manage"
+              >
+                Manage environments
+                <ArrowUpRightIcon size={14} aria-hidden={true} />
+              </Button>
+            }
+          />
+        </SettingsGroup>
+      </div>
+    );
+  }
+
   return (
     <div
       className="space-y-4 p-2"
       data-testid={`workspace-environment-tab-${workspaceId}`}
     >
-      <SecureStorageNotice
-        failure={secureStorageFailure}
-        retrying={saveStatus === 'saving' || status === 'loading'}
-        onRetry={(): void => {
-          void retryStorageFailure()
-            .then(() => {
-              setSaveStatus(
-                pendingSave?.kind === 'workspaceAssignments' &&
-                  Object.keys(pendingOverridesRef.current).length === 0
-                  ? 'saved'
-                  : 'idle',
-              );
-              setSaveError(null);
-            })
-            .catch((err: unknown) => {
-              setSaveStatus('error');
-              setSaveError(
-                err instanceof Error
-                  ? err.message
-                  : 'Could not save environment assignments.',
-              );
-            });
-        }}
-      />
+      {storageNotice}
       <div className="space-y-1">
         <h3 className="text-s font-semibold fg-primary">Environment</h3>
         <p className="text-xs fg-secondary">
@@ -401,14 +616,13 @@ export function WorkspaceEnvironmentTab({
       </div>
 
       <div className="flex items-center justify-between gap-3 border-t pt-3">
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={onManageEnvironments}
           data-testid="workspace-environment-manage"
-          className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-accent-subtle"
         >
           Manage environments
-        </button>
+        </Button>
         <div className="flex items-center justify-end gap-3">
           {saveStatus === 'saved' && (
             <span
@@ -426,19 +640,19 @@ export function WorkspaceEnvironmentTab({
               {saveError ?? 'Could not save environment assignments.'}
             </Notice>
           )}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => {
               void handleSave();
             }}
             disabled={!dirty || saveStatus === 'saving'}
             data-testid="workspace-environment-save"
-            className="focus-ring rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {saveStatus === 'saving'
               ? 'Saving…'
               : 'Save environment assignments'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

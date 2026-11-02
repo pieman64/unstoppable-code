@@ -1,3 +1,4 @@
+import { isSyntacticallyValidModelId } from '../../lib/model-id';
 import { createHash, randomUUID } from 'node:crypto';
 import { capabilityFiles } from '../capabilities/file-snapshot';
 import {
@@ -52,22 +53,43 @@ export async function openCodeCapabilityFiles(
   return capabilityFiles(roots, signal, 'OpenCode');
 }
 
+export interface OpenCodeInferenceSelection {
+  modelId: string;
+  fundingDigest: string;
+}
+
 export interface OpenCodeCapabilitySnapshot {
   version: 1;
   runtime: unknown;
   contextDigest: string;
   providerSettingsDigest: string;
+  inferenceRouteDigest?: string;
+  inferenceSelection?: OpenCodeInferenceSelection;
   files: Record<string, string>;
   mcp: readonly { name: string; identity: unknown; tools: readonly Tool[] }[];
 }
 export interface OpenCodeCapabilityBinding {
-  version: 1;
+  /** Older hosts must reject managed authority or model-transition metadata they cannot verify. */
+  version: 1 | 2 | 3;
   sessionId: string;
   digest: string;
   generation: number;
+  inferenceRouteDigest?: string;
+  inferenceSelection?: OpenCodeInferenceSelection;
 }
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function isInferenceSelection(
+  value: unknown,
+): value is OpenCodeInferenceSelection {
+  return (
+    record(value) &&
+    typeof value.modelId === 'string' &&
+    isSyntacticallyValidModelId(value.modelId) &&
+    typeof value.fundingDigest === 'string' &&
+    /^[a-f0-9]{64}$/.test(value.fundingDigest)
+  );
 }
 function missing(error: unknown): boolean {
   return record(error) && error.code === 'ENOENT';
@@ -99,7 +121,7 @@ export async function readOpenCodeCapabilityBinding(
   const value: unknown = JSON.parse(text);
   if (
     !record(value) ||
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2 && value.version !== 3) ||
     value.sessionId !== sessionId ||
     typeof value.digest !== 'string' ||
     !/^[a-f0-9]{64}$/.test(value.digest) ||
@@ -109,6 +131,21 @@ export async function readOpenCodeCapabilityBinding(
   )
     throw new Error(
       'OpenCode capability binding is invalid. Start a new chat.',
+    );
+  if (
+    value.version !== 1
+      ? typeof value.inferenceRouteDigest !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.inferenceRouteDigest)
+      : value.inferenceRouteDigest !== undefined
+  )
+    throw new Error('OpenCode inference binding is invalid. Start a new chat.');
+  if (
+    value.version === 3
+      ? !isInferenceSelection(value.inferenceSelection)
+      : value.inferenceSelection !== undefined
+  )
+    throw new Error(
+      'OpenCode inference selection is invalid. Start a new chat.',
     );
   const file = join(profile, 'capability-snapshots', `${value.digest}.json`);
   const info = await lstat(file);
@@ -125,11 +162,28 @@ export async function readOpenCodeCapabilityBinding(
     throw new Error(
       'OpenCode capability snapshot changed on disk. Start a new chat.',
     );
+  if (snapshot.inferenceRouteDigest !== value.inferenceRouteDigest)
+    throw new Error(
+      'OpenCode inference binding changed on disk. Start a new chat.',
+    );
+  if (
+    openCodeCapabilityDigest(snapshot.inferenceSelection) !==
+    openCodeCapabilityDigest(value.inferenceSelection)
+  )
+    throw new Error(
+      'OpenCode inference selection changed on disk. Start a new chat.',
+    );
   return {
-    version: 1,
+    ...(isInferenceSelection(value.inferenceSelection)
+      ? { inferenceSelection: { ...value.inferenceSelection } }
+      : {}),
+    version: value.version,
     sessionId,
     digest: value.digest,
     generation: value.generation,
+    ...(typeof value.inferenceRouteDigest === 'string'
+      ? { inferenceRouteDigest: value.inferenceRouteDigest }
+      : {}),
   };
 }
 async function atomicJson(
@@ -161,14 +215,35 @@ export async function saveOpenCodeCapabilitySnapshot(
   previous: OpenCodeCapabilityBinding | undefined,
   signal: AbortSignal,
 ): Promise<OpenCodeCapabilityBinding> {
+  if (
+    snapshot.inferenceRouteDigest !== undefined &&
+    !/^[a-f0-9]{64}$/.test(snapshot.inferenceRouteDigest)
+  )
+    throw new Error('OpenCode inference binding is invalid.');
+  if (
+    snapshot.inferenceSelection !== undefined &&
+    (!snapshot.inferenceRouteDigest ||
+      !isInferenceSelection(snapshot.inferenceSelection))
+  )
+    throw new Error('OpenCode inference selection is invalid.');
   const digest = openCodeCapabilityDigest(snapshot);
   const binding: OpenCodeCapabilityBinding = {
-    version: 1,
+    version: snapshot.inferenceSelection
+      ? 3
+      : snapshot.inferenceRouteDigest
+        ? 2
+        : 1,
+    ...(snapshot.inferenceSelection
+      ? { inferenceSelection: { ...snapshot.inferenceSelection } }
+      : {}),
     sessionId,
     digest,
     generation: previous
       ? previous.generation + Number(previous.digest !== digest)
       : 1,
+    ...(snapshot.inferenceRouteDigest
+      ? { inferenceRouteDigest: snapshot.inferenceRouteDigest }
+      : {}),
   };
   await atomicJson(
     join(profile, 'capability-snapshots'),

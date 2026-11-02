@@ -531,10 +531,13 @@ export async function measureInjectedMemoryLatency(options: {
       await Promise.all([
         readMemoryIndex(options.userDir),
         readMemoryIndex(options.workspaceDir),
-        readRecentInboxNotes(options.userDir, { maxNotes: 3, maxChars: 1_000 }),
+        readRecentInboxNotes(options.userDir, {
+          maxNotes: 3,
+          maxCharsPerNote: 1_000,
+        }),
         readRecentInboxNotes(options.workspaceDir, {
           maxNotes: 3,
-          maxChars: 1_000,
+          maxCharsPerNote: 1_000,
         }),
       ]);
     renderLocalMemoryBlock({

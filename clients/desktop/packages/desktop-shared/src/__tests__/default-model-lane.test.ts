@@ -14,6 +14,8 @@ import {
 } from '../types';
 import {
   CREDITS_LANE_DEFAULT_CANDIDATES,
+  isAiCreditsOnlyBilling,
+  isCodexModelAvailableToAccount,
   isGuestAllowedCreditsModel,
   repairLaneDefaults,
   resolveDefaultModelLane,
@@ -1072,6 +1074,182 @@ describe('guest principal on the AI Credits lane', () => {
     routeOnly(SONNET);
     expect(resolve(CREDITS_ONLY, { guestPrincipal: true })).toMatchObject({
       outcome: 'no-dispatchable-model',
+    });
+  });
+});
+
+describe('isAiCreditsOnlyBilling', () => {
+  const lanes = (
+    claudeNativeAuth: boolean | undefined,
+    codexNativeAuth: boolean | undefined,
+    creditsEligible: boolean | undefined,
+  ): BillingLaneAvailability => ({
+    claudeNativeAuth,
+    codexNativeAuth,
+    creditsEligible,
+  });
+
+  it('is true when credits are eligible and neither provider has native access', () => {
+    expect(isAiCreditsOnlyBilling(lanes(false, false, true))).toBe(true);
+  });
+
+  it('is false when either provider has native access', () => {
+    expect(isAiCreditsOnlyBilling(lanes(true, false, true))).toBe(false);
+    expect(isAiCreditsOnlyBilling(lanes(false, true, true))).toBe(false);
+  });
+
+  it('is false while either native access probe is unknown', () => {
+    expect(isAiCreditsOnlyBilling(lanes(undefined, false, true))).toBe(false);
+    expect(isAiCreditsOnlyBilling(lanes(false, undefined, true))).toBe(false);
+  });
+
+  it('is false when credits are ineligible or unknown', () => {
+    expect(isAiCreditsOnlyBilling(lanes(false, false, false))).toBe(false);
+    expect(isAiCreditsOnlyBilling(lanes(false, false, undefined))).toBe(false);
+  });
+
+  it('is false when every fact is unknown', () => {
+    expect(isAiCreditsOnlyBilling(lanes(undefined, undefined, undefined))).toBe(
+      false,
+    );
+  });
+});
+
+describe('CAN-4716 Codex account eligibility', () => {
+  const LUNA = 'gpt-6-luna';
+
+  beforeEach(() => {
+    initClaudeModels([{ id: DEFAULT_CLAUDE_MODEL, label: 'Opus' }]);
+    initCodexModels([
+      { id: DEFAULT_CODEX_MODEL, label: 'GPT' },
+      { id: LUNA, label: 'GPT 6 Luna' },
+    ]);
+  });
+
+  function codexRepairHooks(
+    accountModels: ReadonlySet<string> | null,
+    blocked: (model: string) => boolean = () => false,
+  ): Parameters<typeof repairLaneDefaults>[1] {
+    return {
+      laneCatalog: (lane: BillingLane) =>
+        lane === 'codex-native' ? [DEFAULT_CODEX_MODEL, LUNA] : [],
+      isPolicyBlocked: blocked,
+      isModelInRegistry: (model) => resolveKnownModel(model) !== undefined,
+      isLaneCatalogHydrated: () => true,
+      // The same wrapper both hosts install around their lane hook.
+      isRunnableOnLane: (lane, model) =>
+        lane === 'codex-native'
+          ? isCodexModelAvailableToAccount(model, accountModels)
+          : true,
+      clampThinkingLevel: (level) => level,
+    };
+  }
+
+  it('treats an unknown or empty account list as eligible', () => {
+    expect(isCodexModelAvailableToAccount(DEFAULT_CODEX_MODEL, null)).toBe(
+      true,
+    );
+    expect(isCodexModelAvailableToAccount(DEFAULT_CODEX_MODEL, undefined)).toBe(
+      true,
+    );
+    expect(isCodexModelAvailableToAccount(DEFAULT_CODEX_MODEL, new Set())).toBe(
+      true,
+    );
+    expect(
+      isCodexModelAvailableToAccount(DEFAULT_CODEX_MODEL, new Set([LUNA])),
+    ).toBe(false);
+    expect(isCodexModelAvailableToAccount(LUNA, new Set([LUNA]))).toBe(true);
+  });
+
+  it('repairs a configured Codex default the account cannot run to the first eligible catalog model', () => {
+    const repaired = repairLaneDefaults(
+      defaults,
+      codexRepairHooks(new Set([LUNA])),
+    );
+    expect(repaired.codex).toEqual({ model: LUNA, thinkingLevel: 'high' });
+  });
+
+  it('keeps the configured Codex default when the account can run it', () => {
+    const repaired = repairLaneDefaults(
+      defaults,
+      codexRepairHooks(new Set([DEFAULT_CODEX_MODEL, LUNA])),
+    );
+    expect(repaired.codex.model).toBe(DEFAULT_CODEX_MODEL);
+  });
+
+  it.each([
+    ['null', null],
+    ['empty', new Set<string>()],
+  ])('changes nothing for a %s account list', (_label, accountModels) => {
+    const repaired = repairLaneDefaults(
+      defaults,
+      codexRepairHooks(accountModels),
+    );
+    expect(repaired.codex.model).toBe(DEFAULT_CODEX_MODEL);
+  });
+
+  it('skips a policy-blocked eligible model', () => {
+    const repaired = repairLaneDefaults(
+      defaults,
+      codexRepairHooks(new Set([LUNA]), (model) => model === LUNA),
+    );
+    // No eligible, allowed candidate: the original selection stays so the
+    // resolver sees the lane as undispatchable.
+    expect(repaired.codex.model).toBe(DEFAULT_CODEX_MODEL);
+  });
+
+  it('never rewrites the stored defaults object', () => {
+    const stored: LaneModelDefaults = {
+      ...defaults,
+      codex: { model: DEFAULT_CODEX_MODEL, thinkingLevel: 'high' },
+    };
+    const snapshot = structuredClone(stored);
+    const repaired = repairLaneDefaults(
+      stored,
+      codexRepairHooks(new Set([LUNA])),
+    );
+    expect(repaired.codex.model).toBe(LUNA);
+    expect(stored).toEqual(snapshot);
+  });
+
+  it('falls through to AI Credits when the account can run no Codex candidate', () => {
+    const availability = {
+      claudeNativeAuth: false,
+      codexNativeAuth: true,
+      creditsEligible: true,
+    };
+    expect(
+      resolve(availability, {
+        preferredProvider: 'codex',
+        codexAccountModels: new Set(['some-other-model']),
+        // A cold gateway catalog fails open on routability, so the registered
+        // candidate stands in for a routable credits model here.
+        gatewayRoutesHydrated: false,
+        creditsCandidates: [LUNA],
+      }),
+    ).toMatchObject({
+      outcome: 'resolved',
+      lane: 'ai-credits',
+      selection: { model: LUNA },
+    });
+    expect(
+      resolve(
+        { ...availability, creditsEligible: false },
+        {
+          preferredProvider: 'codex',
+          codexAccountModels: new Set(['some-other-model']),
+        },
+      ),
+    ).toMatchObject({ outcome: 'no-dispatchable-model' });
+    expect(
+      resolve(availability, {
+        preferredProvider: 'codex',
+        codexAccountModels: null,
+      }),
+    ).toMatchObject({
+      outcome: 'resolved',
+      lane: 'codex-native',
+      selection: { model: DEFAULT_CODEX_MODEL },
     });
   });
 });

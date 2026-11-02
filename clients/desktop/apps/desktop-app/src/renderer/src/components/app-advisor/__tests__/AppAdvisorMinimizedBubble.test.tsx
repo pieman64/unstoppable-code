@@ -38,7 +38,7 @@ it('shows only while the floating panel is minimized', () => {
   expect(bubble()).toBeNull();
 
   act(() => useAppAdvisorStore.setState({ minimized: true }));
-  expect(bubble()?.getAttribute('aria-label')).toBe('Open App Advisor');
+  expect(bubble()?.getAttribute('aria-label')).toBe('Open Orchestrator');
   expect(bubble()?.className).toContain('rounded-full');
 
   // Open again: the panel is back, so the bubble goes.

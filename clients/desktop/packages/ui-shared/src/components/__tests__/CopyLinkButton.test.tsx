@@ -3,6 +3,7 @@
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { buttonClassName } from '../Button';
 import { COPY_LINK_CONFIRMATION_MS, CopyLinkButton } from '../CopyLinkButton';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -40,6 +41,31 @@ describe('CopyLinkButton', () => {
     expect(button?.textContent).toBe('Copy link');
     expect(button?.getAttribute('aria-label')).toBe('Copy link');
     expect(button?.querySelector('svg')).not.toBeNull();
+  });
+
+  it('takes the size of the box it sits in, defaulting to sm', () => {
+    const tokens = (size: 'sm' | 'compact'): string[] =>
+      buttonClassName({ variant: 'ghost', size }).split(' ').filter(Boolean);
+    act(() => {
+      root.render(
+        <CopyLinkButton url="https://example.test/s/1" dataTestId="copy" />,
+      );
+    });
+    expect(
+      container.querySelector('[data-testid="copy"]')?.className.split(' '),
+    ).toEqual(expect.arrayContaining(tokens('sm')));
+    act(() => {
+      root.render(
+        <CopyLinkButton
+          url="https://example.test/s/1"
+          dataTestId="copy"
+          size="compact"
+        />,
+      );
+    });
+    expect(
+      container.querySelector('[data-testid="copy"]')?.className.split(' '),
+    ).toEqual(expect.arrayContaining(tokens('compact')));
   });
 
   it('copies only on click and confirms with Copied for two seconds', async () => {

@@ -10,7 +10,10 @@ class FakeUtilityProcess extends EventEmitter {
 }
 
 const forkMock = jest.fn<FakeUtilityProcess, unknown[]>();
-const killProcessGroupByPidMock = jest.fn(() => Promise.resolve());
+const killProcessGroupByPidMock = jest.fn<
+  Promise<void>,
+  [pid: number, signal: NodeJS.Signals]
+>(() => Promise.resolve());
 const recordSessionDiagnosticMock = jest.fn();
 jest.mock('electron', () => ({
   utilityProcess: {
@@ -18,8 +21,8 @@ jest.mock('electron', () => ({
   },
 }));
 jest.mock('@canopy/desktop-shared/node/lib/process-kill', () => ({
-  killProcessGroupByPid: (...args: [number, NodeJS.Signals]): Promise<void> =>
-    killProcessGroupByPidMock(...args),
+  killProcessGroupByPid: (pid: number, signal: NodeJS.Signals): Promise<void> =>
+    killProcessGroupByPidMock(pid, signal),
 }));
 jest.mock('../observability', () => ({
   getObservabilityService: (): {

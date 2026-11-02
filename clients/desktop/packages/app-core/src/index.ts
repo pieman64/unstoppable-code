@@ -13,5 +13,10 @@ export * from './cost';
 export * from './events';
 export * from './gating';
 export * from './ledger';
+export * from './transcripts';
 export * from './navigation';
 export * from './view-model';
+export {
+  FileSaveConflictError,
+  isFileSaveConflictError,
+} from '@canopy/protocol/file-save-conflict';

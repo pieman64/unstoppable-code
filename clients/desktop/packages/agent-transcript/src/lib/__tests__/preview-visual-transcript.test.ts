@@ -2,9 +2,14 @@ import {
   applyClaudeTranscriptEvent,
   applyCodexTranscriptEvent,
   createEmptyTranscriptReducerState,
+  type TranscriptReducerOptions,
 } from '../transcript-parser';
 
-const options = { now: 1, createMessageId: (): string => 'message-1' };
+const options: TranscriptReducerOptions = {
+  now: 1,
+  createMessageId: (): string => 'message-1',
+  childToolLiveness: { kind: 'unknown' },
+};
 const image = 'data:image/png;base64,' + 'A'.repeat(400);
 
 it('omits a PreviewVisual image when replaying a Codex dynamic tool result', () => {

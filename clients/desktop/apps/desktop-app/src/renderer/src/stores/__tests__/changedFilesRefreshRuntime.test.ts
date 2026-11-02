@@ -18,10 +18,11 @@ function deferred(): {
       resolvePromise = resolve;
     },
   );
-  if (!resolvePromise) {
+  const resolve = resolvePromise;
+  if (!resolve) {
     throw new Error('Failed to create deferred promise');
   }
-  return { promise, resolve: () => resolvePromise(undefined) };
+  return { promise, resolve: (): void => resolve(undefined) };
 }
 
 describe('changedFilesRefreshRuntime', () => {

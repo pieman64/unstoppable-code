@@ -159,7 +159,7 @@ export function createCoreCostAdapter(
       ): Promise<PipelineRunCostView> =>
         readCost(
           async () => (await getService()).getPipelineRun(params),
-          'The pipeline run cost could not be read.',
+          'The workflow run cost could not be read.',
         ),
     },
     instructions: {

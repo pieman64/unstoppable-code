@@ -43,6 +43,7 @@ import {
   type PersistedChatMessage,
   type PersistedChatTab,
 } from '@canopy/desktop-shared/types';
+import { delegationTranscriptMessages } from '@canopy/agent-transcript';
 
 interface MockBrowserWindow {
   isDestroyed: jest.MockedFunction<() => boolean>;
@@ -56,7 +57,11 @@ jest.mock(
   (): {
     BrowserWindow: { getAllWindows: typeof mockGetAllWindows };
   } => ({
-    BrowserWindow: { getAllWindows: mockGetAllWindows },
+    BrowserWindow: {
+      get getAllWindows(): typeof mockGetAllWindows {
+        return mockGetAllWindows;
+      },
+    },
   }),
 );
 
@@ -69,7 +74,11 @@ import {
   removeArchivedContainerPayloadsAfterPartialRestore,
 } from '../lib/archived-containers';
 import { getStandaloneHistoryStorage } from '../lib/standalone-history';
-import { ChatTranscriptIntegrityError } from '../lib/chat-transcript-log';
+import {
+  ChatTranscriptIntegrityError,
+  ChatTranscriptLog,
+} from '../lib/chat-transcript-log';
+import type { ActiveRowAnchor } from '../lib/chat-transcript-live-positions';
 import {
   CHAT_SEARCH_INDEXER_RECOVERY_DELAY_MS,
   ChatSearchService,
@@ -91,6 +100,7 @@ import {
   openChatSearchDatabase,
 } from '../chat-search/schema';
 import { commitArchivedContainer } from '../lib/archived-containers';
+import { createChatTabsAuxiliaryProjectionObserver } from '../lib/chat-tabs-auxiliary-projection';
 
 const actualFsPromises =
   jest.requireActual<typeof FsPromisesModule>('node:fs/promises');
@@ -331,6 +341,757 @@ describe('ChatSearchService', () => {
     }
   });
 
+  it('backs a committed search projection off while its index worker is failed, then lands it once recovered', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const fakes: FakeThreadedIndexer[] = [];
+    const projecting = new ChatSearchService({
+      threadedIndexerFactory: (): ThreadedChatSearchIndexer => {
+        const fake = fakeThreadedIndexer(fakes.length === 0);
+        fakes.push(fake);
+        return fake.indexer;
+      },
+      dbPath: join(dataDir, 'backoff.sqlite'),
+      debounceMs: 50,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    const searchRuns: number[] = [];
+    const logRetry = jest.fn<undefined, [string, unknown]>();
+    const observe = createChatTabsAuxiliaryProjectionObserver({
+      indexSearch: (projectId, worktreeId, data, delta) => {
+        searchRuns.push(Date.now());
+        return projecting.projectLiveTabs(projectId, worktreeId, data, delta);
+      },
+      syncBadges: () => undefined,
+      syncWorkEntrySummary: () => Promise.resolve(),
+      publishRuntimeStatus: () => undefined,
+      publishScope: () => undefined,
+      nudgeSummary: () => undefined,
+      logRetry,
+    });
+    const searchAttempts = (): number[] =>
+      logRetry.mock.calls
+        .map(([message]) =>
+          /^\[chat-state\] Chat search .*attempt (\d+)/.exec(message),
+        )
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match) => Number(match[1]));
+    try {
+      await observe(
+        'workspace-backoff',
+        'worktree-backoff',
+        tabsFile(makeTab('committed', 'Committed during outage')),
+        undefined,
+        1,
+      );
+      // The failed worker rejects at once; through the whole recovery delay
+      // each retry waits longer than the last.
+      await jest.advanceTimersByTimeAsync(
+        CHAT_SEARCH_INDEXER_RECOVERY_DELAY_MS - 1,
+      );
+      expect(fakes).toHaveLength(1);
+      const attempts = searchAttempts();
+      expect(attempts).toEqual(attempts.map((_attempt, index) => index + 1));
+      expect(attempts.length).toBeGreaterThanOrEqual(5);
+      expect(searchRuns.length).toBeLessThanOrEqual(attempts.length + 1);
+      const gaps = searchRuns
+        .slice(1)
+        .map((run, index) => run - (searchRuns[index] ?? run));
+      for (let index = 1; index < gaps.length; index += 1) {
+        expect(gaps[index]).toBeGreaterThan(gaps[index - 1] ?? 0);
+      }
+
+      // The worker is replaced, and the next retry lands the projection.
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(fakes).toHaveLength(2);
+      expect(fakes[1]?.stagedDocIds).toContain('committed');
+      const settledRuns = searchRuns.length;
+      const settledAttempts = searchAttempts().length;
+      await jest.advanceTimersByTimeAsync(10 * 60_000);
+      expect(searchRuns).toHaveLength(settledRuns);
+      expect(searchAttempts()).toHaveLength(settledAttempts);
+    } finally {
+      await projecting.close();
+      consoleError.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('settles committed-projection callers only once their debounced update lands or fails', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const fakes: FakeThreadedIndexer[] = [];
+    const projecting = new ChatSearchService({
+      threadedIndexerFactory: (): ThreadedChatSearchIndexer => {
+        const fake = fakeThreadedIndexer(fakes.length === 0);
+        fakes.push(fake);
+        return fake.indexer;
+      },
+      dbPath: join(dataDir, 'projecting.sqlite'),
+      debounceMs: 50,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    const outcomes: string[] = [];
+    const track = (label: string, projection: Promise<void>): void => {
+      projection.then(
+        () => outcomes.push(`${label}:landed`),
+        (error: unknown) =>
+          outcomes.push(
+            `${label}:${error instanceof Error ? error.message : 'failed'}`,
+          ),
+      );
+    };
+    try {
+      const before = makeTab('before', 'Before', [textBlock('first')]);
+      track(
+        'full',
+        projecting.projectLiveTabs(
+          'workspace-1',
+          'worktree-1',
+          tabsFile(before),
+          undefined,
+        ),
+      );
+      // A later commit coalesces into the same debounced update.
+      track(
+        'delta',
+        projecting.projectLiveTabs(
+          'workspace-1',
+          'worktree-1',
+          tabsFile(before, makeTab('next', 'Next', [textBlock('second')])),
+          { changedTabIds: ['next'], removedTabIds: [] },
+        ),
+      );
+      track(
+        'empty',
+        projecting.projectLiveTabs(
+          'workspace-1',
+          'worktree-1',
+          tabsFile(before),
+          { changedTabIds: [], removedTabIds: [] },
+        ),
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      expect(outcomes).toEqual(['empty:landed']);
+
+      await jest.advanceTimersByTimeAsync(50);
+      expect(outcomes).toEqual([
+        'empty:landed',
+        'full:Search index worker timed out',
+        'delta:Search index worker timed out',
+      ]);
+    } finally {
+      await projecting.close();
+      consoleError.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('resolves committed-projection callers once indexed, or once their scope is deleted', async () => {
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'projecting.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    try {
+      let landed = false;
+      const indexed = projecting
+        .projectLiveTabs(
+          'workspace-1',
+          'worktree-1',
+          tabsFile(makeTab('landed', 'Landed', [textBlock('needleword')])),
+          { changedTabIds: ['landed'], removedTabIds: [] },
+        )
+        .then(() => {
+          landed = true;
+        });
+      expect(landed).toBe(false);
+      await indexed;
+      expect(
+        projecting.query({ query: 'needleword' }).map((row) => row.chatId),
+      ).toEqual(['landed']);
+
+      const cancelled = projecting.projectLiveTabs(
+        'workspace-1',
+        'worktree-1',
+        tabsFile(makeTab('cancelled', 'Cancelled', [textBlock('other')])),
+        undefined,
+      );
+      await projecting.deleteWorktreeDocs('workspace-1', 'worktree-1');
+      await expect(cancelled).resolves.toBeUndefined();
+    } finally {
+      await projecting.close();
+    }
+  });
+
+  it('indexes a running delta update that another chat commit supersedes', async () => {
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'superseded.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    try {
+      const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+      const chatB = makeTab('chat-b', 'Chat B', [textBlock('betaneedle')]);
+      const first = projecting.projectLiveTabs(
+        'workspace-1',
+        'worktree-1',
+        tabsFile(chatA, chatB),
+        { changedTabIds: ['chat-a'], removedTabIds: [] },
+      );
+      // Fires right after the debounced update starts and yields per tab.
+      let second: Promise<void> | undefined;
+      await new Promise<void>((resolve) =>
+        setTimeout(() => {
+          second = projecting.projectLiveTabs(
+            'workspace-1',
+            'worktree-1',
+            tabsFile(chatA, chatB),
+            { changedTabIds: ['chat-b'], removedTabIds: [] },
+          );
+          resolve();
+        }, 5),
+      );
+      await first;
+      await second;
+      await projecting.flushPendingUpdates();
+      expect(
+        projecting.query({ query: 'alphaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-a']);
+      expect(
+        projecting.query({ query: 'betaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-b']);
+    } finally {
+      await projecting.close();
+    }
+  });
+
+  /** Holds the first live upsert of `chatId` until released. */
+  function holdFirstUpsert(chatId: string): {
+    started: Promise<void>;
+    release: () => void;
+    writes: string[];
+    failWrites: { value: boolean };
+    written: (chatId: string) => Promise<void>;
+    restore: () => void;
+  } {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Called with this below.
+    const original = ChatSearchIndexer.prototype.upsertDoc;
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const writes: string[] = [];
+    const failWrites = { value: false };
+    const watchers = new Map<string, () => void>();
+    let held = false;
+    const spy = jest
+      .spyOn(ChatSearchIndexer.prototype, 'upsertDoc')
+      .mockImplementation(function (this: ChatSearchIndexer, doc) {
+        if (!held && doc.chatId === chatId) {
+          held = true;
+          markStarted();
+          return gate.then(() => original.call(this, doc));
+        }
+        if (failWrites.value) throw new Error('index write failed');
+        original.call(this, doc);
+        writes.push(doc.chatId);
+        watchers.get(doc.chatId)?.();
+      });
+    return {
+      started,
+      release,
+      writes,
+      failWrites,
+      written: (id) =>
+        new Promise<void>((resolve) => {
+          watchers.set(id, resolve);
+        }),
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  it('rejects a superseded caller when the update that took over its waiters fails', async () => {
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'takeover-failure.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    const upserts = holdFirstUpsert('chat-a');
+    const outcome = (projection: Promise<void>): Promise<string> =>
+      projection.then(
+        () => 'landed',
+        (error: unknown) => (error instanceof Error ? error.message : 'failed'),
+      );
+    try {
+      const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+      const chatB = makeTab('chat-b', 'Chat B', [textBlock('betaneedle')]);
+      const data = tabsFile(chatA, chatB);
+      const older = outcome(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-a'],
+          removedTabIds: [],
+        }),
+      );
+      await upserts.started;
+      upserts.failWrites.value = true;
+      const newer = outcome(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-b'],
+          removedTabIds: [],
+        }),
+      );
+      upserts.release();
+      // The newer update owns the older caller's changes, so its failure
+      // must reach that caller for retry.
+      await expect(older).resolves.toBe('index write failed');
+      await expect(newer).resolves.toBe('index write failed');
+
+      upserts.failWrites.value = false;
+      await projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+        changedTabIds: ['chat-a', 'chat-b'],
+        removedTabIds: [],
+      });
+      expect(
+        projecting.query({ query: 'betaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-b']);
+      expect(
+        projecting.query({ query: 'alphaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-a']);
+    } finally {
+      upserts.release();
+      upserts.restore();
+      await projecting.close();
+      consoleError.mockRestore();
+    }
+  });
+
+  it('does not carry a running update from a deleted workspace into its next incarnation', async () => {
+    // The restore also refreshes the scope's archives.
+    await writeCanonical(
+      join(
+        dataDir,
+        'workspaces',
+        'workspace-1',
+        'chat-archives',
+        'worktree-1.json',
+      ),
+      { version: 1, archived: [] },
+    );
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'deleted-takeover.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    const upserts = holdFirstUpsert('chat-x');
+    try {
+      const chatX = makeTab('chat-x', 'Chat X', [textBlock('xrayneedle')]);
+      const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+      const chatB = makeTab('chat-b', 'Chat B', [textBlock('betaneedle')]);
+      let olderSettled = false;
+      const older = projecting
+        .projectLiveTabs('workspace-1', 'worktree-1', tabsFile(chatX, chatA), {
+          changedTabIds: ['chat-x', 'chat-a'],
+          removedTabIds: [],
+        })
+        .then(() => {
+          olderSettled = true;
+        });
+      await upserts.started;
+      await projecting.deleteWorkspaceDocs('workspace-1');
+      // Reactivates the scope while the old incarnation's update still runs.
+      const restoredWritten = upserts.written('chat-b');
+      projecting.worktreeChatRestored('workspace-1', 'worktree-1', chatB);
+      upserts.release();
+      await older;
+      expect(olderSettled).toBe(true);
+      await restoredWritten;
+      expect(upserts.writes).not.toContain('chat-a');
+      expect(projecting.query({ query: 'alphaneedle' })).toEqual([]);
+      expect(
+        projecting.query({ query: 'betaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-b']);
+      await projecting.flushPendingUpdates();
+    } finally {
+      upserts.release();
+      upserts.restore();
+      await projecting.close();
+    }
+  });
+
+  it('merges a restore or archive into a pending or running whole-scope update', async () => {
+    await writeCanonical(
+      join(
+        dataDir,
+        'workspaces',
+        'workspace-1',
+        'chat-archives',
+        'worktree-1.json',
+      ),
+      { version: 1, archived: [] },
+    );
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'whole-scope-restore.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Called with this below.
+    const original = ChatSearchIndexer.prototype.replaceStreamedScope;
+    let hold: { started: () => void; gate: Promise<void> } | undefined;
+    const holdNextScope = (): {
+      started: Promise<void>;
+      release: () => void;
+    } => {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let started: () => void = () => undefined;
+      const startedPromise = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      hold = { started, gate };
+      return { started: startedPromise, release };
+    };
+    const spy = jest
+      .spyOn(ChatSearchIndexer.prototype, 'replaceStreamedScope')
+      .mockImplementation(async function (this: ChatSearchIndexer, ...args) {
+        const held = args[2] === 'live' ? hold : undefined;
+        if (held) {
+          hold = undefined;
+          held.started();
+          await held.gate;
+        }
+        return original.apply(this, args);
+      });
+    const live = (needle: string): string[] =>
+      projecting.query({ query: needle }).map((row) => row.chatId);
+    try {
+      const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+      const chatB = makeTab('chat-b', 'Chat B', [textBlock('betaneedle')]);
+      const chatC = makeTab('chat-c', 'Chat C', [textBlock('gammaneedle')]);
+
+      // Pending: the restore joins the queued whole-scope snapshot.
+      const queued = projecting.projectLiveTabs(
+        'workspace-1',
+        'worktree-1',
+        tabsFile(chatA, chatC),
+        undefined,
+      );
+      projecting.worktreeChatRestored('workspace-1', 'worktree-1', chatB);
+      await queued;
+      expect(live('alphaneedle')).toEqual(['chat-a']);
+      expect(live('betaneedle')).toEqual(['chat-b']);
+      expect(live('gammaneedle')).toEqual(['chat-c']);
+
+      // Running: the archive re-queues the running snapshot without its chat,
+      // so the chat it was adding still lands, and its caller settles with it.
+      const chatD = makeTab('chat-d', 'Chat D', [textBlock('deltaneedle')]);
+      const running = holdNextScope();
+      let runningSettled = false;
+      const superseded = projecting
+        .projectLiveTabs(
+          'workspace-1',
+          'worktree-1',
+          tabsFile(chatA, chatB, chatC, chatD),
+          undefined,
+        )
+        .then(() => {
+          runningSettled = true;
+        });
+      await running.started;
+      projecting.worktreeChatArchived('workspace-1', 'worktree-1', 'chat-c');
+      running.release();
+      await superseded;
+      expect(runningSettled).toBe(true);
+      expect(live('alphaneedle')).toEqual(['chat-a']);
+      expect(live('betaneedle')).toEqual(['chat-b']);
+      expect(live('gammaneedle')).toEqual([]);
+      expect(live('deltaneedle')).toEqual(['chat-d']);
+      await projecting.flushPendingUpdates();
+    } finally {
+      hold?.started();
+      spy.mockRestore();
+      await projecting.close();
+    }
+  });
+
+  /** Holds the first live upsert of each named chat until released. */
+  function gateUpserts(chatIds: readonly string[]): {
+    started: (chatId: string) => Promise<void>;
+    release: (chatId: string) => void;
+    releaseAll: () => void;
+    failWrites: { value: boolean };
+    restore: () => void;
+  } {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Called with this below.
+    const original = ChatSearchIndexer.prototype.upsertDoc;
+    const gates = new Map(
+      chatIds.map((id) => {
+        let markStarted: () => void = () => undefined;
+        const started = new Promise<void>((resolve) => {
+          markStarted = resolve;
+        });
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return [id, { started, markStarted, gate, release, held: false }];
+      }),
+    );
+    const failWrites = { value: false };
+    const spy = jest
+      .spyOn(ChatSearchIndexer.prototype, 'upsertDoc')
+      .mockImplementation(function (this: ChatSearchIndexer, doc) {
+        const gate = gates.get(doc.chatId);
+        if (gate && !gate.held) {
+          gate.held = true;
+          gate.markStarted();
+          return gate.gate.then(() => original.call(this, doc));
+        }
+        if (failWrites.value) throw new Error('index write failed');
+        original.call(this, doc);
+      });
+    return {
+      started: (id) => gates.get(id)?.started ?? Promise.resolve(),
+      release: (id) => gates.get(id)?.release(),
+      releaseAll: () => gates.forEach((gate) => gate.release()),
+      failWrites,
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  const outcomeOf = (projection: Promise<void>): Promise<string> =>
+    projection.then(
+      () => 'landed',
+      (error: unknown) => (error instanceof Error ? error.message : 'failed'),
+    );
+
+  it('fails every caller along a chain of taken-over running updates', async () => {
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'takeover-chain.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    const upserts = gateUpserts(['chat-a', 'chat-b']);
+    try {
+      const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+      const chatB = makeTab('chat-b', 'Chat B', [textBlock('betaneedle')]);
+      const chatC = makeTab('chat-c', 'Chat C', [textBlock('gammaneedle')]);
+      const data = tabsFile(chatA, chatB, chatC);
+      const first = outcomeOf(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-a'],
+          removedTabIds: [],
+        }),
+      );
+      await upserts.started('chat-a');
+      const second = outcomeOf(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-b'],
+          removedTabIds: [],
+        }),
+      );
+      // The second update runs, inheriting chat-a, and holds on chat-b.
+      await upserts.started('chat-b');
+      upserts.failWrites.value = true;
+      const third = outcomeOf(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-c'],
+          removedTabIds: [],
+        }),
+      );
+      upserts.releaseAll();
+      await expect(Promise.all([first, second, third])).resolves.toEqual([
+        'index write failed',
+        'index write failed',
+        'index write failed',
+      ]);
+
+      upserts.failWrites.value = false;
+      await projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+        changedTabIds: ['chat-a', 'chat-b', 'chat-c'],
+        removedTabIds: [],
+      });
+      for (const [needle, chatId] of [
+        ['alphaneedle', 'chat-a'],
+        ['betaneedle', 'chat-b'],
+        ['gammaneedle', 'chat-c'],
+      ]) {
+        expect(
+          projecting.query({ query: needle }).map((row) => row.chatId),
+        ).toEqual([chatId]);
+      }
+    } finally {
+      upserts.releaseAll();
+      upserts.restore();
+      await projecting.close();
+      consoleError.mockRestore();
+    }
+  });
+
+  it('settles taken-over callers when the scope generation advances, and indexes the reread scope', async () => {
+    const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+    const chatB = makeTab('chat-b', 'Chat B', [textBlock('betaneedle')]);
+    const workspaceDir = join(dataDir, 'workspaces', 'workspace-1');
+    await writeJson(
+      join(workspaceDir, 'chats', 'worktree-1.json'),
+      tabsFile(chatA, chatB),
+    );
+    await writeJson(join(workspaceDir, 'chat-archives', 'worktree-1.json'), {
+      version: 1,
+      archived: [],
+    });
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'generation-takeover.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    const upserts = gateUpserts(['chat-a', 'chat-b']);
+    try {
+      const data = tabsFile(chatA, chatB);
+      const first = outcomeOf(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-a'],
+          removedTabIds: [],
+        }),
+      );
+      await upserts.started('chat-a');
+      const second = outcomeOf(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-b'],
+          removedTabIds: [],
+        }),
+      );
+      await upserts.started('chat-b');
+      // A container restore into this scope advances its generation while
+      // the second update, holding the first's waiters, still runs.
+      await projecting.worktreeContainerRestored(
+        'workspace-1',
+        'container-x',
+        'worktree-1',
+      );
+      upserts.releaseAll();
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        'landed',
+        'landed',
+      ]);
+      await projecting.flushPendingUpdates();
+      expect(
+        projecting.query({ query: 'alphaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-a']);
+      expect(
+        projecting.query({ query: 'betaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-b']);
+    } finally {
+      upserts.releaseAll();
+      upserts.restore();
+      await projecting.close();
+    }
+  });
+
+  it('lets a newer commit take over a live update an explicit flush is running', async () => {
+    const projecting = new ChatSearchService({
+      indexerFactory: (db): ChatSearchIndexer => new ChatSearchIndexer(db),
+      dbPath: join(dataDir, 'flush-takeover.sqlite'),
+      debounceMs: 5,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+    const upserts = gateUpserts(['chat-x']);
+    try {
+      const chatX = makeTab('chat-x', 'Chat X', [textBlock('xrayneedle')]);
+      const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+      const chatB = makeTab('chat-b', 'Chat B', [textBlock('betaneedle')]);
+      const data = tabsFile(chatX, chatA, chatB);
+      const older = outcomeOf(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-x', 'chat-a'],
+          removedTabIds: [],
+        }),
+      );
+      const flushed = projecting.flushPendingUpdates();
+      await upserts.started('chat-x');
+      // Stops the flushed update before it reaches chat-a.
+      const newer = outcomeOf(
+        projecting.projectLiveTabs('workspace-1', 'worktree-1', data, {
+          changedTabIds: ['chat-b'],
+          removedTabIds: [],
+        }),
+      );
+      upserts.release('chat-x');
+      await flushed;
+      await expect(Promise.all([older, newer])).resolves.toEqual([
+        'landed',
+        'landed',
+      ]);
+      expect(
+        projecting.query({ query: 'alphaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-a']);
+      expect(
+        projecting.query({ query: 'betaneedle' }).map((row) => row.chatId),
+      ).toEqual(['chat-b']);
+    } finally {
+      upserts.releaseAll();
+      upserts.restore();
+      await projecting.close();
+    }
+  });
+
+  it("keeps another chat's pending live update when a chat is archived", async () => {
+    const chatA = makeTab('chat-a', 'Chat A', [textBlock('alphaneedle')]);
+    const chatC = makeTab('chat-c', 'Chat C', [textBlock('gammaneedle')]);
+    service.indexLiveTabs('workspace-1', 'worktree-1', tabsFile(chatC));
+    await service.flushPendingUpdates();
+    expect(
+      service.query({ query: 'gammaneedle' }).map((row) => row.chatId),
+    ).toEqual(['chat-c']);
+
+    service.indexLiveTabChanges(
+      'workspace-1',
+      'worktree-1',
+      tabsFile(chatA, chatC),
+      ['chat-a'],
+      [],
+    );
+    service.worktreeChatArchived('workspace-1', 'worktree-1', 'chat-c');
+    await service.flushPendingUpdates();
+    expect(
+      service.query({ query: 'alphaneedle' }).map((row) => row.chatId),
+    ).toEqual(['chat-a']);
+    expect(service.query({ query: 'gammaneedle' })).toEqual([]);
+  });
+
   it('indexes inline tool-output previews without hydrating deferred middles', async () => {
     const scope = { projectId: 'workspace-full', worktreeId: 'worktree-full' };
     const tab = makeTab('full-chat', 'Full transcript', [
@@ -527,7 +1288,9 @@ describe('ChatSearchService', () => {
 
     const deleteFailure = jest
       .spyOn(ChatSearchIndexer.prototype, 'deleteWorktreeDocs')
-      .mockRejectedValueOnce(new Error('derived cleanup unavailable'));
+      .mockImplementationOnce(() => {
+        throw new Error('derived cleanup unavailable');
+      });
     await expect(
       service.worktreeContainerArchived(
         'workspace-page-visibility',
@@ -548,6 +1311,30 @@ describe('ChatSearchService', () => {
         .query({ query: 'pagingneedle', limit: 1 })
         .map((entry) => entry.chatId),
     ).toEqual([visible.id]);
+  });
+
+  it('returns the requested chats from the catalog however old they are', async () => {
+    const older = makeTab('chat-older', 'An older chat');
+    const newer = makeTab('chat-newer', 'A newer chat');
+    newer.messages = newer.messages.map((message) => ({
+      ...message,
+      timestamp: message.timestamp + 20_000,
+    }));
+    service.indexLiveTabs('workspace-ids', 'worktree-ids', tabsFile(older));
+    service.indexLiveTabs('workspace-ids', 'worktree-ids-2', tabsFile(newer));
+    await service.flushPendingUpdates();
+
+    // Without ids the one-row page holds only the newest chat.
+    expect(service.getCatalog(1).map((entry) => entry.chatId)).toEqual([
+      newer.id,
+    ]);
+    expect(
+      service.getCatalog(1, [older.id]).map((entry) => entry.chatId),
+    ).toEqual([older.id]);
+    expect(service.getCatalog(undefined, [])).toEqual([]);
+    await expect(
+      service.getCatalogScoped(undefined, 1, [], [older.id]),
+    ).resolves.toEqual([expect.objectContaining({ chatId: older.id })]);
   });
 
   it('scopes main-side catalog and transcript search to the selected context', async () => {
@@ -933,6 +1720,280 @@ describe('ChatSearchService', () => {
       expect(consume).toHaveBeenCalledTimes(6);
     } finally {
       consume.mockRestore();
+    }
+  });
+
+  it('keeps full and active-only search projections unchanged by active-row anchors', async () => {
+    const scope = {
+      projectId: 'workspace-search-anchors',
+      worktreeId: 'worktree-search-anchors',
+    };
+    const anchoredChatId = 'anchored-search-chat';
+    const unanchoredChatId = 'unanchored-search-chat';
+    const committedRows: PersistedChatMessage[] = [
+      {
+        id: 'early-committed',
+        role: 'user',
+        timestamp: 1_700_000_000_000,
+        blocks: [textBlock('early committed needle')],
+      },
+      {
+        id: 'later-committed',
+        role: 'assistant',
+        timestamp: 1_700_000_001_000,
+        blocks: [textBlock('later committed needle')],
+      },
+    ];
+    const delegatedRows = (
+      delegationId: string,
+      childText?: string,
+    ): PersistedChatMessage[] =>
+      delegationTranscriptMessages({
+        delegationId,
+        runGeneration: 1,
+        sequence: 1,
+        parentHarnessId: 'claude',
+        parentTurnId: `${delegationId}-turn`,
+        parentToolCallId: `${delegationId}-call`,
+        createdAt: 1,
+        task: {
+          description: 'Search projection fixture',
+          prompt: 'Keep its transcript text searchable.',
+          executionMode: 'background',
+        },
+        snapshot: {
+          delegationId,
+          runGeneration: 1,
+          requestedModelId: 'test-model',
+          status: 'running',
+          outputTruncated: false,
+          routeSnapshot: {
+            selectedModelId: 'test-model',
+            runtimeModelId: 'test-runtime-model',
+            harnessId: 'claude',
+            runtimeKind: 'claude-cli',
+            runnerRegistrationId: 'test-runner',
+            runtimeVersion: '1',
+            adapterVersion: '1',
+            modelSource: 'test',
+            providerType: 'claude',
+            assignmentRevision: 'test-assignment',
+            billingAuthority: 'test',
+            aiCreditsRouted: false,
+            capabilities: [],
+            supportedThinkingLevels: [],
+            capabilitySnapshotHash: 'test-capabilities',
+            capabilityGeneration: 1,
+            policyRevision: 'test-policy',
+          },
+        },
+        transcript:
+          childText === undefined
+            ? []
+            : [
+                {
+                  id: 'child-result',
+                  sequence: 1,
+                  occurredAt: 2,
+                  type: 'text',
+                  text: childText,
+                },
+              ],
+      });
+    const firstRun = delegatedRows(
+      'search-anchor-first-run',
+      'child after first card needle',
+    );
+    const firstCard = firstRun[0];
+    const firstChild = firstRun[1];
+    const secondCard = delegatedRows('search-anchor-second-run')[0];
+    if (!firstCard || !firstChild || !secondCard)
+      throw new Error('Missing delegated-agent fixture rows');
+    const startRow: PersistedChatMessage = {
+      id: 'start-anchored-row',
+      role: 'assistant',
+      timestamp: 1_700_000_002_000,
+      parentBlockId: firstCard.id,
+      blocks: [textBlock('start anchored needle')],
+    };
+    const ordinaryRow: PersistedChatMessage = {
+      id: 'ordinary-unanchored-row',
+      role: 'assistant',
+      timestamp: 1_700_000_003_000,
+      blocks: [textBlock('ordinary active needle')],
+    };
+    // The second card's logical position follows later committed history,
+    // but storage order deliberately puts it before the first card.
+    const activeRows = [
+      secondCard,
+      startRow,
+      firstCard,
+      firstChild,
+      ordinaryRow,
+    ];
+    const anchors: ReadonlyMap<string, ActiveRowAnchor> = new Map([
+      [
+        secondCard.id,
+        {
+          version: 1,
+          runId: secondCard.id,
+          after: 'later-committed',
+          tie: 0,
+        },
+      ],
+      [
+        startRow.id,
+        {
+          version: 1,
+          runId: firstCard.id,
+          after: null,
+          tie: 0,
+        },
+      ],
+      [
+        firstCard.id,
+        {
+          version: 1,
+          runId: firstCard.id,
+          after: 'early-committed',
+          tie: 0,
+        },
+      ],
+      [
+        firstChild.id,
+        {
+          version: 1,
+          runId: firstCard.id,
+          after: firstCard.id,
+          tie: 0,
+        },
+      ],
+    ]);
+    const state = getChatStateService();
+    const tabFor = (chatId: string, title: string): PersistedChatTab => ({
+      ...makeTab(chatId, title),
+      messages: committedRows,
+    });
+    await state.replaceCompatibilityTabs(
+      scope,
+      tabsFile(
+        tabFor(anchoredChatId, 'Anchored transcript'),
+        tabFor(unanchoredChatId, 'Unanchored transcript'),
+      ),
+      { authoritative: true },
+    );
+    const transcripts = new ChatTranscriptLog(
+      join(
+        dataDir,
+        'workspaces',
+        scope.projectId,
+        'chat-storage-v2',
+        scope.worktreeId,
+        'transcripts',
+      ),
+    );
+    await transcripts.writeActive(anchoredChatId, activeRows, anchors);
+    await transcripts.writeActive(unanchoredChatId, activeRows);
+    const publishDescriptor = async (chatId: string): Promise<void> => {
+      const transcript = await transcripts.descriptor(chatId);
+      const result = await state.updateCompatibilityTab(
+        scope,
+        chatId,
+        (tab) => ({ ...tab, transcript }),
+        undefined,
+        { metadataOnly: true },
+      );
+      if (!result.updated)
+        throw new Error(
+          `Could not publish transcript descriptor for ${chatId}`,
+        );
+    };
+    await publishDescriptor(anchoredChatId);
+    await publishDescriptor(unanchoredChatId);
+
+    const projections = new Map<string, unknown[]>();
+    const originalConsumeTranscriptPreview =
+      state.consumeTranscriptPreview.bind(state);
+    const consumeTranscriptPreview = jest
+      .spyOn(state, 'consumeTranscriptPreview')
+      .mockImplementation((previewScope, chatId, project, isCurrent, options) =>
+        originalConsumeTranscriptPreview(
+          previewScope,
+          chatId,
+          async (messages, descriptor, read) => {
+            const projection = await project(messages, descriptor, read);
+            const rows = projections.get(chatId) ?? [];
+            rows.push(projection);
+            projections.set(chatId, rows);
+            return projection;
+          },
+          isCurrent,
+          options,
+        ),
+      );
+    const expectedCommittedBody =
+      'User: early committed needle\n\nAssistant: later committed needle';
+    const expectedActiveRows = [
+      { id: secondCard.id, text: '' },
+      { id: startRow.id, text: 'Assistant: start anchored needle' },
+      { id: firstCard.id, text: '' },
+      { id: firstChild.id, text: 'Assistant: child after first card needle' },
+      { id: ordinaryRow.id, text: 'Assistant: ordinary active needle' },
+    ];
+    const expectedActiveBody = expectedActiveRows
+      .map(({ text }) => text)
+      .filter(Boolean)
+      .join('\n\n');
+    const expectedFullProjection = {
+      committedBody: expectedCommittedBody,
+      activeBody: expectedActiveBody,
+      activeRows: expectedActiveRows,
+    };
+    try {
+      service.indexLiveTabs(
+        scope.projectId,
+        scope.worktreeId,
+        await state.getCompatibilityTabs(scope),
+      );
+      await service.flushPendingUpdates();
+
+      expect(projections.get(anchoredChatId)?.[0]).toMatchObject(
+        expectedFullProjection,
+      );
+      expect(projections.get(unanchoredChatId)?.[0]).toMatchObject(
+        expectedFullProjection,
+      );
+
+      // Bump the sidecar revisions with the exact same rows, then assert the
+      // search index takes its active-only preview path for both variants.
+      await transcripts.writeActive(anchoredChatId, activeRows, anchors);
+      await transcripts.writeActive(unanchoredChatId, activeRows);
+      await publishDescriptor(anchoredChatId);
+      await publishDescriptor(unanchoredChatId);
+      service.indexLiveTabChanges(
+        scope.projectId,
+        scope.worktreeId,
+        await state.getCompatibilityTabs(scope),
+        [anchoredChatId, unanchoredChatId],
+        [],
+      );
+      await service.flushPendingUpdates();
+
+      const expectedActiveOnlyProjection = {
+        committedBody: undefined,
+        activeBody: expectedActiveBody,
+        activeRows: expectedActiveRows,
+      };
+      expect(projections.get(anchoredChatId)).toHaveLength(2);
+      expect(projections.get(unanchoredChatId)).toHaveLength(2);
+      expect(projections.get(anchoredChatId)?.[1]).toMatchObject(
+        expectedActiveOnlyProjection,
+      );
+      expect(projections.get(unanchoredChatId)?.[1]).toMatchObject(
+        expectedActiveOnlyProjection,
+      );
+    } finally {
+      consumeTranscriptPreview.mockRestore();
     }
   });
 
@@ -2253,6 +3314,407 @@ describe('ChatSearchService', () => {
     }
   });
 
+  /**
+   * Seeds a two-chat scope and scans it while one chat's per-chat update
+   * supersedes the scan's projection; `flushDuringScan` lands that update
+   * before the scan notices.
+   */
+  async function scanSupersededByChatUpdate(
+    scope: { projectId: string; worktreeId: string },
+    flushDuringScan: boolean,
+  ): Promise<void> {
+    const state = getChatStateService();
+    await state.replaceCompatibilityTabs(
+      scope,
+      tabsFile(
+        makeTab('changed-chat', 'Changed chat'),
+        makeTab('untouched-chat', 'Untouched chat'),
+      ),
+      { authoritative: true },
+    );
+    const originalConsume = state.consumeTranscriptPreview.bind(state);
+    let superseded = false;
+    const consume = jest
+      .spyOn(state, 'consumeTranscriptPreview')
+      .mockImplementation((target, chatId, project, isCurrent) =>
+        originalConsume(
+          target,
+          chatId,
+          async (messages, descriptor, read) => {
+            if (chatId === 'changed-chat' && !superseded) {
+              superseded = true;
+              await state.updateCompatibilityTab(scope, chatId, (current) => ({
+                ...current,
+                title: 'Changed during scan',
+              }));
+              service.indexLiveTabChanges(
+                scope.projectId,
+                scope.worktreeId,
+                await state.getCompatibilityTabs(scope),
+                [chatId],
+                [],
+              );
+              if (flushDuringScan) await service.flushPendingUpdates();
+            }
+            return project(messages, descriptor, read);
+          },
+          isCurrent,
+        ),
+      );
+    try {
+      await service.scanAllSources();
+    } finally {
+      consume.mockRestore();
+    }
+    expect(superseded).toBe(true);
+  }
+
+  function scopeChats(worktreeId: string): Array<[string, string]> {
+    return service
+      .getCatalog()
+      .filter((entry) => entry.worktreeId === worktreeId)
+      .map((entry): [string, string] => [entry.chatId, entry.title])
+      .sort(([left], [right]) => left.localeCompare(right));
+  }
+
+  it('reindexes the whole scope when a per-chat update supersedes its scan projection', async () => {
+    const scope = { projectId: 'scan-delta', worktreeId: 'shared' };
+    await scanSupersededByChatUpdate(scope, false);
+    await service.flushPendingUpdates();
+
+    expect(scopeChats(scope.worktreeId)).toEqual([
+      ['changed-chat', 'Changed during scan'],
+      ['untouched-chat', 'Untouched chat'],
+    ]);
+  });
+
+  it('rebuilds on restart a scope whose scan projection a landed per-chat update superseded', async () => {
+    const scope = { projectId: 'scan-delta-restart', worktreeId: 'shared' };
+    await scanSupersededByChatUpdate(scope, true);
+    // Quit before the scope's reindex runs; only the per-chat update landed.
+    await service.close();
+    service = new ChatSearchService({
+      indexerFactory: (database): ChatSearchIndexer =>
+        new ChatSearchIndexer(database),
+      debounceMs: 60_000,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+
+    await service.scanAllSources();
+
+    expect(scopeChats(scope.worktreeId)).toEqual([
+      ['changed-chat', 'Changed during scan'],
+      ['untouched-chat', 'Untouched chat'],
+    ]);
+  });
+
+  it.each([
+    ['per-chat', 'after'],
+    ['whole-scope', 'after'],
+    // The commit is durable, but its listener has not reported it yet.
+    ['per-chat', 'before'],
+    ['whole-scope', 'before'],
+  ] as const)(
+    'rebuilds on restart a commit made durable while a %s projection lands, %s its commit listener runs',
+    async (kind, listener) => {
+      const scope = {
+        projectId: `fingerprint-lead-${kind}-${listener}`,
+        worktreeId: 'shared',
+      };
+      const state = getChatStateService();
+      await state.replaceCompatibilityTabs(
+        scope,
+        tabsFile(makeTab('chat-a', 'Original'), makeTab('chat-b', 'Other')),
+        { authoritative: true },
+      );
+      await service.scanAllSources();
+      await state.updateCompatibilityTab(scope, 'chat-a', (current) => ({
+        ...current,
+        title: 'First commit',
+      }));
+      // Mirrors the commit listener: a newer durable commit supersedes this one.
+      let latestRevision = 1;
+      const projected = service.projectLiveTabs(
+        scope.projectId,
+        scope.worktreeId,
+        await state.getCompatibilityTabs(scope),
+        kind === 'per-chat'
+          ? { changedTabIds: ['chat-a'], removedTabIds: [] }
+          : undefined,
+        () => latestRevision === 1,
+      );
+      const originalList = state.listChildSearchDocuments.bind(state);
+      let committed = false;
+      const list = jest
+        .spyOn(state, 'listChildSearchDocuments')
+        .mockImplementation(async (target, chatId) => {
+          if (!committed) {
+            committed = true;
+            await state.updateCompatibilityTab(scope, 'chat-a', (current) => ({
+              ...current,
+              title: 'Second commit',
+            }));
+            if (listener === 'after') latestRevision = 2;
+          }
+          return originalList(target, chatId);
+        });
+      try {
+        await service.flushPendingUpdates();
+        await projected;
+      } finally {
+        list.mockRestore();
+      }
+      expect(committed).toBe(true);
+      // Quit while the second commit's projection still waits on the scope.
+      await service.close();
+      service = new ChatSearchService({
+        indexerFactory: (database): ChatSearchIndexer =>
+          new ChatSearchIndexer(database),
+        debounceMs: 60_000,
+        broadcastDebounceMs: 10,
+        broadcastUpdated,
+      });
+
+      await service.scanAllSources();
+
+      expect(scopeChats(scope.worktreeId)).toEqual([
+        ['chat-a', 'Second commit'],
+        ['chat-b', 'Other'],
+      ]);
+    },
+  );
+
+  function liveScopeChats(worktreeId: string): Array<[string, string]> {
+    return service
+      .getCatalog()
+      .filter(
+        (entry) => entry.worktreeId === worktreeId && entry.source === 'live',
+      )
+      .map((entry): [string, string] => [entry.chatId, entry.title])
+      .sort(([left], [right]) => left.localeCompare(right));
+  }
+
+  async function restartSearch(): Promise<void> {
+    await service.close();
+    service = new ChatSearchService({
+      indexerFactory: (database): ChatSearchIndexer =>
+        new ChatSearchIndexer(database),
+      debounceMs: 60_000,
+      broadcastDebounceMs: 10,
+      broadcastUpdated,
+    });
+  }
+
+  async function seedScannedScope(scope: {
+    projectId: string;
+    worktreeId: string;
+  }): Promise<void> {
+    await getChatStateService().replaceCompatibilityTabs(
+      scope,
+      tabsFile(makeTab('chat-a', 'Original'), makeTab('chat-b', 'Other')),
+      { authoritative: true },
+    );
+    await service.scanAllSources();
+  }
+
+  it.each(['per-chat', 'whole-scope'] as const)(
+    'trusts on restart the fingerprint a %s projection of the committed revision recorded',
+    async (kind) => {
+      const scope = {
+        projectId: `fingerprint-current-${kind}`,
+        worktreeId: 'shared',
+      };
+      const state = getChatStateService();
+      await seedScannedScope(scope);
+      await state.updateCompatibilityTab(scope, 'chat-a', (current) => ({
+        ...current,
+        title: 'Projected commit',
+      }));
+      const projected = service.projectLiveTabs(
+        scope.projectId,
+        scope.worktreeId,
+        await state.getCompatibilityTabs(scope),
+        kind === 'per-chat'
+          ? { changedTabIds: ['chat-a'], removedTabIds: [] }
+          : undefined,
+        () => true,
+      );
+      await service.flushPendingUpdates();
+      await projected;
+      await restartSearch();
+
+      const consume = jest.spyOn(state, 'consumeTranscriptPreview');
+      try {
+        await service.scanAllSources();
+        expect(consume).not.toHaveBeenCalled();
+      } finally {
+        consume.mockRestore();
+      }
+      expect(scopeChats(scope.worktreeId)).toEqual([
+        ['chat-a', 'Projected commit'],
+        ['chat-b', 'Other'],
+      ]);
+    },
+  );
+
+  it('rebuilds once on restart a live scope whose fingerprint an older build recorded', async () => {
+    const scope = { projectId: 'fingerprint-unfenced', worktreeId: 'shared' };
+    const state = getChatStateService();
+    await seedScannedScope(scope);
+    await state.updateCompatibilityTab(scope, 'chat-a', (current) => ({
+      ...current,
+      title: 'Unindexed commit',
+    }));
+    // An older build recorded the newer files' fingerprint over the older
+    // index, as the unfenced race could.
+    const fileKey = join(
+      dataDir,
+      'workspaces',
+      scope.projectId,
+      'chats',
+      `${scope.worktreeId}.json`,
+    );
+    const sourceFingerprint = Reflect.get(service, 'sourceFingerprint') as (
+      fileKey: string,
+      projectId: string,
+      worktreeId: string,
+    ) => Promise<{ mtimeMs: number; sizeBytes: number } | null>;
+    const fingerprint = await sourceFingerprint.call(
+      service,
+      fileKey,
+      scope.projectId,
+      scope.worktreeId,
+    );
+    expect(fingerprint).not.toBeNull();
+    const db = Reflect.get(service, 'db') as DatabaseSync;
+    db.prepare(
+      'UPDATE source_files SET mtime_ms = ?, size_bytes = ? WHERE file_key = ?',
+    ).run(fingerprint?.mtimeMs ?? 0, fingerprint?.sizeBytes ?? 0, fileKey);
+    // A scan trusts a matching fingerprint once the fence is recorded.
+    await restartSearch();
+    await service.scanAllSources();
+    expect(scopeChats(scope.worktreeId)).toEqual([
+      ['chat-a', 'Original'],
+      ['chat-b', 'Other'],
+    ]);
+
+    (Reflect.get(service, 'db') as DatabaseSync)
+      .prepare("DELETE FROM search_meta WHERE key = 'live_fingerprint_fence'")
+      .run();
+    await restartSearch();
+    await service.scanAllSources();
+
+    expect(scopeChats(scope.worktreeId)).toEqual([
+      ['chat-a', 'Unindexed commit'],
+      ['chat-b', 'Other'],
+    ]);
+  });
+
+  it('rebuilds on restart a commit made durable before an archive reported outside a commit lands', async () => {
+    const scope = {
+      projectId: 'fingerprint-archive-ipc',
+      worktreeId: 'shared',
+    };
+    const state = getChatStateService();
+    await seedScannedScope(scope);
+    const [archived] = (await state.getCompatibilityTabs(scope)).tabs;
+    if (!archived) throw new Error('missing seeded chat');
+    await state.archiveCompatibilityTab(scope, {
+      tab: archived,
+      archivedAt: '2026-02-01T00:00:00.000Z',
+      turnCount: 1,
+    });
+    // Durable, but not projected before quit.
+    await state.updateCompatibilityTab(scope, 'chat-b', (current) => ({
+      ...current,
+      title: 'Unprojected commit',
+    }));
+    service.worktreeChatArchived(scope.projectId, scope.worktreeId, 'chat-a');
+    await service.flushPendingUpdates();
+    expect(liveScopeChats(scope.worktreeId)).toEqual([['chat-b', 'Other']]);
+    await restartSearch();
+
+    await service.scanAllSources();
+
+    expect(liveScopeChats(scope.worktreeId)).toEqual([
+      ['chat-b', 'Unprojected commit'],
+    ]);
+  });
+
+  it('keeps a whole-scope projection fenced when an archive reported outside a commit merges into it', async () => {
+    const scope = {
+      projectId: 'fingerprint-archive-merge',
+      worktreeId: 'shared',
+    };
+    const state = getChatStateService();
+    await seedScannedScope(scope);
+    const fileKey = join(
+      dataDir,
+      'workspaces',
+      scope.projectId,
+      'chats',
+      `${scope.worktreeId}.json`,
+    );
+    const db = Reflect.get(service, 'db') as DatabaseSync;
+    db.prepare('DELETE FROM source_files WHERE file_key = ?').run(fileKey);
+    // Revisions restart on readmission, so only the currency check can tell
+    // a superseded incarnation's snapshot from the scope's current one.
+    let current = true;
+    const projected = service.projectLiveTabs(
+      scope.projectId,
+      scope.worktreeId,
+      await state.getCompatibilityTabs(scope),
+      undefined,
+      () => current,
+    );
+    service.worktreeChatArchived(scope.projectId, scope.worktreeId, 'chat-a');
+    current = false;
+    await service.flushPendingUpdates();
+    await projected;
+
+    expect(
+      db.prepare('SELECT 1 FROM source_files WHERE file_key = ?').get(fileKey),
+    ).toBeUndefined();
+  });
+
+  it('does not record a scope as indexed from a per-chat update the scan has not covered', async () => {
+    const scope = { projectId: 'delta-before-scan', worktreeId: 'shared' };
+    const state = getChatStateService();
+    await state.replaceCompatibilityTabs(
+      scope,
+      tabsFile(
+        makeTab('changed-chat', 'Changed chat'),
+        makeTab('untouched-chat', 'Untouched chat'),
+      ),
+      { authoritative: true },
+    );
+    await state.updateCompatibilityTab(scope, 'changed-chat', (current) => ({
+      ...current,
+      title: 'Changed before scan',
+    }));
+    service.indexLiveTabChanges(
+      scope.projectId,
+      scope.worktreeId,
+      await state.getCompatibilityTabs(scope),
+      ['changed-chat'],
+      [],
+    );
+    await service.flushPendingUpdates();
+    expect(service.getCatalog().map((entry) => entry.chatId)).toEqual([
+      'changed-chat',
+    ]);
+
+    await service.scanAllSources();
+
+    expect(
+      service
+        .getCatalog()
+        .map((entry) => entry.chatId)
+        .sort(),
+    ).toEqual(['changed-chat', 'untouched-chat']);
+  });
+
   it('discovers App Advisor live and archived chats across entries and global', async () => {
     const advisorChatsDir = join(
       dataDir,
@@ -3114,7 +4576,7 @@ describe('ChatSearchService', () => {
     let blocked = false;
     const replace = jest
       .spyOn(ChatSearchIndexer.prototype, 'replaceStreamedScope')
-      .mockImplementation(async function (...args) {
+      .mockImplementation(async function (this: ChatSearchIndexer, ...args) {
         if (args[2] === 'worktree-archive' && !blocked) {
           blocked = true;
           markFullReplaceStarted();

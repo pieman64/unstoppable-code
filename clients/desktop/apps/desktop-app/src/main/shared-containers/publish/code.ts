@@ -15,7 +15,10 @@ import { readPortalStateStore } from '../../portal/portal-state-store';
 import { readWorkspaceWorktrees } from '../../lib/workspace-persistence';
 import type { SharedContainerPublicationRecord } from '../publication-state';
 import { buildCoworkRevisionArtifacts } from './cowork';
-import { publishSharedContainerRevision } from './pipeline';
+import {
+  publishSharedContainerRevision,
+  type PublishSharedContainerRevisionDependencies,
+} from './pipeline';
 import {
   assertCodePublishInventoryHeadsStable,
   buildCodePublishInventory,
@@ -201,6 +204,7 @@ export interface PublishCodeRevisionDependencies {
     worktreeId: string;
     inventory: CodePublishInventory;
   }) => Promise<{ publishedTitle: string; listTitle: string }>;
+  prepareCapabilityPackage?: PublishSharedContainerRevisionDependencies<CodePublishInventory>['prepareCapabilityPackage'];
 }
 
 async function disposeCodePublishInventory(
@@ -246,6 +250,12 @@ const DEFAULT_DEPENDENCIES: PublishCodeRevisionDependencies = {
         (worktree) => worktree.id === worktreeId,
       )?.branchName ?? worktreeId;
     return { publishedTitle: branchName, listTitle: branchName };
+  },
+  // Deferred: the package analyzer is heavy and only needed while publishing.
+  prepareCapabilityPackage: async (input) => {
+    const { prepareCodeSharedContainerCapabilityPackage } =
+      await import('../capability-package/prepare');
+    return prepareCodeSharedContainerCapabilityPackage(input);
   },
 };
 

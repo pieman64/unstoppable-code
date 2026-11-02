@@ -27,7 +27,9 @@ jest.mock('electron', () => ({
 }));
 
 jest.mock('node:fs/promises', () => ({
-  stat: mockStat,
+  get stat(): typeof mockStat {
+    return mockStat;
+  },
   readFile: jest.fn(),
   open: jest.fn(),
   realpath: jest.fn(),
@@ -41,6 +43,10 @@ import { registerIpcHandler } from '../ipc/register';
 import { getFileBrowserRoots } from '../lib/file-browser-roots';
 import { validateAbsolutePath } from '../lib/validation';
 import { registerFilePreviewHandlers } from '../ipc/file-preview';
+import {
+  unusedCallerResolver,
+  unusedFileContentDispatcher,
+} from './file-preview-fixtures';
 
 const MAX_FULL_TEXT_BYTES = 5 * 1024 * 1024;
 
@@ -119,7 +125,10 @@ describe('fileReadContent handler', () => {
     mockGetCanonicalState.mockResolvedValue({
       codexHome: '/tmp/codex-home',
     });
-    registerFilePreviewHandlers();
+    registerFilePreviewHandlers(
+      unusedFileContentDispatcher,
+      unusedCallerResolver,
+    );
   });
 
   it('rejects a generated-image UNC path before filesystem access', async () => {
@@ -165,7 +174,7 @@ describe('fileReadContent handler', () => {
 
   it('returns an image data URI with the correct mime type', async () => {
     mockStatSize(128);
-    mockedReadFile.mockResolvedValue(Buffer.from('PNG') as never);
+    mockedReadFile.mockResolvedValue(Buffer.from('PNG'));
 
     const result = await invoke('/tmp/photo.png');
 
@@ -211,99 +220,95 @@ describe('fileReadContent handler', () => {
     });
   });
 
-  it('rejects a workspace-scoped read whose symlink resolves outside every root', async () => {
-    mockedGetFileBrowserRoots.mockResolvedValue({
-      roots: [
+  // The scoped branch's containment, symlink and identity checks are pinned
+  // on real filesystems by ipc/__tests__/file-read-content-golden.test.ts;
+  // here only its delegation to the desktop dispatcher is checked.
+  describe('scoped workspace reads', () => {
+    const scopedRequest = {
+      absolutePath: '/workspace/src/file.ts',
+      workspaceTarget: { projectId: 'project-1', worktreeId: 'worktree-1' },
+    };
+    const sender = { id: 9 };
+    const caller = {
+      principalId: 'local',
+      clientInstanceId: 'electron-web-contents:9',
+      authorityId: 'local-desktop',
+      interfaceKind: 'desktop' as const,
+      grants: ['worker.filesystem.read' as const],
+    };
+    const query = jest.fn();
+
+    beforeEach(() => {
+      mockedRegisterIpcHandler.mockClear();
+      query.mockReset();
+      registerFilePreviewHandlers(
         {
-          repoId: 'repo',
-          repoName: 'repo',
-          absolutePath: '/workspace',
-          rootKind: 'repo',
+          queryFileContentForLegacyIpc: query,
+          queryLinkResolveForLegacyIpc:
+            unusedFileContentDispatcher.queryLinkResolveForLegacyIpc,
+          saveTextFileForLegacyIpc:
+            unusedFileContentDispatcher.saveTextFileForLegacyIpc,
         },
-      ],
+        () => caller,
+      );
     });
-    mockedRealpath
-      .mockResolvedValueOnce('/outside/secret.txt')
-      .mockResolvedValueOnce('/workspace');
-    mockTextRead('secret');
 
-    await expect(
-      getHandler(IPC_CHANNELS.fileReadContent)(undefined, {
-        absolutePath: '/workspace/link.txt',
-        workspaceTarget: {
-          projectId: 'project-1',
-          worktreeId: 'worktree-1',
-        },
-      }),
-    ).rejects.toThrow('outside the target project roots');
-    expect(mockStat).not.toHaveBeenCalled();
-  });
-
-  it('reads a contained project file through its canonical path', async () => {
-    mockedGetFileBrowserRoots.mockResolvedValue({
-      roots: [
+    it('returns the projected legacy response without touching the filesystem', async () => {
+      const legacyResult = {
+        kind: 'text',
+        content: 'safe',
+        filename: 'file.ts',
+        sizeBytes: 4,
+        truncated: false,
+        modifiedAtMs: 1,
+      };
+      query.mockResolvedValue({ canonicalResult: null, legacyResult });
+      await expect(
+        getHandler(IPC_CHANNELS.fileReadContent)({ sender }, scopedRequest),
+      ).resolves.toBe(legacyResult);
+      expect(query).toHaveBeenCalledWith(
         {
-          repoId: 'repo',
-          repoName: 'repo',
-          absolutePath: '/workspace-link',
-          rootKind: 'repo',
+          scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+          absolutePath: '/workspace/src/file.ts',
         },
-      ],
-    });
-    mockedRealpath
-      .mockResolvedValueOnce('/workspace/src/file.ts')
-      .mockResolvedValueOnce('/workspace');
-    mockStatSize(4);
-    mockTextRead('safe');
-
-    await expect(
-      getHandler(IPC_CHANNELS.fileReadContent)(undefined, {
-        absolutePath: '/workspace-link/src/file.ts',
-        workspaceTarget: {
-          projectId: 'project-1',
-          worktreeId: 'worktree-1',
-        },
-      }),
-    ).resolves.toMatchObject({
-      content: 'safe',
-    });
-    expect(mockStat).toHaveBeenCalledWith('/workspace/src/file.ts');
-  });
-
-  it('rejects a project file replaced between opening and validation', async () => {
-    mockedGetFileBrowserRoots.mockResolvedValue({
-      roots: [
-        {
-          repoId: 'repo',
-          repoName: 'repo',
-          absolutePath: '/workspace',
-          rootKind: 'repo',
-        },
-      ],
-    });
-    mockedRealpath
-      .mockResolvedValueOnce('/workspace/src/file.ts')
-      .mockResolvedValueOnce('/workspace');
-    const openedHandle = mockTextRead('opened-safe-file');
-    mockStat.mockResolvedValueOnce({
-      size: 15,
-      mtimeMs: 1700000000000,
-      dev: 1,
-      ino: 2,
+        { caller },
+        { sender },
+      );
+      expect(mockedOpen).not.toHaveBeenCalled();
+      expect(mockedRealpath).not.toHaveBeenCalled();
+      expect(mockedGetFileBrowserRoots).not.toHaveBeenCalled();
     });
 
-    await expect(
-      getHandler(IPC_CHANNELS.fileReadContent)(undefined, {
-        absolutePath: '/workspace/src/file.ts',
-        workspaceTarget: {
-          projectId: 'project-1',
-          worktreeId: 'worktree-1',
-        },
-      }),
-    ).rejects.toThrow('changed while being validated');
+    it('rethrows the runtime cause of a typed failure', async () => {
+      const { CanopyOperationError } = await import('@canopy/core-runtime');
+      query.mockRejectedValue(
+        new CanopyOperationError(
+          {
+            kind: 'not_found',
+            code: 'worker.filesystem.file.outsideRoots',
+            message: 'typed',
+            retry: { kind: 'never' },
+          },
+          new Error('Cannot read file outside the target project roots'),
+        ),
+      );
+      await expect(
+        getHandler(IPC_CHANNELS.fileReadContent)({ sender }, scopedRequest),
+      ).rejects.toThrow('Cannot read file outside the target project roots');
+    });
 
-    expect(openedHandle.read).not.toHaveBeenCalled();
-    expect(openedHandle.close).toHaveBeenCalledTimes(1);
+    it('keeps generated-image reads off the scoped path', async () => {
+      mockedRealpath
+        .mockResolvedValueOnce('/tmp/outside/image.png')
+        .mockResolvedValueOnce('/tmp/codex-home/generated_images');
+      await expect(
+        getHandler(IPC_CHANNELS.fileReadContent)(
+          { sender },
+          { ...scopedRequest, allowedRoot: 'codex-generated-images' },
+        ),
+      ).rejects.toThrow('outside the Codex generated-image root');
+      expect(query).not.toHaveBeenCalled();
+    });
   });
 
   it('returns truncated text content when the file exceeds 5MB', async () => {
@@ -401,7 +406,7 @@ describe('fileReadContent handler', () => {
     );
     enoent.code = 'ENOENT';
     mockStatSize(128);
-    mockedReadFile.mockRejectedValueOnce(enoent as never);
+    mockedReadFile.mockRejectedValueOnce(enoent);
 
     const result = await invoke('/tmp/gone.png');
 

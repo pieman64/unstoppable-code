@@ -11,17 +11,22 @@ import {
   type UIEventHandler,
 } from 'react';
 import {
+  MARKDOWN_ROOT_PROPS,
   Markdown,
+  MermaidExportProvider,
   markdownOptions,
+  type MarkdownOptions,
   type MarkdownOverrides,
+  type MermaidSaveDestination,
 } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { FrontmatterBlock } from './FrontmatterBlock';
 import { parseFrontmatterAndBody } from './frontmatter';
 
 // Shared prose styling — kept in sync with the chat markdown surface so a file
-// preview and an inline assistant message read identically.
-const PROSE_CLASSES =
+// preview and an inline assistant message read identically. Notebook Markdown
+// cells reuse it too.
+export const FILE_MARKDOWN_PROSE_CLASSES =
   'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5';
 
 /** Absolute (navigable-as-is) URL schemes; everything else is host-relative. */
@@ -61,6 +66,11 @@ export interface FileMarkdownPreviewProps {
     /** Re-applies a persisted scroll position after embedded images load. */
     readonly onContentLoaded?: () => void;
   };
+  /**
+   * Where diagram pictures go. Omitted, they inherit the host's destination
+   * (a download).
+   */
+  readonly diagramSaveDestination?: MermaidSaveDestination;
 }
 
 function ResolvedMarkdownImage({
@@ -109,77 +119,113 @@ function ResolvedMarkdownImage({
   );
 }
 
+/**
+ * Markdown options for file previews: link and image handling that keeps the
+ * preview host-neutral (see {@link FileMarkdownPreview}). Shared with the
+ * notebook preview so Markdown cells behave exactly like a Markdown file.
+ */
+const ATTACHMENT_SCHEME = 'attachment:';
+
+export function useFileMarkdownOptions(
+  onOpenRelativePath: FileMarkdownPreviewProps['onOpenRelativePath'],
+  resolveAssetSrc: FileMarkdownPreviewProps['resolveAssetSrc'],
+  /** Notebook cells: a validated `data:` URL for `attachment:<name>`. */
+  resolveAttachmentSrc?: (name: string) => string | undefined,
+): MarkdownOptions {
+  return useMemo(() => {
+    const options = markdownOptions({
+      a({ href, children }: ComponentPropsWithoutRef<'a'>): JSX.Element {
+        const target = typeof href === 'string' ? href : '';
+        if (!target || isExternalHref(target)) {
+          return (
+            <a href={target} target="_blank" rel="noreferrer noopener">
+              {children}
+            </a>
+          );
+        }
+        if (onOpenRelativePath) {
+          const open = onOpenRelativePath;
+          return (
+            <button
+              type="button"
+              className="cursor-pointer text-left fg-accent underline underline-offset-2"
+              onClick={(): void => open(target)}
+            >
+              {children}
+            </button>
+          );
+        }
+        // No resolver on this host: render the link text inert rather than as a
+        // dead blue "link" the user would try to click.
+        return (
+          <span
+            className="fg-secondary"
+            aria-disabled="true"
+            title={`Unresolved link: ${target}`}
+          >
+            {children}
+          </span>
+        );
+      },
+      img({ src, alt }: ComponentPropsWithoutRef<'img'>): ReactNode {
+        const raw = typeof src === 'string' ? src : '';
+        if (!raw) {
+          return alt ? (
+            <span className="text-xs fg-secondary">{alt}</span>
+          ) : null;
+        }
+        if (resolveAttachmentSrc && raw.startsWith(ATTACHMENT_SCHEME)) {
+          const attachmentSrc = resolveAttachmentSrc(
+            raw.slice(ATTACHMENT_SCHEME.length),
+          );
+          if (attachmentSrc !== undefined) {
+            return (
+              <img src={attachmentSrc} alt={alt ?? ''} className="max-w-full" />
+            );
+          }
+        }
+        if (resolveAssetSrc && isRelativeAssetSrc(raw)) {
+          return (
+            <ResolvedMarkdownImage
+              src={raw}
+              alt={alt ?? ''}
+              resolveAssetSrc={resolveAssetSrc}
+            />
+          );
+        }
+        return (
+          <span className="text-xs fg-secondary">
+            {alt || 'Image unavailable'}
+          </span>
+        );
+      },
+    } satisfies MarkdownOverrides);
+    if (!resolveAttachmentSrc) return options;
+    // The shared sanitizer drops unknown schemes; let `attachment:` image
+    // sources reach the override above, which only resolves this cell's map.
+    const sanitize = options.sanitizer;
+    return {
+      ...options,
+      sanitizer: (value: string, tag: string, attribute: string) =>
+        tag === 'img' && value.startsWith(ATTACHMENT_SCHEME)
+          ? value
+          : (sanitize?.(value, tag, attribute) ?? null),
+    };
+  }, [onOpenRelativePath, resolveAssetSrc, resolveAttachmentSrc]);
+}
+
 function FileMarkdownPreviewImpl({
   content,
   onOpenRelativePath,
   resolveAssetSrc,
   scrollBinding,
+  diagramSaveDestination,
 }: FileMarkdownPreviewProps): JSX.Element {
   const parsedContent = useMemo(
     () => parseFrontmatterAndBody(content),
     [content],
   );
-  const options = useMemo(
-    () =>
-      markdownOptions({
-        a({ href, children }: ComponentPropsWithoutRef<'a'>): JSX.Element {
-          const target = typeof href === 'string' ? href : '';
-          if (!target || isExternalHref(target)) {
-            return (
-              <a href={target} target="_blank" rel="noreferrer noopener">
-                {children}
-              </a>
-            );
-          }
-          if (onOpenRelativePath) {
-            const open = onOpenRelativePath;
-            return (
-              <button
-                type="button"
-                className="cursor-pointer text-left fg-accent underline underline-offset-2"
-                onClick={(): void => open(target)}
-              >
-                {children}
-              </button>
-            );
-          }
-          // No resolver on this host: render the link text inert rather than as a
-          // dead blue "link" the user would try to click.
-          return (
-            <span
-              className="fg-secondary"
-              aria-disabled="true"
-              title={`Unresolved link: ${target}`}
-            >
-              {children}
-            </span>
-          );
-        },
-        img({ src, alt }: ComponentPropsWithoutRef<'img'>): ReactNode {
-          const raw = typeof src === 'string' ? src : '';
-          if (!raw) {
-            return alt ? (
-              <span className="text-xs fg-secondary">{alt}</span>
-            ) : null;
-          }
-          if (resolveAssetSrc && isRelativeAssetSrc(raw)) {
-            return (
-              <ResolvedMarkdownImage
-                src={raw}
-                alt={alt ?? ''}
-                resolveAssetSrc={resolveAssetSrc}
-              />
-            );
-          }
-          return (
-            <span className="text-xs fg-secondary">
-              {alt || 'Image unavailable'}
-            </span>
-          );
-        },
-      } satisfies MarkdownOverrides),
-    [onOpenRelativePath, resolveAssetSrc],
-  );
+  const options = useFileMarkdownOptions(onOpenRelativePath, resolveAssetSrc);
 
   return (
     <div
@@ -194,8 +240,10 @@ function FileMarkdownPreviewImpl({
           frontmatter={parsedContent.frontmatter}
           className="mb-4"
         />
-        <div className={PROSE_CLASSES}>
-          <Markdown options={options}>{parsedContent.body}</Markdown>
+        <div className={FILE_MARKDOWN_PROSE_CLASSES} {...MARKDOWN_ROOT_PROPS}>
+          <MermaidExportProvider destination={diagramSaveDestination}>
+            <Markdown options={options}>{parsedContent.body}</Markdown>
+          </MermaidExportProvider>
         </div>
       </div>
     </div>

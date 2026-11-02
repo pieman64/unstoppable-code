@@ -85,14 +85,21 @@ export function usePipelineExecutionDetailData({
   const liveState = usePipelineRunsStore((s) =>
     archived ? undefined : s.statesById[activeExecutionId],
   );
-  // The lease registers interest before the snapshot read, keeps the
-  // execution live under events whatever worktree is selected, and evicts its
-  // unretained detail when released (hidden or closed).
-  const { loadFailed: liveLoadFailed } = usePipelineExecutionDetailLease(
+  // Keep the root leased while this view is open so switching to or from a
+  // child cannot drop its last lease mid-commit; the child lease registers
+  // before its snapshot read and evicts its detail on release.
+  const { loadFailed: rootLoadFailed } = usePipelineExecutionDetailLease(
     owner,
-    activeExecutionId,
+    rootExecutionId,
     enabled && !archived,
   );
+  const { loadFailed: childLoadFailed } = usePipelineExecutionDetailLease(
+    owner,
+    activeExecutionId,
+    enabled && !archived && activeExecutionId !== rootExecutionId,
+  );
+  const liveLoadFailed =
+    activeExecutionId === rootExecutionId ? rootLoadFailed : childLoadFailed;
   const advisorSnapshot = usePipelineRunsStore((s) =>
     archived ? undefined : s.advisorSnapshotsByExecutionId[activeExecutionId],
   );

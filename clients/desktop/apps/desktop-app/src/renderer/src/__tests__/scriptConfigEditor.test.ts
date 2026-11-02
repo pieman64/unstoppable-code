@@ -462,6 +462,7 @@ describe('ScriptConfigEditor dev server pattern validity', () => {
           id: 'pattern-1',
           pattern: '(',
           label: '',
+          openTarget: 'in-app',
         },
       ],
       onDevServerPatternsChange: jest.fn(),
@@ -483,6 +484,7 @@ describe('ScriptConfigEditor dev server pattern validity', () => {
         id: 'pattern-1',
         pattern: '(',
         label: '',
+        openTarget: 'in-app',
       },
     ];
     const rendered = renderScriptConfigEditor({

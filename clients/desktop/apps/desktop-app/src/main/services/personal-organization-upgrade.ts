@@ -3,6 +3,7 @@ import type { CanopyCloudCredentialContext } from '../canopy-cloud/client';
 import type { PersonalOrganizationUpgradeJournal } from '../lib/personal-organization-upgrade-journal';
 import type { OrgMemberCreationOptions } from '../lib/org-member-code-create';
 import type {
+  CanopyPortalState,
   CreateOrgMemberCodeProjectResult,
   CreateOrgMemberMultiRepoProjectResult,
 } from '@canopy/desktop-shared/types';
@@ -19,6 +20,31 @@ import {
   type OrganizationInviteStatus,
 } from '@canopy/protocol/organizations';
 
+/** The Portal worker fields that decide whether a bound session is current. */
+export type BoundPortalSessionState = Pick<
+  CanopyPortalState,
+  'sessionId' | 'status' | 'connectionStatus'
+>;
+
+/**
+ * Portal conversion work stays bound to the desktop session that accepted it.
+ * The server reports a session `reconnecting` while a heartbeat is late (a
+ * resumed or loaded host) and the worker reconnects after a failed request;
+ * neither replaces the session, so both keep it current. Work stops once the
+ * session is ended, unpaired or replaced.
+ */
+export function isBoundPortalSessionCurrent(
+  state: BoundPortalSessionState,
+  sessionId: string,
+): boolean {
+  return (
+    state.sessionId === sessionId &&
+    (state.status === 'active' || state.status === 'reconnecting') &&
+    (state.connectionStatus === 'active' ||
+      state.connectionStatus === 'reconnecting')
+  );
+}
+
 export interface UpgradeWorkspace extends PersonalProject {
   path: string;
   owner?: { organizationId: string; projectId: string };
@@ -29,6 +55,8 @@ export interface UpgradeIdentity {
   credentials: CanopyCloudCredentialContext;
 }
 export interface PersonalOrganizationUpgradeDeps {
+  onPromotion?(this: void, result: UpgradePersonalOrganizationResult): void;
+  onInvite?(this: void, result: OrganizationInviteResult): void;
   identity(this: void): Promise<UpgradeIdentity>;
   sessionCurrent(this: void, sessionId: string): boolean;
   destination(
@@ -457,6 +485,11 @@ export function createPersonalOrganizationUpgradeService(
       let identity = await deps.identity();
       await guard(identity);
       const promotion = await deps.promote(request, identity);
+      try {
+        deps.onPromotion?.(promotion);
+      } catch {
+        /* Confirmed creation survives observers. */
+      }
       const warnings: PersonalOrganizationPromotionOutcome['warnings'] = [];
       let contextSwitched = false;
       try {
@@ -486,7 +519,13 @@ export function createPersonalOrganizationUpgradeService(
     ): Promise<OrganizationInviteResult> {
       const identity = await deps.identity();
       await guard(identity);
-      return deps.invite(organizationId, request, identity);
+      const result = await deps.invite(organizationId, request, identity);
+      try {
+        deps.onInvite?.(result);
+      } catch {
+        /* Confirmed send survives observers. */
+      }
+      return result;
     },
     async inviteStatus(
       organizationId,

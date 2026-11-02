@@ -6,12 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
+  access,
   cp,
   lstat,
   mkdir,
   open,
   readFile,
-  realpath,
   readdir,
   rename,
   rm,
@@ -26,6 +26,7 @@ import {
   sep,
   win32,
 } from 'node:path';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import type {
   ArchivedContainerRecoveryManifest,
   WorktreeData,
@@ -34,12 +35,15 @@ import {
   getArchivedContainerGitStateStagedPath,
   getArchivedContainerRecoveryEvidenceDir,
   getWorkspaceWorktreeDir,
+  getWorkspaceWorktreesRootDir,
   getArchivedContainersRootDir,
   getArchivedContainerWorkspaceRootDir,
 } from './paths';
+import { isPathInside } from './path-safety';
 import {
   isWorkspaceWorktreeCurrent,
   readWorkspaceConfig,
+  readWorkspaceConfigDetailed,
   readWorkspaceWorktrees,
 } from './workspace-persistence';
 import { archiveGitEnv } from './git-tree-snapshot';
@@ -47,9 +51,16 @@ import { getResolvedGitExecutableForSpawn } from './git-executable';
 import { validateId } from './validation';
 import { getGitCommonDir, removeWindowsWorktreeReparsePoints } from './git';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
+import {
+  canonicalizePossiblyMissingPath,
+  removeAbsentWorktreeRegistrations,
+} from './worktree-registration-removal';
+import { logMainProcessWarn } from './main-process-logging';
 import { isErrnoException, isRecord } from './type-guards';
 import { readEffectiveWorkspaceConfig } from './workspace-source';
+import { isFilesOnlyRestoreGitless } from './files-only-restore-git';
 import {
+  readArchivedGitCaptureSourceRepositories,
   readArchivedGitStagedDescriptor,
   renameArchiveQuarantine,
   workspaceRootPayloadDigest,
@@ -272,14 +283,9 @@ async function syncPayload(directory: string): Promise<void> {
   await syncDirectory(directory);
 }
 
+// The shared D1 flush: recovery evidence is durable on Windows too (CAN-5151).
 async function syncDirectory(directory: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(directory, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await flushDirectory(directory);
 }
 
 async function containedRecoveryPayloadIds(
@@ -355,6 +361,243 @@ export async function readArchivedContainerRecoveryEvidence(
   return (await readJournal(paths(projectId, worktreeId).journal)) !== null;
 }
 
+/**
+ * Read-only (CAN-5334): the files-only recovery journal's repositories and
+ * creation time, or null without one. Never prepares or rewrites a recovery;
+ * an invalid journal throws.
+ */
+export async function readArchivedContainerRecoveryJournal(
+  projectId: string,
+  worktreeId: string,
+): Promise<{
+  createdAt: string;
+  repositories: {
+    referenceRepoPath: string;
+    repositoryIdentity: string | null;
+  }[];
+} | null> {
+  const journal = await readJournal(paths(projectId, worktreeId).journal);
+  if (!journal) return null;
+  return {
+    createdAt: journal.createdAt,
+    repositories: (journal.repositories ?? []).map((repository) => ({
+      referenceRepoPath: repository.referenceRepoPath,
+      repositoryIdentity: repository.repositoryIdentity?.path ?? null,
+    })),
+  };
+}
+
+interface RecoveryRepositoryCandidate {
+  repoId: string;
+  referenceRepoPath: string;
+  relativePath: string;
+}
+
+/** Read-only export of {@link readConfiguredRecoveryCandidates} (CAN-5334). */
+export function readConfiguredWorktreeSourceCandidates(
+  projectId: string,
+  worktree: WorktreeData,
+  config: Awaited<ReturnType<typeof readWorkspaceConfig>>,
+): Promise<RecoveryRepositoryCandidate[]> {
+  return readConfiguredRecoveryCandidates(projectId, worktree, config);
+}
+
+/**
+ * Every repository the project's configuration names for this worktree: a
+ * superset of the repositories its Git capture uses, and the ones a files-only
+ * recovery cleans up.
+ */
+async function readConfiguredRecoveryCandidates(
+  projectId: string,
+  worktree: WorktreeData,
+  preReadConfig?: Awaited<ReturnType<typeof readWorkspaceConfig>>,
+): Promise<RecoveryRepositoryCandidate[]> {
+  const config = preReadConfig ?? (await readWorkspaceConfig(projectId));
+  if (config.type === 'single-repo') {
+    return config.repoPath
+      ? [
+          {
+            repoId: '__single_repo__',
+            referenceRepoPath: config.repoPath,
+            relativePath: '.',
+          },
+        ]
+      : [];
+  }
+  const effective = await readEffectiveWorkspaceConfig(projectId, config);
+  const includedRepoIds = worktree.includedRepoIds
+    ? new Set(worktree.includedRepoIds)
+    : null;
+  return [
+    ...(effective.sourceRepoPath
+      ? [
+          {
+            repoId: '__workspace_root__',
+            referenceRepoPath: effective.sourceRepoPath,
+            relativePath: '.',
+          },
+        ]
+      : []),
+    ...effective.repos
+      .filter((repo) => !includedRepoIds || includedRepoIds.has(repo.id))
+      .map((repo) => ({
+        repoId: repo.id,
+        referenceRepoPath: repo.repoPath,
+        relativePath: `repos/${repo.id}`,
+      })),
+  ];
+}
+
+async function accessibleOrAbsent(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * The source repositories that archiving this live worktree opens, or null
+ * when the archive would fail for want of one. Follows the archive's own path
+ * choice. A ready capture, a capture with a teardown journal, and a present
+ * checkout go through Git capture, whose repository set comes from the
+ * archive's own selection. Only a capture with a teardown journal that is not
+ * ready falls back from there to the files-only recovery, as does a worktree
+ * without a checkout or a files-only restore that is still Git-less; that
+ * recovery walks every configured repository plus the staged ones.
+ */
+async function readArchiveSourceRepositories(
+  projectId: string,
+  worktree: WorktreeData,
+  expectedKind: 'single-repo' | 'multi-repo',
+): Promise<string[] | null> {
+  const { config, authority } = await readWorkspaceConfigDetailed(projectId);
+  // The archive refuses another kind before any effect.
+  if ((authority === 'ok' ? config.type : expectedKind) !== expectedKind)
+    return [];
+  // CAN-5011: the archive then reruns only the cleanup after its commit.
+  if (await hasCommittedArchive(projectId, worktree)) return [];
+  let staged: Awaited<ReturnType<typeof readArchivedGitStagedDescriptor>>;
+  try {
+    // Same validation as the archive's own read, without its legacy rewrite.
+    staged = await readArchivedGitStagedDescriptor(projectId, worktree.id, {
+      readOnly: true,
+    });
+  } catch {
+    // The archive's own read fails the same way, after its teardown.
+    return null;
+  }
+  const stagedPaths = (staged?.repositories ?? []).map(
+    (repository) => repository.referenceRepoPath,
+  );
+  const checkout = paths(projectId, worktree.id).canonical;
+  const capturesGit = staged
+    ? staged.status === 'ready' ||
+      staged.teardown !== undefined ||
+      (await accessibleOrAbsent(checkout))
+    : (await accessibleOrAbsent(checkout)) &&
+      (worktree.restoredFromFilesOnlyArchiveId === undefined ||
+        !(await isFilesOnlyRestoreGitless(checkout, expectedKind)));
+  if (capturesGit) {
+    // An unreadable configuration reads as an empty default, which the
+    // capture rejects after its teardown.
+    if (authority !== 'ok') return null;
+    let captured: string[];
+    try {
+      captured = await readArchivedGitCaptureSourceRepositories({
+        workspaceId: projectId,
+        containerId: worktree.id,
+        workspaceType: expectedKind,
+        persistedWorktree: worktree,
+        staged,
+      });
+    } catch {
+      return null;
+    }
+    // Releasing an earlier capture opens its staged repositories too.
+    if (staged?.status === 'ready' || !staged?.teardown)
+      return [...captured, ...stagedPaths];
+  }
+  if (expectedKind === 'single-repo')
+    return config.repoPath ? [config.repoPath, ...stagedPaths] : null;
+  const candidates = await readConfiguredRecoveryCandidates(
+    projectId,
+    worktree,
+    config,
+  ).catch((): RecoveryRepositoryCandidate[] => []);
+  return [
+    ...candidates.map((candidate) => candidate.referenceRepoPath),
+    ...stagedPaths,
+  ];
+}
+
+/**
+ * Whether this incarnation's archive manifest is committed, which the
+ * archive reuses even past its retention window. Any other read result leaves
+ * the choice to its other paths, and the archive reports an unreadable
+ * manifest itself.
+ */
+async function hasCommittedArchive(
+  projectId: string,
+  worktree: WorktreeData,
+): Promise<boolean> {
+  // Intentional local import breaks the archive/recovery initialization
+  // cycle; build:e2e verifies this module resolves in packaged bytecode.
+  const { readArchivedContainerManifestIncludingExpired } =
+    await import('./archived-containers');
+  try {
+    const manifest = await readArchivedContainerManifestIncludingExpired(
+      projectId,
+      worktree.id,
+    );
+    return (
+      manifest.kind === 'worktree' &&
+      manifest.originalWorktree?.createdAt === worktree.createdAt
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read-only (CAN-4985): whether archiving this live worktree needs a source
+ * repository that Git cannot open. Its Git capture would then fail after the
+ * teardown, or its files-only recovery would leave Git registration cleanup
+ * pending. Fails closed: a failed Git lookup or call, or a failed read of the
+ * configuration or worktree, counts as unavailable. `available` carries the
+ * repositories already verified across one admission's worktrees.
+ */
+export async function isWorktreeArchiveSourceUnavailable(
+  projectId: string,
+  worktree: WorktreeData,
+  expectedKind: 'single-repo' | 'multi-repo',
+  available: Set<string> = new Set(),
+): Promise<boolean> {
+  let sources: string[] | null;
+  try {
+    sources = await readArchiveSourceRepositories(
+      projectId,
+      worktree,
+      expectedKind,
+    );
+  } catch {
+    return true;
+  }
+  if (sources === null) return true;
+  for (const referenceRepoPath of sources.map((source) => resolve(source))) {
+    if (available.has(referenceRepoPath)) continue;
+    try {
+      await getGitCommonDir(referenceRepoPath);
+    } catch {
+      return true;
+    }
+    available.add(referenceRepoPath);
+  }
+  return false;
+}
+
 async function captureRecoveryRepositories(args: {
   projectId: string;
   worktreeId: string;
@@ -362,47 +605,12 @@ async function captureRecoveryRepositories(args: {
   staged: Awaited<ReturnType<typeof readArchivedGitStagedDescriptor>>;
 }): Promise<RecoveryRepository[] | null> {
   const location = paths(args.projectId, args.worktreeId);
-  type RecoveryRepositoryCandidate = {
-    repoId: string;
-    referenceRepoPath: string;
-    relativePath: string;
-  };
-  const configuredCandidates: RecoveryRepositoryCandidate[] = [];
+  let configuredCandidates: RecoveryRepositoryCandidate[] = [];
   try {
-    const config = await readWorkspaceConfig(args.projectId);
-    if (config.type === 'single-repo') {
-      if (config.repoPath) {
-        configuredCandidates.push({
-          repoId: '__single_repo__',
-          referenceRepoPath: config.repoPath,
-          relativePath: '.',
-        });
-      }
-    } else {
-      const effective = await readEffectiveWorkspaceConfig(
-        args.projectId,
-        config,
-      );
-      const includedRepoIds = args.worktree.includedRepoIds
-        ? new Set(args.worktree.includedRepoIds)
-        : null;
-      if (effective.sourceRepoPath) {
-        configuredCandidates.push({
-          repoId: '__workspace_root__',
-          referenceRepoPath: effective.sourceRepoPath,
-          relativePath: '.',
-        });
-      }
-      configuredCandidates.push(
-        ...effective.repos
-          .filter((repo) => !includedRepoIds || includedRepoIds.has(repo.id))
-          .map((repo) => ({
-            repoId: repo.id,
-            referenceRepoPath: repo.repoPath,
-            relativePath: `repos/${repo.id}`,
-          })),
-      );
-    }
+    configuredCandidates = await readConfiguredRecoveryCandidates(
+      args.projectId,
+      args.worktree,
+    );
   } catch {
     // A staged descriptor still provides enough identity to finish recovery.
   }
@@ -475,21 +683,31 @@ export function isArchivedRecoveryPathWithinRoot(
   );
 }
 
+/**
+ * Removes the archive's stale Git worktree registrations; true while any
+ * cleanup stays pending, including after a failed lookup, stat, Git call or
+ * canonicalization. `inspect` predicts that result for a later
+ * {@link finishArchivedContainerRecovery} without removing a registration or
+ * updating the journal, treating the paths that step clears first as absent.
+ */
 async function cleanupGitRegistrations(
   manifest: ArchivedContainerRecoveryManifest,
   journal: RecoveryJournal,
+  mode: 'remove' | 'inspect' = 'remove',
 ): Promise<boolean> {
   const location = paths(manifest.projectId, manifest.id);
   if (!journal.repositories) return false;
   let pending = false;
   for (const repository of journal.repositories) {
-    if (!repository.repositoryIdentity) {
+    if (pending && mode === 'inspect') break;
+    let recordedIdentity = repository.repositoryIdentity;
+    if (!recordedIdentity) {
       try {
         const repositoryIdentityPath = resolve(
           await getGitCommonDir(repository.referenceRepoPath),
         );
         const identity = await lstat(repositoryIdentityPath);
-        repository.repositoryIdentity = {
+        recordedIdentity = {
           path: repositoryIdentityPath,
           dev: identity.dev,
           ino: identity.ino,
@@ -499,65 +717,26 @@ async function cleanupGitRegistrations(
         pending = true;
         continue;
       }
+      if (mode === 'remove') repository.repositoryIdentity = recordedIdentity;
     }
-    const git = async (args: string[]): Promise<string> => {
-      const { stdout } = await promisify(execFile)(
-        await getResolvedGitExecutableForSpawn(),
-        args,
-        {
-          cwd: repository.referenceRepoPath,
-          env: archiveGitEnv(),
-          timeout: 5_000,
-          windowsHide: true,
-        },
-      );
-      return stdout;
-    };
     try {
       const currentIdentityPath = resolve(
         await getGitCommonDir(repository.referenceRepoPath),
       );
       const currentIdentity = await lstat(currentIdentityPath);
       if (
-        currentIdentityPath !== resolve(repository.repositoryIdentity.path) ||
-        currentIdentity.dev !== repository.repositoryIdentity.dev ||
-        currentIdentity.ino !== repository.repositoryIdentity.ino ||
-        currentIdentity.birthtimeMs !==
-          repository.repositoryIdentity.birthtimeMs
+        currentIdentityPath !== resolve(recordedIdentity.path) ||
+        currentIdentity.dev !== recordedIdentity.dev ||
+        currentIdentity.ino !== recordedIdentity.ino ||
+        currentIdentity.birthtimeMs !== recordedIdentity.birthtimeMs
       ) {
         pending = true;
         continue;
       }
-      const canonicalizePossiblyMissingPath = async (
-        pathValue: string,
-      ): Promise<string> => {
-        let existingAncestor = resolve(pathValue);
-        const missingSegments: string[] = [];
-        while (true) {
-          try {
-            return join(await realpath(existingAncestor), ...missingSegments);
-          } catch (error) {
-            if (!isErrnoException(error) || error.code !== 'ENOENT')
-              throw error;
-            const parent = dirname(existingAncestor);
-            if (parent === existingAncestor) return resolve(pathValue);
-            missingSegments.unshift(basename(existingAncestor));
-            existingAncestor = parent;
-          }
-        }
-      };
-      const registrations = await Promise.all(
-        (await git(['worktree', 'list', '--porcelain', '-z']))
-          .split('\0')
-          .filter((field) => field.startsWith('worktree '))
-          .map(async (field) => {
-            const path = resolve(field.slice(9));
-            return {
-              path,
-              comparablePath: await canonicalizePossiblyMissingPath(path),
-            };
-          }),
+      const registrations = await listWorktreeRegistrations(
+        repository.referenceRepoPath,
       );
+      const stale: WorktreeRegistration[] = [];
       for (const target of repository.worktreePaths) {
         const ownedRoot = [location.canonical, location.quarantine].find(
           (root) => {
@@ -577,24 +756,299 @@ async function cleanupGitRegistrations(
           (candidate) => candidate.comparablePath === comparableTarget,
         );
         if (!registration) continue;
+        // The finish step moves a captured canonical checkout into the
+        // quarantine and removes the quarantine before it reaches here.
+        const clearedByFinish =
+          mode === 'inspect' &&
+          (ownedRoot === location.quarantine
+            ? journal.phase !== 'removed'
+            : journal.phase === 'captured');
         // A replacement canonical occupant never inherits old deletion authority.
-        if (await statOrAbsent(ownedRoot)) {
+        if (!clearedByFinish && (await statOrAbsent(ownedRoot))) {
           pending = true;
           continue;
         }
-        await git([
-          'worktree',
-          'remove',
-          '--force',
-          '--force',
-          registration.path,
-        ]);
+        if (mode === 'remove') stale.push(registration);
       }
+      if (
+        (
+          await removeStaleWorktreeRegistrations(
+            repository.referenceRepoPath,
+            stale,
+          )
+        ).length
+      )
+        pending = true;
     } catch {
       pending = true;
     }
   }
   return pending;
+}
+
+async function runRecoveryGit(
+  referenceRepoPath: string,
+  args: string[],
+): Promise<string> {
+  const { stdout } = await promisify(execFile)(
+    await getResolvedGitExecutableForSpawn(),
+    args,
+    {
+      cwd: referenceRepoPath,
+      env: archiveGitEnv(),
+      timeout: 5_000,
+      windowsHide: true,
+    },
+  );
+  return stdout;
+}
+
+interface WorktreeRegistration {
+  path: string;
+  comparablePath: string;
+}
+
+async function listWorktreeRegistrations(
+  referenceRepoPath: string,
+): Promise<WorktreeRegistration[]> {
+  return Promise.all(
+    (
+      await runRecoveryGit(referenceRepoPath, [
+        'worktree',
+        'list',
+        '--porcelain',
+        '-z',
+      ])
+    )
+      .split('\0')
+      .filter((field) => field.startsWith('worktree '))
+      .map(async (field) => {
+        const path = resolve(field.slice(9));
+        return {
+          path,
+          comparablePath: await canonicalizePossiblyMissingPath(path),
+        };
+      }),
+  );
+}
+
+/**
+ * {@link removeAbsentWorktreeRegistrations} for `stale`; returns those still
+ * registered.
+ */
+async function removeStaleWorktreeRegistrations(
+  referenceRepoPath: string,
+  stale: readonly WorktreeRegistration[],
+): Promise<WorktreeRegistration[]> {
+  if (!stale.length) return [];
+  await removeAbsentWorktreeRegistrations(
+    await getGitCommonDir(referenceRepoPath),
+    stale.map((registration) => registration.path),
+  );
+  const remaining = await listWorktreeRegistrations(referenceRepoPath);
+  return stale.filter((registration) =>
+    remaining.some(
+      (candidate) =>
+        candidate.path === registration.path ||
+        candidate.comparablePath === registration.comparablePath,
+    ),
+  );
+}
+
+/**
+ * Where an archive whose recovery journal is unusable may still be registered
+ * with Git (CAN-5011): each repository the project's configuration names for
+ * it, at its checkout and quarantine paths. The journal that recorded them,
+ * and their identities, is gone.
+ */
+interface DiscardedRecoveryRegistrations {
+  projectId: string;
+  containerId: string;
+  repositories: { referenceRepoPath: string; relativePath: string }[];
+}
+
+/** Null when the project's configuration cannot be read. */
+async function readDiscardedRecoveryRegistrations(
+  manifest: ArchivedContainerRecoveryManifest,
+): Promise<DiscardedRecoveryRegistrations | null> {
+  try {
+    const candidates = await readConfiguredRecoveryCandidates(
+      manifest.projectId,
+      manifest.originalWorktree,
+    );
+    return {
+      projectId: manifest.projectId,
+      containerId: manifest.id,
+      repositories: candidates.map((candidate) => ({
+        referenceRepoPath: resolve(candidate.referenceRepoPath),
+        relativePath: candidate.relativePath,
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Removes the registrations {@link DiscardedRecoveryRegistrations} names once
+ * the archive's checkout and quarantine are both gone
+ * ({@link removeStaleWorktreeRegistrations}), so a stale one holds no path or
+ * branch a later worktree needs. While either remains, its registrations stay
+ * with it: nothing proves that occupant is the archive's. Best effort; never
+ * throws.
+ */
+async function removeDiscardedRecoveryRegistrations(
+  left: DiscardedRecoveryRegistrations,
+): Promise<void> {
+  const location = paths(left.projectId, left.containerId);
+  const warn = (error: unknown): void =>
+    logMainProcessWarn(
+      'A discarded archive Git registration could not be removed.',
+      { projectId: left.projectId, containerId: left.containerId, error },
+    );
+  try {
+    if (
+      (await statOrAbsent(location.canonical)) ||
+      (await statOrAbsent(location.quarantine))
+    )
+      return;
+  } catch (error) {
+    warn(error);
+    return;
+  }
+  for (const repository of left.repositories) {
+    try {
+      const targets = await Promise.all(
+        [location.canonical, location.quarantine]
+          .map((root) => ({
+            root,
+            target: resolve(root, repository.relativePath),
+          }))
+          .filter(({ root, target }) =>
+            isArchivedRecoveryPathWithinRoot(root, target),
+          )
+          .map(({ target }) => canonicalizePossiblyMissingPath(target)),
+      );
+      const left = await removeStaleWorktreeRegistrations(
+        repository.referenceRepoPath,
+        (await listWorktreeRegistrations(repository.referenceRepoPath)).filter(
+          (registration) => targets.includes(registration.comparablePath),
+        ),
+      );
+      if (left.length)
+        warn(new Error('Git still registers a checkout at the archive path.'));
+    } catch (error) {
+      warn(error);
+    }
+  }
+}
+
+/**
+ * The Git registrations a project's configured repositories hold under its
+ * worktrees directory, read before a project deletion removes that directory
+ * (CAN-5011). Some have no record left to name them, such as the checkout a
+ * purge of an archive with an unusable journal leaves in place.
+ */
+export interface ProjectWorktreeRegistrations {
+  projectId: string;
+  repositories: { referenceRepoPath: string; registrationPaths: string[] }[];
+}
+
+/** Read-only and best effort: a repository it cannot read is left out. */
+export async function readProjectWorktreeRegistrations(
+  projectId: string,
+): Promise<ProjectWorktreeRegistrations> {
+  const found: ProjectWorktreeRegistrations = { projectId, repositories: [] };
+  const warn = (error: unknown): void =>
+    logMainProcessWarn(
+      'Project worktree Git registrations could not be read.',
+      {
+        projectId,
+        error,
+      },
+    );
+  let referenceRepoPaths: string[];
+  try {
+    const config = await readWorkspaceConfig(projectId);
+    if (config.type === 'single-repo')
+      referenceRepoPaths = config.repoPath ? [config.repoPath] : [];
+    else if (config.type === 'multi-repo') {
+      const effective = await readEffectiveWorkspaceConfig(projectId, config);
+      referenceRepoPaths = [
+        ...(effective.sourceRepoPath ? [effective.sourceRepoPath] : []),
+        ...effective.repos.map((repo) => repo.repoPath),
+      ];
+    } else return found;
+  } catch (error) {
+    warn(error);
+    return found;
+  }
+  try {
+    const worktreesRoot = await canonicalizePossiblyMissingPath(
+      getWorkspaceWorktreesRootDir(projectId),
+    );
+    for (const referenceRepoPath of Array.from(
+      new Set(referenceRepoPaths.map((path) => resolve(path))),
+    )) {
+      try {
+        const registrationPaths = (
+          await listWorktreeRegistrations(referenceRepoPath)
+        )
+          .filter((registration) =>
+            isPathInside(worktreesRoot, registration.comparablePath),
+          )
+          .map((registration) => registration.path);
+        if (registrationPaths.length)
+          found.repositories.push({ referenceRepoPath, registrationPaths });
+      } catch (error) {
+        warn(error);
+      }
+    }
+  } catch (error) {
+    warn(error);
+  }
+  return found;
+}
+
+/**
+ * After the project directory is removed, removes each registration
+ * {@link readProjectWorktreeRegistrations} found whose path is now gone
+ * ({@link removeStaleWorktreeRegistrations}), so none holds a branch a later
+ * worktree needs. Best effort; never throws.
+ */
+export async function removeProjectWorktreeRegistrations(
+  found: ProjectWorktreeRegistrations,
+): Promise<void> {
+  const warn = (registrationPaths: string[], error: unknown): void =>
+    logMainProcessWarn(
+      'A deleted project worktree Git registration could not be removed.',
+      { projectId: found.projectId, registrationPaths, error },
+    );
+  for (const repository of found.repositories)
+    try {
+      const stale: WorktreeRegistration[] = [];
+      for (const registration of await listWorktreeRegistrations(
+        repository.referenceRepoPath,
+      ))
+        if (repository.registrationPaths.includes(registration.path))
+          try {
+            if (!(await statOrAbsent(registration.path)))
+              stale.push(registration);
+          } catch (error) {
+            warn([registration.path], error);
+          }
+      const left = await removeStaleWorktreeRegistrations(
+        repository.referenceRepoPath,
+        stale,
+      );
+      if (left.length)
+        warn(
+          left.map((registration) => registration.path),
+          new Error('Git still registers a checkout at the deleted path.'),
+        );
+    } catch (error) {
+      warn(repository.registrationPaths, error);
+    }
 }
 
 /** Capture all bytes, including ignored files, without traversing directory links. */
@@ -891,49 +1345,144 @@ export async function prepareArchivedContainerRecovery(args: {
   return recovery;
 }
 
-/** The live row remains the cleanup owner until the quarantine is actually gone. */
-export async function finishArchivedContainerRecovery(
+export interface ArchivedRecoveryFinishOptions {
+  /**
+   * The caller removes the archive with its retained files next, as a purge
+   * or project deletion does (CAN-5011). Once no checkout or quarantine is
+   * left for the finish step to remove, their verification protects nothing,
+   * so it is skipped: a damaged or missing payload no longer keeps the
+   * archive, or its project, from being deleted. While one is left, the
+   * payload still guards its removal. A missing, invalid or mismatched
+   * journal grants no removal: the finish step then removes nothing but
+   * stale Git registrations ({@link removeDiscardedRecoveryRegistrations}),
+   * and clears the pending Git cleanup. The checkout checks apply. A project
+   * deletion unregisters a remaining checkout once it removes it
+   * ({@link removeProjectWorktreeRegistrations}).
+   */
+  discardingArchive?: boolean;
+}
+
+/**
+ * The checks {@link finishArchivedContainerRecovery} makes before its first
+ * effect, without one: the journal, its archive identity, the retained
+ * payload and, in the captured phase, the checkout it moves. Throws that
+ * step's own error. A null journal: a discarding caller's journal is unusable.
+ */
+async function verifyRecoveryBeforeFinish(
   manifest: ArchivedContainerRecoveryManifest,
-): Promise<string[]> {
+  options: ArchivedRecoveryFinishOptions | undefined,
+): Promise<{
+  journal: RecoveryJournal | null;
+  source: Awaited<ReturnType<typeof statOrAbsent>>;
+  quarantine: Awaited<ReturnType<typeof statOrAbsent>>;
+}> {
   const location = paths(manifest.projectId, manifest.id);
-  let journal = await readJournal(location.journal);
+  const discarding = options?.discardingArchive === true;
+  let journal: RecoveryJournal | null;
+  try {
+    journal = await readJournal(location.journal);
+  } catch (error) {
+    // An I/O failure may clear; invalid contents will not.
+    if (!discarding || isErrnoException(error)) throw error;
+    journal = null;
+  }
   if (
     !journal ||
     journal.createdAt !== manifest.createdAt ||
     journal.recovery.payloadId !== manifest.recovery.payloadId
-  )
+  ) {
+    if (discarding) return { journal: null, source: null, quarantine: null };
     throw new Error('Archive recovery identity changed.');
-  await assertPayload(location.root, journal.recovery);
+  }
+  if (!discarding) await assertPayload(location.root, journal.recovery);
+  if (journal.phase !== 'captured') {
+    if (
+      discarding &&
+      journal.phase === 'verified' &&
+      (await statOrAbsent(location.quarantine))
+    )
+      await assertPayload(location.root, journal.recovery);
+    return { journal, source: null, quarantine: null };
+  }
+  const source = await statOrAbsent(location.canonical);
+  const quarantine = await statOrAbsent(location.quarantine);
+  if (discarding && (source || quarantine))
+    await assertPayload(location.root, journal.recovery);
+  if (source && quarantine)
+    throw new Error('Archive recovery quarantine is occupied.');
+  if (journal.identity) {
+    const current = source ?? quarantine;
+    if (
+      current &&
+      (current.dev !== journal.identity.dev ||
+        current.ino !== journal.identity.ino ||
+        current.birthtimeMs !== journal.identity.birthtimeMs ||
+        current.isSymbolicLink())
+    )
+      throw new Error('The worktree changed identity during recovery.');
+    if (
+      current &&
+      (await workspaceRootPayloadDigest({
+        rootPath: source ? location.canonical : location.quarantine,
+      })) !== (journal.sourceDigest ?? journal.recovery.digest)
+    ) {
+      throw new Error(
+        'The worktree changed after recovery capture; its files were preserved.',
+      );
+    }
+  } else if (source || quarantine)
+    throw new Error(
+      'A new occupant appeared after the absent-worktree capture.',
+    );
+  return { journal, source, quarantine };
+}
+
+/** Refuses a quarantine the journal does not own before it is removed. */
+async function assertRecoveryQuarantineOwned(
+  quarantinePath: string,
+  journal: RecoveryJournal,
+): Promise<void> {
+  const remaining = await statOrAbsent(quarantinePath);
+  if (
+    remaining &&
+    (!journal.identity ||
+      remaining.dev !== journal.identity.dev ||
+      remaining.ino !== journal.identity.ino ||
+      remaining.birthtimeMs !== journal.identity.birthtimeMs ||
+      remaining.isSymbolicLink())
+  ) {
+    throw new Error(
+      'Archive recovery quarantine changed identity; cleanup was stopped.',
+    );
+  }
+}
+
+/** The live row remains the cleanup owner until the quarantine is actually gone. */
+export async function finishArchivedContainerRecovery(
+  manifest: ArchivedContainerRecoveryManifest,
+  options?: ArchivedRecoveryFinishOptions,
+): Promise<string[]> {
+  const location = paths(manifest.projectId, manifest.id);
+  const verified = await verifyRecoveryBeforeFinish(manifest, options);
+  if (!verified.journal) {
+    manifest.recovery = { ...manifest.recovery, gitCleanupPending: false };
+    const left = await readDiscardedRecoveryRegistrations(manifest);
+    if (left) await removeDiscardedRecoveryRegistrations(left);
+    const warning =
+      'The archive recovery journal is missing or invalid, so any remaining checkout and its Git registrations were left in place.';
+    logMainProcessWarn(warning, {
+      projectId: manifest.projectId,
+      containerId: manifest.id,
+    });
+    return [warning];
+  }
+  let { journal } = verified;
   if (journal.phase === 'captured') {
-    const source = await statOrAbsent(location.canonical);
-    const quarantine = await statOrAbsent(location.quarantine);
-    if (source && quarantine)
-      throw new Error('Archive recovery quarantine is occupied.');
     if (journal.identity) {
-      const current = source ?? quarantine;
-      if (
-        current &&
-        (!journal.identity ||
-          current.dev !== journal.identity.dev ||
-          current.ino !== journal.identity.ino ||
-          current.birthtimeMs !== journal.identity.birthtimeMs ||
-          current.isSymbolicLink())
-      )
-        throw new Error('The worktree changed identity during recovery.');
-      if (
-        current &&
-        (await workspaceRootPayloadDigest({
-          rootPath: source ? location.canonical : location.quarantine,
-        })) !== (journal.sourceDigest ?? journal.recovery.digest)
-      ) {
-        throw new Error(
-          'The worktree changed after recovery capture; its files were preserved.',
-        );
-      }
-      if (source)
+      if (verified.source)
         await renameArchiveQuarantine(location.canonical, location.quarantine);
       if (
-        current &&
+        (verified.source ?? verified.quarantine) &&
         (await workspaceRootPayloadDigest({
           rootPath: location.quarantine,
         })) !== (journal.sourceDigest ?? journal.recovery.digest)
@@ -942,28 +1491,13 @@ export async function finishArchivedContainerRecovery(
           'The quarantined recovery files changed; cleanup was stopped.',
         );
       }
-    } else if (source || quarantine)
-      throw new Error(
-        'A new occupant appeared after the absent-worktree capture.',
-      );
+    }
     journal = { ...journal, phase: 'verified' };
     await writeJsonDurably(location.journal, journal);
   }
   // Never remove the canonical path here: a retry may find a new occupant there.
   if (journal.phase !== 'removed') {
-    const remaining = await statOrAbsent(location.quarantine);
-    if (
-      remaining &&
-      (!journal.identity ||
-        remaining.dev !== journal.identity.dev ||
-        remaining.ino !== journal.identity.ino ||
-        remaining.birthtimeMs !== journal.identity.birthtimeMs ||
-        remaining.isSymbolicLink())
-    ) {
-      throw new Error(
-        'Archive recovery quarantine changed identity; cleanup was stopped.',
-      );
-    }
+    await assertRecoveryQuarantineOwned(location.quarantine, journal);
     await removeWindowsWorktreeReparsePoints(location.quarantine);
     await removeTreeWithoutAsar(location.quarantine, {
       recursive: true,
@@ -988,6 +1522,52 @@ export async function finishArchivedContainerRecovery(
         ]
       : []),
   ];
+}
+
+/**
+ * Read-only (CAN-4994): throws the error {@link finishArchivedContainerRecovery}
+ * would throw before its first effect, such as a missing, unreadable or
+ * mismatched journal, retained files that fail verification, or a changed
+ * checkout identity. Moves, removes and writes nothing; unlike the finish
+ * step, it never reaches the Git cleanup.
+ */
+export async function verifyArchivedContainerRecoveryFinish(
+  manifest: ArchivedContainerRecoveryManifest,
+  options?: ArchivedRecoveryFinishOptions,
+): Promise<void> {
+  const { journal } = await verifyRecoveryBeforeFinish(manifest, options);
+  if (journal?.phase === 'verified')
+    await assertRecoveryQuarantineOwned(
+      paths(manifest.projectId, manifest.id).quarantine,
+      journal,
+    );
+}
+
+/**
+ * Read-only: whether {@link finishArchivedContainerRecovery} would leave this
+ * archive's Git registration cleanup pending. Removes nothing and writes
+ * nothing. A failed lookup, stat, Git call, timeout or canonicalization in the
+ * walk counts as blocked, as it does in the finish step. False for a missing,
+ * mismatched or unreadable journal, which
+ * {@link verifyArchivedContainerRecoveryFinish} and the finish step reject.
+ */
+export async function isArchivedContainerGitCleanupBlocked(
+  manifest: ArchivedContainerRecoveryManifest,
+): Promise<boolean> {
+  try {
+    const journal = await readJournal(
+      paths(manifest.projectId, manifest.id).journal,
+    );
+    if (
+      !journal ||
+      journal.createdAt !== manifest.createdAt ||
+      journal.recovery.payloadId !== manifest.recovery.payloadId
+    )
+      return false;
+    return await cleanupGitRegistrations(manifest, journal, 'inspect');
+  } catch {
+    return false;
+  }
 }
 
 export async function recoverArchivedFileTeardownsForWorkspace(

@@ -130,7 +130,7 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
         id: 'plan-review',
         label: 'Plan ready for review',
         description:
-          'Plan-approval shield in the leading slot (question and pipeline states outrank it).',
+          'Plan-approval shield in the leading slot (question and workflow states outrank it).',
         props: { uiStatus: 'planning', awaitingApproval: true },
       },
       {
@@ -153,13 +153,13 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
     ],
   },
   {
-    title: 'Pipelines',
+    title: 'Workflows',
     description:
-      'The pipeline glyph carries its state in color: gray running, orange paused, green succeeded-unseen, red failed-unseen. Unseen results also raise a trailing dot.',
+      'The workflow glyph carries its state in color: gray running, orange paused, green succeeded-unseen, red failed-unseen. Unseen results also raise a trailing dot.',
     states: [
       {
         id: 'pipeline-running',
-        label: 'Pipeline running',
+        label: 'Workflow running',
         description:
           'Gray glyph while a run executes; the run spinner sits beside the run controls in the real sidebar.',
         props: {
@@ -170,19 +170,19 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
       },
       {
         id: 'pipeline-paused',
-        label: 'Pipeline paused',
+        label: 'Workflow paused',
         description: 'Orange glyph — the run is waiting on input.',
         props: { uiStatus: 'idle', pipelineStatus: 'paused' },
       },
       {
         id: 'pipeline-unseen',
-        label: 'Pipeline succeeded (unseen)',
+        label: 'Workflow succeeded (unseen)',
         description: 'Green glyph + blue dot until you open the run.',
         props: { uiStatus: 'idle', pipelineStatus: 'unseen' },
       },
       {
         id: 'pipeline-failed',
-        label: 'Pipeline failed (unseen)',
+        label: 'Workflow failed (unseen)',
         description: 'Red glyph + red dot until you open the run.',
         props: { uiStatus: 'idle', pipelineStatus: 'unseen-failure' },
       },
@@ -201,7 +201,7 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
         id: 'pipeline-failed-question',
         label: 'Failure + question',
         description:
-          'The red pipeline glyph keeps the leading slot; the dot still goes needs-input orange (dot priority is unchanged).',
+          'The red workflow glyph keeps the leading slot; the dot still goes needs-input orange (dot priority is unchanged).',
         props: {
           uiStatus: 'idle',
           hasPendingQuestion: true,
@@ -276,9 +276,9 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
       },
       {
         id: 'script-behind-pipeline',
-        label: 'Script behind a pipeline',
+        label: 'Script behind a workflow',
         description:
-          'The pipeline outranks the promotion, so the rocket stays in the subtitle.',
+          'The workflow outranks the promotion, so the rocket stays in the subtitle.',
         props: {
           uiStatus: 'idle',
           scriptStatus: 'running',
@@ -491,7 +491,7 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
         id: 'shared-while-working',
         label: 'Shared while the agent works',
         description:
-          'The share badge coexists with a live subject: the pipeline glyph keeps the leading slot and the badge sits on the title line just left of the trailing status cluster.',
+          'The share badge coexists with a live subject: the workflow glyph keeps the leading slot and the badge sits on the title line just left of the trailing status cluster.',
         props: {
           uiStatus: 'working',
           isStreaming: true,
@@ -563,7 +563,7 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
         id: 'composite',
         label: 'All subjects overlapping',
         description:
-          'Streaming + failed pipeline + unseen terminal + running script + graph build + watchers + scheduled + PR + diff. The red dot wins the trailing slot; everything else keeps its subtitle badge.',
+          'Streaming + failed workflow + unseen terminal + running script + graph build + watchers + scheduled + PR + diff. The red dot wins the trailing slot; everything else keeps its subtitle badge.',
         props: {
           uiStatus: 'working',
           isStreaming: true,
@@ -604,22 +604,22 @@ export const LEGEND_ENTRIES: LegendEntry[] = [
     toneClassName: 'fg-blue',
     title: 'Blue — finished, not seen',
     description:
-      'Something completed while you were away: an unread reply, a finished terminal command, an unseen pipeline result.',
+      'Something completed while you were away: an unread reply, a finished terminal command, an unseen workflow result.',
   },
   {
     toneClassName: 'fg-destructive',
     title: 'Red — failed, not seen',
-    description: 'A pipeline or terminal command failed and is still unseen.',
+    description: 'A workflow or terminal command failed and is still unseen.',
   },
   {
     toneClassName: 'fg-warning',
     title: 'Orange — needs your input',
-    description: 'Agent question, plan review, or a paused pipeline.',
+    description: 'Agent question, plan review, or a paused workflow.',
   },
   {
     toneClassName: 'fg-success',
     title: 'Green — succeeded, not seen',
-    description: 'The pipeline glyph turns green for an unseen success.',
+    description: 'The workflow glyph turns green for an unseen success.',
   },
   {
     toneClassName: 'fg-purple',
@@ -678,8 +678,8 @@ export const LEADING_PRIORITY_ITEMS: Record<string, LeadingPriorityItem> = {
     ),
   },
   'pipeline-paused': {
-    label: 'Pipeline paused',
-    description: 'Orange pipeline glyph.',
+    label: 'Workflow paused',
+    description: 'Orange workflow glyph.',
     icon: (
       <span className="fg-warning">
         <PipelineIcon size={16} />
@@ -687,7 +687,7 @@ export const LEADING_PRIORITY_ITEMS: Record<string, LeadingPriorityItem> = {
     ),
   },
   'pipeline-result': {
-    label: 'Pipeline result (unseen)',
+    label: 'Workflow result (unseen)',
     description: 'Green success / red failure glyph.',
     icon: (
       <span className="fg-success">
@@ -696,8 +696,8 @@ export const LEADING_PRIORITY_ITEMS: Record<string, LeadingPriorityItem> = {
     ),
   },
   'pipeline-running': {
-    label: 'Pipeline running',
-    description: 'Gray pipeline glyph.',
+    label: 'Workflow running',
+    description: 'Gray workflow glyph.',
     icon: (
       <span className="fg-secondary">
         <PipelineIcon size={16} />

@@ -4,7 +4,7 @@ import type {
   PipelineAdvisorSnapshot,
 } from '@canopy/desktop-shared/types/pipeline';
 import { shouldPromoteAdvisor } from '@/lib/pipelineDetailsView';
-import { AgentAssistantIcon } from '@canopy/ui-shared/icons';
+import { AgentAssistantIcon, ChevronIcon } from '@canopy/ui-shared/icons';
 import {
   PipelineFlowDiagram,
   type PipelineFlowSource,
@@ -15,7 +15,6 @@ import {
   AdvisorHealthBadge,
   AdvisorSection,
 } from './PipelineAdvisorDetail';
-import { DetailChevronIcon } from './DetailChevronIcon';
 import { PipelineSummaryBar } from './PipelineSummaryBar';
 import { isPipelineExecutionActiveStatus } from '../utils';
 
@@ -75,11 +74,11 @@ function AdaptiveAdvisor({
             aria-hidden="true"
           />
           <span className="text-s font-medium fg-primary">
-            Pipeline Advisor
+            Workflow Advisor
           </span>
           {headerHealth ? <AdvisorHealthBadge status={headerHealth} /> : null}
           <span className="flex-1" />
-          <DetailChevronIcon open={expanded} />
+          <ChevronIcon open={expanded} />
         </button>
         <AdvisorHeaderAction
           snapshot={advisorSnapshot}

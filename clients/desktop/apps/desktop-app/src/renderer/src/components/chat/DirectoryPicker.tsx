@@ -13,9 +13,9 @@ import {
   FLOATING_PICKER_GAP,
   FloatingMenu,
   PickerTrigger,
+  DirectoryPickerOptionRow,
 } from '@canopy/ui-shared';
 import {
-  CheckIcon,
   ChevronDownMediumIcon,
   FolderIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -132,7 +132,7 @@ export function DirectoryPicker({
 
   const legacyTriggerClass = disabled
     ? 'flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs fg-secondary/70 cursor-not-allowed'
-    : 'flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs fg-secondary transition hover:bg-subtle hover:fg-primary';
+    : 'flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs fg-secondary transition-colors hover:bg-subtle hover:fg-primary';
 
   const triggerContents = (
     <>
@@ -289,26 +289,14 @@ function DirectoryGroup({
     <div>
       <DirectoryPickerHeading />
       {options.map((option) => (
-        <button
+        <DirectoryPickerOptionRow
           key={option.id}
-          type="button"
-          role="option"
-          aria-selected={option.id === currentId}
-          onMouseDown={(e): void => {
-            e.preventDefault();
-          }}
-          onClick={(): void => {
+          name={option.name}
+          selected={option.id === currentId}
+          onSelect={(): void => {
             onSelect(option.id);
           }}
-          className="focus-ring flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-s fg-primary/80 transition-colors hover:bg-subtle focus-visible:bg-subtle"
-        >
-          <span className="w-4 text-center">
-            {option.id === currentId ? (
-              <CheckIcon width={12} height={12} />
-            ) : null}
-          </span>
-          <span className="truncate">{option.name}</span>
-        </button>
+        />
       ))}
     </div>
   );

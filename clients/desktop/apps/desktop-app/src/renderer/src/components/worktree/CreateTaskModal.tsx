@@ -30,11 +30,17 @@ import {
   type BranchOption,
 } from './branch-options';
 import { ChatIcon, PipelineIcon, PlanModeIcon } from '@canopy/ui-shared/icons';
-import { WordBoundaryTruncatedText } from '@canopy/ui-shared/components';
+import {
+  Button,
+  SegmentedControl,
+  type SegmentedControlOption,
+  WordBoundaryTruncatedText,
+} from '@canopy/ui-shared/components';
 import { WorkspaceDropdown } from '../shared/WorkspaceDropdown';
 import { useSettingsLocationLabel } from '@/lib/navigation/settings-destinations';
 
 interface CreateTaskModalProps {
+  initialWorkspaceId?: string;
   onClose: () => void;
   onChooseChat: (
     workspaceId: string,
@@ -67,81 +73,32 @@ function CreateFromPill({
   onChange,
 }: CreateFromPillProps): JSX.Element {
   const linearSettingsLocation = useSettingsLocationLabel('integrations');
-  const baseButtonClass =
-    'focus-ring inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition';
-  const activeClass = 'bg-accent fg-emphasis';
-  const inactiveClass = 'fg-secondary hover:bg-fg-primary/[0.06]';
-  const disabledClass = 'fg-secondary/50 cursor-not-allowed';
-
-  const pillClass = (target: CreateFromMode): string =>
-    `${baseButtonClass} ${mode === target ? activeClass : inactiveClass}`;
-  const linearButtonClass = `${baseButtonClass} ${
-    !linearAvailable
-      ? disabledClass
-      : mode === 'linear'
-        ? activeClass
-        : inactiveClass
-  }`;
+  const options: readonly SegmentedControlOption<CreateFromMode>[] = [
+    { value: 'new', label: 'New', dataTestId: 'create-task-mode-new' },
+    { value: 'branch', label: 'Branch', dataTestId: 'create-task-mode-branch' },
+    { value: 'pr', label: 'PR', dataTestId: 'create-task-mode-pr' },
+    {
+      value: 'linear',
+      label: 'Linear',
+      dataTestId: 'create-task-mode-linear',
+      unavailable: !linearAvailable,
+      tooltip: linearAvailable
+        ? undefined
+        : `Linear tasks require an API key. Add one in ${linearSettingsLocation}.`,
+    },
+  ];
 
   return (
     <div>
       <span className="mb-1.5 block text-xs fg-secondary">Create from</span>
-      <div className="inline-flex items-center gap-1 rounded-full border bg-base p-1">
-        <button
-          type="button"
-          onClick={() => onChange('new')}
-          aria-pressed={mode === 'new'}
-          data-testid="create-task-mode-new"
-          className={pillClass('new')}
-        >
-          New
-        </button>
-        <button
-          type="button"
-          onClick={() => onChange('branch')}
-          aria-pressed={mode === 'branch'}
-          data-testid="create-task-mode-branch"
-          className={pillClass('branch')}
-        >
-          Branch
-        </button>
-        <button
-          type="button"
-          onClick={() => onChange('pr')}
-          aria-pressed={mode === 'pr'}
-          data-testid="create-task-mode-pr"
-          className={pillClass('pr')}
-        >
-          PR
-        </button>
-        <div className="group relative">
-          <button
-            type="button"
-            onClick={() => onChange('linear')}
-            aria-pressed={mode === 'linear'}
-            aria-describedby={
-              linearAvailable ? undefined : 'create-task-linear-tooltip'
-            }
-            disabled={!linearAvailable}
-            data-testid="create-task-mode-linear"
-            className={linearButtonClass}
-          >
-            Linear
-          </button>
-          {!linearAvailable && (
-            <div
-              id="create-task-linear-tooltip"
-              role="tooltip"
-              className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-64 -translate-x-1/2 rounded-md bg-popover p-3 opacity-0 shadow-tooltip transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
-            >
-              <p className="text-xs fg-primary">
-                Linear tasks require an API key. Add one in{' '}
-                {linearSettingsLocation}.
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
+      <SegmentedControl<CreateFromMode>
+        label="Create from"
+        value={mode}
+        options={options}
+        onChange={onChange}
+        width="content"
+        shape="capsule"
+      />
     </div>
   );
 }
@@ -186,13 +143,9 @@ function LinearTicketCard({
             {ticket.url}
           </a>
         </div>
-        <button
-          type="button"
-          onClick={onClear}
-          className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-        >
+        <Button size="compact" onClick={onClear}>
           Change ticket
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -240,7 +193,7 @@ function LinearSearch({
                   type="button"
                   onClick={() => onSelect(ticket)}
                   data-testid={`create-task-linear-result-${ticket.id}`}
-                  className="focus-ring flex w-full flex-col items-start gap-0.5 border-b px-3 py-2 text-left transition last:border-b-0 hover:bg-fg-primary/[0.04]"
+                  className="focus-ring flex w-full flex-col items-start gap-0.5 border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-fg-primary/[0.04]"
                 >
                   <span className="flex w-full min-w-0 items-center gap-2">
                     <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
@@ -322,7 +275,7 @@ function BranchResults({
               type="button"
               onClick={() => onSelect(option.name)}
               data-testid={`create-from-branch-result-${option.name}`}
-              className="focus-ring flex w-full items-center gap-2 border-b px-3 py-2 text-left transition last:border-b-0 hover:bg-fg-primary/[0.04]"
+              className="focus-ring flex w-full items-center gap-2 border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-fg-primary/[0.04]"
             >
               <span className="min-w-0 flex-1 truncate font-mono text-sm fg-primary">
                 {option.name}
@@ -393,6 +346,7 @@ function PrPreview({
 }
 
 export function CreateTaskModal({
+  initialWorkspaceId,
   onClose,
   onChooseChat,
   onChoosePlan,
@@ -409,7 +363,7 @@ export function CreateTaskModal({
   );
 
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(
-    () => eligibleWorkspaces[0]?.id ?? '',
+    () => initialWorkspaceId ?? eligibleWorkspaces[0]?.id ?? '',
   );
   const [taskText, setTaskText] = useState('');
   const [mode, setMode] = useState<CreateFromMode>('new');
@@ -747,13 +701,12 @@ export function CreateTaskModal({
                       <span className="min-w-0 flex-1 truncate font-mono text-sm fg-primary">
                         {selectedBranch}
                       </span>
-                      <button
-                        type="button"
+                      <Button
+                        size="compact"
                         onClick={() => setSelectedBranch(null)}
-                        className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
                       >
                         Change branch
-                      </button>
+                      </Button>
                     </div>
                   ) : (
                     <BranchResults
@@ -827,43 +780,37 @@ export function CreateTaskModal({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-        >
+        <Button size="compact" onClick={onClose}>
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          size="compact"
           onClick={handlePipeline}
           disabled={!canSubmitPipeline}
           data-testid="create-task-pipeline-button"
-          className="focus-ring inline-flex items-center gap-1.5 rounded-lg border bg-secondary px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40"
         >
           <PipelineIcon width={14} height={14} />
-          Pipeline
-        </button>
-        <button
-          type="button"
+          Workflow
+        </Button>
+        <Button
+          size="compact"
           onClick={handlePlan}
           disabled={!canSubmit}
           data-testid="create-task-plan-button"
-          className="focus-ring inline-flex items-center gap-1.5 rounded-lg border bg-secondary px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40"
         >
           <PlanModeIcon width={14} height={14} />
           Plan
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
+          size="compact"
           onClick={handleChat}
           disabled={!canSubmit}
           data-testid="create-task-chat-button"
-          className="focus-ring inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-s font-medium fg-emphasis transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <ChatIcon width={14} height={14} />
           Chat
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );

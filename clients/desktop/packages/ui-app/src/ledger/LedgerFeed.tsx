@@ -1,5 +1,6 @@
 'use client';
 
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   useCallback,
   useEffect,
@@ -32,17 +33,22 @@ import type {
   LedgerFeedFilters,
   LedgerFeedNotice,
   LedgerFeedOrigin,
+  LedgerFeedRow,
   LedgerViewChange,
   LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
+import { isLedgerTaskViewScope } from '@canopy/protocol/ledger-view';
 import {
   Button,
   EmptyState,
+  DelayedLoadingPlaceholder,
+  ErrorState,
   LedgerThreadList,
-  LoadingPlaceholder,
+  LedgerThreadListSkeleton,
   Notice,
   NoticeButton,
   isLedgerFeedFiltered,
+  useRetry,
   type LedgerEntryRowAttribution,
   type LedgerEntryRowDetails,
   type LedgerEntrySlots,
@@ -50,7 +56,11 @@ import {
 import { ledgerActorName } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { LedgerComposer } from './LedgerComposer';
-import { FeedComposerRow, FeedControls } from './ledger-feed-rows';
+import {
+  FeedComposerRow,
+  FeedControls,
+  LEDGER_FEED_ALL_AUDIENCES,
+} from './ledger-feed-rows';
 import {
   createLedgerScopeActions,
   LedgerEntryReadLoading,
@@ -72,6 +82,10 @@ import {
   type LedgerScopeRowsState,
 } from './ledger-scope-rows';
 import { problemCopy } from './ledger-problem-copy';
+import {
+  LEDGER_GLOBAL_CONTEXT_LABEL,
+  ledgerGlobalContextLabel,
+} from './ledger-global-labels';
 import type { LedgerFeedScopeOption } from './LedgerFeedComposer';
 
 /** Typing settles this long before the search runs. */
@@ -84,16 +98,48 @@ export const LEDGER_FEED_POLL_MS = 60_000;
 /** The person, when the host does not name them. */
 const DEFAULT_PERSON_NAME = 'You';
 
+/** A host without a Ledger of its own names none of its scopes. */
+function describeNoScope(): null {
+  return null;
+}
+
 /** A row's work when this device has no name for it. */
 const SCOPE_KIND_LABELS: { readonly [Kind in LedgerScopeKind]: string } = {
   code_worktree: 'Worktree',
   cowork_entry: 'Task',
-  advisor_entry: 'Advisor',
+  advisor_entry: ORCHESTRATOR_LABEL,
+  global: LEDGER_GLOBAL_CONTEXT_LABEL,
 };
 
-export interface LedgerFeedProps {
-  /** The Feed's view state; it outlives the page, so returning restores it. */
-  readonly store: LedgerFeedStore;
+/** A row's work as this device names it, else by its owner or kind. */
+function localRowContext(
+  row: LedgerFeedRow,
+  scope: LedgerViewScope,
+  describeScope: (scope: LedgerViewScope) => string | null,
+): string {
+  const described = describeScope(scope);
+  if (described !== null) return described;
+  if (!isLedgerTaskViewScope(scope)) {
+    return ledgerGlobalContextLabel(scope.owner, row.global?.organizationName);
+  }
+  return SCOPE_KIND_LABELS[row.scopeKind];
+}
+
+/** A remote row's work: only a global row names it, by its owner. */
+function remoteRowContext(row: LedgerFeedRow): string | undefined {
+  if (row.scopeKind !== 'global') return undefined;
+  return row.global === undefined
+    ? LEDGER_GLOBAL_CONTEXT_LABEL
+    : ledgerGlobalContextLabel(row.global.owner, row.global.organizationName);
+}
+
+/**
+ * What only a host that holds a Ledger itself offers (`ledgerLocal`): its
+ * scopes' views and their changes, the composer, corrections, status and
+ * owner changes, navigation to sources and files. A host that only reads
+ * the mirror (`ledgerFeed` alone) passes none, and its Feed reads only.
+ */
+export interface LedgerFeedLocal {
   /** This device's Ledger: its committed changes and its scopes' views. */
   readonly client: LedgerClient;
   readonly navigator: LedgerNavigator;
@@ -107,6 +153,15 @@ export interface LedgerFeedProps {
   readonly describeScope: (scope: LedgerViewScope) => string | null;
   /** The projects and tasks a new entry can go to. */
   readonly addableScopes: readonly LedgerFeedScopeOption[];
+}
+
+export interface LedgerFeedProps {
+  /** The Feed's view state; it outlives the page, so returning restores it. */
+  readonly store: LedgerFeedStore;
+  /** This device's Ledger, when the host holds one (`ledgerLocal`). */
+  readonly local?: LedgerFeedLocal;
+  /** The audience tabs, in order; every one by default. */
+  readonly audiences?: readonly LedgerFeedAudience[];
   /** Whether the Feed is on screen; it looks for new activity only then. */
   readonly visible: boolean;
   /** Opens sign-in, for the notice a signed-out Feed shows. */
@@ -211,17 +266,19 @@ function FeedNotice({
  */
 export function LedgerFeed({
   store,
-  client,
-  navigator,
-  files,
-  scopeStore,
-  scopeHasDraft,
-  describeScope,
-  addableScopes,
+  local,
+  audiences = LEDGER_FEED_ALL_AUDIENCES,
   visible,
   onSignIn,
   personName = DEFAULT_PERSON_NAME,
 }: LedgerFeedProps): JSX.Element {
+  const client = local?.client;
+  const navigator = local?.navigator;
+  const files = local?.files;
+  const scopeStore = local?.scopeStore;
+  const scopeHasDraft = local?.scopeHasDraft;
+  const describeScope = local?.describeScope ?? describeNoScope;
+  const addableScopes = local?.addableScopes;
   const {
     audience,
     list,
@@ -255,6 +312,19 @@ export function LedgerFeed({
   // Bumped when the host replaced a watched scope's view, to watch the new one.
   const [scopeStoreEpoch, setScopeStoreEpoch] = useState(0);
   const [openError, setOpenError] = useState<LedgerOpenError | null>(null);
+  // Try again keeps the failed Feed on screen, its capsule spinning, until the
+  // read settles, instead of blanking to the loading line.
+  const listRetry = useRetry(() => store.getState().load({ refresh: true }));
+  const [retriedProblem, setRetriedProblem] = useState(list.problem);
+  // Only while the list is still loading: a newer read (a search, a filter)
+  // that settles first replaces the kept failure at once.
+  const listRetrying = listRetry.retrying && list.status === 'loading';
+  const shownProblem =
+    list.status === 'problem' && list.problem !== null
+      ? list.problem
+      : listRetrying
+        ? retriedProblem
+        : null;
   const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -279,6 +349,8 @@ export function LedgerFeed({
   // A committed change on this device: look again shortly after. A written
   // title also reaches a loaded row the look would miss, on any page.
   useEffect(() => {
+    // Without a Ledger of its own, nothing commits here: the poll looks.
+    if (client === undefined) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const unsubscribe = client.subscribeChanges((event) => {
       for (const change of event.changes) {
@@ -410,6 +482,7 @@ export function LedgerFeed({
 
   // Watch only scopes that can presently contribute state to a row or action.
   const rowScopesWithDraft = useMemo(() => {
+    if (scopeHasDraft === undefined) return [];
     const scopes = new Map<string, LedgerViewScope>();
     for (const row of rows) {
       if (row.origin.kind === 'this_device') {
@@ -448,6 +521,7 @@ export function LedgerFeed({
     return keys.length === 0 ? [] : keys.split('\u001f');
   }, [watchedLookup]);
   const watchedStores = useMemo(() => {
+    if (scopeStore === undefined) return [];
     const scopes = candidateScopesRef.current;
     const stores: LedgerViewStore[] = [];
     for (const key of watchedScopeKeys) {
@@ -512,7 +586,15 @@ export function LedgerFeed({
   );
   const actionsByScope = scopeActionsCache.actionsByScope;
   const actionsForScope = useCallback(
-    (scope: LedgerViewScope): LedgerScopeActions => {
+    (scope: LedgerViewScope): LedgerScopeActions | null => {
+      // Only a host that holds the scope can change it.
+      if (
+        scopeStore === undefined ||
+        client === undefined ||
+        navigator === undefined
+      ) {
+        return null;
+      }
       const key = ledgerScopeKey(scope);
       const cached = actionsByScope.get(key);
       if (cached !== undefined) return cached;
@@ -568,12 +650,15 @@ export function LedgerFeed({
       }
       if (row.origin.kind === 'this_device') {
         return {
-          context:
-            describeScope(row.origin.scope) ?? SCOPE_KIND_LABELS[row.scopeKind],
+          context: localRowContext(row, row.origin.scope, describeScope),
         };
       }
       const attribution = attributionOf(row.origin);
-      return attribution === null ? {} : { attribution };
+      const context = remoteRowContext(row);
+      return {
+        ...(context === undefined ? {} : { context }),
+        ...(attribution === null ? {} : { attribution }),
+      };
     },
     [rowsById, describeScope, remoteDetail.entryId, remoteDetail.origin],
   );
@@ -626,6 +711,7 @@ export function LedgerFeed({
       const scopeKey = ledgerScopeKey(scope);
       const state = scopeRowsByKey.get(scopeKey) ?? restingRowsFor(scope);
       const actions = actionsForScope(scope);
+      if (actions === null) return {};
       const input = {
         entry,
         ownerName: ledgerActorName(entry.owner, actors),
@@ -846,14 +932,18 @@ export function LedgerFeed({
   const composer = useMemo(
     (): ReactNode => (
       <>
-        <FeedComposerRow
-          store={store}
-          scopeStore={scopeStore}
-          scopeHasDraft={scopeHasDraft}
-          addableScopes={addableScopes}
-          files={files}
-          personName={personName}
-        />
+        {scopeStore !== undefined &&
+          scopeHasDraft !== undefined &&
+          addableScopes !== undefined && (
+            <FeedComposerRow
+              store={store}
+              scopeStore={scopeStore}
+              scopeHasDraft={scopeHasDraft}
+              addableScopes={addableScopes}
+              files={files}
+              personName={personName}
+            />
+          )}
         {correctionFallback}
         {pendingOpen !== null && pendingOpen !== undefined && (
           <div className="border-b border-line-base py-3">{pendingOpen}</div>
@@ -875,13 +965,21 @@ export function LedgerFeed({
   const openEntryById = useCallback(
     (entryId: string): void => {
       const row = rowsById.get(entryId);
-      if (row?.origin.kind === 'this_device') {
-        actionsForScope(row.origin.scope).open(entryId);
+      const rowActions =
+        row?.origin.kind === 'this_device'
+          ? actionsForScope(row.origin.scope)
+          : null;
+      if (rowActions !== null) {
+        rowActions.open(entryId);
         return;
       }
       const currentScope = store.getState().selectedScope;
-      if (row === undefined && currentScope !== null) {
-        actionsForScope(currentScope).open(entryId);
+      const currentActions =
+        row === undefined && currentScope !== null
+          ? actionsForScope(currentScope)
+          : null;
+      if (currentActions !== null) {
+        currentActions.open(entryId);
         return;
       }
       // A remote entry with no row, such as a teammate correction's target,
@@ -902,7 +1000,7 @@ export function LedgerFeed({
       setOpenError(null);
       if (entryId === null) {
         const currentScope = store.getState().selectedScope;
-        if (currentScope !== null) {
+        if (currentScope !== null && scopeStore !== undefined) {
           void scopeStore(currentScope)
             .getState()
             .select(null, { keepDraft: true });
@@ -931,8 +1029,10 @@ export function LedgerFeed({
           : row === undefined
             ? currentScope
             : null;
-      if (localScope !== null) {
-        actionsForScope(localScope).openFile(entry, file);
+      const localActions =
+        localScope === null ? null : actionsForScope(localScope);
+      if (localActions !== null) {
+        localActions.openFile(entry, file);
         return;
       }
       if (store.getState().selectedEntryId !== entry.entryId) {
@@ -959,23 +1059,25 @@ export function LedgerFeed({
   }, [store]);
 
   let listBody: ReactNode;
-  if (list.status === 'problem' && list.problem !== null) {
-    const copy = problemCopy(list.problem, 'list');
+  if (shownProblem !== null) {
+    const copy = problemCopy(shownProblem, 'list');
     listBody = (
       <>
         {composer}
-        <Notice
-          data-testid="ledger-feed-problem"
-          className="mt-3"
-          intent={copy.retry ? 'destructive' : 'neutral'}
-          actions={
-            copy.retry ? (
-              <NoticeButton onClick={onNoticeRetry}>Try again</NoticeButton>
-            ) : undefined
+        <ErrorState
+          testId="ledger-feed-problem"
+          retryTestId="ledger-feed-retry"
+          message={copy.message}
+          retrying={listRetrying}
+          onRetry={
+            copy.retry
+              ? (): void => {
+                  setRetriedProblem(shownProblem);
+                  listRetry.retry();
+                }
+              : undefined
           }
-        >
-          {copy.message}
-        </Notice>
+        />
       </>
     );
   } else if (entries.length === 0 && !list.settled) {
@@ -983,7 +1085,9 @@ export function LedgerFeed({
     listBody = (
       <>
         {composer}
-        <LoadingPlaceholder label="Loading entries…" space="section" />
+        <DelayedLoadingPlaceholder slowNote="Still loading the Feed…">
+          <LedgerThreadListSkeleton density="page" />
+        </DelayedLoadingPlaceholder>
       </>
     );
   } else if (
@@ -1056,6 +1160,7 @@ export function LedgerFeed({
     >
       <FeedControls
         store={store}
+        audiences={audiences}
         onAudienceChange={onAudienceChange}
         onSearchChange={onSearchChange}
         onFiltersChange={onFiltersChange}

@@ -25,6 +25,10 @@ test('shows a ShowVisual app row without inline HTML on desktop', async () => {
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    // Individual-step assertions use the Detailed preference.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openChatPage();
 
     const page = window.getByTestId('page-chat');
@@ -51,6 +55,10 @@ test('shows a PreviewVisual app row with its width and appearance, never its HTM
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    // Individual-step assertions use the Detailed preference.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openChatPage();
 
     const page = window.getByTestId('page-chat');

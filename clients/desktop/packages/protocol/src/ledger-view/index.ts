@@ -20,20 +20,64 @@ import type {
   LedgerEntrySearchItem,
   LedgerEntryType,
   LedgerErrorReason,
+  LedgerGlobalOwner,
   LedgerOwnerCandidatePage,
   LedgerSourceAvailability,
   LedgerStatus,
   LedgerUpdateEntryParams,
 } from '../canopy-core';
-import type { LedgerScopeKind } from '../ledger-sync';
+import type {
+  LedgerMirrorActorLabel,
+  LedgerMirrorEntry,
+  LedgerMirrorEntryResponse,
+  LedgerScopeKind,
+} from '../ledger-sync';
 
 /**
- * The work scope a view reads: a panel layout's project and worktree, where a
- * Cowork or App Advisor Work Entry occupies the worktree slot.
+ * A task's work scope: a panel layout's project and worktree, where a Cowork
+ * or App Advisor Work Entry occupies the worktree slot. Panel placement, the
+ * composer, file search and navigation only ever address this shape.
  */
-export interface LedgerViewScope {
+export interface LedgerTaskViewScope {
   readonly projectId: string;
   readonly worktreeId: string;
+}
+
+/**
+ * One incarnation of an owner's global (workflow) Ledger. `ledgerId` is only
+ * an address: the host validates the stored account and owner before serving
+ * it, so retained guest history stays reachable without exposing another
+ * account's Ledger.
+ */
+export interface LedgerGlobalViewScope {
+  readonly kind: 'global';
+  readonly owner: LedgerGlobalOwner;
+  readonly ledgerId: string;
+}
+
+/** The work scope a view reads. */
+export type LedgerViewScope = LedgerTaskViewScope | LedgerGlobalViewScope;
+
+export function isLedgerTaskViewScope(
+  scope: LedgerViewScope,
+): scope is LedgerTaskViewScope {
+  return !('kind' in scope);
+}
+
+/**
+ * A stable key for per-scope state. Global keys include the `ledgerId` so two
+ * incarnations of one owner's Ledger never collide. The parts are encoded as
+ * a JSON array, so no ID can make two scopes share a key.
+ */
+export function ledgerViewScopeKey(scope: LedgerViewScope): string {
+  if (isLedgerTaskViewScope(scope)) {
+    return JSON.stringify(['task', scope.projectId, scope.worktreeId]);
+  }
+  const owner =
+    scope.owner.kind === 'personal'
+      ? 'personal'
+      : `org:${scope.owner.organizationId.toLowerCase()}`;
+  return JSON.stringify(['global', owner, scope.ledgerId]);
 }
 
 /** Why a scope has no Ledger to read right now. */
@@ -119,11 +163,12 @@ export type LedgerViewSourceTarget =
       /**
        * The pipeline execution of a pipeline agent, or the one a managed
        * delegate's pipeline agent belongs to. Opens at the physical job when
-       * one is known.
+       * one is known. A global or directory run has no task, so it carries
+       * no project or worktree.
        */
       readonly kind: 'pipeline';
-      readonly projectId: string;
-      readonly worktreeId: string;
+      readonly projectId?: string;
+      readonly worktreeId?: string;
       readonly executionId: string;
       readonly jobId?: string;
       readonly stepId?: string;
@@ -285,6 +330,16 @@ export type LedgerFeedOrigin =
       readonly organizationName: string;
     };
 
+/**
+ * Who owns a global (workflow) row. `organizationName` is present only when
+ * the reader may see the organization; without it the row reads as
+ * Workflows alone.
+ */
+export interface LedgerFeedGlobalOwner {
+  readonly owner: LedgerGlobalOwner;
+  readonly organizationName?: string;
+}
+
 /** One entry in the Feed, with where it was recorded. */
 export interface LedgerFeedRow {
   readonly entry: LedgerEntrySearchItem;
@@ -293,6 +348,8 @@ export interface LedgerFeedRow {
   readonly scopeKind: LedgerScopeKind;
   readonly scopeArchived: boolean;
   readonly origin: LedgerFeedOrigin;
+  /** Set on a `global` row read from the mirror, from its version-2 owner. */
+  readonly global?: LedgerFeedGlobalOwner;
 }
 
 /**
@@ -323,4 +380,128 @@ export interface LedgerFeedEntryRequest {
   readonly entryId: string;
   /** Continues the entry's history from this cursor. */
   readonly historyCursor?: string;
+}
+
+// ---------------------------------------------------------------------------
+// The cloud mirror's rows as the Feed reads them. Every host that reads the
+// mirror (the desktop Feed for other devices and teammates, the web Feed for
+// everything) maps them the same way.
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const LEDGER_FEED_PERIOD_MS: {
+  readonly [Period in LedgerFeedPeriod]: number | null;
+} = {
+  any: null,
+  day: DAY_MS,
+  week: 7 * DAY_MS,
+  month: 30 * DAY_MS,
+};
+
+/** The Feed's filters as a scope's search and the mirror's search take them. */
+export interface LedgerFeedSearchFilters {
+  readonly query?: string;
+  readonly types?: LedgerEntriesSearchParams['types'];
+  readonly statuses?: LedgerEntriesSearchParams['statuses'];
+  readonly owner?: 'self';
+  readonly author?: 'self';
+  readonly updatedAfter?: string;
+}
+
+/** The search filters for a Feed query, its period counted back from `now`. */
+export function ledgerFeedSearchFilters(
+  query: string,
+  filters: LedgerFeedFilters,
+  now: number,
+): LedgerFeedSearchFilters {
+  const trimmed = query.trim();
+  const period = LEDGER_FEED_PERIOD_MS[filters.period];
+  return {
+    ...(trimmed.length > 0 ? { query: trimmed } : {}),
+    ...(filters.types.length > 0 ? { types: [...filters.types] } : {}),
+    ...(filters.statuses.length > 0 ? { statuses: [...filters.statuses] } : {}),
+    ...(filters.owner === 'you' ? { owner: 'self' as const } : {}),
+    ...(filters.author === 'you' ? { author: 'self' as const } : {}),
+    ...(period === null
+      ? {}
+      : { updatedAfter: new Date(now - period).toISOString() }),
+  };
+}
+
+/** A mirror row: another device's or a teammate's, read only. */
+export function ledgerFeedRowFromMirror(
+  entry: LedgerMirrorEntry,
+): LedgerFeedRow {
+  const {
+    ledgerId,
+    scopeKind,
+    scopeArchived,
+    source,
+    globalOwner,
+    organizationName,
+    ...item
+  } = entry;
+  const searchItem: LedgerEntrySearchItem = item;
+  return {
+    entry: searchItem,
+    ledgerId,
+    scopeKind,
+    scopeArchived,
+    // A global row names its owner, and the organization when the reader
+    // may see it.
+    ...(globalOwner === undefined
+      ? {}
+      : {
+          global: {
+            owner: globalOwner,
+            ...(organizationName === undefined ? {} : { organizationName }),
+          },
+        }),
+    origin:
+      source.kind === 'mine'
+        ? { kind: 'other_device', deviceLabel: source.deviceLabel }
+        : {
+            kind: 'teammate',
+            teammateName: source.teammateName,
+            organizationName: source.organizationName,
+          },
+  };
+}
+
+/** A mirror actor label, without the ledger it was read from. */
+export function ledgerActorLabelFromMirror(
+  label: Pick<LedgerMirrorActorLabel, 'actorId' | 'kind' | 'displayName'>,
+): LedgerActorLabel {
+  return {
+    actorId: label.actorId,
+    kind: label.kind,
+    displayName: label.displayName,
+  };
+}
+
+/** A history cursor's mirror revision, or null when it is not one. */
+export function ledgerMirrorHistoryRevision(cursor: string): number | null {
+  return /^[1-9][0-9]{0,8}$/.test(cursor) ? Number(cursor) : null;
+}
+
+/** A mirror entry as the read-only detail shows it. */
+export function ledgerViewEntryFromMirror(
+  response: LedgerMirrorEntryResponse,
+): LedgerViewEntry {
+  return {
+    entry: {
+      entry: response.entry,
+      sourceAvailability: response.sourceAvailability,
+      history: {
+        mutations: response.history.mutations,
+        nextCursor:
+          response.history.nextBeforeRevision === null
+            ? null
+            : String(response.history.nextBeforeRevision),
+      },
+      actors: response.actors.map(ledgerActorLabelFromMirror),
+    },
+    // Another device's or a teammate's source never opens here.
+    source: { availability: response.sourceAvailability, target: null },
+  };
 }

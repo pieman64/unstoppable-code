@@ -9,6 +9,7 @@ import * as remoteControlStore from '@/stores/remoteControlStore';
 import { useExperimentalFeaturesStore } from '@/stores/experimentalFeaturesStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import type {
+  InAppNotificationPlacement,
   OverlayLayerRect,
   OverlayLayerSlot as OverlayLayerSlotType,
 } from '@canopy/desktop-shared/types';
@@ -803,7 +804,7 @@ describe('OverlayLayerSlot', () => {
 
     motionToast.removeAttribute('data-expanded');
     motionToast.setAttribute('data-ending-style', '');
-    motionToast.setAttribute('data-swipe-direction', 'down');
+    motionToast.setAttribute('data-swipe-flung', '');
     await act(async () => Promise.resolve());
     flushFrame();
     // A swipe extends the far edge only; the origin stays where the press
@@ -847,7 +848,7 @@ describe('OverlayLayerSlot', () => {
     const hovered = overlayApi.setBounds.mock.calls.at(-1)?.[0]?.bounds;
     expect(hovered).toMatchObject({ y: 0 });
 
-    motionToast.setAttribute('data-swiping', '');
+    motionToast.setAttribute('data-swipe-dragging', '');
     await act(async () => Promise.resolve());
     flushFrame();
     jest.advanceTimersByTime(450);
@@ -907,11 +908,16 @@ describe('overlay layer bounds', () => {
   );
 
   // A mouse hovers (spreads) the stack before its press starts a swipe.
-  it.each(
+  const placementExpansionCases: Array<[InAppNotificationPlacement, boolean]> =
     (['top-right', 'bottom-right', 'top-left', 'bottom-left'] as const).flatMap(
-      (placement) => [false, true].map((expanded) => [placement, expanded]),
-    ),
-  )(
+      (placement): Array<[InAppNotificationPlacement, boolean]> =>
+        [false, true].map((expanded): [InAppNotificationPlacement, boolean] => [
+          placement,
+          expanded,
+        ]),
+    );
+
+  it.each(placementExpansionCases)(
     'keeps the layer origin fixed when a %s swipe starts (expanded: %s), so a press stays a click',
     (placement, expanded) => {
       const resting = calculateOverlayLayerBounds(

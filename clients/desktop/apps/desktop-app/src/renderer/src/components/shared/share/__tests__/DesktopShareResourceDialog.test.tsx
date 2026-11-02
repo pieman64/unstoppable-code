@@ -50,8 +50,14 @@ describe('DesktopShareResourceDialog', () => {
   const listSharedTeams = jest.fn(() =>
     Promise.resolve({ success: true, data: { data: [] } }),
   );
-  const listSharedOrganizations = jest.fn(() =>
-    Promise.resolve({ success: true, data: { data: [] } }),
+  const listSharedOrganizations = jest.fn<
+    ReturnType<typeof window.pipelines.listSharedOrganizations>,
+    Parameters<typeof window.pipelines.listSharedOrganizations>
+  >(() =>
+    Promise.resolve({
+      success: true,
+      data: { serverId: 'server-1', data: [] },
+    }),
   );
 
   function account(membership: {
@@ -109,8 +115,18 @@ describe('DesktopShareResourceDialog', () => {
     };
   }
 
-  const ACME = { id: 'org-1', name: 'Acme' };
-  const BETA = { id: 'org-2', name: 'Beta' };
+  const ACME = {
+    id: 'org-1',
+    name: 'Acme',
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+  const BETA = {
+    id: 'org-2',
+    name: 'Beta',
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
   const PLATFORM = { id: 'team-1', name: 'Platform', organization: ACME };
 
   beforeEach(() => {
@@ -178,24 +194,40 @@ describe('DesktopShareResourceDialog', () => {
     return document.querySelector<HTMLElement>(`[data-testid="${id}"]`);
   }
 
+  // A pill with a reason stays focusable for its tooltip (`aria-disabled`).
   function scopeDisabled(scope: ShareResourceScope): boolean | undefined {
-    return byTestId(`${PREFIX}-scope-${scope}`)?.hasAttribute('disabled');
+    const option = byTestId(`${PREFIX}-scope-${scope}`);
+    if (!option) return undefined;
+    return (
+      option.hasAttribute('disabled') ||
+      option.getAttribute('aria-disabled') === 'true'
+    );
   }
 
-  it('hides the selector for an account with no organization, keeping only the Public disclosure', async () => {
+  it('keeps the pills for an account with no organization, with Team and Organization disabled and Public preselected', async () => {
     loadCanopyCloudAccount.mockResolvedValue(
       account({ organizations: [], teams: [] }),
     );
     await renderDialog();
 
-    // Public is the only usable audience, so there is nothing to choose: no
-    // pills, and no setup or upgrade hint — only the Public disclosure.
-    expect(byTestId(`${PREFIX}-scope`)).toBeNull();
-    expect(byTestId(`${PREFIX}-scope-team`)).toBeNull();
-    expect(byTestId(`${PREFIX}-scope-public`)).toBeNull();
-    expect(byTestId(`${PREFIX}-scope-description`)?.textContent).not.toBe('');
+    // Every scope stays visible so the author sees Share will publish
+    // publicly; the setup step lives in the disabled pills' tooltip.
+    expect(scopeDisabled('team')).toBe(true);
+    expect(scopeDisabled('organization')).toBe(true);
+    expect(
+      byTestId(`${PREFIX}-scope-public`)?.getAttribute('aria-checked'),
+    ).toBe('true');
     expect(byTestId(`${PREFIX}-organization-hint`)).toBeNull();
     expect(byTestId(`${PREFIX}-set-up-organization`)).toBeNull();
+    act(() => {
+      byTestId(`${PREFIX}-scope-team`)?.dispatchEvent(
+        new MouseEvent('mouseover', { bubbles: true }),
+      );
+    });
+    expect(byTestId(`${PREFIX}-scope-team-reason`)?.textContent).toBe(
+      'Team and organization sharing start with an organization.',
+    );
+    expect(byTestId(`${PREFIX}-set-up-organization`)).not.toBeNull();
     // Public stays usable, so the dialog is not replaced by the setup gate.
     expect(byTestId(`${PREFIX}-organization-required`)).toBeNull();
     expect(byTestId(`${PREFIX}-submit`)).not.toBeNull();
@@ -462,7 +494,7 @@ describe('DesktopShareResourceDialog', () => {
     );
     listSharedOrganizations.mockResolvedValue({
       success: true,
-      data: { data: [ACME, BETA] },
+      data: { serverId: 'server-1', data: [ACME, BETA] },
     });
 
     await renderDialog(['organization']);

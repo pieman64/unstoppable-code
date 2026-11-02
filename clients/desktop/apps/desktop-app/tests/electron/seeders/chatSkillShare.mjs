@@ -317,6 +317,11 @@ export async function shareChatLayoutResource(window, row, kind, audience) {
       .click();
   }
   await modal.getByTestId(`share-${kind}-submit`).click({ timeout: 15_000 });
+  // A landed share keeps the dialog open on its success notice until Done.
+  await modal
+    .getByTestId(`share-${kind}-success`)
+    .waitFor({ state: 'visible', timeout: 15_000 });
+  await modal.getByTestId(`share-${kind}-done`).click();
   await modal.waitFor({ state: 'hidden' });
   if (audience !== 'public')
     await window.evaluate(async () => {

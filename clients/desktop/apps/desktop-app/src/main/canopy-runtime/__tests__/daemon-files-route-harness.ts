@@ -1,27 +1,39 @@
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import {
   CanopyClientError,
   type CanopyClientQueryOptions,
 } from '@canopy/core-client';
 import {
   createFilesystemScopeResolver,
+  createFilesystemSearchEngine,
   listFilesystemScopeDirectory,
   listFilesystemScopeRoots,
+  readFilesystemScopeFile,
   readNativeRootIdentity,
+  resolveFilesystemScopeLink,
+  searchFilesystemScope,
   type FilesystemScopeResolver,
   type GitIgnoreHostPort,
 } from '@canopy/core-runtime/node';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+  WORKER_FILESYSTEM_FILE_READ_MAX_RESULT_BYTES,
+  WORKER_FILESYSTEM_SEARCH_MAX_RESULT_BYTES,
   type CanopyCallerDescriptor,
   type CanopyWorkspaceScope,
   type WorkerFilesystemDirectoryListParams,
   type WorkerFilesystemDirectoryListResult,
+  type WorkerFilesystemFileReadParams,
+  type WorkerFilesystemFileReadResult,
+  type WorkerFilesystemLinkResolveParams,
+  type WorkerFilesystemLinkResolveResult,
   type WorkerFilesystemRootsListParams,
   type WorkerFilesystemRootsListResult,
+  type WorkerFilesystemSearchParams,
+  type WorkerFilesystemSearchResult,
 } from '@canopy/protocol/canopy-core';
 import type {
   FileTreeDirectoryRequest,
@@ -46,9 +58,13 @@ import {
   createDaemonFilesRoute,
   type DaemonFilesConnections,
   type DaemonFilesQueryClient,
+  type DaemonFilesRoute,
   type DaemonFilesRouteSender,
   type DaemonFilesSession,
+  type FilesRouteObservedOperation,
+  type ObservedDaemonFilesRoute,
 } from '../daemon-files-route';
+import type { ReadRoutePlatform } from '../daemon-read-route-guard';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -164,15 +180,30 @@ export function deferred<T = void>(): Deferred<T> {
   return { promise, resolve: resolveValue };
 }
 
-export type DaemonQueryName =
-  | 'worker.filesystem.roots.list'
-  | 'worker.filesystem.directory.list';
-type DaemonParams =
-  | WorkerFilesystemRootsListParams
-  | WorkerFilesystemDirectoryListParams;
-type DaemonResult =
-  | WorkerFilesystemRootsListResult
-  | WorkerFilesystemDirectoryListResult;
+interface DaemonQueries {
+  'worker.filesystem.roots.list': [
+    WorkerFilesystemRootsListParams,
+    WorkerFilesystemRootsListResult,
+  ];
+  'worker.filesystem.directory.list': [
+    WorkerFilesystemDirectoryListParams,
+    WorkerFilesystemDirectoryListResult,
+  ];
+  'worker.filesystem.file.read': [
+    WorkerFilesystemFileReadParams,
+    WorkerFilesystemFileReadResult,
+  ];
+  'worker.filesystem.search': [
+    WorkerFilesystemSearchParams,
+    WorkerFilesystemSearchResult,
+  ];
+  'worker.filesystem.link.resolve': [
+    WorkerFilesystemLinkResolveParams,
+    WorkerFilesystemLinkResolveResult,
+  ];
+}
+export type DaemonQueryName = keyof DaemonQueries;
+type DaemonParams = DaemonQueries[DaemonQueryName][0];
 
 export interface DaemonQueryRecord {
   readonly name: DaemonQueryName;
@@ -182,8 +213,8 @@ export interface DaemonQueryRecord {
 
 /**
  * The daemon's filesystem module, in process: Leg A's scope readers over the
- * same records, with its own resolver. Hooks fail, gate, rewrite or race a
- * reply; `null` from `rewrite` serves the real reply.
+ * same records, with its own resolver and search engine. Hooks fail, gate,
+ * rewrite or race a reply; `null` from `rewrite` serves the real reply.
  */
 export class FakeDaemon {
   public readonly queries: DaemonQueryRecord[] = [];
@@ -203,6 +234,22 @@ export class FakeDaemon {
         result: WorkerFilesystemDirectoryListResult,
       ) => WorkerFilesystemDirectoryListResult)
     | null = null;
+  public rewriteFile:
+    | ((
+        result: WorkerFilesystemFileReadResult,
+      ) => WorkerFilesystemFileReadResult)
+    | null = null;
+  public rewriteSearch:
+    | ((result: WorkerFilesystemSearchResult) => WorkerFilesystemSearchResult)
+    | null = null;
+  public rewriteLink:
+    | ((
+        result: WorkerFilesystemLinkResolveResult,
+      ) => WorkerFilesystemLinkResolveResult)
+    | null = null;
+  /** Caps each search page, as the daemon's frame budget does for large roots. */
+  public searchPageLimit: number | null = null;
+  private readonly searches = createFilesystemSearchEngine();
 
   public constructor(
     private readonly dataRoot: string,
@@ -210,11 +257,16 @@ export class FakeDaemon {
     public git: GitIgnoreHostPort,
   ) {}
 
+  public async serve<Name extends DaemonQueryName>(
+    name: Name,
+    params: DaemonQueries[Name][0],
+    options: CanopyClientQueryOptions | undefined,
+  ): Promise<DaemonQueries[Name][1]>;
   public async serve(
     name: DaemonQueryName,
     params: DaemonParams,
     options: CanopyClientQueryOptions | undefined,
-  ): Promise<DaemonResult> {
+  ): Promise<DaemonQueries[DaemonQueryName][1]> {
     const record: DaemonQueryRecord = { name, params, options };
     this.queries.push(record);
     const attempt = this.queries.length;
@@ -227,25 +279,70 @@ export class FakeDaemon {
         message: 'The request was cancelled.',
         retry: { kind: 'never' },
       });
-    let result: DaemonResult;
-    if ('fileRootId' in params) {
-      const real = await listFilesystemScopeDirectory(
-        params,
-        await this.resolveScope(params.scope, 'directory'),
-        await directoryInputsFor(this.dataRoot, this.git).readOptions(
-          new AbortController().signal,
-        ),
-      );
-      result = this.rewriteDirectory ? this.rewriteDirectory(real) : real;
-    } else {
-      const real = await listFilesystemScopeRoots(
-        params,
-        await this.resolveScope(params.scope, 'roots'),
-      );
-      result = this.rewriteRoots ? this.rewriteRoots(real) : real;
-    }
+    const result = await this.reply(record);
     if (this.afterReply) await this.afterReply(record, attempt);
     return result;
+  }
+
+  private async reply(
+    record: DaemonQueryRecord,
+  ): Promise<DaemonQueries[DaemonQueryName][1]> {
+    const signal = new AbortController().signal;
+    const inputs = directoryInputsFor(this.dataRoot, this.git);
+    const { params } = record;
+    switch (record.name) {
+      case 'worker.filesystem.roots.list': {
+        const real = await listFilesystemScopeRoots(
+          params,
+          await this.resolveScope(params.scope, 'roots'),
+        );
+        return this.rewriteRoots ? this.rewriteRoots(real) : real;
+      }
+      case 'worker.filesystem.directory.list': {
+        if (!('relativePath' in params) || !('fileRootId' in params))
+          throw new Error('directory params expected');
+        const real = await listFilesystemScopeDirectory(
+          { ...params, relativePath: params.relativePath },
+          await this.resolveScope(params.scope, 'directory'),
+          await inputs.readOptions(signal),
+        );
+        return this.rewriteDirectory ? this.rewriteDirectory(real) : real;
+      }
+      case 'worker.filesystem.file.read': {
+        if (!('maxBytes' in params)) throw new Error('file params expected');
+        const real = await readFilesystemScopeFile(
+          params,
+          await this.resolveScope(params.scope, 'file'),
+          { maxResultBytes: WORKER_FILESYSTEM_FILE_READ_MAX_RESULT_BYTES },
+        );
+        return this.rewriteFile ? this.rewriteFile(real) : real;
+      }
+      case 'worker.filesystem.search': {
+        if (!('query' in params)) throw new Error('search params expected');
+        const limit = params.limit ?? Number.POSITIVE_INFINITY;
+        const real = await searchFilesystemScope(
+          this.searchPageLimit === null
+            ? params
+            : { ...params, limit: Math.min(limit, this.searchPageLimit) },
+          await this.resolveScope(params.scope, 'search'),
+          {
+            engine: this.searches,
+            inputs: () =>
+              inputs.searchOptions(signal, params.purpose ?? 'mentions'),
+            maxResultBytes: WORKER_FILESYSTEM_SEARCH_MAX_RESULT_BYTES,
+          },
+        );
+        return this.rewriteSearch ? this.rewriteSearch(real) : real;
+      }
+      case 'worker.filesystem.link.resolve': {
+        if (!('href' in params)) throw new Error('link params expected');
+        const real = await resolveFilesystemScopeLink(
+          params,
+          await this.resolveScope(params.scope, 'link'),
+        );
+        return this.rewriteLink ? this.rewriteLink(real) : real;
+      }
+    }
   }
 
   public names(): DaemonQueryName[] {
@@ -266,10 +363,25 @@ class FakeDaemonClient implements DaemonFilesQueryClient {
     options?: CanopyClientQueryOptions,
   ): Promise<WorkerFilesystemDirectoryListResult>;
   public query(
-    name: DaemonQueryName,
-    params: DaemonParams,
+    name: 'worker.filesystem.file.read',
+    params: WorkerFilesystemFileReadParams,
     options?: CanopyClientQueryOptions,
-  ): Promise<DaemonResult> {
+  ): Promise<WorkerFilesystemFileReadResult>;
+  public query(
+    name: 'worker.filesystem.search',
+    params: WorkerFilesystemSearchParams,
+    options?: CanopyClientQueryOptions,
+  ): Promise<WorkerFilesystemSearchResult>;
+  public query(
+    name: 'worker.filesystem.link.resolve',
+    params: WorkerFilesystemLinkResolveParams,
+    options?: CanopyClientQueryOptions,
+  ): Promise<WorkerFilesystemLinkResolveResult>;
+  public query<Name extends DaemonQueryName>(
+    name: Name,
+    params: DaemonQueries[Name][0],
+    options?: CanopyClientQueryOptions,
+  ): Promise<DaemonQueries[Name][1]> {
     return this.daemon.serve(name, params, options);
   }
 }
@@ -403,6 +515,12 @@ export interface RouteHarnessOptions {
   /** Ignore results for the in-process daemon; legacy uses real Git. */
   readonly git?: GitIgnoreHostPort;
   readonly entryNamePlatform?: 'posix' | 'win32';
+  /** The read-route table's host; omitted, the test host's. */
+  readonly platform?: ReadRoutePlatform | null;
+  /** Injected selection; omitted, production's `{roots, directory}`. */
+  readonly selectable?: ReadonlySet<FilesRouteObservedOperation>;
+  /** The route the runtime dispatches through; `route` stays the real one. */
+  readonly wrapRoute?: (route: ObservedDaemonFilesRoute) => DaemonFilesRoute;
 }
 
 /**
@@ -429,13 +547,17 @@ export async function createRouteHarness(
     authorityId: AUTHORITY,
     targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
     coworkManagedDirName: COWORK_DIR,
-    paths: { join, resolve, isAbsolute, sep },
+    paths: { join, resolve, isAbsolute, sep, basename },
     rootIdentity: readNativeRootIdentity,
   });
   const daemon = new FakeDaemon(
     dataRoot,
     daemonResolver,
-    options.git ?? fakeGit(() => Promise.resolve(new Set<string>())),
+    options.git ??
+      fakeGit(
+        () => Promise.resolve(new Set<string>()),
+        () => Promise.resolve([]),
+      ),
   );
   const connections = new FakeConnections(daemon);
   const flag = controllableFlag(options.flag ?? true);
@@ -464,13 +586,16 @@ export async function createRouteHarness(
     ...(options.entryNamePlatform && {
       entryNamePlatform: options.entryNamePlatform,
     }),
+    ...(options.platform !== undefined && { platform: options.platform }),
+    ...(options.selectable && { selectable: options.selectable }),
   });
+  const dispatchedRoute = options.wrapRoute?.(route) ?? route;
   const runtime = createDesktopRuntime({
     services: {
       listFileTreeRoots: direct.roots,
       listFileTreeDirectory: direct.directory,
     },
-    daemonFilesRoute: () => route,
+    daemonFilesRoute: () => dispatchedRoute,
     shutdownTimeoutMs: 1_000,
   });
   return {

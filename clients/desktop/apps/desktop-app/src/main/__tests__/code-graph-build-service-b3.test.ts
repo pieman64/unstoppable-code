@@ -78,14 +78,11 @@ jest.mock('node:fs/promises', () => ({
     options: { recursive: true; force: true },
   ): Promise<void> => mockFsRemove(path, options),
 }));
-jest.mock(
-  '@canopy/desktop-shared/node/code-graph/languages/custom-config',
-  () => ({
-    fingerprintCustomLanguageInputs: (
-      worktreePath: string,
-    ): Promise<{ value: string }> => mockCustomLanguages(worktreePath),
-  }),
-);
+jest.mock('@canopy/code-graph/languages/custom-config', () => ({
+  fingerprintCustomLanguageInputs: (
+    worktreePath: string,
+  ): Promise<{ value: string }> => mockCustomLanguages(worktreePath),
+}));
 jest.mock('@canopy/desktop-shared/node/code-graph/service', () => ({
   getCodeGraphWorktreeService: (): Pick<
     CodeGraphWorktreeService,
@@ -123,7 +120,9 @@ jest.mock('../code-graph/fingerprint-runner', () => ({
     mockFingerprint(key, repositories, options),
 }));
 jest.mock('../code-graph/read-runner', () => ({
-  CodeGraphReadFailureError: mockCodeGraphReadFailureErrorClass,
+  get CodeGraphReadFailureError(): typeof mockCodeGraphReadFailureErrorClass {
+    return mockCodeGraphReadFailureErrorClass;
+  },
   codeGraphReadFailure: (error: unknown): CodeGraphReadFailure =>
     mockCodeGraphReadFailure(error),
 }));

@@ -131,11 +131,11 @@ test('chat watcher button opens the modal and configures a chat watcher', async 
     await expect(
       window.getByTestId(`chat-watcher-button-${CHAT_ID}-count`),
     ).toHaveCount(0);
-    // CAN-4278: in the footer row the idle eye takes the muted footer tone,
+    // Clean chat uses the shared quiet action tone for the idle watcher,
     // read from a probe element carrying the same token.
     const [idleColor, mutedColor] = await eyeButton.evaluate((el) => {
       const probe = document.createElement('span');
-      probe.className = 'fg-quaternary';
+      probe.className = 'fg-tertiary';
       el.parentElement?.appendChild(probe);
       const muted = getComputedStyle(probe).color;
       probe.remove();

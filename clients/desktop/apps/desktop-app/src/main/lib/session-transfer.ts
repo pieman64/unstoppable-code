@@ -175,6 +175,8 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   // Stripped: local turn-lifecycle bookkeeping of this host's chat queue.
   unacceptedTurnEnds: true,
   turnEnds: true,
+  rootTurnInputIds: true,
+  reducedRootTerminalTurnIds: true,
   interruptedTurns: true,
   title: true,
   // Kept: user-owned naming metadata travels with the transcript.
@@ -279,6 +281,8 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   attentionDismissedAt: true,
   // Kept: unread is a small UX flag that transfers cleanly with the tab.
   unread: true,
+  // Kept: qualifies `unread` and travels with it.
+  unreadMarkedManually: true,
   selectedRepoId: true,
   interfaceMode: true,
   claudeTerminal: true,

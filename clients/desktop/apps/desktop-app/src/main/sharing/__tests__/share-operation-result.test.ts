@@ -231,6 +231,20 @@ describe('shareFailureFromError', () => {
     // e.g. a context check tagged `access` after a package prepare POST.
     expect(
       shareFailureFromError(
+        new Error('Workflow unavailable (context-mismatch)'),
+        'access',
+        { writeSent: true },
+      ),
+    ).toMatchObject({
+      kind: 'unavailable',
+      message: 'Workflow unavailable (context-mismatch)',
+      commitState: 'not-committed',
+    });
+  });
+
+  it('still reads the pre-rename pipeline refusal', () => {
+    expect(
+      shareFailureFromError(
         new Error('Pipeline unavailable (context-mismatch)'),
         'access',
         { writeSent: true },

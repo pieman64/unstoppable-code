@@ -106,8 +106,9 @@ jest.mock('../approvals/approval-service', () => ({
   createApprovalSession: jest.fn(),
 }));
 
-const check = jest.fn(() =>
-  Promise.resolve({ decision: 'allow' as 'allow' | 'deny' }),
+const check = jest.fn(
+  (): Promise<{ decision: 'allow' | 'deny' }> =>
+    Promise.resolve({ decision: 'allow' }),
 );
 const dispose = jest.fn();
 const invalidatePending = jest.fn();
@@ -152,9 +153,12 @@ beforeEach(() => {
     warnings: [],
     cursorNotices: [],
   } as unknown as Awaited<ReturnType<typeof resolvePlugins>>);
-  jest
-    .mocked(materializeSelectedCapabilityRoot)
-    .mockResolvedValue({ skillIds: [], commandIds: [], warnings: [] });
+  jest.mocked(materializeSelectedCapabilityRoot).mockResolvedValue({
+    fingerprint: 'fixture-fingerprint',
+    skillIds: [],
+    commandIds: [],
+    warnings: [],
+  });
   proxy = getMcpHttpProxyService() as jest.Mocked<
     ReturnType<typeof getMcpHttpProxyService>
   >;

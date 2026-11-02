@@ -173,7 +173,7 @@ function seedPanelAutomationsState(userDataDir) {
 }
 
 async function openAutomationsSubmenu(window) {
-  await window.getByTestId('panel-add-panel-group-chat').click();
+  await window.getByTestId('panel-add-tab-group-chat').click();
   await expect(window.getByTestId('panel-add-menu')).toBeVisible();
   await window.getByTestId('panel-add-menu-automations-submenu').click();
   await expect(

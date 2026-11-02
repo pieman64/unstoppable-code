@@ -244,11 +244,19 @@ for (const role of ['OWNER', 'ADMIN', 'MEMBER']) {
   test(`free access keeps the wallet personal and shows the pool on the switcher for ${role}`, async () => {
     test.setTimeout(120_000);
     const orgId = '11111111-1111-4111-8111-111111111111';
+    const emptyOrgId = '22222222-2222-4222-8222-222222222222';
     const apiKey = `csk_free_access_context_${role.toLowerCase()}`;
     await registerScenario(DEFAULT_MOCK_BASE_URL, apiKey, {
       cloud: {
         entitlements: FREE_ACCESS_ENTITLEMENTS,
         organizations: [
+          {
+            id: emptyOrgId,
+            name: 'Empty pool',
+            role,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
           {
             id: orgId,
             name: 'Acme',
@@ -258,15 +266,25 @@ for (const role of ['OWNER', 'ADMIN', 'MEMBER']) {
           },
         ],
         aiCreditsBalance: { credits: 688.77, eligible: true },
-        // The organization's pool, read by desktop for an OWNER's row.
+        // The organization's pool: Members receive classifier fields only.
         orgSpendableById: {
+          [emptyOrgId]: {
+            hasSpendableHeadroom: false,
+            hasBalanceNow: false,
+            canReplenish: false,
+            orgCreditPoolCapable: true,
+            ...(role === 'MEMBER' ? {} : { balanceCredits: 0, balanceUsd: 0 }),
+            hasPaymentMethodOnFile: true,
+            billingActive: true,
+          },
           [orgId]: {
             hasSpendableHeadroom: true,
             hasBalanceNow: true,
             canReplenish: false,
             orgCreditPoolCapable: true,
-            balanceCredits: 412.5,
-            balanceUsd: 247.5,
+            ...(role === 'MEMBER'
+              ? {}
+              : { balanceCredits: 412.5, balanceUsd: 247.5 }),
             hasPaymentMethodOnFile: true,
             billingActive: true,
           },
@@ -292,7 +310,7 @@ for (const role of ['OWNER', 'ADMIN', 'MEMBER']) {
               (await window.api.workspaceContext.get()).organizations.length,
           ),
         )
-        .toBe(1);
+        .toBe(2);
 
       const mints = async (target) => {
         const { activity } = await getScenarioActivity(
@@ -340,15 +358,29 @@ for (const role of ['OWNER', 'ADMIN', 'MEMBER']) {
       expect(await mints(ACCOUNT_BILLING_PATH)).toBe(0);
       await driver.closeSettings();
 
-      // The organization's pool is on the switcher, for its OWNER only.
+      // Owners and Admins see the pool; purchase permissions stay separate.
       await contextRow.click();
       const poolRow = win.getByTestId('sidebar-context-menu-item-ai-credits');
-      if (role !== 'OWNER') {
+      if (role === 'MEMBER') {
         await expect(poolRow).toHaveCount(0);
         await win.keyboard.press('Escape');
         expect(await mints(poolPath)).toBe(0);
         return;
       }
+      await expect(
+        win.getByTestId('sidebar-context-menu-item-ai-credits-balance'),
+      ).toHaveText('413', { timeout: 20_000 });
+      await win.keyboard.press('Escape');
+      await contextRow.click();
+      await win.getByTestId(`sidebar-context-option-${emptyOrgId}`).click();
+      await contextRow.click();
+      await expect(
+        win.getByTestId('sidebar-context-menu-item-ai-credits-balance'),
+      ).toHaveText('0', { timeout: 20_000 });
+      await win.keyboard.press('Escape');
+      await contextRow.click();
+      await win.getByTestId(`sidebar-context-option-${orgId}`).click();
+      await contextRow.click();
       await expect(
         win.getByTestId('sidebar-context-menu-item-ai-credits-balance'),
       ).toHaveText('413', { timeout: 20_000 });

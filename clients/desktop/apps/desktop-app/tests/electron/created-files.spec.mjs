@@ -6,6 +6,7 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { collectLeaves, getLayout } from './panelHarness.mjs';
 import {
   injectChatEvent,
+  publishTurnLifecycle,
   seedWorktreeChat,
   writeJson,
 } from './seeders/index.mjs';
@@ -30,7 +31,9 @@ for (const cowork of [false, true]) {
     const { electronApp } = await launchCanopy({ userDataDir });
     try {
       const window = await electronApp.firstWindow();
-      const chat = await openCreatedFiles(window, fixture);
+      const chat = await openCreatedFiles(window, fixture, {
+        expandSummary: false,
+      });
       const summary = chat.locator(
         `[data-testid="turn-files"][data-turn-id="${CREATED_FILES_TURN}"]`,
       );
@@ -48,9 +51,7 @@ for (const cowork of [false, true]) {
         await expect(toggle).toHaveText(`${CREATED_FILE_NAMES.length} files`);
         await expect(chips).toHaveCount(CREATED_FILE_NAMES.length);
       } else {
-        await expect(toggle).toContainText(
-          `${DIFFED_FILE_NAMES.length} files changed`,
-        );
+        await expect(toggle).toContainText(`${DIFFED_FILE_NAMES.length} files`);
         await expect(toggle).toContainText(
           `${CREATED_FILE_NAMES.length - DIFFED_FILE_NAMES.length} other files`,
         );
@@ -94,6 +95,11 @@ for (const cowork of [false, true]) {
           .getByRole('heading', { name: 'Quarterly report', exact: true }),
       ).toBeVisible();
       await expect(chat).toBeVisible();
+      // Opening a file can remount the historical summary in its collapsed
+      // state. Reopen it before exercising repeat-open and focus return.
+      if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
+        await toggle.click();
+      }
       await expect(tile).toBeInViewport();
       await tile.click();
       const layout = await getLayout(window);
@@ -128,11 +134,22 @@ for (const cowork of [false, true]) {
       await browserTabs.getByRole('button', { name: /^Close / }).click();
       await expect(browserTabs).toHaveCount(0);
       await expect(pageTile).toBeFocused();
+      await pageTile.click();
+      await expect(pageTile).toHaveAttribute('aria-busy', 'false');
+      await expect(browserTabs).toHaveCount(1);
+      await toggle.click();
+      await expect(pageTile).toBeHidden();
+      await browserTabs.hover();
+      await browserTabs.getByRole('button', { name: /^Close / }).click();
+      await expect(browserTabs).toHaveCount(0);
+      await expect(toggle).toBeFocused();
       await window.reload();
       const reloaded = await openCreatedFiles(window, fixture);
       const reloadedSummary = reloaded.getByTestId('turn-files');
       await expect(reloadedSummary).toHaveCount(1);
-      await reloadedSummary.locator('button[aria-expanded]').click();
+      const reloadedToggle = reloadedSummary.locator('button[aria-expanded]');
+      if ((await reloadedToggle.getAttribute('aria-expanded')) !== 'true')
+        await reloadedToggle.click();
       await expect(reloadedSummary.getByTestId('turn-file-chip')).toHaveCount(
         cowork
           ? CREATED_FILE_NAMES.length
@@ -201,8 +218,8 @@ test('file chips reconcile live creation, repeated terminal events and an app re
     const window = await open();
     // Main settles a running turn with no live host whenever it reads the
     // chat's snapshot, for example for the Activity rail's Cost card. A real
-    // turn holds the host queue gate, so hold it for this one. Injected
-    // terminal events don't release it; the restart below discards it.
+    // turn holds the host queue gate, so hold it for this one. The restart
+    // below discards the synthetic gate after lifecycle settlement.
     await launched.electronApp.evaluate(
       async (_, target) => globalThis.__CANOPY_E2E_HOLD_CHAT_TURN__(target),
       {
@@ -215,6 +232,13 @@ test('file chips reconcile live creation, repeated terminal events and an app re
     await send({
       type: 'canopy_user_prompt',
       original_text: 'Create a report.',
+    });
+    await publishTurnLifecycle(launched.electronApp, {
+      projectId: fixture.workspaceId,
+      worktreeId: fixture.worktreeId,
+      chatId: CREATED_FILES_CHAT,
+      turnUserMessageId: turnId,
+      phase: 'start',
     });
     await send({
       type: 'codex',
@@ -251,6 +275,13 @@ test('file chips reconcile live creation, repeated terminal events and an app re
     await expect(
       summary.getByRole('button', { name: 'Open Quarterly report.md' }),
     ).toHaveAttribute('aria-disabled', 'false');
+    await publishTurnLifecycle(launched.electronApp, {
+      projectId: fixture.workspaceId,
+      worktreeId: fixture.worktreeId,
+      chatId: CREATED_FILES_CHAT,
+      turnUserMessageId: turnId,
+      phase: 'end',
+    });
     await send({ type: 'codex', event: { type: 'turn.completed' } });
     await expect(summary.getByTestId('turn-file-chip')).toHaveCount(1);
     await closeCanopy(launched.electronApp, userDataDir, {
@@ -369,6 +400,13 @@ for (const cowork of [false, true]) {
       const advisor = await new CanopyAppDriver(main).openAppAdvisorWindow(
         electronApp,
       );
+      // Keep the headless fixture in the standard floating layout. A hidden
+      // full window reopens floating on the close relay and remounts the chip
+      // whose focus this test is checking.
+      await advisor.evaluate(() =>
+        window.api.appAdvisor.openWindow({ layout: 'floating', focus: true }),
+      );
+      await expect(advisor.getByTestId('app-advisor-floating')).toBeVisible();
       const tile = advisor.getByRole('button', {
         name: 'Open Quarterly report.md',
       });

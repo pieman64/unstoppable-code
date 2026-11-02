@@ -17,7 +17,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { PLAN_DIAGRAM_SCHEMA_VERSION } from '@canopy/desktop-shared/types/plan-diagrams';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-// `jest.mock` is hoisted above imports by ts-jest, so the stubs below are wired
+// `jest.mock` is hoisted above imports by the Jest transform, so the stubs below are wired
 // in before `PlanVisualizerPanel` (and its diagram children) are imported.
 import { PlanVisualizerPanel } from '../PlanVisualizerPanel';
 

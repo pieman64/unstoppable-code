@@ -1,3 +1,7 @@
+import {
+  SharedContainerReplicaRevisionUnavailableError,
+  type SharedContainerReplicaRevisionSnapshot,
+} from './types';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmod,
@@ -21,6 +25,7 @@ import {
 } from '@canopy/artifact-crypto';
 import {
   isSharedContainerManifest,
+  isSharedContainerRevisionPackage,
   MAX_SHARED_CONTAINER_ARTIFACT_BYTES,
   MAX_SHARED_CONTAINER_REVISION_BYTES,
   MAX_SHARED_CONTAINER_STAGE_REQUEST_BYTES,
@@ -1504,6 +1509,38 @@ export class SharedContainerReplicaManager {
       (previous?.status === 'available' || previous?.status === 'pinned') &&
       previous.revisionId === latestRevisionId
     ) {
+      // A replica materialized by a pre-v5 client has no package field. The
+      // authenticated detail belongs to this same immutable revision, so it
+      // can fill that field without downloading the encrypted artifacts again.
+      let retained: SharedContainerReplicaState = previous;
+      if (
+        previous.package === undefined &&
+        isSharedContainerRevisionPackage(latest.package)
+      ) {
+        const packageMetadata = latest.package;
+        retained = await this.withReplicaMutation(
+          authorizationGeneration,
+          containerId,
+          scopeKey,
+          async () => {
+            // A pin may have committed after the cached checkpoint was read.
+            // Merge under the mutation guard so metadata cannot unpin it or
+            // replace a state that now belongs to another revision.
+            const current = await this.store.get(containerId);
+            if (
+              (current?.status !== 'available' &&
+                current?.status !== 'pinned') ||
+              current.revisionId !== previous.revisionId ||
+              current.package !== undefined
+            ) {
+              return current ?? previous;
+            }
+            const hydrated = { ...current, package: packageMetadata };
+            await this.store.set(hydrated);
+            return hydrated;
+          },
+        );
+      }
       await this.refreshViewerBrowsers(containerId).catch(() => undefined);
       // Pruning is post-commit housekeeping: keep the verified revision
       // available if cleanup fails, then retry on the next reconciliation.
@@ -1519,7 +1556,7 @@ export class SharedContainerReplicaManager {
       await this.projectViewerChats(containerId, previous.revisionId, {
         mode: viewerLayoutMode,
       });
-      return previous;
+      return retained;
     }
 
     const revisionResponse = await this.transport.fetchRevision(
@@ -1840,6 +1877,9 @@ export class SharedContainerReplicaManager {
         revisionId,
         revision: revision.revision,
         revisionCreatedAt: revision.createdAt,
+        ...(isSharedContainerRevisionPackage(revision.package)
+          ? { package: revision.package }
+          : {}),
         withheldFileCount: layoutValue.withheldFileCount ?? 0,
         withheldFileReasons: layoutValue.withheldFileReasons ?? [],
         updatedAt: now,
@@ -2006,22 +2046,36 @@ export class SharedContainerReplicaManager {
     containerId: string,
     organizationId: string | undefined,
     revisionId: string,
-    operation: (revisionRoot: string) => Promise<T>,
+    operation: (
+      revisionRoot: string,
+      revision: SharedContainerReplicaRevisionSnapshot,
+    ) => Promise<T>,
   ): Promise<T> {
     const authorizationGeneration = this.authorizationGeneration;
+    let guardEntered = false;
     return this.withReplicaMutation(
       authorizationGeneration,
       containerId,
       // The snapshot scope depends on the stored access, checked below.
       undefined,
       async () => {
+        guardEntered = true;
         const state = await this.store.get(containerId);
         if (
           (state?.status !== 'available' && state?.status !== 'pinned') ||
-          state.organizationId !== organizationId ||
-          state.revisionId !== revisionId
+          state.organizationId !== organizationId
         ) {
-          throw new Error('Shared-container revision is not available');
+          throw new SharedContainerReplicaRevisionUnavailableError(
+            'unavailable',
+          );
+        }
+        if (state.revisionId !== revisionId) {
+          throw new SharedContainerReplicaRevisionUnavailableError(
+            'superseded',
+          );
+        }
+        if (!Number.isFinite(Date.parse(state.revisionCreatedAt))) {
+          throw new Error('Invalid shared-container revision publication time');
         }
         if (
           this.isContainerBlockedDuringSnapshot(
@@ -2032,18 +2086,31 @@ export class SharedContainerReplicaManager {
             ),
           )
         ) {
-          throw new DOMException(
-            'Container replica cleanup is in progress',
-            'AbortError',
+          throw new SharedContainerReplicaRevisionUnavailableError(
+            'unavailable',
           );
         }
         const revisionRoot = await this.store.resolveRevisionRootForRead(
           containerId,
           revisionId,
         );
-        return operation(revisionRoot);
+        return operation(revisionRoot, {
+          revisionId: state.revisionId,
+          revisionCreatedAt: state.revisionCreatedAt,
+        });
       },
-    );
+    ).catch((error: unknown) => {
+      // Authorization may change while this read waits for the lock. Refuse
+      // before effects; never retry or translate an abort from the consumer.
+      if (
+        !guardEntered &&
+        error instanceof DOMException &&
+        error.name === 'AbortError'
+      ) {
+        throw new SharedContainerReplicaRevisionUnavailableError('unavailable');
+      }
+      throw error;
+    });
   }
 
   private async withAuthorizationMutationLock<T>(

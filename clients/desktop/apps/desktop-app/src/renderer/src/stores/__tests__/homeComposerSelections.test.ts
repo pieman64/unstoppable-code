@@ -1,7 +1,10 @@
 /**
  * @jest-environment jsdom
  */
-import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
+import type {
+  ChatTabPluginSelections,
+  SingleRepoSidebarItem,
+} from '@canopy/desktop-shared/types';
 import {
   homeDraftChatPluginSelections,
   resolveHomeFastMode,
@@ -43,16 +46,20 @@ function selections(
 function seedProject(defaults: ChatTabPluginSelections | undefined): void {
   // Always start from a clean project: spreading the previous seed would let
   // one test's `defaultPluginSelections` leak into the next.
-  const project = {
+  const project: SingleRepoSidebarItem = {
     id: 'ws',
     name: 'ws',
     type: 'single-repo',
+    repoPath: '/workspace',
+    color: '#000000',
+    collapsed: false,
+    order: 0,
     worktrees: [],
     ...(defaults ? { defaultPluginSelections: defaults } : {}),
   };
   useProjectsStore.setState((state) => ({
     ...state,
-    projects: [project as (typeof state.projects)[number]],
+    projects: [project],
   }));
 }
 
@@ -277,13 +284,13 @@ describe('Home Codex speed draft', () => {
       modelDefaults: {
         chatProvider: 'codex',
         chatModelByProvider: {
-          claude: null,
+          claude: { model: 'claude-sonnet-4-6', thinkingLevel: 'high' },
           codex: { model: CODEX_MODEL, thinkingLevel: 'high' },
           ollama: null,
         },
         worktreeProvider: 'codex',
         worktreeModelByProvider: {
-          claude: null,
+          claude: { model: 'claude-sonnet-4-6', thinkingLevel: 'high' },
           codex: { model: CODEX_MODEL, thinkingLevel: 'high' },
           ollama: null,
         },

@@ -11,15 +11,18 @@ import {
   getWorkspaceApprovalsFilePath,
   readWorkspaceApprovalsResult,
 } from '../lib/approvals-persistence';
-import {
-  peekPreferencesLoadError,
-  readPreferencesFile,
-} from '../lib/preferences-store';
+import { readPreferencesFileDetailed } from '../lib/preferences-store';
+import { readPreferencesApprovalAuthority } from './rule-revisions';
 import { readWorkspaceApprovalsManifest } from '../lib/workspace-approvals-manifest';
 import { getCodeReviewTargetSync } from '../lib/code-review-registry';
 import { getPlanExploreTargetSync } from '../lib/plan-explore-registry';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
-import { getPreferencesFilePath } from '../lib/paths';
+import {
+  createPreferencesGenerationPath,
+  createPreferencesLastGoodPath,
+  preferencesBackupPathPattern,
+} from '../lib/preferences-file-paths';
+import { getMigrationsFilePath, getPreferencesFilePath } from '../lib/paths';
 
 /**
  * Where an approval session reads its rules and roots from. Every approval
@@ -77,13 +80,56 @@ export async function readWorkspaceApprovalRuleTier(
   };
 }
 
-/** The global tier, from the user's preferences. */
+/**
+ * The global tier, from the user's preferences. While they are unreadable,
+ * the served last-good still contributes its deny rules: it is not authority
+ * to allow, but a known deny must not soften into a prompt.
+ */
 export async function readGlobalApprovalRuleTier(): Promise<ApprovalRuleTier> {
-  const preferences = await readPreferencesFile();
+  const { value: tier, confirmed } = await readPreferencesApprovalAuthority(
+    readPersistedGlobalApprovalRuleTier,
+  );
+  return confirmed === undefined
+    ? tier
+    : withConfirmedAllows(tier, confirmed.globalApprovalRules);
+}
+
+async function readPersistedGlobalApprovalRuleTier(): Promise<ApprovalRuleTier> {
+  const { preferences, authority, served } = await readPreferencesFileDetailed({
+    includeServed: true,
+  });
+  if (authority !== 'unreadable') {
+    return { rules: preferences.globalApprovalRules, unreadable: false };
+  }
   return {
-    rules: preferences.globalApprovalRules,
-    unreadable: peekPreferencesLoadError() !== null,
+    rules: (served?.globalApprovalRules ?? []).filter(
+      (rule) => rule.behavior === 'deny',
+    ),
+    unreadable: true,
   };
+}
+
+/**
+ * While a preferences save is unconfirmed, either version of the rules may be
+ * what survives a crash: an allow applies only when both hold it, and a deny
+ * applies when either does.
+ */
+function withConfirmedAllows(
+  tier: ApprovalRuleTier,
+  confirmed: readonly ApprovalRule[],
+): ApprovalRuleTier {
+  const ruleKey = (rule: ApprovalRule): string => JSON.stringify(rule);
+  const confirmedKeys = new Set(confirmed.map(ruleKey));
+  const rules = tier.rules.filter(
+    (rule) => rule.behavior === 'deny' || confirmedKeys.has(ruleKey(rule)),
+  );
+  const keptKeys = new Set(rules.map(ruleKey));
+  for (const rule of confirmed) {
+    if (rule.behavior === 'deny' && !keptKeys.has(ruleKey(rule))) {
+      rules.push(rule);
+    }
+  }
+  return { rules, unreadable: tier.unreadable };
 }
 
 function errorCode(error: unknown): unknown {
@@ -135,17 +181,42 @@ export async function resolveExistingAncestorPath(
   }
 }
 
-/** The approval files a governed agent must never silently modify. */
+/**
+ * The approval policy files a governed agent must never silently modify:
+ * the rule files, the preferences copies recovery restores or keeps, the
+ * generation record that decides whether recovery may restore last-good, and
+ * the migrations ledger, whose loss re-runs approval-mode migrations. Backups
+ * are a file-rule glob, since recovery names each one when it creates it.
+ */
 export async function protectedApprovalFileWritePaths(
   workspaceId: string,
   basePath: string,
 ): Promise<string[]> {
+  const preferencesPath = getPreferencesFilePath();
+  const backupPattern = preferencesBackupPathPattern(preferencesPath);
   const paths = await Promise.all([
     resolveExistingAncestorPath(
       getWorkspaceApprovalsFilePath(workspaceId),
       basePath,
     ),
-    resolveExistingAncestorPath(getPreferencesFilePath(), basePath),
+    resolveExistingAncestorPath(preferencesPath, basePath),
+    resolveExistingAncestorPath(
+      createPreferencesLastGoodPath(preferencesPath),
+      basePath,
+    ),
+    resolveExistingAncestorPath(
+      createPreferencesGenerationPath(preferencesPath),
+      basePath,
+    ),
+    resolveExistingAncestorPath(getMigrationsFilePath(), basePath),
+    // The folder, not the glob: a file literally named like the glob must not
+    // redirect the pattern through a symlink.
+    resolveExistingAncestorPath(dirname(backupPattern), basePath).then(
+      (folder) =>
+        folder === undefined
+          ? undefined
+          : join(folder, basename(backupPattern)),
+    ),
   ]);
   return Array.from(
     new Set(paths.filter((path): path is string => path !== undefined)),

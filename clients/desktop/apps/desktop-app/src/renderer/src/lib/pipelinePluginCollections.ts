@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import type {
   PipelineInfo,
   PipelinePluginCollectionPreference,
@@ -209,7 +210,9 @@ export function toggleExtraSelectionKey(
 export function buildSyntheticPipelineRow(
   item: PipelinePluginDefaultPreviewItem,
 ): UnifiedTablePipelineDerivedRow {
-  const badges: UnifiedTableBadge[] = [{ label: 'Pipeline', tone: 'info' }];
+  const badges: UnifiedTableBadge[] = [
+    { label: WORKFLOW_ITEM_LABEL, tone: 'info' },
+  ];
   if (item.required) {
     badges.push({ label: 'Required', tone: 'danger' });
   }
@@ -228,7 +231,7 @@ export function buildSyntheticPipelineRow(
     badges,
     toggleMode: item.required ? 'locked' : 'normal',
     toggleReason: item.required
-      ? 'This pipeline default is required and cannot be turned off.'
+      ? 'This workflow default is required and cannot be turned off.'
       : item.warning,
     viewDisabled: true,
   };
@@ -304,7 +307,7 @@ export function annotateRowsForCollection(
     const required = matchingItems.some((item) => item.required);
     const badges: UnifiedTableBadge[] = [
       ...(row.badges ?? []),
-      { label: 'Pipeline', tone: 'info' },
+      { label: WORKFLOW_ITEM_LABEL, tone: 'info' },
     ];
     if (required) {
       badges.push({ label: 'Required', tone: 'danger' });
@@ -330,7 +333,7 @@ export function annotateRowsForCollection(
       badges,
       toggleMode: required ? 'locked' : (row.toggleMode ?? 'normal'),
       toggleReason: required
-        ? 'This pipeline default is required and cannot be turned off.'
+        ? 'This workflow default is required and cannot be turned off.'
         : row.toggleReason,
     };
   });

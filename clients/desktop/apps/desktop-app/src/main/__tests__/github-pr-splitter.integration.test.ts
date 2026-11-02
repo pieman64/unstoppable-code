@@ -228,6 +228,8 @@ function buildHarness(params: {
   // `SplitterDeps` signatures, so they return `Promise.resolve(...)` rather than
   // being `async` (no `await` inside → the repo's `require-await` lint rule).
   const deps: SplitterDeps = {
+    recordGitCommitTelemetry: jest.fn(),
+    recordPullRequestOpenedTelemetry: jest.fn(),
     createWorktree: (opts): Promise<{ id: string }> => {
       createWorktreeCalls.push({
         branchName: opts.branchName,

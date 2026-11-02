@@ -26,6 +26,7 @@ import {
   useProjectsStore,
 } from '@/stores/projectsStore';
 import { useChatStore } from '@/stores/chatStore';
+import { readWorktreeSetupDuration } from '@/lib/worktreeSetupDurations';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useFileListStore } from '@/stores/fileListStore';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -35,6 +36,28 @@ import { useScriptsStore } from '@/stores/scriptsStore';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useActivityStore } from '@/stores/activityStore';
 import * as diffStatsHelpers from '@/stores/projectsStore.diffStats';
+import { removeDesktopWorktreeInBatch } from '@/components/sidebar/DesktopSharedSidebarHost';
+import {
+  createSidebarRemovalQueue,
+  type WorktreeBatchTarget,
+} from '@canopy/ui-app/sidebar';
+import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
+import type * as AppState from '@canopy/app-state';
+import { LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL } from '@canopy/protocol/portal/lifecycle-journal';
+import { WorktreeArchiveRefusalError } from '@/lib/worktreeRemovalAdmission';
+
+jest.mock('@/components/worktree/finishWorktreeArchive', () => ({
+  finishWorktreeArchive: jest.fn(),
+}));
+jest.mock('@canopy/app-state', () => {
+  const actual = jest.requireActual<typeof AppState>('@canopy/app-state');
+  return {
+    ...actual,
+    offerLifecycleJournalQuarantine: jest.fn(
+      actual.offerLifecycleJournalQuarantine,
+    ),
+  };
+});
 
 declare global {
   interface Window {
@@ -66,6 +89,15 @@ function createDeferred<T>(): Deferred<T> {
   }
 
   return { promise, resolve, reject };
+}
+
+function getSingleRepoProject(
+  project: SidebarItem | undefined,
+): SingleRepoSidebarItem {
+  if (!project || project.type !== 'single-repo') {
+    throw new Error('Expected a single-repo project');
+  }
+  return project;
 }
 
 function createScriptRunResponse(
@@ -131,6 +163,14 @@ describe('projectsStore project repo adds', () => {
   const addRepoToWorktree = jest.fn();
   const archiveWorktreeRequest = jest.fn();
   const archiveWorkspaceWorktreeRequest = jest.fn();
+  const checkWorktreeRemovalAdmission = jest.fn<
+    ReturnType<CanopyApi['checkWorktreeRemovalAdmission']>,
+    Parameters<CanopyApi['checkWorktreeRemovalAdmission']>
+  >();
+  const describeWorktreeDiscard = jest.fn<
+    ReturnType<CanopyApi['describeWorktreeDiscard']>,
+    Parameters<CanopyApi['describeWorktreeDiscard']>
+  >();
   const combineWorktreeWithWorkspace = jest.fn();
   const createWorktreeRequest = jest.fn();
   const getDiffStatsBatch = jest.fn();
@@ -217,11 +257,11 @@ describe('projectsStore project repo adds', () => {
   const refreshWorktreeTabDiscoveries = jest.fn<void, [string, string]>();
   const queueWorktreeTabDiscoveryRefresh = jest.fn<void, [string, string]>();
   const syncEmptyChatPluginSelections = jest.fn<
-    void,
+    Promise<void>,
     Parameters<
       ReturnType<typeof useChatStore.getState>['syncEmptyChatPluginSelections']
     >
-  >();
+  >((): Promise<void> => Promise.resolve());
   const dropPendingForWorktree = jest.fn<void, [string, string]>();
   let worktreeGitReadyHandler: ((event: WorktreeGitReadyEvent) => void) | null =
     null;
@@ -249,7 +289,7 @@ describe('projectsStore project repo adds', () => {
           useStandaloneChatStore.getState(),
           'activateCreatedCoworkWorkspace',
         )
-        .mockResolvedValue(undefined);
+        .mockResolvedValue(true);
       const addWorkspaceFromFolder = jest
         .fn()
         .mockResolvedValue({ id: 'imported-cowork', type: 'cowork' });
@@ -293,6 +333,8 @@ describe('projectsStore project repo adds', () => {
         addRepoToWorktree,
         archiveWorktree: archiveWorktreeRequest,
         archiveWorkspaceWorktree: archiveWorkspaceWorktreeRequest,
+        checkWorktreeRemovalAdmission,
+        describeWorktreeDiscard,
         combineWorktreeWithWorkspace,
         createWorktree: createWorktreeRequest,
         createWorkspaceWorktree,
@@ -330,6 +372,8 @@ describe('projectsStore project repo adds', () => {
     });
 
     archiveWorktreeRequest.mockResolvedValue({ success: true, warnings: [] });
+    checkWorktreeRemovalAdmission.mockResolvedValue({ status: 'admitted' });
+    describeWorktreeDiscard.mockRejectedValue(new Error('not described'));
     addRepoToWorktree.mockResolvedValue(undefined);
     archiveWorkspaceWorktreeRequest.mockResolvedValue({
       success: true,
@@ -1578,6 +1622,95 @@ describe('projectsStore project repo adds', () => {
     expect(refreshWorkspaceDrift).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['available', 'unavailable'])(
+    'samples a pending row without blocking queue dispatch when storage is %s',
+    (storage) => {
+      const original = useProjectsStore.getState();
+      const createdAt = '2026-04-29T01:49:50.000Z';
+      const readyAt = Date.parse(createdAt) + 25_000;
+      const now = jest.spyOn(Date, 'now').mockReturnValue(readyAt);
+      try {
+        // This suite's window is a plain object; give it a storage to record in.
+        const stored = new Map<string, string>();
+        Object.defineProperty(window, 'localStorage', {
+          configurable: true,
+          value: {
+            getItem: (key: string): string | null => {
+              if (storage === 'unavailable')
+                throw new Error('Storage unavailable');
+              return stored.get(key) ?? null;
+            },
+            setItem: (key: string, value: string): void => {
+              if (storage === 'unavailable')
+                throw new Error('Storage unavailable');
+              stored.set(key, value);
+            },
+          },
+        });
+        useProjectsStore.setState({
+          refreshWorktreeDiffStats: jest.fn().mockResolvedValue(undefined),
+          refreshWorkspaceDrift: jest.fn().mockResolvedValue(undefined),
+          inspectHookChatPluginDependencies: jest
+            .fn()
+            .mockResolvedValue(undefined),
+          inspectRecommendedPlugins: jest.fn().mockResolvedValue(undefined),
+          projects: [
+            {
+              type: 'multi-repo',
+              id: 'workspace-a',
+              name: 'Workspace A',
+              color: '#111111',
+              repos: [],
+              worktrees: [
+                {
+                  id: 'wt-pending',
+                  branchName: 'wt-pending',
+                  createdAt,
+                  setupPhase: 'git-pending',
+                },
+              ],
+              collapsed: false,
+              order: 0,
+              sourceRepoPath: '/repos/workspace-a',
+            },
+          ],
+        });
+        useProjectsStore.getState().subscribeToWorktreeGitLifecycleEvents();
+        if (!worktreeGitReadyHandler) {
+          throw new Error('Expected worktreeGitReady handler to be registered');
+        }
+        const event = {
+          projectId: 'workspace-a',
+          worktreeId: 'wt-pending',
+          branchName: 'feature/ready',
+        };
+        worktreeGitReadyHandler(event);
+        expect(readWorktreeSetupDuration('workspace-a')).toBe(
+          storage === 'available' ? 25_000 : null,
+        );
+        expect(
+          useChatStore.getState().flushPendingChatsForWorktree,
+        ).toHaveBeenCalledWith('workspace-a', 'wt-pending');
+
+        // A replayed event finds the row ready and records nothing new.
+        now.mockReturnValue(readyAt + 60_000);
+        worktreeGitReadyHandler(event);
+        expect(readWorktreeSetupDuration('workspace-a')).toBe(
+          storage === 'available' ? 25_000 : null,
+        );
+      } finally {
+        now.mockRestore();
+        useProjectsStore.setState({
+          refreshWorktreeDiffStats: original.refreshWorktreeDiffStats,
+          refreshWorkspaceDrift: original.refreshWorkspaceDrift,
+          inspectHookChatPluginDependencies:
+            original.inspectHookChatPluginDependencies,
+          inspectRecommendedPlugins: original.inspectRecommendedPlugins,
+        });
+      }
+    },
+  );
+
   it('retries hook dependency inspection once a git-pending worktree becomes ready', async () => {
     createWorkspaceWorktree.mockResolvedValue({
       id: 'wt-pending',
@@ -2571,7 +2704,7 @@ describe('projectsStore project repo adds', () => {
 
     // The reservation was rolled back server-side, so the row is dropped and
     // the repair modal opened with the event payload — but the chat state
-    // (queued message + pending_setup_info) is deliberately KEPT: the repair
+    // (queued message and setup-wait state) is deliberately KEPT: the repair
     // flow reuses the same worktree id and flushes the queue on success. Only
     // a cancelled repair tears the chat state down.
     const worktrees = getProjectWorktrees(
@@ -2917,6 +3050,89 @@ describe('projectsStore project repo adds', () => {
     expect(archiveWorktreeRequest).not.toHaveBeenCalled();
   });
 
+  it('drops the temporary project a discard of its last worktree left empty (CAN-5336 review r2)', async () => {
+    const temporary: SidebarItem = {
+      type: 'multi-repo',
+      id: 'workspace-temp',
+      name: 'Repo A & Repo B',
+      color: '#111111',
+      repos: [{ id: 'repo-a', name: 'Repo A', repoPath: '/repos/repo-a' }],
+      worktrees: [
+        {
+          id: 'wt-1',
+          branchName: 'feature/wt-1',
+          createdAt: '2026-04-09T00:00:00.000Z',
+        },
+      ],
+      collapsed: false,
+      order: 0,
+      temporary: true,
+    };
+    const other: SidebarItem = {
+      type: 'single-repo',
+      id: 'project-b',
+      name: 'Project B',
+      repoPath: '/repos/project-b',
+      color: '#222222',
+      worktrees: [],
+      collapsed: false,
+      order: 1,
+    };
+    useProjectsStore.setState({ projects: [temporary, other], loadProjects });
+    // A refresh that still returns the pre-discard snapshot must not redraw it.
+    loadProjects.mockImplementationOnce(() => {
+      useProjectsStore.setState({ projects: [temporary, other] });
+      return Promise.resolve();
+    });
+
+    await useProjectsStore
+      .getState()
+      .reconcileArchivedWorktree('workspace-temp', 'wt-1', {
+        removedTemporaryWorkspaceId: 'workspace-temp',
+      });
+
+    expect(useProjectsStore.getState().projects).toEqual([
+      expect.objectContaining({ id: 'project-b' }),
+    ]);
+  });
+
+  it('keeps an Always show temporary project that main reports after a discard of its last worktree', async () => {
+    const pinned: SidebarItem = {
+      type: 'multi-repo',
+      id: 'workspace-temp',
+      name: 'Repo A & Repo B',
+      color: '#111111',
+      repos: [{ id: 'repo-a', name: 'Repo A', repoPath: '/repos/repo-a' }],
+      worktrees: [
+        {
+          id: 'wt-1',
+          branchName: 'feature/wt-1',
+          createdAt: '2026-04-09T00:00:00.000Z',
+        },
+      ],
+      collapsed: false,
+      order: 0,
+      temporary: true,
+      alwaysShow: true,
+    };
+    useProjectsStore.setState({ projects: [pinned], loadProjects });
+    // The authoritative reload keeps the empty project: Always show is set.
+    loadProjects.mockImplementationOnce(() => {
+      useProjectsStore.setState({ projects: [{ ...pinned, worktrees: [] }] });
+      return Promise.resolve();
+    });
+
+    await useProjectsStore
+      .getState()
+      .reconcileArchivedWorktree('workspace-temp', 'wt-1', {
+        removedTemporaryWorkspaceId: 'workspace-temp',
+      });
+
+    expect(useProjectsStore.getState().projects).toEqual([
+      expect.objectContaining({ id: 'workspace-temp', worktrees: [] }),
+    ]);
+  });
+
   it('removes a temporary multi-repo project from state when archive deletes its last worktree', async () => {
     archiveWorkspaceWorktreeRequest.mockResolvedValueOnce({
       success: true,
@@ -2976,6 +3192,7 @@ describe('projectsStore project repo adds', () => {
       expectedCreatedAt: '2026-04-09T00:00:00.000Z',
       remainingWorktreeOrder: [],
       expectedRemainingWorktreeOrder: [],
+      typedRefusal: true,
     });
     expect(useProjectsStore.getState().projects).toEqual([
       expect.objectContaining({ id: 'project-b' }),
@@ -3160,6 +3377,372 @@ describe('projectsStore project repo adds', () => {
     expect(archiveWorktreeRequest).not.toHaveBeenCalled();
   });
 
+  describe('source admission before renderer effects (CAN-5333)', () => {
+    const SOURCE_UNAVAILABLE =
+      "Couldn't verify the worktree's source repositories. Check repository access and retry.";
+
+    function seedRefusableWorktree(
+      type: 'single-repo' | 'multi-repo',
+      setupPhase?: 'git-pending',
+    ): void {
+      const worktrees: WorktreeData[] = [
+        {
+          id: 'wt-1',
+          branchName: 'feature/wt-1',
+          createdAt: '2026-04-09T00:00:00.000Z',
+          ...(setupPhase ? { setupPhase } : {}),
+        },
+      ];
+      useProjectsStore.setState({
+        projects: [
+          type === 'single-repo'
+            ? {
+                type,
+                id: 'project-a',
+                name: 'Project A',
+                repoPath: '/repos/project-a',
+                color: '#111111',
+                worktrees,
+                collapsed: false,
+                order: 0,
+                effectiveScripts: { teardown: 'npm run teardown' },
+              }
+            : {
+                type,
+                id: 'project-a',
+                name: 'Project A',
+                color: '#111111',
+                repos: [],
+                worktrees,
+                collapsed: false,
+                order: 0,
+                scripts: { teardown: 'npm run teardown' },
+              },
+        ],
+        loadProjects,
+        saveProjects,
+        diffStats: {},
+        commitsAhead: {},
+        archivingWorktrees: new Set<string>(),
+        tearingDownWorktrees: new Set<string>(),
+        appliedProjectWorktreeScripts: {
+          'project-a/wt-1': { launch: 'npm run dev' },
+        },
+        appliedProjectWorktreeHooks: {},
+      });
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'project-a', worktreeId: 'wt-1' },
+      });
+      useHooksStore.getState().startRun('project-a', 'wt-1', {
+        hookKey: 'project:pr:create',
+        triggerName: 'pr:create',
+        label: 'PR Created',
+        actions: [{ type: 'command', command: 'echo hello' }],
+        target: 'project',
+      });
+      useScriptsStore.getState().startRun('project-a', 'wt-1', {
+        scriptKey: 'project:launch',
+        scriptName: 'launch',
+        label: 'Launch',
+        command: 'npm run dev',
+        lifecycle: 'launch',
+        target: 'project',
+      });
+    }
+
+    function expectNoRendererEffects(): void {
+      expect(cancelWorktreeSetup).not.toHaveBeenCalled();
+      expect(stopScript).not.toHaveBeenCalled();
+      expect(stopHook).not.toHaveBeenCalled();
+      expect(runScript).not.toHaveBeenCalled();
+      expect(archiveWorktreeRequest).not.toHaveBeenCalled();
+      expect(archiveWorkspaceWorktreeRequest).not.toHaveBeenCalled();
+      expect(useChatStore.getState().deselectWorktree).not.toHaveBeenCalled();
+      expect(
+        useArchivedContainersStore.getState().pendingByWorkspace['project-a'] ??
+          [],
+      ).toEqual([]);
+      const state = useProjectsStore.getState();
+      expect(getProjectWorktrees(state.projects[0]).map((wt) => wt.id)).toEqual(
+        ['wt-1'],
+      );
+      expect(state.archivingWorktrees.size).toBe(0);
+      expect(state.tearingDownWorktrees.size).toBe(0);
+      expect(state.appliedProjectWorktreeScripts).toEqual({
+        'project-a/wt-1': { launch: 'npm run dev' },
+      });
+      expect(useScriptsStore.getState().runs['project-a/wt-1']).toBeDefined();
+      expect(useHooksStore.getState().runs['project-a/wt-1']).toBeDefined();
+    }
+
+    beforeEach(() => {
+      useArchivedContainersStore.setState({ pendingByWorkspace: {} });
+      checkWorktreeRemovalAdmission.mockResolvedValue({
+        status: 'refused',
+        worktreeId: 'wt-1',
+        reason: 'source-unavailable',
+        message: SOURCE_UNAVAILABLE,
+      });
+    });
+
+    it.each([
+      ['archive', 'single-repo', undefined, { lockAfterArchive: true }],
+      ['delete', 'single-repo', undefined, { deleteBranch: true }],
+      [
+        'delete of a missing checkout (files only)',
+        'single-repo',
+        undefined,
+        { deleteWithoutRetentionIfMissing: true },
+      ],
+      ['archive of a git-pending worktree', 'single-repo', 'git-pending', {}],
+      [
+        'multi-repo archive',
+        'multi-repo',
+        undefined,
+        { lockAfterArchive: true },
+      ],
+      [
+        'multi-repo delete of a missing checkout (files only)',
+        'multi-repo',
+        undefined,
+        { deleteWithoutRetentionIfMissing: true },
+      ],
+    ] as const)(
+      'refuses a %s before any renderer effect',
+      async (_label, type, setupPhase, options) => {
+        seedRefusableWorktree(type, setupPhase);
+
+        await expect(
+          useProjectsStore
+            .getState()
+            .archiveWorktree('project-a', 'wt-1', options),
+        ).rejects.toThrow(SOURCE_UNAVAILABLE);
+
+        expect(checkWorktreeRemovalAdmission).toHaveBeenCalledWith({
+          workspaceId: 'project-a',
+          worktreeIds: ['wt-1'],
+          expectedKind: type,
+        });
+        expectNoRendererEffects();
+      },
+    );
+
+    it('refuses Delete without teardown before any renderer effect', async () => {
+      seedRefusableWorktree('single-repo');
+
+      await expect(
+        useProjectsStore.getState().forceArchiveWorktree('project-a', 'wt-1'),
+      ).rejects.toThrow(SOURCE_UNAVAILABLE);
+
+      expectNoRendererEffects();
+    });
+
+    it('refuses before any renderer effect when the check itself fails', async () => {
+      seedRefusableWorktree('single-repo');
+      checkWorktreeRemovalAdmission.mockRejectedValueOnce(
+        new Error('check failed'),
+      );
+
+      await expect(
+        useProjectsStore.getState().archiveWorktree('project-a', 'wt-1'),
+      ).rejects.toThrow('check failed');
+
+      expectNoRendererEffects();
+    });
+
+    it('archives normally when a remote host predates the check', async () => {
+      seedRefusableWorktree('single-repo');
+      checkWorktreeRemovalAdmission.mockResolvedValueOnce({
+        status: 'unchecked',
+      });
+      runScript.mockResolvedValue(createScriptRunResponse());
+
+      await useProjectsStore.getState().archiveWorktree('project-a', 'wt-1');
+
+      expect(archiveWorktreeRequest).toHaveBeenCalledTimes(1);
+      expect(
+        getProjectWorktrees(useProjectsStore.getState().projects[0]),
+      ).toEqual([]);
+    });
+
+    it.each([
+      [
+        'discardable with a gone source',
+        'discardable',
+        'Its source repository is missing. Discard it from the row menu.',
+      ],
+      ['not discardable', 'refused', SOURCE_UNAVAILABLE],
+    ] as const)(
+      'gives a refused batch row the discard pointer only when it is %s (CAN-5336 Q4)',
+      async (_label, status, reason) => {
+        seedRefusableWorktree('single-repo');
+        checkWorktreeRemovalAdmission.mockResolvedValue({
+          status: 'refused',
+          worktreeId: 'wt-1',
+          reason: 'source-unavailable',
+          message: SOURCE_UNAVAILABLE,
+        });
+        describeWorktreeDiscard.mockResolvedValue({
+          version: 1,
+          workspaceId: 'project-a',
+          worktreeId: 'wt-1',
+          createdAt: '2026-04-09T00:00:00.000Z',
+          status,
+          causes: status === 'discardable' ? ['source-gone'] : [],
+          sources: [],
+          targets: [],
+          alsoDeleted: [],
+          preserved: [],
+          mayRemain: [],
+          confirmation: 'token',
+        });
+
+        await expect(
+          removeDesktopWorktreeInBatch('project-a', 'wt-1', { mode: 'delete' }),
+        ).rejects.toThrow(reason);
+        expect(describeWorktreeDiscard).toHaveBeenCalledWith({
+          projectId: 'project-a',
+          worktreeId: 'wt-1',
+        });
+        expect(archiveWorktreeRequest).not.toHaveBeenCalled();
+      },
+    );
+
+    it('runs a sidebar batch that mixes healthy and refused worktrees', async () => {
+      useProjectsStore.setState({
+        projects: [
+          {
+            type: 'single-repo',
+            id: 'project-a',
+            name: 'Project A',
+            repoPath: '/repos/project-a',
+            color: '#111111',
+            worktrees: ['wt-1', 'wt-2', 'wt-3'].map((id) => ({
+              id,
+              branchName: `feature/${id}`,
+              createdAt: '2026-04-09T00:00:00.000Z',
+            })),
+            collapsed: false,
+            order: 0,
+            effectiveScripts: {},
+          },
+        ],
+        loadProjects,
+        saveProjects,
+        diffStats: {},
+        commitsAhead: {},
+        archivingWorktrees: new Set<string>(),
+        tearingDownWorktrees: new Set<string>(),
+        appliedProjectWorktreeScripts: {},
+        appliedProjectWorktreeHooks: {},
+      });
+      checkWorktreeRemovalAdmission.mockImplementation(({ worktreeIds }) =>
+        Promise.resolve(
+          worktreeIds.includes('wt-2')
+            ? {
+                status: 'refused',
+                worktreeId: 'wt-2',
+                reason: 'source-unavailable',
+                message: SOURCE_UNAVAILABLE,
+              }
+            : { status: 'admitted' },
+        ),
+      );
+      const queue = createSidebarRemovalQueue<WorktreeBatchTarget>({
+        remove:
+          () =>
+          (target, options): Promise<void> =>
+            removeDesktopWorktreeInBatch(
+              target.workspaceLocalId,
+              target.worktreeLocalId,
+              options,
+            ),
+        blockedReasonFor: () => undefined,
+      });
+
+      const result = await queue.enqueue({
+        batchId: 'batch-1',
+        targets: ['wt-1', 'wt-2', 'wt-3'].map((id) => ({
+          key: `project-a/${id}`,
+          workspaceLocalId: 'project-a',
+          worktreeLocalId: id,
+        })),
+        options: { mode: 'delete' },
+        unit: { singular: 'worktree', plural: 'worktrees' },
+      });
+
+      expect(
+        result.items.map((item) => [item.target.key, item.status, item.reason]),
+      ).toEqual([
+        ['project-a/wt-1', 'done', undefined],
+        ['project-a/wt-2', 'failed', SOURCE_UNAVAILABLE],
+        ['project-a/wt-3', 'done', undefined],
+      ]);
+      expect(
+        archiveWorktreeRequest.mock.calls.map(
+          ([request]: [{ worktreeId: string }]) => request.worktreeId,
+        ),
+      ).toEqual(['wt-1', 'wt-3']);
+      expect(
+        cancelWorktreeSetup.mock.calls.map(([request]) => request.worktreeId),
+      ).toEqual(['wt-1', 'wt-3']);
+      expect(
+        getProjectWorktrees(useProjectsStore.getState().projects[0]).map(
+          (wt) => wt.id,
+        ),
+      ).toEqual(['wt-2']);
+    });
+
+    it('lets one in-flight check serve a duplicate archive call', async () => {
+      seedRefusableWorktree('single-repo');
+
+      const first = useProjectsStore
+        .getState()
+        .archiveWorktree('project-a', 'wt-1');
+      const second = useProjectsStore
+        .getState()
+        .archiveWorktree('project-a', 'wt-1');
+
+      await expect(first).rejects.toThrow(SOURCE_UNAVAILABLE);
+      await expect(second).rejects.toThrow(SOURCE_UNAVAILABLE);
+      expect(checkWorktreeRemovalAdmission).toHaveBeenCalledTimes(1);
+      expectNoRendererEffects();
+    });
+
+    it.each(['archiveWorktree', 'forceArchiveWorktree'] as const)(
+      '%s keeps the row busy from the click through the check, then releases it on refusal',
+      async (action) => {
+        seedRefusableWorktree('single-repo');
+        let answer: (
+          result: Awaited<
+            ReturnType<CanopyApi['checkWorktreeRemovalAdmission']>
+          >,
+        ) => void = () => undefined;
+        checkWorktreeRemovalAdmission.mockReturnValueOnce(
+          new Promise((resolve) => {
+            answer = resolve;
+          }),
+        );
+
+        const removal = useProjectsStore
+          .getState()
+          [action]('project-a', 'wt-1');
+        expect([...useProjectsStore.getState().archivingWorktrees]).toEqual([
+          'project-a/wt-1',
+        ]);
+        answer({
+          status: 'refused',
+          worktreeId: 'wt-1',
+          reason: 'source-unavailable',
+          message: SOURCE_UNAVAILABLE,
+        });
+
+        await expect(removal).rejects.toThrow(SOURCE_UNAVAILABLE);
+        expectNoRendererEffects();
+      },
+    );
+  });
+
   it('filters empty temporary multi-repo projects from project loads', async () => {
     useProjectsStore.setState({
       loadProjects: useProjectsStore.getInitialState().loadProjects,
@@ -3264,6 +3847,7 @@ describe('projectsStore project repo adds', () => {
       expectedCreatedAt: '2026-04-09T00:00:00.000Z',
       remainingWorktreeOrder: [],
       expectedRemainingWorktreeOrder: [],
+      typedRefusal: true,
     });
     // Renderer must skip teardown scripts/hooks for git-pending worktrees.
     expect(stopHook).not.toHaveBeenCalled();
@@ -3319,15 +3903,17 @@ describe('projectsStore project repo adds', () => {
       setImmediate(resolve);
     });
 
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([
-      expect.objectContaining({ id: 'wt-1' }),
-    ]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([expect.objectContaining({ id: 'wt-1' })]);
     expect(useProjectsStore.getState().tearingDownWorktrees.size).toBe(0);
 
     stopScriptResult.resolve(createScriptRunResponse());
     await archivePromise;
 
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
   });
 
   it('keeps the row visible while a configured teardown script runs', async () => {
@@ -3372,9 +3958,9 @@ describe('projectsStore project repo adds', () => {
       setImmediate(resolve);
     });
 
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([
-      expect.objectContaining({ id: 'wt-1' }),
-    ]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([expect.objectContaining({ id: 'wt-1' })]);
     expect(
       useProjectsStore.getState().tearingDownWorktrees.has('project-a/wt-1'),
     ).toBe(true);
@@ -3383,7 +3969,9 @@ describe('projectsStore project repo adds', () => {
     await archivePromise;
 
     expect(useProjectsStore.getState().tearingDownWorktrees.size).toBe(0);
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
   });
 
   it('cancels the worktree setup before teardown and the archive request', async () => {
@@ -3482,7 +4070,9 @@ describe('projectsStore project repo adds', () => {
     await useProjectsStore.getState().archiveWorktree('project-a', 'wt-1');
 
     expect(archiveWorktreeRequest).toHaveBeenCalledTimes(1);
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
   });
 
   it('uses worktree-specific scripts when archiving a single-repo worktree', async () => {
@@ -3559,6 +4149,7 @@ describe('projectsStore project repo adds', () => {
       expectedCreatedAt: '2026-04-09T00:00:00.000Z',
       remainingWorktreeOrder: [],
       expectedRemainingWorktreeOrder: [],
+      typedRefusal: true,
     });
   });
 
@@ -3699,7 +4290,9 @@ describe('projectsStore project repo adds', () => {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
     expect(
       useProjectsStore.getState().archivingWorktrees.has('project-a/wt-race'),
     ).toBe(true);
@@ -3714,11 +4307,15 @@ describe('projectsStore project repo adds', () => {
       workspaceId: 'project-a',
       worktrees: staleProject.worktrees,
     });
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
 
     await useProjectsStore.getState().loadProjects({ silent: true });
 
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
     resolveArchive?.({ warnings: [] });
     await archivePromise;
     expect(useProjectsStore.getState().archivingWorktrees.size).toBe(0);
@@ -3730,7 +4327,9 @@ describe('projectsStore project repo adds', () => {
     });
     await useProjectsStore.getState().loadProjects({ silent: true });
 
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
 
     loadProjectsRequest.mockReset();
     loadProjectsRequest.mockResolvedValueOnce({
@@ -3750,7 +4349,9 @@ describe('projectsStore project repo adds', () => {
     });
     await useProjectsStore.getState().loadProjects({ silent: true });
 
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([
       {
         id: 'wt-race',
         branchName: 'feature/recreated',
@@ -3918,7 +4519,9 @@ describe('projectsStore project repo adds', () => {
 
     await useProjectsStore.getState().loadProjects({ silent: true });
 
-    expect(useProjectsStore.getState().projects[0]?.worktrees).toEqual([]);
+    expect(
+      getSingleRepoProject(useProjectsStore.getState().projects[0]).worktrees,
+    ).toEqual([]);
     resolveArchive?.({ warnings: [] });
     await archivePromise;
   });
@@ -4053,6 +4656,169 @@ describe('projectsStore project repo adds', () => {
     await assertions;
     expect(duplicateSettled).toBe(true);
     expect(useProjectsStore.getState().archivingWorktrees.size).toBe(0);
+  });
+
+  it.each(['archiveWorktree', 'forceArchiveWorktree'] as const)(
+    'offers the lifecycle journal review when %s is refused by an unreadable record (CAN-5335)',
+    async (action) => {
+      archiveWorktreeRequest.mockRejectedValue(
+        new Error(LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL),
+      );
+      useProjectsStore.setState({
+        projects: [
+          {
+            type: 'single-repo',
+            id: 'project-a',
+            name: 'Project A',
+            repoPath: '/repos/project-a',
+            color: '#111111',
+            worktrees: [
+              {
+                id: 'wt-1',
+                branchName: 'feature/wt-1',
+                createdAt: '2026-04-09T00:00:00.000Z',
+              },
+            ],
+            collapsed: false,
+            order: 0,
+            effectiveScripts: {},
+          },
+        ],
+        saveProjects,
+        diffStats: {},
+        commitsAhead: {},
+        tearingDownWorktrees: new Set<string>(),
+        appliedProjectWorktreeScripts: {},
+        appliedProjectWorktreeHooks: {},
+      });
+      const offer = jest.mocked(offerLifecycleJournalQuarantine);
+      offer.mockClear();
+
+      await expect(
+        useProjectsStore.getState()[action]('project-a', 'wt-1'),
+      ).rejects.toThrow(LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL);
+
+      expect(offer).toHaveBeenCalledTimes(1);
+      expect(offer.mock.results[0]?.value).toBe(true);
+    },
+  );
+
+  describe('typed archive refusals (CAN-5336)', () => {
+    const discard = {
+      version: 1 as const,
+      workspaceId: 'project-a',
+      worktreeId: 'wt-1',
+      createdAt: '2026-04-09T00:00:00.000Z',
+      status: 'discardable' as const,
+      causes: ['stranded-removal-journal' as const],
+      sources: [],
+      targets: [],
+      alsoDeleted: [],
+      preserved: [],
+      mayRemain: [],
+      confirmation: 'token',
+    };
+    const refusedMessage =
+      'This change was saved but did not finish and needs recovery.';
+
+    function seed(): void {
+      useProjectsStore.setState({
+        projects: [
+          {
+            type: 'single-repo',
+            id: 'project-a',
+            name: 'Project A',
+            repoPath: '/repos/project-a',
+            color: '#111111',
+            worktrees: [
+              {
+                id: 'wt-1',
+                branchName: 'feature/wt-1',
+                createdAt: '2026-04-09T00:00:00.000Z',
+              },
+            ],
+            collapsed: false,
+            order: 0,
+            effectiveScripts: {},
+          },
+        ],
+        saveProjects,
+        diffStats: {},
+        commitsAhead: {},
+        tearingDownWorktrees: new Set<string>(),
+        appliedProjectWorktreeScripts: {},
+        appliedProjectWorktreeHooks: {},
+      });
+    }
+
+    it.each(['archiveWorktree', 'forceArchiveWorktree'] as const)(
+      '%s opts in, restores the row and throws the discardable refusal with its message',
+      async (action) => {
+        archiveWorktreeRequest.mockResolvedValue({
+          success: false,
+          warnings: [],
+          refusal: {
+            reason: 'recovery-required',
+            message: refusedMessage,
+            discard,
+          },
+        });
+        seed();
+        const toastsBefore = useGitHubStore.getState().toasts.length;
+
+        const thrown = await useProjectsStore
+          .getState()
+          [action]('project-a', 'wt-1')
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+
+        expect(archiveWorktreeRequest).toHaveBeenCalledWith(
+          expect.objectContaining({ typedRefusal: true }),
+        );
+        expect(thrown).toBeInstanceOf(WorktreeArchiveRefusalError);
+        expect(thrown).toMatchObject({ message: refusedMessage, discard });
+        const project = useProjectsStore.getState().projects[0];
+        expect(
+          project && project.type !== 'cowork'
+            ? project.worktrees.map((worktree) => worktree.id)
+            : [],
+        ).toEqual(['wt-1']);
+        expect(useGitHubStore.getState().toasts).toHaveLength(toastsBefore);
+        expect(useProjectsStore.getState().archivingWorktrees.size).toBe(0);
+      },
+    );
+
+    it('fails a non-discardable typed refusal with its message unchanged, so the journal review still opens', async () => {
+      archiveWorktreeRequest.mockResolvedValue({
+        success: false,
+        warnings: [],
+        refusal: {
+          reason: 'recovery-required',
+          message: LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL,
+          discard: { ...discard, status: 'refused' as const },
+        },
+      });
+      seed();
+      const offer = jest.mocked(offerLifecycleJournalQuarantine);
+      offer.mockClear();
+
+      const thrown = await useProjectsStore
+        .getState()
+        .archiveWorktree('project-a', 'wt-1')
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown).not.toBeInstanceOf(WorktreeArchiveRefusalError);
+      expect(thrown).toMatchObject({
+        message: LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL,
+      });
+      expect(offer.mock.results[0]?.value).toBe(true);
+    });
   });
 
   it('keeps a temporary project row (with no worktrees) while its last archive is in flight', async () => {
@@ -4884,6 +5650,7 @@ describe('projectsStore diff stats', () => {
         worktreeId: 'wt-dismiss',
         scopeLabel: 'Repo Dismiss',
         items: [],
+        requirements: [],
       },
     });
 
@@ -6207,6 +6974,8 @@ describe('projectsStore loadProjects warnings', () => {
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
     });
   });

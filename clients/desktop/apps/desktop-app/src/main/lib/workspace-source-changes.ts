@@ -1,4 +1,22 @@
 import type { BrowserWindow } from 'electron';
+import { z } from 'zod';
+import { runW5BoundaryOperation } from './w5-boundary-operation';
+import {
+  checkW5CompositionRevisions,
+  decodeW5CompositionOutcome,
+  type W5CompositionOptions,
+} from './w5-composition-operation';
+import {
+  W5FileWriteRefusedError,
+  W5RevisionConflictError,
+} from './w5-commit-log-file-store';
+import { currentW5CommitScope, type W5CommitOptions } from './w5-commit-scope';
+import {
+  WORKSPACE_MANIFEST_STORAGE,
+  WORKTREE_LIST_STORAGE,
+  withStorageAdmission,
+} from './w5-storage';
+import { WorkspaceSourceChangesRefusedError } from './workspace-source-change-refusal';
 import type {
   ProjectApplySourceChangesRequest,
   ProjectApplySourceChangesResponse,
@@ -30,19 +48,38 @@ interface SourceChangesHost<Event> {
  * worktree and can add or remove repositories; a single-repo project's in
  * its only checkout.
  */
-export type WorkspaceSourceChangesRequest =
-  | ({
-      kind: 'workspace';
-      /** `workspace:apply-source-changes`. */
-      source: 'workspace_settings';
-      request: WorkspaceApplySourceChangesRequest;
-    } & SourceChangesHost<WorkspaceSourceChangesAppliedEvent>)
-  | ({
-      kind: 'project';
-      /** `project:apply-source-changes`. */
-      source: 'project_settings';
-      request: ProjectApplySourceChangesRequest;
-    } & SourceChangesHost<ProjectSourceChangesAppliedEvent>);
+export type WorkspaceSourceChangesRequest = W5CompositionOptions &
+  (
+    | ({
+        kind: 'workspace';
+        /** `workspace:apply-source-changes`. */
+        source: 'workspace_settings';
+        request: WorkspaceApplySourceChangesRequest;
+      } & SourceChangesHost<WorkspaceSourceChangesAppliedEvent>)
+    | ({
+        kind: 'project';
+        /** `project:apply-source-changes`. */
+        source: 'project_settings';
+        request: ProjectApplySourceChangesRequest;
+      } & SourceChangesHost<ProjectSourceChangesAppliedEvent>)
+  );
+
+/** Foreground lifecycle only; background work never receives the receipt binding. */
+export interface SourceChangesTransition<Result> {
+  commit: W5CommitOptions;
+  beforeEffects?: () => void;
+  complete: (result: Result) => Promise<Result>;
+}
+
+const projectOutcomeSchema = z.object({
+  worktreeId: z.string(),
+  branchName: z.string(),
+  createdWorktree: z.boolean(),
+  referenceRepoPath: z.string().optional(),
+});
+const workspaceOutcomeSchema = projectOutcomeSchema.extend({
+  localRepoBindingsUpdated: z.boolean(),
+});
 
 /**
  * The typed in-process `core.workspace.sourceChanges.apply` boundary
@@ -55,8 +92,9 @@ export type WorkspaceSourceChangesRequest =
  * before. Repository bindings that follow the applied `canopy.json` are
  * written in the background to the manifest read inside its write queue.
  * Refusals are {@link WorkspaceSourceChangesRefusedError}s with the existing
- * messages. It makes no revision or idempotency guarantee (CAN-3805), so the
- * operation stays unregistered.
+ * messages. Optional standalone revisions and retry keys record foreground
+ * acceptance, not completion of background binding or repository setup.
+ * The operation stays unregistered.
  */
 export function applySourceChanges(
   request: Extract<WorkspaceSourceChangesRequest, { kind: 'workspace' }>,
@@ -69,26 +107,109 @@ export async function applySourceChanges(
 ): Promise<
   WorkspaceApplySourceChangesResponse | ProjectApplySourceChangesResponse
 > {
+  const workspaceId =
+    request.kind === 'workspace'
+      ? request.request.workspaceId
+      : request.request.projectId;
+  validateId(
+    workspaceId,
+    request.kind === 'workspace' ? 'workspaceId' : 'projectId',
+  );
+  if (request.request.target.mode === 'existing')
+    validateId(request.request.target.worktreeId, 'worktreeId');
+  if (
+    request.idempotencyKey === undefined &&
+    request.expectedRevisions === undefined
+  )
+    return applySourceChangesAdmitted(request);
+  if (currentW5CommitScope())
+    throw new WorkspaceSourceChangesRefusedError(
+      'invalid-request',
+      'Standalone source-change revision or retry options cannot join a parent commit',
+    );
+  return withStorageAdmission(
+    [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE],
+    () =>
+      runW5BoundaryOperation<
+        WorkspaceApplySourceChangesResponse | ProjectApplySourceChangesResponse
+      >(
+        {
+          operation: 'core.workspace.sourceChanges.apply',
+          caller: 'desktop-host:workspace-source-changes',
+          idempotencyKey: request.idempotencyKey,
+          parameters: {
+            kind: request.kind,
+            source: request.source,
+            request: request.request,
+          },
+          recheckAtOutcome: true,
+          isPreEffectRefusal: (error) =>
+            error instanceof WorkspaceSourceChangesRefusedError ||
+            error instanceof W5RevisionConflictError ||
+            error instanceof W5FileWriteRefusedError,
+        },
+        (outcome) =>
+          decodeW5CompositionOutcome(
+            request.kind === 'workspace'
+              ? workspaceOutcomeSchema
+              : projectOutcomeSchema,
+            outcome,
+          ),
+        async (commit, attempt, complete) => {
+          commit.expectedRevisions = request.expectedRevisions;
+          await checkW5CompositionRevisions(commit);
+          return applySourceChangesAdmitted(request, {
+            commit,
+            beforeEffects: attempt?.beforeEffects,
+            complete,
+          });
+        },
+      ),
+  );
+}
+
+async function applySourceChangesAdmitted(
+  request: WorkspaceSourceChangesRequest,
+  transition?: SourceChangesTransition<
+    WorkspaceApplySourceChangesResponse | ProjectApplySourceChangesResponse
+  >,
+): Promise<
+  WorkspaceApplySourceChangesResponse | ProjectApplySourceChangesResponse
+> {
   if (request.kind === 'workspace') {
     const change = request.request;
-    validateId(change.workspaceId, 'workspaceId');
-    if (change.target.mode === 'existing') {
-      validateId(change.target.worktreeId, 'worktreeId');
-    }
+    if (!transition)
+      return applyWorkspaceSourceChangesToWorktree(
+        change,
+        request.getWindow,
+        request.onApplied,
+      );
     return applyWorkspaceSourceChangesToWorktree(
       change,
       request.getWindow,
       request.onApplied,
+      {
+        ...transition,
+        complete: async (
+          result,
+        ): Promise<WorkspaceApplySourceChangesResponse> => {
+          const saved = await transition.complete(result);
+          return decodeW5CompositionOutcome(workspaceOutcomeSchema, saved);
+        },
+      },
     );
   }
   const change = request.request;
-  validateId(change.projectId, 'projectId');
-  if (change.target.mode === 'existing') {
-    validateId(change.target.worktreeId, 'worktreeId');
-  }
+  if (!transition)
+    return applyProjectSourceChangesToWorktree(
+      change,
+      request.getWindow,
+      request.onApplied,
+    );
   return applyProjectSourceChangesToWorktree(
     change,
     request.getWindow,
     request.onApplied,
+    transition,
   );
 }

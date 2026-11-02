@@ -6,6 +6,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 
 /** Rows fully visible while collapsed; the row after them fades out. */
 const COLLAPSED_VISIBLE_ROWS = 3;
@@ -345,17 +346,16 @@ export const CollapsibleUserMessageContent = memo(
               expanded ? 'mt-1' : 'absolute inset-x-0 bottom-1'
             }`}
           >
-            <button
-              type="button"
+            <Button
+              size="compact"
               aria-expanded={expanded}
               data-testid={
                 expanded ? 'user-message-show-less' : 'user-message-show-more'
               }
               onClick={(): void => setExpanded((value) => !value)}
-              className="focus-ring flex h-7 items-center rounded-full bg-quaternary px-3 text-xs font-medium fg-secondary shadow-sm transition hover:fg-primary"
             >
               {expanded ? 'Show less' : 'Show more'}
-            </button>
+            </Button>
           </div>
         )}
       </div>

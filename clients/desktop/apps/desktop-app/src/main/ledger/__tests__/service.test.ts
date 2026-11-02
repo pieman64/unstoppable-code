@@ -973,8 +973,12 @@ describe('LedgerCoreService', () => {
     it('registers a parent the ledger has not seen, and names a nested delegate by its parent delegate', async () => {
       const { entry: first } = await addTask(registerDelegate(), 'first');
       const actors = harness.store.repository.listActors(first.scope.ledgerId);
+      const firstOrigin = first.origin;
+      if (firstOrigin.kind !== 'managed_delegation') {
+        throw new Error('Expected the delegate origin to have a parent actor.');
+      }
       const parentChat = actors.find(
-        (actor) => actor.actor.actorId === first.origin.parentActorId,
+        (actor) => actor.actor.actorId === firstOrigin.parentActorId,
       );
       expect(parentChat).toMatchObject({
         actor: { kind: 'chat' },
@@ -1115,6 +1119,157 @@ describe('LedgerCoreService', () => {
     });
   });
 
+  describe('global (workflow) Ledgers', () => {
+    const ORG_A = '0b4f8a52-7c1d-4e8a-9f3b-2d6c1e5a7b90';
+    const ORG_B = '7f0c1d2e-3b4a-4c5d-8e6f-901234567890';
+
+    function registerGlobalAgent(scope: LedgerBoundScope): string {
+      return harness.register({
+        container: scope.container,
+        containerCreatedAt: scope.containerCreatedAt,
+        role: 'pipeline_agent',
+        actor: {
+          kind: 'pipeline_agent',
+          originKey: 'session-global',
+          displayName: 'Triage · Nightly',
+        },
+        origin: {
+          kind: 'pipeline_agent',
+          executionId: 'execution-global',
+          physicalJobId: 'triage',
+          logicalJobId: 'triage',
+          stepId: 'triage',
+          attempt: 1,
+          iteration: 1,
+          agentSessionId: 'session-global',
+        },
+      });
+    }
+
+    it('binds one Ledger per owner and account, and reuses it', async () => {
+      const personal = await harness.service.scopes.resolveGlobal({
+        kind: 'personal',
+      });
+      const again = await harness.service.scopes.resolveGlobal({
+        kind: 'personal',
+      });
+      const orgA = await harness.service.scopes.resolveGlobal({
+        kind: 'organization',
+        organizationId: ORG_A,
+      });
+      const orgB = await harness.service.scopes.resolveGlobal({
+        kind: 'organization',
+        organizationId: ORG_B,
+      });
+      harness.accountId = 'account-2';
+      const otherAccount = await harness.service.scopes.resolveGlobal({
+        kind: 'personal',
+      });
+
+      expect(again.ledgerId).toBe(personal.ledgerId);
+      expect(
+        new Set([
+          personal.ledgerId,
+          orgA.ledgerId,
+          orgB.ledgerId,
+          otherAccount.ledgerId,
+        ]).size,
+      ).toBe(4);
+      expect(personal.accountId).toBe('account-1');
+      expect(otherAccount.accountId).toBe('account-2');
+    });
+
+    it('records an agent in its global Ledger without chats as owners', async () => {
+      const scope = await harness.service.scopes.resolveGlobal({
+        kind: 'organization',
+        organizationId: ORG_A,
+      });
+      // A global Ledger's container has no chats, whatever a source says.
+      harness.setLiveChats(scope.container, [
+        { chatId: 'chat-1', title: 'Chat one', createdAt: null },
+      ]);
+      const agent = registerGlobalAgent(scope);
+
+      const { entry } = await addTask(agent, 'global-add');
+      const owners = await harness.service.listOwners(
+        {},
+        harness.context(agent),
+      );
+
+      expect(entry.scope).toEqual({
+        ledgerId: scope.ledgerId,
+        authorityId: scope.authorityId,
+        container: scope.container,
+      });
+      expect(
+        owners.candidates.map((candidate) => candidate.actor.kind),
+      ).not.toContain('chat');
+    });
+
+    it('fails an open binding closed once another account signs in', async () => {
+      const scope = await harness.service.scopes.resolveGlobal({
+        kind: 'personal',
+      });
+      const agent = registerGlobalAgent(scope);
+      await addTask(agent, 'before-switch');
+
+      harness.accountId = 'account-2';
+
+      await expect(addTask(agent, 'after-switch')).rejects.toMatchObject({
+        payload: { details: { reason: 'FORBIDDEN', field: 'ledgerId' } },
+      });
+      await expect(
+        harness.service.searchEntries({}, harness.context(agent)),
+      ).rejects.toMatchObject({
+        payload: { details: { reason: 'FORBIDDEN' } },
+      });
+    });
+
+    it('refuses file references in a global Ledger', async () => {
+      const scope = await harness.service.scopes.resolveGlobal({
+        kind: 'personal',
+      });
+      const agent = registerGlobalAgent(scope);
+
+      await expect(
+        harness.service.addEntry(
+          {
+            type: 'OBSERVATION',
+            title: 'A finding',
+            content: 'Seen in the run.',
+            referenceFiles: [{ rootId: 'workspace-1', path: 'src/index.ts' }],
+            _meta: { idempotencyKey: 'global-files' },
+          },
+          harness.context(agent, 'global-files'),
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          details: { reason: 'INVALID_INPUT', field: 'referenceFiles' },
+        },
+      });
+    });
+
+    it('never mints a global Ledger from a caller binding alone', async () => {
+      const agent = harness.register({
+        container: { kind: 'global', owner: { kind: 'personal' } },
+        containerCreatedAt: TEST_CONTAINER_CREATED_AT,
+        role: 'pipeline_agent',
+        actor: {
+          kind: 'pipeline_agent',
+          originKey: 'session-unbound',
+          displayName: 'Unbound',
+        },
+      });
+
+      await expect(
+        harness.service.searchEntries({}, harness.context(agent)),
+      ).rejects.toMatchObject({
+        payload: { details: { reason: 'NOT_FOUND' } },
+      });
+      expect(harness.store.repository.listScopes()).toEqual([]);
+    });
+  });
+
   describe('actor labels and change reports', () => {
     it('labels the authors and owners a page names, and the actors of an entry and its history', async () => {
       const chat = harness.register();
@@ -1186,9 +1341,20 @@ describe('LedgerCoreService', () => {
       // A read is never a change.
       await harness.service.searchEntries({}, harness.context(chat));
 
+      const ledgerId = harness.store.repository.listScopes()[0]?.scope.ledgerId;
       expect(reported).toEqual([
-        { container: TEST_CONTAINER, entryId: entry.entryId, revision: 1 },
-        { container: TEST_CONTAINER, entryId: entry.entryId, revision: 2 },
+        {
+          container: TEST_CONTAINER,
+          ledgerId,
+          entryId: entry.entryId,
+          revision: 1,
+        },
+        {
+          container: TEST_CONTAINER,
+          ledgerId,
+          entryId: entry.entryId,
+          revision: 2,
+        },
       ]);
     });
 

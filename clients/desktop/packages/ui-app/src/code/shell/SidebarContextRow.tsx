@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
+import type { IncomingTeamInvitation } from '@canopy/protocol/settings/organization';
 import type {
   WorkspaceContext,
   WorkspaceContextOrganization,
@@ -8,9 +9,12 @@ import type {
 import { isSameWorkspaceContext } from '@canopy/protocol/workspace-context';
 import {
   ActionMenuRowStyle,
+  Button,
+  ConfirmDialog,
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
+  DropdownMenuLabel,
   FloatingMenu,
   SidebarAiCreditsMenuItem,
 } from '@canopy/ui-shared/components';
@@ -33,6 +37,9 @@ import {
   resolveSidebarContextActions,
   type SidebarContextActions,
 } from './sidebar-context-actions';
+import type { SidebarContextInvitations } from './usePendingOrganizationInvitations';
+import { TeamRoleBadge } from '../../settings/organization/team-role-badge';
+import { ROLE_LABEL } from '../../settings/organization/team-role-label';
 
 /**
  * The selected context's actions under the switcher's context list
@@ -55,7 +62,7 @@ export interface SidebarContextOrgScopedActions {
    * an organization).
    */
   readonly personalOrganizationId: string | null;
-  /** Free app access: an OWNER gets the organization's AI Credits row. */
+  /** Free app access: an OWNER or ADMIN gets the organization's AI Credits row. */
   readonly freeAccess: boolean;
   /** Opens a hosted page path; the menu has already closed. */
   readonly onOpenPath: (path: string) => void;
@@ -113,6 +120,24 @@ export interface SidebarContextRowProps {
    * dot: its work is already on screen.
    */
   readonly contextsWithUpdates?: ReadonlySet<string>;
+  /**
+   * Pending share invitations per context (CAN-4783), keyed like
+   * {@link contextsWithUpdates} (`contextUpdateKey`). A positive count on
+   * another listed context gets the same unread-blue dot, one per surface
+   * alongside any updates, and its count in the accessible name only. The
+   * current context, unlisted organizations and zero counts never show.
+   * Optional: hosts that omit it keep the updates-only cue.
+   */
+  readonly pendingSharesByContext?: ReadonlyMap<string, number>;
+  /**
+   * Pending organization invitations (CAN-3672), from
+   * `usePendingOrganizationInvitations`. A nonempty list gets an Invitations
+   * group after the organizations, and the trigger the unread-blue dot with
+   * the count in its accessible name. The row asks for a fresh read each
+   * time the menu opens. Omitted, or `orgScoped.authenticated` false: no
+   * group and no cue.
+   */
+  readonly invitations?: SidebarContextInvitations;
   /**
    * Re-enter the desktop sidebar's instant-feedback scope by name, as the
    * account row's menu does: the menu portals out of the sidebar's subtree.
@@ -183,6 +208,100 @@ export function buildOrganizationOptions<T extends NamedOrganization>(
     }));
 }
 
+/** `1 pending share`, `2 pending shares`. */
+function pendingSharesPhrase(count: number): string {
+  return `${count} pending ${count === 1 ? 'share' : 'shares'}`;
+}
+
+/** `1 pending invitation`, `2 pending invitations`. */
+function pendingInvitationsPhrase(count: number): string {
+  return `${count} pending ${count === 1 ? 'invitation' : 'invitations'}`;
+}
+
+/** The attention a context row carries: updates and pending shares. */
+interface ContextAttention {
+  readonly updated: boolean;
+  /** Positive, or 0 for none. */
+  readonly pendingShares: number;
+}
+
+/**
+ * Each context's attention by key. The current context carries none: its
+ * work and shares are already on screen.
+ */
+function contextAttention(
+  currentKey: string,
+  contextsWithUpdates: ReadonlySet<string> | undefined,
+  pendingSharesByContext: ReadonlyMap<string, number> | undefined,
+): (key: string) => ContextAttention {
+  return (key) => {
+    if (key === currentKey) return { updated: false, pendingShares: 0 };
+    const count = pendingSharesByContext?.get(key) ?? 0;
+    return {
+      updated: contextsWithUpdates?.has(key) ?? false,
+      pendingShares: count > 0 ? count : 0,
+    };
+  };
+}
+
+/** A menu row's accessible name: name, then `has updates`, then shares. */
+function contextOptionLabel(name: string, attention: ContextAttention): string {
+  return [
+    name,
+    ...(attention.updated ? ['has updates'] : []),
+    ...(attention.pendingShares > 0
+      ? [pendingSharesPhrase(attention.pendingShares)]
+      : []),
+  ].join(', ');
+}
+
+/**
+ * The trigger's accessible name and whether it carries the attention dot:
+ * the current context, then other contexts with updates, then each one's
+ * pending shares. Personal first, then organizations in menu order, as the
+ * menu lists them. Only listed contexts count, so an unknown key never adds
+ * an unnamed suffix or a stray dot.
+ */
+function contextTriggerLabel(
+  currentLabel: string,
+  options: readonly OrganizationOption<NamedOrganization>[],
+  attentionOf: (key: string) => ContextAttention,
+  pendingInvitations: number,
+): { readonly label: string; readonly attention: boolean } {
+  const listedContexts = [
+    { name: 'Personal', ...attentionOf('personal') },
+    ...options.map(({ organization, secondary }) => ({
+      name: secondary ? `${organization.name} ${secondary}` : organization.name,
+      ...attentionOf(organization.id),
+    })),
+  ];
+  const updatedContextNames = listedContexts
+    .filter(({ updated }) => updated)
+    .map(({ name }) => name);
+  const pendingShareSuffixes = listedContexts
+    .filter(({ pendingShares }) => pendingShares > 0)
+    .map(
+      ({ name, pendingShares }) =>
+        `${pendingSharesPhrase(pendingShares)} in ${name}`,
+    );
+  return {
+    label: [
+      `Workspace context: ${currentLabel}`,
+      ...(updatedContextNames.length > 0
+        ? [`updates in ${updatedContextNames.join(', ')}`]
+        : []),
+      ...pendingShareSuffixes,
+      ...(pendingInvitations > 0
+        ? [pendingInvitationsPhrase(pendingInvitations)]
+        : []),
+    ].join(', '),
+    attention:
+      updatedContextNames.length > 0 ||
+      pendingShareSuffixes.length > 0 ||
+      pendingInvitations > 0,
+  };
+}
+
 function UpdatesDot({ testId }: { readonly testId: string }): JSX.Element {
   return (
     <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
@@ -248,14 +367,27 @@ export function SidebarContextRow({
   disabled = false,
   placement = 'footer',
   contextsWithUpdates,
+  pendingSharesByContext,
+  invitations: invitationsProp,
   menuInstantInteractions = false,
   testIds,
 }: SidebarContextRowProps): JSX.Element {
+  const invitations =
+    orgScoped.authenticated === false ? undefined : invitationsProp;
   const [open, setOpenState] = useState(false);
   const setOpen = (next: boolean): void => {
     setOpenState(next);
     if (next !== open) onOpenChange?.(next);
+    // Every open re-reads, even an empty list: invitations arrive by email.
+    if (next && !open) invitations?.refresh();
   };
+  const [declining, setDeclining] = useState<IncomingTeamInvitation | null>(
+    null,
+  );
+  const declineScope = useRef<object | null | undefined>(undefined);
+  const declineRequest = useRef(0);
+  const declineSubmitting = useRef(false);
+  const [declineError, setDeclineError] = useState<string | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuId = useId();
@@ -276,25 +408,72 @@ export function SidebarContextRow({
       : (current?.name ?? 'Organization');
   const currentKey =
     context.kind === 'personal' ? 'personal' : context.organizationId;
-  const hasUpdates = (key: string): boolean =>
-    key !== currentKey && (contextsWithUpdates?.has(key) ?? false);
-  // Personal first, then organizations in menu order, as the menu lists them.
-  const updatedContextNames = [
-    ...(hasUpdates('personal') ? ['Personal'] : []),
-    ...options
-      .filter(({ organization }) => hasUpdates(organization.id))
-      .map(({ organization, secondary }) =>
-        secondary ? `${organization.name} ${secondary}` : organization.name,
-      ),
-  ];
-  const triggerLabel =
-    updatedContextNames.length > 0
-      ? `Workspace context: ${currentLabel}, updates in ${updatedContextNames.join(', ')}`
-      : `Workspace context: ${currentLabel}`;
+  const { label: triggerLabel, attention: triggerAttention } =
+    contextTriggerLabel(
+      currentLabel,
+      options,
+      contextAttention(currentKey, contextsWithUpdates, pendingSharesByContext),
+      invitations?.items.length ?? 0,
+    );
   const closeMenu = (): void => {
     setOpen(false);
     triggerRef.current?.focus();
   };
+
+  // The dialog lives only while its invitation is listed for this account;
+  // a refresh or account change that drops it never sends a stale decline.
+  const declineBusy =
+    declining !== null &&
+    invitations?.pending?.inviteId === declining.id &&
+    invitations.pending.action === 'decline';
+  const declineListed =
+    declining !== null &&
+    (invitations?.items.some((invite) => invite.id === declining.id) ?? false);
+  const declineTarget =
+    declining !== null &&
+    invitations &&
+    declineScope.current === invitations.scope &&
+    (declineListed || declineBusy)
+      ? declining
+      : null;
+  useEffect(() => {
+    if (declining !== null && declineTarget === null) {
+      declineRequest.current += 1;
+      declineSubmitting.current = false;
+      setDeclining(null);
+      setDeclineError(null);
+    }
+  }, [declining, declineTarget]);
+  const confirmDecline = (invite: IncomingTeamInvitation): void => {
+    if (!invitations || declineBusy || declineSubmitting.current) return;
+    declineSubmitting.current = true;
+    const request = ++declineRequest.current;
+    setDeclineError(null);
+    void invitations.decline(invite).then((result) => {
+      if (request !== declineRequest.current) return;
+      declineSubmitting.current = false;
+      if (result.kind === 'failed') {
+        setDeclineError(result.message);
+        return;
+      }
+      if (result.kind === 'declined' || result.kind === 'unavailable')
+        setDeclining(null);
+    });
+  };
+  const cancelDecline = (): void => {
+    declineRequest.current += 1;
+    declineSubmitting.current = false;
+    if (declineError !== null) invitations?.dismissError();
+    setDeclining(null);
+    setDeclineError(null);
+  };
+
+  useEffect(
+    () => (): void => {
+      declineRequest.current += 1;
+    },
+    [],
+  );
 
   const atTop = placement === 'top';
 
@@ -342,7 +521,7 @@ export function SidebarContextRow({
           >
             {currentLabel}
           </span>
-          {updatedContextNames.length > 0 ? (
+          {triggerAttention ? (
             <UpdatesDot
               testId={testIds?.attentionDot ?? 'sidebar-context-attention-dot'}
             />
@@ -372,13 +551,286 @@ export function SidebarContextRow({
           context={context}
           organizations={organizations}
           contextsWithUpdates={contextsWithUpdates}
+          pendingSharesByContext={pendingSharesByContext}
           onClose={closeMenu}
           onSelect={onSelect}
           orgScoped={orgScoped}
+          invitations={invitations}
+          onRequestDecline={(invite): void => {
+            declineRequest.current += 1;
+            declineScope.current = invitations?.scope;
+            setDeclineError(null);
+            setDeclining(invite);
+          }}
           disabled={disabled}
           testIds={testIds}
         />
       </FloatingMenu>
+      {!open && invitations?.error && declineTarget === null ? (
+        <InvitationAlert
+          error={invitations.error}
+          onReview={invitations.review}
+          onDismiss={invitations.dismissError}
+          placement="row"
+        />
+      ) : null}
+      {declineTarget !== null ? (
+        <ConfirmDialog
+          title="Decline invitation?"
+          message={
+            <>
+              Decline the invitation to join{' '}
+              <span className="font-medium fg-primary">
+                {declineTarget.organizationName}
+              </span>
+              ? An owner will have to invite you again to rejoin.
+            </>
+          }
+          confirmLabel="Decline invitation"
+          busyLabel="Declining…"
+          busy={declineBusy}
+          errorMessage={declineError}
+          destructive
+          focusCancel
+          dataTestId="sidebar-context-decline-invitation"
+          confirmTestId="sidebar-context-decline-invitation-confirm"
+          cancelTestId="sidebar-context-decline-invitation-cancel"
+          restoreFocusRef={triggerRef}
+          onConfirm={(): void => confirmDecline(declineTarget)}
+          onCancel={cancelDecline}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * A failed or unavailable invitation response. In the menu it is a status
+ * line (with Open organizations as a menu row after an accepted invitation
+ * whose organization could not open); under the closed trigger it keeps its
+ * own Dismiss button, so the message outlives the menu and its last row.
+ */
+function InvitationAlert({
+  error,
+  onReview,
+  onDismiss,
+  placement,
+}: {
+  readonly error: NonNullable<SidebarContextInvitations['error']>;
+  readonly onReview: () => void;
+  readonly onDismiss: () => void;
+  readonly placement: 'menu' | 'row';
+}): JSX.Element {
+  if (placement === 'menu') {
+    return (
+      <>
+        <div
+          role="alert"
+          data-testid="sidebar-context-invitations-error"
+          className="px-2 py-1 text-xs fg-destructive"
+        >
+          {error.message}
+        </div>
+        {error.kind === 'follow-up' ? (
+          <ActionMenuRowStyle>
+            <DropdownMenuItem
+              data-testid="sidebar-context-invitations-open-organizations"
+              onClick={onReview}
+            >
+              <DropdownMenuItemIcon>
+                <BuildingIcon />
+              </DropdownMenuItemIcon>
+              Open organizations
+            </DropdownMenuItem>
+          </ActionMenuRowStyle>
+        ) : null}
+      </>
+    );
+  }
+  return (
+    <div
+      role="alert"
+      data-testid="sidebar-context-invitations-error"
+      className="mt-1 flex flex-col gap-1 rounded-row px-2 py-1 text-xs fg-destructive"
+    >
+      <span>{error.message}</span>
+      <span className="flex gap-3">
+        {error.kind === 'follow-up' ? (
+          <button
+            type="button"
+            className="focus-ring rounded-sm fg-accent hover:underline"
+            data-testid="sidebar-context-invitations-open-organizations"
+            onClick={(): void => {
+              onDismiss();
+              onReview();
+            }}
+          >
+            Open organizations
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="focus-ring rounded-sm fg-secondary hover:underline"
+          data-testid="sidebar-context-invitations-dismiss"
+          onClick={onDismiss}
+        >
+          Dismiss
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/** The organization a row names, with its team or role when names repeat. */
+function invitationLabels(
+  items: readonly IncomingTeamInvitation[],
+): Map<string, string> {
+  const counts = new Map<string, number>();
+  for (const invite of items) {
+    const key = invite.organizationName.trim().toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return new Map(
+    items.map((invite) => {
+      const repeated =
+        (counts.get(invite.organizationName.trim().toLowerCase()) ?? 0) > 1;
+      const detail = [invite.organizationTeamName, ROLE_LABEL[invite.role]]
+        .filter(Boolean)
+        .join(', ');
+      return [
+        invite.id,
+        repeated
+          ? `${invite.organizationName} (${detail})`
+          : invite.organizationName,
+      ];
+    }),
+  );
+}
+
+/**
+ * The Invitations group (CAN-3672): each pending invitation's organization
+ * and offered role, then its actions as compact menu items. Accept waits for
+ * the response with the menu open, so a failure stays beside its row; an
+ * invitation with enforced settings offers Review, which opens the consent
+ * flow in Settings > Organizations instead of answering it here.
+ */
+function ContextInvitationItems({
+  invitations,
+  onClose,
+  onRequestDecline,
+}: {
+  readonly invitations: SidebarContextInvitations;
+  readonly onClose: () => void;
+  readonly onRequestDecline?: (invite: IncomingTeamInvitation) => void;
+}): JSX.Element | null {
+  const { items, pending, error } = invitations;
+  const labels = useMemo(() => invitationLabels(items), [items]);
+  if (items.length === 0 && error === null) return null;
+  const busy = pending !== null;
+  return (
+    <div role="presentation" data-testid="sidebar-context-invitations">
+      <DropdownMenuDivider />
+      {items.length > 0 ? (
+        <DropdownMenuLabel>Invitations</DropdownMenuLabel>
+      ) : null}
+      {items.map((invite) => {
+        const label = labels.get(invite.id) ?? invite.organizationName;
+        const needsReview = (invite.enforcedSettings?.length ?? 0) > 0;
+        const joining =
+          pending?.inviteId === invite.id && pending.action === 'accept';
+        return (
+          <div
+            key={invite.id}
+            role="presentation"
+            data-testid={`sidebar-context-invitation-${invite.id}`}
+            className="flex flex-col px-2 pb-1"
+          >
+            <div
+              role="presentation"
+              className="flex h-8 min-w-0 items-center gap-2 text-s fg-primary"
+            >
+              <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                <SidebarContextGlyph kind="organization" />
+              </span>
+              <span
+                className="min-w-0 flex-1 truncate"
+                title={invite.organizationName}
+              >
+                {invite.organizationName}
+              </span>
+              <TeamRoleBadge role={invite.role} />
+            </div>
+            <div role="presentation" className="flex items-center gap-1 pl-5">
+              {needsReview ? (
+                <Button
+                  variant="ghost-accent"
+                  size="compact"
+                  role="menuitem"
+                  aria-label={`Review invitation to ${label}`}
+                  data-testid={`sidebar-context-invitation-review-${invite.id}`}
+                  disabled={busy}
+                  onClick={(): void => {
+                    onClose();
+                    invitations.review();
+                  }}
+                >
+                  Review invitation
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost-accent"
+                  size="compact"
+                  role="menuitem"
+                  aria-label={`Accept invitation to ${label}`}
+                  data-testid={`sidebar-context-invitation-accept-${invite.id}`}
+                  disabled={busy}
+                  onClick={(): void => {
+                    let closed = false;
+                    void invitations
+                      .accept(invite, (): void => {
+                        closed = true;
+                        onClose();
+                      })
+                      .then((result) => {
+                        if (!closed && result.kind === 'accepted') onClose();
+                      });
+                  }}
+                >
+                  {joining ? 'Joining…' : 'Accept'}
+                </Button>
+              )}
+              {onRequestDecline ? (
+                <Button
+                  variant="ghost-overlay"
+                  size="compact"
+                  role="menuitem"
+                  aria-label={`Decline invitation to ${label}`}
+                  data-testid={`sidebar-context-invitation-decline-${invite.id}`}
+                  disabled={busy}
+                  onClick={(): void => {
+                    onClose();
+                    onRequestDecline(invite);
+                  }}
+                >
+                  Decline
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+      {error !== null ? (
+        <InvitationAlert
+          error={error}
+          onReview={(): void => {
+            onClose();
+            invitations.dismissError();
+            invitations.review();
+          }}
+          onDismiss={invitations.dismissError}
+          placement="menu"
+        />
+      ) : null}
     </div>
   );
 }
@@ -394,6 +846,12 @@ export interface SidebarContextMenuItemsProps {
   readonly onClose: () => void;
   /** See {@link SidebarContextRowProps.contextsWithUpdates}. */
   readonly contextsWithUpdates?: ReadonlySet<string>;
+  /** See {@link SidebarContextRowProps.pendingSharesByContext}. */
+  readonly pendingSharesByContext?: ReadonlyMap<string, number>;
+  /** See {@link SidebarContextRowProps.invitations}. */
+  readonly invitations?: SidebarContextInvitations;
+  /** Opens the decline confirmation outside the menu; omitted ⇒ no Decline. */
+  readonly onRequestDecline?: (invite: IncomingTeamInvitation) => void;
   /** Disables the context options while a switch is in flight. */
   readonly disabled?: boolean;
   readonly testIds?: SidebarContextRowProps['testIds'];
@@ -527,9 +985,9 @@ function ContextOrgScopedItems({
 }
 
 /**
- * The context switcher's menu rows: Personal, the organizations by name,
- * Create an organization, then the selected context's actions after a divider
- * ({@link SidebarContextOrgScopedActions}).
+ * The context switcher's menu rows: Personal, the organizations by name, any
+ * pending invitations, Create an organization, then the selected context's
+ * actions after a divider ({@link SidebarContextOrgScopedActions}).
  */
 export function SidebarContextMenuItems({
   context,
@@ -538,6 +996,9 @@ export function SidebarContextMenuItems({
   orgScoped,
   onClose,
   contextsWithUpdates,
+  pendingSharesByContext,
+  invitations,
+  onRequestDecline,
   disabled = false,
   testIds,
 }: SidebarContextMenuItemsProps): JSX.Element {
@@ -547,13 +1008,20 @@ export function SidebarContextMenuItems({
   );
   const currentKey =
     context.kind === 'personal' ? 'personal' : context.organizationId;
-  const hasUpdates = (key: string): boolean =>
-    key !== currentKey && (contextsWithUpdates?.has(key) ?? false);
+  const attentionOf = contextAttention(
+    currentKey,
+    contextsWithUpdates,
+    pendingSharesByContext,
+  );
+  const personalAttention = attentionOf('personal');
+  const personalNeedsAttention =
+    personalAttention.updated || personalAttention.pendingShares > 0;
   const activityPrefix = testIds?.activityPrefix ?? 'sidebar-context-activity-';
   const optionPrefix =
     testIds?.optionOrganizationPrefix ?? 'sidebar-context-option-';
   const select = (next: WorkspaceContext): void => {
     onClose();
+    invitations?.cancelFollowUp?.();
     if (!isSameWorkspaceContext(next, context)) {
       onSelect(next);
     }
@@ -572,7 +1040,9 @@ export function SidebarContextMenuItems({
         role="menuitemradio"
         aria-checked={context.kind === 'personal'}
         aria-label={
-          hasUpdates('personal') ? 'Personal, has updates' : undefined
+          personalNeedsAttention
+            ? contextOptionLabel('Personal', personalAttention)
+            : undefined
         }
         data-testid={
           testIds?.optionPersonal ?? 'sidebar-context-option-personal'
@@ -584,7 +1054,7 @@ export function SidebarContextMenuItems({
           <SidebarContextGlyph kind="personal" />
         </DropdownMenuItemIcon>
         <span className="min-w-0 flex-1 truncate">Personal</span>
-        {hasUpdates('personal') ? (
+        {personalNeedsAttention ? (
           <UpdatesDot testId={`${activityPrefix}personal`} />
         ) : null}
         {context.kind === 'personal' ? (
@@ -595,7 +1065,8 @@ export function SidebarContextMenuItems({
         const selected =
           context.kind === 'organization' &&
           context.organizationId === organization.id;
-        const updated = hasUpdates(organization.id);
+        const attention = attentionOf(organization.id);
+        const needsAttention = attention.updated || attention.pendingShares > 0;
         const name = secondary
           ? `${organization.name} ${secondary}`
           : organization.name;
@@ -604,10 +1075,15 @@ export function SidebarContextMenuItems({
             key={organization.id}
             role="menuitemradio"
             aria-checked={selected}
-            // Spell out the identity suffix and the updates dot, which the
-            // visible spans carry without separators or text.
+            // Spell out the identity suffix and the attention dot (updates,
+            // pending shares), which the visible spans carry without
+            // separators or text.
             aria-label={
-              updated ? `${name}, has updates` : secondary ? name : undefined
+              needsAttention
+                ? contextOptionLabel(name, attention)
+                : secondary
+                  ? name
+                  : undefined
             }
             data-testid={`${optionPrefix}${organization.id}`}
             disabled={disabled}
@@ -628,7 +1104,7 @@ export function SidebarContextMenuItems({
             {secondary ? (
               <span className="shrink-0 text-xs fg-secondary">{secondary}</span>
             ) : null}
-            {updated ? (
+            {needsAttention ? (
               <UpdatesDot testId={`${activityPrefix}${organization.id}`} />
             ) : null}
             {selected ? (
@@ -637,6 +1113,13 @@ export function SidebarContextMenuItems({
           </DropdownMenuItem>
         );
       })}
+      {invitations && orgScoped.authenticated !== false ? (
+        <ContextInvitationItems
+          invitations={invitations}
+          onClose={onClose}
+          onRequestDecline={onRequestDecline}
+        />
+      ) : null}
       {createOrganizationPath !== null ? (
         <ActionMenuRowStyle>
           <SidebarCreateOrganizationMenuItem

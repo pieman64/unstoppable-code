@@ -358,8 +358,8 @@ async function runPipelineAction(args: {
   });
   const line =
     launched.status === 'started'
-      ? `Started pipeline "${launched.pipelineName}".`
-      : `Queued pipeline "${launched.pipelineName}" — waiting for active pipeline runs to finish.`;
+      ? `Started workflow "${launched.pipelineName}".`
+      : `Queued workflow "${launched.pipelineName}" — waiting for active workflow runs to finish.`;
 
   await emitHookOutput({
     ref: args.logRef,

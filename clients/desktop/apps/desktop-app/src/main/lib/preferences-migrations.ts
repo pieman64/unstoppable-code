@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import {
   DEFAULT_LOCAL_MEMORY_FALLBACK_MODEL,
   DEFAULT_LOCAL_MEMORY_MODEL,
@@ -15,6 +14,7 @@ import {
 } from '@canopy/desktop-shared/lib/sidebar-nav-layout';
 import { hasMigrationRun, markMigrationRun } from './migrations';
 import { getPreferencesFilePath } from './paths';
+import { createPreferencesLastGoodPath } from './preferences-file-paths';
 import {
   hasPersistedPreferencesFile,
   normalizePersistableModelSelection,
@@ -82,7 +82,7 @@ async function readPersistedPreferences(): Promise<PersistedPreferencesRead> {
   }> = [
     { path: preferencesPath, source: 'primary' },
     {
-      path: join(dirname(preferencesPath), 'preferences.last-good.json'),
+      path: createPreferencesLastGoodPath(preferencesPath),
       source: 'last-good',
     },
   ];
@@ -196,15 +196,10 @@ export async function migrateApprovalDefaultsToFullAccess(
     return;
   }
 
-  const existing = await readPreferencesFile();
+  await readPreferencesFile();
   if (peekPreferencesLoadError()) {
     return;
   }
-
-  const alreadyFullAccess =
-    existing.approvalDefaults.worktree === 'full-access' &&
-    existing.approvalDefaults.cowork === 'full-access' &&
-    existing.approvalDefaults.appAdvisor === 'full-access';
 
   // Deliberately replace all persisted surface selections. Before approval
   // defaults shipped, every existing profile behaved as unrestricted; this
@@ -216,16 +211,22 @@ export async function migrateApprovalDefaultsToFullAccess(
   // chosen deliberately, and a profile old enough to still need it has almost
   // certainly dismissed the earlier notice already — so without the re-arm the
   // escalation would ship with no disclosure at all. When the posture was
-  // already Full Access there is nothing to disclose, so the user's dismissal
-  // is left alone.
-  await updatePreferencesFile(() => ({
-    approvalDefaults: {
-      worktree: 'full-access',
-      cowork: 'full-access',
-      appAdvisor: 'full-access',
-    },
-    ...(alreadyFullAccess ? {} : { approvalsUpgradeNoticeDismissed: false }),
-  }));
+  // already Full Access there is nothing to disclose or write, so the user's
+  // dismissal and the file are left alone.
+  await updatePreferencesFile((latest) =>
+    latest.approvalDefaults.worktree === 'full-access' &&
+    latest.approvalDefaults.cowork === 'full-access' &&
+    latest.approvalDefaults.appAdvisor === 'full-access'
+      ? null
+      : {
+          approvalDefaults: {
+            worktree: 'full-access',
+            cowork: 'full-access',
+            appAdvisor: 'full-access',
+          },
+          approvalsUpgradeNoticeDismissed: false,
+        },
+  );
   await markMigrationRun(APPROVAL_DEFAULTS_FULL_ACCESS_MIGRATION_KEY);
 }
 

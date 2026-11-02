@@ -5,6 +5,14 @@
 import { renderToString } from 'react-dom/server';
 import { StandaloneChatRow } from '../StandaloneChatRow';
 
+/** Whitespace-delimited class tokens of the `<button>` carrying `testId`. */
+function buttonClassTokens(html: string, testId: string): string[] {
+  const tag = html.match(
+    new RegExp(`<button[^>]*data-testid="${testId}"[^>]*>`),
+  )?.[0];
+  return tag?.match(/class="([^"]*)"/)?.[1].split(/\s+/) ?? [];
+}
+
 describe('StandaloneChatRow', () => {
   it('renders the title and model label', () => {
     const html = renderToString(
@@ -69,6 +77,21 @@ describe('StandaloneChatRow', () => {
     );
     expect(html).toContain('Archive chat');
     expect(html).toContain('standalone-chat-row-archive');
+  });
+
+  it('keeps the archive button visible at rest on coarse pointers', () => {
+    const html = renderToString(
+      <StandaloneChatRow title="Chat" onArchive={() => {}} />,
+    );
+    const tokens = buttonClassTokens(html, 'standalone-chat-row-archive');
+
+    expect(tokens).toEqual(
+      expect.arrayContaining([
+        'opacity-0',
+        'group-hover:opacity-100',
+        'pointer-coarse:opacity-100',
+      ]),
+    );
   });
 
   it('hides the archive button when onArchive is omitted', () => {

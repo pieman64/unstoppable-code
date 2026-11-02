@@ -72,6 +72,16 @@ export type UnifiedEntryRef =
   | { type: 'curated-plugin'; key: string }
   | { type: 'curated-pipeline'; key: string }
   | { type: 'marketplace-plugin'; marketplaceId: string; pluginName: string }
+  /**
+   * A skill an installed marketplace plugin bundles; it has no status of its
+   * own and follows the plugin (CAN-4844).
+   */
+  | {
+      type: 'plugin-skill';
+      marketplaceId: string;
+      pluginName: string;
+      skillName: string;
+    }
   | { type: 'curated-mcp'; key: string }
   | {
       type: 'local-mcp';

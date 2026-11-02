@@ -37,6 +37,7 @@ function sameSummary(a: ExecutionSummary, b: ExecutionSummary): boolean {
     a.event_name === b.event_name &&
     a.trigger_source?.kind === b.trigger_source?.kind &&
     a.hidden === b.hidden &&
+    a.execution_context === b.execution_context &&
     a.has_report === b.has_report &&
     a.has_plan === b.has_plan &&
     JSON.stringify(a.status_reasons) === JSON.stringify(b.status_reasons)
@@ -81,7 +82,7 @@ export const useExecutionFeedStore = create<ExecutionFeedState>((set, get) => ({
           set({
             loaded: true,
             loading: false,
-            error: result.error ?? 'Pipeline runs could not be loaded.',
+            error: result.error ?? 'Workflow runs could not be loaded.',
           });
           return;
         }

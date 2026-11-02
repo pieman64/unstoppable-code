@@ -3,6 +3,7 @@ import {
   THINKING_LEVELS,
   THINKING_UI_LEVELS,
   advanceThinkingLevel,
+  clampModelThinkingLevel,
   clampThinkingLevel,
   clampThinkingLevelToDeclared,
   encodeThinkingSetting,
@@ -16,6 +17,29 @@ import {
 } from '../index';
 
 describe('canonical thinking vocabulary', () => {
+  describe('model-aware clamp', () => {
+    it('keeps Low distinct from Medium when the model declares both', () => {
+      expect(clampModelThinkingLevel('low', ['low', 'medium', 'high'])).toBe(
+        'low',
+      );
+      expect(clampModelThinkingLevel('medium', ['low', 'medium', 'high'])).toBe(
+        'medium',
+      );
+    });
+
+    it('retains the legacy alias when Low is unsupported', () => {
+      expect(clampModelThinkingLevel('low', ['off', 'medium', 'high'])).toBe(
+        'medium',
+      );
+      expect(clampModelThinkingLevel('low', ['off', 'high'])).toBe('off');
+    });
+
+    it('uses declared bounds without inventing a tier', () => {
+      expect(clampModelThinkingLevel('off', ['low', 'medium'])).toBe('low');
+      expect(clampModelThinkingLevel('ultra', ['low', 'high'])).toBe('high');
+      expect(clampModelThinkingLevel('high', [])).toBe('off');
+    });
+  });
   describe('thinking setting transport', () => {
     it('encodes Default as an explicit reset and preserves concrete levels', () => {
       expect(encodeThinkingSetting('default')).toBeNull();
@@ -211,13 +235,33 @@ describe('supported-set helpers', () => {
   // would otherwise transmit `off` — a level the host never declared
   // (PR #2625 round-3 review).
   describe('clampThinkingLevelToDeclared', () => {
-    it('matches the UI clamp whenever its result is declared', () => {
+    it('matches the UI clamp for levels the model does not declare', () => {
       expect(clampThinkingLevelToDeclared('max', CODEX)).toBe('xhigh');
       expect(clampThinkingLevelToDeclared('low', CLAUDE)).toBe('medium');
       expect(
         clampThinkingLevelToDeclared('ultra', ['off', 'medium', 'xhigh']),
       ).toBe('xhigh');
       expect(clampThinkingLevelToDeclared('off', ['low', 'high'])).toBe('high');
+    });
+
+    // Composers show and send canonical Low when the model declares it, so the
+    // run must use Low rather than the Medium the UI clamp displays it as.
+    it('passes an exactly declared level through unchanged', () => {
+      const declaredWithLow: readonly ThinkingLevel[] = [
+        'off',
+        'low',
+        'medium',
+        'high',
+      ];
+      expect(clampThinkingLevelToDeclared('low', declaredWithLow)).toBe('low');
+      expect(clampThinkingLevelToDeclared('medium', declaredWithLow)).toBe(
+        'medium',
+      );
+      expect(clampThinkingLevelToDeclared('max', declaredWithLow)).toBe('high');
+      expect(clampThinkingLevelToDeclared('low', ['low', 'high'])).toBe('low');
+      expect(clampThinkingLevelToDeclared('low', ['off', 'low', 'high'])).toBe(
+        'low',
+      );
     });
 
     it('preserves low when it is the only declared level', () => {

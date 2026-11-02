@@ -112,7 +112,7 @@ describe('stopTurnForAuthFailure', () => {
     });
 
     expect(result.stopped).toBe(true);
-    expect(mockedCancel).toHaveBeenCalledWith(TARGET, {
+    expect(mockedCancel).toHaveBeenCalledWith(TARGET, 'teardown', undefined, {
       preserveAuthRecovery: true,
     });
     const pending = readPendingAuthResume(TARGET);
@@ -137,7 +137,7 @@ describe('stopTurnForAuthFailure', () => {
     });
 
     expect(result.stopped).toBe(true);
-    expect(mockedCancel).toHaveBeenCalledWith(TARGET, {
+    expect(mockedCancel).toHaveBeenCalledWith(TARGET, 'teardown', undefined, {
       preserveAuthRecovery: true,
     });
     const pending = readPendingAuthResume(TARGET);

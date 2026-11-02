@@ -1,3 +1,5 @@
+import Ajv, { type AnySchema } from 'ajv';
+import { dispatchActionToolSchema } from '../app-advisor/definitions';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import path from 'node:path';
 import { ORG_PROJECT_LIMITS } from '@canopy/protocol/org-projects';
@@ -6,11 +8,11 @@ import {
   appAdvisorGetFileCommentsSchema,
   appAdvisorRespondToFileCommentSchema,
   appAdvisorShowFilesSchema,
+  dispatchActionJsonSchema,
   dispatchActionSchema,
   searchActionsSchema,
   searchActionsToolShape,
   searchActionsJsonSchema,
-  dispatchActionJsonSchema,
   searchWatchersToolShape,
   SETUP_WATCHERS_DESCRIPTION,
   SEARCH_WATCHERS_DESCRIPTION,
@@ -36,12 +38,18 @@ import {
 import { MAX_ARCHIVE_RETENTION_DAYS } from '@canopy/desktop-shared/lib/archive-retention';
 import { setupWatchersSchema as advisorSetupWatchersSchema } from '../app-advisor/definitions';
 import { setupWatchersJsonSchema as advisorSetupWatchersJsonSchema } from '../app-advisor/definitions';
-import Ajv from 'ajv';
+
+function compileJsonSchema(schema: unknown): ReturnType<Ajv['compile']> {
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new Error('Expected a JSON Schema object.');
+  }
+
+  // Generated schemas are object-shaped JSON values, while Ajv accepts AnySchema.
+  return new Ajv({ strict: false }).compile(schema as AnySchema);
+}
 
 describe('Advisor watcher instance search validation', () => {
-  const validateJson = new Ajv({ strict: false }).compile(
-    searchWatchersJsonSchema,
-  );
+  const validateJson = compileJsonSchema(searchWatchersJsonSchema);
   it.each([
     [
       {
@@ -109,7 +117,7 @@ describe('canonical chat watcher raw validators', () => {
   ] as const)(
     '%s executes strict canonical validation with JSON parity',
     (_name, schema, json) => {
-      const validateJson = new Ajv({ strict: false }).compile(json);
+      const validateJson = compileJsonSchema(json);
       const expectInput = (input: unknown, valid: boolean): void => {
         expect(schema.safeParse(input).success).toBe(valid);
         expect(validateJson(input)).toBe(valid);
@@ -1766,6 +1774,43 @@ describe('appAdvisorActionSchema — archived containers', () => {
   });
 });
 
+describe('dispatch_action JSON Schema scope', () => {
+  if (
+    dispatchActionJsonSchema === null ||
+    typeof dispatchActionJsonSchema !== 'object' ||
+    Array.isArray(dispatchActionJsonSchema)
+  )
+    throw new Error('Expected dispatch_action JSON Schema object');
+  const validate = new Ajv({ strict: false }).compile(dispatchActionJsonSchema);
+
+  it('leaves other actions their own scope values', () => {
+    for (const action of [
+      { type: 'memory.list_snapshots', scope: 'user' },
+      { type: 'memory.rebuild', scope: 'workspace' },
+      {
+        type: 'sidebar.item_groups.list',
+        scope: { appAdvisor: true },
+      },
+    ]) {
+      expect(appAdvisorActionSchema.safeParse(action).success).toBe(true);
+      expect(validate({ action })).toBe(true);
+    }
+  });
+
+  it('limits pipeline.run to the global scope', () => {
+    expect(
+      validate({
+        action: { type: 'pipeline.run', pipelineId: 'p', scope: 'global' },
+      }),
+    ).toBe(true);
+    expect(
+      validate({
+        action: { type: 'pipeline.run', pipelineId: 'p', scope: 'user' },
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('appAdvisorActionSchema — local memory settings', () => {
   it('accepts the local memory toggle, folder, and import actions', () => {
     expect(
@@ -3072,6 +3117,99 @@ describe('navigation page validity', () => {
   );
 });
 
+describe('App Advisor shared transcript-read composition', () => {
+  const target = {
+    kind: 'delegation',
+    chatId: 'owner',
+    delegationId: 'child',
+    runGeneration: 1,
+  };
+  const actions = [
+    { type: 'chat.transcript.page', target },
+    {
+      type: 'chat.content.read',
+      target,
+      messageId: 'row',
+      blockOrdinal: 0,
+      field: 'text',
+      offset: 0,
+    },
+    { type: 'chat.transcript.blocks.page', target, messageId: 'row' },
+  ];
+  if (
+    !dispatchActionJsonSchema ||
+    typeof dispatchActionJsonSchema !== 'object' ||
+    Array.isArray(dispatchActionJsonSchema) ||
+    !searchActionsJsonSchema ||
+    typeof searchActionsJsonSchema !== 'object' ||
+    Array.isArray(searchActionsJsonSchema)
+  ) {
+    throw new Error('Provider schemas must be objects');
+  }
+  const validateDispatch = new Ajv({ strict: false }).compile(
+    dispatchActionJsonSchema,
+  );
+  const validateSearch = new Ajv({ strict: false }).compile(
+    searchActionsJsonSchema,
+  );
+  it.each(actions)(
+    'composes shared parser and both provider schemas for $type',
+    (action) => {
+      expect(dispatchActionSchema.safeParse({ action }).success).toBe(true);
+      expect(dispatchActionToolSchema.safeParse({ action }).success).toBe(true);
+      expect(validateDispatch({ action })).toBe(true);
+      expect(
+        searchActionsSchema.safeParse({ actionType: action.type }).success,
+      ).toBe(true);
+      expect(validateSearch({ actionType: action.type })).toBe(true);
+      expect(
+        APP_ADVISOR_ACTION_CATALOG.some((entry) => entry.type === action.type),
+      ).toBe(false);
+    },
+  );
+  it.each(actions)(
+    'keeps $type strict and rejects model-owned scope in Zod and JSON',
+    (action) => {
+      for (const invalid of [
+        { ...action, mystery: true },
+        { ...action, scope: { workspaceId: 'foreign' } },
+        { ...action, projectId: 'foreign', worktreeId: 'foreign' },
+        { ...action, target: { ...target, workspaceId: 'foreign' } },
+        { ...action, target: { ...target, runGeneration: 0 } },
+      ]) {
+        expect(
+          dispatchActionSchema.safeParse({ action: invalid }).success,
+        ).toBe(false);
+        expect(validateDispatch({ action: invalid })).toBe(false);
+        // Provider registration remains passthrough; the executor owns validation.
+        expect(
+          dispatchActionToolSchema.safeParse({ action: invalid }).success,
+        ).toBe(true);
+      }
+    },
+  );
+  it('does not impose transcript target fields on existing file-tree actions', () => {
+    const action = {
+      type: 'file-tree.create_file',
+      projectId: 'workspace',
+      worktreeId: 'tree',
+      target: { repoId: 'repo', relativePath: 'new-file.ts' },
+    };
+    expect(dispatchActionToolSchema.safeParse({ action }).success).toBe(true);
+    expect(validateDispatch({ action })).toBe(true);
+  });
+  it('preserves shared block cursor and ordinal exclusivity in both schemas', () => {
+    const action = {
+      type: 'chat.transcript.blocks.page',
+      target,
+      messageId: 'row',
+      cursor: 'cursor',
+      firstBlockOrdinal: 0,
+    };
+    expect(dispatchActionSchema.safeParse({ action }).success).toBe(false);
+    expect(validateDispatch({ action })).toBe(false);
+  });
+});
 it.each([
   { type: 'projects.list' },
   { type: 'projects.list_tasks', projectId: 'target' },
@@ -3103,9 +3241,7 @@ describe('phase 12 advertised schemas and compatibility acceptance', () => {
   ];
 
   it('advertises only visible SearchActions types while retaining legacy runtime search', () => {
-    const validateJson = new Ajv({ strict: false }).compile(
-      searchActionsJsonSchema,
-    );
+    const validateJson = compileJsonSchema(searchActionsJsonSchema);
     const provider = z.object(searchActionsToolShape);
     for (const entry of APP_ADVISOR_ACTION_CATALOG) {
       expect(
@@ -3201,7 +3337,7 @@ describe('phase 12 advertised schemas and compatibility acceptance', () => {
           { trigger, target: { ...target, kind } },
         ],
       ] as const) {
-        const validate = new Ajv({ strict: false }).compile(json);
+        const validate = compileJsonSchema(json);
         for (const watchers of [[legacy], [legacy, canonical]]) {
           expect(runtime.safeParse({ watchers }).success).toBe(true);
           expect(validate({ watchers })).toBe(true);
@@ -3214,9 +3350,7 @@ describe('phase 12 advertised schemas and compatibility acceptance', () => {
         rootSearchWatchersJsonSchema,
         searchWatchersJsonSchema,
       ]) {
-        expect(new Ajv({ strict: false }).compile(json)({ trigger })).toBe(
-          true,
-        );
+        expect(compileJsonSchema(json)({ trigger })).toBe(true);
       }
     },
   );

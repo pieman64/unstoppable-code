@@ -3,7 +3,7 @@ import { BrowserProfilePicker } from './BrowserProfilePicker';
 import { useId, type JSX, type ReactNode } from 'react';
 import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
-import { Tooltip } from '@canopy/ui-shared';
+import { Count, Tooltip } from '@canopy/ui-shared';
 import { IN_APP_BROWSER_URL_PLACEHOLDER } from '@/lib/browserUrl';
 import { useBrowserBarActions } from './useBrowserBarActions';
 import {
@@ -16,9 +16,9 @@ import {
   PickIcon,
   RecordIcon,
   RefreshIcon,
-  StopIcon,
+  CircleStopIcon as StopIcon,
   SunIcon,
-} from './icons';
+} from '@canopy/ui-shared/icons/AppIcons';
 import { BrowserDownloadsButton } from './BrowserDownloadsButton';
 
 interface BrowserBarProps {
@@ -59,9 +59,14 @@ export function BrowserBar({
   const pickLabel = snapshot.pickMode
     ? 'Exit pick mode'
     : `Pick element for ${CHAT_UNIT_LABEL}`;
-  const inspectorLabel = inspectorOpen
+  const inspectorAction = inspectorOpen
     ? 'Hide browser details'
     : 'Show browser details';
+  // The corner count is a neutral number, so the name says what it counts.
+  const inspectorLabel =
+    errorCount > 0
+      ? `${inspectorAction}, ${errorCount} ${errorCount === 1 ? 'error' : 'errors'}`
+      : inspectorAction;
 
   return (
     <div
@@ -76,7 +81,7 @@ export function BrowserBar({
             label="Back"
             dataTestId="browser-back"
           >
-            <BackIcon />
+            <BackIcon size={14} />
           </IconButton>
           <IconButton
             onClick={forward}
@@ -84,7 +89,7 @@ export function BrowserBar({
             label="Forward"
             dataTestId="browser-forward"
           >
-            <ForwardIcon />
+            <ForwardIcon size={14} />
           </IconButton>
           {isLoading ? (
             <Tooltip label="Stop loading">
@@ -93,9 +98,9 @@ export function BrowserBar({
                 data-testid="browser-stop"
                 onClick={handleStop}
                 aria-label="Stop loading"
-                className="shrink-0 rounded p-1 fg-destructive/70 transition hover:bg-destructive-subtle hover:fg-destructive"
+                className="shrink-0 rounded p-1 fg-destructive/70 transition-colors hover:bg-destructive-subtle hover:fg-destructive"
               >
-                <StopIcon />
+                <StopIcon size={14} />
               </button>
             </Tooltip>
           ) : (
@@ -104,7 +109,7 @@ export function BrowserBar({
               label="Refresh"
               dataTestId="browser-refresh"
             >
-              <RefreshIcon />
+              <RefreshIcon size={14} />
             </IconButton>
           )}
         </div>
@@ -135,7 +140,7 @@ export function BrowserBar({
             disabled={!canOpenExternally}
             label="Open in external browser"
           >
-            <ExternalIcon />
+            <ExternalIcon size={14} />
           </IconButton>
 
           <div className="mx-0.5 flex shrink-0 items-center rounded border">
@@ -144,14 +149,14 @@ export function BrowserBar({
               label="Use light theme"
               active={snapshot.themeMode === 'light'}
             >
-              <SunIcon />
+              <SunIcon size={14} />
             </IconButton>
             <IconButton
               onClick={(): void => handleTheme('dark')}
               label="Use dark theme"
               active={snapshot.themeMode === 'dark'}
             >
-              <MoonIcon />
+              <MoonIcon size={14} />
             </IconButton>
           </div>
 
@@ -163,6 +168,7 @@ export function BrowserBar({
                 active={snapshot.recording}
               >
                 <RecordIcon
+                  size={14}
                   className={snapshot.recording ? 'fg-destructive' : undefined}
                 />
               </IconButton>
@@ -179,7 +185,7 @@ export function BrowserBar({
                       : 'fg-secondary hover:bg-muted/40 hover:fg-primary'
                   }`}
                 >
-                  <PickIcon />
+                  <PickIcon size={14} />
                   <span className="browser-bar-pick-label">
                     {CHAT_UNIT_LABEL}
                   </span>
@@ -187,7 +193,7 @@ export function BrowserBar({
               </Tooltip>
 
               <IconButton onClick={handleScreenshot} label="Capture screenshot">
-                <CameraIcon />
+                <CameraIcon size={14} />
               </IconButton>
 
               <BrowserDownloadsButton browserId={browserId} />
@@ -198,17 +204,21 @@ export function BrowserBar({
                   onClick={onToggleInspector}
                   aria-label={inspectorLabel}
                   aria-pressed={inspectorOpen}
-                  className={`relative flex shrink-0 items-center rounded p-1 transition ${
+                  className={`relative flex shrink-0 items-center rounded p-1 transition-colors ${
                     inspectorOpen
                       ? 'bg-muted/60 fg-primary'
                       : 'fg-secondary hover:bg-muted/40 hover:fg-primary'
                   }`}
                 >
-                  <DetailsIcon />
+                  <DetailsIcon size={14} />
                   {errorCount > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-3xs font-semibold text-white">
-                      {errorCount > 99 ? '99+' : errorCount}
-                    </span>
+                    <Count
+                      value={errorCount}
+                      placement="icon"
+                      aria-hidden
+                      data-testid="browser-details-error-count"
+                      className="absolute -right-1 -top-1"
+                    />
                   )}
                 </button>
               </Tooltip>
@@ -253,7 +263,7 @@ function IconButton({
         disabled={disabled}
         aria-label={label}
         aria-pressed={active}
-        className={`shrink-0 rounded p-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        className={`shrink-0 rounded p-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
           active
             ? 'bg-muted/60 fg-primary'
             : 'fg-secondary hover:bg-muted/40 hover:fg-primary'

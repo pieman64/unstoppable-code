@@ -20,6 +20,7 @@ import { findOrganizationName } from '@/lib/organizationName';
 import { openAccountOrganizationPage } from '@/lib/navigation/settings-destinations';
 import { isSettingsRouteId } from '@canopy/protocol/settings';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 
 interface MemoryUsedDialogProps {
   memory: AppliedOrgMemoryTurn;
@@ -36,16 +37,16 @@ function MemoryUsedButtonImpl({ memory }: MemoryUsedButtonProps): JSX.Element {
   return (
     <>
       <Tooltip label="Show organization memories used for this message">
-        <button
-          type="button"
-          className="focus-ring mt-1 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-2xs fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
+        <Button
+          size="compact"
+          className="mt-1"
           aria-label="Show organization memories used for this message"
           data-testid="memory-used-button"
           onClick={(): void => setOpen(true)}
         >
           <Sparkles aria-hidden="true" className="size-3" />
           {count} {count === 1 ? 'memory' : 'memories'} used
-        </button>
+        </Button>
       </Tooltip>
       {open && (
         <MemoryUsedDialog
@@ -58,14 +59,6 @@ function MemoryUsedButtonImpl({ memory }: MemoryUsedButtonProps): JSX.Element {
 }
 
 export const MemoryUsedButton = memo(MemoryUsedButtonImpl);
-
-function ratingButtonClass(active: boolean): string {
-  return `focus-ring inline-flex items-center gap-1 rounded-md border px-1.5 py-1 transition-colors ${
-    active
-      ? 'border-line-accent bg-accent-subtle fg-primary'
-      : 'fg-secondary hover:bg-secondary hover:fg-primary'
-  }`;
-}
 
 interface FactFeedbackControlsProps {
   organizationExternalId: string;
@@ -178,9 +171,10 @@ function FactFeedbackControls({
     <div className="mt-2 flex flex-col gap-2">
       <div className="flex items-center gap-1.5 text-2xs">
         <Tooltip label="This memory was helpful">
-          <button
-            type="button"
-            className={ratingButtonClass(pendingRating === 'like')}
+          <Button
+            variant={pendingRating === 'like' ? 'secondary' : 'ghost-quiet'}
+            size="compact"
+            iconOnly
             aria-label="This memory was helpful"
             aria-pressed={pendingRating === 'like'}
             data-testid="memory-feedback-like"
@@ -188,12 +182,13 @@ function FactFeedbackControls({
             onClick={(): void => sendRating('like')}
           >
             <ThumbsUp aria-hidden="true" className="size-3" />
-          </button>
+          </Button>
         </Tooltip>
         <Tooltip label="This memory was wrong or unhelpful">
-          <button
-            type="button"
-            className={ratingButtonClass(pendingRating === 'dislike')}
+          <Button
+            variant={pendingRating === 'dislike' ? 'secondary' : 'ghost-quiet'}
+            size="compact"
+            iconOnly
             aria-label="This memory was wrong or unhelpful"
             aria-pressed={pendingRating === 'dislike'}
             data-testid="memory-feedback-dislike"
@@ -201,12 +196,13 @@ function FactFeedbackControls({
             onClick={(): void => sendRating('dislike')}
           >
             <ThumbsDown aria-hidden="true" className="size-3" />
-          </button>
+          </Button>
         </Tooltip>
         <Tooltip label="Comment on this memory">
-          <button
-            type="button"
-            className={ratingButtonClass(commentOpen)}
+          <Button
+            variant="ghost-quiet"
+            size="compact"
+            aria-expanded={commentOpen}
             aria-label="Comment on this memory"
             data-testid="memory-feedback-comment-toggle"
             disabled={submitting}
@@ -214,7 +210,7 @@ function FactFeedbackControls({
           >
             <MessageSquare aria-hidden="true" className="size-3" />
             Comment
-          </button>
+          </Button>
         </Tooltip>
         {submitting ? (
           <span className="inline-flex items-center gap-1 fg-secondary">
@@ -237,15 +233,14 @@ function FactFeedbackControls({
             value={comment}
             onChange={(event): void => setComment(event.target.value)}
           />
-          <button
-            type="button"
-            className="focus-ring rounded-md border px-2 py-1 text-2xs fg-secondary transition-colors hover:bg-secondary hover:fg-primary disabled:opacity-50"
+          <Button
+            size="compact"
             data-testid="memory-feedback-comment-send"
             disabled={submitting || comment.trim().length === 0}
             onClick={sendComment}
           >
             Send
-          </button>
+          </Button>
         </div>
       ) : null}
     </div>

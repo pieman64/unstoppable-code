@@ -12,6 +12,8 @@ const SENTENCES = {
 describe('resourceContextRefusalMessage', () => {
   it.each([
     'Resource',
+    'Workflow',
+    // Desktops before the workflow rename still send this noun.
     'Pipeline',
     'Skill',
     'Agent',

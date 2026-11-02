@@ -54,12 +54,15 @@ const TARGET = { ...SCOPE, chatId: CHAT_ID };
 const SHOW_VISUAL = CANOPY_INJECTED_TOOL_REGISTRY.show_visual;
 const CLAUDE_NAME = SHOW_VISUAL.claudeToolName;
 const CODEX_NAME = SHOW_VISUAL.codexToolName;
+type ProviderType = NonNullable<
+  Parameters<ChatStateService['ingestProviderEvent']>[0]['providerType']
+>;
 const caller = {
   principalId: 'test-user',
   clientInstanceId: 'test-client',
   authorityId: 'local-desktop',
   interfaceKind: 'test' as const,
-  grants: ['core.chat.read'],
+  grants: ['core.chat.read' as const],
 };
 const HTML = '﻿<!doctype html><title>Chart</title><p>Throughput — 42 ✓</p>';
 const PREPARED = HTML.slice(1);
@@ -113,7 +116,6 @@ describe('ShowVisual end to end', () => {
       now: (): number => 1_786_104_000_000,
       createId: (): string => 'event-id',
       dispatch: (): Promise<void> => Promise.resolve(),
-      steer: (): Promise<boolean> => Promise.resolve(false),
       onInputPickup: (): Promise<undefined> => Promise.resolve(undefined),
       authorizeSend: (): Promise<undefined> => Promise.resolve(undefined),
       cleanupSession: (): Promise<void> => Promise.resolve(),
@@ -208,6 +210,12 @@ describe('ShowVisual end to end', () => {
     const dispatcher = createDesktopRuntime({
       chatServices: { getPort: () => service },
     });
+    const reference = {
+      ...owned.reference,
+      heights: owned.reference.heights?.map(
+        ([start, end]): [number, number] => [start, end],
+      ),
+    };
     const result = await dispatcher.query(
       'core.chat.visual.read',
       {
@@ -218,7 +226,7 @@ describe('ShowVisual end to end', () => {
         },
         messageId: owned.messageId,
         toolUseId: owned.toolUseId,
-        reference: owned.reference,
+        reference,
         offset,
         limit,
       },
@@ -264,7 +272,7 @@ describe('ShowVisual end to end', () => {
       output: string;
       id?: string;
       isError?: boolean;
-      providerType?: string;
+      providerType?: ProviderType;
       chatId?: string;
     },
   ): Promise<void> {
@@ -438,7 +446,7 @@ describe('ShowVisual end to end', () => {
         title: string;
         failed?: boolean;
         ledgerChatId?: string;
-        providerType?: string;
+        providerType?: ProviderType;
       },
     ): Promise<void> {
       const output = await show(service);
@@ -517,7 +525,7 @@ describe('ShowVisual end to end', () => {
       ['a call recorded for another chat', { ledgerChatId: 'chat-2' }],
       ['a failed call', { failed: true }],
       ['a Copilot event', { providerType: 'copilot' }],
-    ])('does not promote %s', async (_case, overrides) => {
+    ] as const)('does not promote %s', async (_case, overrides) => {
       const service = await createService();
       await runCursorCall(service, {
         rawInput: trustedInput,

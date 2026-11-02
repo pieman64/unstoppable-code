@@ -115,4 +115,227 @@ describe('CodeStartPageSettings', () => {
       ),
     ).toBe(true);
   });
+
+  it('does not save the canopy.json value for this computer when switching back', async () => {
+    act(() =>
+      root.render(
+        <CodeStartPageSettings project={project} layout="settings" />,
+      ),
+    );
+    const scope = (id: string): HTMLButtonElement | null =>
+      document.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`);
+
+    await act(async () => {
+      scope('project-settings-scope-source')?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      scope('project-settings-scope-local')?.click();
+      await Promise.resolve();
+    });
+
+    expect(setWorkspaceStartPage).not.toHaveBeenCalled();
+  });
+
+  it('shows and compares against the stored value for this computer, not a prefill', async () => {
+    await act(async () => {
+      root.render(
+        <CodeStartPageSettings
+          project={project}
+          layout="settings"
+          initialMode="local"
+          prefill={null}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(
+      document.querySelector('[data-testid="start-page-choice-trigger"]')
+        ?.textContent,
+    ).toContain('A web page');
+    expect(setWorkspaceStartPage).not.toHaveBeenCalled();
+  });
+
+  it('saves a choice for this computer only when Save local is pressed', async () => {
+    const saved: SingleRepoSidebarItem = { ...project, startPage: null };
+    act(() =>
+      root.render(<CodeStartPageSettings project={saved} layout="settings" />),
+    );
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-choice-trigger"]',
+        )
+        ?.click(),
+    );
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-choice-team"]',
+        )
+        ?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(setWorkspaceStartPage).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Local override');
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-save-local"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(setWorkspaceStartPage).toHaveBeenCalledTimes(1);
+    expect(setWorkspaceStartPage).toHaveBeenLastCalledWith({
+      workspaceId: 'project-1',
+    });
+  });
+
+  it('still reports a local choice as unsaved on the Source controlled tab', async () => {
+    const saved: SingleRepoSidebarItem = { ...project, startPage: null };
+    const onUnsavedChange = jest.fn();
+    act(() =>
+      root.render(
+        <CodeStartPageSettings
+          project={saved}
+          layout="settings"
+          onUnsavedChange={onUnsavedChange}
+        />,
+      ),
+    );
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-choice-trigger"]',
+        )
+        ?.click(),
+    );
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-choice-team"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="project-settings-scope-source"]',
+        )
+        ?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('reports a choice made during a running Save local as unsaved', async () => {
+    const saved: SingleRepoSidebarItem = { ...project, startPage: null };
+    setWorkspaceStartPage.mockImplementationOnce(
+      () => new Promise<void>(() => undefined),
+    );
+    const onUnsavedChange = jest.fn();
+    act(() =>
+      root.render(
+        <CodeStartPageSettings
+          project={saved}
+          layout="settings"
+          onUnsavedChange={onUnsavedChange}
+        />,
+      ),
+    );
+    const choose = async (option: string): Promise<void> => {
+      act(() =>
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="start-page-choice-trigger"]',
+          )
+          ?.click(),
+      );
+      await act(async () => {
+        document
+          .querySelector<HTMLButtonElement>(
+            `[data-testid="start-page-choice-${option}"]`,
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+    };
+    await choose('team');
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-save-local"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    // The running write covers Team.
+    expect(onUnsavedChange).toHaveBeenLastCalledWith(false);
+    // Back to New chat, the value stored before that write.
+    await choose('chat');
+    expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('follows an outside change after its own save settled', async () => {
+    const saved: SingleRepoSidebarItem = { ...project, startPage: null };
+    act(() =>
+      root.render(<CodeStartPageSettings project={saved} layout="settings" />),
+    );
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-choice-trigger"]',
+        )
+        ?.click(),
+    );
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-choice-team"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="start-page-save-local"]',
+        )
+        ?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(setWorkspaceStartPage).toHaveBeenCalledTimes(1);
+    // The save's refresh, then a change made elsewhere.
+    await act(async () => {
+      root.render(
+        <CodeStartPageSettings
+          project={{ ...saved, startPage: undefined }}
+          layout="settings"
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(
+        <CodeStartPageSettings
+          project={{
+            ...saved,
+            startPage: { kind: 'url', url: 'https://elsewhere.test' },
+          }}
+          layout="settings"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(setWorkspaceStartPage).toHaveBeenCalledTimes(1);
+  });
 });

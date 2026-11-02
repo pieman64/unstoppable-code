@@ -4,12 +4,30 @@
 import { act, StrictMode, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useOverlayEscape } from '@canopy/ui-shared/components';
+import type { CanopyClient } from '@canopy/app-core';
+import {
+  CanopyClientProvider,
+  useOnboardingTipsStore,
+  type OnboardingTipsStoreState,
+} from '@canopy/app-state';
 import type { ReleaseNotesEntry } from '@canopy/protocol/release-notes';
 import type { CanopyApi } from '@canopy/desktop-shared/types';
 import { makeTestPreferences } from '@/test-utils/preferences';
 import { useNavigationStore } from '@/stores/navigationStore';
-import { useReleaseHighlightsStore } from '@/stores/releaseHighlightsStore';
+import {
+  INITIAL_AUTOMATIC_GATE,
+  useReleaseHighlightsStore,
+} from '@/stores/releaseHighlightsStore';
+import { createAutomaticPresentationController } from '@/lib/release-highlights/presentation-controller';
 import { resetReleaseHighlightsWritesForTests } from '@/lib/release-highlights/release-highlights';
+import {
+  beginResume,
+  resetResumeLifecycleForTests,
+} from '@/lib/resume-lifecycle';
+import {
+  notifyAcceptedWorktreeTurn,
+  notifyHomeTaskSent,
+} from '@/components/onboarding-tips/homeSendEvents';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { ReleaseHighlightsHost } from '../ReleaseHighlightsHost';
 import { loadDesktopReleaseNotesEntries } from '@/lib/release-highlights/release-notes-entries';
@@ -52,22 +70,41 @@ jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
   useCurrentUiStateReporter: jest.fn(),
 }));
 
-let getAppVersion: jest.Mock;
-let savePreferences: jest.Mock;
-let getCanopyCloudBaseUrl: jest.Mock;
-let openExternal: jest.Mock;
+type ReleaseHighlightsApi = Pick<
+  CanopyApi,
+  'savePreferences' | 'getCanopyCloudBaseUrl'
+> & {
+  update: Pick<CanopyApi['update'], 'getAppVersion'>;
+  browser: Pick<CanopyApi['browser'], 'openExternal'>;
+};
+
+let getAppVersion: jest.Mock<Promise<string>, []>;
+let savePreferences: jest.Mock<
+  ReturnType<CanopyApi['savePreferences']>,
+  Parameters<CanopyApi['savePreferences']>
+>;
+let getCanopyCloudBaseUrl: jest.Mock<
+  ReturnType<CanopyApi['getCanopyCloudBaseUrl']>,
+  []
+>;
+let openExternal: jest.Mock<
+  ReturnType<CanopyApi['browser']['openExternal']>,
+  Parameters<CanopyApi['browser']['openExternal']>
+>;
 let container: HTMLDivElement;
 let root: Root;
+let hasFocus: jest.SpiedFunction<() => boolean>;
 
 function installApi(): void {
+  const api: ReleaseHighlightsApi = {
+    update: { getAppVersion },
+    savePreferences,
+    getCanopyCloudBaseUrl,
+    browser: { openExternal },
+  };
   Object.defineProperty(window, 'api', {
     configurable: true,
-    value: {
-      update: { getAppVersion },
-      savePreferences,
-      getCanopyCloudBaseUrl,
-      browser: { openExternal },
-    } as Partial<CanopyApi> as CanopyApi,
+    value: api,
   });
 }
 
@@ -77,8 +114,24 @@ async function flush(): Promise<void> {
   });
 }
 
+// Onboarding tips share the notice budget (CAN-5005); the host reaches only
+// their store, which reads dismissals through this client.
+let tipsClient: CanopyClient;
+let tips: OnboardingTipsStoreState | null = null;
+function TipsProbe(): null {
+  tips = useOnboardingTipsStore((state) => state);
+  return null;
+}
+
 function render(node: JSX.Element): void {
-  act(() => root.render(node));
+  act(() =>
+    root.render(
+      <CanopyClientProvider client={tipsClient}>
+        <TipsProbe />
+        {node}
+      </CanopyClientProvider>,
+    ),
+  );
 }
 
 function dialog(): HTMLElement | null {
@@ -104,22 +157,45 @@ function capture(
 beforeEach(() => {
   setRollout(true);
   jest.mocked(loadDesktopReleaseNotesEntries).mockResolvedValue(mockEntries);
-  getAppVersion = jest.fn().mockResolvedValue('1.9.0');
-  savePreferences = jest.fn().mockResolvedValue(makeTestPreferences());
-  getCanopyCloudBaseUrl = jest.fn().mockResolvedValue('https://app.test');
-  openExternal = jest.fn().mockResolvedValue(undefined);
+  getAppVersion = jest.fn<Promise<string>, []>(() => Promise.resolve('1.9.0'));
+  savePreferences = jest.fn<
+    ReturnType<CanopyApi['savePreferences']>,
+    Parameters<CanopyApi['savePreferences']>
+  >(() => Promise.resolve(makeTestPreferences()));
+  getCanopyCloudBaseUrl = jest.fn<
+    ReturnType<CanopyApi['getCanopyCloudBaseUrl']>,
+    []
+  >(() => Promise.resolve('https://app.test'));
+  openExternal = jest.fn<
+    ReturnType<CanopyApi['browser']['openExternal']>,
+    Parameters<CanopyApi['browser']['openExternal']>
+  >(() => Promise.resolve());
   installApi();
+  // jsdom reports an unfocused document until something takes focus; the
+  // app window is focused in these scenarios.
+  hasFocus = jest.spyOn(document, 'hasFocus').mockReturnValue(true);
+  const tipsFake = {
+    capabilities: { onboardingTips: true },
+    query: jest.fn(() => Promise.resolve({ dismissed: {} })),
+    command: jest.fn(() => Promise.resolve({ dismissed: {} })),
+    subscribe: jest.fn((): (() => void) => () => undefined),
+  };
+  // Only the onboarding tip operations are reached.
+  tipsClient = tipsFake as unknown as CanopyClient;
+  tips = null;
   useReleaseHighlightsStore.setState({
     entries: [],
     initialSnapshot: null,
     automaticStatus: 'idle',
+    automaticGate: INITIAL_AUTOMATIC_GATE,
     queued: null,
     presentation: null,
     manuallyPresentedVersions: [],
     automaticallyPresentedVersions: [],
   });
-  useNavigationStore.setState({ settingsOpen: false });
+  useNavigationStore.setState({ settingsOpen: false, activePage: 'home' });
   resetReleaseHighlightsWritesForTests();
+  resetResumeLifecycleForTests();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -130,6 +206,7 @@ afterEach(() => {
   document.body.innerHTML = '';
   Reflect.deleteProperty(window, 'api');
   jest.clearAllMocks();
+  jest.restoreAllMocks();
 });
 
 describe('ReleaseHighlightsHost automatic presentation', () => {
@@ -161,6 +238,28 @@ describe('ReleaseHighlightsHost automatic presentation', () => {
     expect(useReleaseHighlightsStore.getState().automaticStatus).toBe(
       'presented',
     );
+  });
+
+  it('holds onboarding tips once for an automatic presentation', async () => {
+    capture('1.8.0');
+    render(
+      <StrictMode>
+        <ReleaseHighlightsHost ready />
+      </StrictMode>,
+    );
+    await flush();
+    expect(dialog()).not.toBeNull();
+    expect(tips?.held).toBe(true);
+    // A send lifts the hold; the same presentation re-rendering does not
+    // take the budget again.
+    act(() => tips?.noteTurnSent({ worktreeChat: false }));
+    render(
+      <StrictMode>
+        <ReleaseHighlightsHost ready />
+      </StrictMode>,
+    );
+    await flush();
+    expect(tips?.held).toBe(false);
   });
 
   it('shows matching notes on first open after startup gates', async () => {
@@ -362,6 +461,7 @@ describe('ReleaseHighlightsHost automatic presentation', () => {
       entries: [],
       initialSnapshot: null,
       automaticStatus: 'idle',
+      automaticGate: INITIAL_AUTOMATIC_GATE,
       queued: null,
       presentation: null,
       manuallyPresentedVersions: [],
@@ -517,6 +617,8 @@ describe('ReleaseHighlightsHost manual presentation', () => {
       );
     });
     expect(dialog()).toBeNull();
+    // Opening it by choice spends no notice budget.
+    expect(tips?.held).toBe(false);
   });
 
   it('cancels an equivalent queued automatic presentation for the session', async () => {
@@ -671,4 +773,487 @@ it('still shows never-presented queued notes after a rollout cycle', async () =>
   await flush();
   expect(dialog()).not.toBeNull();
   expect(savePreferences).toHaveBeenCalledTimes(1);
+});
+
+describe('ReleaseHighlightsHost idle gate (CAN-5006)', () => {
+  beforeEach(() => {
+    // Promises and microtasks stay real so store transitions still flush.
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick'] });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function advance(ms: number): Promise<void> {
+    act(() => {
+      jest.advanceTimersByTime(ms);
+    });
+    await flush();
+  }
+
+  function interact(type = 'pointerdown', init: MouseEventInit = {}): void {
+    act(() => {
+      document.dispatchEvent(new MouseEvent(type, { bubbles: true, ...init }));
+    });
+  }
+
+  function goTo(activePage: 'home' | 'main'): void {
+    act(() => useNavigationStore.setState({ activePage }));
+  }
+
+  function acceptSend(): void {
+    act(() => notifyAcceptedWorktreeTurn());
+  }
+
+  function gate(): { deferred: boolean; milestoneArmed: boolean } {
+    const { deferred, milestoneArmed } =
+      useReleaseHighlightsStore.getState().automaticGate;
+    return { deferred, milestoneArmed };
+  }
+
+  /** Queues the decision after an interaction and an accepted send. */
+  async function queueDeferredWithMilestone(): Promise<void> {
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    interact();
+    await flush();
+    acceptSend();
+    expect(gate()).toEqual({ deferred: true, milestoneArmed: true });
+  }
+
+  function mountComposer(html: string): HTMLElement {
+    const host = document.createElement('div');
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    return host;
+  }
+
+  it('defers notes when the user navigates while the feed is pending, until a return to Home and a quiet window', async () => {
+    let resolveVersion: (version: string) => void = () => undefined;
+    getAppVersion.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveVersion = resolve;
+      }),
+    );
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    goTo('main');
+    resolveVersion('1.9.0');
+    await flush();
+    expect(useReleaseHighlightsStore.getState().automaticStatus).toBe('queued');
+    expect(gate()).toEqual({ deferred: true, milestoneArmed: false });
+
+    await advance(10_000);
+    expect(dialog()).toBeNull();
+
+    goTo('home');
+    expect(gate().milestoneArmed).toBe(true);
+    await advance(999);
+    expect(dialog()).toBeNull();
+    await advance(1);
+    expect(dialog()).not.toBeNull();
+    expect(savePreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores interactions before the startup gates clear', async () => {
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready={false} />);
+    interact();
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('counts an accepted send as a milestone, and later activity restarts the quiet window', async () => {
+    await queueDeferredWithMilestone();
+    await advance(600);
+    interact('keydown');
+    await advance(600);
+    expect(dialog()).toBeNull();
+    await advance(400);
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('ignores a pipeline launch as a send milestone', async () => {
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    interact();
+    await flush();
+    act(() => notifyHomeTaskSent({ kind: 'pipeline' }));
+    await advance(5_000);
+    expect(gate().milestoneArmed).toBe(false);
+    expect(dialog()).toBeNull();
+  });
+
+  it('counts the first pointer position but ignores repeats of it', async () => {
+    await queueDeferredWithMilestone();
+    interact('pointermove', { clientX: 5, clientY: 5 });
+    await advance(600);
+    interact('pointermove', { clientX: 5, clientY: 5 });
+    await advance(399);
+    expect(dialog()).toBeNull();
+    await advance(1);
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('waits for an auto-focused empty composer to lose focus, without counting the focus move as interaction', async () => {
+    const host = mountComposer(
+      '<div data-testid="home-composer"><div data-chat-textarea tabindex="0"></div></div><button type="button">Elsewhere</button>',
+    );
+    act(() => host.querySelector<HTMLElement>('[data-chat-textarea]')?.focus());
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    expect(gate().deferred).toBe(false);
+
+    act(() => host.querySelector('button')?.focus());
+    await advance(0);
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('keeps a composer draft blocking past the quiet window and rechecks once it is cleared', async () => {
+    const host = mountComposer(
+      '<div data-chat-composer-root><div data-chat-textarea>half a thought</div></div>',
+    );
+    await queueDeferredWithMilestone();
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+
+    const editor = host.querySelector('[data-chat-textarea]');
+    if (editor) editor.textContent = '';
+    interact('keydown');
+    await advance(1_000);
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('blocks during IME composition until it ends', async () => {
+    await queueDeferredWithMilestone();
+    act(() => {
+      document.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+    });
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    act(() => {
+      document.dispatchEvent(new Event('compositionend', { bubbles: true }));
+    });
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('never presents while a resume is pending, however long it takes', async () => {
+    const endResume = beginResume();
+    await queueDeferredWithMilestone();
+    await advance(10_000);
+    expect(dialog()).toBeNull();
+    act(() => endResume());
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('presents when an overlay closes without a body mutation or the safety interval', async () => {
+    capture('1.8.0');
+    render(
+      <>
+        <BlockingOverlay />
+        <ReleaseHighlightsHost ready />
+      </>,
+    );
+    await flush();
+    expect(dialog()).toBeNull();
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('stays blocked in a background window and rechecks when it regains focus', async () => {
+    hasFocus.mockReturnValue(false);
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    hasFocus.mockReturnValue(true);
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('keeps the deferral across a remount', async () => {
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    interact();
+    await flush();
+    act(() => root.unmount());
+    root = createRoot(container);
+    render(<ReleaseHighlightsHost ready />);
+    await advance(5_000);
+    expect(gate().deferred).toBe(true);
+    expect(dialog()).toBeNull();
+  });
+
+  it('starts fresh history after a rollout revocation', async () => {
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    interact();
+    await flush();
+    expect(gate().deferred).toBe(true);
+    setRollout(false);
+    await flush();
+    expect(gate()).toEqual({ deferred: false, milestoneArmed: false });
+    setRollout(true);
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('does not reopen a dismissed dialog on a later milestone', async () => {
+    await queueDeferredWithMilestone();
+    await advance(1_000);
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="release-highlights-got-it"]',
+        )
+        ?.click(),
+    );
+    expect(dialog()).toBeNull();
+    goTo('main');
+    goTo('home');
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    expect(savePreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns focus to the element focused just before presentation', async () => {
+    const host = mountComposer('<button type="button">Known control</button>');
+    const known = host.querySelector('button');
+    act(() => known?.focus());
+    await queueDeferredWithMilestone();
+    await advance(1_000);
+    expect(dialog()).not.toBeNull();
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="release-highlights-got-it"]',
+        )
+        ?.click(),
+    );
+    await flush();
+    expect(document.activeElement).toBe(known);
+  });
+  it('rechecks character-data draft removal without advancing the safety timer', async () => {
+    const host = mountComposer(
+      '<div data-chat-composer-root><div data-chat-textarea>draft</div></div>',
+    );
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    expect(dialog()).toBeNull();
+    const text = host.querySelector('[data-chat-textarea]')?.firstChild;
+    if (text) text.nodeValue = '';
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('rechecks attachment removal in a dynamically mounted hidden composer', async () => {
+    const host = mountComposer('<section></section>');
+    host.innerHTML =
+      '<div data-chat-composer-root hidden><div data-testid="attachment-strip"></div></div>';
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    expect(dialog()).toBeNull();
+    host.querySelector('[data-testid="attachment-strip"]')?.remove();
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('keeps the original quiet deadline across an ordinary remount', async () => {
+    await queueDeferredWithMilestone();
+    await advance(600);
+    act(() => root.unmount());
+    root = createRoot(container);
+    render(<ReleaseHighlightsHost ready />);
+    await advance(400);
+    expect(dialog()).not.toBeNull();
+    expect(savePreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the last pointer position across a remount', async () => {
+    await queueDeferredWithMilestone();
+    interact('pointermove', { clientX: 7, clientY: 9 });
+    await advance(600);
+    act(() => root.unmount());
+    root = createRoot(container);
+    render(<ReleaseHighlightsHost ready />);
+    interact('pointermove', { clientX: 7, clientY: 9 });
+    await advance(400);
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('manual viewing of a different entry cancels the automatic attempt', async () => {
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    interact();
+    await flush();
+    act(() => useReleaseHighlightsStore.getState().openManual(mockEntries[0]));
+    act(() => useReleaseHighlightsStore.getState().close());
+    goTo('main');
+    goTo('home');
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    expect(savePreferences).not.toHaveBeenCalled();
+  });
+
+  it('does not use a later accepted send when the first preceded deferral', async () => {
+    const host = mountComposer(
+      '<div data-chat-composer-root><div data-chat-textarea>draft</div></div>',
+    );
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    acceptSend();
+    interact();
+    acceptSend();
+    host.remove();
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    expect(gate().milestoneArmed).toBe(false);
+  });
+
+  it('does not present during transfer from one composer to another', async () => {
+    const host = mountComposer(
+      '<div data-chat-composer-root><button>First</button><button>Second</button></div>',
+    );
+    act(() => host.querySelectorAll('button')[0]?.focus());
+    await queueDeferredWithMilestone();
+    await advance(1_000);
+    act(() => host.querySelectorAll('button')[1]?.focus());
+    await advance(0);
+    expect(dialog()).toBeNull();
+  });
+  it('ignores callbacks from the revoked decision even before host cleanup', async () => {
+    capture('1.8.0');
+    const old = createAutomaticPresentationController(document);
+    setRollout(false);
+    setRollout(true);
+    old.noteInteraction();
+    old.reevaluate();
+    await flush();
+    expect(gate().deferred).toBe(false);
+    old.dispose();
+  });
+
+  it('keeps a consumed first send consumed across remounts', async () => {
+    const host = mountComposer(
+      '<div data-chat-composer-root><div data-chat-textarea>draft</div></div>',
+    );
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    acceptSend();
+    act(() => root.unmount());
+    root = createRoot(container);
+    render(<ReleaseHighlightsHost ready />);
+    interact();
+    acceptSend();
+    host.remove();
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    expect(gate().milestoneArmed).toBe(false);
+  });
+
+  it('leaves the primitive fallback intact if the prior focus target is removed', async () => {
+    const host = mountComposer(
+      '<button type="button">Removed control</button>',
+    );
+    const known = host.querySelector('button');
+    act(() => known?.focus());
+    await queueDeferredWithMilestone();
+    await advance(1_000);
+    expect(dialog()).not.toBeNull();
+    known?.remove();
+    act(() => useReleaseHighlightsStore.getState().close());
+    await flush();
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('keeps IME blocking across a host remount until composition ends', async () => {
+    await queueDeferredWithMilestone();
+    act(() => {
+      document.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+    });
+    await advance(2_000);
+    act(() => root.unmount());
+    root = createRoot(container);
+    render(<ReleaseHighlightsHost ready />);
+    await advance(2_000);
+    expect(dialog()).toBeNull();
+    act(() => {
+      document.dispatchEvent(new Event('compositionend', { bubbles: true }));
+    });
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+  it('presents a fresh queue with an explicitly empty unfocused composer without polling', async () => {
+    mountComposer(
+      '<div data-chat-composer-root><div data-chat-textarea></div></div>',
+    );
+    expect(document.activeElement).toBe(document.body);
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('retains a Home milestone observed before the feed decision completes', async () => {
+    let resolveVersion: (version: string) => void = () => undefined;
+    getAppVersion.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveVersion = resolve;
+      }),
+    );
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    interact('wheel');
+    goTo('main');
+    goTo('home');
+    await advance(1_000);
+    expect(dialog()).toBeNull();
+    expect(gate()).toEqual({ deferred: true, milestoneArmed: true });
+    resolveVersion('1.9.0');
+    await flush();
+    expect(dialog()).not.toBeNull();
+    expect(savePreferences).toHaveBeenCalledTimes(1);
+  });
+  it('keeps tracking after first readiness while a startup gate temporarily reopens', async () => {
+    let resolveVersion: (version: string) => void = () => undefined;
+    getAppVersion.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveVersion = resolve;
+      }),
+    );
+    capture('1.8.0');
+    render(<ReleaseHighlightsHost ready />);
+    render(<ReleaseHighlightsHost ready={false} />);
+    interact();
+    render(<ReleaseHighlightsHost ready />);
+    resolveVersion('1.9.0');
+    await advance(5_000);
+    expect(dialog()).toBeNull();
+    expect(gate()).toEqual({ deferred: true, milestoneArmed: false });
+  });
+  it('hard-blocks an armed attempt until current readiness returns', async () => {
+    await queueDeferredWithMilestone();
+    render(<ReleaseHighlightsHost ready={false} />);
+    await advance(2_000);
+    expect(dialog()).toBeNull();
+    render(<ReleaseHighlightsHost ready />);
+    await flush();
+    expect(dialog()).not.toBeNull();
+  });
 });

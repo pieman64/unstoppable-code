@@ -100,7 +100,11 @@ test('installs an automation from a public link and refuses a stale pin', async 
     userDataDir,
     id: 'can-3135-user-review',
     name: 'CAN-3135 user review',
+    // Valid noncanonical YAML: the packaged pipeline must install these
+    // bytes verbatim, so re-serialization is detectable when the installed
+    // copy is executed.
     yaml: [
+      '# preserve shared-pipeline bytes',
       'pipeline:',
       '  name: CAN-3135 user review',
       '  on: dispatch',
@@ -146,13 +150,22 @@ test('installs an automation from a public link and refuses a stale pin', async 
       .getByRole('radio', { name: 'Public' })
       .click();
     await shareModal.getByTestId('share-automation-submit').click();
-    await expect(shareModal).toHaveCount(0);
+    // The dialog stays open on its success notice with the link and Copy
+    // link; no share toast is raised.
+    await expect(
+      shareModal.getByTestId('share-automation-success'),
+    ).toContainText('Automation is now public');
+    await expect(shareModal.getByTestId('share-automation-link')).toBeVisible();
+    await expect(
+      shareModal.getByTestId('share-automation-copy-link'),
+    ).toBeVisible();
     await expect(
       window
         .getByTestId('toast-card')
-        .filter({ hasText: 'Automation is now public' })
-        .getByTestId('toast-copy-link'),
-    ).toBeVisible();
+        .filter({ hasText: 'Automation is now public' }),
+    ).toHaveCount(0);
+    await shareModal.getByTestId('share-automation-done').click();
+    await expect(shareModal).toHaveCount(0);
 
     // The same document's team-scoped web CTA uses the authenticated shared
     // automation id, not the anonymous public-share id. Exercise that complete
@@ -414,13 +427,24 @@ test('installs an automation from a public link and refuses a stale pin', async 
       updateShareModal.getByTestId('share-automation-submit'),
     ).toBeEnabled();
     await updateShareModal.getByTestId('share-automation-submit').click();
-    await expect(updateShareModal).toHaveCount(0);
+    // The dialog stays open on its success notice with the link and Copy
+    // link; no share toast is raised.
+    await expect(
+      updateShareModal.getByTestId('share-automation-success'),
+    ).toContainText('Automation updated');
+    await expect(
+      updateShareModal.getByTestId('share-automation-link'),
+    ).toBeVisible();
+    await expect(
+      updateShareModal.getByTestId('share-automation-copy-link'),
+    ).toBeVisible();
     await expect(
       window
         .getByTestId('toast-card')
-        .filter({ hasText: 'Automation updated' })
-        .getByTestId('toast-copy-link'),
-    ).toBeVisible();
+        .filter({ hasText: 'Automation updated' }),
+    ).toHaveCount(0);
+    await updateShareModal.getByTestId('share-automation-done').click();
+    await expect(updateShareModal).toHaveCount(0);
 
     await emitOpenUrl(
       electronApp,
@@ -432,10 +456,14 @@ test('installs an automation from a public link and refuses a stale pin', async 
     await expect(
       updateWizard.getByTestId('install-automation-submit'),
     ).toHaveText('Apply update');
-    await updateWizard.getByTestId('install-automation-submit').click();
+    // The review's dry run of the packaged pipeline refuses the update
+    // before it can be applied.
     await expect(
-      updateWizard.getByTestId('install-automation-error'),
+      updateWizard.getByTestId('install-automation-pipelines-blocked'),
     ).toContainText('local changes');
+    await expect(
+      updateWizard.getByTestId('install-automation-submit'),
+    ).toBeDisabled();
     const preserved = await window.evaluate(
       async ({ activityId, pipelineId }) => {
         const [activities, pipeline] = await Promise.all([

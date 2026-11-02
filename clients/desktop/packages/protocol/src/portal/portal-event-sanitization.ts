@@ -81,6 +81,79 @@ function isJsonContainer(value: unknown): value is JsonContainer {
   return Array.isArray(value) || isPlainObject(value);
 }
 
+interface PortalToolIdentitySanitization {
+  dropOccurrence: boolean;
+  dropOutputLocator: boolean;
+  dropNestedResultOutputLocator: boolean;
+}
+
+const NO_PORTAL_TOOL_IDENTITY_DROPS: PortalToolIdentitySanitization = {
+  dropOccurrence: false,
+  dropOutputLocator: false,
+  dropNestedResultOutputLocator: false,
+};
+
+function hasUnstorableLocatorMessageId(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const messageId = value.messageId;
+  return (
+    typeof messageId === 'string' &&
+    sanitizeStorableString(messageId) !== messageId
+  );
+}
+
+function portalToolIdentitySanitization(
+  value: Record<string, unknown>,
+): PortalToolIdentitySanitization {
+  const kind = value.kind ?? value.type;
+  if (kind !== 'tool_use' && kind !== 'tool_result') {
+    return NO_PORTAL_TOOL_IDENTITY_DROPS;
+  }
+
+  const occurrence = isPlainObject(value.occurrence)
+    ? value.occurrence
+    : undefined;
+  const occurrenceId = occurrence?.id;
+  const dropOccurrence =
+    typeof occurrenceId === 'string' &&
+    sanitizeStorableString(occurrenceId) !== occurrenceId;
+  const data = isPlainObject(value.data) ? value.data : undefined;
+  const result = data && isPlainObject(data.result) ? data.result : undefined;
+
+  return {
+    dropOccurrence,
+    dropOutputLocator:
+      dropOccurrence || hasUnstorableLocatorMessageId(value.outputLocator),
+    dropNestedResultOutputLocator:
+      dropOccurrence || hasUnstorableLocatorMessageId(result?.outputLocator),
+  };
+}
+
+function shouldDropPortalToolIdentityField(
+  key: string,
+  sanitization: PortalToolIdentitySanitization,
+): boolean {
+  return (
+    (sanitization.dropOccurrence && key === 'occurrence') ||
+    (sanitization.dropOutputLocator && key === 'outputLocator')
+  );
+}
+
+function withoutNestedResultOutputLocator(value: unknown): unknown {
+  if (!isPlainObject(value)) return value;
+  const result = value.result;
+  if (
+    !isPlainObject(result) ||
+    !Object.prototype.hasOwnProperty.call(result, 'outputLocator')
+  ) {
+    return value;
+  }
+
+  const resultWithoutLocator = { ...result };
+  delete resultWithoutLocator.outputLocator;
+  return { ...value, result: resultWithoutLocator };
+}
+
 function containsUnstorableJson(value: unknown, depth = 0): boolean {
   if (typeof value === 'string') return containsUnstorableString(value);
 
@@ -144,17 +217,30 @@ function sanitizeDeeplyNestedJson(value: JsonContainer): unknown {
     }
 
     let changed = false;
-    const entries = Object.keys(current).map((key) => {
+    const identitySanitization = portalToolIdentitySanitization(current);
+    const entries: Array<readonly [string, unknown]> = [];
+    for (const key of Object.keys(current)) {
+      if (shouldDropPortalToolIdentityField(key, identitySanitization)) {
+        changed = true;
+        continue;
+      }
+
       const sanitizedKey = sanitizeStorableString(key);
       const entry = current[key];
-      const sanitizedEntry = isJsonContainer(entry)
+      let sanitizedEntry: unknown = isJsonContainer(entry)
         ? (sanitizedValues.get(entry) ?? entry)
         : typeof entry === 'string'
           ? sanitizeStorableString(entry)
           : entry;
+      if (
+        key === 'data' &&
+        identitySanitization.dropNestedResultOutputLocator
+      ) {
+        sanitizedEntry = withoutNestedResultOutputLocator(sanitizedEntry);
+      }
       changed ||= sanitizedKey !== key || sanitizedEntry !== entry;
-      return [sanitizedKey, sanitizedEntry] as const;
-    });
+      entries.push([sanitizedKey, sanitizedEntry]);
+    }
     if (!changed) {
       sanitizedValues.set(current, current);
       continue;
@@ -196,13 +282,23 @@ function sanitizeStorableJsonAtDepth(value: unknown, depth: number): unknown {
   if (!isPlainObject(value)) return value;
 
   let changed = false;
-  const entries = Object.keys(value).map((key) => {
+  const identitySanitization = portalToolIdentitySanitization(value);
+  const entries: Array<readonly [string, unknown]> = [];
+  for (const key of Object.keys(value)) {
+    if (shouldDropPortalToolIdentityField(key, identitySanitization)) {
+      changed = true;
+      continue;
+    }
+
     const sanitizedKey = sanitizeStorableString(key);
     const entry = value[key];
-    const sanitizedEntry = sanitizeStorableJsonAtDepth(entry, depth + 1);
+    let sanitizedEntry = sanitizeStorableJsonAtDepth(entry, depth + 1);
+    if (key === 'data' && identitySanitization.dropNestedResultOutputLocator) {
+      sanitizedEntry = withoutNestedResultOutputLocator(sanitizedEntry);
+    }
     changed ||= sanitizedKey !== key || sanitizedEntry !== entry;
-    return [sanitizedKey, sanitizedEntry] as const;
-  });
+    entries.push([sanitizedKey, sanitizedEntry]);
+  }
   if (!changed) return value;
 
   const sanitized: Record<string, unknown> = {};

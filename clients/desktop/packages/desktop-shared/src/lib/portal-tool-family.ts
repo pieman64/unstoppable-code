@@ -1,3 +1,4 @@
+import { isHistoricalDelegateWatchToolName } from './canopy-injected-tools';
 /**
  * Pure helper for mapping a tool-name string to one of the canonical
  * `PortalChatToolFamily` buckets used by the portal protocol. Keep this
@@ -113,6 +114,9 @@ const EXACT_FAMILY_MAP: Record<string, PortalChatToolFamily> = {
   Workflow: 'agent',
   TaskOutput: 'agent',
   ScheduleWakeup: 'monitor',
+  CronCreate: 'monitor',
+  CronDelete: 'monitor',
+  CronList: 'monitor',
   Monitor: 'monitor',
   [legacyMcpToolName('Monitor')]: 'monitor',
   // Plan-mode control tools. Canopy denies `ExitPlanMode` on purpose so the
@@ -138,6 +142,7 @@ export function getPortalChatToolFamily(
   if (typeof toolName !== 'string' || toolName.length === 0) {
     return 'unknown';
   }
+  if (isHistoricalDelegateWatchToolName(toolName)) return 'canopy';
   if (COMPUTER_USE_TOOL_NAMES.has(toolName)) {
     return 'computer-use';
   }

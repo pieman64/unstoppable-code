@@ -70,9 +70,8 @@ describe('startPageStore', () => {
   });
 
   it('does not restore an invalidated value from an older in-flight refresh', async () => {
-    let resolveFirst:
-      | ((value: ResolvedProjectStartPage | null) => void)
-      | null = null;
+    let resolveFirst: (value: ResolvedProjectStartPage | null) => void = () =>
+      undefined;
     const first = new Promise<ResolvedProjectStartPage | null>((resolve) => {
       resolveFirst = resolve;
     });
@@ -85,7 +84,7 @@ describe('startPageStore', () => {
     const staleRefresh = useStartPageStore.getState().refresh('p1', 'w1');
     useStartPageStore.getState().invalidateProject('p1');
     await useStartPageStore.getState().refresh('p1', 'w1');
-    resolveFirst?.({
+    resolveFirst({
       startPage: { kind: 'url', url: 'https://old.example.com' },
       source: 'local',
     });

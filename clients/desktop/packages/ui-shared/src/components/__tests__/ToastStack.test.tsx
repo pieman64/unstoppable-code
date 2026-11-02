@@ -2,13 +2,17 @@
 
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { InAppNotificationPlacement } from '../../lib/notification-placement';
+import {
+  IN_APP_NOTIFICATION_WIDTH_PX,
+  type InAppNotificationPlacement,
+} from '../../lib/notification-placement';
 import {
   TOAST_STACK_LIMIT,
   ToastStack,
   ToastStackActivatableCard,
   ToastStackDescription,
   type ToastStackItem,
+  type ToastStackSwipeInput,
 } from '../ToastStack';
 
 (
@@ -276,6 +280,156 @@ describe('ToastStack', () => {
         .querySelector('[data-testid="stack"]')
         ?.getAttribute('data-edge'),
     ).toBe('bottom');
+  });
+
+  /** Mouse events standing in for pointer events (jsdom has none). */
+  function pointer(type: string, target: Element, clientX: number): void {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX,
+      clientY: 100,
+      button: 0,
+    });
+    Object.defineProperty(event, 'pointerId', { value: 1 });
+    act(() => {
+      target.dispatchEvent(event);
+    });
+  }
+
+  function onlyContent(): Element {
+    const content = container.querySelector('[data-testid="content"]');
+    if (content === null) throw new Error('no card content');
+    return content;
+  }
+
+  it('reports a toast flicked away, however short the flick', () => {
+    render([toast('a', { timeoutMs: 0 })]);
+
+    // A quick 30px flick: short of any distance line, but fast.
+    pointer('pointerdown', onlyContent(), 100);
+    for (const x of [110, 120, 130]) {
+      act(() => jest.advanceTimersByTime(16));
+      pointer('pointermove', onlyContent(), x);
+    }
+    pointer('pointerup', onlyContent(), 130);
+
+    act(() => jest.advanceTimersByTime(500));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith('a');
+  });
+
+  it('moves a dragged card from the first move, then sends it off past the edge', () => {
+    render([toast('a', { timeoutMs: 0 })]);
+    const [card] = cards();
+    if (card === undefined) throw new Error('no card');
+    expect(card.getAttribute('data-toast-stack-id')).toBe('a');
+
+    pointer('pointerdown', onlyContent(), 100);
+    pointer('pointermove', onlyContent(), 102);
+    expect(card.style.getPropertyValue('--toast-swipe-x')).toBe('2px');
+    expect(card.hasAttribute('data-swipe-dragging')).toBe(true);
+    for (const x of [140, 180, 220]) {
+      act(() => jest.advanceTimersByTime(16));
+      pointer('pointermove', onlyContent(), x);
+    }
+    pointer('pointerup', onlyContent(), 220);
+    expect(card.hasAttribute('data-swipe-flung')).toBe(true);
+    // jsdom draws nothing, so the card is the stack's width: it travels all
+    // of that and on past the window edge.
+    expect(
+      Number.parseFloat(card.style.getPropertyValue('--toast-swipe-x')),
+    ).toBeGreaterThan(IN_APP_NOTIFICATION_WIDTH_PX);
+  });
+
+  it('keeps a held toast up past its time, and closes it in full time after', () => {
+    render([toast('a', { timeoutMs: 1_000 })]);
+
+    // Held, as a finger on a touchscreen holds it (no hover to pause it).
+    pointer('pointerdown', onlyContent(), 100);
+    act(() => jest.advanceTimersByTime(3_000));
+    expect(onClose).not.toHaveBeenCalled();
+
+    pointer('pointerup', onlyContent(), 100);
+    act(() => jest.advanceTimersByTime(999));
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(1));
+    expect(onClose).toHaveBeenCalledWith('a');
+  });
+
+  it('keeps a toast up while its own button is held past its time', () => {
+    act(() =>
+      root.render(
+        <ToastStack
+          toasts={[toast('a', { timeoutMs: 1_000 })]}
+          placement="bottom-right"
+          onClose={onClose}
+          renderToast={(item): JSX.Element => (
+            <p>
+              {item.message}
+              <button type="button" data-testid="action">
+                Undo
+              </button>
+            </p>
+          )}
+        />,
+      ),
+    );
+    const action = container.querySelector('[data-testid="action"]');
+    if (action === null) throw new Error('no action button');
+
+    pointer('pointerdown', action, 100);
+    act(() => jest.advanceTimersByTime(3_000));
+    expect(onClose).not.toHaveBeenCalled();
+
+    pointer('pointerup', action, 100);
+    act(() => jest.advanceTimersByTime(999));
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(1));
+    expect(onClose).toHaveBeenCalledWith('a');
+  });
+
+  it('springs a slow, short drag back and keeps the toast', () => {
+    render([toast('a', { timeoutMs: 0 })]);
+    const [card] = cards();
+    if (card === undefined) throw new Error('no card');
+
+    pointer('pointerdown', onlyContent(), 100);
+    for (const x of [110, 120, 130, 140, 150]) {
+      act(() => jest.advanceTimersByTime(16));
+      pointer('pointermove', onlyContent(), x);
+    }
+    act(() => jest.advanceTimersByTime(300));
+    pointer('pointerup', onlyContent(), 150);
+    expect(card.hasAttribute('data-swipe-settling')).toBe(true);
+
+    act(() => jest.advanceTimersByTime(1000));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(card.style.getPropertyValue('--toast-swipe-x')).toBe('');
+  });
+
+  it('hands a host swipe input the stack controller and cleans it up', () => {
+    const detachInput = jest.fn();
+    const swipeInput = jest.fn<() => void, Parameters<ToastStackSwipeInput>>(
+      () => detachInput,
+    );
+    act(() =>
+      root.render(
+        <ToastStack
+          toasts={[toast('a')]}
+          placement="top-left"
+          onClose={onClose}
+          swipeInput={swipeInput}
+          renderToast={(item): JSX.Element => <p>{item.message}</p>}
+        />,
+      ),
+    );
+    expect(swipeInput).toHaveBeenCalledTimes(1);
+    expect(swipeInput.mock.calls[0]?.[2]).toBe('left');
+    expect(swipeInput.mock.calls[0]?.[1]).toBeInstanceOf(HTMLElement);
+
+    act(() => root.render(<p>gone</p>));
+    expect(detachInput).toHaveBeenCalledTimes(1);
   });
 });
 

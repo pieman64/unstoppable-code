@@ -4,11 +4,18 @@ import type {
   PortalEventEnvelope,
 } from '@canopy/desktop-shared/types';
 import {
+  getLiveBackgroundTasksForChat,
+  listLiveBackgroundTaskOwners,
+  subscribeLiveBackgroundTasks,
+} from '../../agents/session-manager';
+import { parseDelegationSessionKey } from '../../agents/delegation/activity';
+import {
   type PortalBackgroundProcessEntity,
   worktreeScopedParentLocalId,
 } from '@canopy/protocol/portal';
 import { logMainProcessError } from '../../lib/main-process-logging';
 import {
+  reconcileBackgroundProcessLiveSet,
   listTrackedBackgroundProcesses,
   subscribeBackgroundProcessTracker,
   type BackgroundProcessTrackerTarget,
@@ -28,6 +35,8 @@ interface BackgroundProcessAdapterDependencies {
 const fingerprints = new Map<string, string>();
 const emittedLocalIds = new Map<string, string[]>();
 let unsubscribeTracker: (() => void) | null = null;
+const pendingLiveTaskSessionKeys = new Set<string>();
+let liveTaskFlushQueued = false;
 
 function projectionKey(target: BackgroundProcessTrackerTarget): string {
   return `${target.workspaceLocalId}\u0000${target.worktreeLocalId}`;
@@ -149,6 +158,44 @@ export function startPortalBackgroundProcessProjection(): void {
   if (unsubscribeTracker) {
     return;
   }
+  subscribeLiveBackgroundTasks((sessionKey): void => {
+    pendingLiveTaskSessionKeys.add(sessionKey);
+    if (liveTaskFlushQueued) {
+      return;
+    }
+    liveTaskFlushQueued = true;
+    // Batch notifications only; this is not an ordering guarantee.
+    queueMicrotask((): void => {
+      liveTaskFlushQueued = false;
+      const sessionKeys = Array.from(pendingLiveTaskSessionKeys);
+      pendingLiveTaskSessionKeys.clear();
+      for (const key of sessionKeys) {
+        const chat = parseDelegationSessionKey(key);
+        if (!chat) {
+          continue;
+        }
+        try {
+          reconcileBackgroundProcessLiveSet(
+            {
+              workspaceLocalId: chat.projectId,
+              worktreeLocalId: chat.worktreeId,
+              chatId: chat.chatId,
+            },
+            getLiveBackgroundTasksForChat(
+              chat.projectId,
+              chat.worktreeId,
+              chat.chatId,
+            ),
+          );
+        } catch (error: unknown) {
+          logMainProcessError(
+            'Portal live background-task reconciliation failed',
+            error,
+          );
+        }
+      }
+    });
+  });
   unsubscribeTracker = subscribeBackgroundProcessTracker((target): void => {
     try {
       emitPortalBackgroundProcessProjection(target);
@@ -156,6 +203,31 @@ export function startPortalBackgroundProcessProjection(): void {
       logMainProcessError('Portal background-process projection failed', error);
     }
   });
+  try {
+    for (const owner of listLiveBackgroundTaskOwners()) {
+      try {
+        reconcileBackgroundProcessLiveSet(
+          {
+            workspaceLocalId: owner.projectId,
+            worktreeLocalId: owner.worktreeId,
+            chatId: owner.chatId,
+          },
+          getLiveBackgroundTasksForChat(
+            owner.projectId,
+            owner.worktreeId,
+            owner.chatId,
+          ),
+        );
+      } catch (error: unknown) {
+        logMainProcessError(
+          'Portal live background-task seeding failed',
+          error,
+        );
+      }
+    }
+  } catch (error: unknown) {
+    logMainProcessError('Portal live background-task seeding failed', error);
+  }
 }
 
 export function clearPortalBackgroundProcessFingerprints(): void {

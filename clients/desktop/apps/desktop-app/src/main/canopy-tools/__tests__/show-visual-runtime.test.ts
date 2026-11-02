@@ -55,6 +55,13 @@ function setup(codexCallId?: string): {
   };
   return { host, staged };
 }
+
+function unvalidatedMeasureResult(heights: number[][]): VisualMeasureResult {
+  const result: VisualMeasureResult = { status: 'ok', heights: [] };
+  // These cases deliberately feed malformed bridge data to the validator.
+  Reflect.set(result, 'heights', heights);
+  return result;
+}
 beforeEach(() => {
   jest.clearAllMocks();
   jest.mocked(readAuthorizedRegularFile).mockResolvedValue(png);
@@ -382,8 +389,8 @@ test.each([
   'rejects %s measurement without failing publishing',
   async (_name, heights) => {
     const { host, staged } = setup();
-    host.measureVisual = jest.fn(() =>
-      Promise.resolve({ status: 'ok' as const, heights }),
+    host.measureVisual = jest.fn<Promise<VisualMeasureResult>, []>(() =>
+      Promise.resolve(unvalidatedMeasureResult(heights)),
     );
     expect(
       (

@@ -1,5 +1,8 @@
 import { BRAND } from '@canopy/brand/current';
-import type { LedgerContainer } from '@canopy/protocol/canopy-core';
+import type {
+  LedgerContainer,
+  LedgerGlobalOwner,
+} from '@canopy/protocol/canopy-core';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import type { PipelineLedgerAttemptRequest } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type {
@@ -42,6 +45,18 @@ jest.mock('../../canopy-tools/ledger-tools-runtime', () => ({
   openLedgerPipelineAgentTools: (
     ...args: Parameters<typeof openLedgerPipelineAgentTools>
   ): Promise<unknown> => mockOpenPipelineAgentTools(...args),
+}));
+
+const mockResolveGlobalScope = jest.fn<
+  Promise<{ readonly containerCreatedAt: string }>,
+  [LedgerGlobalOwner]
+>();
+
+jest.mock('../../ledger/core-ledger-adapter', () => ({
+  resolveDesktopGlobalLedgerScope: (
+    owner: LedgerGlobalOwner,
+  ): Promise<{ readonly containerCreatedAt: string }> =>
+    mockResolveGlobalScope(owner),
 }));
 
 jest.mock('../../mcp/http-proxy-service', () => ({
@@ -87,6 +102,11 @@ function request(
   return {
     executionId: 'execution-1',
     pipelineName: 'Release',
+    target: {
+      kind: 'task',
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+    },
     projectId: 'workspace-1',
     worktreeId: 'worktree-1',
     physicalJobId: 'build__variant_1',
@@ -102,6 +122,26 @@ function request(
     permissionPreset: 'read_only',
     ...overrides,
   };
+}
+
+const ORG_ID = '0b4f8a52-7c1d-4e8a-9f3b-2d6c1e5a7b90';
+
+/**
+ * An attempt of a run without a worktree, recording to its owner's global
+ * Ledger: a directory run keeps its project, a global run has none.
+ */
+function globalRequest(
+  owner: LedgerGlobalOwner,
+  projectId?: string,
+): PipelineLedgerAttemptRequest {
+  const {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    projectId: _project,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    worktreeId: _worktree,
+    ...rest
+  } = request({ target: { kind: 'global', owner } });
+  return projectId === undefined ? rest : { ...rest, projectId };
 }
 
 describe('desktop pipeline Ledger port', () => {
@@ -172,6 +212,45 @@ describe('desktop pipeline Ledger port', () => {
     expect(getPipelineLedgerAttemptTools(attempt.attemptKey)).toBeUndefined();
     attempt.close({ kind: 'settled' });
     expect(session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a global run's attempt in its owner's global Ledger", async () => {
+    mockOpenPipelineAgentTools.mockResolvedValue(fakeSession());
+    const owner: LedgerGlobalOwner = {
+      kind: 'organization',
+      organizationId: ORG_ID,
+    };
+
+    const attempt = await port.openAttempt(globalRequest(owner));
+
+    const [options] = mockOpenPipelineAgentTools.mock.calls[0] ?? [];
+    if (options === undefined) throw new Error('Expected the gate to run');
+    expect(options.globalOwner).toEqual(owner);
+    // A projectless run is keyed by the executor's synthetic pipeline route.
+    expect(options.target).toEqual({
+      projectId: 'pipeline',
+      worktreeId: 'execution-1',
+      chatId: 'pipeline:execution-1',
+    });
+    // The host binds the owner's global Ledger for the signed-in account.
+    mockResolveGlobalScope.mockResolvedValue({
+      containerCreatedAt: '2026-10-21T00:00:00.000Z',
+    });
+    await expect(
+      options.host?.containerCreatedAt({ kind: 'global', owner }),
+    ).resolves.toBe('2026-10-21T00:00:00.000Z');
+    expect(mockResolveGlobalScope).toHaveBeenCalledWith(owner);
+    attempt?.close({ kind: 'settled' });
+  });
+
+  it('keeps a task run in its worktree, whoever owns the run', async () => {
+    mockOpenPipelineAgentTools.mockResolvedValue(fakeSession());
+
+    const attempt = await port.openAttempt(request());
+
+    const [options] = mockOpenPipelineAgentTools.mock.calls[0] ?? [];
+    expect(options).not.toHaveProperty('globalOwner');
+    attempt?.close({ kind: 'settled' });
   });
 
   it("passes the step's configured secrets to the agent's binding", async () => {
@@ -432,6 +511,25 @@ describe('pipeline Ledger subprocess approval', () => {
     );
     expect(check).toHaveBeenCalledTimes(1);
     close();
+  });
+
+  it("keys a directory run's session by its project, so its deny rules apply", async () => {
+    const attempt = await port.openAttempt(
+      globalRequest({ kind: 'personal' }, 'workspace-1'),
+    );
+    if (attempt === null) throw new Error('Expected an attempt');
+    await attempt.openSubprocessTools('/repo/app');
+
+    expect(mockCreateApprovalSession.mock.calls[0]?.[0]).toMatchObject({
+      projectId: 'workspace-1',
+      worktreeId: 'execution-1',
+      chatId: 'pipeline:execution-1',
+    });
+    expect(mockRegisterRoute.mock.calls[0]?.[0]).toMatchObject({
+      projectId: 'workspace-1',
+      worktreeId: 'execution-1',
+    });
+    attempt.close({ kind: 'settled' });
   });
 
   it('follows the step preset', async () => {

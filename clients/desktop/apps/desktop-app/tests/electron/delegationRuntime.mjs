@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 import {
   handleLlmRequest,
   buildResponsesEvents,
+  currentRequestTools,
 } from './mock-server/routes/llm.mjs';
 import { registerScenario } from './mock-server/control-plane.mjs';
 import { handleAuthUsageRequest } from './mock-server/routes/authUsage.mjs';
@@ -23,11 +24,38 @@ export const TOOL_NAMESPACE = loadBrand(process.env.CANOPY_BRAND || 'canopy')
 export const claudeToolName = (name) => `mcp__${TOOL_NAMESPACE}__${name}`;
 export const codexToolName = (name) => `${TOOL_NAMESPACE}_${name}`;
 
+// Codex code mode offers nested tools in the exec gateway's declarations.
+// Observe declarations, never prose examples or tool descriptions mentioning
+// a forbidden tool: confinement assertions must inspect what is offered.
+function offeredToolNames(tools) {
+  return (tools ?? []).flatMap((candidate) => {
+    if (candidate.type !== 'namespace')
+      return [candidate.name ?? candidate.type];
+    return (candidate.tools ?? []).flatMap((nested) => {
+      const name = `${candidate.name}.${nested.name}`;
+      if (candidate.name !== 'functions' || nested.name !== 'exec')
+        return [name];
+      const declared = [
+        ...(nested.description ?? '').matchAll(
+          /declare const tools: \{\s*([A-Za-z_$][\w$]*)\(/g,
+        ),
+      ].map((match) => `functions.${match[1]}`);
+      return [name, ...declared];
+    });
+  });
+}
+
 function userText(body) {
   return (body.messages ?? body.input ?? [])
     .filter((item) => item.role === 'user')
     .map((item) => JSON.stringify(item.content))
     .join('\n');
+}
+function lastUserText(body) {
+  const last = (body.messages ?? body.input ?? [])
+    .filter((item) => item.role === 'user')
+    .at(-1);
+  return JSON.stringify(last?.content ?? '');
 }
 function toolResultEntries(body) {
   const results = [];
@@ -75,6 +103,19 @@ function matchStringLeaves(value, pattern) {
     Array.from(text.matchAll(pattern), (match) => match[1]),
   );
 }
+// Claude Code 2.1.310 offers MCP tools as deferred tools (loaded through
+// ToolSearch): their names are listed in a reminder, not in `tools`.
+const DEFERRED_TOOLS_HEADER = 'before calling them:\n';
+function claudeDeferredToolNames(body) {
+  return Array.from(stringLeaves(body)).flatMap((text) => {
+    const start = text.indexOf(DEFERRED_TOOLS_HEADER);
+    if (start < 0) return [];
+    return text
+      .slice(start + DEFERRED_TOOLS_HEADER.length)
+      .split('\n\n')[0]
+      .split('\n');
+  });
+}
 
 export async function createDelegationInference({
   parent,
@@ -101,6 +142,10 @@ export async function createDelegationInference({
   const integrated = `Integrated the delegated finding for ${caseId}`;
   const continued = `Continuing independent parent work for ${caseId}`;
   const coldFollowUp = `Answered after a cold restart for ${caseId}`;
+  // request-steering: the child's message to its root chat, and the root's
+  // reply once that message reaches it.
+  const steeringRequest = `DELEGATE_STEERING_REQUEST_${caseId}`;
+  const steeringReply = `Answered the delegate steering request for ${caseId}`;
   const requests = [];
   const errors = [];
   let sequence = 0;
@@ -130,16 +175,13 @@ export async function createDelegationInference({
   let nestedResumeRead = false;
   let nestedResumeLaunched = false;
   let nestedResumeTargetId;
-  let nestedResumeWatchRequested = false;
-  let nestedResumeOutputRequested = false;
+  let nestedResumeNotices = 0;
   let nestedGrantResumeLaunched = false;
   let nestedFollowUpLaunched = false;
   let nestedDepthResumeLaunched = false;
   let nestedDepthResumeTargetId;
-  let nestedDepthResumeWatchRequested = false;
-  let nestedDepthResumeOutputRequested = false;
+  let nestedDepthResumeNotices = 0;
   let continuationApprovalStep = 0;
-  let followUpWatcherRequested = false;
   // isolation-conflict: apply fails on a parent edit, the delegate reconciles,
   // then a second apply succeeds. The spec inspects the parent between them.
   let conflictStep = 0;
@@ -149,6 +191,15 @@ export async function createDelegationInference({
     action === 'isolation-conflict'
       ? new Promise((resolve) => {
           releaseConflictRetry = resolve;
+        })
+      : Promise.resolve();
+  // request-steering-queued: the parent's call after its spawn waits for
+  // releaseParentTurn, so the root turn is still running.
+  let releaseParentTurn;
+  const parentTurnBarrier =
+    action === 'request-steering-queued'
+      ? new Promise((resolve) => {
+          releaseParentTurn = resolve;
         })
       : Promise.resolve();
   let releaseContinuation;
@@ -202,6 +253,23 @@ export async function createDelegationInference({
           releaseChild = resolve;
         })
       : Promise.resolve();
+  // Cancellation owns a child turn, not the shared Codex app-server process.
+  // Observe its real inference transport after the native evidence read. The
+  // response stays held at childBarrier, so closing it proves interruption.
+  const childConnections = [];
+  function trackChildCancellation(body, transport) {
+    if (
+      action !== 'cancel' ||
+      !userText(body).includes(childMarker) ||
+      !toolResults(body).includes(canary)
+    )
+      return;
+    const connection = { closed: false };
+    childConnections.push(connection);
+    transport.once('close', () => {
+      connection.closed = true;
+    });
+  }
   const brief = {
     'claude/claude':
       'Perform an adversarial review of the error handling and report one concrete failure mode.',
@@ -382,8 +450,17 @@ export async function createDelegationInference({
   }
 
   async function select(body, harness) {
+    body = { ...body, tools: currentRequestTools(body) };
     const text = userText(body);
     const results = toolResults(body);
+    // A delegate completion notice wakes the parent like a fired watcher.
+    const notified =
+      text.includes('watcher fired') || /delegate finished/i.test(text);
+    // Earlier notices stay in the history, so a resumed run counts as notified
+    // only once a notice arrives after the resume. A batched notice from before
+    // it can land first, so each new notice fetches the output again.
+    const notices =
+      text.match(/watcher fired|delegate finished/gi)?.length ?? 0;
     const context = JSON.stringify(body.messages ?? body.input ?? []);
     const isGrandchild = text.includes(grandchildMarker);
     const isChild = !isGrandchild && text.includes(childMarker);
@@ -440,7 +517,10 @@ export async function createDelegationInference({
         results.includes('denied_probe'),
       hasAmbientMcpTool:
         JSON.stringify(body.tools ?? []).includes('ambient_probe') ||
-        Boolean(selectedMcpTool(body, 'ambient_probe')),
+        Boolean(selectedMcpTool(body, 'ambient_probe')) ||
+        claudeDeferredToolNames(body).some((name) =>
+          name.endsWith('__ambient_probe'),
+        ),
       hasGitCommandInstructions: JSON.stringify(body).includes(
         'Use exec_command with login:false',
       ),
@@ -452,6 +532,14 @@ export async function createDelegationInference({
       hasSetupCommand: JSON.stringify(body).includes('pnpm install'),
       // A fired watcher's hidden context reached this request.
       hasWatcherEvent: JSON.stringify(body).includes('_watcher_event>'),
+      // A delegate completion notice, or a command watcher's event, reached it.
+      // Payload fields, not tool descriptions that name the same values.
+      hasDelegateNotice: /kind\\*":\s*\\*"delegation_finished/.test(
+        JSON.stringify(body),
+      ),
+      hasCommandWatcherEvent: /trigger\\*":\s*\\*"command_watch_resolved/.test(
+        JSON.stringify(body),
+      ),
       results,
       hasNativeEvidence: results.includes(canary),
       hasWorkspaceObservation:
@@ -467,13 +555,7 @@ export async function createDelegationInference({
           }
         : {}),
       // Flattened offered tool names; namespaced Codex tools as `ns.name`.
-      toolNames: (body.tools ?? []).flatMap((candidate) =>
-        candidate.type === 'namespace'
-          ? (candidate.tools ?? []).map(
-              (nested) => `${candidate.name}.${nested.name}`,
-            )
-          : [candidate.name ?? candidate.type],
-      ),
+      toolNames: offeredToolNames(body.tools),
       // What each Codex tool search returned, in the same `ns.name` form. A
       // selected MCP tool the child cannot find is missing from these too.
       toolSearchResults: (body.input ?? [])
@@ -489,6 +571,12 @@ export async function createDelegationInference({
         ),
       receivedAt: Date.now(),
     };
+    if (
+      item.toolNames.some((name) =>
+        /WatchDelegates$|watch_delegates$/.test(name),
+      )
+    )
+      throw new Error('Fresh provider tools must not advertise WatchDelegates');
     requests.push(item);
     onRequest?.(requests);
     if (isParent && action === 'initialization-cancel')
@@ -589,7 +677,7 @@ export async function createDelegationInference({
         text.includes(`DEPTH_LOWERED_${caseId}`))
     ) {
       if (
-        nestedDepthResumeOutputRequested &&
+        nestedDepthResumeLaunched &&
         results.includes(`DEPTH_LOWERED_${caseId}`)
       )
         return {
@@ -598,6 +686,7 @@ export async function createDelegationInference({
         };
       if (!nestedDepthResumeLaunched) {
         nestedDepthResumeLaunched = true;
+        nestedDepthResumeNotices = notices;
         const id = text.match(
           /NESTED_DEPTH_LOWERED_RESUME ([0-9a-f-]{36})/,
         )?.[1];
@@ -623,30 +712,9 @@ export async function createDelegationInference({
           },
         };
       }
-      if (!nestedDepthResumeWatchRequested) {
-        nestedDepthResumeWatchRequested = true;
-        return {
-          marker: parentMarker,
-          step: {
-            toolCalls: [
-              {
-                name:
-                  harness === 'claude'
-                    ? claudeToolName('WatchDelegates')
-                    : codexToolName('watch_delegates'),
-                input: {
-                  delegationIds: [nestedDepthResumeTargetId],
-                  mode: 'all',
-                  timeoutMs: 30_000,
-                },
-              },
-            ],
-            stopReason: 'tool_use',
-          },
-        };
-      }
-      if (!nestedDepthResumeOutputRequested && text.includes('watcher fired')) {
-        nestedDepthResumeOutputRequested = true;
+
+      if (notices > nestedDepthResumeNotices) {
+        nestedDepthResumeNotices = notices;
         return {
           marker: parentMarker,
           step: {
@@ -677,16 +745,14 @@ export async function createDelegationInference({
       ((nestedResumeLaunched && nestedResumeTargetId) ||
         text.includes('NESTED_ROOT_RESUME'))
     ) {
-      if (
-        nestedResumeOutputRequested &&
-        results.includes(`RESUMED_${nestedFinding}`)
-      )
+      if (nestedResumeLaunched && results.includes(`RESUMED_${nestedFinding}`))
         return {
           marker: parentMarker,
           step: { text: `${integrated} resumed`, stopReason: 'end_turn' },
         };
       if (!nestedResumeLaunched) {
         nestedResumeLaunched = true;
+        nestedResumeNotices = notices;
         const id = text.match(/NESTED_ROOT_RESUME ([0-9a-f-]{36})/)?.[1];
         if (!id) throw new Error('Missing root-selected grandchild');
         nestedResumeTargetId = id;
@@ -710,30 +776,9 @@ export async function createDelegationInference({
           },
         };
       }
-      if (!nestedResumeWatchRequested) {
-        nestedResumeWatchRequested = true;
-        return {
-          marker: parentMarker,
-          step: {
-            toolCalls: [
-              {
-                name:
-                  harness === 'claude'
-                    ? claudeToolName('WatchDelegates')
-                    : codexToolName('watch_delegates'),
-                input: {
-                  delegationIds: [nestedResumeTargetId],
-                  mode: 'all',
-                  timeoutMs: 30_000,
-                },
-              },
-            ],
-            stopReason: 'tool_use',
-          },
-        };
-      }
-      if (!nestedResumeOutputRequested && text.includes('watcher fired')) {
-        nestedResumeOutputRequested = true;
+
+      if (notices > nestedResumeNotices) {
+        nestedResumeNotices = notices;
         return {
           marker: parentMarker,
           step: {
@@ -906,6 +951,31 @@ export async function createDelegationInference({
       };
     }
     if (isChild) {
+      // request-steering: once the test releases it, the child asks its root
+      // chat for steering, then finishes.
+      if (action?.startsWith('request-steering')) {
+        if (results)
+          return {
+            marker: childMarker,
+            step: { text: finding, stopReason: 'end_turn' },
+          };
+        await childBarrier;
+        return {
+          marker: childMarker,
+          step: {
+            toolCalls: [
+              {
+                name:
+                  harness === 'claude'
+                    ? claudeToolName('RequestSteering')
+                    : codexToolName('request_steering'),
+                input: { message: steeringRequest },
+              },
+            ],
+            stopReason: 'tool_use',
+          },
+        };
+      }
       // background-task: shell detachment is refused with guidance, and a
       // CLI-managed background task runs with a readable output file.
       if (action === 'background-task' && harness === 'claude') {
@@ -929,7 +999,9 @@ export async function createDelegationInference({
                 {
                   name: 'Bash',
                   input: {
-                    command: `sleep 30 & echo DETACHED_${caseId}`,
+                    // No leading `sleep`: Claude Code 2.1.310 blocks that
+                    // itself, before the delegation policy sees the command.
+                    command: `nohup true & echo DETACHED_${caseId}`,
                     description: 'Detached attempt',
                   },
                 },
@@ -1661,6 +1733,14 @@ export async function createDelegationInference({
       };
     }
     if (isParent) {
+      if (action?.startsWith('request-steering')) {
+        if (lastUserText(body).includes(steeringRequest))
+          return {
+            marker: parentMarker,
+            step: { text: steeringReply, stopReason: 'end_turn' },
+          };
+        if (results.includes('delegationId')) await parentTurnBarrier;
+      }
       if (
         action === 'partial-failure' &&
         text.includes('FAILURE_OUTPUT_PROBE') &&
@@ -1866,13 +1946,12 @@ export async function createDelegationInference({
                     input: {
                       delegationIds: [id],
                       mode: 'all',
-                      // The maximum deadline: completion still fires first.
+                      // Explicit unlisted compatibility injection, not a fresh offer.
                       timeoutMs: 1_800_000,
                     },
                   }
                 : !history.includes(output) ||
-                    (text.includes('watcher fired') &&
-                      !results.includes(finding))
+                    (notified && !results.includes(finding))
                   ? { name: output, input: { delegationId: id } }
                   : undefined;
           if (next)
@@ -1882,12 +1961,8 @@ export async function createDelegationInference({
             };
         }
         if (needsWatcher && action !== 'watch') {
-          const next = !history.includes(watch)
-            ? {
-                name: watch,
-                input: { delegationIds: [id], mode: 'all', timeoutMs: 30_000 },
-              }
-            : text.includes('watcher fired') && !results.includes(finding)
+          const next =
+            notified && !results.includes(finding)
               ? { name: output, input: { delegationId: id } }
               : undefined;
           if (next)
@@ -1955,15 +2030,9 @@ export async function createDelegationInference({
           });
         }
         if (conflictStep === 2) {
-          conflictStep = 3;
-          return call(hostName('WatchDelegates', 'watch_delegates'), {
-            delegationIds: [id],
-            mode: 'all',
-            timeoutMs: 30_000,
-          });
-        }
-        if (conflictStep === 3) {
-          if ((text.match(/watcher fired/g)?.length ?? 0) < 2)
+          if (
+            (text.match(/watcher fired|delegate finished/gi)?.length ?? 0) < 2
+          )
             return {
               marker: parentMarker,
               step: {
@@ -2010,30 +2079,9 @@ export async function createDelegationInference({
         const id = (text + results).match(
           /delegationId[^0-9a-f]{0,10}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
         )?.[1];
-        if (!id) throw new Error('Missing child ID for continuation watcher');
-        if (!followUpWatcherRequested) {
-          followUpWatcherRequested = true;
-          return {
-            marker: parentMarker,
-            step: {
-              toolCalls: [
-                {
-                  name:
-                    harness === 'claude'
-                      ? claudeToolName('WatchDelegates')
-                      : codexToolName('watch_delegates'),
-                  input: {
-                    delegationIds: [id],
-                    mode: 'all',
-                    timeoutMs: 30_000,
-                  },
-                },
-              ],
-              stopReason: 'tool_use',
-            },
-          };
-        }
-        if ((text.match(/watcher fired/g)?.length ?? 0) >= 2)
+        if (!id) throw new Error('Missing child ID for continuation notice');
+
+        if ((text.match(/watcher fired|delegate finished/gi)?.length ?? 0) >= 2)
           return {
             marker: parentMarker,
             step: {
@@ -2177,6 +2225,11 @@ export async function createDelegationInference({
       for await (const chunk of request) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (
+        url.pathname.endsWith('/responses') ||
+        url.pathname.endsWith('/messages')
+      )
+        trackChildCancellation(body, response);
       if (url.pathname.endsWith('/responses')) {
         const events = await responseEvents(body);
         response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -2235,7 +2288,9 @@ export async function createDelegationInference({
       ws.on('error', () => undefined);
       ws.on('message', (data) => {
         void (async () => {
-          for (const event of await responseEvents(JSON.parse(data.toString())))
+          const body = JSON.parse(data.toString());
+          trackChildCancellation(body, ws);
+          for (const event of await responseEvents(body))
             if (ws.readyState === 1) ws.send(JSON.stringify(event.data));
         })().catch((error) => {
           errors.push(String(error));
@@ -2256,12 +2311,16 @@ export async function createDelegationInference({
     integrated,
     continued,
     coldFollowUp,
+    steeringRequest,
+    steeringReply,
     requests,
+    childConnections,
     errors,
     releaseContinuation: () => releaseContinuation?.(),
     releaseChild: () => releaseChild?.(),
     releaseConflictRetry: () => releaseConflictRetry?.(),
     releaseParentInitialization: () => releaseParentInitialization?.(),
+    releaseParentTurn: () => releaseParentTurn?.(),
     armNextDelegation: () => {
       firstSessionReuseDelegationId = requests
         .filter((request) => request.role === 'parent')
@@ -2281,6 +2340,7 @@ export async function createDelegationInference({
       releaseContinuation?.();
       releaseChild?.();
       releaseConflictRetry?.();
+      releaseParentTurn?.();
       for (const client of wss.clients) client.terminate();
       wss.close();
       server.closeAllConnections();

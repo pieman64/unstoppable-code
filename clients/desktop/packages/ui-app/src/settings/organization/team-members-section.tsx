@@ -1,9 +1,9 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -12,11 +12,13 @@ import {
 } from 'react';
 import { LogOut, Mail, Trash2 } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Badge,
   Button,
   CopyButton,
   DialogModal,
   ErrorBanner,
   StatusBadge,
+  SettingsSelect,
 } from '@canopy/ui-shared/components';
 import { formatUsd } from '@canopy/ui-shared/lib';
 import { BILLING_NO_SAVED_CARD_CODE } from '@canopy/protocol/billing';
@@ -62,6 +64,11 @@ import {
   type OrganizationSeatQuote,
 } from './organization-settings-slots';
 import type { InviteSeatChargeMode } from './invite-seat-charge';
+import {
+  SETTINGS_GROUP_CLASS,
+  SETTINGS_GROUP_GRID_CLASS,
+  SETTINGS_GROUP_GRID_ROW_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 
 interface TeamMembersSectionProps {
   detail: OrganizationDetail;
@@ -220,6 +227,7 @@ export function TeamMembersSection({
   }, [detail.subTeams]);
 
   const normalizedViewerEmail = viewerEmail.trim().toLowerCase();
+  const roleLabelPrefix = useId();
 
   const refreshInvites = useCallback(async (): Promise<void> => {
     if (!manageMembers) {
@@ -346,13 +354,19 @@ export function TeamMembersSection({
     // The panel is the list itself: the page header above carries the name,
     // description, and Add member, so nothing else needs a frame.
     <section className="flex flex-col gap-6" data-testid="team-members-section">
+      <span id={`${roleLabelPrefix}-caption`} hidden>
+        Role for
+      </span>
       <ErrorBanner className="" error={error} />
 
+      {/* One grid for the whole list, each row a subgrid of it: the role
+          and action columns size to their widest entry across every row, so
+          Remove and Leave share one width and the role dropdowns line up. */}
       <ul
         ref={membersListRef}
         tabIndex={-1}
         aria-label="Members"
-        className="divide-y rounded-xl bg-card shadow-sm"
+        className={`${SETTINGS_GROUP_GRID_CLASS} grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:gap-x-2`}
       >
         {detail.members.map((member) => {
           const isViewer =
@@ -365,7 +379,7 @@ export function TeamMembersSection({
             <li
               key={member.id}
               data-testid="team-member-row"
-              className="grid grid-cols-1 items-center gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto]"
+              className={SETTINGS_GROUP_GRID_ROW_CLASS}
             >
               <SettingsLink
                 href={memberProfileHref(detail.id, member.id)}
@@ -375,7 +389,9 @@ export function TeamMembersSection({
                 <MemberAvatar name={member.name} image={member.image} />
                 <div className={joinClassNames('min-w-0', blockClassName)}>
                   <p className="flex items-center gap-2 truncate text-s font-medium fg-primary">
-                    {member.name}
+                    <span id={`${roleLabelPrefix}-name-${member.id}`}>
+                      {member.name}
+                    </span>
                     {isViewer && (
                       <span className="text-xs font-normal fg-secondary">
                         (you)
@@ -388,45 +404,46 @@ export function TeamMembersSection({
                   {member.subTeamIds.length > 0 && (
                     <div className="mt-1 flex flex-wrap gap-1">
                       {member.subTeamIds.map((id) => (
-                        <span
-                          key={id}
-                          className="rounded-full bg-secondary px-2 py-0.5 text-3xs font-medium fg-secondary"
-                        >
+                        <Badge key={id}>
                           {subTeamNameById.get(id) ?? 'Team'}
-                        </span>
+                        </Badge>
                       ))}
                     </div>
                   )}
                 </div>
               </SettingsLink>
 
-              <div className="flex items-center justify-end gap-2">
-                {canEditRole ? (
-                  <SettingsControlSelect
-                    value={member.role}
-                    disabled={busy}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      if (
-                        next === 'OWNER' ||
-                        next === 'ADMIN' ||
-                        next === 'MEMBER'
-                      ) {
-                        void handleChangeRole(member, next);
-                      }
-                    }}
-                    aria-label={`Role for ${member.name}`}
-                    data-testid="team-member-role"
-                  >
-                    {ASSIGNABLE_ROLES.map((role) => (
-                      <option key={role} value={role}>
-                        {titleCaseRole(role)}
-                      </option>
-                    ))}
-                  </SettingsControlSelect>
-                ) : (
-                  <TeamRoleBadge role={member.role} />
-                )}
+              {/* Phone width: one right-aligned line under the member. From
+                  `sm`, the role and the action are the list grid's own
+                  columns; an action stretches to its column's width. */}
+              <div className="flex items-center justify-end gap-2 sm:contents">
+                <div className="flex">
+                  {canEditRole ? (
+                    <SettingsSelect
+                      value={member.role}
+                      disabled={busy}
+                      onValueChange={(next) => {
+                        if (
+                          next === 'OWNER' ||
+                          next === 'ADMIN' ||
+                          next === 'MEMBER'
+                        ) {
+                          void handleChangeRole(member, next);
+                        }
+                      }}
+                      // Named through ids: the menu renders outside the
+                      // replay-blocked page, so the member's name stays off it.
+                      aria-labelledby={`${roleLabelPrefix}-caption ${roleLabelPrefix}-name-${member.id}`}
+                      data-testid="team-member-role"
+                      options={ASSIGNABLE_ROLES.map((role) => ({
+                        value: role,
+                        label: titleCaseRole(role),
+                      }))}
+                    />
+                  ) : (
+                    <TeamRoleBadge role={member.role} />
+                  )}
+                </div>
 
                 {canRemove && (
                   <Button
@@ -464,12 +481,12 @@ export function TeamMembersSection({
           <p className="mt-1 text-xs fg-secondary">
             People you&apos;ve invited who haven&apos;t joined yet.
           </p>
-          <ul className="mt-3 divide-y rounded-xl bg-card shadow-sm">
+          <ul className={`mt-3 ${SETTINGS_GROUP_CLASS}`}>
             {pendingInvites.map((invite) => (
               <li
                 key={invite.id}
                 data-testid="team-pending-invite-row"
-                className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+                className="flex flex-wrap items-center justify-between gap-3"
               >
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary fg-secondary">
@@ -505,9 +522,7 @@ export function TeamMembersSection({
                         </span>
                       )}
                       {invite.organizationTeamName && (
-                        <span className="rounded-full bg-secondary px-2 py-0.5 text-3xs font-medium fg-secondary">
-                          {invite.organizationTeamName}
-                        </span>
+                        <Badge>{invite.organizationTeamName}</Badge>
                       )}
                     </div>
                   </div>
@@ -520,7 +535,7 @@ export function TeamMembersSection({
                       copiedLabel="Copied"
                       ariaLabel="Copy invite link"
                       variant="secondary"
-                      size="sm"
+                      size="compact"
                     />
                   )}
                   <Button
@@ -1043,6 +1058,7 @@ function AddMemberDialog({
                     copiedLabel="Copied"
                     ariaLabel="Copy invite link"
                     variant="secondary"
+                    size="compact"
                   />
                 </div>
               )}
@@ -1094,10 +1110,9 @@ function AddMemberDialog({
           <div className="flex flex-wrap gap-3">
             <label className="flex flex-1 flex-col gap-1 text-s fg-secondary">
               <span className="font-medium fg-primary">Role</span>
-              <SettingsControlSelect
+              <SettingsSelect
                 value={role}
-                onChange={(e) => {
-                  const next = e.target.value;
+                onValueChange={(next) => {
                   if (
                     next === 'MEMBER' ||
                     (next === 'ADMIN' && canAssignAdmin)
@@ -1106,29 +1121,29 @@ function AddMemberDialog({
                   }
                 }}
                 data-testid="add-member-role"
-              >
-                {roleOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {titleCaseRole(option)}
-                  </option>
-                ))}
-              </SettingsControlSelect>
+                width="fill"
+                options={roleOptions.map((option) => ({
+                  value: option,
+                  label: titleCaseRole(option),
+                }))}
+              />
             </label>
             {subTeams.length > 0 && (
               <label className="flex flex-1 flex-col gap-1 text-s fg-secondary">
                 <span className="font-medium fg-primary">Team (optional)</span>
-                <SettingsControlSelect
+                <SettingsSelect
                   value={groupId}
-                  onChange={(e) => setGroupId(e.target.value)}
+                  onValueChange={setGroupId}
                   data-testid="add-member-group"
-                >
-                  <option value="">No team</option>
-                  {subTeams.map((team) => (
-                    <option key={team.id} value={team.id}>
-                      {team.name}
-                    </option>
-                  ))}
-                </SettingsControlSelect>
+                  width="fill"
+                  options={[
+                    { value: '', label: 'No team' },
+                    ...subTeams.map((team) => ({
+                      value: team.id,
+                      label: team.name,
+                    })),
+                  ]}
+                />
               </label>
             )}
           </div>
@@ -1281,7 +1296,7 @@ function SeatChargeNotice({
           {canManageBilling && canAddCard ? (
             <Button
               size="compact"
-              variant="primary"
+              variant="secondary"
               className="mt-2"
               onClick={onAddCard}
               data-testid="seat-charge-add-card"

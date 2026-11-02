@@ -252,6 +252,14 @@ export class LiveTabReorder {
   private chip: HTMLElement | null = null;
   private held: readonly number[] | null = null;
   private finished = false;
+  /** The scrolling strip and where it stood when the drag began. */
+  private readonly scroller: HTMLElement | null;
+  private readonly startScrollLeft: number;
+  private readonly onScroll = (): void => {
+    if (!this.finished) {
+      this.pointerMoved(this.pointerX, this.pointerY);
+    }
+  };
 
   /** `null` when the row cannot be measured (not laid out yet). */
   static start(options: LiveTabReorderOptions): LiveTabReorder | null {
@@ -301,6 +309,18 @@ export class LiveTabReorder {
     this.pointerX = options.grabClientX;
     this.pointerY = (band.top + band.bottom) / 2;
     this.layout = computeLiveTabReorder(slots, fromIndex, slot?.left ?? 0);
+    // The strip can scroll under the drag (wheel, trackpad): the places were
+    // measured before that, so the pointer is read in their coordinates, and
+    // a scroll alone re-lays the row.
+    // The strip itself, not the tab's parent: a pinned tab sits in a
+    // tooltip wrapper inside it.
+    this.scroller = options.dragged.closest<HTMLElement>(
+      '.canopy-panel-tab-strip',
+    );
+    this.startScrollLeft = this.scroller?.scrollLeft ?? 0;
+    this.scroller?.addEventListener('scroll', this.onScroll, {
+      passive: true,
+    });
   }
 
   /** The dragged tab's index among the other tabs of its strip. */
@@ -333,10 +353,11 @@ export class LiveTabReorder {
         ? 'strip'
         : 'detached';
     if (this.mode === 'strip') {
+      const scrolled = (this.scroller?.scrollLeft ?? 0) - this.startScrollLeft;
       this.layout = computeLiveTabReorder(
         this.slots,
         this.fromIndex,
-        clientX - this.grabOffset,
+        clientX + scrolled - this.grabOffset,
       );
     }
     this.scheduleDraw();
@@ -408,6 +429,7 @@ export class LiveTabReorder {
   }
 
   private clear(): void {
+    this.scroller?.removeEventListener('scroll', this.onScroll);
     if (this.frame !== null) {
       this.view?.cancelAnimationFrame?.(this.frame);
       this.frame = null;

@@ -45,7 +45,8 @@ import {
   consumePipelineAssistantOpenRequest,
 } from '@/lib/pipelineAssistantEvents';
 import { startPipelineInterviewChat } from '@/lib/pipelineInterview';
-import { Tooltip } from '@canopy/ui-shared';
+import { Button, Tooltip } from '@canopy/ui-shared';
+import { ResizeRailIndicator } from '@canopy/ui-shared/components';
 import { SharePipelineModal } from '../pipeline/SharePipelineModal';
 import { useShareAccess } from '../../hooks/useShareAccess';
 import { SHARE_PIPELINE_GATE_CONTEXT } from '@/lib/share-gate-context';
@@ -495,7 +496,7 @@ export function PipelinesPage({
               return;
             }
             if (loaded.error !== undefined || !loaded.data) {
-              setShareError(loaded.error ?? 'Failed to load pipeline');
+              setShareError(loaded.error ?? 'Failed to load workflow');
               return;
             }
             setShareTarget(loaded.data);
@@ -611,30 +612,31 @@ export function PipelinesPage({
   // receive a window drag instead of a click. See PipelineChatPanel, whose
   // header sits in that band unconditionally.
   const chatToggle = (
-    <Tooltip
-      label={
-        chatPanelVisible ? 'Hide pipeline assistant' : 'Show pipeline assistant'
-      }
-    >
-      <button
-        type="button"
-        onClick={handleToggleChatPanel}
-        aria-label={
+    <span className="electron-no-drag inline-flex">
+      <Tooltip
+        label={
           chatPanelVisible
-            ? 'Hide pipeline assistant'
-            : 'Show pipeline assistant'
+            ? 'Hide workflow assistant'
+            : 'Show workflow assistant'
         }
-        aria-pressed={chatPanelVisible}
-        data-testid="pipeline-chat-toggle"
-        className={`electron-no-drag focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border transition-colors ${
-          chatPanelVisible
-            ? 'bg-accent-subtle fg-accent'
-            : 'bg-secondary fg-secondary hover:bg-accent-subtle hover:fg-primary'
-        }`}
       >
-        <ChatIcon width={16} height={16} aria-hidden="true" />
-      </button>
-    </Tooltip>
+        <Button
+          variant={chatPanelVisible ? 'ghost-accent' : 'secondary'}
+          size="compact"
+          iconOnly
+          onClick={handleToggleChatPanel}
+          aria-label={
+            chatPanelVisible
+              ? 'Hide workflow assistant'
+              : 'Show workflow assistant'
+          }
+          aria-pressed={chatPanelVisible}
+          data-testid="pipeline-chat-toggle"
+        >
+          <ChatIcon width={14} height={14} aria-hidden="true" />
+        </Button>
+      </Tooltip>
+    </span>
   );
 
   const assistantVisible =
@@ -647,7 +649,7 @@ export function PipelinesPage({
         ? pipeline.remoteId !== undefined &&
           (await deleteSharedPipeline(pipeline.remoteId))
         : await deletePipeline(pipeline.id);
-    if (!deleted) throw new Error('The pipeline could not be deleted.');
+    if (!deleted) throw new Error('The workflow could not be deleted.');
   };
   const handleRowEdit = (pipeline: PipelineInfo): void =>
     // Share and Edit must resolve a row to the same document; both go
@@ -663,7 +665,7 @@ export function PipelinesPage({
     const origin = useNavigationStore.getState().workflowEdit;
     const originKey = origin === undefined ? null : workflowEditKey(origin);
     const copy = await duplicatePipeline(pipeline);
-    if (!copy) throw new Error('The pipeline could not be duplicated.');
+    if (!copy) throw new Error('The workflow could not be duplicated.');
     // The copy is the user's own, so it opens editable. Back from it returns
     // to where the original would have. A user who left while the copy was
     // made stays where they went.
@@ -698,7 +700,8 @@ export function PipelinesPage({
       remove: handleRowDelete,
       duplicate: async (pipeline) => {
         const copy = await duplicatePipeline(pipeline);
-        if (!copy) throw new Error('The pipeline could not be duplicated.');
+        // The Library raises this as the reason under `Couldn't duplicate …`.
+        if (!copy) throw new Error('No copy was made.');
       },
       share: handleRowShare,
       sharePendingId,
@@ -776,9 +779,9 @@ export function PipelinesPage({
           onClose={() => setShareTarget(null)}
           onOpenAccountSettings={() => openCloudAccountSettings()}
           onShared={() => {
-            setShareTarget(null);
             // A successful share adds a Shared row and updates the local
             // pipeline's sharing metadata, so both lists need refreshing.
+            // The dialog stays open on its success notice until Done.
             void refresh();
             void refreshSharedList();
           }}
@@ -793,18 +796,12 @@ export function PipelinesPage({
           onMouseDown={handleResizeMouseDown}
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize pipeline assistant"
+          aria-label="Resize workflow assistant"
           aria-valuemin={MIN_PANEL_PERCENT}
           aria-valuemax={MAX_PANEL_PERCENT}
           aria-valuenow={Math.round(chatPanelWidthPercent)}
         >
-          <div
-            className={`my-2 rounded-full transition-[width,background-color] ${
-              isResizing
-                ? 'w-0.5 bg-accent/80'
-                : 'w-px bg-line-base/70 group-hover:w-0.5 group-hover:bg-accent/60'
-            }`}
-          />
+          <ResizeRailIndicator active={isResizing} />
         </div>
       )}
 

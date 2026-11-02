@@ -28,6 +28,9 @@ import {
  * real delivered work rather than advice, so enabling them is a separate call.
  */
 const DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  // Deliberately the former name, not ORCHESTRATOR_LABEL: server-side rows for
+  // this sentinel workspace are keyed by this display name, and a second name
+  // would split their history.
   'app-advisor': 'App Advisor',
   'plan-explore-chat': 'Plan Explore',
   'code-review-chat': 'Code Review Chat',

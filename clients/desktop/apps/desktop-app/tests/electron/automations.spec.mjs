@@ -154,9 +154,11 @@ test('strict background authorization allows an automation with a local custom s
   }
 });
 
+// The late chat start is the native send's `chat:hook-tab-started` notice,
+// which only the Home composer's scheduled task still sends (D4).
 test('Run now into a new Codex worktree chat preserves its timer after a late chat start', async () => {
   test.setTimeout(120_000);
-  const scenario = seedAutomationTurnTimerScenario();
+  const scenario = seedAutomationTurnTimerScenario({ nativeSend: true });
   let electronApp;
   try {
     const opened = await runAutomationAndOpenNewChat({
@@ -174,7 +176,7 @@ test('Run now into a new Codex worktree chat preserves its timer after a late ch
     await expect(timer).toHaveAttribute('data-state', 'live', {
       timeout: 10_000,
     });
-    await expect(timer.getByTestId('turn-timer-label')).toContainText(
+    await expect(panel.getByTestId('turn-work-header')).toContainText(
       'Working',
     );
 
@@ -187,9 +189,7 @@ test('Run now into a new Codex worktree chat preserves its timer after a late ch
     await expect(timer).toHaveAttribute('data-state', 'completed', {
       timeout: 30_000,
     });
-    await expect(timer.getByTestId('turn-timer-label')).toHaveText(
-      /Completed in \d+:\d{2}/,
-    );
+    await expect(panel.getByTestId('turn-timer-relative')).toBeVisible();
     await expect(timer).toHaveCount(1);
   } finally {
     releaseAutomationTurn(scenario.fixture);
@@ -222,9 +222,7 @@ test('Run now into a new Codex worktree chat shows and completes its turn timer'
       'data-state',
       'completed',
     );
-    await expect(panel.getByTestId('turn-timer-label')).toHaveText(
-      /Completed in \d+:\d{2}/,
-    );
+    await expect(panel.getByTestId('turn-timer-relative')).toBeVisible();
     await expect(panel.getByTestId('turn-timer')).toHaveCount(1);
   } finally {
     releaseAutomationTurn(scenario.fixture);
@@ -309,7 +307,24 @@ test('automations page: tabs, App Advisor activity CRUD, and validation', async 
     const definition = window.getByTestId('workflow-edit-section-definition');
     await expect(definition).toBeVisible();
 
-    // Default action type is App Advisor prompt; the prompt starts empty.
+    // A new workflow opens as a pipeline with no project (CAN-4550), owned
+    // by the workflow's owner. Switch to App Advisor; its prompt starts
+    // empty.
+    await expect(
+      definition.getByTestId('automations-form-action-type-global'),
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(
+      definition.getByTestId('automations-form-global-owner'),
+    ).toBeVisible();
+    await definition
+      .getByTestId('automations-form-action-type-app_advisor')
+      .click();
+    await expect(
+      definition.getByTestId('automations-form-action-type-app_advisor'),
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(
+      definition.getByTestId('automations-form-prompt'),
+    ).toBeVisible();
     await definition
       .getByTestId('automations-form-name')
       .fill('Validation activity');
@@ -374,8 +389,8 @@ test('automations page: tabs, App Advisor activity CRUD, and validation', async 
     ).toBeHidden();
 
     // --- Workspace action category: gated follow-up config ---------------
-    // Open a new draft and switch the two-option action selector to
-    // Workspace: only the unified workspace select shows. The follow-up
+    // Open a new draft (No project) and switch the Target selector to
+    // Project: only the unified workspace select shows. The follow-up
     // config (Chat | Pipeline pill and prompt) stays hidden until a
     // workspace is selected. This launch seeds no workspaces, so the picker
     // has nothing to select and the gated controls remain hidden.
@@ -394,7 +409,7 @@ test('automations page: tabs, App Advisor activity CRUD, and validation', async 
       window.getByTestId('automations-form-base-worktree'),
     ).toBeHidden();
 
-    // Switching back to App Advisor restores the prompt-only layout.
+    // Switching to App Advisor shows the prompt-only layout.
     await window
       .getByTestId('automations-form-action-type-app_advisor')
       .click();
@@ -456,6 +471,11 @@ test('automations form: If Command section — collapsed by default, expands on 
     await expect(
       definition.getByTestId('automations-form-action-type'),
     ).toBeVisible();
+    // A new workflow opens as a pipeline with no project; the prompt whose
+    // Add menu carries variable insertion belongs to App Advisor.
+    await definition
+      .getByTestId('automations-form-action-type-app_advisor')
+      .click();
     await expect(
       definition.getByTestId('automations-form-if-command-section'),
     ).toHaveCount(0);
@@ -761,14 +781,10 @@ test('automations page: the Library sort menu orders rows and keeps the choice a
         .toEqual(expected);
     };
     const chooseSort = async (value) => {
+      // The Sort button nested in the search field.
       await window.getByTestId('workflows-library-sort').click();
-      // Recently run is the menu's default entry.
       await window
-        .getByTestId(
-          value === 'recently-run'
-            ? 'workflows-library-sort-any'
-            : `workflows-library-sort-option-${value}`,
-        )
+        .getByTestId(`workflows-library-sort-option-${value}`)
         .click();
     };
 
@@ -1408,6 +1424,101 @@ test('automations run: terminal chat rejects scheduled permission overrides', as
   }
 });
 
+// CAN-4549: the moved existing-chat send keeps the terminal settings guard.
+// Without a D4 purpose the prompt goes through the shared project port; a
+// differing approval or model must still fail the run with today's text and
+// leave the terminal chat's settings unchanged.
+for (const [label, override] of [
+  ['approval', { approvalMode: 'full-access' }],
+  ['model', { model: 'claude-sonnet-4-6' }],
+]) {
+  test(`automations run: terminal chat rejects a shared-port ${label} override`, async () => {
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), `canopy-terminal-automation-${label}-`),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: 'demo-ts-pnpm-vite',
+      worktreeId: 'demo-main',
+      tabs: [
+        {
+          id: 'terminal-chat',
+          title: 'Terminal chat',
+          kind: 'chat',
+          providerType: 'claude',
+          model: 'claude-opus-4-6',
+          interfaceMode: 'auto',
+          approvalMode: 'ask',
+          messages: [],
+        },
+      ],
+      activeTabId: 'terminal-chat',
+    });
+    const activityId = `terminal-shared-port-${label}`;
+    seedAutomations({
+      userDataDir,
+      activities: [
+        {
+          version: 1,
+          id: activityId,
+          name: 'Terminal shared port check',
+          enabled: false,
+          schedule: {
+            kind: 'one_time',
+            runAt: '2099-06-01T15:00:00.000Z',
+            timezone: 'local',
+          },
+          action: {
+            type: 'worktree_session_prompt',
+            workspaceId: 'demo-ts-pnpm-vite',
+            worktreeId: 'demo-main',
+            chatId: 'terminal-chat',
+            prompt: 'Continue',
+            ...override,
+          },
+          createdAt: '2026-08-20T00:00:00.000Z',
+          updatedAt: '2026-08-20T00:00:00.000Z',
+          failureCount: 0,
+        },
+      ],
+    });
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openAutomationsPage();
+      const activityRow = app.workflowsLibraryAutomationRow(activityId);
+      await activityRow.getByTestId('workflows-library-run').click();
+      await expect(
+        activityRow.getByTestId('workflows-library-last-run'),
+      ).toContainText('Failed');
+      await app.chooseWorkflowsLibraryRowAction(activityRow, 'view-runs');
+      await expect(
+        window.getByTestId('workflow-edit-section-runs'),
+      ).toContainText(
+        'Scheduled terminal chat settings differ from the live chat',
+      );
+      const [tab] = await canonicalChatTabs(
+        window,
+        'demo-ts-pnpm-vite',
+        'demo-main',
+      );
+      expect(tab).toMatchObject({
+        model: 'claude-opus-4-6',
+        approvalMode: 'ask',
+      });
+      expect(
+        tab.messages.filter((message) => message.role === 'user'),
+      ).toHaveLength(0);
+    } finally {
+      await discardWorkflowEditIfOpen(electronApp);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // CAN-2937 — the "Run in" selector: new chat each run vs. existing chat.
 //
@@ -1476,9 +1587,14 @@ test('automations editor: creates a code automation in New chat each run mode', 
 
     await app.startNewWorkflow('schedule');
     await window.getByTestId('automations-form-name').fill('Fresh code chat');
+    // A new workflow opens as a pipeline with no project; choosing a project
+    // keeps Pipeline mode, so pick Chat.
     await window.getByTestId('automations-form-action-type-workspace').click();
     await window.getByTestId('automations-form-workspace').click();
     await window.getByRole('option').first().click();
+    await window
+      .getByTestId('automations-form-workspace-action-mode-chat')
+      .click();
     await expect(
       window.getByTestId('automations-form-run-in-new_chat'),
     ).toHaveAttribute('aria-checked', 'true');
@@ -1667,9 +1783,14 @@ test('automations editor: Existing chat defaults to a new chat in the picked wor
 
     await app.startNewWorkflow('schedule');
     await window.getByTestId('automations-form-name').fill('Same worktree');
+    // A new workflow opens as a pipeline with no project; choosing a project
+    // keeps Pipeline mode, so pick Chat.
     await window.getByTestId('automations-form-action-type-workspace').click();
     await window.getByTestId('automations-form-workspace').click();
     await window.getByRole('option').first().click();
+    await window
+      .getByTestId('automations-form-workspace-action-mode-chat')
+      .click();
     await window.getByTestId('automations-form-run-in-existing_chat').click();
 
     // Nothing is picked yet: Save is blocked on the destination.
@@ -1862,6 +1983,15 @@ test('targeted App Advisor automation preserves an existing empty chat and its m
       model: 'sonnet',
       providerType: 'claude',
     });
+    // CAN-5380: the new chat's message carries the automation's title line.
+    const created = (
+      await canonicalChatTabs(window, 'app-advisor', APP_ADVISOR_ENTRY_ID)
+    ).find((tab) => tab.id !== APP_ADVISOR_CHAT_ID);
+    expectAutomationSentMessage(
+      created,
+      'Advisor existing entry run',
+      'advisor-existing-entry-run',
+    );
   } finally {
     if (electronApp) {
       await closeFixture(electronApp, userDataDir, fixture.runtimeDir);
@@ -2156,6 +2286,13 @@ async function canonicalChatTabs(window, projectId, worktreeId) {
   return file.tabs.filter((tab) => (tab.kind ?? 'chat') === 'chat');
 }
 
+async function canonicalActiveTabId(window, projectId, worktreeId) {
+  return window.evaluate(
+    async (target) => (await window.api.chat.loadTabs(target)).activeTabId,
+    { projectId, worktreeId },
+  );
+}
+
 function persistedAutomationBanners(tab, automationName) {
   return (tab?.messages ?? []).filter((message) =>
     message.blocks?.some(
@@ -2164,6 +2301,37 @@ function persistedAutomationBanners(tab, automationName) {
         block.activityName === automationName,
     ),
   );
+}
+
+/**
+ * CAN-4549: an automation's own message carries the shared title line with the
+ * automation name; the title opens nothing and no hidden sender note shows.
+ */
+async function expectAutomationTitle(panel, automationName) {
+  const title = panel.locator(
+    '[data-testid="agent-sent-title"][data-sender="pipeline"]',
+  );
+  await expect(title).toHaveCount(1);
+  await expect(title).toHaveText(automationName);
+  await expect(panel.getByRole('button', { name: automationName })).toHaveCount(
+    0,
+  );
+  await expect(panel.getByText('agent-sender-context')).toHaveCount(0);
+}
+
+/** The automation's message in canonical state: sent as the automation. */
+function expectAutomationSentMessage(tab, automationName, activityId) {
+  const sent = (tab?.messages ?? []).find(
+    (message) => message.role === 'user' && message.agentSent !== undefined,
+  );
+  expect(sent).toMatchObject({
+    userMessageSource: 'agent',
+    agentSent: {
+      sender: { kind: 'pipeline', automationId: activityId },
+      chatTitle: automationName,
+    },
+  });
+  expect(sent.agentSent.sender).not.toHaveProperty('executionId');
 }
 
 async function expectSingleAutomationChat({
@@ -2175,6 +2343,8 @@ async function expectSingleAutomationChat({
   automationName,
   prompt,
   fixture,
+  // Set once the action sends through the shared port (CAN-5379).
+  activityId,
 }) {
   await scope.getByTestId(`panel-tab-panel-chat-${chatId}`).click();
   releaseAutomationTurn(fixture);
@@ -2187,6 +2357,8 @@ async function expectSingleAutomationChat({
   // finishes; response rendering is covered by the turn-timer scenarios.
   await expect(automationStartBanner(panel, automationName)).toHaveCount(1);
   await expect(automationStartBanner(panel, automationName)).toBeVisible();
+  if (activityId !== undefined)
+    await expectAutomationTitle(panel, automationName);
   // Only the automation's own chat: no empty starter tab beside it.
   await expect(visibleChatTabs(scope)).toHaveCount(1);
   await expect(
@@ -2206,6 +2378,12 @@ async function expectSingleAutomationChat({
       { timeout: 15_000 },
     )
     .toEqual({ chatIds: [chatId], banners: 1 });
+  if (activityId !== undefined)
+    expectAutomationSentMessage(
+      (await canonicalChatTabs(window, projectId, worktreeId))[0],
+      automationName,
+      activityId,
+    );
 }
 
 async function waitForAppAdvisorPage(electronApp) {
@@ -2273,6 +2451,7 @@ test('Run now into a new Code worktree starts one chat with the automation banne
       automationName,
       prompt,
       fixture,
+      activityId,
     };
     await expectSingleAutomationChat(expected);
 
@@ -2349,6 +2528,12 @@ test('Run now into an existing Code worktree adds a banner chat and keeps the ch
       worktreeId: 'demo-main',
     });
     expect(result.chatId).not.toBe('existing-review');
+    // A user's Run now brings the automation's chat forward in its scope.
+    await expect
+      .poll(() =>
+        canonicalActiveTabId(window, 'demo-ts-pnpm-vite', 'demo-main'),
+      )
+      .toBe(result.chatId);
 
     await app.openMainPage();
     await app.selectWorktree('demo-main');
@@ -2363,6 +2548,7 @@ test('Run now into an existing Code worktree adds a banner chat and keeps the ch
       .filter({ hasText: prompt });
     await expect(panel).toBeVisible({ timeout: 30_000 });
     await expect(automationStartBanner(panel, automationName)).toBeVisible();
+    await expectAutomationTitle(panel, automationName);
 
     const tabs = await canonicalChatTabs(
       window,
@@ -2379,6 +2565,136 @@ test('Run now into an existing Code worktree adds a banner chat and keeps the ch
     );
     const started = tabs.find((tab) => tab.id === result.chatId);
     expect(persistedAutomationBanners(started, automationName)).toHaveLength(1);
+    expectAutomationSentMessage(started, automationName, activityId);
+  } finally {
+    if (electronApp)
+      await closeFixture(electronApp, userDataDir, fixture.runtimeDir);
+  }
+});
+
+// CAN-4549: an existing-chat automation sends through the shared project port
+// as an automation-only pipeline sender. Its message gains the title line with
+// the automation name and keeps the banner, and a Run now brings it forward.
+test('Run now into an existing chat titles the message with the automation name and keeps the banner', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-automation-start-session-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const chatId = 'automation-target';
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: 'demo-ts-pnpm-vite',
+    worktreeId: 'demo-main',
+    providerType: 'codex',
+    tabs: [
+      {
+        id: chatId,
+        title: 'Release follow-up',
+        kind: 'chat',
+        messages: [
+          {
+            id: 'automation-target-user',
+            role: 'user',
+            timestamp: Date.parse('2026-09-20T12:00:00.000Z'),
+            blocks: [{ type: 'text', text: 'SESSION_CHAT earlier message.' }],
+          },
+          {
+            id: 'automation-target-assistant',
+            role: 'assistant',
+            timestamp: Date.parse('2026-09-20T12:00:05.000Z'),
+            blocks: [{ type: 'text', text: 'Earlier reply.' }],
+          },
+        ],
+      },
+      {
+        id: 'other-chat',
+        title: 'Other chat',
+        kind: 'chat',
+        messages: [],
+      },
+    ],
+    activeTabId: 'other-chat',
+  });
+  const activityId = 'automation-start-session';
+  const automationName = 'Release check';
+  const prompt = 'AUTOMATION_START_SESSION check the release notes.';
+  seedPromptAutomation(userDataDir, {
+    id: activityId,
+    name: automationName,
+    action: {
+      type: 'worktree_session_prompt',
+      workspaceId: 'demo-ts-pnpm-vite',
+      worktreeId: 'demo-main',
+      chatId,
+      prompt,
+    },
+  });
+  const fixture = createFixture('staged', AUTOMATION_START_REPLY);
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy({ userDataDir, env: fixture.env }));
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openAutomationsPage();
+    const result = await runAutomationNow(window, userDataDir, activityId);
+    expect(result).toMatchObject({
+      projectId: 'demo-ts-pnpm-vite',
+      worktreeId: 'demo-main',
+      chatId,
+    });
+    expect(typeof result.userMessageId).toBe('string');
+    // A user's Run now brings the target chat forward, as the native send did.
+    await expect
+      .poll(() =>
+        canonicalActiveTabId(window, 'demo-ts-pnpm-vite', 'demo-main'),
+      )
+      .toBe(chatId);
+
+    await app.openMainPage();
+    await app.selectWorktree('demo-main');
+    const main = window.getByTestId('page-main');
+    await main.getByTestId(`panel-tab-panel-chat-${chatId}`).click();
+    // Check the bubble while the staged reply is held, so it stays in view.
+    const panel = main
+      .getByTestId('panel-content-chat')
+      .filter({ hasText: prompt });
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    // The banner precedes the prompt, so in a chat with earlier turns it folds
+    // into the previous turn's steps, as on the native path; it is checked in
+    // the canonical transcript below.
+    const title = panel.locator(
+      '[data-testid="agent-sent-title"][data-sender="pipeline"]',
+    );
+    await expect(title).toHaveCount(1);
+    await expect(title).toHaveText(automationName);
+    // The title opens nothing and no hidden sender note is shown.
+    await expect(
+      panel.getByRole('button', { name: automationName }),
+    ).toHaveCount(0);
+    await expect(panel.getByText('agent-sender-context')).toHaveCount(0);
+    await expect(visibleChatTabs(main)).toHaveCount(2);
+    releaseAutomationTurn(fixture);
+
+    const tabs = await canonicalChatTabs(
+      window,
+      'demo-ts-pnpm-vite',
+      'demo-main',
+    );
+    expect(tabs.map((tab) => tab.id)).toEqual([chatId, 'other-chat']);
+    const sent = tabs[0]?.messages.find(
+      (message) => message.id === result.userMessageId,
+    );
+    expect(sent).toMatchObject({
+      userMessageSource: 'agent',
+      agentSent: {
+        sender: { kind: 'pipeline', automationId: activityId },
+        chatTitle: automationName,
+      },
+    });
+    expect(sent.agentSent.sender).not.toHaveProperty('executionId');
+    expect(persistedAutomationBanners(tabs[0], automationName)).toHaveLength(1);
   } finally {
     if (electronApp)
       await closeFixture(electronApp, userDataDir, fixture.runtimeDir);
@@ -2434,6 +2750,7 @@ test('Run now into Cowork opens one Work Entry chat with the automation banner, 
       automationName,
       prompt,
       fixture,
+      activityId,
     };
     await openEntry();
     await expectSingleAutomationChat(expected);
@@ -2470,7 +2787,7 @@ test('Run now into App Advisor opens one Work Entry chat with the automation ban
     await app.waitForShell();
     await app.openAutomationsPage();
     const result = await runAutomationNow(window, userDataDir, activityId);
-    // The quick prompt creates the Work Entry under the chat's own id.
+    // The Work Entry is the run's planned task, and its chat shares the id.
     const entryId = result.appAdvisorChatId;
     expect(entryId).toBeTruthy();
 
@@ -2484,6 +2801,7 @@ test('Run now into App Advisor opens one Work Entry chat with the automation ban
       automationName,
       prompt,
       fixture,
+      activityId,
     };
     await expect(
       advisor.getByTestId(`app-advisor-nav-entry-${entryId}`),

@@ -162,7 +162,6 @@ describe('portal.editor.resolve_invocable with the canonical writer', () => {
       now: () => 1_786_104_000_000,
       createId: () => 'event-id',
       dispatch: () => Promise.resolve(),
-      steer: () => Promise.resolve(false),
       onInputPickup: () => Promise.resolve(undefined),
       authorizeSend: () => Promise.resolve(undefined),
       cleanupSession: () => Promise.resolve(undefined),

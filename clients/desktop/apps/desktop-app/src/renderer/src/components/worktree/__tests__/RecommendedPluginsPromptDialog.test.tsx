@@ -43,8 +43,9 @@ describe('RecommendedPluginsPromptDialog', () => {
   });
 
   it('opens the matching setup destination without blocking the dialog', () => {
-    const prompt = {
+    const prompt: PendingRecommendedPluginPrompt = {
       projectId: 'project-1',
+      worktreeId: 'worktree-1',
       scopeLabel: 'Project',
       items: [],
       requirements: [
@@ -67,7 +68,7 @@ describe('RecommendedPluginsPromptDialog', () => {
           status: 'missing',
         },
       ],
-    } as PendingRecommendedPluginPrompt;
+    };
 
     act(() => root.render(<RecommendedPluginsPromptDialog prompt={prompt} />));
 

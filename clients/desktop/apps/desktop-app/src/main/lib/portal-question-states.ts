@@ -12,7 +12,9 @@ export function projectPortalQuestionStates(
   pending: readonly PersistedPendingQuestion[],
 ): PortalAskUserQuestionState[] {
   return pending
-    .filter((entry) => entry.chatId === chatId)
+    .filter(
+      (entry) => entry.chatId === chatId && entry.dismissedAt === undefined,
+    )
     .map((entry) => ({
       requestId: entry.requestId,
       ...(entry.toolUseId ? { toolUseId: entry.toolUseId } : {}),

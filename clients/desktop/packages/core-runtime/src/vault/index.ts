@@ -1,0 +1,17 @@
+export type {
+  VaultAdmission,
+  VaultBlockReason,
+  VaultDeleteOutcome,
+  VaultDeleteRequest,
+  VaultEntryMetadata,
+  VaultFamilyWriter,
+  VaultMutationFailure,
+  VaultNotFound,
+  VaultPutOutcome,
+  VaultPutRequest,
+  VaultReadOutcome,
+  VaultRepository,
+  VaultRevision,
+  VaultSecretPin,
+  VaultSecretRef,
+} from './contracts';

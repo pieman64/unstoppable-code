@@ -1,12 +1,19 @@
 import { createHash } from 'node:crypto';
 
-import type { LedgerAddEntryParams } from '@canopy/protocol/canopy-core';
+import type {
+  LedgerAddEntryParams,
+  LedgerGlobalOwner,
+} from '@canopy/protocol/canopy-core';
 
 import { LedgerStoreError } from '../errors';
 import {
   AUTHORITY_ID,
   CONTAINER_CREATED_AT,
+  ORGANIZATION_OWNER,
+  PERSONAL_OWNER,
   addInput,
+  bindGlobal,
+  readGlobalBindings,
   readLedgerDatabase,
   registerTestActor,
   setUpLedger,
@@ -455,6 +462,161 @@ describe('LedgerRepository sync bookkeeping', () => {
         'INVALID_INPUT',
       );
     }
+  });
+
+  describe('global bindings on a guest merge', () => {
+    /** A global Ledger with one agent entry, as a pipeline run leaves it. */
+    function seedGlobal(
+      owner: LedgerGlobalOwner,
+      accountId: string | null,
+    ): { readonly ledgerId: string; readonly entryId: string } {
+      const ledgerId = bindGlobal(context.repository, owner, accountId).scope
+        .ledgerId;
+      const agent = registerTestActor(
+        context.repository,
+        ledgerId,
+        'pipeline_agent',
+        'pipeline:attempt-1',
+        'Review step',
+      );
+      const entryId = context.repository.addEntry(
+        addInput({ ledgerId }, agent, TASK, `global-${ledgerId}`),
+      ).entry.entryId;
+      return { ledgerId, entryId };
+    }
+
+    function find(
+      owner: LedgerGlobalOwner,
+      accountId: string | null,
+    ): string | undefined {
+      return context.repository.findGlobalScope({ owner, accountId })?.scope
+        .ledgerId;
+    }
+
+    it('moves a guest binding the destination account lacks', () => {
+      const { repository } = context;
+      const personal = seedGlobal(PERSONAL_OWNER, 'guest-account');
+      const organization = seedGlobal(ORGANIZATION_OWNER, 'guest-account');
+      const signedOut = seedGlobal(PERSONAL_OWNER, null);
+      const counts = repository.getStorageCounts();
+
+      expect(
+        repository.rebindAccount({
+          fromAccountId: 'guest-account',
+          toAccountId: 'real-account',
+        }),
+      ).toEqual({ rebound: 2 });
+
+      expect(find(PERSONAL_OWNER, 'real-account')).toBe(personal.ledgerId);
+      expect(find(ORGANIZATION_OWNER, 'real-account')).toBe(
+        organization.ledgerId,
+      );
+      expect(find(PERSONAL_OWNER, 'guest-account')).toBeUndefined();
+      expect(find(ORGANIZATION_OWNER, 'guest-account')).toBeUndefined();
+      expect(repository.getScope(personal.ledgerId)?.accountId).toBe(
+        'real-account',
+      );
+      // Signed-out use is never part of a merge (LD02).
+      expect(find(PERSONAL_OWNER, null)).toBe(signedOut.ledgerId);
+      expect(repository.getScope(signedOut.ledgerId)?.accountId).toBeNull();
+      expect(repository.getStorageCounts()).toEqual(counts);
+      // The moved binding keeps answering binds for the new account.
+      expect(
+        repository.bindGlobalScope({
+          authorityId: AUTHORITY_ID,
+          owner: PERSONAL_OWNER,
+          accountId: 'real-account',
+        }).created,
+      ).toBe(false);
+    });
+
+    it('keeps the destination binding and both Ledgers when the destination is already bound', () => {
+      const { repository, databasePath } = context;
+      const destination = seedGlobal(PERSONAL_OWNER, 'real-account');
+      const guest = seedGlobal(PERSONAL_OWNER, 'guest-account');
+      const guestOrganization = seedGlobal(ORGANIZATION_OWNER, 'guest-account');
+      const counts = repository.getStorageCounts();
+      const guestOutbox = repository.readOutbox({
+        ledgerId: guest.ledgerId,
+        afterSequence: '0',
+        limit: 100,
+      });
+
+      expect(
+        repository.rebindAccount({
+          fromAccountId: 'guest-account',
+          toAccountId: 'real-account',
+        }),
+      ).toEqual({ rebound: 2 });
+
+      // New entries go to the destination's own Ledger...
+      expect(find(PERSONAL_OWNER, 'real-account')).toBe(destination.ledgerId);
+      expect(find(ORGANIZATION_OWNER, 'real-account')).toBe(
+        guestOrganization.ledgerId,
+      );
+      expect(find(PERSONAL_OWNER, 'guest-account')).toBeUndefined();
+      // ...and the guest's Ledger keeps its entries, actors and outbox,
+      // addressed by its ledger ID, under the account it merged into.
+      expect(repository.getScope(guest.ledgerId)?.accountId).toBe(
+        'real-account',
+      );
+      expect(
+        repository.getEntry({
+          ledgerId: guest.ledgerId,
+          entryId: guest.entryId,
+        }).entry.scope.ledgerId,
+      ).toBe(guest.ledgerId);
+      expect(repository.listActors(guest.ledgerId)).toHaveLength(1);
+      expect(
+        repository.readOutbox({
+          ledgerId: guest.ledgerId,
+          afterSequence: '0',
+          limit: 100,
+        }),
+      ).toEqual(guestOutbox);
+      expect(repository.getStorageCounts()).toEqual(counts);
+      repository.close();
+      expect(readGlobalBindings(databasePath)).toEqual([
+        {
+          ownerKey: 'org:00000000-0000-4000-8000-00000000a001',
+          accountKey: 'account:real-account',
+          ledgerId: guestOrganization.ledgerId,
+        },
+        {
+          ownerKey: 'personal',
+          accountKey: 'account:real-account',
+          ledgerId: destination.ledgerId,
+        },
+      ]);
+    });
+
+    it('leaves every binding as it was when the merge fails before commit', () => {
+      const { repository, databasePath } = context;
+      seedGlobal(PERSONAL_OWNER, 'real-account');
+      const guest = seedGlobal(PERSONAL_OWNER, 'guest-account');
+      seedGlobal(ORGANIZATION_OWNER, 'guest-account');
+      context.faults.failNext('rebindAccount');
+      expect(
+        reason(() =>
+          repository.rebindAccount({
+            fromAccountId: 'guest-account',
+            toAccountId: 'real-account',
+          }),
+        ),
+      ).toBe('STORAGE_UNAVAILABLE');
+      expect(find(PERSONAL_OWNER, 'guest-account')).toBe(guest.ledgerId);
+      expect(repository.getScope(guest.ledgerId)?.accountId).toBe(
+        'guest-account',
+      );
+      repository.close();
+      expect(
+        readGlobalBindings(databasePath).map((row) => row.accountKey),
+      ).toEqual([
+        'account:guest-account',
+        'account:guest-account',
+        'account:real-account',
+      ]);
+    });
   });
 
   it('removes a purged scope from the sync bookkeeping', () => {

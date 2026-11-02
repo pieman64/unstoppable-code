@@ -7,7 +7,7 @@ import {
   ShareDialogFrame,
   sharePartialMessage,
   shareStageCaption,
-  shareSuccessToast,
+  shareSuccessNotice,
 } from '../ShareDialogFrame';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -173,12 +173,43 @@ describe('ShareDialogFrame', () => {
     expect(byTestId('share-x-blocked')).not.toBeNull();
     expect(byTestId('share-x-footer')).toBeNull();
   });
+
+  it('pins the success notice with the link beside Copy link and Done', () => {
+    const url = 'https://cloud.test/s/1';
+    renderFrame({
+      lifecycle: { status: 'success', committed: true },
+      success: { tone: 'success', message: 'Project is now public', link: url },
+      showSubmit: false,
+      link: { url, kind: 'public' },
+    });
+    const success = byTestId('share-x-success');
+    expect(success?.textContent).toContain('Project is now public');
+    expect(success?.getAttribute('role')).toBe('status');
+    expect(byTestId('share-x-link')?.textContent).toBe(url);
+    expect(byTestId('share-x-copy-link')?.textContent).toBe('Copy link');
+    expect(byTestId('share-x-done')).not.toBeNull();
+    expect(byTestId('share-x-submit')).toBeNull();
+    expect(byTestId('share-x-error')).toBeNull();
+  });
+
+  it('shows a linkless success as one sentence', () => {
+    renderFrame({
+      lifecycle: { status: 'success', committed: true },
+      success: { tone: 'success', message: 'Project shared with Platform' },
+      showSubmit: false,
+    });
+    expect(byTestId('share-x-success')?.textContent).toBe(
+      'Project shared with Platform',
+    );
+    expect(byTestId('share-x-link')).toBeNull();
+    expect(byTestId('share-x-copy-link')).toBeNull();
+  });
 });
 
-describe('share toast copy', () => {
+describe('share success copy', () => {
   it('names the audience and never says "successfully"', () => {
     expect(
-      shareSuccessToast({
+      shareSuccessNotice({
         noun: 'pipeline',
         scope: 'team',
         targetName: 'Platform',
@@ -186,7 +217,7 @@ describe('share toast copy', () => {
       }),
     ).toEqual({ tone: 'success', message: 'Pipeline shared with Platform' });
     expect(
-      shareSuccessToast({
+      shareSuccessNotice({
         noun: 'pipeline',
         scope: 'organization',
         targetName: 'Acme',
@@ -199,18 +230,27 @@ describe('share toast copy', () => {
       link: 'https://cloud.test/o/1',
     });
     expect(
-      shareSuccessToast({ noun: 'skill', scope: 'public', isUpdate: false })
+      shareSuccessNotice({ noun: 'skill', scope: 'public', isUpdate: false })
         .message,
     ).toBe('Skill is now public');
+    // Reopening on an item that was already public: no "now".
     expect(
-      shareSuccessToast({ noun: 'skill', scope: 'public', isUpdate: true })
+      shareSuccessNotice({
+        noun: 'skill',
+        scope: 'public',
+        isUpdate: false,
+        reopened: true,
+      }).message,
+    ).toBe('Skill is public');
+    expect(
+      shareSuccessNotice({ noun: 'skill', scope: 'public', isUpdate: true })
         .message,
     ).toBe('Skill updated');
   });
 
-  it('turns a host message into a warning toast', () => {
+  it('turns a host message into a warning notice', () => {
     expect(
-      shareSuccessToast({
+      shareSuccessNotice({
         noun: 'skill',
         scope: 'public',
         isUpdate: false,
@@ -225,6 +265,12 @@ describe('share toast copy', () => {
   it('captions a stage without counts as-is', () => {
     expect(shareStageCaption({ stage: 'Preparing package…' })).toBe(
       'Preparing package…',
+    );
+  });
+
+  it('captions the publishing stage as a workflow while the wire value keeps its name (CAN-4651)', () => {
+    expect(shareStageCaption({ stage: 'Publishing pipeline…' })).toBe(
+      'Publishing workflow…',
     );
   });
 

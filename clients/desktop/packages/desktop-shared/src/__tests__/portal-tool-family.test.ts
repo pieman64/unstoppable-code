@@ -22,6 +22,13 @@ describe('getPortalChatToolFamily', () => {
     expect(getPortalChatToolFamily('ScheduleWakeup')).toBe('monitor');
   });
 
+  it.each(['CronCreate', 'CronDelete', 'CronList'])(
+    "maps Claude's %s into the monitor family like the desktop renderer",
+    (name) => {
+      expect(getPortalChatToolFamily(name)).toBe('monitor');
+    },
+  );
+
   it.each([
     'mcp__canopy_app_advisor__WatchCommand',
     'canopy_app_advisor_watch_command',

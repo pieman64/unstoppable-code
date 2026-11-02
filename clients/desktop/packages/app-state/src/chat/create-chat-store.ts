@@ -1,3 +1,4 @@
+import { retainPortalToolPartMetadata } from '@canopy/protocol/portal';
 import { create } from 'zustand';
 import type {
   CanopyClient,
@@ -50,6 +51,8 @@ export type ChatThreadStatus = 'idle' | 'streaming' | 'error';
 /** Default composer thinking level (matches the desktop default). */
 const DEFAULT_THINKING_LEVEL: PortalChatThinkingLevel = 'high';
 
+const EMPTY_WAITING_DELEGATION_IDS: readonly string[] = Object.freeze([]);
+
 /** Debounce window for settings persistence, mirroring the desktop 500ms save. */
 const PERSIST_DEBOUNCE_MS = 500;
 
@@ -75,6 +78,7 @@ export interface ChatHydrationOptions {
   readonly route?: ChatRoute;
   readonly settings?: ChatTabSettings;
   readonly queuedMessages?: readonly PortalQueuedMessage[];
+  readonly waitingDelegationIds?: readonly string[];
   readonly inputDelivery?: readonly ChatInputDeliveryView[];
   readonly steeringCapabilities?: ChatSteeringCapabilities;
 }
@@ -98,6 +102,8 @@ export interface ChatThreadState {
   readonly turnActive: boolean;
   /** Host-authoritative queue mirror. */
   readonly queuedMessages: readonly PortalQueuedMessage[];
+  /** Delegations whose request to this chat waits in its queue (ids only). */
+  readonly waitingDelegationIds: readonly string[];
   readonly inputDelivery?: readonly ChatInputDeliveryView[];
   readonly steeringCapabilities?: ChatSteeringCapabilities;
   /** Epoch-ms of the most recent message frame, for "last activity" derivations. */
@@ -337,6 +343,7 @@ function emptyThread(chatId: string): ChatThreadState {
     error: null,
     turnActive: false,
     queuedMessages: [],
+    waitingDelegationIds: EMPTY_WAITING_DELEGATION_IDS,
     lastEventAt: undefined,
     planMode: false,
     proposalMode: 'optional',
@@ -346,17 +353,37 @@ function emptyThread(chatId: string): ChatThreadState {
   };
 }
 
-/** Omitted metadata in legacy frames must not erase known user files. */
-function retainUserAttachments(
+function sameStringArray(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left === right ||
+    (left.length === right.length &&
+      left.every((value, index) => value === right[index]))
+  );
+}
+
+/** Replacement frames retain known user files and matching tool read metadata. */
+function retainMessageMetadata(
   incoming: PortalChatMessage,
   existing: PortalChatMessage | undefined,
 ): PortalChatMessage {
-  return incoming.role === 'user' &&
+  const withAttachments =
+    incoming.role === 'user' &&
     existing?.role === 'user' &&
     incoming.attachments === undefined &&
     existing.attachments !== undefined
-    ? { ...incoming, attachments: existing.attachments }
-    : incoming;
+      ? { ...incoming, attachments: existing.attachments }
+      : incoming;
+  if (!existing?.parts || !withAttachments.parts) return withAttachments;
+  const parts = retainPortalToolPartMetadata(
+    existing.parts,
+    withAttachments.parts,
+  );
+  return parts.every((part, index) => part === withAttachments.parts?.[index])
+    ? withAttachments
+    : { ...withAttachments, parts };
 }
 
 function refreshPresentationOrder(
@@ -437,13 +464,13 @@ function upsertMessage(
     messages[index].presentationOrder === incoming.presentationOrder
   ) {
     const next = messages.slice();
-    next[index] = retainUserAttachments(incoming, messages[index]);
+    next[index] = retainMessageMetadata(incoming, messages[index]);
     messageIndexes.set(next, indexes);
     return next;
   }
   const next = messages.slice();
   if (index >= 0)
-    next[index] = retainUserAttachments(incoming, messages[index]);
+    next[index] = retainMessageMetadata(incoming, messages[index]);
   else next.push(incoming);
   const ordered = orderMessages(next);
   indexMessages(ordered);
@@ -497,14 +524,23 @@ function isTurnTimerFrame(message: PortalChatMessage): boolean {
 
 const TURN_TIMER_ID_SUFFIX = ':turn-timer';
 
-/** Return the user-message identity carried by a canonical turn-timer id. */
+/**
+ * Return the user-message identity a turn-timer frame belongs to. A canonical
+ * timer (`${T}:timer`) names its execution and anchor in its data, since
+ * several executions can share one anchor; a legacy one carries it in its id.
+ */
 function turnTimerUserMessageId(
   message: PortalChatMessage,
 ): string | undefined {
-  if (
-    !isTurnTimerFrame(message) ||
-    !message.messageId.endsWith(TURN_TIMER_ID_SUFFIX)
-  ) {
+  if (!isTurnTimerFrame(message)) return undefined;
+  const data = message.parts?.find((part) => part.kind === 'turn_timer')?.data;
+  if (isRecord(data) && typeof data.turnId === 'string') {
+    return typeof data.userMessageId === 'string' &&
+      data.userMessageId.length > 0
+      ? data.userMessageId
+      : undefined;
+  }
+  if (!message.messageId.endsWith(TURN_TIMER_ID_SUFFIX)) {
     return undefined;
   }
   const userMessageId = message.messageId.slice(
@@ -881,7 +917,7 @@ export function createChatStore(
             for (const message of messages) {
               byId.set(
                 message.messageId,
-                retainUserAttachments(message, byId.get(message.messageId)),
+                retainMessageMetadata(message, byId.get(message.messageId)),
               );
             }
             const prev = state.threads[chatId] ?? emptyThread(chatId);
@@ -913,7 +949,7 @@ export function createChatStore(
                           ),
                       )
                     : undefined);
-              return retainUserAttachments(message, previous);
+              return retainMessageMetadata(message, previous);
             });
             const authoritativeIncoming = incoming.filter(
               (message) => !isOptimisticMessage(message),
@@ -1044,7 +1080,7 @@ export function createChatStore(
                         message.clientRequestId,
                       )
                     : undefined;
-                const withAttachments = retainUserAttachments(
+                const withAttachments = retainMessageMetadata(
                   message,
                   echoId === undefined ? undefined : mergedById.get(echoId),
                 );
@@ -1055,7 +1091,7 @@ export function createChatStore(
               } else if (supersedesCachedMessage(existing, message)) {
                 mergedById.set(
                   message.messageId,
-                  retainUserAttachments(message, existing),
+                  retainMessageMetadata(message, existing),
                 );
                 if (
                   messageRevision(message) >=
@@ -1069,7 +1105,7 @@ export function createChatStore(
                 mergedById.set(
                   message.messageId,
                   refreshPresentationOrder(
-                    retainUserAttachments(existing, message),
+                    retainMessageMetadata(existing, message),
                     message,
                   ),
                 );
@@ -1077,7 +1113,7 @@ export function createChatStore(
             }
             const merged = options?.replaceMessages
               ? incoming.map((message) =>
-                  retainUserAttachments(
+                  retainMessageMetadata(
                     message,
                     mergedById.get(message.messageId),
                   ),
@@ -1178,6 +1214,15 @@ export function createChatStore(
             }
             const queuedMessages =
               options?.queuedMessages ?? prev.queuedMessages;
+            const requestedWaitingDelegationIds = options?.waitingDelegationIds;
+            const waitingDelegationIds =
+              requestedWaitingDelegationIds === undefined ||
+              sameStringArray(
+                prev.waitingDelegationIds,
+                requestedWaitingDelegationIds,
+              )
+                ? prev.waitingDelegationIds
+                : requestedWaitingDelegationIds;
             const inputDelivery = options?.inputDelivery ?? prev.inputDelivery;
             const steeringCapabilities =
               options !== undefined &&
@@ -1215,6 +1260,7 @@ export function createChatStore(
               error === prev.error &&
               turnActive === prev.turnActive &&
               queuedMessages === prev.queuedMessages &&
+              waitingDelegationIds === prev.waitingDelegationIds &&
               inputDelivery === prev.inputDelivery &&
               steeringCapabilities === prev.steeringCapabilities &&
               route === prev.route &&
@@ -1251,6 +1297,7 @@ export function createChatStore(
               error,
               turnActive,
               queuedMessages,
+              waitingDelegationIds,
               inputDelivery,
               steeringCapabilities,
               route,
@@ -1318,7 +1365,7 @@ export function createChatStore(
                           )),
                   )
                 : undefined;
-            const message = retainUserAttachments(
+            const message = retainMessageMetadata(
               event.message,
               attachmentSource,
             );
@@ -1375,7 +1422,7 @@ export function createChatStore(
               requestDuplicateIndex >= 0
                 ? upsertMessage(
                     prev.messages,
-                    retainUserAttachments(
+                    retainMessageMetadata(
                       prev.messages[requestDuplicateIndex],
                       message,
                     ),
@@ -1791,6 +1838,7 @@ export function createChatStore(
               turnGroups,
               ...runtimeState,
               queuedMessages: target.queuedMessages,
+              waitingDelegationIds: target.waitingDelegationIds,
               inputDelivery: target.inputDelivery,
               steeringCapabilities: target.steeringCapabilities,
               lastEventAt:

@@ -655,8 +655,9 @@ describe('ComposerPlusMenu additional actions', () => {
             origin: 'editor',
             query: 'review',
             activeId: null,
-            setActiveId: jest.fn(),
+            setHoveredId: (): void => undefined,
             anchorRef: createRef(),
+            setActiveId: jest.fn(),
             editorRef: createRef(),
             menuRef: createRef(),
             setQuery: jest.fn(),
@@ -667,6 +668,7 @@ describe('ComposerPlusMenu additional actions', () => {
             prepareAction: jest.fn(),
             insertCommandText: jest.fn(),
             insertFile: jest.fn(),
+            insertPlugin: (): void => undefined,
           }}
           onPickAttachment={jest.fn()}
           onPickLinear={jest.fn()}
@@ -701,6 +703,7 @@ describe('ComposerPlusMenu additional actions', () => {
               query: '',
               activeId: null,
               setActiveId: jest.fn(),
+              setHoveredId: (): void => undefined,
               anchorRef: createRef(),
               editorRef: createRef(),
               menuRef: createRef(),
@@ -712,6 +715,7 @@ describe('ComposerPlusMenu additional actions', () => {
               prepareAction: jest.fn(),
               insertCommandText: jest.fn(),
               insertFile: jest.fn(),
+              insertPlugin: (): void => undefined,
             }}
             onPickAttachment={jest.fn()}
             onPickLinear={jest.fn()}
@@ -1012,6 +1016,8 @@ describe('ComposerPlusMenu additional actions', () => {
             origin: 'editor',
             query: '',
             activeId: null,
+            setHoveredId: (): void => undefined,
+            anchorRef: createRef(),
             setActiveId: jest.fn(),
             editorRef: createRef(),
             menuRef: createRef(),
@@ -1023,6 +1029,7 @@ describe('ComposerPlusMenu additional actions', () => {
             prepareAction: jest.fn(),
             insertCommandText: jest.fn(),
             insertFile: jest.fn(),
+            insertPlugin: (): void => undefined,
           }}
         />,
       );
@@ -1037,5 +1044,146 @@ describe('ComposerPlusMenu additional actions', () => {
     act(() => row?.click());
     expect(toggle).toHaveBeenCalledTimes(1);
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it('caps a typed / search, keeps rank order, and expands with Show all', async () => {
+    const setActiveId = jest.fn();
+    const select = jest.fn();
+    const menuRef = createRef<HTMLDivElement>();
+    const commands = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        name: `deploy-enabled-${index}`,
+        description: '',
+      })),
+      ...Array.from({ length: 6 }, (_, index) => ({
+        name: `deploy-available-${index}`,
+        description: '',
+        section: 'available' as const,
+      })),
+    ];
+    const render = async (query: string): Promise<void> => {
+      await act(async () => {
+        root.render(
+          <ComposerPlusMenu
+            dataTestIdPrefix="cap"
+            onSelectCommand={select}
+            commands={commands}
+            controller={{
+              open: true,
+              variant: 'commands',
+              origin: 'editor',
+              query,
+              activeId: null,
+              setHoveredId: (): void => undefined,
+              anchorRef: createRef(),
+              setActiveId,
+              editorRef: createRef(),
+              menuRef,
+              setQuery: jest.fn(),
+              onOpenChange: jest.fn(),
+              consumeTrigger: jest.fn(),
+              beginSelection: jest.fn(),
+              handleKeyDown: () => false,
+              prepareAction: jest.fn(),
+              insertCommandText: jest.fn(),
+              insertFile: jest.fn(),
+              insertPlugin: jest.fn(),
+            }}
+          />,
+        );
+        await Promise.resolve();
+      });
+    };
+    const commandRows = (): string[] =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[data-completion-row]'),
+      ).map((row) => row.getAttribute('data-testid') ?? '');
+
+    await render('deploy');
+    expect(commandRows()).toEqual([
+      ...[0, 1, 2, 3, 4].map(
+        (index) => `cap-capability-deploy-enabled-${index}`,
+      ),
+      ...[0, 1, 2].map((index) => `cap-capability-deploy-available-${index}`),
+    ]);
+    const showAll = document.querySelector<HTMLButtonElement>(
+      '[data-testid="cap-show-all"]',
+    );
+    expect(showAll?.textContent).toBe('Show all 12');
+    expect(showAll?.hasAttribute('data-completion-row')).toBe(false);
+    expect(showAll?.hasAttribute('data-action-row')).toBe(true);
+
+    await act(async () => {
+      showAll?.click();
+      await Promise.resolve();
+    });
+    expect(select).not.toHaveBeenCalled();
+    expect(commandRows()).toHaveLength(12);
+    expect(document.querySelector('[data-testid="cap-show-all"]')).toBeNull();
+    const firstHidden = document.querySelector<HTMLElement>(
+      '[data-testid="cap-capability-deploy-enabled-5"]',
+    );
+    expect(setActiveId).toHaveBeenLastCalledWith(firstHidden?.id);
+
+    // A new query collapses the list again; browsing stays uncapped.
+    await render('deploy-');
+    expect(commandRows()).toHaveLength(8);
+    await render('deploy');
+    expect(commandRows()).toHaveLength(8);
+    await render('');
+    expect(commandRows()).toHaveLength(12);
+    expect(document.querySelector('[data-testid="cap-show-all"]')).toBeNull();
+  });
+
+  it('CAN-5271 renders typed search in relevance order with inline availability only', async () => {
+    await act(async () => {
+      root.render(
+        <ComposerPlusMenu
+          dataTestIdPrefix="runs"
+          onSelectCommand={jest.fn()}
+          commands={[
+            { name: 'deploy-later', description: '', section: 'available' },
+            { name: 'deploy-docs', description: 'x' },
+            { name: 'deploy', description: '', section: 'available' },
+          ]}
+          controller={{
+            open: true,
+            variant: 'commands',
+            origin: 'editor',
+            query: 'deploy',
+            activeId: null,
+            setHoveredId: (): void => undefined,
+            anchorRef: createRef(),
+            setActiveId: jest.fn(),
+            editorRef: createRef(),
+            menuRef: createRef(),
+            setQuery: jest.fn(),
+            onOpenChange: jest.fn(),
+            consumeTrigger: jest.fn(),
+            beginSelection: jest.fn(),
+            handleKeyDown: () => false,
+            prepareAction: jest.fn(),
+            insertCommandText: jest.fn(),
+            insertFile: jest.fn(),
+            insertPlugin: jest.fn(),
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[role="presentation"]')).toBeNull();
+    const rows = Array.from(document.querySelectorAll('[data-completion-row]'));
+    expect(rows.map((row) => row.getAttribute('data-testid'))).toEqual([
+      'runs-capability-deploy',
+      'runs-capability-deploy-docs',
+      'runs-capability-deploy-later',
+    ]);
+    expect(
+      rows.map(
+        (row) =>
+          row.querySelector('[data-testid="slash-command-availability-tag"]')
+            ?.textContent ?? null,
+      ),
+    ).toEqual(['Available · enable', null, 'Available · enable']);
   });
 });

@@ -1,5 +1,7 @@
+import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL_PLURAL } from '@canopy/protocol/workspace-templates';
+import { WORKFLOW_ITEM_LABEL_PLURAL } from './workflow-labels';
 
 /** The kind a non-`all` Marketplace type tab narrows the browse list to. */
 export type MarketplaceKindFilter =
@@ -19,6 +21,43 @@ export type MarketplaceTypeTabId =
   | 'sources'
   | Exclude<MarketplaceKindFilter, 'pipeline' | 'automation'>;
 export type MarketplaceCatalogTabId = Exclude<MarketplaceTypeTabId, 'sources'>;
+
+export interface MarketplaceBrowseNavigation {
+  readonly tab: MarketplaceTypeTabId;
+  readonly query: string;
+  readonly category?: string;
+  readonly focusSection?: 'installed' | 'shared-by-me';
+  readonly installedStatusFilter?: InstalledItemStatus;
+  readonly installedExpanded?: boolean;
+}
+
+/** Compatibility inputs terminate here; new destinations describe Customize. */
+export function marketplaceManagementDestination(
+  section: unknown = 'installed',
+  statusFilter?: InstalledItemStatus,
+): MarketplaceBrowseNavigation {
+  const tab: MarketplaceTypeTabId =
+    section === 'marketplaces' || section === 'marketplace'
+      ? 'sources'
+      : section === 'skills'
+        ? 'skill'
+        : section === 'mcp'
+          ? 'app'
+          : section === 'collections' || section === 'bundles'
+            ? 'collection'
+            : 'all';
+  return {
+    tab,
+    query: '',
+    ...(tab !== 'sources'
+      ? {
+          focusSection: 'installed' as const,
+          installedExpanded: true,
+          ...(statusFilter ? { installedStatusFilter: statusFilter } : {}),
+        }
+      : {}),
+  };
+}
 
 /** Which optional kinds a host's Marketplace lists. */
 export interface MarketplaceTypeTabOptions {
@@ -65,27 +104,6 @@ export function marketplaceEntityTypeLabel(kind: UnifiedEntryKind): string {
   );
 }
 
-/**
- * The muted ink of a Customize type label (CAN-4261), one per kind so types
- * read apart in lists, Related rows and the Portal without pulling focus from
- * the name. Defined once here; the `fg-kind-*` roles live in the shared token
- * core and work in light and dark.
- */
-const KIND_TONE_CLASS: Readonly<Record<UnifiedEntryKind, string>> = {
-  skill: 'fg-kind-skill',
-  pipeline: 'fg-kind-workflow',
-  automation: 'fg-kind-workflow',
-  plugin: 'fg-kind-plugin',
-  app: 'fg-kind-mcp',
-  collection: 'fg-kind-collection',
-  agent: 'fg-kind-agent',
-  blueprint: 'fg-kind-template',
-};
-
-export function marketplaceKindToneClass(kind: UnifiedEntryKind): string {
-  return KIND_TONE_CLASS[kind];
-}
-
 export interface MarketplaceTypeTab {
   readonly id: MarketplaceTypeTabId;
   readonly label: string;
@@ -96,7 +114,7 @@ export const MARKETPLACE_TYPE_TABS: readonly MarketplaceTypeTab[] = [
   { id: 'plugin', label: 'Plugins' },
   { id: 'app', label: 'MCP servers' },
   { id: 'skill', label: 'Skills' },
-  { id: 'workflow', label: 'Workflows' },
+  { id: 'workflow', label: WORKFLOW_ITEM_LABEL_PLURAL },
   { id: 'collection', label: 'Collections' },
   { id: 'agent', label: 'Agents' },
   { id: 'blueprint', label: WORKSPACE_TEMPLATE_SHARE_LABEL_PLURAL },
@@ -155,7 +173,7 @@ export function normalizeMarketplaceNavigation(
   ownership?: unknown,
 ): {
   tab: MarketplaceTypeTabId;
-  focusSection?: 'shared-by-me';
+  focusSection?: 'installed' | 'shared-by-me';
 } {
   const normalized =
     tab === 'pipeline' || tab === 'automation' ? 'workflow' : tab;
@@ -164,6 +182,9 @@ export function normalizeMarketplaceNavigation(
       ?.id ?? 'all';
   return {
     tab: target,
+    ...(ownership === 'installed' && target !== 'sources'
+      ? { focusSection: 'installed' as const }
+      : {}),
     ...(ownership === 'shared-by-me' && target === 'workflow'
       ? { focusSection: 'shared-by-me' as const }
       : {}),

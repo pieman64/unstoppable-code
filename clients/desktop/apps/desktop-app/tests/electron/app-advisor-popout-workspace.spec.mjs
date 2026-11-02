@@ -18,8 +18,8 @@ import {
 //
 //  - workspace surface readiness + LAZY first-entry creation (a fresh profile
 //    has no Work Entries; the scoped bootstrap creates/reuses one);
-//  - entry create / rename / two-step delete through the nav rows (shared
-//    `WorkEntryListItem` with the `app-advisor-nav-entry` testid prefix);
+//  - entry create / rename / confirmed delete through the nav rows (the
+//    shared `WorkEntryRow` with the `app-advisor-nav-entry` testid prefix);
 //  - entry switching changing the active nav row (grid scope is keyed by the
 //    active entry);
 //  - nav collapse persistence through `PreferencesData.appAdvisorNavCollapsed`
@@ -28,6 +28,10 @@ import {
 //    display work area), while manual resizing persists across relaunch;
 //  - the in-popout settings modal (Defaults/Instructions/Advanced tabs) and a
 //    CLAUDE.md save round-trip.
+//
+// The popout's window title is 'Orchestrator' (ORCHESTRATOR_LABEL from
+// @canopy/protocol); main-process lookups below match it literally because
+// `electronApp.evaluate` callbacks cannot close over imported constants.
 
 function makeUserDataDir() {
   return mkdtempSync(path.join(os.tmpdir(), 'canopy-app-advisor-workspace-'));
@@ -162,12 +166,34 @@ function seedTwoTabEntryFixture(userDataDir) {
   });
 }
 
+// The renderer survives reparenting between the full window and floating host.
+function sendAdvisorEvent(electronApp, advisor, channel, payload) {
+  return electronApp.evaluate(
+    ({ webContents }, request) => {
+      const matches = webContents
+        .getAllWebContents()
+        .filter(
+          (contents) =>
+            !contents.isDestroyed() &&
+            contents.getURL() === request.rendererUrl,
+        );
+      if (matches.length !== 1) {
+        throw new Error(
+          `Expected one App Advisor renderer, found ${matches.length}`,
+        );
+      }
+      matches[0].send(request.channel, request.payload);
+    },
+    { rendererUrl: advisor.url(), channel, payload },
+  );
+}
+
 // Headless runs never show the advisor window on their own, so a visibility
 // assertion needs an explicit show first (as the archive test above does).
 function showAdvisorWindow(electronApp) {
   return electronApp.evaluate(({ BrowserWindow }) => {
-    const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-      candidate.webContents.getURL().includes('surface=app-advisor'),
+    const advisorWindow = BrowserWindow.getAllWindows().find(
+      (candidate) => candidate.getTitle() === 'Orchestrator',
     );
     if (!advisorWindow) throw new Error('App Advisor window not found');
     advisorWindow.show();
@@ -176,8 +202,8 @@ function showAdvisorWindow(electronApp) {
 
 function isAdvisorWindowVisible(electronApp) {
   return electronApp.evaluate(({ BrowserWindow }) => {
-    const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-      candidate.webContents.getURL().includes('surface=app-advisor'),
+    const advisorWindow = BrowserWindow.getAllWindows().find(
+      (candidate) => candidate.getTitle() === 'Orchestrator',
     );
     return advisorWindow?.isVisible() ?? false;
   });
@@ -192,8 +218,8 @@ function isAdvisorWindowVisible(electronApp) {
  */
 async function readAdvisorHeaderCenters(electronApp, advisor) {
   const lights = await electronApp.evaluate(({ BrowserWindow }) => {
-    const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-      candidate.webContents.getURL().includes('surface=app-advisor'),
+    const advisorWindow = BrowserWindow.getAllWindows().find(
+      (candidate) => candidate.getTitle() === 'Orchestrator',
     );
     const position = advisorWindow?.getWindowButtonPosition?.();
     return position ? position.y + 14 / 2 : null;
@@ -226,8 +252,7 @@ async function dispatchMainAppAdvisorAction(electronApp, requestId, action) {
   await electronApp.evaluate(
     ({ BrowserWindow }, request) => {
       const mainWindow = BrowserWindow.getAllWindows().find(
-        (candidate) =>
-          !candidate.webContents.getURL().includes('surface=app-advisor'),
+        (candidate) => candidate.getTitle() !== 'Orchestrator',
       );
       if (!mainWindow) throw new Error('Main window not found');
       mainWindow.webContents.send('app-advisor:tool-request', request);
@@ -251,8 +276,7 @@ async function getAdvisorUiState(electronApp) {
       const responseChannel = 'app-advisor:tool-response';
       const requestChannel = 'app-advisor:tool-request';
       const mainWindow = BrowserWindow.getAllWindows().find(
-        (candidate) =>
-          !candidate.webContents.getURL().includes('surface=app-advisor'),
+        (candidate) => candidate.getTitle() !== 'Orchestrator',
       );
       if (!mainWindow) throw new Error('Main window not found');
 
@@ -274,7 +298,7 @@ async function getAdvisorUiState(electronApp) {
   );
 }
 
-/** Nav rows share the WorkEntryListItem prefix `app-advisor-nav-entry-<id>`. */
+/** Nav rows are shared `WorkEntryRow`s with ids `app-advisor-nav-entry-<id>`. */
 function navEntryRows(advisor) {
   return advisor.locator(
     '[data-testid^="app-advisor-nav-entry-"][data-standalone-chat-id]',
@@ -298,7 +322,10 @@ async function deleteNavEntry(advisor, entryId) {
   await advisor.getByTestId(`app-advisor-nav-entry-${entryId}-delete`).click();
   // Still present until confirmed.
   await expect(row).toBeVisible();
-  await row.getByRole('button', { name: 'Delete?' }).click();
+  await advisor
+    .getByTestId(`app-advisor-nav-entry-${entryId}-delete-dialog`)
+    .getByTestId(`app-advisor-nav-entry-${entryId}-confirm-delete`)
+    .click();
   await expect(row).toHaveCount(0, { timeout: 15_000 });
 }
 
@@ -364,17 +391,16 @@ test.describe('app advisor popout project', () => {
           );
         });
       }, staleRequestId);
-      await electronApp.evaluate(({ BrowserWindow }, requestId) => {
-        const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-          candidate.webContents.getURL().includes('surface=app-advisor'),
-        );
-        if (!advisorWindow) throw new Error('App Advisor window not found');
-        advisorWindow.webContents.send('app-advisor:window-command', {
+      await sendAdvisorEvent(
+        electronApp,
+        advisor,
+        'app-advisor:window-command',
+        {
           type: 'open_archived_overview',
           openEmptyTrashConfirmation: true,
-          requestId,
-        });
-      }, staleRequestId);
+          requestId: staleRequestId,
+        },
+      );
       await expect(
         window.evaluate(() => window.__appAdvisorArchiveRequestOutcome),
       ).resolves.toBe(false);
@@ -398,8 +424,8 @@ test.describe('app advisor popout project', () => {
       await app.waitForShell({ timeout: 30_000 });
       const advisor = await app.openAppAdvisorWindow(electronApp);
       await electronApp.evaluate(({ BrowserWindow }) => {
-        const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-          candidate.webContents.getURL().includes('surface=app-advisor'),
+        const advisorWindow = BrowserWindow.getAllWindows().find(
+          (candidate) => candidate.getTitle() === 'Orchestrator',
         );
         if (!advisorWindow) throw new Error('App Advisor window not found');
         advisorWindow.show();
@@ -429,8 +455,8 @@ test.describe('app advisor popout project', () => {
         });
 
       await electronApp.evaluate(({ BrowserWindow }) => {
-        const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-          candidate.webContents.getURL().includes('surface=app-advisor'),
+        const advisorWindow = BrowserWindow.getAllWindows().find(
+          (candidate) => candidate.getTitle() === 'Orchestrator',
         );
         if (!advisorWindow) throw new Error('App Advisor window not found');
         advisorWindow.close();
@@ -439,8 +465,7 @@ test.describe('app advisor popout project', () => {
         .poll(() =>
           electronApp.evaluate(({ BrowserWindow }) => {
             const advisorWindow = BrowserWindow.getAllWindows().find(
-              (candidate) =>
-                candidate.webContents.getURL().includes('surface=app-advisor'),
+              (candidate) => candidate.getTitle() === 'Orchestrator',
             );
             return advisorWindow?.isVisible() ?? false;
           }),
@@ -470,21 +495,15 @@ test.describe('app advisor popout project', () => {
       const advisor = await app.openAppAdvisorWindow(electronApp);
       const requestId = 'e2e-cancelled-question';
 
-      await electronApp.evaluate(({ BrowserWindow }, id) => {
-        const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-          candidate.webContents.getURL().includes('surface=app-advisor'),
-        );
-        if (!advisorWindow) throw new Error('App Advisor window not found');
-        advisorWindow.webContents.send('app-advisor:tool-request', {
-          kind: 'ask_user_question',
-          requestId: id,
-          question: {
-            header: 'Recovery check',
-            question: 'Should this cancelled question remain visible?',
-            options: ['No', 'Yes'],
-          },
-        });
-      }, requestId);
+      await sendAdvisorEvent(electronApp, advisor, 'app-advisor:tool-request', {
+        kind: 'ask_user_question',
+        requestId,
+        question: {
+          header: 'Recovery check',
+          question: 'Should this cancelled question remain visible?',
+          options: ['No', 'Yes'],
+        },
+      });
 
       // The question asks in the chat's composer, as in other chats.
       const dock = advisor.getByTestId('chat-question-prompt');
@@ -492,15 +511,12 @@ test.describe('app advisor popout project', () => {
         'Should this cancelled question remain visible?',
       );
 
-      await electronApp.evaluate(({ BrowserWindow }, id) => {
-        const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-          candidate.webContents.getURL().includes('surface=app-advisor'),
-        );
-        if (!advisorWindow) throw new Error('App Advisor window not found');
-        advisorWindow.webContents.send('app-advisor:tool-request-cancelled', {
-          requestId: id,
-        });
-      }, requestId);
+      await sendAdvisorEvent(
+        electronApp,
+        advisor,
+        'app-advisor:tool-request-cancelled',
+        { requestId },
+      );
 
       await expect(dock).toHaveCount(0);
     } finally {
@@ -522,19 +538,13 @@ test.describe('app advisor popout project', () => {
         timeout: 30_000,
       });
 
-      await electronApp.evaluate(({ BrowserWindow }) => {
-        const advisorWindow = BrowserWindow.getAllWindows().find((candidate) =>
-          candidate.webContents.getURL().includes('surface=app-advisor'),
-        );
-        if (!advisorWindow) throw new Error('App Advisor window not found');
-        advisorWindow.webContents.send('app-advisor:tool-request', {
-          kind: 'ask_user_question',
-          requestId: 'e2e-answered-question',
-          question: {
-            question: 'Which page should open?',
-            options: ['Settings', 'Pipelines'],
-          },
-        });
+      await sendAdvisorEvent(electronApp, advisor, 'app-advisor:tool-request', {
+        kind: 'ask_user_question',
+        requestId: 'e2e-answered-question',
+        question: {
+          question: 'Which page should open?',
+          options: ['Settings', 'Pipelines'],
+        },
       });
 
       const composer = advisor.locator('[data-chat-composer-root]').first();
@@ -713,9 +723,8 @@ test.describe('app advisor popout project', () => {
       await expect(navEntryRows(advisor)).toHaveCount(2, { timeout: 15_000 });
       expect(await entryIdOtherThan(advisor, firstEntryId)).toBe(freshEntryId);
 
-      // Two-step deletion: the always-on retention policy makes the menu
-      // Delete action arm an inline confirm; only the confirm moves it to
-      // Deleted.
+      // Confirmed deletion: the menu's Delete opens the same confirm the
+      // Chats section uses; only the confirm moves it to Deleted.
       await deleteNavEntry(advisor, firstEntryId);
       await expect(navEntryRows(advisor)).toHaveCount(1, { timeout: 15_000 });
 
@@ -806,8 +815,7 @@ test.describe('app advisor popout project', () => {
       const initial = await firstLaunch.electronApp.evaluate(
         ({ BrowserWindow, screen }) => {
           const advisorWindow = BrowserWindow.getAllWindows().find(
-            (candidate) =>
-              candidate.webContents.getURL().includes('surface=app-advisor'),
+            (candidate) => candidate.getTitle() === 'Orchestrator',
           );
           if (!advisorWindow) throw new Error('App Advisor window not found');
           return {
@@ -824,8 +832,7 @@ test.describe('app advisor popout project', () => {
       const positionedBounds = await firstLaunch.electronApp.evaluate(
         ({ BrowserWindow, screen }) => {
           const advisorWindow = BrowserWindow.getAllWindows().find(
-            (candidate) =>
-              candidate.webContents.getURL().includes('surface=app-advisor'),
+            (candidate) => candidate.getTitle() === 'Orchestrator',
           );
           if (!advisorWindow) throw new Error('App Advisor window not found');
           const workArea = screen.getPrimaryDisplay().workArea;
@@ -849,8 +856,7 @@ test.describe('app advisor popout project', () => {
       resizedBounds = await firstLaunch.electronApp.evaluate(
         ({ BrowserWindow }, size) => {
           const advisorWindow = BrowserWindow.getAllWindows().find(
-            (candidate) =>
-              candidate.webContents.getURL().includes('surface=app-advisor'),
+            (candidate) => candidate.getTitle() === 'Orchestrator',
           );
           if (!advisorWindow) throw new Error('App Advisor window not found');
           advisorWindow.setSize(size.width, size.height);
@@ -880,8 +886,7 @@ test.describe('app advisor popout project', () => {
       const restoredBounds = await secondLaunch.electronApp.evaluate(
         ({ BrowserWindow }) => {
           const advisorWindow = BrowserWindow.getAllWindows().find(
-            (candidate) =>
-              candidate.webContents.getURL().includes('surface=app-advisor'),
+            (candidate) => candidate.getTitle() === 'Orchestrator',
           );
           if (!advisorWindow) throw new Error('App Advisor window not found');
           return advisorWindow.getBounds();

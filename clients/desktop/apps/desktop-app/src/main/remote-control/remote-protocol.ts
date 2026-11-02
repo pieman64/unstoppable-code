@@ -72,9 +72,9 @@ export const REMOTE_EVENTS = {
  * a controller now relies on being removed or renamed, or a session message
  * changing. Additive changes an older peer tolerates do not need a bump.
  * Version 1 is every release before this check. After a bump, run
- * `npm run remote-control:contract:write`; see docs/remote-control-protocol.md.
+ * `pnpm run remote-control:contract:write`; see docs/remote-control-protocol.md.
  */
-export const REMOTE_PROTOCOL_VERSION = 4;
+export const REMOTE_PROTOCOL_VERSION = 10;
 
 /** What a computer runs, as the other computer of a session sees it. */
 export const RemoteVersionSchema = z.object({
@@ -284,10 +284,19 @@ export function isUnknownRemoteMethodError(
   );
 }
 
+const CHANNEL_UNAVAILABLE_CODE = 'remote_channel_unavailable';
+
 export class RemoteChannelUnavailableError extends Error {
-  readonly code = 'remote_channel_unavailable';
+  readonly code = CHANNEL_UNAVAILABLE_CODE;
   constructor(channel: string) {
     super(`"${channel}" is not available while controlling another computer.`);
     this.name = 'RemoteChannelUnavailableError';
   }
+}
+
+/** Whether the other computer answered that it does not tunnel the channel called. */
+export function isRemoteChannelUnavailableError(error: unknown): boolean {
+  return (
+    error instanceof RpcRemoteError && error.code === CHANNEL_UNAVAILABLE_CODE
+  );
 }

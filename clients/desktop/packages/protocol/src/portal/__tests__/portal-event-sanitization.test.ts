@@ -95,6 +95,118 @@ describe('Portal event persistence sanitization', () => {
     });
   });
 
+  it('strips damaged occurrence identities with their standalone and paired locators', () => {
+    const event: PortalEventEnvelope = {
+      eventId: 'event-1',
+      clientEventId: 'client-event-1',
+      commandId: 'command-1',
+      type: 'portal.heartbeat',
+      occurredAt: '2026-05-06T00:00:00.000Z',
+      payload: {
+        parts: [
+          {
+            kind: 'tool_use',
+            occurrence: { id: 'delegate-call\0#3', revision: 12 },
+            data: {
+              toolName: 'Delegate task',
+              result: {
+                output: 'completed',
+                outputLocator: {
+                  messageId: 'delegate-result#8',
+                  blockOrdinal: 8,
+                  field: 'output',
+                },
+              },
+            },
+          },
+          {
+            kind: 'tool_result',
+            occurrence: { id: 'result-row\ud800#4', revision: 13 },
+            outputLocator: {
+              messageId: 'result-row#4',
+              blockOrdinal: 4,
+              field: 'output',
+            },
+          },
+        ],
+      },
+    };
+
+    expect(sanitizePortalEventEnvelope(event)).toEqual({
+      ...event,
+      payload: {
+        parts: [
+          {
+            kind: 'tool_use',
+            data: {
+              toolName: 'Delegate task',
+              result: { output: 'completed' },
+            },
+          },
+          { kind: 'tool_result' },
+        ],
+      },
+    });
+  });
+
+  it('drops a locator with a damaged target while retaining its clean occurrence', () => {
+    const event: PortalEventEnvelope = {
+      eventId: 'event-1',
+      clientEventId: 'client-event-1',
+      commandId: 'command-1',
+      type: 'portal.heartbeat',
+      occurredAt: '2026-05-06T00:00:00.000Z',
+      payload: {
+        parts: [
+          {
+            kind: 'tool_use',
+            occurrence: { id: 'delegate-call#3', revision: 12 },
+            data: {
+              toolName: 'Delegate task',
+              result: {
+                output: 'completed',
+                outputLocator: {
+                  messageId: 'delegate-result\0#8',
+                  blockOrdinal: 8,
+                  field: 'output',
+                },
+              },
+            },
+          },
+          {
+            kind: 'tool_result',
+            occurrence: { id: 'result-row#4', revision: 13 },
+            outputLocator: {
+              messageId: 'result-row\ud800#4',
+              blockOrdinal: 4,
+              field: 'output',
+            },
+          },
+        ],
+      },
+    };
+
+    expect(sanitizePortalEventEnvelope(event)).toEqual({
+      ...event,
+      payload: {
+        parts: [
+          {
+            kind: 'tool_use',
+            occurrence: { id: 'delegate-call#3', revision: 12 },
+            data: {
+              toolName: 'Delegate task',
+              result: { output: 'completed' },
+            },
+          },
+          {
+            kind: 'tool_result',
+            occurrence: { id: 'result-row#4', revision: 13 },
+          },
+        ],
+      },
+    });
+  });
+
   it('replaces lone surrogates while retaining valid pairs', () => {
     expect(sanitizeStorableString('high\ud800 low\udc00 emoji😀')).toBe(
       'high� low� emoji😀',

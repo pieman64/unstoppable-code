@@ -169,7 +169,9 @@ describe('applyProjectSourceChangesToWorktree', () => {
     mockedPruneWorktrees.mockResolvedValue(undefined);
     mockedRemoveWorktree.mockResolvedValue(undefined);
     mockedResolveProjectReferenceRepoPath.mockResolvedValue('/repos/source');
-    mockedStartProjectWorktreePostCreateSetup.mockImplementation(() => {});
+    mockedStartProjectWorktreePostCreateSetup.mockImplementation(() =>
+      Promise.resolve(),
+    );
     mockedReadWorkspaceConfig.mockResolvedValue(createSingleRepoConfig());
     mockedReadWorkspaceWorktrees.mockResolvedValue([
       createWorktreeData('wt-1'),
@@ -601,10 +603,21 @@ describe('applyProjectSourceChangesToWorktree', () => {
       '/repos/source',
       '/mock/workspaces/project-1/worktrees/new-worktree',
     );
+    // W6f3: the rollback removal reaches the writer through the record port.
     expect(mockedRemoveWorkspaceWorktrees).toHaveBeenCalledWith(
       'project-1',
       expect.any(Function),
+      undefined,
+      undefined,
+      {},
     );
+    const removes = mockedRemoveWorkspaceWorktrees.mock.calls[0]?.[1];
+    expect(
+      removes?.({ id: 'new-worktree', branchName: 'other', createdAt: 'x' }),
+    ).toBe(true);
+    expect(
+      removes?.({ id: 'other', branchName: 'new-worktree', createdAt: 'x' }),
+    ).toBe(false);
   });
 
   it('prunes stale worktree metadata when rollback falls back to rm', async () => {

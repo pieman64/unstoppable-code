@@ -1,4 +1,6 @@
 import type { JSX } from 'react';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 import { BrandLogo } from '@/components/BrandLogo';
 import { CloudAuthPanel } from '@/components/auth/CloudAuthPanel';
 import type { CanopyCloudConnectSuccess } from '@/components/auth/useCanopyCloudAuth';
@@ -41,7 +43,9 @@ export function CloudSignInGate({
       data-testid="cloud-sign-in-gate"
     >
       {/* Keep the window draggable behind the centered content. */}
-      <div className="electron-drag h-10 shrink-0 w-full" />
+      {!usesNativeWindowFrame(localPlatform()) && (
+        <div className="electron-drag h-10 shrink-0 w-full" />
+      )}
       <div className="flex flex-1 w-full items-center justify-center overflow-y-auto px-6 pb-10">
         <div className="w-full max-w-sm flex flex-col items-center gap-8">
           <div className="flex flex-col items-center gap-4 text-center">

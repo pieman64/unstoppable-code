@@ -33,15 +33,15 @@ describe('ActionTooltip', () => {
   it('preserves caller classes without changing the cursor', () => {
     act(() => {
       root.render(
-        createElement(
-          ActionTooltip,
-          { title: 'Fork chat', description: 'Duplicate this chat.' },
-          createElement(
+        createElement(ActionTooltip, {
+          title: 'Fork chat',
+          description: 'Duplicate this chat.',
+          children: createElement(
             'button',
             { type: 'button', className: 'base-class' },
             'F',
           ),
-        ),
+        }),
       );
     });
 
@@ -53,11 +53,19 @@ describe('ActionTooltip', () => {
   it('portals the rich tooltip on hover and wires aria-describedby', () => {
     act(() => {
       root.render(
-        createElement(
-          ActionTooltip,
-          { title: 'Fork chat', description: 'Duplicate this chat.' },
-          createElement('button', { type: 'button' }, 'F'),
-        ),
+        createElement(ActionTooltip, {
+          title: 'Fork chat',
+          description: 'Duplicate this chat.',
+          children: createElement(
+            'button',
+            {
+              type: 'button',
+              className: undefined,
+              'aria-describedby': undefined,
+            },
+            'F',
+          ),
+        }),
       );
     });
 
@@ -85,15 +93,20 @@ describe('ActionTooltip', () => {
   it('suppresses the tooltip entirely when disabled is true', () => {
     act(() => {
       root.render(
-        createElement(
-          ActionTooltip,
-          {
-            title: 'Scheduling unavailable',
-            description: 'Attachments are not supported yet.',
-            disabled: true,
-          },
-          createElement('button', { type: 'button' }, 'S'),
-        ),
+        createElement(ActionTooltip, {
+          title: 'Scheduling unavailable',
+          description: 'Attachments are not supported yet.',
+          disabled: true,
+          children: createElement(
+            'button',
+            {
+              type: 'button',
+              className: undefined,
+              'aria-describedby': undefined,
+            },
+            'S',
+          ),
+        }),
       );
     });
 
@@ -112,19 +125,16 @@ describe('ActionTooltip', () => {
   it('preserves caller classes when disabled', () => {
     act(() => {
       root.render(
-        createElement(
-          ActionTooltip,
-          {
-            title: 'Scheduling unavailable',
-            description: 'Attachments are not supported yet.',
-            disabled: true,
-          },
-          createElement(
+        createElement(ActionTooltip, {
+          title: 'Scheduling unavailable',
+          description: 'Attachments are not supported yet.',
+          disabled: true,
+          children: createElement(
             'button',
             { type: 'button', className: 'base-class' },
             'S',
           ),
-        ),
+        }),
       );
     });
 

@@ -61,7 +61,7 @@ test('Terminal settings control nested panel-picker shells, presets, and setting
     }
 
     await app.closeSettings();
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-terminal-submenu').click();
     await expect(
       window.getByTestId('panel-add-menu-terminal-shells-group'),
@@ -89,7 +89,10 @@ test('Terminal settings control nested panel-picker shells, presets, and setting
       'placeholder',
       'Custom TUI',
     );
-    await expect(preset.getByLabel('Shell')).toHaveValue(defaultShellProfileId);
+    await expect(preset.getByLabel('Shell')).toHaveAttribute(
+      'data-value',
+      defaultShellProfileId,
+    );
     await preset.getByLabel('Preset name').fill('Project status');
     await preset.getByLabel('Command').fill(INTERACTIVE_PRESET_COMMAND);
     await preset.getByLabel('Image or SVG').setInputFiles({
@@ -129,7 +132,7 @@ test('Terminal settings control nested panel-picker shells, presets, and setting
     ).toHaveAttribute('src', LIGHT_ICON_DATA_URL);
 
     await app.closeSettings();
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-terminal-submenu').click();
     const terminalMenu = window.getByTestId('panel-add-menu-terminal-group');
     await expect(
@@ -301,7 +304,7 @@ test('preset commands with trailing comments still exit and become restartable',
     await editor.getByRole('button', { name: 'Save preset' }).click();
     await app.closeSettings();
 
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-terminal-submenu').click();
     await window
       .getByTestId('panel-add-menu-item-terminal-preset')

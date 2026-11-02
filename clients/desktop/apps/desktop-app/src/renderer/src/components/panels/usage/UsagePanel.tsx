@@ -1,10 +1,8 @@
 /**
  * UsagePanel — the `usage` panel kind's surface: the standalone Usage page's
- * provider usage / rate-limit content (+ AI Credits) re-flowed to FILL the
- * panel. There is no panel-level header and no per-provider card box; each
- * provider's content renders frameless, and sections are separated by a
- * divider (so the combined `all` variant shows a rule between Claude and
- * Codex). One component serves all five variants (`instance.variant`):
+ * provider groups (+ AI Credits) in the panel, under one Updated line with
+ * the panel's only refresh control, and the interrupted-sessions notice.
+ * One component serves all five variants (`instance.variant`):
  *
  * - `all` — every account provider plus AI Credits, divider-separated.
  * - `active-chat` — follows the worktree's active (or most-recently-active)
@@ -12,9 +10,9 @@
  * - `codex` / `claude` / `cursor` — pinned to one provider.
  *
  * A self-owned `ResizeObserver` (the panel engine passes no size to content)
- * drives only density/padding across four regimes — `full` uses roomier
- * padding and comfortable card density; the smaller regimes tighten both.
- * Everything scrolls, so no regime clips content.
+ * drives only the side padding across four regimes — `full` uses roomier
+ * padding; the smaller regimes tighten it. Everything scrolls, so no regime
+ * clips content.
  */
 /* eslint-disable react-refresh/only-export-components -- exports the pure
    `resolveUsagePanelSizeMode` resolver alongside the component for direct
@@ -27,16 +25,17 @@ import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useWorktreeChatRenderState } from '@/stores/chatStore';
 import { resolveTabProviderType } from '@/stores/chat/tab-utils';
 import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import { UsageUpdatedLine } from '@canopy/ui-shared';
 import {
   ProviderUsageCard,
   OpenCodeUsageSection,
-  ShutdownResumeButton,
   selectAccountProviderUsageSummaries,
   type AccountProviderUsageSummary,
-  type ProviderUsageCardDensity,
   type UsageAccountProvider,
 } from '@/components/pages/usage/ProviderUsageCards';
 import { AiCreditsUsageCard } from '@/components/pages/usage/AiCreditsUsageCard';
+import { InterruptedSessionsNotice } from '@/components/pages/usage/InterruptedSessionsNotice';
+import { useUsageRefresh } from '@/components/pages/usage/useUsageRefresh';
 import { type UsagePanelVariant } from '@/lib/panels/usage-variants';
 
 interface ContainerSize {
@@ -197,6 +196,9 @@ export const UsagePanel = memo(function UsagePanel({
   );
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const { updatedAt, refreshing, refresh } = useUsageRefresh({
+    includeAiCredits: variant === 'all',
+  });
 
   useEffect(() => {
     void initialize();
@@ -244,8 +246,6 @@ export const UsagePanel = memo(function UsagePanel({
     selectAccountProviderUsageSummaries(usage, cursorEnabled, copilotEnabled),
   );
 
-  const tall = sizeMode === 'full' || sizeMode === 'narrow-tall';
-  const density: ProviderUsageCardDensity = tall ? 'comfortable' : 'compact';
   const padX = sizeMode === 'full' ? 'px-6' : 'px-3';
   const noActiveChat = variant === 'active-chat' && activeProvider === null;
   const showAiCredits = variant === 'all';
@@ -258,9 +258,18 @@ export const UsagePanel = memo(function UsagePanel({
       data-size-mode={sizeMode}
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
     >
-      <ShutdownResumeButton nowMs={nowMs} />
-      {cards.length === 0 && !showAiCredits && !showOpenCode ? (
-        <div className={`min-h-0 flex-1 overflow-auto ${padX}`}>
+      <div
+        data-testid="usage-panel-cards"
+        className={`flex min-h-0 flex-1 flex-col gap-6 overflow-auto py-3 ${padX}`}
+      >
+        <UsageUpdatedLine
+          updatedAt={updatedAt}
+          nowMs={nowMs}
+          refreshing={refreshing}
+          onRefresh={refresh}
+        />
+        <InterruptedSessionsNotice />
+        {cards.length === 0 && !showOpenCode ? (
           <LoadingPlaceholder
             label={
               noActiveChat
@@ -268,42 +277,22 @@ export const UsagePanel = memo(function UsagePanel({
                 : 'No provider usage is available yet.'
             }
           />
-        </div>
-      ) : (
-        // Frameless sections fill the panel; a divider separates each provider
-        // (and AI Credits) — `divide-y` skips a self-hidden AI Credits card
-        // because it renders no DOM node.
-        <div
-          data-testid="usage-panel-cards"
-          className={`flex min-h-0 flex-1 flex-col divide-y overflow-auto ${padX}`}
-        >
-          {cards.length === 0 && !showOpenCode ? (
-            <LoadingPlaceholder label="No provider usage is available yet." />
-          ) : (
-            cards.map((provider) => (
-              <ProviderUsageCard
-                key={provider.provider}
-                provider={provider}
-                nowMs={nowMs}
-                snapshots={usage.accountSnapshots ?? []}
-                refreshingProviders={refreshingProviders}
-                refreshProviderUsage={refreshProviderUsage}
-                refreshProviderUsageDetails={refreshProviderUsageDetails}
-                density={density}
-                frameless
-              />
-            ))
-          )}
-          {showOpenCode && (
-            <OpenCodeUsageSection
-              usage={usage}
+        ) : (
+          cards.map((provider) => (
+            <ProviderUsageCard
+              key={provider.provider}
+              provider={provider}
+              nowMs={nowMs}
+              snapshots={usage.accountSnapshots ?? []}
+              refreshingProviders={refreshingProviders}
               refreshProviderUsage={refreshProviderUsage}
-              frameless
+              refreshProviderUsageDetails={refreshProviderUsageDetails}
             />
-          )}
-          {showAiCredits && <AiCreditsUsageCard frameless density={density} />}
-        </div>
-      )}
+          ))
+        )}
+        {showOpenCode && <OpenCodeUsageSection usage={usage} />}
+        {showAiCredits && <AiCreditsUsageCard />}
+      </div>
     </div>
   );
 });

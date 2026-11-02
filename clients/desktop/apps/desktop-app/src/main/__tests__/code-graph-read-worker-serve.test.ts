@@ -1,17 +1,17 @@
-import * as baseGraph from '@canopy/desktop-shared/node/code-graph/base-graph';
-import { CodeGraphEngine } from '@canopy/desktop-shared/node/code-graph/engine';
+import * as baseGraph from '@canopy/code-graph/base-graph';
+import { CodeGraphEngine } from '@canopy/code-graph/engine';
 import {
   type CodeGraphDatabase,
   getMetadataValue,
   openCodeGraphDatabase,
   setMetadataValue,
   withImmediateTransaction,
-} from '@canopy/desktop-shared/node/code-graph/store/database';
+} from '@canopy/code-graph/store/database';
 import {
   CODE_GRAPH_MIGRATIONS,
   runCodeGraphMigrations,
-} from '@canopy/desktop-shared/node/code-graph/store/migrations';
-import { rebuildSymbolFts } from '@canopy/desktop-shared/node/code-graph/store/fts';
+} from '@canopy/code-graph/store/migrations';
+import { rebuildSymbolFts } from '@canopy/code-graph/store/fts';
 import { EventEmitter } from 'node:events';
 import {
   existsSync,

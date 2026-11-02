@@ -10,15 +10,27 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import {
+  claudeToolName,
+  createDelegationInference,
+} from './delegationRuntime.mjs';
+import {
   cleanupDemoWorkspaces,
   seedDemoWorkspaces,
 } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { baseManagedDelegationPreferences } from './fixtures/delegation-capabilities/helpers.mjs';
+import {
+  createTranscriptReadScript,
+  resolvePersistedOutput,
+} from './fixtures/transcript-read-script.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
+import { prepareStreamFixture } from './seeders/delegationStreamFixture.mjs';
+import { legacyDelegationMessages } from './seeders/seedDelegationTranscriptLog.mjs';
 import {
   DEFAULT_MOCK_BASE_URL,
   registerScenario,
   seedWorktreeChat,
+  seedWorkspaceApprovals,
 } from './seeders/index.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
@@ -269,6 +281,387 @@ test('a chat starts and watches another chat through environment actions', async
   } finally {
     await closeCanopy(electronApp, userDataDir);
     cleanupDemoWorkspaces(demo);
+  }
+});
+
+// Large action replies can be stored apart in format 4. Assert the complete
+// persisted parent result, not its renderer preview or the inference script's
+// private state. The action itself is still executed by the real agent turn.
+async function transcriptReadToolResults(window, chatId, parentMarker) {
+  const page = await transcript(window, chatId);
+  const first = page.messages.findIndex(
+    (message) =>
+      message.role === 'user' &&
+      message.blocks.some(
+        (block) => block.type === 'text' && block.text.includes(parentMarker),
+      ),
+  );
+  expect(first, 'new agent turn is retained').toBeGreaterThanOrEqual(0);
+  // The startup fixture also holds historical Read calls. Do not mistake
+  // those for tools executed by this turn.
+  const calls = toolResults({ messages: page.messages.slice(first) });
+  for (const { result } of calls) {
+    expect(result, 'persisted parent tool result').toBeTruthy();
+    if (!result.fullOutputRef) continue;
+    const message = page.messages.find((row) => row.blocks.includes(result));
+    const blockOrdinal = message.blocks.indexOf(result);
+    let offset = 0;
+    let output = '';
+    do {
+      const part = await window.evaluate(
+        async (params) => {
+          const reply = await window.canopyCore.invoke({
+            kind: 'request',
+            method: 'core.chat.content.read',
+            params,
+          });
+          if (!reply.ok) throw new Error(reply.error.message);
+          return reply.value;
+        },
+        {
+          scope: {
+            workspaceId: WORKSPACE_ID,
+            worktreeId: WORKTREE_ID,
+            chatId,
+          },
+          target: { kind: 'primary', chatId },
+          messageId: message.id,
+          blockOrdinal,
+          field: 'output',
+          fieldSource: 'logical',
+          offset,
+          limit: 65_536,
+        },
+      );
+      output += part.text;
+      if (part.nextOffset !== undefined)
+        expect(part.nextOffset).toBeGreaterThan(offset);
+      offset = part.nextOffset;
+    } while (offset !== undefined);
+    result.output = output;
+  }
+  for (const { result } of calls)
+    result.output = resolvePersistedOutput(result.output);
+  return calls;
+}
+
+test('a chat discovers and reads retained delegation transcripts through agent actions', async () => {
+  test.setTimeout(300_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-agent-transcript-reads-'),
+  );
+  const demo = seedDemoWorkspaces({
+    userDataDir,
+    apps: ['ts-pnpm-vite', 'ts-npm-next'],
+  });
+  const fixture = prepareStreamFixture({ userDataDir });
+  const foreignChatId = 'transcript-foreign-owner';
+  const foreignDelegationId = 'transcript-foreign-delegate';
+  const foreignText = 'FOREIGN_WORKSPACE_TRANSCRIPT_MUST_NOT_LEAK';
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: 'demo-ts-npm-next',
+    worktreeId: WORKTREE_ID,
+    tabs: [
+      {
+        id: foreignChatId,
+        title: 'Foreign transcript owner',
+        messages: [
+          ...legacyDelegationMessages({
+            delegationId: foreignDelegationId,
+            childText: foreignText,
+          }),
+          {
+            id: 'foreign-answer',
+            role: 'assistant',
+            timestamp: Date.parse('2026-04-10T12:00:00.000Z'),
+            blocks: [{ type: 'text', text: foreignText }],
+          },
+        ],
+      },
+    ],
+  });
+  seedWorkspaceApprovals({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    defaultMode: 'full-access',
+  });
+  writeJson(
+    path.join(userDataDir, 'preferences.json'),
+    baseManagedDelegationPreferences(),
+  );
+  // Let startup create the fixture's Claude owner tab and its primary rows.
+  // Pre-seeding an empty owner would skip fixtureTab and its startup checks.
+  const inference = await createDelegationInference({
+    parent: 'claude',
+    child: 'claude',
+    mode: 'foreground',
+    caseId: 'transcript-action-reads',
+    script: createTranscriptReadScript({
+      fixture,
+      foreignChatId,
+      foreignDelegationId,
+    }),
+  });
+  let electronApp;
+  try {
+    const workspace = demo.workspaces.find((item) => item.id === WORKSPACE_ID);
+    expect(workspace).toBeTruthy();
+    writeFileSync(
+      path.join(workspace.worktreePath, 'delegation-evidence.txt'),
+      `// ${inference.canary}\nexport const transcriptReadEvidence = true;\n`,
+    );
+    const launched = await launchCanopy({
+      userDataDir,
+      env: {
+        ...fixture.extraEnv,
+        CANOPY_E2E_CHAT_FORMAT4: '1',
+        CANOPY_MOCK_LLM_BASE_URL: inference.url,
+      },
+    });
+    electronApp = launched.electronApp;
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await window
+      .locator(
+        `[data-testid="worktree-row"][data-project-id="${WORKSPACE_ID}"][data-worktree-id="${WORKTREE_ID}"]`,
+      )
+      .first()
+      .evaluate((element) => element.click());
+    const panel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${fixture.chatId}"]`,
+    );
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    // Establish that this is a real second-workspace chat, not a made-up id.
+    const foreign = await transcript(window, foreignChatId, {
+      projectId: 'demo-ts-npm-next',
+      worktreeId: WORKTREE_ID,
+    });
+    expect(hasAssistantText(foreign, foreignText)).toBe(true);
+    // Its owner reads the exact delegation target the agent is later denied.
+    const foreignTarget = {
+      kind: 'delegation',
+      chatId: foreignChatId,
+      delegationId: foreignDelegationId,
+      runGeneration: 1,
+    };
+    const foreignChild = await window.evaluate(
+      (params) =>
+        window.canopyCore.invoke({
+          kind: 'request',
+          method: 'core.chat.transcript.page',
+          params,
+        }),
+      {
+        scope: {
+          workspaceId: 'demo-ts-npm-next',
+          worktreeId: WORKTREE_ID,
+          chatId: foreignChatId,
+        },
+        target: foreignTarget,
+      },
+    );
+    expect(foreignChild.ok).toBe(true);
+    expect(JSON.stringify(foreignChild.value)).toContain(foreignText);
+    const localState = await window.evaluate(
+      (scope) => window.api.chat.getState(scope),
+      { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+    );
+    expect(
+      localState.tabsFile.tabs.some((tab) => tab.id === foreignChatId),
+    ).toBe(false);
+    expect(
+      localState.tabsFile.tabs.find((tab) => tab.id === fixture.chatId),
+    ).toMatchObject({ providerType: 'claude' });
+    await panel
+      .getByRole('textbox')
+      .first()
+      .fill(
+        `[${inference.parentMarker}] Ask one delegate to read delegation-evidence.txt, then discover its run and read the retained transcript, body ranges and blocks through actions. Check that the other workspace's chat is denied.`,
+      );
+    await panel.getByRole('button', { name: 'Send message' }).click();
+    // A script failure drops the provider connection; stop waiting at once
+    // so the next assertion reports it.
+    await expect
+      .poll(
+        async () =>
+          inference.errors.length > 0 ||
+          hasAssistantText(
+            await transcript(window, fixture.chatId),
+            'Transcript action read flow complete.',
+          ),
+        { timeout: 240_000 },
+      )
+      .toBe(true);
+    expect(inference.errors).toEqual([]);
+    const calls = await transcriptReadToolResults(
+      window,
+      fixture.chatId,
+      inference.parentMarker,
+    );
+    const dispatchName = claudeToolName('DispatchAction');
+    expect(calls[0].call.toolName).toBe(claudeToolName('SearchActions'));
+    expect(calls[1].call.toolName).toBe(claudeToolName('DelegateTask'));
+    const listedIndex = calls.findIndex(
+      ({ call }) => call.toolName === claudeToolName('ListDelegates'),
+    );
+    expect(listedIndex).toBeGreaterThan(2);
+    const settlement = calls.slice(2, listedIndex);
+    for (const entry of settlement) {
+      expect(entry.call.toolName).toBe(claudeToolName('GetDelegateOutput'));
+    }
+    expect(settlement.at(-1).result.output).toContain(inference.finding);
+    const reads = calls.slice(listedIndex + 1);
+    expect(reads.map(({ call }) => call.toolName)).toEqual(
+      Array(8).fill(dispatchName),
+    );
+    for (const { result } of calls.slice(0, -1)) {
+      expect(result.isError, result.output).not.toBe(true);
+    }
+    for (const { result } of calls.slice(1, -1)) {
+      expect(JSON.parse(result.output).ok, result.output).toBe(true);
+    }
+    expect(
+      JSON.parse(calls[0].result.output).actions.map((action) => action.type),
+    ).toEqual(
+      expect.arrayContaining([
+        'chat.transcript.page',
+        'chat.content.read',
+        'chat.transcript.blocks.page',
+      ]),
+    );
+    const listed = JSON.parse(calls[listedIndex].result.output);
+    expect(listed.value).toHaveLength(1);
+    const run = listed.value[0];
+    expect(run).toMatchObject({ status: 'completed', runGeneration: 1 });
+    expect(run.delegationId).toEqual(expect.any(String));
+    const actions = reads.map(({ call }) => JSON.parse(call.input).action);
+    expect(actions.map((action) => action.type)).toEqual([
+      'chat.transcript.page',
+      'chat.transcript.page',
+      'chat.transcript.page',
+      'chat.content.read',
+      'chat.content.read',
+      'chat.transcript.page',
+      'chat.transcript.blocks.page',
+      'chat.transcript.page',
+    ]);
+    expect(actions[0].target).toEqual({
+      kind: 'delegation',
+      chatId: fixture.chatId,
+      delegationId: run.delegationId,
+      runGeneration: run.runGeneration,
+    });
+    const [live, newest, older, head, tail, blockRows, blocks] = reads
+      .slice(0, -1)
+      .map(({ result }) => JSON.parse(result.output).result);
+    const liveBlocks = live.messages.flatMap((message) => message.blocks);
+    const liveRead = liveBlocks.find(
+      (block) => block.type === 'tool_use' && block.toolName === 'Read',
+    );
+    expect(liveRead, 'the delegate Read call').toBeTruthy();
+    // A child's stored result carries its call's id, not always the tool name.
+    expect(liveBlocks).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_result',
+        toolUseId: liveRead.toolUseId,
+        isError: false,
+        output: expect.stringContaining(inference.canary),
+      }),
+    );
+    expect(newest.totalMessages).toBe(501);
+    expect(newest.messages).toHaveLength(500);
+    expect(newest.messages[0].id).toBe('stream-row-1');
+    expect(newest.messages.at(-1).id).toBe('stream-row-500');
+    expect(newest.cursor).toEqual(expect.any(String));
+    expect(actions[2].cursor).toBe(newest.cursor);
+    expect(older.totalMessages).toBe(501);
+    expect(older.messages.map((message) => message.id)).toEqual([
+      'stream-row-0',
+    ]);
+    expect(older.cursor).toBeUndefined();
+    expect(JSON.stringify(older.messages)).toContain('Retained child row 0');
+    const newestRow = newest.messages.at(-1);
+    const outputOrdinal = newestRow.blocks.findIndex(
+      (block) => block.type === 'tool_result' && block.toolName === 'Read',
+    );
+    expect(outputOrdinal).toBeGreaterThanOrEqual(0);
+    for (const action of actions.slice(3, 5)) {
+      expect(action).toMatchObject({
+        target: actions[1].target,
+        messageId: newestRow.id,
+        blockOrdinal: outputOrdinal,
+        field: 'output',
+        fieldSource: 'logical',
+        limit: 64,
+      });
+    }
+    expect(actions[3].offset).toBe(32);
+    expect(head).toEqual({
+      text: 'A'.repeat(64),
+      nextOffset: 96,
+      byteLength: 152_536,
+    });
+    expect(actions[4].offset).toBe(152_472);
+    expect(tail).toEqual({
+      text: 'tinel\nsecond content page sentinel\nsecond content page sentinel\n',
+      byteLength: 152_536,
+    });
+    const omittedRow = blockRows.messages.find(
+      (message) => message.blocksOmitted,
+    );
+    expect(omittedRow).toMatchObject({
+      id: 'blocks-row-1',
+      blocks: [],
+      blocksOmitted: { blockCount: 46 },
+    });
+    expect(actions[6].messageId).toBe(omittedRow.id);
+    expect(blocks).toMatchObject({
+      projection: 'bounded-v1',
+      messageId: omittedRow.id,
+      firstBlockOrdinal: 0,
+      blockCount: 46,
+      nextBlockOrdinal: 16,
+      cursor: expect.any(String),
+    });
+    expect(blocks.entries).toHaveLength(16);
+    expect(blocks.entries[0]).toMatchObject({
+      kind: 'block',
+      ordinal: 0,
+      block: { type: 'text', text: 'paged block first sentinel' },
+    });
+    expect(blocks.entries).toContainEqual(
+      expect.objectContaining({
+        kind: 'preview',
+        ordinal: 1,
+        omittedFields: ['text'],
+        block: expect.objectContaining({ type: 'text' }),
+      }),
+    );
+    expect(actions[7].target).toEqual({
+      kind: 'delegation',
+      chatId: foreignChatId,
+      delegationId: foreignDelegationId,
+      runGeneration: 1,
+    });
+    const denied = reads.at(-1).result;
+    expect(JSON.parse(denied.output)).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    expect(JSON.parse(denied.output).result).toBeUndefined();
+    expect(denied.output).not.toContain(foreignText);
+    expect(denied.output).not.toContain('Retained child row');
+    expect(denied.output).not.toContain(inference.canary);
+  } finally {
+    try {
+      if (electronApp) await closeCanopy(electronApp, userDataDir);
+    } finally {
+      await inference.close();
+      cleanupDemoWorkspaces(demo);
+    }
   }
 });
 
@@ -778,9 +1171,7 @@ test('a chat started in a new worktree and stopped during its setup ends as a st
 
     await expect(timer).toHaveCount(1, { timeout: 10_000 });
     await expect(timer).toHaveAttribute('data-state', 'completed');
-    await expect(timer.getByTestId('turn-timer-label')).toHaveText(
-      /^Completed in \d+:\d{2}$/,
-    );
+    await expect(timer.getByTestId('turn-timer-relative')).toBeVisible();
     await expect(child.getByTestId('chat-stop-generation')).toHaveCount(0);
 
     await expect

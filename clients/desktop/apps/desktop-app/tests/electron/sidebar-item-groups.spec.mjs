@@ -47,7 +47,9 @@ test('Code row groups expose group access, editor and retained collapsed selecti
       .getByRole('textbox', { name: 'Group name' })
       .fill('Release polish');
     await editor.getByRole('textbox', { name: 'Group name' }).press('Enter');
-    await editor.getByRole('button', { name: 'Close group editor' }).click();
+    await expect(editor).toHaveCount(0);
+    // Focus returns to the row control that opened the menu.
+    await expect(rows.first().locator(':focus')).toHaveCount(1);
     const group = window.getByTestId('sidebar-item-group-header');
     await expect(group).toContainText('Release polish');
     await rows.first().click({ button: 'right' });

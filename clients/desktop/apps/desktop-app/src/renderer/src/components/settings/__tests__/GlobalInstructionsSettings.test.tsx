@@ -84,7 +84,7 @@ describe('GlobalInstructionsSettings', () => {
         `settings-global-instructions-${kind}`,
       )?.querySelector('h2');
       expect(heading?.textContent).toBe(
-        kind === 'chats' ? 'Chats' : 'Pipelines',
+        kind === 'chats' ? 'Chats' : 'Workflows',
       );
       expect(heading?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).toBeNull();
     }
@@ -204,6 +204,7 @@ describe('GlobalInstructionsSettings', () => {
         {
           modelId: 'gateway-only-codex',
           gatewayId: 'vendor/gateway-only-codex',
+          family: 'chat',
           recommendedHarness: 'codex',
           gatewayOnly: true,
           contextWindow: 100_000,

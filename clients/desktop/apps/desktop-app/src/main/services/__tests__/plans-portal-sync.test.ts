@@ -6,6 +6,8 @@ import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import {
   createPlan,
   deletePlan,
+  listPlans,
+  readPlan,
   syncTrackedPlansToPortal,
   updatePlan,
 } from '../plans-service';
@@ -14,6 +16,7 @@ import {
   createTrackedPlan,
   deleteTrackedPlan,
   getTrackedPlan,
+  listTrackedPlans,
   updateTrackedPlan,
 } from '../../lib/plan-persistence';
 import { sendToWindow } from '../../lib/window-send';
@@ -37,6 +40,7 @@ const mockedCreateTrackedPlan = jest.mocked(createTrackedPlan);
 const mockedUpdateTrackedPlan = jest.mocked(updateTrackedPlan);
 const mockedGetTrackedPlan = jest.mocked(getTrackedPlan);
 const mockedDeleteTrackedPlan = jest.mocked(deleteTrackedPlan);
+const mockedListTrackedPlans = jest.mocked(listTrackedPlans);
 const mockedSendToWindow = jest.mocked(sendToWindow);
 
 /**
@@ -69,6 +73,101 @@ function plan(overrides: Partial<TrackedPlanData> = {}): TrackedPlanData {
     ...overrides,
   };
 }
+
+describe('revision-specific Portal plan reads', () => {
+  const request = {
+    projectId: 'canopy',
+    worktreeId: 'dev-cockatoo',
+    planId: 'plan-1',
+    revisionNumber: 1,
+  };
+  const markdown = ` \n# Original plan — 🐝\n\n1. Keep \`paths\`.\n\n\`\`\`ts\n${'const x = 1;\n'.repeat(500)}\`\`\`\n\n `;
+  let events: PortalEventEnvelope[];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    events = [];
+    setCanopyPortalEventSink((event) => events.push(event));
+    mockedGetTrackedPlan.mockResolvedValue(
+      plan({
+        content: '# Latest',
+        latestRevisionNumber: 2,
+        reviewStatus: 'approved',
+        approvedAt: '2026-10-29T12:00:00Z',
+        revisions: [
+          {
+            revisionNumber: 1,
+            content: markdown,
+            source: 'claude',
+            reviewStatus: 'pending',
+            createdAt: '2026-10-28T12:00:00Z',
+          },
+        ],
+      }),
+    );
+  });
+
+  afterEach(() => setCanopyPortalEventSink(null));
+
+  it('returns exact full Markdown for the requested revision without publishing it as current', async () => {
+    const result = await readPlan(request);
+    expect(result).toMatchObject({
+      content: markdown,
+      body: markdown,
+      revisionNumber: 1,
+      latestRevisionNumber: 2,
+      reviewStatus: 'pending',
+      approvedAt: null,
+    });
+    expect(events).toEqual([]);
+    expect(mockedGetTrackedPlan).toHaveBeenCalledWith(
+      'canopy',
+      'dev-cockatoo',
+      'plan-1',
+    );
+  });
+
+  it('returns null for an unavailable revision instead of substituting latest content', async () => {
+    await expect(
+      readPlan({ ...request, revisionNumber: 3 }),
+    ).resolves.toBeNull();
+    expect(events).toEqual([]);
+  });
+
+  it('can read the current revision even if historical snapshots are absent', async () => {
+    await expect(
+      readPlan({ ...request, revisionNumber: 2 }),
+    ).resolves.toMatchObject({
+      content: '# Latest',
+      revisionNumber: 2,
+      latestRevisionNumber: 2,
+    });
+    expect(events).toEqual([]);
+  });
+
+  it('preserves unpinned reads and their current-plan publication', async () => {
+    const unpinned = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+      planId: request.planId,
+    };
+    await expect(readPlan(unpinned)).resolves.toMatchObject({
+      content: '# Latest',
+      revisionNumber: 2,
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])(
+    'rejects invalid revision %s before reading storage',
+    async (revisionNumber) => {
+      await expect(readPlan({ ...request, revisionNumber })).rejects.toThrow(
+        'revisionNumber',
+      );
+      expect(mockedGetTrackedPlan).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('syncTrackedPlansToPortal', () => {
   let events: PortalEventEnvelope[];
@@ -293,5 +392,87 @@ describe('plan renderer synchronization', () => {
         change: 'remove',
       },
     );
+  });
+});
+
+describe('plan source file projection', () => {
+  let events: PortalEventEnvelope[];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    events = [];
+    setCanopyPortalEventSink((event) => events.push(event));
+  });
+
+  afterEach(() => {
+    setCanopyPortalEventSink(null);
+  });
+
+  it('projects sourceFilePath for imported plans only', async () => {
+    mockedListTrackedPlans.mockResolvedValue([
+      plan({
+        id: 'imported',
+        source: 'imported',
+        sourceFilePath: 'docs/plan.md',
+        sourceRepoId: 'repo-1',
+      }),
+      plan({
+        id: 'detected',
+        source: 'detected',
+        sourceFilePath: 'docs/other.md',
+      }),
+      plan({ id: 'agent' }),
+    ]);
+
+    const summaries = await listPlans({
+      projectId: 'canopy',
+      worktreeId: 'dev-cockatoo',
+    });
+
+    expect(summaries.find((s) => s.planId === 'imported')).toMatchObject({
+      source: 'imported',
+      sourceFilePath: 'docs/plan.md',
+    });
+    expect(summaries.find((s) => s.planId === 'detected')).not.toHaveProperty(
+      'sourceFilePath',
+    );
+    expect(summaries.find((s) => s.planId === 'agent')).not.toHaveProperty(
+      'sourceFilePath',
+    );
+    // The repo id is local identity, never projected to the Portal.
+    expect(summaries[0]).not.toHaveProperty('sourceRepoId');
+  });
+
+  it('omits sourceFilePath for an imported plan without a path', async () => {
+    mockedListTrackedPlans.mockResolvedValue([
+      plan({ id: 'imported', source: 'imported', sourceFilePath: '' }),
+    ]);
+
+    const [summary] = await listPlans({
+      projectId: 'canopy',
+      worktreeId: 'dev-cockatoo',
+    });
+
+    expect(summary).not.toHaveProperty('sourceFilePath');
+  });
+
+  it('includes sourceFilePath in portal plan upsert payloads', () => {
+    syncTrackedPlansToPortal('canopy', 'wt-imported', [
+      plan({
+        worktreeId: 'wt-imported',
+        source: 'imported',
+        sourceFilePath: 'docs/plan.md',
+      }),
+    ]);
+
+    expect(events[0]).toMatchObject({
+      type: 'portal.plan.event',
+      payload: {
+        kind: 'upsert',
+        entity: {
+          payload: { source: 'imported', sourceFilePath: 'docs/plan.md' },
+        },
+      },
+    });
   });
 });

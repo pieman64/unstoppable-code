@@ -153,9 +153,9 @@ test('file viewer: shortcut save, close-guard discard/reopen, autosave, and exte
 
     const modal = window.getByTestId('file-tab-close-guard');
     await expect(modal).toBeVisible();
-    await expect(modal).toContainText(`Save changes to ${FILE_NAME}?`);
+    await expect(modal).toContainText(`Save changes to “${FILE_NAME}”?`);
     await expect(modal).toContainText(
-      'Your changes will be lost if you close this tab without saving.',
+      'Discarding loses the edits you haven’t saved.',
     );
     await expect(
       window.getByTestId('file-tab-close-guard-cancel'),
@@ -197,6 +197,38 @@ test('file viewer: shortcut save, close-guard discard/reopen, autosave, and exte
     await expect(window.getByTestId('file-viewer-dirty')).toHaveCount(0);
     await expect(reopenedEditor).not.toContainText('DRAFT_EDIT');
     await expect(reopenedEditor).toContainText('SHORTCUT_EDIT');
+
+    // --- Header Discard asks first, then restores saved content (CAN-5365) --
+    await reopenedEditor.click();
+    await window.keyboard.type(' HEADER_DRAFT');
+    await expect(discardButton).toHaveText('Discard');
+    const discardConfirm = window.getByTestId('file-discard-confirm');
+    await discardButton.click();
+    await expect(discardConfirm).toContainText(
+      `Discard your edits to “${FILE_NAME}”?`,
+    );
+    await expect(discardConfirm).toContainText(
+      'Discarding loses the edits you haven’t saved.',
+    );
+    await expect(discardConfirm).not.toContainText('latest version');
+    await expect(
+      window.getByTestId('file-discard-confirm-cancel'),
+    ).toBeFocused();
+    await window.getByTestId('file-discard-confirm-cancel').click();
+    await expect(discardConfirm).toHaveCount(0);
+    await expect(discardButton).toBeFocused();
+    await expect(reopenedEditor).toContainText('HEADER_DRAFT');
+    await expect(window.getByTestId('file-viewer-dirty')).toBeVisible();
+
+    await discardButton.click();
+    await window.getByTestId('file-discard-confirm-accept').click();
+    await expect(discardConfirm).toHaveCount(0);
+    await expect(reopenedEditor).not.toContainText('HEADER_DRAFT');
+    await expect(window.getByTestId('file-viewer-dirty')).toHaveCount(0);
+    await expect(
+      window.locator('[data-testid="file-viewer-header"]:visible'),
+    ).toBeFocused();
+    expect(readFileSync(filePath, 'utf8')).toBe(savedContent);
 
     // The reopened tab id is generated; resolve it from the active file panel.
     const reopenedTabId = await window.evaluate(() => {
@@ -262,14 +294,40 @@ test('file viewer: shortcut save, close-guard discard/reopen, autosave, and exte
     await conflictEditor.click();
     await window.keyboard.press(`${SAVE_MODIFIER}+s`);
 
-    // The desktop file service rejects the write; the shared session surfaces
-    // the conflict, keeps the local buffer, and never overwrites disk.
+    // The desktop file service refuses the stale write. The overlapping
+    // changes cannot be combined, so the shared session offers recovery,
+    // keeps the local buffer, and never overwrites disk on its own.
+    const conflictNotice = window.getByTestId('file-overlap-notice');
+    await expect(conflictNotice).toBeVisible({ timeout: 10_000 });
+    await expect(conflictNotice.getByRole('alert')).toBeVisible();
+    await expect(window.getByTestId('file-overlap-choose-ours')).toBeFocused();
     await expect(
       window.getByText('File changed on disk since it was loaded.'),
-    ).toBeVisible({ timeout: 10_000 });
+    ).toHaveCount(0);
     await expect(window.getByTestId('file-viewer-dirty')).toBeVisible();
     await expect(conflictEditor).toContainText('LOCAL_ONLY');
     expect(readFileSync(filePath, 'utf8')).toBe(externalContent);
+
+    // Close-save must expose the shared recovery choices and keep the tab.
+    await closeFileTab(filePanelTab);
+    await expect(window.getByTestId('file-tab-close-guard')).toBeVisible();
+    await window.getByTestId('file-tab-close-guard-save').click();
+    await expect(window.getByTestId('file-tab-close-guard')).toHaveCount(0);
+    await expect(filePanelTab).toBeVisible();
+    await expect(conflictNotice).toBeVisible();
+    await expect(window.getByTestId('file-overlap-choose-ours')).toBeFocused();
+    expect(readFileSync(filePath, 'utf8')).toBe(externalContent);
+
+    // Save my version replaces exactly the version the notice represents.
+    await window.getByTestId('file-overlap-choose-ours').click();
+    // The choice updates only the buffer; Save persists conditionally.
+    expect(readFileSync(filePath, 'utf8')).toBe(externalContent);
+    await window.getByTestId('file-save').click();
+    await expect(conflictNotice).toHaveCount(0);
+    await expect(window.getByTestId('file-viewer-dirty')).toHaveCount(0);
+    await expect
+      .poll(() => readFileSync(filePath, 'utf8'), { timeout: 10_000 })
+      .toContain('LOCAL_ONLY');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

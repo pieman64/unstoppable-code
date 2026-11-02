@@ -378,3 +378,135 @@ describe('Copilot connection errors', () => {
     ).toBe('GitHub sign-in was declined.');
   });
 });
+
+describe('Copilot connection placement', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        copilotConnection: {
+          status: () => Promise.resolve(connected),
+          account: () => Promise.resolve(connected.account),
+          onProgress: (): (() => void) => (): void => undefined,
+          cancel: () => Promise.resolve(),
+        },
+        loadPreferences: () => Promise.resolve({}),
+      },
+    });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  async function renderConnection(
+    placement?: 'row' | 'section',
+  ): Promise<HTMLElement> {
+    await act(async () => {
+      root.render(
+        placement ? (
+          <CopilotConnection placement={placement} />
+        ) : (
+          <CopilotConnection />
+        ),
+      );
+      await Promise.resolve();
+    });
+    const row = container.querySelector<HTMLElement>(
+      '[data-testid="copilot-connection"]',
+    );
+    if (!row) throw new Error('Missing Copilot row');
+    return row;
+  }
+
+  it('is one provider row, named in its label, when placed beside other providers', async () => {
+    const row = await renderConnection('row');
+    // The caller's provider group owns the box; the row adds no section,
+    // card or heading of its own.
+    expect(container.firstElementChild).toBe(row);
+    expect(container.querySelector('section')).toBeNull();
+    expect(container.querySelector('h2')).toBeNull();
+    expect(
+      row.querySelector('[data-settings-row-label]')?.textContent,
+    ).toContain('GitHub Copilot');
+    expect(
+      row
+        .querySelector('[data-testid="copilot-connection-status-dot"]')
+        ?.classList.contains('bg-success'),
+    ).toBe(true);
+  });
+
+  it('keeps its own untitled section in Labs', async () => {
+    const row = await renderConnection();
+    const section = container.firstElementChild;
+    expect(section?.tagName).toBe('SECTION');
+    expect(section?.contains(row)).toBe(true);
+    // The row names Copilot, so a heading would repeat it.
+    expect(container.querySelector('h2')).toBeNull();
+  });
+});
+
+describe('Copilot connection status dot', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let status: ReturnType<typeof deferred<CopilotConnectionStatus>>;
+
+  beforeEach(() => {
+    status = deferred<CopilotConnectionStatus>();
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        copilotConnection: {
+          status: () => status.promise,
+          account: () => Promise.resolve(null),
+          onProgress: (): (() => void) => (): void => undefined,
+          cancel: () => Promise.resolve(),
+        },
+        loadPreferences: () => Promise.resolve({}),
+      },
+    });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  function dot(): Element | null {
+    return container.querySelector(
+      '[data-testid="copilot-connection-status-dot"]',
+    );
+  }
+
+  it('shows no connection state until the first status read answers', async () => {
+    await act(async () => {
+      root.render(<CopilotConnection placement="row" />);
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('Checking setup…');
+    // An unanswered read is neither connected nor disconnected.
+    expect(dot()).toBeNull();
+    await act(async () => {
+      status.resolve({
+        supported: true,
+        installed: false,
+        enabled: false,
+        phase: 'idle',
+        version: 'test',
+        account: null,
+      });
+      await Promise.resolve();
+    });
+    expect(dot()?.classList.contains('bg-destructive')).toBe(true);
+  });
+});

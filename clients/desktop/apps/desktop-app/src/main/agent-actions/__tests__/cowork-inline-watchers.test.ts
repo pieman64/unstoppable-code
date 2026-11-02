@@ -1,3 +1,4 @@
+import { createDesktopTranscriptReadPort } from '../desktop-transcript-read-port';
 // chat.create in a Cowork workspace with inline watchers, through the real
 // desktop surface, environment port, and chat watcher port. The watcher
 // service mock applies the real Cowork rule: a standalone_chat target must
@@ -113,6 +114,7 @@ function surface(): ReturnType<typeof createDesktopAgentActionSurface> {
   return createDesktopAgentActionSurface(runtime, {
     ports: {
       environment,
+      transcriptRead: createDesktopTranscriptReadPort(),
       limits: createInMemoryAgentActionLimits(),
       chatWatchers: desktopChatWatcherPort,
       split: unusedSplit,

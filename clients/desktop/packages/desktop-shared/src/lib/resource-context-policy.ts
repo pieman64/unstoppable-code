@@ -13,6 +13,12 @@ import { classifyResourceOwner } from './resource-context';
 export interface InstallReceipt {
   /** Durable local aliases; editing or account switching cannot erase origin. */
   localResourceIds?: string[];
+  /** Explicit removals retain provenance but no longer represent installed copies. */
+  uninstalledLocalResourceIds?: string[];
+  /** Per-copy SHA-256 baselines. Absent legacy multi-alias copies stay unknown. */
+  localContentHashes?: Record<string, string>;
+  /** A shared skill's dependencies retain origin but are not its replacement targets. */
+  localResourceRoles?: Record<string, 'primary' | 'dependency'>;
   family: string;
   remoteId: string;
   /** Omitted receipts retain their authenticated scoped origin. */
@@ -21,6 +27,30 @@ export interface InstallReceipt {
   ownerContext: WorkspaceContext;
   hash: string;
   authorizedAt: string;
+  /** Historical display metadata from the authenticated source, never grants. */
+  sharedByName?: string;
+  /** Organization name only; a personal owner's name is not an organization. */
+  ownerName?: string;
+  teamName?: string;
+}
+
+type InstallReceiptDisplayNames = Pick<
+  InstallReceipt,
+  'sharedByName' | 'ownerName' | 'teamName'
+>;
+
+/** Use the same display snapshot normalization at install and storage boundaries. */
+export function normalizeInstallReceiptDisplayNames(
+  names: InstallReceiptDisplayNames,
+): InstallReceiptDisplayNames {
+  const sharedByName = names.sharedByName?.trim();
+  const ownerName = names.ownerName?.trim();
+  const teamName = names.teamName?.trim();
+  return {
+    ...(sharedByName ? { sharedByName } : {}),
+    ...(ownerName ? { ownerName } : {}),
+    ...(teamName ? { teamName } : {}),
+  };
 }
 export interface ResourceContextSubject {
   kind: 'plugin' | 'skill' | 'mcp';
@@ -157,6 +187,38 @@ export function isInstallReceipt(value: unknown): value is InstallReceipt {
     return false;
   const record: Record<string, unknown> = { ...value };
   return (
+    (record.uninstalledLocalResourceIds === undefined ||
+      (Array.isArray(record.uninstalledLocalResourceIds) &&
+        record.uninstalledLocalResourceIds.every(
+          (id: unknown) =>
+            typeof id === 'string' &&
+            Array.isArray(record.localResourceIds) &&
+            record.localResourceIds.includes(id),
+        ))) &&
+    (record.localContentHashes === undefined ||
+      (typeof record.localContentHashes === 'object' &&
+        record.localContentHashes !== null &&
+        !Array.isArray(record.localContentHashes) &&
+        Object.entries(record.localContentHashes).every(
+          ([id, hash]) =>
+            Array.isArray(record.localResourceIds) &&
+            record.localResourceIds.includes(id) &&
+            typeof hash === 'string' &&
+            /^[a-f0-9]{64}$/.test(hash),
+        ))) &&
+    (record.localResourceRoles === undefined ||
+      (typeof record.localResourceRoles === 'object' &&
+        record.localResourceRoles !== null &&
+        !Array.isArray(record.localResourceRoles) &&
+        Object.entries(record.localResourceRoles).every(
+          ([id, role]) =>
+            Array.isArray(record.localResourceIds) &&
+            record.localResourceIds.includes(id) &&
+            (role === 'primary' || role === 'dependency'),
+        ))) &&
+    ['sharedByName', 'ownerName', 'teamName'].every(
+      (key) => record[key] === undefined || typeof record[key] === 'string',
+    ) &&
     (record.localResourceIds === undefined ||
       (Array.isArray(record.localResourceIds) &&
         record.localResourceIds.every(

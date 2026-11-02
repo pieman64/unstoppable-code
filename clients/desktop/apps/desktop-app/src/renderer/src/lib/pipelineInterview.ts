@@ -10,7 +10,7 @@ import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
  * ends with a saved pipeline.
  */
 export const PIPELINE_INTERVIEW_PROMPT =
-  'Interview me to help me build a pipeline, then save it with the pipeline tools.';
+  'Interview me to help me build a workflow, then save it with the pipeline tools.';
 
 /**
  * Opens a new Cowork chat in the default Cowork project and immediately sends

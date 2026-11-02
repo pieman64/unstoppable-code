@@ -36,6 +36,7 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { GUEST_SIGN_IN_CTA_LABEL } from '@/lib/guest-cta-copy';
 import { invalidateAiCreditsUsageCache } from '@/hooks/useAiCreditsUsage';
+import { resetModelLibraryAccessForTests } from '@/lib/modelLibraryAccess';
 import { accessibleLabel } from '@/test-utils/dom';
 import {
   defaultRemoteControlState,
@@ -441,6 +442,7 @@ function offPortalState(): CanopyPortalState {
     connectionStatus: 'inactive',
     sessionId: null,
     pairingCode: null,
+    hostCode: null,
     pairingCodeExpiresAt: null,
     machineName: null,
     activatedAt: null,
@@ -1004,12 +1006,9 @@ describe('SidebarAccountMenu', () => {
     }
   });
 
-  it.each([
-    ['Personal', { kind: 'personal' } as WorkspaceContext],
-    [
-      'an organization',
-      { kind: 'organization', organizationId: ORG_A } as WorkspaceContext,
-    ],
+  it.each<[string, WorkspaceContext]>([
+    ['Personal', { kind: 'personal' }],
+    ['an organization', { kind: 'organization', organizationId: ORG_A }],
   ])(
     'keeps organization actions on the switcher, not the personal menu, in %s (CAN-4054)',
     async (_label, context) => {
@@ -1262,7 +1261,6 @@ describe('SidebarAccountMenu', () => {
             name: 'Ada Lovelace',
             email: 'ada@example.com',
             role: 'DEVELOPER',
-            image: null,
           },
         }),
       },
@@ -1365,7 +1363,6 @@ describe('SidebarAccountMenu', () => {
               name: 'Ada Lovelace',
               email: 'ada@example.com',
               role: 'DEVELOPER',
-              image: null,
             },
           }),
           aiCredits: {
@@ -1376,6 +1373,7 @@ describe('SidebarAccountMenu', () => {
               email: 'ada@example.com',
               credits: 500,
               eligible: true,
+              source: 'canopy',
             },
             noUdAccount: false,
             error: null,
@@ -1666,7 +1664,15 @@ describe('SidebarAccountMenu', () => {
         resolve({
           status: {
             authenticated: true,
-            account: { id: 'acct_1' },
+            capabilities: [],
+            account: {
+              id: 'acct_1',
+              name: 'Ada Lovelace',
+              email: 'ada@example.com',
+              role: 'DEVELOPER',
+            },
+            organizations: [],
+            teams: [],
             missingCapabilities: [],
             error: null,
           },
@@ -2633,6 +2639,76 @@ describe('SidebarAccountMenu', () => {
       },
     );
 
+    describe('Free AI Credits label (CAN-5028)', () => {
+      afterEach(() => resetModelLibraryAccessForTests());
+
+      function accessEntitlements(
+        access: 'needs_purchase' | 'unlocked',
+      ): CanopyCloudEntitlementsState {
+        return {
+          ...freeAccessEntitlements,
+          modelLibrary: { status: 'reported', access },
+          modelLibraryAccountKey: 'account:acct_1',
+          workModelLibrary: { status: 'reported', access },
+          modelLibraryOwnerKey: 'personal',
+        };
+      }
+
+      function row(container: HTMLElement): HTMLElement | null {
+        return container.querySelector<HTMLElement>(
+          '[data-testid="sidebar-account-menu-item-ai-credits"]',
+        );
+      }
+
+      it('labels the personal wallet Free AI Credits before purchase', async () => {
+        resetModelLibraryAccessForTests();
+        const { container, unmount } = await renderFreeAccessMenu({
+          entitlements: accessEntitlements('needs_purchase'),
+        });
+        try {
+          openMenu(container);
+          expect(row(container)?.getAttribute('aria-label')).toBe(
+            'Free AI Credits, 689 available',
+          );
+          expect(
+            container.querySelector(
+              '[data-testid="sidebar-account-menu-item-ai-credits-balance"]',
+            )?.textContent,
+          ).toBe('689');
+        } finally {
+          unmount();
+        }
+      });
+
+      it('keeps the plain label once the personal wallet is unlocked', async () => {
+        resetModelLibraryAccessForTests();
+        const { container, unmount } = await renderFreeAccessMenu({
+          entitlements: accessEntitlements('unlocked'),
+        });
+        try {
+          openMenu(container);
+          expect(row(container)?.getAttribute('aria-label')).toBe(
+            'AI Credits, 689 available',
+          );
+        } finally {
+          unmount();
+        }
+      });
+
+      it('keeps the plain label while access is unknown', async () => {
+        resetModelLibraryAccessForTests();
+        const { container, unmount } = await renderFreeAccessMenu();
+        try {
+          openMenu(container);
+          expect(row(container)?.getAttribute('aria-label')).toBe(
+            'AI Credits, 689 available',
+          );
+        } finally {
+          unmount();
+        }
+      });
+    });
+
     it('opens account billing from the AI Credits row and closes the menu', async () => {
       const { container, unmount } = await renderFreeAccessMenu();
       try {
@@ -3221,7 +3297,7 @@ describe('SidebarAccountMenu — cloud account recovery banner', () => {
     mockUpdateState = {
       phase: 'available',
       info: { version: '9.9.9' },
-    } as UpdateState;
+    };
     const { container, unmount } = await renderMenu(
       {},
       { account: unreadableAccount },
@@ -3236,8 +3312,11 @@ describe('SidebarAccountMenu — cloud account recovery banner', () => {
       expect(update).not.toBeNull();
       // `DOCUMENT_POSITION_FOLLOWING` on the update prompt means the recovery
       // banner precedes it in the stack.
+      if (!banner || !update) {
+        throw new Error('Expected recovery banner and update prompt');
+      }
       expect(
-        banner?.compareDocumentPosition(update as Node) &
+        banner.compareDocumentPosition(update) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     } finally {

@@ -41,6 +41,7 @@ import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   injectChatEvent,
+  publishTurnLifecycle,
   registerScenario,
   clearScenario,
   DEFAULT_MOCK_BASE_URL,
@@ -698,6 +699,13 @@ test('keeps a busy source disabled with the transient busy reason', async () => 
         type: 'canopy_user_prompt',
         canopy_turn_user_message_id: 'busy-turn',
       },
+    });
+    await publishTurnLifecycle(electronApp, {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: CHAT_ID,
+      turnUserMessageId: 'busy-turn',
+      phase: 'start',
     });
     await injectChatEvent(electronApp, {
       projectId: WORKSPACE_ID,

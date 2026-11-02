@@ -291,8 +291,14 @@ function codexClientRequests(logPath) {
     .map((entry) => entry.message);
 }
 
+function marketplaceSourceRow(window, id) {
+  return window.locator(
+    `[data-testid="marketplace-source-row"][data-source-id="${id}"]`,
+  );
+}
+
 async function refreshMarketplacesFromUi(window) {
-  const refresh = window.getByTestId('marketplaces-refresh');
+  const refresh = window.getByTestId('marketplace-sources-refresh');
   await refresh.click();
   await expect(refresh).toBeEnabled({ timeout: 30_000 });
 }
@@ -314,16 +320,16 @@ test('refreshes a warm Codex-only marketplace twice and manually without touchin
     await app.openPluginsPage();
     await app.openPluginsTab('marketplace');
 
-    const row = window.getByTestId(`marketplace-row-${MARKETPLACE_ID}`);
+    const row = marketplaceSourceRow(window, MARKETPLACE_ID);
     await expect(row).toBeVisible();
 
-    const refresh = window.getByTestId('marketplaces-refresh');
+    const refresh = window.getByTestId('marketplace-sources-refresh');
     await refresh.click();
     await expect(refresh).toBeEnabled({ timeout: 30_000 });
     await refresh.click();
     await expect(refresh).toBeEnabled({ timeout: 30_000 });
 
-    const update = window.getByTestId(`marketplace-update-${MARKETPLACE_ID}`);
+    const update = row.getByTestId('marketplace-source-update');
     await update.click();
     await expect(update).toBeEnabled({ timeout: 30_000 });
 
@@ -409,14 +415,9 @@ test('repairs a poisoned built-in Codex marketplace cache without requesting a G
     await app.openPluginsTab('marketplace');
 
     await refreshMarketplacesFromUi(window);
-    await expect(
-      window.getByTestId(`marketplace-row-${CODEX_SECURITY_MARKETPLACE_ID}`),
-    ).toBeVisible();
-    await expect(
-      window.getByTestId(
-        `marketplace-error-banner-${CODEX_SECURITY_MARKETPLACE_ID}`,
-      ),
-    ).toHaveCount(0);
+    const row = marketplaceSourceRow(window, CODEX_SECURITY_MARKETPLACE_ID);
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId('marketplace-source-invalid')).toHaveCount(0);
 
     const assertRepairedCache = () => {
       const marketplace = readCodexSecurityMarketplace(fixture.cachePath);
@@ -470,16 +471,12 @@ test('lists the signed-out Codex curated catalog without an error banner', async
     await app.openPluginsTab('marketplace');
     await refreshMarketplacesFromUi(window);
 
-    const row = window.getByTestId(
-      `marketplace-row-${SIGNED_OUT_CURATED_MARKETPLACE_ID}`,
-    );
+    const row = marketplaceSourceRow(window, SIGNED_OUT_CURATED_MARKETPLACE_ID);
     await expect(row).toBeVisible({ timeout: 30_000 });
-    await expect(
-      window.getByTestId(
-        `marketplace-error-banner-${SIGNED_OUT_CURATED_MARKETPLACE_ID}`,
-      ),
-    ).toHaveCount(0);
-    await expect(row).not.toContainText('No providers');
+    await expect(row.getByTestId('marketplace-source-invalid')).toHaveCount(0);
+    // The legacy "No providers" cell is now the source's invalid state: an
+    // unmanaged source that no provider accepted.
+    await expect(row).not.toHaveAttribute('data-source-state', 'invalid');
 
     const cache = JSON.parse(readFileSync(fixture.cachePath, 'utf8'));
     const marketplace = cache.marketplaces.find(
@@ -523,28 +520,24 @@ test('explains suppressed Codex rechecks on a structurally invalid marketplace r
     await app.openPluginsPage();
     await app.openPluginsTab('marketplace');
 
-    const row = window.getByTestId(
-      `marketplace-row-${STRUCTURAL_MARKETPLACE_ID}`,
-    );
+    const row = marketplaceSourceRow(window, STRUCTURAL_MARKETPLACE_ID);
     await expect(row).toBeVisible();
-    await expect(row).toContainText('No providers');
+    // No provider accepts the source (the legacy "No providers" cell).
+    await expect(row).toHaveAttribute('data-source-state', 'invalid');
 
-    await expect(
-      window.getByTestId(
-        `marketplace-error-banner-${STRUCTURAL_MARKETPLACE_ID}`,
-      ),
-    ).toBeVisible();
+    const banner = row.getByTestId('marketplace-source-invalid');
+    await expect(banner).toBeVisible();
 
-    const note = window.getByTestId(
-      `marketplace-codex-structural-note-${STRUCTURAL_MARKETPLACE_ID}`,
+    // The structural note renders in the banner and names its Update action.
+    await expect(banner).toContainText(
+      'Codex support is not rechecked automatically until this repository changes.',
     );
-    await expect(note).toBeVisible();
-    await expect(note).toContainText('Retry refresh');
+    await expect(banner).toContainText('Use Update to check again now.');
 
     // The escape hatch the note points at must actually be actionable.
-    await expect(
-      window.getByTestId(`marketplace-retry-${STRUCTURAL_MARKETPLACE_ID}`),
-    ).toBeEnabled();
+    const update = banner.getByTestId('marketplace-source-invalid-update');
+    await expect(update).toHaveText('Update');
+    await expect(update).toBeEnabled();
   } finally {
     if (electronApp) {
       await closeCanopy(electronApp, userDataDir);

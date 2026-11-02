@@ -565,8 +565,8 @@ export async function readArchivedContainerManifest(
 
 /**
  * The manifest even after its retention window has lapsed, for callers acting
- * on an archive that is being removed. Everywhere else an expired archive
- * stays hidden.
+ * on an archive that is being removed, or redoing the archive that committed
+ * it. Everywhere else an expired archive stays hidden.
  */
 export async function readArchivedContainerManifestIncludingExpired(
   projectId: string,
@@ -612,10 +612,12 @@ export async function listArchivedContainerManifests(
 /**
  * Enumerates every archive directory as deletion-critical state. Unlike the
  * renderer-facing list, this fails closed when any directory is incomplete,
- * corrupt, or no longer matches its durable identity.
+ * corrupt, or no longer matches its durable identity. `skipping` names
+ * directories a caller removes before the deletion reads them (CAN-5337).
  */
 export async function listArchivedContainerManifestsStrict(
   projectId: string,
+  skipping: ReadonlySet<string> = new Set(),
 ): Promise<ArchivedContainerManifest[]> {
   validateId(projectId, 'projectId');
   await waitForWorkspaceMutation(projectId);
@@ -623,7 +625,7 @@ export async function listArchivedContainerManifestsStrict(
   for (const entry of await safeReadDir(
     getArchivedContainersRootDir(projectId),
   )) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || skipping.has(entry.name)) continue;
     validateId(entry.name, 'containerId');
     manifests.push(await readManifestFile(projectId, entry.name));
   }
@@ -920,7 +922,9 @@ async function purgeArchivedContainerWithoutOperationLock(
       // cycle; build:e2e verifies this module resolves in packaged bytecode.
       const { finishArchivedContainerRecovery } =
         await import('./archived-container-recovery');
-      await finishArchivedContainerRecovery(manifest);
+      await finishArchivedContainerRecovery(manifest, {
+        discardingArchive: true,
+      });
       await commitArchivedContainer(manifest);
       if (manifest.recovery.gitCleanupPending) {
         throw new Error(

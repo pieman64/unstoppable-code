@@ -18,26 +18,37 @@ const mockSweepCodexMarketplaceStaging = jest.fn();
 const mockPrefetchBlueprints = jest.fn();
 const mockReconcileLedgerScopesAtStartup = jest.fn();
 const mockReconcileSummaryPublications = jest.fn();
+const mockReconcileManagedMarketplaceReceiptsAtStartup = jest.fn();
 
 jest.mock('../lib/e2e-gate', () => ({
   isE2eBuild: (): boolean => mockIsE2eBuild(),
 }));
 
 jest.mock('../skills/skill-service', () => ({
-  checkUpdates: mockCheckUpdates,
+  get checkUpdates(): typeof mockCheckUpdates {
+    return mockCheckUpdates;
+  },
 }));
 
 jest.mock('../plugins/plugin-service', () => ({
-  refreshMarketplaces: mockRefreshMarketplaces,
+  get refreshMarketplaces(): typeof mockRefreshMarketplaces {
+    return mockRefreshMarketplaces;
+  },
+  get reconcileManagedMarketplaceReceiptsAtStartup(): typeof mockReconcileManagedMarketplaceReceiptsAtStartup {
+    return mockReconcileManagedMarketplaceReceiptsAtStartup;
+  },
 }));
 
 jest.mock('../plugins/invocable-inventory-service', () => ({
-  refreshInvocableInventoryAfterMutation:
-    mockRefreshInvocableInventoryAfterMutation,
+  get refreshInvocableInventoryAfterMutation(): typeof mockRefreshInvocableInventoryAfterMutation {
+    return mockRefreshInvocableInventoryAfterMutation;
+  },
 }));
 
 jest.mock('../lib/window-send', () => ({
-  sendToWindowDetailed: mockSendToWindowDetailed,
+  get sendToWindowDetailed(): typeof mockSendToWindowDetailed {
+    return mockSendToWindowDetailed;
+  },
 }));
 
 jest.mock('../observability', () => ({
@@ -47,32 +58,45 @@ jest.mock('../observability', () => ({
 }));
 
 jest.mock('../feedback/turn-feedback-client', () => ({
-  flushTurnFeedbackOutbox: mockFlushTurnFeedbackOutbox,
+  get flushTurnFeedbackOutbox(): typeof mockFlushTurnFeedbackOutbox {
+    return mockFlushTurnFeedbackOutbox;
+  },
 }));
 
 jest.mock('../canopy-cloud/shared-item-subscriptions', () => ({
-  flushSharedItemSubscriptions: mockFlushSharedItemSubscriptions,
+  get flushSharedItemSubscriptions(): typeof mockFlushSharedItemSubscriptions {
+    return mockFlushSharedItemSubscriptions;
+  },
 }));
 
 jest.mock('../memory/local/import/import-job', () => ({
-  enqueueStartupLocalMemoryImportBatch:
-    mockEnqueueStartupLocalMemoryImportBatch,
+  get enqueueStartupLocalMemoryImportBatch(): typeof mockEnqueueStartupLocalMemoryImportBatch {
+    return mockEnqueueStartupLocalMemoryImportBatch;
+  },
 }));
 
 jest.mock('../plugins/codex-staging-janitor', () => ({
-  sweepCodexMarketplaceStaging: mockSweepCodexMarketplaceStaging,
+  get sweepCodexMarketplaceStaging(): typeof mockSweepCodexMarketplaceStaging {
+    return mockSweepCodexMarketplaceStaging;
+  },
 }));
 
 jest.mock('../blueprints/blueprint-catalog', () => ({
-  prefetchBlueprints: mockPrefetchBlueprints,
+  get prefetchBlueprints(): typeof mockPrefetchBlueprints {
+    return mockPrefetchBlueprints;
+  },
 }));
 
 jest.mock('../ledger/lifecycle', () => ({
-  reconcileLedgerScopesAtStartup: mockReconcileLedgerScopesAtStartup,
+  get reconcileLedgerScopesAtStartup(): typeof mockReconcileLedgerScopesAtStartup {
+    return mockReconcileLedgerScopesAtStartup;
+  },
 }));
 
 jest.mock('../ledger/summary-reconciliation', () => ({
-  reconcileSummaryPublications: mockReconcileSummaryPublications,
+  get reconcileSummaryPublications(): typeof mockReconcileSummaryPublications {
+    return mockReconcileSummaryPublications;
+  },
 }));
 
 import { scheduleDeferredStartupBackgroundTasks } from '../startup-background-tasks';
@@ -125,6 +149,9 @@ describe('startup background tasks', () => {
     mockSweepCodexMarketplaceStaging.mockResolvedValue({ removed: 0 });
     mockPrefetchBlueprints.mockResolvedValue(true);
     mockReconcileLedgerScopesAtStartup.mockResolvedValue('settled');
+    mockReconcileManagedMarketplaceReceiptsAtStartup.mockReturnValue({
+      status: 'unchanged',
+    });
     mockReconcileSummaryPublications.mockResolvedValue({
       scopes: 0,
       published: 0,
@@ -350,6 +377,10 @@ describe('startup background tasks', () => {
       expect(mockSweepCodexMarketplaceStaging).toHaveBeenCalledTimes(1);
       // Ledger reconciliation is local work and launches no provider CLI.
       expect(mockReconcileLedgerScopesAtStartup).toHaveBeenCalledTimes(1);
+      // So is the marketplace receipt pass, which reads Claude's file only.
+      expect(
+        mockReconcileManagedMarketplaceReceiptsAtStartup,
+      ).toHaveBeenCalledTimes(1);
       expect(() => cancel()).not.toThrow();
     } finally {
       restorePlatform();
@@ -390,6 +421,41 @@ describe('startup background tasks', () => {
       // The other deferred tasks still run.
       expect(mockSweepCodexMarketplaceStaging).toHaveBeenCalledTimes(1);
       expect(mockCheckUpdates).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [
+      'reports a failed write',
+      (): unknown => ({ status: 'failed', error: 'disk full' }),
+      'disk full',
+    ],
+    [
+      'throws',
+      (): unknown => {
+        throw new Error('receipts unavailable');
+      },
+      'receipts unavailable',
+    ],
+  ])(
+    'records a startup diagnostic when the marketplace receipt pass %s',
+    async (_outcome, reconcile, reason) => {
+      mockReconcileManagedMarketplaceReceiptsAtStartup.mockImplementation(
+        reconcile,
+      );
+
+      scheduleDeferredStartupBackgroundTasks(() => null);
+      jest.advanceTimersByTime(5000);
+      await Promise.resolve();
+
+      expect(mockRecordAppDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'startup_background_task_failed',
+          reason: `plugin_marketplace_receipts: ${reason}`,
+        }),
+      );
+      // The provider refresh still runs.
+      expect(mockRefreshMarketplaces).toHaveBeenCalledTimes(1);
     },
   );
 

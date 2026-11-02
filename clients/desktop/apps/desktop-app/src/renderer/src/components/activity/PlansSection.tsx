@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import { createPortal } from 'react-dom';
-import type { TrackedPlanData } from '@canopy/desktop-shared/types';
-import { HeaderActionButton, Markdown } from '@canopy/ui-shared/components';
+import type {
+  DetectedPlanEntry,
+  TrackedPlanData,
+} from '@canopy/desktop-shared/types';
+import {
+  HeaderActionButton,
+  Markdown,
+  PlanProvenance,
+  PlanReviewStatusBadge,
+  PlanStatusNote,
+} from '@canopy/ui-shared/components';
 import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
 import { PlanReadyPipelineModal } from '@/components/chat/PlanReadyPipelineModal';
 import type { PipelinePluginCollectionRunContext } from '@/components/activity/PipelineTriggerModal';
@@ -27,7 +36,14 @@ import { useTeamOrgShareEntryVisible } from '@/lib/share-targets';
 import { buildPlanReadyExecuteOptions } from '@/lib/planReadyPipelineExecuteOptions';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
 import { implementTrackedPlan } from '@/lib/plans/plan-follow-up';
-import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
+import { reconcileExecutedPlan } from '@/lib/plans/reconcile-tracked-plans';
+import { revealWorktreeChatPanel } from '@/lib/panels/plan-panel-open';
+import {
+  planExecuteAvailability,
+  usePlanImplementationState,
+  type PlanStatusNoteTarget,
+} from '@/components/plan-explore/usePlanImplementationState';
+import { PlansEmptyMessage } from '@canopy/ui-app/plans';
 import {
   useActivitySectionChrome,
   FRAMELESS_HIDDEN_GROUP_MAX_H,
@@ -43,15 +59,17 @@ import {
   stripPlanTitleLine,
 } from './plan-markdown';
 import {
-  DownloadIcon,
   EyeIcon,
   EyeOffIcon,
   PipelineIcon,
   PlanModeIcon,
+  PlusIcon,
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { Button } from '@canopy/ui-shared/components';
 
 const EMPTY_TRACKED_PLANS: TrackedPlanData[] = [];
+const EMPTY_DETECTED_PLANS: DetectedPlanEntry[] = [];
 
 export function PlansIcon(): JSX.Element {
   return <PlanModeIcon />;
@@ -67,11 +85,6 @@ interface PlanCardProps {
   onPipelineFollowUp: () => void;
   onShare?: () => void;
   shareBusy: boolean;
-  latestExecution: {
-    id: string;
-    pipeline_name: string;
-    status: string;
-  } | null;
   onOpenExecution: (executionId: string) => void;
 }
 
@@ -85,16 +98,35 @@ function PlanCard({
   onPipelineFollowUp,
   onShare,
   shareBusy,
-  latestExecution,
   onOpenExecution,
 }: PlanCardProps): JSX.Element {
   const shareEntryVisible = useTeamOrgShareEntryVisible(
     hasVisiblePlanShare(plan),
   );
   const body = stripPlanTitleLine(plan.content);
-  const linkedPipelineRunning =
-    latestExecution?.status === 'running' ||
-    latestExecution?.status === 'pending';
+  const implementation = usePlanImplementationState(plan);
+  const navigationExecution = usePipelineRunsStore((state) =>
+    state.summaries.find(
+      (summary) => summary.id === implementation.navigationExecutionId,
+    ),
+  );
+  const executionHasOutcomeLink = implementation.notes.some(
+    (note) =>
+      note.text &&
+      note.target.kind === 'run' &&
+      note.target.executionId === navigationExecution?.id,
+  );
+  const openNoteTarget = (target: PlanStatusNoteTarget): void => {
+    if (target.kind === 'run') {
+      onOpenExecution(target.executionId);
+    } else {
+      revealWorktreeChatPanel(
+        { projectId: plan.projectId, worktreeId: plan.worktreeId },
+        target.chatId,
+      );
+    }
+  };
+  const linkedPipelineRunning = implementation.status.kind === 'implementing';
 
   return (
     <div
@@ -109,21 +141,24 @@ function PlanCard({
           onOpen();
         }
       }}
-      className="group/plan focus-ring relative w-full cursor-pointer rounded-lg border bg-fg-primary/[0.03] p-3 text-left transition hover:bg-fg-primary/[0.06]"
+      className="group/plan focus-ring relative w-full cursor-pointer rounded-lg border bg-fg-primary/[0.03] p-3 text-left transition-colors hover:bg-fg-primary/[0.06]"
     >
       {!readOnly && (
-        <button
-          type="button"
-          data-testid={`activity-plan-toggle-hidden-${plan.id}`}
-          onClick={(event): void => {
-            event.stopPropagation();
-            onToggleHidden();
-          }}
-          className="focus-ring absolute right-2 top-2 rounded-md p-1 fg-secondary opacity-0 transition hover:bg-fg-primary/[0.08] hover:fg-primary group-hover/plan:opacity-100"
-          aria-label={plan.hidden ? 'Show plan' : 'Hide plan'}
-        >
-          {plan.hidden ? <EyeIcon /> : <EyeOffIcon />}
-        </button>
+        <div className="absolute right-2 top-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/plan:opacity-100">
+          <Button
+            variant="ghost-overlay"
+            size="compact"
+            iconOnly
+            data-testid={`activity-plan-toggle-hidden-${plan.id}`}
+            onClick={(event): void => {
+              event.stopPropagation();
+              onToggleHidden();
+            }}
+            aria-label={plan.hidden ? 'Show plan' : 'Hide plan'}
+          >
+            {plan.hidden ? <EyeIcon /> : <EyeOffIcon />}
+          </Button>
+        </div>
       )}
 
       <div className="flex items-start gap-2 pr-6">
@@ -146,21 +181,48 @@ function PlanCard({
         </div>
       </div>
 
-      <div className="mt-2 flex items-center gap-3 text-2xs fg-secondary">
-        <span>Rev {plan.latestRevisionNumber}</span>
-        <span>{plan.reviewStatus}</span>
-        {!readOnly && latestExecution ? (
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs fg-secondary">
+        <span className="shrink-0">Rev {plan.latestRevisionNumber}</span>
+        <PlanReviewStatusBadge
+          className="shrink-0"
+          status={implementation.status}
+          data-testid={`activity-plan-status-${plan.id}`}
+        />
+        {/* The run link already sits beside the status, so only outcome
+            and chat notes are added here. */}
+        {!readOnly &&
+          implementation.notes
+            .filter((note) => note.text || note.target.kind === 'chat')
+            .map((note) => (
+              <PlanStatusNote
+                key={`${note.target.kind}-${note.linkLabel}`}
+                text={note.text}
+                data-testid={`activity-plan-status-note-${plan.id}`}
+                link={{
+                  label: note.linkLabel,
+                  onSelect: (): void => openNoteTarget(note.target),
+                  'data-testid': `activity-plan-status-note-${note.target.kind}-${plan.id}`,
+                }}
+              />
+            ))}
+        <PlanProvenance
+          source={plan.source}
+          sourceFilePath={plan.sourceFilePath}
+        />
+        {!readOnly && navigationExecution && !executionHasOutcomeLink ? (
           <button
             type="button"
             data-testid={`activity-plan-execution-${plan.id}`}
             onClick={(event): void => {
               event.stopPropagation();
-              onOpenExecution(latestExecution.id);
+              onOpenExecution(navigationExecution.id);
             }}
-            className="focus-ring inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs fg-info transition hover:bg-fg-primary/[0.06]"
+            className="focus-ring inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs fg-info transition-colors hover:bg-fg-primary/[0.06]"
           >
             <PipelineIcon width={11} height={11} className="shrink-0" />
-            {latestExecution.pipeline_name}
+            <span className="truncate">
+              {navigationExecution.pipeline_name}
+            </span>
           </button>
         ) : null}
       </div>
@@ -173,7 +235,8 @@ function PlanCard({
           <PlanActionControls
             dataTestIdPrefix={`activity-plan-${plan.id}`}
             planContent={plan.content}
-            executeDisabled={isCursorPlanExecutionUnavailable(plan)}
+            {...planExecuteAvailability(plan, implementation)}
+            executeEmphasis={implementation.status.executeEmphasis}
             menuPortal
             onExplore={onExplore}
             onImplement={onChatFollowUp}
@@ -255,9 +318,18 @@ export function PlansSection(): JSX.Element {
   const loadTrackedPlans = useActivityStore((state) => state.loadTrackedPlans);
   const togglePlanHidden = useActivityStore((state) => state.togglePlanHidden);
   const shareTrackedPlan = useActivityStore((state) => state.shareTrackedPlan);
-  const summaries = usePipelineRunsStore((state) => state.summaries);
   const addToast = useGitHubStore((state) => state.addToast);
   const openImportModal = useActivityStore((state) => state.openImportModal);
+  const loadDetectedPlans = useActivityStore(
+    (state) => state.loadDetectedPlans,
+  );
+  const pendingSuggestionCount = useActivityStore(
+    (state) =>
+      (key
+        ? (state.detectedPlans[key] ?? EMPTY_DETECTED_PLANS)
+        : EMPTY_DETECTED_PLANS
+      ).filter((entry) => entry.status === 'detected').length,
+  );
   const [pipelinePlan, setPipelinePlan] = useState<TrackedPlanData | null>(
     null,
   );
@@ -292,6 +364,24 @@ export function PlansSection(): JSX.Element {
       selectedWorktree.worktreeId,
     );
   }, [loadTrackedPlans, selectedWorktree]);
+
+  // Plan files agents wrote in chats, for the empty state's suggestion chip.
+  // A worktree with plans never shows the chip, so the read waits until the
+  // tracked inventory confirms it has none. Results are stored per worktree,
+  // so a late reply for a previous worktree cannot replace this one's.
+  const trackedPlansLoaded = useActivityStore(
+    (state) => key !== '' && state.trackedPlanInventoryLoaded[key] === true,
+  );
+  const isEmpty = trackedPlansLoaded && plans.length === 0;
+  useEffect(() => {
+    if (!selectedWorktree || readOnly || !isEmpty) {
+      return;
+    }
+    void loadDetectedPlans(
+      selectedWorktree.projectId,
+      selectedWorktree.worktreeId,
+    ).catch((): void => undefined);
+  }, [isEmpty, loadDetectedPlans, readOnly, selectedWorktree]);
 
   // The list lives in the plan's worktree surface, so its Plan panel opens
   // there, beside that worktree's active chat, without navigating.
@@ -411,12 +501,6 @@ export function PlansSection(): JSX.Element {
     [shareTrackedPlan, sharePlan],
   );
 
-  // The share dialog raises its own success toast (with the link) before it
-  // closes, so completion only clears the dialog target here.
-  const handleShared = useCallback((): void => {
-    setSharePlan(null);
-  }, []);
-
   const handlePipelineRun = useCallback(
     async (
       _pipelineId: string,
@@ -454,7 +538,7 @@ export function PlansSection(): JSX.Element {
         );
 
         if (!result.success) {
-          setPipelineRunError(result.error ?? 'Pipeline execution failed');
+          setPipelineRunError(result.error ?? 'Workflow execution failed');
           return;
         }
 
@@ -467,10 +551,7 @@ export function PlansSection(): JSX.Element {
         // process (`startPipelineExecutionFromMain`) for every `plan_ready`
         // run, so the renderer no longer emits a duplicate approval. The
         // refetch below pulls the already-approved state back from main.
-        await loadTrackedPlans(
-          selectedWorktree.projectId,
-          selectedWorktree.worktreeId,
-        );
+        await reconcileExecutedPlan(selectedWorktree, pipelinePlan.id);
         setPipelinePlan(null);
       } catch (error: unknown) {
         setPipelineRunError(extractIpcErrorMessage(error));
@@ -500,40 +581,6 @@ export function PlansSection(): JSX.Element {
     [selectedWorktree],
   );
 
-  const getLatestExecution = useCallback(
-    (
-      plan: TrackedPlanData,
-    ): { id: string; pipeline_name: string; status: string } | null => {
-      // Check live summaries for executions referencing this plan (covers
-      // in-progress runs whose ID hasn't been persisted to linkedExecutionIds
-      // yet). Fall back to the persisted list for completed runs.
-      const liveSummary = summaries.find(
-        (s) =>
-          s.planId === plan.id &&
-          (s.status === 'running' || s.status === 'pending'),
-      );
-      if (liveSummary) {
-        return {
-          id: liveSummary.id,
-          pipeline_name: liveSummary.pipeline_name,
-          status: liveSummary.status,
-        };
-      }
-
-      const latestId =
-        plan.linkedExecutionIds[plan.linkedExecutionIds.length - 1];
-      if (!latestId) return null;
-      const summary = summaries.find((s) => s.id === latestId);
-      if (!summary) return null;
-      return {
-        id: summary.id,
-        pipeline_name: summary.pipeline_name,
-        status: summary.status,
-      };
-    },
-    [summaries],
-  );
-
   const importAction =
     selectedWorktree && !readOnly ? (
       <HeaderActionButton
@@ -544,12 +591,11 @@ export function PlansSection(): JSX.Element {
           openImportModal({
             projectId: selectedWorktree.projectId,
             worktreeId: selectedWorktree.worktreeId,
-            initialTab: 'search',
           });
         }}
-        aria-label="Import plan document"
+        aria-label="Import plan"
       >
-        <DownloadIcon size={16} />
+        <PlusIcon size={16} />
       </HeaderActionButton>
     ) : undefined;
 
@@ -579,10 +625,35 @@ export function PlansSection(): JSX.Element {
             subtitle={headerChrome.subtitle}
             collapsedIconColor={headerChrome.collapsedIconColor}
             headerAction={importAction}
-            hasExpandableContent={false}
+            // Read-only scopes have no import card, so their explanation
+            // renders as the section body instead.
+            hasExpandableContent={readOnly}
             actionOnlyCard
             actionOnlyLabel="Import plan"
-          />
+            showBodyWithActionCard
+          >
+            <div
+              data-testid="activity-plans-empty"
+              className="space-y-2 text-xs fg-secondary"
+            >
+              <PlansEmptyMessage canImport={!readOnly} />
+              {!readOnly && pendingSuggestionCount > 0 && (
+                <Button
+                  size="compact"
+                  data-testid="activity-plans-suggestions-chip"
+                  onClick={(event): void => {
+                    event.stopPropagation();
+                    openImportModal({
+                      projectId: selectedWorktree.projectId,
+                      worktreeId: selectedWorktree.worktreeId,
+                    });
+                  }}
+                >
+                  {pendingSuggestionCount} found in chats
+                </Button>
+              )}
+            </div>
+          </ActivitySection>
         </div>
       </>
     );
@@ -630,7 +701,6 @@ export function PlansSection(): JSX.Element {
                     )
                   }
                   shareBusy={sharingPlanId === plan.id}
-                  latestExecution={getLatestExecution(plan)}
                   onOpenExecution={handleOpenExecution}
                 />
               ))}
@@ -641,13 +711,13 @@ export function PlansSection(): JSX.Element {
                 <button
                   type="button"
                   onClick={(): void => setHiddenExpanded(!hiddenExpanded)}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs fg-secondary transition hover:bg-fg-primary/[0.04] hover:fg-secondary"
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-secondary"
                   data-testid="activity-plans-hidden-toggle"
                 >
                   <AppCatalogChevronRightMediumIcon
                     width="12"
                     height="12"
-                    className={`shrink-0 transition ${hiddenExpanded ? 'rotate-90' : ''}`}
+                    className={`shrink-0 transition-transform ${hiddenExpanded ? 'rotate-90' : ''}`}
                   />
                   <EyeOffIcon />
                   <span>{hiddenPlans.length} hidden</span>
@@ -680,7 +750,6 @@ export function PlansSection(): JSX.Element {
                           )
                         }
                         shareBusy={sharingPlanId === plan.id}
-                        latestExecution={getLatestExecution(plan)}
                         onOpenExecution={handleOpenExecution}
                       />
                     ))}
@@ -724,7 +793,6 @@ export function PlansSection(): JSX.Element {
               setSharePlan(null);
             }}
             onShare={handleShareSubmit}
-            onShared={handleShared}
           />,
           document.body,
         )}

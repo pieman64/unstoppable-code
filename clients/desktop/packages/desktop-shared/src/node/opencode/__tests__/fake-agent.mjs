@@ -42,7 +42,8 @@ const error = (id, code = -32602, message = 'fixture error') =>
       error: { code, message },
     }) + '\n',
   );
-let selected = 'fixture/model';
+const configuredModel = config.model ?? 'fixture/model';
+let selected = configuredModel;
 let effort = 'medium';
 const effortMode = process.env.OPENCODE_FIXTURE_EFFORT;
 let sessionId = process.env.OPENCODE_FIXTURE_SESSION_ID || 'opencode-fixture';
@@ -66,7 +67,7 @@ const options = () => [
     category: 'model',
     type: 'select',
     currentValue: selected,
-    options: [{ value: 'fixture/model', name: 'Fixture model' }],
+    options: [{ value: configuredModel, name: 'Fixture model' }],
   },
 ];
 const update = (update) =>
@@ -145,7 +146,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       if (effortMode !== 'mismatch') effort = params.value;
       if (effortMode === 'snap-model') selected = 'fixture/other';
       reply(id, { configOptions: options() });
-    } else if (params.value !== 'fixture/model') error(id);
+    } else if (params.value !== configuredModel) error(id);
     else {
       selected = params.value;
       reply(id, { configOptions: options() });
@@ -197,6 +198,14 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     }
 
     if (text === 'CONFIG_PROVIDER') result = JSON.stringify(config.provider);
+    if (text === 'CONFIG_INFERENCE')
+      result = JSON.stringify({
+        provider: config.provider,
+        model: config.model,
+        smallModel: config.small_model,
+        enabledProviders: config.enabled_providers,
+        auth: process.env.OPENCODE_AUTH_CONTENT,
+      });
     if (text === 'SHELL_ENV') {
       await beforeTool(
         { sessionID: sessionId, callID: 'shell-env', tool: 'shell' },

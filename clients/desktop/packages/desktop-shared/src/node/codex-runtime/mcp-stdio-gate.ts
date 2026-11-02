@@ -12,7 +12,7 @@ export type CodexStdioMcpToolCallGate = (call: {
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
 
 async function* frames(source: Readable): AsyncGenerator<Buffer> {
-  let pending = Buffer.alloc(0);
+  let pending: Buffer = Buffer.alloc(0);
   for await (const value of source) {
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
     let offset = 0;

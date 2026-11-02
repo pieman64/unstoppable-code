@@ -99,8 +99,12 @@ test('launches the built Electron shell', async ({}, testInfo) => {
     const homePage = window.getByTestId('page-home');
     await expect(homePage).toBeVisible();
     const homeDragRegion = homePage.getByTestId('home-titlebar-drag-region');
-    await expect(homeDragRegion).toBeVisible();
-    await expect(homeDragRegion).toHaveCSS('-webkit-app-region', 'drag');
+    if (process.platform === 'linux') {
+      await expect(homeDragRegion).toHaveCount(0);
+    } else {
+      await expect(homeDragRegion).toBeVisible();
+      await expect(homeDragRegion).toHaveCSS('-webkit-app-region', 'drag');
+    }
     // Scope to page-home: the always-mounted (hidden) MainPage hosts a
     // second embedded HomeSurface.
     await expect(homePage.getByTestId('home-composer')).toBeVisible();

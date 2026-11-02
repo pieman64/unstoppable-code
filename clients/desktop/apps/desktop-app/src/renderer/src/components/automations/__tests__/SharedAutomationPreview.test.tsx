@@ -51,7 +51,12 @@ function pipelineDetail(
     actionType: 'worktree_pipeline',
     contentHash: 'a'.repeat(64),
     shareScope: 'team',
-    owner: { type: 'team', id: 'team-1', name: 'Platform' },
+    owner: {
+      type: 'team',
+      id: 'team-1',
+      name: 'Platform',
+      organization: { id: 'org-1', name: 'Acme' },
+    },
     createdAt: '2026-08-19T00:00:00.000Z',
     updatedAt: '2026-08-19T00:00:00.000Z',
     createdBy: { id: 'user-1', name: 'Alex', email: 'alex@example.com' },

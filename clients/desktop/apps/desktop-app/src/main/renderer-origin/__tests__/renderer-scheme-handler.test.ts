@@ -37,9 +37,9 @@ function trackingFs(): RendererSchemeFileSystem {
   return {
     realpath: (path) => realpath(path),
     stat: (path) => stat(path),
-    readFile: (path): Promise<Buffer> => {
+    readFile: async (path): Promise<Uint8Array<ArrayBuffer>> => {
       reads.push(path);
-      return readFile(path);
+      return new Uint8Array(await readFile(path));
     },
   };
 }

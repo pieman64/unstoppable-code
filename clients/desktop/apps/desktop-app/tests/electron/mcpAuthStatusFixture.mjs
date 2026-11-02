@@ -129,7 +129,10 @@ export async function launchMcpAuthStatusFixture({
     if (await expand.count()) await expand.first().click();
     if (!secureStorageUnavailable) {
       await expect(
-        section.getByRole('button', { name: 'Refreshable Account' }),
+        section.getByRole('button', {
+          name: 'Refreshable Account',
+          exact: true,
+        }),
       ).toBeVisible();
     }
     return { electronApp, userDataDir, window, app, section };

@@ -36,7 +36,11 @@ import {
   type PipelineFlowStatus,
   type PipelineJobNode,
 } from '@/lib/pipelineFlowGraph';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
+import {
+  OPERATIONAL_STATUS_COLORS,
+  runStatusGlyphState,
+} from '@canopy/ui-shared/lib';
+import { StatusGlyph } from '@canopy/ui-shared/components';
 
 const STATUS_BORDER: Record<PipelineFlowStatus, string> = {
   success: OPERATIONAL_STATUS_COLORS.success.border,
@@ -51,18 +55,20 @@ const STATUS_BORDER: Record<PipelineFlowStatus, string> = {
   none: '',
 };
 
-const STATUS_DOT: Record<PipelineFlowStatus, string> = {
-  success: OPERATIONAL_STATUS_COLORS.success.background,
-  failure: OPERATIONAL_STATUS_COLORS.failed.background,
-  running: `${OPERATIONAL_STATUS_COLORS.active.background} animate-pulse`,
-  restarting: `${OPERATIONAL_STATUS_COLORS.active.background} animate-pulse`,
-  paused: OPERATIONAL_STATUS_COLORS.paused.background,
-  queued: OPERATIONAL_STATUS_COLORS.paused.backgroundMuted,
-  pending: OPERATIONAL_STATUS_COLORS.paused.backgroundMuted,
-  cancelled: OPERATIONAL_STATUS_COLORS.paused.backgroundMuted,
-  skipped: OPERATIONAL_STATUS_COLORS.paused.backgroundMuted,
-  none: OPERATIONAL_STATUS_COLORS.paused.backgroundMuted,
-};
+/**
+ * A node's status mark: the shared status glyph, or nothing for a node with
+ * no run yet (the definition view), so an unrun workflow carries no marks.
+ */
+function FlowStatusGlyph({
+  status,
+  size,
+}: {
+  readonly status: PipelineFlowStatus;
+  readonly size: 12 | 14;
+}): JSX.Element | null {
+  const state = runStatusGlyphState(status);
+  return state === null ? null : <StatusGlyph state={state} size={size} />;
+}
 
 interface FlowInteraction {
   onSelectJob?: (jobId: string) => void;
@@ -143,9 +149,7 @@ function PipelineJobNodeView({
           onSelectJob?.(data.jobId);
         }}
       >
-        <span
-          className={`h-2.5 w-2.5 shrink-0 rounded-full ${STATUS_DOT[data.status]}`}
-        />
+        <FlowStatusGlyph status={data.status} size={14} />
         <span className="min-w-0 flex-1 truncate text-xs font-semibold fg-primary">
           {data.label}
         </span>
@@ -188,9 +192,7 @@ function PipelineJobNodeView({
                   onSelectStep?.(data.jobId, step.stepIndex);
                 }}
               >
-                <span
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[step.status]}`}
-                />
+                <FlowStatusGlyph status={step.status} size={12} />
                 <span className="min-w-0 flex-1 truncate text-2xs fg-primary/80">
                   {step.label}
                 </span>

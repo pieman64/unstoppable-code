@@ -9,6 +9,7 @@
  * round trip.
  */
 import type { TranscriptDescriptor } from '@canopy/agent-transcript/transcript-storage';
+import { createHash } from 'node:crypto';
 import {
   ChatDeltaJournalIntegrityError,
   ChatStorageNewerFormatError,
@@ -16,7 +17,229 @@ import {
   encodeDeltaJournalFrame,
   scanDeltaJournalFrames,
   type DeltaJournalCommitRecord,
+  type DeltaJournalFrame,
+  journalFileFor,
+  parseChatStorageManifest,
+  selectJournal,
+  DELTA_JOURNAL_V2_FILE_NAME,
+  assertNoNewerChatStorageManifest,
+  decodeDeltaJournalV2Record,
+  decodeJournalRecordForSegment,
+  DELTA_JOURNAL_V2_GENESIS_DIGEST,
 } from '../lib/chat-delta-journal/format';
+
+describe('format-4 selection', () => {
+  const manifest = {
+    version: 4,
+    scopeId: 's',
+    migrationId: 'm',
+    sourceRevision: 0,
+    sourceDigest: 'a'.repeat(64),
+    cleanupComplete: true,
+    journal: 'chat-delta-journal-v2',
+  };
+  it('pins a distinct journal and an explicit ceiling', () => {
+    expect(DELTA_JOURNAL_V2_FILE_NAME).not.toBe('delta-journal.log');
+    expect(journalFileFor(manifest)).toBe(DELTA_JOURNAL_V2_FILE_NAME);
+    expect(selectJournal(manifest)).toBe('chat-delta-journal-v2');
+    expect(() => assertNoNewerChatStorageManifest(manifest, 's')).not.toThrow();
+    expect(() =>
+      assertNoNewerChatStorageManifest({ ...manifest, version: 5 }, 's'),
+    ).toThrow(ChatStorageNewerFormatError);
+    expect(() => assertNoNewerChatStorageManifest(manifest, 's', 3)).toThrow(
+      ChatStorageNewerFormatError,
+    );
+    expect(() =>
+      assertNoNewerChatStorageManifest(manifest, 's', 4),
+    ).not.toThrow();
+  });
+  it('rejects future fields and demotion data', () => {
+    expect(parseChatStorageManifest(manifest)).toEqual(manifest);
+    expect(() =>
+      parseChatStorageManifest({ ...manifest, demotesTo: {} }),
+    ).toThrow(ChatStorageNewerFormatError);
+    expect(() =>
+      parseChatStorageManifest({ ...manifest, future: true }),
+    ).toThrow(ChatStorageNewerFormatError);
+  });
+});
+
+describe('journal record v2', () => {
+  const target = {
+    kind: 'delegation' as const,
+    chatId: 'chat',
+    delegationId: 'd',
+    runGeneration: 1,
+  };
+  const streamKey = createHash('sha256')
+    .update(JSON.stringify(['delegation', 'chat', 'd', 1]))
+    .digest('hex');
+  const frame = (record: unknown): DeltaJournalFrame => {
+    const payload = Buffer.from(JSON.stringify(record));
+    return { offset: 100, end: 140 + payload.length, digest: '', payload };
+  };
+  const commit = {
+    type: 'commit',
+    v: 2,
+    prev: 'a'.repeat(64),
+    fromRevision: 1,
+    toRevision: 2,
+    mutationIds: ['m'],
+    delta: {},
+    transcripts: [],
+    streamRegistrations: [
+      {
+        type: 'stream',
+        version: 1,
+        target,
+        streamKey,
+        registeredAtRevision: 2,
+      },
+    ],
+    descriptorUpdates: [],
+  };
+  it('pins version pairing and required reservation arrays', () => {
+    const segment = {
+      type: 'segment' as const,
+      v: 2 as const,
+      scopeId: 'scope',
+      baseRevision: 1,
+      prev: DELTA_JOURNAL_V2_GENESIS_DIGEST,
+    };
+    expect(decodeDeltaJournalV2Record(frame(segment))).toEqual(segment);
+    expect(decodeJournalRecordForSegment(frame(commit), 2)).toEqual(commit);
+    expect(() => decodeJournalRecordForSegment(frame(commit), 1)).toThrow(
+      ChatStorageNewerFormatError,
+    );
+    expect(() =>
+      decodeDeltaJournalV2Record(
+        frame({ ...commit, descriptorUpdates: undefined }),
+      ),
+    ).toThrow();
+  });
+  it('rejects unknown fields, versions, and duplicate full targets', () => {
+    expect(() =>
+      decodeDeltaJournalV2Record(frame({ ...commit, future: true })),
+    ).toThrow(ChatStorageNewerFormatError);
+    expect(() =>
+      decodeDeltaJournalV2Record(frame({ ...commit, v: 3 })),
+    ).toThrow(ChatStorageNewerFormatError);
+    expect(() =>
+      decodeDeltaJournalV2Record(
+        frame({
+          ...commit,
+          streamRegistrations: [
+            commit.streamRegistrations[0],
+            commit.streamRegistrations[0],
+          ],
+        }),
+      ),
+    ).toThrow(ChatDeltaJournalIntegrityError);
+    const effect = {
+      kind: 'delete',
+      target: { kind: 'primary', chatId: 'chat' },
+    };
+    expect(
+      decodeDeltaJournalV2Record(
+        frame({
+          ...commit,
+          transcripts: [
+            effect,
+            { ...effect, target: { kind: 'primary', chatId: 'chat-2' } },
+          ],
+        }),
+      ).type,
+    ).toBe('commit');
+    expect(() =>
+      decodeDeltaJournalV2Record(
+        frame({ ...commit, transcripts: [effect, effect] }),
+      ),
+    ).toThrow(ChatDeltaJournalIntegrityError);
+  });
+  it('keeps v1 child kinds newer and rejects cross-target effect kinds', () => {
+    const row = {
+      id: 'block:item',
+      role: 'assistant',
+      timestamp: 1,
+      parentBlockId: 'block',
+      delegationSequence: 2,
+      blocks: [{ type: 'text', text: 'hi' }],
+      itemRevision: 0,
+      final: false,
+    };
+    expect(() =>
+      decodeDeltaJournalV2Record(
+        frame({
+          ...commit,
+          transcripts: [
+            {
+              kind: 'child-upsert',
+              target: { kind: 'primary', chatId: 'chat' },
+              rows: [row],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(ChatDeltaJournalIntegrityError);
+    expect(() =>
+      decodeDeltaJournalV2Record(
+        frame({
+          ...commit,
+          transcripts: [
+            { kind: 'append', target, create: true, messages: [row] },
+          ],
+        }),
+      ),
+    ).toThrow(ChatDeltaJournalIntegrityError);
+    expect(
+      decodeDeltaJournalV2Record(
+        frame({
+          ...commit,
+          transcripts: [{ kind: 'child-upsert', target, rows: [row] }],
+        }),
+      ),
+    ).toMatchObject({ transcripts: [{ rows: [row] }] });
+    expect(() =>
+      decodeDeltaJournalV2Record(
+        frame({
+          ...commit,
+          transcripts: [
+            { kind: 'child-upsert', target, rows: [{ ...row, future: true }] },
+          ],
+        }),
+      ),
+    ).toThrow(ChatStorageNewerFormatError);
+    expect(() =>
+      decodeDeltaJournalRecord(
+        frame({
+          ...commit,
+          v: 1,
+          transcripts: [{ kind: 'child-upsert', chatId: 'chat', rows: [row] }],
+        }),
+      ),
+    ).toThrow(ChatStorageNewerFormatError);
+  });
+});
+
+it('pins the legacy CDJ1 segment frame bytes', () => {
+  const { frame, digest } = encodeDeltaJournalFrame({
+    type: 'segment',
+    v: 1,
+    scopeId: 's',
+    baseRevision: 0,
+    prev: '0'.repeat(64),
+  });
+  expect(frame.subarray(0, 8).toString('hex')).toBe('43444a3181000000');
+  expect(digest).toBe(
+    '0327b2eba2d967f4fc6e592871ad9a41da39fdb664f816fc031576af53f5f825',
+  );
+  expect(frame.subarray(8, 40).toString('hex')).toBe(digest);
+  expect(frame.subarray(40).toString()).toBe(
+    '{"type":"segment","v":1,"scopeId":"s","baseRevision":0,"prev":"' +
+      '0'.repeat(64) +
+      '"}',
+  );
+});
 import {
   applyChatIndexDelta,
   diffChatIndexes,
@@ -527,4 +750,65 @@ describe('index deltas', () => {
       diffChatIndexes(wrap({}), wrap({ when: new Date(0) })),
     ).toThrow('not plain JSON data');
   });
+});
+
+describe('journal segment validation', () => {
+  function decode(segment: unknown): unknown {
+    const target = {
+      kind: 'delegation',
+      chatId: 'chat',
+      delegationId: 'delegate',
+      runGeneration: 1,
+    };
+    const payload = Buffer.from(
+      JSON.stringify({
+        type: 'commit',
+        v: 2,
+        prev: 'a'.repeat(64),
+        fromRevision: 1,
+        toRevision: 2,
+        mutationIds: ['segment'],
+        delta: {},
+        transcripts: [
+          {
+            kind: 'child-upsert',
+            target,
+            rows: [
+              {
+                id: 'retained',
+                role: 'assistant',
+                timestamp: 2,
+                parentBlockId: 'agent',
+                delegationSequence: 0,
+                delegationSegment: segment,
+                itemRevision: 0,
+                final: false,
+                blocks: [{ type: 'text', text: 'revision 0' }],
+              },
+            ],
+          },
+        ],
+        streamRegistrations: [],
+        descriptorUpdates: [],
+      }),
+    );
+    const frame: DeltaJournalFrame = {
+      offset: 0,
+      end: payload.length,
+      digest: '',
+      payload,
+    };
+    return decodeDeltaJournalV2Record(frame);
+  }
+
+  it('accepts a non-empty segment in a journal child row', () => {
+    expect(() => decode('native-segment')).not.toThrow();
+  });
+
+  it.each(['', 7, null])(
+    'rejects an invalid segment %p in a journal child row',
+    (segment) => {
+      expect(() => decode(segment)).toThrow('Invalid child row segment');
+    },
+  );
 });

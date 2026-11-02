@@ -1,9 +1,5 @@
-// Labs: Chat tab previews (`chat-tab-previews`).
-//
-// Off (the default for everyone), chat tabs are exactly as before: the label
-// keeps its native title tooltip and hovering opens no card. Switched on
-// through `experiments.setChoice`, resting on a BACKGROUND chat tab's label
-// opens the shared preview card after the 500ms delay, hung 8px under the
+// Standard chat tab previews. Resting on a background chat tab opens the
+// shared preview after the host tooltip delay, hung 8px under the
 // tab with left edges lined up: the last prompt, the agent's reply and the
 // status row. The active tab never gets one. A live turn shows "Working…"
 // with its tool count while hovered. The card sizes to what exists: a
@@ -197,28 +193,13 @@ async function launch() {
   await expect(window.getByTestId(`panel-tab-${panel(FINISHED)}`)).toBeVisible({
     timeout: 30_000,
   });
+  // Entering the worktree lands on the chat with the waiting question
+  // (CAN-4957). These cases preview background tabs from the seeded active
+  // chat, so choose it explicitly.
+  const activeTab = window.getByTestId(`panel-tab-${panel(ACTIVE)}`);
+  await activeTab.click();
+  await expect(activeTab).toHaveAttribute('aria-selected', 'true');
   return { electronApp, userDataDir, window };
-}
-
-async function setPreviews(window, enabled) {
-  await window.evaluate(
-    (value) =>
-      window.api.experiments.setChoice({
-        experimentId: 'chat-tab-previews',
-        enabled: value,
-      }),
-    enabled,
-  );
-  await expect
-    .poll(() =>
-      window.evaluate(async () => {
-        const snapshot = await window.api.experiments.getSnapshot();
-        return snapshot.experiments.find(
-          (entry) => entry.id === 'chat-tab-previews',
-        )?.enabled;
-      }),
-    )
-    .toBe(enabled);
 }
 
 const label = (window, chatId) =>
@@ -234,21 +215,11 @@ async function rest(window, chatId) {
   await label(window, chatId).hover();
 }
 
-test.describe('Labs: chat tab previews', () => {
-  test('off keeps the native title; on previews background chat tabs only', async () => {
+test.describe('Chat tab previews', () => {
+  test('previews background chat tabs without an opt-in', async () => {
     test.setTimeout(180_000);
     const { electronApp, userDataDir, window } = await launch();
     try {
-      // Off by default: today's title tooltip and no card.
-      await expect(label(window, FINISHED)).toHaveAttribute(
-        'title',
-        'Show Activity only when there is activity',
-      );
-      await rest(window, FINISHED);
-      await window.waitForTimeout(900);
-      await expect(card(window, FINISHED)).toHaveCount(0);
-
-      await setPreviews(window, true);
       await expect(label(window, FINISHED)).not.toHaveAttribute('title');
       // The active tab keeps its title and never gets a card.
       await expect(label(window, ACTIVE)).toHaveAttribute(
@@ -283,6 +254,11 @@ test.describe('Labs: chat tab previews', () => {
       );
       expect(Math.abs(cardBox.x - tabBox.x)).toBeLessThan(1.5);
       expect(Math.round(cardBox.width)).toBe(280);
+
+      // The close button belongs to this tab's preview hover region too.
+      await window.getByTestId(`panel-tab-close-${panel(FINISHED)}`).hover();
+      await window.waitForTimeout(1_000);
+      await expect(finished).toBeVisible();
 
       await rest(window, QUESTION);
       await expect(
@@ -328,16 +304,6 @@ test.describe('Labs: chat tab previews', () => {
       await rest(window, ACTIVE);
       await window.waitForTimeout(900);
       await expect(card(window, ACTIVE)).toHaveCount(0);
-
-      // Switching it off restores the native title.
-      await setPreviews(window, false);
-      await expect(label(window, FINISHED)).toHaveAttribute(
-        'title',
-        'Show Activity only when there is activity',
-      );
-      await rest(window, FINISHED);
-      await window.waitForTimeout(900);
-      await expect(card(window, FINISHED)).toHaveCount(0);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -375,7 +341,6 @@ test.describe('Labs: chat tab previews', () => {
     });
     const { electronApp, userDataDir, window } = await launch();
     try {
-      await setPreviews(window, true);
       const composer = window.getByRole('textbox').last();
       await composer.fill(`[${MARKER}] Add the robot glyph`);
       await composer.press('Enter');

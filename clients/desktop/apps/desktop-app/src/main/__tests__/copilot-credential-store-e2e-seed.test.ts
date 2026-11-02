@@ -60,10 +60,14 @@ describe('Copilot credential E2E seed', () => {
   });
 
   it('seeds the grant once, then honours a later sign-out', async () => {
-    await expect(readCopilotCredential()).resolves.toMatchObject({
+    const seeded = await readCopilotCredential();
+    expect(seeded).toMatchObject({
       status: 'present',
-      credential: { login: 'seeded' },
+      credential: { login: 'seeded', revision: 1 },
     });
+    expect(
+      seeded.status === 'present' ? seeded.credential.entryId : null,
+    ).toMatch(/^[0-9a-f]{32}$/);
     await clearCopilotCredential();
     await expect(readCopilotCredential()).resolves.toEqual({
       status: 'absent',

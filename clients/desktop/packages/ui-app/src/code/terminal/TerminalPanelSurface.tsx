@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { TerminalShellProfileId } from '@canopy/protocol/terminal';
+import { Button } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   ensureTerminalWorktreeHydrated,
@@ -610,15 +611,14 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
               {error}
             </span>
           )}
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid="terminal-start-button"
             onClick={startFromSurface}
             disabled={starting}
-            className="rounded border bg-base/50 px-3 py-1.5 text-xs fg-secondary hover:bg-base hover:fg-primary disabled:opacity-50"
           >
             Start terminal
-          </button>
+          </Button>
         </div>
       )}
     </div>

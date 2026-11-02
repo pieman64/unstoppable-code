@@ -14,12 +14,11 @@
 // collide with a running dev app. What this cannot prove is that macOS
 // actually raises the window; that is `focusMainWindow`, verified by hand.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
-import { seedWelcomeChecklist } from './seeders/seedWelcomeChecklist.mjs';
 
 const DEFAULT_ACCELERATOR = 'CommandOrControl+Shift+O';
 const OTHER_ACCELERATOR = 'CommandOrControl+Shift+P';
@@ -250,91 +249,6 @@ test.describe('OS focus shortcut (CAN-1963)', () => {
       expect(readPreferences(userDataDir).globalFocusShortcut).toBe(
         DEFAULT_ACCELERATOR,
       );
-    } finally {
-      await closeCanopy(electronApp, userDataDir);
-    }
-  });
-
-  test('the Getting started checklist asks for the shortcut and Turn on completes it', async () => {
-    const userDataDir = seedWelcomeChecklist({
-      pendingEntry: 'focus-shortcut',
-    });
-    const { electronApp } = await launchCanopy({ userDataDir });
-    try {
-      const window = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(window);
-      await app.waitForShell();
-
-      const row = window.getByTestId(
-        'home-onboarding-suggestion-focus-shortcut',
-      );
-      await expect(row).toBeVisible({ timeout: 30_000 });
-      await expect(row).toHaveAttribute('data-step', 'enable-focus-shortcut');
-      // #3519 (CAN-2666) rewrote every checklist row as a heading plus a
-      // one-line benefit, and this row stopped printing the chord: it names
-      // the hotkey and says what turning it on gives you, while the chord
-      // itself belongs to Settings → Shortcuts (asserted by the first test
-      // in this file). The blocked row below still names it, because there
-      // the chord is the problem being reported. The row's exact copy is
-      // pinned by `onboarding-tools-polish.spec.mjs`; this spec asserts the
-      // row's identity and the Turn on flow, so it checks only the heading,
-      // in that spec's brand-alternation form — the app name is injected.
-      await expect(row.getByRole('heading')).toHaveText(
-        /^Global hotkey for the (?:Canopy|Unstoppable) app$/,
-      );
-      // Home is active, so the sidebar card is not mounted; the Home card's
-      // first row is the queue's current entry.
-      await expect
-        .poll(() => app.currentHomeChecklistEntry())
-        .toBe('focus-shortcut');
-
-      await window
-        .getByTestId('home-onboarding-suggestion-cta-enable-focus-shortcut')
-        .click();
-
-      await expect(row).toHaveCount(0);
-      await expect
-        .poll(() => readPreferences(userDataDir).globalFocusShortcutEnabled)
-        .toBe(true);
-    } finally {
-      await closeCanopy(electronApp, userDataDir);
-    }
-  });
-
-  test('a checklist row blocked by another app opens the Settings recorder', async () => {
-    const userDataDir = seedWelcomeChecklist({
-      pendingEntry: 'focus-shortcut',
-    });
-    const file = path.join(userDataDir, 'preferences.json');
-    const saved = JSON.parse(readFileSync(file, 'utf8'));
-    saved.preferences.globalFocusShortcutEnabled = true;
-    writeFileSync(file, JSON.stringify(saved, null, 2));
-    const { electronApp } = await launchCanopy({
-      userDataDir,
-      env: { CANOPY_E2E_GLOBAL_SHORTCUT_FLOW: `in-use:${DEFAULT_ACCELERATOR}` },
-    });
-    try {
-      const window = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(window);
-      await app.waitForShell();
-
-      const row = window.getByTestId(
-        'home-onboarding-suggestion-focus-shortcut',
-      );
-      await expect(row).toHaveAttribute('data-step', 'focus-shortcut-blocked', {
-        timeout: 30_000,
-      });
-      await window
-        .getByTestId('home-onboarding-suggestion-cta-focus-shortcut-blocked')
-        .click();
-
-      await expect(window.getByTestId('settings-overlay')).toBeVisible();
-      await expect(
-        window.getByTestId('settings-global-focus-shortcut'),
-      ).toBeVisible();
-      await expect(
-        window.getByTestId('global-focus-shortcut-status'),
-      ).toHaveText(/another app is using/i);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

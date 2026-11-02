@@ -73,6 +73,7 @@ import {
   resolveWorkEntryForChat,
   syncWorkEntrySummaryFromWrite,
   updateWorkEntry,
+  updateWorkEntryRegistry,
   updateWorkEntryTitle,
 } from '../lib/cowork-work-entries';
 import {
@@ -80,6 +81,7 @@ import {
   splitFlatChatTabsIntoEntries,
 } from '../lib/cowork-work-entry-migration';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
+import { createChatTabsAuxiliaryProjectionObserver } from '../lib/chat-tabs-auxiliary-projection';
 import { panelLayoutPersistenceStore } from '../panels/persistence';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
 import {
@@ -575,6 +577,21 @@ describe('cowork work entry registry', () => {
     await expect(listWorkEntryChatSummaries(workspaceId)).resolves.toEqual([]);
   });
 
+  it('rejects an unreadable registry for strict projection reads', async () => {
+    const workspaceId = 'strict-projection-read';
+    const file = getWorkspaceWorkEntriesFilePath(workspaceId);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, '{broken');
+    // A lenient empty registry would let the projection report success.
+    await expect(
+      listWorkEntryChatSummaries(workspaceId, { strictRead: true }),
+    ).rejects.toThrow();
+    await rm(file, { force: true });
+    await expect(
+      listWorkEntryChatSummaries(workspaceId, { strictRead: true }),
+    ).resolves.toEqual([]);
+  });
+
   it('persists the captured harness in compact per-chat summaries', () => {
     const tabs = [
       chatTab({
@@ -930,6 +947,596 @@ describe('cowork work entry registry', () => {
       });
     } finally {
       await removeWorkEntryRow(workspaceId, created.entry.id);
+    }
+  });
+
+  it.each(['rename', 'delete'] as const)(
+    'preserves a concurrent Work Entry %s while a two-chat summary waits for the registry',
+    async (change) => {
+      const workspaceId = APP_ADVISOR_PROJECT_ID;
+      const created = await createWorkEntry(workspaceId);
+      const entryId = created.entry.id;
+      const tabs: ChatTabsFile = {
+        version: 1,
+        activeTabId: 'first-chat',
+        tabs: [
+          chatTab({ id: 'first-chat', description: 'First', timestamp: 1000 }),
+          chatTab({
+            id: 'second-chat',
+            description: 'Second',
+            timestamp: 2000,
+          }),
+        ],
+      };
+      await writeTabsFile(workspaceId, entryId, tabs.tabs, {
+        syncSummary: false,
+      });
+      let lockEntered: (() => void) | undefined;
+      const entered = new Promise<void>((resolve) => {
+        lockEntered = resolve;
+      });
+      let releaseLock: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const blocker = updateWorkEntryRegistry(workspaceId, async (entries) => {
+        lockEntered?.();
+        await held;
+        return entries;
+      });
+      try {
+        await entered;
+        const projection = syncWorkEntrySummaryFromWrite(
+          workspaceId,
+          entryId,
+          tabs,
+        );
+        const mutation =
+          change === 'rename'
+            ? updateWorkEntryTitle(workspaceId, entryId, 'Manual title')
+            : removeWorkEntryRow(workspaceId, entryId);
+        releaseLock?.();
+        await Promise.all([blocker, projection, mutation]);
+        const registry = await readRegistryFile(
+          getWorkspaceWorkEntriesFilePath(workspaceId),
+        );
+        const row = registry.entries.find((entry) => entry.id === entryId);
+        if (change === 'rename') {
+          expect(row?.title).toBe('Manual title');
+          expect(row?.summary?.chats.map((chat) => chat.id)).toEqual([
+            'first-chat',
+            'second-chat',
+          ]);
+        } else {
+          expect(row).toBeUndefined();
+          expect(
+            (await listWorkEntries(workspaceId)).some(
+              (entry) => entry.id === entryId,
+            ),
+          ).toBe(false);
+        }
+      } finally {
+        releaseLock?.();
+        await blocker;
+        await removeWorkEntryRow(workspaceId, entryId);
+      }
+    },
+  );
+
+  it('rebuilds a failed summary from the latest two-chat file on startup read', async () => {
+    const workspaceId = APP_ADVISOR_PROJECT_ID;
+    const created = await createWorkEntry(workspaceId);
+    const entryId = created.entry.id;
+    const oldTabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'first-chat',
+      tabs: [
+        chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+      ],
+    };
+    const latestTabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'second-chat',
+      tabs: [
+        chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+        chatTab({ id: 'second-chat', description: 'Latest', timestamp: 2000 }),
+      ],
+    };
+    try {
+      await getChatStateService().replaceCompatibilityTabs(
+        { projectId: workspaceId, worktreeId: entryId },
+        oldTabs,
+        { authoritative: true },
+      );
+      await syncWorkEntrySummaryFromWrite(workspaceId, entryId, oldTabs);
+      await getChatStateService().replaceCompatibilityTabs(
+        { projectId: workspaceId, worktreeId: entryId },
+        latestTabs,
+        { authoritative: true },
+      );
+      const fs = jest.requireActual<typeof FsPromises>('node:fs/promises');
+      const originalWrite = fs.writeFile;
+      let fail = true;
+      const write = jest
+        .spyOn(fs, 'writeFile')
+        .mockImplementation(async (...args) => {
+          if (
+            fail &&
+            typeof args[0] === 'string' &&
+            args[0].includes('.work-entries-')
+          ) {
+            fail = false;
+            throw new Error('summary write failed');
+          }
+          await originalWrite(...args);
+        });
+      try {
+        await expect(
+          syncWorkEntrySummaryFromWrite(workspaceId, entryId, latestTabs),
+        ).rejects.toThrow('summary write failed');
+      } finally {
+        write.mockRestore();
+      }
+      const registryPath = getWorkspaceWorkEntriesFilePath(workspaceId);
+      expect(
+        (await readRegistryFile(registryPath)).entries[0]?.summary?.chatCount,
+      ).toBe(1);
+
+      // A fresh process has no live summary cache; the startup list read
+      // rebuilds a stale persisted summary from canonical chat storage.
+      await clearWorkEntrySummariesForWorkspace(workspaceId);
+      activateWorkEntryWorkspace(workspaceId);
+      const listed = (await listWorkEntryChatSummaries(workspaceId)).find(
+        (item) => item.entryId === entryId,
+      );
+      expect(listed?.chats.map((chat) => chat.id)).toEqual([
+        'first-chat',
+        'second-chat',
+      ]);
+      expect(
+        (await readRegistryFile(registryPath)).entries[0]?.summary?.chatCount,
+      ).toBe(2);
+    } finally {
+      activateWorkEntryWorkspace(workspaceId);
+      await removeWorkEntryRow(workspaceId, entryId);
+    }
+  });
+
+  it('does not let an older summary finish over a newer committed summary', async () => {
+    const workspaceId = APP_ADVISOR_PROJECT_ID;
+    const created = await createWorkEntry(workspaceId);
+    const entryId = created.entry.id;
+    const oldTabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'first-chat',
+      tabs: [
+        chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+      ],
+    };
+    const latestTabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'second-chat',
+      tabs: [
+        chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+        chatTab({ id: 'second-chat', description: 'Latest', timestamp: 2000 }),
+      ],
+    };
+    await writeTabsFile(workspaceId, entryId, oldTabs.tabs, {
+      syncSummary: false,
+    });
+    const registryPath = getWorkspaceWorkEntriesFilePath(workspaceId);
+    const fs = jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const originalRead = fs.readFile;
+    let readEntered: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      readEntered = resolve;
+    });
+    let releaseRead: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let heldOnce = false;
+    const read = jest
+      .spyOn(fs, 'readFile')
+      .mockImplementation(async (...args) => {
+        if (!heldOnce && args[0] === registryPath) {
+          heldOnce = true;
+          readEntered?.();
+          await held;
+        }
+        return originalRead(...args);
+      });
+    let currentRevision = 1;
+    try {
+      const older = syncWorkEntrySummaryFromWrite(
+        workspaceId,
+        entryId,
+        oldTabs,
+        () => currentRevision === 1,
+      );
+      await entered;
+      await writeTabsFile(workspaceId, entryId, latestTabs.tabs, {
+        syncSummary: false,
+      });
+      currentRevision = 2;
+      const newer = syncWorkEntrySummaryFromWrite(
+        workspaceId,
+        entryId,
+        latestTabs,
+        () => currentRevision === 2,
+      );
+      releaseRead?.();
+      await Promise.all([older, newer]);
+      const registry = await readRegistryFile(registryPath);
+      const row = registry.entries.find((entry) => entry.id === entryId);
+      expect(row?.summary?.title).toBe('Latest');
+      expect(row?.summary?.chats.map((chat) => chat.id)).toEqual([
+        'first-chat',
+        'second-chat',
+      ]);
+    } finally {
+      releaseRead?.();
+      read.mockRestore();
+      await removeWorkEntryRow(workspaceId, entryId);
+    }
+  });
+
+  it('does not install an older summary superseded while its registry file is prepared', async () => {
+    const workspaceId = APP_ADVISOR_PROJECT_ID;
+    const created = await createWorkEntry(workspaceId);
+    const entryId = created.entry.id;
+    const oldTabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'first-chat',
+      tabs: [
+        chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+      ],
+    };
+    const latestTabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'second-chat',
+      tabs: [
+        chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+        chatTab({ id: 'second-chat', description: 'Latest', timestamp: 2000 }),
+      ],
+    };
+    await writeTabsFile(workspaceId, entryId, oldTabs.tabs, {
+      syncSummary: false,
+    });
+    const registryPath = getWorkspaceWorkEntriesFilePath(workspaceId);
+    const before = await readFile(registryPath, 'utf8');
+    const fs = jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const originalWrite = fs.writeFile;
+    let currentRevision = 1;
+    // The newer revision publishes after every pre-write currency check,
+    // while the older summary's temporary registry file is being written.
+    const write = jest
+      .spyOn(fs, 'writeFile')
+      .mockImplementationOnce(async (...args) => {
+        await originalWrite(...args);
+        currentRevision = 2;
+      });
+    const sidebarGroups = await import('../lib/sidebar-item-groups');
+    const invalidated = jest.spyOn(
+      sidebarGroups,
+      'publishSidebarItemGroupsChanged',
+    );
+    const logging = await import('../lib/main-process-logging');
+    const warning = jest.spyOn(logging, 'logMainProcessWarn');
+    try {
+      await expect(
+        syncWorkEntrySummaryFromWrite(
+          workspaceId,
+          entryId,
+          oldTabs,
+          () => currentRevision === 1,
+        ),
+      ).resolves.toBeUndefined();
+      expect(write).toHaveBeenCalledWith(
+        expect.stringContaining('.work-entries-'),
+        expect.any(String),
+        'utf8',
+      );
+      expect(currentRevision).toBe(2);
+      expect(await readFile(registryPath, 'utf8')).toBe(before);
+      expect(
+        readdirSync(dirname(registryPath)).filter((name) =>
+          name.endsWith('.tmp'),
+        ),
+      ).toEqual([]);
+      expect(invalidated).not.toHaveBeenCalled();
+      expect(warning).not.toHaveBeenCalled();
+
+      await writeTabsFile(workspaceId, entryId, latestTabs.tabs, {
+        syncSummary: false,
+      });
+      await syncWorkEntrySummaryFromWrite(
+        workspaceId,
+        entryId,
+        latestTabs,
+        () => currentRevision === 2,
+      );
+      const row = (await readRegistryFile(registryPath)).entries.find(
+        (entry) => entry.id === entryId,
+      );
+      expect(row?.summary?.title).toBe('Latest');
+      expect(invalidated).toHaveBeenCalledWith(workspaceId);
+    } finally {
+      write.mockRestore();
+      invalidated.mockRestore();
+      warning.mockRestore();
+      await removeWorkEntryRow(workspaceId, entryId);
+    }
+  });
+
+  it.each([1, 2])(
+    'does not install an older summary superseded during registry rename retry %i',
+    async (heldRetry) => {
+      const workspaceId = APP_ADVISOR_PROJECT_ID;
+      const created = await createWorkEntry(workspaceId);
+      const entryId = created.entry.id;
+      const oldTabs: ChatTabsFile = {
+        version: 1,
+        activeTabId: 'first-chat',
+        tabs: [
+          chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+        ],
+      };
+      const latestTabs: ChatTabsFile = {
+        version: 1,
+        activeTabId: 'second-chat',
+        tabs: [
+          chatTab({ id: 'first-chat', description: 'Old', timestamp: 1000 }),
+          chatTab({
+            id: 'second-chat',
+            description: 'Latest',
+            timestamp: 2000,
+          }),
+        ],
+      };
+      await writeTabsFile(workspaceId, entryId, oldTabs.tabs, {
+        syncSummary: false,
+      });
+      const registryPath = getWorkspaceWorkEntriesFilePath(workspaceId);
+      const before = await readFile(registryPath, 'utf8');
+      const fs = jest.requireActual<typeof FsPromises>('node:fs/promises');
+      let currentRevision = 1;
+      let registryRenames = 0;
+      const originalRename = fs.rename;
+      // Every currency check before the first attempt passes. Each attempt
+      // up to the held retry hits a sharing violation, and the newer revision
+      // commits during the backoff before that retry.
+      const rename = jest
+        .spyOn(fs, 'rename')
+        .mockImplementation(async (from, to) => {
+          if (String(from).includes('.work-entries-')) {
+            registryRenames += 1;
+            if (registryRenames <= heldRetry) {
+              if (registryRenames === heldRetry)
+                setImmediate(() => {
+                  currentRevision = 2;
+                });
+              throw Object.assign(new Error('sharing violation'), {
+                code: 'EBUSY',
+              });
+            }
+          }
+          return originalRename(from, to);
+        });
+      const sidebarGroups = await import('../lib/sidebar-item-groups');
+      const invalidated = jest.spyOn(
+        sidebarGroups,
+        'publishSidebarItemGroupsChanged',
+      );
+      const logging = await import('../lib/main-process-logging');
+      const warning = jest.spyOn(logging, 'logMainProcessWarn');
+      try {
+        await expect(
+          syncWorkEntrySummaryFromWrite(
+            workspaceId,
+            entryId,
+            oldTabs,
+            () => currentRevision === 1,
+          ),
+        ).resolves.toBeUndefined();
+        expect(currentRevision).toBe(2);
+        expect(await readFile(registryPath, 'utf8')).toBe(before);
+        expect(registryRenames).toBe(heldRetry);
+        expect(
+          readdirSync(dirname(registryPath)).filter((name) =>
+            name.endsWith('.tmp'),
+          ),
+        ).toEqual([]);
+        expect(invalidated).not.toHaveBeenCalled();
+        expect(warning).not.toHaveBeenCalled();
+
+        // The skipped older summary leaves no state that blocks the newer one.
+        await writeTabsFile(workspaceId, entryId, latestTabs.tabs, {
+          syncSummary: false,
+        });
+        await syncWorkEntrySummaryFromWrite(
+          workspaceId,
+          entryId,
+          latestTabs,
+          () => currentRevision === 2,
+        );
+        const row = (await readRegistryFile(registryPath)).entries.find(
+          (entry) => entry.id === entryId,
+        );
+        expect(row?.summary?.title).toBe('Latest');
+        expect(invalidated).toHaveBeenCalledWith(workspaceId);
+      } finally {
+        rename.mockRestore();
+        invalidated.mockRestore();
+        warning.mockRestore();
+        await removeWorkEntryRow(workspaceId, entryId);
+      }
+    },
+  );
+
+  it('publishes scope projections while the registry is unreadable and persists the summary on retry', async () => {
+    const workspaceId = APP_ADVISOR_PROJECT_ID;
+    const created = await createWorkEntry(workspaceId);
+    const entryId = created.entry.id;
+    const tabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'retry-chat',
+      tabs: [
+        chatTab({
+          id: 'retry-chat',
+          description: 'Persisted on retry',
+          timestamp: 3000,
+        }),
+      ],
+    };
+    await writeTabsFile(workspaceId, entryId, tabs.tabs, {
+      syncSummary: false,
+    });
+    const registryPath = getWorkspaceWorkEntriesFilePath(workspaceId);
+    const registry = await readFile(registryPath, 'utf8');
+    await writeFile(registryPath, 'not json', 'utf8');
+    const retries: Array<() => void> = [];
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    let summary: Promise<void> = Promise.resolve();
+    const publishScope = jest.fn();
+    const nudgeSummary = jest.fn();
+    const observer = createChatTabsAuxiliaryProjectionObserver({
+      indexSearch: () => undefined,
+      syncBadges: () => undefined,
+      syncWorkEntrySummary: (...args) => {
+        summary = syncWorkEntrySummaryFromWrite(...args);
+        return summary;
+      },
+      publishRuntimeStatus: () => undefined,
+      publishScope,
+      nudgeSummary,
+      logRetry: () => undefined,
+      schedule: (retry) => {
+        retries.push(retry);
+        const timer = setTimeout(() => undefined, 60_000);
+        timers.push(timer);
+        return timer;
+      },
+    });
+    try {
+      await observer(workspaceId, entryId, tabs, undefined, 1, () => true);
+      await expect(summary).rejects.toThrow();
+      expect(publishScope).toHaveBeenCalledTimes(1);
+      expect(retries).toHaveLength(1);
+
+      await writeFile(registryPath, registry, 'utf8');
+      retries[0]?.();
+      await summary;
+      const row = (await readRegistryFile(registryPath)).entries.find(
+        (entry) => entry.id === entryId,
+      );
+      expect(row?.summary?.title).toBe('Persisted on retry');
+      expect(retries).toHaveLength(1);
+      expect(publishScope).toHaveBeenCalledTimes(1);
+      expect(nudgeSummary).toHaveBeenCalledTimes(1);
+    } finally {
+      timers.forEach(clearTimeout);
+      if ((await readFile(registryPath, 'utf8')) === 'not json') {
+        await writeFile(registryPath, registry, 'utf8');
+      }
+      await removeWorkEntryRow(workspaceId, entryId);
+    }
+  });
+
+  it('nudges the sidebar once a summary that failed before projecting lands on retry', async () => {
+    const workspaceId = APP_ADVISOR_PROJECT_ID;
+    const created = await createWorkEntry(workspaceId);
+    const entryId = created.entry.id;
+    const tabs: ChatTabsFile = {
+      version: 1,
+      activeTabId: 'stat-chat',
+      tabs: [
+        chatTab({
+          id: 'stat-chat',
+          description: 'Listed after retry',
+          timestamp: 4000,
+        }),
+      ],
+    };
+    await writeTabsFile(workspaceId, entryId, tabs.tabs, {
+      syncSummary: false,
+    });
+    const sourcePath = await summarySourcePath(workspaceId, entryId);
+    const fs = jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const originalStat = fs.stat;
+    let statFailures = 1;
+    const statSpy = jest
+      .spyOn(fs, 'stat')
+      .mockImplementation(async (...args) => {
+        if (statFailures > 0 && args[0] === sourcePath) {
+          statFailures -= 1;
+          throw Object.assign(new Error('EACCES: permission denied'), {
+            code: 'EACCES',
+          });
+        }
+        return originalStat(...args);
+      });
+    const listedTitle = async (): Promise<string | undefined> =>
+      (await listWorkEntries(workspaceId)).find((entry) => entry.id === entryId)
+        ?.title;
+    const retries: Array<() => void> = [];
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    let summary: Promise<void> = Promise.resolve();
+    const events: string[] = [];
+    const observer = createChatTabsAuxiliaryProjectionObserver({
+      indexSearch: () => {
+        events.push('search');
+      },
+      syncBadges: () => {
+        events.push('badges');
+      },
+      syncWorkEntrySummary: (...args) => {
+        summary = syncWorkEntrySummaryFromWrite(...args);
+        return summary;
+      },
+      publishRuntimeStatus: () => undefined,
+      publishScope: () => {
+        events.push('publish');
+      },
+      nudgeSummary: (projectId, worktreeId) =>
+        events.push(`nudge:${projectId}/${worktreeId}`),
+      logRetry: () => undefined,
+      schedule: (retry) => {
+        retries.push(retry);
+        const timer = setTimeout(() => undefined, 60_000);
+        timers.push(timer);
+        return timer;
+      },
+    });
+    try {
+      await observer(workspaceId, entryId, tabs, undefined, 1, () => true);
+      await expect(summary).rejects.toThrow('EACCES');
+      // The failure came before the live summary was cached.
+      expect(events).toEqual(['search', 'badges', 'publish']);
+      statSpy.mockRestore();
+      const registryPath = getWorkspaceWorkEntriesFilePath(workspaceId);
+      expect(
+        (await readRegistryFile(registryPath)).entries.find(
+          (entry) => entry.id === entryId,
+        )?.summary?.title,
+      ).not.toBe('Listed after retry');
+
+      retries[0]?.();
+      await summary;
+      for (let turn = 0; turn < 5 && events.length < 4; turn++)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(events).toEqual([
+        'search',
+        'badges',
+        'publish',
+        `nudge:${workspaceId}/${entryId}`,
+      ]);
+      expect(retries).toHaveLength(1);
+      expect(await listedTitle()).toBe('Listed after retry');
+    } finally {
+      statSpy.mockRestore();
+      timers.forEach(clearTimeout);
+      await removeWorkEntryRow(workspaceId, entryId);
     }
   });
 
@@ -1341,6 +1948,36 @@ describe('cowork work entry registry', () => {
       expect(
         Date.parse(file.entries[0].lastTouchedAt ?? ''),
       ).toBeGreaterThanOrEqual(before);
+    },
+  );
+
+  it.each([
+    [true, true],
+    ['yes', false],
+  ])(
+    'validates the summary unread-chat markedUnread flag %p',
+    (markedUnread, kept) => {
+      const parsed = parseWorkEntriesFile(
+        JSON.stringify({
+          version: 1,
+          entries: [
+            {
+              id: 'entry-a',
+              createdAt: '2026-01-01T00:00:00.000Z',
+              summary: {
+                version: 1,
+                title: 'Entry',
+                chatCount: 1,
+                chats: [],
+                unreadChats: [{ chatId: 'chat-a', markedUnread }],
+              },
+            },
+          ],
+        }),
+      );
+      expect(parsed.entries[0].summary?.unreadChats).toEqual(
+        kept ? [{ chatId: 'chat-a', markedUnread: true }] : undefined,
+      );
     },
   );
 

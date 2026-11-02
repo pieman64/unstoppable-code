@@ -156,6 +156,101 @@ describe('filePathMentionIndex', () => {
     ]);
   });
 
+  it('keeps one alias per file and resolves the other spellings at lookup', () => {
+    const index = buildFilePathMentionIndex(repos, '/workspace/repo');
+    // Six files under the cwd; the sibling repo's file is outside it.
+    expect(index?.aliases.size).toBe(6);
+    expect(
+      filePieces(
+        'See ./src/App.tsx, src\\App.tsx, .\\nested\\test-file.ts and /workspace/repo/nested/test-file.ts:3.',
+      ),
+    ).toEqual([
+      './src/App.tsx',
+      'src\\App.tsx',
+      '.\\nested\\test-file.ts',
+      '/workspace/repo/nested/test-file.ts:3',
+    ]);
+    const pieces = splitTextByFilePathMentions('Open ./.env.', index);
+    expect(pieces).toEqual([
+      { type: 'text', text: 'Open ' },
+      {
+        type: 'file',
+        text: './.env',
+        target: {
+          absolutePath: '/workspace/repo/.env',
+          displayPath: '.env',
+          filename: '.env',
+        },
+      },
+      { type: 'text', text: '.' },
+    ]);
+  });
+
+  it('resolves Windows paths with either separator', () => {
+    const windowsRepos: RepoFileIndex[] = [
+      {
+        repoId: 'repo',
+        repoName: 'repo',
+        absolutePath: 'C:\\work\\repo',
+        rootKind: 'git-repo',
+        files: [
+          {
+            relativePath: 'src\\App.tsx',
+            filename: 'App.tsx',
+            absolutePath: 'C:\\work\\repo\\src\\App.tsx',
+            isIgnored: false,
+          },
+        ],
+      },
+    ];
+    const index = buildFilePathMentionIndex(windowsRepos, 'C:\\work\\repo');
+    expect(index?.aliases.size).toBe(1);
+    expect(
+      splitTextByFilePathMentions(
+        'Edit src\\App.tsx, src/App.tsx, C:\\work\\repo\\src\\App.tsx and C:/work/repo/src/App.tsx',
+        index,
+      )
+        .filter((piece) => piece.type === 'file')
+        .map((piece) => piece.text),
+    ).toEqual([
+      'src\\App.tsx',
+      'src/App.tsx',
+      'C:\\work\\repo\\src\\App.tsx',
+      'C:/work/repo/src/App.tsx',
+    ]);
+  });
+
+  it('resolves UNC absolute paths', () => {
+    const uncRepos: RepoFileIndex[] = [
+      {
+        repoId: 'repo',
+        repoName: 'repo',
+        absolutePath: '\\\\server\\share\\repo',
+        rootKind: 'git-repo',
+        files: [
+          {
+            relativePath: 'src\\App.tsx',
+            filename: 'App.tsx',
+            absolutePath: '\\\\server\\share\\repo\\src\\App.tsx',
+            isIgnored: false,
+          },
+        ],
+      },
+    ];
+    const index = buildFilePathMentionIndex(
+      uncRepos,
+      '\\\\server\\share\\repo',
+    );
+    expect(
+      splitTextByFilePathMentions(
+        'Edit \\\\server\\share\\repo\\src\\App.tsx now',
+        index,
+      )
+        .filter((piece) => piece.type === 'file')
+        .map((piece) => piece.text),
+    ).toEqual(['\\\\server\\share\\repo\\src\\App.tsx']);
+  });
+
   it('memoizes an index for the same repos array and cwd', () => {
     expect(getFilePathMentionIndex(repos, '/workspace/repo')).toBe(
       getFilePathMentionIndex(repos, '/workspace/repo'),

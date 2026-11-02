@@ -1,0 +1,269 @@
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import type { PlatformOperatingSystem } from '@canopy/core-runtime';
+import type {
+  CanopyCallerDescriptor,
+  CanopyWorkspaceScope,
+} from '@canopy/protocol/canopy-core';
+import type { WorkspaceType } from '@canopy/desktop-shared/types';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
+
+/**
+ * Which local reads may be sent to the core daemon, as code (CAN-5501).
+ * The eligibility half of each daemon read route: the operation × platform
+ * table, the caller and scope rules, and local lookups only, never daemon
+ * contact. A route still applies its own disposal, selection set and flag.
+ * Nothing here reads a user setting; under the always-on daemon model there
+ * is no switch.
+ */
+
+export type FilesReadRouteOperation =
+  | 'files.roots'
+  | 'files.directory'
+  | 'files.file'
+  | 'files.search'
+  | 'files.link';
+
+/** `status` and `diff` are reserved for CAN-4103's changed-files and diff reads. */
+export type GitReadRouteOperation =
+  | 'git.branch.list'
+  | 'git.remote.get'
+  | 'git.worktree.health.get'
+  | 'git.executable.get'
+  | 'git.status.get'
+  | 'git.diff.get';
+
+export type ReadRouteOperation =
+  | FilesReadRouteOperation
+  | GitReadRouteOperation;
+
+export type ReadRoutePlatform = PlatformOperatingSystem;
+
+export type ReadRouteDisposition =
+  | { readonly kind: 'eligible' }
+  | {
+      readonly kind: 'blocked';
+      /** The ticket that flips this cell. */
+      readonly until: `CAN-${number}`;
+      readonly reason: string;
+    };
+
+const ELIGIBLE: ReadRouteDisposition = { kind: 'eligible' };
+const WINDOWS_PENDING: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4732',
+  reason: 'Windows daemon reads beyond roots and directory are not verified.',
+};
+const LINUX_PENDING: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4966',
+  reason: 'Linux has no desktop daemon yet.',
+};
+const MACOS_ONLY: Readonly<Record<ReadRoutePlatform, ReadRouteDisposition>> = {
+  darwin: ELIGIBLE,
+  win32: WINDOWS_PENDING,
+  linux: LINUX_PENDING,
+};
+const PROTOCOL_PENDING: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4729',
+  reason: 'Stays in-process until CAN-4729 decides its daemon route.',
+};
+const CHANGED_FILES_PENDING: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4103',
+  reason: 'Reserved for the changed-files and diff reads.',
+};
+
+/**
+ * Every operation on every platform; a missing row or platform fails to
+ * compile. Roots and directory keep their shipped reach on all three hosts,
+ * Linux included, where a selected read still ends in a typed failure until
+ * CAN-4966. A `blocked` cell keeps the in-process reader whatever a route's
+ * selection set says.
+ */
+export const READ_ROUTE_TABLE: Readonly<
+  Record<
+    ReadRouteOperation,
+    Readonly<Record<ReadRoutePlatform, ReadRouteDisposition>>
+  >
+> = {
+  'files.roots': { darwin: ELIGIBLE, win32: ELIGIBLE, linux: ELIGIBLE },
+  'files.directory': { darwin: ELIGIBLE, win32: ELIGIBLE, linux: ELIGIBLE },
+  'files.file': MACOS_ONLY,
+  'files.search': MACOS_ONLY,
+  'files.link': MACOS_ONLY,
+  'git.branch.list': MACOS_ONLY,
+  'git.remote.get': {
+    darwin: PROTOCOL_PENDING,
+    win32: PROTOCOL_PENDING,
+    linux: PROTOCOL_PENDING,
+  },
+  'git.worktree.health.get': {
+    darwin: PROTOCOL_PENDING,
+    win32: PROTOCOL_PENDING,
+    linux: PROTOCOL_PENDING,
+  },
+  'git.executable.get': {
+    darwin: PROTOCOL_PENDING,
+    win32: PROTOCOL_PENDING,
+    linux: PROTOCOL_PENDING,
+  },
+  'git.status.get': {
+    darwin: CHANGED_FILES_PENDING,
+    win32: WINDOWS_PENDING,
+    linux: LINUX_PENDING,
+  },
+  'git.diff.get': {
+    darwin: CHANGED_FILES_PENDING,
+    win32: WINDOWS_PENDING,
+    linux: LINUX_PENDING,
+  },
+};
+
+/**
+ * The scope selectors an operation's IPC requests carry; any other selector
+ * keeps the in-process reader, so no route reinterprets a foreign selection.
+ * `worktree`: exactly `{workspaceId, worktreeId}`. `repository`: a
+ * `workspaceId` with an optional `worktreeId` and `repoId`.
+ */
+export type ReadRouteScopeShape = 'worktree' | 'repository';
+
+export const READ_ROUTE_SCOPE_SHAPES: Readonly<
+  Record<ReadRouteOperation, ReadRouteScopeShape>
+> = {
+  'files.roots': 'worktree',
+  'files.directory': 'worktree',
+  'files.file': 'worktree',
+  'files.search': 'worktree',
+  'files.link': 'worktree',
+  'git.branch.list': 'repository',
+  'git.remote.get': 'repository',
+  'git.worktree.health.get': 'repository',
+  'git.executable.get': 'repository',
+  'git.status.get': 'repository',
+  'git.diff.get': 'repository',
+};
+
+/** The trusted ids a plan carries, after alias resolution. */
+export type ReadRouteTarget =
+  | {
+      readonly shape: 'worktree';
+      readonly workspaceId: string;
+      readonly worktreeId: string;
+    }
+  | {
+      readonly shape: 'repository';
+      readonly workspaceId: string;
+      readonly worktreeId?: string;
+      readonly repoId?: string;
+    };
+
+export interface ReadRouteLookups {
+  /** Trusted alias normalization (standalone Cowork); `null` stays in-process. */
+  readonly resolveWorktreeTargetIds: (
+    projectId: string,
+    worktreeId: string,
+  ) => { projectId: string; worktreeId: string } | null;
+  readonly workspaceType: (workspaceId: string) => WorkspaceType | null;
+  /** Checked on the requested id, before alias resolution. */
+  readonly excludedWorkspaceIds: ReadonlySet<string>;
+  readonly routedWorkspaceTypes: ReadonlySet<WorkspaceType>;
+}
+
+export interface ReadRouteInput {
+  readonly operation: ReadRouteOperation;
+  /** `null`: an unknown host, which no cell names, so every read stays in-process. */
+  readonly platform: ReadRoutePlatform | null;
+  readonly caller: CanopyCallerDescriptor;
+  /** The trusted IPC event's sender. */
+  readonly senderId: number;
+  readonly scope: CanopyWorkspaceScope;
+  readonly lookups: ReadRouteLookups;
+}
+
+const LOCAL_CALLER_PREFIX = 'electron-web-contents:';
+
+const SCOPE_SELECTORS: Readonly<
+  Record<ReadRouteScopeShape, ReadonlySet<string>>
+> = {
+  worktree: new Set(['workspaceId', 'worktreeId']),
+  repository: new Set(['workspaceId', 'worktreeId', 'repoId']),
+};
+
+function hasOnlySelectors(
+  scope: CanopyWorkspaceScope,
+  allowed: ReadonlySet<string>,
+): boolean {
+  return Object.entries(scope).every(
+    ([key, value]) => value === undefined || allowed.has(key),
+  );
+}
+
+/**
+ * The host platform the table is read for; an unsupported host is `null`,
+ * which keeps every read in-process.
+ */
+export function resolveReadRoutePlatform(
+  read: () => ReadRoutePlatform = hostPlatformOperatingSystem,
+): ReadRoutePlatform | null {
+  try {
+    return read();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a read may leave for the daemon: an eligible cell for this host,
+ * the trusted local window caller for this exact sender, a scope of the
+ * operation's shape, and a registered, routed workspace. `null` keeps the
+ * in-process reader.
+ */
+export function evaluateReadRoute(
+  input: ReadRouteInput,
+): ReadRouteTarget | null {
+  const { operation, platform, caller, scope, lookups } = input;
+  if (platform === null) return null;
+  if (READ_ROUTE_TABLE[operation][platform].kind !== 'eligible') return null;
+  if (
+    caller.interfaceKind !== 'desktop' ||
+    caller.authorityId !== LOCAL_DESKTOP_AUTHORITY_ID
+  )
+    return null;
+  // Only the local window caller trusted main derived for this exact
+  // sender. Remote-control bridge callers (`remote-bridge:<id>`) always keep
+  // the in-process reader, by decision.
+  if (caller.clientInstanceId !== `${LOCAL_CALLER_PREFIX}${input.senderId}`)
+    return null;
+  const shape = READ_ROUTE_SCOPE_SHAPES[operation];
+  const { workspaceId, worktreeId, repoId } = scope;
+  if (
+    workspaceId === undefined ||
+    (shape === 'worktree' && worktreeId === undefined) ||
+    !hasOnlySelectors(scope, SCOPE_SELECTORS[shape])
+  )
+    return null;
+  if (lookups.excludedWorkspaceIds.has(workspaceId)) return null;
+  const resolved =
+    worktreeId === undefined
+      ? null
+      : lookups.resolveWorktreeTargetIds(workspaceId, worktreeId);
+  if (worktreeId !== undefined && !resolved) return null;
+  // Only registered workspaces: an unknown id keeps the in-process read.
+  const type = lookups.workspaceType(resolved?.projectId ?? workspaceId);
+  if (type === null || !lookups.routedWorkspaceTypes.has(type)) return null;
+  if (shape === 'worktree')
+    return resolved
+      ? {
+          shape,
+          workspaceId: resolved.projectId,
+          worktreeId: resolved.worktreeId,
+        }
+      : null;
+  return {
+    shape,
+    workspaceId: resolved?.projectId ?? workspaceId,
+    ...(resolved && { worktreeId: resolved.worktreeId }),
+    ...(repoId !== undefined && { repoId }),
+  };
+}

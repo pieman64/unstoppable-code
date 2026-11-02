@@ -28,7 +28,8 @@ import {
   resolveEffectiveAliasPreference,
   validateEffectiveAliasPreference,
 } from '@/lib/pipelineModelAliases';
-import { ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
+import { Button, SegmentedControl } from '@canopy/ui-shared/components';
 
 interface PipelineModelAliasEditorProps {
   alias: PipelineModelAlias;
@@ -36,17 +37,6 @@ interface PipelineModelAliasEditorProps {
   pluginCollections: PipelinePluginCollection[];
   onChange: (next: PipelineModelAliasPreference | undefined) => void;
   readonly?: boolean;
-}
-
-function ChevronIcon({ expanded }: { expanded: boolean }): JSX.Element {
-  return (
-    <AppCatalogChevronRightMediumIcon
-      width="12"
-      height="12"
-      className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
-      aria-hidden="true"
-    />
-  );
 }
 
 export function PipelineModelAliasEditor({
@@ -180,10 +170,10 @@ export function PipelineModelAliasEditor({
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
         aria-controls={contentId}
-        className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition hover:bg-fg-primary/[0.04]"
+        className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
       >
         <span className="mt-0.5 fg-secondary">
-          <ChevronIcon expanded={expanded} />
+          <ChevronIcon open={expanded} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
@@ -200,7 +190,7 @@ export function PipelineModelAliasEditor({
             )}
             {!effective.customized && effective.source === 'default' && (
               <span className="shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium leading-none bg-fg-primary/10 fg-secondary">
-                Pipeline default
+                Workflow default
               </span>
             )}
             {effective.required && (
@@ -220,24 +210,19 @@ export function PipelineModelAliasEditor({
 
       {expanded && (
         <div id={contentId} className="space-y-3 border-t p-3">
-          <div className="flex gap-1.5">
-            {(['inline', 'agent'] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                disabled={readonly}
-                onClick={() => selectMode(mode)}
-                data-testid={`pipeline-model-alias-${alias.id}-mode-${mode}`}
-                className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
-                  currentMode === mode
-                    ? 'border-line-accent/40 bg-accent-subtle fg-accent'
-                    : 'fg-secondary hover:bg-fg-primary/[0.06]'
-                } disabled:cursor-not-allowed disabled:opacity-50`}
-              >
-                {mode === 'inline' ? 'Inline model' : 'Agent'}
-              </button>
-            ))}
-          </div>
+          <SegmentedControl
+            label="Alias mode"
+            shape="capsule"
+            width="content"
+            value={currentMode}
+            disabled={readonly}
+            onChange={selectMode}
+            options={(['inline', 'agent'] as const).map((mode) => ({
+              value: mode,
+              label: mode === 'inline' ? 'Inline model' : 'Agent',
+              dataTestId: `pipeline-model-alias-${alias.id}-mode-${mode}`,
+            }))}
+          />
 
           {currentMode === 'inline' && (
             <div className="space-y-3">
@@ -347,14 +332,13 @@ export function PipelineModelAliasEditor({
           )}
 
           {!readonly && effective.customized && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={handleResetOrClear}
               data-testid={`pipeline-model-alias-${alias.id}-reset`}
-              className="rounded-md border bg-popover px-2.5 py-1 text-xs font-medium fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
             >
               {hasDefaults ? 'Reset to defaults' : 'Clear custom value'}
-            </button>
+            </Button>
           )}
         </div>
       )}

@@ -9,6 +9,8 @@ import {
   LinearProgress,
   ModelProviderIcon,
   ToggleSwitch,
+  ProviderStatusDot,
+  type ProviderStatusDotTone,
 } from '@canopy/ui-shared';
 import { DeviceBackendIcon } from '@canopy/ui-shared/icons';
 import type {
@@ -18,7 +20,6 @@ import type {
   AccountProxySignInProvider,
   AccountProxyStatus,
 } from '@canopy/desktop-shared/types/account-proxy';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useAccountProxyStore } from '@/stores/accountProxyStore';
@@ -115,7 +116,6 @@ export function AccountProxyLocalSetup({
 }: {
   readonly local: AccountProxyLocalRuntime;
 }): JSX.Element {
-  const buttonSize = useSettingsButtonSize();
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<AccountProxyError | null>(null);
   const version = local.version ?? '';
@@ -170,7 +170,7 @@ export function AccountProxyLocalSetup({
       }
       control={
         <Button
-          size={buttonSize}
+          size="compact"
           variant="primary"
           disabled={starting}
           data-testid="account-proxy-local-start"
@@ -189,14 +189,16 @@ export function AccountProxyLocalSetup({
   );
 }
 
-const DOT_CLASS: Readonly<Record<AccountProxyLocalRuntime['phase'], string>> = {
-  running: 'bg-success',
-  starting: 'bg-fg-tertiary',
-  installing: 'bg-fg-tertiary',
-  stopped: 'bg-fg-tertiary',
-  'not-installed': 'bg-fg-tertiary',
-  unsupported: 'bg-fg-tertiary',
-  error: 'bg-destructive',
+const DOT_TONE: Readonly<
+  Record<AccountProxyLocalRuntime['phase'], ProviderStatusDotTone>
+> = {
+  running: 'connected',
+  starting: 'idle',
+  installing: 'idle',
+  stopped: 'idle',
+  'not-installed': 'idle',
+  unsupported: 'idle',
+  error: 'failed',
 };
 
 function localStatusLine(local: AccountProxyLocalRuntime): ReactNode {
@@ -234,7 +236,6 @@ export function AccountProxyLocalConnection({
 }: {
   readonly status: AccountProxyStatus;
 }): JSX.Element {
-  const buttonSize = useSettingsButtonSize();
   const startWithAppId = useId();
   const [busy, setBusy] = useState(false);
   const [savingStart, setSavingStart] = useState(false);
@@ -260,10 +261,7 @@ export function AccountProxyLocalConnection({
             <span className="inline-flex items-center gap-2">
               <DeviceBackendIcon width={16} height={16} aria-hidden />
               On this device
-              <span
-                aria-hidden="true"
-                className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${DOT_CLASS[local.phase]}`}
-              />
+              <ProviderStatusDot tone={DOT_TONE[local.phase]} />
             </span>
           }
           description={
@@ -282,7 +280,7 @@ export function AccountProxyLocalConnection({
             running ? (
               <>
                 <Button
-                  size={buttonSize}
+                  size="compact"
                   disabled={transitioning}
                   data-testid="account-proxy-local-restart"
                   onClick={(): void => control('restart')}
@@ -290,7 +288,7 @@ export function AccountProxyLocalConnection({
                   Restart
                 </Button>
                 <Button
-                  size={buttonSize}
+                  size="compact"
                   disabled={transitioning}
                   data-testid="account-proxy-local-stop"
                   onClick={(): void => control('stop')}
@@ -300,7 +298,7 @@ export function AccountProxyLocalConnection({
               </>
             ) : (
               <Button
-                size={buttonSize}
+                size="compact"
                 variant="primary"
                 disabled={transitioning}
                 data-testid="account-proxy-local-start"
@@ -352,7 +350,7 @@ export function AccountProxyLocalConnection({
           description="Stops the proxy and forgets its keys. Signed-in accounts stay on this device for next time."
           control={
             <Button
-              size={buttonSize}
+              size="compact"
               disabled={busy}
               data-testid="account-proxy-disconnect"
               onClick={(): void => {
@@ -403,7 +401,6 @@ function PendingSignInRow({
   readonly pending: AccountProxySignIn;
   readonly onError: (message: string | null) => void;
 }): JSX.Element {
-  const buttonSize = useSettingsButtonSize();
   const label = accountProxyProviderLabel(pending.provider);
   return (
     <SettingsRow
@@ -437,7 +434,7 @@ function PendingSignInRow({
         pending.phase === 'failed' ? (
           <>
             <Button
-              size={buttonSize}
+              size="compact"
               data-testid="account-proxy-sign-in-retry"
               onClick={(): void => {
                 onError(null);
@@ -453,8 +450,8 @@ function PendingSignInRow({
               Try again
             </Button>
             <Button
-              size={buttonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               onClick={(): void => {
                 void signIn({ action: 'cancel' });
               }}
@@ -465,7 +462,7 @@ function PendingSignInRow({
         ) : (
           <>
             <Button
-              size={buttonSize}
+              size="compact"
               data-testid="account-proxy-sign-in-reopen"
               onClick={(): void => {
                 void signIn({ action: 'reopen' });
@@ -474,8 +471,8 @@ function PendingSignInRow({
               Open browser again
             </Button>
             <Button
-              size={buttonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               data-testid="account-proxy-sign-in-cancel"
               onClick={(): void => {
                 void signIn({ action: 'cancel' });
@@ -501,7 +498,6 @@ export function AccountProxyAddAccount({
 }: {
   readonly status: AccountProxyStatus;
 }): JSX.Element {
-  const buttonSize = useSettingsButtonSize();
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -528,7 +524,7 @@ export function AccountProxyAddAccount({
           <>
             <Button
               ref={buttonRef}
-              size={buttonSize}
+              size="compact"
               disabled={!running}
               aria-haspopup="menu"
               aria-expanded={open}

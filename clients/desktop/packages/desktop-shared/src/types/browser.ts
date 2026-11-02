@@ -796,12 +796,13 @@ export interface BrowserActionEffects {
   /** Downloads this action started, as they were when the action ended. */
   downloads?: BrowserDownloadTransfer[];
   /**
-   * A page's `window.open` this action caused: the URL opened in this tab,
-   * opened in the user's browser, or was blocked.
+   * A page's `window.open` this action caused: the URL opened in a new tab
+   * (`browserId`), opened in the user's browser, or was blocked.
    */
   popup?: {
     url: string;
     handled: 'blocked' | 'opened_externally' | 'opened_in_tab';
+    browserId?: string;
   };
   permissionDenied?: string[];
   /** The scroll position of the container or page that a scroll moved. */
@@ -951,15 +952,20 @@ export interface BrowserRecordingResult {
  * the renderer's find bar in browser mode for this tab (CAN-3048);
  * `close-tab` closes this tab's panel through the renderer's canonical
  * panel-close path (same as the tab "X"), so session teardown and Minimal's
- * fixed-topology refusal behave like a manual close. History back/forward
- * chords are handled entirely in the main process and never emit this event.
+ * fixed-topology refusal behave like a manual close.
+ * `select-next-tab` / `select-previous-tab` (CAN-4616) select the tab after
+ * or before this browser's own tab in its panel group, as the panel
+ * tab-cycle shortcuts do. History back/forward chords are handled entirely in
+ * the main process and never emit this event.
  */
 export type BrowserShortcutEventAction =
   | 'new-tab'
   | 'focus-address-bar'
   | 'toggle-sidebar'
   | 'find-in-page'
-  | 'close-tab';
+  | 'close-tab'
+  | 'select-next-tab'
+  | 'select-previous-tab';
 
 /**
  * Native find-in-page request (CAN-3048). `text` must contain a
@@ -1127,6 +1133,21 @@ export type BrowserEvent = (
       browserId: string;
       snapshot: BrowserSessionSnapshot;
       action: BrowserShortcutEventAction;
+    }
+  | {
+      /**
+       * The page opened `url` in a new window (`target="_blank"`,
+       * `window.open`), which main denied. The renderer opens it in a new tab
+       * under `newBrowserId`, in the opener's worktree; main gives the
+       * session the opener's profile. `background` marks a popup an agent's
+       * action caused: its tab opens without taking focus.
+       */
+      type: 'new-tab-requested';
+      presentation?: 'background';
+      browserId: string;
+      snapshot: BrowserSessionSnapshot;
+      url: string;
+      newBrowserId: string;
     }
   | { type: 'user-interaction'; browserId: string }
   | {

@@ -2,6 +2,7 @@
 // handful of small JSX helpers used by the per-tool renderers. None of the
 // helpers are intended to be rendered as standalone React components, so the
 // react-refresh fast-refresh constraint does not apply here.
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { Children, isValidElement, type JSX, type ReactNode } from 'react';
 import {
   DocumentIcon,
@@ -15,6 +16,7 @@ import {
   QuestionMarkIcon,
   StopIcon,
   StopwatchIcon,
+  ScheduleIcon,
   AgentIcon,
   AppAdvisorIcon,
   AppAdvisorWatcherIcon,
@@ -31,8 +33,10 @@ import {
 import { TaskIcon as AppCatalogTaskIcon } from '../../icons/AppIcons';
 import { DocumentPencilIcon, PickIcon } from '../../icons/AppIcons';
 import { capitalizeFirstLetter } from '../../lib/text-format';
-import { useCleanChatLook, useStepTense } from '../chat-look';
+import { useCleanChatLook, useStepBadges, useStepTense } from '../chat-look';
+import { StepBadge } from './StepBadge';
 import type { PortalChatToolFamily } from './tool-display-info';
+import type { AnsweredQuestionDisplay } from './AskUserQuestionCard';
 import { normalizeCommandReadToolBlock } from '@canopy/agent-transcript/lib/command-read-display';
 
 // ---------------------------------------------------------------------------
@@ -1280,6 +1284,9 @@ const CLEAN_DETAIL_CLASS = 'fg-tertiary';
 
 function CodeChunk({ children }: { children: ReactNode }): JSX.Element {
   const clean = useCleanChatLook();
+  // Chat detail `detailed`: the target in a code badge.
+  const badges = useStepBadges();
+  if (badges) return <StepBadge>{children}</StepBadge>;
   if (clean) return <span>{children}</span>;
   return (
     <code className="rounded bg-fg-primary/[0.08] px-1 py-0.5 font-mono text-2xs">
@@ -1293,47 +1300,74 @@ interface StepVerbs {
   done: string;
   running: string;
   failed: string;
+  /** Stopped before it ran, so the verb never claims it happened. */
+  blocked: string;
+  /** No outcome was recorded, so the verb claims neither success nor failure. */
+  interrupted: string;
+  /** Held for the person's approval, so the verb never claims it is running. */
+  waiting: string;
 }
 
 const READ_VERBS: StepVerbs = {
   done: 'Read',
   running: 'Reading',
   failed: 'Couldn’t read',
+  blocked: 'Didn’t read',
+  interrupted: 'Read',
+  waiting: 'Waiting to read',
 };
 const WRITE_VERBS: StepVerbs = {
   done: 'Wrote',
   running: 'Writing',
   failed: 'Couldn’t write',
+  blocked: 'Didn’t write',
+  interrupted: 'Write',
+  waiting: 'Waiting to write',
 };
 const EDIT_VERBS: StepVerbs = {
   done: 'Edited',
   running: 'Editing',
   failed: 'Couldn’t edit',
+  blocked: 'Didn’t edit',
+  interrupted: 'Edit',
+  waiting: 'Waiting to edit',
 };
 const DELETE_VERBS: StepVerbs = {
   done: 'Deleted',
   running: 'Deleting',
   failed: 'Couldn’t delete',
+  blocked: 'Didn’t delete',
+  interrupted: 'Delete',
+  waiting: 'Waiting to delete',
 };
 const RUN_VERBS: StepVerbs = {
   done: 'Ran',
   running: 'Running',
   failed: 'Couldn’t run',
+  blocked: 'Didn’t run',
+  interrupted: 'Run',
+  waiting: 'Waiting to run',
 };
 const SEARCH_VERBS: StepVerbs = {
   done: 'Searched for',
   running: 'Searching for',
   failed: 'Couldn’t search for',
+  blocked: 'Didn’t search for',
+  interrupted: 'Search for',
+  waiting: 'Waiting to search for',
 };
 const FIND_VERBS: StepVerbs = {
   done: 'Found files matching',
   running: 'Finding files matching',
   failed: 'Couldn’t find files matching',
+  blocked: 'Didn’t find files matching',
+  interrupted: 'Find files matching',
+  waiting: 'Waiting to find files matching',
 };
 
 /**
  * A tool's own verb in classic rows; in clean rows, a plain verb in the
- * step's tense ("Ran", "Running", "Couldn't run").
+ * step's tense ("Ran", "Running", "Couldn't run", "Didn't run").
  */
 function TensedVerb({
   classic,
@@ -1362,10 +1396,12 @@ function ShellLabel({
   shortCommand: string;
 }): JSX.Element {
   const clean = useCleanChatLook();
+  const badges = useStepBadges();
   if (clean) {
     return (
       <>
-        <TensedVerb classic={heading} verbs={RUN_VERBS} /> {command}
+        <TensedVerb classic={heading} verbs={RUN_VERBS} />{' '}
+        {badges ? <StepBadge>{command}</StepBadge> : command}
       </>
     );
   }
@@ -1382,10 +1418,16 @@ function TaskIcon(): JSX.Element {
 
 function MutedSnippet({ children }: { children: ReactNode }): JSX.Element {
   const clean = useCleanChatLook();
+  // Chat detail `detailed`: shrinks in the badge line and ends in "…".
+  const badges = useStepBadges();
   return (
     <span
       className={
-        clean ? `ml-1 ${CLEAN_DETAIL_CLASS}` : 'ml-1 text-2xs fg-secondary'
+        badges
+          ? `ml-1 min-w-0 truncate ${CLEAN_DETAIL_CLASS}`
+          : clean
+            ? `ml-1 ${CLEAN_DETAIL_CLASS}`
+            : 'ml-1 text-2xs fg-secondary'
       }
     >
       {children}
@@ -1461,19 +1503,75 @@ function truncate(text: string, max: number): string {
 // so the alias helpers stay the single source of truth.
 // ---------------------------------------------------------------------------
 
+/**
+ * One answer summary per answered question, in question order, joined for the
+ * collapsed ask-user row. Uses the display-safe answers only: secret freeform
+ * text stays `[hidden]`, the same as in the answers block.
+ */
+export function askUserQuestionAnswerSummary(
+  answers: readonly AnsweredQuestionDisplay[],
+): string {
+  return answers
+    .map((entry) => {
+      const answer = entry.answer.trim();
+      if (answer) return answer;
+      if (!entry.additional) return '';
+      return entry.secret ? '[hidden]' : entry.additional.trim();
+    })
+    .filter((summary) => summary.length > 0)
+    .join(', ');
+}
+
+/**
+ * Collapsed-row label for every ask-user row on desktop and web:
+ * `Asked you 1 question`, or `Asked you 1 question · <answers>` once answered.
+ * Only the combined answer suffix is truncated; the answers block keeps the
+ * full text.
+ */
+export function askUserQuestionRowLabel({
+  count,
+  answers,
+}: {
+  count: number;
+  answers?: readonly AnsweredQuestionDisplay[];
+}): JSX.Element {
+  const summary = answers
+    ? truncate(askUserQuestionAnswerSummary(answers), 60)
+    : '';
+  return (
+    <>
+      {`Asked you ${count} ${count === 1 ? 'question' : 'questions'}`}
+      {summary && (
+        <>
+          {' '}
+          <MutedSnippet>{`· ${summary}`}</MutedSnippet>
+        </>
+      )}
+    </>
+  );
+}
+
+/** Question count of a serialized ask-user input; 0 when malformed. */
+export function askUserQuestionCount(input: string | undefined): number {
+  if (!input) return 0;
+  try {
+    const parsed: unknown = JSON.parse(input);
+    return parsed &&
+      typeof parsed === 'object' &&
+      'questions' in parsed &&
+      Array.isArray(parsed.questions)
+      ? parsed.questions.length
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
 const renderAskUserQuestion: ToolDisplayRenderer = (parsed) => {
   const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
-  const count = questions.length;
   return {
     icon: <QuestionMarkIcon />,
-    label: (
-      <>
-        User questions{' '}
-        <MutedSnippet>
-          {count} {count === 1 ? 'question' : 'questions'}
-        </MutedSnippet>
-      </>
-    ),
+    label: askUserQuestionRowLabel({ count: questions.length }),
   };
 };
 
@@ -1977,7 +2075,7 @@ const renderAppAdvisorReadPipelineYaml: ToolDisplayRenderer = (parsed) => {
     icon: <AppAdvisorIcon />,
     label: (
       <>
-        Read pipeline YAML
+        Read workflow YAML
         {pipelineId && (
           <>
             {' '}
@@ -2005,10 +2103,10 @@ const renderAppAdvisorGetPipelineDebugContext: ToolDisplayRenderer = (
     icon: <AppAdvisorIcon />,
     label: executionId ? (
       <>
-        Pipeline debug context <CodeChunk>{executionId}</CodeChunk>
+        Workflow debug context <CodeChunk>{executionId}</CodeChunk>
       </>
     ) : (
-      'Pipeline debug context'
+      'Workflow debug context'
     ),
   };
 };
@@ -2246,12 +2344,12 @@ const renderAppAdvisorTool: ToolDisplayRenderer = (parsed, input, toolName) => {
       toolName,
     );
   }
-  return { icon: <WrenchIcon />, label: 'App Advisor' };
+  return { icon: <WrenchIcon />, label: ORCHESTRATOR_LABEL };
 };
 
 const renderPipelineEditorList: ToolDisplayRenderer = () => ({
   icon: <PipelineIcon />,
-  label: 'List pipelines',
+  label: 'List workflows',
 });
 
 const renderPipelineEditorOpen: ToolDisplayRenderer = (parsed) => {
@@ -2260,32 +2358,32 @@ const renderPipelineEditorOpen: ToolDisplayRenderer = (parsed) => {
     icon: <PipelineIcon />,
     label: id ? (
       <>
-        Open pipeline <CodeChunk>{id}</CodeChunk>
+        Open workflow <CodeChunk>{id}</CodeChunk>
       </>
     ) : (
-      'Open pipeline'
+      'Open workflow'
     ),
   };
 };
 
 const renderPipelineEditorCreate: ToolDisplayRenderer = () => ({
   icon: <PipelineIcon />,
-  label: 'Create pipeline',
+  label: 'Create workflow',
 });
 
 const renderPipelineEditorGetCurrent: ToolDisplayRenderer = () => ({
   icon: <PipelineIcon />,
-  label: 'Read current pipeline',
+  label: 'Read current workflow',
 });
 
 const renderPipelineEditorSetYaml: ToolDisplayRenderer = () => ({
   icon: <PipelineIcon />,
-  label: 'Edit pipeline YAML',
+  label: 'Edit workflow YAML',
 });
 
 const renderPipelineEditorSave: ToolDisplayRenderer = () => ({
   icon: <PipelineIcon />,
-  label: 'Save pipeline',
+  label: 'Save workflow',
 });
 
 const renderPipelineEditorGetActionDefinition: ToolDisplayRenderer = (
@@ -2306,7 +2404,7 @@ const renderPipelineEditorGetActionDefinition: ToolDisplayRenderer = (
 
 const renderPipelineEditorNavigate: ToolDisplayRenderer = () => ({
   icon: <PipelineIcon />,
-  label: 'Go to pipeline list',
+  label: 'Go to workflow list',
 });
 
 const PIPELINE_EDITOR_CAPABILITY_RENDERERS: Record<
@@ -2338,7 +2436,7 @@ const renderPipelineEditorTool: ToolDisplayRenderer = (
       toolName,
     );
   }
-  return { icon: <PipelineIcon />, label: 'Pipeline editor' };
+  return { icon: <PipelineIcon />, label: 'Workflow editor' };
 };
 
 const renderGetCodeGraphContext: ToolDisplayRenderer = () => ({
@@ -3113,6 +3211,40 @@ const renderScheduleWakeup: ToolDisplayRenderer = (parsed) => {
   };
 };
 
+// Claude's own scheduler: a prompt the session runs on a cron schedule.
+const renderCronCreate: ToolDisplayRenderer = (parsed) => {
+  const cron = asString(parsed.cron);
+  const prompt = asString(parsed.prompt);
+  return {
+    icon: <ScheduleIcon />,
+    label: (
+      <>
+        Schedule prompt
+        {cron && <CodeChunk>{cron}</CodeChunk>}
+        {prompt && <MutedSnippet>{prompt}</MutedSnippet>}
+      </>
+    ),
+  };
+};
+
+const renderCronDelete: ToolDisplayRenderer = (parsed) => {
+  const id = asString(parsed.id);
+  return {
+    icon: <ScheduleIcon />,
+    label: (
+      <>
+        Cancel scheduled prompt
+        {id && <CodeChunk>{id}</CodeChunk>}
+      </>
+    ),
+  };
+};
+
+const renderCronList: ToolDisplayRenderer = () => ({
+  icon: <ScheduleIcon />,
+  label: 'List scheduled prompts',
+});
+
 const renderMonitor: ToolDisplayRenderer = (parsed) => {
   const description = asString(parsed.description);
   return {
@@ -3243,6 +3375,9 @@ const NAME_RENDERERS: Record<string, ToolDisplayRenderer> = {
   TaskGet: renderTaskGet,
   TaskStop: renderTaskStop,
   ScheduleWakeup: renderScheduleWakeup,
+  CronCreate: renderCronCreate,
+  CronDelete: renderCronDelete,
+  CronList: renderCronList,
   Monitor: renderMonitor,
   [legacyMcpToolName('Monitor')]: renderMonitor,
   Task: renderAgent,
@@ -3282,6 +3417,29 @@ function readShellCommandInput(input: string): string {
   } catch {
     return input;
   }
+}
+
+/** Shell tool names a Codex harness reports for its command executions. */
+const CODEX_SHELL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'bash',
+  'exec_command',
+  'shell',
+]);
+
+/**
+ * A Codex harness tool call in the shape desktop's Codex transcript records
+ * it: a shell call becomes the `command` row whose input is the command, so
+ * every host labels it "Command". Any other call is returned unchanged.
+ */
+export function codexToolCall(
+  toolName: string,
+  input: string,
+): { readonly toolName: string; readonly input: string } {
+  if (!CODEX_SHELL_TOOL_NAMES.has(toolName)) return { toolName, input };
+  const command = readShellCommandInput(input).trim();
+  return command.length > 0
+    ? { toolName: 'command', input: command }
+    : { toolName, input };
 }
 
 function normalizeCloudToolDisplay(
@@ -3474,6 +3632,9 @@ const NAME_TO_FAMILY: Record<string, PortalChatToolFamily> = {
   SendMessage: 'agent',
   Workflow: 'agent',
   ScheduleWakeup: 'monitor',
+  CronCreate: 'monitor',
+  CronDelete: 'monitor',
+  CronList: 'monitor',
   Monitor: 'monitor',
   [legacyMcpToolName('Monitor')]: 'monitor',
   // Plan-mode control tools. Canopy denies `ExitPlanMode` on purpose so the

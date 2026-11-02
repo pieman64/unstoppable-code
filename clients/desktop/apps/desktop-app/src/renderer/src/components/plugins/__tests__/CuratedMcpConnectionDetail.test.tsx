@@ -12,9 +12,10 @@ import type {
   RewriteMcpServerRefsRequest,
   RewriteMcpServerRefsResponse,
 } from '@canopy/desktop-shared/types/mcp-servers';
+import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import { CuratedMcpConnectionDetail } from '../CuratedMcpConnectionDetail';
-import { installOnboardingPlugin } from '../../home/onboarding-suggestions/installOnboardingPlugin';
+import { installRecommendedPlugin } from '@/lib/plugins/installRecommendedPlugin';
 import type { AccountMcpConnectOptions } from '@/hooks/useAccountMcpActions';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
@@ -65,8 +66,8 @@ jest.mock('../PluginHarnessStatus', () => ({
   PluginHarnessStatus: (): null => null,
 }));
 jest.mock('../McpOAuthBrowser', () => ({ McpOAuthBrowser: (): null => null }));
-jest.mock('../../home/onboarding-suggestions/installOnboardingPlugin', () => ({
-  installOnboardingPlugin: jest.fn(),
+jest.mock('@/lib/plugins/installRecommendedPlugin', () => ({
+  installRecommendedPlugin: jest.fn(),
 }));
 jest.mock('../../mcp/AccountMcpControls', () => ({
   ...jest.requireActual<object>('../../mcp/AccountMcpControls'),
@@ -114,6 +115,14 @@ const entry: CuratedMcpServerEntry = {
     { kind: 'oauth-client-id' },
     { kind: 'oauth-client-secret' },
   ],
+};
+
+const installedPlugin: PluginInfo = {
+  name: 'linear',
+  marketplaceId: 'test-marketplace',
+  sourcePath: 'linear',
+  facets: {},
+  providerSupport: { claude: 'none', codex: 'none' },
 };
 
 describe('CuratedMcpConnectionDetail account setup (REG-3033)', () => {
@@ -432,9 +441,9 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     // A provider-only card has no app connection, but the plugin folded into
     // it still installs: Install skills only installs it alone, and a
     // provider route the host starts from Add requests it.
-    const install = jest.mocked(installOnboardingPlugin);
+    const install = jest.mocked(installRecommendedPlugin);
     install.mockReset();
-    install.mockResolvedValue(undefined);
+    install.mockResolvedValue(installedPlugin);
     const providerOnly = {
       ...linear,
       oauthHints: undefined,
@@ -485,7 +494,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     // With no provider CLI to read, no connector folds into the card, so no
     // provider route renders. The card still says how to connect and still
     // reports what Install skills only did.
-    const install = jest.mocked(installOnboardingPlugin);
+    const install = jest.mocked(installRecommendedPlugin);
     install.mockReset();
     install.mockRejectedValue(new Error('Install failed'));
     await renderDetail({
@@ -515,7 +524,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
       'Install skills only',
     );
 
-    install.mockResolvedValue(undefined);
+    install.mockResolvedValue(installedPlugin);
     await flush((): void =>
       byTestId('mcp-browse-detail-install-skills')?.click(),
     );
@@ -1133,9 +1142,19 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     Object.assign(window.mcpServers, { removeAccountConnection });
     await renderDetail({ installedServerId: null, accountConnection });
     await flush(() => byTestId('mcp-management-delete')?.click());
-    jest
-      .mocked(window.api.loadCanopyCloudAccount)
-      .mockResolvedValue({ account: { id: 'other' }, hasApiKey: true });
+    jest.mocked(window.api.loadCanopyCloudAccount).mockResolvedValue({
+      account: {
+        id: 'other',
+        name: 'Other account',
+        email: 'other@example.com',
+        role: 'ADMIN',
+      },
+      hasApiKey: true,
+      authMode: 'api_key',
+      credentialSource: 'manual',
+      capabilities: [],
+      storageAvailable: true,
+    });
     await flush(() => byTestId('mcp-management-delete-confirm')?.click());
     expect(removeAccountConnection).not.toHaveBeenCalled();
     expect(byTestId('mcp-management-delete-confirm')).not.toBeNull();

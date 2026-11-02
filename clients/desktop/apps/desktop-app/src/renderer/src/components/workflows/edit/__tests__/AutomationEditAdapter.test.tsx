@@ -162,7 +162,7 @@ describe('AutomationEditAdapter — leaving', () => {
 
     await env.click('workflow-edit-back');
     const close = document.querySelector(
-      '[data-testid="workflows-unsaved-dialog"] [aria-label="Close"]',
+      '[data-testid="workflows-unsaved-cancel"]',
     );
     if (!(close instanceof HTMLElement)) throw new Error('missing close');
     await act(async () => {
@@ -591,6 +591,82 @@ describe('AutomationEditAdapter — external changes', () => {
   });
 });
 
+// CAN-4551: a converted chat automation opens with the workflow it runs as.
+describe('AutomationEditAdapter — converted chat automations', () => {
+  it('summarizes the workflow over the chat form, and opens it', async () => {
+    seed(
+      activity({
+        ownedPipeline: {
+          pipelineId: 'owned-1',
+          chatEditable: true,
+          storedAction: {
+            type: 'standalone_prompt',
+            chatProjectId: 'storefront',
+            prompt: 'x',
+          },
+        },
+      }),
+    );
+    env.render();
+    await env.openEdit('activity-1');
+
+    expect(env.byTestId('start-chat-summary-destination')?.textContent).toBe(
+      'Start chat in Orchestrator',
+    );
+    expect(env.byTestId('start-chat-summary-steps')?.textContent).toContain(
+      'Send the prompt',
+    );
+    // Today's controls still edit the prompt and settings.
+    expect(env.input('automations-form-name').value).toBe('Morning review');
+
+    await env.click('start-chat-summary-open-workflow');
+    expect(navigation().workflowEdit).toMatchObject({
+      kind: 'pipeline',
+      pipelineId: 'owned-1',
+      returnTo: { kind: 'automation', activityId: 'activity-1' },
+    });
+  });
+
+  it('sends a hand-edited workflow to its editor instead', async () => {
+    seed(
+      activity({
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'global' },
+          pipelineId: 'owned-1',
+          pipelineSource: 'user',
+          pipelineName: 'Morning review',
+        },
+        ownedPipeline: {
+          pipelineId: 'owned-1',
+          chatEditable: false,
+          storedAction: {
+            type: 'standalone_prompt',
+            chatProjectId: 'storefront',
+            prompt: 'x',
+          },
+        },
+      }),
+    );
+    env.render();
+    await env.openEdit('activity-1');
+
+    expect(
+      env.byTestId('start-chat-summary-hand-edited')?.textContent,
+    ).toContain('Its workflow was changed by hand, so you edit it there.');
+    expect(env.byTestId('start-chat-summary')).toBeNull();
+  });
+
+  it('keeps the form alone for an automation that owns nothing', async () => {
+    seed(activity());
+    env.render();
+    await env.openEdit('activity-1');
+
+    expect(env.byTestId('start-chat-summary')).toBeNull();
+    expect(env.byTestId('start-chat-summary-hand-edited')).toBeNull();
+  });
+});
+
 describe('AutomationEditAdapter — missing items', () => {
   it('shows not found with Back for a missing id', async () => {
     env.render();
@@ -654,7 +730,7 @@ describe('AutomationEditAdapter — missing items', () => {
     await env.settle();
 
     expect(env.byTestId('workflow-edit-not-found')?.textContent).toContain(
-      'Pipeline',
+      'Workflow',
     );
   });
 
@@ -737,6 +813,8 @@ describe('AutomationEditAdapter — drafts', () => {
     });
     env.render();
     await env.openDraft();
+    // A new draft runs a pipeline with no project; these start from App Advisor.
+    await env.click('automations-form-action-type-app_advisor');
     const replaced = navigation().workflowEditReplaceCount;
     await editName('New digest');
     await env.type('automations-form-prompt', 'Summarize today.');
@@ -781,6 +859,8 @@ describe('AutomationEditAdapter — drafts', () => {
     );
     env.render();
     await env.openDraft();
+    // A new draft runs a pipeline with no project; these start from App Advisor.
+    await env.click('automations-form-action-type-app_advisor');
     await editName('New digest');
     await env.type('automations-form-prompt', 'Summarize today.');
 

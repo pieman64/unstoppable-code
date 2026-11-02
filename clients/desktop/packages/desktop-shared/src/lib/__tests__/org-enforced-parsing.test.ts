@@ -141,13 +141,6 @@ describe('malformed model policy end to end', () => {
     ]);
 
     const policy = resolveModelPolicy({
-      hasApiKey: true,
-      authMode: 'oauth',
-      credentialSource: 'oauth_desktop',
-      capabilities: [],
-      organizations: [],
-      teams: [],
-      storageAvailable: true,
       enforcedSettings: settings,
     });
 

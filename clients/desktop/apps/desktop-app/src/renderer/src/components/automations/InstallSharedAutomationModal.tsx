@@ -10,6 +10,9 @@ import { CHAT_LABEL } from '@canopy/protocol';
 import type {
   ScheduledActivity,
   ChatTabPluginSelections,
+  InstallAutomationPipelinesRequest,
+  InstallAutomationPipelinesResponse,
+  PreviewAutomationPipelinesResponse,
 } from '@canopy/desktop-shared/types';
 import type {
   PipelineData,
@@ -30,8 +33,10 @@ import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
 import type { ShareablePluginRef } from '@canopy/protocol/plugins';
 import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
 import {
+  AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE,
   buildApplyUpdateRequest,
   buildInstallAutomationRequest,
+  planAutomationPipelineUpdate,
   shareApprovedRunCondition,
   type InstallSharedAutomationBindings,
 } from '@canopy/desktop-shared/lib/automation-install';
@@ -49,7 +54,24 @@ import {
   shareInstallTypeLabel,
 } from '@canopy/ui-app/sharing/share-install-copy';
 import { Button } from '@canopy/ui-shared';
+import {
+  AutomationPipelineTaskField,
+  isAutomationPipelineTaskStale,
+} from '@canopy/ui-shared/components';
+import {
+  pipelineAutomationTaskId,
+  pipelineAutomationWorkspaceId,
+} from '@canopy/desktop-shared/lib/automation-pipeline-target';
+import { usePipelineTaskList } from '@/components/automations/usePipelineTaskList';
 import { useCapabilityPackageReadiness } from '@/components/shared/capability-package/useCapabilityPackageReadiness';
+import {
+  PACKAGED_PIPELINE_STATUS_LABELS,
+  packagedPipelineFileChangeLines,
+  packagedPipelineReviewRows,
+  sharedPackagedPipelines,
+  stagedActionPipelineId,
+} from './packagedPipelineInstall';
+import { InlinePipelineYamlPreview } from './InlinePipelineYamlPreview';
 import { buildShareablePluginDisplay } from '@canopy/desktop-shared/plugin-refs';
 import {
   useUnifiedTableData,
@@ -80,7 +102,8 @@ const ENABLE_FAILED_MESSAGE =
 const ENABLE_REFUSED_SUFFIX = "The automation wasn't installed.";
 const SUBMIT_REASON_PROJECT = 'Choose a project to continue';
 const SUBMIT_REASON_COWORK_PROJECT = `Choose a ${CHAT_LABEL} project to continue`;
-const SUBMIT_REASON_PIPELINE = 'Choose a pipeline to continue';
+const SUBMIT_REASON_PIPELINE = 'Choose a workflow to continue';
+const SUBMIT_REASON_TASK = 'Pick a task to run the workflow in.';
 const SUBMIT_REASON_RUN_CONDITION_EMPTY =
   'Enter a command or turn the run condition off';
 const SUBMIT_REASON_RUN_CONDITION_TOO_LONG = `Shorten the command to ${MAX_AUTOMATION_IF_COMMAND_CHARS.toLocaleString('en-US')} characters or turn the run condition off`;
@@ -92,31 +115,36 @@ const WORKSPACE_PLACEHOLDER = 'Choose a project…';
 const COWORK_WORKSPACE_LABEL = `${CHAT_LABEL} project`;
 const COWORK_WORKSPACE_PLACEHOLDER = `Choose a ${CHAT_LABEL} project…`;
 const COWORK_WORKSPACE_NOTE = `The author's ${CHAT_LABEL} project stays on their machine. Pick one of yours for this automation to post into.`;
-const PIPELINE_LABEL = 'Pipeline';
-const PIPELINE_PLACEHOLDER = 'Choose a pipeline…';
+const PIPELINE_LABEL = 'Workflow';
+const PIPELINE_PLACEHOLDER = 'Choose a workflow…';
 const PIPELINE_NOTE =
-  'This automation runs a pipeline that only exists on the author’s machine. Pick one of your own pipelines to run instead.';
-const PIPELINE_LOADING_LABEL = 'Loading your pipelines…';
+  'This automation runs a workflow that only exists on the author’s machine. Pick one of your own workflows to run instead.';
+const PIPELINE_LOADING_LABEL = 'Loading your workflows…';
 const PIPELINE_EMPTY_LABEL =
-  'You have no pipelines yet. Create one, then install this automation.';
-const PIN_VERIFYING_LABEL = 'Checking the pinned pipeline version…';
+  'You have no workflows yet. Create one, then install this automation.';
+const PIN_VERIFYING_LABEL = 'Checking the pinned workflow version…';
 const BUNDLED_PIPELINE_MISMATCH =
-  'The bundled pipeline definition does not match the version the author pinned. Ask them to share it again.';
-const BUNDLED_PIPELINE_LOCAL_CHANGES =
-  'The installed pipeline has local changes, so this update was not applied. Your local changes were preserved.';
+  'The bundled workflow definition does not match the version the author pinned. Ask them to share it again.';
 const PUBLIC_SHARED_PIPELINE_BLOCKED =
-  'This automation points at a pipeline hosted on the author’s server, which a public link cannot reach. Ask them to share it again from an updated app.';
-const TARGET_CHECKING_LABEL = 'Checking where this pipeline can run…';
+  'This automation points at a workflow hosted on the author’s server, which a public link cannot reach. Ask them to share it again from an updated app.';
+const TARGET_CHECKING_LABEL = 'Checking where this workflow can run…';
+const PIPELINE_STAGE_RUNNING_LABEL = 'Preparing the workflows in this share…';
+const PIPELINE_STAGE_FAILED =
+  'The workflows in this share could not be installed. Try again.';
+const PACKAGED_PIPELINES_HEADING = 'Workflows';
+const PACKAGED_PIPELINES_NOTE =
+  'Each workflow is saved as your own copy. The prompt points at your copies.';
+const PACKAGED_PIPELINE_REVIEW_LABEL = 'Review the updated workflow';
 const TARGET_UNCHECKABLE_LABEL =
-  'This pipeline can’t be checked here, so this automation can’t be installed with it. Choose one of your saved pipelines instead.';
+  'This workflow can’t be checked here, so this automation can’t be installed with it. Choose one of your saved workflows instead.';
 const TARGET_CHOOSE_PIPELINE_LABEL =
-  'Choose a pipeline to see which projects it can run in.';
+  'Choose a workflow to see which projects it can run in.';
 const PACKAGE_INVALID_LABEL =
   'This automation’s packaged dependencies could not be verified. Ask the author to share it again.';
 const REVISION_CHANGED_LABEL =
   'This share changed while you created the project. Check your choices before installing.';
 const SHARED_PIPELINE_CHANGED =
-  'The shared pipeline changed after it was verified. Close this and try again.';
+  'The shared workflow changed after it was verified. Close this and try again.';
 
 /** Whether the wizard created a new local copy or updated an existing one. */
 export type InstallAutomationOutcome = 'installed' | 'updated';
@@ -125,7 +153,16 @@ interface InstallWorkspaceOption {
   id: string;
   name: string;
   type: 'single-repo' | 'multi-repo' | 'cowork';
+  lacksProjectFolder?: boolean;
 }
+
+/** Stage A of the package install: the share's pipelines as local copies. */
+/** Stage A's dry run, read by the install and update review. */
+type PipelinePreviewState =
+  | { status: 'idle' }
+  | { status: 'running' }
+  | { status: 'done'; result: PreviewAutomationPipelinesResponse }
+  | { status: 'error'; message: string };
 
 /** Pipeline scope resolution for the exact selected definition. */
 type PipelineScopeState =
@@ -162,6 +199,8 @@ export interface AutomationInstallDraft {
   existingBranch: string;
   inputs: Record<string, string>;
   chosenPipelineId: string;
+  /** Existing task for a `task` pipeline destination. */
+  taskId?: string;
   /** The recipient's run-condition choice, kept across project creation. */
   runConditionEnabled?: boolean;
   runConditionCommand?: string;
@@ -367,10 +406,16 @@ export function InstallSharedAutomationModal({
           className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary"
         >
           {staleList.map((activity) => {
-            const activityWorkspace =
-              'workspaceId' in activity.action
-                ? workspaceNameById.get(activity.action.workspaceId)
-                : undefined;
+            // A global action's inert `workspaceId` names no project.
+            const workspaceId =
+              activity.action.type === 'worktree_pipeline'
+                ? pipelineAutomationWorkspaceId(activity.action)
+                : 'workspaceId' in activity.action
+                  ? activity.action.workspaceId
+                  : undefined;
+            const activityWorkspace = workspaceId
+              ? workspaceNameById.get(workspaceId)
+              : undefined;
             return (
               <option key={activity.id} value={activity.id}>
                 {activity.name}
@@ -449,8 +494,16 @@ function InstallSharedAutomationForm({
   // A portable Cowork prompt binds a cowork workspace, never a code project,
   // so it takes its own picker instead of the code-workspace one.
   const needsCoworkWorkspace = action.type === 'standalone_prompt';
+  // An explicit pipeline destination; the portable `workspace` kind keeps
+  // the legacy rules. A pipeline with no project binds no project.
+  const destination =
+    action.type === 'worktree_pipeline' && action.target.kind !== 'workspace'
+      ? action.target.kind
+      : undefined;
   const needsWorkspace =
-    action.type !== 'app_advisor_prompt' && !needsCoworkWorkspace;
+    action.type !== 'app_advisor_prompt' &&
+    !needsCoworkWorkspace &&
+    destination !== 'global';
   const pipelineRef: SharedAutomationPipelineRef | null =
     action.type === 'worktree_pipeline' ? action.pipeline : null;
   const inputKeys = action.type === 'worktree_pipeline' ? action.inputKeys : [];
@@ -459,14 +512,34 @@ function InstallSharedAutomationForm({
     [action],
   );
 
+  // A global action's inert `workspaceId` names no project to prefill.
   const [workspaceId, setWorkspaceId] = useState<string>(
     initialDraft?.workspaceId ??
-      (existingAction && 'workspaceId' in existingAction
-        ? existingAction.workspaceId
-        : ''),
+      (existingAction?.type === 'worktree_pipeline'
+        ? (pipelineAutomationWorkspaceId(existingAction) ?? '')
+        : existingAction && 'workspaceId' in existingAction
+          ? (existingAction.workspaceId ?? '')
+          : ''),
   );
   // The author's branch is a suggestion the recipient confirms or clears —
   // it is repo-scoped, not machine-scoped, but never applied silently.
+  // A task binding survives an update only for the same project; any change
+  // of project asks the recipient to pick again.
+  const [taskId, setTaskId] = useState<string>(
+    initialDraft?.taskId ??
+      (existingAction?.type === 'worktree_pipeline'
+        ? (pipelineAutomationTaskId(existingAction) ?? '')
+        : ''),
+  );
+  const taskWorkspaceRef = useRef(workspaceId);
+  useEffect(() => {
+    if (taskWorkspaceRef.current === workspaceId) return;
+    taskWorkspaceRef.current = workspaceId;
+    setTaskId('');
+  }, [workspaceId]);
+  const taskList = usePipelineTaskList(
+    destination === 'task' && workspaceId !== '' ? workspaceId : undefined,
+  );
   const [existingBranch, setExistingBranch] = useState<string>(
     initialDraft?.existingBranch ??
       (existingAction?.type === 'worktree_prompt'
@@ -584,7 +657,7 @@ function InstallSharedAutomationForm({
     const listPipelines = window.pipelines?.list?.bind(window.pipelines);
     if (!listPipelines) {
       setPipelines(null);
-      setPipelineCatalogError('The local pipeline catalog is unavailable.');
+      setPipelineCatalogError('The local workflow catalog is unavailable.');
       setPipelinesLoading(false);
       return undefined;
     }
@@ -597,7 +670,7 @@ function InstallSharedAutomationForm({
         if (!result.success) {
           setPipelines(null);
           setPipelineCatalogError(
-            result.error ?? 'The local pipeline catalog could not be read.',
+            result.error ?? 'The local workflow catalog could not be read.',
           );
           return;
         }
@@ -609,7 +682,7 @@ function InstallSharedAutomationForm({
           setPipelineCatalogError(
             catalogError instanceof Error
               ? catalogError.message
-              : 'The local pipeline catalog could not be read.',
+              : 'The local workflow catalog could not be read.',
           );
         }
       })
@@ -693,6 +766,43 @@ function InstallSharedAutomationForm({
     };
   }, [pipelineRef]);
 
+  // Packaged pipelines install through main (Stage A), and only on Submit, so
+  // cancelling writes nothing. Until then the review reads Stage A's dry run:
+  // what is new, what an update rewrites, and the shared YAML a fresh
+  // install's action pipeline scopes are read from.
+  const packagedPipelines = useMemo(
+    () => sharedPackagedPipelines(detail.automation),
+    [detail.automation],
+  );
+  const needsPipelineStage =
+    detail.automation.capabilityPackage !== undefined &&
+    packagedPipelines.length > 0;
+  const pipelineUpdatePlan = useMemo(
+    () =>
+      needsPipelineStage && existingActivity
+        ? planAutomationPipelineUpdate(
+            existingActivity.installedFrom,
+            detail.automation,
+          )
+        : null,
+    [detail.automation, existingActivity, needsPipelineStage],
+  );
+  const [pipelinePreview, setPipelinePreview] = useState<PipelinePreviewState>({
+    status: 'idle',
+  });
+  const packagedActionLocalId =
+    pipelineRef?.source === 'packaged' && existingActivity
+      ? existingActivity.installedFrom?.bundledPipelineLocalId
+      : undefined;
+  const packagedActionRawPipeline =
+    pipelineRef?.source === 'packaged' &&
+    !existingActivity &&
+    pipelinePreview.status === 'done'
+      ? pipelinePreview.result.pipelines.find(
+          (entry) => entry.key === pipelineRef.key,
+        )?.rawPipeline
+      : undefined;
+
   useEffect(() => {
     if (pipelineRef?.source !== 'shared') {
       setVerifiedPin(null);
@@ -709,7 +819,7 @@ function InstallSharedAutomationForm({
     if (pipelineRef.installPin === undefined) {
       setVerifiedPin(null);
       setPinError(
-        `The pinned version of "${pipelineRef.name ?? 'this pipeline'}" could not be verified. Refresh and try again.`,
+        `The pinned version of "${pipelineRef.name ?? 'this workflow'}" could not be verified. Refresh and try again.`,
       );
       return undefined;
     }
@@ -739,7 +849,7 @@ function InstallSharedAutomationForm({
         setPinError(
           err instanceof Error
             ? err.message
-            : `The pinned version of "${pipelineRef.name ?? 'this pipeline'}" could not be verified. Refresh and try again.`,
+            : `The pinned version of "${pipelineRef.name ?? 'this workflow'}" could not be verified. Refresh and try again.`,
         );
       })
       .finally(() => {
@@ -768,6 +878,8 @@ function InstallSharedAutomationForm({
     chosenPipeline,
     curatedMatch,
     verifiedPin,
+    packagedActionLocalId ?? null,
+    packagedActionRawPipeline !== undefined,
     workspaces,
   ]);
   const scopeLoaderRef = useRef<
@@ -784,6 +896,22 @@ function InstallSharedAutomationForm({
     if (pipelineRef?.source === 'inline' && inlinePipelineVerified) {
       const raw = pipelineRef.rawPipeline;
       key = `inline:${pipelineRef.pipelineContentHash}`;
+      load = (): Promise<AutomationPipelineResolution> =>
+        Promise.resolve(pipelineResolutionFromRaw(raw));
+    } else if (
+      pipelineRef?.source === 'packaged' &&
+      packagedActionLocalId !== undefined
+    ) {
+      const pipelineId = packagedActionLocalId;
+      key = `packaged:${pipelineRef.pipelineContentHash}:${pipelineId}`;
+      load = (): Promise<AutomationPipelineResolution> =>
+        loadPipelineScopes({ pipelineId, pipelineSource: 'user' });
+    } else if (
+      pipelineRef?.source === 'packaged' &&
+      packagedActionRawPipeline !== undefined
+    ) {
+      const raw = packagedActionRawPipeline;
+      key = `packaged:${pipelineRef.pipelineContentHash}:preview`;
       load = (): Promise<AutomationPipelineResolution> =>
         Promise.resolve(pipelineResolutionFromRaw(raw));
     } else if (pipelineRef?.source === 'bundled') {
@@ -836,7 +964,7 @@ function InstallSharedAutomationForm({
           : {
               status: 'error',
               error:
-                'This project pipeline could not be verified for an accessible project. Choose another pipeline.',
+                'This project workflow could not be verified for an accessible project. Choose another workflow.',
             };
       };
     } else if (chosenPipeline) {
@@ -877,7 +1005,7 @@ function InstallSharedAutomationForm({
           error:
             scopeError instanceof Error
               ? scopeError.message
-              : 'The selected pipeline could not be read.',
+              : 'The selected workflow could not be read.',
         }),
       )
       .then((resolution) => {
@@ -897,6 +1025,8 @@ function InstallSharedAutomationForm({
     chosenPipeline,
     curatedMatch,
     inlinePipelineVerified,
+    packagedActionLocalId,
+    packagedActionRawPipeline,
     pipelineRef,
     verifiedPin,
     pipelineScopeKey,
@@ -921,8 +1051,9 @@ function InstallSharedAutomationForm({
         action.type,
         targetRequirement,
         pipelineResolution,
+        destination,
       ),
-    [action.type, pipelineResolution, targetRequirement],
+    [action.type, destination, pipelineResolution, targetRequirement],
   );
   const targetsLoading =
     action.type === 'worktree_pipeline' &&
@@ -940,6 +1071,7 @@ function InstallSharedAutomationForm({
   ): boolean => {
     const context = projectKindToTargetContext(workspace.type);
     if (!context || !allowedContexts.includes(context)) return false;
+    if (destination === 'project' && workspace.lacksProjectFolder) return false;
     if (chosenPipeline?.source !== 'project') return true;
     const facts =
       pipelineScopeState.status === 'done' &&
@@ -950,6 +1082,7 @@ function InstallSharedAutomationForm({
       action.type,
       targetRequirement,
       facts,
+      destination,
     );
     return (
       resolved.status === 'resolved' && resolved.contexts.includes(context)
@@ -1096,10 +1229,110 @@ function InstallSharedAutomationForm({
   const { readiness: packageReadiness, loading: packageReadinessLoading } =
     useCapabilityPackageReadiness(packageReadinessOwner);
 
+  const pipelineStageRequest = (): Omit<
+    InstallAutomationPipelinesRequest,
+    'stage'
+  > => {
+    if (!capabilityPackage) throw new Error(PIPELINE_STAGE_FAILED);
+    if (pipelineUpdatePlan && !pipelineUpdatePlan.ok) {
+      throw new Error(pipelineUpdatePlan.error);
+    }
+    const existingPipelines =
+      pipelineUpdatePlan?.ok === true
+        ? pipelineUpdatePlan.value.existingPipelines
+        : [];
+    return {
+      remoteId: detail.id,
+      packageRef: capabilityPackage,
+      ...(source !== 'shared' ? { source } : {}),
+      ...(publicShare ? { publicShare: true } : {}),
+      ...(existingPipelines.length > 0 ? { existingPipelines } : {}),
+    };
+  };
+  const runPipelineStage =
+    async (): Promise<InstallAutomationPipelinesResponse> => {
+      const install = window.api.automations.installCapabilityPackage?.bind(
+        window.api.automations,
+      );
+      if (!install) throw new Error(PIPELINE_STAGE_FAILED);
+      return install({ stage: 'pipelines', ...pipelineStageRequest() });
+    };
+  // The review reads Stage A's dry run: what each pipeline and its files
+  // would become, and whether a local edit refuses an update.
+  const runPipelinePreview =
+    async (): Promise<PreviewAutomationPipelinesResponse> => {
+      const install = window.api.automations.installCapabilityPackage?.bind(
+        window.api.automations,
+      );
+      if (!install) throw new Error(PIPELINE_STAGE_FAILED);
+      return install({
+        stage: 'pipelines-preview',
+        ...pipelineStageRequest(),
+      });
+    };
+  const runPipelinePreviewRef = useRef(runPipelinePreview);
+  runPipelinePreviewRef.current = runPipelinePreview;
+  const pipelinePreviewPackageDigest =
+    needsPipelineStage &&
+    (pipelineUpdatePlan === null || pipelineUpdatePlan.ok) &&
+    !packageReadinessLoading &&
+    packageReadiness !== null &&
+    packageReadiness.status !== 'invalid'
+      ? (capabilityPackage?.digest ?? null)
+      : null;
+  useEffect(() => {
+    if (pipelinePreviewPackageDigest === null) return undefined;
+    let cancelled = false;
+    setPipelinePreview({ status: 'running' });
+    void runPipelinePreviewRef
+      .current()
+      .then((result) => {
+        if (!cancelled) setPipelinePreview({ status: 'done', result });
+      })
+      .catch((previewError: unknown) => {
+        if (cancelled) return;
+        setPipelinePreview({
+          status: 'error',
+          message:
+            previewError instanceof Error && previewError.message.trim()
+              ? previewError.message
+              : PIPELINE_STAGE_FAILED,
+        });
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [pipelinePreviewPackageDigest]);
+  const pipelineStageBlocking =
+    needsPipelineStage &&
+    (pipelinePreview.status === 'error' ||
+      (!existingActivity && pipelinePreview.status === 'running'));
+  const packagedPipelineRows = useMemo(
+    () =>
+      needsPipelineStage
+        ? packagedPipelineReviewRows({
+            pipelines: packagedPipelines,
+            updatePlan:
+              pipelineUpdatePlan?.ok === true ? pipelineUpdatePlan.value : null,
+            preview:
+              pipelinePreview.status === 'done' ? pipelinePreview.result : null,
+            localPipelineName: (id) =>
+              localPipelines.find((pipeline) => pipeline.id === id)?.name,
+          })
+        : [],
+    [
+      localPipelines,
+      needsPipelineStage,
+      packagedPipelines,
+      pipelinePreview,
+      pipelineUpdatePlan,
+    ],
+  );
+
   const pipelineBindingError = ((): string | null => {
     if (pipelineRef === null || pipelinesLoading) return null;
     if (pipelineRef.source === 'curated' && curatedMatch === null) {
-      return `Import the "${pipelineRef.name ?? pipelineRef.curatedKey}" curated pipeline before installing.`;
+      return `Import the "${pipelineRef.name ?? pipelineRef.curatedKey}" curated workflow before installing.`;
     }
     return null;
   })();
@@ -1107,6 +1340,7 @@ function InstallSharedAutomationForm({
   const pipelineBindingValid =
     pipelineRef === null ||
     pipelineRef.source === 'bundled' ||
+    (pipelineRef.source === 'packaged' && capabilityPackage !== undefined) ||
     (pipelineRef.source === 'curated' && curatedMatch !== null) ||
     (pipelineRef.source === 'shared' && verifiedPin !== null) ||
     (pipelineRef.source === 'inline' && inlinePipelineVerified) ||
@@ -1136,6 +1370,11 @@ function InstallSharedAutomationForm({
   const coworkBindingValid =
     !needsCoworkWorkspace ||
     coworkWorkspaces.some((workspace) => workspace.id === coworkWorkspaceId);
+  const taskBindingValid =
+    destination !== 'task' ||
+    (taskId !== '' &&
+      taskList.tasks.status === 'ready' &&
+      !isAutomationPipelineTaskStale(taskId, taskList.tasks));
   const submitDisabled =
     submitting ||
     catalogLoading ||
@@ -1148,10 +1387,13 @@ function InstallSharedAutomationForm({
       (packageReadinessLoading ||
         packageReadiness === null ||
         packageReadiness.status === 'invalid')) ||
+    pipelineStageBlocking ||
+    (pipelineUpdatePlan !== null && !pipelineUpdatePlan.ok) ||
     pinError !== null ||
     pluginsBlocked ||
     !workspaceBindingValid ||
     !coworkBindingValid ||
+    !taskBindingValid ||
     !pipelineBindingValid ||
     runConditionReason !== null;
 
@@ -1172,6 +1414,8 @@ function InstallSharedAutomationForm({
       (packageReadinessLoading ||
         packageReadiness === null ||
         packageReadiness.status === 'invalid')) ||
+    pipelineStageBlocking ||
+    (pipelineUpdatePlan !== null && !pipelineUpdatePlan.ok) ||
     pinError !== null ||
     pipelineBindingError !== null ||
     pluginsBlocked ||
@@ -1183,6 +1427,7 @@ function InstallSharedAutomationForm({
     if (awaitingPipelineChoice) return SUBMIT_REASON_PIPELINE;
     if (!workspaceBindingValid) return SUBMIT_REASON_PROJECT;
     if (!coworkBindingValid) return SUBMIT_REASON_COWORK_PROJECT;
+    if (!taskBindingValid && taskId === '') return SUBMIT_REASON_TASK;
     if (pipelineRef?.source === 'unresolved' && chosenPipelineId === '') {
       // The empty-catalog note already says there is nothing to choose.
       return localPipelines.length === 0 ? null : SUBMIT_REASON_PIPELINE;
@@ -1233,7 +1478,8 @@ function InstallSharedAutomationForm({
       : pipelineResolution && pipelineResolution.status !== 'pending'
         ? { pipelineResolution }
         : {}),
-    ...(workspaceId ? { workspaceId } : {}),
+    ...(workspaceId && destination !== 'global' ? { workspaceId } : {}),
+    ...(destination === 'task' && taskId ? { taskId } : {}),
     ...(coworkWorkspaceId ? { coworkWorkspaceId } : {}),
     ...resolvedPipelineBinding,
     ...(action.type === 'worktree_prompt' && existingBranch.trim()
@@ -1273,39 +1519,66 @@ function InstallSharedAutomationForm({
           );
         }
       }
+      // Stage A runs once the recipient confirms. The automation request maps
+      // onto its local IDs.
+      let stagedPipelines: InstallAutomationPipelinesResponse | null = null;
+      if (needsPipelineStage) {
+        stagedPipelines = await runPipelineStage();
+        bindings.pipelineDependencies = stagedPipelines.pipelines.map(
+          ({ key, localPipelineId, pipelineContentHash }) => ({
+            key,
+            localPipelineId,
+            pipelineContentHash,
+          }),
+        );
+      }
+      const stagedActionId =
+        pipelineRef?.source === 'packaged' && stagedPipelines
+          ? stagedActionPipelineId(stagedPipelines)
+          : undefined;
+      if (pipelineRef?.source === 'packaged' && stagedActionId === undefined) {
+        throw new Error(PIPELINE_STAGE_FAILED);
+      }
       if (action.type === 'worktree_pipeline') {
         const facts =
-          chosenPipeline?.source === 'project'
-            ? await resolveAutomationPipelineScopes({
-                type: 'worktree_pipeline',
-                workspaceId: selectedTargetId,
-                pipelineId: chosenPipeline.id,
-                pipelineSource: 'project',
-                projectPipelineFilename: chosenPipeline.filename,
-                ...(existingAction?.type === 'worktree_pipeline' &&
-                existingAction.workspaceId === selectedTargetId
-                  ? {
-                      baseWorktreeId: existingAction.baseWorktreeId,
-                      repoId: existingAction.repoId,
-                    }
-                  : {}),
+          stagedActionId !== undefined
+            ? await loadPipelineScopes({
+                pipelineId: stagedActionId,
+                pipelineSource: 'user',
               })
-            : await scopeLoaderRef.current?.();
+            : chosenPipeline?.source === 'project'
+              ? await resolveAutomationPipelineScopes({
+                  type: 'worktree_pipeline',
+                  workspaceId: selectedTargetId,
+                  pipelineId: chosenPipeline.id,
+                  pipelineSource: 'project',
+                  projectPipelineFilename: chosenPipeline.filename,
+                  ...(existingAction?.type === 'worktree_pipeline' &&
+                  existingAction.workspaceId === selectedTargetId
+                    ? {
+                        baseWorktreeId: existingAction.baseWorktreeId,
+                        repoId: existingAction.repoId,
+                      }
+                    : {}),
+                })
+              : await scopeLoaderRef.current?.();
         const resolved = resolveAutomationTargetRequirement(
           action.type,
           targetRequirement,
           facts,
+          destination,
         );
         const context = projectKindToTargetContext(selectedTargetKind);
+        // A pipeline with no project resolves without project contexts.
         if (
           resolved.status !== 'resolved' ||
-          !context ||
-          !resolved.contexts.includes(context)
+          (destination !== 'global' &&
+            (!context || !resolved.contexts.includes(context)))
         ) {
           throw new Error(
             resolved.status === 'error'
               ? resolved.error
-              : 'The pipeline changed. Choose a compatible project or pipeline again.',
+              : 'The workflow changed. Choose a compatible project or workflow again.',
           );
         }
         bindings.pipelineResolution = facts;
@@ -1331,7 +1604,7 @@ function InstallSharedAutomationForm({
       if (pipelineRef?.source === 'inline') {
         const parsed = tryParseAndValidateYaml(pipelineRef.rawPipeline);
         if (!parsed.success) {
-          setError(`The bundled pipeline could not be parsed: ${parsed.error}`);
+          setError(`The bundled workflow could not be parsed: ${parsed.error}`);
           setSubmitting(false);
           submitInFlightRef.current = false;
           return;
@@ -1341,7 +1614,7 @@ function InstallSharedAutomationForm({
         if (recordedId !== undefined && pipelines === null) {
           throw new Error(
             pipelineCatalogError ??
-              'The local pipeline catalog could not be read. Try again.',
+              'The local workflow catalog could not be read. Try again.',
           );
         }
         const stillExists =
@@ -1355,7 +1628,7 @@ function InstallSharedAutomationForm({
           if (!existingPipeline.data) {
             throw new Error(
               existingPipeline.error ??
-                'The previous bundled pipeline could not be read.',
+                'The previous bundled workflow could not be read.',
             );
           }
           const currentPipelineHash = await hashPipelineDocumentYaml(
@@ -1374,7 +1647,7 @@ function InstallSharedAutomationForm({
               ? currentPipelineHash !== recordedPipelineHash
               : currentPipelineHash !== pipelineRef.pipelineContentHash)
           ) {
-            throw new Error(BUNDLED_PIPELINE_LOCAL_CHANGES);
+            throw new Error(AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE);
           }
           overwrittenPipeline = existingPipeline.data;
         }
@@ -1389,7 +1662,7 @@ function InstallSharedAutomationForm({
           rawContent: pipelineRef.rawPipeline,
         });
         if (!saved.success || !saved.data) {
-          setError(saved.error ?? 'The bundled pipeline could not be saved.');
+          setError(saved.error ?? 'The bundled workflow could not be saved.');
           setSubmitting(false);
           submitInFlightRef.current = false;
           return;
@@ -1450,7 +1723,7 @@ function InstallSharedAutomationForm({
       }
       if (capabilityPackage && localAutomationId && installPackage) {
         const localContentHash =
-          pipelineRef?.source === 'inline'
+          pipelineRef?.source === 'inline' || pipelineRef?.source === 'packaged'
             ? pipelineRef.pipelineContentHash
             : response.activity
               ? await hashPipelineDocumentYaml(
@@ -1524,7 +1797,7 @@ function InstallSharedAutomationForm({
           });
           if (!restored.success) {
             throw new Error(
-              restored.error ?? 'The previous bundled pipeline was not saved.',
+              restored.error ?? 'The previous bundled workflow was not saved.',
             );
           }
         } catch (rollbackError: unknown) {
@@ -1532,7 +1805,7 @@ function InstallSharedAutomationForm({
             rollbackError instanceof Error
               ? rollbackError.message
               : 'Unknown rollback error.';
-          errorMessage = `${errorMessage} The previous bundled pipeline could not be restored: ${rollbackMessage}`;
+          errorMessage = `${errorMessage} The previous bundled workflow could not be restored: ${rollbackMessage}`;
         }
       }
       if (createdAutomationId) {
@@ -1603,6 +1876,20 @@ function InstallSharedAutomationForm({
     if (error) {
       return <span data-testid="install-automation-error">{error}</span>;
     }
+    if (pipelineUpdatePlan !== null && !pipelineUpdatePlan.ok) {
+      return (
+        <span data-testid="install-automation-pipelines-blocked">
+          {pipelineUpdatePlan.error}
+        </span>
+      );
+    }
+    if (pipelinePreview.status === 'error') {
+      return (
+        <span data-testid="install-automation-pipelines-blocked">
+          {pipelinePreview.message}
+        </span>
+      );
+    }
     if (pinError !== null) {
       return (
         <span data-testid="install-automation-shared-pipeline-blocked">
@@ -1652,6 +1939,13 @@ function InstallSharedAutomationForm({
       return (
         <span data-testid="install-automation-pin-verifying">
           {PIN_VERIFYING_LABEL}
+        </span>
+      );
+    }
+    if (pipelinePreview.status === 'running' && !existingActivity) {
+      return (
+        <span data-testid="install-automation-pipelines-preparing">
+          {PIPELINE_STAGE_RUNNING_LABEL}
         </span>
       );
     }
@@ -1711,6 +2005,7 @@ function InstallSharedAutomationForm({
                     existingBranch,
                     inputs,
                     chosenPipelineId,
+                    taskId,
                     runConditionEnabled,
                     runConditionCommand,
                   })
@@ -1738,6 +2033,74 @@ function InstallSharedAutomationForm({
           </p>
         )}
 
+      {packagedPipelineRows.length > 0 && (
+        <section
+          className="space-y-1.5"
+          data-testid="install-automation-packaged-pipelines"
+        >
+          <h3 className="text-s font-medium fg-primary">
+            {PACKAGED_PIPELINES_HEADING}
+          </h3>
+          <p className="text-xs fg-secondary">{PACKAGED_PIPELINES_NOTE}</p>
+          <ul className="divide-y divide-line-base">
+            {packagedPipelineRows.map((row) => (
+              <li
+                key={`${row.status}:${row.key}`}
+                className="py-1.5 text-s"
+                data-testid={`install-automation-packaged-pipeline-${row.key}`}
+                data-status={row.status}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate fg-primary">
+                    {row.name}
+                  </span>
+                  <span className="shrink-0 text-xs fg-secondary">
+                    {PACKAGED_PIPELINE_STATUS_LABELS[row.status]}
+                  </span>
+                </div>
+                {row.fileChanges && (
+                  <ul
+                    className="mt-1 space-y-0.5 text-xs"
+                    data-testid={`install-automation-packaged-pipeline-${row.key}-files`}
+                  >
+                    {packagedPipelineFileChangeLines(row.fileChanges).map(
+                      (line) => (
+                        <li
+                          key={line.text}
+                          className={
+                            line.tone === 'warning'
+                              ? 'fg-warning'
+                              : 'fg-secondary'
+                          }
+                        >
+                          {line.text}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                )}
+                {row.rawPipeline !== undefined && (
+                  <details className="mt-1">
+                    <summary
+                      className="cursor-pointer text-xs fg-secondary"
+                      data-testid={`install-automation-packaged-pipeline-${row.key}-review`}
+                    >
+                      {PACKAGED_PIPELINE_REVIEW_LABEL}
+                    </summary>
+                    <div className="mt-1">
+                      <InlinePipelineYamlPreview
+                        rawPipeline={row.rawPipeline}
+                        testId={`install-automation-packaged-pipeline-${row.key}-yaml`}
+                      />
+                    </div>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {needsWorkspace && !noCompatibleProjects && (
         <label className="block text-s">
           <span className="mb-1.5 block fg-secondary">{WORKSPACE_LABEL}</span>
@@ -1757,6 +2120,21 @@ function InstallSharedAutomationForm({
           </select>
         </label>
       )}
+
+      {destination === 'task' &&
+        needsWorkspace &&
+        !noCompatibleProjects &&
+        workspaceId !== '' && (
+          <AutomationPipelineTaskField
+            projectKind={selectedTargetKind === 'cowork' ? 'cowork' : 'code'}
+            taskId={taskId}
+            tasks={taskList.tasks}
+            onTaskChange={setTaskId}
+            onRetryTasks={taskList.retry}
+            disabled={submitting}
+            testIdPrefix="install-automation"
+          />
+        )}
 
       {needsCoworkWorkspace && !noCompatibleProjects && (
         <label className="block text-s">
@@ -1828,7 +2206,7 @@ function InstallSharedAutomationForm({
 
       {inputKeys.length > 0 && (
         <fieldset className="space-y-2" data-testid="install-automation-inputs">
-          <legend className="text-s fg-secondary">Pipeline inputs</legend>
+          <legend className="text-s fg-secondary">Workflow inputs</legend>
           {inputKeys.map((key) => (
             <label key={key} className="block text-s">
               <span className="mb-1 block text-xs fg-secondary">{key}</span>
@@ -1936,6 +2314,7 @@ function InstallSharedAutomationForm({
   );
   const hasInputs =
     copyPicker !== null ||
+    packagedPipelineRows.length > 0 ||
     awaitingPipelineChoice ||
     noCompatibleProjects ||
     (needsWorkspace && !noCompatibleProjects) ||

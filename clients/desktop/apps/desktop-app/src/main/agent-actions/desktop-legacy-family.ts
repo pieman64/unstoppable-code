@@ -36,7 +36,7 @@ const DESKTOP_LEGACY_ACTION_TYPE_SET: ReadonlySet<string> = new Set(
 async function dispatchDesktopLegacyAction(
   action: DesktopLegacyAction,
   runtime: CanopyInjectedToolRuntime,
-  context?: { toolUseId?: string },
+  context?: { toolUseId?: string; signal?: AbortSignal },
 ): Promise<AgentActionDispatchOutput> {
   if (!runtime.worktreeActionRuntime) {
     return {
@@ -58,7 +58,7 @@ async function dispatchDesktopLegacyAction(
       // No watcher capability exists on this surface at all, so arming was
       // never possible and blocking the run would make run_now+watchers
       // permanently unusable here. Dispatch and report the limitation,
-      // mirroring how pipeline.run/automation.create report setup failures.
+      // mirroring how automation.create reports setup failures.
       preArmedRunNowWatchers = failedInlineAutomationWatcherSetup(
         'Inline watcher setup is only available for worktree chats.',
       );
@@ -105,26 +105,11 @@ async function dispatchDesktopLegacyAction(
         },
       }
     : { action };
-  let response = await dispatchWorktreeAction(
-    dispatchInput,
-    runtime.worktreeActionRuntime,
-  );
-  if (
-    response.ok &&
-    action.type === 'pipeline.run' &&
-    action.watchers?.length
-  ) {
-    const inlineWatcherSetup = await setupInlineWorktreePipelineWatchers(
-      action,
-      response.result,
-      runtime,
-      context,
-    );
-    response.result = {
-      ...(isRecord(response.result) ? response.result : {}),
-      inlineWatcherSetup,
-    };
-  }
+  // A Stop's abort signal reaches the action, so a long dispatch can end early.
+  const actionRuntime = context?.signal
+    ? { ...runtime.worktreeActionRuntime, signal: context.signal }
+    : runtime.worktreeActionRuntime;
+  let response = await dispatchWorktreeAction(dispatchInput, actionRuntime);
   if (preArmedRunNowWatchers !== undefined) {
     if (response.ok) {
       response.result = {
@@ -164,7 +149,7 @@ async function dispatchDesktopLegacyAction(
             patch: { enabled: true },
           },
         },
-        runtime.worktreeActionRuntime,
+        actionRuntime,
       );
       if (enableResponse.ok) {
         response = enableResponse;
@@ -223,7 +208,7 @@ interface InlineAutomationWatcherSetup {
 }
 
 /** The JSON an action response embeds for the inline watchers it armed. */
-function inlineWatcherSetupJson(
+export function inlineWatcherSetupJson(
   result: SetupAppAdvisorWatchersResult,
 ): AppAdvisorJson {
   if (!result.ok) {
@@ -271,7 +256,7 @@ async function setupInlineAutomationWatchers(
     allowDuplicate?: boolean;
   }>,
   runtime: CanopyInjectedToolRuntime,
-  context?: { toolUseId?: string },
+  context?: { toolUseId?: string; signal?: AbortSignal },
 ): Promise<InlineAutomationWatcherSetup> {
   const destination = worktreeWatcherDestination(runtime);
   if (!destination) {
@@ -305,6 +290,7 @@ async function setupInlineAutomationWatchers(
       destination,
       {
         toolUseId: context?.toolUseId,
+        ...(context?.signal ? { signal: context.signal } : {}),
       },
     );
     if (!result.ok) {
@@ -354,91 +340,10 @@ async function deleteInlineAutomationWatchers(
   }
 }
 
-function readExecutionId(result: unknown): string | null {
-  if (!isRecord(result)) return null;
-  const direct = result.executionId;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
-  const data = result.data;
-  if (isRecord(data) && typeof data.id === 'string' && data.id.length > 0) {
-    return data.id;
-  }
-  const execution = result.execution;
-  if (
-    isRecord(execution) &&
-    typeof execution.id === 'string' &&
-    execution.id.length > 0
-  ) {
-    return execution.id;
-  }
-  return null;
-}
-
-async function setupInlineWorktreePipelineWatchers(
-  action: Extract<DesktopLegacyAction, { type: 'pipeline.run' }>,
-  result: unknown,
-  runtime: CanopyInjectedToolRuntime,
-  context?: { toolUseId?: string },
-): Promise<AppAdvisorJson> {
-  const destination = worktreeWatcherDestination(runtime);
-  if (!destination) {
-    return {
-      ok: false,
-      error: 'Inline watcher setup is only available for worktree chats.',
-    };
-  }
-  const executionId = readExecutionId(result);
-  try {
-    // Defer the scheduler-backed service until a pipeline run actually asks
-    // for inline watcher setup.
-    const { getAppAdvisorWatcherService } =
-      await import('../app-advisor/watchers');
-    const setup = await getAppAdvisorWatcherService().setup(
-      {
-        watchers: (action.watchers ?? []).map((watcher) => ({
-          trigger: 'worktree_pipeline_completion',
-          ...(watcher.label ? { label: watcher.label } : {}),
-          target: {
-            kind: 'worktree_pipeline',
-            projectId: destination.projectId,
-            worktreeId: destination.worktreeId,
-            ...(executionId
-              ? { executionId }
-              : {
-                  pipelineId: watcher.target?.pipelineId ?? action.pipelineId,
-                }),
-            ...(watcher.target?.terminalStatuses
-              ? { terminalStatuses: watcher.target.terminalStatuses }
-              : {}),
-          },
-          ...(watcher.followUpInstruction
-            ? { followUpInstruction: watcher.followUpInstruction }
-            : {}),
-          ...(watcher.allowDuplicate !== undefined
-            ? { allowDuplicate: watcher.allowDuplicate }
-            : {}),
-        })),
-      },
-      destination,
-      {
-        toolUseId: context?.toolUseId,
-      },
-    );
-    return inlineWatcherSetupJson(setup);
-  } catch (error) {
-    return {
-      ok: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Pipeline execution started, but inline watcher setup failed.',
-    };
-  }
-}
-
 /**
  * The frozen chat-surface actions, plugged into the shared engine: their
  * schema, catalog search, and dispatch, including the inline watchers that
- * pipeline.run, automation.create, and automation.run_now arm.
+ * automation.create and automation.run_now arm.
  */
 export const desktopLegacyActionFamily: AgentActionFamily<CanopyInjectedToolRuntime> =
   defineAgentActionFamily<CanopyInjectedToolRuntime, DesktopLegacyAction>({
@@ -470,5 +375,6 @@ export const desktopLegacyActionFamily: AgentActionFamily<CanopyInjectedToolRunt
     dispatch: (action, call) =>
       dispatchDesktopLegacyAction(action, call.host, {
         toolUseId: call.toolUseId,
+        ...(call.signal ? { signal: call.signal } : {}),
       }),
   });

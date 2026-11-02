@@ -216,7 +216,7 @@ export const settingsDispatchJsonSchema: AgentActionFamilyJsonSchema = {
     destination: {
       type: 'object',
       description:
-        'Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, security, billing, labs. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings.',
+        'Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, security, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings.',
       properties: {
         scope: {
           type: 'string',

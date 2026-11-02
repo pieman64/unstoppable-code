@@ -8,6 +8,8 @@
  */
 import { act, type ComponentProps, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { CanopyClientProvider } from '@canopy/app-state';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { ChatMessageList } from '../ChatMessageList';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { hydratedKeys } from '@/stores/chat/hydration';
@@ -67,15 +69,49 @@ jest.mock('@/stores/fileListStore', () => ({
 }));
 
 jest.mock('../ForkedFromLink', () => ({ ForkedFromLink: (): null => null }));
+const mockTurnGroupProps: Array<{
+  group: {
+    userMessage: { id: string };
+    assistantMessages: Array<{
+      blocks: Array<{ type: string; toolUseId?: string }>;
+    }>;
+  };
+  onShowSpawningCall?: (target: {
+    toolUseId?: string;
+    userMessageId?: string;
+  }) => void;
+  revealRequest?: { messageId: string };
+  searchMessageId?: string;
+}> = [];
 jest.mock('../TurnGroupRenderer', () => ({
-  TurnGroupRenderer: (): JSX.Element => <div />,
+  TurnGroupRenderer: (
+    props: (typeof mockTurnGroupProps)[number],
+  ): JSX.Element => {
+    mockTurnGroupProps.push(props);
+    // Like a completed turn, its tool rows render only once it is opened.
+    return (
+      <div>
+        {props.revealRequest
+          ? props.group.assistantMessages.flatMap((message) =>
+              message.blocks.flatMap((block) =>
+                block.toolUseId === undefined
+                  ? []
+                  : [
+                      <div
+                        key={block.toolUseId}
+                        data-tool-use-id={block.toolUseId}
+                      />,
+                    ],
+              ),
+            )
+          : null}
+      </div>
+    );
+  },
 }));
 jest.mock('../ChatMessageItem', () => ({ ChatMessageItem: (): null => null }));
 jest.mock('../QueuedMessageBubble', () => ({
   QueuedMessageBubble: (): null => null,
-}));
-jest.mock('../QueuedMessageEditor', () => ({
-  QueuedMessageEditor: (): null => null,
 }));
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
@@ -153,18 +189,20 @@ function renderList(
   const render = (rows: ChatMessage[]): void => {
     act(() => {
       root.render(
-        <ChatMessageList
-          messages={rows}
-          queuedMessages={[]}
-          chatId={mockChatId}
-          targetOverride={{
-            projectId: 'project-turn-focus',
-            worktreeId: 'worktree-turn-focus',
-            chatId: mockChatId,
-          }}
-          onClearQueuedMessage={(): void => undefined}
-          {...extra}
-        />,
+        <CanopyClientProvider client={ipcCanopyClient}>
+          <ChatMessageList
+            messages={rows}
+            queuedMessages={[]}
+            chatId={mockChatId}
+            targetOverride={{
+              projectId: 'project-turn-focus',
+              worktreeId: 'worktree-turn-focus',
+              chatId: mockChatId,
+            }}
+            onClearQueuedMessage={(): void => undefined}
+            {...extra}
+          />
+        </CanopyClientProvider>,
       );
     });
   };
@@ -454,5 +492,190 @@ describe('ChatMessageList turn focus', () => {
     // A second click produces a new nonce, so the effect runs again rather
     // than being swallowed as an unchanged value.
     expect(useNavigationStore.getState().pendingChatTurnFocus).toBeUndefined();
+  });
+});
+
+function wakeMessages(): ChatMessage[] {
+  return [
+    {
+      id: 'user-1',
+      role: 'user',
+      blocks: [{ type: 'text', text: 'Run the tests in the background' }],
+      timestamp: 1,
+    },
+    {
+      id: 'assistant-1',
+      role: 'assistant',
+      blocks: [
+        {
+          type: 'tool_use',
+          toolUseId: 'tool-1',
+          toolName: 'Bash',
+          input: JSON.stringify({
+            command: 'npm test',
+            description: 'Run the tests',
+          }),
+        },
+      ],
+      timestamp: 2,
+    },
+    {
+      id: 'turn-1:timer',
+      role: 'system',
+      blocks: [
+        {
+          type: 'turn_timer',
+          turnId: 'turn-1',
+          userMessageId: 'user-1',
+          startedAt: 1,
+          completedAt: 3,
+        },
+      ],
+      timestamp: 1,
+    },
+    {
+      id: 'wake:timer',
+      role: 'system',
+      blocks: [
+        {
+          type: 'turn_timer',
+          turnId: 'wake',
+          spawnedBy: { taskId: 'task-1', toolUseId: 'tool-1' },
+          startedAt: 4,
+          completedAt: 8,
+        },
+      ],
+      timestamp: 4,
+    },
+    {
+      id: 'wake-tool',
+      role: 'assistant',
+      blocks: [
+        {
+          type: 'tool_use',
+          toolUseId: 'tool-2',
+          toolName: 'Read',
+          input: JSON.stringify({ file_path: '/tmp/test-report.txt' }),
+        },
+      ],
+      timestamp: 5,
+    },
+    {
+      id: 'wake-answer',
+      role: 'assistant',
+      blocks: [{ type: 'text', text: 'The tests passed.' }],
+      timestamp: 6,
+    },
+  ];
+}
+
+describe('ChatMessageList wake turns (turn-state phase 40d)', () => {
+  function wakeGroupProps(): (typeof mockTurnGroupProps)[number] | undefined {
+    return mockTurnGroupProps
+      .filter((props) => props.group.userMessage.id === 'wake:timer:wake')
+      .at(-1);
+  }
+
+  beforeEach(() => {
+    mockTurnGroupProps.length = 0;
+  });
+
+  function rect(top: number, height: number): DOMRect {
+    return {
+      top,
+      height,
+      bottom: top + height,
+      left: 0,
+      right: 0,
+      width: 0,
+      x: 0,
+      y: top,
+      toJSON: (): unknown => ({}),
+    };
+  }
+
+  it("opens the spawning call's collapsed turn, centers the call and highlights only it", () => {
+    const { host } = renderList(wakeMessages());
+    const showSpawningCall = wakeGroupProps()?.onShowSpawningCall;
+    expect(showSpawningCall).toBeInstanceOf(Function);
+    expect(host.querySelector('[data-tool-use-id="tool-1"]')).toBeNull();
+
+    act(() =>
+      showSpawningCall?.({ toolUseId: 'tool-1', userMessageId: 'user-1' }),
+    );
+    expect(
+      mockTurnGroupProps
+        .filter((props) => props.group.userMessage.id === 'user-1')
+        .at(-1)?.revealRequest,
+    ).toEqual({ messageId: 'assistant-1' });
+    const row = host.querySelector<HTMLElement>('[data-tool-use-id="tool-1"]');
+    const scroller = host.querySelector<HTMLElement>(
+      '[data-testid="chat-message-list-scroll"]',
+    );
+    expect(row).not.toBeNull();
+    expect(scroller).not.toBeNull();
+    jest
+      .spyOn(scroller ?? host, 'getBoundingClientRect')
+      .mockReturnValue(rect(100, 400));
+    jest
+      .spyOn(row ?? host, 'getBoundingClientRect')
+      .mockReturnValue(rect(900, 20));
+    scrollToSpy.mockClear();
+
+    act(() => {
+      jest.advanceTimersByTime(32);
+    });
+    // The row's middle (910) lands on the scroller's middle (300).
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 610, behavior: 'smooth' });
+    expect(row?.dataset.chatCallFocus).toBe('true');
+    expect(section(host, 'user-1')?.dataset.chatTurnFocus).toBeUndefined();
+    expect(section(host, 'user-1')?.dataset.chatCallFocus).toBeUndefined();
+
+    act(() => {
+      jest.advanceTimersByTime(2500);
+    });
+    expect(row?.dataset.chatCallFocus).toBeUndefined();
+  });
+
+  it('highlights only the prompt bubble when the spawning call is not loaded', () => {
+    const { host } = renderList(wakeMessages());
+
+    act(() =>
+      wakeGroupProps()?.onShowSpawningCall?.({
+        toolUseId: 'tool-missing',
+        userMessageId: 'user-1',
+      }),
+    );
+    act(() => {
+      jest.advanceTimersByTime(32);
+    });
+
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect(
+      host.querySelector<HTMLElement>('[data-sticky-user-message-id="user-1"]')
+        ?.dataset.chatCallFocus,
+    ).toBe('true');
+    expect(section(host, 'user-1')?.dataset.chatTurnFocus).toBeUndefined();
+    expect(section(host, 'user-1')?.dataset.chatCallFocus).toBeUndefined();
+  });
+
+  it("expands the wake's turn for a search match inside it", () => {
+    renderList(wakeMessages(), {
+      searchSelection: {
+        // Search reports the prompt's indexed turn, which holds the wake.
+        turnId: 'user-1',
+        messageId: 'wake-tool',
+        count: 1,
+        occurrence: 0,
+        query: 'report',
+        generation: 1,
+      },
+    });
+    expect(wakeGroupProps()?.searchMessageId).toBe('wake-tool');
+    expect(
+      mockTurnGroupProps
+        .filter((props) => props.group.userMessage.id === 'user-1')
+        .at(-1)?.searchMessageId,
+    ).toBeUndefined();
   });
 });

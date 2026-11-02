@@ -1,4 +1,5 @@
 import { type JSX, useEffect, useState } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import type { SharedAutomationPublicShareInfo } from '@canopy/protocol/automations';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import {
@@ -99,51 +100,48 @@ export function AutomationPublicShareRow({
       <span className="font-medium fg-primary">Public link</span>
       {!share ? (
         canManage && (
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid="automation-public-share-publish"
             disabled={busy}
             onClick={() => void publish()}
-            className="rounded-md border px-2 py-1 fg-primary disabled:opacity-50"
           >
             Publish
-          </button>
+          </Button>
         )
       ) : (
         <>
           <span className="min-w-0 flex-1 truncate fg-secondary">{url}</span>
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid="automation-public-share-copy"
             disabled={!url || busy}
             onClick={() => {
               if (url) void copyTextToClipboard(url).then(setCopied);
             }}
-            className="rounded-md border px-2 py-1 fg-primary disabled:opacity-50"
           >
             {copied ? 'Copied' : 'Copy link'}
-          </button>
+          </Button>
           {canManage && !share.upToDate && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               data-testid="automation-public-share-update"
               disabled={busy}
               onClick={() => void publish()}
-              className="rounded-md border px-2 py-1 fg-primary disabled:opacity-50"
             >
               Update to latest
-            </button>
+            </Button>
           )}
           {canManage && (
-            <button
-              type="button"
+            <Button
+              variant="ghost-destructive"
+              size="compact"
               data-testid="automation-public-share-revoke"
               disabled={busy}
               onClick={() => void revoke()}
-              className="rounded-md border border-line-destructive/40 px-2 py-1 fg-destructive disabled:opacity-50"
             >
               Remove
-            </button>
+            </Button>
           )}
         </>
       )}

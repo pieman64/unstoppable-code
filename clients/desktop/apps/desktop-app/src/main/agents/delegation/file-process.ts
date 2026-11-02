@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import {
   DELEGATION_FILE_DEFAULT_BYTES,
   NativeDelegationFiles,
@@ -12,16 +13,26 @@ import { getBundledDelegationFileBrokerPath } from '../../pipelines/config-paths
 import { spawnClaudeCodeProcessOffMain } from '../claude-process-host-runner';
 import { delegationStopSignal } from './stop-signal';
 
+/** Actionable copy when the staged helper is missing, non-executable, or
+ * otherwise invalid. Kept identical to the parent discovery disabled reason. */
+export const DELEGATION_FILE_HELPER_MISSING_MESSAGE =
+  'The bundled delegated file helper is missing or invalid. Reinstall the app to restore it.';
+
 export function delegationFileBinary(): string {
   return getBundledDelegationFileBrokerPath();
 }
 
+/** The helper at the fixed bundled path must be a non-empty regular file that
+ * is neither a symlink nor hard-linked (nlink === 1). On POSIX hosts it must
+ * also carry an execute bit; Windows has no execute permission bit. An
+ * unsupported host is never eligible. */
 export async function delegationFileBoundaryAvailable(): Promise<boolean> {
-  if (process.platform !== 'darwin' && process.platform !== 'win32')
-    return false;
+  const hostOs = hostOperatingSystem();
+  if (!hostOs) return false;
   try {
     const stat = await fs.lstat(delegationFileBinary());
-    return stat.isFile() && stat.nlink === 1 && stat.size > 0;
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size <= 0) return false;
+    return hostOs === 'win32' || (stat.mode & 0o111) !== 0;
   } catch {
     return false;
   }
@@ -40,7 +51,7 @@ export interface DelegationRootFileSystem {
  * drive root down. The native broker repeats this per component. */
 export async function canonicalDelegationRoot(
   directory: string,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = hostPlatformOperatingSystem(),
   fsApi: DelegationRootFileSystem = fs,
   pathApi: Pick<typeof path, 'resolve' | 'dirname'> = path,
 ): Promise<string> {
@@ -79,6 +90,13 @@ export async function openPortalAssetFiles(
   directory: string,
   signal: AbortSignal,
 ): Promise<NativeDelegationFiles> {
+  // Portal binary-asset access keeps its prior macOS/Windows-only support and
+  // is distinct from managed-delegation helper eligibility: enabling the shared
+  // native helper on Linux must not newly expose this path. Refuse an
+  // unsupported Portal host before any process launch, as before.
+  const hostOs = hostOperatingSystem();
+  if (hostOs !== 'darwin' && hostOs !== 'win32')
+    throw new Error('The delegated file boundary is unavailable');
   return openNativeFiles(
     directory,
     signal,
@@ -94,8 +112,10 @@ async function openNativeFiles(
   assetReadonly = false,
 ): Promise<NativeDelegationFiles> {
   const canonical = await canonicalDelegationRoot(directory);
-  if (signal.aborted || !(await delegationFileBoundaryAvailable()))
+  if (signal.aborted)
     throw new Error('The delegated file boundary is unavailable');
+  if (!(await delegationFileBoundaryAvailable()))
+    throw new Error(DELEGATION_FILE_HELPER_MISSING_MESSAGE);
   // Host selection goes through core-platform (platform boundary check).
   const hostOs = hostPlatformOperatingSystem();
   const environment: Record<string, string> = {

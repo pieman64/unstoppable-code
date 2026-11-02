@@ -14,18 +14,25 @@ import {
   countAccessTools,
   countEnabledAccessTools,
   desktopAccessRows,
-  desktopSelectionFull,
-  desktopsWriteAccess,
+  deviceSelectionFull,
+  devicesWriteAccess,
+  accessHostsMissing,
+  initialAccessHostsState,
+  NEW_TASKS_HOSTS,
   isExternalAgentToolGroup,
   matchingPreset,
   organizationChoiceUnavailable,
-  setAccessDesktopMode,
-  setAccessDesktopSelected,
+  setAccessDeviceChoice,
+  setAccessDeviceSelected,
+  setAccessExposeNames,
+  setAccessManagedHost,
   setAccessDestructive,
   setAccessGroupLevel,
   setAccessToolEnabled,
-  showsAccessDesktops,
+  showsAccessDevices,
+  showsAccessHosts,
   showsAccessOrganizations,
+  MAX_ACCESS_DESKTOPS,
   toAccessEditorGroups,
   type AccessFormState,
   type AccessModelSource,
@@ -74,10 +81,15 @@ interface GroupOptions {
   readonly tools?: readonly ExternalAgentAccessTool[];
 }
 
+const MANAGED_ONLY = { managed: true, connected: false } as const;
+const CONNECTED_ONLY = { managed: false, connected: true } as const;
+const BOTH_HOSTS = { managed: true, connected: true } as const;
+
 function tool(
   name: string,
   access: 'read' | 'write' = 'read',
   defaultOff = false,
+  hosts: ExternalAgentAccessTool['hosts'] = null,
 ): ExternalAgentAccessTool {
   return {
     name,
@@ -90,6 +102,7 @@ function tool(
       publicEffect: false,
       actsOnRemote: false,
     },
+    hosts,
   };
 }
 
@@ -127,7 +140,7 @@ function state(overrides: Partial<AccessFormState> = {}): AccessFormState {
     disabledTools: [],
     enabledDefaultOff: [],
     organizations: { mode: 'selected', organizationIds: [] },
-    remotes: { mode: 'selected', remoteIds: [] },
+    hosts: initialAccessHostsState(),
     ...overrides,
   };
 }
@@ -135,10 +148,11 @@ function state(overrides: Partial<AccessFormState> = {}): AccessFormState {
 function detail(
   groups: ExternalAgentAccessGroup[],
   current: ExternalAgentAccess,
+  server: 'account' | 'tasks' = 'account',
 ): ExternalAgentConnectionDetail {
   return {
     id: 'connection-id',
-    server: 'account',
+    server,
     clientName: 'Example agent',
     verified: true,
     status: 'active',
@@ -149,8 +163,9 @@ function detail(
       read: [],
       write: [],
       destructive: [],
-      organizations: 'all',
+      organizations: server === 'tasks' ? null : 'all',
       desktops: null,
+      managed: server === 'tasks' ? current.hosts.managed : null,
     },
     revision: 1,
     from: null,
@@ -167,7 +182,7 @@ function detail(
         personal: true,
       },
     ],
-    remoteControlEnabled: true,
+    remoteControlEnabled: server === 'tasks',
     maxTools: 80,
     activity: [],
     confirmationClasses: [
@@ -187,12 +202,14 @@ function detail(
       pipeline: 'act',
     },
     waiting: [],
+    textContentCompatibility: false,
   };
 }
 
 function desktop(remoteId: string, name: string): ExternalAgentDesktop {
   return {
     remoteId,
+    hostCode: '7k3q9x2m4p',
     name,
     hostname: null,
     connection: 'active',
@@ -205,7 +222,7 @@ describe('external-agent access model', () => {
     const groups = [
       group('account', { writable: false }),
       group('digests'),
-      group('remote', { unavailableReason: 'Not available yet' }),
+      group('tasks', { unavailableReason: 'Not available yet' }),
     ];
 
     expect(accessPresets(groups)).toEqual({
@@ -215,21 +232,21 @@ describe('external-agent access model', () => {
   });
 
   it('matches presets using effective levels, with missing levels off', () => {
-    const groups = [group('account'), group('digests'), group('remote')];
+    const groups = [group('account'), group('digests'), group('tasks')];
     const model = source('tasks', groups);
     const presets = accessPresets(groups);
 
     expect(
       matchingPreset(
         model,
-        { account: 'read', digests: 'read', remote: 'read' },
+        { account: 'read', digests: 'read', tasks: 'read' },
         presets,
       ),
     ).toBe('read');
     expect(
       matchingPreset(
         model,
-        { account: 'read', digests: 'write', remote: 'write' },
+        { account: 'read', digests: 'write', tasks: 'write' },
         presets,
       ),
     ).toBe('custom');
@@ -237,39 +254,35 @@ describe('external-agent access model', () => {
   });
 
   it('uses source levels only when the state has no group level', () => {
-    const model = source('tasks', [group('cloud'), group('remote')], {
-      cloud: 'write',
-      remote: 'read',
+    const model = source('tasks', [group('tasks')], {
+      tasks: 'write',
     });
 
     expect(buildAccess(model, state()).groups).toEqual({
-      cloud: 'write',
-      remote: 'read',
+      tasks: 'write',
     });
     expect(
-      buildAccess(model, state({ levels: { cloud: 'read' } })).groups,
+      buildAccess(model, state({ levels: { tasks: 'read' } })).groups,
     ).toEqual({
-      cloud: 'read',
-      remote: 'read',
+      tasks: 'read',
     });
   });
 
   it('applies presets to available groups and clears tool overrides', () => {
     const groups = [
-      group('cloud', { tools: [tool('cloud-list')] }),
-      group('remote', { unavailableReason: 'Not available yet' }),
+      group('tasks', { tools: [tool('task_list', 'read', false, BOTH_HOSTS)] }),
     ];
     const model = source('tasks', groups);
     const presets = accessPresets(groups);
     const changed = state({
-      disabledTools: ['cloud-list'],
-      enabledDefaultOff: ['cloud-file-list'],
+      disabledTools: ['task_list'],
+      enabledDefaultOff: ['file_list'],
     });
 
     expect(applyAccessPreset(changed, model, presets, 'read')).toEqual({
       ...changed,
       preset: 'read',
-      levels: { cloud: 'read', remote: 'off' },
+      levels: { tasks: 'read' },
       destructiveGroups: [],
       disabledTools: [],
       enabledDefaultOff: [],
@@ -281,18 +294,18 @@ describe('external-agent access model', () => {
     const model = source('account', [
       group('account'),
       group('billing', { writable: false }),
-      group('remote', { unavailableReason: 'Not available yet' }),
+      group('tasks', { unavailableReason: 'Not available yet' }),
     ]);
     const start = state();
     const account = setAccessGroupLevel(start, model, 'account', 'off');
     const billing = setAccessGroupLevel(account, model, 'billing', 'write');
-    const remote = setAccessGroupLevel(billing, model, 'remote', 'write');
+    const remote = setAccessGroupLevel(billing, model, 'tasks', 'write');
 
     expect(account.levels.account).toBe('read');
     expect(billing.levels.billing).toBe('read');
-    expect(remote.levels.remote).toBe('off');
+    expect(remote.levels.tasks).toBe('off');
     expect(remote.preset).toBe('custom');
-    expect(setAccessGroupLevel(start, model, 'cloud', 'write')).toBe(start);
+    expect(setAccessGroupLevel(start, model, 'digests', 'write')).toBe(start);
   });
 
   it('keeps destructive access separate from levels, tools and presets', () => {
@@ -379,8 +392,8 @@ describe('external-agent access model', () => {
   });
 
   it('toggles regular and default-off tools with new arrays', () => {
-    const regular = tool('cloud-list');
-    const defaultOff = tool('remote-file-list', 'read', true);
+    const regular = tool('task_list', 'read', false, BOTH_HOSTS);
+    const defaultOff = tool('file_read', 'read', true, BOTH_HOSTS);
     const start = state();
     const enabled = setAccessToolEnabled(start, defaultOff, true);
     const disabled = setAccessToolEnabled(enabled, regular, false);
@@ -397,16 +410,15 @@ describe('external-agent access model', () => {
       group('account', {
         tools: [tool('profile-read'), tool('profile-update', 'write')],
       }),
-      group('cloud', {
-        tools: [tool('cloud-list'), tool('cloud-file-list', 'read', true)],
-      }),
-      group('remote', {
-        unavailableReason: 'Not available yet',
-        tools: [tool('remote-list')],
+      group('tasks', {
+        tools: [
+          tool('task_list', 'read', false, BOTH_HOSTS),
+          tool('file_list', 'read', true, BOTH_HOSTS),
+        ],
       }),
     ];
-    const model = source('tasks', groups, { account: 'read', cloud: 'read' });
-    const current = state({ enabledDefaultOff: ['cloud-file-list'] });
+    const model = source('tasks', groups, { account: 'read', tasks: 'read' });
+    const current = state({ enabledDefaultOff: ['file_list'] });
     const editor = toAccessEditorGroups(model, current);
 
     expect(countEnabledAccessTools(model, current)).toBe(3);
@@ -414,14 +426,10 @@ describe('external-agent access model', () => {
       level: 'read',
       levels: ['read', 'write'],
     });
-    expect(editor.find((row) => row.id === 'remote')).toMatchObject({
-      level: 'off',
-      unavailableReason: 'Not available yet',
-    });
     expect(
       editor
-        .find((row) => row.id === 'cloud')
-        ?.tools.find((item) => item.name === 'cloud-file-list'),
+        .find((row) => row.id === 'tasks')
+        ?.tools.find((item) => item.name === 'file_list'),
     ).toMatchObject({ enabled: true, available: true });
   });
 
@@ -463,7 +471,12 @@ describe('external-agent access model', () => {
       disabledTools: ['digest-list', 'not-a-tool', 'usage-read'],
       enabledDefaultOff: ['profile-default', 'not-a-tool'],
       organizations: { mode: 'selected', organizationIds: ['organization-id'] },
-      remotes: { mode: 'all', remoteIds: ['ignored-id'] },
+      hosts: {
+        managed: true,
+        devices: 'all',
+        remoteIds: ['ignored-id'],
+        exposeNames: true,
+      },
     });
 
     expect(buildAccess(model, current)).toEqual({
@@ -471,11 +484,15 @@ describe('external-agent access model', () => {
       disabledTools: ['digest-list'],
       enabledDefaultOff: ['profile-default'],
       organizations: { mode: 'selected', organizationIds: ['organization-id'] },
-      remotes: { mode: 'selected', remoteIds: [] },
+      hosts: {
+        managed: false,
+        connected: { mode: 'selected', remoteIds: [] },
+        exposeNames: false,
+      },
     });
   });
 
-  it('keeps an unused organization and desktop scope when editing, and resets it for consent', () => {
+  it('keeps unused organization and host scopes when editing, but uses the Tasks consent default', () => {
     const account = source('account', [group('account'), group('org')]);
     const orgsOff = state({
       levels: { account: 'read', org: 'off' },
@@ -489,24 +506,30 @@ describe('external-agent access model', () => {
       buildAccess(account, orgsOff, { keepUnusedScope: true }).organizations,
     ).toEqual({ mode: 'selected', organizationIds: ['organization-a'] });
 
-    const tasks = source('tasks', [group('cloud'), group('remote')]);
-    const remoteOff = state({
-      levels: { remote: 'off' },
-      remotes: { mode: 'all', remoteIds: [] },
+    const tasks = source('tasks', [group('tasks')]);
+    const hostsOff = state({
+      levels: { tasks: 'off' },
+      hosts: {
+        managed: false,
+        devices: 'all',
+        remoteIds: ['device-id'],
+        exposeNames: true,
+      },
     });
-    expect(buildAccess(tasks, remoteOff).remotes).toEqual({
-      mode: 'selected',
-      remoteIds: [],
-    });
+    expect(buildAccess(tasks, hostsOff).hosts).toEqual(NEW_TASKS_HOSTS);
     expect(
-      buildAccess(tasks, remoteOff, { keepUnusedScope: true }).remotes,
-    ).toEqual({ mode: 'all', remoteIds: [] });
+      buildAccess(tasks, hostsOff, { keepUnusedScope: true }).hosts,
+    ).toEqual({
+      managed: false,
+      connected: { mode: 'all', remoteIds: [] },
+      exposeNames: true,
+    });
   });
 
   it('keeps a Tasks connection’s selected organizations when editing', () => {
-    const tasks = source('tasks', [group('cloud'), group('remote')]);
+    const tasks = source('tasks', [group('tasks')]);
     const selected = state({
-      levels: { cloud: 'write' },
+      levels: { tasks: 'write' },
       organizations: { mode: 'selected', organizationIds: ['organization-a'] },
     });
     expect(
@@ -519,148 +542,200 @@ describe('external-agent access model', () => {
     });
   });
 
-  it('sends chosen desktops only when the available task remote group is on', () => {
-    const groups = [group('cloud'), group('remote')];
-    const model = source('tasks', groups);
-    const selected = state({
-      levels: { remote: 'write' },
-      remotes: { mode: 'selected', remoteIds: ['desktop-id'] },
-    });
-    const all = state({
-      levels: { remote: 'read' },
-      remotes: { mode: 'all', remoteIds: [] },
-    });
-
-    expect(showsAccessDesktops(model, selected, true)).toBe(true);
-    expect(desktopsWriteAccess(model, selected, true)).toBe(true);
-    expect(buildAccess(model, selected).remotes).toEqual({
-      mode: 'selected',
-      remoteIds: ['desktop-id'],
-    });
-    expect(buildAccess(model, all).remotes).toEqual({
-      mode: 'all',
-      remoteIds: [],
-    });
-    expect(showsAccessDesktops(model, selected, false)).toBe(false);
-    expect(
-      showsAccessDesktops(
-        source('tasks', [
-          group('remote', { unavailableReason: 'Not available yet' }),
-        ]),
-        selected,
-        true,
-      ),
-    ).toBe(false);
-  });
-
-  it('serializes selected and all desktop modes while retaining the draft', () => {
-    const model = source('tasks', [group('remote')]);
+  it('builds all, selected, and none host choices and deduplicates selected device ids', () => {
+    const tasks = source('tasks', [group('tasks')]);
     const firstId = 'c0ffee00-0000-4000-8000-000000000001';
     const secondId = 'c0ffee00-0000-4000-8000-000000000002';
     const selected = state({
-      levels: { remote: 'read' },
-      remotes: { mode: 'selected', remoteIds: [firstId, secondId] },
-    });
-
-    expect(buildAccess(model, selected).remotes).toEqual({
-      mode: 'selected',
-      remoteIds: [firstId, secondId],
-    });
-
-    const all = setAccessDesktopMode(selected, 'all');
-    expect(all.remotes.remoteIds).toEqual([firstId, secondId]);
-    expect(buildAccess(model, all).remotes).toEqual({
-      mode: 'all',
-      remoteIds: [],
-    });
-    expect(setAccessDesktopMode(all, 'selected').remotes).toEqual({
-      mode: 'selected',
-      remoteIds: [firstId, secondId],
-    });
-  });
-
-  it('keeps an unavailable selected desktop until it is removed', () => {
-    const model = source('tasks', [group('remote')]);
-    const unavailableId = 'c0ffee00-0000-4000-8000-000000000003';
-    const selected = state({
-      levels: { remote: 'read' },
-      remotes: { mode: 'selected', remoteIds: [unavailableId] },
-    });
-
-    expect(buildAccess(model, selected).remotes.remoteIds).toEqual([
-      unavailableId,
-    ]);
-    expect(
-      buildAccess(
-        model,
-        setAccessDesktopSelected(selected, unavailableId, false),
-      ).remotes.remoteIds,
-    ).toEqual([]);
-  });
-
-  it('deduplicates desktop ids when building access and checking an id', () => {
-    const model = source('tasks', [group('remote')]);
-    const selectedId = 'c0ffee00-0000-4000-8000-000000000004';
-    const selected = state({
-      levels: { remote: 'read' },
-      remotes: {
-        mode: 'selected',
-        remoteIds: [selectedId, selectedId],
+      levels: { tasks: 'read' },
+      hosts: {
+        managed: true,
+        devices: 'selected',
+        remoteIds: [firstId, secondId, firstId],
+        exposeNames: true,
       },
     });
 
-    expect(buildAccess(model, selected).remotes.remoteIds).toEqual([
-      selectedId,
-    ]);
+    expect(buildAccess(tasks, selected).hosts).toEqual({
+      managed: true,
+      connected: { mode: 'selected', remoteIds: [firstId, secondId] },
+      exposeNames: true,
+    });
+    const all = setAccessDeviceChoice(selected, 'all');
+    expect(all.hosts.remoteIds).toEqual([firstId, secondId, firstId]);
+    expect(buildAccess(tasks, all).hosts).toEqual({
+      managed: true,
+      connected: { mode: 'all', remoteIds: [] },
+      exposeNames: true,
+    });
+    expect(setAccessDeviceChoice(all, 'selected').hosts.devices).toBe(
+      'selected',
+    );
     expect(
-      setAccessDesktopSelected(selected, selectedId, true).remotes.remoteIds,
-    ).toEqual([selectedId]);
+      buildAccess(tasks, setAccessDeviceChoice(selected, 'none')).hosts,
+    ).toEqual({
+      managed: true,
+      connected: { mode: 'selected', remoteIds: [] },
+      exposeNames: true,
+    });
   });
 
-  it('reports full desktop selections and refuses to add beyond the cap', () => {
+  it('shows Hosts for active Tasks access and reports when a Tasks grant reaches no host', () => {
+    const tasks = source('tasks', [group('tasks')]);
+    const active = state({ levels: { tasks: 'read' } });
+    expect(showsAccessHosts(tasks, active)).toBe(true);
+    expect(showsAccessHosts(tasks, state({ levels: { tasks: 'write' } }))).toBe(
+      true,
+    );
+
+    const existingHost = state({
+      levels: { tasks: 'off' },
+      hosts: {
+        managed: true,
+        devices: 'none',
+        remoteIds: [],
+        exposeNames: false,
+      },
+    });
+    expect(showsAccessHosts(tasks, existingHost)).toBe(false);
+
+    const noHost = state({
+      levels: { tasks: 'read' },
+      hosts: {
+        managed: false,
+        devices: 'none',
+        remoteIds: [],
+        exposeNames: false,
+      },
+    });
+    expect(accessHostsMissing(tasks, noHost)).toBe(true);
+    expect(showsAccessHosts(tasks, noHost)).toBe(true);
+    expect(
+      accessHostsMissing(
+        tasks,
+        state({
+          levels: { tasks: 'read' },
+          hosts: {
+            managed: false,
+            devices: 'selected',
+            remoteIds: [],
+            exposeNames: false,
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(accessHostsMissing(tasks, setAccessManagedHost(noHost, true))).toBe(
+      false,
+    );
+    expect(
+      accessHostsMissing(tasks, setAccessDeviceChoice(noHost, 'all')),
+    ).toBe(false);
+    expect(
+      accessHostsMissing(
+        tasks,
+        state({
+          levels: { tasks: 'read' },
+          hosts: {
+            managed: false,
+            devices: 'selected',
+            remoteIds: ['device-id'],
+            exposeNames: false,
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(accessHostsMissing(source('account', []), noHost)).toBe(false);
+    expect(showsAccessHosts(source('account', []), noHost)).toBe(false);
+  });
+
+  it('shows device choice only for Tasks with Remote Control and flags device write access', () => {
+    const tasks = source('tasks', [group('tasks')]);
+    const account = source('account', [group('tasks')]);
+    const write = state({ levels: { tasks: 'write' } });
+    expect(showsAccessDevices(tasks, true)).toBe(true);
+    expect(showsAccessDevices(tasks, false)).toBe(false);
+    expect(showsAccessDevices(account, true)).toBe(false);
+    expect(devicesWriteAccess(tasks, write, true)).toBe(true);
+    expect(
+      devicesWriteAccess(tasks, setAccessDeviceChoice(write, 'none'), true),
+    ).toBe(false);
+    expect(
+      devicesWriteAccess(tasks, state({ levels: { tasks: 'read' } }), true),
+    ).toBe(false);
+    expect(devicesWriteAccess(tasks, write, false)).toBe(false);
+  });
+
+  it('updates host switches, device choices, and expose-names state immutably', () => {
+    const start = state();
+    expect(setAccessManagedHost(start, false).hosts.managed).toBe(false);
+    expect(setAccessExposeNames(start, true).hosts.exposeNames).toBe(true);
+    expect(setAccessDeviceChoice(start, 'all').hosts.devices).toBe('all');
+    expect(start.hosts.managed).toBe(true);
+    expect(start.hosts.exposeNames).toBe(false);
+  });
+
+  it('deduplicates device ids, removes unavailable selections, and enforces the selection cap', () => {
+    const selectedId = 'c0ffee00-0000-4000-8000-000000000004';
+    const selected = state({
+      hosts: {
+        managed: true,
+        devices: 'selected',
+        remoteIds: [selectedId, selectedId],
+        exposeNames: false,
+      },
+    });
+    expect(
+      setAccessDeviceSelected(selected, selectedId, true).hosts.remoteIds,
+    ).toEqual([selectedId]);
+    expect(
+      setAccessDeviceSelected(selected, selectedId, false).hosts.remoteIds,
+    ).toEqual([]);
+
     const fullIds = Array.from(
-      { length: 500 },
+      { length: MAX_ACCESS_DESKTOPS },
       (_, index) =>
         `c0ffee00-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
     );
     const full = state({
-      remotes: { mode: 'selected', remoteIds: fullIds },
+      hosts: {
+        managed: true,
+        devices: 'selected',
+        remoteIds: fullIds,
+        exposeNames: false,
+      },
     });
-
-    expect(desktopSelectionFull(full)).toBe(true);
+    expect(deviceSelectionFull(full)).toBe(true);
     expect(
-      setAccessDesktopSelected(
+      setAccessDeviceSelected(
         full,
         'c0ffee00-0000-4000-8000-ffffffffffff',
         true,
       ),
     ).toBe(full);
-    expect(desktopSelectionFull(state())).toBe(false);
-  });
+    expect(deviceSelectionFull(state())).toBe(false);
 
-  it('counts unique desktops, not duplicate entries, against the cap', () => {
-    const distinctIds = Array.from(
-      { length: 499 },
-      (_, index) =>
-        `c0ffee00-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
-    );
-    const duplicateId = 'c0ffee00-0000-4000-8000-000000000000';
-    const newId = 'c0ffee00-0000-4000-8000-fffffffffffe';
-    // 500 entries, but only 499 distinct desktops.
+    const distinctIds = fullIds.slice(0, MAX_ACCESS_DESKTOPS - 1);
+    const duplicateId = distinctIds[0];
+    if (duplicateId === undefined) throw new Error('Expected a selected ID');
     const withDuplicate = state({
-      remotes: { mode: 'selected', remoteIds: [...distinctIds, duplicateId] },
+      hosts: {
+        managed: true,
+        devices: 'selected',
+        remoteIds: [...distinctIds, duplicateId],
+        exposeNames: false,
+      },
     });
-
-    expect(desktopSelectionFull(withDuplicate)).toBe(false);
-    const next = setAccessDesktopSelected(withDuplicate, newId, true);
+    expect(deviceSelectionFull(withDuplicate)).toBe(false);
+    const newId = 'c0ffee00-0000-4000-8000-fffffffffffe';
+    const next = setAccessDeviceSelected(withDuplicate, newId, true);
     expect(next).not.toBe(withDuplicate);
-    expect(next.remotes.remoteIds).toHaveLength(500);
-    expect(new Set(next.remotes.remoteIds).size).toBe(500);
-    expect(next.remotes.remoteIds[499]).toBe(newId);
-    expect(desktopSelectionFull(next)).toBe(true);
+    expect(next.hosts.remoteIds).toHaveLength(MAX_ACCESS_DESKTOPS);
+    expect(new Set(next.hosts.remoteIds).size).toBe(MAX_ACCESS_DESKTOPS);
+    expect(next.hosts.remoteIds[MAX_ACCESS_DESKTOPS - 1]).toBe(newId);
+    expect(deviceSelectionFull(next)).toBe(true);
   });
 
-  it('maps paired and unavailable desktops and leaves unavailable empty while loading', () => {
+  it('maps paired and unavailable devices and leaves unavailable empty while loading', () => {
     const selectedId = 'c0ffee00-0000-4000-8000-000000000005';
     const unavailableId = 'c0ffee00-0000-4000-8000-000000000006';
     const availableDesktop = desktop(selectedId, 'Work desktop');
@@ -687,30 +762,38 @@ describe('external-agent access model', () => {
     });
   });
 
-  it('builds editor state from current detail and makes tool overrides custom', () => {
+  it('builds editor state from account detail and makes tool overrides custom', () => {
     const groups = [
       group('account'),
       group('digests'),
-      group('remote', { unavailableReason: 'Not available yet' }),
+      group('usage', { unavailableReason: 'Not available yet' }),
     ];
     const current: ExternalAgentAccess = {
-      groups: { account: 'read', digests: 'read', remote: 'write' },
+      groups: { account: 'read', digests: 'read', usage: 'write' },
       disabledTools: [],
       enabledDefaultOff: [],
       organizations: { mode: 'selected', organizationIds: ['organization-id'] },
-      remotes: { mode: 'all', remoteIds: [] },
+      hosts: {
+        managed: false,
+        connected: { mode: 'selected', remoteIds: [] },
+        exposeNames: false,
+      },
     };
-    const connection = detail(groups, current);
-    const fromDetail = accessFormStateFromDetail(connection);
+    const fromDetail = accessFormStateFromDetail(detail(groups, current));
 
     expect(fromDetail).toEqual({
       preset: 'read',
-      levels: { account: 'read', digests: 'read', remote: 'off' },
+      levels: { account: 'read', digests: 'read', usage: 'off' },
       destructiveGroups: [],
       disabledTools: [],
       enabledDefaultOff: [],
       organizations: { mode: 'selected', organizationIds: ['organization-id'] },
-      remotes: { mode: 'all', remoteIds: [] },
+      hosts: {
+        managed: false,
+        devices: 'none',
+        remoteIds: [],
+        exposeNames: false,
+      },
     });
     expect(
       accessFormStateFromDetail(
@@ -722,6 +805,50 @@ describe('external-agent access model', () => {
         detail(groups, { ...current, enabledDefaultOff: ['account-tool'] }),
       ).preset,
     ).toBe('custom');
+  });
+
+  it('maps stored all and selected host scopes into the editor draft', () => {
+    const groups = [group('tasks')];
+    const current: ExternalAgentAccess = {
+      groups: { tasks: 'write' },
+      disabledTools: [],
+      enabledDefaultOff: [],
+      organizations: { mode: 'all', organizationIds: [] },
+      hosts: {
+        managed: true,
+        connected: { mode: 'all', remoteIds: [] },
+        exposeNames: true,
+      },
+    };
+    const all = accessFormStateFromDetail(detail(groups, current, 'tasks'));
+    expect(all.hosts).toEqual({
+      managed: true,
+      devices: 'all',
+      remoteIds: [],
+      exposeNames: true,
+    });
+
+    const selectedId = 'c0ffee00-0000-4000-8000-000000000008';
+    const selected = accessFormStateFromDetail(
+      detail(
+        groups,
+        {
+          ...current,
+          hosts: {
+            managed: false,
+            connected: { mode: 'selected', remoteIds: [selectedId] },
+            exposeNames: false,
+          },
+        },
+        'tasks',
+      ),
+    );
+    expect(selected.hosts).toEqual({
+      managed: false,
+      devices: 'selected',
+      remoteIds: [selectedId],
+      exposeNames: false,
+    });
   });
 
   it('maps destructive grants from detail to write plus an enabled switch', () => {
@@ -736,7 +863,11 @@ describe('external-agent access model', () => {
       disabledTools: [],
       enabledDefaultOff: [],
       organizations: { mode: 'all', organizationIds: [] },
-      remotes: { mode: 'selected', remoteIds: [] },
+      hosts: {
+        managed: false,
+        connected: { mode: 'selected', remoteIds: [] },
+        exposeNames: false,
+      },
     };
 
     expect(accessFormStateFromDetail(detail(groups, current))).toMatchObject({
@@ -769,7 +900,111 @@ describe('external-agent access model', () => {
   });
 
   it('recognizes only protocol tool group identifiers', () => {
-    expect(isExternalAgentToolGroup('cloud')).toBe(true);
+    expect(isExternalAgentToolGroup('tasks')).toBe(true);
+    expect(isExternalAgentToolGroup('cloud')).toBe(false);
+    expect(isExternalAgentToolGroup('remote')).toBe(false);
     expect(isExternalAgentToolGroup('other')).toBe(false);
+  });
+});
+
+describe('host-gated tools', () => {
+  const tasksSource = source('tasks', [
+    group('tasks', {
+      tools: [
+        tool('project_list', 'read', false, BOTH_HOSTS),
+        tool('model_list', 'read', false, MANAGED_ONLY),
+        tool('plan_list', 'read', false, CONNECTED_ONLY),
+        tool('host_list'),
+        tool('connection_get'),
+      ],
+    }),
+  ]);
+  const readTasks = state({ levels: { tasks: 'read' } });
+  const managedOnly = readTasks;
+  const devicesOnly = setAccessManagedHost(
+    setAccessDeviceChoice(readTasks, 'all'),
+    false,
+  );
+  const selectedDeviceOnly = setAccessDeviceSelected(
+    setAccessManagedHost(readTasks, false),
+    'device-1',
+    true,
+  );
+  const neither = setAccessDeviceChoice(
+    setAccessManagedHost(readTasks, false),
+    'none',
+  );
+
+  function enabledToolNames(draft: AccessFormState): string[] {
+    return toAccessEditorGroups(tasksSource, draft)
+      .flatMap((row) => row.tools)
+      .filter((row) => row.enabled)
+      .map((row) => row.name);
+  }
+
+  it('counts a tool for both host kinds with only Cloud agents on', () => {
+    expect(enabledToolNames(managedOnly)).toEqual([
+      'project_list',
+      'model_list',
+      'host_list',
+      'connection_get',
+    ]);
+    expect(countEnabledAccessTools(tasksSource, managedOnly)).toBe(4);
+  });
+
+  it('counts a tool for both host kinds with only devices on', () => {
+    const expected = [
+      'project_list',
+      'plan_list',
+      'host_list',
+      'connection_get',
+    ];
+    expect(enabledToolNames(devicesOnly)).toEqual(expected);
+    expect(countEnabledAccessTools(tasksSource, devicesOnly)).toBe(4);
+    expect(enabledToolNames(selectedDeviceOnly)).toEqual(expected);
+    expect(countEnabledAccessTools(tasksSource, selectedDeviceOnly)).toBe(4);
+  });
+
+  it('counts every host tool with both host kinds on', () => {
+    const both = setAccessDeviceSelected(readTasks, 'device-1', true);
+    expect(countEnabledAccessTools(tasksSource, both)).toBe(5);
+  });
+
+  it('counts only tools that take no host with neither host kind on', () => {
+    expect(enabledToolNames(neither)).toEqual(['host_list', 'connection_get']);
+    expect(countEnabledAccessTools(tasksSource, neither)).toBe(2);
+  });
+
+  it('does not count a managed-only tool with Cloud agents off', () => {
+    expect(enabledToolNames(devicesOnly)).not.toContain('model_list');
+  });
+
+  it('does not count a connected-only tool with devices None', () => {
+    expect(
+      enabledToolNames(setAccessDeviceChoice(readTasks, 'none')),
+    ).not.toContain('plan_list');
+  });
+
+  it('ignores tool names and reads only the hosts field', () => {
+    // An old-style name must not change the decision.
+    const renamed = source('tasks', [
+      group('tasks', {
+        tools: [tool('cloud_project_list', 'read', false, CONNECTED_ONLY)],
+      }),
+    ]);
+    expect(countEnabledAccessTools(renamed, managedOnly)).toBe(0);
+    expect(countEnabledAccessTools(renamed, devicesOnly)).toBe(1);
+  });
+
+  it('marks a tool for an unchosen host unavailable', () => {
+    const rows = toAccessEditorGroups(tasksSource, devicesOnly).flatMap(
+      (row) => row.tools,
+    );
+    expect(rows.find((row) => row.name === 'model_list')).toEqual(
+      expect.objectContaining({ enabled: false, available: false }),
+    );
+    expect(rows.find((row) => row.name === 'host_list')).toEqual(
+      expect.objectContaining({ enabled: true, available: true }),
+    );
   });
 });

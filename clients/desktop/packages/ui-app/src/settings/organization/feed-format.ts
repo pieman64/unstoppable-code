@@ -1,24 +1,9 @@
 import type { FeedActor } from '@canopy/protocol';
+import { formatRelativeTime as formatSharedRelativeTime } from '@canopy/ui-shared/lib';
 
 /** Compact "Ns/Nm/Nh/Nd ago" relative time, falling back to the raw ISO. */
 export function formatRelativeTime(iso: string): string {
-  try {
-    const ts = new Date(iso).getTime();
-    if (Number.isNaN(ts)) {
-      return iso;
-    }
-    const diff = Date.now() - ts;
-    const sec = Math.max(0, Math.round(diff / 1000));
-    if (sec < 60) return `${sec}s ago`;
-    const min = Math.round(sec / 60);
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.round(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    const day = Math.round(hr / 24);
-    return `${day}d ago`;
-  } catch {
-    return iso;
-  }
+  return Number.isNaN(Date.parse(iso)) ? iso : formatSharedRelativeTime(iso);
 }
 
 /** Human display name for a feed actor, with a stable fallback. */

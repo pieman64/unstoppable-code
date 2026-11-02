@@ -1,7 +1,10 @@
 /**
  * @jest-environment jsdom
  */
-import type { NativeAiCreditsAvailability } from '@canopy/desktop-shared/types';
+import type {
+  AccountOrganizationSettingsApi,
+  NativeAiCreditsAvailability,
+} from '@canopy/desktop-shared/types';
 import type * as HostedSettingsAvailabilityModule from '@/components/settings/hosted/hosted-settings-availability';
 import {
   settingsRouteToPath,
@@ -12,7 +15,6 @@ import { readCanopyCloudAccountChangeReason } from '@/lib/canopyCloudAccountChan
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  announceAiCreditsChanged,
   getAiCreditsConnectContext,
   invalidateSharedAiCreditsRead,
   openBillingPage,
@@ -22,7 +24,7 @@ import {
   unlockModels,
   useGetAiCreditsAction,
 } from '../openBillingPage';
-import { isBillingRequestId } from '@canopy/protocol/billing';
+import { organizationBillingPath } from '@canopy/protocol/billing';
 import { resetModelLibraryAccessForTests } from '../modelLibraryAccess';
 import {
   resetModelUnlockIntentForTests,
@@ -32,9 +34,9 @@ import {
   useCloudConnectGateStore,
   type CloudConnectGateContext,
 } from '@/stores/cloudConnectGateStore';
-import { organizationBillingPath } from '@canopy/protocol/billing';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useGitHubStore } from '@/stores/githubStore';
 import { brandText } from '@/lib/brand';
 import {
   invalidateAiCreditsAvailabilityCache,
@@ -768,6 +770,140 @@ describe('openBillingPage', () => {
     await expect(openBillingPage(native())).resolves.toBe('failed');
     expect(openExternal).toHaveBeenCalledWith({ url: PRICING_URL });
   });
+
+  describe("the 'browser' destination (CAN-5159)", () => {
+    function openedSearchParams(): URLSearchParams {
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      const [path] = openAuthenticatedPortalPage.mock.calls[0];
+      return new URL(path, 'https://billing.invalid').searchParams;
+    }
+
+    it('opens the signed-in web page even when hosted settings are openable, and never re-reads on a Settings close', async () => {
+      // A chat banner's "finish this in your browser" state only survives a
+      // browser open; Settings → Billing would clear its hand-off.
+      mockHostedSettingsOpenable.mockReturnValue(true);
+      const reasons: string[] = [];
+      const record = (event: Event): void => {
+        reasons.push(readCanopyCloudAccountChangeReason(event));
+      };
+      window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, record);
+      try {
+        await expect(
+          openBillingPage(native(), undefined, { destination: 'browser' }),
+        ).resolves.toBe('web');
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledWith(
+          '/account/billing',
+        );
+        expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+        expect(openExternal).not.toHaveBeenCalled();
+
+        act(() => {
+          useNavigationStore.setState({ settingsOpen: true });
+        });
+        act(() => {
+          useNavigationStore.setState({ settingsOpen: false });
+        });
+        expect(reasons).toEqual([]);
+      } finally {
+        window.removeEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, record);
+        useNavigationStore.setState({ settingsOpen: false });
+      }
+    });
+
+    it('matches the default route when hosted settings are not openable', async () => {
+      await expect(openBillingPage(native())).resolves.toBe('web');
+      const defaultCalls = openAuthenticatedPortalPage.mock.calls.slice();
+      openAuthenticatedPortalPage.mockClear();
+
+      await expect(
+        openBillingPage(native(), undefined, { destination: 'browser' }),
+      ).resolves.toBe('web');
+      expect(openAuthenticatedPortalPage.mock.calls).toEqual(defaultCalls);
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+      expect(openExternal).not.toHaveBeenCalled();
+    });
+
+    it('appends the credits top-up intent to the personal billing path', async () => {
+      mockHostedSettingsOpenable.mockReturnValue(true);
+      await expect(
+        openBillingPage(native(), undefined, {
+          destination: 'browser',
+          topUpSource: 'banner',
+        }),
+      ).resolves.toBe('web');
+      const [path] = openAuthenticatedPortalPage.mock.calls[0];
+      expect(new URL(path, 'https://billing.invalid').pathname).toBe(
+        '/account/billing',
+      );
+      const params = openedSearchParams();
+      expect(params.get('topUp')).toBe('1');
+      expect(params.get('reason')).toBe('credits');
+      expect(params.get('source')).toBe('banner');
+      expect(params.has('chatId')).toBe(false);
+    });
+
+    it('keeps the organization owner path query when appending the intent', async () => {
+      mockHostedSettingsOpenable.mockReturnValue(true);
+      const ownerOrgId = '55555555-5555-4555-8555-555555555555';
+      const liveOrgId = '66666666-6666-4666-8666-666666666666';
+      seedOwnerAndLiveOrgs(ownerOrgId, liveOrgId);
+      try {
+        await expect(
+          openBillingPage(
+            native({
+              ownerOrganization: { id: ownerOrgId, name: 'Owner Org' },
+            }),
+            { kind: 'work', projectId: 'project-a' },
+            { destination: 'browser', topUpSource: 'banner' },
+          ),
+        ).resolves.toBe('web');
+        const [path] = openAuthenticatedPortalPage.mock.calls[0];
+        const opened = new URL(path, 'https://billing.invalid');
+        const owner = new URL(
+          organizationBillingPath(ownerOrgId),
+          'https://billing.invalid',
+        );
+        expect(opened.pathname).toBe(owner.pathname);
+        owner.searchParams.forEach((value, key) => {
+          expect(opened.searchParams.get(key)).toBe(value);
+        });
+        const params = openedSearchParams();
+        expect(params.get('topUp')).toBe('1');
+        expect(params.get('reason')).toBe('credits');
+        expect(params.get('source')).toBe('banner');
+        expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+      } finally {
+        resetOrgs();
+      }
+    });
+
+    it('falls back to the plain pricing URL, without the intent, when the mint fails', async () => {
+      mockHostedSettingsOpenable.mockReturnValue(true);
+      openAuthenticatedPortalPage.mockRejectedValue(new Error('mint failed'));
+      await expect(
+        openBillingPage(native(), undefined, {
+          destination: 'browser',
+          topUpSource: 'banner',
+        }),
+      ).resolves.toBe('web');
+      expect(openExternal).toHaveBeenCalledWith({ url: PRICING_URL });
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+    });
+
+    it('reports failure when the mint fails and no pricing URL is known', async () => {
+      mockHostedSettingsOpenable.mockReturnValue(true);
+      openAuthenticatedPortalPage.mockResolvedValue(false);
+      await expect(
+        openBillingPage(null, undefined, {
+          destination: 'browser',
+          topUpSource: 'banner',
+        }),
+      ).resolves.toBe('failed');
+      expect(openExternal).not.toHaveBeenCalled();
+      expect(openAccountOrganizationSettings).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('getAiCreditsConnectContext (CAN-4691)', () => {
@@ -784,6 +920,15 @@ describe('getAiCreditsConnectContext (CAN-4691)', () => {
   it('names the web billing page otherwise', () => {
     mockHostedSettingsOpenable.mockReturnValue(false);
     expect(getAiCreditsConnectContext().toastMessage).toBe(
+      "You're connected. Opening your billing page so you can add AI Credits.",
+    );
+  });
+
+  it("names the web billing page for a 'browser' destination even when hosted settings are openable (CAN-5159)", () => {
+    mockHostedSettingsOpenable.mockReturnValue(true);
+    expect(
+      getAiCreditsConnectContext({ destination: 'browser' }).toastMessage,
+    ).toBe(
       "You're connected. Opening your billing page so you can add AI Credits.",
     );
   });
@@ -879,7 +1024,12 @@ describe('unlockModels', () => {
   const originalApiDescriptor = Object.getOwnPropertyDescriptor(window, 'api');
   const ORG_ID = '55555555-5555-4555-8555-555555555555';
   const ACCOUNT_KEY = 'account:acct_1';
-  const openAuthenticatedPortalPage = jest.fn<Promise<boolean>, [string]>();
+  const openAuthenticatedPortalPage = jest.fn();
+  const paymentHandoff = jest.fn<
+    Promise<unknown>,
+    Parameters<AccountOrganizationSettingsApi['paymentHandoff']>
+  >();
+  const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
   const loadNativeAiCreditsAvailability = jest.fn();
   const loadCanopyCloudAccount = jest.fn();
   const loadCanopyCloudEntitlements = jest.fn();
@@ -888,7 +1038,7 @@ describe('unlockModels', () => {
   function entitlementsWith(
     modelLibrary: unknown,
     accountKey: string | null = ACCOUNT_KEY,
-  ): unknown {
+  ): Record<string, unknown> {
     return {
       resolved: true,
       modelLibrary,
@@ -907,34 +1057,35 @@ describe('unlockModels', () => {
     }));
   }
 
-  function openedUrl(): URL {
-    const [path] = openAuthenticatedPortalPage.mock.calls[0];
-    return new URL(path, 'https://billing.invalid');
-  }
-
   beforeEach(() => {
     jest.clearAllMocks();
     invalidateSharedAiCreditsRead();
     resetModelLibraryAccessForTests();
     resetModelUnlockIntentForTests();
     openAuthenticatedPortalPage.mockResolvedValue(true);
+    paymentHandoff
+      .mockReset()
+      .mockResolvedValue({ ok: true, requestId: REQUEST_ID });
     loadNativeAiCreditsAvailability.mockResolvedValue(
       // Spendable daily credits: the state that must NOT read as solved.
       native({ personalEligible: true }),
     );
-    loadCanopyCloudAccount.mockResolvedValue({
+    loadCanopyCloudAccount.mockReset().mockResolvedValue({
       hasApiKey: true,
       account: { id: 'acct_1' },
       authMode: 'oauth',
       credentialSource: 'oauth',
     });
-    loadCanopyCloudEntitlements.mockResolvedValue(
-      entitlementsWith({ status: 'reported', access: 'needs_purchase' }),
-    );
+    loadCanopyCloudEntitlements
+      .mockReset()
+      .mockResolvedValue(
+        entitlementsWith({ status: 'reported', access: 'needs_purchase' }),
+      );
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
         openAuthenticatedPortalPage,
+        accountOrganizationSettings: { paymentHandoff },
         loadNativeAiCreditsAvailability,
         loadCanopyCloudAccount,
         loadCanopyCloudEntitlements,
@@ -961,18 +1112,19 @@ describe('unlockModels', () => {
       chatId: 'chat-1',
     });
 
-    const url = openedUrl();
-    expect(url.pathname).toBe('/account/billing');
-    const requestId = url.searchParams.get('requestId');
-    expect(isBillingRequestId(requestId)).toBe(true);
-    expect(Object.fromEntries(url.searchParams)).toEqual({
-      topUp: '1',
-      reason: 'unlock_models',
-      source: 'desktop',
-      modelId: 'some-model',
-      chatId: 'chat-1',
-      requestId,
+    const requestId = REQUEST_ID;
+    expect(paymentHandoff).toHaveBeenCalledWith({
+      accountId: 'acct_1',
+      owner: { kind: 'personal' },
+      intent: {
+        kind: 'top-up',
+        reason: 'unlock_models',
+        source: 'desktop',
+        modelId: 'some-model',
+        chatId: 'chat-1',
+      },
     });
+    expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
     expect(result).toEqual({ outcome: 'opened', requestId });
     const started = useModelUnlockIntentStore.getState();
     expect(started).toMatchObject({
@@ -986,6 +1138,69 @@ describe('unlockModels', () => {
       },
     });
     expect(typeof started.intent?.startedAt).toBe('number');
+  });
+
+  describe('starting balance (CAN-5160)', () => {
+    const balance = (credits: number): unknown => ({
+      connected: true,
+      email: 'buyer@example.com',
+      subscription: null,
+      balance: {
+        email: 'buyer@example.com',
+        credits,
+        eligible: credits > 0,
+        source: 'canopy',
+      },
+      noUdAccount: false,
+      error: null,
+    });
+
+    it('remembers the balance read before checkout opened', async () => {
+      const loadCanopyCloudAiCredits = jest.fn().mockResolvedValue(balance(0));
+      Object.assign(window.api, { loadCanopyCloudAiCredits });
+
+      await unlockModels(
+        { kind: 'work', projectId: 'p1', chatId: 'chat-1' },
+        { source: 'desktop', chatId: 'chat-1' },
+      );
+
+      expect(loadCanopyCloudAiCredits.mock.invocationCallOrder[0]).toBeLessThan(
+        paymentHandoff.mock.invocationCallOrder[0] ?? 0,
+      );
+      expect(
+        useModelUnlockIntentStore.getState().intent?.startingBalance,
+      ).toEqual({
+        credits: 0,
+        source: 'canopy',
+        email: 'buyer@example.com',
+        reportedGrant: false,
+      });
+    });
+
+    it('claims no starting balance when the read finished after checkout opened', async () => {
+      let answer: (value: unknown) => void = () => {};
+      const loadCanopyCloudAiCredits = jest.fn().mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+      Object.assign(window.api, { loadCanopyCloudAiCredits });
+      paymentHandoff.mockImplementation(async () => {
+        answer(balance(0));
+        await Promise.resolve();
+        return { ok: true, requestId: REQUEST_ID };
+      });
+
+      await unlockModels(
+        { kind: 'work', projectId: 'p1', chatId: 'chat-1' },
+        { source: 'desktop', chatId: 'chat-1' },
+      );
+
+      expect(useModelUnlockIntentStore.getState().intent).not.toBeNull();
+      expect(
+        useModelUnlockIntentStore.getState().intent?.startingBalance,
+      ).toBeUndefined();
+    });
   });
 
   it('tells an organization member who cannot fund the owner to contact an admin', async () => {
@@ -1016,11 +1231,11 @@ describe('unlockModels', () => {
     await expect(
       unlockModels(undefined, { source: 'desktop' }),
     ).resolves.toMatchObject({ outcome: 'opened' });
-    const url = openedUrl();
-    expect(`${url.pathname}${url.search}`).toContain(
-      organizationBillingPath(ORG_ID).split('?')[0],
-    );
-    expect(url.searchParams.get('reason')).toBe('unlock_models');
+    expect(paymentHandoff).toHaveBeenCalledWith({
+      accountId: 'acct_1',
+      owner: { kind: 'organization', organizationId: ORG_ID },
+      intent: { kind: 'top-up', reason: 'unlock_models', source: 'desktop' },
+    });
     expect(useModelUnlockIntentStore.getState().intent?.owner).toBe(
       `org:${ORG_ID}`,
     );
@@ -1046,13 +1261,13 @@ describe('unlockModels', () => {
   });
 
   it('reports failure and remembers nothing when no page opened', async () => {
-    openAuthenticatedPortalPage.mockResolvedValue(false);
+    paymentHandoff.mockResolvedValue({ ok: false, reason: 'failed' });
     await expect(
       unlockModels(undefined, { source: 'desktop', modelId: 'some-model' }),
     ).resolves.toEqual({ outcome: 'failed' });
     expect(useModelUnlockIntentStore.getState().intent).toBeNull();
 
-    openAuthenticatedPortalPage.mockRejectedValue(new Error('no bridge'));
+    paymentHandoff.mockRejectedValue(new Error('no bridge'));
     await expect(
       unlockModels(undefined, { source: 'desktop' }),
     ).resolves.toEqual({ outcome: 'failed' });
@@ -1066,7 +1281,9 @@ describe('unlockModels', () => {
         chatId: 'chat-1',
       }),
     ).resolves.toMatchObject({ outcome: 'opened' });
-    expect(openedUrl().searchParams.has('modelId')).toBe(false);
+    expect(paymentHandoff.mock.calls[0][0].intent).not.toHaveProperty(
+      'modelId',
+    );
     // The pending intent keeps the real value.
     expect(useModelUnlockIntentStore.getState().intent?.modelId).toBe(
       'has spaces',
@@ -1080,10 +1297,12 @@ describe('unlockModels', () => {
       authMode: 'guest',
       credentialSource: 'guest',
     });
-    let proceed: (() => void) | null = null;
-    const requestConnect = jest.fn((_context: unknown, next: () => void) => {
-      proceed = next;
-    });
+    const proceed: Array<() => void> = [];
+    const requestConnect = jest.fn<void, [context: unknown, next: () => void]>(
+      (...args): void => {
+        proceed.push(args[1]);
+      },
+    );
     useCloudConnectGateStore.setState({ requestConnect });
 
     await expect(
@@ -1103,37 +1322,453 @@ describe('unlockModels', () => {
     loadCanopyCloudEntitlements.mockResolvedValue(
       entitlementsWith({ status: 'reported', access: 'unlocked' }),
     );
-    expect(proceed).not.toBeNull();
-    proceed?.();
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'acct_1' },
+      authMode: 'oauth',
+    });
+    expect(proceed).toHaveLength(1);
+    proceed[0]?.();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+    expect(paymentHandoff).not.toHaveBeenCalled();
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
   });
-});
 
-describe('announceAiCreditsChanged (CAN-4061)', () => {
-  it('notifies account subscribers as a same-account refresh and opens a new episode', async () => {
-    const load = jest
-      .fn()
-      .mockResolvedValue(native({ personalEligible: true }));
-    Object.defineProperty(window, 'api', {
-      configurable: true,
-      writable: true,
-      value: { loadNativeAiCreditsAvailability: load },
+  it('binds a successful guest continuation to the newly signed-in account and owner', async () => {
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'guest' },
+      authMode: 'guest',
+    });
+    const continuations: Array<() => void> = [];
+    useCloudConnectGateStore.setState({
+      requestConnect: (_context, proceed) => {
+        continuations.push(proceed);
+      },
+    });
+    const apply = jest.fn();
+    await expect(
+      unlockModels(undefined, {
+        source: 'desktop',
+        modelId: 'some-model',
+        chatId: 'chat-1',
+        apply,
+      }),
+    ).resolves.toEqual({ outcome: 'sign-in' });
+    expect(paymentHandoff).not.toHaveBeenCalled();
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+    setOrganizationRole('OWNER');
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'signed-in-2' },
+    });
+    loadNativeAiCreditsAvailability.mockResolvedValue(
+      native({ ownerOrganization: { id: ORG_ID, name: 'Acme' } }),
+    );
+    loadCanopyCloudEntitlements.mockResolvedValue({
+      ...entitlementsWith(
+        { status: 'reported', access: 'needs_purchase' },
+        'account:signed-in-2',
+      ),
+      modelLibraryOwnerKey: `org:${ORG_ID}`,
+    });
+    continuations[0]();
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    expect(paymentHandoff).toHaveBeenCalledWith({
+      accountId: 'signed-in-2',
+      owner: { kind: 'organization', organizationId: ORG_ID },
+      intent: {
+        kind: 'top-up',
+        reason: 'unlock_models',
+        source: 'desktop',
+        modelId: 'some-model',
+        chatId: 'chat-1',
+      },
+    });
+    expect(useModelUnlockIntentStore.getState().intent).toMatchObject({
+      requestId: REQUEST_ID,
+      accountId: 'account:signed-in-2',
+      owner: `org:${ORG_ID}`,
+      modelId: 'some-model',
+      chatId: 'chat-1',
+    });
+    expect(apply).not.toHaveBeenCalled();
+    expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+  });
+
+  it('cancelling guest sign-in never starts checkout or a pending intent', async () => {
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'guest' },
+      authMode: 'guest',
+    });
+    const requestConnect = jest.fn();
+    useCloudConnectGateStore.setState({ requestConnect });
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'sign-in' });
+    expect(requestConnect).toHaveBeenCalledTimes(1);
+    // Cancellation does not invoke the saved continuation.
+    await Promise.resolve();
+    expect(paymentHandoff).not.toHaveBeenCalled();
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+    expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+  });
+  it.each([
+    { ok: false, reason: 'unavailable' },
+    { ok: false, reason: 'forbidden' },
+    { ok: false, reason: 'identity_changed' },
+    { ok: false, reason: 'browser_failed' },
+    true,
+    null,
+    { ok: true, requestId: 'bad id' },
+    { ok: false, reason: 'failed', requestId: REQUEST_ID },
+  ])(
+    'fails closed on an invalid or unsuccessful handoff: %j',
+    async (reply) => {
+      paymentHandoff.mockResolvedValue(reply);
+      const apply = jest.fn();
+      await expect(
+        unlockModels(undefined, { source: 'desktop', apply }),
+      ).resolves.toEqual({ outcome: 'failed' });
+      expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+      expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+    },
+  );
+
+  it('accepts old success without inventing correlation', async () => {
+    paymentHandoff.mockResolvedValue({ ok: true });
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'opened' });
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+  });
+
+  it.each([
+    null,
+    { hasApiKey: false, account: { id: 'acct_1' } },
+    { hasApiKey: true },
+  ])('requires a real account: %j', async (account) => {
+    // Without a connected account there is nobody to bill, so the click asks
+    // for a sign-in instead of opening checkout (CAN-4703).
+    loadCanopyCloudAccount.mockResolvedValue(account);
+    const requestConnect = jest.fn();
+    useCloudConnectGateStore.setState({ requestConnect });
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'sign-in' });
+    expect(requestConnect).toHaveBeenCalledTimes(1);
+    expect(paymentHandoff).not.toHaveBeenCalled();
+    expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+  });
+
+  it('fails on unreadable credentials', async () => {
+    loadCanopyCloudAccount.mockRejectedValue(new Error('unreadable'));
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'failed' });
+    expect(paymentHandoff).not.toHaveBeenCalled();
+  });
+
+  it.each(['account:other', null])(
+    'rejects a known model-library account mismatch: %s',
+    async (key) => {
+      loadCanopyCloudEntitlements.mockResolvedValue(
+        entitlementsWith({ status: 'reported', access: 'unlocked' }, key),
+      );
+      await expect(
+        unlockModels(undefined, { source: 'desktop' }),
+      ).resolves.toEqual({ outcome: 'failed' });
+      expect(paymentHandoff).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a known owner mismatch', async () => {
+    loadCanopyCloudEntitlements.mockResolvedValue({
+      ...entitlementsWith({ status: 'reported', access: 'unlocked' }),
+      modelLibraryOwnerKey: `org:${ORG_ID}`,
+    });
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'failed' });
+    expect(paymentHandoff).not.toHaveBeenCalled();
+  });
+
+  it('can open without an available library read, but cannot track it', async () => {
+    loadCanopyCloudEntitlements.mockRejectedValue(new Error('unavailable'));
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'opened' });
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+  });
+
+  it('does not track a library response that carries no access answer', async () => {
+    loadCanopyCloudEntitlements.mockResolvedValue(
+      entitlementsWith({ status: 'unavailable' }),
+    );
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'opened' });
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+  });
+
+  it('does not open or report already unlocked after an account event during the read', async () => {
+    loadCanopyCloudEntitlements.mockImplementation(() => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+      return Promise.resolve(
+        entitlementsWith({ status: 'reported', access: 'unlocked' }),
+      );
+    });
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'failed' });
+    expect(paymentHandoff).not.toHaveBeenCalled();
+  });
+
+  it('does not open after a navigation scope change', async () => {
+    const previous = useWorkspaceContextStore.getState().state;
+    loadCanopyCloudEntitlements.mockImplementation(() => {
+      useWorkspaceContextStore.setState({
+        state: {
+          ...previous,
+          context: { kind: 'organization', organizationId: ORG_ID },
+        },
+      });
+      return Promise.resolve(
+        entitlementsWith({ status: 'reported', access: 'needs_purchase' }),
+      );
+    });
+    try {
+      await expect(
+        unlockModels(undefined, { source: 'desktop' }),
+      ).resolves.toEqual({ outcome: 'failed' });
+      expect(paymentHandoff).not.toHaveBeenCalled();
+    } finally {
+      useWorkspaceContextStore.setState({ state: previous });
+    }
+  });
+
+  it.each(['owner', 'account', 'exception', 'epoch'])(
+    'keeps opened success without tracking after post-open %s change',
+    async (change) => {
+      paymentHandoff.mockImplementation(() => {
+        if (change === 'owner')
+          loadNativeAiCreditsAvailability.mockResolvedValue(
+            native({ ownerOrganization: { id: ORG_ID, name: 'Acme' } }),
+          );
+        if (change === 'account')
+          loadCanopyCloudAccount.mockResolvedValue({
+            hasApiKey: true,
+            account: { id: 'other' },
+          });
+        if (change === 'exception')
+          loadCanopyCloudAccount.mockRejectedValue(new Error('unreadable'));
+        if (change === 'epoch')
+          window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+        return Promise.resolve({ ok: true, requestId: REQUEST_ID });
+      });
+      await expect(
+        unlockModels(undefined, { source: 'desktop' }),
+      ).resolves.toEqual({ outcome: 'opened' });
+      expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+    },
+  );
+
+  it('does not replace an existing intent when a later attempt fails', async () => {
+    await unlockModels(undefined, { source: 'desktop', modelId: 'first' });
+    const previous = useModelUnlockIntentStore.getState().intent;
+    paymentHandoff.mockResolvedValue({ ok: false, reason: 'failed' });
+    await expect(
+      unlockModels(undefined, { source: 'desktop', modelId: 'second' }),
+    ).resolves.toEqual({ outcome: 'failed' });
+    expect(useModelUnlockIntentStore.getState().intent).toBe(previous);
+  });
+
+  it('cannot replace a newer intent with an out-of-order opening', async () => {
+    let completeFirst: (value: unknown) => void = () => {
+      throw new Error('First handoff not started');
+    };
+    const firstReply = new Promise((resolve) => {
+      completeFirst = resolve;
+    });
+    paymentHandoff.mockReturnValueOnce(firstReply);
+    const first = unlockModels(undefined, {
+      source: 'desktop',
+      modelId: 'first',
+    });
+    for (let i = 0; i < 30 && paymentHandoff.mock.calls.length === 0; i++)
+      await Promise.resolve();
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    await unlockModels(undefined, { source: 'desktop', modelId: 'second' });
+    completeFirst({
+      ok: true,
+      requestId: '22222222-2222-4222-8222-222222222222',
+    });
+    await expect(first).resolves.toEqual({ outcome: 'opened' });
+    expect(useModelUnlockIntentStore.getState().intent).toMatchObject({
+      requestId: REQUEST_ID,
+      modelId: 'second',
+    });
+  });
+
+  it('reports a failed guest continuation once, without retrying checkout', async () => {
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'guest' },
+      authMode: 'guest',
+    });
+    const continuations: Array<() => void> = [];
+    useCloudConnectGateStore.setState({
+      requestConnect: (_context, proceed) => {
+        continuations.push(proceed);
+      },
+    });
+    const toast = jest
+      .spyOn(useGitHubStore.getState(), 'addToast')
+      .mockImplementation(() => undefined);
+    await expect(
+      unlockModels(undefined, { source: 'desktop' }),
+    ).resolves.toEqual({ outcome: 'sign-in' });
+    expect(paymentHandoff).not.toHaveBeenCalled();
+    // Cancellation leaves the callback uncalled and opens nothing.
+    expect(toast).not.toHaveBeenCalled();
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'acct_1' },
+    });
+    paymentHandoff.mockRejectedValue(new Error('unavailable'));
+    continuations[0]();
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    expect(useModelUnlockIntentStore.getState().intent).toBeNull();
+    toast.mockRestore();
+  });
+
+  it('leaves a failed guest continuation to a caller that narrates it', async () => {
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'guest' },
+      authMode: 'guest',
+    });
+    const continuations: Array<() => void> = [];
+    useCloudConnectGateStore.setState({
+      requestConnect: (_context, proceed) => {
+        continuations.push(proceed);
+      },
+    });
+    const toast = jest
+      .spyOn(useGitHubStore.getState(), 'addToast')
+      .mockImplementation(() => undefined);
+    const onResumed = jest.fn();
+    await unlockModels(undefined, { source: 'desktop', onResumed });
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'acct_1' },
+    });
+    paymentHandoff.mockRejectedValue(new Error('unavailable'));
+    continuations[0]();
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    expect(onResumed).toHaveBeenCalledWith({ outcome: 'failed' });
+    expect(toast).not.toHaveBeenCalled();
+    toast.mockRestore();
+  });
+
+  it('sends a visitor with no account through the sign-in gate too', async () => {
+    // No credential cannot buy either: checkout would fail closed and strand
+    // the visitor on a browser error instead of a sign-in.
+    loadCanopyCloudAccount.mockResolvedValue(null);
+    const requestConnect = jest.fn();
+    useCloudConnectGateStore.setState({ requestConnect });
+
+    await expect(
+      unlockModels(undefined, { source: 'desktop', modelId: 'some-model' }),
+    ).resolves.toEqual({ outcome: 'sign-in' });
+    expect(requestConnect).toHaveBeenCalledTimes(1);
+    expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+  });
+
+  it('opens checkout straight after sign-in and reports it to the caller', async () => {
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'guest_1' },
+      authMode: 'guest',
+      credentialSource: 'guest',
+    });
+    const proceed: Array<() => void> = [];
+    const requestConnect = jest.fn((_context: unknown, next: () => void) => {
+      proceed.push(next);
+    });
+    useCloudConnectGateStore.setState({ requestConnect });
+    const onResumed = jest.fn();
+
+    await unlockModels(undefined, {
+      source: 'desktop',
+      modelId: 'some-model',
+      onResumed,
+    });
+    expect(onResumed).not.toHaveBeenCalled();
+
+    // Signed in: a real account that still needs the purchase.
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'acct_1' },
+      authMode: 'oauth',
+      credentialSource: 'oauth',
+    });
+    proceed[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    expect(paymentHandoff.mock.calls[0]?.[0]).toMatchObject({
+      accountId: 'acct_1',
+      intent: { reason: 'unlock_models' },
+    });
+    expect(onResumed).toHaveBeenCalledWith({
+      outcome: 'opened',
+      requestId: REQUEST_ID,
+    });
+  });
+
+  it('joins the post-sign-in availability read instead of superseding it', async () => {
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'guest_1' },
+      authMode: 'guest',
+      credentialSource: 'guest',
+    });
+    const proceed: Array<() => void> = [];
+    useCloudConnectGateStore.setState({
+      requestConnect: jest.fn((_context: unknown, next: () => void) => {
+        proceed.push(next);
+      }),
+    });
+    await unlockModels(undefined, { source: 'desktop', modelId: 'some-model' });
+
+    // The gate closes on sign-in: a new episode, and the recovery modal
+    // re-reads in it before the resumed checkout runs.
+    loadCanopyCloudAccount.mockResolvedValue({
+      hasApiKey: true,
+      account: { id: 'acct_1' },
+      authMode: 'oauth',
+      credentialSource: 'oauth',
     });
     invalidateSharedAiCreditsRead();
-    await readSharedAiCreditsAvailability();
-    const reasons: string[] = [];
-    const record = (event: Event): void => {
-      reasons.push(readCanopyCloudAccountChangeReason(event));
-    };
-    window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, record);
+    const modalRead = readSharedAiCreditsAvailability();
+    proceed[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    announceAiCreditsChanged();
-    await readSharedAiCreditsAvailability();
-
-    window.removeEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, record);
-    expect(reasons).toEqual(['same-account-refresh']);
-    // Billing subscribers still see the change: the retained answer is gone.
-    expect(load).toHaveBeenCalledTimes(2);
+    expect(paymentHandoff).toHaveBeenCalledTimes(1);
+    // A fresh read here would retract the modal's answer to `null`, which it
+    // shows as "we couldn't check your account" over an open checkout.
+    await expect(modalRead).resolves.not.toBeNull();
+    // The modal's read, joined by checkout, then the owner re-read that
+    // follows the opened checkout. A superseding first read would add a third.
+    expect(loadNativeAiCreditsAvailability).toHaveBeenCalledTimes(2);
   });
 });

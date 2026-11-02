@@ -79,13 +79,10 @@ jest.mock('../lib/code-graph-worktree-fingerprint', () => ({
 }));
 
 const mockFingerprintCustomLanguageInputs = jest.fn();
-jest.mock(
-  '@canopy/desktop-shared/node/code-graph/languages/custom-config',
-  () => ({
-    fingerprintCustomLanguageInputs: (...args: unknown[]): unknown =>
-      mockFingerprintCustomLanguageInputs(...args),
-  }),
-);
+jest.mock('@canopy/code-graph/languages/custom-config', () => ({
+  fingerprintCustomLanguageInputs: (...args: unknown[]): unknown =>
+    mockFingerprintCustomLanguageInputs(...args),
+}));
 
 const mockReadWorkspaceConfig = jest.fn();
 jest.mock('../lib/workspace-persistence', () => ({

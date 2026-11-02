@@ -23,7 +23,6 @@ import { brandText } from '@/lib/brand';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { completeOnboardingSuggestionDurably } from '@/components/home/onboarding-suggestions/completionWriter';
 import { ImportedCursorRulesOffer } from '@/components/repo-rules/ImportedCursorRulesOffer';
 import { openRepoRulesModal } from '@/stores/repoRulesModalStore';
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
@@ -31,6 +30,11 @@ import {
   captureProjectImportSubmission,
   openImportedProject,
 } from '@/lib/importedProjectNavigation';
+import {
+  startProjectImportSubmission,
+  UNKNOWN_IMPORT_SCAN,
+} from '@/lib/projectImportTelemetry';
+import type { ImportProjectsSource } from '@/stores/importProjectsModalStore';
 import {
   CODE_CHAT_DESTINATION_NOTE,
   CODE_PROJECT_LABEL,
@@ -64,6 +68,8 @@ export interface ImportProjectsPanelProps {
   onSkip: () => void;
   onDone: () => void;
   onPhaseChange?: (phase: ImportProjectsPhase) => void;
+  /** Where the hosting modal was opened from, for import telemetry. */
+  modalEntry?: ImportProjectsSource;
 }
 
 interface SelectionState {
@@ -188,6 +194,7 @@ export function ImportProjectsPanel({
   onSkip,
   onDone,
   onPhaseChange,
+  modalEntry,
 }: ImportProjectsPanelProps): JSX.Element {
   const scopingContext = useSidebarScopingContext();
   const [phase, setPhaseState] = useState<ImportProjectsPhase>('scanning');
@@ -208,6 +215,10 @@ export function ImportProjectsPanel({
   const [pluginsError, setPluginsError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const scanRequestRef = useRef(0);
+  // Telemetry only: this opening's entry, and whether a folder was picked.
+  const [entry] = useState(modalEntry);
+  const pickedFolderRef = useRef(false);
+  const importing = useRef(false);
 
   const setPhase = useCallback(
     (next: ImportProjectsPhase): void => {
@@ -217,18 +228,10 @@ export function ImportProjectsPanel({
     [onPhaseChange],
   );
 
-  // Leaving by choice resolves the Getting started entry: Skip for now
-  // means the user has seen what can be brought in and passed on it, and
-  // Done means they are finished with the flow whatever it added. Two exits
-  // leave the entry pending, since completion is permanent (Settings
-  // restores dismissals only): closing the dialog without choosing, and
-  // Skip for now after a failed scan, where the user has seen nothing yet.
   const skipFlow = useCallback((): void => {
-    completeOnboardingSuggestionDurably('import-projects', 'skipped');
     onSkip();
   }, [onSkip]);
   const finishFlow = useCallback((): void => {
-    completeOnboardingSuggestionDurably('import-projects', 'finished');
     onDone();
   }, [onDone]);
 
@@ -333,6 +336,7 @@ export function ImportProjectsPanel({
   const pickFolder = async (): Promise<void> => {
     const folder = await window.api.externalProjects.pickFolder();
     if (!folder || !mountedRef.current) return;
+    pickedFolderRef.current = true;
     const nextRoots = customRoots.includes(folder)
       ? customRoots
       : [...customRoots, folder];
@@ -341,8 +345,17 @@ export function ImportProjectsPanel({
   };
 
   const runImport = async (candidateIds: string[]): Promise<void> => {
-    if (!scan || candidateIds.length === 0) return;
+    if (!scan || candidateIds.length === 0 || importing.current) return;
+    importing.current = true;
     const submission = captureProjectImportSubmission();
+    const tracking = startProjectImportSubmission({
+      surface: { source: 'import_modal', modalEntry: entry },
+      scan: scan
+        ? { kind: 'completed', scan, found: eligible }
+        : UNKNOWN_IMPORT_SCAN,
+      selectedIds: candidateIds,
+      pickedFolder: pickedFolderRef.current,
+    });
     setPhase('importing');
     setProgress(null);
     setError(null);
@@ -356,11 +369,15 @@ export function ImportProjectsPanel({
         })),
       });
     } catch (importError) {
+      tracking.fail();
       if (!mountedRef.current) return;
       setError(extractIpcErrorMessage(importError));
       setPhase('error');
       return;
+    } finally {
+      importing.current = false;
     }
+    tracking.settle(response);
 
     // A retry only carries the retried ids. Record the import response before
     // follow-through so a reload or navigation failure cannot hide successes
@@ -386,15 +403,9 @@ export function ImportProjectsPanel({
 
     // Durable follow-through must not depend on this panel still being
     // mounted, since the wizard can move on while the import is in flight.
-    const imported = response.results.some(
-      (result) => result.status === 'imported',
-    );
     const firstImported = response.results.find(
       (result) => result.status === 'imported' && result.workspaceId,
     );
-    if (imported) {
-      completeOnboardingSuggestionDurably('import-projects', 'imported');
-    }
     try {
       await useProjectsStore.getState().loadProjects({ silent: true });
       if (firstImported?.workspaceId) {
@@ -536,8 +547,8 @@ export function ImportProjectsPanel({
           data-testid="import-projects-progress"
         >
           <div
-            className="h-full bg-accent transition-[width]"
-            style={{ width: `${percent}%` }}
+            className="h-full w-full bg-accent transition-[translate]"
+            style={{ translate: `${percent - 100}%` }}
           />
         </div>
         <p className="text-xs fg-secondary">{detail}…</p>

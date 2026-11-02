@@ -1,4 +1,8 @@
-import type { ApprovalMode } from '@canopy/desktop-shared/types';
+import type { ApprovalMode, ApprovalRule } from '@canopy/desktop-shared/types';
+import {
+  limitAllowRules,
+  narrowSessionApprovalRules,
+} from '@canopy/desktop-shared/lib/send-approval-narrowing';
 
 const liveApprovalModeBySession = new Map<string, ApprovalMode>();
 const approvalModeOperationsBySession = new Map<string, Promise<void>>();
@@ -173,6 +177,66 @@ export function boundingApprovalMode(
   return pending !== undefined && isApprovalModeDowngrade(bound, pending)
     ? pending
     : bound;
+}
+
+/** What a chat's live provider session applies; each part undefined when unknown. */
+export interface AppliedApproval {
+  mode: ApprovalMode | undefined;
+  rules: readonly ApprovalRule[] | undefined;
+}
+
+type AppliedApprovalReader = (
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+) => AppliedApproval | undefined;
+
+let readAppliedApproval: AppliedApprovalReader = () => undefined;
+
+/**
+ * Sets where the caller bounds below read what a chat's live provider
+ * session has applied. The session manager sets it as it loads; until then
+ * no chat has a session.
+ */
+export function setAppliedApprovalReader(reader: AppliedApprovalReader): void {
+  readAppliedApproval = reader;
+}
+
+/**
+ * The loosest mode a calling chat's agent may act with now:
+ * `boundingApprovalMode`, clamped to the mode the chat's live session has
+ * applied when it reports one. The registry holds the chat's own mode, so an
+ * admitted agent turn's cap does not outlast that turn, while the turn's
+ * agent stays within the cap (CAN-4821).
+ */
+export function callerBoundingApprovalMode(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  mode: ApprovalMode,
+): ApprovalMode {
+  const bound = boundingApprovalMode(projectId, worktreeId, chatId, mode);
+  const applied = readAppliedApproval(projectId, worktreeId, chatId)?.mode;
+  return applied !== undefined && isApprovalModeDowngrade(bound, applied)
+    ? applied
+    : bound;
+}
+
+/**
+ * A calling chat's session rules `rules`, narrowed to the rules its live
+ * session applies when it reports them: only the allow rules both hold, and
+ * the deny rules of either. Never wider than `rules` (CAN-4821).
+ */
+export function callerBoundingSessionApprovalRules(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  rules: readonly ApprovalRule[],
+): readonly ApprovalRule[] {
+  const applied = readAppliedApproval(projectId, worktreeId, chatId)?.rules;
+  return applied
+    ? narrowSessionApprovalRules(limitAllowRules(rules, applied), applied)
+    : rules;
 }
 
 /**

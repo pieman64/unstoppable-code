@@ -260,6 +260,8 @@ export function acceptSharedContainer(
   organizationId: string | undefined,
   now: () => Date = () => new Date(),
   access?: SharedContainerAccess,
+  /** Called only after a new consent is durable, while the writer is held. */
+  onAccepted?: () => void,
 ): Promise<SharedContainerAcceptedIdentity> {
   return enqueue(async () => {
     const file = await read();
@@ -290,6 +292,11 @@ export function acceptSharedContainer(
       version: 1,
       accepted: { ...file.accepted, [containerId]: record },
     });
+    try {
+      onAccepted?.();
+    } catch {
+      /* Observers cannot undo consent. */
+    }
     return identityOf(record);
   });
 }

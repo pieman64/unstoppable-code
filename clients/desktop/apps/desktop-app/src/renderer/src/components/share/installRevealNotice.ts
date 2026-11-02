@@ -1,3 +1,4 @@
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import type { PublicShareInstalledTarget } from './usePublicShareLanding';
 
 /**
@@ -13,7 +14,7 @@ const ENTITY_TITLE: Readonly<
 > = {
   skill: 'Skill',
   plugin: 'Plugin',
-  pipeline: 'Pipeline',
+  pipeline: WORKFLOW_ITEM_LABEL,
   agent: 'Agent',
   collection: 'Collection',
   workspace: 'Project',

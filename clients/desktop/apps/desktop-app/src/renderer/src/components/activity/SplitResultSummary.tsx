@@ -46,7 +46,7 @@ export function SplitResultSummary({ map }: { map: SplitPrMap }): JSX.Element {
               href={map.integrationPrUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="fg-primary/80 transition hover:fg-primary"
+              className="fg-primary/80 transition-colors hover:fg-primary"
             >
               Integration PR #{map.integrationPrNumber}
             </a>{' '}
@@ -58,7 +58,7 @@ export function SplitResultSummary({ map }: { map: SplitPrMap }): JSX.Element {
           href={map.originalPrUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="fg-primary/80 transition hover:fg-primary"
+          className="fg-primary/80 transition-colors hover:fg-primary"
         >
           Original PR #{map.originalPrNumber}
         </a>
@@ -85,7 +85,7 @@ export function SplitResultSummary({ map }: { map: SplitPrMap }): JSX.Element {
                   href={child.prUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="shrink-0 fg-secondary transition hover:fg-primary"
+                  className="shrink-0 fg-secondary transition-colors hover:fg-primary"
                 >
                   #{child.prNumber}
                 </a>

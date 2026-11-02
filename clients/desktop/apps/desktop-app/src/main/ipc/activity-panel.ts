@@ -12,6 +12,7 @@ import {
   type ActivityChangedFilesResponse,
   type ActivityFileDiffRequest,
   type ActivityFileDiffResponse,
+  type ActivityLiveBgTasksChangedEvent,
   type ActivityLiveBgTasksRequest,
   type ActivityLiveBgTasksResponse,
   type ActivityReadFullOutputRequest,
@@ -37,7 +38,6 @@ import { revalidateDefaultBranchInBackground } from '../lib/git-default-branch';
 import {
   fetchOrigin,
   getChangedFilesList,
-  getCommittedFilesList,
   getFileDiffUncommitted,
   getFileDiffCommitted,
   getFileDiffCombined,
@@ -46,7 +46,6 @@ import {
   type FileDiffContent,
 } from '../lib/git';
 import { startOutputPolling, stopOutputPolling } from '../lib/bg-output-poller';
-import { recordBackgroundProcessChatEvent } from '../portal/background-process-tracker';
 import {
   deriveWorkflowRunStatePath,
   deriveWorkflowAgentTranscriptPath,
@@ -64,10 +63,14 @@ import {
   type WorkflowLiveAgentDetails,
 } from '../lib/workflow-run-reader';
 import {
+  getLiveBackgroundTasksForChat,
   getLiveBackgroundTaskSnapshot,
   isSessionUnavailableForTaskStopError,
+  subscribeLiveBackgroundTasks,
   stopTaskForSession,
 } from '../agents/session-manager';
+import { parseDelegationSessionKey } from '../agents/delegation/activity';
+import { sendToAllWindows } from '../lib/window-send';
 import { emitSessionEndedBackgroundTaskNotification } from '../lib/session-ended-background-tasks';
 import { validateId } from '../lib/validation';
 import { isPathInside } from '../lib/path-safety';
@@ -78,10 +81,49 @@ import { registerIpcHandler } from './register';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
 import { resolveSharedContainerViewerReadRoots } from '../shared-containers/read/viewer-root';
 import { assertWritableScope } from '../lib/read-only-scope';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
+import {
+  listCommittedChangedFiles,
+  listUncommittedChangedFiles,
+} from '../canopy-runtime/worker-git-dispatch';
+import type { DesktopIpcCallerResolver } from './file-tree';
 
 const SAFE_TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MAX_FULL_OUTPUT_BYTES = 1024 * 1024;
 const MAX_FULL_OUTPUT_LINES = 5000;
+let unsubscribeLiveBackgroundTasks: (() => void) | null = null;
+const pendingLiveBackgroundTaskKeys = new Set<string>();
+
+function flushLiveBackgroundTaskChanges(): void {
+  const sessionKeys = Array.from(pendingLiveBackgroundTaskKeys);
+  pendingLiveBackgroundTaskKeys.clear();
+
+  for (const sessionKey of sessionKeys) {
+    const chat = parseDelegationSessionKey(sessionKey);
+    if (!chat) continue;
+
+    const tasks = getLiveBackgroundTasksForChat(
+      chat.projectId,
+      chat.worktreeId,
+      chat.chatId,
+    );
+    const event: ActivityLiveBgTasksChangedEvent = {
+      ...chat,
+      sessionActive: tasks !== undefined,
+      liveTasks: tasks ?? [],
+    };
+
+    try {
+      sendToAllWindows(IPC_CHANNELS.activityLiveBgTasksChanged, event);
+    } catch (error: unknown) {
+      logMainProcessError(
+        'Live background-task change broadcast failed',
+        error,
+      );
+    }
+  }
+}
 
 function validateTaskId(value: string, label: string): void {
   if (!value || !SAFE_TASK_ID_RE.test(value)) {
@@ -384,6 +426,8 @@ async function waitForFetchHeadStart(fetch: Promise<void>): Promise<void> {
 }
 
 async function getWorkspaceChangedFiles(
+  dispatcher: WorkerGitDispatcher,
+  caller: CanopyCallerDescriptor,
   workspaceId: string,
   worktreeId: string,
 ): Promise<ActivityChangedFilesResponse> {
@@ -408,10 +452,18 @@ async function getWorkspaceChangedFiles(
         repoPath: entry.repoPath,
         allowRemoteLookup: false,
       });
+      const target = {
+        projectId: workspaceId,
+        worktreeId,
+        repoId: entry.repoId,
+        repoPath: entry.repoPath,
+      };
       const [uncommitted, committed] = await Promise.all([
-        getChangedFilesList(entry.repoPath).catch(() => []),
-        getCommittedFilesList(
-          entry.repoPath,
+        listUncommittedChangedFiles(dispatcher, caller, target).catch(() => []),
+        listCommittedChangedFiles(
+          dispatcher,
+          caller,
+          target,
           effectiveBaseBranch.branch ?? undefined,
         ).catch(() => []),
       ]);
@@ -479,11 +531,27 @@ async function getViewerChangedFiles(
 
 export function registerActivityPanelHandlers(
   getWindow: () => BrowserWindow | null,
+  runtime: {
+    dispatcher: WorkerGitDispatcher;
+    resolveCaller: DesktopIpcCallerResolver;
+  },
 ): void {
+  unsubscribeLiveBackgroundTasks?.();
+  unsubscribeLiveBackgroundTasks = subscribeLiveBackgroundTasks(
+    (sessionKey): void => {
+      const wasEmpty = pendingLiveBackgroundTaskKeys.size === 0;
+      pendingLiveBackgroundTaskKeys.add(sessionKey);
+      if (wasEmpty) {
+        // This batches provider bursts only; renderer ordering against chat events is not guaranteed or required.
+        queueMicrotask(flushLiveBackgroundTaskChanges);
+      }
+    },
+  );
+
   registerIpcHandler<
     [ActivityChangedFilesRequest],
     ActivityChangedFilesResponse
-  >(IPC_CHANNELS.activityChangedFiles, async (_event, request) => {
+  >(IPC_CHANNELS.activityChangedFiles, async (event, request) => {
     validateId(request.projectId, 'projectId');
     validateId(request.worktreeId, 'worktreeId');
 
@@ -502,7 +570,12 @@ export function registerActivityPanelHandlers(
     }
 
     if (isMultiRepoWorkspace(request.projectId)) {
-      return getWorkspaceChangedFiles(request.projectId, request.worktreeId);
+      return getWorkspaceChangedFiles(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request.projectId,
+        request.worktreeId,
+      );
     }
 
     const worktreePath = resolveWorktreeCwd(
@@ -521,10 +594,19 @@ export function registerActivityPanelHandlers(
       repoPath: worktreePath,
       allowRemoteLookup: false,
     });
+    const caller = runtime.resolveCaller(event);
+    const target = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+      repoId: WORKSPACE_ROOT_REPO_ID,
+      repoPath: worktreePath,
+    };
     const [uncommitted, committed] = await Promise.all([
-      getChangedFilesList(worktreePath),
-      getCommittedFilesList(
-        worktreePath,
+      listUncommittedChangedFiles(runtime.dispatcher, caller, target),
+      listCommittedChangedFiles(
+        runtime.dispatcher,
+        caller,
+        target,
         effectiveBaseBranch.branch ?? undefined,
       ).catch(() => []),
     ]);
@@ -764,11 +846,10 @@ export function registerActivityPanelHandlers(
     validateId(request.chatId, 'chatId');
     validateTaskId(request.taskId, 'taskId');
 
-    // Stopping a task that is already dead is a success, not a failure: the
-    // card the user just pressed Stop on has to clear either way. Neither
-    // shape will ever produce a provider terminal notification, so Canopy
-    // emits a synthetic one. Genuine provider failures still
-    // reject.
+    // A task that is already dead is a success, not a failure. It will not
+    // produce a provider terminal notification, so Canopy emits a synthetic
+    // one. A running task is reconciled only by the provider notification.
+    // Genuine provider failures still reject.
     let deadTaskOutcome: 'none' | 'session-ended' | 'already-finished';
     try {
       deadTaskOutcome =
@@ -807,24 +888,6 @@ export function registerActivityPanelHandlers(
       return deadTaskOutcome;
     }
 
-    try {
-      recordBackgroundProcessChatEvent(
-        {
-          workspaceLocalId: request.projectId,
-          worktreeLocalId: request.worktreeId,
-          chatId: request.chatId,
-        },
-        {
-          type: 'system',
-          subtype: 'task_notification',
-          task_id: request.taskId,
-          status: 'stopped',
-        },
-      );
-    } catch (error: unknown) {
-      // The tracker is a side channel; it must never block the stop path.
-      logMainProcessError('Background-process tracking failed', error);
-    }
     return 'stopped';
   });
 

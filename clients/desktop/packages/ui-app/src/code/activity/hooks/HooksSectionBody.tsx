@@ -4,6 +4,7 @@ import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
   HeaderActionButton,
   AnsiOutput,
+  Button,
   CompletedRunsDisclosure,
   ExecutionActionButton,
   LoadingSpinner,
@@ -15,12 +16,12 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   ChatIcon,
-  ChevronRightMediumIcon,
   ExternalIcon,
   PipelineIcon,
   TerminalBorderedIcon,
   TerminalIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { PAUSED_HOOK_LABEL_CLASSES } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -148,19 +149,6 @@ function toggle(previous: Set<string>, value: string): Set<string> {
   return next;
 }
 
-function EnlargeIcon(): JSX.Element {
-  return <ExternalIcon size={16} />;
-}
-
-function ChevronIcon({ open }: { open: boolean }): JSX.Element {
-  return (
-    <ChevronRightMediumIcon
-      size={16}
-      className={`transition-transform ${open ? 'rotate-90' : ''}`}
-    />
-  );
-}
-
 export function PauseToggleButton({
   paused,
   onClick,
@@ -210,14 +198,16 @@ function HookLiveOutput({
       spinner={<LoadingSpinner />}
       enlargeButton={
         onEnlarge && !interactive ? (
-          <button
+          <Button
             type="button"
+            variant="ghost-accent"
+            size="compact"
+            iconOnly
             onClick={onEnlarge}
-            className="focus-ring rounded p-0.5 fg-accent/70 transition hover:fg-accent"
             aria-label="Enlarge output"
           >
-            <EnlargeIcon />
-          </button>
+            <ExternalIcon size={14} />
+          </Button>
         ) : undefined
       }
       body={
@@ -275,10 +265,10 @@ function HookCompletedRunCard({
             <button
               type="button"
               onClick={onEnlarge}
-              className={`focus-ring rounded p-0.5 transition ${buttonClass}`}
+              className={`focus-ring rounded p-0.5 transition-colors ${buttonClass}`}
               aria-label="Enlarge output"
             >
-              <EnlargeIcon />
+              <ExternalIcon size={14} />
             </button>
           )}
           <span className={`font-medium ${colorClass}`}>{run.label}</span>
@@ -509,7 +499,7 @@ export function HooksSectionBody({
                 className={
                   compact
                     ? `focus-ring flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} fg-primary`
-                    : 'focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.05]'
+                    : 'focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition-colors hover:bg-fg-primary/[0.05]'
                 }
               >
                 <ChevronIcon open={expanded} />

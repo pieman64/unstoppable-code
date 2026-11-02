@@ -1,26 +1,49 @@
+import { randomUUID } from 'node:crypto';
+import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
 import { clearPresentationTurn } from '../canopy-tools/presentation-state';
 import type { BrowserWindow } from 'electron';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
+import type { ChildToolLiveness } from '@canopy/agent-transcript';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import {
+  isStricterApprovalMode,
+  limitAllowRules,
+  sendDenyRulesBeyond,
+  sessionApprovalRulesWithin,
+} from '@canopy/desktop-shared/lib/send-approval-narrowing';
 import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import type { AgentProvider, AgentSession, AgentSessionOptions } from './types';
-import { buildChatSessionKey } from './session-key';
-import { getInheritedPluginDefaultsRevision } from '../plugins/plugin-defaults-revision';
+import {
+  buildChatSessionKey,
+  parseChatSessionKey as parseSessionKey,
+} from './session-key';
+import {
+  getInheritedPluginDefaultsRevision,
+  subscribePluginDefaultsRevision,
+} from '../plugins/plugin-defaults-revision';
 import type { CodexCompatibleInvocation } from './codex-session';
+import { sendToWindow } from '../lib/window-send';
 import {
   APP_ADVISOR_PROJECT_ID,
+  IPC_CHANNELS,
+  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
   resolveKnownModel,
   getExecutionHarnessForModel,
   getModelSource,
   type ActivityLiveBgTasksChatState,
   type AgentProviderType,
+  type ApprovalMode,
+  type ApprovalRule,
   type AssistantMode,
   type ChatActiveSessionInfo,
   type ChatContextUsageBreakdown,
+  type ChatIngestionLagEventData,
+  type ChatSendMessageRequest,
   type ChatModel,
   type ChatTabPluginSelections,
   type UsageLimitedChatEntry,
 } from '@canopy/desktop-shared/types';
+import type { ActivityLiveBgTask } from '@canopy/desktop-shared/types/activity-panel';
 import {
   isGatewayOnlyModel,
   resolveGatewayModelEntry,
@@ -30,7 +53,11 @@ import {
   cleanupChatSkillPluginDir,
   cleanupWorktreeChatPluginDirs,
 } from '../plugins/plugin-cleanup';
-import { rejectAllForSession } from '../mcp/pending-requests';
+import {
+  hasPendingRequestsForSession,
+  rejectAllForSession,
+} from '../mcp/pending-requests';
+import { hasPendingApprovalsForSession } from '../approvals/pending-approvals';
 import {
   flushAndStopOutputPollingForSession,
   stopAllOutputPolling,
@@ -38,7 +65,13 @@ import {
 import { emitSessionEndedBackgroundTaskNotification } from '../lib/session-ended-background-tasks';
 import { getObservabilityService } from '../observability';
 import { describeChatEventData } from '../lib/chat-event-description';
+import { wakeLockHolder, wakeLockHolderKey } from '@canopy/core-runtime';
 import { getWakeLockService } from '../power/wake-lock-service';
+import {
+  getChatTurnOwnership,
+  shouldHoldChatWake,
+  type ChatTurnOwnershipSnapshot,
+} from '../services/chat-turn-ownership';
 import {
   activeDelegationCount,
   hasLiveDelegations,
@@ -68,6 +101,7 @@ import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import {
   captureSessionWorkOwner,
   peekSessionWorkOwner,
+  resolveBackgroundWorkOwner,
   resolveEnforcementOwner,
   resolveSessionWorkOwner,
 } from './work-owner';
@@ -78,7 +112,13 @@ import {
   withWorkspaceTargetRuntimeStartReservation,
 } from '../lib/workspace-target-exclusion';
 import { isAgentContinuationEvent } from '../lib/chat-turn-audit';
+import {
+  classifyProviderRunEvent,
+  type ProviderRunDescriptor,
+} from '../lib/provider-run-reconciliation';
 import { isE2eBuild } from '../lib/e2e-gate';
+import { notifySteeringEligibilityChanged } from './steering-eligibility-events';
+import { setAppliedApprovalReader } from '../approvals/live-approval-modes';
 
 export { isAgentContinuationEvent } from '../lib/chat-turn-audit';
 
@@ -149,36 +189,36 @@ function pluginSelectionsSignature(
   }).concat(revisionSuffix);
 }
 
-/**
- * Parse a session key back into its project / worktree / chat identifiers.
- *
- * The session map is keyed by the literal `${projectId}/${worktreeId}/${chatId}`
- * string. This is the single authoritative parser for that shape — do not
- * `.split('/')` on session keys outside of this helper. Call sites that already
- * hold the three identifiers separately should pass them directly instead of
- * re-deriving them from the key.
- */
-function parseSessionKey(key: string): {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-} {
-  const parts = key.split('/');
-  if (parts.length !== 3) {
-    throw new Error(`Invalid session key: ${key}`);
-  }
-
-  const [projectId, worktreeId, chatId] = parts;
-  if (!projectId || !worktreeId || !chatId) {
-    throw new Error(`Invalid session key: ${key}`);
-  }
-  return { projectId, worktreeId, chatId };
+interface LiveBackgroundTaskUsage {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
 }
 
 /** Metadata Canopy retains for one live provider background task. */
 interface LiveBackgroundTask {
   toolUseId?: string;
   description?: string;
+  taskType?: string;
+  workflowName?: string;
+  spawnDepth?: number;
+  isBackgrounded?: boolean;
+  status?: 'pending' | 'running' | 'paused';
+  phase?: string;
+  summary?: string;
+  usage?: LiveBackgroundTaskUsage;
+  stoppable?: false;
+}
+
+export interface CodexLiveBackgroundTaskInput {
+  taskId: string;
+  taskType: 'local_agent' | 'local_bash'; // a Codex child is an agent, a terminal is a shell
+  description?: string;
+  toolUseId?: string;
+}
+
+export interface CodexBackgroundOwnerToken {
+  readonly scope: { projectId: string; worktreeId: string; chatId: string };
 }
 
 export interface ClaudeNativeSubagentTask {
@@ -187,15 +227,111 @@ export interface ClaudeNativeSubagentTask {
 }
 
 /**
+ * Session crons (CronCreate, /loop, ScheduleWakeup) that the Claude CLI keeps
+ * inside its process and fires as new turns. The Stop hook's `session_crons`
+ * list is authoritative; cron tool uses since the last list count as pending.
+ */
+interface ClaudeSessionCrons {
+  /** Cron tool uses that no Stop-hook list has accounted for yet. */
+  unconfirmedToolUseIds: Set<string>;
+  /** Tool uses a list already accounted for; a late stream copy is ignored. */
+  confirmedToolUseIds: Set<string>;
+  /** Entries in the last Stop-hook list. */
+  scheduledCount: number;
+  /** A Stop hook arrived without a readable list. */
+  listUnreadable: boolean;
+}
+
+/**
  * Everything the live background-task reducer touches. Narrower than
  * {@link ActiveSession} on purpose: the deterministic E2E chat-event ingress
  * has no provider session to attach state to, and this lets it reduce the
  * identical event stream into its own holder instead of forking the rules.
  */
-interface LiveBackgroundTaskOwner {
+interface LiveBackgroundTaskStateOwner {
   liveBackgroundTasks: Map<string, LiveBackgroundTask>;
   foregroundTaskMetadata: Map<string, LiveBackgroundTask>;
   activeBackgroundTaskIds?: Set<string>;
+  unknownTaskTypesLogged: Set<string>;
+}
+
+/** Current session or E2E ingress owner and its renderer-safe live tasks. */
+export interface LiveBackgroundTaskOwner {
+  sessionKey: string;
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+  liveTasks: ActivityLiveBgTask[];
+}
+
+/** Why a session's live background tasks stopped, for the stop record. */
+export type SessionStopCause =
+  | 'stop'
+  | 'recycle'
+  | 'archive'
+  | 'crash'
+  | 'external_signal'
+  | 'session_ended';
+
+/**
+ * Why a session must be recreated at its next turn. `stop`: the provider query
+ * was aborted and cannot take another turn. `approval`: the live approval
+ * registry already applies the change, so only launch flags lag. Every other
+ * reason (and `unspecified`) changes what the session runs with.
+ */
+export type SessionRecreateReason =
+  | 'stop'
+  | 'approval'
+  | 'plan'
+  | 'plugins'
+  | 'managed_delegation'
+  | 'codex_preferences'
+  | 'account'
+  | 'organization'
+  | 'unspecified';
+
+export type SessionTurnSettings = Pick<
+  ChatSendMessageRequest,
+  | 'model'
+  | 'modelSelectionMode'
+  | 'providerType'
+  | 'executionHarness'
+  | 'pluginSelections'
+  | 'planMode'
+  | 'modelConfig'
+  | 'thinkingLevel'
+  | 'approvalMode'
+  | 'sessionApprovalRules'
+  | 'codexProposalMode'
+  | 'codexFastModeEnabled'
+  | 'deferredToolsAllowed'
+  | 'selectedRepoId'
+>;
+
+function cloneSessionTurnSettings(
+  settings: SessionTurnSettings,
+): SessionTurnSettings {
+  return {
+    model: settings.model,
+    modelSelectionMode: settings.modelSelectionMode,
+    providerType: settings.providerType,
+    executionHarness: settings.executionHarness,
+    pluginSelections: settings.pluginSelections
+      ? structuredClone(settings.pluginSelections)
+      : undefined,
+    planMode: settings.planMode,
+    modelConfig: settings.modelConfig ? { ...settings.modelConfig } : undefined,
+    thinkingLevel: settings.thinkingLevel,
+    approvalMode: settings.approvalMode,
+    sessionApprovalRules: settings.sessionApprovalRules?.map((rule) => ({
+      ...rule,
+      target: { ...rule.target },
+    })),
+    codexProposalMode: settings.codexProposalMode,
+    codexFastModeEnabled: settings.codexFastModeEnabled,
+    deferredToolsAllowed: settings.deferredToolsAllowed,
+    selectedRepoId: settings.selectedRepoId,
+  };
 }
 
 interface ActiveSession {
@@ -235,14 +371,22 @@ interface ActiveSession {
    */
   accountProxyRouted?: boolean;
   recreateOnNextTurn: boolean;
+  /** Why `recreateOnNextTurn` is set; empty or absent reads as `unspecified`. */
+  recreateReasons?: ReadonlySet<SessionRecreateReason>;
   managedDelegationSurface?: AgentSessionOptions['managedDelegationSurface'];
   managedDelegationMode?: AgentSessionOptions['managedDelegationMode'];
+  /** Turn options captured at activation for dispatch orchestration overlays. */
+  turnSettings?: SessionTurnSettings;
   /** True while the session is actively processing a turn (between message dequeue and result/error event). */
   turnActive: boolean;
-  /** User message whose provider turn is currently active, when supplied. */
+  /**
+   * User message the provider dequeued for its current turn, when supplied.
+   * Exact-turn Stop reads canonical turn state first; this record covers only
+   * a chat canonical state has no turn for (see `providerTurnUserMessageId`).
+   */
   activeUserMessageId: string | undefined;
-  /** Avoid dispatching duplicate cancellation requests for the same active turn. */
-  activeTurnCancelRequested: boolean;
+  /** The user message whose stop was already requested, to avoid duplicates. */
+  cancelRequestedUserMessageId: string | undefined;
   /**
    * The root Codex turn that is currently allowed to resume after pausing for
    * user input. Binding the permission to both IDs prevents stale prior-turn or
@@ -253,10 +397,18 @@ interface ActiveSession {
   codexRootTurnId?: string;
   /** Task tool_use ids correlated to native subagent tasks on this query. */
   claudeNativeSubagentTasks: Map<string, ClaudeNativeSubagentTask>;
+  claudeSessionCrons: ClaudeSessionCrons;
   /** Receiver ids correlated to this root's Codex multi-agent items. */
   codexNativeSubagentThreadIds: Set<string>;
   /** Active child turns correlated to the receiver ids above. */
   codexNativeSubagentTurns: Map<string, string>;
+  /**
+   * Child thread turns running on this session's Codex client, keyed by
+   * thread id. Unlike the interrupt correlation above, an entry outlives the
+   * root turn that spawned the child: it ends only at the child's own
+   * terminal event, or when the client re-establishes its thread.
+   */
+  codexLiveNativeSubagentTurns: Map<string, string>;
   createdAt: number;
   lastActivityAt: number;
   turnStartedAt?: number;
@@ -265,25 +417,42 @@ interface ActiveSession {
   pendingMessageCount: number;
   activeBackgroundTaskIds: Set<string>;
   continuationToolUseIds: Set<string>;
+  /** Shell tools excluded by the finite-background heuristic (notably servers). */
+  nonBusyBackgroundToolUseIds: Set<string>;
   /**
    * Every background task the provider has reported as live for this session's
    * current CLI process, keyed by task id.
    *
    * Deliberately separate from `activeBackgroundTaskIds`, which holds only the
-   * finite background Bash continuations that drive wake-lock and turn-revival
-   * semantics. This set is the complete picture the activity panel needs, so it
+   * Workflow and finite background shell continuations. Busy guards also
+   * inspect non-ambient live tasks below. This set is the complete picture the
+   * activity panel needs, so it
    * also holds persistent services and tasks Canopy never correlated to a tool
    * use. Reset whenever the session's CLI process (re)starts, because
    * `background_tasks_changed` emits nothing at startup.
    */
   liveBackgroundTasks: Map<string, LiveBackgroundTask>;
+  /** Current Codex snapshot producer; identity gates delayed updates. */
+  codexBackgroundOwnerToken?: CodexBackgroundOwnerToken;
+  /** Last snapshot revision accepted from the current Codex owner. */
+  codexBackgroundOwnerRevision?: number;
+  /** Task ids in the shared live-task map owned by the current Codex producer. */
+  codexBackgroundTaskIds: Set<string>;
   /** Bounded correlation retained until a foreground task is promoted. */
   foregroundTaskMetadata: Map<string, LiveBackgroundTask>;
-  wakeLockHeld: boolean;
+  /** Task types are untrusted provider data; warn once per type and session. */
+  unknownTaskTypesLogged: Set<string>;
+  /** Why this session's provider process is ending; the first cause recorded wins. */
+  teardownCause?: SessionStopCause;
   lastEventType?: string;
   assistantMode: AssistantMode;
   toolProfileHash: string;
   codeGraphToolsAdvertised: boolean;
+  /**
+   * The session rule list the session was created with. Providers check
+   * approvals against this array and add the session's grants to it.
+   */
+  sessionApprovalRules?: ApprovalRule[];
 }
 
 interface CodexTurnIdentity {
@@ -292,6 +461,7 @@ interface CodexTurnIdentity {
 }
 
 export type ChatSessionActivityListener = () => void;
+export type LiveBackgroundTasksListener = (sessionKey: string) => void;
 
 export interface ChatTurnConcurrencySnapshot {
   activeTurns: number;
@@ -299,14 +469,39 @@ export interface ChatTurnConcurrencySnapshot {
 }
 
 const sessions = new Map<string, ActiveSession>();
+const codexBackgroundOwnerEntries = new WeakMap<
+  CodexBackgroundOwnerToken,
+  string
+>();
+setAppliedApprovalReader((projectId, worktreeId, chatId) => {
+  const session = sessions.get(
+    sessionKey(projectId, worktreeId, chatId),
+  )?.session;
+  return session
+    ? {
+        mode: session.getAppliedApprovalMode?.(),
+        rules: session.getAppliedApprovalRules?.(),
+      }
+    : undefined;
+});
 const providerAuthGenerations = new Map<AgentProviderType, number>();
 // Session recreation can follow a passive observation without withdrawing
 // the authority captured by delegates that are already doing work.
 const providerSessionAuthGenerations = new Map<AgentProviderType, number>();
 const chatSessionActivityListeners = new Set<ChatSessionActivityListener>();
+const liveBackgroundTasksListeners = new Set<LiveBackgroundTasksListener>();
 const SLOW_SESSION_PHASE_MS = 10_000;
 
+// Announce manager-owned identity, recreation, auth, and plugin revisions.
+// Routing-signature inputs have no change event, so those are not announced.
+subscribePluginDefaultsRevision(() => {
+  for (const key of Array.from(sessions.keys())) {
+    notifySteeringEligibilityChanged(key);
+  }
+});
+
 function notifyChatSessionActivityListeners(): void {
+  evaluateIdleSessionReleases();
   for (const listener of Array.from(chatSessionActivityListeners)) {
     try {
       listener();
@@ -320,10 +515,25 @@ function notifyChatSessionActivityListeners(): void {
   }
 }
 
+function notifyLiveBackgroundTasksListeners(key: string): void {
+  // Codex task snapshots change live tasks outside `recordSessionEvent`.
+  evaluateIdleSessionRelease(key);
+  for (const listener of Array.from(liveBackgroundTasksListeners)) {
+    try {
+      listener(key);
+    } catch {
+      // Background-task observers are read-only side channels. A renderer or
+      // test listener must never interrupt provider event reduction.
+    }
+  }
+}
+
 function resolveProviderType(
   opts: AgentSessionOptions,
   existing?: ActiveSession,
 ): AgentProviderType {
+  if (opts.providerType === 'opencode' || opts.executionHarness === 'opencode')
+    return 'opencode';
   if (opts.model) {
     const source = getModelSource(opts.model);
     if (source === 'ollama') return 'ollama';
@@ -351,11 +561,19 @@ function resolveExecutionHarness(
 ): NonNullable<AgentSessionOptions['executionHarness']> {
   const wantsOpenCode =
     opts.providerType === 'opencode' || opts.executionHarness === 'opencode';
-  if (
-    wantsOpenCode &&
-    (!opts.model || getModelSource(opts.model) !== 'opencode-managed')
-  )
-    throw new Error('OpenCode requires a model from its connected providers.');
+  if (wantsOpenCode) {
+    if (
+      !opts.model ||
+      (getModelSource(opts.model) !== 'opencode-managed' &&
+        !resolveGatewayModelEntry(opts.model))
+    )
+      throw new Error(
+        'OpenCode requires a model from its connected providers.',
+      );
+    // The runtime admits the captured funding route and checks its protocol.
+    // Keep the explicit harness even when this model also has a native route.
+    return 'opencode';
+  }
   if (opts.model && getModelSource(opts.model) === 'opencode-managed')
     return 'opencode';
   const wantsCopilot =
@@ -414,11 +632,15 @@ function getProviderSessionAuthGeneration(
 export function resetProviderAuthGenerationsForTests(): void {
   providerAuthGenerations.clear();
   providerSessionAuthGenerations.clear();
+  for (const key of Array.from(sessions.keys())) {
+    notifySteeringEligibilityChanged(key);
+  }
 }
 
 async function createProvider(
   harness: NonNullable<AgentSessionOptions['executionHarness']>,
   providerType: AgentProviderType,
+  getWindow: () => BrowserWindow | null,
 ): Promise<AgentProvider> {
   if (harness === 'opencode') {
     const { OpenCodeProvider } = await import('./opencode-session');
@@ -438,6 +660,12 @@ async function createProvider(
     // Keep this local import lazy to break the session-manager ↔ codex-session
     // cycle; the packaged Electron main build exercises this resolution path.
     const { CodexProvider } = await import('./codex-session');
+    const emitIngestionLag = (
+      target: { projectId: string; worktreeId: string; chatId: string },
+      data: ChatIngestionLagEventData,
+    ): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, { ...target, data });
+    };
     if (providerType === 'ollama') {
       // Keep the Ollama adapter lazy with the Codex provider to preserve the
       // same session-manager cycle break in packaged Electron main builds.
@@ -445,6 +673,7 @@ async function createProvider(
         await import('../ollama/codex-compatible');
       return new CodexProvider({
         providerType: 'ollama',
+        emitIngestionLag,
         prepareInvocation: async (
           model: ChatModel | undefined,
         ): Promise<CodexCompatibleInvocation> => {
@@ -463,7 +692,7 @@ async function createProvider(
         },
       });
     }
-    return new CodexProvider();
+    return new CodexProvider({ emitIngestionLag });
   }
   if (providerType === 'ollama') {
     const { OllamaProvider } = await import('./ollama-provider');
@@ -486,6 +715,20 @@ async function ensureProviderAuthBaselineForSession(
     providerType,
     'session-create',
   );
+}
+
+// A loggable name for the session-instance identity that registration and
+// teardown compare (the AgentSession object), so a diagnostic line, such as a
+// hosted CLI's PID, maps back to one instance without a join.
+const sessionInstanceIds = new WeakMap<AgentSession, string>();
+
+export function getSessionInstanceId(session: AgentSession): string {
+  let id = sessionInstanceIds.get(session);
+  if (id === undefined) {
+    id = randomUUID();
+    sessionInstanceIds.set(session, id);
+  }
+  return id;
 }
 
 function recordSessionDiagnostic(
@@ -515,6 +758,7 @@ function recordSessionDiagnostic(
     worktreeId: identifiers.worktreeId,
     chatId: identifiers.chatId,
     providerType: entry.providerType,
+    sessionInstanceId: getSessionInstanceId(entry.session),
     ...(diagnostic.kind !== 'session_replaced' && entry.executionHarness
       ? { executionHarness: entry.executionHarness }
       : {}),
@@ -539,31 +783,147 @@ function recordSessionDiagnostic(
   });
 }
 
-function syncWakeLockForSession(key: string, entry: ActiveSession): void {
-  const active =
+function hasBusyBackgroundWork(entry: ActiveSession): boolean {
+  if (entry.activeBackgroundTaskIds.size > 0) return true;
+  for (const task of Array.from(entry.liveBackgroundTasks.values())) {
+    if (task.toolUseId && entry.nonBusyBackgroundToolUseIds.has(task.toolUseId))
+      continue;
+    // Snapshots can omit tool-use correlation; retain the known-server
+    // description heuristic rather than letting a dev server block forever.
+    if (
+      !task.toolUseId &&
+      isPersistentBackgroundService('', task.description ?? '')
+    )
+      continue;
+    return true;
+  }
+  return false;
+}
+
+function hasActiveSessionWork(entry: ActiveSession): boolean {
+  return (
     entry.turnActive ||
     entry.pendingMessageCount > 0 ||
-    entry.activeBackgroundTaskIds.size > 0;
+    hasBusyBackgroundWork(entry)
+  );
+}
 
-  if (active) {
-    if (!entry.wakeLockHeld) {
-      getWakeLockService().acquire(`chat:${key}`, 'agent chat turn');
-      entry.wakeLockHeld = true;
-    }
-  } else if (entry.wakeLockHeld) {
-    getWakeLockService().release(`chat:${key}`);
-    entry.wakeLockHeld = false;
+function hasActiveTurnOrNativeBackgroundWork(entry: ActiveSession): boolean {
+  return hasActiveSessionWork(entry) || entry.liveBackgroundTasks.size > 0;
+}
+
+/** Chats whose canonical ownership (D, S, T, removal, background) needs wake. */
+const canonicalWakeKeys = new Set<string>();
+/**
+ * Chats whose session reported work at its own last sync. A canonical change
+ * never recomputes this at another moment, so it can only add a hold.
+ */
+const sessionWakeKeys = new Set<string>();
+/** Chat-level, not per session: a removed session cannot drop a needed hold. */
+const heldChatWakeKeys = new Set<string>();
+/** Chats whose receipt-time canonical state has a current turn. */
+const canonicalForegroundKeys = new Set<string>();
+/**
+ * Chats holding an accepted dispatch (D) that has not reached its start
+ * receipt. Tracked by scope, so a chat without a session yet still counts.
+ */
+const canonicalDispatchKeys = new Set<string>();
+
+/**
+ * Hold a chat's wake lock while its canonical ownership needs it, including
+ * before a session exists and while a removed one settles, or while its
+ * session last reported work.
+ */
+export function syncWakeLockForChat(
+  scope: { projectId: string; worktreeId: string; chatId: string },
+  snapshot: ChatTurnOwnershipSnapshot,
+): void {
+  const key = sessionKey(scope.projectId, scope.worktreeId, scope.chatId);
+  if (shouldHoldChatWake(snapshot)) canonicalWakeKeys.add(key);
+  else canonicalWakeKeys.delete(key);
+  applyChatWake(key);
+}
+
+/** Recompute the session's share of the hold at one of its own sync points. */
+function syncChatWake(key: string): void {
+  const entry = sessions.get(key);
+  if (entry !== undefined && hasActiveSessionWork(entry))
+    sessionWakeKeys.add(key);
+  else sessionWakeKeys.delete(key);
+  applyChatWake(key);
+}
+
+function applyChatWake(key: string): void {
+  const hold = canonicalWakeKeys.has(key) || sessionWakeKeys.has(key);
+  if (hold === heldChatWakeKeys.has(key)) return;
+  if (hold) {
+    getWakeLockService().acquire(...wakeLockHolder('chat', key));
+    heldChatWakeKeys.add(key);
+  } else {
+    getWakeLockService().release(wakeLockHolderKey('chat', key));
+    heldChatWakeKeys.delete(key);
   }
 }
 
-function removeSessionEntry(key: string): ActiveSession | undefined {
+/**
+ * Session turn activity: receipt-time canonical `current` once canonical turn
+ * state owns root turns, else the session's own bookkeeping.
+ */
+function sessionTurnActive(key: string, entry: ActiveSession): boolean {
+  // Bound ownership means canonical turn state decides; unbound, the session.
+  return getChatTurnOwnership().isBound()
+    ? canonicalForegroundKeys.has(key)
+    : entry.turnActive;
+}
+
+/**
+ * Track receipt-time canonical foreground, which session turn activity
+ * projects once canonical turn state owns root turns (contracts §3).
+ */
+export function syncSessionTurnForChat(
+  scope: { projectId: string; worktreeId: string; chatId: string },
+  snapshot: ChatTurnOwnershipSnapshot,
+): void {
+  const key = sessionKey(scope.projectId, scope.worktreeId, scope.chatId);
+  const dispatching = snapshot.dispatchOwners.length > 0;
+  // Hooks queued behind a dispatch wake when it starts, retires or releases.
+  const dispatchChanged = dispatching !== canonicalDispatchKeys.has(key);
+  if (dispatching) canonicalDispatchKeys.add(key);
+  else canonicalDispatchKeys.delete(key);
+  const current = snapshot.receipt?.state.current;
+  if (current?.userMessageId !== undefined)
+    applyPendingTurnCancel(key, current.userMessageId);
+  const foreground = current !== undefined;
+  const foregroundChanged = foreground !== canonicalForegroundKeys.has(key);
+  if (foreground) canonicalForegroundKeys.add(key);
+  else canonicalForegroundKeys.delete(key);
+  if (
+    getChatTurnOwnership().isBound() &&
+    (dispatchChanged || (foregroundChanged && sessions.has(key)))
+  )
+    notifyChatSessionActivityListeners();
+}
+
+getChatTurnOwnership().subscribe((snapshot) => {
+  syncWakeLockForChat(snapshot.scope, snapshot);
+  syncSessionTurnForChat(snapshot.scope, snapshot);
+});
+
+/** With `expected`, removes the key's entry only while it is still that one. */
+function removeSessionEntry(
+  key: string,
+  expected?: ActiveSession,
+): ActiveSession | undefined {
   const entry = sessions.get(key);
-  if (!entry) {
+  if (!entry || (expected !== undefined && entry !== expected)) {
     return undefined;
   }
 
-  getWakeLockService().release(`chat:${key}`);
   sessions.delete(key);
+  // Canonical removal-awaiting-settle and surviving owners keep the hold.
+  syncChatWake(key);
+  notifyLiveBackgroundTasksListeners(key);
+  notifySteeringEligibilityChanged(key);
   releaseHandedOffTurnPreparations(key, 'all');
   try {
     entry.onRemoved?.();
@@ -603,9 +963,19 @@ export function subscribeChatSessionActivity(
   };
 }
 
+/** Subscribe to live background-task changes; listeners should re-read state. */
+export function subscribeLiveBackgroundTasks(
+  listener: LiveBackgroundTasksListener,
+): () => void {
+  liveBackgroundTasksListeners.add(listener);
+  return (): void => {
+    liveBackgroundTasksListeners.delete(listener);
+  };
+}
+
 export function hasActiveChatTurns(): boolean {
-  for (const entry of Array.from(sessions.values())) {
-    if (entry.turnActive || entry.pendingMessageCount > 0) {
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    if (sessionTurnActive(key, entry) || entry.pendingMessageCount > 0) {
       return true;
     }
   }
@@ -617,11 +987,7 @@ export function hasActiveChatWork(): boolean {
   // Queued delegated work holds no slot, but an install would cancel it.
   if (hasLiveDelegations()) return true;
   for (const entry of Array.from(sessions.values())) {
-    if (
-      entry.turnActive ||
-      entry.pendingMessageCount > 0 ||
-      entry.activeBackgroundTaskIds.size > 0
-    ) {
+    if (hasActiveSessionWork(entry)) {
       return true;
     }
   }
@@ -629,11 +995,43 @@ export function hasActiveChatWork(): boolean {
   return false;
 }
 
+/** Safety guard for destructive worktree operations, not the foreground queue gate. */
+export function hasActiveChatWorkForWorktree(
+  projectId: string,
+  worktreeId: string,
+): boolean {
+  const prefix = `${projectId}/${worktreeId}/`;
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    if (key.startsWith(prefix) && hasActiveSessionWork(entry)) return true;
+  }
+  return false;
+}
+
+export function getChatSessionLiveness(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): { foreground: boolean; background: boolean } {
+  const key = sessionKey(projectId, worktreeId, chatId);
+  const entry = sessions.get(key);
+  if (!entry || entry.session.isDisposed?.() === true) {
+    return { foreground: false, background: false };
+  }
+
+  return {
+    foreground:
+      sessionTurnActive(key, entry) ||
+      entry.pendingMessageCount > 0 ||
+      entry.session.hasPendingSteeringInput?.() === true,
+    background: hasBusyBackgroundWork(entry),
+  };
+}
+
 export function getChatTurnConcurrencySnapshot(): ChatTurnConcurrencySnapshot {
   let activeTurns = activeDelegationCount();
   let pendingMessages = 0;
-  for (const entry of Array.from(sessions.values())) {
-    if (entry.turnActive) {
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    if (sessionTurnActive(key, entry)) {
       activeTurns += 1;
     }
     pendingMessages += entry.pendingMessageCount;
@@ -664,12 +1062,16 @@ export function hasActiveChatTurnsForWorktree(
     if (!key.startsWith(prefix)) {
       continue;
     }
-    if (entry.turnActive || entry.pendingMessageCount > 0) {
+    if (sessionTurnActive(key, entry) || entry.pendingMessageCount > 0) {
       return true;
     }
   }
-
-  return false;
+  // An accepted dispatch owns the chat before its start receipt (§6), so a
+  // hook fired in that window queues behind it.
+  return (
+    getChatTurnOwnership().isBound() &&
+    Array.from(canonicalDispatchKeys).some((key) => key.startsWith(prefix))
+  );
 }
 
 let sessionShutdownStarted = false;
@@ -683,6 +1085,16 @@ let authenticationRecovery: {
 let pendingShutdownEntries: UsageLimitedChatEntry[] = [];
 
 const pendingSessionCreations = new Map<symbol, AgentSessionOptions>();
+
+// Not every caller holds a turn preparation, so an idle release also yields to
+// one that may already have read the session it would end.
+function hasPendingSessionCreation(key: string): boolean {
+  for (const opts of Array.from(pendingSessionCreations.values())) {
+    if (sessionKey(opts.projectId, opts.worktreeId, opts.chatId) === key)
+      return true;
+  }
+  return false;
+}
 
 async function getOrCreateSessionWithoutStartReservation(
   opts: AgentSessionOptions,
@@ -731,10 +1143,9 @@ async function getOrCreateSessionImpl(
   if (sessionShutdownStarted)
     throw new Error('Application is stopping. Resume this chat after restart.');
   const key = sessionKey(opts.projectId, opts.worktreeId, opts.chatId);
-  const requestedMode = opts.assistantMode ?? 'default';
-  const requestedToolProfileHash = opts.toolProfileHash ?? 'default';
   const requestedSelectedModel = opts.selectedModel ?? opts.model;
   const requestedPluginSelectionsSignature = pluginSelectionsSignature(opts);
+  await waitForIdleReleaseTeardown(key);
   const existing = sessions.get(key);
   const executionHarness = resolveExecutionHarness(opts, existing);
   const providerType = resolveProviderType(
@@ -773,15 +1184,15 @@ async function getOrCreateSessionImpl(
     delete effectiveOpts.aiCreditsRouting;
   }
   await ensureProviderAuthBaselineForSession(providerType);
-  const routingSignature = resolveSessionRoutingSignature(
-    effectiveOpts,
-    providerType,
-  );
-  const currentAuthGeneration = getProviderSessionAuthGeneration(providerType);
-  const selectedModel = requestedSelectedModel ?? opts.model;
+  const selectedModel = requestedSelectedModel;
   captureSessionWorkOwner(opts);
   const workOwner = await resolveSessionWorkOwner(opts);
-  const requestedWorkOwnerKey = workOwnerIdentityKey(workOwner);
+  const matchContext = createSessionMatchContext(
+    opts,
+    effectiveOpts,
+    providerType,
+    workOwner,
+  );
   if (
     effectiveOpts.requiredAccountProxyConnectionId &&
     ((providerType !== 'claude' && providerType !== 'codex') ||
@@ -807,8 +1218,11 @@ async function getOrCreateSessionImpl(
   // the sessions map. Refusing here also tears the stale entry down so the next
   // turn cannot resurrect it.
   if (await isModelBlockedByStoredPolicy(selectedModel, workOwner)) {
-    if (existing) {
-      await destroySessionEntry(key, existing, 'getOrCreateSession');
+    // Only the session this request read: one registered during the check
+    // runs on a model the verdict never covered.
+    const blocked = sessions.get(key);
+    if (existing && blocked?.session === existing.session) {
+      await destroySessionEntry(key, blocked, 'getOrCreateSession');
     }
     await onEvent({
       type: 'error',
@@ -833,78 +1247,33 @@ async function getOrCreateSessionImpl(
     if (!gatewayCheck.ok) throw new Error(gatewayCheck.message);
   }
 
-  if (existing) {
-    if (
-      sessionMatchesOptions(existing, sessionIdentityOpts, {
-        providerType,
-        requestedMode,
-        requestedToolProfileHash,
-        requestedSelectedModel,
-        requestedPluginSelectionsSignature,
-        currentAuthGeneration,
-        routingSignature,
-        requestedWorkOwnerKey,
-      })
-    ) {
-      existing.onRemoved = lifecycle?.onRemoved;
-      existing.drainEventsBeforeRemoval ??= lifecycle?.drainEventsBeforeRemoval;
-      existing.session.setManagedDelegationMode?.(
+  // Decide against the key's entry as it is now: during the awaits above
+  // another teardown may have detached the one read at entry, and a successor
+  // may have registered in its place.
+  const current = sessions.get(key);
+  if (current) {
+    if (sessionMatchesOptions(current, sessionIdentityOpts, matchContext)) {
+      current.onRemoved = lifecycle?.onRemoved;
+      current.drainEventsBeforeRemoval ??= lifecycle?.drainEventsBeforeRemoval;
+      current.session.setManagedDelegationMode?.(
         effectiveOpts.managedDelegationMode,
       );
-      existing.managedDelegationSurface =
-        effectiveOpts.managedDelegationSurface;
-      existing.managedDelegationMode = effectiveOpts.managedDelegationMode;
-      return existing.session;
+      current.managedDelegationSurface = effectiveOpts.managedDelegationSurface;
+      current.managedDelegationMode = effectiveOpts.managedDelegationMode;
+      return current.session;
     }
     // Persist field names only. Prompts, environment values, credentials and
     // routing signatures must not appear in this replacement diagnostic.
-    const comparisons: [string, unknown, unknown][] = [
-      ['providerType', existing.providerType, providerType],
-      [
-        'executionHarness',
-        existing.executionHarness,
-        sessionIdentityOpts.executionHarness,
-      ],
-      [
-        'executionContext',
-        existing.executionContext,
-        sessionIdentityOpts.executionContext,
-      ],
-      ['workOwner', existing.workOwnerKey, requestedWorkOwnerKey],
-      ['model', existing.model, opts.model],
-      ['selectedModel', existing.selectedModel, requestedSelectedModel],
-      [
-        'pluginSelections',
-        existing.pluginSelectionsSignature,
-        requestedPluginSelectionsSignature,
-      ],
-      [
-        'deferredToolsAllowed',
-        existing.deferredToolsAllowed,
-        opts.deferredToolsAllowed !== false,
-      ],
-      ['assistantMode', existing.assistantMode, requestedMode],
-      ['toolProfile', existing.toolProfileHash, requestedToolProfileHash],
-      ['authGeneration', existing.authGeneration, currentAuthGeneration],
-      ['routing', existing.aiCreditsRoutingSignature, routingSignature],
-      [
-        'systemPromptAppend',
-        existing.systemPromptAppend,
-        sessionIdentityOpts.systemPromptAppend,
-      ],
-      [
-        'codeGraphToolsAdvertised',
-        existing.codeGraphToolsAdvertised,
-        opts.codeGraphToolsAdvertised ?? false,
-      ],
-    ];
-    recordSessionDiagnostic(key, existing, {
+    recordSessionDiagnostic(key, current, {
       kind: 'session_replaced',
-      changedOptions: comparisons
-        .filter(([, before, after]) => before !== after)
-        .map(([name]) => name),
+      changedOptions: getSessionChangedOptionNames(
+        current,
+        sessionIdentityOpts,
+        matchContext,
+      ),
     });
-    await destroySessionEntry(key, existing, 'getOrCreateSession');
+    markSessionTeardownCause(key, 'recycle');
+    await destroySessionEntry(key, current, 'getOrCreateSession');
   }
 
   // Decided once here, with the session's own owner, and handed to the
@@ -930,7 +1299,11 @@ async function getOrCreateSessionImpl(
     throw new Error(
       'The account proxy connection for this continuation is unavailable.',
     );
-  const provider = await createProvider(executionHarness, providerType);
+  const provider = await createProvider(
+    executionHarness,
+    providerType,
+    getWindow,
+  );
   // Checked after the last await, so a stop or a Codex sign-in that began
   // while either await was pending still keeps this session from starting.
   if (sessionShutdownStarted)
@@ -952,7 +1325,7 @@ async function getOrCreateSessionImpl(
   if (created) {
     created.onRemoved = lifecycle?.onRemoved;
     created.drainEventsBeforeRemoval = lifecycle?.drainEventsBeforeRemoval;
-    created.aiCreditsRoutingSignature = routingSignature;
+    created.aiCreditsRoutingSignature = matchContext.routingSignature;
     created.accountProxyRouted = accountProxyRouting === 'proxy';
     created.model = effectiveOpts.model;
     created.selectedModel = requestedSelectedModel;
@@ -968,10 +1341,17 @@ async function getOrCreateSessionImpl(
         ? getInheritedPluginDefaultsRevision(effectiveOpts)
         : undefined;
     created.executionHarness = executionHarness;
+    syncClaudeIdleStateToStampedHarness(key);
     created.executionContext = effectiveOpts.executionContext;
-    created.workOwnerKey = requestedWorkOwnerKey;
+    created.workOwnerKey = matchContext.requestedWorkOwnerKey;
     created.managedDelegationSurface = effectiveOpts.managedDelegationSurface;
     created.managedDelegationMode = effectiveOpts.managedDelegationMode;
+    created.sessionApprovalRules = effectiveOpts.sessionApprovalRules;
+    trackAppliedApproval(
+      session,
+      effectiveOpts.approvalMode,
+      effectiveOpts.sessionApprovalRules,
+    );
     const readSteeringCapabilities =
       session.getSteeringCapabilities?.bind(session);
     if (readSteeringCapabilities) {
@@ -998,8 +1378,39 @@ async function getOrCreateSessionImpl(
         return { ...capabilities, steer: capabilities.steer && compatible };
       };
     }
+    notifySteeringEligibilityChanged(key);
   }
   return session;
+}
+
+const sessionCreationLanes = new Map<string, Promise<void>>();
+
+/**
+ * Runs one chat's session creations one at a time, in arrival order
+ * (CAN-4833). The slot is taken synchronously, so the order matches the order
+ * in which `getOrCreateRoutedSession` installed its event routes and the
+ * latest request's session ends up registered. Teardowns never take a lane: a
+ * creation awaits teardowns, and its auth baseline check can invalidate
+ * sessions from inside the lane.
+ */
+async function withSessionCreationLane<T>(
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = sessionCreationLanes.get(key) ?? Promise.resolve();
+  let release = (): void => undefined;
+  const slot = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  sessionCreationLanes.set(key, slot);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (sessionCreationLanes.get(key) === slot)
+      sessionCreationLanes.delete(key);
+  }
 }
 
 export function getOrCreateSession(
@@ -1015,11 +1426,15 @@ export function getOrCreateSession(
     opts.projectId,
     opts.worktreeId,
     () =>
-      getOrCreateSessionWithoutStartReservation(
-        opts,
-        onEvent,
-        getWindow,
-        lifecycle,
+      withSessionCreationLane(
+        sessionKey(opts.projectId, opts.worktreeId, opts.chatId),
+        () =>
+          getOrCreateSessionWithoutStartReservation(
+            opts,
+            onEvent,
+            getWindow,
+            lifecycle,
+          ),
       ),
   );
 }
@@ -1035,10 +1450,156 @@ interface SessionMatchContext {
   requestedWorkOwnerKey: string;
 }
 
+interface ReadOnlySessionComparison {
+  existing: ActiveSession;
+  options: AgentSessionOptions;
+  context: SessionMatchContext;
+}
+
 function workOwnerIdentityKey(owner: WorkOwner | undefined): string {
   return owner?.kind === 'organization'
     ? `organization:${owner.organizationId.toLowerCase()}`
     : (owner?.kind ?? 'unknown');
+}
+
+function createSessionMatchContext(
+  opts: AgentSessionOptions,
+  effectiveOpts: AgentSessionOptions,
+  providerType: AgentProviderType,
+  workOwner: WorkOwner | undefined,
+): SessionMatchContext {
+  return {
+    providerType,
+    requestedMode: opts.assistantMode ?? 'default',
+    requestedToolProfileHash: opts.toolProfileHash ?? 'default',
+    requestedSelectedModel: opts.selectedModel ?? opts.model,
+    requestedPluginSelectionsSignature: pluginSelectionsSignature(opts),
+    currentAuthGeneration: getProviderSessionAuthGeneration(providerType),
+    routingSignature: resolveSessionRoutingSignature(
+      effectiveOpts,
+      providerType,
+    ),
+    requestedWorkOwnerKey: workOwnerIdentityKey(workOwner),
+  };
+}
+
+/**
+ * Resolve the owner a read-only comparison would use without binding it into
+ * the session-capture map. Background sends have a persisted execution context
+ * that may supersede a previously captured owner; interactive sends retain the
+ * existing capture and only peek at it.
+ */
+async function resolveReadOnlySessionWorkOwner(
+  opts: AgentSessionOptions,
+  existing: ActiveSession,
+): Promise<WorkOwner | undefined> {
+  if (
+    opts.executionContext !== undefined &&
+    opts.executionContext !== existing.executionContext
+  ) {
+    return resolveBackgroundWorkOwner(
+      { projectId: opts.projectId, worktreeId: opts.worktreeId },
+      opts.executionContext,
+    );
+  }
+  return peekSessionWorkOwner(opts);
+}
+
+async function getReadOnlySessionComparison(
+  opts: AgentSessionOptions,
+): Promise<ReadOnlySessionComparison | undefined> {
+  const existing = sessions.get(
+    sessionKey(opts.projectId, opts.worktreeId, opts.chatId),
+  );
+  if (!existing) return undefined;
+
+  const executionHarness = resolveExecutionHarness(opts, existing);
+  const providerType = resolveProviderType(
+    { ...opts, executionHarness },
+    existing,
+  );
+  const effectiveOpts: AgentSessionOptions = {
+    ...opts,
+    executionHarness,
+    providerType,
+  };
+  const workOwner = await resolveReadOnlySessionWorkOwner(opts, existing);
+  return {
+    existing,
+    options: effectiveOpts,
+    context: createSessionMatchContext(
+      opts,
+      effectiveOpts,
+      providerType,
+      workOwner,
+    ),
+  };
+}
+
+function getSessionChangedOptionNames(
+  existing: ActiveSession,
+  opts: AgentSessionOptions,
+  context: SessionMatchContext,
+  includeCapabilitySnapshot = true,
+): string[] {
+  const comparisons: [string, unknown, unknown][] = [
+    ['providerType', existing.providerType, context.providerType],
+    ['executionHarness', existing.executionHarness, opts.executionHarness],
+    ['executionContext', existing.executionContext, opts.executionContext],
+    ['workOwner', existing.workOwnerKey, context.requestedWorkOwnerKey],
+    ['model', existing.model, opts.model],
+    ['selectedModel', existing.selectedModel, context.requestedSelectedModel],
+    [
+      'pluginSelections',
+      existing.pluginSelectionsSignature,
+      context.requestedPluginSelectionsSignature,
+    ],
+    [
+      'deferredToolsAllowed',
+      existing.deferredToolsAllowed,
+      opts.deferredToolsAllowed !== false,
+    ],
+  ];
+  if (
+    !managedDelegationModesShareProviderSession(
+      existing.managedDelegationMode,
+      opts.managedDelegationMode,
+    )
+  ) {
+    comparisons.push([
+      'managedDelegationMode',
+      existing.managedDelegationMode,
+      opts.managedDelegationMode,
+    ]);
+  }
+  comparisons.push(
+    ['assistantMode', existing.assistantMode, context.requestedMode],
+    ['toolProfile', existing.toolProfileHash, context.requestedToolProfileHash],
+    ['authGeneration', existing.authGeneration, context.currentAuthGeneration],
+    ['routing', existing.aiCreditsRoutingSignature, context.routingSignature],
+  );
+  if (includeCapabilitySnapshot) {
+    comparisons.push(
+      [
+        'systemPromptAppend',
+        existing.systemPromptAppend,
+        opts.systemPromptAppend,
+      ],
+      [
+        'codeGraphToolsAdvertised',
+        existing.codeGraphToolsAdvertised,
+        opts.codeGraphToolsAdvertised ?? false,
+      ],
+      [
+        'sessionApprovalRules',
+        true,
+        sessionApprovalRulesReusable(existing, opts),
+      ],
+    );
+  }
+  return comparisons
+    .filter(([, before, after]) => before !== after)
+    .map(([name]) => name);
 }
 
 function sessionMatchesOptions(
@@ -1046,12 +1607,113 @@ function sessionMatchesOptions(
   opts: AgentSessionOptions,
   context: SessionMatchContext,
 ): boolean {
+  return getSessionChangedOptionNames(existing, opts, context).length === 0;
+}
+
+/**
+ * Whether the session's live rules have the same effect as the requested
+ * rules. A revoked grant or a new deny rule replaces the session, and so does
+ * one narrowed for an earlier turn, so a later turn gets the chat's grants
+ * back. Options that name no rules leave them unchecked.
+ */
+function sessionApprovalRulesReusable(
+  existing: ActiveSession,
+  opts: AgentSessionOptions,
+): boolean {
+  const requested = opts.sessionApprovalRules;
+  const live = existing.sessionApprovalRules;
+  if (requested === undefined) return true;
   return (
-    sessionIdentityMatchesOptions(existing, opts, context) &&
-    existing.systemPromptAppend === opts.systemPromptAppend &&
-    existing.codeGraphToolsAdvertised ===
-      (opts.codeGraphToolsAdvertised ?? false)
+    live !== undefined &&
+    sessionApprovalRulesWithin(live, requested) &&
+    sessionApprovalRulesWithin(requested, live)
   );
+}
+
+/**
+ * Narrows a live session's rules, in place, to `rules`: removes the allow
+ * rules `rules` does not hold and adds its deny rules. Grants `rules` holds
+ * that the session lacks are not added.
+ */
+export function restrictSessionApprovalRules(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  rules: readonly ApprovalRule[],
+): void {
+  const live = sessions.get(
+    sessionKey(projectId, worktreeId, chatId),
+  )?.sessionApprovalRules;
+  if (!live) return;
+  const kept = limitAllowRules(live, rules);
+  if (kept.length !== live.length) live.splice(0, live.length, ...kept);
+  live.push(...sendDenyRulesBeyond(live, rules));
+}
+
+/** The looser of two modes; an unknown mode (undefined) is the loosest. */
+function looserApprovalMode(
+  a: ApprovalMode | undefined,
+  b: ApprovalMode | undefined,
+): ApprovalMode | undefined {
+  if (a === undefined || b === undefined) return undefined;
+  return isStricterApprovalMode(a, b) ? b : a;
+}
+
+/**
+ * Records the approval authority the session has applied, read to decide
+ * what may steer into it and what its agent may do (CAN-4821).
+ * `getAppliedApprovalRules` returns `rules`, the live list the provider's
+ * approvals read and `restrictSessionApprovalRules` narrows in place. Every
+ * `setApprovalMode` call goes through `getAppliedApprovalMode`'s record.
+ * Providers can apply a switch before it settles, or keep part of a failed
+ * one, so while calls are pending, and after a window of overlapping calls in
+ * which one failed, it reports the loosest mode in play. Once every call in a
+ * window succeeds it reports the loosest mode they set, since the order the
+ * provider applied them is unknown.
+ */
+function trackAppliedApproval(
+  session: AgentSession,
+  createdWith: ApprovalMode | undefined,
+  rules: readonly ApprovalRule[] | undefined,
+): void {
+  session.getAppliedApprovalRules = (): readonly ApprovalRule[] | undefined =>
+    rules;
+  const apply = session.setApprovalMode.bind(session);
+  let settled = createdWith;
+  type CallWindow = { modes: ApprovalMode[]; failed: boolean; pending: number };
+  const openWindow = (): CallWindow => ({
+    modes: [],
+    failed: false,
+    pending: 0,
+  });
+  let calls = openWindow();
+  const loosestOf = (
+    modes: readonly ApprovalMode[],
+    from: ApprovalMode | undefined,
+  ): ApprovalMode | undefined =>
+    modes.reduce<ApprovalMode | undefined>(looserApprovalMode, from);
+  session.getAppliedApprovalMode = (): ApprovalMode | undefined =>
+    calls.pending > 0 ? loosestOf(calls.modes, settled) : settled;
+  session.setApprovalMode = async (mode: ApprovalMode): Promise<void> => {
+    const current = calls;
+    current.modes.push(mode);
+    current.pending += 1;
+    try {
+      await apply(mode);
+    } catch (error) {
+      current.failed = true;
+      throw error;
+    } finally {
+      current.pending -= 1;
+      if (current.pending === 0) {
+        const [first, ...rest] = current.modes;
+        settled = current.failed
+          ? loosestOf(current.modes, settled)
+          : loosestOf(rest, first);
+        calls = openWindow();
+      }
+    }
+  };
 }
 
 function sessionIdentityMatchesOptions(
@@ -1060,23 +1722,7 @@ function sessionIdentityMatchesOptions(
   context: SessionMatchContext,
 ): boolean {
   return (
-    managedDelegationModesShareProviderSession(
-      existing.managedDelegationMode,
-      opts.managedDelegationMode,
-    ) &&
-    existing.providerType === context.providerType &&
-    existing.executionHarness === opts.executionHarness &&
-    existing.executionContext === opts.executionContext &&
-    existing.workOwnerKey === context.requestedWorkOwnerKey &&
-    existing.model === opts.model &&
-    existing.selectedModel === context.requestedSelectedModel &&
-    existing.pluginSelectionsSignature ===
-      context.requestedPluginSelectionsSignature &&
-    existing.deferredToolsAllowed === (opts.deferredToolsAllowed !== false) &&
-    existing.assistantMode === context.requestedMode &&
-    existing.toolProfileHash === context.requestedToolProfileHash &&
-    existing.authGeneration === context.currentAuthGeneration &&
-    existing.aiCreditsRoutingSignature === context.routingSignature
+    getSessionChangedOptionNames(existing, opts, context, false).length === 0
   );
 }
 
@@ -1100,31 +1746,34 @@ function managedDelegationModesShareProviderSession(
 export async function canReuseSession(
   opts: AgentSessionOptions,
 ): Promise<boolean> {
-  const existing = sessions.get(
-    sessionKey(opts.projectId, opts.worktreeId, opts.chatId),
+  const comparison = await getReadOnlySessionComparison(opts);
+  return (
+    comparison !== undefined &&
+    sessionMatchesOptions(
+      comparison.existing,
+      comparison.options,
+      comparison.context,
+    )
   );
-  if (!existing) return false;
-  const effectiveOpts = {
-    ...opts,
-    executionHarness: resolveExecutionHarness(opts, existing),
-  };
-  const providerType = resolveProviderType(effectiveOpts, existing);
-  await ensureProviderAuthBaselineForSession(providerType);
-  captureSessionWorkOwner(opts);
-  const workOwner = await resolveSessionWorkOwner(opts);
-  return sessionMatchesOptions(existing, effectiveOpts, {
-    providerType,
-    requestedMode: opts.assistantMode ?? 'default',
-    requestedToolProfileHash: opts.toolProfileHash ?? 'default',
-    requestedSelectedModel: opts.selectedModel ?? opts.model,
-    requestedPluginSelectionsSignature: pluginSelectionsSignature(opts),
-    currentAuthGeneration: getProviderSessionAuthGeneration(providerType),
-    routingSignature: resolveSessionRoutingSignature(
-      effectiveOpts,
-      providerType,
-    ),
-    requestedWorkOwnerKey: workOwnerIdentityKey(workOwner),
-  });
+}
+
+/**
+ * Compare the live session with dispatch options without changing its owner
+ * capture or probing provider authentication. The latter can call the raw
+ * provider status endpoint and publish auth invalidation; normal dispatch
+ * performs that baseline check before making its reuse decision.
+ */
+export async function getSessionChangedOptions(
+  opts: AgentSessionOptions,
+): Promise<string[]> {
+  const comparison = await getReadOnlySessionComparison(opts);
+  return comparison
+    ? getSessionChangedOptionNames(
+        comparison.existing,
+        comparison.options,
+        comparison.context,
+      )
+    : [];
 }
 
 /**
@@ -1136,31 +1785,15 @@ export async function canReuseSession(
 export async function canPreserveSessionCapabilitySnapshot(
   opts: AgentSessionOptions,
 ): Promise<boolean> {
-  const existing = sessions.get(
-    sessionKey(opts.projectId, opts.worktreeId, opts.chatId),
+  const comparison = await getReadOnlySessionComparison(opts);
+  return (
+    comparison !== undefined &&
+    sessionIdentityMatchesOptions(
+      comparison.existing,
+      comparison.options,
+      comparison.context,
+    )
   );
-  if (!existing) return false;
-  const effectiveOpts = {
-    ...opts,
-    executionHarness: resolveExecutionHarness(opts, existing),
-  };
-  const providerType = resolveProviderType(effectiveOpts, existing);
-  await ensureProviderAuthBaselineForSession(providerType);
-  captureSessionWorkOwner(opts);
-  const workOwner = await resolveSessionWorkOwner(opts);
-  return sessionIdentityMatchesOptions(existing, effectiveOpts, {
-    providerType,
-    requestedMode: opts.assistantMode ?? 'default',
-    requestedToolProfileHash: opts.toolProfileHash ?? 'default',
-    requestedSelectedModel: opts.selectedModel ?? opts.model,
-    requestedPluginSelectionsSignature: pluginSelectionsSignature(opts),
-    currentAuthGeneration: getProviderSessionAuthGeneration(providerType),
-    routingSignature: resolveSessionRoutingSignature(
-      effectiveOpts,
-      providerType,
-    ),
-    requestedWorkOwnerKey: workOwnerIdentityKey(workOwner),
-  });
 }
 
 /**
@@ -1189,6 +1822,14 @@ function resolveAiCreditsRoutingSignature(
   opts: AgentSessionOptions,
   providerType: AgentProviderType,
 ): string {
+  if (providerType === 'opencode') {
+    if (!opts.model || getRawOpenCodeModelId(opts.model)) return 'native';
+    const route = resolveGatewayModelEntry(opts.model);
+    if (!route) return 'native';
+    return route.origin === 'org-gateway'
+      ? `routed:org:${route.organizationId ?? ''}:${route.baseUrl ?? ''}:${opts.model ?? ''}`
+      : `routed:${opts.model ?? ''}`;
+  }
   if (providerType !== 'claude' && providerType !== 'codex') {
     return 'native';
   }
@@ -1198,15 +1839,6 @@ function resolveAiCreditsRoutingSignature(
     opts.aiCreditsRouting,
     billedProviderFor(providerType),
   );
-  // A per-session "just this time" activation always wins — even over an
-  // explicit subscription override — mirroring the routing resolver.
-  if (aiCreditsRouting?.active) {
-    const model = aiCreditsRouting.modelId ?? opts.model;
-    const route = resolveGatewayModelEntry(model);
-    return route?.origin === 'org-gateway'
-      ? `routed:org:${route.organizationId ?? ''}:${route.baseUrl ?? ''}:${model ?? ''}`
-      : `routed:${model ?? ''}`;
-  }
   // A gateway-only model has no native provider that could bill it, so the
   // session running it is routed by definition — `resolveCodexAiCreditsRouting`
   // forces the gateway for exactly this case regardless of mode or native auth,
@@ -1233,18 +1865,14 @@ function resolveAiCreditsRoutingSignature(
   // live session instead of reusing a stale routed/native session; the
   // authoritative async resolution still runs at spawn.
   //
-  // The override is only honorable when there is a real native login to bill:
-  // `resolveAiCreditsRoutingAttempt` step 2 returns native ONLY on a confirmed
-  // `checkNativeAuth()`, and otherwise falls through to `no-native-auth`
-  // credits routing. Mirror that here (ECW-9091) — otherwise a chat with the
-  // toggle on but no native session reports `'native-forced'` while actually
-  // billing credits, mis-attributing its account scope and `aiCreditsRouted`
-  // turn metadata exactly as the `!activation` branch below describes.
-  if (opts.subscriptionBillingOverride) {
-    if (peekProviderNativeAuthAvailability()[providerType] !== false) {
-      return 'native-forced';
-    }
-    return `routed:${opts.model ?? ''}`;
+  if (opts.subscriptionBillingOverride) return 'native-forced';
+  // Explicit subscription selection takes precedence over stale session routing.
+  if (aiCreditsRouting?.active) {
+    const model = aiCreditsRouting.modelId ?? opts.model;
+    const route = resolveGatewayModelEntry(model);
+    return route?.origin === 'org-gateway'
+      ? `routed:org:${route.organizationId ?? ''}:${route.baseUrl ?? ''}:${model ?? ''}`
+      : `routed:${model ?? ''}`;
   }
   const activation = resolveAiCreditsRoutingActivation(
     aiCreditsRouting,
@@ -1418,7 +2046,7 @@ export function getActiveChatIds(
   for (const [key, entry] of Array.from(sessions.entries())) {
     if (
       key.startsWith(prefix) &&
-      (entry.turnActive || entry.pendingMessageCount > 0)
+      (sessionTurnActive(key, entry) || entry.pendingMessageCount > 0)
     ) {
       chatIds.push(key.slice(prefix.length));
     }
@@ -1468,7 +2096,7 @@ function toChatActiveSessionInfo(
     ...(entry.executionHarness
       ? { executionHarness: entry.executionHarness }
       : {}),
-    turnActive: entry.turnActive,
+    turnActive: sessionTurnActive(key, entry),
     createdAt: entry.createdAt,
     lastActivityAt: entry.lastActivityAt,
     turnCount: entry.turnCount,
@@ -1605,21 +2233,31 @@ export async function destroySession(
   if (!entry) return Promise.resolve();
   const finishRemoval = detachSessionForTeardown(key, entry);
   rejectAllForSession(key);
+  // The provider can take seconds to exit, and a successor may register under
+  // the key meanwhile; the key-scoped steps below are then the successor's.
   return (
     entry.session
       .destroy()
       // After the provider exits, so the tail its tasks wrote on the way out
       // still reaches the renderer before the pollers are discarded.
-      .finally(() => flushAndStopOutputPollingForSession(key))
+      .finally(() =>
+        isSessionKeyReplaced(key, entry)
+          ? undefined
+          : flushAndStopOutputPollingForSession(key),
+      )
       .finally(() => notifySessionEndedBackgroundTasks(key, entry))
       .finally(() => {
-        if (options?.suppressObservabilityInterrupt !== true) {
+        if (
+          options?.suppressObservabilityInterrupt !== true &&
+          !isSessionKeyReplaced(key, entry)
+        ) {
           getObservabilityService().interruptMatchingEntries(`chat:${key}`);
         }
       })
       .finally(finishRemoval)
       .finally(() => {
-        cleanupChatSkillPluginDir(projectId, worktreeId, chatId);
+        if (!isSessionKeyReplaced(key, entry))
+          cleanupChatSkillPluginDir(projectId, worktreeId, chatId);
       })
   );
 }
@@ -1759,6 +2397,7 @@ export async function destroyAllSessions(
   );
   // Catch pollers whose sessions were already removed before shutdown began.
   stopAllOutputPolling();
+  claudeDurableCronIds.clear();
   if (options.recordInterrupted)
     pendingShutdownEntries.push(
       ...interrupted.map(({ interruptedChat }) => interruptedChat),
@@ -2020,21 +2659,38 @@ async function destroyMatchingSessions(
     }
   }
 
+  for (const { key } of toDestroy) {
+    markSessionTeardownCause(key, 'recycle');
+  }
+
   for (const { key, entry } of toDestroy) {
     await destroySessionEntry(key, entry, 'destroySessionsByProvider');
   }
 }
 
-/** Detach from lookup immediately, but retain delivery until teardown writes drain. */
+/**
+ * Another instance registered under `key` after `entry` was detached. Its
+ * key-scoped state (pollers, audit entries, plugin files) is the successor's.
+ */
+function isSessionKeyReplaced(key: string, entry: ActiveSession): boolean {
+  const current = sessions.get(key);
+  return current !== undefined && current !== entry;
+}
+
+/**
+ * Detach from lookup immediately, but retain delivery until teardown writes
+ * drain. Removal compares the entry, so a teardown that started from a stale
+ * read never drops a successor registered under the same key.
+ */
 function detachSessionForTeardown(
   key: string,
   entry: ActiveSession,
   options: { deferRemoval?: boolean } = {},
 ): () => Promise<void> {
-  clearPresentationTurn(key);
+  if (sessions.get(key) === entry) clearPresentationTurn(key);
   const { onRemoved, drainEventsBeforeRemoval } = entry;
   entry.onRemoved = undefined;
-  if (!options.deferRemoval) removeSessionEntry(key);
+  if (!options.deferRemoval) removeSessionEntry(key, entry);
   return async (): Promise<void> => {
     try {
       await drainEventsBeforeRemoval?.();
@@ -2044,7 +2700,7 @@ function detachSessionForTeardown(
         error,
       );
     } finally {
-      if (options.deferRemoval) removeSessionEntry(key);
+      if (options.deferRemoval) removeSessionEntry(key, entry);
       try {
         onRemoved?.();
       } catch (error) {
@@ -2062,17 +2718,23 @@ async function destroySessionEntry(
   entry: ActiveSession,
   logPrefix: string,
 ): Promise<void> {
+  // Pending requests are keyed by chat; once a successor holds the key, the
+  // remaining ones are its own.
+  const registered = sessions.get(key);
+  const ownsKeyRequests = registered === undefined || registered === entry;
   const finishRemoval = detachSessionForTeardown(key, entry);
-  rejectAllForSession(key);
+  if (ownsKeyRequests) rejectAllForSession(key);
   try {
     await entry.session.destroy();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(`[${logPrefix}] Failed to destroy session ${key}:`, err);
   } finally {
-    await flushAndStopOutputPollingForSession(key);
+    const replaced = isSessionKeyReplaced(key, entry);
+    if (!replaced) await flushAndStopOutputPollingForSession(key);
     notifySessionEndedBackgroundTasks(key, entry);
-    getObservabilityService().interruptMatchingEntries(`chat:${key}`);
+    if (!replaced)
+      getObservabilityService().interruptMatchingEntries(`chat:${key}`);
     await finishRemoval();
   }
 }
@@ -2130,6 +2792,683 @@ function releaseHandedOffTurnPreparations(
   for (const release of released) release();
 }
 
+/**
+ * True while the session can produce a turn with no new user input, or holds
+ * work that destroying it would drop or surface in the chat: a running,
+ * queued or preparing turn (by the session's or canonical turn state's
+ * account), undelivered steering input, a session being acquired, a turn
+ * paused for user input, live background tasks, running native subagents,
+ * live delegations, scheduled prompts the provider process will fire, or an
+ * unanswered approval or question.
+ */
+function sessionCanStartTurnOnItsOwn(
+  key: string,
+  entry: ActiveSession,
+): boolean {
+  return (
+    entry.turnActive ||
+    sessionTurnActive(key, entry) ||
+    claudeSessionHasScheduledPrompts(key, entry) ||
+    entry.pendingMessageCount > 0 ||
+    entry.session.hasPendingSteeringInput?.() === true ||
+    preparingTurnCounts.has(key) ||
+    hasPendingSessionCreation(key) ||
+    entry.codexContinuationRevivalTurn !== undefined ||
+    entry.activeBackgroundTaskIds.size > 0 ||
+    entry.liveBackgroundTasks.size > 0 ||
+    entry.claudeNativeSubagentTasks.size > 0 ||
+    entry.codexLiveNativeSubagentTurns.size > 0 ||
+    hasLiveDelegations(key) ||
+    hasPendingApprovalsForSession(key) ||
+    hasPendingRequestsForSession(key)
+  );
+}
+
+/**
+ * Durable crons (CronCreate `durable: true`) by chat. The CLI persists them to
+ * `.claude/scheduled_tasks.json` but fires them only from a live process, so
+ * they keep the session. Kept across Claude session replacement, since a
+ * replacement process resuming the same conversation takes them over; a
+ * session on another harness drops them.
+ *
+ * Only crons created by this app process are known. Durable crons a resumed
+ * CLI reloads from disk after an app restart do not block release: a released
+ * chat is left as a restarted one always was, with no CLI until its next
+ * message (CAN-4834 known gap). Revisit if released chats must fire them on
+ * time.
+ */
+const claudeDurableCronIds = new Map<string, Set<string>>();
+
+function claudeSessionHasScheduledPrompts(
+  key: string,
+  entry: ActiveSession,
+): boolean {
+  if (entry.executionHarness !== 'claude') return false;
+  const crons = entry.claudeSessionCrons;
+  return (
+    crons.scheduledCount > 0 ||
+    crons.listUnreadable ||
+    crons.unconfirmedToolUseIds.size > 0 ||
+    (claudeDurableCronIds.get(key)?.size ?? 0) > 0
+  );
+}
+
+const CLAUDE_CRON_SCHEDULING_TOOLS = new Set(['CronCreate', 'ScheduleWakeup']);
+const MAX_CONFIRMED_CLAUDE_CRON_TOOL_USES = 256;
+
+function noteClaudeCronToolUse(
+  crons: ClaudeSessionCrons,
+  toolUseId: string,
+): void {
+  if (crons.confirmedToolUseIds.has(toolUseId)) return;
+  crons.unconfirmedToolUseIds.add(toolUseId);
+}
+
+/**
+ * Stream form of the cron tool-use signal. It still counts when repository
+ * settings disable hooks, which also silences the Stop hook that would clear
+ * it, so such a session is kept.
+ */
+function updateClaudeSessionCronToolUses(
+  entry: ActiveSession,
+  data: unknown,
+): void {
+  if (
+    entry.executionHarness !== 'claude' ||
+    !isPlainRecord(data) ||
+    data.type !== 'assistant' ||
+    !isPlainRecord(data.message) ||
+    !Array.isArray(data.message.content)
+  ) {
+    return;
+  }
+  for (const block of data.message.content) {
+    if (!isPlainRecord(block) || block.type !== 'tool_use') continue;
+    const name = readRecordString(block, 'name');
+    const toolUseId = readRecordString(block, 'id');
+    if (name && toolUseId && CLAUDE_CRON_SCHEDULING_TOOLS.has(name)) {
+      noteClaudeCronToolUse(entry.claudeSessionCrons, toolUseId);
+    }
+  }
+}
+
+/**
+ * Feed a Claude hook input into the session's scheduled-prompt state:
+ * PreToolUse marks a cron tool use pending, PostToolUse records durable crons
+ * and their deletion, and the main thread's Stop hook replaces the pending
+ * state with its `session_crons` list. A Stop hook without a readable list
+ * keeps the session.
+ */
+export function recordClaudeSessionCronHookInput(
+  key: string,
+  input: unknown,
+): void {
+  const entry = sessions.get(key);
+  if (!entry || entry.executionHarness !== 'claude' || !isPlainRecord(input))
+    return;
+  const crons = entry.claudeSessionCrons;
+  const event = readRecordString(input, 'hook_event_name');
+  const toolName = readRecordString(input, 'tool_name');
+  const toolUseId = readRecordString(input, 'tool_use_id');
+  if (event === 'PreToolUse') {
+    if (toolName && toolUseId && CLAUDE_CRON_SCHEDULING_TOOLS.has(toolName)) {
+      noteClaudeCronToolUse(crons, toolUseId);
+    }
+    return;
+  }
+  if (event === 'PostToolUse') {
+    recordClaudeDurableCronChange(key, toolName, toolUseId, input);
+    evaluateIdleSessionRelease(key);
+    return;
+  }
+  if (event !== 'Stop' || typeof input.agent_id === 'string') return;
+  const listed = input.session_crons;
+  if (!Array.isArray(listed)) {
+    crons.listUnreadable = true;
+    return;
+  }
+  crons.listUnreadable = false;
+  crons.scheduledCount = listed.length;
+  for (const id of Array.from(crons.unconfirmedToolUseIds)) {
+    crons.confirmedToolUseIds.add(id);
+  }
+  crons.unconfirmedToolUseIds.clear();
+  while (crons.confirmedToolUseIds.size > MAX_CONFIRMED_CLAUDE_CRON_TOOL_USES) {
+    const oldest = crons.confirmedToolUseIds.values().next().value;
+    if (typeof oldest !== 'string') break;
+    crons.confirmedToolUseIds.delete(oldest);
+  }
+  evaluateIdleSessionRelease(key);
+}
+
+function recordClaudeDurableCronChange(
+  key: string,
+  toolName: string | undefined,
+  toolUseId: string | undefined,
+  input: Record<string, unknown>,
+): void {
+  const toolInput = isPlainRecord(input.tool_input)
+    ? input.tool_input
+    : undefined;
+  const response = isPlainRecord(input.tool_response)
+    ? input.tool_response
+    : undefined;
+  const responseId = response ? readRecordString(response, 'id') : undefined;
+  if (toolName === 'CronCreate') {
+    // An unreadable answer to a durable request counts as durable.
+    const durable =
+      response?.durable === true ||
+      (toolInput?.durable === true && response?.durable !== false);
+    const id = responseId ?? toolUseId;
+    if (!durable || !id) return;
+    const ids = claudeDurableCronIds.get(key) ?? new Set<string>();
+    ids.add(id);
+    claudeDurableCronIds.set(key, ids);
+    return;
+  }
+  if (toolName !== 'CronDelete') return;
+  const id =
+    responseId ?? (toolInput ? readRecordString(toolInput, 'id') : undefined);
+  const ids = claudeDurableCronIds.get(key);
+  if (!id || !ids) return;
+  ids.delete(id);
+  if (ids.size === 0) claudeDurableCronIds.delete(key);
+}
+
+/**
+ * Provider-neutral form of {@link sessionCanStartTurnOnItsOwn}. A chat with no
+ * live session cannot start a turn by itself.
+ */
+export function chatSessionCanStartTurnOnItsOwn(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): boolean {
+  const key = sessionKey(projectId, worktreeId, chatId);
+  const entry = sessions.get(key);
+  return entry !== undefined && sessionCanStartTurnOnItsOwn(key, entry);
+}
+
+/**
+ * What the chat's owner says about a release once its session has gone quiet:
+ * release it now, keep waiting for chat-level work to settle, or keep the
+ * session and stop watching (the chat is no longer eligible).
+ */
+export type IdleChatSessionReleaseDecision = 'release' | 'wait' | 'retain';
+
+interface IdleSessionRelease {
+  target: { projectId: string; worktreeId: string; chatId: string };
+  // The provider session, not its entry: re-registering the same session
+  // replaces the entry with a new one around it.
+  session: AgentSession;
+  confirm: () => Promise<IdleChatSessionReleaseDecision>;
+  timer?: ReturnType<typeof setTimeout>;
+  phase: 'settling' | 'blocked' | 'confirming';
+  settleMs: number;
+  providerOutputs: number;
+}
+
+// Quiet period before release when nothing has happened since the request.
+const IDLE_SESSION_RELEASE_SETTLE_MS = 5_000;
+// Quiet period once the session was blocked or produced output: a provider
+// continuation (for example Claude answering a finished background Bash) can
+// take a full model round trip to show its first output, and must keep the
+// session.
+const IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS = 30_000;
+// Re-check for blockers that settle without an activity signal: approvals,
+// questions, delegations, turn preparations and chat-level waits.
+const IDLE_SESSION_RELEASE_RECHECK_MS = 30_000;
+
+const idleSessionReleases = new Map<string, IdleSessionRelease>();
+
+/**
+ * Destroy the chat's provider session once it cannot start a turn by itself
+ * and `confirm` agrees. The release keeps the chat's delegations and records
+ * no interruption, so it emits nothing into the chat; the next send resumes
+ * the provider session through `getOrCreateSession`. Provider activity before
+ * the release keeps the session. Replaces any earlier request for the chat,
+ * and ends without releasing if the session is removed or replaced first.
+ */
+export function releaseChatSessionWhenIdle(
+  target: { projectId: string; worktreeId: string; chatId: string },
+  confirm: () => Promise<IdleChatSessionReleaseDecision>,
+): void {
+  const key = sessionKey(target.projectId, target.worktreeId, target.chatId);
+  cancelIdleSessionRelease(key);
+  const entry = sessions.get(key);
+  if (!entry) return;
+  idleSessionReleases.set(key, {
+    target: { ...target },
+    session: entry.session,
+    confirm,
+    phase: 'blocked',
+    settleMs: IDLE_SESSION_RELEASE_SETTLE_MS,
+    providerOutputs: 0,
+  });
+  evaluateIdleSessionRelease(key);
+}
+
+function cancelIdleSessionRelease(key: string): void {
+  const release = idleSessionReleases.get(key);
+  if (!release) return;
+  if (release.timer !== undefined) clearTimeout(release.timer);
+  idleSessionReleases.delete(key);
+}
+
+function armIdleSessionReleaseTimer(
+  key: string,
+  release: IdleSessionRelease,
+  phase: 'settling' | 'blocked',
+): void {
+  if (release.timer !== undefined) clearTimeout(release.timer);
+  release.phase = phase;
+  release.timer = setTimeout(
+    () => {
+      release.timer = undefined;
+      if (idleSessionReleases.get(key) !== release) return;
+      if (phase === 'settling') void attemptIdleSessionRelease(key, release);
+      else evaluateIdleSessionRelease(key);
+    },
+    phase === 'settling' ? release.settleMs : IDLE_SESSION_RELEASE_RECHECK_MS,
+  );
+  release.timer.unref?.();
+}
+
+/** The chat's live entry while it still holds the session the release watches. */
+function releaseSessionEntry(
+  key: string,
+  release: IdleSessionRelease,
+): ActiveSession | undefined {
+  const entry = sessions.get(key);
+  return entry?.session === release.session ? entry : undefined;
+}
+
+function evaluateIdleSessionReleases(): void {
+  if (idleSessionReleases.size === 0) return;
+  for (const key of Array.from(idleSessionReleases.keys())) {
+    evaluateIdleSessionRelease(key);
+  }
+}
+
+function evaluateIdleSessionRelease(
+  key: string,
+  options: { providerActivity?: boolean } = {},
+): void {
+  const release = idleSessionReleases.get(key);
+  if (!release) return;
+  if (options.providerActivity === true) release.providerOutputs += 1;
+  if (release.phase === 'confirming') return;
+  const entry = releaseSessionEntry(key, release);
+  if (!entry) {
+    cancelIdleSessionRelease(key);
+    return;
+  }
+  if (sessionCanStartTurnOnItsOwn(key, entry)) {
+    release.settleMs = IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS;
+    if (release.phase !== 'blocked' || release.timer === undefined) {
+      armIdleSessionReleaseTimer(key, release, 'blocked');
+    }
+    return;
+  }
+  // Provider output restarts the quiet period; other notifications do not.
+  if (options.providerActivity === true) {
+    release.settleMs = IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS;
+  }
+  if (release.phase !== 'settling' || options.providerActivity === true) {
+    armIdleSessionReleaseTimer(key, release, 'settling');
+  }
+}
+
+async function attemptIdleSessionRelease(
+  key: string,
+  release: IdleSessionRelease,
+): Promise<void> {
+  const entry = releaseSessionEntry(key, release);
+  if (!entry) {
+    cancelIdleSessionRelease(key);
+    return;
+  }
+  if (sessionCanStartTurnOnItsOwn(key, entry)) {
+    release.settleMs = IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS;
+    armIdleSessionReleaseTimer(key, release, 'blocked');
+    return;
+  }
+  release.phase = 'confirming';
+  const outputsBeforeConfirm = release.providerOutputs;
+  let decision: IdleChatSessionReleaseDecision;
+  try {
+    decision = await release.confirm();
+  } catch (error) {
+    // Keeping the session is today's behaviour, so an unanswerable check
+    // fails safe.
+    logMainProcessWarn(
+      `[session-manager] Idle session release check failed for ${key}`,
+      error,
+    );
+    decision = 'retain';
+  }
+  if (idleSessionReleases.get(key) !== release) return;
+  const confirmedEntry = releaseSessionEntry(key, release);
+  if (decision === 'retain' || !confirmedEntry) {
+    cancelIdleSessionRelease(key);
+    return;
+  }
+  if (sessionCanStartTurnOnItsOwn(key, confirmedEntry)) {
+    release.settleMs = IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS;
+    armIdleSessionReleaseTimer(key, release, 'blocked');
+    return;
+  }
+  if (decision === 'wait') {
+    armIdleSessionReleaseTimer(key, release, 'blocked');
+    return;
+  }
+  // Output during the check restarts the quiet period instead.
+  if (release.providerOutputs !== outputsBeforeConfirm) {
+    release.settleMs = IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS;
+    armIdleSessionReleaseTimer(key, release, 'settling');
+    return;
+  }
+  cancelIdleSessionRelease(key);
+  const { projectId, worktreeId, chatId } = release.target;
+  const teardown: Promise<void> = destroySession(
+    projectId,
+    worktreeId,
+    chatId,
+    { retainDelegations: true, suppressObservabilityInterrupt: true },
+  )
+    .catch((error: unknown) => {
+      logMainProcessWarn(
+        `[session-manager] Failed to release idle provider session for ${key}`,
+        error,
+      );
+    })
+    .finally(() => {
+      if (idleReleaseTeardowns.get(key) === teardown)
+        idleReleaseTeardowns.delete(key);
+    });
+  idleReleaseTeardowns.set(key, teardown);
+  await teardown;
+}
+
+/**
+ * Released sessions whose provider cleanup is still running. That cleanup
+ * clears per-chat state by chat key (Claude's query loop unregisters the
+ * session and its MCP routes), so a restored chat's replacement session must
+ * not register until it ends. CAN-4833 makes that cleanup instance-guarded for
+ * every teardown.
+ */
+const idleReleaseTeardowns = new Map<string, Promise<void>>();
+
+async function waitForIdleReleaseTeardown(key: string): Promise<void> {
+  // Each teardown removes itself before settling; a later release of the
+  // same chat installs a new one.
+  for (
+    let teardown = idleReleaseTeardowns.get(key);
+    teardown !== undefined;
+    teardown = idleReleaseTeardowns.get(key)
+  ) {
+    await teardown;
+  }
+}
+
+let claudeSessionIdleTimeoutMs =
+  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES * 60_000;
+const claudeSessionIdleTimers = new Map<
+  string,
+  ReturnType<typeof setTimeout>
+>();
+/**
+ * When each Claude session was last seen busy. Blockers such as delegations,
+ * approvals and steering clear without touching `lastActivityAt`, so the idle
+ * period also starts from here.
+ */
+const claudeSessionBusySeenAt = new Map<string, number>();
+
+/**
+ * The session runs a `claude` CLI, whatever its provider: Claude chats and
+ * Ollama chats on the Claude harness. The Claude idle release keys on this.
+ */
+function sessionRunsClaudeCli(
+  entry: ActiveSession | undefined,
+): entry is ActiveSession {
+  return entry?.executionHarness === 'claude';
+}
+
+function startClaudeSessionIdleWatch(key: string): void {
+  claudeSessionBusySeenAt.delete(key);
+  armClaudeSessionIdleTimer(key, claudeSessionIdleTimeoutMs);
+}
+
+/** A session on another harness has no Claude watch or durable crons. */
+function clearClaudeSessionIdleState(key: string): void {
+  clearTimeout(claudeSessionIdleTimers.get(key));
+  claudeSessionIdleTimers.delete(key);
+  claudeSessionBusySeenAt.delete(key);
+  claudeDurableCronIds.delete(key);
+}
+
+/**
+ * Re-applies the Claude idle state once getOrCreateSession stamps the harness,
+ * which can differ from the one the session registered with. A Claude session
+ * keeps the watch registerSession started.
+ */
+function syncClaudeIdleStateToStampedHarness(key: string): void {
+  if (!sessionRunsClaudeCli(sessions.get(key))) {
+    clearClaudeSessionIdleState(key);
+  } else if (!claudeSessionIdleTimers.has(key)) {
+    startClaudeSessionIdleWatch(key);
+  }
+}
+
+/**
+ * Release an open chat's `claude` process (see {@link sessionRunsClaudeCli})
+ * once the session has had no activity for the idle timeout and is idle (see
+ * {@link claudeSessionIdleReleaseBlocked}). The timer is re-armed from the
+ * session's last activity, so streaming never touches it.
+ */
+function armClaudeSessionIdleTimer(key: string, delayMs: number): void {
+  const previous = claudeSessionIdleTimers.get(key);
+  if (previous !== undefined) clearTimeout(previous);
+  const claudeIdleTimer = setTimeout(
+    () => {
+      if (claudeSessionIdleTimers.get(key) !== claudeIdleTimer) return;
+      claudeSessionIdleTimers.delete(key);
+      checkClaudeSessionIdleTimeoutSafely(key);
+    },
+    Math.max(0, delayMs),
+  );
+  claudeIdleTimer.unref?.();
+  claudeSessionIdleTimers.set(key, claudeIdleTimer);
+}
+
+function claudeSessionBusyRecheckMs(): number {
+  // Often enough that the idle period after a blocker clears is at least nine
+  // tenths of the timeout.
+  return Math.min(60_000, claudeSessionIdleTimeoutMs / 10);
+}
+
+// Retry spacing after a failed idle check; bounds its warnings per chat.
+const CLAUDE_SESSION_FAILED_IDLE_CHECK_RETRY_MS = 60_000;
+
+/** A check that throws counts as busy, so the watch continues. */
+function checkClaudeSessionIdleTimeoutSafely(key: string): void {
+  try {
+    checkClaudeSessionIdleTimeout(key);
+  } catch (error) {
+    logMainProcessWarn(
+      `[session-manager] Idle check failed for Claude session ${key}`,
+      error,
+    );
+    if (!sessionRunsClaudeCli(sessions.get(key))) return;
+    claudeSessionBusySeenAt.set(key, Date.now());
+    armClaudeSessionIdleTimer(key, CLAUDE_SESSION_FAILED_IDLE_CHECK_RETRY_MS);
+  }
+}
+
+function checkClaudeSessionIdleTimeout(key: string): void {
+  const entry = sessions.get(key);
+  // Re-read on every check: the harness can be stamped after registration.
+  if (!sessionRunsClaudeCli(entry)) {
+    claudeSessionBusySeenAt.delete(key);
+    return;
+  }
+  const now = Date.now();
+  if (claudeSessionIdleReleaseBlocked(key, entry)) {
+    claudeSessionBusySeenAt.set(key, now);
+    armClaudeSessionIdleTimer(key, claudeSessionBusyRecheckMs());
+    return;
+  }
+  const remainingMs =
+    claudeSessionIdleSince(key, entry) + claudeSessionIdleTimeoutMs - now;
+  if (remainingMs > 0) {
+    armClaudeSessionIdleTimer(key, remainingMs);
+    return;
+  }
+  requestIdleClaudeSessionRelease(key, entry, 'timeout');
+  // A release that activity or the chat call off waits for another idle
+  // period.
+  armClaudeSessionIdleTimer(key, claudeSessionIdleTimeoutMs);
+}
+
+function claudeSessionIdleSince(key: string, entry: ActiveSession): number {
+  return Math.max(entry.lastActivityAt, claudeSessionBusySeenAt.get(key) ?? 0);
+}
+
+/**
+ * The session can start a turn on its own (which covers steering input in
+ * flight), or already has a pending release (an archived chat's, which stays
+ * in charge).
+ */
+function claudeSessionIdleReleaseBlocked(
+  key: string,
+  entry: ActiveSession,
+): boolean {
+  return (
+    idleSessionReleases.has(key) || sessionCanStartTurnOnItsOwn(key, entry)
+  );
+}
+
+/**
+ * Confirm callbacks of the pending releases the idle timeout requested, which
+ * a timeout change withdraws and measures again. Memory pressure and
+ * archived-chat releases are not in it.
+ */
+const claudeIdleTimeoutReleaseConfirms = new WeakSet<
+  () => Promise<IdleChatSessionReleaseDecision>
+>();
+
+/**
+ * Hand an idle Claude session to {@link releaseChatSessionWhenIdle} unless
+ * {@link claudeSessionIdleReleaseBlocked}. Memory pressure instead takes over
+ * a pending timeout release of an idle session, so a timeout change no longer
+ * withdraws it. True when a release was requested or taken over.
+ */
+function requestIdleClaudeSessionRelease(
+  key: string,
+  entry: ActiveSession,
+  trigger: 'timeout' | 'memory_pressure',
+): boolean {
+  const pending = idleSessionReleases.get(key);
+  if (
+    trigger === 'memory_pressure' &&
+    pending !== undefined &&
+    claudeIdleTimeoutReleaseConfirms.has(pending.confirm) &&
+    !sessionCanStartTurnOnItsOwn(key, entry)
+  ) {
+    claudeIdleTimeoutReleaseConfirms.delete(pending.confirm);
+    return true;
+  }
+  if (claudeSessionIdleReleaseBlocked(key, entry)) return false;
+  let target: ReturnType<typeof parseSessionKey>;
+  try {
+    target = parseSessionKey(key);
+  } catch {
+    return false;
+  }
+  const activityAt = entry.lastActivityAt;
+  const confirm = (): Promise<IdleChatSessionReleaseDecision> =>
+    confirmIdleClaudeSessionRelease(target, activityAt);
+  if (trigger === 'timeout') claudeIdleTimeoutReleaseConfirms.add(confirm);
+  releaseChatSessionWhenIdle(target, confirm);
+  return idleSessionReleases.has(key);
+}
+
+function cancelPendingClaudeIdleTimeoutRelease(key: string): void {
+  const pending = idleSessionReleases.get(key);
+  if (pending && claudeIdleTimeoutReleaseConfirms.has(pending.confirm)) {
+    cancelIdleSessionRelease(key);
+  }
+}
+
+async function confirmIdleClaudeSessionRelease(
+  target: ReturnType<typeof parseSessionKey>,
+  activityAt: number,
+): Promise<IdleChatSessionReleaseDecision> {
+  // Lazy by design: the reload coordinator's catalog reaches the skill and
+  // plugin services. Loaded first so the checks below run with no await
+  // before the release.
+  const { deferredToolsReloadCoordinator } =
+    await import('../deferred-tools/reload-coordinator');
+  const entry = sessions.get(
+    sessionKey(target.projectId, target.worktreeId, target.chatId),
+  );
+  // Activity since the request starts a new idle period.
+  if (entry?.lastActivityAt !== activityAt) return 'retain';
+  if (entry.session.hasPendingSteeringInput?.() === true) return 'retain';
+  if (deferredToolsReloadCoordinator.hasActiveReload(target)) return 'retain';
+  return 'release';
+}
+
+/**
+ * Applies to existing Claude-harness sessions, measured from their last
+ * activity. A release the old timeout queued is measured again, so it is
+ * requested anew only if the new timeout has also passed.
+ */
+export function updateClaudeSessionIdleTimeoutMinutes(minutes: number): void {
+  if (!Number.isFinite(minutes) || minutes <= 0) return;
+  const timeoutMs = Math.round(minutes * 60_000);
+  if (timeoutMs === claudeSessionIdleTimeoutMs) return;
+  claudeSessionIdleTimeoutMs = timeoutMs;
+  for (const key of Array.from(sessions.keys())) {
+    cancelPendingClaudeIdleTimeoutRelease(key);
+    checkClaudeSessionIdleTimeoutSafely(key);
+  }
+}
+
+/**
+ * Critical memory pressure: release idle sessions that run a `claude` CLI
+ * ({@link sessionRunsClaudeCli}) now instead of at their idle timeout. Busy
+ * sessions, and sessions active within the last
+ * {@link IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS} (a provider continuation may
+ * still be on its way), are untouched; the next sweep reconsiders them.
+ * Returns how many releases were requested; each completes after the
+ * release's quiet period unless activity resumes first.
+ */
+export function releaseIdleClaudeSessionsForMemoryPressure(): number {
+  const quietSince = Date.now() - IDLE_SESSION_RELEASE_ACTIVE_SETTLE_MS;
+  let requested = 0;
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    if (
+      !sessionRunsClaudeCli(entry) ||
+      claudeSessionIdleSince(key, entry) > quietSince
+    ) {
+      continue;
+    }
+    try {
+      if (requestIdleClaudeSessionRelease(key, entry, 'memory_pressure')) {
+        requested += 1;
+      }
+    } catch (error) {
+      // Keep this session; the rest of the sweep still runs.
+      logMainProcessWarn(
+        `[session-manager] Memory pressure release check failed for ${key}`,
+        error,
+      );
+    }
+  }
+  return requested;
+}
+
 export async function invalidateProviderAuthSessions(
   providerType: Extract<AgentProviderType, 'claude' | 'codex'>,
   reason: string,
@@ -2152,6 +3491,11 @@ export async function invalidateProviderAuthSessions(
     providerType,
     getProviderSessionAuthGeneration(providerType) + 1,
   );
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    if (entry.providerType === providerType) {
+      notifySteeringEligibilityChanged(key);
+    }
+  }
   if (options.activeTurnPolicy !== 'preserve')
     providerAuthGenerations.set(
       providerType,
@@ -2174,12 +3518,10 @@ export async function invalidateProviderAuthSessions(
       continue;
     }
     const hasActiveWork =
-      entry.turnActive ||
-      entry.pendingMessageCount > 0 ||
-      entry.activeBackgroundTaskIds.size > 0 ||
+      hasActiveTurnOrNativeBackgroundWork(entry) ||
       (options.preservePreparingTurns === true && preparingTurnCounts.has(key));
     if (options.activeTurnPolicy === 'preserve' && hasActiveWork) {
-      entry.recreateOnNextTurn = true;
+      markSessionEntryForNextTurnRecreation(key, entry, 'account');
       continue;
     }
     toDestroy.push({ key, entry });
@@ -2222,12 +3564,9 @@ export async function invalidateSessionsForOrganizations(
           normalizedOrganizationIds.has(owner.organizationId.toLowerCase())));
     if (!affected) continue;
 
-    const hasActiveWork =
-      entry.turnActive ||
-      entry.pendingMessageCount > 0 ||
-      entry.activeBackgroundTaskIds.size > 0;
+    const hasActiveWork = hasActiveTurnOrNativeBackgroundWork(entry);
     if (options.activeTurnPolicy === 'preserve' && hasActiveWork) {
-      entry.recreateOnNextTurn = true;
+      markSessionEntryForNextTurnRecreation(key, entry, 'organization');
       continue;
     }
     toDestroy.push({ key, entry });
@@ -2268,6 +3607,39 @@ export function isSessionUnavailableForTaskStopError(error: unknown): boolean {
  */
 export type StopBackgroundTaskOutcome = 'stopped' | 'already-finished';
 
+interface E2eStopTaskRequest {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+  taskId: string;
+}
+
+function isE2eStopTaskRequestList(
+  value: unknown,
+): value is E2eStopTaskRequest[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (request: unknown) =>
+        isPlainRecord(request) &&
+        typeof request.projectId === 'string' &&
+        typeof request.worktreeId === 'string' &&
+        typeof request.chatId === 'string' &&
+        typeof request.taskId === 'string',
+    )
+  );
+}
+
+function recordE2eStopTaskRequest(request: E2eStopTaskRequest): void {
+  const globalKey = '__CANOPY_E2E_STOP_TASK_REQUESTS__';
+  const existing: unknown = Reflect.get(globalThis, globalKey);
+  if (isE2eStopTaskRequestList(existing)) {
+    existing.push(request);
+    return;
+  }
+  Reflect.set(globalThis, globalKey, [request]);
+}
+
 /**
  * The context-window breakdown for a live chat. Only Claude sessions report
  * categories; other harnesses and chats without a live session resolve
@@ -2296,8 +3668,16 @@ export async function stopTaskForSession(
   chatId: string,
   taskId: string,
 ): Promise<StopBackgroundTaskOutcome> {
-  const entry = sessions.get(sessionKey(projectId, worktreeId, chatId));
+  const key = sessionKey(projectId, worktreeId, chatId);
+  const entry = sessions.get(key);
   if (!entry) {
+    if (isE2eBuild()) {
+      const e2eOwner = e2eIngestedLiveBackgroundTasks.get(key);
+      if (e2eOwner?.liveBackgroundTasks.has(taskId)) {
+        recordE2eStopTaskRequest({ projectId, worktreeId, chatId, taskId });
+        return 'stopped';
+      }
+    }
     throw new SessionUnavailableForTaskStopError();
   }
 
@@ -2315,13 +3695,59 @@ export async function stopTaskForSession(
     taskId,
   );
   if (outcome === 'already-finished') {
-    entry.liveBackgroundTasks.delete(taskId);
+    const wasBackgroundBusy = hasBusyBackgroundWork(entry);
+    const liveTaskRemoved = entry.liveBackgroundTasks.delete(taskId);
+    entry.activeBackgroundTaskIds.delete(taskId);
+    if (liveTaskRemoved) {
+      notifyLiveBackgroundTasksListeners(
+        sessionKey(projectId, worktreeId, chatId),
+      );
+    }
+    syncChatWake(sessionKey(projectId, worktreeId, chatId));
+    if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
+      notifyChatSessionActivityListeners();
+    }
   }
   return outcome;
 }
 
 /**
+ * A registration found another live instance under its key, which would
+ * otherwise keep running, and keep its CLI, with nothing tracking it. Detach
+ * and destroy it before the new entry exists, so the synchronous part of its
+ * teardown still owns the key. Key-scoped output pollers and observability
+ * entries pass to the successor and are left alone.
+ */
+function tearDownDisplacedSession(key: string, displaced: ActiveSession): void {
+  logMainProcessWarn(
+    `[session-manager] Registration displaced a live session for ${key}; destroying it`,
+  );
+  const finishRemoval = detachSessionForTeardown(key, displaced);
+  // Now, not once destroy() settles: that waits for the old query loop to
+  // exit, and nothing updates a detached entry's tasks meanwhile.
+  notifySessionEndedBackgroundTasks(key, displaced);
+  rejectAllForSession(key);
+  let destroyed: Promise<void>;
+  try {
+    destroyed = displaced.session.destroy();
+  } catch (error: unknown) {
+    destroyed = Promise.reject(
+      error instanceof Error ? error : new Error(String(error)),
+    );
+  }
+  void destroyed
+    .catch((error: unknown) => {
+      logMainProcessWarn(
+        `[session-manager] Failed to destroy displaced session ${key}`,
+        error,
+      );
+    })
+    .finally(finishRemoval);
+}
+
+/**
  * Register an active session. Called by providers when creating a session.
+ * A live entry under the same key is torn down, never silently overwritten.
  */
 export function registerSession(
   key: string,
@@ -2334,12 +3760,12 @@ export function registerSession(
   codeGraphToolsAdvertised = false,
   executionHarness?: AgentSessionOptions['executionHarness'],
 ): void {
-  // If we're overwriting an active entry that holds a wake lock, release it
-  // first so we don't strand the holder when the new entry initializes
-  // `wakeLockHeld: false`.
   const previous = sessions.get(key);
-  if (previous?.wakeLockHeld) {
-    getWakeLockService().release(`chat:${key}`);
+  if (previous) markSessionTeardownCause(key, 'recycle');
+  if (previous && previous.session !== session) {
+    tearDownDisplacedSession(key, previous);
+  } else if (previous) {
+    notifySessionEndedBackgroundTasks(key, previous);
   }
   const now = Date.now();
   sessions.set(key, {
@@ -2362,7 +3788,7 @@ export function registerSession(
     recreateOnNextTurn: false,
     turnActive: false,
     activeUserMessageId: undefined,
-    activeTurnCancelRequested: false,
+    cancelRequestedUserMessageId: undefined,
     createdAt: now,
     lastActivityAt: now,
     turnElapsedBeforeCurrentSegmentMs: 0,
@@ -2370,22 +3796,39 @@ export function registerSession(
     pendingMessageCount: 0,
     activeBackgroundTaskIds: new Set<string>(),
     continuationToolUseIds: new Set<string>(),
+    nonBusyBackgroundToolUseIds: new Set<string>(),
     liveBackgroundTasks: new Map<string, LiveBackgroundTask>(),
+    codexBackgroundTaskIds: new Set<string>(),
     foregroundTaskMetadata: new Map<string, LiveBackgroundTask>(),
+    unknownTaskTypesLogged: new Set<string>(),
     claudeNativeSubagentTasks: new Map<string, ClaudeNativeSubagentTask>(),
+    claudeSessionCrons: {
+      unconfirmedToolUseIds: new Set<string>(),
+      confirmedToolUseIds: new Set<string>(),
+      scheduledCount: 0,
+      listUnreadable: false,
+    },
     codexNativeSubagentThreadIds: new Set<string>(),
     codexNativeSubagentTurns: new Map<string, string>(),
-    wakeLockHeld: false,
+    codexLiveNativeSubagentTurns: new Map<string, string>(),
     assistantMode,
     toolProfileHash,
     codeGraphToolsAdvertised,
   });
+  // A replaced session's work no longer counts; canonical owners still do.
+  syncChatWake(key);
+  if (previous || e2eIngestedLiveBackgroundTasks.has(key)) {
+    notifyLiveBackgroundTasksListeners(key);
+  }
+  notifySteeringEligibilityChanged(key);
   const entry = sessions.get(key);
   if (entry) {
     recordSessionDiagnostic(key, entry, {
       kind: 'session_registered',
     });
   }
+  if (sessionRunsClaudeCli(entry)) startClaudeSessionIdleWatch(key);
+  else clearClaudeSessionIdleState(key);
   notifyChatSessionActivityListeners();
 }
 
@@ -2407,17 +3850,69 @@ export function getSessionGlobalInstructionsSnapshot(
     ?.globalInstructionsSnapshot;
 }
 
-export function updateSessionModel(key: string, model: ChatModel): void {
-  const entry = sessions.get(key);
-  if (!entry) {
-    return;
-  }
+// Entry mutators below update in place: the entry object is the registration
+// identity that teardowns and successor checks compare (CAN-4833).
 
-  sessions.set(key, {
-    ...entry,
+/** Capture the settings overlay for an active provider session. */
+export function setSessionTurnSettings(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  settings: SessionTurnSettings,
+): void {
+  const key = sessionKey(projectId, worktreeId, chatId);
+  const entry = sessions.get(key);
+  if (!entry) return;
+  entry.turnSettings = cloneSessionTurnSettings(settings);
+}
+
+/** Read a defensive copy of the active session's captured turn settings. */
+export function getSessionTurnSettings(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): SessionTurnSettings | undefined {
+  const settings = sessions.get(
+    sessionKey(projectId, worktreeId, chatId),
+  )?.turnSettings;
+  return settings ? cloneSessionTurnSettings(settings) : undefined;
+}
+
+function updateSessionTurnSettingsModelByKey(
+  key: string,
+  model: ChatModel,
+): void {
+  const entry = sessions.get(key);
+  if (!entry?.turnSettings) return;
+  entry.turnSettings = cloneSessionTurnSettings({
+    ...entry.turnSettings,
     model,
-    selectedModel: model,
   });
+}
+
+/** Update the model in an active session's captured settings overlay. */
+export function updateSessionTurnSettingsModel(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  model: ChatModel,
+): void {
+  updateSessionTurnSettingsModelByKey(
+    sessionKey(projectId, worktreeId, chatId),
+    model,
+  );
+}
+
+export function updateSessionModel(key: string, model: ChatModel): void {
+  if (!sessions.has(key)) return;
+
+  updateSessionTurnSettingsModelByKey(key, model);
+  const entry = sessions.get(key);
+  if (!entry) return;
+
+  entry.model = model;
+  entry.selectedModel = model;
+  notifySteeringEligibilityChanged(key);
 }
 
 export function getSessionSelectedModel(
@@ -2433,6 +3928,7 @@ export function markSessionForNextTurnRecreation(
   projectId: string,
   worktreeId: string,
   chatId: string,
+  reason: SessionRecreateReason = 'unspecified',
 ): void {
   const key = sessionKey(projectId, worktreeId, chatId);
   const entry = sessions.get(key);
@@ -2440,10 +3936,19 @@ export function markSessionForNextTurnRecreation(
     return;
   }
 
-  sessions.set(key, {
-    ...entry,
-    recreateOnNextTurn: true,
-  });
+  markSessionEntryForNextTurnRecreation(key, entry, reason);
+}
+
+function markSessionEntryForNextTurnRecreation(
+  key: string,
+  entry: ActiveSession,
+  reason: SessionRecreateReason,
+): void {
+  const recreateReasons = new Set(entry.recreateReasons ?? []);
+  recreateReasons.add(reason);
+  entry.recreateOnNextTurn = true;
+  entry.recreateReasons = recreateReasons;
+  notifySteeringEligibilityChanged(key);
 }
 
 /** Refresh both parent harnesses at the next turn boundary, without interrupting root work. */
@@ -2457,8 +3962,9 @@ export function markManagedDelegationSessionsForNextTurnRecreation(
         entry.managedDelegationMode,
         nextMode,
       )
-    )
-      sessions.set(key, { ...entry, recreateOnNextTurn: true });
+    ) {
+      markSessionEntryForNextTurnRecreation(key, entry, 'managed_delegation');
+    }
   }
 }
 
@@ -2481,10 +3987,7 @@ export function markCodexSessionsForNextTurnRecreation(
           : 'worktree';
     if (scope !== 'all' && scope !== sessionScope) continue;
 
-    sessions.set(key, {
-      ...entry,
-      recreateOnNextTurn: true,
-    });
+    markSessionEntryForNextTurnRecreation(key, entry, 'codex_preferences');
   }
 }
 
@@ -2496,6 +3999,46 @@ export function shouldRecreateSessionOnNextTurn(
   return Boolean(
     sessions.get(sessionKey(projectId, worktreeId, chatId))?.recreateOnNextTurn,
   );
+}
+
+/** Why the live session is marked for recreation; empty when it is not. */
+export function getSessionRecreateReasons(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): readonly SessionRecreateReason[] {
+  const entry = sessions.get(sessionKey(projectId, worktreeId, chatId));
+  if (!entry?.recreateOnNextTurn) return [];
+  const reasons = Array.from(entry.recreateReasons ?? []);
+  return reasons.length > 0 ? reasons : ['unspecified'];
+}
+
+/**
+ * Whether the chat's provider process owns live native background work that a
+ * session restart would stop: any live provider task (ambient tasks are never
+ * recorded) or busy background tool use. Managed delegations never count;
+ * they survive a recycle.
+ */
+export function chatHasNativeBackgroundWork(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): boolean {
+  const entry = sessions.get(sessionKey(projectId, worktreeId, chatId));
+  return (
+    entry !== undefined &&
+    (entry.liveBackgroundTasks.size > 0 || hasBusyBackgroundWork(entry))
+  );
+}
+
+/** A settings setter must not patch or replace this session right now. */
+export function sessionHasActiveTurnOrNativeWork(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): boolean {
+  const entry = sessions.get(sessionKey(projectId, worktreeId, chatId));
+  return entry !== undefined && hasActiveTurnOrNativeBackgroundWork(entry);
 }
 
 function warnCodexIdleTimeoutPropagationFailure(
@@ -2557,20 +4100,8 @@ export function markTurnActive(key: string, userMessageId?: string): void {
     entry.turnCount += 1;
   }
   entry.turnActive = true;
-  if (entry.activeUserMessageId !== userMessageId) {
-    entry.activeTurnCancelRequested = false;
-  }
   entry.activeUserMessageId = userMessageId;
-  if (
-    userMessageId !== undefined &&
-    pendingTurnCancels.get(key)?.delete(userMessageId)
-  ) {
-    // An exact-turn stop arrived before this turn started; apply it once the
-    // provider's start returns, still by the same message identity.
-    void Promise.resolve()
-      .then(() => cancelActiveChatTurn(key, userMessageId))
-      .catch(() => undefined);
-  }
+  if (userMessageId !== undefined) applyPendingTurnCancel(key, userMessageId);
   entry.codexContinuationRevivalTurn = undefined;
   entry.lastActivityAt = now;
   entry.pendingMessageCount = Math.max(0, entry.pendingMessageCount - 1);
@@ -2581,7 +4112,7 @@ export function markTurnActive(key: string, userMessageId?: string): void {
     });
     notifyChatSessionActivityListeners();
   }
-  syncWakeLockForSession(key, entry);
+  syncChatWake(key);
 }
 
 function markTurnIdleState(
@@ -2600,7 +4131,7 @@ function markTurnIdleState(
   // preserve its identity until a provider continuation or terminal idle.
   if (!continuationRevivalAllowed) {
     entry.activeUserMessageId = undefined;
-    entry.activeTurnCancelRequested = false;
+    entry.cancelRequestedUserMessageId = undefined;
   }
   entry.codexContinuationRevivalTurn =
     continuationRevivalAllowed &&
@@ -2630,29 +4161,125 @@ function markTurnIdleState(
   if (wasTurnActive || hadPendingMessages) {
     notifyChatSessionActivityListeners();
   }
-  syncWakeLockForSession(key, entry);
+  syncChatWake(key);
+}
+
+function markProviderOwnedRunActive(
+  key: string,
+  entry: ActiveSession,
+): boolean {
+  if (entry.turnActive) return false;
+  const now = Date.now();
+  entry.turnActive = true;
+  entry.codexContinuationRevivalTurn = undefined;
+  entry.turnStartedAt = now;
+  entry.turnCount += 1;
+  entry.lastActivityAt = now;
+  recordSessionDiagnostic(key, entry, { kind: 'turn_active' });
+  syncChatWake(key);
+  return true;
+}
+
+function markProviderOwnedRunIdle(key: string, entry: ActiveSession): boolean {
+  const wasTurnActive = entry.turnActive;
+  if (!wasTurnActive) return false;
+  const now = Date.now();
+  entry.turnActive = false;
+  entry.codexContinuationRevivalTurn = undefined;
+  if (entry.turnStartedAt !== undefined) {
+    entry.turnElapsedBeforeCurrentSegmentMs += Math.max(
+      0,
+      now - entry.turnStartedAt,
+    );
+  }
+  entry.lastActivityAt = now;
+  entry.turnStartedAt = undefined;
+  // A provider-owned run does not consume or clear messages queued for the
+  // ordinary send loop.
+  recordSessionDiagnostic(key, entry, { kind: 'turn_idle' });
+  syncChatWake(key);
+  return true;
+}
+
+function isProviderOwnedStartEvent(
+  data: unknown,
+  descriptor: ProviderRunDescriptor,
+): boolean {
+  if (!isPlainRecord(data) || data.type !== 'codex') return false;
+  const event = isPlainRecord(data.event) ? data.event : undefined;
+  return (
+    event?.type === 'turn.started' &&
+    readRecordString(event, 'thread_id') === descriptor.threadId &&
+    readRecordString(event, 'turn_id') === descriptor.turnId
+  );
+}
+
+function isProviderOwnedTerminalEvent(
+  data: unknown,
+  descriptor: ProviderRunDescriptor,
+): boolean {
+  if (!isPlainRecord(data) || data.type !== 'codex') return false;
+  const event = isPlainRecord(data.event) ? data.event : undefined;
+  return (
+    (event?.type === 'turn.completed' ||
+      event?.type === 'turn.failed' ||
+      event?.type === 'error') &&
+    readRecordString(event, 'thread_id') === descriptor.threadId &&
+    readRecordString(event, 'turn_id') === descriptor.turnId
+  );
+}
+
+/**
+ * The user message that owns the chat's provider turn (D14). Canonical turn
+ * state decides once it owns root turns: its receipt-time `current` stays
+ * current while the turn pauses for user input, and a turn it ended is never
+ * stopped. The session's dequeue record answers only when canonical state has
+ * no turn for the chat, or has not yet bound its turn to a prompt: OpenCode
+ * publishes no lifecycle, a provider can mark a dequeued turn active before
+ * its TurnStarted (Codex's turn.started), and a native Claude turn binds only
+ * when the provider echoes its prompt.
+ */
+function providerTurnUserMessageId(
+  key: string,
+  entry: ActiveSession,
+): string | undefined {
+  const ownership = getChatTurnOwnership();
+  const [projectId, worktreeId, ...chatIdParts] = key.split('/');
+  const canonical =
+    ownership.isBound() && projectId && worktreeId
+      ? ownership.getSnapshot({
+          projectId,
+          worktreeId,
+          chatId: chatIdParts.join('/'),
+        }).receipt?.state
+      : undefined;
+  if (canonical?.current?.userMessageId !== undefined)
+    return canonical.current.userMessageId;
+  return canonical?.lastEnded?.userMessageId === entry.activeUserMessageId
+    ? undefined
+    : entry.activeUserMessageId;
 }
 
 /**
  * Request cancellation only when the requested user message owns the
- * provider turn, including while that turn is paused for user input (its
- * identity is kept until terminal idle). The provider is notified
- * synchronously; completion remains owned by its normal terminal-event path.
+ * provider turn, including while that turn is paused for user input. The
+ * provider is notified synchronously; completion remains owned by its normal
+ * terminal-event path.
  */
 export function cancelActiveChatTurn(
   key: string,
   userMessageId: string,
 ): boolean {
   const entry = sessions.get(key);
-  if (!entry || entry.activeUserMessageId !== userMessageId) {
+  if (!entry || providerTurnUserMessageId(key, entry) !== userMessageId) {
     return false;
   }
   pendingTurnCancels.get(key)?.delete(userMessageId);
-  if (entry.activeTurnCancelRequested) {
+  if (entry.cancelRequestedUserMessageId === userMessageId) {
     return true;
   }
 
-  entry.activeTurnCancelRequested = true;
+  entry.cancelRequestedUserMessageId = userMessageId;
   // Claude-compatible providers stop by aborting the session-wide query, as
   // the chat Stop does; the next turn must start a fresh session.
   if (entry.providerType === 'claude' || entry.providerType === 'ollama') {
@@ -2663,13 +4290,13 @@ export function cancelActiveChatTurn(
     void cancellation.catch(() => {
       if (
         sessions.get(key) === entry &&
-        entry.activeUserMessageId === userMessageId
+        entry.cancelRequestedUserMessageId === userMessageId
       ) {
-        entry.activeTurnCancelRequested = false;
+        entry.cancelRequestedUserMessageId = undefined;
       }
     });
   } catch (error: unknown) {
-    entry.activeTurnCancelRequested = false;
+    entry.cancelRequestedUserMessageId = undefined;
     throw error;
   }
   return true;
@@ -2693,6 +4320,18 @@ export function requestChatTurnCancel(
   const pending = pendingTurnCancels.get(key) ?? new Set<string>();
   pending.add(userMessageId);
   pendingTurnCancels.set(key, pending);
+}
+
+/**
+ * Apply a pending exact-turn stop when its turn starts: at the provider's
+ * dequeue or its canonical TurnStarted, whichever makes it the owner first.
+ * It stays pending until it applies, and it runs after the caller returns.
+ */
+function applyPendingTurnCancel(key: string, userMessageId: string): void {
+  if (!pendingTurnCancels.get(key)?.has(userMessageId)) return;
+  void Promise.resolve()
+    .then(() => cancelActiveChatTurn(key, userMessageId))
+    .catch(() => undefined);
 }
 
 /** Mark a session as idle between turns (called when a result/error event is emitted). */
@@ -2740,12 +4379,40 @@ export function noteSessionMessageQueued(
     });
     notifyChatSessionActivityListeners();
   }
-  syncWakeLockForSession(key, entry);
+  syncChatWake(key);
 }
 
 export function recordSessionEvent(key: string, data: unknown): void {
   const entry = sessions.get(key);
   if (!entry) {
+    return;
+  }
+
+  const [projectId, worktreeId, ...chatIdParts] = key.split('/');
+  const chatId = chatIdParts.join('/');
+  const classification = classifyProviderRunEvent(data, {
+    projectId: projectId ?? '',
+    worktreeId: worktreeId ?? '',
+    chatId,
+  });
+  if (
+    classification.kind === 'reject' ||
+    classification.kind === 'transcript_only'
+  ) {
+    return;
+  }
+  const descriptor =
+    classification.kind === 'ordinary' ? classification.run : undefined;
+  const providerOwnedTerminal =
+    descriptor?.origin === 'provider_owned' &&
+    isProviderOwnedTerminalEvent(data, descriptor);
+  if (
+    providerOwnedTerminal &&
+    (entry.codexRootThreadId !== descriptor.threadId ||
+      entry.codexRootTurnId !== descriptor.turnId)
+  ) {
+    // An authenticated terminal can still be stale relative to this session's
+    // current owner. Do not let it replace identity or idle a newer run.
     return;
   }
 
@@ -2769,14 +4436,35 @@ export function recordSessionEvent(key: string, data: unknown): void {
     }
   }
   updateCodexRootTurnIdentity(entry, data);
+  const wasBackgroundBusy = hasBusyBackgroundWork(entry);
   updateNativeSubagentCorrelation(entry, data);
+  updateClaudeSessionCronToolUses(entry, data);
   const backgroundTaskActivityChanged = updateBackgroundTaskState(entry, data);
-  updateLiveBackgroundTaskState(entry, data);
-  const turnRevived = reviveTurnForAgentContinuation(key, entry, data);
-  if (turnRevived || backgroundTaskActivityChanged) {
+  const liveBackgroundTasksChanged = updateLiveBackgroundTaskState(entry, data);
+  if (liveBackgroundTasksChanged) notifyLiveBackgroundTasksListeners(key);
+  const providerBackgroundBusyChanged =
+    wasBackgroundBusy !== hasBusyBackgroundWork(entry);
+  const providerOwnedStart =
+    descriptor?.origin === 'provider_owned' &&
+    isProviderOwnedStartEvent(data, descriptor);
+  const turnRevived = providerOwnedStart
+    ? markProviderOwnedRunActive(key, entry)
+    : providerOwnedTerminal
+      ? markProviderOwnedRunIdle(key, entry)
+      : reviveTurnForAgentContinuation(key, entry, data);
+  if (
+    turnRevived ||
+    backgroundTaskActivityChanged ||
+    providerBackgroundBusyChanged
+  ) {
     notifyChatSessionActivityListeners();
   }
-  syncWakeLockForSession(key, entry);
+  syncChatWake(key);
+  // Live-task and native-subagent sets change without an activity signal.
+  // Phase markers are main's own bookkeeping, not provider output.
+  evaluateIdleSessionRelease(key, {
+    providerActivity: !(isPlainRecord(data) && data.type === 'phase'),
+  });
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -2863,6 +4551,10 @@ function updateCodexRootTurnIdentity(
       entry.codexNativeSubagentThreadIds.clear();
       entry.codexNativeSubagentTurns.clear();
     }
+    // The client emits `init` only when it (re)establishes its thread: after
+    // a new client or an app-server restart. Children of the earlier client
+    // can no longer report a terminal event here.
+    entry.codexLiveNativeSubagentTurns.clear();
     entry.codexRootThreadId = data.session_id;
     entry.codexRootTurnId = undefined;
     entry.codexContinuationRevivalTurn = undefined;
@@ -2898,6 +4590,7 @@ function updateNativeSubagentCorrelation(
   }
   if (entry.executionHarness === 'codex') {
     updateCodexNativeSubagentTurns(entry, data);
+    updateCodexLiveNativeSubagentTurns(entry, data);
   }
 }
 
@@ -3072,6 +4765,63 @@ function updateCodexNativeSubagentTurns(
   }
 }
 
+/**
+ * Track child turns for release liveness. The connection routes a child
+ * thread's notifications only to the client that owns its root, so every
+ * non-root turn on this session belongs to one of its children, whether or not
+ * a receiver item correlated it.
+ */
+function updateCodexLiveNativeSubagentTurns(
+  entry: ActiveSession,
+  data: unknown,
+): void {
+  const rootThreadId = entry.codexRootThreadId;
+  if (
+    rootThreadId === undefined ||
+    !isPlainRecord(data) ||
+    data.type !== 'codex' ||
+    !isPlainRecord(data.event)
+  ) {
+    return;
+  }
+  const event = data.event;
+  const eventType = readRecordString(event, 'type');
+  const threadId = readRecordString(event, 'thread_id');
+  if (!eventType || !threadId || threadId === rootThreadId) return;
+  const turnId = readRecordString(event, 'turn_id');
+
+  if (eventType === 'turn.started') {
+    // '' stands for a turn the provider did not name; any terminal event of
+    // the thread ends it.
+    entry.codexLiveNativeSubagentTurns.delete(threadId);
+    entry.codexLiveNativeSubagentTurns.set(threadId, turnId ?? '');
+    while (
+      entry.codexLiveNativeSubagentTurns.size >
+      MAX_CODEX_NATIVE_SUBAGENT_THREADS
+    ) {
+      const oldestThreadId = entry.codexLiveNativeSubagentTurns
+        .keys()
+        .next().value;
+      if (typeof oldestThreadId !== 'string') break;
+      entry.codexLiveNativeSubagentTurns.delete(oldestThreadId);
+    }
+    return;
+  }
+
+  // A non-retrying `error` can be a turn's only terminal signal (quota).
+  if (
+    eventType !== 'turn.completed' &&
+    eventType !== 'turn.failed' &&
+    eventType !== 'error'
+  ) {
+    return;
+  }
+  const liveTurnId = entry.codexLiveNativeSubagentTurns.get(threadId);
+  if (turnId === undefined || liveTurnId === '' || turnId === liveTurnId) {
+    entry.codexLiveNativeSubagentTurns.delete(threadId);
+  }
+}
+
 function readRecordStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter(
@@ -3181,11 +4931,11 @@ function isTerminalTaskUpdatePatchStatus(status: string | undefined): boolean {
  * appear as agent activity.
  */
 function updateLiveBackgroundTaskState(
-  entry: LiveBackgroundTaskOwner,
+  entry: LiveBackgroundTaskStateOwner,
   data: unknown,
-): void {
+): boolean {
   if (!isPlainRecord(data) || data.type !== 'system') {
-    return;
+    return false;
   }
 
   const subtype = readRecordString(data, 'subtype');
@@ -3195,12 +4945,16 @@ function updateLiveBackgroundTaskState(
   // signalled by `resetSessionLiveBackgroundTasks` at query start and by
   // teardown, both of which main owns directly.
   if (data.ambient === true) {
-    return;
+    return false;
   }
+
+  const previousTasks = new Map(entry.liveBackgroundTasks);
+  const changed = (): boolean =>
+    !liveBackgroundTaskMapsEqual(previousTasks, entry.liveBackgroundTasks);
 
   if (subtype === 'background_tasks_changed') {
     if (!Array.isArray(data.tasks)) {
-      return;
+      return false;
     }
     const replacement = new Map<string, LiveBackgroundTask>();
     for (const task of data.tasks) {
@@ -3208,67 +4962,114 @@ function updateLiveBackgroundTaskState(
       const taskId = readRecordString(task, 'task_id');
       if (!taskId) continue;
       const previous = entry.liveBackgroundTasks.get(taskId);
-      const toolUseId =
-        readRecordString(task, 'tool_use_id') ?? previous?.toolUseId;
-      const description =
-        readRecordString(task, 'description') ?? previous?.description;
-      replacement.set(taskId, {
-        ...(toolUseId ? { toolUseId } : {}),
-        ...(description ? { description } : {}),
-      });
+      const metadata = readLiveBackgroundTaskMetadata(task);
+      if (metadata.taskType !== undefined) {
+        warnForUnknownBackgroundTaskType(entry, metadata.taskType);
+      }
+      // The level signal owns membership, not metadata: old CLIs send only ids,
+      // so retain every known field for an id that survives replacement.
+      replacement.set(
+        taskId,
+        mergeLiveBackgroundTaskMetadata(previous, metadata),
+      );
     }
     entry.liveBackgroundTasks = replacement;
-    return;
+    return changed();
   }
 
   const taskId = readRecordString(data, 'task_id');
   if (!taskId) {
-    return;
+    return false;
   }
 
-  const eventToolUseId = readRecordString(data, 'tool_use_id');
-
   if (subtype === 'task_started') {
-    const startedDescription = readRecordString(data, 'description');
-    const hasBackgroundCorrelation =
-      data.is_backgrounded === undefined &&
-      entry.activeBackgroundTaskIds?.has(taskId) === true;
-    if (data.is_backgrounded !== true && !hasBackgroundCorrelation) {
-      rememberForegroundTaskMetadata(entry, taskId, {
-        ...(eventToolUseId ? { toolUseId: eventToolUseId } : {}),
-        ...(startedDescription ? { description: startedDescription } : {}),
-      });
-      return;
+    const metadata = readLiveBackgroundTaskMetadata(data);
+    const taskType = metadata.taskType;
+    if (taskType !== undefined) {
+      warnForUnknownBackgroundTaskType(entry, taskType);
     }
+
+    const isBackgrounded = data.is_backgrounded;
+    const hasBackgroundCorrelation =
+      isBackgrounded === undefined &&
+      entry.activeBackgroundTaskIds?.has(taskId) === true;
+    const isKnownAlwaysBackground =
+      taskType === 'local_workflow' ||
+      taskType === 'remote_agent' ||
+      taskType === 'in_process_teammate';
+    const isBackgroundEligibleType =
+      taskType === 'local_agent' ||
+      taskType === 'local_bash' ||
+      taskType === 'mcp_task';
+    const isUnknownTaskType =
+      taskType !== undefined &&
+      !isKnownAlwaysBackground &&
+      !isBackgroundEligibleType;
+    const shouldInclude =
+      isKnownAlwaysBackground ||
+      isUnknownTaskType ||
+      ((isBackgroundEligibleType || taskType === undefined) &&
+        (isBackgrounded === true || hasBackgroundCorrelation));
+
+    if (!shouldInclude) {
+      rememberForegroundTaskMetadata(entry, taskId, metadata);
+      return changed();
+    }
+
     entry.foregroundTaskMetadata.delete(taskId);
-    rememberLiveBackgroundTask(entry, taskId, {
-      ...(eventToolUseId ? { toolUseId: eventToolUseId } : {}),
-      ...(startedDescription ? { description: startedDescription } : {}),
-    });
-    return;
+    rememberLiveBackgroundTask(entry, taskId, metadata);
+    return changed();
   }
 
   if (subtype === 'task_updated') {
     const patch = isPlainRecord(data.patch) ? data.patch : undefined;
-    if (!patch) return;
+    if (!patch) return false;
     if (isTerminalTaskUpdatePatchStatus(readRecordString(patch, 'status'))) {
       entry.liveBackgroundTasks.delete(taskId);
       entry.foregroundTaskMetadata.delete(taskId);
-      return;
+      return changed();
     }
-    // A foreground task that outran its timeout is moved to the background.
-    if (patch.is_backgrounded === true) {
-      const patchDescription = readRecordString(patch, 'description');
+
+    const patchMetadata = readLiveBackgroundTaskMetadata(patch);
+    const current = entry.liveBackgroundTasks.get(taskId);
+    if (current) {
+      // A snapshot can list the task before its promotion; keep the foreground
+      // correlation (its tool_use_id) that the snapshot does not carry.
       const foreground = entry.foregroundTaskMetadata.get(taskId);
       entry.foregroundTaskMetadata.delete(taskId);
-      const toolUseId = eventToolUseId ?? foreground?.toolUseId;
-      const description = patchDescription ?? foreground?.description;
       rememberLiveBackgroundTask(entry, taskId, {
-        ...(toolUseId ? { toolUseId } : {}),
-        ...(description ? { description } : {}),
+        ...foreground,
+        ...patchMetadata,
       });
+      return changed();
     }
-    return;
+
+    // A foreground task that outran its timeout is moved to the background.
+    if (patch.is_backgrounded === true) {
+      const foreground = entry.foregroundTaskMetadata.get(taskId);
+      entry.foregroundTaskMetadata.delete(taskId);
+      rememberLiveBackgroundTask(entry, taskId, {
+        ...foreground,
+        ...readLiveBackgroundTaskMetadata(data),
+        ...patchMetadata,
+      });
+      return changed();
+    }
+
+    if (entry.foregroundTaskMetadata.has(taskId)) {
+      rememberForegroundTaskMetadata(entry, taskId, patchMetadata);
+    }
+    return changed();
+  }
+
+  if (subtype === 'task_progress') {
+    if (!entry.liveBackgroundTasks.has(taskId)) return false;
+    rememberLiveBackgroundTask(
+      entry,
+      taskId,
+      readLiveBackgroundTaskProgress(data),
+    );
+    return changed();
   }
 
   if (
@@ -3277,18 +5078,186 @@ function updateLiveBackgroundTaskState(
   ) {
     entry.liveBackgroundTasks.delete(taskId);
     entry.foregroundTaskMetadata.delete(taskId);
+    return changed();
   }
+
+  return false;
 }
 
 const MAX_FOREGROUND_TASK_METADATA = 256;
+const MAX_LIVE_BACKGROUND_TASK_STRING_LENGTH = 500;
+const KNOWN_BACKGROUND_TASK_TYPES = new Set([
+  'local_workflow',
+  'remote_agent',
+  'in_process_teammate',
+  'local_agent',
+  'local_bash',
+  'mcp_task',
+]);
+
+function readBoundedRecordString(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = readRecordString(record, key);
+  return value === undefined
+    ? undefined
+    : value.slice(0, MAX_LIVE_BACKGROUND_TASK_STRING_LENGTH);
+}
+
+function readRecordNumber(
+  record: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function readLiveBackgroundTaskMetadata(
+  record: Record<string, unknown>,
+): LiveBackgroundTask {
+  const metadata: LiveBackgroundTask = {};
+  const toolUseId = readBoundedRecordString(record, 'tool_use_id');
+  const description = readBoundedRecordString(record, 'description');
+  const taskType = readBoundedRecordString(record, 'task_type');
+  const workflowName = readBoundedRecordString(record, 'workflow_name');
+  const spawnDepth = readRecordNumber(record, 'spawn_depth');
+  const isBackgrounded = record.is_backgrounded;
+  const status = readRecordString(record, 'status');
+  if (toolUseId !== undefined) metadata.toolUseId = toolUseId;
+  if (description !== undefined) metadata.description = description;
+  if (taskType !== undefined) metadata.taskType = taskType;
+  if (workflowName !== undefined) metadata.workflowName = workflowName;
+  if (spawnDepth !== undefined) metadata.spawnDepth = spawnDepth;
+  if (typeof isBackgrounded === 'boolean') {
+    metadata.isBackgrounded = isBackgrounded;
+  }
+  if (status === 'pending' || status === 'running' || status === 'paused') {
+    metadata.status = status;
+  }
+  const summary = readBoundedRecordString(record, 'summary');
+  if (summary !== undefined) metadata.summary = summary;
+  const usage = readBackgroundTaskUsage(record.usage);
+  if (usage) metadata.usage = usage;
+  return metadata;
+}
+
+function readLiveBackgroundTaskProgress(
+  record: Record<string, unknown>,
+): LiveBackgroundTask {
+  const progress: LiveBackgroundTask = {};
+  const phase = readBoundedRecordString(record, 'description');
+  const summary = readBoundedRecordString(record, 'summary');
+  if (phase !== undefined) progress.phase = phase;
+  if (summary !== undefined) progress.summary = summary;
+  const usage = readBackgroundTaskUsage(record.usage);
+  if (usage) progress.usage = usage;
+  return progress;
+}
+
+function readBackgroundTaskUsage(
+  value: unknown,
+): LiveBackgroundTaskUsage | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const totalTokens = readRecordNumber(value, 'total_tokens');
+  const toolUses = readRecordNumber(value, 'tool_uses');
+  const durationMs = readRecordNumber(value, 'duration_ms');
+  if (
+    totalTokens === undefined &&
+    toolUses === undefined &&
+    durationMs === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(toolUses !== undefined ? { toolUses } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
+function mergeLiveBackgroundTaskMetadata(
+  ...sources: (LiveBackgroundTask | undefined)[]
+): LiveBackgroundTask {
+  const merged: LiveBackgroundTask = {};
+  for (const source of sources) {
+    if (!source) continue;
+    const usage = source.usage;
+    const flatMetadata = { ...source };
+    delete flatMetadata.usage;
+    Object.assign(merged, flatMetadata);
+    if (usage) merged.usage = { ...merged.usage, ...usage };
+  }
+  return merged;
+}
+
+function liveBackgroundTaskMapsEqual(
+  first: Map<string, LiveBackgroundTask>,
+  second: Map<string, LiveBackgroundTask>,
+): boolean {
+  if (first.size !== second.size) return false;
+  const firstTasks = Array.from(first.entries());
+  const secondTasks = Array.from(second.entries());
+  for (let index = 0; index < firstTasks.length; index += 1) {
+    const [firstId, firstTask] = firstTasks[index];
+    const [secondId, secondTask] = secondTasks[index];
+    if (firstId !== secondId) return false;
+    const fields: (keyof LiveBackgroundTask)[] = [
+      'toolUseId',
+      'description',
+      'taskType',
+      'workflowName',
+      'spawnDepth',
+      'isBackgrounded',
+      'status',
+      'phase',
+      'summary',
+    ];
+    if (fields.some((field) => firstTask[field] !== secondTask[field])) {
+      return false;
+    }
+    const firstUsage = firstTask.usage;
+    const secondUsage = secondTask.usage;
+    if (
+      firstUsage?.totalTokens !== secondUsage?.totalTokens ||
+      firstUsage?.toolUses !== secondUsage?.toolUses ||
+      firstUsage?.durationMs !== secondUsage?.durationMs
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function warnForUnknownBackgroundTaskType(
+  entry: LiveBackgroundTaskStateOwner,
+  taskType: string,
+): void {
+  if (
+    KNOWN_BACKGROUND_TASK_TYPES.has(taskType) ||
+    entry.unknownTaskTypesLogged.has(taskType)
+  ) {
+    return;
+  }
+  entry.unknownTaskTypesLogged.add(taskType);
+  logMainProcessWarn(
+    '[session-manager] Unknown background task type; treating it as background work',
+  );
+}
 
 function rememberForegroundTaskMetadata(
-  entry: LiveBackgroundTaskOwner,
+  entry: LiveBackgroundTaskStateOwner,
   taskId: string,
   task: LiveBackgroundTask,
 ): void {
+  const previous = entry.foregroundTaskMetadata.get(taskId);
   entry.foregroundTaskMetadata.delete(taskId);
-  entry.foregroundTaskMetadata.set(taskId, task);
+  entry.foregroundTaskMetadata.set(
+    taskId,
+    mergeLiveBackgroundTaskMetadata(previous, task),
+  );
   while (entry.foregroundTaskMetadata.size > MAX_FOREGROUND_TASK_METADATA) {
     const oldestTaskId = entry.foregroundTaskMetadata.keys().next().value;
     if (typeof oldestTaskId !== 'string') break;
@@ -3297,17 +5266,15 @@ function rememberForegroundTaskMetadata(
 }
 
 function rememberLiveBackgroundTask(
-  entry: LiveBackgroundTaskOwner,
+  entry: LiveBackgroundTaskStateOwner,
   taskId: string,
   task: LiveBackgroundTask,
 ): void {
   const previous = entry.liveBackgroundTasks.get(taskId);
-  const toolUseId = task.toolUseId ?? previous?.toolUseId;
-  const description = task.description ?? previous?.description;
-  entry.liveBackgroundTasks.set(taskId, {
-    ...(toolUseId ? { toolUseId } : {}),
-    ...(description ? { description } : {}),
-  });
+  entry.liveBackgroundTasks.set(
+    taskId,
+    mergeLiveBackgroundTaskMetadata(previous, task),
+  );
 }
 
 /**
@@ -3320,14 +5287,20 @@ function rememberLiveBackgroundTask(
 function notifySessionEndedBackgroundTasks(
   key: string,
   entry: ActiveSession,
+  options: { notifyListeners?: boolean } = {},
 ): void {
-  if (entry.liveBackgroundTasks.size === 0) {
-    return;
-  }
+  const stopCause = entry.teardownCause ?? 'session_ended';
+  // The cause belongs to this provider process only. Consume it even if the
+  // process had no remaining tasks or the session key is malformed.
+  entry.teardownCause = undefined;
   const tasks = Array.from(entry.liveBackgroundTasks.entries());
   // Cleared before delivery so a second teardown pass over the same entry
   // cannot emit a duplicate notification.
   entry.liveBackgroundTasks = new Map<string, LiveBackgroundTask>();
+  if (options.notifyListeners !== false) {
+    notifyLiveBackgroundTasksListeners(key);
+  }
+  if (tasks.length === 0) return;
 
   let target: { projectId: string; worktreeId: string; chatId: string };
   try {
@@ -3341,8 +5314,24 @@ function notifySessionEndedBackgroundTasks(
       taskId,
       ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
       ...(task.description ? { description: task.description } : {}),
+      stopCause,
     });
   }
+}
+
+/**
+ * Record why the current session for `key` is about to end, before the
+ * cancellation or destruction that ends it. The first cause recorded wins, so
+ * an intentional Stop, archive or recycle outranks the abort or exit it
+ * triggers. Stored on the session entry: a replacement session under the same
+ * key is unaffected. The stop record consumes it.
+ */
+export function markSessionTeardownCause(
+  key: string,
+  cause: SessionStopCause,
+): void {
+  const entry = sessions.get(key);
+  if (entry && entry.teardownCause === undefined) entry.teardownCause = cause;
 }
 
 /**
@@ -3356,12 +5345,31 @@ function notifySessionEndedBackgroundTasks(
  */
 export function resetSessionLiveBackgroundTasks(key: string): void {
   const entry = sessions.get(key);
+  const e2eOwner = e2eIngestedLiveBackgroundTasks.get(key);
   if (!entry) {
+    if (!e2eOwner) return;
+    e2eOwner.liveBackgroundTasks = new Map<string, LiveBackgroundTask>();
+    e2eOwner.foregroundTaskMetadata.clear();
+    notifyLiveBackgroundTasksListeners(key);
     return;
   }
-  notifySessionEndedBackgroundTasks(key, entry);
+  const wasBackgroundBusy = hasBusyBackgroundWork(entry);
+  notifySessionEndedBackgroundTasks(key, entry, { notifyListeners: false });
   entry.foregroundTaskMetadata.clear();
   entry.claudeNativeSubagentTasks.clear();
+  entry.activeBackgroundTaskIds.clear();
+  entry.continuationToolUseIds.clear();
+  entry.nonBusyBackgroundToolUseIds.clear();
+  entry.teardownCause = undefined;
+  if (e2eOwner) {
+    e2eOwner.liveBackgroundTasks = new Map<string, LiveBackgroundTask>();
+    e2eOwner.foregroundTaskMetadata.clear();
+  }
+  syncChatWake(key);
+  notifyLiveBackgroundTasksListeners(key);
+  if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
+    notifyChatSessionActivityListeners();
+  }
 }
 
 /**
@@ -3377,6 +5385,15 @@ export function getSessionLiveBackgroundTaskIds(
   const entry = sessions.get(sessionKey(projectId, worktreeId, chatId));
   if (!entry) return undefined;
   return Array.from(entry.liveBackgroundTasks.keys());
+}
+
+function toActivityLiveBackgroundTasks(
+  owner: Pick<LiveBackgroundTaskStateOwner, 'liveBackgroundTasks'>,
+): ActivityLiveBgTask[] {
+  return Array.from(owner.liveBackgroundTasks, ([taskId, task]) => ({
+    taskId,
+    ...task,
+  }));
 }
 
 /**
@@ -3398,11 +5415,7 @@ export function getLiveBackgroundTaskSnapshot(
     if (!chatId || chatId.includes('/')) continue;
     chats[chatId] = {
       sessionActive: true,
-      liveTasks: Array.from(entry.liveBackgroundTasks, ([taskId, task]) => ({
-        taskId,
-        ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
-        ...(task.description ? { description: task.description } : {}),
-      })),
+      liveTasks: toActivityLiveBackgroundTasks(entry),
     };
   }
 
@@ -3417,11 +5430,7 @@ export function getLiveBackgroundTaskSnapshot(
       if (chats[chatId]) continue;
       chats[chatId] = {
         sessionActive: true,
-        liveTasks: Array.from(entry.liveBackgroundTasks, ([taskId, task]) => ({
-          taskId,
-          ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
-          ...(task.description ? { description: task.description } : {}),
-        })),
+        liveTasks: toActivityLiveBackgroundTasks(entry),
       };
     }
   }
@@ -3444,8 +5453,213 @@ export function getLiveBackgroundTaskSnapshot(
  */
 const e2eIngestedLiveBackgroundTasks = new Map<
   string,
-  LiveBackgroundTaskOwner
+  LiveBackgroundTaskStateOwner
 >();
+
+/** Live provider or E2E task owners, with real sessions authoritative by key. */
+export function listLiveBackgroundTaskOwners(): LiveBackgroundTaskOwner[] {
+  const owners: LiveBackgroundTaskOwner[] = [];
+
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    const target = parseSessionKey(key);
+    owners.push({
+      sessionKey: key,
+      ...target,
+      liveTasks: toActivityLiveBackgroundTasks(entry),
+    });
+  }
+
+  if (isE2eBuild()) {
+    for (const [key, entry] of Array.from(
+      e2eIngestedLiveBackgroundTasks.entries(),
+    )) {
+      if (sessions.has(key)) continue;
+      const target = parseSessionKey(key);
+      owners.push({
+        sessionKey: key,
+        ...target,
+        liveTasks: toActivityLiveBackgroundTasks(entry),
+      });
+    }
+  }
+
+  return owners;
+}
+
+/** Live provider or E2E tasks for one chat; absent owners return undefined. */
+export function getLiveBackgroundTasksForChat(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): ActivityLiveBgTask[] | undefined {
+  const key = sessionKey(projectId, worktreeId, chatId);
+  const owner =
+    sessions.get(key) ??
+    (isE2eBuild() ? e2eIngestedLiveBackgroundTasks.get(key) : undefined);
+  return owner ? toActivityLiveBackgroundTasks(owner) : undefined;
+}
+
+export function registerCodexBackgroundOwner(scope: {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}): CodexBackgroundOwnerToken | undefined {
+  const key = sessionKey(scope.projectId, scope.worktreeId, scope.chatId);
+  const entry = sessions.get(key);
+  if (!entry || entry.executionHarness !== 'codex') return undefined;
+
+  const token: CodexBackgroundOwnerToken = {
+    scope: { ...scope },
+  };
+  Object.freeze(token.scope);
+  Object.freeze(token);
+  entry.codexBackgroundOwnerToken = token;
+  entry.codexBackgroundOwnerRevision = undefined;
+  codexBackgroundOwnerEntries.set(token, key);
+  return token;
+}
+
+function getCurrentCodexBackgroundOwner(
+  token: CodexBackgroundOwnerToken,
+): { key: string; entry: ActiveSession } | undefined {
+  const key = codexBackgroundOwnerEntries.get(token);
+  if (!key) return undefined;
+  const entry = sessions.get(key);
+  if (
+    !entry ||
+    entry.executionHarness !== 'codex' ||
+    entry.codexBackgroundOwnerToken !== token
+  ) {
+    return undefined;
+  }
+  return { key, entry };
+}
+
+export function replaceCodexLiveBackgroundTasks(
+  token: CodexBackgroundOwnerToken,
+  snapshot: {
+    revision: number;
+    tasks: readonly CodexLiveBackgroundTaskInput[];
+  },
+): boolean {
+  const owner = getCurrentCodexBackgroundOwner(token);
+  if (!owner) return false;
+
+  const { key, entry } = owner;
+  const previousRevision = entry.codexBackgroundOwnerRevision;
+  if (
+    !Number.isFinite(snapshot.revision) ||
+    (previousRevision !== undefined && snapshot.revision <= previousRevision)
+  ) {
+    return false;
+  }
+
+  const snapshotTasks = new Map<string, LiveBackgroundTask>();
+  for (const task of snapshot.tasks) {
+    if (
+      !entry.codexBackgroundTaskIds.has(task.taskId) &&
+      entry.liveBackgroundTasks.has(task.taskId)
+    ) {
+      // A task id already owned by another provider event stays untouched; the
+      // single shared map cannot represent two owners for the same id.
+      continue;
+    }
+    snapshotTasks.set(task.taskId, {
+      taskType: task.taskType,
+      status: 'running',
+      // Codex task stop is refused (turn-state D10), so no Stop control.
+      stoppable: false,
+      ...(task.description === undefined
+        ? {}
+        : { description: task.description }),
+      ...(task.toolUseId === undefined ? {} : { toolUseId: task.toolUseId }),
+    });
+  }
+
+  const replacement = new Map<string, LiveBackgroundTask>();
+  for (const [taskId, task] of Array.from(
+    entry.liveBackgroundTasks.entries(),
+  )) {
+    if (entry.codexBackgroundTaskIds.has(taskId)) {
+      const updatedTask = snapshotTasks.get(taskId);
+      if (updatedTask) replacement.set(taskId, updatedTask);
+    } else {
+      replacement.set(taskId, task);
+    }
+  }
+  for (const [taskId, task] of Array.from(snapshotTasks.entries())) {
+    if (!replacement.has(taskId)) replacement.set(taskId, task);
+  }
+
+  const previousTasks = new Map(entry.liveBackgroundTasks);
+  const wasBackgroundBusy = hasBusyBackgroundWork(entry);
+  const changed = !liveBackgroundTaskMapsEqual(previousTasks, replacement);
+  entry.codexBackgroundTaskIds = new Set(snapshotTasks.keys());
+  entry.codexBackgroundOwnerRevision = snapshot.revision;
+  if (!changed) return true;
+
+  entry.liveBackgroundTasks = replacement;
+  notifyLiveBackgroundTasksListeners(key);
+  syncChatWake(key);
+  if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
+    notifyChatSessionActivityListeners();
+  }
+  return true;
+}
+
+export function retireCodexLiveBackgroundTasks(
+  token: CodexBackgroundOwnerToken,
+): boolean {
+  const owner = getCurrentCodexBackgroundOwner(token);
+  if (!owner) return false;
+
+  const { key, entry } = owner;
+  const previousTasks = new Map(entry.liveBackgroundTasks);
+  const wasBackgroundBusy = hasBusyBackgroundWork(entry);
+  const replacement = new Map(
+    Array.from(entry.liveBackgroundTasks.entries()).filter(
+      ([taskId]) => !entry.codexBackgroundTaskIds.has(taskId),
+    ),
+  );
+  const changed = !liveBackgroundTaskMapsEqual(previousTasks, replacement);
+
+  entry.codexBackgroundOwnerToken = undefined;
+  entry.codexBackgroundOwnerRevision = undefined;
+  entry.codexBackgroundTaskIds.clear();
+  if (!changed) return true;
+
+  entry.liveBackgroundTasks = replacement;
+  notifyLiveBackgroundTasksListeners(key);
+  syncChatWake(key);
+  if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
+    notifyChatSessionActivityListeners();
+  }
+  return true;
+}
+
+/** Snapshot child tool correlation at the moment a parent terminal is received. */
+export function getChildToolLiveness(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): ChildToolLiveness {
+  const liveTasks = getLiveBackgroundTasksForChat(
+    projectId,
+    worktreeId,
+    chatId,
+  );
+  if (liveTasks === undefined) return { kind: 'no-live-session' };
+
+  return {
+    kind: 'known',
+    liveParentToolUseIds: liveTasks.flatMap((task) =>
+      task.toolUseId === undefined ? [] : [task.toolUseId],
+    ),
+    hasUncorrelatedLiveTask: liveTasks.some(
+      (task) => task.toolUseId === undefined,
+    ),
+  };
+}
 
 /**
  * Record one injected provider event against the E2E live background-task
@@ -3466,10 +5680,13 @@ export function applyE2eIngestedLiveBackgroundTaskEvent(
     owner = {
       liveBackgroundTasks: new Map<string, LiveBackgroundTask>(),
       foregroundTaskMetadata: new Map<string, LiveBackgroundTask>(),
+      unknownTaskTypesLogged: new Set<string>(),
     };
     e2eIngestedLiveBackgroundTasks.set(key, owner);
   }
-  updateLiveBackgroundTaskState(owner, data);
+  if (updateLiveBackgroundTaskState(owner, data)) {
+    notifyLiveBackgroundTasksListeners(key);
+  }
 }
 
 function updateBackgroundTaskState(
@@ -3485,7 +5702,7 @@ function updateBackgroundTaskState(
     return false;
   }
 
-  if (data.type !== 'system') {
+  if (data.type !== 'system' || data.ambient === true) {
     return false;
   }
 
@@ -3497,6 +5714,7 @@ function updateBackgroundTaskState(
     const liveTaskIds = new Set<string>();
     for (const task of data.tasks) {
       if (!isPlainRecord(task)) return false;
+      if (task.ambient === true) continue;
       const liveTaskId = readRecordString(task, 'task_id');
       if (!liveTaskId) return false;
       liveTaskIds.add(liveTaskId);
@@ -3557,6 +5775,18 @@ function rememberToolUseNames(
       const input = isPlainRecord(block.input) ? block.input : undefined;
       if (isContinuationToolUse(name, input)) {
         entry.continuationToolUseIds.add(id);
+      } else if (
+        (name === 'Bash' || name === 'PowerShell') &&
+        input !== undefined &&
+        isPersistentBackgroundService(
+          readRecordString(input, 'command') ?? '',
+          readRecordString(input, 'description') ?? '',
+        )
+      ) {
+        // Only known servers stay out of busy accounting. A finite command
+        // started in the foreground can be promoted to the background when it
+        // outruns its timeout, and it is still work in flight.
+        entry.nonBusyBackgroundToolUseIds.add(id);
       }
     }
   }
@@ -3648,9 +5878,30 @@ export function createSessionPhaseTimer(
 }
 
 /**
- * Remove a session from the active map. Called by providers when a session ends.
+ * How a provider session instance relates to its key: `registered` while it is
+ * the key's entry, `released` once nothing is registered there (it was
+ * detached for teardown or unregistered), and `replaced` once another instance
+ * has registered. Key-scoped teardown by a `replaced` instance would destroy
+ * live state of its successor.
  */
-export function unregisterSession(key: string): void {
+export type SessionKeyOwnership = 'registered' | 'released' | 'replaced';
+
+export function getSessionKeyOwnership(
+  key: string,
+  session: AgentSession,
+): SessionKeyOwnership {
+  const entry = sessions.get(key);
+  if (!entry) return 'released';
+  return entry.session === session ? 'registered' : 'replaced';
+}
+
+/**
+ * Remove a session from the active map. Called by providers when a session ends.
+ * With `session`, only while the key's entry is still that instance: a late
+ * teardown must not drop a successor registered under the same key.
+ */
+export function unregisterSession(key: string, session?: AgentSession): void {
+  if (session !== undefined && sessions.get(key)?.session !== session) return;
   clearPresentationTurn(key);
   const entry = removeSessionEntry(key);
   if (!entry) return;

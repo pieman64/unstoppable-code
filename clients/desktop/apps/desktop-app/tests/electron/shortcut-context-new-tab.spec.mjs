@@ -60,7 +60,7 @@ test.describe('context-aware new-tab + browser hotkeys (ECW-7984)', () => {
       // Adding a Browser panel creates one browser directly (no separate
       // "new browser" affordance); activating its panel tab makes the browser
       // the active surface so ⌘/Ctrl+T routes to a new browser tab.
-      await window.getByTestId('panel-add-panel-group-terminal').click();
+      await window.getByTestId('panel-add-tab-group-terminal').click();
       await expect(window.getByTestId('panel-add-menu')).toBeVisible();
       await window.getByTestId('panel-add-menu-item-browser').click();
       await expect(window.getByTestId('browser-panel-surface')).toBeVisible();
@@ -161,7 +161,7 @@ test.describe('context-aware new-tab + browser hotkeys (ECW-7984)', () => {
     const { electronApp, userDataDir, window } = await seedPanelWorktree();
 
     try {
-      await window.getByTestId('panel-add-panel-group-terminal').click();
+      await window.getByTestId('panel-add-tab-group-terminal').click();
       await expect(window.getByTestId('panel-add-menu')).toBeVisible();
       await window.getByTestId('panel-add-menu-item-browser').click();
       await expect(window.getByTestId('browser-panel-surface')).toBeVisible();
@@ -184,9 +184,11 @@ test.describe('context-aware new-tab + browser hotkeys (ECW-7984)', () => {
       // Two real, COMMITTED navigations → one back entry. Wait for each
       // page's title in the tab label before continuing so the second load
       // cannot supersede a still-pending first load.
+      await urlInput.click();
       await urlInput.fill(`http://127.0.0.1:${port}/a`);
       await urlInput.press('Enter');
       await expect(browserTab).toContainText('page /a', { timeout: 20_000 });
+      await urlInput.click();
       await urlInput.fill(`http://127.0.0.1:${port}/b`);
       await urlInput.press('Enter');
       await expect(browserTab).toContainText('page /b', { timeout: 20_000 });
@@ -196,29 +198,32 @@ test.describe('context-aware new-tab + browser hotkeys (ECW-7984)', () => {
       await focusBrowserChrome();
       await window.keyboard.press('ControlOrMeta+ArrowLeft');
       await expect(browserTab).toContainText('page /a', { timeout: 20_000 });
-      // The address bar mirrors the committed back navigation.
-      await expect
-        .poll(() => urlInput.inputValue(), { timeout: 20_000 })
-        .toContain('/a');
+      // Unfocused chrome shows the host; focusing reveals the committed URL.
+      await expect(urlInput).toHaveValue(`127.0.0.1:${port}`);
+      await window.keyboard.press('ControlOrMeta+l');
+      await expect(urlInput).toBeFocused();
+      await expect(urlInput).toHaveValue(`http://127.0.0.1:${port}/a`);
       await expect(window.getByTestId('browser-forward')).toBeEnabled();
 
       await focusBrowserChrome();
       await window.keyboard.press('ControlOrMeta+ArrowRight');
       await expect(browserTab).toContainText('page /b', { timeout: 20_000 });
-      await expect
-        .poll(() => urlInput.inputValue(), { timeout: 20_000 })
-        .toContain('/b');
+      await expect(urlInput).toHaveValue(`127.0.0.1:${port}`);
+      await window.keyboard.press('ControlOrMeta+l');
+      await expect(urlInput).toHaveValue(`http://127.0.0.1:${port}/b`);
 
       // Forward again with no forward entry → safe no-op, URL unchanged.
       await focusBrowserChrome();
       await window.keyboard.press('ControlOrMeta+ArrowRight');
       await window.waitForTimeout(500);
-      expect(await urlInput.inputValue()).toContain('/b');
+      await expect(browserTab).toContainText('page /b');
+      await expect(urlInput).toHaveValue(`127.0.0.1:${port}`);
 
       // ⌘/Ctrl+L from browser chrome focuses the address bar.
       await focusBrowserChrome();
       await window.keyboard.press('ControlOrMeta+l');
       await expect(urlInput).toBeFocused();
+      await expect(urlInput).toHaveValue(`http://127.0.0.1:${port}/b`);
 
       // Exactly one browser tab throughout — history chords never create or
       // touch another tab.

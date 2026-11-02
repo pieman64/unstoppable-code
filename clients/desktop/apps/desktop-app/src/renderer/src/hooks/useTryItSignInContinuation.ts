@@ -18,7 +18,10 @@ import {
   tryItCapabilityReadiness,
   type TryItSignInGateState,
 } from '@canopy/protocol/try-it/continuation';
-import type { CanopyCloudAccountPublicState } from '@canopy/desktop-shared/types';
+import type {
+  CanopyCloudAccountPublicState,
+  ChatTabPluginSelections,
+} from '@canopy/desktop-shared/types';
 import { isConclusiveAccountRead } from '@canopy/desktop-shared/lib/canopy-cloud-account-read';
 import {
   tryItAccountKey,
@@ -27,8 +30,8 @@ import {
 import {
   readTryItChatLaunch,
   rebindTryItChatLaunch,
+  subscribeTryItChatLaunch,
   type DesktopTryItLaunch,
-  continueTryItChat,
 } from '@/lib/tryItChat';
 import {
   parseTryItContinuation,
@@ -46,20 +49,21 @@ import {
   type CloudConnectGateContext,
 } from '@/stores/cloudConnectGateStore';
 import { useChatStore } from '@/stores/chatStore';
-import { runDesktopTryItContinuation } from '@/lib/tryItContinuationRunner';
-import { readTryItSendReceipt } from '@/lib/tryItSendReceipt';
+import {
+  queueDesktopTryItSelectionUpdate,
+  runDesktopTryItContinuation,
+} from '@/lib/tryItContinuationRunner';
 
 /**
  * Guest Try it sign-in continuation on desktop (CAN-4396). One owner per
  * composer: the banner's actions, the connect gate's close or proceed, and an
  * explicit retry all enter the same guarded routine.
  *
- * Fresh account connections resolve only the launched MCP identity. Usable
- * selections continue through the canonical durable command seam; missing
+ * Fresh account connections resolve only the launched MCP identity, and
+ * only into this chat's selections: Try it staged its prompt as an unsent
+ * draft (CAN-5218), so no outcome sends a turn or rewrites the draft. Missing
  * connections stay setup-required until the setup step (CAN-4451) verifies
  * one and requeues the same record through {@link DesktopTryItSignIn.resumeAfterSetup}.
- * Recovery first reads main's durable command receipt (CAN-4404), so an
- * accepted turn completes without being sent again.
  */
 
 export interface DesktopTryItTarget {
@@ -72,7 +76,7 @@ export interface UseTryItSignInContinuationInput {
   target: DesktopTryItTarget;
   unresolvedCapabilities: readonly TryItCapability[];
   hasUserTurn: boolean;
-  /** The initial Try it send has not been acknowledged yet. */
+  /** The chat is not ready yet (missing, or still being created). */
   initialSendPending: boolean;
   /** Transient setup progress for a signed-in setup-required record. */
   setup?: 'idle' | 'active' | 'cancelled' | 'failed';
@@ -162,33 +166,47 @@ export async function bindTryItContinuation(
     record.host.worktreeId !== target.worktreeId
   )
     return;
+  const selections = (): ChatTabPluginSelections | null => {
+    const tab = useChatStore
+      .getState()
+      .worktreeChats[
+        `${target.projectId}/${target.worktreeId}`
+      ]?.tabs.find((candidate) => candidate.id === target.chatId);
+    return tab && !tab.readOnly && !tab.pendingInitialCreation
+      ? (tab.pluginSelections ?? {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+        })
+      : null;
+  };
   await runDesktopTryItContinuation(target.chatId, destinationAccountKey, {
     accountKey: authenticatedAccountKey,
-    selections: () => {
-      const tab = useChatStore
-        .getState()
-        .worktreeChats[
-          `${target.projectId}/${target.worktreeId}`
-        ]?.tabs.find((candidate) => candidate.id === target.chatId);
-      return tab && !tab.readOnly && !tab.pendingInitialCreation
-        ? (tab.pluginSelections ?? {
-            collectionIds: [],
-            skillRefs: [],
-            pluginRefs: [],
-          })
-        : null;
-    },
+    selections,
     connections: () => window.mcpServers.listAccountConnections(),
-    updateSelections: async (pluginSelections, canContinue) => {
-      await window.api.chat.updatePlugins({ ...target, pluginSelections });
-      if (!(await canContinue())) return;
-      useChatStore
-        .getState()
-        .setPluginSelections(pluginSelections, target, undefined, {
-          runtimeAlreadyUpdated: true,
-        });
-    },
-    continueChat: continueTryItChat,
+    updateSelections: (resolve, canContinue) =>
+      queueDesktopTryItSelectionUpdate(target, async () => {
+        while (await canContinue()) {
+          const before = selections();
+          if (!before) return;
+          const pluginSelections = resolve(before);
+          await window.api.chat.updatePlugins({ ...target, pluginSelections });
+          if (!(await canContinue())) return;
+          const latest = selections();
+          if (!latest) return;
+          const accepted = resolve(latest);
+          // Persist again before accepting when another picker edit occurred
+          // during the IPC. Never project the older payload over that edit.
+          if (JSON.stringify(accepted) !== JSON.stringify(pluginSelections))
+            continue;
+          useChatStore
+            .getState()
+            .setPluginSelections(accepted, target, undefined, {
+              runtimeAlreadyUpdated: true,
+            });
+          return;
+        }
+      }),
     rebind: (record, accountKey) => {
       rebindTryItChatLaunch({
         fromAccountId: record.sourceAccountKey,
@@ -197,7 +215,6 @@ export async function bindTryItContinuation(
         chatId: target.chatId,
       });
     },
-    receipt: (request) => readTryItSendReceipt(request),
   });
 }
 
@@ -212,6 +229,7 @@ function freshContinuation(
     ]?.tabs.find((candidate) => candidate.id === target.chatId);
   return {
     version: 1,
+    ...(launch.version === 2 ? { intent: 'select-capability' as const } : {}),
     sourceChatId: target.chatId,
     sourceSessionId: target.chatId,
     sourceAccountKey: launch.accountId,
@@ -249,31 +267,51 @@ export function useTryItSignInContinuation(
     (listener: () => void) => subscribeTryItContinuation(chatId, listener),
     [chatId],
   );
-  const raw = useSyncExternalStore(subscribe, () =>
-    readTryItContinuationRaw(chatId),
-  );
-  const record = useMemo(
+  const readRaw = useCallback(() => readTryItContinuationRaw(chatId), [chatId]);
+  const raw = useSyncExternalStore(subscribe, readRaw, readRaw);
+  const savedRecord = useMemo(
     () => parseTryItContinuation(raw, chatId),
     [raw, chatId],
   );
-  const launch = useMemo(
-    () =>
-      account.status !== 'loading' && account.accountId
-        ? findAccountTryItLaunch(
-            { projectId, worktreeId, chatId },
-            unresolvedCapabilities,
-            account.accountId,
-          )
-        : null,
-    [
-      account.status,
-      account.accountId,
-      projectId,
-      worktreeId,
-      chatId,
-      unresolvedCapabilities,
-    ],
+  const readLaunchSnapshot = useMemo(() => {
+    let snapshot: DesktopTryItLaunch | null = null;
+    let serialized = 'null';
+    return (): DesktopTryItLaunch | null => {
+      const next =
+        account.status !== 'loading' && account.accountId
+          ? findAccountTryItLaunch(
+              { projectId, worktreeId, chatId },
+              unresolvedCapabilities,
+              account.accountId,
+            )
+          : null;
+      const nextSerialized = JSON.stringify(next);
+      if (nextSerialized !== serialized) {
+        serialized = nextSerialized;
+        snapshot = next;
+      }
+      return snapshot;
+    };
+  }, [
+    account.status,
+    account.accountId,
+    projectId,
+    worktreeId,
+    chatId,
+    unresolvedCapabilities,
+  ]);
+  const launch = useSyncExternalStore(
+    subscribeTryItChatLaunch,
+    readLaunchSnapshot,
+    readLaunchSnapshot,
   );
+  const record =
+    savedRecord?.status === 'completed' &&
+    launch?.version === 2 &&
+    launch.status === 'staged' &&
+    !sameTryItCapability(savedRecord.capability, launch.capability)
+      ? null
+      : savedRecord;
   const [authentication, setAuthentication] = useState<'idle' | 'active'>(
     'idle',
   );
@@ -289,6 +327,15 @@ export function useTryItSignInContinuation(
   );
 
   const capability = record?.capability ?? launch?.capability ?? null;
+  // A staged draft has no user turn; a legacy launch sent one. A saved
+  // continuation for this chat records its staged capability across the
+  // account change that moves the launch.
+  const staged =
+    (launch?.version === 2 && launch.status === 'staged') ||
+    record?.intent === 'select-capability';
+  const launchSettled =
+    launch?.version === 2 ? staged : launch?.status === 'completed';
+  const attemptStarted = staged || hasUserTurn;
   const readiness = capability
     ? tryItCapabilityReadiness(capability, {
         authoritative: true,
@@ -303,9 +350,9 @@ export function useTryItSignInContinuation(
       capability && isAccountGatedCapability(capability) ? capability : null,
     transcriptLoading: false,
     initialAttemptSettled:
-      !initialSendPending &&
-      (record !== null || launch?.status === 'completed'),
+      !initialSendPending && (record !== null || launchSettled),
     hasUserTurn,
+    staged,
     readiness,
     authentication:
       authentication === 'active'
@@ -323,22 +370,23 @@ export function useTryItSignInContinuation(
   // honestly say the prompt is saved. Activation reuses this record.
   const unsaved = state === 'sign-in' && record === null ? launch : null;
   useEffect(() => {
-    if (unsaved)
+    if (unsaved && readTryItContinuationRaw(chatId) === raw)
       writeTryItContinuation(
         freshContinuation(unsaved, { projectId, worktreeId, chatId }),
       );
-  }, [unsaved, projectId, worktreeId, chatId]);
+  }, [unsaved, raw, projectId, worktreeId, chatId]);
 
   useEffect(() => {
     if (
       record !== null ||
       account.status !== 'signed-in' ||
       !account.accountId ||
-      launch?.status !== 'completed' ||
+      !launch ||
+      !launchSettled ||
       initialSendPending ||
-      !hasUserTurn ||
+      !attemptStarted ||
       (readiness !== 'unresolved' && readiness !== 'needs-account') ||
-      readTryItContinuation(chatId) !== null
+      readTryItContinuationRaw(chatId) !== raw
     )
       return;
     writeTryItContinuation({
@@ -348,11 +396,13 @@ export function useTryItSignInContinuation(
     });
   }, [
     record,
+    raw,
     account.status,
     account.accountId,
     launch,
+    launchSettled,
     initialSendPending,
-    hasUserTurn,
+    attemptStarted,
     readiness,
     projectId,
     worktreeId,

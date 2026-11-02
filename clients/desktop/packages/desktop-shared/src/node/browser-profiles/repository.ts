@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readdir, rm } from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
+import { dirname, join } from 'node:path';
+import { StorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import {
   browserTaskScopeTuple,
   isBrowserTaskScope,
@@ -20,9 +22,15 @@ import {
   validateProfilePatch,
 } from '../../browser-profile-error';
 import {
+  createDirectoryDurably,
+  syncDirectory,
+  writeFileAtomically,
+} from '../lib/atomic-file';
+import {
+  errorCode,
+  isProfileJsonTemporary,
   readProfileJson,
   withProfileWriter,
-  writeProfileJson,
 } from './storage';
 
 const RESULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -192,7 +200,8 @@ function assertCatalog(value: unknown): asserts value is Catalog {
     !isProfileRecord(value.retirements) ||
     !isProfileRecord(value.jobs) ||
     !Array.isArray(value.taskKeys) ||
-    !value.taskKeys.every((key) => typeof key === 'string' && HASH.test(key))
+    !value.taskKeys.every((key) => typeof key === 'string' && HASH.test(key)) ||
+    new Set(value.taskKeys).size !== value.taskKeys.length
   )
     invalidMetadata();
   const claimedPartitions = new Set<string>();
@@ -294,9 +303,110 @@ export class BrowserProfileRepository {
   private async checkpoint(stage: Checkpoint): Promise<void> {
     await this.options.checkpoint?.(stage);
   }
+  /**
+   * Resolves once the file and every folder entry leading to it are durable.
+   * A flush failing after the install rejects with StorageOutcomeUnknownError;
+   * the journal stays, so recovery republishes the same decision.
+   */
+  private async publish(path: string, value: unknown): Promise<void> {
+    const folder = dirname(path);
+    // Created here first: createDirectoryDurably would use the default mode.
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    // The root is always `<data>/browser-profiles` (its storage-ownership row).
+    await createDirectoryDurably(folder, { dataRoot: dirname(this.root) });
+    await writeFileAtomically(path, `${JSON.stringify(value)}\n`, {
+      durable: true,
+      mode: 0o600,
+      encoding: 'utf8',
+    });
+  }
+  /** Only after the receipt: a journal that reappears replays as a no-op. */
+  private async removeJournal(): Promise<void> {
+    await rm(join(this.root, 'transaction.json'));
+    try {
+      await syncDirectory(this.root);
+    } catch (error) {
+      // The decision is durable; the removal is not until a later root flush.
+      throw new StorageOutcomeUnknownError('directory_flush', error);
+    }
+  }
   private async catalog(): Promise<Catalog> {
     const value = await readProfileJson(join(this.root, 'catalog.json'));
-    return value === undefined ? emptyCatalog() : validateCatalog(value);
+    if (value !== undefined) return validateCatalog(value);
+    await this.assertUnusedNamespace();
+    return emptyCatalog();
+  }
+  private async assertUnusedNamespace(initial?: {
+    operationId: string;
+    taskKey?: string;
+  }): Promise<void> {
+    // An unrenamed temporary of the journal's own slot is an interrupted write,
+    // not a published decision. Receipts follow the catalog, so none can be.
+    for (const [directory, allowed, interruptible] of [
+      ['operations', initial?.operationId, false],
+      ['task-slots', initial?.taskKey, true],
+    ] as const) {
+      let names: string[];
+      try {
+        names = await readdir(join(this.root, directory));
+      } catch (error) {
+        if (errorCode(error) === 'ENOENT') continue;
+        invalidMetadata();
+      }
+      const own = allowed === undefined ? undefined : `${allowed}.json`;
+      if (
+        names.some(
+          (name) =>
+            !own ||
+            (name !== own &&
+              !(interruptible && isProfileJsonTemporary(name, own))),
+        )
+      )
+        invalidMetadata();
+    }
+  }
+  private async validateRecoveryTasks(
+    catalog: Catalog,
+    task: Transaction['task'],
+  ): Promise<void> {
+    if (task && !catalog.taskKeys.includes(task.key)) invalidMetadata();
+    const slots = new Map<string, BrowserTaskSlot>();
+    for (const key of catalog.taskKeys) {
+      const slot =
+        task?.key === key
+          ? task.slot
+          : validateSlot(await readProfileJson(this.taskPath(key)));
+      if (scopeKey(slot.scope) !== key) invalidMetadata();
+      slots.set(key, slot);
+      if (slot.taskProfileId) {
+        const record = catalog.profiles[slot.taskProfileId]?.record;
+        if (
+          !record ||
+          record.kind !== 'task' ||
+          record.owner.kind !== 'task' ||
+          scopeKey(record.owner.taskScope) !== key ||
+          record.owner.taskIncarnationId !== slot.incarnationId ||
+          record.storageGeneration >= slot.nextStorageGeneration ||
+          record.agentPermissions.allowClear !== slot.agentClearAllowed ||
+          (slot.lifecycle === 'retired'
+            ? record.lifecycle !== 'cleanup_pending' &&
+              record.lifecycle !== 'retired'
+            : record.lifecycle !== 'active')
+        )
+          invalidMetadata();
+      }
+    }
+    for (const { record } of Object.values(catalog.profiles)) {
+      if (record.lifecycle !== 'active' || record.owner.kind !== 'task')
+        continue;
+      const slot = slots.get(scopeKey(record.owner.taskScope));
+      if (
+        !slot ||
+        slot.taskProfileId !== record.profileId ||
+        slot.lifecycle === 'retired'
+      )
+        invalidMetadata();
+    }
   }
   private taskPath(key: string): string {
     if (!HASH.test(key)) invalidMetadata();
@@ -354,33 +464,59 @@ export class BrowserProfileRepository {
       value.schemaVersion !== 1 ||
       !revision(value.expectedRevision) ||
       !isProfileId(value.operationId) ||
+      value.operationId.length > 200 ||
       !isProfileRecord(value.outcome) ||
       value.outcome.schemaVersion !== 1 ||
       typeof value.outcome.digest !== 'string' ||
-      !revision(value.outcome.completedAt)
+      !HASH.test(value.outcome.digest) ||
+      !revision(value.outcome.completedAt) ||
+      !('result' in value.outcome)
     )
       invalidMetadata();
+    const outcomePath = this.operationPath(value.operationId);
     const catalog = validateCatalog(value.catalog);
     if (catalog.revision !== value.expectedRevision + 1) invalidMetadata();
-    const current = await this.catalog();
-    if (
-      current.revision !== value.expectedRevision &&
-      current.revision !== catalog.revision
-    )
-      invalidMetadata();
+    let task: Transaction['task'];
     if (value.task !== undefined) {
       if (!isProfileRecord(value.task) || typeof value.task.key !== 'string')
         invalidMetadata();
       const slot = validateSlot(value.task.slot);
       if (scopeKey(slot.scope) !== value.task.key) invalidMetadata();
-      await writeProfileJson(this.taskPath(value.task.key), slot);
+      task = { key: value.task.key, slot };
     }
-    await writeProfileJson(join(this.root, 'catalog.json'), catalog);
-    await writeProfileJson(
-      this.operationPath(value.operationId),
-      value.outcome,
-    );
-    await rm(join(this.root, 'transaction.json'));
+    const installed = await readProfileJson(join(this.root, 'catalog.json'));
+    if (installed === undefined) {
+      if (value.expectedRevision !== 0) invalidMetadata();
+      // Initial recovery can itself have stopped after installing its sidecars.
+      await this.assertUnusedNamespace({
+        operationId: value.operationId,
+        taskKey: task?.key,
+      });
+    } else {
+      const current = validateCatalog(installed);
+      if (
+        current.revision !== value.expectedRevision &&
+        (current.revision !== catalog.revision ||
+          !isDeepStrictEqual(current, catalog))
+      )
+        invalidMetadata();
+    }
+    await this.validateRecoveryTasks(catalog, task);
+    const outcome = await readProfileJson(outcomePath);
+    if (outcome !== undefined && !isDeepStrictEqual(outcome, value.outcome))
+      invalidMetadata();
+    // The journal may be unflushed (a failed flush, a killed writer) or from an
+    // earlier non-syncing writer; it must be durable before its decision is.
+    await this.publish(join(this.root, 'transaction.json'), value);
+    if (task) {
+      await this.publish(this.taskPath(task.key), task.slot);
+      await this.checkpoint('task');
+    }
+    await this.publish(join(this.root, 'catalog.json'), catalog);
+    await this.checkpoint('catalog');
+    await this.publish(outcomePath, value.outcome);
+    await this.checkpoint('outcome');
+    await this.removeJournal();
   }
   private async read<T>(
     action: (catalog: Catalog) => T | Promise<T>,
@@ -409,6 +545,7 @@ export class BrowserProfileRepository {
     const digest = createHash('sha256').update(serialized).digest('hex');
     return withProfileWriter(this.root, async () => {
       await this.recover();
+      const catalog = await this.catalog();
       const previous = await readProfileJson(this.operationPath(id));
       if (previous !== undefined) {
         if (
@@ -425,7 +562,7 @@ export class BrowserProfileRepository {
           );
         if (this.now() - previous.completedAt > RESULT_RETENTION_MS) {
           if ('result' in previous)
-            await writeProfileJson(this.operationPath(id), {
+            await this.publish(this.operationPath(id), {
               schemaVersion: 1,
               digest: previous.digest,
               completedAt: previous.completedAt,
@@ -437,7 +574,6 @@ export class BrowserProfileRepository {
         }
         return structuredClone(previous.result) as T;
       }
-      const catalog = await this.catalog();
       const expectedRevision = catalog.revision;
       const task = { slot: scope ? await this.readTask(scope, catalog) : null };
       const result = await change(catalog, task);
@@ -459,20 +595,20 @@ export class BrowserProfileRepository {
           result: result ?? null,
         },
       };
-      await writeProfileJson(join(this.root, 'transaction.json'), transaction);
+      await this.publish(join(this.root, 'transaction.json'), transaction);
       await this.checkpoint('journal');
       if (transaction.task) {
-        await writeProfileJson(
+        await this.publish(
           this.taskPath(transaction.task.key),
           transaction.task.slot,
         );
         await this.checkpoint('task');
       }
-      await writeProfileJson(join(this.root, 'catalog.json'), catalog);
+      await this.publish(join(this.root, 'catalog.json'), catalog);
       await this.checkpoint('catalog');
-      await writeProfileJson(this.operationPath(id), transaction.outcome);
+      await this.publish(this.operationPath(id), transaction.outcome);
       await this.checkpoint('outcome');
-      await rm(join(this.root, 'transaction.json'));
+      await this.removeJournal();
       return structuredClone(result);
     });
   }

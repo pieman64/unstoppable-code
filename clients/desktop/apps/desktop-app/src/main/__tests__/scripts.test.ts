@@ -191,6 +191,7 @@ import {
   readScriptRunLogTail,
   startScriptRunLog,
 } from '../lib/script-log-store';
+import { resetPreferencesLoadErrorForTests } from '../lib/preferences-store';
 import { emitPortalFeatureUpsert } from '../services/portal-feature-event-service';
 
 const mockedReadFile = jest.mocked(readFile);
@@ -311,12 +312,25 @@ const fakeEvent = { sender: { send: jest.fn() } };
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // A fixture without a preferences object latches failed recovery for the
+  // process; each test needs its own preferences lifetime.
+  resetPreferencesLoadErrorForTests();
   mockedLstat.mockResolvedValue({
     isDirectory: (): boolean => true,
     isSymbolicLink: (): boolean => false,
   } as Awaited<ReturnType<typeof lstat>>);
 
-  registerScriptHandlers();
+  registerScriptHandlers({
+    // These suites never read script definitions through core.
+    dispatcher: {
+      query: (): never => {
+        throw new Error('The script handler tests dispatch no core query.');
+      },
+    },
+    resolveCaller: (): never => {
+      throw new Error('The script handler tests resolve no IPC caller.');
+    },
+  });
 
   const calls = mockedRegisterIpcHandler.mock.calls;
   runHandler = calls.find(([ch]) => ch === 'script:run')![1] as HandlerFn;

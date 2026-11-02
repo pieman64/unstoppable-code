@@ -8,7 +8,6 @@ import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { ModelThinkingPreferenceRow } from './ModelThinkingPreferenceRow';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const TOGGLE_ID = 'settings-local-memory-enabled';
 const TOGGLE_LABEL = 'Use local memory';
@@ -30,7 +29,6 @@ function modelSelection(
 }
 
 export function LocalMemorySettings(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   // Keep the toggle off until preferences load so the control never flashes
   // an assumed enabled state before the persisted opt-out is known.
   const [enabled, setEnabled] = useState(false);
@@ -148,7 +146,7 @@ export function LocalMemorySettings(): JSX.Element {
           description="Where your local memories are saved."
           control={
             <Button
-              size={settingsButtonSize}
+              size="compact"
               variant="secondary"
               onClick={handleOpenMemoryFolder}
               data-testid="local-memory-open-folder"

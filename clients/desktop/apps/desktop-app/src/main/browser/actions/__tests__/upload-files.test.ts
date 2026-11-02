@@ -262,7 +262,8 @@ describe('fileInputConnected', () => {
     await expect(
       fileInputConnected(sendFor(true, calls), 'frame-session', 9),
     ).resolves.toBe(true);
-    const group = (calls[0]?.[1] as { objectGroup?: string }).objectGroup;
+    const group = (calls[0]?.[1] as { objectGroup?: string } | undefined)
+      ?.objectGroup;
     expect(calls).toEqual([
       [
         'DOM.resolveNode',

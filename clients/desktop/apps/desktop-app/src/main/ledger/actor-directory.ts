@@ -54,7 +54,7 @@ const SAFE_CONTAINER_ID = /^[a-z0-9][a-z0-9-]*$/;
 const DEFAULT_DISPLAY_NAMES: { readonly [Kind in LedgerActorKind]: string } = {
   user: LEDGER_USER_ACTOR_DISPLAY_NAME,
   chat: 'Chat',
-  pipeline_agent: 'Pipeline agent',
+  pipeline_agent: 'Workflow agent',
   managed_delegation: 'Delegate',
   background: 'Background task',
   ledger_sidecar: 'Feed sidecar',
@@ -112,11 +112,14 @@ export type LedgerChatLivenessSource = (
   container: LedgerContainer,
 ) => Promise<readonly LedgerLiveChat[]>;
 
-/** The chat-state scope of a container: an entry ID fills the worktree slot. */
+/**
+ * The chat-state scope of a container: an entry ID fills the worktree slot.
+ * Null for a global (workflow) Ledger, which has no chats.
+ */
 function chatScopeOf(container: LedgerContainer): {
   projectId: string;
   worktreeId: string;
-} {
+} | null {
   switch (container.kind) {
     case 'code_worktree':
       return {
@@ -133,6 +136,8 @@ function chatScopeOf(container: LedgerContainer): {
         projectId: container.appWorkspaceId,
         worktreeId: container.entryId,
       };
+    case 'global':
+      return null;
   }
 }
 
@@ -146,7 +151,9 @@ function chatScopeOf(container: LedgerContainer): {
 export async function readLedgerContainerLiveChats(
   container: LedgerContainer,
 ): Promise<LedgerLiveChat[]> {
-  const { projectId, worktreeId } = chatScopeOf(container);
+  const chatScope = chatScopeOf(container);
+  if (chatScope === null) return [];
+  const { projectId, worktreeId } = chatScope;
   if (
     !SAFE_CONTAINER_ID.test(projectId) ||
     !SAFE_CONTAINER_ID.test(worktreeId)
@@ -680,7 +687,7 @@ export class LedgerActorDirectory {
     const chatNames = new Map<string, string>();
     if (records.some((record) => record.actor.kind === 'chat')) {
       const chats = uniqueLiveChats(
-        await this.options.liveChats(scope.container).catch(() => []),
+        await this.liveChats(scope.container).catch(() => []),
       );
       for (const chat of chats) {
         chatNames.set(
@@ -713,9 +720,7 @@ export class LedgerActorDirectory {
     scope: LedgerBoundScope,
   ): Promise<LedgerOwnerCandidateEntry[]> {
     const user = await this.ensureUser(scope);
-    const chats = uniqueLiveChats(
-      await this.options.liveChats(scope.container),
-    );
+    const chats = uniqueLiveChats(await this.liveChats(scope.container));
     const delegates = selectableDelegates(
       await this.liveDelegates(scope.container),
       chats,
@@ -753,7 +758,7 @@ export class LedgerActorDirectory {
       }),
     );
     const pipelineAgentCandidates = await Promise.all(
-      this.pausedPipelineAgents(scope.container).map(
+      this.pausedPipelineAgents(scope).map(
         async (agent): Promise<LedgerOwnerCandidateEntry> => {
           const displayName = toLedgerDisplayName(
             agent.displayName,
@@ -957,7 +962,7 @@ export class LedgerActorDirectory {
     if (!owner.originKey.startsWith(DELEGATE_ORIGIN_PREFIX)) return null;
     const delegationId = owner.originKey.slice(DELEGATE_ORIGIN_PREFIX.length);
     const [chats, delegates] = await Promise.all([
-      this.options.liveChats(scope.container),
+      this.liveChats(scope.container),
       this.liveDelegates(scope.container),
     ]);
     return (
@@ -967,23 +972,26 @@ export class LedgerActorDirectory {
     );
   }
 
-  /** The container's paused pipeline agents, one row per agent session. */
+  /** The scope's paused pipeline agents, one row per agent session. */
   private pausedPipelineAgents(
-    container: LedgerContainer,
+    scope: LedgerBoundScope,
   ): LedgerPausedPipelineAgent[] {
     const seen = new Set<string>();
-    return (this.options.pipelineAgents?.list(container) ?? []).filter(
-      (agent) => {
-        if (
-          seen.has(agent.agentSessionId) ||
-          !LedgerOpaqueIdSchema.safeParse(agent.agentSessionId).success
-        ) {
-          return false;
-        }
-        seen.add(agent.agentSessionId);
-        return true;
-      },
-    );
+    return (
+      this.options.pipelineAgents?.list(
+        scope.container,
+        scope.containerCreatedAt,
+      ) ?? []
+    ).filter((agent) => {
+      if (
+        seen.has(agent.agentSessionId) ||
+        !LedgerOpaqueIdSchema.safeParse(agent.agentSessionId).success
+      ) {
+        return false;
+      }
+      seen.add(agent.agentSessionId);
+      return true;
+    });
   }
 
   /** The paused agent an owner record names, while it is still paused here. */
@@ -997,15 +1005,28 @@ export class LedgerActorDirectory {
     const agentSessionId = owner.originKey.slice(
       PIPELINE_AGENT_ORIGIN_PREFIX.length,
     );
-    return this.pausedPipelineAgents(scope.container).find(
+    return this.pausedPipelineAgents(scope).find(
       (agent) => agent.agentSessionId === agentSessionId,
     );
+  }
+
+  /**
+   * The container's live chats. A global (workflow) Ledger has none: its
+   * owners are the person and its paused pipeline agents.
+   */
+  private liveChats(
+    container: LedgerContainer,
+  ): Promise<readonly LedgerLiveChat[]> {
+    return container.kind === 'global'
+      ? Promise.resolve([])
+      : this.options.liveChats(container);
   }
 
   private liveDelegates(
     container: LedgerContainer,
   ): Promise<readonly LedgerLiveDelegate[]> {
-    return this.options.liveDelegates === undefined
+    return this.options.liveDelegates === undefined ||
+      container.kind === 'global'
       ? Promise.resolve([])
       : this.options.liveDelegates(container);
   }
@@ -1024,7 +1045,7 @@ export class LedgerActorDirectory {
       return false;
     }
     const chatId = owner.originKey.slice(CHAT_ORIGIN_PREFIX.length);
-    const chats = await this.options.liveChats(scope.container);
+    const chats = await this.liveChats(scope.container);
     return chats.some((chat) => chat.chatId === chatId);
   }
 

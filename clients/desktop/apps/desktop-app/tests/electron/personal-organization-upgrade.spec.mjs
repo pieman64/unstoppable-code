@@ -380,6 +380,8 @@ test('returns to the original pipeline share dialog with the promoted organizati
     );
     await page.getByTestId('pipeline-share').click();
     await expect(page.getByTestId('share-pipeline-modal')).toContainText(title);
+    // Create a team lives in the disabled Team pill's tooltip.
+    await page.getByTestId('share-pipeline-scope-team').hover();
     await page.getByTestId('share-pipeline-set-up-organization').click();
     await page
       .getByTestId('invite-to-organization-team-name')

@@ -4,6 +4,7 @@ import {
   isLabsExperimentAvailability,
   parseLabsExperimentAvailability,
   type LabsExperimentAvailability,
+  type LabsExperimentAvailabilitySource,
 } from '@canopy/protocol/experiments';
 import {
   CLIENT_FEATURE_FLAGS,
@@ -39,19 +40,48 @@ export type LabsAvailabilityFallbackPolicy = (
   entry: LabsExperiment,
   mode: FeatureFlagDefaultMode,
 ) => LabsExperimentAvailability | undefined;
+
+export function createDesktopLabsAvailabilityFallback(
+  brandId: string,
+): LabsAvailabilityFallbackPolicy {
+  return (entry): LabsExperimentAvailability | undefined =>
+    entry.id === 'daemon-files-reads'
+      ? brandId === 'canopy'
+        ? 'on'
+        : 'offered'
+      : undefined;
+}
+
+export interface ResolvedLabsAvailability {
+  availability: LabsExperimentAvailability;
+  source: LabsExperimentAvailabilitySource;
+}
 export function resolveLabsAvailability(
   entry: LabsExperiment,
   state: LabsAvailabilityState,
   cached: Readonly<Record<string, LabsExperimentAvailability>>,
   fallbackPolicy?: LabsAvailabilityFallbackPolicy,
 ): LabsExperimentAvailability {
-  if (entry.fixtureAvailability !== undefined) return entry.fixtureAvailability;
+  return resolveLabsAvailabilityWithSource(entry, state, cached, fallbackPolicy)
+    .availability;
+}
+
+export function resolveLabsAvailabilityWithSource(
+  entry: LabsExperiment,
+  state: LabsAvailabilityState,
+  cached: Readonly<Record<string, LabsExperimentAvailability>>,
+  fallbackPolicy?: LabsAvailabilityFallbackPolicy,
+): ResolvedLabsAvailability {
+  if (entry.fixtureAvailability !== undefined)
+    return { availability: entry.fixtureAvailability, source: 'fixture' };
   if (state.snapshot.status === 'not_configured')
     return resolveFallback(entry, 'launchdarkly_disabled', fallbackPolicy);
   const live = state.liveValues[entry.flagKey];
-  if (isLabsExperimentAvailability(live)) return live;
+  if (isLabsExperimentAvailability(live))
+    return { availability: live, source: 'live' };
   const cachedValue = cached[entry.flagKey];
-  if (isLabsExperimentAvailability(cachedValue)) return cachedValue;
+  if (isLabsExperimentAvailability(cachedValue))
+    return { availability: cachedValue, source: 'cache' };
   return resolveFallback(
     entry,
     'launchdarkly_enabled_unavailable',
@@ -63,7 +93,7 @@ function resolveFallback(
   entry: LabsExperiment,
   mode: FeatureFlagDefaultMode,
   policy: LabsAvailabilityFallbackPolicy | undefined,
-): LabsExperimentAvailability {
+): ResolvedLabsAvailability {
   const flag = Object.values(CLIENT_FEATURE_FLAGS).find(
     (flag) => flag.key === entry.flagKey,
   );
@@ -73,5 +103,8 @@ function resolveFallback(
       : flag?.launchDarklyEnabledUnavailableValue,
     mode === 'launchdarkly_disabled' ? 'on' : 'offered',
   );
-  return parseLabsExperimentAvailability(policy?.(entry, mode), registered);
+  const policyValue = policy?.(entry, mode);
+  return isLabsExperimentAvailability(policyValue)
+    ? { availability: policyValue, source: 'policy_fallback' }
+    : { availability: registered, source: 'registered_fallback' };
 }

@@ -127,7 +127,11 @@ it('persists rebound hook execution contexts after an ownership change', async (
   jest
     .mocked(updateWorkspaceConfig)
     .mockImplementation(async (_workspaceId, update, options) => {
-      const value = await update(config);
+      const value = await update(config, {
+        authority: 'ok',
+        ownerMalformed: false,
+        memoryMalformed: false,
+      });
       written = options?.shouldWrite?.(value) ?? true;
       return value;
     });

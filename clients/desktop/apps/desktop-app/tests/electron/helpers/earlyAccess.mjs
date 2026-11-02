@@ -48,7 +48,14 @@ export async function setAllLabsFeatures(page, enabled) {
     const snapshot = await window.api.experiments.getSnapshot();
     const features = snapshot.experiments.filter(
       (entry) =>
-        entry.id !== 'early-access' &&
+        // Files reads was never bundled; enabling it would contact the daemon.
+        // Chat automation pipelines would convert the chat automations a
+        // legacy spec saves.
+        ![
+          'early-access',
+          'daemon-files-reads',
+          'chat-automation-pipelines',
+        ].includes(entry.id) &&
         entry.pages.length === 0 &&
         entry.flagKey.startsWith('canopy-desktop-labs-'),
     );

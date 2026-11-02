@@ -83,6 +83,7 @@ const EXPECTED_ROUTES: readonly string[] = [
   'app://settings/account',
   'app://settings/account-proxy',
   'app://settings/account/account',
+  'app://settings/account/appearance',
   'app://settings/account/billing',
   'app://settings/account/digests',
   'app://settings/account/integrations',
@@ -175,9 +176,7 @@ describe('PostHog synthetic screen routes', () => {
       expect(routeForSettingsSection('environment')).toBe(
         'app://settings/environment',
       );
-      expect(
-        POSTHOG_ROUTES.has('app://settings/environment' as PostHogRoute),
-      ).toBe(true);
+      expect(POSTHOG_ROUTES.has('app://settings/environment')).toBe(true);
     });
 
     it('gives every Settings section a route', () => {

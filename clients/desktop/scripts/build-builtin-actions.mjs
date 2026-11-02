@@ -69,11 +69,29 @@ function validateManifest(entryPoint) {
     throw new Error(`Action manifest is missing runs block: ${manifestPath}`);
   }
 
-  if (runs.using !== 'node' || runs.main !== 'index.js') {
+  if (!runsUseBuiltEntry(runs)) {
     throw new Error(
-      `Builtin action "${actionName}" must use runs.using=node and runs.main=index.js`,
+      `Builtin action "${actionName}" must use runs.using=node and runs.main=index.js, or runs.using=host with that pair as runs.fallback`,
     );
   }
+}
+
+function isBuiltNodeEntry(runs) {
+  return (
+    !!runs &&
+    typeof runs === 'object' &&
+    !Array.isArray(runs) &&
+    runs.using === 'node' &&
+    runs.main === 'index.js'
+  );
+}
+
+/** A built action runs `index.js` directly or as a host action's Node fallback. */
+function runsUseBuiltEntry(runs) {
+  return (
+    isBuiltNodeEntry(runs) ||
+    (runs.using === 'host' && isBuiltNodeEntry(runs.fallback))
+  );
 }
 
 function getActionName(entryPoint) {
@@ -190,6 +208,7 @@ function getBuildOptions(entryPoints) {
       '@canopy/protocol': join(root, 'packages', 'protocol', 'src'),
       '@canopy/agent-actions': join(root, 'packages', 'agent-actions', 'src'),
       '@canopy/plugin-interop': join(root, 'packages', 'plugin-interop', 'src'),
+      '@canopy/code-graph': join(root, 'packages', 'code-graph', 'src'),
       '@canopy/desktop-shared': join(root, 'packages', 'desktop-shared', 'src'),
       '@canopy/ui-shared': join(root, 'packages', 'ui-shared', 'src'),
       '@canopy/brand/current': join(

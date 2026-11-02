@@ -1,16 +1,23 @@
 import { execFile } from 'node:child_process';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { constants } from 'node:fs';
 import { access, stat, realpath, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, win32 } from 'node:path';
 import {
   LINUX_SYSTEM_GIT_PATH,
+  getGitExecutableDetectionMode,
+  getGitExecutableProbeOrder,
+  getGitExecutableRequirement,
   getLinuxGitCandidates,
   getMacGitCandidates,
   getWindowsGitCandidates,
   isMacGitShim,
   parseGitVersion,
   parseWhereExeOutput,
+  selectLinuxExplicitGitChoice,
+  shapeGitExecutableStatus,
+  shouldJoinGitExecutableDetection,
 } from '@canopy/desktop-shared/lib/git-executable';
 import {
   getLinuxProbeEnv,
@@ -22,6 +29,7 @@ import type {
   GitExecutableSource,
   GitExecutableStatus,
 } from '@canopy/desktop-shared/types';
+import type { WorkerGitExecutableIssue } from '@canopy/protocol/canopy-core';
 import { readPreferencesFile, writePreferencesFile } from './preferences-store';
 import { isErrnoException } from './type-guards';
 
@@ -40,7 +48,15 @@ let linuxDiscoveredPath: string | null = null;
 let linuxDetectionGeneration = 0;
 let xcodeInstallPromise: Promise<void> | null = null;
 
-let detectionPromise: Promise<GitExecutableStatus> | null = null;
+/** One detection's status and, when it is not ready, why. */
+export interface GitExecutableDetection {
+  status: GitExecutableStatus;
+  issue: WorkerGitExecutableIssue | null;
+}
+
+// The shared live detection. Every caller that changes the preference or the
+// environment joins it, so one probe applies its effects exactly once.
+let detectionPromise: Promise<GitExecutableDetection> | null = null;
 let installPromise: Promise<GitExecutableStatus> | null = null;
 
 function nowIso(): string {
@@ -48,39 +64,42 @@ function nowIso(): string {
 }
 
 function getEffectivePlatform(): NodeJS.Platform {
-  if (__CANOPY_E2E__ && process.env.CANOPY_E2E_PLATFORM === 'win32') {
-    return 'win32';
+  if (
+    __CANOPY_E2E__ &&
+    (process.env.CANOPY_E2E_PLATFORM === 'win32' ||
+      process.env.CANOPY_E2E_PLATFORM === 'linux')
+  ) {
+    return process.env.CANOPY_E2E_PLATFORM;
   }
-  return process.platform;
+  return hostPlatformOperatingSystem();
 }
 
 function isWindows(): boolean {
   return getEffectivePlatform() === 'win32';
 }
 
-function isLinuxX64(): boolean {
-  return getEffectivePlatform() === 'linux' && process.arch === 'x64';
+function isLinuxGitSupported(): boolean {
+  return (
+    getGitExecutableDetectionMode(getEffectivePlatform(), process.arch) ===
+    'linux'
+  );
 }
 
 export function getGitExecutablePlatformStatus(): Pick<
   GitExecutableStatus,
   'platform' | 'required'
 > {
-  return {
-    platform: getEffectivePlatform(),
-    required:
-      isWindows() || getEffectivePlatform() === 'darwin' || isLinuxX64(),
-  };
+  return getGitExecutableRequirement(getEffectivePlatform(), process.arch);
 }
 
 function status(
   values: Omit<GitExecutableStatus, 'platform' | 'required' | 'checkedAt'>,
 ): GitExecutableStatus {
-  return {
-    ...getGitExecutablePlatformStatus(),
-    checkedAt: nowIso(),
-    ...values,
-  };
+  return shapeGitExecutableStatus(
+    getGitExecutablePlatformStatus(),
+    nowIso(),
+    values,
+  );
 }
 
 function notFoundStatus(values?: {
@@ -151,7 +170,7 @@ function execFileBuffered(
       file,
       args,
       {
-        windowsHide: process.platform === 'win32',
+        windowsHide: hostPlatformOperatingSystem() === 'win32',
         ...options,
       },
       (error, stdout, stderr) => {
@@ -218,13 +237,137 @@ function assertValidWindowsGitBasename(candidate: string): void {
   }
 }
 
+/**
+ * What one detection reads and changes. The live state applies a detection's
+ * effects to the saved preference, the published environment and the Linux
+ * discovery state through this module's writers; a preview reads them but
+ * changes only its own overlay.
+ */
+interface DetectionState {
+  readSavedPath(): Promise<string | null>;
+  readPublishedPath(): string | undefined;
+  readLinuxDiscoveredPath(): string | null;
+  /** Starts a Linux detection; the result reports whether it is still current. */
+  beginLinuxDetection(): () => boolean;
+  publish(path: string): void;
+  unpublish(path?: string | null): void;
+  save(path: string): Promise<void>;
+  /** Clears the saved preference and unpublishes `savedPath`, the value it held. */
+  clearSaved(savedPath: string): Promise<void>;
+  acceptLinux(path: string, discovered: boolean): void;
+  forgetLinuxDiscovery(): void;
+  rememberMacValidation(path: string): void;
+}
+
+function logGitCacheWriteFailure(error: unknown): void {
+  // eslint-disable-next-line no-console
+  console.warn('Could not save the detected Git executable path:', error);
+}
+
+const LIVE_DETECTION_STATE: DetectionState = {
+  readSavedPath: () => getCachedGitExecutablePath(),
+  readPublishedPath: () => process.env.CANOPY_GIT_EXECUTABLE,
+  readLinuxDiscoveredPath: () => linuxDiscoveredPath,
+  beginLinuxDetection: () => {
+    const generation = ++linuxDetectionGeneration;
+    return () => generation === linuxDetectionGeneration;
+  },
+  publish: (path) => publishGitExecutablePath(path),
+  unpublish: (path) => clearPublishedGitExecutablePath(path),
+  // Detection's cache writes are best-effort: preferences refuse writes after
+  // a failed recovery (CAN-5154), and usable Git must stay usable then.
+  save: async (path) => {
+    try {
+      await setCachedGitExecutablePath(path);
+    } catch (error) {
+      logGitCacheWriteFailure(error);
+      publishGitExecutablePath(path.trim());
+    }
+  },
+  clearSaved: async (savedPath) => {
+    try {
+      await clearCachedGitExecutablePath();
+    } catch (error) {
+      logGitCacheWriteFailure(error);
+      // Not a reread: a write that installed '' before rejecting reads back
+      // null, and unpublishing null removes any override.
+      clearPublishedGitExecutablePath(savedPath);
+    }
+  },
+  acceptLinux: (path, discovered) => {
+    validatedLinuxPath = path;
+    if (discovered) linuxDiscoveredPath = path;
+    publishGitExecutablePath(path);
+  },
+  forgetLinuxDiscovery: () => forgetLinuxDiscoveredPath(),
+  rememberMacValidation: (path) => {
+    validatedMacPath = path;
+  },
+};
+
+/**
+ * A detection that answers as the live one would without changing anything:
+ * its saves, publications and discovery stay in this overlay, so later reads
+ * in the same detection see them. It never bumps the Linux generation.
+ */
+function previewDetectionState(): DetectionState {
+  let saved: { value: string | null } | undefined;
+  let published: { value: string | undefined } | undefined;
+  let discovered: { value: string | null } | undefined;
+  const readSavedPath = (): Promise<string | null> =>
+    saved ? Promise.resolve(saved.value) : getCachedGitExecutablePath();
+  const readPublishedPath = (): string | undefined =>
+    published ? published.value : process.env.CANOPY_GIT_EXECUTABLE;
+  const readLinuxDiscoveredPath = (): string | null =>
+    discovered ? discovered.value : linuxDiscoveredPath;
+  const unpublish = (path?: string | null): void => {
+    if (!path || readPublishedPath() === path) published = { value: undefined };
+  };
+  const forgetLinuxDiscovery = (): void => {
+    const current = readLinuxDiscoveredPath();
+    if (current) unpublish(current);
+    discovered = { value: null };
+  };
+  return {
+    readSavedPath,
+    readPublishedPath,
+    readLinuxDiscoveredPath,
+    beginLinuxDetection: () => () => true,
+    publish: (path): void => {
+      published = { value: path };
+    },
+    unpublish,
+    // Only macOS and Windows detections save or clear the preference.
+    save: (path): Promise<void> => {
+      const trimmed = path.trim();
+      if (!trimmed)
+        return Promise.reject(new Error('Git executable path is required'));
+      saved = { value: trimmed };
+      published = { value: trimmed };
+      return Promise.resolve();
+    },
+    clearSaved: (savedPath): Promise<void> => {
+      saved = { value: null };
+      unpublish(savedPath);
+      return Promise.resolve();
+    },
+    acceptLinux: (path, isDiscovered): void => {
+      if (isDiscovered) discovered = { value: path };
+      published = { value: path };
+    },
+    forgetLinuxDiscovery,
+    rememberMacValidation: () => undefined,
+  };
+}
+
 async function validateAndCache(
   candidate: string,
   source: GitExecutableSource,
-  wingetAvailable?: boolean,
+  wingetAvailable: boolean,
+  state: DetectionState,
 ): Promise<GitExecutableStatus> {
-  const validated = await validateGitExecutable(candidate);
-  await setCachedGitExecutablePath(validated.path);
+  const validated = await validateCandidate(candidate, state);
+  await state.save(validated.path);
   return readyStatus({
     path: validated.path,
     version: validated.version,
@@ -303,17 +446,6 @@ export async function installGitWithXcode(): Promise<void> {
   return xcodeInstallPromise;
 }
 
-/**
- * The user's explicit Linux choice: the saved selection, else an override the
- * environment supplied (not a path this module published after discovery).
- */
-async function getLinuxExplicitChoice(): Promise<string | null> {
-  const saved = await getCachedGitExecutablePath();
-  if (saved) return saved;
-  const override = process.env.CANOPY_GIT_EXECUTABLE?.trim();
-  return override && override !== linuxDiscoveredPath ? override : null;
-}
-
 /** Drop discovery state; an environment-supplied explicit path is left alone. */
 function forgetLinuxDiscoveredPath(): void {
   if (linuxDiscoveredPath) clearPublishedGitExecutablePath(linuxDiscoveredPath);
@@ -333,46 +465,55 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Linux x64 precedence: explicit choice (reported, never replaced when broken),
+ * Linux x64/arm64 precedence: explicit choice (reported, never replaced when broken),
  * revalidated discovery cache, refreshed login PATH, then the system location.
  * A superseded detection still returns its own result but never publishes,
  * caches or invalidates shared state.
  */
 async function detectLinuxGitExecutable(
   force: boolean,
-): Promise<GitExecutableStatus> {
-  const generation = ++linuxDetectionGeneration;
-  const isCurrent = (): boolean => generation === linuxDetectionGeneration;
+  state: DetectionState,
+): Promise<GitExecutableDetection> {
+  const isCurrent = state.beginLinuxDetection();
   const accept = (path: string, discovered: boolean): void => {
     if (!isCurrent()) return;
-    validatedLinuxPath = path;
-    if (discovered) linuxDiscoveredPath = path;
-    publishGitExecutablePath(path);
+    state.acceptLinux(path, discovered);
   };
 
-  const explicit = await getLinuxExplicitChoice();
+  // The user's explicit choice: the saved selection, else an override the
+  // environment supplied (not a path this module published after discovery).
+  const saved = await state.readSavedPath();
+  const explicit = selectLinuxExplicitGitChoice({
+    saved,
+    override: state.readPublishedPath()?.trim(),
+    discovered: state.readLinuxDiscoveredPath(),
+  });
   if (explicit) {
     try {
-      const validated = await validateGitExecutable(explicit);
+      const validated = await validateCandidate(explicit, state);
       accept(validated.path, false);
-      return readyStatus({ ...validated, source: 'user-selected' });
+      return ready(readyStatus({ ...validated, source: 'user-selected' }));
     } catch (error) {
       // The broken choice itself stays; nothing discovered may stand in for it.
-      if (isCurrent()) forgetLinuxDiscoveredPath();
-      return notFoundStatus({
-        error: `Selected Git executable cannot be used. ${errorMessage(error)}`,
-      });
+      if (isCurrent()) state.forgetLinuxDiscovery();
+      return {
+        status: notFoundStatus({
+          error: `Selected Git executable cannot be used. ${errorMessage(error)}`,
+        }),
+        issue: 'selected-unusable',
+      };
     }
   }
 
   const unusable = new Set<string>();
-  if (linuxDiscoveredPath) {
+  const discovered = state.readLinuxDiscoveredPath();
+  if (discovered) {
     try {
-      const validated = await validateGitExecutable(linuxDiscoveredPath);
+      const validated = await validateCandidate(discovered, state);
       accept(validated.path, true);
-      return readyStatus({ ...validated, source: 'cache' });
+      return ready(readyStatus({ ...validated, source: 'cache' }));
     } catch (error) {
-      if (isCurrent()) forgetLinuxDiscoveredPath();
+      if (isCurrent()) state.forgetLinuxDiscovery();
       if (!(error instanceof GitExecutableMissingError)) {
         unusable.add(errorMessage(error));
       }
@@ -382,119 +523,160 @@ async function detectLinuxGitExecutable(
   await prewarmLoginShellPath(force ? { force: true } : undefined);
   for (const { path, source } of getLinuxGitCandidates(getLoginShellPath())) {
     try {
-      const validated = await validateGitExecutable(path);
+      const validated = await validateCandidate(path, state);
       accept(validated.path, true);
-      return readyStatus({ ...validated, source });
+      return ready(readyStatus({ ...validated, source }));
     } catch (error) {
       if (!(error instanceof GitExecutableMissingError)) {
         unusable.add(errorMessage(error));
       }
     }
   }
-  return notFoundStatus({
-    error: describeLinuxGitNotFound(Array.from(unusable)),
-  });
+  return {
+    status: notFoundStatus({
+      error: describeLinuxGitNotFound(Array.from(unusable)),
+    }),
+    issue: unusable.size > 0 ? 'candidate-unusable' : 'not-found',
+  };
+}
+
+function ready(readyGitStatus: GitExecutableStatus): GitExecutableDetection {
+  return { status: readyGitStatus, issue: null };
 }
 
 async function detectGitExecutableInternal(
-  force = false,
-): Promise<GitExecutableStatus> {
-  if (isLinuxX64()) {
-    return detectLinuxGitExecutable(force);
+  force: boolean,
+  state: DetectionState,
+): Promise<GitExecutableDetection> {
+  const platform = getEffectivePlatform();
+  const mode = getGitExecutableDetectionMode(platform, process.arch);
+  if (mode === 'linux') {
+    return detectLinuxGitExecutable(force, state);
   }
-  if (!getGitExecutablePlatformStatus().required) {
-    const override = process.env.CANOPY_GIT_EXECUTABLE?.trim();
+  if (mode === 'optional') {
+    const override = state.readPublishedPath()?.trim();
     if (override) {
       try {
-        const validated = await validateGitExecutable(override);
-        publishGitExecutablePath(validated.path);
-        return status({
-          ready: true,
-          path: validated.path,
-          version: validated.version,
-          source: 'cache',
-          wingetAvailable: false,
-        });
+        const validated = await validateCandidate(override, state);
+        state.publish(validated.path);
+        return ready(
+          status({
+            ready: true,
+            path: validated.path,
+            version: validated.version,
+            source: 'cache',
+            wingetAvailable: false,
+          }),
+        );
       } catch (error) {
-        return notFoundStatus({
-          error: error instanceof Error ? error.message : String(error),
-        });
+        return {
+          status: notFoundStatus({
+            error: error instanceof Error ? error.message : String(error),
+          }),
+          issue: 'selected-unusable',
+        };
       }
     }
-    return status({
-      ready: true,
-      path: null,
-      version: null,
-      source: 'not-found',
-      wingetAvailable: false,
-    });
+    return ready(
+      status({
+        ready: true,
+        path: null,
+        version: null,
+        source: 'not-found',
+        wingetAvailable: false,
+      }),
+    );
   }
 
   const winget = await detectWinget();
+  // `candidate-unusable` needs a candidate that exists; missing paths alone
+  // are `not-found`.
+  let foundUnusable = false;
+  const noteFailure = (error: unknown): void => {
+    if (!isMissingCandidateError(error)) foundUnusable = true;
+  };
 
-  const cached = await getCachedGitExecutablePath();
+  const cached = await state.readSavedPath();
   if (cached) {
     try {
-      const validated = await validateGitExecutable(cached);
-      publishGitExecutablePath(validated.path);
-      return readyStatus({
-        path: validated.path,
-        version: validated.version,
-        source: 'cache',
-        wingetAvailable: winget.available,
-      });
-    } catch {
-      await clearCachedGitExecutablePath();
+      const validated = await validateCandidate(cached, state);
+      state.publish(validated.path);
+      return ready(
+        readyStatus({
+          path: validated.path,
+          version: validated.version,
+          source: 'cache',
+          wingetAvailable: winget.available,
+        }),
+      );
+    } catch (error) {
+      noteFailure(error);
+      await state.clearSaved(cached);
     }
   }
 
   // An inherited/published override can outlive its preference (or the file).
   // Validate it as well: clearing only the cached preference leaves background
   // Git operations spawning the stale executable indefinitely.
-  const published = process.env.CANOPY_GIT_EXECUTABLE?.trim();
+  const published = state.readPublishedPath()?.trim();
   if (published) {
     try {
-      return await validateAndCache(
-        published,
-        'auto-detected',
-        winget.available,
+      return ready(
+        await validateAndCache(
+          published,
+          'auto-detected',
+          winget.available,
+          state,
+        ),
       );
-    } catch {
-      clearPublishedGitExecutablePath(published);
+    } catch (error) {
+      noteFailure(error);
+      state.unpublish(published);
     }
   }
 
-  const candidates = [
-    ...(isWindows()
+  const candidates =
+    platform === 'win32'
       ? [...(await getWhereExeResults('git')), ...getCommonWindowsGitPaths()]
-      : await getMacGitPaths()),
-  ];
+      : await getMacGitPaths();
 
-  const seen = new Set<string>();
+  // The legacy message is the last discovery failure, missing or not.
   let lastError: string | undefined;
-  for (const candidate of candidates) {
-    if (getEffectivePlatform() === 'darwin' && isMacGitShim(candidate))
-      continue;
-    const key = isWindows() ? candidate.toLowerCase() : candidate;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
+  for (const candidate of getGitExecutableProbeOrder(platform, candidates)) {
     try {
-      return await validateAndCache(
-        candidate,
-        'auto-detected',
-        winget.available,
+      return ready(
+        await validateAndCache(
+          candidate,
+          'auto-detected',
+          winget.available,
+          state,
+        ),
       );
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      noteFailure(error);
     }
   }
 
-  return notFoundStatus({
-    wingetAvailable: winget.available,
-    ...(lastError ? { error: lastError } : {}),
-  });
+  return {
+    status: notFoundStatus({
+      wingetAvailable: winget.available,
+      ...(lastError ? { error: lastError } : {}),
+    }),
+    issue: foundUnusable ? 'candidate-unusable' : 'not-found',
+  };
+}
+
+/** The candidate path does not exist: a missing file or macOS's dangling resolution. */
+function isMissingCandidateError(error: unknown): boolean {
+  if (error instanceof GitExecutableMissingError) return true;
+  // `validateCandidate` lets macOS's `realpath` rejection through unchanged,
+  // since its message is the legacy status text.
+  return (
+    isErrnoException(error) &&
+    error.syscall === 'realpath' &&
+    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+  );
 }
 
 export async function getCachedGitExecutablePath(): Promise<string | null> {
@@ -509,7 +691,7 @@ export async function setCachedGitExecutablePath(path: string): Promise<void> {
     throw new Error('Git executable path is required');
   }
   await writePreferencesFile({ gitExecutablePath: trimmed });
-  if (isLinuxX64()) {
+  if (isLinuxGitSupported()) {
     linuxDetectionGeneration += 1;
     detectionPromise = null;
     forgetLinuxDiscoveredPath();
@@ -521,7 +703,7 @@ export async function clearCachedGitExecutablePath(): Promise<void> {
   const cached = await getCachedGitExecutablePath();
   await writePreferencesFile({ gitExecutablePath: '' });
   clearPublishedGitExecutablePath(cached);
-  if (isLinuxX64()) {
+  if (isLinuxGitSupported()) {
     linuxDetectionGeneration += 1;
     detectionPromise = null;
     forgetLinuxDiscoveredPath();
@@ -531,11 +713,18 @@ export async function clearCachedGitExecutablePath(): Promise<void> {
 export async function validateGitExecutable(
   candidate: string,
 ): Promise<{ path: string; version: string }> {
+  return validateCandidate(candidate, LIVE_DETECTION_STATE);
+}
+
+async function validateCandidate(
+  candidate: string,
+  state: DetectionState,
+): Promise<{ path: string; version: string }> {
   let trimmed = candidate.trim();
   if (!trimmed) {
     throw new Error('Git executable path is required');
   }
-  if (isLinuxX64()) {
+  if (isLinuxGitSupported()) {
     return validateLinuxGitExecutable(trimmed);
   }
   if (getEffectivePlatform() === 'darwin') {
@@ -587,7 +776,7 @@ export async function validateGitExecutable(
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-    validatedMacPath = trimmed;
+    state.rememberMacValidation(trimmed);
   }
   return { path: trimmed, version };
 }
@@ -644,25 +833,54 @@ function describeLinuxProbeFailure(candidate: string, error: unknown): string {
     : `Git executable failed when asked for its version: ${candidate}`;
 }
 
-export async function detectGitExecutable(options?: {
+/**
+ * The shared live detection, with its issue for the `worker.git.executable.get`
+ * projection. It applies the preference, environment and Linux effects once
+ * per probe for every caller it serves.
+ */
+export function detectGitExecutableShared(options?: {
   force?: boolean;
-}): Promise<GitExecutableStatus> {
+}): Promise<GitExecutableDetection> {
+  const force = options?.force ?? false;
   // Forced macOS rechecks share an active probe to avoid overlapping installers' checks.
   if (
     detectionPromise &&
-    (!options?.force || getEffectivePlatform() === 'darwin')
+    shouldJoinGitExecutableDetection(getEffectivePlatform(), force)
   ) {
     return detectionPromise;
   }
 
-  const detection: Promise<GitExecutableStatus> = detectGitExecutableInternal(
-    options?.force,
-  ).finally(() => {
-    // A superseded detection must not clear the newer one other callers share.
-    if (detectionPromise === detection) detectionPromise = null;
-  });
+  const detection: Promise<GitExecutableDetection> =
+    detectGitExecutableInternal(force, LIVE_DETECTION_STATE).finally(() => {
+      // A superseded detection must not clear the newer one other callers share.
+      if (detectionPromise === detection) detectionPromise = null;
+    });
   detectionPromise = detection;
   return detection;
+}
+
+export async function detectGitExecutable(options?: {
+  force?: boolean;
+}): Promise<GitExecutableStatus> {
+  return (await detectGitExecutableShared(options)).status;
+}
+
+/**
+ * The pure `worker.git.executable.get` answer for callers outside the IPC
+ * projections: a running live detection when the sharing rule lets this
+ * request join it (that detection applies its effects for the caller that
+ * started it), otherwise a preview that changes nothing.
+ */
+export function previewGitExecutable(options: {
+  force: boolean;
+}): Promise<GitExecutableDetection> {
+  if (
+    detectionPromise &&
+    shouldJoinGitExecutableDetection(getEffectivePlatform(), options.force)
+  ) {
+    return detectionPromise;
+  }
+  return detectGitExecutableInternal(options.force, previewDetectionState());
 }
 
 export async function detectWinget(): Promise<{
@@ -796,7 +1014,7 @@ export async function getResolvedGitExecutableForSpawn(
   let published = env.CANOPY_GIT_EXECUTABLE?.trim();
   if (!getGitExecutablePlatformStatus().required) return published || 'git';
   const publishedGeneration = linuxDetectionGeneration;
-  if (published && isLinuxX64()) {
+  if (published && isLinuxGitSupported()) {
     // The saved choice outranks whatever an environment publishes, including
     // this module's own earlier publication inherited through a copy.
     const saved = await getCachedGitExecutablePath();
@@ -804,7 +1022,10 @@ export async function getResolvedGitExecutableForSpawn(
   }
   if (env !== process.env && published) {
     const validated = await validateGitExecutable(published);
-    if (isLinuxX64() && publishedGeneration !== linuxDetectionGeneration) {
+    if (
+      isLinuxGitSupported() &&
+      publishedGeneration !== linuxDetectionGeneration
+    ) {
       return getResolvedGitExecutableForSpawn(env);
     }
     return validated.path;
@@ -814,7 +1035,7 @@ export async function getResolvedGitExecutableForSpawn(
       if (isWindows() && (await stat(published)).isFile()) {
         return published;
       }
-      if (isLinuxX64()) {
+      if (isLinuxGitSupported()) {
         if (
           published === validatedLinuxPath &&
           (await stat(published)).isFile()
@@ -847,7 +1068,7 @@ export async function getResolvedGitExecutableForSpawn(
   const detection = detectGitExecutable();
   const generation = linuxDetectionGeneration;
   const detected = await detection;
-  if (isLinuxX64() && generation !== linuxDetectionGeneration) {
+  if (isLinuxGitSupported() && generation !== linuxDetectionGeneration) {
     return getResolvedGitExecutableForSpawn(env);
   }
   if (!detected.ready || !detected.path) {

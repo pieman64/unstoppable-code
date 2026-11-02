@@ -8,10 +8,10 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { injectChatEvent, seedWorktreeChat } from './seeders/index.mjs';
 
 /**
- * Tool calls show one row each by default. "Group tool calls" (Settings →
- * Experiments → "Keep chats short while agents work") folds back-to-back
- * calls into one row ("Read 3 files") that opens to each call. It is off by
- * default and independent of "Show only recent steps", which stays off here.
+ * Chat detail (Settings → Display → Appearance) "Detailed" shows each tool
+ * call as its own row; "Compact" folds the calls between two replies into one
+ * line ("Read 3 files") that opens to each call. The default is "Recent",
+ * which chat-live-step-window.spec.mjs covers.
  *
  * Determinism: no live agent and no network. Every provider event goes
  * through the E2E chat-event ingress, which commits through main exactly as a
@@ -38,7 +38,7 @@ function result(id) {
   };
 }
 
-test('tool calls show one row each until Group tool calls is on', async () => {
+test('tool calls show one row each until Chat detail is Compact', async () => {
   test.setTimeout(180_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-group-tool-calls-'),
@@ -60,12 +60,13 @@ test('tool calls show one row each until Group tool calls is on', async () => {
     await app.waitForShell({ timeout: 30_000 });
     const saved = () =>
       window.evaluate(() =>
-        window.api.loadPreferences().then((prefs) => ({
-          group: prefs.chatGroupToolCallsEnabled,
-          recent: prefs.chatLiveStepWindowEnabled,
-        })),
+        window.api.loadPreferences().then((prefs) => prefs.chatDetail),
       );
-    expect(await saved()).toEqual({ group: false, recent: false });
+    expect(await saved()).toBe('recent');
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
+    await expect.poll(saved).toBe('detailed');
 
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
@@ -129,24 +130,35 @@ test('tool calls show one row each until Group tool calls is on', async () => {
       );
       await inject(result(id));
     }
+    // A reply closes the run, so its line counts the calls instead of
+    // shimmering the running turn's tail.
+    await inject(
+      assistant('group-reply', [{ type: 'text', text: 'Read them all.' }]),
+    );
+    await expect(panel.getByText('Read them all.')).toBeVisible();
 
-    // Default: every tool call is its own row.
+    // Detailed: every tool call is its own row.
     const rows = panel.getByTestId('chat-tool-call');
-    const groups = panel.getByTestId('chat-tool-step-group');
+    // Step lines in the transcript; the row under the reply holds the live
+    // "Thinking" line, which is not one of them.
+    const groups = panel.locator(
+      '[data-testid="chat-tool-step-group"]:not([data-testid="turn-timer"] *)',
+    );
     await expect(rows).toHaveCount(3);
     await expect(groups).toHaveCount(0);
 
-    // Turning the setting on folds the calls into one row, on its own.
+    // Choosing Compact folds the calls into one line.
     await app.openSettings();
-    await app.openSettingsSection('experiments');
-    const toggle = window.getByTestId('chat-group-tool-calls-toggle');
-    await expect(toggle).toHaveAttribute('aria-checked', 'false');
-    await expect(
-      window.getByTestId('chat-live-step-window-toggle'),
-    ).toHaveAttribute('aria-checked', 'false');
-    await toggle.click();
-    await expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await expect.poll(saved).toEqual({ group: true, recent: false });
+    await app.openSettingsSection('display');
+    const row = window.getByTestId('settings-chat-detail-row');
+    await row.scrollIntoViewIfNeeded();
+    const detailed = row.getByTestId('chat-detail-detailed');
+    const compact = row.getByTestId('chat-detail-compact');
+    await expect(detailed).toHaveAttribute('aria-pressed', 'true');
+    await expect(compact).toHaveAttribute('aria-pressed', 'false');
+    await compact.click();
+    await expect(compact).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(saved).toBe('compact');
     await app.closeSettings();
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
@@ -155,9 +167,9 @@ test('tool calls show one row each until Group tool calls is on', async () => {
     await expect(groups.first()).toContainText('Read 3 files');
     await expect(rows).toHaveCount(0);
 
-    // Off again: one row per call.
+    // Detailed again: one row per call.
     await window.evaluate(() =>
-      window.api.savePreferences({ chatGroupToolCallsEnabled: false }),
+      window.api.savePreferences({ chatDetail: 'detailed' }),
     );
     await expect(groups).toHaveCount(0);
     await expect(rows).toHaveCount(3);

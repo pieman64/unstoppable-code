@@ -406,6 +406,35 @@ describe('hook-runner', () => {
     );
   });
 
+  it.each(['bash', 'zsh'] as const)(
+    'passes command hook Linux %s shell through to the script runner',
+    async (linux) => {
+      await runHook({
+        projectId: 'project-a',
+        worktreeId: 'worktree-a',
+        hook: {
+          ...hook,
+          actions: [
+            {
+              type: 'command',
+              command: 'echo hook',
+              shell: { linux },
+            },
+          ],
+        },
+        cwd: '/tmp',
+        getWindow: () => null,
+        invocation: 'manual',
+        currentSnapshot: buildSnapshot(),
+        currentSnapshotPath: '/tmp/does-not-exist/current.json',
+      });
+
+      expect(mockedRunShellScript).toHaveBeenCalledWith(
+        expect.objectContaining({ shell: { linux } }),
+      );
+    },
+  );
+
   it('runs interactive command hooks in a monitored project terminal', async () => {
     await runHook({
       projectId: 'project-a',
@@ -657,8 +686,13 @@ describe('hook-runner', () => {
       pipelineName: 'Review pipeline',
       queueId: 'queued-pipeline-1',
     });
+    const outputLines: string[][] = [];
+    const onOutput = (_hook: HookDescriptor, lines: string[]): void => {
+      outputLines.push(lines);
+    };
 
     const result = await runHook({
+      onOutput,
       projectId: 'project-a',
       worktreeId: 'worktree-a',
       hook: {
@@ -684,13 +718,16 @@ describe('hook-runner', () => {
 
     expect(result.success).toBe(true);
     expect(mockedLaunchHookPipeline).toHaveBeenCalledTimes(1);
+    expect(outputLines).toContainEqual([
+      'Queued workflow "Review pipeline" — waiting for active workflow runs to finish.',
+    ]);
     expect(mockedRunShellScript).toHaveBeenCalledTimes(1);
     expect(mockedRunShellScript.mock.calls[0]?.[0].script).toBe('echo later');
   });
 
   it('fails the hook when pipeline validation or start fails', async () => {
     mockedLaunchHookPipeline.mockRejectedValueOnce(
-      new Error('Pipeline "Review" does not define a dispatch trigger'),
+      new Error('Workflow "Review" does not define a dispatch trigger'),
     );
 
     const result = await runHook({
@@ -719,7 +756,7 @@ describe('hook-runner', () => {
 
     expect(result.success).toBe(false);
     expect(result.output).toBe(
-      'Pipeline "Review" does not define a dispatch trigger',
+      'Workflow "Review" does not define a dispatch trigger',
     );
     expect(mockedRunShellScript).not.toHaveBeenCalled();
   });
@@ -938,7 +975,7 @@ describe('hook-runner', () => {
         if (
           activeHook.hookKey === repoHook.hookKey &&
           lines.some((line) =>
-            line.includes('$ [1/1] Pipeline action (bundled/review)'),
+            line.includes('$ [1/1] Workflow action (bundled/review)'),
           )
         ) {
           void stopHooksForRepoTarget({

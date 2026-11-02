@@ -151,6 +151,14 @@ jest.mock('../lib/workspace-persistence', () => ({
   removeWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
   readWorkspaceConfig: jest.fn(),
   readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
+  readWorkspaceWorktreesDetailed: jest.fn(async (workspaceId: string) => ({
+    worktrees: await jest
+      .requireMock<{
+        readWorkspaceWorktrees: (id: string) => Promise<unknown[]>;
+      }>('../lib/workspace-persistence')
+      .readWorkspaceWorktrees(workspaceId),
+    authority: 'ok',
+  })),
   readWorkspaceConfigDetailed: jest.fn(async (workspaceId: string) => ({
     config: await jest
       .requireMock<{
@@ -191,7 +199,16 @@ jest.mock('../ipc/worktree-discovery', () => ({
   triggerDiscovery: jest.fn(),
 }));
 jest.mock('../agents/session-manager', () => ({
+  getLiveBackgroundTasksForChat: jest.fn(() => undefined),
+  listLiveBackgroundTaskOwners: jest.fn(() => []),
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
+  subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
+  hasPendingCodexContinuation: jest.fn(() => false),
+  getChatSessionLiveness: jest.fn(() => ({
+    foreground: false,
+    background: false,
+  })),
   getGlobalPluginDefaultsRevision: jest.fn(() => 0),
   getSessionGlobalPluginDefaultsRevision: jest.fn(() => undefined),
   destroyWorktreeSessions: jest.fn(() => Promise.resolve()),
@@ -272,6 +289,7 @@ import { registerWorkspaceHandlers } from '../ipc/workspaces';
 import { validateId } from '../lib/validation';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { computeWorkspaceReadinessIssues } from '../lib/workspace-readiness';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedReadFile = jest.mocked(readFile);
@@ -317,6 +335,18 @@ beforeEach(() => {
 
   registerWorkspaceHandlers(() => null, {
     dispatcher: {
+      query: (
+        ...args: Parameters<DesktopCanopyDispatcher['query']>
+      ): Promise<never> => {
+        void args;
+        return Promise.reject(new Error('Unexpected dispatcher query'));
+      },
+      instruction: (
+        ...args: Parameters<DesktopCanopyDispatcher['instruction']>
+      ): Promise<never> => {
+        void args;
+        return Promise.reject(new Error('Unexpected dispatcher instruction'));
+      },
       queryWorktreeListForLegacyIpc: () =>
         Promise.resolve({
           canonicalResult: null,

@@ -1,6 +1,6 @@
 import type {
   ChatStateService,
-  ProviderEventIngestOutcome,
+  ProviderEventIngestResult,
 } from '../services/chat-state-service';
 import type {
   ChatTabsFile,
@@ -16,9 +16,10 @@ jest.mock('../lib/chat-tabs-reader', () => ({
   readChatTabsFile: jest.fn(),
 }));
 
+const completeChatTurnMock = jest.fn();
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    completeChatTurn: jest.fn(),
+    completeChatTurn: completeChatTurnMock,
   })),
 }));
 
@@ -31,13 +32,10 @@ const ingestProviderEventMock = jest.fn<
   [Record<string, unknown>]
 >(() => Promise.resolve(true));
 
-// Delivery reads the outcome; by default it mirrors the boolean commit mock.
-const ingestProviderEventWithOutcomeMock = jest.fn<
-  Promise<ProviderEventIngestOutcome>,
+const ingestProviderEventWithResultMock = jest.fn<
+  Promise<ProviderEventIngestResult>,
   [Record<string, unknown>]
->(async (input) =>
-  (await ingestProviderEventMock(input)) ? 'applied' : 'not-applied',
-);
+>(() => Promise.resolve({ outcome: 'applied' }));
 
 const updateCompatibilityTabMock = jest.fn<
   ReturnType<ChatStateService['updateCompatibilityTab']>,
@@ -47,7 +45,7 @@ const updateCompatibilityTabMock = jest.fn<
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: jest.fn(() => ({
     ingestProviderEvent: ingestProviderEventMock,
-    ingestProviderEventWithOutcome: ingestProviderEventWithOutcomeMock,
+    ingestProviderEventWithResult: ingestProviderEventWithResultMock,
     updateCompatibilityTab: updateCompatibilityTabMock,
   })),
 }));
@@ -94,6 +92,40 @@ beforeEach(() => {
 });
 
 describe('commitProviderChatEvent', () => {
+  it('passes a large Codex MCP result to shared ingest without truncation', async () => {
+    const body = `start-${'x'.repeat(65_536)}-end`;
+    const data = {
+      type: 'codex',
+      event: {
+        type: 'item.completed',
+        item: {
+          id: 'mcp-call-large',
+          type: 'mcp_tool_call',
+          status: 'completed',
+          result: { content: [{ type: 'text', text: body }] },
+        },
+      },
+    };
+
+    await commitProviderChatEvent({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat-1',
+      userMessageId: 'user-1',
+      providerType: 'codex',
+      event: {
+        data,
+        sequence: 0,
+        sequenceNamespace: 'initial',
+      },
+    });
+
+    expect(ingestProviderEventWithResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({ data }),
+    );
+    expect(body).toHaveLength(65_546);
+  });
+
   it('namespaces mutation ids when a provider stream resumes at sequence zero', async () => {
     await commitProviderChatEvent({
       projectId: 'proj',
@@ -119,7 +151,9 @@ describe('commitProviderChatEvent', () => {
     });
 
     expect(
-      ingestProviderEventMock.mock.calls.map(([event]) => event.mutationId),
+      ingestProviderEventWithResultMock.mock.calls.map(
+        ([event]) => event.mutationId,
+      ),
     ).toEqual([
       'chat-1:user-1:provider:initial:0',
       'chat-1:user-1:provider:reload-request:0',
@@ -166,24 +200,32 @@ describe('commitProviderChatEvent', () => {
     });
 
     expect(
-      ingestProviderEventMock.mock.calls.map(([event]) => event.providerType),
+      ingestProviderEventWithResultMock.mock.calls.map(
+        ([event]) => event.providerType,
+      ),
     ).toEqual(['claude', 'claude', 'codex']);
   });
 
   it.each([
-    ['applied', true],
-    ['activity-only', true],
-    ['not-applied', false],
+    ['ordinary applied event', { outcome: 'applied' }],
+    ['ordinary activity-only event', { outcome: 'activity-only' }],
+    ['ordinary not-applied event', { outcome: 'not-applied' }],
+    [
+      'accepted starting pickup despite a not-applied event',
+      { outcome: 'not-applied', pickup: 'accepted' },
+    ],
+    [
+      'already-accepted starting pickup despite a not-applied event',
+      { outcome: 'not-applied', pickup: 'already-accepted' },
+    ],
+    [
+      'rejected starting pickup',
+      { outcome: 'not-applied', pickup: 'rejected' },
+    ],
   ] as const)(
-    'reports a %s event as deliverable: %s',
-    async (outcome, deliverable) => {
-      ingestProviderEventMock.mockResolvedValueOnce(outcome === 'applied');
-      ingestProviderEventWithOutcomeMock.mockImplementationOnce(
-        async (input) => {
-          await ingestProviderEventMock(input);
-          return outcome;
-        },
-      );
+    'returns the canonical result unchanged for %s',
+    async (_description, result) => {
+      ingestProviderEventWithResultMock.mockResolvedValueOnce(result);
       await expect(
         commitProviderChatEvent({
           projectId: 'proj',
@@ -196,9 +238,37 @@ describe('commitProviderChatEvent', () => {
             sequenceNamespace: 'initial',
           },
         }),
-      ).resolves.toBe(deliverable);
+      ).resolves.toBe(result);
     },
   );
+
+  it('preserves provider and root-turn identities for canonical ingestion', async () => {
+    const data = { type: 'assistant', message: 'response' };
+
+    await commitProviderChatEvent({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat-1',
+      userMessageId: 'user-1',
+      providerType: 'claude',
+      event: {
+        data,
+        sequence: 4,
+        sequenceNamespace: 'resume',
+        turnUserMessageId: 'root-turn-1',
+      },
+    });
+
+    expect(ingestProviderEventWithResultMock).toHaveBeenCalledWith({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat-1',
+      data,
+      mutationId: 'chat-1:user-1:provider:resume:4',
+      providerType: 'claude',
+      turnUserMessageId: 'root-turn-1',
+    });
+  });
 });
 
 describe('upsertPersistedChatTab', () => {
@@ -382,7 +452,8 @@ describe('persistOrgMemoryUsedForChat', () => {
       ],
     };
     updateCompatibilityTabMock.mockImplementation((_scope, chatId, update) => {
-      const next = currentTab?.id === chatId ? update(currentTab) : null;
+      const next =
+        currentTab?.id === chatId ? update(currentTab, undefined) : null;
       if (next) currentTab = next;
       return Promise.resolve({
         updated: next !== null,
@@ -478,6 +549,25 @@ describe('persistOrgMemoryUsedForChat', () => {
 });
 
 describe('emitChatDispatchFailure', () => {
+  it('reports the failed turn as a setup failure (CAN-4629)', async () => {
+    await emitChatDispatchFailure({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      chatId: 'chat-1',
+      errorMessage: 'dispatch rejected',
+      getWindow: jest.fn(() => null),
+    });
+
+    expect(completeChatTurnMock).toHaveBeenCalledWith(
+      'proj',
+      'wt',
+      'chat-1',
+      'failure',
+      'dispatch rejected',
+      { setupFailure: true },
+    );
+  });
+
   it('commits the failed runtime before notifying the renderer', async () => {
     let releaseCommit: ((applied: boolean) => void) | undefined;
     ingestProviderEventMock.mockImplementationOnce(

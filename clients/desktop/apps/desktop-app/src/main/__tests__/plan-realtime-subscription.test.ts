@@ -87,7 +87,9 @@ describe('createPlanRealtimeSubscription', () => {
       })
       // After the stream ends, the reconnect hits a 404 → terminal-quiet.
       .mockResolvedValue({ status: 404, ok: false, body: null });
-    const delayImpl = jest.fn((): Promise<void> => Promise.resolve());
+    const delayImpl = jest.fn<Promise<void>, [delayMs: number]>(() =>
+      Promise.resolve(),
+    );
 
     const sub = createPlanRealtimeSubscription({
       remoteId: 'plan-1',
@@ -114,7 +116,9 @@ describe('createPlanRealtimeSubscription', () => {
     const onSignal = jest.fn();
     const fetchImpl: jest.MockedFunction<PlanRealtimeFetch> = jest.fn();
     fetchImpl.mockResolvedValue({ status: 404, ok: false, body: null });
-    const delayImpl = jest.fn((): Promise<void> => Promise.resolve());
+    const delayImpl = jest.fn<Promise<void>, [delayMs: number]>(() =>
+      Promise.resolve(),
+    );
 
     const sub = createPlanRealtimeSubscription({
       remoteId: 'plan-404',
@@ -140,7 +144,9 @@ describe('createPlanRealtimeSubscription', () => {
       const onSignal = jest.fn();
       const fetchImpl: jest.MockedFunction<PlanRealtimeFetch> = jest.fn();
       fetchImpl.mockResolvedValue({ status, ok: false, body: null });
-      const delayImpl = jest.fn((): Promise<void> => Promise.resolve());
+      const delayImpl = jest.fn<Promise<void>, [delayMs: number]>(() =>
+        Promise.resolve(),
+      );
 
       const sub = createPlanRealtimeSubscription({
         remoteId: 'plan-auth',
@@ -171,7 +177,9 @@ describe('createPlanRealtimeSubscription', () => {
         body: streamFromChunks([planDetailFrame('plan-2', 1, 77)]),
       })
       .mockResolvedValueOnce({ status: 404, ok: false, body: null });
-    const delayImpl = jest.fn((): Promise<void> => Promise.resolve());
+    const delayImpl = jest.fn<Promise<void>, [delayMs: number]>(() =>
+      Promise.resolve(),
+    );
 
     const sub = createPlanRealtimeSubscription({
       remoteId: 'plan-2',
@@ -194,7 +202,9 @@ describe('createPlanRealtimeSubscription', () => {
   it('stops quietly when credential resolution fails (cloud not configured)', async () => {
     const onSignal = jest.fn();
     const fetchImpl: jest.MockedFunction<PlanRealtimeFetch> = jest.fn();
-    const delayImpl = jest.fn((): Promise<void> => Promise.resolve());
+    const delayImpl = jest.fn<Promise<void>, [delayMs: number]>(() =>
+      Promise.resolve(),
+    );
     const configError = new Error('not configured');
     configError.name = 'CanopyCloudConfigError';
 

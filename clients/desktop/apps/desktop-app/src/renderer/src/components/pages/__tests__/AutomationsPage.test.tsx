@@ -435,8 +435,8 @@ describe('AutomationsPage triggered activity coverage', () => {
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
       'data-testid="automations-empty-new"',
     );
-    expect(AUTOMATIONS_PAGE_SOURCE).toContain(
-      'rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis',
+    expect(AUTOMATIONS_PAGE_SOURCE).toMatch(
+      /<Button\s+variant="primary"\s+size="compact"\s+onClick=\{onBeginCreate\}/,
     );
     expect(AUTOMATIONS_PAGE_SOURCE).not.toMatch(
       /text-(?:sky|amber|emerald|red)-(?:100|200|300)/,
@@ -527,18 +527,18 @@ describe('AutomationsPage triggered activity coverage', () => {
     expect(AUTOMATIONS_PAGE_SOURCE).toContain('<ConfigurationChatComposer');
     expect(AUTOMATIONS_PAGE_SOURCE).toContain('<InterfaceModePill');
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
-      'data-testid="automations-form-interface-mode"',
+      'dataTestId="automations-form-interface-mode"',
     );
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
       'data-testid="automations-form-pipeline"',
     );
     expect(AUTOMATIONS_PAGE_SOURCE).toContain('PipelineTriggerModal');
-    expect(AUTOMATIONS_PAGE_SOURCE).toContain('runLabel="Use pipeline"');
+    expect(AUTOMATIONS_PAGE_SOURCE).toContain('runLabel="Use workflow"');
     // The overlay layer is DialogModal's own; the page no longer names it.
     expect(AUTOMATIONS_PAGE_SOURCE).not.toContain('overlayClassName');
     expect(AUTOMATIONS_PAGE_SOURCE).toContain('pipelineSource: info.source');
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
-      'data-testid="automations-form-workspace-action-mode"',
+      'dataTestId="automations-form-workspace-action-mode"',
     );
     // The legacy standalone chat-project select is gone — cowork targets are
     // picked from the unified workspace list instead.
@@ -572,7 +572,7 @@ describe('AutomationsPage triggered activity coverage', () => {
       'testId="automations-form-session-input-mode"',
     );
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
-      "{ label: 'App Advisor', value: 'app_advisor' }",
+      "{ label: ORCHESTRATOR_LABEL, value: 'app_advisor' }",
     );
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
       "{ label: 'Project', value: 'workspace' }",
@@ -633,6 +633,7 @@ describe('AutomationsPage triggered activity interactions', () => {
 
     Object.defineProperty(window, 'api', {
       configurable: true,
+      writable: true,
       value: {
         automations: {
           list: jest.fn().mockResolvedValue({ activities: [], recentRuns: [] }),
@@ -666,6 +667,7 @@ describe('AutomationsPage triggered activity interactions', () => {
     });
     Object.defineProperty(window, 'pipelines', {
       configurable: true,
+      writable: true,
       value: {
         list: jest.fn().mockResolvedValue({
           success: true,
@@ -694,7 +696,13 @@ describe('AutomationsPage triggered activity interactions', () => {
       deleteErrors: {},
     });
     useStandaloneChatStore.setState({
-      chatProjects: [{ id: 'default', name: 'Default' }],
+      chatProjects: [
+        {
+          id: 'default',
+          name: 'Default',
+          createdAt: '2024-04-20T00:00:00.000Z',
+        },
+      ],
       chatProjectsLoaded: true,
     });
     useSidebarItemGroupsStore.setState({ byScope: {}, errors: {} });
@@ -703,12 +711,26 @@ describe('AutomationsPage triggered activity interactions', () => {
         {
           id: 'workspace-1',
           name: 'Canopy',
-          worktrees: [{ id: 'base-worktree', branchName: 'main' }],
+          type: 'single-repo',
+          repoPath: '/repo/workspace-1',
+          color: '#6366f1',
+          worktrees: [
+            {
+              id: 'base-worktree',
+              branchName: 'main',
+              createdAt: '2024-04-20T00:00:00.000Z',
+            },
+          ],
+          collapsed: false,
+          order: 0,
         },
         {
           id: 'cowork-1',
           name: 'Notes',
           type: 'cowork',
+          color: '',
+          collapsed: false,
+          order: 0,
         },
       ],
     });
@@ -1003,6 +1025,10 @@ describe('AutomationsPage triggered activity interactions', () => {
           action: {
             type: 'pipeline_execution_resume',
             executionId: 'execution-1',
+            statusReasonIds: [],
+            provider: 'claude',
+            purpose: 'usage_limit_resume',
+            pipelineName: 'Nightly build',
           },
         }),
       ],
@@ -1199,12 +1225,18 @@ describe('AutomationsPage triggered activity interactions', () => {
         {
           id: 'workspace-1',
           name: 'Canopy',
+          type: 'single-repo',
+          repoPath: '/repo/workspace-1',
+          color: '#6366f1',
           worktrees: [
             {
               id: 'base-worktree',
               branchName: 'base-worktree-1713571200123',
+              createdAt: '2024-04-20T00:00:00.123Z',
             },
           ],
+          collapsed: false,
+          order: 0,
         },
       ],
     });
@@ -2445,7 +2477,7 @@ describe('AutomationsPage — "New chat" in an existing destination', () => {
 describe('resolveRepickedSharedPipeline (CAN-3354 edit-form pin)', () => {
   const installPin = {
     pipelineContentHash: 'a'.repeat(64),
-    distributionMode: 'self_contained' as const,
+    distributionMode: 'package' as const,
   };
   const previous = {
     serverId: 'canopy-cloud',
@@ -2845,6 +2877,7 @@ describe('AutomationsPage — Personal/organization scoping (CAN-3448)', () => {
     updateMock.mockResolvedValue({ ok: true, activity: personalChatsActivity });
     Object.defineProperty(window, 'api', {
       configurable: true,
+      writable: true,
       value: {
         automations: {
           list: jest.fn().mockResolvedValue({ activities: [], recentRuns: [] }),
@@ -2866,6 +2899,7 @@ describe('AutomationsPage — Personal/organization scoping (CAN-3448)', () => {
     });
     Object.defineProperty(window, 'pipelines', {
       configurable: true,
+      writable: true,
       value: {
         list: jest.fn().mockResolvedValue({ success: true, data: [] }),
         discoverProject: jest.fn().mockResolvedValue({
@@ -2910,17 +2944,41 @@ describe('AutomationsPage — Personal/organization scoping (CAN-3448)', () => {
       deleteErrors: {},
     });
     useStandaloneChatStore.setState({
-      chatProjects: [{ id: 'chats', name: 'Chats' }],
+      chatProjects: [
+        {
+          id: 'chats',
+          name: 'Chats',
+          createdAt: '2024-04-20T00:00:00.000Z',
+        },
+      ],
       chatProjectsLoaded: true,
     });
     useProjectsStore.setState({
       projects: [
-        { id: 'chats', name: 'Chats', type: 'cowork' },
+        {
+          id: 'chats',
+          name: 'Chats',
+          type: 'cowork',
+          color: '',
+          collapsed: false,
+          order: 0,
+        },
         {
           id: 'org-project',
           name: 'Org Project',
+          type: 'single-repo',
+          repoPath: '/repo/org-project',
+          color: '#6366f1',
           owner: ORG_OWNER,
-          worktrees: [{ id: 'base-worktree', branchName: 'main' }],
+          worktrees: [
+            {
+              id: 'base-worktree',
+              branchName: 'main',
+              createdAt: '2024-04-20T00:00:00.000Z',
+            },
+          ],
+          collapsed: false,
+          order: 0,
         },
       ],
     });
@@ -3089,6 +3147,7 @@ describe('AutomationsPage — reveal an installed automation (CAN-3651)', () => 
     runNowMock.mockResolvedValue({ ok: true });
     Object.defineProperty(window, 'api', {
       configurable: true,
+      writable: true,
       value: {
         automations: {
           list: listMock,
@@ -3112,6 +3171,7 @@ describe('AutomationsPage — reveal an installed automation (CAN-3651)', () => 
     });
     Object.defineProperty(window, 'pipelines', {
       configurable: true,
+      writable: true,
       value: {
         list: jest.fn().mockResolvedValue({ success: true, data: [] }),
         discoverProject: jest
@@ -3135,11 +3195,26 @@ describe('AutomationsPage — reveal an installed automation (CAN-3651)', () => 
       deleteErrors: {},
     });
     useStandaloneChatStore.setState({
-      chatProjects: [{ id: 'chats', name: 'Chats' }],
+      chatProjects: [
+        {
+          id: 'chats',
+          name: 'Chats',
+          createdAt: '2024-04-20T00:00:00.000Z',
+        },
+      ],
       chatProjectsLoaded: true,
     });
     useProjectsStore.setState({
-      projects: [{ id: 'chats', name: 'Chats', type: 'cowork' }],
+      projects: [
+        {
+          id: 'chats',
+          name: 'Chats',
+          type: 'cowork',
+          color: '',
+          collapsed: false,
+          order: 0,
+        },
+      ],
     });
     useLinkedPersonalWorkspacesStore.setState({ ids: [] });
     useNavigationStore.setState({

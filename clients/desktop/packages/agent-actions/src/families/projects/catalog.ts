@@ -59,7 +59,7 @@ const PROJECT_DISCOVERY_PAGE_FIELDS: readonly AgentActionField[] = [
 ];
 const PROJECT_DISCOVERY_NOTES: readonly string[] = [
   'Read-only explicit-target discovery; no UI fields or expectedUiRevision. Supply projectId for task/chat lists; optional taskId narrows the chat list.',
-  'Code and cowork root agents may discover only projects with the same saved owner as their origin. App Advisor can discover all authorized owners; owner filters only narrow access.',
+  'Code and cowork root agents may discover only projects with the same saved owner as their origin. Orchestrator can discover all authorized owners; owner filters only narrow access.',
   'Archived retention filters are currently unavailable and return unsupported_filter. Retained active and done tasks remain discoverable.',
   'cursor_expired and cursor_context_changed require restarting from the first page without a cursor. Keep target, filters, sort, and order unchanged during continuation.',
 ];
@@ -86,7 +86,7 @@ const PROJECT_READ_ADDRESS_FIELDS: readonly AgentActionField[] = [
 ];
 const PROJECT_READ_NOTES: readonly string[] = [
   'Read-only explicit address from discovery: supply projectId, taskId, and chatId. No UI fields or expectedUiRevision; retained discoverable targets only, not archives.',
-  'Code and cowork root agents may read only projects with the same saved owner as their origin. App Advisor may read all authorized owners. Self-history reads are allowed; unknown or unauthorized targets return not_found.',
+  'Code and cowork root agents may read only projects with the same saved owner as their origin. Orchestrator may read all authorized owners. Self-history reads are allowed; unknown or unauthorized targets return not_found.',
   'Visible user/assistant text and basename-only file references only; no tool calls, tool results, thinking, hidden context, system/hook/info blocks, or child agents. Empty visible projections are excluded. Each message is capped at 8,000 characters with truncation marked.',
 ];
 
@@ -378,6 +378,12 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
         false,
         'Nonblank first message; original whitespace is preserved.',
       ),
+      field(
+        'model',
+        'string',
+        false,
+        'Model id from models.list, including an installed custom Agent. Omit for the project default.',
+      ),
     ],
     example: projectWriteActionSchema.parse({
       type: 'projects.create_task',
@@ -386,6 +392,7 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
     keywords: ['create', 'new task', 'new chat', 'initial message'],
     notes: [
       'Returns CreatedTaskChatReceipt: address, taskCreated, chatCreated and input only when an initial message was accepted. Input proves acceptance, not completion.',
+      'With model, the model or Agent is checked against the target project (availability, policy, gateway, runtime) before anything is created. An Agent on the default model is pinned to the target default. The receipt adds model (the stored id) and, for an Agent, agentId; projects.list_task_chats model is the durable re-check.',
       'Initial messages use the trusted agent sender. No sender overrides, navigation or managed-delegate access.',
       'Always creates a new task and founding chat; taskCreated and chatCreated are true. Repeated calls are new creations, not retries.',
       'Cowork projects only. Code projects must use the existing worktree-creation workflow; this action returns unsupported_action there.',
@@ -406,6 +413,12 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
         false,
         'Nonblank first message; original whitespace is preserved.',
       ),
+      field(
+        'model',
+        'string',
+        false,
+        'Model id from models.list, including an installed custom Agent. Always creates a new chat. Omit for the project default or a reused empty chat.',
+      ),
     ],
     example: projectWriteActionSchema.parse({
       type: 'projects.create_task_chat',
@@ -415,8 +428,9 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
     keywords: ['create', 'new task', 'new chat', 'initial message'],
     notes: [
       'Returns CreatedTaskChatReceipt: address, taskCreated, chatCreated and input only when an initial message was accepted. Input proves acceptance, not completion.',
+      'With model, the model or Agent is checked against the target project (availability, policy, gateway, runtime) before anything is created. An Agent on the default model is pinned to the target default. The receipt adds model (the stored id) and, for an Agent, agentId; projects.list_task_chats model is the durable re-check.',
       'Initial messages use the trusted agent sender. No sender overrides, navigation or managed-delegate access.',
-      'May reuse the first eligible empty non-terminal chat, excluding file, read-only, stale-session and caller chats. Reuse keeps its settings and returns chatCreated:false; otherwise chatCreated:true. taskCreated is always false.',
+      'Without model, may reuse the first eligible empty non-terminal chat, excluding file, read-only, stale-session and caller chats. Reuse keeps its settings and returns chatCreated:false; otherwise chatCreated:true. With model, always creates a new chat. taskCreated is always false.',
       'Supports code and cowork tasks. Omit initialMessage to create or reuse an empty chat without starting a provider session.',
       'After an error, discover any created task or chat before retrying: creation and initial-message acceptance are separate commits.',
     ],
@@ -448,7 +462,7 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
     notes: [
       'Returns SteeredInputReceipt: address, queuedMessageId, disposition steered and steeredAt. No compare-and-set is promised.',
       'Keeps the original input sender and provenance; records the steering actor separately. Self-steer is allowed because it creates no input.',
-      'An ineligible input stays queued with missing_capability. Root chats and App Advisor only; managed delegates cannot discover or dispatch this action.',
+      'An ineligible input stays queued with missing_capability. Root chats and Orchestrator only; managed delegates cannot discover or dispatch this action.',
     ],
   },
   {
@@ -515,7 +529,7 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
     notes: [
       'Returns ScheduledMessageReceipt: address, automationId, name, resolved runAt, timezone and createdAt. Saving is not delivery.',
       'Captures the sender in main and rechecks the saved owner rule at delivery. User edits keep attribution. Agents cannot edit the action of an agent-scheduled send; cancel and schedule a new one instead.',
-      'Use this action rather than generic automation.create with worktree_session_prompt. Self-scheduling is refused. Root chats and App Advisor only; managed delegates cannot discover or dispatch it.',
+      'Use this action rather than generic automation.create with worktree_session_prompt. Self-scheduling is refused. Root chats and Orchestrator only; managed delegates cannot discover or dispatch it.',
     ],
   },
   {
@@ -563,7 +577,7 @@ export const PROJECT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
       'Sending starts or queues an input under shared tool approval and the target session policy; discovery is not permission to mutate.',
       'Returns AcceptedInputReceipt: canonical address, started with messageId or queued with queuedMessageId, acceptedAt, optional turnId, and watcherReceipts (created or deduplicated). Acceptance is not completion.',
       'No navigation or UI revision is required. Self-send is rejected. Sender context is captured by the host; do not supply sender or target settings.',
-      'Watchers are optional; sending alone creates none. Root chats and App Advisor only; managed delegates cannot discover or dispatch sends.',
+      'Watchers are optional; sending alone creates none. Root chats and Orchestrator only; managed delegates cannot discover or dispatch sends.',
       'Project roots may send only within their saved owner boundary.',
     ],
   },

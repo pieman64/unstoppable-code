@@ -10,6 +10,7 @@ function assertNotAborted(signal: AbortSignal): void {
 export async function resolveDesktopDocumentBytes(
   read: () => Promise<FileDocumentBytesResponse>,
   signal: AbortSignal,
+  maxBytes: number = DOCUMENT_PREVIEW_MAX_BYTES,
 ): Promise<FileDocumentBytesResult> {
   assertNotAborted(signal);
   try {
@@ -18,8 +19,8 @@ export async function resolveDesktopDocumentBytes(
     if (result.status === 'too-large')
       return { status: 'too-large', maxBytes: result.maxBytes };
     if (result.status === 'missing') return { status: 'failed' };
-    if (result.bytes.byteLength > DOCUMENT_PREVIEW_MAX_BYTES) {
-      return { status: 'too-large', maxBytes: DOCUMENT_PREVIEW_MAX_BYTES };
+    if (result.bytes.byteLength > maxBytes) {
+      return { status: 'too-large', maxBytes };
     }
     // Copy the view, not its possibly larger backing store. IPC itself is
     // structured-cloned and cannot be cancelled by this renderer signal.

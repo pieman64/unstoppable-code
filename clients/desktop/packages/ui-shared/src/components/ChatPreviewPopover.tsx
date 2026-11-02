@@ -35,7 +35,15 @@ export interface ChatPreviewRow {
   scheduleLabel?: string;
   /** Marks a plan-explore chat row so the popover renders a plan icon. */
   isPlan?: boolean;
+  /**
+   * Set when the user marked the chat unread themselves. The row then says so
+   * instead of showing its last response, which is not why the dot is there.
+   */
+  markedUnread?: boolean;
 }
+
+/** Secondary line for a chat the user marked unread themselves. */
+export const CHAT_PREVIEW_MARKED_UNREAD_COPY = 'Marked as unread';
 
 export interface ChatPreviewPopoverProps {
   anchorRect: DOMRect;
@@ -160,7 +168,9 @@ export function ChatPreviewPopover({
               <div
                 className={`${REPLAY_BLOCK_CLASS} truncate pl-4.5 text-3xs fg-secondary`}
               >
-                {row.preview ?? 'No response yet'}
+                {row.markedUnread
+                  ? CHAT_PREVIEW_MARKED_UNREAD_COPY
+                  : (row.preview ?? 'No response yet')}
               </div>
               {row.scheduleLabel ? (
                 <div className="truncate pl-4.5 text-3xs fg-secondary">

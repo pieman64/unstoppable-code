@@ -158,7 +158,7 @@ test('dispatch working-directory picker includes the root and every child repo f
         .click();
 
       const dialog = window.getByRole('dialog', {
-        name: 'Dispatch pipeline',
+        name: 'Dispatch workflow',
       });
       await expect(dialog).toBeVisible();
       const workingDirectory = dialog.getByLabel('Working directory', {

@@ -16,7 +16,10 @@ function makeTerminal(
 }
 
 function activateOscLink(term: Terminal, url: string): void {
-  term.options.linkHandler?.activate({} as MouseEvent, url, { x: 1, y: 1 });
+  term.options.linkHandler?.activate({} as MouseEvent, url, {
+    start: { x: 1, y: 1 },
+    end: { x: 1, y: 1 },
+  });
 }
 
 describe('installTerminalLinks', () => {

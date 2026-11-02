@@ -1,0 +1,985 @@
+{
+  "version": 2,
+  "description": "CAN-5271 slash search conformance vectors. Expectations are hand-derived from the search contract in packages/ui-rich/src/plugins/commandSearch.ts; both the TypeScript ranker and the Dart port assert them. Update the contract, these vectors and the Dart port together.",
+  "search": [
+    {
+      "case": "tier 1 exact beats tier 2 prefix",
+      "query": "review",
+      "rows": [
+        {
+          "id": "loop",
+          "name": "review-loop"
+        },
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": ["review", "loop"]
+    },
+    {
+      "case": "trigger, case and whitespace normalize",
+      "query": " /DEPLOY ",
+      "rows": [
+        {
+          "id": "deploy",
+          "name": "deploy"
+        }
+      ],
+      "expected": ["deploy"]
+    },
+    {
+      "case": "stopwords are dropped when a meaningful token remains",
+      "query": "open the pr",
+      "rows": [
+        {
+          "id": "open",
+          "name": "open-pr"
+        }
+      ],
+      "expected": ["open"]
+    },
+    {
+      "case": "a stopword-only query keeps its tokens",
+      "query": "the",
+      "rows": [
+        {
+          "id": "end",
+          "name": "the-end"
+        }
+      ],
+      "expected": ["end"]
+    },
+    {
+      "case": "separator-only input matches nothing",
+      "query": "--",
+      "rows": [
+        {
+          "id": "xy",
+          "name": "x-y"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "one character admits exact and prefix only",
+      "query": "r",
+      "rows": [
+        {
+          "id": "review",
+          "name": "review"
+        },
+        {
+          "id": "described",
+          "name": "x",
+          "description": "r"
+        },
+        {
+          "id": "inner",
+          "name": "merge-rules"
+        }
+      ],
+      "expected": ["review"]
+    },
+    {
+      "case": "flattened member found by explicit plugin identity",
+      "query": "docs-plugin",
+      "rows": [
+        {
+          "id": "mention",
+          "name": "other",
+          "description": "Mentions docs-plugin in passing"
+        },
+        {
+          "id": "writing",
+          "name": "writing-docs",
+          "namespace": "docs-plugin"
+        }
+      ],
+      "expected": ["writing", "mention"]
+    },
+    {
+      "case": "qualified identity inferred from name",
+      "query": "docs:wr",
+      "rows": [
+        {
+          "id": "write",
+          "name": "docs:write"
+        }
+      ],
+      "expected": ["write"]
+    },
+    {
+      "case": "explicit member identity wins over projected name",
+      "query": "review/deep",
+      "rows": [
+        {
+          "id": "deep",
+          "name": "review-deep-thing",
+          "namespace": "code-review",
+          "memberName": "review/deep:thing"
+        }
+      ],
+      "expected": ["deep"]
+    },
+    {
+      "case": "display name is an identity alias",
+      "query": "invest",
+      "rows": [
+        {
+          "id": "alias",
+          "name": "zz",
+          "displayName": "/Investigator"
+        }
+      ],
+      "expected": ["alias"]
+    },
+    {
+      "case": "one-edit typo with an exact companion token",
+      "query": "ecomm-debugger",
+      "rows": [
+        {
+          "id": "debugger",
+          "name": "ecom-debugger"
+        },
+        {
+          "id": "tools",
+          "name": "ecom-tools"
+        }
+      ],
+      "expected": ["debugger"]
+    },
+    {
+      "case": "typo needs four characters",
+      "query": "fux",
+      "rows": [
+        {
+          "id": "fix",
+          "name": "fix"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "adjacent transposition is one edit",
+      "query": "reveiw",
+      "rows": [
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": ["review"]
+    },
+    {
+      "case": "two edits do not match",
+      "query": "revwie",
+      "rows": [
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "single-token subsequences are excluded",
+      "query": "rvw",
+      "rows": [
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "single description token must be a whole word",
+      "query": "dom",
+      "rows": [
+        {
+          "id": "order",
+          "name": "x",
+          "description": "Debug a domain/order problem"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "trailing description tokens must be whole words",
+      "query": "domain ord",
+      "rows": [
+        {
+          "id": "order",
+          "name": "x",
+          "description": "Debug a domain/order problem"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "identity and description cannot split query coverage",
+      "query": "review pull",
+      "rows": [
+        {
+          "id": "review",
+          "name": "review",
+          "description": "Reviews a pull request"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "category labels are not identities",
+      "query": "repo",
+      "rows": [
+        {
+          "id": "tests",
+          "name": "run-tests",
+          "category": "Repository"
+        },
+        {
+          "id": "sync",
+          "name": "repo-sync"
+        }
+      ],
+      "expected": ["sync"]
+    },
+    {
+      "case": "member identity outranks plugin identity",
+      "query": "deploy",
+      "rows": [
+        {
+          "id": "plugin",
+          "name": "other",
+          "namespace": "deploy"
+        },
+        {
+          "id": "member",
+          "name": "deploy"
+        }
+      ],
+      "expected": ["member", "plugin"]
+    },
+    {
+      "case": "enabled breaks ties before input order",
+      "query": "deploy",
+      "rows": [
+        {
+          "id": "available",
+          "name": "deploy",
+          "section": "available"
+        },
+        {
+          "id": "enabled",
+          "name": "deploy"
+        }
+      ],
+      "expected": ["enabled", "available"]
+    },
+    {
+      "case": "Available exact match outranks enabled description match",
+      "query": "ecom-debugger",
+      "rows": [
+        {
+          "id": "helper",
+          "name": "helper",
+          "description": "Runs ecom-debugger"
+        },
+        {
+          "id": "ecom",
+          "name": "ecom-debugger",
+          "section": "available"
+        }
+      ],
+      "expected": ["ecom", "helper"]
+    },
+    {
+      "case": "exact token count before stable input order",
+      "query": "review",
+      "rows": [
+        {
+          "id": "hog",
+          "name": "review-hog-authoring"
+        },
+        {
+          "id": "reviewer",
+          "name": "reviewer"
+        },
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": ["review", "hog", "reviewer"]
+    },
+    {
+      "case": "full typo coverage precedes compound identities",
+      "query": "reveiw",
+      "rows": [
+        {
+          "id": "hog",
+          "name": "review-hog-authoring"
+        },
+        {
+          "id": "reviewer",
+          "name": "reviewer"
+        },
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": ["review", "hog"]
+    },
+    {
+      "case": "tokens from unrelated identities do not combine",
+      "query": "alpha beta",
+      "rows": [
+        {
+          "id": "split",
+          "name": "alpha",
+          "displayName": "beta"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "non-ASCII identity prefix",
+      "query": "CAFÉ",
+      "rows": [
+        {
+          "id": "cafe",
+          "name": "café-helper"
+        }
+      ],
+      "expected": ["cafe"]
+    },
+    {
+      "case": "non-ASCII description word",
+      "query": "domäne",
+      "rows": [
+        {
+          "id": "check",
+          "name": "x",
+          "description": "Überprüfe die Domäne"
+        }
+      ],
+      "expected": ["check"]
+    },
+    {
+      "case": "empty query keeps catalog order",
+      "query": "  /  ",
+      "rows": [
+        {
+          "id": "b",
+          "name": "b"
+        },
+        {
+          "id": "a",
+          "name": "a"
+        }
+      ],
+      "expected": ["b", "a"]
+    },
+    {
+      "case": "full typo coverage precedes enablement",
+      "query": "reveiw",
+      "rows": [
+        {
+          "id": "long",
+          "name": "review-hog-authoring"
+        },
+        {
+          "id": "short",
+          "name": "review",
+          "section": "available"
+        }
+      ],
+      "expected": ["short", "long"]
+    },
+    {
+      "case": "subsequence uses full query including separators",
+      "query": "r v w",
+      "rows": [
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "explicit fields replace inferred identities",
+      "query": "old",
+      "rows": [
+        {
+          "id": "source",
+          "name": "old:projected",
+          "namespace": "actual",
+          "memberName": "source"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "stable ties retain original order",
+      "query": "rev",
+      "rows": [
+        {
+          "id": "b",
+          "name": "review"
+        },
+        {
+          "id": "a",
+          "name": "review"
+        }
+      ],
+      "expected": ["b", "a"]
+    },
+    {
+      "case": "single-token subsequences never become matches",
+      "query": "rvw",
+      "rows": [
+        {
+          "id": "long",
+          "name": "r-e-v-i-e-w"
+        },
+        {
+          "id": "short",
+          "name": "review"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "case": "single-word descriptions are fallback only",
+      "query": "plan",
+      "rows": [
+        {
+          "id": "letters",
+          "name": "p-l-a-n"
+        },
+        {
+          "id": "desc",
+          "name": "x",
+          "description": "plan"
+        },
+        {
+          "id": "exact",
+          "name": "plan"
+        }
+      ],
+      "expected": ["exact"]
+    },
+    {
+      "case": "category labels cannot supplement plugin identities",
+      "query": "notes",
+      "rows": [
+        {
+          "id": "label",
+          "name": "x",
+          "category": "notes"
+        },
+        {
+          "id": "identity",
+          "name": "notes-sync"
+        }
+      ],
+      "expected": ["identity"]
+    },
+    {
+      "case": "dollar trigger normalizes",
+      "query": "$ REVIEW ",
+      "rows": [
+        {
+          "id": "review",
+          "name": "review"
+        }
+      ],
+      "expected": ["review"]
+    },
+    {
+      "case": "single-word description fallback without identities",
+      "query": "plan",
+      "rows": [
+        {
+          "id": "desc",
+          "name": "x",
+          "description": "Plan the work"
+        }
+      ],
+      "expected": ["desc"]
+    },
+    {
+      "case": "whole-word multi-term descriptions remain beside identities",
+      "query": "review my pr",
+      "rows": [
+        {
+          "id": "identity",
+          "name": "review-pr"
+        },
+        {
+          "id": "desc",
+          "name": "specialist",
+          "description": "Review code with GitHub PR automation"
+        },
+        {
+          "id": "partial",
+          "name": "x",
+          "description": "Reviews a pull request"
+        }
+      ],
+      "expected": ["identity", "desc"]
+    },
+    {
+      "case": "multi-token identity subsequence last resort",
+      "query": "alpha-bbet",
+      "rows": [
+        {
+          "id": "fallback",
+          "name": "alpha-beta:alpha-beta"
+        }
+      ],
+      "expected": ["fallback"]
+    },
+    {
+      "case": "identity suppresses multi-token subsequence fallback",
+      "query": "alpha-bbet",
+      "rows": [
+        {
+          "id": "fallback",
+          "name": "alpha-beta:alpha-beta"
+        },
+        {
+          "id": "literal",
+          "name": "alpha-bbet"
+        }
+      ],
+      "expected": ["literal"]
+    },
+    {
+      "case": "whole-word description suppresses identity subsequence fallback",
+      "query": "alpha-bbet",
+      "rows": [
+        {
+          "id": "fallback",
+          "name": "alpha-beta:alpha-beta"
+        },
+        {
+          "id": "desc",
+          "name": "x",
+          "description": "alpha bbet"
+        }
+      ],
+      "expected": ["desc"]
+    },
+    {
+      "case": "equal typo token widths retain enablement tie break",
+      "query": "reveiw",
+      "rows": [
+        {
+          "id": "available",
+          "name": "review",
+          "section": "available"
+        },
+        {
+          "id": "enabled",
+          "name": "review"
+        }
+      ],
+      "expected": ["enabled", "available"]
+    }
+  ],
+  "limit": [
+    {
+      "case": "under the cap",
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "b1",
+          "group": "b"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "b1"],
+        "hiddenCount": 0
+      },
+      "runs": [
+        {
+          "key": "a",
+          "occurrence": 0,
+          "rows": ["a1", "a2"]
+        },
+        {
+          "key": "b",
+          "occurrence": 0,
+          "rows": ["b1"]
+        }
+      ]
+    },
+    {
+      "case": "exactly at the cap",
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "a4",
+          "group": "a"
+        },
+        {
+          "id": "b1",
+          "group": "b"
+        },
+        {
+          "id": "b2",
+          "group": "b"
+        },
+        {
+          "id": "b3",
+          "group": "b"
+        },
+        {
+          "id": "b4",
+          "group": "b"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4"],
+        "hiddenCount": 0
+      }
+    },
+    {
+      "case": "global cap of eight",
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "b1",
+          "group": "b"
+        },
+        {
+          "id": "b2",
+          "group": "b"
+        },
+        {
+          "id": "b3",
+          "group": "b"
+        },
+        {
+          "id": "c1",
+          "group": "c"
+        },
+        {
+          "id": "c2",
+          "group": "c"
+        },
+        {
+          "id": "c3",
+          "group": "c"
+        },
+        {
+          "id": "c4",
+          "group": "c"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "a3", "b1", "b2", "b3", "c1", "c2"],
+        "hiddenCount": 2
+      }
+    },
+    {
+      "case": "single group capped at five",
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "a4",
+          "group": "a"
+        },
+        {
+          "id": "a5",
+          "group": "a"
+        },
+        {
+          "id": "a6",
+          "group": "a"
+        },
+        {
+          "id": "a7",
+          "group": "a"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "a3", "a4", "a5"],
+        "hiddenCount": 2
+      }
+    },
+    {
+      "case": "later group fills skipped slots",
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "a4",
+          "group": "a"
+        },
+        {
+          "id": "a5",
+          "group": "a"
+        },
+        {
+          "id": "a6",
+          "group": "a"
+        },
+        {
+          "id": "a7",
+          "group": "a"
+        },
+        {
+          "id": "b1",
+          "group": "b"
+        },
+        {
+          "id": "b2",
+          "group": "b"
+        },
+        {
+          "id": "b3",
+          "group": "b"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3"],
+        "hiddenCount": 2
+      }
+    },
+    {
+      "case": "repeated runs count cumulatively",
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "b1",
+          "group": "b"
+        },
+        {
+          "id": "a4",
+          "group": "a"
+        },
+        {
+          "id": "a5",
+          "group": "a"
+        },
+        {
+          "id": "a6",
+          "group": "a"
+        },
+        {
+          "id": "b2",
+          "group": "b"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "a3", "b1", "a4", "a5", "b2"],
+        "hiddenCount": 1
+      },
+      "runs": [
+        {
+          "key": "a",
+          "occurrence": 0,
+          "rows": ["a1", "a2", "a3"]
+        },
+        {
+          "key": "b",
+          "occurrence": 0,
+          "rows": ["b1"]
+        },
+        {
+          "key": "a",
+          "occurrence": 1,
+          "rows": ["a4", "a5"]
+        },
+        {
+          "key": "b",
+          "occurrence": 1,
+          "rows": ["b2"]
+        }
+      ]
+    },
+    {
+      "case": "custom limits",
+      "limits": {
+        "total": 3,
+        "perGroup": 2
+      },
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "b1",
+          "group": "b"
+        },
+        {
+          "id": "b2",
+          "group": "b"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "b1"],
+        "hiddenCount": 2
+      }
+    },
+    {
+      "case": "invalid limits fall back to defaults",
+      "limits": {
+        "total": 0,
+        "perGroup": 1.5
+      },
+      "rows": [
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "a4",
+          "group": "a"
+        },
+        {
+          "id": "a5",
+          "group": "a"
+        },
+        {
+          "id": "a6",
+          "group": "a"
+        }
+      ],
+      "expected": {
+        "visible": ["a1", "a2", "a3", "a4", "a5"],
+        "hiddenCount": 1
+      }
+    },
+    {
+      "case": "empty input",
+      "rows": [],
+      "expected": {
+        "visible": [],
+        "hiddenCount": 0
+      },
+      "runs": []
+    },
+    {
+      "case": "expanded bypass keeps every eligible row",
+      "expanded": true,
+      "rows": [
+        {
+          "id": "a0",
+          "group": "a"
+        },
+        {
+          "id": "a1",
+          "group": "a"
+        },
+        {
+          "id": "a2",
+          "group": "a"
+        },
+        {
+          "id": "a3",
+          "group": "a"
+        },
+        {
+          "id": "a4",
+          "group": "a"
+        },
+        {
+          "id": "a5",
+          "group": "a"
+        },
+        {
+          "id": "a6",
+          "group": "a"
+        }
+      ],
+      "expected": {
+        "visible": ["a0", "a1", "a2", "a3", "a4", "a5", "a6"],
+        "hiddenCount": 0
+      }
+    }
+  ]
+}

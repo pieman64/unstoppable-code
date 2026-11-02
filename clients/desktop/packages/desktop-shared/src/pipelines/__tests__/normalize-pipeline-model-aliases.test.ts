@@ -80,7 +80,9 @@ describe('normalizePipeline model_aliases', () => {
     expect(normalized.jobs.test?.steps[1]?.with?.model).toBe(
       '${{ inputs.model }}',
     );
-    expect(normalized.model_aliases?.[0]?.defaults?.base).toBe('sonnet');
+    expect(normalized.model_aliases?.[0]?.defaults).toMatchObject({
+      base: 'sonnet',
+    });
   });
 
   it('rejects an unknown built-in model alias at load time', () => {
@@ -424,7 +426,7 @@ describe('built-in pipeline model alias harnesses', () => {
     ['$opus', 'opus[1m]', 'claude'],
     ['$fable', 'claude-fable-5-1', 'claude'],
     ['$astra', 'gpt-6-astra', 'codex'],
-    ['$terra', 'gpt-5.6-terra', 'codex'],
+    ['$terra', 'gpt-6.1-terra', 'codex'],
   ])('resolves %s to the configured %s model', (alias, model, harness) => {
     expect(resolvePipelineModelAlias(alias)).toBe(model);
     expect(getExecutionHarnessForModel(model)).toBe(harness);

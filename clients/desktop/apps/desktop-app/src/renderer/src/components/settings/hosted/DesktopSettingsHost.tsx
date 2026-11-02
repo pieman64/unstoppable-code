@@ -67,6 +67,7 @@ import { DesktopDataSharingOptIn } from '../DesktopDataSharingOptIn';
 import { createDesktopOrgProjectSetupSlot } from './desktopOrgProjectSetupSlot';
 import {
   DesktopSettingsHostContext,
+  activateHostedSettingsAnchor,
   followHostedSettingsHref,
   hostedSettingsAccountFrom,
   openHostedSettingsExternalUrl,
@@ -87,6 +88,7 @@ import {
   SETTINGS_NAV_MODEL_STORAGE_PREFIX,
   type PersistedSettingsNavModel,
 } from './hosted-settings-model';
+import { withInvitationResponseAnnouncements } from './invitation-response-announcements';
 
 /**
  * The desktop host for shared account and organization settings UI
@@ -95,8 +97,8 @@ import {
  * store per Settings session and signed-in account.
  *
  * Links and router calls that name a settings page stay inside the Settings
- * overlay; every other destination opens in the browser through the guarded
- * open-external path. The renderer never chooses a request URL: data goes
+ * overlay; every other destination opens through the authenticated portal boundary when same-origin,
+ * or the guarded external-open path otherwise. The renderer never chooses a request URL: data goes
  * through the fixed operation table.
  */
 
@@ -185,7 +187,7 @@ function useSettingsLinkPrefetch(
 }
 
 /** `next/link`'s subset over an anchor that never navigates the renderer. */
-function DesktopSettingsLink(props: SettingsLinkProps): JSX.Element {
+export function DesktopSettingsLink(props: SettingsLinkProps): JSX.Element {
   const {
     href,
     prefetch,
@@ -205,25 +207,31 @@ function DesktopSettingsLink(props: SettingsLinkProps): JSX.Element {
   // resets its own scroll per destination. Prefetch is on unless a link
   // opts out, as with `next/link`.
   void scroll;
-  void target;
-  const { webOrigin } = useDesktopSettingsHostContext();
+  const { account, webOrigin } = useDesktopSettingsHostContext();
+  const location = useCurrentHostedLocation();
   const intent = useSettingsLinkPrefetch(href, prefetch !== false);
   const handleClick = (event: MouseEvent<HTMLAnchorElement>): void => {
     intent.cancel();
     onClick?.(event);
     if (event.defaultPrevented) return;
-    event.preventDefault();
-    followHostedSettingsHref(href, webOrigin, { replace: replace === true });
+    activateHostedSettingsAnchor(
+      event,
+      { account, webOrigin, location },
+      { replace: replace === true },
+    );
   };
   const handleAuxClick = (event: MouseEvent<HTMLAnchorElement>): void => {
     onAuxClick?.(event);
-    // A middle click would otherwise open the path in a new renderer window.
+    if (event.defaultPrevented) return;
+    activateHostedSettingsAnchor(event, { account, webOrigin, location });
+    // Suppress native auxiliary navigation, including unsupported buttons.
     event.preventDefault();
   };
   return (
     <a
       {...anchorProps}
       href={href}
+      target={target}
       onClick={handleClick}
       onAuxClick={handleAuxClick}
       onPointerEnter={(event: PointerEvent<HTMLAnchorElement>) => {
@@ -245,6 +253,28 @@ function DesktopSettingsLink(props: SettingsLinkProps): JSX.Element {
     >
       {children}
     </a>
+  );
+}
+
+/** No layout box; React bubbling includes anchors rendered through portals. */
+export function DesktopSettingsAnchorBoundary({
+  children,
+}: {
+  readonly children: ReactNode;
+}): JSX.Element {
+  const { account, webOrigin } = useDesktopSettingsHostContext();
+  const location = useCurrentHostedLocation();
+  const activate = (event: MouseEvent<HTMLDivElement>): void => {
+    activateHostedSettingsAnchor(event, { account, webOrigin, location });
+  };
+  return (
+    <div
+      style={{ display: 'contents' }}
+      onClick={activate}
+      onAuxClick={activate}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -463,13 +493,19 @@ function useCurrentHostedLocation(): HostedSettingsLocation | null {
 }
 
 function useDesktopSettingsRouter(): SettingsRouter {
-  const { webOrigin } = useDesktopSettingsHostContext();
+  const { account, webOrigin } = useDesktopSettingsHostContext();
+  const location = useCurrentHostedLocation();
   const store = useOptionalSettingsStoreApi();
   return useMemo<SettingsRouter>(
     () => ({
-      push: (href): void => followHostedSettingsHref(href, webOrigin),
+      push: (href): void =>
+        followHostedSettingsHref(href, { account, webOrigin, location }),
       replace: (href): void =>
-        followHostedSettingsHref(href, webOrigin, { replace: true }),
+        followHostedSettingsHref(
+          href,
+          { account, webOrigin, location },
+          { replace: true },
+        ),
       refresh: (): void => {
         const location = useNavigationStore.getState().settingsHostedLocation;
         if (store === null || location === null) return;
@@ -488,7 +524,7 @@ function useDesktopSettingsRouter(): SettingsRouter {
       back: (): void =>
         useNavigationStore.getState().backAccountOrganizationSettings(),
     }),
-    [store, webOrigin],
+    [store, account, webOrigin, location],
   );
 }
 
@@ -503,7 +539,8 @@ function useDesktopSettingsSearchParams(): SettingsSearchParams {
 }
 
 function useDesktopSettingsNavigation(): SettingsNavigationPort {
-  const { account, settingsApi } = useDesktopSettingsHostContext();
+  const { account, settingsApi, webOrigin } = useDesktopSettingsHostContext();
+  const location = useCurrentHostedLocation();
   const accountId = account.status === 'signed_in' ? account.accountId : null;
   return useMemo<SettingsNavigationPort>(
     () => ({
@@ -516,7 +553,13 @@ function useDesktopSettingsNavigation(): SettingsNavigationPort {
       back: (): void =>
         useNavigationStore.getState().backAccountOrganizationSettings(),
       href: settingsRouteToPath,
-      openExternal: openHostedSettingsExternalUrl,
+      openExternal: (href): void => {
+        void openHostedSettingsExternalUrl(href, {
+          account,
+          webOrigin,
+          location,
+        });
+      },
       // Provider linking completes in the browser, where the callback lands:
       // open the web Security page signed in as this account.
       openOAuth: (): void => openAuthenticatedCloudPage('/account/security'),
@@ -533,7 +576,7 @@ function useDesktopSettingsNavigation(): SettingsNavigationPort {
         }
       },
     }),
-    [accountId, settingsApi],
+    [account, accountId, settingsApi, webOrigin, location],
   );
 }
 
@@ -774,9 +817,13 @@ export function DesktopHostedSettingsProvider({
   const initialRoute = useNavigationStore(
     (state) => state.settingsHostedLocation?.route ?? null,
   );
+  const settingsClient = useMemo(
+    () => withInvitationResponseAnnouncements(client),
+    [client],
+  );
   const host = useMemo(
-    () => createDesktopSettingsHost(client, storage, webOrigin),
-    [client, storage, webOrigin],
+    () => createDesktopSettingsHost(settingsClient, storage, webOrigin),
+    [settingsClient, storage, webOrigin],
   );
   const context = useMemo<DesktopSettingsHostContextValue>(
     () => ({
@@ -803,7 +850,7 @@ export function DesktopHostedSettingsProvider({
   return (
     <DesktopSettingsHostContext.Provider value={context}>
       <SettingsStoreProvider
-        client={client}
+        client={settingsClient}
         accountId={accountId}
         storage={storage}
         initialBootstraps={initialBootstraps}
@@ -815,7 +862,9 @@ export function DesktopHostedSettingsProvider({
         />
         <SettingsHostProvider host={host}>
           <OrganizationSettingsSlotsProvider slots={organizationSlots}>
-            {children}
+            <DesktopSettingsAnchorBoundary>
+              {children}
+            </DesktopSettingsAnchorBoundary>
           </OrganizationSettingsSlotsProvider>
         </SettingsHostProvider>
       </SettingsStoreProvider>

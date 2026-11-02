@@ -436,6 +436,9 @@ describe('describeCopilotMcpServerError', () => {
   it('collapses whitespace and truncates long text', () => {
     const long = `boom   ${'x'.repeat(400)}`;
     const described = describeCopilotMcpServerError(long);
+    if (described === undefined) {
+      throw new Error('Expected a description for a non-empty error');
+    }
     expect(described.startsWith('boom x')).toBe(true);
     expect(described.length).toBeLessThanOrEqual(160);
     expect(describeCopilotMcpServerError('  ')).toBeUndefined();

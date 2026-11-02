@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Check, Mail, Plus, Users, X } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Badge,
+  Button,
   DelayedLoadingPlaceholder,
+  EmptyState,
   ErrorBanner,
   OrgEnforcedConsentList,
   SettingsListSkeleton,
@@ -30,6 +33,7 @@ import { TeamRoleBadge } from './team-role-badge';
 import { OrganizationLogo } from './OrganizationLogo';
 import { joinClassNames } from './join-class-names';
 import { useMembershipChangeFollowUp } from './membership-change';
+import { resolveJoinedOrganization } from './resolve-joined-organization';
 
 export type TeamPanelStatus = 'loading' | 'ready' | 'error';
 
@@ -150,20 +154,17 @@ export function TeamPanel({
         if (action === 'accept') followMembershipChange();
         // Refresh so the team appears (accept) or the card clears (decline).
         const listed = await refresh();
-        // The invitation names its organization but not its id, so the
-        // joined organization is the membership the refresh added.
-        const joined =
-          action === 'accept' && listed !== null
-            ? listed.filter(
-                (org) => !organizations.some((known) => known.id === org.id),
-              )
-            : [];
-        const [only] = joined;
+        // The invitation's organization id when the server sends one,
+        // otherwise the one same-named membership the refresh added.
         const match =
-          joined.length === 1
-            ? only
-            : joined.find((org) => org.name === invite.organizationName);
-        if (match !== undefined) selectOrganization(match.id);
+          action === 'accept' && listed !== null
+            ? resolveJoinedOrganization({
+                invite,
+                before: organizations,
+                after: listed,
+              })
+            : null;
+        if (match !== null) selectOrganization(match.id);
       } catch (err) {
         setActionError(
           errorCopy.actionCopy(err, {
@@ -243,9 +244,7 @@ export function TeamPanel({
                         <StatusBadge variant="warning" label="Invited" />
                         <TeamRoleBadge role={invite.role} />
                         {invite.organizationTeamName && (
-                          <span className="rounded-full bg-secondary px-2 py-0.5 text-3xs font-medium fg-secondary">
-                            {invite.organizationTeamName}
-                          </span>
+                          <Badge>{invite.organizationTeamName}</Badge>
                         )}
                         <span
                           className={joinClassNames(
@@ -259,26 +258,26 @@ export function TeamPanel({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="compact"
                       onClick={() => void handleRespond(invite, 'accept')}
                       disabled={busy}
                       data-testid="team-invitation-accept"
-                      className="inline-flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Check size={13} />
                       {busy ? 'Joining…' : 'Accept'}
-                    </button>
-                    <button
-                      type="button"
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="compact"
                       onClick={() => setPendingDecline(invite)}
                       disabled={busy}
                       data-testid="team-invitation-decline"
-                      className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <X size={13} />
                       Decline
-                    </button>
+                    </Button>
                   </div>
                   <OrgEnforcedConsentList
                     className="mt-2 w-full basis-full"
@@ -299,30 +298,23 @@ export function TeamPanel({
       )}
 
       {status === 'ready' && !hasOrgs && (
-        <div className="flex flex-col items-start gap-4 rounded-md border border-dashed bg-secondary/40 p-6">
-          <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-              <Users size={18} />
-            </span>
-            <div>
-              <p className="text-s font-medium fg-primary">
-                You&apos;re not part of an organization yet.
-              </p>
-              <p className="text-s fg-secondary">
-                Create one to invite collaborators and organize teams.
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onCreate}
-            data-testid="team-panel-create-empty"
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90"
-          >
-            <Plus size={14} />
-            Create an organization
-          </button>
-        </div>
+        <EmptyState
+          testId="team-panel-empty"
+          icon={<Users size={20} className="fg-secondary" aria-hidden />}
+          title="You’re not part of an organization yet."
+          subtitle="Create one to invite collaborators and organize teams."
+          action={
+            <Button
+              variant="secondary"
+              size="compact"
+              onClick={onCreate}
+              data-testid="team-panel-create-empty"
+            >
+              <Plus size={14} />
+              Create an organization
+            </Button>
+          }
+        />
       )}
 
       {status === 'ready' && hasOrgs && (
@@ -331,6 +323,7 @@ export function TeamPanel({
             <li key={org.id}>
               <button
                 type="button"
+                data-settings-control="row"
                 onClick={() => {
                   selectOrganization(org.id);
                   router.push(`/organization/${org.id}`);

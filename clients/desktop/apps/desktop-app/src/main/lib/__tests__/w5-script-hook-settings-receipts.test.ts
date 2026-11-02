@@ -729,6 +729,35 @@ it.each(kinds)(
   },
 );
 
+it('a keyed definition change replays its outcome and refuses the key for another change (CAN-4153)', async () => {
+  writeFileSync(
+    join(root, 'a', 'workspace.json'),
+    JSON.stringify({
+      version: 1,
+      type: 'multi-repo',
+      repos: [],
+      scripts: { setup: 'npm ci' },
+    }),
+  );
+  const set = (value: string): Promise<void> =>
+    updateWorkspaceScripts({
+      workspaceId: 'a',
+      source: 'desktop',
+      idempotencyKey: 'definition',
+      change: { kind: 'definition', name: 'lint', value },
+    });
+  await set('eslint .');
+  await updateWorkspaceScripts({
+    workspaceId: 'a',
+    source: 'desktop',
+    change: { kind: 'remove-definition', name: 'lint' },
+  });
+  // A retry with the same key returns the saved outcome and writes nothing.
+  await set(' eslint . ');
+  expect(manifest().scripts).toEqual({ setup: 'npm ci' });
+  await expect(set('prettier')).rejects.toMatchObject({ reason: 'key-reused' });
+});
+
 it('a keyed hooks change to an unknown repository refuses and releases the key', async () => {
   const before = images();
   const save = (): Promise<void> =>

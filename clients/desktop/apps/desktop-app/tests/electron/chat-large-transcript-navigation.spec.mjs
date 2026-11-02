@@ -489,6 +489,9 @@ test('large transcript preserves tail, historical navigation, rich blocks, and r
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
@@ -532,8 +535,10 @@ test('large transcript preserves tail, historical navigation, rich blocks, and r
     await expect(checkedTask).toBeDisabled();
     await expect(chatPanel.getByRole('cell', { name: 'Ready' })).toBeVisible();
 
+    // The seeded SendMessage belongs to the final reply, so Detailed keeps
+    // its row inline; it does not create an intermediate Agent steps group.
     const sendMessageCard = chatPanel
-      .locator('button[aria-expanded][data-tool-family="agent"]')
+      .locator('button[aria-expanded][data-step-row]')
       .filter({ hasText: 'Agent message' })
       .filter({ hasText: 'Review the recent transcript tail' });
     await expect(sendMessageCard).toBeVisible();
@@ -964,8 +969,9 @@ test('retains the prompt and completed frame when a bounded transcript arrives',
     await expect(
       panel.getByText('The long-running task is complete.', { exact: true }),
     ).toBeVisible();
-    await expect(panel.getByTestId('turn-timer-label')).toContainText(
-      'Completed',
+    await expect(panel.getByTestId('turn-timer')).toHaveAttribute(
+      'data-state',
+      'completed',
       { timeout: 5_000 },
     );
     await expect(

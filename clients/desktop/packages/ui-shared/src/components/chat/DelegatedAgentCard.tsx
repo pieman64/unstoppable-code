@@ -25,16 +25,17 @@ import {
   DELEGATED_AGENT_REFRESH_CHANGES_LABEL,
   DELEGATED_AGENT_SHOW_CHANGES_LABEL,
   DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL,
-  DELEGATED_AGENT_STOP_LABEL,
   DELEGATED_AGENT_STOP_WITH_DESCENDANTS_LABEL,
-  DELEGATED_AGENT_STOPPING_LABEL,
   delegatedAgentChangesShownLabel,
   delegatedAgentQueueDetail,
   delegatedAgentStatusLabel,
   hasDelegatedAgentCapabilityEntries,
 } from './delegated-agent-copy';
-import { ExecutionActionButton } from '../ExecutionActionButton';
+import { TaskStopButton } from './TaskStopButton';
 import { ThinkingSpinner } from '../ThinkingSpinner';
+
+/** Header status while the delegate's request waits in its parent's queue. */
+export const DELEGATED_AGENT_WAITING_ON_PARENT_LABEL = 'Waiting for the parent';
 
 const DELEGATION_METADATA_CLASSNAME =
   'space-y-2 px-2.5 py-2 text-3xs inset-ring-[length:var(--border-hairline)] inset-ring-line-base';
@@ -63,6 +64,12 @@ export interface DelegatedAgentCardProps {
    * that cannot read the worktree omit it.
    */
   onLoadChanges?: () => Promise<DelegationWorkspaceChanges>;
+  /**
+   * The host reports that this delegate's request to its parent is queued
+   * and not yet claimed. A live card shows one status line; the request
+   * itself is never rendered. Hosts without a delegation queue omit it.
+   */
+  waitingOnParent?: boolean;
 }
 
 type ChangesState =
@@ -143,47 +150,6 @@ function DelegatedAgentChanges({
   );
 }
 
-interface DelegatedAgentStopButtonProps {
-  stopping: boolean;
-  hasLiveDescendants: boolean;
-  onStop: () => void;
-}
-
-/**
- * Always-visible row Stop. While the stop is in flight it reads `Stopping…`
- * and is disabled, so it cannot be sent twice; once the row settles the card
- * drops it and the header shows the outcome instead.
- */
-function DelegatedAgentStopButton({
-  stopping,
-  hasLiveDescendants,
-  onStop,
-}: DelegatedAgentStopButtonProps): JSX.Element {
-  return (
-    <ExecutionActionButton
-      label={
-        stopping ? DELEGATED_AGENT_STOPPING_LABEL : DELEGATED_AGENT_STOP_LABEL
-      }
-      ariaLabel={
-        stopping
-          ? DELEGATED_AGENT_STOPPING_LABEL
-          : DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL
-      }
-      title={
-        stopping
-          ? undefined
-          : hasLiveDescendants
-            ? DELEGATED_AGENT_STOP_WITH_DESCENDANTS_LABEL
-            : DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL
-      }
-      variant="destructive"
-      disabled={stopping}
-      dataTestId="delegated-agent-stop"
-      onClick={onStop}
-    />
-  );
-}
-
 export function delegatedAgentRouteMetadata(
   snapshot: AgentDelegationSnapshot,
 ): {
@@ -218,6 +184,7 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
   onStop,
   hasLiveDescendants = false,
   onLoadChanges,
+  waitingOnParent = false,
 }: DelegatedAgentCardProps): JSX.Element {
   const route = snapshot.routeSnapshot;
   const live = snapshot.status === 'pending' || snapshot.status === 'running';
@@ -292,6 +259,14 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
             <span role="status" className="ml-auto shrink-0 fg-secondary">
               Awaiting approval
             </span>
+          ) : waitingOnParent && live ? (
+            <span
+              data-testid="delegated-agent-waiting-on-parent"
+              role="status"
+              className="ml-auto shrink-0 fg-secondary"
+            >
+              {DELEGATED_AGENT_WAITING_ON_PARENT_LABEL}
+            </span>
           ) : queued ? (
             <span
               data-testid="delegated-agent-queue-status"
@@ -314,10 +289,16 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
         }
         headerAction={
           onStop && live ? (
-            <DelegatedAgentStopButton
+            <TaskStopButton
               stopping={stopping}
-              hasLiveDescendants={hasLiveDescendants}
               onStop={handleStop}
+              accessibleLabel={DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL}
+              title={
+                hasLiveDescendants
+                  ? DELEGATED_AGENT_STOP_WITH_DESCENDANTS_LABEL
+                  : DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL
+              }
+              dataTestId="delegated-agent-stop"
             />
           ) : undefined
         }

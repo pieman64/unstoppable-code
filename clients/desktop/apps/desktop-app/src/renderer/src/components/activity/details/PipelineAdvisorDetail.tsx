@@ -17,6 +17,7 @@ import {
 import { PipelineAdvisorMarkdownText } from '../PipelineAdvisorMarkdown';
 import { isPipelineExecutionActiveStatus } from '../utils';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 
 // --- Pipeline Advisor helpers -----------------------------------------------
 
@@ -95,19 +96,18 @@ function AdvisorRunButton({
   const label = running
     ? 'Starting…'
     : snapshot?.lastError
-      ? 'Retry pipeline advisor'
-      : 'Run pipeline advisor';
+      ? 'Retry workflow advisor'
+      : 'Run workflow advisor';
   return (
-    <button
-      type="button"
+    <Button
+      size="compact"
       disabled={running}
       onClick={onRun}
       data-testid="pipeline-detail-run-advisor"
-      className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-fg-info/20 bg-info-subtle px-2 py-1 text-2xs font-medium fg-primary transition hover:bg-info-subtle/80 disabled:cursor-not-allowed disabled:opacity-55"
     >
       <AgentAssistantIcon className="h-3.5 w-3.5 fg-info" aria-hidden="true" />
       <span>{label}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -135,24 +135,31 @@ function AdvisorRefreshButton({
     pipelineStatus !== undefined &&
     !isPipelineExecutionActiveStatus(pipelineStatus);
   const refreshLabel = terminalPipeline
-    ? 'Re-run Pipeline Advisor'
-    : 'Refresh Pipeline Advisor';
-  const className = showLabel
-    ? 'focus-ring inline-flex items-center justify-center gap-1.5 rounded-md border border-fg-info/20 bg-info-subtle px-2 py-1 text-2xs font-medium normal-case fg-info transition hover:bg-info-subtle/80'
-    : 'focus-ring inline-flex items-center justify-center rounded-md border border-fg-info/20 bg-info-subtle p-1 fg-info transition hover:bg-info-subtle/80';
-
+    ? 'Re-run Workflow Advisor'
+    : 'Refresh Workflow Advisor';
   return (
     <Tooltip label={refreshLabel}>
-      <button
-        type="button"
-        onClick={onRun}
-        aria-label={refreshLabel}
-        data-testid="pipeline-detail-refresh-advisor"
-        className={className}
-      >
-        <RefreshSpinner size={12} />
-        {showLabel ? <span>Refresh</span> : null}
-      </button>
+      {showLabel ? (
+        <Button
+          size="compact"
+          onClick={onRun}
+          aria-label={refreshLabel}
+          data-testid="pipeline-detail-refresh-advisor"
+        >
+          <RefreshSpinner size={12} />
+          <span>Refresh</span>
+        </Button>
+      ) : (
+        <Button
+          size="compact"
+          iconOnly
+          onClick={onRun}
+          aria-label={refreshLabel}
+          data-testid="pipeline-detail-refresh-advisor"
+        >
+          <RefreshSpinner size={12} />
+        </Button>
+      )}
     </Tooltip>
   );
 }
@@ -428,7 +435,7 @@ function AdvisorReportContent({
           Generated {formatTimingTimestamp(report.generatedAt)}
           {showHistorySelector ? (
             <select
-              aria-label="Pipeline Advisor report history"
+              aria-label="Workflow Advisor report history"
               data-testid="pipeline-advisor-report-selector"
               value={selectedReportValue}
               onChange={(event) =>
@@ -685,7 +692,7 @@ function AdvisorStartErrorMessage({
 }): JSX.Element {
   return (
     <p className="text-s fg-warning">
-      Failed to start Pipeline Advisor: {message}
+      Failed to start Workflow Advisor: {message}
     </p>
   );
 }

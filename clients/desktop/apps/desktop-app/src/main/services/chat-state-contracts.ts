@@ -1,11 +1,28 @@
 import type {
   ChatJournalRecord,
   ChatStateLoadError,
+  ChatStateChange,
   PersistedCommandReceipt,
 } from '@canopy/desktop-shared/types';
+import type { PersistedToolOutputReference } from '@canopy/agent-transcript/types';
 import type { CanonicalChatState } from './chat-state-reducer';
 import type { writeSyncedJsonTemp } from '../lib/chat-state-journal';
 import type { LegacyChatRevisionGapRecovery } from '../lib/legacy-chat-migration';
+import type { ChatWaitOperation } from '../observability/chat-wait-diagnostics';
+
+/**
+ * A commit observer. `wait`, when present, is the commit's publication timing,
+ * started when its publication slot was reserved.
+ */
+export type ChatStateCommitListener = (
+  commit: ChatStateCommit,
+  wait?: ChatWaitOperation,
+) => void | Promise<void>;
+
+/** Starts a commit's publication timing when its publication slot is reserved. */
+export type ChatStateCommitWaitStarter = (
+  commit: ChatStateCommit,
+) => ChatWaitOperation;
 
 export type ChatScopeLifecycle =
   | 'unloaded'
@@ -21,6 +38,11 @@ export interface ChatScopeKey {
 }
 
 export interface ChatStateCommit {
+  /** S2 supplies descriptor-only card changes after durable admission. */
+  cardChanges?: Extract<
+    ChatStateChange,
+    { type: 'delegation.card_state_updated' }
+  >[];
   projectId: string;
   worktreeId: string;
   baseRevision: number;
@@ -29,6 +51,13 @@ export interface ChatStateCommit {
   state: CanonicalChatState;
   /** True only when this call appended a new durable journal record. */
   applied: boolean;
+  /**
+   * Chat ids whose `transcript.updated` change must carry `reset`: the commit
+   * shifted existing rows' logical ranks, or removed or replaced rows. Absent
+   * when the backend does not report it; publishers then apply the mutation
+   * rule.
+   */
+  transcriptResets?: readonly string[];
 }
 
 export interface ChatMutationOptions {
@@ -42,6 +71,12 @@ export interface ChatMutationOptions {
   /** Explicit transcript selection used by the per-chat storage backend. */
   chatIds?: readonly string[];
   fullTranscript?: boolean;
+  /**
+   * Set by a turn start that must move an already-committed prompt to its
+   * dispatch position (phase 25): the full rewrite it causes is reported
+   * with this reason instead of a patch or removal.
+   */
+  rewriteReason?: 'prompt_relocation';
   /** Async preparation performed after durable payload staging. */
   preparePublish?: () => Promise<void>;
   /** Synchronous guard immediately before durable publication starts. */
@@ -71,7 +106,7 @@ export interface ChatStateRepositoryOptions {
   resolvePaths?: (scope: ChatScopeKey) => ScopePaths;
   now?: () => number;
   createId?: () => string;
-  onCommit?: (commit: ChatStateCommit) => void | Promise<void>;
+  onCommit?: ChatStateCommitListener;
   hasLiveDependency?: (scope: ChatScopeKey) => boolean;
   /** Injectable checkpoint writer for deterministic cooperative-abort tests. */
   writeSyncedJsonTemp?: typeof writeSyncedJsonTemp;
@@ -155,6 +190,22 @@ export interface ChatStateTransactionContext {
   hasRemovedArchiveEntry(archiveEntryId: string): boolean;
   /** Omitting chatId retains the legacy scope-wide fence. */
   hasRemovedMessage(messageId: string, chatId?: string): boolean;
+  /**
+   * Format 4 scopes only; absent otherwise and in older repositories. Lets
+   * ingest publish a final body from chunks inside the transaction, under its
+   * rollback, instead of building the whole body string.
+   */
+  transcriptFields?: TranscriptFieldPreparation;
+}
+
+export interface TranscriptFieldPreparation {
+  readonly format: 4;
+  /** The reference `ChatTranscriptArtifacts.put` would give the joined chunks. */
+  publish(
+    chatId: string,
+    chunks: Iterable<string> | AsyncIterable<string>,
+    signal?: AbortSignal,
+  ): Promise<PersistedToolOutputReference>;
 }
 
 export class ChatStateRepositoryLoadError
@@ -164,7 +215,8 @@ export class ChatStateRepositoryLoadError
   public override readonly name = 'ChatStateLoadError';
   public readonly code = 'recovery_error' as const;
   public readonly retryable = false;
-  public readonly cause?: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare public readonly cause?: unknown;
 
   public constructor(message: string, options?: { cause?: unknown }) {
     super(message);

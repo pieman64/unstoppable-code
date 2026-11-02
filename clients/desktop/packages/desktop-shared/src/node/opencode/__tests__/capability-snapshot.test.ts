@@ -209,6 +209,50 @@ it('copies a verified capability manifest to a distinct native fork binding', as
   ).toBe(2);
 });
 
+it('retains managed inference identity across forks and rejects a stripped binding', async () => {
+  const snapshot = {
+    version: 1 as const,
+    runtime: {},
+    files: {},
+    mcp: [],
+    contextDigest: '',
+    providerSettingsDigest: 'settings',
+    inferenceRouteDigest: 'a'.repeat(64),
+  };
+  const signal = AbortSignal.timeout(5000);
+  const original = await saveOpenCodeCapabilitySnapshot(
+    root,
+    'managed',
+    snapshot,
+    undefined,
+    signal,
+  );
+  expect(original).toMatchObject({
+    inferenceRouteDigest: snapshot.inferenceRouteDigest,
+  });
+  const child = await forkOpenCodeCapabilityBinding(
+    root,
+    'managed',
+    join(root, 'child'),
+    'child-session',
+    signal,
+  );
+  expect(child).toMatchObject({
+    inferenceRouteDigest: snapshot.inferenceRouteDigest,
+  });
+  const file = join(
+    root,
+    'capability-bindings',
+    `${openCodeCapabilityDigest('managed')}.json`,
+  );
+  const { inferenceRouteDigest: removed, ...binding } = original;
+  expect(removed).toBe(snapshot.inferenceRouteDigest);
+  await writeFile(file, JSON.stringify(binding));
+  await expect(readOpenCodeCapabilityBinding(root, 'managed')).rejects.toThrow(
+    'inference',
+  );
+});
+
 it('refuses to fork absent or tampered capability history', async () => {
   const destination = join(root, 'destination');
   const signal = AbortSignal.timeout(5000);
@@ -239,4 +283,61 @@ it('refuses to fork absent or tampered capability history', async () => {
   expect(
     await readOpenCodeCapabilityBinding(destination, 'fork'),
   ).toBeUndefined();
+});
+
+it('versions and verifies model-transition authority across native forks', async () => {
+  const snapshot = {
+    version: 1 as const,
+    runtime: {},
+    files: {},
+    mcp: [],
+    contextDigest: '',
+    providerSettingsDigest: 'settings',
+    inferenceRouteDigest: 'a'.repeat(64),
+    inferenceSelection: {
+      modelId: 'logical-model',
+      fundingDigest: 'b'.repeat(64),
+    },
+  };
+  const signal = AbortSignal.timeout(5000);
+  const original = await saveOpenCodeCapabilitySnapshot(
+    root,
+    'managed-choice',
+    snapshot,
+    undefined,
+    signal,
+  );
+  expect(original).toMatchObject({
+    version: 3,
+    inferenceSelection: snapshot.inferenceSelection,
+  });
+  const child = await forkOpenCodeCapabilityBinding(
+    root,
+    'managed-choice',
+    join(root, 'child'),
+    'child-session',
+    signal,
+  );
+  expect(child).toMatchObject({
+    version: 3,
+    inferenceSelection: snapshot.inferenceSelection,
+  });
+  const file = join(
+    root,
+    'capability-bindings',
+    `${openCodeCapabilityDigest('managed-choice')}.json`,
+  );
+  await writeFile(
+    file,
+    JSON.stringify({
+      ...original,
+      inferenceSelection: {
+        ...snapshot.inferenceSelection,
+        fundingDigest: 'c'.repeat(64),
+      },
+    }),
+  );
+  await expect(
+    readOpenCodeCapabilityBinding(root, 'managed-choice'),
+  ).rejects.toThrow('inference selection');
 });

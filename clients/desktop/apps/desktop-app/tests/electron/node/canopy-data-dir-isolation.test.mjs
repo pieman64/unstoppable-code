@@ -400,3 +400,35 @@ test('Linux session HOME/XDG overrides and provider isolation coexist', () => {
   assert.equal(env.CANOPY_SECURE_DATA_DIR, `${dir}-secure`);
   assert.equal(env.CODEX_HOME, path.join(dir, 'provider-state', 'codex'));
 });
+
+test('LaunchDarkly startup fixtures allow an explicit client id only with a loopback endpoint', () => {
+  const dir = path.join(os.tmpdir(), 'canopy-launchdarkly-startup-test');
+  const env = buildElectronEnv(dir, {
+    LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID: 'e2e-startup-client',
+    CANOPY_E2E_LAUNCHDARKLY_BASE_URL: 'http://127.0.0.1:12345',
+  });
+  assert.equal(env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID, 'e2e-startup-client');
+  assert.throws(
+    () =>
+      buildElectronEnv(dir, {
+        LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID: 'e2e-startup-client',
+        CANOPY_E2E_LAUNCHDARKLY_BASE_URL: 'https://example.com',
+      }),
+    /loopback/,
+  );
+});
+
+test('LaunchDarkly startup fixtures still discard an inherited client id', () => {
+  const previous = process.env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID;
+  process.env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID = 'e2e-inherited-client';
+  try {
+    const env = buildElectronEnv(
+      path.join(os.tmpdir(), 'canopy-inherited-ld-test'),
+    );
+    assert.equal(env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID, undefined);
+  } finally {
+    if (previous === undefined)
+      delete process.env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID;
+    else process.env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID = previous;
+  }
+});

@@ -31,7 +31,9 @@ const nativeStorage = {
 };
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
-  safeStorage: nativeStorage,
+  get safeStorage(): typeof nativeStorage {
+    return nativeStorage;
+  },
 }));
 
 import {

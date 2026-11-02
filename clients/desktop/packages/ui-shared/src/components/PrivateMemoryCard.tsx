@@ -168,7 +168,7 @@ export function PrivateMemoryInlineToggle({
           type="button"
           data-testid={`${dataTestId}-info`}
           aria-label={`About ${PRIVATE_MEMORY_LABEL}`}
-          className="focus-ring shrink-0 rounded-full fg-tertiary transition hover:fg-primary"
+          className="focus-ring shrink-0 rounded-full fg-tertiary transition-colors hover:fg-primary"
         >
           <InfoIcon />
         </button>

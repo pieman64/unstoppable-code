@@ -109,6 +109,20 @@ describe('WorktreeRow focused status model', () => {
     );
   });
 
+  it('shows background work as the quiet loader, below unread', () => {
+    const html = focused({ backgroundTasks: 2 });
+    expect(leadingStatus(html)).toBe('background');
+    expect(html).toContain('aria-label="2 background tasks running"');
+    expect(html).toContain('fg-tertiary');
+    // A long-running server would otherwise hide unread for good.
+    expect(
+      leadingStatus(focused({ backgroundTasks: 2, hasUnread: true })),
+    ).toBe('unread');
+    expect(
+      leadingStatus(focused({ backgroundTasks: 2, isStreaming: true })),
+    ).toBe('working');
+  });
+
   it('shows a blue dot for unread and an unseen pipeline success', () => {
     expect(leadingStatus(focused({ hasUnread: true }))).toBe('unread');
     expect(leadingStatus(focused({ pipelineStatus: 'unseen' }))).toBe('unread');

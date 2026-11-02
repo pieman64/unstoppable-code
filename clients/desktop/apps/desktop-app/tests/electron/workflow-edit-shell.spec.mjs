@@ -15,6 +15,11 @@
 //      close + Discard closes the window; quit + Save saves, then quits.
 //   5. History Back into a shell entry whose automation was deleted shows the
 //      shell's not-found state.
+//   6. Pipeline automation destinations (CAN-4550): a new workflow defaults
+//      to No project and round-trips with a `scope: global` pipeline; a
+//      legacy pipeline automation keeps its project and saves without a
+//      `target`; a task destination whose task was removed is refused when
+//      it runs.
 //
 // Every test leaves the shell clean (`discardWorkflowEditIfOpen`) before
 // teardown so the quit prompt never holds the app open.
@@ -29,6 +34,7 @@ import {
   deleteFromWorkflowEdit,
   discardWorkflowEditIfOpen,
   openWorkflowEditSection,
+  saveWorkflowEdit,
   workflowEditTarget,
 } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
@@ -182,7 +188,7 @@ test('a pipeline Trigger row opens its automation, and Back walks back through t
     await expect(shell).toHaveAttribute('data-kind', 'automation');
     await expect(shell).toHaveAttribute('aria-label', 'Nightly shell pipeline');
     await expect(shell.getByTestId('workflow-edit-back')).toHaveText(
-      'Pipeline',
+      'Workflow',
     );
     expect(await workflowEditTarget(window)).toMatchObject({
       kind: 'automation',
@@ -274,7 +280,7 @@ test('a pipeline Trigger lists what starts it: its triggers, the hooks that run 
     await expect(hooks).toContainText('PR Merged');
     await expect(
       trigger.getByTestId('pipeline-trigger-automations-empty'),
-    ).toHaveText('No automations run this pipeline.');
+    ).toHaveText('No automations run this workflow.');
 
     // Edit opens the declared triggers in Definition's settings.
     await trigger.getByTestId('pipeline-trigger-edit-starts').click();
@@ -292,10 +298,12 @@ test('a pipeline Trigger lists what starts it: its triggers, the hooks that run 
       name: 'TypeScript pnpm Vite',
     });
     await expect(settings).toBeVisible();
-    await expect(settings.getByRole('tab', { name: 'Hooks' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    await expect(
+      settings.getByTestId('project-settings-nav-scripts'),
+    ).toHaveAttribute('aria-current', 'page');
+    await expect(
+      settings.getByTestId('project-settings-hook-pr:merged'),
+    ).toBeVisible();
   } finally {
     await discardWorkflowEditIfOpen(electronApp);
     await closeCanopy(electronApp, userDataDir);
@@ -463,7 +471,7 @@ test('Back from a Trigger row walks automation → pipeline → the Marketplace 
       .click();
     await expect(shell).toHaveAttribute('data-kind', 'automation');
     await expect(shell.getByTestId('workflow-edit-back')).toHaveText(
-      'Pipeline',
+      'Workflow',
     );
 
     // First Back: the pipeline, on its Trigger section, still returning to
@@ -572,7 +580,7 @@ test('a popped-out Automations panel opens the Runs section in the main window',
     seedDemoWorkspaces: false,
   });
   try {
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(window.getByTestId('panel-add-menu')).toBeVisible();
     await window.getByTestId('panel-add-menu-automations-submenu').click();
     await window.getByTestId('panel-add-menu-item-automations-full').click();
@@ -741,6 +749,267 @@ test('history Back into the edit shell of a deleted automation shows not found',
     await notFound.getByTestId('workflow-edit-back').click();
     await expect(notFound).toBeHidden();
     await expect(window.getByTestId('page-workflows-library')).toBeVisible();
+  } finally {
+    await discardWorkflowEditIfOpen(electronApp);
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+const GLOBAL_PIPELINE_ID = 'shell-global-pipeline';
+const GLOBAL_PIPELINE_NAME = 'Shell Global Pipeline';
+const TASK_MISSING_ERROR =
+  'This task is no longer available. Choose another task.';
+
+/** A stored user pipeline that can run with no project. */
+function seedGlobalPipeline(userDataDir) {
+  seedStoredPipeline({
+    userDataDir,
+    id: GLOBAL_PIPELINE_ID,
+    name: GLOBAL_PIPELINE_NAME,
+    yaml: [
+      `name: ${GLOBAL_PIPELINE_NAME}`,
+      'on: dispatch',
+      'scope: global',
+      'jobs:',
+      '  main:',
+      '    steps:',
+      '      - run: echo global',
+      '',
+    ].join('\n'),
+  });
+}
+
+/** A stored user pipeline that runs in a project. */
+function seedProjectPipeline(userDataDir) {
+  seedStoredPipeline({
+    userDataDir,
+    id: PIPELINE_ID,
+    name: PIPELINE_NAME,
+    yaml: [
+      `name: ${PIPELINE_NAME}`,
+      'on: dispatch',
+      'scope: directory',
+      'jobs:',
+      '  main:',
+      '    steps:',
+      '      - run: echo project',
+      '',
+    ].join('\n'),
+  });
+}
+
+function pipelineAutomation(action, overrides = {}) {
+  return {
+    version: 1,
+    id: PIPELINE_AUTOMATION_ID,
+    name: 'Nightly shell pipeline',
+    enabled: false,
+    schedule: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+    action: {
+      type: 'worktree_pipeline',
+      pipelineId: PIPELINE_ID,
+      pipelineSource: 'user',
+      pipelineName: PIPELINE_NAME,
+      ...action,
+    },
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    failureCount: 0,
+    ...overrides,
+  };
+}
+
+test('a new workflow defaults to No project, saves a global pipeline, and reopens as No project', async () => {
+  const userDataDir = seedDemo('canopy-can4550-global-');
+  seedGlobalPipeline(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openAutomationsPage();
+
+    await app.startNewWorkflow('schedule');
+    const shell = window.getByTestId('workflow-edit-shell');
+    await expect(shell).toHaveAttribute('data-kind', 'automation');
+    const definition = shell.getByTestId('workflow-edit-section-definition');
+    await expect(definition).toBeVisible();
+
+    // An unseeded workflow starts as a pipeline with no project, owned by
+    // the workflow's owner, and asks for no project.
+    await expect(
+      definition.getByTestId('automations-form-action-type-global'),
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(
+      definition.getByTestId('automations-form-global-owner'),
+    ).toContainText('Owner: Personal');
+    await expect(
+      definition.getByTestId('automations-form-workspace'),
+    ).toHaveCount(0);
+    await expect(
+      definition.getByTestId('automations-form-pipeline-run-in'),
+    ).toHaveCount(0);
+
+    await definition
+      .getByTestId('automations-form-name')
+      .fill('Global shell report');
+    const pickPipeline = definition.getByTestId('automations-form-pipeline');
+    await expect(pickPipeline).toBeEnabled();
+    await pickPipeline.click();
+    const modal = window.getByTestId('pipeline-trigger-modal-body');
+    await expect(modal).toBeVisible();
+    await modal.getByRole('button', { name: GLOBAL_PIPELINE_NAME }).click();
+    await window.getByTestId('pipeline-trigger-modal-run').click();
+    await expect(modal).toBeHidden();
+    await expect(definition).toContainText(GLOBAL_PIPELINE_NAME);
+
+    await saveWorkflowEdit(window);
+    const target = await workflowEditTarget(window);
+    expect(target?.kind).toBe('automation');
+    const activityId = target.activityId;
+    const saved = persistedActivity(userDataDir, activityId);
+    expect(saved.action).toMatchObject({
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      pipelineId: GLOBAL_PIPELINE_ID,
+      pipelineSource: 'user',
+    });
+    expect(saved.action).not.toHaveProperty('workspaceId');
+    expect(saved.action).not.toHaveProperty('baseWorktreeId');
+
+    // Reopened from the Library, it is still No project with no project
+    // picker and nothing to correct.
+    await backFromWorkflowEdit(window);
+    await expect(shell).toBeHidden();
+    await app.openWorkflowsLibraryRow(
+      app.workflowsLibraryAutomationRow(activityId),
+    );
+    await expect(shell).toHaveAttribute('data-kind', 'automation');
+    await expect(shell).toHaveAttribute('data-dirty', 'false');
+    await expect(
+      definition.getByTestId('automations-form-action-type-global'),
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(
+      definition.getByTestId('automations-form-global-owner'),
+    ).toContainText('Owner: Personal');
+    await expect(definition).toContainText(GLOBAL_PIPELINE_NAME);
+    await expect(
+      definition.getByTestId('automations-form-workspace'),
+    ).toHaveCount(0);
+    await expect(shell.getByTestId('automations-form-error')).toHaveCount(0);
+
+    // Saving an edit keeps the destination.
+    await definition
+      .getByTestId('automations-form-name')
+      .fill('Global shell report renamed');
+    await expect(shell).toHaveAttribute('data-dirty', 'true');
+    await saveWorkflowEdit(window);
+    await expect(shell.getByTestId('automations-form-error')).toHaveCount(0);
+    const resaved = persistedActivity(userDataDir, activityId);
+    expect(resaved.name).toBe('Global shell report renamed');
+    expect(resaved.action).toEqual(saved.action);
+  } finally {
+    await discardWorkflowEditIfOpen(electronApp);
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('a legacy pipeline automation reopens on its project and saves without gaining a target', async () => {
+  const userDataDir = seedDemo('canopy-can4550-legacy-');
+  seedProjectPipeline(userDataDir);
+  const legacy = pipelineAutomation({ workspaceId: WORKSPACE_ID });
+  seedAutomations({ userDataDir, activities: [legacy] });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openAutomationsPage();
+    await app.openWorkflowsLibraryRow(
+      app.workflowsLibraryAutomationRow(PIPELINE_AUTOMATION_ID),
+    );
+    const shell = window.getByTestId('workflow-edit-shell');
+    await expect(shell).toHaveAttribute('data-kind', 'automation');
+    const definition = shell.getByTestId('workflow-edit-section-definition');
+
+    // A legacy action shows its project and what it already does: a new
+    // worktree each run on a code project.
+    await expect(
+      definition.getByTestId('automations-form-action-type-workspace'),
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(
+      definition.getByTestId('automations-form-workspace'),
+    ).toContainText('TypeScript pnpm Vite');
+    await expect(
+      definition.getByTestId('automations-form-pipeline-run-in-new_worktree'),
+    ).toBeChecked();
+    await expect(
+      definition.getByTestId('automations-form-global-owner'),
+    ).toHaveCount(0);
+    await expect(definition).toContainText(PIPELINE_NAME);
+
+    await definition
+      .getByTestId('automations-form-name')
+      .fill('Nightly shell pipeline renamed');
+    await expect(shell).toHaveAttribute('data-dirty', 'true');
+    await saveWorkflowEdit(window);
+    await expect(shell.getByTestId('automations-form-error')).toHaveCount(0);
+
+    const saved = persistedActivity(userDataDir, PIPELINE_AUTOMATION_ID);
+    expect(saved.name).toBe('Nightly shell pipeline renamed');
+    expect(saved.action).toEqual(legacy.action);
+    expect(saved.action).not.toHaveProperty('target');
+  } finally {
+    await discardWorkflowEditIfOpen(electronApp);
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Run now refuses a task destination whose task was removed', async () => {
+  const userDataDir = seedDemo('canopy-can4550-task-missing-');
+  seedProjectPipeline(userDataDir);
+  seedAutomations({
+    userDataDir,
+    activities: [
+      pipelineAutomation({
+        workspaceId: WORKSPACE_ID,
+        target: { kind: 'task', taskId: 'removed-worktree' },
+      }),
+    ],
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openAutomationsPage();
+    await app.chooseWorkflowsLibraryRowAction(
+      app.workflowsLibraryAutomationRow(PIPELINE_AUTOMATION_ID),
+      'view-runs',
+    );
+    const shell = window.getByTestId('workflow-edit-shell');
+    await expect(shell).toHaveAttribute('data-kind', 'automation');
+    const runs = await openWorkflowEditSection(window, 'runs');
+    await expect(runs.getByTestId('workflow-edit-no-runs')).toBeVisible();
+
+    await shell.getByTestId('automation-details-run-now').click();
+
+    // The run is recorded as failed with the reason, and nothing ran.
+    await expect
+      .poll(() => {
+        const file = JSON.parse(
+          readFileSync(path.join(userDataDir, 'automations.json'), 'utf8'),
+        );
+        const run = (file.recentRuns ?? []).find(
+          (entry) => entry.activityId === PIPELINE_AUTOMATION_ID,
+        );
+        return run ? { status: run.status, error: run.error } : null;
+      })
+      .toEqual({ status: 'failure', error: TASK_MISSING_ERROR });
+    await expect(runs.getByTestId('workflows-run-row')).toHaveCount(1);
+    await expect(runs.getByTestId('workflows-run-row')).toContainText(
+      TASK_MISSING_ERROR,
+    );
   } finally {
     await discardWorkflowEditIfOpen(electronApp);
     await closeCanopy(electronApp, userDataDir);

@@ -220,7 +220,7 @@ test('Cost panel filters, sorts, refreshes, and opens chat and pipeline details'
         [panel.getByTestId(`cost-chat-row-${cost.ids.archivedChat}`), /Chat/],
         [
           panel.getByTestId(`cost-run-row-${cost.ids.rootExecution}`),
-          /Pipeline/,
+          /Workflow/,
         ],
         [panel.getByTestId('cost-unattached-row'), /Background/],
       ];
@@ -240,7 +240,7 @@ test('Cost panel filters, sorts, refreshes, and opens chat and pipeline details'
         );
       }
       await panel.getByTestId('cost-split-source').click();
-      await expect(legend).toContainText('Pipeline');
+      await expect(legend).toContainText('Workflow');
 
       await panel.getByTestId('cost-sort').click();
       const sortMenu = window.getByTestId('cost-sort-menu');
@@ -391,7 +391,7 @@ test('Cost panel opens from the add-tab menu and the palette with Early access o
   try {
     // Without Early access the add-tab menu opens from the group's add-panel
     // control; the plus button starts a chat directly.
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     const menu = window.getByTestId('panel-add-menu');
     await expect(menu).toBeVisible();
     await menu.getByTestId('panel-add-menu-item-cost').click();
@@ -469,8 +469,8 @@ test('cost views name the proxy accounts of a chat, a subagent and a pipeline ru
       );
       expect(connected.ok).toBe(true);
       await chat.getByTestId('usage-indicator').click();
-      await expect(accounts).toContainText('Via account proxy · 75% of turns');
-      await expect(accounts).toContainText('Via account proxy · 25% of turns');
+      await expect(accounts).toContainText('75% of turns');
+      await expect(accounts).toContainText('25% of turns');
       await expect(accounts).toContainText('Claude account');
       await window.keyboard.press('Escape');
       // The views below name each account by provider, as with no proxy.

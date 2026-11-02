@@ -138,77 +138,22 @@ describe('click observer', () => {
   });
 });
 
-describe('getting started sequence clicks (CAN-3013)', () => {
-  it('round-trips a sequence step id', () => {
-    const id = buildCampaignNotificationId(
-      'getting-started-sequence',
-      'connect-accounts',
-    );
-    expect(id).toBe(
-      'activation-campaign:getting-started-sequence:connect-accounts',
-    );
-    expect(parseCampaignNotificationId(id)).toEqual({
-      campaignId: 'getting-started-sequence',
-      variantKey: 'connect-accounts',
-    });
-  });
-
-  it('rejects a step the checklist no longer defines', () => {
-    // A banner from a build whose checklist had a since-retired item must not
-    // route anywhere.
-    expect(
-      parseCampaignNotificationId(
-        'activation-campaign:getting-started-sequence:run-pipeline',
-      ),
-    ).toBeNull();
-  });
-
-  it('routes a click to the step deep link and names the item', () => {
-    const delivered: CampaignClickPayload[] = [];
-    const observed: Array<[string, string | undefined]> = [];
-    setCampaignClickObserver((campaignId, itemId) => {
-      observed.push([campaignId, itemId]);
-    });
-    setCampaignClickSender((payload) => {
-      delivered.push(payload);
-      return true;
-    });
-    notifyCampaignClickStartupUnlocked();
-
-    handleCampaignNotificationClick(
-      'activation-campaign:getting-started-sequence:add-capability',
-    );
-
-    expect(observed).toEqual([['getting-started-sequence', 'add-capability']]);
-    expect(delivered).toEqual([
-      {
-        campaignId: 'getting-started-sequence',
-        itemId: 'add-capability',
-        destination: { kind: 'plugins-discovery' },
-      },
-    ]);
-  });
-
-  it('buffers a step click until a renderer is unlocked', () => {
-    // The deep link has to survive a relaunch: the click that reopened the
-    // app arrives before any window exists.
-    const delivered: CampaignClickPayload[] = [];
-    handleCampaignNotificationClick(
-      'activation-campaign:getting-started-sequence:create-account',
-    );
-    setCampaignClickSender((payload) => {
-      delivered.push(payload);
-      return true;
-    });
-    expect(delivered).toEqual([]);
-
-    notifyCampaignClickStartupUnlocked();
-    expect(delivered).toEqual([
-      {
-        campaignId: 'getting-started-sequence',
-        itemId: 'create-account',
-        destination: { kind: 'settings', section: 'account' },
-      },
-    ]);
-  });
+it('makes every retired sequence notification inert', () => {
+  const sender = jest.fn(() => true);
+  const observer = jest.fn();
+  setCampaignClickSender(sender);
+  setCampaignClickObserver(observer);
+  notifyCampaignClickStartupUnlocked();
+  for (const item of [
+    'start-chat',
+    'connect-accounts',
+    'add-capability',
+    'create-account',
+  ]) {
+    const id = `activation-campaign:getting-started-sequence:${item}`;
+    expect(parseCampaignNotificationId(id)).toBeNull();
+    handleCampaignNotificationClick(id);
+  }
+  expect(sender).not.toHaveBeenCalled();
+  expect(observer).not.toHaveBeenCalled();
 });

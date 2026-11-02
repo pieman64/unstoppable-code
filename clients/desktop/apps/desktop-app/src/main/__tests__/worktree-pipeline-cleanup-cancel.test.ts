@@ -8,7 +8,9 @@ const mockCancelPipelineExecution = jest.fn();
 const mockPersistedCancelPipelineExecution = jest.fn();
 const mockGetActiveExecutionHandle = jest.fn();
 jest.mock('../pipelines/pipeline-execution-registry', () => ({
-  getActiveExecutionHandle: mockGetActiveExecutionHandle,
+  get getActiveExecutionHandle(): typeof mockGetActiveExecutionHandle {
+    return mockGetActiveExecutionHandle;
+  },
 }));
 jest.mock(
   '@canopy/desktop-shared/node/pipelines/executor/pipeline-executor',
@@ -18,7 +20,9 @@ jest.mock(
     );
     return {
       ...actual,
-      cancelPipelineExecution: mockPersistedCancelPipelineExecution,
+      get cancelPipelineExecution(): typeof mockPersistedCancelPipelineExecution {
+        return mockPersistedCancelPipelineExecution;
+      },
     };
   },
 );

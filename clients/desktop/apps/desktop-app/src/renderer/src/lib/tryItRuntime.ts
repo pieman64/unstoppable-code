@@ -9,7 +9,10 @@ import type {
   ProviderModelSelection,
 } from '@canopy/desktop-shared/types';
 import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
-import { cursorPluginFacetSupport } from '@canopy/desktop-shared/lib/cursor-capabilities';
+import {
+  PLUGIN_HARNESSES,
+  pluginHarnessRows,
+} from '@canopy/plugin-interop/harness-support';
 
 /** Per-harness support, as the detail page's Harness rows show it. */
 export type TryItHarnessSupport = Record<TryItHarness, boolean>;
@@ -24,13 +27,24 @@ export type TryItRuntime =
   | { status: 'model'; selection: ProviderModelSelection }
   | { status: 'setup-required' };
 
-/** The plugin's Harness rows: provider support, Codex compat, Cursor facets. */
+/** The plugin's Harness rows (the shared row rule), for the Try it harnesses. */
 export function pluginHarnessSupport(plugin: PluginInfo): TryItHarnessSupport {
+  const rows = pluginHarnessRows({
+    providerSupport: plugin.providerSupport,
+    codexCompatDisabled: plugin.codexCompatDisabled,
+    facets: plugin.facets,
+    installed: false,
+    // Support per named harness, whatever the build lists.
+    harnesses: PLUGIN_HARNESSES,
+  });
+  const supported = (harness: TryItHarness): boolean =>
+    rows.some(
+      (row) => row.id === harness && row.installation !== 'Not supported',
+    );
   return {
-    claude: plugin.providerSupport.claude !== 'none',
-    codex:
-      plugin.providerSupport.codex !== 'none' && !plugin.codexCompatDisabled,
-    cursor: cursorPluginFacetSupport(plugin.facets).supported,
+    claude: supported('claude'),
+    codex: supported('codex'),
+    cursor: supported('cursor'),
   };
 }
 
@@ -58,7 +72,10 @@ export function resolveTryItRuntime(input: {
     return { status: 'default' };
   if (!defaults) return { status: 'loading' };
   const preferred = harnessForProvider(defaults.chatProvider);
-  if (preferred && support[preferred]) return { status: 'default' };
+  if (preferred && support[preferred]) {
+    const selection = defaults.chatModelByProvider[preferred];
+    if (selection) return { status: 'model', selection };
+  }
   if (
     TRY_IT_HARNESSES.some(
       (harness) => support[harness] && signedIn[harness] === null,

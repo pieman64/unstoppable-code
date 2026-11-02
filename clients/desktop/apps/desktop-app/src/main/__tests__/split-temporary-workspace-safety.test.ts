@@ -1,6 +1,7 @@
 const listWorkspaceItemsMock = jest.fn();
 const readWorkspaceConfigMock = jest.fn();
 const pathExistsMock = jest.fn();
+const makeEmptyAttachmentNames = (): string[] => [];
 const analyzeSplitWorktreeItemsMock = jest.fn(() =>
   Promise.resolve({
     perRepo: new Map(),
@@ -10,7 +11,7 @@ const analyzeSplitWorktreeItemsMock = jest.fn(() =>
       fileTabs: [],
       executions: [],
       plans: [],
-      attachmentNames: [],
+      attachmentNames: makeEmptyAttachmentNames(),
     },
   }),
 );
@@ -35,7 +36,10 @@ const releaseSplitDestinationWorktreeClaimMock = jest.fn();
 const releaseSplitLockMock = jest.fn();
 const acquireWorkspaceArchiveRetentionLeaseMock = jest.fn(() => jest.fn());
 const safeRemoveWorktreeMock = jest.fn();
-const reverseMovedCheckoutsMock = jest.fn(() => Promise.resolve());
+const reverseMovedCheckoutsMock = jest.fn<
+  Promise<void>,
+  [unknown[], unknown[]]
+>(() => Promise.resolve());
 const restoreSplitExecutionSnapshotsMock = jest.fn(() => Promise.resolve());
 const restoreSplitExecutionSnapshotsForTargetMock = jest.fn<
   Promise<void>,
@@ -48,10 +52,11 @@ const undoSplitChatsAndPlansTargetMigrationMock = jest.fn<
 const removeWorkspaceIndexEntryMock = jest.fn();
 const worktreeRowsMock = new Map<string, WorktreeData[]>();
 const findOrCreateSingleRepoWorkspaceForRepoMock = jest.fn();
-const rmMock = jest.fn();
-const readdirMock = jest.fn();
 const hasSplitWorktreeStoredItemsMock = jest.fn(() => Promise.resolve(false));
-const resolveArchiveRetentionDaysMock = jest.fn(() => null);
+const resolveArchiveRetentionDaysMock = jest.fn<
+  number | null,
+  [string, number | null | undefined]
+>(() => null);
 const allocateAdhocDestinationWorktreeIdMock = jest.fn(
   (
     _workspaceId: string,
@@ -85,36 +90,51 @@ const discardLedgerMoveIntentMock = jest.fn();
 
 jest.mock('node:fs/promises', () => ({
   mkdir: jest.fn(),
-  readdir: readdirMock,
-  rm: rmMock,
+  readdir: jest.fn(),
+  rm: jest.fn(),
 }));
 
 jest.mock('../lib/adhoc-combine-core', () => ({
-  allocateAdhocDestinationWorktreeId: allocateAdhocDestinationWorktreeIdMock,
-  assertNoActiveWorktreeWork: assertNoActiveWorktreeWorkMock,
+  get allocateAdhocDestinationWorktreeId(): typeof allocateAdhocDestinationWorktreeIdMock {
+    return allocateAdhocDestinationWorktreeIdMock;
+  },
+  get assertNoActiveWorktreeWork(): typeof assertNoActiveWorktreeWorkMock {
+    return assertNoActiveWorktreeWorkMock;
+  },
   findWorkspace: jest.fn((items: Array<{ id: string }>, workspaceId: string) =>
     items.find((item) => item.id === workspaceId),
   ),
   identitiesMatch: jest.fn(() => false),
   resolveRepoIdentity: jest.fn(() => Promise.resolve({ remotes: [] })),
-  reverseMovedCheckouts: reverseMovedCheckoutsMock,
+  get reverseMovedCheckouts(): typeof reverseMovedCheckoutsMock {
+    return reverseMovedCheckoutsMock;
+  },
 }));
 
 jest.mock('../lib/git', () => ({
   getCurrentBranch: jest.fn(() => Promise.resolve(null)),
-  getGitCommonDir: getGitCommonDirMock,
+  get getGitCommonDir(): typeof getGitCommonDirMock {
+    return getGitCommonDirMock;
+  },
   moveWorktree: jest.fn(),
 }));
 
 jest.mock('../services/split-lock-service', () => ({
-  acquireSplitDestinationWorktreeClaim:
-    acquireSplitDestinationWorktreeClaimMock,
-  acquireWorkspaceArchiveRetentionLease:
-    acquireWorkspaceArchiveRetentionLeaseMock,
-  acquireSplitLock: acquireSplitLockMock,
-  releaseSplitDestinationWorktreeClaim:
-    releaseSplitDestinationWorktreeClaimMock,
-  releaseSplitLock: releaseSplitLockMock,
+  get acquireSplitDestinationWorktreeClaim(): typeof acquireSplitDestinationWorktreeClaimMock {
+    return acquireSplitDestinationWorktreeClaimMock;
+  },
+  get acquireWorkspaceArchiveRetentionLease(): typeof acquireWorkspaceArchiveRetentionLeaseMock {
+    return acquireWorkspaceArchiveRetentionLeaseMock;
+  },
+  get acquireSplitLock(): typeof acquireSplitLockMock {
+    return acquireSplitLockMock;
+  },
+  get releaseSplitDestinationWorktreeClaim(): typeof releaseSplitDestinationWorktreeClaimMock {
+    return releaseSplitDestinationWorktreeClaimMock;
+  },
+  get releaseSplitLock(): typeof releaseSplitLockMock {
+    return releaseSplitLockMock;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({
@@ -138,15 +158,21 @@ jest.mock('../lib/paths', () => ({
 }));
 
 jest.mock('../lib/fs-utils', () => ({
-  pathExists: pathExistsMock,
+  get pathExists(): typeof pathExistsMock {
+    return pathExistsMock;
+  },
 }));
 
 jest.mock('../lib/safe-remove-worktree', () => ({
-  safeRemoveWorktree: safeRemoveWorktreeMock,
+  get safeRemoveWorktree(): typeof safeRemoveWorktreeMock {
+    return safeRemoveWorktreeMock;
+  },
 }));
 
 jest.mock('../lib/sidebar-items', () => ({
-  removeWorkspaceIndexEntry: removeWorkspaceIndexEntryMock,
+  get removeWorkspaceIndexEntry(): typeof removeWorkspaceIndexEntryMock {
+    return removeWorkspaceIndexEntryMock;
+  },
 }));
 
 jest.mock('../lib/sidebar-items-preservation', () => ({
@@ -158,58 +184,105 @@ jest.mock('../lib/validation', () => ({
 }));
 
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceConfig: readWorkspaceConfigMock,
+  get readWorkspaceConfig(): typeof readWorkspaceConfigMock {
+    return readWorkspaceConfigMock;
+  },
   isWorkspaceWorktreeRecentlyRemoved: jest.fn(() => false),
-  readWorkspaceWorktrees: readWorkspaceWorktreesMock,
-  removeWorkspaceWorktrees: removeWorkspaceWorktreesMock,
-  updateWorkspaceWorktrees: updateWorkspaceWorktreesMock,
+  get readWorkspaceWorktrees(): typeof readWorkspaceWorktreesMock {
+    return readWorkspaceWorktreesMock;
+  },
+  get removeWorkspaceWorktrees(): typeof removeWorkspaceWorktreesMock {
+    return removeWorkspaceWorktreesMock;
+  },
+  get updateWorkspaceWorktrees(): typeof updateWorkspaceWorktreesMock {
+    return updateWorkspaceWorktreesMock;
+  },
 }));
 
 jest.mock('../lib/workspace-service', () => ({
-  acquireSplitDestinationWorkspaceLeases:
-    acquireSplitDestinationWorkspaceLeasesMock,
-  findOrCreateSingleRepoWorkspaceForRepo:
-    findOrCreateSingleRepoWorkspaceForRepoMock,
-  listWorkspaceItems: listWorkspaceItemsMock,
-  withSplitDestinationWorkspaceCreationLock:
-    withSplitDestinationWorkspaceCreationLockMock,
+  get acquireSplitDestinationWorkspaceLeases(): typeof acquireSplitDestinationWorkspaceLeasesMock {
+    return acquireSplitDestinationWorkspaceLeasesMock;
+  },
+  get findOrCreateSingleRepoWorkspaceForRepo(): typeof findOrCreateSingleRepoWorkspaceForRepoMock {
+    return findOrCreateSingleRepoWorkspaceForRepoMock;
+  },
+  get listWorkspaceItems(): typeof listWorkspaceItemsMock {
+    return listWorkspaceItemsMock;
+  },
+  get withSplitDestinationWorkspaceCreationLock(): typeof withSplitDestinationWorkspaceCreationLockMock {
+    return withSplitDestinationWorkspaceCreationLockMock;
+  },
 }));
 
 jest.mock('../lib/worktree-service', () => ({
-  archiveMultiRepoWorktree: archiveMultiRepoWorktreeMock,
-  archiveSingleRepoWorktree: archiveSingleRepoWorktreeMock,
+  get archiveMultiRepoWorktree(): typeof archiveMultiRepoWorktreeMock {
+    return archiveMultiRepoWorktreeMock;
+  },
+  get archiveSingleRepoWorktree(): typeof archiveSingleRepoWorktreeMock {
+    return archiveSingleRepoWorktreeMock;
+  },
 }));
 
 jest.mock('../lib/split-temporary-workspace-items', () => ({
-  analyzeSplitWorktreeItems: analyzeSplitWorktreeItemsMock,
-  deleteSplitPipelineExecutions: deleteSplitPipelineExecutionsMock,
-  finalizeSplitChatsAndPlansMigration: finalizeSplitChatsAndPlansMigrationMock,
-  hasSplitWorktreeStoredItems: hasSplitWorktreeStoredItemsMock,
-  migrateSplitChatsAndPlans: migrateSplitChatsAndPlansMock,
-  migrateSplitPipelineExecutions: migrateSplitPipelineExecutionsMock,
-  restoreSplitExecutionSnapshots: restoreSplitExecutionSnapshotsMock,
-  restoreSplitExecutionSnapshotsForTarget:
-    restoreSplitExecutionSnapshotsForTargetMock,
+  get analyzeSplitWorktreeItems(): typeof analyzeSplitWorktreeItemsMock {
+    return analyzeSplitWorktreeItemsMock;
+  },
+  get deleteSplitPipelineExecutions(): typeof deleteSplitPipelineExecutionsMock {
+    return deleteSplitPipelineExecutionsMock;
+  },
+  get finalizeSplitChatsAndPlansMigration(): typeof finalizeSplitChatsAndPlansMigrationMock {
+    return finalizeSplitChatsAndPlansMigrationMock;
+  },
+  get hasSplitWorktreeStoredItems(): typeof hasSplitWorktreeStoredItemsMock {
+    return hasSplitWorktreeStoredItemsMock;
+  },
+  get migrateSplitChatsAndPlans(): typeof migrateSplitChatsAndPlansMock {
+    return migrateSplitChatsAndPlansMock;
+  },
+  get migrateSplitPipelineExecutions(): typeof migrateSplitPipelineExecutionsMock {
+    return migrateSplitPipelineExecutionsMock;
+  },
+  get restoreSplitExecutionSnapshots(): typeof restoreSplitExecutionSnapshotsMock {
+    return restoreSplitExecutionSnapshotsMock;
+  },
+  get restoreSplitExecutionSnapshotsForTarget(): typeof restoreSplitExecutionSnapshotsForTargetMock {
+    return restoreSplitExecutionSnapshotsForTargetMock;
+  },
   undoSplitChatsAndPlansMigration: jest.fn(() => Promise.resolve()),
-  undoSplitChatsAndPlansTargetMigration:
-    undoSplitChatsAndPlansTargetMigrationMock,
+  get undoSplitChatsAndPlansTargetMigration(): typeof undoSplitChatsAndPlansTargetMigrationMock {
+    return undoSplitChatsAndPlansTargetMigrationMock;
+  },
 }));
 
 jest.mock('@canopy/desktop-shared/lib/archive-retention', () => ({
-  resolveArchiveRetentionDays: resolveArchiveRetentionDaysMock,
+  get resolveArchiveRetentionDays(): typeof resolveArchiveRetentionDaysMock {
+    return resolveArchiveRetentionDaysMock;
+  },
 }));
 
 jest.mock('@canopy/desktop-shared/node/lib/worktree-data-cleanup', () => ({
-  removePersistedWorktreeDataDirectory:
-    removePersistedWorktreeDataDirectoryMock,
+  get removePersistedWorktreeDataDirectory(): typeof removePersistedWorktreeDataDirectoryMock {
+    return removePersistedWorktreeDataDirectoryMock;
+  },
 }));
 
 jest.mock('../ledger/lifecycle', () => ({
-  discardLedgerMoveIntent: discardLedgerMoveIntentMock,
+  get discardLedgerMoveIntent(): typeof discardLedgerMoveIntentMock {
+    return discardLedgerMoveIntentMock;
+  },
   LEDGER_INTENT_REFUSING_WAIT_MS: 5_000,
-  notifyLedgerContainerMoved: notifyLedgerContainerMovedMock,
-  recordLedgerMoveIntent: recordLedgerMoveIntentMock,
+  get notifyLedgerContainerMoved(): typeof notifyLedgerContainerMovedMock {
+    return notifyLedgerContainerMovedMock;
+  },
+  get recordLedgerMoveIntent(): typeof recordLedgerMoveIntentMock {
+    return recordLedgerMoveIntentMock;
+  },
 }));
+
+const { readdir: readdirMock, rm: rmMock } = jest.requireMock<{
+  readdir: jest.Mock;
+  rm: jest.Mock;
+}>('node:fs/promises');
 
 import { removeTreeWithoutAsar } from '../lib/remove-tree-without-asar';
 import type {
@@ -959,7 +1032,7 @@ describe('splitTemporaryWorkspaceWorktree safety', () => {
     if (!finishExecutionMigration) {
       throw new Error('Expected execution migration to be pending');
     }
-    finishExecutionMigration(new Map());
+    finishExecutionMigration(new Map<string, never>());
     await drainSplitTemporaryWorkspaceBackgroundPhases(1_000);
 
     expect(updateWorkspaceWorktreesMock).toHaveBeenCalledTimes(2);
@@ -1456,15 +1529,17 @@ describe('splitTemporaryWorkspaceWorktree safety', () => {
     updateWorkspaceWorktreesMock.mockImplementationOnce(
       (
         _workspaceId: string,
-        update: (worktrees: WorktreeData[]) => WorktreeData[],
-      ) =>
-        update([
-          {
-            id: 'destination-wt',
-            branchName: 'other-branch',
-            createdAt: '2026-08-05T00:00:00.000Z',
-          },
-        ]),
+        update: WorkspaceWorktreeUpdater,
+      ): Promise<WorktreeData[]> =>
+        Promise.resolve(
+          update([
+            {
+              id: 'destination-wt',
+              branchName: 'other-branch',
+              createdAt: '2026-08-05T00:00:00.000Z',
+            },
+          ]),
+        ),
     );
 
     await expect(
@@ -1629,7 +1704,7 @@ describe('splitTemporaryWorkspaceWorktree safety', () => {
     if (!finishFirstMigration) {
       throw new Error('Expected the first execution migration to be pending');
     }
-    finishFirstMigration(new Map());
+    finishFirstMigration(new Map<string, never>());
     await drainSplitTemporaryWorkspaceBackgroundPhases(1_000);
 
     expect(archiveSingleRepoWorktreeMock).toHaveBeenCalledWith(

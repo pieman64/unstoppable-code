@@ -3,7 +3,7 @@
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { UpdateState } from '@canopy/desktop-shared/types';
+import type { CliPathStatus, UpdateState } from '@canopy/desktop-shared/types';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { useGitHubCliStatus } from '@/hooks/useGitHubCliStatus';
 import { CanopyTab } from '../CanopyTab';
@@ -11,6 +11,11 @@ import { useRepoRulesModalStore } from '@/stores/repoRulesModalStore';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
+// The tips row reads the shared tip store, which needs a client provider;
+// its own coverage is ShowTipsAgainRow.test.tsx.
+jest.mock('../ShowTipsAgainRow', () => ({
+  ShowTipsAgainRow: (): null => null,
+}));
 jest.mock('@/hooks/useGitHubCliStatus', () => ({
   useGitHubCliStatus: jest.fn(() => ({
     authenticated: true,
@@ -251,6 +256,107 @@ describe('CanopyTab error messages', () => {
     });
     const message = byTestId('settings-shell-integration-message');
     expect(message.textContent).toContain('/Users/jane.doe/bin');
+  });
+
+  it('offers Linux installation, refreshes an outdated CLI and then offers removal', async () => {
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    const status = {
+      state: 'missing',
+      symlinkPath: '/home/test/.local/bin/canopy',
+      symlinkTarget: null,
+      bundledCliPath: '/opt/canopy/resources/cli/canopy',
+    };
+    api.cli.getStatus.mockResolvedValue(status);
+    api.cli.installToPath.mockResolvedValue({ success: true, error: null });
+    await renderTab();
+    const button = byTestId('settings-shell-integration-action');
+    expect(button.hasAttribute('disabled')).toBe(false);
+    api.cli.getStatus.mockResolvedValue({ ...status, state: 'outdated' });
+    await act(async () => {
+      button.click();
+      await Promise.resolve();
+    });
+    expect(api.cli.installToPath).toHaveBeenCalledTimes(1);
+    expect(button.textContent).toBe('Update CLI');
+    expect(byTestId('settings-shell-integration').textContent).toContain(
+      'outdated',
+    );
+    api.cli.getStatus.mockResolvedValue({
+      ...status,
+      state: 'correct-symlink',
+    });
+    await act(async () => {
+      button.click();
+      await Promise.resolve();
+    });
+    expect(api.cli.installToPath).toHaveBeenCalledTimes(2);
+    expect(api.cli.uninstallFromPath).not.toHaveBeenCalled();
+    expect(button.textContent).toBe('Remove CLI');
+  });
+
+  it('refreshes the Linux package status when Settings regains focus', async () => {
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    const status = {
+      state: 'correct-symlink',
+      symlinkPath: '/home/test/.local/bin/canopy',
+      symlinkTarget: null,
+      bundledCliPath: '/opt/canopy/resources/cli/canopy',
+    };
+    api.cli.getStatus.mockResolvedValue(status);
+    await renderTab();
+    expect(byTestId('settings-shell-integration-action').textContent).toBe(
+      'Remove CLI',
+    );
+    api.cli.getStatus.mockResolvedValue({ ...status, state: 'outdated' });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
+    expect(byTestId('settings-shell-integration-action').textContent).toBe(
+      'Update CLI',
+    );
+  });
+
+  it('ignores an earlier CLI status read that settles after a newer focus refresh', async () => {
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    const status: CliPathStatus = {
+      state: 'correct-symlink',
+      symlinkPath: '/home/test/.local/bin/canopy',
+      symlinkTarget: null,
+      bundledCliPath: '/opt/canopy/resources/cli/canopy',
+    };
+    api.cli.getStatus.mockResolvedValue(status);
+    await renderTab();
+    let resolveStale: ((value: CliPathStatus) => void) | undefined;
+    const stale = new Promise<CliPathStatus>((resolve) => {
+      resolveStale = resolve;
+    });
+    api.cli.getStatus
+      .mockReturnValueOnce(stale)
+      .mockResolvedValue({ ...status, state: 'outdated' });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
+    if (!resolveStale) throw new Error('Missing deferred status resolver');
+    const settle = resolveStale;
+    await act(async () => {
+      settle({ ...status, state: 'missing' });
+      await Promise.resolve();
+    });
+    expect(byTestId('settings-shell-integration-action').textContent).toBe(
+      'Update CLI',
+    );
   });
 
   it('shows an updater error message', async () => {

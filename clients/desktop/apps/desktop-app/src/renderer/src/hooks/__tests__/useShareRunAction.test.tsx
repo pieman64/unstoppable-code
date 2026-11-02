@@ -280,7 +280,7 @@ describe('useShareRunAction', () => {
     cleanup();
   });
 
-  it('records the team share and leaves the success toast to the share dialog', async () => {
+  it('records the team share and keeps the target until the dialog closes', async () => {
     setSharedRunMock.mockResolvedValue(undefined);
     resolveSharedRunUrlMock.mockResolvedValue(
       'https://cloud.example.test/share/runs/shared-run-1',
@@ -310,11 +310,18 @@ describe('useShareRunAction', () => {
         teamName: 'Platform',
       }),
     );
-    // The common share dialog raises the success toast (with the link) once
-    // this completion hook returns; a second one here would duplicate it.
+    // The common share dialog stays open on its success notice (with the
+    // link) once this completion hook returns, so no toast is raised here.
     expect(addToastMock).not.toHaveBeenCalled();
     expect(unshareRunMock).not.toHaveBeenCalled();
+    expect(probe.current?.target?.chatId).toBe('chat-1');
+
+    // Done closes the dialog through `close`.
+    act(() => {
+      probe.current?.close();
+    });
     expect(probe.current?.target).toBeNull();
+    expect(addToastMock).not.toHaveBeenCalled();
     cleanup();
   });
 });

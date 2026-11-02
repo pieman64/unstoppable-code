@@ -182,6 +182,10 @@ interface TranscriptFileIdentity {
 
 const IGNORED_CLAUDE_TRANSCRIPT_EVENT_TYPES = new Set([
   'ai-title',
+  // Request records repeat conversation messages as API request blobs.
+  'api-request',
+  'api-request-blob',
+  'api-request-shape',
   'attachment',
   'file-history-snapshot',
   'last-prompt',

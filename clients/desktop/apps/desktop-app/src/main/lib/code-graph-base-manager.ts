@@ -19,7 +19,7 @@ import {
   readPublishedCodeGraphBase,
   type CodeGraphBaseIdentity,
   type ValidatedCodeGraphBase,
-} from '@canopy/desktop-shared/node/code-graph/base-graph';
+} from '@canopy/code-graph/base-graph';
 import {
   CODE_GRAPH_CUSTOM_LANGUAGES_CONFIG_MAX_BYTES,
   CODE_GRAPH_CUSTOM_LANGUAGES_CONFIG_RELATIVE_PATH,
@@ -31,8 +31,9 @@ import {
   parseCustomLanguagesConfig,
   readBoundedCodeGraphCustomLanguageFile,
   validateCustomLanguageEntries,
-} from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+} from '@canopy/code-graph/languages/custom-config';
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import { writeFileAtomically } from './atomic-file';
 import {
   cancelBuild,
   beginCodeGraphWorkerBuild,
@@ -177,8 +178,14 @@ async function persistPreparedCustomLanguageFingerprint(
 ): Promise<void> {
   const fingerprintPath = workspaceFingerprintPath(workspaceId);
   await mkdir(path.dirname(fingerprintPath), { recursive: true });
-  await writeFile(fingerprintPath, fingerprint);
+  await writeFileAtomically(fingerprintPath, fingerprint);
   preparedCustomLanguageFingerprints.set(workspaceId, fingerprint);
+}
+
+function removePersistedCustomLanguageFingerprint(workspaceId: string): void {
+  void Promise.resolve()
+    .then(() => rm(workspaceFingerprintPath(workspaceId), { force: true }))
+    .catch(() => undefined);
 }
 
 async function readPersistedCustomLanguageFingerprint(
@@ -1160,6 +1167,7 @@ export function syncCodeGraphBaseRepositories(
   preserveWorkspaceIds: ReadonlySet<string> = new Set(),
 ): void {
   const previousSignature = desiredWorkspacesSignature();
+  const previousWorkspaceIds = Array.from(desiredWorkspaces.keys());
   const nextDesiredWorkspaces = new Map<string, DesiredBaseWorkspace>();
   for (const item of items) {
     const descriptor = workspaceDescriptor(item);
@@ -1194,6 +1202,11 @@ export function syncCodeGraphBaseRepositories(
   )) {
     if (!desiredWorkspaces.has(workspaceId)) {
       preparedCustomLanguageFingerprints.delete(workspaceId);
+    }
+  }
+  for (const workspaceId of previousWorkspaceIds) {
+    if (!desiredWorkspaces.has(workspaceId)) {
+      removePersistedCustomLanguageFingerprint(workspaceId);
     }
   }
   // Projects reload on many unrelated events. Re-arming here on every reload

@@ -22,6 +22,11 @@ import {
   archiveWorktree,
   WorktreeArchiveRefusedError,
 } from '../../lib/worktree-archive';
+import {
+  describeWorktreeDiscard,
+  withTypedArchiveRefusal,
+} from '../../lib/worktree-discard';
+import { discardWorktreeFromInterface } from '../../lib/worktree-discard-interface';
 import { sendToWindow } from '../../lib/window-send';
 import type { PortalAdapterContext } from './types';
 import { failServiceError, isRecord } from './validation';
@@ -501,17 +506,27 @@ export async function handlePortalWorktreeArchive(
     context.fail(command, 'invalid_payload', 'Invalid worktree archive mode.');
     return;
   }
+  // The discard description is user-only (CAN-5334); an agent gets the throw.
+  const typedRefusal = payload.typedRefusal === true && !context.origin;
 
   try {
     // The archive boundary resolves the stable origin repo path itself from
     // the project config, so no `repoPath` is passed: the worktree's own
     // checkout is the directory being removed.
-    const result = await archiveWorktree({
-      workspaceId,
-      worktreeId,
-      source: 'portal',
-      ...(mode !== 'delete' ? { lockAfterArchive: true } : {}),
-    });
+    const result = await withTypedArchiveRefusal(
+      { typedRefusal, workspaceId, worktreeId },
+      () =>
+        archiveWorktree({
+          workspaceId,
+          worktreeId,
+          source: 'portal',
+          ...(mode !== 'delete' ? { lockAfterArchive: true } : {}),
+        }),
+    );
+    if (result.refusal) {
+      context.complete(command, result);
+      return;
+    }
     await broadcastWorktreeListToRenderer(context, workspaceId);
     context.complete(command, result);
     await broadcastWorkspaceWorktrees(context, workspaceId);
@@ -520,10 +535,131 @@ export async function handlePortalWorktreeArchive(
       context.fail(
         command,
         error.reason === 'not-found' ? 'not_found' : 'invalid_payload',
-        error.message,
+        error.reason === 'source-unavailable' &&
+          (await isDiscardableForMissingSource(workspaceId, worktreeId))
+          ? WORKTREE_SOURCE_MISSING_DISCARD_POINTER
+          : error.message,
       );
       return;
     }
+    failServiceError(command, context, error);
+  }
+}
+
+/**
+ * CAN-5336: an untyped refusal (mobile, external agents, older web) for a
+ * source that is gone points at the discard instead of retrying. Typed
+ * requests get the description and never reach this copy.
+ */
+export const WORKTREE_SOURCE_MISSING_DISCARD_POINTER =
+  "This worktree's source repository is missing. If it's on a disconnected drive or share, reconnect it and retry. Otherwise, discard it in the desktop app or on the web.";
+
+async function isDiscardableForMissingSource(
+  workspaceId: string,
+  worktreeId: string,
+): Promise<boolean> {
+  const description = await describeWorktreeDiscard(
+    workspaceId,
+    worktreeId,
+  ).catch(() => null);
+  return (
+    description?.status === 'discardable' &&
+    description.causes.includes('source-gone')
+  );
+}
+
+function readDiscardTarget(
+  payload: unknown,
+): { workspaceId: string; worktreeId: string; confirmation?: string } | null {
+  if (
+    !isRecord(payload) ||
+    typeof payload.workspaceId !== 'string' ||
+    typeof payload.worktreeId !== 'string' ||
+    (payload.confirmation !== undefined &&
+      typeof payload.confirmation !== 'string')
+  )
+    return null;
+  try {
+    validateId(payload.workspaceId, 'workspaceId');
+    validateId(payload.worktreeId, 'worktreeId');
+  } catch {
+    return null;
+  }
+  return {
+    workspaceId: payload.workspaceId,
+    worktreeId: payload.worktreeId,
+    ...(typeof payload.confirmation === 'string'
+      ? { confirmation: payload.confirmation }
+      : {}),
+  };
+}
+
+/**
+ * Handle `portal.worktree.discard.describe` (CAN-5334): the read-only
+ * description of a worktree whose ordinary removal cannot finish. User-only:
+ * a command an external agent sent is refused.
+ */
+export async function handlePortalWorktreeDiscardDescribe(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> {
+  if (context.origin) {
+    context.fail(command, 'forbidden', 'Only a person can discard a worktree.');
+    return;
+  }
+  const target = readDiscardTarget(command.payload);
+  if (!target) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid worktree discard payload: workspaceId and worktreeId are required.',
+    );
+    return;
+  }
+  try {
+    context.complete(
+      command,
+      await describeWorktreeDiscard(target.workspaceId, target.worktreeId),
+    );
+  } catch (error) {
+    failServiceError(command, context, error);
+  }
+}
+
+/**
+ * Handle `portal.worktree.discard` (CAN-5334): the permanent, user-only
+ * discard bound to a description's confirmation. It resolves typed refusals
+ * as results, and is gated as destructive server-side. Its post-discard
+ * effects, the list broadcast included, are the shared helper's, as on IPC.
+ */
+export async function handlePortalWorktreeDiscard(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> {
+  if (context.origin) {
+    context.fail(command, 'forbidden', 'Only a person can discard a worktree.');
+    return;
+  }
+  const target = readDiscardTarget(command.payload);
+  if (!target?.confirmation) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid worktree discard payload: workspaceId, worktreeId and confirmation are required.',
+    );
+    return;
+  }
+  try {
+    context.complete(
+      command,
+      await discardWorktreeFromInterface({
+        workspaceId: target.workspaceId,
+        worktreeId: target.worktreeId,
+        confirmation: target.confirmation,
+        source: 'portal-ui',
+      }),
+    );
+  } catch (error) {
     failServiceError(command, context, error);
   }
 }

@@ -1,0 +1,21 @@
+{
+  "invocation": {
+    "ok": false,
+    "error": {
+      "code": "invalid_request",
+      "message": "Invalid delegation request.",
+      "retryable": false
+    }
+  },
+  "serializedInvocation": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}",
+  "codexResponse": {
+    "success": false,
+    "contentItems": [
+      {
+        "type": "inputText",
+        "text": "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid delegation request.\",\"retryable\":false}}"
+      }
+    ]
+  },
+  "serializedCodexResponse": "{\"success\":false,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"{\\\"ok\\\":false,\\\"error\\\":{\\\"code\\\":\\\"invalid_request\\\",\\\"message\\\":\\\"Invalid delegation request.\\\",\\\"retryable\\\":false}}\"}]}"
+}

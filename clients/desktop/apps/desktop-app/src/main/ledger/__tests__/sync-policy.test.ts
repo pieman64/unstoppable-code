@@ -130,6 +130,82 @@ describe('resolveLedgerSyncDisposition', () => {
   });
 });
 
+describe('global (workflow) scopes', () => {
+  const GLOBAL_ORGANIZATION: LedgerContainer = {
+    kind: 'global',
+    owner: { kind: 'organization', organizationId: ORGANIZATION_ID },
+  };
+
+  it("shares an organization's global Ledger with its current members", () => {
+    // The owner is the container's: no workspace owner is consulted.
+    expect(
+      resolveLedgerSyncDisposition(
+        scope(ACCOUNT_ID, GLOBAL_ORGANIZATION),
+        account(),
+        { kind: 'unknown' },
+      ),
+    ).toEqual({
+      kind: 'sync',
+      audience: {
+        kind: 'organization_global',
+        organizationId: ORGANIZATION_ID,
+      },
+    });
+  });
+
+  it('keeps a Personal one private, and an organization one without its facts', () => {
+    const privately = { kind: 'sync', audience: { kind: 'private' } };
+    for (const [record, signedIn] of [
+      // Personal, even with organization sharing and a project owner.
+      [
+        scope(ACCOUNT_ID, { kind: 'global', owner: { kind: 'personal' } }),
+        account(),
+      ],
+      // "Just me".
+      [
+        scope(ACCOUNT_ID, GLOBAL_ORGANIZATION),
+        account({ summaries: 'private' }),
+      ],
+      // No longer a member.
+      [
+        scope(ACCOUNT_ID, GLOBAL_ORGANIZATION),
+        account({ organizationIds: new Set() }),
+      ],
+      // The organization's teams capability lapsed.
+      [
+        scope(ACCOUNT_ID, GLOBAL_ORGANIZATION),
+        account({ lapsedOrganizationIds: new Set([ORGANIZATION_ID]) }),
+      ],
+    ] as const) {
+      expect(
+        resolveLedgerSyncDisposition(record, signedIn, ORGANIZATION),
+      ).toEqual(privately);
+    }
+  });
+
+  it('applies an organization lease only for the same organization', () => {
+    const lease = {
+      kind: 'organization_global',
+      organizationId: ORGANIZATION_ID,
+      expiresAt: '2026-10-24T12:00:00.000Z',
+    } as const;
+    const shared = {
+      kind: 'organization_global',
+      organizationId: ORGANIZATION_ID,
+    } as const;
+
+    expect(isLedgerAudienceApplied(shared, lease)).toBe(true);
+    expect(
+      isLedgerAudienceApplied(
+        { kind: 'organization_global', organizationId: LAPSED_ORGANIZATION_ID },
+        lease,
+      ),
+    ).toBe(false);
+    expect(isLedgerAudienceApplied(shared, { kind: 'private' })).toBe(false);
+    expect(isLedgerAudienceApplied({ kind: 'private' }, lease)).toBe(false);
+  });
+});
+
 describe('ledgerAccountHold', () => {
   it('names why an account uploads nothing, or null when it does', () => {
     expect(ledgerAccountHold(account())).toBeNull();

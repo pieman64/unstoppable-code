@@ -1,7 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ControlSelect } from '../ControlSelect';
-import { SettingsControlSelect } from '../SettingsControlSelect';
-import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 describe('ControlSelect', () => {
   it('renders a native select on the 28px control surface with a chevron', () => {
@@ -55,25 +53,4 @@ describe('ControlSelect', () => {
     expect(wrapperClass.split(' ')).toContain('min-w-0');
     expect(wrapperClass.split(' ')).not.toContain('shrink-0');
   });
-});
-
-it('shares capsule geometry across Settings while preserving native form and privacy props', () => {
-  const html = renderToStaticMarkup(
-    <SettingsControlSelect
-      name="role"
-      aria-label="Member role"
-      defaultValue="member"
-      disabled
-      replayPrivacy={{ blockClassName: REPLAY_BLOCK_CLASS }}
-    >
-      <option value="member">Member</option>
-      <option value="admin">Admin</option>
-    </SettingsControlSelect>,
-  );
-  expect(html).toContain('rounded-full');
-  expect(html).not.toContain('rounded-md');
-  expect(html).toContain('name="role"');
-  expect(html).toContain(REPLAY_BLOCK_CLASS);
-  expect(html).toContain('disabled=""');
-  expect(html).toContain('selected=""');
 });

@@ -6,7 +6,6 @@ import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 import { act, type JSX, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Button, Notice } from '@canopy/ui-shared/components';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeaturesStore';
 import {
   SettingsGroup,
@@ -17,8 +16,7 @@ import {
 } from '../SettingsLayout';
 
 function SettingsAction(): JSX.Element {
-  const size = useSettingsButtonSize();
-  return <Button size={size}>Browse</Button>;
+  return <Button size="compact">Browse</Button>;
 }
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {

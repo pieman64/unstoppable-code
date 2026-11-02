@@ -11,6 +11,7 @@ import {
   MAX_SHARED_CONTAINER_ARTIFACT_BYTES,
   MAX_SHARED_CONTAINER_ARTIFACTS_PER_REVISION,
   MAX_SHARED_CONTAINER_REVISION_BYTES,
+  type SharedContainerCapabilityPackageCounts,
 } from '@canopy/protocol/shared-containers';
 import { mapWithConcurrency } from '../lib/concurrency';
 import {
@@ -140,6 +141,28 @@ export interface SharedContainerPreviewDependencies {
   resolvePushedBase?: typeof resolveSharedContainerPushedBase;
   buildSnapshot?: typeof buildSharedContainerCodeSnapshot;
   resolveStartPage?: typeof resolveProjectStartPage;
+  /**
+   * Counts from a completed capability-package analysis of the current
+   * scope. Must return promptly: a cold or stale scope resolves undefined
+   * and refreshes in the background instead of delaying Share.
+   */
+  readCapabilityPackageCounts?: (
+    request: SharedContainerPreviewRequest,
+    approvedFileScope: SharedContainerFileScope,
+  ) => Promise<SharedContainerCapabilityPackageCounts | undefined>;
+}
+
+async function readPreviewCapabilityPackageCounts(
+  request: SharedContainerPreviewRequest,
+  approvedFileScope: SharedContainerFileScope,
+): Promise<SharedContainerCapabilityPackageCounts | undefined> {
+  // Deferred: the package analyzer is heavy and only needed once sharing.
+  const { readSharedContainerCapabilityPackagePreviewCounts } =
+    await import('./capability-package/preview');
+  return readSharedContainerCapabilityPackagePreviewCounts(
+    request,
+    approvedFileScope,
+  );
 }
 
 async function inspectPreviewFile(
@@ -357,6 +380,7 @@ const DEFAULT_DEPENDENCIES: SharedContainerPreviewDependencies = {
   resolvePushedBase: resolveSharedContainerPushedBase,
   buildSnapshot: buildSharedContainerCodeSnapshot,
   resolveStartPage: resolveProjectStartPage,
+  readCapabilityPackageCounts: readPreviewCapabilityPackageCounts,
 };
 
 export async function listSharedContainerUntrackedCandidatePaths(
@@ -416,6 +440,20 @@ export async function buildSharedContainerSharePreview(
       worktreeId: request.worktreeId,
     }) ?? Promise.resolve(null),
   ]);
+  // Started now and awaited last: the lookup is a cache read, and a failure
+  // only leaves the package line out of the preview.
+  const capabilityPackageCounts = (
+    deps.readCapabilityPackageCounts?.(request, approvedFileScope) ??
+    Promise.resolve(undefined)
+  ).catch(() => undefined);
+  const withCapabilityPackageCounts = async <
+    T extends SharedContainerSharePreview,
+  >(
+    preview: T,
+  ): Promise<T> => {
+    const counts = await capabilityPackageCounts;
+    return counts ? { ...preview, capabilityPackageCounts: counts } : preview;
+  };
   // Notes and prompts are included unless the owner excluded them, so the
   // budget counts the resolved set rather than every row offered in the picker.
   // `noteCount`/`promptCount` keep their picker semantics.
@@ -523,7 +561,7 @@ export async function buildSharedContainerSharePreview(
         (path) => !defaultIncludedFileSet.has(path),
       ),
     ];
-    return {
+    return withCapabilityPackageCounts({
       ...base,
       startPage: resolvedStartPage
         ? resolvedStartPage.startPage.kind === 'url'
@@ -551,7 +589,7 @@ export async function buildSharedContainerSharePreview(
       ...(candidateResult.withheldFileCount > 0
         ? { withheldFileCount: candidateResult.withheldFileCount }
         : {}),
-    };
+    });
   }
 
   const repositories = await deps.resolveRepositories(
@@ -999,7 +1037,7 @@ export async function buildSharedContainerSharePreview(
       status: isWithheld ? 'withheld' : 'included',
     };
   }
-  return {
+  return withCapabilityPackageCounts({
     ...base,
     startPage,
     approvedFileScope: visibleApprovedFileScope,
@@ -1052,5 +1090,5 @@ export async function buildSharedContainerSharePreview(
         defaultIncludedFilePaths.length,
       limit: MAX_SHARED_CONTAINER_ARTIFACTS_PER_REVISION,
     },
-  };
+  });
 }

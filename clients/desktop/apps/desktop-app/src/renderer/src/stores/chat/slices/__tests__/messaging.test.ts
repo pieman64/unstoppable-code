@@ -118,7 +118,7 @@ function makeRetryHarness(queuedMessages: QueuedChatMessage[] = []): {
   };
   const getState = (): ChatState => state;
   const slice = createMessagingSlice(
-    setState as Parameters<typeof createMessagingSlice>[0],
+    setState,
     getState,
     {} as Parameters<typeof createMessagingSlice>[2],
   );

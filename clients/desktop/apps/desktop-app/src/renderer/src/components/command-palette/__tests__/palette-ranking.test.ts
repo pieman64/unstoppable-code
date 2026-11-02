@@ -7,23 +7,95 @@ import {
   withChatContentSection,
   type PaletteRanking,
 } from '../paletteRanking';
-import type { PaletteItem, PaletteItemKind } from '../paletteItems';
+import type { CommandExecutionResult } from '../paletteCommands';
+import type {
+  PaletteItem,
+  PaletteItemKind,
+  PaletteNavigationByKind,
+} from '../paletteItems';
 
 const NOW = 1_700_000_000_000;
 const DAY = 86_400_000;
+
+const defaultNavigation: PaletteNavigationByKind = {
+  command: { type: 'command', commandKey: 'test-command' },
+  worktree: { type: 'worktree', projectId: 'project', worktreeId: 'worktree' },
+  archive: { type: 'archive', projectId: 'project', containerId: 'archive' },
+  chat: {
+    type: 'chat',
+    projectId: 'project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    source: 'live',
+  },
+  'chat-content': {
+    type: 'chat-content',
+    projectId: 'project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+    source: 'live',
+  },
+  plan: {
+    type: 'plan',
+    projectId: 'project',
+    worktreeId: 'worktree',
+    planId: 'plan',
+  },
+  pipeline: { type: 'pipeline', pipelineId: 'pipeline' },
+  automation: { type: 'automation', activityId: 'automation' },
+  watcher: { type: 'watcher', watcherId: 'watcher' },
+  agent: { type: 'agent', agentId: 'agent' },
+  plugin: {
+    type: 'plugin',
+    marketplaceId: 'marketplace',
+    pluginName: 'plugin',
+  },
+  skill: { type: 'skill', sourceId: 'source', skillName: 'skill' },
+  setting: { type: 'setting-route', path: '/settings' },
+};
 
 function makeItem(
   kind: PaletteItemKind,
   title: string,
   overrides: Partial<PaletteItem> = {},
 ): PaletteItem {
-  return {
+  const base = {
     id: `${kind}:${title}`,
-    kind,
     title,
-    execute: () => ({ closePalette: true }),
+    execute: (): CommandExecutionResult => ({ closePalette: true }),
     ...overrides,
   };
+
+  switch (kind) {
+    case 'command':
+      return { ...base, kind, navigation: defaultNavigation.command };
+    case 'worktree':
+      return { ...base, kind, navigation: defaultNavigation.worktree };
+    case 'archive':
+      return { ...base, kind, navigation: defaultNavigation.archive };
+    case 'chat':
+      return { ...base, kind, navigation: defaultNavigation.chat };
+    case 'chat-content':
+      return { ...base, kind, navigation: defaultNavigation['chat-content'] };
+    case 'plan':
+      return { ...base, kind, navigation: defaultNavigation.plan };
+    case 'pipeline':
+      return { ...base, kind, navigation: defaultNavigation.pipeline };
+    case 'automation':
+      return { ...base, kind, navigation: defaultNavigation.automation };
+    case 'watcher':
+      return { ...base, kind, navigation: defaultNavigation.watcher };
+    case 'agent':
+      return { ...base, kind, navigation: defaultNavigation.agent };
+    case 'plugin':
+      return { ...base, kind, navigation: defaultNavigation.plugin };
+    case 'skill':
+      return { ...base, kind, navigation: defaultNavigation.skill };
+    case 'setting':
+      return { ...base, kind, navigation: defaultNavigation.setting };
+    default:
+      throw new Error(`Missing default navigation for ${String(kind)}`);
+  }
 }
 
 function sectionIds(ranking: PaletteRanking): string[] {

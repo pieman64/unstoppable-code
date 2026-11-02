@@ -29,6 +29,11 @@ import type {
   ScriptValue,
 } from '../scripts';
 
+/** Keep one explicit cast at the malformed runtime-draft parser boundary. */
+function malformedScriptValue(value: unknown): ScriptValue {
+  return value as ScriptValue;
+}
+
 describe('scripts transport contract', () => {
   describe('dev-server autoOpen', () => {
     it('keeps opt-in autoOpen through normalization and runnable descriptors', () => {
@@ -222,16 +227,44 @@ describe('scripts transport contract', () => {
     });
 
     it('drops invalid shell draft values leniently', () => {
-      expect(
-        normalizeScriptDefinition({
-          command: 'npm test',
-          shell: { windows: 'zsh', mac: 'fish' },
-        }),
-      ).toEqual({ command: 'npm test' });
+      // This is an intentionally malformed runtime draft passed through the
+      // parser boundary; it is not a valid ScriptValue fixture.
+      const invalidShellDraft = malformedScriptValue({
+        command: 'npm test',
+        shell: { windows: 'zsh', mac: 'fish' },
+      });
+      expect(normalizeScriptDefinition(invalidShellDraft)).toEqual({
+        command: 'npm test',
+      });
     });
   });
 
   describe('normalizeCommandShellDefinition', () => {
+    it.each(['bash', 'zsh'] as const)(
+      'preserves a Linux %s override',
+      (linux) => {
+        expect(normalizeCommandShellDefinition({ linux })).toEqual({ linux });
+        expect(
+          normalizeScriptDefinition({
+            command: 'echo script',
+            shell: { linux },
+          }),
+        ).toEqual({ command: 'echo script', shell: { linux } });
+      },
+    );
+
+    it('keeps Linux defaults absent and drops unsupported Linux draft values', () => {
+      expect(
+        normalizeCommandShellDefinition({ mac: 'zsh', linux: 'fish' }),
+      ).toEqual({ mac: 'zsh' });
+      expect(
+        normalizeCommandShellDefinition({ linux: 'fish' }),
+      ).toBeUndefined();
+      expect(
+        normalizeCommandShellDefinition({ windows: 'cmd', mac: 'bash' }),
+      ).toEqual({ windows: 'cmd', mac: 'bash' });
+    });
+
     it('returns only configured supported platform values', () => {
       expect(
         normalizeCommandShellDefinition({
@@ -657,10 +690,8 @@ describe('scripts transport contract', () => {
     });
 
     it('drops object entries without a string pattern', () => {
-      expect(
-        normalizeScriptDevServerPattern({ pattern: 42 } as unknown),
-      ).toBeUndefined();
-      expect(normalizeScriptDevServerPattern({} as unknown)).toBeUndefined();
+      expect(normalizeScriptDevServerPattern({ pattern: 42 })).toBeUndefined();
+      expect(normalizeScriptDevServerPattern({})).toBeUndefined();
     });
 
     it('caps arrays at MAX_SCRIPT_DEV_SERVER_PATTERNS, preserving leading order', () => {
@@ -841,7 +872,7 @@ describe('scripts transport contract', () => {
         normalizeScriptDevServerPattern({
           pattern: 'https?://\\S+',
           openTarget: 'popup',
-        } as unknown),
+        }),
       ).toBe('https?://\\S+');
       // And the runtime form resolves the invalid value to in-app.
       expect(

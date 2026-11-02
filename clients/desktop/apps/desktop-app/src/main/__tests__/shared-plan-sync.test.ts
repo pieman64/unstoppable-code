@@ -63,7 +63,9 @@ jest.mock('../plans/plan-realtime-subscription', () => ({
 jest.mock('../lib/plan-persistence', () => ({
   getTrackedPlan: jest.fn(),
   listTrackedPlans: jest.fn(),
-  setTrackedPlanShareState: mockSetTrackedPlanShareState,
+  get setTrackedPlanShareState(): typeof mockSetTrackedPlanShareState {
+    return mockSetTrackedPlanShareState;
+  },
   applyRemoteSharedPlanComments: jest.fn(),
 }));
 
@@ -171,6 +173,7 @@ function makeRemote(
             type: 'team',
             id: '22222222-2222-4222-8222-222222222222',
             name: 'Team',
+            organization: { id: 'org-1', name: 'Org' },
           }
         : shareScope === 'organization'
           ? {
@@ -185,6 +188,7 @@ function makeRemote(
     canUpdate: true,
     canDelete: true,
     ...overrides,
+    commentThreads: overrides.commentThreads ?? [],
   };
 }
 
@@ -641,6 +645,13 @@ describe('shared plan sync', () => {
         lastSyncedSnapshotHash: 'previous-server-snapshot',
       },
     });
+    const worktree = {
+      id: 'wt-1',
+      name: 'Worktree',
+      branchName: 'main',
+      createdAt: '2026-06-09T12:00:00.000Z',
+      path: '/tmp/wt-1',
+    };
     mockedReadAllSidebarItems.mockResolvedValue({
       version: 1,
       items: [
@@ -650,7 +661,7 @@ describe('shared plan sync', () => {
           name: 'Project A',
           repoPath: '/tmp/project-a',
           color: 'blue',
-          worktrees: [{ id: 'wt-1', name: 'Worktree', path: '/tmp/wt-1' }],
+          worktrees: [worktree],
           collapsed: false,
           order: 0,
         },
@@ -707,6 +718,20 @@ describe('shared plan sync', () => {
         lastSyncedSnapshotHash: 'second-snapshot',
       },
     });
+    const firstWorktree = {
+      id: 'wt-1',
+      name: 'One',
+      branchName: 'main',
+      createdAt: '2026-06-09T12:00:00.000Z',
+      path: '/tmp/wt-1',
+    };
+    const secondWorktree = {
+      id: 'wt-2',
+      name: 'Two',
+      branchName: 'main',
+      createdAt: '2026-06-09T12:00:00.000Z',
+      path: '/tmp/wt-2',
+    };
     mockedReadAllSidebarItems.mockResolvedValue({
       version: 1,
       items: [
@@ -716,7 +741,7 @@ describe('shared plan sync', () => {
           name: 'Project A',
           repoPath: '/tmp/project-a',
           color: 'blue',
-          worktrees: [{ id: 'wt-1', name: 'One', path: '/tmp/wt-1' }],
+          worktrees: [firstWorktree],
           collapsed: false,
           order: 0,
         },
@@ -726,7 +751,7 @@ describe('shared plan sync', () => {
           name: 'Project B',
           repoPath: '/tmp/project-b',
           color: 'green',
-          worktrees: [{ id: 'wt-2', name: 'Two', path: '/tmp/wt-2' }],
+          worktrees: [secondWorktree],
           collapsed: false,
           order: 1,
         },
@@ -1192,6 +1217,20 @@ describe('shared plan sync', () => {
     }
 
     beforeEach(() => {
+      const firstWorktree = {
+        id: 'wt-1',
+        name: 'Worktree 1',
+        branchName: 'main',
+        createdAt: '2026-06-09T12:00:00.000Z',
+        path: '/tmp/wt-1',
+      };
+      const secondWorktree = {
+        id: 'wt-2',
+        name: 'Worktree 2',
+        branchName: 'main',
+        createdAt: '2026-06-09T12:00:00.000Z',
+        path: '/tmp/wt-2',
+      };
       mockedReadAllSidebarItems.mockResolvedValue({
         version: 1,
         items: [
@@ -1201,10 +1240,7 @@ describe('shared plan sync', () => {
             name: 'Project A',
             repoPath: '/tmp/project-a',
             color: 'blue',
-            worktrees: [
-              { id: 'wt-1', name: 'Worktree 1', path: '/tmp/wt-1' },
-              { id: 'wt-2', name: 'Worktree 2', path: '/tmp/wt-2' },
-            ],
+            worktrees: [firstWorktree, secondWorktree],
             collapsed: false,
             order: 0,
           },

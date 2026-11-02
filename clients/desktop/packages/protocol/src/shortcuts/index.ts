@@ -301,7 +301,7 @@ const OTHER_KEY_LABELS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Platform display string in the shape `ShortcutKeys` / `splitShortcutKeys`
+ * Platform display string in the shape `Kbd` / `splitShortcutKeys`
  * expect: a spaceless glyph run on macOS (`⌘⇧O`) and space-separated words
  * elsewhere (`Ctrl Shift O`). A macOS key label longer than one glyph
  * (`F5`, `Space`) is space-separated too, because `splitShortcutKeys` splits

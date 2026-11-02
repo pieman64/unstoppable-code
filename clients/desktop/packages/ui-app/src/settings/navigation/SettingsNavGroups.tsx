@@ -55,15 +55,13 @@ export interface SettingsNavGroupsProps {
    * uses `settings-nav-`.
    */
   readonly testIdPrefix: string;
-  /** Extra class for the organization group's label (replay masking). */
-  readonly organizationLabelClassName?: string;
 }
 
 /**
- * The hosted settings rail groups (Account, Organizations, and the browsed
- * organization). Hosts own the surrounding `SidebarPageNav`, Back, and any
- * groups of their own: web appends Admin, desktop appends its local settings
- * groups.
+ * The hosted settings rail groups for the current scope (the account's pages,
+ * or the browsed organization's). Hosts own the surrounding `SidebarPageNav`,
+ * Back, the scope picker above these groups, and any groups of their own:
+ * web appends Admin, desktop appends its local settings groups.
  */
 export function SettingsNavGroups({
   groups,
@@ -71,25 +69,14 @@ export function SettingsNavGroups({
   LinkComponent,
   onNavigate,
   testIdPrefix,
-  organizationLabelClassName,
 }: SettingsNavGroupsProps): JSX.Element {
   return (
     <>
       {groups.map((group) => (
         <SidebarPageNavGroup
           key={group.id}
-          label={
-            group.id === 'organization' ? (
-              <span
-                className={`block truncate${organizationLabelClassName ? ` ${organizationLabelClassName}` : ''}`}
-                title={group.label}
-              >
-                {group.label}
-              </span>
-            ) : (
-              group.label
-            )
-          }
+          label={group.label}
+          ariaLabel={group.ariaLabel}
           testId={`${testIdPrefix}group-${group.id}`}
         >
           {group.rows.map((row) => {

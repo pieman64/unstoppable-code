@@ -1,8 +1,13 @@
 import type { ComponentType, JSX } from 'react';
 import type { PluginInfo } from '@canopy/protocol/plugins';
 import type { PortalPluginCatalogMemberSummary } from '@canopy/protocol/portal';
-import { McpServerLogo, type McpServerLogoProps } from '@canopy/ui-shared';
-import { ExecutionActionButton } from '@canopy/ui-shared/components';
+import {
+  McpServerLogo,
+  type McpServerLogoProps,
+  type UnifiedEntryAlternative,
+} from '@canopy/ui-shared';
+import { Badge, ExecutionActionButton } from '@canopy/ui-shared/components';
+import { PluginAlternatives } from './PluginAlternatives';
 
 export interface PluginCatalogDetailModel {
   name: PluginInfo['name'];
@@ -21,6 +26,9 @@ export interface PluginCatalogDetailModel {
 
 export interface PluginCatalogDetailProps {
   entry: PluginCatalogDetailModel;
+  /** The same app from other catalogs, linked under the description. */
+  alternatives?: readonly UnifiedEntryAlternative[];
+  onOpenEntryId?: (entryId: string) => void;
   McpServerLogoComponent?: ComponentType<McpServerLogoProps>;
 }
 
@@ -51,6 +59,8 @@ export function PluginCatalogAddButton({
 /** Pure marketplace plugin summary body; its actions are host chrome. */
 export function PluginCatalogDetail({
   entry,
+  alternatives,
+  onOpenEntryId,
   McpServerLogoComponent = McpServerLogo,
 }: PluginCatalogDetailProps): JSX.Element {
   const componentCount = Object.values(entry.components).reduce(
@@ -85,8 +95,17 @@ export function PluginCatalogDetail({
         </div>
       </div>
 
-      {entry.description && (
-        <p className="text-sm fg-secondary">{entry.description}</p>
+      {(entry.description || (alternatives?.length ?? 0) > 0) && (
+        <div>
+          {entry.description && (
+            <p className="text-sm fg-secondary">{entry.description}</p>
+          )}
+          <PluginAlternatives
+            alternatives={alternatives}
+            onOpenEntryId={onOpenEntryId}
+            testIdPrefix="plugin-catalog-detail-also-available"
+          />
+        </div>
       )}
       {entry.homepage && (
         <a
@@ -101,12 +120,7 @@ export function PluginCatalogDetail({
       {entry.categories.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {entry.categories.map((category) => (
-            <span
-              key={category}
-              className="rounded-full bg-secondary px-2 py-0.5 text-3xs font-medium fg-secondary"
-            >
-              {category}
-            </span>
+            <Badge key={category}>{category}</Badge>
           ))}
         </div>
       )}

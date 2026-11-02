@@ -14,8 +14,10 @@ import {
   keyFromBearer,
   recordScenarioActivity,
   registerScenario,
+  waitForBarrier,
 } from '../control-plane.mjs';
 import { isSharedContainersCloudApiKey } from '../../sharedContainersCloudFixtureKey.mjs';
+import { AI_GATEWAY_MODEL_CATALOG } from './ai-gateway-catalog.mjs';
 
 // Canopy Cloud surface for the shared UI-automation mock server.
 //
@@ -47,6 +49,8 @@ const CLOUD_CAPABILITIES = [
   'automations-crud-v1',
   'automations-target-requirements-v3',
   'automations-run-condition-v4',
+  'automations-pipeline-dependencies-v5',
+  'automations-pipeline-targets-v6',
   'automation-catalog-v1',
   'collections-crud-v1',
   'workspace-templates-v1',
@@ -232,13 +236,6 @@ let sharedAutomationDocument = {
 };
 let automationPublicSnapshot = null;
 let automationPublicPackage = null;
-const AUTOMATION_PACKAGE_BLOB = Buffer.from(
-  '# Bundled review helper\nUse this skill while reviewing.\n',
-  'utf8',
-);
-const AUTOMATION_PACKAGE_BLOB_HASH = createHash('sha256')
-  .update(AUTOMATION_PACKAGE_BLOB)
-  .digest('hex');
 // A public skill share that carries a capability package: its SKILL.md, a
 // supporting file, and a runnable script, in the Claude and Codex trees a
 // real share publishes. Built in canonical key order with pre-sorted arrays,
@@ -376,6 +373,35 @@ let sharedAutomationCreated = false;
 // whose pipeline only needs setup requirements (no files) still carries a
 // requirements-only package, which the install wizard downloads and verifies.
 let sharedAutomationPackage = null;
+
+/** The public snapshot's package summary: per-resource steps and sizes. */
+function publicAutomationPackageSummary({ digest, manifest }) {
+  return {
+    digest,
+    version: 1,
+    resources: manifest.resources.map((resource) => {
+      const entries = (resource.trees ?? []).flatMap(
+        (tree) => tree.entries ?? [],
+      );
+      return {
+        id: resource.id,
+        kind: resource.kind,
+        displayName: resource.displayName,
+        sourceLabel: resource.sourceLabel,
+        invocationKeys: resource.invocationKeys,
+        dependencyResourceIds: resource.dependencyResourceIds,
+        affectedSteps: (manifest.bindings ?? [])
+          .filter((binding) => binding.resourceIds?.includes(resource.id))
+          .map(({ jobId, stepId }) => ({ jobId, stepId })),
+        totalFiles: entries.length,
+        totalBytes: entries.reduce((total, entry) => total + entry.size, 0),
+      };
+    }),
+    environmentRequirements: manifest.environmentRequirements ?? [],
+    totalFiles: manifest.totalFiles,
+    totalBytes: manifest.totalBytes,
+  };
+}
 
 function sharedAutomationSummary(automation, publicShare) {
   const summary = sharedAutomationDetail(automation, publicShare);
@@ -538,73 +564,6 @@ const MODEL_POLICY_REVIEWED_IDS = [
   return typeof id === 'string' ? [id] : [];
 });
 const MODEL_POLICY_BLOCKED_ID = 'openai/gpt-5.6-sol';
-
-// `family` is required on catalog version 2 and the client rejects the whole
-// response if any model omits it, so derive it from the gateway prefix rather
-// than hard-coding a value per model.
-const FAMILY_BY_GATEWAY_PREFIX = {
-  anthropic: 'anthropic',
-  openai: 'openai',
-  deepseek: 'deepseek',
-  moonshotai: 'moonshot',
-  minimax: 'minimax',
-  zai: 'zai',
-};
-const FAMILY_LABELS = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  deepseek: 'DeepSeek',
-  moonshot: 'Moonshot AI',
-  minimax: 'MiniMax',
-  zai: 'Z.ai',
-};
-
-function familyForGatewayId(gatewayId) {
-  const family = FAMILY_BY_GATEWAY_PREFIX[gatewayId.split('/')[0] ?? ''];
-  if (!family) {
-    throw new Error(`unmapped gateway prefix in E2E fixture: ${gatewayId}`);
-  }
-  return family;
-}
-
-function gatewayCatalogModels(section, recommendedHarness) {
-  return (section?.models ?? []).flatMap((model, index) => {
-    if (typeof model.gatewayId !== 'string') return [];
-    return [
-      {
-        id: `e2e-${recommendedHarness}-${index}`,
-        gatewayId: model.gatewayId,
-        label: model.label,
-        family: familyForGatewayId(model.gatewayId),
-        familyLabel: FAMILY_LABELS[familyForGatewayId(model.gatewayId)],
-        recommendedHarness,
-        contextWindow: model.contextWindow ?? 200_000,
-        supportsPromptCaching: recommendedHarness === 'claude',
-        requiresLocalHarnessSupport: true,
-        showMoreOnly: false,
-        supportedThinkingLevels: model.supportedThinkingLevels ?? [],
-        toolSchemaProfile: 'standard',
-      },
-    ];
-  });
-}
-
-// Mirror every package-owned gateway ID so normal E2E startup exercises the
-// live catalog merge instead of silently making native models non-routable.
-// Reading package.json keeps this fixture aligned when the model list changes.
-//
-// `version` must track AI_GATEWAY_MODEL_CATALOG_VERSION in
-// packages/protocol/src/ai-gateway-models. It cannot be imported here (this is
-// a plain .mjs fixture), so bump it by hand: the client rejects any catalog
-// whose version is not current, which drops every model's gateway route and
-// fails the AI Credits specs rather than erroring on the version itself.
-const AI_GATEWAY_MODEL_CATALOG = {
-  version: 8,
-  models: [
-    ...gatewayCatalogModels(packageConfig['claude-code'], 'claude'),
-    ...gatewayCatalogModels(packageConfig.codex, 'codex'),
-  ],
-};
 
 const SHARED_PIPELINES = [
   {
@@ -1857,20 +1816,29 @@ export async function handleCloudRequest(request, response, url) {
     }
     const body = await readJsonBody(request);
     const uploadId = randomUUID();
-    const missingBlobs = [
+    const requestsEveryBlob = [
       'csk_workspace_template_e2e',
       CAN3310_COLLECTION_API_KEY,
-    ].includes(keyFromBearer(request))
-      ? Array.from(
-          new Set(
-            (body?.manifest?.resources ?? []).flatMap((resource) =>
-              (resource.trees ?? []).flatMap((tree) =>
-                (tree.entries ?? []).map((entry) => entry.sha256),
-              ),
+    ].includes(keyFromBearer(request));
+    // Packaged automation pipelines and their file assets have no fixture
+    // fallback, so the mock always asks for their bytes; a recipient can only
+    // install them from blobs the author actually uploaded.
+    const missingBlobs = Array.from(
+      new Set(
+        (body?.manifest?.resources ?? [])
+          .filter(
+            (resource) =>
+              requestsEveryBlob ||
+              resource.kind === 'automation_pipeline' ||
+              resource.kind === 'file_asset',
+          )
+          .flatMap((resource) =>
+            (resource.trees ?? []).flatMap((tree) =>
+              (tree.entries ?? []).map((entry) => entry.sha256),
             ),
           ),
-        )
-      : [];
+      ),
+    );
     pipelinePackageUploads.set(uploadId, {
       ...body,
       missingBlobs,
@@ -2923,9 +2891,21 @@ export async function handleCloudRequest(request, response, url) {
     // Returns a `csk_`-prefixed guest key so the desktop saves a
     // `credentialSource: 'guest'` credential. The guest-upgrade-nudge spec uses
     // this to seed guest state before asserting the contextual sign-in prompt.
-    await readJsonBody(request);
+    //
+    // A spec that needs its own guest scenario seeds its device id and
+    // registers `{ guestToken }` under `guest-device:<clientDeviceId>`, so it
+    // never rewrites the `csk_guest_e2e` scenario parallel specs share.
+    const body = await readJsonBody(request);
+    const deviceGuestToken =
+      typeof body?.clientDeviceId === 'string'
+        ? getScenario(`guest-device:${body.clientDeviceId}`).guestToken
+        : undefined;
     jsonResponse(response, 200, {
-      token: 'csk_guest_e2e',
+      token:
+        typeof deviceGuestToken === 'string' &&
+        deviceGuestToken.startsWith('csk_')
+          ? deviceGuestToken
+          : 'csk_guest_e2e',
       userApiKey: { id: 'guest-key-e2e' },
       account: {
         id: MOCK_GUEST_ACCOUNT_ID,
@@ -3514,6 +3494,14 @@ export async function handleCloudRequest(request, response, url) {
       });
       return true;
     }
+    // CAN-5026: `cloud.aiCreditsBalanceWaitFor` names a barrier every balance
+    // read waits on until the test releases it (`POST /__mock/barrier`), so a
+    // spec can observe the composer while the re-read is in flight. A reset
+    // or timed-out barrier still answers, so no request is left hanging.
+    const holdFor = getScenario(bearer).cloud?.aiCreditsBalanceWaitFor;
+    if (typeof holdFor === 'string' && holdFor.trim()) {
+      await waitForBarrier(bearer, holdFor, 60_000).catch(() => {});
+    }
     jsonResponse(response, 200, {
       email: CLOUD_ACCOUNT.email,
       // CAN-2311/CAN-2349: every org-billing fixture has NO spendable personal
@@ -3608,6 +3596,15 @@ export async function handleCloudRequest(request, response, url) {
       scenarioKey,
       body.enabled ? 'dailyCreditDripEnable' : 'dailyCreditDripDisable',
     );
+    // Deterministic pending-state/layout coverage for the first-run opt-in.
+    if (
+      typeof configured?.saveDelayMs === 'number' &&
+      configured.saveDelayMs > 0
+    ) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, configured.saveDelayMs),
+      );
+    }
     const next = {
       enabled: body.enabled,
       decidedAt: new Date().toISOString(),
@@ -3892,76 +3889,16 @@ export async function handleCloudRequest(request, response, url) {
         };
         automationPublicSnapshot = structuredClone(sharedAutomationDocument);
         if (
-          keyFromBearer(request) === 'csk_can3135_public_automation_install' &&
-          automationPublicSnapshot.action?.type === 'worktree_pipeline' &&
-          automationPublicSnapshot.action.pipeline?.source === 'inline'
+          sharedAutomationPackage &&
+          automationPublicSnapshot.capabilityPackage?.digest ===
+            sharedAutomationPackage.digest
         ) {
-          // Exercise byte-preserving installs with valid noncanonical YAML.
-          // The real automation API can carry these bytes verbatim from a
-          // shared pipeline; adding a comment here makes re-serialization
-          // detectable when the installed copy is executed.
-          automationPublicSnapshot.action.pipeline.rawPipeline = `# preserve shared-pipeline bytes\n${automationPublicSnapshot.action.pipeline.rawPipeline}`;
-          const pipelineContentHash = createHash('sha256')
-            .update(automationPublicSnapshot.action.pipeline.rawPipeline)
-            .digest('hex');
-          automationPublicSnapshot.action.pipeline.pipelineContentHash =
-            pipelineContentHash;
-          const manifest = {
-            version: 1,
-            pipelineContentHash,
-            resources: [
-              {
-                id: 'bundled-review-helper',
-                kind: 'standalone_skill',
-                displayName: 'Bundled review helper',
-                sourceLabel: 'CAN-3135 fixture',
-                sourceVisibility: 'private',
-                invocationKeys: ['$bundled-review-helper'],
-                dependencyResourceIds: [],
-                trees: [
-                  {
-                    provider: 'codex',
-                    runtimeKind: 'standalone_skill',
-                    rootName: 'bundled-review-helper',
-                    entries: [
-                      {
-                        path: 'SKILL.md',
-                        sha256: AUTOMATION_PACKAGE_BLOB_HASH,
-                        size: AUTOMATION_PACKAGE_BLOB.byteLength,
-                        mode: 'read',
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-            bindings: [
-              {
-                jobId: 'review',
-                stepId: 'inspect',
-                resourceIds: ['bundled-review-helper'],
-              },
-            ],
-            environmentRequirements: [
-              {
-                id: 'linear-review',
-                kind: 'mcp',
-                displayName: 'linear',
-                required: true,
-                affectedSteps: [{ jobId: 'review', stepId: 'inspect' }],
-                setupHint: 'Connect linear in Settings.',
-              },
-            ],
-            totalFiles: 1,
-            totalBytes: AUTOMATION_PACKAGE_BLOB.byteLength,
-          };
-          const digest = `pp:v1:${createHash('sha256')
-            .update(JSON.stringify(manifest))
-            .digest('base64url')}`;
-          automationPublicPackage = { digest, manifest };
-          automationPublicSnapshot.capabilityPackage = {
-            version: 1,
-            digest,
+          // A packaged pipeline (document version 5+) publishes the package
+          // committed with the scoped share, as the real server does.
+          automationPublicPackage = {
+            digest: sharedAutomationPackage.digest,
+            manifest: sharedAutomationPackage.manifest,
+            blobs: sharedAutomationPackage.blobs,
           };
         } else {
           automationPublicPackage = null;
@@ -4141,27 +4078,7 @@ export async function handleCloudRequest(request, response, url) {
       distributionMode: automationPublicPackage ? 'package' : 'definition_only',
       ...(automationPublicPackage
         ? {
-            package: {
-              digest: automationPublicPackage.digest,
-              version: 1,
-              resources: automationPublicPackage.manifest.resources.map(
-                (resource) => ({
-                  id: resource.id,
-                  kind: resource.kind,
-                  displayName: resource.displayName,
-                  sourceLabel: resource.sourceLabel,
-                  invocationKeys: resource.invocationKeys,
-                  dependencyResourceIds: resource.dependencyResourceIds,
-                  affectedSteps: [{ jobId: 'review', stepId: 'inspect' }],
-                  totalFiles: 1,
-                  totalBytes: AUTOMATION_PACKAGE_BLOB.byteLength,
-                }),
-              ),
-              environmentRequirements:
-                automationPublicPackage.manifest.environmentRequirements,
-              totalFiles: 1,
-              totalBytes: AUTOMATION_PACKAGE_BLOB.byteLength,
-            },
+            package: publicAutomationPackageSummary(automationPublicPackage),
           }
         : {}),
       authorUsername: 'portal-e2e',
@@ -4183,7 +4100,10 @@ export async function handleCloudRequest(request, response, url) {
       jsonResponse(response, 404, { error: 'Package not found.' });
       return true;
     }
-    jsonResponse(response, 200, automationPublicPackage);
+    jsonResponse(response, 200, {
+      digest: automationPublicPackage.digest,
+      manifest: automationPublicPackage.manifest,
+    });
     return true;
   }
 
@@ -4191,21 +4111,24 @@ export async function handleCloudRequest(request, response, url) {
     /^\/api\/v1\/public-shares\/automations\/([^/]+)\/package\/blobs\/([^/]+)$/,
   );
   if (method === 'GET' && automationPublicPackageBlobMatch) {
+    const [, shareId, blobHash] = automationPublicPackageBlobMatch;
+    // A published share package serves the author's uploaded blobs.
+    const blob = automationPublicPackage?.blobs?.get(blobHash);
     if (
-      automationPublicPackageBlobMatch[1] !== AUTOMATION_PUBLIC_SHARE_ID ||
-      automationPublicPackageBlobMatch[2] !== AUTOMATION_PACKAGE_BLOB_HASH ||
+      shareId !== AUTOMATION_PUBLIC_SHARE_ID ||
       !automationPublicPackage ||
       url.searchParams.get('expectedPackageDigest') !==
-        automationPublicPackage.digest
+        automationPublicPackage.digest ||
+      !blob
     ) {
       jsonResponse(response, 404, { error: 'Blob not found.' });
       return true;
     }
     response.writeHead(200, {
       'content-type': 'application/octet-stream',
-      'content-length': String(AUTOMATION_PACKAGE_BLOB.byteLength),
+      'content-length': String(blob.byteLength),
     });
-    response.end(AUTOMATION_PACKAGE_BLOB);
+    response.end(blob);
     return true;
   }
 
@@ -4889,12 +4812,20 @@ export async function handleCloudRequest(request, response, url) {
       jsonResponse(response, 401, { error: 'Invalid API key.' });
       return true;
     }
+    const cloud = getScenario(keyFromBearer(request)).cloud;
+    // Opt-in: filter by the `q` search the way the real server does, so a
+    // spec can hide a skill from the inventory Customize lists.
+    const query = cloud?.filterSharedSkillsByQuery
+      ? (url.searchParams.get('q') ?? '').trim().toLowerCase()
+      : '';
     jsonResponse(response, 200, {
-      skills: (
-        getScenario(keyFromBearer(request)).cloud?.sharedSkills ?? [
-          MARKETPLACE_SHARED_SKILL,
-        ]
-      ).filter(isVisibleSharedResource),
+      skills: (cloud?.sharedSkills ?? [MARKETPLACE_SHARED_SKILL])
+        .filter(isVisibleSharedResource)
+        .filter(
+          (skill) =>
+            query === '' ||
+            `${skill.name} ${skill.description}`.toLowerCase().includes(query),
+        ),
       nextCursor: null,
     });
     return true;
@@ -5215,6 +5146,18 @@ export async function handleCloudRequest(request, response, url) {
   if (method === 'DELETE' && pipelinePublicShareMatch) {
     response.writeHead(204);
     response.end();
+    return true;
+  }
+
+  // The Workflows tab lists curated pipeline templates beside shared ones.
+  // The default mock has none, so it returns an empty catalog instead of
+  // letting the detail route below 404 on the `curated` id (CAN-4261).
+  if (method === 'GET' && pathname === '/api/v1/canopy/pipelines/curated') {
+    if (!hasValidAuth(request)) {
+      jsonResponse(response, 401, { error: 'Invalid API key.' });
+      return true;
+    }
+    jsonResponse(response, 200, { version: 1, data: [], nextCursor: null });
     return true;
   }
 

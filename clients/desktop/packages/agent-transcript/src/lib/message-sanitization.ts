@@ -1,4 +1,5 @@
 import type { PersistedChatBlock, PersistedChatMessage } from '../types';
+import { isTranscriptBlocksReference } from '../transcript-storage';
 
 /** Block variants that visibly represent transcript structure without text. */
 const NON_EMPTY_NON_TEXT_BLOCKS = new Set<PersistedChatBlock['type']>([
@@ -22,7 +23,8 @@ function isEmptyAssistantTextBlock(block: PersistedChatBlock): boolean {
 
 function isEmptyAssistantTextMessage(message: PersistedChatMessage): boolean {
   if (message.role !== 'assistant') return false;
-  if (message.blocks.length === 0) return true;
+  if (message.blocks.length === 0)
+    return !isTranscriptBlocksReference(message.blocksRef);
   if (message.blocks.some((block) => NON_EMPTY_NON_TEXT_BLOCKS.has(block.type)))
     return false;
   return message.blocks.every(isEmptyAssistantTextBlock);

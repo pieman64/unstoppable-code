@@ -8,6 +8,7 @@ import {
   canManageProjects,
   canRemoveMember,
   roleRank,
+  visibleOrganizationSettingsSubtabs,
 } from '../organization-permissions';
 
 describe('roleRank', () => {
@@ -85,5 +86,69 @@ describe('assertNotLastOwner', () => {
     expect(() =>
       assertNotLastOwner({ targetIsOwner: false, ownerCount: 1 }),
     ).not.toThrow();
+  });
+});
+
+describe('visibleOrganizationSettingsSubtabs', () => {
+  const owner = {
+    viewerRole: 'OWNER',
+    lapsed: false,
+    billingEnabled: true,
+    canViewUsageStats: true,
+    githubConnected: false,
+    externalAgentsPolicy: false,
+  } as const;
+
+  it('gives a healthy owner every Settings page, in rail order', () => {
+    expect(visibleOrganizationSettingsSubtabs(owner)).toEqual([
+      'general',
+      'policies',
+      'integrations',
+      'usage',
+      'billing',
+    ]);
+  });
+
+  it('hides Billing while the billing flag is off', () => {
+    expect(
+      visibleOrganizationSettingsSubtabs({ ...owner, billingEnabled: false }),
+    ).not.toContain('billing');
+  });
+
+  it('gives a member only Usage, and only when they clear the statistics role', () => {
+    const member = { ...owner, viewerRole: 'MEMBER' } as const;
+    expect(visibleOrganizationSettingsSubtabs(member)).toEqual(['usage']);
+    expect(
+      visibleOrganizationSettingsSubtabs({
+        ...member,
+        canViewUsageStats: false,
+      }),
+    ).toEqual([]);
+  });
+
+  it('keeps General, Usage and Billing for a lapsed owner, and Integrations only to disconnect', () => {
+    const lapsed = { ...owner, lapsed: true, canViewUsageStats: false };
+    expect(visibleOrganizationSettingsSubtabs(lapsed)).toEqual([
+      'general',
+      'billing',
+    ]);
+    expect(
+      visibleOrganizationSettingsSubtabs({ ...lapsed, githubConnected: true }),
+    ).toEqual(['general', 'integrations', 'billing']);
+    // Unknown connection state keeps it, so a connection can always be
+    // reached to disconnect.
+    expect(
+      visibleOrganizationSettingsSubtabs({ ...lapsed, githubConnected: null }),
+    ).toEqual(['general', 'integrations', 'billing']);
+  });
+
+  it('keeps Policies for a lapsed owner who manages outside agents', () => {
+    expect(
+      visibleOrganizationSettingsSubtabs({
+        ...owner,
+        lapsed: true,
+        externalAgentsPolicy: true,
+      }),
+    ).toContain('policies');
   });
 });

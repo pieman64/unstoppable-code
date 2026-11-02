@@ -2793,6 +2793,9 @@ test.describe('phase 08b: file choosers and request_files', () => {
           'ask',
         );
         const card = chatPanelLocator(window).getByTestId('tool-approval-card');
+        const composer = chatPanelLocator(window).locator(
+          '[data-chat-textarea][contenteditable="true"]',
+        );
         const pick = pickedFile('requested.txt', 'chosen for the agent\n');
         const request = (purpose) =>
           run({
@@ -2802,6 +2805,7 @@ test.describe('phase 08b: file choosers and request_files', () => {
           });
         try {
           await armOpenDialog(electronApp, [[pick], []]);
+          await composer.focus();
           const requested = request('Your report for the form');
           await cardFor(card, requested);
           await expect(card).toContainText(
@@ -2809,6 +2813,9 @@ test.describe('phase 08b: file choosers and request_files', () => {
           );
           await expect(card).toContainText('“Your report for the form”');
           await expect(card.getByTestId('tool-approval-allow')).toHaveCount(0);
+          await expect(
+            card.getByTestId('tool-approval-choose-files'),
+          ).toBeFocused();
           await card.getByTestId('tool-approval-choose-files').click();
           const response = await requested;
           expect(receiptOf(response), kind).toMatchObject({
@@ -2875,6 +2882,21 @@ test.describe('phase 08b: file choosers and request_files', () => {
             error: { code: 'cancelled' },
           });
           expect(await openDialogCalls(electronApp)).toHaveLength(2);
+          // CAN-4997: native cancellation consumes this request under the
+          // existing transport. Focus must remain usable for the next request.
+          await expect(card).toHaveCount(0);
+          await expect(composer).toBeFocused();
+          const retry = request('Choose another file');
+          await cardFor(card, retry);
+          await expect(
+            card.getByTestId('tool-approval-choose-files'),
+          ).toBeFocused();
+          await card.getByTestId('tool-approval-decline-files').click();
+          expect(receiptOf(await retry)).toMatchObject({
+            status: 'not_executed',
+            error: { code: 'approval_denied' },
+          });
+          await expect(composer).toBeFocused();
         } finally {
           await endApprovalSession(electronApp, session.id);
         }
@@ -3964,7 +3986,7 @@ async function requestWorktreeDeletion(window, row) {
   await row.hover();
   await row.getByTestId('worktree-actions-menu-button').click();
   await window.getByTestId('worktree-actions-menu-delete').click();
-  const dialog = window.getByRole('dialog', { name: 'Delete worktree?' });
+  const dialog = window.getByRole('dialog', { name: /^Delete worktree/ });
   // A clean worktree can delete directly; otherwise confirm branch handling.
   const confirmationRequired = await dialog
     .waitFor({ state: 'visible', timeout: 5_000 })

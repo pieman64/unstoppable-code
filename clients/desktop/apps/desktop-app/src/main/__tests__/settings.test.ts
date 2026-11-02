@@ -1,17 +1,60 @@
 import type {
   AgentProviderAuthStatus,
+  CanopyCloudAccountPublicState,
   CanopyServerStatus,
   GitHubCliStatus,
   LinearTicketSearchResult,
   SecureStorageFailure,
 } from '@canopy/desktop-shared/types';
+import type {
+  LinearApiErrorType,
+  LinearIssueAttachments,
+  LinearIssueSearchResult,
+  LinearViewer,
+} from '../lib/linear-api';
+import type { ProviderConnectionEvent } from '../lib/provider-connection-events';
+
+const mockReadLinearViewer = jest.fn<Promise<LinearViewer>, [string]>();
+const mockSearchLinearIssues = jest.fn<
+  Promise<LinearIssueSearchResult[]>,
+  [string, string]
+>();
+const mockReadLinearIssueAttachments = jest.fn<
+  Promise<LinearIssueAttachments>,
+  [string, string]
+>();
+const mockResolveLinearToken = jest.fn<Promise<string>, []>();
+const mockLinearSdkLoads: number[] = [];
+
+interface LinearApiModule {
+  LinearApiError: typeof LinearApiError;
+  isLinearApiError: typeof isLinearApiError;
+}
+
+jest.mock('../lib/linear-api', () => {
+  const actual = jest.requireActual<LinearApiModule>('../lib/linear-api');
+  return {
+    ...actual,
+    LinearApiError: actual.LinearApiError,
+    isLinearApiError: actual.isLinearApiError,
+    get readLinearViewer(): typeof mockReadLinearViewer {
+      return mockReadLinearViewer;
+    },
+    get searchLinearIssues(): typeof mockSearchLinearIssues {
+      return mockSearchLinearIssues;
+    },
+    get readLinearIssueAttachments(): typeof mockReadLinearIssueAttachments {
+      return mockReadLinearIssueAttachments;
+    },
+  };
+});
 
 jest.mock('node:child_process', () => ({
   execFile: jest.fn(),
 }));
 jest.mock('node:fs/promises');
 jest.mock('@canopy/core-platform/host-platform', () => ({
-  hostOperatingSystem: (): string => 'linux',
+  hostOperatingSystem: jest.fn((): string => 'linux'),
 }));
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
@@ -23,6 +66,7 @@ jest.mock('electron', () => ({
   },
 }));
 jest.mock('../lib/atomic-file', () => ({
+  createDirectoryDurably: jest.fn(),
   writeFileAtomically: jest.fn(),
   renameWithRetry: jest.fn(),
 }));
@@ -70,10 +114,15 @@ jest.mock('../shared-containers/reconciliation-service', () => ({
       afterCleanup?: () => Promise<unknown>,
     ) => Promise<unknown>;
   } => ({
-    purgeAll: mockPurgeSharedContainerReplicas,
-    withReplicaPurgeFence: mockWithSharedContainerReplicaPurgeFence,
-    reconcileOrganizationSnapshot:
-      mockReconcileSharedContainerOrganizationSnapshot,
+    get purgeAll(): typeof mockPurgeSharedContainerReplicas {
+      return mockPurgeSharedContainerReplicas;
+    },
+    get withReplicaPurgeFence(): typeof mockWithSharedContainerReplicaPurgeFence {
+      return mockWithSharedContainerReplicaPurgeFence;
+    },
+    get reconcileOrganizationSnapshot(): typeof mockReconcileSharedContainerOrganizationSnapshot {
+      return mockReconcileSharedContainerOrganizationSnapshot;
+    },
   }),
 }));
 jest.mock('../canopy-cloud/config', () => ({
@@ -106,21 +155,33 @@ class mockCanopyCloudClientError extends Error {
   }
 }
 jest.mock('../canopy-cloud/client', () => ({
-  CanopyCloudClientError: mockCanopyCloudClientError,
-  requestCanopyCloudJson: mockRequestCanopyCloudJson,
-  revokeCurrentOAuthDesktopKey: mockRevokeCurrentOAuthDesktopKey,
+  get CanopyCloudClientError(): typeof mockCanopyCloudClientError {
+    return mockCanopyCloudClientError;
+  },
+  get requestCanopyCloudJson(): typeof mockRequestCanopyCloudJson {
+    return mockRequestCanopyCloudJson;
+  },
+  get revokeCurrentOAuthDesktopKey(): typeof mockRevokeCurrentOAuthDesktopKey {
+    return mockRevokeCurrentOAuthDesktopKey;
+  },
 }));
 const mockStartCanopyCloudOAuthLogin = jest.fn();
 const mockCancelCanopyCloudOAuthLogin = jest.fn();
 jest.mock('../canopy-cloud/oauth-login', () => ({
-  startCanopyCloudOAuthLogin: mockStartCanopyCloudOAuthLogin,
-  cancelCanopyCloudOAuthLogin: mockCancelCanopyCloudOAuthLogin,
+  get startCanopyCloudOAuthLogin(): typeof mockStartCanopyCloudOAuthLogin {
+    return mockStartCanopyCloudOAuthLogin;
+  },
+  get cancelCanopyCloudOAuthLogin(): typeof mockCancelCanopyCloudOAuthLogin {
+    return mockCancelCanopyCloudOAuthLogin;
+  },
 }));
 const mockRebindLedgerGuestScopes = jest.fn<Promise<void>, [string, string]>(
   () => Promise.resolve(),
 );
 jest.mock('../ledger/sync-host', () => ({
-  rebindLedgerGuestScopes: mockRebindLedgerGuestScopes,
+  get rebindLedgerGuestScopes(): typeof mockRebindLedgerGuestScopes {
+    return mockRebindLedgerGuestScopes;
+  },
 }));
 interface LinearAuthModule {
   invalidateLinearTokenCache: () => void;
@@ -135,6 +196,10 @@ jest.mock('../lib/linear-auth', () => {
       actual.invalidateLinearTokenCache();
       mockInvalidateLinearTokenCache();
     },
+    resolveLinearToken: (): Promise<string> => {
+      void mockResolveLinearToken();
+      return actual.resolveLinearToken();
+    },
   };
 });
 const mockResolveGitHubToken = jest
@@ -142,7 +207,9 @@ const mockResolveGitHubToken = jest
   .mockResolvedValue('');
 const mockResumeAfterGitHub = jest.fn().mockResolvedValue([]);
 jest.mock('../lib/auth-failure-resume', () => ({
-  resumeChatsAfterGitHubLogin: mockResumeAfterGitHub,
+  get resumeChatsAfterGitHubLogin(): typeof mockResumeAfterGitHub {
+    return mockResumeAfterGitHub;
+  },
 }));
 const mockInvalidateTokenCache = jest.fn();
 interface GitHubAuthModule {
@@ -153,7 +220,9 @@ jest.mock('../lib/github-auth', () => {
   const actual = jest.requireActual<GitHubAuthModule>('../lib/github-auth');
   return {
     ...actual,
-    resolveGitHubToken: mockResolveGitHubToken,
+    get resolveGitHubToken(): typeof mockResolveGitHubToken {
+      return mockResolveGitHubToken;
+    },
     invalidateTokenCache: (): void => {
       actual.invalidateTokenCache();
       mockInvalidateTokenCache();
@@ -163,18 +232,26 @@ jest.mock('../lib/github-auth', () => {
 const mockInitializeGitHubPatEnvRuntime = jest.fn();
 const mockInvalidateGitHubPatEnvCache = jest.fn();
 jest.mock('../lib/github-pat-env', () => ({
-  initializeGitHubPatEnvRuntime: mockInitializeGitHubPatEnvRuntime,
-  invalidateGitHubPatEnvCache: mockInvalidateGitHubPatEnvCache,
+  get initializeGitHubPatEnvRuntime(): typeof mockInitializeGitHubPatEnvRuntime {
+    return mockInitializeGitHubPatEnvRuntime;
+  },
+  get invalidateGitHubPatEnvCache(): typeof mockInvalidateGitHubPatEnvCache {
+    return mockInvalidateGitHubPatEnvCache;
+  },
 }));
 const mockResetGitHubBrokerCredentials = jest.fn();
 jest.mock('../lib/github-broker', () => ({
   getGitHubBroker: jest.fn(() => ({
-    resetCredentials: mockResetGitHubBrokerCredentials,
+    get resetCredentials(): typeof mockResetGitHubBrokerCredentials {
+      return mockResetGitHubBrokerCredentials;
+    },
   })),
 }));
 const mockInvalidateGitHubRepoListCache = jest.fn();
 jest.mock('../lib/github-repo-listing', () => ({
-  invalidateGitHubRepoListCache: mockInvalidateGitHubRepoListCache,
+  get invalidateGitHubRepoListCache(): typeof mockInvalidateGitHubRepoListCache {
+    return mockInvalidateGitHubRepoListCache;
+  },
 }));
 const mockSummarizeProviderCarryover = jest.fn<Promise<unknown>, [unknown]>();
 jest.mock('../plugins/provider-carryover', () => ({
@@ -183,16 +260,21 @@ jest.mock('../plugins/provider-carryover', () => ({
 }));
 const mockInvalidatePullRequestListingCache = jest.fn();
 jest.mock('../lib/github-pr-listing', () => ({
-  invalidatePullRequestListingCache: mockInvalidatePullRequestListingCache,
+  get invalidatePullRequestListingCache(): typeof mockInvalidatePullRequestListingCache {
+    return mockInvalidatePullRequestListingCache;
+  },
 }));
-const mockedGetEnhancedEnv = jest.fn<Record<string, string>, []>(() => ({
-  PATH: '/mock/bin',
-}));
+const mockedGetEnhancedEnv = jest.fn<Record<string, string>, [unknown?]>(
+  () => ({
+    PATH: '/mock/bin',
+  }),
+);
 jest.mock('../pipelines/config-paths', () => ({
   getBundledClaudeBinaryPath: jest.fn(() => '/mock/bin/claude'),
   getBundledCodexBinaryPath: jest.fn(() => '/mock/bin/codex'),
   getBundledGhBinaryPath: jest.fn(() => '/mock/bin/gh'),
-  getEnhancedEnv: (): Record<string, string> => mockedGetEnhancedEnv(),
+  getEnhancedEnv: (options?: unknown): Record<string, string> =>
+    mockedGetEnhancedEnv(options),
   registerSecretsEnvInjector: jest.fn(),
 }));
 const mockCodexReadAccount = jest.fn();
@@ -209,13 +291,16 @@ const mockCodexAdminRequest = jest.fn<unknown, [string, unknown?]>(
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({
     admin: (): { request: typeof mockCodexAdminRequest } => ({
-      request: mockCodexAdminRequest,
+      get request(): typeof mockCodexAdminRequest {
+        return mockCodexAdminRequest;
+      },
     }),
   })),
 }));
-jest.mock('@linear/sdk', () => ({
-  LinearClient: jest.fn(),
-}));
+jest.mock('@linear/sdk', () => {
+  mockLinearSdkLoads.push(1);
+  return {};
+});
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
 }));
@@ -223,30 +308,46 @@ const mockRefreshFeatureFlagContext = jest.fn().mockResolvedValue(undefined);
 const mockIsFeatureEnabled = jest.fn((): boolean => false);
 jest.mock('../feature-flags', () => ({
   getFeatureFlagService: jest.fn(() => ({
-    refreshContext: mockRefreshFeatureFlagContext,
-    isEnabled: mockIsFeatureEnabled,
+    get refreshContext(): typeof mockRefreshFeatureFlagContext {
+      return mockRefreshFeatureFlagContext;
+    },
+    get isEnabled(): typeof mockIsFeatureEnabled {
+      return mockIsFeatureEnabled;
+    },
   })),
 }));
 const mockGuestMintBarrierRelease = jest.fn();
 const mockPauseGuestMintsForRealSignIn = jest.fn(() => ({
   activeGuestMint: null as Promise<unknown> | null,
-  release: mockGuestMintBarrierRelease,
+  get release(): typeof mockGuestMintBarrierRelease {
+    return mockGuestMintBarrierRelease;
+  },
 }));
 const mockRequestGuestLinkTicket = jest.fn();
 jest.mock('../canopy-cloud/guest-auth', () => ({
   mintGuest: jest.fn(),
-  pauseGuestMintsForRealSignIn: mockPauseGuestMintsForRealSignIn,
-  requestGuestLinkTicket: mockRequestGuestLinkTicket,
+  get pauseGuestMintsForRealSignIn(): typeof mockPauseGuestMintsForRealSignIn {
+    return mockPauseGuestMintsForRealSignIn;
+  },
+  get requestGuestLinkTicket(): typeof mockRequestGuestLinkTicket {
+    return mockRequestGuestLinkTicket;
+  },
 }));
 const mockProbeMobileActivation = jest.fn();
 const mockInvalidateMobileActivationCache = jest.fn();
 jest.mock('../canopy-cloud/mobile-activation', () => ({
-  probeMobileActivation: mockProbeMobileActivation,
-  invalidateMobileActivationCache: mockInvalidateMobileActivationCache,
+  get probeMobileActivation(): typeof mockProbeMobileActivation {
+    return mockProbeMobileActivation;
+  },
+  get invalidateMobileActivationCache(): typeof mockInvalidateMobileActivationCache {
+    return mockInvalidateMobileActivationCache;
+  },
 }));
 const mockApplyEnforcedSettings = jest.fn().mockResolvedValue(undefined);
 jest.mock('../services/org-enforced-settings', () => ({
-  applyEnforcedSettings: mockApplyEnforcedSettings,
+  get applyEnforcedSettings(): typeof mockApplyEnforcedSettings {
+    return mockApplyEnforcedSettings;
+  },
 }));
 const mockInvalidateProviderAuthSessions = jest.fn<Promise<void>, unknown[]>();
 jest.mock('../agents/session-manager', () => ({
@@ -266,20 +367,27 @@ interface SavedGatewayCredential {
   baseUrlAtSave: string;
   lastValidatedAt?: string;
   lastError?: string;
+  validated?: boolean;
 }
 
 const mockSaveModelGatewayCredential = jest.fn<
   Promise<void>,
   [SavedGatewayCredential]
 >();
-const mockLoadModelGatewayCredential = jest.fn<Promise<null>, [string]>();
+const mockLoadModelGatewayCredential = jest.fn<
+  Promise<(SavedGatewayCredential & { updatedAt: string }) | null>,
+  [string]
+>();
 const mockIsModelGatewayCredentialStorageAvailable = jest.fn(() => true);
 class MockGatewayCredentialStorageUnavailableError extends Error {}
 
 jest.mock('../lib/model-gateway-credential-store', () => ({
-  GatewayCredentialStorageUnavailableError:
-    MockGatewayCredentialStorageUnavailableError,
-  loadModelGatewayCredential: (organizationId: string): Promise<null> =>
+  get GatewayCredentialStorageUnavailableError(): typeof MockGatewayCredentialStorageUnavailableError {
+    return MockGatewayCredentialStorageUnavailableError;
+  },
+  loadModelGatewayCredential: (
+    organizationId: string,
+  ): Promise<(SavedGatewayCredential & { updatedAt: string }) | null> =>
     mockLoadModelGatewayCredential(organizationId),
   saveModelGatewayCredential: (input: SavedGatewayCredential): Promise<void> =>
     mockSaveModelGatewayCredential(input),
@@ -287,9 +395,20 @@ jest.mock('../lib/model-gateway-credential-store', () => ({
     mockIsModelGatewayCredentialStorageAvailable(),
 }));
 
+const mockRecordDailyCreditGrantFromBalance = jest.fn();
+const mockClearDailyCreditGrantStatus = jest.fn();
+jest.mock('../lib/daily-credit-grant-telemetry', () => ({
+  captureDailyCreditGrantAccount: (): object => ({ key: 'account:account-1' }),
+  recordDailyCreditGrantFromBalance: (...args: unknown[]): unknown =>
+    mockRecordDailyCreditGrantFromBalance(...args),
+  clearDailyCreditGrantStatus: (): unknown => mockClearDailyCreditGrantStatus(),
+}));
+
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    recordAppDiagnostic: mockRecordAppDiagnostic,
+    get recordAppDiagnostic(): typeof mockRecordAppDiagnostic {
+      return mockRecordAppDiagnostic;
+    },
   })),
 }));
 jest.mock('electron-log/main.js', () => ({
@@ -313,7 +432,10 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { safeStorage } from 'electron';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { registerIpcHandler } from '../ipc/register';
+import * as authenticatedPortalService from '../services/authenticated-portal-open';
+import * as authenticatedPortal from '../canopy-cloud/authenticated-portal';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
 import {
   invalidateCanopyCloudAccountCache,
@@ -321,10 +443,22 @@ import {
   subscribeCanopyCloudAccountConfirmations,
 } from '../lib/canopy-cloud-account-store';
 import { invalidateLinearTokenCache } from '../lib/linear-auth';
+import { isLinearApiError, LinearApiError } from '../lib/linear-api';
 import { renameWithRetry, writeFileAtomically } from '../lib/atomic-file';
 import { mintGuest } from '../canopy-cloud/guest-auth';
+import { checkGitHubCliStatus } from '../lib/github-auth';
+import { createCanopyDispatcher } from '@canopy/core-runtime';
 import {
-  checkGitHubCliStatus,
+  CORE_INTEGRATION_QUERIES,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import { createCoreIntegrationAdapter } from '../canopy-runtime/core-integration-adapter';
+import {
+  deriveDesktopIpcCaller,
+  type DesktopIpcFrame,
+  type DesktopIpcSender,
+} from '../canopy-runtime/desktop-ipc-caller';
+import {
   loadCanopyCloudAiCredits,
   loadNativeAiCreditsAvailability,
   loadOrgAiCreditsSpendable,
@@ -387,14 +521,34 @@ const mockedEncryptString = jest.mocked(safeStorage.encryptString);
 const mockedDecryptString = jest.mocked(safeStorage.decryptString);
 /* eslint-enable @typescript-eslint/unbound-method */
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+
+// The real core.integration handlers and desktop host on a dispatcher that
+// installs only them; `settings:github-cli-status` projects through it.
+const integrationDispatcher = createCanopyDispatcher({
+  profile: 'core+worker',
+  definitions: {
+    queries: CORE_INTEGRATION_QUERIES,
+    instructions: {},
+    streams: {},
+  },
+  handlers: {
+    queries: createCoreIntegrationAdapter().queries,
+    instructions: {},
+    streams: {},
+  },
+});
+const DESKTOP_IPC_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: 'local-desktop',
+  interfaceKind: 'desktop',
+  grants: ['worker.filesystem.read', 'core.workspace.read'],
+};
+let resolveIpcCaller: () => CanopyCallerDescriptor = () => DESKTOP_IPC_CALLER;
 const mockedGetCanopyCloudBaseUrl = jest.mocked(getCanopyCloudBaseUrl);
 
 const originalFetch = global.fetch;
 const mockedFetch: jest.MockedFunction<typeof fetch> = jest.fn();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function missingFileError(): Error & { code: 'ENOENT' } {
   return Object.assign(new Error('missing'), { code: 'ENOENT' as const });
@@ -404,26 +558,18 @@ function errnoError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
 }
 
-function getLinearClientMock(): jest.Mock {
-  const linearSdkModule: unknown = jest.requireMock('@linear/sdk');
-  if (
-    !isRecord(linearSdkModule) ||
-    !jest.isMockFunction(linearSdkModule.LinearClient)
-  ) {
-    throw new Error('Expected @linear/sdk LinearClient mock');
-  }
-
-  return linearSdkModule.LinearClient;
-}
-
-const mockedLinearClient = getLinearClientMock();
-
 type ExecFileCallback = (
   error: Error | null,
   result: { stdout: string; stderr: string },
 ) => void;
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
+type LoadCanopyCloudAccountHandler = (
+  ...args: unknown[]
+) => Promise<CanopyCloudAccountPublicState>;
+type SearchLinearHandler = (
+  ...args: unknown[]
+) => Promise<LinearTicketSearchResult[]>;
 type HandlerRegistration = [channel: string, handler: HandlerFn];
 
 let ghStatusHandler: HandlerFn;
@@ -435,7 +581,7 @@ let refreshGitHubCredentialsHandler: HandlerFn;
 let loadLinearHandler: HandlerFn;
 let saveLinearHandler: HandlerFn;
 let validateLinearHandler: HandlerFn;
-let loadCanopyCloudAccountHandler: HandlerFn;
+let loadCanopyCloudAccountHandler: LoadCanopyCloudAccountHandler;
 let loadCanopyCloudAiCreditsHandler: HandlerFn;
 let loadCanopyCloudMobileActivationHandler: HandlerFn;
 let loadCanopyCloudApiKeyHandler: HandlerFn;
@@ -446,7 +592,7 @@ let cancelCanopyCloudOAuthLoginHandler: HandlerFn;
 let disconnectCanopyCloudAccountHandler: HandlerFn;
 let resetUnreadableCanopyCloudAccountHandler: HandlerFn;
 let validateCanopyCloudApiKeyHandler: HandlerFn;
-let searchLinearHandler: HandlerFn;
+let searchLinearHandler: SearchLinearHandler;
 let loadModelGatewayCredentialHandler: HandlerFn;
 let saveModelGatewayCredentialHandler: HandlerFn;
 
@@ -457,17 +603,17 @@ function isHandlerRegistration(
   return value[0] === channel && typeof value[1] === 'function';
 }
 
-function getRegisteredHandler(
+function getRegisteredHandler<THandler extends HandlerFn = HandlerFn>(
   calls: ReadonlyArray<ReadonlyArray<unknown>>,
   channel: string,
-): HandlerFn {
+): THandler {
   const match = calls.find((value) => isHandlerRegistration(value, channel));
 
   if (match === undefined) {
     throw new Error(`Missing IPC handler registration for ${channel}`);
   }
 
-  return match[1];
+  return match[1] as THandler;
 }
 
 function mockExecFileResult(
@@ -504,12 +650,16 @@ function mockExecFileByCommand(
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockReadLinearViewer.mockReset();
+  mockSearchLinearIssues.mockReset();
+  mockReadLinearIssueAttachments.mockReset();
+  mockResolveLinearToken.mockReset();
   mockResolveAiCreditsScopeOwner.mockResolvedValue(undefined);
   resetProviderAuthStateForTests();
   invalidateCanopyCloudAccountCache();
   invalidateLinearTokenCache();
   mockInvalidateLinearTokenCache.mockClear();
-  global.fetch = mockedFetch as unknown as typeof fetch;
+  global.fetch = mockedFetch;
   mockedGetCanopyCloudBaseUrl.mockReturnValue('https://cloud.example.test');
   mockedIsEncryptionAvailable.mockReturnValue(true);
   mockedBackend.mockReturnValue('gnome_libsecret');
@@ -543,7 +693,9 @@ beforeEach(() => {
   mockGuestMintBarrierRelease.mockReset();
   mockPauseGuestMintsForRealSignIn.mockReturnValue({
     activeGuestMint: null,
-    release: mockGuestMintBarrierRelease,
+    get release() {
+      return mockGuestMintBarrierRelease;
+    },
   });
   mockRequestGuestLinkTicket.mockReset();
   mockRequestCanopyCloudJson.mockReset();
@@ -589,7 +741,11 @@ beforeEach(() => {
     requiresOpenaiAuth: true,
   });
 
-  registerSettingsHandlers();
+  resolveIpcCaller = (): CanopyCallerDescriptor => DESKTOP_IPC_CALLER;
+  registerSettingsHandlers({
+    dispatcher: integrationDispatcher,
+    resolveCaller: () => resolveIpcCaller(),
+  });
 
   const calls = mockedRegisterIpcHandler.mock.calls;
   claudeStatusHandler = getRegisteredHandler(
@@ -613,7 +769,7 @@ beforeEach(() => {
     calls,
     'settings:validate-linear-token',
   );
-  searchLinearHandler = getRegisteredHandler(
+  searchLinearHandler = getRegisteredHandler<SearchLinearHandler>(
     calls,
     'settings:search-linear-issues',
   );
@@ -625,10 +781,11 @@ beforeEach(() => {
     calls,
     'model-gateway:load-credential',
   );
-  loadCanopyCloudAccountHandler = getRegisteredHandler(
-    calls,
-    'settings:load-canopy-cloud-account',
-  );
+  loadCanopyCloudAccountHandler =
+    getRegisteredHandler<LoadCanopyCloudAccountHandler>(
+      calls,
+      'settings:load-canopy-cloud-account',
+    );
   loadCanopyCloudAiCreditsHandler = getRegisteredHandler(
     calls,
     'settings:load-canopy-cloud-ai-credits',
@@ -679,6 +836,81 @@ afterAll(() => {
 // registerSettingsHandlers
 // ---------------------------------------------------------------------------
 describe('registerSettingsHandlers', () => {
+  it('dispatches every non-string exclusively to strict validation', async () => {
+    const strict = jest
+      .spyOn(authenticatedPortalService, 'openAuthenticatedPortalRequest')
+      .mockResolvedValue({ ok: false, reason: 'failed' });
+    const legacy = jest.spyOn(
+      authenticatedPortal,
+      'openAuthenticatedPortalPage',
+    );
+    try {
+      const handler = getRegisteredHandler(
+        mockedRegisterIpcHandler.mock.calls,
+        'settings:open-authenticated-portal-page',
+      );
+      for (const value of [
+        undefined,
+        null,
+        true,
+        1,
+        [],
+        {},
+        {
+          requireAuthentication: true,
+          kind: 'signed-in',
+          path: '/account',
+          accountId: 'acct-1',
+          webOrigin: 'https://cloud.example.test',
+        },
+      ]) {
+        await expect(handler({}, value)).resolves.toEqual({
+          ok: false,
+          reason: 'failed',
+        });
+        expect(strict).toHaveBeenLastCalledWith(value);
+      }
+      expect(strict).toHaveBeenCalledTimes(7);
+      expect(legacy).not.toHaveBeenCalled();
+    } finally {
+      strict.mockRestore();
+      legacy.mockRestore();
+    }
+  });
+
+  it('retains legacy string dispatch and boolean results', async () => {
+    const legacy = jest
+      .spyOn(authenticatedPortal, 'openAuthenticatedPortalPage')
+      .mockResolvedValueOnce(true);
+    const strict = jest.spyOn(
+      authenticatedPortalService,
+      'openAuthenticatedPortalRequest',
+    );
+    try {
+      const handler = getRegisteredHandler(
+        mockedRegisterIpcHandler.mock.calls,
+        'settings:open-authenticated-portal-page',
+      );
+      await expect(handler({}, '/account?x=1#profile')).resolves.toBe(true);
+      expect(legacy).toHaveBeenCalledWith('/account?x=1#profile');
+      expect(strict).not.toHaveBeenCalled();
+    } finally {
+      legacy.mockRestore();
+      strict.mockRestore();
+    }
+  });
+
+  it('rejects malformed strict portal requests with a typed failure', async () => {
+    const handler = getRegisteredHandler(
+      mockedRegisterIpcHandler.mock.calls,
+      'settings:open-authenticated-portal-page',
+    );
+    await expect(
+      handler({}, { requireAuthentication: true, path: '/account' }),
+    ).resolves.toEqual({ ok: false, reason: 'failed' });
+    expect(mockRequestCanopyCloudJson).not.toHaveBeenCalled();
+  });
+
   it('registers all handlers', () => {
     expect(mockedRegisterIpcHandler).toHaveBeenCalledTimes(39);
     expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
@@ -869,7 +1101,7 @@ describe('checkClaudeAuthStatus', () => {
       '',
     );
 
-    const result = await checkClaudeAuthStatus();
+    const result = await checkClaudeAuthStatus('settings-test');
 
     expect(mockedExecFile).toHaveBeenCalledWith(
       '/mock/bin/claude',
@@ -891,7 +1123,7 @@ describe('checkClaudeAuthStatus', () => {
   it('returns unauthenticated when Claude reports logged out', async () => {
     mockExecFileResult(null, JSON.stringify({ loggedIn: false }), '');
 
-    const result = await checkClaudeAuthStatus();
+    const result = await checkClaudeAuthStatus('settings-test');
 
     expect(result).toEqual({
       authenticated: false,
@@ -950,7 +1182,7 @@ describe('checkCodexAuthStatus', () => {
   it('returns authenticated with Codex app-server account details', async () => {
     mockExecFileResult(null, 'Logged in using ChatGPT', '');
 
-    const result = await checkCodexAuthStatus();
+    const result = await checkCodexAuthStatus('settings-test');
 
     expect(mockCodexAdminRequest).toHaveBeenCalledWith('account/read', {
       refreshToken: false,
@@ -973,7 +1205,7 @@ describe('checkCodexAuthStatus', () => {
     mockCodexReadAccount.mockRejectedValueOnce(new Error('app-server failed'));
     mockExecFileResult(null, 'Logged in using ChatGPT', '');
 
-    const result = await checkCodexAuthStatus();
+    const result = await checkCodexAuthStatus('settings-test');
 
     expect(result).toEqual({
       authenticated: false,
@@ -989,7 +1221,7 @@ describe('checkCodexAuthStatus', () => {
     mockCodexReadAccount.mockRejectedValueOnce(new Error('app-server failed'));
     mockExecFileResult(new Error('exit code 1'), '', '');
 
-    const result = await checkCodexAuthStatus();
+    const result = await checkCodexAuthStatus('settings-test');
 
     // Both probes failed — this is an inconclusive "unknown", not a confirmed
     // logout, so it must carry `probeFailed: true` (and never invalidate). The
@@ -1251,6 +1483,360 @@ describe('ghStatusHandler', () => {
 
     expect(claude.authenticated).toBe(false);
     expect(claude.userSuppliedCredential).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// settings:github-cli-status goldens
+// ---------------------------------------------------------------------------
+// CAN-4070 rule: captured on the unchanged handler before CAN-4109 serves it
+// through core.integration.get. Responses are compared as JSON text, so key
+// order is pinned too.
+describe('settings:github-cli-status goldens (CAN-4109)', () => {
+  const NOT_AUTHENTICATED =
+    '{"authenticated":false,"username":null,"error":"GitHub CLI is not authenticated.","tokenSource":null,"envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":false}';
+
+  function ghEntry(entry: Record<string, unknown>): Record<string, unknown> {
+    return {
+      state: 'success',
+      active: true,
+      host: 'github.com',
+      login: 'octo',
+      tokenSource: 'keyring',
+      gitProtocol: 'https',
+      ...entry,
+    };
+  }
+
+  function ghHosts(hosts: Record<string, unknown>): string {
+    return JSON.stringify({ hosts });
+  }
+
+  async function status(): Promise<string> {
+    return JSON.stringify(await ghStatusHandler());
+  }
+
+  beforeEach(() => {
+    mockedGetEnhancedEnv.mockReturnValue({ PATH: '/golden/bin' });
+  });
+
+  afterEach(() => {
+    mockedGetEnhancedEnv.mockReturnValue({ PATH: '/mock/bin' });
+  });
+
+  it('spawns the bundled gh once, without Canopy secrets, and reads no Canopy credential', async () => {
+    mockExecFileResult(
+      null,
+      ghHosts({ 'github.com': [ghEntry({ login: 'octo' })] }),
+      '',
+    );
+
+    await status();
+
+    expect(mockedExecFile).toHaveBeenCalledTimes(1);
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      '/mock/bin/gh',
+      ['auth', 'status', '--json', 'hosts'],
+      {
+        timeout: 10_000,
+        env: { PATH: '/golden/bin' },
+        // The host OS is mocked to linux for this file.
+        windowsHide: false,
+      },
+      expect.any(Function),
+    );
+    expect(mockedGetEnhancedEnv).toHaveBeenCalledWith({
+      includeCanopySecrets: false,
+      environment: false,
+    });
+    // No `gh auth token`, no Canopy token resolution, no secure-store read.
+    expect(
+      mockedExecFile.mock.calls.some(
+        ([, args]) =>
+          Array.isArray(args) && args[0] === 'auth' && args[1] === 'token',
+      ),
+    ).toBe(false);
+    expect(mockResolveGitHubToken).not.toHaveBeenCalled();
+    expect(
+      mockedReadFile.mock.calls.some(
+        ([path]) => typeof path === 'string' && path.includes('github-pat'),
+      ),
+    ).toBe(false);
+    expect(mockedDecryptString).not.toHaveBeenCalled();
+  });
+
+  it('hides the gh console window on a Windows host', async () => {
+    const mockedHostOperatingSystem = jest.mocked(hostOperatingSystem);
+    mockedHostOperatingSystem.mockReturnValue('win32');
+    try {
+      mockExecFileResult(
+        null,
+        ghHosts({ 'github.com': [ghEntry({ login: 'octo' })] }),
+        '',
+      );
+
+      await status();
+
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        expect.any(String),
+        ['auth', 'status', '--json', 'hosts'],
+        expect.objectContaining({ windowsHide: true }),
+        expect.any(Function),
+      );
+    } finally {
+      mockedHostOperatingSystem.mockReturnValue('linux');
+    }
+  });
+
+  it.each<[string, string, string]>([
+    [
+      'an active keyring login',
+      ghHosts({ 'github.com': [ghEntry({ login: 'octo' })] }),
+      '{"authenticated":true,"username":"octo","error":null,"tokenSource":"keyring","envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":true}',
+    ],
+    [
+      'an active GH_TOKEN entry beside an inactive keyring login',
+      ghHosts({
+        'github.com': [
+          ghEntry({ tokenSource: 'GH_TOKEN' }),
+          ghEntry({ active: false, tokenSource: 'keyring' }),
+        ],
+      }),
+      '{"authenticated":true,"username":"octo","error":null,"tokenSource":"GH_TOKEN","envOverride":true,"envOverrideName":"GH_TOKEN","hasCredentialStoreLogin":true}',
+    ],
+    [
+      'an active GITHUB_ENTERPRISE_TOKEN entry alone',
+      ghHosts({
+        'github.com': [ghEntry({ tokenSource: 'GITHUB_ENTERPRISE_TOKEN' })],
+      }),
+      '{"authenticated":true,"username":"octo","error":null,"tokenSource":"GITHUB_ENTERPRISE_TOKEN","envOverride":true,"envOverrideName":"GITHUB_ENTERPRISE_TOKEN","hasCredentialStoreLogin":false}',
+    ],
+    [
+      'an active entry gh failed to validate (state "error")',
+      ghHosts({
+        'github.com': [ghEntry({ state: 'error', error: 'bad token' })],
+      }),
+      '{"authenticated":true,"username":"octo","error":null,"tokenSource":"keyring","envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":true}',
+    ],
+    [
+      'a token source that is a host path, returned raw',
+      ghHosts({
+        'github.com': [
+          ghEntry({ tokenSource: '/Users/octo/.config/gh/hosts.yml' }),
+        ],
+      }),
+      '{"authenticated":true,"username":"octo","error":null,"tokenSource":"/Users/octo/.config/gh/hosts.yml","envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":true}',
+    ],
+    [
+      'an active entry with an empty login',
+      ghHosts({ 'github.com': [ghEntry({ login: '' })] }),
+      '{"authenticated":true,"username":null,"error":null,"tokenSource":"keyring","envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":true}',
+    ],
+    [
+      'only an inactive keyring login',
+      ghHosts({ 'github.com': [ghEntry({ active: false })] }),
+      '{"authenticated":false,"username":null,"error":"GitHub CLI is not authenticated.","tokenSource":null,"envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":true}',
+    ],
+    [
+      'only an active login on another host',
+      ghHosts({ 'ghe.example.com': [ghEntry({ host: 'ghe.example.com' })] }),
+      NOT_AUTHENTICATED,
+    ],
+    ['no hosts member', JSON.stringify({}), NOT_AUTHENTICATED],
+    [
+      'an empty github.com entry list',
+      ghHosts({ 'github.com': [] }),
+      NOT_AUTHENTICATED,
+    ],
+    [
+      'github.com entries that lack required fields',
+      ghHosts({ 'github.com': [{ active: true, host: 'github.com' }] }),
+      NOT_AUTHENTICATED,
+    ],
+    [
+      'output that is not JSON',
+      'not json',
+      '{"authenticated":false,"username":null,"error":"Unable to parse GitHub CLI status output.","tokenSource":null,"envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":false}',
+    ],
+  ])('reports %s', async (_label, stdout, expected) => {
+    mockExecFileResult(null, stdout, '');
+
+    await expect(status()).resolves.toBe(expected);
+  });
+
+  it.each<[string, () => Error, string]>([
+    [
+      'a missing gh binary (ENOENT)',
+      (): Error =>
+        Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }),
+      '{"authenticated":false,"username":null,"error":"GitHub CLI (gh) is not installed.","tokenSource":null,"envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":false}',
+    ],
+    [
+      'a non-zero exit',
+      (): Error => Object.assign(new Error('Command failed'), { code: 1 }),
+      NOT_AUTHENTICATED,
+    ],
+    [
+      'the 10-second timeout killing gh',
+      (): Error =>
+        Object.assign(new Error('Command failed'), {
+          code: null,
+          killed: true,
+          signal: 'SIGTERM',
+        }),
+      NOT_AUTHENTICATED,
+    ],
+    [
+      'a failure without a code',
+      (): Error => new Error('exit code 1'),
+      NOT_AUTHENTICATED,
+    ],
+  ])('reports %s', async (_label, makeError, expected) => {
+    mockExecFileResult(makeError(), '', '');
+
+    await expect(status()).resolves.toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// settings:github-cli-status through core.integration.get (CAN-4109)
+// ---------------------------------------------------------------------------
+describe('settings:github-cli-status projection', () => {
+  const KEYRING_HOSTS = JSON.stringify({
+    hosts: {
+      'github.com': [
+        {
+          state: 'success',
+          active: true,
+          host: 'github.com',
+          login: 'octo',
+          tokenSource: 'keyring',
+        },
+      ],
+    },
+  });
+
+  function frame(url: string): DesktopIpcFrame {
+    return { url, detached: false, isDestroyed: () => false };
+  }
+
+  function bridgeEvent(): {
+    sender: DesktopIpcSender;
+    senderFrame: DesktopIpcFrame;
+  } {
+    const mainFrame = frame('file:///bridge.html');
+    return {
+      sender: {
+        id: 7,
+        mainFrame,
+        getURL: () => mainFrame.url,
+        isDestroyed: () => false,
+      },
+      senderFrame: mainFrame,
+    };
+  }
+
+  it('reaches the dispatcher as the remote device holding only core.integration.read', async () => {
+    const query = jest.spyOn(integrationDispatcher, 'query');
+    // The tunneled call replays on the bridge window; main derives its caller.
+    resolveIpcCaller = (): CanopyCallerDescriptor =>
+      deriveDesktopIpcCaller(bridgeEvent(), {
+        getAppWindows: () => [],
+        packagedRendererUrls: [],
+        resolveRemoteBridgeSender: () => 'controller-1',
+      });
+    mockExecFileResult(null, KEYRING_HOSTS, '');
+    try {
+      await expect(
+        ghStatusHandler().then((value) => JSON.stringify(value)),
+      ).resolves.toBe(
+        '{"authenticated":true,"username":"octo","error":null,"tokenSource":"keyring","envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":true}',
+      );
+      expect(query.mock.calls).toEqual([
+        [
+          'core.integration.get',
+          { integrationId: 'github-cli' },
+          {
+            caller: {
+              principalId: 'remote-device:controller-1',
+              clientInstanceId: 'remote-bridge:7',
+              authorityId: 'local-desktop',
+              interfaceKind: 'desktop',
+              grants: ['core.integration.read'],
+            },
+          },
+        ],
+      ]);
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  it('replaces the desktop caller grants with core.integration.read alone', async () => {
+    const query = jest.spyOn(integrationDispatcher, 'query');
+    mockExecFileResult(null, KEYRING_HOSTS, '');
+    try {
+      await ghStatusHandler();
+      expect(query.mock.calls).toEqual([
+        [
+          'core.integration.get',
+          { integrationId: 'github-cli' },
+          {
+            caller: {
+              ...DESKTOP_IPC_CALLER,
+              grants: ['core.integration.read'],
+            },
+          },
+        ],
+      ]);
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  it('refuses an untracked sender before gh runs', async () => {
+    resolveIpcCaller = (): CanopyCallerDescriptor =>
+      deriveDesktopIpcCaller(bridgeEvent(), {
+        getAppWindows: () => [],
+        packagedRendererUrls: [],
+      });
+    mockExecFileResult(null, KEYRING_HOSTS, '');
+
+    await expect(ghStatusHandler()).rejects.toMatchObject({
+      payload: { kind: 'permission_denied' },
+    });
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the legacy status when the canonical result fails validation', async () => {
+    // The canonical login is capped at 256 characters; the legacy one is not.
+    const login = 'o'.repeat(300);
+    mockExecFileResult(
+      null,
+      JSON.stringify({
+        hosts: {
+          'github.com': [
+            { active: true, host: 'github.com', login, tokenSource: 'keyring' },
+          ],
+        },
+      }),
+      '',
+    );
+    await expect(
+      integrationDispatcher.query(
+        'core.integration.get',
+        { integrationId: 'github-cli' },
+        {
+          caller: { ...DESKTOP_IPC_CALLER, grants: ['core.integration.read'] },
+        },
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+
+    await expect(
+      ghStatusHandler().then((value) => JSON.stringify(value)),
+    ).resolves.toBe(
+      `{"authenticated":true,"username":"${login}","error":null,"tokenSource":"keyring","envOverride":false,"envOverrideName":null,"hasCredentialStoreLogin":true}`,
+    );
   });
 });
 
@@ -1743,7 +2329,7 @@ describe('validateLinearHandler', () => {
       displayName: null,
       error: null,
     });
-    expect(mockedLinearClient).not.toHaveBeenCalled();
+    expect(mockReadLinearViewer).not.toHaveBeenCalled();
   });
 
   it('returns unauthenticated with no error for whitespace-only token', async () => {
@@ -1754,48 +2340,55 @@ describe('validateLinearHandler', () => {
       displayName: null,
       error: null,
     });
-    expect(mockedLinearClient).not.toHaveBeenCalled();
+    expect(mockReadLinearViewer).not.toHaveBeenCalled();
   });
 
   it('returns authenticated with displayName on success', async () => {
-    const mockViewer = Promise.resolve({
+    mockReadLinearViewer.mockResolvedValue({
       displayName: 'Alice',
       name: 'Alice A',
     });
-    mockedLinearClient.mockImplementation(() => ({ viewer: mockViewer }));
 
-    const result = await validateLinearHandler({}, 'lin_api_valid');
+    const result = await validateLinearHandler({}, 'lin_api_test_token');
 
     expect(result).toEqual({
       authenticated: true,
       displayName: 'Alice',
       error: null,
     });
-    expect(mockedLinearClient).toHaveBeenCalledWith({
-      apiKey: 'lin_api_valid',
+    expect(mockReadLinearViewer).toHaveBeenCalledWith('lin_api_test_token');
+  });
+
+  it('falls back to the viewer name when displayName is null', async () => {
+    mockReadLinearViewer.mockResolvedValue({
+      displayName: null,
+      name: 'Casey Viewer',
+    });
+
+    const result = await validateLinearHandler({}, 'lin_api_test_token');
+
+    expect(result).toEqual({
+      authenticated: true,
+      displayName: 'Casey Viewer',
+      error: null,
     });
   });
 
   it('trims the token before validating', async () => {
-    const mockViewer = Promise.resolve({
+    mockReadLinearViewer.mockResolvedValue({
       displayName: 'Bob',
       name: 'Bob B',
     });
-    mockedLinearClient.mockImplementation(() => ({ viewer: mockViewer }));
 
-    await validateLinearHandler({}, '  lin_api_padded  ');
+    await validateLinearHandler({}, '  lin_api_test_token  ');
 
-    expect(mockedLinearClient).toHaveBeenCalledWith({
-      apiKey: 'lin_api_padded',
-    });
+    expect(mockReadLinearViewer).toHaveBeenCalledWith('lin_api_test_token');
   });
 
-  it('returns error when Linear API rejects the token', async () => {
-    mockedLinearClient.mockImplementation(() => {
-      throw new Error('Unauthorized');
-    });
+  it('returns the fixed error when Linear API rejects the token', async () => {
+    mockReadLinearViewer.mockRejectedValue(new Error('Unauthorized'));
 
-    const result = await validateLinearHandler({}, 'lin_api_bad');
+    const result = await validateLinearHandler({}, 'lin_api_test_token');
 
     expect(result).toEqual({
       authenticated: false,
@@ -1809,38 +2402,43 @@ describe('validateLinearHandler', () => {
 // searchLinearIssues IPC handler
 // ---------------------------------------------------------------------------
 describe('searchLinearHandler', () => {
-  it('distinguishes a disconnected exact lookup from an absent issue', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    mockedReadFile.mockRejectedValue(new Error('ENOENT'));
-    await expect(searchLinearHandler({}, 'CAN-3606')).rejects.toThrow(
-      'Connect Linear',
-    );
-  });
-
-  it.each(['Unauthorized', 'rate limit', 'network unavailable'])(
-    'surfaces exact lookup failure %s instead of empty issue evidence',
-    async (message) => {
-      mockedIsEncryptionAvailable.mockReturnValue(true);
-      mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-      mockedDecryptString.mockReturnValue('lin_api_valid');
-      mockedLinearClient.mockImplementation(() => ({
-        searchIssues: jest.fn().mockRejectedValue(new Error(message)),
-      }));
-      const writeSpy = jest
-        .spyOn(process.stderr, 'write')
-        .mockImplementation(() => true);
-      try {
-        await expect(searchLinearHandler({}, 'CAN-3606')).rejects.toThrow();
-      } finally {
-        writeSpy.mockRestore();
-      }
+  const linearErrorCases: ReadonlyArray<{
+    type: LinearApiErrorType;
+    status: number | null;
+    message: string;
+  }> = [
+    {
+      type: 'authentication',
+      status: 401,
+      message: 'Reconnect Linear to look up this issue.',
     },
-  );
+    {
+      type: 'forbidden',
+      status: 403,
+      message: 'Reconnect Linear to look up this issue.',
+    },
+    {
+      type: 'ratelimited',
+      status: 429,
+      message: 'Linear is rate limiting requests. Try again shortly.',
+    },
+    {
+      type: 'network',
+      status: null,
+      message: 'Couldn’t reach Linear. Try again.',
+    },
+  ];
+
+  function storeLinearToken(token: string = 'lin_api_test_token'): void {
+    mockedIsEncryptionAvailable.mockReturnValue(true);
+    mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
+    mockedDecryptString.mockReturnValue(token);
+  }
 
   function createSearchResult(
     index: number,
-    overrides: Partial<LinearTicketSearchResult> = {},
-  ): LinearTicketSearchResult {
+    overrides: Partial<LinearIssueSearchResult> = {},
+  ): LinearIssueSearchResult {
     return {
       id: `issue-${String(index)}`,
       identifier: `ENG-${String(index)}`,
@@ -1854,14 +2452,80 @@ describe('searchLinearHandler', () => {
     };
   }
 
-  it('returns [] for empty and whitespace-only queries without invoking LinearClient', async () => {
+  it.each([42, {}, 'x'.repeat(257)])(
+    'returns [] for invalid search input %p without reading the token',
+    async (query) => {
+      const result = await searchLinearHandler({}, query);
+
+      expect(result).toEqual([]);
+      expect(mockResolveLinearToken).not.toHaveBeenCalled();
+      expect(mockSearchLinearIssues).not.toHaveBeenCalled();
+      expect(mockReadLinearIssueAttachments).not.toHaveBeenCalled();
+      expect(mockedReadFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not load @linear/sdk after importing settings and running Linear handlers', async () => {
+    expect(mockLinearSdkLoads).toEqual([]);
+    storeLinearToken();
+    mockReadLinearViewer.mockResolvedValue({
+      displayName: 'Test Viewer',
+      name: 'Test Viewer',
+    });
+    mockSearchLinearIssues.mockResolvedValue([]);
+
+    await validateLinearHandler({}, 'lin_api_test_token');
+    await searchLinearHandler({}, 'ENG');
+
+    expect(mockLinearSdkLoads).toEqual([]);
+  });
+
+  it('distinguishes a disconnected exact lookup from an absent issue', async () => {
+    mockedIsEncryptionAvailable.mockReturnValue(true);
+    mockedReadFile.mockRejectedValue(new Error('ENOENT'));
+    await expect(searchLinearHandler({}, 'CAN-3606')).rejects.toThrow(
+      'Connect Linear to look up this issue.',
+    );
+
+    expect(await searchLinearHandler({}, 'ENG')).toEqual([]);
+    expect(mockSearchLinearIssues).not.toHaveBeenCalled();
+  });
+
+  it.each(linearErrorCases)(
+    'maps helper error type $type to fixed copy',
+    async ({ type, status, message }) => {
+      storeLinearToken();
+      const error = new LinearApiError(
+        'searchIssues',
+        type,
+        status,
+        null,
+        false,
+      );
+      expect(isLinearApiError(error)).toBe(true);
+      mockSearchLinearIssues.mockRejectedValue(error);
+      const writeSpy = jest
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+
+      try {
+        await expect(searchLinearHandler({}, 'CAN-3606')).rejects.toThrow(
+          message,
+        );
+      } finally {
+        writeSpy.mockRestore();
+      }
+    },
+  );
+
+  it('returns [] for empty and whitespace-only queries without resolving a token', async () => {
     const emptyResult = await searchLinearHandler({}, '');
     const whitespaceResult = await searchLinearHandler({}, '  \n  ');
 
     expect(emptyResult).toEqual([]);
     expect(whitespaceResult).toEqual([]);
-    expect(mockedReadFile).not.toHaveBeenCalled();
-    expect(mockedLinearClient).not.toHaveBeenCalled();
+    expect(mockResolveLinearToken).not.toHaveBeenCalled();
+    expect(mockSearchLinearIssues).not.toHaveBeenCalled();
   });
 
   it('returns [] when no Linear token is persisted', async () => {
@@ -1871,61 +2535,57 @@ describe('searchLinearHandler', () => {
     const result = await searchLinearHandler({}, 'ENG');
 
     expect(result).toEqual([]);
-    expect(mockedLinearClient).not.toHaveBeenCalled();
+    expect(mockResolveLinearToken).toHaveBeenCalledTimes(1);
+    expect(mockSearchLinearIssues).not.toHaveBeenCalled();
   });
 
-  it('constructs LinearClient with the decrypted token and maps search results', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    const encrypted = Buffer.from('encrypted-linear');
+  it('searches with the trimmed query and maps helper results', async () => {
+    storeLinearToken();
     const mappedResults = [
       createSearchResult(1, { description: null }),
       createSearchResult(2),
     ];
-    const searchIssues = jest
-      .fn<Promise<{ nodes: LinearTicketSearchResult[] }>, [string]>()
-      .mockResolvedValue({
-        nodes: mappedResults,
-      });
+    mockSearchLinearIssues.mockResolvedValue(mappedResults);
 
-    mockedReadFile.mockResolvedValue(encrypted);
-    mockedDecryptString.mockReturnValue('lin_api_valid');
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues,
-    }));
+    const result = await searchLinearHandler({}, '  ENG  ');
 
-    const result = await searchLinearHandler({}, '  ENG-12  ');
-
-    expect(mockedLinearClient).toHaveBeenCalledWith({
-      apiKey: 'lin_api_valid',
-    });
-    expect(searchIssues).toHaveBeenCalledWith('ENG-12');
+    expect(mockSearchLinearIssues).toHaveBeenCalledWith(
+      'lin_api_test_token',
+      'ENG',
+    );
     expect(result).toEqual(mappedResults);
   });
 
-  it('returns attachment URLs and marks a truncated page as incomplete', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-    mockedDecryptString.mockReturnValue('lin_api_valid');
-    const attachments = jest.fn().mockResolvedValue({
-      nodes: [
+  it('puts an exact identifier first and fetches attachments only for that issue', async () => {
+    storeLinearToken();
+    const results = [
+      createSearchResult(1),
+      createSearchResult(7),
+      createSearchResult(8),
+    ];
+    mockSearchLinearIssues.mockResolvedValue(results);
+    mockReadLinearIssueAttachments.mockResolvedValue({
+      attachments: [
         {
           url: 'https://github.com/o/r/pull/7',
           sourceType: 'github',
           title: 'PR',
-          id: 'attachment-1',
         },
       ],
-      pageInfo: { hasNextPage: true },
+      complete: false,
     });
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues: jest
-        .fn()
-        .mockResolvedValue({ nodes: [createSearchResult(7)] }),
-      issue: jest.fn().mockResolvedValue({ attachments }),
-    }));
 
-    const result = await searchLinearHandler({}, 'ENG-7');
+    const result = await searchLinearHandler({}, '  eng-7  ');
 
+    expect(mockSearchLinearIssues).toHaveBeenCalledWith(
+      'lin_api_test_token',
+      'ENG-7',
+    );
+    expect(mockReadLinearIssueAttachments).toHaveBeenCalledTimes(1);
+    expect(mockReadLinearIssueAttachments).toHaveBeenCalledWith(
+      'lin_api_test_token',
+      'issue-7',
+    );
     expect(result).toEqual([
       {
         ...createSearchResult(7),
@@ -1938,87 +2598,70 @@ describe('searchLinearHandler', () => {
         ],
         attachmentsComplete: false,
       },
+      createSearchResult(1),
+      createSearchResult(8),
     ]);
-    expect(attachments).toHaveBeenCalledWith({ first: 50 });
   });
 
   it.each([
     [
-      { nodes: [], pageInfo: { hasNextPage: false } },
+      { attachments: [], complete: true },
       { attachments: [], attachmentsComplete: true },
     ],
     [
-      { nodes: [{ url: 'https://github.com/o/r', sourceType: null }] },
       {
-        attachments: [{ url: 'https://github.com/o/r', source: null }],
+        attachments: [
+          { url: 'https://github.com/o/r', sourceType: null, title: null },
+        ],
+        complete: false,
+      },
+      {
+        attachments: [
+          { url: 'https://github.com/o/r', source: null, title: null },
+        ],
         attachmentsComplete: false,
       },
     ],
     [
-      { nodes: [{ url: 7 }], pageInfo: { hasNextPage: false } },
-      { attachmentsComplete: false },
-    ],
-    [
-      { nodes: [], pageInfo: { hasNextPage: 'false' } },
-      { attachmentsComplete: false },
+      {
+        attachments: [{ url: 'https://github.com/o/r' }],
+        complete: false,
+      },
+      {
+        attachments: [{ url: 'https://github.com/o/r' }],
+        attachmentsComplete: false,
+      },
     ],
   ])(
-    'preserves attachment completeness for payload %p',
-    async (payload, expected) => {
-      mockedIsEncryptionAvailable.mockReturnValue(true);
-      mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-      mockedDecryptString.mockReturnValue('lin_api_valid');
-      const issue = jest.fn().mockResolvedValue({
-        attachments: jest.fn().mockResolvedValue(payload),
-      });
-      const searchIssues = jest.fn().mockResolvedValue({
-        nodes: [createSearchResult(1), createSearchResult(7)],
-      });
-      mockedLinearClient.mockImplementation(() => ({ searchIssues, issue }));
+    'maps attachment completeness and optional fields',
+    async (attachmentPayload, expected) => {
+      storeLinearToken();
+      mockSearchLinearIssues.mockResolvedValue([createSearchResult(7)]);
+      mockReadLinearIssueAttachments.mockResolvedValue(attachmentPayload);
 
-      const result = await searchLinearHandler({}, '  eng-7  ');
+      const result = await searchLinearHandler({}, 'ENG-7');
 
-      expect(searchIssues).toHaveBeenCalledWith('ENG-7');
-      expect(issue).toHaveBeenCalledTimes(1);
-      expect(issue).toHaveBeenCalledWith('issue-7');
       expect(result).toContainEqual({ ...createSearchResult(7), ...expected });
-      expect(result).toContainEqual(createSearchResult(1));
     },
   );
 
   it('leaves ordinary autocomplete as a single request', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-    mockedDecryptString.mockReturnValue('lin_api_valid');
-    const issue = jest.fn();
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues: jest
-        .fn()
-        .mockResolvedValue({ nodes: [createSearchResult(7)] }),
-      issue,
-    }));
+    storeLinearToken();
+    mockSearchLinearIssues.mockResolvedValue([createSearchResult(7)]);
 
     expect(await searchLinearHandler({}, 'ENG')).toEqual([
       createSearchResult(7),
     ]);
-    expect(issue).not.toHaveBeenCalled();
+    expect(mockReadLinearIssueAttachments).not.toHaveBeenCalled();
   });
 
   it('preserves the accessible issue when attachment lookup fails', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-    mockedDecryptString.mockReturnValue('lin_api_valid');
+    storeLinearToken();
+    mockSearchLinearIssues.mockResolvedValue([createSearchResult(7)]);
+    mockReadLinearIssueAttachments.mockRejectedValue(new Error('Forbidden'));
     const writeSpy = jest
       .spyOn(process.stderr, 'write')
       .mockImplementation(() => true);
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues: jest
-        .fn()
-        .mockResolvedValue({ nodes: [createSearchResult(7)] }),
-      issue: jest.fn().mockResolvedValue({
-        attachments: jest.fn().mockRejectedValue(new Error('Forbidden')),
-      }),
-    }));
 
     try {
       expect(await searchLinearHandler({}, 'ENG-7')).toEqual([
@@ -2029,64 +2672,35 @@ describe('searchLinearHandler', () => {
     }
   });
 
-  it('marks unavailable attachment APIs as unknown rather than empty evidence', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-    mockedDecryptString.mockReturnValue('lin_api_valid');
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues: jest
-        .fn()
-        .mockResolvedValue({ nodes: [createSearchResult(7)] }),
-    }));
+  it('returns incomplete attachment evidence with no list on helper failure', async () => {
+    storeLinearToken();
+    mockSearchLinearIssues.mockResolvedValue([createSearchResult(7)]);
+    mockReadLinearIssueAttachments.mockRejectedValue(
+      new Error('invalid payload'),
+    );
+    const writeSpy = jest
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
 
-    expect(await searchLinearHandler({}, 'ENG-7')).toEqual([
-      { ...createSearchResult(7), attachmentsComplete: false },
-    ]);
+    try {
+      expect(await searchLinearHandler({}, 'ENG-7')).toEqual([
+        { ...createSearchResult(7), attachmentsComplete: false },
+      ]);
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
-  it('caps attachment data and never claims completeness for an oversized response', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-    mockedDecryptString.mockReturnValue('lin_api_valid');
-    const nodes = Array.from({ length: 51 }, (_, index) => ({
-      url: `https://github.com/o/r/pull/${index + 1}`,
-    }));
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues: jest
-        .fn()
-        .mockResolvedValue({ nodes: [createSearchResult(7)] }),
-      issue: jest.fn().mockResolvedValue({
-        attachments: jest
-          .fn()
-          .mockResolvedValue({ nodes, pageInfo: { hasNextPage: false } }),
-      }),
-    }));
-
-    const result = await searchLinearHandler({}, 'ENG-7');
-    expect(result).toEqual([
-      {
-        ...createSearchResult(7),
-        attachments: nodes.slice(0, 50),
-        attachmentsComplete: false,
-      },
-    ]);
-  });
-
-  it('retains an exact issue even when fuzzy neighbors fill the result limit', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    mockedReadFile.mockResolvedValue(Buffer.from('encrypted-linear'));
-    mockedDecryptString.mockReturnValue('lin_api_valid');
+  it('preserves an exact issue when fuzzy neighbors fill the result limit', async () => {
+    storeLinearToken();
     const results = Array.from({ length: 25 }, (_, index) =>
       createSearchResult(index + 1),
     );
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues: jest.fn().mockResolvedValue({ nodes: results }),
-      issue: jest.fn().mockResolvedValue({
-        attachments: jest
-          .fn()
-          .mockResolvedValue({ nodes: [], pageInfo: { hasNextPage: false } }),
-      }),
-    }));
+    mockSearchLinearIssues.mockResolvedValue(results);
+    mockReadLinearIssueAttachments.mockResolvedValue({
+      attachments: [],
+      complete: true,
+    });
 
     const result = await searchLinearHandler({}, 'ENG-25');
     expect(result).toHaveLength(20);
@@ -2095,25 +2709,19 @@ describe('searchLinearHandler', () => {
       attachments: [],
       attachmentsComplete: true,
     });
+    expect(result[0]).toEqual({
+      ...createSearchResult(25),
+      attachments: [],
+      attachmentsComplete: true,
+    });
   });
 
   it('caps mapped results at 20', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    const encrypted = Buffer.from('encrypted-linear');
+    storeLinearToken();
     const results = Array.from({ length: 25 }, (_value, index) =>
       createSearchResult(index + 1),
     );
-    const searchIssues = jest
-      .fn<Promise<{ nodes: LinearTicketSearchResult[] }>, [string]>()
-      .mockResolvedValue({
-        nodes: results,
-      });
-
-    mockedReadFile.mockResolvedValue(encrypted);
-    mockedDecryptString.mockReturnValue('lin_api_valid');
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues,
-    }));
+    mockSearchLinearIssues.mockResolvedValue(results);
 
     const result = await searchLinearHandler({}, 'ENG');
 
@@ -2121,25 +2729,80 @@ describe('searchLinearHandler', () => {
     expect(result).toEqual(results.slice(0, 20));
   });
 
-  it('returns [] when searchIssues rejects', async () => {
-    mockedIsEncryptionAvailable.mockReturnValue(true);
-    const encrypted = Buffer.from('encrypted-linear');
+  it('returns [] when helper search rejects for a non-identifier query', async () => {
+    storeLinearToken();
+    mockSearchLinearIssues.mockRejectedValue(new Error('Unauthorized'));
     const writeSpy = jest
       .spyOn(process.stderr, 'write')
       .mockImplementation(() => true);
-    const searchIssues = jest
-      .fn<Promise<{ nodes: LinearTicketSearchResult[] }>, [string]>()
-      .mockRejectedValue(new Error('Unauthorized'));
 
-    mockedReadFile.mockResolvedValue(encrypted);
-    mockedDecryptString.mockReturnValue('lin_api_revoked');
-    mockedLinearClient.mockImplementation(() => ({
-      searchIssues,
-    }));
+    try {
+      await expect(searchLinearHandler({}, 'ENG')).resolves.toEqual([]);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
 
-    await expect(searchLinearHandler({}, 'ENG')).resolves.toEqual([]);
+  it('logs no request or provider text when a LinearApiError is thrown', async () => {
+    const identifier = 'ENG-42';
+    const apiKey = 'lin_api_test_token';
+    storeLinearToken(apiKey);
+    mockSearchLinearIssues.mockRejectedValue(
+      new LinearApiError('searchIssues', 'ratelimited', 429, null, false),
+    );
+    const writeSpy = jest
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
 
-    writeSpy.mockRestore();
+    try {
+      await expect(searchLinearHandler({}, identifier)).rejects.toThrow(
+        'Linear is rate limiting requests. Try again shortly.',
+      );
+      const line = writeSpy.mock.calls.map(([chunk]) => String(chunk)).join('');
+
+      expect(line).toContain(
+        '[settings] Failed to search Linear issues: operation=searchIssues status=429 type=ratelimited',
+      );
+      expect(line).not.toContain(apiKey);
+      expect(line).not.toContain(identifier);
+      expect(line).not.toContain('issue_leak_42');
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
+  it('logs no request or provider text for an untyped error', async () => {
+    const identifier = 'ENG-42';
+    const apiKey = 'lin_api_test_token';
+    const errorText = `${apiKey} ${identifier} issue_leak_42 provider response`;
+    storeLinearToken(apiKey);
+    mockSearchLinearIssues.mockRejectedValue(new Error(errorText));
+    const writeSpy = jest
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+
+    try {
+      let searchError: unknown;
+      try {
+        await searchLinearHandler({}, identifier);
+      } catch (error: unknown) {
+        searchError = error;
+      }
+      const line = writeSpy.mock.calls.map(([chunk]) => String(chunk)).join('');
+
+      expect(line).toContain(
+        '[settings] Failed to search Linear issues: type unknown',
+      );
+      expect(line).not.toContain(apiKey);
+      expect(line).not.toContain(identifier);
+      expect(line).not.toContain('issue_leak_42');
+      expect(searchError).toHaveProperty(
+        'message',
+        'Couldn’t reach Linear. Try again.',
+      );
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 });
 
@@ -2153,6 +2816,10 @@ describe('saveModelGatewayCredentialHandler', () => {
   it.each(['sk-live-key', ''])(
     'reports persisted gateway key after session invalidation fails (%s)',
     async (apiKey) => {
+      const events = await import('../lib/provider-connection-events');
+      events.resetProviderConnectionEventsForTests();
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
       mockedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
       mockInvalidateProviderAuthSessions.mockRejectedValueOnce(
         new Error('session cleanup failed'),
@@ -2163,8 +2830,187 @@ describe('saveModelGatewayCredentialHandler', () => {
       ).resolves.toMatchObject({ valid: apiKey.length > 0 });
       expect(mockSaveModelGatewayCredential).toHaveBeenCalledTimes(1);
       expect(mockInvalidateProviderAuthSessions).toHaveBeenCalledTimes(1);
+      if (apiKey)
+        expect(connection).toHaveBeenCalledWith({
+          provider: 'model_gateway',
+          connectionMethod: 'api_key',
+          connectSource: 'in_app',
+        });
+      else expect(connection).not.toHaveBeenCalled();
+      stop();
     },
   );
+
+  it('can replace a key when the analytics baseline cannot read the old credential', async () => {
+    mockLoadModelGatewayCredential.mockRejectedValueOnce(
+      new Error('old credential cannot be decrypted'),
+    );
+    mockedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
+    await expect(
+      saveModelGatewayCredentialHandler({}, input),
+    ).resolves.toMatchObject({ valid: true });
+    expect(mockSaveModelGatewayCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['store-read', 'owner-recheck'] as const)(
+    'discards a gateway read superseded by a committed save during %s',
+    async (phase) => {
+      const events = await import('../lib/provider-connection-events');
+      events.resetProviderConnectionEventsForTests();
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      const oldRecord = {
+        organizationId: input.organizationId,
+        apiKey: 'old-key',
+        baseUrlAtSave: 'https://gateway.acme.test',
+        validated: true,
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      };
+      const accounts = await import('../lib/canopy-cloud-account-store');
+      const currentAccount = await accounts.loadCanopyCloudAccount();
+      const account = jest
+        .spyOn(accounts, 'loadCanopyCloudAccount')
+        .mockResolvedValue(currentAccount);
+      let releaseRead: () => void = () => {
+        throw new Error('Read has not started');
+      };
+      let markReadStarted: () => void = () => undefined;
+      const readStarted = new Promise<void>((resolve) => {
+        markReadStarted = resolve;
+      });
+      const delayedRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      mockLoadModelGatewayCredential.mockResolvedValue(oldRecord);
+      mockedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
+      try {
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        connection.mockClear();
+        mockLoadModelGatewayCredential.mockImplementationOnce(() => {
+          if (phase === 'owner-recheck') {
+            account.mockImplementationOnce(() => {
+              markReadStarted();
+              return delayedRead.then(() => currentAccount);
+            });
+            return Promise.resolve(oldRecord);
+          }
+          markReadStarted();
+          return delayedRead.then(() => oldRecord);
+        });
+        const pendingRead = loadModelGatewayCredentialHandler(
+          {},
+          input.organizationId,
+        );
+        await readStarted;
+        await saveModelGatewayCredentialHandler({}, input);
+        releaseRead();
+        await pendingRead;
+        mockLoadModelGatewayCredential.mockResolvedValue({
+          ...oldRecord,
+          apiKey: input.apiKey,
+        });
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        expect(
+          connection.mock.calls.map(([event]) => event.connectSource),
+        ).toEqual(['in_app']);
+      } finally {
+        releaseRead();
+        account.mockRestore();
+        stop();
+        events.resetProviderConnectionEventsForTests();
+        mockLoadModelGatewayCredential.mockReset();
+      }
+    },
+  );
+
+  it('baselines gateway credentials independently for accounts in the same organization', async () => {
+    const accounts = await import('../lib/canopy-cloud-account-store');
+    const events = await import('../lib/provider-connection-events');
+    events.resetProviderConnectionEventsForTests();
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    let accountId = 'account-a';
+    const account = jest
+      .spyOn(accounts, 'loadCanopyCloudAccount')
+      .mockImplementation(() =>
+        Promise.resolve({
+          apiKey: 'test-cloud-key',
+          capabilities: [],
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+          account: {
+            id: accountId,
+            name: 'Fixture',
+            email: 'fixture@example.test',
+            role: 'VIEWER',
+          },
+        }),
+      );
+    mockLoadModelGatewayCredential.mockImplementation(() =>
+      Promise.resolve({
+        organizationId: input.organizationId,
+        apiKey: `key-${accountId}`,
+        baseUrlAtSave: 'https://gateway.acme.test',
+        validated: true,
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      }),
+    );
+    mockedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
+    try {
+      await loadModelGatewayCredentialHandler({}, input.organizationId);
+      accountId = 'account-b';
+      await loadModelGatewayCredentialHandler({}, input.organizationId);
+      accountId = 'account-a';
+      await loadModelGatewayCredentialHandler({}, input.organizationId);
+      expect(
+        connection.mock.calls.map(([event]) => event.connectSource),
+      ).toEqual(['at_startup', 'at_startup']);
+      connection.mockClear();
+      // A late credential read belongs to the captured owner, never the next account.
+      mockLoadModelGatewayCredential.mockImplementationOnce(() => {
+        accountId = 'account-c';
+        return Promise.resolve({
+          organizationId: input.organizationId,
+          apiKey: 'late-account-a-key',
+          baseUrlAtSave: 'https://gateway.acme.test',
+          validated: true,
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        });
+      });
+      await loadModelGatewayCredentialHandler({}, input.organizationId);
+      expect(connection).not.toHaveBeenCalled();
+      accountId = 'account-a';
+      // A genuinely changed credential within an owner still counts.
+      await saveModelGatewayCredentialHandler({}, input);
+      expect(connection).toHaveBeenCalledWith({
+        provider: 'model_gateway',
+        connectionMethod: 'api_key',
+        connectSource: 'in_app',
+      });
+      connection.mockClear();
+      mockLoadModelGatewayCredential.mockResolvedValue({
+        organizationId: input.organizationId,
+        apiKey: input.apiKey,
+        baseUrlAtSave: 'https://gateway.acme.test',
+        validated: true,
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      });
+      mockedFetch.mockImplementationOnce(() => {
+        accountId = 'account-c';
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      });
+      await saveModelGatewayCredentialHandler(
+        {},
+        { ...input, apiKey: 'replacement' },
+      );
+      expect(connection).not.toHaveBeenCalled();
+    } finally {
+      account.mockRestore();
+      stop();
+      events.resetProviderConnectionEventsForTests();
+      mockLoadModelGatewayCredential.mockReset();
+    }
+  });
 
   it('attaches a typed storage failure without refreshing provider sessions', async () => {
     mockedFetch.mockResolvedValue(
@@ -2219,6 +3065,161 @@ describe('saveModelGatewayCredentialHandler', () => {
       }),
     );
   });
+
+  it('baselines legacy keys of unknown validation history without counting an unchanged resave', async () => {
+    const events = await import('../lib/provider-connection-events');
+    events.resetProviderConnectionEventsForTests();
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    mockLoadModelGatewayCredential.mockResolvedValue({
+      ...input,
+      baseUrlAtSave: 'https://gateway.acme.test',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    });
+    mockedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
+    try {
+      await loadModelGatewayCredentialHandler({}, input.organizationId);
+      await saveModelGatewayCredentialHandler({}, input);
+      expect(connection.mock.calls.map(([event]) => event)).toEqual([
+        {
+          provider: 'model_gateway',
+          connectionMethod: 'api_key',
+          connectSource: 'at_startup',
+        },
+      ]);
+    } finally {
+      stop();
+      events.resetProviderConnectionEventsForTests();
+    }
+  });
+
+  it.each(['network', 'server', 'rejected', 'changed-key', 'changed-url'])(
+    'retains validation only for unchanged credentials after %s failure',
+    async (failure) => {
+      const events = await import('../lib/provider-connection-events');
+      events.resetProviderConnectionEventsForTests();
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      let saved: (SavedGatewayCredential & { updatedAt: string }) | null = null;
+      mockLoadModelGatewayCredential.mockImplementation(() =>
+        Promise.resolve(saved),
+      );
+      mockSaveModelGatewayCredential.mockImplementation((record) => {
+        saved = { ...record, updatedAt: '2026-10-27T00:00:00.000Z' };
+        return Promise.resolve();
+      });
+      const retryInput = {
+        ...input,
+        apiKey: failure === 'changed-key' ? 'replacement-key' : input.apiKey,
+        baseUrl:
+          failure === 'changed-url'
+            ? 'https://other.gateway.test'
+            : 'https://gateway.acme.test/',
+      };
+      try {
+        mockedFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+        await saveModelGatewayCredentialHandler({}, input);
+        if (failure === 'network')
+          mockedFetch.mockRejectedValueOnce(new Error('fetch failed'));
+        else
+          mockedFetch.mockResolvedValueOnce(
+            new Response('{}', { status: failure === 'rejected' ? 401 : 503 }),
+          );
+        await saveModelGatewayCredentialHandler({}, retryInput);
+        const retained = failure === 'network' || failure === 'server';
+        expect(mockSaveModelGatewayCredential.mock.calls[1][0].validated).toBe(
+          retained,
+        );
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        mockedFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+        await saveModelGatewayCredentialHandler({}, retryInput);
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        expect(
+          connection.mock.calls.filter(
+            ([event]) =>
+              !event.failureReason && event.connectSource !== 'at_startup',
+          ),
+        ).toHaveLength(retained ? 1 : 2);
+      } finally {
+        stop();
+        events.resetProviderConnectionEventsForTests();
+        mockSaveModelGatewayCredential.mockReset();
+      }
+    },
+  );
+
+  it.each(['network', 'server'])(
+    'does not count a %s-failed save on reads or retries',
+    async (failure) => {
+      const events = await import('../lib/provider-connection-events');
+      events.resetProviderConnectionEventsForTests();
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      let saved: (SavedGatewayCredential & { updatedAt: string }) | null = null;
+      mockLoadModelGatewayCredential.mockImplementation(() =>
+        Promise.resolve(saved),
+      );
+      mockSaveModelGatewayCredential.mockImplementation((record) => {
+        saved = { ...record, updatedAt: '2026-10-27T00:00:00.000Z' };
+        return Promise.resolve();
+      });
+      if (failure === 'network')
+        mockedFetch.mockRejectedValue(new Error('fetch failed'));
+      else
+        mockedFetch.mockImplementation(() =>
+          Promise.resolve(new Response('{}', { status: 503 })),
+        );
+      try {
+        await expect(
+          saveModelGatewayCredentialHandler({}, input),
+        ).resolves.toMatchObject({ valid: false });
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        await expect(
+          saveModelGatewayCredentialHandler({}, input),
+        ).resolves.toMatchObject({ valid: false });
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        expect(connection.mock.calls.map(([event]) => event)).toEqual([
+          {
+            provider: 'model_gateway',
+            connectionMethod: 'api_key',
+            connectSource: 'in_app',
+            failureReason: 'network',
+          },
+          {
+            provider: 'model_gateway',
+            connectionMethod: 'api_key',
+            connectSource: 'in_app',
+            failureReason: 'network',
+          },
+        ]);
+        // Reopening the app must not convert unvalidated stored keys into successes.
+        events.resetProviderConnectionEventsForTests();
+        events.subscribeProviderConnections(connection);
+        connection.mockClear();
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        expect(connection).not.toHaveBeenCalled();
+        mockedFetch.mockImplementation(() =>
+          Promise.resolve(new Response('{}', { status: 200 })),
+        );
+        await expect(
+          saveModelGatewayCredentialHandler({}, input),
+        ).resolves.toMatchObject({ valid: true });
+        await loadModelGatewayCredentialHandler({}, input.organizationId);
+        await saveModelGatewayCredentialHandler({}, input);
+        expect(connection.mock.calls.map(([event]) => event)).toEqual([
+          {
+            provider: 'model_gateway',
+            connectionMethod: 'api_key',
+            connectSource: 'in_app',
+          },
+        ]);
+      } finally {
+        stop();
+        events.resetProviderConnectionEventsForTests();
+        mockSaveModelGatewayCredential.mockReset();
+      }
+    },
+  );
 
   it('does not brick routing when the probe merely could not reach the gateway', async () => {
     // `resolveOrgGatewayCredential` REFUSES to route any turn while a stored
@@ -2314,6 +3315,7 @@ describe('saveModelGatewayCredentialHandler', () => {
     );
     await Promise.resolve();
 
+    await new Promise((resolve) => setImmediate(resolve));
     expect(mockedFetch).toHaveBeenCalledTimes(1);
     finishOlderProbe?.(
       new Response(JSON.stringify({ data: [] }), { status: 200 }),
@@ -2526,6 +3528,69 @@ describe('Canopy Cloud account handlers', () => {
       orgFundingAvailable: false,
       orgPool: null,
     });
+  });
+
+  it('forgets the daily credit grant status when no account is connected (CAN-4633)', async () => {
+    const state = await loadCanopyCloudAiCredits();
+
+    expect(state.connected).toBe(false);
+    expect(mockClearDailyCreditGrantStatus).toHaveBeenCalledTimes(1);
+    expect(mockRecordDailyCreditGrantFromBalance).not.toHaveBeenCalled();
+  });
+
+  it('reports the balance read to daily credit grant telemetry (CAN-4633)', async () => {
+    mockSuccessfulCloudProbe();
+    await saveCanopyCloudApiKeyHandler({}, { apiKey: 'csk_valid' });
+    const balance = {
+      email: 'admin@example.test',
+      credits: 0,
+      eligible: false,
+      source: 'canopy',
+      dailyDripOutcome: 'blocked',
+      dailyDripBlockedReason: 'network_limit',
+    };
+    mockRequestCanopyCloudJson.mockImplementation((pathname: string) => {
+      if (pathname === '/api/v1/ai-credits/subscription') {
+        return Promise.resolve(null);
+      }
+      if (pathname === '/api/v1/ai-credits/balance') {
+        return Promise.resolve(balance);
+      }
+      return Promise.reject(new Error(`Unexpected path ${pathname}`));
+    });
+
+    await loadCanopyCloudAiCredits();
+
+    expect(mockRecordDailyCreditGrantFromBalance).toHaveBeenCalledWith(
+      balance,
+      undefined,
+      { key: 'account:account-1' },
+    );
+  });
+
+  it('records a granted balance even when the parallel subscription fails (CAN-4633)', async () => {
+    mockSuccessfulCloudProbe();
+    await saveCanopyCloudApiKeyHandler({}, { apiKey: 'csk_valid' });
+    const balance = {
+      credits: 10,
+      dailyDripOutcome: 'granted',
+      dailyDripGrantedCredits: 10,
+    };
+    mockRequestCanopyCloudJson.mockImplementation((pathname: string) =>
+      pathname.endsWith('/balance')
+        ? Promise.resolve(balance)
+        : Promise.reject(new Error('Subscription unavailable')),
+    );
+
+    const state = await loadCanopyCloudAiCredits();
+
+    expect(state.error).toBe('Subscription unavailable');
+    expect(state.balance).toBeNull();
+    expect(mockRecordDailyCreditGrantFromBalance).toHaveBeenCalledWith(
+      balance,
+      undefined,
+      { key: 'account:account-1' },
+    );
   });
 
   it.each([
@@ -3515,20 +4580,22 @@ describe('Canopy Cloud account handlers', () => {
     // the wrong shape makes the store treat the read as corrupt and recover to
     // empty defaults.
     const prefsStr = JSON.stringify({ version: 1, preferences: prefs });
-    mockedReadFile.mockImplementation((target): Promise<Buffer | string> => {
-      const filePath = typeof target === 'string' ? target : '';
-      // The encrypted account file is read as a Buffer (then decrypted);
-      // preferences.json is read as a UTF-8 string.
-      if (filePath.includes('canopy-cloud-account')) {
-        return Promise.resolve(accountBuf);
-      }
-      if (filePath.endsWith('/preferences.json')) {
-        return Promise.resolve(prefsStr);
-      }
-      return Promise.reject(
-        Object.assign(new Error('missing'), { code: 'ENOENT' }),
-      );
-    });
+    mockedReadFile.mockImplementation(
+      (target): Promise<Buffer<ArrayBuffer> | string> => {
+        const filePath = typeof target === 'string' ? target : '';
+        // The encrypted account file is read as a Buffer (then decrypted);
+        // preferences.json is read as a UTF-8 string.
+        if (filePath.includes('canopy-cloud-account')) {
+          return Promise.resolve(accountBuf);
+        }
+        if (filePath.endsWith('/preferences.json')) {
+          return Promise.resolve(prefsStr);
+        }
+        return Promise.reject(
+          Object.assign(new Error('missing'), { code: 'ENOENT' }),
+        );
+      },
+    );
   };
 
   it('falls back to an anonymous guest session on disconnect when guest mode is enabled and guest consent is recorded', async () => {
@@ -3581,7 +4648,7 @@ describe('Canopy Cloud account handlers', () => {
       version: 1,
       preferences: { telemetrySharing: storedSharing },
     });
-    mockedReadFile.mockImplementation((target): Promise<Buffer | string> => {
+    mockedReadFile.mockImplementation((target): Promise<string> => {
       const filePath = typeof target === 'string' ? target : '';
       if (filePath.endsWith('/preferences.json')) {
         return Promise.resolve(prefsStr);
@@ -4239,6 +5306,94 @@ describe('loadOrgAiCreditsSpendable', () => {
       expect(availability.ownerOrganizationBalanceCredits).toBe(
         SPENDABLE.balanceCredits,
       );
+    });
+
+    it.each([undefined, null, '100', NaN, Infinity, -Infinity])(
+      'omits an unavailable or invalid pool balance (%s) without losing classification',
+      async (balanceCredits) => {
+        seedAccountWithOrgs();
+        const redacted = {
+          hasSpendableHeadroom: true,
+          hasBalanceNow: true,
+          canReplenish: true,
+          orgCreditPoolCapable: true,
+          hasPaymentMethodOnFile: true,
+          billingActive: true,
+        };
+        mockRequestCanopyCloudJson.mockImplementation((path: string) =>
+          Promise.resolve(
+            path.includes('/billing/credits/spendable')
+              ? balanceCredits === undefined
+                ? redacted
+                : { ...redacted, balanceCredits }
+              : balancePayload(false),
+          ),
+        );
+        const availability = await loadNativeAiCreditsAvailability({
+          kind: 'organization',
+          organizationId: 'org-healthy',
+        });
+        expect(
+          Object.hasOwn(availability, 'ownerOrganizationBalanceCredits'),
+        ).toBe(false);
+        expect(availability.inconclusive).toBeUndefined();
+        expect(availability.inOrg).toBe(true);
+        expect(availability.orgCreditPoolCovered).toBe(true);
+        expect(availability.orgSpendable).toBe(true);
+        expect(availability.personalEligible).toBe(false);
+      },
+    );
+
+    it('projects zero from a resolved capable pool', async () => {
+      seedAccountWithOrgs();
+      mockRequestCanopyCloudJson.mockImplementation((path: string) =>
+        Promise.resolve(
+          path.includes('/billing/credits/spendable')
+            ? {
+                ...SPENDABLE,
+                balanceCredits: 0,
+                balanceUsd: 0,
+                hasBalanceNow: false,
+                hasSpendableHeadroom: false,
+              }
+            : balancePayload(false),
+        ),
+      );
+      const availability = await loadNativeAiCreditsAvailability({
+        kind: 'organization',
+        organizationId: 'org-healthy',
+      });
+      expect(availability.ownerOrganizationBalanceCredits).toBe(0);
+      expect(availability.inconclusive).toBeUndefined();
+      expect(availability.orgSpendable).toBe(false);
+    });
+
+    it('keeps a redacted empty Member pool conclusively exhausted despite armed top-up', async () => {
+      seedAccountWithOrgs();
+      mockRequestCanopyCloudJson.mockImplementation((path: string) =>
+        Promise.resolve(
+          path.includes('/billing/credits/spendable')
+            ? {
+                hasSpendableHeadroom: false,
+                hasBalanceNow: false,
+                canReplenish: true,
+                orgCreditPoolCapable: true,
+                hasPaymentMethodOnFile: true,
+                billingActive: true,
+              }
+            : balancePayload(false),
+        ),
+      );
+      const availability = await loadNativeAiCreditsAvailability({
+        kind: 'organization',
+        organizationId: 'org-healthy',
+      });
+      expect(
+        Object.hasOwn(availability, 'ownerOrganizationBalanceCredits'),
+      ).toBe(false);
+      expect(availability.inconclusive).toBeUndefined();
+      expect(availability.orgSpendable).toBe(false);
+      expect(availability.orgCreditPoolCovered).toBe(true);
     });
 
     // The marker must not be so eager that it erases coverage we ALREADY

@@ -95,6 +95,7 @@ function activity(snapshot: PortalSessionShellState | null): ActivityState {
     snapshot,
     sectionOrderOverrides: {},
     hydrate: (): void => {},
+    patch: (): void => {},
     setSectionOrder: (): void => {},
   };
 }

@@ -101,34 +101,39 @@ const failedSummary: ExecutionSummary = {
   pipeline_id: 'pipeline-1',
   pipeline_name: 'Build pipeline',
   status: 'failure',
+  status_reasons: [],
   started_at: '2026-05-19T00:00:00.000Z',
   completed_at: '2026-05-19T00:01:00.000Z',
   cwd: '/repo',
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };
 
-const failedState = {
+const failedState: ExecutionState = {
   version: 4,
   id: 'execution-1',
   pipeline_id: 'pipeline-1',
   pipeline_snapshot: {
-    id: 'pipeline-1',
     name: 'Build pipeline',
+    scope: ['directory'],
     jobs: {},
   },
   status: 'failure',
   jobs: {},
+  job_definitions: {},
+  job_groups: {},
+  pending_pauses: [],
+  status_reasons: [],
   started_at: '2026-05-19T00:00:00.000Z',
   completed_at: '2026-05-19T00:01:00.000Z',
   cwd: '/repo',
   env: {},
   inputs: {},
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
-} as unknown as ExecutionState;
+};
 
 describe('PipelineRunsSection failed-run Debug action', () => {
   beforeEach(() => {
@@ -155,7 +160,8 @@ describe('PipelineRunsSection failed-run Debug action', () => {
         capturedAt: new Date(0).toISOString(),
         digest: 'digest',
         snapshot: {
-          activePage: 'activity',
+          activePage: 'workflows',
+          archivedContainers: { count: 0, viewerOpen: false },
           overlays: {
             commandPaletteOpen: false,
             fileSearchPaletteOpen: false,

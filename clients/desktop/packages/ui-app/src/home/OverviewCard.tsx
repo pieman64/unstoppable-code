@@ -52,7 +52,7 @@ function OverviewCardImpl({
   return (
     <div
       role="group"
-      className={`group relative flex w-full flex-col gap-0.5 rounded-md border bg-card px-3 py-2 text-left transition focus-within:border-line-accent/60 ${
+      className={`group relative flex w-full flex-col gap-0.5 rounded-md border bg-card px-3 py-2 text-left transition-colors focus-within:border-line-accent/60 ${
         onClick
           ? 'cursor-pointer hover:border-line-accent/40 hover:bg-accent-subtle/40'
           : 'cursor-default'

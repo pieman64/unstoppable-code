@@ -30,7 +30,7 @@ const CATALOG = [
 function installApi(api: Partial<CanopyApi>): void {
   Object.defineProperty(window, 'api', {
     configurable: true,
-    value: api as CanopyApi,
+    value: api,
   });
 }
 

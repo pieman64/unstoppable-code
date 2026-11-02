@@ -1,8 +1,10 @@
 'use client';
 
 import type { JSX } from 'react';
+import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 import type { ActiveInstalledItemCounts } from '../lib/installed-item-status';
 import { Button } from './Button';
+import { SettingsRowsRow } from './settings/SettingsRows';
 
 /**
  * Settings summary of what loads into every new chat (CAN-4255). Counts come
@@ -11,10 +13,10 @@ import { Button } from './Button';
  */
 
 /**
- * Temporary shared name for the capability management surface until the
- * Customize naming work (#5727) exports its canonical label.
+ * The action that opens Customize, worded as on the MCP servers page so both
+ * Settings pages name it the same way.
  */
-export const CUSTOMIZE_SURFACE_LABEL = 'Customize';
+export const OPEN_CUSTOMIZE_LABEL = `Open ${CUSTOMIZE_LABEL}`;
 
 export const ACTIVE_ITEMS_SUMMARY_DESCRIPTION =
   'Active items are added to every new chat. Any project or chat can turn one off from its plugin picker.';
@@ -80,26 +82,20 @@ export function ActiveItemsSummary({
     );
   }
   return (
-    <div
-      data-testid={testId}
-      className="flex items-start justify-between gap-4"
-    >
-      <div className="flex min-w-0 flex-col gap-1">
-        <p data-testid={`${testId}-counts`} className="text-s">
-          {line}
-        </p>
-        <p className="text-xs fg-tertiary">
-          {ACTIVE_ITEMS_SUMMARY_DESCRIPTION}
-        </p>
-      </div>
-      <Button
-        variant="secondary"
-        size="sm"
-        data-testid={`${testId}-manage`}
-        onClick={onManage}
-      >
-        {`Manage in ${CUSTOMIZE_SURFACE_LABEL}`}
-      </Button>
-    </div>
+    <SettingsRowsRow
+      dataTestId={testId}
+      label={<span data-testid={`${testId}-counts`}>{line}</span>}
+      description={ACTIVE_ITEMS_SUMMARY_DESCRIPTION}
+      control={
+        <Button
+          variant="secondary"
+          size="compact"
+          data-testid={`${testId}-manage`}
+          onClick={onManage}
+        >
+          {OPEN_CUSTOMIZE_LABEL}
+        </Button>
+      }
+    />
   );
 }

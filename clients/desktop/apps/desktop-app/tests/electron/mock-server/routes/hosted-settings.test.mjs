@@ -637,6 +637,31 @@ test('hosted-settings-long-timeline serves a Timeline long enough to scroll', as
 
 const OWNER = HOSTED_SETTINGS_ORG_IDS.owner;
 
+test('organization GitHub install handoff returns a guarded destination without changing connection state', async () => {
+  register();
+  const call = session(await signIn());
+  const { status, json } = await execute(call, 'organization.github.connect', {
+    organizationId: OWNER,
+  });
+  assert.equal(status, 200);
+  assert.equal(
+    settings.validateSettingsOperationResult(
+      'organization.github.connect',
+      json,
+    ).ok,
+    true,
+  );
+  assert.equal(new URL(json.installUrl).origin, 'https://github.com');
+  const detail = await execute(call, 'organization.detail', {
+    organizationId: OWNER,
+  });
+  assert.equal(detail.json.githubConnection.connected, false);
+  const member = await execute(call, 'organization.github.connect', {
+    organizationId: HOSTED_SETTINGS_ORG_IDS.member,
+  });
+  assert.equal(member.status, 403);
+});
+
 /** One sample input per served table entry, in an order that keeps state valid. */
 const OPERATION_SAMPLES = [
   ['account.details.update', { name: 'Portal Renamed' }],
@@ -664,6 +689,7 @@ const OPERATION_SAMPLES = [
   ['account.billing.charges', {}],
   ['account.billing.creditsLedger', {}],
   ['account.github.connection.read', {}],
+  ['organization.github.connect', { organizationId: OWNER }],
   ['organization.invitations.incoming', {}],
   [
     'organization.members.invite',
@@ -1339,10 +1365,12 @@ test('incoming invitations appear in page data, accept once, and are consumed on
     true,
   );
   assert.equal(incoming.json.invitations[0]?.id, INCOMING_INVITE);
+  assert.equal(incoming.json.invitations[0]?.organizationId, INCOMING_ORG);
   const page = await execute(call, 'settings.pageData', {
     route: { scope: 'organizations' },
   });
   assert.equal(page.json.data.invitations[0]?.id, INCOMING_INVITE);
+  assert.equal(page.json.data.invitations[0]?.organizationId, INCOMING_ORG);
   await validMutation(call, 'organization.invitations.respond', {
     inviteId: INCOMING_INVITE,
     action: 'accept',

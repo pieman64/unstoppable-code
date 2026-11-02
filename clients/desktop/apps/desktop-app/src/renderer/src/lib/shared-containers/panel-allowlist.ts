@@ -58,6 +58,7 @@ export function sharedContainerCapabilities(
     marketplaceOwnedAutomationShares: false,
     marketplaceOwnedShares: false,
     marketplaceSharedCollectionEdit: false,
+    customSkillEdit: false,
     workspaceCreation: false,
     workspaceReordering: false,
     worktreeReordering: false,

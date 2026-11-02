@@ -1,4 +1,4 @@
-import { useEffect, useState, type JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   AgentProviderType,
   NativeAiCreditsAvailability,
@@ -10,16 +10,38 @@ import {
 } from '@/lib/openBillingPage';
 import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
 import {
+  AiCreditsArrivedNotice,
+  AI_CREDITS_PURCHASE_LABEL,
+  AI_CREDITS_REOPEN_BILLING_LABEL,
   Notice,
   NoticeButton,
   noticeButtonClassName,
 } from '@canopy/ui-shared/components';
-import { GetAiCreditsCta } from './GetAiCreditsCta';
+import { TimeslotIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  GetAiCreditsCta,
+  type GetAiCreditsHandoffState,
+} from './GetAiCreditsCta';
+import { aiCreditsHandoffCopy } from './aiCreditsHandoffCopy';
 import { useChatTargetAiCreditsScope } from '@/lib/aiCreditsScope';
 import {
+  clearAiCreditsArrival,
+  markAiCreditsArrivalRouted,
+  selectAiCreditsArrivalEvidence,
+  selectAiCreditsArrivalForChat,
+  useAiCreditsArrivalStore,
+  type AiCreditsArrivalOrigin,
+} from '@/lib/aiCreditsArrivalConfirmation';
+import {
+  chatBannerKey,
   useNoBillingSourceSignal,
   type ChatBannerTarget,
 } from '@/stores/aiCreditsBannerStore';
+import {
+  trackCreditsRecoveryClick,
+  type CreditsRecoveryTrigger,
+} from '@/lib/creditsRecoveryTelemetry';
+import { CreditsRecoveryView } from './CreditsRecoveryView';
 import { AuthLoginModal } from '@/components/settings/AuthLoginModal';
 import type { ProviderModelAvailability } from '@/hooks/useProviderAvailability';
 import type { BillingLane } from '@canopy/desktop-shared/lib/default-model-lane';
@@ -33,9 +55,17 @@ import type { BillingLane } from '@canopy/desktop-shared/lib/default-model-lane'
  */
 const PRIMARY_BUTTON_CLASS = noticeButtonClassName('primary');
 
+/** The purchases this banner confirms. The usage-limit banner owns its own. */
+const ARRIVAL_ORIGINS: readonly AiCreditsArrivalOrigin[] = [
+  'no-billing-source',
+  'model-picker',
+];
+
 export interface NoBillingSourceBannerProps {
   /** Provider the current model resolves to. Only `claude` / `codex` can bill. */
   provider: AgentProviderType;
+  /** The main-owned queue is preserving a prompt after a credit refusal. */
+  queuedCreditHeld?: boolean;
   /** Live native-auth / credits availability for that provider. */
   availability: ProviderModelAvailability;
   /**
@@ -74,8 +104,8 @@ export interface NoBillingSourceBannerProps {
    * insisting credits are required and recommends an action the user just took.
    *
    * Deliberately `!== 'subscription'` rather than `=== 'ai-credits'`: when the
-   * framework is unresolved (toggle hidden, availability still loading) the
-   * banner keeps today's behavior. Only an explicit switch away suppresses it.
+   * framework is unresolved (for example, no model) the banner keeps today's
+   * behavior. Only an explicit switch away suppresses it.
    * The derived pre-flight path is untouched — it describes an account that
    * cannot pay either way.
    */
@@ -109,6 +139,25 @@ export interface NoBillingSourceBannerProps {
      */
     hasPolicyAllowedLane?: boolean;
   } | null;
+  /**
+   * The composer's streaming state. Used only to retire the arrival
+   * confirmation when the next turn starts (CAN-5160).
+   */
+  turnActive?: boolean;
+  /**
+   * True while the composer shows the "Using AI Credits" card for this chat.
+   * The card has its own arrival state (CAN-5159), so credits bought here are
+   * confirmed there instead of in a second notice beside it. Defaults to
+   * `false`.
+   */
+  aiCreditsCardVisible?: boolean;
+  /**
+   * True when the same billing resolver says that card WILL show once this
+   * chat can spend credits. The CTA learns about a purchase before the
+   * composer's eligibility read does, so without this the notice would flash
+   * for a frame before the card takes over. Defaults to `false`.
+   */
+  aiCreditsCardExpected?: boolean;
 }
 
 /**
@@ -127,27 +176,23 @@ export interface NoBillingSourceBannerProps {
  *
  * Note the deliberate asymmetry with the main-process backstop: this banner
  * hides while availability is `loading` (an inconclusive auth probe is not a
- * confirmed logout), matching how `resolveChatBillingFramework` hides the
- * billing toggle rather than asserting a logged-out state on a probe blip.
- *
- * KNOWN FALSE POSITIVE (ECW-9091 review round 6): a user whose provider
- * credential comes from Canopy Environments rather than a native login shows up
- * as `!nativeAuth`, so this banner appears even though `main`'s
- * `hasUserSuppliedProviderCredential` guard will fall their turn through to a
- * working native spawn. They are told to sign in while the send would actually
- * succeed. Narrow (no native login AND an Environments-supplied key) and
- * cosmetic — the send is not blocked. Fixing it properly means surfacing that
- * guard's result alongside `nativeAuth` in `useProviderAvailability`, which is
- * a main→renderer plumbing change rather than a banner change.
+ * confirmed logout). The billing resolver keeps subscription choice reachable
+ * through that same probe blip; this banner still avoids claiming sign-out.
+ * Provider credentials supplied through Canopy Environments count toward
+ * `nativeAuth` in `useProviderAvailability`, as they do in the send path.
  */
 export function NoBillingSourceBanner({
   provider,
+  queuedCreditHeld = false,
   availability,
   orgLapseVisible = false,
   target = null,
   gatewayOnlyModel = false,
   effectiveBillingFramework = null,
   noDispatchableModel = null,
+  turnActive = false,
+  aiCreditsCardVisible = false,
+  aiCreditsCardExpected = false,
 }: NoBillingSourceBannerProps): JSX.Element | null {
   const [nativeAvailability, setNativeAvailability] =
     useState<NativeAiCreditsAvailability | null>(null);
@@ -161,6 +206,9 @@ export function NoBillingSourceBanner({
   // reintroduced through the fix for it.
   const [coverageSettled, setCoverageSettled] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
+  // The credits CTA's browser hand-off, which takes over the title and
+  // message while it lasts (CAN-5162).
+  const [handoff, setHandoff] = useState<GetAiCreditsHandoffState | null>(null);
   const runtimeSignal = useNoBillingSourceSignal(target);
   // Coverage is a question about THIS chat's owner (CAN-3463).
   const creditsScope = useChatTargetAiCreditsScope(target);
@@ -321,10 +369,6 @@ export function NoBillingSourceBanner({
   // hides the banner. Unmounting the modal with the banner produced an
   // infinite open → refresh → hide → remount blink loop; instead the banner
   // body hides on its own while the modal stays up until its own onClose.
-  if (!billable || (!visible && !loginOpen)) {
-    return null;
-  }
-
   const providerLabel = getModelCatalogProviderLabel(provider);
   const coverage = resolveAiCreditsCoverage(nativeAvailability);
   const { showPurchase } = coverage;
@@ -411,15 +455,137 @@ export function NoBillingSourceBanner({
   // Never render an empty actions row.
   const hasActions = showSignIn || showCreditsButton;
 
+  useEffect(() => {
+    setHandoff(null);
+  }, [creditsScope, visible, showCreditsButton]);
+
+  // Credits bought from this banner's Get AI Credits (CAN-5160), and from the
+  // model picker or its recovery dialog, which have no notice of their own.
+  const arrival = useAiCreditsArrivalStore((s) =>
+    selectAiCreditsArrivalForChat(s, target, ARRIVAL_ORIGINS),
+  );
+  const arrivalEvidence = useAiCreditsArrivalStore((s) =>
+    selectAiCreditsArrivalEvidence(s, arrival?.handoffId),
+  );
+  const arrivalHandoffId = arrival?.handoffId ?? null;
+  // The "Using AI Credits" card confirms the purchase itself, so the record
+  // moves there rather than stacking a second notice beside it. Once routed
+  // the card owns its lifecycle; the notice below is only for a chat that
+  // has no card, such as a gateway-only model.
+  useEffect(() => {
+    if (aiCreditsCardVisible && arrivalHandoffId !== null) {
+      markAiCreditsArrivalRouted(arrivalHandoffId);
+    }
+  }, [aiCreditsCardVisible, arrivalHandoffId]);
+  // A record exists only after this banner's own CTA found coverage, so the
+  // dead end is over whatever this banner's lagging re-read says. Gating on
+  // that read would paint the attention notice for a frame and announce
+  // twice. While the org-lapse banner explains its dead end the record waits.
+  const arrivalPending = billable && !orgLapseVisible && arrival !== null;
+  // Until the expected card takes the slot, show nothing: neither the
+  // notice it replaces nor the dead end the purchase just ended.
+  const awaitingCard = arrivalPending && aiCreditsCardExpected;
+  const showArrival =
+    arrivalPending && !aiCreditsCardVisible && !aiCreditsCardExpected;
+
+  // Seeded with the mount-time value, so a banner that mounts during a
+  // running turn waits for the next turn to start.
+  const wasTurnActive = useRef(turnActive);
+  useEffect(() => {
+    const started = !wasTurnActive.current && turnActive;
+    wasTurnActive.current = turnActive;
+    if (started && arrivalHandoffId !== null) {
+      clearAiCreditsArrival(arrivalHandoffId);
+    }
+  }, [turnActive, arrivalHandoffId]);
+
+  // A switch to Subscription means the chat no longer spends the credits.
+  // Only the edge from credits counts: before the purchase lands the chat
+  // already resolves to a locked 'subscription' with no credits, and the
+  // record arrives while that value still stands. The composer keeps this
+  // banner mounted across chats, so only an edge within one chat counts.
+  const frameworkKey = target ? chatBannerKey(target) : null;
+  const previousFramework = useRef({
+    key: frameworkKey,
+    value: effectiveBillingFramework,
+  });
+  useEffect(() => {
+    const switched =
+      previousFramework.current.key === frameworkKey &&
+      previousFramework.current.value === 'ai-credits' &&
+      effectiveBillingFramework === 'subscription';
+    previousFramework.current = {
+      key: frameworkKey,
+      value: effectiveBillingFramework,
+    };
+    if (switched && arrivalHandoffId !== null) {
+      clearAiCreditsArrival(arrivalHandoffId);
+    }
+  }, [frameworkKey, effectiveBillingFramework, arrivalHandoffId]);
+
+  // The Check again button the user pressed unmounts when the arrival
+  // replaces the attention notice; move focus to the arrival in that commit.
+  // Same pattern as `AiCreditsUsageLimitBanner`.
+  const noticeRef = useRef<HTMLDivElement | null>(null);
+  const restoreNoticeFocus = useRef(false);
+  const attachNotice = useCallback((element: HTMLDivElement | null): void => {
+    if (element === null) {
+      const previous = noticeRef.current;
+      restoreNoticeFocus.current =
+        previous !== null &&
+        previous.contains(previous.ownerDocument.activeElement);
+      // Hiding the banner must not reclaim focus when it later returns.
+      queueMicrotask((): void => {
+        restoreNoticeFocus.current = false;
+      });
+    } else if (restoreNoticeFocus.current) {
+      element.focus();
+      restoreNoticeFocus.current = false;
+    }
+    noticeRef.current = element;
+  }, []);
+
+  if (!billable || (!visible && !loginOpen && !showArrival)) {
+    return null;
+  }
+
+  // Read only while the CTA is rendered, so it cannot outlive its button.
+  // A recovered account is past the hand-off, whatever it last reported.
+  const visibleHandoff =
+    showCreditsButton && !coverageRecovered ? handoff : null;
+  const reopenBilling = visibleHandoff?.onReopenBilling;
+
   const actions = hasActions ? (
     <>
       {showSignIn && (
         <NoticeButton
           variant="secondary"
-          onClick={(): void => setLoginOpen(true)}
+          onClick={(): void => {
+            trackCreditsRecoveryClick({
+              surface: 'chat_banner',
+              action: 'provider_sign_in',
+            });
+            setLoginOpen(true);
+          }}
           data-testid="chat-input-no-billing-source-sign-in"
         >
-          {`Sign in to ${providerLabel}`}
+          {/* Mid-purchase, signing in is the way out if credits are slow. */}
+          {visibleHandoff !== null
+            ? `Sign in to ${providerLabel} instead`
+            : `Sign in to ${providerLabel}`}
+        </NoticeButton>
+      )}
+      {visibleHandoff !== null && reopenBilling !== undefined && (
+        <NoticeButton
+          variant="secondary"
+          onClick={reopenBilling}
+          busy={visibleHandoff.reopenPending}
+          disabled={visibleHandoff.reopenDisabled}
+          // Keep focus where it was (often the composer), like the CTA.
+          onMouseDown={(e): void => e.preventDefault()}
+          data-testid="chat-input-no-billing-source-reopen-billing"
+        >
+          {AI_CREDITS_REOPEN_BILLING_LABEL}
         </NoticeButton>
       )}
       {showCreditsButton && (
@@ -435,7 +601,7 @@ export function NoBillingSourceBanner({
               own rule: the button is rendered but inert until this
               surface's coverage read settles. */}
           <GetAiCreditsCta
-            label="Get AI Credits"
+            label={AI_CREDITS_PURCHASE_LABEL}
             {...(creditsScope ? { aiCreditsScope: creditsScope } : {})}
             // Re-read rather than ignore: the CTA's read is fresher
             // than this banner's, so "covered" here means the
@@ -460,6 +626,20 @@ export function NoBillingSourceBanner({
             // This action bar is a horizontal, right-aligned row; the
             // default stacked hand-off block would re-flow it.
             handoffLayout="compact"
+            // Always the browser, even when Settings → Billing could open
+            // in-app (CAN-5159): the waiting state and Check again stay in
+            // this chat instead of the purchase being lost in Settings. The
+            // default route clears the hand-off on an in-app open, so an
+            // arrival notice here could never show.
+            billingDestination="browser"
+            onHandoffChange={setHandoff}
+            confirmArrival="no-billing-source"
+            onGetCreditsClick={(): void =>
+              trackCreditsRecoveryClick({
+                surface: 'chat_banner',
+                action: 'credits_purchase',
+              })
+            }
             dataTestId="chat-input-no-billing-source-get-credits"
           />
         </span>
@@ -512,52 +692,114 @@ export function NoBillingSourceBanner({
       // over: say so instead of continuing to sell credits.
       coverageRecovered
       ? { title: 'Credits available again', message: 'You can send it now.' }
-      : // `missing === 'policy-allowance'` is NOT a second arm here: the
-        // resolver only returns it when `lanesNeeded` is empty, which is
-        // exactly `policyOnlyDeadEnd` above.
-        creditsOnlyDeadEnd
-        ? {
-            title: 'AI Credits required',
-            message: `Your organization only allows models that require ${brandText.appName} AI Credits.`,
-          }
-        : policyRestricted &&
-            noDispatchableModel?.missing === 'both' &&
-            noDispatchableModel.hasPolicyAllowedLane !== false
+      : // Mid-purchase, the step the user is on replaces the dead end they
+        // already acted on (CAN-5162).
+        visibleHandoff !== null
+        ? aiCreditsHandoffCopy(visibleHandoff.feedback)
+        : // `missing === 'policy-allowance'` is NOT a second arm here: the
+          // resolver only returns it when `lanesNeeded` is empty, which is
+          // exactly `policyOnlyDeadEnd` above.
+          creditsOnlyDeadEnd
           ? {
-              title: 'No model available',
-              message: `Your organization's allowed models all need a billing source you don't have yet.`,
+              title: 'AI Credits required',
+              message: `Your organization only allows models that require ${brandText.appName} AI Credits.`,
             }
-          : // Every remaining dispatch dead end keeps the copy ECW-9091
-            // shipped: without a policy the resolver's verdict is about
-            // payment, and the CTAs below name the remedy.
-            dispatchDeadEnd
+          : policyRestricted &&
+              noDispatchableModel?.missing === 'both' &&
+              noDispatchableModel.hasPolicyAllowedLane !== false
             ? {
-                title: 'No billing source',
-                message: 'No available model can be paid for right now.',
+                title: 'No model available',
+                message: `Your organization's allowed models all need a billing source you don't have yet.`,
               }
-            : runtimeSignalActive
+            : // Every remaining dispatch dead end keeps the copy ECW-9091
+              // shipped: without a policy the resolver's verdict is about
+              // payment, and the CTAs below name the remedy.
+              dispatchDeadEnd
               ? {
-                  title: 'Message not sent',
-                  message: `Your ${brandText.appName} AI Credits didn't cover that message.`,
+                  title: 'No billing source',
+                  message: 'No available model can be paid for right now.',
                 }
-              : {
-                  title: `Not signed in to ${providerLabel}`,
-                  message: `You have no ${brandText.appName} AI Credits to cover this chat either.`,
-                };
+              : runtimeSignalActive
+                ? {
+                    title: 'Message not sent',
+                    message: `Your ${brandText.appName} AI Credits didn't cover that message.`,
+                  }
+                : {
+                    title: `Not signed in to ${providerLabel}`,
+                    message: `You have no ${brandText.appName} AI Credits to cover this chat either.`,
+                  };
+
+  // Same precedence as the copy: a dispatch dead end, then a failed turn. A
+  // pure org-policy dead end is not a credits state, so it records no view.
+  const recoveryTrigger: CreditsRecoveryTrigger = dispatchDeadEnd
+    ? 'no_dispatchable_model'
+    : runtimeSignalActive
+      ? 'failed_turn'
+      : 'preflight';
 
   return (
     <>
-      {visible && (
+      {visible && !policyOnlyDeadEnd && !showArrival && !awaitingCard && (
+        <CreditsRecoveryView
+          surface="chat_banner"
+          trigger={recoveryTrigger}
+          dedupeKey={target ? chatBannerKey(target) : 'composer'}
+        />
+      )}
+      {showArrival ? (
+        // Its own component and live-region scope, not a `copy` arm. Only
+        // the title and body: Check again belongs to the dead end.
+        <AiCreditsArrivedNotice
+          ref={attachNotice}
+          addedCredits={arrivalEvidence?.addedCredits ?? null}
+          balanceCredits={arrivalEvidence?.balanceCredits ?? null}
+          data-testid="chat-input-no-billing-source-arrival"
+          tabIndex={-1}
+          onDismiss={(): void => {
+            if (arrivalHandoffId !== null) {
+              clearAiCreditsArrival(arrivalHandoffId);
+            }
+          }}
+          dismissTestId="chat-input-no-billing-source-arrival-dismiss"
+        >
+          You can send it now.
+        </AiCreditsArrivedNotice>
+      ) : visible && !awaitingCard ? (
         <Notice
-          intent="attention"
-          title={copy.title}
+          ref={attachNotice}
+          // Waiting on a purchase is not a warning; only a failed check is.
+          intent={
+            visibleHandoff !== null &&
+            visibleHandoff.feedback !== 'check-failed'
+              ? 'neutral'
+              : 'attention'
+          }
+          {...(visibleHandoff !== null &&
+          visibleHandoff.feedback !== 'check-failed'
+            ? { icon: <TimeslotIcon size={16} aria-hidden="true" /> }
+            : {})}
+          title={
+            queuedCreditHeld && !policyOnlyDeadEnd
+              ? 'Message queued'
+              : copy.title
+          }
           data-testid="chat-input-no-billing-source-banner"
           {...(detail !== undefined ? { detail } : {})}
-          {...(actions !== undefined ? { actions } : {})}
+          {...(actions !== undefined
+            ? {
+                actions,
+                // The hand-off's buttons get their own row, so the copy
+                // keeps the full width.
+                actionsPlacement:
+                  visibleHandoff !== null ? 'below' : 'trailing',
+              }
+            : {})}
         >
-          {copy.message}
+          {queuedCreditHeld && !policyOnlyDeadEnd
+            ? 'Your queued message is still saved. Add credits, then click Retry.'
+            : copy.message}
         </Notice>
-      )}
+      ) : null}
       {/* Rendered as a SIBLING of the `role="status"` element, not inside it.
           `DialogModal` does not portal, so nesting the modal here would make a
           `dialog` a DOM child of a polite live region — invalid ARIA, and

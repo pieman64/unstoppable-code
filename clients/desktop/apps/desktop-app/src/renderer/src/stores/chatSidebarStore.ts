@@ -13,7 +13,8 @@
 // always those selectors' values over the same snapshot: it can never
 // disagree with the chat store, and phase 12's render cadence carries over.
 // The live-delegate input of the badge keys comes from the delegation
-// activity store, as before.
+// activity store, as before, and the live provider-task input from the live
+// background-task store.
 
 import { createStore, useStore, type StoreApi } from 'zustand';
 import type {
@@ -24,9 +25,11 @@ import {
   deriveChatBadgeKeys,
   type ChatBadgeKeys,
   type LiveDelegateChats,
+  type LiveProviderTaskChats,
 } from '@/components/sidebar/chatBadgeKeys';
 import { chatStoreRenderView } from './chatStore';
 import { useDelegationActivityStore } from './delegationActivityStore';
+import { useLiveBackgroundTaskStore } from './liveBackgroundTaskStore';
 import type { ChatState } from './chat/state';
 import type {
   ChatTab,
@@ -100,7 +103,8 @@ function sameBadgeKeys(left: ChatBadgeKeys, right: ChatBadgeKeys): boolean {
     left.active === right.active &&
     left.awaiting === right.awaiting &&
     left.question === right.question &&
-    left.toolApproval === right.toolApproval
+    left.toolApproval === right.toolApproval &&
+    left.background === right.background
   );
 }
 
@@ -115,6 +119,7 @@ interface ChatSidebarDerivationMemo {
   pendingApprovals?: Record<string, ApprovalRequestEvent>;
   persistedWorktreeBadges?: Record<string, WorktreeChatBadgesSummary>;
   liveDelegateChats?: LiveDelegateChats;
+  liveProviderTaskChats?: LiveProviderTaskChats;
 }
 
 function createChatSidebarDerivationMemo(): ChatSidebarDerivationMemo {
@@ -166,6 +171,7 @@ const EMPTY_BADGE_KEYS: ChatBadgeKeys = {
   awaiting: '',
   question: '',
   toolApproval: '',
+  background: '',
 };
 
 const EMPTY_CHAT_SIDEBAR_STATE: ChatSidebarState = {
@@ -183,6 +189,7 @@ const EMPTY_CHAT_SIDEBAR_STATE: ChatSidebarState = {
 function deriveChatSidebarState(
   source: ChatSidebarSource,
   liveDelegateChats: LiveDelegateChats,
+  liveProviderTaskChats: LiveProviderTaskChats,
   previous: ChatSidebarState,
   memo: ChatSidebarDerivationMemo,
 ): ChatSidebarState {
@@ -200,7 +207,8 @@ function deriveChatSidebarState(
     source.pendingQuestions !== memo.pendingQuestions ||
     source.pendingApprovals !== memo.pendingApprovals ||
     source.persistedWorktreeBadges !== memo.persistedWorktreeBadges ||
-    liveDelegateChats !== memo.liveDelegateChats
+    liveDelegateChats !== memo.liveDelegateChats ||
+    liveProviderTaskChats !== memo.liveProviderTaskChats
   ) {
     const derived = deriveChatBadgeKeys(
       {
@@ -211,6 +219,7 @@ function deriveChatSidebarState(
         worktreeChats: worktrees,
       },
       liveDelegateChats,
+      liveProviderTaskChats,
     );
     if (!sameBadgeKeys(derived, badgeKeys)) badgeKeys = derived;
   }
@@ -219,6 +228,7 @@ function deriveChatSidebarState(
   memo.pendingApprovals = source.pendingApprovals;
   memo.persistedWorktreeBadges = source.persistedWorktreeBadges;
   memo.liveDelegateChats = liveDelegateChats;
+  memo.liveProviderTaskChats = liveProviderTaskChats;
   memo.derived = true;
 
   if (
@@ -243,8 +253,9 @@ const sidebarStore = createStore<ChatSidebarState>()(
 let connected = false;
 
 /**
- * Feed the store from the chat store's view and the delegation activity
- * store. Runs on first use, then on every publication of either.
+ * Feed the store from the chat store's view, the delegation activity store
+ * and the live background-task store. Runs on first use, then on every
+ * publication of any of them.
  */
 function ensureChatSidebarStoreConnected(): void {
   if (connected) return;
@@ -253,11 +264,14 @@ function ensureChatSidebarStoreConnected(): void {
   let chatState = chatStoreRenderView.getState();
   let liveDelegateChats: LiveDelegateChats =
     useDelegationActivityStore.getState().byChat;
+  let liveProviderTaskChats: LiveProviderTaskChats =
+    useLiveBackgroundTaskStore.getState().byChat;
   const update = (): void => {
     const previous = sidebarStore.getState();
     const next = deriveChatSidebarState(
       chatState,
       liveDelegateChats,
+      liveProviderTaskChats,
       previous,
       memo,
     );
@@ -271,6 +285,11 @@ function ensureChatSidebarStoreConnected(): void {
   useDelegationActivityStore.subscribe((state) => {
     if (state.byChat === liveDelegateChats) return;
     liveDelegateChats = state.byChat;
+    update();
+  });
+  useLiveBackgroundTaskStore.subscribe((state) => {
+    if (state.byChat === liveProviderTaskChats) return;
+    liveProviderTaskChats = state.byChat;
     update();
   });
 }

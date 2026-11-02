@@ -159,7 +159,7 @@ describe('split lock chokepoint guards', () => {
         projectId: WS,
         worktreeId,
         cwd: '/repo',
-      } as any);
+      });
     }
 
     it('refuses with SplitLockError when the worktree is locked', async () => {

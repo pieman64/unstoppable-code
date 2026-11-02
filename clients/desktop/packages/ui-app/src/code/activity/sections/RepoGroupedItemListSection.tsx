@@ -88,7 +88,7 @@ export function RepoGroupedItemListSection({
                   return next;
                 })
               }
-              className="focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.05]"
+              className="focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition-colors hover:bg-fg-primary/[0.05]"
               data-testid={`portal-${kind}-repo-header`}
             >
               <ChevronRightIcon

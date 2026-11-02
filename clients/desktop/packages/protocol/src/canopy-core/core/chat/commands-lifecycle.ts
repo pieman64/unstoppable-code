@@ -82,7 +82,7 @@ const settingsPatch = z.strictObject({
   description: z.string().optional(),
   autoArchive: z.boolean().nullable().optional(),
   pinned: z.boolean().optional(),
-  fileViewMode: fileViewMode.optional(),
+  fileViewMode: fileViewMode.nullable().optional(),
   fileDiffContext: json.optional(),
   title: z.string().optional(),
   providerType: providerType.optional(),
@@ -90,7 +90,6 @@ const settingsPatch = z.strictObject({
   modelSelectionMode: z.literal('auto').nullable().optional(),
   modelExplicitlyChosen: z.boolean().optional(),
   billingExplicitlyChosen: z.boolean().optional(),
-  approvalMode: z.string().optional(),
   sdkSessionId: z.string().nullable().optional(),
   globalInstructionsSnapshot: z.string().optional(),
   modelConfig: modelConfig.optional(),
@@ -157,8 +156,19 @@ const updateAction = z.discriminatedUnion('type', [
     autoRoutedMessageId: id.optional(),
     notice: json.optional(),
   }),
+  // Approval mode never travels in a settings patch.
+  z.strictObject({
+    type: z.literal('chat.set_approval_mode'),
+    tabId: id,
+    approvalMode: z.enum(['ask', 'auto', 'full-access']),
+  }),
   z.strictObject({ type: z.literal('chat.mark_read'), chatId: id }),
-  z.strictObject({ type: z.literal('chat.mark_unread'), chatId: id }),
+  // `manual` marks a user's explicit "Mark as unread"; automatic marks omit it.
+  z.strictObject({
+    type: z.literal('chat.mark_unread'),
+    chatId: id,
+    manual: z.literal(true).optional(),
+  }),
   z.strictObject({
     type: z.literal('chat.mark_archive_read'),
     archiveEntryId: id,

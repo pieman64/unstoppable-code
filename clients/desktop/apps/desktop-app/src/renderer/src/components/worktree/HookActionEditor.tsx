@@ -6,12 +6,14 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { Button, SettingsSelect } from '@canopy/ui-shared/components';
 import {
   SUPPORTED_HOOK_TRIGGERS,
   getHookTriggerDisplayName,
   type PipelineHookSource,
 } from '@canopy/desktop-shared/hooks';
 import {
+  isLinuxCommandShell,
   isMacCommandShell,
   isWindowsCommandShell,
   type CommandShellDefinition,
@@ -94,6 +96,19 @@ interface HookActionEditorProps {
    * `<cwd>/.canopy/pipelines/`.
    */
   pipelineDiscoveryCwd?: string;
+  /**
+   * Shows one part of the editor, for a page that opens each hook on its
+   * own: a trigger name shows that trigger's actions, `null` shows only the
+   * form that adds a hook. Omitted shows every trigger and the form.
+   */
+  visibleTrigger?: string | null;
+  /**
+   * `stack` frames each trigger and the add form as cards. `settings` drops
+   * those frames for a page that already titles the hook.
+   */
+  layout?: 'stack' | 'settings';
+  /** Called after the add form adds an action to `trigger`. */
+  onActionAdded?: (trigger: string) => void;
 }
 
 const PIPELINE_HOOK_SOURCE_LABELS: Record<PipelineHookSource, string> = {
@@ -161,7 +176,7 @@ function PipelineRowIcon({ icon }: { icon?: string | null }): JSX.Element {
 
 function updateShellPlatform(
   shell: CommandShellDefinition | undefined,
-  platform: 'windows' | 'mac',
+  platform: 'windows' | 'mac' | 'linux',
   value: string,
 ): CommandShellDefinition | undefined {
   const next: CommandShellDefinition = { ...(shell ?? {}) };
@@ -171,10 +186,16 @@ function updateShellPlatform(
     } else {
       delete next.windows;
     }
-  } else if (isMacCommandShell(value)) {
-    next.mac = value;
+  } else if (platform === 'mac') {
+    if (isMacCommandShell(value)) {
+      next.mac = value;
+    } else {
+      delete next.mac;
+    }
+  } else if (isLinuxCommandShell(value)) {
+    next.linux = value;
   } else {
-    delete next.mac;
+    delete next.linux;
   }
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -221,6 +242,21 @@ function CommandShellFields({
             <option value="">Default</option>
             <option value="zsh">zsh</option>
             <option value="bash">bash</option>
+          </select>
+        </label>
+        <label className="block text-s">
+          <span className="mb-1 block text-2xs fg-secondary">Linux</span>
+          <select
+            aria-label="Command action Linux shell"
+            value={shell?.linux ?? ''}
+            onChange={(event) =>
+              onChange(updateShellPlatform(shell, 'linux', event.target.value))
+            }
+            className="focus-ring h-8 w-full rounded-lg border bg-base px-2 text-xs"
+          >
+            <option value="">Default (Bash)</option>
+            <option value="bash">bash</option>
+            <option value="zsh">zsh</option>
           </select>
         </label>
       </div>
@@ -512,19 +548,19 @@ function PipelineActionFields({
   return (
     <div className="space-y-3">
       <div className="space-y-2">
-        <span className="block text-xs fg-secondary">Pipeline</span>
+        <span className="block text-xs fg-secondary">Workflow</span>
 
         <input
           type="text"
           value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)}
-          placeholder="Search pipelines…"
+          placeholder="Search workflows…"
           className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s placeholder:fg-secondary"
         />
 
         {pipelineLoading && (
           <div role="status" className="text-xs fg-secondary">
-            Loading pipeline definition…
+            Loading workflow definition…
           </div>
         )}
         {pipelineLoadError && (
@@ -533,42 +569,34 @@ function PipelineActionFields({
           </div>
         )}
         {sourceFilterOptions.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {sourceFilterOptions.map((filter) => {
-              const label =
-                filter === 'all' ? 'All' : PIPELINE_HOOK_SOURCE_LABELS[filter];
-              const active = sourceFilter === filter;
-              return (
-                <button
-                  key={filter}
-                  type="button"
-                  onClick={() => setSourceFilter(filter)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
-                    active
-                      ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
-                      : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
+          <SettingsSelect<PipelineSourceFilter>
+            aria-label="Workflow source"
+            data-testid="hook-workflow-source-filter"
+            value={sourceFilter}
+            width="field"
+            options={sourceFilterOptions.map((filter) => ({
+              value: filter,
+              label:
+                filter === 'all' ? 'All' : PIPELINE_HOOK_SOURCE_LABELS[filter],
+              testId: `hook-workflow-source-${filter}`,
+            }))}
+            onValueChange={setSourceFilter}
+          />
         )}
 
         <div className="max-h-64 overflow-y-auto rounded-lg border bg-card/40">
           {pipelineOptionsLoading ? (
             <div className="flex items-center justify-center gap-2 py-6 text-xs fg-secondary">
               <LoadingSpinner />
-              <span>Loading pipelines…</span>
+              <span>Loading workflows…</span>
             </div>
           ) : pipelineOptions.length === 0 ? (
             <div className="py-6 text-center text-xs fg-secondary">
-              No dispatch pipelines found.
+              No dispatch workflows found.
             </div>
           ) : filteredOptions.length === 0 ? (
             <div className="py-6 text-center text-xs fg-secondary">
-              No pipelines match your search.
+              No workflows match your search.
             </div>
           ) : (
             <div className="space-y-0.5 p-1">
@@ -584,7 +612,7 @@ function PipelineActionFields({
                     onClick={() => {
                       void selectPipeline(option);
                     }}
-                    className={`flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left transition ${
+                    className={`flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left transition-colors ${
                       isSelected
                         ? 'bg-accent-subtle ring-1 ring-line-accent/40'
                         : 'hover:bg-fg-primary/[0.06]'
@@ -620,7 +648,7 @@ function PipelineActionFields({
 
         {showMissingNotice && (
           <p className="text-2xs fg-warning">
-            Missing pipeline: {action.id} (
+            Missing workflow: {action.id} (
             {PIPELINE_HOOK_SOURCE_LABELS[action.source]})
           </p>
         )}
@@ -666,15 +694,16 @@ function PipelineActionFields({
                         </span>
                       )}
                       {typedWidget && (
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
+                          size="compact"
                           onClick={() => toggleRawForKey(key, def)}
                           aria-pressed={raw}
-                          className="focus-ring mt-2 inline-flex items-center gap-1 self-start rounded-md border bg-base px-1.5 py-0.5 text-3xs font-medium fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+                          className="mt-2 self-start"
                         >
                           <AppCatalogWorkflowIcon width="10" height="10" />
                           {raw ? 'Use typed input' : 'Raw override'}
-                        </button>
+                        </Button>
                       )}
                     </div>
                     {raw ? (
@@ -765,10 +794,10 @@ function PipelineActionFields({
         />
         <span className="flex flex-col">
           <span className="text-xs font-medium fg-primary">
-            Allow pipeline concurrency
+            Allow workflow concurrency
           </span>
           <span className="text-2xs fg-secondary">
-            Start this hook pipeline immediately even when another pipeline is
+            Start this hook workflow immediately even when another workflow is
             running.
           </span>
         </span>
@@ -1106,7 +1135,11 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
     pluginSelectionMode,
     chatContext,
     onBlockedChange,
+    visibleTrigger,
+    layout = 'stack',
+    onActionAdded,
   } = props;
+  const framed = layout === 'stack';
   const [blockedEditors, setBlockedEditors] = useState<Record<string, boolean>>(
     {},
   );
@@ -1127,9 +1160,15 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
   }, [blocked]);
   useEffect(() => (): void => blockedCallbackRef.current?.(false), []);
   const [newHookTrigger, setNewHookTrigger] = useState<string>(
-    SUPPORTED_HOOK_TRIGGERS.find((trigger) => trigger === 'pr:create') ??
-      SUPPORTED_HOOK_TRIGGERS[0] ??
-      'pr:create',
+    typeof visibleTrigger === 'string'
+      ? visibleTrigger
+      : (SUPPORTED_HOOK_TRIGGERS.find((trigger) => trigger === 'pr:create') ??
+          SUPPORTED_HOOK_TRIGGERS[0] ??
+          'pr:create'),
+  );
+  // A page for one hook keeps its add form behind "Add another action".
+  const [addFormOpen, setAddFormOpen] = useState(
+    typeof visibleTrigger !== 'string',
   );
   const [newActionType, setNewActionType] =
     useState<EditableHookAction['type']>('command');
@@ -1173,23 +1212,34 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
     }
 
     return (
-      <div key={triggerName} className="rounded-lg border p-3">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs font-medium fg-primary">
-            {getHookTriggerDisplayName(triggerName)}
-          </span>
+      <div
+        key={triggerName}
+        className={framed ? 'rounded-lg border p-3' : 'space-y-3'}
+      >
+        <div
+          className={
+            framed
+              ? 'mb-2 flex items-center justify-between'
+              : 'flex items-center justify-end'
+          }
+        >
+          {framed && (
+            <span className="text-xs font-medium fg-primary">
+              {getHookTriggerDisplayName(triggerName)}
+            </span>
+          )}
           {allowDisable && (
-            <button
-              type="button"
+            <Button
+              size="compact"
+              variant={framed ? 'secondary' : 'ghost'}
               onClick={() =>
                 onChange((current) =>
                   setEditableHookDisabled(current, triggerName, !disabled),
                 )
               }
-              className="focus-ring rounded-md border px-2 py-1 text-2xs fg-secondary hover:fg-primary"
             >
               {disabled ? 'Use inherited hook' : 'Disable hook'}
-            </button>
+            </Button>
           )}
         </div>
 
@@ -1202,7 +1252,11 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
             {actions.map((action, index) => (
               <div
                 key={action.uiId}
-                className="rounded-lg border bg-card/40 p-3"
+                className={
+                  framed
+                    ? 'rounded-lg border bg-card/40 p-3'
+                    : 'rounded-lg bg-secondary px-4 py-3 ring-[length:var(--border-hairline)] ring-line-base'
+                }
               >
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <label className="block text-s">
@@ -1240,14 +1294,16 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                     >
                       <option value="command">command</option>
                       <option value="chat">chat</option>
-                      <option value="pipeline">pipeline</option>
+                      <option value="pipeline">workflow</option>
                     </select>
                   </label>
 
                   <div className="flex items-center gap-1 self-start pt-6">
                     {index > 0 && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="ghost"
+                        size="compact"
+                        iconOnly
                         onClick={() =>
                           onChange((current) =>
                             moveEditableHookAction(
@@ -1258,18 +1314,19 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                             ),
                           )
                         }
-                        className="focus-ring rounded p-1 fg-secondary hover:fg-primary"
                         aria-label="Move up"
                       >
                         <AppCatalogChevronTopMediumIcon
                           width="12"
                           height="12"
                         />
-                      </button>
+                      </Button>
                     )}
                     {index < actions.length - 1 && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="ghost"
+                        size="compact"
+                        iconOnly
                         onClick={() =>
                           onChange((current) =>
                             moveEditableHookAction(
@@ -1280,27 +1337,27 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                             ),
                           )
                         }
-                        className="focus-ring rounded p-1 fg-secondary hover:fg-primary"
                         aria-label="Move down"
                       >
                         <AppCatalogChevronDownMediumIcon
                           width="12"
                           height="12"
                         />
-                      </button>
+                      </Button>
                     )}
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost-destructive"
+                      size="compact"
+                      iconOnly
                       onClick={() =>
                         onChange((current) =>
                           removeEditableHookAction(current, triggerName, index),
                         )
                       }
-                      className="focus-ring rounded p-1 fg-destructive hover:bg-destructive-subtle"
                       aria-label="Remove action"
                     >
                       <AppCatalogCloseIcon width="12" height="12" />
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
@@ -1332,110 +1389,134 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
     );
   };
 
+  const showTriggers = visibleTrigger !== null;
+  const showAddForm = typeof visibleTrigger !== 'string' || addFormOpen;
   return (
     <div className="space-y-4">
-      {SUPPORTED_HOOK_TRIGGERS.map(renderTriggerEditor)}
+      {showTriggers &&
+        (visibleTrigger === undefined
+          ? SUPPORTED_HOOK_TRIGGERS.map(renderTriggerEditor)
+          : renderTriggerEditor(visibleTrigger))}
 
-      {Object.entries(hooks)
-        .filter(
-          (entry): entry is [string, EditableHookAction[]] =>
-            Array.isArray(entry[1]) &&
-            !SUPPORTED_HOOK_TRIGGERS.some((trigger) => trigger === entry[0]),
-        )
-        .map(([triggerName]) => renderTriggerEditor(triggerName))}
+      {visibleTrigger === undefined &&
+        Object.entries(hooks)
+          .filter(
+            (entry): entry is [string, EditableHookAction[]] =>
+              Array.isArray(entry[1]) &&
+              !SUPPORTED_HOOK_TRIGGERS.some((trigger) => trigger === entry[0]),
+          )
+          .map(([triggerName]) => renderTriggerEditor(triggerName))}
 
-      <div className="rounded-lg border border-dashed p-3">
-        <p className="mb-2 text-s font-medium fg-primary">Add hook action</p>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="block text-s">
-            <span className="mb-1.5 block text-xs fg-secondary">Trigger</span>
-            <select
-              value={newHookTrigger}
-              onChange={(event) => setNewHookTrigger(event.target.value)}
-              className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-            >
-              {SUPPORTED_HOOK_TRIGGERS.map((trigger) => (
-                <option key={trigger} value={trigger}>
-                  {getHookTriggerDisplayName(trigger)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="block text-s">
-            <span className="mb-1.5 block text-xs fg-secondary">
-              Action type
-            </span>
-            <select
-              value={newActionType}
-              onChange={(event) => {
-                const nextType = parseActionType(event.target.value);
-                setNewActionType(nextType);
-                setNewAction(createBlankHookAction(nextType));
-              }}
-              className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-            >
-              <option value="command">command</option>
-              <option value="chat">chat</option>
-              <option value="pipeline">pipeline</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="mt-3">
-          <HookActionFields
-            key={newActionGeneration}
-            action={newAction}
-            editorId={`hook-chat-draft-${newHookTrigger}`}
-            chatContext={chatContext}
-            onBlockedChange={reportBlocked}
-            triggerName={newHookTrigger}
-            onChange={setNewAction}
-            pipelineOptions={pipelineOptions}
-            pipelineOptionsLoading={pipelineOptionsLoading}
-            pluginSelectionMode={pluginSelectionMode}
-          />
-        </div>
-
-        <div className="mt-3 flex items-end gap-2">
-          {allowDisable && (
-            <button
-              type="button"
-              onClick={() =>
-                onChange((current) =>
-                  setEditableHookDisabled(current, newHookTrigger, true),
-                )
-              }
-              className="focus-ring rounded-md border px-3 py-2 text-xs font-medium fg-primary"
-            >
-              Disable trigger
-            </button>
+      {!showAddForm && (
+        <Button
+          size="compact"
+          onClick={() => setAddFormOpen(true)}
+          data-testid="hook-add-another"
+        >
+          Add another action
+        </Button>
+      )}
+      {showAddForm && (
+        <div
+          className={framed ? 'rounded-lg border border-dashed p-3' : ''}
+          data-testid="hook-add-form"
+        >
+          {framed && (
+            <p className="mb-2 text-s font-medium fg-primary">
+              Add hook action
+            </p>
           )}
-          <button
-            type="button"
-            onClick={() => {
-              if (!canAddNewAction) {
-                return;
-              }
 
-              onChange((current) =>
-                addEditableHookAction(
-                  current,
-                  newHookTrigger,
-                  trimHookActionDraft(newAction),
-                ),
-              );
-              setNewAction(createBlankHookAction(newActionType));
-              setNewActionGeneration((generation) => generation + 1);
-            }}
-            disabled={!canAddNewAction}
-            className="focus-ring rounded-md bg-accent px-3 py-2 text-xs font-medium fg-emphasis"
-          >
-            Add action
-          </button>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block text-s">
+              <span className="mb-1.5 block text-xs fg-secondary">Trigger</span>
+              <select
+                value={newHookTrigger}
+                onChange={(event) => setNewHookTrigger(event.target.value)}
+                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
+              >
+                {SUPPORTED_HOOK_TRIGGERS.map((trigger) => (
+                  <option key={trigger} value={trigger}>
+                    {getHookTriggerDisplayName(trigger)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-s">
+              <span className="mb-1.5 block text-xs fg-secondary">
+                Action type
+              </span>
+              <select
+                value={newActionType}
+                onChange={(event) => {
+                  const nextType = parseActionType(event.target.value);
+                  setNewActionType(nextType);
+                  setNewAction(createBlankHookAction(nextType));
+                }}
+                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
+              >
+                <option value="command">command</option>
+                <option value="chat">chat</option>
+                <option value="pipeline">workflow</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="mt-3">
+            <HookActionFields
+              key={newActionGeneration}
+              action={newAction}
+              editorId={`hook-chat-draft-${newHookTrigger}`}
+              chatContext={chatContext}
+              onBlockedChange={reportBlocked}
+              triggerName={newHookTrigger}
+              onChange={setNewAction}
+              pipelineOptions={pipelineOptions}
+              pipelineOptionsLoading={pipelineOptionsLoading}
+              pluginSelectionMode={pluginSelectionMode}
+            />
+          </div>
+
+          <div className="mt-3 flex items-end gap-2">
+            {allowDisable && (
+              <Button
+                size="compact"
+                onClick={() =>
+                  onChange((current) =>
+                    setEditableHookDisabled(current, newHookTrigger, true),
+                  )
+                }
+              >
+                Disable trigger
+              </Button>
+            )}
+            <Button
+              size="compact"
+              variant="primary"
+              onClick={() => {
+                if (!canAddNewAction) {
+                  return;
+                }
+
+                onChange((current) =>
+                  addEditableHookAction(
+                    current,
+                    newHookTrigger,
+                    trimHookActionDraft(newAction),
+                  ),
+                );
+                setNewAction(createBlankHookAction(newActionType));
+                setNewActionGeneration((generation) => generation + 1);
+                onActionAdded?.(newHookTrigger);
+              }}
+              disabled={!canAddNewAction}
+            >
+              Add action
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

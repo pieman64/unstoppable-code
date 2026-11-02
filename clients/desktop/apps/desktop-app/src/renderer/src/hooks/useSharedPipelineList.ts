@@ -262,7 +262,7 @@ export function useSharedPipelineList(
         if (!result.success || !result.data) {
           setLoading(false);
           setLoadingMore(false);
-          setError(result.error ?? 'Failed to load shared pipelines');
+          setError(result.error ?? 'Failed to load shared workflows');
           setLoaded(true);
           return;
         }
@@ -307,7 +307,7 @@ export function useSharedPipelineList(
         const message =
           err instanceof Error
             ? err.message
-            : 'Failed to load shared pipelines';
+            : 'Failed to load shared workflows';
         setLoading(false);
         setLoadingMore(false);
         setError(message);

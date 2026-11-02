@@ -58,7 +58,9 @@ test('file view toggles survive a revision refresh already in progress', async (
     const panel = window.locator(
       `[data-testid="panel-content-file-diff"][data-panel-id="panel-file-${CHANGED_TAB_ID}"]`,
     );
-    const toggle = panel.locator('[data-testid="file-view-toggle"]:visible');
+    const toggle = panel.locator(
+      '[data-testid="file-view-toggle-formatted"]:visible',
+    );
     await expect(toggle).toBeVisible({ timeout: 20_000 });
     await expect(panel.locator('.monaco-editor')).toBeVisible();
     const snapshot = await window.evaluate(
@@ -216,7 +218,9 @@ test('file viewer exposes View Diff for changed text and image files only', asyn
     await expect(
       header.locator('[data-testid="file-viewer-view-diff"]:visible'),
     ).toBeVisible();
-    await expect(viewDiff).toHaveText(/^\+\d+-\d+$/);
+    // An append-only change shows no "-0"; its status dot stays.
+    await expect(viewDiff).toHaveText(/^\+\d+$/);
+    await expect(viewDiff.locator('[title="Modified"]')).toHaveCount(1);
     await expect(viewDiff).toHaveAttribute('aria-label', 'View diff');
     const viewToggle = changedPanel.locator(
       '[data-testid="file-view-toggle"]:visible',
@@ -271,6 +275,28 @@ test('file viewer exposes View Diff for changed text and image files only', asyn
       changedPanel.getByText('Diff shows saved content'),
     ).toBeVisible();
     await expect(diff).toContainText(ADDED_MARKER, { timeout: 15_000 });
+    // The alternate header confirms the same draft and restores focus to
+    // its surviving header when acceptance removes the Discard trigger.
+    const discard = changedPanel.getByTestId('file-discard');
+    const confirm = window.getByTestId('file-discard-confirm');
+    const savedBeforeDiscard = readFileSync(changedPath, 'utf8');
+    await discard.click();
+    await expect(confirm).toBeVisible();
+    await expect(
+      window.getByTestId('file-discard-confirm-cancel'),
+    ).toBeFocused();
+    await window.keyboard.press('Escape');
+    await expect(confirm).toHaveCount(0);
+    await expect(discard).toBeFocused();
+    await expect(changedPanel.getByTestId('file-viewer-dirty')).toBeVisible();
+    await discard.click();
+    await window.getByTestId('file-discard-confirm-accept').click();
+    await expect(confirm).toHaveCount(0);
+    await expect(changedPanel.getByTestId('file-viewer-dirty')).toHaveCount(0);
+    await expect(
+      changedPanel.locator('[data-testid="file-viewer-header"]:visible'),
+    ).toBeFocused();
+    expect(readFileSync(changedPath, 'utf8')).toBe(savedBeforeDiscard);
     await expect(
       window.getByTestId(`panel-tab-panel-file-${CHANGED_TAB_ID}`),
     ).toHaveCount(1);

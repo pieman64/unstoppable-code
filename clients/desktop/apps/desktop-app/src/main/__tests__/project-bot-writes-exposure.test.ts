@@ -25,21 +25,40 @@ const mockSchedule = jest.fn<
 >();
 
 jest.mock('../project-discovery/bots', (): object => ({
-  isBotAccessAllowed: mockIsBotAccessAllowed,
+  get isBotAccessAllowed(): typeof mockIsBotAccessAllowed {
+    return mockIsBotAccessAllowed;
+  },
   dispatchBotAction: jest.fn(),
 }));
-jest.mock('../agent-messaging/send-orchestration', (): object => ({
-  ...jest.requireActual<object>('../agent-messaging/send-orchestration'),
-  dispatchAgentChatSend: mockSend,
-}));
+jest.mock('../agent-messaging/send-orchestration', (): object => {
+  const actual = jest.requireActual<object>(
+    '../agent-messaging/send-orchestration',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      dispatchAgentChatSend: {
+        get: () => mockSend,
+        enumerable: true,
+      },
+    },
+  );
+});
 jest.mock('../agent-messaging/creation-orchestration', (): object => ({
-  dispatchAgentChatCreation: mockCreate,
+  get dispatchAgentChatCreation(): typeof mockCreate {
+    return mockCreate;
+  },
 }));
 jest.mock('../agent-messaging/steer-orchestration', (): object => ({
-  dispatchAgentChatSteer: mockSteer,
+  get dispatchAgentChatSteer(): typeof mockSteer {
+    return mockSteer;
+  },
 }));
 jest.mock('../agent-messaging/schedule-orchestration', (): object => ({
-  dispatchAgentChatSchedule: mockSchedule,
+  get dispatchAgentChatSchedule(): typeof mockSchedule {
+    return mockSchedule;
+  },
 }));
 
 import { appAdvisorActionSchema } from '../app-advisor/definitions';
@@ -233,6 +252,92 @@ describe('phase 09 explicit sends', () => {
       );
     },
   );
+
+  it('keeps the pipeline-only send fields off every agent surface', async () => {
+    const runtime = makeRuntime('worktree');
+    const action = {
+      type: 'projects.send_message',
+      projectId: 'other-project',
+      taskId: 'other-task',
+      chatId: 'other-chat',
+      text: 'text',
+    };
+    for (const field of [
+      'turnOverride',
+      'fixedIds',
+      'composition',
+      'newChatSeed',
+      'caller',
+    ]) {
+      const spoofed = await executeCanopyInjectedTool(
+        'dispatch_action',
+        { action: { ...action, [field]: { version: 1 } } },
+        runtime,
+      );
+      expect(spoofed.isError).toBe(true);
+    }
+    expect(mockSend).not.toHaveBeenCalled();
+    const catalog = JSON.stringify([
+      dispatchActionJsonSchema,
+      appAdvisorActionSchema.safeParse({}),
+    ]);
+    expect(catalog).not.toContain('turnOverride');
+    expect(catalog).not.toContain('fixedIds');
+    expect(catalog).not.toContain('newChatSeed');
+  });
+
+  it('routes a pipeline write through the same orchestrations, never an agent action', async () => {
+    const { dispatchPipelineProjectBotAction } =
+      await import('../agent-actions/desktop-project-bot-port');
+    const agentActions: Record<string, unknown> =
+      await import('@canopy/agent-actions');
+    expect(Object.keys(agentActions)).not.toContain(
+      'dispatchPipelineProjectBotAction',
+    );
+    const receipt = { address: {}, disposition: 'started' };
+    mockSend.mockResolvedValueOnce(receipt);
+    const caller = {
+      kind: 'pipeline',
+      source: {
+        executionId: 'exec',
+        pipelineId: 'pipe',
+        stepId: 'step',
+        pipelineName: 'Pipe',
+        owner: { kind: 'personal' },
+      },
+    } as const;
+    const action = {
+      type: 'projects.send_message',
+      projectId: 'target',
+      taskId: 'task',
+      chatId: 'chat',
+      text: 'text',
+    } as const;
+    await expect(
+      dispatchPipelineProjectBotAction(action, caller, {
+        turnOverride: { version: 1, planMode: true },
+      }),
+    ).resolves.toEqual({ ok: true, result: receipt });
+    expect(mockSend).toHaveBeenLastCalledWith(action, {
+      caller,
+      turnOverride: { version: 1, planMode: true },
+    });
+    await expect(
+      dispatchPipelineProjectBotAction(
+        {
+          type: 'projects.list',
+          pageSize: 50,
+          includeDefault: true,
+          sort: 'name',
+          order: 'asc',
+        },
+        caller,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'unsupported_action' },
+    });
+  });
 
   it('reports typed send refusals with their codes', async () => {
     const runtime = makeRuntime('worktree');

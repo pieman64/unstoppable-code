@@ -1,4 +1,5 @@
 import { type JSX, useEffect, useState } from 'react';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '@canopy/ui-shared/components';
 import {
   CloseMediumIcon,
@@ -7,6 +8,8 @@ import {
   TimeslotIcon,
   WarningIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
+import { brand } from '@/lib/brand';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { formatVersionLabel } from '@/lib/version-label';
 import { pt } from '@/lib/platform-text';
@@ -48,6 +51,7 @@ interface PromptView {
 export function UpdatePrompt(): JSX.Element {
   const { state } = useUpdateState();
   const manualLinux = window.platform === 'linux';
+  const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
   // Local click acknowledgement. The updater phase only advances once the
   // main process emits its next event — the first download-progress event can
   // lag several seconds behind the click — so reflect the requested action
@@ -77,8 +81,8 @@ export function UpdatePrompt(): JSX.Element {
       ? {
           icon: <DownloadIcon size={16} aria-hidden="true" />,
           iconTone: 'accent',
-          label: 'Download Linux update',
-          ariaLabel: `Download Linux update (${versionLabel}): open the official download`,
+          label: linuxCopy.downloadLabel,
+          ariaLabel: `${linuxCopy.downloadLabel} (${versionLabel}): open the official download`,
           title: state.info?.manualDownload
             ? `${state.info.manualDownload.guidance} ${state.info.manualDownload.checksum.algorithm}: ${state.info.manualDownload.checksum.value}`
             : undefined,
@@ -215,7 +219,24 @@ export function UpdatePrompt(): JSX.Element {
   }
 
   return (
-    <div>
+    <div className="space-y-2">
+      {manualLinux &&
+        state.phase === 'available' &&
+        state.info?.manualDownload &&
+        linuxCopy.apt && (
+          <div
+            className="text-xs fg-secondary select-text space-y-2"
+            data-testid="update-prompt-linux-guidance"
+          >
+            <p>{linuxCopy.apt.introduction}</p>
+            <code
+              className={`block font-mono break-words ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+            >
+              {linuxCopy.apt.command}
+            </code>
+            <p>{linuxCopy.apt.bootstrap}</p>
+          </div>
+        )}
       <SidebarFooterBanner
         ariaLabel={view.ariaLabel}
         surface="status"

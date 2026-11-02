@@ -72,6 +72,10 @@ import {
   type CursorTurnMcpSetup,
 } from '@canopy/desktop-shared/node/cursor/turn-driver';
 import {
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+} from './provider-turn-lifecycle';
+import {
   authorizeCursorMcpTool,
   authorizeCursorTool,
 } from '../cursor/tool-approval';
@@ -80,6 +84,7 @@ import { getManagedCursorRuntime } from '../cursor/connection';
 import { cursorDataPolicyMessage } from '../cursor/model-data-policy';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
 import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
+import type { TurnBinding } from '@canopy/protocol/canopy-core';
 import {
   buildCoworkInjectedToolPrompt,
   buildLedgerPlanModeInstruction,
@@ -133,12 +138,10 @@ import {
 import {
   buildSessionKey,
   drainChatSessionEvents,
-  markTurnActive,
-  markTurnAwaitingUser,
-  markTurnIdle,
-  recordSessionEvent,
   registerSession,
 } from './session-manager';
+import { observeRoutedTurnBinding } from './session-event-router';
+import { createOwnedTurnState } from './owned-turn-state';
 
 /**
  * Fingerprint of the user's home-folder skills and commands the last Cursor
@@ -241,6 +244,16 @@ export class CursorProvider implements AgentProvider {
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
+    const lifecycleScope = {
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+    };
+    const lifecycleProducer = getTurnLifecycleProducer(
+      'cursor',
+      lifecycleScope,
+    );
+    const turnState = createOwnedTurnState(key, () => session);
     const lifetime = new AbortController();
     let active: { abort: AbortController; done: Promise<void> } | undefined;
     let output: CursorEventBuffer | undefined;
@@ -250,6 +263,8 @@ export class CursorProvider implements AgentProvider {
     // fresh native session. Later turns in this live instance may reuse it.
     let sessionId =
       opts.assistantMode === 'pipeline-editor' ? undefined : opts.sdkSessionId;
+    let awaitingUser = false;
+    let lifecycleProducerReleased = false;
     const forkContext = new CursorForkContext(opts);
     let selectedModel = opts.model;
     // Like the model, a level chosen during a turn applies to the next one.
@@ -302,6 +317,20 @@ export class CursorProvider implements AgentProvider {
       data: Record<string, unknown>,
       userMessageId?: string,
     ): void | Promise<void> {
+      if (
+        awaitingUser &&
+        data.type !== 'result' &&
+        data.type !== 'error' &&
+        currentTurn
+      ) {
+        awaitingUser = false;
+        lifecycleProducer.sessionState({
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          state: 'running',
+          source: 'provider',
+          observedDuringTurnId: currentTurn,
+        });
+      }
       const event = {
         ...data,
         provider: 'cursor',
@@ -310,7 +339,7 @@ export class CursorProvider implements AgentProvider {
           : {}),
       };
       managedDelegation?.observe(event, userMessageId);
-      recordSessionEvent(key, event);
+      turnState.recordSessionEvent(event);
       if (output && data.type !== 'result' && data.type !== 'error')
         return output.push(event);
       return onEvent(event);
@@ -550,6 +579,7 @@ export class CursorProvider implements AgentProvider {
         abort.signal.throwIfAborted();
         const currentApproval = createApprovalSession({
           sessionKey: key,
+          getTurnUserMessageId: () => userMessageId,
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
@@ -969,7 +999,17 @@ export class CursorProvider implements AgentProvider {
                   ...(opts.model ? { model: opts.model } : {}),
                   // A question pause keeps the turn's message identity so an
                   // exact-turn stop still applies to it.
-                  onAwaitingUser: () => markTurnAwaitingUser(key),
+                  onAwaitingUser: (): void => {
+                    turnState.markTurnAwaitingUser();
+                    awaitingUser = true;
+                    if (hostTurnId)
+                      lifecycleProducer.sessionState({
+                        ...(sessionId ? { providerSessionId: sessionId } : {}),
+                        state: 'requires_action',
+                        source: 'provider',
+                        observedDuringTurnId: hostTurnId,
+                      });
+                  },
                   onSetAutoArchive: (enabled) =>
                     emitTurn({
                       type: SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
@@ -1207,7 +1247,7 @@ export class CursorProvider implements AgentProvider {
                     : // The App Advisor system prompt spells its tools for
                       // Claude and Codex and points at deferred loading; Cursor
                       // sees them under MCP titles and cannot reload mid-turn.
-                      `In this Cursor chat the App Advisor tools are MCP tools titled "${serverNames.main}: <Name>" (for example "${serverNames.main}: GetCurrentUiState") and "${serverNames.ui}: AskUserQuestion". SearchDeferredTools and LoadDeferredTools are unavailable here; work with the tools already listed.`
+                      `In this Cursor chat the Orchestrator tools are MCP tools titled "${serverNames.main}: <Name>" (for example "${serverNames.main}: GetCurrentUiState") and "${serverNames.ui}: AskUserQuestion". SearchDeferredTools and LoadDeferredTools are unavailable here; work with the tools already listed.`
                 : undefined;
               const pluginServerSteering =
                 mcp.pluginServerNames.length > 0
@@ -1281,10 +1321,12 @@ export class CursorProvider implements AgentProvider {
               currentApproval.invalidatePending?.();
               currentApproval.dispose();
               // Plugin proxy routes are keyed by the session before the
-              // worktree route registers, so release them unconditionally.
-              proxy.unregisterRoutesForSession(key);
-              if (routeRegistered)
-                proxy.unregisterCanopyWorktreeSessionRoute(key);
+              // worktree route registers, so release them even without it.
+              if (turnState.ownsKeyResources()) {
+                proxy.unregisterRoutesForSession(key);
+                if (routeRegistered)
+                  proxy.unregisterCanopyWorktreeSessionRoute(key);
+              }
               return Promise.resolve();
             },
           },
@@ -1365,8 +1407,10 @@ export class CursorProvider implements AgentProvider {
         // failed in preflight releases the same resources here.
         approval?.dispose();
         approval = undefined;
-        proxy.unregisterRoutesForSession(key);
-        if (routeRegistered) proxy.unregisterCanopyWorktreeSessionRoute(key);
+        if (turnState.ownsKeyResources()) {
+          proxy.unregisterRoutesForSession(key);
+          if (routeRegistered) proxy.unregisterCanopyWorktreeSessionRoute(key);
+        }
       }
     }
 
@@ -1377,7 +1421,43 @@ export class CursorProvider implements AgentProvider {
         if (active)
           throw new Error('Wait for the current Cursor turn to finish.');
         const abort = new AbortController();
-        currentTurn = sendOptions?.userMessageId ?? randomUUID();
+        const lifecycleTurnId =
+          sendOptions?.lifecycleExecutionId ??
+          sendOptions?.userMessageId ??
+          randomUUID();
+        currentTurn = lifecycleTurnId;
+        const startedAtMs = Date.now();
+        const lifecycleBinding: TurnBinding = {
+          turnId: lifecycleTurnId,
+          origin: 'user',
+          binding: sendOptions?.userMessageId ? 'bound' : 'unbound',
+          submissionIds: [],
+          userMessageIds: sendOptions?.userMessageId
+            ? [sendOptions.userMessageId]
+            : [],
+          providerUserMessageUuids: [],
+        };
+        awaitingUser = false;
+        lifecycleProducer.turnStarted({
+          ...lifecycleBinding,
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          phase: 'start',
+          startedAtMs,
+        });
+        if (sendOptions?.userMessageId !== undefined)
+          observeRoutedTurnBinding(
+            lifecycleScope,
+            session,
+            [sendOptions.userMessageId],
+            undefined,
+            lifecycleTurnId,
+          );
+        lifecycleProducer.sessionState({
+          ...(sessionId ? { providerSessionId: sessionId } : {}),
+          state: 'running',
+          source: 'provider',
+          observedDuringTurnId: lifecycleTurnId,
+        });
         const turnOutput = new CursorEventBuffer(async (event) => {
           await onEvent(event);
           // The router acknowledges admission before persistence. Wait for
@@ -1390,7 +1470,7 @@ export class CursorProvider implements AgentProvider {
           );
         });
         output = turnOutput;
-        markTurnActive(key, sendOptions?.userMessageId);
+        turnState.markTurnActive(sendOptions?.userMessageId);
         // Trusted ShowVisual calls of this turn; closed after its final drain.
         const visualLedger = openTurnLedger({
           projectId: opts.projectId,
@@ -1418,14 +1498,38 @@ export class CursorProvider implements AgentProvider {
             result:
               error instanceof Error ? error.message : 'Cursor cleanup failed.',
           }))
-          .then((result) => {
+          .then((result: Record<string, unknown>) => {
             active = undefined;
             output = undefined;
             // All answer output is durable. The terminal callback releases
             // the chat queue, so the provider must be reusable before it runs.
-            markTurnIdle(key);
+            turnState.markTurnIdle();
             // Emit one terminal event. `error` both settles the failed turn
             // and persists its message in the shared transcript renderer.
+            awaitingUser = false;
+            const endedAtMs = Date.now();
+            lifecycleProducer.turnEnded({
+              ...lifecycleBinding,
+              ...(sessionId ? { providerSessionId: sessionId } : {}),
+              endedAtMs,
+              // The reducer derives the duration net of requires_action pauses.
+              outcome:
+                abort.signal.aborted || result.subtype === 'cancelled'
+                  ? 'cancelled'
+                  : result.is_error === true
+                    ? 'failed'
+                    : 'completed',
+              ...(typeof result.result === 'string'
+                ? { terminalReason: result.result }
+                : {}),
+              source: 'result',
+            });
+            lifecycleProducer.sessionState({
+              ...(sessionId ? { providerSessionId: sessionId } : {}),
+              state: 'idle',
+              source: 'result-fallback',
+              observedDuringTurnId: lifecycleTurnId,
+            });
             return emit(
               result.is_error === true
                 ? { type: 'error', error: result.result }
@@ -1447,10 +1551,17 @@ export class CursorProvider implements AgentProvider {
       },
       destroy: async (): Promise<void> => {
         lifetime.abort();
-        await session.cancel();
-        // The session is gone; the chat's delegations outlive it. Closing
-        // the chat closes its delegation scope before destroying the session.
-        managedDelegation?.detach();
+        try {
+          await session.cancel();
+          // The session is gone; the chat's delegations outlive it. Closing
+          // the chat closes its delegation scope before destroying the session.
+          managedDelegation?.detach();
+        } finally {
+          if (!lifecycleProducerReleased) {
+            lifecycleProducerReleased = true;
+            releaseTurnLifecycleProducer('cursor', lifecycleScope);
+          }
+        }
       },
       setManagedDelegationMode: (mode) => {
         opts.managedDelegationMode = mode;

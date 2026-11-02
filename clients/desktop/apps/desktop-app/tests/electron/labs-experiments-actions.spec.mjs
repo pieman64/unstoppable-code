@@ -18,7 +18,7 @@ import {
 
 // Real provider tool dispatch -> shared family -> desktop port -> main
 // evaluator -> renderer mirror. The provider is the deterministic local mock.
-test('an agent stores Early access preferences through the shared action and reports refusals', async () => {
+test('an agent stores Early access and independent Files preferences through the shared action and reports refusals', async () => {
   test.setTimeout(180_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-labs-action-'),
@@ -28,6 +28,7 @@ test('an agent stores Early access preferences through the shared action and rep
   const worktreeId = 'demo-main';
   const chatId = 'labs-action-chat';
   const marker = 'Canopy-CLABSCHOICES';
+  const filesId = 'daemon-files-reads';
   const action = (experimentId, enabled) => ({
     name: 'mcp__canopy__DispatchAction',
     input: {
@@ -52,6 +53,14 @@ test('an agent stores Early access preferences through the shared action and rep
           stopReason: 'tool_use',
         },
         { toolCalls: [action('early-access', false)], stopReason: 'tool_use' },
+        {
+          toolCalls: [action(filesId, true)],
+          stopReason: 'tool_use',
+        },
+        {
+          toolCalls: [action(filesId, false)],
+          stopReason: 'tool_use',
+        },
         { text: 'Experiment preferences recorded.', stopReason: 'end_turn' },
       ],
     },
@@ -98,7 +107,7 @@ test('an agent stores Early access preferences through the shared action and rep
       .flatMap((message) => message.blocks)
       .filter((block) => block.type === 'tool_result')
       .map((block) => JSON.parse(block.output));
-    expect(results).toHaveLength(3);
+    expect(results).toHaveLength(5);
     expect(results[0]).toMatchObject({
       ok: true,
       result: {
@@ -116,12 +125,31 @@ test('an agent stores Early access preferences through the shared action and rep
       ok: true,
       result: { storedChoice: false, effectiveEnabledAtCommit: false },
     });
-    expect(
-      await window.evaluate(
-        async () =>
-          (await window.api.experiments.getSnapshot()).earlyAccessEnabled,
-      ),
-    ).toBe(false);
+    for (const [index, enabled] of [
+      [3, true],
+      [4, false],
+    ]) {
+      expect(results[index]).toMatchObject({
+        ok: true,
+        result: {
+          experimentId: filesId,
+          storedChoice: enabled,
+          effectiveEnabledAtCommit: enabled,
+          listedAtCommit: true,
+        },
+      });
+      expect(results[index].result.revisionAtCommit).toBeGreaterThan(
+        results[index - 1].result.revisionAtCommit,
+      );
+    }
+    const { experiments } = await window.evaluate(() =>
+      window.api.experiments.getSnapshot(),
+    );
+    for (const id of ['early-access', filesId])
+      expect(experiments.find((entry) => entry.id === id)).toMatchObject({
+        choice: false,
+        enabled: false,
+      });
   } finally {
     await closeCanopy(electronApp, userDataDir);
     cleanupDemoWorkspaces(demo.createdDirs);

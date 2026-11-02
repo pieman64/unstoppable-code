@@ -1,3 +1,4 @@
+import { CANOPY_MCP_TOOL_TIMEOUT_MS } from '../../../lib/canopy-injected-tools';
 import { CodexHostToolDispatcher } from '../host-tools';
 import type { CodexHostToolPolicy } from '../thread-handle';
 import type { DynamicToolCallResponse } from '../generated/v2/DynamicToolCallResponse';
@@ -134,20 +135,32 @@ describe('per-turn host tools', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  it('waits as long as a call takes when no deadline is set', async () => {
+  it('applies the shared default budget when the host sets none', async () => {
     jest.useFakeTimers();
+    let signal: AbortSignal | undefined;
     let finish: ((value: DynamicToolCallResponse) => void) | undefined;
     const { dispatcher } = fixture({
-      execute: (): Promise<DynamicToolCallResponse> =>
-        new Promise((resolve) => {
+      execute: (_call, current) => {
+        signal = current;
+        return new Promise((resolve) => {
           finish = resolve;
-        }),
+        });
+      },
     });
     const pending = dispatcher.run(request());
-    await jest.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
-    expect(jest.getTimerCount()).toBe(0);
+    await jest.advanceTimersByTimeAsync(CANOPY_MCP_TOOL_TIMEOUT_MS - 1);
+    expect(signal?.aborted).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(signal?.aborted).toBe(true);
+    const response = await pending;
+    expect(response.success).toBe(false);
+    const content = response.contentItems[0];
+    expect(content?.type === 'inputText' ? content.text : '').toMatch(
+      /time limit.*effects may be incomplete/i,
+    );
     finish?.(result);
-    expect(await pending).toEqual(result);
+    expect((await dispatcher.run(request())).success).toBe(false);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it('accepts a deadline longer than a minute', async () => {

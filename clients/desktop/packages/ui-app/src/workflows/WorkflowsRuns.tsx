@@ -10,8 +10,13 @@ import {
 } from 'react';
 import {
   Button,
+  PageSearchControls,
+  PageSearchFilters,
+  PageSearchRow,
+  StatusGlyph,
   TableActionsCell,
   Tooltip,
+  pageFilter,
 } from '@canopy/ui-shared/components';
 import {
   ChatIcon,
@@ -22,12 +27,12 @@ import {
   StopIcon,
   WorkflowsIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
 import {
+  EMPTY_WORKFLOW_RUN_FILTERS,
   runSearchHint,
   workflowRunFiltersActive,
   type WorkflowRunFilters,
@@ -40,7 +45,7 @@ import {
   menuWorkflowRunActions,
   primaryWorkflowRunAction,
   workflowRunDurationLabel,
-  workflowRunStatusTone,
+  workflowRunStatusGlyphState,
   type WorkflowRunAction,
   type WorkflowRunKind,
   type WorkflowRunRow,
@@ -49,7 +54,6 @@ import {
 } from './workflow-run-model';
 import { formatRunStarted } from './workflow-time';
 import {
-  WorkflowsFilterMenu,
   WorkflowsRowMenu,
   type WorkflowsRowMenuItem,
   WorkflowsSearchField,
@@ -78,22 +82,11 @@ const RUN_MENU_ROWS: Readonly<
 
 export const WORKFLOWS_RUNS_RENDER_BATCH = 100;
 
-function statusDotClassName(status: WorkflowRunStatus): string {
-  const { tone, muted } = workflowRunStatusTone(status);
-  const ink =
-    tone === 'warning'
-      ? 'bg-fg-warning'
-      : tone === 'neutral'
-        ? 'bg-fg-secondary'
-        : OPERATIONAL_STATUS_COLORS[tone].background;
-  return `${ink}${muted ? ' opacity-60' : ''}`;
-}
-
 /**
- * The status mark at the head of a run row. The color alone does not say
- * what it means, so the status is named in a tooltip and for readers.
+ * The status mark at the head of a run row: the shared status glyph, named
+ * in a tooltip and for readers since the row says the status nowhere else.
  */
-export function WorkflowRunStatusDot({
+export function WorkflowRunStatusGlyph({
   status,
 }: {
   readonly status: WorkflowRunStatus;
@@ -106,10 +99,7 @@ export function WorkflowRunStatusDot({
         data-status={status}
         data-testid="workflows-run-status"
       >
-        <span
-          aria-hidden="true"
-          className={`h-2 w-2 rounded-full ${statusDotClassName(status)}`}
-        />
+        <StatusGlyph state={workflowRunStatusGlyphState(status)} />
         <span className="sr-only">{label}</span>
       </span>
     </Tooltip>
@@ -141,85 +131,85 @@ export function WorkflowsRunsToolbar({
   starters,
 }: WorkflowsRunsToolbarProps): JSX.Element {
   const hint = runSearchHint(query);
+  const pageFilters = [
+    pageFilter<WorkflowRunStatus>({
+      key: 'status',
+      title: 'Status',
+      anyLabel: 'Any status',
+      options: statuses.map((status) => ({
+        value: status,
+        label: WORKFLOW_RUN_STATUS_LABELS[status],
+      })),
+      selected: filters.status === null ? [] : [filters.status],
+      onToggle: (status): void =>
+        onFiltersChange({
+          ...filters,
+          status: filters.status === status ? null : status,
+        }),
+      onClear: (): void => onFiltersChange({ ...filters, status: null }),
+      testId: 'workflows-runs-filter-status',
+    }),
+    ...(kinds.length > 1
+      ? [
+          pageFilter<WorkflowRunKind>({
+            key: 'kind',
+            title: 'Kind',
+            anyLabel: 'Any kind',
+            options: kinds.map((kind) => ({
+              value: kind,
+              label: WORKFLOW_RUN_KIND_LABELS[kind],
+            })),
+            selected: filters.kind === null ? [] : [filters.kind],
+            onToggle: (kind): void =>
+              onFiltersChange({
+                ...filters,
+                kind: filters.kind === kind ? null : kind,
+              }),
+            onClear: (): void => onFiltersChange({ ...filters, kind: null }),
+            testId: 'workflows-runs-filter-kind',
+          }),
+        ]
+      : []),
+    pageFilter<WorkflowRunStarter>({
+      key: 'starter',
+      title: 'Started by',
+      // The trigger names the filter until one is picked.
+      label:
+        filters.starter === null
+          ? 'Started by'
+          : WORKFLOW_RUN_STARTER_LABELS[filters.starter],
+      anyLabel: 'Anything',
+      options: starters.map((starter) => ({
+        value: starter,
+        label: WORKFLOW_RUN_STARTER_LABELS[starter],
+      })),
+      selected: filters.starter === null ? [] : [filters.starter],
+      onToggle: (starter): void =>
+        onFiltersChange({
+          ...filters,
+          starter: filters.starter === starter ? null : starter,
+        }),
+      onClear: (): void => onFiltersChange({ ...filters, starter: null }),
+      testId: 'workflows-runs-filter-starter',
+    }),
+  ];
   return (
     <div className="flex flex-col gap-1.5" data-testid="workflows-runs-toolbar">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <PageSearchRow>
         <WorkflowsSearchField
           value={query}
           onChange={onQueryChange}
           placeholder="Search runs"
           testId="workflows-runs-search"
-          className="w-80 max-w-full"
         />
-        <WorkflowsFilterMenu
-          title="Status"
-          label={
-            filters.status === null
-              ? 'Any status'
-              : WORKFLOW_RUN_STATUS_LABELS[filters.status]
-          }
-          anyLabel="Any status"
-          options={statuses.map((status) => ({
-            value: status,
-            label: WORKFLOW_RUN_STATUS_LABELS[status],
-          }))}
-          selected={filters.status === null ? [] : [filters.status]}
-          onToggle={(status): void =>
-            onFiltersChange({
-              ...filters,
-              status: filters.status === status ? null : status,
-            })
-          }
-          onClear={(): void => onFiltersChange({ ...filters, status: null })}
-          testId="workflows-runs-filter-status"
-        />
-        {kinds.length > 1 ? (
-          <WorkflowsFilterMenu
-            title="Kind"
-            label={
-              filters.kind === null
-                ? 'Any kind'
-                : WORKFLOW_RUN_KIND_LABELS[filters.kind]
-            }
-            anyLabel="Any kind"
-            options={kinds.map((kind) => ({
-              value: kind,
-              label: WORKFLOW_RUN_KIND_LABELS[kind],
-            }))}
-            selected={filters.kind === null ? [] : [filters.kind]}
-            onToggle={(kind): void =>
-              onFiltersChange({
-                ...filters,
-                kind: filters.kind === kind ? null : kind,
-              })
-            }
-            onClear={(): void => onFiltersChange({ ...filters, kind: null })}
-            testId="workflows-runs-filter-kind"
+        <PageSearchControls>
+          <PageSearchFilters
+            filters={pageFilters}
+            onClearAll={(): void => onFiltersChange(EMPTY_WORKFLOW_RUN_FILTERS)}
+            testId="workflows-runs-filter"
           />
-        ) : null}
-        <WorkflowsFilterMenu
-          title="Started by"
-          label={
-            filters.starter === null
-              ? 'Started by'
-              : WORKFLOW_RUN_STARTER_LABELS[filters.starter]
-          }
-          anyLabel="Anything"
-          options={starters.map((starter) => ({
-            value: starter,
-            label: WORKFLOW_RUN_STARTER_LABELS[starter],
-          }))}
-          selected={filters.starter === null ? [] : [filters.starter]}
-          onToggle={(starter): void =>
-            onFiltersChange({
-              ...filters,
-              starter: filters.starter === starter ? null : starter,
-            })
-          }
-          onClear={(): void => onFiltersChange({ ...filters, starter: null })}
-          testId="workflows-runs-filter-starter"
-        />
-      </div>
+        </PageSearchControls>
+      </PageSearchRow>
       {hint === null ? null : (
         <p className="text-xs fg-tertiary" data-testid="workflows-runs-hint">
           {hint}
@@ -374,7 +364,7 @@ export function WorkflowsRunsTable({
                 >
                   <td className="px-4 py-3">
                     <div className="flex min-w-0 gap-2">
-                      <WorkflowRunStatusDot status={row.status} />
+                      <WorkflowRunStatusGlyph status={row.status} />
                       <div className="flex min-w-0 flex-col gap-1">
                         <span
                           className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}
@@ -429,7 +419,7 @@ export function WorkflowsRunsTable({
                       ) : primary ? (
                         <Button
                           variant="secondary"
-                          size="control"
+                          size="compact"
                           disabled={busy}
                           data-testid={`workflows-run-action-${primary}`}
                           onClick={(): void => onAction(row, primary)}
@@ -461,7 +451,7 @@ export function WorkflowsRunsTable({
         <div className="flex justify-end pt-3">
           <Button
             variant="secondary"
-            size="control"
+            size="compact"
             disabled={loadingMore}
             aria-busy={loadingMore}
             data-testid="workflows-runs-load-more"

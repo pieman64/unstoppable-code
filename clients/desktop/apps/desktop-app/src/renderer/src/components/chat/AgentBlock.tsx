@@ -1,12 +1,18 @@
-import { DeferredToolOutput } from './DeferredToolOutput';
+import { DeferredToolOutput } from '@canopy/ui-app';
 import { useContext, type JSX } from 'react';
 import { useActivityStore } from '@/stores/activityStore';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { isClaudeAgentRunning } from './agent-block-state';
 import { AgentBlockCard } from '@canopy/ui-shared/components';
+import { TaskStopAction } from '@canopy/ui-app';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import type { ToolResult, DisplayBlock } from './types';
 import type { AgentUsage } from '@canopy/desktop-shared/types';
+import {
+  liveBackgroundTaskKey,
+  useLiveBackgroundTaskStore,
+} from '@/stores/liveBackgroundTaskStore';
+import { NativeTaskStopContext } from './native-task-stop';
 import { useSubagentOpenChatCallback } from '@/components/subagents/subagent-entry-actions';
 
 interface AgentBlockSubagentIdentity {
@@ -30,6 +36,7 @@ interface AgentBlockProps {
   usage?: AgentUsage;
   isRunningOverride?: boolean;
   isErrorOverride?: boolean;
+  nativeTaskStop?: boolean;
   subagentIdentity?: AgentBlockSubagentIdentity;
   renderSubBlock: AgentSubBlockRenderer;
 }
@@ -66,11 +73,25 @@ export function AgentBlock({
   usage,
   isRunningOverride,
   isErrorOverride,
+  nativeTaskStop,
   subagentIdentity,
   renderSubBlock,
 }: AgentBlockProps): JSX.Element {
   const displayResult = taskOutputResult ?? result;
   const target = useContext(ChatMarkdownFileTargetContext);
+  const nativeStop = useContext(NativeTaskStopContext);
+  const nativeStopTarget = nativeStop?.target;
+  const liveTaskId = useLiveBackgroundTaskStore((state) => {
+    if (!nativeStopTarget || !toolUseId) return undefined;
+    const key = liveBackgroundTaskKey(
+      nativeStopTarget.projectId,
+      nativeStopTarget.worktreeId,
+      nativeStopTarget.chatId,
+    );
+    return state.byChat[key]?.liveTasks.find(
+      (task) => task.toolUseId === toolUseId,
+    )?.taskId;
+  });
   const onOpenChat = useSubagentOpenChatCallback(
     subagentIdentity?.kind ?? 'claude-native',
     subagentIdentity?.id,
@@ -94,16 +115,32 @@ export function AgentBlock({
     );
   const isError = isErrorOverride ?? displayResult?.isError === true;
   const hasSubBlocks = subBlocks.length > 0;
+  const headerAction =
+    nativeTaskStop &&
+    nativeStop !== null &&
+    toolUseId &&
+    liveTaskId !== undefined &&
+    isRunning ? (
+      <TaskStopAction
+        target={{ ...nativeStop.target, taskId: liveTaskId }}
+        live
+        accessibleLabel="Stop agent"
+        dataTestId="agent-task-stop"
+        onError={nativeStop.onError}
+      />
+    ) : undefined;
 
   return (
     <>
       <AgentBlockCard
         dataTestId="agent-block"
+        toolUseId={toolUseId}
         subagentType={subagentType}
         description={description}
         runInBackground={runInBackground}
         isRunning={isRunning}
         isError={isError}
+        headerAction={headerAction}
         pendingSpinner={<ThinkingSpinner />}
         usage={usage}
         result={displayResult ? displayResult.output : undefined}
@@ -124,10 +161,14 @@ export function AgentBlock({
           // contributes the full-output control, so it gets an empty preview.
           <div data-testid="chat-deferred-output-host">
             <DeferredToolOutput
-              reference={displayResult.fullOutputRef}
+              identity={{
+                kind: 'reference',
+                reference: displayResult.fullOutputRef,
+                messageId: displayResult.messageId,
+                toolUseId: displayResult.toolUseId,
+              }}
               preview=""
-              messageId={displayResult.messageId}
-              toolUseId={displayResult.toolUseId}
+              isError={displayResult.isError}
             />
           </div>
         )}

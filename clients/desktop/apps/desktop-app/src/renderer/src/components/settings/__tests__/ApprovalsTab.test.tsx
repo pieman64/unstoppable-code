@@ -29,6 +29,10 @@ import { CANOPY_PREFERENCES_UPDATED_EVENT } from '@/lib/preferences-events';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { ApprovalsTab } from '../ApprovalsTab';
+import {
+  querySettingsSelect,
+  type SettingsSelectProbe,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 type PreferencesSyncedCallback = (preferences: PreferencesData) => void;
 
@@ -85,7 +89,9 @@ function installApi(options?: {
           }),
         ),
     ),
-    onPreferencesSynced: jest.fn(() => jest.fn()),
+    onPreferencesSynced: jest
+      .fn<() => void, [PreferencesSyncedCallback]>()
+      .mockReturnValue(() => undefined),
     approvals: {
       listRules: jest
         .fn<Promise<ApprovalRulesListResponse>, [ApprovalRulesListRequest]>()
@@ -159,15 +165,6 @@ async function flush(): Promise<void> {
   });
 }
 
-function setSelectValue(select: HTMLSelectElement, value: string): void {
-  const descriptor = Object.getOwnPropertyDescriptor(
-    HTMLSelectElement.prototype,
-    'value',
-  );
-  descriptor?.set?.call(select, value);
-  select.dispatchEvent(new Event('change', { bubbles: true }));
-}
-
 function setInputValue(input: HTMLInputElement, value: string): void {
   const descriptor = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
@@ -177,15 +174,28 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function findLabel(
+  scope: HTMLElement,
+  labelText: string,
+): HTMLLabelElement | undefined {
+  return Array.from(scope.querySelectorAll('label')).find(
+    (entry) => entry.querySelector('span')?.textContent === labelText,
+  );
+}
+
 function findLabelledControl<T extends HTMLElement>(
   scope: HTMLElement,
   labelText: string,
 ): T | null {
-  const labels = Array.from(scope.querySelectorAll('label'));
-  const label = labels.find(
-    (entry) => entry.querySelector('span')?.textContent === labelText,
-  );
-  return label?.querySelector<T>('select, input') ?? null;
+  return findLabel(scope, labelText)?.querySelector<T>('input') ?? null;
+}
+
+function findLabelledSelect(
+  scope: HTMLElement,
+  labelText: string,
+): SettingsSelectProbe | null {
+  const label = findLabel(scope, labelText);
+  return label ? querySettingsSelect(label, 'button[role="combobox"]') : null;
 }
 
 function getAddRuleFormContainer(
@@ -229,13 +239,16 @@ describe('ApprovalsTab', () => {
     });
     const { container, cleanup } = await renderTab();
 
-    const worktreeSelect = container.querySelector<HTMLSelectElement>(
+    const worktreeSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-worktree"]',
     );
-    const coworkSelect = container.querySelector<HTMLSelectElement>(
+    const coworkSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-cowork"]',
     );
-    const appAdvisorSelect = container.querySelector<HTMLSelectElement>(
+    const appAdvisorSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-app-advisor"]',
     );
 
@@ -254,7 +267,8 @@ describe('ApprovalsTab', () => {
       },
     });
     const { container, cleanup } = await renderTab();
-    const appAdvisorSelect = container.querySelector<HTMLSelectElement>(
+    const appAdvisorSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-app-advisor"]',
     );
 
@@ -300,7 +314,8 @@ describe('ApprovalsTab', () => {
         }),
       );
     });
-    const appAdvisorSelect = container.querySelector<HTMLSelectElement>(
+    const appAdvisorSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-app-advisor"]',
     );
     expect(appAdvisorSelect?.value).toBe('full-access');
@@ -323,7 +338,8 @@ describe('ApprovalsTab', () => {
   it('lists app-managed projects even when they are absent from the sidebar', async () => {
     const api = installApi();
     const { container, cleanup } = await renderTab();
-    const workspaceSelect = container.querySelector<HTMLSelectElement>(
+    const workspaceSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-project-workspace"]',
     );
     const options = Array.from(workspaceSelect?.options ?? []).map(
@@ -335,8 +351,8 @@ describe('ApprovalsTab', () => {
 
     expect(options).toEqual(
       expect.arrayContaining([
-        { label: 'App Advisor', value: APP_ADVISOR_PROJECT_ID },
-        { label: 'Pipeline editor', value: PIPELINE_EDITOR_PROJECT_ID },
+        { label: 'Orchestrator', value: APP_ADVISOR_PROJECT_ID },
+        { label: 'Workflow editor', value: PIPELINE_EDITOR_PROJECT_ID },
       ]),
     );
     expect(api.approvals.listRules).toHaveBeenCalledWith({
@@ -393,12 +409,13 @@ describe('ApprovalsTab', () => {
     };
     window.addEventListener(CANOPY_PREFERENCES_UPDATED_EVENT, onUpdated);
 
-    const coworkSelect = container.querySelector<HTMLSelectElement>(
+    const coworkSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-cowork"]',
     );
     expect(coworkSelect).not.toBeNull();
     if (coworkSelect) {
-      act(() => setSelectValue(coworkSelect, 'auto'));
+      coworkSelect.choose('auto');
     }
     await flush();
 
@@ -442,7 +459,8 @@ describe('ApprovalsTab', () => {
           },
         }),
       );
-    const coworkSelect = container.querySelector<HTMLSelectElement>(
+    const coworkSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-cowork"]',
     );
     expect(coworkSelect).not.toBeNull();
@@ -450,11 +468,11 @@ describe('ApprovalsTab', () => {
       throw new Error('Expected the Cowork approval-default select.');
     }
 
-    act(() => setSelectValue(coworkSelect, 'auto'));
+    coworkSelect.choose('auto');
     await flush();
     expect(api.loadPreferences).toHaveBeenCalledTimes(2);
 
-    act(() => setSelectValue(coworkSelect, 'full-access'));
+    coworkSelect.choose('full-access');
     await flush();
     expect(coworkSelect?.value).toBe('full-access');
 
@@ -477,12 +495,12 @@ describe('ApprovalsTab', () => {
     installApi({ globalRules: [makeRule({ id: 'rule-a' })] });
     const { container, cleanup } = await renderTab();
 
-    const table = container.querySelector(
-      '[data-testid="approval-rules-table"]',
+    const row = container.querySelector(
+      '[data-testid="approval-rules-table"] [data-testid="approval-rule-row-rule-a"]',
     );
-    expect(table).not.toBeNull();
-    expect(table?.textContent).toContain('npm test*');
-    expect(table?.textContent).toContain('Allow');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain('npm test*');
+    expect(row?.textContent).toContain('Allow');
     cleanup();
   });
 
@@ -541,12 +559,9 @@ describe('ApprovalsTab', () => {
     const { container, cleanup } = await renderTab();
 
     const form = getAddRuleFormContainer(container, 'global');
-    const behaviorSelect = findLabelledControl<HTMLSelectElement>(
-      form,
-      'Behavior',
-    );
+    const behaviorSelect = findLabelledSelect(form, 'Behavior');
     expect(behaviorSelect).not.toBeNull();
-    if (behaviorSelect) act(() => setSelectValue(behaviorSelect, 'deny'));
+    if (behaviorSelect) behaviorSelect.choose('deny');
 
     const valueInput = form.querySelector<HTMLInputElement>(
       '[data-testid="approval-add-rule-global-value"]',
@@ -576,9 +591,9 @@ describe('ApprovalsTab', () => {
     const { container, cleanup } = await renderTab();
 
     const form = getAddRuleFormContainer(container, 'global');
-    const kindSelect = findLabelledControl<HTMLSelectElement>(form, 'Kind');
+    const kindSelect = findLabelledSelect(form, 'Kind');
     expect(kindSelect).not.toBeNull();
-    if (kindSelect) act(() => setSelectValue(kindSelect, 'mcp'));
+    if (kindSelect) kindSelect.choose('mcp');
     await flush();
 
     const updatedForm = getAddRuleFormContainer(container, 'global');
@@ -619,8 +634,8 @@ describe('ApprovalsTab', () => {
     const { container, cleanup } = await renderTab();
 
     const form = getAddRuleFormContainer(container, 'global');
-    const kindSelect = findLabelledControl<HTMLSelectElement>(form, 'Kind');
-    if (kindSelect) act(() => setSelectValue(kindSelect, 'browser-upload'));
+    const kindSelect = findLabelledSelect(form, 'Kind');
+    if (kindSelect) kindSelect.choose('browser-upload');
     await flush();
 
     const updatedForm = getAddRuleFormContainer(container, 'global');
@@ -749,12 +764,13 @@ describe('ApprovalsTab', () => {
     const { container, cleanup } = await renderTab();
     await flush();
 
-    const worktreeSelect = container.querySelector<HTMLSelectElement>(
+    const worktreeSelect = querySettingsSelect(
+      container,
       '[data-testid="approval-default-worktree"]',
     );
     expect(worktreeSelect).not.toBeNull();
     if (worktreeSelect) {
-      act(() => setSelectValue(worktreeSelect, 'ask'));
+      worktreeSelect.choose('ask');
     }
     await flush();
 

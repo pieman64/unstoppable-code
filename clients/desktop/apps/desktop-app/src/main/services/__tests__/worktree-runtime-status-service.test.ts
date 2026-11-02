@@ -1,8 +1,11 @@
+import type * as WorktreeRuntimeStatusModule from '../worktree-runtime-status-service';
 const statMock = jest.fn<Promise<{ mtimeMs: number }>, [string]>();
 const readFileMock = jest.fn<Promise<string>, [string, string]>();
 const readChatTabsFileMock = jest.fn<Promise<ChatTabsFile>, [string, string]>();
 jest.mock('../../lib/chat-tabs-reader', () => ({
-  readChatTabsFile: readChatTabsFileMock,
+  get readChatTabsFile(): typeof readChatTabsFileMock {
+    return readChatTabsFileMock;
+  },
 }));
 const getAllActiveSessionInfosMock = jest.fn<ChatActiveSessionInfo[], []>();
 const subscribeChatSessionActivityMock = jest.fn<() => void, [() => void]>();
@@ -15,6 +18,20 @@ const listTrackedShellScriptsMock = jest.fn();
 const subscribeTrackedScriptsChangedMock = jest.fn<() => void, [() => void]>();
 const listActiveHookRunTargetsMock = jest.fn();
 const subscribeActiveHookRunsChangedMock = jest.fn<() => void, [() => void]>();
+type BackgroundWorkTarget = {
+  sessionKey: string;
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+  hasBackgroundWork: boolean;
+  blocksClose: boolean;
+  backgroundTasks: number;
+};
+const listBackgroundWorkTargetsMock = jest.fn<BackgroundWorkTarget[], []>();
+const subscribeBackgroundWorkMock = jest.fn<
+  () => void,
+  [(sessionKey: string) => void]
+>();
 const enqueuePortalEventMock = jest.fn<void, [PortalEventEnvelope]>();
 const isCanopyPortalActiveMock = jest.fn<boolean, []>(() => true);
 const getWorkspacePortalWorktreeEntityMock = jest.fn<
@@ -23,39 +40,72 @@ const getWorkspacePortalWorktreeEntityMock = jest.fn<
 >();
 
 jest.mock('node:fs/promises', () => ({
-  readFile: readFileMock,
-  stat: statMock,
+  get readFile(): typeof readFileMock {
+    return readFileMock;
+  },
+  get stat(): typeof statMock {
+    return statMock;
+  },
 }));
 
 jest.mock('../../agents/session-manager', () => ({
-  getAllActiveSessionInfos: getAllActiveSessionInfosMock,
-  subscribeChatSessionActivity: subscribeChatSessionActivityMock,
+  get getAllActiveSessionInfos(): typeof getAllActiveSessionInfosMock {
+    return getAllActiveSessionInfosMock;
+  },
+  get subscribeChatSessionActivity(): typeof subscribeChatSessionActivityMock {
+    return subscribeChatSessionActivityMock;
+  },
+  listLiveBackgroundTaskOwners: jest.fn(() => []),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
 }));
 
 jest.mock('../../pipelines/pipeline-execution-registry', () => ({
-  getActivePipelineExecutionHandles: getActivePipelineExecutionHandlesMock,
-  subscribeToActiveCountChange: subscribeToActiveCountChangeMock,
+  get getActivePipelineExecutionHandles(): typeof getActivePipelineExecutionHandlesMock {
+    return getActivePipelineExecutionHandlesMock;
+  },
+  get subscribeToActiveCountChange(): typeof subscribeToActiveCountChangeMock {
+    return subscribeToActiveCountChangeMock;
+  },
 }));
 
 jest.mock('../pipelines-service', () => ({
-  subscribePipelineRunUpdates: subscribePipelineRunUpdatesMock,
+  get subscribePipelineRunUpdates(): typeof subscribePipelineRunUpdatesMock {
+    return subscribePipelineRunUpdatesMock;
+  },
 }));
 
-jest.mock('../../terminal/pty-manager', () => ({
-  ptyManager: {
-    getRunningWorktreeTargets: getRunningWorktreeTargetsMock,
-    addEventListener: addTerminalEventListenerMock,
+jest.mock('../../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    get runningWorktrees(): typeof getRunningWorktreeTargetsMock {
+      return getRunningWorktreeTargetsMock;
+    },
+    get addEventListener(): typeof addTerminalEventListenerMock {
+      return addTerminalEventListenerMock;
+    },
   },
 }));
 
 jest.mock('../../lib/script-runner', () => ({
-  listTrackedShellScripts: listTrackedShellScriptsMock,
-  subscribeTrackedScriptsChanged: subscribeTrackedScriptsChangedMock,
+  get listTrackedShellScripts(): typeof listTrackedShellScriptsMock {
+    return listTrackedShellScriptsMock;
+  },
+  get subscribeTrackedScriptsChanged(): typeof subscribeTrackedScriptsChangedMock {
+    return subscribeTrackedScriptsChangedMock;
+  },
 }));
 
 jest.mock('../../lib/hook-runner', () => ({
-  listActiveHookRunTargets: listActiveHookRunTargetsMock,
-  subscribeActiveHookRunsChanged: subscribeActiveHookRunsChangedMock,
+  get listActiveHookRunTargets(): typeof listActiveHookRunTargetsMock {
+    return listActiveHookRunTargetsMock;
+  },
+  get subscribeActiveHookRunsChanged(): typeof subscribeActiveHookRunsChangedMock {
+    return subscribeActiveHookRunsChangedMock;
+  },
+}));
+
+jest.mock('../../agents/background-work', () => ({
+  listBackgroundWorkTargets: listBackgroundWorkTargetsMock,
+  subscribeBackgroundWork: subscribeBackgroundWorkMock,
 }));
 
 jest.mock('../../lib/resolve-worktree', () => ({
@@ -66,8 +116,12 @@ jest.mock('../../lib/resolve-worktree', () => ({
 }));
 
 jest.mock('../../portal/portal-event-bus', () => ({
-  enqueuePortalEvent: enqueuePortalEventMock,
-  isCanopyPortalActive: isCanopyPortalActiveMock,
+  get enqueuePortalEvent(): typeof enqueuePortalEventMock {
+    return enqueuePortalEventMock;
+  },
+  get isCanopyPortalActive(): typeof isCanopyPortalActiveMock {
+    return isCanopyPortalActiveMock;
+  },
   createPortalEvent: jest.fn((type: string, payload: unknown) => ({
     type,
     payload,
@@ -75,7 +129,9 @@ jest.mock('../../portal/portal-event-bus', () => ({
 }));
 
 jest.mock('../workspace-portal-service', () => ({
-  getWorkspacePortalWorktreeEntity: getWorkspacePortalWorktreeEntityMock,
+  get getWorkspacePortalWorktreeEntity(): typeof getWorkspacePortalWorktreeEntityMock {
+    return getWorkspacePortalWorktreeEntityMock;
+  },
 }));
 
 import type {
@@ -86,16 +142,18 @@ import type {
   PersistedChatTab,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { setDelegationActivity } from '../../agents/delegation/activity';
-import {
+import type { WorktreeRuntimeStatus } from '../worktree-runtime-status-service';
+
+const {
   getWorktreeRuntimeStatuses,
   handleChatTabsWritten,
   resetWorktreeRuntimeStatusServiceForTests,
   startWorktreeRuntimeStatusService,
   stopWorktreeRuntimeStatusService,
-  type WorktreeRuntimeStatus,
-} from '../worktree-runtime-status-service';
+} = jest.requireActual<typeof WorktreeRuntimeStatusModule>(
+  '../worktree-runtime-status-service',
+);
 
 async function getWorktreeRuntimeStatus(
   workspaceId: string,
@@ -110,9 +168,11 @@ async function getWorktreeRuntimeStatus(
 let activityListener: (() => void) | null = null;
 let pipelineCountListener: (() => void) | null = null;
 let pipelineUpdateListener: (() => void) | null = null;
-let terminalListener: ((channel: string) => void) | null = null;
+let terminalListener: ((event: { type: string }) => void) | null = null;
 let scriptListener: (() => void) | null = null;
 let hookListener: (() => void) | null = null;
+let backgroundWorkListener: ((sessionKey: string) => void) | null = null;
+let backgroundWorkTargets: BackgroundWorkTarget[] = [];
 let sessions: ChatActiveSessionInfo[] = [];
 let pipelineStates: Array<{
   status: 'running' | 'paused';
@@ -193,6 +253,8 @@ describe('worktree runtime status service', () => {
     terminalListener = null;
     scriptListener = null;
     hookListener = null;
+    backgroundWorkListener = null;
+    backgroundWorkTargets = [];
     statMock.mockReset();
     statMock.mockRejectedValue(new Error('missing'));
     isCanopyPortalActiveMock.mockReset();
@@ -244,7 +306,7 @@ describe('worktree runtime status service', () => {
     );
     addTerminalEventListenerMock.mockReset();
     addTerminalEventListenerMock.mockImplementation(
-      (listener: (channel: string) => void): (() => void) => {
+      (listener: (event: { type: string }) => void): (() => void) => {
         terminalListener = listener;
         return (): void => {
           terminalListener = null;
@@ -263,13 +325,24 @@ describe('worktree runtime status service', () => {
         hookListener = listener;
       }),
     );
+    listBackgroundWorkTargetsMock.mockReset();
+    listBackgroundWorkTargetsMock.mockImplementation(
+      () => backgroundWorkTargets,
+    );
+    subscribeBackgroundWorkMock.mockReset();
+    subscribeBackgroundWorkMock.mockImplementation((listener) => {
+      backgroundWorkListener = listener;
+      return (): void => {
+        backgroundWorkListener = null;
+      };
+    });
     enqueuePortalEventMock.mockReset();
     getWorkspacePortalWorktreeEntityMock.mockReset();
     getWorkspacePortalWorktreeEntityMock.mockImplementation(
       (
         workspaceId: string,
         worktreeId: string,
-        runtimeStatus: Record<string, unknown>,
+        runtimeStatus: WorktreeRuntimeStatus,
       ) =>
         Promise.resolve({
           entityType: 'worktree',
@@ -322,23 +395,35 @@ describe('worktree runtime status service', () => {
     ).not.toHaveProperty('isStreaming');
   });
 
-  it('shows a worktree whose chats have live delegates as streaming', async () => {
+  it('shows live delegates as background work with their count, not streaming (turn-state phase 41f)', async () => {
     startWorktreeRuntimeStatusService();
     await expect(
       getWorktreeRuntimeStatus('workspace-1', worktree),
     ).resolves.toEqual({});
 
+    backgroundWorkTargets = [
+      {
+        sessionKey: 'workspace-1/snake/chat-a',
+        projectId: 'workspace-1',
+        worktreeId: 'snake',
+        chatId: 'chat-a',
+        hasBackgroundWork: true,
+        blocksClose: true,
+        backgroundTasks: 1,
+      },
+    ];
     setDelegationActivity('status-owner', 'workspace-1/snake/chat-a', 0, 1);
     try {
       jest.advanceTimersByTime(35);
       await flushAsync();
       expect(enqueuePortalEventMock).toHaveBeenCalledTimes(1);
       expect(getWorkspacePortalWorktreeEntityMock.mock.calls[0]?.[2]).toEqual({
-        isStreaming: true,
+        hasBackgroundWork: true,
+        backgroundTasks: 1,
       });
       await expect(
         getWorktreeRuntimeStatus('workspace-1', worktree),
-      ).resolves.toEqual({ isStreaming: true });
+      ).resolves.toEqual({ hasBackgroundWork: true, backgroundTasks: 1 });
       await expect(
         getWorktreeRuntimeStatus('workspace-1', {
           ...worktree,
@@ -346,6 +431,7 @@ describe('worktree runtime status service', () => {
         }),
       ).resolves.toEqual({});
     } finally {
+      backgroundWorkTargets = [];
       setDelegationActivity('status-owner', 'workspace-1/snake/chat-a', 0);
     }
 
@@ -355,12 +441,17 @@ describe('worktree runtime status service', () => {
     expect(
       getWorkspacePortalWorktreeEntityMock.mock.calls[1]?.[2],
     ).not.toHaveProperty('isStreaming');
+    expect(
+      getWorkspacePortalWorktreeEntityMock.mock.calls[1]?.[2],
+    ).not.toHaveProperty('hasBackgroundWork');
   });
 
   it('stops refreshing on delegate activity after the service stops', async () => {
     startWorktreeRuntimeStatusService();
     await getWorktreeRuntimeStatus('workspace-1', worktree);
+    expect(backgroundWorkListener).not.toBeNull();
     stopWorktreeRuntimeStatusService();
+    expect(backgroundWorkListener).toBeNull();
     getAllActiveSessionInfosMock.mockClear();
 
     setDelegationActivity('status-owner', 'workspace-1/snake/chat-a', 1);
@@ -370,6 +461,103 @@ describe('worktree runtime status service', () => {
 
     expect(getAllActiveSessionInfosMock).not.toHaveBeenCalled();
     expect(enqueuePortalEventMock).not.toHaveBeenCalled();
+  });
+
+  it('emits background-only status changes without changing streaming state', async () => {
+    sessions = [
+      session('chat-background', false, Date.parse('2026-07-27T10:20:01.500Z')),
+    ];
+    pipelineStates = [
+      {
+        status: 'running',
+        project_id: 'workspace-1',
+        worktree_id: 'snake',
+      },
+    ];
+    startWorktreeRuntimeStatusService();
+    await getWorktreeRuntimeStatus('workspace-1', worktree);
+
+    const target: BackgroundWorkTarget = {
+      sessionKey: 'workspace-1/snake/chat-background',
+      projectId: 'workspace-1',
+      worktreeId: 'snake',
+      chatId: 'chat-background',
+      hasBackgroundWork: true,
+      blocksClose: false,
+      backgroundTasks: 2,
+    };
+    backgroundWorkTargets = [target];
+    backgroundWorkListener?.(target.sessionKey);
+    jest.advanceTimersByTime(35);
+    await flushAsync();
+
+    expect(enqueuePortalEventMock).toHaveBeenCalledTimes(1);
+    expect(
+      getWorkspacePortalWorktreeEntityMock.mock.calls[0]?.[2],
+    ).toMatchObject({
+      hasBackgroundWork: true,
+      backgroundTasks: 2,
+      lastActivityAt: '2026-07-27T10:20:01.000Z',
+      pipelineStatus: 'running',
+      isRunningRun: true,
+    });
+    expect(
+      getWorkspacePortalWorktreeEntityMock.mock.calls[0]?.[2],
+    ).not.toHaveProperty('isStreaming');
+
+    // Provider-only background work is data, not a streaming turn.
+    backgroundWorkTargets = [];
+    backgroundWorkListener?.(target.sessionKey);
+    jest.advanceTimersByTime(35);
+    await flushAsync();
+
+    expect(enqueuePortalEventMock).toHaveBeenCalledTimes(2);
+    expect(
+      getWorkspacePortalWorktreeEntityMock.mock.calls[1]?.[2],
+    ).not.toHaveProperty('hasBackgroundWork');
+    expect(
+      getWorkspacePortalWorktreeEntityMock.mock.calls[1]?.[2],
+    ).not.toHaveProperty('isStreaming');
+    expect(
+      getWorkspacePortalWorktreeEntityMock.mock.calls[1]?.[2],
+    ).toMatchObject({
+      lastActivityAt: '2026-07-27T10:20:01.000Z',
+      pipelineStatus: 'running',
+      isRunningRun: true,
+    });
+  });
+
+  it('still emits a background change that a non-Portal read saw first', async () => {
+    const target: BackgroundWorkTarget = {
+      sessionKey: 'workspace-1/snake/chat-background',
+      projectId: 'workspace-1',
+      worktreeId: 'snake',
+      chatId: 'chat-background',
+      hasBackgroundWork: true,
+      blocksClose: true,
+      backgroundTasks: 1,
+    };
+    startWorktreeRuntimeStatusService();
+    backgroundWorkTargets = [target];
+    backgroundWorkListener?.(target.sessionKey);
+    jest.advanceTimersByTime(35);
+    await flushAsync();
+    expect(enqueuePortalEventMock).toHaveBeenCalledTimes(1);
+
+    // The last task ends. The desktop session snapshot (or auto-archive) reads
+    // the runtime status inside the refresh window, before the Portal delta.
+    backgroundWorkTargets = [];
+    backgroundWorkListener?.(target.sessionKey);
+    await expect(
+      getWorktreeRuntimeStatus('workspace-1', worktree),
+    ).resolves.toEqual({});
+    jest.advanceTimersByTime(35);
+    await flushAsync();
+
+    expect(enqueuePortalEventMock).toHaveBeenCalledTimes(2);
+    expect(
+      getWorkspacePortalWorktreeEntityMock.mock.calls[1]?.[2],
+    ).not.toHaveProperty('backgroundTasks');
   });
 
   it('derives all executable runtime aggregates and omits them while idle', async () => {
@@ -424,7 +612,7 @@ describe('worktree runtime status service', () => {
       'terminal',
       (): void => {
         terminalTargets = [{ projectId: 'workspace-1', worktreeId: 'snake' }];
-        terminalListener?.(IPC_CHANNELS.terminalRunningChanged);
+        terminalListener?.({ type: 'runningChanged' });
       },
       { terminalStatus: 'running' },
     ],
@@ -560,7 +748,13 @@ describe('worktree runtime status service', () => {
     // are stale (empty) while the live write above already saw unread.
     const status = await getWorktreeRuntimeStatus('workspace-1', {
       ...worktree,
-      chatBadges: { unreadChats: [], approvalChats: [] },
+      chatBadges: {
+        version: 1,
+        unreadChats: [],
+        approvalChats: [],
+        needsHydration: false,
+        updatedAt: '2026-07-27T00:00:00.000Z',
+      },
     });
 
     expect(status).toMatchObject({ hasUnread: true });
@@ -574,8 +768,11 @@ describe('worktree runtime status service', () => {
         worktree: {
           ...worktree,
           chatBadges: {
+            version: 1,
             unreadChats: [{ chatId: 'chat-1', title: 'Chat' }],
             approvalChats: [],
+            needsHydration: false,
+            updatedAt: '2026-07-27T00:00:00.000Z',
           },
         },
       },
@@ -603,7 +800,13 @@ describe('worktree runtime status service', () => {
     await expect(
       getWorktreeRuntimeStatus('workspace-1', {
         ...worktree,
-        chatBadges: { unreadChats: [], approvalChats: [] },
+        chatBadges: {
+          version: 1,
+          unreadChats: [],
+          approvalChats: [],
+          needsHydration: false,
+          updatedAt: '2026-07-27T00:00:00.000Z',
+        },
       }),
     ).resolves.toEqual({
       hasUnread: true,
@@ -632,8 +835,11 @@ describe('worktree runtime status service', () => {
       getWorktreeRuntimeStatus('workspace-1', {
         ...worktree,
         chatBadges: {
+          version: 1,
           unreadChats: [{ chatId: 'chat-1', title: 'Chat' }],
           approvalChats: [{ chatId: 'chat-1', title: 'Chat' }],
+          needsHydration: false,
+          updatedAt: '2026-07-27T00:00:00.000Z',
         },
       }),
     ).resolves.toMatchObject({ hasUnread: true, awaitingApproval: true });
@@ -700,11 +906,20 @@ describe('worktree runtime status service', () => {
   });
 
   it('cancels pending and stale async emissions after shutdown', async () => {
-    let resolveEntity: ((value: unknown) => void) | null = null;
+    const entityResolution: {
+      resolve:
+        | ((
+            value:
+              | PortalEntityEnvelope
+              | PromiseLike<PortalEntityEnvelope | null>
+              | null,
+          ) => void)
+        | undefined;
+    } = { resolve: undefined };
     getWorkspacePortalWorktreeEntityMock.mockImplementation(
       () =>
-        new Promise((resolve): void => {
-          resolveEntity = resolve;
+        new Promise<PortalEntityEnvelope | null>((resolve): void => {
+          entityResolution.resolve = resolve;
         }),
     );
     startWorktreeRuntimeStatusService();
@@ -714,7 +929,7 @@ describe('worktree runtime status service', () => {
     jest.advanceTimersByTime(35);
     await Promise.resolve();
     stopWorktreeRuntimeStatusService();
-    resolveEntity?.({
+    entityResolution.resolve?.({
       entityType: 'worktree',
       localId: 'snake',
       payload: {},

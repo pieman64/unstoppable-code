@@ -13,6 +13,7 @@ import type {
   LedgerViewResult,
   LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
+import { ledgerViewScopeKey } from '@canopy/protocol/ledger-view';
 import {
   normalizeQuery,
   problemOf,
@@ -580,9 +581,9 @@ export function createLedgerViewStore(
         });
       },
       applyChanges: (event): void => {
+        const scopeKey = ledgerViewScopeKey(scope);
         const isThisScope = (candidate: LedgerViewScope): boolean =>
-          candidate.projectId === scope.projectId &&
-          candidate.worktreeId === scope.worktreeId;
+          ledgerViewScopeKey(candidate) === scopeKey;
         const changes = event.changes.filter((change) =>
           isThisScope(change.scope),
         );

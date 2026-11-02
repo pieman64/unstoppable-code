@@ -24,10 +24,12 @@ describe('ChatCopyAction', () => {
     const root = createRoot(container);
     act(() =>
       root.render(
-        <ChatCopyAction
-          text={'Sunny today.citeturn0forecast0'}
-          dataTestId="copy"
-        />,
+        <ChatLookProvider value="classic">
+          <ChatCopyAction
+            text={'Sunny today.citeturn0forecast0'}
+            dataTestId="copy"
+          />
+        </ChatLookProvider>,
       ),
     );
     await act(async () => {
@@ -90,26 +92,53 @@ describe('ChatCopyAction', () => {
     }
 
     it('takes the footer icon styling of each look', () => {
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       expect(button().className).toContain('fg-quaternary');
       render(
         <ChatLookProvider value="clean">
           <ChatCopyAction text="Done." dataTestId="copy" />
         </ChatLookProvider>,
       );
-      expect(button().className).toContain('fg-secondary');
+      // Clean: the quiet ghost button, tertiary at rest like the row.
+      expect(button().className).toContain('fg-tertiary hover:bg-subtle');
     });
 
     it('keeps an empty polite status beside the button until a copy', () => {
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       expect(status().getAttribute('role')).toBe('status');
       expect(status().textContent).toBe('');
       expect(button().contains(status())).toBe(false);
       expect(button().getAttribute('aria-label')).toBe('Copy message');
     });
 
+    it('positions the hidden status within the action, not a far ancestor', () => {
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
+      // An unpositioned `sr-only` span escapes the transcript scroller and
+      // overflows the panel by the reply's offset.
+      expect(status().className).toContain('sr-only');
+      const wrapper = status().parentElement;
+      expect(wrapper?.classList.contains('relative')).toBe(true);
+      expect(wrapper?.contains(button())).toBe(true);
+    });
+
     it('confirms a copy with a check, its name and an announcement, then resets', async () => {
-      render(<ChatCopyAction text={'# Plan\n\n- **one**'} dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text={'# Plan\n\n- **one**'} dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       await press();
       expect(writeText).toHaveBeenCalledWith('# Plan\n\n- **one**');
       expect(button().getAttribute('aria-label')).toBe('Copied');
@@ -123,7 +152,11 @@ describe('ChatCopyAction', () => {
     });
 
     it('announces a repeat copy afresh and restarts the duration', async () => {
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       await press();
       act(() => {
         jest.advanceTimersByTime(1000);
@@ -152,7 +185,11 @@ describe('ChatCopyAction', () => {
         configurable: true,
         value: execCommand,
       });
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       await press();
       expect(execCommand).toHaveBeenCalledWith('copy');
       expect(status().textContent).toBe('Copied');
@@ -164,14 +201,22 @@ describe('ChatCopyAction', () => {
         configurable: true,
         value: jest.fn(() => false),
       });
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       await press();
       expect(button().getAttribute('aria-label')).toBe('Copy message');
       expect(status().textContent).toBe('');
     });
 
     it('clears an earlier success when the next copy fails', async () => {
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       await press();
       expect(button().getAttribute('aria-label')).toBe('Copied');
       writeText.mockRejectedValueOnce(new Error('denied'));
@@ -196,9 +241,17 @@ describe('ChatCopyAction', () => {
               }),
           );
         }
-        render(<ChatCopyAction text="First reply" dataTestId="copy" />);
+        render(
+          <ChatLookProvider value="classic">
+            <ChatCopyAction text="First reply" dataTestId="copy" />
+          </ChatLookProvider>,
+        );
         await press();
-        render(<ChatCopyAction text="Second reply" dataTestId="copy" />);
+        render(
+          <ChatLookProvider value="classic">
+            <ChatCopyAction text="Second reply" dataTestId="copy" />
+          </ChatLookProvider>,
+        );
         await act(async () => {
           finish();
           await Promise.resolve();
@@ -223,7 +276,13 @@ describe('ChatCopyAction', () => {
       doc.body.append(host);
       const auxRoot = createRoot(host);
       try {
-        act(() => auxRoot.render(<ChatCopyAction text="Aux reply" />));
+        act(() =>
+          auxRoot.render(
+            <ChatLookProvider value="classic">
+              <ChatCopyAction text="Aux reply" />
+            </ChatLookProvider>,
+          ),
+        );
         const copy = host.querySelector('button');
         if (!copy) throw new Error('no auxiliary copy');
         await act(async () => {
@@ -253,7 +312,11 @@ describe('ChatCopyAction', () => {
         configurable: true,
         value: jest.fn(() => false),
       });
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       await press();
       await press();
       await act(async () => {
@@ -272,7 +335,11 @@ describe('ChatCopyAction', () => {
             finish = resolve;
           }),
       );
-      render(<ChatCopyAction text="Done." dataTestId="copy" />);
+      render(
+        <ChatLookProvider value="classic">
+          <ChatCopyAction text="Done." dataTestId="copy" />
+        </ChatLookProvider>,
+      );
       await press();
       render(null);
       const setTimeoutSpy = jest.spyOn(globalThis, 'setTimeout');

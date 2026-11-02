@@ -12,6 +12,7 @@ import {
   requestBrowserSessionDestruction,
 } from '@/lib/panels/browser-panel-sync';
 import { closePanelTab } from '@/lib/panels/chat-panel-sync';
+import { selectAdjacentPanelTab } from '@/lib/panels/commands';
 import {
   ensureBrowserEventSubscription,
   openAppLinkInWorktreeBrowser,
@@ -19,6 +20,7 @@ import {
 import { useBrowserStore } from '../browserStore';
 import { useSidebarStore } from '../sidebarStore';
 import { useChatStore } from '../chatStore';
+import { useNavigationStore } from '../navigationStore';
 import { useGitHubStore } from '../githubStore';
 import { getBrowserUserInteractionGeneration } from '@/lib/browserUserInteraction';
 import { makeTestPreferences } from '@/test-utils/preferences';
@@ -46,6 +48,9 @@ jest.mock('@/lib/panels/browser-panel-sync', () => ({
 }));
 jest.mock('@/lib/panels/chat-panel-sync', () => ({
   closePanelTab: jest.fn(),
+}));
+jest.mock('@/lib/panels/commands', () => ({
+  selectAdjacentPanelTab: jest.fn(() => true),
 }));
 jest.mock('@/lib/navigation/settings-destinations', () => ({
   openSettingsPathInApp: jest.fn(() => false),
@@ -341,6 +346,53 @@ it('opens the in-page new-tab shortcut tab before its session exists', async () 
   expect(discardOpenedBrowser).not.toHaveBeenCalled();
 });
 
+it.each([
+  ['a user’s link opens a selected tab', undefined, undefined],
+  [
+    'an agent’s popup opens behind the selected tab',
+    'background' as const,
+    { focus: false, preserveSelection: true },
+  ],
+])(
+  'opens a page-requested new tab under main’s id and URL: %s (CAN-4831)',
+  async (_case, presentation, placement) => {
+    const create = jest.fn(() => new Promise(() => undefined));
+    Object.assign(window.api.browser, { create });
+    ensureBrowserEventSubscription();
+
+    listener?.({
+      type: 'new-tab-requested',
+      browserId: 'browser-agent',
+      snapshot: snapshot(),
+      url: 'https://example.com/',
+      newBrowserId: 'browser-popup',
+      ...(presentation ? { presentation } : {}),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(jest.mocked(requestBrowserPanel).mock.calls[0]).toEqual([
+      'project-1',
+      'worktree-1',
+      'browser-popup',
+      undefined,
+      placement,
+    ]);
+    expect(
+      useBrowserStore.getState().worktrees['project-1/worktree-1'].browsers[
+        'browser-popup'
+      ],
+    ).toMatchObject({ url: 'https://example.com/' });
+    // Main gives the session the opener's profile; the renderer sends none.
+    expect(create).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      browserId: 'browser-popup',
+      url: 'https://example.com/',
+    });
+  },
+);
+
 it('never opens a new tab for the in-page find shortcut (CAN-3048)', async () => {
   const create = jest.fn(() => new Promise(() => undefined));
   Object.assign(window.api.browser, { create });
@@ -529,10 +581,152 @@ it('contains destroyed-event coordinator failures', async () => {
 describe('app-link routing', () => {
   const originalOpenUrl = useBrowserStore.getState().openUrlFromDevServer;
   const originalSelection = useChatStore.getState().selectedWorktree;
+  const originalNavigation = useNavigationStore.getState();
+
+  beforeEach(() => {
+    // The worktree browser is reachable from the main page only.
+    useNavigationStore.setState({
+      activePage: 'main',
+      settingsOpen: false,
+      canopyPortalOpen: false,
+    });
+  });
 
   afterEach(() => {
     useBrowserStore.setState({ openUrlFromDevServer: originalOpenUrl });
     useChatStore.setState({ selectedWorktree: originalSelection });
+    useNavigationStore.setState({
+      activePage: originalNavigation.activePage,
+      settingsOpen: originalNavigation.settingsOpen,
+      canopyPortalOpen: originalNavigation.canopyPortalOpen,
+    });
+  });
+
+  // CAN-5271: a Website link on Customize must not open a browser panel the
+  // user cannot see; main opens it externally on a declined acknowledgement.
+  it.each<[string, Partial<ReturnType<typeof useNavigationStore.getState>>]>([
+    ['Customize', { activePage: 'plugins' }],
+    ['Home', { activePage: 'overview' }],
+    ['Settings', { settingsOpen: true }],
+    ['the Portal', { canopyPortalOpen: true }],
+  ])('declines an app link from %s', async (_surface, navigation) => {
+    const openUrlFromDevServer = jest.fn();
+    useBrowserStore.setState({ openUrlFromDevServer });
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'project-1', worktreeId: 'worktree-1' },
+    });
+    useNavigationStore.setState(navigation);
+    ensureBrowserEventSubscription();
+
+    listener?.({
+      type: 'app-link-open-requested',
+      requestId: 'req-declined',
+      url: 'https://example.com/plugin',
+      source: 'app-link',
+      openInApp: true,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(resolveOpenLinkRequest).toHaveBeenCalledTimes(1);
+    expect(resolveOpenLinkRequest).toHaveBeenCalledWith({
+      requestId: 'req-declined',
+      handled: false,
+      phase: 'acknowledge',
+    });
+    expect(openUrlFromDevServer).not.toHaveBeenCalled();
+    expect(requestBrowserPanel).not.toHaveBeenCalled();
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it('declines an app link with no selected worktree', async () => {
+    const openUrlFromDevServer = jest.fn();
+    useBrowserStore.setState({ openUrlFromDevServer });
+    useChatStore.setState({ selectedWorktree: null });
+    ensureBrowserEventSubscription();
+
+    listener?.({
+      type: 'app-link-open-requested',
+      requestId: 'req-none',
+      url: 'https://example.com/plugin',
+      source: 'app-link',
+      openInApp: true,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(resolveOpenLinkRequest).toHaveBeenCalledTimes(1);
+    expect(resolveOpenLinkRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ handled: false }),
+    );
+    expect(openUrlFromDevServer).not.toHaveBeenCalled();
+  });
+
+  it.each(['link-context-menu', 'system-default'] as const)(
+    'keeps %s routing to the selected worktree off the main page',
+    async (source) => {
+      const openUrlFromDevServer = jest
+        .fn()
+        .mockReturnValue(opened('browser-link', true));
+      useBrowserStore.setState({ openUrlFromDevServer });
+      useChatStore.setState({
+        selectedWorktree: { projectId: 'project-1', worktreeId: 'worktree-1' },
+      });
+      useNavigationStore.setState({ activePage: 'plugins' });
+      ensureBrowserEventSubscription();
+
+      listener?.({
+        type: 'app-link-open-requested',
+        requestId: `req-${source}`,
+        url: 'https://example.com/plugin',
+        source,
+        openInApp: true,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(resolveOpenLinkRequest).toHaveBeenCalledWith({
+        requestId: `req-${source}`,
+        handled: true,
+        phase: 'acknowledge',
+      });
+    },
+  );
+
+  it('keeps App Advisor app links on its selected worktree', async () => {
+    const openUrlFromDevServer = jest
+      .fn()
+      .mockReturnValue(opened('browser-link', true));
+    useBrowserStore.setState({ openUrlFromDevServer });
+    useChatStore.setState({
+      selectedWorktree: { projectId: 'project-1', worktreeId: 'worktree-1' },
+    });
+    useNavigationStore.setState({ activePage: 'plugins' });
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        body: { dataset: { rendererSurface: 'app-advisor' } },
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+      },
+    });
+    try {
+      ensureBrowserEventSubscription();
+      listener?.({
+        type: 'app-link-open-requested',
+        requestId: 'req-advisor',
+        url: 'https://example.com/plugin',
+        source: 'app-link',
+        openInApp: true,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      Reflect.deleteProperty(globalThis, 'document');
+    }
+
+    expect(resolveOpenLinkRequest).toHaveBeenCalledWith({
+      requestId: 'req-advisor',
+      handled: true,
+      phase: 'acknowledge',
+    });
+    expect(openUrlFromDevServer).toHaveBeenCalled();
   });
 
   it('opens an app link in the selected worktree browser and accepts the request', async () => {
@@ -573,11 +767,12 @@ describe('app-link routing', () => {
   });
 
   it('coalesces concurrent requests for the same worktree URL', async () => {
-    let finishOpen: ((value: BrowserSessionSnapshot | null) => void) | null =
-      null;
+    const finishOpen: {
+      resolve: (value: BrowserSessionSnapshot | null) => void;
+    } = { resolve: () => undefined };
     const pendingReady = new Promise<BrowserSessionSnapshot | null>(
       (resolve) => {
-        finishOpen = resolve;
+        finishOpen.resolve = resolve;
       },
     );
     const openUrlFromDevServer = jest.fn(() =>
@@ -602,7 +797,7 @@ describe('app-link routing', () => {
     const callsBeforeCompletion = openUrlFromDevServer.mock.calls.length;
     // The tab is already placed while its session is still opening.
     expect(requestBrowserPanel).toHaveBeenCalledTimes(1);
-    finishOpen?.({ ...snapshot(), id: 'browser-link' });
+    finishOpen.resolve({ ...snapshot(), id: 'browser-link' });
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(callsBeforeCompletion).toBe(1);
@@ -611,11 +806,12 @@ describe('app-link routing', () => {
   });
 
   it('coalesces the external fallback when concurrent placement fails', async () => {
-    let finishOpen: ((value: BrowserSessionSnapshot | null) => void) | null =
-      null;
+    const finishOpen: {
+      resolve: (value: BrowserSessionSnapshot | null) => void;
+    } = { resolve: () => undefined };
     const pendingReady = new Promise<BrowserSessionSnapshot | null>(
       (resolve) => {
-        finishOpen = resolve;
+        finishOpen.resolve = resolve;
       },
     );
     const openUrlFromDevServer = jest.fn(() =>
@@ -641,7 +837,7 @@ describe('app-link routing', () => {
         });
       }
       await new Promise((resolve) => setImmediate(resolve));
-      finishOpen?.({ ...snapshot(), id: 'browser-link' });
+      finishOpen.resolve({ ...snapshot(), id: 'browser-link' });
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(openUrlFromDevServer).toHaveBeenCalledTimes(1);
@@ -1608,6 +1804,7 @@ describe('browser handoffs (CAN-4663)', () => {
       type: 'open-requested',
       browserId: 'browser-agent',
       snapshot: snapshot(),
+      originChatTabId: 'chat-1',
       createdNewSession: false,
       presentation: 'background',
     });
@@ -1616,7 +1813,7 @@ describe('browser handoffs (CAN-4663)', () => {
       'project-1',
       'worktree-1',
       'browser-agent',
-      undefined,
+      'chat-1',
       { focus: false, preserveSelection: true },
     );
     expect(focusCalls()).toHaveLength(0);
@@ -1885,6 +2082,70 @@ it('closes every panel bound to the browser for the in-page close-tab shortcut',
       'panel-advisor-browser-agent',
     ],
   ]);
+});
+
+// CAN-4616: tab cycling from a focused native page moves from the pressed
+// browser's own tab, which a click into the page may not have activated.
+it.each([
+  ['select-next-tab', 'next'],
+  ['select-previous-tab', 'previous'],
+] as const)(
+  'cycles from the pressed browser tab for the in-page %s shortcut',
+  async (action, direction) => {
+    jest.mocked(findBrowserPanelBindings).mockReturnValue([
+      {
+        layoutKey: 'project-1/worktree-1',
+        groupId: 'group-browser',
+        panelId: 'panel-browser-agent',
+      },
+      {
+        layoutKey: 'app-advisor/project-1',
+        groupId: 'group-advisor-browser',
+        panelId: 'panel-advisor-browser-agent',
+      },
+    ]);
+    const create = jest.fn(() => new Promise(() => undefined));
+    Object.assign(window.api.browser, { create });
+    ensureBrowserEventSubscription();
+
+    listener?.({
+      type: 'shortcut',
+      browserId: 'browser-agent',
+      snapshot: snapshot(),
+      action,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(findBrowserPanelBindings).toHaveBeenCalledWith('browser-agent');
+    expect(jest.mocked(selectAdjacentPanelTab).mock.calls).toEqual([
+      [
+        'project-1/worktree-1',
+        { groupId: 'group-browser', panelId: 'panel-browser-agent' },
+        direction,
+      ],
+    ]);
+    expect(closePanelTab).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  },
+);
+
+it('never opens a new tab for the in-page tab-cycle shortcut of an unbound browser', async () => {
+  jest.mocked(findBrowserPanelBindings).mockReturnValue([]);
+  const create = jest.fn(() => new Promise(() => undefined));
+  Object.assign(window.api.browser, { create });
+  ensureBrowserEventSubscription();
+
+  listener?.({
+    type: 'shortcut',
+    browserId: 'browser-agent',
+    snapshot: snapshot(),
+    action: 'select-next-tab',
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  expect(selectAdjacentPanelTab).not.toHaveBeenCalled();
+  expect(requestBrowserPanel).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
 });
 
 it('honors the session runtime generation main stamps on the close-tab shortcut', async () => {

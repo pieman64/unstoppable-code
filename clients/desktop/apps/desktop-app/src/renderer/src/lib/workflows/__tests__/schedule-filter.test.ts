@@ -20,11 +20,29 @@ const WORKTREE: AutomationAction = {
   prompt: 'Triage',
 };
 
+const GLOBAL_PIPELINE: AutomationAction = {
+  type: 'worktree_pipeline',
+  target: { kind: 'global' },
+  // Inert compatibility data; never a project.
+  workspaceId: 'project-1',
+  pipelineId: 'review',
+};
+
 describe('automationProjectId', () => {
   it('reads the project each action type runs in', () => {
     expect(automationProjectId(ADVISOR)).toBeUndefined();
     expect(automationProjectId(COWORK)).toBe('cowork-1');
     expect(automationProjectId(WORKTREE)).toBe('project-1');
+    expect(automationProjectId(GLOBAL_PIPELINE)).toBeUndefined();
+  });
+
+  it('files a pipeline with no project under No project', () => {
+    expect(
+      matchesScheduleProject({ action: GLOBAL_PIPELINE }, WORKFLOW_NO_PROJECT),
+    ).toBe(true);
+    expect(
+      matchesScheduleProject({ action: GLOBAL_PIPELINE }, 'project-1'),
+    ).toBe(false);
   });
 });
 

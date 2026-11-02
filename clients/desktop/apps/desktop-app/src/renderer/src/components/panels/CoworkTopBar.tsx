@@ -10,6 +10,8 @@
  *   28px pill spec as the worktree breadcrumb) that opens the cowork
  *   workspace settings modal; cowork has no branches, so it is the single
  *   segment;
+ * - under the Subagents view, the same "N running" control as the worktree
+ *   header, for the active entry;
  * - the "Open in" dropdown (resolves the cowork root, honoring an attached
  *   external folder — cwd resolution is entry-agnostic, so passing the entry
  *   id as worktreeId is fine) and the layout dropdown (saves the
@@ -28,6 +30,7 @@ import { CollapsedTitlebarToggle } from '@/components/sidebar/CollapsedTitlebarT
 import { OpenDropdown } from '@/components/worktree/OpenDropdown';
 import { WorkspaceLayoutControls } from '@/components/panels/WorkspaceLayoutControls';
 import { ProjectIcon } from '@/components/shared/ProjectIcon';
+
 import { ChatProjectSettingsModal } from '@/components/standalone-chat/ChatProjectSettingsModal';
 import { useTopBarLeadingInsetClassName } from '@/components/panels/useTopBarLeadingInsetClassName';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';

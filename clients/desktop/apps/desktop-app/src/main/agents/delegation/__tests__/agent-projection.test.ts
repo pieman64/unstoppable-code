@@ -144,7 +144,10 @@ describe('delegated Agent selected capability projection', () => {
   });
 
   it('retains selected skill and plugin instructions, native metadata, and declared capability identities', async () => {
-    const roots: Record<string, NativeDelegationFiles> = {
+    const roots: Record<
+      string,
+      Pick<NativeDelegationFiles, 'list' | 'read' | 'close'>
+    > = {
       '/skills/review': reader({ 'SKILL.md': '# Review' }),
       '/plugins/plugin': reader({
         '.claude-plugin/plugin.json': JSON.stringify({
@@ -235,7 +238,7 @@ describe('delegated Agent selected capability projection', () => {
       mcpServerRefs: [],
       warnings: [],
     });
-    for (const pluginFiles of [
+    const pluginFilesCases: Record<string, string>[] = [
       {
         '.claude-plugin/plugin.json': JSON.stringify({
           name: 'plugin',
@@ -246,7 +249,8 @@ describe('delegated Agent selected capability projection', () => {
         '.claude-plugin/plugin.json': JSON.stringify({ name: 'plugin' }),
         'monitors/monitors.json': JSON.stringify({ command: 'echo unsafe' }),
       },
-    ]) {
+    ];
+    for (const pluginFiles of pluginFilesCases) {
       await expect(
         materializeDelegationAgentPlugins(
           { collectionIds: [], skillRefs: [], pluginRefs: [] },

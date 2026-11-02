@@ -1,5 +1,4 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import {
   lazy,
@@ -14,15 +13,17 @@ import {
 } from 'react';
 import { SlidersHorizontal } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Button,
   DelayedLoadingPlaceholder,
+  Dot,
   ErrorBanner,
+  SegmentedControl,
   SettingsChartSkeleton,
+  SettingsSelect,
+  type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
 import { getTelemetryToolCategoryLabel } from '@canopy/ui-shared/lib/telemetry-tool-category';
-import {
-  capitalizeFirstLetter,
-  formatImpactScore,
-} from '@canopy/ui-shared/lib';
+import { formatImpactScore } from '@canopy/ui-shared/lib';
 import { classifyPipelineType } from '@canopy/protocol/telemetry';
 import type {
   PipelineUsageType,
@@ -197,7 +198,7 @@ const METRIC_TABS: ReadonlyArray<{ key: MetricTab; label: string }> = [
   { key: 'overview', label: 'Overview' },
   { key: 'people', label: 'People' },
   { key: 'tokens', label: 'Tokens' },
-  { key: 'pipelines', label: 'Pipelines' },
+  { key: 'pipelines', label: 'Workflows' },
   { key: 'tools', label: 'Tools' },
   { key: 'activity', label: 'Activity' },
 ];
@@ -865,12 +866,12 @@ function TabContent({
             />
           </Panel>
           {peopleDetailed ? (
-            <Panel title="Pipelines">
+            <Panel title="Workflows">
               <StatTable
                 testId="people-pipelines-table"
                 rows={pipelinePeopleRows}
                 rowKey={(row) => row.userId ?? 'unknown'}
-                emptyLabel="No completed pipeline runs for this range."
+                emptyLabel="No completed workflow runs for this range."
                 defaultSortKey="agentSteps"
                 defaultSortDir="desc"
                 columns={pipelinePeopleColumns}
@@ -882,16 +883,16 @@ function TabContent({
 
     case 'pipelines':
       return (
-        <Panel title="Pipeline usage">
+        <Panel title="Workflow usage">
           <StatTable
             testId="pipelines-table"
             rows={usage.pipelines}
             rowKey={(row) => row.clientPipelineId}
-            emptyLabel="No pipeline runs for this range."
+            emptyLabel="No workflow runs for this range."
             columns={[
               {
                 key: 'pipeline',
-                header: 'Pipeline',
+                header: 'Workflow',
                 render: (row) => row.pipelineName ?? row.clientPipelineId,
               },
               {
@@ -1316,10 +1317,10 @@ function peopleColumns(
       align: 'right',
       tooltip:
         'Agent turns that actually ran for this person in range — chat, plan ' +
-        'chat, Cowork chat and pipeline agent steps. Excludes helper and ' +
+        'chat, Cowork chat and workflow agent steps. Excludes helper and ' +
         'advisory turns, and turns still running. Feeds a soft-capped bonus ' +
         'into Impact, weighted by the tools each turn used. Metric definition ' +
-        'changed on 2026-08-21; earlier rows counted declared pipeline steps.',
+        'changed on 2026-08-21; earlier rows counted declared workflow steps.',
       sortValue: (row) => row.agentTurns,
       render: (row) => formatCount(row.agentTurns),
     },
@@ -1461,7 +1462,7 @@ function peoplePipelineColumns(
       key: 'user',
       header: 'Person',
       tooltip:
-        'Team member the pipeline runs are attributed to. Links to their profile.',
+        'Team member the workflow runs are attributed to. Links to their profile.',
       sortValue: (row) => row.userName ?? 'Unknown',
       render: (row) => (
         <MemberName orgId={orgId} row={row} blockClassName={blockClassName} />
@@ -1471,7 +1472,7 @@ function peoplePipelineColumns(
       key: 'runs',
       header: 'Runs',
       align: 'right',
-      tooltip: 'Completed pipeline runs attributed to this person in range.',
+      tooltip: 'Completed workflow runs attributed to this person in range.',
       sortValue: (row) => row.pipelineRuns,
       render: (row) => formatCount(row.pipelineRuns),
     },
@@ -1497,7 +1498,7 @@ function peoplePipelineColumns(
       header: 'Agent steps',
       align: 'right',
       tooltip:
-        'Agent steps that actually ran across completed pipeline runs in ' +
+        'Agent steps that actually ran across completed workflow runs in ' +
         'range, counted separately per matrix variant, retry attempt, ' +
         'iteration and parallel agent. No longer feeds Impact; Agent turns ' +
         'does. Metric definition changed on 2026-08-21; earlier rows count ' +
@@ -1507,9 +1508,9 @@ function peoplePipelineColumns(
     },
     {
       key: 'distinctPipelines',
-      header: 'Distinct pipelines',
+      header: 'Distinct workflows',
       align: 'right',
-      tooltip: 'Distinct pipelines this person ran to completion in range.',
+      tooltip: 'Distinct workflows this person ran to completion in range.',
       sortValue: (row) => row.pipelineDistinctPipelines,
       render: (row) => formatCount(row.pipelineDistinctPipelines),
     },
@@ -1587,17 +1588,26 @@ function FilterPopover({
     if (!open) {
       return;
     }
+    // A dropdown in the panel draws its menu outside it (portaled to the
+    // page body); a press or Escape there belongs to that menu, not the panel.
+    function inPanelMenu(target: EventTarget | null): boolean {
+      return (
+        target instanceof Element &&
+        target.closest('.canopy-floating-menu') !== null
+      );
+    }
     function handleClickOutside(event: MouseEvent): void {
       if (
         ref.current &&
         event.target instanceof Node &&
-        !ref.current.contains(event.target)
+        !ref.current.contains(event.target) &&
+        !inPanelMenu(event.target)
       ) {
         setOpen(false);
       }
     }
     function handleKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !inPanelMenu(event.target)) {
         setOpen(false);
         // Return focus to the trigger so keyboard users keep their place
         // (dialog focus management for the Escape close path).
@@ -1614,26 +1624,27 @@ function FilterPopover({
 
   return (
     <div ref={ref} className="relative">
-      <button
+      <Button
         ref={triggerRef}
-        type="button"
+        size="compact"
+        iconOnly
+        variant="ghost"
         onClick={() => setOpen((prev) => !prev)}
         aria-label="Filters"
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls="usage-filters-panel"
         data-testid="usage-filters-trigger"
-        className="focus-ring relative rounded-md p-1.5 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
       >
-        <SlidersHorizontal size={16} aria-hidden="true" />
+        <SlidersHorizontal size={14} aria-hidden="true" />
         {hasActiveFilters && (
-          <span
-            aria-hidden="true"
+          <Dot
+            tone="filter"
             data-testid="usage-filters-active-dot"
-            className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent"
+            className="absolute right-0.5 top-0.5"
           />
         )}
-      </button>
+      </Button>
 
       {open && (
         <div
@@ -1747,19 +1758,14 @@ function SelectControl({
     >
       <span>{label}</span>
       <div className={`relative ${stacked ? 'flex' : 'inline-flex'}`}>
-        <SettingsControlSelect
+        <SettingsSelect
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onValueChange={onChange}
           data-testid={testId}
-          fill={stacked}
+          width={stacked ? 'fill' : 'control'}
           replayPrivacy={{ blockClassName: selectClassName }}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </SettingsControlSelect>
+          options={options}
+        />
       </div>
     </label>
   );
@@ -1773,25 +1779,22 @@ interface DimToggleProps {
 
 function DimToggle({ value, onChange, testId }: DimToggleProps): JSX.Element {
   return (
-    <div className="inline-flex rounded-md border p-0.5" data-testid={testId}>
-      {(['provider', 'model'] as const).map((dim) => (
-        <button
-          key={dim}
-          type="button"
-          onClick={() => onChange(dim)}
-          className={`cursor-pointer rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-            value === dim
-              ? 'bg-accent fg-emphasis'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-          aria-pressed={value === dim}
-        >
-          {capitalizeFirstLetter(dim)}
-        </button>
-      ))}
-    </div>
+    <SegmentedControl
+      label="Group by"
+      semantics="toggle"
+      width="content"
+      dataTestId={testId}
+      value={value}
+      onChange={onChange}
+      options={DIM_OPTIONS}
+    />
   );
 }
+
+const DIM_OPTIONS: readonly SegmentedControlOption<'provider' | 'model'>[] = [
+  { value: 'provider', label: 'Provider' },
+  { value: 'model', label: 'Model' },
+];
 
 interface ColumnsToggleProps {
   detailed: boolean;
@@ -1800,40 +1803,35 @@ interface ColumnsToggleProps {
 
 /**
  * Toggles the People leaderboard between the default compact column set and the
- * full detailed set. Mirrors {@link DimToggle}'s pill styling.
+ * full detailed set, on the shared segmented control like {@link DimToggle}.
  */
 function ColumnsToggle({
   detailed,
   onChange,
 }: ColumnsToggleProps): JSX.Element {
-  const options: ReadonlyArray<{ value: boolean; label: string }> = [
-    { value: false, label: 'Summary' },
-    { value: true, label: 'Detailed' },
-  ];
   return (
-    <div
-      className="inline-flex rounded-md border p-0.5"
-      data-testid="people-columns-toggle"
-    >
-      {options.map((option) => (
-        <button
-          key={option.label}
-          type="button"
-          onClick={() => onChange(option.value)}
-          data-testid={`people-columns-${option.value ? 'detailed' : 'summary'}`}
-          className={`cursor-pointer rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-            detailed === option.value
-              ? 'bg-accent fg-emphasis'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-          aria-pressed={detailed === option.value}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
+    <SegmentedControl
+      label="People columns"
+      semantics="toggle"
+      width="content"
+      dataTestId="people-columns-toggle"
+      value={detailed ? 'detailed' : 'summary'}
+      onChange={(next) => onChange(next === 'detailed')}
+      options={COLUMNS_OPTIONS}
+    />
   );
 }
+
+const COLUMNS_OPTIONS: readonly SegmentedControlOption<
+  'summary' | 'detailed'
+>[] = [
+  { value: 'summary', label: 'Summary', dataTestId: 'people-columns-summary' },
+  {
+    value: 'detailed',
+    label: 'Detailed',
+    dataTestId: 'people-columns-detailed',
+  },
+];
 
 interface PanelProps {
   title: string;

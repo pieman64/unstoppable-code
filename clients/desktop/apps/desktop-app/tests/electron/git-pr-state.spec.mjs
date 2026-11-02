@@ -588,7 +588,7 @@ test.describe('Git settings — agent-rebase resolution toggle (PR 712)', () => 
       const modelSelect = win.getByTestId('settings-git-agent-rebase-model');
       await expect(modelSelect).toBeVisible();
       // It defaults to the "Project default" sentinel (value "").
-      await expect(modelSelect).toHaveValue('');
+      await expect(modelSelect).toHaveAttribute('data-value', '');
 
       // Flip OFF again and confirm the select disappears, then ON to persist.
       await toggle.click();
@@ -2643,10 +2643,14 @@ test.describe('PR status surfaces via injectGithubPrStatus (Spec 13)', () => {
       await expect(otherRow).toHaveClass(/bg-muted/);
       await releaseUnresolvedMergePr(electronApp);
 
-      const toastMessage = window.getByText(
-        'This merge needs confirmation because the pull request has unresolved comments. Click to return to the worktree and review it.',
-        { exact: true },
-      );
+      // Toast previews truncate long messages; identify the warning by its
+      // first sentence while keeping the destination handoff covered below.
+      const toastMessage = window
+        .getByTestId('toast-live-region')
+        .getByText(
+          'This merge needs confirmation because the pull request has unresolved comments.',
+          { exact: false },
+        );
       await expect(toastMessage).toBeVisible();
       await expect(window.getByTestId('pr-merge-warning-modal')).toHaveCount(0);
 

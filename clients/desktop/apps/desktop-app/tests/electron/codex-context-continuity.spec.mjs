@@ -969,21 +969,23 @@ test.describe('Codex context continuity without synthetic homes', () => {
         if (origin === 'manual') {
           await window.getByRole('button', { name: 'Send message' }).click();
         } else {
-          await electronApp.evaluate(({ BrowserWindow }, text) => {
-            const command = {
-              type: 'send_watcher_message',
-              projectId: 'demo-ts-pnpm-vite',
-              worktreeId: 'demo-main',
-              chatId: 'writer-chat',
-              watcherId: 'writer-handoff',
-              deliveryId: 'writer-handoff-delivery',
-              text,
-              watcherFired: { kind: 'Pipeline completion (Handoff)' },
-            };
-            const win = BrowserWindow.getAllWindows()[0];
-            win.webContents.send('chat:window-command', command);
-            win.webContents.send('chat:window-command', command);
-          }, USER_PROMPT);
+          const delivery = {
+            projectId: 'demo-ts-pnpm-vite',
+            worktreeId: 'demo-main',
+            chatId: 'writer-chat',
+            watcherId: 'writer-handoff',
+            deliveryId: 'writer-handoff-delivery',
+            text: USER_PROMPT,
+            watcherFired: { kind: 'Pipeline completion (Handoff)' },
+          };
+          const deliverWatcherMessage = () =>
+            electronApp.evaluate(
+              (_electron, payload) =>
+                globalThis.__CANOPY_E2E_DELIVER_WATCHER_MESSAGE__(payload),
+              delivery,
+            );
+          expect(await deliverWatcherMessage()).toBe('submitted');
+          expect(await deliverWatcherMessage()).toBe('already_delivered');
         }
         const draftStart = performance.now();
         await composer.fill('Draft while restarting');
@@ -1626,7 +1628,7 @@ test.describe('Codex context continuity without synthetic homes', () => {
           })
           .toMatch(/^e2e-thread-/);
 
-        await window.getByRole('button', { name: 'Fork Chat' }).click();
+        await window.getByRole('button', { name: 'Fork chat' }).click();
 
         if (scenario === 'cancelled-fork') {
           // Observe the pending fork before sending so the fixture's delayed
@@ -2082,7 +2084,9 @@ test.describe('Codex context continuity without synthetic homes', () => {
         name: /^Agent steps: .*mcp/,
       });
       await expect(agentSteps).toBeVisible({ timeout: 30_000 });
-      await agentSteps.click();
+      if ((await agentSteps.getAttribute('aria-expanded')) !== 'true') {
+        await agentSteps.click();
+      }
       await expect(agentSteps).toHaveAttribute('aria-expanded', 'true');
 
       const mcpCard = window.locator(
@@ -2101,7 +2105,6 @@ test.describe('Codex context continuity without synthetic homes', () => {
         'true',
       );
       await expect(mcpCard).toContainText('accept-me');
-      await expect(mcpCard).toContainText('Result');
       await expect(mcpCard).toContainText('fixture mutation accepted');
     } finally {
       await closeFixtureApp(electronApp, userDataDir, fixture.runtimeDir);
@@ -2379,7 +2382,7 @@ test.describe('Codex context continuity without synthetic homes', () => {
         window.locator(
           `[data-testid="chat-model-row-credits-${DEEPSEEK_GATEWAY_MODEL.id}"]:visible`,
         ),
-      ).toHaveText('AI credits');
+      ).toHaveText('AI Credits');
       // No row menu for it holds billing, whichever button opens it.
       await expect(
         window.locator(

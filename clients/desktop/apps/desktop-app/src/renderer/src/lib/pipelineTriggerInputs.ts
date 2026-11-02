@@ -85,7 +85,7 @@ export function resolvePipelineTriggerInputs(
       error:
         error instanceof Error
           ? error.message
-          : 'Failed to load pipeline trigger inputs',
+          : 'Failed to load workflow trigger inputs',
     };
   }
 }

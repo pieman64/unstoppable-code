@@ -53,6 +53,12 @@ function tab(id: string, overrides: Partial<ChatTab> = {}): ChatTab {
     proposalMode: 'optional',
     thinkingLevel: 'high',
     ...overrides,
+    fastModeExplicit: overrides.fastModeExplicit ?? false,
+    modelConfig: overrides.modelConfig ?? {
+      thinkingLevel: 'high',
+      speed: 'standard',
+      fastMode: false,
+    },
   };
 }
 
@@ -167,6 +173,53 @@ describe('dispatchWorkspaceComments', () => {
     expect(sentOptions).not.toHaveProperty('reservedRevertAttachmentPath');
     // File and diagram comments are about no tracked plan.
     expect(sentOptions).not.toHaveProperty('activePlan');
+  });
+
+  it('sends to the requested chat over the active one, and only while it is loaded', async () => {
+    useChatStore.setState({
+      worktreeChats: {
+        [KEY]: {
+          tabs: [tab('chat-a'), tab('chat-plan')],
+          activeTabId: 'chat-a',
+        },
+      },
+    });
+    sendMessage.mockImplementation(
+      (
+        _t: unknown,
+        _f: unknown,
+        _target: unknown,
+        _mode: unknown,
+        options: SendMessageOptions,
+      ) => {
+        options.onDispatchAccepted?.();
+        return Promise.resolve();
+      },
+    );
+
+    await expect(
+      dispatchWorkspaceComments(SCOPE, 'hi', HIDDEN_CONTEXT, {
+        chatId: 'chat-plan',
+      }),
+    ).resolves.toEqual({ ok: true, chatId: 'chat-plan' });
+    expect(switchTab).toHaveBeenCalledWith('chat-plan', SCOPE);
+    expect(sendMessage).toHaveBeenCalledWith(
+      'hi',
+      undefined,
+      { ...SCOPE, chatId: 'chat-plan' },
+      undefined,
+      expect.anything(),
+    );
+
+    // A requested chat that is gone refuses rather than redirecting the
+    // comments to another chat.
+    sendMessage.mockClear();
+    await expect(
+      dispatchWorkspaceComments(SCOPE, 'hi', HIDDEN_CONTEXT, {
+        chatId: 'chat-closed',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'no-chat' });
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("forwards the plan panel's active plan, with the viewed revision, to sendMessage", async () => {

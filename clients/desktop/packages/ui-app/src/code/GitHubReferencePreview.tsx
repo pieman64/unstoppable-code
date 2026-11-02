@@ -135,7 +135,12 @@ function GitHubReferencePreviewContent({
               Date.now() - view.checkedAt > LINEAR_PREVIEW_CACHE_LIMITS.freshMs,
           };
   return (
-    <GitHubReferencePreviewCard label={label} view={cardView} layout={layout} />
+    <GitHubReferencePreviewCard
+      label={label}
+      view={cardView}
+      layout={layout}
+      itemNumber={target.kind === 'item' ? target.number : undefined}
+    />
   );
 }
 

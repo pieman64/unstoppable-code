@@ -2,15 +2,21 @@ import subagentActivityEvents from '../../../../tests/electron/fixtures/codex-su
 import packageConfig from '../../../../../../package.json';
 import { parseModelPackageConfig } from '@canopy/desktop-shared/model-config';
 import {
-  applyClaudeTranscriptEvent,
+  applyClaudeTranscriptEvent as applyClaudeTranscriptEventWithLiveness,
   parseAgentTranscriptLines,
   createEmptyTranscriptReducerState,
-  applyCodexTranscriptEvent,
+  applyCodexTranscriptEvent as applyCodexTranscriptEventWithLiveness,
   buildTranscriptDisplayMessages,
   pauseOpenTurnTimer,
   resumePausedTurnTimer,
 } from '../lib/transcript-parser';
+import type {
+  ChildToolLiveness,
+  TranscriptReducerOptions,
+  TranscriptReducerState,
+} from '@canopy/agent-transcript';
 import type { PersistedChatBlock } from '@canopy/agent-transcript/types';
+import { codexItemOutputBody } from '@canopy/agent-transcript';
 import {
   initAgentModels,
   initAiGatewayModels,
@@ -27,6 +33,43 @@ import {
 } from '@canopy/protocol';
 
 jest.setTimeout(15_000);
+
+// These cases were written for the close-everything terminal behavior, which
+// `no-live-session` keeps; liveness-specific cases live in the package tests.
+type ReducerOptionsWithoutLiveness = Omit<
+  TranscriptReducerOptions,
+  'childToolLiveness'
+> & { childToolLiveness?: ChildToolLiveness };
+
+function withLiveness(
+  options: ReducerOptionsWithoutLiveness,
+): TranscriptReducerOptions {
+  return { childToolLiveness: { kind: 'no-live-session' }, ...options };
+}
+
+function applyClaudeTranscriptEvent(
+  state: TranscriptReducerState,
+  event: Parameters<typeof applyClaudeTranscriptEventWithLiveness>[1],
+  options: ReducerOptionsWithoutLiveness,
+): TranscriptReducerState {
+  return applyClaudeTranscriptEventWithLiveness(
+    state,
+    event,
+    withLiveness(options),
+  );
+}
+
+function applyCodexTranscriptEvent(
+  state: TranscriptReducerState,
+  event: Parameters<typeof applyCodexTranscriptEventWithLiveness>[1],
+  options: ReducerOptionsWithoutLiveness,
+): TranscriptReducerState {
+  return applyCodexTranscriptEventWithLiveness(
+    state,
+    event,
+    withLiveness(options),
+  );
+}
 
 describe('Claude terminal error results', () => {
   it('preserves SDK errors when a turn limit result has no result field', () => {
@@ -851,6 +894,7 @@ describe('transcript-parser', () => {
         {
           modelId: 'opus[1m]',
           gatewayId: 'anthropic/claude-opus-5',
+          family: 'anthropic',
           recommendedHarness: 'claude',
           gatewayOnly: false,
           contextWindow: 400_000,
@@ -1089,7 +1133,7 @@ describe('transcript-parser', () => {
               type: 'tool_use' as const,
               toolUseId: 'tool-1',
               toolName: 'Read',
-              input: { file_path: '/tmp/fixture.txt' },
+              input: JSON.stringify({ file_path: '/tmp/fixture.txt' }),
             },
           ],
         },
@@ -1972,7 +2016,11 @@ describe('transcript-parser', () => {
         name: 'Rigorous',
         baseModel: 'opus[1m]',
         instructions: 'Be rigorous.',
-        pluginSelections: [],
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+        },
         createdAt: '2026-07-14T00:00:00.000Z',
         updatedAt: '2026-07-14T00:00:00.000Z',
         available: true,
@@ -4413,9 +4461,7 @@ describe('transcript-parser', () => {
         ),
       );
       const blockBefore = messageBefore?.blocks[0];
-      expect(
-        blockBefore?.type === 'tool_use' ? blockBefore.result : null,
-      ).toBeUndefined();
+      expect(blockBefore).not.toHaveProperty('result');
       expect(messageBefore?.blocks).toHaveLength(1);
 
       const state2 = applyCodexTranscriptEvent(
@@ -4761,7 +4807,7 @@ describe('transcript-parser', () => {
       ]);
     });
 
-    it('reports content items omitted after image-preview preprocessing', () => {
+    it('retains all MCP content items after image-preview preprocessing', () => {
       const state = applyCodexTranscriptEvent(
         createEmptyTranscriptReducerState(),
         {
@@ -4787,7 +4833,10 @@ describe('transcript-parser', () => {
       );
       expect(
         resultBlock?.type === 'tool_result' ? resultBlock.output : '',
-      ).toContain('[150 additional content items omitted]');
+      ).toContain('item-249');
+      expect(
+        resultBlock?.type === 'tool_result' ? resultBlock.output : '',
+      ).not.toContain('additional content items omitted');
     });
 
     it('replaces duplicate completion idempotently without appending', () => {
@@ -7137,5 +7186,564 @@ describe('CAN-2835 native Codex completion without a synthetic result', () => {
       { ...options, now: 4000 },
     );
     expect(state.messages[0]?.blocks[0]).toMatchObject({ completedAt: 3000 });
+  });
+});
+
+describe('Codex canonical tool result output', () => {
+  const complete = (
+    item: Record<string, unknown>,
+  ): ReturnType<typeof applyCodexTranscriptEvent> =>
+    applyCodexTranscriptEvent(
+      createEmptyTranscriptReducerState(),
+      {
+        type: 'item.completed',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        item,
+      },
+      { now: 1, createMessageId: () => 'unused' },
+    );
+
+  it('retains dynamic content after item 100 and beyond 65,536 chars', () => {
+    const content_items = Array.from({ length: 100 }, () => ({
+      type: 'inputText',
+      text: 'x'.repeat(1310),
+    }));
+    content_items.push({ type: 'inputText', text: 'last-marker' });
+    const state = complete({
+      type: 'dynamic_tool_call',
+      id: 'dynamic-full',
+      tool: 'tool',
+      status: 'completed',
+      arguments: {},
+      content_items,
+      success: true,
+    });
+    const result = state.messages[0].blocks.find(
+      (block) => block.type === 'tool_result',
+    );
+    if (result?.type !== 'tool_result') throw new Error('missing result');
+    expect(result.output).toContain('last-marker');
+    expect(result.output.length).toBeGreaterThan(131_082);
+  });
+
+  it('retains MCP text, resource, and structured fallback in full', () => {
+    const content: Array<
+      | { type: 'text'; text: string }
+      | { type: 'resource'; resource: { text: string } }
+    > = Array.from({ length: 101 }, (): { type: 'text'; text: string } => ({
+      type: 'text',
+      text: 'x'.repeat(1300),
+    }));
+    content.push({ type: 'resource', resource: { text: 'resource-marker' } });
+    const state = complete({
+      type: 'mcp_tool_call',
+      id: 'mcp-full',
+      server: 's',
+      tool: 't',
+      arguments: {},
+      status: 'completed',
+      result: { content },
+      error: null,
+    });
+    const result = state.messages[0].blocks.find(
+      (block) => block.type === 'tool_result',
+    );
+    if (result?.type !== 'tool_result') throw new Error('missing result');
+    expect(result.output).toContain('resource-marker');
+    const structured = complete({
+      type: 'mcp_tool_call',
+      id: 'mcp-structured',
+      server: 's',
+      tool: 't',
+      arguments: {},
+      status: 'completed',
+      result: {
+        structuredContent: {
+          nested: { _meta: 'secret', marker: 'structured-marker' },
+        },
+      },
+      error: null,
+    });
+    const structuredResult = structured.messages[0].blocks.find(
+      (block) => block.type === 'tool_result',
+    );
+    if (structuredResult?.type !== 'tool_result')
+      throw new Error('missing result');
+    expect(structuredResult.output).toContain('structured-marker');
+    expect(structuredResult.output).not.toContain('_meta');
+  });
+
+  it('keeps function_call_output bounded', () => {
+    const state = complete({
+      type: 'function_call_output',
+      id: 'function-bounded',
+      name: 'tool',
+      output: 'x'.repeat(131_082),
+    });
+    const text = state.messages[0].blocks.find(
+      (block) => block.type === 'text',
+    );
+    if (text?.type !== 'text') throw new Error('missing text');
+    expect(text.text.length).toBeLessThan(65_600);
+    expect(text.text).toContain('[additional output omitted]');
+  });
+
+  it('does not announce images outside first 100 items or after four safe images', () => {
+    const image = {
+      type: 'inputImage',
+      imageUrl: 'data:image/png;base64,AAAA',
+    };
+    const afterLimit = complete({
+      type: 'dynamic_tool_call',
+      id: 'image-late',
+      tool: 'tool',
+      arguments: {},
+      status: 'completed',
+      content_items: [
+        ...Array.from({ length: 100 }, () => ({
+          type: 'inputText',
+          text: 'x',
+        })),
+        image,
+      ],
+      success: true,
+    });
+    const lateBlocks = afterLimit.messages[0].blocks;
+    expect(lateBlocks.filter((block) => block.type === 'image')).toHaveLength(
+      0,
+    );
+    const lateResult = lateBlocks.find((block) => block.type === 'tool_result');
+    if (lateResult?.type !== 'tool_result') throw new Error('missing result');
+    expect(lateResult.output).not.toContain('[Image displayed below]');
+    const ceiling = complete({
+      type: 'dynamic_tool_call',
+      id: 'image-four',
+      tool: 'tool',
+      arguments: {},
+      status: 'completed',
+      content_items: Array.from({ length: 5 }, () => image),
+      success: true,
+    });
+    expect(
+      ceiling.messages[0].blocks.filter((block) => block.type === 'image'),
+    ).toHaveLength(4);
+    const result = ceiling.messages[0].blocks.find(
+      (block) => block.type === 'tool_result',
+    );
+    if (result?.type !== 'tool_result') throw new Error('missing result');
+    expect(result.output.match(/\[Image displayed below\]/g)).toHaveLength(4);
+  });
+});
+
+describe('Codex function_call_output transcript storage format', () => {
+  const sentinel = 'middle-sentinel-7f3c';
+  const bigOutput = `${'a'.repeat(80_000)}${sentinel}${'b'.repeat(80_000)}`;
+  const png = 'data:image/png;base64,aGVsbG8=';
+  const pair = '\u{1F600}';
+  const ref = {
+    version: 1 as const,
+    artifactId: `sha256-v1-${'a'.repeat(64)}`,
+    byteLength: 200_000,
+    sha256: 'a'.repeat(64),
+    encoding: 'utf-8' as const,
+    mediaType: 'text/plain' as const,
+  };
+  const reduce = (
+    item: Record<string, unknown>,
+    options: Partial<
+      Pick<
+        Parameters<typeof applyCodexTranscriptEvent>[2],
+        'transcriptStorageFormat' | 'preparedCodexItem'
+      >
+    > = {},
+    eventType = 'item.completed',
+  ): PersistedChatBlock[] =>
+    applyCodexTranscriptEvent(
+      createEmptyTranscriptReducerState(),
+      { type: eventType, thread_id: 'thread-1', turn_id: 'turn-1', item },
+      { now: 1, createMessageId: () => 'unused', ...options },
+    ).messages.flatMap((message) => message.blocks);
+
+  it('keeps a >64 KiB function_call_output lossless in format 4', () => {
+    const blocks = reduce(
+      {
+        type: 'function_call_output',
+        id: 'fco-big',
+        name: 'tool',
+        output: bigOutput,
+      },
+      { transcriptStorageFormat: 4 },
+    );
+    const [text] = blocks;
+    if (text?.type !== 'text') throw new Error('missing text block');
+    expect(text.text.includes(sentinel)).toBe(true);
+    expect(text.text === `Tool output (tool)\n\n${bigOutput}`).toBe(true);
+    expect(blocks).toHaveLength(1);
+    expect(text.verbatim).toBe(true);
+    expect(text.textRef).toBeUndefined();
+  });
+
+  const legacyFixtures: Array<[string, Record<string, unknown>, string?]> = [
+    ['small string', { type: 'function_call_output', output: '42 passed' }],
+    ['large string', { type: 'function_call_output', output: bigOutput }],
+    [
+      'multibyte at the preview edge',
+      {
+        type: 'function_call_output',
+        namespace: 'ns',
+        name: 'tool',
+        output: `${'x'.repeat(65_500)}${pair.repeat(100)}\uD800`,
+      },
+    ],
+    ['empty string', { type: 'function_call_output', output: '' }],
+    ['missing output', { type: 'function_call_output' }],
+    [
+      'content items with images',
+      {
+        type: 'function_call_output',
+        name: 'preview',
+        output: [
+          { type: 'input_text', text: 'y'.repeat(70_000) },
+          { type: 'input_image', image_url: png },
+          { type: 'encrypted_content', encrypted_content: 'secret' },
+        ],
+      },
+    ],
+    [
+      'mcp structured',
+      {
+        type: 'mcp_tool_call',
+        server: 's',
+        tool: 't',
+        status: 'completed',
+        result: {
+          structuredContent: { big: 'z'.repeat(70_000), _meta: 'x' },
+        },
+        error: null,
+      },
+    ],
+    [
+      'mcp error',
+      {
+        type: 'mcp_tool_call',
+        server: 's',
+        tool: 't',
+        status: 'failed',
+        result: null,
+        error: { message: 'failed hard' },
+      },
+    ],
+    [
+      'dynamic failure',
+      {
+        type: 'dynamic_tool_call',
+        tool: 'tool',
+        status: 'failed',
+        success: false,
+        content_items: [],
+      },
+    ],
+    [
+      'function output update',
+      { type: 'function_call_output', output: bigOutput },
+      'item.updated',
+    ],
+  ];
+
+  it.each(
+    legacyFixtures.map(([name, fixture, eventType]) => ({
+      name,
+      fixture,
+      eventType: eventType ?? 'item.completed',
+    })),
+  )(
+    'keeps formats 2 and 3 identical to the default rows: $name',
+    ({ fixture, eventType }) => {
+      const item = { id: 'legacy-item', ...fixture };
+      const legacy = JSON.stringify(reduce(item, {}, eventType));
+      for (const transcriptStorageFormat of [2, 3] as const) {
+        expect(
+          JSON.stringify(
+            reduce(
+              item,
+              { transcriptStorageFormat, preparedCodexItem: undefined },
+              eventType,
+            ),
+          ) === legacy,
+        ).toBe(true);
+      }
+    },
+  );
+
+  it('keeps the default function_call_output on the bounded helpers', () => {
+    const item = {
+      id: 'legacy-item',
+      type: 'function_call_output',
+      name: 'tool',
+      output: bigOutput,
+    };
+    expect(reduce(item)).toEqual([
+      {
+        type: 'text',
+        text: `Tool output (tool)\n\n${bigOutput.slice(0, 65_536 - '\n\n[additional output omitted]'.length)}\n\n[additional output omitted]`,
+        verbatim: true,
+      },
+    ]);
+  });
+
+  it('keeps non-string function output lossless with images in format 4', () => {
+    const output = [
+      { type: 'input_text', text: `${'y'.repeat(70_000)}${sentinel}` },
+      { type: 'input_image', image_url: png },
+      { type: 'encrypted_content', encrypted_content: 'secret' },
+    ];
+    const blocks = reduce(
+      { type: 'function_call_output', id: 'fco-items', name: 'n', output },
+      { transcriptStorageFormat: 4 },
+    );
+    expect(blocks[0]).toEqual({
+      type: 'text',
+      text: `Tool output (n)\n\n${'y'.repeat(70_000)}${sentinel}\n\n[Image displayed below]\n\n[encrypted output omitted]`,
+      verbatim: true,
+    });
+    expect(blocks[1]).toEqual({
+      type: 'image',
+      path: '',
+      dataUrl: png,
+      alt: 'Tool output image',
+    });
+    expect(JSON.stringify(blocks)).not.toContain('secret');
+  });
+
+  it('keeps format 4 lossless when parsing transcript lines', () => {
+    const parsed = parseAgentTranscriptLines(
+      [
+        JSON.stringify({
+          type: 'item.completed',
+          item: {
+            id: 'fco-lines',
+            type: 'function_call_output',
+            name: 'tool',
+            output: bigOutput,
+          },
+        }),
+      ],
+      'codex',
+      { transcriptStorageFormat: 4 },
+    );
+    const text = parsed.messages
+      .flatMap((message) => message.blocks)
+      .find((block) => block.type === 'text');
+    if (text?.type !== 'text') throw new Error('missing text block');
+    expect(text.text.includes(sentinel)).toBe(true);
+  });
+
+  it('describes the final body that format 4 stores', () => {
+    const cases: Array<Record<string, unknown>> = [
+      {
+        type: 'function_call_output',
+        id: 'a',
+        name: 'tool',
+        output: bigOutput,
+      },
+      {
+        type: 'function_call_output',
+        id: 'b',
+        output: [
+          { type: 'input_text', text: bigOutput },
+          { type: 'input_image', image_url: png },
+        ],
+      },
+      {
+        type: 'mcp_tool_call',
+        id: 'c',
+        server: 's',
+        tool: 't',
+        status: 'completed',
+        result: {
+          content: [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }],
+          structuredContent: { big: bigOutput },
+        },
+        error: null,
+      },
+      {
+        type: 'dynamic_tool_call',
+        id: 'd',
+        tool: 'tool',
+        status: 'completed',
+        success: true,
+        content_items: [{ type: 'inputText', text: bigOutput }],
+      },
+    ];
+    for (const item of cases) {
+      const body = codexItemOutputBody({ type: 'item.completed', item });
+      if (!body) throw new Error('missing body');
+      expect(body.itemId).toBe(item.id);
+      const joined = Array.from(body.chunks).join('');
+      expect(joined === body.whole()).toBe(true);
+      const blocks = reduce(item, { transcriptStorageFormat: 4 });
+      const stored = blocks.find(
+        (block) =>
+          (body.field === 'text' && block.type === 'text') ||
+          (body.field === 'output' && block.type === 'tool_result'),
+      );
+      const storedText =
+        stored?.type === 'text'
+          ? stored.text
+          : stored?.type === 'tool_result'
+            ? stored.output
+            : undefined;
+      expect(storedText === joined).toBe(true);
+    }
+    expect(
+      codexItemOutputBody({
+        type: 'item.updated',
+        item: cases[0],
+      }),
+    ).toBeUndefined();
+    expect(
+      codexItemOutputBody({
+        type: 'item.completed',
+        item: { id: 'e', type: 'agent_message', text: 'hi' },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('uses a trusted prepared body only for format 4 and the matching completed item', () => {
+    const item = {
+      type: 'function_call_output',
+      id: 'fco-prepared',
+      name: 'tool',
+      output: [
+        { type: 'input_text', text: bigOutput },
+        { type: 'input_image', image_url: png },
+      ],
+      // Provider fields can never mint a reference.
+      textRef: ref,
+    };
+    const preparedCodexItem = {
+      itemId: 'fco-prepared',
+      output: { field: 'text' as const, text: 'preview text', textRef: ref },
+    };
+    const prepared = reduce(item, {
+      transcriptStorageFormat: 4,
+      preparedCodexItem,
+    });
+    expect(prepared).toEqual([
+      { type: 'text', text: 'preview text', verbatim: true, textRef: ref },
+      { type: 'image', path: '', dataUrl: png, alt: 'Tool output image' },
+    ]);
+    expect(Object.keys(prepared[0])).toEqual([
+      'type',
+      'text',
+      'verbatim',
+      'textRef',
+    ]);
+    const ignored: Array<[Parameters<typeof reduce>[1], string | undefined]> = [
+      [{ transcriptStorageFormat: 3, preparedCodexItem }, undefined],
+      [{ preparedCodexItem }, undefined],
+      [
+        {
+          transcriptStorageFormat: 4,
+          preparedCodexItem: { ...preparedCodexItem, itemId: 'other' },
+        },
+        undefined,
+      ],
+      [{ transcriptStorageFormat: 4, preparedCodexItem }, 'item.updated'],
+      [
+        {
+          transcriptStorageFormat: 4,
+          preparedCodexItem: {
+            itemId: 'fco-prepared',
+            output: { field: 'output', output: 'x', fullOutputRef: ref },
+          },
+        },
+        undefined,
+      ],
+    ];
+    for (const [options, eventType] of ignored) {
+      const [text] = reduce(item, options, eventType);
+      if (text?.type !== 'text') throw new Error('missing text block');
+      expect(text.text).not.toBe('preview text');
+      expect(text.textRef).toBeUndefined();
+    }
+    const [unprepared] = reduce(item, { transcriptStorageFormat: 4 });
+    if (unprepared?.type !== 'text') throw new Error('missing text block');
+    expect(unprepared.textRef).toBeUndefined();
+  });
+
+  it('uses a prepared tool result without reading the result body', () => {
+    let bodyReads = 0;
+    const result = {
+      isError: false,
+      content: [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }],
+      get structuredContent(): unknown {
+        bodyReads += 1;
+        return { big: bigOutput };
+      },
+    };
+    const blocks = reduce(
+      {
+        type: 'mcp_tool_call',
+        id: 'mcp-prepared',
+        server: 's',
+        tool: 't',
+        arguments: { q: 1 },
+        status: 'completed',
+        result,
+        error: null,
+      },
+      {
+        transcriptStorageFormat: 4,
+        preparedCodexItem: {
+          itemId: 'mcp-prepared',
+          output: { field: 'output', output: 'preview', fullOutputRef: ref },
+        },
+      },
+    );
+    expect(bodyReads).toBe(0);
+    expect(blocks).toEqual([
+      {
+        type: 'tool_use',
+        toolUseId: 'codex-mcp-prepared',
+        toolName: 'mcp__s__t',
+        input: '{"q":1}',
+      },
+      {
+        type: 'tool_result',
+        toolUseId: 'codex-mcp-prepared',
+        toolName: 'mcp__s__t',
+        output: 'preview',
+        isError: false,
+        outputTruncated: true,
+        fullOutputRef: ref,
+      },
+      { type: 'image', path: '', dataUrl: png, alt: 'Tool output image' },
+    ]);
+    const dynamic = reduce(
+      {
+        type: 'dynamic_tool_call',
+        id: 'dyn-prepared',
+        tool: 'tool',
+        status: 'failed',
+        success: false,
+        content_items: [{ type: 'inputText', text: 'whole' }],
+      },
+      {
+        transcriptStorageFormat: 4,
+        preparedCodexItem: {
+          itemId: 'dyn-prepared',
+          output: { field: 'output', output: 'whole' },
+        },
+      },
+    );
+    expect(dynamic[1]).toEqual({
+      type: 'tool_result',
+      toolUseId: 'codex-dyn-prepared',
+      toolName: 'tool',
+      output: 'whole',
+      isError: true,
+    });
   });
 });

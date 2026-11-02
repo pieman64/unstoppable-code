@@ -34,7 +34,7 @@ import type { FrameScheduler } from '@/stores/chat/frame-batched-store-view';
 import { useWorktreeChatTabSurfaceState } from '@/components/chat/useWorktreeChatSurfaceState';
 import { useChatBadgeKeys } from '@/components/sidebar/useChatBadgeKeys';
 import {
-  setDesktopRowLiveKeys,
+  resetDesktopRowLiveKeys,
   useDesktopWorktreeRowOverrides,
 } from '@/components/sidebar/desktopWorktreeRowOverrides';
 import { ChatTabBar } from '@/components/chat/ChatTabBar';
@@ -410,7 +410,7 @@ describe('chat store split: streamed content reaches only its own chat', () => {
     W1 = { projectId: PROJECT, worktreeId: WT1 };
     W2 = { projectId: PROJECT, worktreeId: WT2 };
     installApi();
-    setDesktopRowLiveKeys(null);
+    resetDesktopRowLiveKeys();
     await hydrate();
     mount();
     expect(

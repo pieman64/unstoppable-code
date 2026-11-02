@@ -3,6 +3,7 @@ import type {
   FileReference,
   PersistedChatBlock,
   PersistedChatMessage,
+  UsageLimitedChatItem,
 } from '../types';
 
 /**
@@ -149,4 +150,22 @@ export function computeUsageLimitResumePrompt(
     return fallback;
   }
   return { ...payload, resendsUserMessage: true };
+}
+
+/** Missing, empty or promptless history cannot support a confident preview. */
+export function describeUsageLimitResumePromptKind(
+  messages: readonly PersistedChatMessage[] | undefined,
+): UsageLimitedChatItem['resumePromptKind'] {
+  if (
+    !messages?.some(
+      (message) =>
+        message.role === 'user' &&
+        (message.blocks.length === 0 ||
+          !message.blocks.every((block) => block.type === 'tool_result')),
+    )
+  )
+    return undefined;
+  return computeUsageLimitResumePrompt(messages).resendsUserMessage
+    ? 'resend_user_message'
+    : 'continue';
 }

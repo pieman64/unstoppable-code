@@ -1,4 +1,5 @@
 import { type JSX, type ReactNode } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons';
 import { CalendarViewPicker } from './CalendarViewPicker';
 import type { CalendarView } from './calendarPreferences';
@@ -33,33 +34,34 @@ export function CalendarToolbar({
 }: CalendarToolbarProps): JSX.Element {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <button
-        type="button"
+      <Button
+        size="compact"
         onClick={(): void => onToday()}
         data-testid="automations-calendar-today"
-        className="focus-ring rounded-md border px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary"
       >
         Today
-      </button>
+      </Button>
       <div className="flex items-center gap-0.5">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={(): void => onPrev()}
           aria-label="Previous"
           data-testid="automations-calendar-prev"
-          className="focus-ring rounded-md p-1.5 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
         >
           <ChevronRightIcon width={16} height={16} className="-scale-x-100" />
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={(): void => onNext()}
           aria-label="Next"
           data-testid="automations-calendar-next"
-          className="focus-ring rounded-md p-1.5 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
         >
           <ChevronRightIcon width={16} height={16} />
-        </button>
+        </Button>
       </div>
       <h2
         data-testid="automations-calendar-title"

@@ -36,9 +36,12 @@ import {
   handleAuxPanelNewTabShortcut,
 } from '@/lib/auxPanelShortcuts';
 import { brandText } from '@/lib/brand';
+import { localPlatform } from '@/lib/local-platform';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { formatFileReferencePath } from '@/lib/file-reference-paths';
 import { useBusyChatCanCloseTab } from '@/lib/panels/busy-chat-panels';
+import { chatReadStateServices } from '@/lib/panels/chat-read-state';
 import {
   closePanelGroup,
   closePanelTab,
@@ -63,6 +66,8 @@ import { renderPanelContent } from '@/lib/panels/registry';
 import { splitGroupMovingActiveTab } from '@/lib/panels/split-active-tab';
 import {
   panelTabDisplayTitle,
+  renderPanelTabAccessibleStatus,
+  renderPanelTabAttention,
   renderPanelCollapsedTabIcon,
   renderPanelTabIcon,
   renderPanelTabLabel,
@@ -74,6 +79,8 @@ import {
 } from '@/lib/panels/terminal-panel-activation';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import { useChatStore } from '@/stores/chatStore';
+import { useNavigationMode } from '@/stores/navigationModeStore';
+import { isLocalFileActionAvailable } from '@/lib/file-reveal';
 import {
   getPanelLayoutViewModel,
   readPanelGroupRevealState,
@@ -88,6 +95,7 @@ import {
 } from '@/stores/panelWindowsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { PanelGridHost } from '@canopy/ui-shared/components/panels';
 import { RevertIcon as AppCatalogRevertIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -145,6 +153,7 @@ export function AuxPanelWindow({
   record,
   hostState,
 }: AuxPanelWindowProps): JSX.Element | null {
+  const nativeWindowFrame = usesNativeWindowFrame(localPlatform());
   const {
     auxWindowId,
     worktreeKey,
@@ -157,6 +166,8 @@ export function AuxPanelWindow({
   const [container, setContainer] = useState<HTMLElement | null>(null);
   // Early access shows the `fill` tabs here too, matching the main window.
   const tabStyle = 'fill';
+  // Work navigation leads file tab menus with reveal, as in the main window.
+  const fileActionsFirst = useNavigationMode() === 'work';
   const [tabContextMenu, setTabContextMenu] =
     useState<PanelTabContextMenuTarget | null>(null);
   const viewModel = usePanelLayoutViewModel(layoutKey);
@@ -258,6 +269,7 @@ export function AuxPanelWindow({
     // (doc 13: adopted nodes keep opener-realm prototypes; child-realm nodes
     // break `instanceof` checks in React/libraries).
     const root = document.createElement('div');
+    childDocument.body.setAttribute('data-app-selection', '');
     root.style.position = 'fixed';
     root.style.inset = '0';
     root.style.display = 'flex';
@@ -551,6 +563,16 @@ export function AuxPanelWindow({
     [callbacks],
   );
   const readOnly = useWorkspaceIsReadOnly();
+  const chatReadState = useMemo(
+    () =>
+      ownerSelection
+        ? chatReadStateServices(
+            ownerSelection.projectId,
+            ownerSelection.worktreeId,
+          )
+        : undefined,
+    [ownerSelection],
+  );
   const chatTabRename = useChatTabRename();
   const openChatTabRename = chatTabRename.open;
   const handleRenameChat = useCallback(
@@ -584,16 +606,13 @@ export function AuxPanelWindow({
         aria-label={`${brandText.appName} panels`}
         className="flex h-full min-h-0 flex-1 flex-col bg-base fg-primary"
       >
-        {/* The single-row custom top bar: the aux BrowserWindow is created
-            with `titleBarStyle: 'hidden'` (aux-window-service), so this row
-            replaces the OS title bar entirely — drag region for moving the
-            window, left padding reserving the macOS traffic-light cluster,
-            the SOURCE indicator (worktree/branch the panels came from), and
-            the merge-back control inlined right-aligned. App-region styles
+        {/* This row supplies window dragging and the traffic-light inset
+            where the native frame is hidden. With a native frame it remains
+            an ordinary source/merge header. App-region styles
             are inline via callback refs (see `setAppRegion`). */}
         <header
           ref={(el): void => {
-            setAppRegion(el, 'drag');
+            setAppRegion(el, nativeWindowFrame ? 'no-drag' : 'drag');
           }}
           data-testid="panel-aux-window-top-bar"
           className="flex h-9.5 shrink-0 items-center gap-2 border-b bg-card/50 pr-2"
@@ -601,7 +620,11 @@ export function AuxPanelWindow({
           // (`trafficLightPosition: {x:15,y:12}`), so their 78px reservation
           // is divided by the interface-scale zoom (`--ui-zoom`, mirrored from
           // the opener's <html> inline style) instead of zooming with the bar.
-          style={{ paddingLeft: AUX_WINDOW_TRAFFIC_LIGHT_INSET_CSS }}
+          style={{
+            paddingLeft: nativeWindowFrame
+              ? 8
+              : AUX_WINDOW_TRAFFIC_LIGHT_INSET_CSS,
+          }}
         >
           <div
             data-testid="panel-aux-window-source"
@@ -613,13 +636,12 @@ export function AuxPanelWindow({
           {/* Tooltip mounted in THIS window's realm: the shared Tooltip
               portals into the trigger's ownerDocument, not the main window. */}
           <Tooltip label="Move back to main window">
-            <button
+            <Button
+              size="compact"
               ref={(el): void => {
                 setAppRegion(el, 'no-drag');
               }}
-              type="button"
               data-testid="panel-aux-window-merge-back"
-              className="flex shrink-0 items-center gap-1.5 rounded-md border bg-base/65 px-2 py-0.5 text-xs fg-secondary hover:fg-primary"
               aria-label="Move back to main window"
               onClick={(): void => {
                 usePanelWindowsStore.getState().mergeBack(auxWindowId);
@@ -627,7 +649,7 @@ export function AuxPanelWindow({
             >
               <AppCatalogRevertIcon width="12" height="12" aria-hidden="true" />
               Move back
-            </button>
+            </Button>
           </Tooltip>
         </header>
         <PanelWorktreeContext.Provider value={ownerSelection}>
@@ -641,6 +663,8 @@ export function AuxPanelWindow({
             renderCollapsedTabIcon={renderPanelCollapsedTabIcon}
             renderTabLabel={renderPanelTabLabel}
             getTabTitle={panelTabDisplayTitle}
+            renderTabAccessibleStatus={renderPanelTabAccessibleStatus}
+            renderTabAttention={renderPanelTabAttention}
             renderTabTrailing={renderPanelTabTrailing}
             canCloseTab={canCloseTab}
             tabStyle={tabStyle}
@@ -660,12 +684,21 @@ export function AuxPanelWindow({
             canCloseTab={canCloseTab}
             onCopyFilePath={copyFilePath}
             onCopyRelativeFilePath={copyRelativeFilePath}
-            onOpenFileInFileManager={openFileInFileManager}
+            onOpenFileInFileManager={
+              !readOnly &&
+              ownerSelection &&
+              isLocalFileActionAvailable('showInFinder')
+                ? openFileInFileManager
+                : undefined
+            }
             resolveFileTabPath={resolveFileTabPath}
+            fileActionsFirst={fileActionsFirst}
             onFullScreen={handleFullScreen}
             onRenameChat={
               ownerSelection && !readOnly ? handleRenameChat : undefined
             }
+            getChatReadState={chatReadState?.getChatReadState}
+            onSetChatUnread={chatReadState?.onSetChatUnread}
             ownerDocument={childWindow.document}
             tabStyle={tabStyle}
           />

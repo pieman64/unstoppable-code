@@ -1559,12 +1559,15 @@ describe('changing-page fallback (PR #4917 finding 2)', () => {
   }
 
   /**
-   * A value at letter boundaries, so `red` does not match `[redacted]` or
-   * `valueRedacted`.
+   * A value at alphanumeric boundaries, so `red` does not match `[redacted]`
+   * or `valueRedacted`, and `ada` does not match the random UUID in node and
+   * frame refs (`r-7ada0…-n`).
    */
   function containsValue(serialized: string, value: string): boolean {
     const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(?<![A-Za-z])${escaped}(?![A-Za-z])`).test(serialized);
+    return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`).test(
+      serialized,
+    );
   }
 
   async function inconsistentBuild(name: string): Promise<BrowserPageModel> {

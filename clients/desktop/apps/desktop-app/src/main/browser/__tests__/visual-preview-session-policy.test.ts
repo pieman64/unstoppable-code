@@ -56,8 +56,8 @@ describe('visual preview request policy', () => {
       }),
     };
     const policy = new VisualPreviewSessionPolicy(native as unknown as Session);
-    const a = { urls: [], omitted: 0 };
-    const b = { urls: [], omitted: 0 };
+    const a: { urls: string[]; omitted: number } = { urls: [], omitted: 0 };
+    const b: { urls: string[]; omitted: number } = { urls: [], omitted: 0 };
     const unregisterA = policy.register(1, a);
     policy.register(2, b);
     const callback = jest.fn();

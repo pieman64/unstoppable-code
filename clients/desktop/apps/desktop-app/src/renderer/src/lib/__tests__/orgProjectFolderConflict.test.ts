@@ -48,6 +48,9 @@ function project(
     name: 'Payments',
     description: null,
     kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
     location: 'LOCAL',
     repository: null,
     state: 'ACTIVE',
@@ -62,10 +65,13 @@ function project(
   };
 }
 
-type Catalog = Pick<
+type CatalogState = Pick<
   OrgProjectsStoreState,
   'accountEpoch' | 'snapshots' | 'errors' | 'load' | 'loading'
 >;
+type Catalog = {
+  -readonly [Key in keyof CatalogState]: CatalogState[Key];
+};
 
 function catalog(
   projects: OrgProjectSummary[] | null,

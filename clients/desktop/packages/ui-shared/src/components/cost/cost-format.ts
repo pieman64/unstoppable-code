@@ -22,7 +22,7 @@ export interface CostSegment {
 
 export const COST_SOURCE_LABELS: Readonly<Record<CostSource, string>> = {
   chat: 'Chat turns',
-  pipeline: 'Pipeline steps',
+  pipeline: 'Workflow steps',
   subagents: 'Subagents',
   delegations: 'Delegations',
   background: 'Background',

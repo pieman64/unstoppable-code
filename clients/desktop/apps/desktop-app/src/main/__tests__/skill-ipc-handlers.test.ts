@@ -51,12 +51,14 @@ jest.mock('../skills/skill-service', () => ({
   readRawSkill: jest.fn(),
   readSkillContent: jest.fn(),
   readSkillFile: jest.fn(),
-  removeSkill: jest.fn(() => ({ success: true })),
+  removeSkillForContext: jest.fn(() => ({ success: true })),
   saveCustomSkill: jest.fn(),
   updateSkill: jest.fn(() => Promise.resolve({ success: true })),
   writeRawSkill: jest.fn(),
   writeRawSkillForContext: jest.fn(),
-  writeSkillRemoteMetadata: mockWriteSkillRemoteMetadata,
+  get writeSkillRemoteMetadata(): typeof mockWriteSkillRemoteMetadata {
+    return mockWriteSkillRemoteMetadata;
+  },
   clearSkillRemoteMetadataByRemoteId: jest.fn(),
 }));
 

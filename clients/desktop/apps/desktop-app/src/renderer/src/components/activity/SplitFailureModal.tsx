@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '@/components/shared/DialogModal';
 import type { SplitPrExecutionErrorCode } from '@canopy/desktop-shared/types/github';
+import { Button } from '@canopy/ui-shared/components';
 
 export interface SplitFailureModalFailure {
   code?: SplitPrExecutionErrorCode;
@@ -26,12 +27,6 @@ export interface SplitFailureModalProps {
   onDiscard: () => void;
   onPlanNew: () => void;
 }
-
-const SPLIT_FAILURE_BUTTON_CLASS =
-  'focus-ring rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary';
-
-const SPLIT_FAILURE_PRIMARY_CLASS =
-  'focus-ring rounded-lg bg-accent-subtle px-4 py-1.5 text-s font-medium fg-accent transition hover:bg-accent-subtle/80';
 
 /**
  * Immediate over-the-normal-UX surface for a Split PR run that settled
@@ -122,61 +117,51 @@ export function SplitFailureModal({
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-2 border-t px-5 py-3">
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={onLeave}
           data-testid="split-failure-leave"
-          className={SPLIT_FAILURE_BUTTON_CLASS}
         >
           Leave
-        </button>
-        {isMismatch ? (
-          <button
-            type="button"
-            onClick={onDiscard}
-            data-testid="split-failure-discard"
-            className={SPLIT_FAILURE_PRIMARY_CLASS}
-          >
-            Discard split state
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onDiscard}
-            data-testid="split-failure-discard"
-            className={SPLIT_FAILURE_BUTTON_CLASS}
-          >
-            Discard split state
-          </button>
-        )}
+        </Button>
+        {/* Discard is irreversible but sits beside routine actions, so it is
+            the quiet destructive variant; the forward action keeps the
+            primary. */}
+        <Button
+          variant="ghost-destructive"
+          size="compact"
+          onClick={onDiscard}
+          data-testid="split-failure-discard"
+        >
+          Discard split state
+        </Button>
         {canRecover ? (
           <>
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={onEditPlan}
               data-testid="split-failure-edit-plan"
-              className={SPLIT_FAILURE_BUTTON_CLASS}
             >
               Edit plan
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
+              size="compact"
               onClick={onRetry}
               data-testid="split-failure-retry"
-              className={SPLIT_FAILURE_PRIMARY_CLASS}
             >
               Retry
-            </button>
+            </Button>
           </>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onPlanNew}
             data-testid="split-failure-plan-new"
-            className={SPLIT_FAILURE_PRIMARY_CLASS}
           >
             Plan new split
-          </button>
+          </Button>
         )}
       </div>
     </DialogModal>,

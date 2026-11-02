@@ -9,10 +9,13 @@ import {
 import {
   LAPSED_LIVE_TABS,
   matchTeamNavTab,
+  ORGANIZATION_SETTINGS_SUBTAB_ITEMS,
+  organizationSettingsSubtabHref,
+  organizationSettingsSubtabItem,
+  resolveOrganizationSettingsSubtab,
   TEAM_NAV_ITEMS,
   teamNavItem,
   type TeamTab,
-  teamTabHref,
 } from '../organization-nav-items';
 
 const ORG = 'org-1';
@@ -35,6 +38,7 @@ describe('account nav items', () => {
       ['externalAgents', 'External agents (MCP)', '/account/external-agents'],
       ['security', 'Security', '/account/security'],
       ['billing', 'Billing', '/account/billing'],
+      ['appearance', 'Appearance', '/account/appearance'],
       ['labs', 'Labs', '/account/labs'],
     ]);
   });
@@ -51,6 +55,20 @@ describe('account nav items', () => {
     expect(
       visibleAccountNavItems({ ...flags, labsEnabled: true }).at(-1)?.key,
     ).toBe('labs');
+  });
+
+  it('lists Appearance only where the host sets chat detail there (web)', () => {
+    const flags = {
+      billingEnabled: false,
+      digestsEnabled: false,
+      integrationsEnabled: false,
+    };
+    expect(
+      visibleAccountNavItems(flags).some((item) => item.key === 'appearance'),
+    ).toBe(false);
+    expect(
+      visibleAccountNavItems({ ...flags, appearanceEnabled: true }).at(-1)?.key,
+    ).toBe('appearance');
   });
 
   it.each([
@@ -138,6 +156,7 @@ describe('account nav items', () => {
     ['/account/external-agents/consent', 'externalAgents'],
     ['/account/security', 'security'],
     ['/account/labs', 'labs'],
+    ['/account/appearance', 'appearance'],
     ['/account/billing/invoices/inv-1', 'billing'],
     ['/account/unknown', null],
     ['/accounting', null],
@@ -153,11 +172,11 @@ describe('team nav items', () => {
     expect(TEAM_NAV_ITEMS.map((item) => [item.key, item.label])).toEqual([
       ['feed', 'Timeline'],
       ['statistics', 'Statistics'],
-      ['digests', 'Organization digests'],
+      ['digests', 'Digests'],
       ['members', 'Members'],
       ['groups', 'Teams'],
       ['projects', 'Projects'],
-      ['memory', 'Organization memory'],
+      ['memory', 'Memory'],
       ['settings', 'Settings'],
     ]);
   });
@@ -176,19 +195,45 @@ describe('team nav items', () => {
     ).toEqual(['feed', 'statistics', 'digests', 'memory']);
   });
 
-  it('deep-links Settings to Billing only when billing needs attention', () => {
-    const settings = teamNavItem('settings');
-    const members = teamNavItem('members');
-    expect(teamTabHref(settings, ORG, false)).toBe(
+  it('lists the Settings pages in rail order, each with its own link', () => {
+    expect(
+      ORGANIZATION_SETTINGS_SUBTAB_ITEMS.map((item) => [item.key, item.label]),
+    ).toEqual([
+      ['general', 'General'],
+      ['policies', 'Policies'],
+      ['integrations', 'Integrations'],
+      ['usage', 'Usage'],
+      ['billing', 'Billing'],
+    ]);
+    expect(organizationSettingsSubtabHref(ORG, 'general')).toBe(
       `/organization/${ORG}/settings`,
     );
-    expect(teamTabHref(settings, ORG, true)).toBe(
+    expect(organizationSettingsSubtabHref(ORG, 'billing')).toBe(
       `/organization/${ORG}/settings?tab=billing`,
     );
-    expect(teamTabHref(members, ORG, true)).toBe(
-      `/organization/${ORG}/members`,
-    );
   });
+
+  it('names Billing for AI credits under free access', () => {
+    expect(organizationSettingsSubtabItem('billing').label).toBe('Billing');
+    expect(organizationSettingsSubtabItem('billing', true).label).toBe(
+      'AI Credits',
+    );
+    expect(organizationSettingsSubtabItem('usage', true).label).toBe('Usage');
+  });
+
+  it.each([
+    ['policies', ['general', 'policies'], 'policies'],
+    ['billing', ['general', 'usage'], 'general'],
+    [null, ['usage'], 'usage'],
+    [null, [], null],
+  ] as const)(
+    'resolves a request for %s among %j to %s',
+    (requested, visible, expected) => {
+      expect(resolveOrganizationSettingsSubtab(requested, visible)).toBe(
+        expected,
+      );
+    },
+  );
 
   it.each([
     [`/organization/${ORG}`, 'feed'],
@@ -250,6 +295,7 @@ describe('settings page header copy', () => {
       'Billing',
       'Your plan, AI credits, payment method and past payments.',
     ],
+    ['appearance', 'Appearance', 'How chats look while agents work.'],
     ['labs', 'Labs', 'Try features we are still working on.'],
   ];
 
@@ -260,11 +306,7 @@ describe('settings page header copy', () => {
       'Statistics',
       'Usage, savings and impact across this organization.',
     ],
-    [
-      'digests',
-      'Organization digests',
-      "Regular summaries of this organization's work.",
-    ],
+    ['digests', 'Digests', "Regular summaries of this organization's work."],
     ['members', 'Members', 'The people in this organization and their roles.'],
     ['groups', 'Teams', 'Groups of members inside this organization.'],
     [
@@ -274,7 +316,7 @@ describe('settings page header copy', () => {
     ],
     [
       'memory',
-      'Organization memory',
+      'Memory',
       "Facts agents have learned from this organization's work.",
     ],
     [

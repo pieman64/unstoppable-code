@@ -1,3 +1,4 @@
+import { assertLegacyCombineAllowed } from './org-shared-multi-repo-legacy-guard';
 import { w5CompositionLocks } from './w5-composition-operation';
 import { runW5BoundaryOperation } from './w5-boundary-operation';
 import {
@@ -10,7 +11,7 @@ import {
   admitW5Composition,
   checkW5CompositionRevisions,
   commitW5BoundaryStep,
-  w5ExistingCombineOutcomeSchema,
+  w5ExistingCombineOutcomeParser,
   type W5CompositionOptions,
   type W5ExistingCombineOutcome,
 } from './w5-composition-operation';
@@ -688,6 +689,10 @@ async function combineWorktreeWithExistingWorktreeAdmitted(
     throw new Error('Cannot join a worktree from the same project');
   }
 
+  await assertLegacyCombineAllowed([
+    request.sourceWorkspaceId,
+    request.joinWorkspaceId,
+  ]);
   // Retry path: the source worktree may already have been handled by a prior
   // combine attempt.
   const existingDestination = await findExistingAdhocDestination(
@@ -792,8 +797,10 @@ async function combineWorktreeWithExistingWorktreeAdmitted(
     request.sourceWorktreeId,
     {
       activeChats: 'Stop active chats before adding a repo to this worktree.',
+      runningScripts:
+        'Wait for running scripts, such as setup, to finish before adding a repo to this worktree.',
       runningPipelines:
-        'Wait for running pipeline executions to finish before adding a repo to this worktree.',
+        'Wait for running workflow executions to finish before adding a repo to this worktree.',
     },
   );
   await assertNoActiveWorktreeWork(
@@ -802,8 +809,10 @@ async function combineWorktreeWithExistingWorktreeAdmitted(
     {
       activeChats:
         'Stop active chats in the selected worktree before joining it.',
+      runningScripts:
+        'Wait for the selected worktree’s running scripts, such as setup, to finish before joining it.',
       runningPipelines:
-        'Wait for the selected worktree’s running pipeline executions to finish before joining it.',
+        'Wait for the selected worktree’s running workflow executions to finish before joining it.',
     },
   );
 
@@ -1706,7 +1715,7 @@ export function combineWorktreeWithExistingWorktree(
       isPreEffectRefusal: (error) => error instanceof W5RevisionConflictError,
     },
     (outcome) =>
-      decodeW5CompositionOutcome(w5ExistingCombineOutcomeSchema, outcome),
+      decodeW5CompositionOutcome(w5ExistingCombineOutcomeParser, outcome),
     async (commit, attempt) => {
       commit.expectedRevisions = expectedRevisions;
       await checkW5CompositionRevisions(commit);

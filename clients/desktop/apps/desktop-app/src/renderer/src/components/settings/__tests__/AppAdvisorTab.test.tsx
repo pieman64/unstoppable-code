@@ -40,6 +40,7 @@ import { makeTestPreferences } from '../../../test-utils/preferences';
 import { useAppAdvisorStore } from '../../../stores/appAdvisorStore';
 import { useCurrentUiStateStore } from '../../../stores/currentUiStateStore';
 import { useWorkspaceContextStore } from '../../../stores/workspaceContextStore';
+import { querySettingsSelects } from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 const TEST_ORGANIZATIONS: WorkspaceContextOrganization[] = [
   { id: 'org-zulu', name: 'Zulu', role: 'MEMBER' },
@@ -57,7 +58,13 @@ describe('AppAdvisorTab', () => {
   beforeAll(() => {
     initClaudeModels([{ id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' }]);
     initCodexModels([{ id: 'gpt-6-luna', label: 'GPT 6 Luna' }]);
-    initOllamaModels([{ id: 'ollama-llama3:8b', label: 'Llama 3 8B' }]);
+    initOllamaModels([
+      {
+        id: 'ollama-llama3:8b',
+        rawModelId: 'llama3:8b',
+        label: 'Llama 3 8B',
+      },
+    ]);
   });
 
   beforeEach(() => {
@@ -172,7 +179,7 @@ describe('AppAdvisorTab', () => {
           '[data-testid="settings-tab-app-advisor"]',
         ),
       ).not.toBeNull();
-      expect(rendered.container.textContent).toContain('App Advisor');
+      expect(rendered.container.textContent).toContain('Orchestrator');
       expect(rendered.container.textContent).toContain('Embedded assistant');
       expect(rendered.container.textContent).toContain('Project agents');
       expect(
@@ -186,17 +193,17 @@ describe('AppAdvisorTab', () => {
       expect(enabled?.getAttribute('aria-pressed')).toBe('true');
       expect(rendered.container.textContent).toContain('Default model');
       expect(rendered.container.textContent).toContain(
-        'Model and thinking level used for new App Advisor chats.',
+        'Model and thinking level used for new Orchestrator chats.',
       );
       // `Default plugins` and its description are rendered by the real
       // `SettingsPluginPicker`, which is mocked out in this test suite (its
       // production dependency chain is outside this suite's scope).
-      expect(rendered.container.textContent).toContain('Pipeline monitoring');
+      expect(rendered.container.textContent).toContain('Workflow monitoring');
       expect(rendered.container.textContent).toContain(
-        'Automatically monitor pipeline runs',
+        'Automatically monitor workflow runs',
       );
       expect(rendered.container.textContent).toContain(
-        'Pipeline monitor model',
+        'Workflow monitor model',
       );
     } finally {
       rendered.cleanup();
@@ -452,17 +459,14 @@ describe('AppAdvisorTab', () => {
     const rendered = await renderTab();
 
     try {
-      const selects = rendered.container.querySelectorAll('select');
+      const selects = querySettingsSelects(rendered.container);
       // Expect: App Advisor model + thinking level (2) + Pipeline monitor
       // model + thinking level (2) = 4 selects.
       expect(selects).toHaveLength(4);
       const [appAdvisorModelSelect] = Array.from(selects);
 
+      appAdvisorModelSelect.choose('claude-sonnet-4-6');
       await act(async () => {
-        appAdvisorModelSelect.value = 'claude-sonnet-4-6';
-        appAdvisorModelSelect.dispatchEvent(
-          new Event('change', { bubbles: true }),
-        );
         await Promise.resolve();
       });
       expect(savePreferencesMock).toHaveBeenLastCalledWith(

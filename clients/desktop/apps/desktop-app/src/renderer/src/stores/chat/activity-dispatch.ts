@@ -5,9 +5,9 @@ import type {
 } from '@canopy/desktop-shared/types';
 import {
   codexMcpToolName,
-  flattenCodexMcpToolResult,
+  previewCodexMcpToolResult,
 } from '@canopy/agent-transcript';
-import { flattenCodexDynamicToolContent } from '@/lib/codex-dynamic-tool-results';
+import { previewCodexDynamicToolContent } from '@/lib/codex-dynamic-tool-results';
 import { useActivityStore } from '../activityStore';
 import type { WorktreeChatState } from './types';
 import { isRecord } from './utils';
@@ -112,8 +112,8 @@ export function dispatchCodexActivityEvent(
     // MCP calls. `item.started` registers one pending activity entry under the
     // synthetic `codex-<itemId>` id with the canonical `mcp__<server>__<tool>`
     // name and the serialized arguments; `item.completed` resolves it through
-    // the shared `flattenCodexMcpToolResult()` mapping so activity and
-    // persisted chat use identical output/error semantics. `item.updated` is
+    // the shared `previewCodexMcpToolResult()` mapping: persisted chat's error
+    // semantics with a bounded preview of its output. `item.updated` is
     // filtered out above and never creates a second activity or a result.
     const codexToolId = `codex-${item.id}`;
     const server = typeof item.server === 'string' ? item.server : '';
@@ -128,7 +128,7 @@ export function dispatchCodexActivityEvent(
         JSON.stringify(item.arguments ?? {}),
       );
     } else {
-      const { output, isError } = flattenCodexMcpToolResult({
+      const { output, isError } = previewCodexMcpToolResult({
         status: typeof item.status === 'string' ? item.status : '',
         result: item.result,
         error: item.error,
@@ -164,7 +164,7 @@ export function dispatchCodexActivityEvent(
     } else {
       const itemSuccess =
         typeof item.success === 'boolean' ? item.success : null;
-      const output = flattenCodexDynamicToolContent({
+      const output = previewCodexDynamicToolContent({
         contentItems: item.content_items,
         success: itemSuccess,
       });

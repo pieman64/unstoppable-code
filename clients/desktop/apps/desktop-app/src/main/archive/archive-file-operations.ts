@@ -1,4 +1,4 @@
-import { constants, createReadStream } from 'node:fs';
+import { constants, createReadStream, type Stats } from 'node:fs';
 import {
   cp,
   lstat,
@@ -6,9 +6,20 @@ import {
   open,
   readdir,
   realpath,
+  rename,
   rm,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { WINDOWS_ARCHIVE_QUARANTINE_RETRY_DELAYS_MS } from '../lib/archive-quarantine';
 import { isErrnoException } from '../lib/type-guards';
 import type { ArchivePayloadCopyEntry } from './archive-io-protocol';
 
@@ -308,7 +319,34 @@ export async function copyArchivePayload(args: {
   return { files, directories, bytes };
 }
 
-/** Removes an already-authorized tree, repairing only owned directory modes. */
+/** The codes Node's own `rm` retries, with its linear backoff. */
+const ARCHIVE_TREE_RETRY_CODES = new Set([
+  'EBUSY',
+  'EMFILE',
+  'ENFILE',
+  'ENOTEMPTY',
+  'EPERM',
+]);
+const ARCHIVE_TREE_RETRY_DELAY_MS = 200;
+
+function isArchiveTreeRetryable(error: unknown): boolean {
+  return (
+    isErrnoException(error) &&
+    error.code !== undefined &&
+    ARCHIVE_TREE_RETRY_CODES.has(error.code)
+  );
+}
+
+/**
+ * Removes an already-authorized tree, repairing only owned directory modes.
+ * The caller checks `assertUnchanged` before the first pass; each retry checks
+ * it again, since `rm`'s own retries would re-walk the path unchecked.
+ *
+ * Residual: Node has no descriptor-relative removal (no `unlinkat`/`openat`),
+ * so each pass walks `path` by name. A same-user actor that replaces `path`
+ * between the last check and a pass, or during one, gets that replacement
+ * removed. Revisit if Node gains descriptor-relative removal.
+ */
 export async function removeArchiveTree(
   path: string,
   permissionRoot: string,
@@ -316,16 +354,49 @@ export async function removeArchiveTree(
   options: { maxRetries: number },
 ): Promise<void> {
   const repaired = new Set<string>();
+  let retries = 0;
   for (;;) {
     try {
-      await rm(path, {
-        recursive: true,
-        force: true,
-        maxRetries: options.maxRetries,
-        retryDelay: 200,
-      });
+      await rm(path, { recursive: true, force: true, maxRetries: 0 });
       return;
     } catch (error) {
+      if (isArchiveTreeRetryable(error) && retries < options.maxRetries) {
+        // Each failed re-read spends a retry, so the budget and backoff stay
+        // those of Node's own `rm` retries.
+        for (;;) {
+          retries += 1;
+          await new Promise((resolveDelay) =>
+            setTimeout(resolveDelay, retries * ARCHIVE_TREE_RETRY_DELAY_MS),
+          );
+          try {
+            // Gone already is done, as `rm` with `force` treats it.
+            if (!(await lstatIfPresent(path))) return;
+            await assertUnchanged();
+            break;
+          } catch (rereadError) {
+            const goneSince =
+              isErrnoException(rereadError) &&
+              rereadError.code === 'ENOENT' &&
+              (await lstatIfPresent(path).then(
+                (info) => info === null,
+                () => false,
+              ));
+            if (goneSince) return;
+            // Windows reports EPERM, or EACCES, to `lstat` too while a delete
+            // is pending. Only a definite answer (a mismatch or another error)
+            // stops.
+            const pendingDelete =
+              isArchiveTreeRetryable(rereadError) ||
+              (hostOperatingSystem() === 'win32' &&
+                isErrnoException(rereadError) &&
+                rereadError.code === 'EACCES');
+            if (!pendingDelete || retries >= options.maxRetries) {
+              throw rereadError;
+            }
+          }
+        }
+        continue;
+      }
       const owner = process.getuid?.();
       if (
         owner === undefined ||
@@ -390,19 +461,191 @@ export async function removeArchiveTree(
         await handle.close();
       }
       await assertUnchanged();
+      // A repaired pass starts with the full retry budget.
+      retries = 0;
     }
   }
+}
+
+interface ArchiveStatIdentity {
+  dev: number;
+  ino: number;
+  birthtimeMs: number;
+}
+
+function hasIdentity(info: Stats, identity: ArchiveStatIdentity): boolean {
+  return (
+    !info.isSymbolicLink() &&
+    info.dev === identity.dev &&
+    info.ino === identity.ino &&
+    info.birthtimeMs === identity.birthtimeMs
+  );
+}
+
+async function lstatIfPresent(path: string): Promise<Stats | null> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/**
+ * CAN-5334: removes the directory with `expected` identity by first renaming
+ * it to `asidePath`, a sibling only this removal uses, and removing it there.
+ * Whatever reoccupies `path` during the walk is never reached. A crash after
+ * the rename leaves the directory at `asidePath`, which a retry finishes.
+ * The aside is identity-checked right before each removal pass; a swap of
+ * the aside itself after that check is `removeArchiveTree`'s residual.
+ */
+async function removeBoundArchiveDirectory(args: {
+  path: string;
+  allowedRoot: string;
+  expected: ArchiveStatIdentity;
+  asidePath: string;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const label = 'Archive removal path';
+  const windows = hostOperatingSystem() === 'win32';
+  const aborted = (): void => {
+    if (args.signal?.aborted) throw new Error('Archive I/O request cancelled.');
+  };
+  const parentPath = dirname(resolve(args.path));
+  if (
+    dirname(resolve(args.asidePath)) !== parentPath ||
+    basename(args.asidePath) === basename(args.path)
+  ) {
+    throw new Error('Archive removal aside must be a sibling of its target.');
+  }
+  if (
+    !(await lstatIfPresent(args.path)) &&
+    !(await lstatIfPresent(args.asidePath))
+  )
+    return;
+  const canonicalRoot = await canonicalApprovedRoot(args.allowedRoot, label);
+  // Rejects a symlink anywhere between the root and the parent.
+  const parent = await assertCanonicalContained(
+    args.allowedRoot,
+    parentPath,
+    label,
+    { rootMustExist: true, pathMustExist: true },
+  );
+  if (parent.root !== canonicalRoot) {
+    throw new Error(`${label}'s approved root changed during the operation.`);
+  }
+  const target = join(parent.path, basename(args.path));
+  const aside = join(parent.path, basename(args.asidePath));
+  const assertRoot = async (): Promise<void> => {
+    aborted();
+    await assertApprovedRootUnchanged(args.allowedRoot, canonicalRoot, label);
+  };
+
+  let asideInfo = await lstatIfPresent(aside);
+  if (asideInfo && !hasIdentity(asideInfo, args.expected)) {
+    throw new Error(
+      'Archive removal aside is occupied by another directory; it was preserved.',
+    );
+  }
+  if (!asideInfo) {
+    const targetInfo = await lstatIfPresent(target);
+    if (!targetInfo) return;
+    if (targetInfo.isSymbolicLink()) {
+      throw new Error('Archive removal path cannot be a symbolic link.');
+    }
+    if (!hasIdentity(targetInfo, args.expected)) {
+      throw new Error('Archive removal path changed identity.');
+    }
+    for (let attempt = 0; ; attempt++) {
+      await assertRoot();
+      if (await lstatIfPresent(aside)) {
+        throw new Error(
+          'Archive removal aside appeared before the move; it was preserved.',
+        );
+      }
+      const current = await lstatIfPresent(target);
+      if (!current || !hasIdentity(current, args.expected)) {
+        throw new Error('Archive removal path changed identity.');
+      }
+      try {
+        await rename(target, aside);
+        break;
+      } catch (error) {
+        // The quarantine move's budget: the same checkout, the same handles.
+        const delay = windows
+          ? WINDOWS_ARCHIVE_QUARANTINE_RETRY_DELAYS_MS[attempt]
+          : undefined;
+        if (
+          delay === undefined ||
+          !isErrnoException(error) ||
+          (error.code !== 'EBUSY' &&
+            error.code !== 'EPERM' &&
+            error.code !== 'EACCES')
+        ) {
+          // Never an in-place fallback: that walk is the race this closes.
+          const code =
+            isErrnoException(error) && error.code ? ` (${error.code})` : '';
+          throw new Error(
+            `The directory could not be moved aside for removal${code}, so nothing was removed. Close anything using it and retry.`,
+          );
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
+      }
+    }
+    asideInfo = await lstat(aside);
+    if (!hasIdentity(asideInfo, args.expected)) {
+      // The rename took a directory swapped in after the last check: return it.
+      if (!(await lstatIfPresent(target))) {
+        await rename(aside, target).catch(() => undefined);
+      }
+      throw new Error('Archive removal path changed identity.');
+    }
+  }
+  const assertAsideUnchanged = async (): Promise<void> => {
+    await assertRoot();
+    const current = await lstat(aside);
+    if (!hasIdentity(current, args.expected)) {
+      throw new Error('Archive removal aside changed identity.');
+    }
+    aborted();
+  };
+  await assertAsideUnchanged();
+  if (asideInfo.isDirectory()) {
+    await removeWindowsReparsePoints(aside);
+    await assertAsideUnchanged();
+  }
+  await removeArchiveTree(aside, aside, assertAsideUnchanged, {
+    maxRetries: windows ? 50 : 2,
+  });
 }
 
 export async function removeArchiveDirectory(args: {
   path: string;
   allowedRoot: string;
+  /** With `asidePath`: remove only this directory, by moving it aside first. */
+  expectedIdentity?: ArchiveStatIdentity;
+  asidePath?: string;
   signal?: AbortSignal;
 }): Promise<void> {
   if (args.signal?.aborted) throw new Error('Archive I/O request cancelled.');
   assertContained(args.allowedRoot, args.path, 'Archive removal path');
   if (resolve(args.path) === resolve(args.allowedRoot)) {
     throw new Error('Archive removal cannot target its approved root.');
+  }
+  if ((args.expectedIdentity === undefined) !== (args.asidePath === undefined))
+    throw new Error(
+      'Archive removal needs both an expected identity and an aside path.',
+    );
+  if (args.expectedIdentity && args.asidePath) {
+    assertContained(args.allowedRoot, args.asidePath, 'Archive removal aside');
+    await removeBoundArchiveDirectory({
+      path: args.path,
+      allowedRoot: args.allowedRoot,
+      expected: args.expectedIdentity,
+      asidePath: args.asidePath,
+      signal: args.signal,
+    });
+    return;
   }
   let targetInfo;
   try {
@@ -423,44 +666,34 @@ export async function removeArchiveDirectory(args: {
   if (canonicalPath === canonicalRoot) {
     throw new Error('Archive removal cannot target its approved root.');
   }
-  await assertApprovedRootUnchanged(
-    args.allowedRoot,
-    canonicalRoot,
-    'Archive removal path',
-  );
+  const assertUnchanged = async (): Promise<void> => {
+    if (args.signal?.aborted) throw new Error('Archive I/O request cancelled.');
+    await assertApprovedRootUnchanged(
+      args.allowedRoot,
+      canonicalRoot,
+      'Archive removal path',
+    );
+    const current = await lstat(canonicalPath);
+    if (
+      current.isSymbolicLink() ||
+      current.dev !== targetInfo.dev ||
+      current.ino !== targetInfo.ino ||
+      current.birthtimeMs !== targetInfo.birthtimeMs
+    ) {
+      throw new Error('Archive removal path changed identity.');
+    }
+    if (args.signal?.aborted) throw new Error('Archive I/O request cancelled.');
+  };
+  // Re-checked before each pass over the tree. An unbound removal still walks
+  // the path in place; a discard binds its identity and moves it aside instead.
+  await assertUnchanged();
   if (targetInfo.isDirectory()) {
     await removeWindowsReparsePoints(canonicalPath);
+    await assertUnchanged();
   }
-  await assertApprovedRootUnchanged(
-    args.allowedRoot,
-    canonicalRoot,
-    'Archive removal path',
-  );
-  await removeArchiveTree(
-    canonicalPath,
-    canonicalPath,
-    async () => {
-      if (args.signal?.aborted)
-        throw new Error('Archive I/O request cancelled.');
-      await assertApprovedRootUnchanged(
-        args.allowedRoot,
-        canonicalRoot,
-        'Archive removal path',
-      );
-      const current = await lstat(canonicalPath);
-      if (
-        current.isSymbolicLink() ||
-        current.dev !== targetInfo.dev ||
-        current.ino !== targetInfo.ino ||
-        current.birthtimeMs !== targetInfo.birthtimeMs
-      ) {
-        throw new Error('Archive removal path changed identity.');
-      }
-      if (args.signal?.aborted)
-        throw new Error('Archive I/O request cancelled.');
-    },
-    { maxRetries: process.platform === 'win32' ? 50 : 2 },
-  );
+  await removeArchiveTree(canonicalPath, canonicalPath, assertUnchanged, {
+    maxRetries: process.platform === 'win32' ? 50 : 2,
+  });
 }
 
 export async function resetArchiveDirectory(args: {

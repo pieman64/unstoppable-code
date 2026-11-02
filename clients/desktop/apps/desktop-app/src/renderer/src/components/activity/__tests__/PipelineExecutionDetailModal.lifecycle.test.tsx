@@ -106,6 +106,7 @@ function executionState(
     pipeline_id: 'pipeline-1',
     pipeline_snapshot: {
       name: 'Build pipeline',
+      scope: ['directory'],
       jobs: {
         build: {
           name: 'Build',
@@ -145,7 +146,7 @@ function executionState(
     cwd: '/repo',
     env: {},
     inputs: {},
-    event_name: 'manual',
+    event_name: 'dispatch',
     project_id: 'project',
     worktree_id: 'other-worktree',
     ...overrides,
@@ -246,12 +247,13 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
     ).toBeUndefined();
   });
 
-  it('keeps detail the selected run list shows after the modal closes', async () => {
+  it('keeps a row projection, not full detail, when the selected run remains listed', async () => {
     const listed: ExecutionSummary = {
       id: 'exec-1',
       pipeline_id: 'pipeline-1',
       pipeline_name: 'Build pipeline',
       status: 'running',
+      status_reasons: [],
       started_at: '2026-05-19T00:00:00.000Z',
       cwd: '/repo',
       project_id: 'project',
@@ -272,7 +274,12 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
       await flushAsyncWork();
     });
 
-    expect(usePipelineRunsStore.getState().statesById['exec-1']).toBeDefined();
+    expect(
+      usePipelineRunsStore.getState().statesById['exec-1'],
+    ).toBeUndefined();
+    expect(
+      usePipelineRunsStore.getState().rowStatesById['exec-1'],
+    ).toBeDefined();
   });
 
   it('shows the load failure when the snapshot read fails', async () => {

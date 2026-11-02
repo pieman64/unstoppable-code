@@ -355,7 +355,9 @@ export function toCloudRepositoryErrorBody(
   error: CloudRepositoryError | GitHubCloudConnectionError,
   details?: CloudRepositoryErrorDetails,
 ): CloudRepositoryErrorBody {
-  const ownDetails = isCloudRepositoryError(error) ? error.details : null;
+  const ownDetails = isCloudRepositoryError(error)
+    ? error.details
+    : { repositoryFullName: error.repositoryFullName };
   const merged = readCloudRepositoryErrorDetails({
     ...ownDetails,
     ...details,

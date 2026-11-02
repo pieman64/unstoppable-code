@@ -26,7 +26,8 @@ import {
   execFile,
   type ExecFileOptions,
 } from 'node:child_process';
-import { Dirent, statSync, type Stats } from 'node:fs';
+import { statSync, type Dirent, type Stats } from 'node:fs';
+import type { NonSharedBuffer } from 'node:buffer';
 import {
   lstat,
   open,
@@ -68,6 +69,8 @@ import {
   getFileDiffCommitted,
   getGitHeadWatchState,
   getLiveOriginBranchSha,
+  pullBranchFastForward,
+  pullBranchRebase,
   pushBranchToOriginNonInteractive,
   getLocalDefaultBranch,
   getPushRemoteUrlStrict,
@@ -913,6 +916,46 @@ describe('fetchOrigin', () => {
     activeFetchCallback?.(null, { stdout: '', stderr: '' });
     await activeFetch;
   });
+
+  // CAN-5517 golden: the daemon's write host must reproduce the pull flow's
+  // environment, or record the difference as N4 debt (CAN-5496).
+  it('runs the user fetch and both pulls interactively, on the main runner environment', async () => {
+    const envs = new Map<string, NodeJS.ProcessEnv | undefined>();
+    mockExecFile((_cmd, args, opts, cb) => {
+      const key = args.join(' ');
+      envs.set(key, opts?.env);
+      if (key === 'rev-parse --git-common-dir') {
+        cb?.(null, { stdout: '.git', stderr: '' });
+        return;
+      }
+      if (key === 'remote get-url origin') {
+        cb?.(null, { stdout: 'https://example.test/env.git', stderr: '' });
+        return;
+      }
+      cb?.(null, { stdout: '', stderr: '' });
+    });
+
+    await fetchOrigin('/env-repo', {
+      prune: true,
+      signal: new AbortController().signal,
+    });
+    await pullBranchFastForward('/env-repo', 'feature');
+    await pullBranchRebase('/env-repo', 'feature');
+
+    const fetchEnv = envs.get('fetch --prune origin');
+    expect(fetchEnv?.PATH).toEqual(expect.any(String));
+    for (const key of [
+      'fetch --prune origin',
+      'pull --ff-only origin feature',
+      'pull --rebase --autostash origin feature',
+    ]) {
+      const env = envs.get(key);
+      expect(env).toBeDefined();
+      expect(env?.GIT_TERMINAL_PROMPT).toBeUndefined();
+      expect(env?.GCM_INTERACTIVE).toBeUndefined();
+      expect(env?.PATH).toBe(fetchEnv?.PATH);
+    }
+  });
 });
 
 describe('createWorktree', () => {
@@ -1487,11 +1530,19 @@ describe('listBranches', () => {
 
       if (
         key ===
-        'for-each-ref --format=%(refname:short)%(HEAD) refs/heads/ refs/remotes/origin/'
+        'for-each-ref --format=%(refname)%09%(refname:short)%(HEAD) refs/heads/ refs/remotes/origin/'
       ) {
         cb?.(null, {
-          stdout:
-            'main\nfeature/foo*\norigin/main\norigin/feature/foo\norigin/remote-only\norigin/HEAD\n',
+          stdout: [
+            'refs/heads/main\tmain ',
+            'refs/heads/feature/foo\tfeature/foo*',
+            'refs/remotes/origin/main\torigin/main ',
+            'refs/remotes/origin/feature/foo\torigin/feature/foo ',
+            'refs/remotes/origin/remote-only\torigin/remote-only ',
+            // Git 2.55 shortens origin/HEAD to `origin`.
+            'refs/remotes/origin/HEAD\torigin ',
+            '',
+          ].join('\n'),
           stderr: '',
         });
         return;
@@ -1562,10 +1613,11 @@ describe('listBranches', () => {
 
       if (
         key ===
-        'for-each-ref --format=%(refname:short)%(HEAD) refs/heads/ refs/remotes/origin/'
+        'for-each-ref --format=%(refname)%09%(refname:short)%(HEAD) refs/heads/ refs/remotes/origin/'
       ) {
         cb?.(null, {
-          stdout: 'main*\norigin/main\norigin/release\n',
+          stdout:
+            'refs/heads/main\tmain*\nrefs/remotes/origin/main\torigin/main \nrefs/remotes/origin/release\torigin/release \n',
           stderr: '',
         });
         return;
@@ -1788,6 +1840,59 @@ describe('checkoutBranch', () => {
     expect(calls).toContain(fetchKey);
   });
 
+  // CAN-4108 golden: the daemon's write host must reproduce each runner's
+  // environment, or record the difference as N4 debt (CAN-5496).
+  it('keeps each runner environment: interactive checkout, non-interactive branch fetch', async () => {
+    const envs = new Map<string, NodeJS.ProcessEnv | undefined>();
+    let fetched = false;
+    const fetchKey =
+      'fetch --no-tags origin refs/heads/pr-head:refs/remotes/origin/pr-head';
+    mockExecFile((_cmd, args, opts, cb) => {
+      const key = (args ?? []).join(' ');
+      envs.set(key, opts?.env);
+      if (key === 'rev-parse --git-common-dir') {
+        cb?.(null, { stdout: '/repo/.git/worktrees/current\n', stderr: '' });
+        return;
+      }
+      if (key === 'worktree list --porcelain') {
+        cb?.(null, {
+          stdout:
+            'worktree /repo-current\nHEAD abc123\nbranch refs/heads/current\n',
+          stderr: '',
+        });
+        return;
+      }
+      if (key === 'show-ref --verify --quiet refs/heads/pr-head') {
+        cb?.(new Error('not found'), { stdout: '', stderr: '' });
+        return;
+      }
+      if (key === 'show-ref --verify --quiet refs/remotes/origin/pr-head') {
+        cb?.(fetched ? null : new Error('not found'), {
+          stdout: '',
+          stderr: '',
+        });
+        return;
+      }
+      if (key === fetchKey) fetched = true;
+      cb?.(null, { stdout: '', stderr: '' });
+    });
+
+    await checkoutBranch('/repo-current', 'pr-head');
+
+    const checkoutEnv = envs.get('checkout -b pr-head origin/pr-head');
+    expect(checkoutEnv).toBeDefined();
+    expect(checkoutEnv?.GIT_TERMINAL_PROMPT).toBeUndefined();
+    expect(checkoutEnv?.GCM_INTERACTIVE).toBeUndefined();
+    expect(checkoutEnv?.PATH).toEqual(expect.any(String));
+    const fetchEnv = envs.get(fetchKey);
+    expect(fetchEnv?.GIT_TERMINAL_PROMPT).toBe('0');
+    expect(fetchEnv?.GCM_INTERACTIVE).toBe('never');
+    expect(fetchEnv?.PATH).toBe(checkoutEnv?.PATH);
+    expect(
+      envs.get('status --porcelain --untracked-files=normal'),
+    ).toBeDefined();
+  });
+
   it('rejects branches already occupied by another worktree', async () => {
     mockExecFile((_cmd, args, _opts, cb) => {
       const key = (args ?? []).join(' ');
@@ -1824,8 +1929,21 @@ describe('checkoutBranch', () => {
 });
 
 describe('removeWorktree', () => {
-  function mockDirent(name: string): Dirent {
-    return new Dirent(name, 1);
+  function mockDirent(name: string): Dirent<NonSharedBuffer> {
+    const dirent: Dirent<NonSharedBuffer> = {
+      name: Buffer.from(name),
+      parentPath: '',
+      isFile: () => false,
+      isDirectory: () => false,
+      isBlockDevice: () => false,
+      isCharacterDevice: () => false,
+      isSymbolicLink: () => false,
+      isFIFO: () => false,
+      isSocket: () => false,
+    };
+    // Preserve the test's existing string-name Dirent input at one boundary.
+    Reflect.set(dirent, 'name', name);
+    return dirent;
   }
 
   it('serializes removals for the same repository and uses the delete timeout', async () => {
@@ -2416,9 +2534,7 @@ describe('configured base-branch git helpers', () => {
       cb?.(new Error(`Unexpected: ${key}`), { stdout: '', stderr: '' });
     });
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      'working tree content\n' as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue('working tree content\n');
 
     await expect(
       getFileDiffCombined('/repo', 'src/app.ts', 'develop'),

@@ -1,3 +1,6 @@
+import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
+import { useNavigationStore } from '@/stores/navigationStore';
+import { marketplaceManagementDestination } from '@canopy/ui-shared/lib';
 import { McpServersTab } from '../pages/McpServersTab';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -28,20 +31,22 @@ import {
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
+  LoadingButton,
+  SkeletonBlock,
+  SlowLoadNote,
   StatusBadge,
   type StatusBadgeVariant,
 } from '@canopy/ui-shared/components';
+import { useLoadingPhase } from '@canopy/ui-shared/lib';
 import {
   SettingsGroup,
   SettingsPage,
-  SettingsLoading,
   SettingsRadioGroup,
   SettingsRow,
   SettingsSection,
   SettingsTextField,
   type SettingsRadioOption,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 function statusLabel(status: McpProxyStatus): string {
   switch (status) {
@@ -66,6 +71,29 @@ function statusBadgeVariant(status: McpProxyStatus): StatusBadgeVariant {
 }
 
 type LoadStatus = 'loading' | 'ready' | 'error';
+
+/**
+ * A value that has not loaded, in its own slot: hidden for the shared delay
+ * so a fast load never flashes, then pulsing. The slot is laid out from the
+ * start, so nothing moves when the skeleton or the value arrives.
+ */
+function McpLoadingValue({
+  shown,
+  children,
+}: {
+  readonly shown: boolean;
+  readonly children: JSX.Element;
+}): JSX.Element {
+  return (
+    <span
+      aria-hidden="true"
+      data-testid="settings-mcp-loading-value"
+      className={`flex items-center ${shown ? '' : 'invisible'}`}
+    >
+      {children}
+    </span>
+  );
+}
 
 type McpAuthOption = SettingsRadioOption<McpHttpAuthHandler>;
 
@@ -94,7 +122,6 @@ function isValidHandler(value: unknown): value is McpHttpAuthHandler {
 }
 
 export function McpTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const mcpSectionTitle = useEarlyAccessTitle('MCP Servers');
   const accountConnectionsEnabled = useFeatureFlagsStore((state): boolean =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key),
@@ -222,13 +249,12 @@ export function McpTab(): JSX.Element {
     setErrorMessage(null);
   }
 
-  if (status === 'loading') {
-    return (
-      <SettingsPage title="MCP servers" dataTestId="settings-tab-mcp">
-        <SettingsLoading />
-      </SettingsPage>
-    );
-  }
+  // While the saved values load, the page keeps its headings and labels and
+  // only the values pulse (after the shared delay); the values replace them
+  // in place.
+  const loading = status === 'loading';
+  const loadingPhase = useLoadingPhase(loading);
+  const skeletonShown = loadingPhase === 'skeleton' || loadingPhase === 'slow';
 
   const authOptions = accountConnectionsEnabled
     ? [...MCP_AUTH_OPTIONS, MCP_ACCOUNT_AUTH_OPTION]
@@ -251,6 +277,33 @@ export function McpTab(): JSX.Element {
       // is two short forms that read best at the default measure.
       dataTestId="settings-tab-mcp"
     >
+      {loading && (
+        <span className="sr-only" role="status">
+          Loading
+        </span>
+      )}
+      <SettingsSection title="Installed MCP servers">
+        <SettingsGroup>
+          <SettingsRow
+            label="Manage MCP servers"
+            control={
+              <Button
+                size="compact"
+                variant="secondary"
+                data-testid="settings-mcp-manage"
+                onClick={(): void => {
+                  const navigation = useNavigationStore.getState();
+                  navigation.closeSettings();
+                  navigation.openPluginsNavigation({
+                    kind: 'marketplace-browse',
+                    ...marketplaceManagementDestination('mcp'),
+                  });
+                }}
+              >{`Open ${CUSTOMIZE_LABEL}`}</Button>
+            }
+          />
+        </SettingsGroup>
+      </SettingsSection>
       {accountConnectionsEnabled && (
         <SettingsSection
           title="Account connections"
@@ -269,23 +322,54 @@ export function McpTab(): JSX.Element {
           <SettingsRow
             label="Default auth path"
             description={
-              <span data-testid="settings-mcp-auth-description">
-                {authHandler === 'account'
-                  ? 'Uses your connected cloud account through the local proxy.'
-                  : authHandler === 'canopy'
-                    ? MCP_HTTP_AUTH_CANOPY_DESCRIPTION
-                    : MCP_HTTP_AUTH_PROVIDER_DESCRIPTION}
-              </span>
+              loading ? (
+                <McpLoadingValue shown={skeletonShown}>
+                  {/* The explanation's two lines at the column's measure. */}
+                  <span className="flex w-full flex-col">
+                    <span className="flex h-4.5 items-center">
+                      <SkeletonBlock height="meta" width="full" />
+                    </span>
+                    <span className="flex h-4.5 items-center">
+                      <SkeletonBlock height="meta" width="2/3" />
+                    </span>
+                  </span>
+                </McpLoadingValue>
+              ) : (
+                <span data-testid="settings-mcp-auth-description">
+                  {authHandler === 'account'
+                    ? 'Uses your connected cloud account through the local proxy.'
+                    : authHandler === 'canopy'
+                      ? MCP_HTTP_AUTH_CANOPY_DESCRIPTION
+                      : MCP_HTTP_AUTH_PROVIDER_DESCRIPTION}
+                </span>
+              )
             }
           >
-            <SettingsRadioGroup
-              name="settings-mcp-auth-handler"
-              label="Default auth path"
-              value={authHandler}
-              options={authOptions}
-              onChange={handleAuthHandlerChange}
-              dataTestId="settings-mcp-auth-pill"
-            />
+            {loading ? (
+              <McpLoadingValue shown={skeletonShown}>
+                {/* One row per choice, at the radio rows' height and gap. */}
+                <span className="flex flex-col gap-3">
+                  {authOptions.map((option) => (
+                    <span
+                      key={option.value}
+                      className="flex h-5 w-32 items-center gap-2.5"
+                    >
+                      <SkeletonBlock shape="dot" />
+                      <SkeletonBlock height="text" width="full" />
+                    </span>
+                  ))}
+                </span>
+              </McpLoadingValue>
+            ) : (
+              <SettingsRadioGroup
+                name="settings-mcp-auth-handler"
+                label="Default auth path"
+                value={authHandler}
+                options={authOptions}
+                onChange={handleAuthHandlerChange}
+                dataTestId="settings-mcp-auth-pill"
+              />
+            )}
           </SettingsRow>
         </SettingsGroup>
       </SettingsSection>
@@ -306,49 +390,58 @@ export function McpTab(): JSX.Element {
               ) : undefined
             }
             control={
-              <>
-                <SettingsTextField
-                  id="settings-mcp-port-input"
-                  type="number"
-                  width="xs"
-                  min={1}
-                  max={65535}
-                  value={portInput}
-                  disabled={portLocked}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>): void => {
-                    setPortInput(e.target.value);
-                    setSuccessMessage(null);
-                    setErrorMessage(null);
-                  }}
-                  data-testid="settings-mcp-port-input"
-                />
-                {showReset && (
-                  <Tooltip label="Reset proxy port to default">
-                    <Button
-                      size={settingsButtonSize}
-                      variant="ghost"
-                      onClick={(): void => {
-                        void handleReset();
-                      }}
-                      disabled={saving}
-                      data-testid="settings-mcp-reset"
-                    >
-                      Reset
-                    </Button>
-                  </Tooltip>
-                )}
-                <Button
-                  size={settingsButtonSize}
-                  variant="secondary"
-                  onClick={(): void => {
-                    void handleApply();
-                  }}
-                  disabled={saving}
-                  data-testid="settings-mcp-save"
-                >
-                  {saving ? 'Applying…' : 'Apply'}
-                </Button>
-              </>
+              loading ? (
+                <McpLoadingValue shown={skeletonShown}>
+                  <SkeletonBlock shape="control" />
+                </McpLoadingValue>
+              ) : (
+                <>
+                  <SettingsTextField
+                    id="settings-mcp-port-input"
+                    type="number"
+                    width="xs"
+                    min={1}
+                    max={65535}
+                    value={portInput}
+                    disabled={portLocked}
+                    onChange={(
+                      e: React.ChangeEvent<HTMLInputElement>,
+                    ): void => {
+                      setPortInput(e.target.value);
+                      setSuccessMessage(null);
+                      setErrorMessage(null);
+                    }}
+                    data-testid="settings-mcp-port-input"
+                  />
+                  {showReset && (
+                    <Tooltip label="Reset proxy port to default">
+                      <Button
+                        size="compact"
+                        variant="secondary"
+                        onClick={(): void => {
+                          void handleReset();
+                        }}
+                        disabled={saving}
+                        data-testid="settings-mcp-reset"
+                      >
+                        Reset
+                      </Button>
+                    </Tooltip>
+                  )}
+                  <LoadingButton
+                    size="compact"
+                    variant="secondary"
+                    onClick={(): void => {
+                      void handleApply();
+                    }}
+                    loading={saving}
+                    loadingLabel="Applying…"
+                    data-testid="settings-mcp-save"
+                  >
+                    Apply
+                  </LoadingButton>
+                </>
+              )
             }
           >
             {/* Inline under the port, like the Display tab's save error, so
@@ -372,6 +465,17 @@ export function McpTab(): JSX.Element {
             )}
           </SettingsRow>
 
+          {loading && proxyState === null && (
+            <SettingsRow
+              label="Status"
+              dataTestId="settings-mcp-proxy-status-loading"
+              control={
+                <McpLoadingValue shown={skeletonShown}>
+                  <SkeletonBlock shape="badge" />
+                </McpLoadingValue>
+              }
+            />
+          )}
           {proxyState && (
             <SettingsRow
               label="Status"
@@ -393,6 +497,11 @@ export function McpTab(): JSX.Element {
           )}
         </SettingsGroup>
       </SettingsSection>
+      {loading && (
+        <SlowLoadNote show={loadingPhase === 'slow'}>
+          Still loading MCP settings…
+        </SlowLoadNote>
+      )}
     </SettingsPage>
   );
 }

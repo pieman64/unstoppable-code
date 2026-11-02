@@ -157,3 +157,19 @@ export function openInWorkspaceContext(
     if (ready) open();
   });
 }
+
+/**
+ * {@link openInWorkspaceContext} for callers that need to know when the open
+ * has finished: resolves after the context switch and `open` (and any
+ * promise it returns) settle, or once a rejected switch opened nothing.
+ */
+export async function openInWorkspaceContextAsync(
+  workspaceId: string,
+  open: () => void | Promise<unknown>,
+): Promise<void> {
+  if (!isWorkspaceIdInScopingContext(workspaceId)) {
+    const ready = await switchContextForWorkspace(workspaceId);
+    if (!ready) return;
+  }
+  await open();
+}

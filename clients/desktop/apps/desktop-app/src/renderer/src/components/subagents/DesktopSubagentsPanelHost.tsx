@@ -1,5 +1,11 @@
-import { requestManagedDelegationStopAll } from '@/components/chat/managed-delegation-stop';
 import { useCallback, useState, type JSX } from 'react';
+import { LifetimeLimitNotice } from '@canopy/ui-app';
+import { useWorkspaceCapabilities } from '@canopy/app-state/CanopyClientProvider';
+import {
+  lifetimeLimitTargetKey,
+  useLifetimeLimitStore,
+} from '@canopy/app-state/delegation/lifetime-limit-store';
+import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
   isSubagentChatKind,
   type SubagentNode,
@@ -55,6 +61,44 @@ export interface DesktopSubagentsPanelHostProps {
   readonly scope: SubagentHostScope;
   readonly isVisible: boolean;
   readonly isActive: boolean;
+}
+
+/** Desktop-only, sanitized awareness; never exposes refusal identities or a setter. */
+function LifetimeLimitUiReporter({
+  scope,
+  enabled,
+}: {
+  readonly scope: SubagentHostScope;
+  readonly enabled: boolean;
+}): null {
+  const key = lifetimeLimitTargetKey(scope);
+  const status = useLifetimeLimitStore((state) => state.entries[key]?.status);
+  const capabilities = useWorkspaceCapabilities(scope.worktreeId);
+  const available = status?.kind === 'available' ? status : null;
+  const notice =
+    status && !available
+      ? 'unavailable'
+      : available?.atLimit
+        ? available.atCap
+          ? 'full_at_cap'
+          : 'full'
+        : 'none';
+  useCurrentUiStateReporter(
+    enabled ? 'subagents.lifetimeLimit' : null,
+    enabled
+      ? {
+          projectId: scope.projectId,
+          worktreeId: scope.worktreeId,
+          notice,
+          atLimit: available?.atLimit ?? null,
+          limit: available?.limit ?? null,
+          canExtend:
+            capabilities.delegationLifetimeLimitExtension === true &&
+            available?.canExtend === true,
+        }
+      : null,
+  );
+  return null;
 }
 
 /** Desktop adapter for the shared Subagents panel and its IPC-backed data. */
@@ -176,13 +220,6 @@ export function DesktopSubagentsPanelHost({
     },
     [scope],
   );
-  const stopAllDelegations = useCallback(
-    (): Promise<boolean> =>
-      selectedRootId
-        ? requestManagedDelegationStopAll({ ...scope, chatId: selectedRootId })
-        : Promise.resolve(false),
-    [selectedRootId, scope],
-  );
   const closeChanges = useCallback((): void => setChangesTarget(null), []);
   const closeWorkflow = useCallback((): void => setWorkflowTarget(null), []);
 
@@ -192,6 +229,15 @@ export function DesktopSubagentsPanelHost({
     <div className="flex min-h-0 min-w-0 flex-1" data-panel-active={isActive}>
       <SubagentsPanel
         scopeKey={scopeKey}
+        lifetimeNotice={
+          showWorkspaceDetails ? (
+            <LifetimeLimitNotice
+              projectId={scope.projectId}
+              worktreeId={scope.worktreeId}
+              placement="panel"
+            />
+          ) : undefined
+        }
         rootChats={rootChats}
         selectedRootId={selectedRootId}
         tree={treeQuery.tree}
@@ -206,9 +252,14 @@ export function DesktopSubagentsPanelHost({
         onStopWorkflow={stopWorkflow}
         onStop={stop}
         onShowChanges={showChanges}
-        onStopAllDelegations={stopAllDelegations}
         onSelectedNodeChange={setSelectedNode}
       />
+      {showWorkspaceDetails ? (
+        <LifetimeLimitUiReporter
+          scope={scope}
+          enabled={isVisible && isActive}
+        />
+      ) : null}
       <SubagentChangesDialog target={changesTarget} onClose={closeChanges} />
       <WorkflowRunDialog
         scope={scope}

@@ -10,6 +10,7 @@ import {
   CHAT_SIBLING_CONTENT_KINDS,
   createChatSiblingGroupToRight,
   pickReusableChatSiblingGroupId,
+  resolveChatPanelAnchor,
   rollbackCreatedChatSiblingGroup,
 } from '../sibling-panel-placement';
 
@@ -298,5 +299,114 @@ describe('pickReusableChatSiblingGroupId', () => {
         new Set<PanelKind>(['terminal']),
       ),
     ).toBe('group-terminal');
+  });
+});
+
+describe('resolveChatPanelAnchor (CAN-4789)', () => {
+  /**
+   * Two chat groups and a documents group. Chat A's group holds a file that
+   * is selected over chat A; chat B is selected in its own group. MRU after
+   * setup (most recent first): docs, chat-b, chat-a.
+   */
+  function initLayout(): WorktreePanelLayout {
+    const store = usePanelLayoutStore.getState();
+    store.initializeLayout(KEY, {
+      orientation: 'horizontal',
+      groups: [
+        {
+          kind: 'chat',
+          groupId: 'group-chat-a',
+          panelId: 'panel-chat-a',
+          instance: { chatTabId: 'chat-a' },
+        },
+        {
+          kind: 'chat',
+          groupId: 'group-chat-b',
+          panelId: 'panel-chat-b',
+          instance: { chatTabId: 'chat-b' },
+        },
+        {
+          kind: 'file-diff',
+          groupId: 'group-docs',
+          panelId: 'panel-doc',
+          instance: { fileTabId: 'file-doc' },
+        },
+      ],
+      containerSize: { width: 1600, height: 800 },
+    });
+    store.addTab(KEY, 'group-chat-a', 'file-diff', {
+      panelId: 'panel-legacy-file',
+      instance: { fileTabId: 'file-legacy' },
+    });
+    for (const groupId of ['group-chat-a', 'group-chat-b', 'group-docs']) {
+      store.focusGroup(KEY, groupId);
+    }
+    return usePanelLayoutStore.getState().layouts[KEY];
+  }
+
+  test('prefers the first live preferred chat id', () => {
+    const layout = initLayout();
+    expect(resolveChatPanelAnchor(layout, ['chat-a', 'chat-b'])).toEqual({
+      groupId: 'group-chat-a',
+      panelId: 'panel-chat-a',
+      chatTabId: 'chat-a',
+    });
+  });
+
+  test('skips stale, missing, and file ids before using the next preference', () => {
+    const layout = initLayout();
+    expect(
+      resolveChatPanelAnchor(layout, [
+        null,
+        undefined,
+        'chat-from-another-worktree',
+        'file-doc',
+        'chat-b',
+      ])?.chatTabId,
+    ).toBe('chat-b');
+  });
+
+  test('falls back to the selected chat of the most recently used group', () => {
+    const layout = initLayout();
+    // chat-a is covered by the legacy file, so chat-b is the selected chat.
+    expect(resolveChatPanelAnchor(layout, [])?.chatTabId).toBe('chat-b');
+  });
+
+  test('falls back to the first chat panel when no group has a chat selected', () => {
+    initLayout();
+    const store = usePanelLayoutStore.getState();
+    store.addTab(KEY, 'group-chat-b', 'file-diff', {
+      panelId: 'panel-legacy-b',
+      instance: { fileTabId: 'file-legacy-b' },
+    });
+    store.focusGroup(KEY, 'group-chat-a');
+    const layout = usePanelLayoutStore.getState().layouts[KEY];
+    expect(resolveChatPanelAnchor(layout, [])?.chatTabId).toBe('chat-a');
+  });
+
+  test('covers groups missing from MRU in stable layout order', () => {
+    const layout = initLayout();
+    const withoutMru: WorktreePanelLayout = { ...layout, mruGroupIds: [] };
+    expect(resolveChatPanelAnchor(withoutMru, [])?.chatTabId).toBe('chat-b');
+  });
+
+  test('never anchors to a non-chat panel and returns null without chats', () => {
+    const store = usePanelLayoutStore.getState();
+    store.initializeLayout(KEY, {
+      orientation: 'horizontal',
+      groups: [
+        { kind: 'chat', groupId: 'group-chat', panelId: 'panel-legacy-chat' },
+        {
+          kind: 'file-diff',
+          groupId: 'group-docs',
+          panelId: 'panel-doc',
+          instance: { fileTabId: 'file-doc' },
+        },
+      ],
+      containerSize: { width: 1200, height: 800 },
+    });
+    const layout = usePanelLayoutStore.getState().layouts[KEY];
+    // An instance-less legacy chat panel binds no chat and cannot anchor.
+    expect(resolveChatPanelAnchor(layout, ['file-doc'])).toBeNull();
   });
 });

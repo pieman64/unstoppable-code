@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -27,6 +28,8 @@ import {
   type GitReadHost,
   type GitReadHostSeams,
 } from '../git-read/host';
+import { createGitReadRunner } from '../git-read/runner';
+import { createWindowsClosureWitness } from '../supervision/windows-closure';
 import { evidenceRecorder } from './git-read-evidence';
 
 /*
@@ -89,7 +92,7 @@ function warm(file: string): void {
  */
 function fakeGit(
   name: string,
-  options: { versionPrefix?: string; version?: string; checkIgnore?: string } = {}, // prettier-ignore
+  options: { versionPrefix?: string; version?: string; checkIgnore?: string; lsFiles?: string } = {}, // prettier-ignore
 ): { file: string; log: string } {
   const dir = fresh(`git-${name}`);
   mkdirSync(join(dir, 'bin'));
@@ -104,6 +107,7 @@ case "$1" in
     echo "${options.version ?? 'git version 2.45.0'}"; exit 0;;
   -c) echo "smoke" >> "${log}"; exit 0;;
   check-ignore) echo "check-ignore" >> "${log}"; ${options.checkIgnore ?? 'cat > /dev/null;'} printf '${name}\\000'; exit 0;;
+  ls-files) echo "ls-files $*" >> "${log}"; ${options.lsFiles ?? ''} printf '${name}/\\000'; exit 0;;
 esac
 exit 3
 `,
@@ -284,6 +288,100 @@ posix('createGitReadHost: real repositories (POSIX)', () => {
   });
 });
 
+function listIgnored(
+  target: GitReadHost,
+  root: string,
+  saved: string,
+  signal = new AbortController().signal,
+): Promise<string[]> {
+  return target.port.listIgnoredPathEntries({
+    root,
+    readSavedExecutablePath: (): Promise<string> => Promise.resolve(saved),
+    signal,
+  });
+}
+
+posix('createGitReadHost: ignored listing (POSIX)', () => {
+  jest.setTimeout(60_000);
+
+  it("lists a repository's ignored untracked paths as desktop Git does", async () => {
+    const git = realGit();
+    const repo = repository('*.log\nbuild/\n!keep.log\n');
+    mkdirSync(join(repo, 'build', 'deep'), { recursive: true });
+    writeFileSync(join(repo, 'build', 'deep', 'out.js'), '');
+    writeFileSync(join(repo, 'a.log'), '');
+    writeFileSync(join(repo, 'keep.log'), '');
+    writeFileSync(join(repo, 'new\nline.log'), '');
+    writeFileSync(join(repo, 'tracked.log'), '');
+    writeFileSync(join(repo, 'src.ts'), '');
+    const env = { ...process.env, ...snapshot() };
+    execFileSync('git', ['-C', repo, 'add', '-f', 'tracked.log'], { env });
+    // Desktop's `listIgnoredPathEntries` argv, run directly.
+    const desktop = execFileSync(
+      git,
+      ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], // prettier-ignore
+      { cwd: repo, env, encoding: 'utf8' },
+    )
+      .split('\0')
+      .filter(Boolean);
+    const target = host(snapshot());
+    const listed = await listIgnored(target, repo, git);
+    expect(listed).toEqual(desktop);
+    expect([...listed].sort()).toEqual(['a.log', 'build/', 'new\nline.log']);
+    expect(target.selections().selections).toEqual([
+      expect.objectContaining({ executable: git }),
+    ]);
+    await expect(target.stop(AbortSignal.timeout(8_000))).resolves.toEqual({ state: 'stopped' }); // prettier-ignore
+  });
+
+  it('rejects outside a repository, as desktop execFile did', async () => {
+    const target = host(snapshot());
+    await expect(
+      listIgnored(target, fresh('not-a-repo'), realGit()),
+    ).rejects.toEqual(new GitIgnoreHostError('exit_status'));
+    expect(target.lastFailure()).toBe('exit_status');
+  });
+
+  it('runs one listing with the saved Git, then stops and aborts like check-ignore', async () => {
+    const fake = fakeGit('L');
+    const target = host(snapshot());
+    await expect(listIgnored(target, fresh('root'), fake.file)).resolves.toEqual(['L/']); // prettier-ignore
+    expect(lines(fake.log).filter((line) => line.startsWith('ls-files'))).toEqual(['ls-files ls-files --others --ignored --exclude-standard --directory -z']); // prettier-ignore
+
+    const hanging = fakeGit('L-hang', { lsFiles: 'sleep 30;' });
+    const controller = new AbortController();
+    const reason = { client: 'gone' };
+    const aborted = settle(listIgnored(target, fresh('root'), hanging.file, controller.signal)); // prettier-ignore
+    await until(() => lines(hanging.log).some((line) => line.startsWith('ls-files'))); // prettier-ignore
+    controller.abort(reason);
+    expect(await aborted).toEqual({ error: reason });
+
+    const stopped = settle(listIgnored(target, fresh('root'), hanging.file));
+    await until(() => lines(hanging.log).filter((line) => line.startsWith('ls-files')).length === 2); // prettier-ignore
+    await expect(target.stop(AbortSignal.timeout(8_000))).resolves.toEqual({ state: 'stopped' }); // prettier-ignore
+    expect(await stopped).toEqual({ error: new GitIgnoreHostError('stopped') });
+    await expect(listIgnored(target, fresh('root'), fake.file)).rejects.toEqual(new GitIgnoreHostError('stopped')); // prettier-ignore
+  });
+
+  it('refuses a malformed request before selecting a Git', async () => {
+    const target = host(snapshot());
+    const malformed: unknown = Reflect.apply(
+      target.port.listIgnoredPathEntries,
+      undefined,
+      [
+        {
+          root: fresh('root'),
+          readSavedExecutablePath: 'not a function',
+          signal: new AbortController().signal,
+        },
+      ],
+    );
+    await expect(malformed).rejects.toEqual(
+      new GitIgnoreHostError('invalid_request'),
+    );
+  });
+});
+
 posix('createGitReadHost: real processes (POSIX)', () => {
   jest.setTimeout(60_000);
 
@@ -366,7 +464,7 @@ posix('createGitReadHost: real processes (POSIX)', () => {
     );
   });
 
-  it('other Linux resolves git through the snapshot PATH only', async () => {
+  it('unsupported Linux architecture resolves git through the snapshot PATH only', async () => {
     const fake = fakeGit('snapshot-path');
     const ambient = process.env.PATH;
     expect(ambient?.split(':')).not.toContain(paths.dirname(fake.file));
@@ -378,7 +476,7 @@ posix('createGitReadHost: real processes (POSIX)', () => {
         }),
         probeDirectory: join(base, 'data'),
       },
-      { arch: 'arm64' },
+      { arch: 's390x' },
     );
     await expect(check(target, fresh('root'), ['x'], '/ignored/saved')).resolves.toEqual(new Set(['snapshot-path'])); // prettier-ignore
     expect(lines(fake.log)).toEqual(['check-ignore']);
@@ -466,6 +564,8 @@ posix('createGitReadHost: Windows taskkill after settlement (D3 B)', () => {
     writeFileSync(
       file,
       `#!/bin/sh
+# Win32 check-ignore carries the fsmonitor discharge first.
+if [ "$1 $2" = "-c core.fsmonitor=false" ]; then shift 2; fi
 case "$1" in
   __warm__) exit 0;;
   --version) echo "git version 2.45.0.windows.1"; exit 0;;
@@ -530,6 +630,137 @@ exit 3
     await expect(s.target.stop(AbortSignal.timeout(300))).rejects.toEqual(new GitIgnoreHostError('stopped')); // prettier-ignore
   });
 });
+
+/**
+ * The Win32 fsmonitor discharge is trusted only for the image whose version
+ * validation parsed. Replacing the selected git.exe (by an unaudited 2.35)
+ * after its version probe leaves the closure unsafe on the fresh and cached
+ * selection paths. `//` keeps the paths absolute for win32.
+ */
+posix(
+  'createGitReadHost: the Win32 fsmonitor discharge binds the started image',
+  () => {
+    jest.setTimeout(60_000);
+
+    /** A fake git.exe; `--version` logs, runs `onVersion`, then answers. */
+    function windowsGit(
+      file: string,
+      version: string,
+      log: string,
+      onVersion = '',
+    ): void {
+      writeFileSync(
+        file,
+        `#!/bin/sh
+if [ "$1 $2" = "-c core.fsmonitor=false" ]; then shift 2; fi
+case "$1" in
+  __warm__) exit 0;;
+  --version) echo v >> "${log}"; ${onVersion} echo "${version}"; exit 0;;
+  check-ignore) /bin/cat > /dev/null; exit 1;;
+esac
+exit 3
+`,
+      );
+      chmodSync(file, 0o755);
+      warm(file);
+    }
+
+    type Swap =
+      | 'none'
+      | 'during-version-probe'
+      | 'after-fresh-selection'
+      | 'after-cached-selection';
+
+    async function qualify(swap: Swap): Promise<{
+      readonly accepted: boolean;
+      readonly versionProbes: number;
+    }> {
+      const dir = fresh('win32-discharge');
+      const installed = join(dir, 'git.exe');
+      const replacement = join(dir, 'replacement.exe');
+      const log = join(dir, 'calls.log');
+      windowsGit(replacement, 'git version 2.35.1.windows.1', log);
+      windowsGit(
+        installed,
+        'git version 2.47.1.windows.2',
+        log,
+        swap === 'during-version-probe' ? `/bin/mv "${replacement}" "${installed}";` : '', // prettier-ignore
+      );
+      // One request for a fresh-path swap: a second would see the changed file
+      // on its cached path, which already drops the version.
+      const requests =
+        swap === 'none' || swap === 'after-cached-selection' ? 2 : 1;
+      // The selection after which the wrapper swaps the file; 0 for none.
+      const swapAt: Record<Swap, number> = {
+        none: 0,
+        'during-version-probe': 0,
+        'after-fresh-selection': 1,
+        'after-cached-selection': 2,
+      };
+      let selections = 0;
+      const witness = createWindowsClosureWitness();
+      await witness.run(async () => {
+        const target = createGitReadHostWith(
+          {
+            os: 'win32',
+            environment: { SystemRoot: 'C:\\Windows', PATH: 'C:\\Windows\\System32' }, // prettier-ignore
+            probeDirectory: `/${join(base, 'data')}`,
+          },
+          {
+            // Replaces the file after selection returns, before the spawn.
+            createRunner: (options) => {
+              const runner = createGitReadRunner(options);
+              return {
+                ...runner,
+                checkIgnoredPathsSelected: (request): Promise<Set<string>> =>
+                  runner.checkIgnoredPathsSelected({
+                    ...request,
+                    executableForChunk: async (...args) => {
+                      const selected = await request.executableForChunk(
+                        ...args,
+                      );
+                      selections += 1;
+                      if (selections === swapAt[swap])
+                        renameSync(replacement, installed);
+                      return selected;
+                    },
+                  }),
+              };
+            },
+          },
+        );
+        const root = `/${fresh('root')}`;
+        for (let request = 0; request < requests; request += 1)
+          await expect(
+            check(target, root, ['x'], `/${installed}`),
+          ).resolves.toEqual(new Set());
+        await expect(target.stop(AbortSignal.timeout(5_000))).resolves.toEqual({
+          state: 'stopped',
+        });
+      });
+      return {
+        accepted: witness.accepts(witness.finalize()),
+        versionProbes: lines(log).length,
+      };
+    }
+
+    it('accepts the audited image it validated, fresh and then cached', async () => {
+      await expect(qualify('none')).resolves.toEqual({ accepted: true, versionProbes: 1 }); // prettier-ignore
+    });
+
+    it.each([
+      'during-version-probe',
+      'after-fresh-selection',
+      'after-cached-selection',
+    ] as const)(
+      'keeps the closure unsafe when the image is replaced %s',
+      async (swap) => {
+        // One validation: the cached request never probes the replacement.
+        await expect(qualify(swap)).resolves.toEqual({ accepted: false, versionProbes: 1 }); // prettier-ignore
+      },
+    );
+  },
+);
 
 posix('createGitReadHost: composed no-write inventory (POSIX)', () => {
   jest.setTimeout(60_000);

@@ -1,5 +1,8 @@
 import { portalSnapshotWorkBudget } from '../portal/portal-snapshot-work-budget';
-import { getWorktreeDiffStatsOnly } from '../lib/worktree-service';
+import {
+  getWorktreeDiffStatsOnly,
+  type WorktreeRepoDiffStatsReader,
+} from '../lib/worktree-service';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { emitWorktreeDiffStatsDelta } from '../portal/portal-event-bus';
 import { mapWithConcurrency } from '../lib/concurrency';
@@ -256,9 +259,14 @@ export function removeCachedWorkspaceDiffStats(workspaceId: string): void {
   });
 }
 
+/**
+ * `readDiffStats` reads a refresh this call starts; a refresh in flight or a
+ * recent entry serves the call with the stats it read.
+ */
 export function refreshWorktreeDiffStats(
   workspaceId: string,
   worktreeId: string,
+  readDiffStats?: WorktreeRepoDiffStatsReader,
 ): Promise<CachedWorktreeDiffStats | undefined> {
   const cacheKey = key(workspaceId, worktreeId);
   const generation = generations.get(cacheKey) ?? 0;
@@ -275,7 +283,11 @@ export function refreshWorktreeDiffStats(
   }
 
   lastRefreshAttemptAt.set(cacheKey, Date.now());
-  const promise = getWorktreeDiffStatsOnly(workspaceId, worktreeId)
+  const promise = getWorktreeDiffStatsOnly(
+    workspaceId,
+    worktreeId,
+    readDiffStats,
+  )
     .then((stats) => {
       if ((generations.get(cacheKey) ?? 0) !== generation) {
         return entries.get(cacheKey);

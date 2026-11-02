@@ -6,8 +6,14 @@ import type {
 import {
   accessSummaryLine,
   activityTargetsLine,
+  claudeCodeAddCommand,
+  codexAddCommand,
   connectionStatusLabel,
   cursorMcpSnippet,
+  hermesAddCommand,
+  openClawAddCommand,
+  openCodeAuthCommand,
+  openCodeConfigSnippet,
   EXTERNAL_AGENT_CONFIRMATION_CLASS_LABELS,
   EXTERNAL_AGENT_SERVER_COPY,
   relativeTimeLabel,
@@ -23,6 +29,7 @@ function summary(
     destructive: [],
     organizations: null,
     desktops: null,
+    managed: null,
     ...overrides,
   };
 }
@@ -36,22 +43,62 @@ describe('external-agent display helpers', () => {
       },
       tasks: {
         title: 'Tasks',
-        line: 'Projects and tasks in the cloud and on your desktops.',
+        line: 'Projects and tasks in the cloud and on your devices.',
       },
     });
   });
 
-  it('summarizes groups in catalog order with plain sentences', () => {
+  it('summarizes Tasks access on the managed host and selected devices', () => {
     expect(
       accessSummaryLine(
         summary({
           read: ['digests', 'account'],
-          write: ['cloud'],
+          write: ['tasks'],
           organizations: 1,
-          desktops: null,
+          desktops: 2,
+          managed: true,
         }),
       ),
-    ).toBe('Reads account and digests. Writes cloud tasks. 1 organization.');
+    ).toBe(
+      'Reads account and digests. Writes tasks on linux-managed and 2 devices. 1 organization.',
+    );
+    expect(
+      accessSummaryLine(
+        summary({ write: ['tasks'], desktops: 2, managed: true }),
+      ),
+    ).toBe('Writes tasks on linux-managed and 2 devices.');
+    expect(
+      accessSummaryLine(
+        summary({ write: ['tasks'], desktops: 'all', managed: true }),
+      ),
+    ).toBe('Writes tasks on linux-managed and all devices.');
+    expect(
+      accessSummaryLine(
+        summary({ write: ['tasks'], desktops: 1, managed: false }),
+      ),
+    ).toBe('Writes tasks on 1 device.');
+    expect(
+      accessSummaryLine(
+        summary({ write: ['tasks'], desktops: null, managed: true }),
+      ),
+    ).toBe('Writes tasks on linux-managed.');
+    expect(
+      accessSummaryLine(
+        summary({ write: ['tasks'], desktops: 0, managed: false }),
+      ),
+    ).toBe('Writes tasks. No hosts.');
+    expect(
+      accessSummaryLine(
+        summary({
+          write: ['tasks'],
+          desktops: 2,
+          managed: true,
+        }),
+      ),
+    ).not.toContain('7k3q9x2m4p');
+  });
+
+  it('summarizes Account groups in catalog order with unchanged copy', () => {
     expect(
       accessSummaryLine(
         summary({
@@ -62,9 +109,9 @@ describe('external-agent display helpers', () => {
     ).toBe(
       'Reads digests, usage and billing. Writes organizations and work records.',
     );
-    expect(
-      accessSummaryLine(summary({ read: ['remote', 'memory', 'library'] })),
-    ).toBe('Reads the library, memory and desktop tasks.');
+    expect(accessSummaryLine(summary({ read: ['memory', 'library'] }))).toBe(
+      'Reads the library and memory.',
+    );
     expect(accessSummaryLine(summary({ destructive: ['org'] }))).toBe(
       'Can remove members and teams.',
     );
@@ -86,7 +133,7 @@ describe('external-agent display helpers', () => {
     );
   });
 
-  it('summarizes all, zero and counted organization and desktop access', () => {
+  it('summarizes organization scope without changing Account rows', () => {
     expect(accessSummaryLine(summary({ organizations: 'all' }))).toBe(
       'All organizations.',
     );
@@ -97,11 +144,8 @@ describe('external-agent display helpers', () => {
       '4 organizations.',
     );
     expect(
-      accessSummaryLine(summary({ organizations: null, desktops: 'all' })),
-    ).toBe('All desktops.');
-    expect(accessSummaryLine(summary({ desktops: 0 }))).toBe('No desktops.');
-    expect(accessSummaryLine(summary({ desktops: 1 }))).toBe('1 desktop.');
-    expect(accessSummaryLine(summary({ desktops: 3 }))).toBe('3 desktops.');
+      accessSummaryLine(summary({ read: ['account'], desktops: null })),
+    ).toBe('Reads account.');
   });
 
   it('reports no access when the summary has no enabled scope', () => {
@@ -112,6 +156,50 @@ describe('external-agent display helpers', () => {
     expect(connectionStatusLabel('active')).toBeNull();
     expect(connectionStatusLabel('paused')).toBe('Paused');
     expect(connectionStatusLabel('expired')).toBe('Expired');
+  });
+
+  it('builds one setup command per server for each CLI agent', () => {
+    const tasks: ExternalAgentServerAddress = {
+      server: 'tasks',
+      url: 'https://mcp.example.com/tasks',
+    };
+
+    expect(claudeCodeAddCommand(tasks)).toBe(
+      'claude mcp add --transport http --scope user tasks https://mcp.example.com/tasks',
+    );
+    expect(codexAddCommand(tasks)).toBe(
+      'codex mcp add tasks --url https://mcp.example.com/tasks',
+    );
+    expect(openCodeAuthCommand(tasks)).toBe('opencode mcp auth tasks');
+    expect(hermesAddCommand(tasks)).toBe(
+      'hermes mcp add tasks --url https://mcp.example.com/tasks --auth oauth\nhermes mcp login tasks',
+    );
+    expect(openClawAddCommand(tasks)).toBe(
+      'openclaw mcp add tasks --url https://mcp.example.com/tasks --transport streamable-http --auth oauth\nopenclaw mcp login tasks',
+    );
+  });
+
+  it('builds the OpenCode remote entries in server order', () => {
+    const servers: ExternalAgentServerAddress[] = [
+      { server: 'tasks', url: 'https://mcp.example.com/tasks' },
+      { server: 'account', url: 'https://mcp.example.com/account' },
+    ];
+
+    expect(JSON.parse(openCodeConfigSnippet(servers))).toEqual({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {
+        tasks: {
+          type: 'remote',
+          url: 'https://mcp.example.com/tasks',
+          enabled: true,
+        },
+        account: {
+          type: 'remote',
+          url: 'https://mcp.example.com/account',
+          enabled: true,
+        },
+      },
+    });
   });
 
   it('builds the Cursor snippet in server order', () => {
@@ -147,7 +235,7 @@ describe('external-agent display helpers', () => {
     ];
 
     expect(activityTargetsLine(targets)).toBe(
-      'Northwind, a project, a desktop, Review issue',
+      'Northwind, a project, a device, Review issue',
     );
     expect(activityTargetsLine([])).toBe('');
   });

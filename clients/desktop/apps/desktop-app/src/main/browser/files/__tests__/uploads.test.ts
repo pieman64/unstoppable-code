@@ -145,16 +145,19 @@ describe('workspaceUploadSource', () => {
   it('refuses a file whose folder is swapped for a link to outside after its path resolves', async () => {
     const actual = jest.requireActual<typeof fsModule>('node:fs');
     await writeFile(join(outside, 'report.csv'), 'outside bytes');
-    jest.mocked(realpathSync).mockImplementation(((
-      path: fsModule.PathLike,
-    ): string => {
-      const resolved = actual.realpathSync(path);
-      if (String(path).endsWith(join('exports', 'report.csv'))) {
-        actual.renameSync(join(workspace, 'exports'), join(workspace, 'moved'));
-        actual.symlinkSync(outside, join(workspace, 'exports'));
-      }
-      return resolved;
-    }) as typeof realpathSync);
+    jest
+      .mocked(realpathSync)
+      .mockImplementation((path: fsModule.PathLike): string => {
+        const resolved = actual.realpathSync(path);
+        if (String(path).endsWith(join('exports', 'report.csv'))) {
+          actual.renameSync(
+            join(workspace, 'exports'),
+            join(workspace, 'moved'),
+          );
+          actual.symlinkSync(outside, join(workspace, 'exports'));
+        }
+        return resolved;
+      });
     try {
       expect(refusal('exports/report.csv')).toBe('file_not_eligible');
     } finally {
@@ -169,28 +172,32 @@ describe('workspaceUploadSource', () => {
     const moved = join(workspace, 'moved');
     let swapped = false;
     // Outside for the open and the lstat after it, back for the realpath after that.
-    jest.mocked(openSync).mockImplementation(((
-      path: fsModule.PathLike,
-      flags?: fsModule.OpenMode,
-      mode?: fsModule.Mode | null,
-    ): number => {
-      if (String(path).endsWith(join('exports', 'report.csv'))) {
-        actual.renameSync(exports, moved);
-        actual.symlinkSync(outside, exports);
-        swapped = true;
-      }
-      return actual.openSync(path, flags, mode);
-    }) as typeof openSync);
-    jest.mocked(realpathSync).mockImplementation(((
-      path: fsModule.PathLike,
-    ): string => {
-      if (swapped) {
-        actual.unlinkSync(exports);
-        actual.renameSync(moved, exports);
-        swapped = false;
-      }
-      return actual.realpathSync(path);
-    }) as typeof realpathSync);
+    jest
+      .mocked(openSync)
+      .mockImplementation(
+        (
+          path: fsModule.PathLike,
+          flags: fsModule.OpenMode,
+          mode?: fsModule.Mode | null,
+        ): number => {
+          if (String(path).endsWith(join('exports', 'report.csv'))) {
+            actual.renameSync(exports, moved);
+            actual.symlinkSync(outside, exports);
+            swapped = true;
+          }
+          return actual.openSync(path, flags, mode);
+        },
+      );
+    jest
+      .mocked(realpathSync)
+      .mockImplementation((path: fsModule.PathLike): string => {
+        if (swapped) {
+          actual.unlinkSync(exports);
+          actual.renameSync(moved, exports);
+          swapped = false;
+        }
+        return actual.realpathSync(path);
+      });
     try {
       expect(refusal('exports/report.csv')).toBe('file_not_eligible');
     } finally {

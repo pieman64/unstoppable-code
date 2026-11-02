@@ -55,7 +55,7 @@ export async function openAgentArtifactNavigation(
           if (!result.success || !pipeline?.filePath) {
             throw new Error(
               result.error ??
-                `Project pipeline ${target.pipelineId} not found.`,
+                `Project workflow ${target.pipelineId} not found.`,
             );
           }
           navigation.openPipelineEdit({

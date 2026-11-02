@@ -505,6 +505,7 @@ describe('collapseDuplicatePluginRows keeps every reachable copy', () => {
     support: { claude: 'native' | 'none'; codex: 'native' | 'compat' | 'none' },
   ): UnifiedTableRow => ({
     kind: 'plugin',
+    rowOrigin: 'catalog',
     key: `${marketplaceId}/slack`,
     name: 'slack',
     description: '',
@@ -514,6 +515,11 @@ describe('collapseDuplicatePluginRows keeps every reachable copy', () => {
     sourceIcon: 'mixed',
     lastUpdated: '2026-08-31T00:00:00.000Z',
     providerSupport: support,
+    original: makePlugin({
+      name: 'slack',
+      marketplaceId,
+      providerSupport: support,
+    }),
   });
 
   it('does not let a selected subset evict the copy that covers it', () => {
@@ -572,6 +578,7 @@ describe('the pinned branch dedupes its remainder too', () => {
     support: { claude: 'native' | 'none'; codex: 'native' | 'compat' | 'none' },
   ): UnifiedTableRow => ({
     kind: 'plugin',
+    rowOrigin: 'catalog',
     key: `${marketplaceId}/slack`,
     name: 'slack',
     description: '',
@@ -581,6 +588,11 @@ describe('the pinned branch dedupes its remainder too', () => {
     sourceIcon: 'mixed',
     lastUpdated: '2026-08-31T00:00:00.000Z',
     providerSupport: support,
+    original: makePlugin({
+      name: 'slack',
+      marketplaceId,
+      providerSupport: support,
+    }),
   });
 
   it('collapses identical copies the pinned one does not cover', () => {
@@ -621,6 +633,7 @@ describe('a row whose provider support is unknown', () => {
     },
   ): UnifiedTableRow => ({
     kind: 'plugin',
+    rowOrigin: 'catalog',
     key: `${marketplaceId}/slack`,
     name: 'slack',
     description: '',
@@ -630,6 +643,11 @@ describe('a row whose provider support is unknown', () => {
     sourceIcon: 'mixed',
     lastUpdated: '2026-08-31T00:00:00.000Z',
     ...(support ? { providerSupport: support } : {}),
+    original: makePlugin({
+      name: 'slack',
+      marketplaceId,
+      ...(support ? { providerSupport: support } : {}),
+    }),
   });
 
   it('is neither collapsed nor the reason a sibling disappears', () => {

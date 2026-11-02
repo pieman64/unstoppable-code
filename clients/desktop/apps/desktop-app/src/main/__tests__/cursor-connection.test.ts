@@ -1,5 +1,8 @@
 import type * as RuntimeMetadata from '@canopy/desktop-shared/node/cursor/runtime-metadata';
-import type { PreferencesData } from '@canopy/desktop-shared/types';
+import type {
+  CursorConnectionStatus,
+  PreferencesData,
+} from '@canopy/desktop-shared/types';
 import { shell } from 'electron';
 import {
   changeCursorAccount,
@@ -78,7 +81,7 @@ jest.mock('@canopy/desktop-shared/node/cursor/runtime-environment', () => ({
 jest.mock('@canopy/desktop-shared/node/cursor/runtime-process', () => ({
   runCursorRuntimeCommand: jest.fn(),
 }));
-const mockRuntimeStatus = jest.fn(() =>
+const mockRuntimeStatus = jest.fn<Promise<CursorConnectionStatus>, []>(() =>
   Promise.resolve({
     supported: true,
     installed: true,

@@ -3,9 +3,9 @@ import type { DiffFileStatus } from '@canopy/ui-shared/components';
 /**
  * Map either a git porcelain status code (`'M'`, `'A'`, `'D'`, `'R'`, `'C'`,
  * `'U'`, `'T'`, `'??'`, …) or its canonical word spelling onto the shared
- * {@link DiffFileStatus} union used by `DiffFileTree`. For porcelain codes,
- * only the first significant character is considered; anything unrecognised
- * maps to `'unknown'` so the tree still renders a neutral dot.
+ * {@link DiffFileStatus} union used by `DiffFileTree`. Merge-conflict pairs are
+ * recognised before the single-character fallback; unknown codes map to the
+ * neutral `'unknown'` status.
  */
 export function toDiffFileStatus(status: string): DiffFileStatus {
   const code = status.trim();
@@ -25,6 +25,16 @@ export function toDiffFileStatus(status: string): DiffFileStatus {
   }
   if (code === '??') {
     return 'untracked';
+  }
+  switch (code) {
+    case 'DD':
+    case 'AU':
+    case 'UD':
+    case 'UA':
+    case 'DU':
+    case 'AA':
+    case 'UU':
+      return 'unmerged';
   }
   switch (code.charAt(0)) {
     case 'A':

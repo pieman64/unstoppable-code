@@ -73,10 +73,14 @@ export interface CapabilityRequirement {
   readonly marketplaceOwnedShares?: true;
   /** Requires the host to edit shared collections from their detail. */
   readonly marketplaceSharedCollectionEdit?: true;
+  /** Requires the host to edit custom skills from their Customize row. */
+  readonly customSkillEdit?: true;
   /** Requires the host to manage and run automations. */
   readonly automations?: true;
   /** Requires the host to list and manage watchers. */
   readonly watchers?: true;
+  /** Requires the host to edit, open runs of, and delete Customize workflows. */
+  readonly workflowManagement?: true;
   /** Requires the host to have wired organization projects (CAN-2944). */
   readonly orgProjects?: true;
   /** Requires the host to read the Agent Ledger. */
@@ -173,10 +177,22 @@ export function meetsCapabilityRequirement(
   ) {
     return false;
   }
+  if (
+    requirement.customSkillEdit === true &&
+    capabilities.customSkillEdit !== true
+  ) {
+    return false;
+  }
   if (requirement.automations === true && capabilities.automations !== true) {
     return false;
   }
   if (requirement.watchers === true && capabilities.watchers !== true) {
+    return false;
+  }
+  if (
+    requirement.workflowManagement === true &&
+    capabilities.workflowManagement !== true
+  ) {
     return false;
   }
   if (requirement.orgProjects === true && capabilities.orgProjects !== true) {
@@ -341,12 +357,16 @@ export const FEATURE_SURFACES = [
   'marketplace-owned-shares',
   /** Marketplace shared collection detail → Edit (CAN-4263, desktop-only). */
   'marketplace-shared-collection-edit',
+  /** Customize → Skills custom skill row → Edit (CAN-4844, desktop-only). */
+  'custom-skill-edit',
   /** Workflows → Schedule, the calendar of scheduled automations. */
   'workflow-schedule',
   /** Automation rows, runs and editing in Workflows. */
   'workflow-automations',
   /** Watcher rows and the Watcher kind filter in Workflows → Runs. */
   'workflow-watchers',
+  /** Edit, View runs and Delete… on Customize → Workflows rows (CAN-4845). */
+  'workflow-management',
 ] as const;
 
 /** Identifies one capability-gated non-panel feature surface. */
@@ -381,9 +401,11 @@ export const FEATURE_CAPABILITY_REQUIREMENTS: Readonly<
   'marketplace-shared-collection-edit': {
     marketplaceSharedCollectionEdit: true,
   },
+  'custom-skill-edit': { customSkillEdit: true },
   'workflow-schedule': { automations: true },
   'workflow-automations': { automations: true },
   'workflow-watchers': { watchers: true },
+  'workflow-management': { workflowManagement: true },
 };
 
 /**

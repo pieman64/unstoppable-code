@@ -21,22 +21,14 @@ import {
 
 interface RowProps {
   id: string;
-  getMarkdown: () => string;
   writeText?: ChatMessageClipboardWriter;
   onRowClick?: () => void;
   children?: ReactNode;
 }
 
-function Row({
-  id,
-  getMarkdown,
-  writeText,
-  onRowClick,
-  children,
-}: RowProps): ReactNode {
+function Row({ id, writeText, onRowClick, children }: RowProps): ReactNode {
   const { targetProps, menu } = useChatMessageContextMenu({
     messageId: id,
-    getMarkdown,
     ...(writeText ? { writeText } : {}),
   });
   return (
@@ -140,21 +132,22 @@ function menuItem(testId: string, doc: Document = document): HTMLButtonElement {
   return item;
 }
 
-const MARKDOWN = '# Plan\n\n- **one**\n- [docs](https://example.com)';
-const PLAIN = 'Plan\n\n- one\n- docs (https://example.com)';
+function menuLabels(): Array<string | null> {
+  return Array.from(
+    byTestId('chat-message-context-menu').querySelectorAll('[role="menuitem"]'),
+  ).map((item) => item.textContent);
+}
 
 describe('useChatMessageContextMenu', () => {
   it('keeps read-only scopes inactive and discards menus when disabled', () => {
-    const getMarkdown = jest.fn(() => 'message');
     const scoped = (enabled: boolean): ReactNode => (
       <ChatMessageContextMenuScope enabled={enabled}>
-        <Row id="a" getMarkdown={getMarkdown} />
+        <Row id="a" />
       </ChatMessageContextMenuScope>
     );
     render(scoped(false));
     expect(rightClick(byTestId('text-a')).defaultPrevented).toBe(false);
     expect(queryMenus()).toHaveLength(0);
-    expect(getMarkdown).not.toHaveBeenCalled();
     render(scoped(true));
     rightClick(byTestId('text-a'));
     expect(queryMenus()).toHaveLength(1);
@@ -163,49 +156,111 @@ describe('useChatMessageContextMenu', () => {
     render(scoped(true));
     expect(queryMenus()).toHaveLength(0);
   });
-  it('renders no menu markup and reads no source while closed', () => {
-    const getMarkdown = jest.fn(() => MARKDOWN);
-    const html = renderToStaticMarkup(<Row id="a" getMarkdown={getMarkdown} />);
+  it('renders no menu markup while closed', () => {
+    const html = renderToStaticMarkup(<Row id="a" />);
     expect(html).not.toContain('chat-message-context-menu');
-    render(<Row id="a" getMarkdown={getMarkdown} />);
+    render(<Row id="a" />);
     expect(queryMenus()).toHaveLength(0);
-    expect(getMarkdown).not.toHaveBeenCalled();
   });
 
-  it('opens at the pointer with the whole-message actions', () => {
-    render(<Row id="a" getMarkdown={() => MARKDOWN} />);
+  it('opens at the pointer with only a disabled Copy selection without a selection', async () => {
+    const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
+      Promise.resolve(true),
+    );
+    render(<Row id="a" writeText={writeText} />);
     const event = rightClick(byTestId('text-a'));
     expect(event.defaultPrevented).toBe(true);
     const menu = byTestId('chat-message-context-menu');
     expect(menu.style.left).toBe('40px');
     expect(menu.style.top).toBe('50px');
+    expect(menuLabels()).toEqual(['Copy selection']);
+    // The whole-message copies live in the footer, not here (CAN-4870).
     expect(
-      Array.from(menu.querySelectorAll('[role="menuitem"]')).map(
-        (item) => item.textContent,
-      ),
-    ).toEqual(['Copy message', 'Copy as Markdown']);
+      document.querySelector('[data-testid="chat-message-copy-plain"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-testid="chat-message-copy-markdown"]'),
+    ).toBeNull();
+    const item = menuItem('chat-message-copy-selection');
+    expect(item.disabled).toBe(true);
+    click(item);
+    await flush();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="chat-message-copied"]'),
+    ).toBeNull();
   });
 
-  it('hides Copy selection without a selection and copies whole messages regardless', async () => {
+  it('copies exactly the rendered selection, never the message source', async () => {
     const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
       Promise.resolve(true),
     );
-    render(<Row id="a" getMarkdown={() => MARKDOWN} writeText={writeText} />);
-    rightClick(byTestId('text-a'));
-    expect(
-      document.querySelector('[data-testid="chat-message-copy-selection"]'),
-    ).toBeNull();
-    click(menuItem('chat-message-copy-plain'));
-    await flush();
-    expect(writeText).toHaveBeenLastCalledWith(PLAIN, document);
-
-    // A selection does not change what the whole-message actions copy.
+    render(
+      <Row id="a" writeText={writeText}>
+        <div data-testid="text-a">
+          <h1>Plan</h1>
+          <ul>
+            <li>
+              <strong>one</strong>
+            </li>
+          </ul>
+          <pre>{'line one\n  line two'}</pre>
+        </div>
+      </Row>,
+    );
     selectContents(byTestId('text-a'));
+    const expected = document.getSelection()?.toString() ?? '';
+    expect(expected).toContain('line one\n  line two');
     rightClick(byTestId('text-a'));
     expect(menuItem('chat-message-copy-selection').disabled).toBe(false);
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
-    expect(writeText).toHaveBeenLastCalledWith(MARKDOWN, document);
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith(expected, document);
+    expect(writeText.mock.calls[0]?.[0]).not.toContain('**');
+  });
+
+  it('copies a rendered formula in the selection as its TeX source', async () => {
+    const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
+      Promise.resolve(true),
+    );
+    render(
+      <Row id="a" writeText={writeText}>
+        <p data-testid="text-a">
+          {'Ramsey '}
+          <span
+            className="canopy-markdown-math-container"
+            data-math-source={'\\(R(3,3)\\)'}
+          >
+            <span data-testid="formula-a">R ( 3 , 3 ) R(3,3)</span>
+          </span>
+          {' is 6'}
+        </p>
+      </Row>,
+    );
+    // The selection starts inside the formula, which still copies whole.
+    const formulaText = byTestId('formula-a').firstChild;
+    const tail = byTestId('text-a').lastChild;
+    if (!formulaText || !tail) throw new Error('missing text nodes');
+    const range = document.createRange();
+    range.setStart(formulaText, 4);
+    range.setEnd(tail, tail.textContent?.length ?? 0);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+
+    rightClick(byTestId('text-a'));
+    click(menuItem('chat-message-copy-selection'));
+    await flush();
+    expect(writeText).toHaveBeenCalledWith('\\(R(3,3)\\) is 6', document);
+
+    selectContents(byTestId('text-a'));
+    rightClick(byTestId('text-a'));
+    click(menuItem('chat-message-copy-selection'));
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith(
+      'Ramsey \\(R(3,3)\\) is 6',
+      document,
+    );
   });
 
   it('copies the selection captured when the menu opened, whitespace and Unicode intact', async () => {
@@ -214,10 +269,10 @@ describe('useChatMessageContextMenu', () => {
     );
     render(
       <>
-        <Row id="a" getMarkdown={() => 'a'} writeText={writeText}>
+        <Row id="a" writeText={writeText}>
           <p data-testid="text-a">{'  héllo 🌲  '}</p>
         </Row>
-        <Row id="b" getMarkdown={() => 'b'} writeText={writeText} />
+        <Row id="b" writeText={writeText} />
       </>,
     );
     // The selection may span messages; any selection in the document counts.
@@ -237,73 +292,61 @@ describe('useChatMessageContextMenu', () => {
     expect(writeText).toHaveBeenCalledWith(expected, document);
   });
 
-  it('keeps a whitespace-only selection available', () => {
+  it('copies a whitespace-only selection verbatim', async () => {
+    const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
+      Promise.resolve(true),
+    );
     render(
-      <Row id="a" getMarkdown={() => 'a'}>
-        <p data-testid="text-a">{'   '}</p>
+      <Row id="a" writeText={writeText}>
+        <p data-testid="text-a">{' \n\t '}</p>
       </Row>,
     );
     selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
     expect(menuItem('chat-message-copy-selection').disabled).toBe(false);
-  });
-
-  it('copies nonempty whitespace Markdown verbatim', async () => {
-    const writeText = jest.fn(() => Promise.resolve(true));
-    render(<Row id="a" getMarkdown={() => ' \n\t '} writeText={writeText} />);
-    rightClick(byTestId('text-a'));
-    expect(menuItem('chat-message-copy-markdown').disabled).toBe(false);
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(writeText).toHaveBeenCalledWith(' \n\t ', document);
   });
 
-  it('never copies the opaque citation markers the transcript hides', async () => {
+  it('keeps the opening snapshot and captures afresh on every opening', async () => {
     const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
       Promise.resolve(true),
     );
-    const source = 'Sunny **today**.citeturn0forecast0 Then rainciteturn0';
-    render(<Row id="a" getMarkdown={() => source} writeText={writeText} />);
-    rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
-    await flush();
-    expect(writeText).toHaveBeenLastCalledWith(
-      'Sunny **today**. Then rain',
-      document,
-    );
-    rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-plain'));
-    await flush();
-    expect(writeText).toHaveBeenLastCalledWith(
-      'Sunny today. Then rain',
-      document,
-    );
-  });
-
-  it('disables whole-message copies when only citation markers remain', () => {
-    render(<Row id="a" getMarkdown={() => 'citeturn0search0'} />);
-    rightClick(byTestId('text-a'));
-    expect(menuItem('chat-message-copy-plain').disabled).toBe(true);
-    expect(menuItem('chat-message-copy-markdown').disabled).toBe(true);
-  });
-
-  it('preserves whitespace-only code content for plain copy', async () => {
-    const writeText = jest.fn(() => Promise.resolve(true));
     render(
-      <Row id="a" getMarkdown={() => '```\n  \n```'} writeText={writeText} />,
+      <Row id="a" writeText={writeText}>
+        <p data-testid="text-a">first</p>
+        <p data-testid="other-a">second</p>
+      </Row>,
     );
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    expect(menuItem('chat-message-copy-plain').disabled).toBe(false);
-    click(menuItem('chat-message-copy-plain'));
+    // A live selection change after opening does not change the payload.
+    selectContents(byTestId('other-a'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
-    expect(writeText).toHaveBeenCalledWith('  ', document);
+    expect(writeText).toHaveBeenLastCalledWith('first', document);
+
+    // Reopening with no selection leaves no stale text available.
+    document.getSelection()?.removeAllRanges();
+    rightClick(byTestId('text-a'));
+    expect(menuItem('chat-message-copy-selection').disabled).toBe(true);
+    click(menuItem('chat-message-copy-selection'));
+    await flush();
+    expect(writeText).toHaveBeenCalledTimes(1);
+
+    selectContents(byTestId('other-a'));
+    rightClick(byTestId('other-a'));
+    click(menuItem('chat-message-copy-selection'));
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith('second', document);
   });
 
   it.each(['invalid', ' true '])(
     'inherits invalid contenteditable value %s from a noneditable parent',
     (value) => {
       render(
-        <Row id="a" getMarkdown={() => 'a'}>
+        <Row id="a">
           <div data-testid="invalid-host">
             <span data-testid="invalid-editable">ordinary text</span>
           </div>
@@ -314,46 +357,6 @@ describe('useChatMessageContextMenu', () => {
       expect(queryMenus()).toHaveLength(1);
     },
   );
-
-  it('copies the latest text of a streaming message when an action is chosen', async () => {
-    const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
-      Promise.resolve(true),
-    );
-    render(<Row id="a" getMarkdown={() => ''} writeText={writeText} />);
-    rightClick(byTestId('text-a'));
-    expect(menuItem('chat-message-copy-markdown').disabled).toBe(true);
-
-    render(
-      <Row
-        id="a"
-        getMarkdown={() => 'Now **streamed**'}
-        writeText={writeText}
-      />,
-    );
-    expect(menuItem('chat-message-copy-markdown').disabled).toBe(false);
-    click(menuItem('chat-message-copy-markdown'));
-    await flush();
-    expect(writeText).toHaveBeenCalledWith('Now **streamed**', document);
-  });
-
-  it('never writes an empty result for empty or markup-only messages', async () => {
-    const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
-      Promise.resolve(true),
-    );
-    render(<Row id="a" getMarkdown={() => '---'} writeText={writeText} />);
-    rightClick(byTestId('text-a'));
-    expect(menuItem('chat-message-copy-plain').disabled).toBe(true);
-    expect(menuItem('chat-message-copy-markdown').disabled).toBe(false);
-
-    render(<Row id="b" getMarkdown={() => ''} writeText={writeText} />);
-    rightClick(byTestId('text-b'));
-    expect(menuItem('chat-message-copy-plain').disabled).toBe(true);
-    expect(menuItem('chat-message-copy-markdown').disabled).toBe(true);
-    click(menuItem('chat-message-copy-plain'));
-    click(menuItem('chat-message-copy-markdown'));
-    await flush();
-    expect(writeText).not.toHaveBeenCalled();
-  });
 
   it.each([
     ['an input', <input key="i" data-testid="owned" />],
@@ -391,11 +394,7 @@ describe('useChatMessageContextMenu', () => {
       </button>,
     ],
   ])('yields to %s inside the message', (_label, child) => {
-    render(
-      <Row id="a" getMarkdown={() => 'a'}>
-        {child}
-      </Row>,
-    );
+    render(<Row id="a">{child}</Row>);
     const event = rightClick(byTestId('owned'));
     expect(event.defaultPrevented).toBe(false);
     expect(queryMenus()).toHaveLength(0);
@@ -406,7 +405,7 @@ describe('useChatMessageContextMenu', () => {
 
   it('opens over a non-editable island inside an editable ancestor', () => {
     render(
-      <Row id="a" getMarkdown={() => 'a'}>
+      <Row id="a">
         <div contentEditable suppressContentEditableWarning>
           <div contentEditable={false}>
             <span data-testid="island">read only</span>
@@ -419,7 +418,7 @@ describe('useChatMessageContextMenu', () => {
   });
 
   it('yields to an already-handled event and to touch long-press', () => {
-    render(<Row id="a" getMarkdown={() => 'a'} />);
+    render(<Row id="a" />);
     const text = byTestId('text-a');
     const prevent = (event: Event): void => event.preventDefault();
     text.addEventListener('contextmenu', prevent);
@@ -444,9 +443,9 @@ describe('useChatMessageContextMenu', () => {
   it('keeps one menu per document and lets an inner message own the event', () => {
     render(
       <>
-        <Row id="a" getMarkdown={() => 'a'} />
-        <Row id="outer" getMarkdown={() => 'outer'}>
-          <Row id="inner" getMarkdown={() => 'inner'} />
+        <Row id="a" />
+        <Row id="outer">
+          <Row id="inner" />
         </Row>
       </>,
     );
@@ -460,16 +459,16 @@ describe('useChatMessageContextMenu', () => {
   });
 
   it('closes when its message is removed or replaced', () => {
-    render(<Row id="a" getMarkdown={() => 'a'} />);
+    render(<Row id="a" />);
     rightClick(byTestId('text-a'));
     expect(queryMenus()).toHaveLength(1);
-    render(<Row id="b" getMarkdown={() => 'b'} />);
+    render(<Row id="b" />);
     expect(queryMenus()).toHaveLength(0);
 
     // Reusing a prior identity must not resurrect its old selection/menu.
-    render(<Row id="a" getMarkdown={() => 'new a'} />);
+    render(<Row id="a" />);
     expect(queryMenus()).toHaveLength(0);
-    render(<Row id="b" getMarkdown={() => 'b'} />);
+    render(<Row id="b" />);
 
     rightClick(byTestId('text-b'));
     expect(queryMenus()).toHaveLength(1);
@@ -478,7 +477,7 @@ describe('useChatMessageContextMenu', () => {
   });
 
   it('dismisses on an outside press, resize and blur', () => {
-    render(<Row id="a" getMarkdown={() => 'a'} />);
+    render(<Row id="a" />);
     rightClick(byTestId('text-a'));
     act(() => {
       document.body.dispatchEvent(
@@ -498,8 +497,8 @@ describe('useChatMessageContextMenu', () => {
     expect(queryMenus()).toHaveLength(0);
   });
 
-  it('opens from Shift+F10 at the message, then Escape restores focus', () => {
-    render(<Row id="a" getMarkdown={() => 'a'} />);
+  it('opens from Shift+F10 at the message with no enabled item, then Escape closes', () => {
+    render(<Row id="a" />);
     const row = byTestId('row-a');
     row.getBoundingClientRect = (): DOMRect => new DOMRect(30, 120, 200, 40);
     act(() => row.focus());
@@ -508,16 +507,72 @@ describe('useChatMessageContextMenu', () => {
     const menu = byTestId('chat-message-context-menu');
     expect(menu.style.left).toBe('30px');
     expect(menu.style.top).toBe('120px');
-    // Copy is disabled, so focus starts on the first enabled action.
-    expect(document.activeElement).toBe(menuItem('chat-message-copy-plain'));
+    // Copy selection is disabled, so focus stays on the message.
+    expect(menuItem('chat-message-copy-selection').disabled).toBe(true);
+    expect(document.activeElement).toBe(row);
+    // Arrow keys skip the disabled item.
+    keyDown(menu, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(row);
 
-    keyDown(menuItem('chat-message-copy-plain'), { key: 'Escape' });
+    keyDown(row, { key: 'Escape' });
+    expect(queryMenus()).toHaveLength(0);
+    expect(document.activeElement).toBe(row);
+  });
+
+  it('closes on Escape with no enabled item even when the focused trigger consumes the key', () => {
+    // A hover-card trigger (RichHoverTooltip with dismissOnEscape) stops
+    // Escape from propagating; the open menu is the topmost layer.
+    const onTriggerEscape = jest.fn();
+    render(
+      <Row id="a">
+        <span
+          data-testid="trigger-a"
+          role="link"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape') return;
+            event.stopPropagation();
+            onTriggerEscape();
+          }}
+        >
+          CAN-1
+        </span>
+      </Row>,
+    );
+    const trigger = byTestId('trigger-a');
+    act(() => trigger.focus());
+    rightClick(trigger);
+    expect(menuItem('chat-message-copy-selection').disabled).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+
+    const event = keyDown(trigger, { key: 'Escape' });
+    expect(event.defaultPrevented).toBe(true);
+    expect(queryMenus()).toHaveLength(0);
+    expect(document.activeElement).toBe(trigger);
+    // The menu took this Escape; the next one reaches the trigger again.
+    expect(onTriggerEscape).not.toHaveBeenCalled();
+    keyDown(trigger, { key: 'Escape' });
+    expect(onTriggerEscape).toHaveBeenCalledTimes(1);
+  });
+
+  it('focuses Copy selection for a keyboard menu over a selection, then Escape restores focus', () => {
+    render(<Row id="a" />);
+    const row = byTestId('row-a');
+    // jsdom clears the selection on focus, so select after focusing.
+    act(() => row.focus());
+    selectContents(byTestId('text-a'));
+    keyDown(row, { key: 'F10', shiftKey: true });
+    expect(document.activeElement).toBe(
+      menuItem('chat-message-copy-selection'),
+    );
+
+    keyDown(menuItem('chat-message-copy-selection'), { key: 'Escape' });
     expect(queryMenus()).toHaveLength(0);
     expect(document.activeElement).toBe(row);
   });
 
   it('anchors a zero-coordinate (keyboard) contextmenu event at the message', () => {
-    render(<Row id="a" getMarkdown={() => 'a'} />);
+    render(<Row id="a" />);
     const row = byTestId('row-a');
     row.getBoundingClientRect = (): DOMRect => new DOMRect(12, 34, 100, 20);
     rightClick(row, { clientX: 0, clientY: 0 });
@@ -531,7 +586,7 @@ describe('useChatMessageContextMenu', () => {
       .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
       .mockReturnValue(new DOMRect(0, 0, 300, 120));
     try {
-      render(<Row id="a" getMarkdown={() => 'a'} />);
+      render(<Row id="a" />);
       rightClick(byTestId('text-a'), {
         clientX: window.innerWidth - 1,
         clientY: window.innerHeight - 1,
@@ -545,7 +600,7 @@ describe('useChatMessageContextMenu', () => {
   });
 
   it('opens from the Menu key and ignores other keys', () => {
-    render(<Row id="a" getMarkdown={() => 'a'} />);
+    render(<Row id="a" />);
     keyDown(byTestId('row-a'), { key: 'F10' });
     expect(queryMenus()).toHaveLength(0);
     keyDown(byTestId('row-a'), { key: 'ContextMenu' });
@@ -557,13 +612,13 @@ describe('useChatMessageContextMenu', () => {
     render(
       <Row
         id="a"
-        getMarkdown={() => 'a'}
         writeText={() => Promise.resolve(true)}
         onRowClick={onRowClick}
       />,
     );
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(onRowClick).not.toHaveBeenCalled();
     expect(queryMenus()).toHaveLength(0);
@@ -581,9 +636,10 @@ describe('useChatMessageContextMenu', () => {
   ])(
     'shows a copy failure when the clipboard write %s',
     async (_label, write) => {
-      render(<Row id="a" getMarkdown={() => 'a'} writeText={write} />);
+      render(<Row id="a" writeText={write} />);
+      selectContents(byTestId('text-a'));
       rightClick(byTestId('text-a'));
-      click(menuItem('chat-message-copy-markdown'));
+      click(menuItem('chat-message-copy-selection'));
       await flush();
       const status = byTestId('chat-message-copy-failed');
       expect(status.querySelector('[role="alert"]')?.textContent).toBe(
@@ -612,11 +668,7 @@ describe('useChatMessageContextMenu', () => {
       Promise.resolve(true),
     );
     try {
-      act(() =>
-        auxRoot.render(
-          <Row id="aux" getMarkdown={() => 'aux'} writeText={writeText} />,
-        ),
-      );
+      act(() => auxRoot.render(<Row id="aux" writeText={writeText} />));
       // A main-window selection must not leak into the auxiliary menu.
       const mainText = document.createElement('p');
       mainText.textContent = 'main selection';
@@ -625,17 +677,11 @@ describe('useChatMessageContextMenu', () => {
       rightClick(byTestId('text-aux', doc));
       expect(queryMenus(doc)).toHaveLength(1);
       expect(queryMenus(document)).toHaveLength(0);
-      expect(
-        doc.querySelector('[data-testid="chat-message-copy-selection"]'),
-      ).toBeNull();
+      expect(menuItem('chat-message-copy-selection', doc).disabled).toBe(true);
       mainText.remove();
 
       act(() => auxRoot.render(null));
-      act(() =>
-        auxRoot.render(
-          <Row id="aux" getMarkdown={() => 'aux'} writeText={writeText} />,
-        ),
-      );
+      act(() => auxRoot.render(<Row id="aux" writeText={writeText} />));
       selectContents(byTestId('text-aux', doc));
       rightClick(byTestId('text-aux', doc));
       click(menuItem('chat-message-copy-selection', doc));
@@ -654,16 +700,9 @@ describe('useChatMessageContextMenu link section (CAN-2632)', () => {
     'Open in browser',
     'Open in external browser',
   ] as const;
-  // Without a selection, Copy selection is not offered.
-  const COPY_ITEMS = ['Copy message', 'Copy as Markdown'];
-
-  function menuLabels(): Array<string | null> {
-    return Array.from(
-      byTestId('chat-message-context-menu').querySelectorAll(
-        '[role="menuitem"]',
-      ),
-    ).map((item) => item.textContent);
-  }
+  // Copy selection always follows the link section, disabled without a
+  // selection (CAN-4870).
+  const COPY_ITEMS = ['Copy selection'];
 
   function LinkRow({
     actions,
@@ -673,11 +712,7 @@ describe('useChatMessageContextMenu link section (CAN-2632)', () => {
     writeText?: ChatMessageClipboardWriter;
   }): ReactNode {
     const row = (
-      <Row
-        id="a"
-        getMarkdown={() => 'see [docs](/docs?x=1#frag)'}
-        {...(writeText ? { writeText } : {})}
-      >
+      <Row id="a" {...(writeText ? { writeText } : {})}>
         <p data-testid="text-a">
           See{' '}
           <a data-testid="link-a" href="/docs?x=1#frag">
@@ -705,8 +740,16 @@ describe('useChatMessageContextMenu link section (CAN-2632)', () => {
     render(<LinkRow />);
     rightClick(byTestId('link-a'));
     expect(menuLabels()).toEqual(['Copy link', ...COPY_ITEMS]);
+    expect(menuItem('chat-message-copy-link').disabled).toBe(false);
+    expect(menuItem('chat-message-copy-selection').disabled).toBe(true);
     const menu = byTestId('chat-message-context-menu');
-    expect(menu.querySelectorAll('[role="separator"]').length).toBe(1);
+    const separators = menu.querySelectorAll('[role="separator"]');
+    expect(separators.length).toBe(1);
+    // The one divider sits between the link section and Copy selection.
+    const order = Array.from(
+      menu.querySelectorAll('[role="menuitem"], [role="separator"]'),
+    ).map((node) => node.getAttribute('role'));
+    expect(order).toEqual(['menuitem', 'separator', 'menuitem']);
   });
 
   it('gates each open action on the host providing it', () => {
@@ -765,6 +808,29 @@ describe('useChatMessageContextMenu link section (CAN-2632)', () => {
       'Open in external browser',
       ...COPY_ITEMS,
     ]);
+    // Link actions come first, and navigation skips disabled Copy selection.
+    expect(document.activeElement).toBe(menuItem('chat-message-copy-link'));
+    const menu = byTestId('chat-message-context-menu');
+    keyDown(menuItem('chat-message-copy-link'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(
+      menuItem('chat-message-open-link-external'),
+    );
+    keyDown(menu, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(menuItem('chat-message-copy-link'));
+  });
+
+  it('enables Copy selection after the link section over a selection', async () => {
+    const writeText = jest.fn<Promise<boolean>, [string, Document]>(() =>
+      Promise.resolve(true),
+    );
+    render(<LinkRow writeText={writeText} />);
+    selectContents(byTestId('text-a'));
+    const expected = document.getSelection()?.toString() ?? '';
+    rightClick(byTestId('link-a'));
+    expect(menuLabels()).toEqual(['Copy link', ...COPY_ITEMS]);
+    click(menuItem('chat-message-copy-selection'));
+    await flush();
+    expect(writeText).toHaveBeenCalledWith(expected, document);
   });
 
   it('treats non-http links and plain text as non-link targets', () => {
@@ -796,11 +862,7 @@ describe('useChatMessageContextMenu link section (CAN-2632)', () => {
     refAUrl?: string;
   }): ReactNode {
     const row = (
-      <Row
-        id="a"
-        getMarkdown={() => 'CAN-1 and #7'}
-        {...(writeText ? { writeText } : {})}
-      >
+      <Row id="a" {...(writeText ? { writeText } : {})}>
         <p data-testid="text-a">
           <span
             data-testid="ref-a"
@@ -896,7 +958,7 @@ describe('useChatMessageContextMenu link section (CAN-2632)', () => {
       Promise.resolve(true),
     );
     render(
-      <Row id="a" getMarkdown={() => 'x'} writeText={writeText}>
+      <Row id="a" writeText={writeText}>
         <span data-link-url="https://a.test/declared">
           <a data-testid="inner-anchor" href="https://a.test/anchor">
             x
@@ -913,7 +975,7 @@ describe('useChatMessageContextMenu link section (CAN-2632)', () => {
   it('ignores a declaration outside the message element', () => {
     render(
       <div data-link-url="https://a.test/outside">
-        <Row id="a" getMarkdown={() => 'x'} />
+        <Row id="a" />
       </div>,
     );
     rightClick(byTestId('text-a'));
@@ -967,8 +1029,6 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
 
   it.each([
     ['chat-message-copy-selection', 'Message a'],
-    ['chat-message-copy-plain', PLAIN],
-    ['chat-message-copy-markdown', MARKDOWN],
     ['chat-message-copy-link', 'https://example.com/docs'],
   ])(
     'shows and announces Copied after %s, then clears it',
@@ -977,7 +1037,7 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
         Promise.resolve(true),
       );
       render(
-        <Row id="a" getMarkdown={() => MARKDOWN} writeText={writeText}>
+        <Row id="a" writeText={writeText}>
           <p data-testid="text-a">Message a</p>
           <a data-testid="link-a" href="https://example.com/docs">
             docs
@@ -1010,17 +1070,13 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
   );
 
   it('never takes focus from where the menu returned it', async () => {
-    render(
-      <Row
-        id="a"
-        getMarkdown={() => 'a'}
-        writeText={() => Promise.resolve(true)}
-      />,
-    );
+    render(<Row id="a" writeText={() => Promise.resolve(true)} />);
     const row = byTestId('row-a');
+    // jsdom clears the selection on focus, so select after focusing.
     act(() => row.focus());
+    selectContents(byTestId('text-a'));
     keyDown(row, { key: 'F10', shiftKey: true });
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(queryCopied()).not.toBeNull();
     expect(document.activeElement).toBe(row);
@@ -1032,19 +1088,14 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
     document.body.append(frame);
     const doc = frame.contentDocument;
     if (!doc) throw new Error('no auxiliary document');
-    render(
-      <Row
-        id="a"
-        getMarkdown={() => 'a'}
-        writeText={() => Promise.resolve(true)}
-      />,
-    );
+    render(<Row id="a" writeText={() => Promise.resolve(true)} />);
     const row = byTestId('row-a');
     doc.body.append(container);
     try {
       act(() => row.focus());
+      selectContents(row);
       keyDown(row, { key: 'F10', shiftKey: true });
-      click(menuItem('chat-message-copy-markdown', doc));
+      click(menuItem('chat-message-copy-selection', doc));
       await flush();
       expect(doc.activeElement).toBe(row);
     } finally {
@@ -1057,15 +1108,10 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
   it.each(['mousedown', 'keydown', 'resize', 'blur'])(
     'dismisses success on %s and clears its timers',
     async (eventName) => {
-      render(
-        <Row
-          id="a"
-          getMarkdown={() => 'a'}
-          writeText={() => Promise.resolve(true)}
-        />,
-      );
+      render(<Row id="a" writeText={() => Promise.resolve(true)} />);
+      selectContents(byTestId('text-a'));
       rightClick(byTestId('text-a'));
-      click(menuItem('chat-message-copy-markdown'));
+      click(menuItem('chat-message-copy-selection'));
       await flush();
       expect(queryCopied()).not.toBeNull();
       act(() => {
@@ -1084,18 +1130,13 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
       .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
       .mockReturnValue(new DOMRect(0, 0, 200, 40));
     try {
-      render(
-        <Row
-          id="a"
-          getMarkdown={() => 'a'}
-          writeText={() => Promise.resolve(true)}
-        />,
-      );
+      render(<Row id="a" writeText={() => Promise.resolve(true)} />);
+      selectContents(byTestId('text-a'));
       rightClick(byTestId('text-a'), {
         clientX: window.innerWidth - 1,
         clientY: window.innerHeight - 1,
       });
-      click(menuItem('chat-message-copy-markdown'));
+      click(menuItem('chat-message-copy-selection'));
       await flush();
       expect(byTestId('chat-message-copied').style.left).toBe(
         `${window.innerWidth - 204}px`,
@@ -1109,15 +1150,10 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
   });
 
   it('dismisses Copied on the next press in its document', async () => {
-    render(
-      <Row
-        id="a"
-        getMarkdown={() => 'a'}
-        writeText={() => Promise.resolve(true)}
-      />,
-    );
+    render(<Row id="a" writeText={() => Promise.resolve(true)} />);
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(queryCopied()).not.toBeNull();
     act(() => {
@@ -1130,45 +1166,63 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
 
   it('keeps success and failure mutually exclusive', async () => {
     let succeed = true;
-    render(
-      <Row
-        id="a"
-        getMarkdown={() => 'a'}
-        writeText={() => Promise.resolve(succeed)}
-      />,
-    );
+    render(<Row id="a" writeText={() => Promise.resolve(succeed)} />);
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(queryCopied()).not.toBeNull();
 
     succeed = false;
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
     expect(queryCopied()).toBeNull();
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(queryFailed()).not.toBeNull();
     expect(queryCopied()).toBeNull();
 
     succeed = true;
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
     expect(queryFailed()).toBeNull();
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
+    await flush();
+    expect(queryCopied()).not.toBeNull();
+    expect(queryFailed()).toBeNull();
+  });
+
+  it('shows no Copied after a rejected write, and a later copy still succeeds', async () => {
+    let reject = true;
+    render(
+      <Row
+        id="a"
+        writeText={() =>
+          reject ? Promise.reject(new Error('denied')) : Promise.resolve(true)
+        }
+      />,
+    );
+    selectContents(byTestId('text-a'));
+    rightClick(byTestId('text-a'));
+    click(menuItem('chat-message-copy-selection'));
+    await flush();
+    expect(queryFailed()).not.toBeNull();
+    expect(queryCopied()).toBeNull();
+
+    reject = false;
+    selectContents(byTestId('text-a'));
+    rightClick(byTestId('text-a'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(queryCopied()).not.toBeNull();
     expect(queryFailed()).toBeNull();
   });
 
   it('gives a repeat success its own status and announcement', async () => {
-    render(
-      <Row
-        id="a"
-        getMarkdown={() => 'a'}
-        writeText={() => Promise.resolve(true)}
-      />,
-    );
+    render(<Row id="a" writeText={() => Promise.resolve(true)} />);
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     act(() => {
       jest.advanceTimersByTime(1000);
@@ -1177,8 +1231,9 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
     expect(announcement()).toBe('Copied');
 
     // Same message, same point: still a fresh status with a fresh timeout.
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     await flush();
     expect(queryCopied()).not.toBe(first);
     expect(announcement()).toBe('');
@@ -1203,14 +1258,15 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
     render(
       <Row
         id="a"
-        getMarkdown={() => 'a'}
         writeText={() => writes.shift()?.promise ?? Promise.resolve(false)}
       />,
     );
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     second.resolve(true);
     await flush();
     expect(queryCopied()).not.toBeNull();
@@ -1225,28 +1281,31 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
     const writeText = (): Promise<boolean> =>
       pending.shift()?.promise ?? Promise.resolve(false);
     const [renamed, disabled, unmounted] = pending;
-    render(<Row id="a" getMarkdown={() => 'a'} writeText={writeText} />);
+    render(<Row id="a" writeText={writeText} />);
+    selectContents(byTestId('text-a'));
     rightClick(byTestId('text-a'));
-    click(menuItem('chat-message-copy-markdown'));
-    render(<Row id="b" getMarkdown={() => 'b'} writeText={writeText} />);
+    click(menuItem('chat-message-copy-selection'));
+    render(<Row id="b" writeText={writeText} />);
     renamed?.resolve(true);
     await flush();
     expect(queryCopied()).toBeNull();
 
+    selectContents(byTestId('text-b'));
     rightClick(byTestId('text-b'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     render(
       <ChatMessageContextMenuScope enabled={false}>
-        <Row id="b" getMarkdown={() => 'b'} writeText={writeText} />
+        <Row id="b" writeText={writeText} />
       </ChatMessageContextMenuScope>,
     );
     disabled?.resolve(true);
     await flush();
-    render(<Row id="b" getMarkdown={() => 'b'} writeText={writeText} />);
+    render(<Row id="b" writeText={writeText} />);
     expect(queryCopied()).toBeNull();
 
+    selectContents(byTestId('text-b'));
     rightClick(byTestId('text-b'));
-    click(menuItem('chat-message-copy-markdown'));
+    click(menuItem('chat-message-copy-selection'));
     render(null);
     unmounted?.resolve(true);
     await flush();
@@ -1262,16 +1321,11 @@ describe('useChatMessageContextMenu copy feedback (CAN-4704)', () => {
     doc.body.append(host);
     const auxRoot = createRoot(host);
     act(() =>
-      auxRoot.render(
-        <Row
-          id="aux"
-          getMarkdown={() => 'aux'}
-          writeText={() => Promise.resolve(true)}
-        />,
-      ),
+      auxRoot.render(<Row id="aux" writeText={() => Promise.resolve(true)} />),
     );
+    selectContents(byTestId('text-aux', doc));
     rightClick(byTestId('text-aux', doc));
-    click(menuItem('chat-message-copy-markdown', doc));
+    click(menuItem('chat-message-copy-selection', doc));
     await flush();
     expect(
       doc.querySelector('[data-testid="chat-message-copied"]'),

@@ -13,10 +13,11 @@ import { setUiScale } from './uiScale.mjs';
 
 // CAN-4258: the MCP servers table (`McpServersTab.tsx`) clipped its trailing
 // Actions column at laptop widths, showing "Make available in c", because the
-// table outgrew its `overflow-hidden` wrapper. Both mounts — Settings → MCP
-// servers → Account connections and Plugins → Your plugins → MCP — must keep
-// every action complete and reachable by pointer and keyboard input, either
-// in place or by scrolling the table region, without widening the page.
+// table outgrew its `overflow-hidden` wrapper. Its mount, Settings → MCP
+// servers → Account connections, must keep every action complete and
+// reachable by pointer and keyboard input, either in place or by scrolling
+// the table region, without widening the page. (CAN-4267 removed the former
+// Plugins → Your plugins → MCP mount with the legacy management view.)
 //
 // `fixtures/mcpServersLayout.mjs` seeds the widest action combinations the
 // table renders. The spec never clicks Health Check or Test Connection.
@@ -374,13 +375,8 @@ for (const mount of MCP_TABLE_MOUNTS) {
       await app.waitForShell();
       await setUiScale(window, 150);
       await setWindowContentSize(electronApp, window, CONFIGURATIONS[1]);
-      if (mount.name === 'settings') {
-        await app.openSettings();
-        await app.openSettingsSection('mcp');
-      } else {
-        await app.openPluginsPage();
-        await app.openPluginsTab('mcp');
-      }
+      await app.openSettings();
+      await app.openSettingsSection('mcp');
       const panel = window.getByTestId(mount.panelTestId);
       await expect(panel.getByText('No MCP servers registered')).toBeVisible();
       await expect(panel.locator('table')).toHaveCount(0);

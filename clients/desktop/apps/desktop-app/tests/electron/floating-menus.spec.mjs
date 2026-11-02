@@ -1144,7 +1144,7 @@ test.describe('reported worktree action menus', () => {
       // The catalog menu moved to the Add panel button (`+` is a direct New
       // Chat now).
       const addTrigger = window.getByTestId(
-        `panel-add-panel-${DEFAULT_GROUP_IDS.chat}`,
+        `panel-add-tab-${DEFAULT_GROUP_IDS.chat}`,
       );
       await addTrigger.click();
       const addMenu = window.getByTestId('panel-add-menu');

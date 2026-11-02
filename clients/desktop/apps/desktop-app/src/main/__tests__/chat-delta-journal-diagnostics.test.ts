@@ -25,6 +25,8 @@ import {
   type DeltaJournalDiagnostic,
 } from '../lib/chat-delta-journal/writer';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
+import { setChatTabsRequiredDurabilityObserver } from '../lib/chat-tabs';
+import type { ChatCoreMutation } from '@canopy/desktop-shared/types';
 import type { SessionDiagnosticRecord } from '../observability/service';
 import {
   ChatStateService,
@@ -35,7 +37,14 @@ import { createV2Scope, message } from './helpers/chat-delta-journal-harness';
 import {
   drainAfterTest,
   drainOpenRepositories,
+  streaming,
+  text,
+  upsert,
 } from './helpers/chat-delta-journal-scope';
+import {
+  eventually,
+  gateJournalSyncs,
+} from './helpers/chat-delta-journal-sync-gate';
 
 const mockAppDiagnostic = jest.fn();
 jest.mock('../observability', () => ({
@@ -56,6 +65,8 @@ describe('delta journal diagnostics', () => {
   });
 
   afterEach(async () => {
+    setChatTabsRequiredDurabilityObserver(null);
+    jest.useRealTimers();
     jest.restoreAllMocks();
     await drainOpenRepositories();
     mockAppDiagnostic.mockReset();
@@ -128,6 +139,392 @@ describe('delta journal diagnostics', () => {
       }),
     );
   }
+
+  /** Captures materialization retries so none runs after the test ends. */
+  function heldRetries(): {
+    retries: Array<() => void>;
+    schedule: (callback: () => void) => ReturnType<typeof setTimeout>;
+  } {
+    const retries: Array<() => void> = [];
+    return {
+      retries,
+      schedule: (callback): ReturnType<typeof setTimeout> => {
+        retries.push(callback);
+        const handle = setTimeout(() => undefined, 0);
+        clearTimeout(handle);
+        return handle;
+      },
+    };
+  }
+
+  it('attributes a durable commit waiting for required materialization before subscriber publication', async () => {
+    await createV2Scope(root, 'scope', [
+      { id: 'chat', messages: [message('m0', 'SECRET-TRANSCRIPT', 'user')] },
+    ]);
+    const records: SessionDiagnosticRecord[] = [];
+    const store = repository();
+    const service = new ChatStateService({
+      repository: store,
+      recordDiagnostic: (record): void => {
+        records.push(record);
+      },
+    });
+    let published = 0;
+    service.subscribe(() => {
+      published += 1;
+    });
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let materializationEntered = (): void => undefined;
+    const entered = new Promise<void>((resolve) => {
+      materializationEntered = resolve;
+    });
+    setChatTabsRequiredDurabilityObserver(() => {
+      materializationEntered();
+      return held;
+    });
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      const transaction = store.transact(
+        SCOPE,
+        [{ type: 'tab.removed', tabId: 'chat' }],
+        { source: 'automation' },
+      );
+      await entered;
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(published).toBe(0);
+      const stalled = records.find(
+        (record) =>
+          record.kind === 'chat_wait_phase' &&
+          record.waitOperation === 'chat_state.publish_commit' &&
+          record.waitPhase === 'required_materialization' &&
+          record.waitOutcome === 'stalled',
+      );
+      expect(stalled).toMatchObject({
+        waitScope: SCOPE,
+        waitElapsedMs: 1_000,
+      });
+      expect(typeof stalled?.waitOperationId).toBe('string');
+      expect(typeof stalled?.waitStartedAtMs).toBe('number');
+      expect(JSON.stringify(records)).not.toContain('SECRET-TRANSCRIPT');
+      release();
+      await transaction;
+      expect(published).toBe(1);
+      const completed = records.find(
+        (record) =>
+          record.kind === 'chat_wait_phase' &&
+          record.waitOperationId === stalled?.waitOperationId &&
+          record.waitPhase === 'end',
+      );
+      expect(completed?.waitOutcome).toBe('completed');
+      expect(
+        typeof completed?.waitPhaseDurationsMs?.required_materialization,
+      ).toBe('number');
+      expect(
+        typeof completed?.waitPhaseDurationsMs?.subscriber_publication,
+      ).toBe('number');
+    } finally {
+      release();
+      setChatTabsRequiredDurabilityObserver(null);
+      jest.useRealTimers();
+      await service.drain();
+    }
+  });
+
+  it('attributes a commit held at required durability, and the commit queued behind it, before publication', async () => {
+    await createV2Scope(root, 'scope', [
+      { id: 'chat', messages: [message('m0', 'SECRET-TRANSCRIPT', 'user')] },
+    ]);
+    const records: SessionDiagnosticRecord[] = [];
+    const store = repository();
+    const service = new ChatStateService({
+      repository: store,
+      recordDiagnostic: (record): void => {
+        records.push(record);
+      },
+    });
+    let published = 0;
+    service.subscribe(() => {
+      published += 1;
+    });
+    const stream = (
+      id: string,
+      mutations: ChatCoreMutation[],
+    ): Promise<unknown> =>
+      store.transact(SCOPE, mutations, {
+        source: 'provider',
+        mutationId: id,
+        chatIds: ['chat'],
+      });
+    const publishWaits = (): SessionDiagnosticRecord[] =>
+      records.filter(
+        (record) =>
+          record.kind === 'chat_wait_phase' &&
+          record.waitOperation === 'chat_state.publish_commit',
+      );
+    const syncs = gateJournalSyncs();
+    try {
+      // A turn in progress keeps the later rows journaled, so each commit's
+      // publication waits for its group-committed batch.
+      await stream('turn-start', [
+        streaming('chat', 'p1'),
+        upsert('chat', text('p1', 'go', 'user')),
+      ]);
+      records.length = 0;
+      published = 0;
+      syncs.hold();
+      const first = stream('a', [
+        upsert('chat', text('row-a', 'SECRET-TRANSCRIPT a')),
+      ]);
+      const second = stream('b', [
+        upsert('chat', text('row-b', 'SECRET-TRANSCRIPT b')),
+      ]);
+      const stalled = (phase: string): SessionDiagnosticRecord | undefined =>
+        publishWaits().find(
+          (record) =>
+            record.waitPhase === phase && record.waitOutcome === 'stalled',
+        );
+      await eventually(
+        () =>
+          stalled('required_durability') !== undefined &&
+          stalled('queue_wait') !== undefined,
+        'a held durability stall and the publication queued behind it',
+      );
+      expect(published).toBe(0);
+      const durability = stalled('required_durability');
+      const queued = stalled('queue_wait');
+      expect(durability).toMatchObject({
+        waitScope: SCOPE,
+        projectId: SCOPE.projectId,
+        worktreeId: SCOPE.worktreeId,
+        waitQueueDepth: 0,
+      });
+      // Real timers: the 1s stall timer can fire just before 1s of the
+      // monotonic clock has elapsed.
+      const stallMs = 990;
+      expect(durability?.waitElapsedMs).toBeGreaterThanOrEqual(stallMs);
+      // The queued commit names the publication it waits behind.
+      expect(queued).toMatchObject({
+        waitScope: SCOPE,
+        waitQueueDepth: 1,
+        waitQueueOwnerOperationId: durability?.waitOperationId,
+        waitQueueOwnerOperation: 'chat_state.publish_commit',
+      });
+      expect(queued?.waitOperationId).not.toBe(durability?.waitOperationId);
+      expect(queued?.waitElapsedMs).toBeGreaterThanOrEqual(stallMs);
+
+      syncs.release();
+      await Promise.all([first, second]);
+      expect(published).toBe(2);
+      const ended = (
+        operationId: string | undefined,
+      ): SessionDiagnosticRecord | undefined =>
+        publishWaits().find(
+          (record) =>
+            record.waitOperationId === operationId &&
+            record.waitPhase === 'end',
+        );
+      const held = ended(durability?.waitOperationId);
+      const behind = ended(queued?.waitOperationId);
+      expect(held?.waitOutcome).toBe('completed');
+      expect(behind?.waitOutcome).toBe('completed');
+      // Queue wait and the durability phase are reported separately, then the
+      // publication stages that follow them.
+      for (const durations of [
+        held?.waitPhaseDurationsMs,
+        behind?.waitPhaseDurationsMs,
+      ])
+        for (const phase of [
+          'queue_wait',
+          'required_durability',
+          'required_materialization',
+          'subscriber_publication',
+        ])
+          expect(typeof durations?.[phase]).toBe('number');
+      expect(
+        held?.waitPhaseDurationsMs?.required_durability,
+      ).toBeGreaterThanOrEqual(stallMs);
+      expect(behind?.waitPhaseDurationsMs?.queue_wait).toBeGreaterThanOrEqual(
+        stallMs,
+      );
+      expect(JSON.stringify(records)).not.toContain('SECRET-TRANSCRIPT');
+    } finally {
+      syncs.release();
+      await service.drain();
+    }
+  });
+
+  it('records a commit whose durable batch fails as a failed publication', async () => {
+    await createV2Scope(root, 'scope', [
+      { id: 'chat', messages: [message('m0', 'secret', 'user')] },
+    ]);
+    const records: SessionDiagnosticRecord[] = [];
+    const store = repository();
+    const service = new ChatStateService({
+      repository: store,
+      recordDiagnostic: (record): void => {
+        records.push(record);
+      },
+    });
+    let published = 0;
+    service.subscribe(() => {
+      published += 1;
+    });
+    const syncs = gateJournalSyncs();
+    try {
+      await store.transact(
+        SCOPE,
+        [streaming('chat', 'p1'), upsert('chat', text('p1', 'go', 'user'))],
+        { source: 'provider', mutationId: 'turn-start', chatIds: ['chat'] },
+      );
+      records.length = 0;
+      published = 0;
+      syncs.failSync(1, new Error('disk unavailable'));
+      await expect(
+        store.transact(SCOPE, [upsert('chat', text('row-a', 'streamed a'))], {
+          source: 'provider',
+          mutationId: 'a',
+          chatIds: ['chat'],
+        }),
+      ).rejects.toThrow();
+      await eventually(
+        () =>
+          records.some(
+            (record) =>
+              record.waitOperation === 'chat_state.publish_commit' &&
+              record.waitPhase === 'end',
+          ),
+        'the failed publication is recorded',
+      );
+      expect(published).toBe(0);
+      const failed = records.find(
+        (record) =>
+          record.waitOperation === 'chat_state.publish_commit' &&
+          record.waitPhase === 'end',
+      );
+      expect(failed).toMatchObject({ waitOutcome: 'failed', waitScope: SCOPE });
+      expect(typeof failed?.waitPhaseDurationsMs?.required_durability).toBe(
+        'number',
+      );
+    } finally {
+      syncs.release();
+      await service.drain();
+    }
+  });
+
+  it('does not report required materialization as completed when its retry is pending', async () => {
+    await createV2Scope(root, 'scope', [
+      { id: 'chat', messages: [message('m0', 'secret', 'user')] },
+    ]);
+    const records: SessionDiagnosticRecord[] = [];
+    let resolvePublication = (): void => undefined;
+    const publicationRecorded = new Promise<void>((resolve) => {
+      resolvePublication = resolve;
+    });
+    const store = repository();
+    const { retries, schedule } = heldRetries();
+    const service = new ChatStateService({
+      repository: store,
+      schedule,
+      recordDiagnostic: (record): void => {
+        records.push(record);
+        if (
+          record.waitOperation === 'chat_state.publish_commit' &&
+          record.waitPhase === 'end'
+        )
+          resolvePublication();
+      },
+    });
+    let published = 0;
+    service.subscribe(() => {
+      published += 1;
+    });
+    setChatTabsRequiredDurabilityObserver(() =>
+      Promise.reject(new Error('materialization unavailable')),
+    );
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      await store.transact(SCOPE, [{ type: 'tab.removed', tabId: 'chat' }], {
+        source: 'automation',
+      });
+      await publicationRecorded;
+      expect(published).toBe(1);
+      expect(retries).toHaveLength(1);
+      expect(
+        records.find(
+          (record) =>
+            record.waitOperation === 'chat_state.publish_commit' &&
+            record.waitPhase === 'end',
+        )?.waitOutcome,
+      ).toBe('failed');
+    } finally {
+      setChatTabsRequiredDurabilityObserver(null);
+      jest.useRealTimers();
+      await service.drain();
+    }
+  });
+
+  it('closes a stalled required materialization as failed when it rejects', async () => {
+    await createV2Scope(root, 'scope', [
+      { id: 'chat', messages: [message('m0', 'secret', 'user')] },
+    ]);
+    const records: SessionDiagnosticRecord[] = [];
+    const store = repository();
+    const { retries, schedule } = heldRetries();
+    const service = new ChatStateService({
+      repository: store,
+      schedule,
+      recordDiagnostic: (record): void => {
+        records.push(record);
+      },
+    });
+    let reject: (error: Error) => void = () => undefined;
+    let materializationEntered = (): void => undefined;
+    const entered = new Promise<void>((resolve) => {
+      materializationEntered = resolve;
+    });
+    setChatTabsRequiredDurabilityObserver(() => {
+      materializationEntered();
+      return new Promise<void>((_resolve, rejectWrite) => {
+        reject = rejectWrite;
+      });
+    });
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      const transaction = store.transact(
+        SCOPE,
+        [{ type: 'tab.removed', tabId: 'chat' }],
+        { source: 'automation' },
+      );
+      await entered;
+      await jest.advanceTimersByTimeAsync(1_000);
+      reject(new Error('materialization unavailable'));
+      await transaction;
+      expect(retries).toHaveLength(1);
+      const materialization = records.filter(
+        (record) =>
+          record.waitOperation === 'chat_state.publish_commit' &&
+          record.waitPhase === 'required_materialization',
+      );
+      expect(materialization.map((record) => record.waitOutcome)).toEqual([
+        'stalled',
+        'failed',
+      ]);
+      expect(
+        records.find(
+          (record) =>
+            record.waitOperation === 'chat_state.publish_commit' &&
+            record.waitPhase === 'end',
+        )?.waitOutcome,
+      ).toBe('failed');
+    } finally {
+      setChatTabsRequiredDurabilityObserver(null);
+      jest.useRealTimers();
+      await service.drain();
+    }
+  });
 
   it('records the refusal of a newer journal version once per load attempt', async () => {
     const journal = await journaledScope();

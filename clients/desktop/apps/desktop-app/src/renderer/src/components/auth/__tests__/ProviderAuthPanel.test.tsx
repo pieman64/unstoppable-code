@@ -33,20 +33,14 @@ jest.mock('@/hooks/useCodexAuthStatus', () => ({
 jest.mock('@/components/settings/AuthLoginModal', () => ({
   AuthLoginModal: (): null => null,
 }));
-let mockCarryover: {
-  provider: 'claude' | 'codex' | 'cursor';
-  skills: number;
-  commands: number;
-  plugins: number;
-  attention: string[];
-} | null = null;
+let mockCarryover: ProviderCarryoverSummary | null = null;
 const mockUseProviderCarryover = jest.fn<
-  typeof mockCarryover,
-  [string, boolean, number | undefined]
+  ProviderCarryoverSummary | null,
+  [ProviderCarryoverProvider, boolean, number | undefined]
 >(() => mockCarryover);
 jest.mock('@/hooks/useProviderCarryover', () => ({
   useProviderCarryover: (
-    provider: string,
+    provider: ProviderCarryoverProvider,
     enabled: boolean,
     refreshKey?: number,
   ): typeof mockCarryover =>
@@ -55,6 +49,10 @@ jest.mock('@/hooks/useProviderCarryover', () => ({
 
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type {
+  ProviderCarryoverProvider,
+  ProviderCarryoverSummary,
+} from '@canopy/desktop-shared/types';
 import { ProviderAuthPanel } from '../ProviderAuthPanel';
 import {
   invalidateGitHubPermissionsCache,
@@ -373,7 +371,8 @@ describe('ProviderAuthPanel account labels', () => {
             '[class*="destructive"], [class*="warning"]',
           ),
         ).toHaveLength(0);
-        expect(statusDot().className).toContain('border');
+        // A hollow grey ring, the shared signed-out dot.
+        expect(statusDot().className).toContain('ring-fg-quaternary');
         expect(statusDot().className).not.toContain('bg-destructive');
       },
     );

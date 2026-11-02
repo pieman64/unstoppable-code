@@ -1,13 +1,23 @@
 import type { AgentSentReceivingContext } from '@canopy/ui-shared';
 import { TranscriptSearchRevealContext } from './transcript-search-reveal';
-import { memo, useCallback, type ReactNode } from 'react';
-import { useChatMessageContextMenu } from '@canopy/ui-shared/components';
+import { memo, type ReactNode } from 'react';
+import {
+  MARKDOWN_ROOT_PROPS,
+  useChatMessageContextMenu,
+} from '@canopy/ui-shared/components';
 import type { AppliedOrgMemoryTurn, PendingQuestion } from '@/stores/chatStore';
 import { ChatBlockRenderer, ChatVisualResult } from './ChatBlockRenderer';
 import { getDisplayBlockKey } from './display-block-keys';
 import { LAYOUT_BLOCK_TYPES } from '@canopy/desktop-shared/lib/transcript-fingerprint';
 import { UserBubble } from './UserBubble';
+import { WakeTurnBoundary } from '@canopy/ui-shared/components';
 import type { DisplayMessage } from './types';
+
+/** What started a wake's task: its tool call, else the prompt that made it. */
+export interface SpawningCallTarget {
+  toolUseId?: string;
+  userMessageId?: string;
+}
 import type { InvocableMentionIndex } from '@/lib/invocableMentionIndex';
 import type { FilePathMentionIndex } from '@/lib/filePathMentionIndex';
 
@@ -17,6 +27,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   turnExpanded = false,
   streaming = false,
   settled = !streaming,
+  turnSettled = false,
   chatPendingQuestions,
   onResetToPoint,
   invocableMentionIndex,
@@ -28,6 +39,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   forceExpandedUserMessage = false,
   visualOnly = false,
   onJumpToMessage,
+  onShowSpawningCall,
   blockKeyOffset = 0,
 }: {
   message: DisplayMessage;
@@ -36,6 +48,8 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   streaming?: boolean;
   /** No more text will arrive for this message, even if its turn streams. */
   settled?: boolean;
+  /** The owning turn settled; unresolved tool calls render interrupted. */
+  turnSettled?: boolean;
   chatPendingQuestions: PendingQuestion[];
   onResetToPoint?: (userMessageId: string) => Promise<void>;
   invocableMentionIndex?: InvocableMentionIndex | null;
@@ -51,33 +65,48 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   visualOnly?: boolean;
   /** Transcript-supplied click-to-jump handler for user bubbles. */
   onJumpToMessage?: (element: HTMLElement) => void;
+  /** Brings a wake's spawning tool call (or its prompt) into view. */
+  onShowSpawningCall?: (target: SpawningCallTarget) => void;
   /**
    * Index of `message.blocks[0]` in the transcript message it was cut from
    * (live step window rows), so block keys stay put as the cut moves.
    */
   blockKeyOffset?: number;
 }): ReactNode {
-  // Copy message / Copy as Markdown (CAN-4277) copy the message's
-  // text blocks in transcript order, without tool output or thinking. User
+  // The message menu (CAN-4277) copies a selection inside the row. User
   // bubbles own their menu in `UserBubble`. Registered layout chrome, hidden
   // question placeholders and collapsed visual projections stay presentation-only.
   // Genuine system text and visible question messages remain eligible.
-  const getMarkdown = useCallback(
-    (): string =>
-      message.blocks
-        .flatMap((block) => (block.type === 'text' ? [block.text] : []))
-        .join('\n\n'),
-    [message.blocks],
-  );
   const { targetProps: contextMenuTarget, menu: contextMenu } =
     useChatMessageContextMenu({
       messageId: message.id,
-      getMarkdown,
       // Rows with no text block (tool-only) get no Tab stop.
       focusable: message.blocks.some(
         (block) => block.type === 'text' && block.text !== '',
       ),
     });
+  const wake = message.blocks[0];
+  if (message.role === 'system' && wake?.type === 'wake_boundary') {
+    const target: SpawningCallTarget = {
+      toolUseId: wake.spawningToolUseId,
+      userMessageId: wake.spawningUserMessageId,
+    };
+    return (
+      <WakeTurnBoundary
+        taskLabel={wake.taskLabel}
+        event={wake.taskEvent === true}
+        scheduled={wake.scheduled === true}
+        toolsLoaded={wake.toolsLoaded === true}
+        onShowSpawningTurn={
+          (target.toolUseId !== undefined ||
+            target.userMessageId !== undefined) &&
+          onShowSpawningCall
+            ? (): void => onShowSpawningCall(target)
+            : undefined
+        }
+      />
+    );
+  }
   if (visualOnly) {
     return (
       // px-3 keeps the visual on the same inset as the expanded turn's rows.
@@ -92,6 +121,14 @@ export const ChatMessageItem = memo(function ChatMessageItem({
               key={getDisplayBlockKey(block, index + blockKeyOffset)}
               result={block.result}
               variant="visual-only"
+            />
+          ) : block.type === 'approval_safety_denied_info' ? (
+            <ChatBlockRenderer
+              key={getDisplayBlockKey(block, index + blockKeyOffset)}
+              block={block}
+              chatPendingQuestions={chatPendingQuestions}
+              originChatTabId={originChatTabId}
+              originMessageId={message.id}
             />
           ) : null,
         )}
@@ -188,6 +225,8 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         className="focus-ring flex min-w-0 max-w-full justify-start px-3"
         data-role={message.role}
         data-chat-message-id={message.id}
+        // Diagram names read headings from this message only.
+        {...MARKDOWN_ROOT_PROPS}
         // The row has no existing message-level tab stop. Its interactive
         // descendants still receive their own events through the shared guard.
         {...contextMenuTarget}
@@ -199,6 +238,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
               block={block}
               streaming={streaming}
               settled={settled || i < message.blocks.length - 1}
+              turnSettled={turnSettled}
               chatPendingQuestions={chatPendingQuestions}
               invocableMentionIndex={
                 message.role === 'assistant' ? invocableMentionIndex : null

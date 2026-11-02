@@ -2,13 +2,18 @@ import type { JSX } from 'react';
 import {
   impliedTargetContexts,
   intersectTargetContexts,
+  type AutomationPipelineTargetKind,
   type SharedAutomationAction,
   type SharedAutomationDocument,
   type TargetContext,
 } from '@canopy/protocol/automations';
 import type { ShareablePluginRef } from '@canopy/protocol';
 import type { PipelineDistributionMode } from '@canopy/protocol/pipelines';
-import { CHAT_LABEL } from '@canopy/protocol';
+import {
+  CHAT_LABEL,
+  ORCHESTRATOR_LABEL,
+  WORKTREE_UNIT_LABEL,
+} from '@canopy/protocol';
 import {
   AUTOMATION_PACKAGE_BUNDLED_NOTE,
   AUTOMATION_PACKAGE_DEPENDENCIES_EXCLUDED_NOTE,
@@ -37,7 +42,7 @@ export interface AutomationDefinitionSummaryProps {
 const TARGET_CONTEXT_LABELS: Record<TargetContext, string> = {
   cowork: `a ${CHAT_LABEL} project`,
   worktree: 'a code project',
-  app_advisor: 'App Advisor',
+  app_advisor: ORCHESTRATOR_LABEL,
 };
 
 /** Shared "Runs in" wording for automation target contexts (CAN-3734). */
@@ -48,7 +53,7 @@ export function formatAutomationTargetContexts(
 }
 
 export const AUTOMATION_TARGET_UNVERIFIED_NOTE =
-  'The pipeline’s own requirements are checked when you install, and may narrow these choices.';
+  'The workflow’s own requirements are checked when you install, and may narrow these choices.';
 export const AUTOMATION_TARGET_NONE_LABEL =
   'This automation has no compatible place to run.';
 
@@ -83,7 +88,34 @@ export function describeAutomationTargetRequirement(
       };
 }
 
-/** One "Runs in" line plus the unverified-pipeline note when applicable. */
+const PIPELINE_DESTINATION_LABELS: Record<
+  AutomationPipelineTargetKind,
+  string
+> = {
+  global: 'Runs with no project.',
+  new_worktree: `Creates a new ${WORKTREE_UNIT_LABEL.toLowerCase()} each run.`,
+  task: 'Runs in an existing task.',
+  project: 'Runs in the project folder.',
+};
+
+/**
+ * Where a pipeline automation runs, for an explicit destination. `undefined`
+ * for the portable `workspace` kind and every other action, which keep the
+ * "Runs in" contexts.
+ */
+export function automationPipelineDestinationLabel(
+  action: SharedAutomationAction,
+): string | undefined {
+  if (action.type !== 'worktree_pipeline') return undefined;
+  const { kind } = action.target;
+  return kind === 'workspace' ? undefined : PIPELINE_DESTINATION_LABELS[kind];
+}
+
+/**
+ * One "Runs in" line plus the unverified-pipeline note when applicable. An
+ * explicit pipeline destination names the destination instead, so a global
+ * pipeline's empty context list never reads as "nowhere to run".
+ */
 export function AutomationTargetRequirementLine({
   automation,
   resolvedTargetContexts,
@@ -91,6 +123,18 @@ export function AutomationTargetRequirementLine({
   automation: SharedAutomationDocument;
   resolvedTargetContexts?: readonly TargetContext[];
 }): JSX.Element {
+  const destination = automationPipelineDestinationLabel(automation.action);
+  if (destination !== undefined)
+    return (
+      <div data-testid="automation-summary-runs-in">
+        <p
+          className="text-xs fg-secondary"
+          data-testid="automation-summary-destination"
+        >
+          {destination}
+        </p>
+      </div>
+    );
   const display = describeAutomationTargetRequirement(
     automation,
     resolvedTargetContexts,
@@ -136,7 +180,7 @@ function pluginLabel(ref: ShareablePluginRef): string {
 function actionLabel(action: SharedAutomationAction): string {
   switch (action.type) {
     case 'app_advisor_prompt':
-      return 'Sends a prompt to App Advisor';
+      return `Sends a prompt to ${ORCHESTRATOR_LABEL}`;
     case 'standalone_prompt':
       return `Sends a prompt in a ${CHAT_LABEL} project the installer picks`;
     case 'worktree_prompt':
@@ -147,23 +191,25 @@ function actionLabel(action: SharedAutomationAction): string {
       // though the named pipeline travels.
       if (action.pipeline.source === 'unresolved') {
         return action.pipeline.name
-          ? `Runs a pipeline you choose (the author used "${action.pipeline.name}")`
-          : 'Runs a pipeline you choose';
+          ? `Runs a workflow you choose (the author used "${action.pipeline.name}")`
+          : 'Runs a workflow you choose';
       }
       if (action.pipeline.name) {
-        return `Runs the ${action.pipeline.name} pipeline`;
+        return `Runs the ${action.pipeline.name} workflow`;
       }
       switch (action.pipeline.source) {
         case 'bundled':
-          return 'Runs a pipeline';
+          return 'Runs a workflow';
         case 'curated':
-          return 'Runs a curated pipeline';
-        // An inline ref carries the definition itself, so an absent name must
-        // never render as an empty pipeline name or as "a shared pipeline".
+          return 'Runs a curated workflow';
+        // An inline or packaged ref carries the definition itself, so an
+        // absent name must never render as an empty workflow name or as "a
+        // shared workflow".
         case 'inline':
-          return 'Runs the pipeline included in this share';
+        case 'packaged':
+          return 'Runs the workflow included in this share';
         default:
-          return 'Runs a shared pipeline';
+          return 'Runs a shared workflow';
       }
   }
 }
@@ -178,12 +224,28 @@ function pipelineBundlingNote(action: SharedAutomationAction): string | null {
   if (action.type !== 'worktree_pipeline') return null;
   switch (action.pipeline.source) {
     case 'inline':
+    case 'packaged':
       return AUTOMATION_PACKAGE_BUNDLED_NOTE;
     case 'shared':
       return AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE;
     default:
       return null;
   }
+}
+
+/**
+ * Names of the pipelines a prompt automation carries in its package. The
+ * guard keeps a document from a newer version (whose action may differ)
+ * renderable.
+ */
+function packagedPipelineNames(action: SharedAutomationAction): string[] {
+  if (action.type === 'worktree_pipeline') return [];
+  const dependencies = Array.isArray(action.pipelineDependencies)
+    ? action.pipelineDependencies
+    : [];
+  return dependencies.map(
+    (dependency) => dependency.pipeline.name ?? dependency.key,
+  );
 }
 
 /**
@@ -204,12 +266,16 @@ export function AutomationDefinitionSummary({
   const inputKeys = action.type === 'worktree_pipeline' ? action.inputKeys : [];
   const prompt = action.type === 'worktree_pipeline' ? null : action.prompt;
   const bundlingNote = pipelineBundlingNote(action);
+  const pipelineNames = packagedPipelineNames(action);
   // Only real requirements open the block. A known distribution mode is not
   // one: on an automation that needs nothing, "dependencies are (not)
   // included in this share" describes an empty set, and on a definition-only
   // share it just restates the warning already sitting above the CTA.
   const hasNeeds =
-    plugins.length > 0 || inputKeys.length > 0 || automation.hasRunCondition;
+    plugins.length > 0 ||
+    pipelineNames.length > 0 ||
+    inputKeys.length > 0 ||
+    automation.hasRunCondition;
 
   return (
     <div className="space-y-6" data-testid="automation-definition-summary">
@@ -255,6 +321,20 @@ export function AutomationDefinitionSummary({
                   {plugins.map(
                     (ref): JSX.Element => (
                       <li key={JSON.stringify(ref)}>{pluginLabel(ref)}</li>
+                    ),
+                  )}
+                </ul>
+              </div>
+            )}
+            {pipelineNames.length > 0 && (
+              <div data-testid="automation-summary-pipelines">
+                <p className="text-xs font-medium fg-secondary">
+                  Pipelines included
+                </p>
+                <ul className="mt-1 space-y-1">
+                  {pipelineNames.map(
+                    (name, index): JSX.Element => (
+                      <li key={`${String(index)}:${name}`}>{name}</li>
                     ),
                   )}
                 </ul>

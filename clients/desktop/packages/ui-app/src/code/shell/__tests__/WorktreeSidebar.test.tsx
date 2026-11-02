@@ -1,4 +1,5 @@
 import { renderToString } from 'react-dom/server';
+import type { JSX } from 'react';
 import type { ActivityState } from '@canopy/app-state';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import type { PortalSessionShellState } from '@canopy/protocol/portal';
@@ -38,11 +39,12 @@ function activity(snapshot: PortalSessionShellState | null): ActivityState {
     snapshot,
     sectionOrderOverrides: {},
     hydrate: (): void => {},
+    patch: (): void => {},
     setSectionOrder: (): void => {},
   };
 }
 
-const snapshot = {
+const snapshot: PortalSessionShellState = {
   workspaces: [
     {
       localId: 'workspace',
@@ -51,7 +53,28 @@ const snapshot = {
     },
   ],
   worktrees: [],
-} as PortalSessionShellState;
+  chatProjects: [],
+  standaloneChats: [],
+  scriptDescriptors: [],
+  scriptRuns: [],
+  hookDescriptors: [],
+  hookRuns: [],
+  plans: [],
+  pipelines: [],
+  pipelineRuns: [],
+  chatMessages: [],
+  chatSummaries: [],
+  terminalSessions: [],
+  terminalBuffers: {},
+  changedFiles: {},
+  diffSnapshots: {},
+  prStatuses: {},
+  fileRoots: [],
+  fileTree: {},
+  filePreviews: {},
+  refreshing: false,
+  connectionStatus: 'active',
+};
 
 describe('WorktreeSidebar', () => {
   it('owns chrome and composes the shared project sections', () => {

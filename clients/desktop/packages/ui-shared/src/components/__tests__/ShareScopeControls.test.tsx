@@ -484,6 +484,56 @@ describe('ShareAudienceSelector', () => {
     ).toEqual(['Team', 'Organization', 'Public']);
   });
 
+  it('keeps an unavailable audience focusable and explains it in a tooltip', () => {
+    const onChange = jest.fn();
+    const onSetUp = jest.fn();
+    render({
+      value: 'public',
+      onChange,
+      availability: { team: false, organization: false },
+      keepDisabledVisible: true,
+      unavailableReasons: {
+        team: {
+          label: 'Create a team to share this thing with teammates.',
+          action: { text: 'Create a team', onClick: onSetUp, testId: 'setup' },
+        },
+      },
+    });
+    const team = container.querySelector<HTMLButtonElement>(
+      '[data-testid="share-thing-scope-team"]',
+    );
+    const organization = container.querySelector<HTMLButtonElement>(
+      '[data-testid="share-thing-scope-organization"]',
+    );
+    // With a reason: aria-disabled, so pointer and keyboard reach the tooltip.
+    expect(team?.disabled).toBe(false);
+    expect(team?.getAttribute('aria-disabled')).toBe('true');
+    // Without one: a plain disabled option.
+    expect(organization?.disabled).toBe(true);
+
+    // Activating the option runs its next step, so a keyboard or touch user
+    // reaches it without the hover-only tooltip; it never selects the option.
+    act(() => {
+      team?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onSetUp).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      team?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(
+      document.querySelector('[data-testid="share-thing-scope-team-reason"]')
+        ?.textContent,
+    ).toBe('Create a team to share this thing with teammates.');
+    act(() => {
+      document
+        .querySelector('[data-testid="setup"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onSetUp).toHaveBeenCalledTimes(2);
+  });
+
   it('never offers Private, even when a host still lists it', () => {
     render({ offered: ['private', 'team', 'public'] });
     expect(options()).toEqual([

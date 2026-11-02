@@ -95,7 +95,7 @@ export function MarketplaceSourceDetail({
           <div role="alert" className="flex flex-col items-start gap-3">
             <p className="text-s fg-destructive">{state.listError}</p>
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               onClick={() => void state.reload()}
             >
@@ -110,7 +110,7 @@ export function MarketplaceSourceDetail({
             <p className="text-s fg-secondary">
               This marketplace is no longer available.
             </p>
-            <Button size="control" variant="secondary" onClick={onNavigateBack}>
+            <Button size="compact" variant="secondary" onClick={onNavigateBack}>
               Back to marketplaces
             </Button>
           </div>
@@ -312,7 +312,7 @@ function MarketplaceSourceDetailBody({
               {state.pluginErrors[errorKey]}
             </p>
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               onClick={() => void state.reload()}
             >
@@ -374,7 +374,7 @@ function MarketplaceSourceDetailBody({
             />
             {source.actions.update && (
               <Button
-                size="control"
+                size="compact"
                 variant="secondary"
                 disabled={operation !== undefined || bulk.running}
                 onClick={() => void state.update(source.id)}
@@ -395,7 +395,7 @@ function MarketplaceSourceDetailBody({
               {state.sourceErrors[source.id] ?? state.sourceWarnings[source.id]}
             </p>
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               onClick={() => void state.reload()}
             >
@@ -468,7 +468,7 @@ function MarketplaceSourceDetailBody({
               No plugins match your filters.
             </p>
             <Button
-              size="control"
+              size="compact"
               variant="ghost"
               onClick={() =>
                 setFilters(EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS)

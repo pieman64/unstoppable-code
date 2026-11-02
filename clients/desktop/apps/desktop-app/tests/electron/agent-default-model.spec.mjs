@@ -55,6 +55,7 @@ async function startChatWithAgent(app, window, expectedModel) {
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_ID);
   await window.getByTestId('panel-add-tab-group-chat').click();
+  await window.getByTestId('panel-add-menu-item-new-chat').click();
   const picker = window
     .locator('[data-testid="chat-model-picker"]:visible')
     .first();
@@ -99,7 +100,7 @@ test('an Agent on the default model pins each new chat to its Settings default',
     await expect(window.getByTestId('agent-model-base-model')).toHaveCount(0);
     await window.getByTestId('agent-model-instructions').fill('Be brief.');
     await window.getByTestId('agent-model-submit').click();
-    const createdDetail = await app.openLocalAgentDetail(AGENT_ID);
+    const createdDetail = await app.expectCreatedLocalAgentDetail(AGENT_ID);
     await expect(createdDetail).toContainText('Default model');
     await app.closeMarketplaceEntryDetail();
     expect(

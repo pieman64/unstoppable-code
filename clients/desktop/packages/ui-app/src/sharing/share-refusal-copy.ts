@@ -16,8 +16,9 @@ const REFUSAL_SENTENCES: ReadonlyMap<string, string> = new Map([
 
 const IPC_INVOKE_WRAPPER = /^error invoking remote method '[^']*':\s*/i;
 const ERROR_CLASS_PREFIX = /^(?:error|[a-z][a-z0-9_]*error):\s*/i;
+// `pipeline` is the noun workflows used before they were renamed.
 const REFUSAL =
-  /^(?:resource|pipeline|skill|agent|automation|collection|plugin) unavailable \(([a-z-]+)\)\.?$/i;
+  /^(?:resource|workflow|pipeline|skill|agent|automation|collection|plugin) unavailable \(([a-z-]+)\)\.?$/i;
 
 function readMessage(error: unknown): string | null {
   if (typeof error === 'string') return error;

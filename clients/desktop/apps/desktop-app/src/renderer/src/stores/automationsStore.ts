@@ -247,7 +247,7 @@ export const useAutomationsStore = create<AutomationsStore>((set, get) => ({
         error:
           error instanceof Error
             ? error.message
-            : 'Failed to approve the pipeline.',
+            : 'Failed to approve the workflow.',
       };
     }
   },

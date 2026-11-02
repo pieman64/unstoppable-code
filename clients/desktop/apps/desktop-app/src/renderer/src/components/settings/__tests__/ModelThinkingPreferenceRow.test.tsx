@@ -2,8 +2,16 @@
  * @jest-environment jsdom
  */
 import { act, createElement } from 'react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  chooseSettingsOptionSync,
+  settingsSelectGroupLabels,
+  settingsSelectOption,
+  settingsSelectOptionValues,
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 import {
   initClaudeModels,
   initCodexModels,
@@ -47,21 +55,44 @@ const SUPPORTED_OLLAMA_ENTRY: OllamaModelEntry = {
   show: { capabilities: ['completion', 'tools'] },
 };
 
-function renderRow(
+const mounted: { host: HTMLElement; root: Root }[] = [];
+
+afterEach(() => {
+  for (const { host, root } of mounted.splice(0)) {
+    act(() => root.unmount());
+    host.remove();
+  }
+});
+
+/** Mounts the row and returns its host element. */
+function mountRow(
   model = 'claude-sonnet-4-6',
   thinkingLevel: ThinkingLevel = 'off',
-): string {
-  return renderToStaticMarkup(
-    <ModelThinkingPreferenceRow
-      title="Branch naming model"
-      description="Model used to generate branch names"
-      model={model}
-      thinkingLevel={thinkingLevel}
-      defaultThinkingLevel="off"
-      onModelChange={() => undefined}
-      onThinkingChange={() => undefined}
-      testIdPrefix="branch-naming"
-    />,
+): HTMLElement {
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  mounted.push({ host, root });
+  act(() => {
+    root.render(
+      <ModelThinkingPreferenceRow
+        title="Branch naming model"
+        description="Model used to generate branch names"
+        model={model}
+        thinkingLevel={thinkingLevel}
+        defaultThinkingLevel="off"
+        onModelChange={() => undefined}
+        onThinkingChange={() => undefined}
+        testIdPrefix="branch-naming"
+      />,
+    );
+  });
+  return host;
+}
+
+function modelGroups(host: HTMLElement, prefix = 'branch-naming'): string[] {
+  return settingsSelectGroupLabels(
+    settingsSelectTrigger(host, `[data-testid="${prefix}-model"]`),
   );
 }
 
@@ -75,72 +106,80 @@ describe('ModelThinkingPreferenceRow — Ollama catalog gating', () => {
     initOllamaModels([]);
   });
 
-  it('omits the Ollama optgroup when the catalog is empty (disabled build)', () => {
+  it('omits the Ollama group when the catalog is empty (disabled build)', () => {
     initOllamaModels([]);
-    const html = renderRow();
-    expect(html).toContain('label="Claude"');
-    expect(html).not.toContain('label="Ollama"');
+    const groups = modelGroups(mountRow());
+    expect(groups).toContain('Claude');
+    expect(groups).not.toContain('Ollama');
   });
 
-  it('shows the Ollama optgroup when models are available (macOS)', () => {
+  it('shows the Ollama group when models are available (macOS)', () => {
     initOllamaModels([SUPPORTED_OLLAMA_ENTRY]);
-    const html = renderRow();
-    expect(html).toContain('label="Ollama"');
+    expect(modelGroups(mountRow())).toContain('Ollama');
   });
 
-  it('keeps the thinking test id on the select element', () => {
-    const html = renderRow();
-    expect(html).toMatch(
-      /<select[^>]*data-testid="branch-naming-thinking"[^>]*>/,
+  it('keeps the thinking test id on the dropdown trigger', () => {
+    const host = mountRow();
+    expect(
+      settingsSelectTrigger(host, '[data-testid="branch-naming-thinking"]'),
+    ).toBeTruthy();
+  });
+
+  it('uses the shared capsule dropdown in two equal 144px columns', () => {
+    const host = mountRow();
+    const triggers = host.querySelectorAll<HTMLButtonElement>(
+      'button[role="combobox"]',
     );
-  });
-
-  it('uses matching capsule geometry and equal columns for model and thinking', () => {
-    const host = document.createElement('div');
-    host.innerHTML = renderRow();
-    const selects = host.querySelectorAll<HTMLSelectElement>('select');
-    expect(selects).toHaveLength(2);
-    selects.forEach((select: HTMLSelectElement) => {
-      expect(select.classList.contains('rounded-full')).toBe(true);
-      expect(select.classList.contains('rounded-md')).toBe(false);
+    expect(triggers).toHaveLength(2);
+    triggers.forEach((trigger: HTMLButtonElement) => {
+      expect(trigger.classList.contains('rounded-full')).toBe(true);
+      expect(trigger.classList.contains('h-7')).toBe(true);
     });
     expect(host.querySelectorAll('.w-36')).toHaveLength(2);
   });
 
   it('shows the saved model while unavailable and restores its catalog label', () => {
-    const select = document.createElement('div');
-    select.innerHTML = renderRow('gpt-future-summary', 'ultra');
-    const unavailable = select.querySelector<HTMLSelectElement>(
+    const unavailableHost = mountRow('gpt-future-summary', 'ultra');
+    const unavailable = settingsSelectTrigger(
+      unavailableHost,
       '[data-testid="branch-naming-model"]',
     );
-    expect(unavailable?.value).toBe('gpt-future-summary');
-    expect(unavailable?.selectedOptions[0]?.textContent).toBe(
-      'gpt-future-summary (unavailable)',
-    );
-    expect(unavailable?.selectedOptions[0]?.disabled).toBe(true);
+    expect(settingsSelectValue(unavailable)).toBe('gpt-future-summary');
+    expect(unavailable.textContent).toBe('gpt-future-summary (unavailable)');
+    expect(settingsSelectOption(unavailable, 'gpt-future-summary')).toEqual({
+      label: 'gpt-future-summary (unavailable)',
+      disabled: true,
+    });
     expect(
-      select.querySelector<HTMLSelectElement>(
-        '[data-testid="branch-naming-thinking"]',
-      )?.value,
+      settingsSelectValue(
+        settingsSelectTrigger(
+          unavailableHost,
+          '[data-testid="branch-naming-thinking"]',
+        ),
+      ),
     ).toBe('ultra');
 
     initCodexModels([{ id: 'gpt-future-summary', label: 'Future summary' }]);
-    select.innerHTML = renderRow('gpt-future-summary');
-    const restored = select.querySelector<HTMLSelectElement>(
+    const restored = settingsSelectTrigger(
+      mountRow('gpt-future-summary'),
       '[data-testid="branch-naming-model"]',
     );
-    expect(restored?.value).toBe('gpt-future-summary');
-    expect(restored?.selectedOptions[0]?.textContent).toBe('Future summary');
-    expect(restored?.selectedOptions[0]?.disabled).toBe(false);
+    expect(settingsSelectValue(restored)).toBe('gpt-future-summary');
+    expect(restored.textContent).toBe('Future summary');
+    expect(settingsSelectOption(restored, 'gpt-future-summary')).toEqual({
+      label: 'Future summary',
+      disabled: false,
+    });
   });
 
   it('labels a saved model id the registries no longer list as unavailable', () => {
-    const host = document.createElement('div');
-    host.innerHTML = renderRow('ollama-my-private-model');
-    const option = host.querySelector(
-      'option[value="ollama-my-private-model"]',
+    const trigger = settingsSelectTrigger(
+      mountRow('ollama-my-private-model'),
+      '[data-testid="branch-naming-model"]',
     );
-    expect(option?.textContent).toBe('ollama-my-private-model (unavailable)');
+    expect(
+      settingsSelectOption(trigger, 'ollama-my-private-model')?.label,
+    ).toBe('ollama-my-private-model (unavailable)');
   });
 });
 
@@ -180,18 +219,47 @@ describe('ModelThinkingPreferenceRow — Cursor opt-in', () => {
         includeCursor={includeCursor}
       />,
     );
-  it('omits the Cursor optgroup unless the caller opts in', () => {
-    expect(render('gpt-5.5', false)).not.toContain('label="Cursor"');
+  const mount = (model: string, includeCursor: boolean): HTMLElement => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ host, root });
+    act(() => {
+      root.render(
+        <ModelThinkingPreferenceRow
+          title="Default model"
+          description="App Advisor"
+          model={model}
+          thinkingLevel="high"
+          defaultThinkingLevel="high"
+          onModelChange={() => undefined}
+          onThinkingChange={() => undefined}
+          testIdPrefix="advisor"
+          includeCursor={includeCursor}
+        />,
+      );
+    });
+    return host;
+  };
+  it('omits the Cursor group unless the caller opts in', () => {
+    expect(modelGroups(mount('gpt-5.5', false), 'advisor')).not.toContain(
+      'Cursor',
+    );
   });
   it('lists cached Cursor models when opted in and available', () => {
-    const html = render('gpt-5.5', true);
-    expect(html).toContain('label="Cursor"');
-    expect(html).toContain('value="cursor-default"');
-    expect(html).toContain('value="cursor:gpt-6-luna"');
+    const host = mount('gpt-5.5', true);
+    expect(modelGroups(host, 'advisor')).toContain('Cursor');
+    const values = settingsSelectOptionValues(
+      settingsSelectTrigger(host, '[data-testid="advisor-model"]'),
+    );
+    expect(values).toContain('cursor-default');
+    expect(values).toContain('cursor:gpt-6-luna');
   });
-  it('omits the Cursor optgroup while the runtime is unavailable', () => {
+  it('omits the Cursor group while the runtime is unavailable', () => {
     mockCursorAvailable = false;
-    expect(render('gpt-5.5', true)).not.toContain('label="Cursor"');
+    expect(modelGroups(mount('gpt-5.5', true), 'advisor')).not.toContain(
+      'Cursor',
+    );
   });
   it('hides the thinking select for a Cursor model and keeps it for others', () => {
     expect(render('cursor-default', true)).not.toMatch(
@@ -220,14 +288,10 @@ describe('ModelThinkingPreferenceRow — Cursor opt-in', () => {
           }),
         );
       });
-      const select = host.querySelector<HTMLSelectElement>(
-        '[data-testid="advisor-model"]',
+      chooseSettingsOptionSync(
+        settingsSelectTrigger(host, '[data-testid="advisor-model"]'),
+        'cursor-default',
       );
-      if (!select) throw new Error('model select missing');
-      act(() => {
-        select.value = 'cursor-default';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      });
       // Cursor has no thinking level to clamp into; the saved level is left
       // untouched so a later switch back to Claude or Codex keeps it.
       expect(onModelChange).toHaveBeenCalledWith('cursor-default', 'xhigh');

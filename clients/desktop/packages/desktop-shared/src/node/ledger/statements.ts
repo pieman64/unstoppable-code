@@ -143,6 +143,20 @@ export const LEDGER_SQL = {
     WHERE ledger_id = ? AND scope_sequence > ?
     ORDER BY scope_sequence ASC LIMIT ?`,
   rebindAccount: 'UPDATE ledger_scopes SET account_id = ? WHERE account_id = ?',
+  selectGlobalScope: `SELECT ${LEDGER_SCOPE_COLUMNS} FROM ledger_scopes
+    WHERE ledger_id = (
+      SELECT ledger_id FROM ledger_global_bindings WHERE owner_key = ? AND account_key = ?
+    )`,
+  insertGlobalBinding: `INSERT INTO ledger_global_bindings (owner_key, account_key, ledger_id)
+    VALUES (?, ?, ?)`,
+  // A guest binding whose owner the destination account already has gives way;
+  // the guest's Ledger itself stays. Bound to (from, to).
+  deleteRedundantGlobalBindings: `DELETE FROM ledger_global_bindings
+    WHERE account_key = ? AND owner_key IN (
+      SELECT owner_key FROM ledger_global_bindings WHERE account_key = ?
+    )`,
+  rebindGlobalBindings:
+    'UPDATE ledger_global_bindings SET account_key = ? WHERE account_key = ?',
 } as const;
 
 /**
@@ -162,6 +176,7 @@ export const LEDGER_PURGE_SCOPE_SQL: readonly string[] = [
   'DELETE FROM ledger_outbox WHERE ledger_id = ?',
   'DELETE FROM ledger_scope_sync WHERE ledger_id = ?',
   'DELETE FROM ledger_actors WHERE ledger_id = ?',
+  'DELETE FROM ledger_global_bindings WHERE ledger_id = ?',
   'DELETE FROM ledger_scopes WHERE ledger_id = ?',
 ];
 

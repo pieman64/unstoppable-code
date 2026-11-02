@@ -152,7 +152,7 @@ export function PipelineRunsSectionBody({
             type="button"
             aria-expanded={hiddenExpanded}
             onClick={() => onHiddenExpandedChange(!hiddenExpanded)}
-            className="focus-ring flex w-full items-center gap-3 rounded-md py-1 text-xs font-medium fg-secondary/60 transition hover:fg-secondary"
+            className="focus-ring flex w-full items-center gap-3 rounded-md py-1 text-xs font-medium fg-secondary/60 transition-colors hover:fg-secondary"
           >
             {/* The 16px slot matches the action card's icon slot, so the
                 chevron centers under the Dispatch glyph above it. */}

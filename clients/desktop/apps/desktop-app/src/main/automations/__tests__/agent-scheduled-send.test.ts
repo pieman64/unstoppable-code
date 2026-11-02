@@ -284,10 +284,13 @@ it('reads the additive field in a persisted file and keeps it through an action 
   expect((await reloaded.list()).activities[0].agentScheduledSend).toEqual(
     captured,
   );
+  const action = { ...request.action };
+  // Keep the legacy extra field in this persisted-input tolerance test.
+  Reflect.set(action, 'prompt', 'Edited after reload');
   expect(
     await reloaded.update({
       id: activity.id,
-      action: { ...request.action, prompt: 'Edited after reload' },
+      action,
     }),
   ).toMatchObject({ ok: true, activity: { agentScheduledSend: captured } });
   expect(

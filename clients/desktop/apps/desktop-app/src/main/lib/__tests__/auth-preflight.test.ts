@@ -206,6 +206,7 @@ beforeEach(() => {
   );
   mockedRefs.mockImplementation((input) =>
     Promise.resolve({
+      disabledRefs: [],
       skillRefs: input.skillRefs,
       pluginRefs: input.pluginRefs,
       mcpServerRefs: [...(input.mcpServerRefs ?? [])],
@@ -271,9 +272,11 @@ describe('resolveTurnAuthBlockers', () => {
       enabledTools: null,
     });
     mockedRefs.mockResolvedValue({
+      disabledRefs: [],
       skillRefs: [],
       pluginRefs: [],
       mcpServerRefs: [{ serverId: 'account', configId: 'default' }],
+      warnings: [],
     });
     await expect(
       resolveTurnAuthBlockers({

@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Button } from '@/components/shared/Button';
 
 interface DetailBackChipProps {
   onNavigateBack: () => void;
@@ -15,15 +16,16 @@ export function DetailBackChip({
 }: DetailBackChipProps): JSX.Element {
   return (
     <div className="mb-2 shrink-0">
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="compact"
         onClick={onNavigateBack}
         data-testid="plugins-entry-detail-back"
-        className="inline-flex items-center gap-1 text-xs fg-secondary hover:fg-primary transition-colors"
+        className="-ml-3"
       >
         <AppCatalogChevronLeftMediumIcon width="12" height="12" />
         Back
-      </button>
+      </Button>
     </div>
   );
 }

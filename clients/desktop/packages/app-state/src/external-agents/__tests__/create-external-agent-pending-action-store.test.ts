@@ -24,7 +24,11 @@ const access: ExternalAgentAccess = {
   disabledTools: [],
   enabledDefaultOff: [],
   organizations: { mode: 'all', organizationIds: [] },
-  remotes: { mode: 'all', remoteIds: [] },
+  hosts: {
+    managed: false,
+    connected: { mode: 'all', remoteIds: [] },
+    exposeNames: false,
+  },
 };
 
 const summary: ExternalAgentConnectionSummary = {
@@ -42,6 +46,7 @@ const summary: ExternalAgentConnectionSummary = {
     destructive: [],
     organizations: 'all',
     desktops: null,
+    managed: null,
   },
 };
 
@@ -71,6 +76,7 @@ function createDetail(
       pipeline: 'act',
     },
     waiting: [],
+    textContentCompatibility: false,
     ...overrides,
   };
 }

@@ -1,3 +1,5 @@
+import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
+import { observeRoutedCodexTurnStart } from './session-event-router';
 import { chatVisualsEligible } from '../lib/chat-visuals-feature-flag';
 import { createShowVisualHost } from '../canopy-tools/show-visual-host';
 import { withProxyFailureRestored } from './ai-credits-proxy-failure-restore';
@@ -48,6 +50,10 @@ import {
   resolveOrgGatewayCredential,
   markOrgGatewayCredentialRejected,
 } from './ai-credits-routing';
+import {
+  scopeDerivedNotices,
+  withFailureSourceScope,
+} from './failure-source-scope';
 import { captureSessionWorkOwner, resolveSessionWorkOwner } from './work-owner';
 import { resolveAccountProxySessionRoute } from '../account-proxy/routing';
 import { watchAccountProxySwitches } from '../account-proxy/switch-events';
@@ -75,13 +81,26 @@ import {
   markProviderQuotaReached,
 } from './ai-credits-quota-state';
 import { recordUsageLimitedChat } from '../lib/usage-limited-chats-registry';
+import { recordChatEventDropped } from '../lib/chat-event-drop-diagnostics';
+import { recordEventReceiptTime } from './event-receipt-time';
+import {
+  classifyProviderRunEvent,
+  copyProviderRunProvenance,
+  getProviderRunDescriptor,
+} from '../lib/provider-run-reconciliation';
 import {
   buildUsageLimitedEntry,
   buildAccountProxyUsageLimitedEntry,
   classifyAccountChangeResumeReason,
 } from '../lib/usage-limited-chats-recording';
 import { classifyAgentFailure } from '@canopy/desktop-shared/agent-failures';
+import {
+  CANOPY_MODEL_ACCESS_FAILURE_FIELD,
+  type CodexAccountModelAccessFailure,
+} from '@canopy/protocol/auth-recovery';
+import { resolveCodexAccountModelAccessFailure } from '../model-routing/codex-account-model-fallback';
 import { buildProviderAuthFailureEvent } from './provider-auth-failure-event';
+import { createCodexContractGuard } from './provider-contract-guard';
 import { resolveWorkspaceRecordingSnapshot } from '../lib/resolve-workspace-display-name';
 import {
   SET_AUTO_ARCHIVE_REQUESTED_EVENT_TYPE,
@@ -89,12 +108,16 @@ import {
   IPC_CHANNELS,
   CODE_REVIEW_CHAT_PROJECT_ID,
   DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
+  buildAiCreditsRequiredError,
   buildNoBillingSourceError,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CREDITS_CODEX_MODEL,
   resolveModelAlias,
   NO_BILLING_SOURCE_ERROR_CODE,
   resolveProviderModelConfig,
+  INGESTION_LAG_EVENT_TYPE,
+  type ChatIngestionLag,
+  type ChatIngestionLagEventData,
   type ApprovalMode,
   type CanopyAuthFailureEventData,
   type ResolvedAgentModelConfig,
@@ -111,17 +134,34 @@ import {
   registerSession,
   unregisterSession,
   buildSessionKey,
-  markTurnActive,
-  markTurnAwaitingUser,
-  markTurnIdle,
   markSessionForNextTurnRecreation,
-  noteSessionMessageQueued,
-  recordSessionEvent,
   createSessionPhaseTimer,
   isSessionAccountProxyRouted,
   isSessionAiCreditsRouted,
+  registerCodexBackgroundOwner,
+  replaceCodexLiveBackgroundTasks,
+  retireCodexLiveBackgroundTasks,
+  type CodexBackgroundOwnerToken,
+  type CodexLiveBackgroundTaskInput,
   recordSessionAccountProxyRoute,
 } from './session-manager';
+import { notifySteeringEligibilityChanged } from './steering-eligibility-events';
+import {
+  beginCodexSessionTurn,
+  finishCodexSessionTurn,
+  recordCodexTurnEnd,
+  type CodexTurnTerminalEvidence,
+} from './provider-turn-evidence';
+import {
+  CodexTurnLifecycleTracker,
+  type CodexTurnTrackerObservation,
+} from './codex-turn-lifecycle';
+import {
+  getTurnLifecycleProducer,
+  hasTurnLifecycleEnded,
+  releaseTurnLifecycleProducer,
+} from './provider-turn-lifecycle';
+import { createOwnedTurnState, type OwnedTurnState } from './owned-turn-state';
 import { CodexAppServerClient } from '../codex/app-server-client';
 import { getDesktopCodexCapabilityStore } from '../codex/capability-store';
 import { getCodexRuntimeService } from '../codex/runtime-service';
@@ -147,6 +187,7 @@ import { getAttentionTracker } from '../services/attention-tracker';
 import { commitPendingPlanExit } from '../services/chat-state-plan-exit';
 import {
   isCodexSubagentTerminalEvent,
+  isRootTerminalChatEventData,
   readCodexRootThreadId,
 } from '../lib/chat-turn-audit';
 import {
@@ -186,6 +227,11 @@ import {
 } from '../canopy-tools/show-files-runtime';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
+import type { CodexIngestionLagChange } from '@canopy/desktop-shared/node/codex-runtime/runtime-service';
+import type {
+  CodexBackgroundSnapshot,
+  CodexNativeBackgroundWork,
+} from '@canopy/desktop-shared/node/codex-runtime';
 import { CODEX_PROJECT_DOC_THREAD_CONFIG } from '@canopy/desktop-shared/node/codex-runtime/thread-config';
 import { classifyCodexTransportError } from '@canopy/desktop-shared/node/codex-runtime/transport-errors';
 import type { CodexConfig } from '@canopy/desktop-shared/lib/codex-model-config';
@@ -199,6 +245,25 @@ function isUnknownDynamicToolError(message: string | undefined): boolean {
   return /unknown\s+dynamic\s+tool|dynamic\s+tool\s+(?:unknown|not\s+found)/i.test(
     message,
   );
+}
+
+function toCodexLiveBackgroundTaskInput(
+  work: CodexNativeBackgroundWork,
+): CodexLiveBackgroundTaskInput {
+  if (work.kind === 'child') {
+    return {
+      taskId: work.id,
+      taskType: 'local_agent',
+      description: 'Background agent',
+      ...(work.toolUseId ? { toolUseId: work.toolUseId } : {}),
+    };
+  }
+  return {
+    taskId: work.id,
+    taskType: 'local_bash',
+    description: 'Background terminal',
+    toolUseId: work.itemId,
+  };
 }
 
 async function resolveCodexStandaloneInvocationEntries(
@@ -285,12 +350,28 @@ const SESSION_DESTROYED_ERROR_MESSAGE = 'session_destroyed';
 
 interface QueuedCodexMessage {
   text: string;
+  submissionId: string;
   userMessageId?: string;
   revivesSettledTurn?: boolean;
   staleProxyRouteRetried?: boolean;
   staleProxyRouteRecoverySignal?: AbortSignal;
   countsTowardSkillUsage?: boolean;
   skillUsageTurnId?: string;
+}
+
+interface CodexIngestionLagOwner {
+  client: CodexAppServerClient | null;
+  hasPositiveSample: boolean;
+  retired: boolean;
+}
+
+interface CodexBackgroundSessionOwner {
+  client: CodexAppServerClient;
+  token: CodexBackgroundOwnerToken | undefined;
+  epoch: string;
+  revision: number;
+  unsubscribe: (() => void) | undefined;
+  detached: boolean;
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -320,17 +401,44 @@ function withTurnMetadata(
   data: unknown,
   turn: QueuedCodexMessage | undefined,
 ): unknown {
-  if (!turn?.userMessageId || typeof data !== 'object' || data === null) {
+  if (!isRecord(data)) {
     return data;
   }
-  if (Array.isArray(data)) {
-    return data;
+  const descriptor = getProviderRunDescriptor(data);
+  const runClassification = classifyProviderRunEvent(data);
+  const trustedRun =
+    runClassification.kind === 'ordinary' ? runClassification.run : undefined;
+  const trustedLate = runClassification.kind === 'transcript_only';
+  const explicitMessageId =
+    typeof data.canopy_turn_user_message_id === 'string'
+      ? data.canopy_turn_user_message_id
+      : undefined;
+  const messageId =
+    descriptor?.executionUserMessageId ??
+    explicitMessageId ??
+    turn?.userMessageId;
+  const stamped = { ...data };
+  if (trustedLate || trustedRun?.origin === 'provider_owned') {
+    delete stamped.canopy_turn_revival;
   }
-  return {
-    ...data,
-    canopy_turn_user_message_id: turn.userMessageId,
-    ...(turn.revivesSettledTurn ? { canopy_turn_revival: true } : {}),
-  };
+  if (messageId) stamped.canopy_turn_user_message_id = messageId;
+
+  const event = isRecord(data.event) ? data.event : undefined;
+  const isProviderOwnedStart =
+    trustedRun?.origin === 'provider_owned' &&
+    event?.type === 'turn.started' &&
+    event.thread_id === trustedRun.threadId &&
+    event.turn_id === trustedRun.turnId;
+  if (isProviderOwnedStart) {
+    stamped.canopy_turn_revival = true;
+  } else if (
+    !trustedLate &&
+    trustedRun?.origin !== 'provider_owned' &&
+    turn?.revivesSettledTurn
+  ) {
+    stamped.canopy_turn_revival = true;
+  }
+  return copyProviderRunProvenance(data, stamped);
 }
 
 /**
@@ -349,6 +457,56 @@ function isAiCreditsFailureEvent(data: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readCodexTurnTerminalOutcome(
+  data: unknown,
+): CodexTurnTerminalEvidence['outcome'] | undefined {
+  if (!isRecord(data)) return undefined;
+
+  if (data.type === 'codex' && isRecord(data.event)) {
+    if (data.event.type === 'turn.completed') {
+      return data.event.status === 'interrupted' ? 'interrupted' : 'completed';
+    }
+    if (data.event.type === 'turn.failed') {
+      return 'failed';
+    }
+    return undefined;
+  }
+
+  if (data.type === 'error') return 'failed';
+  if (data.type !== 'result') return undefined;
+
+  const resultText =
+    typeof data.result === 'string' ? data.result.trim().toLowerCase() : '';
+  const terminalReason =
+    typeof data.terminal_reason === 'string'
+      ? data.terminal_reason.toLowerCase()
+      : '';
+  if (
+    resultText === 'turn cancelled' ||
+    resultText === 'session aborted' ||
+    resultText === 'session ended' ||
+    terminalReason === 'aborted_streaming' ||
+    terminalReason === 'aborted_tools'
+  ) {
+    return 'interrupted';
+  }
+  return data.is_error === true ? 'failed' : 'completed';
+}
+
+function codexTurnOutcomeForError(
+  error: unknown,
+): CodexTurnTerminalEvidence['outcome'] {
+  if (
+    error instanceof Error &&
+    (error.message === 'turn_cancelled' ||
+      error.message === SESSION_DESTROYED_ERROR_MESSAGE ||
+      error.message === AI_CREDITS_BACKSTOP_ABORT_ERROR)
+  ) {
+    return 'interrupted';
+  }
+  return 'failed';
 }
 
 /**
@@ -390,13 +548,13 @@ function appendPluginMcpDiscoveryInstructions(
 }
 
 function recordPluginResolutionRetry(
-  key: string,
+  turnState: OwnedTurnState,
   reason: 'resolution_error',
   attempt: number,
   retryDelayMs: number,
   details: unknown,
 ): void {
-  recordSessionEvent(key, {
+  turnState.recordSessionEvent({
     type: 'phase',
     phase: 'codex.resolve_plugins.retry',
     reason,
@@ -429,6 +587,10 @@ export interface CodexCompatibleInvocation {
 
 interface CodexProviderOptions {
   providerType?: 'codex' | 'ollama';
+  emitIngestionLag?: (
+    target: { projectId: string; worktreeId: string; chatId: string },
+    data: ChatIngestionLagEventData,
+  ) => void | Promise<void>;
   prepareInvocation?: (
     model: ChatModel | undefined,
     reason: 'session-start' | 'model-change',
@@ -672,7 +834,7 @@ async function resolveCodexAiCreditsRouting(
         // and the banner survives a reload, exactly like a failed routed turn.
         [AI_CREDITS_NO_BILLING_SOURCE_EVENT_FLAG]: true,
         error_code: NO_BILLING_SOURCE_ERROR_CODE,
-        error: `This model is only available with ${BRAND.displayName} credits. Make sure you have available credits or an active plan with spendable balance to use it.`,
+        error: buildAiCreditsRequiredError(BRAND.displayName),
       });
       return AI_CREDITS_BACKSTOP_ABORT;
     }
@@ -724,10 +886,12 @@ async function resolveCodexAiCreditsRouting(
 
 export class CodexProvider implements AgentProvider {
   private readonly providerType: 'codex' | 'ollama';
+  private readonly emitIngestionLag?: CodexProviderOptions['emitIngestionLag'];
   private readonly prepareInvocation?: CodexProviderOptions['prepareInvocation'];
 
   constructor(options?: CodexProviderOptions) {
     this.providerType = options?.providerType ?? 'codex';
+    this.emitIngestionLag = options?.emitIngestionLag;
     this.prepareInvocation = options?.prepareInvocation;
   }
 
@@ -737,6 +901,35 @@ export class CodexProvider implements AgentProvider {
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
+    const lifecycleScope = {
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+    };
+    const turnLifecycleTracker = new CodexTurnLifecycleTracker(
+      getTurnLifecycleProducer('codex', lifecycleScope),
+      (turnId) => hasTurnLifecycleEnded(lifecycleScope, turnId),
+    );
+    const onTurnLifecycleObservation = (
+      observation: CodexTurnTrackerObservation,
+    ): void => {
+      const publishedBinding =
+        turnLifecycleTracker.observeWithPublishedBinding(observation);
+      if (
+        publishedBinding &&
+        (observation.type === 'turn-started' ||
+          observation.type === 'input-bound')
+      ) {
+        observeRoutedCodexTurnStart(
+          lifecycleScope,
+          session,
+          observation.threadId,
+          observation.turnId,
+          publishedBinding.userMessageIds,
+        );
+      }
+    };
+    const turnState = createOwnedTurnState(key, () => session);
     const pluginRouteOwnerId = `codex-session:${key}:${randomUUID()}`;
     /** Ends the transcript's account switch lines (CAN-4021). */
     let stopAccountProxySwitches: (() => void) | undefined;
@@ -806,16 +999,99 @@ export class CodexProvider implements AgentProvider {
     let turnInProgress = false;
     let turnCancelling = false;
     let turnPreparationController = new AbortController();
-    let releaseClientAfterTurn = false;
+    let forceClientReleaseAfterTurn = false;
+    let forceClientReleaseAfterDelegation = false;
     let releaseClientAfterDelegation = false;
     let destroyed = false;
     let client: CodexAppServerClient | null = null;
+    const ingestionLagTarget = {
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+    };
+    const ingestionLagOwners = new WeakMap<
+      CodexAppServerClient,
+      CodexIngestionLagOwner
+    >();
+    const codexBackgroundOwners = new WeakMap<
+      CodexAppServerClient,
+      CodexBackgroundSessionOwner
+    >();
+    const codexBackgroundSnapshots = new WeakMap<
+      CodexAppServerClient,
+      CodexBackgroundSnapshot
+    >();
+    let activeIngestionLagOwner: CodexIngestionLagOwner | null = null;
+    const emitIngestionLag = this.emitIngestionLag;
+    const emitIngestionLagObservation = (
+      lag: ChatIngestionLag | null,
+    ): void => {
+      if (!emitIngestionLag) return;
+      const data: ChatIngestionLagEventData = {
+        type: INGESTION_LAG_EVENT_TYPE,
+        lag,
+      };
+      try {
+        const delivery = emitIngestionLag(ingestionLagTarget, data);
+        if (delivery) void delivery.catch(() => undefined);
+      } catch {
+        // Observational delivery must not affect provider event admission.
+      }
+    };
+    const retireIngestionLagOwner = (
+      retiredClient: CodexAppServerClient | null,
+    ): void => {
+      if (!retiredClient) return;
+      const owner = ingestionLagOwners.get(retiredClient);
+      if (!owner || owner.retired) return;
+      owner.retired = true;
+      if (activeIngestionLagOwner === owner) {
+        activeIngestionLagOwner = null;
+      }
+      if (owner.hasPositiveSample) {
+        owner.hasPositiveSample = false;
+        emitIngestionLagObservation(null);
+      }
+    };
+    const emitIngestionLagSample = (
+      owner: CodexIngestionLagOwner,
+      sample: ChatIngestionLag,
+    ): void => {
+      if (
+        destroyed ||
+        owner.retired ||
+        owner.client === null ||
+        client !== owner.client ||
+        activeIngestionLagOwner !== owner
+      ) {
+        return;
+      }
+      if (sample.catchingUp) {
+        owner.hasPositiveSample = true;
+        emitIngestionLagObservation(sample);
+      } else if (owner.hasPositiveSample) {
+        owner.hasPositiveSample = false;
+        emitIngestionLagObservation(null);
+      }
+    };
     let activeTurn: QueuedCodexMessage | undefined;
+    let lastExecutionUserMessageId: string | undefined;
+    let activeProviderOwnedEvidence:
+      | {
+          generation: NonNullable<
+            ReturnType<typeof getProviderRunDescriptor>
+          >['generation'];
+          threadId: string;
+          turnId: string;
+          executionUserMessageId: string;
+        }
+      | undefined;
     let managedDelegation: ManagedDelegationSession | undefined;
     let managedInitialization: Promise<void> | undefined;
     let currentApprovalMode: ApprovalMode = opts.approvalMode ?? 'ask';
     const rawApprovalSession: ApprovalSessionHandle = createApprovalSession({
       sessionKey: key,
+      getTurnUserMessageId: () => activeTurn?.userMessageId,
       projectId: opts.projectId,
       worktreeId: opts.worktreeId,
       chatId: opts.chatId,
@@ -825,7 +1101,7 @@ export class CodexProvider implements AgentProvider {
       // The live rule list children's approvals are evaluated against.
       sessionRules: sessionOpts.sessionApprovalRules ?? [],
       getWindow,
-      onAwaitingUser: () => markTurnAwaitingUser(key),
+      onAwaitingUser: () => turnState.markTurnAwaitingUser(),
     });
     const approvalSession: ApprovalSessionHandle = {
       check: (approvalCheck, display) =>
@@ -862,9 +1138,75 @@ export class CodexProvider implements AgentProvider {
       }
     };
 
+    const hasLiveCodexBackgroundWork = (
+      candidateClient: CodexAppServerClient,
+    ): boolean => {
+      const snapshot = codexBackgroundSnapshots.get(candidateClient);
+      return (
+        candidateClient.hasLiveBackgroundWork() ||
+        (snapshot !== undefined &&
+          (snapshot.work.length > 0 || snapshot.reconciling))
+      );
+    };
+
+    const retireCodexBackgroundManagerToken = (
+      owner: CodexBackgroundSessionOwner,
+    ): void => {
+      const token = owner.token;
+      owner.token = undefined;
+      if (token) retireCodexLiveBackgroundTasks(token);
+    };
+
+    const detachCodexBackgroundOwner = (
+      retiredClient: CodexAppServerClient | null,
+    ): void => {
+      if (!retiredClient) return;
+      const owner = codexBackgroundOwners.get(retiredClient);
+      if (!owner) return;
+
+      owner.detached = true;
+      owner.unsubscribe?.();
+      owner.unsubscribe = undefined;
+      codexBackgroundOwners.delete(retiredClient);
+      retireCodexBackgroundManagerToken(owner);
+    };
+
+    const retireClientSessionOwners = (
+      retiredClient: CodexAppServerClient | null,
+    ): void => {
+      retireIngestionLagOwner(retiredClient);
+      detachCodexBackgroundOwner(retiredClient);
+    };
+
+    const publishCodexBackgroundSnapshot = (
+      owner: CodexBackgroundSessionOwner,
+      snapshot: CodexBackgroundSnapshot,
+      registerIfNeeded: boolean,
+    ): void => {
+      if (!owner.token && registerIfNeeded && snapshot.work.length > 0) {
+        owner.token = registerCodexBackgroundOwner(lifecycleScope);
+      }
+      if (owner.token) {
+        replaceCodexLiveBackgroundTasks(owner.token, {
+          revision: snapshot.revision,
+          // A command its turn still waits on shows in the transcript, not
+          // as background work.
+          tasks: snapshot.work
+            .filter((work) => work.kind !== 'terminal' || !work.foreground)
+            .map(toCodexLiveBackgroundTaskInput),
+        });
+      }
+    };
+
     const releaseIdleClient = (): void => {
       const idleClient = client;
-      if (destroyed || turnInProgress || !idleClient) {
+      if (
+        destroyed ||
+        turnInProgress ||
+        !idleClient ||
+        idleClient.hasActiveTurn() ||
+        hasLiveCodexBackgroundWork(idleClient)
+      ) {
         return;
       }
       if (managedDelegation?.activeCount) {
@@ -878,27 +1220,114 @@ export class CodexProvider implements AgentProvider {
       // worker remains alive, allowing Codex to tear down thread-scoped tool
       // subprocesses without waiting for the entire pooled app-server to go
       // idle. The next message recreates a client and resumes this thread.
-      rootThreadId = idleClient.getThreadId() ?? rootThreadId;
-      idleClient.dispose();
-      if (client === idleClient) {
+      disposeClient(idleClient);
+    };
+
+    const disposeClient = (disposedClient: CodexAppServerClient): void => {
+      if (client !== disposedClient) return;
+      clearIdleTimer();
+      forceClientReleaseAfterTurn = false;
+      forceClientReleaseAfterDelegation = false;
+      releaseClientAfterDelegation = false;
+      rootThreadId = disposedClient.getThreadId() ?? rootThreadId;
+      retireClientSessionOwners(disposedClient);
+      disposedClient.dispose();
+      if (client === disposedClient) {
         client = null;
+        notifySteeringEligibilityChanged(key);
       }
     };
 
     const scheduleIdleClientRelease = (): void => {
       clearIdleTimer();
-      if (destroyed || turnInProgress || !client) {
+      if (
+        destroyed ||
+        turnInProgress ||
+        !client ||
+        client.hasActiveTurn() ||
+        hasLiveCodexBackgroundWork(client)
+      ) {
         return;
       }
 
       idleTimer = setTimeout(() => {
         idleTimer = null;
-        if (destroyed || turnInProgress || !client) {
+        if (
+          destroyed ||
+          turnInProgress ||
+          !client ||
+          client.hasActiveTurn() ||
+          hasLiveCodexBackgroundWork(client)
+        ) {
           return;
         }
         releaseIdleClient();
       }, currentIdleTimeoutMinutes * 60_000);
       idleTimer.unref?.();
+    };
+
+    const handleCodexBackgroundSnapshot = (
+      owner: CodexBackgroundSessionOwner,
+      snapshot: CodexBackgroundSnapshot,
+    ): void => {
+      if (owner.detached || destroyed || owner.client !== client) {
+        return;
+      }
+
+      if (snapshot.epoch !== owner.epoch) {
+        owner.epoch = snapshot.epoch;
+        owner.revision = snapshot.revision;
+        codexBackgroundSnapshots.set(owner.client, snapshot);
+        // A new epoch means the prior process's registry is no longer an
+        // authority for this client. Retire its Manager token, but keep the
+        // client subscription so recovered work from the new epoch can acquire
+        // a fresh token. This callback is state delivery only, never session
+        // teardown.
+        retireCodexBackgroundManagerToken(owner);
+        publishCodexBackgroundSnapshot(owner, snapshot, true);
+      } else {
+        if (snapshot.revision <= owner.revision) return;
+        owner.revision = snapshot.revision;
+        codexBackgroundSnapshots.set(owner.client, snapshot);
+        publishCodexBackgroundSnapshot(owner, snapshot, true);
+      }
+
+      if (hasLiveCodexBackgroundWork(owner.client)) {
+        clearIdleTimer();
+      } else if (!turnInProgress) {
+        // A completion snapshot can be observed while the raw item event is
+        // still being projected by the client. Defer a pending idle release
+        // until after that event has had a chance to reach the session.
+        scheduleIdleClientRelease();
+      }
+    };
+
+    const registerCodexBackgroundClient = (
+      nextClient: CodexAppServerClient,
+    ): void => {
+      if (codexBackgroundOwners.has(nextClient)) return;
+
+      // Subscribe only after taking the initial complete state. The provider
+      // registry publishes complete, revisioned snapshots, not event deltas.
+      const initialSnapshot = nextClient.getBackgroundSnapshot();
+      const token = registerCodexBackgroundOwner(lifecycleScope);
+      const owner: CodexBackgroundSessionOwner = {
+        client: nextClient,
+        token,
+        epoch: initialSnapshot.epoch,
+        revision: initialSnapshot.revision,
+        unsubscribe: undefined,
+        detached: false,
+      };
+      codexBackgroundOwners.set(nextClient, owner);
+      codexBackgroundSnapshots.set(nextClient, initialSnapshot);
+      publishCodexBackgroundSnapshot(owner, initialSnapshot, false);
+
+      const unsubscribe = nextClient.subscribeBackgroundWork((snapshot) => {
+        handleCodexBackgroundSnapshot(owner, snapshot);
+      });
+      owner.unsubscribe = unsubscribe;
+      if (owner.detached) unsubscribe();
     };
 
     const markCodexTurnStarting = (): void => {
@@ -911,9 +1340,23 @@ export class CodexProvider implements AgentProvider {
     const markCodexTurnFinished = (): void => {
       turnInProgress = false;
       turnCancelling = false;
-      if (releaseClientAfterTurn) {
-        releaseClientAfterTurn = false;
-        releaseIdleClient();
+      if (forceClientReleaseAfterTurn) {
+        forceClientReleaseAfterTurn = false;
+        if (managedDelegation?.activeCount) {
+          forceClientReleaseAfterDelegation = true;
+        } else {
+          const clientToDispose = client;
+          if (clientToDispose) disposeClient(clientToDispose);
+        }
+      } else if (
+        forceClientReleaseAfterDelegation &&
+        !managedDelegation?.activeCount
+      ) {
+        // The delegation drained during this turn, so its drain callback
+        // could not rebuild the client; do it now that the turn is over.
+        forceClientReleaseAfterDelegation = false;
+        const clientToDispose = client;
+        if (clientToDispose) disposeClient(clientToDispose);
       } else if (releaseClientAfterDelegation) {
         releaseIdleClient();
       } else if (!destroyed) {
@@ -932,25 +1375,34 @@ export class CodexProvider implements AgentProvider {
       stopAccountProxySwitches?.();
       stopAccountProxySwitches = undefined;
       clearIdleTimer();
+      retireClientSessionOwners(client);
       client?.dispose();
+      notifySteeringEligibilityChanged(key);
       approvalSession.dispose();
       skillUsage.dispose();
       getMcpHttpProxyService().unregisterRoutesForSession(pluginRouteOwnerId);
-      // Codex registers its proxy routes under `pluginRouteOwnerId`, but
-      // `worktree-chat-turn.ts` pairs MCP auth failures under the CHAT SESSION
-      // KEY for every provider. Without this second call the process-global
-      // `pendingByOwner` / `toolNamesByRouteOwner` maps keep `key`-keyed
-      // entries with no eviction path (CAN-1814). Harmless when no route is
-      // registered under `key`: teardown clears both registries first and then
-      // finds no routes to unregister.
-      getMcpHttpProxyService().unregisterRoutesForSession(key);
-      getCodexGatewayProxyService().unregisterRoutesForSession(key);
-      // A verdict recorded but never consumed (the session was torn down before
-      // the failure event surfaced) must not outlive the session and arm an
-      // unrelated later turn under the same key.
-      clearSessionProxyFailure(key);
+      // A registration that displaced this session tears it down while its
+      // successor already owns the key's routes and proxy verdicts.
+      if (turnState.ownsKeyResources()) {
+        // Codex registers its proxy routes under `pluginRouteOwnerId`, but
+        // `worktree-chat-turn.ts` pairs MCP auth failures under the CHAT SESSION
+        // KEY for every provider. Without this second call the process-global
+        // `pendingByOwner` / `toolNamesByRouteOwner` maps keep `key`-keyed
+        // entries with no eviction path (CAN-1814). Harmless when no route is
+        // registered under `key`: teardown clears both registries first and then
+        // finds no routes to unregister.
+        getMcpHttpProxyService().unregisterRoutesForSession(key);
+        getCodexGatewayProxyService().unregisterRoutesForSession(key);
+        // A verdict recorded but never consumed (the session was torn down before
+        // the failure event surfaced) must not outlive the session and arm an
+        // unrelated later turn under the same key.
+        clearSessionProxyFailure(key);
+      }
       void getCodexRuntimeService().revokeStdioMcpRoutes(pluginRouteOwnerId);
-      unregisterSession(key);
+      // A torn-down transport never reports turn/completed for its open turns.
+      turnLifecycleTracker.closeOpenTurns();
+      releaseTurnLifecycleProducer('codex', lifecycleScope);
+      unregisterSession(key, session);
       if (waitingForMessage) {
         waitingForMessage(undefined);
         waitingForMessage = null;
@@ -970,18 +1422,19 @@ export class CodexProvider implements AgentProvider {
         clearIdleTimer();
         messageQueue.push({
           text,
+          submissionId: randomUUID(),
           countsTowardSkillUsage: sendOptions?.countsTowardSkillUsage === true,
           skillUsageTurnId: randomUUID(),
           ...(sendOptions?.userMessageId
             ? { userMessageId: sendOptions.userMessageId }
             : {}),
         });
-        noteSessionMessageQueued(key, messageQueue.length);
+        turnState.noteSessionMessageQueued(messageQueue.length);
         if (waitingForMessage) {
           const resolver = waitingForMessage;
           waitingForMessage = null;
           resolver(messageQueue.shift());
-          noteSessionMessageQueued(key, messageQueue.length);
+          turnState.noteSessionMessageQueued(messageQueue.length);
         }
       },
       getProviderSessionId(): string | undefined {
@@ -1016,9 +1469,10 @@ export class CodexProvider implements AgentProvider {
           withdraw: false,
           interrupt: false,
         },
+      getSteeringTarget: () => client?.getSteeringTarget(),
       getSteeringWorkingDirectory: () => opts.cwd,
-      submitSteeringInput: (text, attemptId) =>
-        client?.submitSteeringInput(text, attemptId) ??
+      submitSteeringInput: (text, attemptId, userMessageId, target) =>
+        client?.submitSteeringInput(text, attemptId, target, userMessageId) ??
         Promise.resolve({
           kind: 'rejected',
           attemptId,
@@ -1037,7 +1491,7 @@ export class CodexProvider implements AgentProvider {
         // messages; a later send remains free to reuse this live session.
         if (!activeTurn && messageQueue.length > 0) {
           messageQueue.splice(0);
-          noteSessionMessageQueued(key, 0);
+          turnState.noteSessionMessageQueued(0);
         }
         // Stop ends only the parent turn. Retire that turn's delegation tool
         // bindings; the chat's delegations keep running.
@@ -1064,7 +1518,11 @@ export class CodexProvider implements AgentProvider {
             // Retire the client after a bounded drain so teardown (including
             // account switching) cannot wait forever for turn/completed. Keep
             // the session registered until the run loop drains its final events.
-            const drainTimeout = setTimeout(() => client?.dispose(), 5_000);
+            const drainTimeout = setTimeout(() => {
+              const drainClient = client;
+              retireClientSessionOwners(drainClient);
+              drainClient?.dispose();
+            }, 5_000);
             drainTimeout.unref?.();
             try {
               await runPromise;
@@ -1138,9 +1596,12 @@ export class CodexProvider implements AgentProvider {
             prepared.codexConfig,
           );
           if (turnInProgress) {
-            releaseClientAfterTurn = true;
+            forceClientReleaseAfterTurn = true;
+          } else if (managedDelegation?.activeCount) {
+            forceClientReleaseAfterDelegation = true;
           } else {
-            releaseIdleClient();
+            const clientToDispose = client;
+            if (clientToDispose) disposeClient(clientToDispose);
           }
         }
       },
@@ -1158,10 +1619,102 @@ export class CodexProvider implements AgentProvider {
       opts.executionHarness,
     );
 
+    // A root terminal carries its execution's lifecycle id, as Claude's do:
+    // a stopped turn and its resumed turn share the input ID. A native
+    // completion maps its own turn; a session result maps the newest
+    // execution bound to its input. Child turns are never tracked.
+    const withExecutionTurnId = (data: unknown): unknown => {
+      if (
+        !isRecord(data) ||
+        data.canopy_execution_turn_id !== undefined ||
+        !isRootTerminalChatEventData(data, rootThreadId)
+      )
+        return data;
+      const event =
+        data.type === 'codex' && isRecord(data.event) ? data.event : undefined;
+      const executionTurnId = event
+        ? typeof event.thread_id === 'string' &&
+          typeof event.turn_id === 'string'
+          ? turnLifecycleTracker.executionTurnId(event.thread_id, event.turn_id)
+          : undefined
+        : typeof data.canopy_turn_user_message_id === 'string'
+          ? turnLifecycleTracker.latestExecutionTurnIdFor(
+              data.canopy_turn_user_message_id,
+            )
+          : undefined;
+      return executionTurnId === undefined
+        ? data
+        : { ...data, canopy_execution_turn_id: executionTurnId };
+    };
+
     const emitEvent = (data: unknown): void | Promise<void> => {
+      // This callback receives the app-server client's mapped event after its
+      // shared admission lane. The stamp intentionally starts here, not at the
+      // raw app-server notification entry.
+      const receivedAtMonotonicMs = performance.now();
+      const providerRunClassification = classifyProviderRunEvent(data, {
+        projectId: opts.projectId,
+        worktreeId: opts.worktreeId,
+        chatId: opts.chatId,
+      });
+      if (providerRunClassification.kind === 'reject') {
+        const event = isRecord(data) && isRecord(data.event) ? data.event : {};
+        const eventType =
+          typeof event.type === 'string' ? event.type : 'unknown';
+        recordChatEventDropped({
+          projectId: opts.projectId,
+          worktreeId: opts.worktreeId,
+          chatId: opts.chatId,
+          providerType: 'codex',
+          gate: eventType.startsWith('item.')
+            ? 'codex_root_output_stale'
+            : 'codex_root_completion_stale',
+          reason: providerRunClassification.reason,
+          data: {
+            eventType,
+            ...(typeof event.thread_id === 'string'
+              ? { threadId: event.thread_id }
+              : {}),
+            ...(typeof event.turn_id === 'string'
+              ? { turnId: event.turn_id }
+              : {}),
+          },
+        });
+        return;
+      }
+      if (providerRunClassification.kind === 'transcript_only') {
+        const eventData = withTurnMetadata(data, undefined);
+        if (isRecord(eventData)) {
+          recordEventReceiptTime(eventData, receivedAtMonotonicMs);
+        }
+        return onEvent(eventData);
+      }
+      const runDescriptor = getProviderRunDescriptor(data);
+      const trustedRun =
+        providerRunClassification.kind === 'ordinary'
+          ? providerRunClassification.run
+          : undefined;
+      const rawEvent = isRecord(data) && isRecord(data.event) ? data.event : {};
+      if (
+        trustedRun?.origin === 'provider_owned' &&
+        rawEvent.type === 'turn.started' &&
+        rawEvent.thread_id === trustedRun.threadId &&
+        rawEvent.turn_id === trustedRun.turnId
+      ) {
+        activeProviderOwnedEvidence = {
+          generation: trustedRun.generation,
+          threadId: trustedRun.threadId,
+          turnId: trustedRun.turnId,
+          executionUserMessageId: trustedRun.executionUserMessageId,
+        };
+        beginCodexSessionTurn(key, trustedRun.executionUserMessageId);
+      }
+      if (trustedRun) {
+        lastExecutionUserMessageId = trustedRun.executionUserMessageId;
+      }
       managedDelegation?.observe(
         data,
-        activeTurn?.userMessageId,
+        trustedRun?.executionUserMessageId ?? activeTurn?.userMessageId,
         client?.getThreadId(),
       );
       rootThreadId = readCodexRootThreadId(data) ?? rootThreadId;
@@ -1202,10 +1755,45 @@ export class CodexProvider implements AgentProvider {
         accountScope === 'ai_credits' && isAiCreditsFailureEvent(data)
           ? consumeSessionProxyFailure(key)
           : undefined;
-      const stampedData = proxyFailure
+      const restoredData = proxyFailure
         ? withProxyFailureRestored(data, proxyFailure)
         : data;
-      const eventData = withTurnMetadata(stampedData, activeTurn);
+      const stampedData =
+        proxyFailure && isRecord(restoredData)
+          ? copyProviderRunProvenance(data, restoredData)
+          : restoredData;
+      const eventData = withExecutionTurnId(
+        withTurnMetadata(stampedData, activeTurn),
+      );
+      const rawTerminalOutcome = readCodexTurnTerminalOutcome(eventData);
+      const providerOwnedTerminal =
+        trustedRun?.origin === 'provider_owned' &&
+        rawTerminalOutcome !== undefined &&
+        activeProviderOwnedEvidence?.generation === trustedRun.generation &&
+        activeProviderOwnedEvidence.threadId === trustedRun.threadId &&
+        activeProviderOwnedEvidence.turnId === trustedRun.turnId;
+      if (providerOwnedTerminal && trustedRun) {
+        recordCodexTurnEnd(key, {
+          turnUserMessageId: trustedRun.executionUserMessageId,
+          outcome: rawTerminalOutcome,
+          endedAtMs: Date.now(),
+        });
+      }
+      if (
+        isRecord(eventData) &&
+        eventData.type === 'codex' &&
+        activeTurn &&
+        rawTerminalOutcome !== undefined &&
+        !isCodexSubagentTerminalEvent(eventData, rootThreadId)
+      ) {
+        recordCodexTurnEnd(key, {
+          ...(activeTurn.userMessageId !== undefined
+            ? { turnUserMessageId: activeTurn.userMessageId }
+            : {}),
+          outcome: rawTerminalOutcome,
+          endedAtMs: Date.now(),
+        });
+      }
       // A proxy account's sign-in or limit is not the user's own, so it never
       // starts native account recovery (CAN-4020).
       const resumeReason = isSessionAccountProxyRouted(
@@ -1218,6 +1806,9 @@ export class CodexProvider implements AgentProvider {
       // Reads the STAMPED event so the live banner and the persisted per-tab
       // flag are decided by one value, whichever signal established it.
       const sideAdmissions: Promise<void>[] = [];
+      // Every notice derived from this event names the thread it came from, so
+      // a sub-agent's failure is never read as the root turn's (CAN-4629).
+      const emitDerivedNotice = scopeDerivedNotices(onEvent, data);
       // Account-limit notices can precede a successful turn. Only the
       // settled root result can create an automatic quota continuation.
       const proxyInterruption =
@@ -1237,6 +1828,7 @@ export class CodexProvider implements AgentProvider {
                 provider: 'codex',
                 detectedAt: Date.now(),
                 accountProxyConnectionId,
+                interruptedUserMessageId: activeTurn?.userMessageId,
               },
               data,
             )
@@ -1252,7 +1844,10 @@ export class CodexProvider implements AgentProvider {
         accountScope === 'ai_credits' &&
         detectAiCreditsNoBillingSource(eventData)
       ) {
-        const admission = emitAiCreditsNoBillingSource(onEvent, 'codex');
+        const admission = emitAiCreditsNoBillingSource(
+          emitDerivedNotice,
+          'codex',
+        );
         if (admission && typeof admission.then === 'function') {
           sideAdmissions.push(admission);
         }
@@ -1264,7 +1859,7 @@ export class CodexProvider implements AgentProvider {
       if (resumeReason === 'usage_limit' && quota.reached) {
         markProviderQuotaReached('codex', quota.resetsAt);
         const admission = emitAiCreditsUsageLimitReached(
-          onEvent,
+          emitDerivedNotice,
           'codex',
           quota.resetsAt,
         );
@@ -1272,11 +1867,13 @@ export class CodexProvider implements AgentProvider {
           sideAdmissions.push(admission);
         }
         void (async (): Promise<void> => {
+          const interruptedUserMessageId = activeTurn?.userMessageId;
           const workspace = await resolveWorkspaceRecordingSnapshot(
             opts.projectId,
           );
           await recordUsageLimitedChat(
             buildUsageLimitedEntry({
+              interruptedUserMessageId,
               projectId: opts.projectId,
               worktreeId: opts.worktreeId,
               chatId: opts.chatId,
@@ -1304,11 +1901,13 @@ export class CodexProvider implements AgentProvider {
           providerAuthEvent = buildProviderAuthFailureEvent(classification);
         }
         void (async (): Promise<void> => {
+          const interruptedUserMessageId = activeTurn?.userMessageId;
           const workspace = await resolveWorkspaceRecordingSnapshot(
             opts.projectId,
           );
           await recordUsageLimitedChat(
             buildUsageLimitedEntry({
+              interruptedUserMessageId,
               projectId: opts.projectId,
               worktreeId: opts.worktreeId,
               chatId: opts.chatId,
@@ -1322,7 +1921,7 @@ export class CodexProvider implements AgentProvider {
           );
         })();
       }
-      recordSessionEvent(key, eventData);
+      turnState.recordSessionEvent(eventData);
       if (!isCodexSubagentTerminalEvent(eventData, rootThreadId)) {
         const attentionFailure = noteChatSessionEvent(
           {
@@ -1352,24 +1951,67 @@ export class CodexProvider implements AgentProvider {
       // the delivery path. Deliberately NOT also recorded: stamping
       // `lastEventType: 'canopy_auth_failure'` after a terminal turn event
       // would hide the terminal event from restore.
-      const authEvent = providerAuthEvent
-        ? withTurnMetadata(providerAuthEvent, activeTurn)
+      const sourcedAuthEvent = providerAuthEvent
+        ? withFailureSourceScope(providerAuthEvent, data)
+        : null;
+      const authEvent = sourcedAuthEvent
+        ? withTurnMetadata(
+            runDescriptor
+              ? copyProviderRunProvenance(data, sourcedAuthEvent)
+              : sourcedAuthEvent,
+            activeTurn,
+          )
         : null;
       const deliverRecordedEvent = (): void | Promise<void> => {
+        if (typeof eventData === 'object' && eventData !== null) {
+          recordEventReceiptTime(eventData, receivedAtMonotonicMs);
+        }
         const eventAdmission = onEvent(eventData);
         const eventReceipt =
           eventAdmission && typeof eventAdmission.then === 'function'
             ? eventAdmission
             : undefined;
-        if (!authEvent) return eventReceipt;
+        const finishProviderOwnedEvidence = (): void => {
+          if (!providerOwnedTerminal || !trustedRun) return;
+          const identity = activeProviderOwnedEvidence;
+          if (
+            identity?.generation !== trustedRun.generation ||
+            identity.threadId !== trustedRun.threadId ||
+            identity.turnId !== trustedRun.turnId
+          ) {
+            return;
+          }
+          finishCodexSessionTurn(key, trustedRun.executionUserMessageId);
+          activeProviderOwnedEvidence = undefined;
+        };
+        if (!authEvent) {
+          if (!eventReceipt) {
+            finishProviderOwnedEvidence();
+            return;
+          }
+          return eventReceipt.finally(finishProviderOwnedEvidence);
+        }
         // Stamped like every other emitted event. Only terminal events consult
         // `canopy_turn_user_message_id` today, but an event that skipped
         // `withTurnMetadata` is a latent trap for anything that later groups by
         // turn.
-        if (eventReceipt) {
-          return eventReceipt.then(() => onEvent(authEvent));
+        const deliverAuthEvent = (): void | Promise<void> => {
+          if (typeof authEvent === 'object' && authEvent !== null) {
+            recordEventReceiptTime(authEvent, receivedAtMonotonicMs);
+          }
+          return onEvent(authEvent);
+        };
+        const completeAdmission = eventReceipt
+          ? eventReceipt.then(deliverAuthEvent)
+          : deliverAuthEvent();
+        if (
+          !completeAdmission ||
+          typeof completeAdmission.then !== 'function'
+        ) {
+          finishProviderOwnedEvidence();
+          return completeAdmission;
         }
-        return onEvent(authEvent);
+        return completeAdmission.finally(finishProviderOwnedEvidence);
       };
       // A side notice and its source event share one transport receipt. Delay
       // the latter until earlier notices have entered the canonical route.
@@ -1393,6 +2035,8 @@ export class CodexProvider implements AgentProvider {
         () => destroyed || destroyRequested,
         (message) => {
           activeTurn = message;
+          if (message === undefined) return;
+          beginCodexSessionTurn(key, message.userMessageId);
           // Clears a prior plan-review or terminal-error attention edge when the
           // human starts the next turn.
           getAttentionTracker().clear(
@@ -1409,14 +2053,39 @@ export class CodexProvider implements AgentProvider {
         clearCodexTurnInProgress,
         beginTurnCancellation,
         emitEvent,
+        onTurnLifecycleObservation,
         skillUsage,
         key,
         pluginRouteOwnerId,
         getWindow,
         () => rootThreadId,
+        () => lastExecutionUserMessageId,
+        (userMessageId) => {
+          lastExecutionUserMessageId = userMessageId;
+        },
+        (changedClient) => {
+          notifySteeringEligibilityChanged(key);
+          if (!changedClient || client !== changedClient) return;
+          if (changedClient.hasActiveTurn()) {
+            clearIdleTimer();
+          } else if (!turnInProgress) {
+            scheduleIdleClientRelease();
+          }
+        },
         () => client,
         (next) => {
+          const previousClient = client;
+          if (previousClient !== next) {
+            retireClientSessionOwners(previousClient);
+          }
           client = next;
+          if (next && previousClient !== next) {
+            registerCodexBackgroundClient(next);
+          }
+          activeIngestionLagOwner = next
+            ? (ingestionLagOwners.get(next) ?? null)
+            : null;
+          notifySteeringEligibilityChanged(key);
         },
         approvalSession,
         () => currentApprovalMode,
@@ -1424,6 +2093,11 @@ export class CodexProvider implements AgentProvider {
         managedDelegation,
         shutdownController.signal,
         () => turnPreparationController.signal,
+        emitIngestionLagSample,
+        (createdClient, owner): void => {
+          ingestionLagOwners.set(createdClient, owner);
+        },
+        retireClientSessionOwners,
         (connectionId) => {
           accountProxyConnectionId = connectionId;
           // The transcript's account switch lines, once per session while
@@ -1435,6 +2109,8 @@ export class CodexProvider implements AgentProvider {
             );
           }
         },
+        () => unregisterSession(key, session),
+        turnState,
       );
 
     if (managedDelegationEnabled(sessionOpts)) {
@@ -1485,8 +2161,14 @@ export class CodexProvider implements AgentProvider {
           }),
           currentTurn: () => activeTurn?.userMessageId,
           onActivityChange: (count): void => {
-            if (count === 0 && releaseClientAfterDelegation)
+            if (count !== 0) return;
+            if (forceClientReleaseAfterDelegation && !turnInProgress) {
+              forceClientReleaseAfterDelegation = false;
+              const clientToDispose = client;
+              if (clientToDispose) disposeClient(clientToDispose);
+            } else if (releaseClientAfterDelegation) {
               releaseIdleClient();
+            }
           },
         });
         if (destroyed || destroyRequested) {
@@ -1501,7 +2183,7 @@ export class CodexProvider implements AgentProvider {
         )
       : runSession();
     void runPromise.catch((error: unknown) => {
-      markTurnIdle(key);
+      turnState.markTurnIdle();
       logMainProcessWarn('[codex-session] Managed session failed', error);
       void Promise.resolve(
         emitEvent({
@@ -1539,11 +2221,19 @@ export class CodexProvider implements AgentProvider {
     clearCodexTurnInProgress: () => void,
     beginTurnCancellation: () => void,
     onEvent: (data: unknown) => void | Promise<void>,
+    onTurnLifecycleObservation: (
+      observation: CodexTurnTrackerObservation,
+    ) => void,
     skillUsage: SkillUsageTracker,
     key: string,
     pluginRouteOwnerId: string,
     getWindow: () => BrowserWindow | null,
     getResumeThreadId: () => string | undefined,
+    getLastExecutionUserMessageId: () => string | undefined,
+    setLastExecutionUserMessageId: (userMessageId: string) => void,
+    onClientSteeringEligibilityChanged: (
+      changedClient: CodexAppServerClient | null,
+    ) => void,
     getClient: () => CodexAppServerClient | null,
     setClient: (client: CodexAppServerClient | null) => void,
     approvalSession: ApprovalSessionHandle,
@@ -1556,19 +2246,65 @@ export class CodexProvider implements AgentProvider {
     managedDelegation: ManagedDelegationSession | undefined,
     shutdownSignal: AbortSignal,
     getTurnPreparationSignal: () => AbortSignal,
+    handleIngestionLagSample: (
+      owner: CodexIngestionLagOwner,
+      sample: ChatIngestionLag,
+    ) => void,
+    registerIngestionLagOwner: (
+      client: CodexAppServerClient,
+      owner: CodexIngestionLagOwner,
+    ) => void,
+    retireClientSessionOwners: (client: CodexAppServerClient | null) => void,
     setAccountProxyConnectionId: (connectionId: string | undefined) => void,
+    unregisterOwnSession: () => void,
+    turnState: OwnedTurnState,
   ): Promise<void> {
     const codeGraphToolsAdvertised =
       opts.codeGraphToolsAdvertised ??
       isCodeGraphAvailableForWorkspace(opts.projectId);
     let resultEmitted = false;
     let terminalAdmissionFailed = false;
+    let currentMessage: QueuedCodexMessage | undefined;
+    let currentExecutionUserMessageId: string | undefined;
     const emitTerminal = async (data: unknown): Promise<void> => {
+      if (getClient()?.hasProviderOwnedTurn()) return;
+      const terminalOutcome = readCodexTurnTerminalOutcome(data);
+      const executionUserMessageId = currentMessage
+        ? currentExecutionUserMessageId
+        : undefined;
+      if (currentMessage && terminalOutcome !== undefined) {
+        recordCodexTurnEnd(key, {
+          ...(executionUserMessageId !== undefined
+            ? { turnUserMessageId: executionUserMessageId }
+            : {}),
+          outcome: terminalOutcome,
+          endedAtMs: Date.now(),
+        });
+        // Ends the execution's lifecycle turn if its native turn/completed
+        // never arrived; a completed one is already closed.
+        if (executionUserMessageId !== undefined)
+          onTurnLifecycleObservation({
+            type: 'execution-ended',
+            userMessageId: executionUserMessageId,
+            status: terminalOutcome,
+          });
+      }
       try {
-        await onEvent(data);
+        const anchoredData =
+          executionUserMessageId && isRecord(data)
+            ? {
+                ...data,
+                canopy_turn_user_message_id: executionUserMessageId,
+              }
+            : data;
+        await onEvent(anchoredData);
       } catch (error) {
         terminalAdmissionFailed = true;
         throw error;
+      } finally {
+        if (currentMessage && terminalOutcome !== undefined) {
+          finishCodexSessionTurn(key, executionUserMessageId);
+        }
       }
     };
     let hasRetriedUnknownDynamicTool = false;
@@ -1853,6 +2589,7 @@ export class CodexProvider implements AgentProvider {
             const staleClient = getClient();
             if (staleClient) {
               initialThreadId = staleClient.getThreadId() ?? initialThreadId;
+              retireClientSessionOwners(staleClient);
               staleClient.dispose();
               setClient(null);
             }
@@ -1947,7 +2684,7 @@ export class CodexProvider implements AgentProvider {
           if (hasPluginSelections) {
             let stopPluginTimer: (() => void) | null = null;
             try {
-              recordSessionEvent(key, {
+              turnState.recordSessionEvent({
                 type: 'phase',
                 phase: 'codex.resolve_plugins',
               });
@@ -2003,7 +2740,7 @@ export class CodexProvider implements AgentProvider {
                     break;
                   }
                   recordPluginResolutionRetry(
-                    key,
+                    turnState,
                     'resolution_error',
                     attempt + 1,
                     retryDelay,
@@ -2031,7 +2768,7 @@ export class CodexProvider implements AgentProvider {
                 // eslint-disable-next-line no-console
                 console.warn('[codex-plugin-resolver]', warning);
               }
-              recordSessionEvent(key, {
+              turnState.recordSessionEvent({
                 type: 'phase',
                 phase: 'codex.resolve_plugins.complete',
                 timings: resolved.timings,
@@ -2137,7 +2874,7 @@ export class CodexProvider implements AgentProvider {
               toolUseId: requestOptions?.toolUseId,
               providerType: 'codex',
               model: getModel() ?? opts.model,
-              onAwaitingUser: (): void => markTurnAwaitingUser(key),
+              onAwaitingUser: (): void => turnState.markTurnAwaitingUser(),
               askUserTimeoutMs: ASK_USER_TIMEOUT_MS,
               signal: requestOptions?.signal,
             }),
@@ -2278,6 +3015,13 @@ export class CodexProvider implements AgentProvider {
 
         getTurnPreparationSignal().throwIfAborted();
         const createdApprovalMode = getApprovalMode();
+        const ingestionLagOwner: CodexIngestionLagOwner = {
+          client: null,
+          hasPositiveSample: false,
+          retired: false,
+        };
+        const retainedExecutionUserMessageId = getLastExecutionUserMessageId();
+        let constructingClient: CodexAppServerClient | null = null;
         const nextClient = new CodexAppServerClient({
           cwd: opts.cwd,
           projectId: opts.projectId,
@@ -2285,7 +3029,57 @@ export class CodexProvider implements AgentProvider {
           chatId: opts.chatId,
           sessionKey: key,
           initialThreadId: getResumeThreadId() ?? initialThreadId,
+          ...(retainedExecutionUserMessageId
+            ? {
+                initialExecutionUserMessageId: retainedExecutionUserMessageId,
+              }
+            : {}),
           onEvent,
+          onTurnLifecycleObservation,
+          onProviderEventDropped: (drop): void => {
+            recordChatEventDropped({
+              ...drop,
+              projectId: opts.projectId,
+              worktreeId: opts.worktreeId,
+              chatId: opts.chatId,
+              providerType: 'codex',
+            });
+          },
+          providerContractGuard: createCodexContractGuard(
+            {
+              sessionKey: key,
+              projectId: opts.projectId,
+              worktreeId: opts.worktreeId,
+              chatId: opts.chatId,
+            },
+            (diagnostic) => {
+              getObservabilityService().recordSessionDiagnostic(diagnostic);
+            },
+          ),
+          onSteeringEligibilityChanged: (): void => {
+            onClientSteeringEligibilityChanged(constructingClient);
+          },
+          onIngestionLagChange: (change: CodexIngestionLagChange): void => {
+            getObservabilityService().recordSessionDiagnostic({
+              version: 1,
+              timestamp: new Date().toISOString(),
+              kind: 'ingestion_lag',
+              sessionKey: key,
+              projectId: opts.projectId,
+              worktreeId: opts.worktreeId,
+              chatId: opts.chatId,
+              providerType: 'codex',
+              outcome: change.outcome,
+              lagMs: change.lagMs,
+              peakLagMs: change.peakLagMs,
+              episodeMs: change.episodeMs,
+              thresholdMs: change.thresholdMs,
+              source: change.source,
+            });
+          },
+          onIngestionLagSample: (sample: ChatIngestionLag): void => {
+            handleIngestionLagSample(ingestionLagOwner, sample);
+          },
           getWindow,
           extraEnv:
             preparedInvocationState.extraEnv &&
@@ -2315,13 +3109,16 @@ export class CodexProvider implements AgentProvider {
             getMcpHttpProxyService().getCodexCapabilityAuthorityIds(
               resolvedMcpServersConfig ?? {},
             ),
-          threadConfig: managedDelegation
-            ? {
-                ...preparedInvocationState.threadConfig,
-                'features.multi_agent': false,
-                'features.multi_agent_v2': false,
-              }
-            : preparedInvocationState.threadConfig,
+          threadConfig: {
+            ...preparedInvocationState.threadConfig,
+            'features.goals': false,
+            ...(managedDelegation
+              ? {
+                  'features.multi_agent': false,
+                  'features.multi_agent_v2': false,
+                }
+              : {}),
+          },
           selectedCapabilityRoots,
           capabilityStore: getDesktopCodexCapabilityStore(),
           fallbackSeedItems: forkSeedItems,
@@ -2367,7 +3164,7 @@ export class CodexProvider implements AgentProvider {
           modelConfig: getModelConfig,
           approvalSession,
           approvalMode: createdApprovalMode,
-          onAwaitingUser: (): void => markTurnAwaitingUser(key),
+          onAwaitingUser: (): void => turnState.markTurnAwaitingUser(),
           ...(managedDelegation
             ? {
                 onDynamicToolResultAccepted: (call: {
@@ -2443,6 +3240,17 @@ export class CodexProvider implements AgentProvider {
                 toolUseId: `codex-${params.callId}`,
               },
             );
+            if (requestOptions?.signal?.aborted) {
+              return {
+                contentItems: [
+                  {
+                    type: 'inputText',
+                    text: 'The dynamic tool call was cancelled before dispatch.',
+                  },
+                ],
+                success: false,
+              };
+            }
             if (outcome.decision === 'deny') {
               const response = {
                 contentItems: [
@@ -2466,12 +3274,23 @@ export class CodexProvider implements AgentProvider {
               }
               return response;
             }
-            if (managedDelegation?.ownsTool(toolName)) {
+            if (
+              managedDelegation &&
+              (isWatchDelegatesCompatibilityName(toolName, 'codex') ||
+                managedDelegation.ownsTool(toolName))
+            ) {
               const target = nextClient.getActiveTurnInterruptTarget();
               const result = await managedDelegation.parent.invokeCodex(
                 toolName,
                 params.arguments,
-                params,
+                {
+                  callId: params.callId,
+                  turnId: params.turnId,
+                  threadId: params.threadId,
+                  ...(requestOptions?.signal !== undefined
+                    ? { signal: requestOptions.signal }
+                    : {}),
+                },
                 target?.threadId,
                 target?.turnId ?? undefined,
               );
@@ -2545,7 +3364,10 @@ export class CodexProvider implements AgentProvider {
             });
           },
         });
-        recordSessionEvent(key, {
+        constructingClient = nextClient;
+        ingestionLagOwner.client = nextClient;
+        registerIngestionLagOwner(nextClient, ingestionLagOwner);
+        turnState.recordSessionEvent({
           type: 'phase',
           phase: 'codex.client_created',
         });
@@ -2556,6 +3378,7 @@ export class CodexProvider implements AgentProvider {
           appliedApprovalMode = latestApprovalMode;
         }
         if (isDestroyed()) {
+          retireClientSessionOwners(nextClient);
           nextClient.dispose();
           throw new Error(SESSION_DESTROYED_ERROR_MESSAGE);
         }
@@ -2589,6 +3412,8 @@ export class CodexProvider implements AgentProvider {
           break;
         }
 
+        currentMessage = message;
+        currentExecutionUserMessageId = message.userMessageId;
         // `input` is computed below from send-time invocation normalization.
         const turnPlanMode = getPlanMode();
         setActiveTurn(message);
@@ -2600,9 +3425,9 @@ export class CodexProvider implements AgentProvider {
         try {
           message.staleProxyRouteRecoverySignal?.throwIfAborted();
           markCodexTurnStarting();
-          markTurnActive(key, message.userMessageId);
+          turnState.markTurnActive(message.userMessageId);
           const activeClient = await ensureClient(message.userMessageId);
-          recordSessionEvent(key, {
+          turnState.recordSessionEvent({
             type: 'phase',
             phase: 'codex.turn_start',
           });
@@ -2698,6 +3523,9 @@ export class CodexProvider implements AgentProvider {
             text:
               managedDelegation?.applyPolicyGuidance(turnInput) ?? turnInput,
             cwd: opts.cwd,
+            submissionId: message.submissionId,
+            clientUserMessageId: message.userMessageId ?? message.submissionId,
+            executionUserMessageId: message.userMessageId,
             // The routed process catalog maps gateway IDs to portable standard
             // Responses metadata. Vercel does not preserve Lite's custom
             // grammar tool-call semantics, so routed turns use that gateway ID;
@@ -2717,10 +3545,42 @@ export class CodexProvider implements AgentProvider {
             ultrafastAdmitted: speedAdmission.speed === 'ultrafast',
             proposalMode: getProposalMode(),
           });
+          // The client getter is the trusted native execution anchor, which
+          // may differ from the currently dispatched input after a merge. Read
+          // it only after startTurn resolves: a failed admission must retain
+          // this submission's own anchor, not a previous turn's client state.
+          currentExecutionUserMessageId =
+            activeClient.getExecutionUserMessageId?.() ?? message.userMessageId;
+          if (currentExecutionUserMessageId) {
+            setLastExecutionUserMessageId(currentExecutionUserMessageId);
+          }
 
+          if (activeClient.hasProviderOwnedTurn()) {
+            // The dispatched root settled, then a provider-owned root adopted
+            // the same chat before this send loop resumed. Its native terminal
+            // is now the sole owner of live session activity.
+            resultEmitted = true;
+            markCodexTurnFinished();
+            clearActiveTurn();
+            continue;
+          }
+
+          const terminalOutcome: CodexTurnTerminalEvidence['outcome'] =
+            turnResult.status === 'failed'
+              ? 'failed'
+              : turnResult.status === 'interrupted'
+                ? 'interrupted'
+                : 'completed';
+          recordCodexTurnEnd(key, {
+            ...(currentExecutionUserMessageId !== undefined
+              ? { turnUserMessageId: currentExecutionUserMessageId }
+              : {}),
+            outcome: terminalOutcome,
+            endedAtMs: Date.now(),
+          });
           const recoverySignal = getTurnPreparationSignal();
           resultEmitted = true;
-          markTurnIdle(key);
+          turnState.markTurnIdle();
           markCodexTurnFinished();
           if (turnResult.status === 'failed') {
             // One report per failed real request; only a definitive tier,
@@ -2788,7 +3648,7 @@ export class CodexProvider implements AgentProvider {
                   revivesSettledTurn: true,
                 });
                 clearActiveTurn();
-                noteSessionMessageQueued(key, messageQueue.length);
+                turnState.noteSessionMessageQueued(messageQueue.length);
                 continue;
               }
               markForRecreation();
@@ -2804,11 +3664,12 @@ export class CodexProvider implements AgentProvider {
               incompatibleReasoningRetriedThreadIds.add(failedThreadKey);
               initialThreadId = activeClient.getThreadId() ?? initialThreadId;
               forceMaterializeOnResume = true;
+              retireClientSessionOwners(activeClient);
               activeClient.dispose();
               setClient(null);
               messageQueue.unshift({ ...message, revivesSettledTurn: true });
               clearActiveTurn();
-              noteSessionMessageQueued(key, messageQueue.length);
+              turnState.noteSessionMessageQueued(messageQueue.length);
               continue;
             }
             if (
@@ -2832,12 +3693,33 @@ export class CodexProvider implements AgentProvider {
               });
               initialThreadId = activeClient.getThreadId() ?? initialThreadId;
               forceMaterializeOnResume = true;
+              retireClientSessionOwners(activeClient);
               activeClient.dispose();
               setClient(null);
               messageQueue.unshift({ ...message, revivesSettledTurn: true });
               clearActiveTurn();
-              noteSessionMessageQueued(key, messageQueue.length);
+              turnState.noteSessionMessageQueued(messageQueue.length);
               continue;
+            }
+            // A ChatGPT account refused this model: carry a structured
+            // recovery notice on the terminal event (CAN-4716). Never retried
+            // automatically; the only resend is the user's click. A failed
+            // lookup drops only the notice, never the terminal event.
+            let modelAccessFailure: CodexAccountModelAccessFailure | null =
+              null;
+            try {
+              modelAccessFailure = await resolveCodexAccountModelAccessFailure({
+                error: turnResult.error,
+                codexErrorInfo: turnResult.codexErrorInfo,
+                owner: await resolveSessionWorkOwner(opts),
+                ...(turnModel ? { turnModel } : {}),
+              });
+            } catch (error) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                '[codex-session] model access failure lookup failed',
+                error,
+              );
             }
             await emitTerminal({
               type: 'result',
@@ -2848,6 +3730,9 @@ export class CodexProvider implements AgentProvider {
                 ? { codexErrorInfo: turnResult.codexErrorInfo }
                 : {}),
               errors: [turnResult.error ?? 'Codex turn failed'],
+              ...(modelAccessFailure
+                ? { [CANOPY_MODEL_ACCESS_FAILURE_FIELD]: modelAccessFailure }
+                : {}),
             });
             clearActiveTurn();
             continue;
@@ -2891,19 +3776,37 @@ export class CodexProvider implements AgentProvider {
           });
           clearActiveTurn();
         } catch (error: unknown) {
-          if (message.staleProxyRouteRetried) {
+          // A displaced session's retry fails here once destroyed; the flag
+          // would recreate its successor.
+          if (message.staleProxyRouteRetried && turnState.ownsKeyResources()) {
             markSessionForNextTurnRecreation(
               opts.projectId,
               opts.worktreeId,
               opts.chatId,
             );
           }
-          markTurnIdle(key);
+          if (getClient()?.hasProviderOwnedTurn()) {
+            resultEmitted = true;
+            markCodexTurnFinished();
+            clearActiveTurn();
+            continue;
+          }
+          recordCodexTurnEnd(key, {
+            ...(currentExecutionUserMessageId !== undefined
+              ? {
+                  turnUserMessageId: currentExecutionUserMessageId,
+                }
+              : {}),
+            outcome: codexTurnOutcomeForError(error),
+            endedAtMs: Date.now(),
+          });
+          turnState.markTurnIdle();
           markCodexTurnFinished();
           if (terminalAdmissionFailed) {
             throw error;
           }
           if (isDestroyed()) {
+            finishCodexSessionTurn(key, currentExecutionUserMessageId);
             break;
           }
 
@@ -2953,8 +3856,22 @@ export class CodexProvider implements AgentProvider {
         }
       }
     } catch (error: unknown) {
+      if (getClient()?.hasProviderOwnedTurn()) {
+        clearCodexTurnInProgress();
+        clearActiveTurn();
+        return;
+      }
       resultEmitted = true;
-      markTurnIdle(key);
+      if (currentMessage) {
+        recordCodexTurnEnd(key, {
+          ...(currentExecutionUserMessageId !== undefined
+            ? { turnUserMessageId: currentExecutionUserMessageId }
+            : {}),
+          outcome: codexTurnOutcomeForError(error),
+          endedAtMs: Date.now(),
+        });
+      }
+      turnState.markTurnIdle();
       clearCodexTurnInProgress();
       if (terminalAdmissionFailed) {
         throw error;
@@ -2980,7 +3897,16 @@ export class CodexProvider implements AgentProvider {
     } finally {
       try {
         if (!resultEmitted) {
-          markTurnIdle(key);
+          if (currentMessage) {
+            recordCodexTurnEnd(key, {
+              ...(currentExecutionUserMessageId !== undefined
+                ? { turnUserMessageId: currentExecutionUserMessageId }
+                : {}),
+              outcome: 'interrupted',
+              endedAtMs: Date.now(),
+            });
+          }
+          turnState.markTurnIdle();
           clearCodexTurnInProgress();
           await emitTerminal({
             type: 'result',
@@ -2995,7 +3921,7 @@ export class CodexProvider implements AgentProvider {
           // The session is gone; the chat's delegations outlive it.
           managedDelegation?.detach();
         } finally {
-          unregisterSession(key);
+          unregisterOwnSession();
         }
       }
     }

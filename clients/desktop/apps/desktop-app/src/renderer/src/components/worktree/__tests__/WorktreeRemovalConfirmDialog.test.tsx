@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { WorktreeRemovalConfirmDialog } from '../WorktreeRemovalConfirmDialog';
 import { getWorktreeDeleteLabels } from '@canopy/ui-app';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 
 jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
   useCurrentUiStateReporter: jest.fn(),
@@ -35,7 +36,7 @@ describe('WorktreeRemovalConfirmDialog', () => {
     container.remove();
   });
 
-  it('names the row, abbreviates the retention warning, and commits through Preserve local', () => {
+  it('names the worktree, says what goes with it, and keeps the branch by default', () => {
     const onConfirm = jest.fn();
     const onCancel = jest.fn();
     act(() =>
@@ -54,7 +55,17 @@ describe('WorktreeRemovalConfirmDialog', () => {
       ),
     );
     const dialog = document.querySelector('[role="dialog"]');
-    expect(dialog?.textContent).toContain('Delete worktree?');
+    expect(dialog?.querySelector('h2')?.textContent).toBe(
+      'Delete worktree “feature”?',
+    );
+    // User-authored names are masked in session replay: the worktree in the
+    // title and the project in the switch note.
+    expect(dialog?.querySelector('h2 .ph-mask')?.textContent).toBe('feature');
+    expect(
+      document.querySelector(
+        '[data-testid="worktree-removal-target-identity"] .ph-mask',
+      )?.textContent,
+    ).toBe('Demo');
     // Portaled to <body> as a browser-native overlay root, so the in-app
     // browser's native view never paints over it.
     const overlay = dialog?.closest('[data-canopy-browser-native-overlay]');
@@ -62,17 +73,15 @@ describe('WorktreeRemovalConfirmDialog', () => {
       'true',
     );
     expect(overlay?.parentElement).toBe(document.body);
-    const identity = document.querySelector(
-      '[data-testid="worktree-removal-target-identity"]',
-    );
-    expect(identity?.textContent).toContain('Worktreefeature wt');
-    expect(identity?.textContent).toContain('Branchfeature/x');
-    expect(identity?.textContent).toContain('ProjectDemo');
+    expect(
+      document.querySelector('[data-testid="worktree-removal-target-identity"]')
+        ?.textContent,
+    ).toBe('feature/x stays in Demo.');
     expect(
       document.querySelector('[data-testid="worktree-removal-summary"]')
         ?.textContent,
     ).toBe(
-      'Has local changes +3 -1. Restorable for 7 days when an archive can be created.',
+      'Its local changes (+3 −1) go with it. Restorable for 7 days when an archive can be created.',
     );
     // The full explanation lives behind the info button, not in the body.
     expect(dialog?.textContent).not.toContain(
@@ -97,9 +106,17 @@ describe('WorktreeRemovalConfirmDialog', () => {
     );
 
     const labels = Array.from(dialog?.querySelectorAll('button') ?? [])
-      .map((button) => button.textContent)
+      // A label without the key chip drawn after it.
+      .map((button) => button.firstChild?.textContent ?? '')
       .filter((label) => label !== '');
-    expect(labels).toEqual(['Cancel', 'Preserve local', 'Delete local']);
+    expect(labels).toEqual(['Cancel', 'Delete worktree']);
+    const keepBranch = document.querySelector<HTMLButtonElement>(
+      '[data-testid="worktree-removal-keep-branch"]',
+    );
+    expect(keepBranch?.getAttribute('role')).toBe('switch');
+    expect(keepBranch?.getAttribute('aria-checked')).toBe('true');
+    // Delete is destructive: no default button, focus starts on Cancel.
+    expect(document.activeElement?.firstChild?.textContent).toBe('Cancel');
     act(() => {
       document
         .querySelector<HTMLButtonElement>(
@@ -140,12 +157,12 @@ describe('WorktreeRemovalConfirmDialog', () => {
     ).toBe(
       'Deleting removes the worktree from disk and its chat from the sidebar. ' +
         'When a restorable archive can be created, its Git state, chats, and ' +
-        'eligible pipeline history are kept for 7 days. Otherwise, deletion ' +
+        'eligible workflow history are kept for 7 days. Otherwise, deletion ' +
         'is permanent.',
     );
   });
 
-  it('commits Delete local with the branch deleted', () => {
+  it('presets the switch from an App Advisor request to delete the branch', () => {
     const onConfirm = jest.fn();
     act(() =>
       root.render(
@@ -162,18 +179,70 @@ describe('WorktreeRemovalConfirmDialog', () => {
         />,
       ),
     );
+    // The request presets the switch; the note names it.
     expect(document.body.textContent).toContain(
-      'Advisor suggested Delete local.',
+      `${ORCHESTRATOR_LABEL} suggested deleting it.`,
     );
+    expect(
+      document
+        .querySelector('[data-testid="worktree-removal-keep-branch"]')
+        ?.getAttribute('aria-checked'),
+    ).toBe('false');
     const deleteLocal = document.querySelector<HTMLButtonElement>(
       '[data-testid="worktree-removal-delete-branch"]',
     );
-    expect(deleteLocal?.getAttribute('data-requested')).toBe('true');
+    expect(deleteLocal?.textContent).toBe('Delete worktree');
     act(() => deleteLocal?.click());
     expect(onConfirm).toHaveBeenCalledWith(true);
   });
 
-  it('keeps both removal actions locked while removal is blocked and cancels on Escape', () => {
+  it('flips to deleting the branch from the switch', () => {
+    const onConfirm = jest.fn();
+    act(() =>
+      root.render(
+        <WorktreeRemovalConfirmDialog
+          target={target}
+          labels={getWorktreeDeleteLabels('archive', 7, target.branchName)}
+          hasLocalWork={false}
+          hasLineChanges={false}
+          archiveInProgress={false}
+          blocked={false}
+          onCancel={jest.fn()}
+          onConfirm={onConfirm}
+        />,
+      ),
+    );
+    // Archive is not destructive: its action is the default and takes focus.
+    expect(document.activeElement?.firstChild?.textContent).toBe(
+      'Archive worktree',
+    );
+    act(() => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="worktree-removal-keep-branch"]',
+        )
+        ?.click();
+    });
+    expect(
+      document.querySelector('[data-testid="worktree-removal-target-identity"]')
+        ?.textContent,
+    ).toBe('feature/x is deleted from Demo.');
+    expect(
+      document.querySelector(
+        '[data-testid="worktree-removal-preserve-branch"]',
+      ),
+    ).toBeNull();
+    act(() => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="worktree-removal-delete-branch"]',
+        )
+        ?.click();
+    });
+    expect(onConfirm).toHaveBeenCalledWith(true);
+  });
+
+  it('keeps the removal action locked while removal is blocked and cancels on Escape', () => {
     const onConfirm = jest.fn();
     const onCancel = jest.fn();
     act(() =>
@@ -191,22 +260,17 @@ describe('WorktreeRemovalConfirmDialog', () => {
       ),
     );
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
-    expect(dialog?.textContent).toContain('Archive worktree?');
+    expect(dialog?.textContent).toContain('Archive worktree “feature”?');
     expect(dialog?.textContent).toContain('Kept until you delete the archive.');
-    for (const testId of [
-      'worktree-removal-preserve-branch',
-      'worktree-removal-delete-branch',
-    ]) {
-      const button = document.querySelector<HTMLButtonElement>(
-        `[data-testid="${testId}"]`,
-      );
-      expect(button?.disabled).toBe(true);
-      act(() => button?.click());
-    }
+    const button = document.querySelector<HTMLButtonElement>(
+      '[data-testid="worktree-removal-preserve-branch"]',
+    );
+    expect(button?.disabled).toBe(true);
+    act(() => button?.click());
     expect(onConfirm).not.toHaveBeenCalled();
     // Focus lands on Cancel, the safe default, so Escape reaches the dialog
     // from wherever the keyboard is rather than only after a click inside.
-    expect(document.activeElement?.textContent).toBe('Cancel');
+    expect(document.activeElement?.firstChild?.textContent).toBe('Cancel');
     expect(dialog?.contains(document.activeElement)).toBe(true);
     act(() => {
       document.activeElement?.dispatchEvent(
@@ -242,5 +306,41 @@ describe('WorktreeRemovalConfirmDialog', () => {
     });
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onRowClick).not.toHaveBeenCalled();
+  });
+  it('presets the branch switch again when a new request replaces the open one', () => {
+    const render = (requestedDeleteBranch: boolean | undefined): void =>
+      act(() =>
+        root.render(
+          <WorktreeRemovalConfirmDialog
+            target={target}
+            labels={getWorktreeDeleteLabels('archive', 7, target.branchName)}
+            hasLocalWork={false}
+            hasLineChanges={false}
+            archiveInProgress={false}
+            blocked={false}
+            requestedDeleteBranch={requestedDeleteBranch}
+            onCancel={jest.fn()}
+            onConfirm={jest.fn()}
+          />,
+        ),
+      );
+    const keepBranch = (): string | null | undefined =>
+      document
+        .querySelector('[data-testid="worktree-removal-keep-branch"]')
+        ?.getAttribute('aria-checked');
+
+    render(true);
+    expect(keepBranch()).toBe('false');
+    // A replacement request to keep the branch must not inherit the earlier
+    // "delete it" preset.
+    render(false);
+    expect(keepBranch()).toBe('true');
+    expect(
+      document.querySelector(
+        '[data-testid="worktree-removal-preserve-branch"]',
+      ),
+    ).toBeInstanceOf(HTMLButtonElement);
+    render(true);
+    expect(keepBranch()).toBe('false');
   });
 });

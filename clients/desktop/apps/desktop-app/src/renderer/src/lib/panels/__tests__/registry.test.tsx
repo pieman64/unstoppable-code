@@ -17,6 +17,7 @@ import {
   renderPanelContent,
 } from '../registry';
 import { useChatStore, type ChatTab } from '@/stores/chatStore';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { useExperimentalFeaturesStore } from '@/stores/experimentalFeaturesStore';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
@@ -38,6 +39,8 @@ import {
   usePanelLayoutStore,
 } from '@/stores/panelLayoutStore';
 import { PanelWorktreeContext } from '../panel-worktree-context';
+import { PanelPlacementContext } from '../panel-placement-context';
+import { usePanelWindowsStore } from '@/stores/panelWindowsStore';
 import {
   DEFAULT_PANEL_HOST_STATE,
   PanelHostContext,
@@ -250,7 +253,7 @@ function makeTab(overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
@@ -506,7 +509,7 @@ describe('desktop panel content registry', () => {
   describe('pipeline-execution', () => {
     it('is a repeatable, poppable, non-window-bound kind', () => {
       const definition = DESKTOP_PANEL_DEFINITIONS['pipeline-execution'];
-      expect(definition.title).toBe('Pipeline run');
+      expect(definition.title).toBe('Workflow run');
       expect(definition.singleton).toBe(false);
       expect(definition.canPopOut).toBe(true);
       expect(definition.isWindowBound).toBe(false);
@@ -1016,6 +1019,157 @@ describe('desktop panel content registry', () => {
       expect(props.viewMode).toBe('diff');
       expect(props.active).toBe(true);
       expect(props.recheckAfterWorktreeSetup).toBe(true);
+    });
+
+    describe('empty file tab', () => {
+      function seedEmptyFileTab(key: string): void {
+        useChatStore.setState((state) => ({
+          worktreeChats: {
+            ...state.worktreeChats,
+            [key]: {
+              activeTabId: 'file-empty',
+              tabs: [makeTab({ id: 'file-empty', kind: 'file', filePath: '' })],
+            },
+          },
+        }));
+      }
+      const emptyProps = (): PanelContentProps =>
+        contentProps('file-diff', {
+          instance: { fileTabId: 'file-empty', filePath: '' },
+        });
+
+      it('offers Open file with its shortcut chip and opens file search', () => {
+        seedEmptyFileTab('project-1/worktree-1');
+        useNavigationStore.setState({ fileSearchPaletteOpen: false });
+        renderKind(emptyProps());
+        const empty = container.querySelector(
+          '[data-testid="file-tab-empty-state"]',
+        );
+        expect(empty?.textContent).toContain('No file open');
+        expect(empty?.textContent).toContain(
+          'Pick one in the file tree, or search by name.',
+        );
+        expect(empty?.textContent).not.toContain('Press');
+        const button = container.querySelector<HTMLButtonElement>(
+          '[data-testid="file-tab-empty-open-file"]',
+        );
+        expect(button).toBeInstanceOf(HTMLButtonElement);
+        expect(
+          button?.querySelector('[data-testid="kbd-chip"]')?.textContent,
+        ).toMatch(/^(⌘P|Ctrl P)$/);
+        act(() => {
+          button?.click();
+        });
+        expect(useNavigationStore.getState().fileSearchPaletteOpen).toBe(true);
+      });
+
+      it('keeps the file tree alone when the main window shows another worktree', () => {
+        seedEmptyFileTab('project-1/worktree-2');
+        act(() => {
+          root.render(
+            <PanelWorktreeContext.Provider
+              value={{ projectId: 'project-1', worktreeId: 'worktree-2' }}
+            >
+              {renderPanelContent(emptyProps())}
+            </PanelWorktreeContext.Provider>,
+          );
+        });
+        const empty = container.querySelector(
+          '[data-testid="file-tab-empty-state"]',
+        );
+        expect(empty).toBeInstanceOf(HTMLElement);
+        expect(empty?.textContent).toContain('Pick one in the file tree.');
+        expect(
+          container.querySelector('[data-testid="file-tab-empty-open-file"]'),
+        ).toBeNull();
+      });
+
+      it('drops Open file when its panel moves to a popped-out window', () => {
+        seedEmptyFileTab('project-1/worktree-1');
+        const iframe = document.createElement('iframe');
+        document.body.append(iframe);
+        const childWindow = iframe.contentWindow;
+        if (childWindow === null) throw new Error('iframe has no window');
+        const auxLayoutKey = 'project-1/worktree-1#aux-1';
+        try {
+          act(() => {
+            root.render(
+              <PanelPlacementContext.Provider
+                value={{ layoutKey: auxLayoutKey, groupId: 'group-files' }}
+              >
+                <PanelWorktreeContext.Provider
+                  value={{ projectId: 'project-1', worktreeId: 'worktree-1' }}
+                >
+                  {renderPanelContent(emptyProps())}
+                </PanelWorktreeContext.Provider>
+              </PanelPlacementContext.Provider>,
+            );
+          });
+          // Not popped out yet: the panel shows in the main window.
+          expect(
+            container.querySelector('[data-testid="file-tab-empty-open-file"]'),
+          ).toBeInstanceOf(HTMLButtonElement);
+          // Its layout opens in an auxiliary window; the panel moves without
+          // remounting, and the button goes.
+          act(() => {
+            usePanelWindowsStore.setState({
+              auxWindows: {
+                'aux-1': {
+                  auxWindowId: 'aux-1',
+                  worktreeKey: 'project-1/worktree-1',
+                  layoutKey: auxLayoutKey,
+                  sourceGroupId: 'group-files',
+                  childWindow,
+                  status: 'open',
+                  focusOnOpen: false,
+                },
+              },
+            });
+          });
+          expect(
+            container.querySelector('[data-testid="file-tab-empty-open-file"]'),
+          ).toBeNull();
+          expect(
+            container.querySelector('[data-testid="file-tab-empty-state"]')
+              ?.textContent,
+          ).toContain('Pick one in the file tree.');
+        } finally {
+          act(() => {
+            usePanelWindowsStore.setState({ auxWindows: {} });
+          });
+          iframe.remove();
+        }
+      });
+
+      it('makes its own tab active before opening search from the keyboard', () => {
+        useChatStore.setState({
+          worktreeChats: {
+            'project-1/worktree-1': {
+              activeTabId: 'file-other',
+              tabs: [
+                makeTab({ id: 'file-other', kind: 'file', filePath: '' }),
+                makeTab({ id: 'file-empty', kind: 'file', filePath: '' }),
+              ],
+            },
+          },
+        });
+        useNavigationStore.setState({ fileSearchPaletteOpen: false });
+        renderKind(emptyProps());
+        const button = container.querySelector<HTMLButtonElement>(
+          '[data-testid="file-tab-empty-open-file"]',
+        );
+        expect(button).toBeInstanceOf(HTMLButtonElement);
+        // A keyboard press clicks without the pointer-down that activates
+        // the panel group.
+        act(() => {
+          button?.click();
+        });
+        expect(
+          useChatStore.getState().worktreeChats['project-1/worktree-1']
+            ?.activeTabId,
+        ).toBe('file-empty');
+        expect(useNavigationStore.getState().fileSearchPaletteOpen).toBe(true);
+      });
     });
 
     it('reports the active file tab embedded-tree visibility to App Advisor', () => {

@@ -12,7 +12,6 @@ import type { DelegationParentContext } from '../types';
 
 const names = {
   spawn: 'Spawn',
-  watch: 'Watch',
   output: 'Output',
   inspect: 'Inspect',
   list: 'List',
@@ -35,9 +34,10 @@ const input = {
 };
 
 async function setup(
-  harness: 'claude' | 'codex' | 'cursor' = 'claude',
+  harness: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude',
   routeOverrides: Parameters<typeof routeFixture>[0] = {},
   namespace = 'test',
+  currentMessage?: () => string | undefined,
 ): Promise<{
   parent: DelegationParent;
   runner: FakeRunner;
@@ -90,6 +90,7 @@ async function setup(
     names,
     broker,
     currentTurn: (): string => turn,
+    ...(currentMessage === undefined ? {} : { currentMessage }),
     removeQueued,
     reportError: (): void => undefined,
   });
@@ -114,40 +115,44 @@ async function flush(): Promise<void> {
 }
 
 describe('managed native parent boundary', () => {
-  it('binds Cursor admission to the host turn and MCP request identity', async () => {
-    const { parent, runner, setTurn } = await setup('cursor');
-    try {
-      const native = { turnId: 'turn', callId: 'mcp-request-1' };
-      const first = await parent.invokeCursor(names.spawn, input, native);
-      expect(first.ok).toBe(true);
-      expect(await parent.invokeCursor(names.spawn, input, native)).toEqual(
-        first,
-      );
-      await flush();
-      expect(runner.starts).toHaveLength(1);
-      expect(runner.starts[0]?.parent).toMatchObject({
-        harnessId: 'cursor',
-        turnId: 'turn',
-        toolCallId: 'mcp-request-1',
-      });
-      expect(
-        (
-          await parent.invokeCursor(
-            names.spawn,
-            { ...input, _hostCorrelation: 'forged' },
-            { ...native, callId: 'forged' },
-          )
-        ).ok,
-      ).toBe(false);
-      setTurn('next-turn');
-      expect((await parent.invokeCursor(names.spawn, input, native)).ok).toBe(
-        false,
-      );
-      expect(runner.starts).toHaveLength(1);
-    } finally {
-      await parent.close('parent_cancelled');
-    }
-  });
+  it.each(['cursor', 'copilot'] as const)(
+    'binds %s admission to the host turn and MCP request identity',
+    async (harness) => {
+      const { parent, runner, setTurn } = await setup(harness);
+      try {
+        const native = { turnId: 'turn', callId: 'mcp-request-1' };
+        const first = await parent.invokeCursor(names.spawn, input, native);
+        expect(first.ok).toBe(true);
+        expect(await parent.invokeCursor(names.spawn, input, native)).toEqual(
+          first,
+        );
+        await flush();
+        expect(runner.starts).toHaveLength(1);
+        expect(runner.starts[0]?.parent).toMatchObject({
+          harnessId: harness,
+          turnId: 'turn',
+          userMessageId: 'turn',
+          toolCallId: 'mcp-request-1',
+        });
+        expect(
+          (
+            await parent.invokeCursor(
+              names.spawn,
+              { ...input, _hostCorrelation: 'forged' },
+              { ...native, callId: 'forged' },
+            )
+          ).ok,
+        ).toBe(false);
+        setTurn('next-turn');
+        expect((await parent.invokeCursor(names.spawn, input, native)).ok).toBe(
+          false,
+        );
+        expect(runner.starts).toHaveLength(1);
+      } finally {
+        await parent.close('parent_cancelled');
+      }
+    },
+  );
 
   it('accepts a lower-kebab brand tool namespace', async () => {
     // Brand manifests require lower-kebab namespaces, such as
@@ -175,7 +180,193 @@ describe('managed native parent boundary', () => {
     }
   });
 
-  it('keeps completion silent until an explicit watch or output read', async () => {
+  it('uses the message anchor only for cards while Claude authority and bindings use the turn', async () => {
+    const messageId = 'card-message';
+    const { parent, runner } = await setup(
+      'claude',
+      {},
+      'test',
+      (): string => messageId,
+    );
+    try {
+      expect(parent.context()).toMatchObject({
+        turnId: 'turn',
+        userMessageId: messageId,
+      });
+      const bound = parent.bindClaude(names.spawn, input, 'call');
+      if (!bound.ok) throw new Error('Expected turn-bound Claude call');
+
+      await expect(
+        parent.invokeClaude(names.spawn, bound.value),
+      ).resolves.toMatchObject({
+        ok: true,
+      });
+      await flush();
+      expect(runner.starts).toHaveLength(1);
+      expect(runner.starts[0]?.parent).toMatchObject({
+        turnId: 'turn',
+        userMessageId: messageId,
+        toolCallId: 'call',
+      });
+    } finally {
+      await parent.close('parent_cancelled');
+    }
+  });
+
+  it('anchors each Claude call in one turn to the message current when it was bound', async () => {
+    let messageId = 'first-card-message';
+    const { parent, runner } = await setup(
+      'claude',
+      {},
+      'test',
+      (): string => messageId,
+    );
+    try {
+      const first = parent.bindClaude(names.spawn, input, 'call-1');
+      if (!first.ok) throw new Error('Expected the first turn-bound call');
+      // An autonomous turn anchors to the latest dispatched message, which
+      // can change between two calls without starting a new turn.
+      messageId = 'second-card-message';
+      const second = parent.bindClaude(names.spawn, input, 'call-2');
+      if (!second.ok) throw new Error('Expected the second turn-bound call');
+
+      await expect(
+        parent.invokeClaude(names.spawn, first.value),
+      ).resolves.toMatchObject({ ok: true });
+      await expect(
+        parent.invokeClaude(names.spawn, second.value),
+      ).resolves.toMatchObject({ ok: true });
+      await flush();
+      expect(runner.starts.map((start) => start.parent)).toEqual([
+        expect.objectContaining({
+          turnId: 'turn',
+          userMessageId: 'first-card-message',
+          toolCallId: 'call-1',
+        }),
+        expect.objectContaining({
+          turnId: 'turn',
+          userMessageId: 'second-card-message',
+          toolCallId: 'call-2',
+        }),
+      ]);
+    } finally {
+      await parent.close('parent_cancelled');
+    }
+  });
+
+  it('keeps Claude authority when an explicit message anchor is unavailable', async () => {
+    const { parent, runner } = await setup(
+      'claude',
+      {},
+      'test',
+      (): undefined => undefined,
+    );
+    try {
+      expect(parent.context()).toMatchObject({
+        turnId: 'turn',
+        userMessageId: undefined,
+      });
+      const bound = parent.bindClaude(names.spawn, input, 'call');
+      if (!bound.ok) throw new Error('Expected turn-bound Claude call');
+
+      await expect(
+        parent.invokeClaude(names.spawn, bound.value),
+      ).resolves.toMatchObject({
+        ok: true,
+      });
+      await flush();
+      expect(runner.starts).toHaveLength(1);
+      expect(runner.starts[0]?.parent).toMatchObject({
+        turnId: 'turn',
+        userMessageId: undefined,
+      });
+    } finally {
+      await parent.close('parent_cancelled');
+    }
+  });
+
+  it('limits call bindings per turn and rejects a prior turn binding with the same card anchor', async () => {
+    const messageId = 'same-card-message';
+    const { parent, runner, setTurn } = await setup(
+      'claude',
+      {},
+      'test',
+      (): string => messageId,
+    );
+    try {
+      const first = parent.bindClaude(names.spawn, input, 'call-0');
+      if (!first.ok) throw new Error('Expected first turn binding');
+      const overflow = Array.from({ length: 63 }, (_, index) =>
+        parent.bindClaude(names.spawn, input, `call-${String(index + 1)}`),
+      );
+      expect(overflow.every((result) => result.ok)).toBe(true);
+      expect(
+        parent.bindClaude(names.spawn, input, 'call-overflow'),
+      ).toMatchObject({
+        ok: false,
+        error: { code: 'capacity_exceeded' },
+      });
+
+      setTurn('next-turn');
+      expect(parent.context()).toMatchObject({
+        turnId: 'next-turn',
+        userMessageId: messageId,
+      });
+      await expect(
+        parent.invokeClaude(names.spawn, first.value),
+      ).resolves.toMatchObject({
+        ok: false,
+      });
+      const next = parent.bindClaude(names.spawn, input, 'next-call');
+      if (!next.ok) throw new Error('Expected next turn to have a fresh limit');
+      await expect(
+        parent.invokeClaude(names.spawn, next.value),
+      ).resolves.toMatchObject({
+        ok: true,
+      });
+      await flush();
+      expect(runner.starts).toHaveLength(1);
+      expect(runner.starts[0]?.parent).toMatchObject({
+        turnId: 'next-turn',
+        userMessageId: messageId,
+        toolCallId: 'next-call',
+      });
+    } finally {
+      await parent.close('parent_cancelled');
+    }
+  });
+
+  it('passes the root message anchor through child owner contexts', async () => {
+    const messageId = 'root-card-message';
+    const { parent, runner, broker } = await setup(
+      'claude',
+      {},
+      'test',
+      (): string => messageId,
+    );
+    try {
+      const bound = parent.bindClaude(names.spawn, input, 'call');
+      if (!bound.ok) throw new Error('Expected native hook binding');
+      await parent.invokeClaude(names.spawn, bound.value);
+      await flush();
+      const request = runner.starts[0];
+      if (!request) throw new Error('Expected child execution request');
+
+      const child = broker.childContext(
+        request,
+        'child-call',
+        'child-communication',
+      );
+      expect(child).toMatchObject({
+        userMessageId: messageId,
+        parentDelegationId: request.delegationId,
+      });
+    } finally {
+      await parent.close('parent_cancelled');
+    }
+  });
+
+  it('retains completion until output is explicitly read', async () => {
     const { parent, runner, broker, records, enqueue } = await setup();
     const bound = parent.bindClaude(names.spawn, input, 'call');
     if (!bound.ok) throw new Error('Expected hook binding');
@@ -441,7 +632,7 @@ describe('managed native parent boundary', () => {
       'suppressed',
     );
     expect(
-      broker.getOutput(context, { delegationId: launched.delegationId }),
+      await broker.getOutput(context, { delegationId: launched.delegationId }),
     ).toMatchObject({
       ok: true,
       value: {

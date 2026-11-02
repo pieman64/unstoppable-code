@@ -54,6 +54,33 @@ describe('PptxPreview', () => {
     document.body.innerHTML = '';
   });
 
+  it('resolves selection against each solid slide surface rather than app appearance', async () => {
+    const result = fixtureResult();
+    mockParse.mockResolvedValue({
+      ...result,
+      slides: result.slides.map((slide, index) => ({
+        ...slide,
+        background: index === 0 ? '#ffffff' : '#000000',
+      })),
+    });
+    const { container, root } = mount(
+      <PptxPreview
+        createWorker={createTestWorker}
+        bytes={BYTES}
+        fileName="deck.pptx"
+        onRenderFailure={jest.fn()}
+      />,
+    );
+    await flush();
+    expect(
+      Array.from(
+        container.querySelectorAll('[data-testid="pptx-slide-canvas"]'),
+        (canvas) => canvas.getAttribute('data-selection-surface'),
+      ),
+    ).toEqual(['paper', 'dark']);
+    act(() => root.unmount());
+  });
+
   it('shows the banner while loading, then one canvas per slide', async () => {
     mockParse.mockResolvedValue(fixtureResult());
     const onRenderFailure = jest.fn();

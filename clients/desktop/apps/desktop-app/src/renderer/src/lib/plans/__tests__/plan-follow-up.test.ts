@@ -47,6 +47,8 @@ function tab(id: string): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
   };
 }
 
@@ -54,7 +56,9 @@ beforeEach(() => {
   sendMessage = jest.fn().mockResolvedValue(undefined);
   markTrackedPlanExecuted = jest.fn();
   loadTrackedPlans = jest.fn().mockResolvedValue(undefined);
-  updatePlan = jest.fn().mockResolvedValue(null);
+  updatePlan = jest
+    .fn()
+    .mockResolvedValue({ ...makePlan(), reviewStatus: 'approved' });
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: { activity: { plans: { update: updatePlan } } },
@@ -140,6 +144,44 @@ describe('implementTrackedPlan', () => {
     await expect(implemented).resolves.toEqual({ chatId: 'owning-chat' });
     expect(onChatChosen).toHaveBeenCalledTimes(1);
     expect(updatePlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('synchronizes approval after admission while the implementation send is still held', async () => {
+    let settleSend: () => void = () => undefined;
+    sendMessage.mockImplementation(
+      (
+        _text: unknown,
+        _files: unknown,
+        _target: unknown,
+        _callbacks: unknown,
+        options: SendMessageDispatchOptions,
+      ): Promise<void> => {
+        options.onDispatchAccepted?.();
+        return new Promise<void>((resolve) => {
+          settleSend = resolve;
+        });
+      },
+    );
+    const implemented = implementTrackedPlan(makePlan());
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    expect(updatePlan).toHaveBeenCalledTimes(1);
+    expect(loadTrackedPlans).toHaveBeenCalledTimes(1);
+    settleSend();
+    await implemented;
+    expect(updatePlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles refresh failure after admission without reporting the implementation as failed', async () => {
+    loadTrackedPlans.mockRejectedValueOnce(new Error('offline'));
+    await expect(implementTrackedPlan(makePlan())).resolves.toEqual({
+      chatId: 'owning-chat',
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(
+      useActivityStore.getState().trackedPlans[
+        `${PROJECT_ID}/${WORKTREE_ID}`
+      ]?.[0]?.reviewStatus,
+    ).toBe('approved');
   });
 
   it('leaves the plan unapproved when the send fails', async () => {

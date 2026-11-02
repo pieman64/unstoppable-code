@@ -8,6 +8,7 @@ import { useCleanChatLook } from '../chat-look';
 import { StepRow } from './StepRow';
 import { formatDuration, formatTokenCount } from '../../lib/format-usage';
 import { AgentCardOpenChatAction } from './AgentCardOpenChatAction';
+import { ToolCallCard, toolCallResultFrom } from './ToolCallCard';
 
 function formatReasoningEffort(reasoningEffort: string): string {
   if (isThinkingLevel(reasoningEffort)) {
@@ -67,6 +68,11 @@ export interface AgentBlockCardProps {
   pendingSpinner?: ReactNode;
   /** Test ID hook for automation. */
   dataTestId?: string;
+  /**
+   * The call's stable step identity, exposed as `data-tool-use-id` so a host
+   * can reveal and focus this row (a turn summary landing on a failed step).
+   */
+  toolUseId?: string;
   /**
    * Replaces the default usage cells (context, output, tool uses, API calls,
    * duration, model) for a host whose usage is not an agent's model usage,
@@ -179,6 +185,7 @@ export function AgentBlockCard({
   isRunning = false,
   pendingSpinner,
   dataTestId,
+  toolUseId,
   usageOverride,
   metadata,
   onOpenChat,
@@ -202,8 +209,28 @@ export function AgentBlockCard({
 
   // Clean chat look: the helper agent reads like any other step row.
   const clean = useCleanChatLook();
+  const displayResult =
+    result === undefined
+      ? null
+      : toolCallResultFrom({ output: result, isError });
+  if (displayResult?.kind === 'blocked') {
+    const agentLabel = shouldShowSubagentType
+      ? `${subagentType} agent`
+      : 'agent';
+    return (
+      <ToolCallCard
+        toolName="Agent"
+        toolFamily="agent"
+        label={`${clean ? 'Didn’t run ' : ''}${agentLabel}${description ? ` · ${description}` : ''}`}
+        input={prompt}
+        result={displayResult}
+        dataTestId={dataTestId}
+      />
+    );
+  }
   const cleanHeader = (
     <StepRow
+      step
       icon={<AgentIcon />}
       label={
         <>
@@ -231,7 +258,7 @@ export function AgentBlockCard({
       onClick={(): void => setIsExpanded((prev) => !prev)}
       aria-expanded={isExpanded}
       aria-label={isExpanded ? collapseLabel : expandLabel}
-      className={`group flex ${headerAction != null ? 'min-w-0 flex-1' : 'w-full'} items-center gap-2 py-1 text-xs fg-accent/80 transition`}
+      className={`group flex ${headerAction != null ? 'min-w-0 flex-1' : 'w-full'} items-center gap-2 py-1 text-xs fg-accent/80 transition-colors`}
     >
       <span className="flex-shrink-0">
         <span className="block group-hover:hidden">
@@ -271,6 +298,7 @@ export function AgentBlockCard({
     <div
       className={clean ? undefined : 'border-l-2 border-line-accent/30 pl-2'}
       data-testid={dataTestId}
+      data-tool-use-id={toolUseId}
     >
       {headerAction != null ? (
         <div className="flex items-center gap-2">
@@ -340,7 +368,7 @@ export function AgentBlockCard({
                     isError ? 'fg-destructive/80' : 'fg-secondary'
                   }`}
                 >
-                  {result}
+                  {displayResult?.content}
                 </pre>
               )}
             </>

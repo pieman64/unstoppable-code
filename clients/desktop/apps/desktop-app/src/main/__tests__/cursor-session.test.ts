@@ -25,6 +25,10 @@ import { getChatTurnAuditStatus } from '../lib/chat-turn-audit';
 import { isUserCancellationTerminal } from '../../renderer/src/stores/chat/turn-events';
 import { BRAND } from '@canopy/brand/current';
 import {
+  ChatTurnLifecycleEventSchema,
+  type ChatTurnLifecycleEvent,
+} from '@canopy/protocol/canopy-core';
+import {
   CursorProvider,
   resetCursorPreTurnDiscoveryForTests,
 } from '../agents/cursor-session';
@@ -39,6 +43,7 @@ import {
   drainChatSessionEvents,
   markTurnAwaitingUser,
   markTurnIdle,
+  recordSessionEvent,
 } from '../agents/session-manager';
 import {
   initCursorModels,
@@ -50,8 +55,14 @@ import {
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import type { ChatReadSelection } from '../services/chat-state-v2-backend';
 import { createApprovalSession } from '../approvals/approval-service';
+import {
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+  setTurnLifecycleSink,
+} from '../agents/provider-turn-lifecycle';
 import { hasTrustedVisualToolUse } from '../services/visual-tool-identity';
 import type { AgentSessionOptions } from '../agents/types';
+import type { AppAdvisorToolRuntime } from '../app-advisor/runtime';
 
 const mockReadChatTabsFile = jest.fn<
   Promise<ChatTabsFile>,
@@ -322,7 +333,7 @@ const mockResolvePlugins = jest.fn<
     cursorCapabilities?: { skills: unknown[]; commands: unknown[] };
   }>,
   [unknown, unknown, unknown, unknown, unknown]
->(() => Promise.resolve({ mcpServers: {}, warnings: [] }));
+>(() => Promise.resolve({ mcpServers: {}, warnings: [], cursorNotices: [] }));
 const mockMaterialize = jest.fn<
   Promise<{ skillIds: string[]; commandIds: string[]; warnings: string[] }>,
   [string, unknown]
@@ -440,11 +451,15 @@ jest.mock('@canopy/desktop-shared/node/cursor/hook-transport', () => ({
     });
   },
 }));
-const mockAuthorizeCursorTool = jest.fn(() =>
-  Promise.resolve({ decision: 'allow' }),
-);
+const mockAuthorizeCursorTool = jest.fn<
+  ReturnType<typeof ToolApprovalModule.authorizeCursorTool>,
+  Parameters<typeof ToolApprovalModule.authorizeCursorTool>
+>(() => Promise.resolve({ decision: 'allow' }));
 jest.mock('../cursor/tool-approval', () => ({
-  authorizeCursorTool: (payload: unknown, context: unknown): Promise<unknown> =>
+  authorizeCursorTool: (
+    payload: Parameters<typeof ToolApprovalModule.authorizeCursorTool>[0],
+    context: Parameters<typeof ToolApprovalModule.authorizeCursorTool>[1],
+  ): ReturnType<typeof ToolApprovalModule.authorizeCursorTool> =>
     mockAuthorizeCursorTool(payload, context),
   // MCP authorization is exercised for real against the mocked approval
   // session so the policy hand-off is verified end to end.
@@ -456,10 +471,10 @@ jest.mock('../cursor/tool-approval', () => ({
       .requireActual<typeof ToolApprovalModule>('../cursor/tool-approval')
       .authorizeCursorMcpTool(call, context),
 }));
-const mockRewriteCursorShellInput = jest.fn(
-  (): Promise<Record<string, unknown> | undefined> =>
-    Promise.resolve(undefined),
-);
+const mockRewriteCursorShellInput = jest.fn<
+  Promise<Record<string, unknown> | undefined>,
+  [unknown, unknown]
+>(() => Promise.resolve(undefined));
 jest.mock('@canopy/desktop-shared/node/cursor/rtk-rewrite', () => ({
   rewriteCursorShellInput: (
     payload: unknown,
@@ -531,8 +546,13 @@ jest.mock('../lib/resolve-worktree', () => {
         : { projectId, worktreeId },
   };
 });
+const mockGetSessionKeyOwnership = jest.fn<string, unknown[]>(
+  () => 'registered',
+);
 jest.mock('../agents/session-manager', () => ({
   buildSessionKey: (): string => 'cursor-test',
+  getSessionKeyOwnership: (...args: unknown[]): string =>
+    mockGetSessionKeyOwnership(...args),
   registerSession: jest.fn(),
   recordSessionEvent: jest.fn(),
   markTurnActive: jest.fn(),
@@ -908,6 +928,35 @@ test('Cursor stays active until admitted output has finished committing', async 
     expect(markTurnIdle).toHaveBeenCalledTimes(1);
   } finally {
     release();
+    await turn.destroy();
+  }
+});
+
+test("a displaced Cursor session's ending turn leaves its successor's turn state and routes alone (CAN-4833)", async () => {
+  const turn = startTurn({}, 'displaced-turn');
+  try {
+    await turn.promptStarted;
+    jest.mocked(markTurnIdle).mockClear();
+    jest.mocked(recordSessionEvent).mockClear();
+    mockProxy.unregisterRoutesForSession.mockClear();
+    mockProxy.unregisterCanopyWorktreeSessionRoute.mockClear();
+    // A registration displaced this session mid-turn and destroys it.
+    mockGetSessionKeyOwnership.mockReturnValue('replaced');
+    await turn.destroy();
+    const terminal = await turn.terminal;
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        canopy_turn_user_message_id: 'displaced-turn',
+      }),
+    );
+    expect(markTurnIdle).not.toHaveBeenCalled();
+    expect(recordSessionEvent).not.toHaveBeenCalled();
+    expect(mockProxy.unregisterRoutesForSession).not.toHaveBeenCalled();
+    expect(
+      mockProxy.unregisterCanopyWorktreeSessionRoute,
+    ).not.toHaveBeenCalled();
+  } finally {
+    mockGetSessionKeyOwnership.mockReturnValue('registered');
     await turn.destroy();
   }
 });
@@ -1648,6 +1697,13 @@ test.each(['approval-hook.cjs', 'connection.json'])(
   },
 );
 
+function appAdvisorRuntimeFixture(
+  watcherDestination: AppAdvisorToolRuntime['watcherDestination'],
+): AppAdvisorToolRuntime {
+  // These route tests intentionally exercise only the watcher identity.
+  return { watcherDestination } as AppAdvisorToolRuntime;
+}
+
 function startTurn(
   overrides: Partial<Parameters<CursorProvider['createSession']>[0]> = {},
   userMessageId?: string,
@@ -1664,10 +1720,12 @@ function startTurn(
   sendNextMessage: () => Promise<Record<string, unknown>>;
 } {
   mockPreferences.cursorEnabled = true;
+  const cursorTarget = mockCursorTarget;
+  if (!cursorTarget) throw new Error('missing darwin-arm64 target');
   jest.mocked(getManagedCursorRuntime).mockResolvedValue({
     launch: { command: '/mock/cursor-agent', prefix: [] },
     env: {},
-    target: mockCursorTarget,
+    target: cursorTarget,
   });
   jest.mocked(verifyCursorVersion).mockResolvedValue(undefined);
   let signalPrompt: () => void = () => {};
@@ -1853,11 +1911,10 @@ describe('Cursor visual tool identity', () => {
 
   test('App Advisor cannot record a worktree ShowVisual invocation', async () => {
     mockRealProjection.enabled = true;
+    const appAdvisorRuntime = appAdvisorRuntimeFixture(target);
     const turn = startTurn({
       assistantMode: 'app-advisor',
-      appAdvisorRuntime: {
-        watcherDestination: target,
-      },
+      appAdvisorRuntime,
     });
     try {
       await turn.promptStarted;
@@ -2662,13 +2719,11 @@ describe('MCP over ACP', () => {
 
   // App Advisor sessions: the proxy suite registers a partial runtime the
   // same way; only its identity reaches the route here.
-  const advisorRuntime = {
-    watcherDestination: {
-      projectId: 'app-advisor',
-      worktreeId: 'entry',
-      chatId: 'cursor',
-    },
-  };
+  const advisorRuntime = appAdvisorRuntimeFixture({
+    projectId: 'app-advisor',
+    worktreeId: 'entry',
+    chatId: 'cursor',
+  });
   const advisorSession = (): Partial<
     Parameters<CursorProvider['createSession']>[0]
   > => ({
@@ -4797,6 +4852,24 @@ describe('thinking level', () => {
     }
   });
 
+  // The composer shows and sends Low when the model declares it; the turn must
+  // run at Low, not the Medium the display-only clamp folds it into.
+  test('runs a declared Low request at low reasoning', async () => {
+    const turn = startTurn({ model: gpt, thinkingLevel: 'low' });
+    try {
+      expect(await turn.terminal).toMatchObject({
+        type: 'result',
+        is_error: false,
+      });
+      expect(configCalls()).toEqual([
+        { configId: 'model', value: 'gpt-6-luna' },
+        { configId: 'reasoning', value: 'low' },
+      ]);
+    } finally {
+      await turn.destroy();
+    }
+  });
+
   test('re-plans after turning thinking on reveals the graded effort', async () => {
     mockHideEffortWhileThinkingOff = true;
     mockParameterValues.set('claude-opus-5:thinking', 'false');
@@ -5103,7 +5176,7 @@ describe('thinking level', () => {
 
 test('does not prompt when Cursor acknowledges a different model', async () => {
   mockSetConfig.mockResolvedValueOnce({
-    configOptions: [{ id: 'model', currentValue: 'wrong-model' }],
+    configOptions: mockConfigOptionsFor('wrong-model'),
   });
   const turn = startTurn();
   try {
@@ -5124,6 +5197,219 @@ test('Cursor flag blocks a saved connected model before runtime work', async () 
   });
   expect(getManagedCursorRuntime).not.toHaveBeenCalled();
   expect(verifyCursorVersion).not.toHaveBeenCalled();
+});
+
+test('Cursor session publishes schema-valid turn lifecycle outside the transcript and releases its producer', async () => {
+  const scope = {
+    projectId: 'cursor-lifecycle-project',
+    worktreeId: 'cursor-lifecycle-worktree',
+    chatId: 'cursor-lifecycle-chat',
+  };
+  const producer = getTurnLifecycleProducer('cursor', scope);
+  const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+  setTurnLifecycleSink((event): void => {
+    lifecycleEvents.push(event);
+  });
+  const turn = startTurn(scope, 'cursor-user-message');
+  let destroyed = false;
+
+  try {
+    await turn.promptStarted;
+    const route =
+      mockProxy.registerCanopyWorktreeSessionRoute.mock.calls[0]?.[0];
+    expect(route?.onAwaitingUser).toEqual(expect.any(Function));
+    const transcriptBeforeAwaitingUser = [...turn.events];
+    route?.onAwaitingUser?.();
+    expect(turn.events).toEqual(transcriptBeforeAwaitingUser);
+    await expect(turn.terminal).resolves.toMatchObject({
+      type: 'result',
+      is_error: false,
+    });
+
+    expect(lifecycleEvents.map((event) => event.type)).toEqual([
+      'TurnStarted',
+      'SessionState',
+      'SessionState',
+      'TurnEnded',
+      'SessionState',
+    ]);
+    expect(lifecycleEvents.map((event) => event.sequence)).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+    expect(
+      lifecycleEvents.every(
+        (event) => ChatTurnLifecycleEventSchema.safeParse(event).success,
+      ),
+    ).toBe(true);
+    expect(lifecycleEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'TurnStarted',
+        provider: 'cursor',
+        ...scope,
+        turnId: 'cursor-user-message',
+        origin: 'user',
+        binding: 'bound',
+        userMessageIds: ['cursor-user-message'],
+        phase: 'start',
+      }),
+    );
+    expect(lifecycleEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'SessionState',
+        state: 'running',
+        observedDuringTurnId: 'cursor-user-message',
+      }),
+    );
+    expect(lifecycleEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'SessionState',
+        provider: 'cursor',
+        ...scope,
+        state: 'requires_action',
+        source: 'provider',
+        observedDuringTurnId: 'cursor-user-message',
+      }),
+    );
+    expect(lifecycleEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'TurnEnded',
+        outcome: 'completed',
+        source: 'result',
+      }),
+    );
+    // A host wall-clock duration would include the requires_action pause; the
+    // reducer derives the active duration instead.
+    expect(
+      lifecycleEvents.find((event) => event.type === 'TurnEnded'),
+    ).not.toHaveProperty('durationMs');
+    expect(lifecycleEvents.at(-1)).toMatchObject({
+      type: 'SessionState',
+      state: 'idle',
+      source: 'result-fallback',
+    });
+    expect(turn.events.at(-1)).toMatchObject({
+      type: 'result',
+      is_error: false,
+      provider: 'cursor',
+      canopy_turn_user_message_id: 'cursor-user-message',
+    });
+    expect(
+      turn.events.some(
+        (event) =>
+          typeof event.type === 'string' &&
+          ['TurnStarted', 'TurnEnded', 'SessionState'].includes(event.type),
+      ),
+    ).toBe(false);
+
+    await turn.destroy();
+    destroyed = true;
+    expect(getTurnLifecycleProducer('cursor', scope)).not.toBe(producer);
+  } finally {
+    if (!destroyed) await turn.destroy();
+    setTurnLifecycleSink(null);
+    releaseTurnLifecycleProducer('cursor', scope);
+  }
+});
+
+test('Cursor session ends lifecycle as cancelled when its turn is cancelled', async () => {
+  const scope = {
+    projectId: 'cursor-cancel-project',
+    worktreeId: 'cursor-cancel-worktree',
+    chatId: 'cursor-cancel-chat',
+  };
+  const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+  setTurnLifecycleSink((event): void => {
+    lifecycleEvents.push(event);
+  });
+  const turn = startTurn(scope, 'cursor-cancel-message');
+
+  try {
+    await turn.promptStarted;
+    await turn.cancel();
+    await expect(turn.terminal).resolves.toMatchObject({
+      type: 'result',
+      subtype: 'cancelled',
+    });
+    expect(lifecycleEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'TurnEnded',
+        outcome: 'cancelled',
+        source: 'result',
+      }),
+    );
+    expect(lifecycleEvents.at(-1)).toMatchObject({
+      type: 'SessionState',
+      state: 'idle',
+    });
+  } finally {
+    await turn.destroy();
+    setTurnLifecycleSink(null);
+    releaseTurnLifecycleProducer('cursor', scope);
+  }
+});
+
+test('Cursor session ends lifecycle as failed when the provider errors', async () => {
+  const scope = {
+    projectId: 'cursor-error-project',
+    worktreeId: 'cursor-error-worktree',
+    chatId: 'cursor-error-chat',
+  };
+  const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+  setTurnLifecycleSink((event): void => {
+    lifecycleEvents.push(event);
+  });
+  const turn = startTurn(scope, 'cursor-error-message');
+  mockPrompt.mockRejectedValueOnce(new Error('Cursor transport failed.'));
+
+  try {
+    await expect(turn.terminal).resolves.toMatchObject({
+      type: 'error',
+      error: 'Cursor transport failed.',
+    });
+    expect(lifecycleEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'TurnEnded',
+        outcome: 'failed',
+        source: 'result',
+      }),
+    );
+    expect(lifecycleEvents.at(-1)).toMatchObject({
+      type: 'SessionState',
+      state: 'idle',
+    });
+  } finally {
+    await turn.destroy();
+    setTurnLifecycleSink(null);
+    releaseTurnLifecycleProducer('cursor', scope);
+  }
+});
+
+test('maps a Cursor cancelled subtype to canonical cancelled even without a host abort', async () => {
+  const scope = {
+    projectId: 'cursor-subtype-project',
+    worktreeId: 'cursor-subtype-worktree',
+    chatId: 'cursor-subtype-chat',
+  };
+  const lifecycleEvents: ChatTurnLifecycleEvent[] = [];
+  setTurnLifecycleSink((event): void => {
+    lifecycleEvents.push(event);
+  });
+  promptStopReason = 'cancelled';
+  const turn = startTurn(scope, 'cursor-subtype-message');
+  try {
+    await expect(turn.terminal).resolves.toMatchObject({
+      type: 'result',
+      subtype: 'cancelled',
+    });
+    expect(lifecycleEvents).toContainEqual(
+      expect.objectContaining({ type: 'TurnEnded', outcome: 'cancelled' }),
+    );
+  } finally {
+    promptStopReason = 'end_turn';
+    await turn.destroy();
+    setTurnLifecycleSink(null);
+    releaseTurnLifecycleProducer('cursor', scope);
+  }
 });
 
 describe('Cursor plan proposals', () => {

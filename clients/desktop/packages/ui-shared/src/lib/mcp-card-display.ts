@@ -1,3 +1,5 @@
+import { badgeClassName, type BadgeTone } from './badge';
+
 export type McpCardAuthStatus =
   | 'unsupported'
   | 'not_configured'
@@ -74,28 +76,37 @@ export function mcpAuthConnectLabel(
  * state. Callers add the surface and ink.
  */
 export const MCP_ROW_ACTION_CLASS_NAME =
-  'focus-ring inline-flex items-center rounded-md px-2 py-1 text-2xs font-medium transition disabled:opacity-60';
+  'focus-ring inline-flex items-center rounded-md px-2 py-1 text-2xs font-medium transition-colors disabled:opacity-60';
 
-/** Returns the Tailwind classes for the auth-status badge. */
+/**
+ * The shared badge tone for an auth status. An expired sign-in that refreshes
+ * on its own is neutral; one that needs the person is warning.
+ */
+export function mcpAuthStatusBadgeTone(
+  status: McpCardAuthStatus,
+  canRefresh = false,
+): BadgeTone {
+  if (status === 'expired' && canRefresh) return 'neutral';
+  switch (status) {
+    case 'connected':
+      return 'success';
+    case 'not_connected':
+    case 'expired':
+      return 'warning';
+    case 'error':
+      return 'danger';
+    case 'not_configured':
+    case 'unsupported':
+      return 'neutral';
+  }
+}
+
+/** Full shared-badge class string for the auth-status badge. */
 export function mcpAuthStatusBadgeClass(
   status: McpCardAuthStatus,
   canRefresh = false,
 ): string {
-  if (status === 'expired' && canRefresh) return 'bg-muted fg-secondary';
-  switch (status) {
-    case 'connected':
-      return 'bg-success-subtle fg-success-strong';
-    case 'not_connected':
-      return 'bg-warning-subtle fg-warning';
-    case 'expired':
-      return 'bg-warning-subtle fg-warning';
-    case 'error':
-      return 'bg-destructive-subtle fg-destructive';
-    case 'not_configured':
-      return 'bg-muted fg-secondary';
-    case 'unsupported':
-      return 'bg-muted fg-secondary';
-  }
+  return badgeClassName(mcpAuthStatusBadgeTone(status, canRefresh));
 }
 
 /**
@@ -121,20 +132,27 @@ export function mcpConnectionStatusLabel(
   }
 }
 
-/** Returns the Tailwind classes for the connection-status badge. */
+/** The shared badge tone for a connection status. */
+export function mcpConnectionStatusBadgeTone(
+  status: McpCardConnectionStatus,
+): BadgeTone {
+  switch (status) {
+    case 'connected':
+      return 'success';
+    case 'auth_required':
+      return 'warning';
+    case 'unreachable':
+      return 'danger';
+    case 'unknown':
+      return 'neutral';
+  }
+}
+
+/** Full shared-badge class string for the connection-status badge. */
 export function mcpConnectionStatusBadgeClass(
   status: McpCardConnectionStatus,
 ): string {
-  switch (status) {
-    case 'connected':
-      return 'bg-success-subtle fg-success-strong';
-    case 'auth_required':
-      return 'bg-warning-subtle fg-warning';
-    case 'unreachable':
-      return 'bg-destructive-subtle fg-destructive';
-    case 'unknown':
-      return 'bg-muted fg-secondary';
-  }
+  return badgeClassName(mcpConnectionStatusBadgeTone(status));
 }
 
 /** Builds the secondary "source · context" line for a row. */

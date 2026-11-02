@@ -1,3 +1,4 @@
+import { createDesktopTranscriptReadPort } from '../desktop-transcript-read-port';
 // Runs the shared agent action conformance suite against the desktop host:
 // the real desktop surface, environment port, and dispatcher, over in-memory
 // chat state, workspace reads, renderer bridge, and watcher service.
@@ -45,10 +46,19 @@ jest.mock('../../project-discovery/bots', () => ({
   isBotAccessAllowed: (): Promise<boolean> => Promise.resolve(false),
 }));
 
-jest.mock('../../ipc/chat-state', () => ({
-  ...jest.requireActual<object>('../../ipc/chat-state'),
-  getChatStateCommandPort: (): unknown => mockChatPort,
-}));
+jest.mock('../../ipc/chat-state', () => {
+  const actual = jest.requireActual<object>('../../ipc/chat-state');
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      getChatStateCommandPort: {
+        value: (): unknown => mockChatPort,
+        enumerable: true,
+      },
+    },
+  );
+});
 
 jest.mock('../../app-advisor/watchers', () => {
   const sameDestination = (
@@ -233,15 +243,18 @@ jest.mock('../../app-advisor/watchers', () => {
 });
 
 import {
+  AgentPortError,
+  transcriptReadActionSchema,
   createInMemoryAgentActionLimits,
   createInMemoryAgentActionReceipts,
-  AgentPortError,
   type AgentActionCall,
+  type AgentTranscriptReadOwner,
   type AgentExperimentWriteResult,
   type AgentModelList,
 } from '@canopy/agent-actions';
 import { z } from 'zod';
 import {
+  createConformanceTranscriptStore,
   createLimitCommitFailures,
   createWriteHolds,
   loadConformanceWorld,
@@ -415,6 +428,18 @@ function makeDesktopHost(world: ConformanceWorld): {
     outcome,
   });
 
+  const transcripts = createConformanceTranscriptStore(world);
+  const transcriptOwner = (request: {
+    projectId: string;
+    worktreeId: string;
+    chatId: string;
+  }): AgentTranscriptReadOwner => ({
+    scope: {
+      workspaceId: request.projectId,
+      worktreeId: request.worktreeId,
+      chatId: request.chatId,
+    },
+  });
   const port: ChatStateCommandPort = {
     getState: (request) => {
       const state = scope(request.projectId, request.worktreeId);
@@ -438,6 +463,27 @@ function makeDesktopHost(world: ConformanceWorld): {
       });
     },
     getTranscriptPage: (request): Promise<TranscriptPage> => {
+      if (request.target?.kind === 'delegation') {
+        try {
+          const input = transcriptReadActionSchema.parse({
+            type: 'chat.transcript.page',
+            target: request.target,
+            cursor: request.cursor,
+          });
+          if (input.type !== 'chat.transcript.page')
+            throw new Error('Unexpected action.');
+          return Promise.resolve(
+            transcripts.page(input, transcriptOwner(request)),
+          );
+        } catch (error) {
+          if (
+            error instanceof AgentPortError &&
+            error.code === 'invalid_target'
+          )
+            throw new Error('Invalid transcript page cursor');
+          throw error;
+        }
+      }
       const tab = findTab(
         request.projectId,
         request.worktreeId,
@@ -450,8 +496,50 @@ function makeDesktopHost(world: ConformanceWorld): {
         transcriptRevision: 0,
       });
     },
+    readTranscriptContent: (request) => {
+      const input = transcriptReadActionSchema.parse({
+        type: 'chat.content.read',
+        target: request.target,
+        messageId: request.messageId,
+        blockOrdinal: request.blockOrdinal,
+        field: request.field,
+        fieldSource: request.fieldSource,
+        offset: request.offset,
+        limit: request.limit,
+      });
+      if (input.type !== 'chat.content.read')
+        throw new Error('Unexpected action.');
+      return Promise.resolve(
+        transcripts.content(input, transcriptOwner(request)),
+      );
+    },
+    getTranscriptBlocks: (request) => {
+      const input = transcriptReadActionSchema.parse({
+        type: 'chat.transcript.blocks.page',
+        target: request.target,
+        messageId: request.messageId,
+        firstBlockOrdinal: request.firstBlockOrdinal,
+        cursor: request.cursor,
+        limit: request.limit,
+      });
+      if (input.type !== 'chat.transcript.blocks.page')
+        throw new Error('Unexpected action.');
+      try {
+        return Promise.resolve(
+          transcripts.rawBlocks(
+            { ...input, projection: 'bounded-v1' },
+            transcriptOwner(request),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof AgentPortError && error.code === 'invalid_target')
+          throw new Error('Stale transcript blocks cursor');
+        throw error;
+      }
+    },
     searchTranscript: () => Promise.reject(new Error('unused')),
     readToolOutput: () => Promise.reject(new Error('unused')),
+    readVisual: () => Promise.reject(new Error('unused')),
     subscribe: () => () => undefined,
     command: (request) => {
       const state = scope(request.projectId, request.worktreeId);
@@ -550,6 +638,9 @@ function makeDesktopHost(world: ConformanceWorld): {
                     ? world.workspace.name
                     : 'Foreign workspace',
                 type: 'multi-repo',
+                color: '#000000',
+                collapsed: false,
+                order: 0,
               }
             : null,
         ),
@@ -575,7 +666,9 @@ function makeDesktopHost(world: ConformanceWorld): {
   let created = 0;
   let rendererSends = 0;
   const rendererAction = (
-    action: { type: string } & Record<string, unknown>,
+    action: Parameters<
+      ReturnType<typeof desktopEnvironmentPortDeps>['rendererAction']
+    >[0],
   ): Promise<DesktopRendererActionResult> => {
     if (action.type === 'worktree.create') {
       created += 1;
@@ -681,6 +774,8 @@ function makeDesktopHost(world: ConformanceWorld): {
     newChatApprovalMode: () => Promise.resolve('full-access'),
     liveApprovalMode: (chat, mode, use) =>
       desktopEnvironmentPortDeps().liveApprovalMode(chat, mode, use),
+    callerSessionApprovalRules: (chat, rules) =>
+      desktopEnvironmentPortDeps().callerSessionApprovalRules(chat, rules),
     approvalSettingsRevision: () =>
       desktopEnvironmentPortDeps().approvalSettingsRevision(),
     chatApprovalStateRevision: (chat) =>
@@ -690,6 +785,7 @@ function makeDesktopHost(world: ConformanceWorld): {
     chatExecutionRoot: (chat) => Promise.resolve(conformanceRoot(chat)),
     terminalDrivenChatIds: (_scope, chatIds) =>
       Promise.resolve(chatIds.filter((chatId) => terminalChats.has(chatId))),
+    terminalTurnStates: () => Promise.resolve(() => undefined),
     agentSenderFields: () => Promise.resolve(undefined),
     lineage,
   });
@@ -712,6 +808,7 @@ function makeDesktopHost(world: ConformanceWorld): {
   };
   const openedSettings: unknown[] = [];
   const control: AgentConformanceWorldControl = {
+    transcriptReadCount: (): number => transcripts.readCount(),
     setChatMessageable: (chatId, messageable): Promise<void> => {
       if (messageable) terminalChats.delete(chatId);
       else terminalChats.add(chatId);
@@ -864,6 +961,16 @@ function makeDesktopHost(world: ConformanceWorld): {
         },
         settings,
         environment: holds.wrap(environment),
+        transcriptRead: createDesktopTranscriptReadPort({
+          runtime: () => dispatcher,
+          listWorkEntries: () => Promise.resolve([]),
+          resolveStandaloneOwner: () =>
+            Promise.resolve({
+              workspaceId: world.workspace.workspaceId,
+              entryId: null,
+              archivedInEntryId: null,
+            }),
+        }),
         limits: commitFailures.wrap(
           createInMemoryAgentActionLimits({
             limits: DESKTOP_AGENT_ACTION_LIMITS,

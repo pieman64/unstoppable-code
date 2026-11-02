@@ -415,9 +415,29 @@ describe('preload approvals API', () => {
       },
     };
 
+    const fileWrite = {
+      ...request,
+      requestId: 'request-4',
+      title: 'Edit a.ts',
+      details: {
+        kind: 'file-write',
+        path: '/workspace/a.ts',
+        displayPath: 'a.ts',
+        change: { kind: 'edit', oldText: 'a', newText: 'b', replaceAll: true },
+      },
+    };
+
     requestHandler({}, request);
     requestHandler({}, upload);
     requestHandler({}, fileRequest);
+    requestHandler({}, fileWrite);
+    requestHandler(
+      {},
+      {
+        ...fileWrite,
+        details: { ...fileWrite.details, change: { kind: 'write' } },
+      },
+    );
     requestHandler(
       {},
       { ...fileRequest, details: { ...fileRequest.details, multiple: 'no' } },
@@ -436,10 +456,11 @@ describe('preload approvals API', () => {
     cancelledHandler({}, { requestId: 42 });
     ruleAddedHandler({}, { ...ruleAdded, rule: { id: 'bad' } });
 
-    expect(requestCallback).toHaveBeenCalledTimes(3);
+    expect(requestCallback).toHaveBeenCalledTimes(4);
     expect(requestCallback).toHaveBeenCalledWith(request);
     expect(requestCallback).toHaveBeenCalledWith(upload);
     expect(requestCallback).toHaveBeenCalledWith(fileRequest);
+    expect(requestCallback).toHaveBeenCalledWith(fileWrite);
     expect(cancelledCallback).toHaveBeenCalledTimes(1);
     expect(cancelledCallback).toHaveBeenCalledWith(cancelled);
     expect(ruleAddedCallback).toHaveBeenCalledTimes(2);

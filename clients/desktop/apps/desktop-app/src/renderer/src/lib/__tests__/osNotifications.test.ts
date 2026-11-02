@@ -14,8 +14,9 @@ import {
   setOsNotificationNavigationHandler,
   setVisibleContext,
   shouldShowInAppNotification,
+  toastCategoryLabel,
 } from '../osNotifications';
-import { useGitHubStore } from '@/stores/githubStore';
+import { useGitHubStore, type ToastCategory } from '@/stores/githubStore';
 import { showGuestMergeFailureToast } from '@/components/auth/guestMergeFailure';
 
 const enabledPreferences: OsNotificationPreferences = {
@@ -31,6 +32,8 @@ const enabledPreferences: OsNotificationPreferences = {
     prCreate: true,
     pipeline: true,
     terminal: true,
+    runComment: true,
+    activation: true,
   },
   categorySounds: {
     chat: 'Default',
@@ -41,6 +44,8 @@ const enabledPreferences: OsNotificationPreferences = {
     prCreate: 'Default',
     pipeline: 'Default',
     terminal: 'Default',
+    runComment: 'Default',
+    activation: 'Default',
   },
 };
 
@@ -450,6 +455,14 @@ describe('osNotifications', () => {
     expect(request.sound).toBe('Glass');
   });
 
+  it('fireTestOsNotification names the pipeline category Workflow in its copy', async () => {
+    await fireTestOsNotification({ categoryKey: 'pipeline' });
+
+    const [request] = mockApi.showOsNotification.mock.calls[0];
+    expect(request.title).toMatch(/— Workflow$/);
+    expect(request.body).toBe('Test Workflow notification.');
+  });
+
   it('fireTestOsNotification respects soundOverride for previewing a choice', async () => {
     await fireTestOsNotification({ soundOverride: 'Hero' });
 
@@ -477,6 +490,8 @@ describe('osNotifications', () => {
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
     };
 
@@ -593,6 +608,33 @@ describe('osNotifications', () => {
 
       expect(shouldShowInAppNotification('Pipeline')).toBe(false);
       expect(shouldShowInAppNotification('Chat')).toBe(true);
+    });
+  });
+
+  describe('toastCategoryLabel', () => {
+    it('renders the Pipeline category as Workflow', () => {
+      expect(toastCategoryLabel('Pipeline')).toBe('Workflow');
+    });
+
+    it.each<ToastCategory>([
+      'Chat',
+      'Script',
+      'Hook',
+      'Git Commit',
+      'Git Push',
+      'Git Pull',
+      'Git Merge',
+      'PR Create',
+      'Split PR',
+      'Worktree',
+      'Terminal',
+      'Automation',
+      'GitHub',
+      'Run Comment',
+      'Account',
+      'Privacy',
+    ])('returns the %s category unchanged', (category) => {
+      expect(toastCategoryLabel(category)).toBe(category);
     });
   });
 });

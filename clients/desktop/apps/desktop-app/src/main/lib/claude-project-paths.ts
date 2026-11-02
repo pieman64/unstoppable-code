@@ -5,10 +5,10 @@ import path from 'node:path';
 
 const CLAUDE_PROJECT_SCAN_ENTRY_LIMIT = 10_000;
 
-export function getClaudeCodeProjectsDir(): string {
+export function getClaudeCodeProjectsDir(configDir?: string): string {
   const configuredDirectory = process.env.CLAUDE_CONFIG_DIR?.trim();
   return path.join(
-    configuredDirectory || path.join(homedir(), '.claude'),
+    configDir?.trim() || configuredDirectory || path.join(homedir(), '.claude'),
     'projects',
   );
 }
@@ -59,6 +59,68 @@ export async function resolveClaudeCodeSessionTranscriptPath(
     fileName,
     cwd,
   );
+}
+
+export interface ClaudeCodeSessionTranscriptCandidates {
+  paths: string[];
+  /** True when the bounded project scan could not inspect every candidate. */
+  scanExhausted: boolean;
+}
+
+/**
+ * Return every matching session transcript under the Claude projects root.
+ * The slug candidates are checked first, followed by the same bounded scan
+ * used by the compatibility resolver.
+ */
+export async function findClaudeCodeSessionTranscriptCandidates(
+  sdkSessionId: string,
+  cwd: string,
+  configDir?: string,
+): Promise<ClaudeCodeSessionTranscriptCandidates> {
+  const projectsDir = getClaudeCodeProjectsDir(configDir);
+  const fileName = `${sdkSessionId}.jsonl`;
+  const paths = new Set<string>();
+  for (const dirName of await claudeProjectDirCandidates(cwd)) {
+    const candidatePath = path.join(projectsDir, dirName, fileName);
+    try {
+      await access(candidatePath);
+      paths.add(candidatePath);
+    } catch {
+      // Continue through the remaining slug candidates and bounded scan.
+    }
+  }
+
+  const stack = [projectsDir];
+  let visitedEntries = 0;
+  let scanExhausted = false;
+  while (stack.length > 0 && visitedEntries < CLAUDE_PROJECT_SCAN_ENTRY_LIMIT) {
+    const dir = stack.pop();
+    if (!dir) break;
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      // A skipped directory could contain another matching transcript.
+      scanExhausted = true;
+      continue;
+    }
+    for (const entry of entries) {
+      if (visitedEntries >= CLAUDE_PROJECT_SCAN_ENTRY_LIMIT) {
+        scanExhausted = true;
+        break;
+      }
+      visitedEntries += 1;
+      if (entry.isFile() && entry.name === fileName) {
+        paths.add(path.join(dir, entry.name));
+      }
+      if (entry.isDirectory()) {
+        stack.push(path.join(dir, entry.name));
+      }
+    }
+  }
+  if (stack.length > 0) scanExhausted = true;
+
+  return { paths: Array.from(paths), scanExhausted };
 }
 
 export async function findClaudeCodeSessionTranscriptInProjectsDir(

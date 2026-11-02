@@ -23,8 +23,10 @@ import { validateQuestionControlAnswers } from '@canopy/protocol/portal';
 import { MessagesSquare, ChevronDownMediumIcon } from '../../icons/AppIcons';
 import { Button } from '../Button';
 import { Checkbox, ChoiceMark, Radio } from '../Choice';
+import { Kbd } from '../Kbd';
 import { Select, TextArea, TextInput } from '../Field';
 import { Notice } from '../Notice';
+import { useCleanChatLook } from '../chat-look';
 import { QuestionOptionText } from './QuestionOptionText';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -32,7 +34,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Question-state matching (shared between the two transcript render paths)
+// Question identity (matching lives in `ask-user-question-presentation.ts`)
 // ---------------------------------------------------------------------------
 
 /** Whether a tool-use id was minted by a Codex ask-user path (`codex-*`). */
@@ -42,71 +44,10 @@ export function isCodexAskUserToolUseId(
   return typeof toolUseId === 'string' && toolUseId.startsWith('codex-');
 }
 
-export interface AskUserQuestionMatch {
-  /** The transcript `tool_use` block's tool-use id, when available. */
-  toolUseId?: string;
-  /**
-   * Ordered question text parsed from the serialized tool input. Used to
-   * disambiguate an already-answered Claude entry (whose live event cannot
-   * supply a tool-use id) against the projected answered states.
-   */
-  questionTexts?: readonly string[];
-}
-
-function questionsMatchTexts(
-  questions: readonly PortalAskUserQuestion[],
-  texts: readonly string[],
-): boolean {
-  if (questions.length !== texts.length) return false;
-  return questions.every((q, i) => q.question === texts[i]);
-}
-
-/**
- * Select the projected question state matching a transcript `tool_use` block.
- *
- * - Codex dynamic + built-in `request_user_input` blocks carry a `codex-*`
- *   tool-use id and match a projected state EXACTLY by `toolUseId`; a mismatched
- *   codex id returns `undefined` so it can never steal another prompt.
- * - Claude MCP blocks have no correlatable id, so an unresolved block matches
- *   the FIRST unanswered projected state, and a resolved block matches an
- *   answered state by its ordered question text. When ordered text is
- *   available, a mismatch returns `undefined` rather than stealing another
- *   answered prompt.
- */
-export function matchAskUserQuestionState(
-  states: readonly PortalAskUserQuestionState[],
-  match: AskUserQuestionMatch,
-  options: { answered: boolean },
-): PortalAskUserQuestionState | undefined {
-  const { toolUseId, questionTexts } = match;
-  const wantAnswered = options.answered;
-
-  if (typeof toolUseId === 'string' && toolUseId.length > 0) {
-    const exact = states.find(
-      (s) => s.toolUseId === toolUseId && s.answered === wantAnswered,
-    );
-    if (exact) return exact;
-    // A codex-form id must match EXACTLY; never fall through to a heuristic
-    // that could attach the card to a different prompt.
-    if (isCodexAskUserToolUseId(toolUseId)) return undefined;
-  }
-
-  if (wantAnswered) {
-    if (questionTexts && questionTexts.length > 0) {
-      return states.find(
-        (s) => s.answered && questionsMatchTexts(s.questions, questionTexts),
-      );
-    }
-    return states.find((s) => s.answered);
-  }
-
-  return states.find((s) => !s.answered);
-}
-
 /**
  * Parse the ordered question text from a serialized AskUserQuestion tool input
  * (`{ questions: [{ question }] }`). Returns `undefined` when the input is not
- * parseable question JSON so callers fall back to the id/heuristic match.
+ * parseable question JSON, so only an exact tool-use id can match it.
  */
 export function parseAskUserQuestionTexts(
   input: string | undefined,
@@ -150,12 +91,30 @@ export function answersToDisplay(
   answers: readonly PortalAskUserQuestionAnswer[],
   questions?: readonly PortalAskUserQuestion[],
 ): AnsweredQuestionDisplay[] {
-  return answers.map((answer, i) => ({
-    question: answer.question,
-    answer: answer.selectedOptions.join(', '),
-    ...(answer.freeformText ? { additional: answer.freeformText } : {}),
-    ...(questions?.[i]?.secret ? { secret: true } : {}),
-  }));
+  if (!Array.isArray(answers)) return [];
+  return answers.flatMap((answer: unknown, i: number) => {
+    // Restored/projected data may predate validation. Malformed answers still
+    // settle the record, but must never fabricate text or crash the transcript.
+    if (
+      !isRecord(answer) ||
+      typeof answer.question !== 'string' ||
+      !Array.isArray(answer.selectedOptions) ||
+      !answer.selectedOptions.every(
+        (option: unknown) => typeof option === 'string',
+      )
+    )
+      return [];
+    return [
+      {
+        question: answer.question,
+        answer: answer.selectedOptions.join(', '),
+        ...(typeof answer.freeformText === 'string' && answer.freeformText
+          ? { additional: answer.freeformText }
+          : {}),
+        ...(questions?.[i]?.secret ? { secret: true } : {}),
+      },
+    ];
+  });
 }
 
 /** Grouped read-only answers; secret freeform is always shown as `[hidden]`. */
@@ -164,9 +123,14 @@ export const AnsweredQuestionsBlock = memo(function AnsweredQuestionsBlock({
 }: {
   answers: readonly AnsweredQuestionDisplay[];
 }): JSX.Element {
+  // Clean chat look: one 12px inset on every side, and answers 12px apart
+  // across their hairline, the same as the inset.
+  const clean = useCleanChatLook();
   return (
     <div
-      className="rounded-2xl border border-line-base bg-tertiary px-3 py-2.5 text-s text-pretty"
+      className={`rounded-2xl border border-line-base bg-tertiary text-s text-pretty ${
+        clean ? 'canopy-small-icon-stroke p-3' : 'px-3 py-2.5'
+      }`}
       data-testid="answered-questions"
     >
       <div className="mb-2 flex items-center gap-2 fg-tertiary">
@@ -179,7 +143,13 @@ export const AnsweredQuestionsBlock = memo(function AnsweredQuestionsBlock({
         return (
           <div
             key={i}
-            className={`${i > 0 ? 'mt-2.5 border-t border-line-base pt-2.5' : ''}`}
+            className={
+              i === 0
+                ? ''
+                : clean
+                  ? 'mt-3 border-t border-line-base pt-3'
+                  : 'mt-2.5 border-t border-line-base pt-2.5'
+            }
             data-testid="answered-question"
           >
             <div className="mb-1 whitespace-pre-wrap break-words fg-tertiary">
@@ -385,12 +355,14 @@ const OPTION_ROW_CLASSES = `group/option flex min-h-9 w-full cursor-pointer item
 function ChoiceShortcut({ index }: { index: number }): JSX.Element | null {
   if (index >= 26) return null;
   return (
-    <kbd
+    // The cap is 18px on the row's 20px text line, so 1px down centres it.
+    <span
       aria-hidden="true"
-      className="ml-auto rounded bg-secondary px-1.5 text-xs leading-5 font-normal fg-secondary opacity-0 group-hover/option:opacity-100 group-focus-visible/option:opacity-100 group-has-[:focus-visible]/option:opacity-100"
+      data-testid="ask-user-question-choice-shortcut"
+      className="ml-auto mt-px flex opacity-0 group-hover/option:opacity-100 group-focus-visible/option:opacity-100 group-has-[:focus-visible]/option:opacity-100"
     >
-      {String.fromCharCode(65 + index)}
-    </kbd>
+      <Kbd shortcut={[String.fromCharCode(65 + index)]} />
+    </span>
   );
 }
 

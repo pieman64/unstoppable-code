@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { openBackgroundDrawer } from './backgroundDrawer.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { seedPipelineExecution } from './seeders/seedPipelineExecution.mjs';
@@ -314,8 +315,12 @@ test('chat run card stays live with no Activity panel', async () => {
 
     const chatPanel = window.getByTestId('panel-content-chat');
     const runCard = chatPanel.getByTestId(`pipeline-run-card-${EXECUTION_ID}`);
-    await expect(runCard).toBeVisible({ timeout: 15_000 });
-    await expect(runCard).toContainText('running');
+    // A live run is the composer drawer's alone; its turn card appears only
+    // once the run finishes (background drawer D3).
+    const tray = await openBackgroundDrawer(chatPanel);
+    const runRow = tray.locator(`[data-tray-row="run:${receipt.dedupeKey}"]`);
+    await expect(runRow).toHaveCount(1, { timeout: 15_000 });
+    await expect(runCard).toHaveCount(0);
 
     const successState = buildSuccessState(seededState, {
       jobId: JOB_ID,
@@ -326,6 +331,8 @@ test('chat run card stays live with no Activity panel', async () => {
       state: successState,
       type: 'execution.completed',
     });
+    // Completion moves the run from live work into history and its transcript.
+    await expect(runRow).toHaveCount(0, { timeout: 15_000 });
     await expect(runCard).toContainText('success', { timeout: 15_000 });
   } finally {
     await closeCanopy(electronApp, userDataDir);
@@ -392,7 +399,7 @@ test('two Activity panels do not duplicate output', async () => {
     // `lib/panels/registry.tsx` renders the section's own `render()` function
     // directly — a completely separate React subtree from the stacked
     // `SharedActivityPanelAdapter` one above).
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window
       .getByTestId('panel-add-menu-item-activity-card-pipeline-runs')
       .click();

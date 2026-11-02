@@ -11,11 +11,25 @@ const mockPublicRequest = jest.fn<Promise<unknown>, unknown[]>();
 jest.mock('../lib/paths', () => ({
   getCuratedMcpCatalogFilePath: (): string => mockCatalogPath,
 }));
-jest.mock('../canopy-cloud/client', () => ({
-  ...jest.requireActual<typeof CanopyCloudClient>('../canopy-cloud/client'),
-  requestCanopyCloudJson: mockCloudRequest,
-  requestCanopyCloudPublicJson: mockPublicRequest,
-}));
+jest.mock('../canopy-cloud/client', () => {
+  const actual = jest.requireActual<typeof CanopyCloudClient>(
+    '../canopy-cloud/client',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      requestCanopyCloudJson: {
+        get: (): typeof mockCloudRequest => mockCloudRequest,
+        enumerable: true,
+      },
+      requestCanopyCloudPublicJson: {
+        get: (): typeof mockPublicRequest => mockPublicRequest,
+        enumerable: true,
+      },
+    },
+  );
+});
 
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 

@@ -9,6 +9,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
+import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { requestBrowserPanel } from '@/lib/browserPanelActivation';
 
 declare global {
@@ -588,6 +589,7 @@ describe('AppAdvisorWorkspaceSurface', () => {
       lastArchivedOverviewRequestId: null,
       lastArchivedOverviewConfirmationOpened: null,
       hasUnsentDraft: false,
+      batchRemovalDialog: null,
     });
     const payload = reportWindowUiStateMock.mock.calls[0] as unknown as [
       Record<string, unknown>,
@@ -609,6 +611,48 @@ describe('AppAdvisorWorkspaceSurface', () => {
     expect(reportWindowUiStateMock).toHaveBeenCalledTimes(2);
     expect(reportWindowUiStateMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ activeWorkEntryId: 'entry-2' }),
+    );
+  });
+
+  it("forwards the nav's open batch removal dialog, so the main window can report it", async () => {
+    render();
+    await flush();
+    flushTimers(300);
+    await flush();
+    act(() => {
+      useCurrentUiStateStore
+        .getState()
+        .updateSlice('appAdvisor.batchRemovalDialog', {
+          open: true,
+          mode: 'delete',
+          count: 2,
+          phase: 'running',
+        });
+    });
+    await flush();
+    flushTimers(300);
+    await flush();
+    expect(reportWindowUiStateMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        batchRemovalDialog: {
+          open: true,
+          mode: 'delete',
+          count: 2,
+          phase: 'running',
+        },
+      }),
+    );
+
+    act(() => {
+      useCurrentUiStateStore
+        .getState()
+        .updateSlice('appAdvisor.batchRemovalDialog', null);
+    });
+    await flush();
+    flushTimers(300);
+    await flush();
+    expect(reportWindowUiStateMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ batchRemovalDialog: null }),
     );
   });
 });

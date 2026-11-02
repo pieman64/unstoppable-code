@@ -1,4 +1,14 @@
-import type { JSX } from 'react';
+import { useRef, type JSX } from 'react';
+import { useFlipBox } from '../lib/flip-box';
+
+/**
+ * The bar's fill: a compositor stretch, not a `width` transition, on the 300ms
+ * Tailwind default curve it has always used.
+ */
+const BAR_FILL = {
+  durationMs: 300,
+  easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+} as const;
 
 interface LinearProgressProps {
   /** 0–100 */
@@ -13,6 +23,11 @@ interface LinearProgressProps {
   height?: string;
   className?: string;
   label?: string;
+  /**
+   * Human-readable value (`aria-valuetext`) for determinate progress, when the
+   * number alone does not convey the state. Ignored while indeterminate.
+   */
+  valueText?: string;
 }
 
 export function LinearProgress({
@@ -23,8 +38,14 @@ export function LinearProgress({
   height = 'h-0.75',
   className = '',
   label,
+  valueText,
 }: LinearProgressProps): JSX.Element {
   const clamped = Math.min(Math.max(percentage, 0), 100);
+  // The bar takes its new width at once and is drawn growing into it with a
+  // compositor scale, so it moves smoothly while the main thread is busy and
+  // is exact, ends and all, once it lands.
+  const barRef = useRef<HTMLDivElement>(null);
+  useFlipBox(barRef, BAR_FILL);
 
   return (
     <div
@@ -34,9 +55,11 @@ export function LinearProgress({
       aria-valuemin={0}
       aria-valuemax={100}
       aria-label={label}
+      aria-valuetext={indeterminate ? undefined : valueText}
     >
       <div
-        className={`h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${barColor} ${indeterminate ? 'w-1/3 animate-pulse' : ''}`}
+        ref={barRef}
+        className={`h-full origin-top-left rounded-full ${barColor} ${indeterminate ? 'w-1/3 animate-pulse' : ''}`}
         style={indeterminate ? undefined : { width: `${clamped}%` }}
       />
     </div>

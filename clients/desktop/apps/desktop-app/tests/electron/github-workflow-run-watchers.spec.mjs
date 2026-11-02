@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { openBackgroundDrawer } from './backgroundDrawer.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { primeStoredPat, saveGitHubPat } from './helpers/github-pat.mjs';
 import { readChatStorageTabs } from './readChatStorage.mjs';
@@ -394,6 +395,65 @@ async function waitForRequestCount(count, scenarioKey = MOCK_SCENARIO_KEY) {
       { timeout: 30_000 },
     )
     .toBeGreaterThanOrEqual(count);
+}
+
+/**
+ * The watched run's row in the composer's background drawer, with its
+ * inspector open: a live run is listed there, not in Agent activity
+ * (background drawer D2). The inspector holds the run's full job bar, its
+ * watcher and Open on GitHub.
+ */
+async function openRunRow(panel, { name = 'CI #42', timeout = 30_000 } = {}) {
+  const tray = await openBackgroundDrawer(panel, { timeout });
+  const row = tray.locator('[data-tray-row^="run:"]').filter({ hasText: name });
+  await expect(row).toBeVisible({ timeout });
+  const toggle = row.getByTestId('background-tray-row-toggle');
+  if ((await toggle.getAttribute('aria-expanded', { timeout })) !== 'true') {
+    await toggle.click({ timeout });
+  }
+  const inspector = row.getByTestId('background-tray-inspector');
+  await expect(inspector).toBeVisible({ timeout });
+  return { row, inspector };
+}
+
+/**
+ * Waits for a job's dot in the run's inspector. The renderer lists only
+ * active watchers, so while a watcher delivers an event, or retires, its run
+ * briefly leaves the drawer and the inspector closes (CAN-4690); each try
+ * reopens it.
+ */
+async function expectRunJob(panel, jobId, label, timeout = 15_000) {
+  await expect(async () => {
+    const { inspector } = await openRunRow(panel, { timeout: 2_000 });
+    await expect(inspector.locator(`[data-job-id="${jobId}"]`)).toHaveAttribute(
+      'aria-label',
+      label,
+      { timeout: 2_000 },
+    );
+  }).toPass({ timeout });
+}
+
+async function completedRun(panel) {
+  const turnBox = panel.getByTestId('agent-activity-completed');
+  const toggle = turnBox.getByRole('button', {
+    name: /^(Expand|Collapse) agent activity$/,
+  });
+  await expect(toggle).toBeVisible();
+  if ((await toggle.getAttribute('aria-expanded')) === 'false')
+    await toggle.click();
+  const card = turnBox.getByTestId('github-workflow-run-card-101');
+  await expect(card).toHaveAttribute('data-run-status', 'success', {
+    timeout: 30_000,
+  });
+  return card;
+}
+
+async function expectCompletedJob(panel, jobId, label) {
+  const row = await completedRun(panel);
+  await expect(row.locator(`[data-job-id="${jobId}"]`)).toHaveAttribute(
+    'aria-label',
+    label,
+  );
 }
 
 test.describe('GitHub workflow-run watchers against the REST mock', () => {
@@ -994,14 +1054,17 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       await expect(
         window.getByTestId(`chat-input-watchers-${CHAT_ID}`),
       ).toBeVisible();
-      const card = panel.getByTestId('github-workflow-run-card-101');
-      await expect(card).toBeVisible();
-      await expect(card).toHaveCount(1);
-      await expect(card.locator('[data-job-id="501"]')).toHaveAttribute(
+      // The live run is the drawer's; the transcript records its carry.
+      const { row, inspector } = await openRunRow(panel);
+      await expect(row).toHaveCount(1);
+      await expect(
+        panel.getByTestId('github-workflow-run-card-101'),
+      ).toHaveCount(0);
+      await expect(inspector.locator('[data-job-id="501"]')).toHaveAttribute(
         'aria-label',
         'Build macOS: running',
       );
-      await expect(card.locator('[data-job-id="502"]')).toHaveAttribute(
+      await expect(inspector.locator('[data-job-id="502"]')).toHaveAttribute(
         'aria-label',
         'Test: pending',
       );
@@ -1019,8 +1082,8 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
         .toBe(true);
       await app.openSettings();
       await app.closeSettings();
-      await expect(card).toBeVisible();
-      await expect(card).toHaveCount(1);
+      await expect(row).toBeVisible();
+      await expect(row).toHaveCount(1);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -1124,10 +1187,16 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
     };
     const { electronApp } = await launchCanopy({ userDataDir });
     try {
+      // Hold the newer history back until the drawer has seen the run live.
+      // Otherwise which arrives first is a race: a run the drawer saw live is
+      // held there until dismissed, and one it never saw goes to its turn
+      // (background drawer D3).
       await electronApp.evaluate(({ ipcMain }, history) => {
         const channel = 'app-advisor:watchers-completed-list';
         ipcMain.removeHandler(channel);
-        ipcMain.handle(channel, () => [history]);
+        ipcMain.handle(channel, () =>
+          globalThis.__e2eReleaseWatcherHistory === true ? [history] : [],
+        );
       }, firing);
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
@@ -1138,18 +1207,20 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       await expect(
         panel.getByText('The completion watcher is set.'),
       ).toBeVisible();
+      await expectRunJob(panel, '501', 'Build macOS: running');
+      await electronApp.evaluate(() => {
+        globalThis.__e2eReleaseWatcherHistory = true;
+      });
       // Any watcher change re-reads the history.
       await window.evaluate(
         (watcherId) => window.api.appAdvisor.deleteWatcher(watcherId),
         historyTrigger,
       );
 
+      // The newer terminal history moves the run to completed work.
+      await expectCompletedJob(panel, '501', 'Build macOS: success');
       const card = panel.getByTestId('github-workflow-run-card-101');
-      await expect(card).toHaveAttribute('data-run-status', 'success');
-      await expect(card.locator('[data-job-id="501"]')).toHaveAttribute(
-        'aria-label',
-        'Build macOS: success',
-      );
+      await expect(card).toHaveCount(1);
       await expect
         .poll(
           () =>
@@ -1161,13 +1232,13 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
         )
         .toBe(observedAt);
       await expect(window.getByText(/hit a renderer error/)).toHaveCount(0);
-      await expect(card).toHaveAttribute('data-run-status', 'success');
+      await expectCompletedJob(panel, '501', 'Build macOS: success');
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
   });
 
-  test('mirrors the watched run as an Agent activity card that follows job progress and opens on GitHub', async () => {
+  test('lists the watched run in the drawer while it runs, then keeps its completed record in chat', async () => {
     test.setTimeout(360_000);
     const userDataDir = makeUserDataDir();
     await primeStoredPat(userDataDir, ACTIVITY_TOKEN);
@@ -1240,33 +1311,29 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
 
       const panel = window.getByTestId('panel-content-chat');
       await expect(panel.getByText('Watch the CI run for me.')).toBeVisible();
-      const activity = panel.getByTestId('agent-activity-active');
-      await expect(activity).toBeVisible();
-      const card = activity.getByTestId('github-workflow-run-card-101');
-      await expect(card).toBeVisible();
-      await expect(card).toContainText('CI #42');
-      await expect(card).toContainText('acme/api');
-      await expect(card).toHaveAttribute('data-run-status', 'in progress');
-      await expect(card.locator('[role="button"] button')).toHaveCount(0);
-      const runButton = card.getByRole('button', {
-        name: 'Open CI #42 on GitHub',
-      });
-      await expect(runButton).toBeVisible();
-      expect(await runButton.evaluate((element) => element.tagName)).toBe(
-        'BUTTON',
-      );
-      const buildDot = card.locator('[data-job-id="501"]');
-      const testDot = card.locator('[data-job-id="502"]');
-      await expect(buildDot).toHaveAttribute(
-        'aria-label',
-        'Build macOS: running',
-      );
-      await expect(testDot).toHaveAttribute('aria-label', 'Test: pending');
+      // No Agent activity card while the run is live: it is the drawer's.
       await expect(
-        activity.getByTestId('github-workflow-run-watchers-101'),
+        panel.getByTestId('github-workflow-run-card-101'),
+      ).toHaveCount(0);
+      const { row, inspector } = await openRunRow(panel);
+      await expect(
+        inspector.getByTestId('background-tray-run-watchers-101'),
+      ).toHaveText('Manage watching');
+      await expect(inspector).toContainText('acme/api');
+      // A GitHub run has no Stop (D1b).
+      await expect(
+        row.getByTestId(/^background-tray-run-.+-stop$/),
+      ).toHaveCount(0);
+      await expect(
+        row.getByRole('button', { name: 'Open on GitHub', exact: true }),
+      ).toBeVisible();
+      await expectRunJob(panel, '501', 'Build macOS: running');
+      await expectRunJob(panel, '502', 'Test: pending');
+      await expect(
+        inspector.getByTestId('background-tray-run-watchers-101'),
       ).toBeVisible();
 
-      // The watcher's own poll observes the build job completing; the card
+      // The watcher's own poll observes the build job completing; the row
       // follows that broadcast rather than issuing a request of its own.
       const requestsBefore =
         (await getGithubScenario(ACTIVITY_TOKEN)).workflowRunJobRequests
@@ -1288,16 +1355,12 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
         ACTIVITY_TOKEN,
       );
       // The observer's transient backoff can reach 60s; allow a full cycle.
-      await expect(buildDot).toHaveAttribute(
-        'aria-label',
-        'Build macOS: success',
-        { timeout: 90_000 },
-      );
-      await expect(testDot).toHaveAttribute('aria-label', 'Test: running');
+      await expectRunJob(panel, '501', 'Build macOS: success', 90_000);
+      await expectRunJob(panel, '502', 'Test: running');
       const jobRequests = (await getGithubScenario(ACTIVITY_TOKEN))
         .workflowRunJobRequests;
       // Every jobs read is the observer's paged attempt read; nothing else
-      // touched the jobs endpoint on behalf of the card.
+      // touched the jobs endpoint on behalf of the row.
       expect(
         jobRequests
           .slice(requestsBefore)
@@ -1305,7 +1368,7 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       ).toBe(true);
 
       // The run completes: the grouped watcher settles and retires, and the
-      // card keeps the terminal state from the completed watcher summary.
+      // row keeps the terminal state from the completed watcher summary.
       await setScenario(
         {
           workflowRuns: {
@@ -1330,12 +1393,38 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
           },
         )
         .toBe('fired');
-      await expect(card).toHaveAttribute('data-run-status', 'success', {
+      // With no active work left the drawer hides; the completed record remains in chat.
+      await expect(panel.getByTestId('composer-work-drawer')).toHaveCount(0);
+      await expect(
+        panel.getByTestId('background-tray-run-watchers-101'),
+      ).toHaveCount(0);
+      const turnBox = panel.getByTestId('agent-activity-completed');
+      const activityToggle = turnBox.getByRole('button', {
+        name: /^(Expand|Collapse) agent activity$/,
+      });
+      await expect(activityToggle).toBeVisible();
+      if ((await activityToggle.getAttribute('aria-expanded')) === 'false') {
+        await activityToggle.click();
+      }
+      await expect(activityToggle).toHaveAttribute('aria-expanded', 'true');
+      const finishedCard = turnBox.getByTestId('github-workflow-run-card-101');
+      await expect(finishedCard).toBeVisible();
+      await expect(
+        panel.getByTestId('github-workflow-run-card-101'),
+      ).toHaveCount(1);
+      await expect(finishedCard.locator('[role="button"] button')).toHaveCount(
+        0,
+      );
+      await expect(finishedCard).toHaveAttribute('data-run-status', 'success', {
         timeout: 30_000,
       });
-      await expect(testDot).toHaveAttribute('aria-label', 'Test: success');
+      const finishedTestDot = finishedCard.locator('[data-job-id="502"]');
+      await expect(finishedTestDot).toHaveAttribute(
+        'aria-label',
+        'Test: success',
+      );
       await expect(
-        activity.getByTestId('github-workflow-run-watchers-101'),
+        panel.getByTestId('github-workflow-run-watchers-101'),
       ).toHaveCount(0);
       // The final snapshot is carried on the turn itself (persisted by main),
       // so it survives the watcher's eventual pruning.
@@ -1363,11 +1452,13 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       await window.evaluate(() =>
         window.api.savePreferences({ openAppLinksInBuiltInBrowser: false }),
       );
-      await testDot.click();
+      await finishedTestDot.click();
       await expect
         .poll(() => externalOpen.opened)
         .toEqual(['https://github.com/acme/api/actions/runs/101/job/502']);
-      await runButton.click();
+      await finishedCard
+        .getByRole('button', { name: 'Open CI #42 on GitHub' })
+        .click();
       await expect
         .poll(() => externalOpen.opened)
         .toEqual([
@@ -1435,33 +1526,18 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       ).toBeVisible();
       await injectActiveTurn(electronApp);
 
-      const card = window
-        .getByTestId('panel-content-chat')
-        .getByTestId('agent-activity-active')
-        .getByTestId('github-workflow-run-card-101');
-      await expect(card).toHaveAttribute('data-run-status', 'in progress');
+      const panel = window.getByTestId('panel-content-chat');
+      const { row } = await openRunRow(panel);
+      await expect(row).not.toContainText('Succeeded');
 
       // The destination chat never finishes accepting the watcher message,
-      // like a busy session, so the watcher stays firing.
-      await electronApp.evaluate(({ ipcMain }, chatId) => {
-        const channel = 'chat:send-message';
-        const original = ipcMain._invokeHandlers?.get(channel);
-        if (typeof original !== 'function') {
-          throw new Error(`Expected a registered ${channel} handler`);
-        }
-        ipcMain.removeHandler(channel);
-        ipcMain.handle(channel, (event, request, ...rest) => {
-          if (request?.chatId !== chatId) {
-            return original(event, request, ...rest);
-          }
-          // Retain the pending reply: Electron rejects an invoke whose
-          // unreachable promise is garbage collected.
-          const hung = new Promise((resolve) => {
-            globalThis.__releaseHungWatcherSend = resolve;
-          });
-          globalThis.__hungWatcherReply = hung;
-          return hung;
-        });
+      // like a busy session, so the watcher stays firing. Main dispatches
+      // watcher messages itself, so hold them in main, not over IPC.
+      await electronApp.evaluate((_, chatId) => {
+        globalThis.__CANOPY_E2E_WATCHER_DELIVERY_HOLD__ = {
+          chatId,
+          released: new Promise(() => {}),
+        };
       }, CHAT_ID);
 
       await setScenario(
@@ -1484,13 +1560,8 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
           { timeout: 90_000 },
         )
         .toBe('firing');
-      await expect(card).toHaveAttribute('data-run-status', 'success', {
-        timeout: 30_000,
-      });
-      await expect(card.locator('[data-job-id="501"]')).toHaveAttribute(
-        'aria-label',
-        'Build macOS: success',
-      );
+      await expect(row).toHaveCount(0, { timeout: 30_000 });
+      await expectCompletedJob(panel, '501', 'Build macOS: success');
       expect(persistedWatcher(userDataDir, ACTIVITY_WATCHER_ID)?.status).toBe(
         'firing',
       );
@@ -1633,13 +1704,11 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       await app.waitForShell({ timeout: 30_000 });
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_BRANCH);
-      const activity = window
-        .getByTestId('panel-content-chat')
-        .getByTestId('agent-activity-active');
-      await expect(activity).toBeVisible();
-      await expect(
-        activity.getByTestId('github-workflow-run-card-101'),
-      ).toHaveAttribute('data-run-status', 'in progress');
+      // The newest run is still live, so it is the drawer's again.
+      const { row } = await openRunRow(
+        window.getByTestId('panel-content-chat'),
+      );
+      await expect(row).not.toContainText('Succeeded');
     } finally {
       await closeCanopy(relaunch.electronApp, userDataDir);
     }
@@ -1716,22 +1785,14 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       await injectActiveTurn(electronApp);
 
       const panel = window.getByTestId('panel-content-chat');
-      const activity = panel.getByTestId('agent-activity-active');
-      const card = activity.getByTestId('github-workflow-run-card-101');
-      await expect(card).toBeVisible();
-      await expect(card).toHaveAttribute('data-run-status', 'in progress');
+      const { row, inspector: card } = await openRunRow(panel);
+      await expect(row).not.toContainText('Succeeded');
 
       // The watcher's own poll reads the jobs even though no job event was
-      // selected, so the card grows one dot per job in GitHub's order.
+      // selected, so the row grows one dot per job in GitHub's order.
       // The observer's transient backoff can reach 60s; allow a full cycle.
-      const buildDot = card.locator('[data-job-id="501"]');
-      const testDot = card.locator('[data-job-id="502"]');
-      await expect(buildDot).toHaveAttribute(
-        'aria-label',
-        'Build macOS: success',
-        { timeout: 90_000 },
-      );
-      await expect(testDot).toHaveAttribute('aria-label', 'Test: running');
+      await expectRunJob(panel, '501', 'Build macOS: success', 90_000);
+      await expectRunJob(panel, '502', 'Test: running');
       // The dots group into tiers inferred from when GitHub created each job:
       // the test job appeared only after the build completed.
       const tiers = card.getByTestId('dag-progress-tier');
@@ -1758,7 +1819,7 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
 
       // A terminal run must not retire a run-only watcher until its final jobs
       // snapshot is available. A transient jobs failure keeps the in-progress
-      // card and durable watcher alive for the observer's retry.
+      // row and durable watcher alive for the observer's retry.
       await setScenario(
         {
           workflowRuns: {
@@ -1781,7 +1842,7 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       expect(persistedWatcher(userDataDir, ACTIVITY_WATCHER_ID)?.status).toBe(
         'active',
       );
-      await expect(card).toHaveAttribute('data-run-status', 'in progress');
+      await expect(row).not.toContainText('Succeeded');
 
       await setScenario(
         {
@@ -1805,10 +1866,8 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
           { timeout: 90_000 },
         )
         .toBe('fired');
-      await expect(card).toHaveAttribute('data-run-status', 'success', {
-        timeout: 30_000,
-      });
-      await expect(testDot).toHaveAttribute('aria-label', 'Test: success');
+      await expect(row).toHaveCount(0, { timeout: 30_000 });
+      await expectCompletedJob(panel, '502', 'Test: success');
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -1912,12 +1971,10 @@ test.describe('GitHub workflow-run watchers against the REST mock', () => {
       await injectActiveTurn(electronApp);
 
       const panel = window.getByTestId('panel-content-chat');
-      const activity = panel.getByTestId('agent-activity-active');
-      const card = activity.getByTestId('github-workflow-run-card-101');
-      await expect(card).toBeVisible();
+      const { inspector: card } = await openRunRow(panel);
 
       // The observer reads the pinned workflow file on its first poll and the
-      // card lays out all declared work in four tiers, with the jobs
+      // row lays out all declared work in four tiers, with the jobs
       // GitHub has not created yet as pending placeholders.
       const tiers = card.getByTestId('dag-progress-tier');
       await expect(tiers).toHaveCount(4, { timeout: 90_000 });

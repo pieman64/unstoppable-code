@@ -20,6 +20,7 @@ function makeMinimalPipeline(
 ): NormalizedPipeline {
   return {
     name: 'test-pipeline',
+    scope: ['directory'],
     trigger_inputs: triggerInputs,
     jobs: {},
   };

@@ -10,30 +10,49 @@ const mockRevokeDelegationLifecycle = jest.fn();
 const mockHasDelegationLifecycle = jest.fn(() => false);
 
 jest.mock('../agents/delegation/lifecycle', () => ({
-  hasDelegationLifecycle: mockHasDelegationLifecycle,
-  revokeDelegationLifecycle: mockRevokeDelegationLifecycle,
+  get hasDelegationLifecycle(): typeof mockHasDelegationLifecycle {
+    return mockHasDelegationLifecycle;
+  },
+  get revokeDelegationLifecycle(): typeof mockRevokeDelegationLifecycle {
+    return mockRevokeDelegationLifecycle;
+  },
 }));
 
 jest.mock('../lib/user-environment-store', () => ({
-  readEnvironmentConfig: mockReadEnvironmentConfig,
-  readUserEnvironment: mockReadUserEnvironment,
-  writeEnvironmentConfig: mockWriteEnvironmentConfig,
-  writeUserEnvironment: mockWriteUserEnvironment,
+  get readEnvironmentConfig(): typeof mockReadEnvironmentConfig {
+    return mockReadEnvironmentConfig;
+  },
+  get readUserEnvironment(): typeof mockReadUserEnvironment {
+    return mockReadUserEnvironment;
+  },
+  get writeEnvironmentConfig(): typeof mockWriteEnvironmentConfig {
+    return mockWriteEnvironmentConfig;
+  },
+  get writeUserEnvironment(): typeof mockWriteUserEnvironment {
+    return mockWriteUserEnvironment;
+  },
 }));
 
 jest.mock('../lib/user-environment-runtime', () => ({
-  initializeUserEnvironmentRuntime: mockInitializeUserEnvironmentRuntime,
-  invalidateUserEnvironmentInjectionCache:
-    mockInvalidateUserEnvironmentInjectionCache,
+  get initializeUserEnvironmentRuntime(): typeof mockInitializeUserEnvironmentRuntime {
+    return mockInitializeUserEnvironmentRuntime;
+  },
+  get invalidateUserEnvironmentInjectionCache(): typeof mockInvalidateUserEnvironmentInjectionCache {
+    return mockInvalidateUserEnvironmentInjectionCache;
+  },
 }));
 
 jest.mock('../agents/session-manager', () => ({
-  destroySessionsByProvider: mockDestroySessionsByProvider,
+  get destroySessionsByProvider(): typeof mockDestroySessionsByProvider {
+    return mockDestroySessionsByProvider;
+  },
 }));
 
 jest.mock('../ollama', () => ({
   getOllamaService: jest.fn(() => ({
-    handleUserEnvironmentChanged: mockHandleUserEnvironmentChanged,
+    get handleUserEnvironmentChanged(): typeof mockHandleUserEnvironmentChanged {
+      return mockHandleUserEnvironmentChanged;
+    },
   })),
 }));
 

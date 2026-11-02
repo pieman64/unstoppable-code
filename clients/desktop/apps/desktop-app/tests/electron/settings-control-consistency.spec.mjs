@@ -13,6 +13,8 @@ import {
 } from './mock-server/routes/hosted-settings-fixtures.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { openOrganizationsList } from './hostedSettingsLocators.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 test('Settings number fields and model effort controls share capsule geometry and keep saved values', async () => {
   const launched = await launchCanopy();
@@ -30,11 +32,11 @@ test('Settings number fields and model effort controls share capsule geometry an
       .locator('[data-testid="settings-content"] section')
       .filter({
         has: page.getByRole('heading', {
-          name: 'Pipeline monitoring',
+          name: 'Workflow monitoring',
           exact: true,
         }),
       });
-    const selects = row.locator('select');
+    const selects = row.locator('button[role="combobox"]');
     await expect(selects).toHaveCount(2);
     for (const select of await selects.all()) {
       await expect(select).toHaveClass(/\brounded-full\b/);
@@ -45,8 +47,8 @@ test('Settings number fields and model effort controls share capsule geometry an
       (await selects.nth(1).boundingBox()).width,
     );
     const effort = selects.nth(1);
-    const value = await effort.inputValue();
-    await effort.selectOption(value);
+    const value = await effort.getAttribute('data-value');
+    await chooseSettingsOption(effort, value ?? '');
     await app.openSettingsSection('canopy');
     await expect(retention).toHaveValue('12');
     await expect(retention).toHaveClass(/\brounded-full\b/);
@@ -160,7 +162,7 @@ test('Organization Statistics role uses one disclosure and saves through the sha
     await app.waitForShell();
     await connectMockCloudAccount(page, key);
     await app.openSettings();
-    await page.getByTestId('settings-nav-organizations-list').click();
+    await openOrganizationsList(page);
     const owner = defaultHostedSettingsOrganizations().find(
       (org) => org.id === HOSTED_SETTINGS_ORG_IDS.owner,
     );
@@ -168,8 +170,8 @@ test('Organization Statistics role uses one disclosure and saves through the sha
       .getByTestId('team-panel-org')
       .filter({ hasText: owner.name })
       .click();
-    await page.getByTestId('settings-nav-organization-settings').click();
-    await page.getByRole('button', { name: 'Usage', exact: true }).click();
+    // Usage is its own rail row.
+    await page.getByTestId('settings-nav-organization-settings-usage').click();
     const role = page.getByTestId('usage-min-role-select');
     await expect(role).toBeVisible();
     await expect(role).toHaveCSS('height', '28px');
@@ -177,7 +179,7 @@ test('Organization Statistics role uses one disclosure and saves through the sha
     await expect(
       role.locator('xpath=ancestor::label[1]').locator('svg'),
     ).toHaveCount(1);
-    await role.selectOption('MEMBER');
+    await chooseSettingsOption(role, 'MEMBER');
     await expect
       .poll(
         async () =>

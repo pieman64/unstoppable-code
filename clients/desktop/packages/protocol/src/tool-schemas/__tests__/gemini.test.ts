@@ -1509,6 +1509,10 @@ describe('Gemini conversion is equivalent on generated schemas (Ajv)', () => {
       const original = generatedSchema(seed);
       const converted = toGeminiToolSchema(original);
       const inlined = toGeminiToolSchema(original, { inlineRefs: true });
+      // Check Gemini's accepted subset on these same conversion results;
+      // a second pass over the identical 300 seeds adds no distinct input.
+      expect([seed, geminiViolations(converted)]).toEqual([seed, []]);
+      expect([seed, geminiViolations(inlined)]).toEqual([seed, []]);
       const before = compile(original);
       const after = compile(converted);
       const afterInlined = compile(inlined);
@@ -1531,17 +1535,6 @@ describe('Gemini conversion is equivalent on generated schemas (Ajv)', () => {
     expect(rejected).toBeGreaterThan(5000);
   });
 
-  it('leaves no node Gemini rejects in the generated schemas', () => {
-    for (let seed = 1; seed <= 300; seed += 1) {
-      for (const options of [{}, { inlineRefs: true }]) {
-        const violations = geminiViolations(
-          toGeminiToolSchema(generatedSchema(seed), options),
-        );
-        expect([seed, violations]).toEqual([seed, []]);
-      }
-    }
-  });
-
   /** JSON pointers to every subschema under `path`. */
   function subschemaPointers(
     schema: JsonSchemaValue,
@@ -1556,6 +1549,7 @@ describe('Gemini conversion is equivalent on generated schemas (Ajv)', () => {
       if (value === undefined) continue;
       if (['properties', '$defs'].includes(key) && typeof value === 'object') {
         for (const [name, member] of Object.entries(value ?? {})) {
+          if (member === undefined) continue;
           subschemaPointers(member, `${path}/${key}/${name}`, found);
         }
       } else if (['anyOf', 'oneOf', 'allOf'].includes(key)) {

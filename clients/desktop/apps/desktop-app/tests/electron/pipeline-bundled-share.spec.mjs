@@ -1,10 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
-import {
-  DEFAULT_MOCK_BASE_URL,
-  getScenarioActivity,
-} from './seeders/index.mjs';
 
 const SCOPED_PIPELINE_ID = '33333333-3333-4333-8333-333333333333';
 
@@ -14,41 +10,11 @@ function emitOpenUrl(electronApp, url) {
   }, url);
 }
 
-// CAN-3510: a share toast's Copy link and Open are peer actions, so both must
-// render as the standard toast action button: same classes, same computed
-// size/font/ink/border/padding, and an icon on each.
-async function expectMatchedLinkActions(scope) {
-  const copy = scope.getByTestId('toast-copy-link');
-  const open = scope.getByTestId('toast-open-link');
-  await expect(copy).toBeVisible();
-  await expect(open).toBeVisible();
-  const look = (locator) =>
-    locator.evaluate((element) => {
-      const style = getComputedStyle(element);
-      return {
-        classes: [...element.classList].sort().join(' '),
-        hasIcon: element.querySelector('svg') !== null,
-        height: style.height,
-        fontSize: style.fontSize,
-        fontWeight: style.fontWeight,
-        color: style.color,
-        backgroundColor: style.backgroundColor,
-        borderRadius: style.borderRadius,
-        boxShadow: style.boxShadow,
-        paddingLeft: style.paddingLeft,
-        paddingRight: style.paddingRight,
-      };
-    });
-  const copyLook = await look(copy);
-  expect(copyLook.hasIcon).toBe(true);
-  expect(await look(open)).toEqual(copyLook);
-}
-
 // Bundled pipelines are read-only, but sharing publishes the current pipeline
 // as a snapshot copy under the sharer's account.
 //
 // Testids exercised:
-//   - `workflows-library-filter-source`          -> Library Source capsule filter
+//   - `workflows-library-filter`                 -> Library Filter button (Source facet)
 //   - `workflows-library-row` (bundled-code-review-codex) -> opens read-only
 //   - `pipeline-share`                           -> editor Share button
 //   - `cloud-sync-modal`                         -> disconnected sign-in gate
@@ -58,11 +24,12 @@ async function expectMatchedLinkActions(scope) {
 //   - `share-pipeline-dependency-problems`       -> grouped publisher problem list
 //   - `share-pipeline-dependencies-summary`      -> collapsed "Included files" summary
 //   - `share-pipeline-submit`                    -> packaged Share action
-//   - `toast-copy-link` / `toast-open-link`      -> matched share toast actions
+//   - `share-pipeline-success` / `-link`         -> success notice with the link
+//   - `share-pipeline-copy-link` / `-done`       -> footer Copy link and Done
 test('bundled pipeline editor offers snapshot sharing', async () => {
   const { electronApp, userDataDir } = await launchCanopy({
-    // The auth link the share toast's Open uses is gated by the portal flag,
-    // which is off under E2E unless pinned.
+    // Portal share links are gated by the portal flag, which is off under
+    // E2E unless pinned.
     env: {
       CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
         'canopy-portal-enabled': true,
@@ -77,10 +44,7 @@ test('bundled pipeline editor offers snapshot sharing', async () => {
     await app.waitForShell();
     await app.openPipelinesPage();
 
-    await window.getByTestId('workflows-library-filter-source').click();
-    await window
-      .getByTestId('workflows-library-filter-source-option-built-in')
-      .click();
+    await app.chooseWorkflowsLibraryFilter('source', 'built-in');
     const bundledRow = app.workflowsLibraryPipelineRow(
       'bundled-code-review-codex',
       'bundled',
@@ -193,43 +157,30 @@ test('bundled pipeline editor offers snapshot sharing', async () => {
     await expect(submit).toBeEnabled();
     await submit.click();
 
-    await expect(shareModal).toHaveCount(0);
-    const shareToast = window
-      .getByTestId('toast-card')
-      .filter({ hasText: 'Pipeline shared with Acme Release' });
-    const scopedLink = shareToast.getByTestId('toast-copy-link');
-    await expect(scopedLink).toBeVisible();
-    await expectMatchedLinkActions(shareToast);
-    await shareToast.getByRole('button', { name: 'Expand' }).click();
-    const toastDetail = window.getByRole('dialog');
-    await expect(toastDetail).toBeVisible();
-    await expectMatchedLinkActions(toastDetail);
-    await toastDetail.getByRole('button', { name: 'Close' }).click();
-    await expect(toastDetail).toHaveCount(0);
-    await scopedLink.click();
-    await expect(scopedLink).toHaveText('Copied');
+    // The dialog stays open on its success notice with the scoped link and
+    // Copy link; no share toast is raised.
+    const scopedLink = new RegExp(
+      `/portal/plugins/pipelines/shared/${SCOPED_PIPELINE_ID}$`,
+    );
+    await expect(
+      shareModal.getByTestId('share-pipeline-success'),
+    ).toContainText('Workflow shared with Acme Release');
+    await expect(shareModal.getByTestId('share-pipeline-link')).toHaveText(
+      scopedLink,
+    );
+    await expect(
+      window
+        .getByTestId('toast-card')
+        .filter({ hasText: 'Workflow shared with Acme Release' }),
+    ).toHaveCount(0);
+    const copyLink = shareModal.getByTestId('share-pipeline-copy-link');
+    await copyLink.click();
+    await expect(copyLink).toContainText('Copied');
     await expect
       .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
-      .toMatch(
-        new RegExp(`/portal/plugins/pipelines/shared/${SCOPED_PIPELINE_ID}$`),
-      );
-    // An organization share needs the account's session to view, so Open
-    // signs the browser in to this desktop's account on the way there.
-    await shareToast.getByTestId('toast-open-link').click();
-    await expect
-      .poll(
-        async () =>
-          (
-            await getScenarioActivity(
-              DEFAULT_MOCK_BASE_URL,
-              'csk_brady_scoped_links_e2e',
-            )
-          ).activity[
-            `authLinkMint:/portal/plugins/pipelines/shared/${SCOPED_PIPELINE_ID}`
-          ] ?? 0,
-        { timeout: 20_000 },
-      )
-      .toBe(1);
+      .toMatch(scopedLink);
+    await shareModal.getByTestId('share-pipeline-done').click();
+    await expect(shareModal).toHaveCount(0);
 
     await emitOpenUrl(
       electronApp,
@@ -252,10 +203,7 @@ test('pipeline editor Account Settings uses the tracked Settings screen', async 
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
     await app.openPipelinesPage();
-    await window.getByTestId('workflows-library-filter-source').click();
-    await window
-      .getByTestId('workflows-library-filter-source-option-built-in')
-      .click();
+    await app.chooseWorkflowsLibraryFilter('source', 'built-in');
     await app.openWorkflowsLibraryRow(
       app.workflowsLibraryPipelineRow('bundled-code-review-codex', 'bundled'),
     );

@@ -32,6 +32,7 @@
  * a vague one. Check the gate before writing the promise.
  */
 
+import { GUEST_WORK_PRESERVED_COPY } from '@canopy/ui-shared';
 import { brandText } from './brand';
 
 /**
@@ -68,11 +69,13 @@ export const GUEST_SIGN_IN_CTA_LABEL: string = 'Sign in for more';
  * editing this constant would silently desynchronize the holdouts while
  * creating the appearance of single-sourcing.
  *
+ * The guest model gate closes on it too, on every host, which is why the
+ * sentence itself lives in `@canopy/ui-shared`.
+ *
  * {@link GUEST_UPGRADE_NUDGE_BODY} closes on a shorter "Your guest work comes
  * with you." so the nudge banner stays brief; it carries the same promise.
  */
-export const GUEST_WORK_PRESERVED: string =
-  'Your guest work comes with you, nothing is lost.';
+export const GUEST_WORK_PRESERVED: string = GUEST_WORK_PRESERVED_COPY;
 
 /**
  * Body of the motivated-moment upgrade nudge shown to a consented guest after
@@ -95,11 +98,10 @@ export const GUEST_UPGRADE_NUDGE_BODY: string =
 // where Canopy pays for the inference. Picking anything else raises a sign-in
 // prompt instead of committing the model.
 //
-// Deliberately NOT web's `MODEL_SIGN_IN_COPY.body`. "Choosing a model needs an
-// account" is FALSE on desktop — a guest keeps every model their own Claude /
-// Codex subscription or local Ollama can run, and only the hosted, Canopy-paid
-// lane is gated. "This chat comes with you" is likewise a web-to-account
-// MIGRATION promise that does not describe the desktop flow.
+// The gate's title, body, and actions are `guestModelGateCopy` in
+// `@canopy/ui-shared` (CAN-4703), shared with the web gate. They say the
+// account is free and, when the host can select one, name the guest model the
+// user can run right now.
 //
 // Per the third tone rule above: this must NOT offer free AI Credits as the
 // perk. Guests can turn on the same opt-in daily drip a signed-in account can,
@@ -127,27 +129,13 @@ export function guestModelGateTitle(): string {
  * Body of the hosted proxy's guest-model refusal, shown when a guest's turn is
  * rejected because the chat is pinned to a model outside the allowlist.
  *
- * Distinct from `guestModelGateBody`: that one is offered BEFORE the fact, for
- * a model the user just picked and can still name. This one is after the fact,
+ * Distinct from the gate body (`guestModelGateCopy`): that one is offered
+ * BEFORE the fact, for a model the user just picked and can still name. This one is after the fact,
  * where the only thing known for certain is that the current model is not
  * available without an account.
  */
 export const GUEST_MODEL_NOT_ALLOWED_BODY: string =
   'This chat is set to a model that needs an account.';
-
-/**
- * Body of the guest model gate. Names WHY the account is required — the model
- * is hosted, i.e. Canopy pays for the turn — and closes on the shared
- * reassurance clause so nothing already built reads as at risk.
- */
-export function guestModelGateBody(modelLabel: string): string {
-  return `${modelLabel} is hosted by ${brandText.appName}, so running it needs an account. ${GUEST_WORK_PRESERVED}`;
-}
-
-/** Primary action of the guest model gate. Names the outcome, not the flow. */
-export function guestModelGatePrimaryLabel(modelLabel: string): string {
-  return `Sign in to use ${modelLabel}`;
-}
 
 /**
  * Success toast fired when the guest connects. Signing in closes the gate
@@ -156,9 +144,3 @@ export function guestModelGatePrimaryLabel(modelLabel: string): string {
 export function guestModelGateToast(modelLabel: string): string {
   return `You're all set. ${modelLabel} is ready to use.`;
 }
-
-/**
- * Dismiss label. `Not now` rather than `Cancel` per `docs/ux-writing.md`: this
- * is a declined offer, not an aborted operation.
- */
-export const GUEST_MODEL_GATE_DISMISS: string = 'Not now';

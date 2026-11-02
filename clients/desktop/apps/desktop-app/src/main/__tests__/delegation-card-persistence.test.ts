@@ -7,10 +7,24 @@ import {
   persistedDelegationSnapshot,
 } from '../agents/delegation/card-persistence';
 
-const route = {
+const route: NonNullable<AgentDelegationSnapshot['routeSnapshot']> = {
   selectedModelId: 'model',
   runtimeModelId: 'model',
   harnessId: 'claude',
+  runtimeKind: 'claude-sdk',
+  runnerRegistrationId: 'claude-local',
+  runtimeVersion: '1',
+  adapterVersion: '1',
+  modelSource: 'test',
+  providerType: 'subscription',
+  assignmentRevision: 'assignment-1',
+  billingAuthority: 'subscription',
+  aiCreditsRouted: false,
+  capabilities: [],
+  supportedThinkingLevels: [],
+  capabilitySnapshotHash: 'hash',
+  capabilityGeneration: 1,
+  policyRevision: 'read-only-1',
 };
 
 function snapshot(
@@ -54,30 +68,35 @@ async function settle(): Promise<void> {
 
 describe('persistedDelegationSnapshot', () => {
   it('drops live-only progress from a running card', () => {
-    expect(
-      persistedDelegationSnapshot(
-        snapshot({
-          partialText: 'Reading files',
-          phase: 'tool',
-          queue: { id: 'queue', name: 'Queue' },
-          approvalPending: true,
-          stopRequested: { operationId: 'stop', status: 'accepted' },
-          workspaceObservation: {
-            consistency: 'consistent',
-            dirty: false,
-            headRevision: 'abc',
-            observedAt: 1,
-          },
-          control: {
-            operationId: 'steer',
-            operation: 'steer',
-            status: 'accepted',
-          },
-          usage: { inputTokens: 10, outputTokens: 1 },
-          nativeSessionId: 'native',
-        }),
-      ),
-    ).toEqual(snapshot({ nativeSessionId: 'native' }));
+    const workspaceObservation: NonNullable<
+      AgentDelegationSnapshot['workspaceObservation']
+    > = {
+      consistency: 'live_shared_worktree',
+      dirty: false,
+      headRevision: 'abc',
+      observedAt: 1,
+    };
+    // Preserve the original legacy value while testing that live-only data is dropped.
+    Reflect.set(workspaceObservation, 'consistency', 'consistent');
+    const liveProgress = snapshot({
+      partialText: 'Reading files',
+      queue: { id: 'queue', name: 'Queue' },
+      approvalPending: true,
+      stopRequested: { operationId: 'stop', status: 'accepted' },
+      workspaceObservation,
+      control: {
+        operationId: 'steer',
+        operation: 'steer',
+        status: 'accepted',
+      },
+      usage: { inputTokens: 10, outputTokens: 1 },
+      nativeSessionId: 'native',
+    });
+    // `tool` is a legacy progress phase that is intentionally removed by the projection.
+    Reflect.set(liveProgress, 'phase', 'tool');
+    expect(persistedDelegationSnapshot(liveProgress)).toEqual(
+      snapshot({ nativeSessionId: 'native' }),
+    );
   });
 
   it('keeps a settled card’s usage and a finished control operation', () => {

@@ -7,11 +7,16 @@ import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   type AppAdvisorWatcherSummary,
   type ScheduledActivity,
+  type TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 import { useActivityStore } from '@/stores/activityStore';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useAutomationsStore } from '@/stores/automationsStore';
-import { chatStoreRenderView, useChatStore } from '@/stores/chatStore';
+import {
+  chatStoreRenderView,
+  useChatStore,
+  type ChatTab,
+} from '@/stores/chatStore';
 import { useCodeGraphBuildStore } from '@/stores/codeGraphBuildStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useHooksStore } from '@/stores/hooksStore';
@@ -38,6 +43,52 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 type SnapshotWorktree = PortalSessionShellState['worktrees'][number];
 type SnapshotWorkspace = PortalSessionShellState['workspaces'][number];
 
+function makeTrackedPlan(
+  projectId: string,
+  worktreeId: string,
+): TrackedPlanData {
+  return {
+    id: 'plan-1',
+    projectId,
+    worktreeId,
+    source: 'claude',
+    title: 'Plan explore safety',
+    content: '# Plan',
+    reviewStatus: 'pending',
+    createdAt: '2026-08-07T00:00:00.000Z',
+    updatedAt: '2026-08-07T00:00:00.000Z',
+    latestRevisionNumber: 1,
+    revisions: [
+      {
+        revisionNumber: 1,
+        content: '# Plan',
+        source: 'claude',
+        reviewStatus: 'pending',
+        createdAt: '2026-08-07T00:00:00.000Z',
+      },
+    ],
+    linkedExecutionIds: [],
+  };
+}
+
+function makeChatTab(id: string, overrides: Partial<ChatTab> = {}): ChatTab {
+  return {
+    id,
+    title: 'Plan explore chat',
+    messages: [],
+    status: 'idle',
+    error: null,
+    createdAt: '2026-08-07T00:00:00.000Z',
+    queuedMessages: [],
+    planMode: false,
+    proposalMode: 'optional',
+    thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
+    ...overrides,
+  };
+}
+
 function makeKeys(
   partial: Partial<DesktopWorktreeRowLiveKeys> = {},
 ): DesktopWorktreeRowLiveKeys {
@@ -52,6 +103,7 @@ function makeKeys(
     pipelineUnseen: new Set(),
     pipelineUnseenFailed: new Set(),
     pipelinePaused: new Set(),
+    backgroundTasks: new Map(),
     ...partial,
   };
 }
@@ -205,12 +257,13 @@ describe('useDesktopWorktreeRowOverrides', () => {
   it('folds a finished plan-explore chat into hasUnread even when the live unread set does not carry the row', () => {
     const key = 'workspace/a';
     useActivityStore.setState({
-      trackedPlans: { [key]: [{ id: 'plan-1' }] },
+      trackedPlans: { [key]: [makeTrackedPlan('workspace', 'a')] },
     });
     useChatStore.setState({
       worktreeChats: {
         [`${PLAN_EXPLORE_CHAT_PROJECT_ID}/plan-1`]: {
-          tabs: [{ id: 'tab-1', unread: true }],
+          activeTabId: 'tab-1',
+          tabs: [makeChatTab('tab-1', { unread: true })],
         },
       },
     });
@@ -332,12 +385,10 @@ describe('useDesktopWorktreeRowOverrides tool-approval popover', () => {
           'workspace/a': {
             activeTabId: 'chat-1',
             tabs: [
-              {
-                id: 'chat-1',
+              makeChatTab('chat-1', {
                 title: 'Approval Blocked',
                 providerType: 'claude',
-                messages: [],
-              },
+              }),
             ],
           },
         },

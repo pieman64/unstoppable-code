@@ -2,6 +2,7 @@ import { useMemo, type JSX } from 'react';
 import { isToday, startOfDay } from './calendarDateUtils';
 import {
   calendarEventChipAttributes,
+  calendarEventInteractionClasses,
   calendarEventSelectedClasses,
   calendarEventToneClasses,
   formatGroupCount,
@@ -94,11 +95,11 @@ function EventChip({
               : undefined
           }
           disabled={!clickable}
-          className={`flex h-full w-full gap-1 overflow-hidden rounded border px-1 text-left text-3xs leading-tight transition ${
+          className={`flex h-full w-full gap-1 overflow-hidden rounded border px-1 text-left text-3xs leading-tight transition-colors ${
             tall ? 'flex-col py-0.5' : 'items-center'
           } ${calendarEventToneClasses(event)} ${calendarEventSelectedClasses(
             selected,
-          )} ${clickable ? 'cursor-pointer hover:brightness-125' : 'cursor-default'}`}
+          )} ${calendarEventInteractionClasses(event)}`}
         >
           <span className="flex w-full items-center gap-1">
             <span className="shrink-0 tabular-nums opacity-80">

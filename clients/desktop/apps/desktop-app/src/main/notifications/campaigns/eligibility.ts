@@ -95,12 +95,8 @@ export async function evaluateCampaign(
 
   const record = context.state.campaigns[definition.id];
   if (record?.sentAt !== undefined) return suppress('already-sent');
-  // The OS refused the last attempt. Event-driven: only an explicit recompute
-  // (launch, resume, a preference change) releases this hold, via
-  // `releaseDeliveryFailures`. Gating on the persisted reason matters now
-  // that the Getting Started sequence keeps a daily timer alive for two
-  // weeks after install -- without it that heartbeat would re-present a
-  // refused banner every day.
+  // Only an explicit lifecycle event releases a refused delivery hold via
+  // releaseDeliveryFailures; scheduled retries must not repeatedly ask the OS.
   if (record?.suppressedReason === 'delivery-failed') {
     return suppress('delivery-failed');
   }

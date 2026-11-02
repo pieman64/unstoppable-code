@@ -12,6 +12,7 @@ import {
   type PortalCommandType,
   type WorkspaceContextState,
 } from '@canopy/desktop-shared/types';
+import type * as SessionManagerModule from '../../../agents/session-manager';
 import { BrowserWindow } from 'electron';
 import { sendToWindow } from '../../../lib/window-send';
 import {
@@ -58,9 +59,55 @@ import * as AgentDefaultModel from '../../../agents/agent-default-model';
 import { peekProviderNativeAuthAvailability } from '../../../auth/provider-auth-state';
 import type { PortalAdapterContext } from '../types';
 
+const appAdvisorSyntheticFence = {
+  isCurrent: jest.fn(() => true),
+};
+const advisorStopTarget = {
+  projectId: APP_ADVISOR_PROJECT_ID,
+  worktreeId: 'entry-1',
+  chatId: 'chat-1',
+};
+const advisorStopContext = {
+  target: advisorStopTarget,
+  session: { owner: 'advisor-session-owner' },
+  fence: {
+    processOwner: Symbol('advisor-session-owner'),
+    turnId: 'advisor-turn',
+    userMessageId: 'advisor-user-message',
+    turnEpoch: 4,
+  },
+};
+const mockGetAllActiveSessionInfos = jest.fn(() => [advisorStopTarget]);
+const mockCaptureChatTurnStop = jest.fn<unknown, [unknown]>(
+  () => advisorStopContext,
+);
+const mockIsChatTurnStopCurrent = jest.fn<boolean, [unknown]>(() => true);
+const mockCaptureAppAdvisorSyntheticResultFence = jest.fn<unknown, [unknown]>(
+  () => appAdvisorSyntheticFence,
+);
+const mockCancelWorktreeChat = jest.fn<Promise<unknown>, [unknown, unknown?]>(
+  () => Promise.resolve({ ok: true }),
+);
+const mockEmitSyntheticResultEvent = jest.fn<
+  Promise<void>,
+  [unknown, unknown, unknown?]
+>(() => Promise.resolve());
+
 jest.mock('../../../lib/window-send', () => ({
   sendToWindow: jest.fn(),
   sendToWindowDetailed: jest.fn(() => ({ delivered: true })),
+}));
+jest.mock('../../../agents/session-manager', () => ({
+  ...jest.requireActual<typeof SessionManagerModule>(
+    '../../../agents/session-manager',
+  ),
+  getAllActiveSessionInfos: (): unknown[] => mockGetAllActiveSessionInfos(),
+}));
+jest.mock('../../../lib/chat-turn-cancel', () => ({
+  captureChatTurnStop: (...args: [unknown]): unknown =>
+    mockCaptureChatTurnStop(...args),
+  isChatTurnStopCurrent: (...args: [unknown]): boolean =>
+    mockIsChatTurnStopCurrent(...args),
 }));
 jest.mock('../../../lib/cowork-work-entries', () => ({
   createWorkEntry: jest.fn(),
@@ -98,7 +145,10 @@ jest.mock('../../../ipc/app-advisor', () => ({
   completeAppAdvisorAskUserRequest: jest.fn(),
 }));
 jest.mock('../../../services/chat-service', () => ({
-  cancelWorktreeChat: jest.fn(),
+  cancelWorktreeChat: jest.fn(
+    (...args: [unknown, unknown?]): Promise<unknown> =>
+      mockCancelWorktreeChat(...args),
+  ),
   projectAppAdvisorChatSummaries: jest.fn(),
   sendWorktreeChatMessage: jest.fn(),
 }));
@@ -112,7 +162,14 @@ jest.mock('../../../integration/claude-terminal-session-service', () => ({
   })),
 }));
 jest.mock('../../../app-advisor/chat-service', () => ({
-  emitAppAdvisorSyntheticResultEvent: jest.fn(),
+  captureAppAdvisorSyntheticResultFence: jest.fn(
+    (...args: [unknown]): unknown =>
+      mockCaptureAppAdvisorSyntheticResultFence(...args),
+  ),
+  emitAppAdvisorSyntheticResultEvent: jest.fn(
+    (...args: [unknown, unknown, unknown?]): Promise<void> =>
+      mockEmitSyntheticResultEvent(...args),
+  ),
 }));
 jest.mock('../../../lib/app-advisor-workspace', () => ({
   readAppAdvisorClaudeMd: jest.fn(),
@@ -215,6 +272,14 @@ interface Recorder {
   fails: RecordedFail[];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isBooleanPredicate(value: unknown): value is () => boolean {
+  return typeof value === 'function';
+}
+
 function recorder(): Recorder {
   const completes: RecordedComplete[] = [];
   const fails: RecordedFail[] = [];
@@ -231,18 +296,40 @@ function recorder(): Recorder {
   return { context, completes, fails };
 }
 
-function command<T extends PortalCommandType>(
-  type: T,
-  payload: unknown,
-): PortalCommandEnvelope<PortalCommandPayloadMap[T]> {
+function command<TPayload>(
+  type: PortalCommandType,
+  payload: TPayload,
+): PortalCommandEnvelope<TPayload> {
   return {
     id: `cmd-${type}`,
     sequence: 1,
     type,
-    payload: payload as PortalCommandPayloadMap[T],
+    payload,
     createdAt: '2026-08-26T00:00:00.000Z',
     expiresAt: null,
   };
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => {
+    throw new Error('Deferred promise did not resolve');
+  };
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function partialPreferences(
+  preferences: Partial<PreferencesData>,
+): PreferencesData {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as PreferencesData;
 }
 
 function initUnavailableAgentModel(): void {
@@ -252,6 +339,11 @@ function initUnavailableAgentModel(): void {
       name: 'Stale Agent',
       baseModel: 'removed-base-model',
       instructions: '',
+      pluginSelections: {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+      },
       createdAt: '2026-08-26T00:00:00.000Z',
       updatedAt: '2026-08-26T00:00:00.000Z',
       available: true,
@@ -261,6 +353,15 @@ function initUnavailableAgentModel(): void {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCancelWorktreeChat.mockReset().mockResolvedValue({ ok: true });
+  mockCaptureAppAdvisorSyntheticResultFence.mockReturnValue(
+    appAdvisorSyntheticFence,
+  );
+  mockGetAllActiveSessionInfos.mockReturnValue([advisorStopTarget]);
+  mockCaptureChatTurnStop.mockReturnValue(advisorStopContext);
+  mockIsChatTurnStopCurrent.mockReturnValue(true);
+  appAdvisorSyntheticFence.isCurrent.mockReturnValue(true);
+  mockEmitSyntheticResultEvent.mockReset().mockResolvedValue(undefined);
   jest
     .spyOn(BrowserWindow, 'getAllWindows')
     .mockReturnValue([mainWindow, appAdvisorWindow]);
@@ -312,8 +413,10 @@ beforeEach(() => {
     ok: true,
     chatId: 'chat-1',
   });
-  mockedCancelWorktreeChat.mockResolvedValue({ ok: true });
-  mockedEmitSyntheticResult.mockResolvedValue(undefined);
+  mockedCancelWorktreeChat.mockClear();
+  mockCancelWorktreeChat.mockReset().mockResolvedValue({ ok: true });
+  mockedEmitSyntheticResult.mockClear();
+  mockEmitSyntheticResultEvent.mockReset().mockResolvedValue(undefined);
   mockedProjectSummaries.mockResolvedValue(undefined);
   mockedChangeChatModel.mockResolvedValue(true);
   mockClaudeTerminalGetState.mockReturnValue(undefined);
@@ -322,16 +425,18 @@ beforeEach(() => {
     tabs: [],
     activeTabId: '',
   });
-  mockedReadPreferences.mockResolvedValue({
-    appAdvisorModel: 'gpt-5.5',
-    appAdvisorThinkingLevel: 'high',
-    appAdvisorPluginSelections: {
-      collectionIds: [],
-      skillRefs: [],
-      pluginRefs: [],
-    },
-    approvalsUpgradeNoticeDismissed: false,
-  } as Awaited<ReturnType<typeof readPreferencesFile>>);
+  mockedReadPreferences.mockResolvedValue(
+    partialPreferences({
+      appAdvisorModel: 'gpt-5.5',
+      appAdvisorThinkingLevel: 'high',
+      appAdvisorPluginSelections: {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+      },
+      approvalsUpgradeNoticeDismissed: false,
+    }),
+  );
   mockWorkspaceContextGetState.mockReturnValue({
     context: { kind: 'personal' },
     revision: 0,
@@ -662,7 +767,7 @@ describe('portal.app_advisor.settings', () => {
       await handlePortalAppAdvisorSettingsSave(
         command('portal.app_advisor.settings.save', {
           projectAgentAccess: access,
-        }),
+        } as PortalCommandPayloadMap['portal.app_advisor.settings.save']),
         context,
       );
 
@@ -683,7 +788,7 @@ describe('portal.app_advisor.settings', () => {
             label: 'Org',
           },
         ],
-      }),
+      } as PortalCommandPayloadMap['portal.app_advisor.settings.save']),
       context,
     );
 
@@ -738,6 +843,11 @@ describe('portal.app_advisor.send', () => {
         name: 'Inherit',
         baseModel: 'default',
         instructions: '',
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+        },
         createdAt: '2026-10-14T00:00:00.000Z',
         updatedAt: '2026-10-14T00:00:00.000Z',
         available: true,
@@ -775,7 +885,7 @@ describe('portal.app_advisor.send', () => {
     });
   });
 
-  it.each([undefined, 'cursor'])(
+  it.each([undefined, 'cursor'] as const)(
     'dispatches a Cursor App Advisor send when the runtime is connected (provider %s)',
     async (providerType) => {
       const { context, completes, fails } = recorder();
@@ -1454,14 +1564,19 @@ describe('portal.app_advisor.set_model', () => {
         name: 'Follows Default',
         baseModel: 'default',
         instructions: '',
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+        },
         createdAt: '2026-08-26T00:00:00.000Z',
         updatedAt: '2026-08-26T00:00:00.000Z',
         available: true,
       },
     ]);
-    mockedReadPreferences.mockResolvedValue({
-      appAdvisorModel: 'claude-sonnet-4-6',
-    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    mockedReadPreferences.mockResolvedValue(
+      partialPreferences({ appAdvisorModel: 'claude-sonnet-4-6' }),
+    );
     mockedReadChatTabsFile.mockResolvedValueOnce({
       version: 1,
       tabs: [
@@ -1597,6 +1712,8 @@ describe('portal.app_advisor.set_model', () => {
 
 describe('portal.app_advisor.cancel', () => {
   it('cancels the resolved chat and emits the synthetic un-stream event', async () => {
+    appAdvisorSyntheticFence.isCurrent.mockReturnValue(false);
+    mockCancelWorktreeChat.mockResolvedValueOnce({ ok: true });
     const { context, completes, fails } = recorder();
     await handlePortalAppAdvisorCancel(
       command('portal.app_advisor.cancel', { chatId: 'chat-1' }),
@@ -1604,14 +1721,85 @@ describe('portal.app_advisor.cancel', () => {
     );
 
     expect(fails).toHaveLength(0);
-    expect(mockedCancelWorktreeChat).toHaveBeenCalledWith({
+    expect(mockedCancelWorktreeChat.mock.calls[0]?.[0]).toEqual({
       projectId: APP_ADVISOR_PROJECT_ID,
       worktreeId: 'entry-1',
       chatId: 'chat-1',
     });
+    expect(mockedCancelWorktreeChat.mock.calls[0]?.[1]).toBe(
+      advisorStopContext,
+    );
+    expect(mockCaptureAppAdvisorSyntheticResultFence).toHaveBeenCalledWith(
+      'chat-1',
+    );
+    expect(
+      mockCaptureAppAdvisorSyntheticResultFence.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockedResolveWorkEntryForChat.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(
+      mockCaptureAppAdvisorSyntheticResultFence.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockedCancelWorktreeChat.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(mockEmitSyntheticResultEvent).toHaveBeenCalledWith(
+      'chat-1',
+      expect.any(Object),
+      expect.objectContaining({
+        fence: appAdvisorSyntheticFence,
+        userMessageId: 'advisor-user-message',
+      }),
+    );
+    const emittedOptions = mockEmitSyntheticResultEvent.mock.calls[0]?.[2];
+    if (!isRecord(emittedOptions)) {
+      throw new Error('Expected Advisor cancellation guard options');
+    }
+    const isCurrent = emittedOptions['isCurrent'];
+    if (!isBooleanPredicate(isCurrent)) {
+      throw new Error('Expected Advisor cancellation current-turn guard');
+    }
+    expect(isCurrent()).toBe(true);
     const emitArgs = mockedEmitSyntheticResult.mock.calls[0];
     expect(emitArgs?.[0]).toBe('chat-1');
     expect(emitArgs?.[1]?.getAppAdvisorWindow()).toBe(appAdvisorWindow);
+    expect(completes).toEqual([
+      expect.objectContaining({ result: { ok: true } }),
+    ]);
+  });
+
+  it('does not retarget an Advisor Stop after Work Entry resolution yields', async () => {
+    const resolution = deferred<{
+      entryId: string | null;
+      archivedInEntryId: null;
+    }>();
+    mockedResolveWorkEntryForChat.mockReturnValueOnce(resolution.promise);
+    const { context, completes, fails } = recorder();
+
+    const stopping = handlePortalAppAdvisorCancel(
+      command('portal.app_advisor.cancel', { chatId: 'chat-1' }),
+      context,
+    );
+
+    expect(mockCaptureAppAdvisorSyntheticResultFence).toHaveBeenCalledWith(
+      'chat-1',
+    );
+    expect(
+      mockCaptureAppAdvisorSyntheticResultFence.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockedResolveWorkEntryForChat.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(mockCaptureChatTurnStop).toHaveBeenCalledWith(advisorStopTarget);
+
+    mockIsChatTurnStopCurrent.mockReturnValue(false);
+    resolution.resolve({ entryId: 'entry-1', archivedInEntryId: null });
+    await stopping;
+
+    expect(fails).toHaveLength(0);
+    expect(mockedCancelWorktreeChat).not.toHaveBeenCalled();
+    expect(mockEmitSyntheticResultEvent).not.toHaveBeenCalled();
     expect(completes).toEqual([
       expect.objectContaining({ result: { ok: true } }),
     ]);
@@ -1852,12 +2040,13 @@ describe('portal.app_advisor.answer_question / dismiss_question', () => {
 
   it('rejects a malformed answers array', () => {
     const { context, fails } = recorder();
+    const answers: unknown = [{ question: 42, selectedOptions: 'Yes' }];
     handlePortalAppAdvisorAnswerQuestion(
       command('portal.app_advisor.answer_question', {
         chatId: 'chat-1',
         requestId: 'request-1',
-        answers: [{ question: 42, selectedOptions: 'Yes' }],
-      }),
+        answers,
+      } as PortalCommandPayloadMap['portal.app_advisor.answer_question']),
       context,
     );
 

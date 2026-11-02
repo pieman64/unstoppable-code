@@ -15,6 +15,7 @@ import {
  * points on the main chain, so they must never be stamped.
  */
 const options: TranscriptReducerOptions = {
+  childToolLiveness: { kind: 'unknown' },
   now: 1_700_000_000_000,
   createMessageId: () => 'generated-id',
 };

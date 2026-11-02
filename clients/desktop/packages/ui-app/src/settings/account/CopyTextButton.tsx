@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, type JSX } from 'react';
-import { Check, Copy } from '@canopy/ui-shared/icons/AppIcons';
+import type { JSX } from 'react';
+import { CopyButton } from '@canopy/ui-shared/components';
 
 interface CopyTextButtonProps {
   /** The text copied to the clipboard on click. */
@@ -18,24 +18,16 @@ export function CopyTextButton({
   label,
   copiedLabel = 'Copied',
 }: CopyTextButtonProps): JSX.Element {
-  const [copied, setCopied] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={() => {
-        void navigator.clipboard.writeText(value).then(() => {
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 2000);
-        });
-      }}
-      className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium fg-primary transition-colors hover:bg-secondary"
-    >
-      {copied ? (
-        <Check size={15} aria-hidden="true" />
-      ) : (
-        <Copy size={15} aria-hidden="true" />
-      )}
-      {copied ? copiedLabel : label}
-    </button>
+    <CopyButton
+      value={value}
+      label={label}
+      ariaLabel={label}
+      title={label}
+      copiedLabel={copiedLabel}
+      variant="secondary"
+      size="compact"
+      copiedDurationMs={2000}
+    />
   );
 }

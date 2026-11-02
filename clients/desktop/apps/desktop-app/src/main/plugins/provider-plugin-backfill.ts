@@ -10,8 +10,8 @@ import type {
 import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
 import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
 import { isE2eBuild } from '../lib/e2e-gate';
-import { safeReadJson } from '../lib/fs-utils';
 import {
   logMainProcessInfo,
   logMainProcessWarn,
@@ -109,12 +109,30 @@ function emptyProviderPluginBackfillState(): ProviderPluginBackfillState {
   return { version: PROVIDER_PLUGIN_BACKFILL_STATE_VERSION, providers: {} };
 }
 
+/**
+ * `damaged`: the file does not parse or holds invalid records; the valid ones
+ * are kept, and the writer copies the file aside before replacing it. `newer`
+ * and `unreadable` carry no records and are never written over.
+ */
+export type ProviderPluginBackfillStateStatus =
+  | 'ok'
+  | 'missing'
+  | 'damaged'
+  | 'newer'
+  | 'unreadable';
+
+export interface ProviderPluginBackfillStateRead {
+  status: ProviderPluginBackfillStateStatus;
+  state: ProviderPluginBackfillState;
+}
+
 export interface ProviderPluginBackfillDependencies {
   loadCache: () => Promise<PluginsCache | null>;
   installPlugin: (
     request: InstallBuiltInPluginRequest,
   ) => Promise<IPCResult<InstallBuiltInPluginResult>>;
-  readState: () => ProviderPluginBackfillState;
+  readState: () => ProviderPluginBackfillStateRead;
+  /** Throws when the state cannot be installed. */
   writeState: (state: ProviderPluginBackfillState) => void;
   /** Keep the failure on the plugin so the detail page can show and retry it. */
   recordInstallError: (
@@ -128,17 +146,25 @@ export interface ProviderPluginBackfillDependencies {
 
 /**
  * Why a run recorded nothing and left the account for the next confirmed
- * sign-in: there was no marketplace data to plan from, or a provider's
- * install state could not be read, which looks like "not installed" and
- * would plan nothing (or plan a plugin the provider already has).
+ * sign-in: there was no marketplace data to plan from; a provider's install
+ * state could not be read, which looks like "not installed" and would plan
+ * nothing (or plan a plugin the provider already has); the state file is from
+ * a newer version or could not be read, so which accounts already ran is
+ * unknown; or the state could not be written, so the run could not be
+ * remembered and every later sign-in would install the same plugins again.
  */
 export type ProviderPluginBackfillDeferral =
   | 'no-marketplace-data'
-  | 'install-status-unreadable';
+  | 'install-status-unreadable'
+  | 'state-unreadable'
+  | 'state-unwritable';
 
 const DEFERRAL_TEXT: Record<ProviderPluginBackfillDeferral, string> = {
   'no-marketplace-data': 'no marketplace data to plan from',
   'install-status-unreadable': "a provider's install state could not be read",
+  'state-unreadable':
+    'the backfill state is from a newer version or could not be read',
+  'state-unwritable': 'the backfill state could not be written',
 };
 
 export interface ProviderPluginBackfillReport {
@@ -152,6 +178,11 @@ export interface ProviderPluginBackfillReport {
   deferred?: ProviderPluginBackfillDeferral;
   installed: ProviderPluginBackfillCandidate[];
   failed: ProviderPluginBackfillFailure[];
+  /**
+   * The account is recorded, but its write reported this error after
+   * installing the file, so the record may not survive a crash.
+   */
+  stateWriteError?: string;
 }
 
 /**
@@ -206,9 +237,9 @@ function deferred(
 const inFlight = new Map<PluginProvider, Promise<unknown>>();
 
 /**
- * Backfill `provider` for the account `fingerprint` identifies. Runs once per
- * confirmed fingerprint: a repeat observation of the same account, including
- * every app start, finds the record and does nothing. Overlapping requests
+ * Backfill `provider` for the account `fingerprint` identifies. Once the run
+ * is recorded, a repeat observation of the same account, including every app
+ * start, finds the record and does nothing. Overlapping requests
  * for one provider run one after the other, so the second sees the first's
  * record instead of installing the same plugins again.
  */
@@ -234,7 +265,10 @@ async function backfillProvider(
   fingerprint: string,
   deps: ProviderPluginBackfillDependencies,
 ): Promise<ProviderPluginBackfillReport> {
-  const state = deps.readState();
+  const read = deps.readState();
+  if (read.status === 'newer' || read.status === 'unreadable')
+    return deferred(provider, 'state-unreadable');
+  const state = read.state;
   if (
     state.providers[provider]?.some(
       (record) => record.fingerprint === fingerprint,
@@ -251,6 +285,22 @@ async function backfillProvider(
   if (hasUnreadableInstallStatus(cache, provider))
     return deferred(provider, 'install-status-unreadable');
   const plan = planProviderPluginBackfill(cache, provider);
+  // The account is recorded only after the installs. Prove the state can be
+  // written first: otherwise each confirmed sign-in, including every app
+  // start, would plan and install again, bringing back a plugin the user has
+  // since removed from this provider. Re-read with no await before the write:
+  // the other provider's run may have recorded its account meanwhile.
+  // This probe reserves nothing: a final write that fails after it passed
+  // leaves the account unrecorded, so a later sign-in can run it again and
+  // reinstall a plugin removed meanwhile. Known limitation, at most one
+  // reinstall; confirmed by Mike on 2026-10-29 (CAN-4482).
+  if (plan.length > 0) {
+    try {
+      deps.writeState(deps.readState().state);
+    } catch {
+      return deferred(provider, 'state-unwritable');
+    }
+  }
   const installed: ProviderPluginBackfillCandidate[] = [];
   const failed: ProviderPluginBackfillFailure[] = [];
   for (const candidate of plan) {
@@ -283,24 +333,50 @@ async function backfillProvider(
     }
   }
   const now = deps.now ?? ((): Date => new Date());
-  const current = deps.readState();
+  const current = deps.readState().state;
   const records = (current.providers[provider] ?? []).filter(
     (record) => record.fingerprint !== fingerprint,
   );
-  records.push({
+  const completed: ProviderPluginBackfillRecord = {
     fingerprint,
     completedAt: now().toISOString(),
     failures: failed,
-  });
-  deps.writeState({
-    version: PROVIDER_PLUGIN_BACKFILL_STATE_VERSION,
-    providers: {
-      ...current.providers,
-      [provider]: records.slice(-MAX_BACKFILL_RECORDS_PER_PROVIDER),
-    },
-  });
+  };
+  records.push(completed);
+  let writeError: { cause: unknown } | null = null;
+  try {
+    deps.writeState({
+      version: PROVIDER_PLUGIN_BACKFILL_STATE_VERSION,
+      providers: {
+        ...current.providers,
+        [provider]: records.slice(-MAX_BACKFILL_RECORDS_PER_PROVIDER),
+      },
+    });
+  } catch (cause) {
+    writeError = { cause };
+  }
+  // The installs landed whether or not the record did, and a later run plans
+  // nothing to refresh for them.
   if (installed.length > 0)
     deps.refreshInventory(`provider-plugin-backfill:${provider}`);
+  if (writeError) {
+    // A write that failed after its rename (a directory sync) left the record
+    // in place; one that failed before it leaves the account to run again.
+    const stored = deps.readState().state.providers[provider] ?? [];
+    const recorded = stored.some(
+      (record) =>
+        record.fingerprint === fingerprint &&
+        record.completedAt === completed.completedAt,
+    );
+    if (!recorded) throw writeError.cause;
+    return {
+      provider,
+      status: 'completed',
+      installed,
+      failed,
+      stateWriteError: errorText(writeError.cause),
+    };
+  }
   return { provider, status: 'completed', installed, failed };
 }
 
@@ -331,39 +407,101 @@ function isBackfillRecord(
 
 const BACKFILL_PROVIDERS: readonly PluginProvider[] = ['claude', 'codex'];
 
+function errorCode(error: unknown): string | undefined {
+  if (!isRecord(error)) return undefined;
+  const code = error.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 /**
- * The persisted state, or nothing backfilled yet when the file is missing,
- * malformed, or written by another version: a bad file costs one extra
- * idempotent backfill, never a crash.
+ * The persisted state and how it read. A missing file is nothing backfilled
+ * yet. A damaged file keeps its valid records, so the accounts it lost run
+ * once more: that re-run can reinstall a plugin the user removed.
  */
 export function readProviderPluginBackfillState(
   filePath: string = getProviderPluginBackfillStateFilePath(),
-): ProviderPluginBackfillState {
-  const raw = safeReadJson<unknown>(filePath);
-  const empty = emptyProviderPluginBackfillState();
+): ProviderPluginBackfillStateRead {
+  const empty = (
+    status: ProviderPluginBackfillStateStatus,
+  ): ProviderPluginBackfillStateRead => ({
+    status,
+    state: emptyProviderPluginBackfillState(),
+  });
+  let text: string;
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    return empty(errorCode(error) === 'ENOENT' ? 'missing' : 'unreadable');
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return empty('damaged');
+  }
+  if (!isRecord(raw) || typeof raw.version !== 'number')
+    return empty('damaged');
+  if (raw.version > PROVIDER_PLUGIN_BACKFILL_STATE_VERSION)
+    return empty('newer');
   if (
-    !isRecord(raw) ||
     raw.version !== PROVIDER_PLUGIN_BACKFILL_STATE_VERSION ||
     !isRecord(raw.providers)
   )
-    return empty;
-  const state = empty;
-  for (const provider of BACKFILL_PROVIDERS) {
-    const records = raw.providers[provider];
-    if (records === undefined) continue;
-    if (!Array.isArray(records) || !records.every(isBackfillRecord))
-      return emptyProviderPluginBackfillState();
-    state.providers[provider] = records;
-  }
-  return state;
+    return empty('damaged');
+  return backfillStateFromProviders(raw.providers);
 }
 
+/** The valid records per provider; `damaged` when any had to be dropped. */
+function backfillStateFromProviders(
+  providers: Record<string, unknown>,
+): ProviderPluginBackfillStateRead {
+  const state = emptyProviderPluginBackfillState();
+  let damaged = false;
+  for (const provider of BACKFILL_PROVIDERS) {
+    const records = providers[provider];
+    if (records === undefined) continue;
+    if (!Array.isArray(records)) {
+      damaged = true;
+      continue;
+    }
+    const valid = records.filter(isBackfillRecord);
+    if (valid.length !== records.length) damaged = true;
+    state.providers[provider] = valid;
+  }
+  return { status: damaged ? 'damaged' : 'ok', state };
+}
+
+/**
+ * Installs `state` atomically. A damaged file is copied to
+ * `<name>.damaged-<ms>` first; a newer or unreadable one is never replaced.
+ */
 export function writeProviderPluginBackfillState(
   state: ProviderPluginBackfillState,
-  filePath: string = getProviderPluginBackfillStateFilePath(),
+  targetPath?: string,
 ): void {
+  // Resolved in the body, not as a parameter default, so the ownership census
+  // traces this writer to its file.
+  const filePath = targetPath ?? getProviderPluginBackfillStateFilePath();
+  const current = readProviderPluginBackfillState(filePath);
+  if (current.status === 'newer' || current.status === 'unreadable')
+    throw new Error(
+      `Refusing to replace a ${current.status} provider plugin backfill state file.`,
+    );
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(state, null, 2), 'utf8');
+  const aside =
+    current.status === 'damaged' ? `${filePath}.damaged-${Date.now()}` : null;
+  // Copied, not moved: the damaged file and its valid records stay readable
+  // until the rewrite renames over it.
+  if (aside) fs.copyFileSync(filePath, aside);
+  writeFileAtomicallySync(filePath, JSON.stringify(state, null, 2), {
+    encoding: 'utf8',
+    durable: true,
+  });
+  if (aside) {
+    logMainProcessWarn(
+      `provider-plugin-backfill: copied a damaged state file aside as ${path.basename(aside)}`,
+    );
+  }
 }
 
 /**
@@ -460,6 +598,11 @@ export function startProviderPluginBackfill(
           );
           return;
         }
+        if (report.stateWriteError !== undefined)
+          logMainProcessWarn(
+            `provider-plugin-backfill: ${event.provider} backfill recorded, but its state write reported an error`,
+            report.stateWriteError,
+          );
         if (report.installed.length === 0 && report.failed.length === 0) return;
         logMainProcessInfo(
           `provider-plugin-backfill: ${event.provider} received ${report.installed.length} plugin(s), ${report.failed.length} failed`,

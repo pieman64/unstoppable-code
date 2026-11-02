@@ -95,8 +95,9 @@ export function BrowserAddressBar({
     >
       {/* The panel's title row keeps its controls 4px from the card's
           edges; this row does too, so Back sits under the first tab and the
-          last control under the panel's ✕. */}
-      <div className="flex h-11 min-w-0 items-center gap-1 px-1">
+          last control under the panel's ✕. As a pane toolbar its controls
+          take the tab row's nested corner radius (panels.css). */}
+      <div className="canopy-panel-toolbar flex h-11 min-w-0 items-center gap-1 px-1">
         <HeaderActionButton
           stateStyle="toolbar"
           iconOnly

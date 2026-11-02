@@ -520,7 +520,7 @@ export function MultiRepoPrBadge({
         onClick={onOpen}
         onMouseEnter={(e): void => hover.onTriggerEnter(e.currentTarget)}
         onMouseLeave={hover.onTriggerLeave}
-        className={`electron-no-drag inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition hover:brightness-125 ${
+        className={`electron-no-drag inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors hover:opacity-90 ${
           openRepos.every((r) => r.pr?.state === 'merged')
             ? 'border-fg-special-strong/30 bg-special-subtle fg-special-strong'
             : 'border-fg-success-strong/30 bg-success-subtle fg-success-strong'

@@ -65,7 +65,7 @@ test.describe('Codex pipeline live streaming', () => {
         .locator('[data-testid^="audit-transcript-button-pipeline:"]')
         .first();
       await expect(auditTranscriptButton).toBeVisible({ timeout: 30_000 });
-      await expect(window.getByText('Pipeline Agent').first()).toBeVisible();
+      await expect(window.getByText('Workflow Agent').first()).toBeVisible();
       await expect(window.getByText('8 messages')).toBeVisible({
         timeout: 30_000,
       });

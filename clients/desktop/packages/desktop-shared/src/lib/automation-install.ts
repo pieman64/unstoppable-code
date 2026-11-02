@@ -1,13 +1,20 @@
 import type {
   SharedAutomationAction,
+  SharedAutomationDocument,
   SharedAutomationInstallSource,
   SharedAutomationModelConfig,
+  SharedAutomationPipelineDependency,
   SharedAutomationTrigger,
 } from '@canopy/protocol/automations';
 import {
+  SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
+  SHARED_AUTOMATION_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
+  canonicalizeSharedAutomationPrompt,
   projectKindToTargetContext,
   validateSharedAutomationDocument,
 } from '@canopy/protocol/automations';
+import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
 import {
   resolveAutomationTargetRequirement,
   type AutomationPipelineResolution,
@@ -17,6 +24,13 @@ import {
   type AutomationSessionTargetKind,
 } from './automation-target';
 import {
+  pipelineAutomationTaskId,
+  pipelineAutomationWorkspaceId,
+  resolveAutomationPipelineTarget,
+  PIPELINE_TARGET_GLOBAL_PROJECT_PIPELINE_ERROR,
+  PIPELINE_TARGET_NEW_WORKTREE_COWORK_ERROR,
+} from './automation-pipeline-target';
+import {
   buildSharedPipelineId,
   type PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
@@ -25,6 +39,9 @@ import type {
   AgentModelConfig,
   AutomationAction,
   AutomationCreateRequest,
+  AutomationExistingPipelineInstall,
+  AutomationInstalledFromMetadata,
+  AutomationInstalledPipelineDependency,
   AutomationTrigger,
   AutomationUpdateRequest,
   ChatTabPluginSelections,
@@ -51,12 +68,28 @@ import type {
  * caller share identical behavior.
  */
 
+/**
+ * Refusal when a pipeline installed from a share was edited on this machine:
+ * applying the update would overwrite the recipient's work.
+ */
+export const AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE =
+  'The installed workflow has local changes, so this update was not applied. Your local changes were preserved.';
+
+/** Install copy for a document version this client does not understand. */
+export const SHARED_AUTOMATION_NEWER_VERSION_MESSAGE =
+  'This share needs a newer version of the app. Update the app and try again.';
+
+const PIPELINES_NOT_INSTALLED_MESSAGE =
+  'Install the pipelines this automation uses before installing it.';
+
 export interface InstallSharedAutomationBindings {
   /** Advisory facts; main independently resolves the selected IDs. */
   targetKind?: AutomationSessionTargetKind;
   pipelineResolution?: AutomationPipelineResolution;
   /** Target workspace id for worktree-scoped actions. */
   workspaceId?: string;
+  /** Existing task (worktree or Work Entry) for a `task` pipeline destination. */
+  taskId?: string;
   /** Stable repository IDs available under the selected workspace. */
   repoIds?: string[];
   /** Target Cowork workspace id for portable standalone prompts. */
@@ -69,6 +102,20 @@ export interface InstallSharedAutomationBindings {
   verifiedSharedPipelineInstallPin?: PipelineShareInstallPin;
   /** Local pipeline created from an inline pipeline definition. */
   bundledPipelineLocalId?: string;
+  /**
+   * Local pipelines materialized for the share's packaged pipelines (Stage A
+   * of the package install), one per key. Key `action` is a
+   * `worktree_pipeline` action's own pipeline; the others are prompt
+   * dependencies whose prompt mentions are rewritten to these IDs.
+   */
+  pipelineDependencies?: AutomationInstalledPipelineDependency[];
+  /**
+   * Current content hash of each recorded local pipeline, keyed by local
+   * pipeline ID; `null` when it no longer exists. Update only: a recorded
+   * dependency whose hash differs from the one last installed refuses the
+   * update with {@link AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE}.
+   */
+  localPipelineContentHashes?: Readonly<Record<string, string | null>>;
   /**
    * Recipient-confirmed branch for `worktree_prompt` actions. The document's
    * `existingBranch` is only a suggestion — the wizard prefills it, and only
@@ -93,8 +140,292 @@ export type BuildInstallAutomationRequestResult =
   | { ok: false; error: string };
 
 export type BuildApplyUpdateRequestResult =
-  | { ok: true; request: AutomationUpdateRequest; keptEnabled: boolean }
+  | {
+      ok: true;
+      request: AutomationUpdateRequest;
+      keptEnabled: boolean;
+      /**
+       * Recorded pipelines the new share no longer lists. Their local
+       * pipelines stay, and callers need not act on them: Stage B unlinks their
+       * pipeline-owner records when it releases the previous package
+       * (`releaseAutomationPackagePipelineInstalls`), and keeps them while
+       * another installed automation still uses that package.
+       */
+      droppedPipelineDependencies: AutomationInstalledPipelineDependency[];
+    }
   | { ok: false; error: string };
+
+type PipelineMappingResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string };
+
+function promptPipelineDependencies(
+  action: SharedAutomationAction,
+): SharedAutomationPipelineDependency[] {
+  return action.type === 'worktree_pipeline'
+    ? []
+    : (action.pipelineDependencies ?? []);
+}
+
+/**
+ * Every packaged pipeline the document carries, by key, with the hash the
+ * capability package must deliver for it.
+ */
+function packagedPipelineHashes(
+  automation: SharedAutomationDocument,
+): Map<string, string> {
+  const hashes = new Map<string, string>();
+  const action = automation.action;
+  if (action.type === 'worktree_pipeline') {
+    if (action.pipeline.source === 'packaged') {
+      hashes.set(action.pipeline.key, action.pipeline.pipelineContentHash);
+    }
+    return hashes;
+  }
+  for (const dependency of promptPipelineDependencies(action)) {
+    if (dependency.pipeline.source === 'packaged') {
+      hashes.set(dependency.key, dependency.pipeline.pipelineContentHash);
+    }
+  }
+  return hashes;
+}
+
+/**
+ * Resolve the local pipeline for each packaged key from the Stage A
+ * bindings. Every packaged pipeline must be installed, and installed at the
+ * exact hash the document names.
+ */
+function packagedPipelineLocalIds(
+  automation: SharedAutomationDocument,
+  bindings: InstallSharedAutomationBindings,
+): PipelineMappingResult<Map<string, string>> {
+  const installed = new Map(
+    (bindings.pipelineDependencies ?? []).map((entry) => [entry.key, entry]),
+  );
+  const localIds = new Map<string, string>();
+  for (const [key, pipelineContentHash] of Array.from(
+    packagedPipelineHashes(automation),
+  )) {
+    const entry = installed.get(key);
+    const localPipelineId =
+      entry?.localPipelineId ??
+      (key === SHARED_AUTOMATION_ACTION_PIPELINE_KEY
+        ? bindings.bundledPipelineLocalId
+        : undefined);
+    if (localPipelineId === undefined) {
+      return { ok: false, error: PIPELINES_NOT_INSTALLED_MESSAGE };
+    }
+    if (
+      entry !== undefined &&
+      entry.pipelineContentHash !== pipelineContentHash
+    ) {
+      return {
+        ok: false,
+        error:
+          'An installed pipeline does not match this share. Refresh and try again.',
+      };
+    }
+    localIds.set(key, localPipelineId);
+  }
+  return { ok: true, value: localIds };
+}
+
+/**
+ * Replace each packaged dependency's prompt mentions with the recipient's
+ * local pipeline ID. Mentions are UUIDs and local IDs are UUIDs, so every
+ * replacement must keep the prompt length and configured prompt reference
+ * offsets stay valid; edits are applied from the last offset to the first.
+ */
+export function rewriteSharedAutomationPromptPipelines(
+  prompt: string,
+  dependencies: readonly SharedAutomationPipelineDependency[] | undefined,
+  localPipelineIds: ReadonlyMap<string, string>,
+  promptReferences?: readonly ConfiguredPromptReference[],
+): PipelineMappingResult<string> {
+  const canonicalPrompt = canonicalizeSharedAutomationPrompt(prompt);
+  const edits: Array<{ textStart: number; text: string; replacement: string }> =
+    [];
+  for (const dependency of dependencies ?? []) {
+    if (dependency.promptSpans.length === 0) continue;
+    const localPipelineId = localPipelineIds.get(dependency.key);
+    if (localPipelineId === undefined) {
+      return { ok: false, error: PIPELINES_NOT_INSTALLED_MESSAGE };
+    }
+    const replacement = localPipelineId.toLowerCase();
+    for (const span of dependency.promptSpans) {
+      if (replacement.length !== span.text.length) {
+        return {
+          ok: false,
+          error: `The prompt's mention of the "${dependency.pipeline.name ?? dependency.key}" pipeline could not be updated to its local ID.`,
+        };
+      }
+      edits.push({ textStart: span.textStart, text: span.text, replacement });
+    }
+  }
+  edits.sort((left, right) => right.textStart - left.textStart);
+  let rewritten = canonicalPrompt;
+  let previousStart = Number.POSITIVE_INFINITY;
+  for (const edit of edits) {
+    const end = edit.textStart + edit.text.length;
+    if (
+      end > previousStart ||
+      rewritten.slice(edit.textStart, end) !== edit.text ||
+      (promptReferences ?? []).some(
+        (reference) =>
+          edit.textStart < reference.textStart + reference.displayText.length &&
+          reference.textStart < end,
+      )
+    ) {
+      return {
+        ok: false,
+        error:
+          'The prompt no longer matches its pipeline mentions. Ask the author to share it again.',
+      };
+    }
+    rewritten = `${rewritten.slice(0, edit.textStart)}${edit.replacement}${rewritten.slice(end)}`;
+    previousStart = edit.textStart;
+  }
+  return { ok: true, value: rewritten };
+}
+
+/**
+ * The prompt with packaged pipeline mentions rewritten, for a prompt action.
+ */
+function mappedPrompt(
+  action: Exclude<SharedAutomationAction, { type: 'worktree_pipeline' }>,
+  localPipelineIds: ReadonlyMap<string, string>,
+): PipelineMappingResult<string> {
+  return rewriteSharedAutomationPromptPipelines(
+    action.prompt,
+    action.pipelineDependencies,
+    localPipelineIds,
+    action.promptReferences,
+  );
+}
+
+/** Install provenance for the document's packaged pipelines. */
+function packagedPipelineProvenance(
+  automation: SharedAutomationDocument,
+  localPipelineIds: ReadonlyMap<string, string>,
+): Pick<
+  AutomationInstalledFromMetadata,
+  | 'bundledPipelineLocalId'
+  | 'bundledPipelineContentHash'
+  | 'pipelineDependencies'
+> {
+  const action = automation.action;
+  if (action.type === 'worktree_pipeline') {
+    const localPipelineId =
+      action.pipeline.source === 'packaged'
+        ? localPipelineIds.get(action.pipeline.key)
+        : undefined;
+    return action.pipeline.source === 'packaged' &&
+      localPipelineId !== undefined
+      ? {
+          bundledPipelineLocalId: localPipelineId,
+          bundledPipelineContentHash: action.pipeline.pipelineContentHash,
+        }
+      : {};
+  }
+  const pipelineDependencies: AutomationInstalledPipelineDependency[] = [];
+  for (const dependency of promptPipelineDependencies(action)) {
+    const localPipelineId = localPipelineIds.get(dependency.key);
+    if (
+      dependency.pipeline.source !== 'packaged' ||
+      localPipelineId === undefined
+    )
+      continue;
+    pipelineDependencies.push({
+      key: dependency.key,
+      localPipelineId,
+      pipelineContentHash: dependency.pipeline.pipelineContentHash,
+    });
+  }
+  return pipelineDependencies.length > 0 ? { pipelineDependencies } : {};
+}
+
+/** Locally installed pipelines recorded for a share, by key. */
+function recordedPipelineInstalls(
+  installedFrom: AutomationInstalledFromMetadata | undefined,
+  automation: SharedAutomationDocument,
+): AutomationInstalledPipelineDependency[] {
+  const recorded = [...(installedFrom?.pipelineDependencies ?? [])];
+  if (installedFrom?.bundledPipelineLocalId !== undefined) {
+    // An older inline install may lack the hash; like the inline update path,
+    // it then updates in place only when its bytes already equal the new ones.
+    const incoming = packagedPipelineHashes(automation).get(
+      SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
+    );
+    const pipelineContentHash =
+      installedFrom.bundledPipelineContentHash ?? incoming;
+    if (pipelineContentHash !== undefined) {
+      recorded.push({
+        key: SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
+        localPipelineId: installedFrom.bundledPipelineLocalId,
+        pipelineContentHash,
+      });
+    }
+  }
+  return recorded;
+}
+
+/** Keys the new document still installs locally, packaged or inline. */
+function documentPipelineKeys(
+  automation: SharedAutomationDocument,
+): Set<string> {
+  const keys = new Set(packagedPipelineHashes(automation).keys());
+  if (
+    automation.action.type === 'worktree_pipeline' &&
+    automation.action.pipeline.source === 'inline'
+  ) {
+    keys.add(SHARED_AUTOMATION_ACTION_PIPELINE_KEY);
+  }
+  return keys;
+}
+
+export interface AutomationPipelineUpdatePlan {
+  /** Stage A `existingPipelines` for the packaged keys the share still lists. */
+  existingPipelines: AutomationExistingPipelineInstall[];
+  /** Recorded pipelines the new share no longer lists. */
+  dropped: AutomationInstalledPipelineDependency[];
+}
+
+/**
+ * Plan how an update reuses the pipelines an earlier install recorded: each
+ * still-listed packaged key keeps its local pipeline (Stage A
+ * `existingPipelines`), and keys the share no longer lists are dropped.
+ * With `localPipelineContentHashes`, a recorded pipeline edited since it was
+ * installed refuses the whole update, and one that no longer exists is left
+ * for Stage A to create again. Without them, Stage A makes the same check.
+ */
+export function planAutomationPipelineUpdate(
+  installedFrom: AutomationInstalledFromMetadata | undefined,
+  automation: SharedAutomationDocument,
+  localPipelineContentHashes?: Readonly<Record<string, string | null>>,
+): PipelineMappingResult<AutomationPipelineUpdatePlan> {
+  const packaged = packagedPipelineHashes(automation);
+  const listed = documentPipelineKeys(automation);
+  const existingPipelines: AutomationExistingPipelineInstall[] = [];
+  const dropped: AutomationInstalledPipelineDependency[] = [];
+  for (const record of recordedPipelineInstalls(installedFrom, automation)) {
+    if (!listed.has(record.key)) {
+      dropped.push(record);
+      continue;
+    }
+    if (!packaged.has(record.key)) continue;
+    const current = localPipelineContentHashes?.[record.localPipelineId];
+    if (current === null) continue;
+    if (current !== undefined && current !== record.pipelineContentHash) {
+      return { ok: false, error: AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE };
+    }
+    existingPipelines.push({
+      key: record.key,
+      localPipelineId: record.localPipelineId,
+      expectedContentHash: record.pipelineContentHash,
+    });
+  }
+  return { ok: true, value: { existingPipelines, dropped } };
+}
 
 function approvedIfCommand(
   bindings: InstallSharedAutomationBindings,
@@ -176,12 +507,13 @@ function installPinsEqual(
 }
 
 function pipelineVerificationError(name: string | undefined): string {
-  return `The pinned version of "${name ?? 'this pipeline'}" could not be verified. Refresh and try again.`;
+  return `The pinned version of "${name ?? 'this workflow'}" could not be verified. Refresh and try again.`;
 }
 
 function mapAction(
   action: SharedAutomationAction,
   bindings: InstallSharedAutomationBindings,
+  localPipelineIds: ReadonlyMap<string, string>,
 ): { ok: true; action: AutomationAction } | { ok: false; error: string } {
   if (
     'promptReferences' in action &&
@@ -199,11 +531,13 @@ function mapAction(
     };
   }
   if (action.type === 'app_advisor_prompt') {
+    const prompt = mappedPrompt(action, localPipelineIds);
+    if (!prompt.ok) return prompt;
     return {
       ok: true,
       action: {
         type: 'app_advisor_prompt',
-        prompt: action.prompt,
+        prompt: prompt.value,
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
@@ -222,12 +556,14 @@ function mapAction(
         error: 'Choose a Cowork project for this automation before installing.',
       };
     }
+    const prompt = mappedPrompt(action, localPipelineIds);
+    if (!prompt.ok) return prompt;
     return {
       ok: true,
       action: {
         type: 'standalone_prompt',
         chatProjectId: bindings.coworkWorkspaceId,
-        prompt: action.prompt,
+        prompt: prompt.value,
         ...(action.promptReferences
           ? { promptReferences: action.promptReferences }
           : {}),
@@ -238,6 +574,9 @@ function mapAction(
       },
     };
   }
+
+  if (action.type === 'worktree_pipeline')
+    return mapPipelineAction(action, bindings, localPipelineIds);
 
   if (!bindings.workspaceId) {
     return {
@@ -246,30 +585,96 @@ function mapAction(
     };
   }
 
-  if (action.type === 'worktree_prompt') {
+  const prompt = mappedPrompt(action, localPipelineIds);
+  if (!prompt.ok) return prompt;
+  return {
+    ok: true,
+    action: {
+      type: 'worktree_prompt',
+      workspaceId: bindings.workspaceId,
+      ...(bindings.existingBranch !== undefined
+        ? { existingBranch: bindings.existingBranch }
+        : {}),
+      prompt: prompt.value,
+      ...(action.promptReferences
+        ? { promptReferences: action.promptReferences }
+        : {}),
+      ...splitModelConfig(action.modelConfig),
+      ...(action.planMode !== undefined ? { planMode: action.planMode } : {}),
+      ...(action.interfaceMode !== undefined
+        ? { interfaceMode: action.interfaceMode }
+        : {}),
+      ...(bindings.pluginSelections
+        ? { pluginSelections: bindings.pluginSelections }
+        : {}),
+    },
+  };
+}
+
+type PipelineAutomationLocation = Pick<
+  Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+  'workspaceId' | 'target'
+>;
+
+/**
+ * The recipient's binding for a portable pipeline destination, resolved
+ * before the pipeline source. Portable `workspace` installs as a legacy
+ * action with no `target`; no destination needs a project.
+ */
+function mapPipelineLocation(
+  kind: Extract<
+    SharedAutomationAction,
+    { type: 'worktree_pipeline' }
+  >['target']['kind'],
+  bindings: InstallSharedAutomationBindings,
+):
+  | { ok: true; location: PipelineAutomationLocation }
+  | { ok: false; error: string } {
+  if (kind === 'global')
+    return { ok: true, location: { target: { kind: 'global' } } };
+  const workspaceId = bindings.workspaceId;
+  if (!workspaceId)
     return {
-      ok: true,
-      action: {
-        type: 'worktree_prompt',
-        workspaceId: bindings.workspaceId,
-        ...(bindings.existingBranch !== undefined
-          ? { existingBranch: bindings.existingBranch }
-          : {}),
-        prompt: action.prompt,
-        ...(action.promptReferences
-          ? { promptReferences: action.promptReferences }
-          : {}),
-        ...splitModelConfig(action.modelConfig),
-        ...(action.planMode !== undefined ? { planMode: action.planMode } : {}),
-        ...(action.interfaceMode !== undefined
-          ? { interfaceMode: action.interfaceMode }
-          : {}),
-        ...(bindings.pluginSelections
-          ? { pluginSelections: bindings.pluginSelections }
-          : {}),
-      },
+      ok: false,
+      error: 'Choose a project for this automation before installing.',
     };
+  switch (kind) {
+    case 'workspace':
+      return { ok: true, location: { workspaceId } };
+    case 'new_worktree':
+      return bindings.targetKind === 'cowork'
+        ? { ok: false, error: PIPELINE_TARGET_NEW_WORKTREE_COWORK_ERROR }
+        : {
+            ok: true,
+            location: { workspaceId, target: { kind: 'new_worktree' } },
+          };
+    case 'task':
+      return bindings.taskId
+        ? {
+            ok: true,
+            location: {
+              workspaceId,
+              target: { kind: 'task', taskId: bindings.taskId },
+            },
+          }
+        : { ok: false, error: 'Pick a task to run the workflow in.' };
+    case 'project':
+      return {
+        ok: true,
+        location: { workspaceId, target: { kind: 'project' } },
+      };
   }
+}
+
+function mapPipelineAction(
+  action: Extract<SharedAutomationAction, { type: 'worktree_pipeline' }>,
+  bindings: InstallSharedAutomationBindings,
+  localPipelineIds: ReadonlyMap<string, string>,
+): { ok: true; action: AutomationAction } | { ok: false; error: string } {
+  const mappedLocation = mapPipelineLocation(action.target.kind, bindings);
+  if (!mappedLocation.ok) return mappedLocation;
+  const location = mappedLocation.location;
+  const global = location.target?.kind === 'global';
 
   const inputsError = validateInputs(bindings.inputs, action.inputKeys);
   if (inputsError) {
@@ -285,7 +690,7 @@ function mapAction(
       ok: true,
       action: {
         type: 'worktree_pipeline',
-        workspaceId: bindings.workspaceId,
+        ...location,
         pipelineId: action.pipeline.pipelineId,
         pipelineSource: 'bundled',
         ...(action.pipeline.name !== undefined
@@ -301,15 +706,35 @@ function mapAction(
       return {
         ok: false,
         error:
-          'Install the bundled pipeline definition before installing this automation.',
+          'Install the bundled workflow definition before installing this automation.',
       };
     }
     return {
       ok: true,
       action: {
         type: 'worktree_pipeline',
-        workspaceId: bindings.workspaceId,
+        ...location,
         pipelineId: bindings.bundledPipelineLocalId,
+        pipelineSource: 'user',
+        ...(action.pipeline.name !== undefined
+          ? { pipelineName: action.pipeline.name }
+          : {}),
+        ...(inputs ? { inputs } : {}),
+      },
+    };
+  }
+
+  if (action.pipeline.source === 'packaged') {
+    const localPipelineId = localPipelineIds.get(action.pipeline.key);
+    if (localPipelineId === undefined) {
+      return { ok: false, error: PIPELINES_NOT_INSTALLED_MESSAGE };
+    }
+    return {
+      ok: true,
+      action: {
+        type: 'worktree_pipeline',
+        ...location,
+        pipelineId: localPipelineId,
         pipelineSource: 'user',
         ...(action.pipeline.name !== undefined
           ? { pipelineName: action.pipeline.name }
@@ -336,7 +761,7 @@ function mapAction(
       ok: true,
       action: {
         type: 'worktree_pipeline',
-        workspaceId: bindings.workspaceId,
+        ...location,
         pipelineId: buildSharedPipelineId(
           CANOPY_CLOUD_SERVER_ID,
           action.pipeline.remoteId,
@@ -361,8 +786,8 @@ function mapAction(
       ok: false,
       error:
         action.pipeline.source === 'curated'
-          ? `Import or choose the "${subject}" pipeline before installing.`
-          : 'Choose a pipeline for this automation before installing.',
+          ? `Import or choose the "${subject}" workflow before installing.`
+          : 'Choose a workflow for this automation before installing.',
     };
   }
 
@@ -375,14 +800,16 @@ function mapAction(
   ) {
     return {
       ok: false,
-      error: 'Choose a pipeline for this automation before installing.',
+      error: 'Choose a workflow for this automation before installing.',
     };
   }
+  if (global && pipelineSource === 'project')
+    return { ok: false, error: PIPELINE_TARGET_GLOBAL_PROJECT_PIPELINE_ERROR };
   return {
     ok: true,
     action: {
       type: 'worktree_pipeline',
-      workspaceId: bindings.workspaceId,
+      ...location,
       pipelineId: bindings.pipelineId,
       pipelineSource,
       ...(pipelineSource === 'project' && bindings.projectPipelineFilename
@@ -406,7 +833,18 @@ export function buildInstallAutomationRequest(
   installedAt: string,
   origin?: { sourceKind: 'public' | 'curated' },
 ): BuildInstallAutomationRequestResult {
-  const mapped = mapAction(detail.automation.action, bindings);
+  const versionError = unsupportedVersionError(detail);
+  if (versionError) return { ok: false, error: versionError };
+  const localPipelineIds = packagedPipelineLocalIds(
+    detail.automation,
+    bindings,
+  );
+  if (!localPipelineIds.ok) return localPipelineIds;
+  const mapped = mapAction(
+    detail.automation.action,
+    bindings,
+    localPipelineIds.value,
+  );
   if (!mapped.ok) return mapped;
   const compatibilityError = validateInstallCompatibility(detail, bindings);
   if (compatibilityError) return { ok: false, error: compatibilityError };
@@ -437,12 +875,33 @@ export function buildInstallAutomationRequest(
                 detail.automation.action.pipeline.pipelineContentHash,
             }
           : {}),
+        ...packagedPipelineProvenance(
+          detail.automation,
+          localPipelineIds.value,
+        ),
         ...(detail.automation.capabilityPackage
           ? { capabilityPackage: detail.automation.capabilityPackage }
           : {}),
       },
     },
   };
+}
+
+/**
+ * {@link SHARED_AUTOMATION_NEWER_VERSION_MESSAGE} for a document version this
+ * client cannot read, so a share from a newer author client reads as an
+ * update prompt instead of validator text.
+ */
+function unsupportedVersionError(
+  detail: SharedAutomationInstallSource,
+): string | null {
+  const version: unknown = detail.automation.version;
+  return typeof version === 'number' &&
+    Number.isInteger(version) &&
+    version >= SHARED_AUTOMATION_API_VERSION &&
+    version <= SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION
+    ? null
+    : SHARED_AUTOMATION_NEWER_VERSION_MESSAGE;
 }
 
 function validateInstallCompatibility(
@@ -453,14 +912,21 @@ function validateInstallCompatibility(
   if (!validated.ok) return validated.error;
   const action = detail.automation.action;
   const requirement = detail.automation.targetRequirement;
+  const destination =
+    action.type === 'worktree_pipeline' && action.target.kind !== 'workspace'
+      ? action.target.kind
+      : undefined;
   const resolved = resolveAutomationTargetRequirement(
     action.type,
     requirement,
     bindings.pipelineResolution,
+    destination,
   );
   if (resolved.status === 'error') return resolved.error;
   if (resolved.status !== 'resolved')
-    return 'Verify the selected pipeline before installing this automation.';
+    return 'Verify the selected workflow before installing this automation.';
+  // A destination with no project resolves without project contexts.
+  if (destination === 'global') return null;
   const context =
     action.type === 'app_advisor_prompt'
       ? 'app_advisor'
@@ -547,14 +1013,22 @@ function preserveLocalCustomizations(
   if (
     mapped.type === 'worktree_pipeline' &&
     existing.type === 'worktree_pipeline' &&
-    mapped.workspaceId === existing.workspaceId
+    pipelineAutomationWorkspaceId(mapped) ===
+      pipelineAutomationWorkspaceId(existing)
   ) {
+    // Only bindings the mapped destination admits survive: a base worktree
+    // for a new worktree each run, a repository for any project destination.
+    const destination = resolveAutomationPipelineTarget(mapped);
+    const keepsBaseWorktree = destination?.kind === 'new_worktree';
+    const keepsRepo = destination !== null && destination.kind !== 'global';
     return {
       ...mapped,
-      ...(existing.baseWorktreeId !== undefined
+      ...(keepsBaseWorktree && existing.baseWorktreeId !== undefined
         ? { baseWorktreeId: existing.baseWorktreeId }
         : {}),
-      ...(existing.repoId !== undefined ? { repoId: existing.repoId } : {}),
+      ...(keepsRepo && existing.repoId !== undefined
+        ? { repoId: existing.repoId }
+        : {}),
       ...(existing.modelAliasPreferences !== undefined
         ? { modelAliasPreferences: existing.modelAliasPreferences }
         : {}),
@@ -567,6 +1041,37 @@ function preserveLocalCustomizations(
     };
   }
   return mapped;
+}
+
+/**
+ * Fill keys the caller's Stage A bindings omit from the earlier install's
+ * records, but only where the recorded bytes equal the new document's, so an
+ * unchanged pipeline keeps its local ID without a fresh Stage A result.
+ */
+function withRecordedPipelineBindings(
+  bindings: InstallSharedAutomationBindings,
+  recorded: readonly AutomationInstalledPipelineDependency[],
+  automation: SharedAutomationDocument,
+): InstallSharedAutomationBindings {
+  const hashes = packagedPipelineHashes(automation);
+  const bound = new Set(
+    (bindings.pipelineDependencies ?? []).map((entry) => entry.key),
+  );
+  const filled = recorded.filter(
+    (record) =>
+      !bound.has(record.key) &&
+      hashes.get(record.key) === record.pipelineContentHash &&
+      bindings.localPipelineContentHashes?.[record.localPipelineId] !== null,
+  );
+  return filled.length === 0
+    ? bindings
+    : {
+        ...bindings,
+        pipelineDependencies: [
+          ...(bindings.pipelineDependencies ?? []),
+          ...filled,
+        ],
+      };
 }
 
 /**
@@ -586,9 +1091,18 @@ export function buildApplyUpdateRequest(
   appliedAt: string,
   origin?: { sourceKind: 'public' | 'curated' },
 ): BuildApplyUpdateRequestResult {
-  const effectiveBindings =
-    detail.automation.action.type === 'worktree_pipeline' &&
-    detail.automation.action.pipeline.source === 'inline' &&
+  const versionError = unsupportedVersionError(detail);
+  if (versionError) return { ok: false, error: versionError };
+  const pipelinePlan = planAutomationPipelineUpdate(
+    existing.installedFrom,
+    detail.automation,
+    bindings.localPipelineContentHashes,
+  );
+  if (!pipelinePlan.ok) return pipelinePlan;
+  const sharedAction = detail.automation.action;
+  const withBundledPipeline =
+    sharedAction.type === 'worktree_pipeline' &&
+    sharedAction.pipeline.source === 'inline' &&
     bindings.bundledPipelineLocalId === undefined &&
     existing.installedFrom?.bundledPipelineLocalId !== undefined
       ? {
@@ -596,7 +1110,36 @@ export function buildApplyUpdateRequest(
           bundledPipelineLocalId: existing.installedFrom.bundledPipelineLocalId,
         }
       : bindings;
-  const mapped = mapAction(detail.automation.action, effectiveBindings);
+  // A task binding survives an update that keeps the task kind in the same
+  // project; any other kind change needs an explicit rebind.
+  const existingTaskId =
+    existing.action.type === 'worktree_pipeline'
+      ? pipelineAutomationTaskId(existing.action)
+      : undefined;
+  const effectiveBindings =
+    sharedAction.type === 'worktree_pipeline' &&
+    sharedAction.target.kind === 'task' &&
+    withBundledPipeline.taskId === undefined &&
+    existingTaskId !== undefined &&
+    existing.action.type === 'worktree_pipeline' &&
+    withBundledPipeline.workspaceId ===
+      pipelineAutomationWorkspaceId(existing.action)
+      ? { ...withBundledPipeline, taskId: existingTaskId }
+      : withBundledPipeline;
+  const localPipelineIds = packagedPipelineLocalIds(
+    detail.automation,
+    withRecordedPipelineBindings(
+      effectiveBindings,
+      recordedPipelineInstalls(existing.installedFrom, detail.automation),
+      detail.automation,
+    ),
+  );
+  if (!localPipelineIds.ok) return localPipelineIds;
+  const mapped = mapAction(
+    sharedAction,
+    effectiveBindings,
+    localPipelineIds.value,
+  );
   if (!mapped.ok) {
     return mapped;
   }
@@ -629,12 +1172,14 @@ export function buildApplyUpdateRequest(
   const preservedInstalledFrom = { ...existing.installedFrom };
   delete preservedInstalledFrom.bundledPipelineLocalId;
   delete preservedInstalledFrom.bundledPipelineContentHash;
+  delete preservedInstalledFrom.pipelineDependencies;
   delete preservedInstalledFrom.approvedRunCondition;
   const approvedRunCondition =
     approved ?? (clearsSharedGate ? undefined : (sharedGate ?? undefined));
   return {
     ok: true,
     keptEnabled,
+    droppedPipelineDependencies: pipelinePlan.value.dropped,
     request: {
       id: existing.id,
       name: detail.automation.name,
@@ -665,6 +1210,10 @@ export function buildApplyUpdateRequest(
                 detail.automation.action.pipeline.pipelineContentHash,
             }
           : {}),
+        ...packagedPipelineProvenance(
+          detail.automation,
+          localPipelineIds.value,
+        ),
         capabilityPackage: detail.automation.capabilityPackage,
       },
     },

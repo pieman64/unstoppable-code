@@ -23,6 +23,8 @@ export interface GroupableStandaloneChat extends PortalStandaloneWorkEntryFields
   createdAt?: string;
   archived?: boolean;
   hasActiveChat?: boolean;
+  /** The chat's background tasks (D11), from the desktop's canonical state. */
+  backgroundTasks?: number;
   hasUnread?: boolean;
 }
 
@@ -48,6 +50,8 @@ export interface StandaloneWorkEntryRow<
   order?: number;
   /** True when any chat in the entry has a turn in flight. */
   hasActiveChat: boolean;
+  /** Background tasks across the entry's chats (turn-state phase 41b). */
+  backgroundTasks: number;
   /** True when any chat in the entry has output the user has not viewed. */
   hasUnread: boolean;
   /** Every chat in the entry, in input order. */
@@ -169,6 +173,10 @@ function buildRow<T extends GroupableStandaloneChat>(
     lastMessageAt,
     lastTouchedAt,
     hasActiveChat: chats.some((chat) => chat.hasActiveChat === true),
+    backgroundTasks: chats.reduce(
+      (total, chat) => total + (chat.backgroundTasks ?? 0),
+      0,
+    ),
     hasUnread: chats.some((chat) => chat.hasUnread === true),
     chats: [...chats],
     unreadChats: chats.filter((chat) => chat.hasUnread === true),

@@ -66,6 +66,7 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import type {
   PortalCodeViewerSelection,
+  PortalChangedFilesGroup,
   PortalHookDescriptor,
   PortalHookRunProjection,
   PortalMcpServerEntity,
@@ -263,6 +264,9 @@ interface ActivitySectionDescriptor {
 
 function changedFileCount(context: ActivitySectionContext): number {
   const changed = context.snapshot?.changedFiles[context.worktreeLocalId];
+  if (changed?.page) {
+    return changed.page.uncommitted.total + changed.page.committed.total;
+  }
   return (changed?.uncommitted.length ?? 0) + (changed?.committed.length ?? 0);
 }
 
@@ -270,10 +274,12 @@ function changedFileCount(context: ActivitySectionContext): number {
 function changedFilesHeaderInput(
   context: ActivitySectionContext,
 ): ChangedFilesHeaderInput {
+  const changed = context.snapshot?.changedFiles[context.worktreeLocalId];
   return {
     totalCount: changedFileCount(context),
-    notices:
-      context.snapshot?.changedFiles[context.worktreeLocalId]?.notices ?? [],
+    notices: (changed?.notices ?? []).filter(
+      (notice) => notice.kind !== 'truncated' || changed?.page === undefined,
+    ),
   };
 }
 
@@ -284,12 +290,20 @@ function changedFilesHaveContent(
         readonly uncommitted: readonly unknown[];
         readonly committed: readonly unknown[];
         readonly notices?: readonly unknown[];
+        readonly page?: {
+          readonly uncommitted: { readonly total: number };
+          readonly committed: { readonly total: number };
+        };
       }
     | undefined,
 ): boolean {
   return (
-    (changedFiles?.uncommitted.length ?? 0) +
-      (changedFiles?.committed.length ?? 0) +
+    (changedFiles?.page?.uncommitted.total ??
+      changedFiles?.uncommitted.length ??
+      0) +
+      (changedFiles?.page?.committed.total ??
+        changedFiles?.committed.length ??
+        0) +
       (changedFiles?.notices?.length ?? 0) >
     0
   );
@@ -469,14 +483,14 @@ const ACTIVITY_SECTION_DESCRIPTORS: Record<
         .length > 0,
   },
   'pipeline-runs': {
-    title: 'Pipeline runs',
+    title: 'Workflow runs',
     icon: <PipelineIcon />,
     subtitle: (context): ReactNode => {
       const runs = selectWorktreeItems(
         context.snapshot?.pipelineRuns,
         context.worktreeLocalId,
       );
-      if (runs.length === 0) return 'No pipeline runs';
+      if (runs.length === 0) return 'No workflow runs';
       const active = runs.filter((run) =>
         isActivePipelineStatus(run.status),
       ).length;
@@ -681,6 +695,11 @@ export interface ActivityPanelHostActions {
    */
   readonly onRunPlanPipeline?: (plan: PortalPlan) => void;
   readonly onOpenTerminal?: (terminal: PortalTerminalSessionEntity) => void;
+  /** Load the next Portal-paged changed-files group. */
+  readonly onLoadMoreChangedFiles?: (
+    worktreeLocalId: string,
+    group: PortalChangedFilesGroup,
+  ) => void;
   readonly onListDirectory?: (name: string) => void;
   /** Host switches the Files tab to another file root (multi-repo). */
   readonly onSelectFileRoot?: (rootLocalId: string) => void;
@@ -720,6 +739,10 @@ export interface ActivityPanelProps {
   readonly hooksSection?: HooksSectionHostModel;
   /** Rich host projection; falls back to the hydrated portal snapshot. */
   readonly changedFilesSection?: ChangedFilesSectionHostModel;
+  /** Per-group Portal page reads currently in flight. */
+  readonly loadingMoreChangedFiles?: Partial<
+    Record<PortalChangedFilesGroup, boolean>
+  >;
   /** Host-projected tasks and actions. Absent means the empty state. */
   readonly backgroundTasksSection?: BackgroundTasksSectionHostModel;
   /**
@@ -735,6 +758,8 @@ export interface ActivityPanelProps {
   /** All selectable file roots; the Files tab shows a switcher when > 1. */
   readonly fileRoots?: readonly FilesTabRoot[];
   readonly activeFileRootLocalId?: string;
+  /** Brand display name grouping app-owned file roots in the switcher. */
+  readonly appManagedFileRootsLabel?: string;
   /** Root-relative directory currently listed in the Files tab. */
   readonly fileTreeDir?: string;
   /** Host-rendered recovery content for an empty Files directory. */
@@ -1219,6 +1244,7 @@ export function ActivityPanel({
   scriptsSection,
   hooksSection,
   changedFilesSection,
+  loadingMoreChangedFiles,
   backgroundTasksSection,
   onSelectFile,
   onRevertFile,
@@ -1226,6 +1252,7 @@ export function ActivityPanel({
   fileRootLocalId,
   fileRoots,
   activeFileRootLocalId,
+  appManagedFileRootsLabel,
   fileTreeDir,
   filesEmptyState,
   filesStatusBar,
@@ -1471,25 +1498,46 @@ export function ActivityPanel({
             </>
           );
         }
-        return (
-          <ChangedFilesSection
-            changedFiles={snapshot?.changedFiles[worktreeLocalId]}
-            canRevert={capabilities.fileSystemAccess === 'read-write'}
-            workspaceLocalId={workspaceLocalId}
-            worktreeLocalId={worktreeLocalId}
-            showRepoName={showChangedFileRepoNames}
-            onSelectFile={selectChangedFile}
-            onRevertFile={
-              (hostActions?.onRevertFile ?? onRevertFile)
-                ? (row): void => {
-                    const revert = hostActions?.onRevertFile ?? onRevertFile;
-                    revert?.(row.filePath);
-                  }
-                : undefined
-            }
-            openDataTestId={testIds?.changedFileOpen}
-          />
-        );
+        {
+          const changedFiles = snapshot?.changedFiles[worktreeLocalId];
+          const page = changedFiles?.page;
+          const hasMore = page
+            ? {
+                uncommitted: page.uncommitted.nextCursor !== undefined,
+                committed: page.committed.nextCursor !== undefined,
+              }
+            : undefined;
+          return (
+            <ChangedFilesSection
+              changedFiles={changedFiles}
+              canRevert={capabilities.fileSystemAccess === 'read-write'}
+              workspaceLocalId={workspaceLocalId}
+              worktreeLocalId={worktreeLocalId}
+              showRepoName={showChangedFileRepoNames}
+              hasMore={hasMore}
+              loadingMore={loadingMoreChangedFiles}
+              onLoadMore={
+                hostActions?.onLoadMoreChangedFiles
+                  ? (group): void =>
+                      hostActions.onLoadMoreChangedFiles?.(
+                        worktreeLocalId,
+                        group,
+                      )
+                  : undefined
+              }
+              onSelectFile={selectChangedFile}
+              onRevertFile={
+                (hostActions?.onRevertFile ?? onRevertFile)
+                  ? (row): void => {
+                      const revert = hostActions?.onRevertFile ?? onRevertFile;
+                      revert?.(row.filePath);
+                    }
+                  : undefined
+              }
+              openDataTestId={testIds?.changedFileOpen}
+            />
+          );
+        }
       case 'pull-request':
         return (
           <PullRequestSection
@@ -2051,6 +2099,7 @@ export function ActivityPanel({
             fileRootLocalId={fileRootLocalId}
             roots={fileRoots}
             activeRootLocalId={activeFileRootLocalId}
+            appManagedRootsLabel={appManagedFileRootsLabel}
             onSelectRoot={hostActions?.onSelectFileRoot}
             currentDir={fileTreeDir}
             emptyState={filesEmptyState}

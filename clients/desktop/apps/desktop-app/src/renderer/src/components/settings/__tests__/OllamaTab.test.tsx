@@ -185,10 +185,12 @@ async function setInputValue(
 
 describe('OllamaTab loading', () => {
   it('shows the loading placeholder while state is resolving', async () => {
-    let resolveState: ((state: OllamaState) => void) | null = null;
+    const stateResolver: {
+      current: ((state: OllamaState) => void) | null;
+    } = { current: null };
     api.getOllamaState.mockReturnValue(
       new Promise<OllamaState>((resolve) => {
-        resolveState = resolve;
+        stateResolver.current = resolve;
       }),
     );
     const { container, cleanup } = await mount();
@@ -206,7 +208,7 @@ describe('OllamaTab loading', () => {
       expect(query(container, 'settings-tab-ollama')).toBeNull();
     } finally {
       // Resolve so the pending promise doesn't leak into other tests.
-      resolveState?.(makeState());
+      stateResolver.current?.(makeState());
       cleanup();
     }
   });

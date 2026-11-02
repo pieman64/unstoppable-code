@@ -1,5 +1,10 @@
 import { lstat, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { resolveRuntimeModel } from '@canopy/desktop-shared/types';
+import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
+import { prepareOpenCodeInferenceRoute } from '@canopy/desktop-shared/node/opencode/inference-route';
+import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
+import type { OpenCodeExecutionRuntime } from './execution-runtime';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   forkOpenCodeSession,
@@ -9,6 +14,7 @@ import { buildChatSessionKey } from '../agents/session-key';
 import {
   assertOpenCodeConnectionGeneration,
   openManagedOpenCodeRuntime,
+  type ManagedOpenCodeRuntime,
 } from './connection';
 import { getOpenCodeSessionProfile } from './session-profile';
 
@@ -22,13 +28,21 @@ interface OpenCodeForkOptions {
   sourceChatId: string;
   sourceCwd: string;
   sourceSessionId: string;
+  model?: string;
   signal?: AbortSignal;
 }
-const pending = new Map<string, { source: string; result: Promise<string> }>();
+interface OpenCodeForkResult {
+  sessionId: string;
+  executionContext?: string;
+}
+const pending = new Map<
+  string,
+  { source: string; result: Promise<OpenCodeForkResult> }
+>();
 
 export async function forkOpenCodeSessionByIdViaOneShot(
   options: OpenCodeForkOptions,
-): Promise<string> {
+): Promise<OpenCodeForkResult> {
   options.signal?.throwIfAborted();
   const key = buildChatSessionKey(
     options.projectId,
@@ -41,6 +55,7 @@ export async function forkOpenCodeSessionByIdViaOneShot(
     options.sourceChatId,
     options.sourceCwd,
     options.sourceSessionId,
+    options.model,
     options.cwd,
   ]);
   const existing = pending.get(key);
@@ -51,7 +66,7 @@ export async function forkOpenCodeSessionByIdViaOneShot(
       );
     return existing.result;
   }
-  const result = transfer(options);
+  const result = transfer({ ...options });
   pending.set(key, { source, result });
   try {
     return await result;
@@ -60,7 +75,9 @@ export async function forkOpenCodeSessionByIdViaOneShot(
   }
 }
 
-async function transfer(options: OpenCodeForkOptions): Promise<string> {
+async function transfer(
+  options: OpenCodeForkOptions,
+): Promise<OpenCodeForkResult> {
   const sourceProfile = getOpenCodeSessionProfile({
     projectId: options.sourceProjectId,
     worktreeId: options.sourceWorktreeId,
@@ -88,12 +105,103 @@ async function transfer(options: OpenCodeForkOptions): Promise<string> {
     ...(options.signal ? [options.signal] : []),
     AbortSignal.timeout(180_000),
   ]);
-  const runtime = await openManagedOpenCodeRuntime({
-    signal,
-    workspaceId: options.sourceProjectId,
-  });
-  let result: { sessionId: string } | { error: unknown };
+  const model = options.model
+    ? (resolveRuntimeModel(options.model) ?? options.model)
+    : undefined;
+  const runtimes: ManagedOpenCodeRuntime[] = [];
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> =>
+    (closing ??= (async (): Promise<void> => {
+      const results = await Promise.allSettled(
+        runtimes.map((runtime) => runtime.close()),
+      );
+      for (const result of results)
+        if (result.status === 'rejected') throw result.reason;
+    })());
+  let result: OpenCodeForkResult | { error: unknown };
+  let completedFork: OpenCodeForkResult | undefined;
+  let forkRuntime:
+    | ManagedOpenCodeRuntime
+    | OpenCodeExecutionRuntime
+    | undefined;
+  let executionContext: string | undefined;
   try {
+    let runtime: ManagedOpenCodeRuntime | OpenCodeExecutionRuntime;
+    if (model && !getRawOpenCodeModelId(model)) {
+      const [
+        { resolveSessionAiCreditsAttribution, resolveAiCreditsAttribution },
+        { resolveBackgroundWorkOwner },
+        { openOpenCodeExecutionRuntime },
+      ] = await Promise.all([
+        import('../agents/ai-credits-routing'),
+        import('../agents/work-owner'),
+        import('./execution-runtime'),
+      ]);
+      const attribution = await resolveSessionAiCreditsAttribution({
+        projectId: options.sourceProjectId,
+        worktreeId: options.sourceWorktreeId,
+        chatId: options.sourceChatId,
+      });
+      if (!attribution.workOwner)
+        throw new Error(
+          'The source work owner is unavailable. Reopen the chat and try again.',
+        );
+      executionContext = serializeWorkspaceContext(attribution.workOwner);
+      const destinationOwner = await resolveBackgroundWorkOwner(
+        { projectId: options.projectId, worktreeId: options.worktreeId },
+        executionContext,
+      );
+      if (!destinationOwner)
+        throw new Error(
+          'The destination work owner is unavailable. Reopen the chat and try again.',
+        );
+      const destinationAttribution = {
+        ...(await resolveAiCreditsAttribution(
+          options.projectId,
+          options.worktreeId,
+        )),
+        workOwner: destinationOwner,
+      };
+      const sourceRuntime = await openOpenCodeExecutionRuntime({
+        model,
+        sessionId: `opencode-fork-source:${buildChatSessionKey(options.sourceProjectId, options.sourceWorktreeId, options.sourceChatId)}`,
+        cwd: options.sourceCwd,
+        workspaceId: options.sourceProjectId,
+        signal,
+        attribution: () => Promise.resolve(attribution),
+      });
+      runtimes.push(sourceRuntime);
+      if (!sourceRuntime.inferenceRoute)
+        throw new Error('The source inference route is unavailable.');
+      const destinationRuntime = await openOpenCodeExecutionRuntime({
+        model,
+        sessionId: `opencode-fork:${buildChatSessionKey(options.projectId, options.worktreeId, options.chatId)}`,
+        cwd: options.cwd,
+        workspaceId: options.projectId,
+        signal: AbortSignal.any([signal, sourceRuntime.signal]),
+        expectedInferenceBindingKey: sourceRuntime.inferenceRoute.bindingKey,
+        attribution: () => Promise.resolve(destinationAttribution),
+      });
+      runtimes.push(destinationRuntime);
+      if (
+        !destinationRuntime.inferenceRoute ||
+        prepareOpenCodeInferenceRoute(sourceRuntime.inferenceRoute)
+          .identityDigest !==
+          prepareOpenCodeInferenceRoute(destinationRuntime.inferenceRoute)
+            .identityDigest
+      )
+        throw new Error(
+          'The funding owner changed. Start a new chat instead of forking this session.',
+        );
+      runtime = destinationRuntime;
+    } else {
+      runtime = await openManagedOpenCodeRuntime({
+        signal,
+        workspaceId: options.sourceProjectId,
+      });
+      runtimes.push(runtime);
+    }
+    forkRuntime = runtime;
     assertOpenCodeConnectionGeneration(runtime.generation);
     const forked = await forkOpenCodeSession({
       ...runtime,
@@ -121,22 +229,64 @@ async function transfer(options: OpenCodeForkOptions): Promise<string> {
         runtime.signal.throwIfAborted();
       },
     });
-    result = { sessionId: forked.sessionId };
+    completedFork = {
+      sessionId: forked.sessionId,
+      ...(executionContext ? { executionContext } : {}),
+    };
+    // Check the lease before deliberate disposal aborts its signal.
+    runtime.signal.throwIfAborted();
+    assertOpenCodeConnectionGeneration(runtime.generation);
+    result = completedFork;
   } catch (error) {
     result = { error };
   }
   try {
-    await runtime.close();
+    await close();
   } catch (closeError) {
-    if ('error' in result)
-      throw Object.assign(
-        new Error('OpenCode fork failed and runtime cleanup was incomplete.'),
-        { cause: result.error, errors: [result.error, closeError] },
-      );
-    throw closeError;
+    result = {
+      error:
+        'error' in result
+          ? Object.assign(
+              new Error(
+                'OpenCode fork failed and runtime cleanup was incomplete.',
+              ),
+              { cause: result.error, errors: [result.error, closeError] },
+            )
+          : closeError,
+    };
   }
-  if ('error' in result) throw result.error;
-  return result.sessionId;
+  if (!('error' in result)) {
+    try {
+      signal.throwIfAborted();
+      if (forkRuntime)
+        assertOpenCodeConnectionGeneration(forkRuntime.generation);
+    } catch (error) {
+      result = { error };
+    }
+  }
+  if ('error' in result) {
+    // Canonical chat publication has not begun. Retire only the verified
+    // native fork, using a fresh bounded cleanup signal after leases close.
+    if (completedFork && forkRuntime) {
+      try {
+        await discardOpenCodeSessionFork({
+          ...forkRuntime,
+          signal: AbortSignal.timeout(30000),
+          profileDir: destinationProfile,
+          cwd: options.cwd,
+          sessionId: completedFork.sessionId,
+        });
+        await rm(destinationProfile, { recursive: true, force: true });
+      } catch (cleanupError) {
+        throw Object.assign(
+          new Error('OpenCode fork failed and native cleanup was incomplete.'),
+          { cause: result.error, errors: [result.error, cleanupError] },
+        );
+      }
+    }
+    throw result.error;
+  }
+  return result;
 }
 
 /** Only for the caller's newly reserved chat, before canonical publication begins. */

@@ -69,19 +69,12 @@ for (const [enabled, released] of [
       const driver = new CanopyAppDriver(window);
       await driver.waitForShell();
       await window.getByTestId('sidebar-create-task').click();
-      const onboarding = window.getByTestId(
-        'home-onboarding-agent-connections',
-      );
-      await expect(onboarding).toBeVisible();
-      const connectCursor = onboarding.getByTestId(
-        'home-onboarding-suggestion-connect-cursor',
-      );
-      await expect(connectCursor).toHaveCount(enabled && released ? 1 : 0);
-      if (enabled && released) {
-        await connectCursor.click();
-        await expect(window.getByTestId('settings-tab-account')).toBeVisible();
-        await driver.closeSettings();
-      }
+      await expect(
+        window.getByTestId('home-composer-editor').locator('visible=true'),
+      ).toBeVisible();
+      await expect(
+        window.getByTestId('home-onboarding-agent-connections'),
+      ).toHaveCount(0);
       await driver.openSettings();
       await driver.openSettingsSection('harnesses');
       await expect(window.getByTestId('harness-column-cursor')).toHaveCount(

@@ -1,0 +1,629 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Linux x64 explains candidates that exist but cannot be used 1`] = `
+{
+  "commands": [
+    "/home/golden/.local/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":false,"error":"Git was found but cannot be used: Git executable did not report a Git version: /home/golden/.local/bin/git; Git executable cannot be accessed (EACCES): /usr/local/bin/git; Git executable is not a file: /usr/bin/git. Fix or reinstall Git, then recheck."}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 forces the login-PATH refresh on redetect and falls back to the system Git 1`] = `
+{
+  "commands": [
+    "/usr/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/usr/bin/git",
+  "responses": {
+    "redetect": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/bin/git","version":"git version 2.43.0","source":"system","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 keeps the newer detection published when the older finishes new-first 1`] = `
+{
+  "commands": [
+    "/new/bin/git --version",
+    "/old/bin/git --version",
+    "/new/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/new/bin/git",
+  "responses": {
+    "after": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/new/bin/git","version":"git version 2.43.0","source":"cache","wingetAvailable":false}",
+    "newer": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/new/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+    "older": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/old/bin/git","version":"git version 2.40.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 keeps the newer detection published when the older finishes old-first 1`] = `
+{
+  "commands": [
+    "/old/bin/git --version",
+    "/new/bin/git --version",
+    "/new/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/new/bin/git",
+  "responses": {
+    "after": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/new/bin/git","version":"git version 2.43.0","source":"cache","wingetAvailable":false}",
+    "newer": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/new/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+    "older": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/old/bin/git","version":"git version 2.40.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 never publishes a detection superseded by a saved choice 1`] = `
+{
+  "commands": [
+    "/opt/chosen/git --version",
+    "/opt/chosen/git --version",
+    "/usr/local/bin/git --version",
+    "/opt/chosen/git --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "/opt/chosen/git",
+    },
+  ],
+  "publishedEnvironment": "/opt/chosen/git",
+  "responses": {
+    "after": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/chosen/git","version":"git version 2.45.0","source":"user-selected","wingetAvailable":false}",
+    "browse": "{"platform":"linux","required":true,"ready":true,"path":"/opt/chosen/git","version":"git version 2.45.0","source":"browse","wingetAvailable":false,"checkedAt":"<checkedAt>"}",
+    "spawn": "/opt/chosen/git",
+    "superseded": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "/opt/chosen/git",
+}
+`;
+
+exports[`Linux x64 publishes login-PATH discovery without saving it, then reports it from cache 1`] = `
+{
+  "commands": [
+    "/usr/local/bin/git --version",
+    "/usr/local/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/usr/local/bin/git",
+  "responses": {
+    "first": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+    "second": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"cache","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 reports a broken saved choice without replacing or clearing it 1`] = `
+{
+  "commands": [],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":false,"error":"Selected Git executable cannot be used. Git executable /opt/git/bin/git is not executable by this user"}",
+  },
+  "savedPreference": "/opt/git/bin/git",
+}
+`;
+
+exports[`Linux x64 reports a stock image without Git 1`] = `
+{
+  "commands": [],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":false,"error":"Git was not found on the login PATH or at /usr/bin/git. Install Git with your package manager, then recheck."}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 shares a redetect probe and its generation with direct detection started in the same turn 1`] = `
+{
+  "commands": [
+    "/usr/local/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/usr/local/bin/git",
+  "responses": {
+    "redetect": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 shares a redetect probe and its generation with spawn resolution started in the same turn 1`] = `
+{
+  "commands": [
+    "/usr/local/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/usr/local/bin/git",
+  "responses": {
+    "redetect": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 shares a redetect probe and its generation with status started in the same turn 1`] = `
+{
+  "commands": [
+    "/usr/local/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/usr/local/bin/git",
+  "responses": {
+    "redetect": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 shares one probe and one generation across status and spawn resolution (spawn-first) 1`] = `
+{
+  "commands": [
+    "/usr/local/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/usr/local/bin/git",
+  "responses": {
+    "spawn": "/usr/local/bin/git",
+    "status": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 shares one probe and one generation across status and spawn resolution (status-first) 1`] = `
+{
+  "commands": [
+    "/usr/local/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/usr/local/bin/git",
+  "responses": {
+    "spawn": "/usr/local/bin/git",
+    "status": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/usr/local/bin/git","version":"git version 2.43.0","source":"login-path","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Linux x64 treats an inherited override as the explicit choice 1`] = `
+{
+  "commands": [
+    "/srv/git/bin/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/srv/git/bin/git",
+  "responses": {
+    "status": "{"platform":"linux","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/srv/git/bin/git","version":"git version 2.44.1","source":"user-selected","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Windows clears a missing saved preference and saves the where.exe Git on redetect 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Tools\\Git\\cmd\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "",
+    },
+    {
+      "gitExecutablePath": "C:\\Tools\\Git\\cmd\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Tools\\Git\\cmd\\git.exe",
+  "responses": {
+    "redetect": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Tools\\\\Git\\\\cmd\\\\git.exe","version":"git version 2.46.0.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Tools\\Git\\cmd\\git.exe",
+}
+`;
+
+exports[`Windows publishes a valid saved preference 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "C:\\Git\\cmd\\git.exe --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "C:\\Git\\cmd\\git.exe",
+  "responses": {
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\cmd\\\\git.exe","version":"git version 2.47.1.windows.1","source":"cache","wingetAvailable":true}",
+  },
+  "savedPreference": "C:\\Git\\cmd\\git.exe",
+}
+`;
+
+exports[`Windows rejects a non-git.exe candidate with its reason 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":false,"error":"Selected file must be git.exe"}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Windows reports not-found with winget and without a reason when nothing exists 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":true}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`Windows saves a valid inherited override when nothing is saved 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "C:\\Portable\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "C:\\Portable\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Portable\\git.exe",
+  "responses": {
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Portable\\\\git.exe","version":"git version 2.45.2.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Portable\\git.exe",
+}
+`;
+
+exports[`Windows shares a redetect probe with direct detection started in the same turn 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Git\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "C:\\Git\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Git\\git.exe",
+  "responses": {
+    "redetect": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Git\\git.exe",
+}
+`;
+
+exports[`Windows shares a redetect probe with spawn resolution started in the same turn 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Git\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "C:\\Git\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Git\\git.exe",
+  "responses": {
+    "redetect": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Git\\git.exe",
+}
+`;
+
+exports[`Windows shares a redetect probe with status started in the same turn 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Git\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "C:\\Git\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Git\\git.exe",
+  "responses": {
+    "redetect": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Git\\git.exe",
+}
+`;
+
+exports[`Windows shares one probe and one save across status, spawn resolution and direct detection (spawn-first) 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Git\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "C:\\Git\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Git\\git.exe",
+  "responses": {
+    "spawn": "C:\\Git\\git.exe",
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Git\\git.exe",
+}
+`;
+
+exports[`Windows shares one probe and one save across status, spawn resolution and direct detection (status-first) 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Git\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "C:\\Git\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Git\\git.exe",
+  "responses": {
+    "spawn": "C:\\Git\\git.exe",
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Git\\git.exe",
+}
+`;
+
+exports[`Windows starts a new probe for a forced recheck while status runs 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Git\\git.exe --version",
+    "where.exe winget",
+    "where.exe git",
+    "C:\\Git\\git.exe --version",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "C:\\Git\\git.exe",
+    },
+    {
+      "gitExecutablePath": "C:\\Git\\git.exe",
+    },
+  ],
+  "publishedEnvironment": "C:\\Git\\git.exe",
+  "responses": {
+    "redetect": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1.windows.1","source":"auto-detected","wingetAvailable":false}",
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"C:\\\\Git\\\\git.exe","version":"git version 2.47.1.windows.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "C:\\Git\\git.exe",
+}
+`;
+
+exports[`Windows unpublishes an unusable override and keeps looking 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+    "C:\\Broken\\git.exe --version",
+    "where.exe git",
+    "c:\\tools\\GIT.EXE --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"win32","required":true,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":false,"error":"Selected executable did not report a Git version"}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`host failures redetect rejects with the preference read error itself 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {},
+  "savedPreference": "",
+}
+`;
+
+exports[`host failures status rejects with the preference read error itself 1`] = `
+{
+  "commands": [
+    "where.exe winget",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {},
+  "savedPreference": "",
+}
+`;
+
+exports[`macOS clears a saved shim and reports the last candidate failure 1`] = `
+{
+  "commands": [
+    "/usr/bin/xcode-select --print-path",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "",
+    },
+  ],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"darwin","required":true,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":false,"error":"ENOENT: no such file or directory, realpath '/usr/local/bin/git'"}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`macOS lets a forced recheck share the running probe 1`] = `
+{
+  "commands": [
+    "/usr/bin/xcode-select --print-path",
+    "/opt/homebrew/bin/git --version",
+    "/opt/homebrew/bin/git -c init.templateDir= init --bare /tmp/git-validation-golden",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "/opt/homebrew/bin/git",
+    },
+  ],
+  "publishedEnvironment": "/opt/homebrew/bin/git",
+  "responses": {
+    "redetect": "{"platform":"darwin","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/homebrew/bin/git","version":"git version 2.47.1","source":"auto-detected","wingetAvailable":false}",
+    "status": "{"platform":"darwin","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/homebrew/bin/git","version":"git version 2.47.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "/opt/homebrew/bin/git",
+}
+`;
+
+exports[`macOS shares a redetect probe with direct detection started in the same turn 1`] = `
+{
+  "commands": [
+    "/usr/bin/xcode-select --print-path",
+    "/opt/homebrew/bin/git --version",
+    "/opt/homebrew/bin/git -c init.templateDir= init --bare /tmp/git-validation-golden",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "/opt/homebrew/bin/git",
+    },
+  ],
+  "publishedEnvironment": "/opt/homebrew/bin/git",
+  "responses": {
+    "redetect": "{"platform":"darwin","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/homebrew/bin/git","version":"git version 2.47.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "/opt/homebrew/bin/git",
+}
+`;
+
+exports[`macOS shares a redetect probe with spawn resolution started in the same turn 1`] = `
+{
+  "commands": [
+    "/usr/bin/xcode-select --print-path",
+    "/opt/homebrew/bin/git --version",
+    "/opt/homebrew/bin/git -c init.templateDir= init --bare /tmp/git-validation-golden",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "/opt/homebrew/bin/git",
+    },
+  ],
+  "publishedEnvironment": "/opt/homebrew/bin/git",
+  "responses": {
+    "redetect": "{"platform":"darwin","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/homebrew/bin/git","version":"git version 2.47.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "/opt/homebrew/bin/git",
+}
+`;
+
+exports[`macOS shares a redetect probe with status started in the same turn 1`] = `
+{
+  "commands": [
+    "/usr/bin/xcode-select --print-path",
+    "/opt/homebrew/bin/git --version",
+    "/opt/homebrew/bin/git -c init.templateDir= init --bare /tmp/git-validation-golden",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "/opt/homebrew/bin/git",
+    },
+  ],
+  "publishedEnvironment": "/opt/homebrew/bin/git",
+  "responses": {
+    "redetect": "{"platform":"darwin","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/homebrew/bin/git","version":"git version 2.47.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "/opt/homebrew/bin/git",
+}
+`;
+
+exports[`macOS skips the Apple shim and saves the login-PATH Git 1`] = `
+{
+  "commands": [
+    "/usr/bin/xcode-select --print-path",
+    "/opt/homebrew/Cellar/git/2.47.1/bin/git --version",
+    "/opt/homebrew/Cellar/git/2.47.1/bin/git -c init.templateDir= init --bare /tmp/git-validation-golden",
+  ],
+  "preferenceWrites": [
+    {
+      "gitExecutablePath": "/opt/homebrew/Cellar/git/2.47.1/bin/git",
+    },
+  ],
+  "publishedEnvironment": "/opt/homebrew/Cellar/git/2.47.1/bin/git",
+  "responses": {
+    "status": "{"platform":"darwin","required":true,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/homebrew/Cellar/git/2.47.1/bin/git","version":"git version 2.47.1","source":"auto-detected","wingetAvailable":false}",
+  },
+  "savedPreference": "/opt/homebrew/Cellar/git/2.47.1/bin/git",
+}
+`;
+
+exports[`platforms that do not require Git reports an unusable override with its reason 1`] = `
+{
+  "commands": [],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/opt/git/git",
+  "responses": {
+    "redetect": "{"platform":"linux","required":false,"checkedAt":"<checkedAt>","ready":false,"path":null,"version":null,"source":"not-found","wingetAvailable":false,"error":"Git executable does not exist: /opt/git/git"}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`platforms that do not require Git reports ready without probing 1`] = `
+{
+  "commands": [],
+  "preferenceWrites": [],
+  "publishedEnvironment": null,
+  "responses": {
+    "status": "{"platform":"linux","required":false,"checkedAt":"<checkedAt>","ready":true,"path":null,"version":null,"source":"not-found","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;
+
+exports[`platforms that do not require Git validates and publishes an override 1`] = `
+{
+  "commands": [
+    "/opt/git/git --version",
+  ],
+  "preferenceWrites": [],
+  "publishedEnvironment": "/opt/git/git",
+  "responses": {
+    "status": "{"platform":"linux","required":false,"checkedAt":"<checkedAt>","ready":true,"path":"/opt/git/git","version":"git version 2.43.0","source":"cache","wingetAvailable":false}",
+  },
+  "savedPreference": "",
+}
+`;

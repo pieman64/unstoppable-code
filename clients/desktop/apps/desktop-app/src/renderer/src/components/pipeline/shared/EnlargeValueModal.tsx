@@ -1,4 +1,5 @@
 import { type JSX, useState, useEffect } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { DialogModal } from '../../shared/DialogModal';
 import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
 
@@ -87,22 +88,12 @@ export function EnlargeValueModal({
           />
         )}
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 text-s fg-secondary hover:fg-primary
-              bg-secondary rounded-md transition-colors"
-          >
+          <Button size="compact" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            className="px-4 py-2 text-s font-medium fg-emphasis
-              bg-accent rounded-md hover:bg-accent/90 transition-colors"
-          >
+          </Button>
+          <Button variant="primary" size="compact" onClick={handleSave}>
             Save
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>

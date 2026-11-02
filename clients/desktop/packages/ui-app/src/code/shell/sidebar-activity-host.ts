@@ -3,6 +3,7 @@ import type {
   SidebarActivityEntry,
   SidebarActivityInventory,
   SidebarActivityLoader,
+  SidebarActivitySpaceMuted,
 } from '@canopy/app-state';
 import { sidebarRowLabel } from './worktree-status';
 
@@ -34,6 +35,39 @@ export interface SidebarActivityHost {
   readonly activeChatKey: string | null;
   /** Opens exactly this chat through the host's existing navigation. */
   readonly onOpenChat: (entry: SidebarActivityEntry) => void;
+  /**
+   * Live: whether a space's acknowledged notification choice is Mute. Its
+   * chats never classify as unread and show no dot (CAN-4378). Attached with
+   * {@link withSidebarActivitySpaceMute} from the rail's own lookup.
+   */
+  readonly isSpaceMuted?: SidebarActivitySpaceMuted;
+}
+
+/**
+ * Attaches the rail's mute lookup to a host, so every Activity build and row
+ * agrees with the tree's dots. Returns `host` itself without a lookup.
+ */
+export function withSidebarActivitySpaceMute(
+  host: SidebarActivityHost | undefined,
+  isSpaceMuted: SidebarActivitySpaceMuted | undefined,
+): SidebarActivityHost | undefined {
+  if (host === undefined || isSpaceMuted === undefined) return host;
+  return { ...host, isSpaceMuted };
+}
+
+/** Whether an Activity row's space is muted right now. */
+export function isSidebarActivityEntryMuted(
+  host: SidebarActivityHost,
+  entry: SidebarActivityEntry,
+): boolean {
+  const { isSpaceMuted } = host;
+  if (isSpaceMuted === undefined) return false;
+  if (entry.kind === 'worktree-chat')
+    return isSpaceMuted(entry.workspaceLocalId, entry.worktreeLocalId);
+  return (
+    entry.workEntryId !== undefined &&
+    isSpaceMuted(entry.projectLocalId, entry.workEntryId)
+  );
 }
 
 /** Whether Activity can be offered for this host and capability set. */
@@ -60,6 +94,7 @@ export function prepareSidebarActivityLoader(
       unreadKeys: loaded.unreadKeys,
       draftKeys: drafts ? loaded.draftKeys : undefined,
       worktreeLabel: sidebarRowLabel,
+      isSpaceMuted: host.isSpaceMuted,
     };
   };
 }

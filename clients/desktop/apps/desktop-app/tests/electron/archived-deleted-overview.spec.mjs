@@ -668,7 +668,7 @@ test.describe('archived and deleted overview', () => {
       await window.getByTestId('worktree-actions-menu-button').click();
       await window.getByTestId('worktree-actions-menu-delete').click();
       const deleteDialog = window.getByRole('dialog', {
-        name: 'Delete worktree?',
+        name: /^Delete worktree/,
       });
       await expect(deleteDialog).toBeVisible();
       // The confirm control is a split button: pick the branch handling.

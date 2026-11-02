@@ -1,13 +1,13 @@
 /** @jest-environment jsdom */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { createDesktopCapabilities } from '@/client/ipc-canopy-client';
 import {
   CanopyClientProvider,
   useChatStore,
   type ChatThreadState,
 } from '@canopy/app-state';
 import type {
-  CanopyCapabilities,
   CanopyClient,
   CommandMap,
   CommandName,
@@ -40,15 +40,7 @@ const selection: WorktreeSelection = {
 };
 
 function mockCanopyClient(): CanopyClient {
-  const capabilities: CanopyCapabilities = {
-    localExecution: true,
-    terminalPty: true,
-    fileSystemAccess: 'read-write',
-    voice: true,
-    settingsScope: 'full',
-    pipelines: 'execute',
-    routing: 'in-memory',
-  };
+  const capabilities = createDesktopCapabilities('darwin');
   return {
     capabilities,
     query<K extends QueryName>(): Promise<QueryMap[K]['result']> {
@@ -76,7 +68,11 @@ function composer(
     planMode: true,
     proposalMode: 'required',
     thinkingLevel: 'max',
-    modelConfig: { thinkingLevel: 'max', fastMode: false },
+    modelConfig: {
+      thinkingLevel: 'max',
+      speed: 'standard',
+      fastMode: false,
+    },
     hasStartedSession: true,
     shareSessionBusy: true,
     ...overrides,
@@ -146,6 +142,7 @@ describe('DesktopSharedChatPanelBridge', () => {
             onSend={onSend}
             onStop={onStop}
             renderTranscript={() => <div data-testid="native-transcript" />}
+            hostQueuedMessageEditor={null}
             renderComposer={(controls): JSX.Element => (
               <div>
                 <button onClick={() => controls.onSend?.('routed')}>
@@ -205,6 +202,7 @@ describe('DesktopSharedChatPanelBridge', () => {
             onStop={onStop}
             renderTranscript={() => <div />}
             renderComposer={() => <div />}
+            hostQueuedMessageEditor={null}
           />
           <StoreProbe chatId="chat-1" />
         </CanopyClientProvider>,

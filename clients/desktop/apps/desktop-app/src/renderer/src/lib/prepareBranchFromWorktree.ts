@@ -7,6 +7,10 @@ export type BranchFromWorktreePreparation =
   | { status: 'cancelled' }
   | { status: 'failed'; retryable: true };
 
+export interface PrepareBranchFromWorktreeOptions {
+  uncommittedChanges?: 'prompt' | 'leave-in-source';
+}
+
 async function showStatusUnavailableToast(): Promise<void> {
   const { useGitHubStore } = await import('@/stores/githubStore');
   useGitHubStore
@@ -24,16 +28,23 @@ async function showStatusUnavailableToast(): Promise<void> {
 export async function prepareBranchFromWorktree(
   projectId: string,
   worktreeId: string,
+  options: PrepareBranchFromWorktreeOptions = {},
 ): Promise<BranchFromWorktreePreparation> {
   const key = createDiffStatsKey(projectId, worktreeId);
   const refreshed = await useProjectsStore
     .getState()
     .refreshWorktreeDiffStatsVerified(projectId, worktreeId);
   if (!refreshed) {
-    await showStatusUnavailableToast();
+    if (options.uncommittedChanges !== 'leave-in-source') {
+      await showStatusUnavailableToast();
+    }
     return { status: 'failed', retryable: true };
   }
   if (useProjectsStore.getState().uncommittedChanges[key] !== true) {
+    return { status: 'ready' };
+  }
+
+  if (options.uncommittedChanges === 'leave-in-source') {
     return { status: 'ready' };
   }
 

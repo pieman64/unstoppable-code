@@ -200,6 +200,7 @@ describe('shared-container materialization', () => {
         layout: {
           schemaVersion: 1,
           containerType: 'COWORK_WORK_ENTRY',
+          title: 'Work Entry',
           repositories: [],
           files: [],
           notes: [],
@@ -220,6 +221,7 @@ describe('shared-container materialization', () => {
         layout: {
           schemaVersion: 1,
           containerType: 'COWORK_WORK_ENTRY',
+          title: 'Work Entry',
           repositories: [],
           files: [
             {
@@ -247,6 +249,7 @@ describe('shared-container materialization', () => {
         layout: {
           schemaVersion: 1,
           containerType: 'COWORK_WORK_ENTRY',
+          title: 'Work Entry',
           repositories: [],
           files: [
             {
@@ -276,6 +279,7 @@ describe('shared-container materialization', () => {
     const layout: SharedContainerRevisionLayout = {
       schemaVersion: 1,
       containerType: 'COWORK_WORK_ENTRY',
+      title: 'Work Entry',
       repositories: [],
       files: [],
       notes: [],
@@ -465,6 +469,7 @@ describe('shared-container materialization', () => {
     const layout: SharedContainerRevisionLayout = {
       schemaVersion: 1,
       containerType: 'COWORK_WORK_ENTRY',
+      title: 'Work Entry',
       repositories: [],
       files: [],
       notes: [{ itemId: '../escape', title: 'Unsafe' }],
@@ -511,13 +516,9 @@ describe('shared-container materialization', () => {
         artifactPathsById: new Map(),
       },
       {
+        ...codeDependencies(),
         resolveGitHubToken: () => Promise.resolve(''),
-        probeRepository: () => Promise.resolve(),
-        probeCommit: () => Promise.resolve(),
         cloneRepo,
-        fetchOrigin: () => Promise.resolve(),
-        materializeRawCommit: () =>
-          Promise.resolve({ fileCount: 0, totalBytes: BigInt(0) }),
       },
     );
 
@@ -571,7 +572,7 @@ describe('shared-container materialization', () => {
         dependencies.probeRepository = (): Promise<void> =>
           Promise.reject(rejection);
       } else {
-        dependencies.probeCommit = (): Promise<void> =>
+        dependencies.probeCommit = (): Promise<string> =>
           Promise.reject(rejection);
       }
 
@@ -597,6 +598,7 @@ describe('shared-container materialization', () => {
         layout: codeLayout('https://gitlab.com/acme/repo.git'),
         artifactsDir: join(root, 'artifacts'),
         reposDir: join(root, 'unsupported'),
+        committedRangesDir: join(root, 'committed-ranges'),
         artifactPathsById: new Map(),
       },
       codeDependencies(),
@@ -618,6 +620,7 @@ describe('shared-container materialization', () => {
         layout: codeLayout(),
         artifactsDir: join(root, 'artifacts'),
         reposDir: join(root, 'git-failure'),
+        committedRangesDir: join(root, 'committed-ranges'),
         artifactPathsById: new Map(),
       },
       gitDependencies,
@@ -638,6 +641,7 @@ describe('shared-container materialization', () => {
         layout: codeLayout(),
         artifactsDir: join(root, 'artifacts'),
         reposDir: lfsRepos,
+        committedRangesDir: join(root, 'committed-ranges'),
         artifactPathsById: new Map(),
       },
       codeDependencies(),
@@ -670,6 +674,7 @@ describe('shared-container materialization', () => {
             layout: codeLayout(),
             artifactsDir: join(root, 'artifacts'),
             reposDir,
+            committedRangesDir: join(root, 'committed-ranges'),
             artifactPathsById: new Map(),
           },
           dependencies,
@@ -739,6 +744,7 @@ describe('shared-container materialization', () => {
           layout: codeLayout(),
           artifactsDir: join(root, 'artifacts'),
           reposDir,
+          committedRangesDir: join(root, 'committed-ranges'),
           artifactPathsById: new Map(),
         },
         codeDependencies(),
@@ -761,6 +767,7 @@ describe('shared-container materialization', () => {
           layout: codeLayout(),
           artifactsDir: join(root, 'artifacts'),
           reposDir,
+          committedRangesDir: join(root, 'committed-ranges'),
           artifactPathsById: new Map(),
         },
         codeDependencies(),
@@ -927,7 +934,7 @@ describe('shared-container materialization', () => {
         artifactPathsById: new Map(),
         signal: controller.signal,
       },
-      { ...codeDependencies(), cloneRepo } as MaterializeCodeDependencies,
+      { ...codeDependencies(), cloneRepo },
     );
 
     expect(cloneRepo).toHaveBeenCalledWith(
@@ -1396,6 +1403,7 @@ describe('shared-container materialization', () => {
             layout,
             artifactsDir: '/unused/artifacts',
             reposDir: '/unused/repos',
+            committedRangesDir: '/unused/committed-ranges',
             artifactPathsById: new Map([
               ['link-artifact', 'repos/repo-1/files/link-target'],
             ]),
@@ -2806,8 +2814,9 @@ describe('shared-container materialization', () => {
           },
           {
             ...codeDependencies(),
-            cloneRepo: (_remote, destination) =>
-              mkdir(destination, { recursive: true }),
+            cloneRepo: async (_remote, destination): Promise<void> => {
+              await mkdir(destination, { recursive: true });
+            },
             prepareCommittedRange,
           },
         ),
@@ -2835,8 +2844,9 @@ describe('shared-container materialization', () => {
           },
           {
             ...codeDependencies(),
-            cloneRepo: (_remote, destination) =>
-              mkdir(destination, { recursive: true }),
+            cloneRepo: async (_remote, destination): Promise<void> => {
+              await mkdir(destination, { recursive: true });
+            },
             prepareCommittedRange: () =>
               Promise.reject(new Error('merge base is unreachable')),
           },
@@ -2859,8 +2869,9 @@ describe('shared-container materialization', () => {
           },
           {
             ...codeDependencies(),
-            cloneRepo: (_remote, destination) =>
-              mkdir(destination, { recursive: true }),
+            cloneRepo: async (_remote, destination): Promise<void> => {
+              await mkdir(destination, { recursive: true });
+            },
             prepareCommittedRange,
           },
         ),
@@ -2882,8 +2893,9 @@ describe('shared-container materialization', () => {
       const root = await mkdtemp(join(tmpdir(), 'code-materialize-'));
       const reposDir = join(root, 'repos');
       await seedCheckout(reposDir);
-      const cloneRepo = jest.fn((_remote: string, destination: string) =>
-        mkdir(destination, { recursive: true }),
+      const cloneRepo = jest.fn<Promise<void>, [string, string]>(
+        (_remote, destination) =>
+          mkdir(destination, { recursive: true }).then(() => undefined),
       );
       const fetchOrigin = jest.fn(() => Promise.resolve());
 
@@ -2893,6 +2905,7 @@ describe('shared-container materialization', () => {
             layout: codeLayout(),
             artifactsDir: join(root, 'artifacts'),
             reposDir,
+            committedRangesDir: join(root, 'committed-ranges'),
             artifactPathsById: new Map(),
           },
           {
@@ -2960,6 +2973,7 @@ describe('shared-container materialization', () => {
             layout,
             artifactsDir,
             reposDir,
+            committedRangesDir: join(root, 'committed-ranges'),
             artifactPathsById: new Map([['snapshot-bundle', snapshotPath]]),
           },
           {
@@ -2997,8 +3011,9 @@ describe('shared-container materialization', () => {
         const root = await mkdtemp(join(tmpdir(), 'code-materialize-'));
         const reposDir = join(root, 'repos');
         const repoDir = await seedCheckout(reposDir);
-        const cloneRepo = jest.fn((_remote: string, destination: string) =>
-          mkdir(destination, { recursive: true }),
+        const cloneRepo = jest.fn<Promise<void>, [string, string]>(
+          (_remote, destination) =>
+            mkdir(destination, { recursive: true }).then(() => undefined),
         );
         const fetchOrigin = jest.fn(() => Promise.resolve());
 
@@ -3008,6 +3023,7 @@ describe('shared-container materialization', () => {
               layout: codeLayout(),
               artifactsDir: join(root, 'artifacts'),
               reposDir,
+              committedRangesDir: join(root, 'committed-ranges'),
               artifactPathsById: new Map(),
             },
             {
@@ -3032,8 +3048,9 @@ describe('shared-container materialization', () => {
       const root = await mkdtemp(join(tmpdir(), 'code-materialize-'));
       const reposDir = join(root, 'repos');
       await seedCheckout(reposDir);
-      const cloneRepo = jest.fn((_remote: string, destination: string) =>
-        mkdir(destination, { recursive: true }),
+      const cloneRepo = jest.fn<Promise<void>, [string, string]>(
+        (_remote, destination) =>
+          mkdir(destination, { recursive: true }).then(() => undefined),
       );
       const fetchOrigin = jest.fn(() => Promise.resolve());
 
@@ -3043,6 +3060,7 @@ describe('shared-container materialization', () => {
             layout: codeLayout(),
             artifactsDir: join(root, 'artifacts'),
             reposDir,
+            committedRangesDir: join(root, 'committed-ranges'),
             artifactPathsById: new Map(),
           },
           {

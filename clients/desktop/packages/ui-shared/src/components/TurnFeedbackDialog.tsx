@@ -4,6 +4,7 @@ import {
   TURN_FEEDBACK_REASONS,
   type TurnFeedbackReason,
 } from '@canopy/protocol/turn-feedback';
+import { Button } from './Button';
 import { DialogModal } from './DialogModal';
 
 const REASON_LABELS: Record<TurnFeedbackReason, string> = {
@@ -94,7 +95,7 @@ export function TurnFeedbackDialog({
                 onClick={(): void => {
                   setReason(selected ? undefined : code);
                 }}
-                className={`focus-ring rounded-full border px-3 py-1 text-xs transition ${
+                className={`focus-ring rounded-full border px-3 py-1 text-xs transition-colors ${
                   selected
                     ? 'border-line-accent bg-accent fg-emphasis'
                     : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
@@ -129,25 +130,26 @@ export function TurnFeedbackDialog({
 
         <div className="flex items-center justify-end gap-2 pt-1">
           {onOpenAppFeedback && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
               data-testid="turn-feedback-open-app-feedback"
               onClick={onOpenAppFeedback}
-              className="focus-ring mr-auto rounded px-1 text-xs fg-secondary transition hover:fg-primary hover:underline"
+              className="mr-auto"
             >
               Report a bug with logs
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid="turn-feedback-skip"
             onClick={onClose}
-            className="focus-ring rounded-lg border px-4 py-2 text-s fg-primary transition hover:bg-secondary"
           >
             Skip
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             data-testid="turn-feedback-submit"
             disabled={!hasDetail}
             onClick={(): void => {
@@ -156,10 +158,9 @@ export function TurnFeedbackDialog({
                 ...(trimmed.length > 0 ? { comment: trimmed } : {}),
               });
             }}
-            className="focus-ring rounded-lg border bg-accent px-4 py-2 text-s font-medium fg-emphasis transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Send feedback
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>

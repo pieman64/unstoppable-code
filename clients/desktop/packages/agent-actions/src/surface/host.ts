@@ -1,3 +1,4 @@
+import type { AgentTranscriptReadPort } from '../port/transcript-read-port';
 import type { AgentEnvironmentPort } from '../port/environment-port';
 import type {
   AgentActionExecutionScope,
@@ -32,6 +33,10 @@ export interface AgentActionHostBinding {
         chatCreatePlacements: readonly AgentChatCreatePlacement[];
       }
     >
+  >;
+  /** Optional dedicated retained transcript read binding. */
+  transcriptReadPort?: Readonly<
+    Record<keyof AgentTranscriptReadPort<unknown>, AgentActionHostPortBinding>
   >;
   environmentPort: Readonly<
     Record<keyof AgentEnvironmentPort<unknown>, AgentActionHostPortBinding>

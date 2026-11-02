@@ -92,6 +92,23 @@ describe('computeTranscriptStickySections', () => {
     expect(sections[1].items).toEqual([items[2]]);
   });
 
+  it('preserves an automatic resume as a focusable section with its marker head', () => {
+    const resumed = turnGroup('accepted-resume', {
+      userMessageSource: 'auto_resume',
+    });
+    const sections = computeTranscriptStickySections(
+      [turnGroup('human'), resumed],
+      NO_REVERTS,
+    );
+    expect(sections).toHaveLength(2);
+    expect(sections[1]).toEqual({
+      key: 'accepted-resume',
+      startIndex: 1,
+      items: [resumed],
+      stickyGroup: resumed,
+    });
+  });
+
   it.each([
     'watcher',
     'deferred_tools_reload',
@@ -145,6 +162,36 @@ describe('computeTranscriptStickySections', () => {
     expect(sections[0].stickyGroup).toBeUndefined();
     expect(sections[0].items).toEqual([items[0], items[1]]);
     expect(sections[1].stickyGroup).toBe(items[2]);
+  });
+
+  // CAN-4551: an automation's chat opens with its banner, and run history's
+  // Go to chat focuses the sent turn by its user message ID.
+  it('keeps an agent-sent turn after the leading banner addressable, without a sticky head', () => {
+    const sent = turnGroup('sent', { userMessageSource: 'agent' });
+    const items = [standalone('banner', 'system'), sent, turnGroup('user-1')];
+    const sections = computeTranscriptStickySections(items, NO_REVERTS);
+
+    expect(sections.map((section) => section.key)).toEqual([
+      'banner',
+      'sent',
+      'user-1',
+    ]);
+    expect(sections[1]).toEqual({ key: 'sent', startIndex: 1, items: [sent] });
+  });
+
+  it('keeps a later agent-sent turn under the last human prompt', () => {
+    const items = [
+      standalone('banner', 'system'),
+      turnGroup('user-1'),
+      turnGroup('sent', { userMessageSource: 'agent' }),
+    ];
+    const sections = computeTranscriptStickySections(items, NO_REVERTS);
+
+    expect(sections.map((section) => section.key)).toEqual([
+      'banner',
+      'user-1',
+    ]);
+    expect(sections[1].items).toEqual([items[1], items[2]]);
   });
 
   it('bounds sections at reverted user turns without making them sticky', () => {

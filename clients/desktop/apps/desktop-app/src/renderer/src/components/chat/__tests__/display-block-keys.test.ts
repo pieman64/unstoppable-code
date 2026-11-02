@@ -112,6 +112,23 @@ describe('getDisplayBlockKey', () => {
     expect(getDisplayBlockKey(block, 1)).toBe('approval-resolution:123:1');
   });
 
+  it('keys safety denial receipts by receipt identity, not position or time', () => {
+    const block: DisplayBlock = {
+      type: 'approval_safety_denied_info',
+      receiptId: 'approval-safety-abc',
+      timestamp: 123,
+      reason: 'force-push',
+      command: 'git push --force origin HEAD',
+      mode: 'ask',
+      toolUseId: 'tool-1',
+    };
+
+    expect(getDisplayBlockKey(block, 0)).toBe(
+      'approval-safety-denied:approval-safety-abc',
+    );
+    expect(getDisplayBlockKey(block, 3)).toBe(getDisplayBlockKey(block, 0));
+  });
+
   it('uses the index to disambiguate pending setup blocks with the same timestamp', () => {
     const block: DisplayBlock = {
       type: 'pending_setup_info',

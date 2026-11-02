@@ -99,6 +99,14 @@ class CountingStore implements LedgerStoreClient {
     return unused('findScope');
   }
 
+  bindGlobalScope(): Promise<never> {
+    return unused('bindGlobalScope');
+  }
+
+  findGlobalScope(): Promise<never> {
+    return unused('findGlobalScope');
+  }
+
   getScope(): Promise<never> {
     return unused('getScope');
   }

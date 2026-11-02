@@ -12,15 +12,17 @@ import {
   ActionMenuRowStyle,
   type ActionMenuItem,
 } from './ActionMenuItems';
+import { Button } from './Button';
 import { FloatingMenu } from './FloatingMenu';
 import { isMenuOpenBodyFlagSet } from '../lib/menu-open-body-flag';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '../lib/row-chips';
 import {
   ChevronRightMediumIcon,
   EyeIcon,
   LinkIcon,
   MoreHorizontalIcon,
+  StarIcon,
 } from '../icons/AppIcons';
+import { Tooltip } from './Tooltip';
 import { curatedLogoKey } from '../lib/curated-logo-key';
 import { McpServerLogo, type McpServerLogoProps } from './McpServerLogo';
 import {
@@ -29,12 +31,8 @@ import {
   type PluginsDiscoverySection,
 } from '../lib/plugins-discovery-sections';
 import type { UnifiedEntryState } from '@canopy/protocol/unified-entry';
-import {
-  UNIFIED_ENTRY_SURFACE_LABELS,
-  type UnifiedPluginEntry,
-} from '../lib/unified-plugin-entry';
+import { type UnifiedPluginEntry } from '../lib/unified-plugin-entry';
 import { marketplaceCardSubtitle } from '../lib/marketplace-card-subtitle';
-import { marketplaceKindToneClass } from '../lib/marketplace-type-tabs';
 import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { ShareActionButton } from './ShareActionButton';
@@ -43,6 +41,7 @@ import type {
   MarketplaceEntryShareStates,
 } from '../lib/marketplace-share';
 import { ShareAudienceLabel } from './ShareAudienceLabel';
+import { EntrySourceLabel, showsEntrySourceLabel } from './EntrySourceLabel';
 import {
   alwaysAvailableReason,
   type InstalledEntryStatusStates,
@@ -51,8 +50,14 @@ import { InstalledItemStatusPicker } from './InstalledItemStatusPicker';
 import {
   InstalledItemStatusControl,
   type InstalledItemSetStatus,
+  type InstalledItemUninstall,
 } from './InstalledItemStatusRow';
+import { EntrySurfaceIcon } from './EntrySurfaceIcon';
 import { McpConnectionStatusBadge } from './McpConnectionStatusBadge';
+import {
+  CuratedSourceLabel,
+  MarketplaceTypeLabel,
+} from './MarketplaceTypeLabel';
 
 /**
  * Sectioned discovery grid for the capability marketplace.
@@ -125,6 +130,16 @@ export interface PluginsEntryStatusBinding {
   /** Omit to show each status read-only. */
   readonly onSetStatus?: InstalledItemSetStatus;
   readonly onError?: (message: string) => void;
+  /** Omit to leave the Customize row menu without a removal item. */
+  readonly onUninstall?: InstalledItemUninstall;
+  /** Called after a confirmed removal so the host can refresh its inventory. */
+  readonly onUninstalled?: (entry: UnifiedPluginEntry) => void;
+  /**
+   * Identifies the machine and project removal acts on. A pending row
+   * confirmation closes when it changes, so it never confirms a target
+   * against another desktop. Omit when the scope cannot change.
+   */
+  readonly removalScope?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,9 +195,11 @@ function PluginsEntryMenu({
 
   return (
     <div className="relative mr-4 shrink-0">
-      <button
+      <Button
         ref={triggerRef}
-        type="button"
+        variant="ghost-quiet"
+        size="compact"
+        iconOnly
         data-testid={`plugins-entry-menu-${entry.id}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -197,10 +214,9 @@ function PluginsEntryMenu({
           }
         }}
         onClick={() => setOpen((value) => !value)}
-        className="focus-ring flex h-7 w-7 items-center justify-center rounded-lg fg-tertiary transition-colors hover:bg-subtle hover:fg-primary pointer-coarse:h-11 pointer-coarse:w-11"
       >
         <MoreHorizontalIcon width={16} height={16} aria-hidden />
-      </button>
+      </Button>
       <FloatingMenu
         open={open}
         onOpenChange={setOpen}
@@ -283,15 +299,45 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
   const shareBlockedReason =
     shareState?.status === 'blocked' ? shareState.reason : undefined;
   const showShare = onShare !== undefined && shareState !== undefined;
+  // A shared item installs a copy; catalog items are added (CAN-5223).
+  const addVerb = entry.origin === 'shared' ? 'Install' : 'Add';
   // An MCP entry's connection badge is its status; the generic state badge
   // would repeat it.
   const stateBadge =
     entry.connection === undefined ? STATE_BADGE_LABELS[entry.state] : null;
   const includedPlugin = entry.integration?.plugin;
   const requirements = entry.requirements ?? [];
-  const subtitle = entry.description
-    ? marketplaceCardSubtitle(entry.name, entry.description)
-    : '';
+  // A catalog card whose endpoint an installed plugin already provides, and a
+  // server row a plugin bundled, both lead to that plugin (CAN-3653).
+  const installedVia =
+    entry.state === 'available' ? entry.installedVia : undefined;
+  const bundledBy = entry.bundledBy;
+  const subtitle = bundledBy
+    ? `From the ${bundledBy.name} plugin`
+    : entry.description
+      ? marketplaceCardSubtitle(entry.name, entry.description)
+      : '';
+
+  const showPipelineSource =
+    showPipelineSources === true &&
+    entry.kind === 'pipeline' &&
+    Boolean(entry.sourceLabel);
+  const showCuratedSource =
+    showPipelineSource &&
+    (entry.origin === 'curated' || entry.sourceLabel === 'Curated');
+  const showUpdate =
+    entry.updateAvailable === true && installedAction !== 'label';
+  // One rule per tag, shared with the tags themselves, so the meta line never
+  // renders empty or hides a tag that should show.
+  const hasMeta =
+    (showsEntrySourceLabel(entry) && !showCuratedSource) ||
+    showCuratedSource ||
+    showPipelineSource ||
+    entry.sharedWith !== undefined ||
+    stateBadge !== null ||
+    showUpdate ||
+    entry.connection !== undefined ||
+    entry.surface !== undefined;
 
   const href = hrefForEntry?.(entry);
   const primaryProps = {
@@ -320,31 +366,79 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
           data-testid={`plugins-card-copy-${entry.id}`}
           className="min-w-0 flex-1"
         >
-          {/* Badges never wrap or squeeze the name: when the row is too
-              narrow for both, they move under it as a group. */}
-          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-            <span className="min-w-0 max-w-full truncate text-s font-medium fg-primary">
+          {/* Line 1 is the name and type only, so every card reads the same;
+              where it comes from and its status go on the meta line below
+              the description (CAN-4261). */}
+          <span
+            data-testid={`plugins-card-title-${entry.id}`}
+            className="flex min-w-0 items-center gap-x-1.5 overflow-hidden"
+          >
+            <span
+              title={entry.name}
+              className="min-w-0 truncate text-s font-medium fg-primary"
+            >
               {entry.name}
             </span>
             {showEntryType && entry.typeLabel && (
-              <span
-                data-testid={`plugins-card-type-${entry.id}`}
-                className={`shrink-0 text-xs ${marketplaceKindToneClass(entry.kind)}`}
-              >
-                {entry.typeLabel}
-              </span>
-            )}
-            {entry.sharedWith && (
-              <ShareAudienceLabel
-                audience={entry.sharedWith.audience}
-                personal={entry.sharedWith.personal}
-                teamName={entry.sharedWith.name}
-                dataTestId={`plugins-card-shared-with-${entry.id}`}
+              <MarketplaceTypeLabel
+                kind={entry.kind}
+                label={entry.typeLabel}
+                dataTestId={`plugins-card-type-${entry.id}`}
               />
             )}
-            {showPipelineSources &&
-              entry.kind === 'pipeline' &&
-              entry.sourceLabel && (
+            {entry.recommended && (
+              <Tooltip label="Recommended">
+                <span
+                  role="img"
+                  aria-label="Recommended"
+                  data-testid={`plugins-card-recommended-${entry.id}`}
+                  className="inline-flex shrink-0 fg-tertiary"
+                >
+                  <StarIcon size={12} aria-hidden="true" />
+                </span>
+              </Tooltip>
+            )}
+            {entry.surface && (
+              <EntrySurfaceIcon
+                surface={entry.surface}
+                testId={`plugins-surface-${entry.id}`}
+              />
+            )}
+          </span>
+          {subtitle && (
+            <span
+              data-testid={
+                bundledBy
+                  ? `plugins-card-from-plugin-${entry.id}`
+                  : `plugins-card-subtitle-${entry.id}`
+              }
+              className={`mt-0.5 block truncate text-xs fg-tertiary ${entry.ref.type === 'local-agent' ? REPLAY_BLOCK_CLASS : ''}`}
+            >
+              {subtitle}
+            </span>
+          )}
+          {hasMeta && (
+            <span
+              data-testid={`plugins-card-meta-${entry.id}`}
+              className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
+            >
+              {!showCuratedSource && (
+                <EntrySourceLabel
+                  entry={entry}
+                  testId={`plugins-card-source-${entry.id}`}
+                />
+              )}
+              {showCuratedSource && (
+                <CuratedSourceLabel
+                  entryId={entry.id}
+                  dataTestId={
+                    entry.kind === 'pipeline'
+                      ? `plugins-pipeline-source-${entry.id}`
+                      : `plugins-card-source-${entry.id}`
+                  }
+                />
+              )}
+              {showPipelineSource && !showCuratedSource && (
                 // Routine metadata, so plain text rather than a pill.
                 <span
                   data-testid={`plugins-pipeline-source-${entry.id}`}
@@ -353,49 +447,38 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
                   {entry.sourceLabel}
                 </span>
               )}
-            {entry.recommended && (
-              <span className="shrink-0 rounded-full bg-accent-subtle px-1.5 py-0.5 text-3xs font-medium fg-accent whitespace-nowrap">
-                Recommended
-              </span>
-            )}
-            {stateBadge && (
-              <span className="shrink-0 rounded-full bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning whitespace-nowrap">
-                {stateBadge}
-              </span>
-            )}
-            {entry.updateAvailable === true && installedAction !== 'label' && (
-              <span
-                data-testid={`plugins-update-available-${entry.id}`}
-                className="shrink-0 rounded-full bg-accent-subtle px-1.5 py-0.5 text-3xs font-medium fg-accent whitespace-nowrap"
-              >
-                Update available
-              </span>
-            )}
-            {entry.connection && (
-              <McpConnectionStatusBadge
-                badge={{
-                  status: entry.connection.status,
-                  isProvider: entry.connection.provider === true,
-                }}
-                dataTestId={`plugins-connection-status-${entry.id}`}
-                providerTestId={`plugins-connection-provider-${entry.id}`}
-              />
-            )}
-            {entry.surface && (
-              <span
-                data-testid={`plugins-surface-${entry.id}`}
-                className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary whitespace-nowrap"
-              >
-                {UNIFIED_ENTRY_SURFACE_LABELS[entry.surface]}
-              </span>
-            )}
-          </span>
-          {subtitle && (
-            <span
-              data-testid={`plugins-card-subtitle-${entry.id}`}
-              className={`mt-0.5 block truncate text-xs fg-tertiary ${entry.ref.type === 'local-agent' ? REPLAY_BLOCK_CLASS : ''}`}
-            >
-              {subtitle}
+              {entry.sharedWith && (
+                <ShareAudienceLabel
+                  audience={entry.sharedWith.audience}
+                  personal={entry.sharedWith.personal}
+                  teamName={entry.sharedWith.name}
+                  teamIcon
+                  dataTestId={`plugins-card-shared-with-${entry.id}`}
+                />
+              )}
+              {stateBadge && (
+                <span className="shrink-0 rounded-full bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning whitespace-nowrap">
+                  {stateBadge}
+                </span>
+              )}
+              {showUpdate && (
+                <span
+                  data-testid={`plugins-update-available-${entry.id}`}
+                  className="shrink-0 rounded-full bg-accent-subtle px-1.5 py-0.5 text-3xs font-medium fg-accent whitespace-nowrap"
+                >
+                  Update available
+                </span>
+              )}
+              {entry.connection && entry.connection.status !== 'unknown' && (
+                <McpConnectionStatusBadge
+                  badge={{
+                    status: entry.connection.status,
+                    isProvider: entry.connection.provider === true,
+                  }}
+                  dataTestId={`plugins-connection-status-${entry.id}`}
+                  providerTestId={`plugins-connection-provider-${entry.id}`}
+                />
+              )}
             </span>
           )}
           {includedPlugin && includedPlugin.skills > 0 && (
@@ -444,6 +527,8 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
         {(showShare ||
           showInstalledLabel ||
           statusSlot ||
+          installedVia !== undefined ||
+          bundledBy !== undefined ||
           (entry.state === 'available' && onAdd !== undefined)) && (
           <div
             data-testid={`plugins-card-actions-${entry.id}`}
@@ -489,29 +574,49 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
                 disabledReason={shareBlockedReason}
               />
             )}
+            {installedVia && (
+              <Button
+                size="compact"
+                data-testid={`plugins-entry-installed-via-${entry.id}`}
+                aria-label={`Installed via ${installedVia.name}. Open the ${installedVia.name} plugin`}
+                disabled={onOpenEntryId === undefined}
+                onClick={() => onOpenEntryId?.(installedVia.entryId)}
+              >
+                {`Installed via ${installedVia.name}`}
+              </Button>
+            )}
+            {bundledBy && !installedVia && (
+              <Button
+                size="compact"
+                data-testid={`plugins-entry-open-plugin-${entry.id}`}
+                disabled={onOpenEntryId === undefined}
+                onClick={() => onOpenEntryId?.(bundledBy.entryId)}
+              >
+                {`Open the ${bundledBy.name} plugin`}
+              </Button>
+            )}
             {entry.state === 'available' &&
+              !installedVia &&
               !pendingUninstall &&
               onAdd !== undefined && (
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   data-testid={`plugins-entry-add-${entry.id}`}
-                  aria-label={`Add ${entry.name}`}
+                  aria-label={`${addVerb} ${entry.name}`}
                   onClick={() => onAdd(entry)}
-                  className={SECONDARY_ACTION_BUTTON_CLASS}
                 >
-                  Add
-                </button>
+                  {addVerb}
+                </Button>
               )}
             {showInstalledLabel && (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 disabled
                 data-testid={`plugins-entry-installed-${entry.id}`}
                 aria-label={`${entry.name} is installed`}
-                className={`${SECONDARY_ACTION_BUTTON_CLASS} disabled:cursor-default disabled:opacity-60`}
               >
                 Installed
-              </button>
+              </Button>
             )}
           </div>
         )}

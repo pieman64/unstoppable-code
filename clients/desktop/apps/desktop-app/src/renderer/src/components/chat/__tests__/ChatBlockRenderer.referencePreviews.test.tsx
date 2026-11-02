@@ -48,6 +48,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type * as CreateFromReference from '@canopy/desktop-shared/lib/create-from-reference';
 import { scanReferenceOccurrences } from '@canopy/desktop-shared/lib/create-from-reference';
 import type { CanopyClient } from '@canopy/app-core';
+import { createFakeClient } from '@canopy/app-state/__tests__/fake-org-projects-client';
 import {
   CanopyClientProvider,
   invalidateReferencePreviews,
@@ -61,7 +62,8 @@ import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeat
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const query = jest.fn<Promise<unknown>, [string, unknown?]>();
+const fakeClient = createFakeClient();
+const query = fakeClient.query;
 const client: CanopyClient = {
   capabilities: {
     localExecution: true,
@@ -72,10 +74,11 @@ const client: CanopyClient = {
     pipelines: 'execute',
     routing: 'in-memory',
     referencePreviews: true,
+    overviewNotifications: false,
   },
   query,
-  command: jest.fn(),
-  subscribe: () => () => undefined,
+  command: fakeClient.command,
+  subscribe: fakeClient.client.subscribe.bind(fakeClient.client),
 };
 
 let container: HTMLDivElement;
@@ -109,7 +112,9 @@ const references = (): string[] =>
   );
 
 const calls = (name: string): unknown[][] =>
-  query.mock.calls.filter(([called]) => called === name);
+  query.mock.calls
+    .map((call: unknown[]) => call)
+    .filter(([called]) => called === name);
 
 beforeEach(() => {
   // Each test starts as a fresh install: no saved titles or team catalog.

@@ -36,7 +36,10 @@ import {
   assertCanopyCloudCapability,
   CanopyCloudClientError,
 } from '../canopy-cloud/client';
-import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import {
+  listExecutionSummaries,
+  loadExecutionState,
+} from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import {
   cancelMatrixVariantFromMain,
@@ -84,6 +87,12 @@ import type * as preferencesStoreModule from '../lib/preferences-store';
 import { withPipelineCrudTelemetry } from '../pipelines/instrumentation';
 import { BrowserWindow } from 'electron';
 import { pinOrgProjectsFlagOff } from './helpers/org-projects-flag';
+import {
+  pipelineRunActionSchema,
+  type AgentPipelineRunResult,
+  type PipelineRunAction,
+} from '@canopy/agent-actions';
+import { desktopPipelinesPort } from '../agent-actions/desktop-pipelines-port';
 
 // Browser actions belong to the shared browser family, which the desktop
 // surface binds beside the legacy actions.
@@ -110,6 +119,26 @@ jest.mock('../pipelines/curated-pipeline-catalog', () => ({
 jest.mock('../pipelines/pipeline-service', () => ({
   getPipeline: jest.fn(),
   listPipelines: jest.fn(),
+}));
+
+// CAN-4551: the owned pipelines of hidden Orchestrator automations.
+const mockAgentHiddenOwnedPipelineIds = jest.fn<
+  Promise<ReadonlySet<string>>,
+  [readonly string[], unknown]
+>(() => Promise.resolve(new Set()));
+jest.mock('../automations/owned-pipeline', () => ({
+  agentHiddenOwnedPipelineIds: (
+    ids: readonly string[],
+    caller: unknown,
+  ): Promise<ReadonlySet<string>> =>
+    mockAgentHiddenOwnedPipelineIds(ids, caller),
+  isOwnedPipelineHiddenFromAgent: (
+    id: string,
+    caller: unknown,
+  ): Promise<boolean> =>
+    mockAgentHiddenOwnedPipelineIds([id], caller).then((hidden) =>
+      hidden.has(id),
+    ),
 }));
 
 jest.mock('../pipelines/canopy-server-client', () => ({
@@ -260,6 +289,9 @@ function pipelineData(): PipelineData {
       name: 'Test pipeline',
       description: '',
       filename: 'test.yml',
+      icon: 'build',
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:00:00.000Z',
       source: 'user',
       readonly: false,
     },
@@ -293,6 +325,7 @@ function sharedPipelineData(): SharedPipelineDetail {
     canDelete: true,
     rawPipeline:
       'name: Shared pipeline\ndescription: Shared pipeline description\nscope: directory\non:\n  dispatch: {}\n  plan_ready: {}\njobs: {}\n',
+    contentHash: 'test-content-hash',
   };
 }
 
@@ -363,6 +396,24 @@ function hookSummary(
 const FRESH_BROWSER_ID: unknown = expect.stringMatching(
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
 );
+
+/** `pipeline.run` runs through the shared family's desktop port. */
+function runPipeline(
+  action: Omit<PipelineRunAction, 'type'>,
+  chatRuntime: WorktreeActionRuntime,
+): Promise<AgentPipelineRunResult> {
+  return desktopPipelinesPort.run(
+    { type: 'pipeline.run', ...action },
+    {
+      host: {
+        requestUserAnswers: () => Promise.resolve([]),
+        loadScriptOutput: () => Promise.reject(new Error('Unused')),
+        worktreeActionRuntime: chatRuntime,
+      },
+      actorKey: 'test',
+    },
+  );
+}
 
 describe('worktree actions', () => {
   it.each(['worktree', 'directory'] as const)(
@@ -704,16 +755,15 @@ describe('worktree actions', () => {
       }).success,
     ).toBe(false);
 
-    const pipelineInputs = dispatchActionSchema.safeParse({
-      action: {
-        type: 'pipeline.run',
-        pipelineId: 'pipeline-1',
-        inputs: { page: 'overview', tab: 'activity' },
-      },
+    // `pipeline.run` is validated by the shared `pipelines` family.
+    const pipelineInputs = pipelineRunActionSchema.safeParse({
+      type: 'pipeline.run',
+      pipelineId: 'pipeline-1',
+      inputs: { page: 'overview', tab: 'activity' },
     });
     expect(pipelineInputs.success).toBe(true);
     if (!pipelineInputs.success) throw new Error('pipeline inputs fixture');
-    expect(pipelineInputs.data.action).toMatchObject({
+    expect(pipelineInputs.data).toMatchObject({
       inputs: { page: 'overview', tab: 'activity' },
     });
 
@@ -863,6 +913,46 @@ describe('worktree actions', () => {
     }
   });
 
+  it('leaves out the owned pipelines of hidden Orchestrator automations (CAN-4551)', async () => {
+    const owned = { ...pipelineData().info, id: 'owned-advisor' };
+    const ordinary = { ...pipelineData().info, id: 'ordinary' };
+    jest
+      .mocked(pipelineStore.listPipelines)
+      .mockReturnValue({ success: true, data: [owned, ordinary] });
+    getPipelineMock.mockImplementation((id) => ({
+      success: true,
+      data: { ...pipelineData(), info: { ...pipelineData().info, id } },
+    }));
+    mockAgentHiddenOwnedPipelineIds.mockResolvedValue(new Set([owned.id]));
+
+    const listed = await dispatchWorktreeAction(
+      { action: { type: 'pipeline.list' } },
+      runtime,
+    );
+    const fetched = await dispatchWorktreeAction(
+      { action: { type: 'pipeline.get', pipelineId: owned.id } },
+      runtime,
+    );
+
+    expect(mockAgentHiddenOwnedPipelineIds).toHaveBeenCalledWith(
+      [owned.id, ordinary.id],
+      runtime,
+    );
+    expect(listed).toMatchObject({
+      ok: true,
+      result: { pipelines: [expect.objectContaining({ id: ordinary.id })] },
+    });
+    const listedResult = listed.result;
+    if (
+      typeof listedResult !== 'object' ||
+      listedResult === null ||
+      Array.isArray(listedResult)
+    )
+      throw new Error('Expected a pipeline listing');
+    expect(listedResult.pipelines).toHaveLength(1);
+    expect(fetched).toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
   it('lists managed curated metadata without hydration and honors hidden preferences', async () => {
     const info = {
       ...pipelineData().info,
@@ -938,11 +1028,8 @@ describe('worktree actions', () => {
       data: executionState({ pipeline_id: data.info.id, status: 'running' }),
     });
     expect(
-      await dispatchWorktreeAction(
-        { action: { type: 'pipeline.run', pipelineId: data.info.id } },
-        runtime,
-      ),
-    ).toMatchObject({ ok: true });
+      await runPipeline({ pipelineId: data.info.id }, runtime),
+    ).toMatchObject({ status: 'started' });
     const start = startPipelineExecutionFromMainMock.mock.calls[0]?.[0];
     expect(start?.pipeline).toEqual(data.content);
     expect(start?.options.pipelinePreferenceLocator).toEqual({
@@ -971,11 +1058,8 @@ describe('worktree actions', () => {
         data: executionState({ pipeline_id: data.info.id, status: 'running' }),
       });
       expect(
-        await dispatchWorktreeAction(
-          { action: { type: 'pipeline.run', pipelineId: data.info.id } },
-          runtime,
-        ),
-      ).toMatchObject({ ok: true });
+        await runPipeline({ pipelineId: data.info.id }, runtime),
+      ).toMatchObject({ status: 'started' });
       expect(
         startPipelineExecutionFromMainMock.mock.calls[0]?.[0].options
           .pipelinePreferenceLocator,
@@ -1023,7 +1107,7 @@ describe('worktree actions', () => {
     'cloud-not-configured',
     'missing-api-key',
     'unsupported-capability',
-  ])(
+  ] as const)(
     'omits shared pipeline warnings when Cloud is unavailable with %s',
     async (code) => {
       assertCanopyCloudCapabilityMock.mockRejectedValue(
@@ -1243,7 +1327,7 @@ describe('worktree actions', () => {
       operationId: 'switch-op',
       browserId: snapshot.id,
       expectedRuntimeGeneration: 1,
-      selection: { kind: 'temporary' as const },
+      selection: { kind: 'task' as const },
       mode: 'replace' as const,
     };
 
@@ -1961,16 +2045,12 @@ describe('worktree actions', () => {
       ]),
     } as unknown as ReturnType<typeof getBrowserService>);
 
-    const result = await dispatchWorktreeAction(
-      {
-        action: {
-          type: 'browser.start_recording',
-          expectedRuntimeGeneration: 1,
-          browserId: 'browser-1',
-        },
-      },
-      runtime,
-    );
+    const action = {
+      type: 'browser.start_recording' as const,
+      expectedRuntimeGeneration: 1,
+      browserId: 'browser-1',
+    };
+    const result = await dispatchWorktreeAction({ action }, runtime);
 
     expect(result.ok).toBe(true);
     expect(startRecording).toHaveBeenCalledWith('browser-1');
@@ -1989,7 +2069,7 @@ describe('worktree actions', () => {
       loadWorktreeState: jest.fn().mockResolvedValue(undefined),
       hasLiveBrowser: jest.fn().mockReturnValue(false),
       withRuntimeTarget: (_target: unknown, operation: () => unknown) =>
-        operation(),
+        Promise.resolve(operation()),
       create,
       stopRecording,
       resolveActiveBrowserId,
@@ -2088,15 +2168,11 @@ describe('worktree actions', () => {
       listWorktreeBrowsers: jest.fn(),
     } as unknown as ReturnType<typeof getBrowserService>);
 
-    const result = await dispatchWorktreeAction(
-      {
-        action: {
-          type: 'browser.reload',
-          expectedRuntimeGeneration: 1,
-        },
-      },
-      runtime,
-    );
+    const action = {
+      type: 'browser.reload' as const,
+      expectedRuntimeGeneration: 1,
+    };
+    const result = await dispatchWorktreeAction({ action }, runtime);
 
     expect(result).toEqual({
       requestId: '',
@@ -2651,7 +2727,7 @@ describe('worktree actions', () => {
       .mockReturnValue([snapshot]);
     const withRuntimeTarget = jest
       .spyOn(browserService, 'withRuntimeTarget')
-      .mockImplementation((_target, operation) => operation());
+      .mockImplementation((_target, operation) => Promise.resolve(operation()));
     const automation = jest
       .spyOn(browserService, 'automation')
       .mockImplementation((request) =>
@@ -3282,6 +3358,7 @@ describe('worktree actions', () => {
     const retainedDialog = {
       id: 'dialog-1',
       type: 'alert' as const,
+      browserId: 'browser-1',
       message: 'Saved',
       url: 'https://example.test/',
       openedAt: 1,
@@ -4133,27 +4210,41 @@ describe('worktree actions', () => {
     },
   );
 
+  it('points a scoped run of a global-only pipeline to scope "global"', async () => {
+    const data = pipelineData();
+    data.info = { ...data.info, scopes: ['global'] };
+    getPipelineMock.mockReturnValue({ success: true, data });
+
+    const result = await runPipeline({ pipelineId: 'pipe-1' }, runtime);
+
+    const pointsToGlobal: unknown = expect.stringContaining('scope: "global"');
+    expect(result).toMatchObject({
+      status: 'rejected',
+      reason: 'unsupported_scope',
+      message: pointsToGlobal,
+    });
+    // A worktree chat names its own scope, not a workspace folder's.
+    expect(JSON.stringify(result)).toContain(
+      'cannot run in this task (worktree scope)',
+    );
+    expect(startPipelineExecutionFromMainMock).not.toHaveBeenCalled();
+  });
+
   it('rejects pipeline.run plan paths outside the worktree and executions dir', async () => {
-    const result = await dispatchWorktreeAction(
+    const result = await runPipeline(
       {
-        action: {
-          type: 'pipeline.run',
-          pipelineId: 'pipe-1',
-          runMode: 'plan_ready',
-          planPath: '/tmp/private-plan.md',
-        },
+        pipelineId: 'pipe-1',
+        runMode: 'plan_ready',
+        planPath: '/tmp/private-plan.md',
       },
       runtime,
     );
 
     expect(result).toEqual({
-      requestId: '',
-      ok: false,
-      error: {
-        code: 'invalid_payload',
-        message:
-          'planPath must be inside the current worktree or pipeline executions directory.',
-      },
+      status: 'rejected',
+      reason: 'invalid_target',
+      message:
+        'planPath must be inside the current worktree or pipeline executions directory.',
     });
     expect(startPipelineExecutionFromMainMock).not.toHaveBeenCalled();
   });
@@ -4172,10 +4263,7 @@ describe('worktree actions', () => {
       });
       const chatRuntime: WorktreeActionRuntime = { ...runtime, ...overrides };
 
-      await dispatchWorktreeAction(
-        { action: { type: 'pipeline.run', pipelineId: 'pipe-1' } },
-        chatRuntime,
-      );
+      await runPipeline({ pipelineId: 'pipe-1' }, chatRuntime);
 
       const options: unknown =
         startPipelineExecutionFromMainMock.mock.calls[0]?.[0].options;
@@ -4199,15 +4287,12 @@ describe('worktree actions', () => {
       error: 'stopped after dispatch',
     });
 
-    await dispatchWorktreeAction(
+    await runPipeline(
       {
-        action: {
-          type: 'pipeline.run',
-          pipelineId: 'pipe-1',
-          runMode: 'task_ready',
-          taskPath: 'tasks/task.md',
-          planPath: '/tmp/canopy-executions/exec-1/plan.md',
-        },
+        pipelineId: 'pipe-1',
+        runMode: 'task_ready',
+        taskPath: 'tasks/task.md',
+        planPath: '/tmp/canopy-executions/exec-1/plan.md',
       },
       runtime,
     );
@@ -4246,34 +4331,26 @@ describe('worktree actions', () => {
       }),
     });
 
-    const result = await dispatchWorktreeAction(
-      {
-        action: {
-          type: 'pipeline.run',
-          pipelineId: 'pipe-1',
-          runMode: 'dispatch',
-        },
-      },
+    const result = await runPipeline(
+      { pipelineId: 'pipe-1', runMode: 'dispatch' },
       runtime,
     );
 
     expect(result).toMatchObject({
-      ok: true,
-      result: {
-        execution: { id: 'exec-1', status: 'running' },
-        agentArtifacts: [
-          {
-            kind: 'pipeline_run',
-            operation: 'pipeline.run',
-            executionId: 'exec-1',
-            pipelineId: 'pipe-1',
-            pipelineName: 'Test pipeline',
-            initialStatus: 'running',
-            projectId: 'project-1',
-            worktreeId: 'worktree-1',
-          },
-        ],
-      },
+      status: 'started',
+      execution: { executionId: 'exec-1', executionStatus: 'running' },
+      agentArtifacts: [
+        {
+          kind: 'pipeline_run',
+          operation: 'pipeline.run',
+          executionId: 'exec-1',
+          pipelineId: 'pipe-1',
+          pipelineName: 'Test pipeline',
+          initialStatus: 'running',
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+        },
+      ],
     });
   });
 
@@ -4293,13 +4370,10 @@ describe('worktree actions', () => {
       }),
     });
 
-    const result = await dispatchWorktreeAction(
+    const result = await runPipeline(
       {
-        action: {
-          type: 'pipeline.run',
-          pipelineId: 'shared:canopy-cloud:shared-pipeline',
-          runMode: 'dispatch',
-        },
+        pipelineId: 'shared:canopy-cloud:shared-pipeline',
+        runMode: 'dispatch',
       },
       runtime,
     );
@@ -4318,15 +4392,13 @@ describe('worktree actions', () => {
       remoteId: 'shared-pipeline',
     });
     expect(result).toMatchObject({
-      ok: true,
-      result: {
-        agentArtifacts: [
-          expect.objectContaining({
-            kind: 'pipeline_run',
-            pipelineId: 'shared:canopy-cloud:shared-pipeline',
-          }),
-        ],
-      },
+      status: 'started',
+      agentArtifacts: [
+        expect.objectContaining({
+          kind: 'pipeline_run',
+          pipelineId: 'shared:canopy-cloud:shared-pipeline',
+        }),
+      ],
     });
   });
 
@@ -4341,25 +4413,19 @@ describe('worktree actions', () => {
       'name: Shared pipeline\nscope: directory\non:\n  plan_ready: {}\njobs: {}\n';
     getSharedPipelineMock.mockResolvedValue(sharedPipeline);
 
-    const result = await dispatchWorktreeAction(
+    const result = await runPipeline(
       {
-        action: {
-          type: 'pipeline.run',
-          pipelineId: 'shared:canopy-cloud:shared-pipeline',
-          runMode: 'dispatch',
-        },
+        pipelineId: 'shared:canopy-cloud:shared-pipeline',
+        runMode: 'dispatch',
       },
       runtime,
     );
 
     expect(result).toEqual({
-      requestId: '',
-      ok: false,
-      error: {
-        code: 'invalid_target',
-        message:
-          'Pipeline shared:canopy-cloud:shared-pipeline does not declare the dispatch run mode.',
-      },
+      status: 'rejected',
+      reason: 'invalid_target',
+      message:
+        'Pipeline shared:canopy-cloud:shared-pipeline does not declare the dispatch run mode.',
     });
     expect(startPipelineExecutionFromMainMock).not.toHaveBeenCalled();
   });
@@ -4373,26 +4439,20 @@ describe('worktree actions', () => {
       }),
     );
 
-    const result = await dispatchWorktreeAction(
+    const result = await runPipeline(
       {
-        action: {
-          type: 'pipeline.run',
-          pipelineId: 'pipe-1',
-          runMode: 'task_ready',
-          taskPath: '/tmp/canopy-executions/other-exec/task.md',
-        },
+        pipelineId: 'pipe-1',
+        runMode: 'task_ready',
+        taskPath: '/tmp/canopy-executions/other-exec/task.md',
       },
       runtime,
     );
 
     expect(result).toEqual({
-      requestId: '',
-      ok: false,
-      error: {
-        code: 'invalid_payload',
-        message:
-          'taskPath must be inside the current worktree or pipeline executions directory.',
-      },
+      status: 'rejected',
+      reason: 'invalid_target',
+      message:
+        'taskPath must be inside the current worktree or pipeline executions directory.',
     });
     expect(startPipelineExecutionFromMainMock).not.toHaveBeenCalled();
   });
@@ -4405,7 +4465,7 @@ describe('worktree actions', () => {
             plan_path: '/tmp/private-plan.md',
           },
         },
-      }) as Awaited<ReturnType<typeof loadExecutionState>>,
+      }),
     );
 
     const result = await dispatchWorktreeAction(
@@ -4589,7 +4649,7 @@ describe('worktree actions', () => {
             plan_path: '/tmp/worktree/missing-plan.md',
           },
         },
-      }) as Awaited<ReturnType<typeof loadExecutionState>>,
+      }),
     );
 
     const result = await dispatchWorktreeAction(
@@ -4609,6 +4669,125 @@ describe('worktree actions', () => {
       report: null,
       plan: null,
     });
+  });
+
+  describe('global runs started by an agent chat', () => {
+    const ORG = 'org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const AGENT_CHAT = {
+      projectId: runtime.projectId,
+      worktreeId: runtime.worktreeId,
+      chatId: runtime.chatId,
+    };
+
+    function globalRun(
+      id: string,
+      initiator: ExecutionState['initiator'],
+    ): ExecutionState & { pipeline_name: string } {
+      return {
+        ...executionState({
+          id,
+          project_id: undefined,
+          worktree_id: undefined,
+          scope: 'global',
+          execution_context: ORG,
+          initiator,
+        }),
+        pipeline_name: 'Test pipeline',
+      };
+    }
+
+    const ownRun = globalRun('own', { kind: 'agent', chat: AGENT_CHAT });
+    const otherChatRun = globalRun('other-chat', {
+      kind: 'agent',
+      chat: { ...AGENT_CHAT, chatId: 'chat-2' },
+    });
+    const personRun = globalRun('person', { kind: 'user' });
+
+    it('lists only the global runs this chat started', async () => {
+      jest
+        .mocked(listExecutionSummaries)
+        .mockResolvedValue([ownRun, otherChatRun, personRun]);
+      loadExecutionStateMock.mockImplementation((id: string) =>
+        Promise.resolve(
+          [ownRun, otherChatRun, personRun].find((run) => run.id === id) ??
+            null,
+        ),
+      );
+
+      const result = await dispatchWorktreeAction(
+        { action: { type: 'pipeline.execution_list' } },
+        runtime,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        result: { totalMatches: 1, executions: [{ id: 'own' }] },
+      });
+    });
+
+    it('reads and cancels its own global run', async () => {
+      loadExecutionStateMock.mockResolvedValue(ownRun);
+
+      await expect(
+        dispatchWorktreeAction(
+          { action: { type: 'pipeline.execution_get', executionId: 'own' } },
+          runtime,
+        ),
+      ).resolves.toMatchObject({ ok: true });
+      await expect(
+        dispatchWorktreeAction(
+          {
+            action: { type: 'pipeline.execution_cancel', executionId: 'own' },
+          },
+          runtime,
+        ),
+      ).resolves.toMatchObject({ ok: true });
+      expect(cancelPipelineExecutionFromMainMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries its own global run without a receipt naming a task', async () => {
+      loadExecutionStateMock.mockResolvedValue(ownRun);
+      retryPipelineExecutionFromMainMock.mockResolvedValueOnce({
+        success: true,
+        data: { ...ownRun, id: 'own-retry' },
+      });
+
+      const result = await dispatchWorktreeAction(
+        { action: { type: 'pipeline.execution_retry', executionId: 'own' } },
+        runtime,
+      );
+
+      // A run with no project has no receipt card; it never ran in this task.
+      expect(result).toMatchObject({ ok: true });
+      expect(result).toHaveProperty('result.agentArtifacts', []);
+    });
+
+    it.each([
+      ['another chat in the same task', otherChatRun],
+      ['a person, under the same owner', personRun],
+      ['no recorded initiator', globalRun('legacy', undefined)],
+    ])(
+      'refuses a global run started by %s',
+      async (_label: string, run: ExecutionState) => {
+        loadExecutionStateMock.mockResolvedValue(run);
+
+        for (const action of [
+          { type: 'pipeline.execution_get' as const, executionId: run.id },
+          { type: 'pipeline.execution_cancel' as const, executionId: run.id },
+          { type: 'pipeline.execution_retry' as const, executionId: run.id },
+          { type: 'pipeline.execution_resume' as const, executionId: run.id },
+        ])
+          await expect(
+            dispatchWorktreeAction({ action }, runtime),
+          ).resolves.toMatchObject({
+            ok: false,
+            error: { code: 'invalid_target' },
+          });
+        expect(cancelPipelineExecutionFromMainMock).not.toHaveBeenCalled();
+        expect(retryPipelineExecutionFromMainMock).not.toHaveBeenCalled();
+        expect(resumePipelineExecutionFromMainMock).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it('cancels stored paused executions through the main pipeline event path', async () => {
@@ -4790,7 +4969,7 @@ describe('worktree actions', () => {
             plan_path: '/tmp/private-plan.md',
           },
         },
-      }) as Awaited<ReturnType<typeof loadExecutionState>>,
+      }),
     );
 
     const result = await dispatchWorktreeAction(
@@ -5279,7 +5458,6 @@ describe('searchWorktreeActions ranking characterization', () => {
     ['worktree.get_settings', worktree],
     ['sidebar.item_groups.set_item', worktree],
     ['sidebar.item_groups.set_item', directory],
-    ['pipeline.run', directory],
     ['hook.pause', worktree],
   ] as const)('scopes the %s catalog entry for %o', (actionType, options) => {
     const result = searchWorktreeActions(

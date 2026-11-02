@@ -391,7 +391,8 @@ test('shares a completed Cowork session from the turn and tab menu, then imports
       window.getByText(COWORK_TRANSCRIPT_MARKER, { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
 
-    const turnShare = window.getByTestId('turn-share-session');
+    await window.getByTestId('turn-more-actions').click();
+    const turnShare = window.getByTestId('turn-more-share');
     await expect(turnShare).toBeVisible();
     await turnShare.click();
     await expect(window.getByTestId('share-run-modal')).toBeVisible();
@@ -743,7 +744,8 @@ test('exports a session bundle, imports it into an exact-match project, and open
     await expect(importSessionItem).toHaveClass(/canopy-dropdown-menu-item/);
     await expect(importSessionItem).toHaveClass(/h-8/);
     await expect(importSessionItem).toHaveClass(/rounded-md/);
-    await expect(importSessionItem).toHaveClass(/text-s/);
+    // Shared sidebar menus use the 13px text-xs token.
+    await expect(importSessionItem).toHaveCSS('font-size', '13px');
     const contextGeometry = await Promise.all([
       destinationHeader.boundingBox(),
       sessionContextMenu.boundingBox(),

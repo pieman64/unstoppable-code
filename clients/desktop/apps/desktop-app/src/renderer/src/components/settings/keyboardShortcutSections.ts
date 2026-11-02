@@ -75,4 +75,6 @@ export const PANEL_SHORTCUT_COMMAND_IDS: CommandId[] = [
   'panel-toggle-maximize',
   'panel-close-group',
   'panel-even-sizes',
+  'panel-select-next-tab',
+  'panel-select-previous-tab',
 ];

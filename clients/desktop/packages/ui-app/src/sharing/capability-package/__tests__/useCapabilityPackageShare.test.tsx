@@ -250,9 +250,9 @@ describe('useCapabilityPackageShare', () => {
   it('does not re-analyze for a no-op dismissal or restore', async () => {
     // Main echoes what it actually suppressed.
     const analyze = jest.fn(
-      (request: {
-        dismissedInvocations?: readonly { provider: 'claude'; token: string }[];
-      }): Promise<PipelinePackageAnalysisSummary> =>
+      (
+        request: Parameters<CapabilityPackageSharePort['analyze']>[0],
+      ): Promise<PipelinePackageAnalysisSummary> =>
         Promise.resolve({
           ...summary('one', []),
           dismissedInvocations: [
@@ -279,6 +279,88 @@ describe('useCapabilityPackageShare', () => {
         { provider: 'claude', token: '/z' },
       ],
     });
+  });
+
+  it("sends pipeline reference dismissals and keeps main's echo", async () => {
+    const analyze = jest.fn(
+      (request: {
+        dismissedReferences?: readonly {
+          kind: 'pipeline_reference' | 'child_pipeline_ref';
+          token: string;
+        }[];
+      }): Promise<PipelinePackageAnalysisSummary> =>
+        Promise.resolve({
+          ...summary('refs', []),
+          dismissedReferences: [...(request.dismissedReferences ?? [])],
+        }),
+    );
+    render({ analyze });
+    await settle();
+    expect(latest?.dismissedReferences).toEqual([]);
+
+    act(() =>
+      latest?.dismissReference({ kind: 'pipeline_reference', token: 'Daily' }),
+    );
+    await settle();
+    expect(analyze).toHaveBeenLastCalledWith({
+      dismissedReferences: [{ kind: 'pipeline_reference', token: 'Daily' }],
+    });
+    expect(latest?.dismissedReferences).toEqual([
+      { kind: 'pipeline_reference', token: 'Daily' },
+    ]);
+    expect(latest?.relevant).toBe(true);
+
+    act(() =>
+      latest?.restoreReference({ kind: 'pipeline_reference', token: 'Daily' }),
+    );
+    await settle();
+    expect(analyze).toHaveBeenLastCalledWith({ dismissedReferences: [] });
+    expect(latest?.dismissedReferences).toEqual([]);
+  });
+
+  it('re-analyzes with the optional pipelines the author selects', async () => {
+    const pipelineResource: PipelinePackageResource = {
+      ...resource('automation-pipeline-daily', 'local'),
+      kind: 'automation_pipeline',
+    };
+    const analyze = jest.fn(
+      (request: {
+        pipelineSelections?: readonly string[];
+      }): Promise<PipelinePackageAnalysisSummary> => {
+        const selected = request.pipelineSelections?.includes('daily') ?? false;
+        return Promise.resolve({
+          ...summary('pipelines', selected ? [pipelineResource] : []),
+          packagedPipelines: [
+            {
+              key: 'daily',
+              resourceId: 'automation-pipeline-daily',
+              name: 'Daily',
+              pipelineContentHash: 'c'.repeat(64),
+              source: 'user',
+              isActionPipeline: false,
+              optional: true,
+              promptSpans: [],
+            },
+          ],
+        });
+      },
+    );
+    render({ analyze });
+    await settle();
+    expect(analyze).toHaveBeenLastCalledWith({});
+    expect(latest?.selectedPipelineKeys).toEqual([]);
+
+    act(() => latest?.togglePipeline('daily'));
+    await settle();
+    expect(analyze).toHaveBeenLastCalledWith({
+      pipelineSelections: ['daily'],
+    });
+    expect(latest?.selectedPipelineKeys).toEqual(['daily']);
+
+    act(() => latest?.togglePipeline('daily'));
+    await settle();
+    expect(analyze).toHaveBeenLastCalledWith({ pipelineSelections: [] });
+    expect(latest?.selectedPipelineKeys).toEqual([]);
   });
 
   it('forwards progress events', async () => {

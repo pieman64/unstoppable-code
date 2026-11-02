@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useId, useState, type JSX } from 'react';
 import type {
   ChatTabPluginSelections,
@@ -133,12 +134,12 @@ function CompactRecommendationsStrip({
           {total} {total === 1 ? 'item' : 'items'}
           {notSelected > 0 ? ` · ${String(notSelected)} not selected` : ''}
         </span>
-        <button
-          type="button"
+        <Button
+          variant="ghost-accent"
+          size="compact"
           aria-expanded={expanded}
           aria-controls={expanded ? rowListId : undefined}
           onClick={(): void => setExpanded((current) => !current)}
-          className="focus-ring inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium fg-accent hover:bg-secondary"
         >
           Review
           <span
@@ -147,7 +148,7 @@ function CompactRecommendationsStrip({
           >
             ⌄
           </span>
-        </button>
+        </Button>
       </div>
       {expanded && (
         <div id={rowListId} className="max-h-48 overflow-y-auto border-t p-2">
@@ -338,16 +339,15 @@ export function RecommendedPluginsSettingsPanel({
               )}
             </div>
             {action && (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={(): void => {
                   void handleAction(item, action);
                 }}
                 disabled={state?.pending === true}
-                className="focus-ring rounded-lg border px-2 py-1 text-2xs font-medium fg-primary hover:bg-secondary disabled:opacity-60"
               >
                 {state?.pending ? 'Working…' : actionLabel(action)}
-              </button>
+              </Button>
             )}
           </li>
         );

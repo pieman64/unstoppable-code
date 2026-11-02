@@ -7,23 +7,24 @@ import {
   type PortalCommandEnvelope,
   type PortalCommandPayloadMap,
 } from '@canopy/desktop-shared/types';
+import { describeProjectDeletionDiscard } from '../../lib/project-deletion-discard';
 import { deleteWorkspaceById } from '../../lib/workspace-deletion';
 import {
   reorderWorkspaces,
   updateWorkspaceMetadata,
   WorkspaceMetadataRefusedError,
 } from '../../lib/workspace-metadata';
-import { readWorkspaceScriptCommands } from '../../lib/workspace-script-config';
 import { updateWorkspaceScripts } from '../../lib/workspace-script-hook-settings';
-import {
-  loadWorkspaceClaudeMd,
-  saveWorkspaceClaudeMd,
-} from '../../lib/workspace-claude-md';
 import { createWorkspace } from '../../lib/workspace-creation';
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import { getDefaultReposDir } from '../../lib/paths';
 import { readPreferencesFile } from '../../lib/preferences-store';
-import { readPortalSidebarItems } from '../portal-workspace-reads';
+import {
+  readPortalSidebarItems,
+  readPortalWorkspaceInstructions,
+  writePortalWorkspaceInstructions,
+  readPortalWorkspaceScriptCommands,
+} from '../portal-workspace-reads';
 import { validateId } from '../../lib/validation';
 import { sendToWindow } from '../../lib/window-send';
 import { markPortalWorkspaceCreateStarted } from '../portal-state-store';
@@ -287,14 +288,103 @@ export async function handlePortalWorkspaceDelete(
     return;
   }
   const workspaceId = payload.workspaceId;
+  // Superseding is a person's confirmation (CAN-5337); an agent's is ignored.
+  const superseded =
+    !context.origin && typeof payload.supersedeInterruptedDeletion === 'string'
+      ? payload.supersedeInterruptedDeletion
+      : undefined;
+  if (superseded !== undefined) {
+    // Checked outside the deletion's catch, which may replace its message.
+    try {
+      validateId(superseded, 'supersedeInterruptedDeletion');
+    } catch {
+      context.fail(
+        command,
+        'invalid_payload',
+        'Invalid project delete payload: supersedeInterruptedDeletion must be an operation id.',
+      );
+      return;
+    }
+  }
 
   try {
     // Defense-in-depth on the browser-supplied id (the service also validates,
     // but validate up front to match the IPC convention).
     validateId(workspaceId, 'workspaceId');
-    await deleteWorkspaceById(workspaceId, 'portal');
+    await deleteWorkspaceById(
+      workspaceId,
+      'portal',
+      superseded !== undefined
+        ? { supersedeInterruptedDeletion: superseded }
+        : {},
+    );
     notifyRendererWorkspacesChanged(context, workspaceId);
     context.complete(command, { success: true });
+  } catch (error) {
+    if (await isRefusedOnlyForDiscardableItems(workspaceId)) {
+      const code: unknown =
+        error instanceof Error && 'code' in error ? error.code : undefined;
+      context.fail(
+        command,
+        typeof code === 'string' ? code : 'execution_failed',
+        PROJECT_DELETION_DISCARD_POINTER,
+        false,
+      );
+      return;
+    }
+    failServiceError(command, context, error);
+  }
+}
+
+/**
+ * CAN-5337: a deletion that refused only because of worktrees a person can
+ * discard points at the discard instead of a retry that can't succeed. The
+ * service's own messages stay unchanged; desktop Settings and the web open the
+ * discard confirmation themselves.
+ */
+export const PROJECT_DELETION_DISCARD_POINTER =
+  "A source repository for this project's worktrees is missing, or a worktree's removal can't finish. If a repository is on a disconnected drive or share, reconnect it and retry. Otherwise, delete the project in the desktop app or on the web to discard the affected worktrees.";
+
+/** Any other refusal, or one the description can't read, keeps its message. */
+async function isRefusedOnlyForDiscardableItems(
+  workspaceId: string,
+): Promise<boolean> {
+  try {
+    const description = await describeProjectDeletionDiscard(workspaceId);
+    return description.status === 'discardable';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Handle `portal.workspace.delete.discard.describe` (CAN-5337): the read-only
+ * list of what keeps a project's deletion from finishing. User-only: a
+ * command an external agent sent is refused.
+ */
+export async function handlePortalWorkspaceDeleteDiscardDescribe(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> {
+  if (context.origin) {
+    context.fail(command, 'forbidden', 'Only a person can discard a worktree.');
+    return;
+  }
+  const payload: unknown = command.payload;
+  if (!isRecord(payload) || typeof payload.workspaceId !== 'string') {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Invalid project deletion discard payload: workspaceId is required.',
+    );
+    return;
+  }
+  try {
+    validateId(payload.workspaceId, 'workspaceId');
+    context.complete(
+      command,
+      await describeProjectDeletionDiscard(payload.workspaceId),
+    );
   } catch (error) {
     failServiceError(command, context, error);
   }
@@ -303,9 +393,9 @@ export async function handlePortalWorkspaceDelete(
 /**
  * Handle `portal.workspace.claude_md.get` — read a workspace's editable
  * `CLAUDE.md` for the browser workspace-settings dialog. Small-RPC: the content
- * is returned in the command completion result (`{ content }`). Reuses the
- * shared {@link loadWorkspaceClaudeMd} (source-backed routing + empty-on-missing)
- * that the renderer IPC path uses.
+ * is returned in the command completion result (`{ content }`). Reads through
+ * `core.workspace.instructions.get`, the operation behind the renderer IPC
+ * path (source-backed routing + empty-on-missing).
  */
 export async function handlePortalWorkspaceClaudeMdGet(
   command: PortalCommandEnvelope<
@@ -325,7 +415,7 @@ export async function handlePortalWorkspaceClaudeMdGet(
   const workspaceId = payload.workspaceId;
   try {
     validateId(workspaceId, 'workspaceId');
-    const content = await loadWorkspaceClaudeMd(workspaceId);
+    const content = await readPortalWorkspaceInstructions(workspaceId);
     context.complete(command, { content });
   } catch (error) {
     failServiceError(command, context, error);
@@ -334,9 +424,9 @@ export async function handlePortalWorkspaceClaudeMdGet(
 
 /**
  * Handle `portal.workspace.claude_md.save` — write a workspace's `CLAUDE.md`
- * from the browser workspace-settings dialog via the shared
- * {@link saveWorkspaceClaudeMd} (keeps the source-backed `AGENTS.md` symlink and
- * records update telemetry). Editing config is additive, so this is not gated by
+ * from the browser workspace-settings dialog via
+ * `core.workspace.instructions.update` (keeps the source-backed `AGENTS.md`
+ * symlink and records `portal` update telemetry). Editing config is additive, so this is not gated by
  * the destructive-actions flag.
  */
 export async function handlePortalWorkspaceClaudeMdSave(
@@ -362,7 +452,7 @@ export async function handlePortalWorkspaceClaudeMdSave(
   const content = payload.content;
   try {
     validateId(workspaceId, 'workspaceId');
-    await saveWorkspaceClaudeMd(workspaceId, content, 'portal');
+    await writePortalWorkspaceInstructions(workspaceId, content);
     context.complete(command, { success: true });
   } catch (error) {
     failServiceError(command, context, error);
@@ -432,8 +522,7 @@ export async function handlePortalWorkspaceScriptsGet(
   }
   const workspaceId = payload.workspaceId;
   try {
-    validateId(workspaceId, 'workspaceId');
-    const commands = await readWorkspaceScriptCommands(workspaceId);
+    const commands = await readPortalWorkspaceScriptCommands(workspaceId);
     context.complete(command, { commands });
   } catch (error) {
     failServiceError(command, context, error);

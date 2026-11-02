@@ -1,4 +1,5 @@
 import { browserHandoffs } from '../browser/browser-handoffs';
+import { agentHiddenOwnedPipelineIds } from '../automations/owned-pipeline';
 import type {
   BrowserSavePdfRequest,
   BrowserTransferStatus,
@@ -201,7 +202,6 @@ export const DESKTOP_LEGACY_ACTION_TYPES = [
   'pipeline.update_shared',
   'pipeline.delete_shared',
   'pipeline.set_enabled',
-  'pipeline.run',
   // Kept as a compatibility alias for App Advisor parity; both list names are worktree-scoped here.
   'pipeline.execution_list_for_worktree',
   'pipeline.execution_list',
@@ -338,26 +338,6 @@ type ScopedAction =
       remoteId?: string;
     }
   | { type: 'pipeline.set_enabled'; pipelineId: string; enabled: boolean }
-  | {
-      type: 'pipeline.run';
-      pipelineId: string;
-      inputs?: Record<string, string>;
-      runMode?: PipelineTriggerType;
-      planPath?: string;
-      taskPath?: string;
-      planId?: string;
-      repoId?: string;
-      watchers?: Array<{
-        label?: string;
-        target?: {
-          executionId?: string;
-          pipelineId?: string;
-          terminalStatuses?: Array<'success' | 'failure' | 'cancelled'>;
-        };
-        followUpInstruction?: string;
-        allowDuplicate?: boolean;
-      }>;
-    }
   | {
       type: 'pipeline.execution_list_for_worktree' | 'pipeline.execution_list';
       query?: string;
@@ -659,7 +639,7 @@ export interface AutomationInlineWatcher {
  * The agent chat that started a run. A chat opened from the Portal is still
  * the agent; `pipelineInitiationSource` is usage attribution only.
  */
-function initiatorForWorktreeRuntime(
+export function initiatorForWorktreeRuntime(
   runtime: Pick<WorktreeActionRuntime, 'projectId' | 'worktreeId' | 'chatId'>,
 ): PipelineExecutionInitiator {
   const chat = {
@@ -714,7 +694,7 @@ export interface WorktreeActionRuntime {
   authorizeScriptCommand?: (command: string) => Promise<boolean>;
 }
 
-function runtimeExecutionScope(
+export function runtimeExecutionScope(
   runtime: WorktreeActionRuntime,
 ): 'worktree' | 'directory' {
   return runtime.executionScope ?? 'worktree';
@@ -847,7 +827,7 @@ function pipelineInputDetails(
     options: input.options ?? null,
     min: input.min ?? null,
     max: input.max ?? null,
-  })) as unknown as AppAdvisorJson;
+  }));
 }
 
 interface PipelineListRow {
@@ -900,9 +880,15 @@ async function loadPipelineRows(
   warnings: string[];
 }> {
   const storedResult = pipelineStore.listPipelines();
-  const storedInfos = await filterStoredPipelineContexts(
+  const contextInfos = await filterStoredPipelineContexts(
     storedResult.success && storedResult.data ? storedResult.data : [],
   );
+  // Hidden like the Orchestrator automations that own them (CAN-4551).
+  const hiddenOwned = await agentHiddenOwnedPipelineIds(
+    contextInfos.map((info) => info.id),
+    runtime,
+  );
+  const storedInfos = contextInfos.filter((info) => !hiddenOwned.has(info.id));
   const projectInfos = await filterProjectPipelineContexts(
     await discoverProjectPipelines(runtime.cwd).catch(() => []),
     runtime.cwd,
@@ -1001,7 +987,7 @@ async function loadPipelineRows(
   };
 }
 
-function pipelineSourceExecutionOptions(pipeline: PipelineData): {
+export function pipelineSourceExecutionOptions(pipeline: PipelineData): {
   sharedPipeline?: { serverId: string; remoteId: string };
   pipelinePreferenceLocator?: PipelinePreferenceLocator;
 } {
@@ -1062,7 +1048,7 @@ function scopeActionCatalog(
             summary:
               'Inspect the intended base branch, configured hooks, pausedHookKeys, and per-hook paused status for a Code entry (worktree).',
             notes: [
-              'This scoped action returns projectId, worktreeId, trackedBaseBranch and trackedRepoBaseBranches for the intended comparison base, pausedHookKeys, and hooks; it does not return App Advisor UI effective overrides.',
+              'This scoped action returns projectId, worktreeId, trackedBaseBranch and trackedRepoBaseBranches for the intended comparison base, pausedHookKeys, and hooks; it does not return Orchestrator UI effective overrides.',
             ],
           }
         : action,
@@ -1218,10 +1204,32 @@ function getExecutionPlanPath(state: ExecutionState): string | null {
   );
 }
 
+/**
+ * Whether a run with no project was started by exactly this chat. Only the
+ * initiating agent chat may reach it; a matching owner grants nothing.
+ */
+function globalExecutionStartedByRuntime(
+  execution: Pick<ExecutionState, 'project_id' | 'initiator'>,
+  runtime: Pick<WorktreeActionRuntime, 'projectId' | 'worktreeId' | 'chatId'>,
+): boolean {
+  if (execution.project_id !== undefined) return false;
+  const initiator = execution.initiator;
+  if (initiator?.kind !== 'agent' && initiator?.kind !== 'app_advisor')
+    return false;
+  const chat = initiator.chat;
+  return (
+    chat !== undefined &&
+    chat.projectId === runtime.projectId &&
+    chat.worktreeId === runtime.worktreeId &&
+    chat.chatId === runtime.chatId
+  );
+}
+
 function executionBelongsToRuntime(
-  execution: Pick<ExecutionState, 'project_id' | 'worktree_id'>,
+  execution: Pick<ExecutionState, 'project_id' | 'worktree_id' | 'initiator'>,
   runtime: WorktreeActionRuntime,
 ): boolean {
+  if (globalExecutionStartedByRuntime(execution, runtime)) return true;
   if (
     runtimeExecutionScope(runtime) === 'directory' &&
     runtime.projectId !== STANDALONE_CHAT_PROJECT_ID
@@ -1249,7 +1257,7 @@ async function executionPathBelongsToRuntime(
   return state !== null && executionBelongsToRuntime(state, runtime);
 }
 
-async function resolveScopedEventPath(
+export async function resolveScopedEventPath(
   filePath: string | undefined,
   cwd: string,
   executionsDir: string,
@@ -1392,7 +1400,7 @@ function executionDetails(state: ExecutionState): AppAdvisorJson {
   };
 }
 
-function pipelineExecutionArtifact(
+export function pipelineExecutionArtifact(
   operation: string,
   state: ExecutionState,
   runtime: WorktreeActionRuntime,
@@ -1420,6 +1428,21 @@ function pipelineExecutionArtifact(
       worktreeId: state.worktree_id ?? runtime.worktreeId,
     },
   });
+}
+
+/**
+ * A replayed run's receipts. A run with no project has none yet: the receipt
+ * protocol requires a task, and the run never ran in the caller's.
+ */
+function replayedExecutionArtifacts(
+  operation: string,
+  state: ExecutionState,
+  runtime: WorktreeActionRuntime,
+  repoId?: string,
+): ReturnType<typeof pipelineExecutionArtifact>[] {
+  return (state.scope ?? state.target?.scope) === 'global'
+    ? []
+    : [pipelineExecutionArtifact(operation, state, runtime, repoId)];
 }
 
 async function setHookPaused(
@@ -1569,7 +1592,7 @@ async function readReport(
   return {
     filePath: resolvedPath,
     ...truncated,
-  } as unknown as AppAdvisorJson;
+  };
 }
 
 async function readPlan(
@@ -1593,7 +1616,7 @@ async function readPlan(
   return {
     filePath: resolvedPath,
     ...truncated,
-  } as unknown as AppAdvisorJson;
+  };
 }
 
 async function listPipelines(
@@ -1616,8 +1639,13 @@ async function listPipelines(
     .filter((row) => {
       // Directory runtimes (Cowork) only surface pipelines whose declared
       // scopes a plain directory context satisfies — worktree-only pipelines
-      // are unrunnable there and stay hidden.
-      return executionContextSatisfies(row.scopes, executionScope);
+      // are unrunnable there and stay hidden. Non-project pipelines that run
+      // globally are listed too: pipeline.run starts them with scope global.
+      return (
+        executionContextSatisfies(row.scopes, executionScope) ||
+        (row.source !== 'project' &&
+          executionContextSatisfies(row.scopes, 'global'))
+      );
     })
     .filter((row) => {
       return fuzzyMatch(action.query, [row.id, row.name, row.description]);
@@ -1698,143 +1726,6 @@ async function getPipeline(
   return { ...response, result: toAppAdvisorJson(response.result) };
 }
 
-async function runPipeline(
-  action: Extract<ScopedAction, { type: 'pipeline.run' }>,
-  runtime: WorktreeActionRuntime,
-): Promise<AppAdvisorActionResponse> {
-  const executionScope = runtimeExecutionScope(runtime);
-  // Directory runtimes (Cowork) always run at the workspace folder root —
-  // there are no per-repo checkouts to select with repoId.
-  const cwd =
-    action.repoId && executionScope === 'worktree'
-      ? resolveWorktreeCwd(runtime.projectId, runtime.worktreeId, action.repoId)
-      : runtime.cwd;
-  const loaded = await loadPipelineForAction(action.pipelineId, runtime, cwd);
-  if ('response' in loaded) return loaded.response;
-  const pipeline = loaded.pipeline;
-  if (!pipeline) {
-    return error('not_found', `Pipeline ${action.pipelineId} was not found.`);
-  }
-  const declaredScopes = pipeline.info.scopes ?? DEFAULT_PIPELINE_SCOPES;
-  if (!executionContextSatisfies(declaredScopes, executionScope)) {
-    return error(
-      'invalid_target',
-      `Pipeline ${action.pipelineId} declares scopes [${declaredScopes.join(
-        ', ',
-      )}] and cannot run in this workspace folder (directory scope). Use pipeline.list to find runnable pipelines.`,
-    );
-  }
-  const eventName = action.runMode ?? 'dispatch';
-  if (!getTriggerTypes(pipeline.content.on).includes(eventName)) {
-    return error(
-      'invalid_target',
-      `Pipeline ${action.pipelineId} does not declare the ${eventName} run mode.`,
-    );
-  }
-  const executionRuntime = await createWorktreeExecutionRuntime();
-  const planPath = action.planPath
-    ? await resolveScopedEventPath(
-        action.planPath,
-        cwd,
-        executionRuntime.executionsDir,
-        runtime,
-      )
-    : null;
-  if (action.planPath && !planPath) {
-    return error(
-      'invalid_payload',
-      'planPath must be inside the current worktree or pipeline executions directory.',
-    );
-  }
-  const taskPath = action.taskPath
-    ? await resolveScopedEventPath(
-        action.taskPath,
-        cwd,
-        executionRuntime.executionsDir,
-        runtime,
-      )
-    : null;
-  if (action.taskPath && !taskPath) {
-    return error(
-      'invalid_payload',
-      'taskPath must be inside the current worktree or pipeline executions directory.',
-    );
-  }
-  const { startPipelineExecutionFromMain } =
-    await import('../pipelines/pipeline-handlers');
-  const result = await startPipelineExecutionFromMain({
-    pipeline: pipeline.content,
-    getWindow: runtime.getWindow,
-    options: {
-      cwd,
-      pipelineId: pipeline.info.id,
-      pipelineFilePath:
-        pipeline.info.source === 'project' ? pipeline.info.filePath : undefined,
-      repoPath: pipeline.info.source === 'project' ? cwd : undefined,
-      ...pipelineSourceExecutionOptions(pipeline),
-      projectId: runtime.projectId,
-      worktreeId: runtime.worktreeId,
-      ...(executionScope === 'directory'
-        ? {
-            scope: 'directory' as const,
-            target: { scope: 'directory' as const, path: cwd },
-          }
-        : {
-            scope: 'worktree' as const,
-            target: {
-              scope: 'worktree' as const,
-              workspace_id: runtime.projectId,
-              worktree_id: runtime.worktreeId,
-              path: cwd,
-              created: false,
-            },
-          }),
-      initiationSource: 'app_advisor',
-      initiator: initiatorForWorktreeRuntime(runtime),
-      eventName,
-      ...(eventName === 'plan_ready'
-        ? {
-            eventData: {
-              plan_ready: {
-                ...(planPath ? { plan_path: planPath } : {}),
-                ...(action.planId ? { planId: action.planId } : {}),
-              },
-            },
-          }
-        : {}),
-      ...(eventName === 'task_ready'
-        ? {
-            eventData: {
-              task_ready: {
-                ...(taskPath ? { task_path: taskPath } : {}),
-                ...(planPath ? { plan_path: planPath } : {}),
-              },
-            },
-          }
-        : {}),
-      ...(action.inputs && Object.keys(action.inputs).length > 0
-        ? { inputs: action.inputs }
-        : {}),
-    },
-  });
-  if (!result.success) {
-    return error('execution_failed', result.error);
-  }
-  const state = result.data;
-  const response = {
-    requestId: '',
-    ok: true as const,
-    result: { execution: executionDetails(state) },
-  };
-  const receiptResponse = withAgentArtifacts(response, [
-    pipelineExecutionArtifact(action.type, state, runtime, action.repoId),
-  ]);
-  return {
-    ...receiptResponse,
-    result: toAppAdvisorJson(receiptResponse.result),
-  };
-}
-
 export async function listExecutions(
   action: Extract<
     ScopedAction,
@@ -1897,7 +1788,7 @@ export async function listExecutions(
     executions: selected.map((summary, index) =>
       executionRow(summary, states[index]),
     ),
-  } as unknown as AppAdvisorJson);
+  });
 }
 
 async function getExecution(
@@ -1914,7 +1805,7 @@ async function getExecution(
     execution: executionDetails(loaded.state),
     ...(action.includeReport ? { report } : {}),
     ...(action.includePlan ? { plan } : {}),
-  } as unknown as AppAdvisorJson);
+  });
 }
 
 async function cancelExecution(
@@ -1967,9 +1858,10 @@ export async function resumeExecution(
     ok: true as const,
     result: { execution: executionDetails(result.state) },
   };
-  const receiptResponse = withAgentArtifacts(response, [
-    pipelineExecutionArtifact(action.type, result.state, runtime),
-  ]);
+  const receiptResponse = withAgentArtifacts(
+    response,
+    replayedExecutionArtifacts(action.type, result.state, runtime),
+  );
   return {
     ...receiptResponse,
     result: toAppAdvisorJson(receiptResponse.result),
@@ -2003,9 +1895,10 @@ export async function retryExecution(
     ok: true as const,
     result: { execution: executionDetails(result.data) },
   };
-  const receiptResponse = withAgentArtifacts(response, [
-    pipelineExecutionArtifact(action.type, result.data, runtime),
-  ]);
+  const receiptResponse = withAgentArtifacts(
+    response,
+    replayedExecutionArtifacts(action.type, result.data, runtime),
+  );
   return {
     ...receiptResponse,
     result: toAppAdvisorJson(receiptResponse.result),
@@ -2192,9 +2085,15 @@ async function chainExecution(
     ok: true as const,
     result: { execution: executionDetails(result.data) },
   };
-  const receiptResponse = withAgentArtifacts(response, [
-    pipelineExecutionArtifact(action.type, result.data, runtime, action.repoId),
-  ]);
+  const receiptResponse = withAgentArtifacts(
+    response,
+    replayedExecutionArtifacts(
+      action.type,
+      result.data,
+      runtime,
+      action.repoId,
+    ),
+  );
   return {
     ...receiptResponse,
     result: toAppAdvisorJson(receiptResponse.result),
@@ -3128,8 +3027,6 @@ async function dispatchWorktreeActionInner(
     }
     case 'sharing.open_dialog':
       return openShareDialog(input.action, runtime);
-    case 'pipeline.run':
-      return runPipeline(input.action, runtime);
     case 'pipeline.execution_list':
     case 'pipeline.execution_list_for_worktree':
       return listExecutions(input.action, runtime);

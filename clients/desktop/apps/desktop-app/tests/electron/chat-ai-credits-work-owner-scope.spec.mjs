@@ -202,8 +202,12 @@ async function openChat(fixture, context, worktreeId) {
 test('only the chat an org owns reads as covered by that org', async () => {
   test.setTimeout(180_000);
   const cloudKey = 'csk_can3463_owner_scope_banner';
+  // No usage read confirms restored allowance, which would end the seeded
+  // session routing before its card shows (CAN-4272).
+  const authKey = 'can-3463-owner-scope-banner-unauthenticated';
   const fixture = await launch({
     cloudKey,
+    authKey,
     providerType: 'codex',
     prefix: 'canopy-can3463-banner-',
   });
@@ -228,7 +232,7 @@ test('only the chat an org owns reads as covered by that org', async () => {
     await window.waitForTimeout(2_000);
     await expect(coveredBy).toHaveCount(0);
   } finally {
-    await close(fixture, [cloudKey]);
+    await close(fixture, [cloudKey, authKey]);
   }
 });
 

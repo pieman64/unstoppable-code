@@ -1,3 +1,8 @@
+import {
+  CORE_SHARED_MULTI_REPO_QUERIES,
+  CORE_SHARED_MULTI_REPO_INSTRUCTIONS,
+} from '@canopy/protocol/canopy-core';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { createScriptActionsBridge } from './script-actions-bridge';
 import {
   labsExperimentChoiceRequestSchema,
@@ -40,6 +45,11 @@ import type {
   ManagedDelegationRootsResult,
   ManagedDelegationWorktreeSummaryRequest,
   ManagedDelegationWorktreeSummaryResult,
+  ManagedDelegationExtendLifetimeLimitRequest,
+  ManagedDelegationExtendLifetimeLimitResult,
+  ManagedDelegationLifetimeStatusRequest,
+  ManagedDelegationLifetimeStatus,
+  ManagedDelegationLifetimeChangedEvent,
   NativeSubagentInterruptRequest,
   NativeSubagentInterruptResult,
   ManagedDelegationStopAllRequest,
@@ -66,6 +76,7 @@ import { createChatEventSubscription } from './api/chat-event-api';
 import { createCodexSpeedApi } from './api/codex-speed-api';
 import { createPanelLayoutApi } from './api/panel-layout-api';
 import { createAccountOrganizationSettingsApi } from './api/account-organization-settings-api';
+import { createAuthenticatedPortalApi } from './api/authenticated-portal-api';
 import {
   createRemoteControlApi,
   uploadFilesToRemote,
@@ -146,6 +157,7 @@ import {
   type HookCompleteEvent,
   type HookSkippedPausedEvent,
   type ActivityBgProcessOutputEvent,
+  type ActivityLiveBgTasksChangedEvent,
   type TrackedPlansUpdatedEvent,
   type DetectedPlansUpdatedEvent,
   type WorktreeSummaryGeneratingEvent,
@@ -205,6 +217,7 @@ import {
   type AppAdvisorWindowCommand,
   type AppAdvisorWindowOpenRequest,
   type AppAdvisorWindowCloseOptions,
+  type AppAdvisorWindowBatchRemovalDialog,
   type AppAdvisorWindowState,
   type AppAdvisorWindowUiState,
   type AutomationCronGenerateRequest,
@@ -228,10 +241,6 @@ import {
   type UpdateSharedAutomationIpcRequest,
   type VerifyAutomationSharedPipelinePinRequest,
   type AutomationsListResponse,
-  type OnboardingChecklistMarkItemCompleteRequest,
-  type OnboardingChecklistSetProviderNotUsedRequest,
-  type OnboardingChecklistSnoozeRequest,
-  type OnboardingChecklistState,
   type SpaceNotificationPolicySnapshot,
   type SpaceNotificationScope,
   type SpaceNotificationSetRequest,
@@ -390,6 +399,31 @@ function serializeAppAdvisorSettingsLoadResponse(
   }
 }
 
+/**
+ * The popout nav's open batch removal dialog, reduced to its mode, count,
+ * and phase; `null` when closed and `undefined` when not reported. Throws on
+ * a malformed one.
+ */
+function serializeAppAdvisorBatchRemovalDialog(
+  value: unknown,
+): AppAdvisorWindowBatchRemovalDialog | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!isRecord(value) || value.open !== true) {
+    throw new TypeError('Invalid App Advisor window UI state');
+  }
+  const { mode, phase, count } = value;
+  if (
+    (mode !== 'archive' && mode !== 'delete') ||
+    (phase !== 'confirm' && phase !== 'running' && phase !== 'results') ||
+    typeof count !== 'number' ||
+    !Number.isSafeInteger(count) ||
+    count < 0
+  ) {
+    throw new TypeError('Invalid App Advisor window UI state');
+  }
+  return { open: true, mode, count, phase };
+}
+
 function serializeAppAdvisorWindowUiState(
   state: unknown,
 ): AppAdvisorWindowUiState {
@@ -425,6 +459,9 @@ function serializeAppAdvisorWindowUiState(
   ) {
     throw new TypeError('Invalid App Advisor window UI state');
   }
+  const batchRemovalDialog = serializeAppAdvisorBatchRemovalDialog(
+    state.batchRemovalDialog,
+  );
   return {
     activeWorkEntryId: state.activeWorkEntryId,
     activeChatId: state.activeChatId,
@@ -440,15 +477,25 @@ function serializeAppAdvisorWindowUiState(
     lastArchivedOverviewRequestId: state.lastArchivedOverviewRequestId,
     lastArchivedOverviewConfirmationOpened:
       state.lastArchivedOverviewConfirmationOpened,
+    ...(batchRemovalDialog === undefined ? {} : { batchRemovalDialog }),
   };
 }
 
 // A window that shows another computer reports that computer's platform, so
 // path handling in the renderer matches the paths it receives.
+const hostPlatform = ((): NonNullable<
+  ReturnType<typeof hostOperatingSystem>
+> => {
+  const platform = hostOperatingSystem();
+  if (platform === null) throw new Error('Unsupported host platform');
+  return platform;
+})();
 const localPlatform =
-  __CANOPY_E2E__ && process.env.CANOPY_E2E_PLATFORM === 'win32'
-    ? 'win32'
-    : process.platform;
+  __CANOPY_E2E__ &&
+  (process.env.CANOPY_E2E_PLATFORM === 'win32' ||
+    process.env.CANOPY_E2E_PLATFORM === 'linux')
+    ? process.env.CANOPY_E2E_PLATFORM
+    : hostPlatform;
 const exposedPlatform = remoteWindowContext?.platform ?? localPlatform;
 
 // One `chat:event` IPC listener for this page, shared by every subscriber.
@@ -504,6 +551,28 @@ function isUploadFileList(value: unknown): boolean {
   );
 }
 
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === 'boolean';
+}
+
+/** Mirrors `ApprovalFileChange`; a malformed change rejects the event. */
+function isOptionalApprovalFileChange(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !isOptionalBoolean(value.truncated)) return false;
+  switch (value.kind) {
+    case 'edit':
+      return (
+        typeof value.oldText === 'string' &&
+        typeof value.newText === 'string' &&
+        isOptionalBoolean(value.replaceAll)
+      );
+    case 'write':
+      return typeof value.content === 'string';
+    default:
+      return false;
+  }
+}
+
 function isApprovalRequestDetails(value: unknown): boolean {
   if (!isRecord(value)) return false;
   switch (value.kind) {
@@ -516,6 +585,8 @@ function isApprovalRequestDetails(value: unknown): boolean {
     case 'file-write':
       return (
         isOptionalString(value.path) &&
+        isOptionalString(value.displayPath) &&
+        isOptionalApprovalFileChange(value.change) &&
         isOptionalString(value.reason) &&
         isOptionalString(value.itemId)
       );
@@ -850,9 +921,25 @@ function isDesktopOrgProjectCatalogSnapshot(
   );
 }
 
-function isLedgerViewScope(value: unknown): boolean {
+function isLedgerGlobalOwner(value: unknown): boolean {
   return (
     isRecord(value) &&
+    (value.kind === 'personal' ||
+      (value.kind === 'organization' &&
+        typeof value.organizationId === 'string'))
+  );
+}
+
+/** A task's scope, or one global (workflow) Ledger by its owner and ID. */
+function isLedgerViewScope(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.kind === 'global') {
+    return (
+      typeof value.ledgerId === 'string' && isLedgerGlobalOwner(value.owner)
+    );
+  }
+  return (
+    value.kind === undefined &&
     typeof value.projectId === 'string' &&
     typeof value.worktreeId === 'string'
   );
@@ -1574,22 +1661,11 @@ initOllamaModels(ollamaModelEntries);
 interface DevInfo {
   isDev: boolean;
   branch: string | null;
-  /**
-   * E2E-only. The automation harness sets
-   * `CANOPY_E2E_ONBOARDING_SUGGESTIONS=hidden` to keep the Home/sidebar
-   * onboarding suggestions module — which every install starts — out of
-   * unrelated specs. Never set outside an E2E build.
-   */
-  hideOnboardingSuggestions?: boolean;
 }
 
 const devInfo: DevInfo = {
   isDev: false,
   branch: null,
-  ...(__CANOPY_E2E__ &&
-  process.env.CANOPY_E2E_ONBOARDING_SUGGESTIONS === 'hidden'
-    ? { hideOnboardingSuggestions: true }
-    : {}),
 };
 if (process.env.NODE_ENV === 'development') {
   devInfo.isDev = true;
@@ -1601,7 +1677,7 @@ if (process.env.NODE_ENV === 'development') {
         cwd: join(__dirname, '../..'),
         encoding: 'utf-8',
         timeout: 3_000,
-        windowsHide: process.platform === 'win32',
+        windowsHide: hostPlatform === 'win32',
       },
     ).trim();
   } catch {
@@ -1954,7 +2030,7 @@ function createE2eOllamaApi(api: OllamaApiSurface): OllamaApiSurface {
     models: [],
     mode: 'managed',
     installation: {
-      platform: process.platform,
+      platform: hostPlatform,
       ready: false,
       path: null,
       version: null,
@@ -2197,6 +2273,8 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.preferencesSave, preferences, options),
   setPipelineDisabledPreference: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.preferencesSetPipelineDisabled, request),
+  updateOnboardingTips: (update) =>
+    ipcRenderer.invoke(IPC_CHANNELS.preferencesUpdateOnboardingTips, update),
   setApprovalDefaultPreference: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.preferencesSetApprovalDefault, request),
   createPrimaryDataDir: () =>
@@ -2373,6 +2451,14 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.worktreeCreate, request),
   archiveWorktree: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeArchive, request),
+  checkWorktreeRemovalAdmission: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeCheckRemovalAdmission, request),
+  describeWorktreeDiscard: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeDiscardDescribe, request),
+  discardWorktree: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeDiscard, request),
+  describeProjectDeletionDiscard: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.workspaceDeleteDiscardDescribe, request),
   getDiffStats: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeDiffStats, request),
   getDiffStatsBatch: (request) =>
@@ -2620,6 +2706,10 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.workspaceDelete, request),
   deleteProject: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.projectDelete, request),
+  inspectLifecycleJournal: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.lifecycleJournalInspect),
+  quarantineLifecycleJournalEntry: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.lifecycleJournalQuarantine, request),
   onWorkspaceReferenceRepoStatus: (callback) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -3023,8 +3113,7 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAccount),
   getCanopyCloudBaseUrl: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsGetCanopyCloudBaseUrl),
-  openAuthenticatedPortalPage: (path) =>
-    ipcRenderer.invoke(IPC_CHANNELS.settingsOpenAuthenticatedPortalPage, path),
+  ...createAuthenticatedPortalApi(ipcRenderer),
   loadCanopyCloudAiCredits: (scope) =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAiCredits, scope),
   loadCanopyCloudEntitlements: (scope) =>
@@ -3123,6 +3212,10 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.localMemoryUpdateItem, request),
   deleteLocalMemoryItem: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.localMemoryDeleteItem, request),
+  updateLocalMemoryFile: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.localMemoryUpdateFile, request),
+  deleteLocalMemoryFile: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.localMemoryDeleteFile, request),
   onLocalMemoryChanged: (callback) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -3244,6 +3337,19 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.activityReadFullOutput, request),
     listLiveBgTasks: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.activityListLiveBgTasks, request),
+    onLiveBgTasksChanged: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        event: ActivityLiveBgTasksChangedEvent,
+      ): void => callback(event);
+      ipcRenderer.on(IPC_CHANNELS.activityLiveBgTasksChanged, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.activityLiveBgTasksChanged,
+          handler,
+        );
+      };
+    },
     readWorkflowRun: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.activityReadWorkflowRun, request),
     readWorkflowAgentTranscript: (request) =>
@@ -5327,6 +5433,32 @@ const canopyApi: CanopyApi = {
       req: ManagedDelegationWorktreeSummaryRequest,
     ): Promise<ManagedDelegationWorktreeSummaryResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.managedDelegationWorktreeSummary, req),
+    getLifetimeStatus: (
+      req: ManagedDelegationLifetimeStatusRequest,
+    ): Promise<ManagedDelegationLifetimeStatus> =>
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationLifetimeStatus, req),
+    onLifetimeChanged: (
+      cb: (event: ManagedDelegationLifetimeChangedEvent) => void,
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        event: ManagedDelegationLifetimeChangedEvent,
+      ): void => cb(event);
+      ipcRenderer.on(IPC_CHANNELS.managedDelegationLifetimeChanged, handler);
+      return (): void => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.managedDelegationLifetimeChanged,
+          handler,
+        );
+      };
+    },
+    extendLifetimeLimit: (
+      req: ManagedDelegationExtendLifetimeLimitRequest,
+    ): Promise<ManagedDelegationExtendLifetimeLimitResult> =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.managedDelegationExtendLifetimeLimit,
+        req,
+      ),
 
     listActivity: (): Promise<ChatDelegationActivity[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.managedDelegationActivityList),
@@ -5445,6 +5577,44 @@ const canopyApi: CanopyApi = {
   accountOrganizationSettings:
     createAccountOrganizationSettingsApi(ipcRenderer),
   orgProjects: {
+    sharedMultiRepo: {
+      prepare: async (params) =>
+        CORE_SHARED_MULTI_REPO_QUERIES[
+          'core.workspace.sharedMultiRepo.prepare'
+        ].result.parse(
+          await ipcRenderer.invoke(
+            IPC_CHANNELS.orgProjectsSharedMultiRepoPrepare,
+            params,
+          ),
+        ),
+      create: async (params) =>
+        CORE_SHARED_MULTI_REPO_INSTRUCTIONS[
+          'core.workspace.sharedMultiRepo.create'
+        ].result.parse(
+          await ipcRenderer.invoke(
+            IPC_CHANNELS.orgProjectsSharedMultiRepoCreate,
+            params,
+          ),
+        ),
+      getCreation: async (creationKey) =>
+        CORE_SHARED_MULTI_REPO_QUERIES[
+          'core.workspace.sharedMultiRepo.getCreation'
+        ].result.parse(
+          await ipcRenderer.invoke(
+            IPC_CHANNELS.orgProjectsSharedMultiRepoGetCreation,
+            { creationKey },
+          ),
+        ),
+      listCreations: async () =>
+        CORE_SHARED_MULTI_REPO_QUERIES[
+          'core.workspace.sharedMultiRepo.listCreations'
+        ].result.parse(
+          await ipcRenderer.invoke(
+            IPC_CHANNELS.orgProjectsSharedMultiRepoListCreations,
+            { limit: 50 },
+          ),
+        ),
+    },
     linksList: () => ipcRenderer.invoke(IPC_CHANNELS.orgProjectLinksList),
     linksDecide: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.orgProjectLinksDecide, request),
@@ -5778,45 +5948,7 @@ const canopyApi: CanopyApi = {
       };
     },
   },
-  onboardingChecklist: {
-    getState: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.onboardingChecklistGetState),
-    dismiss: () => ipcRenderer.invoke(IPC_CHANNELS.onboardingChecklistDismiss),
-    snooze: (request: OnboardingChecklistSnoozeRequest) =>
-      ipcRenderer.invoke(IPC_CHANNELS.onboardingChecklistSnooze, request),
-    restore: () => ipcRenderer.invoke(IPC_CHANNELS.onboardingChecklistRestore),
-    setProviderNotUsed: (
-      request: OnboardingChecklistSetProviderNotUsedRequest,
-    ) =>
-      ipcRenderer.invoke(
-        IPC_CHANNELS.onboardingChecklistSetProviderNotUsed,
-        request,
-      ),
-    markItemComplete: (request: OnboardingChecklistMarkItemCompleteRequest) =>
-      ipcRenderer.invoke(
-        IPC_CHANNELS.onboardingChecklistMarkItemComplete,
-        request,
-      ),
-    onChanged: (callback) => {
-      // The main-process checklist IPC module is the single producer on this
-      // channel; the listener parameter is typed directly (Electron's args
-      // are untyped at this boundary) so the shared contract applies without
-      // a cast.
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        state: OnboardingChecklistState,
-      ): void => {
-        callback(state);
-      };
-      ipcRenderer.on(IPC_CHANNELS.onboardingChecklistChanged, handler);
-      return () => {
-        ipcRenderer.removeListener(
-          IPC_CHANNELS.onboardingChecklistChanged,
-          handler,
-        );
-      };
-    },
-  },
+
   spaceNotifications: {
     getSnapshot: () =>
       ipcRenderer.invoke(IPC_CHANNELS.spaceNotificationsGetSnapshot),
@@ -6014,36 +6146,21 @@ if (process.contextIsolated) {
     console.error(error);
   }
 } else {
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.electron = electronAPI;
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.platform = exposedPlatform;
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.localPlatform = localPlatform;
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.api = canopyApi;
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.canopyCore = createCanopyCoreRelayApi(ipcRenderer);
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.bundles = createBundlesAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.collections = createCollectionsAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.pipelines = createPipelinesAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.plugins = createPluginsAPI();
   window.installedItems = createInstalledItemsAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.skills = createSkillsAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.agents = createAgentsAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.skillShareNudge = createSkillShareNudgeAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.skillSuggestions = createSkillSuggestionsAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.invocableInventory = createInvocableInventoryAPI();
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.mcpServers = createMcpServersAPI();
   // @ts-expect-error -- Fallback for non-context-isolated environments
   window.claudeModelEntries = claudeModelEntries;
@@ -6053,7 +6170,6 @@ if (process.contextIsolated) {
   window.codexModelEntries = codexModelEntries;
   // @ts-expect-error -- Fallback for non-context-isolated environments
   window.ollamaModelEntries = ollamaModelEntries;
-  // @ts-expect-error -- Fallback for non-context-isolated environments
   window.devInfo = devInfo;
 }
 

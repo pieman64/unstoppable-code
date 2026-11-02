@@ -1,6 +1,5 @@
 /** @type {import('jest').Config} */
 const config = {
-  preset: 'ts-jest',
   ...(process.env.CANOPY_JEST_BALANCE === 'true'
     ? { testSequencer: '<rootDir>/scripts/lib/jest-duration-sequencer.mjs' }
     : {}),
@@ -15,7 +14,7 @@ const config = {
     '<rootDir>/apps/core-daemon/src',
     '<rootDir>/packages',
   ],
-  testPathIgnorePatterns: ["<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts"],
+  testPathIgnorePatterns: ["<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/w5-commit-log/__tests__/commit-log-host-construction.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port-stopped.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/fixtures/electron-w5-record-port-daemon.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts","<rootDir>/packages/desktop-shared/src/node/lib/__tests__/admitted-storage-paths-manifest.test.ts","<rootDir>/packages/protocol/src/__tests__/core-workspace-metadata-contracts.test.ts"],
   testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
   // Tests spawn `git` in temp repositories; drop inherited repository
   // variables (set when run from a Git hook) before any worker forks.
@@ -24,6 +23,7 @@ const config = {
     '<rootDir>/apps/desktop-app/src/__tests__/jestDataDirIsolation.ts',
     '<rootDir>/apps/desktop-app/src/__tests__/jestElectronLogSetup.ts',
     '<rootDir>/apps/desktop-app/src/__tests__/jestW5FileStoreSetup.ts',
+    '<rootDir>/apps/desktop-app/src/__tests__/jestCodeGraphResourcesSetup.ts',
   ],
   moduleNameMapper: {
     '^@canopy/mcp-oauth-core$':
@@ -64,6 +64,8 @@ const config = {
     '^@canopy/core-transport/(.*)$': '<rootDir>/packages/core-transport/src/$1',
     '^@canopy/core-client$': '<rootDir>/packages/core-client/src/index.ts',
     '^@canopy/core-client/(.*)$': '<rootDir>/packages/core-client/src/$1',
+    '^@canopy/code-graph$': '<rootDir>/packages/code-graph/src/index.ts',
+    '^@canopy/code-graph/(.*)$': '<rootDir>/packages/code-graph/src/$1',
     '^@canopy/desktop-shared$':
       '<rootDir>/packages/desktop-shared/src/index.ts',
     '^@canopy/desktop-shared/(.*)$': '<rootDir>/packages/desktop-shared/src/$1',
@@ -88,21 +90,8 @@ const config = {
   transformIgnorePatterns: [
     '/node_modules/(?!(?:mdast-util-[^/]+|micromark[^/]*|unist-util-[^/]+|decode-named-character-reference|devlop|character-entities|ccount|escape-string-regexp|longest-streak|markdown-table|zwitch|dequal)/)',
   ],
-  transform: {
-    '^.+\\.js$': [
-      'ts-jest',
-      {
-        tsconfig: {
-          allowJs: true,
-          target: 'ES2022',
-          module: 'CommonJS',
-          isolatedModules: true,
-        },
-        diagnostics: false,
-      },
-    ],
-    '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
-  },
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  transform: require('./scripts/lib/jest-swc-transform.cjs').transform,
   globals: {
     __DEP_CLAUDE_CLI__: '1.0.0',
     __DEP_CLAUDE_SDK__: '^0.1.0',

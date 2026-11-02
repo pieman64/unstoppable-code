@@ -12,10 +12,8 @@ import {
 import { evaluateWithSyntheticIpcEvent } from './syntheticIpcEvent.mjs';
 
 /**
- * A running worktree row's loader follows Settings → Labs → Comet spinners in
- * both sidebar styles (see docs/sidebar-worktree-status.md): the dot grid by
- * default, the comet ring with the choice on. Compact rows used to draw the
- * comet whatever the choice.
+ * A running worktree row uses the standard comet loader in both sidebar
+ * styles, including accounts with a saved Comet spinners opt-out.
  *
  * Determinism: no live agent. The seeded chat is marked streaming through a
  * synthetic `runtime.patched` chat state event, as in chat-queue.spec.mjs.
@@ -57,7 +55,7 @@ async function markChatStreaming(electronApp) {
   );
 }
 
-test('a running worktree row draws its loader in the Labs spinner style', async () => {
+test('a running worktree row uses the standard comet in both sidebar styles', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-sidebar-row-loader-'),
@@ -71,6 +69,12 @@ test('a running worktree row draws its loader in the Labs spinner style', async 
     activeTabId: CHAT_ID,
     tabs: [{ id: CHAT_ID, title: 'Feed page redesign' }],
   });
+  const { seedEarlyAccess } = await import('./seeders/seedEarlyAccess.mjs');
+  const { readFileSync, writeFileSync } = await import('node:fs');
+  const { filePath } = seedEarlyAccess({ userDataDir });
+  const saved = JSON.parse(readFileSync(filePath, 'utf8'));
+  saved.accounts.local['comet-spinners'] = false;
+  writeFileSync(filePath, JSON.stringify(saved));
   const { electronApp } = await launchCanopy({
     userDataDir,
     viewportSize: { width: 1000, height: 800 },
@@ -98,23 +102,15 @@ test('a running worktree row draws its loader in the Labs spinner style', async 
 
     for (const compact of [true, false]) {
       await setChoice('sidebar', compact);
-      for (const cometChoice of [false, true]) {
-        await setChoice('comet-spinners', cometChoice);
-        if (compact) {
-          await expect(row.getByTestId('worktree-row-status')).toHaveAttribute(
-            'data-row-status',
-            'working',
-            { timeout: 30_000 },
-          );
-        }
-        if (cometChoice) {
-          await expect(comet).toHaveCount(1);
-          await expect(dots).toHaveCount(0);
-        } else {
-          await expect(comet).toHaveCount(0);
-          await expect(dots.first()).toBeVisible();
-        }
+      if (compact) {
+        await expect(row.getByTestId('worktree-row-status')).toHaveAttribute(
+          'data-row-status',
+          'working',
+          { timeout: 30_000 },
+        );
       }
+      await expect(comet).toHaveCount(1);
+      await expect(dots).toHaveCount(0);
     }
   } finally {
     await closeCanopy(electronApp, userDataDir);

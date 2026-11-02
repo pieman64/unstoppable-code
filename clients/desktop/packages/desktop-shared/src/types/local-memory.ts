@@ -22,6 +22,15 @@ export interface LocalMemoryFileSummary {
   sizeBytes: number;
   /** First-line ATX level-1 heading text, when the file starts with one. */
   title?: string;
+  /** First line of the body after the title, plain text and clipped. */
+  excerpt?: string;
+  /** The chat that saved an inbox note, from its front matter. */
+  source?: { provider: string; chatId: string };
+  /**
+   * Times agents used this file (searches, reads and injected recall), while
+   * usage tracking is intact for the scope. Absent when usage is unknown.
+   */
+  usageCount?: number;
 }
 
 export interface LocalMemoryItem {
@@ -36,6 +45,8 @@ export interface LocalMemoryDocument {
   fileKey: string;
   revision: string;
   items: LocalMemoryItem[];
+  /** The file's Markdown after its front matter, as written. */
+  markdown?: string;
 }
 
 export type LocalMemoryReadRequest = LocalMemoryScopeRequest & {
@@ -47,6 +58,18 @@ export type LocalMemoryDeleteRequest = LocalMemoryReadRequest & {
 };
 export type LocalMemoryUpdateRequest = LocalMemoryDeleteRequest & {
   text: string;
+};
+/** Deletes a whole topic or inbox note; the index cannot be deleted. */
+export type LocalMemoryDeleteFileRequest = LocalMemoryReadRequest & {
+  revision: string;
+};
+/**
+ * Replaces a memory file's Markdown body. Front matter is kept, and `title`
+ * becomes the level-1 heading that starts the body when given.
+ */
+export type LocalMemoryUpdateFileRequest = LocalMemoryDeleteFileRequest & {
+  title?: string;
+  body: string;
 };
 
 export type LocalMemoryConsolidationResult =
@@ -112,23 +135,8 @@ export interface LocalMemorySnapshotRestoreResponse {
   previousSnapshotId: string | null;
 }
 
-/**
- * Stored verbatim as `lastReason` when consolidation refuses an
- * organization-blocked model; the explorer shows it unchanged.
- */
-export const LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE =
-  'Memory consolidation was skipped: this model is blocked by your organization policy.';
-
-/**
- * Stored verbatim as `lastReason` (and returned as a rebuild reason) when a
- * memory run refuses the memory model the user chose because this install
- * cannot run it right now. Memory is never sent to another model instead.
- */
-export const LOCAL_MEMORY_MODEL_UNAVAILABLE_MESSAGE =
-  "Memory consolidation was skipped: your memory model isn't available. Choose another memory model in settings, or try again once it's available.";
-
-/** Reasons that are complete sentences, shown without a prefix. */
-export const LOCAL_MEMORY_FULL_SENTENCE_REASONS: ReadonlySet<string> = new Set([
+export {
+  LOCAL_MEMORY_FULL_SENTENCE_REASONS,
   LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE,
   LOCAL_MEMORY_MODEL_UNAVAILABLE_MESSAGE,
-]);
+} from '@canopy/protocol/local-memory';

@@ -9,7 +9,6 @@ import {
   type AgentProviderType,
   type ChatModel,
   type CodeReviewUpdatedEvent,
-  type FileAnnotationsUpdatedEvent,
   type LocalMemoryScopeRequest,
   type McpAskUserEvent,
   type McpQuestion,
@@ -27,7 +26,11 @@ import {
 } from '../lib/window-send';
 import { getObservabilityService } from '../observability';
 import { getAttentionTracker } from '../services/attention-tracker';
-import { createPendingRequest, rejectRequest } from '../mcp/pending-requests';
+import {
+  clearAskUserRequestCancellation,
+  createPendingRequest,
+  rejectRequest,
+} from '../mcp/pending-requests';
 import {
   loadScriptOutputSnapshot,
   type ScriptOutputSnapshot,
@@ -56,7 +59,7 @@ import {
 import {
   readFileCommentThreads,
   respondToFileComment,
-} from '../lib/file-annotations-persistence';
+} from './file-comment-core-client';
 import {
   computeReviewFingerprint,
   listReviewRepos,
@@ -82,7 +85,7 @@ import {
 import { broadcastLocalMemoryChanged } from '../memory/local/change-events';
 import { resolveLocalMemoryPolicy } from '../memory/local/policy';
 import { recordUsage, seedEntry } from '../memory/local/usage';
-import { checkGitHubCliStatus } from '../ipc/settings';
+import { checkGitHubCliStatus } from '../lib/github-auth';
 import { resolveCommitMessageInstructions } from '@canopy/desktop-shared/lib/commit-message-generator';
 import { resolvePrContentInstructions } from '@canopy/desktop-shared/lib/github-pr-generator';
 import { getChatStateService } from '../services/chat-state-service';
@@ -345,6 +348,8 @@ export async function requestAnswersFromRenderer(options: {
   onRequestCreated?: (requestId: string) => void;
   signal?: AbortSignal;
 }): Promise<McpQuestionAnswer[]> {
+  if (options.signal?.aborted) throw new Error('ask_user_cancelled');
+
   const requestId = randomUUID();
   const payload: McpAskUserEvent = {
     requestId,
@@ -370,6 +375,23 @@ export async function requestAnswersFromRenderer(options: {
     });
   };
 
+  let cancelled = false;
+  let persistenceStarted = false;
+  let upsertPromise: Promise<void> | undefined;
+  let rejectAbort: (() => void) | undefined;
+  const abortPromise = new Promise<never>((_, reject) => {
+    rejectAbort = (): void => reject(new Error('ask_user_cancelled'));
+  });
+  const cleanupAfterAbort = async (): Promise<void> => {
+    await Promise.resolve();
+    if (!persistenceStarted) {
+      clearAskUserRequestCancellation(requestId);
+      return;
+    }
+    await upsertPromise?.catch(() => undefined);
+    await consumeAndExpire();
+  };
+
   const pendingAnswers = createPendingRequest(
     requestId,
     options.sessionKey,
@@ -382,88 +404,114 @@ export async function requestAnswersFromRenderer(options: {
         }
       : undefined,
   );
+  void pendingAnswers.catch(() => undefined);
+  const abortPendingRequest = (): void => {
+    if (cancelled) return;
+    if (!rejectRequest(requestId, 'ask_user_cancelled')) return;
+    cancelled = true;
+    rejectAbort?.();
+    void cleanupAfterAbort().catch(() => undefined);
+  };
+  options.signal?.addEventListener('abort', abortPendingRequest, {
+    once: true,
+  });
   try {
-    await getChatStateService().upsertPendingQuestion(
-      { projectId: options.projectId, worktreeId: options.worktreeId },
-      {
-        requestId,
-        chatId: options.chatId,
-        questions: options.questions,
-        ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
-      },
-    );
-  } catch (error) {
-    void pendingAnswers.catch(() => undefined);
-    rejectRequest(requestId, 'ask_user_persistence_failed');
-    throw error;
-  }
-  options.onRequestCreated?.(requestId);
+    try {
+      if (options.signal?.aborted) abortPendingRequest();
+      if (cancelled) throw new Error('ask_user_cancelled');
+      persistenceStarted = true;
+      try {
+        upsertPromise = getChatStateService().upsertPendingQuestion(
+          { projectId: options.projectId, worktreeId: options.worktreeId },
+          {
+            requestId,
+            chatId: options.chatId,
+            questions: options.questions,
+            ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+          },
+        );
+      } catch (error) {
+        upsertPromise = Promise.reject(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+      if (options.signal?.aborted) abortPendingRequest();
+      if (options.signal) await Promise.race([upsertPromise, abortPromise]);
+      else await upsertPromise;
+    } catch (error) {
+      if (cancelled) throw new Error('ask_user_cancelled');
+      rejectRequest(requestId, 'ask_user_persistence_failed');
+      throw error;
+    }
+    if (cancelled || options.signal?.aborted) {
+      abortPendingRequest();
+      throw new Error('ask_user_cancelled');
+    }
+    options.onRequestCreated?.(requestId);
 
-  const win = options.getWindow();
-  const delivery = sendToWindowDetailed(win, IPC_CHANNELS.mcpAskUser, payload);
-  if (!delivery.delivered) {
-    getObservabilityService().recordSessionDiagnostic({
-      version: 1,
-      timestamp: new Date().toISOString(),
-      kind: 'ask_user_request_undelivered',
-      sessionKey: options.sessionKey,
+    const win = options.getWindow();
+    if (cancelled || options.signal?.aborted) {
+      abortPendingRequest();
+      throw new Error('ask_user_cancelled');
+    }
+    const delivery = sendToWindowDetailed(
+      win,
+      IPC_CHANNELS.mcpAskUser,
+      payload,
+    );
+    if (!delivery.delivered) {
+      getObservabilityService().recordSessionDiagnostic({
+        version: 1,
+        timestamp: new Date().toISOString(),
+        kind: 'ask_user_request_undelivered',
+        sessionKey: options.sessionKey,
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+        providerType: options.providerType ?? 'unknown',
+        ...(options.model ? { model: options.model } : {}),
+        sendFailureReason: delivery.reason,
+      });
+    }
+    options.onAwaitingUser?.();
+    getObservabilityService().pauseChatTurn(
+      options.projectId,
+      options.worktreeId,
+      options.chatId,
+    );
+    // Second of the two human-blocking chokepoints (see `prompt-bridge.ts`). A
+    // `secret: true` question is a credential prompt, so its text never leaves
+    // the machine as push context even though the block itself still notifies.
+    const askUserDetail = options.questions.find(
+      (question) => question.secret !== true,
+    )?.question;
+    getAttentionTracker().mark({
       projectId: options.projectId,
       worktreeId: options.worktreeId,
       chatId: options.chatId,
-      providerType: options.providerType ?? 'unknown',
-      ...(options.model ? { model: options.model } : {}),
-      sendFailureReason: delivery.reason,
+      state: 'needs_input',
+      reason: 'ask_user',
+      sourceId: `ask-user:${requestId}`,
+      ...(askUserDetail !== undefined ? { detail: askUserDetail } : {}),
     });
-  }
-  const abortPendingRequest = (): void => {
-    void consumeAndExpire()
-      .catch(() => undefined)
-      .finally(() => rejectRequest(requestId, 'ask_user_cancelled'));
-  };
-  if (options.signal?.aborted) {
-    abortPendingRequest();
-  } else {
-    options.signal?.addEventListener('abort', abortPendingRequest, {
-      once: true,
-    });
-  }
-  options.onAwaitingUser?.();
-  getObservabilityService().pauseChatTurn(
-    options.projectId,
-    options.worktreeId,
-    options.chatId,
-  );
-  // Second of the two human-blocking chokepoints (see `prompt-bridge.ts`). A
-  // `secret: true` question is a credential prompt, so its text never leaves
-  // the machine as push context even though the block itself still notifies.
-  const askUserDetail = options.questions.find(
-    (question) => question.secret !== true,
-  )?.question;
-  getAttentionTracker().mark({
-    projectId: options.projectId,
-    worktreeId: options.worktreeId,
-    chatId: options.chatId,
-    state: 'needs_input',
-    reason: 'ask_user',
-    sourceId: `ask-user:${requestId}`,
-    ...(askUserDetail !== undefined ? { detail: askUserDetail } : {}),
-  });
-  try {
-    return await pendingAnswers;
+    try {
+      return await pendingAnswers;
+    } finally {
+      if (!cancelled) await consumePending().catch(() => undefined);
+      getObservabilityService().resumeChatTurn(
+        options.projectId,
+        options.worktreeId,
+        options.chatId,
+      );
+      getAttentionTracker().clear(
+        options.projectId,
+        options.worktreeId,
+        options.chatId,
+        `ask-user:${requestId}`,
+      );
+    }
   } finally {
     options.signal?.removeEventListener('abort', abortPendingRequest);
-    await consumePending().catch(() => undefined);
-    getObservabilityService().resumeChatTurn(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-    );
-    getAttentionTracker().clear(
-      options.projectId,
-      options.worktreeId,
-      options.chatId,
-      `ask-user:${requestId}`,
-    );
   }
 }
 
@@ -713,6 +761,7 @@ export async function respondToFileCommentInSession(options: {
     sendToAllWindows(IPC_CHANNELS.codeReviewUpdated, event);
     return { ok: true, resolved: options.resolve, store: 'review' };
   }
+  // The core.annotation adapter publishes the committed reply.
   const result = await respondToFileComment(scopedOptions);
   if (!result.ok || !result.document) {
     return {
@@ -721,12 +770,6 @@ export async function respondToFileCommentInSession(options: {
       error: result.error ?? 'Failed to post file comment reply.',
     };
   }
-  const event: FileAnnotationsUpdatedEvent = {
-    projectId: scope.projectId,
-    worktreeId: scope.worktreeId,
-    document: result.document,
-  };
-  sendToAllWindows(IPC_CHANNELS.fileAnnotationsUpdated, event);
   return { ok: true, resolved: result.resolved, store: 'file' };
 }
 

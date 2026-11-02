@@ -40,25 +40,17 @@ describe('HomeComposerControls voice availability', () => {
     expect(SOURCE).toContain('onDismiss={voice.dismissError}');
   });
 
-  it('uses the 16px send icon in the shared glyph weight', () => {
-    const sendIcon = SOURCE.match(/<ArrowUp[\s\S]*?\/>/)?.[0];
-
-    expect(sendIcon).toContain('width={16}');
-    expect(sendIcon).toContain('height={16}');
-    // App glyphs are filled; their weight is an icon manifest decision.
-    expect(sendIcon).not.toContain('strokeWidth');
-    expect(sendIcon).not.toContain('stroke-[');
-  });
-
-  it('uses a neutral treatment when send is disabled', () => {
+  it('sends from the shared composer send button', () => {
+    // Its icon, neutral disabled treatment, and tooltip are pinned by the
+    // shared component's rendered tests; Home only wires it.
     const sendButton = SOURCE.match(
-      /<button[\s\S]*?data-testid="home-send-button"[\s\S]*?<\/button>/,
+      /<ComposerSendButton[^>]*?dataTestId="home-send-button"[^>]*?\/>/,
     )?.[0];
 
-    expect(sendButton).toContain('disabled:bg-muted');
-    expect(sendButton).toContain('disabled:fg-tertiary');
-    expect(sendButton).toContain('disabled:opacity-100');
-    expect(sendButton).toContain('enabled:hover:bg-accent/90');
+    expect(sendButton).toContain('kind="send"');
+    expect(sendButton).toContain('onSend={onSend}');
+    expect(sendButton).toContain('disabled={sendDisabled}');
+    expect(SOURCE).not.toContain('aria-label="Send"');
   });
 
   it('keeps the task settings in the box row with the chat composer look', () => {
@@ -86,7 +78,8 @@ describe('HomeComposerControls voice availability', () => {
   it('offers Plan mode and Pipeline in the + menu', () => {
     expect(SOURCE).toContain("dataTestId: 'home-plan-mode-button'");
     expect(SOURCE).toContain("dataTestId: 'home-pipeline-mode-button'");
-    // The Plan mode onboarding highlight points at + now.
-    expect(SOURCE).toContain('<PlanModeHighlight target={plusTriggerRef} />');
+    // The Plan mode suggestion is the composer's tip, which the surface
+    // draws in its top drawer; this box hands it the hint.
+    expect(SOURCE).toContain('onPlanModeHintChange?.(');
   });
 });

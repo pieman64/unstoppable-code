@@ -12,6 +12,7 @@ import {
   delegatedAgentRouteMetadata,
 } from '../DelegatedAgentCard';
 import { hideDelegationTransportParts } from '../../../lib/delegation-display';
+import { ChatLookProvider } from '../../chat-look';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -94,7 +95,10 @@ const pendingSnapshots: readonly AgentDelegationSnapshot[] = [
   { ...card, status: 'pending' },
 ];
 
-function renderDelegatedCard(snapshot: AgentDelegationSnapshot): {
+function renderDelegatedCard(
+  snapshot: AgentDelegationSnapshot,
+  options: { waitingOnParent?: boolean } = {},
+): {
   container: HTMLDivElement;
   root: Root;
 } {
@@ -102,13 +106,16 @@ function renderDelegatedCard(snapshot: AgentDelegationSnapshot): {
   const root = createRoot(container);
   act((): void => {
     root.render(
-      <DelegatedAgentCard
-        snapshot={snapshot}
-        parentHarnessId="codex"
-        description="Review source"
-        prompt="Read source"
-        executionMode="background"
-      />,
+      <ChatLookProvider value="classic">
+        <DelegatedAgentCard
+          snapshot={snapshot}
+          parentHarnessId="codex"
+          description="Review source"
+          prompt="Read source"
+          executionMode="background"
+          waitingOnParent={options.waitingOnParent}
+        />
+      </ChatLookProvider>,
     );
   });
   return { container, root };
@@ -131,18 +138,20 @@ it('memoizes the delegated task card rendered in streaming chat lists', () => {
 
 it('shows depth and immediate parent in the collapsed agent card', () => {
   const html = renderToString(
-    <DelegatedAgentCard
-      snapshot={{
-        ...card,
-        depth: 2,
-        parentDelegationId: 'parent-agent',
-        parentDescription: 'Review API',
-      }}
-      parentHarnessId="codex"
-      description="Review source"
-      prompt="Read source"
-      executionMode="background"
-    />,
+    <ChatLookProvider value="classic">
+      <DelegatedAgentCard
+        snapshot={{
+          ...card,
+          depth: 2,
+          parentDelegationId: 'parent-agent',
+          parentDescription: 'Review API',
+        }}
+        parentHarnessId="codex"
+        description="Review source"
+        prompt="Read source"
+        executionMode="background"
+      />
+    </ChatLookProvider>,
   );
   expect(html).toContain('Depth 2');
   expect(html).toContain('Parent: Review API');
@@ -152,13 +161,15 @@ it.each([{}, { depth: 1 }])(
   'omits the lineage for a direct child of this chat (%o)',
   (lineage) => {
     const html = renderToString(
-      <DelegatedAgentCard
-        snapshot={{ ...card, ...lineage }}
-        parentHarnessId="codex"
-        description="Review source"
-        prompt="Read source"
-        executionMode="background"
-      />,
+      <ChatLookProvider value="classic">
+        <DelegatedAgentCard
+          snapshot={{ ...card, ...lineage }}
+          parentHarnessId="codex"
+          description="Review source"
+          prompt="Read source"
+          executionMode="background"
+        />
+      </ChatLookProvider>,
     );
     expect(html).not.toContain('delegated-agent-lineage');
     expect(html).not.toContain('Depth 1');
@@ -174,18 +185,20 @@ it.each([{}, { depth: 2, parentDelegationId: 'parent-agent' }])(
     const root = createRoot(container);
     act(() =>
       root.render(
-        <DelegatedAgentCard
-          snapshot={{
-            ...card,
-            ...lineage,
-            status: 'running',
-            approvalPending: true,
-          }}
-          parentHarnessId="codex"
-          description="Review source"
-          prompt="Read source"
-          executionMode="background"
-        />,
+        <ChatLookProvider value="classic">
+          <DelegatedAgentCard
+            snapshot={{
+              ...card,
+              ...lineage,
+              status: 'running',
+              approvalPending: true,
+            }}
+            parentHarnessId="codex"
+            description="Review source"
+            prompt="Read source"
+            executionMode="background"
+          />
+        </ChatLookProvider>,
       ),
     );
     const header = container.querySelector<HTMLButtonElement>(
@@ -209,13 +222,15 @@ it('shows the stable settled result index', () => {
   const root = createRoot(container);
   act(() =>
     root.render(
-      <DelegatedAgentCard
-        snapshot={{ ...card, resultIndex: 3 }}
-        parentHarnessId="codex"
-        description="Review source"
-        prompt="Read source"
-        executionMode="background"
-      />,
+      <ChatLookProvider value="classic">
+        <DelegatedAgentCard
+          snapshot={{ ...card, resultIndex: 3 }}
+          parentHarnessId="codex"
+          description="Review source"
+          prompt="Read source"
+          executionMode="background"
+        />
+      </ChatLookProvider>,
     ),
   );
   act(() => {
@@ -286,6 +301,87 @@ it('keeps approval status ahead of the queued status', (): void => {
   ).toBeNull();
   expect(container.querySelector('[aria-label="Thinking"]')).toBeNull();
   act((): void => root.unmount());
+});
+
+describe('waiting for the parent', () => {
+  const running: AgentDelegationSnapshot = {
+    ...card,
+    status: 'running',
+  };
+  const waitingLine = (container: HTMLDivElement): HTMLElement | null =>
+    container.querySelector<HTMLElement>(
+      '[data-testid="delegated-agent-waiting-on-parent"]',
+    );
+
+  it('shows one quiet line while its request waits for the parent', (): void => {
+    const { container, root } = renderDelegatedCard(running, {
+      waitingOnParent: true,
+    });
+    const line = waitingLine(container);
+    expect(line?.textContent).toBe('Waiting for the parent');
+    expect(line?.getAttribute('role')).toBe('status');
+    expect(line?.classList.contains('fg-secondary')).toBe(true);
+    expect(
+      container.querySelectorAll(
+        '[data-testid="delegated-agent-waiting-on-parent"]',
+      ),
+    ).toHaveLength(1);
+    act((): void => root.unmount());
+  });
+
+  it('omits the line when the host does not say the delegate is waiting', (): void => {
+    for (const waitingOnParent of [undefined, false]) {
+      const { container, root } = renderDelegatedCard(running, {
+        waitingOnParent,
+      });
+      expect(waitingLine(container)).toBeNull();
+      act((): void => root.unmount());
+    }
+  });
+
+  it('takes the place of the queued status and yields to approval', (): void => {
+    const queued = renderDelegatedCard(
+      {
+        ...card,
+        status: 'pending',
+        phase: 'queued',
+        queue: { id: 'default', name: 'Default' },
+      },
+      { waitingOnParent: true },
+    );
+    expect(waitingLine(queued.container)).not.toBeNull();
+    expect(
+      queued.container.querySelector(
+        '[data-testid="delegated-agent-queue-status"]',
+      ),
+    ).toBeNull();
+    act((): void => queued.root.unmount());
+    const approval = renderDelegatedCard(
+      { ...running, approvalPending: true },
+      { waitingOnParent: true },
+    );
+    expect(approval.container.textContent).toContain('Awaiting approval');
+    expect(waitingLine(approval.container)).toBeNull();
+    act((): void => approval.root.unmount());
+  });
+
+  it('keeps the settled outcome once the delegate has finished', (): void => {
+    const { container, root } = renderDelegatedCard(
+      { ...card, status: 'completed' },
+      { waitingOnParent: true },
+    );
+    expect(waitingLine(container)).toBeNull();
+    act((): void => root.unmount());
+  });
+
+  it('never renders the request itself', (): void => {
+    const { container, root } = renderDelegatedCard(running, {
+      waitingOnParent: true,
+    });
+    expect(container.textContent).not.toContain('system_instruction');
+    expect(waitingLine(container)?.textContent).toBe('Waiting for the parent');
+    act((): void => root.unmount());
+  });
 });
 
 it('shows capability summary and details in the expanded card', (): void => {
@@ -363,13 +459,15 @@ it.each([
   'renders canonical %s metadata without native resume actions',
   (status) => {
     const html = renderToString(
-      <DelegatedAgentCard
-        snapshot={{ ...card, status }}
-        parentHarnessId="codex"
-        description="Review source"
-        prompt="Read source"
-        executionMode="background"
-      />,
+      <ChatLookProvider value="classic">
+        <DelegatedAgentCard
+          snapshot={{ ...card, status }}
+          parentHarnessId="codex"
+          description="Review source"
+          prompt="Read source"
+          executionMode="background"
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('chat-delegated-agent');
     expect(html).toContain('Historical reviewer');
@@ -407,13 +505,15 @@ it('uses a theme-safe inset ring for the metadata separator', () => {
   const root = createRoot(container);
   act(() =>
     root.render(
-      <DelegatedAgentCard
-        snapshot={card}
-        parentHarnessId="codex"
-        description="Review source"
-        prompt="Read source"
-        executionMode="background"
-      />,
+      <ChatLookProvider value="classic">
+        <DelegatedAgentCard
+          snapshot={card}
+          parentHarnessId="codex"
+          description="Review source"
+          prompt="Read source"
+          executionMode="background"
+        />
+      </ChatLookProvider>,
     ),
   );
   act(() => {
@@ -476,14 +576,16 @@ describe('row Stop', () => {
   ): void {
     act(() =>
       root.render(
-        <DelegatedAgentCard
-          snapshot={snapshot}
-          parentHarnessId="codex"
-          description="Review source"
-          prompt="Read source"
-          executionMode="background"
-          {...props}
-        />,
+        <ChatLookProvider value="classic">
+          <DelegatedAgentCard
+            snapshot={snapshot}
+            parentHarnessId="codex"
+            description="Review source"
+            prompt="Read source"
+            executionMode="background"
+            {...props}
+          />
+        </ChatLookProvider>,
       ),
     );
   }
@@ -652,13 +754,15 @@ describe('stopped status', () => {
     ],
   ])('labels %s', (_name, stop, label) => {
     const html = renderToString(
-      <DelegatedAgentCard
-        snapshot={{ ...card, status: 'cancelled', ...stop }}
-        parentHarnessId="codex"
-        description="Review source"
-        prompt="Read source"
-        executionMode="background"
-      />,
+      <ChatLookProvider value="classic">
+        <DelegatedAgentCard
+          snapshot={{ ...card, status: 'cancelled', ...stop }}
+          parentHarnessId="codex"
+          description="Review source"
+          prompt="Read source"
+          executionMode="background"
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain(label);
     if (label === 'Stopped by parent') expect(html).not.toContain('Cancelled');
@@ -693,14 +797,16 @@ describe('isolated delegate changes', () => {
   ): void {
     act(() =>
       root.render(
-        <DelegatedAgentCard
-          snapshot={snapshot}
-          parentHarnessId="codex"
-          description="Review source"
-          prompt="Read source"
-          executionMode="background"
-          onLoadChanges={onLoadChanges}
-        />,
+        <ChatLookProvider value="classic">
+          <DelegatedAgentCard
+            snapshot={snapshot}
+            parentHarnessId="codex"
+            description="Review source"
+            prompt="Read source"
+            executionMode="background"
+            onLoadChanges={onLoadChanges}
+          />
+        </ChatLookProvider>,
       ),
     );
     expandDelegatedCard(container);
@@ -817,24 +923,26 @@ it('shows a watcher-started run without its hidden payload', () => {
   const root = createRoot(container);
   act(() =>
     root.render(
-      <DelegatedAgentCard
-        snapshot={card}
-        parentHarnessId="codex"
-        description="Review source"
-        prompt={[
-          '<system_instruction>',
-          'Canopy watcher internal event details.',
-          '<canopy_watcher_event>',
-          JSON.stringify({
-            watcherId: 'watcher-1',
-            label: 'Delegate completion',
-            target: { kind: 'managed_delegation', outcome: 'completed' },
-          }),
-          '</canopy_watcher_event>',
-          '</system_instruction>',
-        ].join('\n')}
-        executionMode="background"
-      />,
+      <ChatLookProvider value="classic">
+        <DelegatedAgentCard
+          snapshot={card}
+          parentHarnessId="codex"
+          description="Review source"
+          prompt={[
+            '<system_instruction>',
+            'Canopy watcher internal event details.',
+            '<canopy_watcher_event>',
+            JSON.stringify({
+              watcherId: 'watcher-1',
+              label: 'Delegate completion',
+              target: { kind: 'managed_delegation', outcome: 'completed' },
+            }),
+            '</canopy_watcher_event>',
+            '</system_instruction>',
+          ].join('\n')}
+          executionMode="background"
+        />
+      </ChatLookProvider>,
     ),
   );
   const expand = container.querySelector<HTMLElement>(

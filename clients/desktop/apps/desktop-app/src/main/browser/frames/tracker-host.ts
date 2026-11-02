@@ -109,33 +109,46 @@ export class PageTrackers {
         )
         .catch(() => undefined);
     }
-    try {
-      const main = await this.deps.send(
-        'Page.addScriptToEvaluateOnNewDocument',
-        {
-          // Child documents only: the preload covers top documents.
-          source: mainWorldTrackerSource(this.key, { documents: 'child' }),
-        },
-        sessionId,
-      );
-      const mainId = scriptIdentifier(main);
-      if (mainId === undefined) return false;
-      this.scripts.set(sessionId, [mainId]);
-      const isolated = await this.deps.send(
-        'Page.addScriptToEvaluateOnNewDocument',
-        {
-          source: isolatedTrackerSource(this.key),
-          worldName: TRACKER_WORLD_NAME,
-        },
-        sessionId,
-      );
-      const isolatedId = scriptIdentifier(isolated);
-      if (isolatedId === undefined) return false;
-      this.scripts.set(sessionId, [mainId, isolatedId]);
-      return true;
-    } catch {
+    const register = (params: {
+      source: string;
+      worldName?: string;
+    }): Promise<string | undefined> =>
+      this.deps
+        .send('Page.addScriptToEvaluateOnNewDocument', params, sessionId)
+        .then(scriptIdentifier, () => undefined);
+    // Both are sent in this turn, main world first. A session runs its
+    // commands in order, so every document that gets the witness got the
+    // main-world tracker before it, and neither waits for the other's reply:
+    // at attach, both queue until the first navigation starts the renderer,
+    // ahead of that navigation's child documents.
+    const [mainId, isolatedId] = await Promise.all([
+      // Child documents only: the preload covers top documents.
+      register({
+        source: mainWorldTrackerSource(this.key, { documents: 'child' }),
+      }),
+      register({
+        source: isolatedTrackerSource(this.key),
+        worldName: TRACKER_WORLD_NAME,
+      }),
+    ]);
+    if (mainId === undefined) {
+      // A witness without the main-world tracker vouches for nothing there;
+      // until it is removed, the missing resolver reads as unknown.
+      if (isolatedId !== undefined)
+        await this.deps
+          .send(
+            'Page.removeScriptToEvaluateOnNewDocument',
+            { identifier: isolatedId },
+            sessionId,
+          )
+          .catch(() => undefined);
       return false;
     }
+    this.scripts.set(
+      sessionId,
+      isolatedId === undefined ? [mainId] : [mainId, isolatedId],
+    );
+    return isolatedId !== undefined;
   }
 
   public forgetSession(sessionId: string): void {

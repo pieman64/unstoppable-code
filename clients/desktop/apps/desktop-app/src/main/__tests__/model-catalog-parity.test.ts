@@ -24,7 +24,9 @@ import {
 import { buildModelCatalogOption } from '@canopy/desktop-shared/lib/model-catalog-projection';
 import type { ModelCatalogProvider } from '@canopy/protocol/models';
 
-const mockIsModelBlockedByCurrentPolicy = jest.fn(() => false);
+const mockIsModelBlockedByCurrentPolicy = jest.fn<boolean, [id: string]>(
+  () => false,
+);
 jest.mock('../lib/model-policy-state', () => ({
   isModelBlockedByCurrentPolicy: (id: string): boolean =>
     mockIsModelBlockedByCurrentPolicy(id),
@@ -39,7 +41,9 @@ const DEFAULT_MODEL = 'opus';
  * provider for native rows, per-row provider detection for the mixed
  * AI-Credits group, and the Agent's base-model provider.
  */
-function rendererRowProvider(id: string): ModelCatalogProvider {
+function rendererRowProvider(
+  id: string,
+): Exclude<ModelCatalogProvider, 'unknown'> {
   const definition = resolveAgentModelDefinition(id);
   if (definition) {
     return getProviderForModel(definition.baseModel) ?? 'claude';
@@ -112,6 +116,7 @@ describe('renderer ↔ portal model catalog projection parity (CAN-2540)', () =>
         {
           modelId: 'gateway-only',
           gatewayId: 'provider/gateway-only',
+          family: 'openai',
           recommendedHarness: 'codex',
           gatewayOnly: true,
           contextWindow: 128_000,
@@ -127,7 +132,7 @@ describe('renderer ↔ portal model catalog projection parity (CAN-2540)', () =>
         name: 'Reviewer',
         baseModel: 'opus',
         instructions: '',
-        pluginSelections: { collectionIds: [] },
+        pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         available: true,
@@ -137,7 +142,7 @@ describe('renderer ↔ portal model catalog projection parity (CAN-2540)', () =>
         name: 'Stale',
         baseModel: 'ghost-model-that-does-not-exist',
         instructions: '',
-        pluginSelections: { collectionIds: [] },
+        pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         available: true,

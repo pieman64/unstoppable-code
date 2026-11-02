@@ -3,6 +3,7 @@
 import { type JSX, useState } from 'react';
 import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
 import { PipelineIcon } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 export interface PipelineReadDetailProps {
@@ -84,14 +85,14 @@ export function PipelineReadDetail({
             </div>
           </div>
           {onOpenEditor && (
-            <button
+            <Button
               type="button"
+              size="compact"
               onClick={onOpenEditor}
               data-testid="pipeline-read-detail-open-editor"
-              className="rounded-md border px-3 py-1.5 text-xs font-medium fg-secondary hover:bg-secondary hover:fg-primary"
             >
               Open in editor
-            </button>
+            </Button>
           )}
         </div>
       </header>
@@ -105,15 +106,15 @@ export function PipelineReadDetail({
             Jobs ({definition.jobs.length})
           </h2>
           {definition.canonicalYaml !== undefined && (
-            <button
+            <Button
               type="button"
+              size="compact"
               aria-expanded={showYaml}
               onClick={() => setShowYaml((visible) => !visible)}
               data-testid="pipeline-read-detail-yaml-toggle"
-              className="rounded-md border px-3 py-1.5 text-xs font-medium fg-secondary hover:bg-secondary hover:fg-primary"
             >
               Raw
-            </button>
+            </Button>
           )}
         </div>
 

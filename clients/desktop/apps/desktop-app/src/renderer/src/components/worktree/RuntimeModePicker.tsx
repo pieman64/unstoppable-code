@@ -1,5 +1,6 @@
 import { useId, type JSX } from 'react';
 import { TerminalBorderedIcon, TerminalIcon } from '@canopy/ui-shared/icons';
+import { SECONDARY_SURFACE_SHELL_CLASS } from '@canopy/ui-shared';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
 
 /**
@@ -33,6 +34,11 @@ export interface RuntimeModePickerProps {
   /** Distinguishes the script and hook pickers for tests. */
   testId: string;
   ariaLabel: string;
+  /**
+   * Show the "Runtime" label beside the picker. A settings row that already
+   * names the setting hides it.
+   */
+  showLabel?: boolean;
 }
 
 const OPTIONS: ReadonlyArray<{
@@ -52,10 +58,13 @@ export function RuntimeModePicker({
   disabledReason,
   testId,
   ariaLabel,
+  showLabel = true,
 }: RuntimeModePickerProps): JSX.Element {
   const descriptionId = useId();
   const lockedReason = disabled ? disabledReason : undefined;
-  const showInteractiveDescription = !disabled && mode === 'interactive';
+  // A settings row shows the description itself, beside its label.
+  const showInteractiveDescription =
+    showLabel && !disabled && mode === 'interactive';
 
   const group = (
     <div
@@ -65,7 +74,7 @@ export function RuntimeModePicker({
         lockedReason || showInteractiveDescription ? descriptionId : undefined
       }
       data-testid={testId}
-      className={`inline-flex rounded-lg border bg-secondary p-0.5 ${
+      className={`inline-flex h-7 shrink-0 items-stretch gap-0.5 rounded-full bg-depth p-0.5 ${
         disabled ? 'opacity-80' : ''
       }`}
     >
@@ -85,8 +94,10 @@ export function RuntimeModePicker({
               }
               onChange(value);
             }}
-            className={`focus-ring flex items-center gap-1.5 rounded-md px-2 py-1 text-2xs font-medium transition-colors ${
-              isActive ? 'bg-card fg-primary' : 'fg-secondary hover:fg-primary'
+            className={`focus-ring flex items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors ${
+              isActive
+                ? `fg-primary ${SECONDARY_SURFACE_SHELL_CLASS}`
+                : 'fg-secondary hover:fg-primary'
             } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
           >
             <Icon width="12" height="12" aria-hidden="true" />
@@ -98,9 +109,11 @@ export function RuntimeModePicker({
   );
 
   return (
-    <div className="space-y-1.5 pt-1">
+    <div className={showLabel ? 'space-y-1.5 pt-1' : undefined}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-2xs font-medium fg-secondary">Runtime</span>
+        {showLabel && (
+          <span className="text-2xs font-medium fg-secondary">Runtime</span>
+        )}
         {lockedReason ? (
           <RichHoverTooltip
             surfaceClassName="w-max max-w-56"

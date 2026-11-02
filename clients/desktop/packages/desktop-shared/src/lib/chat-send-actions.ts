@@ -217,6 +217,13 @@ export type CreatedTaskChatReceipt = {
   address: ProjectChatAddress | BotChatAddress;
   taskCreated: boolean;
   chatCreated: boolean;
+  /**
+   * Present exactly when the action supplied `model`: the id stored on the
+   * new chat, a route for an Agent on the default model.
+   */
+  model?: string;
+  /** The selected Agent's id, when the selected model is an Agent. */
+  agentId?: string;
   input?: AcceptedInputReceipt;
 };
 

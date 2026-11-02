@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  Button,
   DialogModal,
   DisplayAvatar,
   PickerMenuOptionCheck,
@@ -391,7 +392,7 @@ export function InviteTeammateDialog({
                     data-testid={`invite-teammate-member-${member.userId}`}
                     disabled={alreadyShared || submitting}
                     onClick={(): void => setSelectedUserId(member.userId)}
-                    className="focus-ring flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-s transition hover:bg-accent-subtle focus-visible:bg-accent-subtle disabled:opacity-50"
+                    className="outline-none flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-s transition-colors hover:bg-accent-subtle focus-visible:bg-accent-subtle disabled:opacity-50"
                   >
                     <DisplayAvatar
                       name={memberLabel(member)}
@@ -490,23 +491,25 @@ export function InviteTeammateDialog({
       </div>
 
       <div className="flex justify-end gap-2 border-t px-5 py-3">
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="compact"
           onClick={onClose}
           disabled={submitting}
-          className="min-h-11 rounded-lg px-4 py-1.5 text-s fg-secondary hover:bg-fg-primary/[0.06] disabled:opacity-50"
         >
           Close
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="primary"
+          size="compact"
           data-testid="invite-teammate-submit"
           disabled={!organizationId || !selectedUserId || submitting}
           onClick={(): void => void submitInvite()}
-          className="min-h-11 rounded-lg bg-accent px-4 py-1.5 text-s font-medium fg-emphasis disabled:opacity-50"
         >
           {submitting ? 'Inviting…' : 'Invite'}
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );

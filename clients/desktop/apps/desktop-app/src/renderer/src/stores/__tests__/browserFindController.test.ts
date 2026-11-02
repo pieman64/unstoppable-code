@@ -23,8 +23,14 @@ interface MockBrowserFindApi extends BrowserFindApi {
 function makeApi(): MockBrowserFindApi {
   let nextId = 1;
   return {
-    findInPage: jest.fn(() => Promise.resolve(nextId++)),
-    stopFindInPage: jest.fn(() => Promise.resolve()),
+    findInPage: jest.fn<
+      Promise<number>,
+      Parameters<BrowserFindApi['findInPage']>
+    >(() => Promise.resolve(nextId++)),
+    stopFindInPage: jest.fn<
+      Promise<void>,
+      Parameters<BrowserFindApi['stopFindInPage']>
+    >(() => Promise.resolve()),
   };
 }
 

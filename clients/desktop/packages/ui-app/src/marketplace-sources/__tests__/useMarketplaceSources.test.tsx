@@ -14,6 +14,7 @@ import type {
 } from '@canopy/app-core/client';
 import {
   resolveMarketplaceSourcesAccess,
+  useMarketplaceSourcesAccess,
   useMarketplaceSources,
   type MarketplaceSourcesAccess,
   type UseMarketplaceSourcesResult,
@@ -24,6 +25,14 @@ import {
   missingInstallState,
   sourcePlugin,
 } from './fixtures';
+
+let mockAccessClient: Parameters<typeof resolveMarketplaceSourcesAccess>[0] = {
+  capabilities: {},
+};
+jest.mock('@canopy/app-state', () => ({
+  ...jest.requireActual<Record<string, unknown>>('@canopy/app-state'),
+  useCanopyClient: (): typeof mockAccessClient => mockAccessClient,
+}));
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -331,7 +340,7 @@ describe('useMarketplaceSources', () => {
       })),
     });
     await render({ client, canInstall: true });
-    let ok: boolean | undefined;
+    let ok: boolean | null | undefined;
     await act(async () => {
       ok = await latest.installPlugin('a', 'p');
     });
@@ -356,7 +365,7 @@ describe('useMarketplaceSources', () => {
       })),
     });
     await render({ client, canInstall: true });
-    let ok: boolean | undefined;
+    let ok: boolean | null | undefined;
     await act(async () => {
       ok = await latest.installPlugin('a', 'p');
     });
@@ -484,7 +493,7 @@ describe('useMarketplaceSources', () => {
       installPlugin: jest.fn(() => pending.promise),
     });
     await render({ client, canInstall: true });
-    let first: Promise<boolean> | undefined;
+    let first: Promise<boolean | null> | undefined;
     act(() => {
       first = latest.installPlugin('a', 'p');
     });
@@ -616,4 +625,24 @@ describe('useMarketplaceSources', () => {
       true,
     );
   });
+});
+
+it('follows a composite source-client replacement without requiring a new provider object (CAN-4267)', async () => {
+  const first = fakeClient();
+  const second = fakeClient();
+  const composite = {
+    capabilities: { marketplaceSources: true },
+    marketplaceSources: first,
+  };
+  mockAccessClient = composite;
+  let selected: MarketplaceSourcesAccess | null = null;
+  function AccessHarness(): null {
+    selected = useMarketplaceSourcesAccess();
+    return null;
+  }
+  await act(async () => root.render(<AccessHarness />));
+  expect(selected).toMatchObject({ client: first });
+  composite.marketplaceSources = second;
+  await act(async () => root.render(<AccessHarness />));
+  expect(selected).toMatchObject({ client: second });
 });

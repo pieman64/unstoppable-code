@@ -1,3 +1,6 @@
+'use client';
+
+import { useContinuousMotion } from '../lib/continuous-motion';
 import type { CSSProperties, JSX } from 'react';
 import { spinnerClassName, type SpinnerTone } from './spinner-tone';
 
@@ -30,6 +33,7 @@ export function CometSpinner({
   ariaLabel,
   dataTestId,
 }: CometSpinnerProps): JSX.Element {
+  const motionRef = useContinuousMotion<HTMLSpanElement>();
   const style: CSSProperties & Record<'--canopy-comet-stroke', string> = {
     width: sizePx,
     height: sizePx,
@@ -37,6 +41,7 @@ export function CometSpinner({
   };
   return (
     <span
+      ref={motionRef}
       className={`relative inline-block shrink-0 ${spinnerClassName(tone, quiet)} ${className}`}
       style={style}
       {...(ariaLabel === undefined

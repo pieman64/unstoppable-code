@@ -8,12 +8,16 @@ import type {
   InstalledItemSnapshot,
   InstalledItemSnapshotEntry,
 } from '@canopy/protocol/installed-items';
-import { InstalledItemStatusPicker } from '../InstalledItemStatusPicker';
+import {
+  InstalledItemStatusIcon,
+  InstalledItemStatusPicker,
+} from '../InstalledItemStatusPicker';
 import {
   InstalledItemStatusControl,
   InstalledItemStatusRow,
 } from '../InstalledItemStatusRow';
 import { UninstallConfirmDialog } from '../UninstallConfirmDialog';
+import { DetailMoreItemsProvider } from '../DetailMoreMenu';
 import {
   DetailActionBar,
   DetailActionSlotsProvider,
@@ -26,8 +30,10 @@ import {
 import { PluginsDiscoveryList } from '../PluginsDiscoveryList';
 import {
   installedEntryStatusStates,
+  PROVIDER_CONNECTED_STATUS_REASON,
   type InstalledItemStatusController,
   type InstalledItemStatusSource,
+  installedItemStatusDescription,
 } from '../../lib/installed-item-status';
 import { useInstalledItemStatuses } from '../../lib/useInstalledItemStatuses';
 import type { UnifiedPluginEntry } from '../../lib/unified-plugin-entry';
@@ -68,6 +74,23 @@ async function flush(): Promise<void> {
     await Promise.resolve();
   });
 }
+
+it.each([false, true])(
+  'keeps the Disabled ring at 8px with a 2px Available-colored stroke (read-only: %s)',
+  (disabled) => {
+    render(<InstalledItemStatusIcon status="disabled" disabled={disabled} />);
+    const ring = document.querySelector<HTMLElement>(
+      '[data-status-dot="disabled"]',
+    );
+    // Inline color must beat the unlayered universal border-color rule in the token stylesheet.
+    expect(ring?.style.borderColor).toBe('var(--fg-tertiary)');
+    expect(ring?.classList.contains('h-2')).toBe(true);
+    expect(ring?.classList.contains('w-2')).toBe(true);
+    expect(ring?.classList.contains('box-border')).toBe(true);
+    expect(ring?.classList.contains('border-2')).toBe(true);
+    expect(ring?.className).not.toContain('bg-');
+  },
+);
 
 afterEach(() => {
   act(() => {
@@ -145,7 +168,7 @@ describe('InstalledItemStatusPicker', () => {
     );
     expect(options.map((option) => option.textContent)).toEqual([
       'ActiveAdded to every new chat',
-      'AvailableYou can call it manually with /',
+      'AvailableType / and the plugin name to use its skills',
       'DisabledInstalled, but turned off',
     ]);
     expect(
@@ -154,6 +177,48 @@ describe('InstalledItemStatusPicker', () => {
     act(() => byTestId('installed-item-status-picker-option-disabled').click());
     expect(onChange).toHaveBeenCalledWith('disabled');
     expect(queryTestId('installed-item-status-picker-menu')).toBeNull();
+  });
+
+  it.each([
+    ['skill', 'Type / and the skill name to use it'],
+    ['plugin', 'Type / and the plugin name to use its skills'],
+    ['collection', 'Loads when you or an agent need it'],
+    ['mcp-server', 'Loads when you or an agent need it'],
+    ['account-mcp', 'Loads when you or an agent need it'],
+    ['mcp-config', 'Loads when you or an agent need it'],
+  ] as const)(
+    'describes Available for a %s by how it is reached',
+    (targetKind, description) => {
+      render(
+        <InstalledItemStatusPicker
+          itemName="Linter"
+          status="active"
+          targetKind={targetKind}
+          onChange={jest.fn()}
+        />,
+      );
+      act(() => byTestId('installed-item-status-picker').click());
+      expect(
+        byTestId('installed-item-status-picker-option-available').textContent,
+      ).toBe(`Available${description}`);
+      expect(
+        byTestId('installed-item-status-picker-option-active').textContent,
+      ).toBe('ActiveAdded to every new chat');
+    },
+  );
+
+  it('keeps non-Available and kind-less descriptions unchanged', () => {
+    expect(installedItemStatusDescription('available')).toBe(
+      'Type / and the plugin name to use its skills',
+    );
+    for (const kind of ['skill', 'collection', undefined] as const) {
+      expect(installedItemStatusDescription('active', kind)).toBe(
+        'Added to every new chat',
+      );
+      expect(installedItemStatusDescription('disabled', kind)).toBe(
+        'Installed, but turned off',
+      );
+    }
   });
 
   it('does not report reselecting the current status', () => {
@@ -573,6 +638,27 @@ describe('InstalledItemStatusControl', () => {
 describe('InstalledItemStatusRow', () => {
   // CAN-4261: the heading, current state and helper text read as one unit,
   // and the state is a clear dot, not a dashed circle.
+  it('describes the current Available status for a standalone skill', () => {
+    render(
+      <InstalledItemStatusRow
+        itemName="Review"
+        state={{
+          kind: 'ready',
+          item: {
+            ...PLUGIN_ITEM,
+            target: { kind: 'skill', sourceId: 'source', skillName: 'review' },
+          },
+          configurations: [],
+        }}
+        pendingKeys={new Set()}
+        onSetStatus={jest.fn()}
+      />,
+    );
+    expect(byTestId('installed-item-status-row-description').textContent).toBe(
+      'Type / and the skill name to use it',
+    );
+  });
+
   it('keeps Status, its control and the helper text on one row', () => {
     render(
       <InstalledItemStatusRow
@@ -591,12 +677,45 @@ describe('InstalledItemStatusRow', () => {
       line.querySelector(
         '[data-testid="installed-item-status-row-description"]',
       )?.textContent,
-    ).toBe('You can call it manually with /');
+    ).toBe('Type / and the plugin name to use its skills');
     const picker = byTestId('installed-item-status-row-picker');
     expect(picker.querySelector('[data-glyph="circle-dashed"]')).toBeNull();
     expect(
       picker.querySelector('[data-status-dot="available"]'),
     ).not.toBeNull();
+  });
+
+  it("lists the host's rows above Uninstall in one ⋯ menu (CAN-4842)", () => {
+    const onUpdate = jest.fn();
+    render(
+      <DetailMoreItemsProvider
+        items={[
+          {
+            id: 'update',
+            label: 'Update',
+            icon: null,
+            testId: 'host-update',
+            onSelect: onUpdate,
+          },
+        ]}
+      >
+        <InstalledItemStatusRow
+          itemName="Linter"
+          state={{ kind: 'ready', item: PLUGIN_ITEM, configurations: [] }}
+          pendingKeys={new Set()}
+          onSetStatus={jest.fn()}
+          onUninstall={jest.fn()}
+        />
+      </DetailMoreItemsProvider>,
+    );
+    act(() => byTestId('installed-item-status-row-more').click());
+    const menu = byTestId('installed-item-status-row-menu');
+    const rows = Array.from(menu.querySelectorAll('[role="menuitem"]')).map(
+      (row) => row.textContent,
+    );
+    expect(rows).toEqual(['Update', 'Uninstall…']);
+    act(() => byTestId('host-update').click());
+    expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
   it('confirms uninstall with the backend description and keeps failures reviewable', async () => {
@@ -724,6 +843,45 @@ describe('UninstallConfirmDialog', () => {
     pending.resolve(null);
     await flush();
   });
+
+  it('keeps the Uninstall labels by default and takes custom ones', async () => {
+    render(
+      <UninstallConfirmDialog
+        title="Uninstall Linter?"
+        message="Removes it."
+        onConfirm={() => Promise.resolve(null)}
+        onCancel={jest.fn()}
+        onUninstalled={jest.fn()}
+      />,
+    );
+    expect(byTestId('uninstall-confirm-dialog-confirm').textContent).toBe(
+      'Uninstall',
+    );
+    for (const root of activeRoots.splice(0)) act(() => root.unmount());
+    document.body.innerHTML = '';
+
+    const pending = deferred<string | null>();
+    render(
+      <UninstallConfirmDialog
+        title={'Delete "Nightly build"?'}
+        message="This cannot be undone."
+        confirmLabel="Delete"
+        busyLabel="Deleting…"
+        onConfirm={() => pending.promise}
+        onCancel={jest.fn()}
+        onUninstalled={jest.fn()}
+      />,
+    );
+    expect(byTestId('uninstall-confirm-dialog-confirm').textContent).toBe(
+      'Delete',
+    );
+    act(() => byTestId('uninstall-confirm-dialog-confirm').click());
+    expect(byTestId('uninstall-confirm-dialog-confirm').textContent).toContain(
+      'Deleting…',
+    );
+    pending.resolve(null);
+    await flush();
+  });
 });
 
 describe('activeItemsSummaryText', () => {
@@ -786,7 +944,7 @@ describe('PluginsDiscoveryList entry status', () => {
     expect(onSetStatus).toHaveBeenCalledWith(PLUGIN_ITEM.target, 'active');
   });
   it('keeps one fixed status slot on every installed row and badges on one line', () => {
-    const installed = entry({ connection: { status: 'unknown' } });
+    const installed = entry({ connection: { status: 'connected' } });
     const pipeline = entry({
       id: 'pipeline:builtin',
       kind: 'pipeline',
@@ -917,5 +1075,185 @@ test('a removed catalog row retains its pending-uninstall controls after restart
   expect(states.pending).toMatchObject({
     kind: 'ready',
     item: { status: null },
+  });
+});
+
+describe('CAN-5272 provider-connected MCP status', () => {
+  type Connection = NonNullable<
+    UnifiedPluginEntry['integration']
+  >['connections'][number];
+  const provider = (
+    name = 'Claude account',
+    state: Connection['state'] = 'installed',
+  ): Connection => ({ serverId: 'gmail', name, binding: 'provider', state });
+  const device: Connection = {
+    serverId: 'gmail-device',
+    name: 'Gmail',
+    binding: 'device',
+    state: 'installed',
+  };
+  const account: Connection = {
+    serverId: 'gmail-account',
+    name: 'Gmail',
+    binding: 'account',
+    state: 'installed',
+    accountConnectionId: 'conn-1',
+  };
+  const gmail = (
+    connections: readonly Connection[],
+    overrides: Partial<UnifiedPluginEntry> = {},
+  ): UnifiedPluginEntry =>
+    entry({
+      id: 'curated-mcp:gmail',
+      kind: 'app',
+      name: 'Gmail',
+      state: 'installed',
+      ref: { type: 'curated-mcp', key: 'gmail' },
+      integration: { curatedKey: 'gmail', connections },
+      ...overrides,
+    });
+  const DEVICE_ITEM: InstalledItemSnapshotEntry = {
+    target: { kind: 'mcp-server', serverId: 'gmail-device' },
+    status: 'available',
+    removable: true,
+    notices: [],
+  };
+  const reads = {
+    ready: { kind: 'ready', snapshot: snapshot() },
+    loading: { kind: 'loading' },
+    error: { kind: 'error', message: 'Desktop is offline.' },
+    unsupported: { kind: 'unsupported', reason: 'Pair a desktop.' },
+  } as const;
+
+  it.each(Object.keys(reads) as (keyof typeof reads)[])(
+    'resolves established provider-only connections as Active under a %s read',
+    (read) => {
+      for (const connections of [
+        [provider()],
+        [provider(), provider('Codex account')],
+      ]) {
+        const states = installedEntryStatusStates(
+          [gmail(connections)],
+          reads[read],
+        );
+        expect(states['curated-mcp:gmail']).toMatchObject({
+          kind: 'fixed',
+          status: 'active',
+        });
+      }
+    },
+  );
+
+  it('keeps the existing resolution without qualifying provider connections', () => {
+    const read = reads.error;
+    for (const candidate of [
+      gmail([]),
+      gmail([provider('Claude account', 'needs-auth')]),
+      gmail([provider('Claude account', 'available')]),
+      gmail([provider(), device]),
+      gmail([provider(), account]),
+      gmail([provider()], {
+        id: 'local-mcp:gmail',
+        ref: { type: 'local-mcp', serverId: 'gmail' },
+      }),
+    ]) {
+      expect(
+        installedEntryStatusStates([candidate], read)[candidate.id],
+      ).toEqual({ kind: 'read-only', reason: 'Desktop is offline.' });
+    }
+  });
+
+  it('lets the device status win when provider and device connections mix', () => {
+    const states = installedEntryStatusStates([gmail([provider(), device])], {
+      kind: 'ready',
+      snapshot: snapshot(DEVICE_ITEM),
+    });
+    expect(states['curated-mcp:gmail']).toMatchObject({
+      kind: 'ready',
+      item: { status: 'available' },
+    });
+  });
+
+  it('keeps ambiguous multiple device bindings unreadable beside a provider connection', () => {
+    const secondDevice: Connection = { ...device, serverId: 'second-device' };
+    const states = installedEntryStatusStates(
+      [gmail([provider(), device, secondDevice])],
+      {
+        kind: 'ready',
+        snapshot: snapshot(DEVICE_ITEM, {
+          ...DEVICE_ITEM,
+          target: { kind: 'mcp-server', serverId: 'second-device' },
+          status: 'active',
+        }),
+      },
+    );
+    expect(states['curated-mcp:gmail']).toMatchObject({ kind: 'read-only' });
+  });
+
+  it('renders a provider-only row as a fixed Active control, not Unavailable', () => {
+    const states = installedEntryStatusStates(
+      [gmail([provider()])],
+      reads.unsupported,
+    );
+    const onSetStatus = jest.fn();
+    render(
+      <InstalledItemStatusControl
+        itemName="Gmail"
+        state={states['curated-mcp:gmail']}
+        pendingKeys={new Set()}
+        onSetStatus={onSetStatus}
+        testId="gmail"
+      />,
+    );
+    expect(queryTestId('gmail-unavailable')).toBeNull();
+    const trigger = byTestId('gmail');
+    expect(trigger.textContent).toContain('Active');
+    expect(trigger.getAttribute('data-status')).toBe('active');
+    expect(trigger.getAttribute('aria-disabled')).toBe('true');
+    expect(trigger.getAttribute('aria-label')).toBe('Status for Gmail: Active');
+    expect(describedBy(trigger)).toBe(PROVIDER_CONNECTED_STATUS_REASON);
+    act(() => trigger.click());
+    act(() => {
+      trigger.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+    });
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(onSetStatus).not.toHaveBeenCalled();
+  });
+
+  it('renders the detail Status row as fixed Active without Uninstall', () => {
+    const onSetStatus = jest.fn();
+    render(
+      <InstalledItemStatusRow
+        itemName="Gmail"
+        state={{
+          kind: 'fixed',
+          status: 'active',
+          reason: PROVIDER_CONNECTED_STATUS_REASON,
+        }}
+        pendingKeys={new Set()}
+        onSetStatus={onSetStatus}
+        onUninstall={jest.fn()}
+      />,
+    );
+    const picker = byTestId('installed-item-status-row-picker');
+    expect(picker.getAttribute('data-status')).toBe('active');
+    expect(picker.getAttribute('aria-disabled')).toBe('true');
+    expect(describedBy(picker)).toBe(PROVIDER_CONNECTED_STATUS_REASON);
+    expect(byTestId('installed-item-status-row-description').textContent).toBe(
+      'Added to every new chat',
+    );
+    expect(queryTestId('installed-item-status-row-reason')).toBeNull();
+    expect(queryTestId('installed-item-status-row-more')).toBeNull();
+    act(() => picker.click());
+    act(() => {
+      for (const key of ['Enter', ' '])
+        picker.dispatchEvent(
+          new KeyboardEvent('keydown', { key, bubbles: true }),
+        );
+    });
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(onSetStatus).not.toHaveBeenCalled();
   });
 });

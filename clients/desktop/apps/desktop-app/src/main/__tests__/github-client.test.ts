@@ -231,6 +231,78 @@ describe('github-client', () => {
     });
   });
 
+  // CAN-4070 rule: the broker's authentication failures, captured before
+  // CAN-4109 routes GitHub reads and writes through core. The renderer offers
+  // Connect GitHub from these messages (CAN-4466), and the PR and push flows
+  // map them to `github_not_authenticated`, so they are contractual.
+  describe('authentication failure goldens (CAN-4109)', () => {
+    async function importClientWithAuthFailureCode(): Promise<{
+      client: typeof GitHubClientModule;
+      githubAuthFailureCode: (error: unknown) => string | undefined;
+    }> {
+      return new Promise((resolve) => {
+        jest.isolateModules(() => {
+          resolve({
+            client:
+              require('../lib/github-client') as typeof GitHubClientModule,
+            githubAuthFailureCode: (
+              require('../lib/github-push-auth-failure') as {
+                githubAuthFailureCode: (error: unknown) => string | undefined;
+              }
+            ).githubAuthFailureCode,
+          });
+        });
+      });
+    }
+
+    async function settle(promise: Promise<unknown>): Promise<unknown> {
+      const outcome = promise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await jest.advanceTimersByTimeAsync(600);
+      return outcome;
+    }
+
+    it('rejects with the no-token message when no credential resolves', async () => {
+      // resolveGitHubToken answers '' when neither a PAT nor gh supplies one.
+      mockedResolveGitHubToken.mockResolvedValue('');
+      const { client, githubAuthFailureCode } =
+        await importClientWithAuthFailureCode();
+
+      const error = await settle(
+        client.getGitHubClient().enqueue(async () => 'unreachable', 'high'),
+      );
+
+      expect(error).toMatchObject({
+        name: 'GitHubBrokerError',
+        code: 'not_authenticated',
+        message:
+          'No GitHub token is available. Configure a PAT or sign in with the GitHub CLI.',
+      });
+      expect(githubAuthFailureCode(error)).toBe('github_not_authenticated');
+    });
+
+    it('rejects with the refreshed-credentials message after a second 401', async () => {
+      const { client, githubAuthFailureCode } =
+        await importClientWithAuthFailureCode();
+
+      const error = await settle(
+        client.getGitHubClient().enqueue(async () => {
+          throw makeApiError(401);
+        }, 'high'),
+      );
+
+      expect(error).toMatchObject({
+        name: 'GitHubBrokerError',
+        code: 'not_authenticated',
+        status: 401,
+        message: 'GitHub authentication failed after refreshing credentials.',
+      });
+      expect(githubAuthFailureCode(error)).toBe('github_not_authenticated');
+    });
+  });
+
   describe('high-priority items inserted before normal-priority items', () => {
     it('processes high-priority items before normal-priority items', async () => {
       const { getGitHubClient } = await importFreshModule();

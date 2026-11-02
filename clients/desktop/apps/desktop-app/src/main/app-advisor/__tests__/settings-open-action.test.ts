@@ -2,7 +2,10 @@ import type { ScriptActionsSnapshot } from '@canopy/protocol/script-actions';
 import type * as AgentActionsModule from '@canopy/agent-actions';
 import type * as DesktopHostModule from '../../agent-actions/desktop-host';
 import type * as AccountStoreModule from '../../lib/canopy-cloud-account-store';
-import type { CanopyCloudAccountReadResult } from '../../lib/canopy-cloud-account-store';
+import type {
+  CanopyCloudAccountEntry,
+  CanopyCloudAccountReadResult,
+} from '../../lib/canopy-cloud-account-store';
 
 jest.mock('../../services/script-actions-host', () => ({
   scriptActionsService: {
@@ -96,11 +99,23 @@ import type { SendableBrowserWindow } from '../../lib/window-send';
 import { createAppAdvisorToolRuntime } from '../runtime';
 import { executeAppAdvisorTool } from '../tool-executor';
 
-const entry = {
+const entry: CanopyCloudAccountEntry = {
   apiKey: 'key',
   capabilities: [],
-  account: { id: 'acct-1', email: 'user@example.com' },
-  organizations: [{ id: 'org-member', name: 'Member org' }],
+  account: {
+    id: 'acct-1',
+    name: 'User',
+    email: 'user@example.com',
+    role: 'DEVELOPER',
+  },
+  organizations: [
+    {
+      id: 'org-member',
+      name: 'Member org',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+  ],
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };

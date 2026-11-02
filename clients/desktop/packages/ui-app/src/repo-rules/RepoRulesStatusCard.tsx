@@ -12,6 +12,12 @@ export interface RepoRulesStatusCardProps {
   readonly onReview: () => void;
   /** Change it to reload the saved setting, e.g. after the review closes. */
   readonly refreshToken?: number;
+  /**
+   * `card` frames the setting on its own. `row` is one settings row, for a
+   * page that groups its rows in one box: label and status leading, the
+   * actions trailing.
+   */
+  readonly surface?: 'card' | 'row';
 }
 
 type CardState =
@@ -59,6 +65,7 @@ function RepoRulesStatusCardBody({
   workspaceId,
   onReview,
   refreshToken = 0,
+  surface = 'card',
 }: RepoRulesStatusCardProps): JSX.Element {
   const client = useCanopyClient();
   const [state, setState] = useState<CardState>({ kind: 'loading' });
@@ -109,6 +116,54 @@ function RepoRulesStatusCardBody({
   };
 
   const enabled = state.kind === 'ready' && state.status.enabled;
+  const statusLine =
+    state.kind === 'loading'
+      ? 'Checking the saved setting…'
+      : state.kind === 'error'
+        ? "Couldn't load the saved setting."
+        : statusSentence(state.status);
+  if (surface === 'row') {
+    return (
+      <div
+        className="flex flex-col gap-3"
+        data-testid="project-settings-repo-rules"
+      >
+        <div className="flex min-h-10 items-center justify-between gap-6">
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="text-s font-medium fg-primary">Cursor rules</div>
+            <p
+              className="text-xs text-pretty fg-secondary"
+              role="status"
+              data-testid="project-settings-repo-rules-status"
+            >
+              {statusLine}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {enabled ? (
+              <Button
+                size="compact"
+                variant="ghost"
+                disabled={turningOff}
+                onClick={turnOff}
+                data-testid="project-settings-repo-rules-turn-off"
+              >
+                Turn off
+              </Button>
+            ) : null}
+            <Button
+              size="compact"
+              onClick={onReview}
+              data-testid="project-settings-repo-rules-review"
+            >
+              Review rules
+            </Button>
+          </div>
+        </div>
+        {error ? <ErrorBanner error={error} /> : null}
+      </div>
+    );
+  }
   return (
     <div
       className="rounded-lg border p-4"
@@ -120,11 +175,7 @@ function RepoRulesStatusCardBody({
         role="status"
         data-testid="project-settings-repo-rules-status"
       >
-        {state.kind === 'loading'
-          ? 'Checking the saved setting…'
-          : state.kind === 'error'
-            ? "Couldn't load the saved setting."
-            : statusSentence(state.status)}
+        {statusLine}
       </p>
       {error ? <ErrorBanner className="mt-3" error={error} /> : null}
       <div className="mt-3 flex flex-wrap gap-2">

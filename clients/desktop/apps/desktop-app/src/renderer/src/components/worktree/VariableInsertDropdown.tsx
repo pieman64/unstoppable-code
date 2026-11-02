@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { DropdownMenuSurface } from '@canopy/ui-shared';
+import { focusMenuRow } from '@canopy/ui-shared/lib';
 import { Tooltip } from '@canopy/ui-shared';
 import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -30,7 +31,6 @@ export function VariableInsertDropdown({
   ownerDocument,
 }: VariableInsertDropdownProps): JSX.Element {
   const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
   const menuId = useId();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -50,7 +50,6 @@ export function VariableInsertDropdown({
 
     const normalizedIndex =
       ((index % variables.length) + variables.length) % variables.length;
-    setActiveIndex(normalizedIndex);
     itemRefs.current[normalizedIndex]?.focus();
   };
 
@@ -59,9 +58,7 @@ export function VariableInsertDropdown({
       return;
     }
 
-    const nextIndex = indexToFocus ?? 0;
-    setActiveIndex(nextIndex);
-    focusIndexOnOpenRef.current = nextIndex;
+    focusIndexOnOpenRef.current = indexToFocus ?? 0;
     setOpen(true);
   };
 
@@ -92,7 +89,8 @@ export function VariableInsertDropdown({
         if (indexToFocus === null) {
           return;
         }
-        itemRefs.current[indexToFocus]?.focus();
+        const item = itemRefs.current[indexToFocus];
+        if (item) focusMenuRow(item);
         focusIndexOnOpenRef.current = null;
       });
     }
@@ -180,7 +178,6 @@ export function VariableInsertDropdown({
                   type="button"
                   role="menuitem"
                   aria-disabled={variable.disabled ? true : undefined}
-                  onFocus={() => setActiveIndex(index)}
                   onClick={(event) => {
                     if (variable.disabled) {
                       event.preventDefault();
@@ -216,9 +213,9 @@ export function VariableInsertDropdown({
                       buttonRef.current?.focus();
                     }
                   }}
-                  className={`focus-ring block w-full rounded-md px-3 py-2 text-left hover:bg-accent-subtle/40 ${
-                    activeIndex === index ? 'bg-accent-subtle/40' : ''
-                  } ${variable.disabled ? 'cursor-not-allowed opacity-50 hover:bg-transparent' : ''}`}
+                  // Keyboard focus is the row's fill, like hover; a click
+                  // open leaves the first row unpainted (`focusMenuRow`).
+                  className={`block w-full rounded-md px-3 py-2 text-left outline-none hover:bg-accent-subtle/40 focus-visible:bg-accent-subtle/40 ${variable.disabled ? 'cursor-not-allowed opacity-50 hover:bg-transparent' : ''}`}
                 >
                   <span className="block font-mono text-xs fg-primary">
                     {variable.name}

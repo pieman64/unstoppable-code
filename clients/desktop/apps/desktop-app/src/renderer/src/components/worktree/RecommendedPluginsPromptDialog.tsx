@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import type {
   RecommendedPluginApplyResult,
@@ -386,8 +387,8 @@ export function RecommendedPluginsPromptDialog({
                   {requirement.status !== 'available' &&
                     (requirement.kind === 'mcp' ||
                       requirement.kind === 'connector') && (
-                      <button
-                        type="button"
+                      <Button
+                        size="compact"
                         data-testid={`recommended-plugin-requirement-setup-${requirement.id}`}
                         onClick={() =>
                           openPluginsNavigation({
@@ -398,10 +399,9 @@ export function RecommendedPluginsPromptDialog({
                                 : `provider-connector:${requirement.displayName}`,
                           })
                         }
-                        className="focus-ring shrink-0 rounded-md border px-2 py-1 text-2xs fg-primary hover:bg-secondary"
                       >
                         Set up
-                      </button>
+                      </Button>
                     )}
                 </li>
               ))}
@@ -412,13 +412,12 @@ export function RecommendedPluginsPromptDialog({
                 requirement.kind !== 'mcp' &&
                 requirement.kind !== 'connector',
             ) && (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => openSettings('environment')}
-                className="focus-ring rounded-md border px-2.5 py-1.5 text-xs fg-primary hover:bg-secondary"
               >
                 Open environment setup
-              </button>
+              </Button>
             )}
             <p className="text-2xs fg-secondary">
               Missing setup does not block applying recommendations.
@@ -437,25 +436,24 @@ export function RecommendedPluginsPromptDialog({
                   : `${checkedCount} of ${actionable.length} selected`}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={handleAskMeLater}
               disabled={applying}
-              className="focus-ring rounded-lg px-3 py-1.5 text-xs fg-secondary hover:fg-primary disabled:opacity-60"
             >
               Ask me later
-            </button>
+            </Button>
             {actionable.length > 0 && (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={(): void => {
                   void runApply({ skip: noneChecked });
                 }}
                 disabled={applying}
-                className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
               >
                 {primaryLabel}
-              </button>
+              </Button>
             )}
           </div>
         </div>

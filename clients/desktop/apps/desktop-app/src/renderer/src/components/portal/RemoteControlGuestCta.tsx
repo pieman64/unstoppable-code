@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import { MODAL_BUTTON_PRIMARY } from '@/components/portal/portal-button-styles';
+import { Button } from '@/components/shared/Button';
 import { GUEST_WORK_PRESERVED } from '@/lib/guest-cta-copy';
 
 interface RemoteControlGuestCtaProps {
@@ -45,14 +45,14 @@ export function RemoteControlGuestCta({
         Create a free account to unlock {REMOTE_CONTROL_LABEL}.{' '}
         {GUEST_WORK_PRESERVED}
       </p>
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="compact"
         onClick={onCreateAccount}
         data-testid="canopy-portal-guest-cta-button"
-        className={`shrink-0 ${MODAL_BUTTON_PRIMARY}`}
       >
         {freeAccess ? 'Sign in' : 'Start free trial'}
-      </button>
+      </Button>
     </div>
   );
 }

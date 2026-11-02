@@ -34,4 +34,20 @@ describe('normalizePreferences — native provider accounts (CAN-4200)', () => {
       }).nativeProviderAccounts,
     ).toEqual({ codex: { accountKey: 'b@example.com' } });
   });
+  test('preserves the account-bound subscription recovery watermark only when valid', () => {
+    expect(
+      normalizePreferences({
+        nativeProviderAccounts: {
+          claude: { accountKey: 'a@example.com', subscriptionRestoredAt: 123 },
+          codex: {
+            accountKey: 'b@example.com',
+            subscriptionRestoredAt: Number.NaN,
+          },
+        },
+      }).nativeProviderAccounts,
+    ).toEqual({
+      claude: { accountKey: 'a@example.com', subscriptionRestoredAt: 123 },
+      codex: { accountKey: 'b@example.com' },
+    });
+  });
 });

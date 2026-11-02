@@ -44,7 +44,7 @@ export async function readStoredPipelineContext(
   executionContext?: string,
 ): Promise<ResourceContextInput['resource']> {
   if (localId.startsWith('project--'))
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const account = await readCanopyCloudAccountWithStatus();
   const accountId =
     account.status === 'ok' ? account.entry?.account?.id : undefined;
@@ -55,7 +55,7 @@ export async function readStoredPipelineContext(
     return { owner: { type: 'user', id: accountId ?? 'local', name: null } };
   }
   if (!accountId || binding.accountId !== accountId) {
-    throw new Error('Pipeline unavailable (access-removed)');
+    throw new Error('Workflow unavailable (access-removed)');
   }
   // An install receipt is provenance, never a grant: reauthorize the remote id.
   const detail = await (executionContext !== undefined
@@ -67,11 +67,13 @@ export async function readStoredPipelineContext(
 export async function assertStoredPipelineContext(
   localId: string,
   projectId?: string,
+  executionContext?: string,
 ): Promise<void> {
   if (!pipelineResourceContextEnabled()) return;
   await assertPipelineContext(
-    await readStoredPipelineContext(localId),
+    await readStoredPipelineContext(localId, executionContext),
     projectId,
+    executionContext,
   );
 }
 
@@ -83,10 +85,10 @@ async function assertPipelineInstallAccount(
   try {
     await assertPipelineContextSnapshot(snapshot);
   } catch {
-    throw new Error('Pipeline unavailable (access-removed)');
+    throw new Error('Workflow unavailable (access-removed)');
   }
   if (account.status !== 'ok' || account.entry?.account?.id !== accountId)
-    throw new Error('Pipeline unavailable (access-removed)');
+    throw new Error('Workflow unavailable (access-removed)');
 }
 
 export async function recordSharedPipelineInstall(
@@ -99,7 +101,7 @@ export async function recordSharedPipelineInstall(
   const account = await readCanopyCloudAccountWithStatus();
   const accountId =
     account.status === 'ok' ? account.entry?.account?.id : undefined;
-  if (!accountId) throw new Error('Pipeline unavailable (access-removed)');
+  if (!accountId) throw new Error('Workflow unavailable (access-removed)');
   await recordSharedPipelineInstallInContext(
     detail,
     localId,
@@ -119,7 +121,7 @@ async function recordSharedPipelineInstallInContext(
   await assertPipelineContext({ owner: detail.owner });
   const owner = classifyResourceOwner(detail.owner, { strict: true });
   if (owner === 'unknown')
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const store = createResourceInstallReceiptsStore(accountId);
   const receipt: InstallReceipt = {
     family: 'pipelines',
@@ -152,7 +154,7 @@ export async function copyPipelineInstallOrigin(
   const id = account.status === 'ok' ? account.entry?.account?.id : undefined;
   const shared = parseSharedPipelineLocalId(source);
   if (shared) {
-    if (!id) throw new Error('Pipeline unavailable (access-removed)');
+    if (!id) throw new Error('Workflow unavailable (access-removed)');
     const detail = await getSharedPipeline(shared.remoteId);
     await recordSharedPipelineInstallInContext(
       detail,
@@ -213,7 +215,7 @@ export async function assertPipelineShareOrigin(
 ): Promise<void> {
   if (!pipelineResourceContextEnabled()) return;
   if (localId.startsWith('project--'))
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const shared = parseSharedPipelineLocalId(localId);
   let resource: ResourceContextInput['resource'];
   if (shared) {
@@ -248,7 +250,7 @@ export async function assertPipelineShareOrigin(
     },
   });
   if (!decision.allow)
-    throw new Error(`Pipeline unavailable (${decision.reason})`);
+    throw new Error(`Workflow unavailable (${decision.reason})`);
 }
 
 async function readSystemPipelineShareSource(
@@ -258,12 +260,12 @@ async function readSystemPipelineShareSource(
   if (source === 'curated') {
     const pipeline = await getManagedCuratedPipeline(id);
     if (!pipeline.info.filePath)
-      throw new Error('Pipeline unavailable (unknown-provenance)');
+      throw new Error('Workflow unavailable (unknown-provenance)');
     return readFile(pipeline.info.filePath, 'utf8');
   }
   const stored = getStoredPipelineBySource('bundled', id);
   if (!stored.success || !stored.data?.rawContent)
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   return stored.data.rawContent;
 }
 
@@ -289,7 +291,7 @@ export async function readPipelineShareSource(
         filePath: source.pipelineFilePath,
       });
       if (resolved.projectId !== source.projectId)
-        throw new Error('Pipeline unavailable (unknown-provenance)');
+        throw new Error('Workflow unavailable (unknown-provenance)');
     }
     const file = path.resolve(source.pipelineFilePath);
     const root = getProjectPipelinesDirCandidates(cwd).find((candidate) =>
@@ -300,14 +302,14 @@ export async function readPipelineShareSource(
       !root ||
       !['.yaml', '.yml'].includes(path.extname(file).toLowerCase())
     )
-      throw new Error('Pipeline unavailable (unknown-provenance)');
+      throw new Error('Workflow unavailable (unknown-provenance)');
     const [realCwd, realRoot, realFile] = await Promise.all([
       realpath(cwd),
       realpath(root),
       realpath(file),
     ]);
     if (!isPathInside(realCwd, realRoot) || !isPathInside(realRoot, realFile))
-      throw new Error('Pipeline unavailable (unknown-provenance)');
+      throw new Error('Workflow unavailable (unknown-provenance)');
     return readFile(realFile, 'utf8');
   }
   if (
@@ -317,13 +319,13 @@ export async function readPipelineShareSource(
     return readSystemPipelineShareSource(source.source, source.id);
   const localId = typeof source === 'string' ? source : source.id;
   if (localId.startsWith('project--'))
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const shared = parseSharedPipelineLocalId(localId);
   if (!shared) validateId(localId, 'sourcePipelineId');
   if (shared) return (await getSharedPipeline(shared.remoteId)).rawPipeline;
   const stored = getPipelineText(localId);
   if (!stored.success || !stored.data)
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   return stored.data;
 }
 
@@ -331,7 +333,7 @@ export async function readPipelineShareSource(
 export async function readProjectPipelineOwner(
   projectId: string | undefined,
 ): Promise<{ type: 'organization' | 'user'; id: string; name: null }> {
-  if (!projectId) throw new Error('Pipeline unavailable (unknown-provenance)');
+  if (!projectId) throw new Error('Workflow unavailable (unknown-provenance)');
   validateId(projectId, 'projectId');
   // Defer workspace persistence's heavy Portal graph, which reaches pipeline handlers.
   const { readWorkspaceConfigDetailed } =
@@ -339,7 +341,7 @@ export async function readProjectPipelineOwner(
   const { config, authority, ownerMalformed } =
     await readWorkspaceConfigDetailed(projectId);
   if (authority !== 'ok' || ownerMalformed)
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   return config.owner?.type === 'organization'
     ? { type: 'organization', id: config.owner.organizationId, name: null }
     : { type: 'user', id: 'local', name: null };
@@ -358,7 +360,7 @@ export async function assertPipelineShareSourceContext(
     if (!parseSharedPipelineLocalId(source.id))
       validateId(source.id, 'sourcePipelineId');
     if (source.id.startsWith('project--'))
-      throw new Error('Pipeline unavailable (unknown-provenance)');
+      throw new Error('Workflow unavailable (unknown-provenance)');
     await assertStoredPipelineContext(source.id);
     if (destinationOwner !== undefined)
       await assertPipelineShareOrigin(source.id, destinationOwner);
@@ -375,7 +377,7 @@ export async function assertPipelineShareSourceContext(
     filePath: source.pipelineFilePath,
   });
   if (projectId !== source.projectId)
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   if (owner.type === 'organization' && destinationOwner !== undefined) {
     const destination = classifyResourceOwner(destinationOwner, {
       strict: true,
@@ -384,7 +386,7 @@ export async function assertPipelineShareSourceContext(
       typeof destination !== 'object' ||
       destination.organizationId !== owner.id
     )
-      throw new Error('Pipeline unavailable (context-mismatch)');
+      throw new Error('Workflow unavailable (context-mismatch)');
   }
 }
 
@@ -409,12 +411,12 @@ export async function assertNewPipelineShareContent(
         (organizationId) => organizationId !== destination.organizationId,
       )
     ) {
-      throw new Error('Pipeline unavailable (context-mismatch)');
+      throw new Error('Workflow unavailable (context-mismatch)');
     }
   }
   const stored = listPipelines();
   if (!stored.success || !stored.data)
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const pipeline = parsePipelineText(rawPipeline);
   // A changed serialization is not evidence of authorship. Existing definitions
   // must be shared through a trusted locator, including Advisor snapshots.
@@ -425,7 +427,7 @@ export async function assertNewPipelineShareContent(
         ('id' in pipeline && row.id === pipeline.id),
     )
   )
-    throw new Error('Pipeline unavailable (context-mismatch)');
+    throw new Error('Workflow unavailable (context-mismatch)');
   // Catalog names and receipt hashes may predate edits. Compare the current
   // stored bytes too before treating source-less content as a new definition.
   for (const row of stored.data) {
@@ -437,7 +439,7 @@ export async function assertNewPipelineShareContent(
         : {}),
     });
     if (content === rawPipeline)
-      throw new Error('Pipeline unavailable (context-mismatch)');
+      throw new Error('Workflow unavailable (context-mismatch)');
   }
   // Project files have no install receipt or stored-catalog row. Search every
   // host-known project root, including secondary repositories and worktrees.
@@ -453,12 +455,12 @@ export async function assertNewPipelineShareContent(
         row.name === pipeline.name ||
         ('id' in pipeline && row.id === pipeline.id)
       )
-        throw new Error('Pipeline unavailable (context-mismatch)');
+        throw new Error('Workflow unavailable (context-mismatch)');
       if (
         row.filePath &&
         (await readFile(row.filePath, 'utf8')) === rawPipeline
       )
-        throw new Error('Pipeline unavailable (context-mismatch)');
+        throw new Error('Workflow unavailable (context-mismatch)');
     }
   }
 }
@@ -498,10 +500,10 @@ export async function authorizeProjectPipelineRequest(
   // Defer the sidebar's heavy workspace-persistence/Portal graph until project lookup.
   const { readAllSidebarItems } = await import('../lib/sidebar-items');
   const cwd = await realpath(request.cwd).catch(() => undefined);
-  if (!cwd) throw new Error('Pipeline unavailable (unknown-provenance)');
+  if (!cwd) throw new Error('Workflow unavailable (unknown-provenance)');
   const file = await realpath(request.filePath).catch(() => undefined);
   if (!file || !isPathInside(cwd, file))
-    throw new Error('Pipeline unavailable (unsupported-target)');
+    throw new Error('Workflow unavailable (unsupported-target)');
   const projectIds = new Set<string>();
   for (const item of (await readAllSidebarItems()).items) {
     const roots = await projectPipelineRoots(item);
@@ -513,18 +515,18 @@ export async function authorizeProjectPipelineRequest(
     }
   }
   if (projectIds.size !== 1)
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const projectId = Array.from(projectIds)[0];
-  if (!projectId) throw new Error('Pipeline unavailable (unknown-provenance)');
+  if (!projectId) throw new Error('Workflow unavailable (unknown-provenance)');
   const owner = await readProjectPipelineOwner(projectId);
   try {
     await assertPipelineContext({ owner }, undefined, executionContext);
   } catch (error) {
     if (
       error instanceof Error &&
-      error.message === 'Pipeline unavailable (unsupported-target)'
+      error.message === 'Workflow unavailable (unsupported-target)'
     )
-      throw new Error('Pipeline unavailable (context-mismatch)');
+      throw new Error('Workflow unavailable (context-mismatch)');
     throw error;
   }
   return { projectId, owner };

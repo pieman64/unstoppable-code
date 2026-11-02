@@ -27,6 +27,8 @@ import {
   CAPABILITY_PACKAGE_ACTION_TYPES,
   capabilityPackageDispatchJsonSchema,
   experimentDispatchJsonSchema,
+  PIPELINES_ACTION_TYPES,
+  pipelinesDispatchJsonSchema,
   SETTINGS_ACTION_TYPES,
   settingsDispatchJsonSchema,
   environmentDispatchJsonSchema,
@@ -40,6 +42,8 @@ import {
   setupWatchersDescription,
   START_SPLIT_AGENT_JSON_SCHEMA,
   startSplitAgentInputSchema,
+  TRANSCRIPT_READ_ACTION_TYPES,
+  transcriptReadDispatchJsonSchema,
   type AgentActionBrand,
   type AgentActionFamilyJsonSchema,
   type AgentChatCreatePlacement,
@@ -475,11 +479,6 @@ const pipelineExecutionStatusSchema = z.enum([
   'failure',
   'cancelled',
 ]);
-const watcherPipelineTerminalStatusSchema = z.enum([
-  'success',
-  'failure',
-  'cancelled',
-]);
 
 const skillExtraMetadataSchema = z.record(z.string(), z.string());
 const resourceShareScopeSchema = z.enum(['team', 'organization']);
@@ -746,35 +745,6 @@ const scopedWorktreeActionBaseSchema = z.discriminatedUnion('type', [
     type: z.literal('pipeline.set_enabled'),
     pipelineId: z.string().min(1),
     enabled: z.boolean(),
-  }),
-  z.object({
-    type: z.literal('pipeline.run'),
-    pipelineId: z.string(),
-    inputs: z.record(z.string(), z.string()).optional(),
-    runMode: pipelineRunModeSchema.optional(),
-    planPath: z.string().optional(),
-    taskPath: z.string().optional(),
-    planId: z.string().optional(),
-    repoId: z.string().optional(),
-    watchers: z
-      .array(
-        z.object({
-          label: z.string().optional(),
-          target: z
-            .object({
-              executionId: z.string().optional(),
-              pipelineId: z.string().optional(),
-              terminalStatuses: z
-                .array(watcherPipelineTerminalStatusSchema)
-                .optional(),
-            })
-            .optional(),
-          followUpInstruction: z.string().optional(),
-          allowDuplicate: z.boolean().optional(),
-        }),
-      )
-      .max(10)
-      .optional(),
   }),
   z.object({
     type: z.literal('pipeline.execution_list_for_worktree'),
@@ -1852,7 +1822,6 @@ export const DESKTOP_LEGACY_ACTION_JSON_ENUM_ORDER = [
   'pipeline.update_shared',
   'pipeline.delete_shared',
   'pipeline.set_enabled',
-  'pipeline.run',
   'pipeline.execution_list_for_worktree',
   'pipeline.execution_list',
   'pipeline.execution_get',
@@ -1933,7 +1902,7 @@ export const DESKTOP_LEGACY_DISPATCH_JSON_SCHEMA: AgentActionFamilyJsonSchema =
 /**
  * DispatchAction as the desktop surface advertises it, for the static tool
  * lists: the same package composition the surface engine runs over the
- * environment and desktop-legacy families.
+ * environment, transcript-read and desktop-legacy families.
  */
 function desktopDispatchActionJsonSchema(
   placements: readonly AgentChatCreatePlacement[],
@@ -1944,6 +1913,10 @@ function desktopDispatchActionJsonSchema(
       {
         types: ENVIRONMENT_ACTION_TYPES,
         dispatchJsonSchema: environmentDispatchJsonSchema(placements),
+      },
+      {
+        types: TRANSCRIPT_READ_ACTION_TYPES,
+        dispatchJsonSchema: transcriptReadDispatchJsonSchema,
       },
       {
         types: PROJECT_ACTION_TYPES,
@@ -1971,6 +1944,10 @@ function desktopDispatchActionJsonSchema(
         dispatchJsonSchema: capabilityPackageDispatchJsonSchema,
       },
       {
+        types: PIPELINES_ACTION_TYPES,
+        dispatchJsonSchema: pipelinesDispatchJsonSchema,
+      },
+      {
         types: BROWSER_ACTION_TYPES,
         dispatchJsonSchema: browserDispatchJsonSchema,
       },
@@ -1981,12 +1958,14 @@ function desktopDispatchActionJsonSchema(
     ],
     [
       ...ENVIRONMENT_ACTION_TYPES,
+      ...TRANSCRIPT_READ_ACTION_TYPES,
       ...PROJECT_ACTION_TYPES,
       ...BOT_ACTION_TYPES,
       ...INSTALLED_ITEM_ACTION_TYPES,
       ...EXPERIMENT_ACTION_TYPES,
       ...SETTINGS_ACTION_TYPES,
       ...CAPABILITY_PACKAGE_ACTION_TYPES,
+      ...PIPELINES_ACTION_TYPES,
       ...BROWSER_ACTION_TYPES,
       ...DESKTOP_LEGACY_ACTION_JSON_ENUM_ORDER,
     ],

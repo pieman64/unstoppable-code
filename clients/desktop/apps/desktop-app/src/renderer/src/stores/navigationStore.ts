@@ -1,5 +1,8 @@
 import { create, type StateCreator } from 'zustand';
-import { normalizeMarketplaceNavigation } from '@canopy/ui-shared/lib';
+import {
+  normalizeMarketplaceNavigation,
+  marketplaceManagementDestination,
+} from '@canopy/ui-shared/lib';
 import type { SettingsSection } from '@/components/settings/SettingsNav';
 import type { SettingsRoute } from '@canopy/protocol/settings';
 import {
@@ -15,6 +18,7 @@ import {
 // re-exports the alias from this module for backwards-compatible imports.
 import { NAVIGATION_PAGE_MAP } from '@canopy/desktop-shared/types';
 import { localAgentEntryId } from '@canopy/protocol/unified-entry';
+import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from './featureFlagsStore';
 import type {
@@ -27,7 +31,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { PrState } from '@canopy/desktop-shared/types/github';
 import type { ProjectStartPage } from '@canopy/protocol/start-page';
-import type { MarketplaceTypeTabId } from '@canopy/ui-shared/lib';
+import type {
+  MarketplaceTypeTabId,
+  PipelineFilterValues,
+} from '@canopy/ui-shared/lib';
 import {
   NAVIGATION_FALLBACK_PAGE,
   isPageAvailable,
@@ -50,6 +57,12 @@ import {
   type WorkflowEditTargetCommon,
 } from '@/lib/workflows/edit-target';
 import { useWorkflowsViewStore } from './workflowsViewStore';
+import { useWorkspaceContextStore } from './workspaceContextStore';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import {
+  createSidebarSectionRootRegistry,
+  returnSidebarSectionToRoot,
+} from '@canopy/ui-app/sidebar';
 
 export type NavigationPage = SharedNavigationPage;
 
@@ -76,12 +89,43 @@ export interface OpenAccountOrganizationSettingsOptions extends HostedSettingsLo
 
 export type CapabilityMarketplaceTabId = MarketplaceTypeTabId;
 
+export interface MarketplaceSourceReturnContext {
+  readonly sourceId: string;
+  readonly filters: {
+    readonly query: string;
+    readonly category: string | null;
+    readonly author: string | null;
+  };
+}
+
 /** Discovery state restored after viewing a capability on another page. */
 export interface CapabilityMarketplaceReturnTarget {
   query: string;
   tab: CapabilityMarketplaceTabId;
   category?: string;
-  focusSection?: 'shared-by-me';
+  focusSection?: 'installed' | 'shared-by-me';
+  installedStatusFilter?: InstalledItemStatus;
+  installedExpanded?: boolean;
+  pipelineFilters?: PipelineFilterValues;
+  source?: MarketplaceSourceReturnContext;
+}
+
+/** In-memory Customize history; completed dialogs and mutations are never replayed. */
+export interface PluginsPresentationLocation {
+  readonly scrollTop?: number;
+  readonly browseScrollTop?: number;
+  readonly detailReturnScrollTop?: number;
+  readonly categoryQuery?: string;
+  readonly browse: CapabilityMarketplaceReturnTarget;
+  readonly source?: MarketplaceSourceReturnContext;
+  readonly entry?: {
+    readonly id: string;
+    readonly stack: string[];
+    readonly fromInstalled: boolean;
+    readonly skillFilePath?: string;
+    readonly pipelineReturn?: PipelineReturnTarget;
+    readonly browseReturn?: CapabilityMarketplaceReturnTarget;
+  };
 }
 
 /** Source-aware pipeline locator used by related-item return paths (CAN-2382). */
@@ -243,6 +287,24 @@ export interface ChatTurnFocusDeepLink {
   nonce: number;
 }
 
+/**
+ * Request to focus a freshly forked container once it is in the foreground
+ * (CAN-4782). Keyed to the destination and the page that renders it, and
+ * consumed by that destination's provenance notice only after focus lands.
+ *
+ * `nonce` comes from a counter that never resets, so a repeat request for the
+ * same copy stays distinguishable after an earlier one was consumed, and an
+ * old consumer cannot clear a newer request. `accountEpoch` drops a request
+ * that outlived an account change.
+ */
+export interface ForkedContainerFocusRequest {
+  projectId: string;
+  worktreeId: string;
+  page: 'main' | 'chat';
+  accountEpoch: number;
+  nonce: number;
+}
+
 export type SkillViewerDeepLink =
   | {
       kind: 'installed';
@@ -277,6 +339,14 @@ export type EntryDetailReturnTarget =
 
 export type PluginsNavigationIntent =
   | { kind: 'browse-apps' }
+  | { kind: 'restore'; location: PluginsPresentationLocation }
+  | { kind: 'marketplace-source'; target: 'list' }
+  | {
+      kind: 'marketplace-source';
+      target: 'detail';
+      sourceId: string;
+      pluginKey?: string;
+    }
   | ({ kind: 'marketplace-browse' } & CapabilityMarketplaceReturnTarget)
   /**
    * Open the unfiltered discovery view — the surface that browses and
@@ -302,10 +372,10 @@ export type PluginsNavigationIntent =
       kind: 'management';
       section: PluginsManagementSectionId;
       /**
-       * Opens Installed filtered to Active items (Settings' Active summary,
-       * CAN-4255) until CAN-4261 brings the full filter controls.
+       * Opens Installed with the Customize status filter applied (Settings'
+       * Active summary opens it on Active, CAN-4255; any status, CAN-4838).
        */
-      statusFilter?: 'active';
+      statusFilter?: InstalledItemStatus;
     }
   /**
    * Open a unified discovery entry's detail surface by entry id (e.g.
@@ -316,6 +386,11 @@ export type PluginsNavigationIntent =
   | {
       kind: 'entry-detail';
       entryId: string;
+      mcpTarget?: {
+        serverName: string;
+        provider?: 'claude' | 'codex';
+        requestId: string;
+      };
       /**
        * `edit` opens a local agent's editor over its detail (CAN-4266); other
        * entries treat it as `view`.
@@ -482,6 +557,14 @@ interface NavigationState {
    * current entry instead of pushing a new one. Nothing else reads it.
    */
   workflowEditReplaceCount: number;
+  /**
+   * Counts {@link NavigationState.returnToSectionRoot} calls that entered a
+   * root fresh. The page host keys the open page on it, so a section
+   * returning to its root from a deeper page mounts fresh, the same as
+   * entering it from another page. A page already on its root resets in
+   * place instead (see {@link desktopSectionRoot}).
+   */
+  sectionRootRequest: number;
   /** Curated catalog key consumed after the lazy Pipelines page mounts. */
   pendingCuratedPipelinePreviewKey?: string;
   pendingPipelineDispatch?: PipelineDispatchDeepLink;
@@ -518,6 +601,13 @@ interface NavigationState {
    * owns `chatId` (see {@link ChatTurnFocusDeepLink}).
    */
   pendingChatTurnFocus?: ChatTurnFocusDeepLink;
+  /** See {@link ForkedContainerFocusRequest}. */
+  pendingForkedContainerFocus?: ForkedContainerFocusRequest;
+  /**
+   * Open fork dialogs. A pending fork focus request waits while any is open,
+   * so the dialog's own dismissal cannot take focus back from the copy.
+   */
+  forkedContainerFocusHolds: number;
   /**
    * Transient deep-link target for a skill's detail viewer on the Plugins
    * page's Skills tab. Window CustomEvents cannot reach that surface reliably —
@@ -532,6 +622,8 @@ interface NavigationState {
   pendingSkillViewer?: SkillViewerDeepLink;
   /** Durable destination consumed after the lazy Plugins page mounts. */
   pendingPluginsNavigation?: PluginsNavigationIntent;
+  pluginsPresentation?: PluginsPresentationLocation;
+  setPluginsPresentation: (location: PluginsPresentationLocation) => void;
   /**
    * The shared resource in the install review (CAN-3710): an OS share deep
    * link (`<scheme>://share/...`, CAN-2361) pushed from the main process after
@@ -614,6 +706,14 @@ interface NavigationState {
    */
   pendingArchiveWorktree?: WorktreeActionRequest;
   navigate: (page: NavigationPage | 'agents') => void;
+  /**
+   * The current sidebar row's click (2026-10-22): returns `page`'s section to
+   * its root, the same as entering it fresh, so a detail or an editor closes.
+   * On the root itself a registered page only resets its tab and scroll, with
+   * no remount (QA, 2026-10-23). Unlike {@link NavigationState.navigate} it asks the navigation guard even
+   * when the page stays the same, so unsaved changes are confirmed first.
+   */
+  returnToSectionRoot: (page: NavigationPage) => void;
   setPluginsBrowseSectionId: (sectionId: string | null) => void;
   openSettings: (
     section?: SettingsSection,
@@ -718,11 +818,18 @@ interface NavigationState {
   consumeAutomationSharedPipelineReview: () => void;
   openChatTurn: (link: Omit<ChatTurnFocusDeepLink, 'nonce'>) => void;
   consumeChatTurnFocus: () => void;
+  requestForkedContainerFocus: (
+    request: Omit<ForkedContainerFocusRequest, 'nonce'>,
+  ) => void;
+  /** Clears the request only while `nonce` is still the pending one. */
+  consumeForkedContainerFocus: (nonce: number) => void;
+  /** Hold pending fork focus while a fork dialog is open; returns the release. */
+  holdForkedContainerFocus: () => () => void;
   openSkillViewer: (link: SkillViewerDeepLink) => void;
   consumeSkillViewer: () => void;
   openPluginsTab: (tab: PluginsTabDeepLink) => void;
   openPluginsNavigation: (intent: PluginsNavigationIntent) => void;
-  consumePluginsNavigation: () => void;
+  consumePluginsNavigation: (expected?: PluginsNavigationIntent) => void;
   /**
    * Opens the install review on `link`. While a review is writing, the
    * request is held and applied once the write settles.
@@ -798,6 +905,13 @@ export type NavigationGuard = (
 
 let navigationGuard: NavigationGuard | null = null;
 
+/**
+ * The open page's root state for {@link NavigationState.returnToSectionRoot}:
+ * a page that registers resets in place when it is already on its root,
+ * instead of remounting.
+ */
+export const desktopSectionRoot = createSidebarSectionRootRegistry();
+
 /** Depth of {@link runWithoutNavigationGuard} calls in progress. */
 let navigationGuardBypassDepth = 0;
 
@@ -870,10 +984,24 @@ function runGuardedNavigation(
   );
 }
 
+let pluginsNavigationGeneration = 0;
+let pluginsPresentationContextGeneration = 0;
+
+/** Identifies the account/workspace context that owns private Customize history. */
+export function getPluginsPresentationContextGeneration(): number {
+  return pluginsPresentationContextGeneration;
+}
+
 /** The store update that opens Plugins on `intent`. */
 function pluginsNavigationUpdate(
   intent: PluginsNavigationIntent,
 ): Partial<NavigationState> {
+  if (intent.kind === 'management') {
+    intent = {
+      kind: 'marketplace-browse',
+      ...marketplaceManagementDestination(intent.section, intent.statusFilter),
+    };
+  }
   if (intent.kind === 'marketplace-browse') {
     const normalized = normalizeMarketplaceNavigation(
       intent.tab,
@@ -882,13 +1010,30 @@ function pluginsNavigationUpdate(
     intent = {
       kind: 'marketplace-browse',
       query: intent.query,
+      ...(intent.installedStatusFilter
+        ? { installedStatusFilter: intent.installedStatusFilter }
+        : {}),
+      ...(intent.installedExpanded !== undefined
+        ? { installedExpanded: intent.installedExpanded }
+        : {}),
+      ...(intent.pipelineFilters
+        ? { pipelineFilters: intent.pipelineFilters }
+        : {}),
       ...(intent.category ? { category: intent.category } : {}),
       ...normalized,
+      ...(normalized.tab === 'sources' && intent.source
+        ? { source: intent.source }
+        : {}),
     };
   }
   return {
     activePage: 'plugins',
+    settingsOpen: false,
     pluginsBrowseSectionId: null,
+    // History captures synchronously before the page consumes this intent.
+    ...(intent.kind === 'restore'
+      ? { pluginsPresentation: intent.location }
+      : {}),
     pendingPluginsNavigation: intent,
     pendingAutomationReveal: undefined,
   };
@@ -934,12 +1079,14 @@ function isAgentNavigation(
 }
 
 let agentNavigationGeneration = 0;
+let forkedContainerFocusNonce = 0;
 
 export const useNavigationStore = create<NavigationState>(
   withWorkflowEditClearing((set, get) => ({
     // Overview is a Labs page experiment, off by default (CAN-3678).
     activePage: 'home',
     workflowEditReplaceCount: 0,
+    sectionRootRequest: 0,
     pluginsBrowseSectionId: null,
     homeComposerFocusRequest: 0,
     settingsOpen: false,
@@ -964,6 +1111,7 @@ export const useNavigationStore = create<NavigationState>(
     addWorkspaceInitialRepoUrl: null,
     addWorkspaceInitialProjectType: null,
     customizeSidebarRequested: false,
+    forkedContainerFocusHolds: 0,
     navigate: (requestedPage): void => {
       if (requestedPage === 'agents') {
         if (
@@ -1026,6 +1174,12 @@ export const useNavigationStore = create<NavigationState>(
             page === 'workflows-library'
               ? state.pendingAutomationReveal
               : undefined,
+          // Leaving the copy's page cancels its focus request, so a later
+          // visit does not take focus unexpectedly.
+          pendingForkedContainerFocus:
+            state.pendingForkedContainerFocus?.page === page
+              ? state.pendingForkedContainerFocus
+              : undefined,
           pluginsBrowseSectionId:
             page === 'plugins' ? state.pluginsBrowseSectionId : null,
           homeComposerFocusRequest:
@@ -1052,6 +1206,34 @@ export const useNavigationStore = create<NavigationState>(
         return;
       }
       runGuardedNavigation(requestedPage, apply);
+    },
+    returnToSectionRoot: (page): void => {
+      runGuardedNavigation(page, (): void => {
+        const state = get();
+        // Only the open page's own root can reset in place: another tab of
+        // the section, an editor or a category is deeper.
+        const onRoot =
+          state.activePage === page &&
+          state.workflowEdit === undefined &&
+          state.pluginsBrowseSectionId === null;
+        returnSidebarSectionToRoot({
+          section: onRoot ? desktopSectionRoot.current() : undefined,
+          enterRoot: (): void => {
+            // The guard has answered: entering `page` must not ask again.
+            runWithoutNavigationGuard((): void => {
+              get().navigate(page);
+            });
+            set((current) => ({
+              workflowEdit: undefined,
+              pluginsBrowseSectionId: null,
+              // The remounted Customize page restores this presentation;
+              // its home has none (CAN-4267).
+              ...(page === 'plugins' ? { pluginsPresentation: undefined } : {}),
+              sectionRootRequest: current.sectionRootRequest + 1,
+            }));
+          },
+        });
+      });
     },
     setPluginsBrowseSectionId: (sectionId): void => {
       set({ pluginsBrowseSectionId: sectionId });
@@ -1092,6 +1274,11 @@ export const useNavigationStore = create<NavigationState>(
       // Desktop keeps Labs in its own section, over main's Labs snapshot.
       if (route.scope === 'account' && route.page === 'labs') {
         get().openSettings('experiments', { scrollTo: options?.scrollTo });
+        return;
+      }
+      // Desktop sets chat detail on this computer, under Display.
+      if (route.scope === 'account' && route.page === 'appearance') {
+        get().openSettings('display', { scrollTo: options?.scrollTo });
         return;
       }
       const state = get();
@@ -1483,6 +1670,35 @@ export const useNavigationStore = create<NavigationState>(
     consumeChatTurnFocus: (): void => {
       set({ pendingChatTurnFocus: undefined });
     },
+    requestForkedContainerFocus: (request): void => {
+      forkedContainerFocusNonce += 1;
+      set({
+        pendingForkedContainerFocus: {
+          ...request,
+          nonce: forkedContainerFocusNonce,
+        },
+      });
+    },
+    consumeForkedContainerFocus: (nonce): void => {
+      if (get().pendingForkedContainerFocus?.nonce !== nonce) return;
+      set({ pendingForkedContainerFocus: undefined });
+    },
+    holdForkedContainerFocus: (): (() => void) => {
+      set((state) => ({
+        forkedContainerFocusHolds: state.forkedContainerFocusHolds + 1,
+      }));
+      let released = false;
+      return (): void => {
+        if (released) return;
+        released = true;
+        set((state) => ({
+          forkedContainerFocusHolds: Math.max(
+            0,
+            state.forkedContainerFocusHolds - 1,
+          ),
+        }));
+      };
+    },
     openSkillViewer: (link): void => {
       runGuardedNavigation('plugins', (): void => {
         set({
@@ -1496,19 +1712,21 @@ export const useNavigationStore = create<NavigationState>(
     consumeSkillViewer: (): void => {
       set({ pendingSkillViewer: undefined });
     },
+    setPluginsPresentation: (location): void => {
+      if (
+        JSON.stringify(get().pluginsPresentation) !== JSON.stringify(location)
+      )
+        set({ pluginsPresentation: location });
+    },
     openPluginsTab: (tab): void => {
-      const section: PluginsManagementSectionId =
-        tab === 'marketplace' ? 'marketplaces' : tab;
-      runGuardedNavigation('plugins', (): void => {
-        set({
-          activePage: 'plugins',
-          pluginsBrowseSectionId: null,
-          pendingPluginsNavigation: { kind: 'management', section },
-          pendingAutomationReveal: undefined,
-        });
+      get().openPluginsNavigation({
+        kind: 'marketplace-browse',
+        ...marketplaceManagementDestination(tab),
       });
     },
     openPluginsNavigation: (intent): void => {
+      pluginsNavigationGeneration += 1;
+      const requestGeneration = pluginsNavigationGeneration;
       const agentIntent = isAgentNavigation(intent);
       const generation = agentNavigationGeneration;
       if (
@@ -1520,11 +1738,13 @@ export const useNavigationStore = create<NavigationState>(
       )
         return;
       runGuardedNavigation('plugins', (): void => {
+        if (requestGeneration !== pluginsNavigationGeneration) return;
         if (agentIntent && generation !== agentNavigationGeneration) return;
         set(pluginsNavigationUpdate(intent));
       });
     },
-    consumePluginsNavigation: (): void => {
+    consumePluginsNavigation: (expected): void => {
+      if (expected && get().pendingPluginsNavigation !== expected) return;
       set({ pendingPluginsNavigation: undefined });
     },
     shareInstallBusy: false,
@@ -1820,3 +2040,105 @@ export function selectSettingsDestination(state: {
     ? null
     : { kind: 'local', section: state.settingsActiveSection };
 }
+
+// Legacy browser events remain accepted even before Customize's lazy chunk loads.
+function invalidatePluginsPresentation(): void {
+  pluginsNavigationGeneration += 1;
+  pluginsPresentationContextGeneration += 1;
+  useNavigationStore.setState({
+    pendingPluginsNavigation: undefined,
+    pluginsPresentation: undefined,
+  });
+}
+
+useWorkspaceContextStore.subscribe((state, previous): void => {
+  if (
+    state.appliedGeneration !== previous.appliedGeneration ||
+    state.accountEpoch !== previous.accountEpoch
+  )
+    invalidatePluginsPresentation();
+});
+
+/**
+ * Module-level window listeners need a real event target. Tests and other
+ * non-renderer hosts may stub `window` without one; importing this store
+ * must not throw there.
+ */
+function windowAcceptsListeners(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.addEventListener === 'function'
+  );
+}
+
+if (windowAcceptsListeners()) {
+  window.addEventListener(
+    CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
+    invalidatePluginsPresentation,
+  );
+  window.addEventListener('canopy:plugins-open-tab', (event: Event): void => {
+    if (!(event instanceof CustomEvent)) return;
+    const detail: unknown = event.detail;
+    const tab: unknown =
+      typeof detail === 'object' && detail !== null
+        ? Reflect.get(detail, 'tab')
+        : undefined;
+    if (
+      typeof tab !== 'string' ||
+      !['marketplace', 'skills', 'mcp', 'collections', 'bundles'].includes(tab)
+    )
+      return;
+    useNavigationStore.getState().openPluginsNavigation({
+      kind: 'marketplace-browse',
+      ...marketplaceManagementDestination(tab),
+    });
+  });
+  window.addEventListener(
+    'canopy:plugins-open-management',
+    (event: Event): void => {
+      if (!(event instanceof CustomEvent)) return;
+      const detail: unknown = event.detail;
+      const section: unknown =
+        typeof detail === 'object' && detail !== null
+          ? Reflect.get(detail, 'section')
+          : undefined;
+      useNavigationStore.getState().openPluginsNavigation({
+        kind: 'marketplace-browse',
+        ...marketplaceManagementDestination(section),
+      });
+    },
+  );
+}
+
+if (windowAcceptsListeners()) {
+  window.addEventListener('canopy:mcp-open-browse', (): void => {
+    useNavigationStore
+      .getState()
+      .openPluginsNavigation({ kind: 'browse-apps' });
+  });
+  window.addEventListener('canopy:plugin-open-detail', (event: Event): void => {
+    if (!(event instanceof CustomEvent)) return;
+    const detail: unknown = event.detail;
+    if (typeof detail !== 'object' || detail === null) return;
+    const sourceId: unknown = Reflect.get(detail, 'marketplaceId');
+    const pluginKey: unknown = Reflect.get(detail, 'pluginName');
+    if (typeof sourceId !== 'string' || typeof pluginKey !== 'string') return;
+    useNavigationStore.getState().openPluginsNavigation({
+      kind: 'marketplace-source',
+      target: 'detail',
+      sourceId,
+      pluginKey,
+    });
+  });
+}
+
+useNavigationStore.subscribe((state, previous): void => {
+  if (
+    state.activePage !== previous.activePage &&
+    state.activePage !== 'plugins'
+  ) {
+    pluginsNavigationGeneration += 1;
+    if (state.pendingPluginsNavigation)
+      useNavigationStore.setState({ pendingPluginsNavigation: undefined });
+  }
+});

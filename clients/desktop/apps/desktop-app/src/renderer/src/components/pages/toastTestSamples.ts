@@ -12,7 +12,7 @@ export interface ToastSample {
 }
 
 const LONG_MESSAGE =
-  'The pipeline stopped at the review step because two required checks did not report back in time. Open the run to see which checks are missing and start them again.';
+  'The workflow stopped at the review step because two required checks did not report back in time. Open the run to see which checks are missing and start them again.';
 
 export const TOAST_TEST_SAMPLES: readonly ToastSample[] = [
   { id: 'info', label: 'Info', type: 'info', message: 'Layout saved' },

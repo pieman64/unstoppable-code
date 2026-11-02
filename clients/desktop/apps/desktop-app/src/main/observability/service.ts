@@ -5,12 +5,18 @@ import {
 import type { OpenCodeUpdateDiagnostics } from '@canopy/desktop-shared/node/opencode/update-diagnostics';
 import type { DelegationMetric } from '../agents/delegation/metrics';
 import {
+  isClaudeChildFrame,
+  isRootAgentContinuationEvent,
+  isTerminalChatEventData,
+} from '../lib/chat-turn-audit';
+import {
   isAgentDelegationTranscript,
   type AgentDelegationTranscript,
   type AgentDelegationTranscriptItem,
 } from '@canopy/protocol/delegation';
 import { randomUUID } from 'node:crypto';
 import { parseCursorReportedUsage } from '@canopy/agent-transcript/lib/cursor-usage';
+import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
 import { isCursorHarnessEnabled } from '../cursor/feature-flag';
 import { readCursorAccountUsage } from '../cursor/account-usage';
 import { isCopilotHarnessEnabled } from '../copilot/feature-flag';
@@ -20,7 +26,6 @@ import { getFeatureFlagService } from '../feature-flags';
 import { isAssistantPatch } from '@canopy/agent-transcript/lib/assistant-snapshot';
 import { Buffer } from 'node:buffer';
 import {
-  appendFile,
   mkdir,
   readFile,
   readdir,
@@ -32,6 +37,7 @@ import {
 import { dirname, join } from 'node:path';
 import { BRAND } from '@canopy/brand/current';
 import type { CodeGraphBuildTimings } from '@canopy/desktop-shared/types/code-graph';
+import type { BrowserDownloadSource } from '@canopy/desktop-shared/types/browser';
 import type { CodeGraphReadFailure } from '@canopy/desktop-shared/types/code-graph-tools';
 import { sanitizeAppDiagnosticRecord } from './app-diagnostic-privacy';
 import type {
@@ -39,12 +45,21 @@ import type {
   RemotePushSummary,
 } from '@canopy/desktop-shared/types/observability';
 import {
+  TURN_DISPATCH_PHASES,
+  type TurnDispatchPhase,
+} from '../lib/turn-dispatch-timing';
+import {
   CHAT_LABEL,
   CHAT_UNIT_LABEL,
+  ORCHESTRATOR_LABEL,
   WORKTREE_LABEL,
   WORKTREE_UNIT_LABEL,
 } from '@canopy/protocol';
 import { CANOPY_AUTH_FAILURE_EVENT_TYPE } from '@canopy/protocol/auth-recovery';
+import {
+  ChatTurnFailureEvidence,
+  type ChatTurnFailure,
+} from './chat-turn-failure';
 import { CANOPY_ACCOUNT_PROXY_SWITCH_EVENT_TYPE } from '@canopy/agent-transcript/types';
 import {
   labelForPlanKey,
@@ -77,6 +92,7 @@ import {
   type AgentProviderType,
   type AssistantMode,
   type AgentTranscriptInjectedPrompt,
+  type ChatInternalRow,
   type ChatModel,
   type AgentUsageOverview,
   type ApprovalCheck,
@@ -119,6 +135,7 @@ import {
   type OrgProjectLinksUnknownReason,
   type OrgProjectConversionErrorCode,
 } from '@canopy/desktop-shared/types';
+import { isInternalChatRequest } from '@canopy/desktop-shared/lib/internal-chat-row';
 import { getCodeReviewTargetSync } from '../lib/code-review-registry';
 import { getPlanExploreTargetSync } from '../lib/plan-explore-registry';
 import type { SharedContainerType } from '@canopy/protocol/shared-containers';
@@ -138,6 +155,7 @@ import {
   succeedDesktopOperation,
 } from '@canopy/desktop-instrumentation/electron/main';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { getLastDailyCreditGrantStatus } from '../lib/daily-credit-grant-telemetry';
 import { bucketEntries } from '@canopy/desktop-shared/lib/auditTimeBucket';
 import {
   getToolCategory,
@@ -159,6 +177,11 @@ import {
   parseClaudeUsageDetails,
   type ClaudeUsageDetails,
 } from '@canopy/desktop-shared/lib/provider-usage-parsers';
+import {
+  classifySubscriptionUsage,
+  subscriptionUsageLimits,
+} from '@canopy/desktop-shared/lib/subscription-usage';
+import { recordNativeSubscriptionRestored } from '../agents/native-account-change';
 import type { AccountProxyUsageSnapshot } from '@canopy/desktop-shared/types/account-proxy';
 import { AccountProxyQuotaUsage } from './account-proxy-quota-usage';
 import type * as AccountProxyUsagePorts from '../account-proxy/service';
@@ -235,8 +258,10 @@ import { normalizeAuditEntry, parseObservedCost } from './audit-entry-parser';
 import {
   mayPruneAuditDayFile,
   notifyAuditEntryEnqueued,
+  sameAuditDayFileIdentity,
   type AuditEntryEnqueueCause,
 } from './audit-stream-hooks';
+import { appendJsonlLines } from './jsonl-append';
 import {
   computeCountsTimeseries,
   computeDistributionTimeseries,
@@ -273,7 +298,10 @@ import {
   getNestedRootPipelineExecutionId,
   type PipelineExecutionLineage,
 } from '../pipelines/root-pipeline-execution';
-import { purgePersistedWorktreeObservabilityData } from './worktree-cleanup';
+import {
+  purgePersistedWorktreeObservabilityData,
+  purgePersistedWorktreeSessionDiagnostics,
+} from './worktree-cleanup';
 import type {
   ProviderAccountIdentity,
   ProviderBillingAccountKind,
@@ -297,6 +325,24 @@ const RECENT_ENTRY_LIMIT = 200;
 const MAX_RETAINED_PIPELINE_ENTRIES = 256;
 const MAX_CODEX_SUBAGENT_CHAT_STATES = 128;
 const MAX_CODEX_PIPELINE_SUBAGENT_TRACKERS = 128;
+
+// Typed as a full record so a new provider must be listed before it compiles.
+const TRACKED_PIPELINE_PROVIDERS: Readonly<Record<AgentProviderType, true>> = {
+  claude: true,
+  codex: true,
+  ollama: true,
+  cursor: true,
+  opencode: true,
+  copilot: true,
+};
+
+// Persisted execution state can carry a provider from a newer app version.
+function isTrackedPipelineProvider(value: string): value is AgentProviderType {
+  return Object.prototype.hasOwnProperty.call(
+    TRACKED_PIPELINE_PROVIDERS,
+    value,
+  );
+}
 
 function isOrganizationGatewayModel(model: string | undefined): boolean {
   if (!model) return false;
@@ -364,9 +410,54 @@ function claudeUsageRefreshDelayMs(maxWait: boolean): number {
 
 function claudePatchedWindowKey(
   accountKey: string | null,
-  limitId: string,
+  snapshot: ProviderRateLimitSnapshot,
 ): string {
-  return JSON.stringify([accountKey, limitId]);
+  return JSON.stringify([accountKey, claudeSubscriptionWindowKey(snapshot)]);
+}
+
+function claudeSubscriptionWindowKey(
+  snapshot: ProviderRateLimitSnapshot,
+): string | undefined {
+  const { limitId, scope } = snapshot;
+  if (limitId === 'session') return 'five_hour';
+  if (limitId === 'weekly_all') return 'seven_day';
+  if (
+    limitId?.startsWith('weekly_scoped:') ||
+    limitId?.startsWith('seven_day_')
+  ) {
+    const model = (scope?.model?.id ?? scope?.model?.displayName)
+      ?.trim()
+      .toLowerCase();
+    const family = model?.match(/sonnet|opus|haiku|fable/)?.[0] ?? model;
+    const surface = scope?.surface?.trim().toLowerCase().replace(/[ _-]/g, '');
+    if (family || surface)
+      return JSON.stringify(['seven_day', family ?? null, surface ?? null]);
+  }
+  return limitId;
+}
+
+/** Unknown resets remain required; known elapsed windows cannot block a fresh read. */
+function claudeSubscriptionWindowPending(
+  snapshot: ProviderRateLimitSnapshot,
+  nowMs: number,
+): boolean {
+  const windows = [snapshot.primary, snapshot.secondary].filter(
+    (window) => window !== undefined,
+  );
+  return (
+    windows.length === 0 ||
+    windows.some((window) => {
+      const value = window.resetsAt;
+      if (value === undefined) return true;
+      const reset =
+        typeof value === 'number'
+          ? value < 1_000_000_000_000
+            ? value * 1000
+            : value
+          : Date.parse(value);
+      return !Number.isFinite(reset) || reset > nowMs;
+    })
+  );
 }
 
 interface AuditContextWorkspaceResolvers {
@@ -420,6 +511,14 @@ const NON_ERROR_CLOUD_OAUTH_OUTCOMES = new Set<CloudOAuthDiagnosticOutcome>([
   'timeout',
 ]);
 
+interface PendingAutonomousTurn {
+  id: string;
+  startedAtMs: number;
+  userMessageId?: string;
+  /** No longer current at receipt; its frames may still be arriving. */
+  ended: boolean;
+}
+
 interface OpenAuditEntry {
   entry: AgentAuditEntry;
   providerAccountIdentity: ProviderAccountIdentity | null;
@@ -456,6 +555,10 @@ interface OpenAuditEntry {
   codexSubagentUsageTracker?: CodexSubagentUsageTracker;
   /** The last `builtin/agent-loop` iteration seen for a pipeline step. */
   agentLoopIteration?: number;
+  /** Chat turns only: who started the turn, sent as `trigger_type`. */
+  turnTrigger?: UsageInitiationSource;
+  /** Chat turns only: events that may explain why the turn failed. */
+  failureEvidence?: ChatTurnFailureEvidence;
 }
 
 /** Per-turn identities only; never retain another copy of streamed content. */
@@ -585,6 +688,9 @@ export interface TranscriptSeedOptions {
   injectedPrompts?: AgentTranscriptInjectedPrompt[];
   userMessageId?: string;
   steering?: { startsTurn: boolean; rootUserMessageId?: string };
+  /** Local observability markers; intentionally not part of shared API DTOs. */
+  internalRow?: ChatInternalRow;
+  managedDelegationDeliveryId?: string;
 }
 
 export interface ChatTranscriptStartOptions {
@@ -607,6 +713,9 @@ export interface ChatTranscriptStartOptions {
    * the turn it rates. Absent for surfaces with no renderer message id.
    */
   userMessageId?: string;
+  /** Local observability markers; intentionally not part of shared API DTOs. */
+  internalRow?: ChatInternalRow;
+  managedDelegationDeliveryId?: string;
   /** Resolved cowork workspace id used to build standalone-chat navigation. */
   standaloneProjectId?: string;
   assistantMode?: AssistantMode;
@@ -788,7 +897,8 @@ export interface AppDiagnosticRecord {
     /**
      * The chat transcript planner rewrote a chat's whole committed history
      * because an upsert patched or a removal deleted committed rows, or a
-     * commit mixed committed and active rows. Rate-limited to one record per
+     * commit mixed committed and active rows, materialized a run, or replaced
+     * existing committed row data. Rate-limited to one record per
      * chat per minute with a suppressed count. Counts, bytes and block type
      * names only; the chat key is an opaque digest. Never message ids, text,
      * paths, or workspace, worktree or chat ids.
@@ -866,6 +976,13 @@ export interface AppDiagnosticRecord {
      */
     | 'shared_container_org_reconcile_deferred'
     /**
+     * A new organization copy of a shared container failed unexpectedly
+     * (CAN-4781). Carries the stable refusal code when there is one and the
+     * error names, codes and frames of the failure, its cause and every
+     * member of an incomplete rollback; never a message, path or id.
+     */
+    | 'shared_container_org_fork_failed'
+    /**
      * The org-enforced telemetry policy could not be read (locked keychain,
      * unavailable `safeStorage`, corrupt account file). The read fails through
      * to "nothing enforced", so the entire CLIENT-side half of enforcement is
@@ -919,7 +1036,13 @@ export interface AppDiagnosticRecord {
      * - `aged_out_unverified: <count>`: their receipts could not be read;
      * - `rejected: <count>`: the Ledger rejected their projection;
      * - `journal_replaced: 1`: a summary file that did not parse was
-     *   replaced, with whatever it held.
+     *   replaced, with whatever it held;
+     * - `journal_unreadable: 1` / `journal_future_version: 1`: a write was
+     *   skipped to keep a file it could not read or a newer app wrote;
+     * - `journal_entries_dropped: <count>`: a write dropped history entries
+     *   that did not validate;
+     * - `provenance_stripped: <count>` (or `_unverified`): a write kept
+     *   snapshots unpublishable because their provenance did not validate.
      * Counts only, never workspace, worktree or snapshot ids, or summary
      * text.
      */
@@ -971,8 +1094,16 @@ export interface AppDiagnosticRecord {
      * `chat_storage_diagnostic` session event instead.
      */
     | 'chat_storage_activity_summary'
+    /**
+     * The startup sweep reaped a hosted CLI that a crashed run left running
+     * and that no chat owned (`reason` `previous_run`). PID and uptime only;
+     * chat-owned survivors are session diagnostics instead.
+     */
+    | 'claude_process_untracked'
     | 'before_quit'
     | 'runtime_cleanup_stage';
+  /** `claude_process_untracked` only: the reaped process. */
+  claudeProcessId?: number;
   /** Shutdown stage identifiers and timing only; never work identities or raw errors. */
   cleanupStage?: string;
   cleanupStatus?: 'started' | 'completed' | 'failed' | 'stalled' | 'timed_out';
@@ -1049,6 +1180,12 @@ export interface AppDiagnosticRecord {
   pressureLevel?: ResourcePressureLevel;
   processCount?: number;
   suspendedCodexPoolCount?: number;
+  /**
+   * `resource_pressure_critical` only: idle Claude-harness sessions whose
+   * release was requested. Each releases after a short quiet period unless
+   * activity resumes.
+   */
+  idleClaudeSessionReleaseCount?: number;
   sweptRemoved?: number;
   sweptStagingRemoved?: number;
   sweptBackupRemoved?: number;
@@ -1107,6 +1244,16 @@ export interface AppDiagnosticRecord {
   chatTranscriptRewriteCommittedRows?: number;
   /** `chat_transcript_full_rewrite` only: committed JSONL bytes before it. */
   chatTranscriptRewriteCommittedBytes?: number;
+  /** JSONL bytes written by the replacement, excluding a cloned prefix. */
+  chatTranscriptRewriteBytesWritten?: number;
+  /** Serialized operation duration through publication/indexes, excluding queue wait. */
+  chatTranscriptRewriteDurationMs?: number;
+  /** Transcript write-rate warnings only: opaque scope digest, never raw ids. */
+  chatTranscriptWriteScopeDigest?: string;
+  chatTranscriptWriteRateBytesPerSecond?: number;
+  chatTranscriptWriteRateThresholdBytesPerSecond?: number;
+  chatTranscriptWriteRateObservedMs?: number;
+  chatTranscriptWriteRateSampleCount?: number;
   /** `chat_transcript_full_rewrite` only: committed rows patched in place. */
   chatTranscriptRewritePatchedRows?: number;
   /** `chat_transcript_full_rewrite` only: committed rows removed. */
@@ -1335,16 +1482,39 @@ export interface SessionDiagnosticRecord {
     | 'session_registered'
     | 'session_unregistered'
     | 'session_replaced'
+    | 'session_recreate_deferred'
     | 'message_queued'
     | 'turn_active'
     | 'turn_idle'
     | 'phase_slow'
     | 'chat_event_undelivered'
+    | 'chat_event_dropped'
+    | 'chat_input_delivery_outcome'
+    | 'claude_event_receipt_backlog'
+    /**
+     * Provider contract runtime guard (turn-state phase 43a): an SDK frame the
+     * lifecycle tables don't classify (once per session and label), a missing
+     * `session_state_changed` gate (once per CLI process), and the harness
+     * version a process reports. Bounded identifiers only, never payload text.
+     */
+    | 'provider_contract_unknown_event'
+    | 'provider_contract_gate_missing'
+    | 'provider_harness_version'
+    /**
+     * Turn-state phase 43c: a committed turn state disagrees with its timer
+     * rows (an open timer with no running turn, or two open timers). Once per
+     * chat and invariant; ids and counts only.
+     */
+    | 'turn_state_invariant_violation'
+    | 'chat_queue_gate_stale'
+    | 'chat_queue_drain_declined'
+    | 'chat_wait_phase'
     | 'ask_user_request_undelivered'
     | 'codex_process_started'
     | 'codex_process_exit'
     | 'codex_process_error'
     | 'codex_process_recovery'
+    | 'ingestion_lag'
     | 'terminal_transcript_sync_start'
     | 'terminal_transcript_sync_end'
     | 'terminal_transcript_sync_failure'
@@ -1352,6 +1522,15 @@ export interface SessionDiagnosticRecord {
     | 'terminal_turn_idle'
     | 'terminal_turn_diff_capture_open_failure'
     | 'terminal_compaction_appended'
+    /**
+     * A chat's Claude CLI under the Claude process host: started (the host
+     * reported its PID), exited, or untracked, which means killed by the
+     * owner consistency check or reaped at startup from a previous run.
+     * `pid` and `sessionInstanceId` identify the process and its session.
+     */
+    | 'claude_process_started'
+    | 'claude_process_exited'
+    | 'claude_process_untracked'
     | 'claude_terminal_first_output'
     | 'claude_terminal_process_exit'
     | 'claude_terminal_process_error'
@@ -1417,6 +1596,7 @@ export interface SessionDiagnosticRecord {
      * (CAN-3106). Worktree/chat-scoped, so it belongs in session-events.
      */
     | 'implausible_turn_duration'
+    | 'turn_dispatch_slow'
     /**
      * One code-graph generation (a worktree build, or a workspace-shadow base
      * build with an empty `worktreeId`): its outcome and phase timings from
@@ -1453,9 +1633,85 @@ export interface SessionDiagnosticRecord {
   worktreeId: string;
   chatId: string;
   providerType: AgentProviderType | 'cursor' | 'unknown';
+  /** `turn_dispatch_slow` only: elapsed prompt-to-provider time, without text. */
+  totalMs?: number;
+  /** `session_recreate_deferred` only: why recreation waits; names, never values. */
+  recreateReasons?: string[];
+  /** `turn_dispatch_slow` only: provider handoff or first output milestone. */
+  endpoint?: 'enqueued' | 'first_event';
+  /** `turn_dispatch_slow` only: bounded phase durations, without content. */
+  phases?: Array<{ phase: TurnDispatchPhase; elapsedMs: number }>;
+  /**
+   * Names the registered provider session instance: session lifecycle kinds
+   * and the `claude_process_*` kinds carry it.
+   */
+  sessionInstanceId?: string;
+  /** `claude_process_*` only: the delegated run whose CLI this is. */
+  delegationId?: string;
+  /**
+   * `claude_process_untracked` only: its owning session instance was no
+   * longer registered, or the CLI survived a previous run.
+   */
+  claudeProcessUntrackedReason?: 'owner_unregistered' | 'previous_run';
   model?: ChatModel;
   delegationMetric?: DelegationMetric;
   turnActive?: boolean;
+  /** Transient host-gate evidence; never request or provider content. */
+  queueGateSource?:
+    | 'adopted-provider-activity'
+    | 'queued-dispatch'
+    | 'immediate-dispatch'
+    | 'stop-preparation'
+    | 'revived-root';
+  queueGateOwnerId?: string;
+  queueGateAgeMs?: number;
+  /** Content-free local wait timing; phases and operation names are fixed by callers. */
+  waitOperationId?: string;
+  waitOperation?: string;
+  waitScope?: {
+    projectId?: string;
+    worktreeId?: string;
+    taskId?: string;
+    chatId?: string;
+    botId?: string;
+  };
+  waitPhase?: string;
+  /** Phase owned when a recovery flag was acquired or released. */
+  waitAwaitingPhase?: string;
+  /** Time since recovery ownership was claimed, excluding pre-claim checks. */
+  waitRecoveryElapsedMs?: number;
+  waitStartedAtMs?: number;
+  waitElapsedMs?: number;
+  waitQueueDepth?: number;
+  waitQueueOwnerOperationId?: string;
+  waitQueueOwnerOperation?: string;
+  waitOutcome?: 'stalled' | 'completed' | 'failed' | 'released';
+  waitOwnerTokenId?: string;
+  waitOperationEpoch?: number;
+  waitGateOwnerInputId?: string;
+  waitProjectInventoryCalls?: number;
+  waitPhaseDurationsMs?: Record<string, number>;
+  /** Why a non-empty queue stood down and what will wake it. */
+  queueDrainGuard?:
+    | 'provider-foreground'
+    | 'host-gate'
+    | 'reservation'
+    | 'dispatch-in-flight'
+    | 'recovery-in-flight'
+    | 'edit-locked-head'
+    | 'auth-pause'
+    | 'backlog-wait-failed'
+    | 'background-work';
+  queueDrainRetryAtMs?: number;
+  queueDrainWakeEvent?:
+    | 'provider-terminal-or-session-activity'
+    | 'gate-reconcile'
+    | 'reservation-released'
+    | 'dispatch-finalizer'
+    | 'recovery-finalizer'
+    | 'head-edit-unlocked'
+    | 'authentication-resumed'
+    | 'native-background-work-ended';
   turnCount?: number;
   pendingMessageCount?: number;
   /** Names of incompatible options only; never their values. */
@@ -1509,8 +1765,88 @@ export interface SessionDiagnosticRecord {
     | 'reattached'
     | 'replayed'
     | 'continued';
+  /** `ingestion_lag` only: one content-free per-session lag transition. */
+  outcome?: 'entered' | 'drained' | 'aborted';
+  lagMs?: number;
+  peakLagMs?: number;
+  episodeMs?: number;
+  thresholdMs?: number;
+  /** `ingestion_lag`: which stream lagged; `browser_download_*`: who started it. */
+  source?: 'provider' | 'receipt' | BrowserDownloadSource;
+  /**
+   * `ingestion_lag` without `outcome`: periodic, content-free admission window.
+   * Latency runs from provider receipt (router admission when unavailable) to
+   * settlement: persisted, ignored or failed, not necessarily durable success.
+   * Backlog covers routed active + waiting events; upstream provider queue
+   * depth remains in provider-specific diagnostics.
+   */
+  admissionLatencyP50Ms?: number;
+  admissionLatencyP95Ms?: number;
+  admissionSampleCount?: number;
+  admissionReceiptSampleCount?: number;
+  admissionWindowMs?: number;
+  backlogDepth?: number;
+  backlogPeakDepth?: number;
+  backlogOldestAgeMs?: number;
   error?: string;
   eventType?: string;
+  /** `chat_event_dropped`: the gate that dropped a provider event. */
+  chatEventDropGate?:
+    | 'router_stamp_mismatch'
+    | 'router_no_route'
+    | 'router_stale_codex_root_error'
+    | 'router_deferred_tools_suppressed'
+    | 'turn_root_refused'
+    | 'turn_revival_refused'
+    | 'worktree_turn_ineligible'
+    | 'claude_prelude_without_turn'
+    | 'codex_root_completion_stale'
+    | 'codex_root_output_stale'
+    | 'canonical_admission_rejected';
+  /** `chat_event_dropped`: a short fixed reason code, never provider text. */
+  chatEventDropReason?: string;
+  /** `chat_input_delivery_outcome`: one record per attempt, at its first settlement. */
+  inputAttemptId?: string;
+  inputGeneration?: string;
+  inputOrigin?: 'typed' | 'watcher' | 'answer' | 'internal';
+  inputDeliveryOutcome?:
+    | 'picked-up'
+    | 'rejected-requeued'
+    | 'rejected-final'
+    | 'withdrawn'
+    | 'unknown-timeout'
+    | 'unknown-transport'
+    | 'unknown-restart'
+    | 'history-delivered'
+    | 'history-not-delivered';
+  /** Elapsed from the attempt's creation to each phase that was observed. */
+  inputPhaseTimingsMs?: {
+    admitted?: number;
+    pickedUp?: number;
+    withdrawn?: number;
+    completed?: number;
+    uncertain?: number;
+  };
+  /** A refusal or failure kind and its bounded code; never provider or error text. */
+  inputErrorClass?: 'refusal' | 'timeout' | 'transport' | 'restart';
+  inputErrorCode?: string;
+  /** The fixed summary for that code. */
+  inputErrorSummary?: string;
+  /** `claude_event_receipt_backlog`: the receipt queue filled; counts only. */
+  claudeReceiptQueueDepth?: number;
+  /** The unclassified frame or missing gate, as a bounded identifier. */
+  providerContractEvent?: string;
+  /** The provider harness version a process reported, bounded. */
+  providerHarnessVersion?: string;
+  /** `turn_state_invariant_violation`: which invariant the commit broke. */
+  turnStateInvariant?: 'settled_runtime_open_timer' | 'two_open_timers';
+  /** `turn_state_invariant_violation`: the chat's open timer rows. */
+  openTimerCount?: number;
+  claudeReceiptOldestWaitMs?: number;
+  /** The Canopy turn the dropped event was tagged with. */
+  eventTurnUserMessageId?: string;
+  providerThreadId?: string;
+  providerTurnId?: string;
   phase?: string;
   elapsedMs?: number;
   archiveIoRequestId?: string;
@@ -1705,9 +2041,10 @@ export interface SessionDiagnosticRecord {
    * a `scope: 'once'` allow conflates the user clicking "Allow once" with a
    * policy-driven auto-approval, which is precisely the distinction an audit
    * trail of privileged actions has to keep (CAN-3083). Absent on entries
-   * written before the field existed; treat that as `'prompt'`.
+   * written before the field existed; treat that as `'prompt'`. Safety policy
+   * denials use `'safety-rule'`, never an attribution to the user.
    */
-  approvalDecisionSource?: 'prompt' | 'mode-widened';
+  approvalDecisionSource?: 'prompt' | 'mode-widened' | 'safety-rule';
   /**
    * `approval_stale_deny_observed` only: a deny rule now matches a prompt that
    * is still standing in the renderer. `promptForDecision` honours the user's
@@ -1790,11 +2127,71 @@ function mapAuditStatusToFailureReason(
   return 'other';
 }
 
+interface ChatTurnOperationContext {
+  trigger: UsageInitiationSource;
+  failure?: ChatTurnFailure;
+  subAgentFailure?: ChatTurnFailure;
+}
+
+/**
+ * A failed turn always carries a category; an abandoned one only when a cause
+ * was seen, so a plain cancel is not reported as a failure. A sub-agent
+ * failure is reported on any outcome.
+ */
+function resolveChatTurnFailures(
+  openEntry: OpenAuditEntry,
+  status: AgentAuditStatus,
+  error: string | undefined,
+  options: { setupFailure?: boolean } | undefined,
+): { failure?: ChatTurnFailure; subAgentFailure?: ChatTurnFailure } {
+  const { failure, subAgentFailure } = (
+    openEntry.failureEvidence ?? new ChatTurnFailureEvidence()
+  ).classify({
+    provider: openEntry.entry.provider,
+    ...(error === undefined ? {} : { error }),
+  });
+  const rootFailure: ChatTurnFailure | undefined =
+    status === 'success'
+      ? undefined
+      : (failure ??
+        (status === 'failure'
+          ? { category: options?.setupFailure ? 'setup' : 'other' }
+          : undefined));
+  return {
+    ...(rootFailure ? { failure: rootFailure } : {}),
+    ...(subAgentFailure ? { subAgentFailure } : {}),
+  };
+}
+
+/**
+ * Whether the daily drip was blocked, off, or already spent when a turn ran
+ * out of credits (CAN-4633). Routing reads the balance at most 30 seconds
+ * before dispatch, so main's latest read describes this turn's wallet.
+ */
+function noCreditsGrantContext(): { daily_credit_grant_status?: string } {
+  const status = getLastDailyCreditGrantStatus();
+  return status === undefined ? {} : { daily_credit_grant_status: status };
+}
+
 function buildAuditOperationContext(
   entry: AgentAuditEntry,
   status?: AgentAuditStatus,
+  chatTurn?: ChatTurnOperationContext,
 ): Record<string, string | number | boolean | null | undefined> {
   return {
+    ...(chatTurn ? { trigger_type: chatTurn.trigger } : {}),
+    ...(chatTurn?.failure
+      ? { failure_category: chatTurn.failure.category }
+      : {}),
+    ...(chatTurn?.failure?.detail
+      ? { failure_detail: chatTurn.failure.detail }
+      : {}),
+    ...(chatTurn?.failure?.category === 'no_credits'
+      ? noCreditsGrantContext()
+      : {}),
+    ...(chatTurn?.subAgentFailure
+      ? { sub_agent_failure_category: chatTurn.subAgentFailure.category }
+      : {}),
     event_type: entry.eventType,
     provider: entry.provider,
     status,
@@ -1822,10 +2219,11 @@ function finishAuditOperation(
   key: string,
   entry: AgentAuditEntry,
   status: AgentAuditStatus,
+  chatTurn?: ChatTurnOperationContext,
 ): void {
   const operationOptions = {
     operationKey: createDesktopInstrumentationOperationKey(key),
-    context: buildAuditOperationContext(entry, status),
+    context: buildAuditOperationContext(entry, status, chatTurn),
   };
   const operationName = getOperationNameForAuditKey(key);
 
@@ -2030,6 +2428,49 @@ function defaultToolCounts(): AgentAuditToolCounts {
   };
 }
 
+/** A chat's audit metadata, without any per-turn counters or outcome. */
+function chatEntryMetadata(
+  entry: AgentAuditEntry,
+): Omit<
+  AgentAuditEntry,
+  | 'id'
+  | 'status'
+  | 'startedAt'
+  | 'tokens'
+  | 'messageCount'
+  | 'assistantMessageCount'
+  | 'toolUseCount'
+  | 'subAgentCount'
+  | 'toolCounts'
+  | 'hasTranscript'
+> {
+  return {
+    eventType: entry.eventType,
+    provider: entry.provider,
+    label: entry.label,
+    ...(entry.modelSource ? { modelSource: entry.modelSource } : {}),
+    ...(entry.executionHarness
+      ? { executionHarness: entry.executionHarness }
+      : {}),
+    ...(entry.model ? { model: entry.model } : {}),
+    ...(entry.modelRouting ? { modelRouting: entry.modelRouting } : {}),
+    ...(entry.serviceTier ? { serviceTier: entry.serviceTier } : {}),
+    ...(entry.aiCreditsRouted ? { aiCreditsRouted: true } : {}),
+    ...(entry.modelGatewayRouted ? { modelGatewayRouted: true } : {}),
+    ...(entry.projectId ? { projectId: entry.projectId } : {}),
+    ...(entry.worktreeId ? { worktreeId: entry.worktreeId } : {}),
+    ...(entry.contextWorkspaceId
+      ? { contextWorkspaceId: entry.contextWorkspaceId }
+      : {}),
+    ...(entry.repoId ? { repoId: entry.repoId } : {}),
+    ...(entry.repoLabel ? { repoLabel: entry.repoLabel } : {}),
+    ...(entry.chatId ? { chatId: entry.chatId } : {}),
+    ...(entry.sdkSessionId ? { sdkSessionId: entry.sdkSessionId } : {}),
+    ...(entry.chatMode ? { chatMode: entry.chatMode } : {}),
+    ...(entry.linkTarget ? { linkTarget: entry.linkTarget } : {}),
+  };
+}
+
 const AGENT_AUDIT_TOOL_COUNT_KEYS: Array<keyof AgentAuditToolCounts> = [
   'thinking',
   'bash',
@@ -2085,6 +2526,9 @@ function buildSyntheticPromptRecord(
   };
   if ((options.fileReferences?.length ?? 0) > 0) {
     record.file_references = options.fileReferences;
+  }
+  if (isInternalChatRequest(options)) {
+    record.canopy_hidden = true;
   }
   return record;
 }
@@ -2208,6 +2652,19 @@ function readIsoDayPrefix(value: string | undefined): string | undefined {
   return Number.isFinite(timestamp) ? day : undefined;
 }
 
+/**
+ * The start of the day a retention file or directory is named for, or null
+ * when the name is not a calendar date. Retention never deletes such a name.
+ */
+function retainedDayStartTime(day: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const time = Date.parse(`${day}T00:00:00.000Z`);
+  return Number.isFinite(time) &&
+    new Date(time).toISOString().slice(0, 10) === day
+    ? time
+    : null;
+}
+
 function shiftIsoDay(day: string, days: number): string {
   const date = new Date(`${day}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + days);
@@ -2321,24 +2778,6 @@ function readCodexEventTurnId(
     readString(event, 'turn_id') ??
     readString(event, 'turnId') ??
     (turn ? readString(turn, 'id') : undefined)
-  );
-}
-
-function isAgentContinuationEvent(data: Record<string, unknown>): boolean {
-  if (data.type === 'assistant' || data.type === 'user') {
-    return true;
-  }
-
-  if (data.type !== 'codex' || !isRecord(data.event)) {
-    return false;
-  }
-
-  return (
-    data.event.type === 'turn.started' ||
-    data.event.type === 'item.started' ||
-    data.event.type === 'item.updated' ||
-    data.event.type === 'item.completed' ||
-    data.event.type === 'item.plan.delta'
   );
 }
 
@@ -2598,13 +3037,13 @@ function labelForEventType(eventType: AgentAuditEventType): string {
     case 'standalone_chat':
       return `${CHAT_LABEL} ${CHAT_UNIT_LABEL}`;
     case 'app_advisor':
-      return 'App Advisor';
+      return ORCHESTRATOR_LABEL;
     case 'pipeline_editor':
-      return 'Pipeline Editor';
+      return 'Workflow Editor';
     case 'pipeline_agent_turn':
-      return 'Pipeline Agent';
+      return 'Workflow Agent';
     case 'pipeline_advisor':
-      return 'Pipeline Advisor';
+      return 'Workflow Advisor';
     case 'pr_generation':
       return 'PR Generation';
     case 'pr_split_planning':
@@ -2641,6 +3080,26 @@ function labelForEventType(eventType: AgentAuditEventType): string {
       return 'Skill Suggestion Scan';
     case 'managed_delegation':
       return 'Delegation';
+  }
+}
+
+/**
+ * Both names of a renamed audit target. Persisted entries keep the label they
+ * were written with, so history search matches either the old or the current
+ * name for every entry of that type.
+ */
+function renamedLabelsForEventType(
+  eventType: AgentAuditEventType,
+): readonly string[] {
+  switch (eventType) {
+    case 'pipeline_editor':
+      return ['Pipeline Editor', 'Workflow Editor'];
+    case 'pipeline_agent_turn':
+      return ['Pipeline Agent', 'Workflow Agent'];
+    case 'pipeline_advisor':
+      return ['Pipeline Advisor', 'Workflow Advisor'];
+    default:
+      return [];
   }
 }
 
@@ -3396,11 +3855,61 @@ function estimatePendingRecordBytes(value: unknown): number {
   return Math.min(FLUSH_BYTE_TRIGGER, estimate(value, 0));
 }
 
+export function sanitizeTurnDispatchSlowDiagnostic(
+  event: SessionDiagnosticRecord,
+): SessionDiagnosticRecord {
+  if (event.kind !== 'turn_dispatch_slow') return event;
+  const phases: NonNullable<SessionDiagnosticRecord['phases']> = [];
+  for (const phase of event.phases ?? []) {
+    if (
+      !TURN_DISPATCH_PHASES.includes(phase.phase) ||
+      !Number.isFinite(phase.elapsedMs)
+    ) {
+      continue;
+    }
+    phases.push({
+      phase: phase.phase,
+      elapsedMs: Math.min(
+        Number.MAX_SAFE_INTEGER,
+        Math.max(0, Math.round(phase.elapsedMs)),
+      ),
+    });
+  }
+  return {
+    version: event.version,
+    timestamp: event.timestamp,
+    kind: event.kind,
+    sessionKey: event.sessionKey,
+    projectId: event.projectId,
+    worktreeId: event.worktreeId,
+    chatId: event.chatId,
+    providerType: event.providerType,
+    totalMs:
+      typeof event.totalMs === 'number' && Number.isFinite(event.totalMs)
+        ? Math.min(
+            Number.MAX_SAFE_INTEGER,
+            Math.max(0, Math.round(event.totalMs)),
+          )
+        : 0,
+    endpoint: event.endpoint === 'first_event' ? 'first_event' : 'enqueued',
+    phases: phases.slice(0, TURN_DISPATCH_PHASES.length),
+  };
+}
+
 export class ObservabilityService {
   private readonly listeners = new Set<
     (event: AgentObservabilityUpdateEvent) => void
   >();
   private readonly openEntries = new Map<string, OpenAuditEntry>();
+  /** Canonical turn state, not raw items, decides undispatched turns' entries. */
+  private turnStateAudit = false;
+  /** Each chat's autonomous turns awaiting their first root output. */
+  private readonly pendingAutonomousTurns = new Map<
+    string,
+    PendingAutonomousTurn[]
+  >();
+  /** The last autonomous turn each chat opened an entry for. */
+  private readonly openedAutonomousTurnIds = new Map<string, string>();
   private readonly codexSubagentUsageByChat = new Map<
     string,
     CodexSubagentUsageTracker
@@ -4588,8 +5097,9 @@ export class ObservabilityService {
   }
 
   recordSessionDiagnostic(event: SessionDiagnosticRecord): void {
-    this.pendingSessionDiagnostics.push(event);
-    this.scheduleFlush(estimatePendingRecordBytes(event));
+    const sanitizedEvent = sanitizeTurnDispatchSlowDiagnostic(event);
+    this.pendingSessionDiagnostics.push(sanitizedEvent);
+    this.scheduleFlush(estimatePendingRecordBytes(sanitizedEvent));
   }
 
   recordUsageMetricEvent(event: UsageMetricEvent): void {
@@ -4763,12 +5273,19 @@ export class ObservabilityService {
        */
       accountProxyRouted?: boolean;
       modelRouting?: AgentAuditEntry['modelRouting'];
+      /**
+       * Who started the turn for analytics, when that differs from the
+       * `initiationSource` that drives dispatch behavior.
+       */
+      turnTrigger?: UsageInitiationSource;
     },
   ): void {
     const key = `chat:${options.projectId}/${options.worktreeId}/${options.chatId}`;
     if (this.openEntries.has(key)) {
       this.finalizeOpenEntry(key, 'interrupted', 'Superseded by a new turn');
     }
+    // A dispatched turn supersedes wakes whose output has not arrived.
+    this.pendingAutonomousTurns.delete(key);
     // A new turn closes the last one for good.
     this.closedTurnAccountProxyResponses.delete(key);
     const providerSnapshot = this.captureProviderStartSnapshot(
@@ -4895,6 +5412,7 @@ export class ObservabilityService {
       providerAccountIdentity: providerSnapshot.providerAccountIdentity,
       billingAccountKind: providerSnapshot.billingAccountKind,
       ...(options.accountProxyRouted ? { accountProxyRouted: true } : {}),
+      turnTrigger: options.turnTrigger ?? options.initiationSource ?? 'unknown',
       seenCodexItems: new Set<string>(),
       seenBillableToolItemIds: new Set<string>(),
       usageObserved: false,
@@ -4915,6 +5433,8 @@ export class ObservabilityService {
       submittedText: options.submittedText,
       fileReferences: options.fileReferences,
       planMode: options.planMode,
+      internalRow: options.internalRow,
+      managedDelegationDeliveryId: options.managedDelegationDeliveryId,
       injectedPrompts: buildInjectedPrompts(options),
     });
     startAuditOperation(key, entry);
@@ -5023,6 +5543,8 @@ export class ObservabilityService {
       | 'fileReferences'
       | 'planMode'
       | 'initiationSource'
+      | 'internalRow'
+      | 'managedDelegationDeliveryId'
     > & { startsTurn: boolean },
   ): void {
     const key = `chat:${options.projectId}/${options.worktreeId}/${options.chatId}`;
@@ -5036,6 +5558,8 @@ export class ObservabilityService {
           fileReferences: options.fileReferences,
           planMode: options.planMode,
           userMessageId: options.userMessageId,
+          internalRow: options.internalRow,
+          managedDelegationDeliveryId: options.managedDelegationDeliveryId,
           steering: {
             startsTurn: false,
             rootUserMessageId: this.openEntries.get(key)?.entry.userMessageId,
@@ -5294,12 +5818,32 @@ export class ObservabilityService {
       return;
     }
 
-    if (!this.openEntries.has(key) && isAgentContinuationEvent(data)) {
-      this.reviveChatTurn(key);
+    if (!this.openEntries.has(key)) {
+      if (!this.turnStateAudit) {
+        if (isRootAgentContinuationEvent(data)) this.reviveChatTurn(key);
+      } else if (isRootAgentContinuationEvent(data)) {
+        this.openAutonomousTurnEntry(key);
+      } else if (
+        data.type !== 'codex' &&
+        isTerminalChatEventData(data) &&
+        this.pendingAutonomousTurns.get(key)?.[0]?.ended === true
+      ) {
+        // A turn that ended with no root output still sends its terminal.
+        this.pendingAutonomousTurns.get(key)?.shift();
+      }
     }
 
     const openEntry = this.openEntries.get(key);
     if (!openEntry) {
+      // A late Claude child frame never reopens a completed entry, but its
+      // output still belongs in that entry's transcript.
+      if (isClaudeChildFrame(data))
+        void this.appendFinalizedChatTranscriptRecord(
+          projectId,
+          worktreeId,
+          chatId,
+          data,
+        ).catch((): void => undefined);
       const previous = this.recentEntries.find((entry) =>
         entry.id.startsWith(`${key}:`),
       );
@@ -5312,6 +5856,14 @@ export class ObservabilityService {
       return;
     }
     const provider = openEntry.entry.provider;
+
+    openEntry.failureEvidence ??= new ChatTurnFailureEvidence();
+    openEntry.failureEvidence.observe(
+      data,
+      openEntry.entry.sdkSessionId ||
+        openEntry.codexActiveProviderTurn?.threadId ||
+        undefined,
+    );
 
     // Provider-agnostic and ahead of the provider dispatch, because a
     // structured auth failure is Canopy's own event: it matches neither
@@ -6359,17 +6911,71 @@ export class ObservabilityService {
     this.upsertRecentEntry(openEntry.entry);
   }
 
+  /** From now on canonical turn state decides undispatched turns' entries. */
+  enableTurnStateAudit(): void {
+    this.turnStateAudit = true;
+  }
+
+  /**
+   * Receipt turn state announces each autonomous turn, such as a wake, before
+   * its provider frames arrive. A dispatched Claude turn starts autonomous
+   * until it binds to its prompt, and a stopped turn delivers nothing more,
+   * so neither keeps its place.
+   */
+  observeTurnState(
+    scope: { projectId: string; worktreeId: string; chatId: string },
+    state: Pick<PersistedChatTurnState, 'current' | 'lastEnded'>,
+  ): void {
+    const key = `chat:${scope.projectId}/${scope.worktreeId}/${scope.chatId}`;
+    const { current, lastEnded } = state;
+    const pending = (this.pendingAutonomousTurns.get(key) ?? [])
+      .filter((turn) =>
+        [current, lastEnded].every(
+          (record) =>
+            record?.id !== turn.id ||
+            (record.origin === 'autonomous' && record.outcome !== 'cancelled'),
+        ),
+      )
+      .map((turn) => ({
+        ...turn,
+        ended: turn.ended || turn.id !== current?.id,
+      }));
+    if (
+      current?.origin === 'autonomous' &&
+      current.id !== this.openedAutonomousTurnIds.get(key) &&
+      !pending.some((turn) => turn.id === current.id)
+    ) {
+      const userMessageId = current.userMessageId ?? current.inputIds?.[0];
+      pending.push({
+        id: current.id,
+        startedAtMs: current.startedAtMs,
+        ...(userMessageId ? { userMessageId } : {}),
+        ended: false,
+      });
+    }
+    // Bounded: a dispatch clears the rest.
+    if (pending.length > 0)
+      this.pendingAutonomousTurns.set(key, pending.slice(-4));
+    else this.pendingAutonomousTurns.delete(key);
+  }
+
   completeChatTurn(
     projectId: string,
     worktreeId: string,
     chatId: string,
     status: AgentAuditStatus,
     error?: string,
+    /**
+     * `setupFailure`: the turn failed before its provider ran, so an
+     * unrecognized failure is reported as `setup` rather than `other`.
+     */
+    options?: { setupFailure?: boolean },
   ): void {
     this.finalizeOpenEntry(
       `chat:${projectId}/${worktreeId}/${chatId}`,
       status,
       error,
+      options,
     );
   }
 
@@ -6558,6 +7164,71 @@ export class ObservabilityService {
     }
 
     this.enqueueTranscriptRecord(transcriptState, payload);
+  }
+
+  /**
+   * A wake's first root output opens its own entry with the chat's metadata
+   * and fresh counters. Its terminal frame closes it, as a dispatched turn's
+   * does, so the entry keeps the terminal's usage and cost.
+   */
+  private openAutonomousTurnEntry(key: string): void {
+    const turn = this.pendingAutonomousTurns.get(key)?.shift();
+    if (!turn) return;
+    const previous = this.recentEntries.find((entry) =>
+      entry.id.startsWith(`${key}:`),
+    );
+    if (!previous) return;
+    const startedAt = new Date(turn.startedAtMs).toISOString();
+    const entry: AgentAuditEntry = {
+      ...chatEntryMetadata(previous),
+      id: `${key}:${startedAt}:${turn.id}`,
+      status: 'running',
+      startedAt,
+      tokens: defaultTokens(),
+      messageCount: 0,
+      assistantMessageCount: 0,
+      toolUseCount: 0,
+      subAgentCount: 0,
+      toolCounts: defaultToolCounts(),
+      hasTranscript: false,
+      autonomous: true,
+      ...(turn.userMessageId ? { userMessageId: turn.userMessageId } : {}),
+    };
+    const accountProxyRouted = previous.billingBasis === 'account_proxy';
+    // A new turn closes the last one for good.
+    this.closedTurnAccountProxyResponses.delete(key);
+    const providerSnapshot = this.captureProviderStartSnapshot(
+      entry.provider,
+      accountProxyRouted,
+    );
+    const codexSubagentUsageTracker =
+      entry.provider === 'codex'
+        ? this.getOrCreateCodexSubagentChatTracker(key)
+        : undefined;
+    codexSubagentUsageTracker?.beginEntry();
+    this.openEntries.set(key, {
+      entry,
+      providerAccountIdentity: providerSnapshot.providerAccountIdentity,
+      billingAccountKind: providerSnapshot.billingAccountKind,
+      ...(accountProxyRouted ? { accountProxyRouted: true } : {}),
+      // A wake continues on its own, with no new prompt from anyone.
+      turnTrigger: 'automation',
+      seenCodexItems: new Set<string>(),
+      seenBillableToolItemIds: new Set<string>(),
+      usageObserved: false,
+      pendingClaudePrCreateToolUses: new Map<string, string>(),
+      seenManualPrCreateKeys: new Set<string>(),
+      pausedDurationMs: 0,
+      seenCompactionIds: new Set<string>(),
+      ...(codexSubagentUsageTracker ? { codexSubagentUsageTracker } : {}),
+    });
+    this.openedAutonomousTurnIds.set(key, turn.id);
+    if (entry.provider === 'claude') {
+      this.claudeTaskTrackers.get(key)?.applyPending(entry);
+    }
+    this.initializeTranscriptState(key, entry);
+    startAuditOperation(key, entry);
+    this.upsertRecentEntry(entry);
   }
 
   private reviveChatTurn(key: string): void {
@@ -7191,6 +7862,47 @@ export class ObservabilityService {
     this.emitSnapshot();
   }
 
+  /**
+   * The persisted-only worktree purge, serialized with this service's writes.
+   * It also drops the worktree's session diagnostics not yet written, so they
+   * are not appended after the purge; live audit state is left to its owner.
+   */
+  async purgePersistedWorktreeData(
+    projectId: string,
+    worktreeId: string,
+  ): Promise<void> {
+    await this.enqueuePersistenceTask(async (): Promise<void> => {
+      this.pendingSessionDiagnostics = this.pendingSessionDiagnostics.filter(
+        (entry) => !this.entryMatchesWorktree(entry, projectId, worktreeId),
+      );
+      await purgePersistedWorktreeObservabilityData(projectId, worktreeId);
+    });
+  }
+
+  /**
+   * Removes the session diagnostics of a worktree purged before an operation
+   * on it finished. Its pending records always go; its persisted session
+   * events are rewritten only when some of the operation's `records` were
+   * already written. Audit and transcript data are left alone.
+   */
+  async purgeLateWorktreeSessionDiagnostics(
+    projectId: string,
+    worktreeId: string,
+    waitOperationId: string,
+    records: number,
+  ): Promise<void> {
+    await this.enqueuePersistenceTask(async (): Promise<void> => {
+      const unwritten = this.pendingSessionDiagnostics.filter(
+        (entry) => entry.waitOperationId === waitOperationId,
+      ).length;
+      this.pendingSessionDiagnostics = this.pendingSessionDiagnostics.filter(
+        (entry) => !this.entryMatchesWorktree(entry, projectId, worktreeId),
+      );
+      if (unwritten < records)
+        await purgePersistedWorktreeSessionDiagnostics(projectId, worktreeId);
+    });
+  }
+
   syncPipelineExecutionState(state: PipelineExecutionStateSyncInput): void {
     const lineage: PipelineExecutionLineage = {
       id: state.id,
@@ -7487,16 +8199,20 @@ export class ObservabilityService {
         );
         continue;
       }
-      if (openEntry.entry.provider === 'opencode') {
+      if (
+        openEntry.entry.provider === 'opencode' ||
+        openEntry.entry.provider === 'copilot'
+      ) {
+        const provider = openEntry.entry.provider;
         if (parsed.type === 'canopy_assistant_patch') {
-          if (parsed.provider === 'opencode' && isAssistantPatch(parsed)) {
+          if (parsed.provider === provider && isAssistantPatch(parsed)) {
             this.appendTranscriptRecord(key, parsed);
             if (parsed.role !== 'system')
               this.observeCursorPatch(openEntry, parsed);
           }
         } else if (isClaudeEventShape(parsed)) {
           this.appendTranscriptRecord(key, parsed);
-          this.observeClaudeEvent(key, parsed, 'opencode');
+          this.observeClaudeEvent(key, parsed, provider);
         }
         continue;
       }
@@ -7743,12 +8459,9 @@ export class ObservabilityService {
     const logFormatHint = options.step.log_format_hint;
     const model = options.step.agent_model;
     const shouldTrack =
-      provider === 'claude' ||
-      provider === 'codex' ||
-      provider === 'ollama' ||
-      provider === 'cursor' ||
-      provider === 'opencode' ||
-      logFormatHint === 'agent';
+      provider === undefined
+        ? logFormatHint === 'agent'
+        : isTrackedPipelineProvider(provider);
 
     if (!shouldTrack) {
       return;
@@ -7784,16 +8497,9 @@ export class ObservabilityService {
         id: `${key}:${startedAt}`,
         eventType: 'pipeline_agent_turn',
         status: 'running',
-        provider:
-          provider === 'codex'
-            ? 'codex'
-            : provider === 'ollama'
-              ? 'ollama'
-              : provider === 'opencode'
-                ? 'opencode'
-                : provider === 'cursor'
-                  ? 'cursor'
-                  : 'claude',
+        // Legacy agent steps omit the provider; explicit unknown values were
+        // rejected above and must never acquire Claude account metadata.
+        provider: provider ?? 'claude',
         modelSource: model ? getModelSource(model) : undefined,
         executionHarness:
           options.step.agent_harness ??
@@ -7830,6 +8536,14 @@ export class ObservabilityService {
         Object.assign(entry, recorded, { status: 'running' });
         delete entry.completedAt;
         delete entry.error;
+        // Earlier versions recorded agent-hinted Copilot steps as Claude. The
+        // step's explicit provider wins, without the other account's stamp.
+        if (provider !== undefined && entry.provider !== provider) {
+          entry.provider = provider;
+          delete entry.providerAccountKey;
+          delete entry.providerAccountEmail;
+          delete entry.providerPlanType;
+        }
       }
       if (entry.provider === 'claude') {
         // builtin/agent-resume's resolved input is not in StepResult. Its
@@ -7962,6 +8676,7 @@ export class ObservabilityService {
     key: string,
     status: AgentAuditStatus,
     error?: string,
+    options?: { setupFailure?: boolean },
   ): void {
     const openEntry = this.openEntries.get(key);
     if (!openEntry) {
@@ -8154,7 +8869,17 @@ export class ObservabilityService {
       });
     }
 
-    finishAuditOperation(key, openEntry.entry, status);
+    finishAuditOperation(
+      key,
+      openEntry.entry,
+      status,
+      key.startsWith('chat:')
+        ? {
+            trigger: openEntry.turnTrigger ?? 'unknown',
+            ...resolveChatTurnFailures(openEntry, status, error, options),
+          }
+        : undefined,
+    );
 
     const transcriptState = this.transcriptStates.get(key);
     if (transcriptState) {
@@ -8606,6 +9331,7 @@ export class ObservabilityService {
       const needle = request.search.toLowerCase();
       const haystack = [
         entry.label,
+        ...renamedLabelsForEventType(entry.eventType),
         entry.model,
         entry.projectId,
         entry.worktreeId,
@@ -9695,6 +10421,61 @@ export class ObservabilityService {
         readOrder,
         usageResult.details.rateLimits,
       );
+      // Only this completed successful HTTP read can restore subscription
+      // allowance. Cached, failed and 429 snapshots retain displayed numbers
+      // but are never recovery evidence. Requiring coverage of prior known
+      // windows avoids treating a partial five-hour response as proof that an
+      // omitted weekly or model-scoped limit recovered.
+      const fetchedSubscriptionLimits = subscriptionUsageLimits({
+        provider: 'claude',
+        rateLimits: usageResult.details.rateLimits,
+      });
+      const previousSubscriptionLimits = subscriptionUsageLimits({
+        provider: 'claude',
+        rateLimits: sameAccount ? previousSummary.rateLimits : undefined,
+      }).filter((limit) =>
+        claudeSubscriptionWindowPending(limit, gateResult.startedAt),
+      );
+      const coversKnownWindows = previousSubscriptionLimits.every(
+        (previousLimit) =>
+          previousLimit.limitId !== undefined &&
+          fetchedSubscriptionLimits.some(
+            (fetchedLimit) =>
+              claudeSubscriptionWindowKey(fetchedLimit) ===
+                claudeSubscriptionWindowKey(previousLimit) &&
+              (previousLimit.primary === undefined ||
+                fetchedLimit.primary !== undefined) &&
+              (previousLimit.secondary === undefined ||
+                fetchedLimit.secondary !== undefined),
+          ),
+      );
+      if (
+        accountKey !== null &&
+        coversKnownWindows &&
+        classifySubscriptionUsage({
+          provider: 'claude',
+          rateLimits: usageResult.details.rateLimits,
+        }).status === 'available' &&
+        classifySubscriptionUsage({
+          provider: 'claude',
+          rateLimits,
+        }).status === 'available'
+      ) {
+        const observationOrder = this.claudeUsageEventOrder;
+        await recordNativeSubscriptionRestored(
+          'claude',
+          accountKey,
+          gateResult.startedAt,
+          () =>
+            !this.disposing &&
+            this.isCurrentProviderUsageRefresh('claude', refreshVersion) &&
+            this.claudeUsageEventOrder === observationOrder &&
+            this.usageProviders.claude.authState === 'authenticated' &&
+            normalizeClaudeAccountKey(
+              this.usageProviders.claude.accountEmail,
+            ) === accountKey,
+        );
+      }
     }
   }
 
@@ -9765,7 +10546,7 @@ export class ObservabilityService {
     const merged: ProviderRateLimitSnapshot[] = fetched.map((snapshot) => {
       if (snapshot.limitId === undefined) return snapshot;
       const patch = this.claudeUsageWindowPatches.get(
-        claudePatchedWindowKey(accountKey, snapshot.limitId),
+        claudePatchedWindowKey(accountKey, snapshot),
       );
       if (patch === undefined) return snapshot;
       const usedPercent = patch.usedPercent;
@@ -9786,22 +10567,24 @@ export class ObservabilityService {
         },
       };
     });
-    const fetchedIds = new Set(fetched.map((snapshot) => snapshot.limitId));
-    const previousWindows = previous ?? [];
+    const fetchedIds = new Set(fetched.map(claudeSubscriptionWindowKey));
+    const previousWindows = subscriptionUsageLimits({
+      provider: 'claude',
+      rateLimits: previous,
+    });
     for (let index = 0; index < previousWindows.length; index += 1) {
       const snapshot = previousWindows[index];
       if (
         snapshot === undefined ||
         snapshot.limitId === undefined ||
-        fetchedIds.has(snapshot.limitId) ||
-        !this.claudeUsageWindowPatches.has(
-          claudePatchedWindowKey(accountKey, snapshot.limitId),
-        )
+        fetchedIds.has(claudeSubscriptionWindowKey(snapshot)) ||
+        !claudeSubscriptionWindowPending(snapshot, startedAt)
       )
         continue;
-      // Keep the known window and its position when HTTP supplies no replacement.
+      // Keep omitted windows until a confirmed reset or equivalent replacement;
+      // repeated partial reads alone are never recovery evidence.
       merged.splice(Math.min(index, merged.length), 0, snapshot);
-      fetchedIds.add(snapshot.limitId);
+      fetchedIds.add(claudeSubscriptionWindowKey(snapshot));
     }
     return merged;
   }
@@ -9813,7 +10596,7 @@ export class ObservabilityService {
   ): void {
     for (const snapshot of fetched) {
       if (snapshot.limitId === undefined) continue;
-      const key = claudePatchedWindowKey(accountKey, snapshot.limitId);
+      const key = claudePatchedWindowKey(accountKey, snapshot);
       const patch = this.claudeUsageWindowPatches.get(key);
       if (patch?.accountKey !== accountKey) continue;
       if (
@@ -9868,10 +10651,11 @@ export class ObservabilityService {
     const order = ++this.claudeUsageEventOrder;
     const at = Date.now();
     for (const window of observation.windows) {
-      const patchKey = claudePatchedWindowKey(
-        summaryAccountKey,
-        window.limitId,
+      const snapshot = summary.rateLimits.find(
+        (limit) => limit.limitId === window.limitId,
       );
+      if (snapshot === undefined) continue;
+      const patchKey = claudePatchedWindowKey(summaryAccountKey, snapshot);
       const prior = this.claudeUsageWindowPatches.get(patchKey);
       this.claudeUsageWindowPatches.set(patchKey, {
         ...prior,
@@ -10226,7 +11010,10 @@ export class ObservabilityService {
               if (batchBytes >= APPEND_BATCH_MAX_BYTES) break;
             }
             if (lines.length === 0) break;
-            await appendFile(transcriptState.path, `${lines.join('\n')}\n`);
+            await appendJsonlLines(
+              transcriptState.path,
+              `${lines.join('\n')}\n`,
+            );
             cursor += lines.length;
             committedBytes += batchBytes;
             if (lines.some((line) => isPersistedTranscriptContentLine(line))) {
@@ -10322,7 +11109,7 @@ export class ObservabilityService {
             lookahead = undefined;
             if (batchBytes >= APPEND_BATCH_MAX_BYTES) break;
           }
-          await appendFile(options.pathForDay(day), lines.join(''));
+          await appendJsonlLines(options.pathForDay(day), lines.join(''));
           for (let index = 0; index < lines.length; index += 1) {
             const entry = entries[cursor + index];
             if (entry !== undefined) committed.push(entry);
@@ -10542,22 +11329,41 @@ export class ObservabilityService {
         .filter((name) => name.endsWith('.jsonl'))
         .map(async (filename) => {
           const day = filename.replace(/\.jsonl$/, '');
-          const fileDate = new Date(`${day}T00:00:00.000Z`);
-          if (fileDate.getTime() >= cutoffTime) {
+          const fileDayTime = retainedDayStartTime(day);
+          if (fileDayTime === null || fileDayTime >= cutoffTime) {
             return;
           }
           // A reader of the audit stream may still need this file.
-          const mayPrune = await mayPruneAuditDayFile({
+          const decision = await mayPruneAuditDayFile({
             dayFilename: filename,
-            fileDayTime: fileDate.getTime(),
+            fileDayTime,
             cutoffTime,
             retentionDays,
           });
-          if (!mayPrune) {
+          if (!decision.prune) {
             return;
           }
-          await rm(getAgentObservabilityAuditDayFilePath(day), {
-            force: true,
+          const filePath = getAgentObservabilityAuditDayFilePath(day);
+          const verified = decision.verified;
+          if (verified === undefined) {
+            await rm(filePath, { force: true });
+            return;
+          }
+          // The guard runs outside the persistence queue, since a refresh it
+          // waits for may flush observability. Delete inside the queue, and
+          // only the file the reader consumed: an entry appended since keeps it.
+          await this.enqueuePersistenceTask(async (): Promise<void> => {
+            const current = await stat(filePath);
+            if (
+              !sameAuditDayFileIdentity(verified, {
+                size: current.size,
+                mtimeMs: current.mtimeMs,
+                ino: current.ino,
+              })
+            ) {
+              return;
+            }
+            await rm(filePath, { force: true });
           });
         }),
     ).catch(() => {});
@@ -10578,8 +11384,8 @@ export class ObservabilityService {
         .filter((name) => name.endsWith('.jsonl'))
         .map(async (filename) => {
           const day = filename.replace(/\.jsonl$/, '');
-          const fileDate = new Date(`${day}T00:00:00.000Z`);
-          if (fileDate.getTime() >= usageEventCutoffTime) {
+          const fileDayTime = retainedDayStartTime(day);
+          if (fileDayTime === null || fileDayTime >= usageEventCutoffTime) {
             return;
           }
           await rm(getAgentObservabilityUsageEventsDayFilePath(day), {
@@ -10601,8 +11407,8 @@ export class ObservabilityService {
         .filter((name) => name.endsWith('.jsonl'))
         .map(async (filename) => {
           const day = filename.replace(/\.jsonl$/, '');
-          const fileDate = new Date(`${day}T00:00:00.000Z`);
-          if (fileDate.getTime() >= cutoffTime) {
+          const fileDayTime = retainedDayStartTime(day);
+          if (fileDayTime === null || fileDayTime >= cutoffTime) {
             return;
           }
           await rm(getAgentObservabilityAppEventsDayFilePath(day), {
@@ -10624,8 +11430,8 @@ export class ObservabilityService {
         .filter((name) => name.endsWith('.jsonl'))
         .map(async (filename) => {
           const day = filename.replace(/\.jsonl$/, '');
-          const fileDate = new Date(`${day}T00:00:00.000Z`);
-          if (fileDate.getTime() >= cutoffTime) {
+          const fileDayTime = retainedDayStartTime(day);
+          if (fileDayTime === null || fileDayTime >= cutoffTime) {
             return;
           }
           await rm(getAgentObservabilitySessionEventsDayFilePath(day), {
@@ -10644,8 +11450,8 @@ export class ObservabilityService {
 
     await Promise.all(
       transcriptDays.map(async (day) => {
-        const directoryDate = new Date(`${day}T00:00:00.000Z`);
-        if (directoryDate.getTime() >= cutoffTime) {
+        const directoryDayTime = retainedDayStartTime(day);
+        if (directoryDayTime === null || directoryDayTime >= cutoffTime) {
           return;
         }
         await rm(getAgentObservabilityTranscriptDayDir(day), {
@@ -10668,8 +11474,8 @@ export class ObservabilityService {
         .filter((name) => name.endsWith('.jsonl'))
         .map(async (filename) => {
           const day = filename.replace(/\.jsonl$/, '');
-          const fileDate = new Date(`${day}T00:00:00.000Z`);
-          if (fileDate.getTime() >= cutoffTime) {
+          const fileDayTime = retainedDayStartTime(day);
+          if (fileDayTime === null || fileDayTime >= cutoffTime) {
             return;
           }
           await rm(getAgentObservabilityTranscriptIndexDayFilePath(day), {

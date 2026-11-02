@@ -1,13 +1,27 @@
-import { createContext, useContext, type RefObject } from 'react';
+import {
+  createContext,
+  useContext,
+  type RefObject,
+  type MouseEvent,
+} from 'react';
 import type {
   AccountOrganizationSettingsApi,
   CanopyApi,
   CanopyCloudAccountPublicState,
 } from '@canopy/desktop-shared/types';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
+import {
+  authenticatedPortalResultSchema,
+  classifyAuthenticatedPortalPath,
+  normalizeAuthenticatedPortalOrigin,
+} from '@canopy/desktop-shared/lib/authenticated-portal-request';
+import { settingsActionErrorCopy } from '@canopy/ui-app/settings/errors';
+import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
   hostedSettingsPathname,
+  hostedSettingsSearchParams,
+  type HostedSettingsLocation,
   resolveHostedSettingsHref,
 } from './hosted-settings-location';
 import type { PersistedSettingsNavModel } from './hosted-settings-model';
@@ -78,46 +92,178 @@ export function useHostedSettingsWebOrigin(): string {
   return useDesktopSettingsHostContext().webOrigin;
 }
 
-/** Open a URL through main's guarded external-open path. */
-export function openHostedSettingsExternalUrl(url: string): void {
-  const api: Partial<CanopyApi> | undefined = window.api;
-  const browser = api?.browser;
-  if (browser === undefined) return;
-  void browser.openExternal({ url }).catch(() => {
-    // Failing to open the browser is not surfaced, as elsewhere on desktop.
-  });
+/** Facts supplied by the host, never inferred from the Electron document. */
+export interface HostedSettingsLinkContext {
+  readonly account: HostedSettingsAccount;
+  readonly webOrigin: string;
+  readonly location: HostedSettingsLocation | null;
 }
 
-/**
- * Follow an `href` from shared settings UI: settings pages navigate inside
- * the overlay; anything else opens on the web.
- */
+/** Reject raw input before URL parsing can normalize unsafe characters. */
+function safeHostedSettingsHref(href: string): boolean {
+  return (
+    href.length > 0 &&
+    !/[\s\\]/.test(href) &&
+    !Array.from(href).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+    })
+  );
+}
+
+function currentHostedSettingsPath(
+  location: HostedSettingsLocation | null,
+): string {
+  if (location === null) return '/';
+  // Keep the raw query, including repeated tab values used by payment
+  // classification. Add only route defaults that the location omits.
+  const existing = new URLSearchParams(location.search);
+  const defaults = new URLSearchParams();
+  hostedSettingsSearchParams({ ...location, search: '' }).forEach(
+    (value, key) => {
+      if (!existing.has(key)) defaults.append(key, value);
+    },
+  );
+  const query = [defaults.toString(), location.search]
+    .filter(Boolean)
+    .join('&');
+  return `${hostedSettingsPathname(location.route)}${query ? `?${query}` : ''}${location.hash ? `#${location.hash}` : ''}`;
+}
+
+/** One activation owns one failure notice; no destination or server text is shown. */
+export async function openHostedSettingsExternalUrl(
+  href: string,
+  { account, webOrigin, location }: HostedSettingsLinkContext,
+): Promise<boolean> {
+  let action = 'open this page';
+  try {
+    if (!safeHostedSettingsHref(href)) throw new Error('Invalid destination');
+    const origin = normalizeAuthenticatedPortalOrigin(webOrigin);
+    const url =
+      origin === null
+        ? new URL(href)
+        : new URL(href, new URL(currentHostedSettingsPath(location), origin));
+    if (url.username || url.password || /^https?:\/\/[^/]*@/i.test(href))
+      throw new Error('Invalid destination');
+    const api: Partial<CanopyApi> | undefined = window.api;
+    if (url.protocol === 'mailto:' && url.pathname) {
+      if (!api?.browser?.openExternal) throw new Error('Unavailable');
+      await api.browser.openExternal({ url: url.href });
+      return true;
+    }
+    if (
+      origin === null ||
+      (url.protocol !== 'https:' && url.protocol !== 'http:')
+    )
+      throw new Error('Unavailable');
+    if (url.origin !== origin) {
+      if (!api?.browser?.openExternal) throw new Error('Unavailable');
+      await api.browser.openExternal({ url: url.href });
+      return true;
+    }
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    const kind = classifyAuthenticatedPortalPath(path);
+    if (kind === 'payment') action = 'open this payment page';
+    // eslint-disable-next-line no-restricted-properties -- This host adapter uses the strict object overload; legacy navigation helpers permit fallback.
+    const openAuthenticated = api?.openAuthenticatedPortalPage;
+    if (kind === null || account.status !== 'signed_in' || !openAuthenticated)
+      throw new Error('Unavailable');
+    const result = authenticatedPortalResultSchema.safeParse(
+      await openAuthenticated({
+        requireAuthentication: true,
+        kind,
+        path,
+        accountId: account.accountId,
+        webOrigin: origin,
+      }),
+    );
+    if (result.success && result.data.ok) return true;
+    if (
+      result.success &&
+      !result.data.ok &&
+      result.data.reason === 'browser_failed'
+    )
+      action = 'open your browser';
+  } catch {
+    // A rejected invoke may follow a launch. Never retry or downgrade it.
+  }
+  useGitHubStore
+    .getState()
+    .addToast(settingsActionErrorCopy(null, { action }), 'error', undefined, {
+      forceInApp: true,
+    });
+  return false;
+}
+
+/** Internal settings routing remains available without the external bridge. */
 export function followHostedSettingsHref(
   href: string,
-  webOrigin: string,
+  context: HostedSettingsLinkContext,
   options: { readonly replace?: boolean } = {},
 ): void {
-  const navigation = useNavigationStore.getState();
-  const current = navigation.settingsHostedLocation;
-  const currentPath =
-    current === null ? '/' : hostedSettingsPathname(current.route);
-  const target = resolveHostedSettingsHref(href, webOrigin, currentPath);
-  switch (target.kind) {
-    case 'settings': {
-      const { route, search, hash } = target.location;
-      // A fragment-only link keeps the page's own query.
-      const keepSearch = href.startsWith('#') && current !== null;
-      navigation.openAccountOrganizationSettings(route, {
-        search: keepSearch ? current.search : search,
-        hash,
-        ...(options.replace === true ? { replace: true } : {}),
-      });
-      return;
-    }
-    case 'external':
-      openHostedSettingsExternalUrl(target.url);
-      return;
-    case 'none':
-      return;
+  if (!safeHostedSettingsHref(href)) {
+    void openHostedSettingsExternalUrl(href, context);
+    return;
   }
+  const origin = normalizeAuthenticatedPortalOrigin(context.webOrigin);
+  try {
+    const url = new URL(
+      href,
+      new URL(
+        currentHostedSettingsPath(context.location),
+        origin ?? 'https://settings.invalid',
+      ),
+    );
+    if (url.username || url.password || /^https?:\/\/[^/]*@/i.test(href))
+      throw new Error('Invalid destination');
+  } catch {
+    void openHostedSettingsExternalUrl(href, context);
+    return;
+  }
+  const target = resolveHostedSettingsHref(
+    href,
+    origin ?? '',
+    currentHostedSettingsPath(context.location),
+  );
+  if (target.kind === 'settings') {
+    const { route, search, hash } = target.location;
+    useNavigationStore.getState().openAccountOrganizationSettings(route, {
+      search,
+      hash,
+      ...(options.replace === true ? { replace: true } : {}),
+    });
+  } else {
+    void openHostedSettingsExternalUrl(href, context);
+  }
+}
+
+/** Bubbling boundary also covers raw shared anchors and React portals. */
+export function activateHostedSettingsAnchor(
+  event: MouseEvent<HTMLElement>,
+  context: HostedSettingsLinkContext,
+  options: { readonly replace?: boolean } = {},
+): void {
+  if (event.defaultPrevented || (event.button !== 0 && event.button !== 1))
+    return;
+  const target = event.target;
+  const element =
+    target instanceof Element
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  const anchor = element?.closest('a');
+  const href = anchor?.getAttribute('href');
+  if (href === null || href === undefined) return;
+  event.preventDefault();
+  if (href === '') return;
+  const external =
+    event.button === 1 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey ||
+    (anchor?.target && anchor.target.toLowerCase() !== '_self');
+  if (external) void openHostedSettingsExternalUrl(href, context);
+  else followHostedSettingsHref(href, context, options);
 }

@@ -24,7 +24,7 @@ export class TranscriptReader {
   private pinnedRevision: number | undefined;
 
   public constructor(
-    private readonly context: ChatReadContext,
+    private readonly context: Pick<ChatReadContext, 'scope'>,
     revision?: number,
   ) {
     this.pinnedRevision = revision;

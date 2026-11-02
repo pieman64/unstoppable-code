@@ -5,6 +5,7 @@ import type {
   CapabilityItemKind,
   CapabilityReferenceArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
+import { WORKFLOW_ITEM_LABEL } from '../lib/workflow-labels';
 
 /**
  * Receipts that render as a compact capability tile. Pipeline runs and watched
@@ -49,6 +50,11 @@ export interface CapabilityTileModel {
   kindLabel: string;
   /** What this turn did with the item: "Created", "Found", "Triggered"… */
   operationLabel: string;
+  /**
+   * Leads the tile's detail line: "Skill" for a found or recommended item,
+   * "Created pipeline" when the turn changed it.
+   */
+  kindPhrase: string;
   name: string;
   /** One-line purpose or configuration summary. */
   summary?: string;
@@ -72,7 +78,7 @@ const IMPORT_OPERATION = /\.import_shared$/i;
 
 const ITEM_KIND_LABELS: Record<CapabilityItemKind, string> = {
   skill: 'Skill',
-  pipeline: 'Pipeline',
+  pipeline: WORKFLOW_ITEM_LABEL,
   automation: 'Automation',
   agent: 'Agent',
   plugin: 'Plugin',
@@ -119,11 +125,20 @@ const REFERENCE_STATES: Record<
   CapabilityReferenceArtifactReceiptV1['state'],
   { label: string; tone: CapabilityTileTone } | undefined
 > = {
-  installed: { label: 'Installed', tone: 'success' },
-  available: { label: 'Available', tone: 'muted' },
+  installed: { label: 'Installed', tone: 'muted' },
+  available: { label: 'Not installed', tone: 'muted' },
   'needs-auth': { label: 'Needs sign-in', tone: 'warning' },
   unknown: undefined,
 };
+
+/**
+ * Source labels that only say the item is on this machine, which the state
+ * already says. Shared, plugin, catalog and external sources stay visible.
+ */
+const LOCAL_SOURCE_LABELS: ReadonlySet<string> = new Set([
+  'Installed',
+  'Local',
+]);
 
 const MAX_LISTED_CHANGES = 3;
 
@@ -168,6 +183,13 @@ export function formatCapabilityRunDuration(
   return rest > 0 ? `${minutes} min ${rest} s` : `${minutes} min`;
 }
 
+/** "Pipeline" → "pipeline"; an acronym such as "MCP server" stays as is. */
+function lowerFirstWord(label: string): string {
+  return /^[A-Z][a-z]/.test(label)
+    ? `${label.charAt(0).toLowerCase()}${label.slice(1)}`
+    : label;
+}
+
 function joinSummary(...parts: Array<string | undefined>): string | undefined {
   const present = parts.filter(
     (part): part is string => typeof part === 'string' && part.length > 0,
@@ -178,7 +200,7 @@ function joinSummary(...parts: Array<string | undefined>): string | undefined {
 function automationRunModel(
   receipt: AutomationRunArtifactReceiptV1,
   live: CapabilityTileLiveState,
-): Omit<CapabilityTileModel, 'external' | 'removed'> {
+): Omit<CapabilityTileModel, 'external' | 'removed' | 'kindPhrase'> {
   // A terminal receipt never regresses to running from older live data.
   const status =
     live.runStatus &&
@@ -216,12 +238,12 @@ function automationRunModel(
 function baseModel(
   receipt: CapabilityTileReceipt,
   live: CapabilityTileLiveState,
-): Omit<CapabilityTileModel, 'external' | 'removed'> {
+): Omit<CapabilityTileModel, 'external' | 'removed' | 'kindPhrase'> {
   switch (receipt.kind) {
     case 'pipeline':
       return {
         iconKind: 'pipeline',
-        kindLabel: 'Pipeline',
+        kindLabel: WORKFLOW_ITEM_LABEL,
         operationLabel: mutationLabel(receipt.operation),
         name: receipt.name,
         summary:
@@ -237,9 +259,8 @@ function baseModel(
         kindLabel: 'Skill',
         operationLabel: mutationLabel(receipt.operation),
         name: receipt.name,
-        summary:
-          receipt.description ||
-          (receipt.source === 'shared' ? 'Shared skill' : 'Installed skill'),
+        ...(receipt.description ? { summary: receipt.description } : {}),
+        ...(receipt.source === 'shared' ? { sourceLabel: 'Shared' } : {}),
       };
     case 'automation':
       return {
@@ -263,11 +284,10 @@ function baseModel(
         kindLabel: 'Agent',
         operationLabel: mutationLabel(receipt.operation),
         name: receipt.name,
-        summary:
-          receipt.description ||
-          receipt.model ||
-          (receipt.source === 'shared' ? 'Shared agent' : 'Local agent'),
-        sourceLabel: receipt.source === 'shared' ? 'Shared' : 'Local',
+        ...(receipt.description || receipt.model
+          ? { summary: receipt.description || receipt.model }
+          : {}),
+        ...(receipt.source === 'shared' ? { sourceLabel: 'Shared' } : {}),
       };
     case 'capability_reference': {
       const state = REFERENCE_STATES[receipt.state];
@@ -278,7 +298,9 @@ function baseModel(
           receipt.relation === 'recommended' ? 'Recommended' : 'Found',
         name: receipt.name,
         ...(receipt.description ? { summary: receipt.description } : {}),
-        sourceLabel: receipt.sourceLabel,
+        ...(LOCAL_SOURCE_LABELS.has(receipt.sourceLabel)
+          ? {}
+          : { sourceLabel: receipt.sourceLabel }),
         ...(state ? { state } : {}),
         ...(receipt.reason ? { reason: receipt.reason } : {}),
       };
@@ -295,6 +317,12 @@ export function capabilityTileModel(
   live: CapabilityTileLiveState = {},
 ): CapabilityTileModel {
   const model = baseModel(receipt, live);
+  // A found or recommended item and a run are named by kind alone; a turn
+  // that saved the item leads with what it did, e.g. "Updated pipeline".
+  const kindPhrase =
+    receipt.kind === 'capability_reference' || receipt.kind === 'automation_run'
+      ? model.kindLabel
+      : `${model.operationLabel} ${lowerFirstWord(model.kindLabel)}`;
   const external =
     receipt.kind === 'capability_reference' &&
     receipt.navigationTarget.kind === 'external_url';
@@ -311,6 +339,7 @@ export function capabilityTileModel(
       : {};
   return {
     ...model,
+    kindPhrase,
     ...(changeSummary ? { changeSummary } : {}),
     ...removedState,
     ...(removed && receipt.kind === 'automation_run'

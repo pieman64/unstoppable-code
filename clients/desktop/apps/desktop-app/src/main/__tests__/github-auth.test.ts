@@ -15,19 +15,34 @@ jest.mock('../pipelines/config-paths', () => ({
   getEnhancedEnv: jest.fn(() => ({ PATH: '/mock/bin' })),
 }));
 
-const mockNativeStorage = {
-  isEncryptionAvailable: jest.fn(() => true),
-  encryptString: jest.fn((value: string) =>
-    Buffer.from(`internal:${value}`, 'utf8'),
-  ),
-  decryptString: jest.fn((encrypted: Buffer) =>
-    encrypted.toString('utf8').replace(/^legacy:/, ''),
-  ),
-  getSelectedStorageBackend: jest.fn(() => 'gnome_libsecret'),
-};
+// `gh auth token` answers through this mock; by default gh is missing.
+const mockGhToken = jest.fn<string | null, []>(() => null);
+jest.mock('node:child_process', () => ({
+  execFile: (
+    _file: string,
+    _args: string[],
+    _options: unknown,
+    callback: (error: Error | null, result?: { stdout: string }) => void,
+  ): void => {
+    const token = mockGhToken();
+    if (token === null)
+      callback(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }));
+    else callback(null, { stdout: `${token}\n` });
+  },
+}));
+
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
-  safeStorage: mockNativeStorage,
+  safeStorage: {
+    isEncryptionAvailable: jest.fn(() => true),
+    encryptString: jest.fn((value: string) =>
+      Buffer.from(`internal:${value}`, 'utf8'),
+    ),
+    decryptString: jest.fn((encrypted: Buffer) =>
+      encrypted.toString('utf8').replace(/^legacy:/, ''),
+    ),
+    getSelectedStorageBackend: jest.fn(() => 'gnome_libsecret'),
+  },
 }));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): string => 'linux',
@@ -37,6 +52,7 @@ import { readFile } from 'node:fs/promises';
 import { getInternalLegacySharedGitHubPatFilePath } from '../lib/paths';
 import { writeFileAtomically } from '../lib/atomic-file';
 import {
+  describeGitHubCredential,
   loadStoredPat,
   readStoredPatWithStatus,
   invalidateTokenCache,
@@ -48,6 +64,15 @@ const internalLegacyPathMock = jest.mocked(
   getInternalLegacySharedGitHubPatFilePath,
 );
 const atomicWriteMock = jest.mocked(writeFileAtomically);
+const mockNativeStorage = jest.requireMock<{
+  safeStorage: Record<
+    | 'isEncryptionAvailable'
+    | 'encryptString'
+    | 'decryptString'
+    | 'getSelectedStorageBackend',
+    jest.Mock
+  >;
+}>('electron').safeStorage;
 
 function missingFileError(): Error & { code: 'ENOENT' } {
   return Object.assign(new Error('missing'), { code: 'ENOENT' as const });
@@ -59,6 +84,7 @@ function errnoError(code: string): Error & { code: string } {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockGhToken.mockReturnValue(null);
   invalidateTokenCache();
   mockNativeStorage.isEncryptionAvailable.mockReturnValue(true);
   mockNativeStorage.getSelectedStorageBackend.mockReturnValue(
@@ -203,4 +229,79 @@ it('retries legacy migration after a temporary filesystem write failure without 
     .mockResolvedValueOnce(Buffer.from('legacy:fixture-token'));
   await resolveGitHubTokenWithSource();
   expect(atomicWriteMock).toHaveBeenCalledTimes(2);
+});
+
+describe('describeGitHubCredential', () => {
+  it('reports a stored PAT as present, then answers from the shared cache', async () => {
+    readFileMock.mockResolvedValue(Buffer.from('fixture-token'));
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'pat',
+      storedCredential: 'present',
+    });
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'pat',
+      storedCredential: 'present',
+    });
+    // The second read used the cache resolveGitHubToken fills.
+    expect(readFileMock).toHaveBeenCalledTimes(1);
+    await expect(resolveGitHubTokenWithSource()).resolves.toEqual({
+      token: 'fixture-token',
+      source: 'pat',
+    });
+    expect(readFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the GitHub CLI fallback with an absent store', async () => {
+    readFileMock.mockRejectedValue(missingFileError());
+    mockGhToken.mockReturnValue('gho_fixture');
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'gh-cli',
+      storedCredential: 'absent',
+    });
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'gh-cli',
+      storedCredential: 'absent',
+    });
+    expect(mockGhToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports no credential when neither the store nor gh has one', async () => {
+    readFileMock.mockRejectedValue(missingFileError());
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'none',
+      storedCredential: 'absent',
+    });
+  });
+
+  it('reports an unavailable platform store', async () => {
+    readFileMock.mockResolvedValue(Buffer.from('fixture-token'));
+    mockNativeStorage.isEncryptionAvailable.mockReturnValue(false);
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'none',
+      storedCredential: 'storage-unavailable',
+    });
+    mockGhToken.mockReturnValue('gho_fixture');
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'gh-cli',
+      storedCredential: 'storage-unavailable',
+    });
+  });
+
+  it('reports a store that cannot be read as unreadable', async () => {
+    readFileMock.mockRejectedValue(errnoError('EACCES'));
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'none',
+      storedCredential: 'unreadable',
+    });
+  });
+
+  it('reports a store that turned unavailable after a cached PAT', async () => {
+    readFileMock.mockResolvedValue(Buffer.from('fixture-token'));
+    await describeGitHubCredential();
+    mockNativeStorage.isEncryptionAvailable.mockReturnValue(false);
+    await expect(describeGitHubCredential()).resolves.toEqual({
+      tokenSource: 'none',
+      storedCredential: 'storage-unavailable',
+    });
+  });
 });

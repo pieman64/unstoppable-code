@@ -106,6 +106,39 @@ describe('model harness transport contracts', () => {
     );
   });
 
+  it('isolates per-chat choices from caller mutations and assignment defaults', () => {
+    const chatHarnesses: NonNullable<
+      ModelHarnessAssignmentSnapshot['assignments'][number]['chatHarnesses']
+    > = ['claude', 'opencode'];
+    const assignment = Object.assign(
+      {
+        modelId: 'managed-claude',
+        source: 'claude-managed',
+        harness: 'claude',
+        defaultHarness: 'claude',
+        configurable: false,
+        overridden: false,
+        availableHarnesses: ['claude'],
+      } satisfies ModelHarnessAssignmentSnapshot['assignments'][number],
+      {
+        chatHarnesses,
+      },
+    );
+    initModelHarnessAssignments({ revision: 4, assignments: [assignment] });
+    assignment.availableHarnesses.length = 0;
+    assignment.chatHarnesses.length = 0;
+    const first = getModelHarnessAssignmentSnapshot();
+    expect(first.assignments[0]).toMatchObject({
+      availableHarnesses: ['claude'],
+      chatHarnesses: ['claude', 'opencode'],
+    });
+    first.assignments[0].availableHarnesses?.pop();
+    expect(getHydratedModelHarnessAssignment('managed-claude')).toMatchObject({
+      availableHarnesses: ['claude'],
+      chatHarnesses: ['claude', 'opencode'],
+    });
+  });
+
   it('locks the v1 overrides-file schema and Ollama default', () => {
     const file: ModelHarnessOverridesFile = {
       version: 1,

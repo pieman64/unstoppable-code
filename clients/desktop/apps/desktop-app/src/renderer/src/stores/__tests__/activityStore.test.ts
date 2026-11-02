@@ -373,6 +373,206 @@ describe('activityStore tracked-plan inventory flag', () => {
   });
 });
 
+describe('activityStore stale tracked-plan list responses (CAN-5166)', () => {
+  let listMock: jest.Mock;
+
+  function deferred<T>(): {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+    reject: (error: unknown) => void;
+  } {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  beforeEach(() => {
+    listMock = jest.fn();
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { api: { activity: { plans: { list: listMock } } } },
+    });
+    useActivityStore.setState({
+      trackedPlans: { [KEY]: [makePlan()] },
+      trackedPlanInventoryLoaded: {},
+    });
+  });
+
+  it('keeps a committed approval when a list started before it resolves afterward', async () => {
+    const olderList = deferred<TrackedPlanData[]>();
+    listMock.mockReturnValueOnce(olderList.promise);
+    const olderLoad = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+
+    useActivityStore
+      .getState()
+      .commitTrackedPlanUpdate(makePlan({ reviewStatus: 'approved' }));
+    olderList.resolve([
+      makePlan({ reviewStatus: 'pending' }),
+      makePlan({ id: 'plan-2', title: 'Sibling' }),
+    ]);
+    await olderLoad;
+
+    const plans = getStoredPlans();
+    expect(plans.find((plan) => plan.id === 'plan-1')?.reviewStatus).toBe(
+      'approved',
+    );
+    // The rest of the older response still applies.
+    expect(plans.find((plan) => plan.id === 'plan-2')?.title).toBe('Sibling');
+  });
+
+  it('applies a list that started after the write as authoritative', async () => {
+    const olderList = deferred<TrackedPlanData[]>();
+    listMock
+      .mockReturnValueOnce(olderList.promise)
+      .mockResolvedValueOnce([
+        makePlan({ reviewStatus: 'approved', title: 'Renamed' }),
+      ]);
+    const olderLoad = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    useActivityStore
+      .getState()
+      .commitTrackedPlanUpdate(makePlan({ reviewStatus: 'approved' }));
+
+    await useActivityStore.getState().loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    expect(getStoredPlans()[0]?.title).toBe('Renamed');
+
+    // The older response still cannot restore Pending once the newer one won.
+    olderList.resolve([makePlan({ reviewStatus: 'pending' })]);
+    await olderLoad;
+    expect(getStoredPlans()[0]).toMatchObject({
+      reviewStatus: 'approved',
+      title: 'Renamed',
+    });
+  });
+
+  it('protects a noted write that has no returned record', async () => {
+    const olderList = deferred<TrackedPlanData[]>();
+    listMock
+      .mockReturnValueOnce(olderList.promise)
+      .mockResolvedValueOnce([makePlan({ reviewStatus: 'approved' })]);
+    const olderLoad = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    useActivityStore
+      .getState()
+      .noteTrackedPlanWrite(PROJECT_ID, WORKTREE_ID, 'plan-1');
+    const newerLoad = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    await newerLoad;
+
+    olderList.resolve([makePlan({ reviewStatus: 'pending' })]);
+    await olderLoad;
+    expect(getStoredPlans()[0]?.reviewStatus).toBe('approved');
+  });
+
+  it('preserves a committed approval omitted by an older list after reconciliation fails', async () => {
+    const olderList = deferred<TrackedPlanData[]>();
+    listMock
+      .mockReturnValueOnce(olderList.promise)
+      .mockRejectedValueOnce(new Error('offline'));
+    const olderLoad = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    useActivityStore
+      .getState()
+      .commitTrackedPlanUpdate(makePlan({ reviewStatus: 'approved' }));
+    await expect(
+      useActivityStore.getState().loadTrackedPlans(PROJECT_ID, WORKTREE_ID),
+    ).rejects.toThrow('offline');
+
+    olderList.resolve([makePlan({ id: 'plan-2', title: 'Sibling' })]);
+    await olderLoad;
+    expect(getStoredPlans()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'plan-1', reviewStatus: 'approved' }),
+        expect.objectContaining({ id: 'plan-2', title: 'Sibling' }),
+      ]),
+    );
+  });
+
+  it('leaves other worktrees untouched by the guard', async () => {
+    const otherKey = `${PROJECT_ID}/wt-2`;
+    useActivityStore.setState({
+      trackedPlans: {
+        [KEY]: [makePlan()],
+        [otherKey]: [makePlan({ worktreeId: 'wt-2' })],
+      },
+    });
+    const olderList = deferred<TrackedPlanData[]>();
+    listMock.mockReturnValueOnce(olderList.promise);
+    const olderLoad = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, 'wt-2');
+    useActivityStore
+      .getState()
+      .commitTrackedPlanUpdate(makePlan({ reviewStatus: 'approved' }));
+
+    olderList.resolve([
+      makePlan({ worktreeId: 'wt-2', reviewStatus: 'dismissed' }),
+    ]);
+    await olderLoad;
+    expect(
+      useActivityStore.getState().trackedPlans[otherKey]?.[0]?.reviewStatus,
+    ).toBe('dismissed');
+    expect(getStoredPlans()[0]?.reviewStatus).toBe('approved');
+  });
+
+  it('never resurrects a plan removed by a newer authoritative list', async () => {
+    const olderList = deferred<TrackedPlanData[]>();
+    listMock.mockReturnValueOnce(olderList.promise).mockResolvedValueOnce([]);
+    const olderLoad = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    useActivityStore
+      .getState()
+      .commitTrackedPlanUpdate(makePlan({ reviewStatus: 'approved' }));
+    await useActivityStore.getState().loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    olderList.resolve([makePlan({ reviewStatus: 'pending' })]);
+    await olderLoad;
+    expect(getStoredPlans()).toEqual([]);
+  });
+
+  it.each([true, false])(
+    'does not resurrect a plan removed by an authoritative event while listing (hydrated=%s)',
+    async (hydrated) => {
+      if (!hydrated) useActivityStore.setState({ trackedPlans: {} });
+      const pendingList = deferred<TrackedPlanData[]>();
+      listMock.mockReturnValueOnce(pendingList.promise);
+      const load = useActivityStore
+        .getState()
+        .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+      useActivityStore
+        .getState()
+        .removeTrackedPlan(PROJECT_ID, WORKTREE_ID, 'plan-1');
+      pendingList.resolve([makePlan(), makePlan({ id: 'plan-2' })]);
+      await load;
+      expect(getStoredPlans().map((plan) => plan.id)).toEqual(['plan-2']);
+    },
+  );
+
+  it('preserves an authoritative event approval against a pending list', async () => {
+    const pendingList = deferred<TrackedPlanData[]>();
+    listMock.mockReturnValueOnce(pendingList.promise);
+    const load = useActivityStore
+      .getState()
+      .loadTrackedPlans(PROJECT_ID, WORKTREE_ID);
+    useActivityStore
+      .getState()
+      .upsertTrackedPlan(makePlan({ reviewStatus: 'approved' }));
+    pendingList.resolve([makePlan({ reviewStatus: 'pending' })]);
+    await load;
+    expect(getStoredPlans()[0]?.reviewStatus).toBe('approved');
+  });
+});
+
 describe('activityStore.ensureTrackedPlanLoaded', () => {
   let getMock: jest.Mock;
 

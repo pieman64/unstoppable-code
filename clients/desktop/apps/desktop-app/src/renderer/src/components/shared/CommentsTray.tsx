@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { ResizeHandle } from '@/components/shared/ResizeHandle';
+import { Button } from '@/components/shared/Button';
 import { ChevronTopMediumIcon as AppCatalogChevronTopMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 /**
@@ -256,22 +257,24 @@ export function CommentsTray<T>({
         <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-2">
           <div className="flex items-center gap-1.5">
             {onToggleCollapsed && (
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                className="-ml-1"
                 data-testid={collapseToggleTestId}
                 onClick={onToggleCollapsed}
                 aria-label={
                   isCollapsed ? 'Expand comments' : 'Collapse comments'
                 }
                 aria-expanded={!isCollapsed}
-                className="focus-ring -ml-1 rounded p-0.5 fg-secondary transition hover:fg-primary"
               >
                 <AppCatalogChevronTopMediumIcon
                   width="14"
                   height="14"
                   className={`transition-transform ${isCollapsed ? '' : 'rotate-180'}`}
                 />
-              </button>
+              </Button>
             )}
             <span className="text-xs font-semibold fg-primary">
               Comments ({totalCount})
@@ -283,31 +286,31 @@ export function CommentsTray<T>({
                 body, so the button would otherwise open a composer nothing
                 can see. */}
             {!readOnly && !isCollapsed && (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="compact"
                 data-testid={addNoteTestId}
                 onClick={(): void => {
                   setAddingNote((prev) => !prev);
                   setNoteDraft('');
                 }}
-                className="focus-ring rounded-md border px-2 py-1 text-2xs fg-secondary transition hover:fg-primary"
               >
                 + Add comment
-              </button>
+              </Button>
             )}
             {/* Not gated on readOnly: staged drafts always belong to the
                 latest revision, so submitting stays available even while
                 viewing an older one (matches the original plan tray). */}
             {stagedCount > 0 && onSubmitStaged && (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 data-testid={submitTestId}
                 onClick={onSubmitStaged}
-                className="focus-ring rounded-md bg-accent px-2.5 py-1 text-2xs font-medium fg-emphasis transition hover:bg-accent/90"
               >
                 Submit {stagedCount} comment
                 {stagedCount === 1 ? '' : 's'}
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -341,25 +344,24 @@ export function CommentsTray<T>({
                 className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="mt-1 flex items-center justify-end gap-1.5">
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={(): void => {
                     setAddingNote(false);
                     setNoteDraft('');
                   }}
-                  className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
                 >
                   Cancel
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="compact"
                   onClick={submitNote}
                   disabled={noteDraft.trim().length === 0}
                   data-testid={noteSaveTestId}
-                  className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
                 >
                   Add
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -369,15 +371,16 @@ export function CommentsTray<T>({
               {activeThreads.map(renderThread)}
               {archivedThreads.length > 0 && (
                 <>
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    className="mt-1 self-start"
                     data-testid={archivedToggleTestId}
                     onClick={(): void => setArchivedOpen((prev) => !prev)}
-                    className="focus-ring mt-1 flex items-center gap-1 self-start rounded px-1 py-0.5 text-2xs fg-secondary hover:fg-primary"
                   >
                     {archivedOpen ? 'Hide' : 'Show'} resolved &amp; outdated (
                     {archivedThreads.length})
-                  </button>
+                  </Button>
                   {archivedOpen && archivedThreads.map(renderThread)}
                 </>
               )}

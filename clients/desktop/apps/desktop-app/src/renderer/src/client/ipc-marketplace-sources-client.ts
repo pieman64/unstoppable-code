@@ -1,3 +1,4 @@
+import { createIpcMarketplaceSourceAddSession } from './marketplace-source-add-session';
 import type {
   MarketplaceSource,
   MarketplaceSourcePluginInstallResult,
@@ -38,7 +39,8 @@ type MarketplaceSourcesPluginsApi = Pick<
   | 'removeMarketplace'
   | 'installPlugin'
   | 'onMarketplaceOperationProgress'
->;
+> &
+  Partial<Pick<PluginsAPI, 'addMarketplace'>>;
 
 export interface IpcMarketplaceSourcesCacheSync {
   readonly current?: () => PluginsCache | null;
@@ -50,6 +52,8 @@ export interface IpcMarketplaceSourcesCacheSync {
   readonly remove: (id: string, result: MarketplaceRemovalResult) => void;
   readonly plugin: typeof applyPluginUpdateToMarketplaceCaches;
 }
+
+const LIST_READ_ATTEMPTS = 3;
 
 const DEFAULT_CACHE_SYNC: IpcMarketplaceSourcesCacheSync = {
   current: getCurrentMarketplaceCache,
@@ -89,17 +93,19 @@ function partialRemovalWarning(result: MarketplaceRemovalResult): string {
 
 /**
  * Desktop source management over the existing `window.plugins` IPC. Every
- * authoritative result is also patched into the mounted legacy
- * `useMarketplaceList` caches so the management view, modal and catalog
- * stay in step with the shared surface.
+ * authoritative result is also patched into the mounted
+ * `useMarketplaceList` caches so the plugin details and catalog stay in step
+ * with the shared surface.
  */
 export function createIpcMarketplaceSourcesClient(
   plugins: MarketplaceSourcesPluginsApi,
   sync: IpcMarketplaceSourcesCacheSync = DEFAULT_CACHE_SYNC,
 ): MarketplaceSourcesClient {
+  const addMarketplace = plugins.addMarketplace?.bind(plugins);
   const rows = new Map<string, MarketplaceInfo>();
   let lastCache: PluginsCache | null = null;
   let publishingRead = false;
+  let mutationRevision = 0;
   let cacheOperations = marketplaceSourceOperations.getSnapshot();
 
   const remember = (marketplace: MarketplaceInfo): void => {
@@ -132,6 +138,27 @@ export function createIpcMarketplaceSourcesClient(
 
   return {
     operations: marketplaceSourceOperations,
+    ...(addMarketplace
+      ? {
+          createAddSession: () =>
+            createIpcMarketplaceSourceAddSession({
+              add: addMarketplace,
+              list: async () =>
+                (
+                  await unwrap(
+                    plugins.loadMarketplaces(),
+                    'Failed to load marketplaces',
+                  )
+                ).marketplaces,
+              upsert: (marketplace) => {
+                mutationRevision += 1;
+                remember(marketplace);
+                sync.upsert(marketplace);
+              },
+              operations: marketplaceSourceOperations,
+            }),
+        }
+      : {}),
     cachedSnapshot(): MarketplaceSourcesSnapshot | null {
       if (cacheOperations !== marketplaceSourceOperations.getSnapshot())
         return null;
@@ -139,10 +166,23 @@ export function createIpcMarketplaceSourcesClient(
       return cache ? snapshotFrom(cache) : null;
     },
     async list(): Promise<MarketplaceSourcesSnapshot> {
-      const cache = await unwrap(
-        plugins.loadMarketplaces(),
-        'Failed to load marketplaces',
-      );
+      // A read that a mutation overtook is discarded and retried, so it can
+      // never resurrect a removed source. Bound the retries: steady cache
+      // patches must not keep re-issuing reads.
+      let cache: PluginsCache | null = null;
+      for (let attempt = 0; attempt < LIST_READ_ATTEMPTS; attempt += 1) {
+        const revision = mutationRevision;
+        const read = await unwrap(
+          plugins.loadMarketplaces(),
+          'Failed to load marketplaces',
+        );
+        if (revision === mutationRevision) {
+          cache = read;
+          break;
+        }
+      }
+      if (cache === null)
+        throw new Error('Marketplaces changed while loading. Try again.');
       publishingRead = true;
       try {
         sync.cache(cache);
@@ -157,6 +197,7 @@ export function createIpcMarketplaceSourcesClient(
       return (
         sync.subscribe?.((patch) => {
           if (publishingRead) return;
+          mutationRevision += 1;
           const base = lastCache ?? sync.current?.();
           if (base) listener(snapshotFrom(patch(base)));
         }) ?? ((): void => undefined)
@@ -174,20 +215,26 @@ export function createIpcMarketplaceSourcesClient(
     },
 
     async update(sourceId): Promise<MarketplaceSource> {
+      mutationRevision += 1;
       const marketplace = await unwrap(
         plugins.updateMarketplace(sourceId),
         'Failed to update marketplace',
       );
+      // Fence reads that started after the request began but before its result
+      // was published, including clients without a mounted cache subscription.
+      mutationRevision += 1;
       remember(marketplace);
       sync.upsert(marketplace);
       return toMarketplaceSource(marketplace);
     },
 
     async remove(sourceId): Promise<MarketplaceSourceRemoveResult> {
+      mutationRevision += 1;
       const result = await unwrap(
         plugins.removeMarketplace(sourceId),
         'Failed to remove marketplace',
       );
+      mutationRevision += 1;
       sync.remove(sourceId, result);
       if (result.marketplace === null) {
         rows.delete(sourceId);

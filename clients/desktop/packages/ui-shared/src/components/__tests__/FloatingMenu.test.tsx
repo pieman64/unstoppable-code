@@ -10,6 +10,7 @@ import {
 } from '../FloatingMenu';
 import { DropdownMenuItem } from '../DropdownMenu';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
+import { resetInputModality } from '../../lib/input-modality';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -210,11 +211,54 @@ function ManualHarness(): JSX.Element {
   );
 }
 
+function ClickThroughHarness({
+  onSend,
+  onOutside,
+}: {
+  readonly onSend: () => void;
+  readonly onOutside: () => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(true);
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
+
+  return (
+    <>
+      <div ref={composerRef}>
+        <span ref={anchorRef} />
+        <div ref={editorRef} data-testid="editor" />
+        <button type="button" data-testid="send" onClick={onSend}>
+          Send
+        </button>
+      </div>
+      <button type="button" data-testid="outside" onClick={onOutside}>
+        Outside
+      </button>
+      <FloatingMenu
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={anchorRef}
+        outsidePressBoundaryRef={editorRef}
+        outsidePressClickThroughRef={composerRef}
+        interaction="manual"
+        role="dialog"
+        data-testid="click-through-menu"
+      >
+        <div>Rows</div>
+      </FloatingMenu>
+    </>
+  );
+}
+
 describe('FloatingMenu', () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
+    // jsdom shares one document across cases; a press in one must not make
+    // the next case's open look pointer-driven.
+    resetInputModality(document);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -372,6 +416,47 @@ describe('FloatingMenu', () => {
     expect(menu()).toBeNull();
   });
 
+  it('dismisses on a click-through press without swallowing its click', () => {
+    const onSend = jest.fn();
+    const onOutside = jest.fn();
+    const pressWithMouse = (testId: string): void => {
+      const target = container.querySelector(`[data-testid="${testId}"]`);
+      if (!target) throw new Error(`${testId} missing`);
+      act(() => {
+        target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        target.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true }),
+        );
+      });
+    };
+    const clickThroughMenu = (): Element | null =>
+      document.body.querySelector('[data-testid="click-through-menu"]');
+
+    act(() =>
+      root.render(
+        <ClickThroughHarness onSend={onSend} onOutside={onOutside} />,
+      ),
+    );
+    pressWithMouse('editor');
+    expect(clickThroughMenu()).not.toBeNull();
+
+    pressWithMouse('send');
+    expect(clickThroughMenu()).toBeNull();
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() =>
+      root.render(
+        <ClickThroughHarness onSend={onSend} onOutside={onOutside} />,
+      ),
+    );
+    pressWithMouse('outside');
+    expect(clickThroughMenu()).toBeNull();
+    expect(onOutside).not.toHaveBeenCalled();
+  });
+
   it('uses the document that owns the trigger as its portal and event boundary', () => {
     act(() => root.unmount());
     const frame = document.createElement('iframe');
@@ -404,6 +489,65 @@ describe('FloatingMenu', () => {
     expect(container.contains(menu())).toBe(false);
     expect(document.body.contains(menu())).toBe(true);
     expect(menu()?.className).toContain('canopy-floating-menu');
+  });
+
+  function pressKey(key: string): void {
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true }),
+      );
+    });
+  }
+
+  it('opens from a click with the first row focused but unpainted, and the first arrow paints it', () => {
+    const onFirst = jest.fn();
+    renderHarness({ onFirst });
+    const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
+
+    act(() => {
+      trigger().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      trigger().click();
+    });
+
+    const first = document.body.querySelector<HTMLElement>(
+      '[data-testid="first"]',
+    );
+    expect(document.activeElement).toBe(first);
+    // Keyboard focus paints a row like hover, never with the accent ring.
+    expect(first?.className).toContain('focus-visible:bg-subtle');
+    expect(first?.className).not.toContain('focus-ring');
+    // Chromium's option: the row holds focus without the keyboard look.
+    expect(
+      focusSpy.mock.calls.some(([options]) => options?.focusVisible === false),
+    ).toBe(true);
+    focusSpy.mockRestore();
+
+    // The first arrow paints the focused row instead of skipping past it.
+    pressKey('ArrowDown');
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('first');
+    // Later arrows move, skipping the disabled row.
+    pressKey('ArrowDown');
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('third');
+    pressKey('ArrowUp');
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('first');
+    // Enter picks the painted row.
+    pressKey('Enter');
+    expect(onFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens from the keyboard with the first row painted, so the first arrow moves', () => {
+    renderHarness();
+
+    act(() => {
+      trigger().dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+      trigger().click();
+    });
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('first');
+
+    pressKey('ArrowDown');
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('third');
   });
 
   it('uses the 8px picker gap, focuses the selected option, and skips disabled rows', () => {

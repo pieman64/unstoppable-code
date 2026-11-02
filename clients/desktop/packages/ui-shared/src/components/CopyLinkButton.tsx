@@ -1,5 +1,6 @@
 import { useCallback, type JSX, type MouseEvent } from 'react';
 import { CheckIcon, CopyIcon } from '../icons/AppIcons';
+import type { ButtonSize } from './Button';
 import { CopyButton } from './CopyButton';
 import { NoticeButton } from './Notice';
 import { useCopyToClipboard } from './copy-to-clipboard';
@@ -22,6 +23,12 @@ export interface CopyLinkButtonProps {
   url: string;
   /** Host surface; picks the shared treatment. Defaults to `button`. */
   variant?: CopyLinkButtonVariant;
+  /**
+   * Button size for the `button` variant, so it matches the other actions in
+   * its box (`compact` in a dialog footer). Defaults to `sm`; ignored by
+   * `notice`.
+   */
+  size?: ButtonSize;
   /** Placement in the host. The treatment is not the caller's. */
   className?: string;
   /** Test ID hook for automation. */
@@ -87,6 +94,7 @@ function NoticeCopyLinkButton({
 export function CopyLinkButton({
   url,
   variant = 'button',
+  size = 'sm',
   className,
   dataTestId,
   onCopy,
@@ -111,7 +119,7 @@ export function CopyLinkButton({
       ariaLabel="Copy link"
       title="Copy link"
       variant="ghost"
-      size="sm"
+      size={size}
       copiedDurationMs={COPY_LINK_CONFIRMATION_MS}
       {...(className !== undefined ? { className } : {})}
       {...(dataTestId !== undefined ? { dataTestId } : {})}

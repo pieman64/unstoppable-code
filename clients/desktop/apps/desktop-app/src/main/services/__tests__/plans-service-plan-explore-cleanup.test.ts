@@ -1,14 +1,24 @@
-const mockedDeleteTrackedPlan = jest.fn((): Promise<void> => Promise.resolve());
+const mockedDeleteTrackedPlan = jest.fn<
+  Promise<void>,
+  [projectId: string, worktreeId: string, planId: string]
+>(() => Promise.resolve());
 // `deletePlan` reads the plan before removing it so it can name the deleted
 // plan on the renderer's `trackedPlansUpdated` channel (CAN-1305).
-const mockedGetTrackedPlan = jest.fn(
-  (): Promise<null> => Promise.resolve(null),
-);
+const mockedGetTrackedPlan = jest.fn<
+  Promise<null>,
+  [projectId: string, worktreeId: string, planId: string]
+>(() => Promise.resolve(null));
 jest.mock('../../lib/plan-persistence', () => ({
-  deleteTrackedPlan: (...args: unknown[]): Promise<void> =>
-    mockedDeleteTrackedPlan(...args),
-  getTrackedPlan: (...args: unknown[]): Promise<null> =>
-    mockedGetTrackedPlan(...args),
+  deleteTrackedPlan: (
+    projectId: string,
+    worktreeId: string,
+    planId: string,
+  ): Promise<void> => mockedDeleteTrackedPlan(projectId, worktreeId, planId),
+  getTrackedPlan: (
+    projectId: string,
+    worktreeId: string,
+    planId: string,
+  ): Promise<null> => mockedGetTrackedPlan(projectId, worktreeId, planId),
 }));
 jest.mock('../../lib/shared-plan-sync', () => ({
   shareTrackedPlan: jest.fn(),

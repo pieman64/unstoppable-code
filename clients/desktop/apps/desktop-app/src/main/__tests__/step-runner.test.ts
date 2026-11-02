@@ -1299,16 +1299,17 @@ describe('step-runner', () => {
             ANTHROPIC_BASE_URL: 'http://127.0.0.1:11534',
           },
         }),
-      resolveClaudeCompatibleInvocation: (model, options) =>
-        Promise.resolve({
+      resolveClaudeCompatibleInvocation: (model, options) => {
+        const envOverride: Record<string, string> =
+          options?.ensureRunningReason === 'pipeline' && options.assertInstalled
+            ? { ANTHROPIC_BASE_URL: 'http://127.0.0.1:11534' }
+            : {};
+        return Promise.resolve({
           providerType: 'ollama',
           sdkModel: model?.replace(/^ollama-/, ''),
-          envOverride:
-            options?.ensureRunningReason === 'pipeline' &&
-            options.assertInstalled
-              ? { ANTHROPIC_BASE_URL: 'http://127.0.0.1:11534' }
-              : {},
-        }),
+          envOverride,
+        });
+      },
     };
 
     const result = await runStep({
@@ -1361,7 +1362,10 @@ describe('step-runner', () => {
     const runtimeWithWorker: ExecutionRuntime = {
       ...runtime,
       agentPromptWorker: {
-        runAgentPrompt: jest.fn(async (request) => {
+        runAgentPrompt: jest.fn<
+          Promise<AgentPromptWorkerResult>,
+          [AgentPromptWorkerRequest]
+        >(async (request) => {
           await request.onWorkerStarted?.('worker-1');
           return {
             status: 'success' as const,
@@ -1477,7 +1481,10 @@ describe('step-runner', () => {
       "throw new Error('agentPromptWorker should intercept this step');",
       'utf8',
     );
-    const runAgentPrompt = jest.fn(
+    const runAgentPrompt = jest.fn<
+      Promise<AgentPromptWorkerResult>,
+      [AgentPromptWorkerRequest]
+    >(
       (): Promise<AgentPromptWorkerResult> =>
         Promise.resolve({
           status: 'success',
@@ -3501,7 +3508,7 @@ describe('step-runner', () => {
       ): Promise<undefined> =>
         file
           ? Promise.reject(
-              new Error('Pipeline unavailable (unsupported-target)'),
+              new Error('Workflow unavailable (unsupported-target)'),
             )
           : Promise.resolve(undefined),
     );

@@ -1,7 +1,7 @@
 import { brandEnvCandidates } from '@canopy/desktop-shared/brand/env';
 import type { UserEnvironmentEntry } from '@canopy/desktop-shared/types';
 import { getLoginShellPath } from '../pipelines/config-paths';
-import { isBlockedManagedEnvName } from '../terminal/managed-terminal-env';
+import { isBlockedManagedEnvName } from '@canopy/core-runtime/node/terminal';
 
 const BASE_ENV_NAMES = [
   'HOME',

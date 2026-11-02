@@ -19,8 +19,8 @@ function inventory(): Inventory {
         name: 'Multi',
         type: 'multi-repo',
         repos: [
-          { id: 'repo-1', name: 'api', repoPath: '/x/api' },
-          { id: 'repo-2', name: 'web', repoPath: '/x/web' },
+          { id: 'repo-1', name: 'api' },
+          { id: 'repo-2', name: 'web' },
         ],
       },
       { localId: 'cw', name: 'Chats', type: 'cowork' },
@@ -317,6 +317,65 @@ describe('buildSidebarActivitySnapshot', () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.unreplied)).toBe(true);
     expect(Object.isFrozen(first.unreplied[0])).toBe(true);
+  });
+
+  it("never classifies a muted space's chats as unread (CAN-4378)", () => {
+    const inv = inventory();
+    inv.chatSummaries.push(
+      summary('muted-unread', { hasUnread: true }),
+      summary('loud-unread', {
+        hasUnread: true,
+        workspaceLocalId: 'ws-m',
+        worktreeLocalId: 'wt-2',
+      }),
+    );
+    inv.standaloneChats.push(
+      standalone('entry-muted', { hasUnread: true, workEntryId: 'we-muted' }),
+      standalone('entry-loud', { hasUnread: true, workEntryId: 'we-loud' }),
+      // No Work Entry to look up, so nothing can mute it.
+      standalone('entry-unknown', { hasUnread: true }),
+    );
+    const muted = new Set(['ws-a\u001fwt-1', 'cw\u001fwe-muted', 'cw\u001f']);
+    const spaces: string[] = [];
+    const snapshot = buildSidebarActivitySnapshot({
+      inventory: inv,
+      isSpaceMuted: (workspaceLocalId, spaceLocalId) => {
+        spaces.push(`${workspaceLocalId}\u001f${spaceLocalId}`);
+        return muted.has(`${workspaceLocalId}\u001f${spaceLocalId}`);
+      },
+    });
+    expect(keys(snapshot.unread)).toEqual(
+      expect.arrayContaining([
+        wtKey('loud-unread', 'wt-2', 'ws-m'),
+        sidebarActivityStandaloneChatKey('cw', 'entry-loud'),
+        sidebarActivityStandaloneChatKey('cw', 'entry-unknown'),
+      ]),
+    );
+    expect(snapshot.unread).toHaveLength(3);
+    // Muted chats fall through to the next section that fits them.
+    expect(keys(snapshot.unreplied)).toEqual(
+      expect.arrayContaining([
+        wtKey('muted-unread'),
+        sidebarActivityStandaloneChatKey('cw', 'entry-muted'),
+      ]),
+    );
+    expect(spaces).not.toContain('cw\u001f');
+    expect(
+      snapshot.unread.find((entry) => entry.chatId === 'entry-loud'),
+    ).toMatchObject({ kind: 'standalone-chat', workEntryId: 'we-loud' });
+  });
+
+  it('masks muted spaces even when the host reports the chat unread', () => {
+    const inv = inventory();
+    inv.chatSummaries.push(summary('host-unread', { lastMessageRole: 'user' }));
+    const snapshot = buildSidebarActivitySnapshot({
+      inventory: inv,
+      unreadKeys: new Set([wtKey('host-unread')]),
+      draftKeys: new Set([wtKey('host-unread')]),
+      isSpaceMuted: () => true,
+    });
+    expect(snapshot.unread).toHaveLength(0);
+    expect(keys(snapshot.drafts)).toEqual([wtKey('host-unread')]);
   });
 
   it('keys cannot collide through delimiters in ids', () => {

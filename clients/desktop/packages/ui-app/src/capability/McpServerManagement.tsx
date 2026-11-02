@@ -25,15 +25,15 @@ import {
   type McpConnectionStatusSource,
   type McpServerPlacement,
 } from '@canopy/ui-shared/lib/mcp-card-display';
+import { badgeClassName } from '@canopy/ui-shared/lib/badge';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import type { HostAction } from '@canopy/ui-shared/lib/host-action';
 
 /**
  * A host port for one MCP action. An omitted port means the action does not
  * apply to this server; an unavailable port renders disabled with its reason.
  */
-export type McpAction<F> =
-  | { readonly available: true; readonly run: F }
-  | { readonly available: false; readonly reason: string };
+export type McpAction<F> = HostAction<F>;
 
 /** Cached status, structurally satisfied by desktop entries and the Portal projection. */
 export interface McpHealthStatusInput extends McpConnectionStatusSource {
@@ -121,6 +121,14 @@ export interface McpServerHealthSectionProps {
   /** Called after a finished test so the host can refetch status. */
   readonly onTested?: () => void;
   readonly formatTimestamp?: (iso: string) => string;
+  /**
+   * `section` (default) is the MCP server page's titled Health section;
+   * `inline` drops the heading and fits one table row: health on the left,
+   * Test connection on the right (the plugin detail's MCP servers rows).
+   */
+  readonly presentation?: 'section' | 'inline';
+  /** The inline group's accessible name; defaults to "Health". */
+  readonly label?: string;
 }
 
 interface KeyedOutcome {
@@ -149,6 +157,8 @@ function McpServerHealthSectionForTarget({
   onPendingChange,
   onTested,
   formatTimestamp = defaultFormatTimestamp,
+  presentation = 'section',
+  label = 'Health',
 }: McpServerHealthSectionProps): JSX.Element {
   const reasonId = useId();
   const badge = resolveMcpConnectionBadge(status, accountConnectionStatus);
@@ -246,6 +256,109 @@ function McpServerHealthSectionForTarget({
     return [{ ...config, authStatus: config.authStatus, name }];
   });
 
+  const badgeNode = (
+    <McpConnectionStatusBadge
+      badge={badge}
+      dataTestId="mcp-health-badge"
+      providerTestId="mcp-health-provider"
+    />
+  );
+  const lastCheckedNode = (
+    <p data-testid="mcp-health-last-checked" className="text-xs fg-tertiary">
+      {lastCheckedAt !== undefined
+        ? `Last checked ${formatTimestamp(lastCheckedAt)}`
+        : 'No recorded check'}
+    </p>
+  );
+  const authList = authRows.length > 0 && (
+    <ul className="space-y-1">
+      {authRows.map((config) => (
+        <li
+          key={config.configId}
+          data-testid={`mcp-health-auth-${config.configId}`}
+          className="flex items-center gap-2 text-xs fg-secondary"
+        >
+          <span className="min-w-0 truncate">{config.name}</span>
+          <span
+            className={mcpAuthStatusBadgeClass(
+              config.authStatus,
+              config.canRefresh,
+            )}
+          >
+            {mcpAuthStatusLabel(config.authStatus, config.canRefresh)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+  const testControls = (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        {testable.length > 1 && (
+          <ControlSelect
+            aria-label="Configuration to test"
+            data-testid="mcp-health-config-select"
+            value={effectiveConfigId}
+            disabled={pending}
+            onChange={(event): void => {
+              setSelectedConfigId(event.target.value);
+            }}
+          >
+            {testable.map((config) => (
+              <option key={config.id} value={config.id}>
+                {config.name}
+              </option>
+            ))}
+          </ControlSelect>
+        )}
+        <Button
+          variant="secondary"
+          size="compact"
+          data-testid="mcp-health-test"
+          disabled={testReason !== undefined || pending || busy}
+          aria-describedby={testReason !== undefined ? reasonId : undefined}
+          onClick={(): void => {
+            void handleTest();
+          }}
+        >
+          {pending ? 'Testing…' : 'Test connection'}
+        </Button>
+      </div>
+      {testReason !== undefined && (
+        <UnavailableReason id={reasonId} testId="mcp-health-test-reason">
+          {testReason}
+        </UnavailableReason>
+      )}
+      {shownResult !== null && <TestResultPanel outcome={shownResult} />}
+    </>
+  );
+
+  if (presentation === 'inline') {
+    // Inline renders once per server row, so it is a group rather than a
+    // repeated "Health" landmark.
+    return (
+      <div
+        role="group"
+        data-testid="mcp-health-section"
+        aria-label={label}
+        className="flex flex-wrap items-center justify-between gap-3"
+      >
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {badgeNode}
+            {lastCheckedNode}
+          </div>
+          {authList}
+        </div>
+        {testConnection !== undefined && (
+          <div className="flex min-w-0 flex-col items-end gap-2">
+            {testControls}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <section
       data-testid="mcp-health-section"
@@ -259,75 +372,12 @@ function McpServerHealthSectionForTarget({
         >
           Health
         </h3>
-        <McpConnectionStatusBadge
-          badge={badge}
-          dataTestId="mcp-health-badge"
-          providerTestId="mcp-health-provider"
-        />
+        {badgeNode}
       </div>
-      <p data-testid="mcp-health-last-checked" className="text-xs fg-tertiary">
-        {lastCheckedAt !== undefined
-          ? `Last checked ${formatTimestamp(lastCheckedAt)}`
-          : 'No recorded check'}
-      </p>
-      {authRows.length > 0 && (
-        <ul className="space-y-1">
-          {authRows.map((config) => (
-            <li
-              key={config.configId}
-              data-testid={`mcp-health-auth-${config.configId}`}
-              className="flex items-center gap-2 text-xs fg-secondary"
-            >
-              <span className="min-w-0 truncate">{config.name}</span>
-              <span
-                className={`rounded-full px-2 py-0.5 text-3xs font-medium ${mcpAuthStatusBadgeClass(config.authStatus, config.canRefresh)}`}
-              >
-                {mcpAuthStatusLabel(config.authStatus, config.canRefresh)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      {lastCheckedNode}
+      {authList}
       {testConnection !== undefined && (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {testable.length > 1 && (
-              <ControlSelect
-                aria-label="Configuration to test"
-                data-testid="mcp-health-config-select"
-                value={effectiveConfigId}
-                disabled={pending}
-                onChange={(event): void => {
-                  setSelectedConfigId(event.target.value);
-                }}
-              >
-                {testable.map((config) => (
-                  <option key={config.id} value={config.id}>
-                    {config.name}
-                  </option>
-                ))}
-              </ControlSelect>
-            )}
-            <Button
-              variant="secondary"
-              size="control"
-              data-testid="mcp-health-test"
-              disabled={testReason !== undefined || pending || busy}
-              aria-describedby={testReason !== undefined ? reasonId : undefined}
-              onClick={(): void => {
-                void handleTest();
-              }}
-            >
-              {pending ? 'Testing…' : 'Test connection'}
-            </Button>
-          </div>
-          {testReason !== undefined && (
-            <UnavailableReason id={reasonId} testId="mcp-health-test-reason">
-              {testReason}
-            </UnavailableReason>
-          )}
-          {shownResult !== null && <TestResultPanel outcome={shownResult} />}
-        </div>
+        <div className="space-y-2">{testControls}</div>
       )}
     </section>
   );
@@ -564,7 +614,7 @@ function McpServerManagementActionsForTarget({
         <span
           data-testid="mcp-management-placement"
           data-placement={placement}
-          className="rounded-full bg-secondary px-2 py-0.5 text-3xs font-medium fg-secondary"
+          className={badgeClassName('neutral')}
         >
           {mcpPlacementLabel(placement)}
         </span>
@@ -578,7 +628,7 @@ function McpServerManagementActionsForTarget({
               <li key={row.id} className="space-y-1">
                 <Button
                   variant={row.destructive ? 'destructive' : 'secondary'}
-                  size="control"
+                  size="compact"
                   data-testid={`mcp-management-${row.id}`}
                   disabled={reason !== undefined || pending !== null || busy}
                   aria-describedby={reason !== undefined ? reasonId : undefined}
@@ -628,7 +678,6 @@ function McpServerManagementActionsForTarget({
           busy={pending === 'delete'}
           errorMessage={deleteError}
           destructive
-          focusCancel
           dataTestId="mcp-management-delete-dialog"
           confirmTestId="mcp-management-delete-confirm"
           cancelTestId="mcp-management-delete-cancel"

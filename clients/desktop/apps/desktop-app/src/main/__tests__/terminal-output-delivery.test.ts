@@ -9,6 +9,7 @@ import {
   addRendererDeliveryBarrier,
   sendToWebContents,
 } from '../lib/web-contents-send';
+import type { IpcSendTarget } from '../lib/web-contents-send';
 import {
   TERMINAL_OUTPUT_FRAME_BYTES,
   TERMINAL_OUTPUT_FRAME_MS,
@@ -314,13 +315,12 @@ describe('TerminalOutputDelivery beside the chat state delivery', () => {
 
   it("delivers another window's held chat state before output released into it", () => {
     const received = new Map<string, string[]>();
-    const windowNamed = (
-      name: string,
-    ): { send: (channel: string, payload: unknown) => void } => {
+    const windowNamed = (name: string): IpcSendTarget => {
       const log: string[] = [];
       received.set(name, log);
       return {
-        send: (channel, payload): void => {
+        send: (channel, ...args): void => {
+          const payload = args[0];
           if (channel === IPC_CHANNELS.terminalOutput && isOutput(payload)) {
             log.push(`terminal ${decoder.decode(payload.data)}`);
           } else if (
@@ -344,7 +344,7 @@ describe('TerminalOutputDelivery beside the chat state delivery', () => {
         clearTimeout(timer);
       };
     };
-    const chat = new ChatStateDelivery<object>({
+    const chat = new ChatStateDelivery<IpcSendTarget>({
       deliver: (target, event): void => {
         sendToWebContents(target, IPC_CHANNELS.chatStateChanged, event);
       },

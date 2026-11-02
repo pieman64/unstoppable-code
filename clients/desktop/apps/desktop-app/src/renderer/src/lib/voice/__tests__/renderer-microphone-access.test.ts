@@ -54,12 +54,15 @@ describe('renderer microphone access', () => {
     const getUserMedia = jest.fn<
       Promise<MediaStream>,
       [MediaStreamConstraints]
-    >(() =>
-      Promise.resolve({
-        getTracks: () =>
-          [{ stop: stopFirst }, { stop: stopSecond }] as MediaStreamTrack[],
-      } as MediaStream),
-    );
+    >(() => {
+      const tracks: MediaStreamTrack[] = [];
+      // The renderer only calls stop(); these are minimal jsdom track doubles.
+      Reflect.set(tracks, '0', { stop: stopFirst });
+      Reflect.set(tracks, '1', { stop: stopSecond });
+      return Promise.resolve({
+        getTracks: () => tracks,
+      } as MediaStream);
+    });
     installNavigatorMediaDevices(getUserMedia);
 
     await expect(requestRendererMicrophoneAccess()).resolves.toBeUndefined();

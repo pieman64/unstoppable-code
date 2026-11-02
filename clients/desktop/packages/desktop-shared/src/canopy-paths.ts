@@ -1,6 +1,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { types } from 'node:util';
 import { BRAND } from '@canopy/brand/current';
 import type {
   CanopyRuntimeMode,
@@ -8,6 +9,7 @@ import type {
   ResolvedCanopyDataDir,
   ResolvedCanopySecureDataDir,
 } from '@canopy/protocol/brand';
+import { registerCanopyDataRootResolver } from './node/lib/canopy-data-root-registration';
 
 declare const __CANOPY_RELEASE_FLAVOR__: string | undefined;
 
@@ -155,9 +157,24 @@ function isAutoProvisionedWorkspaceId(id: string): boolean {
  * user-created workspaces) is on-disk indistinguishable from such a skeleton
  * and intentionally resolves to the data-bearing fallback; the Settings
  * fallback notice re-offers the switch, which now writes the marker.
+ *
+ * PostHog launch analytics request strict reads to distinguish missing data
+ * from failed probes. Data-directory resolution keeps permissive reads.
  */
-function candidateHasInstallData(candidate: string): boolean {
-  if (existsSync(path.join(candidate, DATA_DIR_ADOPTION_MARKER_FILENAME))) {
+export function hasCanopyInstallData(
+  candidate: string,
+  options: { throwOnReadError?: boolean } = {},
+): boolean {
+  const throwOnReadError = options.throwOnReadError === true;
+  const markerPath = path.join(candidate, DATA_DIR_ADOPTION_MARKER_FILENAME);
+  if (throwOnReadError) {
+    try {
+      statSync(markerPath);
+      return true;
+    } catch (error) {
+      handleInstallDataReadError(error, throwOnReadError);
+    }
+  } else if (existsSync(markerPath)) {
     return true;
   }
 
@@ -165,7 +182,7 @@ function candidateHasInstallData(candidate: string): boolean {
   // only when the user opens those surfaces — never by a plain boot — so
   // their content protects an install even when no user workspace (and thus
   // no workspace index) was ever created.
-  if (appManagedWorkspacesHaveContent(candidate)) {
+  if (appManagedWorkspacesHaveContent(candidate, throwOnReadError)) {
     return true;
   }
 
@@ -199,17 +216,43 @@ function candidateHasInstallData(candidate: string): boolean {
       // directories; chat/work-entry files are written solely by real usage,
       // so a cowork-only install (all data under the default workspace) is
       // still protected from a stray skeleton candidate.
-      return autoProvisionedWorkspaceHasContent(candidate, id);
+      return autoProvisionedWorkspaceHasContent(
+        candidate,
+        id,
+        throwOnReadError,
+      );
     });
-  } catch {
+  } catch (error) {
+    handleInstallDataReadError(error, throwOnReadError);
     return false;
   }
 }
 
-function appManagedWorkspacesHaveContent(candidate: string): boolean {
+function handleInstallDataReadError(
+  error: unknown,
+  throwOnReadError: boolean,
+): void {
+  if (!throwOnReadError) return;
+  if (
+    types.isNativeError(error) &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  ) {
+    return;
+  }
+  throw types.isNativeError(error)
+    ? error
+    : new Error('Cannot read install data');
+}
+
+function appManagedWorkspacesHaveContent(
+  candidate: string,
+  throwOnReadError: boolean,
+): boolean {
   try {
     return readdirSync(path.join(candidate, 'app-workspaces')).length > 0;
-  } catch {
+  } catch (error) {
+    handleInstallDataReadError(error, throwOnReadError);
     return false;
   }
 }
@@ -217,6 +260,7 @@ function appManagedWorkspacesHaveContent(candidate: string): boolean {
 function autoProvisionedWorkspaceHasContent(
   candidate: string,
   workspaceId: string,
+  throwOnReadError: boolean,
 ): boolean {
   const workspaceDir = path.join(candidate, 'workspaces', workspaceId);
   for (const contentDir of ['chats', 'chat-history']) {
@@ -224,7 +268,8 @@ function autoProvisionedWorkspaceHasContent(
       if (readdirSync(path.join(workspaceDir, contentDir)).length > 0) {
         return true;
       }
-    } catch {
+    } catch (error) {
+      handleInstallDataReadError(error, throwOnReadError);
       // Missing directory — no content there.
     }
   }
@@ -256,7 +301,7 @@ export function getResolvedCanopyDataDir(
   // stray writes (e.g. a cache file, CAN-2271) can create a skeleton primary
   // directory that must not hijack an install living in a fallback directory.
   const existing =
-    allCandidates.find(candidateHasInstallData) ??
+    allCandidates.find((candidate) => hasCanopyInstallData(candidate)) ??
     allCandidates.find((candidate) => existsSync(candidate));
   const primary = allCandidates[0];
   resolvedDataDirCacheKey = cacheKey;
@@ -287,6 +332,8 @@ export const resetResolvedCanopyDataDirForTests =
 export function getCanopyDataDir(): string {
   return getResolvedCanopyDataDir().path;
 }
+
+registerCanopyDataRootResolver(getCanopyDataDir);
 
 function getLegacyEnvironmentConfigDataDir(): string {
   return getResolvedCanopyDataDir().path;

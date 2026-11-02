@@ -1,18 +1,30 @@
+import { Button } from '@canopy/ui-shared/components';
+import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
 import {
+  CustomizeSearchRow,
   CustomizeTabSections,
+  EMPTY_INSTALLED_STATUS_SNAPSHOT,
+  MarketplaceUnshareAction,
   buildCustomizeTabModel,
+  type InstalledStatusSnapshot,
+  useOpenCreatedCustomItem,
   useResourceContext,
 } from '@canopy/ui-app/capability';
-import { useCapabilities } from '@canopy/app-state';
+import { useCapabilities, useCanopyClient } from '@canopy/app-state';
 import type { MarketplaceSource } from '@canopy/app-core/client';
 import {
   EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS,
+  MarketplaceSourceAddDialog,
   MarketplaceSourceDetail,
   MarketplaceSourcesList,
   useMarketplaceSources,
   useMarketplaceSourcesAccess,
   type MarketplaceSourcePluginFilters,
 } from '@canopy/ui-app/marketplace-sources';
+import {
+  scrollSectionToTop,
+  useSidebarSectionRoot,
+} from '@canopy/ui-app/sidebar';
 import {
   formatMarketplaceRemoveBodyCopy,
   marketplaceSourceValidProviders,
@@ -22,6 +34,7 @@ import { CuratedPipelinePreview } from '../pipeline/CuratedPipelinePreview';
 import { curatedPipelineId } from '../pipeline/pipeline-catalog-entry';
 import {
   type JSX,
+  type ReactNode,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -30,7 +43,6 @@ import {
   useState,
 } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
-import { PageHeading } from '../shared/PageHeading';
 import { PageContent } from '../shared/PageContent';
 import { TITLEBAR_BUTTON_CLASSNAME } from '../sidebar/sidebar-styles';
 import { useMarketplaceList } from '../../hooks/useMarketplaceList';
@@ -39,7 +51,10 @@ import { useMcpServerList } from '../../hooks/useMcpServerList';
 import { useSkillList } from '../../hooks/useSkillList';
 import { useCustomizeSkillUpdates } from '../../hooks/useCustomizeSkillUpdates';
 import { usePublisherSkills } from '../../hooks/usePublisherSkills';
-import { useCapabilityMarketplaceInventory } from '../../hooks/useCapabilityMarketplaceInventory';
+import {
+  useCapabilityMarketplaceInventory,
+  type CapabilityMarketplaceInventory,
+} from '../../hooks/useCapabilityMarketplaceInventory';
 import { McpServerDialog } from './McpServersTab';
 import { AddSkillsModal, CreateSkillModal } from './SkillsTab';
 import { CollectionModal } from './CollectionsTab';
@@ -69,40 +84,47 @@ import {
   resolveRolePluginRecommendations,
 } from '@canopy/desktop-shared/lib/role-plugin-recommendations';
 import { useAutomationsStore } from '@/stores/automationsStore';
+import { AutomationUpdateModal } from '../automations/AutomationUpdateModal';
+import { useAutomationUpdateSource } from '../automations/useAutomationUpdateSource';
+import { useCustomizeWorkflowActions } from '../plugins/useCustomizeWorkflowActions';
 import { useSavedProfileRoles } from '@/hooks/useSavedProfileRoles';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { PluginsDiscoveryList } from '../plugins/PluginsDiscoveryList';
 import type { PluginsDiscoverySectionId } from '../plugins/pluginsDiscoverySections';
 import { PluginEntryDetail } from '../plugins/PluginEntryDetail';
+import type { MarketplaceUnshareKind } from '@canopy/ui-shared/lib/marketplace-unshare';
+import {
+  followMarketplaceUnshare,
+  unshareMarketplaceResource,
+  unshareOwnerName,
+} from '@/lib/marketplaceUnshare';
 import { PipelineCatalogStatus } from '../plugins/PipelineCatalogStatus';
 import { AutomationCatalogStatus } from '../plugins/AutomationCatalogStatus';
-import {
-  AddMarketplaceModal,
-  MarketplacePluginsModal,
-  PluginsManagementView,
-  type PluginsManagementSection,
-} from '../plugins/PluginsManagementView';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useWorkspaceContextReset } from '@/hooks/useWorkspaceContextReset';
 import { useProviderConnectors } from '@/hooks/useProviderConnectors';
 import { advertisesProviderConnector } from '@/lib/unifiedPluginEntries';
 import { SharePluginModal } from '@/components/plugins/SharePluginModal';
 import {
+  desktopSectionRoot,
   useNavigationStore,
   type CapabilityMarketplaceTabId,
+  type CapabilityMarketplaceReturnTarget,
+  type PluginsPresentationLocation,
   type PipelineReturnTarget,
 } from '@/stores/navigationStore';
-import type { MarketplaceInfo } from '@canopy/desktop-shared/types/plugins';
-import { PLUGINS_MANAGEMENT_SECTIONS } from '@canopy/desktop-shared/types';
+import type { PluginsManagementSectionId } from '@canopy/desktop-shared/types';
 import type {
   McpServerStatusEntry,
   McpServerIndexEntry,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
-  CustomizeSectionHeading,
+  CUSTOMIZE_SECTION_SUBTITLE,
   EmptyState,
+  PageHeader,
   MarketplaceSearchField,
+  PageSearchRow,
   MarketplaceTypeTabs,
   PluginsAddCustomMenu,
   Notice,
@@ -121,11 +143,14 @@ import {
   marketplaceEntryInTab,
   marketplaceTabForKind,
   normalizeMarketplaceNavigation,
+  marketplaceManagementDestination,
+  pipelineFiltersActive,
   type MarketplaceEntryShareState,
   type PipelineFilterValues,
 } from '@canopy/ui-shared/lib';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
+import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useShareAction } from '@/hooks/useShareAction';
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
@@ -137,27 +162,29 @@ import {
   type MarketplaceShareResolution,
   type PluginShareTarget,
 } from '../plugins/marketplaceShareResolution';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
 import { pluginNeedsInstall } from '@/lib/pluginInstallStatus';
+import { CUSTOM_SKILL_SOURCE_ID } from '@/lib/sharedSkillImport';
 import { SKILLS_CHANGED_EVENT, trackSkillsRefresh } from '@/lib/skillsChanged';
 import { COLLECTIONS_CHANGED_EVENT } from '../share/installReveal';
 import { marketplaceEntryInstallLink } from '@/lib/sharedResourceInstallLink';
+import { useDesktopInstalledItemStatuses } from '@/hooks/useDesktopInstalledItemStatuses';
+import {
+  installedEntryStatusStates,
+  type PluginsEntryStatusBinding,
+} from '@canopy/ui-shared';
 import { AgentModelModal } from '../agents/AgentModelModal';
 import { DeleteConfirmModal } from '../shared/DeleteConfirmModal';
 import { useAgentsStore } from '@/stores/agentsStore';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import type { SaveAgentModelRequest } from '@canopy/desktop-shared/types/agent-models';
+import type { SharedSkillSummary } from '@canopy/desktop-shared/types/skills';
+import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
 
-type PluginsTab = 'collections' | 'marketplace' | 'skills' | 'mcp';
-const PLUGINS_OPEN_TAB_EVENT = 'canopy:plugins-open-tab';
-const PLUGINS_OPEN_MANAGEMENT_EVENT = 'canopy:plugins-open-management';
-const PLUGIN_OPEN_DETAIL_EVENT = 'canopy:plugin-open-detail';
 /**
  * Curated MCP browse. The event used to be handled by `McpServersTab`, but the
  * redesign removed the curated Browse affordance from the MCP section and gave
  * discovery ownership of it (API-2153, design section 5).
  */
-const MCP_OPEN_BROWSE_EVENT = 'canopy:mcp-open-browse';
 function entryUsesDetailPage(
   entry: UnifiedPluginEntry,
   mcpServers: readonly McpServerIndexEntry[],
@@ -172,65 +199,10 @@ function entryUsesDetailPage(
   return true;
 }
 
-export type { PluginsManagementSection };
-
 /** Every curated name any role can recommend, in first-seen order. */
 const ROLE_RECOMMENDATION_NAMES = Array.from(
   new Set(Object.values(ROLE_PLUGIN_RECOMMENDATIONS).flat()),
 );
-
-/**
- * Normalize an inbound tab id from an external event/action. The legacy
- * `bundles` alias still resolves to the `collections` tab so old App Advisor
- * prompts and persisted state continue to work after the rename.
- */
-function normalizePluginsTabId(raw: string | undefined): PluginsTab | null {
-  if (!raw) return null;
-  if (raw === 'bundles' || raw === 'collections') return 'collections';
-  if (raw === 'skills' || raw === 'mcp' || raw === 'marketplace') return raw;
-  return null;
-}
-
-/**
- * Map a legacy tab id onto the management view's section id. The tabs became
- * sections of the "Your plugins" view in the discovery redesign (API-2153), so
- * every existing `canopy:plugins-open-tab` deep link still lands somewhere
- * meaningful.
- */
-function managementSectionForTabId(tab: PluginsTab): PluginsManagementSection {
-  return tab === 'marketplace' ? 'marketplaces' : tab;
-}
-
-/**
- * Preserve the active marketplace type when the Installed summary opens the
- * management surface. Plugin and pipeline have no dedicated management
- * section, so callers can fall back to either the mixed Installed list or the
- * corresponding Marketplace type tab.
- */
-function managementSectionForCapabilityType(
-  tab: CapabilityMarketplaceTabId,
-): PluginsManagementSection | null {
-  switch (tab) {
-    case 'app':
-      return 'mcp';
-    case 'skill':
-      return 'skills';
-    case 'collection':
-      return 'collections';
-    default:
-      return null;
-  }
-}
-
-const MANAGEMENT_SECTION_IDS: readonly PluginsManagementSection[] =
-  PLUGINS_MANAGEMENT_SECTIONS;
-
-/** Narrow an inbound `plugins.open_management` section id. */
-function normalizeManagementSection(
-  raw: unknown,
-): PluginsManagementSection | null {
-  return MANAGEMENT_SECTION_IDS.find((section) => section === raw) ?? null;
-}
 
 // ---------------------------------------------------------------------------
 // Discovery helpers
@@ -257,29 +229,84 @@ interface PluginsPageProps {
  *
  * The page IS discovery: search over one unified list of
  * curated plugins, curated/local MCP "apps", local/shared skills, pipelines,
- * and Collections. Installed content collapses into a single summary row that
- * opens the management view, and the technical add-flows live behind the "Add
- * custom…" dropdown — each item opening the pre-existing dialog.
+ * and Collections. Installed content collapses into the Installed section, and
+ * the technical add-flows live behind the "Add custom…" dropdown — each item
+ * opening the pre-existing dialog.
  */
+const SCROLL_PRESENTATION_WRITE_DELAY_MS = 150;
+
+interface RowUnshareTarget {
+  readonly kind: MarketplaceUnshareKind;
+  readonly shareId: string;
+  readonly name: string;
+  readonly owner: { readonly type: string; readonly name?: string | null };
+  readonly canDelete?: boolean;
+}
+
+function unshareTarget(
+  kind: MarketplaceUnshareKind,
+  shareId: string,
+  share: Omit<RowUnshareTarget, 'kind' | 'shareId'>,
+): RowUnshareTarget {
+  return {
+    kind,
+    shareId,
+    name: share.name,
+    owner: share.owner,
+    canDelete: share.canDelete,
+  };
+}
+
+/** The account share behind a Shared by me row, from the page's lists. */
+function rowUnshareTarget(
+  entry: UnifiedPluginEntry,
+  inventory: Pick<
+    CapabilityMarketplaceInventory,
+    'sharedSkills' | 'sharedCollections' | 'sharedAgents' | 'sharedPlugins'
+  >,
+): RowUnshareTarget | null {
+  const ref = entry.ref;
+  if (ref.type === 'shared-skill') {
+    const share = inventory.sharedSkills.find((row) => row.id === ref.skillId);
+    return share ? unshareTarget('skill', share.id, share) : null;
+  }
+  if (ref.type === 'shared-collection') {
+    const share = inventory.sharedCollections.find(
+      (row) => row.id === ref.collectionId,
+    );
+    return share ? unshareTarget('collection', share.id, share) : null;
+  }
+  if (ref.type === 'shared-agent') {
+    const share = inventory.sharedAgents.find((row) => row.id === ref.agentId);
+    return share ? unshareTarget('agent', share.id, share) : null;
+  }
+  if (ref.type === 'shared-plugin') {
+    const share = inventory.sharedPlugins.find(
+      (row) => row.externalId === ref.pluginId,
+    );
+    return share ? unshareTarget('plugin', share.externalId, share) : null;
+  }
+  return null;
+}
+
 export function PluginsPage({
   onOpenAccountSettings,
 }: PluginsPageProps): JSX.Element {
-  const [query, setQuery] = useState('');
+  const savedPresentation = useRef(
+    useNavigationStore.getState().pluginsPresentation,
+  ).current;
+  const [query, setQuery] = useState(savedPresentation?.browse.query ?? '');
   const deferredQuery = useDeferredValue(query);
 
   // --- Data sources (composed through existing hooks and wire contracts) ---
   // Exactly one `useMarketplaceList` for the whole surface: the hook loads on
-  // mount and its `upsert`/`removal` mutators are per-instance, so the
-  // management view is fed from here rather than mounting a second copy.
+  // mount and its `upsert`/`removal` mutators are per-instance, so every
+  // section is fed from here rather than mounting a second copy.
   const {
     cache,
     loading,
     error,
-    progressMessage,
     reload: reloadMarketplaces,
-    refresh: refreshMarketplaces,
-    upsertMarketplace,
-    applyMarketplaceRemoval,
   } = useMarketplaceList();
   const {
     skills,
@@ -333,14 +360,22 @@ export function PluginsPage({
   }, [servers]);
 
   // --- Discovery state ---
-  const [category, setCategory] = useState<string | null>(null);
+  const [category, setCategory] = useState<string | null>(
+    savedPresentation?.browse.category ?? null,
+  );
   /** Restricts discovery to the capability type selected in the peer tabs. */
   const [kindFilter, setKindFilter] = useState<Exclude<
     CapabilityMarketplaceTabId,
     'all'
-  > | null>(null);
+  > | null>(
+    savedPresentation?.browse.tab === 'all'
+      ? null
+      : (savedPresentation?.browse.tab ?? null),
+  );
   const [pipelineFilterValues, setPipelineFilterValues] =
-    useState<PipelineFilterValues>(DEFAULT_PIPELINE_FILTERS);
+    useState<PipelineFilterValues>(
+      savedPresentation?.browse.pipelineFilters ?? DEFAULT_PIPELINE_FILTERS,
+    );
   // Every filter narrows pipelines only, so they apply on the Pipelines tab
   // alone and a choice made there never hides rows on another tab.
   const pipelineFilters =
@@ -352,16 +387,25 @@ export function PluginsPage({
       capabilities,
       'marketplace-owned-automation-shares',
     );
-  const [focusSection, setFocusSection] = useState<'shared-by-me' | null>(null);
+  const [focusSection, setFocusSection] = useState<
+    'installed' | 'shared-by-me' | null
+  >(null);
   // Shared agents list behind the Agents rollout flag, like the Agents page.
   // Project templates get a tab once the desktop can list team and
   // organization template shares.
   const sharedCustomAgentsEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedCustomAgents.key),
   );
-  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
-  const [managementSection, setManagementSection] =
-    useState<PluginsManagementSection | null>(null);
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(
+    savedPresentation?.entry?.id ?? null,
+  );
+  const sourceClient = useCanopyClient();
+  const canAddMarketplace =
+    sourceClient.capabilities.marketplaceSourceAdd === true &&
+    typeof sourceClient.marketplaceSources?.createAddSession === 'function';
+  const [installedExpanded, setInstalledExpanded] = useState(
+    savedPresentation?.browse.installedExpanded === true,
+  );
   const marketplaceSourcesAccess = useMarketplaceSourcesAccess();
   const marketplaceSourcesAvailable = marketplaceSourcesAccess.client !== null;
   const typeTabs = useMemo(
@@ -376,10 +420,9 @@ export function PluginsPage({
   // it swaps the catalog for the shared source list and loads nothing else.
   const showingSources =
     kindFilter === 'sources' && marketplaceSourcesAvailable;
-  const sourcesVisible =
-    showingSources && managementSection === null && selectedEntryId === null;
+  const sourcesVisible = showingSources && selectedEntryId === null;
   const marketplaceSources = useMarketplaceSources(marketplaceSourcesAccess, {
-    enabled: sourcesVisible,
+    enabled: showingSources,
   });
   const [sourceBulkState, setSourceBulkState] = useState({
     running: false,
@@ -387,24 +430,41 @@ export function PluginsPage({
     done: 0,
     total: 0,
   });
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const sourceRequestGeneration = useRef(0);
+  const [pendingSourcePlugin, setPendingSourcePlugin] = useState<{
+    sourceId: string;
+    pluginKey: string;
+    generation: number;
+  } | null>(null);
+  const [sourceNavigationError, setSourceNavigationError] = useState<
+    string | null
+  >(null);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
+    savedPresentation?.source?.sourceId ?? null,
+  );
   const [sourcePluginFilters, setSourcePluginFilters] =
     useState<MarketplaceSourcePluginFilters>(
-      EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS,
+      savedPresentation?.source?.filters ??
+        EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS,
     );
   const openMarketplaceSource = useCallback((sourceId: string): void => {
     setSourcePluginFilters(EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS);
+    setSourceNavigationError(null);
+    setPendingSourcePlugin(null);
     setSelectedSourceId(sourceId);
   }, []);
   const closeMarketplaceSource = useCallback((): void => {
     setSelectedSourceId(null);
+    setPendingSourcePlugin(null);
+    setSourceNavigationError(null);
   }, []);
   const sourceDetailOpen = sourcesVisible && selectedSourceId !== null;
-  const selectedSource = sourceDetailOpen
-    ? marketplaceSources.sources?.find(
-        (source) => source.id === selectedSourceId,
-      )
-    : undefined;
+  const selectedSource =
+    selectedSourceId !== null
+      ? marketplaceSources.sources?.find(
+          (source) => source.id === selectedSourceId,
+        )
+      : undefined;
   const marketplaceSourceRemoveConfirmation = useCallback(
     (source: MarketplaceSource) => ({
       title: (
@@ -456,7 +516,15 @@ export function PluginsPage({
         selectedLocalAgentId !== null ||
         pendingAgentEditId !== null ||
         agentDialog !== null),
-    sharedPluginsEnabled: kindFilter === null || kindFilter === 'plugin',
+    // Shared plugins also load for an open plugin detail, so an installed
+    // plugin's Shared by you finds the owner's share under any type filter
+    // (CAN-4842).
+    sharedPluginsEnabled:
+      kindFilter === null ||
+      kindFilter === 'plugin' ||
+      selectedEntryId?.startsWith('mkt:') === true ||
+      selectedEntryId?.startsWith('curated:') === true ||
+      selectedEntryId?.startsWith('plugin:shared:') === true,
     sharedBlueprintsEnabled: kindFilter === null || kindFilter === 'blueprint',
   });
   const [retainedDetailEntry, setRetainedDetailEntry] =
@@ -476,40 +544,72 @@ export function PluginsPage({
    * the detail in place and pushes the previous entry here so its Back
    * affordance can restore it (CAN-2382).
    */
-  const [entryDetailStack, setEntryDetailStack] = useState<string[]>([]);
+  const [entryDetailStack, setEntryDetailStack] = useState<string[]>(
+    savedPresentation?.entry?.stack ?? [],
+  );
   /**
    * Pipeline to reopen when the current detail was opened from a pipeline
    * editor's related-capability click (CAN-2382). Back on the detail
    * restores that editor instead of stranding the user on this page.
    */
   const [entryDetailPipelineReturn, setEntryDetailPipelineReturn] =
-    useState<PipelineReturnTarget | null>(null);
+    useState<PipelineReturnTarget | null>(
+      savedPresentation?.entry?.pipelineReturn ?? null,
+    );
   /**
    * Whether the open detail page was reached from an installed list (the
-   * Installed strip or the management view), so its breadcrumb keeps the
+   * Installed strip or the Installed section), so its breadcrumb keeps the
    * Installed level: `Customize > Installed > Skills > <name>` (CAN-3484).
    */
-  const [entryDetailFromInstalled, setEntryDetailFromInstalled] =
-    useState(false);
+  const [entryDetailFromInstalled, setEntryDetailFromInstalled] = useState(
+    savedPresentation?.entry?.fromInstalled === true,
+  );
   /** Management section restored by the detail's Back control, when any. */
-  const [entryDetailManagementReturn, setEntryDetailManagementReturn] =
-    useState<PluginsManagementSection | null>(null);
+  const [entryDetailBrowseReturn, setEntryDetailBrowseReturn] =
+    useState<CapabilityMarketplaceReturnTarget | null>(
+      savedPresentation?.entry?.browseReturn ?? null,
+    );
   /**
    * Installed skill opened by identity (the Installed Skills list or a deep
    * link), resolved by `selectedEntry` until the projection lists it.
    */
   const [installedSkillDetailEntry, setInstalledSkillDetailEntry] =
     useState<UnifiedPluginEntry | null>(null);
+  /**
+   * Shared skill a deep link read by id. The shared inventory is filtered by
+   * the page's search, so it may not list the skill the link names.
+   */
+  const [linkedSharedSkill, setLinkedSharedSkill] =
+    useState<SharedSkillSummary | null>(null);
+  /**
+   * Bumped whenever the page's own navigation moves on (a reset, a closed or
+   * newly opened entry, a context or Cloud account change); a shared-skill
+   * link read from before it is dropped.
+   */
+  const sharedSkillLinkGeneration = useRef(0);
+  /** Shared skill whose link read is in flight, consumed if the page closes. */
+  const sharedSkillLinkInFlight = useRef<string | null>(null);
   /** Supporting file an installed skill's deep link opens its page on. */
   const [skillDetailFilePath, setSkillDetailFilePath] = useState<{
     entryId: string;
     filePath: string;
-  } | null>(null);
+  } | null>(
+    savedPresentation?.entry?.skillFilePath
+      ? {
+          entryId: savedPresentation.entry.id,
+          filePath: savedPresentation.entry.skillFilePath,
+        }
+      : null,
+  );
   /**
    * Installed custom skill whose edit page replaces its detail page
    * (CAN-3485): `Customize > Installed > Skills > <name> > Edit`. Keyed by
    * entry id, so moving to any other detail (a rename included) ends it.
    */
+  const [mcpNavigation, setMcpNavigation] = useState<{
+    entryId: string;
+    target: PluginMcpNavigationTarget;
+  } | null>(null);
   const [skillEditorEntryId, setSkillEditorEntryId] = useState<string | null>(
     null,
   );
@@ -531,8 +631,13 @@ export function PluginsPage({
     node.addEventListener('scroll', update, { passive: true });
     return (): void => node.removeEventListener('scroll', update);
   }, []);
-  const browseScrollTopRef = useRef(0);
-  const detailReturnScrollTopRef = useRef(0);
+  const browseScrollTopRef = useRef(savedPresentation?.browseScrollTop ?? 0);
+  const detailReturnScrollTopRef = useRef(
+    savedPresentation?.detailReturnScrollTop ?? 0,
+  );
+  const pendingScrollTop = useRef<number | null>(
+    savedPresentation?.scrollTop ?? null,
+  );
   const detailPageEntryIdRef = useRef<string | null>(null);
 
   /**
@@ -546,6 +651,21 @@ export function PluginsPage({
     if (detailPageEntryIdRef.current !== null) return;
     detailReturnScrollTopRef.current = pageScrollRef.current?.scrollTop ?? 0;
   }, []);
+  // The Customize row clicked on the Customize home (QA, 2026-10-23): back
+  // to All at the top, in place. From a detail, a source or the installed
+  // view the page mounts fresh instead; the store sees an open category.
+  useSidebarSectionRoot(
+    desktopSectionRoot,
+    selectedEntryId === null && !sourceDetailOpen && !installedExpanded,
+    (): void => {
+      setQuery('');
+      setCategory(null);
+      setKindFilter(null);
+      // The status filter belongs to the tab being left (CAN-4838).
+      setInstalledStatusFilter(null);
+      scrollSectionToTop(pageScrollRef.current);
+    },
+  );
   const browseSectionId = useNavigationStore(
     (state) => state.pluginsBrowseSectionId,
   ) as PluginsDiscoverySectionId | null;
@@ -553,11 +673,18 @@ export function PluginsPage({
     (state) => state.setPluginsBrowseSectionId,
   );
   const previousBrowseSectionIdRef = useRef<string | null>(browseSectionId);
-  const [categoryQuery, setCategoryQuery] = useState('');
+  const [categoryQuery, setCategoryQuery] = useState(
+    savedPresentation?.categoryQuery ?? '',
+  );
   const deferredCategoryQuery = useDeferredValue(categoryQuery);
-  const [managementStatusFilter, setManagementStatusFilter] = useState<
-    'active' | null
-  >(null);
+  const [installedStatusFilter, setInstalledStatusFilter] =
+    useState<InstalledItemStatus | null>(
+      savedPresentation?.browse.installedStatusFilter ?? null,
+    );
+  // Held here, not in the list, so a row changed while filtered keeps its
+  // place across an entry detail page, which unmounts the list (CAN-4838).
+  const [installedStatusSnapshot, setInstalledStatusSnapshot] =
+    useState<InstalledStatusSnapshot>(EMPTY_INSTALLED_STATUS_SNAPSHOT);
 
   // --- Dialog state (every dialog is an existing component) ---
   const [addMarketplaceOpen, setAddMarketplaceOpen] = useState(false);
@@ -572,41 +699,42 @@ export function PluginsPage({
   const { shareGateModal } = shareAction;
   const shareScopingContext = useSidebarScopingContext();
 
-  // Marketplace-plugin detail deep link (Cmd+K palette) keeps working through
-  // the existing marketplace modal until Task 4's unified detail surface.
-  const [selectedMarketplace, setSelectedMarketplace] =
-    useState<MarketplaceInfo | null>(null);
-  const [detailPluginName, setDetailPluginName] = useState<string | null>(null);
-  const [pendingPluginDetail, setPendingPluginDetail] = useState<{
-    marketplaceId: string;
-    pluginName: string;
-  } | null>(null);
-
-  const closePageOwnedDialogs = useCallback((): void => {
-    setSelectedEntryId(null);
-    setFocusSection(null);
-    setEntryDetailIntent('view');
-    setEntryDetailStack([]);
-    setEntryDetailPipelineReturn(null);
-    setEntryDetailFromInstalled(false);
-    setEntryDetailManagementReturn(null);
-    setSkillDetailFilePath(null);
-    setInstalledSkillDetailEntry(null);
-    setSkillEditorEntryId(null);
-    setSelectedMarketplace(null);
-    setDetailPluginName(null);
-    setPendingPluginDetail(null);
-    setAddMarketplaceOpen(false);
-    setMarketplaceInitialRepo('');
-    setMcpDialogOpen(false);
-    setAddSkillsOpen(false);
-    setCreateSkillOpen(false);
-    setCreateCollectionOpen(false);
-    setAgentDialog(null);
-    setPendingAgentEditId(null);
-    setBrowseSectionId(null);
-    setCategoryQuery('');
-  }, [setBrowseSectionId]);
+  useEffect(() => {
+    if (!canAddMarketplace) setAddMarketplaceOpen(false);
+  }, [canAddMarketplace]);
+  const closePageOwnedDialogs = useCallback(
+    (preserveBrowse = false): void => {
+      sourceRequestGeneration.current += 1;
+      sharedSkillLinkGeneration.current += 1;
+      setSelectedEntryId(null);
+      setSelectedSourceId(null);
+      setPendingSourcePlugin(null);
+      setSourceNavigationError(null);
+      setFocusSection(null);
+      setEntryDetailIntent('view');
+      setEntryDetailStack([]);
+      setEntryDetailPipelineReturn(null);
+      setEntryDetailFromInstalled(false);
+      setEntryDetailBrowseReturn(null);
+      setSkillDetailFilePath(null);
+      setInstalledSkillDetailEntry(null);
+      setLinkedSharedSkill(null);
+      setSkillEditorEntryId(null);
+      setAddMarketplaceOpen(false);
+      setMarketplaceInitialRepo('');
+      setMcpDialogOpen(false);
+      setAddSkillsOpen(false);
+      setCreateSkillOpen(false);
+      setCreateCollectionOpen(false);
+      setAgentDialog(null);
+      setPendingAgentEditId(null);
+      if (!preserveBrowse) {
+        setBrowseSectionId(null);
+        setCategoryQuery('');
+      }
+    },
+    [setBrowseSectionId],
+  );
 
   const marketplaces = useMemo(
     () => cache?.marketplaces ?? [],
@@ -623,6 +751,18 @@ export function PluginsPage({
     // Codex cache parse would be paid for a discarded result.
     enabled: curatedMcpServers.some(advertisesProviderConnector),
   });
+
+  // Customize › Workflows rows run, toggle, edit and delete through the same
+  // stores and commands as the Workflows page (CAN-4845).
+  const { workflowActions, pipelineLastRuns, dispatchPipelineModal } =
+    useCustomizeWorkflowActions({
+      pipelines: capabilityInventory.pipelines,
+      activities: capabilityInventory.automationActivities,
+      refreshPipelines: capabilityInventory.refreshPipelines,
+      deletePipeline: capabilityInventory.deletePipeline,
+      deleteSharedPipeline: capabilityInventory.deleteSharedPipeline,
+    });
+  const automationUpdate = useAutomationUpdateSource();
 
   const publisherSkills = usePublisherSkills();
   const { personalOrganizationId } = useResourceContext();
@@ -652,6 +792,13 @@ export function PluginsPage({
         foldSingleKeyPlugins: true,
         providerConnectors: providerConnectors ?? [],
         pipelines: capabilityInventory.pipelines,
+        // An automation's own pipeline lists under it (CAN-4551).
+        ownedPipelineIds: new Set(
+          capabilityInventory.automationActivities.flatMap((activity) =>
+            activity.ownedPipeline ? [activity.ownedPipeline.pipelineId] : [],
+          ),
+        ),
+        pipelineLastRuns,
         curatedPipelines: capabilityInventory.curated?.rows,
         localCollections: capabilityInventory.localCollections,
         sharedSkills: capabilityInventory.sharedSkills,
@@ -681,6 +828,8 @@ export function PluginsPage({
       curatedMcpServers,
       providerConnectors,
       capabilityInventory.pipelines,
+      capabilityInventory.automationActivities,
+      pipelineLastRuns,
       capabilityInventory.curated?.rows,
       capabilityInventory.localCollections,
       capabilityInventory.sharedSkills,
@@ -696,6 +845,39 @@ export function PluginsPage({
       skillUpdates.project,
       sharedCustomAgentsEnabled,
     ],
+  );
+
+  const linkedSharedSkillEntry = useMemo(
+    () =>
+      linkedSharedSkill
+        ? (buildUnifiedPluginEntries({
+            personalOrganizationId,
+            viewerId: capabilityInventory.viewerId,
+            curatedPlugins: [],
+            marketplaces: [],
+            installedSkills: [],
+            mcpServers: [],
+            mcpStatuses: [],
+            curatedMcpServers: [],
+            providerConnectors: [],
+            sharedSkills: [linkedSharedSkill],
+          }).find(
+            (entry) => entry.id === `skill:shared:${linkedSharedSkill.id}`,
+          ) ?? null)
+        : null,
+    [capabilityInventory.viewerId, linkedSharedSkill, personalOrganizationId],
+  );
+  // The detail reads its summary from this list; the inventory's copy wins
+  // once the search lists the skill again.
+  const detailSharedSkills = useMemo(
+    () =>
+      linkedSharedSkill &&
+      !capabilityInventory.sharedSkills.some(
+        (skill) => skill.id === linkedSharedSkill.id,
+      )
+        ? [...capabilityInventory.sharedSkills, linkedSharedSkill]
+        : capabilityInventory.sharedSkills,
+    [capabilityInventory.sharedSkills, linkedSharedSkill],
   );
 
   // A collection installed from the share install review (CAN-3710) is listed
@@ -740,7 +922,7 @@ export function PluginsPage({
       createMarketplaceEntryShareResolver({
         marketplaces,
         skills,
-        sharedSkills: capabilityInventory.sharedSkills,
+        sharedSkills: detailSharedSkills,
         sharedPlugins: capabilityInventory.sharedPlugins,
         localCollections: capabilityInventory.localCollections,
         pipelines: capabilityInventory.pipelines,
@@ -753,8 +935,8 @@ export function PluginsPage({
       capabilityInventory.localAgentDefinitions,
       capabilityInventory.localCollections,
       capabilityInventory.pipelines,
-      capabilityInventory.sharedSkills,
       capabilityInventory.sharedPlugins,
+      detailSharedSkills,
       marketplaces,
       shareScopingContext,
       skills,
@@ -770,14 +952,21 @@ export function PluginsPage({
   );
   const entryShareStates = useMemo(() => {
     const states = new Map<string, MarketplaceEntryShareState>();
-    for (const entry of entries) {
+    // A linked shared skill the search hides still needs its detail's share
+    // state; it never joins the browse list.
+    const shareEntries =
+      linkedSharedSkillEntry &&
+      !entries.some((entry) => entry.id === linkedSharedSkillEntry.id)
+        ? [...entries, linkedSharedSkillEntry]
+        : entries;
+    for (const entry of shareEntries) {
       const resolution = resolveEntryShare(entry);
       if (!canShareResolution(resolution)) continue;
       const state = marketplaceEntryShareState(entry, resolution);
       if (state) states.set(entry.id, state);
     }
     return states;
-  }, [canShareResolution, entries, resolveEntryShare]);
+  }, [canShareResolution, entries, linkedSharedSkillEntry, resolveEntryShare]);
 
   // A newer click or unmount cancels an in-flight share. An inventory
   // snapshot that changes mid-click (opening a detail page refreshes one)
@@ -811,7 +1000,7 @@ export function PluginsPage({
       void refreshMarketplaceEntryShareResolution(entry, {
         marketplaces,
         skills,
-        sharedSkills: capabilityInventory.sharedSkills,
+        sharedSkills: detailSharedSkills,
         sharedPlugins: capabilityInventory.sharedPlugins,
         localCollections: capabilityInventory.localCollections,
         pipelines: capabilityInventory.pipelines,
@@ -840,6 +1029,7 @@ export function PluginsPage({
     [
       canShareResolution,
       capabilityInventory,
+      detailSharedSkills,
       marketplaces,
       resolveEntryShare,
       shareAction,
@@ -917,9 +1107,21 @@ export function PluginsPage({
     );
   }, [entries, savedRoles]);
 
+  const installedStatuses = useDesktopInstalledItemStatuses();
+  const [installedStatusError, setInstalledStatusError] = useState<
+    string | null
+  >(null);
+  const entryStatusStates = useMemo(
+    () => installedEntryStatusStates(entries, installedStatuses.state),
+    [entries, installedStatuses.state],
+  );
   const browseGroups = useMemo(
-    () => buildMarketplaceBrowseGroups(results, { suggestedNames }),
-    [results, suggestedNames],
+    () =>
+      buildMarketplaceBrowseGroups(results, {
+        suggestedNames,
+        installedStatusStates: entryStatusStates,
+      }),
+    [entryStatusStates, results, suggestedNames],
   );
 
   const activeBrowseGroup = useMemo(
@@ -997,6 +1199,120 @@ export function PluginsPage({
     })();
   }, [refreshPipelineLists]);
 
+  // A removed row disappears once its inventory re-reads (CAN-4840).
+  const refreshAfterRemoval = useCallback(
+    (entry: UnifiedPluginEntry): void => {
+      const ref = entry.ref;
+      switch (ref.type) {
+        case 'skill':
+          void refreshSkills();
+          return;
+        case 'local-mcp':
+        case 'curated-mcp':
+        case 'mcp-server':
+          void refreshServers();
+          return;
+        case 'local-collection':
+          void refreshLocalCollections();
+          return;
+        case 'marketplace-plugin':
+        case 'curated-plugin':
+          void reloadMarketplaces();
+          return;
+        // These rows never carry an installed-items status, so they offer no
+        // removal from the row menu. A plugin-bundled skill follows its plugin
+        // (CAN-4844).
+        case 'plugin-skill':
+        case 'public-share':
+        case 'curated-pipeline':
+        case 'provider-connector':
+        case 'pipeline':
+        case 'local-agent':
+        case 'automation':
+        case 'curated-automation':
+        case 'shared-skill':
+        case 'shared-collection':
+        case 'shared-agent':
+        case 'shared-plugin':
+        case 'shared-blueprint':
+        case 'shared-automation':
+          return;
+        default: {
+          const unhandled: never = ref;
+          return unhandled;
+        }
+      }
+    },
+    [
+      refreshSkills,
+      refreshServers,
+      refreshLocalCollections,
+      reloadMarketplaces,
+    ],
+  );
+  const entryStatus: PluginsEntryStatusBinding = useMemo(
+    () => ({
+      states: entryStatusStates,
+      pendingKeys: installedStatuses.pendingKeys,
+      onSetStatus: installedStatuses.setStatus,
+      onError: setInstalledStatusError,
+      onUninstall: installedStatuses.uninstall,
+      onUninstalled: refreshAfterRemoval,
+    }),
+    [
+      entryStatusStates,
+      installedStatuses.pendingKeys,
+      installedStatuses.setStatus,
+      installedStatuses.uninstall,
+      refreshAfterRemoval,
+    ],
+  );
+  const {
+    removeSharedResource,
+    refreshSharedSkills,
+    refreshSharedCollections,
+  } = capabilityInventory;
+  // The owner's Unshare beside a Shared by me row (CAN-4840), with the same
+  // follow-up as the shared detail's Unshare minus closing a detail.
+  const renderRowUnshare = useCallback(
+    (entry: UnifiedPluginEntry): ReactNode => {
+      const share = rowUnshareTarget(entry, {
+        sharedSkills: capabilityInventory.sharedSkills,
+        sharedCollections: capabilityInventory.sharedCollections,
+        sharedAgents: capabilityInventory.sharedAgents,
+        sharedPlugins: capabilityInventory.sharedPlugins,
+      });
+      if (share?.canDelete !== true) return null;
+      const { kind, shareId, name } = share;
+      return (
+        <MarketplaceUnshareAction
+          key={`${kind}:${shareId}`}
+          iconOnly
+          kind={kind}
+          name={name}
+          ownerName={unshareOwnerName(share.owner)}
+          onUnshare={() => unshareMarketplaceResource(kind, shareId)}
+          onUnshared={(): void => {
+            removeSharedResource(kind, shareId);
+            followMarketplaceUnshare(kind, name, {
+              sharedSkills: refreshSharedSkills,
+              sharedCollections: refreshSharedCollections,
+            });
+          }}
+          dataTestId={`customize-row-unshare-${entry.id}`}
+        />
+      );
+    },
+    [
+      capabilityInventory.sharedSkills,
+      capabilityInventory.sharedCollections,
+      capabilityInventory.sharedAgents,
+      capabilityInventory.sharedPlugins,
+      removeSharedResource,
+      refreshSharedSkills,
+      refreshSharedCollections,
+    ],
+  );
   const sectionModel = useMemo(
     () =>
       buildCustomizeTabModel({
@@ -1040,8 +1356,10 @@ export function PluginsPage({
     'plugins.page',
     useMemo(
       () => ({
-        view: managementSection === null ? 'discovery' : 'management',
-        managementSection,
+        view: 'discovery',
+        customizeTab: kindFilter ?? 'all',
+        installedStatusFilter,
+        installedExpanded,
         searchActive: reportedSearchActive,
         resultCount: reportedResultCount,
         selectedEntryId,
@@ -1068,7 +1386,9 @@ export function PluginsPage({
       }),
       [
         agentDialog,
-        managementSection,
+        kindFilter,
+        installedStatusFilter,
+        installedExpanded,
         reportedSearchActive,
         reportedResultCount,
         selectedEntryId,
@@ -1118,72 +1438,146 @@ export function PluginsPage({
     ),
   );
 
-  // Legacy tab deep links now open the management view at the matching section.
   useEffect(() => {
-    const handleOpenTab = (event: Event): void => {
-      if (!(event instanceof CustomEvent)) return;
-      const detail: unknown = event.detail;
-      const tab =
-        typeof detail === 'object' &&
-        detail !== null &&
-        'tab' in detail &&
-        typeof detail.tab === 'string'
-          ? detail.tab
-          : undefined;
-      const normalized = normalizePluginsTabId(tab);
-      if (normalized !== null) {
-        closePageOwnedDialogs();
-        setManagementSection(managementSectionForTabId(normalized));
+    if (marketplaceSourcesAvailable) return;
+    sourceRequestGeneration.current += 1;
+    setPendingSourcePlugin(null);
+    setSelectedSourceId(null);
+  }, [marketplaceSourcesAvailable]);
+  const settingsOpen = useNavigationStore((state) => state.settingsOpen);
+  useEffect(() => {
+    if (settingsOpen) setAddMarketplaceOpen(false);
+  }, [settingsOpen]);
+
+  const currentBrowseState = useMemo<CapabilityMarketplaceReturnTarget>(
+    () => ({
+      query,
+      tab: kindFilter ?? 'all',
+      ...(category ? { category } : {}),
+      ...(installedStatusFilter ? { installedStatusFilter } : {}),
+      installedExpanded,
+      ...(pipelineFiltersActive(pipelineFilterValues)
+        ? { pipelineFilters: pipelineFilterValues }
+        : {}),
+    }),
+    [
+      query,
+      kindFilter,
+      category,
+      installedStatusFilter,
+      installedExpanded,
+      pipelineFilterValues,
+    ],
+  );
+  const currentDetailReturn = useMemo<CapabilityMarketplaceReturnTarget>(
+    () => ({
+      ...currentBrowseState,
+      ...(selectedSourceId
+        ? {
+            source: {
+              sourceId: selectedSourceId,
+              filters: sourcePluginFilters,
+            },
+          }
+        : {}),
+    }),
+    [currentBrowseState, selectedSourceId, sourcePluginFilters],
+  );
+  const applyBrowseDestination = useCallback(
+    (destination: CapabilityMarketplaceReturnTarget): void => {
+      if (destination.tab === 'sources' && !marketplaceSourcesAvailable) {
+        setKindFilter(null);
+        setSelectedSourceId(null);
+        setPendingSourcePlugin(null);
+        setSourceNavigationError('Marketplaces are not available right now.');
+        return;
       }
-    };
-    window.addEventListener(PLUGINS_OPEN_TAB_EVENT, handleOpenTab);
-    return (): void => {
-      window.removeEventListener(PLUGINS_OPEN_TAB_EVENT, handleOpenTab);
-    };
-  }, [closePageOwnedDialogs]);
-
-  // `plugins.open_management` targets a section directly, including the two
-  // (`installed`, `marketplaces`) that never had a legacy tab id.
-  useEffect(() => {
-    const handleOpenManagement = (event: Event): void => {
-      if (!(event instanceof CustomEvent)) return;
-      const detail: unknown = event.detail;
-      const section =
-        typeof detail === 'object' && detail !== null && 'section' in detail
-          ? normalizeManagementSection(detail.section)
-          : null;
-      closePageOwnedDialogs();
-      setManagementSection(section ?? 'installed');
-    };
-    window.addEventListener(
-      PLUGINS_OPEN_MANAGEMENT_EVENT,
-      handleOpenManagement,
-    );
-    return (): void => {
-      window.removeEventListener(
-        PLUGINS_OPEN_MANAGEMENT_EVENT,
-        handleOpenManagement,
+      setQuery(destination.query);
+      setCategory(destination.category ?? null);
+      setKindFilter(destination.tab === 'all' ? null : destination.tab);
+      setFocusSection(destination.focusSection ?? null);
+      setInstalledStatusFilter(destination.installedStatusFilter ?? null);
+      setInstalledExpanded(destination.installedExpanded === true);
+      setPipelineFilterValues(
+        destination.pipelineFilters ?? DEFAULT_PIPELINE_FILTERS,
       );
-    };
-  }, [closePageOwnedDialogs]);
-
-  // Curated MCP browse: focus discovery search on the MCP servers tab. It does
-  // NOT open the management view — discovery owns curated browse now, and the
-  // overlay would cover the surface being focused.
+      setSelectedSourceId(destination.source?.sourceId ?? null);
+      if (destination.source)
+        setSourcePluginFilters(destination.source.filters);
+    },
+    [marketplaceSourcesAvailable],
+  );
+  // Scrolling records the page offset for history, but one store write per
+  // scroll event re-runs every navigation selector and rewrites the current
+  // history entry. Keep the latest offset and write it once the scroll
+  // settles, or when the page unmounts so Back/Forward still restore it.
+  const pendingScrollTopRef = useRef<number | null>(null);
+  const scrollWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const flushScrollTop = useCallback((): void => {
+    if (scrollWriteTimerRef.current !== null) {
+      clearTimeout(scrollWriteTimerRef.current);
+      scrollWriteTimerRef.current = null;
+    }
+    const scrollTop = pendingScrollTopRef.current;
+    pendingScrollTopRef.current = null;
+    if (scrollTop === null) return;
+    const navigation = useNavigationStore.getState();
+    if (navigation.pluginsPresentation)
+      navigation.setPluginsPresentation({
+        ...navigation.pluginsPresentation,
+        scrollTop,
+      });
+  }, []);
+  useEffect(() => flushScrollTop, [flushScrollTop]);
   useEffect(() => {
-    const handleOpenBrowse = (): void => {
-      closePageOwnedDialogs();
-      setManagementSection(null);
-      setQuery('');
-      setCategory(null);
-      setKindFilter('app');
-      searchInputRef.current?.focus();
+    const location: PluginsPresentationLocation = {
+      browse: currentBrowseState,
+      scrollTop: pageScrollRef.current?.scrollTop ?? 0,
+      browseScrollTop: browseScrollTopRef.current,
+      detailReturnScrollTop: detailReturnScrollTopRef.current,
+      categoryQuery,
+      ...(selectedSourceId
+        ? {
+            source: {
+              sourceId: selectedSourceId,
+              filters: sourcePluginFilters,
+            },
+          }
+        : {}),
+      ...(selectedEntryId
+        ? {
+            entry: {
+              id: selectedEntryId,
+              stack: entryDetailStack,
+              fromInstalled: entryDetailFromInstalled,
+              ...(skillDetailFilePath?.entryId === selectedEntryId
+                ? { skillFilePath: skillDetailFilePath.filePath }
+                : {}),
+              ...(entryDetailPipelineReturn
+                ? { pipelineReturn: entryDetailPipelineReturn }
+                : {}),
+              ...(entryDetailBrowseReturn
+                ? { browseReturn: entryDetailBrowseReturn }
+                : {}),
+            },
+          }
+        : {}),
     };
-    window.addEventListener(MCP_OPEN_BROWSE_EVENT, handleOpenBrowse);
-    return (): void => {
-      window.removeEventListener(MCP_OPEN_BROWSE_EVENT, handleOpenBrowse);
-    };
-  }, [closePageOwnedDialogs]);
+    useNavigationStore.getState().setPluginsPresentation(location);
+  }, [
+    currentBrowseState,
+    selectedSourceId,
+    sourcePluginFilters,
+    selectedEntryId,
+    entryDetailStack,
+    entryDetailFromInstalled,
+    entryDetailPipelineReturn,
+    entryDetailBrowseReturn,
+    skillDetailFilePath,
+    categoryQuery,
+  ]);
 
   const pendingPluginsNavigation = useNavigationStore(
     (state) => state.pendingPluginsNavigation,
@@ -1193,21 +1587,100 @@ export function PluginsPage({
   );
   useEffect(() => {
     if (!pendingPluginsNavigation) return;
-    closePageOwnedDialogs();
+    closePageOwnedDialogs(pendingPluginsNavigation.kind === 'restore');
     // A `switch` rather than an if/else chain so the union stays closed: a
     // new `PluginsNavigationIntent` kind must add its own case instead of
     // silently inheriting the discovery reset below.
     switch (pendingPluginsNavigation.kind) {
-      case 'management':
-        setManagementSection(
-          normalizeManagementSection(pendingPluginsNavigation.section) ??
-            'installed',
+      case 'restore':
+        if (
+          pendingPluginsNavigation.location.browse.tab === 'sources' &&
+          !marketplaceSourcesAvailable
+        ) {
+          applyBrowseDestination({ query: '', tab: 'all' });
+          setSourceNavigationError('Marketplaces are not available right now.');
+          break;
+        }
+        pendingScrollTop.current =
+          pendingPluginsNavigation.location.scrollTop ?? 0;
+        browseScrollTopRef.current =
+          pendingPluginsNavigation.location.browseScrollTop ?? 0;
+        detailReturnScrollTopRef.current =
+          pendingPluginsNavigation.location.detailReturnScrollTop ?? 0;
+        setSkillDetailFilePath(
+          pendingPluginsNavigation.location.entry?.skillFilePath
+            ? {
+                entryId: pendingPluginsNavigation.location.entry.id,
+                filePath: pendingPluginsNavigation.location.entry.skillFilePath,
+              }
+            : null,
         );
-        setManagementStatusFilter(
-          pendingPluginsNavigation.statusFilter ?? null,
+        setCategoryQuery(pendingPluginsNavigation.location.categoryQuery ?? '');
+        applyBrowseDestination(pendingPluginsNavigation.location.browse);
+        setSelectedSourceId(
+          pendingPluginsNavigation.location.source?.sourceId ?? null,
+        );
+        setSourcePluginFilters(
+          pendingPluginsNavigation.location.source?.filters ??
+            EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS,
+        );
+        setSelectedEntryId(pendingPluginsNavigation.location.entry?.id ?? null);
+        setEntryDetailStack(
+          pendingPluginsNavigation.location.entry?.stack ?? [],
+        );
+        setEntryDetailFromInstalled(
+          pendingPluginsNavigation.location.entry?.fromInstalled === true,
+        );
+        setEntryDetailPipelineReturn(
+          pendingPluginsNavigation.location.entry?.pipelineReturn ?? null,
+        );
+        setEntryDetailBrowseReturn(
+          pendingPluginsNavigation.location.entry?.browseReturn ?? null,
         );
         break;
+      case 'management':
+        // A fresh visit, even to the filter already applied; a restore keeps
+        // the snapshot so Back from an entry detail keeps its rows.
+        setInstalledStatusSnapshot(EMPTY_INSTALLED_STATUS_SNAPSHOT);
+        applyBrowseDestination(
+          marketplaceManagementDestination(
+            pendingPluginsNavigation.section,
+            pendingPluginsNavigation.statusFilter,
+          ),
+        );
+        break;
+      case 'marketplace-source':
+        if (!marketplaceSourcesAvailable) {
+          setSourceNavigationError('Marketplaces are not available right now.');
+          break;
+        }
+        applyBrowseDestination({ query: '', tab: 'sources' });
+        setSourcePluginFilters(EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS);
+        setSelectedSourceId(
+          pendingPluginsNavigation.target === 'detail'
+            ? pendingPluginsNavigation.sourceId
+            : null,
+        );
+        if (
+          pendingPluginsNavigation.target === 'detail' &&
+          pendingPluginsNavigation.pluginKey
+        ) {
+          setPendingSourcePlugin({
+            sourceId: pendingPluginsNavigation.sourceId,
+            pluginKey: pendingPluginsNavigation.pluginKey,
+            generation: sourceRequestGeneration.current,
+          });
+        }
+        break;
       case 'entry-detail': {
+        setMcpNavigation(
+          pendingPluginsNavigation.mcpTarget
+            ? {
+                entryId: pendingPluginsNavigation.entryId,
+                target: pendingPluginsNavigation.mcpTarget,
+              }
+            : null,
+        );
         const agentId = localAgentIdFromEntryId(
           pendingPluginsNavigation.entryId,
         );
@@ -1219,7 +1692,6 @@ export function PluginsPage({
           // search narrowing it. With agents switched off the request is
           // dropped rather than replayed when they return.
           if (!sharedCustomAgentsEnabled) break;
-          setManagementSection(null);
           setQuery('');
           setCategory(null);
           setKindFilter('agent');
@@ -1252,17 +1724,19 @@ export function PluginsPage({
           setEntryDetailStack(from.stack);
           setEntryDetailPipelineReturn(from.pipelineReturn ?? null);
           setEntryDetailFromInstalled(from.fromInstalled === true);
-          setEntryDetailManagementReturn(from.managementReturn ?? null);
+          const returnBrowse = from.managementReturn
+            ? marketplaceManagementDestination(from.managementReturn)
+            : (from.marketplace ?? null);
+          setEntryDetailBrowseReturn(returnBrowse);
           // The page unmounted while the pipeline editor was open, so the
           // browse state behind the detail comes back through the intent.
-          if (from.marketplace) {
-            setQuery(from.marketplace.query);
-            setCategory(from.marketplace.category ?? null);
+          if (returnBrowse) {
             const normalized = normalizeMarketplaceNavigation(
-              from.marketplace.tab,
-              Reflect.get(from.marketplace, 'ownership'),
+              returnBrowse.tab,
+              returnBrowse.focusSection ??
+                Reflect.get(returnBrowse, 'ownership'),
             );
-            setKindFilter(normalized.tab === 'all' ? null : normalized.tab);
+            applyBrowseDestination({ ...returnBrowse, ...normalized });
           }
         } else if (from?.kind === 'pipeline') {
           setEntryDetailPipelineReturn({
@@ -1280,11 +1754,14 @@ export function PluginsPage({
       }
       case 'browse-apps':
       case 'discovery':
+        setPipelineFilterValues(DEFAULT_PIPELINE_FILTERS);
+        setInstalledStatusFilter(null);
+        setInstalledExpanded(false);
+        setSelectedSourceId(null);
         // Both open discovery and differ only in the kind filter:
         // `browse-apps` narrows to MCP apps, while `discovery` is the
         // unfiltered browse surface and must not inherit an app-only filter
         // (that filter hides exactly the skills and plugins its callers want).
-        setManagementSection(null);
         setQuery(
           pendingPluginsNavigation.kind === 'discovery'
             ? (pendingPluginsNavigation.searchQuery ?? '')
@@ -1297,16 +1774,7 @@ export function PluginsPage({
         searchInputRef.current?.focus();
         break;
       case 'marketplace-browse': {
-        setManagementSection(null);
-        setQuery(pendingPluginsNavigation.query);
-        setCategory(pendingPluginsNavigation.category ?? null);
-        const normalized = normalizeMarketplaceNavigation(
-          pendingPluginsNavigation.tab,
-          pendingPluginsNavigation.focusSection ??
-            Reflect.get(pendingPluginsNavigation, 'ownership'),
-        );
-        setKindFilter(normalized.tab === 'all' ? null : normalized.tab);
-        setFocusSection(normalized.focusSection ?? null);
+        applyBrowseDestination(pendingPluginsNavigation);
         break;
       }
       default: {
@@ -1315,18 +1783,20 @@ export function PluginsPage({
         break;
       }
     }
-    consumePluginsNavigation();
+    consumePluginsNavigation(pendingPluginsNavigation);
   }, [
+    applyBrowseDestination,
     captureDetailReturnScrollTop,
     closePageOwnedDialogs,
     consumePluginsNavigation,
     pendingPluginsNavigation,
+    marketplaceSourcesAvailable,
     sharedCustomAgentsEnabled,
   ]);
 
   // Discovery's `useSkillList()` is its own hook instance with its own cache,
   // so a skill installed, created, imported or removed elsewhere (App Advisor,
-  // the management view's `SkillsTab`, an installed skill's detail page) only
+  // an installed skill's detail page) only
   // reaches this projection by refreshing on the shared skills-changed event.
   // The refresh is tracked so a sender can wait for it.
   useEffect(() => {
@@ -1375,16 +1845,16 @@ export function PluginsPage({
       edit?: true;
     }): void => {
       const entry = installedSkillEntry(skill.sourceId, skill.name);
+      sharedSkillLinkGeneration.current += 1;
       captureDetailReturnScrollTop();
       setEntryDetailIntent('view');
       setEntryDetailStack([]);
       setEntryDetailPipelineReturn(null);
       setEntryDetailFromInstalled(true);
-      setEntryDetailManagementReturn('skills');
+      setEntryDetailBrowseReturn(marketplaceManagementDestination('skills'));
       setSkillDetailFilePath(
         skill.filePath ? { entryId: entry.id, filePath: skill.filePath } : null,
       );
-      setManagementSection(null);
       setInstalledSkillDetailEntry(entry);
       setSkillEditorEntryId(skill.edit ? entry.id : null);
       setSelectedEntryId(entry.id);
@@ -1394,15 +1864,69 @@ export function PluginsPage({
 
   // Store-backed skill deep link (Cmd+K palette, chat artifacts, App Advisor):
   // the pending payload survives this page's lazy mount. An installed skill
-  // opens its detail page here; a shared skill opens the management view's
-  // Skills section, whose SkillsTab consumes the payload once it mounts.
+  // opens its detail page here; a shared skill opens its shared detail.
   const pendingSkillViewer = useNavigationStore((s) => s.pendingSkillViewer);
+  // A shared skill is read by id, not from the search-filtered inventory. Its
+  // own effect keeps inventory loads from cancelling and resending the read.
+  // The link is consumed once its detail opens or its failure is shown, or
+  // dropped when the page navigated, the context or Cloud account changed,
+  // or the page closed during the read.
+  const pendingSharedSkillId =
+    pendingSkillViewer &&
+    'kind' in pendingSkillViewer &&
+    pendingSkillViewer.kind === 'shared'
+      ? pendingSkillViewer.skillId
+      : null;
   useEffect(() => {
-    if (!pendingSkillViewer) return;
-    if ('kind' in pendingSkillViewer && pendingSkillViewer.kind === 'shared') {
-      setManagementSection('skills');
+    if (pendingSharedSkillId === null) return undefined;
+    let cancelled = false;
+    const generation = sharedSkillLinkGeneration.current;
+    sharedSkillLinkInFlight.current = pendingSharedSkillId;
+    const settle = (open: () => void): void => {
+      if (cancelled) return;
+      sharedSkillLinkInFlight.current = null;
+      if (generation === sharedSkillLinkGeneration.current) {
+        closePageOwnedDialogs();
+        open();
+      }
+      useNavigationStore.getState().consumeSkillViewer();
+    };
+    void window.skills.getShared(pendingSharedSkillId).then(
+      (detail) =>
+        settle((): void => {
+          setLinkedSharedSkill(detail);
+          setSelectedEntryId(`skill:shared:${detail.id}`);
+        }),
+      (error: unknown) =>
+        settle((): void =>
+          setSourceNavigationError(resolveSharedResourceErrorMessage(error)),
+        ),
+    );
+    return (): void => {
+      cancelled = true;
+    };
+  }, [closePageOwnedDialogs, pendingSharedSkillId]);
+  useEffect(
+    () => (): void => {
+      const inFlight = sharedSkillLinkInFlight.current;
+      const pending = useNavigationStore.getState().pendingSkillViewer;
+      if (
+        inFlight !== null &&
+        pending &&
+        'kind' in pending &&
+        pending.kind === 'shared' &&
+        pending.skillId === inFlight
+      )
+        useNavigationStore.getState().consumeSkillViewer();
+    },
+    [],
+  );
+  useEffect(() => {
+    if (
+      !pendingSkillViewer ||
+      ('kind' in pendingSkillViewer && pendingSkillViewer.kind === 'shared')
+    )
       return;
-    }
     closePageOwnedDialogs();
     openInstalledSkillDetail({
       sourceId: pendingSkillViewer.sourceId,
@@ -1413,49 +1937,19 @@ export function PluginsPage({
     });
     useNavigationStore.getState().consumeSkillViewer();
   }, [closePageOwnedDialogs, openInstalledSkillDetail, pendingSkillViewer]);
-
-  useEffect(() => {
-    const handleOpenDetail = (event: Event): void => {
-      if (!(event instanceof CustomEvent)) return;
-      const detail: unknown = event.detail;
-      if (
-        typeof detail === 'object' &&
-        detail !== null &&
-        'marketplaceId' in detail &&
-        typeof detail.marketplaceId === 'string' &&
-        'pluginName' in detail &&
-        typeof detail.pluginName === 'string'
-      ) {
-        setPendingPluginDetail({
-          marketplaceId: detail.marketplaceId,
-          pluginName: detail.pluginName,
-        });
-      }
-    };
-    window.addEventListener(PLUGIN_OPEN_DETAIL_EVENT, handleOpenDetail);
-    return (): void => {
-      window.removeEventListener(PLUGIN_OPEN_DETAIL_EVENT, handleOpenDetail);
-    };
-  }, []);
-
-  // Open the matched plugin's detail view once its marketplace is in the cache.
-  useEffect(() => {
-    if (!pendingPluginDetail) return;
-    const marketplace = marketplaces.find(
-      (entry) => entry.id === pendingPluginDetail.marketplaceId,
-    );
-    if (!marketplace) return;
-    setSelectedMarketplace(marketplace);
-    setDetailPluginName(pendingPluginDetail.pluginName);
-    setPendingPluginDetail(null);
-  }, [marketplaces, pendingPluginDetail]);
-
-  const existingRepos = marketplaces
-    .filter((marketplace) => marketplace.sourceUrl)
-    .map((marketplace) => marketplace.sourceUrl);
-
   const selectEntry = useCallback(
-    (entry: UnifiedPluginEntry, fromInstalled: boolean): void => {
+    (selected: UnifiedPluginEntry, fromInstalled: boolean): void => {
+      // A bundled skill has no detail of its own; it opens its plugin, and
+      // does nothing once that plugin is gone from the list (CAN-4844).
+      const entry =
+        selected.ref.type === 'plugin-skill'
+          ? entries.find(
+              (candidate) => candidate.id === selected.bundledBy?.entryId,
+            )
+          : selected;
+      if (entry === undefined) return;
+      // The user's own choice outranks a shared-skill link still being read.
+      sharedSkillLinkGeneration.current += 1;
       if (entry.ref.type === 'curated-pipeline') {
         const key = entry.ref.key;
         const row = capabilityInventory.curated?.rows.find(
@@ -1467,20 +1961,19 @@ export function PluginsPage({
       setEntryDetailIntent('view');
       if (entryUsesDetailPage(entry, servers)) {
         captureDetailReturnScrollTop();
-        // The management view lists only installed content, so a detail it
+        // The Installed section lists only installed content, so a detail it
         // opens keeps the Installed breadcrumb level just like the strip.
-        setEntryDetailFromInstalled(
-          fromInstalled || managementSection !== null,
-        );
-        setEntryDetailManagementReturn(managementSection);
-        setManagementSection(null);
+        setEntryDetailFromInstalled(fromInstalled || installedExpanded);
+        setEntryDetailBrowseReturn(currentDetailReturn);
       }
       setSelectedEntryId(entry.id);
     },
     [
       captureDetailReturnScrollTop,
       capabilityInventory.curated,
-      managementSection,
+      currentDetailReturn,
+      entries,
+      installedExpanded,
       servers,
     ],
   );
@@ -1488,12 +1981,51 @@ export function PluginsPage({
     (entry: UnifiedPluginEntry): void => selectEntry(entry, false),
     [selectEntry],
   );
+  // A custom skill's row menu Edit opens its edit page (CAN-3485, CAN-4844).
+  const handleEditEntry = useCallback(
+    (entry: UnifiedPluginEntry): void => {
+      if (entry.ref.type === 'skill')
+        openInstalledSkillDetail({
+          sourceId: entry.ref.sourceId,
+          name: entry.ref.skillName,
+          edit: true,
+        });
+    },
+    [openInstalledSkillDetail],
+  );
+  const automationActivities = capabilityInventory.automationActivities;
+  const openAutomationUpdate = automationUpdate.openUpdate;
   const handleUpdateEntry = useCallback(
     async (entry: UnifiedPluginEntry): Promise<void> => {
-      if (entry.ref.type === 'skill') await updateSkillEntry(entry);
-      else if (entry.ref.type === 'automation') handleSelectEntry(entry);
+      if (entry.ref.type === 'skill') {
+        await updateSkillEntry(entry);
+        return;
+      }
+      if (entry.ref.type === 'pipeline') {
+        // TODO(follow-up under CAN-4837, "Apply team-shared pipeline updates
+        // from Customize Workflows"): the existing pipeline APIs can read install
+        // provenance and the current team share, but none can re-import that
+        // share over its installed local copy. Keep this branch explicit so a
+        // pipeline update never degrades into opening details and pretending
+        // the update was applied.
+        throw new Error('Pipeline updates are not available yet.');
+      }
+      if (entry.ref.type !== 'automation') return;
+      // The install wizard applies the update in place; a load failure
+      // rejects into the Updates failure report.
+      const activityId = entry.ref.activityId;
+      const activity = automationActivities.find(
+        (candidate) => candidate.id === activityId,
+      );
+      if (activity) await openAutomationUpdate(activity);
+      else handleSelectEntry(entry);
     },
-    [handleSelectEntry, updateSkillEntry],
+    [
+      automationActivities,
+      handleSelectEntry,
+      openAutomationUpdate,
+      updateSkillEntry,
+    ],
   );
   // A requirement chip on a multi-connection plugin card opens that
   // integration's card (REG-3033).
@@ -1503,6 +2035,11 @@ export function PluginsPage({
       if (target) selectEntry(target, false);
     },
     [entries, selectEntry],
+  );
+  // An item created from Add custom opens its detail, as its row would.
+  const openCreatedCustomItem = useOpenCreatedCustomItem(
+    entries,
+    handleSelectEntry,
   );
   // A source plugin opens the catalog entry the inventory built for it; a
   // plugin the catalog does not list stays non-interactive.
@@ -1519,6 +2056,46 @@ export function PluginsPage({
     },
     [entries, marketplaceSources.sources],
   );
+
+  useEffect(() => {
+    if (
+      !pendingSourcePlugin ||
+      pendingSourcePlugin.generation !== sourceRequestGeneration.current ||
+      !showingSources ||
+      marketplaceSources.loading ||
+      marketplaceSources.sources === null ||
+      loading ||
+      capabilityInventory.loading
+    )
+      return;
+    const source = marketplaceSources.sources.find(
+      (entry) => entry.id === pendingSourcePlugin.sourceId,
+    );
+    if (!source) {
+      setPendingSourcePlugin(null);
+      return;
+    }
+    const plugin = source.plugins.find(
+      (entry) =>
+        entry.key.toLowerCase() === pendingSourcePlugin.pluginKey.toLowerCase(),
+    );
+    const entry = plugin ? sourcePluginEntry(source.id, plugin.key) : undefined;
+    if (entry) handleSelectEntry(entry);
+    else
+      setSourceNavigationError(
+        'This plugin is no longer available. Choose another plugin or return to Marketplaces.',
+      );
+    setPendingSourcePlugin(null);
+  }, [
+    pendingSourcePlugin,
+    showingSources,
+    marketplaceSources.loading,
+    marketplaceSources.sources,
+    loading,
+    capabilityInventory.loading,
+    sourcePluginEntry,
+    handleSelectEntry,
+  ]);
 
   // Only the shared lists, so the card handler is not rebuilt on every
   // unrelated inventory change.
@@ -1572,12 +2149,12 @@ export function PluginsPage({
         handleSelectEntry(entry);
         return;
       }
+      sharedSkillLinkGeneration.current += 1;
       setEntryDetailIntent('add');
       if (entryUsesDetailPage(entry, servers)) {
         captureDetailReturnScrollTop();
-        setEntryDetailFromInstalled(managementSection !== null);
-        setEntryDetailManagementReturn(managementSection);
-        setManagementSection(null);
+        setEntryDetailFromInstalled(installedExpanded);
+        setEntryDetailBrowseReturn(currentDetailReturn);
       }
       setSelectedEntryId(entry.id);
     },
@@ -1585,7 +2162,8 @@ export function PluginsPage({
       captureDetailReturnScrollTop,
       handleSelectEntry,
       sharedInstallInventory,
-      managementSection,
+      currentDetailReturn,
+      installedExpanded,
       servers,
     ],
   );
@@ -1655,6 +2233,9 @@ export function PluginsPage({
       (installedSkillDetailEntry?.id === selectedEntryId
         ? installedSkillDetailEntry
         : null) ??
+      (linkedSharedSkillEntry?.id === selectedEntryId
+        ? linkedSharedSkillEntry
+        : null) ??
       // A shared automation the browse inventory does not list, such as the
       // user's own public-link-only share outside "Shared by me", still opens
       // by id: its detail loads the share and reports the real name.
@@ -1675,6 +2256,7 @@ export function PluginsPage({
     foundSelectedEntry,
     retainedDetailEntry,
     installedSkillDetailEntry,
+    linkedSharedSkillEntry,
     selectedEntryId,
     sharedCustomAgentsEnabled,
   ]);
@@ -1709,26 +2291,68 @@ export function PluginsPage({
   }, [selectedDetailPageEntryId]);
 
   useEffect(() => {
-    if (selectedEntryUsesDetailPage) setManagementSection(null);
-  }, [selectedEntryUsesDetailPage]);
+    if (
+      pendingScrollTop.current === null ||
+      loading ||
+      skillsLoading ||
+      capabilityInventory.loading ||
+      marketplaceSources.loading
+    )
+      return;
+    if (pageScrollRef.current)
+      pageScrollRef.current.scrollTop = pendingScrollTop.current;
+    pendingScrollTop.current = null;
+  }, [
+    selectedDetailPageEntryId,
+    selectedSourceId,
+    loading,
+    skillsLoading,
+    capabilityInventory.loading,
+    marketplaceSources.loading,
+  ]);
 
   const closeEntryDetail = useCallback((): void => {
+    sharedSkillLinkGeneration.current += 1;
     setPendingAgentEditId(null);
     setSelectedEntryId(null);
     setEntryDetailIntent('view');
     setEntryDetailStack([]);
     setEntryDetailPipelineReturn(null);
     setEntryDetailFromInstalled(false);
-    setEntryDetailManagementReturn(null);
+    setEntryDetailBrowseReturn(null);
     setSkillDetailFilePath(null);
     setInstalledSkillDetailEntry(null);
+    setLinkedSharedSkill(null);
     setSkillEditorEntryId(null);
   }, []);
+  useEffect(() => {
+    if (!selectedSource || !selectedEntry) return;
+    const ref = selectedEntry.ref;
+    const key =
+      ref.type === 'marketplace-plugin' &&
+      ref.marketplaceId === selectedSource.id
+        ? ref.pluginName
+        : ref.type === 'curated-plugin' && selectedSource.kind === 'curated'
+          ? ref.key
+          : null;
+    if (
+      key !== null &&
+      !selectedSource.plugins.some(
+        (plugin) => plugin.key.toLowerCase() === key.toLowerCase(),
+      )
+    ) {
+      closeEntryDetail();
+      setSourceNavigationError(
+        'This plugin is no longer available. Choose another plugin or return to Marketplaces.',
+      );
+    }
+  }, [selectedSource, selectedEntry, closeEntryDetail]);
+
   const navigateBackFromEntryDetail = useCallback((): void => {
-    const managementReturn = entryDetailManagementReturn;
+    const managementReturn = entryDetailBrowseReturn;
     closeEntryDetail();
-    if (managementReturn !== null) setManagementSection(managementReturn);
-  }, [closeEntryDetail, entryDetailManagementReturn]);
+    if (managementReturn !== null) applyBrowseDestination(managementReturn);
+  }, [applyBrowseDestination, closeEntryDetail, entryDetailBrowseReturn]);
 
   // --- Local agents (CAN-4266) ---
   const {
@@ -1819,9 +2443,11 @@ export function PluginsPage({
   }, []);
   const handleSaveAgent = useCallback(
     async (request: SaveAgentModelRequest): Promise<void> => {
-      await saveAgent(request);
+      const saved = await saveAgent(request);
+      if (request.id === undefined)
+        openCreatedCustomItem({ kind: 'agent', agentId: saved.id });
     },
-    [saveAgent],
+    [openCreatedCustomItem, saveAgent],
   );
   const handleConfirmDeleteAgent = useCallback(
     (agentId: string): void => {
@@ -1847,12 +2473,17 @@ export function PluginsPage({
     },
     [navigateBackFromEntryDetail, removeAgent],
   );
-  // A Personal/organization switch takes the previous context's agent
-  // dialog, pending editor and open agent detail with it.
+  // A Personal/organization switch takes the previous context's dialogs,
+  // including any open Share dialog, pending editor and open agent detail
+  // with it.
   useWorkspaceContextReset((): void => {
+    closePageOwnedDialogs();
+    setSelectedSourceId(null);
+    setInstalledStatusFilter(null);
+    setInstalledExpanded(false);
     setAgentDialog(null);
     setPendingAgentEditId(null);
-    if (ownedShare.openKind === 'agent') ownedShare.close();
+    if (ownedShare.openKind !== null) ownedShare.close();
     if (selectedLocalAgentId !== null) closeEntryDetail();
   });
   // Switching agents off live hides every agent surface: dialogs close, a
@@ -1886,6 +2517,9 @@ export function PluginsPage({
   }, [selectedEntry]);
   useEffect(() => {
     const handleAccountChanged = (): void => {
+      sharedSkillLinkGeneration.current += 1;
+      setAddMarketplaceOpen(false);
+      setPendingSourcePlugin(null);
       const current = selectedEntryForAccountRef.current;
       if (
         current &&
@@ -1899,6 +2533,7 @@ export function PluginsPage({
         closeEntryDetail();
       }
       setRetainedDetailEntry(null);
+      setLinkedSharedSkill(null);
       setDetailNameOverride(null);
     };
     window.addEventListener(
@@ -1976,6 +2611,11 @@ export function PluginsPage({
       entry={detailEntry}
       presentation={presentation}
       initialIntent={entryDetailIntent}
+      mcpTarget={
+        mcpNavigation?.entryId === selectedEntryId
+          ? mcpNavigation.target
+          : undefined
+      }
       shareAction={marketplaceShareAction(
         entryShareStates.get(detailEntry.id),
         (): void => handleShareEntry(detailEntry),
@@ -1995,7 +2635,7 @@ export function PluginsPage({
       curatedMcpServers={curatedMcpServers}
       localCollections={capabilityInventory.localCollections}
       sharedCollections={capabilityInventory.sharedCollections}
-      sharedSkills={capabilityInventory.sharedSkills}
+      sharedSkills={detailSharedSkills}
       pipelines={capabilityInventory.pipelines}
       automationActivities={capabilityInventory.automationActivities}
       curatedAutomations={capabilityInventory.curatedAutomations}
@@ -2012,6 +2652,7 @@ export function PluginsPage({
       }
       sharedAgents={capabilityInventory.sharedAgents}
       sharedPlugins={capabilityInventory.sharedPlugins}
+      ownSharedPlugins={capabilityInventory.ownSharedPlugins}
       sharedBlueprints={capabilityInventory.sharedBlueprints}
       providerConnectors={providerConnectors ?? []}
       providerConnectorsLoading={providerConnectorsLoading}
@@ -2043,14 +2684,7 @@ export function PluginsPage({
             ? { pipelineReturn: entryDetailPipelineReturn }
             : {}),
           ...(entryDetailFromInstalled ? { fromInstalled: true } : {}),
-          ...(entryDetailManagementReturn
-            ? { managementReturn: entryDetailManagementReturn }
-            : {}),
-          marketplace: {
-            query,
-            tab: activeTypeTab,
-            ...(category ? { category } : {}),
-          },
+          marketplace: entryDetailBrowseReturn ?? currentDetailReturn,
         };
         closeEntryDetail();
         useNavigationStore.getState().openPipelineEdit({
@@ -2161,21 +2795,25 @@ export function PluginsPage({
   const selectedEntryKindFilter = selectedEntry
     ? marketplaceTabForKind(selectedEntry.kind)
     : null;
-  const openInstalledFromDetail = (section: PluginsManagementSection): void => {
+  const openInstalledFromDetail = (
+    section: PluginsManagementSectionId,
+  ): void => {
     closeEntryDetail();
     closeBrowseGroup();
-    setManagementSection(section);
+    applyBrowseDestination(marketplaceManagementDestination(section));
   };
   const openEntryTypeFromDetail = (): void => {
     if (selectedEntryKindFilter === null) return;
     if (entryDetailFromInstalled) {
-      const managementSection = managementSectionForCapabilityType(
-        selectedEntryKindFilter,
-      );
-      if (managementSection !== null) {
-        openInstalledFromDetail(managementSection);
-        return;
-      }
+      closeEntryDetail();
+      closeBrowseGroup();
+      applyBrowseDestination({
+        query: '',
+        tab: selectedEntryKindFilter,
+        focusSection: 'installed',
+        installedExpanded: true,
+      });
+      return;
     }
     detailReturnScrollTopRef.current = 0;
     closeEntryDetail();
@@ -2257,6 +2895,15 @@ export function PluginsPage({
     <div
       ref={pageScrollRef}
       className="marketplace-page-scroll page-scroll-gutter h-full w-full overflow-y-auto"
+      onScroll={(event): void => {
+        pendingScrollTopRef.current = event.currentTarget.scrollTop;
+        if (scrollWriteTimerRef.current !== null)
+          clearTimeout(scrollWriteTimerRef.current);
+        scrollWriteTimerRef.current = setTimeout(
+          flushScrollTop,
+          SCROLL_PRESENTATION_WRITE_DELAY_MS,
+        );
+      }}
       data-testid="page-plugins"
       data-tall-titlebar={titlebarHasBreadcrumb ? 'true' : undefined}
     >
@@ -2301,9 +2948,30 @@ export function PluginsPage({
                           browseScrollTopRef.current;
                       }
                       closeEntryDetail();
+                      if (selectedSourceId) setSelectedSourceId(null);
                       closeBrowseGroup();
                     },
                   },
+                  ...(selectedSourceId
+                    ? [
+                        {
+                          key: 'sources',
+                          label: 'Marketplaces',
+                          testId: 'plugins-entry-detail-breadcrumb-sources',
+                          onSelect: (): void => {
+                            closeEntryDetail();
+                            setSelectedSourceId(null);
+                          },
+                        },
+                        {
+                          key: 'source',
+                          label: selectedSource?.name ?? 'Marketplace',
+                          privateLabel: true,
+                          testId: 'plugins-entry-detail-breadcrumb-source',
+                          onSelect: closeEntryDetail,
+                        },
+                      ]
+                    : []),
                   ...(entryDetailFromInstalled
                     ? [
                         {
@@ -2468,43 +3136,47 @@ export function PluginsPage({
           </div>
         ) : sourceDetailOpen && selectedSourceId !== null ? (
           <div data-testid="marketplace-source-page" className="-mt-1.5">
-            <MarketplaceSourceDetail
-              state={marketplaceSources}
-              onBulkStateChange={setSourceBulkState}
-              sourceId={selectedSourceId}
-              onNavigateBack={closeMarketplaceSource}
-              breadcrumbs={null}
-              filters={sourcePluginFilters}
-              onFiltersChange={setSourcePluginFilters}
-              canOpenPlugin={(sourceId, pluginKey) =>
-                sourcePluginEntry(sourceId, pluginKey) !== undefined
-              }
-              onOpenPlugin={(sourceId, pluginKey) => {
-                const entry = sourcePluginEntry(sourceId, pluginKey);
-                if (entry) selectEntry(entry, false);
-              }}
-            />
+            <>
+              <ErrorBanner error={sourceNavigationError} />
+              <MarketplaceSourceDetail
+                state={marketplaceSources}
+                onBulkStateChange={setSourceBulkState}
+                sourceId={selectedSourceId}
+                onNavigateBack={closeMarketplaceSource}
+                breadcrumbs={null}
+                filters={sourcePluginFilters}
+                onFiltersChange={setSourcePluginFilters}
+                canOpenPlugin={(sourceId, pluginKey) =>
+                  sourcePluginEntry(sourceId, pluginKey) !== undefined
+                }
+                onOpenPlugin={(sourceId, pluginKey) => {
+                  const entry = sourcePluginEntry(sourceId, pluginKey);
+                  if (entry) selectEntry(entry, false);
+                }}
+              />
+            </>
           </div>
         ) : activeBrowseGroup ? (
           <div data-testid="plugins-category-page" className="-mt-1.5">
-            <PageHeading
+            <PageHeader
               title={activeBrowseGroup.title}
-              subtitle={`Browse all ${activeBrowseGroup.title.toLowerCase()} capabilities.`}
+              description={`Browse all ${activeBrowseGroup.title.toLowerCase()} capabilities.`}
             />
 
-            <MarketplaceSearchField
-              className="mt-6"
-              inputRef={categorySearchInputRef}
-              value={categoryQuery}
-              onChange={setCategoryQuery}
-              onEscapeEmpty={closeBrowseGroup}
-              ariaLabel={`Search ${activeBrowseGroup.title}`}
-              clearAriaLabel={`Clear ${activeBrowseGroup.title} search`}
-              testId="plugins-category-search"
-              clearTestId="plugins-category-search-clear"
-            />
+            <PageSearchRow className="mt-4">
+              <MarketplaceSearchField
+                inputRef={categorySearchInputRef}
+                value={categoryQuery}
+                onChange={setCategoryQuery}
+                onEscapeEmpty={closeBrowseGroup}
+                ariaLabel={`Search ${activeBrowseGroup.title}`}
+                clearAriaLabel={`Clear ${activeBrowseGroup.title} search`}
+                testId="plugins-category-search"
+                clearTestId="plugins-category-search-clear"
+              />
+            </PageSearchRow>
 
-            <div className="mt-10">
+            <div className="mt-4">
               <PluginsDiscoveryList
                 sections={[
                   {
@@ -2526,11 +3198,16 @@ export function PluginsPage({
           </div>
         ) : (
           <>
-            <PageHeading
-              heading={<CustomizeSectionHeading />}
+            <PageHeader
+              title={CUSTOMIZE_LABEL}
+              description={CUSTOMIZE_SECTION_SUBTITLE}
               actions={
                 <PluginsAddCustomMenu
-                  onAddMarketplace={() => setAddMarketplaceOpen(true)}
+                  onAddMarketplace={
+                    canAddMarketplace
+                      ? (): void => setAddMarketplaceOpen(true)
+                      : undefined
+                  }
                   onAddMcpServer={() => setMcpDialogOpen(true)}
                   onInstallSkillsFromGitHub={() => setAddSkillsOpen(true)}
                   onCreateCustomSkill={() => setCreateSkillOpen(true)}
@@ -2544,37 +3221,58 @@ export function PluginsPage({
               }
             />
 
+            <ErrorBanner error={sourceNavigationError} />
+            {installedStatusError && (
+              <ErrorBanner error={installedStatusError} />
+            )}
+
             {/* Marketplace controls and results use the full shared page width,
             matching the other top-level utility pages. */}
             <div className="mt-6 flex flex-col gap-4">
-              {/* Pill search: the page's primary control, so it gets the full
-              column width and the only rounded-full shape on the surface. */}
-              {!showingSources && (
-                <MarketplaceSearchField
-                  inputRef={searchInputRef}
-                  value={query}
-                  onChange={(value) => {
-                    setQuery(value);
-                    setFocusSection(null);
-                  }}
-                  onEscapeEmpty={() => setCategory(null)}
-                  ariaLabel="Search all capabilities"
-                  clearAriaLabel={`Clear ${CUSTOMIZE_LABEL} search`}
-                  testId="plugins-search"
-                  clearTestId="plugins-search-clear"
-                />
-              )}
-
               <MarketplaceTypeTabs
                 value={activeTypeTab}
                 tabs={typeTabs}
                 onChange={(tab) => {
+                  setAddMarketplaceOpen(false);
+                  setPendingSourcePlugin(null);
+                  setSelectedSourceId(null);
+                  setInstalledStatusFilter(null);
+                  setInstalledExpanded(false);
+                  setFocusSection(null);
                   setKindFilter(tab === 'all' ? null : tab);
                   setFocusSection(null);
                   setCategory(null);
                   setSelectedSourceId(null);
                 }}
               />
+
+              {/* The search sits under the tabs it searches within, as the
+              page's toolbar. */}
+              {!showingSources && (
+                <CustomizeSearchRow
+                  tab={activeTypeTab}
+                  search={{
+                    inputRef: searchInputRef,
+                    value: query,
+                    onChange: (value) => {
+                      setAddMarketplaceOpen(false);
+                      setPendingSourcePlugin(null);
+                      setQuery(value);
+                      setFocusSection(null);
+                    },
+                    onEscapeEmpty: () => setCategory(null),
+                    ariaLabel: 'Search all capabilities',
+                    clearAriaLabel: `Clear ${CUSTOMIZE_LABEL} search`,
+                    testId: 'plugins-search',
+                    clearTestId: 'plugins-search-clear',
+                  }}
+                  installedStatusFilter={installedStatusFilter}
+                  onInstalledStatusFilterChange={(value) => {
+                    setInstalledStatusFilter(value);
+                    setFocusSection(null);
+                  }}
+                />
+              )}
             </div>
 
             {showingSources ? (
@@ -2583,6 +3281,17 @@ export function PluginsPage({
                   state={marketplaceSources}
                   onOpenSource={openMarketplaceSource}
                   removeConfirmation={marketplaceSourceRemoveConfirmation}
+                  addAction={
+                    canAddMarketplace ? (
+                      <Button
+                        size="compact"
+                        data-testid="marketplace-sources-add"
+                        onClick={() => setAddMarketplaceOpen(true)}
+                      >
+                        Add marketplace
+                      </Button>
+                    ) : undefined
+                  }
                 />
               </div>
             ) : (
@@ -2630,12 +3339,18 @@ export function PluginsPage({
                   </Notice>
                 )}
 
-                <div className="mt-10">
+                {/* 16px under the page search row, as on every page. */}
+                <div className="mt-4">
                   <ErrorBanner error={skillUpdates.error} />
                   <CustomizeTabSections
                     tab={activeCatalogTab}
                     entries={entries}
                     query={deferredQuery}
+                    onClearSearch={() => {
+                      setQuery('');
+                      setFocusSection(null);
+                      searchInputRef.current?.focus();
+                    }}
                     installedInventory={
                       error ||
                       skillsError ||
@@ -2670,6 +3385,7 @@ export function PluginsPage({
                     ])}
                     selectedEntryId={selectedEntryId}
                     onSelectEntry={handleSelectEntry}
+                    onEditEntry={handleEditEntry}
                     onAddEntry={handleAddEntry}
                     onConnectEntry={handleAddEntry}
                     onOpenEntryId={handleOpenEntryId}
@@ -2684,6 +3400,7 @@ export function PluginsPage({
                     }
                     onUpdateEntry={handleUpdateEntry}
                     onUpdateFailures={skillUpdates.reportFailures}
+                    workflowActions={workflowActions}
                     onRetryInventory={() => {
                       void useAutomationsStore.getState().hydrate();
                       void reloadMarketplaces();
@@ -2693,6 +3410,18 @@ export function PluginsPage({
                       void capabilityInventory.refreshLocalCollections();
                       capabilityInventory.refreshOwnedShares();
                     }}
+                    entryStatus={entryStatus}
+                    renderSharedActions={renderRowUnshare}
+                    installedStatusFilter={installedStatusFilter ?? undefined}
+                    installedStatusInventory={
+                      installedStatuses.state.kind === 'unsupported'
+                        ? 'unavailable'
+                        : installedStatuses.state.kind
+                    }
+                    installedStatusSnapshot={installedStatusSnapshot}
+                    onInstalledStatusSnapshotChange={setInstalledStatusSnapshot}
+                    installedExpanded={installedExpanded}
+                    onInstalledExpandedChange={setInstalledExpanded}
                     focusSection={focusSection}
                     focusPending={
                       capabilityInventory.ownedSharesLoading ||
@@ -2707,7 +3436,7 @@ export function PluginsPage({
                         />
                         <RefreshButton
                           dataTestId="plugins-pipelines-refresh"
-                          ariaLabel="Refresh pipelines"
+                          ariaLabel="Refresh workflows"
                           busy={pipelinesRefreshBusy}
                           onClick={handleRefreshPipelines}
                         />
@@ -2718,52 +3447,49 @@ export function PluginsPage({
                       kindFilter === 'collection' ? (
                         <EmptyState
                           title="No collections yet"
-                          subtitle="Group skills, plugins, and MCP servers so a chat or pipeline can pick them up together."
+                          subtitle="Group skills, plugins, and MCP servers so a chat or workflow can pick them up together."
                           action={
-                            <button
-                              type="button"
+                            <Button
+                              size="compact"
                               data-testid="plugins-collections-empty-create"
                               onClick={() => setCreateCollectionOpen(true)}
-                              className={SECONDARY_ACTION_BUTTON_CLASS}
                             >
                               Add collection
-                            </button>
+                            </Button>
                           }
                         />
                       ) : kindFilter === 'agent' && !showLocalAgentsError ? (
                         <EmptyState
                           title="No agents yet"
-                          subtitle="Create an agent to reuse instructions and plugins from model pickers and pipelines."
+                          subtitle="Create an agent to reuse instructions and plugins from model pickers and workflows."
                           action={
-                            <button
-                              type="button"
+                            <Button
+                              size="compact"
                               data-testid="plugins-agents-empty-create"
                               onClick={() =>
                                 openAgentDialog({ mode: 'create' })
                               }
-                              className={SECONDARY_ACTION_BUTTON_CLASS}
                             >
                               New agent
-                            </button>
+                            </Button>
                           }
                         />
                       ) : kindFilter === 'workflow' && !inventoryError ? (
                         <EmptyState
                           title="No workflows yet"
-                          subtitle="Run an agent or a pipeline on a schedule. Workflows you create or add show up here."
+                          subtitle="Run an agent or a workflow on a schedule. Workflows you create or add show up here."
                           action={
-                            <button
-                              type="button"
+                            <Button
+                              size="compact"
                               data-testid="plugins-automations-empty-open"
                               onClick={() =>
                                 useNavigationStore
                                   .getState()
                                   .navigate('automations')
                               }
-                              className={SECONDARY_ACTION_BUTTON_CLASS}
                             >
                               Open Workflows
-                            </button>
+                            </Button>
                           }
                         />
                       ) : undefined
@@ -2874,67 +3600,26 @@ export function PluginsPage({
         />
       )}
 
-      <PluginsManagementView
-        open={managementSection !== null}
-        initialSection={managementSection ?? 'installed'}
-        // A detail page opened from the management view keeps that view's
-        // list mounted behind it, so Back restores its state (CAN-3483).
-        retainContent={
-          selectedDetailPageEntryId !== null &&
-          entryDetailManagementReturn !== null
-        }
-        statusFilter={managementStatusFilter}
-        onClearStatusFilter={() => setManagementStatusFilter(null)}
-        onClose={() => {
-          setManagementSection(null);
-          setManagementStatusFilter(null);
-          // The management view's `SkillsTab`/`McpServersTab` mutate through
-          // their own hook instances (see the top-level `useSkillList`/
-          // `useMcpServerList` comment); refresh discovery's projection on
-          // close so any install/uninstall/edit made in there is reflected.
-          void refreshSkills();
-          void refreshServers();
-        }}
-        onSectionChange={setManagementSection}
-        entries={entries}
-        selectedEntryId={selectedEntryId}
-        onSelectEntry={handleSelectEntry}
-        onOpenSkill={(skill) => {
-          // The list's inventory can be ahead of this page's (it owns its own
-          // `useSkillList`); catch up so the page's actions see the skill.
-          void refreshSkills();
-          openInstalledSkillDetail(skill);
-        }}
-        marketplaces={marketplaces}
-        marketplacesLoading={loading}
-        marketplacesError={error}
-        marketplacesProgressMessage={progressMessage}
-        marketplacesLastRefreshed={cache?.lastRefreshed ?? null}
-        // Deliberate user gesture (Refresh button / invalid-marketplace
-        // Retry), so force the provider recheck past the 24h TTL. Incidental
-        // callers leave this unset and inherit 'if-stale'.
-        onRefreshMarketplaces={() => refreshMarketplaces('always')}
-        onMarketplaceUpserted={upsertMarketplace}
-        onMarketplaceRemoved={applyMarketplaceRemoval}
-        onOpenMarketplace={(marketplace) => {
-          setDetailPluginName(null);
-          setSelectedMarketplace(marketplace);
-        }}
-        onAddMarketplace={() => setAddMarketplaceOpen(true)}
-        onAddMarketplaceFromSkills={handleAddMarketplaceFromSkills}
-        onOpenAccountSettings={onOpenAccountSettings}
-      />
-
-      <AddMarketplaceModal
-        isOpen={addMarketplaceOpen}
-        onClose={() => {
-          setAddMarketplaceOpen(false);
-          setMarketplaceInitialRepo('');
-        }}
-        existingRepos={existingRepos}
-        onAdded={upsertMarketplace}
-        initialRepo={marketplaceInitialRepo}
-      />
+      {addMarketplaceOpen &&
+        canAddMarketplace &&
+        sourceClient.marketplaceSources && (
+          <MarketplaceSourceAddDialog
+            client={sourceClient.marketplaceSources}
+            initialInput={marketplaceInitialRepo}
+            onClose={() => {
+              setAddMarketplaceOpen(false);
+              setMarketplaceInitialRepo('');
+            }}
+            onComplete={async (result, isCurrent) => {
+              await marketplaceSources.reload();
+              if (!isCurrent()) return;
+              setAddMarketplaceOpen(false);
+              setMarketplaceInitialRepo('');
+              applyBrowseDestination({ query: '', tab: 'sources' });
+              setSelectedSourceId(result.sourceId);
+            }}
+          />
+        )}
 
       {mcpDialogOpen && (
         <McpServerDialog
@@ -2945,6 +3630,7 @@ export function PluginsPage({
             setMcpDialogOpen(false);
             await refreshServers();
           }}
+          onCreated={openCreatedCustomItem}
         />
       )}
 
@@ -2958,8 +3644,13 @@ export function PluginsPage({
       <CreateSkillModal
         isOpen={createSkillOpen}
         onClose={() => setCreateSkillOpen(false)}
-        onSaved={async () => {
+        onSaved={async (savedName) => {
           setCreateSkillOpen(false);
+          openCreatedCustomItem({
+            kind: 'skill',
+            sourceId: CUSTOM_SKILL_SOURCE_ID,
+            name: savedName,
+          });
           await refreshSkills();
         }}
       />
@@ -2971,17 +3662,11 @@ export function PluginsPage({
             setCreateCollectionOpen(false);
             await capabilityInventory.refreshLocalCollections();
           }}
+          onCreated={(collectionId): void =>
+            openCreatedCustomItem({ kind: 'collection', collectionId })
+          }
         />
       )}
-
-      <MarketplacePluginsModal
-        marketplace={selectedMarketplace}
-        initialPluginName={detailPluginName}
-        onClose={() => {
-          setSelectedMarketplace(null);
-          setDetailPluginName(null);
-        }}
-      />
 
       {sharedCustomAgentsEnabled &&
         (agentDialog?.mode === 'create' ||
@@ -2998,7 +3683,7 @@ export function PluginsPage({
         agentDialogTarget && (
           <DeleteConfirmModal
             title="Delete agent"
-            message={`Existing chats and pipelines that use ${agentDialogTarget.id} will fail until another model is selected.`}
+            message={`Existing chats and workflows that use ${agentDialogTarget.id} will fail until another model is selected.`}
             confirmLabel="Delete agent"
             pending={agentDeletePending}
             error={agentDeleteError}
@@ -3019,6 +3704,13 @@ export function PluginsPage({
         />
       )}
       {shareGateModal}
+      {dispatchPipelineModal}
+      {automationUpdate.pending && (
+        <AutomationUpdateModal
+          update={automationUpdate.pending}
+          onClose={automationUpdate.clear}
+        />
+      )}
 
       {/* Dialog-owned branches remain over the browse/management surface. */}
       {selectedEntry &&

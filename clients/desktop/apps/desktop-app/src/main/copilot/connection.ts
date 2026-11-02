@@ -1,3 +1,7 @@
+import {
+  observeProviderConnection,
+  withProviderConnectionAttempt,
+} from '../lib/provider-connection-events';
 import type { CopilotAccountUsage } from '@canopy/desktop-shared/types/copilot-connection';
 import { getFeatureFlagService } from '../feature-flags';
 import { notifyCopilotUsageChanged } from './usage-events';
@@ -14,6 +18,7 @@ import {
 } from '@canopy/desktop-shared/lib/copilot-models';
 import {
   getCopilotRuntimeRootDir,
+  getCopilotRuntimeReceiptsDir,
   getCopilotRuntimeStateDir,
 } from '@canopy/desktop-shared/pipelines/config-paths';
 import {
@@ -25,7 +30,16 @@ import {
   startCopilotRuntime,
   type OwnedCopilotRuntime,
 } from '@canopy/desktop-shared/node/copilot/runtime';
-import type { CopilotRuntimeAuth } from '@canopy/desktop-shared/node/copilot/runtime-auth';
+import { reapCopilotProcessReceipts } from '@canopy/desktop-shared/node/copilot/process-receipts';
+import { runCopilotTurn } from '@canopy/desktop-shared/node/copilot/turn-driver';
+import type { CopilotRecipientHandle } from '@canopy/desktop-shared/node/copilot/recipient-handle';
+import { probeCopilotRotationAttempt } from './rotation-attempt';
+import type { GitHubTokenProvider } from '@github/copilot-sdk';
+import {
+  CopilotRecipient,
+  type CopilotRecipientLease,
+  type CopilotLeasePurpose,
+} from './recipient';
 import {
   pollDeviceFlow,
   refreshDeviceGrant,
@@ -52,15 +66,24 @@ import {
   invalidateCopilotRuntimeAvailability,
 } from './runtime-availability';
 import {
-  clearCopilotCredential,
+  clearCopilotGrant,
+  drainCopilotGrant,
+  resetCopilotGrantFenceForTests,
+  resumeCopilotGrant,
+  commitCopilotGrant,
+  copilotGrantAuthority,
+  deleteCopilotGrant,
   isCopilotCredentialStorageAvailable,
   readCopilotCredential,
-  saveCopilotCredential,
   type CopilotCredential,
-} from './credential-store';
+  type CopilotGrant,
+  type CopilotGrantHandle,
+  type CopilotAccountEpoch,
+} from './grant-authority';
 import {
+  CopilotSignInChangedError,
   CopilotSignInExpiredError,
-  createCopilotCredentialBroker,
+  untilAborted,
 } from './credential-broker';
 import { describeCopilotServiceRefusal } from './service-errors';
 
@@ -75,6 +98,31 @@ export const COPILOT_SETUP_TIMEOUT_MS = 30 * 60_000;
 export const COPILOT_INSTALL_TIMEOUT_MS = 10 * 60_000;
 
 let generation = 0;
+/** Status reads also span sign-out inside setup, which keeps its runtime epoch. */
+let observationGeneration = 0;
+/** Quit is terminal: no runtime may start once teardown has chosen its live set. */
+let shutDown = false;
+function assertCopilotAdmissionOpen(): void {
+  if (shutDown) throw new Error('Copilot is shutting down.');
+}
+let recovery: Promise<void> | undefined;
+export function recoverCopilotAtStartup(): Promise<void> {
+  recovery ??= (async (): Promise<void> => {
+    // Presence is evidence of an uncertain exchange, never a reason to alter a grant.
+    if ((await probeCopilotRotationAttempt()) === 'present')
+      process.emitWarning(
+        'A Copilot rotation was interrupted; the stored grant is unchanged.',
+        { code: 'COPILOT_ROTATION_UNCERTAIN' },
+      );
+    await reapCopilotProcessReceipts(getCopilotRuntimeReceiptsDir());
+  })().catch((error: unknown): never => {
+    // Retry on the next demand after an inspection/cleanup failure, but never
+    // re-run a successful pass against receipts admitted during this boot.
+    recovery = undefined;
+    throw error;
+  });
+  return recovery;
+}
 let activeSetup:
   | { token: symbol; abort: AbortController; done: Promise<void> }
   | undefined;
@@ -89,14 +137,47 @@ function observeRollout(): void {
 }
 const live = new Set<{ abort: AbortController; done: Promise<void> }>();
 let cachedModels:
-  | { generation: number; expires: number; models: CopilotModelEntry[] }
+  | {
+      generation: number;
+      accountEpoch: CopilotAccountEpoch;
+      expires: number;
+      models: CopilotModelEntry[];
+    }
   | undefined;
-let discovery: Promise<CopilotModelEntry[]> | undefined;
-// Every consumer in this process shares one broker per pinned account, so a
-// refresh is single-flight across concurrent chats, discovery and usage reads.
-let sharedBroker:
-  | { pin: CopilotAccount | undefined; auth: CopilotRuntimeAuth }
+let discovery:
+  | {
+      generation: number;
+      accountEpoch: CopilotAccountEpoch;
+      operation: Promise<CopilotModelEntry[]>;
+    }
   | undefined;
+
+function sameAccountEpoch(
+  left: CopilotAccountEpoch,
+  right: CopilotAccountEpoch,
+): boolean {
+  return (
+    left.host === right.host &&
+    left.id === right.id &&
+    left.entryId === right.entryId
+  );
+}
+
+async function modelAccountEpoch(
+  source: CopilotGrantHandle,
+  signal: AbortSignal,
+  expectedGeneration: number,
+): Promise<CopilotAccountEpoch> {
+  try {
+    return await untilAborted(source.binding(), signal);
+  } catch (error) {
+    signal.throwIfAborted();
+    assertCopilotConnectionGeneration(expectedGeneration);
+    if (error instanceof CopilotSignInChangedError)
+      throw new Error('Copilot connection was revoked.');
+    throw error;
+  }
+}
 
 function runtimeArtifact(): ReturnType<typeof getCopilotRuntimeArtifact> {
   const artifact = getCopilotRuntimeArtifact();
@@ -158,33 +239,24 @@ function deviceFlowOptions(): DeviceFlowOptions {
   return { clientId, baseUrl: override || undefined };
 }
 
-function samePin(
-  left: CopilotAccount | undefined,
-  right: CopilotAccount | undefined,
-): boolean {
-  if (!left || !right) return !left && !right;
-  return sameCopilotAccount(left, right);
-}
-
-function credentialBroker(pin: CopilotAccount | undefined): CopilotRuntimeAuth {
-  if (sharedBroker && samePin(sharedBroker.pin, pin)) return sharedBroker.auth;
+/**
+ * Every consumer in this process, in every runtime generation, shares the
+ * account epoch's one grant authority, so a refresh is single-flight across
+ * chats, discovery, usage reads and handles kept past a revoke.
+ */
+function grantAuthority(pin: CopilotAccount | undefined): CopilotGrantHandle {
   const options = deviceFlowOptions();
-  const auth = createCopilotCredentialBroker({
-    pin,
-    read: readCopilotCredential,
-    save: saveCopilotCredential,
-    clear: async (): Promise<void> => {
+  return copilotGrantAuthority(pin, {
+    refresh: (refreshToken, signal) =>
+      refreshDeviceGrant(options, refreshToken, signal),
+    onCleared: () => {
       // A rejected refresh signs the user out mid-session; the UI must learn
       // it now rather than at the next status probe.
-      await clearCopilotCredential();
+      observationGeneration++;
       invalidateCopilotRuntimeAvailability();
       cachedModels = undefined;
     },
-    refresh: (refreshToken, signal) =>
-      refreshDeviceGrant(options, refreshToken, signal),
   });
-  sharedBroker = { pin, auth };
-  return auth;
 }
 
 function isTransportFailure(error: unknown): boolean {
@@ -231,6 +303,26 @@ async function signedInAccount(preferences: {
 }
 
 /**
+ * What a failed create left installed, such as an entry whose directory sync
+ * failed after its rename. GitHub issues each refresh token once, so only that
+ * create can have stored this one; an unreadable store could hold either.
+ */
+async function entryLeftByFailedCreate(
+  grant: CopilotGrant,
+): Promise<
+  | { status: 'installed'; credential: CopilotCredential }
+  | { status: 'none' }
+  | { status: 'unknown' }
+> {
+  const read = await readCopilotCredential();
+  if (read.status === 'unreadable') return { status: 'unknown' };
+  return read.status === 'present' &&
+    read.credential.refreshToken === grant.refreshToken
+    ? { status: 'installed', credential: read.credential }
+    : { status: 'none' };
+}
+
+/**
  * Copilot is still chosen in Settings but its sign-in is gone: a rejected
  * refresh cleared the credential (often during the startup quota probe), or
  * the refresh token lapsed. Status reads that as not connected; model
@@ -251,18 +343,30 @@ async function signInExpired(): Promise<boolean> {
 }
 
 export async function copilotConnectionStatus(): Promise<CopilotConnectionStatus> {
+  const epoch = observationGeneration;
   const cache = beginCopilotAvailabilityProbe();
   try {
     const artifact = runtimeArtifact();
     const preferences = await readPreferencesFile();
     const installed = !!artifact && (await installer().isInstalled());
-    const account = await signedInAccount(preferences);
+    const account = artifact ? await signedInAccount(preferences) : null;
     const enabled =
+      epoch === observationGeneration &&
+      !shutDown &&
       !activeSetup &&
       isCopilotHarnessEnabled() &&
       preferences.copilotEnabled === true &&
       account !== null;
     cache(!!artifact && installed && enabled);
+    // A missing public account can also mean an unreadable credential. Only
+    // positive reads establish a baseline; committed sign-out clears it below.
+    if (!activeSetup && enabled && installed && account)
+      observeProviderConnection({
+        provider: 'copilot',
+        connectionMethod: 'native_login',
+        via: 'read',
+        fingerprint: `${account.host}:${account.login}`,
+      });
     return {
       supported: !!artifact,
       installed,
@@ -283,28 +387,36 @@ interface ManagedCopilotRuntimeOptions {
   cwd?: string;
   workspaceId?: string;
   requireAccount?: boolean;
+  purpose?: CopilotLeasePurpose;
   executionKind?: 'agent' | 'pipeline';
   restrictedEnvironment?: boolean;
   environment?: Record<string, string>;
 }
-export type ManagedCopilotRuntime = OwnedCopilotRuntime & {
-  account: CopilotAccount | null;
-  generation: number;
-  auth: CopilotRuntimeAuth;
-};
 
-/** All managed consumers share revocation and carry the app-held identity. */
+/**
+ * All managed consumers share revocation and carry the app-held identity.
+ * They receive results only; the client and its leases stay in this module.
+ */
 export async function openManagedCopilotRuntime(
   options: ManagedCopilotRuntimeOptions,
-): Promise<ManagedCopilotRuntime> {
-  return openCopilotRuntime(options);
+): Promise<CopilotRecipientHandle> {
+  return (await openCopilotRuntime(options)).handle;
+}
+
+interface OpenedCopilotRecipient {
+  handle: CopilotRecipientHandle;
+  /** Setup only: proves catalog access; discovery validates the catalog. */
+  probeAccess(signal: AbortSignal): Promise<void>;
 }
 
 async function openCopilotRuntime(
   options: ManagedCopilotRuntimeOptions,
   setupToken?: symbol,
-): Promise<ManagedCopilotRuntime> {
+  setupGrant?: CopilotGrant,
+): Promise<OpenedCopilotRecipient> {
+  assertCopilotAdmissionOpen();
   assertCopilotHarnessEnabled();
+  const verifiedInstaller = installer();
   if (activeSetup && activeSetup.token !== setupToken)
     throw new Error(
       'Copilot account setup is in progress. Try again when it finishes.',
@@ -323,10 +435,12 @@ async function openCopilotRuntime(
   live.add(record);
   let runtime: OwnedCopilotRuntime | undefined;
   let closing: Promise<void> | undefined;
+  let recipient: CopilotRecipient | undefined;
   const onAbort = (): void => {
     void close().catch(() => undefined);
   };
   const close = (): Promise<void> => {
+    recipient?.revoke();
     closing ??= (async (): Promise<void> => {
       try {
         await runtime?.close();
@@ -339,14 +453,25 @@ async function openCopilotRuntime(
     return closing;
   };
   try {
+    await recoverCopilotAtStartup();
     const preferences = await readPreferencesFile();
     const requireAccount = options.requireAccount !== false;
     if (requireAccount && !preferences.copilotEnabled)
-      throw new Error('Connect GitHub Copilot in Settings > Labs.');
-    const auth = credentialBroker(preferences.copilotAccount);
-    // Prove the credential before paying for a process; this also refreshes.
-    if (requireAccount) await auth.token(signal);
-    const executable = await installer().verify(signal);
+      throw new Error('Connect GitHub Copilot in Settings.');
+    // Capability admission precedes both lease minting and grant presentation.
+    const executable = await verifiedInstaller.verify(signal);
+    const source = requireAccount
+      ? grantAuthority(preferences.copilotAccount)
+      : undefined;
+    const binding = setupGrant
+      ? {
+          host: setupGrant.host,
+          id: setupGrant.id,
+          entryId: `setup:${String(setupToken)}`,
+        }
+      : await source?.binding();
+    if (!binding) throw new Error('Copilot runtime is unavailable.');
+    assertCopilotAdmissionOpen();
     assertCopilotHarnessEnabled();
     if (epoch !== generation)
       throw new Error('Copilot connection changed. Try again.');
@@ -364,6 +489,7 @@ async function openCopilotRuntime(
       expectedVersion: COPILOT_RUNTIME_VERSION,
       workingDirectory: options.cwd ?? getCopilotRuntimeStateDir(),
       stateDirectory: getCopilotRuntimeStateDir(),
+      receiptDirectory: getCopilotRuntimeReceiptsDir(),
       env: {
         ...(options.restrictedEnvironment
           ? buildDelegationCursorEnvironment(baseEnvironment)
@@ -390,12 +516,106 @@ async function openCopilotRuntime(
     signal.throwIfAborted();
     if (epoch !== generation)
       throw new Error('Copilot connection changed. Try again.');
-    return {
-      ...runtime,
+    const owned = runtime;
+    recipient = new CopilotRecipient({
+      accountEpoch: binding,
+      generation: epoch,
+      recipient: owned.identity,
+      signal,
+      binding: source
+        ? (): Promise<CopilotAccountEpoch> => source.binding()
+        : (): Promise<CopilotAccountEpoch> => Promise.resolve(binding),
+      access: source
+        ? (
+            requestSignal,
+            admit,
+          ): Promise<{ accessToken: string; expiresAt: number }> =>
+            source.access(requestSignal, admit)
+        : (): Promise<{ accessToken: string; expiresAt: number }> => {
+            if (!setupGrant) throw new Error('Copilot runtime is unavailable.');
+            return Promise.resolve({
+              accessToken: setupGrant.accessToken,
+              expiresAt: Date.parse(setupGrant.accessTokenExpiresAt),
+            });
+          },
+      assertGeneration: assertCopilotConnectionGeneration,
+      isClosed: (): boolean => closing !== undefined || owned.isClosed(),
+    });
+    const admittedRecipient = recipient;
+    const purpose = options.purpose ?? 'session';
+    const auth = admittedRecipient.issue(purpose);
+    // Session preflight is inside the verified recipient, never before capability.
+    if (purpose === 'session') await auth.token(signal);
+    const notAdmitted = (): Error =>
+      new Error('Copilot lease purpose is not admitted.');
+    let sessionLease: CopilotRecipientLease | undefined;
+    const tokenProviderForSession = (
+      sessionId?: string,
+    ): GitHubTokenProvider => {
+      // Resume recovery gets a fresh lease, not a relaxed old audience.
+      if (sessionLease) admittedRecipient.revokeLease(sessionLease);
+      sessionLease = admittedRecipient.issue('session', sessionId);
+      return sessionLease.tokenProvider;
+    };
+    /** One push RPC: deliver the lease's token, then admit the result. */
+    const pushOperation = async <T>(
+      lease: CopilotRecipientLease,
+      requestSignal: AbortSignal,
+      call: (gitHubToken: string) => Promise<T>,
+    ): Promise<T> => {
+      const result = await call(await lease.token(requestSignal));
+      await admittedRecipient.admit(lease, lease.purpose);
+      return result;
+    };
+    const readModels = (
+      lease: CopilotRecipientLease,
+      requestSignal: AbortSignal,
+    ): ReturnType<OwnedCopilotRuntime['client']['rpc']['models']['list']> =>
+      pushOperation(lease, requestSignal, (gitHubToken) =>
+        owned.client.rpc.models.list({ gitHubToken }),
+      );
+    const handle: CopilotRecipientHandle = {
       account: requireAccount ? (preferences.copilotAccount ?? null) : null,
       generation: epoch,
       close,
-      auth,
+      runTurn: async (request) => {
+        if (purpose !== 'session') throw notAdmitted();
+        return runCopilotTurn({
+          ...request,
+          gitHubTokenProvider: undefined,
+          runtime: {
+            exited: owned.exited,
+            close,
+            client: owned.client,
+            tokenProviderForSession,
+          },
+        });
+      },
+      listModels: async (requestSignal) => {
+        // A session reads thinking-levels metadata on its own one-shot lease.
+        const lease =
+          purpose === 'session'
+            ? admittedRecipient.issue('thinking-levels')
+            : purpose === 'models'
+              ? auth
+              : undefined;
+        if (!lease) throw notAdmitted();
+        const listed = await readModels(lease, requestSignal);
+        return copilotModelsFromSdk(listed.models);
+      },
+      getQuota: async (requestSignal) => {
+        if (purpose !== 'quota') throw notAdmitted();
+        return pushOperation(auth, requestSignal, (gitHubToken) =>
+          owned.client.rpc.account.getQuota({ gitHubToken }),
+        );
+      },
+    };
+    return {
+      handle: Object.freeze(handle),
+      probeAccess: async (requestSignal): Promise<void> => {
+        if (purpose !== 'setup-probe') throw notAdmitted();
+        await readModels(auth, requestSignal);
+      },
     };
   } catch (error) {
     await close();
@@ -417,11 +637,11 @@ async function revokeRuntimes(preserveSetup?: symbol): Promise<void> {
   const setup = activeSetup?.token === preserveSetup ? undefined : activeSetup;
   setup?.abort.abort();
   generation++;
+  observationGeneration++;
   notifyCopilotUsageChanged(false);
   invalidateCopilotRuntimeAvailability();
   cachedModels = undefined;
   discovery = undefined;
-  sharedBroker = undefined;
   initCopilotModels([]);
   const pending = Array.from(live);
   for (const record of pending) record.abort.abort();
@@ -435,12 +655,30 @@ export async function readCopilotAccount(): Promise<CopilotAccount | null> {
   return (await copilotConnectionStatus()).account ?? null;
 }
 
+async function writeDisconnectedPreferences(): Promise<void> {
+  try {
+    await updatePreferencesFile(() => ({
+      copilotEnabled: false,
+      copilotAccount: undefined,
+    }));
+  } catch (error) {
+    resumeCopilotGrant();
+    throw error;
+  }
+}
+
 async function signOut(): Promise<void> {
-  await updatePreferencesFile(() => ({
-    copilotEnabled: false,
-    copilotAccount: undefined,
-  }));
-  await clearCopilotCredential();
+  await drainCopilotGrant();
+  await writeDisconnectedPreferences();
+  // The pin is revoked even if removing its encrypted grant later fails.
+  observationGeneration++;
+  await clearCopilotGrant();
+  observeProviderConnection({
+    provider: 'copilot',
+    connectionMethod: 'native_login',
+    via: 'in_app',
+    fingerprint: null,
+  });
   invalidateCopilotRuntimeAvailability();
 }
 
@@ -449,7 +687,36 @@ export async function connectCopilot(
   progress: (status: CopilotConnectionStatus) => void,
   changeAccount = false,
 ): Promise<CopilotConnectionStatus> {
+  return withProviderConnectionAttempt(
+    'copilot',
+    'native_login',
+    signal,
+    async () => {
+      await copilotConnectionStatus();
+      const connected = await connectCopilotImpl(
+        signal,
+        progress,
+        changeAccount,
+      );
+      if (connected.phase === 'connected' && connected.account)
+        observeProviderConnection({
+          provider: 'copilot',
+          connectionMethod: 'native_login',
+          via: 'in_app',
+          fingerprint: `${connected.account.host}:${connected.account.login}`,
+        });
+      return connected;
+    },
+  );
+}
+
+async function connectCopilotImpl(
+  signal: AbortSignal,
+  progress: (status: CopilotConnectionStatus) => void,
+  changeAccount = false,
+): Promise<CopilotConnectionStatus> {
   assertCopilotHarnessEnabled();
+  installer();
   if (activeSetup)
     throw new Error('Copilot account setup is already in progress.');
   let finishSetup: () => void = () => undefined;
@@ -480,7 +747,8 @@ export async function connectCopilot(
     if (changeAccount) await signOut();
     const preferences = await readPreferencesFile();
     let account = changeAccount ? null : await signedInAccount(preferences);
-    let savedNew = false;
+    let pending: CopilotGrant | undefined;
+    let created: CopilotCredential | undefined;
     if (!account) {
       const start = await startDeviceFlow(flow, signal);
       progress({
@@ -513,13 +781,18 @@ export async function connectCopilot(
       // Prove Copilot access before anything is saved; the user may have a
       // GitHub account without a Copilot plan.
       const probe = await openCopilotRuntime(
-        { signal, requireAccount: false },
+        { signal, requireAccount: false, purpose: 'setup-probe' },
         setup.token,
+        {
+          clientId: flow.clientId,
+          host: GITHUB_HOST,
+          login: identity.login,
+          id: identity.id,
+          ...outcome.grant,
+        },
       );
       try {
-        await probe.client.rpc.models.list({
-          gitHubToken: outcome.grant.accessToken,
-        });
+        await probe.probeAccess(signal);
       } catch (error) {
         signal.throwIfAborted();
         if (isTransportFailure(error))
@@ -532,23 +805,21 @@ export async function connectCopilot(
           new Error("This GitHub account doesn't have Copilot access.")
         );
       } finally {
-        await probe.close();
+        await probe.handle.close();
       }
       signal.throwIfAborted();
       assertCopilotConnectionGeneration(epoch);
-      const credential: CopilotCredential = {
-        version: 1,
+      pending = {
         clientId: flow.clientId,
         host: GITHUB_HOST,
         login: identity.login,
         id: identity.id,
         ...outcome.grant,
       };
-      await saveCopilotCredential(credential);
-      savedNew = true;
       account = { host: GITHUB_HOST, login: identity.login };
     }
     try {
+      if (pending) created = await commitCopilotGrant(pending);
       signal.throwIfAborted();
       assertCopilotConnectionGeneration(epoch);
       await updatePreferencesFile(() => ({
@@ -560,16 +831,43 @@ export async function connectCopilot(
     } catch (error) {
       // The grant and the pin are one setup. A grant this setup created must
       // not outlive a pin that never landed; a reused grant is left alone.
-      if (savedNew) await clearCopilotCredential();
-      await updatePreferencesFile(() => ({
-        copilotEnabled: false,
-        ...(savedNew ? { copilotAccount: undefined } : {}),
-      }));
+      if (pending && !created) {
+        const left = await entryLeftByFailedCreate(pending);
+        // Nothing this setup saved landed, so the earlier state stands.
+        if (left.status === 'none') throw error;
+        // An unreadable store may predate this setup: keep it, but disabled.
+        if (left.status === 'installed') created = left.credential;
+      }
+      try {
+        // Nothing else creates an entry during setup, so a grant it cannot
+        // read back is still the one it created.
+        if (created) {
+          const rollback = await deleteCopilotGrant({
+            entryId: created.entryId,
+          });
+          if (rollback.status === 'unreadable') await clearCopilotGrant();
+        }
+      } finally {
+        // The removal can fail as the save did; the setup is undone regardless.
+        await updatePreferencesFile(() => ({
+          copilotEnabled: false,
+          ...(created ? { copilotAccount: undefined } : {}),
+        }));
+      }
       throw error;
     }
     // Publish a fresh account generation before admitting any managed consumer.
     await revokeRuntimes(setup.token);
     signal.throwIfAborted();
+    // A newly authorized grant is a real reconnection, including an expired
+    // grant replaced by the same account. Failed reads alone never clear it.
+    if (pending)
+      observeProviderConnection({
+        provider: 'copilot',
+        connectionMethod: 'native_login',
+        via: 'in_app',
+        fingerprint: null,
+      });
     const connected: CopilotConnectionStatus = {
       ...base,
       installed: true,
@@ -587,13 +885,27 @@ export async function connectCopilot(
   }
 }
 
+export function resetCopilotShutdownForTests(): void {
+  shutDown = false;
+  resetCopilotGrantFenceForTests();
+}
+
+export async function shutdownCopilotRuntimes(): Promise<void> {
+  // Latched before the live snapshot: a later open can never join teardown.
+  shutDown = true;
+  const teardown = revokeCopilotRuntimes();
+  await Promise.allSettled([drainCopilotGrant(true), teardown]);
+}
+
 export async function disconnectCopilot(): Promise<void> {
-  await updatePreferencesFile(() => ({
-    copilotEnabled: false,
-    copilotAccount: undefined,
-  }));
-  await revokeCopilotRuntimes();
-  await clearCopilotCredential();
+  installer();
+  const teardown = revokeCopilotRuntimes();
+  try {
+    // Disconnect deletes the native sign-in, just as Change account does.
+    await signOut();
+  } finally {
+    await teardown;
+  }
 }
 
 export async function listCopilotModels(
@@ -601,37 +913,59 @@ export async function listCopilotModels(
 ): Promise<CopilotModelEntry[]> {
   signal.throwIfAborted();
   assertCopilotHarnessEnabled();
+  const deliveryGeneration = generation;
   const status = await copilotConnectionStatus();
   signal.throwIfAborted();
+  assertCopilotConnectionGeneration(deliveryGeneration);
+  if (!status.supported) return [];
   if (!status.enabled || !status.installed) {
     if (await signInExpired()) throw new CopilotSignInExpiredError();
     return [];
   }
+  const source = grantAuthority(status.account ?? undefined);
+  const accountEpoch = await modelAccountEpoch(
+    source,
+    signal,
+    deliveryGeneration,
+  );
+  signal.throwIfAborted();
+  assertCopilotConnectionGeneration(deliveryGeneration);
+  if (
+    cachedModels &&
+    !sameAccountEpoch(cachedModels.accountEpoch, accountEpoch)
+  )
+    cachedModels = undefined;
   if (
     cachedModels?.generation === generation &&
     cachedModels.expires > Date.now()
   )
     return structuredClone(cachedModels.models);
-  if (!discovery) {
+  if (
+    !discovery ||
+    discovery.generation !== deliveryGeneration ||
+    !sameAccountEpoch(discovery.accountEpoch, accountEpoch)
+  ) {
     const epoch = generation;
     const operation = (async (): Promise<CopilotModelEntry[]> => {
       // Discovery is shared across callers. Its runtime is owned by the
       // account generation and timeout, never by one caller's cancellation.
       const timeout = AbortSignal.timeout(45_000);
-      const runtime = await openManagedCopilotRuntime({ signal: timeout });
+      const runtime = await openManagedCopilotRuntime({
+        signal: timeout,
+        purpose: 'models',
+      });
       try {
-        let listed;
+        let models;
         try {
-          listed = await runtime.client.rpc.models.list({
-            gitHubToken: await runtime.auth.token(timeout),
-          });
+          models = await runtime.listModels(timeout);
         } catch (error) {
           throw describeCopilotServiceRefusal(error) ?? error;
         }
-        const models = copilotModelsFromSdk(listed.models);
+        await modelAccountEpoch(source, timeout, epoch);
         assertCopilotConnectionGeneration(epoch);
         cachedModels = {
           generation: epoch,
+          accountEpoch,
           expires: Date.now() + 60_000,
           models,
         };
@@ -641,14 +975,18 @@ export async function listCopilotModels(
         await runtime.close();
       }
     })();
-    discovery = operation;
+    discovery = { generation: epoch, accountEpoch, operation };
     void operation
       .finally(() => {
-        if (discovery === operation) discovery = undefined;
+        if (discovery?.operation === operation) discovery = undefined;
       })
       .catch(() => undefined);
   }
-  return structuredClone(await waitForModelDiscovery(discovery, signal));
+  const models = await waitForModelDiscovery(discovery.operation, signal);
+  await modelAccountEpoch(source, signal, deliveryGeneration);
+  signal.throwIfAborted();
+  assertCopilotConnectionGeneration(deliveryGeneration);
+  return structuredClone(models);
 }
 
 function waitForModelDiscovery(
@@ -714,13 +1052,11 @@ export function getCopilotAccountGeneration(): number {
 export async function readCopilotAccountUsage(
   signal: AbortSignal,
 ): Promise<CopilotAccountUsage> {
-  const runtime = await openManagedCopilotRuntime({ signal });
+  const runtime = await openManagedCopilotRuntime({ signal, purpose: 'quota' });
   try {
     if (!runtime.account)
       throw new Error('Connect Copilot to see account usage.');
-    const response = await runtime.client.rpc.account.getQuota({
-      gitHubToken: await runtime.auth.token(signal),
-    });
+    const response = await runtime.getQuota(signal);
     assertCopilotConnectionGeneration(runtime.generation);
     const limits = Object.entries(response.quotaSnapshots)
       .slice(0, 16)

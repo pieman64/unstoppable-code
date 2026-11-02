@@ -30,8 +30,9 @@ export interface InlineMentionProps extends Omit<
 // alone; every mention renders through this component.
 const SHELL_CLASS =
   '-mx-0.5 inline-flex items-center gap-[0.125em] rounded-sm px-0.5 align-[-0.08em] fg-accent';
+// Keyboard focus gets the same underline cue as hover, beside the focus ring.
 const INTERACTIVE_CLASS =
-  'focus-ring cursor-pointer transition hover:bg-accent-subtle hover:underline';
+  'focus-ring cursor-pointer transition-colors hover:bg-accent-subtle hover:underline focus-visible:underline';
 const GLYPH_SLOT_CLASS =
   'inline-flex h-[1em] w-[1em] shrink-0 items-center justify-center';
 const GLYPH_CLASS = 'h-[0.9em] w-[0.9em] shrink-0';

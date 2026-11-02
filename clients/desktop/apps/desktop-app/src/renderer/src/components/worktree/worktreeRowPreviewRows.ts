@@ -134,6 +134,11 @@ export function buildChatPreviewRows(
             : `New ${CHAT_UNIT_LABEL}`,
         providerType: tab.providerType,
         preview: getChatTabAgentResponsePreview(tab),
+        ...(kind === 'unread' &&
+        tab.unread === true &&
+        tab.unreadMarkedManually === true
+          ? { markedUnread: true }
+          : {}),
       });
     }
   } else {
@@ -154,6 +159,9 @@ export function buildChatPreviewRows(
             : `New ${CHAT_UNIT_LABEL}`,
         providerType: ref.providerType,
         preview: ref.preview,
+        ...(kind === 'unread' && ref.markedUnread === true
+          ? { markedUnread: true }
+          : {}),
       });
     }
   }

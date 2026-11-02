@@ -41,6 +41,9 @@ import type { SettingsOperationName } from '@canopy/protocol/settings';
 import { SettingsOperationError } from '@canopy/protocol/settings/errors';
 import type { SettingsRouter } from '../../host';
 import { SETTINGS_LOAD_ERROR_COPY } from '../../errors';
+
+/** The load copy beside its own Try again, which the banner does not repeat. */
+const LOAD_SHOWN = SETTINGS_LOAD_ERROR_COPY.replace(/ Try again\.$/, '');
 import { INVOICES_LOAD_MORE_ERROR } from '../invoices-section';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
@@ -854,7 +857,7 @@ describe('billing errors', () => {
 
   function retryButton(): HTMLButtonElement {
     const found = Array.from(container.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent === 'Retry',
+      (candidate) => candidate.textContent === 'Try again',
     );
     if (found === undefined) throw new Error('No Retry button');
     return found;
@@ -874,7 +877,7 @@ describe('billing errors', () => {
       },
     );
 
-    expect(container.textContent).toContain(SETTINGS_LOAD_ERROR_COPY);
+    expect(container.textContent).toContain(LOAD_SHOWN);
     expect(container.innerHTML).not.toContain(SENTINEL);
     const before = readCount(client, 'organization.billing.summary');
 
@@ -885,7 +888,7 @@ describe('billing errors', () => {
     await flush();
 
     expect(readCount(client, 'organization.billing.summary')).toBe(before + 1);
-    expect(container.textContent).not.toContain(SETTINGS_LOAD_ERROR_COPY);
+    expect(container.textContent).not.toContain(LOAD_SHOWN);
   });
 
   it('sends an organization billing 403 through the access-lost refresh', async () => {
@@ -954,7 +957,7 @@ describe('billing errors', () => {
       },
     });
 
-    expect(container.textContent).toContain(SETTINGS_LOAD_ERROR_COPY);
+    expect(container.textContent).toContain(LOAD_SHOWN);
     expect(container.innerHTML).not.toContain(SENTINEL);
     const before = readCount(client, 'account.billing.summary');
 
@@ -965,6 +968,6 @@ describe('billing errors', () => {
     await flush();
 
     expect(readCount(client, 'account.billing.summary')).toBe(before + 1);
-    expect(container.textContent).not.toContain(SETTINGS_LOAD_ERROR_COPY);
+    expect(container.textContent).not.toContain(LOAD_SHOWN);
   });
 });

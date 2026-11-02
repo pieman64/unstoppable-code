@@ -12,7 +12,6 @@ import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import {
-  IPC_CHANNELS,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   TERMINAL_USER_CLOSE_SIGNAL,
   type ManagedTerminalCommand,
@@ -34,13 +33,10 @@ import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { assertNotSplitLocked } from './split-lock-service';
 import {
-  ptyManager,
-  listAvailableTerminalProfiles,
-  prewarmLinuxTerminalShell,
-  type TerminalEventChannel,
-  type TerminalEventPayload,
-} from '../terminal/pty-manager';
-import { isBlockedManagedEnvName } from '../terminal/managed-terminal-env';
+  isBlockedManagedEnvName,
+  type WorkerTerminalEvent,
+} from '@canopy/core-runtime/node/terminal';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { createPortalEvent } from '../portal/portal-event-bus';
 import { getBundledClaudeBinaryPath } from '../pipelines/config-paths';
 import { detectGitExecutable } from '../lib/git-executable';
@@ -156,7 +152,7 @@ function assertTerminalAuthorized(
   terminalId: string,
   scope: TerminalOperationScope,
 ): void {
-  const session = ptyManager
+  const session = workerTerminal
     .list()
     .find((candidate) => candidate.id === terminalId);
   if (!session) {
@@ -379,111 +375,23 @@ function spawnTerminalWithEnvironment(
   }
   if (request.managedCommand) {
     validateManagedCommand(request.managedCommand);
-    if (relativeCwd) {
-      return environmentOverride
-        ? ptyManager.spawnWithEnvironment(
-            environmentOverride,
-            request.projectId,
-            request.worktreeId,
-            request.cols,
-            request.rows,
-            request.selectedRepoId,
-            request.managedCommand,
-            relativeCwd,
-          )
-        : ptyManager.spawn(
-            request.projectId,
-            request.worktreeId,
-            request.cols,
-            request.rows,
-            request.selectedRepoId,
-            request.managedCommand,
-            relativeCwd,
-          );
-    }
-    return environmentOverride
-      ? ptyManager.spawnWithEnvironment(
-          environmentOverride,
-          request.projectId,
-          request.worktreeId,
-          request.cols,
-          request.rows,
-          request.selectedRepoId,
-          request.managedCommand,
-        )
-      : ptyManager.spawn(
-          request.projectId,
-          request.worktreeId,
-          request.cols,
-          request.rows,
-          request.selectedRepoId,
-          request.managedCommand,
-        );
   }
-  const spawn = (
-    ...args: Parameters<typeof ptyManager.spawn>
-  ): TerminalSession =>
-    environmentOverride
-      ? ptyManager.spawnWithEnvironment(environmentOverride, ...args)
-      : ptyManager.spawn(...args);
-  if (relativeCwd) {
-    return spawn(
-      request.projectId,
-      request.worktreeId,
-      request.cols,
-      request.rows,
-      request.selectedRepoId,
-      undefined,
-      relativeCwd,
-      request.terminalProfileId,
-      request.initialCommand,
-    );
-  }
-  if (request.terminalProfileId === undefined) {
-    if (request.initialCommand === undefined) {
-      return spawn(
-        request.projectId,
-        request.worktreeId,
-        request.cols,
-        request.rows,
-        request.selectedRepoId,
-      );
-    }
-    return spawn(
-      request.projectId,
-      request.worktreeId,
-      request.cols,
-      request.rows,
-      request.selectedRepoId,
-      undefined,
-      undefined,
-      undefined,
-      request.initialCommand,
-    );
-  }
-  if (request.initialCommand === undefined) {
-    return spawn(
-      request.projectId,
-      request.worktreeId,
-      request.cols,
-      request.rows,
-      request.selectedRepoId,
-      undefined,
-      undefined,
-      request.terminalProfileId,
-    );
-  }
-  return spawn(
-    request.projectId,
-    request.worktreeId,
-    request.cols,
-    request.rows,
-    request.selectedRepoId,
-    undefined,
-    undefined,
-    request.terminalProfileId,
-    request.initialCommand,
-  );
+  return workerTerminal.create({
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    cols: request.cols,
+    rows: request.rows,
+    repoId: request.selectedRepoId,
+    managedCommand: request.managedCommand,
+    cwd: relativeCwd,
+    ...(request.managedCommand
+      ? {}
+      : {
+          profileId: request.terminalProfileId,
+          initialCommand: request.initialCommand,
+        }),
+    environment: environmentOverride,
+  });
 }
 
 async function authorizeRelativeTerminalTarget(
@@ -538,7 +446,7 @@ export async function spawnTerminalAfterShellPrewarm(
     (request.terminalProfileId === undefined ||
       request.terminalProfileId === 'default')
   ) {
-    await prewarmLinuxTerminalShell();
+    await workerTerminal.prewarmShell();
   }
   return spawnTerminal(request);
 }
@@ -621,7 +529,11 @@ export async function restoreTerminalForRenderer(
   session: TerminalSession | undefined,
 ): Promise<TerminalSession> {
   if (session?.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID) {
-    return ptyManager.restore(request.terminalId, request.cols, request.rows);
+    return workerTerminal.restore({
+      terminalId: request.terminalId,
+      cols: request.cols,
+      rows: request.rows,
+    });
   }
   return withSharedContainerRunLifecycle(
     session.worktreeId,
@@ -676,12 +588,12 @@ export async function restoreTerminalForRenderer(
       const values = (
         await readSharedContainerRunEnvironment(session.worktreeId)
       ).filter((entry) => declared.has(entry.key));
-      return ptyManager.restore(
-        request.terminalId,
-        request.cols,
-        request.rows,
-        buildSharedContainerRunEnv(session.worktreeId, values),
-      );
+      return workerTerminal.restore({
+        terminalId: request.terminalId,
+        cols: request.cols,
+        rows: request.rows,
+        environment: buildSharedContainerRunEnv(session.worktreeId, values),
+      });
     },
   );
 }
@@ -690,8 +602,8 @@ export async function listTerminalProfiles(): Promise<TerminalShellProfile[]> {
   if (process.platform === 'win32') {
     await detectGitExecutable().catch(() => undefined);
   }
-  await prewarmLinuxTerminalShell();
-  return listAvailableTerminalProfiles();
+  await workerTerminal.prewarmShell();
+  return workerTerminal.profiles();
 }
 
 export function spawnManagedTerminal(
@@ -721,38 +633,39 @@ export function spawnManagedTerminal(
   validateTerminalDimension(request.cols, 'cols');
   validateTerminalDimension(request.rows, 'rows');
   validateManagedCommand(request.managedCommand, { allowPathPrepend: true });
-  return ptyManager.spawn(
-    request.projectId,
-    request.worktreeId,
-    request.cols,
-    request.rows,
-    request.selectedRepoId,
-    request.managedCommand,
-    request.relativeCwd === undefined || request.relativeCwd === ''
-      ? request.cwd
-      : ((): string | undefined => {
-          if (request.cwd !== undefined)
-            throw new TerminalServiceError(
-              'invalid_target',
-              'Cannot combine relative and absolute terminal directories.',
-            );
-          try {
-            return resolveTerminalRelativeCwd(
-              resolveWorktreeCwd(
-                request.projectId,
-                request.worktreeId,
-                request.selectedRepoId,
-              ),
-              request.relativeCwd,
-            );
-          } catch {
-            throw new TerminalServiceError(
-              'invalid_target',
-              'Invalid relative terminal directory.',
-            );
-          }
-        })(),
-  );
+  return workerTerminal.create({
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    cols: request.cols,
+    rows: request.rows,
+    repoId: request.selectedRepoId,
+    managedCommand: request.managedCommand,
+    cwd:
+      request.relativeCwd === undefined || request.relativeCwd === ''
+        ? request.cwd
+        : ((): string | undefined => {
+            if (request.cwd !== undefined)
+              throw new TerminalServiceError(
+                'invalid_target',
+                'Cannot combine relative and absolute terminal directories.',
+              );
+            try {
+              return resolveTerminalRelativeCwd(
+                resolveWorktreeCwd(
+                  request.projectId,
+                  request.worktreeId,
+                  request.selectedRepoId,
+                ),
+                request.relativeCwd,
+              );
+            } catch {
+              throw new TerminalServiceError(
+                'invalid_target',
+                'Invalid relative terminal directory.',
+              );
+            }
+          })(),
+  });
 }
 
 /** Read-only receipt probe so callers can skip pre-write policy on a replay. */
@@ -791,7 +704,7 @@ export function writeTerminal(
   if (receiptKey && terminalWriteReceipts.has(receiptKey)) {
     return 'already_written';
   }
-  ptyManager.write(request.terminalId, request.data);
+  workerTerminal.write(request.terminalId, request.data);
   if (receiptKey) {
     rememberTerminalWriteReceipt(receiptKey);
   }
@@ -806,7 +719,7 @@ export function resizeTerminal(
   validateTerminalDimension(request.cols, 'cols');
   validateTerminalDimension(request.rows, 'rows');
   assertTerminalAuthorized(request.terminalId, request);
-  ptyManager.resize(request.terminalId, request.cols, request.rows);
+  workerTerminal.resize(request.terminalId, request.cols, request.rows);
 }
 
 export function closeTerminal(
@@ -815,8 +728,8 @@ export function closeTerminal(
   validateTerminalId(request.terminalId);
   validateTerminalOperationScope(request);
   assertTerminalAuthorized(request.terminalId, request);
-  ptyManager.kill(request.terminalId, {
-    signalOverride: TERMINAL_USER_CLOSE_SIGNAL,
+  workerTerminal.kill(request.terminalId, {
+    signal: TERMINAL_USER_CLOSE_SIGNAL,
   });
 }
 
@@ -829,7 +742,7 @@ export function terminalSessionToPortalEntity(
   } = {},
 ): PortalEntityEnvelope {
   const buffer = options.includeBuffer
-    ? ptyManager.getReplayBufferText(session.id)
+    ? workerTerminal.replayText(session.id)
     : null;
   return {
     entityType: 'terminal_session',
@@ -855,7 +768,7 @@ export function terminalSessionToPortalEntity(
 export function listTerminalPortalEntities(
   target?: PortalTarget,
 ): PortalEntityEnvelope[] {
-  return ptyManager
+  return workerTerminal
     .list()
     .filter((session) => sessionMatchesTarget(session, target))
     .map((session) =>
@@ -866,13 +779,12 @@ export function listTerminalPortalEntities(
 }
 
 function toPortalTerminalOutputEvent(
-  channel: TerminalEventChannel,
-  payload: TerminalEventPayload,
+  event: WorkerTerminalEvent,
 ): PortalEventEnvelope | null {
-  if (channel !== IPC_CHANNELS.terminalOutput) {
+  if (event.type !== 'output') {
     return null;
   }
-  const output = payload as Extract<TerminalEventPayload, { data: Uint8Array }>;
+  const output = event.payload;
   const portalPayload: PortalTerminalOutputPayload = {
     terminalLocalId: output.terminalId,
     workspaceLocalId: output.projectId,
@@ -901,14 +813,10 @@ function clearTerminalOutputDecoder(terminalId: string): void {
 }
 
 function toPortalTerminalLifecycleEvent(
-  channel: TerminalEventChannel,
-  payload: TerminalEventPayload,
+  event: WorkerTerminalEvent,
 ): PortalEventEnvelope | null {
-  if (channel === IPC_CHANNELS.terminalExit) {
-    const exit = payload as Extract<
-      TerminalEventPayload,
-      { exitCode: number | null }
-    >;
+  if (event.type === 'exit') {
+    const exit = event.payload;
     clearTerminalOutputDecoder(exit.terminalId);
     return createPortalEvent('portal.state.delta', {
       scope: 'terminal',
@@ -941,11 +849,8 @@ function toPortalTerminalLifecycleEvent(
     });
   }
 
-  if (channel === IPC_CHANNELS.terminalRunningChanged) {
-    const running = payload as Extract<
-      TerminalEventPayload,
-      { running: boolean }
-    >;
+  if (event.type === 'runningChanged') {
+    const running = event.payload;
     return createPortalEvent('portal.state.delta', {
       scope: 'terminal',
       target: {
@@ -980,10 +885,10 @@ function toPortalTerminalLifecycleEvent(
 export function subscribeTerminalPortalEvents(
   enqueue: (event: PortalEventEnvelope) => void,
 ): () => void {
-  return ptyManager.addEventListener((channel, payload) => {
+  return workerTerminal.addEventListener((terminalEvent) => {
     const event =
-      toPortalTerminalOutputEvent(channel, payload) ??
-      toPortalTerminalLifecycleEvent(channel, payload);
+      toPortalTerminalOutputEvent(terminalEvent) ??
+      toPortalTerminalLifecycleEvent(terminalEvent);
     if (event) {
       enqueue(event);
     }

@@ -31,13 +31,13 @@ export function isVoiceDictationPlatform(platform: NodeJS.Platform): boolean {
 /**
  * The desktop app manages a Canopy CLI PATH entry on macOS (via a symlink in
  * `/usr/local/bin`) and on Windows (via a managed directory inserted into
- * `HKCU\Environment\Path`). On Linux and other platforms no PATH management
- * is performed.
+ * `HKCU\Environment\Path`). Linux manages a per-user launcher under
+ * `XDG_BIN_HOME` or `~/.local/bin`, without editing PATH or shell files.
  */
 export function isCliPathManagementPlatform(
   platform: NodeJS.Platform,
 ): boolean {
-  return platform === 'darwin' || platform === 'win32';
+  return platform === 'darwin' || platform === 'win32' || platform === 'linux';
 }
 
 /**
@@ -66,4 +66,9 @@ export function isWakeLockSupportedPlatform(
   platform: NodeJS.Platform,
 ): boolean {
   return platform === 'darwin' || platform === 'win32' || platform === 'linux';
+}
+
+/** Linux window managers provide the title bar and native window controls. */
+export function usesNativeWindowFrame(platform: NodeJS.Platform): boolean {
+  return platform === 'linux';
 }

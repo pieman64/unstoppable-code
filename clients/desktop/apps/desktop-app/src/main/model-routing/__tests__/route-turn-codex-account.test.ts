@@ -12,10 +12,14 @@ jest.mock('../../lib/model-policy-state', () => ({
   isModelBlockedByStoredPolicy: (): Promise<boolean> => Promise.resolve(false),
 }));
 jest.mock('../client', () => ({
-  resolveDesktopAutoModel: mockResolveDesktopAutoModel,
+  get resolveDesktopAutoModel(): typeof mockResolveDesktopAutoModel {
+    return mockResolveDesktopAutoModel;
+  },
 }));
 jest.mock('../codex-account-models', () => ({
-  readCodexAccountModelIds: mockReadCodexAccountModelIds,
+  get readCodexAccountModelIds(): typeof mockReadCodexAccountModelIds {
+    return mockReadCodexAccountModelIds;
+  },
 }));
 jest.mock('@canopy/desktop-shared/lib/gateway-model-availability', () => ({
   isGatewayRoutableModel: (): boolean => true,

@@ -5,14 +5,15 @@
 // capture + lazy snapshot refresh across a rename, the snapshot fallback
 // after worktree deletion, and prompt read-by-path validation.
 
-const showOpenDialogMock = jest.fn(() =>
-  Promise.resolve({ canceled: true, filePaths: [] }),
-);
+const showOpenDialogMock = jest.fn<
+  Promise<{ canceled: boolean; filePaths: string[] }>,
+  [window: unknown, options: unknown]
+>(() => Promise.resolve({ canceled: true, filePaths: [] }));
 const fromWebContentsMock = jest.fn<unknown, [unknown]>();
 jest.mock('electron', () => ({
   dialog: {
-    showOpenDialog: (...args: unknown[]): unknown =>
-      showOpenDialogMock(...args),
+    showOpenDialog: (window: unknown, options: unknown): unknown =>
+      showOpenDialogMock(window, options),
   },
   BrowserWindow: {
     fromWebContents: (contents: unknown): unknown =>
@@ -85,7 +86,33 @@ import {
   saveWorkspacePrompt,
   deleteWorkspaceNote,
 } from '../lib/workspace-items';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { registerWorkspaceItemHandlers } from '../ipc/workspace-items';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../canopy-runtime/desktop-runtime';
+
+// CAN-4105: the attachment channels project core.workspace.item.*, so each
+// test registers them over a real desktop runtime on its temporary data root.
+let runtime: DesktopCanopyDispatcher | null = null;
+function attachmentRuntime(): {
+  dispatcher: DesktopCanopyDispatcher;
+  resolveCaller: () => CanopyCallerDescriptor;
+} {
+  const created = createDesktopRuntime();
+  runtime = created;
+  return {
+    dispatcher: created,
+    resolveCaller: (): CanopyCallerDescriptor => ({
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'electron-web-contents:1',
+      authorityId: 'local-desktop',
+      interfaceKind: 'desktop',
+      grants: [],
+    }),
+  };
+}
 import { getAppAdvisorHomeDir, getWorkspaceHomeDir } from '../lib/paths';
 import { resolveAgentAttachmentsDir } from '../lib/agent-attachments';
 import {
@@ -364,10 +391,12 @@ describe('workspace-items IPC adapter', () => {
     mockScheduleSharedContainerWorkspace.mockClear();
     tempDataDir = mkdtempSync(join(tmpdir(), 'canopy-workspace-items-ipc-'));
     process.env.CANOPY_DATA_DIR = tempDataDir;
-    registerWorkspaceItemHandlers();
+    registerWorkspaceItemHandlers(attachmentRuntime());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await runtime?.shutdown();
+    runtime = null;
     if (originalCanopyDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
     } else {
@@ -394,6 +423,9 @@ describe('workspace-items IPC adapter', () => {
   function getHandler(
     channel: typeof IPC_CHANNELS.workspaceAttachmentsList,
   ): (event: unknown, ...args: unknown[]) => Promise<WorkspaceAttachmentItem[]>;
+  function getHandler(
+    channel: string,
+  ): (event: unknown, ...args: unknown[]) => unknown;
   function getHandler(
     channel: string,
   ): (event: unknown, ...args: unknown[]) => unknown {

@@ -14,6 +14,7 @@ import type {
   WorktreeSummarySnapshot,
 } from '@canopy/desktop-shared/types';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import type { WorktreeSummaryWriteAbortReason } from '../lib/worktree-summary-persistence';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { DESKTOP_LEDGER_TOOLS_HOST } from '../canopy-tools/ledger-tools-runtime';
 import { getFeatureFlagService } from '../feature-flags';
@@ -418,21 +419,52 @@ export function reportReplacedSummaryFile(
 }
 
 /**
- * Reports publishable snapshots a summary write dropped from the capped
- * history before they published: they can no longer be reconciled. Content
- * free: only a count reaches the diagnostic. Never rejects.
+ * Reports a summary write that was aborted to keep the file it could not
+ * read or that a newer app wrote: the new snapshot was never journaled.
+ * Content free, and only while the scope's snapshots are publishable.
  */
-export async function reportDroppedSummarySnapshots(
+export function reportAbortedSummaryWrite(
+  scope: SummaryScope,
+  reason: WorktreeSummaryWriteAbortReason,
+  host: SummaryPublicationHost = DESKTOP_SUMMARY_PUBLICATION_HOST,
+): void {
+  if (isSummaryScopePublishable(scope, host)) {
+    host.recordGap(`journal_${reason}: 1`);
+  }
+}
+
+/**
+ * Reports history entries that did not validate and a summary write dropped.
+ * What they held is unknown, so only their count is reported, and only while
+ * the scope's snapshots are publishable.
+ */
+export function reportInvalidSummarySnapshots(
+  scope: SummaryScope,
+  count: number,
+  host: SummaryPublicationHost = DESKTOP_SUMMARY_PUBLICATION_HOST,
+): void {
+  if (count > 0 && isSummaryScopePublishable(scope, host)) {
+    host.recordGap(`journal_entries_dropped: ${String(count)}`);
+  }
+}
+
+/**
+ * Records `<reason>: <count>` for the snapshots without a publication
+ * receipt, or `<reason>_unverified: <count>` for all of them when receipts
+ * cannot be read. Never rejects.
+ */
+async function reportUnpublishedSnapshots(
   scope: SummaryScope,
   snapshotIds: readonly string[],
-  host: SummaryPublicationHost = DESKTOP_SUMMARY_PUBLICATION_HOST,
+  reason: 'aged_out' | 'provenance_stripped',
+  host: SummaryPublicationHost,
 ): Promise<void> {
   if (snapshotIds.length === 0) return;
   try {
     const scopeLedger = await resolveSummaryScopeLedger(scope, host);
     if (scopeLedger === null) {
       if (host.container(scope.projectId, scope.worktreeId) !== null) {
-        host.recordGap(`aged_out_unverified: ${String(snapshotIds.length)}`);
+        host.recordGap(`${reason}_unverified: ${String(snapshotIds.length)}`);
       }
       return;
     }
@@ -443,8 +475,39 @@ export async function reportDroppedSummarySnapshots(
       await host.publishedKeys(scopeLedger.ledgerId, keys),
     );
     const missing = keys.filter((key) => !published.has(key)).length;
-    if (missing > 0) host.recordGap(`aged_out: ${String(missing)}`);
+    if (missing > 0) host.recordGap(`${reason}: ${String(missing)}`);
   } catch {
-    host.recordGap(`aged_out_unverified: ${String(snapshotIds.length)}`);
+    host.recordGap(`${reason}_unverified: ${String(snapshotIds.length)}`);
   }
+}
+
+/**
+ * Reports publishable snapshots a summary write dropped from the capped
+ * history before they published: they can no longer be reconciled. Content
+ * free: only a count reaches the diagnostic. Never rejects.
+ */
+export async function reportDroppedSummarySnapshots(
+  scope: SummaryScope,
+  snapshotIds: readonly string[],
+  host: SummaryPublicationHost = DESKTOP_SUMMARY_PUBLICATION_HOST,
+): Promise<void> {
+  await reportUnpublishedSnapshots(scope, snapshotIds, 'aged_out', host);
+}
+
+/**
+ * Reports publishable snapshots whose provenance did not validate, which a
+ * summary write kept unpublishable before they published. Content free: only
+ * a count reaches the diagnostic. Never rejects.
+ */
+export async function reportStrippedSummaryProvenance(
+  scope: SummaryScope,
+  snapshotIds: readonly string[],
+  host: SummaryPublicationHost = DESKTOP_SUMMARY_PUBLICATION_HOST,
+): Promise<void> {
+  await reportUnpublishedSnapshots(
+    scope,
+    snapshotIds,
+    'provenance_stripped',
+    host,
+  );
 }

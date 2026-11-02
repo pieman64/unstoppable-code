@@ -32,9 +32,9 @@ import {
   prepareCodeGraphBaseStaging,
   publishCodeGraphBase,
   type CodeGraphSeedSource,
-} from '@canopy/desktop-shared/node/code-graph/base-graph';
-import { CodeGraphEngine } from '@canopy/desktop-shared/node/code-graph/engine';
-import { fingerprintCustomLanguageInputs } from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+} from '@canopy/code-graph/base-graph';
+import { CodeGraphEngine } from '@canopy/code-graph/engine';
+import { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import {

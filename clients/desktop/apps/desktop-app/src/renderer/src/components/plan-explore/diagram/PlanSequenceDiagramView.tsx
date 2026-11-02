@@ -19,7 +19,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { ThinkingSpinner } from '@canopy/ui-shared/components';
+import { Button, ThinkingSpinner } from '@canopy/ui-shared/components';
 import type { PlanDiagramArtifact } from '@canopy/desktop-shared/types/plan-diagrams';
 import type { ParsedPlanGraph } from '@canopy/desktop-shared/types/plan-diagrams';
 import {
@@ -173,14 +173,15 @@ function SelectedNodeDetail({
     <div className="absolute bottom-3 left-3 right-3 z-20 max-h-3/5 overflow-auto rounded-lg bg-popover p-3 shadow-lg">
       <div className="mb-1 flex items-start justify-between gap-2">
         <h4 className="text-s font-semibold fg-primary">{data.title}</h4>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onClose}
           aria-label="Close node detail"
-          className="focus-ring shrink-0 rounded-md p-0.5 fg-secondary hover:bg-secondary hover:fg-primary"
         >
           <AppCatalogCloseIcon width="14" height="14" />
-        </button>
+        </Button>
       </div>
       <p className="mb-2 text-xs fg-secondary">{data.description}</p>
       {data.detail && (
@@ -229,36 +230,34 @@ function SelectedNodeDetail({
                 className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="flex items-center justify-end gap-1.5">
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={(): void => {
                     setComposing(false);
                     setBody('');
                   }}
-                  className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
                 >
                   Cancel
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="primary"
+                  size="compact"
                   onClick={handleSave}
                   disabled={body.trim().length === 0}
                   data-testid="plan-node-comment-save"
-                  className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
                 >
                   Save comment
-                </button>
+                </Button>
               </div>
             </div>
           ) : (
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={(): void => setComposing(true)}
               data-testid="plan-node-add-comment"
-              className="focus-ring rounded-md border px-2 py-1 text-xs fg-secondary transition hover:fg-primary"
             >
               + Add comment
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -404,15 +403,14 @@ export const PlanSequenceDiagram = forwardRef<
         <CenteredMessage>
           <p className="text-s fg-secondary">No sequence diagram yet.</p>
           {onGenerate && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               data-testid="plan-sequence-generate"
               onClick={onGenerate}
               disabled={isGenerating}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.06] px-3 py-1.5 text-xs fg-primary transition hover:bg-fg-primary/[0.12] disabled:cursor-default disabled:opacity-60"
             >
               {isGenerating ? 'Generating…' : 'Generate diagram'}
-            </button>
+            </Button>
           )}
         </CenteredMessage>
       </div>
@@ -453,15 +451,14 @@ export const PlanSequenceDiagram = forwardRef<
             <p className="max-w-sm text-xs fg-secondary">{artifact.error}</p>
           )}
           {onGenerate && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               data-testid="plan-sequence-retry"
               onClick={onGenerate}
               disabled={isGenerating}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.06] px-3 py-1.5 text-xs fg-primary transition hover:bg-fg-primary/[0.12] disabled:cursor-default disabled:opacity-60"
             >
               {isGenerating ? 'Generating…' : 'Retry'}
-            </button>
+            </Button>
           )}
         </CenteredMessage>
       </div>

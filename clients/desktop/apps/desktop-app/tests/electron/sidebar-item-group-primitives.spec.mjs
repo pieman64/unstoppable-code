@@ -6,7 +6,7 @@ import { launchSidebarItemGroupHarness } from './sidebar-item-group-harness.mjs'
 test('panel add submenu supports ArrowRight, ArrowLeft and Escape focus return', async () => {
   const { electronApp, userDataDir, window } = await seedPanelWorktree();
   try {
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     const trigger = window.getByTestId('panel-add-menu-terminal-submenu');
     await trigger.focus();
     await trigger.press('ArrowRight');
@@ -60,10 +60,12 @@ test('shared group header, nested row menu, editor and legacy swatches remain ke
     await window.getByTestId('sidebar-item-group-header').hover();
     await window.getByTestId('sidebar-item-group-menu-trigger').click();
     await window.getByTestId('sidebar-item-group-edit').click();
+    await window.getByRole('button', { name: 'Color 2', exact: true }).click();
     await input.fill('  Payments  ');
     await input.press('Enter');
-    await window.getByRole('button', { name: 'Color 2', exact: true }).click();
-    await window.getByTestId('sidebar-item-group-editor-close').click();
+    await expect(window.getByTestId('sidebar-item-group-editor')).toHaveCount(
+      0,
+    );
     await expect(window.getByTestId('sidebar-item-group-toggle')).toContainText(
       'Payments',
     );
@@ -142,7 +144,9 @@ test('Portal renderer expires an edit when the owner changes behind a stable cli
     await window.getByTestId('sidebar-item-group-edit').click();
     await window.getByTestId('sidebar-item-group-name').fill('Local edit');
     await window.getByTestId('sidebar-item-group-name').press('Enter');
-    await window.keyboard.press('Escape');
+    await expect(window.getByTestId('sidebar-item-group-editor')).toHaveCount(
+      0,
+    );
     await expect(window.getByTestId('sidebar-item-group-header')).toContainText(
       'Local edit',
     );

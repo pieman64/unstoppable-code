@@ -139,7 +139,13 @@ describe('agent automation policy', () => {
     expect(
       validateAgentAutomationUpdatePolicy(
         normalAction,
-        { schedule: { kind: 'interval', every: 1, unit: 'hours' } },
+        {
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * *',
+            timezone: 'local',
+          },
+        },
         'existing command',
       ),
     ).toBe(AGENT_AUTOMATION_IF_COMMAND_POLICY_ERROR);
@@ -154,7 +160,11 @@ describe('agent automation policy', () => {
       validateAgentAutomationUpdatePolicy(
         normalAction,
         {
-          schedule: { kind: 'interval', every: 1, unit: 'hours' },
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * *',
+            timezone: 'local',
+          },
           ifCommand: '',
         },
         'existing command',
@@ -257,7 +267,11 @@ describe('agent automation policy', () => {
     ).toBe(PIPELINE_EXECUTION_RESUME_POLICY_ERROR);
     expect(
       validateAgentAutomationUpdatePolicy(resumeAction, {
-        schedule: { kind: 'interval', every: 1, unit: 'hours' },
+        schedule: {
+          kind: 'cron',
+          expression: '0 9 * * *',
+          timezone: 'local',
+        },
       }),
     ).toBe(PIPELINE_EXECUTION_RESUME_POLICY_ERROR);
   });
@@ -286,7 +300,10 @@ describe('agent automation policy', () => {
       { ...sessionAction, planMode: false },
       { ...sessionAction, model: 'claude-sonnet-4-5' as const },
       { ...sessionAction, modelConfig: { thinkingLevel: 'high' as const } },
-      { ...sessionAction, pluginSelections: {} },
+      {
+        ...sessionAction,
+        pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
+      },
       { ...sessionAction, plugins: [] },
     ]) {
       expect(
@@ -349,6 +366,35 @@ describe('agent automation policy', () => {
       validateAgentAutomationUpdatePolicy(sessionAction, { enabled: false }),
     ).toBeNull();
     expect(validateAgentAutomationUpdatePolicy(normalAction, {})).toBeNull();
+  });
+});
+
+describe('agentAutomationTargetProject pipeline destinations', () => {
+  const base = { type: 'worktree_pipeline', pipelineId: 'p' } as const;
+  it('reports a global pipeline as owned by no project', () => {
+    expect(
+      agentAutomationTargetProject({
+        ...base,
+        workspaceId: 'ws-1',
+        target: { kind: 'global' },
+      }),
+    ).toEqual({ kind: 'global' });
+  });
+
+  it('reports a task destination with its task', () => {
+    expect(
+      agentAutomationTargetProject({
+        ...base,
+        workspaceId: 'ws-1',
+        target: { kind: 'task', taskId: 'wt-1' },
+      }),
+    ).toEqual({ kind: 'project', projectId: 'ws-1', worktreeId: 'wt-1' });
+    expect(
+      agentAutomationTargetProject({ ...base, workspaceId: 'ws-1' }),
+    ).toEqual({ kind: 'project', projectId: 'ws-1' });
+    expect(agentAutomationTargetProject({ ...base })).toEqual({
+      kind: 'unknown',
+    });
   });
 });
 

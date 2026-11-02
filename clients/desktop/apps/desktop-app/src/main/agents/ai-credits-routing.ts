@@ -47,6 +47,7 @@ import {
   AI_CREDITS_ROUTING_STATUS_EVENT_TYPE,
   AI_CREDITS_NO_BILLING_SOURCE_EVENT_TYPE,
   AI_CREDITS_USAGE_LIMIT_EVENT_TYPE,
+  buildAiCreditsRequiredError,
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CREDITS_CODEX_MODEL,
@@ -166,7 +167,7 @@ export interface AiCreditsAttribution {
  * proxy decodes + sanitizes it. The current client protocol claim is always
  * included for the same compatibility context as native entitlements.
  */
-function attributionHeaderPairs(
+export function attributionHeaderPairs(
   attribution: AiCreditsAttribution | undefined,
 ): Array<[string, string]> {
   const pairs: Array<[string, string]> = [
@@ -908,15 +909,15 @@ export interface AiCreditsRoutingAttempt {
 /**
  * Async wrapper over {@link resolveAiCreditsRoutingActivation} that adds the
  * per-chat subscription override and the `no-native-auth` trigger. Precedence
- * is **session-override → subscription-override → mode → no-native-auth**:
+ * is **subscription-override → session-override → mode → no-native-auth**:
  *
- * 1. An active per-session `aiCreditsRouting` ("just this time") always wins,
- *    unless it is stale (see {@link effectiveTabAiCreditsRouting}).
- * 2. `subscriptionBillingOverride` (the user explicitly picked "My
- *    subscription" in the billing toggle) forces native billing and beats the
- *    global routing mode — but only for Claude/Codex and only when the user is
- *    actually natively authenticated. If the override is set but there is no
- *    native login to honor, it is ignored and evaluation falls through.
+ * 1. `subscriptionBillingOverride` (the user explicitly picked "My
+ *    subscription") forces a native attempt for Claude/Codex, even if a cached
+ *    auth or quota probe says it cannot succeed. A failed native attempt is
+ *    surfaced as that failure, never silently replaced with paid credits.
+ * 2. An active per-session `aiCreditsRouting` applies unless it is stale (see
+ *    {@link effectiveTabAiCreditsRouting}) or superseded by that explicit
+ *    subscription choice.
  * 3. The global `aiCreditsRoutingMode` (`on`, or `on-quota` once native quota
  *    is reached) routes.
  * 4. Absent a native login for a gateway-routable provider, routing is enabled
@@ -927,8 +928,7 @@ export interface AiCreditsRoutingAttempt {
  *    keeps meaning "don't pre-emptively spend my credits" for subscribers.
  *
  * Native auth is injected as a callback so this module does not need to import
- * `provider-auth-state.ts`; the probe is memoized locally so the override check
- * and the trailing native-auth fallback never double-hit it.
+ * `provider-auth-state.ts`; an explicit subscription attempt skips the probe.
  *
  * Returns `null` when routing should not be attempted. Harness/credit
  * eligibility gating still happens in the caller after this returns non-null.
@@ -939,14 +939,18 @@ export async function resolveAiCreditsRoutingAttempt(
   isNativelyAuthenticated: () => Promise<boolean>,
   subscriptionBillingOverride?: boolean,
 ): Promise<AiCreditsRoutingAttempt | null> {
-  // Stale session routing (reset passed, or a later account change) falls
+  const isGatewayProvider = provider === 'claude' || provider === 'codex';
+  // The actual model and organization gateway requirements are checked by the
+  // callers after this choice: a gateway-only model still has no native route.
+  if (subscriptionBillingOverride && isGatewayProvider) return null;
+
+  // Stale session routing (reset, account change or allowance restoration) falls
   // through to the rules below (CAN-4200).
   const aiCreditsRouting = effectiveTabAiCreditsRouting(
     storedAiCreditsRouting,
     billedProviderFor(provider),
   );
-  // 1. Per-session "just this time" activation always wins, even over an
-  //    explicit subscription override.
+  // 2. Per-session "just this time" activation wins over automatic modes.
   if (aiCreditsRouting?.active) {
     return {
       ...(aiCreditsRouting.modelId !== undefined
@@ -954,26 +958,6 @@ export async function resolveAiCreditsRoutingAttempt(
         : {}),
       reason: 'session-override',
     };
-  }
-
-  const isGatewayProvider = provider === 'claude' || provider === 'codex';
-
-  // Memoize the native-auth probe so the subscription-override check below and
-  // the trailing `no-native-auth` fallback share a single (already cached) read.
-  let nativeAuthPromise: Promise<boolean> | undefined;
-  const checkNativeAuth = (): Promise<boolean> => {
-    if (!nativeAuthPromise) {
-      nativeAuthPromise = isNativelyAuthenticated();
-    }
-    return nativeAuthPromise;
-  };
-
-  // 2. Explicit per-chat subscription override beats the global mode, but only
-  //    when we can honor it with a real native login.
-  if (subscriptionBillingOverride && isGatewayProvider) {
-    if (await checkNativeAuth()) {
-      return null;
-    }
   }
 
   // 3. Global routing mode (`on` / `on-quota`). `aiCreditsRouting.active` is
@@ -1011,7 +995,7 @@ export async function resolveAiCreditsRoutingAttempt(
   //    custom `model_provider` that does not use OpenAI auth. A `false` reaching
   //    this line is therefore a CONFIRMED signed-out state, never a probe blip
   //    and never an unknown, so no extra confidence plumbing is required.
-  if (await checkNativeAuth()) {
+  if (await isNativelyAuthenticated()) {
     return null;
   }
   return { reason: 'no-native-auth' };
@@ -1111,7 +1095,7 @@ export interface ResolveAiCreditsRoutingOverrideOptions {
  * workspace/worktree display names when a workspace is known, plus the owner
  * of the work, resolved once per invocation.
  */
-async function resolveRoutingOverrideAttribution(
+export async function resolveRoutingOverrideAttribution(
   options: ResolveAiCreditsRoutingOverrideOptions,
 ): Promise<AiCreditsAttribution> {
   const target = {
@@ -1181,13 +1165,16 @@ export async function markOrgGatewayCredentialRejected(
   organizationId: string,
   status: 401 | 403,
   credentialVersion?: string,
+  expectedAccountId?: string,
 ): Promise<void> {
   try {
-    const updated = await markModelGatewayCredentialRejected(
+    const rejection: Parameters<typeof markModelGatewayCredentialRejected> = [
       organizationId,
       `Gateway returned HTTP ${String(status)}.`,
       credentialVersion,
-    );
+    ];
+    if (expectedAccountId !== undefined) rejection[3] = expectedAccountId;
+    const updated = await markModelGatewayCredentialRejected(...rejection);
     if (updated) {
       sendToAllWindows(
         IPC_CHANNELS.modelGatewayCredentialChanged,
@@ -1411,9 +1398,7 @@ export async function resolveAiCreditsRoutingOverride(
   });
   if (!context || !context.creditsEligible) {
     if (gatewayOnly) {
-      throw new Error(
-        `This model is only available with ${BRAND.displayName} credits. Make sure you have available credits or an active plan with spendable balance to use it.`,
-      );
+      throw new Error(buildAiCreditsRequiredError(BRAND.displayName));
     }
     return null;
   }

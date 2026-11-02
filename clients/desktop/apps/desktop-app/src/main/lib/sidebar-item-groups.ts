@@ -55,7 +55,7 @@ export function onSidebarItemGroupsChanged(
   };
 }
 
-/** Called only after the owning registry and membership writes succeed. */
+/** Publish pending workspace invalidation, not a correlated command receipt. */
 export function publishSidebarItemGroupsChanged(workspaceId: string): void {
   if (!pendingChanges.delete(workspaceId)) return;
   for (const listener of Array.from(changeListeners)) {

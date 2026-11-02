@@ -26,6 +26,7 @@ import {
   type PdfSearchMatch,
   type PdfSearchTextItem,
 } from './pdf-search';
+import { Button } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import styles from './PdfPreview.module.css';
 
@@ -608,8 +609,10 @@ export function PdfPreview({
             {fileName}
           </span>
         )}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           aria-label="Zoom out"
           disabled={zoom <= MIN_ZOOM}
           onClick={() => {
@@ -618,10 +621,12 @@ export function PdfPreview({
           }}
         >
           −
-        </button>
+        </Button>
         <span aria-label="Zoom level">{Math.round(zoom * 100)}%</span>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           aria-label="Zoom in"
           disabled={zoom >= MAX_ZOOM}
           onClick={() => {
@@ -630,15 +635,16 @@ export function PdfPreview({
           }}
         >
           +
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="ghost"
+          size="compact"
           aria-label="Fit PDF to width"
           aria-pressed={fitWidth}
           onClick={() => setFitWidth(true)}
         >
           Fit width
-        </button>
+        </Button>
         <span aria-label="Current PDF page">
           {currentPage} / {Math.max(totalPages, pages.length)}
         </span>
@@ -657,29 +663,35 @@ export function PdfPreview({
               setSearching(false);
             }}
           />
-          <button
+          <Button
             type="submit"
+            variant="secondary"
+            size="compact"
             aria-label="Search PDF text"
             disabled={!searchReady}
           >
             Search
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             aria-label="Previous PDF search match"
             disabled={matches.length === 0}
             onClick={() => moveMatch(-1)}
           >
             ↑
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             aria-label="Next PDF search match"
             disabled={matches.length === 0}
             onClick={() => moveMatch(1)}
           >
             ↓
-          </button>
+          </Button>
           <span data-testid="pdf-search-count" aria-live="polite">
             {searching
               ? 'Searching…'

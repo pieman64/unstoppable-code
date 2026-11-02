@@ -145,6 +145,9 @@ export function subagentTreeInputFingerprint(input: SubagentTreeInput): string {
         agent.model ?? '',
         agent.reasoningEffort ?? '',
       ]),
+    Object.entries(entry.receiverTimes ?? {})
+      .sort(([left], [right]) => compareText(left, right))
+      .map(([id, times]) => [id, times.startedAt ?? 0, times.settledAt ?? 0]),
     entry.occurredAt ?? 0,
   ]);
   const workflowRuns = stableRows(

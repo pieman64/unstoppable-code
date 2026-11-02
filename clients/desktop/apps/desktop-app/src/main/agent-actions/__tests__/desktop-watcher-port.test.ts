@@ -201,8 +201,8 @@ describe('desktop chat watcher port', () => {
       expect(
         mockSetups.map(
           (setup) =>
-            (setup.watchers[0]?.target as Record<string, unknown>)
-              .turnUserMessageId,
+            (setup.watchers[0]?.target as Record<string, unknown> | undefined)
+              ?.turnUserMessageId,
         ),
       ).toEqual([agentWriteMessageId(`write-${workspaceId}`), undefined]);
     },

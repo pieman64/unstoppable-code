@@ -9,6 +9,9 @@ const project: OrgProjectSummary = {
   name: 'Payments',
   description: null,
   kind: 'CODE',
+  purpose: 'project',
+  visibility: 'organization',
+  memberOwned: false,
   location: 'LOCAL',
   repository: null,
   state: 'ACTIVE',
@@ -20,6 +23,9 @@ const project: OrgProjectSummary = {
   capabilities: { use: true, administer: false, manageCloud: false },
   instance: null,
 };
+const archivedProject: OrgProjectSummary = { ...project };
+// Keep the intentionally unsupported archived input at the test boundary.
+Reflect.set(archivedProject, 'state', 'ARCHIVED');
 function deps(
   projects: readonly OrgProjectSummary[] = [project],
 ): OrgProjectLinkDeps {
@@ -50,10 +56,10 @@ describe('organization project deep-link authorization', () => {
     [],
     [{ ...project, capabilities: { ...project.capabilities, use: false } }],
     [{ ...project, organizationId: 'other' }],
-    [{ ...project, state: 'ARCHIVED' }],
+    [archivedProject],
   ])(
     'reports unknown, unauthorized, cross-context and archived projects identically (%#)',
-    async (...rows) => {
+    async (...rows: OrgProjectSummary[]): Promise<void> => {
       const host = deps(rows);
       await openOrgProjectDeepLink('p', 'org', host);
       expect(host.unavailable).toHaveBeenCalledTimes(1);

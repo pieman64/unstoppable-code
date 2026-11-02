@@ -20,13 +20,14 @@ const row = (state: ChatInputDeliveryView['state']): ChatInputDeliveryView => ({
 });
 
 describe('InputDeliveryList', () => {
-  it('renders Pending as a queued-style bubble with corner edit/cancel actions and Queue below', () => {
+  it('renders a pending row as Sending… with corner edit/cancel actions and Queue below', () => {
     const html = renderToString(
       <InputDeliveryList rows={[row('pending')]} onAction={async () => {}} />,
     );
 
     expect(html).toContain('data-testid="input-delivery-bubble"');
-    expect(html).toContain('>Pending<');
+    expect(html).toContain('>Sending…<');
+    expect(html).not.toContain('>Pending<');
     expect(html).not.toContain(BUBBLE_INFO_SURFACE_CLASS);
     expect(html).not.toContain('data-testid="watcher-fired-title"');
     expect(html).toContain('data-testid="input-delivery-edit"');
@@ -52,11 +53,51 @@ describe('InputDeliveryList', () => {
       expect(html).toContain(BUBBLE_INFO_SURFACE_CLASS);
       expect(html).toContain('Pipeline completion (Deploy) watcher has fired');
       expect(html).toContain(
-        `>${state === 'pending' ? 'Pending' : 'Cancelled'}<`,
+        `>${state === 'pending' ? 'Sending…' : 'Cancelled'}<`,
       );
       expect(html).not.toContain('>Queued<');
     },
   );
+
+  it('reads Sending… until confirmed and leaves once picked up', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    const render = (state: ChatInputDeliveryView['state']): void => {
+      act(() => {
+        root.render(
+          <InputDeliveryList rows={[row(state)]} onAction={async () => {}} />,
+        );
+      });
+    };
+
+    try {
+      render('sending');
+      expect(container.textContent).toContain('Sending…');
+
+      render('uncertain');
+      expect(container.textContent).toContain('Delivery uncertain');
+      expect(container.textContent).toContain(
+        'Delivery could not be confirmed.',
+      );
+
+      // A late acknowledgement returns the row to pending.
+      render('pending');
+      expect(container.textContent).toContain('Sending…');
+      expect(container.textContent).not.toContain('Delivery uncertain');
+      expect(container.textContent).not.toContain(
+        'Delivery could not be confirmed.',
+      );
+
+      render('picked-up');
+      expect(
+        container.querySelector('[data-testid="input-delivery-bubble"]'),
+      ).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
 
   it('renders Cancelled as a queued-style bubble with corner Edit and recovery actions below', () => {
     const html = renderToString(
@@ -73,6 +114,78 @@ describe('InputDeliveryList', () => {
     expect(html).toContain('>Resend<');
     expect(html).toContain('data-testid="input-delivery-queue"');
     expect(html).toContain('>Queue<');
+  });
+
+  it('shows typed-only edit actions while keeping generated rows recoverable', () => {
+    for (const state of ['pending', 'cancelled'] as const) {
+      const typedHtml = renderToString(
+        <InputDeliveryList rows={[row(state)]} onAction={async () => {}} />,
+      );
+      const generatedHtml = renderToString(
+        <InputDeliveryList
+          rows={[{ ...row(state), generated: true }]}
+          onAction={async () => {}}
+        />,
+      );
+
+      expect(typedHtml).toContain('data-testid="input-delivery-edit"');
+      expect(generatedHtml).not.toContain('data-testid="input-delivery-edit"');
+      if (state === 'pending') {
+        expect(generatedHtml).toContain('data-testid="input-delivery-cancel"');
+      } else {
+        expect(generatedHtml).toContain('data-testid="input-delivery-resend"');
+        expect(generatedHtml).toContain('data-testid="input-delivery-queue"');
+      }
+    }
+  });
+
+  it('identifies cancelled messages proven not to have reached the agent', () => {
+    const html = renderToString(
+      <InputDeliveryList
+        rows={[{ ...row('cancelled'), notDelivered: true }]}
+        onAction={async () => {}}
+      />,
+    );
+
+    expect(html).toContain('>Not delivered<');
+    expect(html).toContain('This message never reached the agent.');
+    expect(html).toContain('data-testid="input-delivery-resend"');
+    expect(html).toContain('data-testid="input-delivery-queue"');
+  });
+
+  it.each([
+    ['ordinary', {}],
+    [
+      'generated watcher',
+      { generated: true, watcherFired: { kind: 'Delegate completion' } },
+    ],
+  ] as const)('offers Dismiss on a cancelled %s row', (_kind, patch) => {
+    const onAction = jest.fn(async () => {});
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    act(() => {
+      root.render(
+        <InputDeliveryList
+          rows={[{ ...row('cancelled'), ...patch }]}
+          onAction={onAction}
+        />,
+      );
+    });
+    const dismiss = container.querySelector<HTMLButtonElement>(
+      '[data-testid="input-delivery-dismiss"]',
+    );
+    expect(dismiss?.getAttribute('aria-label')).toBe('Dismiss message');
+    expect(dismiss?.className).toContain('pointer-coarse:h-11');
+    expect(dismiss?.className).toContain('pointer-coarse:w-11');
+    act(() => dismiss?.click());
+    expect(onAction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'row-cancelled' }),
+      'dismiss',
+      undefined,
+    );
+    act(() => root.unmount());
+    container.remove();
   });
 
   it('reveals the floating dismiss button on bubble hover, keyboard focus, and touch', () => {
@@ -97,8 +210,165 @@ describe('InputDeliveryList', () => {
     expect(html).toContain('pointer-coarse:top-0');
     expect(html).toContain('pointer-coarse:h-11');
     expect(html).toContain('pointer-coarse:w-11');
-    expect(html).not.toContain('data-testid="input-delivery-resend"');
+    expect(html).toContain('data-testid="input-delivery-resend"');
+    expect(html).toContain('>Resend<');
     expect(html).not.toContain('data-testid="input-delivery-queue"');
+  });
+
+  it('opens a polite uncertain-delivery warning and returns focus when kept', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    const onAction = jest.fn(async () => {});
+
+    try {
+      act(() => {
+        root.render(
+          <InputDeliveryList rows={[row('uncertain')]} onAction={onAction} />,
+        );
+      });
+      const resend = container.querySelector<HTMLButtonElement>(
+        '[data-testid="input-delivery-resend"]',
+      );
+      if (!resend) throw new Error('Expected uncertain-row Resend action');
+
+      act(() => resend.click());
+
+      const warning = container.querySelector(
+        '[data-testid="input-delivery-resend-warning"]',
+      );
+      const keep = container.querySelector<HTMLButtonElement>(
+        '[data-testid="input-delivery-resend-keep"]',
+      );
+      expect(warning).not.toBeNull();
+      expect(warning?.textContent).toContain(
+        'Send again? It may arrive twice.',
+      );
+      expect(warning?.getAttribute('aria-live')).toBe('polite');
+      expect(keep?.textContent).toBe('Keep');
+      expect(document.activeElement).toBe(keep);
+      expect(onAction).not.toHaveBeenCalled();
+
+      act(() => keep?.click());
+
+      expect(
+        container.querySelector(
+          '[data-testid="input-delivery-resend-warning"]',
+        ),
+      ).toBeNull();
+      expect(document.activeElement).toBe(resend);
+      expect(onAction).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it('resends an uncertain message once and disables warning actions while busy', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    let finishAction: (() => void) | undefined;
+    const onAction = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishAction = resolve;
+        }),
+    );
+
+    try {
+      act(() => {
+        root.render(
+          <InputDeliveryList rows={[row('uncertain')]} onAction={onAction} />,
+        );
+      });
+      const resend = container.querySelector<HTMLButtonElement>(
+        '[data-testid="input-delivery-resend"]',
+      );
+      if (!resend) throw new Error('Expected uncertain-row Resend action');
+      act(() => resend.click());
+      const confirm = container.querySelector<HTMLButtonElement>(
+        '[data-testid="input-delivery-resend-confirm"]',
+      );
+      const keep = container.querySelector<HTMLButtonElement>(
+        '[data-testid="input-delivery-resend-keep"]',
+      );
+      if (!confirm || !keep) throw new Error('Expected warning actions');
+
+      act(() => {
+        confirm.click();
+        confirm.click();
+      });
+
+      expect(onAction).toHaveBeenCalledTimes(1);
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'row-uncertain' }),
+        'resend',
+        undefined,
+      );
+      expect(confirm.disabled).toBe(true);
+      expect(keep.disabled).toBe(true);
+
+      await act(async () => {
+        finishAction?.();
+        await Promise.resolve();
+      });
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it('closes an uncertain resend warning when the row is cancelled', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    const onAction = jest.fn(async () => {});
+    const stableRow = (
+      state: ChatInputDeliveryView['state'],
+    ): ChatInputDeliveryView => ({
+      ...row(state),
+      id: 'row-stable',
+    });
+
+    try {
+      act(() => {
+        root.render(
+          <InputDeliveryList
+            rows={[stableRow('uncertain')]}
+            onAction={onAction}
+          />,
+        );
+      });
+      const resend = container.querySelector<HTMLButtonElement>(
+        '[data-testid="input-delivery-resend"]',
+      );
+      if (!resend) throw new Error('Expected uncertain-row Resend action');
+      act(() => resend.click());
+      expect(
+        container.querySelector(
+          '[data-testid="input-delivery-resend-warning"]',
+        ),
+      ).not.toBeNull();
+
+      act(() => {
+        root.render(
+          <InputDeliveryList
+            rows={[stableRow('cancelled')]}
+            onAction={onAction}
+          />,
+        );
+      });
+
+      expect(
+        container.querySelector(
+          '[data-testid="input-delivery-resend-warning"]',
+        ),
+      ).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
   });
 
   it('uses the canonical Close action for an open delivery editor', () => {

@@ -2,6 +2,7 @@ import {
   CANOPY_INSTRUCTION_DEFINITIONS,
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
+  CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -19,7 +20,11 @@ const definitions: EffectiveRuntimeOperationsInput['definitions'] = {
 };
 const FILESYSTEM = [
   'worker.filesystem.directory.list',
+  'worker.filesystem.file.read',
+  'worker.filesystem.link.resolve',
   'worker.filesystem.roots.list',
+  'worker.filesystem.search',
+  'worker.filesystem.watch',
 ];
 const input = (
   overrides: Partial<EffectiveRuntimeOperationsInput>,
@@ -50,6 +55,14 @@ describe('effectiveRuntimeOperations', () => {
       available: false,
     });
     expect(names({ principal: null })).toEqual([]);
+  });
+
+  it('keeps an operation the desktop runtime refuses out of its manifest', () => {
+    const chat = ['core.chat.write', 'core.runtime.read'];
+    expect(names({ grants: chat, includeUnavailable: true })).not.toContain(
+      'core.chat.turn.cancel',
+    );
+    expect(names({ grants: chat })).toContain('core.chat.queue.entry.cancel');
   });
 
   it('advertises only registered definitions in classified domains', () => {
@@ -116,11 +129,62 @@ describe('effectiveRuntimeOperations', () => {
         isolated
           .effectiveRuntimeOperations(input({ principal }))
           .map(({ name }) => name);
-      expect(reach('delegating-primary')).toEqual([FILESYSTEM[1]]);
+      expect(reach('delegating-primary')).toEqual(FILESYSTEM.slice(1));
       expect(reach('owning-core')).toEqual(
         expect.arrayContaining(['core.runtime.manifest.get', ...FILESYSTEM]),
       );
     });
     jest.dontMock('../runtime-profile-policy.generated');
+  });
+
+  it('fences every core.vault instruction from the interface principal', async () => {
+    // No vault definition is registered yet; stand-ins exercise the real policy.
+    const query = CORE_TRANSPORT_QUERY_DEFINITIONS['core.runtime.health.get'];
+    const instruction =
+      CORE_TRANSPORT_INSTRUCTION_DEFINITIONS[
+        'core.client.capabilities.register'
+      ];
+    const reads = ['core.vault.entry.get', 'core.vault.entry.list'];
+    const writes = [
+      'core.vault.entry.delete',
+      'core.vault.entry.put',
+      'core.vault.grant.issue',
+      'core.vault.grant.revoke',
+    ];
+    const vault: EffectiveRuntimeOperationsInput['definitions'] = {
+      queries: Object.fromEntries(reads.map((name) => [name, query])),
+      instructions: Object.fromEntries(
+        writes.map((name) => [name, instruction]),
+      ),
+      streams: {},
+    };
+    jest.doMock('@canopy/protocol/canopy-core', () => ({
+      ...jest.requireActual<object>('@canopy/protocol/canopy-core'),
+      CANOPY_QUERY_DEFINITIONS: {
+        ...CANOPY_QUERY_DEFINITIONS,
+        ...vault.queries,
+      },
+      CANOPY_INSTRUCTION_DEFINITIONS: {
+        ...CANOPY_INSTRUCTION_DEFINITIONS,
+        ...vault.instructions,
+      },
+    }));
+    await jest.isolateModulesAsync(async () => {
+      const isolated = await import('../runtime-profile-manifest');
+      for (const profile of ['core', 'core+worker'] as const) {
+        for (const name of writes)
+          expect(
+            isolated.runtimeProfileInstalls(profile, name, 'instruction'),
+          ).toBe(true);
+        expect(
+          isolated
+            .effectiveRuntimeOperations(
+              input({ profile, definitions: vault, includeUnavailable: true }),
+            )
+            .map(({ name }) => name),
+        ).toEqual(reads);
+      }
+    });
+    jest.dontMock('@canopy/protocol/canopy-core');
   });
 });

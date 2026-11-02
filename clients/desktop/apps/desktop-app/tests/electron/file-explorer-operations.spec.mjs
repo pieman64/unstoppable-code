@@ -33,11 +33,33 @@ async function openExplorer(window) {
   await app.waitForShell({ timeout: 30_000 });
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_BRANCH);
-  await window.getByTestId('panel-add-panel-group-chat').click();
+  await window.getByTestId('panel-add-tab-group-chat').click();
   await window.getByTestId('panel-add-menu-item-file-explorer').click();
   const explorer = window.getByTestId('files-tree-tab');
   await expect(explorer).toBeVisible();
   return explorer;
+}
+
+/** The single panel of `kind` in the worktree layout, with its group. */
+async function findPanelOfKind(window, kind) {
+  const matches = await window.evaluate((panelKind) => {
+    const found = [];
+    const visit = (node) => {
+      if (node.type === 'leaf') {
+        for (const panel of node.panels) {
+          if (panel.kind === panelKind) {
+            found.push({ panelId: panel.panelId, groupId: node.groupId });
+          }
+        }
+        return;
+      }
+      node.children.forEach(visit);
+    };
+    visit(window.__canopyPanelTestApi.getSerializedLayout().root);
+    return found;
+  }, kind);
+  expect(matches, `one ${kind} panel`).toHaveLength(1);
+  return matches[0];
 }
 
 async function observeExplorerLoadingFlashes(explorer) {
@@ -976,6 +998,110 @@ test('file explorer detects external mutations only while its panel is visible',
       .click();
     await expect(explorer).not.toBeVisible();
     await expect(explorer).toHaveAttribute('data-watching', 'false');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// Two visible surfaces on one worktree share a watch: closing one must not
+// stop live updates in the other.
+test('file explorer keeps live updates after another tree on the same worktree closes', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-explorer-shared-watch-'),
+  );
+  const demoSeed = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const worktreePath = demoSeed.workspaces[0]?.worktreePath;
+  expect(worktreePath, 'seeded worktree path').toBeTruthy();
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: 'demo-ts-pnpm-vite',
+    worktreeId: WORKTREE_BRANCH,
+    providerType: 'claude',
+    tabs: [{ id: 'explorer-shared-watch-chat', title: 'Chat' }],
+  });
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    await openExplorer(window);
+    const explorer = window
+      .getByTestId('panel-content-file-explorer')
+      .getByTestId('files-tree-tab');
+
+    // A File tab's embedded tree is the second surface. Move the explorer
+    // beside it so both stay visible, and so both hold the watch.
+    await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-file').click();
+    const embedded = window
+      .getByTestId('file-tab-tree')
+      .getByTestId('files-tree-tab');
+    await expect(embedded).toBeVisible();
+    // Panels added from the menu get generated ids; read them from the layout.
+    const explorerPanel = await findPanelOfKind(window, 'file-explorer');
+    const filePanel = await findPanelOfKind(window, 'file-diff');
+    await window.evaluate((panelId) => {
+      window.__canopyPanelTestApi.setFixedTopology(false);
+      window.__canopyPanelTestApi.movePanel(panelId, 'group-chat', 'right');
+    }, explorerPanel.panelId);
+    await expect
+      .poll(
+        async () => (await findPanelOfKind(window, 'file-explorer')).groupId,
+      )
+      .not.toBe(filePanel.groupId);
+    await expect(explorer).toBeVisible();
+    await expect(embedded).toBeVisible();
+    await expect(explorer).toHaveAttribute('data-watching', 'true');
+    await expect(embedded).toHaveAttribute('data-watching', 'true');
+
+    const treeRow = (surface, relativePath) =>
+      surface.locator(
+        `[data-testid="files-tree-row"][data-path="${relativePath}"]`,
+      );
+    writeFileSync(path.join(worktreePath, 'shared-before.txt'), 'before\n');
+    await expect(treeRow(explorer, 'shared-before.txt')).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(treeRow(embedded, 'shared-before.txt')).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // A remount or a re-run watch effect would re-arm the watch and hide a
+    // dropped subscription: mark the element and record every disarm.
+    await explorer.evaluate((element) => {
+      element.dataset.sharedWatchProbe = 'kept';
+      const disarms = [];
+      new MutationObserver(() => {
+        if (element.dataset.watching !== 'true') disarms.push(Date.now());
+      }).observe(element, {
+        attributes: true,
+        attributeFilter: ['data-watching'],
+      });
+      window.__sharedWatchDisarms = disarms;
+    });
+
+    const fileTab = window.getByTestId(`panel-tab-${filePanel.panelId}`);
+    await fileTab.hover();
+    await window.getByTestId(`panel-tab-close-${filePanel.panelId}`).click();
+    await expect(fileTab).toHaveCount(0);
+    await expect(window.getByTestId('file-tab-tree')).toHaveCount(0);
+    await expect(explorer).toBeVisible();
+    await expect(explorer).toHaveAttribute('data-shared-watch-probe', 'kept');
+    await expect(explorer).toHaveAttribute('data-watching', 'true');
+
+    // Two separate changes: without the watch, the 30 s diff-stats poll can
+    // refresh the tree once, but not twice within these waits.
+    writeFileSync(path.join(worktreePath, 'shared-after.txt'), 'after\n');
+    await expect(treeRow(explorer, 'shared-after.txt')).toBeVisible({
+      timeout: 10_000,
+    });
+    unlinkSync(path.join(worktreePath, 'shared-before.txt'));
+    await expect(treeRow(explorer, 'shared-before.txt')).toHaveCount(0, {
+      timeout: 10_000,
+    });
+    await expect(explorer).toHaveAttribute('data-shared-watch-probe', 'kept');
+    expect(await window.evaluate(() => window.__sharedWatchDisarms)).toEqual(
+      [],
+    );
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

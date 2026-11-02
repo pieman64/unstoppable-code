@@ -1,6 +1,6 @@
 'use client';
 
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { Notice } from './Notice';
 
 /**
@@ -56,6 +56,31 @@ export function DiffBinaryState({
       data-testid="diff-viewer-notice-binary"
     >
       Binary file. There is no text diff to show.
+    </div>
+  );
+}
+
+export interface DiffTurnUnavailableStateProps {
+  /** The way to the comparison that is available, such as the branch's. */
+  readonly action?: ReactNode;
+  readonly className?: string;
+}
+
+/**
+ * The diff area of a turn whose before and after trees were not saved. No
+ * other comparison stands in for it; `action` offers one explicitly.
+ */
+export function DiffTurnUnavailableState({
+  action,
+  className = '',
+}: DiffTurnUnavailableStateProps): JSX.Element {
+  return (
+    <div
+      className={`flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-s fg-secondary ${className}`}
+      data-testid="diff-viewer-notice-turn-unavailable"
+    >
+      <p>{"This turn's changes weren't saved, so they can't be shown."}</p>
+      {action}
     </div>
   );
 }

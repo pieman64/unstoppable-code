@@ -8,7 +8,7 @@
 //
 // All terminal IPC payloads carry `{ projectId, worktreeId, terminalId }` so
 // the renderer can route events by worktree without maintaining a local
-// id→worktree map. The main-side `pty-manager` owns the authoritative
+// id→worktree map. The desktop terminal engine owns the authoritative
 // ownership table and stamps every outbound event from it.
 //
 // ManagedTerminalCommand remains a host-only capability and must stay
@@ -279,8 +279,9 @@ export interface TerminalAttachRequest {
 export interface TerminalAttachResponse {
   session: TerminalSession;
   /**
-   * Rolling 256 KB replay buffer of raw PTY bytes. Used for first-mount
-   * scrollback and for rehydration after renderer reload.
+   * The terminal's replay window of raw PTY bytes (256 KB rolling, 1 MB for
+   * a restored terminal). Used for first-mount scrollback and for
+   * rehydration after renderer reload; reading it never consumes it.
    */
   replay: Uint8Array;
   /**
@@ -415,7 +416,7 @@ export interface TerminalRunningChangedEvent {
    *   is unknown (for example, it ended without a status mark). Consumers must
    *   treat it as neither success nor failure;
    * - omitted: a legacy producer without exit-status reporting (the desktop
-   *   `pty-manager`, which never sets it). Consumers keep their existing
+   *   terminal engine, which never sets it). Consumers keep their existing
    *   completion behavior.
    *
    * The web cloud terminal sends an explicit `null` for an unknown outcome, so

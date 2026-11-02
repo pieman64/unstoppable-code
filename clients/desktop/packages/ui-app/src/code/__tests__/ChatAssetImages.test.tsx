@@ -85,7 +85,7 @@ it('resolves historical attachment thumbnails asynchronously', async () => {
               assetId: 'asset-file',
               filename: 'photo.png',
               mediaType: 'image/png',
-              sizeBytes: 3,
+              size: 3,
             },
           ]}
         />
@@ -352,7 +352,7 @@ it('cancels an old download and allows downloading the replacement target', asyn
               assetId,
               filename: 'file.txt',
               mediaType: 'text/plain',
-              sizeBytes: 3,
+              size: 3,
             },
           ]}
         />

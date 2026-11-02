@@ -7,8 +7,12 @@ function isAppAdvisor(sender: AgentSentSender): boolean {
   return sender.kind === 'bot' && sender.botId === 'app_advisor';
 }
 
-/** Opens the sender's chat, or, once it is archived, its transcript read-only. */
+/**
+ * Opens the sender's chat, or, once it is archived, its transcript read-only.
+ * A pipeline sender has no chat to open.
+ */
 export async function openSender(sender: AgentSentSender): Promise<void> {
+  if (sender.kind === 'pipeline') return;
   const target = {
     projectId:
       sender.kind === 'project' ? sender.projectId : APP_ADVISOR_PROJECT_ID,

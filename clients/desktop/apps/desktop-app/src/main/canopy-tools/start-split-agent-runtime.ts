@@ -137,12 +137,12 @@ export async function startSplitAgent(
     sourceWorktreeId === APP_ADVISOR_WORKTREE_ID
   ) {
     throw new Error(
-      'The legacy App Advisor global slot cannot start a forked agent; select a Work Entry chat.',
+      'The legacy Orchestrator global slot cannot start a forked agent; select a Work Entry chat.',
     );
   }
   if (projectId === APP_ADVISOR_PROJECT_ID && !runtime.appAdvisorSurfaces) {
     throw new Error(
-      'Starting an App Advisor fork requires App Advisor surfaces.',
+      'Starting an Orchestrator fork requires Orchestrator surfaces.',
     );
   }
   const sourceTarget = resolveWorktreeTargetIds(projectId, sourceWorktreeId);
@@ -237,7 +237,8 @@ export async function startSplitAgent(
     destinationRoot: string,
   ): Promise<void> => {
     if (isOpenCode && source.sdkSessionId) {
-      cloned.sdkSessionId = await forkOpenCodeSessionByIdViaOneShot({
+      const forked = await forkOpenCodeSessionByIdViaOneShot({
+        model: source.model,
         cwd: destinationRoot,
         projectId: destinationProjectId,
         worktreeId: destinationWorktreeId,
@@ -249,6 +250,9 @@ export async function startSplitAgent(
         sourceSessionId: source.sdkSessionId,
         signal: runtime.signal,
       });
+      cloned.sdkSessionId = forked.sessionId;
+      if (forked.executionContext !== undefined)
+        cloned.executionContext = forked.executionContext;
       if (cloned.forkedFrom) delete cloned.forkedFrom.modelContext;
       unpublishedOpenCodeFork = {
         projectId: destinationProjectId,

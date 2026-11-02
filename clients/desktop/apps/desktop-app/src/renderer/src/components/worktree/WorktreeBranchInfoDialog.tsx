@@ -42,7 +42,7 @@ import {
 import { useCodeGraphExperimentEnabled } from '@/hooks/useCodeGraphExperimentEnabled';
 import { useCodeGraphBuildStore } from '@/stores/codeGraphBuildStore';
 import { Tooltip } from '@canopy/ui-shared';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import { Button, Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { LoadingIndicator } from '@canopy/ui-shared/components';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
 
@@ -191,7 +191,7 @@ function ProjectPipelineList({
     return (
       <div className="flex items-center justify-center py-8 text-s fg-secondary">
         <LoadingSpinner />
-        <span className="ml-2">Loading pipelines…</span>
+        <span className="ml-2">Loading workflows…</span>
       </div>
     );
   }
@@ -199,7 +199,7 @@ function ProjectPipelineList({
   if (pipelines.length === 0) {
     return (
       <p className="py-6 text-center text-xs fg-secondary">
-        No project pipelines found.
+        No project workflows found.
         <br />
         <span className="mt-1 inline-block text-3xs">
           Add YAML files to <code>.canopy/pipelines/</code> in your repo.
@@ -226,13 +226,9 @@ function ProjectPipelineList({
               </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => onView(p)}
-            className="shrink-0 rounded-md bg-secondary px-3 py-1 text-xs font-medium fg-primary transition-colors hover:bg-accent-subtle"
-          >
+          <Button size="compact" onClick={() => onView(p)}>
             View
-          </button>
+          </Button>
         </div>
       ))}
     </div>
@@ -260,14 +256,14 @@ function BranchInfoTabs({
           role="tab"
           aria-selected={active === tab}
           onClick={() => onChange(tab)}
-          className={`canopy-tab-trigger px-3 py-1.5 text-xs font-medium transition ${
+          className={`canopy-tab-trigger px-3 py-1.5 text-xs font-medium transition-colors ${
             active === tab ? 'fg-primary' : 'fg-secondary hover:fg-primary'
           }`}
         >
           {tab === 'details' ? (
             'Details'
           ) : tab === 'pipelines' ? (
-            'Pipelines'
+            'Workflows'
           ) : (
             <span className="inline-flex items-center gap-1">
               <GraphIcon width={12} height={12} />
@@ -278,32 +274,6 @@ function BranchInfoTabs({
       ))}
     </div>
   );
-}
-
-function PencilIcon(): JSX.Element {
-  return <AppCatalogPencilIcon width="14" height="14" />;
-}
-
-function ChevronDownIcon(): JSX.Element {
-  return (
-    <AppCatalogChevronDownMediumIcon
-      width="10"
-      height="10"
-      className="shrink-0"
-    />
-  );
-}
-
-function CheckIcon(): JSX.Element {
-  return <AppCatalogCheckIcon width="14" height="14" />;
-}
-
-function CopyIcon(): JSX.Element {
-  return <AppCatalogCopy width="14" height="14" />;
-}
-
-function CloseIcon(): JSX.Element {
-  return <AppCatalogCloseIcon width="16" height="16" />;
 }
 
 interface DirectoryInfoRowProps {
@@ -447,22 +417,17 @@ function BranchRenameForm({
           className="min-w-0 flex-1 rounded border bg-fg-primary/5 px-2 py-1 font-mono text-xs fg-primary outline-none focus:border-line-accent disabled:opacity-60"
           aria-label={ariaLabel}
         />
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="compact"
           disabled={loading}
           onClick={onSubmit}
-          className="focus-ring shrink-0 rounded-md bg-accent px-2 py-1 text-xs font-medium fg-emphasis hover:bg-accent/90 disabled:opacity-60"
         >
           {loading ? 'Saving…' : submitLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={loading}
-          className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary hover:bg-secondary hover:fg-primary disabled:opacity-60"
-        >
+        </Button>
+        <Button size="compact" onClick={onCancel} disabled={loading}>
           Cancel
-        </button>
+        </Button>
       </div>
       {confirmRemote && (
         <RemoteRenameWarning
@@ -517,35 +482,41 @@ function BranchActionButtons({
           }
         >
           <span className="truncate">{branch}</span>
-          <ChevronDownIcon />
+          <AppCatalogChevronDownMediumIcon size={14} className="shrink-0" />
         </button>
       </RichHoverTooltip>
       <Tooltip label="Rename branch">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           disabled={disabled}
           onClick={onRenameClick}
-          className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:fg-secondary"
           aria-label={
             copyKey === 'single' ? 'Rename branch' : `Rename branch ${branch}`
           }
         >
-          <PencilIcon />
-        </button>
+          <AppCatalogPencilIcon size={14} />
+        </Button>
       </Tooltip>
       <Tooltip
         label={copiedBranch === copyKey ? 'Copied' : `Copy branch ${branch}`}
       >
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onCopyClick}
-          className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
           aria-label={
             copiedBranch === copyKey ? 'Copied' : `Copy branch ${branch}`
           }
         >
-          {copiedBranch === copyKey ? <CheckIcon /> : <CopyIcon />}
-        </button>
+          {copiedBranch === copyKey ? (
+            <AppCatalogCheckIcon size={14} />
+          ) : (
+            <AppCatalogCopy size={14} />
+          )}
+        </Button>
       </Tooltip>
     </>
   );
@@ -1360,14 +1331,15 @@ export function WorktreeBranchInfoDialog({
         <h2 id={titleId} className="text-m font-semibold fg-primary">
           Branch info
         </h2>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={handleClose}
-          className="focus-ring rounded p-1 fg-secondary hover:fg-primary"
           aria-label="Close"
         >
-          <CloseIcon />
-        </button>
+          <AppCatalogCloseIcon size={14} />
+        </Button>
       </div>
     );
 
@@ -1542,8 +1514,10 @@ export function WorktreeBranchInfoDialog({
         </h2>
         {renamingBranch !== 'all' && (
           <Tooltip label="Rename all branches">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               disabled={branchMutationsDisabled}
               onClick={() => {
                 cancelRename();
@@ -1554,22 +1528,22 @@ export function WorktreeBranchInfoDialog({
                     : worktree.branchName,
                 );
               }}
-              className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:fg-secondary"
               aria-label="Rename all branches"
             >
-              <PencilIcon />
-            </button>
+              <AppCatalogPencilIcon size={14} />
+            </Button>
           </Tooltip>
         )}
       </div>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="compact"
+        iconOnly
         onClick={handleClose}
-        className="focus-ring rounded p-1 fg-secondary hover:fg-primary"
         aria-label="Close"
       >
-        <CloseIcon />
-      </button>
+        <AppCatalogCloseIcon size={14} />
+      </Button>
     </div>
   );
 
@@ -1656,17 +1630,16 @@ export function WorktreeBranchInfoDialog({
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span className="text-xs fg-primary">Not in worktree</span>
-                  <button
-                    type="button"
+                  <Button
+                    size="compact"
                     disabled={addingRepoId === repo.id}
                     onClick={async (e) => {
                       e.stopPropagation();
                       await handleAddRepo(repo.id);
                     }}
-                    className="focus-ring shrink-0 rounded-md bg-accent px-2 py-1 text-xs font-medium fg-emphasis hover:bg-accent/90 disabled:opacity-60"
                   >
                     {addingRepoId === repo.id ? 'Adding…' : 'Add'}
-                  </button>
+                  </Button>
                 </span>
               </div>
             ))}
@@ -1684,17 +1657,17 @@ export function WorktreeBranchInfoDialog({
                   <span className="text-xs fg-primary">
                     Removed from project
                   </span>
-                  <button
-                    type="button"
+                  <Button
+                    variant="warning"
+                    size="compact"
                     disabled={removingRepoId === rb.repoId}
                     onClick={async (e) => {
                       e.stopPropagation();
                       await handleRemoveRepo(rb.repoId);
                     }}
-                    className="focus-ring shrink-0 rounded-md border border-line-attention/40 bg-warning-subtle px-2 py-1 text-xs fg-primary transition hover:bg-warning-subtle/80 disabled:opacity-60"
                   >
                     {removingRepoId === rb.repoId ? 'Removing…' : 'Remove'}
-                  </button>
+                  </Button>
                 </span>
               </div>
             ))}

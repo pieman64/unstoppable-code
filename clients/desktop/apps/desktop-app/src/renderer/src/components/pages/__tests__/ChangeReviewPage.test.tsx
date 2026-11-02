@@ -245,7 +245,7 @@ describe('ChangeReviewPage sections', () => {
       'Plan updated',
       'Input required',
       'Advisor running',
-      'Pipeline',
+      'Workflow',
       'Retry',
       'Start over',
     ]) {
@@ -255,16 +255,16 @@ describe('ChangeReviewPage sections', () => {
       row?.querySelector('[data-testid="change-review-follow-up-chat"]'),
     ).not.toBeNull();
 
-    // Every status badge shares the pill geometry; every action button
-    // shares the chip geometry. No border utilities or palette literals.
+    // Every status badge is the shared 18px Badge capsule; every action
+    // button shares the chip geometry. No border utilities or palette literals.
     const badges = Array.from(row?.querySelectorAll('span') ?? []).filter(
-      (candidate) => /(^|\s)h-5(\s|$)/.test(candidate.className),
+      (candidate) => /(^|\s)h-4\.5(\s|$)/.test(candidate.className),
     );
     expect(badges).toHaveLength(5);
     for (const badge of badges) {
       expect(badge.className).toContain('rounded-full');
-      expect(badge.className).toContain('text-3xs');
-      expect(badge.className).toContain('ring-[length:var(--border-hairline)]');
+      expect(badge.className).toContain('text-2xs');
+      expect(badge.className).not.toContain('ring-');
     }
     const buttons = Array.from(row?.querySelectorAll('button') ?? []);
     expect(buttons).toHaveLength(4);

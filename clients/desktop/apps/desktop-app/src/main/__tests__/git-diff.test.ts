@@ -103,9 +103,7 @@ describe('getFileDiffUncommitted', () => {
     }) as typeof execFile);
 
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      'new file content\n' as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue('new file content\n');
 
     const result = await getFileDiffUncommitted('/repo', 'src/file.ts');
 
@@ -143,9 +141,7 @@ describe('getFileDiffUncommitted', () => {
     }) as typeof execFile);
 
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      'brand new content\n' as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue('brand new content\n');
 
     const result = await getFileDiffUncommitted('/repo', 'new-file.ts');
 
@@ -232,9 +228,7 @@ describe('getFileDiffUncommitted', () => {
     }) as typeof execFile);
 
     mockedStat.mockResolvedValue({ size: 3 } as never);
-    mockedReadFile.mockResolvedValue(
-      Buffer.from([1, 2, 3]) as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue(Buffer.from([1, 2, 3]));
 
     const result = await getFileDiffUncommitted('/repo', 'assets/logo.png');
 
@@ -302,9 +296,7 @@ describe('getFileDiffUncommitted', () => {
     }) as typeof execFile);
 
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      'short new\n' as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue('short new\n');
 
     const result = await getFileDiffUncommitted('/repo', 'big.ts');
 
@@ -624,9 +616,7 @@ describe('getFileDiffCombined', () => {
     }) as typeof execFile);
 
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      'working tree content\n' as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue('working tree content\n');
 
     const result = await getFileDiffCombined('/repo', 'src/app.ts');
 
@@ -678,9 +668,7 @@ describe('getFileDiffCombined', () => {
     }) as typeof execFile);
 
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      'local content\n' as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue('local content\n');
 
     const result = await getFileDiffCombined('/repo', 'fallback.ts');
 
@@ -731,9 +719,7 @@ describe('getFileDiffCombined', () => {
     }) as typeof execFile);
 
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      'new file\n' as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue('new file\n');
 
     const result = await getFileDiffCombined('/repo', 'new.ts');
 
@@ -868,9 +854,7 @@ describe('getFileDiffCombined', () => {
     }) as typeof execFile);
 
     mockOpenAsText();
-    mockedReadFile.mockResolvedValue(
-      longContent as Awaited<ReturnType<typeof readFile>>,
-    );
+    mockedReadFile.mockResolvedValue(longContent);
 
     const result = await getFileDiffCombined('/repo', 'massive.ts');
 

@@ -18,6 +18,11 @@ import {
 import { makeTestPreferences } from '@/test-utils/preferences';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { LocalMemorySettings } from '../LocalMemorySettings';
+import {
+  chooseSettingsOptionSync,
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 type PreferencesSyncedCallback = (preferences: PreferencesData) => void;
 
@@ -99,24 +104,21 @@ describe('LocalMemorySettings', () => {
   });
 
   it('shows the memory model and saves a new model with a clamped thinking level', () => {
-    const model = container.querySelector<HTMLSelectElement>(
+    const model = settingsSelectTrigger(
+      container,
       '[data-testid="local-memory-model"]',
     );
-    expect(model?.value).toBe(DEFAULT_LOCAL_MEMORY_MODEL);
-    expect(model?.disabled).toBe(false);
+    expect(settingsSelectValue(model)).toBe(DEFAULT_LOCAL_MEMORY_MODEL);
+    expect(model.disabled).toBe(false);
 
-    act(() => {
-      if (!model) return;
-      model.value = 'claude-sonnet-4-6';
-      model.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseSettingsOptionSync(model, 'claude-sonnet-4-6');
 
     expect(api.savePreferences).toHaveBeenCalledWith({
       localMemoryModel: 'claude-sonnet-4-6',
       localMemoryModelSetByUser: true,
       localMemoryThinkingLevel: 'high',
     });
-    expect(model?.value).toBe('claude-sonnet-4-6');
+    expect(settingsSelectValue(model)).toBe('claude-sonnet-4-6');
   });
 
   it('follows a synced memory model and disables it while memory is off', () => {
@@ -129,11 +131,12 @@ describe('LocalMemorySettings', () => {
         }),
       );
     });
-    const model = container.querySelector<HTMLSelectElement>(
+    const model = settingsSelectTrigger(
+      container,
       '[data-testid="local-memory-model"]',
     );
-    expect(model?.value).toBe('claude-sonnet-4-6');
-    expect(model?.disabled).toBe(true);
+    expect(settingsSelectValue(model)).toBe('claude-sonnet-4-6');
+    expect(model.disabled).toBe(true);
   });
 
   it('opens the local memory folder through the main-process bridge', () => {

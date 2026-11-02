@@ -1,3 +1,5 @@
+import { ORCHESTRATOR_AGENT_NAME } from '@canopy/protocol/ui-labels';
+
 /**
  * Discriminator for the kind of event a watcher waits for. New variants must
  * extend both this union and the host's watcher target union so the catalog,
@@ -43,7 +45,6 @@ export type AgentWatcherTriggerType =
   | 'automation_run'
   | 'github_workflow_runs_changed'
   | 'github_pull_requests_changed'
-  | 'managed_delegation_completion'
   | 'scheduled_wakeup'
   | 'command_watch_resolved';
 
@@ -57,8 +58,7 @@ export type AgentWatcherSetupTool =
   | 'schedule_wakeup'
   | 'watch_command'
   | 'setup_watchers'
-  | 'watch_github_items'
-  | 'watch_delegates';
+  | 'watch_github_items';
 
 /** Watcher target discriminants the catalog describes. */
 export type AgentWatcherTargetKind =
@@ -68,7 +68,6 @@ export type AgentWatcherTargetKind =
   | 'bot_chat_scope'
   | 'scheduled_wakeup'
   | 'command_watch'
-  | 'managed_delegation'
   | 'worktree_chat'
   | 'standalone_chat'
   | 'worktree_chat_scope'
@@ -160,13 +159,12 @@ const MAX_CATALOG_LIMIT = 100;
 
 /** Legacy chat rows keep host-neutral discovery text; other hosts still offer them. */
 const LEGACY_TARGET_DISCOVERY_GUIDANCE =
-  'Discover target ids via the App Advisor actions: `get_current_ui_state` for the active selection, `workspace.list` / `workspace.list_worktrees` for project worktree ids, `worktree-chat.list_tabs` for worktree chat tabs, `standalone-chat.list_projects` / `standalone-chat.list_chats` for cowork project and chat ids, and the `pipeline.execution_list` / `pipeline.execution_get` actions for pipeline executions. Copy chat row `id` values into `target.chatId`; copy pipeline execution row `id` values into `target.executionId`. Confirm the target is still awaiting a future transition before calling `setup_watchers`: completion watchers observe future transitions only, so setup rejects chats that are already idle unless the watcher entry sets `armForNextCompletion: true`; exact pipeline executions that are already terminal remain rejected. New-chat-started watchers watch future newly tracked chats in the supplied worktree or cowork project. Pipeline pause notifications must be armed before the pause transition. Do not invent ids, use titles/descriptions as ids, pass display metadata, pass session keys, pass destination chat ids, or reuse the App Advisor sentinel project/worktree as a target.';
+  'Discover target ids via the Orchestrator actions: `get_current_ui_state` for the active selection, `workspace.list` / `workspace.list_worktrees` for project worktree ids, `worktree-chat.list_tabs` for worktree chat tabs, `standalone-chat.list_projects` / `standalone-chat.list_chats` for cowork project and chat ids, and the `pipeline.execution_list` / `pipeline.execution_get` actions for pipeline executions. Copy chat row `id` values into `target.chatId`; copy pipeline execution row `id` values into `target.executionId`. Confirm the target is still awaiting a future transition before calling `setup_watchers`: completion watchers observe future transitions only, so setup rejects chats that are already idle unless the watcher entry sets `armForNextCompletion: true`; exact pipeline executions that are already terminal remain rejected. New-chat-started watchers watch future newly tracked chats in the supplied worktree or cowork project. Pipeline pause notifications must be armed before the pause transition. Do not invent ids, use titles/descriptions as ids, pass display metadata, pass session keys, pass destination chat ids, or reuse the Orchestrator sentinel project/worktree as a target.';
 
-const TARGET_DISCOVERY_GUIDANCE =
-  'Use SearchActions to discover projects.list / bots.list, then projects.list_tasks / bots.list_tasks, then projects.list_task_chats / bots.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Project agents and delegates are limited to the root project’s saved owner; bot targets require the App Advisor project-agent access setting to allow that owner. App Advisor is not restricted by that setting. Completion watches require a running or pending input unless armForNextCompletion:true is explicitly set beside target. Unknown activity returns runtime_unavailable; do not implicitly arm. Exact terminal pipeline executions remain rejected. Pipeline pauses must be armed before the transition. Never invent IDs or pass kind, destination, session, owner, or display fields for canonical chat targets.';
+const TARGET_DISCOVERY_GUIDANCE = `Use SearchActions to discover projects.list / bots.list, then projects.list_tasks / bots.list_tasks, then projects.list_task_chats / bots.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Project agents and delegates are limited to the root project’s saved owner; bot targets require the ${ORCHESTRATOR_AGENT_NAME} project-agent access setting to allow that owner. Orchestrator is not restricted by that setting. Completion watches require a running or pending input unless armForNextCompletion:true is explicitly set beside target. Unknown activity returns runtime_unavailable; do not implicitly arm. Exact terminal pipeline executions remain rejected. Pipeline pauses must be armed before the transition. Never invent IDs or pass kind, destination, session, owner, or display fields for canonical chat targets.`;
 
 const COMPLETION_GUIDANCE =
-  'Fires on the watched input’s terminal event, including completed, interrupted, error, and no_output. Set armForNextCompletion:true beside target only to watch the next input; otherwise a running or pending input is required. Unknown activity returns runtime_unavailable; retry with explicit arm intent only if appropriate. A root cannot watch itself; delegates compare against their root chat.';
+  'Fires on the watched input’s terminal event, including completed, interrupted, error, and no_output. Set armForNextCompletion:true beside target only to watch the next completion, including an input already running when armed; otherwise a running or pending input is required. Unknown activity returns runtime_unavailable; retry with explicit arm intent only if appropriate. A root cannot watch itself; delegates compare against their root chat.';
 const START_GUIDANCE =
   'Fires on the first submitted input in a newly tracked chat, not empty-tab creation. Omit taskId for the whole project or bot, or supply taskId to restrict the scope. Never supply chatId or armForNextCompletion. The destination root chat’s own start is excluded; sibling starts still match.';
 
@@ -205,26 +203,6 @@ export function buildAgentWatcherCatalog<
       keywords: ['command', 'shell', 'probe', 'poll', 'condition'],
     },
     {
-      trigger: 'managed_delegation_completion',
-      title: 'Delegate completion',
-      targetKind: 'managed_delegation',
-      setupTool: 'watch_delegates',
-      requiredFields: ['delegationIds', 'mode', 'timeoutMs'],
-      optionalFields: [],
-      usageGuidance:
-        'Register through Watch Delegates only. It returns immediately and captures the current run generation of each delegate. The one-shot notification contains status and result indices but no output; use Get Delegate Output to read a result.',
-      keywords: [
-        'delegate',
-        'delegation',
-        'completion',
-        'completed',
-        'watch',
-        'any',
-        'all',
-        'deadline',
-      ],
-    },
-    {
       trigger: 'project_task_chat_completion',
       title: 'Project task chat completion',
       targetKind: 'project_task_chat',
@@ -232,7 +210,7 @@ export function buildAgentWatcherCatalog<
       requiredFields: ['projectId', 'taskId', 'chatId'],
       optionalFields: [],
       optionalEntryFields: ['armForNextCompletion'],
-      usageGuidance: `Use SearchActions to discover projects.list, then projects.list_tasks, then projects.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Project roots and delegates may watch only targets with the root project’s saved owner; App Advisor may watch across owners. ${COMPLETION_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"project_task_chat_completion","target":{"projectId":"...","taskId":"...","chatId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
+      usageGuidance: `Use SearchActions to discover projects.list, then projects.list_tasks, then projects.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Project roots and delegates may watch only targets with the root project’s saved owner; Orchestrator may watch across owners. ${COMPLETION_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"project_task_chat_completion","target":{"projectId":"...","taskId":"...","chatId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
       keywords: [
         'project',
         'code',
@@ -253,7 +231,7 @@ export function buildAgentWatcherCatalog<
       setupTool: 'setup_watchers',
       requiredFields: ['projectId'],
       optionalFields: ['taskId'],
-      usageGuidance: `Use SearchActions to discover projects.list, then projects.list_tasks, then projects.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Project roots and delegates may watch only targets with the root project’s saved owner; App Advisor may watch across owners. ${START_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"project_new_chat_started","target":{"projectId":"...","taskId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
+      usageGuidance: `Use SearchActions to discover projects.list, then projects.list_tasks, then projects.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Project roots and delegates may watch only targets with the root project’s saved owner; Orchestrator may watch across owners. ${START_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"project_new_chat_started","target":{"projectId":"...","taskId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
       keywords: [
         'project',
         'code',
@@ -276,7 +254,7 @@ export function buildAgentWatcherCatalog<
       requiredFields: ['botId', 'taskId', 'chatId'],
       optionalFields: [],
       optionalEntryFields: ['armForNextCompletion'],
-      usageGuidance: `Use SearchActions to discover bots.list, then bots.list_tasks, then bots.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Only the public botId app_advisor is registered; never use the internal app-advisor ID. Bot access for project roots and delegates requires the App Advisor project-agent access setting to allow the root project’s saved owner; App Advisor is unrestricted by that setting. ${COMPLETION_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"bot_task_chat_completion","target":{"botId":"app_advisor","taskId":"...","chatId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
+      usageGuidance: `Use SearchActions to discover bots.list, then bots.list_tasks, then bots.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Only the public botId app_advisor is registered; never use the internal app-advisor ID. Bot access for project roots and delegates requires the Orchestrator project-agent access setting to allow the root project’s saved owner; Orchestrator is unrestricted by that setting. ${COMPLETION_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"bot_task_chat_completion","target":{"botId":"app_advisor","taskId":"...","chatId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
       keywords: [
         'bot',
         'advisor',
@@ -296,7 +274,7 @@ export function buildAgentWatcherCatalog<
       setupTool: 'setup_watchers',
       requiredFields: ['botId'],
       optionalFields: ['taskId'],
-      usageGuidance: `Use SearchActions to discover bots.list, then bots.list_tasks, then bots.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Only the public botId app_advisor is registered; never use the internal app-advisor ID. Bot access for project roots and delegates requires the App Advisor project-agent access setting to allow the root project’s saved owner; App Advisor is unrestricted by that setting. ${START_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"bot_new_chat_started","target":{"botId":"app_advisor","taskId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
+      usageGuidance: `Use SearchActions to discover bots.list, then bots.list_tasks, then bots.list_task_chats through DispatchAction. Copy the returned IDs, then use SearchWatchers before SetupWatchers. Only the public botId app_advisor is registered; never use the internal app-advisor ID. Bot access for project roots and delegates requires the Orchestrator project-agent access setting to allow the root project’s saved owner; Orchestrator is unrestricted by that setting. ${START_GUIDANCE} Use the strict envelope: {"watchers":[{"trigger":"bot_new_chat_started","target":{"botId":"app_advisor","taskId":"..."}}]}. No caller kind, destination, session, owner, or display fields.`,
       keywords: [
         'bot',
         'advisor',
@@ -456,7 +434,7 @@ export function buildAgentWatcherCatalog<
       requiredFields: ['automationId'],
       optionalFields: [],
       usageGuidance:
-        'Fires once per armed watcher when a run of the target automation reaches its outcome. Failed and skipped runs fire immediately with that status. A successful run fires when its dispatched chat turn ends or its dispatched pipeline reaches a terminal status; App Advisor prompt dispatches still fire at dispatch; bot chat completion watches are separate. Use this exact setup shape: {"watchers":[{"trigger":"automation_run","target":{"kind":"automation","automationId":"..."}}]}. Automations are global to the user; discover ids with the automation.list / automation.get dispatch actions. The watcher is consumed on fire — re-arm it per run for recurring automations, or use the inline watchers field on the automation.create / automation.run_now dispatch actions to arm atomically with the automation. Unknown automation ids are rejected.',
+        'Fires once per armed watcher when a run of the target automation reaches its outcome. Failed and skipped runs fire immediately with that status. A successful run fires when its dispatched chat turn ends or its dispatched pipeline reaches a terminal status; Orchestrator prompt dispatches still fire at dispatch; bot chat completion watches are separate. Use this exact setup shape: {"watchers":[{"trigger":"automation_run","target":{"kind":"automation","automationId":"..."}}]}. Automations are global to the user; discover ids with the automation.list / automation.get dispatch actions. The watcher is consumed on fire — re-arm it per run for recurring automations, or use the inline watchers field on the automation.create / automation.run_now dispatch actions to arm atomically with the automation. Unknown automation ids are rejected.',
       keywords: [
         'automation',
         'automations',

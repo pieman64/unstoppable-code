@@ -63,7 +63,28 @@ function makeInfo(overrides: Partial<PipelineInfo> = {}): PipelineInfo {
 }
 
 function makeData(info: PipelineInfo): PipelineData {
-  return { info, content: { name: info.name, jobs: {} } };
+  return { info, content: { name: info.name, on: 'dispatch', jobs: {} } };
+}
+
+function makeSharedDetail(
+  overrides: Partial<SharedPipelineDetail> = {},
+): SharedPipelineDetail {
+  return {
+    id: 'remote-1',
+    name: 'Shared demo',
+    description: 'desc',
+    icon: 'rocket',
+    version: '1',
+    triggerTypes: ['dispatch'],
+    createdBy: { id: 'user-1', name: 'Test User' },
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    contentHash: 'content-hash',
+    rawPipeline: 'name: Shared demo\non: dispatch\njobs: {}\n',
+    canUpdate: true,
+    canDelete: true,
+    ...overrides,
+  };
 }
 
 describe('pipelineInfoToDocumentLocator', () => {
@@ -112,7 +133,7 @@ describe('pipelineInfoToDocumentLocator', () => {
 
 describe('loadPipelineDocument', () => {
   it('fetches shared pipelines through getShared and rebuilds renderer info', async () => {
-    const detail: SharedPipelineDetail = {
+    const detail: SharedPipelineDetail = makeSharedDetail({
       id: 'remote-1',
       name: 'Shared demo',
       description: 'desc',
@@ -122,7 +143,7 @@ describe('loadPipelineDocument', () => {
       rawPipeline: 'name: Shared demo\non: manual\njobs: {}\n',
       canUpdate: true,
       canDelete: true,
-    };
+    });
     getShared.mockResolvedValue({ success: true, data: detail });
 
     const result = await loadPipelineDocument({
@@ -200,7 +221,7 @@ describe('loadPipelineDocument', () => {
     const result = await loadPipelineDocument({ pipelineId: null });
 
     expect(result).toEqual({
-      error: 'Pipeline id is required to load this pipeline',
+      error: 'Workflow id is required to load this workflow',
     });
     expect(get).not.toHaveBeenCalled();
     expect(getShared).not.toHaveBeenCalled();
@@ -211,7 +232,7 @@ describe('loadPipelineDocument', () => {
 
     const result = await loadPipelineDocument({ pipelineId: 'demo' });
 
-    expect(result).toEqual({ error: 'Failed to load pipeline' });
+    expect(result).toEqual({ error: 'Failed to load workflow' });
   });
 
   // `registerIpcHandler` rejects the `invoke` when a main-process handler
@@ -280,6 +301,43 @@ describe('loadAutomationPipelineDocument', () => {
       expect(discoverProject).toHaveBeenCalledWith('/reference');
     },
   );
+  it("loads a project-folder destination's pipeline from the configured source folder", async () => {
+    // Discovery and the run use the configured folder, never the reference
+    // checkout it may be a linked worktree of.
+    const info = makeInfo({
+      source: 'project',
+      filename: 'review.yaml',
+      filePath: '/source/.canopy/pipelines/review.yaml',
+    });
+    loadProjects.mockResolvedValue({
+      version: 1,
+      items: [
+        {
+          id: 'project-1',
+          type: 'multi-repo',
+          repos: [],
+          sourceRepoPath: '/source',
+          worktrees: [],
+        },
+      ],
+    });
+    getWorkspaceSettingsData.mockResolvedValue({
+      referenceRepoPath: '/reference',
+    });
+    discoverProject.mockResolvedValue({ success: true, data: [info] });
+    get.mockResolvedValue({ success: true, data: makeData(info) });
+    const result = await loadAutomationPipelineDocument({
+      type: 'worktree_pipeline',
+      workspaceId: 'project-1',
+      target: { kind: 'project' },
+      pipelineId: 'demo',
+      pipelineSource: 'project',
+    });
+    expect(result.error).toBeUndefined();
+    expect(discoverProject).toHaveBeenCalledWith('/source');
+    expect(getWorkspaceSettingsData).not.toHaveBeenCalled();
+  });
+
   it('loads a project pipeline through its resolved worktree cwd and discovery row', async () => {
     const info = makeInfo({
       source: 'project',
@@ -310,6 +368,47 @@ describe('loadAutomationPipelineDocument', () => {
       id: 'demo',
       cwd: '/repo',
       filePath: '/repo/.canopy/pipelines/review.yaml',
+    });
+  });
+
+  it('loads a task destination project pipeline from the task checkout', async () => {
+    const info = makeInfo({
+      source: 'project',
+      filename: 'review.yaml',
+      filePath: '/tasks/feature/.canopy/pipelines/review.yaml',
+    });
+    loadProjects.mockResolvedValue({
+      version: 1,
+      items: [
+        {
+          id: 'project-1',
+          type: 'single-repo',
+          repoPath: '/repo',
+          worktrees: [{ id: 'task-1' }],
+        },
+      ],
+    });
+    getWorktreePath.mockResolvedValue('/tasks/feature');
+    discoverProject.mockResolvedValue({ success: true, data: [info] });
+    get.mockResolvedValue({ success: true, data: makeData(info) });
+
+    const result = await loadAutomationPipelineDocument({
+      type: 'worktree_pipeline',
+      workspaceId: 'project-1',
+      target: { kind: 'task', taskId: 'task-1' },
+      pipelineId: 'demo',
+      pipelineSource: 'project',
+      projectPipelineFilename: 'review.yaml',
+    });
+
+    expect(getWorktreePath).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'task-1',
+    });
+    expect(discoverProject).toHaveBeenCalledWith('/tasks/feature');
+    expect(result.worktree).toEqual({
+      projectId: 'project-1',
+      worktreeId: 'task-1',
     });
   });
 
@@ -409,7 +508,7 @@ describe('fetchPipelineDocument', () => {
 
     const result = await fetchPipelineDocument(info);
 
-    expect(result.error).toBe('This shared pipeline is missing its remote id');
+    expect(result.error).toBe('This shared workflow is missing its remote id');
     expect(result.data).toBeUndefined();
     // Must not fall through to the bare-id lookup, which would resolve against
     // the local stored catalog and fail with an opaque "not found".
@@ -420,18 +519,20 @@ describe('fetchPipelineDocument', () => {
 
 describe('sharedDetailToPipelineData', () => {
   it('marks a non-updatable shared pipeline readonly and preserves owner/scope', () => {
-    const data = sharedDetailToPipelineData({
-      id: 'remote-2',
-      name: 'Org pipeline',
-      description: '',
-      icon: '',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      rawPipeline: 'name: Org pipeline\non: manual\njobs: {}\n',
-      canUpdate: false,
-      canDelete: false,
-      shareScope: 'organization',
-    });
+    const data = sharedDetailToPipelineData(
+      makeSharedDetail({
+        id: 'remote-2',
+        name: 'Org pipeline',
+        description: '',
+        icon: '',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        rawPipeline: 'name: Org pipeline\non: manual\njobs: {}\n',
+        canUpdate: false,
+        canDelete: false,
+        shareScope: 'organization',
+      }),
+    );
 
     expect(data.info.readonly).toBe(true);
     expect(data.info.shareScope).toBe('organization');

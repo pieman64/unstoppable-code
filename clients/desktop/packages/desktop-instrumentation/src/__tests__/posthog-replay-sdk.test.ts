@@ -78,7 +78,7 @@ describe('PostHog replay against the pinned SDK', () => {
       sdk.sessionRecording?.onRemoteConfig({
         ok: true,
         config: {
-          sessionRecording: { endpoint: '/s/', sampleRate: remoteRate },
+          sessionRecording: { endpoint: '/s/', sampleRate: String(remoteRate) },
           supportedCompression: [],
           toolbarParams: {},
           toolbarVersion: 'toolbar',
@@ -176,7 +176,7 @@ describe('replay payload against the pinned SDK', () => {
       config: {
         sessionRecording: {
           endpoint: '/s/',
-          sampleRate: 1,
+          sampleRate: '1',
           masking: { maskAllElementAttributes: true },
         },
         supportedCompression: [],
@@ -213,7 +213,7 @@ describe('replay payload against the pinned SDK', () => {
 
     const label = root.querySelector('.reviewed');
     const anchor = root.querySelector('a');
-    const hidden = root.querySelector('input[type="hidden"]');
+    const hidden = root.querySelector<HTMLInputElement>('input[type="hidden"]');
     const maskedText = root.querySelector('span');
     if (
       !label?.firstChild ||
@@ -230,7 +230,8 @@ describe('replay payload against the pinned SDK', () => {
     hidden.value = 'hidden-only456';
     hidden.dispatchEvent(new Event('input', { bubbles: true }));
     root.append(document.createComment('comment-later456'));
-    const textInput = root.querySelector('input[type="text"]');
+    const textInput =
+      root.querySelector<HTMLInputElement>('input[type="text"]');
     if (!textInput) throw new Error('text input fixture missing');
     textInput.value = 'input-only456';
     textInput.dispatchEvent(new Event('input', { bubbles: true }));

@@ -1,11 +1,11 @@
 import type { JSX } from 'react';
-import { LoadingPlaceholder } from '@canopy/ui-shared/components';
+import { Button, LoadingPlaceholder } from '@canopy/ui-shared/components';
 import { BackIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useNavigationStore } from '@/stores/navigationStore';
 
 const NOT_FOUND_COPY: Readonly<Record<'automation' | 'pipeline', string>> = {
   automation: 'This automation no longer exists.',
-  pipeline: 'This pipeline no longer exists.',
+  pipeline: 'This workflow no longer exists.',
 };
 
 export interface WorkflowEditNotFoundProps {
@@ -30,15 +30,16 @@ export function WorkflowEditNotFound({
       data-testid="workflow-edit-not-found"
       data-loading={loading ? 'true' : 'false'}
     >
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="compact"
         onClick={(): void => useNavigationStore.getState().closeWorkflowEdit()}
         data-testid="workflow-edit-back"
-        className="focus-ring inline-flex shrink-0 items-center gap-1 self-start rounded-sm text-xs fg-secondary transition-colors hover:fg-primary"
+        className="-ml-3 self-start"
       >
         <BackIcon width={12} height={12} aria-hidden="true" />
         {backLabel}
-      </button>
+      </Button>
       {loading ? (
         <LoadingPlaceholder space="section" />
       ) : (

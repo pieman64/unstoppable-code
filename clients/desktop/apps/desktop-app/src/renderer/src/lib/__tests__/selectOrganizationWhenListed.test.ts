@@ -110,4 +110,57 @@ describe('selectOrganizationWhenListed', () => {
 
     expect(mockSet).not.toHaveBeenCalled();
   });
+
+  // CAN-3672: the switcher opens Projects only after the switch lands.
+  describe('onSettled', () => {
+    async function flush(): Promise<void> {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    }
+
+    it('bounds an in-flight selection and ignores its late completion', async () => {
+      let complete: (value: WorkspaceContextState) => void = () => {};
+      mockSet.mockReturnValueOnce(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const onSettled = jest.fn();
+      selectOrganizationWhenListed(ORG_A, onSettled);
+      jest.advanceTimersByTime(15_000);
+      expect(onSettled.mock.calls).toEqual([[false]]);
+      complete(useWorkspaceContextStore.getState().state);
+      await flush();
+      expect(onSettled.mock.calls).toEqual([[false]]);
+    });
+
+    it('reports a landed switch once', async () => {
+      const onSettled = jest.fn();
+      selectOrganizationWhenListed(ORG_B, onSettled);
+      applyMembership(2, ORG_A, ORG_B);
+      await flush();
+      applyMembership(3, ORG_A, ORG_B);
+      await flush();
+      expect(onSettled.mock.calls).toEqual([[true]]);
+    });
+
+    it('reports a timeout and a replaced request as not selected', () => {
+      const timedOut = jest.fn();
+      selectOrganizationWhenListed(ORG_B, timedOut);
+      jest.advanceTimersByTime(15_000);
+      expect(timedOut.mock.calls).toEqual([[false]]);
+
+      const replaced = jest.fn();
+      selectOrganizationWhenListed(ORG_B, replaced);
+      selectOrganizationWhenListed(ORG_A);
+      expect(replaced.mock.calls).toEqual([[false]]);
+    });
+
+    it('reports a refused switch as not selected', async () => {
+      mockSet.mockRejectedValueOnce(new Error('refused'));
+      const onSettled = jest.fn();
+      selectOrganizationWhenListed(ORG_A, onSettled);
+      await flush();
+      expect(onSettled.mock.calls).toEqual([[false]]);
+    });
+  });
 });

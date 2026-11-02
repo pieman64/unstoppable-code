@@ -47,6 +47,7 @@ export async function launchCopilotSelectionFixture({
     userDataDir,
     env: { ...managed.env, ...env },
   });
+  const exitedApps = [];
   let window = await launched.electronApp.firstWindow();
   let driver = new CanopyAppDriver(window);
   const ready = async () => {
@@ -142,6 +143,17 @@ export async function launchCopilotSelectionFixture({
       await ready();
     },
     /** Relaunch with extra seeding and environment, e.g. a stored grant. */
+    async restartAfterExit() {
+      // Defer the harness reaper until after production recovery assertions.
+      exitedApps.push(launched.electronApp);
+      launched = await launchCanopy({
+        userDataDir,
+        env: { ...managed.env, ...env },
+      });
+      window = await launched.electronApp.firstWindow();
+      driver = new CanopyAppDriver(window);
+      await ready();
+    },
     async restartWith({ seed, env: restartEnv } = {}) {
       await closeCanopy(launched.electronApp, userDataDir, {
         keepUserData: true,
@@ -156,6 +168,8 @@ export async function launchCopilotSelectionFixture({
       await ready();
     },
     async close() {
+      for (const previous of exitedApps)
+        await closeCanopy(previous, userDataDir, { keepUserData: true });
       await closeCanopy(launched.electronApp, userDataDir);
       await managed.close();
       cleanupDemoWorkspaces(seeded);

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   CHAT_STORAGE_ACTIVITY_IDENTITY_LIMIT,
   CHAT_STORAGE_ACTIVITY_SCOPE_LIMIT,
@@ -22,6 +23,17 @@ describe('chat-storage activity', () => {
   beforeEach(() => {
     resetChatStorageActivityForTests();
     resetWorkCounters();
+  });
+
+  it('separates transcript and append staging from other storage bytes with opaque keys', () => {
+    recordChatStorageFileWrite(`${SCOPE}/transcripts/chat.jsonl`, 12, true);
+    recordChatStorageFileWrite(`${SCOPE}/transcripts/chat.append.tmp`, 8, true);
+    recordChatStorageFileWrite(`${SCOPE}/live-index.json`, 100, true);
+    const window = takeChatStorageActivity();
+    expect(window?.total.bytesWritten).toBe(120);
+    expect(window?.total.transcriptBytesWritten).toBe(20);
+    expect(window?.scopes[0].activity.transcriptBytesWritten).toBe(20);
+    expect(window?.scopes[0].scopeKey).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it('is silent while idle', () => {
@@ -67,11 +79,17 @@ describe('chat-storage activity', () => {
 
     expect(window?.scopes).toEqual([
       {
+        scopeKey: createHash('sha256')
+          .update('chat-storage-activity\0')
+          .update(SCOPE)
+          .digest('hex')
+          .slice(0, 16),
         identity: { projectId: 'w1', worktreeId: 'wt-1' },
         activity: {
           commits: 2,
           mutations: 5,
           bytesWritten: 184,
+          transcriptBytesWritten: 64,
           fileSyncs: 1,
           directorySyncs: 2,
           commitMsTotal: 60.4,
@@ -80,11 +98,17 @@ describe('chat-storage activity', () => {
         },
       },
       {
+        scopeKey: createHash('sha256')
+          .update('chat-storage-activity\0')
+          .update(OTHER)
+          .digest('hex')
+          .slice(0, 16),
         identity: { projectId: 'w2', worktreeId: 'entry-9' },
         activity: {
           commits: 0,
           mutations: 0,
           bytesWritten: 30,
+          transcriptBytesWritten: 0,
           fileSyncs: 0,
           directorySyncs: 0,
           commitMsTotal: 0,
@@ -97,6 +121,7 @@ describe('chat-storage activity', () => {
       commits: 2,
       mutations: 5,
       bytesWritten: 224,
+      transcriptBytesWritten: 64,
       fileSyncs: 1,
       directorySyncs: 3,
       commitMsTotal: 60.4,

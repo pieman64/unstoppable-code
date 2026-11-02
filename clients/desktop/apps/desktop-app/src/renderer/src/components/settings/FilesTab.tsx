@@ -12,7 +12,7 @@ import type {
   FileIndexingPreferences,
   FileLabelBucket,
 } from '@canopy/desktop-shared/types';
-import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
+import { Button, ErrorState, ToggleSwitch } from '@canopy/ui-shared/components';
 import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
 import { useFileListStore } from '@/stores/fileListStore';
@@ -33,12 +33,10 @@ import {
   SettingsGroup,
   SettingsPage,
   SettingsLoading,
-  SettingsPageMessage,
   SettingsRow,
   SettingsSection,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 /**
  * Generate a stable id for a new custom glob without depending on the
@@ -57,7 +55,6 @@ function makeCustomGlobId(): string {
 const SAVE_ERROR_MESSAGE = 'Unable to save Do not index settings.';
 
 export function FilesTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const labelsSectionExpandRequest = useFileLabelsStore(
     (s) => s.labelsSectionExpandRequest,
   );
@@ -271,18 +268,11 @@ export function FilesTab(): JSX.Element {
   if (state.status === 'error') {
     return (
       <SettingsPage title="Files">
-        <div className="flex flex-col items-start gap-3">
-          <SettingsPageMessage>
-            Unable to load file preferences right now.
-          </SettingsPageMessage>
-          <Button
-            size={settingsButtonSize}
-            variant="secondary"
-            onClick={() => setLoadVersion((current) => current + 1)}
-          >
-            Retry
-          </Button>
-        </div>
+        <ErrorState
+          message="Couldn't load file preferences."
+          onRetry={() => setLoadVersion((current) => current + 1)}
+          testId="settings-files-load-error"
+        />
       </SettingsPage>
     );
   }
@@ -380,7 +370,6 @@ function DoNotIndexLists({
   onAddCustomGlob,
   onRemoveCustomGlob,
 }: DoNotIndexSectionProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [pendingPattern, setPendingPattern] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -450,7 +439,7 @@ function DoNotIndexLists({
               data-testid="settings-files-custom-input"
             />
             <Button
-              size={settingsButtonSize}
+              size="compact"
               variant="secondary"
               onClick={handleAdd}
               data-testid="settings-files-custom-add"
@@ -485,8 +474,8 @@ function DoNotIndexLists({
           dataTestId={`settings-files-custom-${row.id}`}
           control={
             <Button
-              size={settingsButtonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               iconOnly
               onClick={() => onRemoveCustomGlob(row.id)}
               aria-label={`Remove ${row.pattern}`}

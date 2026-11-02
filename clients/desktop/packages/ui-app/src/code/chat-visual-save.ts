@@ -1,5 +1,6 @@
 import {
   buildAgentVisualExportDocument,
+  downloadBlob,
   type AgentVisualTheme,
 } from '@canopy/ui-shared/lib';
 
@@ -27,18 +28,11 @@ export function saveChatVisualAsHtml({
   title: string;
   ownerDocument?: Document;
 }): void {
-  const targetDocument = ownerDocument ?? globalThis.document;
-  const view = targetDocument.defaultView ?? window;
   const blob = new Blob(
     [buildAgentVisualExportDocument(visual, theme, title)],
     {
       type: 'text/html;charset=utf-8',
     },
   );
-  const url = URL.createObjectURL(blob);
-  const anchor = targetDocument.createElement('a');
-  anchor.href = url;
-  anchor.download = chatVisualFilename(title);
-  anchor.click();
-  view.setTimeout((): void => URL.revokeObjectURL(url), 0);
+  downloadBlob(blob, chatVisualFilename(title), ownerDocument);
 }

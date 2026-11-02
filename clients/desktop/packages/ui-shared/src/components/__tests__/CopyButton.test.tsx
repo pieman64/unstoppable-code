@@ -81,6 +81,52 @@ describe('CopyButton', () => {
     expect(button?.querySelector('svg')?.getAttribute('width')).toBe('14px');
   });
 
+  it('announces successful and repeated copies, and resets when content changes', async () => {
+    act(() => root.render(<CopyButton value="first" />));
+    const copy = async (): Promise<void> => {
+      await act(async () => {
+        container.querySelector('button')?.click();
+        await Promise.resolve();
+      });
+    };
+    await copy();
+    act(() => jest.advanceTimersByTime(100));
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      'Copied',
+    );
+    await copy();
+    expect(container.querySelector('[role="status"]')?.textContent ?? '').toBe(
+      '',
+    );
+    act(() => jest.advanceTimersByTime(100));
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      'Copied',
+    );
+    act(() => root.render(<CopyButton value="second" />));
+    expect(container.querySelector('[role="status"]')?.textContent ?? '').toBe(
+      '',
+    );
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe(
+      'Copy to clipboard',
+    );
+  });
+
+  it('announces rejected writes without success or an unhandled rejection', async () => {
+    const write = jest.fn().mockRejectedValue(new Error('denied'));
+    act(() => root.render(<CopyButton value="first" write={write} />));
+    await act(async () => {
+      container.querySelector('button')?.click();
+      await Promise.resolve();
+    });
+    act(() => jest.advanceTimersByTime(100));
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "Couldn't copy to the clipboard",
+    );
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe(
+      'Copy to clipboard',
+    );
+  });
+
   it('keeps caller classes for placement only', () => {
     act(() => {
       root.render(<CopyButton value="x" className="ml-auto" />);

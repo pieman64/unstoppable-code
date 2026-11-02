@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { REMOTE_CONTROL_LABEL } from '../ui-labels';
+import { ORCHESTRATOR_LABEL, REMOTE_CONTROL_LABEL } from '../ui-labels';
 
 /**
  * The Flutter pairing screen tells users which desktop controls reveal the
@@ -86,5 +86,76 @@ describe('REMOTE_CONTROL_LABEL mobile mirror', () => {
     expect(repository).toContain(
       `'active ${REMOTE_CONTROL_LABEL.toLowerCase()} session not found'`,
     );
+  });
+});
+
+describe('ORCHESTRATOR_LABEL mobile mirror', () => {
+  // Each Dart site hard-codes the label because it cannot import it. Anchored
+  // to the full expression so unrelated copy cannot satisfy the match.
+  it.each([
+    [
+      [
+        'ui',
+        'features',
+        'home',
+        'views',
+        'widgets',
+        'home_navigation_drawer.dart',
+      ],
+      `HomeTab.advisor => '${ORCHESTRATOR_LABEL}'`,
+    ],
+    [
+      ['ui', 'features', 'remote', 'views', 'remote_app_advisor_screen.dart'],
+      `content: const Text('${ORCHESTRATOR_LABEL}')`,
+    ],
+    [
+      [
+        'ui',
+        'features',
+        'remote',
+        'views',
+        'remote_app_advisor_chat_screen.dart',
+      ],
+      `(chatId == null ? 'New chat' : '${ORCHESTRATOR_LABEL}')`,
+    ],
+    [
+      [
+        'ui',
+        'features',
+        'remote',
+        'views',
+        'remote_app_advisor_chat_screen.dart',
+      ],
+      `hintText: 'Message ${ORCHESTRATOR_LABEL}…'`,
+    ],
+    [
+      ['ui', 'core', 'chat', 'view_models', 'tool_call_display.dart'],
+      `'app-advisor' => '${ORCHESTRATOR_LABEL}'`,
+    ],
+    [
+      // Lowercased like its sibling chips, matching CollapsedTurnSummary.
+      ['ui', 'core', 'chat', 'view_models', 'turn_grouping.dart'],
+      `appAdvisor('${ORCHESTRATOR_LABEL.toLowerCase()}')`,
+    ],
+    [
+      ['ui', 'features', 'stats', 'stats_aggregation.dart'],
+      `'APP_ADVISOR': '${ORCHESTRATOR_LABEL}'`,
+    ],
+    [
+      [
+        'ui',
+        'features',
+        'remote',
+        'view_models',
+        'app_advisor_controller.dart',
+      ],
+      `"Couldn't load ${ORCHESTRATOR_LABEL} chats from the desktop. Try again."`,
+    ],
+    [
+      ['data', 'repositories', 'remote_app_advisor_commands.dart'],
+      `'Update the desktop app to use ${ORCHESTRATOR_LABEL} here.'`,
+    ],
+  ])('%j says the current label', (segments, snippet) => {
+    expect(readMobileSource(join(MOBILE_LIB, ...segments))).toContain(snippet);
   });
 });

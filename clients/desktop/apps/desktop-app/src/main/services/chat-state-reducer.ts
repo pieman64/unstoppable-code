@@ -164,6 +164,9 @@ function applySettingsPatch(
     }
     defineChatTabMetadataProperty(next, key, value);
   }
+  // Only `chat.mark_unread` sets the manual flag; any other unread write
+  // replaces the user's mark.
+  if (rest.unread !== undefined) delete next.unreadMarkedManually;
   if (modelConfig === null) {
     delete next.modelConfig;
   } else if (modelConfig !== undefined) {
@@ -371,19 +374,26 @@ export function applyMutation(
           ),
         },
       };
-    case 'runtime.patched':
+    case 'runtime.patched': {
       if (!state.tabsFile.tabs.some((tab) => tab.id === mutation.chatId)) {
         throw new ChatStateInvariantError(
           `Runtime targets unknown chat: ${mutation.chatId}`,
         );
       }
+      const previousRuntime = state.runtimeByChatId[mutation.chatId];
+      const runtime =
+        mutation.runtime.turn === undefined &&
+        previousRuntime?.turn !== undefined
+          ? { ...mutation.runtime, turn: previousRuntime.turn }
+          : mutation.runtime;
       return {
         ...state,
         runtimeByChatId: {
           ...state.runtimeByChatId,
-          [mutation.chatId]: mutation.runtime,
+          [mutation.chatId]: runtime,
         },
       };
+    }
     case 'archive.upserted': {
       validateMessageIds(mutation.entry.tab.messages);
       if (state.tabsFile.tabs.some((tab) => tab.id === mutation.entry.tab.id)) {

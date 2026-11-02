@@ -26,6 +26,7 @@ import { refuseWorkspaceCreation } from './workspace-creation-refusal';
 import {
   addWorkspaceFromRemote,
   createAndPersistNewMultiRepoWorkspace,
+  registerBoundMultiRepoWorkspace,
   createNewSingleRepoWorkspace,
   importMultiRepoWorkspaceManifestFromRepo,
   importWorkspaceFromRepoPath,
@@ -41,6 +42,7 @@ export type WorkspaceCreationSource =
   | 'remote'
   | 'import_from_repo'
   | 'portal'
+  | 'org-shared-multi-repo-setup'
   | 'org-member-multi-repo-create'
   | 'shared_container_fork'
   | 'external_projects_import';
@@ -54,6 +56,10 @@ export type WorkspaceCreationVariant =
   | { kind: 'new-single-repo'; name: string }
   /** A new multi-repo project with its source repository. */
   | { kind: 'new-multi-repo'; name: string }
+  /** Host-only, validated complete clone with its organization binding. */
+  | ({ kind: 'bound-multi-repo' } & Parameters<
+      typeof registerBoundMultiRepoWorkspace
+    >[0])
   /**
    * An existing folder: a repository, a multi-repo manifest repository, or a
    * plain folder imported as an external Cowork project.
@@ -149,6 +155,9 @@ async function admitCreation(
         refuseWorkspaceCreation('name-required', 'Project name is required');
       }
       return;
+    case 'bound-multi-repo':
+      await admitImportFolder(variant.path, inspectFolder);
+      return;
     case 'local-folder':
       await admitImportFolder(variant.folderPath, inspectFolder);
       return;
@@ -190,6 +199,13 @@ async function runCreation(
       return {
         workspace: await createAndPersistNewMultiRepoWorkspace(variant.name),
         clonedRepoIds: [],
+      };
+    case 'bound-multi-repo':
+      return {
+        workspace: await registerBoundMultiRepoWorkspace(variant),
+        clonedRepoIds: variant.repositories.map((entry) =>
+          entry.relativePath.slice('repos/'.length),
+        ),
       };
     case 'local-folder':
       return {
@@ -287,7 +303,10 @@ export function createWorkspace(
           source: request.source,
         }),
       );
-      if (outcome.workspace.type !== 'cowork') {
+      if (
+        outcome.workspace.type !== 'cowork' &&
+        request.variant.kind !== 'bound-multi-repo'
+      ) {
         const repoIds =
           outcome.workspace.type === 'single-repo'
             ? [SINGLE_REPO_USAGE_REPO_ID]

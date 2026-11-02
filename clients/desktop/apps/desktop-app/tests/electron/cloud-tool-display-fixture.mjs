@@ -16,7 +16,7 @@ export const CLOUD_TOOL_CASES = [
   {
     name: 'write',
     input: { filePath: '/repo/src/created.ts', content: 'export {};' },
-    label: 'Write created.ts',
+    label: 'Wrote created.ts',
     family: 'write',
   },
   {
@@ -26,19 +26,19 @@ export const CLOUD_TOOL_CASES = [
       oldString: 'before',
       newString: 'after',
     },
-    label: 'Edit edited.ts',
+    label: 'Edited edited.ts',
     family: 'edit',
   },
   {
     name: 'grep',
     input: { pattern: 'needle', path: 'src' },
-    label: 'Grep needle in src',
+    label: 'Searched for needle in src',
     family: 'grep',
   },
   {
     name: 'glob',
     input: { pattern: '**/*.ts' },
-    label: 'Glob **/*.ts',
+    label: 'Found files matching **/*.ts',
     family: 'glob',
   },
   {
@@ -62,19 +62,19 @@ export const CLOUD_TOOL_CASES = [
   {
     name: 'bash',
     input: { command: 'npm test' },
-    label: 'Bash npm test',
+    label: 'Ran npm test',
     family: 'bash',
   },
   {
     name: 'bash',
     input: { command: 'cat *.ts' },
-    label: 'Bash cat *.ts',
+    label: 'Ran cat *.ts',
     family: 'bash',
   },
   {
     name: 'bash',
     input: { command: "sed -n '2,8p' src/*.ts" },
-    label: "Bash sed -n '2,8p' src/*.ts",
+    label: "Ran sed -n '2,8p' src/*.ts",
     family: 'bash',
   },
   {
@@ -86,7 +86,7 @@ export const CLOUD_TOOL_CASES = [
   {
     name: 'bash',
     input: 'npm test',
-    label: 'Bash npm test',
+    label: 'Ran npm test',
     family: 'bash',
   },
   {

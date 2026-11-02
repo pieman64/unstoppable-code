@@ -104,6 +104,8 @@ function makeTab(
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
     ...over,
@@ -229,6 +231,48 @@ describe('chatStore unread state after answering an ask-user question', () => {
 
     expect(requireTab(useChatStore, 'chat-b').unread).toBe(false);
     expect(useChatStore.getState().unreadWorktreeKeys.has(KEY)).toBe(false);
+  });
+
+  it('drops a stale manual mark when the question raises unread (CAN-4378)', () => {
+    const { useChatStore } = loadStore();
+    // A resumed turn clears `unread` but leaves the earlier manual mark.
+    seedTwoTabs(useChatStore, { unread: false, unreadMarkedManually: true });
+
+    askOnChatB(useChatStore);
+
+    expect(requireTab(useChatStore, 'chat-b').unread).toBe(true);
+    expect(
+      requireTab(useChatStore, 'chat-b').unreadMarkedManually,
+    ).toBeUndefined();
+  });
+
+  it('keeps a live manual mark when a question arrives on the unread tab', () => {
+    const { useChatStore } = loadStore();
+    // Main still holds the manual flag; the renderer must not diverge from it.
+    seedTwoTabs(useChatStore, { unread: true, unreadMarkedManually: true });
+
+    askOnChatB(useChatStore);
+
+    expect(requireTab(useChatStore, 'chat-b').unread).toBe(true);
+    expect(requireTab(useChatStore, 'chat-b').unreadMarkedManually).toBe(true);
+  });
+
+  it('answering keeps a manual mark set after the question was read (CAN-4378)', async () => {
+    const { useChatStore } = loadStore();
+    seedTwoTabs(useChatStore);
+    askOnChatB(useChatStore);
+    useChatStore
+      .getState()
+      .markTargetRead('project', 'worktree', { tabId: 'chat-b' });
+    useChatStore
+      .getState()
+      .setChatUnread('project', 'worktree', 'chat-b', true);
+
+    useChatStore.getState().answerMcpQuestion('req-1', ANSWERS);
+    await flushMicrotasks();
+
+    expect(requireTab(useChatStore, 'chat-b').unread).toBe(true);
+    expect(requireTab(useChatStore, 'chat-b').unreadMarkedManually).toBe(true);
   });
 
   it('keeps an unread that a completed turn set before the question arrived', async () => {

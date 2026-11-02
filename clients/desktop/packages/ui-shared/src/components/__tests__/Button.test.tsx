@@ -105,6 +105,139 @@ describe('Button', () => {
     expect(html).toContain('disabled:opacity-100');
   });
 
+  it('keeps the disabled fill on filled variants only', () => {
+    const filled: readonly ButtonVariant[] = [
+      'primary',
+      'secondary',
+      'outline',
+      'warning',
+      'destructive',
+    ];
+    const transparent: readonly ButtonVariant[] = [
+      'ghost',
+      'ghost-overlay',
+      'ghost-quiet',
+      'ghost-accent',
+      'ghost-destructive',
+    ];
+    const render = (variant: ButtonVariant): string =>
+      renderToStaticMarkup(
+        <Button variant={variant} iconOnly aria-label="Refresh" disabled>
+          <svg />
+        </Button>,
+      );
+
+    for (const variant of filled) {
+      expect([variant, render(variant)]).toEqual([
+        variant,
+        expect.stringContaining('disabled:bg-[var(--bg-disabled)]'),
+      ]);
+    }
+    // A disabled ghost or link is a dimmed icon or label, never a grey disc.
+    const link = renderToStaticMarkup(
+      <Button variant="link" disabled>
+        Retry
+      </Button>,
+    );
+    for (const [variant, html] of [
+      ...transparent.map((name) => [name, render(name)] as const),
+      ['link', link] as const,
+    ]) {
+      expect([variant, html]).toEqual([
+        variant,
+        expect.not.stringContaining('bg-disabled'),
+      ]);
+      expect([variant, html]).toEqual([
+        variant,
+        expect.stringMatching(
+          /disabled:(?:text-\[var\(--fg-disabled\)\]|fg-disabled|opacity-40)/,
+        ),
+      ]);
+    }
+  });
+
+  it('swallows a click while disabled instead of passing it through', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    const onRowClick = jest.fn();
+    act(() => {
+      root.render(
+        // A busy action inside a clickable row (an archived chat's Restore).
+        <div role="presentation" onClick={onRowClick}>
+          <Button disabled>Restore</Button>
+          <Button variant="link" disabled>
+            Retry
+          </Button>
+        </div>,
+      );
+    });
+
+    for (const button of Array.from(container.querySelectorAll('button'))) {
+      // `pointer-events: none` would hand the click to the row behind; the
+      // disabled element has to stay the click target.
+      expect(button.className).not.toContain('pointer-events-none');
+      act(() => button.click());
+    }
+    expect(onRowClick).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('does not react to hover or press while disabled', () => {
+    const variants: readonly ButtonVariant[] = [
+      'primary',
+      'secondary',
+      'outline',
+      'ghost',
+      'ghost-overlay',
+      'ghost-quiet',
+      'ghost-accent',
+      'ghost-destructive',
+      'warning',
+      'destructive',
+    ];
+    for (const variant of variants) {
+      const html = renderToStaticMarkup(
+        <Button variant={variant} disabled>
+          Save
+        </Button>,
+      );
+      // Every hover fill has a disabled counterpart that outranks it (the
+      // `disabled:` variant sorts after `hover:` and `active:`), the press
+      // scale is reset, and the cursor says the action is unavailable.
+      expect([variant, html]).toEqual([
+        variant,
+        expect.stringMatching(
+          /disabled:bg-(?:transparent|\[var\(--bg-disabled\)\])/,
+        ),
+      ]);
+      expect([variant, html]).toEqual([
+        variant,
+        expect.stringContaining('disabled:scale-100'),
+      ]);
+      expect([variant, html]).toEqual([
+        variant,
+        expect.stringContaining('disabled:cursor-not-allowed'),
+      ]);
+    }
+    const secondary = renderToStaticMarkup(
+      <Button variant="secondary" disabled>
+        Save
+      </Button>,
+    );
+    // The secondary hover paints a background image over the fill.
+    expect(secondary).toContain('disabled:[background-image:none]');
+    const link = renderToStaticMarkup(
+      <Button variant="link" disabled>
+        Retry
+      </Button>,
+    );
+    expect(link).toContain('disabled:no-underline');
+    expect(link).toContain('disabled:cursor-not-allowed');
+  });
+
   it('reads as unavailable while aria-disabled without leaving the tab order', () => {
     const html = renderToStaticMarkup(
       <Button variant="primary" aria-disabled aria-busy>
@@ -212,6 +345,76 @@ describe('Button', () => {
     expect(plain).not.toContain('group-hover/checklist');
     expect(plain).not.toContain('after:absolute');
     expect(plain).not.toContain('position:static');
+  });
+
+  it("honours a caller's position utility instead of its own relative", () => {
+    const classesOf = (html: string): string[] =>
+      (/class="([^"]*)"/.exec(html)?.[1] ?? '').split(/\s+/);
+    const render = (className?: string): string[] =>
+      classesOf(
+        renderToStaticMarkup(
+          <Button
+            variant="ghost"
+            iconOnly
+            aria-label="Close"
+            className={className}
+          >
+            x
+          </Button>,
+        ),
+      );
+
+    // Tailwind emits `.relative` after `.absolute`, so both on one element
+    // would leave the button relative; the caller's placement has to win.
+    const placed = render('absolute right-1 top-1');
+    expect(placed).toContain('absolute');
+    expect(placed).not.toContain('relative');
+    // The hit area still has a containing block: the positioned button.
+    expect(placed).toContain('before:absolute');
+    for (const position of ['fixed', 'sticky', 'sm:absolute']) {
+      expect([position, render(position)]).toEqual([
+        position,
+        expect.not.arrayContaining(['relative']),
+      ]);
+    }
+    expect(render()).toContain('relative');
+    expect(render('ml-auto')).toContain('relative');
+    // A pseudo-element's position is not the button's.
+    expect(render('after:absolute')).toContain('relative');
+
+    const fillRow = classesOf(
+      renderToStaticMarkup(
+        <Button iconOnly variant="ghost" aria-label="Run" fillRow>
+          go
+        </Button>,
+      ),
+    );
+    expect(fillRow).toContain('relative');
+    expect(fillRow).toContain('after:absolute');
+  });
+
+  it('renders the link variant as inline accent text with no capsule', () => {
+    const html = renderToStaticMarkup(
+      <p>
+        The plugin needs a key.{' '}
+        <Button variant="link" onClick={() => {}}>
+          Open settings
+        </Button>
+      </p>,
+    );
+
+    expect(html).toContain('type="button"');
+    expect(html).toContain('fg-accent');
+    expect(html).toContain('hover:underline');
+    expect(html).toContain('focus-ring');
+    expect(html).toContain('disabled:fg-disabled');
+    // It takes the size of the sentence around it: no height, pill, padding
+    // or label size of its own.
+    expect(html).not.toMatch(/\bh-(?:7|8|9)\b/);
+    expect(html).not.toContain('rounded-full');
+    expect(html).not.toMatch(/\bpx-/);
+    expect(html).not.toMatch(/\btext-(?:xs|s)\b/);
+    expect(html).not.toContain('active:scale-97');
   });
 
   it('forwards native props and refs', () => {

@@ -29,6 +29,7 @@ import {
 } from '../types/pipeline';
 import { normalizePipelineScopes } from './scope';
 import { parsePipelineText } from './parse-pipeline';
+import { serializePipelineDocument } from '@canopy/pipeline-interop/serialize-pipeline';
 import { isCuratedCatalogKey } from '@canopy/protocol/plugin-catalog';
 import type { CuratedPipelineOrigin } from '@canopy/protocol/pipelines';
 import {
@@ -147,6 +148,19 @@ function parsePipelineIndexEntry(value: unknown): PipelineIndexEntry | null {
 
   const curatedOrigin = parseCuratedOrigin(value.curatedOrigin);
   const remote = parseShareRemoteMetadata(value.remote);
+  // The cached step count lets list reads skip reparsing each definition.
+  const stepCount =
+    typeof value.stepCount === 'number' &&
+    Number.isInteger(value.stepCount) &&
+    value.stepCount >= 0
+      ? value.stepCount
+      : undefined;
+  const revision =
+    typeof value.revision === 'number' &&
+    Number.isSafeInteger(value.revision) &&
+    value.revision > 0
+      ? value.revision
+      : undefined;
   return {
     id,
     name,
@@ -159,6 +173,8 @@ function parsePipelineIndexEntry(value: unknown): PipelineIndexEntry | null {
     ...(remote ? { remote } : {}),
     triggerTypes,
     scopes,
+    ...(stepCount === undefined ? {} : { stepCount }),
+    ...(revision === undefined ? {} : { revision }),
   };
 }
 
@@ -347,8 +363,8 @@ function parsePipelineFile(raw: string, filePath: string): IPCResult<Pipeline> {
       success: false,
       error:
         error instanceof Error
-          ? `Failed to parse pipeline file ${path.basename(filePath)}: ${error.message}`
-          : `Failed to parse pipeline file ${path.basename(filePath)}: ${String(error)}`,
+          ? `Failed to parse workflow file ${path.basename(filePath)}: ${error.message}`
+          : `Failed to parse workflow file ${path.basename(filePath)}: ${String(error)}`,
     };
   }
 }
@@ -359,7 +375,7 @@ function loadPipelineFromFile(filePath: string): IPCResult<Pipeline> {
     ? parsePipelineFile(raw, filePath)
     : {
         success: false,
-        error: `Pipeline file not found: ${path.basename(filePath)}`,
+        error: `Workflow file not found: ${path.basename(filePath)}`,
       };
 }
 
@@ -375,16 +391,29 @@ function derivePipelineScopes(
 
 export function listStoredPipelines(): IPCResult<PipelineInfo[]> {
   try {
-    const bundled = readBundledIndex().pipelines.map((p) => ({
-      ...p,
-      scopes: p.scopes ?? ['directory' as const],
-      source: 'bundled' as const,
-      readonly: true,
-    }));
+    const bundled = readBundledIndex().pipelines.map((p) => {
+      const loaded = loadPipelineFromFile(
+        path.join(getBundledPipelinesDir(), p.filename),
+      );
+      const stepCount =
+        loaded.success && loaded.data
+          ? Object.values(loaded.data.jobs).reduce(
+              (count, job) => count + job.steps.length,
+              0,
+            )
+          : p.stepCount;
+      return {
+        ...p,
+        ...(stepCount === undefined ? {} : { stepCount }),
+        scopes: p.scopes ?? ['directory' as const],
+        source: 'bundled' as const,
+        readonly: true,
+      };
+    });
     const userIndex = readIndex();
     let shouldPersistDerivedMetadata = false;
     const user = userIndex.pipelines.map((p, index) => {
-      if (p.triggerTypes && p.scopes) {
+      if (p.triggerTypes && p.scopes && p.stepCount !== undefined) {
         return { ...p, source: 'user' as const, readonly: false };
       }
       const filePath = resolveUserPipelineFilePath(p.filename);
@@ -392,7 +421,7 @@ export function listStoredPipelines(): IPCResult<PipelineInfo[]> {
         filePath === null
           ? {
               success: false,
-              error: `Pipeline file not found: ${p.filename}`,
+              error: `Workflow file not found: ${p.filename}`,
             }
           : loadPipelineFromFile(filePath);
       const triggerTypes =
@@ -402,6 +431,13 @@ export function listStoredPipelines(): IPCResult<PipelineInfo[]> {
       const scopes =
         result.success && result.data
           ? derivePipelineScopes(result.data)
+          : undefined;
+      const stepCount =
+        result.success && result.data
+          ? Object.values(result.data.jobs).reduce(
+              (count, job) => count + job.steps.length,
+              0,
+            )
           : undefined;
       if (triggerTypes) {
         userIndex.pipelines[index] = {
@@ -417,10 +453,18 @@ export function listStoredPipelines(): IPCResult<PipelineInfo[]> {
         };
         shouldPersistDerivedMetadata = true;
       }
+      if (stepCount !== undefined) {
+        userIndex.pipelines[index] = {
+          ...userIndex.pipelines[index],
+          stepCount,
+        };
+        shouldPersistDerivedMetadata = true;
+      }
       return {
         ...p,
         triggerTypes: triggerTypes ?? p.triggerTypes,
         scopes: scopes ?? p.scopes,
+        stepCount: stepCount ?? p.stepCount,
         source: 'user' as const,
         readonly: false,
       };
@@ -442,14 +486,14 @@ export function getStoredPipeline(id: string): IPCResult<PipelineData> {
   try {
     const resolved = resolvePipelineEntry(id);
     if (!resolved) {
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
 
     const rawContent = safeReadFile(resolved.filePath);
     if (!rawContent) {
       return {
         success: false,
-        error: `Pipeline file not found: ${resolved.entry.filename}`,
+        error: `Workflow file not found: ${resolved.entry.filename}`,
       };
     }
     const pipeline = parsePipelineFile(rawContent, resolved.filePath);
@@ -483,14 +527,14 @@ export function getStoredPipelineBySource(
   try {
     const resolved = resolvePipelineEntryBySource(source, id);
     if (!resolved) {
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
 
     const rawContent = safeReadFile(resolved.filePath);
     if (!rawContent) {
       return {
         success: false,
-        error: `Pipeline file not found: ${resolved.entry.filename}`,
+        error: `Workflow file not found: ${resolved.entry.filename}`,
       };
     }
     const pipeline = parsePipelineFile(rawContent, resolved.filePath);
@@ -517,18 +561,57 @@ export function getStoredPipelineBySource(
   }
 }
 
+/** A stored definition's index entry and raw text, read for core. */
+export type StoredPipelineDocumentRead =
+  | { kind: 'missing' }
+  | { kind: 'unreadable'; message: string }
+  | {
+      kind: 'found';
+      source: 'user' | 'bundled';
+      entry: PipelineIndexEntry;
+      rawContent: string;
+    };
+
+/**
+ * Read one stored definition by source, or by id with user before bundled.
+ * Unlike the IPC readers, a missing entry is told apart from an unreadable
+ * file, and the text is returned unparsed.
+ */
+export function readStoredPipelineDocument(
+  id: string,
+  source?: 'user' | 'bundled',
+): StoredPipelineDocumentRead {
+  const resolved = source
+    ? resolvePipelineEntryBySource(source, id)
+    : resolvePipelineEntry(id);
+  if (!resolved) return { kind: 'missing' };
+  const rawContent = safeReadFile(resolved.filePath);
+  if (!rawContent) {
+    return {
+      kind: 'unreadable',
+      message: `Workflow file not found: ${resolved.entry.filename}`,
+    };
+  }
+  return {
+    kind: 'found',
+    source: resolved.source,
+    entry: resolved.entry,
+    rawContent,
+  };
+}
+
 export function getStoredPipelineText(id: string): IPCResult<string> {
   try {
     const resolved = resolvePipelineEntry(id);
     if (!resolved) {
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
 
     const raw = safeReadFile(resolved.filePath);
     if (!raw) {
       return {
         success: false,
-        error: `Pipeline file not found: ${resolved.entry.filename}`,
+        error: `Workflow file not found: ${resolved.entry.filename}`,
       };
     }
 
@@ -542,7 +625,7 @@ export function getStoredPipelinePath(id: string): IPCResult<string> {
   try {
     const resolved = resolvePipelineEntry(id);
     if (!resolved) {
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
 
     return { success: true, data: resolved.filePath };
@@ -557,7 +640,7 @@ export function getStoredPipelinePathWithSource(
   try {
     const resolved = resolvePipelineEntry(id);
     if (!resolved) {
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
 
     return {
@@ -642,8 +725,7 @@ export function saveStoredPipeline(
     }
 
     const yamlContent =
-      input.rawContent ??
-      yaml.dump({ pipeline: contentToSave }, { lineWidth: 120, noRefs: true });
+      input.rawContent ?? serializePipelineDocument(contentToSave);
     atomicWriteFile(filePath, yamlContent);
 
     const curatedOrigin = parseCuratedOrigin(
@@ -661,7 +743,13 @@ export function saveStoredPipeline(
       updatedAt: now,
       ...(curatedOrigin ? { curatedOrigin } : {}),
       ...(remote ? { remote } : {}),
+      revision:
+        existing >= 0 ? (index.pipelines[existing].revision ?? 0) + 1 : 1,
       triggerTypes: getTriggerTypes(contentToSave.on),
+      stepCount: Object.values(contentToSave.jobs).reduce(
+        (count, job) => count + job.steps.length,
+        0,
+      ),
       scopes: normalized.scope,
     };
 
@@ -695,7 +783,7 @@ export function writeStoredPipelineRemoteMetadata(
     const index = readIndex();
     const entryIndex = index.pipelines.findIndex((entry) => entry.id === id);
     if (entryIndex < 0) {
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
     const entry = { ...index.pipelines[entryIndex], remote: { ...remote } };
     index.pipelines[entryIndex] = entry;
@@ -730,6 +818,21 @@ export function clearStoredPipelineRemoteMetadataByRemoteId(
   }
 }
 
+/**
+ * The stored revision of a user pipeline, `bundled` for a bundled id, or
+ * `null` when neither store has it. A read and a write in the same
+ * synchronous turn form a compare-and-swap within this process.
+ */
+export function readStoredPipelineRevision(
+  id: string,
+): { source: 'user'; revision: number } | { source: 'bundled' } | null {
+  const entry = readIndex().pipelines.find((p) => p.id === id);
+  if (entry) return { source: 'user', revision: entry.revision ?? 0 };
+  return readBundledIndex().pipelines.some((p) => p.id === id)
+    ? { source: 'bundled' }
+    : null;
+}
+
 export function deleteStoredPipeline(id: string): IPCResult {
   try {
     const index = readIndex();
@@ -738,10 +841,10 @@ export function deleteStoredPipeline(id: string): IPCResult {
       if (readBundledIndex().pipelines.some((p) => p.id === id)) {
         return {
           success: false,
-          error: `Cannot delete bundled pipeline: ${id}`,
+          error: `Cannot delete bundled workflow: ${id}`,
         };
       }
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
 
     const entry = index.pipelines[idx];
@@ -764,10 +867,10 @@ export function updateStoredPipeline(
       if (readBundledIndex().pipelines.some((p) => p.id === id)) {
         return {
           success: false,
-          error: `Cannot update bundled pipeline: ${id}`,
+          error: `Cannot update bundled workflow: ${id}`,
         };
       }
-      return { success: false, error: `Pipeline not found: ${id}` };
+      return { success: false, error: `Workflow not found: ${id}` };
     }
 
     return saveStoredPipeline({ ...input, id });

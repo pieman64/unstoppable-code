@@ -19,6 +19,7 @@ export const ACCOUNT_SETTINGS_PAGES = [
   'security',
   'billing',
   'labs',
+  'appearance',
 ] as const;
 
 export type AccountSettingsPage = (typeof ACCOUNT_SETTINGS_PAGES)[number];
@@ -172,6 +173,7 @@ function parseAccountSegments(rest: string[]): SettingsRoute | null {
     case 'integrations':
     case 'security':
     case 'labs':
+    case 'appearance':
       return detail === undefined ? { scope: 'account', page: section } : null;
     case 'digests':
       if (id !== undefined) return null;

@@ -7,6 +7,7 @@ import type {
   UnifiedTableBadge,
   UnifiedTableToggleMode,
 } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 
 /**
  * The rows of a capability picker that both hosts render the same way: the
@@ -258,14 +259,15 @@ export function UnavailableRemoveAction({
   readonly onRemove: () => void;
 }): JSX.Element {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="compact"
       onClick={onRemove}
       data-testid="portal-plugins-remove-unavailable"
       aria-label={`${CAPABILITY_REMOVE_LABEL} ${name}`}
-      className="focus-ring inline-flex min-h-11 items-center rounded-md px-2 text-xs font-medium fg-secondary hover:bg-secondary/50 hover:fg-primary lg:min-h-0 lg:py-1"
     >
       {CAPABILITY_REMOVE_LABEL}
-    </button>
+    </Button>
   );
 }

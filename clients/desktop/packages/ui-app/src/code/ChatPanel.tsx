@@ -1,5 +1,8 @@
 'use client';
 
+import { isPlanModeReadOnly } from '@canopy/ui-shared/lib/plan-mode-suggestion';
+import { usePlanModeHintStore } from './composer/PlanModeHintContext';
+
 import type { ChatPlanReviewApproval } from '@canopy/protocol/portal';
 
 import {
@@ -11,6 +14,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type ReactElement,
   type ReactNode,
 } from 'react';
 import { useCanopyClient, useChatStore } from '@canopy/app-state';
@@ -18,6 +22,7 @@ import { portalChatMessageAttachmentsFromRefs } from '@canopy/protocol/portal';
 import type {
   PortalChatCloudAttachmentRef,
   PortalChatFileReference,
+  PortalChatMessage,
   PortalChatThinkingLevel,
   PortalQueuedMessage,
 } from '@canopy/protocol/portal';
@@ -26,14 +31,20 @@ import {
   MESSAGE_NO_LONGER_EDITABLE_NOTICE,
   MessageEditNotice,
   QueuedMessageBubble,
+  queuedMessageForceKind,
   splitSubagentReference,
   SubagentReferenceChip,
 } from '@canopy/ui-shared';
 import { InputDeliveryList } from '@canopy/ui-shared';
 import {
-  MessageEditCancelSave,
-  MessageEditCard,
+  ComposerTray,
+  ComposerTrayProvider,
+  MessageEditSurface,
+  QueuedMessageRow,
+  Notice,
+  QueuedMessageReason,
   UnsavedMessageEdits,
+  useCompactQueue,
   type UnsavedMessageEdit,
 } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -43,7 +54,14 @@ import {
   type AgentSentReceivingContext,
 } from '@canopy/ui-shared';
 import { ChatComposer, type ChatComposerProps } from './ChatComposer';
+import { QueuedEditComposerSlot } from './composer/QueuedEditComposerSlot';
+import {
+  QueuedMessageComposer,
+  type QueuedMessageEditControls,
+} from './composer/QueuedMessageComposer';
 import type { ChatTranscriptProps } from './ChatTranscript';
+import { ChatWaitingDelegationsContext } from './ChatPartView';
+import { QueuedMessageStack } from './QueuedMessageStack';
 import { useChatTranscriptFind } from '../find/useChatTranscriptFind';
 import { isPersonPromptText } from './sent-prompt-summary';
 
@@ -117,6 +135,8 @@ export interface ChatComposerSendOptions {
  * one lands.
  */
 export interface ChatPanelProps {
+  /** Lets the host place the shared compact queue in its grouped drawer. */
+  readonly composerWorkDrawer?: boolean;
   readonly receivingContext?: AgentSentReceivingContext;
   readonly chatId: string;
   readonly transcriptInitialized?: boolean;
@@ -158,6 +178,7 @@ export interface ChatPanelProps {
    * Supplying it keeps the transcript mounted on a chat with no messages.
    */
   readonly footerStatus?: ReactNode;
+  readonly firstSendStartingEnabled?: boolean;
   /** Host-owned action rendered beside the latest transcript turn. */
   readonly renderLatestTurnAction?: ChatTranscriptProps['renderLatestTurnAction'];
   /**
@@ -174,6 +195,11 @@ export interface ChatPanelProps {
    * shell and hands the canonical state to the host renderer.
    */
   readonly onLoadOlder?: () => Promise<void>;
+  /**
+   * Dedupe keys of the live runs the host lists in its background drawer;
+   * the built-in transcript's turns leave them out until they finish.
+   */
+  readonly liveRunKeys?: ReadonlySet<string>;
   readonly renderTranscript?: (
     controls: ChatTranscriptHostControls,
   ) => ReactNode;
@@ -193,6 +219,16 @@ export interface ChatPanelProps {
    * to render the built-in composer (the desktop and default web paths).
    */
   readonly renderComposer?: (controls: ChatComposerHostControls) => ReactNode;
+  /** The host composer already owns the queued-credit recovery notice. */
+  readonly queuedCreditNoticeHandled?: boolean;
+  /**
+   * Editing a queued message happens in the composer's place (CAN-3607): the
+   * panel's own queue opens a {@link QueuedMessageComposer} there. A host that
+   * renders its own queue through `renderTranscript` (desktop) passes its
+   * editor here instead, null when nothing is being edited. Either way the
+   * composer stays mounted, hidden, so its draft survives the edit.
+   */
+  readonly hostQueuedMessageEditor?: ReactElement | null;
 }
 
 /**
@@ -201,6 +237,8 @@ export interface ChatPanelProps {
  * the shared store stays the single source of truth for thread state.
  */
 export interface ChatComposerHostControls {
+  readonly queuedPanel?: ReactNode;
+  readonly queuedCount?: number;
   /**
    * Optimistic-echo-wrapped send transport; absent for a read-only host.
    * `options` carries per-send extras (e.g. serialized `@`-mention file
@@ -239,12 +277,15 @@ export interface ChatTranscriptHostControls {
   readonly error: ChatTranscriptProps['error'];
   readonly renderLatestTurnAction: ChatTranscriptProps['renderLatestTurnAction'];
   readonly footerStatus: ChatTranscriptProps['footerStatus'];
+  readonly firstSendStartingEnabled?: boolean;
   readonly chatId: ChatTranscriptProps['chatId'];
   /** Person-authored prompts in the queue the panel renders beside it. */
   readonly queuedPromptCount: ChatTranscriptProps['queuedPromptCount'];
   readonly queuedPromptIds: ChatTranscriptProps['queuedPromptIds'];
   readonly queuedPromptMessageIds: ChatTranscriptProps['queuedPromptMessageIds'];
   readonly initialized: ChatTranscriptProps['initialized'];
+  /** Queue rows the host marked `delivering`, which the transcript renders. */
+  readonly deliveringMessages: ChatTranscriptProps['deliveringMessages'];
 }
 
 /**
@@ -277,10 +318,15 @@ export function ChatPanel({
   appIcon,
   emptyState,
   footerStatus,
+  firstSendStartingEnabled = true,
   renderLatestTurnAction,
   composer,
+  liveRunKeys,
   renderTranscript,
   renderComposer,
+  queuedCreditNoticeHandled = false,
+  composerWorkDrawer = false,
+  hostQueuedMessageEditor = null,
   onLoadOlder,
   findScope,
 }: ChatPanelProps): JSX.Element {
@@ -293,6 +339,13 @@ export function ChatPanel({
     rootRef: panelRoot,
   });
   const thread = useChatStore((state) => state.threads[chatId]);
+  const waitingDelegationIds = useChatStore(
+    (state) => state.threads[chatId]?.waitingDelegationIds,
+  );
+  const waitingDelegations = useMemo(
+    () => new Set(waitingDelegationIds ?? []),
+    [waitingDelegationIds],
+  );
   const client = useCanopyClient();
   /* eslint-disable @typescript-eslint/unbound-method --
      Zustand store actions are closure-based (they capture `set`/`get`, never
@@ -309,10 +362,46 @@ export function ChatPanel({
   const turnGroups = thread?.turnGroups ?? [];
   const status = thread?.status ?? 'idle';
   const error = thread?.error ?? null;
+  const hintStore = usePlanModeHintStore();
   const planMode = thread?.planMode ?? false;
   const thinkingLevel = thread?.thinkingLevel;
   const queuedMessages = thread?.queuedMessages ?? EMPTY_QUEUED_MESSAGES;
+  const compactQueuePreference = useCompactQueue();
+  const compactQueue = composerWorkDrawer || compactQueuePreference;
+  // A row the host is delivering to an idle agent reads as sent, in the
+  // transcript; only rows waiting behind other work keep the queued look.
+  const waitingQueuedMessages = useMemo(
+    () => queuedMessages.filter((message) => message.delivering !== true),
+    [queuedMessages],
+  );
+  const deliveringMessages = useMemo(
+    () =>
+      queuedMessages
+        .filter((message) => message.delivering === true)
+        .map(
+          (message): PortalChatMessage => ({
+            messageId: message.id,
+            chatId,
+            role: 'user',
+            status: 'complete',
+            text: message.text,
+            createdAtMs: message.enqueuedAtMs,
+            promptSource: message.promptSource ?? 'human',
+            ...(message.agentSent ? { agentSent: message.agentSent } : {}),
+          }),
+        ),
+    [chatId, queuedMessages],
+  );
   const route = thread?.route;
+  const targetCapabilities =
+    route?.workspaceLocalId === undefined
+      ? client.capabilities
+      : (client.capabilitiesFor?.(route.workspaceLocalId) ??
+        client.capabilities);
+  const genuinePlanAvailable =
+    (targetCapabilities.workspaceCreation === 'full' ||
+      targetCapabilities.workspaceCreation === 'remote-clone') &&
+    !isPlanModeReadOnly(providerType);
   const receivingContext = useMemo<AgentSentReceivingContext | undefined>(
     () =>
       explicitContext ??
@@ -375,7 +464,6 @@ export function ChatPanel({
     target: NonNullable<typeof queueTarget>;
     focusMoved: boolean;
   } | null>(null);
-  const queueEditFocusAllowed = useRef(true);
   const [queueEditPending, setQueueEditPending] = useState(false);
   // The editor closes before the host confirms a save; entry stays hidden
   // until then, since a new edit cannot begin while the save holds the row.
@@ -393,17 +481,9 @@ export function ChatPanel({
   const [unsavedQueueEdits, setUnsavedQueueEdits] = useState<
     readonly UnsavedMessageEdit[]
   >([]);
-  const queueEditInputRef = useRef<HTMLTextAreaElement>(null);
-  const editingQueueEntryId = editingQueueEntry?.id;
-  // Focus each newly opened editor once, caret at the end. Keyed to the entry
-  // so typing and queue refreshes never pull focus back.
-  useEffect(() => {
-    const input = queueEditInputRef.current;
-    if (!editingQueueEntryId || !input || !queueEditFocusAllowed.current)
-      return;
-    input.focus({ preventScroll: true });
-    input.setSelectionRange(input.value.length, input.value.length);
-  }, [editingQueueEntryId]);
+  // The editor focuses itself once when it opens, unless focus moved
+  // elsewhere while the edit lock was being acquired.
+  const [queueEditAutoFocus, setQueueEditAutoFocus] = useState(true);
 
   // The {entry, target} pair is captured ONLY when an editor opens and
   // cleared on save/cancel — never re-synced on prop changes, which would
@@ -478,7 +558,7 @@ export function ChatPanel({
     pendingQueueEdit.current = attempt;
     setQueueEditPending(true);
     const document =
-      queueEditInputRef.current?.ownerDocument ?? globalThis.document;
+      composerContainer.current?.ownerDocument ?? globalThis.document;
     const recordFocusMove = (): void => {
       attempt.focusMoved = true;
     };
@@ -516,7 +596,7 @@ export function ChatPanel({
         return;
       }
       editingQueueEntryRef.current = attempt;
-      queueEditFocusAllowed.current = !attempt.focusMoved;
+      setQueueEditAutoFocus(!attempt.focusMoved);
       setQueueEditNotice('');
       setEditingQueueEntry({ id, text: row.text });
     } catch (error) {
@@ -536,12 +616,11 @@ export function ChatPanel({
     }
   };
 
-  const saveEditingQueueEntry = (): void => {
+  const saveEditingQueueEntry = (text: string): void => {
     const editing = editingQueueEntryRef.current;
     if (!editing || editingQueueEntry?.id !== editing.entry.id) return;
 
     const { entry, target } = editing;
-    const text = editingQueueEntry.text;
     const clearCapturedEdit = (): void => {
       if (editingQueueEntryRef.current === editing) {
         editingQueueEntryRef.current = null;
@@ -586,6 +665,23 @@ export function ChatPanel({
       releaseEditLock();
     }
   };
+
+  const cancelEditingQueueEntry = (): void => {
+    const editing = editingQueueEntryRef.current;
+    editingQueueEntryRef.current = null;
+    setEditingQueueEntry(null);
+    if (!editing) return;
+    void client.command('chat.queue.set_edit_lock', {
+      ...editing.target,
+      entryId: editing.entry.id,
+      locked: false,
+    });
+  };
+
+  const editingQueuedMessage =
+    editingQueueEntry === null
+      ? undefined
+      : queuedMessages.find((message) => message.id === editingQueueEntry.id);
 
   const sendSeq = useRef(0);
   const handleSend =
@@ -636,7 +732,7 @@ export function ChatPanel({
           // follow-ups) but pass `optimisticLocalId: undefined` so a later
           // rejection cannot lower the active host turn.
           const fileReferences = options?.fileReferences;
-          return onSend(text, {
+          const sent = onSend(text, {
             optimisticLocalId,
             ...(options?.planReviewApproval
               ? { planReviewApproval: options.planReviewApproval }
@@ -648,6 +744,20 @@ export function ChatPanel({
               ? { cloudAttachments }
               : {}),
           });
+          // The acknowledgement, including queued admission, defines successful
+          // plan use. Failure never retires; later execution failure cannot undo it.
+          if (
+            renderComposer === undefined &&
+            planMode &&
+            genuinePlanAvailable
+          ) {
+            if (sent === undefined) void hintStore?.getState().markTried();
+            else
+              return sent.then(() => {
+                void hintStore?.getState().markTried();
+              });
+          }
+          return sent;
         };
 
   // Queued messages are the tail of the conversation, so they render INSIDE
@@ -658,8 +768,214 @@ export function ChatPanel({
   // otherwise they would leave an empty container that reads as a queue tail.
   // Queued and delivering messages are user prompts: session replay keeps a
   // placeholder for the whole list.
+  /**
+   * One queued row's actions, shared by the transcript bubble and the compact
+   * list's row, so both offer the same actions with the same eligibility.
+   */
+  const queuedEntryActions = (
+    message: PortalQueuedMessage,
+  ): {
+    onSteer?: () => void;
+    onCancel?: () => void;
+    onEdit?: () => Promise<void>;
+    onForce?: () => void;
+    onRetry?: () => void;
+    onRunNow?: () => void;
+  } => {
+    const forceKind = queuedMessageForceKind(message);
+    // A force-locked row (a rebound delivery the host may already have sent)
+    // must not offer to send it again; hosts without the lock use the edit lock.
+    // A held row gets no send callback: its Retry renders disabled until the
+    // host lifts the hold and republishes the row.
+    const forceQueuedMessage =
+      queueActionsEnabled &&
+      queueTarget &&
+      message.retryBlockedReason === undefined &&
+      !(message.forceLocked ?? message.editLocked)
+        ? (): void => {
+            void client.command('chat.queue.force', {
+              ...queueTarget,
+              entryId: message.id,
+            });
+          }
+        : undefined;
+    return {
+      onSteer:
+        queueActionsEnabled &&
+        queueTarget &&
+        thread?.steeringCapabilities?.steer &&
+        message.canSteer === true &&
+        message.retryBlockedReason === undefined &&
+        !message.editLocked
+          ? (): void => {
+              void client.command('chat.queue.steer', {
+                ...queueTarget,
+                entryId: message.id,
+              });
+            }
+          : undefined,
+      onCancel: queueActionsEnabled
+        ? (): void => {
+            if (onCancelQueuedMessage?.(message.id)) return;
+            if (!queueTarget) return;
+            void client.command('chat.queue.cancel', {
+              ...queueTarget,
+              entryId: message.id,
+            });
+          }
+        : undefined,
+      onEdit:
+        queueActionsEnabled &&
+        queueTarget &&
+        !queueEditPending &&
+        !queueEditSaving &&
+        !editingQueueEntry &&
+        !message.editLocked &&
+        (!message.hasAttachments ||
+          message.attachmentEditsPreservePayload === true)
+          ? (): Promise<void> => beginQueueEdit(message.id)
+          : undefined,
+      // Retryable or idle/background rows retry, and rows held for background
+      // work run now. Other rows interrupt the running turn, which the strip
+      // offers only in the foreground phase.
+      onForce: forceKind === 'interrupt' ? forceQueuedMessage : undefined,
+      onRetry: forceKind === 'retry' ? forceQueuedMessage : undefined,
+      onRunNow: forceKind === 'run-now' ? forceQueuedMessage : undefined,
+    };
+  };
+
+  const renderQueuedEntry = (
+    message: PortalQueuedMessage,
+  ): JSX.Element | null => {
+    // The entry being edited steps out of the queue: its editor sits in the
+    // composer's place (CAN-3607).
+    if (queueActionsEnabled && editingQueueEntry?.id === message.id) {
+      return null;
+    }
+    const actions = queuedEntryActions(message);
+    const subagentReference = splitSubagentReference(message.text);
+    const displayMessage = subagentReference.reference
+      ? { ...message, text: subagentReference.body }
+      : message;
+    const attachment = subagentReference.reference ? (
+      <SubagentReferenceChip title={subagentReference.reference.title} />
+    ) : undefined;
+    return (
+      <QueuedMessageBubble
+        key={message.id}
+        message={displayMessage}
+        attachment={attachment}
+        steeringSupported={thread?.steeringCapabilities?.steer === true}
+        onSteer={actions.onSteer}
+        onCancel={actions.onCancel}
+        onEdit={actions.onEdit}
+        onForce={actions.onForce}
+        onRetry={actions.onRetry}
+        onRunNow={actions.onRunNow}
+        turnPhase={message.turnPhase}
+      />
+    );
+  };
+
+  // Compact queue (Labs): the queued rows leave the transcript tail for the
+  // one-line list above the composer. The row being edited leaves the list;
+  // its editor sits in the composer's place, as in the transcript queue.
+  const compactRows = compactQueue
+    ? waitingQueuedMessages.filter(
+        (message) => editingQueueEntry?.id !== message.id,
+      )
+    : [];
+  const compactQueueList =
+    compactRows.length > 0 ? (
+      <div
+        // The card lands on the host composer's box, under every notice the
+        // host stacks above it, and tucks under the box's top edge; the box
+        // paints over it as its later sibling. The built-in composer has no
+        // such box, so there the card sits flush on the composer instead.
+        className={
+          renderComposer
+            ? REPLAY_BLOCK_CLASS
+            : `${REPLAY_BLOCK_CLASS} relative z-30 mx-auto -mb-3 w-full max-w-[var(--chat-reading-width)] chat-width-transition px-4 pt-2`
+        }
+      >
+        <QueuedMessageStack
+          surface={composerWorkDrawer ? 'drawer' : 'tray'}
+          ids={compactRows.map((message) => message.id)}
+          renderRow={(id) => {
+            const message = compactRows.find((row) => row.id === id);
+            if (!message) return null;
+            const actions = queuedEntryActions(message);
+            const subagentReference = splitSubagentReference(message.text);
+            return (
+              <QueuedMessageRow
+                surface={composerWorkDrawer ? 'drawer' : 'tray'}
+                data-testid="queued-message-bubble"
+                text={
+                  subagentReference.reference
+                    ? subagentReference.body
+                    : message.text
+                }
+                label={
+                  message.agentSent ? (
+                    <AgentSentTitle
+                      agentSent={message.agentSent}
+                      receivingContext={
+                        receivingContext ?? { kind: 'project', projectId: '' }
+                      }
+                      layout="inline"
+                    />
+                  ) : undefined
+                }
+                // The cloud queue says only that a message has files, not
+                // which; the row shows that much without naming any.
+                attachments={
+                  message.hasAttachments === true
+                    ? [{ key: 'attachments', kind: 'file', name: 'Attachment' }]
+                    : undefined
+                }
+                editLockAdvisory={message.editLockAdvisory}
+                status={
+                  message.waitingReason ? (
+                    <QueuedMessageReason
+                      waitingReason={message.waitingReason}
+                      layout="inline"
+                    />
+                  ) : undefined
+                }
+                forceKind={queuedMessageForceKind(message)}
+                onEdit={actions.onEdit}
+                onSteer={actions.onSteer}
+                steerBlockedByCapabilityChange={
+                  thread?.steeringCapabilities?.steer === true &&
+                  message.steerBlockedByCapabilityChange === true
+                }
+                // Send now runs whichever force the row offers: interrupt,
+                // retry or run now.
+                onInterrupt={
+                  actions.onForce ?? actions.onRetry ?? actions.onRunNow
+                }
+                sendBlockedReason={
+                  queueActionsEnabled &&
+                  !(message.forceLocked ?? message.editLocked)
+                    ? message.retryBlockedReason
+                    : undefined
+                }
+                onDelete={actions.onCancel}
+              />
+            );
+          }}
+        />
+      </div>
+    ) : null;
+
+  const creditHeld =
+    !queuedCreditNoticeHandled &&
+    waitingQueuedMessages.some(
+      (message) => message.retryBlockedReason === 'insufficient_credits',
+    );
   const queuedList =
-    queuedMessages.length > 0 ||
+    creditHeld ||
+    (!compactQueue && waitingQueuedMessages.length > 0) ||
     (queueTarget !== undefined &&
       queueActionsEnabled &&
       (thread?.inputDelivery?.length ?? 0) > 0) ||
@@ -669,6 +985,11 @@ export function ChatPanel({
         className={`${REPLAY_BLOCK_CLASS} space-y-2 px-4 pb-2`}
         data-testid="queued-message-list"
       >
+        {creditHeld && (
+          <Notice intent="attention">
+            Your queued message is still saved. Add credits, then click Retry.
+          </Notice>
+        )}
         {queueTarget && queueActionsEnabled && (
           <InputDeliveryList
             onError={setQueueEditNotice}
@@ -705,122 +1026,40 @@ export function ChatPanel({
             )
           }
         />
-        {queuedMessages.map((message) => {
-          const subagentReference = splitSubagentReference(message.text);
-          const displayMessage = subagentReference.reference
-            ? { ...message, text: subagentReference.body }
-            : message;
-          const attachment = subagentReference.reference ? (
-            <SubagentReferenceChip title={subagentReference.reference.title} />
-          ) : undefined;
-          return queueActionsEnabled && editingQueueEntry?.id === message.id ? (
-            <MessageEditCard
-              key={message.id}
-              dataTestId="queued-message-editor"
-              label={
-                message.agentSent ? (
-                  <AgentSentTitle
-                    agentSent={message.agentSent}
-                    receivingContext={
-                      receivingContext ?? { kind: 'project', projectId: '' }
-                    }
-                  />
-                ) : undefined
-              }
-              inputRef={queueEditInputRef}
-              ariaLabel="Edit queued message"
-              inputTestId="queued-message-edit-input"
-              value={editingQueueEntry.text}
-              onChange={(text): void =>
-                setEditingQueueEntry({ id: message.id, text })
-              }
-              onKeyDown={(event): void => {
-                if (
-                  event.key !== 'Enter' ||
-                  event.shiftKey ||
-                  event.nativeEvent.isComposing
-                ) {
-                  return;
-                }
-                event.preventDefault();
-                saveEditingQueueEntry();
-              }}
-              actions={
-                <MessageEditCancelSave
-                  onCancel={(): void => {
-                    if (queueTarget) {
-                      void client.command('chat.queue.set_edit_lock', {
-                        ...queueTarget,
-                        entryId: message.id,
-                        locked: false,
-                      });
-                    }
-                    editingQueueEntryRef.current = null;
-                    setEditingQueueEntry(null);
-                  }}
-                  onSave={saveEditingQueueEntry}
-                />
-              }
-            />
-          ) : (
-            <QueuedMessageBubble
-              key={message.id}
-              message={displayMessage}
-              attachment={attachment}
-              steeringSupported={thread?.steeringCapabilities?.steer === true}
-              onSteer={
-                queueActionsEnabled &&
-                queueTarget &&
-                thread?.steeringCapabilities?.steer &&
-                message.canSteer === true &&
-                !message.editLocked
-                  ? (): void => {
-                      void client.command('chat.queue.steer', {
-                        ...queueTarget,
-                        entryId: message.id,
-                      });
-                    }
-                  : undefined
-              }
-              onCancel={
-                queueActionsEnabled
-                  ? (): void => {
-                      if (onCancelQueuedMessage?.(message.id)) return;
-                      if (!queueTarget) return;
-                      void client.command('chat.queue.cancel', {
-                        ...queueTarget,
-                        entryId: message.id,
-                      });
-                    }
-                  : undefined
-              }
-              onEdit={
-                queueActionsEnabled &&
-                queueTarget &&
-                !queueEditPending &&
-                !queueEditSaving &&
-                !editingQueueEntry &&
-                !message.editLocked &&
-                (!message.hasAttachments ||
-                  message.attachmentEditsPreservePayload === true)
-                  ? (): Promise<void> => beginQueueEdit(message.id)
-                  : undefined
-              }
-              onForce={
-                queueActionsEnabled && queueTarget
-                  ? (): void => {
-                      void client.command('chat.queue.force', {
-                        ...queueTarget,
-                        entryId: message.id,
-                      });
-                    }
-                  : undefined
-              }
-            />
-          );
-        })}
+        {(compactQueue ? [] : waitingQueuedMessages).map(renderQueuedEntry)}
       </div>
     ) : null;
+
+  const queueEdit: QueuedMessageEditControls | null =
+    queueActionsEnabled && editingQueueEntry && editingQueuedMessage
+      ? {
+          entryId: editingQueueEntry.id,
+          initialText: editingQueueEntry.text,
+          allowEmpty: editingQueuedMessage.hasAttachments === true,
+          autoFocus: queueEditAutoFocus,
+          label: editingQueuedMessage.agentSent ? (
+            <AgentSentTitle
+              agentSent={editingQueuedMessage.agentSent}
+              receivingContext={
+                receivingContext ?? { kind: 'project', projectId: '' }
+              }
+            />
+          ) : undefined,
+          onTextChange: (text): void =>
+            setEditingQueueEntry({ id: editingQueueEntry.id, text }),
+          onSave: saveEditingQueueEntry,
+          onCancel: cancelEditingQueueEntry,
+        }
+      : null;
+  const queueEditor =
+    queueEdit === null ? (
+      hostQueuedMessageEditor
+    ) : (
+      <QueuedMessageComposer
+        key={`queued-edit:${queueEdit.entryId}`}
+        edit={queueEdit}
+      />
+    );
 
   // A queue on a chat with no messages is the start of the transcript (desktop
   // parity), unless the host's own empty state says the history is still
@@ -828,115 +1067,172 @@ export function ChatPanel({
   const showPlaceholder =
     !renderTranscript &&
     messages.length === 0 &&
+    deliveringMessages.length === 0 &&
     footerStatus == null &&
     (queuedList === null || emptyState != null);
 
   return (
-    <AgentSentReceivingContextProvider receivingContext={receivingContext}>
-      <div
-        ref={panelRoot}
-        className="flex h-full flex-col outline-none"
-        data-testid="chat-panel"
-        {...find.surfaceProps}
-      >
-        {findScope !== undefined ? <style>{find.highlightStyle}</style> : null}
-        <div className="flex min-h-0 flex-1 flex-col">
-          {renderTranscript ? (
-            renderTranscript({
-              messages,
-              turnGroups,
-              status,
-              error,
-              renderLatestTurnAction,
-              footerStatus,
-              chatId,
-              queuedPromptCount,
-              queuedPromptIds,
-              queuedPromptMessageIds,
-              initialized,
-            })
-          ) : showPlaceholder ? (
-            <ChatTranscriptPlaceholder emptyState={emptyState} />
-          ) : (
-            <Suspense
-              fallback={
-                // Carries the queue tail and host status so a first send stays
-                // on screen while the transcript chunk loads.
-                <div
-                  className="h-full p-3"
-                  data-testid="chat-transcript-loading"
-                >
-                  {(queuedList !== null || footerStatus != null) && (
-                    <div className="mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition">
-                      {queuedList}
-                      {footerStatus}
+    // A host composer draws the shared box, which takes the composer tray;
+    // a host transcript's compact queue lands there too.
+    <ComposerTrayProvider enabled={renderComposer !== undefined}>
+      <AgentSentReceivingContextProvider receivingContext={receivingContext}>
+        <div
+          ref={panelRoot}
+          className="flex h-full flex-col outline-none"
+          data-testid="chat-panel"
+          // Chat keeps plain line breaks (see canopy-tokens-core.css).
+          data-chat-window
+          {...find.surfaceProps}
+        >
+          {findScope !== undefined ? (
+            <style>{find.highlightStyle}</style>
+          ) : null}
+          <ChatWaitingDelegationsContext.Provider value={waitingDelegations}>
+            <div className="flex min-h-0 flex-1 flex-col">
+              {renderTranscript ? (
+                renderTranscript({
+                  messages,
+                  turnGroups,
+                  status,
+                  error,
+                  renderLatestTurnAction,
+                  footerStatus,
+                  firstSendStartingEnabled,
+                  chatId,
+                  queuedPromptCount,
+                  queuedPromptIds,
+                  queuedPromptMessageIds,
+                  initialized,
+                  deliveringMessages,
+                })
+              ) : showPlaceholder ? (
+                <ChatTranscriptPlaceholder emptyState={emptyState} />
+              ) : (
+                <Suspense
+                  fallback={
+                    // Carries the queue tail and host status so a first send stays
+                    // on screen while the transcript chunk loads.
+                    <div
+                      className="h-full p-3"
+                      data-testid="chat-transcript-loading"
+                    >
+                      {(queuedList !== null ||
+                        footerStatus != null ||
+                        deliveringMessages.length > 0) && (
+                        <div className="mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition">
+                          {/* The sent-bubble surface, without the transcript
+                          chunk this placeholder waits for. */}
+                          {deliveringMessages.map((message) => (
+                            <MessageEditSurface key={message.messageId}>
+                              <p className="whitespace-pre-wrap">
+                                {message.text}
+                              </p>
+                            </MessageEditSurface>
+                          ))}
+                          {queuedList}
+                          {footerStatus}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              }
-            >
-              <LazyChatTranscript
-                chatId={chatId}
-                messages={messages}
-                turnGroups={turnGroups}
-                status={status}
-                error={error}
-                appIcon={appIcon}
-                emptyState={emptyState}
-                renderLatestTurnAction={renderLatestTurnAction}
-                footerSlot={queuedList}
-                footerStatus={footerStatus}
-                queuedPromptCount={queuedPromptCount}
-                queuedPromptIds={queuedPromptIds}
-                queuedPromptMessageIds={queuedPromptMessageIds}
-                initialized={initialized}
-                onLoadOlder={onLoadOlder}
-              />
-            </Suspense>
-          )}
-        </div>
-        {/* The shared transcript owns the queue (footerSlot), including on a chat
+                  }
+                >
+                  <LazyChatTranscript
+                    chatId={chatId}
+                    messages={messages}
+                    turnGroups={turnGroups}
+                    liveRunKeys={liveRunKeys}
+                    status={status}
+                    error={error}
+                    appIcon={appIcon}
+                    emptyState={emptyState}
+                    renderLatestTurnAction={renderLatestTurnAction}
+                    footerSlot={queuedList}
+                    footerStatus={footerStatus}
+                    firstSendStartingEnabled={firstSendStartingEnabled}
+                    deliveringMessages={deliveringMessages}
+                    queuedPromptCount={queuedPromptCount}
+                    queuedPromptIds={queuedPromptIds}
+                    queuedPromptMessageIds={queuedPromptMessageIds}
+                    initialized={initialized}
+                    onLoadOlder={onLoadOlder}
+                  />
+                </Suspense>
+              )}
+            </div>
+          </ChatWaitingDelegationsContext.Provider>
+          {/* The shared transcript owns the queue (footerSlot), including on a chat
           with no messages yet. A host-supplied transcript and the host's
           loading placeholder keep it as a sibling; the reading column aligns
           it with the composer. */}
-        {(renderTranscript || showPlaceholder) && queuedList ? (
-          <div className="mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition">
-            {queuedList}
+          {(renderTranscript || showPlaceholder) && queuedList ? (
+            <div className="mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition">
+              {queuedList}
+            </div>
+          ) : null}
+          {compactQueueList && (!composerWorkDrawer || queueEditor != null) ? (
+            <ComposerTray>
+              {composerWorkDrawer ? (
+                <div
+                  className="max-h-[min(40vh,20rem)] overflow-y-auto"
+                  data-testid="queued-edit-queue-scroll"
+                >
+                  {compactQueueList}
+                </div>
+              ) : (
+                compactQueueList
+              )}
+            </ComposerTray>
+          ) : null}
+          <div ref={composerContainer} className="contents">
+            <QueuedEditComposerSlot editor={queueEditor}>
+              {renderComposer ? (
+                renderComposer({
+                  queuedPanel:
+                    composerWorkDrawer && queueEditor == null
+                      ? compactQueueList
+                      : undefined,
+                  queuedCount: compactRows.length,
+                  onSend: handleSend,
+                  onStop,
+                  isStreaming: status === 'streaming',
+                  planMode,
+                  onTogglePlanMode: () => setPlanMode(chatId, !planMode),
+                  thinkingLevel,
+                  onCycleThinking: (supportedLevels) =>
+                    cycleThinkingLevel(chatId, providerType, supportedLevels),
+                })
+              ) : (
+                <ChatComposer
+                  key={chatId}
+                  onSend={handleSend}
+                  onStop={onStop}
+                  isStreaming={status === 'streaming'}
+                  planMode={planMode}
+                  onTogglePlanMode={() => setPlanMode(chatId, !planMode)}
+                  draftKey={chatId}
+                  planAvailable={onSend !== undefined && genuinePlanAvailable}
+                  onEnablePlanMode={() => {
+                    setPlanMode(chatId, true);
+                    return true;
+                  }}
+                  thinkingLevel={thinkingLevel}
+                  onCycleThinking={() =>
+                    cycleThinkingLevel(chatId, providerType)
+                  }
+                  providerType={providerType}
+                  slashCommands={composer?.slashCommands}
+                  slashDiscovering={composer?.slashDiscovering}
+                  slashTriggerCharacters={composer?.slashTriggerCharacters}
+                  onRefreshSlashCommands={composer?.onRefreshSlashCommands}
+                  fileSearch={composer?.fileSearch}
+                  fileTypeaheadMultiRepo={composer?.fileTypeaheadMultiRepo}
+                  fileTypeaheadLoading={composer?.fileTypeaheadLoading}
+                />
+              )}
+            </QueuedEditComposerSlot>
           </div>
-        ) : null}
-        <div ref={composerContainer} className="contents">
-          {renderComposer ? (
-            renderComposer({
-              onSend: handleSend,
-              onStop,
-              isStreaming: status === 'streaming',
-              planMode,
-              onTogglePlanMode: () => setPlanMode(chatId, !planMode),
-              thinkingLevel,
-              onCycleThinking: (supportedLevels) =>
-                cycleThinkingLevel(chatId, providerType, supportedLevels),
-            })
-          ) : (
-            <ChatComposer
-              onSend={handleSend}
-              onStop={onStop}
-              isStreaming={status === 'streaming'}
-              planMode={planMode}
-              onTogglePlanMode={() => setPlanMode(chatId, !planMode)}
-              thinkingLevel={thinkingLevel}
-              onCycleThinking={() => cycleThinkingLevel(chatId, providerType)}
-              providerType={providerType}
-              slashCommands={composer?.slashCommands}
-              slashDiscovering={composer?.slashDiscovering}
-              slashTriggerCharacters={composer?.slashTriggerCharacters}
-              onRefreshSlashCommands={composer?.onRefreshSlashCommands}
-              fileSearch={composer?.fileSearch}
-              fileTypeaheadMultiRepo={composer?.fileTypeaheadMultiRepo}
-              fileTypeaheadLoading={composer?.fileTypeaheadLoading}
-            />
-          )}
         </div>
-      </div>
-    </AgentSentReceivingContextProvider>
+      </AgentSentReceivingContextProvider>
+    </ComposerTrayProvider>
   );
 }

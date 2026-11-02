@@ -1,11 +1,13 @@
 import {
   curateMarketplaceBrowse,
   type MarketplaceKindFilter,
+  type InstalledEntryStatusStates,
   type PipelineFilterValues,
   type PluginsDiscoverySectionId,
   type UnifiedPluginEntry,
 } from '@canopy/ui-shared/lib';
 import {
+  bundledServerStandsBehindPlugin,
   searchUnifiedEntries,
   type RankedResults,
 } from './unifiedPluginEntries';
@@ -19,6 +21,20 @@ import {
 
 /** Browse sections show this many entries before their "See all" page. */
 export const MARKETPLACE_BROWSE_SECTION_LIMIT = 10;
+
+/**
+ * A server an installed plugin bundles is listed as that plugin, not as a
+ * standalone server beside it (CAN-3653), unless it needs attention: hiding
+ * it then would also hide the only place to connect it or see its failure.
+ * A bundled skill keeps its own row, which follows the plugin (CAN-4844).
+ */
+export function listedAsItsPlugin(entry: UnifiedPluginEntry): boolean {
+  return (
+    entry.kind === 'app' &&
+    entry.bundledBy !== undefined &&
+    bundledServerStandsBehindPlugin(entry)
+  );
+}
 
 export interface MarketplaceEntryFilter {
   readonly kindFilter: MarketplaceKindFilter | null;
@@ -63,6 +79,36 @@ export interface MarketplaceBrowseGroup {
   readonly entries: UnifiedPluginEntry[];
 }
 
+/** The inventory and status snapshot agree on what still has an installation. */
+export function marketplaceEntryIsInstalled(
+  entry: UnifiedPluginEntry,
+  states?: InstalledEntryStatusStates,
+): boolean {
+  if (entry.state === 'installed' || entry.state === 'needs-auth') return true;
+  const state = states?.[entry.id];
+  return (
+    state?.kind === 'ready' &&
+    state.item.notices.some((notice) => notice.code === 'partial_removal')
+  );
+}
+
+/** One exclusion policy for section previews and standalone Browse pages. */
+export function marketplaceBrowseEntries(
+  entries: readonly UnifiedPluginEntry[],
+  installedKeys: ReadonlySet<string> = new Set(),
+  states?: InstalledEntryStatusStates,
+): UnifiedPluginEntry[] {
+  return entries.filter(
+    (entry) =>
+      !installedKeys.has(entry.installedEntryId ?? entry.id) &&
+      (entry.kind === 'blueprint' ||
+        !marketplaceEntryIsInstalled(entry, states)) &&
+      entry.installedEntryId === undefined &&
+      entry.installedVia === undefined &&
+      !listedAsItsPlugin(entry),
+  );
+}
+
 /**
  * The All tab's plugin and MCP groups: Suggested first (role picks when the
  * host knows the user's roles, the curated featured set otherwise), then one
@@ -70,17 +116,26 @@ export interface MarketplaceBrowseGroup {
  */
 export function buildMarketplaceBrowseGroups(
   results: RankedResults,
-  options: { readonly suggestedNames?: readonly string[] } = {},
+  options: {
+    readonly suggestedNames?: readonly string[];
+    readonly installedStatusStates?: InstalledEntryStatusStates;
+  } = {},
 ): MarketplaceBrowseGroup[] {
   const browse = curateMarketplaceBrowse(
-    [
-      ...results.installed.filter(
-        (entry) => entry.kind === 'plugin' || entry.kind === 'app',
-      ),
-      ...results.curatedPlugins,
-      ...results.curatedApps,
-      ...results.marketplace,
-    ],
+    marketplaceBrowseEntries(
+      [
+        ...results.installed.filter(
+          (entry) =>
+            (entry.kind === 'plugin' || entry.kind === 'app') &&
+            !listedAsItsPlugin(entry),
+        ),
+        ...results.curatedPlugins,
+        ...results.curatedApps,
+        ...results.marketplace,
+      ],
+      new Set(),
+      options.installedStatusStates,
+    ),
     options.suggestedNames === undefined
       ? undefined
       : { suggestedNames: [...options.suggestedNames] },

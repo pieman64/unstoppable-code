@@ -1,7 +1,7 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
-  IPC_CHANNELS,
   type AppAdvisorWatcherSummary,
   type AutoArchiveNotification,
   type AutomationAction,
@@ -10,6 +10,15 @@ import {
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
 import { resolveAutoArchiveDays } from '@canopy/desktop-shared/lib/archive-retention';
+import {
+  pipelineAutomationTaskId,
+  pipelineAutomationWorkspaceId,
+} from '@canopy/desktop-shared/lib/automation-pipeline-target';
+import {
+  listBackgroundWorkTargets,
+  subscribeBackgroundWork,
+  worktreeBlocksClose,
+} from '../agents/background-work';
 import {
   LiveDelegationsError,
   listDelegationActivity,
@@ -34,7 +43,8 @@ import {
   isSplitDestinationWorktreeClaimed,
   isSplitLocked,
 } from '../services/split-lock-service';
-import { ptyManager, type TerminalEventChannel } from '../terminal/pty-manager';
+import type { WorkerTerminalEventType } from '@canopy/core-runtime/node/terminal';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { readAppAdvisorWorkspaceSettings } from './app-advisor-workspace';
 import { listWorkEntryChatSummaries } from './cowork-work-entries';
 import { readWorkEntriesFile } from './cowork-work-entries-file';
@@ -218,7 +228,7 @@ export async function collectAutoArchiveCandidates(
       candidates.push({
         surface: 'app-advisor',
         workspaceId: APP_ADVISOR_PROJECT_ID,
-        workspaceName: 'App Advisor',
+        workspaceName: ORCHESTRATOR_LABEL,
         targetId: entry.id,
         targetName: workEntryDisplayName(entry),
         createdAt: entry.createdAt,
@@ -286,8 +296,11 @@ function addAutomationTarget(
     keys.add(targetKey(action.workspaceId, action.existingWorktreeId));
   } else if (action.type === 'worktree_prompt' && action.baseWorktreeId) {
     keys.add(targetKey(action.workspaceId, action.baseWorktreeId));
-  } else if (action.type === 'worktree_pipeline' && action.baseWorktreeId) {
-    keys.add(targetKey(action.workspaceId, action.baseWorktreeId));
+  } else if (action.type === 'worktree_pipeline') {
+    const workspaceId = pipelineAutomationWorkspaceId(action);
+    const worktreeId =
+      pipelineAutomationTaskId(action) ?? action.baseWorktreeId;
+    if (workspaceId && worktreeId) keys.add(targetKey(workspaceId, worktreeId));
   } else if (action.type === 'standalone_prompt' && action.workEntryId) {
     keys.add(
       targetKey(
@@ -355,7 +368,10 @@ export async function isAutoArchiveRuntimeBusy(
   candidate: AutoArchiveCandidate,
 ): Promise<boolean> {
   // Queued, starting or running delegates keep their root chat's target.
-  if (worktreeHasLiveDelegations(candidate.workspaceId, candidate.targetId))
+  if (
+    worktreeHasLiveDelegations(candidate.workspaceId, candidate.targetId) ||
+    worktreeBlocksClose(candidate.workspaceId, candidate.targetId)
+  )
     return true;
   const activeSession = getAllActiveSessionInfos().some(
     (session) =>
@@ -421,6 +437,7 @@ async function defaultArchive(
       ? archiveSingleRepoWorktree
       : archiveMultiRepoWorktree;
   return archive({
+    sourceAdmission: 'required',
     workspaceId: candidate.workspaceId,
     worktreeId: candidate.targetId,
     expectedCreatedAt: candidate.createdAt,
@@ -609,9 +626,9 @@ export async function applyAutoArchive(
 }
 
 export function shouldTouchAutoArchiveTargetsForTerminalEvent(
-  channel: TerminalEventChannel,
+  type: WorkerTerminalEventType,
 ): boolean {
-  return channel !== IPC_CHANNELS.terminalOutput;
+  return type !== 'output';
 }
 
 export function createActiveTargetActivityTracker(deps: {
@@ -659,7 +676,7 @@ export function collectActiveAutoArchiveTargetKeys(): Set<string> {
       targets.add(targetKey(state.project_id, state.worktree_id));
     }
   }
-  for (const target of ptyManager.getRunningWorktreeTargets()) {
+  for (const target of workerTerminal.runningWorktrees()) {
     targets.add(targetKey(target.projectId, target.worktreeId));
   }
   for (const target of listTrackedShellScripts()) {
@@ -671,6 +688,11 @@ export function collectActiveAutoArchiveTargetKeys(): Set<string> {
   for (const entry of listDelegationActivity()) {
     const chat = parseDelegationSessionKey(entry.sessionKey);
     if (chat) targets.add(targetKey(chat.projectId, chat.worktreeId));
+  }
+  for (const target of listBackgroundWorkTargets()) {
+    if (target.blocksClose) {
+      targets.add(targetKey(target.projectId, target.worktreeId));
+    }
   }
   return new Set(
     Array.from(targets).filter(
@@ -743,14 +765,15 @@ export function startAutoArchiveScheduler(): AutoArchiveSchedulerController {
   const unsubscribers = [
     subscribeChatSessionActivity(touchActiveTargets),
     subscribeToActiveCountChange(touchActiveTargets),
-    ptyManager.addEventListener((channel) => {
-      if (shouldTouchAutoArchiveTargetsForTerminalEvent(channel)) {
+    workerTerminal.addEventListener((event) => {
+      if (shouldTouchAutoArchiveTargetsForTerminalEvent(event.type)) {
         touchActiveTargets();
       }
     }),
     subscribeTrackedScriptsChanged(touchActiveTargets),
     subscribeActiveHookRunsChanged(touchActiveTargets),
     subscribeDelegationActivity(touchActiveTargets),
+    subscribeBackgroundWork(touchActiveTargets),
   ];
   touchActiveTargets();
   const stopSweeps = startDrainableAutoArchiveSweeps({

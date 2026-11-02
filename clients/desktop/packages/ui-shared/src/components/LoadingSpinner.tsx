@@ -1,3 +1,6 @@
+'use client';
+
+import { useContinuousMotion } from '../lib/continuous-motion';
 import type { JSX } from 'react';
 import {
   spinnerClassName,
@@ -39,8 +42,7 @@ interface LoadingSpinnerProps {
   decorative?: boolean;
 }
 
-const DOT =
-  'h-0.5 w-0.5 rounded-full bg-current will-change-[transform,opacity]';
+const DOT = 'h-0.5 w-0.5 rounded-full bg-current';
 /**
  * A marching dot. Under reduced motion the global rule would run the march
  * once in 0.01ms and hold its last frame, where every dot is hidden, so the
@@ -63,6 +65,7 @@ export function LoadingSpinner({
   dataTestId,
   decorative = false,
 }: LoadingSpinnerProps): JSX.Element {
+  const motionRef = useContinuousMotion<HTMLSpanElement>();
   // A host that draws spinners as the comet (desktop early access) gets the
   // ring at the dot grid's footprint, with the same name and test hook.
   if (useSpinnerStyle() === 'comet') {
@@ -79,6 +82,7 @@ export function LoadingSpinner({
   }
   return (
     <span
+      ref={motionRef}
       className={`inline-grid grid-cols-3 gap-0.5 ${spinnerClassName(tone, quiet)} ${className}`}
       style={spinnerGapStyle(sizePx)}
       {...(decorative ? { 'aria-hidden': true } : { 'aria-label': 'Loading' })}

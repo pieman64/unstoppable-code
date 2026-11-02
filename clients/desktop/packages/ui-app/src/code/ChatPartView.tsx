@@ -1,5 +1,9 @@
 'use client';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
+import {
+  readCodexAccountModelAccessFailure,
+  type CodexAccountModelAccessFailure,
+} from '@canopy/protocol/auth-recovery';
 
 import {
   isAgentDelegationCardData,
@@ -22,9 +26,11 @@ import {
   type PortalChatPart,
   type PortalChatToolFamily,
 } from '@canopy/protocol/portal';
+import type { TranscriptContentField } from '@canopy/protocol/canopy-core/core';
 import {
   Markdown,
   ClaudeAiCreditsFallbackErrorNotice,
+  CodexAccountModelNotice,
   TRANSCRIPT_MARKDOWN_OPTIONS,
   AgentBlockCard,
   DelegatedAgentCard,
@@ -39,27 +45,51 @@ import {
   ThinkingSpinner,
   ToolCallCard,
   TurnTimer,
-  answersToDisplay,
+  askUserQuestionCount,
+  askUserQuestionResultEvidence,
+  askUserQuestionRowLabel,
   extractExitPlanModePlan,
   getToolDisplayInfo,
   getToolRowInput,
   getToolDisplayFamily,
   isAskUserQuestionToolName,
   markdownOptions,
-  matchAskUserQuestionState,
   parseAskUserQuestionTexts,
+  portalAskUserQuestionRecordState,
   readToolCallResult,
+  interruptedToolCallResult,
+  ToolCallResultSection,
+  resolveAskUserQuestionPresentation,
   SUBAGENT_UNTITLED_LABEL,
   type AgentBlockUsage,
   type AskUserQuestionDraft,
   type ToolCallResult,
+  type TurnTerminalStatus,
+  resolveTurnCompletionStatus,
   useCleanChatLook,
+  useSmoothStreaming,
+  type PlanCopyState,
 } from '@canopy/ui-shared/components';
 import { stripOpaqueAgentCitationMarkers } from '@canopy/ui-shared/lib';
-import { DotIcon, ThinkingIcon } from '@canopy/ui-shared/icons';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { DotIcon, WrenchIcon } from '@canopy/ui-shared/icons';
 import { LightbulbIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { ChatAssetImage } from './ChatMessageAttachments';
+import {
+  DelegationChildPages,
+  isStreamBackedDelegation,
+} from './DelegationChildPages';
 import { useSubagentChatActions } from './subagents/SubagentChatActionsContext';
+import {
+  DeferredToolOutput,
+  ToolOutputReaderContext,
+  type ToolOutputIdentity,
+} from './DeferredToolOutput';
+import { TranscriptReadHostContext } from './transcript-read-host-context';
+import {
+  AgentCardTaskStopAction,
+  agentPartTaskStoppable,
+} from './agent-card-task-stop';
 import {
   ChatToolResultPart,
   readChatToolResultVisual,
@@ -76,6 +106,13 @@ import {
  * `appIcon` is injected (not sourced from a brand module) because `@canopy/ui-app`
  * is brand-agnostic; hosts thread their brand logo down for app-action tools.
  */
+/**
+ * Whether the owning turn is authoritatively settled (its timer carries a
+ * completion stamp). A tool call with no result in such a turn renders
+ * interrupted; inactivity, a disconnect or `live === false` never sets it.
+ */
+export const ToolTurnSettledContext = createContext(false);
+
 export interface ChatPartViewProps {
   readonly part: PortalChatPart;
   readonly messageId?: string;
@@ -92,8 +129,12 @@ export interface ChatPartViewProps {
    * the message streams. The clean look's thinking row settles on it.
    */
   readonly settled?: boolean;
-  /** Failed/cancelled outcomes must not render a successful completion label. */
-  readonly terminalStatus?: 'failed' | 'cancelled';
+  /**
+   * How the turn ended when not plainly complete, so a failed, cancelled or
+   * interrupted turn never renders a successful completion label. The
+   * timer's projected `endReason` applies when this is omitted.
+   */
+  readonly terminalStatus?: TurnTerminalStatus;
   /** Optional branded app icon for app-action tool calls / agent cards. */
   readonly appIcon?: ReactNode;
   /**
@@ -108,10 +149,12 @@ export interface ChatPartViewProps {
   readonly turnTimerHostTurnGap?: boolean;
   /** Turn actions after the elapsed label, revealed like it on hover/focus. */
   readonly turnTimerTrailing?: ReactNode;
-  /** Clean chat look: a running step already shows what the turn is doing. */
-  readonly turnTimerLiveStatusShown?: boolean;
   /** The finished reply's text, for the timer row's Copy button. */
   readonly turnTimerCopyText?: string;
+  /** The turn's plan, whose Copy plan replaces the reply's Copy (CAN-5354). */
+  readonly turnTimerPlanCopy?: PlanCopyState;
+  /** Clean chat look: the running turn's live line, in the timer row's slot. */
+  readonly turnTimerLiveLine?: ReactNode;
 }
 
 /** Per-request in-flight/error status for an interactive AskUserQuestion. */
@@ -167,6 +210,13 @@ export interface AskUserQuestionInteraction {
 const AskUserQuestionInteractionContext =
   createContext<AskUserQuestionInteraction | null>(null);
 
+const EMPTY_WAITING_DELEGATION_IDS: ReadonlySet<string> = new Set();
+
+/** Parent chats identify delegates whose internal request is waiting in queue. */
+export const ChatWaitingDelegationsContext = createContext<ReadonlySet<string>>(
+  EMPTY_WAITING_DELEGATION_IDS,
+);
+
 /**
  * Provide interactive AskUserQuestion behavior to the shared transcript. The
  * value flows to every {@link ChatPartView} below it — including nested agent
@@ -190,6 +240,78 @@ export function AskUserQuestionInteractionProvider({
 /** Read the optional ask-user interaction surface (null when unprovided). */
 export function useAskUserQuestionInteraction(): AskUserQuestionInteraction | null {
   return useContext(AskUserQuestionInteractionContext);
+}
+
+/**
+ * Host behaviour behind a Codex account model notice's "Use <model>" action
+ * (CAN-4716). The host switches the chat's model and resends the failed turn;
+ * the shared transcript only asks whether a message's notice may act.
+ */
+export interface ModelAccessRecoveryInteraction {
+  /** True only while that failed row is the chat's live, idle failure. */
+  readonly canAct: (messageId: string) => boolean;
+  readonly busyMessageId: string | null;
+  readonly onUseFallback: (
+    messageId: string,
+    fallbackModel: string,
+  ) => Promise<void>;
+}
+
+const ModelAccessRecoveryInteractionContext =
+  createContext<ModelAccessRecoveryInteraction | null>(null);
+
+/**
+ * Provide the model access recovery action to the shared transcript. Absent
+ * (or `null`) renders every notice read-only, as on cloud chats and shared
+ * views.
+ */
+export function ModelAccessRecoveryInteractionProvider({
+  value,
+  children,
+}: {
+  value: ModelAccessRecoveryInteraction | null;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <ModelAccessRecoveryInteractionContext.Provider value={value}>
+      {children}
+    </ModelAccessRecoveryInteractionContext.Provider>
+  );
+}
+
+/** Read the optional model access recovery surface (null when unprovided). */
+export function useModelAccessRecoveryInteraction(): ModelAccessRecoveryInteraction | null {
+  return useContext(ModelAccessRecoveryInteractionContext);
+}
+
+function ModelAccessFailurePart({
+  failure,
+  messageId,
+}: {
+  failure: CodexAccountModelAccessFailure;
+  messageId: string | undefined;
+}): JSX.Element {
+  const interaction = useModelAccessRecoveryInteraction();
+  const fallbackModel = failure.fallbackModel;
+  const actionable =
+    interaction !== null &&
+    messageId !== undefined &&
+    fallbackModel !== undefined;
+  return (
+    <CodexAccountModelNotice
+      failure={failure}
+      dataTestId="portal-chat-codex-account-model-notice"
+      {...(actionable
+        ? {
+            onUseFallback: (): void => {
+              void interaction.onUseFallback(messageId, fallbackModel);
+            },
+            busy: interaction.busyMessageId === messageId,
+            disabled: !interaction.canAct(messageId),
+          }
+        : {})}
+    />
+  );
 }
 
 export interface DeliverableRef {
@@ -336,6 +458,68 @@ function readToolResult(data: Record<string, unknown>): ToolCallResult | null {
   return readToolCallResult(data['result']);
 }
 
+function rowFieldIdentity(
+  value: unknown,
+): Extract<ToolOutputIdentity, { kind: 'row' }> | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.messageId !== 'string' ||
+    typeof value.blockOrdinal !== 'number' ||
+    !Number.isSafeInteger(value.blockOrdinal) ||
+    value.blockOrdinal < 0 ||
+    !isTranscriptContentField(value.field)
+  )
+    return undefined;
+  return {
+    kind: 'row',
+    messageId: value.messageId,
+    blockOrdinal: value.blockOrdinal,
+    field: value.field,
+  };
+}
+
+function isTranscriptContentField(
+  value: unknown,
+): value is TranscriptContentField {
+  return (
+    value === 'output' ||
+    value === 'input' ||
+    value === 'text' ||
+    value === 'partialText' ||
+    value === 'finalText'
+  );
+}
+
+/** expandedSlot replaces the default input/result chrome, not just its body. */
+function ToolOutputSlot({
+  identity,
+  input,
+  result,
+}: {
+  readonly identity: ToolOutputIdentity;
+  readonly input: string;
+  readonly result: ToolCallResult;
+}): JSX.Element {
+  return (
+    <>
+      {input.length > 0 && (
+        <pre
+          className={`${REPLAY_BLOCK_CLASS} max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary`}
+        >
+          {input}
+        </pre>
+      )}
+      <ToolCallResultSection result={result}>
+        <DeferredToolOutput
+          identity={identity}
+          preview={result.content}
+          isError={result.kind === 'error'}
+        />
+      </ToolCallResultSection>
+    </>
+  );
+}
+
 const PLAN_PROSE_CLASSES =
   'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5';
 const PLAN_MARKDOWN_OPTIONS = markdownOptions();
@@ -399,9 +583,22 @@ function coercePart(value: unknown): PortalChatPart | null {
     return null;
   }
   const toolFamily = value['toolFamily'];
+  const locator =
+    kind === 'tool_result'
+      ? rowFieldIdentity(value['outputLocator'])
+      : undefined;
+  const outputLocator: PortalChatPart['outputLocator'] =
+    locator?.field === 'output'
+      ? {
+          messageId: locator.messageId,
+          blockOrdinal: locator.blockOrdinal,
+          field: 'output',
+        }
+      : undefined;
   return {
     kind,
     data: value['data'],
+    ...(outputLocator ? { outputLocator } : {}),
     ...(typeof toolFamily === 'string' && isToolFamily(toolFamily)
       ? { toolFamily }
       : {}),
@@ -450,6 +647,8 @@ function ManagedAgentPart({
   readonly children?: ReactNode;
 }): JSX.Element {
   const { onOpenSubagentChat } = useSubagentChatActions();
+  const transcriptHost = useContext(TranscriptReadHostContext);
+  const waitingDelegations = useContext(ChatWaitingDelegationsContext);
   const onOpenChat = useCallback((): void => {
     onOpenSubagentChat?.({
       kind: 'managed',
@@ -465,18 +664,40 @@ function ManagedAgentPart({
       description={delegation.description}
       prompt={delegation.prompt}
       executionMode={delegation.executionMode}
+      waitingOnParent={waitingDelegations.has(delegation.delegationId)}
       {...(onOpenSubagentChat ? { onOpenChat } : {})}
     >
-      {children}
+      {isStreamBackedDelegation(delegation.transcriptStore) ? (
+        <DelegationChildPages
+          source={transcriptHost?.source}
+          renderRows={transcriptHost?.renderRows}
+          hint={
+            transcriptHost
+              ? {
+                  epoch: transcriptHost.epoch,
+                  streamRevision: delegation.streamRevision,
+                }
+              : undefined
+          }
+          delegationId={delegation.delegationId}
+          runGeneration={delegation.runGeneration ?? 1}
+        />
+      ) : (
+        children
+      )}
     </DelegatedAgentCard>
   );
 }
 
 type NativeAgentPartProps = Omit<
   ComponentProps<typeof AgentBlockCard>,
-  'onOpenChat'
+  'onOpenChat' | 'toolUseId' | 'headerAction'
 > & {
   readonly toolUseId: string | undefined;
+  /** The spawning call's id, anchoring the card for a transcript reveal. */
+  readonly callId?: string;
+  /** A live Claude agent's task the host may stop from the card header. */
+  readonly stoppableTaskId?: string;
 };
 
 /**
@@ -485,6 +706,8 @@ type NativeAgentPartProps = Omit<
  */
 function NativeAgentPart({
   toolUseId,
+  callId,
+  stoppableTaskId,
   ...cardProps
 }: NativeAgentPartProps): JSX.Element {
   const { onOpenSubagentChat } = useSubagentChatActions();
@@ -497,6 +720,12 @@ function NativeAgentPart({
   return (
     <AgentBlockCard
       {...cardProps}
+      toolUseId={callId}
+      {...(stoppableTaskId === undefined
+        ? {}
+        : {
+            headerAction: <AgentCardTaskStopAction taskId={stoppableTaskId} />,
+          })}
       {...(onOpenSubagentChat && toolUseId !== undefined ? { onOpenChat } : {})}
     />
   );
@@ -513,14 +742,20 @@ function ChatPartViewImpl({
   turnTimerStampAccessory,
   turnTimerHostTurnGap = false,
   turnTimerTrailing,
-  turnTimerLiveStatusShown = false,
+  turnTimerLiveLine,
   turnTimerCopyText,
+  turnTimerPlanCopy,
 }: ChatPartViewProps): JSX.Element | null {
   const deliverableInteraction = useContext(DeliverableInteractionContext);
   const workingStatus = useContext(TurnWorkingStatusContext);
   const data = partData(part);
   const askUserInteraction = useAskUserQuestionInteraction();
+  const outputReader = useContext(ToolOutputReaderContext);
+  const turnSettled = useContext(ToolTurnSettledContext);
   const clean = useCleanChatLook();
+  // Smooth streaming (Labs) paces live text; without it, text parts render
+  // as before (Mermaid diagrams draw as soon as they arrive).
+  const smoothStreaming = useSmoothStreaming();
 
   switch (part.kind) {
     case 'mcp_activation':
@@ -534,7 +769,7 @@ function ChatPartViewImpl({
           // thinking; the classic row never shows it running.
           running={clean && live === true && !settled}
           content={readPartText(data)}
-          icon={clean ? <LightbulbIcon /> : <ThinkingIcon />}
+          icon={<LightbulbIcon />}
         />
       );
 
@@ -545,6 +780,18 @@ function ChatPartViewImpl({
       const family = getToolDisplayFamily(toolName, input, part.toolFamily);
       const { label } = getToolDisplayInfo(toolName, input);
       const result = readToolResult(data);
+      const rawResult = data['result'];
+      const identity = isRecord(rawResult)
+        ? rowFieldIdentity(rawResult.outputLocator)
+        : undefined;
+      const outputSlot =
+        outputReader && identity && result ? (
+          <ToolOutputSlot
+            identity={identity}
+            input={getToolRowInput(toolName, input)}
+            result={result}
+          />
+        ) : undefined;
 
       // Plan mode (CAN-3019). Canopy answers `ExitPlanMode` with `behavior:
       // 'deny'` on purpose so the plan routes into its own review UI, so the
@@ -574,115 +821,89 @@ function ChatPartViewImpl({
         }
       }
 
-      // Interactive AskUserQuestion: when a host provides the projection +
-      // callbacks, render the same choices desktop shows (or the read-only
-      // answer bubbles) instead of raw tool JSON. Absent interaction (every
-      // non-portal host) falls through to the generic tool row below.
-      if (
-        askUserInteraction &&
-        family === 'ask-user' &&
-        isAskUserQuestionToolName(toolName)
-      ) {
+      // All ask-user rows share result precedence. Hosts with a projection
+      // additionally render pending prompts and restored answers.
+      if (family === 'ask-user' && isAskUserQuestionToolName(toolName)) {
         const toolUseId =
           readString(data, 'toolUseId') ?? readString(data, 'tool_use_id');
-        const questionTexts = parseAskUserQuestionTexts(input);
-        const resolved = result !== null;
-
-        if (!resolved) {
-          const pending = matchAskUserQuestionState(
-            askUserInteraction.states,
-            { toolUseId, questionTexts },
-            { answered: false },
-          );
-          if (pending) {
+        // The Portal transcript may project the tool_use and tool_result as
+        // separate messages, so a part without an embedded `result` can still
+        // be answered; the shared resolver settles it from the projection.
+        const presentation = resolveAskUserQuestionPresentation(
+          askUserQuestionResultEvidence(result, input),
+          portalAskUserQuestionRecordState(askUserInteraction?.states ?? [], {
+            toolName,
+            toolUseId,
+            questionTexts: parseAskUserQuestionTexts(input),
+          }),
+        );
+        switch (presentation.kind) {
+          case 'awaiting': {
+            if (!askUserInteraction) return null;
+            const pending = presentation.record;
             const status = askUserInteraction.getRequestStatus?.(
               pending.requestId,
             );
             const { onDraftChange } = askUserInteraction;
             return (
-              <AskUserQuestionCard
-                state={pending}
-                draft={askUserInteraction.getDraft?.(pending.requestId)}
-                onDraftChange={
-                  onDraftChange
-                    ? (draft): void => onDraftChange(pending.requestId, draft)
-                    : undefined
-                }
-                renderMarkdown={askUserInteraction.renderMarkdown}
-                disconnected={askUserInteraction.disconnected}
-                disabled={askUserInteraction.disabled}
-                busy={status?.busy ?? null}
-                errorKind={status?.errorKind ?? null}
-                onSubmit={(answers): void =>
-                  askUserInteraction.onAnswer(pending.requestId, answers)
-                }
-                onDismiss={(): void =>
-                  askUserInteraction.onDismiss(pending.requestId)
-                }
-              />
+              <div data-tool-use-id={toolUseId}>
+                <AskUserQuestionCard
+                  state={pending}
+                  draft={askUserInteraction.getDraft?.(pending.requestId)}
+                  onDraftChange={
+                    onDraftChange
+                      ? (draft): void => onDraftChange(pending.requestId, draft)
+                      : undefined
+                  }
+                  renderMarkdown={askUserInteraction.renderMarkdown}
+                  disconnected={askUserInteraction.disconnected}
+                  disabled={askUserInteraction.disabled}
+                  busy={status?.busy ?? null}
+                  errorKind={status?.errorKind ?? null}
+                  onSubmit={(answers): void =>
+                    askUserInteraction.onAnswer(pending.requestId, answers)
+                  }
+                  onDismiss={(): void =>
+                    askUserInteraction.onDismiss(pending.requestId)
+                  }
+                />
+              </div>
             );
           }
-          // The portal transcript may project the tool_use and tool_result as
-          // separate messages. In that shape this part has no embedded
-          // `result`, but the durable projection has already become answered.
-          // Treat that authoritative state as resolved so the card converges
-          // to read-only bubbles instead of "Preparing question".
-          const answered = matchAskUserQuestionState(
-            askUserInteraction.states,
-            { toolUseId, questionTexts },
-            { answered: true },
-          );
-          if (answered) {
+          case 'preparing':
+            return (
+              <div
+                className="rounded-lg border border-line-accent/20 bg-accent/[0.04] px-4 py-3 text-xs fg-secondary"
+                data-testid="ask-user-question-preparing"
+              >
+                Preparing question…
+              </div>
+            );
+          case 'answered':
             return (
               <>
                 <ToolCallCard
                   toolFamily={family}
                   toolName={toolName}
                   appIcon={appIcon}
-                  label={label}
+                  label={askUserQuestionRowLabel({
+                    count: askUserQuestionCount(input),
+                    answers: presentation.answers,
+                  })}
                   input={input}
                   result={result}
-                  // `result` is null in the separate-message shape; without an
-                  // explicit status the card would infer `pending` and show a
-                  // spinner next to an already-answered question.
-                  status="success"
+                  expandedSlot={outputSlot}
+                  // Set when `result` is null; without it the card would infer
+                  // `pending` and spin next to an already-answered question.
+                  status={presentation.status}
                   pendingSpinner={<ThinkingSpinner />}
                   dataTestId="chat-tool-call"
                 />
-                <AnsweredQuestionsBlock
-                  answers={answersToDisplay(
-                    answered.answers ?? [],
-                    answered.questions,
-                  )}
-                />
+                <AnsweredQuestionsBlock answers={presentation.answers} />
               </>
             );
-          }
-          // Unresolved, but the projection has not arrived yet.
-          return (
-            <div
-              className="rounded-lg border border-line-accent/20 bg-accent/[0.04] px-4 py-3 text-xs fg-secondary"
-              data-testid="ask-user-question-preparing"
-            >
-              Preparing question…
-            </div>
-          );
-        }
-
-        // Resolved: an answered match keeps the normal collapsed tool row and
-        // appends the read-only answer bubbles; error/dismiss results fall
-        // through to the generic tool row.
-        const answered =
-          result.kind !== 'error'
-            ? matchAskUserQuestionState(
-                askUserInteraction.states,
-                { toolUseId, questionTexts },
-                { answered: true },
-              )
-            : undefined;
-        if (answered) {
-          return (
-            <>
+          case 'settled':
+            return (
               <ToolCallCard
                 toolFamily={family}
                 toolName={toolName}
@@ -690,17 +911,15 @@ function ChatPartViewImpl({
                 label={label}
                 input={input}
                 result={result}
+                expandedSlot={outputSlot}
+                status={presentation.status}
                 pendingSpinner={<ThinkingSpinner />}
                 dataTestId="chat-tool-call"
               />
-              <AnsweredQuestionsBlock
-                answers={answersToDisplay(
-                  answered.answers ?? [],
-                  answered.questions,
-                )}
-              />
-            </>
-          );
+            );
+          case 'result':
+            // Errors and other results use the generic tool row below.
+            break;
         }
       }
 
@@ -711,32 +930,74 @@ function ChatPartViewImpl({
           appIcon={appIcon}
           label={label}
           input={getToolRowInput(toolName, input)}
-          result={result}
+          result={result ?? (turnSettled ? interruptedToolCallResult() : null)}
+          expandedSlot={outputSlot}
           pendingSpinner={<ThinkingSpinner />}
           dataTestId="chat-tool-call"
+          toolUseId={
+            readString(data, 'toolUseId') ?? readString(data, 'tool_use_id')
+          }
         />
       );
     }
 
-    case 'tool_result':
+    case 'tool_result': {
+      const identity = rowFieldIdentity(part.outputLocator);
+      const visual = readChatToolResultVisual(part.data, messageId);
+      if (identity && outputReader) {
+        const result: ToolCallResult = {
+          kind: data['isError'] === true ? 'error' : 'text',
+          content: readPartText(data),
+        };
+        return (
+          <>
+            <ToolCallCard
+              toolName={readString(data, 'toolName') ?? 'Tool'}
+              label="Tool result"
+              icon={<WrenchIcon />}
+              result={result}
+              expandedSlot={
+                <ToolOutputSlot identity={identity} input="" result={result} />
+              }
+              dataTestId="chat-tool-call"
+            />
+            {visual && <ChatToolResultPart content="" visual={visual} />}
+          </>
+        );
+      }
       return (
-        <ChatToolResultPart
-          content={readPartText(data)}
-          visual={readChatToolResultVisual(part.data, messageId)}
-        />
+        <ChatToolResultPart content={readPartText(data)} visual={visual} />
       );
+    }
 
-    case 'text':
+    case 'text': {
       if (isClaudeAiCreditsFallbackErrorCode(data.errorCode)) {
         return <ClaudeAiCreditsFallbackErrorNotice />;
       }
+      // A Codex turn the ChatGPT account was refused for its model
+      // (CAN-4716): the notice replaces the raw error text.
+      const modelAccessFailure = readCodexAccountModelAccessFailure(
+        data.modelAccessFailure,
+      );
+      if (modelAccessFailure) {
+        return (
+          <ModelAccessFailurePart
+            failure={modelAccessFailure}
+            messageId={messageId}
+          />
+        );
+      }
       return (
         <div className="prose prose-sm dark:prose-invert max-w-none">
-          <Markdown options={TRANSCRIPT_MARKDOWN_OPTIONS}>
+          <Markdown
+            options={TRANSCRIPT_MARKDOWN_OPTIONS}
+            streaming={smoothStreaming && live === true}
+          >
             {stripOpaqueAgentCitationMarkers(readPartText(data))}
           </Markdown>
         </div>
       );
+    }
     case 'agent': {
       const rawSubBlocks = Array.isArray(data['subBlocks'])
         ? data['subBlocks']
@@ -770,9 +1031,11 @@ function ChatPartViewImpl({
           : undefined;
       if (isAgentDelegationCardData(data.delegation)) {
         return (
-          <ManagedAgentPart delegation={data.delegation}>
-            {subBlocks}
-          </ManagedAgentPart>
+          <ToolTurnSettledContext.Provider value={false}>
+            <ManagedAgentPart delegation={data.delegation}>
+              {subBlocks}
+            </ManagedAgentPart>
+          </ToolTurnSettledContext.Provider>
         );
       }
       const omittedSubBlocks = readNumber(data, 'omittedSubBlocks') ?? 0;
@@ -792,31 +1055,38 @@ function ChatPartViewImpl({
         ) : null;
       const provider = data['provider'];
       const toolUseId = readString(data, 'toolUseId');
+      const claude = provider === undefined || provider === 'claude';
+      // Root completion does not settle the agent's independently owned turn.
       return (
-        <NativeAgentPart
-          toolUseId={
-            (provider === undefined || provider === 'claude') && toolUseId
-              ? toolUseId
-              : undefined
-          }
-          subagentType={readString(data, 'subagentType') ?? 'agent'}
-          description={readString(data, 'description')}
-          runInBackground={data['runInBackground'] === true}
-          prompt={readString(data, 'prompt')}
-          result={readString(data, 'result')}
-          usage={readAgentUsage(data)}
-          subBlocks={
-            truncatedNotice === null
-              ? subBlocks
-              : [truncatedNotice, ...(subBlocks ?? [])]
-          }
-          isRunning={data['isRunning'] === true}
-          isError={data['isError'] === true}
-          model={readString(data, 'model')}
-          reasoningEffort={readString(data, 'reasoningEffort')}
-          pendingSpinner={<ThinkingSpinner />}
-          dataTestId="chat-agent-block"
-        />
+        <ToolTurnSettledContext.Provider value={false}>
+          <NativeAgentPart
+            toolUseId={claude && toolUseId ? toolUseId : undefined}
+            // Codex child agents have no Stop, as on desktop (D2).
+            {...(claude &&
+            data['isRunning'] === true &&
+            agentPartTaskStoppable(data)
+              ? { stoppableTaskId: data.taskId }
+              : {})}
+            subagentType={readString(data, 'subagentType') ?? 'agent'}
+            description={readString(data, 'description')}
+            runInBackground={data['runInBackground'] === true}
+            prompt={readString(data, 'prompt')}
+            result={readString(data, 'result')}
+            usage={readAgentUsage(data)}
+            subBlocks={
+              truncatedNotice === null
+                ? subBlocks
+                : [truncatedNotice, ...(subBlocks ?? [])]
+            }
+            isRunning={data['isRunning'] === true}
+            isError={data['isError'] === true}
+            model={readString(data, 'model')}
+            reasoningEffort={readString(data, 'reasoningEffort')}
+            pendingSpinner={<ThinkingSpinner />}
+            dataTestId="chat-agent-block"
+            callId={toolUseId}
+          />
+        </ToolTurnSettledContext.Provider>
       );
     }
 
@@ -831,6 +1101,17 @@ function ChatPartViewImpl({
       );
       const autoRoutedModelLabel = readTurnTimerAutoRoutedModelLabel(data);
       const endReason = readString(data, 'endReason');
+      const timerStatus = resolveTurnCompletionStatus({
+        settled: completedAt != null,
+        recorded:
+          terminalStatus === 'failed' || terminalStatus === 'cancelled'
+            ? terminalStatus
+            : endReason === 'failed' || endReason === 'cancelled'
+              ? endReason
+              : terminalStatus === 'interrupted' || endReason === 'interrupted'
+                ? 'interrupted'
+                : undefined,
+      });
       // The clean look names the model in the time's tooltip instead.
       const autoRoutedModelPill =
         autoRoutedModelLabel === undefined || clean ? undefined : (
@@ -861,7 +1142,7 @@ function ChatPartViewImpl({
           isStreaming={true}
           hostTurnGap={turnTimerHostTurnGap}
           trailing={timerTrailing}
-          liveStatusShown={turnTimerLiveStatusShown}
+          liveLine={turnTimerLiveLine}
           {...(workingStatus === null ? {} : { workingLabel: workingStatus })}
         />
       ) : (
@@ -875,16 +1156,18 @@ function ChatPartViewImpl({
           {...(turnTimerCopyText !== undefined
             ? { copyText: turnTimerCopyText }
             : {})}
+          {...(turnTimerPlanCopy !== undefined
+            ? { planCopy: turnTimerPlanCopy }
+            : {})}
           {...(clean && autoRoutedModelLabel !== undefined
             ? { modelLabel: autoRoutedModelLabel }
             : {})}
           hostTurnGap={turnTimerHostTurnGap}
-          completionStatus={terminalStatus}
+          completionStatus={timerStatus}
           isStreaming={false}
           alwaysVisible={
             turnTimerAlwaysVisible ||
-            endReason === 'failed' ||
-            endReason === 'cancelled'
+            (timerStatus !== undefined && timerStatus !== 'complete')
           }
           trailing={timerTrailing}
         />

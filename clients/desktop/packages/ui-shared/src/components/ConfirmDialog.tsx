@@ -1,16 +1,45 @@
 'use client';
 
-import { useRef, type JSX, type ReactNode, type RefObject } from 'react';
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+  type RefObject,
+} from 'react';
+import {
+  DIALOG_CONFIRM_CHORD,
+  DISMISS_CHORD,
+  formatChord,
+} from '../lib/shortcut-platform';
 import { Button } from './Button';
 import { DialogModal } from './DialogModal';
 import { LoadingSpinner } from './LoadingSpinner';
 
+/** The second option of a two-way choice, such as Discard beside Save. */
+export interface ConfirmDialogSecondaryAction {
+  readonly label: string;
+  readonly onSelect: () => void;
+  readonly testId?: string;
+}
+
 export interface ConfirmDialogProps {
-  /** A node, so a caller can mask a user-authored name for session replay. */
+  /**
+   * A question that names the object (`Delete worktree “owl”?`). A node, so a
+   * caller can mask a user-authored name for session replay.
+   */
   readonly title: ReactNode;
+  /** One sentence about what is lost or what happens next. */
   readonly message: ReactNode;
+  /** Repeats the verb and noun from the title (`Delete worktree`), never Yes. */
   readonly confirmLabel: string;
   readonly busyLabel?: string;
+  /**
+   * The action is running: the spinner sits inside the action, which keeps
+   * its width, and the dialog stays open and cannot be dismissed until the
+   * caller clears it.
+   */
   readonly busy?: boolean;
   /**
    * Failure text for a confirm handler that rejected. Rendering it keeps the
@@ -18,18 +47,37 @@ export interface ConfirmDialogProps {
    * failure the user never saw.
    */
   readonly errorMessage?: string | null;
+  /**
+   * Something is lost for good. The action takes the destructive role and
+   * the dialog has no default button: focus starts on Cancel, so Enter can't
+   * commit by accident. Otherwise the action is the primary default button
+   * and focus starts on it, so Enter presses it.
+   */
   readonly destructive?: boolean;
   readonly onConfirm: () => void;
+  /** The action cannot run right now (its reason is in the sentence). */
+  readonly confirmDisabled?: boolean;
   /** Overrides the default confirm-button test id for multi-instance isolation. */
   readonly confirmTestId?: string;
   readonly onCancel: () => void;
   readonly dataTestId?: string;
-  /** Overrides the cancel-button test id. */
+  /** Overrides the default cancel-button test id. */
   readonly cancelTestId?: string;
   /**
-   * Contain Tab inside the dialog and land initial focus on Cancel, so a
-   * reflexive Enter backs out instead of committing. Off by default for
-   * existing callers.
+   * The other answer of a two-way choice (Discard beside Save changes). It
+   * sits beside the action, Cancel moves to the left on its own, and the
+   * card widens to fit three buttons.
+   */
+  readonly secondaryAction?: ConfirmDialogSecondaryAction;
+  /**
+   * One optional control between the sentence and the buttons, such as the
+   * switch that keeps a worktree's local branch.
+   */
+  readonly children?: ReactNode;
+  /**
+   * Start focus on Cancel even though the action is not destructive. Use
+   * sparingly: a non-destructive confirmation normally lets Enter press its
+   * default button.
    */
   readonly focusCancel?: boolean;
   /**
@@ -40,6 +88,17 @@ export interface ConfirmDialogProps {
   readonly restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
+/**
+ * The one confirmation shape shared by desktop and web: a compact 380px card
+ * (400px with three buttons), a question naming the object, one sentence,
+ * then Cancel and the action as capsules. No header rule and no close button:
+ * Cancel and Escape close it, except while the action is busy. Focus is
+ * contained while open and returns to the control that opened it.
+ *
+ * The keys sit inside their buttons: Cancel carries `esc`, and the default
+ * action carries `↵` because focus starts on it. A destructive dialog has no
+ * default, so its action carries no key.
+ */
 export function ConfirmDialog({
   title,
   message,
@@ -49,67 +108,110 @@ export function ConfirmDialog({
   errorMessage,
   destructive = false,
   onConfirm,
+  confirmDisabled = false,
   onCancel,
   dataTestId,
   confirmTestId = 'confirm-dialog-confirm',
-  cancelTestId,
+  cancelTestId = 'confirm-dialog-cancel',
+  secondaryAction,
+  children,
   focusCancel = false,
   restoreFocusRef,
 }: ConfirmDialogProps): JSX.Element {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const restingWidth = useRef<number | null>(null);
+  const [busyMinWidth, setBusyMinWidth] = useState<number | null>(null);
+
+  // Keep the action's width while it spins: measure it at rest, then hold
+  // that width as a minimum while busy so the footer does not jump.
+  useLayoutEffect(() => {
+    if (!busy) {
+      restingWidth.current = confirmRef.current?.offsetWidth ?? null;
+      setBusyMinWidth(null);
+      return;
+    }
+    setBusyMinWidth(restingWidth.current);
+  }, [busy, confirmLabel]);
+
+  // A disabled default cannot take focus, so Cancel does.
+  const startOnCancel = destructive || focusCancel || confirmDisabled;
+  const confirmIsDefault = !startOnCancel && !busy;
   return (
     <DialogModal
+      variant={secondaryAction ? 'confirm-wide' : 'confirm'}
       onClose={busy ? (): void => undefined : onCancel}
       closeOnBackdrop={!busy}
       closeOnEscape={!busy}
       title={title}
-      maxWidth="md"
       dataTestId={dataTestId}
-      trapFocus={focusCancel}
-      initialFocusRef={focusCancel ? cancelRef : undefined}
+      trapFocus
+      initialFocusRef={startOnCancel ? cancelRef : confirmRef}
       restoreFocusRef={restoreFocusRef}
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
-        <div className="text-s fg-secondary">{message}</div>
+      <div className="flex flex-col px-5 pb-4">
+        <div className="mt-1 text-s text-pretty fg-secondary">{message}</div>
+        {children ? <div className="mt-3">{children}</div> : null}
         {errorMessage && (
           <div
             role="alert"
             data-testid="confirm-dialog-error"
-            className="text-s fg-destructive"
+            className="mt-3 text-s text-pretty fg-destructive"
           >
             {errorMessage}
           </div>
         )}
-        <div className="flex items-center justify-end gap-2">
+        {/* Wraps instead of clipping when a long action label and a
+            secondary action outgrow the card (CAN-5336). */}
+        <div className="mt-4.5 flex flex-wrap items-center justify-end gap-2">
           <Button
             ref={cancelRef}
-            variant="outline"
-            size="lg"
+            variant="secondary"
+            size="compact"
             onClick={onCancel}
             disabled={busy}
+            className={secondaryAction ? 'mr-auto' : undefined}
+            shortcut={formatChord(DISMISS_CHORD)}
             data-testid={cancelTestId}
           >
             Cancel
           </Button>
+          {secondaryAction ? (
+            <Button
+              variant="secondary"
+              size="compact"
+              onClick={secondaryAction.onSelect}
+              disabled={busy}
+              data-testid={secondaryAction.testId}
+            >
+              {secondaryAction.label}
+            </Button>
+          ) : null}
           <Button
+            ref={confirmRef}
             variant={destructive ? 'destructive' : 'primary'}
-            size="lg"
+            size="compact"
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             // The spinner is `decorative` (aria-hidden), and a caller that
             // passes no `busyLabel` leaves the label unchanged — so without
             // this a screen-reader user would get no signal that work started
             // beyond the button going disabled.
             aria-busy={busy}
+            shortcut={
+              confirmIsDefault ? formatChord(DIALOG_CONFIRM_CHORD) : undefined
+            }
+            style={
+              busy && busyMinWidth !== null
+                ? { minWidth: busyMinWidth }
+                : undefined
+            }
             data-testid={confirmTestId}
           >
             {/* CAN-2349 decision 5: every async step reports progress with a
                 spinner, never a bare label swap. The spinner renders INSIDE the
-                button that started the work — leading, before the label — so the
-                affordance the user pressed is the thing that reports progress.
-                `busyLabel` semantics are unchanged, so no caller has to move;
-                this lands the spinner on the #2487 cross-harness continue dialog
-                and every other `ConfirmDialog` caller in one place. */}
+                button that started the work, leading the label, so the
+                affordance the user pressed is the thing that reports progress. */}
             {busy && (
               <LoadingSpinner
                 className="shrink-0"

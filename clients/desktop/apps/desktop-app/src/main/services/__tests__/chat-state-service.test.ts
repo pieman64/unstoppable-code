@@ -1,3 +1,8 @@
+import type {
+  ChatStateCommit,
+  TranscriptFieldPreparation,
+} from '../chat-state-contracts';
+import { ChatTranscriptArtifacts } from '../../lib/chat-transcript-artifacts';
 import {
   correlateTerminalAgentMessage,
   retainedTerminalAgentInput,
@@ -6,6 +11,8 @@ import * as watcherIngress from '../active-chat-input';
 import { noteWatcherDeliveryAuthorityChange } from '../watcher-delivery-authority';
 import * as activePlan from '../../lib/active-plan-instruction';
 import * as senderContext from '../../agent-messaging/sender-context';
+import type * as ModelPolicyStateModule from '../../lib/model-policy-state';
+import * as claudeTuiChats from '../../lib/claude-tui-chats';
 import { browserHandoffs } from '../../browser/browser-handoffs';
 import {
   capturePresentationTurn,
@@ -13,11 +20,15 @@ import {
   forgetPresentationChat,
   presentationChatKey,
 } from '../../canopy-tools/presentation-state';
-import type { ChatStateCommit } from '../chat-state-contracts';
+import {
+  initialChatTurnState,
+  serializeChatTurnState,
+} from '@canopy/agent-transcript/turn';
 import { McpActivationStore } from '../mcp-activation-store';
 import { McpActivationService } from '../mcp-activation-service';
 import { McpSessionAvailability } from '../../mcp/session-availability';
 import { mcpActivationMessageId } from '../mcp-activation-message';
+import { automationInfoMessageId } from '../automation-info-message';
 import type { McpActivationRecord } from '@canopy/protocol/mcp-servers';
 import { chatDisplayLabel } from '@canopy/desktop-shared/lib/chat-display-label';
 import { chatTabLabel } from '@canopy/protocol';
@@ -32,12 +43,16 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import type {
+  ApprovalMode,
+  ApprovalRule,
   ChatCommand,
   ChatCommandEnvelope,
+  ChatSendTurnOverride,
+  ChatTabPluginSelections,
   ChatCommandRequest,
   ChatCoreMutation,
   ChatAgentSentInfo,
@@ -47,6 +62,7 @@ import type {
   ChatStateChange,
   PersistedChatMessage,
   PersistedChatTab,
+  PersistedHostQueuedMessage,
 } from '@canopy/desktop-shared/types';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
 import type { PersistedVisualReference } from '@canopy/agent-transcript/types';
@@ -62,9 +78,10 @@ import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { RETIRED_PLAN_CHAT_MESSAGE } from '@canopy/desktop-shared/lib/retired-chat-scopes';
+import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import {
   isInputLedger,
-  inputRequestMatchesSettings,
+  inputRequestMatchesSettings as inputRequestMatchesTurnSettings,
   inputDeliveryViews,
 } from '@canopy/desktop-shared/chat-input-delivery';
 import {
@@ -72,12 +89,21 @@ import {
   reorderMessagesForDisplay,
 } from '@canopy/desktop-shared/lib/message-transforms';
 import { groupIntoTurns } from '@canopy/desktop-shared/lib/turn-utils';
+import { getChatTurnOwnership } from '../chat-turn-ownership';
+import {
+  isCurrentTurnBindingFull,
+  resetTurnBindingSlotsForTests,
+} from '../chat-turn-binding-slots';
 import {
   resetWorkCounters,
   snapshotWorkCounters,
 } from '@canopy/desktop-shared/node/work-counters';
-import { setChatTabsWriteObserver } from '../../lib/chat-tabs';
+import {
+  setChatTabsRequiredDurabilityObserver,
+  setChatTabsWriteObserver,
+} from '../../lib/chat-tabs';
 import * as agentAttachments from '../../lib/agent-attachments';
+import * as approvalModeResolution from '../../lib/approval-mode-resolution';
 import * as planPersistence from '../../lib/plan-persistence';
 import * as resolveWorktree from '../../lib/resolve-worktree';
 import { ChatQueueService, getChatQueueService } from '../chat-queue-service';
@@ -88,11 +114,22 @@ import type {
 import type * as ChatQueueServiceModule from '../chat-queue-service';
 import type * as AppAdvisorWatchersModule from '../../app-advisor/watchers';
 import { ChatStateV2Repository as ChatStateRepository } from '../chat-state-v2-repository';
-import { ChatStorageV2 } from '../../lib/chat-storage-v2';
+import type { ChatStateV2RepositoryOptions } from '../chat-state-v2-repository';
+import {
+  assertChatStorageIndexes,
+  ChatStorageV2,
+} from '../../lib/chat-storage-v2';
+import { openReplayedChatScope } from '../../lib/chat-delta-journal/reader';
 import { ChatTranscriptLog } from '../../lib/chat-transcript-log';
+import * as mainProcessLogging from '../../lib/main-process-logging';
 import * as standaloneHistory from '../../lib/standalone-history';
 import * as archivedContainers from '../../lib/archived-containers';
 import { ChatStateV2Backend } from '../chat-state-v2-backend';
+import type {
+  ProviderEventIngestResult,
+  ProviderEventAdmission,
+} from '../provider-event-admission';
+import * as transcriptRewriteDiagnostics from '../chat-transcript-rewrite-diagnostics';
 import {
   ChatStateService,
   createShowVisualToolKeyResolver,
@@ -100,10 +137,39 @@ import {
   isNativeVisualToolResultEvent,
   preserveProviderVisualReferences,
 } from '../chat-state-service';
-import { withChatSendAdmission } from '../chat-send-admission';
-import { getChatApprovalStateRevision } from '../../approvals/rule-revisions';
+import {
+  ChatSendAdmissionRefusedError,
+  withChatSendAdmission,
+} from '../chat-send-admission';
+import {
+  beginApprovalModeTransition,
+  endApprovalModeTransition,
+} from '../../approvals/live-approval-modes';
+import { chatTurnApprovalAuthorityFor } from '../../lib/chat-turn-approval-authority';
+import {
+  getApprovalSettingsRevision,
+  getChatApprovalStateRevision,
+  markApprovalDefaultsChanged,
+} from '../../approvals/rule-revisions';
+import { ChatTurnStateHandoff } from '../chat-turn-state-handoff';
+import type { TurnStarted } from '@canopy/protocol/canopy-core';
+import {
+  observeTurn,
+  turnEnded,
+  turnStarted,
+} from '../../__tests__/helpers/turn-lifecycle-events';
+import {
+  createPendingRequest,
+  rejectRequest,
+} from '../../mcp/pending-requests';
+import { TurnAuthPreflightBlockedError } from '../../lib/auth-preflight-error';
+import { OrdinarySteerFallbackError } from '../chat-input-delivery-coordinator';
+import { readDeliveryHistory } from '../chat-input-delivery-history';
 import { closeRejectedSplitAgentStartup } from '../split-agent-startup';
 import { createDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
+import { delegationTranscriptMessages } from '@canopy/agent-transcript';
+import { format4Scope } from '../../__tests__/helpers/chat-format4-scope';
+import { scopeSource } from '../../__tests__/helpers/chat-delta-journal-harness';
 import {
   createChatCommandDispatchOptions,
   dispatchTrustedChatCommand,
@@ -124,7 +190,8 @@ import {
   beginWorktreeGitSetup,
   type WorktreeGitSetupOutcome,
 } from '../../lib/worktree-git-setup';
-import type { AgentSession } from '../../agents/types';
+import type { AgentSession, ChatInputSubmitResult } from '../../agents/types';
+import type * as InputDeliveryDiagnosticsModule from '../../lib/chat-input-delivery-diagnostics';
 import type {
   ChatInputAdmission,
   ChatInputDeliveryAction,
@@ -132,12 +199,29 @@ import type {
 } from '@canopy/protocol/portal';
 import type { SessionDiagnosticRecord } from '../../observability/service';
 import { setDelegationActivity } from '../../agents/delegation/activity';
+import { installDelegationLifecycle } from '../../agents/delegation/lifecycle';
 import {
   resetWorkspaceTargetExclusionsForTests,
   withWorkspaceTargetAutoArchiveLease,
 } from '../../lib/workspace-target-exclusion';
 
-const mockObserveSteeringInput = jest.fn();
+const mockObserveSteeringInput = jest.fn<void, [Record<string, unknown>]>();
+const mockInputDeliveryOutcomes: SessionDiagnosticRecord[] = [];
+
+jest.mock('../../lib/chat-input-delivery-diagnostics', () => {
+  const actual = jest.requireActual<typeof InputDeliveryDiagnosticsModule>(
+    '../../lib/chat-input-delivery-diagnostics',
+  );
+  return {
+    ...actual,
+    recordChatInputDeliveryOutcome: (
+      facts: Parameters<typeof actual.recordChatInputDeliveryOutcome>[0],
+    ) =>
+      actual.recordChatInputDeliveryOutcome(facts, (record) => {
+        mockInputDeliveryOutcomes.push(record);
+      }),
+  };
+});
 
 jest.mock('../../observability', () => ({
   getObservabilityService: () => ({
@@ -153,6 +237,12 @@ jest.mock('../chat-queue-service', () => {
   return { ...actual, getChatQueueService: jest.fn() };
 });
 
+jest.mock('../chat-input-delivery-history', () => ({
+  readDeliveryHistory: jest.fn(() => Promise.resolve('unreadable')),
+}));
+
+const mockedReadDeliveryHistory = jest.mocked(readDeliveryHistory);
+
 const mockResumePendingObservations = jest.fn(
   (): Promise<void> => Promise.resolve(),
 );
@@ -166,17 +256,42 @@ jest.mock('../../integration/claude-terminal-session-service', () => ({
   }),
 }));
 
-const mockRecordInterruptedChats = jest.fn<Promise<void>, unknown[]>(() =>
-  Promise.resolve(),
+const mockRecordInterruptedChats = jest.fn<Promise<void>, [...args: unknown[]]>(
+  () => Promise.resolve(),
 );
 jest.mock('../../lib/usage-limited-chats-registry', () => ({
-  recordInterruptedChats: (...args: unknown[]) =>
+  recordInterruptedChats: (...args: unknown[]): Promise<void> =>
     mockRecordInterruptedChats(...args),
 }));
 
-const mockIsModelBlockedByStoredPolicy = jest.fn(() => Promise.resolve(false));
+const mockReleaseArchivedChatSessionWhenIdle = jest.fn<
+  void,
+  [{ projectId: string; worktreeId: string; chatId: string }, unknown]
+>();
+jest.mock('../../lib/archived-chat-session-release', () => ({
+  releaseArchivedChatSessionWhenIdle: (
+    target: {
+      projectId: string;
+      worktreeId: string;
+      chatId: string;
+    },
+    chatState: unknown,
+  ): void => mockReleaseArchivedChatSessionWhenIdle(target, chatState),
+}));
+
+const mockIsModelBlockedByStoredPolicy = jest.fn(
+  (model?: string, policy?: unknown): Promise<boolean> => {
+    void model;
+    void policy;
+    return Promise.resolve(false);
+  },
+);
 jest.mock('../../lib/model-policy-state', () => ({
-  isModelBlockedByStoredPolicy: (...args: unknown[]) =>
+  isModelBlockedByStoredPolicy: (
+    ...args: Parameters<
+      typeof ModelPolicyStateModule.isModelBlockedByStoredPolicy
+    >
+  ): ReturnType<typeof ModelPolicyStateModule.isModelBlockedByStoredPolicy> =>
     mockIsModelBlockedByStoredPolicy(...args),
 }));
 
@@ -200,10 +315,38 @@ const mockedGetChatQueueService = jest.mocked(getChatQueueService);
 const queueEdit = jest.fn();
 const queueCancel = jest.fn();
 const queueForce = jest.fn();
+const queueRestoreInput = jest.fn<
+  Promise<void>,
+  Parameters<ChatQueueService['restoreWithdrawnInput']>
+>();
+const queueMove = jest.fn();
 const queueConsumeRestoredInput = jest.fn();
 const queueSnapshots = jest.fn((): never[] => []);
 
 const SCOPE = { projectId: 'workspace-1', worktreeId: 'worktree-1' };
+
+/**
+ * Whether `request` may steer into a session that applied `mode` and `rules`,
+ * against the turn it would start in `tab`, whose default is Full Access.
+ */
+function inputRequestMatchesSettings(
+  request: ChatSendMessageRequest,
+  tab: PersistedChatTab,
+  mode?: ApprovalMode,
+  rules?: readonly ApprovalRule[],
+): boolean {
+  return inputRequestMatchesTurnSettings(
+    request,
+    tab,
+    chatTurnApprovalAuthorityFor(
+      request,
+      tab.approvalMode ?? 'full-access',
+      tab.sessionApprovalRules ?? [],
+    ),
+    mode,
+    rules,
+  );
+}
 
 describe('native visual provider event admission', () => {
   it.each([
@@ -521,6 +664,24 @@ describe('chat state service', () => {
     retryEligible: false,
   };
 
+  it('reads committed watcher identity without runtime recovery or transcripts', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    const read = jest.spyOn(repository, 'getState');
+    const recover = jest.spyOn(target, 'getState');
+    try {
+      const snapshot = await target.getCommittedWatcherSnapshot(SCOPE);
+      expect(snapshot.tabsFile.tabs.map((tab) => tab.id)).toEqual(['chat-1']);
+      expect(snapshot.projectId).toBe(SCOPE.projectId);
+      expect(snapshot.worktreeId).toBe(SCOPE.worktreeId);
+      expect(read).toHaveBeenCalledWith(SCOPE, { chatIds: [] });
+      expect(recover).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+      recover.mockRestore();
+    }
+  });
+
   it.each([false, true])(
     'protects archived MCP rows unless the restore is authoritative (%s)',
     async (authoritative) => {
@@ -596,9 +757,11 @@ describe('chat state service', () => {
           activation,
         ),
       ).toBe(true);
-      expect(await new McpActivationStore(service()).read(scope)).toEqual(
-        activation,
-      );
+      expect(
+        await readThroughFreshRepository(target, (reader) =>
+          new McpActivationStore(reader).read(scope),
+        ),
+      ).toEqual(activation);
       expect(frames).toContainEqual(
         expect.objectContaining({
           kind: 'item',
@@ -751,7 +914,9 @@ describe('chat state service', () => {
         retryEligible: false,
       });
       expect(host.reconcile).toHaveBeenCalledTimes(uncertain ? 1 : 0);
-      const settled = await new McpActivationStore(service()).read(scope);
+      const settled = await readThroughFreshRepository(target, (reader) =>
+        new McpActivationStore(reader).read(scope),
+      );
       expect(settled).toMatchObject({
         phase: 'cancelled',
         admission: 'not_sent',
@@ -907,6 +1072,59 @@ describe('chat state service', () => {
     },
   );
 
+  it('retains automatic resume metadata and its original timestamp across replay and reopening', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    const autoResume = {
+      reason: 'app_shutdown' as const,
+      resumesUserMessageId: 'original',
+      resendsUserMessage: false,
+    };
+    const event = (timestamp: number) => ({
+      type: 'canopy_user_prompt',
+      canopy_turn_user_message_id: 'resume',
+      canopy_resumes_interrupted_turn: true,
+      canopy_resumes_user_message_id: 'original',
+      canopy_persisted_messages: [
+        {
+          id: 'resume',
+          role: 'user',
+          userMessageSource: 'auto_resume',
+          autoResume,
+          timestamp,
+          blocks: [{ type: 'text', text: 'Continue' }],
+        },
+      ],
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      mutationId: 'resume-1',
+      data: event(500),
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      mutationId: 'resume-replay',
+      data: event(1000),
+    });
+    await repository.flushScope(SCOPE);
+    const reloaded = serviceWithRepository(
+      {},
+      copyDurableFilesAtBoundary(),
+    ).target;
+    const messages = (
+      await reloaded.getState(SCOPE)
+    ).tabsFile.tabs[0]?.messages.filter((message) => message.id === 'resume');
+    expect(messages).toHaveLength(1);
+    expect(messages?.[0]).toMatchObject({
+      timestamp: 500,
+      userMessageSource: 'auto_resume',
+      autoResume,
+    });
+    expect(messages?.[0]).not.toHaveProperty('inputMode');
+  });
+
   it('drops malformed and future MCP recovery records while keeping the chat readable', async () => {
     const target = service();
     await createChat(target);
@@ -957,11 +1175,14 @@ describe('chat state service', () => {
 
   beforeEach(() => {
     resetWorkspaceTargetExclusionsForTests();
+    resetTurnBindingSlotsForTests();
     mockResumePendingObservations.mockReset().mockResolvedValue(undefined);
     mockTerminalState.mockReset().mockReturnValue(undefined);
     mockRecordInterruptedChats.mockReset().mockResolvedValue(undefined);
     mockIsModelBlockedByStoredPolicy.mockReset().mockResolvedValue(false);
     mockObserveSteeringInput.mockReset();
+    mockInputDeliveryOutcomes.length = 0;
+    mockedReadDeliveryHistory.mockReset().mockResolvedValue('unreadable');
     initModelAliases({});
     initOllamaModels([]);
     initModelHarnessAssignments({ revision: 0, assignments: [] });
@@ -978,12 +1199,18 @@ describe('chat state service', () => {
     queueEdit.mockReturnValue('applied');
     queueCancel.mockReturnValue('applied');
     queueForce.mockReset().mockResolvedValue('applied');
+    queueRestoreInput.mockReset().mockResolvedValue(undefined);
+    queueMove.mockReset().mockResolvedValue('applied');
     queueConsumeRestoredInput.mockReset().mockResolvedValue(undefined);
     queueSnapshots.mockReset().mockReturnValue([]);
     const queueService = new ChatQueueService();
     jest.spyOn(queueService, 'edit').mockImplementation(queueEdit);
     jest.spyOn(queueService, 'cancel').mockImplementation(queueCancel);
     jest.spyOn(queueService, 'force').mockImplementation(queueForce);
+    jest.spyOn(queueService, 'move').mockImplementation(queueMove);
+    jest
+      .spyOn(queueService, 'restoreWithdrawnInput')
+      .mockImplementation(queueRestoreInput);
     jest
       .spyOn(queueService, 'consumeRestoredInput')
       .mockImplementation(queueConsumeRestoredInput);
@@ -995,6 +1222,9 @@ describe('chat state service', () => {
 
   afterEach(async () => {
     setChatTabsWriteObserver(null);
+    setChatTabsRequiredDurabilityObserver(null);
+    chatStateServiceModule.resetChatStateServiceForTests();
+    // Hydration can arm queue timers; no host work may outlive its repository.
     getChatQueueService().resetForTests();
     await Promise.all(repositories.map((repository) => repository.drainAll()));
     rmSync(tempDir, { recursive: true, force: true });
@@ -1003,12 +1233,14 @@ describe('chat state service', () => {
   function serviceWithRepository(
     overrides: Partial<ChatStateServiceOptions> = {},
     storagePaths = paths,
+    repositoryOptions: Omit<ChatStateV2RepositoryOptions, 'resolvePaths'> = {},
   ): {
     target: ChatStateService;
     repository: ChatStateRepository;
   } {
     const repository = new ChatStateRepository({
       resolvePaths: () => storagePaths,
+      ...repositoryOptions,
     });
     repositories.push(repository);
     const target = new ChatStateService({
@@ -1018,7 +1250,6 @@ describe('chat state service', () => {
       dispatch: async (request) => {
         dispatched.push(request);
       },
-      steer: async () => false,
       onInputPickup: async () => undefined,
       authorizeSend: async () => undefined,
       approvePlanReview: async () => true,
@@ -1034,8 +1265,724 @@ describe('chat state service', () => {
     return { target, repository };
   }
 
+  let lifecycleSequence = 0;
+  /** Report a turn's canonical start or end as its adapter does, and commit it. */
+  async function reportTurn(
+    target: ChatStateService,
+    type: 'start' | 'end',
+    userMessageId: string | undefined,
+    options: {
+      provider?: 'claude' | 'codex';
+      turnId?: string;
+      atMs?: number;
+      chatId?: string;
+      outcome?: 'completed' | 'cancelled' | 'failed';
+    } = {},
+  ): Promise<void> {
+    const chat = {
+      ...SCOPE,
+      chatId: options.chatId ?? 'chat-1',
+      provider: options.provider ?? 'claude',
+    };
+    const fields = {
+      sequence: ++lifecycleSequence,
+      turnId: options.turnId ?? `turn-${userMessageId ?? 'wake'}`,
+      atMs: options.atMs ?? 1_786_104_000_000,
+      userMessageIds: userMessageId === undefined ? [] : [userMessageId],
+    };
+    await observeTurn(
+      target,
+      type === 'start'
+        ? turnStarted(chat, fields)
+        : turnEnded(chat, {
+            ...fields,
+            ...(options.outcome ? { outcome: options.outcome } : {}),
+          }),
+    );
+  }
+
   function service(): ChatStateService {
     return serviceWithRepository().target;
+  }
+
+  /**
+   * Reads `SCOPE` through a second repository, as a restarted process would.
+   * Storage has one writer per scope: an open reader's idle checkpoint races
+   * the live repository's checkpoint on the same work files. So the live one
+   * is flushed first and the reader is drained before the live one writes.
+   */
+  async function readThroughFreshRepository<T>(
+    live: ChatStateService,
+    read: (reader: ChatStateService) => Promise<T>,
+  ): Promise<T> {
+    await live.flushScope(SCOPE.projectId, SCOPE.worktreeId);
+    const reader = serviceWithRepository();
+    try {
+      return await read(reader.target);
+    } finally {
+      await reader.repository.drainAll();
+    }
+  }
+
+  describe('canonical tool admission', () => {
+    afterEach(() => jest.restoreAllMocks());
+    it.each(['boolean', 'outcome'] as const)(
+      'keeps %s wrapper parity for admitted and duplicate Claude/Codex events',
+      async (wrapper) => {
+        const target = service();
+        await createChat(target);
+        const events: unknown[] = [
+          {
+            type: 'assistant',
+            message: {
+              id: 'wrapper-calls',
+              content: [
+                { type: 'tool_use', id: 'wrapper', name: 'Read', input: {} },
+                { type: 'tool_use', id: 'wrapper', name: 'Read', input: {} },
+              ],
+            },
+          },
+          {
+            type: 'user',
+            message: {
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'wrapper',
+                  content: 'x'.repeat(70_000),
+                },
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'wrapper',
+                  content: 'x'.repeat(5000),
+                },
+              ],
+            },
+          },
+          {
+            type: 'user',
+            message: {
+              content: [
+                { type: 'tool_result', tool_use_id: 'short', content: 'short' },
+              ],
+            },
+          },
+          {
+            type: 'codex',
+            event: {
+              type: 'item.started',
+              item: {
+                id: 'wrapper-cmd',
+                type: 'command_execution',
+                command: 'ls',
+                status: 'in_progress',
+              },
+            },
+          },
+          {
+            type: 'codex',
+            event: {
+              type: 'item.completed',
+              item: {
+                id: 'wrapper-cmd',
+                type: 'command_execution',
+                command: 'ls',
+                status: 'completed',
+                aggregated_output: 'done',
+              },
+            },
+          },
+        ];
+        for (const [index, data] of events.entries()) {
+          const input = {
+            ...SCOPE,
+            chatId: 'chat-1',
+            mutationId: `wrapper-${index}`,
+            data,
+          };
+          if (wrapper === 'boolean') {
+            expect(await target.ingestProviderEvent(input)).toBe(true);
+            expect(await target.ingestProviderEvent(input)).toBe(false);
+          } else {
+            expect(await target.ingestProviderEventWithOutcome(input)).toBe(
+              'applied',
+            );
+            expect(await target.ingestProviderEventWithOutcome(input)).toBe(
+              'not-applied',
+            );
+          }
+        }
+      },
+    );
+    // Reds used the existing outcome wrapper here, so they failed on absent
+    // behavioral metadata rather than on a missing additive export.
+    async function admit(
+      target: ChatStateService,
+      input: Parameters<ChatStateService['ingestProviderEvent']>[0],
+    ): Promise<{
+      outcome: ProviderEventIngestResult['outcome'];
+      admission?: ProviderEventAdmission;
+    }> {
+      return target.ingestProviderEventWithResult(input);
+    }
+
+    async function fixture(format: 2 | 3 | 4) {
+      if (format === 2) {
+        // Inhibit only format promotion, not ingestion/reduction/storage.
+        jest
+          .spyOn(ChatStateV2Backend.prototype, 'promoteToDeltaJournal')
+          .mockResolvedValue(false);
+      }
+      const initial = serviceWithRepository();
+      await createChat(initial.target);
+      await initial.repository.drainAll();
+      const store = ChatStorageV2.fromLegacyPaths(paths, {
+        maxManifestVersion: 4,
+      });
+      if (format !== 2) {
+        const promoter = new ChatStateV2Backend(store, {
+          deltaJournal: {},
+          enableFormat4: format === 4,
+        });
+        await promoter.promoteToDeltaJournal();
+        if (format === 4) expect(await promoter.promoteToFormat4()).toBe(true);
+        await promoter.flush();
+        promoter.releaseJournal();
+      }
+      expect(await store.format()).toBe(`v${format}`);
+      return serviceWithRepository({}, paths, { enableFormat4: format === 4 });
+    }
+
+    it.each([2, 3, 4] as const)(
+      'returns canonical Claude addresses and absolute ordinals in format %s',
+      async (format) => {
+        const { target, repository } = await fixture(format);
+        // Seed an earlier result with the converged provider ID. A later real
+        // result supersedes it by tool id, so the new row keeps its canonical
+        // ID; the expected addresses are not computed by the receipt code.
+        await target.ingestProviderEvent({
+          ...SCOPE,
+          chatId: 'chat-1',
+          mutationId: 'old',
+          data: {
+            type: 'user',
+            message: {
+              content: [
+                { type: 'tool_result', tool_use_id: 'same', content: 'old' },
+              ],
+            },
+          },
+        });
+        await target.ingestProviderEvent({
+          ...SCOPE,
+          chatId: 'chat-1',
+          mutationId: 'calls',
+          data: {
+            type: 'assistant',
+            message: {
+              id: 'call-row',
+              content: [
+                { type: 'text', text: 'before' },
+                { type: 'tool_use', id: 'same', name: 'Read', input: {} },
+                { type: 'tool_use', id: 'same', name: 'Read', input: {} },
+              ],
+            },
+          },
+        });
+        const input = {
+          ...SCOPE,
+          chatId: 'chat-1',
+          mutationId: 'results',
+          data: {
+            type: 'user',
+            message: {
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'same',
+                  content: 'x'.repeat(5000),
+                },
+                { type: 'tool_result', tool_use_id: 'same', content: 'short' },
+              ],
+            },
+          },
+        };
+        const read = jest.spyOn(repository, 'getState');
+        const result = await admit(target, input);
+        expect(result).toMatchObject({
+          outcome: 'applied',
+          admission: {
+            ...SCOPE,
+            chatId: 'chat-1',
+            mutationId: 'results',
+            tools: [
+              {
+                sourceToken: '0',
+                occurrenceId: 'call-row#2',
+                call: { rowId: 'call-row', blockOrdinal: 2 },
+                result: {
+                  rowId: 'tool:same',
+                  blockOrdinal: 0,
+                  needsRead: true,
+                },
+              },
+              {
+                sourceToken: '1',
+                occurrenceId: 'call-row#1',
+                call: { rowId: 'call-row', blockOrdinal: 1 },
+                result: {
+                  rowId: 'tool:same',
+                  blockOrdinal: 1,
+                  needsRead: false,
+                },
+              },
+            ],
+          },
+        });
+        expect(read).not.toHaveBeenCalled();
+        expect(await admit(target, input)).toEqual({ outcome: 'not-applied' });
+      },
+    );
+
+    it('captures source content positions without zipping filtered blocks', async () => {
+      const target = service();
+      await createChat(target);
+      expect(
+        await admit(target, {
+          ...SCOPE,
+          chatId: 'chat-1',
+          mutationId: 'filtered',
+          data: {
+            type: 'assistant',
+            message: {
+              id: 'filtered-row',
+              content: [
+                { type: 'unknown' },
+                { type: 'text', text: '' },
+                { type: 'thinking', thinking: 'thinking' },
+                { type: 'tool_use', id: 'read', name: 'Read', input: {} },
+              ],
+            },
+          },
+        }),
+      ).toMatchObject({
+        admission: {
+          tools: [
+            {
+              sourceToken: '3',
+              occurrenceId: 'filtered-row#1',
+              call: { rowId: 'filtered-row', blockOrdinal: 1 },
+            },
+          ],
+        },
+      });
+    });
+
+    it.each([2, 3, 4] as const)(
+      'returns stored-result eligibility without aggregate/body reads in format %s',
+      async (format) => {
+        const { target, repository } = await fixture(format);
+        const read = jest.spyOn(repository, 'getState');
+        const materialize = jest.spyOn(
+          ChatTranscriptArtifacts.prototype,
+          'readRange',
+        );
+        const blocks = jest.spyOn(
+          ChatTranscriptArtifacts.prototype,
+          'readBlocks',
+        );
+        const result = await admit(target, {
+          ...SCOPE,
+          chatId: 'chat-1',
+          mutationId: 'stored',
+          data: {
+            type: 'user',
+            message: {
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'large',
+                  content: 'x'.repeat(70_000),
+                },
+              ],
+            },
+          },
+        });
+        expect(result).toMatchObject({
+          admission: {
+            tools: [
+              {
+                sourceToken: '0',
+                occurrenceId: 'tool:large#0',
+                result: {
+                  rowId: 'tool:large',
+                  blockOrdinal: 0,
+                  needsRead: true,
+                },
+              },
+            ],
+          },
+        });
+        expect(read).not.toHaveBeenCalled();
+        expect(materialize).not.toHaveBeenCalled();
+        expect(blocks).not.toHaveBeenCalled();
+        expect(result.admission?.revision).toBe(
+          await repository.getRevision(SCOPE),
+        );
+        read.mockRestore();
+        materialize.mockRestore();
+        blocks.mockRestore();
+      },
+    );
+
+    it('bounds receipt count and serialized metadata while leaving excess preview-only', async () => {
+      const target = service();
+      await createChat(target);
+      const content = Array.from({ length: 80 }, (_, index) => ({
+        type: 'tool_use',
+        id: `tool-${index}`,
+        name: 'Read',
+        input: {},
+      }));
+      const limited = await admit(target, {
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'bounded-count',
+        data: { type: 'assistant', message: { id: 'bounded', content } },
+      });
+      expect(limited.admission?.tools).toHaveLength(64);
+      expect(limited.admission?.tools[63]).toEqual({
+        sourceToken: '63',
+        occurrenceId: 'bounded#63',
+        call: { rowId: 'bounded', blockOrdinal: 63 },
+      });
+      const large = await admit(target, {
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'bounded-bytes',
+        data: { type: 'assistant', message: { id: 'a'.repeat(500), content } },
+      });
+      expect(large.admission?.tools.length).toBeGreaterThan(0);
+      expect(large.admission?.tools.length).toBeLessThan(64);
+      expect(
+        Buffer.byteLength(JSON.stringify(large.admission?.tools)),
+      ).toBeLessThanOrEqual(65_536);
+    });
+
+    it('returns no receipt for activity-only or stale events and preserves wrappers', async () => {
+      let clock = 1_786_104_000_000;
+      const { target, repository } = serviceWithRepository({
+        now: () => clock,
+      });
+      await createChat(target);
+      await target.command(
+        envelope('send-admission', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'current',
+          text: 'Continue',
+        }),
+      );
+      await target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'text',
+        turnUserMessageId: 'current',
+        data: {
+          type: 'assistant',
+          message: { id: 'text', content: [{ type: 'text', text: 'Working' }] },
+        },
+      });
+      clock += 1000;
+      const activity = {
+        ...SCOPE,
+        chatId: 'chat-1',
+        turnUserMessageId: 'current',
+        mutationId: 'activity',
+        data: { type: 'system', subtype: 'status', status: 'requesting' },
+      };
+      expect(await admit(target, activity)).toEqual({
+        outcome: 'activity-only',
+      });
+      clock += 1000;
+      expect(
+        await target.ingestProviderEventWithOutcome({
+          ...activity,
+          mutationId: 'activity-wrapper',
+        }),
+      ).toBe('activity-only');
+      clock += 1000;
+      expect(
+        await target.ingestProviderEvent({
+          ...activity,
+          mutationId: 'activity-boolean',
+        }),
+      ).toBe(false);
+      // Canonical turn state owns the root status; reopen the current turn
+      // so a stale turn's output meets the turn gate.
+      await repository.transact(
+        SCOPE,
+        [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: {
+              status: 'streaming',
+              queuedMessageIds: [],
+              activeTurn: { userMessageId: 'current', startedAt: clock },
+            },
+          },
+        ],
+        { source: 'provider', mutationId: 'admission-active-turn' },
+      );
+      const stale = {
+        ...SCOPE,
+        chatId: 'chat-1',
+        turnUserMessageId: 'old',
+        mutationId: 'stale',
+        data: {
+          type: 'assistant',
+          message: {
+            id: 'stale',
+            content: [
+              { type: 'tool_use', id: 'stale', name: 'Read', input: {} },
+            ],
+          },
+        },
+      };
+      expect(await admit(target, stale)).toEqual({ outcome: 'not-applied' });
+      expect(await target.ingestProviderEventWithOutcome(stale)).toBe(
+        'not-applied',
+      );
+      expect(await target.ingestProviderEvent(stale)).toBe(false);
+    });
+
+    it('maps only terminal Codex results and keeps the same-row call occurrence', async () => {
+      const target = service();
+      await createChat(target);
+      const input = {
+        ...SCOPE,
+        chatId: 'chat-1',
+        providerType: 'codex' as const,
+        data: {
+          type: 'codex',
+          event: {
+            type: 'item.started',
+            item: {
+              id: 'cmd',
+              type: 'command_execution',
+              command: 'ls',
+              aggregated_output: 'pending',
+              status: 'in_progress',
+            },
+          },
+        },
+      };
+      const started = await admit(target, { ...input, mutationId: 'started' });
+      expect(started).toMatchObject({
+        admission: {
+          tools: [
+            {
+              sourceToken: 'cmd:call',
+              occurrenceId: 'codex-cmd#0',
+              call: { rowId: 'codex-cmd', blockOrdinal: 0 },
+            },
+          ],
+        },
+      });
+      expect(
+        started.admission?.tools.every(
+          (tool: { result?: unknown }) => tool.result === undefined,
+        ),
+      ).toBe(true);
+      expect(
+        await admit(target, {
+          ...input,
+          mutationId: 'completed',
+          data: {
+            type: 'codex',
+            event: {
+              type: 'item.completed',
+              item: {
+                ...input.data.event.item,
+                aggregated_output: 'done',
+                status: 'completed',
+                exit_code: 0,
+              },
+            },
+          },
+        }),
+      ).toMatchObject({
+        admission: {
+          tools: [
+            { sourceToken: 'cmd:call', occurrenceId: 'codex-cmd#0' },
+            {
+              sourceToken: 'cmd:result',
+              occurrenceId: 'codex-cmd#0',
+              call: { rowId: 'codex-cmd', blockOrdinal: 0 },
+              result: { rowId: 'codex-cmd', blockOrdinal: 1, needsRead: false },
+            },
+          ],
+        },
+      });
+    });
+
+    it('resets candidates on reducer retry and never returns an admission after commit failure', async () => {
+      const { target, repository } = serviceWithRepository();
+      await createChat(target);
+      const transact = repository.transactWith.bind(repository);
+      const retry = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, options) =>
+          transact(
+            scope,
+            async (state, revision, context) => {
+              await build(state, revision, context);
+              return build(state, revision, context);
+            },
+            options,
+          ),
+        );
+      const input = {
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'retry',
+        data: {
+          type: 'assistant',
+          message: {
+            id: 'retry-row',
+            content: [
+              { type: 'tool_use', id: 'read', name: 'Read', input: {} },
+            ],
+          },
+        },
+      };
+      const result = await admit(target, input);
+      expect(result).toMatchObject({
+        admission: {
+          tools: [{ sourceToken: '0', occurrenceId: 'retry-row#0' }],
+        },
+      });
+      expect(result.admission?.tools).toHaveLength(1);
+      expect(result.admission?.revision).toBe(
+        await repository.getRevision(SCOPE),
+      );
+      retry.mockRestore();
+      // Still run the actual reducer against the real repository transaction;
+      // fail after reduction but before its mutations can be committed.
+      const fail = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, options) =>
+          transact(
+            scope,
+            async (state, revision, context) => {
+              await build(state, revision, context);
+              throw new Error('admission commit failed');
+            },
+            options,
+          ),
+        );
+      await expect(
+        admit(target, { ...input, mutationId: 'failed' }),
+      ).rejects.toThrow('admission commit failed');
+      await expect(
+        target.ingestProviderEventWithOutcome({
+          ...input,
+          mutationId: 'failed-outcome',
+        }),
+      ).rejects.toThrow('admission commit failed');
+      await expect(
+        target.ingestProviderEvent({ ...input, mutationId: 'failed-boolean' }),
+      ).rejects.toThrow('admission commit failed');
+      fail.mockRestore();
+      expect(await repository.getRevision(SCOPE)).toBe(
+        result.admission?.revision,
+      );
+    });
+
+    it('fails closed when a Codex row already has paged blocks and no source-slot proof', async () => {
+      const { target, repository } = await fixture(4);
+      const store = ChatStorageV2.fromLegacyPaths(paths, {
+        maxManifestVersion: 4,
+      });
+      const artifacts = new ChatTranscriptArtifacts(
+        join(store.directory, 'transcripts'),
+        false,
+        { rowTargetBytes: 512 },
+      );
+      const row: PersistedChatMessage = {
+        id: 'codex-paged',
+        role: 'system',
+        timestamp: 1,
+        blocks: Array.from({ length: 4 }, () => ({
+          type: 'tool_use',
+          toolUseId: 'codex-paged',
+          toolName: 'command',
+          input: 'x'.repeat(300),
+        })),
+      };
+      const paged = await artifacts.externalize('chat-1', row, undefined, {
+        kind: 'format4',
+        final: true,
+      });
+      expect(paged.blocks).toEqual([]);
+      expect(paged.blocksRef).toBeDefined();
+      await repository.transact(
+        SCOPE,
+        [{ type: 'message.upserted', chatId: 'chat-1', message: paged }],
+        { source: 'provider', mutationId: 'paged-seed' },
+      );
+      const inspect = repository.transactWith.bind(repository);
+      let sawPaged = false;
+      jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, options) =>
+          inspect(
+            scope,
+            (state, revision, context) => {
+              sawPaged =
+                state.tabsFile.tabs[0]?.messages.some(
+                  (message) =>
+                    message.id === 'codex-paged' &&
+                    message.blocksRef !== undefined,
+                ) === true;
+              return build(state, revision, context);
+            },
+            options,
+          ),
+        );
+      const read = jest.spyOn(ChatTranscriptArtifacts.prototype, 'readBlocks');
+      const result = await admit(target, {
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'paged-update',
+        data: {
+          type: 'codex',
+          event: {
+            type: 'item.completed',
+            item: {
+              id: 'paged',
+              type: 'command_execution',
+              command: 'ls',
+              status: 'completed',
+              aggregated_output: 'done',
+            },
+          },
+        },
+      });
+      expect(sawPaged).toBe(true);
+      expect(result).toEqual({ outcome: 'applied' });
+      expect(read).not.toHaveBeenCalled();
+    });
+  });
+
+  function isolatedServicePaths(): typeof paths {
+    const directory = mkdtempSync(join(tempDir, 'isolated-'));
+    return {
+      tabs: join(directory, 'chats.json'),
+      archives: join(directory, 'archives.json'),
+      journal: join(directory, 'journal.jsonl'),
+    };
   }
 
   function copyDurableFilesAtBoundary(): typeof paths {
@@ -1076,6 +2023,204 @@ describe('chat state service', () => {
     ).resolves.toMatchObject({ outcome: 'applied', revision: 1 });
   }
 
+  it('forwards the stored parent row rather than the descriptor overlay', async () => {
+    const storedCard = delegationTranscriptMessages({
+      delegationId: 'child',
+      runGeneration: 1,
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: 'parent-turn',
+      parentToolCallId: 'parent-call',
+      createdAt: 1,
+      task: {
+        description: 'Stored task',
+        prompt: 'Stored prompt',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: 'child',
+        status: 'running',
+        finalText: 'stored parent preview',
+        outputTruncated: false,
+        routeSnapshot: {
+          selectedModelId: 'model',
+          runtimeModelId: 'model',
+          harnessId: 'claude',
+          runtimeKind: 'sdk',
+          runnerRegistrationId: 'runner',
+          runtimeVersion: '1',
+          adapterVersion: '1',
+          modelSource: 'agent',
+          providerType: 'anthropic',
+          assignmentRevision: '1',
+          billingAuthority: 'local',
+          aiCreditsRouted: false,
+          capabilities: [],
+          supportedThinkingLevels: [],
+          capabilitySnapshotHash: 'hash',
+          capabilityGeneration: 1,
+          policyRevision: '1',
+        },
+      },
+      transcript: [],
+      transcriptStore: 'chat-stream-v2',
+    })[0];
+    if (!storedCard) throw new Error('Missing stored delegation card');
+    const streamTarget = {
+      kind: 'delegation',
+      chatId: 'chat-1',
+      delegationId: 'child',
+      runGeneration: 1,
+    } satisfies Parameters<ChatStateService['openChildStream']>[1];
+    const seeded = await format4Scope(
+      tempDir,
+      'chats',
+      scopeSource([{ id: 'chat-1', messages: [storedCard] }]),
+    );
+    try {
+      await seeded.backend.registerTranscriptStream(streamTarget);
+      const descriptor =
+        await seeded.backend.childStreamDescriptor(streamTarget);
+      if (!descriptor) throw new Error('Missing stream descriptor');
+      await seeded.backend.updateChildStreamCardState(
+        streamTarget,
+        descriptor.streamRevision,
+        {
+          version: 1,
+          status: 'running',
+          resultIndex: null,
+          error: null,
+          usage: null,
+          workspaceRevision: null,
+          workspaceDiscarded: false,
+          stopOutcome: null,
+          controlOutcome: null,
+          attribution: null,
+          capabilitySummary: null,
+          nestedChildSummary: null,
+          partialPreview: null,
+          finalPreview: 'overlaid parent preview',
+        },
+      );
+    } finally {
+      seeded.backend.releaseJournal();
+      await seeded.backend.disposeArtifactMaintenance();
+    }
+
+    const { target, repository } = serviceWithRepository({}, paths, {
+      enableFormat4: true,
+    });
+    const overlaid = await target.getState(SCOPE);
+    const overlaidCard = overlaid.tabsFile.tabs
+      .find((tab) => tab.id === 'chat-1')
+      ?.messages.find((message) => message.id === storedCard.id);
+    expect(overlaidCard).not.toEqual(storedCard);
+    expect(overlaidCard?.blocks[0]).toMatchObject({
+      finalText: 'overlaid parent preview',
+    });
+
+    const readStoredParentMessage = jest.spyOn(
+      repository,
+      'readStoredParentMessage',
+    );
+    await expect(
+      target.readStoredParentMessage(SCOPE, 'chat-1', storedCard.id),
+    ).resolves.toEqual(storedCard);
+    expect(readStoredParentMessage).toHaveBeenCalledWith(
+      SCOPE,
+      'chat-1',
+      storedCard.id,
+    );
+  });
+
+  function stateBackedQueue(
+    target: ChatStateService,
+    dispatch: ChatQueueServiceDependencies['dispatch'],
+    overrides: Partial<ChatQueueServiceDependencies> = {},
+  ): ChatQueueService {
+    return new ChatQueueService({
+      dispatch,
+      cancel: async (): Promise<void> => undefined,
+      settleCancelledTurn: async (): Promise<void> => undefined,
+      hasActiveProviderTurn: () => false,
+      hasPendingProviderContinuation: () => false,
+      persistRuntime: (...args) => target.reconcileHostQueue(...args),
+      broadcast: () => undefined,
+      drainProviderEvents: async (): Promise<void> => undefined,
+      createId: () => 'queue-dispatch',
+      now: () => 1_786_104_000_001,
+      schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+      ...overrides,
+    });
+  }
+
+  async function markRuntimeCompleted(
+    target: ChatStateService,
+    userMessageId: string,
+  ): Promise<void> {
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: userMessageId,
+      mutationId: `${userMessageId}:terminal`,
+      data: { type: 'result', is_error: false, result: 'Finished' },
+    });
+    expect(
+      (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.status,
+    ).toBe('completed');
+  }
+
+  async function waitForQueuedRuntime(
+    target: ChatStateService,
+    queueRowId: string,
+  ): Promise<ChatRuntimeState> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runtime = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
+      if (runtime?.queuedMessageIds.includes(queueRowId)) return runtime;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Queue row ${queueRowId} was not restored`);
+  }
+
+  function answerDeliverySession(
+    provider: 'claude' | 'codex',
+    submitSteeringInput: NonNullable<AgentSession['submitSteeringInput']>,
+  ): {
+    session: AgentSession;
+    steerActiveTurn: jest.Mock<Promise<boolean>, [string, string?]>;
+  } {
+    const steerActiveTurn = jest.fn(
+      async (
+        _text: string,
+        _clientUserMessageId?: string,
+      ): Promise<boolean> => {
+        void _text;
+        void _clientUserMessageId;
+        return true;
+      },
+    );
+    const session: AgentSession = {
+      sendMessage: jest.fn(),
+      cancel: async () => undefined,
+      destroy: async () => undefined,
+      setPlanMode: async () => undefined,
+      setApprovalMode: async () => undefined,
+      setThinkingLevel: async () => undefined,
+      setModel: async () => undefined,
+      getSteeringCapabilities: () => ({
+        provider,
+        generation: 'answer-generation',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      }),
+      submitSteeringInput,
+      steerActiveTurn,
+      // At Ask, never wider than an answer's own turn, so it accepts steering.
+      getAppliedApprovalMode: () => 'ask',
+    };
+    return { session, steerActiveTurn };
+  }
   it('resolves a snapshot while terminal observation publication is blocked', async () => {
     const target = service();
     await createChat(target);
@@ -1771,11 +2916,10 @@ describe('chat state service', () => {
 
     function setup(): {
       target: ChatStateService;
-      repository: ChatStateRepository;
       notices: Notice[];
     } {
       const notices: Notice[] = [];
-      const { target, repository } = serviceWithRepository({
+      const { target } = serviceWithRepository({
         notifyTurnTerminal: async (notice) => {
           notices.push(notice);
         },
@@ -1783,7 +2927,7 @@ describe('chat state service', () => {
       jest
         .spyOn(getChatQueueService(), 'holdsUserMessage')
         .mockReturnValue(false);
-      return { target, repository, notices };
+      return { target, notices };
     }
 
     async function prompt(
@@ -1809,6 +2953,7 @@ describe('chat state service', () => {
           ],
         },
       });
+      await reportTurn(target, 'start', userMessageId);
     }
 
     async function accept(
@@ -1827,24 +2972,10 @@ describe('chat state service', () => {
     }
 
     async function complete(
-      repository: ChatStateRepository,
+      target: ChatStateService,
       userMessageId: string,
     ): Promise<void> {
-      await repository.transact(
-        SCOPE,
-        [
-          {
-            type: 'runtime.patched',
-            chatId: 'chat-1',
-            runtime: {
-              status: 'completed',
-              activeTurn: { userMessageId, startedAt: 1 },
-              queuedMessageIds: [],
-            },
-          },
-        ],
-        { source: 'provider' },
-      );
+      await reportTurn(target, 'end', userMessageId);
     }
 
     async function restart(target: ChatStateService): Promise<void> {
@@ -1868,7 +2999,7 @@ describe('chat state service', () => {
     ] as const)(
       'reports an %s interrupted turn by the turn that resumed it',
       async (_case, accepted) => {
-        const { target, repository } = setup();
+        const { target } = setup();
         await createChat(target);
         await prompt(target, 'user-x');
         if (accepted) await accept(target, 'user-x');
@@ -1882,7 +3013,7 @@ describe('chat state service', () => {
         await expect(target.turnOutcome(turn('user-x'))).resolves.toBe(
           'pending',
         );
-        await complete(repository, 'user-resume');
+        await complete(target, 'user-resume');
         await expect(target.turnOutcome(turn('user-x'))).resolves.toBe(
           'completed',
         );
@@ -1896,7 +3027,7 @@ describe('chat state service', () => {
     );
 
     it('reports a turn resumed after a second restart by the last resume', async () => {
-      const { target, repository } = setup();
+      const { target } = setup();
       await createChat(target);
       await prompt(target, 'user-x');
       await accept(target, 'user-x');
@@ -1908,7 +3039,7 @@ describe('chat state service', () => {
 
       await prompt(target, 'user-resume-again', true);
       await accept(target, 'user-resume-again');
-      await complete(repository, 'user-resume-again');
+      await complete(target, 'user-resume-again');
 
       await expect(target.turnOutcome(turn('user-x'))).resolves.toBe(
         'completed',
@@ -1919,7 +3050,7 @@ describe('chat state service', () => {
     });
 
     it('ends an interrupted turn as cancelled, once, when another turn starts instead of a resume', async () => {
-      const { target, repository, notices } = setup();
+      const { target, notices } = setup();
       await createChat(target);
       await prompt(target, 'user-x');
       await accept(target, 'user-x');
@@ -1927,7 +3058,7 @@ describe('chat state service', () => {
 
       await prompt(target, 'user-fresh');
       await accept(target, 'user-fresh');
-      await complete(repository, 'user-fresh');
+      await complete(target, 'user-fresh');
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       await expect(target.turnOutcome(turn('user-x'))).resolves.toBe(
@@ -1950,7 +3081,7 @@ describe('chat state service', () => {
 
       await prompt(target, 'user-resume', true);
       await accept(target, 'user-resume');
-      await complete(repository, 'user-resume');
+      await complete(target, 'user-resume');
       await expect(target.turnOutcome(turn('user-x'))).resolves.toBe(
         'cancelled',
       );
@@ -1978,6 +3109,8 @@ describe('chat state service', () => {
     async function startTurn(
       target: ChatStateService,
       userMessageId: string,
+      /** `legacy`: a build without canonical turns ran it. */
+      { turnId, legacy = false }: { turnId?: string; legacy?: boolean } = {},
     ): Promise<void> {
       await target.ingestProviderEvent({
         ...CHAT,
@@ -1996,6 +3129,7 @@ describe('chat state service', () => {
           ],
         },
       });
+      if (!legacy) await reportTurn(target, 'start', userMessageId, { turnId });
       await target.ingestProviderEvent({
         ...CHAT,
         mutationId: `chat-1:${userMessageId}:accepted`,
@@ -2010,6 +3144,7 @@ describe('chat state service', () => {
     async function completeTurn(
       target: ChatStateService,
       userMessageId: string,
+      turnId?: string,
     ): Promise<void> {
       await target.ingestProviderEvent({
         ...CHAT,
@@ -2024,6 +3159,7 @@ describe('chat state service', () => {
           },
         },
       });
+      await reportTurn(target, 'end', userMessageId, { turnId });
       await target.ingestProviderEvent({
         ...CHAT,
         mutationId: `chat-1:${userMessageId}:result`,
@@ -2089,6 +3225,7 @@ describe('chat state service', () => {
         const { target } = setup();
         await createChat(target);
         await startTurn(target, 'user-first');
+        await reportTurn(target, 'end', 'user-first', { outcome });
         await target.ingestProviderEvent({
           ...CHAT,
           mutationId: 'chat-1:user-first:end',
@@ -2123,6 +3260,8 @@ describe('chat state service', () => {
       const { target } = setup();
       await createChat(target);
       await startTurn(target, 'user-plan');
+      // The session ends the turn at the result's receipt, before admitting it.
+      await reportTurn(target, 'end', 'user-plan', { outcome: 'completed' });
       await target.ingestProviderEvent({
         ...CHAT,
         mutationId: 'chat-1:user-plan:end',
@@ -2148,6 +3287,7 @@ describe('chat state service', () => {
       const { target } = setup();
       await createChat(target);
       await startTurn(target, 'user-first');
+      await reportTurn(target, 'end', 'user-first', { outcome: 'failed' });
       await target.ingestProviderEvent({
         ...CHAT,
         mutationId: 'chat-1:user-first:end',
@@ -2176,6 +3316,7 @@ describe('chat state service', () => {
       const { target } = setup();
       await createChat(target);
       await startTurn(target, 'user-first');
+      await reportTurn(target, 'end', 'user-first', { outcome: 'failed' });
       await target.ingestProviderEvent({
         ...CHAT,
         mutationId: 'chat-1:user-first:end',
@@ -2190,10 +3331,13 @@ describe('chat state service', () => {
           canopy_turn_user_message_id: 'user-first',
         },
       });
+      await reportTurn(target, 'start', 'user-first', {
+        turnId: 'turn-user-first-again',
+      });
       await expect(target.turnOutcome(turn('user-first'))).resolves.toBe(
         'pending',
       );
-      await completeTurn(target, 'user-first');
+      await completeTurn(target, 'user-first', 'turn-user-first-again');
       await expect(target.turnOutcome(turn('user-first'))).resolves.toBe(
         'completed',
       );
@@ -2202,7 +3346,7 @@ describe('chat state service', () => {
     it('infers from acceptance order for a turn that ended before ends were recorded', async () => {
       const { target, repository } = setup();
       await createChat(target);
-      await startTurn(target, 'user-first');
+      await startTurn(target, 'user-first', { legacy: true });
       await repository.transact(
         SCOPE,
         [
@@ -2291,23 +3435,11 @@ describe('chat state service', () => {
       });
 
     await send('user-done');
+    await reportTurn(target, 'start', 'user-done');
     await accept('user-done');
-    await repository.transact(
-      SCOPE,
-      [
-        {
-          type: 'runtime.patched',
-          chatId: 'chat-1',
-          runtime: {
-            status: 'completed',
-            activeTurn: { userMessageId: 'user-done', startedAt: 1 },
-            queuedMessageIds: [],
-          },
-        },
-      ],
-      { source: 'provider' },
-    );
+    await reportTurn(target, 'end', 'user-done');
     await send('user-next');
+    await reportTurn(target, 'start', 'user-next');
     await accept('user-next');
     await send('user-queued');
     await target.reconcileHostQueue(
@@ -3091,6 +4223,1871 @@ describe('chat state service', () => {
     },
   );
 
+  it.each(['getState', 'recoverHostRuntime'] as const)(
+    'captures the recovered chat target for asynchronous history resolution through %s',
+    async (recoveryMethod) => {
+      const f = await deliveryFixture();
+      await expect(f.steer()).resolves.toBe(true);
+
+      const restarted = serviceWithRepository(
+        { inputSession: async () => undefined },
+        copyDurableFilesAtBoundary(),
+      ).target;
+      Object.defineProperty(restarted, 'reconcileHostRuntime', {
+        value: true,
+      });
+      const scheduleHistoryResolution = jest.fn();
+      Object.defineProperty(
+        restarted.inputDelivery,
+        'scheduleHistoryResolution',
+        { value: scheduleHistoryResolution },
+      );
+
+      if (recoveryMethod === 'getState') await restarted.getState(SCOPE);
+      else await restarted.recoverHostRuntime(SCOPE);
+
+      expect(scheduleHistoryResolution).toHaveBeenCalledWith(f.scope);
+    },
+  );
+
+  it.each(['getState', 'recoverHostRuntime'] as const)(
+    'runs no recovery transaction through %s for a ledger with nothing to recover',
+    async (recoveryMethod) => {
+      const f = await deliveryFixture();
+      await expect(f.steer()).resolves.toBe(true);
+      const before = await f.getRow();
+      Object.defineProperty(f.target, 'reconcileHostRuntime', { value: true });
+      // The live session still owns the attempt's generation, so restoring
+      // the ledger changes nothing and must not queue a transaction.
+      const transactWith = jest.spyOn(f.repository, 'transactWith');
+      try {
+        if (recoveryMethod === 'getState') await f.target.getState(SCOPE);
+        else await f.target.recoverHostRuntime(SCOPE);
+        expect(
+          transactWith.mock.calls.filter(
+            ([, , options]) => options.source === 'provider',
+          ),
+        ).toEqual([]);
+      } finally {
+        transactWith.mockRestore();
+      }
+      expect(await f.getRow()).toEqual(before);
+    },
+  );
+
+  it.each(['getState', 'recoverHostRuntime'] as const)(
+    'still settles a row a restart left in flight through %s',
+    async (recoveryMethod) => {
+      const f = await deliveryFixture();
+      await expect(f.steer()).resolves.toBe(true);
+      expect(['sending', 'pending']).toContain((await f.getRow()).state);
+
+      const restarted = serviceWithRepository(
+        { inputSession: async () => undefined },
+        copyDurableFilesAtBoundary(),
+      ).target;
+      Object.defineProperty(restarted, 'reconcileHostRuntime', {
+        value: true,
+      });
+      // Read the call's own result: another reconciling read would recover too.
+      const tabs =
+        recoveryMethod === 'getState'
+          ? (await restarted.getState(SCOPE)).tabsFile.tabs
+          : (await restarted.recoverHostRuntime(SCOPE)).tabs;
+
+      const ledger = tabs[0]?.inputDelivery;
+      expect(isInputLedger(ledger) ? ledger.rows[0]?.state : ledger).toBe(
+        'uncertain',
+      );
+    },
+  );
+
+  it('schedules history resolution only after root input execution has committed', async () => {
+    const f = await deliveryFixture();
+    await expect(f.steer()).resolves.toBe(true);
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing current input attempt');
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((candidate) =>
+        candidate.id === row.id
+          ? {
+              ...candidate,
+              state: 'picked-up',
+              attempts: candidate.attempts.map((attempt) =>
+                attempt.id === row.currentAttemptId
+                  ? {
+                      ...attempt,
+                      pickedUpAt: 1,
+                      rootUserMessageId: 'root-1',
+                    }
+                  : attempt,
+              ),
+            }
+          : candidate,
+      ),
+    }));
+    let inputExecutionCommitCompleted = false;
+    const transactWith = f.repository.transactWith.bind(f.repository);
+    jest
+      .spyOn(f.repository, 'transactWith')
+      .mockImplementation(async (...args) => {
+        const commit = await transactWith(...args);
+        inputExecutionCommitCompleted = true;
+        return commit;
+      });
+    const scheduleHistoryResolution = jest.fn(() => {
+      expect(inputExecutionCommitCompleted).toBe(true);
+    });
+    Object.defineProperty(f.target.inputDelivery, 'scheduleHistoryResolution', {
+      value: scheduleHistoryResolution,
+    });
+
+    await expect(
+      f.target.ingestProviderEvent({
+        ...f.scope,
+        turnUserMessageId: 'root-1',
+        data: { type: 'result', is_error: false, result: 'Finished' },
+      }),
+    ).resolves.toBe(true);
+
+    expect(scheduleHistoryResolution).toHaveBeenCalledWith(f.scope);
+    const persisted = await f.repository.getState(f.scope);
+    expect(
+      persisted.tabsFile.tabs[0].inputDelivery?.rows[0]?.attempts[0],
+    ).toMatchObject({
+      turnOutcome: 'completed',
+      turnSettledAt: expect.any(Number),
+    });
+  });
+
+  it('schedules history resolution for an uncertain attempt after root completion', async () => {
+    const f = await deliveryFixture();
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    expect(await f.getRow()).toMatchObject({ state: 'uncertain' });
+
+    const scheduleHistoryResolution = jest.fn();
+    Object.defineProperty(f.target.inputDelivery, 'scheduleHistoryResolution', {
+      value: scheduleHistoryResolution,
+    });
+
+    await expect(
+      f.target.ingestProviderEvent({
+        ...f.scope,
+        turnUserMessageId: 'root-1',
+        data: { type: 'result', is_error: false, result: 'Finished' },
+      }),
+    ).resolves.toBe(true);
+
+    expect(scheduleHistoryResolution).toHaveBeenCalledWith(f.scope);
+    expect(await f.getRow()).toMatchObject({ state: 'uncertain' });
+  });
+
+  it('captures the provider steering target with the attempt and submits it', async () => {
+    const f = await deliveryFixture();
+    const target = { sessionId: 'provider-session-1', turnId: 'turn-1' };
+    f.session.getSteeringTarget = jest.fn(() => target);
+
+    await expect(f.steer()).resolves.toBe(true);
+
+    const attempt = (await f.getRow()).attempts[0];
+    expect(attempt?.target).toEqual(target);
+    expect(f.submission.mock.calls[0]?.[3]).toEqual(target);
+  });
+
+  it('captures a fresh steering target when Resend creates its attempt', async () => {
+    const f = await deliveryFixture();
+    const target = { sessionId: 'provider-session-2', turnId: 'turn-2' };
+    f.session.getSteeringTarget = jest.fn(() => target);
+    await f.steer();
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((row) =>
+        row.id === 'row-1' ? { ...row, state: 'cancelled' } : row,
+      ),
+    }));
+
+    await expect(f.action('resend')).resolves.toMatchObject({
+      outcome: 'applied',
+    });
+
+    const attempts = (await f.getRow()).attempts;
+    expect(attempts[1]?.target).toEqual(target);
+    expect(f.submission.mock.calls[1]?.[3]).toEqual(target);
+  });
+
+  it('schedules provider-history reconciliation without awaiting it', async () => {
+    const f = await deliveryFixture();
+    f.session.getSteeringTarget = () => ({
+      sessionId: 'provider-session-1',
+      turnId: 'turn-1',
+    });
+    await f.steer();
+    const row = await f.getRow();
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((candidate) =>
+        candidate.id === row.id
+          ? { ...candidate, state: 'uncertain' }
+          : candidate,
+      ),
+    }));
+    mockedReadDeliveryHistory.mockImplementation(() => new Promise(() => {}));
+
+    expect(
+      f.target.inputDelivery.scheduleHistoryResolution(f.scope),
+    ).toBeUndefined();
+  });
+
+  function useCodexHistory(
+    f: Awaited<ReturnType<typeof deliveryFixture>>,
+  ): void {
+    f.session.getSteeringCapabilities = () => ({
+      provider: 'codex',
+      generation: 'generation-1',
+      steer: true,
+      withdraw: true,
+      interrupt: true,
+    });
+    f.session.getSteeringTarget = () => ({
+      sessionId: 'codex-thread-1',
+      turnId: 'codex-turn-1',
+    });
+  }
+
+  async function makeDeliveryUncertain(
+    f: Awaited<ReturnType<typeof deliveryFixture>>,
+  ): Promise<void> {
+    const row = await f.getRow();
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((candidate) =>
+        candidate.id === row.id
+          ? { ...candidate, state: 'uncertain' }
+          : candidate,
+      ),
+    }));
+  }
+
+  async function waitForHistoryRow(
+    f: Awaited<ReturnType<typeof deliveryFixture>>,
+    predicate: (row: Awaited<ReturnType<typeof f.getRow>>) => boolean,
+  ): Promise<Awaited<ReturnType<typeof f.getRow>>> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const row = await f.getRow();
+      if (predicate(row)) return row;
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+    throw new Error('Provider-history reconciliation did not settle');
+  }
+
+  it('reconciles a found attempt through pickup and consumes the restored queue copy', async () => {
+    const instruction = { id: 'history-instruction', text: 'Apply once' };
+    const f = await deliveryFixture({
+      pendingSystemInstructions: [instruction],
+    });
+    useCodexHistory(f);
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'tab.metadata_patched',
+          tabId: f.scope.chatId,
+          patch: { pendingSystemInstructions: [instruction] },
+        },
+      ],
+      { source: 'provider', mutationId: 'history-instruction' },
+    );
+    await f.steer();
+    const initial = await f.getRow();
+    await makeDeliveryUncertain(f);
+    mockedReadDeliveryHistory.mockResolvedValue('found');
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+
+    const resolved = await waitForHistoryRow(
+      f,
+      (row) => row.state === 'picked-up',
+    );
+    const state = await f.target.getState(SCOPE);
+    expect(initial.attempts[0]?.withdrawnAt).toBeUndefined();
+    expect(resolved.attempts[0]?.pickedUpAt).toEqual(expect.any(Number));
+    expect(
+      state.tabsFile.tabs[0]?.messages.filter(
+        (message) => message.id === initial.id,
+      ),
+    ).toHaveLength(1);
+    expect(
+      state.tabsFile.tabs[0]?.messages.some(
+        (message) => message.id === `${initial.id}:timer`,
+      ),
+    ).toBe(false);
+    expect(state.tabsFile.tabs[0]?.pendingSystemInstructions).toEqual([]);
+    expect(queueConsumeRestoredInput).toHaveBeenCalledWith(f.scope, initial.id);
+  });
+
+  it('uses current-attempt history evidence when another attempt is not found', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    await f.steer();
+    const initial = await f.getRow();
+    const first = initial.attempts[0];
+    if (!first) throw new Error('Missing first test attempt');
+    const current = {
+      ...first,
+      id: 'current-history-attempt',
+      createdAt: first.createdAt + 1,
+    };
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((row) =>
+        row.id === initial.id
+          ? {
+              ...row,
+              currentAttemptId: current.id,
+              state: 'uncertain',
+              attempts: [...row.attempts, current],
+            }
+          : row,
+      ),
+    }));
+    mockedReadDeliveryHistory.mockImplementation(async (query) =>
+      query.attemptId === current.id ? 'found' : 'not-found',
+    );
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+
+    const resolved = await waitForHistoryRow(
+      f,
+      (row) => row.state === 'picked-up',
+    );
+    expect(mockedReadDeliveryHistory).toHaveBeenCalledTimes(2);
+    expect(resolved.currentAttemptId).toBe(current.id);
+  });
+
+  it('marks attempts predating the process start as previousRun history queries', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    await f.steer();
+    await makeDeliveryUncertain(f);
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((row) => ({
+        ...row,
+        attempts: row.attempts.map((attempt) => ({
+          ...attempt,
+          createdAt: 0,
+        })),
+      })),
+    }));
+    const queryMade = { resolve: (): void => undefined };
+    const queryStarted = new Promise<void>((resolve) => {
+      queryMade.resolve = resolve;
+    });
+    mockedReadDeliveryHistory.mockImplementation(async (query) => {
+      expect(query.previousRun).toBe(true);
+      queryMade.resolve();
+      return 'unreadable';
+    });
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+    await queryStarted;
+
+    expect(mockedReadDeliveryHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('rotates bounded history passes past unreadable early candidates', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    const first = await f.getRow();
+    const firstAttempt = first.attempts[0];
+    if (!firstAttempt) throw new Error('Missing test input attempt');
+    const candidateRows = Array.from({ length: 52 }, (_unused, index) => {
+      const id = `history-row-${index}`;
+      const attemptId = `history-attempt-${index}`;
+      const text = `History candidate ${index}`;
+      return {
+        ...first,
+        id,
+        text,
+        payload: { ...first.payload, userMessageId: id, text },
+        state: 'uncertain' as const,
+        currentAttemptId: attemptId,
+        attempts: [{ ...firstAttempt, id: attemptId }],
+      };
+    });
+    await f.updateLedger((ledger) => ({ ...ledger, rows: candidateRows }));
+    mockedReadDeliveryHistory.mockImplementation(async (query) =>
+      query.attemptId === 'history-attempt-51' ? 'found' : 'unreadable',
+    );
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const laterRow = (await f.getLedger()).rows.find(
+        (candidate) => candidate.id === 'history-row-51',
+      );
+      if (laterRow?.state === 'picked-up') break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+    expect(
+      (await f.getLedger()).rows.find(
+        (candidate) => candidate.id === 'history-row-51',
+      ),
+    ).toMatchObject({ state: 'picked-up' });
+    expect(mockedReadDeliveryHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptId: 'history-attempt-51' }),
+    );
+  });
+
+  it('keeps a row uncertain when provider history finds only a superseded attempt', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    await f.steer();
+    const initial = await f.getRow();
+    const first = initial.attempts[0];
+    if (!first) throw new Error('Missing first test attempt');
+    const second = {
+      ...first,
+      id: 'superseding-attempt',
+      createdAt: first.createdAt + 1,
+    };
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((row) =>
+        row.id === initial.id
+          ? {
+              ...row,
+              currentAttemptId: second.id,
+              state: 'uncertain',
+              attempts: [...row.attempts, second],
+            }
+          : row,
+      ),
+    }));
+    mockedReadDeliveryHistory.mockImplementation(async (query) =>
+      query.attemptId === first.id ? 'found' : 'not-found',
+    );
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+
+    const resolved = await waitForHistoryRow(
+      f,
+      (row) => row.attempts[0]?.pickedUpAt !== undefined,
+    );
+    expect(resolved.state).toBe('uncertain');
+    expect(resolved.currentAttemptId).toBe(second.id);
+    expect(resolved.attempts[0]?.pickedUpAt).toEqual(expect.any(Number));
+  });
+
+  it('cancels all-not-found rows and restores generated input ordinary-only', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    useCodexHistory(f);
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    const initial = await f.getRow();
+    const epoch = (await f.getLedger()).epoch;
+    mockedReadDeliveryHistory.mockResolvedValue('not-found');
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+
+    const resolved = await waitForHistoryRow(
+      f,
+      (row) => row.notDelivered !== undefined,
+    );
+    expect(resolved.state).toBe('cancelled');
+    expect(queueRestoreInput).toHaveBeenCalledWith(
+      initial.payload,
+      initial.id,
+      undefined,
+      epoch,
+      'desktop',
+      undefined,
+      {
+        ordinaryOnly: true,
+        waitForQueue: true,
+        continuation: { attemptId: initial.currentAttemptId, epoch },
+      },
+    );
+    expect(
+      mockInputDeliveryOutcomes
+        .filter((record) => record.inputAttemptId === initial.currentAttemptId)
+        .map((record) => record.inputDeliveryOutcome),
+    ).toEqual(['unknown-transport', 'history-not-delivered']);
+  });
+
+  it('does not send typed input after all attempts are proven not found', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    await makeDeliveryUncertain(f);
+    mockedReadDeliveryHistory.mockResolvedValue('not-found');
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+
+    const resolved = await waitForHistoryRow(
+      f,
+      (row) => row.notDelivered !== undefined,
+    );
+    expect(resolved.state).toBe('cancelled');
+    expect(f.submission).toHaveBeenCalledTimes(1);
+    expect(queueRestoreInput).not.toHaveBeenCalled();
+  });
+
+  it.each(['unreadable result', 'missing target'] as const)(
+    'leaves uncertain input unchanged for a %s',
+    async (reason) => {
+      const f = await deliveryFixture();
+      useCodexHistory(f);
+      await f.steer();
+      await makeDeliveryUncertain(f);
+      const before = await f.getRow();
+      if (reason === 'missing target') {
+        await f.updateLedger((ledger) => ({
+          ...ledger,
+          rows: ledger.rows.map((row) =>
+            row.id === before.id
+              ? {
+                  ...row,
+                  attempts: row.attempts.map((attempt) => ({
+                    ...attempt,
+                    target: undefined,
+                  })),
+                }
+              : row,
+          ),
+        }));
+        mockedReadDeliveryHistory.mockResolvedValue('found');
+      } else {
+        mockedReadDeliveryHistory.mockResolvedValue('unreadable');
+      }
+
+      f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+      expect((await f.getRow()).state).toBe('uncertain');
+      expect(queueRestoreInput).not.toHaveBeenCalled();
+      if (reason === 'missing target')
+        expect(mockedReadDeliveryHistory).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not wait for provider history from getState', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    const restarted = serviceWithRepository(
+      { inputSession: async () => undefined },
+      copyDurableFilesAtBoundary(),
+    ).target;
+    Object.defineProperty(restarted, 'reconcileHostRuntime', { value: true });
+    mockedReadDeliveryHistory.mockImplementation(() => new Promise(() => {}));
+    // The reader never settles: awaiting it would hang getState past the test timeout.
+    await expect(restarted.getState(SCOPE)).resolves.toBeDefined();
+  });
+
+  it('coalesces repeated history schedules into one rerun', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    await f.steer();
+    await makeDeliveryUncertain(f);
+    const started: { resolve: () => void } = { resolve: () => undefined };
+    const queryStarted = new Promise<void>((resolve) => {
+      started.resolve = resolve;
+    });
+    let releaseRead: (value: 'unreadable') => void = () => undefined;
+    const blockedRead = new Promise<'unreadable'>((resolve) => {
+      releaseRead = resolve;
+    });
+    mockedReadDeliveryHistory.mockImplementation(() => {
+      started.resolve();
+      return blockedRead;
+    });
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+    await queryStarted;
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+    expect(mockedReadDeliveryHistory).toHaveBeenCalledTimes(1);
+    releaseRead('unreadable');
+    for (
+      let attempt = 0;
+      attempt < 100 && mockedReadDeliveryHistory.mock.calls.length < 2;
+      attempt += 1
+    )
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    expect(mockedReadDeliveryHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['epoch change', 'new attempt'] as const)(
+    'does not apply a history result after an %s during the read',
+    async (change) => {
+      const f = await deliveryFixture();
+      useCodexHistory(f);
+      await f.steer();
+      await makeDeliveryUncertain(f);
+      const initial = await f.getRow();
+      const started = { resolve: (): void => undefined };
+      const queryStarted = new Promise<void>((resolve) => {
+        started.resolve = resolve;
+      });
+      let releaseRead: (value: 'found') => void = () => undefined;
+      const blockedRead = new Promise<'found'>((resolve) => {
+        releaseRead = resolve;
+      });
+      mockedReadDeliveryHistory.mockImplementation(() => {
+        started.resolve();
+        return blockedRead;
+      });
+
+      f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+      await queryStarted;
+      await f.updateLedger((ledger) => ({
+        ...ledger,
+        ...(change === 'epoch change' ? { epoch: ledger.epoch + 1 } : {}),
+        rows: ledger.rows.map((row) => {
+          if (row.id !== initial.id || change !== 'new attempt') return row;
+          const first = row.attempts[0];
+          if (!first) return row;
+          const next = { ...first, id: 'attempt-created-during-read' };
+          return {
+            ...row,
+            currentAttemptId: next.id,
+            attempts: [...row.attempts, next],
+          };
+        }),
+      }));
+      releaseRead('found');
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+      const resolved = await f.getRow();
+      expect(resolved.state).toBe('uncertain');
+      expect(
+        resolved.attempts.every((attempt) => attempt.pickedUpAt === undefined),
+      ).toBe(true);
+      expect(
+        (await f.target.getState(SCOPE)).tabsFile.tabs[0]?.messages.some(
+          (message) => message.id === initial.id,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it('checks uncertain input history before Resend, and sends only when history does not prove pickup', async () => {
+    const found = await deliveryFixture();
+    useCodexHistory(found);
+    found.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await found.steer();
+    mockedReadDeliveryHistory.mockResolvedValue('found');
+    await expect(found.action('resend')).resolves.toMatchObject({
+      outcome: 'applied',
+    });
+    expect(found.submission).toHaveBeenCalledTimes(1);
+    expect((await found.getRow()).attempts[0]?.pickedUpAt).toEqual(
+      expect.any(Number),
+    );
+
+    const unreadable = await deliveryFixture({}, {}, isolatedServicePaths());
+    useCodexHistory(unreadable);
+    unreadable.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await unreadable.steer();
+    mockedReadDeliveryHistory.mockResolvedValue('unreadable');
+    await expect(unreadable.action('resend')).resolves.toMatchObject({
+      outcome: 'applied',
+    });
+    expect(unreadable.submission).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets an idle Resend queue an uncertain row', async () => {
+    const f = await deliveryFixture();
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    const row = await f.getRow();
+    expect(row.state).toBe('uncertain');
+    // An idle session's Resend restores the row to the queue instead of steering.
+    await f.target.reconcileHostQueue(f.scope, [row.id], false, {
+      type: 'restore-input',
+      request: row.payload,
+      rowId: row.id,
+      epoch: (await f.getLedger()).epoch,
+      allowUncertain: true,
+    });
+    expect(await f.getRow()).toMatchObject({ state: 'queued' });
+  });
+
+  it('opts in when an idle Resend restores an uncertain row through the host queue', async () => {
+    const f = await deliveryFixture();
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    await f.setRuntime('completed');
+    f.session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'generation-1',
+      steer: false,
+      withdraw: true,
+      interrupt: true,
+    });
+
+    await expect(f.action('resend')).resolves.toMatchObject({
+      outcome: 'applied',
+    });
+
+    expect(queueRestoreInput.mock.calls[0]?.[6]).toEqual({
+      allowUncertain: true,
+    });
+  });
+
+  it('rejects restore-input without allowUncertain for an uncertain row', async () => {
+    const f = await deliveryFixture();
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    const row = await f.getRow();
+    expect(row.state).toBe('uncertain');
+
+    await expect(
+      f.target.reconcileHostQueue(f.scope, [row.id], false, {
+        type: 'restore-input',
+        request: row.payload,
+        rowId: row.id,
+        epoch: (await f.getLedger()).epoch,
+      }),
+    ).rejects.toThrow('The input is no longer available to queue');
+    expect(await f.getRow()).toMatchObject({ state: 'uncertain' });
+  });
+
+  it('records a history-delivered diagnostic after an earlier unknown outcome', async () => {
+    const f = await deliveryFixture();
+    useCodexHistory(f);
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'unknown',
+      attemptId,
+      reason: 'Transport unavailable',
+    }));
+    await f.steer();
+    const attemptId = (await f.getRow()).currentAttemptId;
+    mockedReadDeliveryHistory.mockResolvedValue('found');
+
+    f.target.inputDelivery.scheduleHistoryResolution(f.scope);
+
+    await waitForHistoryRow(f, (row) => row.state === 'picked-up');
+    expect(
+      mockInputDeliveryOutcomes
+        .filter((record) => record.inputAttemptId === attemptId)
+        .map((record) => record.inputDeliveryOutcome),
+    ).toEqual(['unknown-transport', 'history-delivered']);
+  });
+
+  it.each(['runtime queued messages', 'ledger-only fallback'] as const)(
+    'hydrates ordinary-only from the ledger by id for the %s path',
+    async (path) => {
+      const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'rejected',
+        attemptId,
+        reason: 'Turn ended',
+        fallback: 'ordinary',
+      }));
+      await f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'desktop',
+        true,
+      );
+      const pending = await f.getRow();
+      const continuation = pending.ordinaryContinuation;
+      if (!continuation) throw new Error('Missing ordinary continuation');
+      const queueRowId =
+        path === 'runtime queued messages' ? 'queue-2' : pending.id;
+      const queuedMessage: PersistedHostQueuedMessage = {
+        id: queueRowId,
+        request: f.request,
+        origin: 'desktop',
+        enqueuedAtMs: 124,
+      };
+      await f.target.reconcileHostQueue(
+        f.scope,
+        [queueRowId],
+        false,
+        {
+          type: 'restore-input',
+          rowId: pending.id,
+          epoch: continuation.epoch,
+          request: f.request,
+          ordinaryOnly: true,
+          continuation,
+        },
+        path === 'runtime queued messages' ? [queuedMessage] : undefined,
+      );
+      const hydratePersistedInput = jest
+        .spyOn(getChatQueueService(), 'hydratePersistedInput')
+        .mockImplementation(() => undefined);
+      const restarted = serviceWithRepository(
+        { inputSession: async () => undefined },
+        copyDurableFilesAtBoundary(),
+      ).target;
+      Object.defineProperty(restarted, 'reconcileHostRuntime', {
+        value: true,
+      });
+
+      await restarted.getState(SCOPE);
+
+      expect(hydratePersistedInput).toHaveBeenCalledWith(
+        f.request,
+        queueRowId,
+        'desktop',
+        path === 'runtime queued messages' ? 124 : pending.createdAt,
+        undefined,
+        undefined,
+        { ordinaryOnly: true },
+      );
+    },
+  );
+
+  it.each([
+    'immediate requeue',
+    'late settlement',
+    'generated Resend',
+  ] as const)(
+    'recovers a generated cancelled continuation after restart as one ordinary full turn (%s)',
+    async (fallbackPath) => {
+      const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+      // Stop at the first durable boundary: no restore-input transaction lands.
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      if (fallbackPath === 'generated Resend') {
+        await f.target.inputDelivery.steerGenerated(
+          f.request,
+          () => [],
+          'desktop',
+          true,
+        );
+        await f.action('cancel');
+      }
+      let settle: (result: ChatInputAdmission) => void = () => {
+        throw new Error('The late submission was not initialized');
+      };
+      f.submission.mockImplementation(async (_text, attemptId) => {
+        if (fallbackPath === 'late settlement') {
+          const settlement = new Promise<ChatInputAdmission>((resolve) => {
+            settle = resolve;
+          });
+          return { kind: 'pending', attemptId, settlement };
+        }
+        return {
+          kind: 'rejected',
+          attemptId,
+          reason: 'The provider stopped steering.',
+          fallback: 'ordinary',
+        };
+      });
+      if (fallbackPath === 'generated Resend') await f.action('resend');
+      else
+        await f.target.inputDelivery.steerGenerated(
+          f.request,
+          () => [],
+          'desktop',
+          true,
+        );
+      if (fallbackPath === 'late settlement') {
+        const pending = await f.getRow();
+        if (!pending.currentAttemptId)
+          throw new Error('Missing pending attempt');
+        settle({
+          kind: 'rejected',
+          attemptId: pending.currentAttemptId,
+          reason: 'The provider stopped steering.',
+          fallback: 'ordinary',
+        });
+      }
+      let cancelled = await f.getRow();
+      for (
+        let attempt = 0;
+        attempt < 100 &&
+        (!cancelled.ordinaryContinuation ||
+          (fallbackPath !== 'immediate requeue' &&
+            restore.mock.calls.length === 0));
+        attempt++
+      ) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 2));
+        cancelled = await f.getRow();
+      }
+      restore.mockRestore();
+      expect(cancelled.state).toBe('cancelled');
+      expect(cancelled.ordinaryContinuation).toEqual({
+        attemptId: cancelled.currentAttemptId,
+        epoch: 0,
+      });
+      await f.setRuntime('completed');
+
+      const restarted = serviceWithRepository(
+        { inputSession: async () => undefined },
+        copyDurableFilesAtBoundary(),
+      ).target;
+      Object.defineProperty(restarted, 'reconcileHostRuntime', {
+        value: true,
+      });
+      const dispatched: Array<{
+        request: ChatSendMessageRequest;
+        fromQueue: boolean;
+      }> = [];
+      const steeringCalls: string[] = [];
+      const queue = stateBackedQueue(
+        restarted,
+        async (request, _origin, fromQueue) => {
+          dispatched.push({ request, fromQueue });
+        },
+        {
+          steerGenerated: async (request) => {
+            steeringCalls.push(request.userMessageId);
+            return { status: 'handled' };
+          },
+          steerQueuedGenerated: async (request) => {
+            steeringCalls.push(request.userMessageId);
+            return { status: 'handled' };
+          },
+        },
+      );
+      mockedGetChatQueueService.mockReturnValue(queue);
+
+      await restarted.getState(SCOPE);
+      for (let attempt = 0; attempt < 200 && dispatched.length === 0; attempt++)
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      await restarted.getState(SCOPE);
+
+      expect(dispatched).toEqual([{ request: f.request, fromQueue: true }]);
+      expect(steeringCalls).toEqual([]);
+      const recovered = (
+        await restarted.getState(SCOPE)
+      ).tabsFile.tabs[0].inputDelivery?.rows.find(
+        (row) => row.id === cancelled.id,
+      );
+      expect(recovered).toMatchObject({
+        state: 'queued',
+        ordinaryOnly: true,
+      });
+      expect(recovered?.ordinaryContinuation).toBeUndefined();
+      queue.resetForTests();
+    },
+  );
+
+  it.each([false, true])(
+    'coalesces repeated hydration while the queue is busy (in-process restore=%s)',
+    async (concurrentRestore) => {
+      const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'rejected',
+        attemptId,
+        reason: 'Turn ended',
+        fallback: 'ordinary',
+      }));
+      await f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'desktop',
+        true,
+      );
+      const row = await f.getRow();
+      const continuation = row.ordinaryContinuation;
+      if (!continuation) throw new Error('Missing ordinary continuation');
+      await f.setRuntime('completed');
+      Object.defineProperty(f.target, 'reconcileHostRuntime', { value: true });
+      let releaseDispatch: () => void = () => undefined;
+      let enteredDispatch: () => void = () => undefined;
+      const blocked = new Promise<void>((resolve) => {
+        releaseDispatch = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        enteredDispatch = resolve;
+      });
+      let restoredDispatched: () => void = () => undefined;
+      const restoredDispatch = new Promise<void>((resolve) => {
+        restoredDispatched = resolve;
+      });
+      const steerQueuedGenerated = jest.fn(async () => {
+        throw new Error('Ordinary-only input must never steer');
+      });
+      const requests: string[] = [];
+      const restoreMutations: ChatQueuePersistenceMutation[] = [];
+      const queue = stateBackedQueue(
+        f.target,
+        async (request) => {
+          requests.push(request.userMessageId);
+          if (request.userMessageId === 'blocking-turn') {
+            enteredDispatch();
+            await blocked;
+          } else {
+            restoredDispatched();
+          }
+        },
+        {
+          persistRuntime: async (...args) => {
+            if (args[3]?.type === 'restore-input')
+              restoreMutations.push(args[3]);
+            await f.target.reconcileHostQueue(...args);
+          },
+          steerQueuedGenerated,
+        },
+      );
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const busy = queue.submit(
+        {
+          ...f.request,
+          userMessageId: 'blocking-turn',
+          text: 'Blocking turn',
+          watcherFired: undefined,
+        },
+        'desktop',
+      );
+      await entered;
+      const inProcess = concurrentRestore
+        ? queue.restoreWithdrawnInput(
+            f.request,
+            row.id,
+            undefined,
+            continuation.epoch,
+            'desktop',
+            undefined,
+            { ordinaryOnly: true, waitForQueue: true, continuation },
+          )
+        : undefined;
+      // These reads must finish without waiting for the busy queue's dispatch.
+      await Promise.all([
+        f.target.getState(SCOPE),
+        f.target.getState(SCOPE),
+        f.target.getState(SCOPE),
+      ]);
+      expect(restoreMutations).toEqual([]);
+      const restoration =
+        inProcess ??
+        queue.restoreWithdrawnInput(
+          f.request,
+          row.id,
+          undefined,
+          continuation.epoch,
+          'desktop',
+          undefined,
+          { ordinaryOnly: true, waitForQueue: true, continuation },
+        );
+      releaseDispatch();
+      await busy;
+      await restoration;
+      await f.target.getState(SCOPE);
+      expect(restoreMutations).toHaveLength(1);
+      expect(
+        queue
+          .getWorktreeSnapshots(f.scope.projectId, f.scope.worktreeId)[0]
+          ?.queue.map((message) => message.id),
+      ).toEqual([row.id]);
+      queue.notifySteeringEligibility(
+        `${f.scope.projectId}/${f.scope.worktreeId}/${f.scope.chatId}`,
+      );
+      queue.onTurnTerminal(f.scope, 'complete', 'blocking-turn');
+      await restoredDispatch;
+      expect(steerQueuedGenerated).not.toHaveBeenCalled();
+      expect(requests).toEqual(['blocking-turn', f.request.userMessageId]);
+      expect(restoreMutations).toHaveLength(1);
+      queue.resetForTests();
+    },
+  );
+
+  it('persists a dequeued host row as starting before its dispatch dependency runs', async () => {
+    const target = service();
+    await createChat(target);
+    await markRuntimeCompleted(target, 'completed-turn');
+    let observedStatus: ChatRuntimeState['status'] | undefined;
+    let observedActiveTurnUserMessageId: string | undefined;
+    let resolveDispatchObserved: () => void = () => undefined;
+    const dispatchObserved = new Promise<void>((resolve) => {
+      resolveDispatchObserved = resolve;
+    });
+    const queue = stateBackedQueue(target, async (request) => {
+      if (request.userMessageId !== 'queued-dispatch-user') return;
+      const runtime = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
+      observedStatus = runtime?.status;
+      observedActiveTurnUserMessageId = runtime?.activeTurn?.userMessageId;
+      resolveDispatchObserved();
+    });
+
+    try {
+      await queue.submit(
+        {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: 'active-root',
+          text: 'Host-owned root turn',
+        },
+        'desktop',
+      );
+      await queue.submit(
+        {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: 'queued-dispatch-user',
+          text: 'Dispatch after completed turn',
+          providerType: 'claude',
+          model: 'claude-opus-4-6',
+        },
+        'desktop',
+      );
+      queue.onTurnTerminal(
+        { ...SCOPE, chatId: 'chat-1' },
+        'complete',
+        'active-root',
+      );
+      await dispatchObserved;
+
+      expect(observedStatus).toBe('starting');
+      expect(observedActiveTurnUserMessageId).toBe('queued-dispatch-user');
+    } finally {
+      queue.resetForTests();
+    }
+  });
+
+  it('clears the previous empty-completion error when a queued turn starts', async () => {
+    const target = service();
+    await createChat(target);
+    await target.command(
+      envelope('send-empty-before-queued', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'empty-before-queued',
+        text: 'Prior turn completed without output',
+      }),
+    );
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'empty-before-queued',
+      mutationId: 'empty-before-queued:terminal',
+      data: {
+        type: 'result',
+        is_error: false,
+        result: 'Completed',
+        duration_ms: 50,
+      },
+    });
+    expect(
+      (await target.getState(SCOPE)).runtimeByChatId['chat-1'],
+    ).toMatchObject({
+      status: 'failed',
+      error: { code: 'empty_completion' },
+      emptyCompletionRecovery: {
+        turnUserMessageId: 'empty-before-queued',
+      },
+    });
+    const dispatching: PersistedHostQueuedMessage = {
+      id: 'queued-after-empty',
+      request: {
+        ...SCOPE,
+        chatId: 'chat-1',
+        userMessageId: 'queued-after-empty-user',
+        text: 'Retry after the empty completion',
+      },
+      origin: 'desktop',
+      enqueuedAtMs: 123,
+    };
+
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      [],
+      true,
+      undefined,
+      [],
+      'queued-after-empty-user',
+      dispatching,
+    );
+
+    const runtime = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
+    expect(runtime).toMatchObject({
+      status: 'starting',
+      activeTurn: { userMessageId: 'queued-after-empty-user' },
+    });
+    expect(runtime).not.toHaveProperty('error');
+    expect(runtime).not.toHaveProperty('emptyCompletionRecovery');
+  });
+
+  it('restores a refused host dispatch from starting to queued', async () => {
+    const target = service();
+    await createChat(target);
+    await markRuntimeCompleted(target, 'completed-before-refusal');
+    let observedStatus: ChatRuntimeState['status'] | undefined;
+    let resolveDispatchObserved: () => void = () => undefined;
+    const dispatchObserved = new Promise<void>((resolve) => {
+      resolveDispatchObserved = resolve;
+    });
+    const queue = stateBackedQueue(target, async (request) => {
+      if (request.userMessageId !== 'refused-dispatch-user') return;
+      observedStatus = (await target.getState(SCOPE)).runtimeByChatId['chat-1']
+        ?.status;
+      resolveDispatchObserved();
+      throw new TurnAuthPreflightBlockedError([
+        {
+          dependencyClass: 'mcp',
+          dependencyId: 'server-1:config-1',
+          displayName: 'Build MCP server',
+          failureClass: 'unauthenticated',
+          recovery: {
+            kind: 'mcp_oauth',
+            serverId: 'server-1',
+            configId: 'config-1',
+          },
+        },
+      ]);
+    });
+
+    try {
+      await queue.submit(
+        {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: 'active-root-for-refusal',
+          text: 'Host-owned root turn',
+        },
+        'desktop',
+      );
+      await queue.submit(
+        {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: 'refused-dispatch-user',
+          text: 'Refused queued turn',
+          providerType: 'claude',
+          model: 'claude-opus-4-6',
+        },
+        'desktop',
+      );
+      await target.commitPlanExit({
+        ...SCOPE,
+        chatId: 'chat-1',
+        requestId: 'review-before-refused-dispatch',
+        source: 'claude',
+        reviewMode: 'manual',
+        planId: 'tracked-plan',
+        revisionNumber: 1,
+        toolInput: { plan: 'Keep this review until revision is accepted' },
+      });
+      const pendingReview = (await target.getState(SCOPE)).tabsFile.tabs[0];
+      queue.onTurnTerminal(
+        { ...SCOPE, chatId: 'chat-1' },
+        'complete',
+        'active-root-for-refusal',
+      );
+      await dispatchObserved;
+      const restored = await waitForQueuedRuntime(target, 'queue-dispatch');
+
+      expect(observedStatus).toBe('starting');
+      expect(restored).toMatchObject({
+        status: 'queued',
+        queuedMessageIds: ['queue-dispatch'],
+      });
+      await readThroughFreshRepository(target, async (reader) => {
+        const tab = (await reader.getState(SCOPE)).tabsFile.tabs[0];
+        expect(tab?.pendingPlanExitRequestId).toBe(
+          'review-before-refused-dispatch',
+        );
+        expect(tab?.pendingPlanExit).toEqual(pendingReview?.pendingPlanExit);
+      });
+    } finally {
+      queue.resetForTests();
+    }
+  });
+
+  it('does not start an adopted provider turn without a dispatching queue row', async () => {
+    const target = service();
+    await createChat(target);
+    await markRuntimeCompleted(target, 'completed-before-adoption');
+
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      [],
+      true,
+      undefined,
+      [],
+      'adopted-provider-turn',
+    );
+
+    expect(
+      (await target.getState(SCOPE)).runtimeByChatId['chat-1'],
+    ).toMatchObject({
+      status: 'completed',
+      activeTurn: { userMessageId: 'adopted-provider-turn' },
+    });
+  });
+
+  it('clears a queued dispatch starting status when a stale turn gate is released', async () => {
+    const target = service();
+    await createChat(target);
+    const dispatching: PersistedHostQueuedMessage = {
+      id: 'dispatch-row',
+      request: {
+        ...SCOPE,
+        chatId: 'chat-1',
+        userMessageId: 'stale-dispatch-user',
+        text: 'Dispatch without provider events',
+      },
+      origin: 'desktop',
+      enqueuedAtMs: 123,
+    };
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      [],
+      true,
+      undefined,
+      [],
+      'stale-dispatch-user',
+      dispatching,
+    );
+    expect(
+      (await target.getState(SCOPE)).runtimeByChatId['chat-1'],
+    ).toMatchObject({
+      status: 'starting',
+      activeTurn: { userMessageId: 'stale-dispatch-user' },
+    });
+
+    // reconcileStaleTurnGate releases by broadcasting with turnActive false,
+    // no activeTurnUserMessageId, and no inFlight row.
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      [],
+      false,
+      undefined,
+      [],
+    );
+
+    expect(
+      (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.status,
+    ).toBe('idle');
+  });
+
+  it('hides internal host-queue payloads from snapshots without losing durable queue state', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    const scope = { ...SCOPE, chatId: 'chat-1' };
+    const internalRowRequest: ChatSendMessageRequest = {
+      ...scope,
+      userMessageId: 'internal-row',
+      managedDelegationDeliveryId: 'internal-row',
+      text: 'Private delegation request payload',
+      providerType: 'claude',
+      model: 'claude-opus-4-6',
+      internalRow: {
+        kind: 'delegation-request',
+        delegationId: 'delegation-1',
+        displayLine: 'Waiting for the parent',
+      },
+    };
+    const legacyInternalRequest: ChatSendMessageRequest = {
+      ...scope,
+      userMessageId: 'legacy-internal-row',
+      text: 'Legacy private delegation request payload',
+      providerType: 'claude',
+      model: 'claude-opus-4-6',
+      managedDelegationDeliveryId: 'delivery-1',
+    };
+    const visibleRequest: ChatSendMessageRequest = {
+      ...scope,
+      userMessageId: 'visible-row',
+      text: 'Visible follow-up',
+      providerType: 'claude',
+      model: 'claude-opus-4-6',
+    };
+    const queueMessages: PersistedHostQueuedMessage[] = [
+      {
+        id: 'internal-row',
+        request: internalRowRequest,
+        origin: 'desktop',
+        enqueuedAtMs: 1,
+      },
+      {
+        id: 'legacy-internal-row',
+        request: legacyInternalRequest,
+        origin: 'desktop',
+        enqueuedAtMs: 2,
+      },
+      {
+        id: 'visible-row',
+        request: visibleRequest,
+        origin: 'desktop',
+        enqueuedAtMs: 3,
+      },
+    ];
+    const allQueueIds = [
+      'internal-row',
+      'legacy-internal-row',
+      'visible-row',
+      'unresolved-id',
+    ];
+
+    await target.reconcileHostQueue(
+      scope,
+      allQueueIds,
+      true,
+      undefined,
+      queueMessages,
+    );
+
+    const snapshot = await target.getState(scope);
+    expect(snapshot.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: ['visible-row', 'unresolved-id'],
+      queuedMessages: [
+        expect.objectContaining({
+          id: 'visible-row',
+          request: expect.objectContaining({ text: 'Visible follow-up' }),
+        }),
+      ],
+    });
+    expect(snapshot.tabsFile.tabs[0]?.messages).toEqual([]);
+
+    const persisted = await repository.getState(scope, { chatIds: ['chat-1'] });
+    expect(persisted.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: allQueueIds,
+      queuedMessages: [
+        expect.objectContaining({ id: 'internal-row' }),
+        expect.objectContaining({ id: 'legacy-internal-row' }),
+        expect.objectContaining({ id: 'visible-row' }),
+      ],
+    });
+
+    getChatQueueService().resetForTests();
+    const dispatchedAfterRecovery: ChatSendMessageRequest[] = [];
+    const recoveryQueue = new ChatQueueService({
+      dispatch: async (request): Promise<void> => {
+        dispatchedAfterRecovery.push(request);
+      },
+      cancel: async (): Promise<void> => undefined,
+      settleCancelledTurn: async (): Promise<void> => undefined,
+      hasActiveProviderTurn: () => false,
+      hasPendingProviderContinuation: () => false,
+      persistRuntime: async (): Promise<void> => undefined,
+      broadcast: () => undefined,
+      drainProviderEvents: async (): Promise<void> => undefined,
+      createId: () => 'recovered-queue-row',
+      now: () => Date.now(),
+      schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    });
+    mockedGetChatQueueService.mockReturnValue(recoveryQueue);
+    const { target: restarted, repository: restartedRepository } =
+      serviceWithRepository({}, copyDurableFilesAtBoundary());
+    Object.defineProperty(restarted, 'reconcileHostRuntime', { value: true });
+    const recoveredSnapshot = await restarted.getState(scope);
+    // Recovery dispatches asynchronously; wait for it within a bound rather
+    // than for one tick, which a loaded host does not guarantee.
+    for (
+      let attempt = 0;
+      attempt < 100 && dispatchedAfterRecovery.length === 0;
+      attempt += 1
+    )
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(recoveredSnapshot.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: ['visible-row', 'unresolved-id'],
+      queuedMessages: [expect.objectContaining({ id: 'visible-row' })],
+    });
+    expect(dispatchedAfterRecovery[0]).toMatchObject({
+      userMessageId: 'visible-row',
+    });
+    recoveryQueue.onTurnTerminal(scope, 'complete', 'visible-row');
+    for (
+      let attempt = 0;
+      attempt < 100 &&
+      !dispatchedAfterRecovery.some(
+        (request) => request.userMessageId === 'internal-row',
+      );
+      attempt += 1
+    )
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(dispatchedAfterRecovery).toContainEqual(
+      expect.objectContaining({
+        userMessageId: 'internal-row',
+        internalRow: expect.objectContaining({
+          delegationId: 'delegation-1',
+          displayLine: 'Waiting for the parent',
+        }),
+      }),
+    );
+    const recovered = await restartedRepository.getState(scope, {
+      chatIds: ['chat-1'],
+    });
+    expect(recovered.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: allQueueIds,
+      queuedMessages: [
+        expect.objectContaining({
+          id: 'internal-row',
+          request: expect.objectContaining({
+            text: 'Private delegation request payload',
+          }),
+        }),
+        expect.objectContaining({ id: 'legacy-internal-row' }),
+        expect.objectContaining({ id: 'visible-row' }),
+      ],
+    });
+  });
+
+  it('recovers a row that was dispatching at a restart at the head of the queue', async () => {
+    const target = service();
+    await createChat(target);
+    const dispatchingRequest = {
+      ...SCOPE,
+      chatId: 'chat-1',
+      userMessageId: 'dispatching-user',
+      text: 'Dispatch in flight',
+      providerType: 'claude' as const,
+      model: 'claude-opus-4-6',
+    };
+    const waitingRequest = {
+      ...dispatchingRequest,
+      userMessageId: 'waiting-user',
+      text: 'Still queued',
+    };
+    // The dequeue has removed the row from the queue ids, which is how the
+    // renderer sees a dispatch, but its prompt has not committed yet.
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      ['queue-2'],
+      true,
+      undefined,
+      [
+        {
+          id: 'queue-2',
+          request: waitingRequest,
+          origin: 'desktop',
+          enqueuedAtMs: 124,
+        },
+      ],
+      'dispatching-user',
+      {
+        id: 'queue-1',
+        request: dispatchingRequest,
+        origin: 'desktop',
+        enqueuedAtMs: 123,
+      },
+    );
+    const persisted = await target.getState(SCOPE);
+    expect(persisted.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: ['queue-2'],
+      queuedMessages: [
+        expect.objectContaining({ id: 'queue-1', dispatching: true }),
+        expect.objectContaining({ id: 'queue-2' }),
+      ],
+    });
+
+    getChatQueueService().resetForTests();
+    const hydratePersistedInput = jest.spyOn(
+      getChatQueueService(),
+      'hydratePersistedInput',
+    );
+    const restarted = serviceWithRepository(
+      { inputSession: async () => undefined },
+      copyDurableFilesAtBoundary(),
+    ).target;
+    Object.defineProperty(restarted, 'reconcileHostRuntime', { value: true });
+    await restarted.getState(SCOPE);
+    expect(hydratePersistedInput).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Dispatch in flight' }),
+      'queue-1',
+      'desktop',
+      123,
+      undefined,
+      undefined,
+      { atHead: true },
+    );
+    expect(hydratePersistedInput).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Still queued' }),
+      'queue-2',
+      'desktop',
+      124,
+      undefined,
+      undefined,
+    );
+  });
+
+  it('recovers host runtime before watcher admission without losing FIFO or payloads', async () => {
+    const target = service();
+    await createChat(target);
+    const requestBase: ChatSendMessageRequest = {
+      ...SCOPE,
+      chatId: 'chat-1',
+      userMessageId: 'older-user',
+      text: 'Older queued message',
+      providerType: 'claude',
+      model: 'claude-opus-4-6',
+    };
+    const dispatchingRequest: ChatSendMessageRequest = {
+      ...requestBase,
+      userMessageId: 'dispatching-user',
+      text: 'Dispatch was interrupted before commit',
+    };
+    const olderRequest: ChatSendMessageRequest = {
+      ...requestBase,
+      userMessageId: 'older-user',
+    };
+    // This deliberately models a legacy persisted file reference.
+    Reflect.set(olderRequest, 'fileReferences', [
+      { path: 'src/older.ts', line: 3 },
+    ]);
+    const watcherRequest: ChatSendMessageRequest = {
+      ...requestBase,
+      userMessageId: 'watcher-delivery-1',
+      text: 'A watcher noticed a change.',
+      hiddenContext: {
+        kind: 'canopy-watcher-event',
+        text: 'Keep this hidden follow-up context.',
+      },
+      watcherFired: { kind: 'Pipeline completion' },
+      pendingSystemInstructions: [
+        { id: 'one-shot-1', text: 'Use the pending instruction once.' },
+      ],
+    };
+
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      ['queue-older', 'queue-watcher'],
+      true,
+      undefined,
+      [
+        {
+          id: 'queue-older',
+          request: olderRequest,
+          origin: 'desktop',
+          enqueuedAtMs: 124,
+        },
+        {
+          id: 'queue-watcher',
+          request: watcherRequest,
+          origin: 'desktop',
+          enqueuedAtMs: 125,
+        },
+      ],
+      'dispatching-user',
+      {
+        id: 'queue-dispatching',
+        request: dispatchingRequest,
+        origin: 'desktop',
+        enqueuedAtMs: 123,
+      },
+    );
+    const persisted = await target.getState(SCOPE);
+    expect(persisted.runtimeByChatId['chat-1']?.queuedMessages).toEqual([
+      expect.objectContaining({ id: 'queue-dispatching', dispatching: true }),
+      expect.objectContaining({ id: 'queue-older' }),
+      expect.objectContaining({ id: 'queue-watcher' }),
+    ]);
+
+    getChatQueueService().resetForTests();
+    const restarted = serviceWithRepository(
+      { inputSession: async () => undefined },
+      copyDurableFilesAtBoundary(),
+    ).target;
+    Object.defineProperty(restarted, 'reconcileHostRuntime', { value: true });
+
+    const dispatchedRequests: ChatSendMessageRequest[] = [];
+    let recoveredQueue = new ChatQueueService();
+    let resolveFirstDispatchStarted: () => void = () => undefined;
+    let releaseFirstDispatch: () => void = () => undefined;
+    const firstDispatchStarted = new Promise<void>((resolve) => {
+      resolveFirstDispatchStarted = resolve;
+    });
+    const firstDispatchReleased = new Promise<void>((resolve) => {
+      releaseFirstDispatch = resolve;
+    });
+    let resolveAllDispatches: () => void = () => undefined;
+    const allDispatches = new Promise<void>((resolve) => {
+      resolveAllDispatches = resolve;
+    });
+    const dependencies: ChatQueueServiceDependencies = {
+      steerGenerated: () => Promise.resolve({ status: 'fallback' }),
+      dispatch: async (request): Promise<void> => {
+        dispatchedRequests.push(request);
+        if (dispatchedRequests.length === 1) {
+          resolveFirstDispatchStarted();
+          await firstDispatchReleased;
+        }
+        if (dispatchedRequests.length === 3) {
+          resolveAllDispatches();
+          return;
+        }
+        recoveredQueue.onTurnTerminal(
+          request,
+          'complete',
+          request.userMessageId,
+        );
+      },
+      cancel: async () => undefined,
+      settleCancelledTurn: async () => undefined,
+      hasActiveProviderTurn: () => false,
+      drainProviderEvents: async () => undefined,
+      hasPendingProviderContinuation: () => false,
+      persistRuntime: (
+        queueTarget,
+        queuedMessageIds,
+        turnActive,
+        mutation,
+        queuedMessages,
+        activeTurnUserMessageId,
+        inFlight,
+      ) =>
+        restarted.reconcileHostQueue(
+          queueTarget,
+          queuedMessageIds,
+          turnActive,
+          mutation,
+          queuedMessages,
+          activeTurnUserMessageId,
+          inFlight,
+        ),
+      broadcast: () => undefined,
+      createId: () => 'recovered-queue-row',
+      now: () => 126,
+      schedule: (callback) => setTimeout(callback, 0),
+    };
+    recoveredQueue = new ChatQueueService(dependencies);
+    mockedGetChatQueueService.mockReturnValue(recoveredQueue);
+    const hydratePersistedInput = jest.spyOn(
+      recoveredQueue,
+      'hydratePersistedInput',
+    );
+
+    try {
+      await restarted.recoverHostRuntime(SCOPE);
+
+      expect(hydratePersistedInput).toHaveBeenCalledTimes(3);
+      expect(hydratePersistedInput).toHaveBeenNthCalledWith(
+        1,
+        dispatchingRequest,
+        'queue-dispatching',
+        'desktop',
+        123,
+        undefined,
+        undefined,
+        { atHead: true },
+      );
+      expect(hydratePersistedInput).toHaveBeenNthCalledWith(
+        2,
+        olderRequest,
+        'queue-older',
+        'desktop',
+        124,
+        undefined,
+        undefined,
+      );
+      expect(hydratePersistedInput).toHaveBeenNthCalledWith(
+        3,
+        watcherRequest,
+        'queue-watcher',
+        'desktop',
+        125,
+        undefined,
+        undefined,
+      );
+      await firstDispatchStarted;
+      await recoveredQueue.submit(watcherRequest, 'desktop');
+      expect(
+        dispatchedRequests.map((request) => request.userMessageId),
+      ).toEqual(['dispatching-user']);
+      releaseFirstDispatch();
+      await allDispatches;
+      expect(dispatchedRequests).toEqual([
+        dispatchingRequest,
+        olderRequest,
+        watcherRequest,
+      ]);
+      expect(
+        dispatchedRequests.map((request) => request.userMessageId),
+      ).toEqual(['dispatching-user', 'older-user', 'watcher-delivery-1']);
+    } finally {
+      recoveredQueue.resetForTests();
+    }
+  });
+
+  it('does not keep a dispatching row once its prompt row exists', async () => {
+    const target = service();
+    await createChat(target);
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'dispatched-user',
+      mutationId: 'dispatched-prompt',
+      data: {
+        type: 'canopy_user_prompt',
+        canopy_turn_user_message_id: 'dispatched-user',
+        canopy_persisted_messages: [
+          {
+            id: 'dispatched-user',
+            role: 'user',
+            timestamp: 2,
+            blocks: [{ type: 'text', text: 'Already dispatched' }],
+          },
+        ],
+      },
+    });
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      [],
+      true,
+      undefined,
+      [],
+      'dispatched-user',
+      {
+        id: 'queue-1',
+        request: {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: 'dispatched-user',
+          text: 'Already dispatched',
+        },
+        origin: 'desktop',
+        enqueuedAtMs: 123,
+      },
+    );
+    const persisted = await target.getState(SCOPE);
+    expect(persisted.runtimeByChatId['chat-1']?.queuedMessages).toEqual([]);
+  });
+
   it('preserves trusted sender provenance from a send through queue restart replay', async () => {
     const agentSent: AgentSentInfo = {
       kind: 'external_agent',
@@ -3191,15 +6188,32 @@ describe('chat state service', () => {
         globalInstructionsSnapshot: '',
       }),
     ).toBe(true);
+    // The mode compares with the one the session applied; unknown counts
+    // as Full Access.
+    expect(
+      inputRequestMatchesSettings(
+        { ...request, approvalMode: 'ask' },
+        tab,
+        'ask',
+      ),
+    ).toBe(true);
     expect(
       inputRequestMatchesSettings({ ...request, approvalMode: 'ask' }, tab),
-    ).toBe(true);
+    ).toBe(false);
+    // Approval fields compare in one direction: only a stricter request
+    // misses the session; a wider one carries no authority.
+    expect(
+      inputRequestMatchesSettings(
+        { ...request, approvalMode: 'ask' },
+        { ...tab, approvalMode: 'full-access' },
+      ),
+    ).toBe(false);
     expect(
       inputRequestMatchesSettings(
         { ...request, approvalMode: 'full-access' },
         tab,
       ),
-    ).toBe(false);
+    ).toBe(true);
     const sessionApprovalRules = [
       {
         id: 'rule-1',
@@ -3218,6 +6232,17 @@ describe('chat state service', () => {
     expect(
       inputRequestMatchesSettings(
         { ...request, sessionApprovalRules },
+        { ...tab, sessionApprovalRules: [] },
+      ),
+    ).toBe(true);
+    expect(
+      inputRequestMatchesSettings(
+        {
+          ...request,
+          sessionApprovalRules: [
+            { ...sessionApprovalRules[0], behavior: 'deny' as const },
+          ],
+        },
         { ...tab, sessionApprovalRules: [] },
       ),
     ).toBe(false);
@@ -3433,24 +6458,50 @@ describe('chat state service', () => {
     content: Partial<
       Pick<
         ChatSendMessageRequest,
-        | 'initiationSource'
         | 'attachmentPaths'
         | 'attachmentPromptContexts'
         | 'fileReferences'
         | 'pendingSystemInstructions'
         | 'watcherFired'
         | 'hiddenContext'
+        | 'initiationSource'
+        | 'automationName'
+        | 'internalRow'
+        | 'managedDelegationDeliveryId'
         | 'agentSent'
         | 'agentSenderProvenance'
+        | 'approvalMode'
+        | 'sessionApprovalRules'
+        | 'admittedApproval'
       >
     > = {},
     overrides: Partial<ChatStateServiceOptions> = {},
+    storagePaths = paths,
+    sessionOverrides: Partial<AgentSession> = {},
   ) {
     const scope = { ...SCOPE, chatId: 'chat-1' };
+    type DeliveryLedger = NonNullable<PersistedChatTab['inputDelivery']>;
+    let fixtureMutationSequence = 0;
+    const fixtureMutationId = (label: string) =>
+      `delivery-fixture-${label}-${fixtureMutationSequence++}`;
+    const submittedCalls: {
+      text: string;
+      attemptId: string;
+      clientUserMessageId: string;
+      target?: { sessionId: string; turnId?: string };
+    }[] = [];
     const submission = jest.fn<
-      Promise<ChatInputAdmission>,
-      [string, string, string]
-    >((_text, attemptId) => Promise.resolve({ kind: 'accepted', attemptId }));
+      Promise<ChatInputSubmitResult>,
+      [string, string, string, { sessionId: string; turnId?: string }?]
+    >((text, attemptId, clientUserMessageId, target) => {
+      submittedCalls.push({
+        text,
+        attemptId,
+        clientUserMessageId,
+        ...(target ? { target } : {}),
+      });
+      return Promise.resolve({ kind: 'accepted', attemptId });
+    });
     const withdrawal = jest.fn<Promise<ChatInputWithdrawal>, [string]>(
       (attemptId) =>
         Promise.resolve({
@@ -3476,11 +6527,17 @@ describe('chat state service', () => {
       }),
       submitSteeringInput: submission,
       withdrawSteeringInput: withdrawal,
+      // At Ask, never wider than a message's own turn, so it accepts steering.
+      getAppliedApprovalMode: () => 'ask',
+      ...sessionOverrides,
     };
-    const { target, repository } = serviceWithRepository({
-      inputSession: async () => session,
-      ...overrides,
-    });
+    const { target, repository } = serviceWithRepository(
+      {
+        inputSession: async () => session,
+        ...overrides,
+      },
+      storagePaths,
+    );
     await createChat(target);
     await repository.transact(
       scope,
@@ -3512,6 +6569,49 @@ describe('chat state service', () => {
       if (!row) throw new Error('Missing test delivery row');
       return row;
     };
+    const getLedger = async () => {
+      const ledger = (await target.getState(scope)).tabsFile.tabs[0]
+        .inputDelivery;
+      if (!ledger) throw new Error('Missing test input delivery ledger');
+      return ledger;
+    };
+    const updateLedger = async (
+      update: (ledger: DeliveryLedger) => DeliveryLedger,
+    ) => {
+      const ledger = await getLedger();
+      return repository.transact(
+        scope,
+        [
+          {
+            type: 'tab.metadata_patched',
+            tabId: scope.chatId,
+            patch: { inputDelivery: update(ledger) },
+          },
+        ],
+        { source: 'provider', mutationId: fixtureMutationId('ledger') },
+      );
+    };
+    const setRuntime = async (
+      status: 'streaming' | 'completed' | 'cancelled' | 'interrupted',
+      userMessageId?: string,
+    ) =>
+      repository.transact(
+        scope,
+        [
+          {
+            type: 'runtime.patched',
+            chatId: scope.chatId,
+            runtime: {
+              status,
+              queuedMessageIds: [],
+              ...(userMessageId !== undefined
+                ? { activeTurn: { userMessageId, startedAt: 1 } }
+                : {}),
+            },
+          },
+        ],
+        { source: 'provider', mutationId: fixtureMutationId('runtime') },
+      );
     const steer = async () =>
       target.inputDelivery.steerQueued(
         request,
@@ -3542,12 +6642,70 @@ describe('chat state service', () => {
       scope,
       request,
       submission,
+      submittedCalls,
       withdrawal,
       session,
       getRow,
+      getLedger,
+      updateLedger,
+      setRuntime,
       steer,
       action,
     };
+  }
+
+  function steerQueuedGenerated(
+    f: Awaited<ReturnType<typeof deliveryFixture>>,
+    request: ChatSendMessageRequest,
+    canSteerNow: () => boolean,
+    claimed: () => void,
+    queuedIds: () => string[] = () => [],
+  ) {
+    return f.target.inputDelivery.steerQueuedGenerated(
+      request,
+      queuedIds,
+      'desktop',
+      canSteerNow,
+      claimed,
+    );
+  }
+
+  function asyncAnswerCommand(questionId: string): ChatCommand {
+    return {
+      type: 'chat.answer_question',
+      chatId: 'chat-1',
+      questionId,
+      answers: [
+        {
+          questionId: 'scope',
+          question: 'Which scope?',
+          selectedOptions: ['Full'],
+        },
+      ],
+    };
+  }
+
+  async function seedAsyncAnswerQuestion(
+    repository: ChatStateRepository,
+    questionId: string,
+  ): Promise<void> {
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: questionId,
+            chatId: 'chat-1',
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+          },
+        },
+      ],
+      { source: 'provider', mutationId: `seed-${questionId}` },
+    );
   }
 
   it.each(['pending', 'cancelled', 'unknown'] as const)(
@@ -3561,13 +6719,13 @@ describe('chat state service', () => {
           reason: 'Transport unavailable',
         }));
       const deliver = () =>
-        f.target.inputDelivery.steerWatcher(
+        f.target.inputDelivery.steerGenerated(
           f.request,
           () => [],
           'desktop',
           true,
         );
-      expect(await deliver()).toEqual({ status: 'handled', submitted: true });
+      expect(await deliver()).toEqual({ status: 'handled' });
       if (state === 'cancelled') await f.action('cancel');
       const row = await f.getRow();
       expect(await deliver()).toEqual({ status: 'handled' });
@@ -3586,7 +6744,7 @@ describe('chat state service', () => {
       interrupt: false,
     });
     expect(
-      await f.target.inputDelivery.steerWatcher(
+      await f.target.inputDelivery.steerGenerated(
         f.request,
         () => [],
         'desktop',
@@ -3599,6 +6757,550 @@ describe('chat state service', () => {
     ).toBeUndefined();
   });
 
+  it('falls back when the watcher foreground guard closes before its durable claim', async () => {
+    let canSteerNow = true;
+    const f = await deliveryFixture(
+      { watcherFired: { kind: 'Wakeup' } },
+      {
+        authorizeSend: async () => {
+          canSteerNow = false;
+        },
+      },
+    );
+
+    const result = await f.target.inputDelivery.steerGenerated(
+      f.request,
+      () => [],
+      'desktop',
+      true,
+      () => canSteerNow,
+    );
+
+    expect(result).toEqual({ status: 'fallback' });
+    expect(f.submission).not.toHaveBeenCalled();
+    expect(
+      (await f.target.getState(f.scope)).tabsFile.tabs[0].inputDelivery,
+    ).toBeUndefined();
+  });
+
+  it('requeues a watcher claim if its foreground guard closes before provider I/O', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    let canSteerNow = true;
+    const transactWith = f.repository.transactWith.bind(f.repository);
+    jest
+      .spyOn(f.repository, 'transactWith')
+      .mockImplementation(async (...args) => {
+        const committed = await transactWith(...args);
+        canSteerNow = false;
+        return committed;
+      });
+
+    const result = await f.target.inputDelivery.steerGenerated(
+      f.request,
+      () => [],
+      'desktop',
+      true,
+      () => canSteerNow,
+    );
+
+    expect(result).toEqual({
+      status: 'requeue',
+      rowId: f.request.userMessageId,
+      epoch: 0,
+      continuation: { attemptId: expect.any(String), epoch: 0 },
+    });
+    expect(f.submission).not.toHaveBeenCalled();
+    expect((await f.getRow()).state).toBe('cancelled');
+  });
+
+  it('does not let the live watcher guard override disabled caller steering', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+
+    await expect(
+      f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'desktop',
+        false,
+        () => true,
+      ),
+    ).resolves.toEqual({ status: 'fallback' });
+
+    expect(f.submission).not.toHaveBeenCalled();
+    expect(
+      (await f.target.getState(f.scope)).tabsFile.tabs[0].inputDelivery,
+    ).toBeUndefined();
+  });
+
+  it('keeps an automatically queued watcher in place when it is ineligible before claim', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    const claimed = jest.fn();
+
+    await expect(
+      steerQueuedGenerated(f, f.request, () => false, claimed),
+    ).resolves.toEqual({ status: 'fallback' });
+
+    expect(claimed).not.toHaveBeenCalled();
+    expect(f.submission).not.toHaveBeenCalled();
+    expect(
+      (await f.target.getState(f.scope)).tabsFile.tabs[0].inputDelivery,
+    ).toBeUndefined();
+  });
+
+  it('requeues an automatically queued watcher after any proven provider refusal', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    const request = {
+      ...f.request,
+      consolidatedWatcherUserMessageIds: ['watcher-1', 'watcher-2'],
+    };
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'rejected',
+      attemptId,
+      reason: 'Too many messages are awaiting delivery confirmation',
+    }));
+    const claimed = jest.fn();
+
+    await expect(
+      steerQueuedGenerated(f, request, () => true, claimed),
+    ).resolves.toEqual({
+      status: 'requeue',
+      rowId: f.request.userMessageId,
+      epoch: 0,
+    });
+
+    expect(claimed).toHaveBeenCalledTimes(1);
+    expect(f.submission).toHaveBeenCalledTimes(1);
+    const row = await f.getRow();
+    expect(row.state).toBe('cancelled');
+    expect(row.payload).toEqual(request);
+    expect(row.attempts[0]).toMatchObject({
+      generation: 'generation-1',
+      provider: 'claude',
+      payloadSnapshot: request,
+    });
+    expect(row.attempts[0]?.uncertainAt).toBeUndefined();
+  });
+
+  it('records the ordinary continuation before returning an immediate generated requeue', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'rejected',
+      attemptId,
+      reason: 'The active session no longer accepts steering.',
+      fallback: 'ordinary',
+    }));
+
+    const result = await f.target.inputDelivery.steerGenerated(
+      f.request,
+      () => [],
+      'desktop',
+      true,
+    );
+    const row = await f.getRow();
+
+    expect(row.currentAttemptId).toBeDefined();
+    expect(row.ordinaryContinuation).toEqual({
+      attemptId: row.currentAttemptId,
+      epoch: 0,
+    });
+    expect(result).toEqual({
+      status: 'requeue',
+      rowId: f.request.userMessageId,
+      epoch: 0,
+      continuation: { attemptId: row.currentAttemptId, epoch: 0 },
+    });
+  });
+
+  it('leaves a 65th input queued for the next turn without submitting it', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    // The current canonical turn already binds 64 distinct inputs.
+    const full = serializeChatTurnState({
+      ...initialChatTurnState(),
+      current: {
+        id: 'full-turn',
+        origin: 'user',
+        startedAtMs: 1,
+        pauses: [],
+        inputIds: Array.from({ length: 64 }, (_, index) => `bound-${index}`),
+      },
+    });
+    const getSnapshot = jest
+      .spyOn(getChatTurnOwnership(), 'getSnapshot')
+      .mockReturnValue({
+        scope: f.scope,
+        serviceEpoch: Symbol('service'),
+        operationEpoch: 1,
+        knowledge: 'known',
+        receipt: { generation: 1, state: full },
+        committed: { generation: 1, state: full },
+        unacknowledgedLifecycle: [],
+        dispatchOwners: [],
+        stopOwners: [],
+        hostQueuedInputCount: 0,
+        removalAwaitingSettle: false,
+        backgroundFreshness: 'fresh',
+      });
+    try {
+      const result = await f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'desktop',
+        true,
+      );
+      expect(f.submission).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        status: 'requeue',
+        rowId: f.request.userMessageId,
+      });
+      expect((await f.getRow()).state).toBe('cancelled');
+    } finally {
+      getSnapshot.mockRestore();
+    }
+  });
+
+  it('frees the slot of a refused input for the next one', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    const almostFull = serializeChatTurnState({
+      ...initialChatTurnState(),
+      current: {
+        id: 'almost-full-turn',
+        origin: 'user',
+        startedAtMs: 1,
+        pauses: [],
+        inputIds: Array.from({ length: 63 }, (_, index) => `bound-${index}`),
+      },
+    });
+    const ownership = getChatTurnOwnership();
+    const snapshot = ownership.getSnapshot(f.scope);
+    const getSnapshot = jest.spyOn(ownership, 'getSnapshot').mockReturnValue({
+      ...snapshot,
+      receipt: { generation: 1, state: almostFull },
+    });
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'rejected',
+      attemptId,
+      reason: 'Turn ended',
+      fallback: 'ordinary',
+    }));
+    try {
+      await f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'desktop',
+        true,
+      );
+      expect(f.submission).toHaveBeenCalledTimes(1);
+      expect(isCurrentTurnBindingFull(f.scope)).toBe(false);
+    } finally {
+      getSnapshot.mockRestore();
+    }
+  });
+
+  it('frees the slot of an input withdrawn before pickup', async () => {
+    const f = await deliveryFixture();
+    const almostFull = serializeChatTurnState({
+      ...initialChatTurnState(),
+      current: {
+        id: 'almost-full-turn',
+        origin: 'user',
+        startedAtMs: 1,
+        pauses: [],
+        inputIds: Array.from({ length: 63 }, (_, index) => `bound-${index}`),
+      },
+    });
+    const ownership = getChatTurnOwnership();
+    const snapshot = ownership.getSnapshot(f.scope);
+    const getSnapshot = jest.spyOn(ownership, 'getSnapshot').mockReturnValue({
+      ...snapshot,
+      receipt: { generation: 1, state: almostFull },
+    });
+    try {
+      await f.steer();
+      expect(f.submission).toHaveBeenCalledTimes(1);
+      expect(isCurrentTurnBindingFull(f.scope)).toBe(true);
+      await f.action('cancel');
+      expect(f.withdrawal).toHaveBeenCalledTimes(1);
+      expect(isCurrentTurnBindingFull(f.scope)).toBe(false);
+    } finally {
+      getSnapshot.mockRestore();
+    }
+  });
+
+  it('does not drop the generated continuation fence when pickup evidence already invalidates it', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    f.submission.mockImplementation(async (_text, attemptId) => {
+      await f.updateLedger((ledger) => ({
+        ...ledger,
+        rows: ledger.rows.map((row) => ({
+          ...row,
+          attempts: row.attempts.map((attempt) =>
+            attempt.id === attemptId ? { ...attempt, pickedUpAt: 42 } : attempt,
+          ),
+        })),
+      }));
+      return {
+        kind: 'rejected',
+        attemptId,
+        reason: 'Turn ended',
+        fallback: 'ordinary',
+      };
+    });
+    const restore = jest
+      .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+      .mockImplementation(
+        async (
+          request,
+          rowId,
+          _receipt,
+          epoch,
+          _origin,
+          _question,
+          options,
+        ) => {
+          await f.target.reconcileHostQueue(f.scope, [rowId], false, {
+            type: 'restore-input',
+            request,
+            rowId,
+            epoch,
+            ...(options?.ordinaryOnly ? { ordinaryOnly: true } : {}),
+            ...(options?.continuation
+              ? { continuation: options.continuation }
+              : {}),
+          });
+        },
+      );
+    try {
+      await expect(f.steer()).rejects.toThrow(
+        'The input is no longer available to queue',
+      );
+      expect((await f.getRow()).state).toBe('cancelled');
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          ?.queuedMessageIds,
+      ).not.toContain(f.request.userMessageId);
+    } finally {
+      restore.mockRestore();
+    }
+  });
+
+  it('restores a refused generated Resend as ordinary-only with its continuation', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    await f.target.inputDelivery.steerGenerated(
+      f.request,
+      () => [],
+      'desktop',
+      true,
+    );
+    await f.action('cancel');
+    const restore = jest
+      .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+      .mockResolvedValue(undefined);
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'rejected',
+      attemptId,
+      reason: 'The provider refused this resend.',
+      fallback: 'ordinary',
+    }));
+
+    try {
+      await f.action('resend');
+      const row = await f.getRow();
+      expect(row.state).toBe('cancelled');
+      expect(row.currentAttemptId).toBeDefined();
+      expect(row.ordinaryContinuation).toEqual({
+        attemptId: row.currentAttemptId,
+        epoch: 0,
+      });
+      expect(restore).toHaveBeenCalledWith(
+        f.request,
+        f.request.userMessageId,
+        undefined,
+        0,
+        'desktop',
+        undefined,
+        {
+          ordinaryOnly: true,
+          continuation: { attemptId: row.currentAttemptId, epoch: 0 },
+        },
+      );
+    } finally {
+      restore.mockRestore();
+    }
+  });
+
+  it('atomically removes the claimed watcher from durable runtime queue state', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    const candidateRequest = {
+      ...f.request,
+      consolidatedWatcherUserMessageIds: ['watcher-1', 'watcher-2'],
+    };
+    const ordinaryRequest = {
+      ...f.request,
+      userMessageId: 'ordinary-row',
+      text: 'Keep this queued',
+    };
+    const queuedMessages: PersistedHostQueuedMessage[] = [
+      {
+        id: 'host-candidate-id',
+        request: candidateRequest,
+        origin: 'desktop',
+        enqueuedAtMs: 1,
+      },
+      {
+        id: 'host-ordinary-id',
+        request: ordinaryRequest,
+        origin: 'desktop',
+        enqueuedAtMs: 2,
+      },
+    ];
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: f.scope.chatId,
+          runtime: {
+            status: 'streaming',
+            queuedMessageIds: ['host-candidate-id', 'host-ordinary-id'],
+            queuedMessages,
+            activeTurn: { userMessageId: 'root-1', startedAt: 1 },
+          },
+        },
+      ],
+      { source: 'provider' },
+    );
+
+    await expect(
+      steerQueuedGenerated(
+        f,
+        candidateRequest,
+        () => true,
+        jest.fn(),
+        () => ['host-candidate-id', 'host-ordinary-id'],
+      ),
+    ).resolves.toEqual({ status: 'handled' });
+
+    const runtime = (await f.target.getState(f.scope)).runtimeByChatId[
+      f.scope.chatId
+    ];
+    expect(runtime?.queuedMessageIds).toEqual(['host-ordinary-id']);
+    expect(runtime?.queuedMessages).toEqual([queuedMessages[1]]);
+  });
+
+  it.each(['first arrival', 'queued row'] as const)(
+    'steers a watcher on the %s path when the tab provider is not the harness that takes the steer',
+    async (path) => {
+      const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+      // An Ollama model runs on the Codex harness: the tab keeps the model's
+      // provider, and the session reports the harness.
+      await f.repository.transact(
+        f.scope,
+        [
+          {
+            type: 'tab.metadata_patched',
+            tabId: f.scope.chatId,
+            patch: {
+              providerType: 'ollama',
+              executionHarness: 'codex',
+              model: 'qwen3:8b',
+            },
+          },
+        ],
+        { source: 'provider' },
+      );
+      f.session.getSteeringCapabilities = () => ({
+        provider: 'codex',
+        generation: 'generation-1',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      });
+      const request: ChatSendMessageRequest = {
+        ...f.request,
+        providerType: 'ollama',
+        executionHarness: 'codex',
+        model: 'qwen3:8b',
+      };
+
+      const result =
+        path === 'first arrival'
+          ? f.target.inputDelivery.steerGenerated(
+              request,
+              () => [],
+              'desktop',
+              true,
+            )
+          : steerQueuedGenerated(f, request, () => true, jest.fn());
+
+      await expect(result).resolves.toEqual({ status: 'handled' });
+      expect(f.submission).toHaveBeenCalledTimes(1);
+      expect((await f.getRow()).attempts[0]?.provider).toBe('codex');
+    },
+  );
+
+  it('requeues an automatically queued watcher if its guard closes after the durable claim', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    let canSteerNow = true;
+    const claimed = jest.fn(() => {
+      canSteerNow = false;
+    });
+
+    await expect(
+      steerQueuedGenerated(f, f.request, () => canSteerNow, claimed),
+    ).resolves.toEqual({
+      status: 'requeue',
+      rowId: f.request.userMessageId,
+      epoch: 0,
+      continuation: { attemptId: expect.any(String), epoch: 0 },
+    });
+
+    expect(claimed).toHaveBeenCalledTimes(1);
+    expect(f.submission).not.toHaveBeenCalled();
+    expect((await f.getRow()).state).toBe('cancelled');
+  });
+
+  it('leaves a queued watcher to the queue while its refused attempt is still cancelled', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    let canSteerNow = true;
+    await steerQueuedGenerated(
+      f,
+      f.request,
+      () => canSteerNow,
+      () => {
+        canSteerNow = false;
+      },
+    );
+    expect((await f.getRow()).state).toBe('cancelled');
+
+    // The queue has not restored the row yet. Reporting it as handled would
+    // make the queue retire an input that was never delivered.
+    const claimed = jest.fn();
+    await expect(
+      steerQueuedGenerated(f, f.request, () => true, claimed),
+    ).resolves.toEqual({ status: 'fallback' });
+
+    expect(claimed).not.toHaveBeenCalled();
+    expect(f.submission).not.toHaveBeenCalled();
+    expect((await f.getRow()).state).toBe('cancelled');
+  });
+
+  it('does not resend automatically queued watcher input after unknown admission', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    f.submission.mockRejectedValue(new Error('Transport closed after write'));
+    const claimed = jest.fn();
+
+    await expect(
+      steerQueuedGenerated(f, f.request, () => true, claimed),
+    ).resolves.toEqual({ status: 'handled' });
+    await expect(
+      steerQueuedGenerated(f, f.request, () => true, jest.fn()),
+    ).resolves.toEqual({ status: 'handled' });
+
+    expect(claimed).toHaveBeenCalledTimes(1);
+    expect(f.submission).toHaveBeenCalledTimes(1);
+    expect((await f.getRow()).state).toBe('uncertain');
+  });
+
   it('returns a durable queue handoff when a watcher steering attempt is definitively rejected', async () => {
     const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
     f.submission.mockImplementation(async (_text, attemptId) => ({
@@ -3607,14 +7309,20 @@ describe('chat state service', () => {
       reason: 'Turn ended',
     }));
     expect(
-      await f.target.inputDelivery.steerWatcher(
+      await f.target.inputDelivery.steerGenerated(
         f.request,
         () => [],
         'desktop',
         true,
       ),
-    ).toEqual({ status: 'requeue', rowId: f.request.userMessageId, epoch: 0 });
-    expect((await f.getRow()).state).toBe('cancelled');
+    ).toMatchObject({
+      status: 'requeue',
+      rowId: f.request.userMessageId,
+      epoch: 0,
+    });
+    const row = await f.getRow();
+    expect(row.state).toBe('cancelled');
+    expect(row.ordinaryContinuation).toBeUndefined();
     expect(f.submission).toHaveBeenCalledTimes(1);
   });
 
@@ -3633,16 +7341,17 @@ describe('chat state service', () => {
 
     try {
       expect(
-        await f.target.inputDelivery.steerWatcher(
+        await f.target.inputDelivery.steerGenerated(
           f.request,
           () => [],
           'desktop',
           true,
         ),
-      ).toEqual({
+      ).toMatchObject({
         status: 'requeue',
         rowId: f.request.userMessageId,
         epoch: 0,
+        continuation: { attemptId: expect.any(String), epoch: 0 },
       });
       const row = await f.getRow();
       expect(row.state).toBe('cancelled');
@@ -3682,7 +7391,7 @@ describe('chat state service', () => {
       });
     try {
       f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
-      await f.target.inputDelivery.steerWatcher(
+      await f.target.inputDelivery.steerGenerated(
         { ...f.request, watcherDeliveryId: 'superseded-steering' },
         () => [],
         'desktop',
@@ -3692,6 +7401,167 @@ describe('chat state service', () => {
       expect(f.submission).not.toHaveBeenCalled();
       expect((await f.getRow()).reason).toContain('superseded by Stop');
     } finally {
+      ingress.mockRestore();
+    }
+  });
+
+  it('splits merged notices after production queued-steer final authority denial and steers them once', async () => {
+    const ingress = jest
+      .spyOn(watcherIngress, 'checkWatcherDeliveryIngress')
+      .mockResolvedValue({
+        allowed: false,
+        outcome: 'held',
+        reason: 'owner_boundary',
+      });
+    const f = await deliveryFixture({ watcherFired: { kind: 'Build' } });
+    const watcher: ChatSendMessageRequest = {
+      ...f.request,
+      userMessageId: 'watcher-denied',
+      text: 'Watcher private text',
+      watcherDeliveryId: 'denied',
+      hiddenContext: {
+        kind: 'canopy-watcher-event',
+        text: 'Watcher private context',
+      },
+    };
+    const notice: ChatSendMessageRequest = {
+      ...f.request,
+      userMessageId: 'notice-1',
+      text: 'Delegate finished',
+      delegationNoticeBatchId: 'notice-1',
+      watcherFired: { kind: 'Delegate finished' },
+      hiddenContext: {
+        kind: 'canopy-watcher-event',
+        text: 'Notice private context',
+      },
+    };
+    const secondNotice = {
+      ...notice,
+      userMessageId: 'notice-2',
+      delegationNoticeBatchId: 'notice-2',
+      text: 'Second delegate finished',
+    };
+    const parts = [notice, watcher, secondNotice];
+    const merged: ChatSendMessageRequest = {
+      ...watcher,
+      text: parts.map((part) => part.text).join('\n\n'),
+      watcherFired: { kind: 'Multiple watchers fired (3)' },
+      consolidatedWatcherUserMessageIds: parts.map(
+        (part) => part.userMessageId,
+      ),
+      watcherPartSnapshots: parts.map((part) => ({
+        userMessageId: part.userMessageId,
+        text: part.text,
+        kind: part.watcherFired?.kind ?? '',
+        hiddenContext: part.hiddenContext,
+        ...(part.watcherDeliveryId
+          ? { watcherDeliveryId: part.watcherDeliveryId }
+          : {}),
+        ...(part.delegationNoticeBatchId
+          ? { delegationNoticeBatchId: part.delegationNoticeBatchId }
+          : {}),
+      })),
+    };
+    const steered: ChatSendMessageRequest[] = [];
+    const results: Awaited<
+      ReturnType<typeof f.target.inputDelivery.steerQueuedGenerated>
+    >[] = [];
+    const snapshots: Array<readonly PersistedHostQueuedMessage[]> = [];
+    let queueId = 0;
+    let providerTurnActive = false;
+    const dispatch = jest.fn(() => {
+      providerTurnActive = true;
+      return Promise.resolve();
+    });
+    const dependencies: ChatQueueServiceDependencies = {
+      steerQueuedGenerated: async (request, origin, ids, guard, claimed) => {
+        steered.push(request);
+        const result = await f.target.inputDelivery.steerQueuedGenerated(
+          request,
+          ids,
+          origin,
+          guard,
+          claimed,
+        );
+        results.push(result);
+        return result;
+      },
+      dispatch,
+      cancel: () => Promise.resolve(),
+      settleCancelledTurn: () => undefined,
+      hasActiveProviderTurn: () => providerTurnActive,
+      hasPendingProviderContinuation: () => false,
+      getActiveProviderPluginSelections: () =>
+        normalizePluginSelections(undefined),
+      persistRuntime: async (target, ids, active, mutation, rows, activeId) => {
+        snapshots.push(structuredClone(rows ?? []));
+        await f.target.reconcileHostQueue(
+          target,
+          ids,
+          active,
+          mutation,
+          rows,
+          activeId,
+        );
+      },
+      broadcast: () => undefined,
+      createId: () => `split-${++queueId}`,
+      now: () => 1,
+      schedule: (callback, delay) => setTimeout(callback, delay),
+    };
+    const queue = new ChatQueueService(dependencies);
+    mockedGetChatQueueService.mockReturnValue(queue);
+    try {
+      await queue.submit(
+        { ...f.request, userMessageId: 'root-1', watcherFired: undefined },
+        'desktop',
+      );
+      dispatch.mockClear();
+      queue.hydratePersistedInput(merged, 'merged-host-row', 'desktop', 1);
+      for (let attempt = 0; attempt < 100; attempt++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        if (
+          results.length >= 3 &&
+          queue.getWorktreeSnapshots(f.scope.projectId, f.scope.worktreeId)[0]
+            ?.queue.length === 1
+        )
+          break;
+      }
+      expect(results[0]).toMatchObject({
+        status: 'requeue',
+        watcherDeliveryHeld: { outcome: 'held', reason: 'owner_boundary' },
+      });
+      expect(steered.map((part) => part.userMessageId)).toEqual([
+        'watcher-denied',
+        'notice-1',
+        'notice-2',
+      ]);
+      expect(snapshots.some((rows) => rows.length === 3)).toBe(true);
+      expect(f.submission).toHaveBeenCalledTimes(2);
+      expect(f.submission.mock.calls.map((call) => call[2])).toEqual([
+        'notice-1',
+        'notice-2',
+      ]);
+      expect(dispatch).not.toHaveBeenCalled();
+      const held = snapshots
+        .flat()
+        .filter((row) => row.id === 'merged-host-row')
+        .pop();
+      expect(held?.request).toEqual(watcher);
+      expect(
+        queue
+          .getWorktreeSnapshots(f.scope.projectId, f.scope.worktreeId)[0]
+          ?.queue.map((row) => row.text),
+      ).toEqual([watcher.text]);
+      // A fresh eligibility wakeup cannot retry the denied watcher until its hold is released.
+      queue.notifySteeringEligibility(
+        `${f.scope.projectId}/${f.scope.worktreeId}/${f.scope.chatId}`,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      expect(steered).toHaveLength(3);
+      expect(ingress).toHaveBeenCalledTimes(1);
+    } finally {
+      queue.resetForTests();
       ingress.mockRestore();
     }
   });
@@ -3717,14 +7587,14 @@ describe('chat state service', () => {
           }
           return getState(...args);
         });
-      const result = await f.target.inputDelivery.steerWatcher(
+      const result = await f.target.inputDelivery.steerGenerated(
         { ...f.request, watcherDeliveryId: 'revoked-after-authorization' },
         () => [],
         'desktop',
         true,
       );
       expect(f.submission).not.toHaveBeenCalled();
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         status: 'requeue',
         rowId: f.request.userMessageId,
         epoch: 0,
@@ -3735,7 +7605,7 @@ describe('chat state service', () => {
   });
 
   it.each(['preparation', 'admission'] as const)(
-    'holds watcher access revoked during steering %s and retries after access returns',
+    'holds watcher access revoked during steering %s',
     async (boundary) => {
       let allowed = true;
       const ingress = jest
@@ -3778,50 +7648,23 @@ describe('chat state service', () => {
             return commit;
           });
       }
-      const ordinaryDispatch = jest.fn(async () => undefined);
-      const delays: number[] = [];
-      const queue = new ChatQueueService({
-        checkWatcherIngress: (payload) =>
-          watcherIngress.checkWatcherDeliveryIngress(payload),
-        steerWatcher: (payload, origin, ids, allow) =>
-          f.target.inputDelivery.steerWatcher(payload, ids, origin, allow),
-        dispatch: ordinaryDispatch,
-        cancel: async () => undefined,
-        settleCancelledTurn: async () => undefined,
-        hasActiveProviderTurn: () => false,
-        hasPendingProviderContinuation: () => false,
-        persistRuntime: (...args) => f.target.reconcileHostQueue(...args),
-        broadcast: () => undefined,
-        createId: () => 'held-queue-row',
-        now: () => 1,
-        schedule: (callback, delay) => {
-          delays.push(delay);
-          return setTimeout(callback, delay);
-        },
-      });
-      mockedGetChatQueueService.mockReturnValue(queue);
       try {
-        const submitting = queue.submit(request, 'desktop');
+        // The coordinator rechecks watcher authority at its last provider
+        // boundary; the queue's held retry is covered by its own suite.
+        const steering = f.target.inputDelivery.steerGenerated(
+          request,
+          () => [],
+          'desktop',
+          true,
+        );
         await entered;
         allowed = false;
         release?.();
-        await submitting;
+        const result = await steering;
         expect(f.submission).not.toHaveBeenCalled();
-        expect(ordinaryDispatch).not.toHaveBeenCalled();
-        expect((await f.getRow()).state).toBe('queued');
-        expect(delays).toContain(5000);
-        allowed = true;
-        queue.retryHeldWatcherDeliveries();
-        await new Promise<void>((resolve) => {
-          ordinaryDispatch.mockImplementationOnce(async () => {
-            resolve();
-          });
-        });
-        expect(ordinaryDispatch).toHaveBeenCalledTimes(1);
-        expect(f.submission).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ status: 'requeue' });
       } finally {
         release?.();
-        queue.resetForTests();
         ingress.mockRestore();
       }
     },
@@ -3835,10 +7678,15 @@ describe('chat state service', () => {
       origin: 'desktop' | 'portal';
       fromQueue: boolean;
     }> = [];
+    let dispatchFinished: () => void = () => undefined;
+    const ordinaryDispatchFinished = new Promise<void>((resolve) => {
+      dispatchFinished = resolve;
+    });
+    let providerTurnActive = false;
     let queueId = 0;
     const dependencies: ChatQueueServiceDependencies = {
-      steerWatcher: (request, origin, queuedIds, allowSteering) =>
-        f.target.inputDelivery.steerWatcher(
+      steerGenerated: (request, origin, queuedIds, allowSteering) =>
+        f.target.inputDelivery.steerGenerated(
           request,
           queuedIds,
           origin,
@@ -3846,10 +7694,14 @@ describe('chat state service', () => {
         ),
       dispatch: async (request, origin, fromQueue) => {
         ordinaryDispatches.push({ request, origin, fromQueue });
+        if (request.userMessageId === f.request.userMessageId)
+          dispatchFinished();
       },
       cancel: async () => undefined,
       settleCancelledTurn: async () => undefined,
-      hasActiveProviderTurn: () => false,
+      hasActiveProviderTurn: () => providerTurnActive,
+      getActiveProviderPluginSelections: () =>
+        normalizePluginSelections(undefined),
       drainProviderEvents: async () => undefined,
       hasPendingProviderContinuation: () => false,
       persistRuntime: async (
@@ -3877,14 +7729,28 @@ describe('chat state service', () => {
     };
     const queue = new ChatQueueService(dependencies);
     mockedGetChatQueueService.mockReturnValue(queue);
-    f.submission.mockImplementation(async (_text, attemptId) => ({
-      kind: 'rejected',
-      attemptId,
-      reason: 'The active turn no longer accepts steering',
-      fallback: 'ordinary',
-    }));
+    const fixtureTurnRequest = {
+      ...f.request,
+      userMessageId: 'fixture-seed',
+      text: 'Fixture seed',
+      watcherFired: undefined,
+    };
+    await queue.submit(fixtureTurnRequest, 'desktop');
+    ordinaryDispatches.length = 0;
+    providerTurnActive = true;
+    f.submission.mockImplementation(async (_text, attemptId) => {
+      providerTurnActive = false;
+      return {
+        kind: 'rejected',
+        attemptId,
+        reason: 'The active turn no longer accepts steering',
+        fallback: 'ordinary',
+      };
+    });
 
     await queue.submit(f.request, 'desktop');
+    queue.onTurnTerminal(f.scope, 'complete', 'fixture-seed');
+    await ordinaryDispatchFinished;
 
     const row = await f.getRow();
     expect(row.state).toBe('queued');
@@ -3897,6 +7763,11 @@ describe('chat state service', () => {
       expect.objectContaining({
         type: 'restore-input',
         rowId: f.request.userMessageId,
+        ordinaryOnly: true,
+        continuation: {
+          attemptId: (await f.getRow()).currentAttemptId,
+          epoch: 0,
+        },
       }),
     ]);
     expect(ordinaryDispatches).toEqual([
@@ -3964,7 +7835,7 @@ describe('chat state service', () => {
 
     try {
       await expect(
-        f.target.inputDelivery.steerWatcher(
+        f.target.inputDelivery.steerGenerated(
           f.request,
           () => [],
           'desktop',
@@ -3984,16 +7855,16 @@ describe('chat state service', () => {
     const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
     f.submission.mockRejectedValue(new Error('Transport closed after write'));
     expect(
-      await f.target.inputDelivery.steerWatcher(
+      await f.target.inputDelivery.steerGenerated(
         f.request,
         () => [],
         'desktop',
         true,
       ),
-    ).toEqual({ status: 'handled', submitted: true });
+    ).toEqual({ status: 'handled' });
     expect((await f.getRow()).state).toBe('uncertain');
     expect(
-      await f.target.inputDelivery.steerWatcher(
+      await f.target.inputDelivery.steerGenerated(
         f.request,
         () => [],
         'desktop',
@@ -4010,7 +7881,7 @@ describe('chat state service', () => {
       return { kind: 'rejected', attemptId, reason: 'Stopped' };
     });
     expect(
-      await f.target.inputDelivery.steerWatcher(
+      await f.target.inputDelivery.steerGenerated(
         f.request,
         () => [],
         'desktop',
@@ -4032,7 +7903,7 @@ describe('chat state service', () => {
       interrupt: true,
     });
     expect(
-      await f.target.inputDelivery.steerWatcher(
+      await f.target.inputDelivery.steerGenerated(
         f.request,
         () => [],
         'desktop',
@@ -4047,24 +7918,42 @@ describe('chat state service', () => {
 
   it('requeues a never-sent watcher if the turn ends after the durable claim', async () => {
     const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
-    let reads = 0;
+    let steeringEnabled = true;
     f.session.getSteeringCapabilities = () => ({
       provider: 'claude',
       generation: 'generation-1',
-      steer: ++reads <= 2,
+      steer: steeringEnabled,
       withdraw: true,
       interrupt: true,
     });
-    expect(
-      await f.target.inputDelivery.steerWatcher(
-        f.request,
-        () => [],
-        'desktop',
-        true,
-      ),
-    ).toEqual({ status: 'requeue', rowId: f.request.userMessageId, epoch: 0 });
-    expect(f.submission).not.toHaveBeenCalled();
-    expect((await f.getRow()).state).toBe('cancelled');
+    const transactWith = f.repository.transactWith.bind(f.repository);
+    const transaction = jest
+      .spyOn(f.repository, 'transactWith')
+      .mockImplementation(async (...args) => {
+        const committed = await transactWith(...args);
+        steeringEnabled = false;
+        return committed;
+      });
+
+    try {
+      expect(
+        await f.target.inputDelivery.steerGenerated(
+          f.request,
+          () => [],
+          'desktop',
+          true,
+        ),
+      ).toEqual({
+        status: 'requeue',
+        rowId: f.request.userMessageId,
+        epoch: 0,
+        continuation: { attemptId: expect.any(String), epoch: 0 },
+      });
+      expect(f.submission).not.toHaveBeenCalled();
+      expect((await f.getRow()).state).toBe('cancelled');
+    } finally {
+      transaction.mockRestore();
+    }
   });
 
   it('counts an input delivery event that commits as an applied provider event', async () => {
@@ -4096,6 +7985,744 @@ describe('chat state service', () => {
     expect(snapshotWorkCounters().provider).toEqual({
       eventsIngested: 2,
       eventsApplied: 1,
+    });
+  });
+
+  describe('provider event ingest results', () => {
+    type DeliveryRow = NonNullable<
+      PersistedChatTab['inputDelivery']
+    >['rows'][number];
+    let pickupMutationSequence = 0;
+
+    function pickupInput(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+      row: DeliveryRow,
+      overrides: {
+        attemptId?: string;
+        generation?: string;
+        provider?: string;
+        userMessageId?: string;
+        turnRootAccepted?: boolean;
+      } = {},
+    ) {
+      const attemptId = overrides.attemptId ?? row.currentAttemptId;
+      if (!attemptId) throw new Error('Missing current attempt');
+      return {
+        ...f.scope,
+        mutationId: `starting-pickup-${pickupMutationSequence++}`,
+        data: {
+          type: 'canopy_input_delivery',
+          provider: overrides.provider ?? 'claude',
+          generation: overrides.generation ?? 'generation-1',
+          attemptId,
+          phase: 'picked-up',
+          startsTurn: true,
+          userMessageId: overrides.userMessageId ?? row.id,
+          turnRootAccepted: overrides.turnRootAccepted ?? true,
+        },
+      };
+    }
+
+    async function startingPickupInput(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+      generation = 'generation-1',
+      overrides: {
+        attemptId?: string;
+        provider?: string;
+        userMessageId?: string;
+        turnRootAccepted?: boolean;
+      } = {},
+    ) {
+      await f.steer();
+      const row = await f.getRow();
+      return pickupInput(f, row, { ...overrides, generation });
+    }
+
+    async function seedPreviouslyObservedPickup(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+      options: {
+        rootUserMessageId?: string | null;
+        runtimeUserMessageId?: string;
+        state?: 'picked-up' | 'uncertain';
+        markUnknown?: boolean;
+      } = {},
+    ) {
+      await f.steer();
+      const row = await f.getRow();
+      const attemptId = row.currentAttemptId;
+      if (!attemptId) throw new Error('Missing current attempt');
+      await f.updateLedger((ledger) => ({
+        ...ledger,
+        rows: ledger.rows.map((candidate) => {
+          if (candidate.id !== row.id) return candidate;
+          return {
+            ...candidate,
+            revision: candidate.revision + 1,
+            state: options.state ?? 'picked-up',
+            attempts: candidate.attempts.map((attempt) => {
+              if (attempt.id !== attemptId) return attempt;
+              const seededAttempt = { ...attempt, pickedUpAt: 100 };
+              delete seededAttempt.rootUserMessageId;
+              return {
+                ...seededAttempt,
+                ...(options.rootUserMessageId === null
+                  ? {}
+                  : {
+                      rootUserMessageId: options.rootUserMessageId ?? row.id,
+                    }),
+                ...(options.markUnknown ? { uncertainAt: 101 } : {}),
+              };
+            }),
+          };
+        }),
+      }));
+      await f.setRuntime('streaming', options.runtimeUserMessageId ?? row.id);
+      return row;
+    }
+
+    it('leaves the root runtime of a starting pickup to canonical turn state', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      const input = await startingPickupInput(f);
+      const pickupRuntimes: ChatRuntimeState[] = [];
+      const transactWith = f.repository.transactWith.bind(f.repository);
+      jest
+        .spyOn(f.repository, 'transactWith')
+        .mockImplementation((scope, build, options) =>
+          transactWith(
+            scope,
+            async (current, revision, context) => {
+              const mutations = await build(current, revision, context);
+              for (const mutation of mutations) {
+                if (
+                  mutation.type === 'runtime.patched' &&
+                  mutation.runtime.activeTurn?.userMessageId ===
+                    input.data.userMessageId
+                )
+                  pickupRuntimes.push(mutation.runtime);
+              }
+              return mutations;
+            },
+            options,
+          ),
+        );
+
+      await expect(
+        f.target.ingestProviderEventWithResult(input),
+      ).resolves.toEqual({ outcome: 'applied', pickup: 'accepted' });
+      expect(pickupRuntimes).toEqual([]);
+    });
+
+    it('matches the legacy outcome for an applied starting pickup', async () => {
+      const legacy = await deliveryFixture({}, {}, isolatedServicePaths());
+      const legacyOutcome = await legacy.target.ingestProviderEventWithOutcome(
+        await startingPickupInput(legacy),
+      );
+      const resultFixture = await deliveryFixture(
+        {},
+        {},
+        isolatedServicePaths(),
+      );
+      const result = await resultFixture.target.ingestProviderEventWithResult(
+        await startingPickupInput(resultFixture),
+      );
+
+      expect(legacyOutcome).toBe('applied');
+      expect(result).toEqual({ outcome: legacyOutcome, pickup: 'accepted' });
+    });
+
+    it('maps rejected starting pickups to a rejected verdict', async () => {
+      const legacy = await deliveryFixture({}, {}, isolatedServicePaths());
+      const legacyOutcome = await legacy.target.ingestProviderEventWithOutcome(
+        await startingPickupInput(legacy, 'stale-generation'),
+      );
+      const resultFixture = await deliveryFixture(
+        {},
+        {},
+        isolatedServicePaths(),
+      );
+      const result = await resultFixture.target.ingestProviderEventWithResult(
+        await startingPickupInput(resultFixture, 'stale-generation'),
+      );
+
+      expect(legacyOutcome).toBe('not-applied');
+      expect(result).toEqual({ outcome: legacyOutcome, pickup: 'rejected' });
+    });
+
+    it('distinguishes an already-accepted exact pickup duplicate from a fresh pickup', async () => {
+      const legacy = await deliveryFixture({}, {}, isolatedServicePaths());
+      const legacyInput = await startingPickupInput(legacy);
+      await expect(
+        legacy.target.ingestProviderEvent(legacyInput),
+      ).resolves.toBe(true);
+      const legacyOutcome =
+        await legacy.target.ingestProviderEventWithOutcome(legacyInput);
+
+      const resultFixture = await deliveryFixture(
+        {},
+        {},
+        isolatedServicePaths(),
+      );
+      const resultInput = await startingPickupInput(resultFixture);
+      const firstResult =
+        await resultFixture.target.ingestProviderEventWithResult(resultInput);
+      // The accepted steer starts its own turn, as the adapter reports it.
+      await reportTurn(resultFixture.target, 'start', 'row-1');
+      const result =
+        await resultFixture.target.ingestProviderEventWithResult(resultInput);
+
+      expect(legacyOutcome).toBe('not-applied');
+      expect(firstResult).toEqual({ outcome: 'applied', pickup: 'accepted' });
+      expect(result).toEqual({
+        outcome: legacyOutcome,
+        pickup: 'already-accepted',
+      });
+      const row = await resultFixture.getRow();
+      expect(row).toMatchObject({ state: 'picked-up' });
+      expect(row.attempts[0]).toMatchObject({
+        id: row.currentAttemptId,
+        pickedUpAt: expect.any(Number),
+        rootUserMessageId: row.id,
+      });
+      expect(
+        (await resultFixture.target.getState(resultFixture.scope))
+          .runtimeByChatId[resultFixture.scope.chatId].activeTurn,
+      ).toMatchObject({ userMessageId: row.id });
+    });
+
+    it('rejects a pickup refused by root arbitration while retaining pickup evidence', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      const input = await startingPickupInput(f);
+      const refusedInput = {
+        ...input,
+        data: { ...input.data, turnRootAccepted: false },
+      };
+
+      await expect(
+        f.target.ingestProviderEventWithResult(refusedInput),
+      ).resolves.toEqual({ outcome: 'applied', pickup: 'rejected' });
+
+      const row = await f.getRow();
+      expect(row.state).toBe('picked-up');
+      expect(row.attempts[0]).toMatchObject({
+        pickedUpAt: expect.any(Number),
+        rootUserMessageId: 'root-1',
+      });
+      expect(row.attempts[0].rootUserMessageId).not.toBe(row.id);
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toEqual({ userMessageId: 'root-1', startedAt: 1 });
+    });
+
+    it('keeps an exact mutation-id repeat of a root-refused pickup rejected', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      const input = await startingPickupInput(f);
+      const refusedInput = {
+        ...input,
+        data: { ...input.data, turnRootAccepted: false },
+      };
+
+      await expect(
+        f.target.ingestProviderEventWithResult(refusedInput),
+      ).resolves.toEqual({ outcome: 'applied', pickup: 'rejected' });
+      const evidence = await f.getRow();
+      const runtime = (await f.target.getState(f.scope)).runtimeByChatId[
+        f.scope.chatId
+      ].activeTurn;
+
+      await expect(
+        f.target.ingestProviderEventWithResult(refusedInput),
+      ).resolves.toEqual({ outcome: 'not-applied', pickup: 'rejected' });
+      expect(await f.getRow()).toEqual(evidence);
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toEqual(runtime);
+    });
+
+    it('keeps exact mutation-id repeats for unknown attempts rejected', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      const input = await startingPickupInput(f);
+      const unknownAttemptInput = {
+        ...input,
+        data: { ...input.data, attemptId: 'unknown-attempt' },
+      };
+      const before = await f.getRow();
+
+      await expect(
+        f.target.ingestProviderEventWithResult(unknownAttemptInput),
+      ).resolves.toEqual({ outcome: 'not-applied', pickup: 'rejected' });
+      await expect(
+        f.target.ingestProviderEventWithResult(unknownAttemptInput),
+      ).resolves.toEqual({ outcome: 'not-applied', pickup: 'rejected' });
+      expect(await f.getRow()).toEqual(before);
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toEqual({ userMessageId: 'root-1', startedAt: 1 });
+    });
+
+    it('recognizes a previously committed pickup when the observe builder runs with fresh evidence', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      const row = await seedPreviouslyObservedPickup(f);
+      const result = await f.target.ingestProviderEventWithResult(
+        pickupInput(f, row),
+      );
+
+      expect(result).toEqual({
+        outcome: 'not-applied',
+        pickup: 'already-accepted',
+      });
+      expect(await f.getRow()).toMatchObject({
+        id: row.id,
+        state: 'picked-up',
+        attempts: [
+          expect.objectContaining({
+            id: row.currentAttemptId,
+            pickedUpAt: 100,
+            rootUserMessageId: row.id,
+          }),
+        ],
+      });
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toMatchObject({ userMessageId: row.id });
+    });
+
+    const pickupEvidenceCases: Array<{
+      description: string;
+      options: {
+        rootUserMessageId?: string | null;
+        runtimeUserMessageId?: string;
+        state?: 'picked-up' | 'uncertain';
+        markUnknown?: boolean;
+      };
+    }> = [
+      {
+        description: 'root-rejected pickup evidence',
+        options: {
+          rootUserMessageId: 'root-1',
+          runtimeUserMessageId: 'root-1',
+          state: 'picked-up',
+        },
+      },
+      {
+        description: 'unknown pickup evidence',
+        options: {
+          rootUserMessageId: null,
+          runtimeUserMessageId: 'root-1',
+          state: 'uncertain',
+          markUnknown: true,
+        },
+      },
+    ];
+
+    it.each(pickupEvidenceCases)(
+      'rejects repeats with only $description',
+      async ({ options }) => {
+        const f = await deliveryFixture({}, {}, isolatedServicePaths());
+        const row = await seedPreviouslyObservedPickup(f, options);
+
+        await expect(
+          f.target.ingestProviderEventWithResult(pickupInput(f, row)),
+        ).resolves.toEqual({ outcome: 'not-applied', pickup: 'rejected' });
+
+        const after = await f.getRow();
+        expect(after.state).toBe(options.state);
+        expect(after.attempts[0]).toMatchObject({
+          pickedUpAt: 100,
+          ...(options.rootUserMessageId !== null
+            ? { rootUserMessageId: options.rootUserMessageId }
+            : {}),
+          ...(options.markUnknown ? { uncertainAt: 101 } : {}),
+        });
+        expect(
+          (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+            .activeTurn,
+        ).toEqual({
+          userMessageId: options.runtimeUserMessageId,
+          startedAt: 1,
+        });
+      },
+    );
+
+    it('rejects malformed or uncorrelated pickup events without changing outcome or evidence', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      const baseInput = await startingPickupInput(f);
+      const before = await f.getRow();
+      const malformedInputs = [
+        {
+          ...baseInput,
+          data: { ...baseInput.data, attemptId: 1 },
+        },
+        {
+          ...baseInput,
+          data: { ...baseInput.data, attemptId: 'unknown-attempt' },
+        },
+        {
+          ...baseInput,
+          data: { ...baseInput.data, generation: 'unknown-generation' },
+        },
+        {
+          ...baseInput,
+          data: { ...baseInput.data, provider: 'unknown-provider' },
+        },
+        {
+          ...baseInput,
+          data: { ...baseInput.data, provider: 'codex' },
+        },
+      ].map((input, index) => ({
+        ...input,
+        mutationId: `malformed-pickup-${index}`,
+      }));
+
+      for (const input of malformedInputs) {
+        await expect(
+          f.target.ingestProviderEventWithResult(input),
+        ).resolves.toEqual({ outcome: 'not-applied', pickup: 'rejected' });
+        expect(await f.getRow()).toEqual(before);
+        expect(
+          (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+            .activeTurn,
+        ).toEqual({ userMessageId: 'root-1', startedAt: 1 });
+      }
+    });
+
+    it('rejects a mismatched pickup verdict and leaves the root runtime to canonical turn state', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      const input = await startingPickupInput(f, 'generation-1', {
+        userMessageId: 'another-row',
+      });
+
+      const result = await f.target.ingestProviderEventWithResult(input);
+
+      expect(result).toEqual({ outcome: 'applied', pickup: 'rejected' });
+      const row = await f.getRow();
+      expect(row.attempts[0].pickedUpAt).toEqual(expect.any(Number));
+      expect(row.attempts[0].rootUserMessageId).toBe(row.id);
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toEqual({ userMessageId: 'root-1', startedAt: 1 });
+    });
+
+    it('rejects a superseded attempt while retaining its provider pickup evidence', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      await f.steer();
+      const beforeResend = await f.getRow();
+      const supersededAttemptId = beforeResend.attempts[0]?.id;
+      if (!supersededAttemptId) throw new Error('Missing superseded attempt');
+      await f.action('edit');
+      await f.action('save', 'Edited steering');
+      const row = await f.getRow();
+      expect(row.currentAttemptId).not.toBe(supersededAttemptId);
+
+      const result = await f.target.ingestProviderEventWithResult(
+        pickupInput(f, row, { attemptId: supersededAttemptId }),
+      );
+
+      expect(result).toEqual({ outcome: 'applied', pickup: 'rejected' });
+      const after = await f.getRow();
+      expect(after.state).toBe('uncertain');
+      expect(
+        after.attempts.find((attempt) => attempt.id === supersededAttemptId),
+      ).toMatchObject({
+        id: supersededAttemptId,
+        pickedUpAt: expect.any(Number),
+      });
+      expect(
+        after.attempts.find((attempt) => attempt.id === row.currentAttemptId)
+          ?.pickedUpAt,
+      ).toBeUndefined();
+      // Canonical turn state owns the root runtime; the pickup doesn't write it.
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toEqual({ userMessageId: 'root-1', startedAt: 1 });
+    });
+
+    it('rejects a pickup when Stop changes the epoch during root arbitration while retaining evidence', async () => {
+      const sessionReference: { current?: AgentSession } = {};
+      let blockNextLookup = false;
+      let lookupIsBlocked = false;
+      let signalLookupStarted = (): void => undefined;
+      const lookupStarted = new Promise<void>((resolve) => {
+        signalLookupStarted = resolve;
+      });
+      let releaseLookup = (): void => undefined;
+      const lookupBlocked = new Promise<void>((resolve) => {
+        releaseLookup = resolve;
+      });
+      const f = await deliveryFixture(
+        {},
+        {
+          inputSession: async () => {
+            if (blockNextLookup && !lookupIsBlocked) {
+              lookupIsBlocked = true;
+              signalLookupStarted();
+              await lookupBlocked;
+            }
+            const session = sessionReference.current;
+            if (!session) throw new Error('Missing fixture session');
+            return session;
+          },
+        },
+        isolatedServicePaths(),
+      );
+      sessionReference.current = f.session;
+      await f.steer();
+      const row = await f.getRow();
+      const input = pickupInput(f, row);
+      blockNextLookup = true;
+      const observing = f.target.ingestProviderEventWithResult(input);
+
+      await lookupStarted;
+      try {
+        await f.target.inputDelivery.stop(f.scope, async () => undefined);
+      } finally {
+        releaseLookup();
+      }
+      const result = await observing;
+
+      expect(result).toEqual({ outcome: 'applied', pickup: 'rejected' });
+      expect((await f.getLedger()).epoch).toBe(1);
+      const after = await f.getRow();
+      expect(after).toMatchObject({ state: 'picked-up' });
+      expect(after.attempts[0]).toMatchObject({
+        pickedUpAt: expect.any(Number),
+        rootUserMessageId: 'root-1',
+      });
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toEqual({ userMessageId: 'root-1', startedAt: 1 });
+    });
+
+    it('rejects a pickup while Stop holds suspension after incrementing the epoch', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      await f.steer();
+      const row = await f.getRow();
+      let signalStopOperation = (): void => undefined;
+      const stopOperationEntered = new Promise<void>((resolve) => {
+        signalStopOperation = resolve;
+      });
+      let releaseStopOperation = (): void => undefined;
+      const stopOperationBlocked = new Promise<void>((resolve) => {
+        releaseStopOperation = resolve;
+      });
+      const stopping = f.target.inputDelivery.stop(f.scope, async () => {
+        signalStopOperation();
+        await stopOperationBlocked;
+      });
+
+      await stopOperationEntered;
+      try {
+        expect((await f.getLedger()).epoch).toBe(1);
+        const result = await f.target.ingestProviderEventWithResult(
+          pickupInput(f, row),
+        );
+        expect(result).toEqual({ outcome: 'applied', pickup: 'rejected' });
+      } finally {
+        releaseStopOperation();
+      }
+      await stopping;
+
+      const after = await f.getRow();
+      expect(after.state).toBe('picked-up');
+      expect(after.attempts[0].pickedUpAt).toEqual(expect.any(Number));
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toEqual({ userMessageId: 'root-1', startedAt: 1 });
+    });
+
+    it('accepts a fresh pickup in a nonzero epoch and conservatively rejects its repeat', async () => {
+      const f = await deliveryFixture({}, {}, isolatedServicePaths());
+      await f.target.inputDelivery.stop(f.scope, async () => undefined);
+      const input = await startingPickupInput(f);
+      const firstResult = await f.target.ingestProviderEventWithResult(input);
+      await reportTurn(f.target, 'start', 'row-1');
+
+      expect(firstResult).toEqual({ outcome: 'applied', pickup: 'accepted' });
+      const acceptedRow = await f.getRow();
+      expect((await f.getLedger()).epoch).toBe(1);
+      expect(acceptedRow.attempts[0]).toMatchObject({
+        pickedUpAt: expect.any(Number),
+        rootUserMessageId: acceptedRow.id,
+      });
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          .activeTurn,
+      ).toMatchObject({ userMessageId: acceptedRow.id });
+
+      await expect(
+        f.target.ingestProviderEventWithResult(input),
+      ).resolves.toEqual({ outcome: 'not-applied', pickup: 'rejected' });
+      expect(await f.getRow()).toEqual(acceptedRow);
+    });
+
+    it.each([
+      {
+        description: 'after a terminal event',
+        update: async (
+          f: Awaited<ReturnType<typeof deliveryFixture>>,
+        ): Promise<void> => {
+          const row = await f.getRow();
+          // The adapter reports the end when it receives the result.
+          await reportTurn(f.target, 'end', row.id);
+          await f.target.ingestProviderEvent({
+            ...f.scope,
+            turnUserMessageId: row.id,
+            mutationId: 'terminal-after-pickup',
+            data: { type: 'result', is_error: false, result: 'Completed' },
+          });
+        },
+        expectedRuntime: undefined,
+      },
+      {
+        description: 'after ledger-only Stop increments the epoch',
+        update: async (
+          f: Awaited<ReturnType<typeof deliveryFixture>>,
+        ): Promise<void> => {
+          await f.target.inputDelivery.stop(f.scope, async () => undefined);
+        },
+        expectedRuntime: 'same-root',
+      },
+    ])(
+      'rejects an otherwise matching repeat $description',
+      async ({ update, expectedRuntime }) => {
+        const f = await deliveryFixture({}, {}, isolatedServicePaths());
+        const input = await startingPickupInput(f);
+        await expect(
+          f.target.ingestProviderEventWithResult(input),
+        ).resolves.toEqual({ outcome: 'applied', pickup: 'accepted' });
+        await reportTurn(f.target, 'start', 'row-1');
+        const runtimeBefore = (await f.target.getState(f.scope))
+          .runtimeByChatId[f.scope.chatId].activeTurn;
+
+        await update(f);
+        const evidenceAfterUpdate = await f.getRow();
+
+        const runtime = (await f.target.getState(f.scope)).runtimeByChatId[
+          f.scope.chatId
+        ];
+        if (expectedRuntime === 'same-root') {
+          expect(runtime.activeTurn).toEqual(runtimeBefore);
+          expect((await f.getLedger()).epoch).toBe(1);
+        } else {
+          // This fixture has no assistant output, so a real successful provider
+          // result settles as an empty-completion failure rather than success.
+          expect(runtime.status).toBe('failed');
+        }
+
+        await expect(
+          f.target.ingestProviderEventWithResult(input),
+        ).resolves.toEqual({ outcome: 'not-applied', pickup: 'rejected' });
+        expect(await f.getRow()).toEqual(evidenceAfterUpdate);
+      },
+    );
+
+    it('omits pickup for other phases and non-starting pickups', async () => {
+      const otherPhase = await deliveryFixture({}, {}, isolatedServicePaths());
+      const acceptedInput = await startingPickupInput(otherPhase);
+      const acceptedResult =
+        await otherPhase.target.ingestProviderEventWithResult({
+          ...acceptedInput,
+          data: { ...acceptedInput.data, phase: 'unknown' },
+        });
+
+      const nonStarting = await deliveryFixture({}, {}, isolatedServicePaths());
+      const pickedUpInput = await startingPickupInput(nonStarting);
+      const nonStartingResult =
+        await nonStarting.target.ingestProviderEventWithResult({
+          ...pickedUpInput,
+          data: { ...pickedUpInput.data, startsTurn: false },
+        });
+
+      expect(acceptedResult).toEqual({ outcome: 'not-applied' });
+      expect(nonStartingResult).toEqual({ outcome: 'applied' });
+    });
+
+    it('rejects malformed starting pickups but omits pickup for malformed non-starting events', async () => {
+      const f = await deliveryFixture();
+      const malformedStarting = await f.target.ingestProviderEventWithResult({
+        ...f.scope,
+        data: {
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          generation: 'generation-1',
+          attemptId: 1,
+          phase: 'picked-up',
+          startsTurn: true,
+        },
+      });
+      const malformedNonStarting = await f.target.ingestProviderEventWithResult(
+        {
+          ...f.scope,
+          data: {
+            type: 'canopy_input_delivery',
+            provider: 'claude',
+            generation: 'generation-1',
+            attemptId: 1,
+            phase: 'picked-up',
+            startsTurn: false,
+          },
+        },
+      );
+
+      expect(malformedStarting).toEqual({
+        outcome: 'not-applied',
+        pickup: 'rejected',
+      });
+      expect(malformedNonStarting).toEqual({ outcome: 'not-applied' });
+    });
+
+    it('records provider work exactly once through result and legacy APIs', async () => {
+      const resultFixture = await deliveryFixture(
+        {},
+        {},
+        isolatedServicePaths(),
+      );
+      const resultInput = await startingPickupInput(resultFixture);
+      resetWorkCounters();
+      await expect(
+        resultFixture.target.ingestProviderEventWithResult(resultInput),
+      ).resolves.toEqual({ outcome: 'applied', pickup: 'accepted' });
+      expect(snapshotWorkCounters().provider).toEqual({
+        eventsIngested: 1,
+        eventsApplied: 1,
+      });
+
+      const outcomeFixture = await deliveryFixture(
+        {},
+        {},
+        isolatedServicePaths(),
+      );
+      const outcomeInput = await startingPickupInput(outcomeFixture);
+      resetWorkCounters();
+      await expect(
+        outcomeFixture.target.ingestProviderEventWithOutcome(outcomeInput),
+      ).resolves.toBe('applied');
+      expect(snapshotWorkCounters().provider).toEqual({
+        eventsIngested: 1,
+        eventsApplied: 1,
+      });
+
+      const booleanFixture = await deliveryFixture(
+        {},
+        {},
+        isolatedServicePaths(),
+      );
+      const booleanInput = await startingPickupInput(booleanFixture);
+      resetWorkCounters();
+      await expect(
+        booleanFixture.target.ingestProviderEvent(booleanInput),
+      ).resolves.toBe(true);
+      expect(snapshotWorkCounters().provider).toEqual({
+        eventsIngested: 1,
+        eventsApplied: 1,
+      });
     });
   });
 
@@ -4131,10 +8758,14 @@ describe('chat state service', () => {
     const steering = jest
       .spyOn(getChatQueueService(), 'steer')
       .mockImplementation(async (_target, _entryId, receipt) => {
+        if (receipt.outcome !== 'applied')
+          throw new Error('Expected an applied steering receipt');
+        const entityId = receipt.entityId;
+        if (!entityId) throw new Error('Expected a steering receipt entity id');
         await f.target.inputDelivery.steerQueued(
           f.request,
           () => [],
-          receipt,
+          { ...receipt, outcome: 'applied', entityId },
           jest.fn(),
         );
         return 'applied';
@@ -4206,7 +8837,12 @@ describe('chat state service', () => {
           jest.fn(),
         ),
       ).rejects.toMatchObject({ code: 'not_found' });
-      expect(actor).toHaveBeenCalledWith(steeringActor, f.scope.projectId);
+      // The steered row's own provenance; this user input has none.
+      expect(actor).toHaveBeenCalledWith(
+        steeringActor,
+        f.scope.projectId,
+        undefined,
+      );
       expect(f.submission).not.toHaveBeenCalled();
       // The input goes back to the queue as ordinary input.
       expect(restore).toHaveBeenCalledTimes(1);
@@ -4292,6 +8928,33 @@ describe('chat state service', () => {
     expect(f.submission.mock.calls[0][0]).toContain(
       'sent by an external agent, "Claude Desktop" (connection ID 123e4567-e89b-42d3-a456-426614174000)',
     );
+  });
+
+  it('records the trusted sender on a steered message once it is picked up', async () => {
+    const agentSent: AgentSentInfo = {
+      kind: 'managed_delegate',
+      delegationId: 'delegation-1',
+      title: 'Independent error handling review',
+    };
+    const f = await deliveryFixture({ agentSent });
+    await f.steer();
+    const row = await f.getRow();
+    // The broker's wrapper names the delegate to the provider already.
+    expect(f.submission.mock.calls[0][0]).not.toContain('external agent');
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+      },
+    });
+    const message = (
+      await f.target.getState(f.scope)
+    ).tabsFile.tabs[0].messages.find((message) => message.id === row.id);
+    expect(message?.agentSent).toEqual(agentSent);
   });
 
   it('preserves watcher attribution and hidden context through steering pickup', async () => {
@@ -4429,6 +9092,69 @@ describe('chat state service', () => {
     },
   );
 
+  it.each(['user', 'automation'] as const)(
+    'settles %s handoffs when a pending steer is accepted later',
+    async (source) => {
+      const f = await deliveryFixture({ initiationSource: source });
+      const origin = {
+        projectId: f.scope.projectId,
+        worktreeId: f.scope.worktreeId,
+        chatTabId: f.scope.chatId,
+      };
+      const key = presentationChatKey(origin);
+      browserHandoffs.releaseWorktree(origin.projectId, origin.worktreeId);
+      recordPresentationTurn(key, 'root-1', 'user');
+      const handoff = browserHandoffs.request(
+        {
+          projectId: origin.projectId,
+          worktreeId: origin.worktreeId,
+          browserId: 'browser',
+          origin,
+        },
+        jest.fn(),
+      );
+      let settle: (result: ChatInputAdmission) => void = () => {
+        throw new Error('The late submission was not initialized');
+      };
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: new Promise<ChatInputAdmission>((resolve) => {
+          settle = resolve;
+        }),
+      }));
+      try {
+        await f.steer();
+        // Unconfirmed: the pin stays until the provider accepts the steer.
+        expect(
+          browserHandoffs.snapshot(origin.projectId, origin.worktreeId).handoff
+            ?.handoffId,
+        ).toBe(handoff.handoffId);
+        const row = await f.getRow();
+        if (!row.currentAttemptId) throw new Error('Missing pending attempt');
+        settle({ kind: 'accepted', attemptId: row.currentAttemptId });
+        for (
+          let attempt = 0;
+          attempt < 100 && (await f.getRow()).state === 'pending';
+          attempt += 1
+        )
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(
+          browserHandoffs.snapshot(origin.projectId, origin.worktreeId)
+            .handoff === null,
+        ).toBe(source === 'user');
+        if (source === 'automation')
+          expect(capturePresentationTurn(origin)).toEqual({
+            turnId: 'root-1',
+            source,
+          });
+      } finally {
+        browserHandoffs.releaseWorktree(origin.projectId, origin.worktreeId);
+        forgetPresentationChat(key);
+      }
+    },
+  );
+
   it.each([false, true])(
     'fences delayed pickup release after uncertain steering (replacement=%s)',
     async (replace) => {
@@ -4541,63 +9267,87 @@ describe('chat state service', () => {
   // delegate's message to its root chat is therefore steered through here,
   // never handed straight to the provider session.
   it('applies the turn-start pickup of a recorded delegate message, not of an unrecorded steer', async () => {
-    const f = await deliveryFixture();
-    const pickup = (attemptId: string, userMessageId: string) =>
-      f.target.ingestProviderEvent({
-        ...f.scope,
-        data: {
-          type: 'canopy_input_delivery',
-          provider: 'claude',
-          generation: 'generation-1',
-          attemptId,
-          phase: 'picked-up',
-          startsTurn: true,
-          userMessageId,
-        },
-      });
-    expect(await pickup('unrecorded-attempt', 'unrecorded-attempt')).toBe(
-      false,
-    );
-
-    expect(
-      await f.target.inputDelivery.steerWatcher(
-        {
-          ...f.request,
-          userMessageId: 'upward-1',
-          text: '<system_instruction>Subordinate request</system_instruction>',
-          initiationSource: 'automation',
-          managedDelegationDeliveryId: 'upward-1',
-        },
-        () => [],
-        'desktop',
-        true,
-      ),
-    ).toEqual({ status: 'handled', submitted: true });
-    const row = await f.getRow();
-    expect(row.id).toBe('upward-1');
-    if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
-
-    expect(await pickup(row.currentAttemptId, row.id)).toBe(true);
-    const state = await f.target.getState(f.scope);
-    expect(state.runtimeByChatId[f.scope.chatId].activeTurn).toMatchObject({
-      userMessageId: 'upward-1',
+    const retireDelivery = jest.fn();
+    installDelegationLifecycle({
+      shutdown: async (): Promise<void> => undefined,
+      revoke: async (): Promise<void> => undefined,
+      closeScope: async (): Promise<void> => undefined,
+      isDeliveryActive: () => true,
+      claimDelivery: () => true,
+      releaseDelivery: (): void => undefined,
+      retireDelivery,
     });
-    // Like a delegate message dispatched as an ordinary queued turn, it is
-    // hidden behind an automation start banner and never listed as a pending
-    // delivery.
-    const messages = state.tabsFile.tabs[0].messages;
-    expect(
-      messages
-        .filter((message) => message.id.startsWith('upward-1'))
-        .map(({ id, hidden }) => ({ id, hidden })),
-    ).toEqual([
-      { id: 'upward-1-automation-info', hidden: undefined },
-      { id: 'upward-1', hidden: true },
-      { id: 'upward-1:timer', hidden: undefined },
-    ]);
-    expect(inputDeliveryViews(state.tabsFile.tabs[0].inputDelivery)).toEqual(
-      [],
-    );
+    try {
+      const f = await deliveryFixture();
+      const pickup = (attemptId: string, userMessageId: string) =>
+        f.target.ingestProviderEvent({
+          ...f.scope,
+          data: {
+            type: 'canopy_input_delivery',
+            provider: 'claude',
+            generation: 'generation-1',
+            attemptId,
+            phase: 'picked-up',
+            startsTurn: true,
+            userMessageId,
+          },
+        });
+      expect(await pickup('unrecorded-attempt', 'unrecorded-attempt')).toBe(
+        false,
+      );
+
+      expect(
+        await f.target.inputDelivery.steerGenerated(
+          {
+            ...f.request,
+            userMessageId: 'upward-1',
+            text: '<system_instruction>Subordinate request</system_instruction>',
+            initiationSource: 'automation',
+            managedDelegationDeliveryId: 'upward-1',
+          },
+          () => [],
+          'desktop',
+          true,
+        ),
+      ).toEqual({ status: 'handled' });
+      const row = await f.getRow();
+      expect(row.id).toBe('upward-1');
+      if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
+
+      expect(await pickup(row.currentAttemptId, row.id)).toBe(true);
+      // The picked-up message starts its own turn, as the adapter reports it.
+      await reportTurn(f.target, 'start', row.id, { turnId: row.id, atMs: 3 });
+      const state = await f.target.getState(f.scope);
+      expect(state.runtimeByChatId[f.scope.chatId].activeTurn).toMatchObject({
+        userMessageId: 'upward-1',
+      });
+      // Once sent, the root chat shows the delegate's message (as its steering
+      // request, with no automation banner), never lists it as a pending
+      // delivery, and retires its delivery once.
+      const messages = state.tabsFile.tabs[0].messages;
+      expect(
+        messages
+          .filter((message) => message.id.startsWith('upward-1'))
+          .map(({ id, hidden }) => ({ id, hidden })),
+      ).toEqual([
+        { id: 'upward-1', hidden: undefined },
+        { id: 'upward-1:timer', hidden: undefined },
+      ]);
+      expect(retireDelivery).toHaveBeenCalledTimes(1);
+      expect(inputDeliveryViews(state.tabsFile.tabs[0].inputDelivery)).toEqual(
+        [],
+      );
+    } finally {
+      installDelegationLifecycle({
+        shutdown: async (): Promise<void> => undefined,
+        revoke: async (): Promise<void> => undefined,
+        closeScope: async (): Promise<void> => undefined,
+        isDeliveryActive: () => false,
+        claimDelivery: () => false,
+        releaseDelivery: (): void => undefined,
+        retireDelivery: (): void => undefined,
+      });
+    }
   });
 
   // A steer admitted while a turn was running can be picked up after that turn
@@ -4657,6 +9407,8 @@ describe('chat state service', () => {
         userMessageId: row.id,
       },
     });
+    // The picked-up steer starts its own turn, as the adapter reports it.
+    await reportTurn(f.target, 'start', row.id, { turnId: row.id, atMs: 3 });
     await f.repository.transact(
       f.scope,
       [
@@ -4824,6 +9576,775 @@ describe('chat state service', () => {
         (message) => message.id === row.id,
       )?.timestamp,
     ).toBe(pickedUpAt);
+  });
+
+  async function expectApprovalFallback(
+    f: Awaited<ReturnType<typeof deliveryFixture>>,
+  ): Promise<void> {
+    const restore = jest
+      .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+      .mockResolvedValue(undefined);
+    try {
+      await expect(f.steer()).resolves.toBe(false);
+      expect(f.submission).not.toHaveBeenCalled();
+      expect(restore).toHaveBeenCalledWith(
+        f.request,
+        f.request.userMessageId,
+        undefined,
+        0,
+        'desktop',
+        undefined,
+        undefined,
+      );
+    } finally {
+      restore.mockRestore();
+    }
+  }
+
+  describe('steering compared with the approval mode the live session applied (CAN-4821)', () => {
+    const applied = (
+      mode: ApprovalMode | undefined,
+    ): Partial<AgentSession> => ({ getAppliedApprovalMode: () => mode });
+    async function withDefault<T>(
+      mode: ApprovalMode,
+      run: (resolve: jest.SpyInstance) => Promise<T>,
+    ): Promise<T> {
+      const resolve = jest
+        .spyOn(approvalModeResolution, 'resolvePersistedApprovalMode')
+        .mockResolvedValue(mode);
+      try {
+        return await run(resolve);
+      } finally {
+        resolve.mockRestore();
+      }
+    }
+
+    it('does not steer an Auto-admitted agent message into a busy Full Access session after the default narrows to Auto', async () => {
+      // The default setter never touches running sessions.
+      await withDefault('auto', async () => {
+        const f = await deliveryFixture(
+          {
+            admittedApproval: {
+              approvalMode: 'auto',
+              sessionApprovalRules: [],
+            },
+          },
+          {},
+          paths,
+          applied('full-access'),
+        );
+
+        await expectApprovalFallback(f);
+        expect(f.submission).not.toHaveBeenCalled();
+      });
+    });
+
+    it('does not steer a queued Auto message into a Full Access session after the default narrows to Auto', async () => {
+      await withDefault('auto', async () => {
+        const f = await deliveryFixture(
+          { approvalMode: 'auto' },
+          {},
+          paths,
+          applied('full-access'),
+        );
+
+        await expectApprovalFallback(f);
+        expect(f.submission).not.toHaveBeenCalled();
+      });
+    });
+
+    it('does not steer an Auto message into a saved Auto chat whose session still runs at Full Access', async () => {
+      const f = await deliveryFixture(
+        { approvalMode: 'auto' },
+        {},
+        paths,
+        applied('full-access'),
+      );
+      await f.repository.transact(
+        f.scope,
+        [
+          {
+            type: 'tab.metadata_patched',
+            tabId: f.scope.chatId,
+            patch: { approvalMode: 'auto' },
+          },
+        ],
+        { source: 'provider' },
+      );
+
+      await expectApprovalFallback(f);
+      expect(f.submission).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a session created without a mode', applied(undefined)],
+      [
+        'a session that cannot report its mode',
+        { getAppliedApprovalMode: undefined },
+      ],
+    ])(
+      'does not steer a narrowing message into %s',
+      async (_label, sessionOverrides) => {
+        await withDefault('ask', async () => {
+          const f = await deliveryFixture(
+            { approvalMode: 'ask' },
+            {},
+            paths,
+            sessionOverrides,
+          );
+
+          await expectApprovalFallback(f);
+          expect(f.submission).not.toHaveBeenCalled();
+        });
+      },
+    );
+
+    it.each([
+      [
+        'an admitted agent message',
+        {
+          admittedApproval: {
+            approvalMode: 'auto' as const,
+            sessionApprovalRules: [],
+          },
+        },
+        'auto' as const,
+      ],
+      [
+        'a queued Auto message',
+        { approvalMode: 'auto' as const },
+        'ask' as const,
+      ],
+    ])(
+      'steers %s that asks for no more than the session applied, whatever the default',
+      async (_label, content, sessionMode) => {
+        await withDefault('full-access', async (resolve) => {
+          const f = await deliveryFixture(
+            content,
+            {},
+            paths,
+            applied(sessionMode),
+          );
+
+          await f.steer();
+          expect(f.submission).toHaveBeenCalledTimes(1);
+          // The message's own turn would start at the default, narrowed by
+          // the message, and the session holds no more than that.
+          expect(resolve).toHaveBeenCalled();
+        });
+      },
+    );
+
+    it('sends a narrower message whose steer is refused through ordinary delivery instead of cancelling it', async () => {
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      try {
+        await withDefault('ask', async (resolve) => {
+          const f = await deliveryFixture(
+            { approvalMode: 'ask' },
+            {},
+            paths,
+            applied('ask'),
+          );
+          f.submission.mockImplementation(async (_text, attemptId) => {
+            // The chat's default widens while the input is in flight.
+            resolve.mockResolvedValue('full-access');
+            return {
+              kind: 'rejected',
+              attemptId,
+              reason: 'The active turn no longer accepts steering',
+              fallback: 'ordinary',
+            };
+          });
+
+          await expect(f.steer()).resolves.toBe(false);
+          const row = await f.getRow();
+          expect(row.state).toBe('cancelled');
+          expect(row.reason).toContain('Falling back to ordinary delivery.');
+          expect(restore).toHaveBeenCalledWith(
+            expect.objectContaining({ approvalMode: 'ask' }),
+            row.id,
+            undefined,
+            0,
+            'desktop',
+            undefined,
+            undefined,
+          );
+        });
+      } finally {
+        restore.mockRestore();
+      }
+    });
+
+    it('sends a message through ordinary delivery when the session applies a looser mode while it is prepared', async () => {
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      const resolve = jest
+        .spyOn(approvalModeResolution, 'resolvePersistedApprovalMode')
+        .mockResolvedValue('full-access');
+      let mode: ApprovalMode = 'auto';
+      try {
+        const f = await deliveryFixture({ approvalMode: 'auto' }, {}, paths, {
+          getAppliedApprovalMode: () => mode,
+          getSteeringWorkingDirectory: () => {
+            // Read while the text is prepared, after the settings check.
+            mode = 'full-access';
+            return tempDir;
+          },
+        });
+
+        await expect(f.steer()).resolves.toBe(false);
+        expect(f.submission).not.toHaveBeenCalled();
+        const row = await f.getRow();
+        expect(row.state).toBe('cancelled');
+        // The existing refusal copy, not a new reason.
+        expect(row.reason).toBe(
+          'The active session no longer accepts steering. Falling back to ordinary delivery.',
+        );
+        expect(restore).toHaveBeenCalledTimes(1);
+      } finally {
+        restore.mockRestore();
+        resolve.mockRestore();
+      }
+    });
+
+    it.each([
+      ['falls back from', 'full-access' as const, { status: 'fallback' }],
+      ['steers into', 'auto' as const, { status: 'handled' }],
+    ])(
+      'a watcher-fired Auto-admitted message %s a session that applied %s',
+      async (_label, sessionMode, expected) => {
+        await withDefault('auto', async () => {
+          const f = await deliveryFixture(
+            {
+              watcherFired: { kind: 'Wakeup' },
+              admittedApproval: {
+                approvalMode: 'auto',
+                sessionApprovalRules: [],
+              },
+            },
+            {},
+            paths,
+            applied(sessionMode),
+          );
+
+          await expect(
+            f.target.inputDelivery.steerGenerated(
+              f.request,
+              () => [],
+              'desktop',
+              true,
+            ),
+          ).resolves.toEqual(expected);
+          expect(f.submission).toHaveBeenCalledTimes(
+            sessionMode === 'auto' ? 1 : 0,
+          );
+        });
+      },
+    );
+  });
+
+  describe('steering compared with the authority the message would start its own turn with (CAN-4821)', () => {
+    const applied = (mode: ApprovalMode): Partial<AgentSession> => ({
+      getAppliedApprovalMode: () => mode,
+    });
+    async function withDefault<T>(
+      mode: ApprovalMode,
+      run: (resolve: jest.SpyInstance) => Promise<T>,
+    ): Promise<T> {
+      const resolve = jest
+        .spyOn(approvalModeResolution, 'resolvePersistedApprovalMode')
+        .mockResolvedValue(mode);
+      try {
+        return await run(resolve);
+      } finally {
+        resolve.mockRestore();
+      }
+    }
+    async function saveTabMode(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+      approvalMode: ApprovalMode,
+    ): Promise<void> {
+      await f.repository.transact(
+        f.scope,
+        [
+          {
+            type: 'tab.metadata_patched',
+            tabId: f.scope.chatId,
+            patch: { approvalMode },
+          },
+        ],
+        { source: 'provider' },
+      );
+    }
+    /** A queued Portal message: Portal ingress strips every approval field. */
+    const steerFromPortal = (
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+    ): Promise<boolean> =>
+      f.target.inputDelivery.steerQueued(
+        f.request,
+        () => [],
+        { commandId: 'portal-steer', outcome: 'applied', entityId: 'chat-1' },
+        jest.fn(),
+        'portal',
+      );
+    const steerAsWatcher = (
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+    ): ReturnType<typeof f.target.inputDelivery.steerGenerated> =>
+      f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'portal',
+        true,
+      );
+    function ordinaryQueue(f: Awaited<ReturnType<typeof deliveryFixture>>) {
+      let complete: (() => void) | undefined;
+      const delivered = new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      const dispatch = jest.fn<
+        Promise<void>,
+        [ChatSendMessageRequest, 'desktop' | 'portal', boolean]
+      >(() => {
+        complete?.();
+        return Promise.resolve();
+      });
+      const queue = new ChatQueueService({
+        steerGenerated: (request, origin, ids, allow) =>
+          f.target.inputDelivery.steerGenerated(request, ids, origin, allow),
+        dispatch,
+        cancel: async () => undefined,
+        settleCancelledTurn: async () => undefined,
+        hasActiveProviderTurn: () => false,
+        hasPendingProviderContinuation: () => false,
+        persistRuntime: (...args) => f.target.reconcileHostQueue(...args),
+        broadcast: () => undefined,
+        createId: () => 'ordinary-row',
+        now: () => 1,
+        schedule: (callback, delay) => setTimeout(callback, delay),
+      });
+      mockedGetChatQueueService.mockReturnValue(queue);
+      return { queue, dispatch, delivered };
+    }
+    async function expectOwnTurn(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+    ): Promise<void> {
+      await expect(steerAsWatcher(f)).resolves.toEqual({ status: 'fallback' });
+      const ordinary = ordinaryQueue(f);
+      await expect(steerFromPortal(f)).resolves.toBe(false);
+      await ordinary.delivered;
+      expect(ordinary.dispatch.mock.calls[0].slice(0, 3)).toEqual([
+        f.request,
+        'portal',
+        true,
+      ]);
+      expect(f.submission).not.toHaveBeenCalled();
+      expect((await f.getRow()).state).toBe('queued');
+    }
+
+    it('returns success from the queued command and delivers its refused steer as an ordinary turn', async () => {
+      const f = await deliveryFixture({}, {}, paths, applied('full-access'));
+      await saveTabMode(f, 'ask');
+      const ordinary = ordinaryQueue(f);
+      ordinary.queue.hydratePersistedInput(
+        f.request,
+        f.request.userMessageId,
+        'portal',
+        1,
+      );
+      const service = jest
+        .spyOn(chatStateServiceModule, 'getChatStateService')
+        .mockReturnValue(f.target);
+      try {
+        await expect(
+          ordinary.queue.steer(f.scope, f.request.userMessageId, {
+            commandId: 'queued-command',
+            outcome: 'applied',
+            entityId: f.scope.chatId,
+          }),
+        ).resolves.toBe('applied');
+        expect(f.submission).not.toHaveBeenCalled();
+        await ordinary.delivered;
+        expect(ordinary.dispatch).toHaveBeenCalledTimes(1);
+        expect((await f.getRow()).state).toBe('queued');
+      } finally {
+        service.mockRestore();
+      }
+    });
+
+    it.each(['preparation', 'after claim'] as const)(
+      'delivers as an ordinary turn when the saved tab narrows during %s',
+      async (boundary) => {
+        const f = await deliveryFixture({}, {}, paths, applied('full-access'));
+        await saveTabMode(f, 'full-access');
+        const ordinary = ordinaryQueue(f);
+        if (boundary === 'preparation') {
+          jest
+            .spyOn(activePlan, 'resolveActivePlanSystemInstruction')
+            .mockImplementationOnce(async () => {
+              await saveTabMode(f, 'ask');
+              return null;
+            });
+        } else {
+          const transact = f.repository.transactWith.bind(f.repository);
+          jest
+            .spyOn(f.repository, 'transactWith')
+            .mockImplementationOnce(async (...args) => {
+              const commit = await transact(...args);
+              await saveTabMode(f, 'ask');
+              return commit;
+            });
+        }
+        await expect(steerFromPortal(f)).resolves.toBe(false);
+        expect((await f.getRow()).state).toBe('queued');
+        await ordinary.delivered;
+        expect(ordinary.dispatch).toHaveBeenCalledTimes(1);
+        expect(f.submission).not.toHaveBeenCalled();
+        expect((await f.getRow()).state).toBe('queued');
+      },
+    );
+
+    it('delivers an edited resend as an ordinary turn when the saved tab narrowed since the original attempt', async () => {
+      const f = await deliveryFixture({}, {}, paths, applied('full-access'));
+      await saveTabMode(f, 'full-access');
+      await f.steer();
+      await f.action('edit');
+      await saveTabMode(f, 'ask');
+      const ordinary = ordinaryQueue(f);
+      await expect(f.action('save', 'Edited message')).resolves.toMatchObject({
+        outcome: 'applied',
+      });
+      await ordinary.delivered;
+      expect(ordinary.dispatch).toHaveBeenCalledTimes(1);
+      expect(ordinary.dispatch.mock.calls[0][0].text).toBe('Edited message');
+      expect(f.submission).toHaveBeenCalledTimes(1);
+      expect((await f.getRow()).state).toBe('queued');
+    });
+
+    it('steers an edited resend when approval widens but its session remains within the resolved authority', async () => {
+      const f = await deliveryFixture({}, {}, paths, applied('ask'));
+      await saveTabMode(f, 'ask');
+      await f.steer();
+      await f.action('edit');
+      await saveTabMode(f, 'full-access');
+      await expect(f.action('save', 'Edited message')).resolves.toMatchObject({
+        outcome: 'applied',
+      });
+      expect(f.submission).toHaveBeenCalledTimes(2);
+      expect((await f.getRow()).state).toBe('pending');
+    });
+
+    it('delivers a watcher normally if its default changes between the outer check and the nested queued check', async () => {
+      await withDefault('full-access', async (resolve) => {
+        const f = await deliveryFixture(
+          { watcherFired: { kind: 'Wakeup' } },
+          {},
+          paths,
+          applied('full-access'),
+        );
+        resolve
+          .mockImplementationOnce(async () => 'full-access')
+          .mockImplementationOnce(async () => {
+            markApprovalDefaultsChanged();
+            return 'ask';
+          });
+        const ordinary = ordinaryQueue(f);
+        await expect(
+          ordinary.queue.submit(f.request, 'portal'),
+        ).resolves.toBeUndefined();
+        expect(f.submission).not.toHaveBeenCalled();
+        await ordinary.delivered;
+        expect(ordinary.dispatch).toHaveBeenCalledTimes(1);
+        expect(f.submission).not.toHaveBeenCalled();
+      });
+    });
+
+    it.each(['auto', 'ask'] as const)(
+      'does not steer a message without approval fields into a Full Access session after its saved tab narrows to %s',
+      async (narrowed) => {
+        await withDefault('full-access', async () => {
+          const f = await deliveryFixture(
+            {},
+            {},
+            paths,
+            applied('full-access'),
+          );
+          await saveTabMode(f, narrowed);
+
+          await expectOwnTurn(f);
+        });
+      },
+    );
+
+    it.each(['auto', 'ask'] as const)(
+      'does not steer a message without approval fields into a Full Access session after the default of a tab without a saved mode narrows to %s',
+      async (narrowed) => {
+        await withDefault(narrowed, async () => {
+          const f = await deliveryFixture(
+            {},
+            {},
+            paths,
+            applied('full-access'),
+          );
+
+          await expectOwnTurn(f);
+        });
+      },
+    );
+
+    it('does not steer a message without approval fields into a session whose restrictive switch failed', async () => {
+      const f = await deliveryFixture({}, {}, paths, {
+        // The provider rolled the switch back, so the session keeps the
+        // wider mode it reports.
+        getAppliedApprovalMode: () => 'full-access',
+        setApprovalMode: jest.fn(async () => {
+          throw new Error('setPermissionMode failed');
+        }),
+      });
+      await saveTabMode(f, 'full-access');
+      await saveTabMode(f, 'auto');
+      await expect(f.session.setApprovalMode('auto')).rejects.toThrow(
+        'setPermissionMode failed',
+      );
+
+      await expectOwnTurn(f);
+    });
+
+    it.each([
+      ['the default of a tab without a saved mode', undefined, 'auto' as const],
+      ['the saved tab mode', 'auto' as const, 'auto' as const],
+      ['a mode stricter than the saved tab', 'auto' as const, 'ask' as const],
+    ])(
+      'steers a message without approval fields into a session that runs at %s',
+      async (_label, savedMode, sessionMode) => {
+        await withDefault('auto', async () => {
+          const f = await deliveryFixture({}, {}, paths, applied(sessionMode));
+          if (savedMode) await saveTabMode(f, savedMode);
+
+          await expect(steerFromPortal(f)).resolves.toBe(true);
+          expect(f.submission).toHaveBeenCalledTimes(1);
+        });
+      },
+    );
+
+    it.each([
+      [
+        'the default changes',
+        (): (() => void) => {
+          markApprovalDefaultsChanged();
+          return () => undefined;
+        },
+      ],
+      [
+        "the chat's mode narrows",
+        (): (() => void) => {
+          // A restrictive switch registers before it awaits anything.
+          const generation = beginApprovalModeTransition(
+            SCOPE.projectId,
+            SCOPE.worktreeId,
+            'chat-1',
+            'auto',
+          );
+          return () =>
+            endApprovalModeTransition(
+              SCOPE.projectId,
+              SCOPE.worktreeId,
+              'chat-1',
+              generation,
+            );
+        },
+      ],
+    ])(
+      'sends a message through ordinary delivery when %s while it is prepared',
+      async (_label, change) => {
+        const restore = jest
+          .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+          .mockResolvedValue(undefined);
+        let undo: () => void = () => undefined;
+        try {
+          await withDefault('full-access', async (resolve) => {
+            const f = await deliveryFixture({}, {}, paths, {
+              getAppliedApprovalMode: () => 'full-access',
+              getSteeringWorkingDirectory: () => {
+                // Read while the text is prepared, after the settings check.
+                resolve.mockResolvedValue('auto');
+                undo = change();
+                return tempDir;
+              },
+            });
+
+            await expect(steerFromPortal(f)).resolves.toBe(false);
+            expect(f.submission).not.toHaveBeenCalled();
+            const row = await f.getRow();
+            expect(row.state).toBe('cancelled');
+            expect(row.reason).toBe(
+              'The active session no longer accepts steering. Falling back to ordinary delivery.',
+            );
+            expect(restore).toHaveBeenCalledTimes(1);
+          });
+        } finally {
+          undo();
+          restore.mockRestore();
+        }
+      },
+    );
+
+    it.each(['returned', 'thrown'] as const)(
+      'does not steer a message its admission check refuses (%s), so its turn start reports the refusal',
+      async (kind) => {
+        await withDefault('full-access', async () => {
+          const f = await deliveryFixture({}, {}, paths, applied('ask'));
+
+          await withChatSendAdmission(
+            { ...f.scope, userMessageId: f.request.userMessageId },
+            () => {
+              const reason =
+                'The target chat now runs with broader tool approvals.';
+              if (kind === 'thrown')
+                throw new ChatSendAdmissionRefusedError(reason);
+              return reason;
+            },
+            () => expectOwnTurn(f),
+          );
+        });
+      },
+    );
+  });
+
+  describe('steering compared with the approval rules the live session applied (CAN-4821)', () => {
+    const rule = (
+      id: string,
+      behavior: ApprovalRule['behavior'],
+      pattern: string,
+    ): ApprovalRule => ({
+      id,
+      behavior,
+      target: { kind: 'command', pattern },
+      createdAt: '2026-10-23T00:00:00.000Z',
+      origin: 'prompt',
+    });
+    const GRANT = rule('grant', 'allow', 'npm test');
+    const DENY = rule('deny', 'deny', 'rm -rf *');
+    /** A session at Ask that evaluates `rules`, a live list it may change. */
+    const applying = (rules: ApprovalRule[]): Partial<AgentSession> => ({
+      getAppliedApprovalMode: () => 'ask',
+      getAppliedApprovalRules: () => rules,
+    });
+
+    async function setTabRules(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+      rules: ApprovalRule[],
+    ): Promise<void> {
+      await f.repository.transact(
+        f.scope,
+        [
+          {
+            type: 'tab.metadata_patched',
+            tabId: f.scope.chatId,
+            patch: { sessionApprovalRules: rules },
+          },
+        ],
+        { source: 'provider' },
+      );
+    }
+
+    // The session keeps its rules until its next ordinary turn starts.
+    // [change, rules the message was queued with, session rules, tab rules]
+    const activeTurnChanges: [
+      string,
+      ApprovalRule[],
+      ApprovalRule[],
+      ApprovalRule[],
+    ][] = [
+      // Queued while the chat held the grant.
+      ['a grant removed from the chat', [GRANT], [GRANT], []],
+      ['a deny rule added to the chat', [], [], [DENY]],
+    ];
+
+    it.each(activeTurnChanges)(
+      'does not steer a queued message into a session that predates %s',
+      async (_label, queuedRules, sessionRules, tabRules) => {
+        const f = await deliveryFixture(
+          { sessionApprovalRules: [...queuedRules] },
+          {},
+          paths,
+          applying([...sessionRules]),
+        );
+        await setTabRules(f, [...tabRules]);
+
+        await expectApprovalFallback(f);
+        expect(f.submission).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(activeTurnChanges)(
+      'falls back to ordinary delivery for a watcher message into a session that predates %s',
+      async (_label, queuedRules, sessionRules, tabRules) => {
+        const f = await deliveryFixture(
+          {
+            sessionApprovalRules: [...queuedRules],
+            watcherFired: { kind: 'Wakeup' },
+          },
+          {},
+          paths,
+          applying([...sessionRules]),
+        );
+        await setTabRules(f, [...tabRules]);
+
+        await expect(
+          f.target.inputDelivery.steerGenerated(
+            f.request,
+            () => [],
+            'desktop',
+            true,
+          ),
+        ).resolves.toEqual({ status: 'fallback' });
+        expect(f.submission).not.toHaveBeenCalled();
+      },
+    );
+
+    it('steers a message into a session that applies the chat rules', async () => {
+      const f = await deliveryFixture(
+        { sessionApprovalRules: [GRANT, DENY] },
+        {},
+        paths,
+        applying([{ ...GRANT, id: 'same-effect' }, DENY]),
+      );
+      await setTabRules(f, [GRANT, DENY]);
+
+      await f.steer();
+      expect(f.submission).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends a message through ordinary delivery when the session gains a grant while it is prepared', async () => {
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      const sessionRules: ApprovalRule[] = [];
+      try {
+        const f = await deliveryFixture({}, {}, paths, {
+          ...applying(sessionRules),
+          getSteeringWorkingDirectory: () => {
+            // Read while the text is prepared, after the settings check.
+            sessionRules.push(GRANT);
+            return tempDir;
+          },
+        });
+
+        await expect(f.steer()).resolves.toBe(false);
+        expect(f.submission).not.toHaveBeenCalled();
+        const row = await f.getRow();
+        expect(row.state).toBe('cancelled');
+        expect(row.reason).toBe(
+          'The active session no longer accepts steering. Falling back to ordinary delivery.',
+        );
+        expect(restore).toHaveBeenCalledTimes(1);
+      } finally {
+        restore.mockRestore();
+      }
+    });
   });
 
   it('refuses steering when the stored session model is blocked', async () => {
@@ -5035,6 +10556,972 @@ describe('chat state service', () => {
     ).toContain('Saved without sending');
   });
 
+  describe('input delivery outcomes', () => {
+    const PAYLOAD_SENTINEL = 'payload-sentinel-5f2a';
+    const tick = () =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 2);
+      });
+
+    function deferredAdmission(): {
+      promise: Promise<ChatInputAdmission>;
+      resolve(admission: ChatInputAdmission): void;
+    } {
+      let resolvePromise: (admission: ChatInputAdmission) => void = () => {
+        throw new Error('Settlement promise was not initialized');
+      };
+      const promise = new Promise<ChatInputAdmission>((resolve) => {
+        resolvePromise = resolve;
+      });
+      return { promise, resolve: resolvePromise };
+    }
+
+    async function waitForRow(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+      predicate: (row: Awaited<ReturnType<typeof f.getRow>>) => boolean,
+    ): Promise<Awaited<ReturnType<typeof f.getRow>>> {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const row = await f.getRow();
+        if (predicate(row)) return row;
+        await tick();
+      }
+      throw new Error('Delivery row did not reach its expected state');
+    }
+
+    function deliveryEvent(
+      f: Awaited<ReturnType<typeof deliveryFixture>>,
+      attemptId: string | undefined,
+      phase: 'accepted' | 'picked-up' | 'withdrawn' | 'completed' | 'unknown',
+      extra: Record<string, unknown> = {},
+    ) {
+      if (!attemptId) throw new Error('Missing current attempt');
+      return {
+        ...f.scope,
+        data: {
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          generation: 'generation-1',
+          attemptId,
+          phase,
+          ...extra,
+        },
+      };
+    }
+
+    function outcomes() {
+      return mockInputDeliveryOutcomes.map((record) => ({
+        outcome: record.inputDeliveryOutcome,
+        attemptId: record.inputAttemptId,
+        origin: record.inputOrigin,
+        errorClass: record.inputErrorClass,
+        errorCode: record.inputErrorCode,
+        errorSummary: record.inputErrorSummary,
+        timings: record.inputPhaseTimingsMs,
+      }));
+    }
+
+    it('keeps an unconfirmed handoff Sending until a late acknowledgement and pickup settle it', async () => {
+      const f = await deliveryFixture();
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+      }));
+
+      await expect(f.steer()).resolves.toBe(true);
+      const pending = await f.getRow();
+      expect(pending.state).toBe('pending');
+      expect(pending.attempts[0].admittedAt).toBeUndefined();
+      expect(pending.attempts[0].uncertainAt).toBeUndefined();
+      expect(mockInputDeliveryOutcomes).toEqual([]);
+
+      await tick();
+      await f.target.ingestProviderEvent(
+        deliveryEvent(f, pending.currentAttemptId, 'accepted'),
+      );
+      const admitted = await f.getRow();
+      expect(admitted.state).toBe('pending');
+      expect(admitted.attempts[0].admittedAt).toEqual(expect.any(Number));
+      expect(mockInputDeliveryOutcomes).toEqual([]);
+
+      await f.target.ingestProviderEvent(
+        deliveryEvent(f, pending.currentAttemptId, 'picked-up'),
+      );
+      expect((await f.getRow()).state).toBe('picked-up');
+      expect(outcomes()).toEqual([
+        {
+          outcome: 'picked-up',
+          attemptId: pending.currentAttemptId,
+          origin: 'typed',
+          errorClass: undefined,
+          errorCode: undefined,
+          errorSummary: undefined,
+          timings: {
+            admitted: expect.any(Number),
+            pickedUp: expect.any(Number),
+          },
+        },
+      ]);
+    });
+
+    it('cancels a never-sent steer when Stop lands during its pre-handoff lookup', async () => {
+      const f = await deliveryFixture();
+      let claimCommitted = false;
+      let lookupIsBlocked = false;
+      let signalLookupStarted = (): void => undefined;
+      const lookupStarted = new Promise<void>((resolve) => {
+        signalLookupStarted = resolve;
+      });
+      let releaseLookup = (): void => undefined;
+      const lookupBlocked = new Promise<void>((resolve) => {
+        releaseLookup = resolve;
+      });
+      let signalStopOperationStarted = (): void => undefined;
+      const stopOperationStarted = new Promise<void>((resolve) => {
+        signalStopOperationStarted = resolve;
+      });
+      let releaseStopOperation = (): void => undefined;
+      const stopOperationBlocked = new Promise<void>((resolve) => {
+        releaseStopOperation = resolve;
+      });
+      const transactWith = f.repository.transactWith.bind(f.repository);
+      const transaction = jest
+        .spyOn(f.repository, 'transactWith')
+        .mockImplementation(async (...args) => {
+          const result = await transactWith(...args);
+          claimCommitted = true;
+          return result;
+        });
+      const getState = f.repository.getState.bind(f.repository);
+      const lookup = jest
+        .spyOn(f.repository, 'getState')
+        .mockImplementation(async (...args) => {
+          const state = await getState(...args);
+          const row = state.tabsFile.tabs
+            .find((tab) => tab.id === f.scope.chatId)
+            ?.inputDelivery?.rows.find(
+              (candidate) => candidate.id === f.request.userMessageId,
+            );
+          if (claimCommitted && !lookupIsBlocked && row?.state === 'sending') {
+            lookupIsBlocked = true;
+            signalLookupStarted();
+            await lookupBlocked;
+          }
+          return state;
+        });
+      let stopping: Promise<void> | undefined;
+
+      try {
+        const steering = f.steer();
+        await lookupStarted;
+        stopping = f.target.inputDelivery.stop(f.scope, async () => {
+          signalStopOperationStarted();
+          await stopOperationBlocked;
+        });
+        await stopOperationStarted;
+
+        releaseLookup();
+        await expect(steering).resolves.toBe(false);
+
+        expect((await f.getRow()).state).toBe('cancelled');
+        expect(f.submission).not.toHaveBeenCalled();
+      } finally {
+        releaseLookup();
+        releaseStopOperation();
+        await stopping;
+        lookup.mockRestore();
+        transaction.mockRestore();
+      }
+    });
+
+    it('applies a late accepted submit result to its pending attempt', async () => {
+      const f = await deliveryFixture();
+      const settlement = deferredAdmission();
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: settlement.promise,
+      }));
+
+      await expect(f.steer()).resolves.toBe(true);
+      const pending = await f.getRow();
+      const attemptId = pending.currentAttemptId;
+      if (!attemptId) throw new Error('Missing pending attempt id');
+      settlement.resolve({
+        kind: 'accepted',
+        attemptId,
+      });
+
+      const admitted = await waitForRow(
+        f,
+        (row) => row.attempts[0]?.admittedAt !== undefined,
+      );
+      expect(admitted.state).toBe('pending');
+      expect(admitted.attempts[0]?.uncertainAt).toBeUndefined();
+    });
+
+    it('restores an ordinary late refusal once with its refusal details', async () => {
+      const f = await deliveryFixture();
+      const settlement = deferredAdmission();
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: settlement.promise,
+      }));
+
+      try {
+        await expect(f.steer()).resolves.toBe(true);
+        const pending = await f.getRow();
+        const attemptId = pending.currentAttemptId;
+        if (!attemptId) throw new Error('Missing pending attempt id');
+        settlement.resolve({
+          kind: 'rejected',
+          attemptId,
+          reason: 'The provider no longer accepts steering.',
+          fallback: 'ordinary',
+          refusal: { code: 'not-steerable', summary: 'Steering ended.' },
+        });
+
+        const restored = await waitForRow(
+          f,
+          (row) => row.state === 'cancelled',
+        );
+        expect(restored.reason).toContain('Falling back to ordinary delivery');
+        expect(restore).toHaveBeenCalledTimes(1);
+        expect(restore).toHaveBeenCalledWith(
+          f.request,
+          restored.id,
+          undefined,
+          0,
+          restored.origin,
+          undefined,
+          { waitForQueue: true },
+        );
+        expect(outcomes()).toEqual([
+          expect.objectContaining({
+            outcome: 'rejected-requeued',
+            attemptId: pending.currentAttemptId,
+            errorCode: 'not-steerable',
+          }),
+        ]);
+      } finally {
+        restore.mockRestore();
+      }
+    });
+
+    it('requeues an automatically steered watcher once after a late ordinary refusal', async () => {
+      const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+      const settlement = deferredAdmission();
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: settlement.promise,
+      }));
+
+      try {
+        await expect(
+          steerQueuedGenerated(f, f.request, () => true, jest.fn()),
+        ).resolves.toEqual({ status: 'handled' });
+        const pending = await f.getRow();
+        const attemptId = pending.currentAttemptId;
+        if (!attemptId) throw new Error('Missing pending attempt id');
+        settlement.resolve({
+          kind: 'rejected',
+          attemptId,
+          reason: 'The provider no longer accepts steering.',
+          fallback: 'ordinary',
+          refusal: { code: 'not-steerable', summary: 'Steering ended.' },
+        });
+
+        const requeued = await waitForRow(
+          f,
+          (row) => row.state === 'cancelled',
+        );
+        expect(requeued.payload.watcherFired).toBeDefined();
+        expect(requeued.ordinaryContinuation).toEqual({
+          attemptId: requeued.currentAttemptId,
+          epoch: 0,
+        });
+        expect(restore).toHaveBeenCalledTimes(1);
+        expect(restore).toHaveBeenCalledWith(
+          f.request,
+          requeued.id,
+          undefined,
+          0,
+          requeued.origin,
+          undefined,
+          {
+            ordinaryOnly: true,
+            waitForQueue: true,
+            continuation: {
+              attemptId: requeued.currentAttemptId,
+              epoch: 0,
+            },
+          },
+        );
+        expect(
+          outcomes().filter(
+            (outcome) => outcome.outcome === 'rejected-requeued',
+          ),
+        ).toHaveLength(1);
+      } finally {
+        restore.mockRestore();
+      }
+    });
+
+    it('applies a late unknown submit result with its failure code', async () => {
+      const f = await deliveryFixture();
+      const settlement = deferredAdmission();
+      const failure = {
+        class: 'timeout',
+        code: 'delivery-deadline',
+        summary:
+          'The provider did not confirm the message before the delivery deadline.',
+      } as const;
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: settlement.promise,
+      }));
+
+      await f.steer();
+      const pending = await f.getRow();
+      const attemptId = pending.currentAttemptId;
+      if (!attemptId) throw new Error('Missing pending attempt id');
+      const unknownAdmission: ChatInputAdmission = {
+        kind: 'unknown',
+        attemptId,
+        reason: 'The provider response did not confirm delivery.',
+        failure,
+      };
+      // Preserve the legacy no-reason timeout response exercised by this case.
+      Reflect.deleteProperty(unknownAdmission, 'reason');
+      settlement.resolve(unknownAdmission);
+
+      const uncertain = await waitForRow(f, (row) => row.state === 'uncertain');
+      expect(uncertain.attempts[0]?.uncertainAt).toEqual(expect.any(Number));
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-timeout',
+          errorCode: 'delivery-deadline',
+        }),
+      ]);
+    });
+
+    it('ignores a late settlement after Resend supersedes its attempt', async () => {
+      const f = await deliveryFixture();
+      const settlement = deferredAdmission();
+      let submissions = 0;
+      f.submission.mockImplementation(async (_text, attemptId) => {
+        submissions += 1;
+        return submissions === 1
+          ? { kind: 'pending', attemptId, settlement: settlement.promise }
+          : { kind: 'accepted', attemptId };
+      });
+
+      await f.steer();
+      const oldAttemptId = (await f.getRow()).currentAttemptId;
+      if (!oldAttemptId) throw new Error('Missing pending attempt id');
+      await f.action('cancel');
+      await f.action('resend-original');
+      const resent = await f.getRow();
+      expect(resent.currentAttemptId).not.toBe(oldAttemptId);
+
+      settlement.resolve({ kind: 'accepted', attemptId: oldAttemptId });
+      await tick();
+
+      const unchanged = await f.getRow();
+      expect(unchanged.currentAttemptId).toBe(resent.currentAttemptId);
+      expect(unchanged.attempts[0]?.admittedAt).toBeUndefined();
+      expect(unchanged.state).toBe('pending');
+    });
+
+    it('ignores a late settlement after the delivery epoch changes', async () => {
+      const f = await deliveryFixture();
+      const settlement = deferredAdmission();
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: settlement.promise,
+      }));
+
+      await f.steer();
+      const pending = await f.getRow();
+      const attemptId = pending.currentAttemptId;
+      if (!attemptId) throw new Error('Missing pending attempt id');
+      await f.updateLedger((ledger) => ({
+        ...ledger,
+        epoch: ledger.epoch + 1,
+      }));
+      settlement.resolve({
+        kind: 'accepted',
+        attemptId,
+      });
+      await tick();
+
+      const unchanged = await f.getRow();
+      expect(unchanged.state).toBe('pending');
+      expect(unchanged.attempts[0]?.admittedAt).toBeUndefined();
+    });
+
+    it('ignores a late settlement after Stop makes the attempt uncertain', async () => {
+      const f = await deliveryFixture();
+      const settlement = deferredAdmission();
+      f.session.getSteeringCapabilities = () => ({
+        provider: 'codex',
+        generation: 'generation-1',
+        steer: true,
+        withdraw: false,
+        interrupt: true,
+      });
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: settlement.promise,
+      }));
+
+      await f.steer();
+      const pending = await f.getRow();
+      const attemptId = pending.currentAttemptId;
+      if (!attemptId) throw new Error('Missing pending attempt id');
+      await f.target.inputDelivery.stop(f.scope, async () => undefined);
+      settlement.resolve({
+        kind: 'accepted',
+        attemptId,
+      });
+      await tick();
+
+      const uncertain = await f.getRow();
+      expect(uncertain.state).toBe('uncertain');
+      expect(uncertain.attempts[0]?.admittedAt).toBeUndefined();
+    });
+
+    it('logs a rejected late settlement promise and leaves delivery pending', async () => {
+      const f = await deliveryFixture();
+      const warning = jest
+        .spyOn(mainProcessLogging, 'logMainProcessWarn')
+        .mockImplementation(() => {});
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'pending',
+        attemptId,
+        settlement: Promise.reject(new Error(`failed ${PAYLOAD_SENTINEL}`)),
+      }));
+
+      try {
+        await f.steer();
+        await tick();
+        expect((await f.getRow()).state).toBe('pending');
+        expect(warning).toHaveBeenCalledWith(
+          '[chat-input-delivery] Late steering settlement could not be applied.',
+        );
+        expect(JSON.stringify(warning.mock.calls)).not.toContain(
+          PAYLOAD_SENTINEL,
+        );
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it.each(['pickup', 'withdrawal'] as const)(
+      'does not restore a late ordinary refusal after %s resolved the row',
+      async (resolution) => {
+        const f = await deliveryFixture();
+        const settlement = deferredAdmission();
+        const restore = jest
+          .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+          .mockResolvedValue(undefined);
+        f.submission.mockImplementation(async (_text, attemptId) => ({
+          kind: 'pending',
+          attemptId,
+          settlement: settlement.promise,
+        }));
+
+        try {
+          await f.steer();
+          const pending = await f.getRow();
+          const attemptId = pending.currentAttemptId;
+          if (!attemptId) throw new Error('Missing pending attempt id');
+          if (resolution === 'pickup') {
+            await f.target.ingestProviderEvent(
+              deliveryEvent(f, attemptId, 'picked-up'),
+            );
+          } else {
+            await f.action('cancel');
+          }
+          settlement.resolve({
+            kind: 'rejected',
+            attemptId,
+            reason: 'The provider no longer accepts steering.',
+            fallback: 'ordinary',
+            refusal: { code: 'not-steerable', summary: 'Steering ended.' },
+          });
+          await tick();
+
+          expect(restore).not.toHaveBeenCalled();
+          expect((await f.getRow()).state).toBe(
+            resolution === 'pickup' ? 'picked-up' : 'cancelled',
+          );
+          expect(outcomes()).toHaveLength(1);
+        } finally {
+          restore.mockRestore();
+        }
+      },
+    );
+
+    it('records a thrown handoff as a handoff error without its message', async () => {
+      const f = await deliveryFixture();
+      // Preserve the malformed legacy context used to exercise error redaction.
+      Reflect.set(f.request, 'hiddenContext', { text: PAYLOAD_SENTINEL });
+      const thrown = new Error(`provider echoed ${PAYLOAD_SENTINEL}`);
+      thrown.name = `Name ${PAYLOAD_SENTINEL}`;
+      thrown.stack = `Stack ${PAYLOAD_SENTINEL}`;
+      Object.assign(thrown, { cause: PAYLOAD_SENTINEL });
+      f.submission.mockRejectedValue(thrown);
+
+      await expect(f.steer()).resolves.toBe(true);
+
+      const row = await f.getRow();
+      expect(row.state).toBe('uncertain');
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-transport',
+          errorClass: 'transport',
+          errorCode: 'handoff-error',
+          errorSummary: 'Canopy could not hand the message to the provider.',
+          timings: { uncertain: expect.any(Number) },
+        }),
+      ]);
+      expect(JSON.stringify(mockInputDeliveryOutcomes)).not.toContain(
+        PAYLOAD_SENTINEL,
+      );
+    });
+
+    it('returns an unknown attempt to Sending on a live acknowledgement and records only its first settlement', async () => {
+      const f = await deliveryFixture();
+      const failure = {
+        class: 'timeout',
+        code: 'delivery-deadline',
+        summary:
+          'The provider did not confirm the message before the delivery deadline.',
+      } as const;
+      f.submission.mockImplementation(async (_text, attemptId) => {
+        // The provider reports the same unknown as an event and a result.
+        await f.target.ingestProviderEvent(
+          deliveryEvent(f, attemptId, 'unknown', { failure }),
+        );
+        return { kind: 'unknown', attemptId, reason: 'Timed out', failure };
+      });
+
+      await f.steer();
+      const uncertain = await f.getRow();
+      expect(uncertain.state).toBe('uncertain');
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-timeout',
+          errorClass: 'timeout',
+          errorCode: 'delivery-deadline',
+        }),
+      ]);
+
+      await tick();
+      await f.target.ingestProviderEvent(
+        deliveryEvent(f, uncertain.currentAttemptId, 'accepted'),
+      );
+      const resolved = await f.getRow();
+      expect(resolved.state).toBe('pending');
+      expect(resolved.attempts[0].uncertainAt).toBe(
+        uncertain.attempts[0].uncertainAt,
+      );
+
+      await f.target.ingestProviderEvent(
+        deliveryEvent(f, uncertain.currentAttemptId, 'picked-up'),
+      );
+      expect((await f.getRow()).state).toBe('picked-up');
+      expect(mockInputDeliveryOutcomes).toHaveLength(1);
+    });
+
+    it('keeps an unknown attempt uncertain when its acknowledgement comes from a replaced generation', async () => {
+      const f = await deliveryFixture();
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'unknown',
+        attemptId,
+        reason: 'Session ended',
+        failure: {
+          class: 'restart',
+          code: 'session-ended',
+          summary:
+            'The provider session ended before the message was confirmed.',
+        },
+      }));
+      await f.steer();
+      const uncertain = await f.getRow();
+      f.session.getSteeringCapabilities = () => ({
+        provider: 'claude',
+        generation: 'generation-2',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      });
+
+      await tick();
+      await f.target.ingestProviderEvent(
+        deliveryEvent(f, uncertain.currentAttemptId, 'accepted'),
+      );
+
+      expect((await f.getRow()).state).toBe('uncertain');
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-restart',
+          errorClass: 'restart',
+          errorCode: 'session-ended',
+        }),
+      ]);
+    });
+
+    it('never keeps a forged failure class or summary from an unknown event', async () => {
+      const f = await deliveryFixture();
+      await f.steer();
+      const pending = await f.getRow();
+
+      await f.target.ingestProviderEvent(
+        deliveryEvent(f, pending.currentAttemptId, 'unknown', {
+          failure: {
+            class: 'timeout',
+            code: 'not-a-code',
+            summary: PAYLOAD_SENTINEL,
+          },
+        }),
+      );
+
+      expect((await f.getRow()).state).toBe('uncertain');
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-transport',
+          errorClass: 'transport',
+          errorCode: 'transport-error',
+        }),
+      ]);
+      expect(JSON.stringify(mockInputDeliveryOutcomes)).not.toContain(
+        PAYLOAD_SENTINEL,
+      );
+    });
+
+    it('rebuilds a known failure code with its fixed summary', async () => {
+      const f = await deliveryFixture();
+      await f.steer();
+      const pending = await f.getRow();
+
+      await f.target.ingestProviderEvent(
+        deliveryEvent(f, pending.currentAttemptId, 'unknown', {
+          failure: {
+            class: 'transport',
+            code: 'process-exit',
+            summary: PAYLOAD_SENTINEL,
+          },
+        }),
+      );
+
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-restart',
+          errorClass: 'restart',
+          errorCode: 'process-exit',
+          errorSummary:
+            'The provider process exited before the message was confirmed.',
+        }),
+      ]);
+    });
+
+    it('records a provider refusal restored to the queue as requeued', async () => {
+      const f = await deliveryFixture();
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'rejected',
+        attemptId,
+        reason: 'There is no active turn to steer',
+        fallback: 'ordinary',
+        refusal: { code: 'no-active-turn', summary: PAYLOAD_SENTINEL },
+      }));
+
+      try {
+        await expect(f.steer()).resolves.toBe(false);
+        const restored = await f.getRow();
+        expect(restore).toHaveBeenCalledTimes(1);
+        expect(restore).toHaveBeenCalledWith(
+          f.request,
+          restored.id,
+          undefined,
+          0,
+          restored.origin,
+          undefined,
+          undefined,
+        );
+      } finally {
+        restore.mockRestore();
+      }
+
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'rejected-requeued',
+          errorClass: 'refusal',
+          errorCode: 'no-active-turn',
+          errorSummary: 'There is no active turn to steer.',
+        }),
+      ]);
+    });
+
+    it('records a refusal whose queue restore fails as final', async () => {
+      const f = await deliveryFixture();
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockRejectedValue(new Error(`restore failed ${PAYLOAD_SENTINEL}`));
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'rejected',
+        attemptId,
+        reason: 'The active turn no longer accepts steering',
+        fallback: 'ordinary',
+        refusal: { code: 'not-steerable', summary: 'x' },
+      }));
+
+      try {
+        await expect(f.steer()).rejects.toThrow('restore failed');
+      } finally {
+        restore.mockRestore();
+      }
+
+      expect((await f.getRow()).state).toBe('cancelled');
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'rejected-final',
+          errorClass: 'refusal',
+          errorCode: 'not-steerable',
+        }),
+      ]);
+      expect(JSON.stringify(mockInputDeliveryOutcomes)).not.toContain(
+        PAYLOAD_SENTINEL,
+      );
+    });
+
+    it('records a refusal without an ordinary fallback as final', async () => {
+      const f = await deliveryFixture();
+      f.submission.mockImplementation(async (_text, attemptId) => ({
+        kind: 'rejected',
+        attemptId,
+        reason: 'Too many messages are awaiting delivery confirmation',
+        refusal: { code: 'delivery-backlog', summary: 'x' },
+      }));
+
+      await expect(f.steer()).resolves.toBe(false);
+
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'rejected-final',
+          errorClass: 'refusal',
+          errorCode: 'delivery-backlog',
+          errorSummary: 'Too many messages are awaiting delivery confirmation.',
+        }),
+      ]);
+    });
+
+    it('records the host refusal when the session stops accepting steering before handoff', async () => {
+      const f = await deliveryFixture();
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      let reads = 0;
+      f.session.getSteeringCapabilities = () => ({
+        provider: 'claude',
+        generation: ++reads === 1 ? 'generation-1' : 'generation-2',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      });
+
+      try {
+        await expect(f.steer()).resolves.toBe(false);
+      } finally {
+        restore.mockRestore();
+      }
+
+      expect(f.submission).not.toHaveBeenCalled();
+      expect((await f.getRow()).reason).toBe(
+        'The active session no longer accepts steering. Falling back to ordinary delivery.',
+      );
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'rejected-requeued',
+          errorClass: 'refusal',
+          errorCode: 'session-not-steerable',
+          errorSummary: 'The active session no longer accepts steering.',
+        }),
+      ]);
+    });
+
+    it.each(['cancel', 'edit', 'queue'] as const)(
+      'records one withdrawn outcome for a confirmed %s withdrawal',
+      async (kind) => {
+        const f = await deliveryFixture();
+        const restore = jest
+          .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+          .mockResolvedValue(undefined);
+        await f.steer();
+        const pending = await f.getRow();
+
+        try {
+          await f.action(kind);
+        } finally {
+          restore.mockRestore();
+        }
+        // A duplicate withdrawal report adds nothing.
+        await f.target.ingestProviderEvent(
+          deliveryEvent(f, pending.currentAttemptId, 'withdrawn'),
+        );
+
+        expect(outcomes()).toEqual([
+          expect.objectContaining({
+            outcome: 'withdrawn',
+            attemptId: pending.currentAttemptId,
+            errorClass: undefined,
+            timings: {
+              admitted: expect.any(Number),
+              withdrawn: expect.any(Number),
+            },
+          }),
+        ]);
+      },
+    );
+
+    it('records Stop of an unconfirmed non-withdrawable steer once', async () => {
+      const f = await deliveryFixture();
+      f.session.getSteeringCapabilities = () => ({
+        provider: 'codex',
+        generation: 'generation-1',
+        steer: true,
+        withdraw: false,
+        interrupt: true,
+      });
+      await f.steer();
+
+      await f.target.inputDelivery.stop(f.scope, async () => undefined);
+      await f.target.inputDelivery.stop(f.scope, async () => undefined);
+
+      expect((await f.getRow()).state).toBe('uncertain');
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-restart',
+          errorClass: 'restart',
+          errorCode: 'stopped',
+          timings: {
+            admitted: expect.any(Number),
+            uncertain: expect.any(Number),
+          },
+        }),
+      ]);
+    });
+
+    it('records recovery after a restart once, including after a later restart', async () => {
+      const f = await deliveryFixture({ initiationSource: 'automation' });
+      await f.steer();
+      const pending = await f.getRow();
+      await f.repository.drainAll();
+
+      const restarted = serviceWithRepository({
+        inputSession: async () => undefined,
+      }).target;
+      await restarted.inputDelivery.recover(f.scope);
+      await restarted.inputDelivery.recover(f.scope);
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          outcome: 'unknown-restart',
+          attemptId: pending.currentAttemptId,
+          origin: 'internal',
+          errorClass: 'restart',
+          errorCode: 'host-restart',
+          timings: {
+            admitted: expect.any(Number),
+            uncertain: expect.any(Number),
+          },
+        }),
+      ]);
+
+      const restartedAgain = serviceWithRepository({
+        inputSession: async () => undefined,
+      }).target;
+      await restartedAgain.inputDelivery.recover(f.scope);
+      expect(mockInputDeliveryOutcomes).toHaveLength(1);
+    });
+
+    it('attributes watcher and answer attempts to their origin', async () => {
+      const watcher = await deliveryFixture(
+        { watcherFired: { kind: 'Wakeup' } },
+        {},
+        isolatedServicePaths(),
+      );
+      await watcher.steer();
+      const watcherRow = await watcher.getRow();
+      await watcher.target.ingestProviderEvent(
+        deliveryEvent(watcher, watcherRow.currentAttemptId, 'picked-up'),
+      );
+
+      const answer = await deliveryFixture({}, {}, isolatedServicePaths());
+      await answer.target.inputDelivery.steerQueued(
+        { ...answer.request, asyncQuestionId: 'question-1' },
+        () => [],
+        { commandId: 'steer-answer', outcome: 'applied', entityId: 'chat-1' },
+        jest.fn(),
+      );
+      const answerRow = await answer.getRow();
+      await answer.target.ingestProviderEvent(
+        deliveryEvent(answer, answerRow.currentAttemptId, 'picked-up'),
+      );
+
+      expect(
+        outcomes().map((record) => [record.outcome, record.origin]),
+      ).toEqual([
+        ['picked-up', 'watcher'],
+        ['picked-up', 'answer'],
+      ]);
+    });
+
+    it('records nothing for a pickup whose commit fails, then records its replay', async () => {
+      const f = await deliveryFixture();
+      await f.steer();
+      const pending = await f.getRow();
+      const transactWith = f.repository.transactWith.bind(f.repository);
+      const transaction = jest
+        .spyOn(f.repository, 'transactWith')
+        .mockImplementationOnce(async () => {
+          throw new Error('disk full');
+        })
+        .mockImplementation(transactWith);
+
+      try {
+        await expect(
+          f.target.ingestProviderEvent(
+            deliveryEvent(f, pending.currentAttemptId, 'picked-up'),
+          ),
+        ).rejects.toThrow('disk full');
+        expect(mockInputDeliveryOutcomes).toEqual([]);
+
+        await f.target.ingestProviderEvent(
+          deliveryEvent(f, pending.currentAttemptId, 'picked-up'),
+        );
+      } finally {
+        transaction.mockRestore();
+      }
+      expect(outcomes()).toEqual([
+        expect.objectContaining({ outcome: 'picked-up' }),
+      ]);
+    });
+  });
+
   it('keeps delivery uncertain after transport loss and never makes it editable or queueable', async () => {
     const f = await deliveryFixture();
     f.submission.mockRejectedValue(new Error('connection lost after write'));
@@ -5044,6 +11531,79 @@ describe('chat state service', () => {
     await expect(f.action('queue')).rejects.toThrow('unavailable');
     expect(f.submission).toHaveBeenCalledTimes(1);
     expect(dispatched).toEqual([]);
+  });
+
+  it('settles a queued row once the queue starts its turn', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    await f.target.inputDelivery.steerGenerated(
+      f.request,
+      () => [],
+      'desktop',
+      true,
+    );
+    // A refused steer falls back to the queue, which owns the row from here.
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((row) => ({ ...row, state: 'queued' })),
+    }));
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      mutationId: 'queued-turn-accepted',
+      turnUserMessageId: f.request.userMessageId,
+      data: {
+        type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
+        canopy_turn_user_message_id: f.request.userMessageId,
+      },
+    });
+    expect((await f.getRow()).state).toBe('picked-up');
+  });
+
+  it('dismisses a cancelled message, after which no action applies to it', async () => {
+    const f = await deliveryFixture();
+    await f.steer();
+    await f.action('cancel');
+    expect((await f.getRow()).state).toBe('cancelled');
+
+    expect((await f.action('dismiss')).outcome).toBe('applied');
+    expect(await f.getRow()).toMatchObject({
+      state: 'cancelled',
+      dismissedAt: expect.any(Number),
+    });
+    expect(
+      inputDeliveryViews(
+        (await f.target.getState(f.scope)).tabsFile.tabs[0].inputDelivery,
+      ),
+    ).toEqual([]);
+    await expect(f.action('resend')).rejects.toThrow('unavailable');
+    await expect(f.action('queue')).rejects.toThrow('unavailable');
+  });
+
+  it('refuses to dismiss a cancelled message that still owes its ordinary delivery', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    await f.target.inputDelivery.steerGenerated(
+      f.request,
+      () => [],
+      'desktop',
+      true,
+    );
+    await f.action('cancel');
+    const restore = jest
+      .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+      .mockResolvedValue(undefined);
+    f.submission.mockImplementation(async (_text, attemptId) => ({
+      kind: 'rejected',
+      attemptId,
+      reason: 'The provider refused this resend.',
+      fallback: 'ordinary',
+    }));
+    try {
+      await f.action('resend');
+      expect((await f.getRow()).ordinaryContinuation).toBeDefined();
+      await expect(f.action('dismiss')).rejects.toThrow('unavailable');
+      expect((await f.getRow()).dismissedAt).toBeUndefined();
+    } finally {
+      restore.mockRestore();
+    }
   });
 
   it('dismisses uncertain watcher notices durably while retaining deduplication and late evidence', async () => {
@@ -5057,7 +11617,12 @@ describe('chat state service', () => {
     sessionLookup.mockResolvedValue(f.session);
     f.submission.mockRejectedValue(new Error('connection lost after write'));
     const deliver = () =>
-      f.target.inputDelivery.steerWatcher(f.request, () => [], 'desktop', true);
+      f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'desktop',
+        true,
+      );
     await deliver();
     const before = await f.getRow();
     sessionLookup.mockClear();
@@ -5622,6 +12187,7 @@ describe('chat state service', () => {
     const restore = jest
       .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
       .mockImplementation(async (request, rowId, _receipt, epoch, origin) => {
+        if (!origin) throw new Error('Missing restored queue origin');
         await f.target.reconcileHostQueue(
           f.scope,
           [rowId],
@@ -5640,8 +12206,98 @@ describe('chat state service', () => {
     await f.steer();
 
     expect(restore).toHaveBeenCalledTimes(1);
-    expect(await f.getRow()).toMatchObject({ state: 'queued' });
+    const row = await f.getRow();
+    expect(row).toMatchObject({ state: 'queued' });
+    expect(row.ordinaryContinuation).toBeUndefined();
+    expect(row.ordinaryOnly).toBeUndefined();
+    expect(restore).toHaveBeenCalledWith(
+      f.request,
+      f.request.userMessageId,
+      undefined,
+      0,
+      'desktop',
+      undefined,
+      undefined,
+    );
     restore.mockRestore();
+  });
+
+  it('marks a stale preclaim steering capability refusal as ordinary-safe', async () => {
+    const f = await deliveryFixture();
+    f.session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'generation-1',
+      steer: false,
+      withdraw: true,
+      interrupt: true,
+    });
+
+    await expect(f.steer()).rejects.toMatchObject({ fallback: 'ordinary' });
+    expect(f.submission).not.toHaveBeenCalled();
+  });
+
+  it('restores a steer rejected after claim when the turn ended before provider handoff', async () => {
+    const f = await deliveryFixture();
+    const restore = jest
+      .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+      .mockResolvedValue(undefined);
+    let reads = 0;
+    f.session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'generation-1',
+      steer: ++reads === 1,
+      withdraw: true,
+      interrupt: true,
+    });
+
+    try {
+      await expect(f.steer()).resolves.toBe(false);
+      expect(restore).toHaveBeenCalledTimes(1);
+      expect(restore).toHaveBeenCalledWith(
+        f.request,
+        f.request.userMessageId,
+        undefined,
+        0,
+        'desktop',
+        undefined,
+        undefined,
+      );
+      expect(f.submission).not.toHaveBeenCalled();
+    } finally {
+      restore.mockRestore();
+    }
+  });
+
+  it('restores a steer when the capability generation changes before provider handoff', async () => {
+    const f = await deliveryFixture();
+    const restore = jest
+      .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+      .mockResolvedValue(undefined);
+    let reads = 0;
+    f.session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: ++reads === 1 ? 'generation-1' : 'generation-2',
+      steer: true,
+      withdraw: true,
+      interrupt: true,
+    });
+
+    try {
+      await expect(f.steer()).resolves.toBe(false);
+      expect(restore).toHaveBeenCalledTimes(1);
+      expect(restore).toHaveBeenCalledWith(
+        f.request,
+        f.request.userMessageId,
+        undefined,
+        0,
+        'desktop',
+        undefined,
+        undefined,
+      );
+      expect(f.submission).not.toHaveBeenCalled();
+    } finally {
+      restore.mockRestore();
+    }
   });
 
   it('does not replace newer withdrawal evidence with an older delivery snapshot', async () => {
@@ -5784,6 +12440,85 @@ describe('chat state service', () => {
       reason: expect.stringContaining('superseded delivery attempt'),
     });
   });
+
+  it.each([
+    [
+      'current internal-row marker',
+      {
+        internalRow: {
+          kind: 'delegation-request' as const,
+          delegationId: 'delegation-pickup',
+          displayLine: 'Waiting for the parent',
+        },
+      },
+      true,
+    ],
+    [
+      'legacy managed-delegation marker',
+      { managedDelegationDeliveryId: 'delivery-pickup' },
+      false,
+    ],
+  ])(
+    'passes the exact %s payload through pickup audit with startsTurn=%s',
+    async (_description, markers, startsTurn) => {
+      const hasDeliveryOwner = 'managedDelegationDeliveryId' in markers;
+      if (hasDeliveryOwner) {
+        installDelegationLifecycle({
+          shutdown: async (): Promise<void> => undefined,
+          revoke: async (): Promise<void> => undefined,
+          closeScope: async (): Promise<void> => undefined,
+          isDeliveryActive: () => true,
+          claimDelivery: () => true,
+          releaseDelivery: (): void => undefined,
+          retireDelivery: (): void => undefined,
+        });
+      }
+
+      try {
+        const f = await deliveryFixture(markers, { onInputPickup: undefined });
+        await f.steer();
+        const row = await f.getRow();
+        const attemptId = row.currentAttemptId;
+        if (!attemptId) throw new Error('Missing current attempt');
+
+        await f.target.ingestProviderEvent({
+          ...f.scope,
+          data: {
+            type: 'canopy_input_delivery',
+            provider: 'claude',
+            generation: 'generation-1',
+            attemptId,
+            phase: 'picked-up',
+            startsTurn,
+            turnRootAccepted: startsTurn,
+          },
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        const [observed] = mockObserveSteeringInput.mock.calls.at(-1) ?? [];
+        expect(observed).toMatchObject({
+          ...f.scope,
+          userMessageId: 'row-1',
+          startsTurn,
+        });
+        for (const [key, value] of Object.entries(markers)) {
+          expect(observed?.[key]).toEqual(value);
+        }
+      } finally {
+        if (hasDeliveryOwner) {
+          installDelegationLifecycle({
+            shutdown: async (): Promise<void> => undefined,
+            revoke: async (): Promise<void> => undefined,
+            closeScope: async (): Promise<void> => undefined,
+            isDeliveryActive: () => false,
+            claimDelivery: () => false,
+            releaseDelivery: (): void => undefined,
+            retireDelivery: (): void => undefined,
+          });
+        }
+      }
+    },
+  );
 
   it('invalidates edit-resend intent when Stop runs while provider withdrawal waits', async () => {
     const f = await deliveryFixture();
@@ -6038,6 +12773,389 @@ describe('chat state service', () => {
     );
   });
 
+  it('materializes a named automation banner at submission time before its live pickup prompt', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(10_000);
+    try {
+      const f = await deliveryFixture({
+        initiationSource: 'automation',
+        automationName: 'Nightly verification',
+      });
+      await f.steer();
+      const row = await f.getRow();
+      if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
+
+      const event = {
+        type: 'canopy_input_delivery' as const,
+        provider: 'claude' as const,
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up' as const,
+        startsTurn: false,
+      };
+      now.mockReturnValue(20_000);
+      await f.target.ingestProviderEvent({ ...f.scope, data: event });
+
+      const state = await f.target.getState(f.scope);
+      const messages = state.tabsFile.tabs[0]?.messages ?? [];
+      const bannerId = `${row.id}-automation-info`;
+      expect(messages.map((message) => message.id)).toEqual([bannerId, row.id]);
+      expect(messages[0]).toMatchObject({
+        id: bannerId,
+        role: 'system',
+        timestamp: row.createdAt,
+        blocks: [
+          {
+            type: 'automation_info',
+            timestamp: row.createdAt,
+            activityName: 'Nightly verification',
+          },
+        ],
+      });
+      expect(messages[1]).toMatchObject({
+        id: row.id,
+        role: 'user',
+        timestamp: 20_000,
+      });
+
+      now.mockReturnValue(30_000);
+      await f.target.ingestProviderEvent({ ...f.scope, data: event });
+      const reloaded = serviceWithRepository(
+        { inputSession: async () => undefined },
+        copyDurableFilesAtBoundary(),
+      ).target;
+      const persisted = await reloaded.getState(f.scope);
+      expect(persisted.tabsFile.tabs[0]?.messages).toEqual(messages);
+      await reloaded.ingestProviderEvent({ ...f.scope, data: event });
+      expect(
+        (await reloaded.getState(f.scope)).tabsFile.tabs[0]?.messages,
+      ).toEqual(messages);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('materializes an unnamed automation banner without an activity name', async () => {
+    const f = await deliveryFixture({ initiationSource: 'automation' });
+    await f.steer();
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
+
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+        startsTurn: false,
+      },
+    });
+
+    const messages = (await f.target.getState(f.scope)).tabsFile.tabs[0]
+      ?.messages;
+    expect(messages?.map((message) => message.id)).toEqual([
+      `${row.id}-automation-info`,
+      row.id,
+    ]);
+    expect(messages?.[0]?.blocks[0]).toMatchObject({
+      type: 'automation_info',
+      timestamp: row.createdAt,
+    });
+    expect(messages?.[0]?.blocks[0]).not.toHaveProperty('activityName');
+  });
+
+  it('does not add an automation banner for a non-automation pickup', async () => {
+    const f = await deliveryFixture();
+    await f.steer();
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
+
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+        startsTurn: false,
+      },
+    });
+
+    expect(
+      (await f.target.getState(f.scope)).tabsFile.tabs[0]?.messages.map(
+        (message) => message.id,
+      ),
+    ).toEqual([row.id]);
+  });
+
+  it('does not rewrite an existing automation banner when pickup materializes its prompt', async () => {
+    const f = await deliveryFixture({
+      initiationSource: 'automation',
+      automationName: 'Current schedule name',
+    });
+    const existingBanner: PersistedChatMessage = {
+      id: `${f.request.userMessageId}-automation-info`,
+      role: 'system',
+      timestamp: 123,
+      blocks: [
+        {
+          type: 'automation_info',
+          timestamp: 123,
+          activityName: 'Original schedule name',
+        },
+      ],
+    };
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'message.upserted',
+          chatId: f.scope.chatId,
+          message: existingBanner,
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-existing-automation-banner' },
+    );
+    await f.steer();
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
+
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+        startsTurn: false,
+      },
+    });
+
+    const messages = (await f.target.getState(f.scope)).tabsFile.tabs[0]
+      ?.messages;
+    expect(messages).toEqual([
+      existingBanner,
+      expect.objectContaining({ id: row.id }),
+    ]);
+    expect(
+      messages?.filter((message) => message.id === existingBanner.id),
+    ).toHaveLength(1);
+  });
+
+  it('does not add a retroactive automation banner when the pickup prompt is already in the transcript', async () => {
+    const f = await deliveryFixture({
+      initiationSource: 'automation',
+      automationName: 'Missed historical banner',
+    });
+    await f.steer();
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
+    const existingPrompt: PersistedChatMessage = {
+      id: row.id,
+      role: 'user',
+      timestamp: 123,
+      blocks: [{ type: 'text', text: 'Already in transcript' }],
+    };
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'message.upserted',
+          chatId: f.scope.chatId,
+          message: existingPrompt,
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-existing-automation-prompt' },
+    );
+
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+        startsTurn: false,
+      },
+    });
+
+    const messages = (await f.target.getState(f.scope)).tabsFile.tabs[0]
+      ?.messages;
+    expect(messages).toEqual([existingPrompt]);
+    expect(
+      messages?.some((message) => message.id.endsWith('-automation-info')),
+    ).toBe(false);
+  });
+
+  it('materializes an automation banner directly before a late archived pickup prompt', async () => {
+    const f = await deliveryFixture({
+      initiationSource: 'automation',
+      automationName: 'Archived automation',
+    });
+    await f.steer();
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing delivery attempt');
+    await f.action('cancel');
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: f.scope.chatId,
+          runtime: { status: 'completed', queuedMessageIds: [] },
+        },
+      ],
+      { source: 'provider' },
+    );
+    await f.target.command(
+      envelope('archive-before-automation-pickup', {
+        type: 'chat.archive_tab',
+        tabId: f.scope.chatId,
+      }),
+    );
+    const event = {
+      type: 'canopy_input_delivery' as const,
+      provider: 'claude' as const,
+      generation: 'generation-1',
+      attemptId: row.currentAttemptId,
+      phase: 'picked-up' as const,
+      startsTurn: false,
+    };
+
+    await f.target.ingestProviderEvent({ ...f.scope, data: event });
+    const archivedState = await f.repository.getState(f.scope, {
+      chatIds: [f.scope.chatId],
+    });
+    const archived = archivedState.archivesFile.archived[0];
+    expect(archived?.tab.messages.map((message) => message.id)).toEqual([
+      `${row.id}-automation-info`,
+      row.id,
+    ]);
+    expect(archived?.tab.messages[0]).toMatchObject({
+      timestamp: row.createdAt,
+      blocks: [
+        { type: 'automation_info', activityName: 'Archived automation' },
+      ],
+    });
+    expect(archived?.turnCount).toBe(1);
+
+    await f.target.ingestProviderEvent({ ...f.scope, data: event });
+    const afterDuplicate = await f.repository.getState(f.scope, {
+      chatIds: [f.scope.chatId],
+    });
+    expect(afterDuplicate.archivesFile.archived[0]?.tab.messages).toEqual(
+      archived?.tab.messages,
+    );
+  });
+
+  it('updates a recognized picked-up answer without replacing the existing root runtime', async () => {
+    const f = await deliveryFixture();
+    const answers = [
+      {
+        questionId: 'scope',
+        question: 'Which scope?',
+        selectedOptions: ['Full'],
+      },
+    ];
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'recognized-root-answer',
+            chatId: f.scope.chatId,
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+            answers,
+            answeredAt: 20,
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-recognized-root-answer' },
+    );
+    const request = {
+      ...f.request,
+      asyncQuestionId: 'recognized-root-answer',
+      initiationSource: 'automation' as const,
+      automationName: 'Do not add a banner to an existing prompt',
+      text: 'Q: Which scope?\nA: Full',
+    };
+    await f.target.inputDelivery.steerQueued(
+      request,
+      () => [],
+      {
+        commandId: 'steer-recognized-root-answer',
+        outcome: 'applied',
+        entityId: f.scope.chatId,
+      },
+      jest.fn(),
+    );
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing answer attempt');
+    const existingAnswer: PersistedChatMessage = {
+      id: row.id,
+      role: 'user',
+      timestamp: row.createdAt,
+      blocks: [{ type: 'text', text: 'Existing answer prompt' }],
+    };
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'message.upserted',
+          chatId: f.scope.chatId,
+          message: existingAnswer,
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-existing-recognized-answer' },
+    );
+    const runtimeBefore = (await f.target.getState(f.scope)).runtimeByChatId[
+      f.scope.chatId
+    ];
+
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+        startsTurn: true,
+        userMessageId: row.id,
+      },
+    });
+
+    const state = await f.target.getState(f.scope);
+    expect(
+      state.tabsFile.tabs[0]?.messages.find((message) => message.id === row.id)
+        ?.blocks[0],
+    ).toMatchObject({
+      type: 'text',
+      asyncQuestionAnswer: {
+        requestId: 'recognized-root-answer',
+        startsTurn: true,
+        answers,
+      },
+    });
+    expect(state.tabsFile.tabs[0]?.messages).toHaveLength(1);
+    expect(state.runtimeByChatId[f.scope.chatId]?.activeTurn).toEqual(
+      runtimeBefore?.activeTurn,
+    );
+    expect(
+      state.tabsFile.tabs[0]?.messages
+        .flatMap((message) => message.blocks)
+        .filter((block) => block.type === 'turn_timer'),
+    ).toHaveLength(0);
+  });
+
   it('materializes an autonomous root pickup after the chat is archived', async () => {
     const f = await deliveryFixture();
     await f.steer();
@@ -6221,6 +13339,153 @@ describe('chat state service', () => {
     ]);
     expect(f.submission).toHaveBeenCalledTimes(1);
   });
+
+  it('accepts an ordinary continuation after evidence-only revisions and clears it atomically', async () => {
+    const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+    await f.target.inputDelivery.steerGenerated(
+      f.request,
+      () => [],
+      'desktop',
+      true,
+    );
+    await f.action('cancel');
+    const cancelled = await f.getRow();
+    if (!cancelled.currentAttemptId)
+      throw new Error('Missing generated delivery attempt');
+    const continuation = { attemptId: cancelled.currentAttemptId, epoch: 0 };
+    await f.updateLedger((ledger) => ({
+      ...ledger,
+      rows: ledger.rows.map((row) =>
+        row.id === cancelled.id
+          ? {
+              ...row,
+              ordinaryContinuation: continuation,
+              revision: row.revision + 1,
+              attempts: row.attempts.map((attempt) =>
+                attempt.id === continuation.attemptId
+                  ? {
+                      ...attempt,
+                      turnOutcome: 'cancelled',
+                      turnSettledAt: Date.now(),
+                    }
+                  : attempt,
+              ),
+            }
+          : row,
+      ),
+    }));
+    const request = f.request;
+    const queuedMessage: PersistedHostQueuedMessage = {
+      id: cancelled.id,
+      request,
+      origin: 'desktop',
+      enqueuedAtMs: 124,
+    };
+
+    await f.target.reconcileHostQueue(
+      f.scope,
+      [cancelled.id],
+      false,
+      {
+        type: 'restore-input',
+        request,
+        rowId: cancelled.id,
+        epoch: continuation.epoch,
+        ordinaryOnly: true,
+        continuation,
+      },
+      [queuedMessage],
+    );
+
+    expect(await f.getRow()).toMatchObject({
+      state: 'queued',
+      ordinaryOnly: true,
+    });
+    const restoredRow = await f.getRow();
+    expect(restoredRow.ordinaryContinuation).toBeUndefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(restoredRow, 'ordinaryContinuation'),
+    ).toBe(false);
+  });
+
+  it.each(['edit and save', 'resend', 'pickup', 'Stop'] as const)(
+    'rejects a delayed ordinary continuation after %s supersedes it',
+    async (supersedingAction) => {
+      const f = await deliveryFixture({ watcherFired: { kind: 'Wakeup' } });
+      await f.target.inputDelivery.steerGenerated(
+        f.request,
+        () => [],
+        'desktop',
+        true,
+      );
+      await f.action('cancel');
+      const cancelled = await f.getRow();
+      if (!cancelled.currentAttemptId)
+        throw new Error('Missing generated delivery attempt');
+      const continuation = { attemptId: cancelled.currentAttemptId, epoch: 0 };
+      await f.updateLedger((ledger) => ({
+        ...ledger,
+        rows: ledger.rows.map((row) =>
+          row.id === cancelled.id
+            ? { ...row, ordinaryContinuation: continuation }
+            : row,
+        ),
+      }));
+
+      if (supersedingAction === 'edit and save') {
+        await f.action('edit');
+        await f.action('save', 'Edited generated input');
+      } else if (supersedingAction === 'resend') {
+        await f.action('resend');
+      } else if (supersedingAction === 'pickup') {
+        await f.target.ingestProviderEvent({
+          ...f.scope,
+          data: {
+            type: 'canopy_input_delivery',
+            provider: 'claude',
+            generation: 'generation-1',
+            attemptId: continuation.attemptId,
+            phase: 'picked-up',
+          },
+        });
+      } else {
+        await f.target.inputDelivery.stop(
+          f.scope,
+          async (): Promise<void> => undefined,
+        );
+      }
+
+      const beforeRestore = await f.getRow();
+      await expect(
+        f.target.reconcileHostQueue(
+          f.scope,
+          [cancelled.id],
+          false,
+          {
+            type: 'restore-input',
+            request: f.request,
+            rowId: cancelled.id,
+            epoch: continuation.epoch,
+            ordinaryOnly: true,
+            continuation,
+          },
+          [
+            {
+              id: cancelled.id,
+              request: f.request,
+              origin: 'desktop',
+              enqueuedAtMs: 124,
+            },
+          ],
+        ),
+      ).rejects.toThrow('The input is no longer available to queue');
+      expect(await f.getRow()).toEqual(beforeRestore);
+      expect(
+        (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId]
+          ?.queuedMessageIds ?? [],
+      ).not.toContain(cancelled.id);
+    },
+  );
 
   it('queues the saved draft after closing a Pending editor', async () => {
     const f = await deliveryFixture();
@@ -6583,15 +13848,20 @@ describe('chat state service', () => {
       expect.objectContaining({ commandId: 'queue-after-restart' }),
       expect.any(Number),
       'desktop',
+      undefined,
     );
     getChatQueueService().resetForTests();
   });
 
+  const changedPluginSelections = {
+    collectionIds: ['new-collection'],
+    skillRefs: [],
+    pluginRefs: [],
+  };
   it.each([
-    ['approval', { approvalMode: 'full-access' }],
     ['thinking', { thinkingLevel: 'high' }],
     ['model', { model: 'sonnet' }],
-    ['plugins', { pluginSelections: { collectionIds: ['new-collection'] } }],
+    ['plugins', { pluginSelections: changedPluginSelections }],
     ['billing', { subscriptionBillingOverride: true }],
     ['repository', { selectedRepoId: 'new-repository' }],
   ] as const)(
@@ -6690,6 +13960,7 @@ describe('chat state service', () => {
     const iterate = jest.spyOn(ChatTranscriptLog.prototype, 'iterate');
     const target = service();
     const request = {
+      requestId: 'tool-output-request',
       projectId: 'workspace-1',
       worktreeId: 'home',
       chatId: 'chat-archive',
@@ -6808,7 +14079,7 @@ describe('chat state service', () => {
     },
   );
 
-  it('reserves the workspace target until post-commit chat projection finishes', async () => {
+  it('reserves the workspace target until the required activity watermark finishes', async () => {
     const target = service();
     let projectionStarted: (() => void) | undefined;
     let releaseProjection: (() => void) | undefined;
@@ -6818,7 +14089,7 @@ describe('chat state service', () => {
     const projectionBlocked = new Promise<void>((resolve) => {
       releaseProjection = resolve;
     });
-    setChatTabsWriteObserver(async () => {
+    setChatTabsRequiredDurabilityObserver(async () => {
       projectionStarted?.();
       await projectionBlocked;
     });
@@ -7060,6 +14331,15 @@ describe('chat state service', () => {
 
   it('drops host-owned approval state from a seeded tab', async () => {
     const target = service();
+    const legacyRule = {
+      id: 'seeded-rule',
+      behavior: 'allow' as const,
+      target: { kind: 'tool' as const, toolName: 'exec_command' },
+      createdAt: '2026-08-31T12:00:00.000Z',
+      origin: 'prompt' as const,
+    };
+    // Retain the legacy session origin to verify seeded host state is dropped.
+    Reflect.set(legacyRule, 'origin', 'session');
 
     await expect(
       target.command(
@@ -7073,15 +14353,7 @@ describe('chat state service', () => {
             createdAt: '2026-08-31T12:00:00.000Z',
             messages: [],
             approvalMode: 'full-access',
-            sessionApprovalRules: [
-              {
-                id: 'seeded-rule',
-                behavior: 'allow',
-                target: { kind: 'tool', toolName: 'exec_command' },
-                createdAt: '2026-08-31T12:00:00.000Z',
-                origin: 'session',
-              },
-            ],
+            sessionApprovalRules: [legacyRule],
           },
         }),
       ),
@@ -7576,6 +14848,45 @@ describe('chat state service', () => {
     ).toHaveLength(1);
   });
 
+  let startingSeeds = 0;
+  /** A dispatch awaiting its provider start, as canonical runtime commits it. */
+  async function seedStartingRuntime(
+    target: ChatStateService,
+    userMessageId: string,
+  ): Promise<void> {
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: userMessageId,
+      data: {
+        type: 'canopy_user_prompt',
+        original_text: 'Continue',
+        canopy_turn_user_message_id: userMessageId,
+      },
+    });
+    const repository: unknown = Reflect.get(target, 'repository');
+    if (!(repository instanceof ChatStateRepository))
+      throw new Error('Chat state service has no V2 repository');
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: {
+            status: 'starting',
+            queuedMessageIds: [],
+            activeTurn: { userMessageId, startedAt: 1 },
+          },
+        },
+      ],
+      {
+        source: 'provider',
+        mutationId: `seed-starting-${userMessageId}-${String(++startingSeeds)}`,
+      },
+    );
+  }
+
   it('archives a rejected starting child even when its error-event ingestion fails', async () => {
     const target = service();
     await createChat(target);
@@ -7585,16 +14896,7 @@ describe('chat state service', () => {
         tabId: 'source-chat',
       }),
     );
-    await target.ingestProviderEvent({
-      ...SCOPE,
-      chatId: 'chat-1',
-      turnUserMessageId: 'startup-user',
-      data: {
-        type: 'canopy_user_prompt',
-        original_text: 'Continue',
-        canopy_turn_user_message_id: 'startup-user',
-      },
-    });
+    await seedStartingRuntime(target, 'startup-user');
     expect(
       (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.status,
     ).toBe('starting');
@@ -7638,7 +14940,7 @@ describe('chat state service', () => {
         canopy_turn_user_message_id: 'accepted-user',
       },
     };
-    await target.ingestProviderEvent(prompt);
+    await seedStartingRuntime(target, 'accepted-user');
     await target.ingestProviderEvent({
       ...prompt,
       mutationId: 'chat-1:accepted-user:accepted',
@@ -7648,6 +14950,7 @@ describe('chat state service', () => {
       ...prompt,
       mutationId: 'stale-prompt-replay',
     });
+    await seedStartingRuntime(target, 'accepted-user');
     expect(
       (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.status,
     ).toBe('starting');
@@ -7734,19 +15037,10 @@ describe('chat state service', () => {
   it('does not overwrite acceptance racing rejected-startup settlement', async () => {
     const { target, repository } = serviceWithRepository();
     await createChat(target);
-    await target.ingestProviderEvent({
-      ...SCOPE,
-      chatId: 'chat-1',
-      turnUserMessageId: 'startup-user',
-      data: { type: 'canopy_user_prompt' },
-    });
+    await seedStartingRuntime(target, 'startup-user');
     jest.spyOn(repository, 'hasMutation').mockImplementationOnce(async () => {
-      await target.ingestProviderEvent({
-        ...SCOPE,
-        chatId: 'chat-1',
-        turnUserMessageId: 'startup-user',
-        data: { type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE },
-      });
+      // The provider starts the turn while settlement checks its receipt.
+      await reportTurn(target, 'start', 'startup-user');
       return false;
     });
     await target.settleRejectedStartup(
@@ -7814,6 +15108,81 @@ describe('chat state service', () => {
     expect(dispatched.map((request) => request.userMessageId)).toEqual(
       outcome === 'applied' ? ['user-guarded'] : [],
     );
+  });
+
+  it('queues a send to a busy chat at the default its admission check admitted, though the default widens after the commit (CAN-4821)', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: {
+            status: 'streaming',
+            activeTurn: { userMessageId: 'running-turn', startedAt: 1 },
+            queuedMessageIds: [],
+          },
+        },
+      ],
+      { source: 'provider' },
+    );
+    // The chat has no saved mode: it runs at its default, Ask when admitted.
+    // Once the check admits the send, the next read of the default finds it
+    // widened to Full Access, as when a settings write lands after the commit.
+    let defaultMode: ApprovalMode = 'ask';
+    let widenOnNextRead = false;
+    const resolve = jest
+      .spyOn(approvalModeResolution, 'resolvePersistedApprovalMode')
+      .mockImplementation((_projectId, _worktreeId, tabMode) => {
+        if (tabMode !== undefined) return Promise.resolve(tabMode);
+        if (widenOnNextRead) {
+          widenOnNextRead = false;
+          defaultMode = 'full-access';
+          markApprovalDefaultsChanged();
+        }
+        return Promise.resolve(defaultMode);
+      });
+    const admittedAt = getApprovalSettingsRevision();
+    const send = (): ReturnType<ChatStateService['command']> =>
+      withChatSendAdmission(
+        { ...SCOPE, chatId: 'chat-1', userMessageId: 'user-busy' },
+        () => {
+          // As root agent sends check: refused once the settings it read
+          // changed.
+          if (getApprovalSettingsRevision() !== admittedAt)
+            return 'The approval settings changed.';
+          widenOnNextRead = true;
+          return undefined;
+        },
+        () =>
+          target.command(
+            envelope('send-busy', {
+              type: 'chat.send_message',
+              chatId: 'chat-1',
+              userMessageId: 'user-busy',
+              text: 'Run it',
+            }),
+          ),
+      );
+    try {
+      await expect(send()).resolves.toMatchObject({ outcome: 'applied' });
+      // Whether or not the send read the default again, the widening lands.
+      await approvalModeResolution.resolvePersistedApprovalMode(
+        SCOPE.projectId,
+        SCOPE.worktreeId,
+      );
+      expect(defaultMode).toBe('full-access');
+      expect(
+        dispatched.map((request) => [
+          request.userMessageId,
+          request.admittedApproval?.approvalMode,
+        ]),
+      ).toEqual([['user-busy', 'ask']]);
+    } finally {
+      resolve.mockRestore();
+    }
   });
 
   it.each([
@@ -7960,7 +15329,8 @@ describe('chat state service', () => {
         notifyTurnTerminal: async (notice) => {
           notices.push(notice);
         },
-        dispatch: (request, origin) => queue.submit(request, origin),
+        submit: (request, origin, beforeImmediateDispatch) =>
+          queue.submit(request, origin, beforeImmediateDispatch),
         worktreeSetupQueue: {
           hold: async (holdTarget, turnUserMessageId) =>
             queue.holdForWorktreeSetup(holdTarget, turnUserMessageId),
@@ -8100,10 +15470,11 @@ describe('chat state service', () => {
           ? ['user', message.id]
           : [
               message.role,
-              ...message.blocks.flatMap((block) =>
-                block.type === 'turn_timer'
-                  ? [block.type, block.startedAt, block.completedAt]
-                  : [block.type],
+              ...message.blocks.flatMap<string | number | null | undefined>(
+                (block) =>
+                  block.type === 'turn_timer'
+                    ? [block.type, block.startedAt, block.completedAt]
+                    : [block.type],
               ),
             ],
       );
@@ -8448,11 +15819,15 @@ describe('chat state service', () => {
           await expect(target.turnOutcome(turn('user-queued'))).resolves.toBe(
             'pending',
           );
+          // Its prompt enters the transcript at dispatch; it stays queued.
+          await expect(queuedUserMessageIds(target)).resolves.toEqual([
+            'user-queued',
+          ]);
           expect(
             (await target.getState(SCOPE)).tabsFile.tabs[0]?.messages.map(
               (message) => message.id,
             ),
-          ).toEqual(['user-root', 'user-queued']);
+          ).toEqual(['user-root']);
         } finally {
           mockWatcherService = undefined;
         }
@@ -8726,8 +16101,10 @@ describe('chat state service', () => {
 
       expect(dispatchedIds()).toEqual(['user-held']);
       expect(notices).toEqual([]);
+      // The provider reports the dispatched turn's start.
+      await reportTurn(target, 'start', 'user-held');
       await expect(runtimeOf(target)).resolves.toMatchObject({
-        status: 'starting',
+        status: 'streaming',
         activeTurn: { userMessageId: 'user-held' },
       });
       await expect(target.turnOutcome(turn('user-held'))).resolves.toBe(
@@ -8742,10 +16119,10 @@ describe('chat state service', () => {
 
       await expect(
         target.command(
-          envelope('patch-approval', {
-            type: 'chat.patch_tab_settings',
+          envelope('set-approval', {
+            type: 'chat.set_approval_mode',
             tabId: 'chat-1',
-            patch: { approvalMode: 'full-access' },
+            approvalMode: 'full-access',
           }),
         ),
       ).resolves.toMatchObject({ outcome: 'applied' });
@@ -8773,6 +16150,128 @@ describe('chat state service', () => {
       ]);
     });
 
+    it("keeps a pipeline override's model settings when the chat's change during setup", async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      try {
+        const { target, repository, settle } = heldService();
+        await createChat(target);
+        const sender = {
+          kind: 'pipeline' as const,
+          executionId: 'exec-1',
+          pipelineId: 'nightly',
+          stepId: 'notify',
+        };
+        await expect(
+          target.command(
+            envelope('send-pipeline-held', {
+              type: 'chat.send_message',
+              chatId: 'chat-1',
+              userMessageId: 'pipeline-held',
+              text: 'Nightly report',
+              agentSent: { sender, chatTitle: 'Nightly', projectLabel: '' },
+              agentSenderProvenance: {
+                version: 1,
+                sender,
+                owner: { kind: 'personal' },
+                capturedAt: '2026-10-26T00:00:00.000Z',
+                acceptedInputId: 'pipeline-held',
+              },
+              hiddenContext: {
+                kind: 'agent-sender-context',
+                text: '<system_instruction>Pipeline</system_instruction>',
+              },
+              turnOverride: {
+                version: 1,
+                model: 'claude-sonnet-4-6',
+                providerType: 'claude',
+                modelConfig: { thinkingLevel: 'high' },
+                planMode: true,
+              },
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        expect(target.isAwaitingWorktreeSetup(turn('pipeline-held'))).toBe(
+          true,
+        );
+        await expect(
+          target.command(
+            envelope('set-model', {
+              type: 'chat.set_model',
+              tabId: 'chat-1',
+              model: 'gpt-6-sol',
+              providerType: 'codex',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+
+        settle('ready');
+        await released(target, 'pipeline-held');
+
+        expect(dispatched).toEqual([
+          expect.objectContaining({
+            userMessageId: 'pipeline-held',
+            model: 'claude-sonnet-4-6',
+            providerType: 'claude',
+            modelConfig: expect.objectContaining({ thinkingLevel: 'high' }),
+            planMode: true,
+          }),
+        ]);
+        expect(dispatched[0]?.executionHarness).not.toBe('codex');
+        // Host routing reads the saved chat, so it must route the override.
+        const state = await repository.getState(SCOPE, {
+          chatIds: ['chat-1'],
+        });
+        expect(
+          state.tabsFile.tabs.find((tab) => tab.id === 'chat-1'),
+        ).toMatchObject({ model: 'claude-sonnet-4-6', providerType: 'claude' });
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it("commits a queued pipeline override's model over a change made while it waited", async () => {
+      const { target, repository } = serviceWithRepository();
+      await createChat(target);
+      await expect(
+        target.command(
+          envelope('set-model-queued', {
+            type: 'chat.set_model',
+            tabId: 'chat-1',
+            model: 'gpt-6-sol',
+            providerType: 'codex',
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      const queued = {
+        ...SCOPE,
+        chatId: 'chat-1',
+        userMessageId: 'pipeline-queued',
+        text: 'Nightly report',
+      };
+      const tabOf = async (): Promise<unknown> =>
+        (
+          await repository.getState(SCOPE, { chatIds: ['chat-1'] })
+        ).tabsFile.tabs.find((tab) => tab.id === 'chat-1');
+
+      await target.commitTurnOverrideModelFor(queued);
+      await expect(tabOf()).resolves.toMatchObject({ model: 'gpt-6-sol' });
+
+      await target.commitTurnOverrideModelFor({
+        ...queued,
+        turnOverride: {
+          version: 1,
+          model: 'claude-sonnet-4-6',
+          providerType: 'claude',
+        },
+      });
+      await expect(tabOf()).resolves.toMatchObject({
+        model: 'claude-sonnet-4-6',
+        providerType: 'claude',
+      });
+    });
+
     it.each([
       ['ask', ['user-held'], 'pending'],
       ['full-access', [], 'failed'],
@@ -8794,10 +16293,10 @@ describe('chat state service', () => {
         );
         await expect(
           target.command(
-            envelope('patch-approval', {
-              type: 'chat.patch_tab_settings',
+            envelope('set-approval', {
+              type: 'chat.set_approval_mode',
               tabId: 'chat-1',
-              patch: { approvalMode: switchedTo },
+              approvalMode: switchedTo,
             }),
           ),
         ).resolves.toMatchObject({ outcome: 'applied' });
@@ -8830,6 +16329,62 @@ describe('chat state service', () => {
         }
       },
     );
+
+    it('dispatches a held send at the default its admission check admitted at release, though the default widens after the check (CAN-4821)', async () => {
+      const { target, settle } = heldService();
+      await createChat(target);
+      const admittedAt = getApprovalSettingsRevision();
+      let checks = 0;
+      let widenOnNextRead = false;
+      let defaultMode: ApprovalMode = 'ask';
+      // The chat has no saved mode: it runs at its default, Ask when admitted.
+      // Once the check at release admits the send, the next read of the
+      // default finds it widened to Full Access.
+      const resolve = jest
+        .spyOn(approvalModeResolution, 'resolvePersistedApprovalMode')
+        .mockImplementation((_projectId, _worktreeId, tabMode) => {
+          if (tabMode !== undefined) return Promise.resolve(tabMode);
+          if (widenOnNextRead) {
+            widenOnNextRead = false;
+            defaultMode = 'full-access';
+            markApprovalDefaultsChanged();
+          }
+          return Promise.resolve(defaultMode);
+        });
+      try {
+        await withChatSendAdmission(
+          turn('user-held'),
+          () => {
+            // As root agent sends check: refused once the settings changed.
+            if (getApprovalSettingsRevision() !== admittedAt)
+              return 'The approval settings changed.';
+            checks += 1;
+            if (checks === 2) widenOnNextRead = true;
+            return undefined;
+          },
+          () => send(target, 'user-held'),
+        );
+
+        settle('ready');
+        await released(target, 'user-held');
+        // Whether or not the release read the default again, it widens.
+        await approvalModeResolution.resolvePersistedApprovalMode(
+          SCOPE.projectId,
+          SCOPE.worktreeId,
+        );
+
+        expect(checks).toBe(2);
+        expect(defaultMode).toBe('full-access');
+        expect(dispatched).toEqual([
+          expect.objectContaining({
+            userMessageId: 'user-held',
+            admittedApproval: { approvalMode: 'ask', sessionApprovalRules: [] },
+          }),
+        ]);
+      } finally {
+        resolve.mockRestore();
+      }
+    });
 
     it('ends a held turn whose dispatch fails through the turn lifecycle', async () => {
       const { target, notices, settle } = heldService({
@@ -8962,11 +16517,12 @@ describe('chat state service', () => {
       await expect(queuedUserMessageIds(target)).resolves.toEqual([
         'user-kept',
       ]);
+      // A queued prompt enters the transcript at dispatch.
       expect(
         (await target.getState(SCOPE)).tabsFile.tabs[0]?.messages.map(
           (message) => message.id,
         ),
-      ).toEqual(['user-held', 'user-kept']);
+      ).toEqual(['user-held']);
 
       settle('ready');
       await until(() => dispatched.length === 1);
@@ -9022,6 +16578,7 @@ describe('chat state service', () => {
       await createChat(target);
       await post(target, 'user-root');
       expect(dispatchedIds()).toEqual(['user-root']);
+      await reportTurn(target, 'start', 'user-root');
       beginSetup();
       await queueBehind(target, queue, 'user-held');
 
@@ -9034,7 +16591,7 @@ describe('chat state service', () => {
         'failed',
       );
       await expect(runtimeOf(target)).resolves.toMatchObject({
-        status: 'starting',
+        status: 'streaming',
         activeTurn: { userMessageId: 'user-root' },
       });
     });
@@ -9062,6 +16619,7 @@ describe('chat state service', () => {
           await createChat(target);
           await post(target, 'user-root');
           expect(dispatchedIds()).toEqual(['user-root']);
+          await reportTurn(target, 'start', 'user-root');
           await queueBehind(target, queue, 'user-queued');
           const rowId = await rowIdOf(target, 'user-queued');
 
@@ -9116,14 +16674,14 @@ describe('chat state service', () => {
               'pending',
             );
             await expect(runtimeOf(target)).resolves.toMatchObject({
-              status: 'starting',
+              status: 'streaming',
               activeTurn: { userMessageId: 'user-root' },
             });
             expect(
               (await target.getState(SCOPE)).tabsFile.tabs[0]?.messages.map(
                 (message) => message.id,
               ),
-            ).toEqual(['user-root']);
+            ).toEqual(['user-root', 'turn-user-root:timer']);
           }
         } finally {
           mockWatcherService = undefined;
@@ -9275,14 +16833,81 @@ describe('chat state service', () => {
     const before = getChatApprovalStateRevision(chat);
     await expect(
       target.command(
-        envelope('patch-same-mode', {
-          type: 'chat.patch_tab_settings',
+        envelope('set-same-mode', {
+          type: 'chat.set_approval_mode',
           tabId: 'chat-1',
-          patch: { approvalMode: 'ask', title: 'Same mode' },
+          approvalMode: 'ask',
         }),
       ),
     ).resolves.toMatchObject({ outcome: 'applied' });
     expect(getChatApprovalStateRevision(chat) - before).toBe(0);
+    await expect(
+      target.command(
+        envelope('set-new-mode', {
+          type: 'chat.set_approval_mode',
+          tabId: 'chat-1',
+          approvalMode: 'auto',
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied', entityId: 'chat-1' });
+    expect(getChatApprovalStateRevision(chat) - before).toBe(1);
+  });
+
+  it('changes approval mode only through its dedicated command', async () => {
+    const target = service();
+    await createChat(target);
+    const approvalModeOf = async (): Promise<unknown> =>
+      (await target.getState(SCOPE)).tabsFile.tabs.find(
+        (tab) => tab.id === 'chat-1',
+      )?.approvalMode;
+    const before = await approvalModeOf();
+
+    const patched = await target.command(
+      envelope('patch-mode', {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        // A typed caller cannot build this patch; the service still refuses it.
+        patch: Object.assign(
+          { title: 'Patched' },
+          { approvalMode: 'full-access' },
+        ),
+      }),
+    );
+    expect(patched).toMatchObject({
+      outcome: 'rejected',
+      reason: expect.stringContaining('chat.set_approval_mode'),
+    });
+    await expect(approvalModeOf()).resolves.toBe(before);
+
+    await expect(
+      target.command(
+        envelope('set-mode', {
+          type: 'chat.set_approval_mode',
+          tabId: 'chat-1',
+          approvalMode: 'full-access',
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied', entityId: 'chat-1' });
+    await expect(approvalModeOf()).resolves.toBe('full-access');
+    await expect(
+      target.command(
+        envelope('set-mode', {
+          type: 'chat.set_approval_mode',
+          tabId: 'chat-1',
+          approvalMode: 'ask',
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    await expect(approvalModeOf()).resolves.toBe('full-access');
+    await expect(
+      target.command(
+        envelope('set-missing-mode', {
+          type: 'chat.set_approval_mode',
+          tabId: 'missing-chat',
+          approvalMode: 'ask',
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'not_found' });
   });
 
   it('rejects closing a chat while its canonical runtime is active', async () => {
@@ -9657,8 +17282,12 @@ describe('chat state service', () => {
       broadcast: () => undefined,
       createId: () => 'queue-1',
       now: () => 1234,
-      schedule: () => {
-        throw new Error('Unexpected queue drain');
+      schedule: (_callback, delayMs) => {
+        // Only the stale-gate check, 5 s out, may be scheduled; it never runs here.
+        if (delayMs < 5_000) throw new Error('Unexpected queue drain');
+        const timer = setTimeout(() => undefined, delayMs);
+        timer.unref();
+        return timer;
       },
     });
     mockedGetChatQueueService.mockReturnValue(queue);
@@ -9739,7 +17368,7 @@ describe('chat state service', () => {
     clientInstanceId: 'queue-equivalence',
     authorityId: 'local-desktop',
     interfaceKind: 'desktop' as const,
-    grants: ['core.chat.write'],
+    grants: ['core.chat.write' as const],
   };
   const canonicalQueueEdit = {
     scope: { workspaceId: SCOPE.projectId, worktreeId: SCOPE.worktreeId },
@@ -9918,6 +17547,73 @@ describe('chat state service', () => {
     });
   });
 
+  it.each(['queued-1', null])(
+    'routes a queued-message move before %s to the queue with its durable receipt',
+    async (beforeQueuedMessageId) => {
+      const target = service();
+      await createChat(target);
+      await expect(
+        target.command({
+          ...envelope('move-queued', {
+            type: 'chat.move_queued_message' as const,
+            chatId: 'chat-1',
+            queuedMessageId: 'queued-2',
+            beforeQueuedMessageId,
+          }),
+          expectedRevision: 1,
+        }),
+      ).resolves.toMatchObject({ outcome: 'applied', entityId: 'chat-1' });
+      expect(queueMove).toHaveBeenCalledWith(
+        { ...SCOPE, chatId: 'chat-1' },
+        'queued-2',
+        beforeQueuedMessageId,
+        { commandId: 'move-queued', outcome: 'applied', entityId: 'chat-1' },
+      );
+    },
+  );
+
+  it('refuses a queued-message move against a stale aggregate revision', async () => {
+    const target = service();
+    await createChat(target);
+    await expect(
+      target.command({
+        ...envelope('move-stale', {
+          type: 'chat.move_queued_message' as const,
+          chatId: 'chat-1',
+          queuedMessageId: 'queued-2',
+          beforeQueuedMessageId: 'queued-1',
+        }),
+        expectedRevision: 0,
+      }),
+    ).resolves.toMatchObject({ outcome: 'conflict', revision: 1 });
+    expect(queueMove).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['not_found', 'not_found'],
+    ['busy', 'rejected'],
+  ] as const)(
+    'reports a %s queued-message move without journaling it',
+    async (queueResult, outcome) => {
+      const target = service();
+      await createChat(target);
+      queueMove.mockResolvedValueOnce(queueResult);
+      await expect(
+        target.command(
+          envelope(`move-${queueResult}`, {
+            type: 'chat.move_queued_message' as const,
+            chatId: 'chat-1',
+            queuedMessageId: 'queued-2',
+            beforeQueuedMessageId: 'queued-1',
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome, revision: 1 });
+      await expect(target.getState(SCOPE)).resolves.toMatchObject({
+        revision: 1,
+      });
+    },
+  );
+
   it('records a queue command receipt in the queue-runtime transaction', async () => {
     const target = service();
     await createChat(target);
@@ -9991,6 +17687,1203 @@ describe('chat state service', () => {
       revision: 1,
     });
   });
+
+  // Use the real admission gates and durable queue mirror, not runtime status.
+  function admissionFixture(
+    beforeCommit: () => Promise<void> = () => Promise.resolve(),
+    includeAsyncQuestionIdentity = true,
+    persistRuntimeOverride?: ChatQueueServiceDependencies['persistRuntime'],
+  ) {
+    let liveTurn = false;
+    let queueId = 0;
+    let dispatchOverride:
+      | ((
+          request: ChatSendMessageRequest,
+          origin: 'desktop' | 'portal',
+          fromQueue: boolean,
+        ) => Promise<void>)
+      | undefined;
+    let drainProviderEventsOverride: (() => Promise<void>) | undefined;
+    const preparations = new Set<{ cancelled: boolean }>();
+    const immediateRows: string[][] = [];
+    const options = {
+      dispatch: (
+        request: ChatSendMessageRequest,
+        origin: 'desktop' | 'portal',
+      ) => queue.submit(request, origin),
+      submit: (
+        request: ChatSendMessageRequest,
+        origin: 'desktop' | 'portal',
+        beforeImmediateDispatch: (options: {
+          cancelledBeforeDispatch: boolean;
+          startsTurn: boolean;
+        }) => Promise<void>,
+      ) =>
+        queue.submit(request, origin, async (options) => {
+          await beforeCommit();
+          await beforeImmediateDispatch(options);
+        }),
+    };
+    const { target, repository } = serviceWithRepository(options);
+    const queue = new ChatQueueService({
+      dispatch: async (request, _origin, fromQueue) => {
+        if (dispatchOverride) {
+          await dispatchOverride(request, _origin, fromQueue);
+          return;
+        }
+        if (!fromQueue) {
+          const state = await repository.getState(SCOPE, {
+            chatIds: ['chat-1'],
+            fullTranscript: true,
+          });
+          immediateRows.push(
+            state.tabsFile.tabs[0].messages.map(({ id }) => id),
+          );
+        }
+        dispatched.push(request);
+        await target.ingestProviderEvent({
+          ...SCOPE,
+          chatId: request.chatId,
+          turnUserMessageId: request.userMessageId,
+          mutationId: `prompt-${request.userMessageId}`,
+          data: {
+            type: 'canopy_user_prompt',
+            canopy_turn_user_message_id: request.userMessageId,
+            ...(includeAsyncQuestionIdentity
+              ? { canopy_async_question_id: request.asyncQuestionId }
+              : {}),
+            canopy_persisted_messages: [
+              {
+                id: request.userMessageId,
+                role: 'user',
+                timestamp: 2,
+                blocks: [{ type: 'text', text: request.text }],
+              },
+            ],
+          },
+        });
+      },
+      beginTurnPreparation: () => {
+        const preparation = { cancelled: false };
+        preparations.add(preparation);
+        return {
+          get cancelled(): boolean {
+            return preparation.cancelled;
+          },
+          finish: (): void => {
+            preparations.delete(preparation);
+          },
+        };
+      },
+      drainProviderEvents: () =>
+        drainProviderEventsOverride?.() ?? Promise.resolve(),
+      cancel: async () => undefined,
+      settleCancelledTurn: async () => undefined,
+      hasActiveProviderTurn: () => liveTurn,
+      hasPendingProviderContinuation: () => false,
+      persistRuntime:
+        persistRuntimeOverride ??
+        ((...args) => target.reconcileHostQueue(...args)),
+      hasCommittedMessage: (queueTarget, userMessageId) =>
+        target.hasTranscriptMessage(SCOPE, queueTarget.chatId, userMessageId),
+      broadcast: () => undefined,
+      createId: () => `admission-queue-${++queueId}`,
+      now: () => 1,
+      schedule: (callback) => {
+        const timer = setTimeout(callback, 60_000);
+        timer.unref();
+        return timer;
+      },
+    });
+    return {
+      target,
+      repository,
+      queue,
+      immediateRows,
+      setLiveTurn: (active: boolean) => {
+        liveTurn = active;
+      },
+      setDispatchOverride: (
+        impl:
+          | ((
+              request: ChatSendMessageRequest,
+              origin: 'desktop' | 'portal',
+              fromQueue: boolean,
+            ) => Promise<void>)
+          | undefined,
+      ) => {
+        dispatchOverride = impl;
+      },
+      setDrainProviderEventsOverride: (
+        impl: (() => Promise<void>) | undefined,
+      ) => {
+        drainProviderEventsOverride = impl;
+      },
+      stopDuringDrain: () => {
+        preparations.forEach((preparation) => {
+          preparation.cancelled = true;
+        });
+        queue.onTurnTerminal({ ...SCOPE, chatId: 'chat-1' }, 'cancelled');
+      },
+      dispatchQueued: async () => {
+        liveTurn = false;
+        queue.onTurnTerminal({ ...SCOPE, chatId: 'chat-1' }, 'complete');
+        // Deterministically exercise the same dequeue handoff as the timer.
+        await queue.force({ ...SCOPE, chatId: 'chat-1' }, 'admission-queue-1');
+        queue.resetForTests();
+      },
+      seedAdmitting: async (request: ChatSendMessageRequest) => {
+        await repository.transactWith(
+          SCOPE,
+          (current) => {
+            const runtime = current.runtimeByChatId[request.chatId];
+            const id = `admission:${request.userMessageId}`;
+            if (runtime?.queuedMessages?.some((entry) => entry.id === id))
+              return [];
+            const entry: {
+              id: string;
+              request: ChatSendMessageRequest;
+              origin: 'desktop';
+              enqueuedAtMs: number;
+              admitting: true;
+            } = {
+              id,
+              request,
+              origin: 'desktop',
+              enqueuedAtMs: 1,
+              admitting: true,
+            };
+            return [
+              {
+                type: 'runtime.patched',
+                chatId: request.chatId,
+                runtime: {
+                  ...runtime,
+                  status: runtime?.status ?? 'idle',
+                  queuedMessageIds: runtime?.queuedMessageIds ?? [],
+                  queuedMessages: [...(runtime?.queuedMessages ?? []), entry],
+                },
+              },
+            ];
+          },
+          { source: 'provider' },
+        );
+      },
+    };
+  }
+
+  it('persists the fully built admitting request with acceptance before submit settles', async () => {
+    let releaseCommit: () => void = () => undefined;
+    let signalEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      signalEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const f = admissionFixture(() => {
+      signalEntered();
+      return blocked;
+    });
+    await createChat(f.target);
+    const command = {
+      type: 'chat.send_message' as const,
+      chatId: 'chat-1',
+      userMessageId: 'admitting-user',
+      text: 'Persist before submit',
+      selectedRepoId: 'repo-from-send',
+      modelConfig: { thinkingLevel: 'high' as const, fastMode: true },
+      planMode: true,
+      codexProposalMode: 'required' as const,
+      modelSelectionMode: 'auto' as const,
+    };
+    const sending = f.target.command(envelope('admitting-command', command));
+    await entered;
+
+    try {
+      const state = await f.repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(state.runtimeByChatId['chat-1']).toMatchObject({
+        queuedMessageIds: [],
+        queuedMessages: [
+          expect.objectContaining({
+            id: 'admission:admitting-user',
+            admitting: true,
+            request: expect.objectContaining({
+              userMessageId: 'admitting-user',
+              text: 'Persist before submit',
+              providerType: 'claude',
+              model: 'claude-opus-4-6',
+              selectedRepoId: 'repo-from-send',
+              modelConfig: expect.objectContaining({
+                thinkingLevel: 'high',
+                fastMode: true,
+              }),
+              planMode: true,
+              codexProposalMode: 'required',
+              modelSelectionMode: 'auto',
+              startsNewTrackedChat: true,
+            }),
+          }),
+        ],
+      });
+      expect(state.runtimeByChatId['chat-1']?.queuedMessageIds).not.toContain(
+        'admission:admitting-user',
+      );
+      expect(state.tabsFile.tabs[0]?.messages).toEqual([]);
+      await expect(
+        f.repository.getReceipt(SCOPE, 'admitting-command'),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+    } finally {
+      releaseCommit();
+      await sending;
+      f.queue.resetForTests();
+      getChatQueueService().resetForTests();
+    }
+  });
+
+  it('does not hydrate an admission that is still running in this process', async () => {
+    let releaseCommit: () => void = () => undefined;
+    let signalEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      signalEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const f = admissionFixture(() => {
+      signalEntered();
+      return blocked;
+    });
+    await createChat(f.target);
+    getChatQueueService().resetForTests();
+    const hydratePersistedInput = jest.spyOn(
+      getChatQueueService(),
+      'hydratePersistedInput',
+    );
+    Object.defineProperty(f.target, 'reconcileHostRuntime', { value: true });
+    const sending = f.target.command(
+      envelope('in-flight-admission', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'in-flight-user',
+        text: 'Still being admitted',
+      }),
+    );
+    await entered;
+    try {
+      // Every read hydrates the durable queue; this one lands mid-admission,
+      // while the admission itself still owns the message.
+      await f.target.getState(SCOPE);
+      expect(
+        hydratePersistedInput.mock.calls.some(
+          ([, rowId]) => rowId === 'admission:in-flight-user',
+        ),
+      ).toBe(false);
+    } finally {
+      releaseCommit();
+      await sending;
+      hydratePersistedInput.mockRestore();
+      f.queue.resetForTests();
+      getChatQueueService().resetForTests();
+    }
+  });
+
+  it('recovers an admitting request after restart and deduplicates its accepted command', async () => {
+    let releaseCommit: () => void = () => undefined;
+    let signalEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      signalEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const f = admissionFixture(() => {
+      signalEntered();
+      return blocked;
+    });
+    await createChat(f.target);
+    const command = {
+      type: 'chat.send_message' as const,
+      chatId: 'chat-1',
+      userMessageId: 'restart-admitting-user',
+      text: 'Recover from acceptance',
+    };
+    const sending = f.target.command(
+      envelope('restart-admitting-command', command),
+    );
+    await entered;
+
+    try {
+      getChatQueueService().resetForTests();
+      const hydratePersistedInput = jest.spyOn(
+        getChatQueueService(),
+        'hydratePersistedInput',
+      );
+      const restarted = serviceWithRepository(
+        { inputSession: async () => undefined },
+        copyDurableFilesAtBoundary(),
+      ).target;
+      Object.defineProperty(restarted, 'reconcileHostRuntime', {
+        value: true,
+      });
+      await restarted.getState(SCOPE);
+      expect(hydratePersistedInput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userMessageId: 'restart-admitting-user',
+          text: 'Recover from acceptance',
+          providerType: 'claude',
+          model: 'claude-opus-4-6',
+        }),
+        'admission:restart-admitting-user',
+        'desktop',
+        1_786_104_000_000,
+        undefined,
+        undefined,
+      );
+      await expect(
+        restarted.command(envelope('restart-admitting-command', command)),
+      ).resolves.toMatchObject({ outcome: 'already_applied' });
+    } finally {
+      releaseCommit();
+      await sending;
+      f.queue.resetForTests();
+      getChatQueueService().resetForTests();
+    }
+  });
+
+  it('drops the admitted row when the host queue persists it and preserves other admissions', async () => {
+    const f = admissionFixture();
+    await createChat(f.target);
+    const requestX: ChatSendMessageRequest = {
+      ...SCOPE,
+      chatId: 'chat-1',
+      userMessageId: 'queued-x',
+      text: 'Queue X',
+    };
+    const requestY: ChatSendMessageRequest = {
+      ...SCOPE,
+      chatId: 'chat-1',
+      userMessageId: 'admitting-y',
+      text: 'Keep Y',
+    };
+    await f.seedAdmitting(requestX);
+    await f.seedAdmitting(requestY);
+
+    await f.target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      ['queue-x'],
+      true,
+      undefined,
+      [
+        {
+          id: 'queue-x',
+          request: requestX,
+          origin: 'desktop',
+          enqueuedAtMs: 2,
+        },
+      ],
+    );
+
+    const runtime = (await f.target.getState(SCOPE)).runtimeByChatId['chat-1'];
+    expect(runtime).toMatchObject({
+      queuedMessageIds: ['queue-x'],
+      queuedMessages: [
+        expect.objectContaining({ id: 'queue-x' }),
+        expect.objectContaining({
+          id: 'admission:admitting-y',
+          admitting: true,
+          request: expect.objectContaining({ userMessageId: 'admitting-y' }),
+        }),
+      ],
+    });
+    expect(
+      runtime?.queuedMessages?.some(
+        (entry) => entry.id === 'admission:queued-x',
+      ),
+    ).toBe(false);
+    f.queue.resetForTests();
+  });
+
+  it.each([
+    ['immediate', false],
+    ['stop-cancelled', true],
+  ] as const)(
+    'removes an admitting entry in the same commit as an %s prompt row',
+    async (_kind, cancelled) => {
+      let releaseCommit: () => void = () => undefined;
+      let signalEntered: () => void = () => undefined;
+      const entered = new Promise<void>((resolve) => {
+        signalEntered = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
+      });
+      const f = admissionFixture(() => {
+        signalEntered();
+        return blocked;
+      });
+      await createChat(f.target);
+      if (cancelled)
+        f.setDrainProviderEventsOverride(async () => {
+          f.stopDuringDrain();
+        });
+      const command = {
+        type: 'chat.send_message' as const,
+        chatId: 'chat-1',
+        userMessageId: `immediate-${_kind}`,
+        text: 'Commit the row and admission cleanup together',
+      };
+      const sending = f.target.command(
+        envelope(`immediate-${_kind}-command`, command),
+      );
+      await entered;
+      await f.seedAdmitting({
+        ...SCOPE,
+        chatId: 'chat-1',
+        userMessageId: command.userMessageId,
+        text: command.text,
+        providerType: 'claude',
+        model: 'claude-opus-4-6',
+      });
+      const changes: ChatStateChange[][] = [];
+      const unsubscribe = f.target.subscribe((event) => {
+        changes.push(event.changes);
+      });
+
+      try {
+        releaseCommit();
+        await sending;
+        const promptCommit = changes.find((commitChanges) =>
+          commitChanges.some(
+            (change) =>
+              change.type === 'message.upserted' &&
+              change.message.id === command.userMessageId,
+          ),
+        );
+        expect(promptCommit).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'message.upserted',
+              message: expect.objectContaining({ id: command.userMessageId }),
+            }),
+            expect.objectContaining({ type: 'runtime.patched' }),
+          ]),
+        );
+        const runtimeCommit = promptCommit?.find(
+          (change) => change.type === 'runtime.patched',
+        );
+        const committedQueuedMessages =
+          runtimeCommit?.type === 'runtime.patched'
+            ? (runtimeCommit.runtime.queuedMessages ?? [])
+            : [];
+        expect(committedQueuedMessages).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: `admission:${command.userMessageId}`,
+            }),
+          ]),
+        );
+        if (cancelled)
+          expect(runtimeCommit).toMatchObject({ runtime: { status: 'idle' } });
+        expect(
+          (await f.target.getState(SCOPE)).runtimeByChatId['chat-1']
+            ?.queuedMessages,
+        ).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: `admission:${command.userMessageId}`,
+            }),
+          ]),
+        );
+      } finally {
+        unsubscribe();
+        releaseCommit();
+        f.queue.resetForTests();
+      }
+    },
+  );
+
+  it('removes an admission in the queue rejection rollback', async () => {
+    const queuedRequest: ChatSendMessageRequest = {
+      ...SCOPE,
+      chatId: 'chat-1',
+      userMessageId: 'queue-rejected-admission',
+      text: 'Rejected queued input',
+    };
+    const queuedFixture = admissionFixture(
+      () => Promise.resolve(),
+      true,
+      async () => {
+        await queuedFixture.seedAdmitting(queuedRequest);
+        throw new Error('Queue storage refused');
+      },
+    );
+    await createChat(queuedFixture.target);
+    queuedFixture.setLiveTurn(true);
+    await expect(
+      queuedFixture.target.command(
+        envelope('queue-rejected-admission-command', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: queuedRequest.userMessageId,
+          text: queuedRequest.text,
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+    expect(
+      (await queuedFixture.target.getState(SCOPE)).runtimeByChatId['chat-1']
+        ?.queuedMessages,
+    ).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `admission:${queuedRequest.userMessageId}`,
+        }),
+      ]),
+    );
+    queuedFixture.queue.resetForTests();
+  });
+
+  it('removes an admission in the async-answer rejection rollback', async () => {
+    const answerFixture = admissionFixture(
+      () => Promise.resolve(),
+      true,
+      async () => undefined,
+    );
+    await createChat(answerFixture.target);
+    await answerFixture.target.upsertPendingQuestion(SCOPE, {
+      requestId: 'answer-rejected-question',
+      chatId: 'chat-1',
+      delivery: 'async',
+      questions: [{ id: 'scope', question: 'Which scope?', options: ['Full'] }],
+    });
+    answerFixture.setDispatchOverride(async (request) => {
+      await answerFixture.seedAdmitting(request);
+      throw new Error('Answer dispatch refused');
+    });
+    await expect(
+      answerFixture.target.command(
+        envelope('answer-rejected-admission-command', {
+          type: 'chat.answer_question',
+          chatId: 'chat-1',
+          questionId: 'answer-rejected-question',
+          answers: [
+            {
+              questionId: 'scope',
+              question: 'Which scope?',
+              selectedOptions: ['Full'],
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+    expect(
+      (await answerFixture.target.getState(SCOPE)).runtimeByChatId['chat-1']
+        ?.queuedMessages,
+    ).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'admission:answer-answer-rejected-admission-command',
+        }),
+      ]),
+    );
+    answerFixture.queue.resetForTests();
+  });
+
+  it.each(['streaming', 'idle'] as const)(
+    'defers a live-turn send with %s runtime into the durable queue until prompt dispatch',
+    async (status) => {
+      const f = admissionFixture();
+      await createChat(f.target);
+      await f.repository.transact(
+        SCOPE,
+        [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: {
+              status,
+              queuedMessageIds: [],
+              activeTurn: { userMessageId: 'old', startedAt: 1 },
+            },
+          },
+        ],
+        { source: 'provider', mutationId: 'seed-live-runtime' },
+      );
+      f.setLiveTurn(true);
+      await f.target.command(
+        envelope('deferred-send', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'deferred',
+          text: 'Wait for me',
+        }),
+      );
+      const queued = await f.repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(queued.runtimeByChatId['chat-1'].queuedMessages).toEqual([
+        expect.objectContaining({
+          id: 'admission-queue-1',
+          request: expect.objectContaining({
+            userMessageId: 'deferred',
+            text: 'Wait for me',
+          }),
+        }),
+      ]);
+      expect(queued.tabsFile.tabs[0].messages).toEqual([]);
+      expect(
+        queued.runtimeByChatId['chat-1'].activeTurn?.userMessageId,
+      ).not.toBe('deferred');
+      await f.dispatchQueued();
+      const after = await f.repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(after.tabsFile.tabs[0].messages.map(({ id }) => id)).toEqual([
+        'deferred',
+      ]);
+    },
+  );
+
+  it('durably records queue rejection even when no deferred transcript row exists', async () => {
+    const f = admissionFixture(
+      () => Promise.resolve(),
+      true,
+      (_scope, ids) => {
+        if (ids.length > 0) throw new Error('Queue storage refused');
+      },
+    );
+    await createChat(f.target);
+    f.setLiveTurn(true);
+    await expect(
+      f.target.command(
+        envelope('queue-storage-refusal', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'refused',
+          text: 'Not accepted',
+        }),
+      ),
+    ).resolves.toMatchObject({
+      outcome: 'rejected',
+      reason: 'Queue storage refused',
+    });
+    expect(
+      await f.repository.getReceipt(SCOPE, 'queue-storage-refusal'),
+    ).toMatchObject({ outcome: 'rejected' });
+    expect(
+      (
+        await f.repository.getState(SCOPE, {
+          chatIds: ['chat-1'],
+          fullTranscript: true,
+        })
+      ).tabsFile.tabs[0].messages,
+    ).toEqual([]);
+    expect(dispatched).toEqual([]);
+    f.queue.resetForTests();
+  });
+
+  it('preserves a concurrent durable queue admission while the immediate row commits', async () => {
+    let releaseCommit: () => void = () => undefined;
+    let signalEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      signalEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const f = admissionFixture(() => {
+      signalEntered();
+      return blocked;
+    });
+    await createChat(f.target);
+    const first = f.target.command(
+      envelope('concurrent-first', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'first',
+        text: 'First',
+      }),
+    );
+    await entered;
+    await f.target.command(
+      envelope('concurrent-queued', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'second',
+        text: 'Second',
+      }),
+    );
+    releaseCommit();
+    await first;
+    const state = await f.repository.getState(SCOPE, {
+      chatIds: ['chat-1'],
+      fullTranscript: true,
+    });
+    expect(state.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: ['admission-queue-1'],
+      queuedMessages: [
+        expect.objectContaining({
+          request: expect.objectContaining({ userMessageId: 'second' }),
+        }),
+      ],
+    });
+    expect(state.tabsFile.tabs[0].messages.map(({ id }) => id)).toEqual([
+      'first',
+    ]);
+    f.queue.resetForTests();
+  });
+
+  it('keeps idle immediate admission committed before provider dispatch', async () => {
+    const f = admissionFixture();
+    await createChat(f.target);
+    await f.target.command(
+      envelope('immediate-send', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'immediate',
+        text: 'Now',
+      }),
+    );
+    expect(f.immediateRows).toEqual([['immediate']]);
+    f.queue.resetForTests();
+  });
+
+  it('keeps a dequeued send durable until its prompt commits, then removes it atomically', async () => {
+    const f = admissionFixture();
+    await createChat(f.target);
+    f.setLiveTurn(true);
+    await f.target.command(
+      envelope('crash-window-send', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'crash-window-message',
+        text: 'Keep this queued until prompt commit',
+      }),
+    );
+    f.setDispatchOverride((_request, _origin, fromQueue) =>
+      fromQueue
+        ? Promise.reject(new Error('dispatch failed before prompt event'))
+        : Promise.resolve(),
+    );
+
+    await expect(f.dispatchQueued()).rejects.toThrow(
+      'dispatch failed before prompt event',
+    );
+
+    const afterFailedDispatch = await f.repository.getState(SCOPE, {
+      chatIds: ['chat-1'],
+      fullTranscript: true,
+    });
+    expect(afterFailedDispatch.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: ['admission-queue-1'],
+      queuedMessages: [
+        expect.objectContaining({
+          id: 'admission-queue-1',
+          request: expect.objectContaining({
+            userMessageId: 'crash-window-message',
+          }),
+        }),
+      ],
+    });
+    expect(afterFailedDispatch.tabsFile.tabs[0].messages).toEqual([]);
+
+    const promptCommitChanges: ChatStateChange[][] = [];
+    const unsubscribe = f.target.subscribe((event) => {
+      promptCommitChanges.push(event.changes);
+    });
+    await f.target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'crash-window-message',
+      mutationId: 'crash-window-prompt',
+      data: {
+        type: 'canopy_user_prompt',
+        canopy_turn_user_message_id: 'crash-window-message',
+        canopy_persisted_messages: [
+          {
+            id: 'crash-window-message',
+            role: 'user',
+            timestamp: 2,
+            blocks: [
+              { type: 'text', text: 'Keep this queued until prompt commit' },
+            ],
+          },
+        ],
+      },
+    });
+    unsubscribe();
+    const afterPromptCommit = await f.repository.getState(SCOPE, {
+      chatIds: ['chat-1'],
+      fullTranscript: true,
+    });
+    expect(afterPromptCommit.runtimeByChatId['chat-1']).toMatchObject({
+      queuedMessageIds: [],
+      queuedMessages: [],
+    });
+    expect(
+      afterPromptCommit.tabsFile.tabs[0].messages.map(({ id }) => id),
+    ).toEqual(['crash-window-message']);
+    const promptEvents = promptCommitChanges.filter((changes) =>
+      changes.some(
+        (change) =>
+          change.type === 'message.upserted' &&
+          change.message.id === 'crash-window-message',
+      ),
+    );
+    expect(promptEvents).toHaveLength(1);
+    expect(promptEvents[0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'message.upserted',
+          message: expect.objectContaining({ id: 'crash-window-message' }),
+        }),
+        expect.objectContaining({
+          type: 'runtime.patched',
+          runtime: expect.objectContaining({
+            queuedMessageIds: [],
+            queuedMessages: [],
+          }),
+        }),
+      ]),
+    );
+    f.queue.resetForTests();
+  });
+
+  it.each(['message', 'async-answer'] as const)(
+    'commits a stopped pre-dispatch %s row without installing starting runtime',
+    async (kind) => {
+      const f = admissionFixture();
+      await createChat(f.target);
+      f.setDrainProviderEventsOverride(async () => {
+        f.stopDuringDrain();
+      });
+
+      if (kind === 'async-answer') {
+        await f.target.upsertPendingQuestion(SCOPE, {
+          requestId: 'stopped-question',
+          chatId: 'chat-1',
+          delivery: 'async',
+          questions: [
+            { id: 'scope', question: 'Which scope?', options: ['Full'] },
+          ],
+        });
+        await f.target.command(
+          envelope('stopped-answer-command', {
+            type: 'chat.answer_question',
+            chatId: 'chat-1',
+            questionId: 'stopped-question',
+            answers: [
+              {
+                questionId: 'scope',
+                question: 'Which scope?',
+                selectedOptions: ['Full'],
+              },
+            ],
+          }),
+        );
+      } else {
+        await f.target.command(
+          envelope('stopped-message-command', {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: 'stopped-message',
+            text: 'Visible after Stop',
+          }),
+        );
+      }
+
+      const state = await f.repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(state.tabsFile.tabs[0].messages.map(({ id }) => id)).toEqual([
+        kind === 'async-answer'
+          ? 'answer-stopped-answer-command'
+          : 'stopped-message',
+      ]);
+      expect(state.runtimeByChatId['chat-1'].status).not.toBe('starting');
+      expect(dispatched).toEqual([]);
+      f.queue.resetForTests();
+    },
+  );
+
+  it('deduplicates a send whose identity is still held by the input-delivery ledger', async () => {
+    const f = await deliveryFixture();
+    await f.steer();
+    const before = await f.target.getState(f.scope);
+    const tab = before.tabsFile.tabs[0];
+    const ledger = tab?.inputDelivery;
+    if (!tab || !isInputLedger(ledger)) {
+      throw new Error('Expected a valid delivery ledger');
+    }
+    const sendingLedger = {
+      ...ledger,
+      rows: ledger.rows.map((row) => ({
+        ...row,
+        revision: row.revision + 1,
+        state: 'sending' as const,
+      })),
+    };
+    expect(isInputLedger(sendingLedger)).toBe(true);
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'tab.metadata_patched',
+          tabId: tab.id,
+          patch: { inputDelivery: sendingLedger },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-sending-ledger-row' },
+    );
+
+    const result = await f.target.command(
+      envelope('different-retry-command', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: f.request.userMessageId,
+        text: f.request.text,
+      }),
+    );
+
+    expect(result).toMatchObject({ outcome: 'already_applied' });
+    expect(dispatched).toEqual([]);
+  });
+
+  it('keeps 55 committed rows and at least 20 MiB out of the active sidecar at queued dispatch', async () => {
+    const f = admissionFixture();
+    getChatTurnOwnership().resetScopesForTests();
+    chatStateServiceModule.resetChatStateServiceForTests(f.target);
+    await createChat(f.target);
+    const history: PersistedChatMessage[] = Array.from(
+      { length: 55 },
+      (_, i) => ({
+        id: `history-${i}`,
+        role: i % 2 === 0 ? 'assistant' : 'user',
+        timestamp: i,
+        blocks: [{ type: 'text', text: 'h'.repeat(400_000) }],
+      }),
+    );
+    expect(
+      Buffer.byteLength(JSON.stringify(history), 'utf8'),
+    ).toBeGreaterThanOrEqual(20 * 1024 * 1024);
+    await f.repository.transact(
+      SCOPE,
+      history.map((message) => ({
+        type: 'message.upserted',
+        chatId: 'chat-1',
+        message,
+      })),
+      {
+        source: 'provider',
+        mutationId: 'seed-large-history',
+        fullTranscript: true,
+      },
+    );
+    const root = join(
+      ChatStorageV2.fromLegacyPaths(paths).directory,
+      'transcripts',
+    );
+    const committedBefore = readFileSync(join(root, 'chat-1.jsonl'));
+    expect(committedBefore.toString('utf8').trim().split('\n')).toHaveLength(
+      55,
+    );
+    const changes: ChatStateChange[] = [];
+    f.target.subscribe((event) => changes.push(...event.changes));
+    f.setLiveTurn(true);
+    await f.target.command(
+      envelope('large-deferred-send', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'deferred',
+        text: 'New turn only',
+      }),
+    );
+    // Complete the previous reply after admission: an early transcript row
+    // would now be reordered and cause the production 55 -> 0 regression.
+    await f.repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'message.upserted',
+          chatId: 'chat-1',
+          message: {
+            id: 'previous-reply',
+            role: 'assistant',
+            timestamp: 56,
+            blocks: [{ type: 'text', text: 'Previous reply' }],
+          },
+        },
+      ],
+      {
+        source: 'provider',
+        mutationId: 'previous-reply',
+        fullTranscript: true,
+      },
+    );
+    await f.target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      mutationId: 'previous-complete',
+      data: { type: 'result', is_error: false },
+    });
+    await f.dispatchQueued();
+    // The queued turn runs from its canonical start, as the adapter reports it.
+    const started: TurnStarted = {
+      version: 1,
+      provider: 'claude',
+      ...SCOPE,
+      chatId: 'chat-1',
+      sequence: 1,
+      eventId: 'deferred-started',
+      observedAtMs: 3,
+      turnId: 'deferred-turn',
+      origin: 'user',
+      binding: 'bound',
+      submissionIds: [],
+      userMessageIds: ['deferred'],
+      providerUserMessageUuids: [],
+      type: 'TurnStarted',
+      phase: 'start',
+      startedAtMs: 3,
+    };
+    f.target.observeTurnLifecycle(started);
+    const handoff: unknown = Reflect.get(f.target, 'turnHandoff');
+    if (!(handoff instanceof ChatTurnStateHandoff))
+      throw new Error('Chat state service did not create its turn handoff');
+    await handoff.flushAll();
+    const committedAfter = readFileSync(join(root, 'chat-1.jsonl'));
+    expect(committedAfter.length).toBeGreaterThanOrEqual(
+      committedBefore.length,
+    );
+    expect(
+      committedAfter
+        .subarray(0, committedBefore.length)
+        .equals(committedBefore),
+    ).toBe(true);
+    expect(
+      committedAfter.toString('utf8').trim().split('\n').length,
+    ).toBeGreaterThanOrEqual(55);
+    // The delta journal holds a running turn's active rows; replay it, since
+    // the sidecar on disk stays stale until the turn ends.
+    const storage = ChatStorageV2.fromLegacyPaths(paths);
+    const activeIds = async (): Promise<string[]> => {
+      const view = await openReplayedChatScope(
+        { directory: storage.directory, scopeId: basename(storage.directory) },
+        assertChatStorageIndexes,
+      );
+      try {
+        return (await view.transcript('chat-1').activeMessages('chat-1')).map(
+          ({ id }) => id,
+        );
+      } finally {
+        await view.dispose();
+      }
+    };
+    // User rows are committed at turn start; only mutable output (the
+    // canonical turn's open timer) belongs in the active rows.
+    expect(await activeIds()).toEqual(['deferred-turn:timer']);
+    expect(changes.some((change) => change.type === 'messages.replaced')).toBe(
+      false,
+    );
+    await f.target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'deferred',
+      mutationId: 'new-reply',
+      data: {
+        type: 'assistant',
+        message: {
+          id: 'new-reply',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Queued reply' }],
+        },
+      },
+    });
+    expect(await activeIds()).toEqual([
+      'deferred-turn:timer',
+      expect.stringContaining('new-reply'),
+    ]);
+    const after = await f.repository.getState(SCOPE, {
+      chatIds: ['chat-1'],
+      fullTranscript: true,
+    });
+    expect(
+      after.tabsFile.tabs[0].messages.slice(-4).map(({ id }) => id),
+    ).toEqual([
+      'previous-reply',
+      'deferred',
+      'deferred-turn:timer',
+      expect.stringContaining('new-reply'),
+    ]);
+  }, 30_000);
+
+  it.each([true, false])(
+    'materializes a deferred async answer exactly once with its metadata (prompt identity=%s)',
+    async (includeIdentity) => {
+      const f = admissionFixture(() => Promise.resolve(), includeIdentity);
+      await createChat(f.target);
+      await f.target.upsertPendingQuestion(SCOPE, {
+        requestId: 'deferred-question',
+        chatId: 'chat-1',
+        delivery: 'async',
+        questions: [
+          { id: 'scope', question: 'Which scope?', options: ['Full'] },
+        ],
+      });
+      f.setLiveTurn(true);
+      const answer: ChatCommand = {
+        type: 'chat.answer_question',
+        chatId: 'chat-1',
+        questionId: 'deferred-question',
+        answers: [
+          {
+            questionId: 'scope',
+            question: 'Which scope?',
+            selectedOptions: ['Full'],
+          },
+        ],
+      };
+      await f.target.command(envelope('deferred-answer', answer));
+      await expect(
+        f.target.command(envelope('deferred-answer-retry', answer)),
+      ).resolves.toMatchObject({ outcome: 'already_applied' });
+      const before = await f.repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(before.tabsFile.tabs[0].messages).toEqual([]);
+      expect(
+        before.runtimeByChatId['chat-1'].queuedMessages?.[0].request
+          .asyncQuestionId,
+      ).toBe('deferred-question');
+      await f.dispatchQueued();
+      const after = await f.repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(after.tabsFile.tabs[0].messages).toEqual([
+        expect.objectContaining({
+          id: 'answer-deferred-answer',
+          blocks: [
+            expect.objectContaining({
+              asyncQuestionAnswer: {
+                requestId: 'deferred-question',
+                startsTurn: true,
+                answers: answer.answers,
+              },
+            }),
+          ],
+        }),
+      ]);
+      expect(dispatched).toHaveLength(1);
+    },
+  );
 
   it('commits a user message before provider dispatch and derives settings from main state', async () => {
     const target = service();
@@ -10188,6 +19081,7 @@ describe('chat state service', () => {
         text: 'Keep working',
       }),
     );
+    await reportTurn(target, 'start', 'user-root');
     await target.command(
       envelope('send-queued', {
         type: 'chat.send_message',
@@ -10282,6 +19176,7 @@ describe('chat state service', () => {
         text: 'Keep working',
       }),
     );
+    await reportTurn(target, 'start', 'user-root');
     await target.reconcileHostQueue(
       { ...SCOPE, chatId: 'chat-1' },
       ['queue-existing'],
@@ -10305,7 +19200,7 @@ describe('chat state service', () => {
 
     const afterFailure = await target.getState(SCOPE);
     expect(afterFailure.runtimeByChatId['chat-1']).toMatchObject({
-      status: 'starting',
+      status: 'streaming',
       activeTurn: { userMessageId: 'user-root' },
       queuedMessageIds: ['queue-existing'],
     });
@@ -10475,7 +19370,8 @@ describe('chat state service', () => {
     );
 
     const snapshot = await target.getState(SCOPE);
-    expect(snapshot.revision).toBe(3);
+    // Acceptance metadata and immediate-row durability are separate commits.
+    expect(snapshot.revision).toBe(4);
     expect(snapshot.tabsFile.tabs[0]?.messages).toEqual([
       expect.objectContaining({
         id: 'user-editable',
@@ -10654,7 +19550,8 @@ describe('chat state service', () => {
     });
 
     const snapshot = await target.getState(SCOPE);
-    expect(snapshot.revision).toBe(3);
+    // Acceptance metadata and immediate-row durability are separate commits.
+    expect(snapshot.revision).toBe(4);
     expect(snapshot.tabsFile.tabs[0]?.messages).toEqual([]);
     expect(snapshot.runtimeByChatId['chat-1']?.queuedMessageIds).toEqual([]);
     await expect(
@@ -10836,7 +19733,7 @@ describe('chat state service', () => {
             },
           ],
         },
-        'seed-plan-fork',
+        { changedTabIds: ['chat-1'] },
       );
       await target.command(
         envelope('fork-pending-plan', {
@@ -10916,7 +19813,7 @@ describe('chat state service', () => {
             },
           ],
         },
-        'seed-opencode-visible-fork',
+        { changedTabIds: ['chat-1'] },
       );
       await expect(
         target.command(
@@ -11056,9 +19953,7 @@ describe('chat state service', () => {
       userId: '123e4567-e89b-42d3-a456-426614174001',
     };
     const trustedOptions = { agentSent };
-    const { target, repository } = serviceWithRepository({
-      steer: async () => false,
-    });
+    const { target, repository } = serviceWithRepository();
     await createChat(target);
     await repository.transact(
       SCOPE,
@@ -11444,6 +20339,7 @@ describe('chat state service', () => {
     expect(submit).toHaveBeenCalledWith(
       expect.objectContaining({ userMessageId: 'portal-user' }),
       'portal',
+      expect.any(Function),
     );
   });
 
@@ -11498,6 +20394,32 @@ describe('chat state service', () => {
         (tab) => tab.id === 'chat-denied',
       )?.sessionApprovalRules,
     ).toEqual([deny]);
+  });
+
+  it('never saves the approval mode a trusted send carries onto an existing chat without one (CAN-4469 send-commit backfill)', async () => {
+    const target = service();
+    await target.command(
+      envelope('create-unset-mode', {
+        type: 'chat.create_tab',
+        tabId: 'chat-unset-mode',
+        title: 'No saved mode',
+        providerType: 'claude',
+      }),
+    );
+    await target.ensureChatForTrustedSend({
+      ...SCOPE,
+      chatId: 'chat-unset-mode',
+      userMessageId: 'user-unset-mode',
+      text: 'Run it',
+      approvalMode: 'full-access',
+      title: 'Named by the send',
+    });
+    const tab = (await target.getState(SCOPE)).tabsFile.tabs.find(
+      (candidate) => candidate.id === 'chat-unset-mode',
+    );
+    // The same commit still applies the send's other changes.
+    expect(tab?.customTitle).toBe('Named by the send');
+    expect(tab?.approvalMode).toBeUndefined();
   });
 
   it('titles a trusted-send tab with the explicit title the send carries', async () => {
@@ -11578,7 +20500,11 @@ describe('chat state service', () => {
       providerType: 'codex',
       model: 'gpt-6-sol',
       modelConfig: { thinkingLevel: 'high', fastMode: true },
-      pluginSelections: { collectionIds: ['collection-1'] },
+      pluginSelections: {
+        collectionIds: ['collection-1'],
+        skillRefs: [],
+        pluginRefs: [],
+      },
       deferredToolsAllowed: false,
       codexProposalMode: 'required',
       approvalMode: 'full-access',
@@ -11808,15 +20734,17 @@ describe('chat state service', () => {
       approvalMode: 'full-access',
     });
 
-    expect((await target.getState(SCOPE)).tabsFile.tabs[0]).toMatchObject({
+    const tab = (await target.getState(SCOPE)).tabsFile.tabs[0];
+    expect(tab).toMatchObject({
       id: 'chat-routing-less',
       title: 'Use the resolved route',
       providerType: 'codex',
       model: 'gpt-5.5',
       executionHarness: 'codex',
       modelConfig: { thinkingLevel: 'high', fastMode: true },
-      approvalMode: 'full-access',
     });
+    // A send never saves its approval mode onto an existing chat (CAN-4469).
+    expect(tab?.approvalMode).toBeUndefined();
   });
 
   it('persists hydrated Advisor routing before the first prompt and retains it after reload and a second send', async () => {
@@ -12094,6 +21022,480 @@ describe('chat state service', () => {
       expect(dispatched).toEqual([]);
     },
   );
+
+  describe('a pipeline send with a per-turn override (D2)', () => {
+    const sender = {
+      kind: 'pipeline' as const,
+      executionId: 'exec-1',
+      pipelineId: 'nightly',
+      stepId: 'notify',
+    };
+    function pipelineCommand(
+      id: string,
+      turnOverride: ChatSendTurnOverride,
+    ): ChatCommandEnvelope {
+      return envelope(`${id}-command`, {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: id,
+        text: 'Nightly report',
+        agentSent: { sender, chatTitle: 'Nightly', projectLabel: '' },
+        agentSenderProvenance: {
+          version: 1,
+          sender,
+          owner: { kind: 'personal' },
+          capturedAt: '2026-10-26T00:00:00.000Z',
+          acceptedInputId: id,
+        },
+        hiddenContext: {
+          kind: 'agent-sender-context',
+          text: '<system_instruction>Pipeline</system_instruction>',
+        },
+        turnOverride,
+      });
+    }
+
+    it('commits model settings to the tab and applies the turn-only fields to the request', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const dispatched: ChatSendMessageRequest[] = [];
+      const { target } = serviceWithRepository({
+        dispatch: (request) => {
+          dispatched.push(request);
+          return Promise.resolve();
+        },
+      });
+      try {
+        await createChat(target);
+        const pluginSelections: ChatTabPluginSelections = {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+        };
+        await expect(
+          target.command(
+            pipelineCommand('pipeline-input', {
+              version: 1,
+              model: 'claude-sonnet-4-6',
+              providerType: 'claude',
+              modelConfig: { thinkingLevel: 'high' },
+              planMode: true,
+              approvalMode: 'full-access',
+              pluginSelections,
+              resetRuntime: true,
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        expect(dispatched).toHaveLength(1);
+        // The chat keeps the model settings afterwards, as the automation's
+        // session prompt leaves them.
+        const tab = (await target.getState(SCOPE)).tabsFile.tabs[0];
+        expect(tab).toMatchObject({
+          model: 'claude-sonnet-4-6',
+          planMode: true,
+          modelConfig: { thinkingLevel: 'high' },
+        });
+        expect(tab.approvalMode).toBeUndefined();
+        const request = dispatched[0];
+        expect(request).toMatchObject({
+          model: 'claude-sonnet-4-6',
+          planMode: true,
+          approvalMode: 'full-access',
+          pluginSelections,
+          admittedApproval: {
+            approvalMode: 'full-access',
+            sessionApprovalRules: [],
+          },
+          turnOverride: expect.objectContaining({ version: 1 }),
+        });
+        expect(request.sdkSessionId).toBeUndefined();
+        expect('sdkSessionId' in request).toBe(true);
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it('carries an empty override as no setting change', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const dispatched: ChatSendMessageRequest[] = [];
+      const { target } = serviceWithRepository({
+        dispatch: (request) => {
+          dispatched.push(request);
+          return Promise.resolve();
+        },
+      });
+      try {
+        await createChat(target);
+        await target.command(pipelineCommand('plain-input', { version: 1 }));
+        expect(dispatched).toHaveLength(1);
+        expect(dispatched[0]).toMatchObject({ model: 'claude-opus-4-6' });
+        expect(dispatched[0].approvalMode).toBeUndefined();
+        expect(dispatched[0].admittedApproval).toBeUndefined();
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it('runs a named override model on an Auto chat without Auto routing', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const dispatched: ChatSendMessageRequest[] = [];
+      const { target } = serviceWithRepository({
+        dispatch: (request) => {
+          dispatched.push(request);
+          return Promise.resolve();
+        },
+      });
+      try {
+        await createChat(target);
+        await target.command(
+          envelope('enter-auto', {
+            type: 'chat.patch_tab_settings' as const,
+            tabId: 'chat-1',
+            patch: { modelSelectionMode: 'auto' as const },
+          }),
+        );
+        await expect(
+          target.command(
+            pipelineCommand('auto-input', {
+              version: 1,
+              model: 'claude-sonnet-4-6',
+              providerType: 'claude',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        expect(dispatched).toHaveLength(1);
+        expect(dispatched[0]).toMatchObject({
+          model: 'claude-sonnet-4-6',
+          providerType: 'claude',
+        });
+        expect(dispatched[0].modelSelectionMode).toBeUndefined();
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it("refuses an agent-originated run's authority change at the owner (D11)", async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const dispatched: ChatSendMessageRequest[] = [];
+      const { target } = serviceWithRepository({
+        dispatch: (request) => {
+          dispatched.push(request);
+          return Promise.resolve();
+        },
+      });
+      try {
+        await createChat(target);
+        const base = pipelineCommand('agent-input', {
+          version: 1,
+          model: 'claude-sonnet-4-6',
+        });
+        const command = base.command;
+        if (command.type !== 'chat.send_message') throw new Error('send');
+        await expect(
+          target.command({
+            ...base,
+            command: {
+              ...command,
+              agentSenderProvenance: {
+                version: 1,
+                sender,
+                owner: { kind: 'personal' },
+                capturedAt: '2026-10-26T00:00:00.000Z',
+                acceptedInputId: 'agent-input',
+                agentOrigin: {
+                  projectId: 'agent-project',
+                  worktreeId: 'agent-task',
+                  chatId: 'agent-chat',
+                },
+              },
+            },
+          }),
+        ).rejects.toThrow('cannot change the target chat');
+        expect(dispatched).toEqual([]);
+        expect((await target.getState(SCOPE)).tabsFile.tabs[0]).toMatchObject({
+          model: 'claude-opus-4-6',
+        });
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it('refuses an override without pipeline attribution, whoever dispatches it', async () => {
+      const dispatched: ChatSendMessageRequest[] = [];
+      const { target } = serviceWithRepository({
+        dispatch: (request) => {
+          dispatched.push(request);
+          return Promise.resolve();
+        },
+      });
+      await createChat(target);
+      await expect(
+        target.command(
+          envelope('unattributed-command', {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: 'unattributed-input',
+            text: 'Hello',
+            turnOverride: {
+              version: 1,
+              model: 'claude-sonnet-4-6',
+              approvalMode: 'full-access',
+            },
+          }),
+        ),
+      ).rejects.toThrow('per-turn settings');
+      expect(dispatched).toEqual([]);
+      expect((await target.getState(SCOPE)).tabsFile.tabs[0]).toMatchObject({
+        model: 'claude-opus-4-6',
+      });
+    });
+  });
+
+  describe('an automation’s own send (CAN-4549)', () => {
+    const sender = { kind: 'pipeline' as const, automationId: 'automation-1' };
+    const automationDispatch = {
+      version: 1 as const,
+      automationName: 'Morning report',
+      executionContext: 'personal',
+      presentation: 'background' as const,
+      packageOverlay: { packageDigest: 'sha256:abc', resources: [] },
+    };
+    function automationCommand(
+      id: string,
+      commandSender: typeof sender | typeof stepSender = sender,
+    ): ChatCommandEnvelope {
+      return envelope(`${id}-command`, {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: id,
+        text: 'Morning report',
+        inputMode: 'voice',
+        agentSent: {
+          sender: commandSender,
+          chatTitle: 'Morning report',
+          projectLabel: '',
+        },
+        agentSenderProvenance: {
+          version: 1,
+          sender: commandSender,
+          owner: { kind: 'personal' },
+          capturedAt: '2026-10-28T00:00:00.000Z',
+          acceptedInputId: id,
+        },
+        hiddenContext: {
+          kind: 'agent-sender-context',
+          text: '<system_instruction>Automation</system_instruction>',
+        },
+        automationDispatch,
+      });
+    }
+    const stepSender = {
+      kind: 'pipeline' as const,
+      executionId: 'exec-1',
+      pipelineId: 'nightly',
+      stepId: 'notify',
+      automationId: 'automation-1',
+    };
+
+    it('keeps the banner, usage source, overlay and lineage on the admitted request', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const dispatched: ChatSendMessageRequest[] = [];
+      const { target } = serviceWithRepository({
+        dispatch: (request) => {
+          dispatched.push(request);
+          return Promise.resolve();
+        },
+      });
+      try {
+        await createChat(target);
+        await expect(
+          target.command(automationCommand('automation-input')),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        expect(dispatched).toHaveLength(1);
+        const request = dispatched[0];
+        expect(request).toMatchObject({
+          initiationSource: 'automation',
+          automationName: 'Morning report',
+          packageOverlay: automationDispatch.packageOverlay,
+          preserveActiveTab: true,
+          inputMode: 'voice',
+          automationDispatch,
+        });
+        // The banner commits once, directly ahead of the prompt, with the
+        // raw automation name; a later dispatch funnel does not add another.
+        await target.ensureChatForTrustedSend(request);
+        const messages = (await target.getState(SCOPE)).tabsFile.tabs[0]
+          .messages;
+        expect(messages.map(({ id }) => id)).toEqual([
+          automationInfoMessageId('automation-input'),
+          'automation-input',
+        ]);
+        expect(messages[0]).toMatchObject({
+          role: 'system',
+          blocks: [
+            expect.objectContaining({
+              type: 'automation_info',
+              activityName: 'Morning report',
+            }),
+          ],
+        });
+        expect(messages[1]).toMatchObject({ userMessageSource: 'agent' });
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it.each([
+      [false, {}],
+      [
+        true,
+        {
+          interfaceMode: 'claude-code',
+          sdkSessionId: 'terminal-session',
+          globalInstructionsSnapshot: 'Saved instructions',
+        },
+      ],
+    ])(
+      'drops a terminal tab’s session as the native send does (Claude TUI: %s)',
+      async (tuiEnabled, expected) => {
+        const validation = jest
+          .spyOn(senderContext, 'revalidateAgentSenderRequest')
+          .mockResolvedValue(undefined);
+        const effectiveMode = jest
+          .spyOn(claudeTuiChats, 'getEffectiveClaudeChatInterfaceMode')
+          .mockImplementation((mode) =>
+            tuiEnabled ? (mode ?? 'canopy') : 'canopy',
+          );
+        const dispatched: ChatSendMessageRequest[] = [];
+        const { target } = serviceWithRepository({
+          dispatch: (request) => {
+            dispatched.push(request);
+            return Promise.resolve();
+          },
+        });
+        try {
+          await createChat(target);
+          await target.updateCompatibilityTab(SCOPE, 'chat-1', (tab) => ({
+            ...tab,
+            interfaceMode: 'claude-code',
+            sdkSessionId: 'terminal-session',
+            globalInstructionsSnapshot: 'Saved instructions',
+          }));
+          await target.command(automationCommand('terminal-input'));
+          expect(dispatched).toHaveLength(1);
+          const { interfaceMode, sdkSessionId, globalInstructionsSnapshot } =
+            dispatched[0];
+          expect({
+            ...(interfaceMode ? { interfaceMode } : {}),
+            ...(sdkSessionId ? { sdkSessionId } : {}),
+            ...(globalInstructionsSnapshot
+              ? { globalInstructionsSnapshot }
+              : {}),
+          }).toEqual(expected);
+        } finally {
+          effectiveMode.mockRestore();
+          validation.mockRestore();
+        }
+      },
+    );
+
+    // A step in a run an automation started may carry it (CAN-4551); a step
+    // a person or an agent started may not.
+    it('refuses the block with a step no automation started, before anything commits', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const dispatched: ChatSendMessageRequest[] = [];
+      const { target } = serviceWithRepository({
+        dispatch: (request) => {
+          dispatched.push(request);
+          return Promise.resolve();
+        },
+      });
+      try {
+        await createChat(target);
+        const { automationId, ...personStep } = stepSender;
+        void automationId;
+        await expect(
+          // @ts-expect-error -- a step sender without its automation id must be refused.
+          target.command(automationCommand('step-input', personStep)),
+        ).rejects.toThrow('automation dispatch facts');
+        expect(dispatched).toEqual([]);
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it('keeps the block on a setup-held row rebuilt from the command', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const readiness = jest
+        .spyOn(senderContext, 'agentSendTargetReadiness')
+        .mockResolvedValue('pending');
+      let target: ChatStateService | undefined;
+      const queue = new ChatQueueService({
+        dispatch: async () => {
+          throw new Error('Pending setup must not dispatch');
+        },
+        cancel: async () => undefined,
+        settleCancelledTurn: async () => undefined,
+        hasActiveProviderTurn: () => false,
+        hasPendingProviderContinuation: () => false,
+        persistRuntime: async (...args) => target?.reconcileHostQueue(...args),
+        broadcast: () => undefined,
+        createId: () => 'automation-queue-row',
+        now: () => 1234,
+        schedule: () => {
+          const timer = setTimeout(() => undefined, 60000);
+          timer.unref();
+          return timer;
+        },
+      });
+      const chatService = await import('../chat-service');
+      const split = jest
+        .spyOn(chatService, 'assertWorktreeChatSendNotSplitLocked')
+        .mockReturnValue({ ...SCOPE });
+      mockTerminalState.mockReturnValue({ turnState: 'running' });
+      try {
+        target = serviceWithRepository({
+          authorizeSend: undefined,
+          dispatch: (request, origin) => queue.submit(request, origin),
+        }).target;
+        await createChat(target);
+        const base = automationCommand('held-input');
+        if (base.command.type !== 'chat.send_message') throw new Error('send');
+        await target.command({
+          ...base,
+          command: { ...base.command, agentSendSetup: { version: 1 } },
+        });
+        const queued = (await target.getState(SCOPE)).runtimeByChatId['chat-1']
+          .queuedMessages?.[0]?.request;
+        expect(queued).toMatchObject({
+          agentSendSetup: { version: 1 },
+          automationDispatch,
+          initiationSource: 'automation',
+          automationName: 'Morning report',
+          packageOverlay: automationDispatch.packageOverlay,
+          preserveActiveTab: true,
+        });
+      } finally {
+        split.mockRestore();
+        queue.resetForTests();
+        validation.mockRestore();
+        readiness.mockRestore();
+      }
+    });
+  });
 
   function reviewAgentRequest(id: string): ChatSendMessageRequest {
     const sender = {
@@ -13251,10 +22653,11 @@ describe('chat state service', () => {
         userMessageId: retained.userMessageId,
         text: 'renderer stale body',
         attachmentPaths: ['/stale.png'],
-        interfaceMode: 'native' as const,
         model: 'claude-sonnet-4-6',
         planMode: true,
       };
+      // The renderer payload is intentionally stale and must retain its old value.
+      Reflect.set(incoming, 'interfaceMode', 'native');
       const recovered =
         await target.claimRetainedTerminalAgentInputForNative(incoming);
       expect(validation).toHaveBeenCalledWith(
@@ -14330,6 +23733,458 @@ describe('chat state service', () => {
     ).toBeUndefined();
   });
 
+  describe('accepted plan revision turns (CAN-5431)', () => {
+    const send = {
+      type: 'chat.send_message' as const,
+      chatId: 'chat-1',
+      userMessageId: 'revise-user',
+      text: 'Revise the parser plan',
+    };
+    const review = {
+      ...SCOPE,
+      chatId: 'chat-1',
+      requestId: 'review-old',
+      source: 'claude' as const,
+      reviewMode: 'manual' as const,
+      planId: 'tracked-plan',
+      revisionNumber: 1,
+      toolInput: { plan: 'Parser plan' },
+    };
+    async function seed(target: ChatStateService): Promise<void> {
+      await createChat(target);
+      await target.command(
+        envelope('planning-on', {
+          type: 'chat.patch_tab_settings',
+          tabId: 'chat-1',
+          patch: { planMode: true },
+        }),
+      );
+      await target.commitPlanExit(review);
+    }
+    function approval(requestId: string): ChatCommand {
+      return {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        expectedPendingPlanExitRequestId: requestId,
+        patch: {
+          pendingPlanExit: null,
+          pendingPlanExitRequestId: null,
+          planMode: false,
+          trackedPlanReviewStatus: 'approved',
+        },
+      };
+    }
+    function expectRetired(tab: PersistedChatTab | undefined): void {
+      expect(tab?.pendingPlanExit).toBeUndefined();
+      expect(tab?.pendingPlanExitRequestId).toBeUndefined();
+      expect(tab).toMatchObject({
+        planMode: true,
+        trackedPlanId: 'tracked-plan',
+        trackedPlanSource: 'claude',
+        latestRevisionNumber: 1,
+        trackedPlanReviewStatus: 'pending',
+      });
+    }
+
+    it('atomically retires the exit with the accepted prompt and starting runtime', async () => {
+      const { target, repository } = serviceWithRepository({
+        dispatch: async () => {
+          const state = await target.getState(SCOPE);
+          expectRetired(state.tabsFile.tabs[0]);
+          expect(state.tabsFile.tabs[0]?.messages).toEqual([
+            expect.objectContaining({ id: send.userMessageId }),
+          ]);
+          expect(state.runtimeByChatId['chat-1']?.status).toBe('starting');
+        },
+      });
+      await seed(target);
+      const commits: ChatStateCommit[] = [];
+      const transactWith = repository.transactWith.bind(repository);
+      const transactions = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation(async (...args) => {
+          const commit = await transactWith(...args);
+          commits.push(commit);
+          return commit;
+        });
+      try {
+        await expect(
+          target.command(envelope('revise', send)),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        const starting = commits.filter(
+          (commit) =>
+            commit.state.runtimeByChatId['chat-1']?.status === 'starting',
+        );
+        expect(starting.length).toBeGreaterThan(0);
+        for (const commit of starting)
+          expectRetired(commit.state.tabsFile.tabs[0]);
+      } finally {
+        transactions.mockRestore();
+      }
+      await readThroughFreshRepository(target, async (reader) => {
+        expectRetired((await reader.getState(SCOPE)).tabsFile.tabs[0]);
+      });
+    });
+
+    it('keeps a queued review until its Portal prompt is accepted; cancellation leaves it pending', async () => {
+      const { target, repository } = serviceWithRepository();
+      await seed(target);
+      const queued: PersistedHostQueuedMessage = {
+        id: 'queue-revise',
+        request: { ...SCOPE, ...send },
+        origin: 'desktop',
+        enqueuedAtMs: 123,
+      };
+      const cancelled = {
+        ...queued,
+        id: 'queue-cancelled',
+        request: { ...queued.request, userMessageId: 'cancelled-user' },
+      };
+      await target.reconcileHostQueue(
+        { ...SCOPE, chatId: 'chat-1' },
+        [cancelled.id],
+        false,
+        undefined,
+        [cancelled],
+      );
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('review-old');
+      await target.reconcileHostQueue(
+        { ...SCOPE, chatId: 'chat-1' },
+        [],
+        false,
+        { type: 'cancel', request: cancelled.request },
+        [],
+      );
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('review-old');
+      await target.reconcileHostQueue(
+        { ...SCOPE, chatId: 'chat-1' },
+        [queued.id],
+        false,
+        undefined,
+        [queued],
+      );
+      await target.reconcileHostQueue(
+        { ...SCOPE, chatId: 'chat-1' },
+        [],
+        true,
+        undefined,
+        [],
+        send.userMessageId,
+        queued,
+      );
+      const state = await target.getState(SCOPE);
+      expect(state.runtimeByChatId['chat-1']?.status).toBe('starting');
+      expect(state.tabsFile.tabs[0]?.pendingPlanExitRequestId).toBe(
+        'review-old',
+      );
+      await target.replaceCompatibilityTabs(SCOPE, {
+        ...state.tabsFile,
+        tabs: state.tabsFile.tabs.map((tab) =>
+          Object.defineProperty({ ...tab }, 'messages', {
+            enumerable: false,
+            value: [],
+          }),
+        ),
+      });
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('review-old');
+      const transactWith = repository.transactWith.bind(repository);
+      const transaction = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation(async (...args) => {
+          const commit = await transactWith(...args);
+          expectRetired(commit.state.tabsFile.tabs[0]);
+          return commit;
+        });
+      try {
+        await target.replaceCompatibilityTabs(SCOPE, {
+          ...state.tabsFile,
+          tabs: state.tabsFile.tabs.map((tab) => ({
+            ...tab,
+            messages: [
+              ...tab.messages,
+              {
+                id: send.userMessageId,
+                role: 'user',
+                timestamp: 1,
+                blocks: [{ type: 'text', text: send.text }],
+              },
+            ],
+          })),
+        });
+      } finally {
+        transaction.mockRestore();
+      }
+      const admitted = await target.getState(SCOPE);
+      expectRetired(admitted.tabsFile.tabs[0]);
+      expect(admitted.runtimeByChatId['chat-1']?.queuedMessages).toEqual([]);
+      await target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: `chat-1:${send.userMessageId}:queued-prompt`,
+        turnUserMessageId: send.userMessageId,
+        data: {
+          type: 'canopy_user_prompt',
+          canopy_turn_user_message_id: send.userMessageId,
+          canopy_persisted_messages: [
+            {
+              id: send.userMessageId,
+              role: 'user',
+              timestamp: 1,
+              blocks: [{ type: 'text', text: send.text }],
+            },
+          ],
+        },
+      });
+      const accepted = await target.getState(SCOPE);
+      expect(accepted.tabsFile.tabs[0]?.messages).toContainEqual(
+        expect.objectContaining({ id: send.userMessageId }),
+      );
+      expectRetired(accepted.tabsFile.tabs[0]);
+      await reportTurn(target, 'start', send.userMessageId);
+      await target.commitPlanExit({
+        ...review,
+        requestId: 'queued-review-new',
+        revisionNumber: 2,
+        turnUserMessageId: send.userMessageId,
+      });
+      await target.reconcileHostQueue(
+        { ...SCOPE, chatId: 'chat-1' },
+        [],
+        true,
+        undefined,
+        [],
+        send.userMessageId,
+        queued,
+      );
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('queued-review-new');
+      await target.replaceCompatibilityTabs(SCOPE, admitted.tabsFile);
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('queued-review-new');
+    });
+
+    it.each(['rejected', 'cancelled'] as const)(
+      'preserves the exit for an unaccepted %s send',
+      async (scenario) => {
+        const { target } = serviceWithRepository({
+          submit: async (_request, _origin, commit) => {
+            if (scenario === 'rejected') throw new Error('Admission refused');
+            await commit({ cancelledBeforeDispatch: true, startsTurn: true });
+          },
+        });
+        await seed(target);
+        await target.command(envelope('unaccepted-revise', send));
+        expect(
+          (await target.getState(SCOPE)).tabsFile.tabs[0]
+            ?.pendingPlanExitRequestId,
+        ).toBe('review-old');
+      },
+    );
+
+    it.each([
+      ['codex', 'proposal', true],
+      ['cursor', 'proposal', true],
+      ['opencode', 'proposal', true],
+      ['codex', undefined, true],
+      ['cursor', undefined, false],
+      ['opencode', undefined, true],
+      ['codex', 'manual', false],
+      ['cursor', 'manual', false],
+      ['opencode', 'manual', false],
+    ] as const)(
+      'respects %s review mode %s on an ordinary send (retained: %s)',
+      async (source, reviewMode, retained) => {
+        const target = service();
+        await seed(target);
+        await target.commitPlanExit({
+          ...review,
+          requestId: 'source-review',
+          source,
+          reviewMode,
+        });
+        // Exercise source fallback: the tool input has no source of its own.
+        await target.updateCompatibilityTab(SCOPE, 'chat-1', (tab) => ({
+          ...tab,
+          pendingPlanExit: {
+            plan: 'Parser plan',
+            ...(reviewMode ? { reviewMode } : {}),
+          },
+        }));
+        await target.command(envelope('source-revise', send));
+        expect(
+          Boolean(
+            (await target.getState(SCOPE)).tabsFile.tabs[0]?.pendingPlanExit,
+          ),
+        ).toBe(retained);
+      },
+    );
+
+    it('conflicts on old approvals before and after replacement, but accepts the fresh request', async () => {
+      const target = service();
+      await seed(target);
+      await target.command(envelope('revise', send));
+      await expect(
+        target.command(envelope('approve-retired', approval('review-old'))),
+      ).resolves.toMatchObject({ outcome: 'conflict' });
+      const replacement = {
+        ...review,
+        requestId: 'review-new',
+        revisionNumber: 2,
+        turnUserMessageId: send.userMessageId,
+      };
+      await target.commitPlanExit(replacement);
+      // Replaying the accepted command or the previous exit cannot clear or revive a request.
+      await target.command(envelope('revise', send));
+      await target.command(envelope('duplicate-prompt', send));
+      await target.commitPlanExit(review);
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('review-new');
+      await expect(
+        target.command(envelope('approve-replaced', approval('review-old'))),
+      ).resolves.toMatchObject({ outcome: 'conflict' });
+      await expect(
+        target.command(envelope('approve-fresh', approval('review-new'))),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+    });
+
+    it('rejects a delayed exit belonging to the previous turn', async () => {
+      const target = service();
+      await seed(target);
+      await target.command(envelope('revise', send));
+      await expect(
+        target.commitPlanExit({
+          ...review,
+          requestId: 'late-old-turn',
+          turnUserMessageId: 'previous-turn',
+        }),
+      ).rejects.toThrow('superseded');
+      expectRetired((await target.getState(SCOPE)).tabsFile.tabs[0]);
+    });
+
+    it('preserves approved review effects when approval commits before the send', async () => {
+      const target = service();
+      await seed(target);
+      await expect(
+        target.command(envelope('approve-first', approval('review-old'))),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      await target.command(envelope('send-after-approval', send));
+      expect((await target.getState(SCOPE)).tabsFile.tabs[0]).toMatchObject({
+        planMode: false,
+        trackedPlanReviewStatus: 'approved',
+      });
+    });
+
+    it.each(['failed', 'cancelled'] as const)(
+      'keeps retirement after an accepted turn is %s and reloaded',
+      async (outcome) => {
+        const target = service();
+        await seed(target);
+        await target.command(envelope('revise', send));
+        await target.ingestProviderEvent({
+          ...SCOPE,
+          chatId: 'chat-1',
+          turnUserMessageId: send.userMessageId,
+          mutationId: 'revision-terminal',
+          data:
+            outcome === 'failed'
+              ? { type: 'error', error: 'Revision failed' }
+              : { type: 'result', result: 'Interrupted by user' },
+        });
+        await readThroughFreshRepository(target, async (reader) => {
+          expectRetired((await reader.getState(SCOPE)).tabsFile.tabs[0]);
+        });
+      },
+    );
+
+    it('leaves the review intact if the prompt transaction cannot commit', async () => {
+      const { target, repository } = serviceWithRepository();
+      await seed(target);
+      const transactWith = repository.transactWith.bind(repository);
+      const transaction = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, options) => {
+          if (options?.mutationId === 'failed-revise:immediate-prompt')
+            return Promise.reject(new Error('disk full'));
+          return transactWith(scope, build, options);
+        });
+      try {
+        await target.command(envelope('failed-revise', send));
+        const state = await target.getState(SCOPE);
+        expect(state.tabsFile.tabs[0]?.pendingPlanExitRequestId).toBe(
+          'review-old',
+        );
+        expect(
+          state.tabsFile.tabs[0]?.messages.some(
+            ({ id }) => id === send.userMessageId,
+          ),
+        ).toBe(false);
+      } finally {
+        transaction.mockRestore();
+      }
+    });
+
+    it('retires the exit when a dispatched prompt event commits the turn, and its replay keeps a newer request', async () => {
+      // Composer and queued sends reach the transcript through the provider
+      // prompt event rather than the command's immediate prompt commit.
+      const target = service();
+      await seed(target);
+      const promptEvent = {
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: `chat-1:${send.userMessageId}:user-prompt`,
+        turnUserMessageId: send.userMessageId,
+        data: {
+          type: 'canopy_user_prompt',
+          canopy_turn_user_message_id: send.userMessageId,
+          canopy_persisted_messages: [
+            {
+              id: send.userMessageId,
+              role: 'user',
+              timestamp: 1,
+              blocks: [{ type: 'text', text: send.text }],
+            },
+          ],
+        },
+      };
+      await target.ingestProviderEvent(promptEvent);
+      const started = await target.getState(SCOPE);
+      expect(
+        started.tabsFile.tabs[0]?.messages.some(
+          ({ id }) => id === send.userMessageId,
+        ),
+      ).toBe(true);
+      expectRetired(started.tabsFile.tabs[0]);
+      await readThroughFreshRepository(target, async (reader) => {
+        expectRetired((await reader.getState(SCOPE)).tabsFile.tabs[0]);
+      });
+
+      await target.commitPlanExit({ ...review, requestId: 'review-new' });
+      await target.ingestProviderEvent({
+        ...promptEvent,
+        mutationId: `${promptEvent.mutationId}:replay`,
+      });
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.pendingPlanExitRequestId,
+      ).toBe('review-new');
+    });
+  });
+
   describe('approval bound to an implementation message', () => {
     async function pendingReview(
       overrides: Partial<ChatStateServiceOptions> = {},
@@ -14992,6 +24847,7 @@ describe('chat state service', () => {
           ],
         },
       });
+      await reportTurn(target, 'start', 'planning-user');
       await target.ingestProviderEvent({
         ...SCOPE,
         chatId: 'chat-1',
@@ -15216,6 +25072,8 @@ describe('chat state service', () => {
         text: 'Finish after the background notification',
       }),
     );
+    // A continuing prelude doesn't end the turn; only the actual terminal does.
+    await reportTurn(target, 'start', 'user-prelude-sequence');
 
     const events = [
       {
@@ -15317,6 +25175,7 @@ describe('chat state service', () => {
       expect(runtime?.activeTurn?.startedAt).toEqual(expect.any(Number));
     }
 
+    await reportTurn(target, 'end', 'user-prelude-sequence');
     await expect(
       target.ingestProviderEvent({
         ...SCOPE,
@@ -15344,6 +25203,181 @@ describe('chat state service', () => {
     expect(persisted).toContain('fixture contents');
     expect(persisted).toContain('Follow-up finished after interruption.');
   });
+
+  it.each([
+    [
+      'empty completion',
+      'claude',
+      false,
+      false,
+      { type: 'result', is_error: false, result: 'Completed' },
+    ],
+    [
+      'empty completion recovery',
+      'claude',
+      false,
+      true,
+      {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'writer-root',
+        uuid: 'recovery-output',
+        message: {
+          id: 'recovery-native',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Recovered output' }],
+        },
+      },
+    ],
+    [
+      'Codex root completion',
+      'codex',
+      true,
+      false,
+      {
+        type: 'codex',
+        event: { type: 'turn.completed', thread_id: 'root-thread' },
+      },
+    ],
+    [
+      'Codex root failure',
+      'codex',
+      true,
+      false,
+      {
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          thread_id: 'root-thread',
+          error: { message: 'Failed' },
+        },
+      },
+    ],
+    [
+      'other root terminal',
+      'claude',
+      true,
+      false,
+      { type: 'result', is_error: false, result: 'Completed' },
+    ],
+    [
+      'canopy user prompt',
+      'claude',
+      false,
+      false,
+      {
+        type: 'canopy_user_prompt',
+        canopy_turn_user_message_id: 'writer-root',
+        canopy_persisted_messages: [
+          {
+            id: 'writer-root',
+            role: 'user',
+            timestamp: 1,
+            blocks: [{ type: 'text', text: 'Prompt' }],
+          },
+        ],
+      },
+    ],
+  ] as const)(
+    'preserves turn in the %s runtime writer before the funnel',
+    async (_label, provider, visibleOutput, recovery, data) => {
+      const { target, repository } = serviceWithRepository({});
+      await createChat(target);
+      const turn = serializeChatTurnState({
+        ...initialChatTurnState(),
+        catchingUp: true,
+      });
+      const runtime: ChatRuntimeState = {
+        status: recovery ? 'failed' : 'streaming',
+        queuedMessageIds: [],
+        turn,
+        activeTurn: { userMessageId: 'writer-root', startedAt: 1 },
+        ...(recovery
+          ? {
+              error: {
+                code: 'empty_completion',
+                message: 'Empty',
+                retryable: true,
+                occurredAt: new Date(1).toISOString(),
+              },
+              emptyCompletionRecovery: {
+                turnUserMessageId: 'writer-root',
+                detectedAt: 1,
+                automaticRetryAllowed: false,
+              },
+            }
+          : {}),
+      };
+      await repository.transact(
+        SCOPE,
+        [
+          { type: 'runtime.patched', chatId: 'chat-1', runtime },
+          {
+            type: 'message.upserted',
+            chatId: 'chat-1',
+            message: {
+              id: 'writer-root',
+              role: 'user',
+              timestamp: 1,
+              blocks: [{ type: 'text', text: 'Prompt' }],
+            },
+          },
+          ...(visibleOutput
+            ? [
+                {
+                  type: 'message.upserted' as const,
+                  chatId: 'chat-1',
+                  message: {
+                    id: 'writer-output',
+                    role: 'assistant' as const,
+                    timestamp: 2,
+                    blocks: [{ type: 'text' as const, text: 'Answer' }],
+                  },
+                },
+              ]
+            : []),
+          {
+            type: 'tab.metadata_patched',
+            tabId: 'chat-1',
+            patch: {
+              providerType: provider,
+              ...(provider === 'codex' ? { sdkSessionId: 'root-thread' } : {}),
+            },
+          },
+        ],
+        { source: 'provider', mutationId: 'seed-writer-turn' },
+      );
+      const emitted: ChatRuntimeState[] = [];
+      const transactWith = repository.transactWith.bind(repository);
+      jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, options) =>
+          transactWith(
+            scope,
+            async (current, revision, context) => {
+              const mutations = await build(current, revision, context);
+              for (const mutation of mutations)
+                if (mutation.type === 'runtime.patched')
+                  emitted.push(mutation.runtime);
+              return mutations;
+            },
+            options,
+          ),
+        );
+      await target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        providerType: provider,
+        turnUserMessageId: 'writer-root',
+        mutationId: 'writer-event',
+        data,
+      });
+      expect(emitted.length).toBeGreaterThan(0);
+      for (const value of emitted) expect(value.turn).toEqual(turn);
+      expect(
+        (await repository.getState(SCOPE)).runtimeByChatId['chat-1'].turn,
+      ).toEqual(turn);
+    },
+  );
 
   it.each([
     ['short', 50],
@@ -15707,6 +25741,55 @@ describe('chat state service', () => {
     },
   );
 
+  it('records an interrupted Codex turn its lifecycle ended as cancelled', async () => {
+    const target = service();
+    const chatId = 'interrupted-codex-lifecycle';
+    const userMessageId = 'user-interrupted-codex';
+    await target.command(
+      envelope('create-interrupted-codex-lifecycle', {
+        type: 'chat.create_tab',
+        tabId: chatId,
+        title: 'Interrupted Codex',
+        providerType: 'codex',
+        model: 'gpt-6-astra',
+      }),
+    );
+    await target.command(
+      envelope('send-interrupted-codex-lifecycle', {
+        type: 'chat.send_message',
+        chatId,
+        userMessageId,
+        text: 'Stop me before I answer',
+      }),
+    );
+    await reportTurn(target, 'start', userMessageId, {
+      provider: 'codex',
+      chatId,
+    });
+    // The client ends the native turn before delivering its completion.
+    await reportTurn(target, 'end', userMessageId, {
+      provider: 'codex',
+      chatId,
+      outcome: 'cancelled',
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId,
+      providerType: 'codex',
+      turnUserMessageId: userMessageId,
+      mutationId: 'interrupted-codex-lifecycle-completed',
+      data: interruptedCodexTurn,
+    });
+
+    await expect(
+      target.turnOutcome({ ...SCOPE, chatId, userMessageId }),
+    ).resolves.toBe('cancelled');
+    const runtime = (await target.getState(SCOPE)).runtimeByChatId[chatId];
+    expect(runtime?.status).toBe('cancelled');
+    expect(runtime?.error?.code).not.toBe('empty_completion');
+    expect(runtime).not.toHaveProperty('emptyCompletionRecovery');
+  });
+
   it.each([
     [
       'cancellation',
@@ -15826,11 +25909,14 @@ describe('chat state service', () => {
   describe('activity-only provider events', () => {
     const START = 1_786_104_000_000;
 
-    async function streamingChat() {
+    async function streamingChat(storagePaths = paths) {
       let clock = START;
-      const { target, repository } = serviceWithRepository({
-        now: () => clock,
-      });
+      const { target, repository } = serviceWithRepository(
+        {
+          now: () => clock,
+        },
+        storagePaths,
+      );
       await createChat(target);
       await target.command(
         envelope('send-activity', {
@@ -15840,6 +25926,7 @@ describe('chat state service', () => {
           text: 'Continue',
         }),
       );
+      await reportTurn(target, 'start', 'user-1', { atMs: START });
       await expect(
         target.ingestProviderEvent({
           ...SCOPE,
@@ -15897,6 +25984,45 @@ describe('chat state service', () => {
       expect(await f.revision()).toBe(revision);
     });
 
+    it('matches the legacy outcome for activity-only events without a pickup verdict', async () => {
+      const legacy = await streamingChat(isolatedServicePaths());
+      legacy.advance(1_000);
+      const legacyOutcome = await legacy.target.ingestProviderEventWithOutcome(
+        progress(2),
+      );
+
+      const resultFixture = await streamingChat(isolatedServicePaths());
+      resultFixture.advance(1_000);
+      const result = await resultFixture.target.ingestProviderEventWithResult(
+        progress(2),
+      );
+
+      expect(legacyOutcome).toBe('activity-only');
+      expect(result).toEqual({ outcome: legacyOutcome });
+    });
+
+    it('omits pickup verdicts for ordinary applied provider events', async () => {
+      const f = await streamingChat();
+      f.advance(1_000);
+
+      await expect(
+        f.target.ingestProviderEventWithResult({
+          ...SCOPE,
+          chatId: 'chat-1',
+          turnUserMessageId: 'user-1',
+          mutationId: 'assistant-result',
+          data: {
+            type: 'assistant',
+            message: {
+              id: 'assistant-native-result',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Result event' }],
+            },
+          },
+        }),
+      ).resolves.toEqual({ outcome: 'applied' });
+    });
+
     it('does not commit a Codex plan update that changes nothing durable', async () => {
       let clock = START;
       const { target, repository } = serviceWithRepository({
@@ -15927,6 +26053,11 @@ describe('chat state service', () => {
         mutationId,
         data: { type: 'codex', event },
       });
+      // The Codex adapter reports the start when it receives turn/started.
+      await reportTurn(target, 'start', 'user-1', {
+        provider: 'codex',
+        atMs: START,
+      });
       await expect(
         target.ingestProviderEventWithOutcome(
           codexEvent('codex-turn', { type: 'turn.started' }),
@@ -15948,6 +26079,216 @@ describe('chat state service', () => {
       const runtime = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
       expect(runtime?.status).toBe('streaming');
       expect(runtime?.lastActivityAt).toBe(START);
+    });
+
+    it('streams a final format 4 Codex tool body through the transaction port', async () => {
+      const { target, repository } = serviceWithRepository();
+      const artifactRoot = mkdtempSync(join(tmpdir(), 'canopy-field-prep-'));
+      try {
+        const artifacts = new ChatTranscriptArtifacts(artifactRoot);
+        const published: { chatId: string; chunks: number[] }[] = [];
+        const transcriptFields: TranscriptFieldPreparation = {
+          format: 4,
+          publish: async (chatId, chunks) => {
+            const parts: string[] = [];
+            for await (const chunk of chunks) parts.push(chunk);
+            published.push({
+              chatId,
+              chunks: parts.map((part) => part.length),
+            });
+            return artifacts.put(chatId, parts.join(''));
+          },
+        };
+        const transactWith = repository.transactWith.bind(repository);
+        jest
+          .spyOn(repository, 'transactWith')
+          .mockImplementation((scope, build, options) =>
+            transactWith(
+              scope,
+              (current, revision, context) =>
+                build(current, revision, { ...context, transcriptFields }),
+              options,
+            ),
+          );
+        await target.command(
+          envelope('create-codex', {
+            type: 'chat.create_tab',
+            tabId: 'chat-1',
+            title: 'Codex chat',
+            providerType: 'codex',
+            model: 'gpt-6-sol',
+          }),
+        );
+        await target.command(
+          envelope('send-codex', {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: 'user-1',
+            text: 'Continue',
+          }),
+        );
+        const sentinel = 'ingest-middle-sentinel';
+        const output = `${'a'.repeat(200_000)}${sentinel}${'b'.repeat(200_000)}`;
+        await expect(
+          target.ingestProviderEventWithOutcome({
+            ...SCOPE,
+            chatId: 'chat-1',
+            turnUserMessageId: 'user-1',
+            providerType: 'codex',
+            mutationId: 'codex-function-output',
+            data: {
+              type: 'codex',
+              event: {
+                type: 'item.completed',
+                item: {
+                  id: 'fco-1',
+                  type: 'function_call_output',
+                  name: 'tool',
+                  output,
+                },
+              },
+            },
+          }),
+        ).resolves.toBe('applied');
+
+        expect(published).toHaveLength(1);
+        expect(published[0].chatId).toBe('chat-1');
+        expect(published[0].chunks.length).toBeGreaterThan(1);
+        expect(Math.max(...published[0].chunks)).toBeLessThanOrEqual(65_536);
+        const message = (await target.getState(SCOPE)).tabsFile.tabs
+          .find((tab) => tab.id === 'chat-1')
+          ?.messages.find((candidate) => candidate.id === 'codex-fco-1');
+        const block = message?.blocks[0];
+        if (block?.type !== 'text' || !block.textRef)
+          throw new Error('missing referenced text block');
+        expect(block.verbatim).toBe(true);
+        expect(block.text).toContain('[Full output stored separately]');
+        expect(block.text.includes(sentinel)).toBe(false);
+        expect(Buffer.byteLength(block.text)).toBeLessThanOrEqual(65_536);
+        const body = readFileSync(
+          join(
+            artifactRoot,
+            'tool-output',
+            'chat-1',
+            `${block.textRef.artifactId}.txt`,
+          ),
+          'utf8',
+        );
+        expect(body === `Tool output (tool)\n\n${output}`).toBe(true);
+      } finally {
+        rmSync(artifactRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('stores a final Codex function output losslessly through a format 4 repository', async () => {
+      const first = serviceWithRepository();
+      await first.target.command(
+        envelope('create-codex', {
+          type: 'chat.create_tab',
+          tabId: 'chat-1',
+          title: 'Codex chat',
+          providerType: 'codex',
+          model: 'gpt-6-sol',
+        }),
+      );
+      await first.target.command(
+        envelope('send-codex', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'user-1',
+          text: 'Continue',
+        }),
+      );
+      await first.repository.drainAll();
+      // No production path promotes a scope to format 4; tests opt in.
+      const store = ChatStorageV2.fromLegacyPaths(paths, {
+        maxManifestVersion: 4,
+      });
+      const promoter = new ChatStateV2Backend(store, {
+        deltaJournal: {},
+        enableFormat4: true,
+      });
+      await promoter.promoteToDeltaJournal();
+      expect(await promoter.promoteToFormat4()).toBe(true);
+      await promoter.flush();
+      promoter.releaseJournal();
+      expect(await store.format()).toBe('v4');
+
+      const open = (): {
+        target: ChatStateService;
+        repository: ChatStateRepository;
+      } => {
+        const repository = new ChatStateRepository({
+          resolvePaths: () => paths,
+          enableFormat4: true,
+        });
+        repositories.push(repository);
+        const target = new ChatStateService({
+          repository,
+          now: () => 1_786_104_000_000,
+          createId: () => 'event-id',
+          dispatch: async (request) => {
+            dispatched.push(request);
+          },
+          onInputPickup: async () => undefined,
+          authorizeSend: async () => undefined,
+          cleanupSession: async () => undefined,
+          recordDiagnostic: jest.fn(),
+        });
+        return { target, repository };
+      };
+      const sentinel = 'format4-ingest-middle-sentinel';
+      const output = `${'a'.repeat(200_000)}${sentinel}${'b'.repeat(200_000)}`;
+      const second = open();
+      await expect(
+        second.target.ingestProviderEventWithOutcome({
+          ...SCOPE,
+          chatId: 'chat-1',
+          turnUserMessageId: 'user-1',
+          providerType: 'codex',
+          mutationId: 'codex-function-output',
+          data: {
+            type: 'codex',
+            event: {
+              type: 'item.completed',
+              item: {
+                id: 'fco-1',
+                type: 'function_call_output',
+                name: 'tool',
+                output,
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('applied');
+      await second.repository.drainAll();
+
+      // A fresh repository replays the journal and still finds the reference.
+      const third = open();
+      const message = (await third.target.getState(SCOPE)).tabsFile.tabs
+        .find((tab) => tab.id === 'chat-1')
+        ?.messages.find((candidate) => candidate.id === 'codex-fco-1');
+      const block = message?.blocks[0];
+      if (block?.type !== 'text' || !block.textRef)
+        throw new Error('missing referenced text block');
+      expect(block.text.includes(sentinel)).toBe(false);
+      expect(Buffer.byteLength(block.text)).toBeLessThanOrEqual(65_536);
+      const artifacts = new ChatTranscriptArtifacts(
+        join(store.directory, 'transcripts'),
+        true,
+      );
+      await artifacts.verify('chat-1', block.textRef);
+      const body = readFileSync(
+        join(
+          store.directory,
+          'transcripts',
+          'tool-output',
+          'chat-1',
+          `${block.textRef.artifactId}.txt`,
+        ),
+        'utf8',
+      );
+      expect(body === `Tool output (tool)\n\n${output}`).toBe(true);
     });
 
     it('persists streamed activity at most once per interval', async () => {
@@ -16080,33 +26421,6 @@ describe('chat state service', () => {
       expect(await f.target.hasMutation(SCOPE, 'chat-1:user-1:accepted')).toBe(
         true,
       );
-    });
-
-    it('commits the current activity time with a runtime status change', async () => {
-      let clock = START;
-      const { target, repository } = serviceWithRepository({
-        now: () => clock,
-      });
-      await createChat(target);
-      await target.command(
-        envelope('send-status', {
-          type: 'chat.send_message',
-          chatId: 'chat-1',
-          userMessageId: 'user-1',
-          text: 'Continue',
-        }),
-      );
-      const before = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
-      expect(before?.status).not.toBe('streaming');
-      const revision = await repository.getRevision(SCOPE);
-      clock += 1_000;
-
-      await expect(target.ingestProviderEvent(progress(1))).resolves.toBe(true);
-
-      const runtime = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
-      expect(runtime?.status).toBe('streaming');
-      expect(runtime?.lastActivityAt).toBe(START + 1_000);
-      expect(await repository.getRevision(SCOPE)).toBe(revision + 1);
     });
   });
 
@@ -16292,8 +26606,9 @@ describe('chat state service', () => {
         }),
       ).resolves.toBe(true);
       expect(readMessage.mock.calls.map((call) => call[1])).toEqual(
-        // Admission and the returned committed projection each hydrate one card.
-        laterRows
+        // Admission and the returned committed projection each hydrate one
+        // card, unless the current turn's reducer frame already holds it.
+        laterRows && !sameTurn
           ? ['delegated-agent-owned-child', 'delegated-agent-owned-child']
           : [],
       );
@@ -16613,6 +26928,7 @@ describe('chat state service', () => {
             runtimeModelId: 'runtime',
             harnessId: 'claude',
           },
+          opaqueReference: { nested: ['keep'] },
           ...snapshot,
         },
         transcript: [
@@ -16652,33 +26968,131 @@ describe('chat state service', () => {
         finalText: 'Done',
         transcriptStore: 'chat-log-v1',
         sequence: 2,
+        opaqueReference: { nested: ['keep'] },
       }),
     );
     expect(card).not.toHaveProperty('partialText');
     expect(card).not.toHaveProperty('phase');
   });
 
-  it('revives a settled runtime for an untagged continuation stream', async () => {
-    const target = service();
+  it('records an untagged Claude child frame without reviving a settled runtime', async () => {
+    let now = 1_786_104_000_000;
+    const target = serviceWithRepository({ now: () => now }).target;
     await createChat(target);
     await target.command(
-      envelope('send-continuing', {
+      envelope('send-before-child-followup', {
         type: 'chat.send_message',
         chatId: 'chat-1',
-        userMessageId: 'user-continuing',
-        text: 'Continue this turn',
+        userMessageId: 'user-child-followup',
+        text: 'Delegate this task',
       }),
     );
     await target.ingestProviderEvent({
       ...SCOPE,
       chatId: 'chat-1',
-      turnUserMessageId: 'user-continuing',
-      mutationId: 'continuation-initial-result',
+      turnUserMessageId: 'user-child-followup',
+      mutationId: 'child-followup-root-assistant',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'user-child-followup',
+        message: {
+          id: 'root-assistant-message',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Root output' }],
+        },
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'user-child-followup',
+      mutationId: 'child-followup-initial-result',
       data: {
         type: 'result',
         is_error: false,
-        result: 'Initially completed',
-        canopy_turn_user_message_id: 'user-continuing',
+        result: 'Root completed',
+        canopy_turn_user_message_id: 'user-child-followup',
+      },
+    });
+    const completedRuntime = (await target.getState(SCOPE)).runtimeByChatId[
+      'chat-1'
+    ];
+    now += 5_000;
+
+    await expect(
+      target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'late-child-assistant',
+        data: {
+          type: 'assistant',
+          parent_tool_use_id: 'child-1',
+          message: {
+            id: 'late-child-assistant-message',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Late child result' }],
+          },
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const snapshot = await target.getState(SCOPE);
+    expect(completedRuntime).toMatchObject({ status: 'completed' });
+    expect(snapshot.runtimeByChatId['chat-1']).toMatchObject({
+      status: 'completed',
+      lastActivityAt: completedRuntime?.lastActivityAt,
+    });
+    expect(snapshot.runtimeByChatId['chat-1']?.activeTurn).toBeUndefined();
+    expect(JSON.stringify(snapshot.tabsFile.tabs[0]?.messages)).toContain(
+      'Late child result',
+    );
+  });
+
+  it('settles child tools without finishing the active provider turn', async () => {
+    const target = service();
+    await createChat(target);
+    await target.command(
+      envelope('send-active-child-settlement', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'active-child-settlement-turn',
+        text: 'Run an agent task',
+      }),
+    );
+    await reportTurn(target, 'start', 'active-child-settlement-turn');
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'active-child-settlement-turn',
+      mutationId: 'active-child-settlement-parent',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'active-child-settlement-turn',
+        message: {
+          id: 'active-parent-assistant',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'active-parent', name: 'Task', input: {} },
+          ],
+        },
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'active-child-settlement-turn',
+      mutationId: 'active-child-settlement-child',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'active-child-settlement-turn',
+        parent_tool_use_id: 'active-parent',
+        message: {
+          id: 'active-child-assistant',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'active-child', name: 'Bash', input: {} },
+          ],
+        },
       },
     });
 
@@ -16686,47 +27100,273 @@ describe('chat state service', () => {
       target.ingestProviderEvent({
         ...SCOPE,
         chatId: 'chat-1',
-        turnUserMessageId: 'user-continuing',
-        mutationId: 'continuation-revival',
+        mutationId: 'active-child-settlement',
         data: {
-          type: 'assistant',
-          message: {
-            id: 'continued-native-message',
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Continuation resumed' }],
-          },
-        },
-      }),
-    ).resolves.toBe(true);
-    await expect(
-      target.ingestProviderEvent({
-        ...SCOPE,
-        chatId: 'chat-1',
-        turnUserMessageId: 'user-continuing',
-        mutationId: 'continuation-tail',
-        data: {
-          type: 'assistant',
-          canopy_turn_user_message_id: 'user-continuing',
-          message: {
-            id: 'continued-tail-message',
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Continuation tail' }],
-          },
+          type: 'canopy_child_tools_ended',
+          parent_tool_use_ids: ['active-parent'],
         },
       }),
     ).resolves.toBe(true);
 
     const snapshot = await target.getState(SCOPE);
+    const childResults = (snapshot.tabsFile.tabs[0]?.messages ?? []).flatMap(
+      (message) =>
+        message.blocks.filter(
+          (block) =>
+            block.type === 'tool_result' && block.toolUseId === 'active-child',
+        ),
+    );
+    expect(childResults).toHaveLength(1);
+    expect(childResults[0]).toMatchObject({ output: 'Cancelled' });
     expect(snapshot.runtimeByChatId['chat-1']).toMatchObject({
       status: 'streaming',
-      activeTurn: { userMessageId: 'user-continuing' },
+      activeTurn: { userMessageId: 'active-child-settlement-turn' },
     });
-    expect(JSON.stringify(snapshot.tabsFile.tabs[0]?.messages)).toContain(
-      'Continuation resumed',
+  });
+
+  it('closes child controls on a known-empty terminal liveness stamp', async () => {
+    const target = service();
+    await createChat(target);
+    await target.command(
+      envelope('send-known-empty-child', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'known-empty-child-turn',
+        text: 'Run a child task',
+      }),
     );
-    expect(JSON.stringify(snapshot.tabsFile.tabs[0]?.messages)).toContain(
-      'Continuation tail',
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'known-empty-child-turn',
+      mutationId: 'known-empty-parent-tool',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'known-empty-child-turn',
+        message: {
+          id: 'known-empty-parent-assistant',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'known-empty-parent',
+              name: 'Task',
+              input: {},
+            },
+          ],
+        },
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'known-empty-child-turn',
+      mutationId: 'known-empty-child-tool',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'known-empty-child-turn',
+        parent_tool_use_id: 'known-empty-parent',
+        message: {
+          id: 'known-empty-child-assistant',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'known-empty-child',
+              name: 'Bash',
+              input: {},
+            },
+          ],
+        },
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'known-empty-child-turn',
+      mutationId: 'known-empty-terminal-result',
+      data: {
+        type: 'result',
+        is_error: false,
+        result: 'No background tasks remain',
+        canopy_turn_user_message_id: 'known-empty-child-turn',
+        canopy_child_tool_liveness: {
+          kind: 'known',
+          liveParentToolUseIds: [],
+          hasUncorrelatedLiveTask: false,
+        },
+      },
+    });
+
+    const snapshot = await target.getState(SCOPE);
+    const childResults = (snapshot.tabsFile.tabs[0]?.messages ?? [])
+      .flatMap((message) => message.blocks)
+      .filter(
+        (block) =>
+          block.type === 'tool_result' &&
+          block.toolUseId === 'known-empty-child',
+      );
+    expect(childResults).toHaveLength(1);
+    expect(childResults[0]).toMatchObject({ output: 'Cancelled' });
+    expect(snapshot.runtimeByChatId['chat-1']?.status).toBe('completed');
+  });
+
+  it('settles a child after the root turn despite a stale turn id and updates the synthetic result once', async () => {
+    const target = service();
+    const changes: ChatStateChange[][] = [];
+    const unsubscribe = target.subscribe((event) => {
+      changes.push(event.changes);
+    });
+    await createChat(target);
+    await target.command(
+      envelope('send-settled-child-task', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'settled-child-turn',
+        text: 'Run an agent task',
+      }),
     );
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'settled-child-turn',
+      mutationId: 'settled-child-parent',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'settled-child-turn',
+        message: {
+          id: 'settled-parent-assistant',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'settled-parent', name: 'Task', input: {} },
+          ],
+        },
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'settled-child-turn',
+      mutationId: 'settled-child-frame',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'settled-child-turn',
+        parent_tool_use_id: 'settled-parent',
+        message: {
+          id: 'settled-child-assistant',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'settled-child', name: 'Bash', input: {} },
+          ],
+        },
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'settled-child-turn',
+      mutationId: 'settled-child-root-result',
+      data: {
+        type: 'result',
+        is_error: false,
+        result: 'Parent completed',
+        canopy_turn_user_message_id: 'settled-child-turn',
+        canopy_child_tool_liveness: {
+          kind: 'known',
+          liveParentToolUseIds: ['settled-parent'],
+          hasUncorrelatedLiveTask: false,
+        },
+      },
+    });
+
+    const afterRootResult = await target.getState(SCOPE);
+    const retainedChild = (afterRootResult.tabsFile.tabs[0]?.messages ?? [])
+      .flatMap((message) => message.blocks)
+      .find(
+        (block) =>
+          block.type === 'tool_use' && block.toolUseId === 'settled-child',
+      );
+    expect(retainedChild).toBeDefined();
+    expect(
+      (afterRootResult.tabsFile.tabs[0]?.messages ?? [])
+        .flatMap((message) => message.blocks)
+        .filter(
+          (block) =>
+            block.type === 'tool_result' && block.toolUseId === 'settled-child',
+        ),
+    ).toHaveLength(0);
+
+    await expect(
+      target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        turnUserMessageId: 'stale-prior-turn',
+        mutationId: 'settled-child-tools-ended',
+        data: {
+          type: 'canopy_child_tools_ended',
+          parent_tool_use_ids: ['settled-parent'],
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const afterSettlement = await target.getState(SCOPE);
+    const syntheticResults = (afterSettlement.tabsFile.tabs[0]?.messages ?? [])
+      .flatMap((message) => message.blocks)
+      .filter(
+        (block) =>
+          block.type === 'tool_result' && block.toolUseId === 'settled-child',
+      );
+    expect(syntheticResults).toHaveLength(1);
+    expect(syntheticResults[0]).toMatchObject({ output: 'Cancelled' });
+    expect(
+      changes
+        .flat()
+        .some(
+          (change) =>
+            change.type === 'message.upserted' &&
+            change.message.blocks.some(
+              (block) =>
+                block.type === 'tool_result' &&
+                block.toolUseId === 'settled-child' &&
+                block.output === 'Cancelled',
+            ),
+        ),
+    ).toBe(true);
+
+    await expect(
+      target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'settled-child-real-result',
+        data: {
+          type: 'user',
+          parent_tool_use_id: 'settled-parent',
+          message: {
+            id: 'settled-child-user-result',
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'settled-child',
+                content: 'Actual child result',
+              },
+            ],
+          },
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const afterRealResult = await target.getState(SCOPE);
+    const childResults = (afterRealResult.tabsFile.tabs[0]?.messages ?? [])
+      .flatMap((message) => message.blocks)
+      .filter(
+        (block) =>
+          block.type === 'tool_result' && block.toolUseId === 'settled-child',
+      );
+    expect(childResults).toHaveLength(1);
+    expect(childResults[0]).toMatchObject({ output: 'Actual child result' });
+    expect(afterRealResult.runtimeByChatId['chat-1']?.status).toBe('completed');
+    unsubscribe();
   });
 
   it('accepts a tagged terminal-only revival for a settled runtime', async () => {
@@ -16792,7 +27432,7 @@ describe('chat state service', () => {
     ).resolves.toBe(false);
   });
 
-  it('persists replacement session metadata after a tagged failed turn', async () => {
+  it('persists replacement session metadata when a failed turn restarts', async () => {
     const target = service();
     await createChat(target);
     await target.command(
@@ -16803,6 +27443,8 @@ describe('chat state service', () => {
         text: 'Retry on a replacement session',
       }),
     );
+    await reportTurn(target, 'start', 'user-rebuilding');
+    await reportTurn(target, 'end', 'user-rebuilding', { outcome: 'failed' });
     await target.ingestProviderEvent({
       ...SCOPE,
       chatId: 'chat-1',
@@ -16816,6 +27458,13 @@ describe('chat state service', () => {
       },
     });
 
+    expect(
+      (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.status,
+    ).toBe('failed');
+    // The replacement session's turn is a canonical restart of the prompt.
+    await reportTurn(target, 'start', 'user-rebuilding', {
+      turnId: 'turn-user-rebuilding-restart',
+    });
     await expect(
       target.ingestProviderEvent({
         ...SCOPE,
@@ -16834,7 +27483,6 @@ describe('chat state service', () => {
 
     const snapshot = await target.getState(SCOPE);
     expect(snapshot.tabsFile.tabs[0]?.sdkSessionId).toBe('replacement-session');
-    expect(snapshot.runtimeByChatId['chat-1']?.status).toBe('failed');
 
     await expect(
       target.ingestProviderEvent({
@@ -17139,6 +27787,81 @@ describe('chat state service', () => {
     ).toBeUndefined();
   });
 
+  it('persists a manual unread mark until a read or automatic mark replaces it', async () => {
+    const target = service();
+    await createChat(target);
+    await target.command(
+      envelope('manual-unread', {
+        type: 'chat.mark_unread',
+        chatId: 'chat-1',
+        manual: true,
+      }),
+    );
+    expect((await service().getState(SCOPE)).tabsFile.tabs[0]).toMatchObject({
+      unread: true,
+      unreadMarkedManually: true,
+    });
+
+    await target.command(
+      envelope('automatic-unread', {
+        type: 'chat.mark_unread',
+        chatId: 'chat-1',
+      }),
+    );
+    const automatic = (await service().getState(SCOPE)).tabsFile.tabs[0];
+    expect(automatic.unread).toBe(true);
+    expect(automatic.unreadMarkedManually).toBeUndefined();
+
+    await target.command(
+      envelope('manual-again', {
+        type: 'chat.mark_unread',
+        chatId: 'chat-1',
+        manual: true,
+      }),
+    );
+    await target.command(
+      envelope('read', { type: 'chat.mark_read', chatId: 'chat-1' }),
+    );
+    const read = (await service().getState(SCOPE)).tabsFile.tabs[0];
+    expect(read.unread).toBe(false);
+    expect(read.unreadMarkedManually).toBeUndefined();
+  });
+
+  it('clears a manual unread mark when closing a sibling reads the successor', async () => {
+    const target = service();
+    await createChat(target);
+    await target.command(
+      envelope('sibling', { type: 'chat.create_tab', tabId: 'chat-2' }),
+    );
+    await target.command(
+      envelope('manual-unread', {
+        type: 'chat.mark_unread',
+        chatId: 'chat-1',
+        manual: true,
+      }),
+    );
+    await target.command(
+      envelope('activate-sibling', {
+        type: 'chat.activate_tab',
+        tabId: 'chat-2',
+      }),
+    );
+    await expect(
+      target.command(
+        envelope('close-sibling', {
+          type: 'chat.close_tab',
+          tabId: 'chat-2',
+          mode: 'discard_empty',
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+    const successor = (await service().getState(SCOPE)).tabsFile.tabs.find(
+      (tab) => tab.id === 'chat-1',
+    );
+    expect(successor?.unread).toBe(false);
+    expect(successor?.unreadMarkedManually).toBeUndefined();
+  });
+
   it('rejects a remote read when output changes after the adapter snapshot', async () => {
     const target = service();
     await createChat(target);
@@ -17351,7 +28074,7 @@ describe('chat state service', () => {
           {
             type: 'turn_timer',
             startedAt: 10,
-            completedAt: 1_786_104_000_000,
+            completedAt: 10,
           },
         ],
       });
@@ -17366,6 +28089,122 @@ describe('chat state service', () => {
       expect(mockRecordInterruptedChats).not.toHaveBeenCalled();
     },
   );
+
+  it('keeps a dispatched turn live on a state read while its provider reports idle', async () => {
+    const { target, repository } = serviceWithRepository();
+    Object.defineProperty(target, 'reconcileHostRuntime', { value: true });
+    await createChat(target);
+    // Claude, Cursor and Copilot report idle while a turn waits on an approval
+    // or a question, and before its result is committed. Only the queue's
+    // gate still shows that the turn is open.
+    const dependencies: ChatQueueServiceDependencies = {
+      steerGenerated: () => Promise.resolve({ status: 'fallback' }),
+      dispatch: async () => undefined,
+      cancel: async () => undefined,
+      settleCancelledTurn: async () => undefined,
+      hasActiveProviderTurn: () => false,
+      drainProviderEvents: async () => undefined,
+      hasPendingProviderContinuation: () => false,
+      persistRuntime: (
+        queueTarget,
+        queuedMessageIds,
+        turnActive,
+        mutation,
+        queuedMessages,
+        activeTurnUserMessageId,
+      ) =>
+        target.reconcileHostQueue(
+          queueTarget,
+          queuedMessageIds,
+          turnActive,
+          mutation,
+          queuedMessages,
+          activeTurnUserMessageId,
+        ),
+      broadcast: () => undefined,
+      createId: () => 'queue-1',
+      now: () => 1,
+      schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    };
+    const queue = new ChatQueueService(dependencies);
+    mockedGetChatQueueService.mockReturnValue(queue);
+    const queueTarget = { ...SCOPE, chatId: 'chat-1' };
+    await queue.submit(
+      { ...queueTarget, userMessageId: 'user-open', text: 'Open turn' },
+      'desktop',
+    );
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: { status: 'awaiting_input', queuedMessageIds: [] },
+        },
+      ],
+      { source: 'provider', mutationId: 'awaiting-user' },
+    );
+    expect(queue.isTurnActive(queueTarget)).toBe(true);
+
+    const snapshot = await target.getState(SCOPE);
+
+    expect(snapshot.runtimeByChatId['chat-1']).toMatchObject({
+      status: 'awaiting_input',
+    });
+    expect(mockRecordInterruptedChats).not.toHaveBeenCalled();
+  });
+
+  it('reports a turn open only while the committed runtime still owns it', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: {
+            status: 'streaming',
+            queuedMessageIds: [],
+            activeTurn: { userMessageId: 'turn-1', startedAt: 1 },
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'turn-open' },
+    );
+
+    await expect(target.isTurnOpen(SCOPE, 'chat-1', 'turn-1')).resolves.toBe(
+      true,
+    );
+    // Another turn's id is never this chat's open turn.
+    await expect(target.isTurnOpen(SCOPE, 'chat-1', 'turn-0')).resolves.toBe(
+      false,
+    );
+    await expect(
+      target.isTurnOpen(SCOPE, 'chat-missing', 'turn-1'),
+    ).resolves.toBe(false);
+
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: {
+            status: 'completed',
+            queuedMessageIds: [],
+            activeTurn: { userMessageId: 'turn-1', startedAt: 1 },
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'turn-settled' },
+    );
+
+    // A settled runtime can still name its last turn.
+    await expect(target.isTurnOpen(SCOPE, 'chat-1', 'turn-1')).resolves.toBe(
+      false,
+    );
+  });
 
   it('preserves an intentionally paused timer while reconciling an idle runtime', async () => {
     const { target, repository } = serviceWithRepository();
@@ -17667,10 +28506,11 @@ describe('chat state service', () => {
       mutationId: 'second-turn-prompt',
       data: { type: 'canopy_user_prompt' },
     });
+    await reportTurn(target, 'start', 'user-second');
 
     const runtime = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
     expect(runtime).toMatchObject({
-      status: 'starting',
+      status: 'streaming',
       activeTurn: { userMessageId: 'user-second' },
     });
     expect(runtime).not.toHaveProperty('error');
@@ -17708,7 +28548,6 @@ describe('chat state service', () => {
     expect(
       (await f.target.getState(f.scope)).runtimeByChatId[f.scope.chatId],
     ).toMatchObject({
-      status: 'starting',
       steeringCapabilities: {
         generation: 'generation-2',
         steer: true,
@@ -17734,6 +28573,12 @@ describe('chat state service', () => {
           canopy_turn_user_message_id: 'failed-user',
         },
       });
+      await reportTurn(target, 'start', 'failed-user', { provider: 'codex' });
+      // The Codex adapter reports the failed end when it receives the error.
+      await reportTurn(target, 'end', 'failed-user', {
+        provider: 'codex',
+        outcome: 'failed',
+      });
       await target.ingestProviderEvent({
         ...SCOPE,
         chatId: 'chat-1',
@@ -17753,28 +28598,74 @@ describe('chat state service', () => {
       expect(failed.runtimeByChatId['chat-1'].status).toBe('failed');
       expect(
         failed.tabsFile.tabs[0].messages.flatMap((message) => message.blocks),
-      ).toContainEqual({
-        type: 'turn_timer',
-        startedAt: 1_786_104_000_000,
-        completedAt: 1_786_104_000_000,
-      });
-      // The already-settled runtime rejects the session's trailing result. The
-      // first terminal event must therefore persist the timer settlement itself.
-      expect(
-        await target.ingestProviderEvent({
-          ...SCOPE,
-          chatId: 'chat-1',
-          turnUserMessageId: 'failed-user',
-          mutationId: 'trailing-result',
-          data: {
-            type: 'result',
-            is_error: true,
-            result: 'Usage limit exceeded.',
-          },
+      ).toContainEqual(
+        expect.objectContaining({
+          type: 'turn_timer',
+          startedAt: 1_786_104_000_000,
+          completedAt: 1_786_104_000_000,
         }),
-      ).toBe(false);
+      );
+      // The canonical end settled the timer. A Codex `error` isn't a root
+      // terminal, so the session's trailing result may still be admitted as
+      // the ended turn's terminal frame, but it changes neither.
+      const timers = (messages: PersistedChatMessage[]) =>
+        messages.filter((message) =>
+          message.blocks.some((block) => block.type === 'turn_timer'),
+        );
+      await target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        turnUserMessageId: 'failed-user',
+        mutationId: 'trailing-result',
+        data: {
+          type: 'result',
+          is_error: true,
+          result: 'Usage limit exceeded.',
+        },
+      });
+      const after = await target.getState(SCOPE);
+      expect(after.runtimeByChatId['chat-1'].status).toBe('failed');
+      expect(timers(after.tabsFile.tabs[0].messages)).toEqual(
+        timers(failed.tabsFile.tabs[0].messages),
+      );
     },
   );
+
+  it('keeps the provider detail of a Codex turn.failed in the failed runtime', async () => {
+    const target = service();
+    await createChat(target);
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'failed-user',
+      mutationId: 'failed-prompt',
+      data: {
+        type: 'canopy_user_prompt',
+        provider: 'codex',
+        original_text: 'Investigate',
+        canopy_turn_user_message_id: 'failed-user',
+      },
+    });
+    // The client's root settlement nests the held fatal error detail.
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'failed-user',
+      mutationId: 'codex-turn-failed',
+      data: {
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          error: { message: 'Synthetic lifecycle error' },
+        },
+      },
+    });
+    const failed = await target.getState(SCOPE);
+    expect(failed.runtimeByChatId['chat-1']).toMatchObject({
+      status: 'failed',
+      error: { message: 'Synthetic lifecycle error' },
+    });
+  });
 
   it('consumes accepted one-shot system instructions in canonical state', async () => {
     const target = service();
@@ -17880,6 +28771,11 @@ describe('chat state service', () => {
         provider: 'codex',
       },
     });
+    const codexTurn = {
+      provider: 'codex' as const,
+      chatId: 'codex-chat',
+    };
+    await reportTurn(target, 'start', 'codex-user-1', codexTurn);
     const events = [
       { type: 'thread.started', thread_id: 'thread-root' },
       {
@@ -17924,6 +28820,9 @@ describe('chat state service', () => {
       },
     ];
     for (const [index, event] of events.entries()) {
+      // The last event is turn.completed; the adapter reports the end first.
+      if (index === events.length - 1)
+        await reportTurn(target, 'end', 'codex-user-1', codexTurn);
       await target.ingestProviderEvent({
         ...SCOPE,
         chatId: 'codex-chat',
@@ -17953,6 +28852,800 @@ describe('chat state service', () => {
       .filter((block) => block.type === 'turn_timer');
     expect(timers).toHaveLength(1);
     expect(timers?.[0]?.completedAt).toEqual(expect.any(Number));
+  });
+
+  describe('Codex tool result transcript artifacts', () => {
+    const inlineOutputBytes = 65_536;
+    const toolOutputPageBytes = 65_536;
+    const codexRootThreadId = 'thread-root';
+    const codexRootTurnId = 'turn-root';
+
+    type StoredToolResult = Extract<
+      PersistedChatMessage['blocks'][number],
+      { type: 'tool_result' }
+    >;
+    type OutputCapture = {
+      phase: string;
+      output: string;
+      messages: PersistedChatMessage[];
+      publishedMessages: PersistedChatMessage[];
+      toolResult: StoredToolResult;
+    };
+
+    function codexTestRecord(value: unknown): value is Record<string, unknown> {
+      return (
+        typeof value === 'object' && value !== null && !Array.isArray(value)
+      );
+    }
+
+    function expectedDynamicOutput(
+      contentItems: readonly unknown[],
+      success: boolean | null,
+    ): string {
+      const parts: string[] = [];
+      for (const value of contentItems) {
+        if (!codexTestRecord(value)) continue;
+        if (value.type === 'inputText' || value.type === 'input_text') {
+          parts.push(typeof value.text === 'string' ? value.text : '');
+        } else if (
+          value.type === 'inputImage' ||
+          value.type === 'input_image'
+        ) {
+          parts.push('[image output omitted]');
+        } else if (
+          value.type === 'inputAudio' ||
+          value.type === 'input_audio'
+        ) {
+          parts.push('[audio output omitted]');
+        } else if (value.type === 'encrypted_content') {
+          parts.push('[encrypted output omitted]');
+        } else {
+          parts.push('[unsupported output omitted]');
+        }
+      }
+      return parts.length > 0
+        ? parts.join('\n\n')
+        : success === false
+          ? 'Failed'
+          : 'Done';
+    }
+
+    function stripMetaForExpectedOutput(value: unknown): unknown {
+      if (Array.isArray(value)) return value.map(stripMetaForExpectedOutput);
+      if (!codexTestRecord(value)) return value;
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([key]) => key !== '_meta')
+          .map(([key, nested]) => [key, stripMetaForExpectedOutput(nested)]),
+      );
+    }
+
+    function expectedPrettyJson(value: unknown): string | null {
+      try {
+        const serialized = JSON.stringify(
+          stripMetaForExpectedOutput(value),
+          null,
+          2,
+        );
+        // Canonical indentation stops growing at depth 32 (64 spaces).
+        return typeof serialized === 'string'
+          ? serialized.replace(/^ {65,}/gm, ' '.repeat(64))
+          : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function expectedMcpToolResult(options: {
+      status: string;
+      result: unknown;
+      error: unknown;
+    }): { output: string; isError: boolean } {
+      const { status, result, error } = options;
+      const resultRecord = codexTestRecord(result) ? result : null;
+      const errorRecord = codexTestRecord(error) ? error : null;
+      const isError =
+        status === 'failed' ||
+        (error !== null && error !== undefined) ||
+        resultRecord?.isError === true;
+
+      if (
+        errorRecord &&
+        typeof errorRecord.message === 'string' &&
+        errorRecord.message.length > 0
+      ) {
+        return { output: errorRecord.message, isError };
+      }
+
+      const parts: string[] = [];
+      if (Array.isArray(resultRecord?.content)) {
+        for (const item of resultRecord.content) {
+          let part: string | null = null;
+          if (codexTestRecord(item)) {
+            if (
+              item.type === 'text' &&
+              typeof item.text === 'string' &&
+              item.text.length > 0
+            ) {
+              part = item.text;
+            } else if (item.type === 'text') {
+              continue;
+            } else if (item.type === 'resource') {
+              const resource = codexTestRecord(item.resource)
+                ? item.resource
+                : null;
+              part =
+                resource &&
+                typeof resource.text === 'string' &&
+                resource.text.length > 0
+                  ? resource.text
+                  : '[resource output omitted]';
+            } else if (item.type === 'image') {
+              part = '[image output omitted]';
+            } else if (item.type === 'audio') {
+              part = '[audio output omitted]';
+            }
+          }
+          if (part === null) part = expectedPrettyJson(item);
+          if (part !== null && part.length > 0) parts.push(part);
+        }
+      }
+      if (parts.length > 0) return { output: parts.join('\n\n'), isError };
+
+      if (
+        resultRecord &&
+        resultRecord.structuredContent !== null &&
+        resultRecord.structuredContent !== undefined
+      ) {
+        const output = expectedPrettyJson(resultRecord.structuredContent);
+        if (output !== null) return { output, isError };
+      }
+      return { output: isError ? 'Failed' : 'Done', isError };
+    }
+
+    function sha256(value: string): string {
+      return createHash('sha256')
+        .update(Buffer.from(value, 'utf8'))
+        .digest('hex');
+    }
+
+    function toolResultFor(
+      messages: readonly PersistedChatMessage[],
+      toolUseId: string,
+    ): { message: PersistedChatMessage; block: StoredToolResult } {
+      for (const message of messages) {
+        const block = message.blocks.find(
+          (candidate) =>
+            candidate.type === 'tool_result' &&
+            candidate.toolUseId === toolUseId,
+        );
+        if (block?.type === 'tool_result') return { message, block };
+      }
+      throw new Error(`Missing stored Codex tool result ${toolUseId}`);
+    }
+
+    async function startCodexChat(chatId: string): Promise<{
+      target: ChatStateService;
+      ingest: (
+        suffix: string,
+        data: Record<string, unknown>,
+      ) => Promise<unknown>;
+      ingestCodexEvent: (
+        suffix: string,
+        event: Record<string, unknown>,
+      ) => Promise<unknown>;
+    }> {
+      const target = service();
+      const userMessageId = `${chatId}-user`;
+      await target.command(
+        envelope(`${chatId}-create`, {
+          type: 'chat.create_tab',
+          tabId: chatId,
+          title: `Codex ${chatId}`,
+          providerType: 'codex',
+          model: 'gpt-6-sol',
+        }),
+      );
+      await target.command(
+        envelope(`${chatId}-send`, {
+          type: 'chat.send_message',
+          chatId,
+          userMessageId,
+          text: 'Persist the Codex tool result',
+        }),
+      );
+      const ingest = (suffix: string, data: Record<string, unknown>) =>
+        target.ingestProviderEventWithOutcome({
+          ...SCOPE,
+          chatId,
+          providerType: 'codex',
+          turnUserMessageId: userMessageId,
+          mutationId: `${chatId}-${suffix}`,
+          data,
+        });
+      const ingestCodexEvent = (
+        suffix: string,
+        event: Record<string, unknown>,
+      ) => ingest(suffix, { type: 'codex', event });
+
+      await ingest(`${chatId}-prompt`, {
+        type: 'canopy_user_prompt',
+        original_text: 'Persist the Codex tool result',
+        provider: 'codex',
+      });
+      await ingestCodexEvent(`${chatId}-root-thread-started`, {
+        type: 'thread.started',
+        thread_id: codexRootThreadId,
+      });
+      return { target, ingest, ingestCodexEvent };
+    }
+
+    async function readReferencedOutput(
+      target: ChatStateService,
+      chatId: string,
+      phase: string,
+      message: PersistedChatMessage,
+      block: StoredToolResult,
+    ): Promise<string> {
+      const reference = block.fullOutputRef;
+      if (!reference) return block.output;
+
+      let offset = 0;
+      let output = '';
+      for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+        const page = await target.readToolOutput({
+          ...SCOPE,
+          chatId,
+          messageId: message.id,
+          toolUseId: block.toolUseId,
+          requestId: `s3a-${chatId}-${phase}-${pageIndex}`,
+          reference,
+          offset,
+          limit: toolOutputPageBytes,
+        });
+        output += page.text;
+        expect(page.byteLength).toBe(reference.byteLength);
+        if (page.nextOffset === undefined) {
+          expect(Buffer.byteLength(output, 'utf8')).toBe(reference.byteLength);
+          expect(sha256(output)).toBe(reference.sha256);
+          return output;
+        }
+        offset = page.nextOffset;
+      }
+      throw new Error(
+        `Tool output pagination exceeded its bound for ${chatId}`,
+      );
+    }
+
+    async function captureStoredOutput(
+      target: ChatStateService,
+      chatId: string,
+      toolUseId: string,
+      expectedOutput: string,
+      phase: string,
+    ): Promise<OutputCapture> {
+      const page = await target.getTranscriptPage({ ...SCOPE, chatId });
+      const stored = toolResultFor(page.messages, toolUseId);
+      const snapshot = await target.getState(SCOPE);
+      const publishedTab = snapshot.tabsFile.tabs.find(
+        (tab) => tab.id === chatId,
+      );
+      if (!publishedTab)
+        throw new Error(`Missing published Codex chat ${chatId}`);
+      const published = toolResultFor(publishedTab.messages, toolUseId);
+      expect(published.block.output).toBe(stored.block.output);
+      expect(published.block.fullOutputRef).toEqual(stored.block.fullOutputRef);
+
+      const expectedByteLength = Buffer.byteLength(expectedOutput, 'utf8');
+      if (expectedByteLength > inlineOutputBytes) {
+        expect(stored.block.fullOutputRef).toBeDefined();
+        expect(
+          Buffer.byteLength(stored.block.output, 'utf8'),
+        ).toBeLessThanOrEqual(inlineOutputBytes);
+        expect(stored.block.output).not.toBe(expectedOutput);
+        expect(JSON.stringify(page.messages)).not.toContain(expectedOutput);
+        expect(JSON.stringify(publishedTab.messages)).not.toContain(
+          expectedOutput,
+        );
+      } else {
+        expect(stored.block.fullOutputRef).toBeUndefined();
+        expect(stored.block.output).toBe(expectedOutput);
+      }
+      const output = await readReferencedOutput(
+        target,
+        chatId,
+        phase,
+        stored.message,
+        stored.block,
+      );
+      return {
+        phase,
+        output,
+        messages: page.messages,
+        publishedMessages: publishedTab.messages,
+        toolResult: stored.block,
+      };
+    }
+
+    async function captureLifecycle(
+      target: ChatStateService,
+      ingestCodexEvent: (
+        suffix: string,
+        event: Record<string, unknown>,
+      ) => Promise<unknown>,
+      chatId: string,
+      toolUseId: string,
+      expectedOutput: string,
+    ): Promise<OutputCapture[]> {
+      const active = await captureStoredOutput(
+        target,
+        chatId,
+        toolUseId,
+        expectedOutput,
+        'active',
+      );
+      const journaled = serviceWithRepository(
+        {},
+        copyDurableFilesAtBoundary(),
+      ).target;
+      const activeJournaled = await captureStoredOutput(
+        journaled,
+        chatId,
+        toolUseId,
+        expectedOutput,
+        'active-journaled-reopen',
+      );
+
+      await expect(
+        ingestCodexEvent(`${chatId}-root-terminal`, {
+          type: 'turn.completed',
+          thread_id: codexRootThreadId,
+          turn_id: codexRootTurnId,
+        }),
+      ).resolves.toBe('applied');
+      await target.flushScope(SCOPE.projectId, SCOPE.worktreeId);
+      expect(
+        (await target.getState(SCOPE)).runtimeByChatId[chatId]?.status,
+      ).toBe('completed');
+      const checkpointed = await captureStoredOutput(
+        target,
+        chatId,
+        toolUseId,
+        expectedOutput,
+        'checkpointed',
+      );
+
+      const reopenedPaths = copyDurableFilesAtBoundary();
+      const reopened = serviceWithRepository({}, reopenedPaths).target;
+      expect(
+        (await reopened.getState(SCOPE)).runtimeByChatId[chatId]?.status,
+      ).toBe('completed');
+      const freshReopen = await captureStoredOutput(
+        reopened,
+        chatId,
+        toolUseId,
+        expectedOutput,
+        'fresh-reopen',
+      );
+      return [active, activeJournaled, checkpointed, freshReopen];
+    }
+
+    function expectCanonicalBytes(
+      captures: readonly OutputCapture[],
+      expectedOutput: string,
+      markers: readonly string[] = [],
+      endMarker?: string,
+    ): void {
+      const expectedBytes = Buffer.from(expectedOutput, 'utf8');
+      const expectedHash = createHash('sha256')
+        .update(expectedBytes)
+        .digest('hex');
+      const actualProof = captures.map(({ phase, output }) => ({
+        phase,
+        byteLength: Buffer.byteLength(output, 'utf8'),
+        sha256: sha256(output),
+        exactBytes: Buffer.from(output, 'utf8').equals(expectedBytes),
+        markersPresent: markers.map((marker) => output.includes(marker)),
+        endsWithEndMarker:
+          endMarker === undefined || output.endsWith(endMarker),
+      }));
+      const expectedProof = captures.map(({ phase }) => ({
+        phase,
+        byteLength: expectedBytes.byteLength,
+        sha256: expectedHash,
+        exactBytes: true,
+        markersPresent: markers.map(() => true),
+        endsWithEndMarker: true,
+      }));
+      expect(actualProof).toEqual(expectedProof);
+    }
+
+    function dynamicToolItems(): {
+      items: Array<{ type: 'inputText'; text: string }>;
+      item101Marker: string;
+      endMarker: string;
+    } {
+      const item101Marker = 'C01_ITEM_101_MARKER';
+      const endMarker = 'C01_END_MARKER';
+      const item101Text = `${item101Marker} ${endMarker}`;
+      const earlierAsciiCount = 131_082 - item101Text.length;
+      const earlierItems = Array.from({ length: 100 }, (_, index) =>
+        'd'.repeat(
+          Math.floor(earlierAsciiCount / 100) +
+            (index < earlierAsciiCount % 100 ? 1 : 0),
+        ),
+      );
+      earlierItems[0] = `é${earlierItems[0] ?? ''}`;
+      const items = [
+        ...earlierItems.map((text) => ({ type: 'inputText' as const, text })),
+        { type: 'inputText' as const, text: item101Text },
+      ];
+      return { items, item101Marker, endMarker };
+    }
+
+    function deeplyWideStructuredContent(): Record<string, unknown> {
+      let deep: Record<string, unknown> = {
+        leaf: 'C02_DEEP_LEAF_MARKER',
+        _meta: { secret: 'C02_PRIVATE_META_DEEP' },
+      };
+      for (let level = 0; level < 50; level += 1) {
+        deep = {
+          [`level_${level}`]: deep,
+          _meta: { secret: `C02_PRIVATE_META_${level}` },
+        };
+      }
+      const wide = Object.fromEntries(
+        Array.from({ length: 3_000 }, (_, index) => [
+          `wide_key_${String(index).padStart(4, '0')}`,
+          index,
+        ]),
+      );
+      return {
+        _meta: { secret: 'C02_PRIVATE_META_ROOT' },
+        body: `é${'B'.repeat(70_000)}`,
+        deep,
+        wide,
+      };
+    }
+
+    it('keeps every dynamic_tool_call inputText item through the active journal, checkpoint, and reopen', async () => {
+      const chatId = 'codex-dynamic-full-output';
+      const { target, ingestCodexEvent } = await startCodexChat(chatId);
+      const { items, item101Marker, endMarker } = dynamicToolItems();
+      const item = {
+        id: 'dynamic-full-output',
+        type: 'dynamic_tool_call',
+        tool: 'canopy_test_long_result',
+        arguments: {},
+        status: 'completed',
+        content_items: items,
+        success: true,
+      };
+      const expectedOutput = expectedDynamicOutput(items, true);
+      expect(
+        items.reduce(
+          (total, contentItem) =>
+            total + contentItem.text.replace('é', '').length,
+          0,
+        ),
+      ).toBe(131_082);
+      expect(items).toHaveLength(101);
+      expect(expectedOutput.endsWith(endMarker)).toBe(true);
+
+      await expect(
+        ingestCodexEvent('dynamic-item-completed', {
+          type: 'item.completed',
+          thread_id: codexRootThreadId,
+          turn_id: codexRootTurnId,
+          item,
+        }),
+      ).resolves.toBe('applied');
+      const captures = await captureLifecycle(
+        target,
+        ingestCodexEvent,
+        chatId,
+        'codex-dynamic-full-output',
+        expectedOutput,
+      );
+      expectCanonicalBytes(
+        captures,
+        expectedOutput,
+        [item101Marker, endMarker],
+        endMarker,
+      );
+    });
+
+    it('keeps MCP text and resource-text content through the active journal, checkpoint, and reopen', async () => {
+      const chatId = 'codex-mcp-text-resource';
+      const { target, ingestCodexEvent } = await startCodexChat(chatId);
+      const result = {
+        content: [
+          {
+            type: 'text',
+            text: `é${'M'.repeat(70_000)}`,
+            _meta: { private: 'C02_PRIVATE_META_TEXT' },
+          },
+          {
+            type: 'resource',
+            resource: {
+              text: 'C02_RESOURCE_TEXT_END',
+              _meta: { private: 'C02_PRIVATE_META_RESOURCE' },
+            },
+          },
+        ],
+      };
+      const canonical = expectedMcpToolResult({
+        status: 'completed',
+        result,
+        error: null,
+      });
+      const item = {
+        id: 'mcp-text-resource',
+        type: 'mcp_tool_call',
+        server: 'test',
+        tool: 'read_large_result',
+        arguments: {},
+        status: 'completed',
+        result,
+        error: null,
+      };
+
+      await expect(
+        ingestCodexEvent('mcp-text-resource-completed', {
+          type: 'item.completed',
+          thread_id: codexRootThreadId,
+          turn_id: codexRootTurnId,
+          item,
+        }),
+      ).resolves.toBe('applied');
+      const captures = await captureLifecycle(
+        target,
+        ingestCodexEvent,
+        chatId,
+        'codex-mcp-text-resource',
+        canonical.output,
+      );
+      for (const capture of captures) {
+        expect(capture.output).not.toContain('_meta');
+        expect(capture.output).not.toContain('C02_PRIVATE_META_');
+      }
+      expectCanonicalBytes(
+        captures,
+        canonical.output,
+        ['C02_RESOURCE_TEXT_END'],
+        'C02_RESOURCE_TEXT_END',
+      );
+    });
+
+    it('keeps deep, wide structuredContent without _meta through the active journal, checkpoint, and reopen', async () => {
+      const chatId = 'codex-mcp-structured-content';
+      const { target, ingestCodexEvent } = await startCodexChat(chatId);
+      const structuredContent = deeplyWideStructuredContent();
+      const result = { structuredContent };
+      const canonical = expectedMcpToolResult({
+        status: 'completed',
+        result,
+        error: null,
+      });
+      const item = {
+        id: 'mcp-structured-content',
+        type: 'mcp_tool_call',
+        server: 'test',
+        tool: 'read_structured_result',
+        arguments: {},
+        status: 'completed',
+        result,
+        error: null,
+      };
+
+      await expect(
+        ingestCodexEvent('mcp-structured-content-completed', {
+          type: 'item.completed',
+          thread_id: codexRootThreadId,
+          turn_id: codexRootTurnId,
+          item,
+        }),
+      ).resolves.toBe('applied');
+      const captures = await captureLifecycle(
+        target,
+        ingestCodexEvent,
+        chatId,
+        'codex-mcp-structured-content',
+        canonical.output,
+      );
+      for (const capture of captures) {
+        expect(capture.output).not.toContain('_meta');
+        expect(capture.output).not.toContain('C02_PRIVATE_META_');
+      }
+      expectCanonicalBytes(captures, canonical.output, [
+        'C02_DEEP_LEAF_MARKER',
+        'wide_key_2999',
+      ]);
+    });
+
+    it.each([
+      ['exactly 65,536 UTF-8 bytes stays inline', 'é'.repeat(32_768), false],
+      ['65,537 UTF-8 bytes is externalized', 'é'.repeat(32_768) + 'a', true],
+    ] as const)(
+      'handles the multibyte boundary: %s',
+      async (_name, output, isExternalized) => {
+        const chatId = isExternalized
+          ? 'codex-mcp-65537-bytes'
+          : 'codex-mcp-65536-bytes';
+        const { target, ingestCodexEvent } = await startCodexChat(chatId);
+        const result = { content: [{ type: 'text', text: output }] };
+        const canonical = expectedMcpToolResult({
+          status: 'completed',
+          result,
+          error: null,
+        });
+        expect(Buffer.byteLength(canonical.output, 'utf8')).toBe(
+          isExternalized ? 65_537 : 65_536,
+        );
+        const item = {
+          id: `mcp-${isExternalized ? '65537' : '65536'}-bytes`,
+          type: 'mcp_tool_call',
+          server: 'test',
+          tool: 'multibyte_boundary',
+          arguments: {},
+          status: 'completed',
+          result,
+          error: null,
+        };
+
+        await expect(
+          ingestCodexEvent('mcp-boundary-completed', {
+            type: 'item.completed',
+            thread_id: codexRootThreadId,
+            turn_id: codexRootTurnId,
+            item,
+          }),
+        ).resolves.toBe('applied');
+        const captures = await captureLifecycle(
+          target,
+          ingestCodexEvent,
+          chatId,
+          `codex-mcp-${isExternalized ? '65537' : '65536'}-bytes`,
+          canonical.output,
+        );
+        expectCanonicalBytes(captures, canonical.output);
+      },
+    );
+
+    it('keeps a registered native child MCP result attached to its parent and in event order without leaking _meta or omitted media', async () => {
+      const chatId = 'codex-native-child-mcp-result';
+      const { target, ingestCodexEvent } = await startCodexChat(chatId);
+      await expect(
+        ingestCodexEvent('child-agent-started', {
+          type: 'item.completed',
+          thread_id: codexRootThreadId,
+          turn_id: codexRootTurnId,
+          item: {
+            id: 'child-agent-started',
+            type: 'sub_agent_activity',
+            kind: 'started',
+            agent_thread_id: 'thread-child',
+            agent_path: 'review',
+          },
+        }),
+      ).resolves.toBe('applied');
+      await expect(
+        ingestCodexEvent('child-thread-registered', {
+          type: 'thread.started',
+          thread_id: 'thread-child',
+          parent_thread_id: codexRootThreadId,
+          agent_nickname: 'Atlas',
+          model: 'gpt-6-sol',
+          reasoning_effort: 'medium',
+        }),
+      ).resolves.toBe('applied');
+
+      const result = {
+        content: [
+          { type: 'text', text: 'C25_CHILD_TEXT' },
+          {
+            type: 'resource',
+            resource: {
+              text: 'C25_CHILD_RESOURCE_TEXT',
+              _meta: { secret: 'C25_PRIVATE_META_RESOURCE' },
+            },
+          },
+          {
+            type: 'image',
+            mimeType: 'image/svg+xml',
+            data: 'C25_PRIVATE_IMAGE_BYTES',
+            _meta: { secret: 'C25_PRIVATE_META_IMAGE' },
+          },
+          {
+            type: 'audio',
+            data: 'C25_PRIVATE_AUDIO_BYTES',
+            _meta: { secret: 'C25_PRIVATE_META_AUDIO' },
+          },
+          {
+            type: 'custom',
+            value: 'C25_PUBLIC_CUSTOM_CONTENT',
+            nested: { _meta: { secret: 'C25_PRIVATE_META_CUSTOM' } },
+          },
+        ],
+      };
+      const canonical = expectedMcpToolResult({
+        status: 'completed',
+        result,
+        error: null,
+      });
+      const childToolUseId = 'codex-child-mcp-call';
+      await expect(
+        ingestCodexEvent('child-mcp-call-completed', {
+          type: 'item.completed',
+          thread_id: 'thread-child',
+          turn_id: 'turn-child',
+          item: {
+            id: 'child-mcp-call',
+            type: 'mcp_tool_call',
+            server: 'child',
+            tool: 'inspect_result',
+            arguments: {},
+            status: 'completed',
+            result,
+            error: null,
+          },
+        }),
+      ).resolves.toBe('applied');
+
+      const captures = await captureLifecycle(
+        target,
+        ingestCodexEvent,
+        chatId,
+        childToolUseId,
+        canonical.output,
+      );
+      for (const capture of captures) {
+        const parentMessage = capture.messages.find((message) =>
+          message.blocks.some(
+            (block) =>
+              block.type === 'codex_agent_call' &&
+              block.receiverThreadIds.includes('thread-child'),
+          ),
+        );
+        if (!parentMessage)
+          throw new Error('Missing Codex parent child-call row');
+        const parentBlock = parentMessage.blocks.find(
+          (block) => block.type === 'codex_agent_call',
+        );
+        if (parentBlock?.type !== 'codex_agent_call') {
+          throw new Error('Missing Codex parent child-call metadata');
+        }
+        expect(parentBlock.receiverThreadIds).toContain('thread-child');
+        expect(parentBlock.receiverAgents?.['thread-child']).toMatchObject({
+          nickname: 'Atlas',
+          agentPath: 'review',
+          model: 'gpt-6-sol',
+          reasoningEffort: 'medium',
+        });
+        const childMessage = capture.messages.find((message) =>
+          message.blocks.some(
+            (block) =>
+              block.type === 'tool_result' &&
+              block.toolUseId === childToolUseId,
+          ),
+        );
+        if (!childMessage) throw new Error('Missing Codex child MCP row');
+        expect(childMessage.codexThreadId).toBe('thread-child');
+        expect(capture.messages.indexOf(parentMessage)).toBeLessThan(
+          capture.messages.indexOf(childMessage),
+        );
+        expect(capture.output).toContain('[image output omitted]');
+        expect(capture.output).toContain('[audio output omitted]');
+        expect(capture.output).not.toContain('_meta');
+        expect(capture.output).not.toContain('C25_PRIVATE_META_');
+        expect(capture.output).not.toContain('C25_PRIVATE_IMAGE_BYTES');
+        expect(capture.output).not.toContain('C25_PRIVATE_AUDIO_BYTES');
+        expect(
+          childMessage.blocks.filter((block) => block.type === 'image'),
+        ).toHaveLength(0);
+      }
+      expectCanonicalBytes(captures, canonical.output);
+    });
   });
 
   it('keeps a Codex root turn streaming after a subagent completes', async () => {
@@ -17997,6 +29690,12 @@ describe('chat state service', () => {
         canopy_turn_user_message_id: 'codex-subagent-user',
       },
     });
+    const rootTurn = {
+      provider: 'codex' as const,
+      chatId: 'codex-subagent-chat',
+    };
+    // A child thread's terminal reports no root lifecycle end.
+    await reportTurn(target, 'start', 'codex-subagent-user', rootTurn);
     await expect(
       ingest('codex-child-completed', {
         type: 'turn.completed',
@@ -18025,6 +29724,7 @@ describe('chat state service', () => {
       'Root turn finished after delegation',
     );
 
+    await reportTurn(target, 'end', 'codex-subagent-user', rootTurn);
     await ingest('codex-root-completed', {
       type: 'turn.completed',
       thread_id: 'thread-root',
@@ -18078,6 +29778,11 @@ describe('chat state service', () => {
         canopy_turn_user_message_id: 'codex-subagent-error-user',
       },
     });
+    const rootTurn = {
+      provider: 'codex' as const,
+      chatId: 'codex-subagent-error-chat',
+    };
+    await reportTurn(target, 'start', 'codex-subagent-error-user', rootTurn);
     await expect(
       ingest('codex-child-error', {
         type: 'error',
@@ -18092,6 +29797,7 @@ describe('chat state service', () => {
       'streaming',
     );
 
+    await reportTurn(target, 'end', 'codex-subagent-error-user', rootTurn);
     await expect(
       ingest('codex-root-completed-after-child-error', {
         type: 'turn.completed',
@@ -18216,6 +29922,7 @@ describe('chat state service', () => {
       }),
     );
     await target.replaceCompatibilityArchives(SCOPE, {
+      version: 1,
       archived: [
         {
           tab: {
@@ -18406,6 +30113,42 @@ describe('chat state service', () => {
         attentionDismissedAt: 1_786_104_000_000,
       }),
     ]);
+  });
+
+  it('durably clears a stale view mode when assigning an empty file tab', async () => {
+    const target = service();
+    await target.command(
+      envelope('create-empty-file', {
+        type: 'chat.create_file_tab',
+        tabId: 'file-empty',
+        filePath: '',
+        viewMode: 'preview',
+      }),
+    );
+    await expect(
+      target.command(
+        envelope('assign-code-file', {
+          type: 'chat.patch_tab_settings',
+          tabId: 'file-empty',
+          patch: {
+            filePath: '/tmp/source.ts',
+            title: 'source.ts',
+            fileViewMode: null,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+
+    const reloaded = await service().getState(SCOPE);
+    const assigned = reloaded.tabsFile.tabs.find(
+      (tab) => tab.id === 'file-empty',
+    );
+    expect(assigned).toMatchObject({
+      kind: 'file',
+      filePath: '/tmp/source.ts',
+      title: 'source.ts',
+    });
+    expect(assigned).not.toHaveProperty('fileViewMode');
   });
 
   it('creates a background file without publishing or persisting an active-tab change', async () => {
@@ -18727,7 +30470,7 @@ describe('chat state service', () => {
     expect(blocks).toContainEqual(
       expect.objectContaining({
         type: 'turn_timer',
-        completedAt: 1_786_104_000_000,
+        completedAt: 10,
       }),
     );
     expect(blocks).toContainEqual(
@@ -18995,6 +30738,72 @@ describe('chat state service', () => {
     expect(dispatched[0]).toMatchObject({ claudeForkStartsFresh: true });
     expect(dispatched[0]).not.toHaveProperty('sdkSessionId');
     expect(dispatched[0]).not.toHaveProperty('claudeForkSession');
+  });
+
+  it('durably replays one safety denial receipt and publishes it through the real chat stream', async () => {
+    const target = service();
+    await createChat(target);
+    const runtime = createDesktopRuntime({ getChatStatePort: () => target });
+    const frames: unknown[] = [];
+    const opened = await runtime.openChatEventsForLegacyIpc(
+      { scope: SCOPE },
+      {
+        caller: {
+          principalId: 'test-user',
+          clientInstanceId: 'safety-receipt-test',
+          authorityId: 'local-desktop',
+          interfaceKind: 'test',
+          grants: ['core.chat.read'],
+        },
+        onFrame: (frame) => frames.push(frame),
+      },
+    );
+    const receipt: PersistedChatMessage = {
+      id: 'approval-safety-receipt',
+      role: 'system',
+      timestamp: 42,
+      blocks: [
+        {
+          type: 'approval_safety_denied_info',
+          receiptId: 'approval-safety-receipt',
+          timestamp: 42,
+          reason: 'force-push',
+          command: 'git push --force origin HEAD',
+          mode: 'ask',
+          toolUseId: 'call-1',
+          subagentId: 'child-1',
+          turnUserMessageId: 'user-1',
+        },
+      ],
+    };
+    const append = (): Promise<unknown> =>
+      target.updateCompatibilityTab(
+        SCOPE,
+        'chat-1',
+        (tab) =>
+          tab.messages.some((message) => message.id === receipt.id)
+            ? null
+            : { ...tab, messages: [...tab.messages, receipt] },
+        `approval-safety-denied:${receipt.id}`,
+      );
+    try {
+      await Promise.all([append(), append()]);
+      await target.drain();
+      const reopened = await service().getCompatibilityTabs(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(
+        reopened.tabs[0]?.messages.filter(
+          (message) => message.id === receipt.id,
+        ),
+      ).toEqual([receipt]);
+      expect(JSON.stringify(frames)).toContain('approval_safety_denied_info');
+      expect(JSON.stringify(frames)).toContain('force-push');
+    } finally {
+      opened.handle.close();
+      await runtime.shutdown();
+    }
   });
 
   it('persists compatibility updates to existing tabs as well as new tabs', async () => {
@@ -19408,7 +31217,11 @@ describe('chat state service', () => {
       const target = service();
       await untitled(target);
       await target.command(
-        envelope('close', { type: 'chat.close_tab', tabId: 'chat-1' }),
+        envelope('close', {
+          type: 'chat.close_tab',
+          tabId: 'chat-1',
+          mode: 'discard_empty',
+        }),
       );
       await target.removeCompatibilityArchive(SCOPE, 'chat-1');
       await expect(
@@ -19909,6 +31722,11 @@ describe('chat state service', () => {
         keepSession: true,
       }),
     );
+    // Only a fresh canonical start after the archive fence restores the chat.
+    await reportTurn(target, 'start', undefined, {
+      turnId: 'auto-archive-wake',
+      atMs: 1_786_104_000_001,
+    });
 
     await target.ingestProviderEvent({
       ...SCOPE,
@@ -19933,6 +31751,145 @@ describe('chat state service', () => {
     });
     expect(JSON.stringify(snapshot.tabsFile.tabs[0]?.messages)).toContain(
       'Resumed after auto-archive',
+    );
+  });
+
+  it('asks for an auto-archived chat’s kept session to be released once idle', async () => {
+    const cleanupSession = jest.fn<Promise<void>, []>(() => Promise.resolve());
+    const { target } = serviceWithRepository({ cleanupSession });
+    await createChat(target);
+    mockReleaseArchivedChatSessionWhenIdle.mockClear();
+
+    await expect(
+      target.command(
+        envelope('auto-archive-release', {
+          type: 'chat.archive_tab',
+          tabId: 'chat-1',
+          keepSession: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+
+    expect(mockReleaseArchivedChatSessionWhenIdle).toHaveBeenCalledTimes(1);
+    // The service supplies its own reads for the release decision.
+    expect(mockReleaseArchivedChatSessionWhenIdle).toHaveBeenCalledWith(
+      { ...SCOPE, chatId: 'chat-1' },
+      expect.anything(),
+    );
+    expect(mockReleaseArchivedChatSessionWhenIdle.mock.calls[0]?.[1]).toBe(
+      target,
+    );
+    expect(cleanupSession).not.toHaveBeenCalled();
+  });
+
+  it('requests no idle release for a refused or user archive', async () => {
+    const cleanupSession = jest.fn<Promise<void>, []>(() => Promise.resolve());
+    const { target } = serviceWithRepository({ cleanupSession });
+    await createChat(target);
+    mockReleaseArchivedChatSessionWhenIdle.mockClear();
+
+    await expect(
+      target.command(
+        envelope('auto-archive-missing', {
+          type: 'chat.archive_tab',
+          tabId: 'missing-chat',
+          keepSession: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'not_found' });
+    await expect(
+      target.command(
+        envelope('user-archive', {
+          type: 'chat.archive_tab',
+          tabId: 'chat-1',
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+
+    expect(mockReleaseArchivedChatSessionWhenIdle).not.toHaveBeenCalled();
+    expect(cleanupSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an auto-archived chat archived while recording a late Claude child frame', async () => {
+    const target = service();
+    await createChat(target);
+    await target.command(
+      envelope('send-before-child-auto-archive', {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'user-child-auto-archive',
+        text: 'Delegate a task',
+      }),
+    );
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'user-child-auto-archive',
+      mutationId: 'child-auto-archive-root-assistant',
+      data: {
+        type: 'assistant',
+        canopy_turn_user_message_id: 'user-child-auto-archive',
+        message: {
+          id: 'auto-archive-root-assistant',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Root output' }],
+        },
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      turnUserMessageId: 'user-child-auto-archive',
+      mutationId: 'child-auto-archive-root-result',
+      data: {
+        type: 'result',
+        is_error: false,
+        result: 'Root completed',
+        canopy_turn_user_message_id: 'user-child-auto-archive',
+      },
+    });
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      mutationId: 'enable-child-auto-archive',
+      data: { type: 'canopy_set_auto_archive_requested', enabled: true },
+    });
+    await target.command(
+      envelope('archive-before-child-followup', {
+        type: 'chat.archive_tab',
+        tabId: 'chat-1',
+        keepSession: true,
+      }),
+    );
+
+    await expect(
+      target.ingestProviderEvent({
+        ...SCOPE,
+        chatId: 'chat-1',
+        mutationId: 'late-child-after-auto-archive',
+        data: {
+          type: 'assistant',
+          parent_tool_use_id: 'child-1',
+          message: {
+            id: 'late-child-archived-message',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Late archived child output' }],
+          },
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const snapshot = await target.getState(SCOPE);
+    expect(snapshot.tabsFile.tabs).toEqual([]);
+    expect(snapshot.archives).toEqual([
+      expect.objectContaining({ chatId: 'chat-1' }),
+    ]);
+    const archivesFile = await target.getCompatibilityArchives(SCOPE, {
+      chatIds: ['chat-1'],
+      fullTranscript: true,
+    });
+    expect(JSON.stringify(archivesFile.archived[0]?.tab.messages)).toContain(
+      'Late archived child output',
     );
   });
 
@@ -20037,6 +31994,236 @@ describe('chat state service', () => {
         }),
       ),
     ).resolves.toMatchObject({ outcome: 'applied', revision: 1 });
+  });
+
+  it('projects a recreated scope even when its revision restarts below the deleted scope', async () => {
+    const target = service();
+    const projected = jest.fn();
+    setChatTabsWriteObserver(projected);
+    await createChat(target);
+    await target.deleteScope(SCOPE);
+
+    await target.command(
+      envelope('create-reused-projection-scope', {
+        type: 'chat.create_tab',
+        tabId: 'chat-again',
+        title: 'Recreated chat',
+      }),
+    );
+    await Promise.resolve();
+
+    expect(projected).toHaveBeenCalledWith(
+      SCOPE.projectId,
+      SCOPE.worktreeId,
+      expect.objectContaining({
+        tabs: [expect.objectContaining({ id: 'chat-again' })],
+      }),
+      expect.objectContaining({ changedTabIds: ['chat-again'] }),
+      1,
+      expect.any(Function),
+    );
+  });
+
+  it('fences a late deletion projection and carries its removals into a recreated scope', async () => {
+    const target = service();
+    let releaseDeletion: (() => void) | undefined;
+    let deletionProjectionStarted: (() => void) | undefined;
+    const heldDeletion = new Promise<void>((resolve) => {
+      releaseDeletion = resolve;
+    });
+    const deletionStarted = new Promise<void>((resolve) => {
+      deletionProjectionStarted = resolve;
+    });
+    const projections: Array<{
+      revision: number;
+      changed: readonly string[];
+      removed: readonly string[];
+      isCurrent: () => boolean;
+    }> = [];
+    setChatTabsWriteObserver(
+      async (_projectId, _worktreeId, data, delta, revision, isCurrent) => {
+        if (!delta || !isCurrent) return;
+        projections.push({
+          revision,
+          changed: delta.changedTabIds,
+          removed: delta.removedTabIds,
+          isCurrent,
+        });
+        if (data.tabs.length === 0) {
+          deletionProjectionStarted?.();
+          await heldDeletion;
+        }
+      },
+    );
+    await createChat(target);
+    projections.length = 0;
+    await target.deleteScope(SCOPE);
+    await deletionStarted;
+
+    await target.command(
+      envelope('create-while-deletion-projection-held', {
+        type: 'chat.create_tab',
+        tabId: 'chat-again',
+        title: 'Recreated chat',
+      }),
+    );
+    await Promise.resolve();
+
+    expect(projections).toEqual([
+      expect.objectContaining({ revision: 2, removed: ['chat-1'] }),
+      expect.objectContaining({
+        revision: 1,
+        changed: ['chat-again'],
+        removed: ['chat-1'],
+      }),
+    ]);
+    expect(projections[0]?.isCurrent()).toBe(false);
+    expect(projections[1]?.isCurrent()).toBe(true);
+    releaseDeletion?.();
+  });
+
+  it('carries an active removal projection across deletion of an already-empty scope', async () => {
+    const retries: Array<() => void> = [];
+    const { target } = serviceWithRepository({
+      schedule: (callback) => {
+        retries.push(callback);
+        return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+      },
+    });
+    await createChat(target);
+    await Promise.resolve();
+
+    let releaseRemoval: (() => void) | undefined;
+    let removalProjectionStarted: (() => void) | undefined;
+    let removalProjectionFinished: (() => void) | undefined;
+    const heldRemoval = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    const removalStarted = new Promise<void>((resolve) => {
+      removalProjectionStarted = resolve;
+    });
+    const removalFinished = new Promise<void>((resolve) => {
+      removalProjectionFinished = resolve;
+    });
+    const projections: Array<{
+      changed: readonly string[];
+      removed: readonly string[];
+      isCurrent: () => boolean;
+    }> = [];
+    setChatTabsWriteObserver(
+      async (_projectId, _worktreeId, data, delta, _revision, isCurrent) => {
+        if (!delta || !isCurrent) return;
+        projections.push({
+          changed: delta.changedTabIds,
+          removed: delta.removedTabIds,
+          isCurrent,
+        });
+        if (data.tabs.length === 0 && delta.removedTabIds.includes('chat-1')) {
+          removalProjectionStarted?.();
+          await heldRemoval;
+          removalProjectionFinished?.();
+          throw new Error('Old projection completed after readmission');
+        }
+      },
+    );
+    await target.command(
+      envelope('remove-before-scope-delete', {
+        type: 'chat.close_tab',
+        tabId: 'chat-1',
+        mode: 'discard_empty',
+      }),
+    );
+    await removalStarted;
+    expect((await target.getState(SCOPE)).tabsFile.tabs).toEqual([]);
+
+    await target.deleteScope(SCOPE);
+    await target.command(
+      envelope('recreate-after-held-removal', {
+        type: 'chat.create_tab',
+        tabId: 'chat-again',
+        title: 'Recreated chat',
+      }),
+    );
+    await Promise.resolve();
+
+    expect(projections.at(-1)).toEqual({
+      changed: ['chat-again'],
+      removed: ['chat-1'],
+      isCurrent: expect.any(Function),
+    });
+    expect(projections[0]?.isCurrent()).toBe(false);
+    expect(projections.at(-1)?.isCurrent()).toBe(true);
+    retries.length = 0;
+    releaseRemoval?.();
+    await removalFinished;
+    await Promise.resolve();
+    expect(retries).toEqual([]);
+
+    await target.command(
+      envelope('rename-after-old-projection-failed', {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-again',
+        patch: { planMode: true },
+      }),
+    );
+    await Promise.resolve();
+    expect(projections.at(-1)?.changed).toContain('chat-again');
+    expect(projections.at(-1)?.isCurrent()).toBe(true);
+  });
+
+  it('ignores an old projection retry after repeated deletion and recreation with the same chat id', async () => {
+    const retries: Array<() => void> = [];
+    const { target } = serviceWithRepository({
+      schedule: (callback) => {
+        retries.push(callback);
+        return { unref: jest.fn() } as unknown as ReturnType<typeof setTimeout>;
+      },
+    });
+    const projections: Array<{
+      revision: number;
+      changed: readonly string[];
+      removed: readonly string[];
+      current: boolean;
+    }> = [];
+    let failFirst = true;
+    setChatTabsWriteObserver(
+      async (_projectId, _worktreeId, data, delta, revision, isCurrent) => {
+        if (failFirst) {
+          failFirst = false;
+          throw new Error('projection unavailable');
+        }
+        projections.push({
+          revision,
+          changed: delta?.changedTabIds ?? [],
+          removed: delta?.removedTabIds ?? [],
+          current: isCurrent?.() ?? true,
+        });
+        expect(data.tabs.every((tab) => tab.id === 'chat-1')).toBe(true);
+      },
+    );
+
+    await createChat(target);
+    await target.deleteScope(SCOPE);
+    await target.deleteScope(SCOPE);
+    await target.command(
+      envelope('recreate-same-chat-id', {
+        type: 'chat.create_tab',
+        tabId: 'chat-1',
+        title: 'New incarnation',
+      }),
+    );
+    await Promise.resolve();
+
+    expect(projections.at(-1)).toEqual({
+      revision: 1,
+      changed: ['chat-1'],
+      removed: [],
+      current: true,
+    });
+    const beforeRetry = projections.length;
+    for (const retry of retries) retry();
+    await Promise.resolve();
+    expect(projections).toHaveLength(beforeRetry);
   });
 
   it.each(['chat.activate_tab', 'chat.reorder_tabs'] as const)(
@@ -20660,6 +32847,9 @@ describe('chat state service', () => {
       'Imported answer',
     );
     expect(snapshot.runtimeByChatId['imported-chat']?.status).toBe('completed');
+    expect(snapshot.runtimeByChatId['imported-chat']?.turn).toEqual(
+      serializeChatTurnState(initialChatTurnState()),
+    );
 
     await expect(
       target.command(
@@ -20877,11 +33067,1494 @@ describe('chat state service', () => {
     ).toHaveLength(1);
   });
 
+  it('routes async question answers through the queue hook instead of steering from the service', async () => {
+    const submittedRequests: ChatSendMessageRequest[] = [];
+    const { target, repository } = serviceWithRepository({
+      submit: async (request, _origin, beforeImmediateDispatch) => {
+        submittedRequests.push(request);
+        dispatched.push(request);
+        await beforeImmediateDispatch({
+          cancelledBeforeDispatch: false,
+          startsTurn: true,
+        });
+      },
+    });
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'async-queue-hook',
+            chatId: 'chat-1',
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+          },
+        },
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: {
+            status: 'streaming',
+            queuedMessageIds: [],
+            activeTurn: { userMessageId: 'original-user', startedAt: 10 },
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-async-queue-hook' },
+    );
+
+    await expect(
+      target.command(
+        envelope('answer-queue-hook', {
+          type: 'chat.answer_question',
+          chatId: 'chat-1',
+          questionId: 'async-queue-hook',
+          answers: [
+            {
+              questionId: 'scope',
+              question: 'Which scope?',
+              selectedOptions: ['Full'],
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+
+    expect(submittedRequests).toHaveLength(1);
+    expect(submittedRequests[0]).toMatchObject({
+      asyncQuestionId: 'async-queue-hook',
+      text: expect.stringContaining('Q: Which scope?'),
+    });
+    const snapshot = await target.getState(SCOPE);
+    expect(snapshot.runtimeByChatId['chat-1']?.queuedMessages ?? []).toEqual(
+      [],
+    );
+    expect(snapshot.tabsFile.pendingQuestions?.[0]?.answeredAt).toBeDefined();
+  });
+
+  it('does not add steering metadata to an own-turn dispatched async answer', async () => {
+    const { target, repository } = serviceWithRepository({
+      submit: async (request, _origin, beforeImmediateDispatch) => {
+        dispatched.push(request);
+        await beforeImmediateDispatch({
+          cancelledBeforeDispatch: false,
+          startsTurn: true,
+        });
+      },
+    });
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'async-own-turn-no-steering',
+            chatId: 'chat-1',
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-async-own-turn-no-steering' },
+    );
+
+    await expect(
+      target.command(
+        envelope('answer-own-turn-no-steering', {
+          type: 'chat.answer_question',
+          chatId: 'chat-1',
+          questionId: 'async-own-turn-no-steering',
+          answers: [
+            {
+              questionId: 'scope',
+              question: 'Which scope?',
+              selectedOptions: ['Full'],
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+
+    const snapshot = await target.getState(SCOPE);
+    const answerMessage = snapshot.tabsFile.tabs[0]?.messages.find(
+      (message) => message.role === 'user',
+    );
+    expect(answerMessage?.blocks[0]).toMatchObject({
+      asyncQuestionAnswer: {
+        requestId: 'async-own-turn-no-steering',
+        startsTurn: true,
+      },
+    });
+    expect(answerMessage?.blocks[0]).not.toHaveProperty('steering');
+  });
+
+  it('annotates a picked-up async answer from the matching answered question', async () => {
+    const f = await deliveryFixture();
+    const answers = [
+      {
+        questionId: 'scope',
+        question: 'Which scope?',
+        selectedOptions: ['Full'],
+      },
+    ];
+    const request = {
+      ...f.request,
+      asyncQuestionId: 'async-pickup',
+      text: 'Q: Which scope?\nA: Full',
+    };
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'async-pickup',
+            chatId: f.scope.chatId,
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+            answers,
+            answeredAt: 20,
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-async-pickup' },
+    );
+
+    await f.target.inputDelivery.steerQueued(
+      request,
+      () => [],
+      {
+        commandId: 'async-pickup-steer',
+        outcome: 'applied',
+        entityId: 'chat-1',
+      },
+      jest.fn(),
+    );
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing answer attempt');
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+        startsTurn: false,
+      },
+    });
+
+    const message = (
+      await f.target.getState(f.scope)
+    ).tabsFile.tabs[0]?.messages.find(
+      (candidate) => candidate.id === request.userMessageId,
+    );
+    expect(message?.blocks[0]).toMatchObject({
+      type: 'text',
+      text: request.text,
+      asyncQuestionAnswer: {
+        requestId: 'async-pickup',
+        startsTurn: false,
+        answers,
+      },
+      steering: { startsTurn: false },
+    });
+  });
+
+  it.each([
+    { startsTurn: false, turnRootAccepted: undefined, expected: false },
+    { startsTurn: true, turnRootAccepted: false, expected: false },
+    { startsTurn: true, turnRootAccepted: true, expected: true },
+  ])(
+    'uses the effective root event for both answer boundaries: %o',
+    async ({ startsTurn, turnRootAccepted, expected }) => {
+      const f = await deliveryFixture();
+      await f.repository.transact(
+        f.scope,
+        [
+          {
+            type: 'pending_question.upserted',
+            question: {
+              requestId: 'async-root-boundary',
+              chatId: f.scope.chatId,
+              delivery: 'async',
+              questions: [
+                { id: 'scope', question: 'Which scope?', options: ['Full'] },
+              ],
+              answers: [
+                {
+                  questionId: 'scope',
+                  question: 'Which scope?',
+                  selectedOptions: ['Full'],
+                },
+              ],
+              answeredAt: 20,
+            },
+          },
+        ],
+        { source: 'provider', mutationId: 'seed-async-root-boundary' },
+      );
+      const request = {
+        ...f.request,
+        asyncQuestionId: 'async-root-boundary',
+        text: 'Q: Which scope?\nA: Full',
+      };
+      await f.target.inputDelivery.steerQueued(
+        request,
+        () => [],
+        {
+          commandId: 'async-root-boundary-steer',
+          outcome: 'applied',
+          entityId: 'chat-1',
+        },
+        jest.fn(),
+      );
+      const row = await f.getRow();
+      if (!row.currentAttemptId) throw new Error('Missing answer attempt');
+      await f.target.ingestProviderEvent({
+        ...f.scope,
+        data: {
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          generation: 'generation-1',
+          attemptId: row.currentAttemptId,
+          phase: 'picked-up',
+          startsTurn,
+          ...(turnRootAccepted !== undefined ? { turnRootAccepted } : {}),
+        },
+      });
+      // An accepted root pickup starts its own turn, as the adapter reports it.
+      if (expected) await reportTurn(f.target, 'start', row.id);
+
+      const snapshot = await f.target.getState(f.scope);
+      const message = snapshot.tabsFile.tabs[0]?.messages.find(
+        (candidate) => candidate.id === row.id,
+      );
+      expect(message?.blocks[0]).toMatchObject({
+        asyncQuestionAnswer: { startsTurn: expected },
+        steering: { startsTurn: expected },
+      });
+      expect(
+        snapshot.tabsFile.tabs[0]?.messages
+          .flatMap((candidate) => candidate.blocks)
+          .filter((block) => block.type === 'turn_timer'),
+      ).toHaveLength(expected ? 1 : 0);
+    },
+  );
+
+  async function steerAnsweredQuestion(
+    f: Awaited<ReturnType<typeof deliveryFixture>>,
+    questionId: string,
+  ): Promise<void> {
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: questionId,
+            chatId: f.scope.chatId,
+            delivery: 'async',
+            questions: [
+              {
+                id: 'scope',
+                question: 'Which scope?',
+                options: ['Full', 'Focused'],
+              },
+            ],
+            answers: [
+              {
+                questionId: 'scope',
+                question: 'Which scope?',
+                selectedOptions: ['Full'],
+              },
+            ],
+            answeredAt: 20,
+          },
+        },
+      ],
+      { source: 'provider', mutationId: `seed-${questionId}` },
+    );
+    await f.target.inputDelivery.steerQueued(
+      {
+        ...f.request,
+        asyncQuestionId: questionId,
+        text: 'Q: Which scope?\nA: Full',
+      },
+      () => [],
+      {
+        commandId: `${questionId}-steer`,
+        outcome: 'applied',
+        entityId: 'chat-1',
+      },
+      jest.fn(),
+    );
+  }
+
+  async function asyncQuestion(
+    f: Awaited<ReturnType<typeof deliveryFixture>>,
+    questionId: string,
+  ) {
+    return (await f.target.getState(f.scope)).tabsFile.pendingQuestions?.find(
+      (question) => question.requestId === questionId,
+    );
+  }
+
+  it('sends an edited steered answer as plain text and opens its question again', async () => {
+    const f = await deliveryFixture();
+    await steerAnsweredQuestion(f, 'async-edited');
+    await f.action('edit');
+    await f.action('save', 'Q: Which scope?\nA: Focused');
+
+    expect(f.submission).toHaveBeenCalledTimes(2);
+    expect(f.submission.mock.calls[1]?.[0]).toContain('A: Focused');
+    const row = await f.getRow();
+    expect(row.payload.asyncQuestionId).toBeUndefined();
+    const reopened = await asyncQuestion(f, 'async-edited');
+    expect(reopened?.answeredAt).toBeUndefined();
+    expect(reopened?.answers).toBeUndefined();
+
+    if (!row.currentAttemptId) throw new Error('Missing edited attempt');
+    await f.target.ingestProviderEvent({
+      ...f.scope,
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'generation-1',
+        attemptId: row.currentAttemptId,
+        phase: 'picked-up',
+      },
+    });
+    const block = (await f.target.getState(f.scope)).tabsFile.tabs[0]?.messages
+      .find((message) => message.id === row.id)
+      ?.blocks.find((candidate) => candidate.type === 'text');
+    expect(block?.type === 'text' ? block.text : undefined).toBe(
+      'Q: Which scope?\nA: Focused',
+    );
+    expect(
+      block?.type === 'text' ? block.asyncQuestionAnswer : undefined,
+    ).toBeUndefined();
+  });
+
+  it('keeps the answer link when a steered answer is saved unchanged', async () => {
+    const f = await deliveryFixture();
+    await steerAnsweredQuestion(f, 'async-unchanged');
+    await f.action('edit');
+    await f.action('save', 'Q: Which scope?\nA: Full');
+
+    expect((await f.getRow()).payload.asyncQuestionId).toBe('async-unchanged');
+    expect((await asyncQuestion(f, 'async-unchanged'))?.answeredAt).toBe(20);
+  });
+
+  it.each([
+    { draft: 'Q: Which scope?\nA: Focused', reopens: true },
+    { draft: undefined, reopens: false },
+  ])(
+    'moves a withdrawn answer to the queue with its link only when unedited: %o',
+    async ({ draft, reopens }) => {
+      const f = await deliveryFixture();
+      await steerAnsweredQuestion(f, 'async-queue-move');
+      await f.action('edit');
+      if (draft !== undefined) await f.action('save-draft', draft);
+      const restore = jest
+        .spyOn(getChatQueueService(), 'restoreWithdrawnInput')
+        .mockResolvedValue(undefined);
+      try {
+        await f.action('queue');
+        expect(restore).toHaveBeenCalledTimes(1);
+        const [queued, , , , , reopenedQuestionId] =
+          restore.mock.calls[0] ?? [];
+        expect(queued?.text).toBe(draft ?? 'Q: Which scope?\nA: Full');
+        expect(queued?.asyncQuestionId).toBe(
+          reopens ? undefined : 'async-queue-move',
+        );
+        expect(reopenedQuestionId).toBe(
+          reopens ? 'async-queue-move' : undefined,
+        );
+      } finally {
+        restore.mockRestore();
+      }
+    },
+  );
+
+  it('opens the question again when the queue takes an edited answer', async () => {
+    const f = await deliveryFixture();
+    await steerAnsweredQuestion(f, 'async-restored');
+    await f.action('edit');
+    expect((await asyncQuestion(f, 'async-restored'))?.answeredAt).toBe(20);
+    const state = await f.repository.getState(f.scope);
+
+    await f.target.reconcileHostQueue(f.scope, ['row-1'], true, {
+      type: 'restore-input',
+      rowId: 'row-1',
+      epoch: state.tabsFile.tabs[0].inputDelivery?.epoch ?? -1,
+      request: { ...f.request, text: 'Q: Which scope?\nA: Focused' },
+      restoredAsyncQuestionId: 'async-restored',
+    });
+
+    expect(await f.getRow()).toMatchObject({
+      state: 'queued',
+      text: 'Q: Which scope?\nA: Focused',
+    });
+    const reopened = await asyncQuestion(f, 'async-restored');
+    expect(reopened?.answeredAt).toBeUndefined();
+    expect(reopened?.answers).toBeUndefined();
+  });
+
+  it('falls back to a generic pickup when the answer question belongs to another chat', async () => {
+    const f = await deliveryFixture();
+    await f.target.command(
+      envelope('create-other-answer-chat', {
+        type: 'chat.create_tab',
+        tabId: 'chat-2',
+        title: 'Other chat',
+        providerType: 'claude',
+        model: 'claude-opus-4-6',
+      }),
+    );
+    await f.repository.transact(
+      f.scope,
+      [{ type: 'tab.active_changed', activeTabId: f.scope.chatId }],
+      { source: 'provider', mutationId: 'keep-answer-chat-active' },
+    );
+    await f.repository.transact(
+      f.scope,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'async-other-chat',
+            chatId: 'chat-2',
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+            answers: [
+              {
+                questionId: 'scope',
+                question: 'Which scope?',
+                selectedOptions: ['Full'],
+              },
+            ],
+            answeredAt: 20,
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-async-other-chat' },
+    );
+    const request = {
+      ...f.request,
+      asyncQuestionId: 'async-other-chat',
+      text: 'Generic input',
+    };
+    await f.target.inputDelivery.steerQueued(
+      request,
+      () => [],
+      {
+        commandId: 'async-other-chat-steer',
+        outcome: 'applied',
+        entityId: 'chat-1',
+      },
+      jest.fn(),
+    );
+    const row = await f.getRow();
+    if (!row.currentAttemptId) throw new Error('Missing input attempt');
+    await expect(
+      f.target.ingestProviderEvent({
+        ...f.scope,
+        data: {
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          generation: 'generation-1',
+          attemptId: row.currentAttemptId,
+          phase: 'picked-up',
+          startsTurn: false,
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const snapshot = await f.target.getState(f.scope);
+    const message = snapshot.tabsFile.tabs
+      .find((tab) => tab.id === f.scope.chatId)
+      ?.messages.find((candidate) => candidate.id === row.id);
+    expect(message?.blocks[0]).toMatchObject({
+      type: 'text',
+      text: request.text,
+      steering: { startsTurn: false },
+    });
+    expect(message?.blocks[0]).not.toHaveProperty('asyncQuestionAnswer');
+  });
+
+  it.each(['claude', 'codex'] as const)(
+    'submits async answer text through input delivery for %s without steerActiveTurn',
+    async (provider) => {
+      const f = await deliveryFixture({
+        pendingSystemInstructions: [
+          { id: 'pending-instruction', text: 'Do not prefix this answer' },
+        ],
+      });
+      const steerActiveTurn = jest.fn(async () => true);
+      f.session.steerActiveTurn = steerActiveTurn;
+      f.session.getSteeringCapabilities = () => ({
+        provider,
+        generation: 'generation-1',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      });
+      if (provider === 'codex') {
+        await f.target.updateCompatibilityTab(
+          f.scope,
+          f.scope.chatId,
+          (tab) => ({
+            ...tab,
+            model: 'gpt-5.4',
+            providerType: 'codex',
+            executionHarness: 'codex',
+          }),
+        );
+      }
+      const request: ChatSendMessageRequest = {
+        ...f.request,
+        ...(provider === 'codex'
+          ? {
+              model: 'gpt-5.4',
+              providerType: 'codex',
+              executionHarness: 'codex',
+            }
+          : {}),
+        asyncQuestionId: `async-${provider}`,
+        text: `Exact ${provider} answer text`,
+      };
+
+      await steerQueuedGenerated(f, request, () => true, jest.fn());
+
+      expect(f.submission).toHaveBeenCalledTimes(1);
+      expect(f.submittedCalls[0]?.text).toBe(request.text);
+      expect(f.submittedCalls[0]?.clientUserMessageId).toBe(
+        request.userMessageId,
+      );
+      expect(steerActiveTurn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { provider: 'claude', route: 'first arrival' },
+    { provider: 'codex', route: 'first arrival' },
+    { provider: 'claude', route: 'queued row' },
+    { provider: 'codex', route: 'queued row' },
+  ] as const)(
+    'retires answer admission at the %s claim before queue cleanup and preserves structured pickup',
+    async ({ provider, route }) => {
+      const holder: { fixture?: Awaited<ReturnType<typeof deliveryFixture>> } =
+        {};
+      const f = await deliveryFixture(
+        {},
+        {
+          submit: async (request, origin) => {
+            const fixture = holder.fixture;
+            if (!fixture) throw new Error('Missing answer fixture');
+            const before = await fixture.target.getState(fixture.scope);
+            expect(
+              before.runtimeByChatId[fixture.scope.chatId]?.queuedMessages,
+            ).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  id: `admission:${request.userMessageId}`,
+                  admitting: true,
+                }),
+              ]),
+            );
+            const result =
+              route === 'first arrival'
+                ? await fixture.target.inputDelivery.steerGenerated(
+                    request,
+                    () => [],
+                    origin,
+                    true,
+                  )
+                : await fixture.target.inputDelivery.steerQueuedGenerated(
+                    request,
+                    () => [],
+                    origin,
+                    () => true,
+                    jest.fn(),
+                  );
+            expect(result).toEqual({ status: 'handled' });
+            // Assert inside the queue hook, before sendMessage can retire its marker.
+            const claimed = await fixture.target.getState(fixture.scope);
+            expect(
+              claimed.runtimeByChatId[fixture.scope.chatId]?.queuedMessages ??
+                [],
+            ).toEqual([]);
+            expect(claimed.tabsFile.tabs[0]?.inputDelivery?.rows).toHaveLength(
+              1,
+            );
+          },
+        },
+      );
+      holder.fixture = f;
+      expect(f.session).not.toHaveProperty('steerActiveTurn');
+      f.session.getSteeringCapabilities = () => ({
+        provider,
+        generation: 'generation-1',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      });
+      if (provider === 'codex') {
+        await f.target.updateCompatibilityTab(
+          f.scope,
+          f.scope.chatId,
+          (tab) => ({
+            ...tab,
+            providerType: 'codex',
+            executionHarness: 'codex',
+            model: 'gpt-5.4',
+          }),
+        );
+      }
+      await seedAsyncAnswerQuestion(f.repository, 'claim-answer');
+      const command = asyncAnswerCommand('claim-answer');
+      await expect(
+        f.target.command(envelope('claim-answer-command', command)),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      const row = await f.getRow();
+      if (!row.currentAttemptId) throw new Error('Missing answer attempt');
+      await f.target.ingestProviderEvent({
+        ...f.scope,
+        data: {
+          type: 'canopy_input_delivery',
+          provider,
+          generation: 'generation-1',
+          attemptId: row.currentAttemptId,
+          phase: 'picked-up',
+          startsTurn: false,
+        },
+      });
+      const snapshot = await f.target.getState(f.scope);
+      const answer = snapshot.tabsFile.tabs[0]?.messages.find(
+        (message) => message.id === row.id,
+      );
+      expect(answer?.blocks[0]).toMatchObject({
+        asyncQuestionAnswer: {
+          requestId: 'claim-answer',
+          startsTurn: false,
+          answers: [{ question: 'Which scope?', selectedOptions: ['Full'] }],
+        },
+        steering: { startsTurn: false },
+      });
+      expect(snapshot.tabsFile.pendingQuestions?.[0]?.answeredAt).toBeDefined();
+      const reloaded = serviceWithRepository(
+        {},
+        copyDurableFilesAtBoundary(),
+      ).target;
+      const hydrated = await reloaded.getState(f.scope);
+      expect(
+        hydrated.tabsFile.tabs[0]?.messages.filter(
+          (message) => message.id === row.id,
+        ),
+      ).toHaveLength(1);
+      expect(
+        hydrated.runtimeByChatId[f.scope.chatId]?.queuedMessages ?? [],
+      ).toEqual([]);
+      expect(hydrated.tabsFile.pendingQuestions?.[0]?.answeredAt).toBeDefined();
+      expect(f.submission).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps an unknown async-answer delivery owned and reloads its pickup metadata', async () => {
+    const submission = jest.fn(
+      async (
+        _text: string,
+        attemptId: string,
+      ): Promise<ChatInputAdmission> => ({
+        kind: 'unknown',
+        attemptId,
+        reason: 'Provider transport outcome is uncertain',
+      }),
+    );
+    const { session, steerActiveTurn } = answerDeliverySession(
+      'claude',
+      submission,
+    );
+    const answerTarget: { target?: ChatStateService } = {};
+    const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+      request,
+      origin,
+    ) => {
+      const target = answerTarget.target;
+      if (!target) throw new Error('Missing queue target');
+      const result = await target.inputDelivery.steerQueuedGenerated(
+        request,
+        () => [],
+        origin,
+        () => true,
+        jest.fn(),
+      );
+      if (result.status !== 'handled')
+        throw new Error('Async answer was not handled by input delivery');
+    };
+    const { target, repository } = serviceWithRepository({
+      inputSession: async () => session,
+      submit,
+    });
+    answerTarget.target = target;
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'async-uncertain',
+            chatId: 'chat-1',
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+          },
+        },
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: {
+            status: 'streaming',
+            queuedMessageIds: [],
+            activeTurn: { userMessageId: 'original-user', startedAt: 10 },
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-async-uncertain' },
+    );
+    const command: ChatCommand = {
+      type: 'chat.answer_question',
+      chatId: 'chat-1',
+      questionId: 'async-uncertain',
+      answers: [
+        {
+          questionId: 'scope',
+          question: 'Which scope?',
+          selectedOptions: ['Full'],
+        },
+      ],
+    };
+
+    await expect(
+      target.command(envelope('answer-uncertain', command)),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+    const accepted = await target.getState(SCOPE);
+    const answerRow = accepted.tabsFile.tabs[0]?.inputDelivery?.rows.find(
+      (row) => row.payload.asyncQuestionId === 'async-uncertain',
+    );
+    expect(answerRow).toMatchObject({ state: 'uncertain' });
+    expect(accepted.tabsFile.pendingQuestions?.[0]?.answeredAt).toBeDefined();
+    expect(accepted.runtimeByChatId['chat-1']?.queuedMessages ?? []).toEqual(
+      [],
+    );
+    expect(steerActiveTurn).not.toHaveBeenCalled();
+
+    await expect(
+      target.command(envelope('answer-uncertain-retry', command)),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    expect(submission).toHaveBeenCalledTimes(1);
+    expect(
+      accepted.tabsFile.tabs[0]?.messages.filter(
+        (message) => message.role === 'user',
+      ),
+    ).toHaveLength(0);
+    if (!answerRow?.currentAttemptId)
+      throw new Error('Missing uncertain answer attempt');
+    await target.ingestProviderEvent({
+      ...SCOPE,
+      chatId: 'chat-1',
+      data: {
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        generation: 'answer-generation',
+        attemptId: answerRow.currentAttemptId,
+        phase: 'picked-up',
+        startsTurn: false,
+      },
+    });
+    const pickedUp = await target.getState(SCOPE);
+    const answerMessage = pickedUp.tabsFile.tabs[0]?.messages.find(
+      (message) => message.id === answerRow.id,
+    );
+    expect(answerMessage?.blocks[0]).toMatchObject({
+      type: 'text',
+      asyncQuestionAnswer: {
+        requestId: 'async-uncertain',
+        startsTurn: false,
+        answers: [{ question: 'Which scope?', selectedOptions: ['Full'] }],
+      },
+      steering: { startsTurn: false },
+    });
+    expect(
+      pickedUp.tabsFile.tabs[0]?.messages.filter(
+        (message) => message.role === 'user',
+      ),
+    ).toHaveLength(1);
+
+    const snapshotPaths = copyDurableFilesAtBoundary();
+    const reloaded = serviceWithRepository(
+      { inputSession: async () => undefined },
+      snapshotPaths,
+    ).target;
+    const afterReload = await reloaded.getState(SCOPE);
+    const reloadedAnswer = afterReload.tabsFile.tabs[0]?.messages.find(
+      (message) => message.id === answerRow.id,
+    );
+    expect(
+      afterReload.tabsFile.pendingQuestions?.[0]?.answeredAt,
+    ).toBeDefined();
+    expect(reloadedAnswer?.blocks[0]).toMatchObject({
+      asyncQuestionAnswer: { startsTurn: false },
+      steering: { startsTurn: false },
+    });
+  });
+
+  it('retains an answered question after a durable refusal settlement failure', async () => {
+    let refusalSubmitted = false;
+    const submission = jest.fn(
+      async (_text: string, attemptId: string): Promise<ChatInputAdmission> => {
+        refusalSubmitted = true;
+        return {
+          kind: 'rejected',
+          attemptId,
+          reason: 'The provider rejected the answer before accepting it',
+        };
+      },
+    );
+    const { session } = answerDeliverySession('claude', submission);
+    const answerTarget: { target?: ChatStateService } = {};
+    const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+      request,
+      origin,
+    ) => {
+      const target = answerTarget.target;
+      if (!target) throw new Error('Missing queue target');
+      const result = await target.inputDelivery.steerQueuedGenerated(
+        request,
+        () => [],
+        origin,
+        () => true,
+        jest.fn(),
+      );
+      if (result.status !== 'handled')
+        throw new Error('Async answer was not handled by input delivery');
+    };
+    const { target, repository } = serviceWithRepository({
+      inputSession: async () => session,
+      submit,
+    });
+    answerTarget.target = target;
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'async-refusal-settlement',
+            chatId: 'chat-1',
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-async-refusal-settlement' },
+    );
+    const originalTransactWith = repository.transactWith.bind(repository);
+    jest
+      .spyOn(repository, 'transactWith')
+      .mockImplementation((scope, build, options) => {
+        if (refusalSubmitted && options.source === 'provider') {
+          refusalSubmitted = false;
+          return Promise.reject(
+            new Error('Refusal settlement could not commit'),
+          );
+        }
+        return originalTransactWith(scope, build, options);
+      });
+    const command: ChatCommand = {
+      type: 'chat.answer_question',
+      chatId: 'chat-1',
+      questionId: 'async-refusal-settlement',
+      answers: [
+        {
+          questionId: 'scope',
+          question: 'Which scope?',
+          selectedOptions: ['Full'],
+        },
+      ],
+    };
+
+    await expect(
+      target.command(envelope('answer-refusal-settlement', command)),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+    const afterFailure = await target.getState(SCOPE);
+    expect(
+      afterFailure.tabsFile.pendingQuestions?.[0]?.answeredAt,
+    ).toBeDefined();
+    expect(afterFailure.tabsFile.tabs[0]?.inputDelivery?.rows[0]?.state).toBe(
+      'sending',
+    );
+    expect(
+      afterFailure.runtimeByChatId['chat-1']?.queuedMessages ?? [],
+    ).toEqual([]);
+    await expect(
+      target.command(envelope('answer-refusal-retry', command)),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    expect(submission).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses ordinary queue dispatch when the live session refuses steering before claim', async () => {
+    const submission = jest.fn(
+      async (
+        _text: string,
+        attemptId: string,
+      ): Promise<ChatInputAdmission> => ({
+        kind: 'accepted',
+        attemptId,
+      }),
+    );
+    const { session } = answerDeliverySession('claude', submission);
+    session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'answer-generation',
+      steer: false,
+      withdraw: true,
+      interrupt: true,
+    });
+    const answerTarget: { target?: ChatStateService } = {};
+    const ordinaryRequests: ChatSendMessageRequest[] = [];
+    const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+      request,
+      origin,
+      beforeImmediateDispatch,
+    ) => {
+      const target = answerTarget.target;
+      if (!target) throw new Error('Missing queue target');
+      try {
+        await target.inputDelivery.steerQueued(
+          request,
+          () => [],
+          {
+            commandId: `queue-${request.userMessageId}`,
+            outcome: 'applied',
+            entityId: request.chatId,
+          },
+          jest.fn(),
+          origin,
+        );
+      } catch (error) {
+        if (!(error instanceof OrdinarySteerFallbackError)) throw error;
+        ordinaryRequests.push(request);
+        await beforeImmediateDispatch({
+          cancelledBeforeDispatch: false,
+          startsTurn: true,
+        });
+      }
+    };
+    const { target, repository } = serviceWithRepository({
+      inputSession: async () => session,
+      submit,
+    });
+    answerTarget.target = target;
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'pending_question.upserted',
+          question: {
+            requestId: 'async-ordinary-fallback',
+            chatId: 'chat-1',
+            delivery: 'async',
+            questions: [
+              { id: 'scope', question: 'Which scope?', options: ['Full'] },
+            ],
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-async-ordinary-fallback' },
+    );
+
+    await expect(
+      target.command(
+        envelope('answer-ordinary-fallback', {
+          type: 'chat.answer_question',
+          chatId: 'chat-1',
+          questionId: 'async-ordinary-fallback',
+          answers: [
+            {
+              questionId: 'scope',
+              question: 'Which scope?',
+              selectedOptions: ['Full'],
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+
+    expect(submission).not.toHaveBeenCalled();
+    expect(ordinaryRequests).toHaveLength(1);
+    expect(ordinaryRequests[0]?.text).toContain('Q: Which scope?');
+    const snapshot = await target.getState(SCOPE);
+    expect(snapshot.tabsFile.tabs[0]?.inputDelivery).toBeUndefined();
+    expect(snapshot.runtimeByChatId['chat-1']?.queuedMessages ?? []).toEqual(
+      [],
+    );
+    expect(snapshot.tabsFile.pendingQuestions?.[0]?.answeredAt).toBeDefined();
+  });
+
+  it.each([
+    { route: 'direct', admission: 'accepted' },
+    { route: 'direct', admission: 'unknown' },
+    { route: 'queued', admission: 'accepted' },
+    { route: 'queued', admission: 'unknown' },
+    { route: 'queued', admission: 'throws' },
+  ] as const)(
+    'retains an answer after %s %s observation persistence fails after claim',
+    async ({ route, admission }) => {
+      const questionId = `async-observation-${route}-${admission}`;
+      let claimCommitted = false;
+      let providerSubmitted = false;
+      const submission = jest.fn(
+        async (
+          _text: string,
+          attemptId: string,
+        ): Promise<ChatInputAdmission> => {
+          providerSubmitted = true;
+          if (admission === 'throws')
+            throw new Error('Provider threw after possible handoff');
+          if (admission === 'accepted') return { kind: 'accepted', attemptId };
+          return {
+            kind: 'unknown',
+            attemptId,
+            reason: 'Provider transport outcome is uncertain',
+          };
+        },
+      );
+      const { session } = answerDeliverySession('claude', submission);
+      const targetHolder: { target?: ChatStateService } = {};
+      const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+        request,
+        origin,
+      ) => {
+        const target = targetHolder.target;
+        if (!target) throw new Error('Missing queue target');
+        if (route === 'queued') {
+          const result = await target.inputDelivery.steerQueuedGenerated(
+            request,
+            () => [],
+            origin,
+            () => true,
+            () => {
+              claimCommitted = true;
+            },
+          );
+          if (result.status !== 'handled')
+            throw new Error('Async answer was not claimed by input delivery');
+          return;
+        }
+        await target.inputDelivery.steerQueued(
+          request,
+          () => [],
+          {
+            commandId: `queue-${request.userMessageId}`,
+            outcome: 'applied',
+            entityId: request.chatId,
+          },
+          () => {
+            claimCommitted = true;
+          },
+          origin,
+        );
+      };
+      const { target, repository } = serviceWithRepository({
+        inputSession: async () => session,
+        submit,
+      });
+      targetHolder.target = target;
+      await createChat(target);
+      await seedAsyncAnswerQuestion(repository, questionId);
+
+      const originalTransactWith = repository.transactWith.bind(repository);
+      let observationFailed = false;
+      jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, options) => {
+          if (
+            claimCommitted &&
+            providerSubmitted &&
+            !observationFailed &&
+            options.source === 'provider'
+          ) {
+            observationFailed = true;
+            return Promise.reject(
+              new Error('Injected provider observation persistence failure'),
+            );
+          }
+          return originalTransactWith(scope, build, options);
+        });
+      const command = asyncAnswerCommand(questionId);
+
+      await expect(
+        target.command(envelope(`answer-${questionId}`, command)),
+      ).resolves.toMatchObject({ outcome: 'rejected' });
+      const afterFailure = await target.getState(SCOPE);
+      const answerRow = afterFailure.tabsFile.tabs[0]?.inputDelivery?.rows.find(
+        (row) => row.payload.asyncQuestionId === questionId,
+      );
+      expect(observationFailed).toBe(true);
+      expect(
+        afterFailure.tabsFile.pendingQuestions?.[0]?.answeredAt,
+      ).toBeDefined();
+      expect(answerRow).toMatchObject({ state: 'sending' });
+      expect(
+        afterFailure.tabsFile.tabs[0]?.messages.some(
+          (message) => message.id === answerRow?.id,
+        ),
+      ).toBe(false);
+      expect(submission).toHaveBeenCalledTimes(1);
+
+      await expect(
+        target.command(envelope(`answer-${questionId}-retry`, command)),
+      ).resolves.toMatchObject({ outcome: 'already_applied' });
+      expect(submission).toHaveBeenCalledTimes(1);
+      expect(
+        (await target.getState(SCOPE)).tabsFile.pendingQuestions?.[0]
+          ?.answeredAt,
+      ).toBeDefined();
+    },
+  );
+
+  it('retains an answer when the first postclaim tab reread fails before provider I/O', async () => {
+    const questionId = 'async-postclaim-tab-read';
+    let claimCommitted = false;
+    let tabReadFailed = false;
+    const submission = jest.fn(
+      async (
+        _text: string,
+        attemptId: string,
+      ): Promise<ChatInputAdmission> => ({ kind: 'accepted', attemptId }),
+    );
+    const { session } = answerDeliverySession('claude', submission);
+    const targetHolder: { target?: ChatStateService } = {};
+    const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+      request,
+      origin,
+    ) => {
+      const target = targetHolder.target;
+      if (!target) throw new Error('Missing queue target');
+      const result = await target.inputDelivery.steerQueuedGenerated(
+        request,
+        () => [],
+        origin,
+        () => true,
+        () => {
+          claimCommitted = true;
+        },
+      );
+      if (result.status !== 'handled')
+        throw new Error('Async answer was not claimed by input delivery');
+    };
+    const { target, repository } = serviceWithRepository({
+      inputSession: async () => session,
+      submit,
+    });
+    targetHolder.target = target;
+    await createChat(target);
+    await seedAsyncAnswerQuestion(repository, questionId);
+
+    const originalGetState = repository.getState.bind(repository);
+    jest.spyOn(repository, 'getState').mockImplementation((scope, options) => {
+      if (claimCommitted && !tabReadFailed) {
+        tabReadFailed = true;
+        return Promise.reject(
+          new Error('Injected postclaim tab reread failure'),
+        );
+      }
+      return originalGetState(scope, options);
+    });
+    const command = asyncAnswerCommand(questionId);
+
+    await expect(
+      target.command(envelope('answer-postclaim-tab-read', command)),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+    const afterFailure = await target.getState(SCOPE);
+    expect(tabReadFailed).toBe(true);
+    expect(
+      afterFailure.tabsFile.pendingQuestions?.[0]?.answeredAt,
+    ).toBeDefined();
+    expect(afterFailure.tabsFile.tabs[0]?.inputDelivery?.rows[0]?.state).toBe(
+      'sending',
+    );
+    expect(submission).not.toHaveBeenCalled();
+
+    await expect(
+      target.command(envelope('answer-postclaim-tab-read-retry', command)),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    expect(submission).not.toHaveBeenCalled();
+  });
+
+  it('retains an answer when proven pre-I/O refusal settlement cannot persist', async () => {
+    const questionId = 'async-refusal-write-failure';
+    let claimCommitted = false;
+    let settlementFailed = false;
+    const submission = jest.fn(
+      async (
+        _text: string,
+        attemptId: string,
+      ): Promise<ChatInputAdmission> => ({ kind: 'accepted', attemptId }),
+    );
+    const { session } = answerDeliverySession('claude', submission);
+    session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'answer-generation',
+      steer: !claimCommitted,
+      withdraw: true,
+      interrupt: true,
+    });
+    const targetHolder: { target?: ChatStateService } = {};
+    const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+      request,
+      origin,
+    ) => {
+      const target = targetHolder.target;
+      if (!target) throw new Error('Missing queue target');
+      const result = await target.inputDelivery.steerQueuedGenerated(
+        request,
+        () => [],
+        origin,
+        () => true,
+        () => {
+          claimCommitted = true;
+        },
+      );
+      if (result.status !== 'handled')
+        throw new Error('Async answer was not claimed by input delivery');
+    };
+    const { target, repository } = serviceWithRepository({
+      inputSession: async () => session,
+      submit,
+    });
+    targetHolder.target = target;
+    await createChat(target);
+    await seedAsyncAnswerQuestion(repository, questionId);
+
+    const originalTransactWith = repository.transactWith.bind(repository);
+    jest
+      .spyOn(repository, 'transactWith')
+      .mockImplementation((scope, build, options) => {
+        if (
+          claimCommitted &&
+          !settlementFailed &&
+          options.source === 'provider' &&
+          options.commandResult === undefined
+        ) {
+          settlementFailed = true;
+          return Promise.reject(
+            new Error('Injected refusal settlement persistence failure'),
+          );
+        }
+        return originalTransactWith(scope, build, options);
+      });
+    const command = asyncAnswerCommand(questionId);
+
+    await expect(
+      target.command(envelope('answer-refusal-write-failure', command)),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+    const afterFailure = await target.getState(SCOPE);
+    expect(settlementFailed).toBe(true);
+    expect(
+      afterFailure.tabsFile.pendingQuestions?.[0]?.answeredAt,
+    ).toBeDefined();
+    expect(afterFailure.tabsFile.tabs[0]?.inputDelivery?.rows[0]?.state).toBe(
+      'sending',
+    );
+    expect(submission).not.toHaveBeenCalled();
+
+    await expect(
+      target.command(envelope('answer-refusal-write-failure-retry', command)),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    expect(submission).not.toHaveBeenCalled();
+  });
+
+  it('retains a committed own-turn answer when admission cleanup persistence fails', async () => {
+    const questionId = 'async-admission-cleanup-write-failure';
+    const dispatchedRequests: ChatSendMessageRequest[] = [];
+    const { target, repository } = serviceWithRepository({
+      submit: async (request, _origin, beforeImmediateDispatch) => {
+        dispatchedRequests.push(request);
+        await beforeImmediateDispatch({
+          cancelledBeforeDispatch: false,
+          startsTurn: true,
+        });
+      },
+    });
+    await createChat(target);
+    await seedAsyncAnswerQuestion(repository, questionId);
+
+    const originalTransactWith = repository.transactWith.bind(repository);
+    let cleanupFailed = false;
+    jest
+      .spyOn(repository, 'transactWith')
+      .mockImplementation((scope, build, options) => {
+        if (
+          !cleanupFailed &&
+          options.mutationId ===
+            'answer-admission-cleanup-write-failure:answer-admission-retired'
+        ) {
+          cleanupFailed = true;
+          return Promise.reject(
+            new Error('Injected answer admission cleanup persistence failure'),
+          );
+        }
+        return originalTransactWith(scope, build, options);
+      });
+    const command = asyncAnswerCommand(questionId);
+
+    await expect(
+      target.command(
+        envelope('answer-admission-cleanup-write-failure', command),
+      ),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+    const afterFailure = await target.getState(SCOPE);
+    const answerMessages = afterFailure.tabsFile.tabs[0]?.messages.filter(
+      (message) => message.role === 'user',
+    );
+    expect(cleanupFailed).toBe(true);
+    expect(
+      afterFailure.tabsFile.pendingQuestions?.[0]?.answeredAt,
+    ).toBeDefined();
+    expect(answerMessages).toHaveLength(1);
+    expect(dispatchedRequests).toHaveLength(1);
+
+    await expect(
+      target.command(
+        envelope('answer-admission-cleanup-write-failure-retry', command),
+      ),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    expect(
+      (await target.getState(SCOPE)).tabsFile.tabs[0]?.messages.filter(
+        (message) => message.role === 'user',
+      ),
+    ).toHaveLength(1);
+    expect(dispatchedRequests).toHaveLength(1);
+  });
+
+  it('retains an answer when its secondary delivery-failure result also cannot persist', async () => {
+    const questionId = 'async-secondary-result-write-failure';
+    let claimCommitted = false;
+    let providerSubmitted = false;
+    let observationFailed = false;
+    let secondaryResultFailed = false;
+    const submission = jest.fn(
+      async (_text: string, attemptId: string): Promise<ChatInputAdmission> => {
+        providerSubmitted = true;
+        return { kind: 'accepted', attemptId };
+      },
+    );
+    const { session } = answerDeliverySession('claude', submission);
+    const targetHolder: { target?: ChatStateService } = {};
+    const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+      request,
+      origin,
+    ) => {
+      const target = targetHolder.target;
+      if (!target) throw new Error('Missing queue target');
+      const result = await target.inputDelivery.steerQueuedGenerated(
+        request,
+        () => [],
+        origin,
+        () => true,
+        () => {
+          claimCommitted = true;
+        },
+      );
+      if (result.status !== 'handled')
+        throw new Error('Async answer was not claimed by input delivery');
+    };
+    const { target, repository } = serviceWithRepository({
+      inputSession: async () => session,
+      submit,
+    });
+    targetHolder.target = target;
+    await createChat(target);
+    await seedAsyncAnswerQuestion(repository, questionId);
+
+    const originalTransactWith = repository.transactWith.bind(repository);
+    jest
+      .spyOn(repository, 'transactWith')
+      .mockImplementation((scope, build, options) => {
+        if (
+          claimCommitted &&
+          providerSubmitted &&
+          !observationFailed &&
+          options.source === 'provider'
+        ) {
+          observationFailed = true;
+          return Promise.reject(
+            new Error('Injected provider observation persistence failure'),
+          );
+        }
+        if (
+          observationFailed &&
+          !secondaryResultFailed &&
+          options.mutationId ===
+            'answer-secondary-result-write-failure:answer-delivery-failed'
+        ) {
+          secondaryResultFailed = true;
+          return Promise.reject(
+            new Error('Injected retained result persistence failure'),
+          );
+        }
+        return originalTransactWith(scope, build, options);
+      });
+    const command = asyncAnswerCommand(questionId);
+
+    await expect(
+      target.command(
+        envelope('answer-secondary-result-write-failure', command),
+      ),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+    const afterFailure = await target.getState(SCOPE);
+    expect(observationFailed).toBe(true);
+    expect(
+      afterFailure.tabsFile.pendingQuestions?.[0]?.answeredAt,
+    ).toBeDefined();
+    expect(afterFailure.tabsFile.tabs[0]?.inputDelivery?.rows[0]?.state).toBe(
+      'sending',
+    );
+    expect(secondaryResultFailed).toBe(true);
+    expect(submission).toHaveBeenCalledTimes(1);
+
+    await expect(
+      target.command(
+        envelope('answer-secondary-result-write-failure-retry', command),
+      ),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    expect(submission).toHaveBeenCalledTimes(1);
+  });
+
   it.each([true, false])(
-    'routes async answers using live turn liveness (%s) and deduplicates concurrent submissions',
+    'uses the queue hook and deduplicates concurrent async answers with live turn state %s',
     async (active) => {
-      const steer = jest.fn(async () => active);
-      const { target, repository } = serviceWithRepository({ steer });
+      const { target, repository } = serviceWithRepository();
       await createChat(target);
       await repository.transact(
         SCOPE,
@@ -20931,8 +34604,7 @@ describe('chat state service', () => {
         'already_applied',
         'applied',
       ]);
-      expect(steer).toHaveBeenCalledTimes(1);
-      expect(dispatched).toHaveLength(active ? 0 : 1);
+      expect(dispatched).toHaveLength(1);
       const after = await target.getState(SCOPE);
       expect(
         after.tabsFile.tabs[0]?.messages.filter(
@@ -20947,10 +34619,11 @@ describe('chat state service', () => {
         type: 'text',
         asyncQuestionAnswer: {
           requestId: 'async-route',
-          startsTurn: false,
+          startsTurn: true,
           answers: [{ question: 'Which scope?', selectedOptions: ['Full'] }],
         },
       });
+      expect(answerMessage?.blocks[0]).not.toHaveProperty('steering');
       if (!active && answerMessage) {
         await target.ingestProviderEvent({
           ...SCOPE,
@@ -20969,12 +34642,22 @@ describe('chat state service', () => {
           },
           turnUserMessageId: answerMessage.id,
         });
+        await reportTurn(target, 'start', answerMessage.id, {
+          provider: 'codex',
+        });
         const started = await target.getState(SCOPE);
         expect(
           started.tabsFile.tabs[0]?.messages.find(
             (message) => message.id === answerMessage.id,
           )?.blocks[0],
-        ).toMatchObject({ asyncQuestionAnswer: { startsTurn: true } });
+        ).toMatchObject({
+          asyncQuestionAnswer: { startsTurn: true },
+        });
+        expect(
+          started.tabsFile.tabs[0]?.messages.find(
+            (message) => message.id === answerMessage.id,
+          )?.blocks[0],
+        ).not.toHaveProperty('steering');
         expect(
           started.tabsFile.tabs[0]?.messages
             .flatMap((message) => message.blocks)
@@ -20984,13 +34667,15 @@ describe('chat state service', () => {
     },
   );
 
-  it('keeps an async question retryable after transport failure without queuing or settling its active turn', async () => {
-    const steer = jest.fn(async () => {
-      throw new Error('Connection lost');
-    });
-    const { target, repository } = serviceWithRepository({
-      steer,
-    });
+  it('rolls an async answer back after the queue hook fails before delivery claim', async () => {
+    const submitted: ChatSendMessageRequest[] = [];
+    const submit: NonNullable<ChatStateServiceOptions['submit']> = async (
+      request,
+    ) => {
+      submitted.push(request);
+      throw new Error('Queue admission failed');
+    };
+    const { target, repository } = serviceWithRepository({ submit });
     await createChat(target);
     await repository.transact(
       SCOPE,
@@ -21057,16 +34742,12 @@ describe('chat state service', () => {
     expect(after.tabsFile.pendingQuestions?.[0]?.answeredAt).toBeUndefined();
     expect(after.tabsFile.tabs[0]?.messages).toHaveLength(0);
     expect(dispatched).toHaveLength(0);
-    expect(steer).toHaveBeenCalledTimes(2);
-    expect(steer.mock.calls[0]?.[0].clientUserMessageId).toBe(
-      'answer-async-error',
+    expect(submitted).toHaveLength(2);
+    expect(submitted[0]?.clientUserMessageId).toBe('answer-async-error');
+    expect(submitted[0]?.clientUserMessageId).toBe(
+      submitted[1]?.clientUserMessageId,
     );
-    expect(steer.mock.calls[0]?.[0].clientUserMessageId).toBe(
-      steer.mock.calls[1]?.[0].clientUserMessageId,
-    );
-    expect(steer.mock.calls[0]?.[0].userMessageId).not.toBe(
-      steer.mock.calls[1]?.[0].userMessageId,
-    );
+    expect(submitted[0]?.userMessageId).not.toBe(submitted[1]?.userMessageId);
   });
 
   it.each(['cancel', 'edit'] as const)(
@@ -21142,6 +34823,145 @@ describe('chat state service', () => {
         });
     },
   );
+
+  it('publishes the merged durable runtime from an omitted-field writer', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    const turn = serializeChatTurnState({
+      ...initialChatTurnState(),
+      catchingUp: true,
+    });
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: { status: 'streaming', queuedMessageIds: [], turn },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-omitted-writer-turn' },
+    );
+    const runtimes: ChatRuntimeState[] = [];
+    const unsubscribe = target.subscribe((event) => {
+      for (const change of event.changes)
+        if (change.type === 'runtime.patched') runtimes.push(change.runtime);
+    });
+    try {
+      await repository.transact(
+        SCOPE,
+        [
+          {
+            type: 'runtime.patched',
+            chatId: 'chat-1',
+            runtime: { status: 'completed', queuedMessageIds: [] },
+          },
+        ],
+        { source: 'provider', mutationId: 'omitted-field-writer' },
+      );
+      const snapshot = await target.getState(SCOPE);
+      expect(runtimes).toHaveLength(1);
+      expect(runtimes[0]).toEqual(snapshot.runtimeByChatId['chat-1']);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('deliberately resets durable turn state at a transcript reset point', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    const turn = serializeChatTurnState({
+      ...initialChatTurnState(),
+      catchingUp: true,
+    });
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: { status: 'idle', queuedMessageIds: [], turn },
+        },
+        {
+          type: 'message.upserted',
+          chatId: 'chat-1',
+          message: {
+            id: 'turn-reset-anchor',
+            role: 'user',
+            timestamp: 1,
+            blocks: [{ type: 'text', text: 'Reset here' }],
+          },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-turn-reset' },
+    );
+    await expect(
+      target.command(
+        envelope('reset-durable-turn', {
+          type: 'chat.reset_to_point',
+          chatId: 'chat-1',
+          userMessageId: 'turn-reset-anchor',
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+    expect(
+      (await repository.getState(SCOPE)).runtimeByChatId['chat-1'].turn,
+    ).toEqual(serializeChatTurnState(initialChatTurnState()));
+  });
+
+  it('preserves durable turn state in send-dispatch failure writes', async () => {
+    const { target, repository } = serviceWithRepository({
+      dispatch: () => Promise.reject(new Error('dispatch-turn-failure')),
+    });
+    await createChat(target);
+    const turn = serializeChatTurnState({
+      ...initialChatTurnState(),
+      catchingUp: true,
+    });
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'runtime.patched',
+          chatId: 'chat-1',
+          runtime: { status: 'idle', queuedMessageIds: [], turn },
+        },
+      ],
+      { source: 'provider', mutationId: 'seed-turn-dispatch-failure' },
+    );
+    const emitted: ChatRuntimeState[] = [];
+    const transactWith = repository.transactWith.bind(repository);
+    jest
+      .spyOn(repository, 'transactWith')
+      .mockImplementation((scope, build, options) =>
+        transactWith(
+          scope,
+          async (current, revision, context) => {
+            const mutations = await build(current, revision, context);
+            for (const mutation of mutations)
+              if (mutation.type === 'runtime.patched')
+                emitted.push(mutation.runtime);
+            return mutations;
+          },
+          options,
+        ),
+      );
+    await target
+      .command(
+        envelope('send-durable-turn-failure', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'failed-turn-user',
+          text: 'Send',
+        }),
+      )
+      .catch(() => undefined);
+    expect(emitted.some((runtime) => runtime.status === 'failed')).toBe(true);
+    for (const runtime of emitted) expect(runtime.turn).toEqual(turn);
+    expect(
+      (await repository.getState(SCOPE)).runtimeByChatId['chat-1'].turn,
+    ).toEqual(turn);
+  });
 
   it('removes an async pending question when reset truncates its message', async () => {
     const { target, repository } = serviceWithRepository();
@@ -21774,6 +35594,70 @@ describe('chat state service', () => {
     });
   });
 
+  it.each([undefined, 'opencode'] as const)(
+    'retains OpenCode context when a started chat changes model with harness %s',
+    async (executionHarness) => {
+      const assignment = {
+        modelId: 'gpt-6-sol',
+        source: 'codex-managed' as const,
+        harness: 'codex' as const,
+        defaultHarness: 'codex' as const,
+        configurable: false,
+        overridden: false,
+        availableHarnesses: ['codex' as const],
+        chatHarnesses: ['codex' as const, 'opencode' as const],
+      };
+      initModelHarnessAssignments({ revision: 1, assignments: [assignment] });
+      const target = service();
+      await createChat(target);
+      const tabs = await target.getCompatibilityTabs(SCOPE);
+      await target.replaceCompatibilityTabs(SCOPE, {
+        ...tabs,
+        tabs: tabs.tabs.map((tab) => ({
+          ...tab,
+          model: 'claude-sonnet-4-6',
+          providerType: 'opencode' as const,
+          executionHarness: 'opencode' as const,
+          executionHarnessExplicitlyChosen: true,
+          sdkSessionId: 'native-opencode-session',
+          globalInstructionsSnapshot: 'captured instructions',
+          messages: [
+            {
+              id: 'started-opencode',
+              role: 'user' as const,
+              timestamp: 1,
+              blocks: [
+                { type: 'text' as const, text: 'Remember this context' },
+              ],
+            },
+          ],
+        })),
+      });
+      const result = await target.command(
+        envelope('opencode-next-model', {
+          type: 'chat.set_model',
+          tabId: 'chat-1',
+          model: 'gpt-6-sol',
+          providerType: 'opencode',
+          ...(executionHarness ? { executionHarness } : {}),
+        }),
+      );
+      expect(result).toMatchObject({ outcome: 'applied' });
+      const changed = (await target.getState(SCOPE)).tabsFile.tabs[0];
+      expect(changed).toMatchObject({
+        model: 'gpt-6-sol',
+        providerType: 'opencode',
+        executionHarness: 'opencode',
+        sdkSessionId: 'native-opencode-session',
+        globalInstructionsSnapshot: 'captured instructions',
+      });
+      await target.flushScope(SCOPE.projectId, SCOPE.worktreeId);
+      expect((await service().getState(SCOPE)).tabsFile.tabs[0]).toEqual(
+        changed,
+      );
+    },
+  );
+
   it('rejects changing the harness after a chat has started', async () => {
     initOllamaModels([
       {
@@ -21832,6 +35716,64 @@ describe('chat state service', () => {
     );
     expect(result.outcome).toBe('rejected');
   });
+
+  it.each([
+    ['auto', 'claude'],
+    ['claude-code', 'claude'],
+    ['auto', undefined],
+  ] as const)(
+    'allows an empty %s tab with a preallocated terminal session and harness %s to choose OpenCode',
+    async (interfaceMode, executionHarness) => {
+      initModelHarnessAssignments({
+        revision: 1,
+        assignments: [
+          {
+            modelId: 'gpt-6-sol',
+            source: 'codex-managed',
+            harness: 'codex',
+            defaultHarness: 'codex',
+            configurable: false,
+            overridden: false,
+            availableHarnesses: ['codex'],
+            chatHarnesses: ['codex', 'opencode'],
+          },
+        ],
+      });
+      const target = service();
+      await createChat(target);
+      const tabs = await target.getCompatibilityTabs(SCOPE);
+      await target.replaceCompatibilityTabs(SCOPE, {
+        ...tabs,
+        tabs: tabs.tabs.map((tab) => ({
+          ...tab,
+          interfaceMode,
+          executionHarness,
+          providerType: executionHarness,
+          sdkSessionId: 'preallocated-terminal-session',
+          messages: [],
+          claudeTerminal: { turnState: 'idle' as const },
+        })),
+      });
+      const result = await target.command(
+        envelope('choose-opencode-before-first-turn', {
+          type: 'chat.set_model',
+          tabId: 'chat-1',
+          model: 'gpt-6-sol',
+          providerType: 'opencode',
+          executionHarness: 'opencode',
+        }),
+      );
+      expect(result).toMatchObject({ outcome: 'applied' });
+      const changed = (await target.getState(SCOPE)).tabsFile.tabs[0];
+      expect(changed).toMatchObject({
+        model: 'gpt-6-sol',
+        providerType: 'opencode',
+        executionHarness: 'opencode',
+      });
+      expect(changed).not.toHaveProperty('sdkSessionId');
+      expect(changed).not.toHaveProperty('claudeTerminal');
+    },
+  );
 
   it('clears foreign continuation state when an empty tab changes harness', async () => {
     initOllamaModels([
@@ -22503,6 +36445,356 @@ describe('chat state service', () => {
     );
   });
 
+  it('answers synchronous questions as side state without rewriting committed question transcript rows', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    const questions = [
+      { id: 'secret', question: 'Enter value', options: [], secret: true },
+      { id: 'public', question: 'Enter value', options: [] },
+    ];
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'message.upserted',
+          chatId: 'chat-1',
+          message: {
+            id: 'committed-question',
+            role: 'assistant',
+            timestamp: 1,
+            blocks: [
+              {
+                type: 'tool_use',
+                toolUseId: 'question-tool',
+                toolName: 'AskUserQuestion',
+                input: JSON.stringify({ questions }),
+              },
+            ],
+          },
+        },
+      ],
+      {
+        source: 'provider',
+        mutationId: 'seed-committed-question',
+        fullTranscript: true,
+      },
+    );
+    await target.upsertPendingQuestion(SCOPE, {
+      requestId: 'identical-question-text',
+      toolUseId: 'question-tool',
+      chatId: 'chat-1',
+      questions,
+    });
+    const transcriptPath = join(
+      ChatStorageV2.fromLegacyPaths(paths).directory,
+      'transcripts',
+      'chat-1.jsonl',
+    );
+    const committedBytes = readFileSync(transcriptPath);
+    expect(committedBytes.length).toBeGreaterThan(0);
+    const before = (
+      await repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      })
+    ).tabsFile.tabs[0].messages;
+    const commits: ChatStateCommit[] = [];
+    repository.setCommitListener(async (commit) => {
+      commits.push(commit);
+      await target['publishCommit'](commit);
+    });
+    const diagnostics = jest.fn();
+    transcriptRewriteDiagnostics.setChatTranscriptRewriteDiagnosticsForTests({
+      sink: diagnostics,
+    });
+    const report = jest.spyOn(
+      transcriptRewriteDiagnostics,
+      'reportChatTranscriptFullRewrite',
+    );
+    try {
+      await expect(
+        target.command(
+          envelope('answer-identical-text', {
+            type: 'chat.answer_question',
+            chatId: 'chat-1',
+            questionId: 'identical-question-text',
+            // Deliberately reverse answers: equal labels must not override ids.
+            answers: [
+              {
+                questionId: 'public',
+                question: 'Enter value',
+                selectedOptions: [],
+                freeformText: 'public value',
+              },
+              {
+                questionId: 'secret',
+                question: 'Enter value',
+                selectedOptions: [],
+                freeformText: 'private value',
+              },
+            ],
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      await target.consumePendingQuestion(
+        SCOPE,
+        'chat-1',
+        'identical-question-text',
+      );
+      const mutations = commits.flatMap(({ record }) => record.mutations);
+      expect(mutations).toContainEqual(
+        expect.objectContaining({ type: 'pending_question.upserted' }),
+      );
+      // Consuming the answer may also update runtime liveness, but neither
+      // answering nor consuming may mutate the committed transcript.
+      expect(
+        mutations.filter(
+          ({ type }) =>
+            type.startsWith('message.') || type.startsWith('messages.'),
+        ),
+      ).toEqual([]);
+      expect(
+        commits.flatMap(({ transcriptResets }) => transcriptResets ?? []),
+      ).toEqual([]);
+      const after = await repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      });
+      expect(after.tabsFile.tabs[0].messages).toEqual(before);
+      expect(readFileSync(transcriptPath)).toEqual(committedBytes);
+      expect(after.tabsFile.pendingQuestions).toEqual([
+        expect.objectContaining({
+          requestId: 'identical-question-text',
+          answeredAt: 1_786_104_000_000,
+          answers: [
+            expect.objectContaining({
+              questionId: 'public',
+              freeformText: 'public value',
+            }),
+            expect.objectContaining({
+              questionId: 'secret',
+              freeformText: '[hidden]',
+            }),
+          ],
+        }),
+      ]);
+      expect(report).not.toHaveBeenCalled();
+      expect(diagnostics).not.toHaveBeenCalled();
+    } finally {
+      report.mockRestore();
+      transcriptRewriteDiagnostics.setChatTranscriptRewriteDiagnosticsForTests();
+    }
+  });
+
+  it('rejects a late IPC answer after cancellation without persisting it', async () => {
+    const target = service();
+    await createChat(target);
+    await target.upsertPendingQuestion(SCOPE, {
+      requestId: 'cancelled-ipc-question',
+      chatId: 'chat-1',
+      questions: [{ question: 'Pick', options: ['Red', 'Blue'] }],
+    });
+    const waiter = createPendingRequest('cancelled-ipc-question', 'session');
+    const ignoredWaiter = waiter.catch(() => []);
+    rejectRequest('cancelled-ipc-question', 'ask_user_cancelled');
+    await ignoredWaiter;
+
+    await expect(
+      target.answerPendingQuestion('cancelled-ipc-question', [
+        { question: 'Pick', selectedOptions: ['Blue'] },
+      ]),
+    ).resolves.toBe(false);
+
+    const question = (await target.getState(SCOPE)).tabsFile
+      .pendingQuestions?.[0];
+    expect(question).toMatchObject({ requestId: 'cancelled-ipc-question' });
+    expect(question?.answers).toBeUndefined();
+    expect(question?.answeredAt).toBeUndefined();
+    await target.consumePendingQuestion(
+      SCOPE,
+      'chat-1',
+      'cancelled-ipc-question',
+    );
+  });
+
+  it('fences a queued Portal answer by canonical request id when addressed through its tool-use alias', async () => {
+    const { target, repository } = serviceWithRepository();
+    const requestId = 'cancelled-portal-question';
+    await createChat(target);
+    await target.upsertPendingQuestion(SCOPE, {
+      requestId,
+      toolUseId: 'ask-user-tool-alias',
+      chatId: 'chat-1',
+      questions: [{ question: 'Pick', options: ['Red', 'Blue'] }],
+    });
+    const waiter = createPendingRequest(requestId, 'session');
+    const ignoredWaiter = waiter.catch(() => []);
+    const originalTransactWith = repository.transactWith.bind(repository);
+    const transactWith = jest.spyOn(repository, 'transactWith');
+    transactWith.mockImplementation((scope, build, options) => {
+      const queued = originalTransactWith(scope, build, options);
+      if (options.mutationId === 'cancelled-portal-answer') {
+        rejectRequest(requestId, 'ask_user_cancelled');
+      }
+      return queued;
+    });
+
+    try {
+      const result = await target.command(
+        envelope('cancelled-portal-answer', {
+          type: 'chat.answer_question',
+          chatId: 'chat-1',
+          questionId: 'ask-user-tool-alias',
+          answers: [{ question: 'Pick', selectedOptions: ['Blue'] }],
+        }),
+      );
+      await ignoredWaiter;
+
+      expect(result).toMatchObject({ outcome: 'rejected' });
+      const question = (await target.getState(SCOPE)).tabsFile
+        .pendingQuestions?.[0];
+      expect(question).toMatchObject({
+        requestId,
+        toolUseId: 'ask-user-tool-alias',
+      });
+      expect(question?.answers).toBeUndefined();
+      expect(question?.answeredAt).toBeUndefined();
+    } finally {
+      transactWith.mockRestore();
+      await target.consumePendingQuestion(SCOPE, 'chat-1', requestId);
+    }
+  });
+
+  it('clears an abort fence after consume confirms no durable question exists', async () => {
+    const target = service();
+    const requestId = 'cancelled-before-persistence';
+    await createChat(target);
+    const waiter = createPendingRequest(requestId, 'session');
+    const ignoredWaiter = waiter.catch(() => []);
+    expect(rejectRequest(requestId, 'ask_user_cancelled')).toBe(true);
+    await ignoredWaiter;
+
+    await target.consumePendingQuestion(SCOPE, 'chat-1', requestId);
+    await target.upsertPendingQuestion(SCOPE, {
+      requestId,
+      chatId: 'chat-1',
+      questions: [{ question: 'Pick', options: ['Red', 'Blue'] }],
+    });
+
+    await expect(
+      target.answerPendingQuestion(requestId, [
+        { question: 'Pick', selectedOptions: ['Blue'] },
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it('keeps a restored synchronous question answerable without a waiter', async () => {
+    const target = service();
+    const requestId = 'restored-sync-question';
+    await createChat(target);
+    await target.upsertPendingQuestion(SCOPE, {
+      requestId,
+      chatId: 'chat-1',
+      questions: [{ question: 'Pick', options: ['Red', 'Blue'] }],
+    });
+
+    await expect(
+      target.answerPendingQuestion(requestId, [
+        { question: 'Pick', selectedOptions: ['Blue'] },
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it('appends exactly one real user message for an asynchronous question answer', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'message.upserted',
+          chatId: 'chat-1',
+          message: {
+            id: 'async-question-row',
+            role: 'assistant',
+            timestamp: 1,
+            blocks: [{ type: 'text', text: 'Which scope?\n- Full' }],
+          },
+        },
+      ],
+      {
+        source: 'provider',
+        mutationId: 'seed-async-question-row',
+        fullTranscript: true,
+      },
+    );
+    await target.upsertPendingQuestion(SCOPE, {
+      requestId: 'async-single-append',
+      chatId: 'chat-1',
+      delivery: 'async',
+      questions: [{ id: 'scope', question: 'Which scope?', options: ['Full'] }],
+    });
+    const before = (
+      await repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      })
+    ).tabsFile.tabs[0].messages;
+    expect(before).toHaveLength(1);
+    const commits: ChatStateCommit[] = [];
+    repository.setCommitListener(async (commit) => {
+      commits.push(commit);
+      await target['publishCommit'](commit);
+    });
+    const command: ChatCommand = {
+      type: 'chat.answer_question',
+      chatId: 'chat-1',
+      questionId: 'async-single-append',
+      answers: [
+        {
+          questionId: 'scope',
+          question: 'Which scope?',
+          selectedOptions: ['Full'],
+        },
+      ],
+    };
+    await expect(
+      target.command(envelope('async-single-answer', command)),
+    ).resolves.toMatchObject({ outcome: 'applied' });
+    await expect(
+      target.command(envelope('async-single-answer-retry', command)),
+    ).resolves.toMatchObject({ outcome: 'already_applied' });
+    const after = await repository.getState(SCOPE, {
+      chatIds: ['chat-1'],
+      fullTranscript: true,
+    });
+    expect(after.tabsFile.tabs[0].messages).toHaveLength(2);
+    expect(after.tabsFile.tabs[0].messages[0]).toEqual(before[0]);
+    expect(
+      after.tabsFile.tabs[0].messages.filter(({ role }) => role === 'user'),
+    ).toEqual([
+      expect.objectContaining({
+        id: 'answer-async-single-answer',
+        blocks: [
+          expect.objectContaining({
+            type: 'text',
+            text: expect.stringContaining('Full'),
+          }),
+        ],
+      }),
+    ]);
+    expect(
+      commits
+        .flatMap(({ record }) => record.mutations)
+        .filter(
+          (mutation) =>
+            mutation.type === 'message.upserted' &&
+            mutation.message.role === 'user',
+        ),
+    ).toHaveLength(1);
+    expect(dispatched).toHaveLength(1);
+  });
+
   it('persists secret answers redacted while retaining non-secret answers', async () => {
     const target = service();
     await createChat(target);
@@ -22661,6 +36953,183 @@ describe('chat state service', () => {
     const snapshot = await target.getState(SCOPE);
     expect(snapshot.tabsFile.pendingQuestions ?? []).toHaveLength(0);
     expect(snapshot.runtimeByChatId['chat-1']?.status).toBe('streaming');
+  });
+
+  it('publishes per-chat transcript reset metadata for insertion, content changes, and materialization', async () => {
+    const { target, repository } = serviceWithRepository();
+    const chatIds = ['chat-1', 'content-chat', 'materialized-chat'];
+    await createChat(target);
+    for (const chatId of chatIds.slice(1)) {
+      await target.command(
+        envelope(`create-${chatId}`, {
+          type: 'chat.create_tab',
+          tabId: chatId,
+          title: chatId,
+        }),
+      );
+    }
+
+    const message = (id: string, text: string): PersistedChatMessage => ({
+      id,
+      role: 'assistant',
+      timestamp: 1,
+      blocks: [{ type: 'text', text }],
+    });
+    await repository.transact(
+      SCOPE,
+      chatIds.map((chatId) => ({
+        type: 'message.upserted' as const,
+        chatId,
+        message: message(`${chatId}-row`, 'Before'),
+      })),
+      {
+        source: 'provider',
+        mutationId: 'seed-transcript-reset-publish',
+        chatIds,
+        fullTranscript: true,
+      },
+    );
+
+    // The V2 backend owns the structural decision. Keep this test focused on
+    // the service's publication of that decision, rather than the repository's
+    // automatic commit callback.
+    repository.setCommitListener(async () => undefined);
+    const published: ChatStateChange[] = [];
+    target.subscribe((event) => published.push(...event.changes));
+    const commit = await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'message.upserted',
+          chatId: 'chat-1',
+          message: message('chat-1-inserted', 'Inserted at a new position'),
+        },
+        {
+          type: 'message.upserted',
+          chatId: 'content-chat',
+          message: message('content-chat-row', 'Updated text in place'),
+        },
+        {
+          type: 'messages.replaced',
+          chatId: 'materialized-chat',
+          messages: [message('materialized-chat-row', 'Materialized in place')],
+          removedMessageIds: [],
+        },
+      ],
+      {
+        source: 'provider',
+        mutationId: 'publish-transcript-reset-metadata',
+        chatIds,
+        fullTranscript: true,
+      },
+    );
+
+    await target['publishCommit']({ ...commit, transcriptResets: [] });
+    const emptyResetList = published.filter(
+      (change) => change.type === 'transcript.updated',
+    );
+    expect(
+      Object.fromEntries(
+        emptyResetList.map((change) => [change.chatId, change.reset]),
+      ),
+    ).toEqual({
+      'chat-1': false,
+      'content-chat': false,
+      'materialized-chat': false,
+    });
+
+    published.length = 0;
+    await target['publishCommit']({ ...commit, transcriptResets: ['chat-1'] });
+    const perChatResetList = published.filter(
+      (change) => change.type === 'transcript.updated',
+    );
+    expect(
+      Object.fromEntries(
+        perChatResetList.map((change) => [change.chatId, change.reset]),
+      ),
+    ).toEqual({
+      'chat-1': true,
+      'content-chat': false,
+      'materialized-chat': false,
+    });
+  });
+
+  it('uses legacy replacement and removal reset rules only when reset metadata is absent', async () => {
+    const { target, repository } = serviceWithRepository();
+    await createChat(target);
+    await target.command(
+      envelope('create-removal-chat', {
+        type: 'chat.create_tab',
+        tabId: 'removal-chat',
+        title: 'Removal chat',
+      }),
+    );
+    const message = (id: string, text: string): PersistedChatMessage => ({
+      id,
+      role: 'assistant',
+      timestamp: 1,
+      blocks: [{ type: 'text', text }],
+    });
+    await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'message.upserted',
+          chatId: 'chat-1',
+          message: message('replacement-row', 'Before replacement'),
+        },
+        {
+          type: 'message.upserted',
+          chatId: 'removal-chat',
+          message: message('removed-row', 'Before removal'),
+        },
+      ],
+      {
+        source: 'provider',
+        mutationId: 'seed-legacy-transcript-reset-publish',
+        chatIds: ['chat-1', 'removal-chat'],
+        fullTranscript: true,
+      },
+    );
+
+    repository.setCommitListener(async () => undefined);
+    const published: ChatStateChange[] = [];
+    target.subscribe((event) => published.push(...event.changes));
+    const commit = await repository.transact(
+      SCOPE,
+      [
+        {
+          type: 'messages.replaced',
+          chatId: 'chat-1',
+          messages: [message('replacement-row', 'After replacement')],
+          removedMessageIds: [],
+        },
+        {
+          type: 'message.removed',
+          chatId: 'removal-chat',
+          messageId: 'removed-row',
+        },
+      ],
+      {
+        source: 'provider',
+        mutationId: 'publish-legacy-transcript-reset-metadata',
+        chatIds: ['chat-1', 'removal-chat'],
+        fullTranscript: true,
+      },
+    );
+    const legacyCommit: ChatStateCommit = { ...commit };
+    delete legacyCommit.transcriptResets;
+
+    await target['publishCommit'](legacyCommit);
+
+    const transcriptResets = published.filter(
+      (change) => change.type === 'transcript.updated',
+    );
+    expect(
+      Object.fromEntries(
+        transcriptResets.map((change) => [change.chatId, change.reset]),
+      ),
+    ).toEqual({ 'chat-1': true, 'removal-chat': true });
   });
 
   it('isolates a throwing observer after the journal commit', async () => {

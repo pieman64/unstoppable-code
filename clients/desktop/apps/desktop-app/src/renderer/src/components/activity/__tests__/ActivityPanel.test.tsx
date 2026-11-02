@@ -20,6 +20,10 @@ import { useCostScopeStore } from '@canopy/ui-app/cost';
 import { SharedActivityPanelAdapter } from '../SharedActivityPanelAdapter';
 import { resetMcpSectionContentMemoryForTests } from '../mcpSectionContentMemory';
 import { useChatStore } from '@/stores/chatStore';
+import {
+  resetRendererBillingLaneForTests,
+  setRendererBillingLaneAvailability,
+} from '@/stores/billingLaneRuntime';
 import { useHooksStore } from '@/stores/hooksStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useScriptsStore } from '@/stores/scriptsStore';
@@ -34,9 +38,13 @@ let mockPullRequestChrome = {
   collapsedIconColor: 'muted' as const,
   hasContent: false,
 };
-let mockPipelineRunsChrome = {
+let mockPipelineRunsChrome: {
+  subtitle: string;
+  collapsedIconColor: 'amber' | 'muted';
+  hasContent: boolean;
+} = {
   subtitle: 'pipeline-runs chrome',
-  collapsedIconColor: 'amber' as const,
+  collapsedIconColor: 'amber',
   hasContent: true,
 };
 let mockMcpLoading = false;
@@ -368,7 +376,11 @@ describe('SharedActivityPanelAdapter', () => {
               planMode: false,
               proposalMode: 'optional',
               thinkingLevel: 'high',
-              modelConfig: { thinkingLevel: 'high', fastMode: false },
+              modelConfig: {
+                thinkingLevel: 'high',
+                speed: 'standard',
+                fastMode: false,
+              },
               fastModeExplicit: false,
               model: 'claude-sonnet-4-5-20250514',
               providerType: 'claude',
@@ -464,6 +476,7 @@ describe('SharedActivityPanelAdapter', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    resetRendererBillingLaneForTests();
   });
 
   it('passes native bodies, desktop extras, hidden tabs, and persisted order to shared chrome', () => {
@@ -497,7 +510,8 @@ describe('SharedActivityPanelAdapter', () => {
     ]);
     const injected = [
       ...Object.values(props.sectionOverrides ?? {}).filter(
-        (section) => section.body !== undefined,
+        (section): section is NonNullable<typeof section> =>
+          section?.body !== undefined,
       ),
       ...(props.extraSections ?? []),
     ];
@@ -727,6 +741,58 @@ describe('SharedActivityPanelAdapter', () => {
       'activity-section-cost',
     );
     expect(props.sectionOverrides?.cost?.cardValue).toBeUndefined();
+  });
+
+  it('drops the Cost section and its scope read for a credits-only account (CAN-5028)', async () => {
+    setTestEarlyAccessFeatures({ enabled: false, hydrated: true });
+    await import('../cost/CostActivityScopeSource');
+    setRendererBillingLaneAvailability({
+      claudeNativeAuth: false,
+      codexNativeAuth: false,
+      creditsEligible: true,
+    });
+    jest.mocked(useCostScopeStore).mockClear();
+
+    await act(async () => {
+      root.render(<SharedActivityPanelAdapter layout="card" />);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    const calls = jest.mocked(SharedActivityPanel).mock.calls;
+    const props = calls[calls.length - 1][0];
+    expect(jest.mocked(useCostScopeStore)).not.toHaveBeenCalled();
+    // The order is the persisted one; a dropped section is hidden, with no
+    // body, header action or card value of its own.
+    expect(props.sectionOverrides?.cost).toEqual({ hidden: true });
+  });
+
+  it('keeps the Cost section while the account facts are unknown or include a subscription', async () => {
+    setTestEarlyAccessFeatures({ enabled: false, hydrated: true });
+    await import('../cost/CostActivityScopeSource');
+
+    await act(async () => {
+      root.render(<SharedActivityPanelAdapter layout="card" />);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    let calls = jest.mocked(SharedActivityPanel).mock.calls;
+    expect(
+      calls[calls.length - 1][0].sectionOverrides?.cost?.hidden,
+    ).toBeUndefined();
+
+    await act(async () => {
+      setRendererBillingLaneAvailability({
+        claudeNativeAuth: false,
+        codexNativeAuth: true,
+        creditsEligible: true,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    calls = jest.mocked(SharedActivityPanel).mock.calls;
+    const props = calls[calls.length - 1][0];
+    expect(props.sectionOverrides?.cost?.hidden).toBeUndefined();
+    expect(props.sectionOverrides?.cost?.dataTestId).toBe(
+      'activity-section-cost',
+    );
   });
 
   it('shows a successful Cost total in the Activity card and hides it after a failed read', async () => {

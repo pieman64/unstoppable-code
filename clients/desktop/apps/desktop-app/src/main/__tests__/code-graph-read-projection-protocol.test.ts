@@ -4,13 +4,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { CodeGraphEngine } from '@canopy/desktop-shared/node/code-graph/engine';
+import { CodeGraphEngine } from '@canopy/code-graph/engine';
 import {
   codeGraphSummaryProjectionV1Schema,
   type CodeGraphSummaryProjectionV1,
   type ReadCodeGraphSummaryProjectionResult,
-} from '@canopy/desktop-shared/node/code-graph/summary-projection';
-import { parseGraphDiagnostics } from '@canopy/desktop-shared/node/code-graph/diagnostics';
+} from '@canopy/code-graph/summary-projection';
+import { parseGraphDiagnostics } from '@canopy/code-graph/diagnostics';
 import type { CodeGraphDiagnostics } from '@canopy/desktop-shared/types/code-graph';
 class Child extends EventEmitter {
   public readonly postMessage = jest.fn();

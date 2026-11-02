@@ -6,6 +6,7 @@ import {
 import { Button } from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
 import { SearchIcon } from '../icons/AppIcons';
+import { formatDateOrEmpty } from '../lib/format-date';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
 /** One share in the Past shares list, removed or accepted. */
@@ -53,17 +54,6 @@ function byTimeDescending(
   if (left === undefined) return 1;
   if (right === undefined) return -1;
   return right.localeCompare(left);
-}
-
-function formatDate(iso: string | undefined): string {
-  if (iso === undefined) return '';
-  const time = Date.parse(iso);
-  if (Number.isNaN(time)) return '';
-  return new Date(time).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
 }
 
 function matches(item: PastShareItem, query: string): boolean {
@@ -209,8 +199,8 @@ export function SharedContainerPastSharesList({
                     leading={null}
                     title={item.title}
                     trailing={<OwnerLine name={item.ownerName} />}
-                    date={formatDate(item.dismissedAt)}
-                    dateTooltip={`Removed ${formatDate(item.dismissedAt)}`}
+                    date={formatDateOrEmpty(item.dismissedAt)}
+                    dateTooltip={`Removed ${formatDateOrEmpty(item.dismissedAt)}`}
                     actionsReserve="inline"
                     actions={
                       <Button
@@ -241,9 +231,11 @@ export function SharedContainerPastSharesList({
                   leading={null}
                   title={item.title}
                   trailing={<OwnerLine name={item.ownerName} />}
-                  date={formatDate(item.acceptedAt)}
+                  date={formatDateOrEmpty(item.acceptedAt)}
                   {...(item.acceptedAt
-                    ? { dateTooltip: `Accepted ${formatDate(item.acceptedAt)}` }
+                    ? {
+                        dateTooltip: `Accepted ${formatDateOrEmpty(item.acceptedAt)}`,
+                      }
                     : {})}
                   onOpen={(): void => onOpenAccepted(item.id)}
                   openTestId={`${TEST_ID}-accepted-open-${item.id}`}

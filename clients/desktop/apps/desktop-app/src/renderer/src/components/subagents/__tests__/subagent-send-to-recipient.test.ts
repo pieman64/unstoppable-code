@@ -104,7 +104,10 @@ beforeEach(() => {
   useChatStore.setState({ sendMessage: sendMessageMock });
   useSubagentComposerStore.setState({ drafts: {} });
   revealRoot.mockReturnValue(true);
-  openParent.mockResolvedValue({ status: 'placed' });
+  openParent.mockResolvedValue({
+    status: 'placed',
+    location: { layoutKey: 'main', groupId: 'group-1', panelId: 'panel-1' },
+  });
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: { managedDelegation: { message: managedMessage } },

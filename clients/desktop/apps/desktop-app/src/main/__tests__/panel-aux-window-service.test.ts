@@ -55,14 +55,35 @@ describe('decidePanelAuxWindowOpen', () => {
     expect(webPreferences && 'preload' in webPreferences).toBe(false);
   });
 
-  test('the allow uses the compact hidden-title-bar chrome (renderer top bar replaces the OS title bar)', () => {
-    const decision = decidePanelAuxWindowOpen(allowedDetails);
-    const options = decision?.overrideBrowserWindowOptions;
-    expect(options?.titleBarStyle).toBe('hidden');
-    // Traffic lights are positioned to center within the renderer's 38px
-    // custom top bar (AuxPanelWindow's drag-region header).
-    expect(options?.trafficLightPosition).toEqual({ x: 15, y: 12 });
-  });
+  test.each<NodeJS.Platform>(['darwin', 'win32', 'linux'])(
+    'uses the expected auxiliary window chrome on %s',
+    (platform) => {
+      const original = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: platform,
+      });
+      try {
+        const options =
+          decidePanelAuxWindowOpen(
+            allowedDetails,
+          )?.overrideBrowserWindowOptions;
+        expect(options).toBeDefined();
+        if (platform === 'linux') {
+          expect(options?.frame).toBe(true);
+          expect(options).not.toHaveProperty('titleBarStyle');
+          expect(options).not.toHaveProperty('trafficLightPosition');
+        } else {
+          expect(options?.titleBarStyle).toBe('hidden');
+          expect(options?.trafficLightPosition).toEqual({ x: 15, y: 12 });
+          expect(options).not.toHaveProperty('frame');
+        }
+        expect(options).not.toHaveProperty('titleBarOverlay');
+      } finally {
+        if (original) Object.defineProperty(process, 'platform', original);
+      }
+    },
+  );
 
   test('denies (null) any URL other than exactly about:blank', () => {
     for (const url of [

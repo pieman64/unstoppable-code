@@ -1,3 +1,6 @@
+'use client';
+
+import { useContinuousMotion } from '../lib/continuous-motion';
 import type { JSX } from 'react';
 import { CometSpinner } from './CometSpinner';
 import { useSpinnerStyle } from './spinner-style';
@@ -6,8 +9,7 @@ interface RunSpinnerProps {
   className?: string;
 }
 
-const DOT =
-  'h-0.5 w-0.5 rounded-full bg-current will-change-[transform,opacity]';
+const DOT = 'h-0.5 w-0.5 rounded-full bg-current';
 
 /**
  * Diagonal-sweep dot spinner on a 3×3 grid.
@@ -15,6 +17,7 @@ const DOT =
  * Two fully active dots at a time, sweeping across the anti-diagonals.
  */
 export function RunSpinner({ className = '' }: RunSpinnerProps): JSX.Element {
+  const motionRef = useContinuousMotion<HTMLSpanElement>();
   // A host that draws spinners as the comet (desktop early access) gets the
   // ring at the dot grid's 10px footprint, keeping the "Running" name.
   if (useSpinnerStyle() === 'comet') {
@@ -24,6 +27,7 @@ export function RunSpinner({ className = '' }: RunSpinnerProps): JSX.Element {
   }
   return (
     <span
+      ref={motionRef}
       className={`inline-grid grid-cols-3 gap-0.5 ${className}`}
       aria-label="Running"
     >

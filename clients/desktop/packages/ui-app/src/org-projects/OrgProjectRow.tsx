@@ -6,10 +6,18 @@
 // The row is frameless: the list around it owns borders and dividers.
 // ---------------------------------------------------------------------------
 
-import type { JSX, KeyboardEvent, ReactNode, SyntheticEvent } from 'react';
+import {
+  useId,
+  type JSX,
+  type KeyboardEvent,
+  type ReactNode,
+  type SyntheticEvent,
+} from 'react';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { StatusPill } from '@canopy/ui-shared';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { CHAT_LABEL } from '@canopy/protocol';
+import { hasCompleteOrgProjectRepositories } from '@canopy/protocol/org-projects';
 import type {
   OrgProjectRepositoryVisibility,
   OrgProjectSummary,
@@ -31,7 +39,9 @@ export const ORG_PROJECT_ROW_COLUMNS_CLASS =
   'grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 sm:grid-cols-[minmax(0,1fr)_auto_auto]';
 
 function orgProjectRowName(project: OrgProjectSummary): string {
-  return project.repository?.name ?? project.name;
+  return project.topology === 'multi-repo'
+    ? project.name
+    : (project.repository?.name ?? project.name);
 }
 
 export interface OrgProjectRowProps {
@@ -68,6 +78,17 @@ export interface OrgProjectRowProps {
   readonly columns?: boolean;
 }
 
+function projectDescription(project: OrgProjectSummary): string | null {
+  if (project.topology !== 'multi-repo')
+    return project.repository?.description ?? null;
+  if (
+    !hasCompleteOrgProjectRepositories(project) ||
+    !project.repositories?.length
+  )
+    return 'Full repository list unavailable';
+  return `${project.repositories.length} ${project.repositories.length === 1 ? 'repository' : 'repositories'} · ${project.repositories.map((repository) => `${repository.owner}/${repository.name}`).join(', ')}`;
+}
+
 function joinClasses(...classes: string[]): string {
   return classes.filter(Boolean).join(' ');
 }
@@ -81,7 +102,7 @@ export function OrgProjectRow({
   testIdPrefix,
   name = orgProjectRowName(project),
   replayBlock = '',
-  description = project.repository?.description ?? null,
+  description = projectDescription(project),
   pills,
   hidePrivatePill = false,
   status = null,
@@ -92,7 +113,11 @@ export function OrgProjectRow({
   busy,
   columns = false,
 }: OrgProjectRowProps): JSX.Element {
-  const visibility = project.repository?.visibility ?? null;
+  const nameId = useId();
+  const multiRepo = project.topology === 'multi-repo';
+  const visibility = multiRepo
+    ? null
+    : (project.repository?.visibility ?? null);
   const updatedAt = project.repository?.updatedAt ?? null;
   const activatable = onActivate !== undefined;
   const hasMiddle = middle !== undefined && middle !== null;
@@ -116,7 +141,8 @@ export function OrgProjectRow({
         ? {
             role: 'button',
             tabIndex: disabled ? -1 : 0,
-            'aria-label': name,
+            'aria-label': multiRepo ? undefined : name,
+            'aria-labelledby': multiRepo ? nameId : undefined,
             'aria-disabled': disabled || undefined,
             onClick: activate,
             onKeyDown: (event: KeyboardEvent<HTMLDivElement>): void => {
@@ -133,7 +159,12 @@ export function OrgProjectRow({
         <div className="flex min-w-0 items-center gap-2">
           <span
             data-testid={`${testIdPrefix}-name-${project.id}`}
-            className={joinClasses('truncate text-s fg-primary', replayBlock)}
+            id={multiRepo ? nameId : undefined}
+            className={joinClasses(
+              'truncate text-s fg-primary',
+              replayBlock,
+              multiRepo ? REPLAY_MASK_CLASS : '',
+            )}
           >
             {name}
           </span>
@@ -163,6 +194,7 @@ export function OrgProjectRow({
             className={joinClasses(
               'line-clamp-2 text-xs fg-secondary',
               replayBlock,
+              multiRepo ? REPLAY_MASK_CLASS : '',
             )}
           >
             {description}

@@ -16,9 +16,6 @@ export const DELEGATED_AGENT_CANCELLED_LABEL = 'Cancelled';
 /** Header status for a delegation an agent (or an ancestor's stop) ended. */
 export const DELEGATED_AGENT_STOPPED_BY_PARENT_LABEL = 'Stopped by parent';
 
-/** Visible caption of the row's Stop control. */
-export const DELEGATED_AGENT_STOP_LABEL = 'Stop';
-
 /** Accessible name and tooltip of the row's Stop control. */
 export const DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL = 'Stop delegation';
 

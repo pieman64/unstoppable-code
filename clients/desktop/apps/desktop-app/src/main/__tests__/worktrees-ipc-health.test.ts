@@ -143,6 +143,12 @@ jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
 }));
 
+jest.mock('../agents/session-manager', () => ({
+  getActiveChatIds: jest.fn(() => []),
+  getLiveBackgroundTasksForChat: jest.fn(),
+  listLiveBackgroundTaskOwners: jest.fn(),
+}));
+
 import {
   IPC_CHANNELS,
   type DiffStatsBatchRequest,
@@ -151,8 +157,15 @@ import {
   type WorktreeHealthIssue,
 } from '@canopy/desktop-shared/types';
 import { setDelegationActivity } from '../agents/delegation/activity';
+import {
+  getLiveBackgroundTasksForChat,
+  listLiveBackgroundTaskOwners,
+  type LiveBackgroundTaskOwner,
+} from '../agents/session-manager';
 import { registerIpcHandler } from '../ipc/register';
 import { registerWorktreeHandlers } from '../ipc/worktrees';
+import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
+import { createLiveBackgroundTaskOwner } from '../ipc/__tests__/background-work-removal-test-helpers';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { scheduleBranchNaming } from '../lib/worktree-chat-turn';
 import {
@@ -186,6 +199,12 @@ type ScheduleTaskBranchNamingHandler = (
 ) => void;
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+const mockedGetLiveBackgroundTasksForChat = jest.mocked(
+  getLiveBackgroundTasksForChat,
+);
+const mockedListLiveBackgroundTaskOwners = jest.mocked(
+  listLiveBackgroundTaskOwners,
+);
 const mockedGetWorktreeStats = jest.mocked(getWorktreeStats);
 const mockedArchiveSingleRepoWorktree = jest.mocked(archiveSingleRepoWorktree);
 const mockedResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
@@ -205,7 +224,7 @@ const mockedRefreshWorktreeDiffStats = jest.mocked(refreshWorktreeDiffStats);
 type RegisteredHandler = (event: unknown, request: unknown) => Promise<unknown>;
 
 function getRegisteredHandler(channel: string): RegisteredHandler {
-  registerWorktreeHandlers(() => null);
+  registerWorktreeHandlers(() => null, unusedGitReadRuntime());
   const call = mockedRegisterIpcHandler.mock.calls.find(
     ([registered]) => registered === channel,
   );
@@ -218,7 +237,7 @@ function getRegisteredHandler(channel: string): RegisteredHandler {
 }
 
 function getBatchHandler(): BatchHandler {
-  registerWorktreeHandlers(() => null);
+  registerWorktreeHandlers(() => null, unusedGitReadRuntime());
   const call = mockedRegisterIpcHandler.mock.calls.find(
     ([channel]) => channel === 'worktree:diff-stats-batch',
   );
@@ -241,7 +260,7 @@ function getBatchHandler(): BatchHandler {
 type ArchiveHandler = (event: unknown, request: unknown) => Promise<unknown>;
 
 function getArchiveHandler(): ArchiveHandler {
-  registerWorktreeHandlers(() => null);
+  registerWorktreeHandlers(() => null, unusedGitReadRuntime());
   const call = mockedRegisterIpcHandler.mock.calls.find(
     ([channel]) => channel === IPC_CHANNELS.worktreeArchive,
   );
@@ -258,7 +277,7 @@ function getArchiveHandler(): ArchiveHandler {
 }
 
 function getScheduleTaskBranchNamingHandler(): ScheduleTaskBranchNamingHandler {
-  registerWorktreeHandlers(() => null);
+  registerWorktreeHandlers(() => null, unusedGitReadRuntime());
   const call = mockedRegisterIpcHandler.mock.calls.find(
     ([channel]) => channel === IPC_CHANNELS.worktreeScheduleTaskBranchNaming,
   );
@@ -278,7 +297,21 @@ function getScheduleTaskBranchNamingHandler(): ScheduleTaskBranchNamingHandler {
 describe('worktree IPC health handling', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedGetLiveBackgroundTasksForChat.mockReset().mockReturnValue(undefined);
+    mockedListLiveBackgroundTaskOwners.mockReset().mockReturnValue([]);
   });
+
+  function setProviderTask(owner: LiveBackgroundTaskOwner): void {
+    mockedGetLiveBackgroundTasksForChat.mockImplementation(
+      (projectId, worktreeId, chatId) =>
+        owner.projectId === projectId &&
+        owner.worktreeId === worktreeId &&
+        owner.chatId === chatId
+          ? owner.liveTasks
+          : undefined,
+    );
+    mockedListLiveBackgroundTaskOwners.mockReturnValue([owner]);
+  }
 
   it('returns a broken worktree item without rejecting the batch', async () => {
     const issue: WorktreeHealthIssue = {
@@ -390,9 +423,11 @@ describe('worktree IPC health handling', () => {
         mode: 'diff_only',
       },
     ]);
+    // With the row's worker.git.diff.get reader (CAN-4103).
     expect(mockedRefreshWorktreeDiffStats).toHaveBeenCalledWith(
       'project-1',
       'wt-background',
+      expect.any(Function),
     );
     expect(mockedGetWorktreeStats).not.toHaveBeenCalled();
     expect(mockedPrimeWorktreeDiffStats).not.toHaveBeenCalled();
@@ -524,6 +559,9 @@ describe('worktree IPC health handling', () => {
 
     it('archives normally when unlocked', async () => {
       const handler = getArchiveHandler();
+      setProviderTask(
+        createLiveBackgroundTaskOwner(WS, WT, 'chat-a', 'local_bash'),
+      );
       mockedArchiveSingleRepoWorktree.mockResolvedValue({
         success: true,
       } as never);
@@ -570,6 +608,46 @@ describe('worktree IPC health handling', () => {
         await expect(
           handler({}, { projectId: WS, worktreeId: WT, repoPath: '/repo' }),
         ).rejects.toThrow('Delegates are still running here. Stop them first.');
+      } finally {
+        setDelegationActivity('archive-owner', `${WS}/${WT}/chat-a`, 0);
+      }
+      expect(mockedArchiveSingleRepoWorktree).not.toHaveBeenCalled();
+    });
+
+    it.each(['local_agent', 'local_workflow'] as const)(
+      'refuses to archive while a chat in the worktree has a live %s',
+      async (taskType) => {
+        const handler = getArchiveHandler();
+        setProviderTask(
+          createLiveBackgroundTaskOwner(WS, WT, 'chat-a', taskType),
+        );
+
+        await expect(
+          handler({}, { projectId: WS, worktreeId: WT, repoPath: '/repo' }),
+        ).rejects.toMatchObject({
+          code: 'conflict',
+          message:
+            'Background agents or workflows are still running here. Stop them first.',
+        });
+
+        expect(mockedArchiveSingleRepoWorktree).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps delegate refusal copy ahead of provider background-work refusal', async () => {
+      const handler = getArchiveHandler();
+      setProviderTask(
+        createLiveBackgroundTaskOwner(WS, WT, 'chat-a', 'local_agent'),
+      );
+      setDelegationActivity('archive-owner', `${WS}/${WT}/chat-a`, 1);
+
+      try {
+        await expect(
+          handler({}, { projectId: WS, worktreeId: WT, repoPath: '/repo' }),
+        ).rejects.toMatchObject({
+          code: 'conflict',
+          message: 'Delegates are still running here. Stop them first.',
+        });
       } finally {
         setDelegationActivity('archive-owner', `${WS}/${WT}/chat-a`, 0);
       }

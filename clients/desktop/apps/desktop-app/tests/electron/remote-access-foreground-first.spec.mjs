@@ -286,7 +286,7 @@ test('controller misses off-screen Y updates, catches up on focus, and keeps com
     await expect(
       remote.window
         .getByTestId(`panel-tab-panel-chat-${y}`)
-        .locator('[data-unread]'),
+        .locator('[data-testid^="panel-tab-unread-dot-"]'),
     ).toBeVisible({ timeout: 30_000 });
 
     // Bodies: Z's committed rows never reach the controller while it shows X,
@@ -339,7 +339,7 @@ test('controller misses off-screen Y updates, catches up on focus, and keeps com
     await expect(
       remote.window
         .getByTestId(`panel-tab-panel-chat-${z}`)
-        .locator('[data-unread]'),
+        .locator('[data-testid^="panel-tab-unread-dot-"]'),
     ).toBeVisible({ timeout: 30_000 });
     await remoteApp.openOverviewPage();
     await expect(

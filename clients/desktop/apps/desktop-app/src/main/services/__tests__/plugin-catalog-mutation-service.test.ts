@@ -63,6 +63,7 @@ import type {
   PluginInfo,
 } from '@canopy/desktop-shared/types/plugins';
 import type { McpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
+import type { LookupAddress, LookupAllOptions } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import {
   __resetInFlightPortalInstallsForTests,
@@ -99,6 +100,10 @@ import {
   resolveStandaloneHttpHandler,
 } from '../../ipc/mcp-servers';
 import { loadAccountMcpRefConnections } from '../../mcp/account-catalog';
+import {
+  McpConfigNotFoundError,
+  McpConfigStateError,
+} from '../../mcp/config-repository-format';
 
 const mockedTestMcpConnection = jest.mocked(testMcpServerConnection);
 const mockedInstallBuiltIn = jest.mocked(installBuiltInPlugin);
@@ -113,7 +118,11 @@ const mockedCuratedReport = jest.mocked(reportCuratedPluginInstallBestEffort);
 const mockedReadServer = jest.mocked(readServer);
 const mockedLoadAccountConnections = jest.mocked(loadAccountMcpRefConnections);
 const mockedSaveMcpServer = jest.mocked(saveMcpServer);
-const mockedLookup = jest.mocked(lookup);
+// `lookup` is overloaded; ReturnType resolves to the single-address overload,
+// while the service and these fixtures use `{ all: true }`.
+const mockedLookup = jest.mocked(lookup) as unknown as jest.MockedFunction<
+  (hostname: string, options: LookupAllOptions) => Promise<LookupAddress[]>
+>;
 
 /** Deferred promise handle for interleaving concurrent mutations in tests. */
 function deferred<T>(): {
@@ -127,9 +136,7 @@ function deferred<T>(): {
   return { promise, resolve };
 }
 
-const publicLookup = [{ address: '140.82.113.3', family: 4 }] as Awaited<
-  ReturnType<typeof lookup>
->;
+const publicLookup: LookupAddress[] = [{ address: '140.82.113.3', family: 4 }];
 
 /** Drain microtasks + one macrotask so a queued serialized mutation can start. */
 function flush(): Promise<void> {
@@ -212,7 +219,7 @@ function mcpServerFile(enabled: boolean): McpServerFile {
         },
       ],
     },
-  } as McpServerFile;
+  };
 }
 
 describe('portal plugin mutation services', () => {
@@ -222,8 +229,8 @@ describe('portal plugin mutation services', () => {
     __resetInFlightPortalInstallsForTests();
     mockedLookup.mockResolvedValue(publicLookup);
     mockedRefreshMarketplaces.mockResolvedValue({ success: true });
-    mockedRefreshAfterSuccess.mockImplementation(
-      (_reason: string, operation: () => never) => Promise.resolve(operation()),
+    mockedRefreshAfterSuccess.mockImplementation((_reason, operation) =>
+      Promise.resolve(operation()),
     );
   });
 
@@ -442,7 +449,7 @@ describe('portal plugin mutation services', () => {
       }).then(() => {
         settled = true;
         return { success: true as const };
-      }) as ReturnType<typeof refreshMarketplaces>,
+      }),
     );
 
     await expect(startPortalMarketplacesRefresh()).resolves.toBeUndefined();
@@ -498,36 +505,80 @@ describe('portal plugin mutation services', () => {
         message: 'Account MCP servers are managed in your account.',
       });
       expect(mockedSaveMcpServer).not.toHaveBeenCalled();
+      expect(setInstalledMcpConfigEnabled).not.toHaveBeenCalled();
     });
 
-    it('maps a missing server onto not_found', async () => {
+    it('maps a missing non-device server onto not_found without the setter', async () => {
       mockedLoadAccountConnections.mockResolvedValue(null);
-      mockedReadServer.mockRejectedValue(new Error('ENOENT'));
       await expect(
         setPortalMcpConfigEnabled('srv-1', 'cfg-1', true),
       ).rejects.toMatchObject({ code: 'not_found' });
+      expect(setInstalledMcpConfigEnabled).not.toHaveBeenCalled();
     });
 
-    it('maps a missing config onto not_found without saving', async () => {
-      mockedReadServer.mockResolvedValue(mcpServerFile(false));
+    it.each([
+      [false, 'not_found'],
+      [true, 'invalid_payload'],
+    ])(
+      'maps a device server the setter cannot find (account row: %s) onto %s',
+      async (accountRow, code) => {
+        mockedLoadAccountConnections.mockResolvedValue(
+          accountRow
+            ? [
+                {
+                  id: 'conn-1',
+                  serverKey: 'aaa-111',
+                  configId: 'cfg-1',
+                  displayName: 'Server',
+                  status: 'CONNECTED',
+                  routeId: 'route-1',
+                  enabledTools: null,
+                  kind: 'CURATED',
+                },
+              ]
+            : null,
+        );
+        jest
+          .mocked(setInstalledMcpConfigEnabled)
+          .mockRejectedValue(new McpConfigNotFoundError('server'));
+        await expect(
+          setPortalMcpConfigEnabled('aaa-111', 'cfg-1', true),
+        ).rejects.toMatchObject({ code });
+      },
+    );
+
+    it('maps a config the setter cannot find onto not_found', async () => {
+      jest
+        .mocked(setInstalledMcpConfigEnabled)
+        .mockRejectedValue(new McpConfigNotFoundError('config'));
       await expect(
-        setPortalMcpConfigEnabled('srv-1', 'cfg-missing', true),
+        setPortalMcpConfigEnabled('aaa-111', 'cfg-missing', true),
       ).rejects.toMatchObject({ code: 'not_found' });
-      expect(mockedSaveMcpServer).not.toHaveBeenCalled();
+      expect(mockedReadServer).not.toHaveBeenCalled();
+    });
+
+    it('reports a refused unreadable server as execution_failed', async () => {
+      const refusal = new McpConfigStateError('server', 'malformed', 'bad');
+      jest.mocked(setInstalledMcpConfigEnabled).mockRejectedValue(refusal);
+      await expect(
+        setPortalMcpConfigEnabled('aaa-111', 'cfg-1', true),
+      ).rejects.toMatchObject({
+        code: 'execution_failed',
+        message: refusal.message,
+      });
+      expect(mockedReadServer).not.toHaveBeenCalled();
     });
 
     it('flips only the named config through the validated save path and redacts the result', async () => {
-      mockedReadServer
-        .mockResolvedValueOnce(mcpServerFile(false))
-        .mockResolvedValueOnce(mcpServerFile(true));
+      mockedReadServer.mockResolvedValue(mcpServerFile(true));
       jest
         .mocked(setInstalledMcpConfigEnabled)
         .mockResolvedValue(mcpServerFile(true));
 
-      const result = await setPortalMcpConfigEnabled('srv-1', 'cfg-1', true);
+      const result = await setPortalMcpConfigEnabled('aaa-111', 'cfg-1', true);
 
       expect(setInstalledMcpConfigEnabled).toHaveBeenCalledWith(
-        'srv-1',
+        'aaa-111',
         'cfg-1',
         true,
       );
@@ -549,12 +600,20 @@ describe('portal plugin mutation services', () => {
       expect(serialized).not.toContain('extraArgs');
     });
 
-    it('skips the save when the config already has the requested state', async () => {
+    it('leaves the no-op decision to the queued setter even when an earlier read already matches', async () => {
+      // An opposite change may still be queued; only the setter sees current state.
       mockedReadServer.mockResolvedValue(mcpServerFile(true));
+      jest
+        .mocked(setInstalledMcpConfigEnabled)
+        .mockResolvedValue(mcpServerFile(true));
 
-      const result = await setPortalMcpConfigEnabled('srv-1', 'cfg-1', true);
+      const result = await setPortalMcpConfigEnabled('aaa-111', 'cfg-1', true);
 
-      expect(mockedSaveMcpServer).not.toHaveBeenCalled();
+      expect(setInstalledMcpConfigEnabled).toHaveBeenCalledWith(
+        'aaa-111',
+        'cfg-1',
+        true,
+      );
       expect(result.server.configs[0]?.enabled).toBe(true);
     });
   });
@@ -593,8 +652,8 @@ describe('external install SSRF gate (finding 1)', () => {
     __resetInFlightPortalInstallsForTests();
     mockedLookup.mockResolvedValue(publicLookup);
     mockedRefreshMarketplaces.mockResolvedValue({ success: true });
-    mockedRefreshAfterSuccess.mockImplementation(
-      (_reason: string, operation: () => never) => Promise.resolve(operation()),
+    mockedRefreshAfterSuccess.mockImplementation((_reason, operation) =>
+      Promise.resolve(operation()),
     );
   });
 
@@ -623,9 +682,7 @@ describe('external install SSRF gate (finding 1)', () => {
     mockedLoadCacheOnly.mockResolvedValue(
       externalPluginCache('https://sneaky.example.com/acme/repo.git'),
     );
-    mockedLookup.mockResolvedValue([
-      { address: '10.0.0.9', family: 4 },
-    ] as Awaited<ReturnType<typeof lookup>>);
+    mockedLookup.mockResolvedValue([{ address: '10.0.0.9', family: 4 }]);
 
     await expect(
       installPortalExternalPlugin('mkt', 'reviewer'),
@@ -659,8 +716,8 @@ describe('portal install in-flight dedupe (round-2 finding)', () => {
     __resetInFlightPortalInstallsForTests();
     mockedLookup.mockResolvedValue(publicLookup);
     mockedRefreshMarketplaces.mockResolvedValue({ success: true });
-    mockedRefreshAfterSuccess.mockImplementation(
-      (_reason: string, operation: () => never) => Promise.resolve(operation()),
+    mockedRefreshAfterSuccess.mockImplementation((_reason, operation) =>
+      Promise.resolve(operation()),
     );
   });
 
@@ -840,8 +897,8 @@ describe('portal mutation serialization (finding 2)', () => {
     __resetInFlightPortalInstallsForTests();
     mockedLookup.mockResolvedValue(publicLookup);
     mockedRefreshMarketplaces.mockResolvedValue({ success: true });
-    mockedRefreshAfterSuccess.mockImplementation(
-      (_reason: string, operation: () => never) => Promise.resolve(operation()),
+    mockedRefreshAfterSuccess.mockImplementation((_reason, operation) =>
+      Promise.resolve(operation()),
     );
   });
 
@@ -997,7 +1054,7 @@ describe('portal mutation serialization (finding 2)', () => {
       return refreshGate.promise.then(() => {
         order.push('refresh:end');
         return { success: true as const };
-      }) as ReturnType<typeof refreshMarketplaces>;
+      });
     });
     mockedInstallBuiltIn.mockImplementation(() => {
       order.push('install:start');
@@ -1040,7 +1097,7 @@ describe('portal mutation serialization (finding 2)', () => {
       return refreshGate.promise.then(() => {
         order.push('refresh:end');
         return { success: true as const };
-      }) as ReturnType<typeof refreshMarketplaces>;
+      });
     });
     mockedInstallBuiltIn.mockImplementation(() => {
       order.push('next-install:start');

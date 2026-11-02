@@ -8,6 +8,7 @@ import {
   type PortalWorkspaceCreatePayload,
 } from '@canopy/protocol/portal';
 import {
+  Button,
   DialogModal,
   LoadingSpinner,
   RepositoryCloneError,
@@ -102,24 +103,19 @@ export function CreateWorkspaceDialog({
           <RepositoryCloneError id={errorId} testId={errorId} message={error} />
         )}
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={submitting}
-            className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <Button size="compact" onClick={onClose} disabled={submitting}>
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => void submit()}
             disabled={!canSubmit}
             data-testid={testIds?.submit}
-            className="flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting && <LoadingSpinner />}
             {submitting ? 'Cloning…' : 'Create'}
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>

@@ -25,7 +25,7 @@ export function getSplitWorkspaceMenuState(
   const tooltip = gates.hasActiveSession
     ? 'Wait for active agent chats to finish'
     : gates.hasActivePipelines
-      ? 'Wait for active pipelines to finish'
+      ? 'Wait for active workflows to finish'
       : gates.isDone
         ? 'Done worktrees cannot be split'
         : gates.isPendingGitSetup || gates.isRunningSetup

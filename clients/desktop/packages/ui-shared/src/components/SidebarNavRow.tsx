@@ -12,6 +12,7 @@ import {
   SIDEBAR_ITEM_SELECTED_CLASSNAME,
   SIDEBAR_LIST_ICON_CLASSNAME,
   SIDEBAR_NAV_ITEM_CLASSNAME,
+  SIDEBAR_NAV_ROW_TRAILING_INSET_CLASSNAME,
 } from './sidebar-item-classes';
 
 /** A run state the row reports on its leading glyph. */
@@ -34,6 +35,13 @@ export interface SidebarNavRowProps extends Omit<
   readonly iconClassName?: string;
   /** Raise labeled rows to 44px for touch layouts. */
   readonly touchTarget?: 'coarse' | 'always' | 'none';
+  /**
+   * Keys that perform the row's action (`formatShortcut(id)`), trailing the
+   * label as plain glyphs in the quietest ink, as a native menu draws them.
+   * Hidden until the row is hovered or keyboard-focused; it keeps its space,
+   * so the row never resizes or shifts.
+   */
+  readonly shortcut?: string;
 }
 
 /** Canonical navigation row shared by the main and settings sidebars. */
@@ -47,6 +55,7 @@ export const SidebarNavRow = forwardRef<HTMLButtonElement, SidebarNavRowProps>(
       status,
       iconClassName = '',
       touchTarget = 'coarse',
+      shortcut,
       className = '',
       type = 'button',
       ...buttonProps
@@ -76,7 +85,7 @@ export const SidebarNavRow = forwardRef<HTMLButtonElement, SidebarNavRowProps>(
         ref={ref}
         type={type}
         data-sidebar-nav-row=""
-        className={`${SIDEBAR_NAV_ITEM_CLASSNAME} ${touchClassName} ${stateClassName}${className ? ` ${className}` : ''}`}
+        className={`group/nav-row ${SIDEBAR_NAV_ITEM_CLASSNAME} ${touchClassName} ${stateClassName}${className ? ` ${className}` : ''}`}
       >
         <span
           className={`${SIDEBAR_LIST_ICON_CLASSNAME} ${iconInkClassName}${iconClassName ? ` ${iconClassName}` : ''}`}
@@ -84,6 +93,15 @@ export const SidebarNavRow = forwardRef<HTMLButtonElement, SidebarNavRowProps>(
           {icon}
         </span>
         {children}
+        {shortcut !== undefined && shortcut !== '' && (
+          <span
+            aria-hidden="true"
+            data-testid="sidebar-row-shortcut"
+            className={`ml-auto shrink-0 pl-2 ${SIDEBAR_NAV_ROW_TRAILING_INSET_CLASSNAME} text-xs tabular-nums fg-quaternary opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/nav-row:opacity-100 group-focus-visible/nav-row:opacity-100`}
+          >
+            {shortcut}
+          </span>
+        )}
       </button>
     );
   },

@@ -62,12 +62,28 @@ jest.mock('../lib/script-events', () => ({
 jest.mock('../lib/window-send', () => ({
   sendToWindow: jest.fn(),
 }));
+jest.mock('../lib/main-process-logging', () => ({
+  logMainProcessWarn: jest.fn(),
+}));
 
+import { BrowserWindow } from 'electron';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import { sendToWindow } from '../lib/window-send';
 import { scheduleCodeGraphBuild } from '../lib/code-graph-scheduler';
 import { triggerDiscovery } from '../ipc/worktree-discovery';
 import { getResolvedScriptDefinition } from '../lib/script-resolver';
 import { runShellScript } from '../lib/script-runner';
+import {
+  completeScriptRunLog,
+  startScriptRunLog,
+} from '../lib/script-log-store';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isWorkspaceWorktreeCurrent } from '../lib/workspace-persistence';
+import type {
+  WorktreeSetupObserver,
+  WorktreeSetupScriptRef,
+  WorktreeSetupScriptResult,
+} from '../lib/worktree-setup-result';
 import {
   runProjectWorktreePostCreateSetup,
   startProjectWorktreePostCreateSetup,
@@ -86,6 +102,55 @@ const mockedIsWorkspaceWorktreeCurrent = jest.mocked(
 const mockedTriggerDiscovery = jest.mocked(triggerDiscovery);
 const mockedScheduleCodeGraphBuild = jest.mocked(scheduleCodeGraphBuild);
 const mockedRunShellScript = jest.mocked(runShellScript);
+const mockedStartScriptRunLog = jest.mocked(startScriptRunLog);
+const mockedCompleteScriptRunLog = jest.mocked(completeScriptRunLog);
+const mockedLogMainProcessWarn = jest.mocked(logMainProcessWarn);
+
+const SETUP_LOG_REF = {
+  projectId: 'test-project',
+  worktreeId: 'test-animal',
+  script: {
+    scriptKey: 'project:setup',
+    scriptName: 'setup',
+    label: 'setup',
+    command: 'npm install',
+    lifecycle: 'setup' as const,
+    target: 'project' as const,
+  },
+  runId: 'run-setup-1',
+};
+
+function recordingObserver(): {
+  observer: WorktreeSetupObserver;
+  events: string[];
+  resolved: boolean[];
+  started: WorktreeSetupScriptRef[];
+  completed: WorktreeSetupScriptResult[];
+} {
+  const record = {
+    events: [] as string[],
+    resolved: [] as boolean[],
+    started: [] as WorktreeSetupScriptRef[],
+    completed: [] as WorktreeSetupScriptResult[],
+  };
+  return {
+    ...record,
+    observer: {
+      onResolved: (configured): void => {
+        record.events.push(`resolved:${String(configured)}`);
+        record.resolved.push(configured);
+      },
+      onScriptStarted: (script): void => {
+        record.events.push(`started:${script.scriptKey}`);
+        record.started.push(script);
+      },
+      onScriptCompleted: (script): void => {
+        record.events.push(`completed:${script.scriptKey}`);
+        record.completed.push(script);
+      },
+    },
+  };
+}
 
 function flushTurns(turns = 5): Promise<void> {
   let chain = Promise.resolve();
@@ -172,13 +237,305 @@ describe('runProjectWorktreePostCreateSetup', () => {
       getWindow: () => null,
     });
 
-    expect(result).toEqual({ status: 'completed' });
+    expect(result).toMatchObject({ status: 'completed' });
     const runOptions = mockedRunShellScript.mock.calls[0]?.[0];
     expect(runOptions?.script).toBe('npm install');
     expect(runOptions?.backgroundPriority).toBe(true);
     expect(runOptions?.interactive).toBe(true);
     expect(runOptions?.timeoutSeconds).toBeNull();
     expect(runOptions?.tracking?.script?.interactive).toBe(true);
+  });
+
+  it('reports observer events in order around the canonical log and the process', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+    });
+    const recorder = recordingObserver();
+    mockedStartScriptRunLog.mockImplementationOnce(() => {
+      recorder.events.push('log-started');
+      return Promise.resolve(SETUP_LOG_REF);
+    });
+    mockedRunShellScript.mockImplementationOnce(() => {
+      recorder.events.push('process');
+      return Promise.resolve({
+        success: true,
+        exitCode: 0,
+        output: '',
+        timedOut: false,
+        durationMs: 25,
+      });
+    });
+    mockedCompleteScriptRunLog.mockImplementationOnce(() => {
+      recorder.events.push('log-completed');
+      return Promise.resolve();
+    });
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => null,
+      observer: recorder.observer,
+    });
+
+    expect(recorder.events).toEqual([
+      'resolved:true',
+      'log-started',
+      'started:project:setup',
+      'process',
+      'log-completed',
+      'completed:project:setup',
+    ]);
+    const expectedScript: WorktreeSetupScriptResult = {
+      scriptKey: 'project:setup',
+      runId: 'run-setup-1',
+      target: 'project',
+      lifecycle: 'setup',
+      logRef: SETUP_LOG_REF,
+      status: 'succeeded',
+      exitCode: 0,
+      timedOut: false,
+    };
+    expect(result).toEqual({ status: 'completed', script: expectedScript });
+    expect(recorder.completed).toEqual([expectedScript]);
+    expect(recorder.started).toEqual([
+      {
+        scriptKey: 'project:setup',
+        runId: 'run-setup-1',
+        target: 'project',
+        lifecycle: 'setup',
+        logRef: SETUP_LOG_REF,
+      },
+    ]);
+  });
+
+  it('calls onResolved exactly once with configured false when no setup script exists', async () => {
+    const recorder = recordingObserver();
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => null,
+      observer: recorder.observer,
+    });
+
+    expect(result).toEqual({ status: 'skipped' });
+    expect(recorder.events).toEqual(['resolved:false']);
+  });
+
+  it('returns the real exit code and log ref when setup fails', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+    });
+    mockedStartScriptRunLog.mockResolvedValueOnce(SETUP_LOG_REF);
+    mockedRunShellScript.mockResolvedValueOnce({
+      success: false,
+      exitCode: 3,
+      output: 'boom',
+      timedOut: false,
+      durationMs: 25,
+    });
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => null,
+    });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      detail: 'setup script exited with code 3',
+      script: {
+        runId: 'run-setup-1',
+        logRef: SETUP_LOG_REF,
+        status: 'failed',
+        exitCode: 3,
+        timedOut: false,
+      },
+    });
+  });
+
+  it('reports a script deadline as timed out', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+      timeoutSeconds: 5,
+    });
+    mockedRunShellScript.mockResolvedValueOnce({
+      success: false,
+      exitCode: null,
+      output: '',
+      timedOut: true,
+      durationMs: 5000,
+    });
+    const recorder = recordingObserver();
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => null,
+      observer: recorder.observer,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.detail).toBe('setup script timed out');
+    expect(result.script).toMatchObject({
+      status: 'timed_out',
+      exitCode: null,
+      timedOut: true,
+      logRef: null,
+    });
+    expect(typeof result.script?.runId).toBe('string');
+    expect(recorder.completed).toEqual([result.script]);
+    expect(mockedRunShellScript.mock.calls[0]?.[0]?.timeoutSeconds).toBe(5);
+  });
+
+  it('keeps exit code 1 and the started run when the script runner throws', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+    });
+    mockedStartScriptRunLog.mockResolvedValueOnce(SETUP_LOG_REF);
+    mockedRunShellScript.mockRejectedValueOnce(new Error('spawn failed'));
+    const recorder = recordingObserver();
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => null,
+      observer: recorder.observer,
+    });
+
+    const expectedScript: WorktreeSetupScriptResult = {
+      scriptKey: 'project:setup',
+      runId: 'run-setup-1',
+      target: 'project',
+      lifecycle: 'setup',
+      logRef: SETUP_LOG_REF,
+      status: 'failed',
+      exitCode: 1,
+      timedOut: false,
+    };
+    expect(result).toEqual({
+      status: 'failed',
+      detail: 'spawn failed',
+      script: expectedScript,
+    });
+    expect(recorder.events).toEqual([
+      'resolved:true',
+      'started:project:setup',
+      'completed:project:setup',
+    ]);
+  });
+
+  it('keeps the completed script when the completion broadcast throws', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+    });
+    mockedStartScriptRunLog.mockResolvedValueOnce(SETUP_LOG_REF);
+    let completeSends = 0;
+    jest.mocked(sendToWindow).mockImplementation((_window, channel) => {
+      if (channel === IPC_CHANNELS.scriptComplete) {
+        completeSends += 1;
+        if (completeSends === 1) throw new Error('renderer gone');
+      }
+      return true;
+    });
+    const recorder = recordingObserver();
+    const window = new BrowserWindow();
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => window,
+      observer: recorder.observer,
+    });
+
+    expect(result).toEqual({
+      status: 'failed',
+      detail: 'renderer gone',
+      script: recorder.completed[0],
+    });
+    expect(recorder.completed).toHaveLength(1);
+    expect(result.script).toMatchObject({
+      runId: 'run-setup-1',
+      status: 'succeeded',
+      exitCode: 0,
+    });
+    // The canonical log keeps the real completion; it is not rewritten.
+    expect(mockedCompleteScriptRunLog).toHaveBeenCalledTimes(1);
+    expect(
+      mockedCompleteScriptRunLog.mock.calls[0]?.[0].response,
+    ).toMatchObject({ success: true, exitCode: 0 });
+    expect(completeSends).toBe(1);
+  });
+
+  it('does not fail or delay setup when observer callbacks throw, reject or hang', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+    });
+    const observer: WorktreeSetupObserver = {
+      onResolved: (): void => {
+        throw new Error('secret branch feature/private');
+      },
+      onScriptStarted: (): Promise<void> => new Promise<void>(() => undefined),
+      onScriptCompleted: (): Promise<void> =>
+        Promise.reject(new Error('secret group name')),
+    };
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => null,
+      observer,
+    });
+    await flushTurns(2);
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      script: { status: 'succeeded', exitCode: 0 },
+    });
+    expect(mockedRunShellScript).toHaveBeenCalledTimes(1);
+    expect(mockedTriggerDiscovery).toHaveBeenCalledTimes(1);
+    expect(mockedLogMainProcessWarn).toHaveBeenCalledTimes(2);
+    const logged = JSON.stringify(mockedLogMainProcessWarn.mock.calls);
+    expect(logged).not.toContain('secret');
+  });
+
+  it('reports a cancelled script when the caller aborts the run', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+    });
+    const controller = new AbortController();
+    mockedRunShellScript.mockImplementationOnce((options) => {
+      expect(options.signal).toBe(controller.signal);
+      return Promise.resolve({
+        success: false,
+        exitCode: null,
+        output: '',
+        timedOut: false,
+        durationMs: 10,
+      });
+    });
+
+    const result = await runProjectWorktreePostCreateSetup({
+      projectId: 'test-project',
+      worktreeId: 'test-animal',
+      project: { repoPath: '/repo', scripts: {} },
+      getWindow: () => null,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.script).toMatchObject({
+      status: 'cancelled',
+      exitCode: null,
+      timedOut: false,
+    });
   });
 
   it('schedules discovery and graph build when the worktree is still current', async () => {
@@ -303,5 +660,15 @@ describe('startProjectWorktreePostCreateSetup', () => {
 
     expect(setup.rejected).toBe(false);
     expect(mockedTriggerDiscovery).toHaveBeenCalledTimes(1);
+  });
+  it('resolves undefined even though the awaitable runner returns a result', async () => {
+    mockedGetResolvedScriptDefinition.mockReturnValue({
+      command: 'npm install',
+    });
+
+    await expect(
+      startProjectWorktreePostCreateSetup(setupParams),
+    ).resolves.toBeUndefined();
+    expect(mockedRunShellScript).toHaveBeenCalledTimes(1);
   });
 });

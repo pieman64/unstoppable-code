@@ -46,29 +46,45 @@ const snapshot = {
 function landing(
   overrides: Partial<PublicShareLanding> = {},
 ): PublicShareLanding {
-  return {
+  const value: PublicShareLanding = {
     state: { phase: 'ready', snapshot },
     snapshot,
     detecting: false,
     installed: null,
     installing: false,
     installError: '',
+    verificationError: '',
+    needsRefresh: false,
+    refresh: (): void => undefined,
     installProgress: '',
     installStatus: '',
     agentReadiness: null,
     agentReadinessLoading: false,
+    agentReviewLoading: false,
     workspaceReadiness: null,
     workspaceReadinessLoading: false,
     uninstalling: false,
-    install: jest.fn(async () => Promise.resolve()),
+    install: jest.fn<ReturnType<PublicShareLanding['install']>, []>(() =>
+      Promise.resolve(null),
+    ),
+    insertInChat: jest.fn<
+      ReturnType<PublicShareLanding['insertInChat']>,
+      Parameters<PublicShareLanding['insertInChat']>
+    >(() => Promise.resolve('unhandled')),
     tryNow: jest.fn(),
     manage: jest.fn(),
-    uninstall: jest.fn(async () => Promise.resolve()),
+    uninstall: jest.fn<ReturnType<PublicShareLanding['uninstall']>, []>(() =>
+      Promise.resolve(false),
+    ),
     installReview: null,
-    closeInstallReview: jest.fn(),
-    completeInstallReview: jest.fn(),
-    ...overrides,
+    openingInstallReview: false,
+    closeInstallReview: jest.fn<void, []>(),
+    completeInstallReview: jest.fn<void, [string]>(),
+    retryResolve: jest.fn<void, []>(),
+    signIn: jest.fn<void, []>(),
+    switchAccount: jest.fn<void, []>(),
   };
+  return Object.assign(value, overrides);
 }
 
 const heading = <h2 id="plugin-detail-title">Page title</h2>;
@@ -562,5 +578,112 @@ describe('MarketplaceSkillDetailBody skill page', () => {
         .querySelector('[data-testid="pipeline-readiness-mcp-slack"]')
         ?.getAttribute('data-requirement-status'),
     ).toBe('unknown');
+  });
+});
+
+describe('MarketplaceSkillDetailBody failures (CAN-5222)', () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  function renderFailure(
+    reason: Extract<PublicShareLanding['state'], { phase: 'error' }>['reason'],
+    overrides: Partial<PublicShareLanding> = {},
+  ): PublicShareLanding {
+    const value = landing({
+      state: { phase: 'error', reason },
+      snapshot: null,
+      ...overrides,
+    });
+    act(() => {
+      renderBody(root, value, { entity: 'skill' });
+    });
+    return value;
+  }
+  const errorText = (): string =>
+    document.querySelector('[data-testid="deep-link-share-error"]')
+      ?.textContent ?? '';
+  const button = (testId: string): HTMLButtonElement | null =>
+    document.querySelector(`[data-testid="${testId}"]`);
+
+  it('offers Sign in for missing or expired credentials', () => {
+    const value = renderFailure('sign-in-required');
+    expect(errorText()).toContain('Sign in to open this skill.');
+    const signIn = button('deep-link-share-sign-in');
+    expect(signIn?.textContent).toBe('Sign in');
+    act(() => signIn?.click());
+    expect(value.signIn).toHaveBeenCalledTimes(1);
+    expect(value.retryResolve).not.toHaveBeenCalled();
+  });
+
+  it('offers Switch account for an access refusal without naming an organization', () => {
+    const value = renderFailure('not-a-member');
+    expect(errorText()).toContain(
+      "This account doesn't have access to this skill.",
+    );
+    expect(errorText()).not.toMatch(/organization/i);
+    const switchAccount = button('deep-link-share-switch-account');
+    expect(switchAccount?.textContent).toBe('Switch account');
+    act(() => switchAccount?.click());
+    expect(value.switchAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers Retry when the service could not be reached', () => {
+    const value = renderFailure('cloud-unreachable');
+    const retry = button('deep-link-share-retry');
+    expect(retry?.textContent).toBe('Retry');
+    act(() => retry?.click());
+    expect(value.retryResolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the existing Check for updates action', () => {
+    const previousApi = window.api;
+    const checkForUpdates = jest.fn().mockResolvedValue(undefined);
+    Object.assign(window, { api: { update: { checkForUpdates } } });
+    try {
+      renderFailure('client-upgrade-required');
+      const update = button('deep-link-share-update-app');
+      expect(update?.textContent).toBe('Check for updates');
+      act(() => update?.click());
+      expect(checkForUpdates).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.assign(window, { api: previousApi });
+    }
+  });
+
+  it('removes recovery actions and obsolete errors while Retry resolves', () => {
+    renderFailure('cloud-unreachable');
+    expect(button('deep-link-share-retry')).not.toBeNull();
+    const value = landing({ state: { phase: 'loading' }, snapshot: null });
+    act(() => renderBody(root, value, { entity: 'skill' }));
+    expect(button('deep-link-share-retry')).toBeNull();
+    expect(errorText()).toBe('');
+    expect(container.textContent).toContain('Loading');
+  });
+
+  it.each(['not-found', 'share-changed'] as const)(
+    'offers no recovery action for %s',
+    (reason) => {
+      renderFailure(reason);
+      expect(
+        document.querySelector('[data-testid="deep-link-share-error"] button'),
+      ).toBeNull();
+    },
+  );
+
+  it('keeps an unavailable share neutral about revocation', () => {
+    renderFailure('not-found');
+    expect(errorText()).toContain("This share isn't available.");
+    expect(errorText()).not.toMatch(/revoked/i);
   });
 });

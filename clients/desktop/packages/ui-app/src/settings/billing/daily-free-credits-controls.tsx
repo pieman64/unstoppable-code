@@ -2,11 +2,16 @@
 
 import { useState, type JSX } from 'react';
 import type { DailyCreditDripPreferenceInput } from '@canopy/protocol/billing';
+import {
+  DailyFreeCreditsOffer,
+  dailyFreeCreditsTitle,
+  dailyFreeCreditsToggleLabel,
+} from '@canopy/ui-shared/components';
 import { formatCredits } from '@canopy/ui-shared/lib';
 import { BillingTogglePanel } from './billing-toggle-panel';
 
 /**
- * Billing-tab opt-in for the daily free AI credits drip. The switch flips
+ * Billing-tab opt-in for free daily AI credits. The switch flips
  * optimistically, then `save` persists the choice (and refreshes the card).
  * The switch rolls back, with an inline error, only when `save` rejects, which
  * the caller limits to the preference PUT itself failing: a saved preference
@@ -62,10 +67,15 @@ export function DailyFreeCreditsControls({
     <BillingTogglePanel
       testId="billing-daily-drip"
       toggleTestId="billing-daily-drip-toggle"
-      title="Daily free credits"
-      description={`Get ${formatCredits(capCredits)} free AI credits every day.`}
+      title={dailyFreeCreditsTitle('AI credits')}
+      description={
+        <DailyFreeCreditsOffer
+          term="AI credits"
+          formattedCap={formatCredits(capCredits)}
+        />
+      }
       checked={checked}
-      ariaLabel="Toggle daily free credits"
+      ariaLabel={dailyFreeCreditsToggleLabel('AI credits')}
       disabled={busy}
       onToggle={handleToggle}
       error={error}

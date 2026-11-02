@@ -37,14 +37,6 @@ export interface HostDifference {
   readonly reason: string;
 }
 
-const COMPLETE: Omit<HostDifference, 'fixture'> = {
-  finding: 'C',
-  path: ['tree', 'complete'],
-  registry: 'subagent-viewer',
-  reason:
-    'Desktop reads the root chat and its managed tree in full; the web builds the tree from the loaded part of an open chat.',
-};
-
 const CLAUDE_NODES = [
   'toolu_01CheckAuth',
   'toolu_01ExploreRoutes',
@@ -52,10 +44,10 @@ const CLAUDE_NODES = [
   'toolu_01WatchLogs',
 ] as const;
 
+// Finding C (desktop's complete tree against the web's partial one) closed
+// with CAN-5206: cloud reads every Core task row of a root chat, so its tree
+// is complete too. A root whose task list is not read stays partial.
 export const HOST_DIFFERENCES: readonly HostDifference[] = [
-  { ...COMPLETE, fixture: 'claude' },
-  { ...COMPLETE, fixture: 'codex-v2' },
-  { ...COMPLETE, fixture: 'codex-v1' },
   ...CLAUDE_NODES.map(
     (id): HostDifference => ({
       finding: 'D',
@@ -64,53 +56,6 @@ export const HOST_DIFFERENCES: readonly HostDifference[] = [
       registry: 'subagent-viewer',
       reason:
         "Core records when a task was queued; desktop's Claude transcript has no queue time. Shown only when a node has no start time.",
-    }),
-  ),
-  ...CLAUDE_NODES.map(
-    (id): HostDifference => ({
-      finding: 'E',
-      fixture: 'claude',
-      path: ['tree', 'nodes', { id }, 'modelLabel'],
-      registry: 'subagent-viewer',
-      reason:
-        "Desktop gap: a desktop Claude node has no model label, because the persisted transcript keeps no subagent's model; cloud reads it from the task.",
-    }),
-  ),
-  {
-    finding: 'A',
-    fixture: 'claude',
-    path: ['transcripts', 'toolu_01ExploreRoutes', 3],
-    registry: 'agent-block-card',
-    reason:
-      'Desktop gap (follow-up: nested Claude agent cards on desktop): mergeToolResults keeps a nested Agent call as a tool row; cloud folds it into a nested agent card.',
-  },
-  {
-    finding: 'O',
-    fixture: 'codex-v2',
-    path: ['transcripts', '019b4051-0000-7000-8000-00000000000a', 0, 'label'],
-    registry: 'subagent-viewer',
-    reason:
-      'Cloud gap: the shared tool card labels the runner\'s Codex `bash` call "Bash" where desktop\'s Codex `command` row reads "Command"; icon, output and error match.',
-  },
-  {
-    finding: 'L',
-    fixture: 'codex-v2',
-    path: ['transcripts', '019b4051-0000-7000-8000-00000000000b'],
-    registry: 'subagent-viewer',
-    reason:
-      'Cloud gap: desktop records a failed Codex child turn as an "Error:" row; Core sends no failure frame for a child turn, so cloud shows the failure only on the node.',
-  },
-  ...[
-    '019b4051-0000-7000-8000-00000000010a',
-    '019b4051-0000-7000-8000-00000000010b',
-  ].map(
-    (id): HostDifference => ({
-      finding: 'N',
-      fixture: 'codex-v1',
-      path: ['transcripts', id],
-      registry: 'subagent-viewer',
-      reason:
-        "Cloud gap: a multi-receiver Codex card's child rows carry no receiver, so a receiver's chat on cloud shows only its prompt.",
     }),
   ),
 ];

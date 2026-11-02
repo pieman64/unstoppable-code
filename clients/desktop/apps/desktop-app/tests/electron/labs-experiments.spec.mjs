@@ -28,7 +28,64 @@ import {
 
 const FIXTURE_ID = 'plugins-fixture';
 
-function fixtureEnv(availability) {
+test('Files reads has an independent Settings switch whose saved opt-out survives restart', async () => {
+  const first = await launch(null, 'offered');
+  const { userDataDir } = first;
+  try {
+    await first.app.openSettings();
+    await first.app.openSettingsSection('experiments');
+    const toggle = first.window.getByTestId(
+      'labs-experiment-toggle-daemon-files-reads',
+    );
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toBeEnabled();
+    await first.window.evaluate(() =>
+      window.api.experiments.setChoice({
+        experimentId: 'daemon-files-reads',
+        enabled: true,
+      }),
+    );
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(toggle).toBeEnabled();
+    await expect
+      .poll(() => readLocalChoices(userDataDir)['daemon-files-reads'])
+      .toBe(false);
+    expect(
+      (await first.window.evaluate(() => window.api.experiments.getSnapshot()))
+        .earlyAccessEnabled,
+    ).toBe(false);
+    for (const availability of ['hidden', 'on']) {
+      await first.electronApp.evaluate((_electron, value) => {
+        process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS = JSON.stringify({
+          ...JSON.parse(process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS ?? '{}'),
+          'canopy-desktop-labs-daemon-files-reads': value,
+        });
+      }, availability);
+      await first.window.evaluate(() =>
+        window.api.featureFlags.refreshContext(),
+      );
+      if (availability === 'hidden') await expect(toggle).toHaveCount(0);
+      else await expect(toggle).toHaveAttribute('aria-checked', 'false');
+      expect(readLocalChoices(userDataDir)['daemon-files-reads']).toBe(false);
+    }
+  } finally {
+    await closeCanopy(first.electronApp, userDataDir, { keepUserData: true });
+  }
+  const restarted = await launch(userDataDir, 'offered');
+  try {
+    await restarted.app.openSettings();
+    await restarted.app.openSettingsSection('experiments');
+    await expect(
+      restarted.window.getByTestId('labs-experiment-toggle-daemon-files-reads'),
+    ).toHaveAttribute('aria-checked', 'false');
+  } finally {
+    await closeCanopy(restarted.electronApp, userDataDir);
+  }
+});
+
+function fixtureEnv(availability, offlineSync = false) {
   return {
     CANOPY_E2E_LABS_EXPERIMENTS: JSON.stringify([
       {
@@ -40,6 +97,21 @@ function fixtureEnv(availability) {
         flagKey: 'canopy-e2e-labs-plugins-fixture',
         fixtureAvailability: availability,
       },
+      ...(offlineSync
+        ? [
+            {
+              id: 'offline-sync-fixture',
+              name: 'Offline sync fixture',
+              description:
+                'Exercise saved choices while the account is offline.',
+              pages: [],
+              sidebarKeys: [],
+              flagKey: 'canopy-e2e-labs-offline-sync-fixture',
+              fixtureAvailability: availability,
+              requiresEarlyAccess: false,
+            },
+          ]
+        : []),
     ]),
   };
 }
@@ -76,12 +148,12 @@ async function expectFixturePage(window) {
   await expect(window.getByTestId('page-plugins')).toBeVisible();
 }
 
-async function launch(userDataDir, availability) {
+async function launch(userDataDir, availability, offlineSync = false) {
   const freshLayout =
     !userDataDir || !existsSync(path.join(userDataDir, 'preferences.json'));
   const launched = await launchCanopy({
     ...(userDataDir ? { userDataDir } : {}),
-    env: fixtureEnv(availability),
+    env: fixtureEnv(availability, offlineSync),
   });
   const window = await launched.electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
@@ -406,10 +478,14 @@ test('signed-in PUT choices stay account-isolated and survive a failed GET on re
     await expect(
       first.window.getByTestId(`labs-experiment-toggle-${FIXTURE_ID}`),
     ).toHaveAttribute('aria-checked', 'true');
-    expect(
-      (await getScenarioActivity(DEFAULT_MOCK_BASE_URL, accountA)).activity
-        .experimentChoicesPut,
-    ).toBe(1);
+    // Saves commit locally; the account receives them in the background.
+    await expect
+      .poll(
+        async () =>
+          (await getScenarioActivity(DEFAULT_MOCK_BASE_URL, accountA)).activity
+            .experimentChoicesPut,
+      )
+      .toBe(1);
     await first.app.closeSettings();
     await first.window.getByTestId('sidebar-more').click();
     await first.window.getByTestId('sidebar-more-item-plugins').click();
@@ -464,6 +540,94 @@ test('signed-in PUT choices stay account-isolated and survive a failed GET on re
     await closeCanopy(restarted.electronApp, userDataDir);
     await clearScenario(DEFAULT_MOCK_BASE_URL, accountA);
     await clearScenario(DEFAULT_MOCK_BASE_URL, accountB);
+  }
+});
+
+test('signed-in Labs switches work while the account service is unreachable and sync once it answers', async () => {
+  test.setTimeout(240_000);
+  const key = 'csk_can5127-labs-offline';
+  const account = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+  const toggle = 'labs-experiment-toggle-offline-sync-fixture';
+  const readOfflineChoice = (window) =>
+    window.evaluate(async () => {
+      const snapshot = await window.api.experiments.getSnapshot();
+      const entry = snapshot.experiments.find(
+        (item) => item.id === 'offline-sync-fixture',
+      );
+      return { choice: entry?.choice, enabled: entry?.enabled };
+    });
+  await registerScenario(DEFAULT_MOCK_BASE_URL, key, {
+    cloud: {
+      account,
+      experiments: { choices: {}, getStatus: 503, putStatus: 503 },
+    },
+  });
+  const first = await launch(null, 'offered', true);
+  const { userDataDir } = first;
+  try {
+    await connectMockCloudAccount(first.window, key);
+    await first.app.openSettings();
+    await first.app.openSettingsSection('experiments');
+    await expect(first.window.getByTestId(toggle)).toBeEnabled();
+    await first.window.getByTestId(toggle).click();
+    await expect(first.window.getByTestId(toggle)).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    // The switch shows its pending position at once; main commits locally.
+    await expect
+      .poll(() => readOfflineChoice(first.window))
+      .toEqual({ choice: true, enabled: true });
+    await expect(
+      first.window.getByText('Could not save this setting. Try again.'),
+    ).toHaveCount(0);
+  } finally {
+    await closeCanopy(first.electronApp, userDataDir, { keepUserData: true });
+  }
+  const offlineRestart = await launch(userDataDir, 'offered', true);
+  try {
+    expect(await readOfflineChoice(offlineRestart.window)).toEqual({
+      choice: true,
+      enabled: true,
+    });
+    await offlineRestart.app.openSettings();
+    await offlineRestart.app.openSettingsSection('experiments');
+    await expect(offlineRestart.window.getByTestId(toggle)).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    await expect(offlineRestart.window.getByTestId(toggle)).toBeEnabled();
+    expect(
+      (await getScenarioActivity(DEFAULT_MOCK_BASE_URL, key)).activity
+        .experimentChoicesPut ?? 0,
+    ).toBe(0);
+  } finally {
+    await closeCanopy(offlineRestart.electronApp, userDataDir, {
+      keepUserData: true,
+    });
+  }
+  // The account still holds the older choice until the pending save lands.
+  await registerScenario(DEFAULT_MOCK_BASE_URL, key, {
+    cloud: {
+      account,
+      experiments: { choices: { 'offline-sync-fixture': false } },
+    },
+  });
+  const online = await launch(userDataDir, 'offered', true);
+  try {
+    await expect
+      .poll(
+        async () =>
+          (await getScenarioActivity(DEFAULT_MOCK_BASE_URL, key)).activity
+            .experimentChoicesPut,
+      )
+      .toBe(1);
+    await expect
+      .poll(() => readOfflineChoice(online.window))
+      .toEqual({ choice: true, enabled: true });
+  } finally {
+    await closeCanopy(online.electronApp, userDataDir);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, key);
   }
 });
 
@@ -585,7 +749,7 @@ test('a failed same-context refresh retains navigation and a recovered live kill
   }
 });
 
-test('a cold account save returns its extracted choice before the initial GET finishes', async () => {
+test('a cold account save commits at once and gains its extracted choice from the account', async () => {
   const key = 'csk_labs-cold-extraction';
   await registerScenario(DEFAULT_MOCK_BASE_URL, key, {
     cloud: {
@@ -613,9 +777,6 @@ test('a cold account save returns its extracted choice before the initial GET fi
       window.api.experiments.getSnapshot(),
     );
     expect(snapshot.earlyAccessEnabled).toBe(false);
-    expect(
-      snapshot.experiments.find((entry) => entry.id === 'sidebar'),
-    ).toMatchObject({ choice: true, enabled: true });
     await expect
       .poll(() =>
         launched.window.evaluate(

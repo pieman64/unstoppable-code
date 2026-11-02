@@ -101,7 +101,7 @@ export function LedgerCorrectionBox({
             <Button
               type="button"
               variant="ghost"
-              size="control"
+              size="compact"
               disabled={saving}
               data-testid="ledger-correction-more"
               onClick={onMoreOptions}
@@ -115,7 +115,7 @@ export function LedgerCorrectionBox({
             <Button
               type="button"
               variant="ghost"
-              size="control"
+              size="compact"
               disabled={saving}
               data-testid="ledger-correction-discard"
               onClick={onDiscard}
@@ -125,7 +125,7 @@ export function LedgerCorrectionBox({
             <Button
               type="button"
               variant="primary"
-              size="control"
+              size="compact"
               disabled={!canSubmit}
               data-testid="ledger-correction-save"
               onClick={submit}

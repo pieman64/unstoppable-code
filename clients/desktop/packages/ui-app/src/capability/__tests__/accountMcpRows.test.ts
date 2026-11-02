@@ -274,7 +274,12 @@ describe('mcpServerRowSurface', () => {
 });
 
 describe('withMcpServerRef', () => {
-  const empty = { collectionIds: [], skillRefs: [], pluginRefs: [] };
+  const empty = {
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+    mcpServerRefs: [],
+  };
 
   it('adds the ref and keeps every other selection', (): void => {
     expect(
@@ -301,7 +306,12 @@ describe('withMcpServerRef', () => {
 });
 
 describe('withoutMcpServerRef', () => {
-  const empty = { collectionIds: [], skillRefs: [], pluginRefs: [] };
+  const empty = {
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+    mcpServerRefs: [],
+  };
 
   it('removes only that server and keeps every other selection', (): void => {
     expect(

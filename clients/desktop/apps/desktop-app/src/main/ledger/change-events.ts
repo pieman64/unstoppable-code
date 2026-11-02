@@ -6,6 +6,8 @@ import type { LedgerContainer } from '@canopy/protocol/canopy-core';
  */
 export interface LedgerEntryChange {
   readonly container: LedgerContainer;
+  /** The ledger that changed; a global (workflow) view is addressed by it. */
+  readonly ledgerId: string;
   readonly entryId: string;
   readonly revision: number;
   /** A pending title marker resolved without a further revision change. */
@@ -45,11 +47,15 @@ export function notifyLedgerEntryChanged(change: LedgerEntryChange): void {
 
 /**
  * A change in how a Ledger's entries sync, with no new revision: never
- * content, and never an ID beyond the container.
+ * content, and never an ID beyond the container and its ledger.
  */
 export type LedgerSyncChange =
   /** The mirror acknowledged entries, or the scope's audience or repair changed. */
-  | { readonly kind: 'scope'; readonly container: LedgerContainer }
+  | {
+      readonly kind: 'scope';
+      readonly container: LedgerContainer;
+      readonly ledgerId: string;
+    }
   /** What may sync changed for every scope: the account, sharing or policy. */
   | { readonly kind: 'all' }
   /** Scopes of a merged guest account now belong to the account it became. */

@@ -232,7 +232,6 @@ function chooseCommand(model: Model, metadata: CanonicalChatState): Command {
       options: {
         commandResult: {
           commandId: `command-${ordinal}`,
-          revision: 0,
           outcome: 'applied',
           entityId: chatId,
         },

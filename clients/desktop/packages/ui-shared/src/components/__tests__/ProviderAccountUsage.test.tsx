@@ -94,7 +94,7 @@ describe('ProviderAccountUsage', () => {
     expect(
       container.querySelector('[data-testid="provider-account-usage"]'),
     ).not.toBeNull();
-    expect(container.textContent).toContain('Account: alice@example.com');
+    expect(container.textContent).toContain('Accountalice@example.com');
     expect(container.textContent).not.toContain('Claude account');
     expect(container.textContent).toContain('Manage account');
     expect(container.textContent).toContain('7-day Opus');
@@ -125,7 +125,7 @@ describe('ProviderAccountUsage', () => {
       );
     });
 
-    expect(container.textContent).toContain('Account: Claude account');
+    expect(container.textContent).toContain('AccountClaude account');
     expect(container.textContent).not.toContain('alice@example.com');
     expect(container.querySelector(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
   });
@@ -138,10 +138,10 @@ describe('ProviderAccountUsage', () => {
     });
 
     expect(container.textContent).toContain('7-day Opus');
-    expect(container.textContent).toContain('Usage: 42.0%');
-    expect(container.textContent).toContain('Resets: ');
-    expect(container.textContent).toContain('Spent: $1.25');
-    expect(container.textContent).toContain('Remaining credits: $8.75');
+    expect(container.textContent).toContain('42%');
+    expect(container.textContent).toContain('Resets ');
+    expect(container.textContent).toContain('$1.25 spent');
+    expect(container.textContent).toContain('$8.75 left');
     const freshness = Array.from(container.querySelectorAll('p')).find(
       (paragraph) => paragraph.textContent?.startsWith('Updated '),
     );
@@ -172,7 +172,7 @@ describe('ProviderAccountUsage', () => {
     expect(disclosure?.open).toBe(false);
     expect(disclosure?.querySelector('summary')?.textContent).toBe('Usage');
     expect(disclosure?.textContent).toContain('7-day Opus');
-    expect(disclosure?.textContent).toContain('Remaining credits: $8.75');
+    expect(disclosure?.textContent).toContain('$8.75 left');
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
       'Check your connection.',
     );
@@ -228,10 +228,92 @@ describe('ProviderAccountUsage', () => {
       }),
     );
     expect(container.textContent).toContain('7-day Opus');
-    expect(container.textContent).toContain('Usage: 42.0%');
+    expect(container.textContent).toContain('42%');
     expect(providerAccountUsageStatusText(accountWithError, NOW_MS)).toContain(
       'Showing last known usage.',
     );
+  });
+
+  it('renders Claude overage as monthly spend and cap rather than wallet credits', () => {
+    act(() => {
+      root.render(
+        <ProviderAccountUsageDetails
+          account={{
+            ...account,
+            windows: [
+              {
+                id: 'extra_usage-primary',
+                label: 'Extra usage',
+                spend: {
+                  currency: 'USD',
+                  used: 61,
+                  limit: 50,
+                  isEnabled: true,
+                },
+              },
+            ],
+          }}
+          nowMs={NOW_MS}
+        />,
+      );
+    });
+    expect(container.textContent).toContain('Monthly spend: $61.00');
+    expect(container.textContent).toContain('Monthly spending cap: $50.00');
+    expect(container.textContent).not.toContain('Remaining credits');
+    expect(container.textContent).not.toContain('Usage unavailable');
+  });
+
+  it('distinguishes disabled and unreported extra usage without a fake zero', () => {
+    act(() => {
+      root.render(
+        <ProviderAccountUsageDetails
+          account={{
+            ...account,
+            windows: [
+              {
+                id: 'extra_usage-primary',
+                label: 'Extra usage',
+                spend: { isEnabled: false },
+              },
+            ],
+          }}
+          nowMs={NOW_MS}
+        />,
+      );
+    });
+    expect(container.textContent).toContain('Extra usage is off');
+    expect(container.textContent).not.toContain('$0.00');
+    act(() => {
+      root.render(
+        <ProviderAccountUsageDetails
+          account={{
+            ...account,
+            windows: [
+              {
+                id: 'extra_usage-primary',
+                label: 'Extra usage',
+                spend: { isEnabled: true },
+              },
+            ],
+          }}
+          nowMs={NOW_MS}
+        />,
+      );
+    });
+    expect(container.textContent).toContain('Monthly spend unavailable');
+    expect(container.textContent).toContain('Monthly cap unavailable');
+    expect(container.textContent).not.toContain('$0.00');
+  });
+
+  it('does not show an extra-usage cap on a regular subscription window', () => {
+    act(() => {
+      root.render(
+        <ProviderAccountUsageDetails account={account} nowMs={NOW_MS} />,
+      );
+    });
+    expect(container.textContent).toContain('7-day Opus');
+    expect(container.textContent).not.toContain('Monthly spending cap');
+    expect(container.textContent).not.toContain('Monthly cap unavailable');
   });
 
   it('keeps empty usage unknown and maps credit units into indicator limits', () => {

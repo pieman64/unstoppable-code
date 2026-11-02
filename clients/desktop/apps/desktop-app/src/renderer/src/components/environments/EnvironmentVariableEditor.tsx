@@ -19,7 +19,15 @@ import {
   parseBulkEnvironment,
   serializeBulkEnvironment,
 } from '@canopy/desktop-shared/lib/user-environment';
-import { Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Checkbox,
+  FieldError,
+  Notice,
+  TextArea,
+  TextInput,
+} from '@canopy/ui-shared/components';
+import { SettingsSegmentedControl } from '@/components/settings/SettingsLayout';
 import { brandText } from '@/lib/brand';
 
 interface EditorRow {
@@ -40,6 +48,12 @@ interface EnvironmentVariableEditorProps {
    */
   encryptionAvailable: boolean;
   storageFailure?: SecureStorageFailure | null;
+  /**
+   * `inline` (default) shows the encryption status above the editor. `host`
+   * leaves it to the host, which puts it in its section description (and the
+   * unavailable warning above its card), outside the settings card.
+   */
+  encryptionStatus?: 'inline' | 'host';
   /** Disable editing (e.g. while loading). */
   readOnly?: boolean;
   /** Test id passed through for renderer tests. */
@@ -58,6 +72,8 @@ const RESERVED_PATH_MESSAGE = `PATH is managed by ${brandText.appName} and canno
 const INVALID_KEY_MESSAGE =
   'Use letters, numbers, and underscores. Keys cannot start with a number.';
 const DUPLICATE_KEY_MESSAGE = 'Duplicate keys must be removed before saving.';
+const MODE_SWITCH_BLOCKED_MESSAGE = 'Fix the error below to switch.';
+const BULK_MESSAGE_ID = 'environment-editor-bulk-message';
 const BULK_HELPER_TEXT =
   'One KEY=VALUE per line. Blank lines and # comments are ignored. Values may be wrapped in matching quotes. Duplicate keys must be removed before saving.';
 
@@ -171,6 +187,7 @@ export function EnvironmentVariableEditor({
   uiMode,
   encryptionAvailable,
   storageFailure,
+  encryptionStatus = 'inline',
   readOnly,
   testId,
   onVariablesChange,
@@ -309,35 +326,36 @@ export function EnvironmentVariableEditor({
 
   return (
     <div data-testid={testId ?? 'environment-variable-editor'}>
-      {!storageFailure && (
+      {!storageFailure && encryptionStatus === 'inline' && (
         <EncryptionStatusBanner encryptionAvailable={encryptionAvailable} />
       )}
 
-      <div
-        className="inline-flex rounded-md border bg-card/40 p-0.5"
-        role="tablist"
-        aria-label="Editor mode"
-      >
-        <ModeButton
-          active={uiMode === 'key-value'}
-          label="Key-Value"
-          testId="environment-editor-mode-key-value"
-          disabled={
-            readOnly === true ||
-            (uiMode !== 'key-value' && activeMessage !== null)
-          }
-          onClick={() => handleModeChange('key-value')}
-        />
-        <ModeButton
-          active={uiMode === 'bulk'}
-          label="Bulk"
-          testId="environment-editor-mode-bulk"
-          disabled={
-            readOnly === true || (uiMode !== 'bulk' && activeMessage !== null)
-          }
-          onClick={() => handleModeChange('bulk')}
-        />
-      </div>
+      {/* The Settings segmented picker, as tabs: the editor below is the
+          view each one names. While the current view has an error the other
+          tab stays visible but unavailable, and says why. */}
+      <SettingsSegmentedControl<UserEnvironmentUiMode>
+        semantics="tabs"
+        label="Editor mode"
+        value={uiMode}
+        onChange={handleModeChange}
+        disabled={readOnly === true}
+        dataTestId="environment-editor-mode"
+        options={(
+          [
+            ['key-value', 'Key-Value'],
+            ['bulk', 'Bulk'],
+          ] as const
+        ).map(([mode, label]) => {
+          const blocked = uiMode !== mode && activeMessage !== null;
+          return {
+            value: mode,
+            label,
+            dataTestId: `environment-editor-mode-${mode}`,
+            unavailable: blocked,
+            tooltip: blocked ? MODE_SWITCH_BLOCKED_MESSAGE : undefined,
+          };
+        })}
+      />
 
       <div className="mt-3">
         {uiMode === 'key-value' ? (
@@ -379,19 +397,20 @@ export function EnvironmentVariableEditor({
               </div>
             )}
 
-            <button
-              type="button"
+            <Button
+              size="compact"
+              variant="secondary"
               onClick={handleAddRow}
               data-testid="environment-editor-add-row"
               disabled={readOnly === true}
-              className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-accent-subtle hover:fg-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               Add variable
-            </button>
+            </Button>
           </div>
         ) : (
           <div className="space-y-2" data-testid="environment-editor-bulk">
-            <textarea
+            <TextArea
+              mono
               value={bulkText}
               onChange={handleBulkChange}
               spellCheck={false}
@@ -402,17 +421,21 @@ export function EnvironmentVariableEditor({
               placeholder={
                 'FOO=bar\nBAZ="quoted value"\n# Comments are ignored'
               }
+              aria-invalid={bulkMessage !== null}
+              aria-describedby={
+                bulkMessage !== null ? BULK_MESSAGE_ID : undefined
+              }
               data-testid="environment-editor-bulk-textarea"
-              className="focus-ring w-full resize-y rounded-md border bg-base px-3 py-2 font-mono text-s fg-primary disabled:cursor-not-allowed disabled:opacity-50"
+              className="block"
             />
             <p className="text-xs fg-secondary">{BULK_HELPER_TEXT}</p>
             {bulkMessage !== null && (
-              <p
-                className="text-xs fg-destructive"
+              <FieldError
+                id={BULK_MESSAGE_ID}
                 data-testid="environment-editor-bulk-validation"
               >
                 {bulkMessage}
-              </p>
+              </FieldError>
             )}
           </div>
         )}
@@ -430,58 +453,39 @@ function EncryptionStatusBanner({
 }: EncryptionStatusBannerProps): JSX.Element {
   if (encryptionAvailable) {
     return (
-      <p
-        className="mb-3 text-xs fg-secondary"
-        data-testid="environment-editor-encryption-status"
-      >
-        Values are encrypted at rest using the OS keychain.
+      <p className="mb-3 text-xs fg-secondary">
+        <EnvironmentEncryptionStatusText />
       </p>
     );
   }
+  return <EnvironmentEncryptionUnavailableNotice className="mb-3" />;
+}
+
+/** The encryption status line, for a host's section description. */
+export function EnvironmentEncryptionStatusText(): JSX.Element {
+  return (
+    <span data-testid="environment-editor-encryption-status">
+      Values are encrypted at rest using the OS keychain.
+    </span>
+  );
+}
+
+/** The warning while OS encryption is unavailable. */
+export function EnvironmentEncryptionUnavailableNotice({
+  className,
+}: {
+  readonly className?: string;
+}): JSX.Element {
   return (
     <Notice
       intent="attention"
-      className="mb-3"
+      className={className}
       data-testid="environment-editor-encryption-warning"
       title="OS encryption unavailable."
     >
       Values will be saved in plaintext on disk. Avoid storing secrets here
       until a system keychain is configured.
     </Notice>
-  );
-}
-
-interface ModeButtonProps {
-  active: boolean;
-  label: string;
-  testId: string;
-  disabled: boolean;
-  onClick: () => void;
-}
-
-function ModeButton({
-  active,
-  label,
-  testId,
-  disabled,
-  onClick,
-}: ModeButtonProps): JSX.Element {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      disabled={disabled}
-      data-testid={testId}
-      className={`focus-ring rounded px-3 py-1.5 text-s font-medium transition-colors ${
-        active
-          ? 'bg-accent-subtle fg-accent'
-          : 'fg-secondary hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50'
-      }`}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -511,8 +515,9 @@ function KeyValueRow({
   return (
     <>
       <div className="col-span-4 grid grid-cols-subgrid items-center">
-        <input
-          type="text"
+        <TextInput
+          density="settings"
+          mono
           value={row.key}
           spellCheck={false}
           autoCapitalize="off"
@@ -522,15 +527,14 @@ function KeyValueRow({
           onChange={(event: ChangeEvent<HTMLInputElement>): void =>
             onChange(row.id, 'key', event.target.value)
           }
+          aria-label="Key"
           aria-invalid={hasError}
           aria-describedby={hasError ? messageId : undefined}
           data-testid={`environment-editor-key-${row.id}`}
-          className={`focus-ring rounded-md border bg-base px-3 py-1.5 font-mono text-s fg-primary disabled:cursor-not-allowed disabled:opacity-50 ${
-            hasError ? 'border-line-destructive' : ''
-          }`}
         />
-        <input
-          type="text"
+        <TextInput
+          density="settings"
+          mono
           value={row.value}
           spellCheck={false}
           autoCapitalize="off"
@@ -540,12 +544,11 @@ function KeyValueRow({
           onChange={(event: ChangeEvent<HTMLInputElement>): void =>
             onChange(row.id, 'value', event.target.value)
           }
+          aria-label="Value"
           data-testid={`environment-editor-value-${row.id}`}
-          className="focus-ring rounded-md border bg-base px-3 py-1.5 font-mono text-s fg-primary disabled:cursor-not-allowed disabled:opacity-50"
         />
         <label className="flex items-center justify-center">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={row.secret}
             disabled={disabled}
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
@@ -553,28 +556,28 @@ function KeyValueRow({
             }
             aria-label={`Mark ${row.key || 'variable'} as secret`}
             data-testid={`environment-editor-secret-${row.id}`}
-            className="h-4 w-4 rounded fg-accent disabled:cursor-not-allowed disabled:opacity-50"
           />
         </label>
-        <button
-          type="button"
+        <Button
+          size="compact"
+          variant="secondary"
           onClick={() => onRemove(row.id)}
           aria-label={`Remove ${row.key || 'variable'}`}
           data-testid={`environment-editor-remove-${row.id}`}
           disabled={disabled}
-          className="focus-ring rounded-md border bg-secondary px-2 py-1 text-xs fg-primary transition-colors hover:bg-destructive hover:fg-emphasis disabled:cursor-not-allowed disabled:opacity-50"
         >
           Remove
-        </button>
+        </Button>
       </div>
       {hasError && (
-        <p
-          id={messageId}
-          data-testid={`environment-editor-message-${row.id}`}
-          className="col-span-4 -mt-1 pl-1 text-xs fg-destructive"
-        >
-          {validationMessage}
-        </p>
+        <div className="col-span-4 -mt-1">
+          <FieldError
+            id={messageId}
+            data-testid={`environment-editor-message-${row.id}`}
+          >
+            {validationMessage}
+          </FieldError>
+        </div>
       )}
     </>
   );

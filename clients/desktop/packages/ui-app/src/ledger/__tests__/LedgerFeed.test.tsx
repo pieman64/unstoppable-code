@@ -32,9 +32,21 @@ import type {
   LedgerViewEntry,
   LedgerViewReceipt,
   LedgerViewResult,
+  LedgerTaskViewScope,
   LedgerViewScope,
   LedgerViewUpdateRequest,
 } from '@canopy/protocol/ledger-view';
+import {
+  isLedgerTaskViewScope,
+  ledgerViewScopeKey,
+} from '@canopy/protocol/ledger-view';
+
+/** The test's key for a scope's store: a task's project and worktree. */
+function testScopeKey(scope: LedgerViewScope): string {
+  return isLedgerTaskViewScope(scope)
+    ? scope.projectId + '/' + scope.worktreeId
+    : ledgerViewScopeKey(scope);
+}
 import { LEDGER_FEED_CHANGE_DELAY_MS, LedgerFeed } from '../LedgerFeed';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -67,8 +79,11 @@ jest.mock('@canopy/ui-shared/components', () => {
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
-const SCOPE: LedgerViewScope = { projectId: 'project-1', worktreeId: 'wt-1' };
-const OTHER_SCOPE: LedgerViewScope = {
+const SCOPE: LedgerTaskViewScope = {
+  projectId: 'project-1',
+  worktreeId: 'wt-1',
+};
+const OTHER_SCOPE: LedgerTaskViewScope = {
   projectId: 'project-2',
   worktreeId: 'wt-2',
 };
@@ -204,7 +219,10 @@ function entryView(
   options: { readonly titlePending?: true } = {},
 ): LedgerViewResult<LedgerViewEntry> {
   const { entry } = row;
-  const scope = row.origin.kind === 'this_device' ? row.origin.scope : SCOPE;
+  const scope =
+    row.origin.kind === 'this_device' && isLedgerTaskViewScope(row.origin.scope)
+      ? row.origin.scope
+      : SCOPE;
   const details = authorDetails();
   return {
     status: 'ok',
@@ -586,6 +604,8 @@ function receiptFor(view: EntryAnswer): ReceiptAnswer {
 
 interface RenderFeedOptions {
   readonly onSignIn?: () => void;
+  /** A host that only reads the mirror: no Ledger of its own. */
+  readonly mirrorOnly?: boolean;
 }
 
 function renderFeed(
@@ -600,7 +620,7 @@ function renderFeed(
   const store = createLedgerFeedStore(fake.feed);
   const scopeStores = new Map<string, LedgerViewStore>();
   const scopeStore = (scope: LedgerViewScope): LedgerViewStore => {
-    const key = scope.projectId + '/' + scope.worktreeId;
+    const key = testScopeKey(scope);
     let existing = scopeStores.get(key);
     if (existing === undefined) {
       existing = createLedgerViewStore(fake.client, scope);
@@ -613,26 +633,38 @@ function renderFeed(
       root.render(
         <LedgerFeed
           store={store}
-          client={fake.client}
-          navigator={navigator}
-          scopeStore={scopeStore}
-          scopeHasDraft={(scope) => {
-            const scopeState = scopeStores
-              .get(scope.projectId + '/' + scope.worktreeId)
-              ?.getState();
-            return (
-              scopeState !== undefined &&
-              (scopeState.composer.draft !== null ||
-                Object.keys(scopeState.corrections).length > 0)
-            );
-          }}
-          describeScope={(scope) =>
-            scope.worktreeId === SCOPE.worktreeId ? 'Canopy · fix-parser' : null
-          }
-          addableScopes={[
-            { scope: SCOPE, label: 'fix-parser', project: 'Canopy' },
-            { scope: OTHER_SCOPE, label: 'launch-notes', project: 'Docs' },
-          ]}
+          {...(options.mirrorOnly === true
+            ? { audiences: ['mine', 'teammates'] as const }
+            : {
+                local: {
+                  client: fake.client,
+                  navigator,
+                  scopeStore,
+                  scopeHasDraft: (scope: LedgerViewScope): boolean => {
+                    const scopeState = scopeStores
+                      .get(testScopeKey(scope))
+                      ?.getState();
+                    return (
+                      scopeState !== undefined &&
+                      (scopeState.composer.draft !== null ||
+                        Object.keys(scopeState.corrections).length > 0)
+                    );
+                  },
+                  describeScope: (scope: LedgerViewScope): string | null =>
+                    isLedgerTaskViewScope(scope) &&
+                    scope.worktreeId === SCOPE.worktreeId
+                      ? 'Canopy · fix-parser'
+                      : null,
+                  addableScopes: [
+                    { scope: SCOPE, label: 'fix-parser', project: 'Canopy' },
+                    {
+                      scope: OTHER_SCOPE,
+                      label: 'launch-notes',
+                      project: 'Docs',
+                    },
+                  ],
+                },
+              })}
           visible={visible}
           {...(options.onSignIn === undefined
             ? {}
@@ -747,6 +779,76 @@ describe('LedgerFeed list and search', () => {
     expect(teammate.textContent).toContain('Ada Lovelace');
     expect(teammate.textContent).toContain('Acme');
     expect(teammate.textContent).not.toContain('You');
+  });
+
+  it('labels workflow rows by their owner, beside any teammate or device', async () => {
+    const ORG_ID = '7f0c1d2e-3b4a-4c5d-8e6f-901234567890';
+    const globalLocal: LedgerFeedRow = {
+      entry: item(4),
+      ledgerId: '00000000-0000-4000-8000-0000000000e4',
+      scopeKind: 'global',
+      scopeArchived: false,
+      origin: {
+        kind: 'this_device',
+        scope: {
+          kind: 'global',
+          owner: { kind: 'personal' },
+          ledgerId: '00000000-0000-4000-8000-0000000000e4',
+        },
+      },
+    };
+    const globalTeammate: LedgerFeedRow = {
+      entry: item(5, TEAMMATE_USER),
+      ledgerId: '00000000-0000-4000-8000-0000000000e5',
+      scopeKind: 'global',
+      scopeArchived: false,
+      origin: {
+        kind: 'teammate',
+        teammateName: 'Ada Lovelace',
+        organizationName: 'Acme',
+      },
+      global: {
+        owner: { kind: 'organization', organizationId: ORG_ID },
+        organizationName: 'Acme',
+      },
+    };
+    const globalUnnamed: LedgerFeedRow = {
+      entry: item(6),
+      ledgerId: '00000000-0000-4000-8000-0000000000e6',
+      scopeKind: 'global',
+      scopeArchived: false,
+      origin: { kind: 'other_device', deviceLabel: 'Studio Mac' },
+      global: { owner: { kind: 'organization', organizationId: ORG_ID } },
+    };
+    const fake = fakes();
+    fake.answers.push(page([globalLocal, globalTeammate, globalUnnamed]));
+    renderFeed(fake);
+    await flush();
+
+    const contextOf = (entryId: string): Element | null =>
+      rowFor(entryId).querySelector('[data-testid="ledger-entry-row-context"]');
+    // This device has no name for its own workflow scope here, so the row
+    // falls back to its owner.
+    expect(contextOf(globalLocal.entry.entryId)?.textContent).toBe(
+      'Workflows · Personal',
+    );
+    const teammateContext = contextOf(globalTeammate.entry.entryId);
+    expect(teammateContext?.textContent).toBe('Workflows · Acme');
+    expect(teammateContext?.getAttribute('title')).toBe('Workflows · Acme');
+    expect(
+      rowFor(globalTeammate.entry.entryId).querySelector(
+        '[data-testid="ledger-entry-row-teammate"]',
+      )?.textContent,
+    ).toBe('Acme');
+    // Without a name the reader may see, the row reads as Workflows alone.
+    expect(contextOf(globalUnnamed.entry.entryId)?.textContent).toBe(
+      'Workflows',
+    );
+    expect(
+      rowFor(globalUnnamed.entry.entryId).querySelector(
+        '[data-testid="ledger-entry-row-device"]',
+      )?.textContent,
+    ).toBe('Studio Mac');
   });
 
   it('switches audiences', async () => {
@@ -975,7 +1077,7 @@ describe('LedgerFeed list and search', () => {
     expect(onSignIn).toHaveBeenCalledTimes(1);
   });
 
-  it('shows loading, not an empty Feed, while retrying a failed first read', async () => {
+  it('keeps the failed Feed with its Try again spinning, not an empty Feed, while retrying', async () => {
     const fake = fakes();
     fake.answers.push({
       status: 'error',
@@ -984,6 +1086,9 @@ describe('LedgerFeed list and search', () => {
     });
     renderFeed(fake);
     await flush();
+    expect(byTestId('ledger-feed-problem').textContent).toContain(
+      "Couldn't load entries.",
+    );
 
     let release: () => void = () => undefined;
     fake.hold = new Promise((resolve) => {
@@ -996,12 +1101,16 @@ describe('LedgerFeed list and search', () => {
     expect(
       document.querySelector('[data-testid="ledger-feed-empty"]'),
     ).toBeNull();
-    expect(byTestId('ledger-feed-list-pane').textContent).toContain(
-      'Loading entries…',
-    );
+    expect(byTestId('ledger-feed-problem')).toBeInstanceOf(HTMLElement);
+    const retry = byTestId('ledger-feed-retry');
+    expect(retry.textContent).toBe('Trying again…');
+    expect(retry.getAttribute('aria-busy')).toBe('true');
     release();
     await flush();
     expect(rowFor(LOCAL.entry.entryId)).toBeDefined();
+    expect(
+      document.querySelector('[data-testid="ledger-feed-problem"]'),
+    ).toBeNull();
   });
 
   it('leaves newer activity behind Show new activity until asked for', async () => {
@@ -1130,23 +1239,28 @@ describe('LedgerFeed list and search', () => {
     ).toHaveLength(1);
   });
 
-  it('keeps the audience tabs on their own row, then filter, search, and composer', async () => {
+  it('keeps the audience tabs on their own row, then search, Filter, and composer', async () => {
     const fake = fakes();
     fake.answers.push(page([LOCAL]));
     renderFeed(fake);
     await flush();
 
     const controls = byTestId('ledger-feed-controls');
-    const [tabs, filterAndSearch] = Array.from(controls.children);
+    const [tabs, searchRow] = Array.from(controls.children);
     expect(tabs?.getAttribute('role')).toBe('tablist');
+    // The page search row: the 32px search, then the Filter dropdown after
+    // it, with no hairline under the row.
+    expect(searchRow?.hasAttribute('data-page-search-row')).toBe(true);
+    expect(controls.className).not.toContain('border-b');
     expect(
       Array.from(
-        filterAndSearch?.querySelectorAll(
+        searchRow?.querySelectorAll(
           '[data-testid="ledger-filter-trigger"], [data-testid="ledger-feed-search"]',
         ) ?? [],
         (control) => control.getAttribute('data-testid'),
       ),
-    ).toEqual(['ledger-filter-trigger', 'ledger-feed-search']);
+    ).toEqual(['ledger-feed-search', 'ledger-filter-trigger']);
+    expect(byTestId('ledger-filter-trigger').textContent).toBe('Filter');
     const composer = byTestId('ledger-feed-add-entry');
     const row = rowFor(LOCAL.entry.entryId);
     expect(
@@ -2131,6 +2245,45 @@ describe('LedgerFeed composer and scope rows', () => {
       { entryId: TEAMMATE.entry.entryId },
       { entryId: deviceWithFile.entry.entryId },
     ]);
+  });
+
+  it('reads only, with no composer or This device tab, on a mirror-only host', async () => {
+    const fake = fakes();
+    fake.answers.push(page([TEAMMATE, OTHER_DEVICE]));
+    fake.remoteEntryViews.set(
+      TEAMMATE.entry.entryId,
+      entryView(TEAMMATE, 'not_on_this_device'),
+    );
+    const { store } = renderFeed(fake, { mirrorOnly: true });
+    await flush();
+
+    expect(
+      container.querySelector('[data-testid="ledger-feed-add-entry"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="ledger-feed-audience-this_device"]',
+      ),
+    ).toBeNull();
+    expect(byTestId('ledger-feed-audience-teammates')).toBeDefined();
+
+    clickInside(rowFor(TEAMMATE.entry.entryId), 'ledger-entry-details-toggle');
+    await flush();
+    expect(store.getState().remoteDetail.entryId).toBe(TEAMMATE.entry.entryId);
+    for (const testId of [
+      'ledger-status-control',
+      'ledger-owner-picker',
+      'ledger-entry-add-correction',
+    ]) {
+      expect(
+        rowFor(TEAMMATE.entry.entryId).querySelector(
+          '[data-testid="' + testId + '"]',
+        ),
+      ).toBeNull();
+    }
+    // Nothing of this device's Ledger is read or changed.
+    expect(fake.localReads).toEqual([]);
+    expect(fake.updates).toEqual([]);
   });
 
   it('pins an open entry above the loaded rows when a search drops it', async () => {

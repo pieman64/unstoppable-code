@@ -6,6 +6,7 @@ jest.mock('../lib/w5-destructive-recovery', () => ({
     '../lib/w5-destructive-recovery',
   ),
   readDestructiveRecovery: jest.fn(() => Promise.resolve(null)),
+  readWorkspaceDestructiveRecoveries: jest.fn(() => Promise.resolve([])),
   assertNoDestructiveRecovery: jest.fn(() => Promise.resolve()),
   assertNoLegacyArchiveRecovery: jest.fn(() => Promise.resolve()),
   refuseInterruptedArchiveJournal: jest.fn(() => Promise.resolve()),
@@ -70,6 +71,7 @@ import {
   mkdirSync,
   lstatSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -79,13 +81,18 @@ import {
 } from 'node:fs';
 jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof NodeFsPromises>('node:fs/promises');
-  return { ...actual, rename: jest.fn(actual.rename) };
+  return {
+    ...actual,
+    rename: jest.fn(actual.rename),
+    readFile: jest.fn(actual.readFile),
+    rm: jest.fn(actual.rm),
+  };
 });
 const actualFsPromises =
   jest.requireActual<typeof NodeFsPromises>('node:fs/promises');
 const mockedFsPromises =
   jest.requireMock<typeof NodeFsPromises>('node:fs/promises');
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { assertNoDestructiveRecovery } from '../lib/w5-destructive-recovery';
@@ -96,13 +103,18 @@ import {
 import {
   prepareArchivedContainerRecovery,
   finishArchivedContainerRecovery,
+  isArchivedContainerGitCleanupBlocked,
   isArchivedRecoveryPathWithinRoot,
+  isWorktreeArchiveSourceUnavailable,
+  removeProjectWorktreeRegistrations,
   restoreArchivedRecoveryFiles,
   restoreArchivedRecoveryWorkspaceRootFiles,
+  verifyArchivedContainerRecoveryFinish,
 } from '../lib/archived-container-recovery';
 import type {
   ArchivedContainerManifestV2,
   ArchivedContainerRecoveryManifest,
+  WorkspaceConfigFile,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 
@@ -170,16 +182,25 @@ jest.mock('../lib/paths', () => {
   };
 });
 
-jest.mock('../lib/workspace-persistence', () => ({
-  isWorkspaceWorktreeCurrent: jest.fn(() => Promise.resolve(true)),
-  readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
-  readWorkspaceConfig: jest.fn(() =>
+jest.mock('../lib/workspace-persistence', () => {
+  const readWorkspaceConfig = jest.fn(() =>
     Promise.resolve({
       type: 'single-repo',
       repoPath: mockReferenceRepoPath,
     }),
-  ),
-}));
+  );
+  return {
+    isWorkspaceWorktreeCurrent: jest.fn(() => Promise.resolve(true)),
+    readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
+    readWorkspaceConfig,
+    readWorkspaceConfigDetailed: jest.fn(async () => ({
+      config: await readWorkspaceConfig(),
+      authority: 'ok',
+      ownerMalformed: false,
+      memoryMalformed: false,
+    })),
+  };
+});
 
 jest.mock('../lib/workspace-source', () => ({
   readEffectiveWorkspaceConfig: jest.fn(),
@@ -261,14 +282,53 @@ import {
 import * as git from '../lib/git';
 import * as gitTreeSnapshot from '../lib/git-tree-snapshot';
 import { isRecord } from '../lib/type-guards';
-import { readWorkspaceConfig } from '../lib/workspace-persistence';
-import { readEffectiveWorkspaceConfig } from '../lib/workspace-source';
+import {
+  readWorkspaceConfig,
+  readWorkspaceConfigDetailed,
+} from '../lib/workspace-persistence';
+import {
+  readEffectiveWorkspaceConfig,
+  type EffectiveWorkspaceConfig,
+} from '../lib/workspace-source';
+import { resolveProjectReferenceRepoPath } from '../lib/project-reference-repo';
+import { isFilesOnlyRestoreGitless } from '../lib/files-only-restore-git';
 import { executeArchiveIoRequest } from '../archive/archive-io-engine';
 import { prepareArchiveTeardown } from '../archive/archive-git-operations';
 import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 
 const WORKSPACE_ID = 'workspace-1';
 const CONTAINER_ID = 'archive-1';
+/** As a registration cleanup interrupted before its delete locks an entry. */
+const CRASHED_CLEANUP_LOCK =
+  'canopy: removing stale registration 3f1c9a52-8d4e-4b7a-9c21-6e0f5b8d2a47\n';
+
+function withLegacyNullSourceRepoPath(
+  config: EffectiveWorkspaceConfig,
+  absentFields: Array<
+    'manifest' | 'suppressedManifestRepos' | 'unresolvedManifestRepoIds'
+  > = [],
+): EffectiveWorkspaceConfig {
+  Reflect.set(config, 'sourceRepoPath', null);
+  Reflect.deleteProperty(config, 'scripts');
+  Reflect.deleteProperty(config, 'defaultPluginSelections');
+  for (const field of absentFields) Reflect.deleteProperty(config, field);
+  return config;
+}
+
+function withLegacyMissingRepos(
+  config: WorkspaceConfigFile,
+): WorkspaceConfigFile {
+  Reflect.deleteProperty(config, 'repos');
+  return config;
+}
+
+function withLegacyMissingWorkspaceConfigFields(
+  config: WorkspaceConfigFile,
+  absentFields: Array<'version' | 'repos'>,
+): WorkspaceConfigFile {
+  for (const field of absentFields) Reflect.deleteProperty(config, field);
+  return config;
+}
 
 function runGit(repoPath: string, args: string[]): string {
   return execFileSync('git', args, {
@@ -453,17 +513,21 @@ function setupPartialMultiRepoFixture(
     type: 'multi-repo',
     repos: [],
   });
-  jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValue({
-    localConfig: { version: 1, type: 'multi-repo', repos: [] },
-    manifest: null,
-    sourceRepoPath: null,
-    repos: [
-      { id: 'repo-a', name: 'A', repoPath: referenceRepoPath },
-      { id: 'repo-b', name: 'B', repoPath: referenceRepoPath },
-    ],
-    suppressedManifestRepos: [],
-    unresolvedManifestRepoIds: [],
-  });
+  jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValue(
+    withLegacyNullSourceRepoPath({
+      localConfig: { version: 1, type: 'multi-repo', repos: [] },
+      manifest: null,
+      sourceRepoPath: undefined,
+      repos: [
+        { id: 'repo-a', name: 'A', repoPath: referenceRepoPath },
+        { id: 'repo-b', name: 'B', repoPath: referenceRepoPath },
+      ],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
+      suppressedManifestRepos: [],
+      unresolvedManifestRepoIds: [],
+    }),
+  );
   return {
     referenceRepoPath,
     includedRepoPath,
@@ -568,11 +632,14 @@ describe('archived container Git state', () => {
     mockReferenceRepoPath = '';
     mockManifest = null;
     setupRepository();
-    jest.mocked(readWorkspaceConfig).mockResolvedValue({
-      version: 1,
-      type: 'single-repo',
-      repoPath: mockReferenceRepoPath,
-    });
+    jest.mocked(readWorkspaceConfig).mockResolvedValue(
+      withLegacyMissingRepos({
+        version: 1,
+        type: 'single-repo',
+        repoPath: mockReferenceRepoPath,
+        repos: [],
+      }),
+    );
     jest.mocked(fetchArchivedPullRequestMetadata).mockResolvedValue(null);
     await invalidateArchivedContainerChanges(WORKSPACE_ID, CONTAINER_ID);
   });
@@ -630,16 +697,47 @@ describe('archived container Git state', () => {
       expected.update(bytes);
       expected.update('\0');
     });
-    const unsafe = jest.spyOn(Buffer, 'allocUnsafe');
-    const slow = jest.spyOn(Buffer, 'allocUnsafeSlow');
+    // The spies are process-wide, and other work in the same Jest worker,
+    // such as an earlier test's background reads, allocates large buffers
+    // too. So the digest's own read buffer is identified by its caller, and
+    // a whole-file read is caught by size: nothing may allocate a buffer as
+    // large as the 256 KiB fixture.
+    const largeFile = contents[1].length;
+    const readBuffers: number[] = [];
+    const wholeFile: number[] = [];
+    const record = (size: number): void => {
+      if (size >= largeFile) wholeFile.push(size);
+      const caller = new Error().stack
+        ?.split('\n')
+        .find(
+          (frame) =>
+            !frame.includes('node_modules') &&
+            !frame.includes('__tests__') &&
+            frame.includes('/'),
+        );
+      if (size >= 64 * 1024 && caller?.includes('lib/archived-container-git'))
+        readBuffers.push(size);
+    };
+    const originalUnsafe = Buffer.allocUnsafe.bind(Buffer);
+    const originalSlow = Buffer.allocUnsafeSlow.bind(Buffer);
+    const unsafe = jest
+      .spyOn(Buffer, 'allocUnsafe')
+      .mockImplementation((size) => {
+        record(size);
+        return originalUnsafe(size);
+      });
+    const slow = jest
+      .spyOn(Buffer, 'allocUnsafeSlow')
+      .mockImplementation((size) => {
+        record(size);
+        return originalSlow(size);
+      });
     try {
       expect(await workspaceRootPayloadDigest({ rootPath: root })).toBe(
         expected.digest('hex'),
       );
-      const readBufferBytes = [...unsafe.mock.calls, ...slow.mock.calls]
-        .filter(([size]) => size >= 64 * 1024)
-        .reduce((total, [size]) => total + size, 0);
-      expect(readBufferBytes).toBeLessThanOrEqual(64 * 1024);
+      expect(readBuffers).toEqual([64 * 1024]);
+      expect(wholeFile).toEqual([]);
     } finally {
       unsafe.mockRestore();
       slow.mockRestore();
@@ -960,6 +1058,1700 @@ describe('archived container Git state', () => {
     expect(
       runGit(mockReferenceRepoPath, ['rev-parse', '--git-common-dir']),
     ).toBe('.git');
+  });
+
+  describe('read-only Git cleanup prediction (CAN-4963)', () => {
+    const journalPath = (): string =>
+      join(
+        mockRootDir,
+        'archives',
+        WORKSPACE_ID,
+        CONTAINER_ID,
+        'recovery.staged.json',
+      );
+    const registrations = (): string =>
+      runGit(mockReferenceRepoPath, ['worktree', 'list', '--porcelain']);
+
+    /** Asserts the prediction, then that it changed nothing on disk or in Git. */
+    async function expectPrediction(
+      manifest: ArchivedContainerRecoveryManifest,
+      blocked: boolean,
+    ): Promise<void> {
+      const journal = readFileSync(journalPath(), 'utf8');
+      const checkout = existsSync(worktreePath());
+      const recovery = { ...manifest.recovery };
+      const registered = existsSync(mockReferenceRepoPath)
+        ? registrations()
+        : null;
+
+      await expect(
+        isArchivedContainerGitCleanupBlocked(manifest),
+      ).resolves.toBe(blocked);
+
+      expect(readFileSync(journalPath(), 'utf8')).toBe(journal);
+      expect(existsSync(worktreePath())).toBe(checkout);
+      expect(manifest.recovery).toEqual(recovery);
+      if (registered !== null) expect(registrations()).toBe(registered);
+    }
+
+    it('predicts success for a captured checkout the finish step moves away first', async () => {
+      const manifest = await recoveryManifest();
+      expect(registrations()).toContain(worktreePath());
+
+      await expectPrediction(manifest, false);
+
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(false);
+    });
+
+    it('predicts a pending cleanup while the source repository is unavailable, and success once it returns', async () => {
+      const manifest = await recoveryManifest();
+      renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-away`);
+
+      await expectPrediction(manifest, true);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+
+      renameSync(`${mockReferenceRepoPath}-away`, mockReferenceRepoPath);
+      await expectPrediction(manifest, false);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(false);
+    });
+
+    it('never records an identity it reacquires', async () => {
+      const unavailablePath = `${mockReferenceRepoPath}-away`;
+      renameSync(mockReferenceRepoPath, unavailablePath);
+      const manifest = await recoveryManifest();
+      await expectPrediction(manifest, true);
+
+      renameSync(unavailablePath, mockReferenceRepoPath);
+      await expectPrediction(manifest, false);
+      expect(JSON.parse(readFileSync(journalPath(), 'utf8'))).toMatchObject({
+        repositories: [{ repositoryIdentity: null }],
+      });
+    });
+
+    it('predicts a pending cleanup when the captured repository path is replaced', async () => {
+      const manifest = await recoveryManifest();
+      renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-captured`);
+      mkdirSync(mockReferenceRepoPath, { recursive: true });
+      runGit(mockReferenceRepoPath, ['init']);
+
+      await expectPrediction(manifest, true);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+    });
+
+    it('predicts a pending cleanup when a registered canonical path is occupied again after removal', async () => {
+      const manifest = await recoveryManifest();
+      renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-away`);
+      await finishArchivedContainerRecovery(manifest);
+      renameSync(`${mockReferenceRepoPath}-away`, mockReferenceRepoPath);
+      mkdirSync(worktreePath());
+      expect(registrations()).toContain(worktreePath());
+
+      await expectPrediction(manifest, true);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+    });
+
+    function setJournalPhase(phase: 'verified' | 'removed'): void {
+      writeFileSync(
+        journalPath(),
+        JSON.stringify({
+          ...JSON.parse(readFileSync(journalPath(), 'utf8')),
+          phase,
+        }),
+      );
+    }
+    const quarantinePath = (): string =>
+      join(dirname(worktreePath()), `.${CONTAINER_ID}.archive-quarantine`);
+    /** Moves the checkout and its registration, keeping the checkout identity. */
+    function moveCheckoutToRegisteredQuarantine(): void {
+      runGit(mockReferenceRepoPath, [
+        'worktree',
+        'move',
+        worktreePath(),
+        quarantinePath(),
+      ]);
+      expect(registrations()).toContain(quarantinePath());
+    }
+
+    it('predicts success for a verified journal whose registered quarantine the finish step removes first', async () => {
+      const manifest = await recoveryManifest();
+      moveCheckoutToRegisteredQuarantine();
+      setJournalPhase('verified');
+
+      await expectPrediction(manifest, false);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(false);
+      expect(existsSync(quarantinePath())).toBe(false);
+    });
+
+    it('predicts a pending cleanup for a registered quarantine that a removed journal keeps', async () => {
+      const manifest = await recoveryManifest();
+      moveCheckoutToRegisteredQuarantine();
+      setJournalPhase('removed');
+
+      await expectPrediction(manifest, true);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+      expect(existsSync(quarantinePath())).toBe(true);
+    });
+
+    it('predicts a pending cleanup when a verified journal finds the canonical path occupied again', async () => {
+      const manifest = await recoveryManifest();
+      renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-away`);
+      await finishArchivedContainerRecovery(manifest);
+      renameSync(`${mockReferenceRepoPath}-away`, mockReferenceRepoPath);
+      mkdirSync(worktreePath());
+      setJournalPhase('verified');
+
+      await expectPrediction(manifest, true);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+    });
+
+    it.each(['first', 'last'] as const)(
+      'predicts a pending cleanup when the %s of several repositories is unavailable',
+      async (position) => {
+        const manifest = await recoveryManifest();
+        const journal: unknown = JSON.parse(
+          readFileSync(journalPath(), 'utf8'),
+        );
+        if (!isRecord(journal) || !Array.isArray(journal.repositories))
+          throw new Error('Expected a recovery journal with repositories');
+        const repositories: unknown[] = journal.repositories;
+        const unavailable = {
+          referenceRepoPath: join(mockRootDir, 'unavailable-source'),
+          repositoryIdentity: null,
+          relativePath: '.',
+          worktreePaths: [],
+        };
+        writeFileSync(
+          journalPath(),
+          JSON.stringify({
+            ...journal,
+            repositories:
+              position === 'first'
+                ? [unavailable, ...repositories]
+                : [...repositories, unavailable],
+          }),
+        );
+        expect(registrations()).toContain(worktreePath());
+
+        await expectPrediction(manifest, true);
+        await finishArchivedContainerRecovery(manifest);
+        expect(manifest.recovery.gitCleanupPending).toBe(true);
+        // The finish step still cleans up the available repository.
+        expect(registrations()).not.toContain(worktreePath());
+      },
+    );
+
+    it.each([
+      [
+        'fails',
+        Object.assign(new Error('git worktree list failed'), { code: 128 }),
+      ],
+      [
+        'times out',
+        Object.assign(new Error('git worktree list timed out'), {
+          killed: true,
+          signal: 'SIGTERM',
+        }),
+      ],
+    ])(
+      'predicts a pending cleanup when git worktree list %s, as the finish step reports',
+      async (_label, failure) => {
+        const manifest = await recoveryManifest();
+        const actualAsync = promisify(
+          jest.requireActual<typeof NodeChildProcess>('node:child_process')
+            .execFile,
+        );
+        const asyncMock: unknown = Reflect.get(execFile, promisify.custom);
+        if (!jest.isMockFunction(asyncMock))
+          throw new Error('Expected promisified execFile to be mocked');
+        let listings = 0;
+        asyncMock.mockImplementation(
+          async (file: string, args: readonly string[], options: object) => {
+            if (args[0] === 'worktree' && args[1] === 'list') {
+              listings += 1;
+              throw failure;
+            }
+            return actualAsync(file, args, options);
+          },
+        );
+        try {
+          await expectPrediction(manifest, true);
+          expect(listings).toBe(1);
+          // The finish step's walk meets the same failure and stays pending.
+          await finishArchivedContainerRecovery(manifest);
+          expect(manifest.recovery.gitCleanupPending).toBe(true);
+          expect(listings).toBe(2);
+        } finally {
+          asyncMock.mockImplementation(actualAsync);
+        }
+        expect(registrations()).toContain(worktreePath());
+        await expectPrediction(manifest, false);
+        await finishArchivedContainerRecovery(manifest);
+        expect(manifest.recovery.gitCleanupPending).toBe(false);
+      },
+    );
+
+    it('cannot tell without a matching journal', async () => {
+      const manifest = await recoveryManifest();
+      await expect(
+        isArchivedContainerGitCleanupBlocked({
+          ...manifest,
+          createdAt: '2000-01-01T00:00:00.000Z',
+        }),
+      ).resolves.toBe(false);
+      writeFileSync(journalPath(), '{truncated');
+      await expect(
+        isArchivedContainerGitCleanupBlocked(manifest),
+      ).resolves.toBe(false);
+    });
+  });
+
+  describe('read-only recovery finish verification (CAN-4994)', () => {
+    const journalPath = (): string =>
+      join(
+        mockRootDir,
+        'archives',
+        WORKSPACE_ID,
+        CONTAINER_ID,
+        'recovery.staged.json',
+      );
+    const quarantinePath = (): string =>
+      join(dirname(worktreePath()), `.${CONTAINER_ID}.archive-quarantine`);
+    const registrations = (): string =>
+      runGit(mockReferenceRepoPath, ['worktree', 'list', '--porcelain']);
+    const fileImage = (path: string): string | null =>
+      existsSync(path) ? readFileSync(path, 'utf8') : null;
+    const directoryIdentity = (path: string): number | null =>
+      existsSync(path) ? lstatSync(path).ino : null;
+    function setJournal(update: Record<string, unknown>): void {
+      const journal: unknown = JSON.parse(readFileSync(journalPath(), 'utf8'));
+      if (!isRecord(journal)) throw new Error('Expected a recovery journal');
+      writeFileSync(journalPath(), JSON.stringify({ ...journal, ...update }));
+    }
+    function errorOf(error: unknown): { name: string; message: string } {
+      if (!(error instanceof Error)) throw new Error('Expected an error');
+      return { name: error.name, message: error.message };
+    }
+
+    /**
+     * Asserts the verification throws the finish step's own error and changes
+     * nothing, then that the finish step throws it too before any effect.
+     */
+    async function expectFinishRefusal(
+      manifest: ArchivedContainerRecoveryManifest,
+      expected: { name?: string; message?: string },
+    ): Promise<void> {
+      const journal = fileImage(journalPath());
+      const checkout = directoryIdentity(worktreePath());
+      const quarantine = directoryIdentity(quarantinePath());
+      const recovery = { ...manifest.recovery };
+      const registered = registrations();
+
+      const verification = errorOf(
+        await verifyArchivedContainerRecoveryFinish(manifest).then(
+          () => null,
+          (error: unknown) => error,
+        ),
+      );
+
+      expect(verification).toMatchObject(expected);
+      expect(fileImage(journalPath())).toBe(journal);
+      expect(directoryIdentity(worktreePath())).toBe(checkout);
+      expect(directoryIdentity(quarantinePath())).toBe(quarantine);
+      expect(manifest.recovery).toEqual(recovery);
+      expect(registrations()).toBe(registered);
+      const finish = errorOf(
+        await finishArchivedContainerRecovery(manifest).then(
+          () => null,
+          (error: unknown) => error,
+        ),
+      );
+      expect(finish).toEqual(verification);
+      expect(fileImage(journalPath())).toBe(journal);
+      expect(directoryIdentity(worktreePath())).toBe(checkout);
+    }
+
+    it('passes a captured checkout without moving it, and the finish step completes', async () => {
+      const manifest = await recoveryManifest();
+      const journal = readFileSync(journalPath(), 'utf8');
+      const checkout = lstatSync(worktreePath()).ino;
+
+      await expect(
+        verifyArchivedContainerRecoveryFinish(manifest),
+      ).resolves.toBeUndefined();
+
+      expect(readFileSync(journalPath(), 'utf8')).toBe(journal);
+      expect(lstatSync(worktreePath()).ino).toBe(checkout);
+      expect(registrations()).toContain(worktreePath());
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(false);
+    });
+
+    it('passes a removed journal whose Git cleanup is pending', async () => {
+      const manifest = await recoveryManifest();
+      renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-away`);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+
+      await expect(
+        verifyArchivedContainerRecoveryFinish(manifest),
+      ).resolves.toBeUndefined();
+    });
+
+    it('passes a verified journal whose quarantine it owns', async () => {
+      const manifest = await recoveryManifest();
+      runGit(mockReferenceRepoPath, [
+        'worktree',
+        'move',
+        worktreePath(),
+        quarantinePath(),
+      ]);
+      setJournal({ phase: 'verified' });
+
+      await expect(
+        verifyArchivedContainerRecoveryFinish(manifest),
+      ).resolves.toBeUndefined();
+
+      expect(existsSync(quarantinePath())).toBe(true);
+      await finishArchivedContainerRecovery(manifest);
+      expect(existsSync(quarantinePath())).toBe(false);
+    });
+
+    it('throws for an unparsable journal', async () => {
+      const manifest = await recoveryManifest();
+      writeFileSync(journalPath(), '{truncated');
+
+      await expectFinishRefusal(manifest, { name: 'SyntaxError' });
+    });
+
+    it('throws for a journal of an unknown shape', async () => {
+      const manifest = await recoveryManifest();
+      setJournal({ version: 2 });
+
+      await expectFinishRefusal(manifest, {
+        message:
+          'Invalid archive recovery journal; retained files were preserved.',
+      });
+    });
+
+    it.each([
+      ['a missing journal', (): void => rmSync(journalPath())],
+      [
+        'a journal of another archive generation',
+        (): void => setJournal({ createdAt: '2000-01-01T00:00:00.000Z' }),
+      ],
+    ])('throws for %s', async (_label, plant) => {
+      const manifest = await recoveryManifest();
+      plant();
+
+      await expectFinishRefusal(manifest, {
+        message: 'Archive recovery identity changed.',
+      });
+    });
+
+    it('throws for a manifest of another payload', async () => {
+      const manifest = await recoveryManifest();
+
+      await expectFinishRefusal(
+        {
+          ...manifest,
+          recovery: {
+            ...manifest.recovery,
+            payloadId: '00000000-0000-4000-8000-000000000009',
+          },
+        },
+        { message: 'Archive recovery identity changed.' },
+      );
+    });
+
+    it('throws for retained files that fail verification', async () => {
+      const manifest = await recoveryManifest();
+      writeFileSync(
+        join(
+          mockRootDir,
+          'archives',
+          WORKSPACE_ID,
+          CONTAINER_ID,
+          'recovery-files',
+          manifest.recovery.payloadId,
+          'tampered',
+        ),
+        'changed',
+      );
+
+      await expectFinishRefusal(manifest, {
+        message:
+          'The retained recovery files failed verification; cleanup was stopped.',
+      });
+      expect(existsSync(worktreePath())).toBe(true);
+    });
+
+    describe('for an archive being discarded (CAN-5011)', () => {
+      const DISCARDING = { discardingArchive: true };
+      const payloadDir = (
+        manifest: ArchivedContainerRecoveryManifest,
+      ): string =>
+        join(
+          mockRootDir,
+          'archives',
+          WORKSPACE_ID,
+          CONTAINER_ID,
+          'recovery-files',
+          manifest.recovery.payloadId,
+        );
+
+      it.each([
+        [
+          'changed',
+          (path: string): void => writeFileSync(join(path, 'tampered'), 'x'),
+        ],
+        ['deleted', (path: string): void => rmSync(path, { recursive: true })],
+      ])(
+        'skips retained files that were %s once no checkout remains, and the finish step completes',
+        async (_label, damage) => {
+          const manifest = await recoveryManifest();
+          renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-away`);
+          await finishArchivedContainerRecovery(manifest);
+          expect(manifest.recovery.gitCleanupPending).toBe(true);
+          renameSync(`${mockReferenceRepoPath}-away`, mockReferenceRepoPath);
+          damage(payloadDir(manifest));
+
+          await expect(
+            verifyArchivedContainerRecoveryFinish(manifest),
+          ).rejects.toThrow();
+          await expect(
+            verifyArchivedContainerRecoveryFinish(manifest, DISCARDING),
+          ).resolves.toBeUndefined();
+          await finishArchivedContainerRecovery(manifest, DISCARDING);
+          expect(manifest.recovery.gitCleanupPending).toBe(false);
+          expect(registrations()).not.toContain(worktreePath());
+        },
+      );
+
+      it('still verifies them while a captured checkout remains', async () => {
+        const manifest = await recoveryManifest();
+        writeFileSync(join(payloadDir(manifest), 'tampered'), 'changed');
+
+        await expect(
+          finishArchivedContainerRecovery(manifest, DISCARDING),
+        ).rejects.toThrow(
+          'The retained recovery files failed verification; cleanup was stopped.',
+        );
+        expect(existsSync(worktreePath())).toBe(true);
+      });
+
+      it('still verifies them while a verified quarantine remains', async () => {
+        const manifest = await recoveryManifest();
+        runGit(mockReferenceRepoPath, [
+          'worktree',
+          'move',
+          worktreePath(),
+          quarantinePath(),
+        ]);
+        setJournal({ phase: 'verified' });
+        writeFileSync(join(payloadDir(manifest), 'tampered'), 'changed');
+
+        await expect(
+          verifyArchivedContainerRecoveryFinish(manifest, DISCARDING),
+        ).rejects.toThrow(
+          'The retained recovery files failed verification; cleanup was stopped.',
+        );
+        expect(existsSync(quarantinePath())).toBe(true);
+      });
+    });
+
+    it('throws for a captured checkout that changed identity', async () => {
+      const manifest = await recoveryManifest();
+      renameSync(worktreePath(), `${worktreePath()}-captured`);
+      mkdirSync(worktreePath());
+
+      await expectFinishRefusal(manifest, {
+        message: 'The worktree changed identity during recovery.',
+      });
+    });
+
+    it('throws for a captured checkout whose files changed', async () => {
+      const manifest = await recoveryManifest();
+      writeFileSync(join(worktreePath(), 'added-after-capture.txt'), 'new');
+
+      await expectFinishRefusal(manifest, {
+        message:
+          'The worktree changed after recovery capture; its files were preserved.',
+      });
+    });
+
+    it('throws for a captured checkout whose quarantine is occupied', async () => {
+      const manifest = await recoveryManifest();
+      mkdirSync(quarantinePath());
+
+      await expectFinishRefusal(manifest, {
+        message: 'Archive recovery quarantine is occupied.',
+      });
+    });
+
+    it('throws for an occupant that appeared after an absent-worktree capture', async () => {
+      rmSync(worktreePath(), { recursive: true });
+      const manifest = await recoveryManifest();
+      mkdirSync(worktreePath());
+
+      await expectFinishRefusal(manifest, {
+        message: 'A new occupant appeared after the absent-worktree capture.',
+      });
+    });
+
+    it('throws for a verified journal whose quarantine changed identity', async () => {
+      const manifest = await recoveryManifest();
+      renameSync(worktreePath(), `${worktreePath()}-captured`);
+      mkdirSync(quarantinePath());
+      setJournal({ phase: 'verified' });
+
+      await expectFinishRefusal(manifest, {
+        message:
+          'Archive recovery quarantine changed identity; cleanup was stopped.',
+      });
+    });
+  });
+
+  describe('stale registration cleanup and a replacement checkout (CAN-5011)', () => {
+    const journalPath = (): string =>
+      join(
+        mockRootDir,
+        'archives',
+        WORKSPACE_ID,
+        CONTAINER_ID,
+        'recovery.staged.json',
+      );
+    const registrations = (): string =>
+      runGit(mockReferenceRepoPath, ['worktree', 'list', '--porcelain']);
+    const keepPath = (): string => join(worktreePath(), 'keep');
+
+    /**
+     * Adds a replacement checkout at the stale path once the cleanup's absence
+     * check has passed: when it first reads Git's registration entries, or
+     * first calls Git to unregister.
+     */
+    async function withReplacementRace(work: () => Promise<void>): Promise<{
+      raced: boolean;
+    }> {
+      const actualAsync = promisify(
+        jest.requireActual<typeof NodeChildProcess>('node:child_process')
+          .execFile,
+      );
+      const asyncMock: unknown = Reflect.get(execFile, promisify.custom);
+      if (!jest.isMockFunction(asyncMock))
+        throw new Error('Expected promisified execFile to be mocked');
+      const readFileMock = jest.mocked(mockedFsPromises.readFile);
+      const registrationEntries = join(referenceRepoIdentity(), 'worktrees');
+      const state = { raced: false };
+      const race = (): void => {
+        if (state.raced) return;
+        state.raced = true;
+        runGit(mockReferenceRepoPath, [
+          'worktree',
+          'add',
+          '-f',
+          '-b',
+          'replacement',
+          worktreePath(),
+          'main',
+        ]);
+        writeFileSync(keepPath(), 'replacement work\n');
+      };
+      asyncMock.mockImplementation(
+        async (file: string, args: readonly string[], options: object) => {
+          if (
+            args[0] === 'worktree' &&
+            (args[1] === 'remove' || args[1] === 'prune')
+          )
+            race();
+          return actualAsync(file, args, options);
+        },
+      );
+      readFileMock.mockImplementation((path, options) => {
+        if (
+          typeof path === 'string' &&
+          dirname(dirname(path)) === registrationEntries
+        )
+          race();
+        return actualFsPromises.readFile(path, options);
+      });
+      try {
+        await work();
+      } finally {
+        asyncMock.mockImplementation(actualAsync);
+        readFileMock.mockImplementation(actualFsPromises.readFile);
+      }
+      return state;
+    }
+
+    function expectReplacementKept(): void {
+      expect(readFileSync(keepPath(), 'utf8')).toBe('replacement work\n');
+      expect(registrations()).toContain(worktreePath());
+      expect(
+        runGit(worktreePath(), ['rev-parse', '--abbrev-ref', 'HEAD']),
+      ).toBe('replacement');
+    }
+
+    it("a project deletion's cleanup keeps a checkout added after its absence check", async () => {
+      rmSync(worktreePath(), { recursive: true });
+      expect(registrations()).toContain(worktreePath());
+
+      await expect(
+        withReplacementRace(() =>
+          removeProjectWorktreeRegistrations({
+            projectId: WORKSPACE_ID,
+            repositories: [
+              {
+                referenceRepoPath: mockReferenceRepoPath,
+                registrationPaths: [worktreePath()],
+              },
+            ],
+          }),
+        ),
+      ).resolves.toEqual({ raced: true });
+
+      expectReplacementKept();
+    });
+
+    it("a project deletion's cleanup holds Git's lock on the entry until it removes it (CAN-5034)", async () => {
+      rmSync(worktreePath(), { recursive: true });
+      const registrationEntries = join(referenceRepoIdentity(), 'worktrees');
+      const rmMock = jest.mocked(mockedFsPromises.rm);
+      let refusal = '';
+      rmMock.mockImplementation((path, rmOptions) => {
+        if (
+          !refusal &&
+          typeof path === 'string' &&
+          dirname(path) === registrationEntries
+        ) {
+          try {
+            runGit(mockReferenceRepoPath, [
+              'worktree',
+              'add',
+              '-f',
+              '-b',
+              'refused',
+              worktreePath(),
+              'main',
+            ]);
+            refusal = 'added';
+          } catch (error) {
+            refusal = error instanceof Error ? error.message : String(error);
+          }
+        }
+        return actualFsPromises.rm(path, rmOptions);
+      });
+      try {
+        await removeProjectWorktreeRegistrations({
+          projectId: WORKSPACE_ID,
+          repositories: [
+            {
+              referenceRepoPath: mockReferenceRepoPath,
+              registrationPaths: [worktreePath()],
+            },
+          ],
+        });
+      } finally {
+        rmMock.mockImplementation(actualFsPromises.rm);
+      }
+
+      expect(refusal).toMatch(/missing but locked worktree/);
+      expect(registrations()).not.toContain(worktreePath());
+      runGit(mockReferenceRepoPath, [
+        'worktree',
+        'add',
+        '-b',
+        'replacement',
+        worktreePath(),
+        'main',
+      ]);
+      writeFileSync(keepPath(), 'replacement work\n');
+      expectReplacementKept();
+    });
+
+    it("a discarding finish's cleanup keeps a checkout added after its absence check", async () => {
+      const manifest = await recoveryManifest();
+      rmSync(worktreePath(), { recursive: true });
+      writeFileSync(journalPath(), '{truncated');
+
+      await expect(
+        withReplacementRace(async () => {
+          await finishArchivedContainerRecovery(manifest, {
+            discardingArchive: true,
+          });
+        }),
+      ).resolves.toEqual({ raced: true });
+
+      expectReplacementKept();
+    });
+
+    it("a journal-driven finish's cleanup keeps a checkout added after its absence check, and stays pending", async () => {
+      const manifest = await recoveryManifest();
+      renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-away`);
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+      renameSync(`${mockReferenceRepoPath}-away`, mockReferenceRepoPath);
+      expect(existsSync(worktreePath())).toBe(false);
+      expect(registrations()).toContain(worktreePath());
+
+      await expect(
+        withReplacementRace(async () => {
+          await finishArchivedContainerRecovery(manifest);
+        }),
+      ).resolves.toEqual({ raced: true });
+
+      expectReplacementKept();
+      expect(manifest.recovery.gitCleanupPending).toBe(true);
+    });
+
+    it('still clears a locked stale registration, as predicted', async () => {
+      const manifest = await recoveryManifest();
+      runGit(mockReferenceRepoPath, ['worktree', 'lock', worktreePath()]);
+      expect(registrations()).toMatch(/^locked$/m);
+      const journal = readFileSync(journalPath(), 'utf8');
+
+      await expect(
+        isArchivedContainerGitCleanupBlocked(manifest),
+      ).resolves.toBe(false);
+      expect(readFileSync(journalPath(), 'utf8')).toBe(journal);
+      expect(registrations()).toMatch(/^locked$/m);
+
+      await finishArchivedContainerRecovery(manifest);
+      expect(manifest.recovery.gitCleanupPending).toBe(false);
+      expect(registrations()).not.toContain(worktreePath());
+    });
+  });
+
+  describe("stale registration cleanup and another archive's moved checkout (CAN-5011)", () => {
+    const OTHER_ID = 'archive-2';
+    const otherWorktree: WorktreeData = {
+      id: OTHER_ID,
+      branchName: 'feature/other',
+      trackedBaseBranch: 'main',
+      createdAt: '2026-07-21T00:00:00.000Z',
+    };
+    const registrations = (): string =>
+      runGit(mockReferenceRepoPath, ['worktree', 'list', '--porcelain']);
+    const quarantinePath = (
+      projectId = WORKSPACE_ID,
+      containerId = CONTAINER_ID,
+    ): string =>
+      join(
+        mockRootDir,
+        'worktrees',
+        projectId,
+        `.${containerId}.archive-quarantine`,
+      );
+
+    /**
+     * Leaves this archive (or `archive`) as a crash after its teardown moved
+     * the checkout into the quarantine and before `git worktree repair`
+     * followed it, so Git still registers the now-empty checkout path.
+     */
+    async function interruptTeardownBeforeRepair(
+      archive: { projectId: string; worktree: WorktreeData } = {
+        projectId: WORKSPACE_ID,
+        worktree: persistedWorktree(),
+      },
+    ): Promise<
+      Awaited<ReturnType<typeof captureArchivedContainerGitState>>['gitState']
+    > {
+      const { projectId, worktree } = archive;
+      const checkout = join(mockRootDir, 'worktrees', projectId, worktree.id);
+      const capture = await captureArchivedContainerGitState({
+        workspaceId: projectId,
+        containerId: worktree.id,
+        workspaceType: 'single-repo',
+        worktreePath: checkout,
+        persistedWorktree: worktree,
+      });
+      const descriptor = await readArchivedGitStagedDescriptor(
+        projectId,
+        worktree.id,
+      );
+      if (!descriptor) throw new Error('Expected staged descriptor');
+      writeFileSync(
+        join(
+          mockRootDir,
+          'archives',
+          projectId,
+          worktree.id,
+          'git-state.staged.json',
+        ),
+        JSON.stringify({
+          ...descriptor,
+          teardown: {
+            phase: 'quarantine-pending',
+            canonicalPath: checkout,
+            quarantinePath: quarantinePath(projectId, worktree.id),
+            enteredAt: '2026-07-22T00:00:00.000Z',
+          },
+        }),
+      );
+      renameSync(checkout, quarantinePath(projectId, worktree.id));
+      return capture.gitState;
+    }
+
+    const resumes: Array<
+      [
+        string,
+        (
+          gitState: Awaited<
+            ReturnType<typeof captureArchivedContainerGitState>
+          >['gitState'],
+        ) => Promise<void>,
+      ]
+    > = [
+      [
+        'startup recovery',
+        async (): Promise<void> => {
+          await recoverArchivedGitTeardownsForWorkspace(WORKSPACE_ID);
+          expect(archiveSingleRepoWorktree).toHaveBeenCalledWith({
+            workspaceId: WORKSPACE_ID,
+            worktreeId: CONTAINER_ID,
+            retainAsArchivedContainer: true,
+          });
+          expect(existsSync(quarantinePath())).toBe(false);
+        },
+      ],
+      [
+        'a retried teardown',
+        async (gitState): Promise<void> => {
+          await prepareArchivedContainerTeardown({
+            workspaceId: WORKSPACE_ID,
+            containerId: CONTAINER_ID,
+            workspaceType: 'single-repo',
+            gitState,
+          });
+        },
+      ],
+    ];
+
+    const cleanups: Array<[string, () => Promise<unknown>]> = [
+      [
+        "a project deletion's cleanup",
+        (): Promise<void> => {
+          rmSync(worktreePath(OTHER_ID), { recursive: true });
+          return removeProjectWorktreeRegistrations({
+            projectId: WORKSPACE_ID,
+            repositories: [
+              {
+                referenceRepoPath: mockReferenceRepoPath,
+                registrationPaths: [worktreePath(OTHER_ID)],
+              },
+            ],
+          });
+        },
+      ],
+      [
+        'a discarding finish without a journal',
+        (): Promise<string[]> => {
+          rmSync(worktreePath(OTHER_ID), { recursive: true });
+          return finishArchivedContainerRecovery(
+            {
+              version: 3,
+              kind: 'worktree',
+              id: OTHER_ID,
+              projectId: WORKSPACE_ID,
+              name: 'Other',
+              createdAt: otherWorktree.createdAt,
+              archivedAt: '2026-07-22T00:00:00.000Z',
+              retentionDays: 7,
+              expiresAt: '2026-07-29T00:00:00.000Z',
+              chatCount: 0,
+              archivedChatCount: 0,
+              executionCount: 0,
+              workspaceType: 'single-repo',
+              originalWorktree: otherWorktree,
+              recovery: {
+                kind: 'files-only',
+                source: 'absent',
+                digest: '0'.repeat(64),
+                payloadId: '00000000-0000-0000-0000-000000000000',
+              },
+            },
+            { discardingArchive: true },
+          );
+        },
+      ],
+      [
+        "a journal-driven finish's cleanup",
+        async (): Promise<string[]> =>
+          finishArchivedContainerRecovery({
+            version: 3,
+            kind: 'worktree',
+            id: OTHER_ID,
+            projectId: WORKSPACE_ID,
+            name: 'Other',
+            createdAt: otherWorktree.createdAt,
+            archivedAt: '2026-07-22T00:00:00.000Z',
+            retentionDays: 7,
+            expiresAt: '2026-07-29T00:00:00.000Z',
+            chatCount: 0,
+            archivedChatCount: 0,
+            executionCount: 0,
+            workspaceType: 'single-repo',
+            originalWorktree: otherWorktree,
+            recovery: await prepareArchivedContainerRecovery({
+              projectId: WORKSPACE_ID,
+              worktreeId: OTHER_ID,
+              worktree: otherWorktree,
+            }),
+          }),
+      ],
+    ];
+
+    it.each(
+      cleanups.flatMap(([cleanupName, cleanup]) =>
+        resumes.map(
+          ([resumeName, resume]) =>
+            [cleanupName, resumeName, cleanup, resume] as const,
+        ),
+      ),
+    )(
+      '%s leaves its registration, so %s still repairs it',
+      async (_cleanupName, _resumeName, cleanup, resume) => {
+        runGit(mockReferenceRepoPath, [
+          'worktree',
+          'add',
+          '-b',
+          'feature/other',
+          worktreePath(OTHER_ID),
+          'main',
+        ]);
+        const gitState = await interruptTeardownBeforeRepair();
+
+        await cleanup();
+
+        expect(registrations()).not.toContain(worktreePath(OTHER_ID));
+        expect(registrations()).toContain(worktreePath());
+        await resume(gitState);
+        await expect(
+          readArchivedGitStagedDescriptor(WORKSPACE_ID, CONTAINER_ID),
+        ).resolves.toMatchObject({ teardown: { phase: 'verified' } });
+        expect(registrations()).not.toContain(worktreePath());
+      },
+    );
+
+    describe('archive teardown cleanup (CAN-5034)', () => {
+      const OTHER_PROJECT_ID = 'workspace-2';
+      const otherProjectCheckout = (): string =>
+        join(mockRootDir, 'worktrees', OTHER_PROJECT_ID, OTHER_ID);
+
+      const addOtherCheckout = (): void => {
+        runGit(mockReferenceRepoPath, [
+          'worktree',
+          'add',
+          '-b',
+          'feature/other',
+          worktreePath(OTHER_ID),
+          'main',
+        ]);
+      };
+      const removeWithArchiveWorker = (
+        checkout = worktreePath(OTHER_ID),
+        preMoveWorktreePath?: string,
+      ): Promise<unknown> =>
+        executeArchiveIoRequest(
+          {
+            version: 1,
+            type: 'remove-worktree',
+            requestId: 'remove-other-worktree',
+            operationId: `archive:${WORKSPACE_ID}:${OTHER_ID}:remove-worktree:main`,
+            projectId: WORKSPACE_ID,
+            containerId: OTHER_ID,
+            expectedCreatedAt: otherWorktree.createdAt,
+            input: {
+              git: {
+                executable: 'git',
+                env: Object.fromEntries(
+                  Object.entries(process.env).filter(
+                    (entry): entry is [string, string] =>
+                      typeof entry[1] === 'string',
+                  ),
+                ),
+              },
+              referenceRepoPath: mockReferenceRepoPath,
+              expectedRepositoryIdentity: referenceRepoIdentity(),
+              worktreePath: checkout,
+              ...(preMoveWorktreePath ? { preMoveWorktreePath } : {}),
+            },
+          },
+          new AbortController().signal,
+          {
+            progress: jest.fn(),
+            child: { started: jest.fn(), exited: jest.fn() },
+          },
+        );
+
+      const teardownCleanups: Array<[string, () => Promise<unknown>]> = [
+        [
+          "the archive worker's worktree removal",
+          (): Promise<unknown> => {
+            addOtherCheckout();
+            return removeWithArchiveWorker();
+          },
+        ],
+        [
+          "another project's verified teardown",
+          async (): Promise<void> => {
+            // Its own interrupted teardown, which startup recovery repairs
+            // and finishes; this archive is in another project's directory.
+            mkdirSync(dirname(otherProjectCheckout()), { recursive: true });
+            runGit(mockReferenceRepoPath, [
+              'worktree',
+              'add',
+              '-b',
+              'feature/other-project',
+              otherProjectCheckout(),
+              'main',
+            ]);
+            await interruptTeardownBeforeRepair({
+              projectId: OTHER_PROJECT_ID,
+              worktree: {
+                ...otherWorktree,
+                branchName: 'feature/other-project',
+              },
+            });
+            jest.mocked(archiveSingleRepoWorktree).mockClear();
+            await recoverArchivedGitTeardownsForWorkspace(OTHER_PROJECT_ID);
+            expect(archiveSingleRepoWorktree).toHaveBeenCalledWith({
+              workspaceId: OTHER_PROJECT_ID,
+              worktreeId: OTHER_ID,
+              retainAsArchivedContainer: true,
+            });
+            expect(existsSync(quarantinePath(OTHER_PROJECT_ID, OTHER_ID))).toBe(
+              false,
+            );
+            expect(registrations()).not.toContain(
+              quarantinePath(OTHER_PROJECT_ID, OTHER_ID),
+            );
+            expect(registrations()).not.toContain(otherProjectCheckout());
+          },
+        ],
+      ];
+
+      it.each(
+        teardownCleanups.flatMap(([cleanupName, cleanup]) =>
+          resumes.map(
+            ([resumeName, resume]) =>
+              [cleanupName, resumeName, cleanup, resume] as const,
+          ),
+        ),
+      )(
+        '%s leaves its registration, so %s still repairs it',
+        async (_cleanupName, _resumeName, cleanup, resume) => {
+          const gitState = await interruptTeardownBeforeRepair();
+
+          await cleanup();
+
+          expect(registrations()).not.toContain(worktreePath(OTHER_ID));
+          expect(registrations()).toContain(worktreePath());
+          jest.mocked(archiveSingleRepoWorktree).mockClear();
+          await resume(gitState);
+          await expect(
+            readArchivedGitStagedDescriptor(WORKSPACE_ID, CONTAINER_ID),
+          ).resolves.toMatchObject({ teardown: { phase: 'verified' } });
+          expect(registrations()).not.toContain(worktreePath());
+        },
+      );
+
+      it("the archive worker's worktree removal still clears its own stale registration", async () => {
+        addOtherCheckout();
+        rmSync(worktreePath(OTHER_ID), { recursive: true });
+        expect(registrations()).toContain(worktreePath(OTHER_ID));
+
+        await removeWithArchiveWorker();
+
+        expect(registrations()).not.toContain(worktreePath(OTHER_ID));
+      });
+
+      const otherEntry = (): string =>
+        join(referenceRepoIdentity(), 'worktrees', OTHER_ID);
+
+      it("the archive worker's worktree removal clears its stale registration a crashed cleanup left locked", async () => {
+        addOtherCheckout();
+        rmSync(worktreePath(OTHER_ID), { recursive: true });
+        writeFileSync(join(otherEntry(), 'locked'), CRASHED_CLEANUP_LOCK);
+
+        await removeWithArchiveWorker();
+
+        expect(registrations()).not.toContain(worktreePath(OTHER_ID));
+      });
+
+      it("the archive worker's worktree removal still refuses a user-locked registration", async () => {
+        addOtherCheckout();
+        rmSync(worktreePath(OTHER_ID), { recursive: true });
+        runGit(mockReferenceRepoPath, [
+          'worktree',
+          'lock',
+          worktreePath(OTHER_ID),
+        ]);
+
+        await expect(removeWithArchiveWorker()).rejects.toThrow(
+          'Archive removal cannot target a locked worktree.',
+        );
+        expect(registrations()).toContain(worktreePath(OTHER_ID));
+      });
+
+      /** An unmanaged linked worktree, which teardown moves but never repairs. */
+      const moveOtherIntoQuarantine = (): string => {
+        const moved = join(quarantinePath(), 'repos', OTHER_ID);
+        mkdirSync(dirname(moved), { recursive: true });
+        renameSync(worktreePath(OTHER_ID), moved);
+        return moved;
+      };
+
+      it.each([
+        ['', false],
+        [', also after a crashed cleanup left it locked', true],
+      ])(
+        "the archive worker's worktree removal clears the named pre-move registration of a checkout moved without repair%s",
+        async (_case, crashedCleanup) => {
+          await interruptTeardownBeforeRepair();
+          addOtherCheckout();
+          const moved = moveOtherIntoQuarantine();
+          if (crashedCleanup)
+            writeFileSync(join(otherEntry(), 'locked'), CRASHED_CLEANUP_LOCK);
+          expect(registrations()).toContain(worktreePath(OTHER_ID));
+
+          await removeWithArchiveWorker(moved, worktreePath(OTHER_ID));
+
+          expect(registrations()).not.toContain(worktreePath(OTHER_ID));
+          expect(registrations()).toContain(worktreePath());
+        },
+      );
+
+      it("the archive worker's retried removal keeps another quarantined checkout's registration that reused its entry id (CAN-5034)", async () => {
+        addOtherCheckout();
+        const moved = moveOtherIntoQuarantine();
+        // A cleanup removed the moved checkout's entry, then crashed before
+        // the quarantine was removed; Git then reused the id.
+        rmSync(otherEntry(), { recursive: true });
+        mkdirSync(dirname(otherProjectCheckout()), { recursive: true });
+        runGit(mockReferenceRepoPath, [
+          'worktree',
+          'add',
+          '-b',
+          'feature/reuser',
+          otherProjectCheckout(),
+          'main',
+        ]);
+        expect(readFileSync(join(otherEntry(), 'gitdir'), 'utf8')).toContain(
+          otherProjectCheckout(),
+        );
+        // Moved into its own quarantine, awaiting repair.
+        renameSync(
+          otherProjectCheckout(),
+          quarantinePath(OTHER_PROJECT_ID, OTHER_ID),
+        );
+
+        await removeWithArchiveWorker(moved, worktreePath(OTHER_ID));
+
+        expect(registrations()).toContain(otherProjectCheckout());
+        runGit(mockReferenceRepoPath, [
+          'worktree',
+          'repair',
+          quarantinePath(OTHER_PROJECT_ID, OTHER_ID),
+        ]);
+        expect(registrations()).toContain(
+          quarantinePath(OTHER_PROJECT_ID, OTHER_ID),
+        );
+      });
+    });
+  });
+
+  describe('live worktree source admission (CAN-4985)', () => {
+    const unavailable = (
+      worktree: WorktreeData = persistedWorktree(),
+      kind: 'single-repo' | 'multi-repo' = 'single-repo',
+    ): Promise<boolean> =>
+      isWorktreeArchiveSourceUnavailable(WORKSPACE_ID, worktree, kind);
+    function hideReferenceRepo(): void {
+      renameSync(mockReferenceRepoPath, `${mockReferenceRepoPath}-hidden`);
+    }
+    function initRepository(path: string): void {
+      mkdirSync(path, { recursive: true });
+      runGit(path, ['init', '-q', '-b', 'main']);
+    }
+    function configureMultiRepo(
+      repos: { id: string; repoPath: string }[],
+      sourceRepoPath: string | null = null,
+    ): void {
+      jest.mocked(readWorkspaceConfig).mockResolvedValue({
+        version: 1,
+        type: 'multi-repo',
+        repos: [],
+      });
+      const effectiveConfig: EffectiveWorkspaceConfig = {
+        localConfig: { version: 1, type: 'multi-repo', repos: [] },
+        manifest: null,
+        sourceRepoPath: sourceRepoPath ?? undefined,
+        repos: repos.map((repo) => ({ ...repo, name: repo.id })),
+        scripts: undefined,
+        defaultPluginSelections: undefined,
+        suppressedManifestRepos: [],
+        unresolvedManifestRepoIds: [],
+      };
+      jest
+        .mocked(readEffectiveWorkspaceConfig)
+        .mockResolvedValue(
+          sourceRepoPath === null
+            ? withLegacyNullSourceRepoPath(effectiveConfig)
+            : effectiveConfig,
+        );
+    }
+    /** repo-a has a checkout under `repos/`; repo-b, whose source is missing, has none. */
+    function configurePartialCheckout(): string {
+      const present = join(mockRootDir, 'repo-present');
+      initRepository(present);
+      configureMultiRepo([
+        { id: 'repo-a', repoPath: present },
+        { id: 'repo-b', repoPath: join(mockRootDir, 'repo-missing') },
+      ]);
+      mkdirSync(join(worktreePath(), 'repos', 'repo-a'), { recursive: true });
+      return present;
+    }
+
+    it('admits an available single-repo source and refuses a missing one', async () => {
+      await expect(unavailable()).resolves.toBe(false);
+      hideReferenceRepo();
+      await expect(unavailable()).resolves.toBe(true);
+    });
+
+    it('checks a repository once per admission', async () => {
+      const commonDir = jest.spyOn(git, 'getGitCommonDir');
+      const available = new Set<string>();
+      for (const worktreeId of ['first', 'second'])
+        await expect(
+          isWorktreeArchiveSourceUnavailable(
+            WORKSPACE_ID,
+            { ...persistedWorktree(), id: worktreeId },
+            'single-repo',
+            available,
+          ),
+        ).resolves.toBe(false);
+      expect(commonDir).toHaveBeenCalledTimes(1);
+      expect(available).toEqual(new Set([mockReferenceRepoPath]));
+      commonDir.mockRestore();
+    });
+
+    it('refuses a source directory that Git cannot open', async () => {
+      rmSync(join(mockReferenceRepoPath, '.git'), {
+        recursive: true,
+        force: true,
+      });
+      await expect(unavailable()).resolves.toBe(true);
+    });
+
+    it('checks only the repositories a multi-repo worktree includes', async () => {
+      configurePartialCheckout();
+      await expect(
+        unavailable(
+          { ...persistedWorktree(), includedRepoIds: ['repo-a'] },
+          'multi-repo',
+        ),
+      ).resolves.toBe(false);
+      await expect(
+        unavailable(
+          { ...persistedWorktree(), includedRepoIds: ['repo-a', 'repo-b'] },
+          'multi-repo',
+        ),
+      ).resolves.toBe(true);
+    });
+
+    it('without an inclusion list, checks the repositories a live checkout holds, as its Git capture does', async () => {
+      configurePartialCheckout();
+      await expect(
+        unavailable(persistedWorktree(), 'multi-repo'),
+      ).resolves.toBe(false);
+      mkdirSync(join(worktreePath(), 'repos', 'repo-b'));
+      await expect(
+        unavailable(persistedWorktree(), 'multi-repo'),
+      ).resolves.toBe(true);
+    });
+
+    it('without a checkout, checks every configured repository, as its files-only recovery does', async () => {
+      configurePartialCheckout();
+      runGit(mockReferenceRepoPath, [
+        'worktree',
+        'remove',
+        '--force',
+        worktreePath(),
+      ]);
+      await expect(
+        unavailable(persistedWorktree(), 'multi-repo'),
+      ).resolves.toBe(true);
+      await expect(
+        unavailable(
+          { ...persistedWorktree(), includedRepoIds: ['repo-a'] },
+          'multi-repo',
+        ),
+      ).resolves.toBe(false);
+    });
+
+    it('follows the archive for a worktree restored from a files-only archive: Git capture once it has Git again, otherwise every configured repository', async () => {
+      configurePartialCheckout();
+      const restored = {
+        ...persistedWorktree(),
+        restoredFromFilesOnlyArchiveId: 'files-only-archive',
+      };
+      // The checkout root holds a .git pointer, so the archive captures Git.
+      await expect(
+        isFilesOnlyRestoreGitless(worktreePath(), 'multi-repo'),
+      ).resolves.toBe(false);
+      await expect(unavailable(restored, 'multi-repo')).resolves.toBe(false);
+      // Still Git-less: the files-only recovery walks repo-b too.
+      rmSync(join(worktreePath(), '.git'), { force: true });
+      await expect(
+        isFilesOnlyRestoreGitless(worktreePath(), 'multi-repo'),
+      ).resolves.toBe(true);
+      await expect(unavailable(restored, 'multi-repo')).resolves.toBe(true);
+    });
+
+    it('checks the multi-repo workspace root source', async () => {
+      const present = join(mockRootDir, 'repo-present');
+      initRepository(present);
+      configureMultiRepo(
+        [{ id: 'repo-a', repoPath: present }],
+        join(mockRootDir, 'root-missing'),
+      );
+      await expect(
+        unavailable(
+          { ...persistedWorktree(), includedRepoIds: ['repo-a'] },
+          'multi-repo',
+        ),
+      ).resolves.toBe(true);
+    });
+
+    it('checks the repositories an earlier capture staged', async () => {
+      const staged = join(
+        mockRootDir,
+        'archives',
+        WORKSPACE_ID,
+        CONTAINER_ID,
+        'git-state.staged.json',
+      );
+      mkdirSync(dirname(staged), { recursive: true });
+      writeFileSync(
+        staged,
+        JSON.stringify({
+          version: 1,
+          status: 'capturing',
+          repositories: [pullRequestRepository('repo-staged')],
+        }),
+      );
+      await expect(
+        readArchivedGitStagedDescriptor(WORKSPACE_ID, CONTAINER_ID),
+      ).resolves.toMatchObject({ status: 'capturing' });
+      await expect(unavailable()).resolves.toBe(true);
+    });
+
+    it('leaves a legacy ready descriptor with teardown metadata unwritten', async () => {
+      const capture = await captureArchivedContainerGitState({
+        workspaceId: WORKSPACE_ID,
+        containerId: CONTAINER_ID,
+        workspaceType: 'single-repo',
+        worktreePath: worktreePath(),
+        persistedWorktree: persistedWorktree(),
+      });
+      await prepareArchivedContainerTeardown({
+        workspaceId: WORKSPACE_ID,
+        containerId: CONTAINER_ID,
+        workspaceType: 'single-repo',
+        gitState: capture.gitState,
+      });
+      const stagedPath = join(
+        mockRootDir,
+        'archives',
+        WORKSPACE_ID,
+        CONTAINER_ID,
+        'git-state.staged.json',
+      );
+      const staged: unknown = JSON.parse(readFileSync(stagedPath, 'utf8'));
+      if (!isRecord(staged)) throw new Error('Expected staged descriptor');
+      delete staged.pullRequestMetadata;
+      const legacy = JSON.stringify(staged);
+      writeFileSync(stagedPath, legacy);
+
+      await expect(unavailable()).resolves.toBe(false);
+      expect(readFileSync(stagedPath, 'utf8')).toBe(legacy);
+      // One admission: this worktree admits, then a later one's staged capture
+      // names a missing repository and refuses the deletion.
+      const later = { ...persistedWorktree(), id: 'later' };
+      const laterStagedPath = join(
+        mockRootDir,
+        'archives',
+        WORKSPACE_ID,
+        later.id,
+        'git-state.staged.json',
+      );
+      mkdirSync(dirname(laterStagedPath), { recursive: true });
+      writeFileSync(
+        laterStagedPath,
+        JSON.stringify({
+          version: 1,
+          status: 'capturing',
+          repositories: [pullRequestRepository('repo-staged')],
+        }),
+      );
+      const available = new Set<string>();
+      await expect(
+        isWorktreeArchiveSourceUnavailable(
+          WORKSPACE_ID,
+          persistedWorktree(),
+          'single-repo',
+          available,
+        ),
+      ).resolves.toBe(false);
+      await expect(
+        isWorktreeArchiveSourceUnavailable(
+          WORKSPACE_ID,
+          later,
+          'single-repo',
+          available,
+        ),
+      ).resolves.toBe(true);
+      expect(readFileSync(stagedPath, 'utf8')).toBe(legacy);
+      hideReferenceRepo();
+      await expect(unavailable()).resolves.toBe(true);
+      expect(readFileSync(stagedPath, 'utf8')).toBe(legacy);
+    });
+
+    describe('a staged capture', () => {
+      const multiRepoCapture = (): ReturnType<
+        typeof captureArchivedContainerGitState
+      > =>
+        captureArchivedContainerGitState({
+          workspaceId: WORKSPACE_ID,
+          containerId: CONTAINER_ID,
+          workspaceType: 'multi-repo',
+          worktreePath: worktreePath(),
+          persistedWorktree: persistedWorktree(),
+        });
+      function configurationUnreadable(): void {
+        jest.mocked(readWorkspaceConfigDetailed).mockResolvedValueOnce({
+          config: { version: 1, type: 'multi-repo', repos: [] },
+          authority: 'unreadable',
+          ownerMalformed: false,
+          memoryMalformed: false,
+        });
+        jest
+          .mocked(readEffectiveWorkspaceConfig)
+          .mockRejectedValue(new Error('manifest unreadable'));
+      }
+
+      it('checks only the repositories a ready capture holds, as its Git capture reuses them', async () => {
+        const { referenceRepoPath } = setupPartialMultiRepoFixture();
+        await multiRepoCapture();
+        // repo-b has no checkout, and its source is gone.
+        configureMultiRepo([
+          { id: 'repo-a', repoPath: referenceRepoPath },
+          { id: 'repo-b', repoPath: join(mockRootDir, 'repo-missing') },
+        ]);
+
+        await expect(
+          unavailable(persistedWorktree(), 'multi-repo'),
+        ).resolves.toBe(false);
+        // The archive reuses the ready capture without opening repo-b.
+        await expect(multiRepoCapture()).resolves.toMatchObject({
+          gitState: {
+            repositories: [expect.objectContaining({ repoId: 'repo-a' })],
+          },
+        });
+        renameSync(referenceRepoPath, `${referenceRepoPath}-hidden`);
+        await expect(
+          unavailable(persistedWorktree(), 'multi-repo'),
+        ).resolves.toBe(true);
+      });
+
+      it('refuses a ready capture whose configuration cannot be read, as its Git capture cannot resolve it', async () => {
+        setupPartialMultiRepoFixture();
+        await multiRepoCapture();
+        configurationUnreadable();
+
+        await expect(
+          unavailable(persistedWorktree(), 'multi-repo'),
+        ).resolves.toBe(true);
+        await expect(multiRepoCapture()).rejects.toThrow('manifest unreadable');
+      });
+
+      it('refuses an earlier partial capture of a live checkout whose configuration cannot be read', async () => {
+        const { referenceRepoPath } = setupPartialMultiRepoFixture();
+        const staged = join(
+          mockRootDir,
+          'archives',
+          WORKSPACE_ID,
+          CONTAINER_ID,
+          'git-state.staged.json',
+        );
+        mkdirSync(dirname(staged), { recursive: true });
+        writeFileSync(
+          staged,
+          JSON.stringify({
+            version: 1,
+            status: 'capturing',
+            repositories: [
+              { ...pullRequestRepository('repo-a'), referenceRepoPath },
+            ],
+          }),
+        );
+        configurationUnreadable();
+
+        await expect(
+          unavailable(persistedWorktree(), 'multi-repo'),
+        ).resolves.toBe(true);
+        await expect(multiRepoCapture()).rejects.toThrow('manifest unreadable');
+      });
+
+      it('refuses a ready capture whose repositories no longer match the configuration, as its Git capture rejects it', async () => {
+        const { referenceRepoPath } = setupPartialMultiRepoFixture();
+        await multiRepoCapture();
+        const other = join(mockRootDir, 'other-reference');
+        initRepository(other);
+        // Same repository id, another valid source.
+        configureMultiRepo([
+          { id: 'repo-a', repoPath: other },
+          { id: 'repo-b', repoPath: referenceRepoPath },
+        ]);
+        await expect(
+          unavailable(persistedWorktree(), 'multi-repo'),
+        ).resolves.toBe(true);
+        await expect(multiRepoCapture()).rejects.toThrow(
+          'Archived repository repo-a failed integrity validation.',
+        );
+        // Another repository id, so the capture keeps no repository.
+        configureMultiRepo([{ id: 'repo-c', repoPath: referenceRepoPath }]);
+        await expect(
+          unavailable(persistedWorktree(), 'multi-repo'),
+        ).resolves.toBe(true);
+        await expect(multiRepoCapture()).rejects.toThrow(
+          'The worktree has no configured repositories to archive.',
+        );
+      });
+
+      it('refuses a single-repo ready capture of another repository', async () => {
+        await captureArchivedContainerGitState({
+          workspaceId: WORKSPACE_ID,
+          containerId: CONTAINER_ID,
+          workspaceType: 'single-repo',
+          worktreePath: worktreePath(),
+          persistedWorktree: persistedWorktree(),
+        });
+        const other = join(mockRootDir, 'other-reference');
+        initRepository(other);
+        jest.mocked(readWorkspaceConfig).mockResolvedValue(
+          withLegacyMissingRepos({
+            version: 1,
+            type: 'single-repo',
+            repoPath: other,
+            repos: [],
+          }),
+        );
+        // Once for admission, once for the archive's capture.
+        jest
+          .mocked(resolveProjectReferenceRepoPath)
+          .mockResolvedValueOnce(other)
+          .mockResolvedValueOnce(other);
+
+        await expect(unavailable()).resolves.toBe(true);
+        await expect(
+          captureArchivedContainerGitState({
+            workspaceId: WORKSPACE_ID,
+            containerId: CONTAINER_ID,
+            workspaceType: 'single-repo',
+            worktreePath: worktreePath(),
+            persistedWorktree: persistedWorktree(),
+          }),
+        ).rejects.toThrow('failed integrity validation');
+      });
+    });
+
+    it('refuses a single-repo project whose configuration names no repository, as its archive fails after the teardown', async () => {
+      jest.mocked(readWorkspaceConfig).mockResolvedValue({
+        version: 1,
+        type: 'single-repo',
+        repos: [],
+      });
+      await expect(unavailable()).resolves.toBe(true);
+      jest.mocked(readWorkspaceConfigDetailed).mockResolvedValueOnce({
+        config: { version: 1, type: 'multi-repo', repos: [] },
+        authority: 'unreadable',
+        ownerMalformed: false,
+        memoryMalformed: false,
+      });
+      await expect(unavailable()).resolves.toBe(true);
+    });
+
+    it('admits a multi-repo worktree without a checkout whose configuration cannot be read, as its files-only recovery needs no repository', async () => {
+      runGit(mockReferenceRepoPath, [
+        'worktree',
+        'remove',
+        '--force',
+        worktreePath(),
+      ]);
+      jest.mocked(readWorkspaceConfigDetailed).mockResolvedValueOnce({
+        config: { version: 1, type: 'multi-repo', repos: [] },
+        authority: 'unreadable',
+        ownerMalformed: false,
+        memoryMalformed: false,
+      });
+      jest
+        .mocked(readEffectiveWorkspaceConfig)
+        .mockRejectedValue(new Error('manifest unreadable'));
+      await expect(
+        unavailable(persistedWorktree(), 'multi-repo'),
+      ).resolves.toBe(false);
+    });
+
+    it('refuses a live multi-repo checkout whose effective configuration cannot be read, as its Git capture fails the same way', async () => {
+      configureMultiRepo([]);
+      jest
+        .mocked(readEffectiveWorkspaceConfig)
+        .mockRejectedValue(new Error('manifest unreadable'));
+      await expect(
+        unavailable(persistedWorktree(), 'multi-repo'),
+      ).resolves.toBe(true);
+    });
+
+    it('refuses a live multi-repo checkout with no repository to capture, as its Git capture throws after the teardown', async () => {
+      configurePartialCheckout();
+      rmSync(join(worktreePath(), 'repos'), { recursive: true, force: true });
+      await expect(
+        unavailable(persistedWorktree(), 'multi-repo'),
+      ).resolves.toBe(true);
+      // An unreadable manifest reads as an empty default configuration.
+      configurePartialCheckout();
+      jest.mocked(readWorkspaceConfigDetailed).mockResolvedValueOnce({
+        config: { version: 1, type: 'single-repo', repos: [] },
+        authority: 'unreadable',
+        ownerMalformed: false,
+        memoryMalformed: false,
+      });
+      await expect(
+        unavailable(persistedWorktree(), 'multi-repo'),
+      ).resolves.toBe(true);
+    });
+
+    it('admits a project of another kind, whose archive refuses before any effect', async () => {
+      hideReferenceRepo();
+      configureMultiRepo([]);
+      await expect(unavailable()).resolves.toBe(false);
+    });
+
+    it('refuses when the configuration read fails', async () => {
+      jest
+        .mocked(readWorkspaceConfigDetailed)
+        .mockRejectedValueOnce(new Error('config read failed'));
+      await expect(unavailable()).resolves.toBe(true);
+    });
   });
 
   it('does not replace a quarantine directory created during the move', async () => {
@@ -2134,7 +3926,7 @@ describe('archived container Git state', () => {
       const options = jest.mocked(fetchArchivedPullRequestMetadata).mock
         .calls[0]?.[2];
       expect(options?.timeoutMs).toBe(5_000);
-      expect(options?.signal.aborted).toBe(true);
+      expect(options?.signal?.aborted).toBe(true);
     } finally {
       jest.useRealTimers();
     }
@@ -2188,21 +3980,23 @@ describe('archived container Git state', () => {
     writeFileSync(join(repoAPath, 'README.md'), 'included repository\n');
     runGit(repoAPath, ['add', 'README.md']);
     runGit(repoAPath, ['commit', '-m', 'base']);
-    const effectiveConfig = {
+    const effectiveConfig = withLegacyNullSourceRepoPath({
       localConfig: {
         version: 1 as const,
         type: 'multi-repo' as const,
         repos: [],
       },
       manifest: null,
-      sourceRepoPath: null,
+      sourceRepoPath: undefined,
       repos: [
         { id: 'repo-a', name: 'A', repoPath: repoAPath },
         { id: 'repo-b', name: 'B', repoPath: repoAPath },
       ],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
-    };
+    });
     jest
       .mocked(readEffectiveWorkspaceConfig)
       .mockResolvedValue(effectiveConfig);
@@ -3128,6 +4922,64 @@ describe('archived container Git state', () => {
     });
   });
 
+  it.each([
+    ['', false],
+    [', also when retried after a crashed cleanup left its entry locked', true],
+  ])(
+    "finishes verified multi-repo teardown without leaving an unmanaged linked worktree's registration (CAN-5034)%s",
+    async (_case, crashedCleanup) => {
+      const { referenceRepoPath } = setupPartialMultiRepoFixture();
+      const unmanagedPath = join(worktreePath(), 'repos', 'extra-linked');
+      runGit(referenceRepoPath, [
+        'worktree',
+        'add',
+        '-b',
+        'extra-linked',
+        unmanagedPath,
+        'main',
+      ]);
+      const capture = await captureArchivedContainerGitState({
+        workspaceId: WORKSPACE_ID,
+        containerId: CONTAINER_ID,
+        workspaceType: 'multi-repo',
+        worktreePath: worktreePath(),
+        persistedWorktree: {
+          ...persistedWorktree(),
+          includedRepoIds: ['repo-a'],
+        },
+      });
+      const teardown = await prepareArchivedContainerTeardown({
+        workspaceId: WORKSPACE_ID,
+        containerId: CONTAINER_ID,
+        workspaceType: 'multi-repo',
+        gitState: capture.gitState,
+      });
+      const registrationEntries = join(referenceRepoPath, '.git', 'worktrees');
+      if (crashedCleanup)
+        writeFileSync(
+          join(registrationEntries, 'extra-linked', 'locked'),
+          CRASHED_CLEANUP_LOCK,
+        );
+      // Teardown repairs only captured repositories, so Git still registers the
+      // unmanaged checkout at its path before the quarantine move.
+      expect(
+        runGit(referenceRepoPath, ['worktree', 'list', '--porcelain']),
+      ).toContain(unmanagedPath);
+
+      await recoverArchivedGitTeardownsForWorkspace(WORKSPACE_ID);
+
+      expect(existsSync(teardown.quarantinePath)).toBe(false);
+      const registered = runGit(referenceRepoPath, [
+        'worktree',
+        'list',
+        '--porcelain',
+      ]);
+      expect(registered).not.toContain(unmanagedPath);
+      expect(registered).not.toContain(teardown.quarantinePath);
+      expect(readdirSync(registrationEntries)).not.toContain('extra-linked');
+    },
+  );
+
   it('reuses a ready multi-repo capture after every checkout has been removed', async () => {
     const { referenceRepoPath } = setupPartialMultiRepoFixture({
       includeRepoB: true,
@@ -3377,7 +5229,15 @@ describe('archived container Git state', () => {
     jest.mocked(readWorkspaceConfig).mockImplementationOnce(async () => {
       validationStarted.resolve();
       await validationRelease.promise;
-      return { type: 'single-repo', repoPath: mockReferenceRepoPath };
+      return withLegacyMissingWorkspaceConfigFields(
+        {
+          version: 1,
+          type: 'single-repo',
+          repoPath: mockReferenceRepoPath,
+          repos: [],
+        },
+        ['version', 'repos'],
+      );
     });
     const stream = jest
       .spyOn(gitTreeSnapshot, 'streamArchiveTreeDiff')
@@ -3726,14 +5586,24 @@ describe('archived container Git state', () => {
       type: 'multi-repo',
       repos: [],
     });
-    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValueOnce({
-      localConfig: { version: 1, type: 'multi-repo', repos: [] },
-      sourceRepoPath: null,
-      repos: [
-        { id: 'repo-a', name: 'A', repoPath: mockReferenceRepoPath },
-        { id: 'repo-b', name: 'B', repoPath: secondRepoPath },
-      ],
-    });
+    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValueOnce(
+      withLegacyNullSourceRepoPath(
+        {
+          localConfig: { version: 1, type: 'multi-repo', repos: [] },
+          manifest: null,
+          sourceRepoPath: undefined,
+          repos: [
+            { id: 'repo-a', name: 'A', repoPath: mockReferenceRepoPath },
+            { id: 'repo-b', name: 'B', repoPath: secondRepoPath },
+          ],
+          scripts: undefined,
+          defaultPluginSelections: undefined,
+          suppressedManifestRepos: [],
+          unresolvedManifestRepoIds: [],
+        },
+        ['manifest', 'suppressedManifestRepos', 'unresolvedManifestRepoIds'],
+      ),
+    );
     const stagedPath = join(
       mockRootDir,
       'archives',
@@ -3967,40 +5837,48 @@ describe('archived container Git state', () => {
         snapshotRef,
       },
     ];
-    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValueOnce({
-      localConfig: { version: 1, type: 'multi-repo', repos: [] },
-      manifest: null,
-      sourceRepoPath: null,
-      repos: [
-        { id: repoId, name: 'A', repoPath: mockReferenceRepoPath },
-        {
-          id: 'repo-added',
-          name: 'Added',
-          repoPath: join(mockRootDir, 'added-reference'),
-        },
-      ],
-      suppressedManifestRepos: [],
-      unresolvedManifestRepoIds: [],
-    });
+    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValueOnce(
+      withLegacyNullSourceRepoPath({
+        localConfig: { version: 1, type: 'multi-repo', repos: [] },
+        manifest: null,
+        sourceRepoPath: undefined,
+        repos: [
+          { id: repoId, name: 'A', repoPath: mockReferenceRepoPath },
+          {
+            id: 'repo-added',
+            name: 'Added',
+            repoPath: join(mockRootDir, 'added-reference'),
+          },
+        ],
+        scripts: undefined,
+        defaultPluginSelections: undefined,
+        suppressedManifestRepos: [],
+        unresolvedManifestRepoIds: [],
+      }),
+    );
 
     await expect(
       assertArchivedGitStateRestorable(manifest),
     ).resolves.toBeUndefined();
-    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValueOnce({
-      localConfig: { version: 1, type: 'multi-repo', repos: [] },
-      manifest: null,
-      sourceRepoPath: null,
-      repos: [
-        { id: repoId, name: 'A', repoPath: mockReferenceRepoPath },
-        {
-          id: 'repo-added',
-          name: 'Added',
-          repoPath: join(mockRootDir, 'added-reference'),
-        },
-      ],
-      suppressedManifestRepos: [],
-      unresolvedManifestRepoIds: [],
-    });
+    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValueOnce(
+      withLegacyNullSourceRepoPath({
+        localConfig: { version: 1, type: 'multi-repo', repos: [] },
+        manifest: null,
+        sourceRepoPath: undefined,
+        repos: [
+          { id: repoId, name: 'A', repoPath: mockReferenceRepoPath },
+          {
+            id: 'repo-added',
+            name: 'Added',
+            repoPath: join(mockRootDir, 'added-reference'),
+          },
+        ],
+        scripts: undefined,
+        defaultPluginSelections: undefined,
+        suppressedManifestRepos: [],
+        unresolvedManifestRepoIds: [],
+      }),
+    );
     await expect(
       assertArchivedGitStatePurgeable(manifest),
     ).resolves.toBeUndefined();
@@ -4818,14 +6696,18 @@ describe('archived container Git state', () => {
       type: 'multi-repo',
       repos: [],
     });
-    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValue({
-      localConfig: { version: 1, type: 'multi-repo', repos: [] },
-      manifest: null,
-      sourceRepoPath: null,
-      repos: [],
-      suppressedManifestRepos: [],
-      unresolvedManifestRepoIds: [],
-    });
+    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValue(
+      withLegacyNullSourceRepoPath({
+        localConfig: { version: 1, type: 'multi-repo', repos: [] },
+        manifest: null,
+        sourceRepoPath: undefined,
+        repos: [],
+        scripts: undefined,
+        defaultPluginSelections: undefined,
+        suppressedManifestRepos: [],
+        unresolvedManifestRepoIds: [],
+      }),
+    );
     rmSync(worktreePath(), { recursive: true, force: true });
     mkdirSync(worktreePath(), { recursive: true });
     writeFileSync(join(worktreePath(), 'captured.txt'), 'captured\n');
@@ -4875,14 +6757,18 @@ describe('archived container Git state', () => {
       type: 'multi-repo',
       repos: [],
     });
-    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValue({
-      localConfig: { version: 1, type: 'multi-repo', repos: [] },
-      manifest: null,
-      sourceRepoPath: null,
-      repos: [],
-      suppressedManifestRepos: [],
-      unresolvedManifestRepoIds: [],
-    });
+    jest.mocked(readEffectiveWorkspaceConfig).mockResolvedValue(
+      withLegacyNullSourceRepoPath({
+        localConfig: { version: 1, type: 'multi-repo', repos: [] },
+        manifest: null,
+        sourceRepoPath: undefined,
+        repos: [],
+        scripts: undefined,
+        defaultPluginSelections: undefined,
+        suppressedManifestRepos: [],
+        unresolvedManifestRepoIds: [],
+      }),
+    );
     rmSync(worktreePath(), { recursive: true, force: true });
     mkdirSync(join(worktreePath(), 'repos', 'personal'), { recursive: true });
     writeFileSync(

@@ -1,6 +1,7 @@
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
 import {
   computeUsageLimitResumePrompt,
+  describeUsageLimitResumePromptKind,
   USAGE_LIMIT_RESUME_CONTINUE_PROMPT,
 } from '../usage-limit-resume-prompt';
 
@@ -207,5 +208,48 @@ describe('computeUsageLimitResumePrompt', () => {
       text: 'Latest request that got rate limited',
       resendsUserMessage: true,
     });
+  });
+});
+
+describe('describeUsageLimitResumePromptKind', () => {
+  it('keeps unavailable, empty and promptless transcripts unknown', () => {
+    expect(describeUsageLimitResumePromptKind(undefined)).toBeUndefined();
+    expect(describeUsageLimitResumePromptKind([])).toBeUndefined();
+    expect(
+      describeUsageLimitResumePromptKind([
+        message('user', [
+          {
+            type: 'tool_result',
+            toolUseId: 'tool',
+            toolName: 'Read',
+            output: 'output',
+            isError: false,
+          },
+        ]),
+      ]),
+    ).toBeUndefined();
+    expect(
+      describeUsageLimitResumePromptKind([
+        message('assistant', [{ type: 'text', text: 'Hello' }]),
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('uses the authoritative policy, including assistant text and empty user text', () => {
+    for (const messages of [
+      [userText('Continue')],
+      [userText('Fix it')],
+      [
+        userText('Fix it'),
+        message('assistant', [{ type: 'text', text: 'Working' }]),
+      ],
+      [userText('')],
+    ]) {
+      expect(describeUsageLimitResumePromptKind(messages)).toBe(
+        computeUsageLimitResumePrompt(messages).resendsUserMessage
+          ? 'resend_user_message'
+          : 'continue',
+      );
+    }
   });
 });

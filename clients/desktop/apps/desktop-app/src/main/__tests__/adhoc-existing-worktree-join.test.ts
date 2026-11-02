@@ -1,3 +1,6 @@
+jest.mock('../lib/org-shared-multi-repo-legacy-guard', () => ({
+  assertLegacyCombineAllowed: jest.fn((): Promise<void> => Promise.resolve()),
+}));
 import type * as CompositionRecords from '../lib/workspace-composition-records';
 import {
   restoreCompositionWorktrees,
@@ -26,7 +29,10 @@ import {
   type WorktreeData,
   type WorkspaceRepoData,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionSummary } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type {
+  ExecutionState,
+  ExecutionSummary,
+} from '@canopy/desktop-shared/node/pipelines/executor/types';
 
 jest.mock('node:fs/promises');
 jest.mock('../agents/session-manager', () => ({
@@ -179,7 +185,11 @@ import {
   createTemporaryMultiRepoWorkspace,
   listWorkspaceItems,
 } from '../lib/workspace-service';
-import { listExecutionSummaries } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import {
+  listExecutionSummaries,
+  loadExecutionState,
+  saveExecutionState,
+} from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import {
   discardLedgerMoveIntent,
   LEDGER_INTENT_REFUSING_WAIT_MS,
@@ -313,6 +323,7 @@ function makeExecutionSummary(
     started_at: '2026-06-12T00:00:00.000Z',
     cwd: '/mock/cwd',
     ...overrides,
+    status_reasons: overrides.status_reasons ?? [],
   };
 }
 
@@ -468,7 +479,7 @@ describe('listExistingWorktreeJoinOptions', () => {
       makeExecutionSummary({
         project_id: 'other-ws',
         worktree_id: 'worktree',
-        status: 'completed',
+        status: 'success',
       }),
     ]);
 
@@ -780,7 +791,53 @@ function makeJoinFixture(joinRepoPath: string): {
   return { sourceWorkspace, joinWorkspace };
 }
 
+function seedJoinedExecution(): ExecutionState {
+  const state: ExecutionState = {
+    version: 7,
+    id: 'joined-execution',
+    pipeline_id: 'policy',
+    pipeline_snapshot: { name: 'Policy', scope: ['worktree'], jobs: {} },
+    status: 'success',
+    status_reasons: [],
+    jobs: {},
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
+    started_at: '2026-06-12T00:00:00.000Z',
+    env: {},
+    inputs: {},
+    project_id: 'join-ws',
+    worktree_id: 'join-wt',
+    cwd: `${JOIN_CHECKOUT}/desktop`,
+    execution_checkout_root: JOIN_CHECKOUT,
+    target: {
+      scope: 'worktree',
+      workspace_id: 'join-ws',
+      worktree_id: 'join-wt',
+      path: `${JOIN_CHECKOUT}/desktop`,
+      created: false,
+    },
+  };
+  mockedListExecutionSummaries.mockResolvedValue([
+    {
+      id: state.id,
+      pipeline_id: state.pipeline_id,
+      pipeline_name: 'Policy',
+      status: 'success',
+      status_reasons: [],
+      started_at: state.started_at,
+      cwd: state.cwd,
+      project_id: state.project_id,
+      worktree_id: state.worktree_id,
+    },
+  ]);
+  jest.mocked(loadExecutionState).mockResolvedValue(state);
+  return state;
+}
+
 function setupCombineFixtureMocks(): void {
+  jest.mocked(loadExecutionState).mockReset();
+  jest.mocked(saveExecutionState).mockReset();
   existingPaths = new Set();
   addPathWithAncestors(SOURCE_APP_CHECKOUT);
   addPathWithAncestors(SOURCE_LIB_CHECKOUT);
@@ -1425,6 +1482,7 @@ describe('combineWorktreeWithExistingWorktree (temporary)', () => {
       },
     );
 
+    const originalExecution = seedJoinedExecution();
     const response = await combineWorktreeWithExistingWorktree({
       sourceWorkspaceId: 'source-ws',
       sourceWorktreeId: 'src-wt',
@@ -1433,6 +1491,20 @@ describe('combineWorktreeWithExistingWorktree (temporary)', () => {
       mode: 'temporary',
     });
 
+    expect(saveExecutionState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execution_checkout_root: `${TEMP_DEST_ROOT}/repos/tool`,
+        cwd: `${TEMP_DEST_ROOT}/repos/tool/desktop`,
+        target: {
+          ...originalExecution.target,
+          workspace_id: response.destinationWorkspaceId,
+          worktree_id: response.destinationWorktreeId,
+          path: `${TEMP_DEST_ROOT}/repos/tool/desktop`,
+        },
+      }),
+      '/mock/executions',
+    );
+    expect(originalExecution.execution_checkout_root).toBe(JOIN_CHECKOUT);
     expect(mockedMoveWorktree).toHaveBeenCalledWith(
       '/repos/tool',
       JOIN_CHECKOUT,
@@ -2048,7 +2120,7 @@ describe('combineWorktreeWithExistingWorktree (update-source-workspace)', () => 
 
   function makeUpdateRequest(): Parameters<
     typeof combineWorktreeWithExistingWorktree
-  >[0] {
+  >[0] & { idempotencyKey?: undefined } {
     return {
       sourceWorkspaceId: 'source-ws',
       sourceWorktreeId: 'src-wt',
@@ -2211,9 +2283,24 @@ describe('combineWorktreeWithExistingWorktree (update-source-workspace)', () => 
       },
     );
 
+    const originalExecution = seedJoinedExecution();
     const response =
       await combineWorktreeWithExistingWorktree(makeUpdateRequest());
 
+    expect(saveExecutionState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execution_checkout_root: SOURCE_JOINED_REPO_CHECKOUT,
+        cwd: `${SOURCE_JOINED_REPO_CHECKOUT}/desktop`,
+        target: {
+          ...originalExecution.target,
+          workspace_id: 'source-ws',
+          worktree_id: 'src-wt',
+          path: `${SOURCE_JOINED_REPO_CHECKOUT}/desktop`,
+        },
+      }),
+      '/mock/executions',
+    );
+    expect(originalExecution.execution_checkout_root).toBe(JOIN_CHECKOUT);
     expect(mockedAddWorkspaceRepository).toHaveBeenCalledWith(
       combineAdd('source-ws', {
         id: 'join-ws',

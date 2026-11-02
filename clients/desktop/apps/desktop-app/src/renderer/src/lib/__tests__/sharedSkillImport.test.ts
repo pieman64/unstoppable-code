@@ -13,9 +13,10 @@ jest.mock('@/stores/featureFlagsStore', () => ({
 
 import {
   describeSharedSkillImportNotice,
-  findInstalledSharedSkill,
   findInstalledSkillByContentHash,
   importSharedSkill,
+  lookupInstalledSharedSkill,
+  sharedSkillWriteFailureCode,
 } from '../sharedSkillImport';
 import { resolveSharedResourceErrorMessage } from '../sharedResourceErrors';
 import type {
@@ -50,7 +51,7 @@ Object.defineProperty(globalThis, 'TextEncoder', {
 const rawSkill = '---\nname: helper\n---\nExact body\n';
 
 function makeSharedSkill(
-  overrides: Partial<SharedSkillDetail> = {},
+  overrides: Partial<Omit<SharedSkillDetail, 'publicShare'>> = {},
 ): SharedSkillDetail {
   return {
     id: 'shared-skill-1',
@@ -66,6 +67,7 @@ function makeSharedSkill(
     updatedAt: '2026-05-22T00:00:00.000Z',
     canUpdate: true,
     canDelete: true,
+    publicShare: null,
     ...overrides,
   };
 }
@@ -500,10 +502,12 @@ describe('describeSharedSkillImportNotice', () => {
   });
 });
 
-describe('findInstalledSharedSkill', () => {
+describe('lookupInstalledSharedSkill (CAN-5307)', () => {
   const loadSkills = jest.fn();
   const readRawSkill = jest.fn();
+  const getShared = jest.fn();
   const packageDigest = `pp:v1:${'B'.repeat(43)}`;
+  const editedHash = 'b'.repeat(64);
 
   function localSkill(
     name: string,
@@ -535,72 +539,177 @@ describe('findInstalledSharedSkill', () => {
     },
   });
 
+  function hex(hash: string): ArrayBuffer {
+    const bytes = hash.match(/../g)?.map((pair) => parseInt(pair, 16));
+    return Uint8Array.from(bytes ?? []).buffer;
+  }
+
+  /** The share's bytes hash to `matchingHash`; any other bytes to `editedHash`. */
+  function hashByContent(): void {
+    mockDigest.mockImplementation((...args: unknown[]) => {
+      const data = args[1];
+      const text =
+        data instanceof Uint8Array ? String.fromCharCode(...data) : '';
+      return Promise.resolve(
+        hex(text === rawSkill ? matchingHash : editedHash),
+      );
+    });
+  }
+
+  function receipted(...names: string[]): { installedCopyIds: string[] } {
+    return { installedCopyIds: names.map((name) => `custom:app/${name}`) };
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
+    hashByContent();
     mockResourceContextEnabled = true;
     readRawSkill.mockResolvedValue(rawSkill);
-    Object.assign(window, { skills: { loadSkills, readRawSkill } });
+    getShared.mockResolvedValue({ installedCopyIds: [] });
+    Object.assign(window, { skills: { loadSkills, readRawSkill, getShared } });
   });
 
-  it('finds the copy receipted to this share when its bytes still match', async () => {
+  afterAll(() => {
+    mockDigest.mockImplementation(() => Promise.resolve(hex(matchingHash)));
+  });
+
+  it('finds the current copy receipted to this share', async () => {
     loadSkills.mockResolvedValue({
       success: true,
       data: [
         localSkill('helper'),
-        localSkill('helper-2', { remoteId: share.id }),
+        localSkill('helper-2', {
+          remoteId: share.id,
+          contentHash: matchingHash,
+        }),
       ],
     });
 
-    await expect(findInstalledSharedSkill(share)).resolves.toBe('helper-2');
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper-2') }),
+    ).resolves.toEqual({
+      status: 'installed',
+      skillId: 'custom:app/helper-2',
+      sourceId: 'custom:app',
+      skillName: 'helper-2',
+      updateAvailable: false,
+      locallyEdited: false,
+      localContentHash: matchingHash,
+      sourceContentHash: matchingHash,
+    });
     expect(readRawSkill).toHaveBeenCalledTimes(1);
     expect(readRawSkill).toHaveBeenCalledWith('custom:app/helper-2');
   });
 
-  it('checks every copy receipted to this share, as main reuses any of them', async () => {
+  it('keeps a receipted copy whose bytes differ installed, with an update', async () => {
+    // The publisher changed the share; the recipient's copy is as installed.
+    readRawSkill.mockResolvedValue('---\nname: helper\n---\nOlder body\n');
     loadSkills.mockResolvedValue({
       success: true,
       data: [
-        localSkill('release', { remoteId: share.id }),
-        localSkill('release-2', { remoteId: share.id }),
+        localSkill('helper', { remoteId: share.id, contentHash: editedHash }),
       ],
-    });
-    // The first alias was edited locally; the second still matches.
-    mockDigest.mockImplementationOnce(() =>
-      Promise.resolve(new Uint8Array(32).buffer),
-    );
-
-    await expect(findInstalledSharedSkill(share)).resolves.toBe('release-2');
-    expect(readRawSkill).toHaveBeenNthCalledWith(1, 'custom:app/release');
-    expect(readRawSkill).toHaveBeenNthCalledWith(2, 'custom:app/release-2');
-  });
-
-  it('ignores an identical copy that no receipt binds to this share', async () => {
-    loadSkills.mockResolvedValue({
-      success: true,
-      data: [localSkill('helper'), localSkill('other', { remoteId: 'other' })],
-    });
-
-    await expect(findInstalledSharedSkill(share)).resolves.toBeNull();
-    expect(readRawSkill).not.toHaveBeenCalled();
-  });
-
-  it('does not count a receipted copy whose bytes changed', async () => {
-    loadSkills.mockResolvedValue({
-      success: true,
-      data: [localSkill('helper', { remoteId: share.id })],
     });
 
     await expect(
-      findInstalledSharedSkill({ ...share, contentHash: '0'.repeat(64) }),
-    ).resolves.toBeNull();
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toMatchObject({
+      status: 'installed',
+      skillName: 'helper',
+      updateAvailable: true,
+      locallyEdited: false,
+      localContentHash: editedHash,
+      sourceContentHash: matchingHash,
+    });
   });
 
-  it('requires the share package to have installed', async () => {
+  it('flags local edits, and an unknown install-time hash, as edited', async () => {
+    readRawSkill.mockResolvedValue('my edits');
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [
+        localSkill('helper', {
+          remoteId: share.id,
+          contentHash: 'c'.repeat(64),
+        }),
+      ],
+    });
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toMatchObject({ updateAvailable: true, locallyEdited: true });
+
     loadSkills.mockResolvedValue({
       success: true,
       data: [localSkill('helper', { remoteId: share.id })],
     });
-    await expect(findInstalledSharedSkill(packagedShare)).resolves.toBeNull();
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toMatchObject({ updateAvailable: true, locallyEdited: true });
+  });
+
+  it('prefers a current alias, else the first readable one by local id', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [
+        localSkill('release-2', { remoteId: share.id }),
+        localSkill('release', { remoteId: share.id }),
+      ],
+    });
+    readRawSkill.mockImplementation((id: string) =>
+      Promise.resolve(id === 'custom:app/release' ? 'edited' : rawSkill),
+    );
+    await expect(
+      lookupInstalledSharedSkill({
+        ...share,
+        ...receipted('release', 'release-2'),
+      }),
+    ).resolves.toMatchObject({
+      skillName: 'release-2',
+      updateAvailable: false,
+    });
+
+    readRawSkill.mockResolvedValue('edited');
+    await expect(
+      lookupInstalledSharedSkill({
+        ...share,
+        ...receipted('release', 'release-2'),
+      }),
+    ).resolves.toMatchObject({ skillName: 'release', updateAvailable: true });
+  });
+
+  it('never lets a missing or unreadable alias hide a usable sibling', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [
+        localSkill('a', { remoteId: share.id }),
+        localSkill('b', { remoteId: share.id }),
+      ],
+    });
+    readRawSkill.mockImplementation((id: string) =>
+      id === 'custom:app/a'
+        ? Promise.reject(new Error('EACCES'))
+        : Promise.resolve(rawSkill),
+    );
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('a', 'b', 'gone') }),
+    ).resolves.toMatchObject({ status: 'installed', skillName: 'b' });
+  });
+
+  it('reports a receipt whose copies are all missing, not absence', async () => {
+    loadSkills.mockResolvedValue({ success: true, data: [] });
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toEqual({ status: 'missing-copy' });
+  });
+
+  it('treats package drift or an unfinished package as an update', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [localSkill('helper', { remoteId: share.id })],
+    });
+    await expect(
+      lookupInstalledSharedSkill({ ...packagedShare, ...receipted('helper') }),
+    ).resolves.toMatchObject({ status: 'installed', updateAvailable: true });
 
     loadSkills.mockResolvedValue({
       success: true,
@@ -611,15 +720,118 @@ describe('findInstalledSharedSkill', () => {
         }),
       ],
     });
-    await expect(findInstalledSharedSkill(packagedShare)).resolves.toBeNull();
+    await expect(
+      lookupInstalledSharedSkill({ ...packagedShare, ...receipted('helper') }),
+    ).resolves.toMatchObject({ updateAvailable: true });
 
     loadSkills.mockResolvedValue({
       success: true,
       data: [localSkill('helper', { remoteId: share.id, packageDigest })],
     });
-    await expect(findInstalledSharedSkill(packagedShare)).resolves.toBe(
-      'helper',
-    );
+    await expect(
+      lookupInstalledSharedSkill({ ...packagedShare, ...receipted('helper') }),
+    ).resolves.toMatchObject({ updateAvailable: false });
+  });
+
+  it('keeps an interrupted update pending even when hashes match', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [
+        localSkill('helper', { remoteId: share.id, replacementPending: true }),
+      ],
+    });
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toMatchObject({ updateAvailable: true });
+  });
+
+  it('reports failed verification as unverified, never as absent', async () => {
+    loadSkills.mockResolvedValue({ success: false, error: 'receipts' });
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toEqual({ status: 'unverified' });
+
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [localSkill('helper', { remoteId: share.id })],
+    });
+    readRawSkill.mockRejectedValue(new Error('EACCES'));
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toEqual({ status: 'unverified' });
+
+    getShared.mockRejectedValue(new Error('offline'));
+    await expect(lookupInstalledSharedSkill(share)).resolves.toEqual({
+      status: 'unverified',
+    });
+  });
+
+  it('reports unavailable hashing as unverified', async () => {
+    readRawSkill.mockResolvedValue(rawSkill);
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [localSkill('helper', { remoteId: share.id })],
+    });
+    const crypto = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: {},
+    });
+    try {
+      await expect(
+        lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+      ).resolves.toEqual({ status: 'unverified' });
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {
+        configurable: true,
+        value: crypto,
+      });
+    }
+  });
+
+  it('ignores an identical copy that no receipt binds to this share', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [localSkill('helper'), localSkill('other', { remoteId: 'other' })],
+    });
+
+    await expect(
+      lookupInstalledSharedSkill({ ...share, installedCopyIds: [] }),
+    ).resolves.toEqual({ status: 'absent' });
+    expect(readRawSkill).not.toHaveBeenCalled();
+  });
+
+  it('reads the receipt from main when the caller has none', async () => {
+    getShared.mockResolvedValue(receipted('helper'));
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [localSkill('helper', { remoteId: share.id })],
+    });
+
+    await expect(lookupInstalledSharedSkill(share)).resolves.toMatchObject({
+      status: 'installed',
+      skillName: 'helper',
+    });
+    expect(getShared).toHaveBeenCalledWith(share.id);
+  });
+
+  it('blocks install when a receiver cannot supply receipt identity', async () => {
+    getShared.mockResolvedValue(share);
+    loadSkills.mockResolvedValue({ success: true, data: [] });
+    await expect(lookupInstalledSharedSkill(share)).resolves.toEqual({
+      status: 'unverified',
+    });
+  });
+
+  it('rejects a nonempty invalid digest instead of sending it as a replacement expectation', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [localSkill('helper', { remoteId: share.id })],
+    });
+    mockDigest.mockResolvedValueOnce(new Uint8Array([1]).buffer);
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('helper') }),
+    ).resolves.toEqual({ status: 'unverified' });
   });
 
   it('matches identical content without enforcement, where imports reuse it', async () => {
@@ -629,8 +841,79 @@ describe('findInstalledSharedSkill', () => {
       data: [localSkill('helper')],
     });
 
-    await expect(findInstalledSharedSkill(share)).resolves.toBe('helper');
+    await expect(lookupInstalledSharedSkill(share)).resolves.toMatchObject({
+      status: 'installed',
+      skillName: 'helper',
+      updateAvailable: false,
+    });
     // A package cannot be confirmed without a receipt, so Add stays offered.
-    await expect(findInstalledSharedSkill(packagedShare)).resolves.toBeNull();
+    await expect(lookupInstalledSharedSkill(packagedShare)).resolves.toEqual({
+      status: 'absent',
+    });
+    expect(getShared).not.toHaveBeenCalled();
+  });
+});
+
+describe('in-place replacement through importSharedSkill (CAN-5307)', () => {
+  const writeRawSkill = jest.fn();
+  const replaceInstalled = {
+    skillName: 'helper',
+    expectedLocalContentHash: 'b'.repeat(64),
+    expectedSourceContentHash: matchingHash,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    writeRawSkill.mockResolvedValue({
+      skillId: 'custom:app/helper',
+      skillName: 'helper',
+    });
+    Object.assign(window, {
+      skills: {
+        writeRawSkill,
+        loadSkills: jest.fn().mockResolvedValue({ success: true, data: [] }),
+      },
+    });
+  });
+
+  it('sends the reviewed replacement with the scoped write', async () => {
+    mockResourceContextEnabled = true;
+    await expect(
+      importSharedSkill({ ...makeSharedSkill(), replaceInstalled }),
+    ).resolves.toMatchObject({ skillName: 'helper', reused: false });
+    expect(writeRawSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceRemoteId: 'shared-skill-1',
+        replaceInstalled,
+      }),
+    );
+  });
+
+  it('refuses to replace through a public or unenforced import', async () => {
+    mockResourceContextEnabled = false;
+    await expect(
+      importSharedSkill({ ...makeSharedSkill(), replaceInstalled }),
+    ).rejects.toThrow('(replacement-unsupported)');
+
+    mockResourceContextEnabled = true;
+    await expect(
+      importSharedSkill({
+        ...makeSharedSkill(),
+        fromPublicShare: true,
+        replaceInstalled,
+      }),
+    ).rejects.toThrow('(replacement-unsupported)');
+    expect(writeRawSkill).not.toHaveBeenCalled();
+  });
+
+  it('reads the typed reason from a rejected write', () => {
+    expect(
+      sharedSkillWriteFailureCode(
+        new Error(
+          "Error invoking remote method 'skills:write-raw': Error: Skill unavailable (local-conflict). Your installed skill changed.",
+        ),
+      ),
+    ).toBe('local-conflict');
+    expect(sharedSkillWriteFailureCode(new Error('disk full'))).toBeNull();
   });
 });

@@ -110,8 +110,8 @@ export const ACTIVATION_CAMPAIGNS: readonly CampaignDefinition[] = [
     maxLatenessMs: 48 * HOUR_MS,
     variants: {
       [DEFAULT_VARIANT_KEY]: {
-        title: 'Ready-made pipelines are waiting',
-        body: 'Discover plugins and pipelines to get started faster.',
+        title: 'Ready-made workflows are waiting',
+        body: 'Discover plugins and workflows to get started faster.',
         destination: { kind: 'page', page: 'plugins' },
       },
     },

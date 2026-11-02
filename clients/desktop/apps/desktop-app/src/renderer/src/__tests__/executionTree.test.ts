@@ -15,6 +15,7 @@ function makeSummary(
     started_at: new Date().toISOString(),
     cwd: '/tmp',
     ...overrides,
+    status_reasons: overrides.status_reasons ?? [],
   };
 }
 

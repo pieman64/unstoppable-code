@@ -23,6 +23,7 @@ import {
   MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH,
   MAX_SCRIPT_DEV_SERVER_PATTERNS,
   MAX_SCRIPT_TIMEOUT_SECONDS,
+  isLinuxCommandShell,
   isMacCommandShell,
   isWindowsCommandShell,
   normalizeScriptName,
@@ -437,7 +438,7 @@ function parseCommandShellDefinition(
   }
 
   for (const key of Object.keys(value)) {
-    if (key !== 'windows' && key !== 'mac') {
+    if (key !== 'windows' && key !== 'mac' && key !== 'linux') {
       throw new Error(
         `${context}: ${label} "${scriptName}" shell contains unsupported key "${key}"`,
       );
@@ -446,9 +447,10 @@ function parseCommandShellDefinition(
 
   const hasWindows = Object.prototype.hasOwnProperty.call(value, 'windows');
   const hasMac = Object.prototype.hasOwnProperty.call(value, 'mac');
-  if (!hasWindows && !hasMac) {
+  const hasLinux = Object.prototype.hasOwnProperty.call(value, 'linux');
+  if (!hasWindows && !hasMac && !hasLinux) {
     throw new Error(
-      `${context}: ${label} "${scriptName}" shell must configure windows or mac`,
+      `${context}: ${label} "${scriptName}" shell must configure windows, mac, or linux`,
     );
   }
 
@@ -469,6 +471,14 @@ function parseCommandShellDefinition(
     }
     shell.mac = value.mac;
   }
+  if (hasLinux) {
+    if (!isLinuxCommandShell(value.linux)) {
+      throw new Error(
+        `${context}: ${label} "${scriptName}" shell.linux must be "bash" or "zsh"`,
+      );
+    }
+    shell.linux = value.linux;
+  }
   return shell;
 }
 
@@ -481,15 +491,16 @@ function parseHookCommandShellDefinition(
   }
 
   for (const key of Object.keys(value)) {
-    if (key !== 'windows' && key !== 'mac') {
+    if (key !== 'windows' && key !== 'mac' && key !== 'linux') {
       throw new Error(`${context}: shell contains unsupported key "${key}"`);
     }
   }
 
   const hasWindows = Object.prototype.hasOwnProperty.call(value, 'windows');
   const hasMac = Object.prototype.hasOwnProperty.call(value, 'mac');
-  if (!hasWindows && !hasMac) {
-    throw new Error(`${context}: shell must configure windows or mac`);
+  const hasLinux = Object.prototype.hasOwnProperty.call(value, 'linux');
+  if (!hasWindows && !hasMac && !hasLinux) {
+    throw new Error(`${context}: shell must configure windows, mac, or linux`);
   }
 
   const shell: CommandShellDefinition = {};
@@ -506,6 +517,12 @@ function parseHookCommandShellDefinition(
       throw new Error(`${context}: shell.mac must be "zsh" or "bash"`);
     }
     shell.mac = value.mac;
+  }
+  if (hasLinux) {
+    if (!isLinuxCommandShell(value.linux)) {
+      throw new Error(`${context}: shell.linux must be "bash" or "zsh"`);
+    }
+    shell.linux = value.linux;
   }
   return shell;
 }

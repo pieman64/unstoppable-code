@@ -427,12 +427,17 @@ describe('resolveCodexPluginInstallRoots', () => {
     });
     existsSyncMock.mockReturnValue(true);
 
+    const listedMarketplace: PluginMarketplaceEntry = {
+      name: 'acme',
+      path: null,
+      interface: null,
+      plugins: [],
+    };
+    // Preserve the legacy malformed input: this fixture intentionally omits `interface`.
+    Reflect.deleteProperty(listedMarketplace, 'interface');
+
     const result = await resolveCodexPluginInstallRoots('acme', {
-      listedMarketplace: {
-        name: 'acme',
-        path: null,
-        plugins: [],
-      } as PluginMarketplaceEntry,
+      listedMarketplace,
     });
 
     expect(result.locations).toEqual([]);

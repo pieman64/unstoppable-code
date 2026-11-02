@@ -68,7 +68,6 @@ function makeEntry(
     id: overrides.id ?? `id:${name}`,
     provider: overrides.provider ?? 'claude',
     kind: overrides.kind ?? 'skill',
-    name,
     displayName: overrides.displayName ?? `/${name}`,
     description: overrides.description ?? `${name} description`,
     insertText: overrides.insertText ?? `/${name} `,
@@ -392,12 +391,12 @@ describe('useHomeSlashCommands', () => {
         chatProvider: 'claude',
         chatModelByProvider: {
           claude: { model: 'claude-sonnet-4-5', thinkingLevel: 'medium' },
-          codex: null,
+          codex: { model: 'gpt-6-sol', thinkingLevel: 'high' },
           ollama: null,
         },
         worktreeProvider: 'codex',
         worktreeModelByProvider: {
-          claude: null,
+          claude: { model: 'claude-sonnet-4-5', thinkingLevel: 'medium' },
           codex: { model: 'gpt-6-sol', thinkingLevel: 'high' },
           ollama: null,
         },

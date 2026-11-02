@@ -5,6 +5,7 @@
     "moduleResolution": "bundler",
     "target": "ES2020",
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "types": ["jest", "node"],
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
@@ -21,7 +22,12 @@
     "noImplicitOverride": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/icons/icon-manifest.json"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/icons/icon-manifest.json",
+    "src/styles/theme-recipes.json"
+  ],
   "references": [
     {
       "path": "../agent-transcript"

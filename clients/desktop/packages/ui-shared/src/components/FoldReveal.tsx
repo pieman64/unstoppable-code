@@ -9,9 +9,9 @@ export interface FoldRevealProps {
 }
 
 /**
- * Folds inline content in and out sideways, width and fade together, so a
- * control that gains or drops a label or glyph resizes in one motion instead
- * of popping. A 0fr/1fr grid column animates to the content's exact width.
+ * Reveals inline content at its final width, with an opacity confirmation.
+ * Frequent picker changes commit layout once instead of reflowing nearby
+ * controls throughout a grid-track animation.
  * The content stays mounted; folded, it is hidden from assistive tech.
  */
 export function FoldReveal({
@@ -23,7 +23,7 @@ export function FoldReveal({
     <span
       aria-hidden={open ? undefined : true}
       data-fold-open={open}
-      className={`grid shrink-0 transition-[grid-template-columns,opacity] duration-200 ease-out motion-reduce:transition-none ${
+      className={`grid shrink-0 transition-opacity duration-200 ease-out motion-reduce:transition-none ${
         open ? 'grid-cols-[1fr]' : 'grid-cols-[0fr] opacity-0'
       } ${className ?? ''}`}
     >

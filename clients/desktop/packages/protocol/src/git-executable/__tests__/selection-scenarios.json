@@ -1668,7 +1668,7 @@
       }
     },
     {
-      "name": "Linux arm64 spawns git from PATH without validation",
+      "name": "Linux arm64 refuses a broken saved selection instead of falling back",
       "os": "linux",
       "arch": "arm64",
       "environment": {},
@@ -1682,11 +1682,12 @@
         }
       },
       "expected": {
-        "attempts": [],
+        "attempts": ["/opt/custom/git"],
         "status": {
-          "ready": true,
+          "ready": false,
           "path": null,
-          "source": "not-found"
+          "source": "not-found",
+          "error": "Selected Git executable cannot be used. Git executable does not exist: /opt/custom/git"
         },
         "savedAfter": "/opt/custom/git"
       }
@@ -1712,7 +1713,7 @@
         "status": {
           "ready": true,
           "path": "/env/git",
-          "source": "cache"
+          "source": "user-selected"
         },
         "savedAfter": ""
       }

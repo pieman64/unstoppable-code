@@ -14,6 +14,7 @@
  * All reads and mutations go through `useArchivedContainersStore`; this page
  * never touches archive files or re-implements retention rules.
  */
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type {
   ArchivedContainerSummary,
@@ -28,7 +29,7 @@ import {
   HeaderActionButton,
 } from '@canopy/ui-shared/components';
 import { formatCostAmount } from '@canopy/ui-shared/components/cost';
-import { matchesArchivedQuery } from '@canopy/ui-shared/lib';
+import { formatByteSize, matchesArchivedQuery } from '@canopy/ui-shared/lib';
 import {
   BackIcon,
   GitPullRequestIcon,
@@ -67,7 +68,7 @@ import {
   getArchivedPullRequestIndicator,
   type ArchivedContainerState,
 } from '@/lib/archivedContainerDisplay';
-import { formatByteSize, formatDateOrEmpty } from '@/lib/format';
+import { formatDateOrEmpty } from '@/lib/format';
 import { ArchivedContainerActionsMenu } from './ArchivedContainerActionsMenu';
 import { ArchivedStateFilterDropdown } from './ArchivedStateFilterDropdown';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -153,7 +154,7 @@ export function ArchivedContainersOverviewPage({
   );
   const workspaceName =
     surface === 'app-advisor'
-      ? 'App Advisor'
+      ? ORCHESTRATOR_LABEL
       : (codeWorkspaceName ?? coworkWorkspaceName ?? workspaceId);
 
   // Legacy (pre-entry) archived chats: cowork and App Advisor only. They are
@@ -561,7 +562,7 @@ export function ArchivedContainersOverviewPage({
                       data-standalone-chat-id={chat.id}
                       data-archived="true"
                       onClick={() => openLegacyChat(chat.id)}
-                      className="focus-ring flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-fg-primary/[0.04]"
+                      className="focus-ring flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
                     >
                       <ArchivedStateIcon state="archived" />
                       <span
@@ -779,7 +780,7 @@ function ArchivedOverviewRow({
             title="Measured archive footprint; retained Git objects may be shared"
           >
             {diskUsageBytes !== null
-              ? `${diskUsageComplete ? '' : 'At least '}${formatByteSize(diskUsageBytes)}`
+              ? `${diskUsageComplete ? '' : 'At least '}${formatByteSize(diskUsageBytes, { precision: 'adaptive' })}`
               : '…'}
           </span>
         </>
@@ -836,7 +837,9 @@ function DesktopEmptyTrashDialog({
           name: displayNames.get(item.id) ?? item.name,
           trailing: (
             <span className="shrink-0 tabular-nums fg-secondary">
-              {bytes !== null ? formatByteSize(bytes) : '…'}
+              {bytes !== null
+                ? formatByteSize(bytes, { precision: 'adaptive' })
+                : '…'}
             </span>
           ),
         };
@@ -850,7 +853,10 @@ function DesktopEmptyTrashDialog({
             {count} {itemWord}
           </span>
           <span>
-            Frees at least {formatByteSize(guaranteedReclaimableBytes)}
+            Frees at least{' '}
+            {formatByteSize(guaranteedReclaimableBytes, {
+              precision: 'adaptive',
+            })}
           </span>
         </div>
       }

@@ -5,7 +5,7 @@ import { constants as osConstants, tmpdir } from 'node:os';
 import { basename, delimiter } from 'node:path';
 import { join } from 'node:path';
 import * as childProcess from 'node:child_process';
-import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty';
+import type { IPty } from 'node-pty';
 import {
   IPC_CHANNELS,
   TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
@@ -18,15 +18,20 @@ import {
   type TerminalSession,
 } from '@canopy/desktop-shared/types';
 import {
-  listAvailableTerminalProfiles,
-  prewarmLinuxTerminalShell,
-  PtyManager,
-  resetLinuxTerminalShellLookupForTests,
   TERMINAL_FLUSH_THRESHOLD_BYTES,
   TERMINAL_MAX_UNFLUSHED_BYTES,
   TERMINAL_REPLAY_BUFFER_MAX_BYTES,
   TERMINAL_USER_INTERRUPT_SUPPRESS_MS,
-} from '../terminal/pty-manager';
+  type TerminalAttachmentItem,
+  type TerminalEngine,
+  type TerminalPtyPort,
+} from '@canopy/core-runtime/node/terminal';
+import {
+  createDesktopTerminalEngine,
+  createDesktopTerminalHost,
+  desktopTerminalShells,
+  TERMINAL_EVENT_CHANNELS,
+} from '../terminal/worker-terminal';
 
 jest.mock('node:os', () => {
   const actual = jest.requireActual<Record<string, unknown>>('node:os');
@@ -119,11 +124,7 @@ jest.mock('node:child_process', () => {
   };
 });
 
-type PtySpawn = (
-  file: string,
-  args: string[] | string,
-  options: IPtyForkOptions | IWindowsPtyForkOptions,
-) => IPty;
+type PtySpawn = TerminalPtyPort['spawn'];
 
 type TerminalEvent =
   | TerminalSession
@@ -264,14 +265,12 @@ function outputText(event: TerminalOutputEvent): string {
 }
 
 function runningEvent(
-  event: TerminalRunningChangedEvent | TerminalExitEvent | TerminalOutputEvent,
+  event: TerminalEvent,
 ): event is TerminalRunningChangedEvent {
   return 'running' in event;
 }
 
-function outputEvent(
-  event: TerminalRunningChangedEvent | TerminalExitEvent | TerminalOutputEvent,
-): event is TerminalOutputEvent {
+function outputEvent(event: TerminalEvent): event is TerminalOutputEvent {
   return 'data' in event;
 }
 
@@ -315,6 +314,11 @@ function findExecFileCallback(args: unknown[]): MockExecFileCallback | null {
   );
 }
 
+// These tests exercise the callback result; the returned process handle is unused.
+function unusedExecFileChildProcess(): childProcess.ChildProcess {
+  return new EventEmitter() as unknown as childProcess.ChildProcess;
+}
+
 function setArch(arch: NodeJS.Architecture): () => void {
   const original = Object.getOwnPropertyDescriptor(process, 'arch');
   Object.defineProperty(process, 'arch', { configurable: true, value: arch });
@@ -340,14 +344,24 @@ function setPlatform(platform: NodeJS.Platform): () => void {
   };
 }
 
-describe('PtyManager', () => {
+describe('TerminalEngine on the desktop host', () => {
   it('contains a Windows input pipe EOF, exits only that terminal, and permits restart', () => {
     const restore = setPlatform('win32');
     createTaskkill();
     try {
       const { manager, ptys, events, persistenceStore } = createManager();
-      const first = manager.spawn('project', 'worktree', 80, 24);
-      const second = manager.spawn('project', 'worktree', 80, 24);
+      const first = manager.create({
+        projectId: 'project',
+        worktreeId: 'worktree',
+        cols: 80,
+        rows: 24,
+      });
+      const second = manager.create({
+        projectId: 'project',
+        worktreeId: 'worktree',
+        cols: 80,
+        rows: 24,
+      });
       const error = Object.assign(new Error('write EOF'), {
         code: 'EOF',
         syscall: 'write',
@@ -380,7 +394,9 @@ describe('PtyManager', () => {
       worktreeId: string,
       selectedRepoId?: string,
     ) => string;
-    getEnhancedEnvFn?: () => Record<string, string | undefined>;
+    getEnhancedEnvFn?: (options: {
+      environment: boolean;
+    }) => Record<string, string | undefined>;
     buildWorktreeDataEnvFn?: (
       projectId: string,
       worktreeId: string,
@@ -392,7 +408,7 @@ describe('PtyManager', () => {
     killExitGraceMs?: number;
     ptySpawnFailure?: Error;
   }): {
-    manager: PtyManager;
+    manager: TerminalEngine;
     ptys: MockPty[];
     spawnCalls: SpawnCall[];
     buildWorktreeEnvCalls: BuildWorktreeEnvCall[];
@@ -434,60 +450,80 @@ describe('PtyManager', () => {
       >((): PersistedTerminalEntry | null => null),
     };
 
-    const manager = new PtyManager({
-      createTerminalId: (): string => `term-${nextTerminalId++}`,
-      now,
-      ptySpawn,
-      resolveWorktreeCwdFn:
-        options?.resolveWorktreeCwdFn ??
-        ((
-          projectId: string,
-          worktreeId: string,
-          selectedRepoId?: string,
-        ): string => {
-          const basePath = `/worktrees/${projectId}/${worktreeId}`;
-          return selectedRepoId
-            ? `${basePath}/repos/${selectedRepoId}`
-            : basePath;
-        }),
-      buildWorktreeDataEnvFn:
-        options?.buildWorktreeDataEnvFn ??
-        ((
-          projectId: string,
-          worktreeId: string,
-          env?: NodeJS.ProcessEnv,
-          buildOptions?: unknown,
-        ): NodeJS.ProcessEnv => {
-          buildWorktreeEnvCalls.push({
-            projectId,
-            worktreeId,
-            env,
-            options: buildOptions,
-          });
-          return {
-            ...env,
-            CANOPY_WORKSPACE_ID: projectId,
-            CANOPY_WORKTREE_NAME: worktreeId,
-          };
-        }),
-      getEnhancedEnvFn:
-        options?.getEnhancedEnvFn ??
-        ((): Record<string, string | undefined> => ({
-          PATH: '/mock/bin:/usr/bin',
-        })),
-      runningDetector: {
-        syncLifecycle,
+    const getEnhancedEnvFn =
+      options?.getEnhancedEnvFn ??
+      ((): Record<string, string | undefined> => ({
+        PATH: '/mock/bin:/usr/bin',
+      }));
+    const buildWorktreeDataEnvFn =
+      options?.buildWorktreeDataEnvFn ??
+      ((
+        projectId: string,
+        worktreeId: string,
+        env?: NodeJS.ProcessEnv,
+        buildOptions?: unknown,
+      ): NodeJS.ProcessEnv => {
+        buildWorktreeEnvCalls.push({
+          projectId,
+          worktreeId,
+          env,
+          options: buildOptions,
+        });
+        return {
+          ...env,
+          CANOPY_WORKSPACE_ID: projectId,
+          CANOPY_WORKTREE_NAME: worktreeId,
+        };
+      });
+    const resolveWorktreeCwdFn =
+      options?.resolveWorktreeCwdFn ??
+      ((
+        projectId: string,
+        worktreeId: string,
+        selectedRepoId?: string,
+      ): string => {
+        const basePath = `/worktrees/${projectId}/${worktreeId}`;
+        return selectedRepoId
+          ? `${basePath}/repos/${selectedRepoId}`
+          : basePath;
+      });
+    const host = createDesktopTerminalHost();
+    const manager = createDesktopTerminalEngine({
+      host: {
+        pty: { spawn: ptySpawn },
+        environment: {
+          ...host.environment,
+          base: () => getEnhancedEnvFn({ environment: false }),
+          worktree: (projectId, worktreeId) =>
+            buildWorktreeDataEnvFn(projectId, worktreeId, undefined, {
+              runtime: 'canopy',
+            }),
+        },
+        workspace: {
+          ...host.workspace,
+          worktreeCwd: (...args) => resolveWorktreeCwdFn(...args),
+        },
+        persistence: persistenceStore,
       },
-      persistenceStore,
-      ...(options?.maxLiveTerminals !== undefined
-        ? { maxLiveTerminals: options.maxLiveTerminals }
-        : {}),
-      ...(options?.killExitGraceMs !== undefined
-        ? { killExitGraceMs: options.killExitGraceMs }
-        : {}),
+      options: {
+        createTerminalId: (): string => `term-${nextTerminalId++}`,
+        now,
+        runningDetector: {
+          syncLifecycle,
+        },
+        ...(options?.maxLiveTerminals !== undefined
+          ? { maxLiveTerminals: options.maxLiveTerminals }
+          : {}),
+        ...(options?.killExitGraceMs !== undefined
+          ? { killExitGraceMs: options.killExitGraceMs }
+          : {}),
+      },
     });
-    manager.setEventSender((channel, payload): void => {
-      events.push({ channel, payload });
+    manager.setEventSink((event): void => {
+      events.push({
+        channel: TERMINAL_EVENT_CHANNELS[event.type],
+        payload: event.payload,
+      });
     });
 
     return {
@@ -510,7 +546,7 @@ describe('PtyManager', () => {
     mockedExecFile.mockImplementation((...args) => {
       const callback = findExecFileCallback(args);
       callback?.(null, stdout, '');
-      return undefined;
+      return unusedExecFileChildProcess();
     });
   }
 
@@ -540,7 +576,12 @@ describe('PtyManager', () => {
       persistenceStore,
     } = createManager();
 
-    const session = manager.spawn('project-1', 'wt-1', 120, 30);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
     expect(session).toMatchObject({
       id: 'term-1',
@@ -593,17 +634,14 @@ describe('PtyManager', () => {
   it('owns the shell lifecycle for an initial command and reruns it after restore', async () => {
     const { manager, ptys, events, persistenceStore } = createManager();
     const command = "printf 'PRESET_OUTPUT_ONLY\\n'";
-    const session = manager.spawn(
-      'project-1',
-      'wt-1',
-      80,
-      24,
-      undefined,
-      undefined,
-      undefined,
-      'default',
-      command,
-    );
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+      profileId: 'default',
+      initialCommand: command,
+    });
     expect(session.initialCommand).toBe(command);
 
     ptys[0].emitData('MacBook-Pro:demo user$ ');
@@ -630,7 +668,7 @@ describe('PtyManager', () => {
       .map((entry) => entry.payload);
     expect(outputEvents.map(outputText)).toEqual(['PRESET_OUTPUT_ONLY\r\n']);
     expect(
-      Buffer.from(manager.attach(session.id).replay).toString('utf8'),
+      Buffer.from(manager.replay(session.id).replay).toString('utf8'),
     ).toBe('PRESET_OUTPUT_ONLY\r\n');
     expect(persistenceStore.appendTerminalOutput).toHaveBeenCalledTimes(1);
     expect(
@@ -654,7 +692,11 @@ describe('PtyManager', () => {
       signal: null,
     });
 
-    const restored = manager.restore(session.id, 80, 24);
+    const restored = manager.restore({
+      terminalId: session.id,
+      cols: 80,
+      rows: 24,
+    });
     expect(restored.id).toBe(session.id);
     expect(ptys).toHaveLength(2);
 
@@ -665,7 +707,7 @@ describe('PtyManager', () => {
     ptys[1].emitData(`${initialSubmission}\nPRESET_OUTPUT_ONLY\r\n`);
     await flushMicrotasks();
     const restoredReplay = Buffer.from(
-      manager.attach(restored.id).replay,
+      manager.replay(restored.id).replay,
     ).toString('utf8');
     expect(restoredReplay).toContain('PRESET_OUTPUT_ONLY');
     expect(restoredReplay).not.toContain(command);
@@ -675,17 +717,14 @@ describe('PtyManager', () => {
     const { manager, ptys } = createManager();
     const command = 'echo done # keep this note';
 
-    manager.spawn(
-      'project-1',
-      'wt-1',
-      80,
-      24,
-      undefined,
-      undefined,
-      undefined,
-      'default',
-      command,
-    );
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+      profileId: 'default',
+      initialCommand: command,
+    });
     ptys[0].emitData('MacBook-Pro:demo user$ ');
     await new Promise((resolve) => setTimeout(resolve, 150));
 
@@ -700,17 +739,14 @@ describe('PtyManager', () => {
       const { manager, ptys } = createManager();
       const command = "Write-Output 'done' # keep this note";
 
-      manager.spawn(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        undefined,
-        undefined,
-        undefined,
-        'default',
-        command,
-      );
+      manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+        profileId: 'default',
+        initialCommand: command,
+      });
       ptys[0].emitData('PS /tmp> ');
       await new Promise((resolve) => setTimeout(resolve, 150));
 
@@ -729,7 +765,12 @@ describe('PtyManager', () => {
 
   it('lowers the priority of a live PTY by terminal id', () => {
     const { manager, ptys } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 120, 30);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
     manager.lowerPriority(session.id);
 
@@ -746,16 +787,13 @@ describe('PtyManager', () => {
     try {
       const { manager, spawnCalls } = createManager();
 
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        120,
-        30,
-        undefined,
-        undefined,
-        undefined,
-        'bash',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 120,
+        rows: 30,
+        profileId: 'bash',
+      });
 
       expect(session.shell).toBe('/bin/bash');
       expect(session.shellBasename).toBe('bash');
@@ -781,16 +819,13 @@ describe('PtyManager', () => {
     try {
       const { manager, spawnCalls } = createManager();
 
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        120,
-        30,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 120,
+        rows: 30,
+        profileId: 'cmd',
+      });
 
       expect(session.shell).toBe('C:\\Windows\\System32\\cmd.exe');
       expect(session.shellBasename).toBe('cmd.exe');
@@ -814,17 +849,14 @@ describe('PtyManager', () => {
       const { manager, ptys } = createManager();
       const command = 'echo PRESET_OUTPUT_ONLY';
 
-      manager.spawn(
-        'project-1',
-        'wt-1',
-        120,
-        30,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-        command,
-      );
+      manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 120,
+        rows: 30,
+        profileId: 'cmd',
+        initialCommand: command,
+      });
       ptys[0].emitData('C:\\worktrees\\project-1>');
       await new Promise((resolve) => setTimeout(resolve, 150));
 
@@ -844,7 +876,7 @@ describe('PtyManager', () => {
     const originalComSpec = process.env.ComSpec;
     process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
     try {
-      const profiles = listAvailableTerminalProfiles();
+      const profiles = desktopTerminalShells.listProfiles();
 
       const commandPromptProfile = profiles.find(
         (profile) => profile.id === 'cmd',
@@ -870,16 +902,13 @@ describe('PtyManager', () => {
     try {
       const { manager, spawnCalls } = createManager();
 
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        120,
-        30,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 120,
+        rows: 30,
+        profileId: 'cmd',
+      });
 
       expect(session.shell).toBe('C:\\Windows\\System32\\cmd.exe');
       expect(session.shellBasename).toBe('cmd.exe');
@@ -900,7 +929,7 @@ describe('PtyManager', () => {
     const originalShell = process.env.SHELL;
     process.env.SHELL = '/opt/homebrew/bin/fish';
     try {
-      const profiles = listAvailableTerminalProfiles();
+      const profiles = desktopTerminalShells.listProfiles();
 
       expect(profiles[0]).toEqual({
         id: 'default',
@@ -931,7 +960,12 @@ describe('PtyManager', () => {
       getEnhancedEnvFn,
     });
 
-    manager.spawn('project-1', 'wt-1', 120, 30);
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
     expect(getEnhancedEnvFn).toHaveBeenCalledWith({ environment: false });
     expect(buildWorktreeEnvCalls).toEqual([
@@ -961,7 +995,12 @@ describe('PtyManager', () => {
       }),
     });
 
-    manager.spawn('project-1', 'wt-1', 120, 30);
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
     expect(spawnCalls[0].options.env).toMatchObject({
       PATH: '/runtime/bin',
@@ -995,14 +1034,13 @@ describe('PtyManager', () => {
       sessionKey: 'session',
     };
 
-    const session = manager.spawn(
-      'project-1',
-      'wt-1',
-      120,
-      30,
-      undefined,
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
       managedCommand,
-    );
+    });
 
     expect(session).toMatchObject({
       kind: 'claude-code',
@@ -1037,14 +1075,13 @@ describe('PtyManager', () => {
       focusOnSpawn: true,
     };
 
-    const session = manager.spawn(
-      'project-1',
-      'wt-1',
-      120,
-      30,
-      undefined,
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
       managedCommand,
-    );
+    });
 
     expect(session.focusOnSpawn).toBe(true);
     expect(events).toContainEqual({
@@ -1067,7 +1104,13 @@ describe('PtyManager', () => {
       kind: 'claude-code',
     };
 
-    manager.spawn('project-1', 'wt-1', 120, 30, undefined, managedCommand);
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+      managedCommand,
+    });
 
     const env = spawnCalls[0].options.env as Record<string, string | undefined>;
     expect(env.PATH).toBe(
@@ -1107,7 +1150,13 @@ describe('PtyManager', () => {
       sessionKey: 'session',
     };
 
-    manager.spawn('project-1', 'wt-1', 120, 30, undefined, managedCommand);
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+      managedCommand,
+    });
 
     const env = spawnCalls[0].options.env as Record<string, string | undefined>;
     expect(env.PATH).toBe('/runtime/bin');
@@ -1123,7 +1172,12 @@ describe('PtyManager', () => {
 
   it('normalizes PTY signal 0 to null on clean exits', () => {
     const { manager, ptys, events, persistenceStore } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 120, 30);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
     ptys[0].emitExit(0, 0);
 
@@ -1149,7 +1203,12 @@ describe('PtyManager', () => {
 
   it('disposes PTY listeners and streams when a terminal exits', () => {
     const { manager, ptys } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 120, 30);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
     expect(manager.getLiveTerminalCount()).toBe(1);
 
@@ -1166,7 +1225,12 @@ describe('PtyManager', () => {
     mockRegisterResource.mockClear();
     mockUnregisterResource.mockClear();
     const { manager, ptys } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 120, 30);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
     expect(mockRegisterResource).toHaveBeenCalledWith({
       id: `terminal:${session.id}`,
@@ -1190,7 +1254,12 @@ describe('PtyManager', () => {
       const { manager, ptys, events, persistenceStore } = createManager({
         killExitGraceMs: 25,
       });
-      const session = manager.spawn('project-1', 'wt-1', 120, 30);
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 120,
+        rows: 30,
+      });
       jest
         .spyOn(ptys[0], 'kill')
         .mockImplementation((signal?: string): void => {
@@ -1233,11 +1302,21 @@ describe('PtyManager', () => {
   it('refuses to spawn beyond the live terminal cap and tears down the rejected PTY', () => {
     const { manager, ptys } = createManager({ maxLiveTerminals: 1 });
 
-    manager.spawn('project-1', 'wt-1', 120, 30);
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 30,
+    });
 
-    expect(() => manager.spawn('project-1', 'wt-1', 120, 30)).toThrow(
-      'ERR_TERMINAL_CAPACITY',
-    );
+    expect(() =>
+      manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 120,
+        rows: 30,
+      }),
+    ).toThrow('ERR_TERMINAL_CAPACITY');
     expect(manager.getLiveTerminalCount()).toBe(1);
     expect(ptys).toHaveLength(2);
     expect(ptys[1].killSignals).toEqual([undefined]);
@@ -1250,7 +1329,12 @@ describe('PtyManager', () => {
 
     try {
       const { manager, ptys } = createManager();
-      const session = manager.spawn('project-1', 'wt-1', 80, 24);
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+      });
 
       manager.kill(session.id);
       taskkill.emit('exit', 0, null);
@@ -1274,7 +1358,12 @@ describe('PtyManager', () => {
 
     try {
       const { manager, ptys } = createManager();
-      const session = manager.spawn('project-1', 'wt-1', 80, 24);
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+      });
 
       manager.kill(session.id);
       // The kill returns while taskkill is still walking the tree.
@@ -1293,7 +1382,12 @@ describe('PtyManager', () => {
 
     try {
       const { manager, ptys } = createManager();
-      const session = manager.spawn('project-1', 'wt-1', 80, 24);
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+      });
       jest.spyOn(ptys[0], 'kill').mockImplementation(() => {
         throw new Error('already gone');
       });
@@ -1311,7 +1405,12 @@ describe('PtyManager', () => {
 
     try {
       const { manager } = createManager();
-      const session = manager.spawn('project-1', 'wt-1', 80, 24);
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+      });
 
       manager.kill(session.id);
 
@@ -1328,7 +1427,12 @@ describe('PtyManager', () => {
     try {
       const { manager, spawnCalls } = createManager();
 
-      manager.spawn('project-1', 'wt-1', 80, 24);
+      manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+      });
 
       expect(spawnCalls[0].options).toMatchObject({
         useConpty: true,
@@ -1341,7 +1445,13 @@ describe('PtyManager', () => {
   it('spawns a PTY in the selected repo cwd', () => {
     const { manager, spawnCalls } = createManager();
 
-    const session = manager.spawn('workspace-1', 'wt-1', 80, 24, 'frontend');
+    const session = manager.create({
+      projectId: 'workspace-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+      repoId: 'frontend',
+    });
 
     expect(session.cwd).toBe('/worktrees/workspace-1/wt-1/repos/frontend');
     expect(spawnCalls).toHaveLength(1);
@@ -1352,7 +1462,12 @@ describe('PtyManager', () => {
 
   it('microtask-coalesces output frames and keeps seq monotonic', async () => {
     const { manager, ptys, events, persistenceStore } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].emitData('hello ');
     ptys[0].emitData('world');
@@ -1386,7 +1501,7 @@ describe('PtyManager', () => {
 
     expect(nextOutputEvents).toHaveLength(2);
     expect(nextOutputEvents[1].seq).toBe(Buffer.byteLength('hello world!'));
-    expect(manager.attach(session.id).seq).toBe(
+    expect(manager.replay(session.id).seq).toBe(
       Buffer.byteLength('hello world!'),
     );
     expect(persistenceStore.appendTerminalOutput).toHaveBeenNthCalledWith(
@@ -1400,7 +1515,12 @@ describe('PtyManager', () => {
 
   it('flushes immediately once the queued output reaches the threshold', () => {
     const { manager, ptys, events } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].emitData('a'.repeat(TERMINAL_FLUSH_THRESHOLD_BYTES));
 
@@ -1419,7 +1539,12 @@ describe('PtyManager', () => {
 
   it('drops over-cap queued output and emits a truncation marker', () => {
     const { manager, ptys, events, persistenceStore } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].emitData('a'.repeat(TERMINAL_MAX_UNFLUSHED_BYTES + 1));
 
@@ -1436,7 +1561,7 @@ describe('PtyManager', () => {
       '\r\n\x1b[33m[output truncated]\x1b[0m\r\n',
     );
 
-    const attachment = manager.attach(session.id);
+    const attachment = manager.replay(session.id);
     expect(Buffer.from(attachment.replay).toString('utf8')).toBe(
       '\r\n\x1b[33m[output truncated]\x1b[0m\r\n',
     );
@@ -1453,7 +1578,12 @@ describe('PtyManager', () => {
 
   it('flushes queued bytes before truncating an over-cap chunk', () => {
     const { manager, ptys, events } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].emitData('queued');
     ptys[0].emitData('a'.repeat(TERMINAL_MAX_UNFLUSHED_BYTES));
@@ -1477,21 +1607,56 @@ describe('PtyManager', () => {
         Buffer.byteLength('\r\n\x1b[33m[output truncated]\x1b[0m\r\n'),
     );
 
-    const attachment = manager.attach(session.id);
+    const attachment = manager.replay(session.id);
     expect(Buffer.from(attachment.replay).toString('utf8')).toBe(
       `queued\r\n\x1b[33m[output truncated]\x1b[0m\r\n`,
     );
     expect(attachment.seq).toBe(outputEvents[1].seq);
   });
 
+  it('delivers a PTY chunk larger than the replay window to a live attachment', () => {
+    const { manager, ptys } = createManager();
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
+    const items: TerminalAttachmentItem[] = [];
+    const { attachmentId } = manager.attach({
+      terminalId: session.id,
+      fromOffset: 0,
+      sink: {
+        item: (item): void => {
+          items.push(item);
+          manager.acknowledgeAttachment(attachmentId, item.toOffset);
+        },
+        end: (): void => {},
+      },
+    });
+    const oversized = 'z'.repeat(TERMINAL_REPLAY_BUFFER_MAX_BYTES + 45_056);
+
+    ptys[0].emitData(oversized);
+
+    expect(
+      items.map((item) => Buffer.from(item.data).toString('utf8')).join(''),
+    ).toBe(oversized);
+    expect(items.some((item) => item.truncatedBefore)).toBe(false);
+  });
+
   it('maintains a rolling replay buffer for attach responses', () => {
     const { manager, ptys } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
     const oversized = 'x'.repeat(TERMINAL_REPLAY_BUFFER_MAX_BYTES + 64);
 
     ptys[0].emitData(oversized);
 
-    const attachment = manager.attach(session.id);
+    const attachment = manager.replay(session.id);
 
     expect(attachment.replay.byteLength).toBe(TERMINAL_REPLAY_BUFFER_MAX_BYTES);
     expect(Buffer.from(attachment.replay).toString('utf8')).toBe(
@@ -1502,7 +1667,12 @@ describe('PtyManager', () => {
 
   it('emits current running-state snapshots when list is requested', async () => {
     const { manager, ptys, events } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].process = 'sleep';
     manager.list();
@@ -1529,16 +1699,13 @@ describe('PtyManager', () => {
 
     try {
       const { manager, ptys, events } = createManager();
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+        profileId: 'cmd',
+      });
 
       ptys[0].process = 'xterm-256color';
       manager.list();
@@ -1569,13 +1736,13 @@ describe('PtyManager', () => {
     const restorePlatform = setPlatform('win32');
     const originalComSpec = process.env.ComSpec;
     process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
-    let completeProbe: ((stdout: string) => void) | null = null;
+    const completeProbes: Array<(stdout: string) => void> = [];
     mockedExecFile.mockImplementation((...args) => {
       const callback = findExecFileCallback(args);
-      completeProbe = (stdout: string): void => {
+      completeProbes.push((stdout: string): void => {
         callback?.(null, stdout, '');
-      };
-      return undefined;
+      });
+      return unusedExecFileChildProcess();
     });
 
     let currentTime = 10_000;
@@ -1583,16 +1750,13 @@ describe('PtyManager', () => {
       const { manager, ptys, events } = createManager({
         now: (): number => currentTime,
       });
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+        profileId: 'cmd',
+      });
       ptys[0].process = 'xterm-256color';
 
       manager.list();
@@ -1618,7 +1782,7 @@ describe('PtyManager', () => {
 
       expect(mockedExecFile).toHaveBeenCalledTimes(1);
 
-      completeProbe?.('cmd.exe\r\nnode.exe\r\n');
+      completeProbes[0]?.('cmd.exe\r\nnode.exe\r\n');
       await flushMicrotasks();
 
       events.length = 0;
@@ -1655,16 +1819,13 @@ describe('PtyManager', () => {
 
     try {
       const { manager, ptys, events } = createManager();
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+        profileId: 'cmd',
+      });
 
       ptys[0].process = 'xterm-256color';
       manager.list();
@@ -1702,16 +1863,13 @@ describe('PtyManager', () => {
       const { manager, ptys, events } = createManager({
         now: (): number => currentTime,
       });
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+        profileId: 'cmd',
+      });
       ptys[0].process = 'xterm-256color';
 
       manager.write(session.id, 'dir\r');
@@ -1798,16 +1956,13 @@ describe('PtyManager', () => {
 
     try {
       const { manager, ptys, events } = createManager();
-      const session = manager.spawn(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        undefined,
-        undefined,
-        undefined,
-        'cmd',
-      );
+      const session = manager.create({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+        profileId: 'cmd',
+      });
       session.shellBasename = 'bash.exe';
       ptys[0].process = 'xterm-256color';
 
@@ -1838,8 +1993,18 @@ describe('PtyManager', () => {
 
   it('re-emits current running snapshots when listing live terminals', async () => {
     const { manager, ptys, events } = createManager();
-    const first = manager.spawn('project-1', 'wt-1', 80, 24);
-    const second = manager.spawn('project-1', 'wt-2', 80, 24);
+    const first = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
+    const second = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-2',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].process = 'sleep';
     ptys[1].process = expectedShellBasename();
@@ -1893,7 +2058,12 @@ describe('PtyManager', () => {
 
   it('marks the next idle transition after Ctrl+C as user-interrupted', () => {
     const { manager, events } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
     manager.setTerminalStatus(session.id, true, 'sleep');
     events.length = 0;
 
@@ -1917,7 +2087,12 @@ describe('PtyManager', () => {
   it('does not mark delayed idle transitions as user-interrupted', () => {
     let nowMs = 10_000;
     const { manager, events } = createManager({ now: (): number => nowMs });
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
     manager.setTerminalStatus(session.id, true, 'sleep');
     events.length = 0;
 
@@ -1941,7 +2116,12 @@ describe('PtyManager', () => {
   it('does not carry Ctrl+C suppression into the next foreground process', () => {
     let nowMs = 10_000;
     const { manager, events } = createManager({ now: (): number => nowMs });
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
     manager.setTerminalStatus(session.id, true, 'sleep');
     events.length = 0;
 
@@ -1975,13 +2155,28 @@ describe('PtyManager', () => {
 
   it('kills only terminals owned by the requested worktree', () => {
     const { manager, ptys } = createManager();
-    manager.spawn('project-1', 'wt-1', 80, 24);
-    manager.spawn('project-1', 'wt-2', 80, 24);
-    manager.spawn('project-2', 'wt-1', 80, 24);
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-2',
+      cols: 80,
+      rows: 24,
+    });
+    manager.create({
+      projectId: 'project-2',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     const killSpies = ptys.map((pty) => jest.spyOn(pty, 'kill'));
 
-    manager.killWorktreeTerminals('project-1', 'wt-1');
+    manager.killWorktree({ projectId: 'project-1', worktreeId: 'wt-1' });
 
     expect(killSpies[0]).toHaveBeenCalledTimes(1);
     expect(killSpies[1]).not.toHaveBeenCalled();
@@ -1990,23 +2185,45 @@ describe('PtyManager', () => {
 
   it('drains native worktree terminal groups before completing archive cleanup', async () => {
     const { manager, ptys } = createManager();
-    manager.spawn('project-1', 'wt-1', 80, 24);
-    manager.spawn('project-1', 'wt-2', 80, 24);
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-2',
+      cols: 80,
+      rows: 24,
+    });
     processKillSpy.mockImplementation((_pid, signal) => {
       if (signal === 0)
         throw Object.assign(new Error('gone'), { code: 'ESRCH' });
       return true;
     });
-    await manager.drainWorktreeTerminals('project-1', 'wt-1');
+    await manager.releaseWorktree({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+    });
     expect(processKillSpy).toHaveBeenCalledWith(-ptys[0].pid, 'SIGKILL');
     expect(processKillSpy).not.toHaveBeenCalledWith(-ptys[1].pid, 'SIGKILL');
-    expect(manager.hasWorktreeTerminals('project-1', 'wt-1')).toBe(false);
-    expect(manager.hasWorktreeTerminals('project-1', 'wt-2')).toBe(true);
+    expect(
+      manager.hasLiveTerminals({ projectId: 'project-1', worktreeId: 'wt-1' }),
+    ).toBe(false);
+    expect(
+      manager.hasLiveTerminals({ projectId: 'project-1', worktreeId: 'wt-2' }),
+    ).toBe(true);
   });
 
   it('treats kill as a no-op once the terminal has already exited', () => {
     const { manager, ptys } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].emitExit(0);
 
@@ -2018,12 +2235,17 @@ describe('PtyManager', () => {
 
   it('emits a provided kill signal override for Canopy-managed cleanup', () => {
     const { manager, events, persistenceStore } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
     manager.setTerminalStatus(session.id, true, 'claude');
     events.length = 0;
 
     manager.kill(session.id, {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
 
     expect(events).toContainEqual({
@@ -2048,6 +2270,7 @@ describe('PtyManager', () => {
       events.some(
         (event): boolean =>
           event.channel === IPC_CHANNELS.terminalRunningChanged &&
+          runningEvent(event.payload) &&
           event.payload.terminalId === session.id,
       ),
     ).toBe(false);
@@ -2055,12 +2278,22 @@ describe('PtyManager', () => {
 
   it('marks worktree cleanup exits as intentional', () => {
     const { manager, events, persistenceStore } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
-    manager.spawn('project-1', 'wt-2', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
+    manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-2',
+      cols: 80,
+      rows: 24,
+    });
     manager.setTerminalStatus(session.id, true, 'sleep');
     events.length = 0;
 
-    manager.killWorktreeTerminals('project-1', 'wt-1');
+    manager.killWorktree({ projectId: 'project-1', worktreeId: 'wt-1' });
 
     expect(events).toContainEqual({
       channel: IPC_CHANNELS.terminalExit,
@@ -2077,6 +2310,7 @@ describe('PtyManager', () => {
       events.some(
         (event): boolean =>
           event.channel === IPC_CHANNELS.terminalRunningChanged &&
+          runningEvent(event.payload) &&
           event.payload.terminalId === session.id,
       ),
     ).toBe(false);
@@ -2098,7 +2332,12 @@ describe('PtyManager', () => {
 
   it('treats write and resize as no-ops once the terminal has exited', () => {
     const { manager, ptys } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
 
     ptys[0].emitExit(0);
 
@@ -2128,7 +2367,7 @@ describe('PtyManager', () => {
       signal: null,
     });
 
-    expect(manager.attach('historical')).toEqual({
+    expect(manager.replay('historical')).toEqual({
       session: {
         id: 'historical',
         projectId: 'project-1',
@@ -2178,7 +2417,11 @@ describe('PtyManager', () => {
         signal: 'app-quit',
       });
 
-      const session = manager.restore('historical', 100, 40);
+      const session = manager.restore({
+        terminalId: 'historical',
+        cols: 100,
+        rows: 40,
+      });
 
       expect(session.id).toBe('historical');
       expect(ptys).toHaveLength(1);
@@ -2196,7 +2439,7 @@ describe('PtyManager', () => {
         expect.any(Buffer),
       );
 
-      const attach = manager.attach('historical');
+      const attach = manager.replay('historical');
       const replayText = Buffer.from(attach.replay).toString('utf8');
       expect(replayText).toContain('previous output');
       expect(replayText).toContain('Terminal restarted');
@@ -2222,11 +2465,15 @@ describe('PtyManager', () => {
           signal,
         });
 
-        const session = manager.restore('historical', 100, 40);
+        const session = manager.restore({
+          terminalId: 'historical',
+          cols: 100,
+          rows: 40,
+        });
 
         expect(session.id).toBe('historical');
         const replayText = Buffer.from(
-          manager.attach('historical').replay,
+          manager.replay('historical').replay,
         ).toString('utf8');
         expect(replayText).toContain('completed command output');
         expect(replayText).toContain('Terminal restarted');
@@ -2251,9 +2498,9 @@ describe('PtyManager', () => {
         signal: TERMINAL_WORKTREE_CLEANUP_SIGNAL,
       });
 
-      expect(() => manager.restore('historical', 100, 40)).toThrow(
-        'Terminal is not restorable: historical',
-      );
+      expect(() =>
+        manager.restore({ terminalId: 'historical', cols: 100, rows: 40 }),
+      ).toThrow('Terminal is not restorable: historical');
       expect(ptys).toHaveLength(0);
     });
 
@@ -2279,7 +2526,11 @@ describe('PtyManager', () => {
           signal: 'app-quit',
         });
 
-        const session = manager.restore('historical', 100, 40);
+        const session = manager.restore({
+          terminalId: 'historical',
+          cols: 100,
+          rows: 40,
+        });
 
         expect(session.shell).toBe('/bin/bash');
         expect(session.shellBasename).toBe('bash');
@@ -2297,7 +2548,7 @@ describe('PtyManager', () => {
       }
     });
 
-    it('returns the full persisted replay on the first attach after restore', () => {
+    it('returns the full persisted replay on every attach after restore', () => {
       const { manager, persistenceStore } = createManager();
       const persistedReplay = 'x'.repeat(
         TERMINAL_REPLAY_BUFFER_MAX_BYTES + 512,
@@ -2318,18 +2569,16 @@ describe('PtyManager', () => {
         signal: 'app-quit',
       });
 
-      manager.restore('historical', 100, 40);
+      manager.restore({ terminalId: 'historical', cols: 100, rows: 40 });
 
-      const firstAttach = manager.attach('historical');
+      const firstAttach = manager.replay('historical');
       const firstReplayText = Buffer.from(firstAttach.replay).toString('utf8');
       expect(firstReplayText).toContain(persistedReplay);
       expect(firstReplayText).toContain('Terminal restarted');
       expect(firstAttach.seq).toBe(Buffer.byteLength(firstReplayText, 'utf8'));
 
-      const secondAttach = manager.attach('historical');
-      expect(secondAttach.replay.length).toBeLessThanOrEqual(
-        TERMINAL_REPLAY_BUFFER_MAX_BYTES,
-      );
+      const secondAttach = manager.replay('historical');
+      expect(secondAttach.replay).toEqual(firstAttach.replay);
       expect(secondAttach.seq).toBe(firstAttach.seq);
     });
 
@@ -2368,7 +2617,11 @@ describe('PtyManager', () => {
           signal: 'app-quit',
         });
 
-        const session = manager.restore('historical', 100, 40);
+        const session = manager.restore({
+          terminalId: 'historical',
+          cols: 100,
+          rows: 40,
+        });
 
         expect(session.cwd).toBe(persistedCwd);
         expect(spawnCalls).toHaveLength(1);
@@ -2406,7 +2659,11 @@ describe('PtyManager', () => {
           signal: 'app-quit',
         });
 
-        const session = manager.restore('historical', 100, 40);
+        const session = manager.restore({
+          terminalId: 'historical',
+          cols: 100,
+          rows: 40,
+        });
 
         expect(session.cwd).toBe(worktreeRoot);
         expect(spawnCalls).toHaveLength(1);
@@ -2420,7 +2677,12 @@ describe('PtyManager', () => {
   it('tries to kill the entire process group before falling back to pty.kill', () => {
     processKillSpy.mockImplementation(() => true);
     const { manager, ptys } = createManager();
-    const session = manager.spawn('project-1', 'wt-1', 80, 24);
+    const session = manager.create({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    });
     const actualPtyKillSpy = jest.spyOn(ptys[0], 'kill');
 
     manager.kill(session.id);
@@ -2430,423 +2692,460 @@ describe('PtyManager', () => {
     actualPtyKillSpy.mockRestore();
   });
 
-  describe('Linux x64 terminal shell resolution', () => {
-    let restorePlatform: () => void;
-    let restoreArch: () => void;
-    let originalShell: string | undefined;
+  describe.each<NodeJS.Architecture>(['x64', 'arm64'])(
+    'Linux %s terminal shell resolution',
+    (arch) => {
+      let restorePlatform: () => void;
+      let restoreArch: () => void;
+      let originalShell: string | undefined;
 
-    const SYSTEM_BASH: VirtualFsEntries = { '/bin/bash': 'exec' };
-    const uid = String(process.getuid?.() ?? 1000);
+      const SYSTEM_BASH: VirtualFsEntries = { '/bin/bash': 'exec' };
+      const uid = String(process.getuid?.() ?? 1000);
 
-    function setShell(value: string | undefined): void {
-      if (value === undefined) delete process.env.SHELL;
-      else process.env.SHELL = value;
-    }
+      function setShell(value: string | undefined): void {
+        if (value === undefined) delete process.env.SHELL;
+        else process.env.SHELL = value;
+      }
 
-    function mockAccountShell(output: string | Error | null): void {
-      mockedExecFile.mockImplementation((...args) => {
-        const callback = findExecFileCallback(args);
-        if (output === null || output instanceof Error) {
-          callback?.(output ?? new Error('Command timed out'), '', '');
-        } else {
-          callback?.(null, output, '');
-        }
-        return undefined;
+      function mockAccountShell(output: string | Error | null): void {
+        mockedExecFile.mockImplementation((...args) => {
+          const callback = findExecFileCallback(args);
+          if (output === null || output instanceof Error) {
+            callback?.(output ?? new Error('Command timed out'), '', '');
+          } else {
+            callback?.(null, output, '');
+          }
+          return unusedExecFileChildProcess();
+        });
+      }
+
+      function accountLookups(): unknown[][] {
+        return mockedExecFile.mock.calls.filter(
+          (call) => call[0] === '/usr/bin/getent',
+        );
+      }
+
+      function passwd(shell: string, fields = 7, entryUid = uid): string {
+        return ['user', 'x', entryUid, '1000', 'User', '/home/user', shell]
+          .slice(0, fields)
+          .join(':');
+      }
+
+      beforeEach(() => {
+        restorePlatform = setPlatform('linux');
+        restoreArch = setArch(arch);
+        originalShell = process.env.SHELL;
+        desktopTerminalShells.resetForTests();
+        virtualFs.entries = { ...SYSTEM_BASH };
+        mockAccountShell(null);
       });
-    }
 
-    function accountLookups(): unknown[][] {
-      return mockedExecFile.mock.calls.filter(
-        (call) => call[0] === '/usr/bin/getent',
-      );
-    }
+      afterEach(() => {
+        virtualFs.entries = null;
+        setShell(originalShell);
+        restoreArch();
+        restorePlatform();
+      });
 
-    function passwd(shell: string, fields = 7, entryUid = uid): string {
-      return ['user', 'x', entryUid, '1000', 'User', '/home/user', shell]
-        .slice(0, fields)
-        .join(':');
-    }
+      function spawnDefault(): TerminalSession & { spawnCalls: SpawnCall[] } {
+        const { manager, spawnCalls } = createManager();
+        return {
+          ...manager.create({
+            projectId: 'project-1',
+            worktreeId: 'wt-1',
+            cols: 80,
+            rows: 24,
+          }),
+          spawnCalls,
+        };
+      }
 
-    beforeEach(() => {
-      restorePlatform = setPlatform('linux');
-      restoreArch = setArch('x64');
-      originalShell = process.env.SHELL;
-      resetLinuxTerminalShellLookupForTests();
-      virtualFs.entries = { ...SYSTEM_BASH };
-      mockAccountShell(null);
-    });
-
-    afterEach(() => {
-      virtualFs.entries = null;
-      setShell(originalShell);
-      restoreArch();
-      restorePlatform();
-    });
-
-    function spawnDefault(): TerminalSession & { spawnCalls: SpawnCall[] } {
-      const { manager, spawnCalls } = createManager();
-      return { ...manager.spawn('project-1', 'wt-1', 80, 24), spawnCalls };
-    }
-
-    function spawnProfile(
-      manager: PtyManager,
-      profile: 'zsh' | 'bash',
-    ): TerminalSession {
-      return manager.spawn(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        undefined,
-        undefined,
-        undefined,
-        profile,
-      );
-    }
-
-    function persistShell(
-      persistenceStore: MockPersistenceStore,
-      shell: string,
-    ): void {
-      persistenceStore.getPersistedTerminalEntry.mockReturnValue({
-        session: {
-          id: 'historical',
+      function spawnProfile(
+        manager: TerminalEngine,
+        profile: 'zsh' | 'bash',
+      ): TerminalSession {
+        return manager.create({
           projectId: 'project-1',
           worktreeId: 'wt-1',
-          shell,
-          shellBasename: basename(shell),
-          cwd: '/worktrees/project-1/wt-1',
-          createdAt: 10_000,
-        },
-        scrollbackLines: ['previous output'],
-        exitCode: null,
-        signal: 'app-quit',
-      });
-    }
+          cols: 80,
+          rows: 24,
+          profileId: profile,
+        });
+      }
 
-    it("launches a user's Fish default through the login shell argument and labels it", () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
-      setShell('/usr/bin/fish');
+      function persistShell(
+        persistenceStore: MockPersistenceStore,
+        shell: string,
+      ): void {
+        persistenceStore.getPersistedTerminalEntry.mockReturnValue({
+          session: {
+            id: 'historical',
+            projectId: 'project-1',
+            worktreeId: 'wt-1',
+            shell,
+            shellBasename: basename(shell),
+            cwd: '/worktrees/project-1/wt-1',
+            createdAt: 10_000,
+          },
+          scrollbackLines: ['previous output'],
+          exitCode: null,
+          signal: 'app-quit',
+        });
+      }
 
-      const session = spawnDefault();
-
-      expect(session).toMatchObject({
-        shell: '/usr/bin/fish',
-        shellBasename: 'fish',
-      });
-      expect(session.spawnCalls[0]).toMatchObject({
-        file: '/usr/bin/fish',
-        args: ['-l'],
-      });
-      expect(accountLookups()).toHaveLength(0);
-    });
-
-    it.each([
-      ['unset', undefined],
-      ['empty', ''],
-      ['whitespace-only', '  \t '],
-    ])(
-      'uses a bounded, asynchronous account lookup when SHELL is %s',
-      async (_label, value) => {
+      it("launches a user's Fish default through the login shell argument and labels it", () => {
         virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
-        setShell(value);
-        mockAccountShell(`${passwd('/usr/bin/fish')}\n`);
-
-        await prewarmLinuxTerminalShell();
-        const session = spawnDefault();
-
-        expect(session.shell).toBe('/usr/bin/fish');
-        expect(accountLookups()).toEqual([
-          [
-            '/usr/bin/getent',
-            ['passwd', uid],
-            expect.objectContaining({
-              timeout: 1000,
-              killSignal: 'SIGKILL',
-              maxBuffer: 16 * 1024,
-            }),
-            expect.any(Function),
-          ],
-        ]);
-      },
-    );
-
-    it('never runs the account lookup inside a synchronous spawn', async () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
-      setShell(undefined);
-      mockAccountShell(`${passwd('/usr/bin/fish')}\n`);
-
-      // Cold cache: validated Bash now, the lookup only starts in the background.
-      const cold = spawnDefault();
-      expect(cold.shell).toBe('/bin/bash');
-      expect(mockedSpawnSync).not.toHaveBeenCalled();
-
-      await prewarmLinuxTerminalShell();
-      expect(spawnDefault().shell).toBe('/usr/bin/fish');
-      expect(accountLookups()).toHaveLength(1);
-    });
-
-    it('does not look anything up when SHELL is already usable', async () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
-      setShell('/usr/bin/fish');
-
-      await prewarmLinuxTerminalShell();
-
-      expect(accountLookups()).toHaveLength(0);
-    });
-
-    it('shares one in-flight lookup and ignores a lookup finished after a reset', async () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
-      setShell(undefined);
-      const callbacks: MockExecFileCallback[] = [];
-      mockedExecFile.mockImplementation((...args) => {
-        const callback = findExecFileCallback(args);
-        if (callback) callbacks.push(callback);
-        return undefined;
-      });
-
-      const first = prewarmLinuxTerminalShell();
-      const second = prewarmLinuxTerminalShell();
-      expect(accountLookups()).toHaveLength(1);
-
-      resetLinuxTerminalShellLookupForTests();
-      callbacks[0](null, `${passwd('/usr/bin/fish')}\n`, '');
-      await Promise.all([first, second]);
-
-      // The superseded result was dropped, so the default is still Bash.
-      expect(spawnDefault().shell).toBe('/bin/bash');
-    });
-
-    it.each<[string, VirtualFsEntries, string]>([
-      ['nonexistent', {}, '/opt/gone/fish'],
-      ['non-executable', { '/usr/bin/fish': 'plain' }, '/usr/bin/fish'],
-      ['a directory', { '/usr/bin/fish': 'dir' }, '/usr/bin/fish'],
-      ['a relative path', {}, 'fish'],
-      [
-        'an unsupported shell',
-        { '/usr/sbin/nologin': 'exec' },
-        '/usr/sbin/nologin',
-      ],
-      ['an unqualified shell', { '/usr/bin/tcsh': 'exec' }, '/usr/bin/tcsh'],
-    ])(
-      'falls back to validated Bash when SHELL is %s',
-      (_label, extra, shell) => {
-        virtualFs.entries = { ...SYSTEM_BASH, ...extra };
-        setShell(shell);
+        setShell('/usr/bin/fish');
 
         const session = spawnDefault();
 
         expect(session).toMatchObject({
-          shell: '/bin/bash',
-          shellBasename: 'bash',
+          shell: '/usr/bin/fish',
+          shellBasename: 'fish',
         });
-        expect(session.spawnCalls[0].args).toEqual(['-l']);
-      },
-    );
-
-    it('prefers the account shell when SHELL is stale', async () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/zsh': 'exec' };
-      setShell('/opt/removed/fish');
-      mockAccountShell(`${passwd('/usr/bin/zsh')}\n`);
-
-      await prewarmLinuxTerminalShell();
-      expect(spawnDefault().shell).toBe('/usr/bin/zsh');
-    });
-
-    it.each([
-      ['an error', new Error('spawn /usr/bin/getent ENOENT')],
-      ['a timeout', null],
-      [
-        'several records',
-        `${passwd('/usr/bin/fish')}\n${passwd('/bin/zsh')}\n`,
-      ],
-      ['a malformed record', `${passwd('/usr/bin/fish', 6)}\n`],
-      ['another user id', `${passwd('/usr/bin/fish', 7, '0')}\n`],
-      ['startup noise instead of a record', 'motd: welcome\n'],
-      ['an unusable account shell', `${passwd('/usr/bin/fish')}\n`],
-    ])(
-      'falls back to Bash after account lookup returns %s',
-      async (_label, output) => {
-        setShell(undefined);
-        mockAccountShell(output);
-
-        await prewarmLinuxTerminalShell();
-        const session = spawnDefault();
-
-        expect(session.shell).toBe('/bin/bash');
-        expect(accountLookups()).toHaveLength(1);
-      },
-    );
-
-    it('does not repeat a failed account lookup on every spawn', async () => {
-      setShell(undefined);
-      mockAccountShell(new Error('spawn /usr/bin/getent ENOENT'));
-      const { manager } = createManager();
-
-      await prewarmLinuxTerminalShell();
-      manager.spawn('project-1', 'wt-1', 80, 24);
-      await prewarmLinuxTerminalShell();
-      manager.spawn('project-1', 'wt-1', 80, 24);
-
-      expect(accountLookups()).toHaveLength(1);
-    });
-
-    it('uses /usr/bin/bash when /bin/bash is absent', () => {
-      virtualFs.entries = { '/usr/bin/bash': 'exec' };
-      setShell(undefined);
-
-      expect(spawnDefault().shell).toBe('/usr/bin/bash');
-    });
-
-    it('refuses to start, with an actionable reason, when no Bash fallback exists', () => {
-      virtualFs.entries = {};
-      setShell('/opt/removed/fish');
-      const { manager, spawnCalls } = createManager();
-
-      expect(() => manager.spawn('project-1', 'wt-1', 80, 24)).toThrow(
-        /^Terminal shell unavailable: .*Bash/,
-      );
-      expect(spawnCalls).toHaveLength(0);
-    });
-
-    it('launches an explicit zsh and bash profile and labels the launched process', () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/zsh': 'exec' };
-      setShell('/bin/bash');
-      const { manager, spawnCalls } = createManager();
-
-      const zsh = spawnProfile(manager, 'zsh');
-      const bash = spawnProfile(manager, 'bash');
-
-      expect(zsh).toMatchObject({
-        shell: '/usr/bin/zsh',
-        shellBasename: 'zsh',
+        expect(session.spawnCalls[0]).toMatchObject({
+          file: '/usr/bin/fish',
+          args: ['-l'],
+        });
+        expect(accountLookups()).toHaveLength(0);
       });
-      expect(bash).toMatchObject({ shell: '/bin/bash', shellBasename: 'bash' });
-      expect(spawnCalls.map((call) => call.file)).toEqual([
-        '/usr/bin/zsh',
-        '/bin/bash',
-      ]);
-    });
 
-    it.each<[string, VirtualFsEntries, RegExp]>([
-      ['missing', {}, /^Terminal shell unavailable: zsh can't start/],
-      [
-        'non-executable',
-        { '/usr/bin/zsh': 'plain' },
-        /^Terminal shell unavailable: .*\/usr\/bin\/zsh.*executable/,
-      ],
-      [
-        'a directory',
-        { '/usr/bin/zsh': 'dir' },
-        /^Terminal shell unavailable: .*\/usr\/bin\/zsh.*not a file/,
-      ],
-    ])(
-      'fails an explicit zsh selection when zsh is %s without switching shells',
-      (_label, extra, message) => {
-        virtualFs.entries = { ...SYSTEM_BASH, ...extra };
+      it.each([
+        ['unset', undefined],
+        ['empty', ''],
+        ['whitespace-only', '  \t '],
+      ])(
+        'uses a bounded, asynchronous account lookup when SHELL is %s',
+        async (_label, value) => {
+          virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
+          setShell(value);
+          mockAccountShell(`${passwd('/usr/bin/fish')}\n`);
+
+          await desktopTerminalShells.prewarm();
+          const session = spawnDefault();
+
+          expect(session.shell).toBe('/usr/bin/fish');
+          expect(accountLookups()).toEqual([
+            [
+              '/usr/bin/getent',
+              ['passwd', uid],
+              expect.objectContaining({
+                timeout: 1000,
+                killSignal: 'SIGKILL',
+                maxBuffer: 16 * 1024,
+              }),
+              expect.any(Function),
+            ],
+          ]);
+        },
+      );
+
+      it('never runs the account lookup inside a synchronous spawn', async () => {
+        virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
+        setShell(undefined);
+        mockAccountShell(`${passwd('/usr/bin/fish')}\n`);
+
+        // Cold cache: validated Bash now, the lookup only starts in the background.
+        const cold = spawnDefault();
+        expect(cold.shell).toBe('/bin/bash');
+        expect(mockedSpawnSync).not.toHaveBeenCalled();
+
+        await desktopTerminalShells.prewarm();
+        expect(spawnDefault().shell).toBe('/usr/bin/fish');
+        expect(accountLookups()).toHaveLength(1);
+      });
+
+      it('does not look anything up when SHELL is already usable', async () => {
+        virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
+        setShell('/usr/bin/fish');
+
+        await desktopTerminalShells.prewarm();
+
+        expect(accountLookups()).toHaveLength(0);
+      });
+
+      it('shares one in-flight lookup and ignores a lookup finished after a reset', async () => {
+        virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
+        setShell(undefined);
+        const callbacks: MockExecFileCallback[] = [];
+        mockedExecFile.mockImplementation((...args) => {
+          const callback = findExecFileCallback(args);
+          if (callback) callbacks.push(callback);
+          return unusedExecFileChildProcess();
+        });
+
+        const first = desktopTerminalShells.prewarm();
+        const second = desktopTerminalShells.prewarm();
+        expect(accountLookups()).toHaveLength(1);
+
+        desktopTerminalShells.resetForTests();
+        callbacks[0](null, `${passwd('/usr/bin/fish')}\n`, '');
+        await Promise.all([first, second]);
+
+        // The superseded result was dropped, so the default is still Bash.
+        expect(spawnDefault().shell).toBe('/bin/bash');
+      });
+
+      it.each<[string, VirtualFsEntries, string]>([
+        ['nonexistent', {}, '/opt/gone/fish'],
+        ['non-executable', { '/usr/bin/fish': 'plain' }, '/usr/bin/fish'],
+        ['a directory', { '/usr/bin/fish': 'dir' }, '/usr/bin/fish'],
+        ['a relative path', {}, 'fish'],
+        [
+          'an unsupported shell',
+          { '/usr/sbin/nologin': 'exec' },
+          '/usr/sbin/nologin',
+        ],
+        ['an unqualified shell', { '/usr/bin/tcsh': 'exec' }, '/usr/bin/tcsh'],
+      ])(
+        'falls back to validated Bash when SHELL is %s',
+        (_label, extra, shell) => {
+          virtualFs.entries = { ...SYSTEM_BASH, ...extra };
+          setShell(shell);
+
+          const session = spawnDefault();
+
+          expect(session).toMatchObject({
+            shell: '/bin/bash',
+            shellBasename: 'bash',
+          });
+          expect(session.spawnCalls[0].args).toEqual(['-l']);
+        },
+      );
+
+      it('prefers the account shell when SHELL is stale', async () => {
+        virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/zsh': 'exec' };
+        setShell('/opt/removed/fish');
+        mockAccountShell(`${passwd('/usr/bin/zsh')}\n`);
+
+        await desktopTerminalShells.prewarm();
+        expect(spawnDefault().shell).toBe('/usr/bin/zsh');
+      });
+
+      it.each([
+        ['an error', new Error('spawn /usr/bin/getent ENOENT')],
+        ['a timeout', null],
+        [
+          'several records',
+          `${passwd('/usr/bin/fish')}\n${passwd('/bin/zsh')}\n`,
+        ],
+        ['a malformed record', `${passwd('/usr/bin/fish', 6)}\n`],
+        ['another user id', `${passwd('/usr/bin/fish', 7, '0')}\n`],
+        ['startup noise instead of a record', 'motd: welcome\n'],
+        ['an unusable account shell', `${passwd('/usr/bin/fish')}\n`],
+      ])(
+        'falls back to Bash after account lookup returns %s',
+        async (_label, output) => {
+          setShell(undefined);
+          mockAccountShell(output);
+
+          await desktopTerminalShells.prewarm();
+          const session = spawnDefault();
+
+          expect(session.shell).toBe('/bin/bash');
+          expect(accountLookups()).toHaveLength(1);
+        },
+      );
+
+      it('does not repeat a failed account lookup on every spawn', async () => {
+        setShell(undefined);
+        mockAccountShell(new Error('spawn /usr/bin/getent ENOENT'));
+        const { manager } = createManager();
+
+        await desktopTerminalShells.prewarm();
+        manager.create({
+          projectId: 'project-1',
+          worktreeId: 'wt-1',
+          cols: 80,
+          rows: 24,
+        });
+        await desktopTerminalShells.prewarm();
+        manager.create({
+          projectId: 'project-1',
+          worktreeId: 'wt-1',
+          cols: 80,
+          rows: 24,
+        });
+
+        expect(accountLookups()).toHaveLength(1);
+      });
+
+      it('uses /usr/bin/bash when /bin/bash is absent', () => {
+        virtualFs.entries = { '/usr/bin/bash': 'exec' };
+        setShell(undefined);
+
+        expect(spawnDefault().shell).toBe('/usr/bin/bash');
+      });
+
+      it('refuses to start, with an actionable reason, when no Bash fallback exists', () => {
+        virtualFs.entries = {};
+        setShell('/opt/removed/fish');
+        const { manager, spawnCalls } = createManager();
+
+        expect(() =>
+          manager.create({
+            projectId: 'project-1',
+            worktreeId: 'wt-1',
+            cols: 80,
+            rows: 24,
+          }),
+        ).toThrow(/^Terminal shell unavailable: .*Bash/);
+        expect(spawnCalls).toHaveLength(0);
+      });
+
+      it('launches an explicit zsh and bash profile and labels the launched process', () => {
+        virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/zsh': 'exec' };
         setShell('/bin/bash');
         const { manager, spawnCalls } = createManager();
 
-        expect(() => spawnProfile(manager, 'zsh')).toThrow(message);
+        const zsh = spawnProfile(manager, 'zsh');
+        const bash = spawnProfile(manager, 'bash');
+
+        expect(zsh).toMatchObject({
+          shell: '/usr/bin/zsh',
+          shellBasename: 'zsh',
+        });
+        expect(bash).toMatchObject({
+          shell: '/bin/bash',
+          shellBasename: 'bash',
+        });
+        expect(spawnCalls.map((call) => call.file)).toEqual([
+          '/usr/bin/zsh',
+          '/bin/bash',
+        ]);
+      });
+
+      it.each<[string, VirtualFsEntries, RegExp]>([
+        ['missing', {}, /^Terminal shell unavailable: zsh can't start/],
+        [
+          'non-executable',
+          { '/usr/bin/zsh': 'plain' },
+          /^Terminal shell unavailable: .*\/usr\/bin\/zsh.*executable/,
+        ],
+        [
+          'a directory',
+          { '/usr/bin/zsh': 'dir' },
+          /^Terminal shell unavailable: .*\/usr\/bin\/zsh.*not a file/,
+        ],
+      ])(
+        'fails an explicit zsh selection when zsh is %s without switching shells',
+        (_label, extra, message) => {
+          virtualFs.entries = { ...SYSTEM_BASH, ...extra };
+          setShell('/bin/bash');
+          const { manager, spawnCalls } = createManager();
+
+          expect(() => spawnProfile(manager, 'zsh')).toThrow(message);
+          expect(spawnCalls).toHaveLength(0);
+        },
+      );
+
+      it('fails an explicit bash selection when Bash was removed instead of using the default', () => {
+        virtualFs.entries = { '/usr/bin/fish': 'exec' };
+        setShell('/usr/bin/fish');
+        const { manager, spawnCalls } = createManager();
+
+        expect(() => spawnProfile(manager, 'bash')).toThrow(
+          /^Terminal shell unavailable: bash can't start/,
+        );
         expect(spawnCalls).toHaveLength(0);
-      },
-    );
-
-    it('fails an explicit bash selection when Bash was removed instead of using the default', () => {
-      virtualFs.entries = { '/usr/bin/fish': 'exec' };
-      setShell('/usr/bin/fish');
-      const { manager, spawnCalls } = createManager();
-
-      expect(() => spawnProfile(manager, 'bash')).toThrow(
-        /^Terminal shell unavailable: bash can't start/,
-      );
-      expect(spawnCalls).toHaveLength(0);
-    });
-
-    it('reports a failed PTY spawn against the selected shell without retrying another', () => {
-      setShell('/bin/bash');
-      const { manager, spawnCalls } = createManager({
-        ptySpawnFailure: new Error('posix_spawnp failed.'),
       });
 
-      expect(() => manager.spawn('project-1', 'wt-1', 80, 24)).toThrow(
-        /^Terminal shell unavailable: \/bin\/bash.*posix_spawnp failed/,
-      );
-      expect(spawnCalls).toHaveLength(0);
-    });
+      it('reports a failed PTY spawn against the selected shell without retrying another', () => {
+        setShell('/bin/bash');
+        const { manager, spawnCalls } = createManager({
+          ptySpawnFailure: new Error('posix_spawnp failed.'),
+        });
 
-    it('restores the persisted shell instead of the current default', () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
-      setShell('/bin/bash');
-      const { manager, persistenceStore, spawnCalls } = createManager();
-      persistShell(persistenceStore, '/usr/bin/fish');
-
-      const session = manager.restore('historical', 100, 40);
-
-      expect(session).toMatchObject({
-        shell: '/usr/bin/fish',
-        shellBasename: 'fish',
+        expect(() =>
+          manager.create({
+            projectId: 'project-1',
+            worktreeId: 'wt-1',
+            cols: 80,
+            rows: 24,
+          }),
+        ).toThrow(
+          /^Terminal shell unavailable: \/bin\/bash.*posix_spawnp failed/,
+        );
+        expect(spawnCalls).toHaveLength(0);
       });
-      expect(spawnCalls[0]).toMatchObject({
-        file: '/usr/bin/fish',
-        args: ['-l'],
+
+      it('restores the persisted shell instead of the current default', () => {
+        virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/fish': 'exec' };
+        setShell('/bin/bash');
+        const { manager, persistenceStore, spawnCalls } = createManager();
+        persistShell(persistenceStore, '/usr/bin/fish');
+
+        const session = manager.restore({
+          terminalId: 'historical',
+          cols: 100,
+          rows: 40,
+        });
+
+        expect(session).toMatchObject({
+          shell: '/usr/bin/fish',
+          shellBasename: 'fish',
+        });
+        expect(spawnCalls[0]).toMatchObject({
+          file: '/usr/bin/fish',
+          args: ['-l'],
+        });
       });
-    });
 
-    it('does not restore into another shell when the persisted shell was removed', () => {
-      setShell('/bin/bash');
-      const { manager, persistenceStore, spawnCalls } = createManager();
-      persistShell(persistenceStore, '/usr/bin/fish');
+      it('does not restore into another shell when the persisted shell was removed', () => {
+        setShell('/bin/bash');
+        const { manager, persistenceStore, spawnCalls } = createManager();
+        persistShell(persistenceStore, '/usr/bin/fish');
 
-      expect(() => manager.restore('historical', 100, 40)).toThrow(
-        /^Terminal shell unavailable: .*\/usr\/bin\/fish/,
-      );
-      expect(spawnCalls).toHaveLength(0);
-    });
+        expect(() =>
+          manager.restore({ terminalId: 'historical', cols: 100, rows: 40 }),
+        ).toThrow(/^Terminal shell unavailable: .*\/usr\/bin\/fish/);
+        expect(spawnCalls).toHaveLength(0);
+      });
 
-    it('lists Fish as the default alongside installed Bash and optional zsh', () => {
-      virtualFs.entries = {
-        ...SYSTEM_BASH,
-        '/usr/bin/fish': 'exec',
-        '/usr/bin/zsh': 'exec',
-      };
-      setShell('/usr/bin/fish');
+      it('lists Fish as the default alongside installed Bash and optional zsh', () => {
+        virtualFs.entries = {
+          ...SYSTEM_BASH,
+          '/usr/bin/fish': 'exec',
+          '/usr/bin/zsh': 'exec',
+        };
+        setShell('/usr/bin/fish');
 
-      expect(listAvailableTerminalProfiles()).toEqual([
-        { id: 'default', label: 'fish', isDefault: true },
-        { id: 'zsh', label: 'zsh', isDefault: false },
-        { id: 'bash', label: 'bash', isDefault: false },
-      ]);
-    });
+        expect(desktopTerminalShells.listProfiles()).toEqual([
+          { id: 'default', label: 'fish', isDefault: true },
+          { id: 'zsh', label: 'zsh', isDefault: false },
+          { id: 'bash', label: 'bash', isDefault: false },
+        ]);
+      });
 
-    it('labels the Bash fallback as the default and hides an unusable zsh', () => {
-      virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/zsh': 'plain' };
-      setShell('/opt/removed/fish');
+      it('labels the Bash fallback as the default and hides an unusable zsh', () => {
+        virtualFs.entries = { ...SYSTEM_BASH, '/usr/bin/zsh': 'plain' };
+        setShell('/opt/removed/fish');
 
-      expect(listAvailableTerminalProfiles()).toEqual([
-        { id: 'bash', label: 'bash', isDefault: true },
-      ]);
-    });
+        expect(desktopTerminalShells.listProfiles()).toEqual([
+          { id: 'bash', label: 'bash', isDefault: true },
+        ]);
+      });
 
-    it('lists no profiles, without throwing, when no usable shell exists', () => {
-      virtualFs.entries = {};
-      setShell('/opt/removed/fish');
+      it('lists no profiles, without throwing, when no usable shell exists', () => {
+        virtualFs.entries = {};
+        setShell('/opt/removed/fish');
 
-      expect(listAvailableTerminalProfiles()).toEqual([]);
-    });
+        expect(desktopTerminalShells.listProfiles()).toEqual([]);
+      });
 
-    it('keeps macOS and non-x64 Linux resolution unchanged', () => {
-      setShell('/opt/removed/fish');
-      restoreArch();
-      restoreArch = setArch('arm64');
-      expect(spawnDefault()).toMatchObject({ shell: '/opt/removed/fish' });
+      it('keeps macOS and unsupported Linux resolution unchanged', () => {
+        setShell('/opt/removed/fish');
+        restoreArch();
+        restoreArch = setArch('s390x');
+        expect(spawnDefault()).toMatchObject({ shell: '/opt/removed/fish' });
 
-      restoreArch();
-      restoreArch = setArch('x64');
-      restorePlatform();
-      restorePlatform = setPlatform('darwin');
-      expect(spawnDefault()).toMatchObject({ shell: '/opt/removed/fish' });
-      expect(accountLookups()).toHaveLength(0);
-    });
-  });
+        restoreArch();
+        restoreArch = setArch('x64');
+        restorePlatform();
+        restorePlatform = setPlatform('darwin');
+        expect(spawnDefault()).toMatchObject({ shell: '/opt/removed/fish' });
+        expect(accountLookups()).toHaveLength(0);
+      });
+    },
+  );
 });

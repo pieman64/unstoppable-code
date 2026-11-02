@@ -7,6 +7,7 @@ import {
   settingsPaymentHandoffRequestSchema,
   settingsSubscriptionScopeSchema,
   type SettingsPaymentHandoffAvailability,
+  type SettingsPaymentHandoffRequest,
   type SettingsPaymentHandoffResult,
 } from '@canopy/protocol/settings';
 import { registerIpcHandler } from './register';
@@ -45,6 +46,13 @@ const unsubscribeRequestSchema = z.strictObject({
 const paymentHandoffRequestSchema = settingsPaymentHandoffRequestSchema.extend({
   accountId: accountIdSchema,
 });
+
+function isModelUnlockTopUp(request: SettingsPaymentHandoffRequest): boolean {
+  return (
+    request.intent.kind === 'top-up' &&
+    request.intent.reason === 'unlock_models'
+  );
+}
 
 const availabilityRequestSchema = z.strictObject({
   accountId: accountIdSchema,
@@ -126,7 +134,11 @@ export function registerAccountOrganizationSettingsHandlers(): () => void {
     IPC_CHANNELS.accountOrganizationSettingsPaymentHandoff,
     async (_event, value: unknown): Promise<SettingsPaymentHandoffResult> => {
       const request = paymentHandoffRequestSchema.safeParse(value);
-      if (!request.success || !isHostedSettingsEnabled())
+      if (!request.success) return { ok: false, reason: 'failed' };
+      // CAN-4693: unlocking advanced models is not a Settings surface, so it
+      // keeps only the portal gate the service applies. Other payment
+      // hand-offs still require hosted settings.
+      if (!isModelUnlockTopUp(request.data) && !isHostedSettingsEnabled())
         return { ok: false, reason: 'failed' };
       return (await getService()).paymentHandoff(request.data);
     },

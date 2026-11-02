@@ -13,13 +13,16 @@ export {
   matchTeamNavTab,
   TEAM_NAV_ITEMS,
   teamNavItem,
-  teamTabHref,
+  ORGANIZATION_SETTINGS_SUBTAB_ITEMS,
+  organizationSettingsSubtabHref,
+  organizationSettingsSubtabItem,
+  resolveOrganizationSettingsSubtab,
+  type OrganizationSettingsSubtabItem,
   type TeamNavItem,
   type TeamTab,
 } from './organization-nav-items';
 export {
   buildSettingsNavGroups,
-  ORGANIZATIONS_ROW_KEY,
   selectSettingsNavRow,
   settingsNavLogicalRowKey,
   type SettingsNavGroup,
@@ -33,3 +36,7 @@ export {
   SettingsNavGroups,
   type SettingsNavGroupsProps,
 } from './SettingsNavGroups';
+export {
+  SettingsScopePicker,
+  type SettingsScopePickerProps,
+} from './SettingsScopePicker';

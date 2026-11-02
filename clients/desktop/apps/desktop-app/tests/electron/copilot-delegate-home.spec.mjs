@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { seedAgentModels } from './seeders/index.mjs';
 import { launchCopilotSelectionFixture } from './fixtures/copilot-selection.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 for (const inherit of [true, false]) {
   test(`Copilot managed child ${inherit ? 'inherits its parent home skill' : 'honors home inheritance opt-out'}`, async () => {
@@ -28,9 +29,10 @@ for (const inherit of [true, false]) {
       await f.connect();
       await f.driver.openSettings();
       await f.driver.openSettingsSection('experiments');
-      await f.window
-        .getByTestId('settings-managed-delegation-mode')
-        .selectOption('explicit-only');
+      await chooseSettingsOption(
+        f.window.getByTestId('settings-managed-delegation-mode'),
+        'explicit-only',
+      );
       await f.driver.closeSettings();
       await f.select();
       await f.send(
@@ -96,9 +98,10 @@ test('Copilot keeps skipped home capabilities out of chat and still excludes uns
     await f.connect();
     await f.driver.openSettings();
     await f.driver.openSettingsSection('experiments');
-    await f.window
-      .getByTestId('settings-managed-delegation-mode')
-      .selectOption('explicit-only');
+    await chooseSettingsOption(
+      f.window.getByTestId('settings-managed-delegation-mode'),
+      'explicit-only',
+    );
     await f.driver.closeSettings();
     await f.select();
     await f.send('Hello Copilot');
@@ -198,9 +201,10 @@ for (const budget of [false, true]) {
       await f.connect();
       await f.driver.openSettings();
       await f.driver.openSettingsSection('experiments');
-      await f.window
-        .getByTestId('settings-managed-delegation-mode')
-        .selectOption('explicit-only');
+      await chooseSettingsOption(
+        f.window.getByTestId('settings-managed-delegation-mode'),
+        'explicit-only',
+      );
       await f.driver.closeSettings();
       await f.select();
       await f.send(

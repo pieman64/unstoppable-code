@@ -1,7 +1,16 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 import { runSessionReuseFlow } from './seeders/sessionReuseFlow.mjs';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
@@ -29,6 +38,88 @@ const CONVERSATION_MARKER = 'Canopy-CHOSTQUEUE';
 const BACKGROUND_EDITOR_MARKER = 'Canopy-CHOSTQUEUEBACKGROUND';
 const REUSED_SESSION_MARKER = 'Canopy-CHOSTQUEUEREUSE';
 const AUTO_DRAIN_MARKER = 'Canopy-CHOSTQUEUEAUTODRAIN';
+const IDLE_AFTER_QUEUE_DRAIN_MARKER = 'Canopy-CHOSTQUEUEIDLERUNTIME';
+const OCTOPUS_SESSION_ID = `${WORKSPACE_ID}/${WORKTREE_ID}/t1`;
+const OCTOPUS_FIXTURE = fileURLToPath(
+  new URL('./fixtures/fake-claude-octopus-cli.mjs', import.meta.url),
+);
+const SCORPION_FIXTURE = fileURLToPath(
+  new URL('./fixtures/fake-claude-scorpion-cli.mjs', import.meta.url),
+);
+// A dispatch first waits for the chat's received provider events to settle.
+// While a background agent streams, that wait has no bound today and has
+// measured 1 to 26 s on a loaded host. These flows assert that a send goes out
+// without being queued, so they allow for the wait instead of timing it.
+const BACKGROUND_DISPATCH_TIMEOUT_MS = 60_000;
+
+async function queuedMenuAction(window, row, action) {
+  await row.getByTestId('queued-message-more').click();
+  const item = window
+    .getByTestId('queued-message-more-menu')
+    .getByTestId(`queued-message-${action}`);
+  await expect(item).toBeVisible();
+  return item;
+}
+
+function octopusLog(logPath) {
+  if (!existsSync(logPath)) return [];
+  return readFileSync(logPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+/**
+ * Launches a Claude chat backed by the scorpion fake CLI: a parent turn that
+ * starts two background subagents. `holdRoot` keeps the parent turn running
+ * (foreground) until a steer arrives or `release()` is called; otherwise the
+ * parent turn ends at once and the subagents keep the chat in `background`.
+ */
+async function launchScorpionChat({ holdRoot }) {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-claude-scorpion-'),
+  );
+  const fakeCliPath = path.join(userDataDir, 'fake-claude-scorpion-cli.mjs');
+  const logPath = path.join(userDataDir, 'fake-claude-scorpion.log');
+  const releasePath = path.join(userDataDir, 'release-root-turn');
+  copyFileSync(SCORPION_FIXTURE, fakeCliPath);
+  chmodSync(fakeCliPath, 0o755);
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [{ id: 't1', title: 'Scorpion chat', providerType: 'claude' }],
+  });
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({
+      userDataDir,
+      env: {
+        CLAUDE_CODE_EXECUTABLE: fakeCliPath,
+        CANOPY_CLAUDE_SCORPION_LOG: logPath,
+        CANOPY_CLAUDE_SCORPION_RELEASE: releasePath,
+        ...(holdRoot ? { CANOPY_CLAUDE_SCORPION_HOLD_ROOT: '1' } : {}),
+      },
+    }),
+  );
+  return {
+    electronApp,
+    userDataDir,
+    log: () => octopusLog(logPath),
+    release: () => writeFileSync(releasePath, 'release'),
+  };
+}
+
+/** Root-session prompts the scorpion CLI received that contain `text`. */
+function scorpionPrompts(log, text) {
+  return log.filter(
+    (entry) =>
+      entry.type === 'user' &&
+      entry.sessionId === OCTOPUS_SESSION_ID &&
+      entry.text.includes(text),
+  );
+}
 
 test('a follow-up from another client gains Steer after the initial handoff', async () => {
   test.setTimeout(120_000);
@@ -104,7 +195,7 @@ test('a follow-up from another client gains Steer after the initial handoff', as
     ).toBeVisible({ timeout: 30_000 });
     await bubble.getByRole('button', { name: 'Steer', exact: true }).click();
     await expect(panel.getByTestId('input-delivery-row')).toContainText(
-      'Pending',
+      'Sending…',
     );
     await panel.getByTestId('chat-stop-generation').click();
   } finally {
@@ -279,6 +370,7 @@ test('a second draft does not inherit an earlier queued send attachment', async 
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    await connectMockCloudAccount(window, 'csk_chat_queue_attachments_e2e');
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
     const editor = window.locator('[data-slate-editor="true"]:visible').first();
@@ -393,6 +485,7 @@ test('a second draft does not reuse the first queued send revert attachment', as
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    await connectMockCloudAccount(window, 'csk_chat_queue_attachments_e2e');
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
     const editor = window.locator('[data-slate-editor="true"]:visible').first();
@@ -466,9 +559,15 @@ test('a second draft does not reuse the first queued send revert attachment', as
     await expect(failureToast).toBeVisible();
     // The toast header attributes the failure to the chat's worktree and links
     // to it, because the toast can appear while another chat is in view.
+    await expect(failureToast.getByTestId('toast-meta-worktree')).toContainText(
+      WORKTREE_ID,
+    );
     await expect(
-      failureToast.getByRole('button', { name: WORKTREE_ID, exact: true }),
-    ).toBeVisible();
+      failureToast.getByRole('button', {
+        name: 'Open notification',
+        exact: true,
+      }),
+    ).toHaveCount(1);
     await editor.fill('Retry revert draft');
     await editor.press('Enter');
     await expect
@@ -512,6 +611,7 @@ test('a failed native send restores the attachment and revert summary', async ()
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    await connectMockCloudAccount(window, 'csk_chat_queue_attachments_e2e');
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
     const editor = window.locator('[data-slate-editor="true"]:visible').first();
@@ -607,6 +707,7 @@ test('a failed Claude terminal send restores reserved composer inputs', async ()
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    await connectMockCloudAccount(window, 'csk_chat_queue_attachments_e2e');
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
     const editor = window.locator('[data-slate-editor="true"]:visible').first();
@@ -720,6 +821,7 @@ test('a failed Claude terminal launch keeps the prompt and attachments queued', 
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    await connectMockCloudAccount(window, 'csk_chat_queue_attachments_e2e');
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
     const editor = window.locator('[data-slate-editor="true"]:visible').first();
@@ -963,7 +1065,7 @@ for (const mode of ['idle', 'queued', 'queued-mirror-first']) {
           const sample = () => {
             const state = globalThis.__eagerTimerFrames;
             const visible = document.querySelector(
-              '[data-testid="turn-timer"]',
+              '[data-testid="turn-work-header"], [data-testid="turn-timer"]',
             );
             if (visible) state.seen = true;
             else if (state.seen) state.gaps++;
@@ -978,9 +1080,13 @@ for (const mode of ['idle', 'queued', 'queued-mirror-first']) {
       await expect(editor).not.toContainText(text);
       await expect(window.getByText(text, { exact: true })).toHaveCount(1);
       if (!queued) {
-        await expect(window.getByTestId('turn-timer-label')).toHaveText(
-          'Working…',
+        await expect(window.getByTestId('turn-work-header')).toHaveText(
+          /Working for \d+[smh]/,
         );
+        // Arm the per-frame gap probe while the host response is still held.
+        await expect
+          .poll(() => window.evaluate(() => globalThis.__eagerTimerFrames.seen))
+          .toBe(true);
         await expect(
           window.getByTestId('turn-timer').getByRole('button'),
         ).toHaveCount(0);
@@ -989,13 +1095,31 @@ for (const mode of ['idle', 'queued', 'queued-mirror-first']) {
         await expect(window.getByTestId('queued-message-bubble')).toContainText(
           text,
         );
-      if (queued)
-        await expect(
-          window.getByTestId('queued-message-cancel'),
-        ).toBeDisabled();
+      if (queued) {
+        const pendingCancel = await queuedMenuAction(
+          window,
+          window.getByTestId('queued-message-bubble'),
+          'cancel',
+        );
+        await expect(pendingCancel).toBeDisabled();
+        await window.keyboard.press('Escape');
+      }
       await electronApp.evaluate(() => globalThis.__releaseEagerSend());
-      if (queued)
-        await expect(window.getByTestId('queued-message-cancel')).toBeEnabled();
+      if (queued) {
+        // Host acceptance replaces the optimistic row (and its menu state).
+        const accepted = window.getByTestId('queued-message-bubble');
+        await expect(accepted).toHaveAttribute(
+          'data-queued-message-id',
+          'accepted-queue-row',
+        );
+        const acceptedCancel = await queuedMenuAction(
+          window,
+          accepted,
+          'cancel',
+        );
+        await expect(acceptedCancel).toBeEnabled();
+        await window.keyboard.press('Escape');
+      }
       await expect(window.getByText(text, { exact: true })).toHaveCount(1);
       if (queued) {
         await window.evaluate((text) => {
@@ -1027,8 +1151,8 @@ for (const mode of ['idle', 'queued', 'queued-mirror-first']) {
           0,
         );
         await expect(window.getByText(text, { exact: true })).toHaveCount(1);
-        await expect(window.getByTestId('turn-timer-label')).toHaveText(
-          'Working…',
+        await expect(window.getByTestId('turn-work-header')).toHaveText(
+          /Working for \d+[smh]/,
         );
         await expect(
           window.getByTestId('turn-timer').getByRole('button'),
@@ -1037,13 +1161,13 @@ for (const mode of ['idle', 'queued', 'queued-mirror-first']) {
           globalThis.__acceptEagerQueueDispatch(),
         );
         await expect(window.getByText(text, { exact: true })).toHaveCount(1);
-        await expect(window.getByTestId('turn-timer-label')).toHaveText(
-          'Working…',
+        await expect(window.getByTestId('turn-work-header')).toHaveText(
+          /Working for \d+[smh]/,
         );
         await electronApp.evaluate(() => globalThis.__finishEagerTurn());
         await expect(window.getByTestId('turn-timer')).toHaveCount(1);
-        await expect(window.getByTestId('turn-timer-label')).toHaveText(
-          /Working… \d+:\d+/,
+        await expect(window.getByTestId('turn-work-header')).toHaveText(
+          /Working for \d+[smh]/,
         );
         expect(
           await window.evaluate(() => {
@@ -1058,16 +1182,16 @@ for (const mode of ['idle', 'queued', 'queued-mirror-first']) {
             electronApp.evaluate(() => typeof globalThis.__finishEagerTurn),
           )
           .toBe('function');
-        await expect(window.getByTestId('turn-timer-label')).toHaveText(
-          'Working…',
+        await expect(window.getByTestId('turn-work-header')).toHaveText(
+          /Working for \d+[smh]/,
         );
         await expect(
           window.getByTestId('turn-timer').getByRole('button'),
         ).toHaveCount(0);
         await electronApp.evaluate(() => globalThis.__finishEagerTurn());
         await expect(window.getByTestId('turn-timer')).toHaveCount(1);
-        await expect(window.getByTestId('turn-timer-label')).toHaveText(
-          /Working… \d+:\d+/,
+        await expect(window.getByTestId('turn-work-header')).toHaveText(
+          /Working for \d+[smh]/,
         );
         expect(
           await window.evaluate(() => {
@@ -1084,6 +1208,203 @@ for (const mode of ['idle', 'queued', 'queued-mirror-first']) {
     }
   });
 }
+
+// A send the host queues behind an in-flight dispatch, then cancels, never
+// runs. Its renderer bridge must retire with it, or its open timer closes the
+// next completed turn and shows it as still working.
+test('a cancelled host-queued send leaves later completed turns idle', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-cancelled-queued-send-'),
+  );
+  const at = Date.parse('2026-10-29T14:30:00.000Z');
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      {
+        id: 'cancel-chat',
+        title: 'Cancelled queued send',
+        messages: [
+          {
+            id: 'first-user',
+            role: 'user',
+            blocks: [{ type: 'text', text: 'First prompt' }],
+            timestamp: at,
+          },
+          {
+            id: 'first-turn:timer',
+            role: 'system',
+            blocks: [
+              {
+                type: 'turn_timer',
+                turnId: 'first-turn',
+                userMessageId: 'first-user',
+                startedAt: at,
+                completedAt: at + 5_000,
+              },
+            ],
+            timestamp: at,
+          },
+          {
+            id: 'first-reply',
+            role: 'assistant',
+            blocks: [{ type: 'text', text: 'First reply' }],
+            timestamp: at + 4_000,
+          },
+        ],
+      },
+    ],
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const transcript = window.getByTestId('chat-message-list-content');
+    await expect(
+      transcript.getByText('First reply', { exact: true }),
+    ).toBeVisible();
+    const editor = window.locator('[data-slate-editor="true"]:visible').first();
+    await expect(editor).toBeVisible();
+    await evaluateWithSyntheticIpcEvent(
+      electronApp,
+      async ({ ipcMain }, { event }) => {
+        const { sender } = event;
+        const snapshot = await ipcMain._invokeHandlers.get('chat:get-state')(
+          event,
+          { projectId: 'demo-ts-pnpm-vite', worktreeId: 'demo-main' },
+        );
+        const target = {
+          projectId: snapshot.projectId,
+          worktreeId: snapshot.worktreeId,
+        };
+        let revision = snapshot.revision;
+        const emit = (changes) =>
+          sender.send('chat:state-changed', {
+            ...target,
+            schemaVersion: 1,
+            eventId: `cancelled-send-${revision + 1}`,
+            occurredAt: new Date().toISOString(),
+            baseRevision: revision,
+            revision: ++revision,
+            changes,
+          });
+        const queue = (chatId, rows) =>
+          sender.send('chat:queue-updated', { ...target, chatId, queue: rows });
+        ipcMain.removeHandler('chat:send-message');
+        ipcMain.handle('chat:send-message', async (_event, request) => {
+          // A watcher dispatch holds the gate, so the host queues this send.
+          emit([
+            {
+              type: 'runtime.patched',
+              chatId: request.chatId,
+              runtime: { status: 'queued', queuedMessageIds: ['held-row'] },
+            },
+          ]);
+          queue(request.chatId, [
+            {
+              id: 'held-row',
+              text: request.text,
+              origin: 'desktop',
+              enqueuedAtMs: Date.now(),
+            },
+          ]);
+          globalThis.__cancelHeldSend = () => {
+            queue(request.chatId, []);
+            emit([
+              {
+                type: 'runtime.patched',
+                chatId: request.chatId,
+                runtime: { status: 'idle', queuedMessageIds: [] },
+              },
+              {
+                type: 'message.removed',
+                chatId: request.chatId,
+                messageId: request.userMessageId,
+              },
+            ]);
+          };
+          globalThis.__runWatcherTurn = () => {
+            const now = Date.now();
+            emit([
+              {
+                type: 'message.upserted',
+                chatId: request.chatId,
+                afterMessageId: 'first-reply',
+                message: {
+                  id: 'watcher-user',
+                  role: 'user',
+                  blocks: [{ type: 'text', text: 'Watcher update' }],
+                  timestamp: now,
+                },
+              },
+              {
+                type: 'message.upserted',
+                chatId: request.chatId,
+                afterMessageId: 'watcher-user',
+                message: {
+                  id: 'watcher-turn:timer',
+                  role: 'system',
+                  blocks: [
+                    {
+                      type: 'turn_timer',
+                      turnId: 'watcher-turn',
+                      userMessageId: 'watcher-user',
+                      startedAt: now,
+                      completedAt: now + 2_000,
+                    },
+                  ],
+                  timestamp: now,
+                },
+              },
+              {
+                type: 'message.upserted',
+                chatId: request.chatId,
+                afterMessageId: 'watcher-turn:timer',
+                message: {
+                  id: 'watcher-reply',
+                  role: 'assistant',
+                  blocks: [{ type: 'text', text: 'Watcher reply' }],
+                  timestamp: now + 1_000,
+                },
+              },
+              {
+                type: 'runtime.patched',
+                chatId: request.chatId,
+                runtime: { status: 'completed', queuedMessageIds: [] },
+              },
+            ]);
+          };
+          return {};
+        });
+      },
+    );
+
+    await editor.fill('Queued then deleted');
+    await editor.press('Enter');
+    await expect(window.getByTestId('queued-message-bubble')).toContainText(
+      'Queued then deleted',
+    );
+    await electronApp.evaluate(() => globalThis.__cancelHeldSend());
+    await expect(window.getByTestId('queued-message-bubble')).toHaveCount(0);
+    await electronApp.evaluate(() => globalThis.__runWatcherTurn());
+    await expect(
+      transcript.getByText('Watcher reply', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      window
+        .getByTestId('turn-work-header')
+        .filter({ hasText: /Working for \d+[smh]/ }),
+    ).toHaveCount(0);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
 
 async function sendWithin(root, text) {
   const composer = root.getByRole('textbox').last();
@@ -1187,7 +1508,7 @@ test('queued tool changes disable Steer while leaving Interrupt available', asyn
     await send(window, 'Ordinary queued warmup');
     const warmup = panel.getByTestId('queued-message-bubble');
     await expect(warmup.getByTestId('queued-message-steer')).toBeEnabled();
-    await warmup.getByTestId('queued-message-cancel').click();
+    await (await queuedMenuAction(window, warmup, 'cancel')).click();
     await expect(warmup).toHaveCount(0);
     await sendQueued(window, 'queued-tool-change', 'Use the new skill', {
       pluginSelections: {
@@ -1208,7 +1529,9 @@ test('queued tool changes disable Steer while leaving Interrupt available', asyn
         'This message changes agent capabilities. Interrupt the active turn to send it immediately, or wait for the turn to finish.',
       ),
     ).toBeVisible();
-    await expect(bubble.getByTestId('queued-message-interrupt')).toBeEnabled();
+    await expect(
+      await queuedMenuAction(window, bubble, 'interrupt'),
+    ).toBeEnabled();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -1281,7 +1604,7 @@ test('a delegate steering request shows its sender and request, not the hidden w
     await expect(bubble).not.toContainText('A managed subordinate');
 
     await bubble.hover();
-    await bubble.getByTestId('queued-message-interrupt').click();
+    await (await queuedMenuAction(window, bubble, 'interrupt')).click();
     await expect(bubble).toHaveCount(0, { timeout: 60_000 });
     const sent = panel
       .locator('[data-role="user"]')
@@ -1297,7 +1620,28 @@ test('a delegate steering request shows its sender and request, not the hidden w
   }
 });
 
-async function sendWatcher(window, userMessageId, text, kind) {
+async function sendWatcher(electronApp, userMessageId, text, kind) {
+  const delivery = {
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    chatId: 't1',
+    watcherId: userMessageId,
+    deliveryId: `${userMessageId}-delivery`,
+    text,
+    watcherFired: { kind },
+  };
+  const outcome = await electronApp.evaluate(
+    (_electron, payload) =>
+      globalThis.__CANOPY_E2E_DELIVER_WATCHER_MESSAGE__(payload),
+    delivery,
+  );
+  expect(outcome).toBe('submitted');
+}
+
+// Submits a watcher-shaped send straight to the host queue. Its settings do
+// not match the running session, so it queues instead of being steered into
+// the turn, which is what main's own delivery does when it can.
+async function queueWatcherRow(window, userMessageId, text, kind) {
   await window.evaluate(
     async ({ workspaceId, worktreeId, chatId, userMessageId, text, kind }) => {
       await window.api.chat.sendMessage({
@@ -1307,6 +1651,9 @@ async function sendWatcher(window, userMessageId, text, kind) {
         userMessageId,
         text,
         providerType: 'claude',
+        // Narrower than the running Full Access session, so the watcher
+        // queues instead of steering into the active turn (CAN-4821).
+        approvalMode: 'ask',
         watcherFired: { kind },
       });
     },
@@ -1322,6 +1669,260 @@ async function sendWatcher(window, userMessageId, text, kind) {
 }
 
 test.describe('host-owned worktree chat queue', () => {
+  test('octopus: a send after the root turn ends reaches the provider while a background agent still streams', async () => {
+    test.setTimeout(180_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-claude-octopus-'),
+    );
+    const fakeCliPath = path.join(userDataDir, 'fake-claude-octopus-cli.mjs');
+    const logPath = path.join(userDataDir, 'fake-claude-octopus.log');
+    copyFileSync(OCTOPUS_FIXTURE, fakeCliPath);
+    chmodSync(fakeCliPath, 0o755);
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Octopus chat', providerType: 'claude' }],
+    });
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({
+        userDataDir,
+        env: {
+          CLAUDE_CODE_EXECUTABLE: fakeCliPath,
+          CANOPY_CLAUDE_OCTOPUS_LOG: logPath,
+        },
+      }),
+    );
+
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      const panel = window
+        .locator('[data-testid="panel-content-chat"]:visible')
+        .first();
+      await expect(panel).toBeVisible();
+
+      await send(window, 'octopus root request');
+      await expect(
+        panel.getByText('octopus root reply', { exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect
+        .poll(
+          () =>
+            octopusLog(logPath).some(
+              (entry) => entry.type === 'child_frame_emitted',
+            ),
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+
+      const followup = 'octopus follow-up request';
+      await sendWatcher(
+        electronApp,
+        'octopus-followup',
+        followup,
+        'Octopus watcher',
+      );
+      await expect
+        .poll(
+          () =>
+            octopusLog(logPath).filter(
+              (entry) =>
+                entry.type === 'user' &&
+                entry.sessionId === OCTOPUS_SESSION_ID &&
+                entry.text.includes(followup),
+            ).length,
+          { timeout: BACKGROUND_DISPATCH_TIMEOUT_MS },
+        )
+        .toBe(1);
+      await expect(window.getByTestId('queued-message-bubble')).toHaveCount(0, {
+        timeout: 15_000,
+      });
+      await expect(panel.getByText(followup, { exact: true })).toHaveCount(1, {
+        timeout: 15_000,
+      });
+      expect(
+        octopusLog(logPath).filter(
+          (entry) =>
+            entry.type === 'control_request' && entry.subtype === 'interrupt',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('scorpion: a send after the parent turn ends goes at once while two subagents still run', async () => {
+    test.setTimeout(180_000);
+    const { electronApp, userDataDir, log } = await launchScorpionChat({
+      holdRoot: false,
+    });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      const panel = window
+        .locator('[data-testid="panel-content-chat"]:visible')
+        .first();
+      await expect(panel).toBeVisible();
+
+      await send(window, 'scorpion root request');
+      await expect(
+        panel.getByText('scorpion root turn handed off', { exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
+      // The root turn has ended (background) while both subagents still run.
+      await expect
+        .poll(
+          () => {
+            const entries = log();
+            return (
+              entries.some((entry) => entry.type === 'subagents_started') &&
+              entries.some(
+                (entry) =>
+                  entry.type === 'root_result' && entry.reason === 'immediate',
+              )
+            );
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+      // The turn has ended for the user once the composer offers its idle
+      // action; until its terminal is ingested a send would still queue.
+      await expect(composerIdleAction(panel)).toBeVisible({ timeout: 15_000 });
+
+      // Record any queued bubble, however briefly it renders.
+      await window.evaluate(() => {
+        globalThis.__scorpionQueuedBubbleSeen = false;
+        const seen = () =>
+          document.querySelector('[data-testid="queued-message-bubble"]') !==
+          null;
+        globalThis.__scorpionQueuedBubbleObserver = new MutationObserver(() => {
+          if (seen()) globalThis.__scorpionQueuedBubbleSeen = true;
+        });
+        globalThis.__scorpionQueuedBubbleObserver.observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
+      });
+
+      const followup = 'scorpion background follow-up';
+      await send(window, followup);
+      await expect
+        .poll(() => scorpionPrompts(log(), followup), {
+          timeout: BACKGROUND_DISPATCH_TIMEOUT_MS,
+        })
+        .toEqual([expect.objectContaining({ rootTurnRunning: false })]);
+      await expect(
+        panel.getByText(`scorpion follow-up reply: ${followup}`, {
+          exact: true,
+        }),
+      ).toBeVisible({ timeout: 15_000 });
+      expect(
+        await window.evaluate(() => {
+          globalThis.__scorpionQueuedBubbleObserver?.disconnect();
+          return globalThis.__scorpionQueuedBubbleSeen;
+        }),
+      ).toBe(false);
+      await expect(window.getByTestId('queued-message-bubble')).toHaveCount(0);
+      expect(
+        log().filter(
+          (entry) =>
+            entry.type === 'control_request' && entry.subtype === 'interrupt',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('scorpion: a queued row loses Steer and Interrupt and sends at the root result while subagents continue', async () => {
+    test.setTimeout(180_000);
+    const { electronApp, userDataDir, log, release } = await launchScorpionChat(
+      { holdRoot: true },
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      const panel = window
+        .locator('[data-testid="panel-content-chat"]:visible')
+        .first();
+      await expect(panel).toBeVisible();
+
+      await send(window, 'scorpion root request');
+      await expect(
+        panel.getByText('scorpion root reply', { exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect
+        .poll(() => log().some((entry) => entry.type === 'root_held'), {
+          timeout: 15_000,
+        })
+        .toBe(true);
+
+      // Foreground: the parent turn is running, so the send queues and the
+      // row offers both turn actions.
+      const followup = 'scorpion queued follow-up';
+      await send(window, followup);
+      const bubble = panel.getByTestId('queued-message-bubble');
+      await expect(bubble).toHaveCount(1, { timeout: 15_000 });
+      await expect(bubble).toContainText(followup);
+      await expect(
+        await queuedMenuAction(window, bubble, 'interrupt'),
+      ).toBeVisible();
+      await window.keyboard.press('Escape');
+      await expect(bubble.getByTestId('queued-message-steer')).toBeVisible();
+      expect(scorpionPrompts(log(), followup)).toHaveLength(0);
+
+      // The parent turn ends while both subagents keep running.
+      release();
+      await expect(panel.getByTestId('queued-message-interrupt')).toHaveCount(
+        0,
+        { timeout: 15_000 },
+      );
+      await expect(panel.getByTestId('queued-message-steer')).toHaveCount(0);
+      await expect
+        .poll(() => scorpionPrompts(log(), followup), {
+          timeout: BACKGROUND_DISPATCH_TIMEOUT_MS,
+        })
+        .toEqual([expect.objectContaining({ rootTurnRunning: false })]);
+      const entries = log();
+      const resultIndex = entries.findIndex(
+        (entry) => entry.type === 'root_result' && entry.reason === 'release',
+      );
+      const sentIndex = entries.findIndex(
+        (entry) =>
+          entry.type === 'user' &&
+          entry.sessionId === OCTOPUS_SESSION_ID &&
+          entry.text.includes(followup),
+      );
+      expect(resultIndex).toBeGreaterThanOrEqual(0);
+      expect(sentIndex).toBeGreaterThan(resultIndex);
+      expect(
+        entries.filter(
+          (entry) =>
+            entry.type === 'control_request' && entry.subtype === 'interrupt',
+        ),
+      ).toHaveLength(0);
+      await expect(
+        panel.getByText(`scorpion follow-up reply: ${followup}`, {
+          exact: true,
+        }),
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(window.getByTestId('queued-message-bubble')).toHaveCount(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   for (const emitLateCommand of [false, true]) {
     test(`sends a follow-up after a completed Codex turn${emitLateCommand ? ' and late background command result' : ''}`, async () => {
       test.setTimeout(120_000);
@@ -1385,6 +1986,7 @@ test.describe('host-owned worktree chat queue', () => {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell({ timeout: 30_000 });
+      await connectMockCloudAccount(window, 'csk_chat_queue_attachments_e2e');
       await app.openMainPage();
       await app.selectWorktree('demo-main');
 
@@ -1407,15 +2009,41 @@ test.describe('host-owned worktree chat queue', () => {
       await app.selectWorktree('demo-main');
       await expect(bubbles).toHaveCount(3, { timeout: 30_000 });
 
+      // An unsent draft waits in the composer while a queued row is edited.
+      const composer = window.locator(
+        '[data-chat-composer-root]:not([data-testid="queued-message-editor"])',
+      );
+      const composerInput = composer.locator(
+        '[data-chat-textarea][contenteditable="true"]',
+      );
+      await composerInput.fill('draft kept through the edit');
+
       // Save-button edits must close the stale editor and restore the updated
       // queued bubble after the host queue command round-trips.
       await bubbles.first().hover();
-      await bubbles.first().getByTestId('queued-message-edit').click();
+      await (await queuedMenuAction(window, bubbles.first(), 'edit')).click();
       const editor = window.getByTestId('queued-message-editor');
       const editInput = editor.locator(
         '[data-chat-textarea][contenteditable="true"]',
       );
       await expect(editInput).toBeVisible();
+      await expect(editInput).toBeFocused();
+
+      // The editor takes the composer's place (CAN-3607): it is not in the
+      // transcript, the edited row steps out of the queue, and the composer
+      // stays mounted but hidden with the draft in it.
+      await expect(
+        window
+          .getByTestId('chat-message-list-content')
+          .getByTestId('queued-message-editor'),
+      ).toHaveCount(0);
+      await expect(bubbles).toHaveCount(2);
+      await expect(bubbles.filter({ hasText: 'queued edit me' })).toHaveCount(
+        0,
+      );
+      await expect(editInput).toHaveText('queued edit me');
+      await expect(composer).toBeHidden();
+      await expect(composerInput).toHaveText('draft kept through the edit');
 
       // Cancel and Save take send's place inside the box, as capsules at
       // send's 32px height.
@@ -1471,6 +2099,14 @@ test.describe('host-owned worktree chat queue', () => {
       await expect(editor).toHaveCount(0);
       await expect(bubbles).toHaveCount(3, { timeout: 15_000 });
       await expect(bubbles.first()).toContainText('queued edited with Save');
+      // The draft comes back exactly as it was, with the caret in it.
+      await expect(composer).toBeVisible();
+      await expect(composerInput).toHaveText('draft kept through the edit');
+      await expect(composerInput).toBeFocused();
+      // The caret is back where it was, at the end of the draft.
+      await window.keyboard.type('!');
+      await expect(composerInput).toHaveText('draft kept through the edit!');
+      await composerInput.fill('');
       await expect(
         window.getByText('queued edited with Save', { exact: true }),
       ).toHaveCount(1);
@@ -1478,7 +2114,7 @@ test.describe('host-owned worktree chat queue', () => {
       // Enter follows the same save path and must likewise return the row to
       // its non-editing queued-message state.
       await bubbles.nth(1).hover();
-      await bubbles.nth(1).getByTestId('queued-message-edit').click();
+      await (await queuedMenuAction(window, bubbles.nth(1), 'edit')).click();
       await expect(editInput).toBeVisible();
       await editInput.fill('queued edited with Enter');
       await editInput.press('Enter');
@@ -1506,11 +2142,11 @@ test.describe('host-owned worktree chat queue', () => {
       // host-owned queue mirrors to the renderer and that its edit and cancel
       // commands round-trip.
       await bubbles.nth(1).hover();
-      await bubbles.nth(1).getByTestId('queued-message-cancel').click();
+      await (await queuedMenuAction(window, bubbles.nth(1), 'cancel')).click();
       await expect(bubbles).toHaveCount(2, { timeout: 15_000 });
 
       await bubbles.first().hover();
-      await bubbles.first().getByTestId('queued-message-cancel').click();
+      await (await queuedMenuAction(window, bubbles.first(), 'cancel')).click();
       await expect(bubbles).toHaveCount(1, { timeout: 15_000 });
       await expect(
         window.getByText('queued edited with Save', { exact: true }),
@@ -1519,17 +2155,17 @@ test.describe('host-owned worktree chat queue', () => {
         window.getByText('queued edited with Enter', { exact: true }),
       ).toHaveCount(0);
 
-      // Adjacent watcher deliveries consolidate while the turn is active.
+      // Adjacent queued watcher deliveries consolidate while the turn is active.
       // Once the combined row is edited through the real queue UI, the edit
       // becomes a boundary: a later watcher must occupy a separate row and
       // must not regenerate the original watcher summaries over the edit.
-      await sendWatcher(
+      await queueWatcherRow(
         window,
         'watcher-queued-1',
         'Canopy watcher fired.\nDeploy completed',
         'Pipeline completion (Deploy)',
       );
-      await sendWatcher(
+      await queueWatcherRow(
         window,
         'watcher-queued-2',
         'Canopy watcher fired.\nHealth checks passed',
@@ -1540,10 +2176,10 @@ test.describe('host-owned worktree chat queue', () => {
       await bubbles.nth(1).hover();
       await expect(
         bubbles.nth(1).getByTestId('queued-message-steer'),
-      ).toHaveCount(0);
+      ).toBeDisabled();
 
       await bubbles.nth(1).hover();
-      await bubbles.nth(1).getByTestId('queued-message-edit').click();
+      await (await queuedMenuAction(window, bubbles.nth(1), 'edit')).click();
       await expect(editInput).toBeVisible();
       await editInput.fill('edited combined watcher follow-up');
       await editor.getByTestId('queued-message-edit-save').click();
@@ -1554,7 +2190,7 @@ test.describe('host-owned worktree chat queue', () => {
         window.getByText('edited combined watcher follow-up', { exact: true }),
       ).toHaveCount(1);
 
-      await sendWatcher(
+      await queueWatcherRow(
         window,
         'watcher-queued-3',
         'Canopy watcher fired.\nRelease notes ready',
@@ -1568,13 +2204,10 @@ test.describe('host-owned worktree chat queue', () => {
       await bubbles.nth(2).hover();
       await expect(
         bubbles.nth(2).getByTestId('queued-message-steer'),
-      ).toHaveCount(0);
+      ).toBeDisabled();
 
-      // A queued message whose body is one long unbreakable token (a pasted
-      // URL) must wrap inside the transcript. The bubble is a right-aligned
-      // flex item, so without a width constraint its intrinsic min-content
-      // width wins and the text overflows past the panel's left edge, where
-      // the viewport's overflow-x-hidden clips it.
+      // Compact queue rows keep a long URL inside the panel and truncate its
+      // preview with an ellipsis instead of widening or clipping the row.
       await sendQueued(
         window,
         'queued-long-token',
@@ -1582,21 +2215,25 @@ test.describe('host-owned worktree chat queue', () => {
       );
       await expect(bubbles).toHaveCount(4, { timeout: 15_000 });
       const queuedOverflow = await bubbles.nth(3).evaluate((row) => {
-        const viewport = row.closest(
-          '[data-testid="chat-message-list-scroll"]',
+        const viewport = row.closest('[data-testid="panel-content-chat"]');
+        const preview = row.querySelector(
+          '[data-testid="queued-message-preview"]',
         );
-        const bubble = row.firstElementChild;
-        if (!viewport || !bubble) return null;
+        if (!viewport || !preview) return null;
         const viewportRect = viewport.getBoundingClientRect();
-        const bubbleRect = bubble.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
         return {
-          left: viewportRect.left - bubbleRect.left,
-          right: bubbleRect.right - viewportRect.right,
+          left: viewportRect.left - rowRect.left,
+          right: rowRect.right - viewportRect.right,
+          truncated: preview.scrollWidth > preview.clientWidth,
+          textOverflow: getComputedStyle(preview).textOverflow,
         };
       });
       expect(queuedOverflow).not.toBeNull();
       expect(queuedOverflow.left).toBeLessThanOrEqual(1);
       expect(queuedOverflow.right).toBeLessThanOrEqual(1);
+      expect(queuedOverflow.truncated).toBe(true);
+      expect(queuedOverflow.textOverflow).toBe('ellipsis');
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -1700,8 +2337,12 @@ test.describe('host-owned worktree chat queue', () => {
       await expect(bubbles.nth(1)).toContainText('queued bravo');
       // A selection crossing multiple rows wins over the editing gesture.
       await bubbles.evaluateAll((rows) => {
-        const first = rows[0].querySelector('p');
-        const last = rows[2].querySelector('p');
+        const first = rows[0].querySelector(
+          '[data-testid="queued-message-preview"]',
+        );
+        const last = rows[2].querySelector(
+          '[data-testid="queued-message-preview"]',
+        );
         const range = document.createRange();
         range.setStart(first.firstChild, 0);
         range.setEnd(last.firstChild, last.firstChild.textContent.length);
@@ -1713,7 +2354,7 @@ test.describe('host-owned worktree chat queue', () => {
       await expect(editor).toHaveCount(0);
       await window.evaluate(() => window.getSelection()?.removeAllRanges());
 
-      const editBadge = bubbles.nth(1).getByTestId('queued-message-edit');
+      const editBadge = bubbles.nth(1).getByTestId('queued-message-more');
       for (let step = 0; step < 100; step += 1) {
         await window.keyboard.press('Tab');
         if (
@@ -1725,10 +2366,24 @@ test.describe('host-owned worktree chat queue', () => {
       }
       await expect(editBadge).toBeFocused();
       await window.keyboard.press('Enter');
+      const editAction = window
+        .getByTestId('queued-message-more-menu')
+        .getByTestId('queued-message-edit');
+      await expect(
+        window
+          .getByTestId('queued-message-more-menu')
+          .getByTestId('queued-message-interrupt'),
+      ).toBeFocused();
+      await window.keyboard.press('ArrowDown');
+      await expect(editAction).toBeFocused();
+      await window.keyboard.press('Enter');
       await expect(editInput).toBeFocused();
       await editor.getByTestId('queued-message-edit-cancel').click();
+      // Cancel returns focus to the composer, just after the queue, so the
+      // row's Edit is a few steps back rather than a full lap of the window.
+      await expect(composer).toBeFocused();
       for (let step = 0; step < 100; step += 1) {
-        await window.keyboard.press('Tab');
+        await window.keyboard.press('Shift+Tab');
         if (
           await editBadge.evaluate(
             (element) => element === document.activeElement,
@@ -1737,6 +2392,14 @@ test.describe('host-owned worktree chat queue', () => {
           break;
       }
       await expect(editBadge).toBeFocused();
+      await window.keyboard.press('Space');
+      await expect(
+        window
+          .getByTestId('queued-message-more-menu')
+          .getByTestId('queued-message-interrupt'),
+      ).toBeFocused();
+      await window.keyboard.press('ArrowDown');
+      await expect(editAction).toBeFocused();
       await window.keyboard.press('Space');
       await expect(editInput).toBeFocused();
       await editor.getByTestId('queued-message-edit-cancel').click();
@@ -1803,7 +2466,7 @@ test.describe('host-owned worktree chat queue', () => {
       const queuedBubble = firstPanel.getByTestId('queued-message-bubble');
       await expect(queuedBubble).toHaveCount(1, { timeout: 15_000 });
       await queuedBubble.hover();
-      await queuedBubble.getByTestId('queued-message-edit').click();
+      await (await queuedMenuAction(window, queuedBubble, 'edit')).click();
       await expect(
         firstPanel.getByTestId('queued-message-editor'),
       ).toBeVisible();
@@ -1826,7 +2489,8 @@ test.describe('host-owned worktree chat queue', () => {
       ).toHaveAttribute('data-active', 'true');
 
       await window.keyboard.press('Escape');
-      await expect(firstStopButton).toHaveAccessibleName('Stop generation');
+      // The editor holds the composer's place, so the composer and its stop
+      // control stay mounted but hidden until the edit ends (CAN-3607).
       await expect(firstStopButton).not.toHaveAttribute(
         'data-cancel-armed',
         'true',
@@ -1834,6 +2498,15 @@ test.describe('host-owned worktree chat queue', () => {
       await expect(
         firstPanel.getByTestId('queued-message-editor'),
       ).toBeVisible();
+      await firstPanel.getByTestId('queued-message-edit-cancel').click();
+      await expect(firstPanel.getByTestId('queued-message-editor')).toHaveCount(
+        0,
+      );
+      await expect(firstStopButton).toHaveAccessibleName('Stop generation');
+      await expect(firstStopButton).not.toHaveAttribute(
+        'data-cancel-armed',
+        'true',
+      );
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -1984,8 +2657,17 @@ test.describe('host-owned worktree chat queue', () => {
       await expect(queuedBubbles.first()).toContainText(
         'send this immediately queued follow-up',
       );
+      // While queued the message is shown once, from the queue: it has no
+      // transcript row until the queue dispatches it.
+      await expect(
+        panel.getByText('send this immediately queued follow-up', {
+          exact: true,
+        }),
+      ).toHaveCount(1);
       await queuedBubbles.first().hover();
-      await queuedBubbles.first().getByTestId('queued-message-edit').click();
+      await (
+        await queuedMenuAction(window, queuedBubbles.first(), 'edit')
+      ).click();
       const editor = panel.getByTestId('queued-message-editor');
       await editor
         .locator('[data-chat-textarea][contenteditable="true"]')
@@ -2009,7 +2691,242 @@ test.describe('host-owned worktree chat queue', () => {
           exact: true,
         }),
       ).toHaveCount(1);
+      // Dispatch appended the follow-up in order: after the first turn's
+      // reply and before its own reply.
+      const transcript = await panel.innerText();
+      const firstReply = transcript.indexOf('first streaming reply completed');
+      const followUp = transcript.indexOf('send this edited follow-up');
+      const followUpReply = transcript.indexOf('queued follow-up reply');
+      expect(firstReply).toBeGreaterThanOrEqual(0);
+      expect(followUp).toBeGreaterThan(firstReply);
+      expect(followUpReply).toBeGreaterThan(followUp);
       await expect(composerIdleAction(window)).toBeVisible({ timeout: 15_000 });
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('a drained queued follow-up leaves the completed chat composer idle', async () => {
+    test.setTimeout(180_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-host-chat-queue-idle-runtime-'),
+    );
+    const QUEUE_PLACEHOLDER = 'Type to queue a follow-up message...';
+    const firstResponse = 'The first streamed turn completed';
+    const queuedResponse = 'The queued follow-up completed';
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat' }],
+    });
+    await registerScenario(
+      DEFAULT_MOCK_BASE_URL,
+      IDLE_AFTER_QUEUE_DRAIN_MARKER,
+      {
+        llm: {
+          steps: [
+            {
+              text: firstResponse,
+              streamMs: 15_000,
+              chunkChars: 8,
+              stopReason: 'end_turn',
+            },
+            { text: queuedResponse, stopReason: 'end_turn' },
+          ],
+        },
+      },
+    );
+
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({ userDataDir }),
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      // Install before sending so advancing to the quiet threshold does not
+      // wait six real minutes after both turns complete.
+      await window.clock.install();
+      const panel = window.getByTestId('panel-content-chat');
+      const transcript = panel.getByTestId('chat-message-list-content');
+      const queuedBubbles = window.getByTestId('queued-message-bubble');
+      const stopButton = window.getByTestId('chat-stop-generation');
+      const composer = panel.locator(
+        '[data-chat-textarea][contenteditable="true"]',
+      );
+
+      await window.evaluate(() => {
+        window.__stuckAgentWarningSeen = false;
+        new MutationObserver(() => {
+          if (document.querySelector('[data-testid="stuck-agent-warning"]')) {
+            window.__stuckAgentWarningSeen = true;
+          }
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+
+      await send(
+        window,
+        `[${IDLE_AFTER_QUEUE_DRAIN_MARKER}] Start a streaming turn.`,
+      );
+      await expect(stopButton).toBeVisible({ timeout: 30_000 });
+      await sendQueued(
+        window,
+        'idle-runtime-queued-follow-up',
+        'Send this queued follow-up after the first turn.',
+      );
+      await expect(queuedBubbles).toHaveCount(1, { timeout: 15_000 });
+
+      await expect(
+        transcript.getByText(firstResponse, { exact: true }),
+      ).toBeVisible({ timeout: 60_000 });
+      await expect(
+        transcript.getByText(queuedResponse, { exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(queuedBubbles).toHaveCount(0, { timeout: 15_000 });
+      await expect(composerIdleAction(window)).toBeVisible({ timeout: 15_000 });
+      await expect(stopButton).toHaveCount(0);
+
+      // A drained queue used to leave renderer-local streaming state behind,
+      // keeping Stop visible and eventually warning on this idle chat.
+      const idlePlaceholder = composer.locator('[data-slate-placeholder]');
+      await expect(idlePlaceholder).toBeVisible();
+      await expect(idlePlaceholder).not.toHaveText(QUEUE_PLACEHOLDER);
+      const idlePlaceholderText = await idlePlaceholder.innerText();
+      expect(idlePlaceholderText).not.toBe('');
+
+      const clockNow = await window.evaluate(() => Date.now());
+      await window.clock.setSystemTime(clockNow + 6 * 60_000);
+      await window.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', {
+          configurable: true,
+          value: 'visible',
+        });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      // setSystemTime does not run the stuck-warning timer's 10s poll.
+      await window.clock.runFor(10_000);
+
+      await expect(stopButton).toHaveCount(0);
+      await expect(idlePlaceholder).toHaveText(idlePlaceholderText);
+      await expect(idlePlaceholder).not.toHaveText(QUEUE_PLACEHOLDER);
+      await expect(window.getByTestId('stuck-agent-warning')).toHaveCount(0);
+      expect(await window.evaluate(() => window.__stuckAgentWarningSeen)).toBe(
+        false,
+      );
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('Check status leaves the running turn and its queued message alone', async () => {
+    test.setTimeout(240_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-queue-stuck-agent-check-status-'),
+    );
+    const marker = 'Canopy-CQUEUESTUCKCHECK';
+    const firstResponse = 'The first delayed turn completed';
+    const queuedResponse = 'The queued turn completed next';
+    const queuedText = 'This message should stay queued';
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat' }],
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+      llm: {
+        steps: [
+          {
+            text: firstResponse,
+            streamMs: 60_000,
+            chunkChars: 8,
+            stopReason: 'end_turn',
+          },
+          { text: queuedResponse, stopReason: 'end_turn' },
+        ],
+      },
+    });
+
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({ userDataDir }),
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_ID);
+      await window.clock.install();
+      const panel = window.getByTestId('panel-content-chat');
+      const transcript = panel.getByTestId('chat-message-list-content');
+      const queuedMessage = panel.getByTestId('queued-message-bubble');
+
+      await send(window, `[${marker}] Start a delayed turn.`);
+      await expect(window.getByTestId('chat-stop-generation')).toBeVisible({
+        timeout: 30_000,
+      });
+      await sendQueued(window, 'stuck-check-queued-message', queuedText);
+      await expect(queuedMessage).toHaveCount(1, { timeout: 15_000 });
+      await expect(queuedMessage).toContainText(queuedText);
+      await expect(transcript.locator('[data-role="user"]')).toHaveCount(1);
+
+      const clockNow = await window.evaluate(() => Date.now());
+      await window.clock.setSystemTime(clockNow + 6 * 60_000);
+      await window.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', {
+          configurable: true,
+          value: 'visible',
+        });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      const warning = window.getByTestId('stuck-agent-warning');
+      await expect(warning).toContainText('No response for 6 minutes');
+      await warning.getByRole('button', { name: 'Check status' }).click();
+
+      await expect(warning).toContainText('The agent is still working.');
+      await expect(
+        warning.getByRole('button', { name: 'Check status' }),
+      ).toHaveCount(0);
+      await expect(queuedMessage).toHaveCount(1);
+      await expect(queuedMessage).toContainText(queuedText);
+      // The queued bubble renders inside the message list, so check that no
+      // user row carries the queued text yet.
+      await expect(
+        transcript.locator('[data-role="user"]', { hasText: queuedText }),
+      ).toHaveCount(0);
+      await expect(
+        transcript.getByText('Provide status update', { exact: true }),
+      ).toHaveCount(0);
+      await expect(transcript.locator('[data-role="user"]')).toHaveCount(1);
+
+      await expect(
+        transcript.getByText(firstResponse, { exact: true }),
+      ).toBeVisible({ timeout: 90_000 });
+      await expect(queuedMessage).toHaveCount(0, { timeout: 30_000 });
+      await expect(
+        transcript.locator('[data-role="user"]', { hasText: queuedText }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        transcript.getByText(queuedResponse, { exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(transcript.locator('[data-role="user"]')).toHaveCount(2);
+      await expect(
+        transcript.getByText('Provide status update', { exact: true }),
+      ).toHaveCount(0);
+      const transcriptText = await transcript.innerText();
+      const firstResponseIndex = transcriptText.indexOf(firstResponse);
+      const queuedTextIndex = transcriptText.indexOf(queuedText);
+      const queuedResponseIndex = transcriptText.indexOf(queuedResponse);
+      expect(firstResponseIndex).toBeGreaterThanOrEqual(0);
+      expect(queuedTextIndex).toBeGreaterThan(firstResponseIndex);
+      expect(queuedResponseIndex).toBeGreaterThan(queuedTextIndex);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -2084,6 +3001,11 @@ test.describe('host-owned worktree chat queue', () => {
         const window = await electronApp.firstWindow();
         const app = new CanopyAppDriver(window);
         await app.waitForShell({ timeout: 30_000 });
+        if (action === 'steer-attachments')
+          await connectMockCloudAccount(
+            window,
+            'csk_chat_queue_baseline_attachments_e2e',
+          );
         await app.openMainPage();
         await app.selectWorktree(WORKTREE_ID);
         const panel = window.getByTestId('panel-content-chat');
@@ -2159,31 +3081,28 @@ test.describe('host-owned worktree chat queue', () => {
           await bubbles.nth(2).hover();
           await expect(
             bubbles.nth(2).getByTestId('queued-message-steer'),
-          ).toHaveCount(0);
-          await bubbles.nth(2).getByTestId('queued-message-cancel').click();
+          ).toBeDisabled();
+          await (
+            await queuedMenuAction(window, bubbles.nth(2), 'cancel')
+          ).click();
           await expect(bubbles).toHaveCount(2, { timeout: 15_000 });
         }
         if (action.startsWith('steer')) {
           if (action === 'steer') {
             await expect(
-              bubbles
-                .first()
-                .getByTestId('queued-message-steer')
-                .getByTestId('queued-message-steer-icon'),
+              bubbles.first().getByTestId('queued-message-steer'),
             ).toBeVisible();
             await expect(
-              bubbles
-                .first()
-                .getByTestId('queued-message-interrupt')
-                .getByTestId('queued-message-interrupt-icon'),
+              await queuedMenuAction(window, bubbles.first(), 'interrupt'),
             ).toBeVisible();
+            await window.keyboard.press('Escape');
           }
           await bubbles
             .first()
             .getByRole('button', { name: 'Steer', exact: true })
             .click();
           const pending = panel.getByTestId('input-delivery-row');
-          await expect(pending).toContainText('Pending');
+          await expect(pending).toContainText('Sending…');
           if (action === 'steer') {
             await expect(
               pending.getByTestId('input-delivery-bubble'),
@@ -2202,11 +3121,13 @@ test.describe('host-owned worktree chat queue', () => {
           if (action.startsWith('steer-crash')) {
             const editing = action === 'steer-crash-editing';
             const cancelled = action === 'steer-crash-cancelled';
+            // A plain crash kills the CLI that still held the steer, so
+            // provider history proves it was never delivered (phase 23c).
             const expectedState = editing
               ? 'Editing'
               : cancelled
                 ? 'Cancelled'
-                : 'Delivery uncertain';
+                : 'Not delivered';
             const savedDraft = `${queuedInputs.selected} Draft survives hard crash`;
             if (editing) {
               await pending
@@ -2273,13 +3194,22 @@ test.describe('host-owned worktree chat queue', () => {
               const freshPanel = freshWindow.getByTestId('panel-content-chat');
               const recovered = freshPanel.getByTestId('input-delivery-row');
               await expect(recovered).toContainText(expectedState);
+              if (action === 'steer-crash') {
+                await expect(recovered).toContainText(
+                  'This message never reached the agent.',
+                );
+                await expect(
+                  recovered.getByTestId('input-delivery-resend'),
+                ).toHaveText('Resend');
+                await expect(
+                  recovered.getByTestId('input-delivery-edit'),
+                ).toBeVisible();
+              }
               if (editing)
                 await expect(
                   recovered.getByTestId('input-delivery-editor'),
                 ).toHaveValue(savedDraft);
               else await expect(recovered).toContainText(queuedInputs.selected);
-              if (!editing && !cancelled)
-                await expect(recovered).not.toContainText('Cancelled');
               await expect(composerIdleAction(freshPanel)).toBeVisible({
                 timeout: 30_000,
               });
@@ -2311,9 +3241,11 @@ test.describe('host-owned worktree chat queue', () => {
                 before.attempts.map((attempt) => attempt.id),
               );
               expect(after.payload).toEqual(before.payload);
-              expect(after.state).toBe(
-                editing ? 'editing' : cancelled ? 'cancelled' : 'uncertain',
-              );
+              expect(after.state).toBe(editing ? 'editing' : 'cancelled');
+              if (!editing && !cancelled)
+                expect(after.notDelivered?.attemptId).toBe(
+                  before.attempts[0].id,
+                );
               if (editing) expect(after.draft).toBe(savedDraft);
             } finally {
               await closeCanopy(restarted.electronApp, userDataDir, {
@@ -2490,7 +3422,7 @@ test.describe('host-owned worktree chat queue', () => {
                   exact: true,
                 })
                 .click();
-              await expect(pending).toContainText('Pending');
+              await expect(pending).toContainText('Sending…');
               await expect(pending).toContainText(
                 action === 'steer-edit' || action === 'steer-attachments'
                   ? 'Edited safely'
@@ -2537,10 +3469,9 @@ test.describe('host-owned worktree chat queue', () => {
             return;
           }
           if (action === 'steer-interrupt') {
-            await bubbles
-              .first()
-              .getByTestId('queued-message-interrupt')
-              .click();
+            await (
+              await queuedMenuAction(window, bubbles.first(), 'interrupt')
+            ).click();
           } else if (
             action === 'steer-stop' ||
             action === 'steer-edit' ||
@@ -2617,7 +3548,9 @@ test.describe('host-owned worktree chat queue', () => {
         if (action === 'stop') await stop.click();
         else {
           await bubbles.first().hover();
-          await bubbles.first().getByTestId('queued-message-interrupt').click();
+          await (
+            await queuedMenuAction(window, bubbles.first(), 'interrupt')
+          ).click();
         }
         await expect(
           panel.getByText('Baseline first queued reply', { exact: true }),

@@ -28,7 +28,7 @@ describe('getPlanSourceLabel', () => {
     ['claude', 'Claude'],
     ['codex', 'Codex'],
     ['ollama', 'Ollama'],
-    ['pipeline', 'Pipeline'],
+    ['pipeline', 'Workflow'],
     ['imported', 'Imported'],
     ['detected', 'Detected'],
   ] as const)('returns %s → %s', (source, expected) => {
@@ -73,7 +73,7 @@ describe('resolveChatTabProvider', () => {
         name: 'Stale Agent',
         baseModel: 'retired-model',
         instructions: '',
-        pluginSelections: [],
+        pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
         createdAt: '2026-07-10T00:00:00.000Z',
         updatedAt: '2026-07-10T00:00:00.000Z',
         available: false,

@@ -1,9 +1,9 @@
-import { CodeGraphEngine } from '@canopy/desktop-shared/node/code-graph/engine';
-import * as baseGraph from '@canopy/desktop-shared/node/code-graph/base-graph';
+import { CodeGraphEngine } from '@canopy/code-graph/engine';
+import * as baseGraph from '@canopy/code-graph/base-graph';
 import type {
   CodeGraphDatabase,
   CodeGraphStatement,
-} from '@canopy/desktop-shared/node/code-graph/store/database';
+} from '@canopy/code-graph/store/database';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

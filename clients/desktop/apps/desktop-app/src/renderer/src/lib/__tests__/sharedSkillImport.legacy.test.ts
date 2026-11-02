@@ -29,9 +29,18 @@ function legacyDetail(): SharedSkillDetail {
   const detail: SharedSkillDetail = {
     ...legacyDetailJson,
     shareScope: 'team',
-    owner: { type: 'team', id: 'team-1', name: 'Release team' },
+    owner: {
+      type: 'team',
+      id: 'team-1',
+      name: 'Release team',
+      organization: { id: 'org-1', name: 'Acme' },
+    },
     createdBy: { id: 'user-1', name: 'Publisher', email: null },
+    publicShare: null,
   };
+  // This pinned share predates the required modern publicShare field; keep the
+  // production code receiving the exact historical shape below.
+  Reflect.deleteProperty(detail, 'publicShare');
   // Every key the fixture has must have been carried over; a field added to
   // the pre-package shape later would otherwise go untested.
   expect(Object.keys(detail).sort()).toEqual(

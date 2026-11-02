@@ -18,7 +18,9 @@ const mockListCursorModels = jest.fn(() =>
   ]),
 );
 jest.mock('../cursor/models', () => ({
-  listCursorModels: mockListCursorModels,
+  get listCursorModels(): typeof mockListCursorModels {
+    return mockListCursorModels;
+  },
 }));
 
 const mockCursorStatus = jest.fn(() =>
@@ -29,7 +31,9 @@ const mockCursorStatus = jest.fn(() =>
   }),
 );
 jest.mock('../cursor/runtime-status', () => ({
-  cursorConnectionStatus: mockCursorStatus,
+  get cursorConnectionStatus(): typeof mockCursorStatus {
+    return mockCursorStatus;
+  },
 }));
 jest.mock('../cursor/feature-flag', () => ({
   assertCursorHarnessEnabled: jest.fn(),
@@ -79,9 +83,15 @@ const resetMock = jest.fn((modelId: string) => {
 
 jest.mock('@canopy/desktop-shared/node/model-harnesses', () => ({
   ModelHarnessOverrideStore: class {
-    load = loadMock;
-    set = setMock;
-    reset = resetMock;
+    get load(): typeof loadMock {
+      return loadMock;
+    }
+    get set(): typeof setMock {
+      return setMock;
+    }
+    get reset(): typeof resetMock {
+      return resetMock;
+    }
     getCachedOverrides(): Record<string, 'claude' | 'codex' | 'cursor'> {
       return { ...diskOverrides };
     }
@@ -166,6 +176,7 @@ describe('authoritative model harness registry', () => {
         {
           modelId: 'gateway-model',
           gatewayId: 'provider/gateway-model',
+          family: 'custom',
           recommendedHarness: 'codex',
           gatewayOnly: true,
           contextWindow: 100_000,

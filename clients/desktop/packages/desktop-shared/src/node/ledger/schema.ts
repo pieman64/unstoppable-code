@@ -6,7 +6,7 @@ import { LedgerStoreError } from './errors';
 import { rowText } from './rows';
 
 /** The schema version this build reads and writes. */
-export const LEDGER_SCHEMA_VERSION = 4;
+export const LEDGER_SCHEMA_VERSION = 5;
 
 const SCHEMA_VERSION_KEY = 'schema_version';
 const CURSOR_SECRET_KEY = 'cursor_secret';
@@ -277,6 +277,32 @@ function addPendingTitles(db: DatabaseSync): void {
 }
 
 /**
+ * Schema version 5 adds `ledger_global_bindings`: the one global Ledger of
+ * each owner (`owner_key`: `personal` or `org:<lowercase uuid>`) for each
+ * account (`account_key`: `signed_out` or `account:<accountId>`). The scope
+ * itself is an ordinary `ledger_scopes` row whose container is
+ * `('global', 'global', owner_key)` at a minted creation time; the binding is
+ * the only way to find it again, so two accounts never share one. A scope has
+ * at most one binding, and a guest merge may leave a scope with none. The step
+ * only adds a table and rewrites no data, so it needs no copy of the database
+ * first.
+ */
+const SCHEMA_VERSION_5_STATEMENTS: readonly string[] = [
+  `CREATE TABLE ledger_global_bindings (
+    owner_key TEXT NOT NULL,
+    account_key TEXT NOT NULL,
+    ledger_id TEXT NOT NULL UNIQUE REFERENCES ledger_scopes (ledger_id) ON DELETE CASCADE,
+    PRIMARY KEY (owner_key, account_key)
+  ) STRICT`,
+];
+
+function addGlobalBindings(db: DatabaseSync): void {
+  for (const statement of SCHEMA_VERSION_5_STATEMENTS) {
+    db.exec(statement);
+  }
+}
+
+/**
  * Ordered migration steps. Each runs in its own `BEGIN IMMEDIATE` transaction
  * that also records the new version, so a failure leaves the previous version
  * intact. A step that rewrites existing data must first copy the database
@@ -288,6 +314,7 @@ const LEDGER_SCHEMA_MIGRATIONS: readonly LedgerSchemaMigration[] = [
   { toVersion: 2, apply: indexMutationActors },
   { toVersion: 3, apply: addScopeSync },
   { toVersion: 4, apply: addPendingTitles },
+  { toVersion: 5, apply: addGlobalBindings },
 ];
 
 function tableExists(db: DatabaseSync, name: string): boolean {

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import type {
   AiCreditsScopeRequest,
   CanopyCloudAccountPublicState,
@@ -6,15 +13,29 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { useStableAiCreditsScope } from '@/lib/aiCreditsScope';
 import { lapsedOrgNames as lapsedOrgNamesFrom } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
-import { LoadingSpinner } from '@canopy/ui-shared';
 import {
-  announceAiCreditsChanged,
+  AI_CREDITS_CHECK_AGAIN_LABEL,
+  AI_CREDITS_HANDOFF_COPY,
+  AiCreditsCheckFeedback,
+  LoadingSpinner,
+  type AiCreditsCheckFeedbackKind,
+} from '@canopy/ui-shared';
+import {
   getAiCreditsConnectContext,
   invalidateSharedAiCreditsRead,
   openBillingPage,
   readSharedAiCreditsAvailability,
+  type BillingDestination,
+  type BillingPageOpenResult,
+  type OpenBillingPageOptions,
   resolveAiCreditsCoverage,
 } from '@/lib/openBillingPage';
+import { announceAiCreditsChanged } from '@/lib/aiCreditsChanged';
+import {
+  beginAiCreditsArrivalHandoff,
+  type AiCreditsArrivalHandoff,
+  type AiCreditsArrivalOrigin,
+} from '@/lib/aiCreditsArrivalConfirmation';
 import {
   isConnectedNonGuest,
   useCloudConnectGateStore,
@@ -27,7 +48,10 @@ import { ACCOUNT_BUTTON_PRIMARY } from '@/lib/account-button-styles';
  * Cases A, B and C, plus the two existing banners, all end in the same place:
  * `requestConnect` → `openBillingPage` → either Billing opens inside Settings
  * (the CTA returns to idle) or the user leaves for the browser → they come
- * back → we reprobe and either commit or keep waiting. Implementing
+ * back → we reprobe and either commit or keep waiting. Which of the two a
+ * click may open is the host's `billingDestination`: overlay hosts keep
+ * `'auto'` (Settings when it can open), while the inline chat banners pass
+ * `'browser'` so the purchase stays tracked in the chat (CAN-5159). Implementing
  * that per branch is how coverage detection, throttling, cache invalidation and
  * `CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT` get subtly wrong in four places at once,
  * so it lives here and takes only what actually varies.
@@ -123,7 +147,44 @@ async function probeCreditsAvailability(
   return probe;
 }
 
+/**
+ * A forced, non-covered **Check again** stays busy at least this long from the
+ * click (CAN-5162), so repeating the same answer is still a visible change.
+ * Request time counts toward it; a covered result never waits.
+ */
+const CHECK_AGAIN_MIN_BUSY_MS = 500;
+
 export type GetAiCreditsCtaVariant = 'primary' | 'inline';
+
+/**
+ * The browser hand-off a compact host describes in its own notice copy while
+ * this CTA shows only **Check again**. Primitive fields plus one stable
+ * callback, so a host can store it in state without re-triggering the CTA.
+ */
+export interface GetAiCreditsHandoffState {
+  /**
+   * What the last Check again concluded, or `null` while simply waiting for
+   * the user to finish in the browser.
+   */
+  readonly feedback: AiCreditsCheckFeedbackKind | null;
+  /**
+   * Opens billing again without leaving the hand-off. Absent after a failed
+   * check, which is retried with Check again instead.
+   */
+  readonly onReopenBilling?: () => void;
+  readonly reopenPending: boolean;
+  readonly reopenDisabled: boolean;
+  /**
+   * Check again, for a host whose own coverage read found the credits while
+   * this hand-off's automatic check could not conclude (an account change on
+   * return supersedes it). A covered check records the arrival; any other
+   * answer leaves the hand-off as it was. Returns `false` when a check or
+   * reopen is already running, so the host can ask again once it finishes.
+   */
+  readonly onCheckAgain: () => boolean;
+  /** A check or reopen is running; Check again waits for it to finish. */
+  readonly checking: boolean;
+}
 
 export interface GetAiCreditsCtaProps {
   /** e.g. "Get AI Credits" / "Add credits to use Claude Opus 4.5". */
@@ -159,11 +220,11 @@ export interface GetAiCreditsCtaProps {
    * **Check again**, which is right for the modal and the picker footer — both
    * are vertical, full-width surfaces.
    *
-   * `'compact'` is for the two banners, whose action bar is a horizontal,
-   * right-aligned row of buttons: dropping a two-line block into it re-flows
-   * the whole bar. There the explanation moves onto the button itself
-   * (`title` + `aria-label`) so the hand-off state stays exactly one button
-   * wide, like every other control in that row.
+   * `'compact'` is for the two banners, whose action bar is a row of buttons:
+   * dropping a two-line block into it re-flows the whole bar. There the CTA
+   * renders only **Check again** and reports the hand-off through
+   * `onHandoffChange`, so the host's own title and message say what is
+   * happening and **Reopen billing** joins the host's buttons.
    */
   readonly handoffLayout?: 'block' | 'compact';
   /**
@@ -208,6 +269,29 @@ export interface GetAiCreditsCtaProps {
    * banner hosts omit it.
    */
   readonly onOpenedInApp?: () => void;
+  /**
+   * Where a click may open billing (CAN-5159). `'auto'` (default) opens
+   * Settings → Billing in-app when it can, which ends this CTA's hand-off.
+   * `'browser'` always opens the signed-in web top-up, so the waiting state,
+   * Check again, the focus re-check and the arrival record survive in the
+   * host. For inline banner hosts with no overlay to close.
+   */
+  readonly billingDestination?: BillingDestination;
+  /**
+   * Compact hosts only: receives the browser hand-off while it lasts, or
+   * `null` when there is none. Hosts clear their own copy when the CTA is
+   * removed; unmount never updates a parent.
+   */
+  readonly onHandoffChange?: (handoff: GetAiCreditsHandoffState | null) => void;
+  /** The user pressed the button. For recovery telemetry (CAN-4633). */
+  readonly onGetCreditsClick?: () => void;
+  /**
+   * Track the browser hand-off so its first covered return records an
+   * arrival confirmation for the chat in `aiCreditsScope` (CAN-5160). Only a
+   * host that renders that confirmation opts in, naming itself as the
+   * record's origin. Untracked when omitted.
+   */
+  readonly confirmArrival?: AiCreditsArrivalOrigin;
   readonly dataTestId?: string;
 }
 
@@ -220,12 +304,26 @@ export interface GetAiCreditsCtaProps {
  */
 type CoverageCommitOutcome = 'covered' | 'uncovered' | 'unknown' | 'gone';
 
-/** Shown once the user has been sent to billing, in both layouts. */
-const HANDOFF_COPY =
-  "Finish adding credits in your browser — we'll pick this up as soon as they land.";
+/**
+ * Shown above Check again in the stacked layout, the same step the banners
+ * name in their own title and message (CAN-5160).
+ */
+const HANDOFF_COPY = AI_CREDITS_HANDOFF_COPY.waiting;
+
+/**
+ * A browser destination also asks the web page to open its credits top-up
+ * (CAN-5159); only the chat banners use it, so the source is always the banner.
+ */
+function billingOpenOptions(
+  destination: BillingDestination,
+): OpenBillingPageOptions {
+  return destination === 'browser'
+    ? { destination, topUpSource: 'banner' }
+    : { destination };
+}
 
 const INLINE_BUTTON_CLASS =
-  'mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-2xs fg-primary transition hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-60';
+  'mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-2xs fg-primary transition-colors hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-60';
 
 export function GetAiCreditsCta({
   label,
@@ -239,6 +337,10 @@ export function GetAiCreditsCta({
   handoffOnInconclusiveRead = false,
   aiCreditsScope,
   onOpenedInApp,
+  billingDestination = 'auto',
+  onHandoffChange,
+  onGetCreditsClick,
+  confirmArrival,
   dataTestId = 'get-ai-credits-cta',
 }: GetAiCreditsCtaProps): JSX.Element {
   const { scope: stableAiCreditsScope, key: aiCreditsScopeKey } =
@@ -266,7 +368,35 @@ export function GetAiCreditsCta({
    * would appear to do nothing at all.
    */
   const [readFailed, setReadFailed] = useState(false);
+  /**
+   * What the last Check again concluded while handed off (CAN-5162). Only a
+   * conclusive uncovered read or a failed forced read sets it; a covered read,
+   * a new hand-off and a scope change clear it.
+   */
+  const [checkFeedback, setCheckFeedback] =
+    useState<AiCreditsCheckFeedbackKind | null>(null);
+  const [reopenPending, setReopenPending] = useState(false);
   const mountedRef = useRef(true);
+  /**
+   * Bumped on every scope change and on unmount. An awaited read, minimum-busy
+   * timer or reopen captures it and must find it unchanged before acting: a
+   * scope that changes away and back leaves the key equal but the generation
+   * moved on.
+   */
+  const lifecycleRef = useRef(0);
+  /**
+   * The one check or reopen in flight for this instance. Serializes Check
+   * again, focus/visibility checks and Reopen billing, and lets a stale
+   * completion recognize that it no longer owns the busy state.
+   */
+  const operationRef = useRef<object | null>(null);
+  const minimumBusyHoldRef = useRef<{
+    readonly timer: ReturnType<typeof setTimeout>;
+    readonly release: () => void;
+  } | null>(null);
+  const checkAgainButtonRef = useRef<HTMLButtonElement | null>(null);
+  const primaryButtonRef = useRef<HTMLButtonElement | null>(null);
+  const restoreFocusAfterReopenRef = useRef(false);
   const availabilityRef = useRef<NativeAiCreditsAvailability | null>(null);
   /**
    * The in-flight seed read, so the hand-off can AWAIT it instead of racing it.
@@ -297,13 +427,40 @@ export function GetAiCreditsCta({
    * begins so a later covered → uncovered → purchase cycle still commits.
    */
   const coveredRef = useRef(false);
-  const checkInFlightRef = useRef(false);
+  const coveredCommitRef = useRef<object | null>(null);
   // Read through a ref so the focus/visibilitychange listeners below never have
   // to re-register just because the caller passed a new closure.
   const onCoveredRef = useRef(onCovered);
   onCoveredRef.current = onCovered;
   const onOpenedInAppRef = useRef(onOpenedInApp);
   onOpenedInAppRef.current = onOpenedInApp;
+  const billingDestinationRef = useRef(billingDestination);
+  billingDestinationRef.current = billingDestination;
+  const onHandoffChangeRef = useRef(onHandoffChange);
+  onHandoffChangeRef.current = onHandoffChange;
+  const onGetCreditsClickRef = useRef(onGetCreditsClick);
+  onGetCreditsClickRef.current = onGetCreditsClick;
+  const confirmArrivalRef = useRef(confirmArrival);
+  confirmArrivalRef.current = confirmArrival;
+  /**
+   * The browser hand-off an arrival confirmation may come from (CAN-5160).
+   * Started at the click so its baseline balance read can finish before the
+   * browser opens; dropped on every path that is not a browser return.
+   */
+  const arrivalHandoffRef = useRef<AiCreditsArrivalHandoff | null>(null);
+  const clearArrivalHandoff = useCallback((): void => {
+    arrivalHandoffRef.current?.cancel();
+    arrivalHandoffRef.current = null;
+  }, []);
+  const ensureArrivalHandoff = useCallback((): void => {
+    const origin = confirmArrivalRef.current;
+    if (origin === undefined) return;
+    if (arrivalHandoffRef.current?.isLive() === true) return;
+    arrivalHandoffRef.current = beginAiCreditsArrivalHandoff(
+      scopeRef.current,
+      origin,
+    );
+  }, []);
   // NOTE: availability lives ONLY in `availabilityRef`, and every path that
   // learns one writes it there directly.
   //
@@ -316,12 +473,27 @@ export function GetAiCreditsCta({
   // the very next render. A render-phase ref write is also unsafe under
   // StrictMode double-rendering. Do not reintroduce either half.
 
+  const cancelMinimumBusyHold = useCallback((): void => {
+    const hold = minimumBusyHoldRef.current;
+    minimumBusyHoldRef.current = null;
+    if (hold) {
+      clearTimeout(hold.timer);
+      // Settle the awaiting check so its `finally` runs; it then finds the
+      // generation moved on and does nothing else.
+      hold.release();
+    }
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     return (): void => {
       mountedRef.current = false;
+      lifecycleRef.current += 1;
+      operationRef.current = null;
+      cancelMinimumBusyHold();
+      clearArrivalHandoff();
     };
-  }, []);
+  }, [cancelMinimumBusyHold, clearArrivalHandoff]);
 
   // Seed the pricing URL / org coverage that `openBillingPage` needs. Not
   // forced: the shared throttle already keeps this cheap across mounts. The
@@ -330,15 +502,21 @@ export function GetAiCreditsCta({
   useEffect(() => {
     const seedKey = aiCreditsScopeKey;
     availabilityRef.current = null;
+    lifecycleRef.current += 1;
+    operationRef.current = null;
+    cancelMinimumBusyHold();
     setBusy(false);
     setHandedOff(false);
     setHandoffFailed(false);
     setReadFailed(false);
+    setCheckFeedback(null);
+    setReopenPending(false);
     awaitingCloudGateRef.current = false;
     sawCloudGateRef.current = false;
     handoffStartedRef.current = false;
     coveredRef.current = false;
-    checkInFlightRef.current = false;
+    coveredCommitRef.current = null;
+    clearArrivalHandoff();
     const seed = readAvailabilitySafely({ scope: stableAiCreditsScope });
     availabilityPromiseRef.current = seed;
     void seed.then((native) => {
@@ -350,7 +528,12 @@ export function GetAiCreditsCta({
         availabilityRef.current = native;
       }
     });
-  }, [aiCreditsScopeKey, stableAiCreditsScope]);
+  }, [
+    aiCreditsScopeKey,
+    stableAiCreditsScope,
+    cancelMinimumBusyHold,
+    clearArrivalHandoff,
+  ]);
 
   /**
    * The availability the hand-off should use, waiting on the seed read if it is
@@ -361,6 +544,7 @@ export function GetAiCreditsCta({
   const resolveAvailabilityForHandoff =
     useCallback(async (): Promise<NativeAiCreditsAvailability | null> => {
       const requestScopeKey = scopeKeyRef.current;
+      const generation = lifecycleRef.current;
       if (availabilityRef.current !== null) {
         return availabilityRef.current;
       }
@@ -369,7 +553,12 @@ export function GetAiCreditsCta({
         readAvailabilitySafely({ scope: scopeRef.current });
       availabilityPromiseRef.current = pending;
       const native = await pending;
-      if (scopeKeyRef.current !== requestScopeKey) return null;
+      if (
+        !mountedRef.current ||
+        lifecycleRef.current !== generation ||
+        scopeKeyRef.current !== requestScopeKey
+      )
+        return null;
       if (native === null) {
         // A settled-`null` promise must not be cached HERE, or a seed read that
         // failed once would be replayed for the life of this instance and
@@ -419,13 +608,23 @@ export function GetAiCreditsCta({
     // the await, both would pass the check and commit twice, which is the exact
     // double-commit this latch exists to prevent.
     coveredRef.current = true;
+    const commit = {};
+    coveredCommitRef.current = commit;
+    const generation = lifecycleRef.current;
+    const isCurrent = (): boolean =>
+      mountedRef.current &&
+      lifecycleRef.current === generation &&
+      coveredCommitRef.current === commit;
     try {
-      if ((await onCoveredRef.current()) === false) {
+      const accepted = await onCoveredRef.current();
+      if (!isCurrent()) return;
+      if (accepted === false) {
         // Refused: the host saw the coverage but could not apply it. Release
         // the latch so the user can press again once the block clears.
         coveredRef.current = false;
       }
     } catch {
+      if (!isCurrent()) return;
       // A throw is not a commit. Releasing matters more here than anywhere
       // else: nothing resets this latch except `beginBillingHandoff`, which a
       // covered-account retry never reaches, so keeping it armed would make
@@ -461,10 +660,15 @@ export function GetAiCreditsCta({
   const commitIfAlreadyCovered =
     useCallback(async (): Promise<CoverageCommitOutcome> => {
       const requestScopeKey = scopeKeyRef.current;
+      const generation = lifecycleRef.current;
       const native = await readAvailabilitySafely({
         scope: scopeRef.current,
       });
-      if (!mountedRef.current || scopeKeyRef.current !== requestScopeKey) {
+      if (
+        !mountedRef.current ||
+        lifecycleRef.current !== generation ||
+        scopeKeyRef.current !== requestScopeKey
+      ) {
         return 'gone';
       }
       if (native !== null) {
@@ -476,58 +680,253 @@ export function GetAiCreditsCta({
       if (!resolveAiCreditsCoverage(native).canSpendCredits) {
         return 'uncovered';
       }
+      // Covered without a browser return: nothing arrived from a hand-off.
+      clearArrivalHandoff();
       setBusy(false);
       announceAiCreditsChanged();
       void commitCovered();
       return 'covered';
-    }, [commitCovered]);
+    }, [clearArrivalHandoff, commitCovered]);
 
+  /**
+   * Wait out the rest of {@link CHECK_AGAIN_MIN_BUSY_MS} from `startedAt`.
+   * Cancelled (and settled early) by a scope change or unmount.
+   */
+  const waitForMinimumBusy = useCallback((startedAt: number): Promise<void> => {
+    const remaining = CHECK_AGAIN_MIN_BUSY_MS - (Date.now() - startedAt);
+    if (remaining <= 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout((): void => {
+        if (minimumBusyHoldRef.current?.timer === timer) {
+          minimumBusyHoldRef.current = null;
+        }
+        resolve();
+      }, remaining);
+      minimumBusyHoldRef.current = { timer, release: resolve };
+    });
+  }, []);
+
+  /**
+   * Re-read coverage while handed off.
+   *
+   * `force` is **Check again**: it bypasses the throttle, clears the previous
+   * verdict while pending (so the same answer twice is still announced), and
+   * reports a failed or inconclusive read as such. An automatic focus or
+   * visibility read stays silent unless it is conclusive: its `null` may only
+   * mean "throttled". `quiet` forces the read for a host but reports nothing
+   * the user did not ask for. Only a covered read commits, and it never waits.
+   */
   const checkCoverage = useCallback(
-    async (force: boolean): Promise<void> => {
+    async (force: boolean, quiet = false): Promise<void> => {
       if (!mountedRef.current) return;
       // Per-instance guard, not just the shared probe: `focus` and
       // `visibilitychange` both fire on return, and two callers awaiting the
       // SAME shared probe would each fall through to `commitCovered` below.
-      if (checkInFlightRef.current) return;
-      checkInFlightRef.current = true;
-      setBusy(true);
+      // It also keeps a check from racing a Reopen billing.
+      if (operationRef.current !== null) return;
+      const operation = {};
+      operationRef.current = operation;
+      const generation = lifecycleRef.current;
       const requestScopeKey = scopeKeyRef.current;
+      const isCurrent = (): boolean =>
+        mountedRef.current &&
+        lifecycleRef.current === generation &&
+        scopeKeyRef.current === requestScopeKey &&
+        operationRef.current === operation;
+      const startedAt = Date.now();
+      setBusy(true);
+      if (force && !quiet) setCheckFeedback(null);
       try {
-        const native = await probeCreditsAvailability(
-          force,
-          scopeRef.current,
-          requestScopeKey,
-        );
-        if (!mountedRef.current || scopeKeyRef.current !== requestScopeKey) {
-          return;
+        let native: NativeAiCreditsAvailability | null = null;
+        try {
+          native = await probeCreditsAvailability(
+            force,
+            scopeRef.current,
+            requestScopeKey,
+          );
+        } catch {
+          native = null;
         }
-        if (native === null) {
-          // Throttled or failed — keep whatever we already knew.
+        if (!isCurrent()) return;
+        if (native === null || native.inconclusive === true) {
+          // Not evidence about the balance. An automatic read keeps whatever
+          // we already said; a forced one says the check itself failed.
+          if (!force || quiet) return;
+          await waitForMinimumBusy(startedAt);
+          if (!isCurrent()) return;
+          setCheckFeedback('check-failed');
           return;
         }
         availabilityRef.current = native;
         if (resolveAiCreditsCoverage(native).canSpendCredits) {
+          setCheckFeedback(null);
           setHandedOff(false);
           // The hand-off is over, so the one-shot latch must open again or a
           // later purchase from this same instance would spin forever.
           handoffStartedRef.current = false;
+          // Only the hand-off's first covered return records an arrival, and
+          // before the announcement, so its account recheck reconciles it.
+          arrivalHandoffRef.current?.recordCovered();
+          // Keep the cancellation handle until cleanup: identity may still
+          // be resolving, and a scope change or unmount must fence it too.
           // Announce every confirmed-covered read, even if this instance has
           // already committed: hosts (the usage-limit banner) re-derive their
           // affordances from it, and skipping it leaves them stale.
           announceAiCreditsChanged();
           void commitCovered();
+          return;
         }
+        if (quiet) return;
+        if (force) {
+          await waitForMinimumBusy(startedAt);
+          if (!isCurrent()) return;
+        }
+        setCheckFeedback('uncovered');
       } finally {
-        if (scopeKeyRef.current === requestScopeKey) {
-          checkInFlightRef.current = false;
-        }
-        if (mountedRef.current && scopeKeyRef.current === requestScopeKey) {
-          setBusy(false);
+        // A stale completion must not release a newer operation's guard or
+        // clear its busy state.
+        if (operationRef.current === operation) {
+          operationRef.current = null;
+          if (mountedRef.current && lifecycleRef.current === generation) {
+            setBusy(false);
+          }
         }
       }
     },
-    [commitCovered],
+    [commitCovered, waitForMinimumBusy],
   );
+
+  /**
+   * **Reopen billing** after a conclusive uncovered check (CAN-5162).
+   *
+   * Reuses the hand-off's availability resolver and `openBillingPage` without
+   * re-arming the one-shot hand-off latch, which stays held while the user is
+   * in the browser. Serialized with checks, so repeated clicks open one page.
+   */
+  const reopenBilling = useCallback((): void => {
+    if (!mountedRef.current) return;
+    if (operationRef.current !== null) return;
+    const operation = {};
+    operationRef.current = operation;
+    const generation = lifecycleRef.current;
+    const requestScopeKey = scopeKeyRef.current;
+    const scope = scopeRef.current;
+    const isCurrent = (): boolean =>
+      mountedRef.current &&
+      lifecycleRef.current === generation &&
+      scopeKeyRef.current === requestScopeKey &&
+      operationRef.current === operation;
+    setReopenPending(true);
+    void (async (): Promise<void> => {
+      let result: BillingPageOpenResult | 'stale';
+      try {
+        const native = await resolveAvailabilityForHandoff();
+        // Validate BEFORE opening: the open is a visible side effect.
+        result = isCurrent()
+          ? await openBillingPage(
+              native,
+              scope,
+              billingOpenOptions(billingDestinationRef.current),
+            )
+          : 'stale';
+      } catch {
+        result = 'failed';
+      } finally {
+        if (isCurrent()) setReopenPending(false);
+        if (operationRef.current === operation) operationRef.current = null;
+      }
+      if (
+        !mountedRef.current ||
+        lifecycleRef.current !== generation ||
+        scopeKeyRef.current !== requestScopeKey ||
+        result === 'stale'
+      )
+        return;
+      setReopenPending(false);
+      setCheckFeedback(null);
+      restoreFocusAfterReopenRef.current = true;
+      if (result === 'web') {
+        // Still handed off: the focus/visibility listeners stay registered.
+        return;
+      }
+      setHandedOff(false);
+      handoffStartedRef.current = false;
+      clearArrivalHandoff();
+      if (result === 'settings') {
+        restoreFocusAfterReopenRef.current = false;
+        // Call the host last: it may unmount us.
+        onOpenedInAppRef.current?.();
+        return;
+      }
+      setHandoffFailed(true);
+    })();
+  }, [clearArrivalHandoff, resolveAvailabilityForHandoff]);
+
+  // Reopen billing disappears once it settles; keep keyboard focus on the CTA
+  // instead of dropping it to the document.
+  useEffect(() => {
+    if (!restoreFocusAfterReopenRef.current || reopenPending) return;
+    restoreFocusAfterReopenRef.current = false;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    (handedOff ? checkAgainButtonRef : primaryButtonRef).current?.focus();
+  }, [handedOff, reopenPending, checkFeedback]);
+
+  const visibleCheckFeedback = handedOff ? checkFeedback : null;
+  const reopenDisabled = busy || disabled;
+  // The block layout renders the verdict itself, with Reopen billing only
+  // after a conclusive uncovered check.
+  const checkFeedbackState = useMemo((): {
+    readonly kind: AiCreditsCheckFeedbackKind;
+    readonly onReopenBilling?: () => void;
+    readonly reopenPending: boolean;
+    readonly reopenDisabled: boolean;
+  } | null => {
+    if (visibleCheckFeedback === null) return null;
+    return {
+      kind: visibleCheckFeedback,
+      ...(visibleCheckFeedback === 'uncovered'
+        ? { onReopenBilling: reopenBilling }
+        : {}),
+      reopenPending,
+      reopenDisabled,
+    };
+  }, [visibleCheckFeedback, reopenBilling, reopenPending, reopenDisabled]);
+  const checkAgain = useCallback((): boolean => {
+    if (!mountedRef.current || operationRef.current !== null) return false;
+    void checkCoverage(true, true);
+    return true;
+  }, [checkCoverage]);
+  // A compact host describes the whole hand-off, so Reopen billing is offered
+  // while waiting too; only a failed check leaves it out. `checking` makes
+  // each check re-render the host, which needs it to ask again afterwards.
+  const handoffState = useMemo((): GetAiCreditsHandoffState | null => {
+    if (!handedOff) return null;
+    return {
+      feedback: visibleCheckFeedback,
+      ...(visibleCheckFeedback === 'check-failed'
+        ? {}
+        : { onReopenBilling: reopenBilling }),
+      reopenPending,
+      reopenDisabled,
+      onCheckAgain: checkAgain,
+      checking: busy || reopenPending,
+    };
+  }, [
+    handedOff,
+    visibleCheckFeedback,
+    reopenBilling,
+    reopenPending,
+    reopenDisabled,
+    checkAgain,
+    busy,
+  ]);
+
+  // Hand the compact host its hand-off. Keyed on the memoized state, so a
+  // host re-render alone never calls back.
+  useEffect(() => {
+    onHandoffChangeRef.current?.(handoffState);
+  }, [handoffState]);
 
   // §5 post-purchase return. Registered ONLY while handed off to billing, so an
   // ordinary alt-tab away from the picker costs nothing.
@@ -566,11 +965,22 @@ export function GetAiCreditsCta({
     awaitingCloudGateRef.current = false;
     if (handoffStartedRef.current) return;
     handoffStartedRef.current = true;
-    // A fresh hand-off is a fresh chance to commit.
+    // A fresh hand-off is a fresh chance to commit. A previous host callback
+    // can still be pending, so revoke its ownership of this latch as well.
     coveredRef.current = false;
+    coveredCommitRef.current = null;
     setHandoffFailed(false);
+    setCheckFeedback(null);
+    // Reuses the click's hand-off; one made after a sign-in starts here.
+    ensureArrivalHandoff();
     void (async (): Promise<void> => {
       const requestScopeKey = scopeKeyRef.current;
+      const generation = lifecycleRef.current;
+      const scope = scopeRef.current;
+      const isCurrent = (): boolean =>
+        mountedRef.current &&
+        lifecycleRef.current === generation &&
+        scopeKeyRef.current === requestScopeKey;
       // Wait for a conclusive read first: `openBillingPage`'s unauthenticated
       // fallback needs `pricingUrl`, and without it a rejected authenticated
       // hand-off opens NOTHING.
@@ -579,21 +989,31 @@ export function GetAiCreditsCta({
       // effect — a browser tab or the Settings overlay — so a post-open bail
       // still leaves the user looking at a page they can no longer connect to
       // anything they did.
-      if (!mountedRef.current || scopeKeyRef.current !== requestScopeKey) {
+      if (!isCurrent()) {
         return;
       }
-      const result = await openBillingPage(native, scopeRef.current);
-      if (!mountedRef.current || scopeKeyRef.current !== requestScopeKey) {
+      const arrivalHandoff = arrivalHandoffRef.current;
+      arrivalHandoff?.markExternalOpen();
+      const result = await openBillingPage(
+        native,
+        scope,
+        billingOpenOptions(billingDestinationRef.current),
+      );
+      if (!isCurrent()) {
         return;
       }
       setBusy(false);
       if (result === 'web') {
+        if (arrivalHandoffRef.current === arrivalHandoff) {
+          arrivalHandoff?.retain();
+        }
         setHandedOff(true);
         return;
       }
       // Not a browser hand-off: release the one-shot latch so the button works
       // again.
       handoffStartedRef.current = false;
+      clearArrivalHandoff();
       if (result === 'settings') {
         // The user is looking at Settings → Billing inside the app, so there
         // is no browser return to wait for. This CTA stops tracking the
@@ -606,7 +1026,11 @@ export function GetAiCreditsCta({
       // user on "finish this in your browser" for a page that never appeared.
       setHandoffFailed(true);
     })();
-  }, [resolveAvailabilityForHandoff]);
+  }, [
+    clearArrivalHandoff,
+    ensureArrivalHandoff,
+    resolveAvailabilityForHandoff,
+  ]);
 
   /**
    * What to do once an account is connected.
@@ -619,7 +1043,9 @@ export function GetAiCreditsCta({
    */
   const proceedAfterConnect = useCallback((): void => {
     void (async (): Promise<void> => {
+      const generation = lifecycleRef.current;
       const outcome = await commitIfAlreadyCovered();
+      if (!mountedRef.current || lifecycleRef.current !== generation) return;
       if (outcome === 'covered') {
         awaitingCloudGateRef.current = false;
         return;
@@ -648,6 +1074,7 @@ export function GetAiCreditsCta({
           return;
         }
         awaitingCloudGateRef.current = false;
+        clearArrivalHandoff();
         if (mountedRef.current) {
           setBusy(false);
           setReadFailed(true);
@@ -656,7 +1083,12 @@ export function GetAiCreditsCta({
       }
       beginBillingHandoff();
     })();
-  }, [beginBillingHandoff, commitIfAlreadyCovered, handoffOnInconclusiveRead]);
+  }, [
+    beginBillingHandoff,
+    clearArrivalHandoff,
+    commitIfAlreadyCovered,
+    handoffOnInconclusiveRead,
+  ]);
 
   const requestBillingHandoff = useCallback((): void => {
     awaitingCloudGateRef.current = true;
@@ -671,8 +1103,30 @@ export function GetAiCreditsCta({
     // requires a gate that actually opened), so nothing loses its shared answer
     // by starting a new episode here.
     invalidateSharedAiCreditsRead();
-    requestConnect(getAiCreditsConnectContext(), proceedAfterConnect);
-  }, [proceedAfterConnect, requestConnect]);
+    // A new click supersedes any earlier hand-off and reads its baseline now,
+    // in parallel with the coverage read, so it can settle before the open.
+    clearArrivalHandoff();
+    ensureArrivalHandoff();
+    const generation = lifecycleRef.current;
+    const requestScopeKey = scopeKeyRef.current;
+    const connectContext = getAiCreditsConnectContext({
+      destination: billingDestinationRef.current,
+    });
+    requestConnect(connectContext, (): void => {
+      if (
+        !mountedRef.current ||
+        lifecycleRef.current !== generation ||
+        scopeKeyRef.current !== requestScopeKey
+      )
+        return;
+      proceedAfterConnect();
+    });
+  }, [
+    clearArrivalHandoff,
+    ensureArrivalHandoff,
+    proceedAfterConnect,
+    requestConnect,
+  ]);
 
   // When the shared cloud modal closes, it performs its own account re-check
   // before invoking `proceed`. Mirror that read so a cancelled gate can clear
@@ -685,10 +1139,16 @@ export function GetAiCreditsCta({
       return;
     }
     if (!sawCloudGateRef.current) return;
+    const generation = lifecycleRef.current;
     void window.api
       .loadCanopyCloudAccount()
       .then((account) => {
-        if (!mountedRef.current || !awaitingCloudGateRef.current) return;
+        if (
+          !mountedRef.current ||
+          lifecycleRef.current !== generation ||
+          !awaitingCloudGateRef.current
+        )
+          return;
         if (isConnectedNonGuest(account)) {
           // Coverage first: a just-created account may already have the free
           // starting credits the guest copy promised.
@@ -696,16 +1156,19 @@ export function GetAiCreditsCta({
           return;
         }
         awaitingCloudGateRef.current = false;
+        clearArrivalHandoff();
         setBusy(false);
       })
       .catch(() => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || lifecycleRef.current !== generation) return;
         awaitingCloudGateRef.current = false;
+        clearArrivalHandoff();
         setBusy(false);
       });
-  }, [cloudGatePending, proceedAfterConnect]);
+  }, [clearArrivalHandoff, cloudGatePending, proceedAfterConnect]);
 
   const handleGetCredits = useCallback((): void => {
+    onGetCreditsClickRef.current?.();
     setBusy(true);
     // A new attempt supersedes EVERY previous verdict, not just the newest
     // one. Clearing only `readFailed` let the two warning lines stack: a first
@@ -724,6 +1187,7 @@ export function GetAiCreditsCta({
     // one-click billing hand-off or must escalate into ModelRecoveryModal.
     void (async (): Promise<void> => {
       const requestScopeKey = scopeKeyRef.current;
+      const generation = lifecycleRef.current;
       let native: NativeAiCreditsAvailability | null = null;
       let account: CanopyCloudAccountPublicState | null | undefined;
       try {
@@ -745,7 +1209,11 @@ export function GetAiCreditsCta({
         native = null;
         account = null;
       }
-      if (!mountedRef.current || scopeKeyRef.current !== requestScopeKey) {
+      if (
+        !mountedRef.current ||
+        lifecycleRef.current !== generation ||
+        scopeKeyRef.current !== requestScopeKey
+      ) {
         return;
       }
       availabilityRef.current = native;
@@ -787,34 +1255,35 @@ export function GetAiCreditsCta({
   if (handedOff) {
     const checkAgain = (
       <button
+        ref={checkAgainButtonRef}
         type="button"
         data-testid={`${dataTestId}-check-again`}
         // Honors the host's inert gate as well as our own busy state, exactly
         // like the primary button below. A host that knows its own read is in
         // flight means it for every control in this CTA, not just the one it
         // happened to be looking at when it passed the prop.
-        disabled={busy || disabled}
+        disabled={busy || disabled || reopenPending}
+        aria-busy={busy}
         onMouseDown={(e): void => e.preventDefault()}
         // Forced: bypasses the §5 throttle so a user returning inside the
         // 60s window gets a real read instead of a silent no-op.
         onClick={(): void => void checkCoverage(true)}
-        className={buttonClass}
-        {...(handoffLayout === 'compact'
-          ? {
-              title: HANDOFF_COPY,
-              'aria-label': `Check again — ${HANDOFF_COPY}`,
-            }
-          : {})}
+        className={`relative ${buttonClass}`}
       >
         {busy && (
-          <LoadingSpinner dataTestId={`${dataTestId}-spinner`} decorative />
+          <span
+            className="pointer-events-none absolute inset-y-0 left-0.5 flex items-center"
+            aria-hidden="true"
+          >
+            <LoadingSpinner dataTestId={`${dataTestId}-spinner`} decorative />
+          </span>
         )}
-        Check again
+        {AI_CREDITS_CHECK_AGAIN_LABEL}
       </button>
     );
 
-    // Compact: one button, no stacked paragraph, so a banner's horizontal
-    // action bar keeps its shape. The copy survives on the button itself.
+    // Compact: one button, no stacked paragraph, so a banner's action bar
+    // keeps its shape. The host's notice copy explains the hand-off.
     if (handoffLayout === 'compact') {
       return (
         <span
@@ -831,8 +1300,30 @@ export function GetAiCreditsCta({
         className="flex flex-col gap-1.5"
         data-testid={`${dataTestId}-handoff`}
       >
-        <p className="text-2xs leading-snug fg-secondary">{HANDOFF_COPY}</p>
+        <p className="text-2xs leading-snug fg-secondary">
+          <span className="font-medium fg-primary">{HANDOFF_COPY.title}.</span>{' '}
+          {HANDOFF_COPY.message}
+        </p>
         {checkAgain}
+        {/* Always mounted while handed off, so a new verdict is a change
+            inside an existing polite region rather than a new region. */}
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid={`${dataTestId}-check-feedback-region`}
+        >
+          {checkFeedbackState ? (
+            <AiCreditsCheckFeedback
+              kind={checkFeedbackState.kind}
+              {...(checkFeedbackState.onReopenBilling
+                ? { onReopenBilling: checkFeedbackState.onReopenBilling }
+                : {})}
+              reopenPending={checkFeedbackState.reopenPending}
+              reopenDisabled={checkFeedbackState.reopenDisabled}
+              dataTestId={`${dataTestId}-check-feedback`}
+            />
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -848,6 +1339,7 @@ export function GetAiCreditsCta({
         <p className="text-2xs leading-snug fg-secondary">{description}</p>
       ) : null}
       <button
+        ref={primaryButtonRef}
         type="button"
         data-testid={dataTestId}
         disabled={busy || disabled}

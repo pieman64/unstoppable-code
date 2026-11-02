@@ -52,6 +52,7 @@ import {
   PlanReviewThread,
   type PlanReviewAuthor,
 } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 
 /**
  * Map a comment to the shared review author shape, from the plan owner's
@@ -742,22 +743,18 @@ function PlanDocumentPanelImpl({
                   className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
                 />
                 <div className="mt-1 flex items-center justify-end gap-1.5">
-                  <button
-                    type="button"
-                    onClick={cancelEditingComment}
-                    className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
-                  >
+                  <Button size="compact" onClick={cancelEditingComment}>
                     Cancel
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="compact"
                     onClick={saveEditingComment}
                     disabled={editingComment.body.trim().length === 0}
                     data-testid={`plan-comment-edit-save-${comment.id}`}
-                    className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
                   >
                     Save
-                  </button>
+                  </Button>
                 </div>
               </PlanReviewComment>
             );
@@ -868,22 +865,18 @@ function PlanDocumentPanelImpl({
               className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
             />
             <div className="flex items-center justify-end gap-1.5">
-              <button
-                type="button"
-                onClick={cancelDraft}
-                className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
-              >
+              <Button size="compact" onClick={cancelDraft}>
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={saveDraft}
                 disabled={draftBody.trim().length === 0}
                 data-testid="plan-comment-draft-save"
-                className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
               >
                 Comment
-              </button>
+              </Button>
             </div>
           </div>,
           pendingSelection.portalTarget,

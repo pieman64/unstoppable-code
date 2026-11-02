@@ -12,16 +12,16 @@ import { joinClassNames } from './join-class-names';
  * Derive up-to-2-letter uppercase initials from a name, falling back to `'?'`
  * when no usable characters are present (e.g. a removed/unknown actor). Shared
  * by every avatar placeholder so the team Members list and the activity feed
- * render identical initials.
+ * render identical initials. `max` is 1 where two letters do not fit.
  */
-export function initialsOf(name: string): string {
+export function initialsOf(name: string, max: 1 | 2 = 2): string {
   return (
     name
       .split(' ')
       .map((part) => part[0] ?? '')
       .join('')
       .toUpperCase()
-      .slice(0, 2) || '?'
+      .slice(0, max) || '?'
   );
 }
 
@@ -76,6 +76,8 @@ interface MemberAvatarProps {
   size?: number;
   /** Extra classes for the rendered element. */
   className?: string;
+  /** Letters in the initials placeholder; 1 for avatars too small for two. */
+  maxInitials?: 1 | 2;
 }
 
 /**
@@ -89,6 +91,7 @@ export function MemberAvatar({
   image,
   size = 32,
   className = '',
+  maxInitials = 2,
 }: MemberAvatarProps): JSX.Element {
   // Track which URL failed so the initials fallback engages on a load error but
   // auto-clears if the caller later passes a different image (React does not
@@ -127,7 +130,7 @@ export function MemberAvatar({
         blockClassName,
       )}
     >
-      {initialsOf(name)}
+      {initialsOf(name, maxInitials)}
     </span>
   );
 }

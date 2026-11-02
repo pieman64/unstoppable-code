@@ -20,8 +20,7 @@ export const EXTERNAL_AGENT_TOOL_GROUPS = [
   'library',
   'work',
   'memory',
-  'cloud',
-  'remote',
+  'tasks',
 ] as const;
 export type ExternalAgentToolGroup =
   (typeof EXTERNAL_AGENT_TOOL_GROUPS)[number];
@@ -86,12 +85,25 @@ export const externalAgentAccessDecisionSchema = z.strictObject({
     mode: z.enum(['all', 'selected']),
     organizationIds: z.array(UUID).max(500),
   }),
-  remotes: z.strictObject({
-    mode: z.enum(['all', 'selected']),
-    remoteIds: z.array(UUID).max(500),
+  /** Which hosts a Tasks connection may use; Account connections send the default. */
+  hosts: z.strictObject({
+    /** The Cloud agents switch. */
+    managed: z.boolean(),
+    /** The device choice, by `remoteId`. */
+    connected: z.strictObject({
+      mode: z.enum(['all', 'selected']),
+      remoteIds: z.array(UUID).max(500),
+    }),
+    /** Show device names to the agent. */
+    exposeNames: z.boolean(),
   }),
   /** Whole days until the connection ends, or null for until removed. */
   durationDays: z.number().int().min(1).max(365).nullable(),
+  /**
+   * Repeat each tool result's structured content as JSON in its text, for
+   * agents that read only the text. Omitted means the client's default.
+   */
+  textContentCompatibility: z.boolean().optional(),
 });
 export type ExternalAgentAccessDecision = z.infer<
   typeof externalAgentAccessDecisionSchema
@@ -99,16 +111,18 @@ export type ExternalAgentAccessDecision = z.infer<
 
 /** An existing connection's access, as an edit starts from and sends it. */
 export const externalAgentAccessSchema = externalAgentAccessDecisionSchema.omit(
-  { durationDays: true },
+  { durationDays: true, textContentCompatibility: true },
 );
 export type ExternalAgentAccess = z.infer<typeof externalAgentAccessSchema>;
 
 /**
  * One paired desktop a connection can be given access to. `remoteId` is the
- * desktop's stable external identity, the value stored in `remotes.remoteIds`.
+ * desktop's stable external identity, the value stored in
+ * `hosts.connected.remoteIds`; `hostCode` is the host ID agents see for it.
  */
 export const externalAgentDesktopSchema = z.strictObject({
   remoteId: UUID,
+  hostCode: z.string().regex(/^[0-9abcdefghjkmnpqrstvwxyz]{10}$/),
   name: z.string().min(1).max(120),
   hostname: z.string().max(255).nullable(),
   connection: z.enum(['active', 'reconnecting', 'inactive']),
@@ -173,6 +187,8 @@ export const externalAgentAccessUpdateSchema = z.strictObject({
   access: externalAgentAccessSchema,
   expiry: externalAgentExpiryChangeSchema,
   confirmation: externalAgentConfirmationChangeSchema.optional(),
+  /** Omitted keeps the current setting. */
+  textContentCompatibility: z.boolean().optional(),
 });
 export type ExternalAgentAccessUpdate = z.infer<
   typeof externalAgentAccessUpdateSchema
@@ -200,6 +216,8 @@ export type ExternalAgentAccessTool = {
   access: 'read' | 'write';
   defaultOff: boolean;
   markers: ExternalAgentToolMarkers;
+  /** The host kinds a Tasks tool runs on; null for tools that take no host. */
+  hosts: { managed: boolean; connected: boolean } | null;
 };
 
 /** One tool group of a server, as the access editor offers it. */
@@ -256,6 +274,8 @@ export type ExternalAgentAccessSummary = {
   organizations: 'all' | number | null;
   /** Desktops it may use; null on the Account and organizations server. */
   desktops: 'all' | number | null;
+  /** Cloud agents (the managed host) are on; null on the Account server. */
+  managed: boolean | null;
 };
 
 export type ExternalAgentConnectionSummary = {
@@ -365,6 +385,8 @@ export type ExternalAgentConnectionDetail = ExternalAgentConnectionSummary & {
   >;
   /** This connection's waiting requests, oldest first. */
   waiting: ExternalAgentWaitingAction[];
+  /** Tool results repeat their structured content as JSON in their text. */
+  textContentCompatibility: boolean;
 };
 
 export const EXTERNAL_AGENT_PENDING_ACTION_STATUSES = [

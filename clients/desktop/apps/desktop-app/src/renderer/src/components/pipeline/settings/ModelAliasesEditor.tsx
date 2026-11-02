@@ -283,13 +283,13 @@ function ModelAliasItem({
             {mode === 'none' && (
               <p className="text-xs fg-secondary">
                 Dispatch and automation setup must provide this model alias
-                before the pipeline can run.
+                before the workflow can run.
               </p>
             )}
 
             {mode !== 'none' && (
               <p className="text-xs fg-secondary">
-                Used as the pipeline baseline. Dispatch and automation setup can
+                Used as the workflow baseline. Dispatch and automation setup can
                 override it per run.
               </p>
             )}

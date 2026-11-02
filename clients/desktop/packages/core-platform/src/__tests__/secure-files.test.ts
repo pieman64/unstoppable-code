@@ -409,18 +409,34 @@ describe('secure files: syncDirectory', () => {
     expect(await codeOf(missing)).toBe('ENOENT');
   });
 
-  it('closes the handle when fsync fails; Windows is a no-op', async () => {
+  it('closes the handle when fsync fails, on POSIX and Windows alike', async () => {
     const close = jest.fn(() => Promise.resolve());
-    const sync = (): Promise<void> => Promise.reject(fsError('EIO'));
+    const sync = jest.fn((): Promise<void> => Promise.reject(fsError('EIO')));
     const openDirectory = jest.fn(() => Promise.resolve({ sync, close }));
     const posix = create('darwin', { operations: { openDirectory } });
-    expect(await codeOf(posix.syncDirectory(dir))).toBe('EIO');
+    await expect(posix.syncDirectory(dir)).rejects.toMatchObject({
+      name: 'DirectoryFlushError',
+      stage: 'flush',
+      code: 'EIO',
+    });
     expect(close).toHaveBeenCalledTimes(1);
     close.mockImplementationOnce(() => Promise.reject(fsError('EBADF')));
     expect(await codeOf(posix.syncDirectory(dir))).toBe('EIO');
     const windows = create('win32', { operations: { openDirectory } });
     expect(windows.permissionModel).toBe('windows-dacl');
-    expect(await windows.syncDirectory(dir)).toBe('unsupported');
-    expect(openDirectory).toHaveBeenCalledTimes(2);
+    expect(await codeOf(windows.syncDirectory(dir))).toBe('EIO');
+    sync.mockImplementationOnce(() => Promise.resolve());
+    expect(await windows.syncDirectory(dir)).toBe('flushed');
+    expect(openDirectory).toHaveBeenCalledTimes(4);
+  });
+
+  const windowsIt = process.platform === 'win32' ? it : it.skip;
+  windowsIt('flushes a real Windows directory read-write', async () => {
+    const services = create('win32');
+    await make('child');
+    await fs.rename(path.join(dir, 'child'), path.join(dir, 'renamed'));
+    expect(await services.syncDirectory(dir)).toBe('flushed');
+    const missing = services.syncDirectory(path.join(dir, 'none'));
+    expect(await codeOf(missing)).toBe('ENOENT');
   });
 });

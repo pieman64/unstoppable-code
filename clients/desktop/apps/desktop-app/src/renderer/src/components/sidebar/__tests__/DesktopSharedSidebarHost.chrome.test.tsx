@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import type { SessionViewModel } from '@canopy/app-core';
 import { CanopyClientProvider } from '@canopy/app-state';
 import { createFakeClient } from '@canopy/app-state/__tests__/fake-org-projects-client';
 import { act, type JSX } from 'react';
@@ -28,6 +29,37 @@ const capturedSharedContainerSectionProps: Array<{
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
 }> = [];
+
+function makeSessionSnapshot(
+  overrides: Partial<SessionViewModel> = {},
+): SessionViewModel {
+  return {
+    workspaces: [],
+    worktrees: [],
+    standaloneChats: [],
+    chatProjects: [],
+    scriptDescriptors: [],
+    scriptRuns: [],
+    hookDescriptors: [],
+    hookRuns: [],
+    plans: [],
+    pipelines: [],
+    pipelineRuns: [],
+    chatMessages: [],
+    chatSummaries: [],
+    terminalSessions: [],
+    terminalBuffers: {},
+    changedFiles: {},
+    diffSnapshots: {},
+    prStatuses: {},
+    fileRoots: [],
+    fileTree: {},
+    filePreviews: {},
+    refreshing: false,
+    connectionStatus: 'active',
+    ...overrides,
+  };
+}
 
 jest.mock('@canopy/ui-app', () => {
   const actual = jest.requireActual<{ SidebarSurface: typeof SidebarSurface }>(
@@ -111,6 +143,7 @@ jest.mock('@/hooks/useCanopyOrgProjectsEnabled', () => ({
 }));
 
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
@@ -228,12 +261,14 @@ describe('DesktopSharedSidebarHost chrome', () => {
       () =>
         new Promise((resolve) => {
           releaseSnapshot = (): void =>
-            resolve({
-              workspaces: [],
-              worktrees: [],
-              standaloneChats: [],
-              chatProjects: [],
-            });
+            resolve(
+              makeSessionSnapshot({
+                workspaces: [],
+                worktrees: [],
+                standaloneChats: [],
+                chatProjects: [],
+              }),
+            );
         }),
     );
     await act(async () => {
@@ -474,20 +509,22 @@ describe('DesktopSharedSidebarHost chrome', () => {
         },
       ],
     });
-    jest.mocked(ipcCanopyClient).query.mockResolvedValueOnce({
-      workspaces: [{ localId: 'code-1', name: 'Code', type: 'single-repo' }],
-      worktrees: [
-        { localId: 'local-row', workspaceLocalId: 'code-1', branch: 'a' },
-        {
-          localId: 'cloud-session',
-          workspaceLocalId: 'code-1',
-          branch: 'cloud',
-          backend: 'cloud',
-        },
-      ],
-      standaloneChats: [],
-      chatProjects: [],
-    });
+    jest.mocked(ipcCanopyClient).query.mockResolvedValueOnce(
+      makeSessionSnapshot({
+        workspaces: [{ localId: 'code-1', name: 'Code', type: 'single-repo' }],
+        worktrees: [
+          { localId: 'local-row', workspaceLocalId: 'code-1', branch: 'a' },
+          {
+            localId: 'cloud-session',
+            workspaceLocalId: 'code-1',
+            branch: 'cloud',
+            backend: 'cloud',
+          },
+        ],
+        standaloneChats: [],
+        chatProjects: [],
+      }),
+    );
     try {
       await act(async () => {
         root.render(
@@ -895,14 +932,14 @@ describe('DesktopSharedSidebarHost catalog placeholders', () => {
 describe('DesktopSharedSidebarHost store overlay', () => {
   it('hides a worktree as soon as the store does, ahead of the next snapshot', async (): Promise<void> => {
     const projectsBefore = useProjectsStore.getState();
-    const baseSnapshot = {
+    const baseSnapshot = makeSessionSnapshot({
       workspaces: [{ localId: 'code-1', name: 'Code', type: 'single-repo' }],
       worktrees: [
         { localId: 'wt-1', workspaceLocalId: 'code-1', branch: 'feature' },
       ],
       standaloneChats: [],
       chatProjects: [],
-    };
+    });
     const query = jest
       .spyOn(ipcCanopyClient, 'query')
       .mockResolvedValue(baseSnapshot);
@@ -966,14 +1003,16 @@ describe('DesktopSharedSidebarHost store overlay', () => {
 describe('DesktopSharedSidebarHost external archive requests', () => {
   it('opens the confirmation for a done worktree instead of removing it', async (): Promise<void> => {
     const projectsBefore = useProjectsStore.getState();
-    const query = jest.spyOn(ipcCanopyClient, 'query').mockResolvedValue({
-      workspaces: [{ localId: 'code-1', name: 'Code', type: 'single-repo' }],
-      worktrees: [
-        { localId: 'wt-1', workspaceLocalId: 'code-1', branch: 'feature' },
-      ],
-      standaloneChats: [],
-      chatProjects: [],
-    });
+    const query = jest.spyOn(ipcCanopyClient, 'query').mockResolvedValue(
+      makeSessionSnapshot({
+        workspaces: [{ localId: 'code-1', name: 'Code', type: 'single-repo' }],
+        worktrees: [
+          { localId: 'wt-1', workspaceLocalId: 'code-1', branch: 'feature' },
+        ],
+        standaloneChats: [],
+        chatProjects: [],
+      }),
+    );
     const archiveWorktree = jest.fn((): Promise<void> => Promise.resolve());
     useProjectsStore.setState({
       archiveWorktree,
@@ -1028,24 +1067,28 @@ describe('DesktopSharedSidebarHost external archive requests', () => {
     }
   });
 
-  // App Advisor asked for Archive and for the branch to be kept: the dialog
-  // must open as the Archive confirmation and show which branch choice was
-  // requested, while leaving the final choice to the user.
+  // App Advisor asked for Archive and for a branch handling: the dialog must
+  // open as the Archive confirmation with its branch switch preset to the
+  // request and a note naming it, while leaving the final choice to the user.
   it.each([
-    [false, 'worktree-removal-preserve-branch', 'Preserve local'],
-    [true, 'worktree-removal-delete-branch', 'Delete local'],
+    [false, 'worktree-removal-preserve-branch', 'keeping it'],
+    [true, 'worktree-removal-delete-branch', 'deleting it'],
   ])(
-    'opens the requested mode and marks the requested branch choice (deleteBranch=%s)',
+    'opens the requested mode and presets the requested branch choice (deleteBranch=%s)',
     async (requestedDeleteBranch, requestedTestId, hint): Promise<void> => {
       const projectsBefore = useProjectsStore.getState();
-      const query = jest.spyOn(ipcCanopyClient, 'query').mockResolvedValue({
-        workspaces: [{ localId: 'code-1', name: 'Code', type: 'single-repo' }],
-        worktrees: [
-          { localId: 'wt-1', workspaceLocalId: 'code-1', branch: 'feature' },
-        ],
-        standaloneChats: [],
-        chatProjects: [],
-      });
+      const query = jest.spyOn(ipcCanopyClient, 'query').mockResolvedValue(
+        makeSessionSnapshot({
+          workspaces: [
+            { localId: 'code-1', name: 'Code', type: 'single-repo' },
+          ],
+          worktrees: [
+            { localId: 'wt-1', workspaceLocalId: 'code-1', branch: 'feature' },
+          ],
+          standaloneChats: [],
+          chatProjects: [],
+        }),
+      );
       const archiveWorktree = jest.fn((): Promise<void> => Promise.resolve());
       useProjectsStore.setState({
         archiveWorktree,
@@ -1089,18 +1132,26 @@ describe('DesktopSharedSidebarHost external archive requests', () => {
           });
         });
         const dialog = document.querySelector('[role="dialog"]');
-        expect(dialog?.textContent).toContain('Archive worktree?');
-        expect(dialog?.textContent).toContain(`Advisor suggested ${hint}.`);
-        const requested = document.querySelectorAll('[data-requested="true"]');
-        expect(requested).toHaveLength(1);
-        expect(requested[0]?.getAttribute('data-testid')).toBe(requestedTestId);
-        // Marking the requested choice leaves both buttons in place; Delete
-        // local keeps the destructive role either way (DESIGN.md).
+        expect(dialog?.textContent).toContain('Archive worktree “feature”?');
+        expect(dialog?.textContent).toContain(
+          `${ORCHESTRATOR_LABEL} suggested ${hint}.`,
+        );
         expect(
           document
-            .querySelector('[data-testid="worktree-removal-delete-branch"]')
-            ?.className.split(/\s+/),
-        ).toContain('bg-destructive');
+            .querySelector('[data-testid="worktree-removal-keep-branch"]')
+            ?.getAttribute('aria-checked'),
+        ).toBe(String(!requestedDeleteBranch));
+        // One action, named for what it will do with the branch. Archive keeps
+        // the work, so it is the primary action rather than destructive.
+        const action = document.querySelector(
+          `[data-testid="${requestedTestId}"]`,
+        );
+        expect(action?.firstChild?.textContent).toBe('Archive worktree');
+        // Archive keeps the work, so it is the Enter default.
+        expect(
+          action?.querySelector('[data-testid="kbd-chip"]'),
+        ).toBeInstanceOf(Element);
+        expect(action?.className.split(/\s+/)).toContain('bg-accent');
         expect(archiveWorktree).not.toHaveBeenCalled();
       } finally {
         act((): void => root.unmount());
@@ -1128,6 +1179,11 @@ describe('DesktopSharedSidebarHost external archive requests', () => {
       pendingQuestion: new Set(),
       toolApproval: new Set(),
       unread: new Set(),
+      pipelineRunning: new Set(),
+      pipelineUnseen: new Set(),
+      pipelineUnseenFailed: new Set(),
+      pipelinePaused: new Set(),
+      backgroundTasks: new Map(),
     };
     setDesktopRowLiveKeys(staleKeys);
     expect(useDesktopRowLiveKeysStore.getState().keys).toBe(staleKeys);
@@ -1225,11 +1281,14 @@ describe('DesktopSharedSidebarHost worktree menu parity', () => {
     },
   ): Promise<() => void> {
     const projectsBefore = useProjectsStore.getState();
-    const query = jest.spyOn(ipcCanopyClient, 'query').mockResolvedValue({
-      ...snapshot,
-      standaloneChats: [],
-      chatProjects: [],
-    });
+    const query = jest.spyOn(ipcCanopyClient, 'query').mockResolvedValue(
+      makeSessionSnapshot({
+        workspaces: [...snapshot.workspaces],
+        worktrees: [...snapshot.worktrees],
+        standaloneChats: [],
+        chatProjects: [],
+      }),
+    );
     useProjectsStore.setState({ projects });
     const container = document.createElement('div');
     const root = createRoot(container);
@@ -1256,7 +1315,11 @@ describe('DesktopSharedSidebarHost worktree menu parity', () => {
     NonNullable<SidebarSurfaceProps['transformWorktreeMenuItems']>
   >[0] {
     return {
-      workspace: { localId: workspaceLocalId, name: workspaceLocalId },
+      workspace: {
+        localId: workspaceLocalId,
+        name: workspaceLocalId,
+        type: 'single-repo',
+      },
       worktree: {
         localId: worktreeLocalId,
         workspaceLocalId,
@@ -1505,10 +1568,12 @@ describe('DesktopSharedSidebarHost move to organization', () => {
   beforeEach(() => {
     capturedProps.length = 0;
     // An earlier suite's spy restore can leave the shared query mock empty.
-    jest.mocked(ipcCanopyClient).query.mockResolvedValue({
-      workspaces: [],
-      standaloneChats: [],
-    });
+    jest.mocked(ipcCanopyClient).query.mockResolvedValue(
+      makeSessionSnapshot({
+        workspaces: [],
+        standaloneChats: [],
+      }),
+    );
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);

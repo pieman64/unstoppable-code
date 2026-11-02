@@ -11,6 +11,9 @@ import {
   MAX_SHARED_CONTAINER_TITLE_LENGTH,
   SHARED_CONTAINER_STAGE_ALREADY_COMMITTED_ERROR_CODE,
   SHARED_CONTAINER_UPLOAD_TARGET_REFRESH_EXHAUSTED_ERROR_CODE,
+  SHARED_CONTAINER_PACKAGE_UPLOAD_EXPIRED_ERROR_CODE,
+  isSharedContainerRevisionPackage,
+  type SharedContainerRevisionPackage,
   type SharedContainerArtifactDetail,
   type SharedContainerType,
   type SharedContainerStageRevisionRequest,
@@ -37,6 +40,83 @@ import { getSharedContainerPublishErrorReason } from './errors';
 
 const CONTENT_FINGERPRINT_ARTIFACT_ID_SEED =
   'shared-container-content-fingerprint-v1';
+const PACKAGE_WORK_BUDGET_MS = 10_000;
+
+export type PreparedSharedContainerCapabilityPackage =
+  | {
+      state: 'ready';
+      summary: SharedContainerRevisionPackage;
+      /** Upload only after the content/package no-op check. Observe signal. */
+      commit(signal: AbortSignal): Promise<{
+        capabilityPackage: NonNullable<
+          SharedContainerStageRevisionRequest['capabilityPackage']
+        >;
+        committedPackageUploadId: string;
+      }>;
+    }
+  | { state: 'empty' }
+  | { state: 'failed' };
+
+function packageContentFingerprint(
+  contentHash: string,
+  digest?: string,
+): string {
+  return digest
+    ? sha256(
+        Buffer.from(JSON.stringify({ contentHash, packageDigest: digest })),
+      )
+    : contentHash;
+}
+
+async function boundedPackageWork<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted();
+  const controller = new AbortController();
+  const combined = signal
+    ? AbortSignal.any([signal, controller.signal])
+    : controller.signal;
+  let rejectDeadline: (error: Error) => void = () => undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject;
+  });
+  const onAbort = (): void => {
+    rejectDeadline(new Error('Shared-container package work aborted'));
+  };
+  combined.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), PACKAGE_WORK_BUDGET_MS);
+  try {
+    return await Promise.race([work(combined), deadline]);
+  } finally {
+    clearTimeout(timer);
+    combined.removeEventListener('abort', onAbort);
+  }
+}
+
+function canOmitFailedPackage(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 16; depth += 1) {
+    if (
+      current instanceof CanopyCloudClientError &&
+      (current.status === 401 ||
+        current.status === 403 ||
+        current.status === 409)
+    ) {
+      return false;
+    }
+    if (
+      !(current instanceof Error) ||
+      !('cause' in current) ||
+      current.cause === undefined
+    )
+      return true;
+    current = current.cause;
+  }
+  // An unclassifiable or cyclic cause chain cannot establish a package-only
+  // failure. Preserve the refusal rather than swallowing authorization.
+  return false;
+}
 
 /**
  * Prefix of every staging directory this process creates. Startup recovery
@@ -170,6 +250,14 @@ function canRetryWithoutCarryForward(error: unknown): boolean {
 }
 
 export interface PublishSharedContainerRevisionDependencies<TInventory> {
+  signal?: AbortSignal;
+  prepareCapabilityPackage?: (input: {
+    projectId: string;
+    worktreeId: string;
+    inventory: TInventory;
+    scope: Awaited<ReturnType<typeof readSharedContainerFileScope>>;
+    signal: AbortSignal;
+  }) => Promise<PreparedSharedContainerCapabilityPackage>;
   buildInventory: (input: {
     projectId: string;
     worktreeId: string;
@@ -268,6 +356,21 @@ async function runPublishSharedContainerRevision<TInventory>(
   deps: PublishSharedContainerRevisionDependencies<TInventory>,
 ): Promise<SharedContainerPublicationRecord> {
   const stateStore = getSharedContainerPublicationStateStore();
+  let pendingArtifactContentHash: string | undefined;
+  let pendingPackageDigest: string | undefined;
+  let pendingCommittedPackageUploadId: string | undefined;
+  let pendingCarryParentPackage = false;
+  let packageRecoveryPending = false;
+  let packageRecoveryAttempts = 0;
+  const packagePendingFields =
+    (): Partial<SharedContainerPublicationRecord> => ({
+      ...(pendingArtifactContentHash ? { pendingArtifactContentHash } : {}),
+      ...(pendingPackageDigest ? { pendingPackageDigest } : {}),
+      ...(pendingCommittedPackageUploadId
+        ? { pendingCommittedPackageUploadId }
+        : {}),
+      ...(pendingCarryParentPackage ? { pendingCarryParentPackage: true } : {}),
+    });
   const assertTargetCurrent = (
     record: SharedContainerPublicationRecord | null,
   ): void => {
@@ -276,6 +379,7 @@ async function runPublishSharedContainerRevision<TInventory>(
     }
   };
   const readAndAssertTargetCurrent = async (): Promise<void> => {
+    deps.signal?.throwIfAborted();
     assertTargetCurrent(
       await stateStore.get(
         input.projectId,
@@ -287,7 +391,11 @@ async function runPublishSharedContainerRevision<TInventory>(
   const setForCurrentTarget = async (
     record: SharedContainerPublicationRecord,
   ): Promise<SharedContainerPublicationRecord> => {
-    const persisted = await stateStore.set(record);
+    deps.signal?.throwIfAborted();
+    const persisted = await stateStore.set({
+      ...record,
+      ...(record.status === 'published' ? {} : packagePendingFields()),
+    });
     assertTargetCurrent(persisted);
     return persisted;
   };
@@ -297,6 +405,12 @@ async function runPublishSharedContainerRevision<TInventory>(
     input.organizationId,
   );
   assertTargetCurrent(previous);
+  pendingArtifactContentHash = previous?.pendingArtifactContentHash;
+  pendingPackageDigest = previous?.pendingPackageDigest;
+  pendingCommittedPackageUploadId = previous?.pendingCommittedPackageUploadId;
+  pendingCarryParentPackage = previous?.pendingCarryParentPackage === true;
+  packageRecoveryPending = previous?.packageRecoveryPending === true;
+  packageRecoveryAttempts = previous?.packageRecoveryAttempts ?? 0;
   let lastCommitted = {
     ...(previous?.revision !== undefined
       ? { revision: previous.revision }
@@ -306,12 +420,29 @@ async function runPublishSharedContainerRevision<TInventory>(
     ...(previous?.publishedContentHash
       ? { publishedContentHash: previous.publishedContentHash }
       : {}),
+    ...(previous?.publishedPackageDigest
+      ? { publishedPackageDigest: previous.publishedPackageDigest }
+      : {}),
   };
   let pendingContentHash = previous?.pendingContentHash;
   const persistCommitted = async (
     committed: Awaited<ReturnType<typeof commitSharedContainerRevision>>,
   ): Promise<SharedContainerPublicationRecord> => {
     const publishedAt = committed.revision.createdAt;
+    const publishedPackageDigest = committed.revision.package?.digest;
+    if (
+      pendingPackageDigest &&
+      publishedPackageDigest !== pendingPackageDigest
+    ) {
+      packageRecoveryPending = true;
+      packageRecoveryAttempts = (previous?.packageRecoveryAttempts ?? 0) + 1;
+    }
+    const actualContentHash = pendingArtifactContentHash
+      ? packageContentFingerprint(
+          pendingArtifactContentHash,
+          publishedPackageDigest,
+        )
+      : (pendingContentHash ?? previous?.publishedContentHash);
     const record = await setForCurrentTarget({
       ...input,
       status: 'published',
@@ -319,19 +450,18 @@ async function runPublishSharedContainerRevision<TInventory>(
       revisionId: committed.revision.id,
       publishedAt,
       updatedAt: publishedAt,
-      ...(pendingContentHash
-        ? { publishedContentHash: pendingContentHash }
-        : previous?.publishedContentHash
-          ? { publishedContentHash: previous.publishedContentHash }
-          : {}),
+      ...(actualContentHash ? { publishedContentHash: actualContentHash } : {}),
+      ...(publishedPackageDigest ? { publishedPackageDigest } : {}),
+      ...(packageRecoveryPending
+        ? { packageRecoveryPending: true, packageRecoveryAttempts }
+        : {}),
     });
     lastCommitted = {
       revision: committed.revision.revision,
       revisionId: committed.revision.id,
       publishedAt,
-      ...(pendingContentHash
-        ? { publishedContentHash: pendingContentHash }
-        : {}),
+      ...(actualContentHash ? { publishedContentHash: actualContentHash } : {}),
+      ...(publishedPackageDigest ? { publishedPackageDigest } : {}),
     };
     return record;
   };
@@ -343,6 +473,7 @@ async function runPublishSharedContainerRevision<TInventory>(
     stageRequestHash?: string,
     restartWithFreshStage = false,
   ): Promise<void> => {
+    if (deps.signal?.aborted) return;
     await stateStore.set({
       ...input,
       status: 'error',
@@ -357,6 +488,10 @@ async function runPublishSharedContainerRevision<TInventory>(
       ...(stageRequestHash ? { stageRequestHash } : {}),
       ...(restartWithFreshStage ? { restartWithFreshStage: true } : {}),
       ...(pendingContentHash ? { pendingContentHash } : {}),
+      ...packagePendingFields(),
+      ...(packageRecoveryPending
+        ? { packageRecoveryPending: true, packageRecoveryAttempts }
+        : {}),
       ...lastCommitted,
     });
   };
@@ -416,7 +551,7 @@ async function runPublishSharedContainerRevision<TInventory>(
   const publishedTitle = sanitizeSharedContainerTitle(rawTitles.publishedTitle);
   const listTitle = sanitizeSharedContainerTitle(rawTitles.listTitle);
 
-  const contentHash = revisionContentFingerprint(
+  const artifactContentHash = revisionContentFingerprint(
     deps.buildArtifacts(
       inventory,
       CONTENT_FINGERPRINT_ARTIFACT_ID_SEED,
@@ -424,26 +559,175 @@ async function runPublishSharedContainerRevision<TInventory>(
     ),
     listTitle,
   );
+  let capabilityPackage: PreparedSharedContainerCapabilityPackage = {
+    state: 'empty',
+  };
+  const prepareCapabilityPackage = deps.prepareCapabilityPackage;
+  if (prepareCapabilityPackage) {
+    try {
+      capabilityPackage = await boundedPackageWork(
+        (signal) =>
+          prepareCapabilityPackage({ ...input, inventory, scope, signal }),
+        deps.signal,
+      );
+      if (
+        capabilityPackage.state === 'ready' &&
+        !isSharedContainerRevisionPackage(capabilityPackage.summary)
+      ) {
+        capabilityPackage = { state: 'failed' };
+      }
+    } catch (error) {
+      deps.signal?.throwIfAborted();
+      if (!canOmitFailedPackage(error)) throw error;
+      capabilityPackage = { state: 'failed' };
+    }
+    packageRecoveryPending = capabilityPackage.state === 'failed';
+    packageRecoveryAttempts = packageRecoveryPending
+      ? (previous?.packageRecoveryAttempts ?? 0) + 1
+      : 0;
+  } else if (packageRecoveryPending) {
+    // A missing optional provider is still unavailable work, not a successful
+    // empty analysis. Advance the same persisted retry budget after restart.
+    capabilityPackage = { state: 'failed' };
+    packageRecoveryAttempts = (previous?.packageRecoveryAttempts ?? 0) + 1;
+  }
+  const candidateDigest =
+    capabilityPackage.state === 'ready'
+      ? capabilityPackage.summary.digest
+      : undefined;
+  const contentHash = packageContentFingerprint(
+    artifactContentHash,
+    candidateDigest,
+  );
   const publishedRecord =
     recoveredCommitted ??
     (previous?.status === 'published' ? previous : undefined);
   if (publishedRecord?.publishedContentHash === contentHash) {
-    return publishedRecord;
+    return deps.prepareCapabilityPackage || packageRecoveryPending
+      ? setForCurrentTarget({
+          ...publishedRecord,
+          packageRecoveryPending,
+          packageRecoveryAttempts,
+        })
+      : publishedRecord;
   }
+  // The published revision has these exact artifacts, with or without its
+  // own package. A package that could not be prepared or attached is no
+  // decision to remove that package, so such a publish keeps the revision
+  // and leaves recovery pending instead of publishing a degraded one.
+  const publishedArtifactsUnchanged =
+    publishedRecord?.publishedContentHash !== undefined &&
+    publishedRecord.publishedContentHash ===
+      packageContentFingerprint(
+        artifactContentHash,
+        publishedRecord.publishedPackageDigest,
+      );
+  if (
+    publishedRecord &&
+    publishedArtifactsUnchanged &&
+    capabilityPackage.state === 'failed'
+  ) {
+    return setForCurrentTarget({
+      ...publishedRecord,
+      packageRecoveryPending,
+      packageRecoveryAttempts,
+    });
+  }
+  pendingArtifactContentHash = artifactContentHash;
   pendingContentHash = contentHash;
 
   const carryParentRevisionId =
     recoveredCommitted?.revisionId ?? previous?.revisionId;
-  const parentArtifacts =
+  const parentRevision =
     carryParentRevisionId && deps.fetchRevision
-      ? ((
-          await deps.fetchRevision(
-            input.containerId,
-            carryParentRevisionId,
-            input.organizationId,
-          )
-        ).revision.artifacts ?? [])
-      : [];
+      ? await deps.fetchRevision(
+          input.containerId,
+          carryParentRevisionId,
+          input.organizationId,
+        )
+      : undefined;
+  const parentArtifacts = parentRevision?.revision.artifacts ?? [];
+  const parentPackageDigest = carryParentRevisionId
+    ? parentRevision?.revision.package?.digest
+    : undefined;
+  /**
+   * A package that could not be prepared or uploaded is no decision to remove
+   * one. A revision with changed artifacts keeps the selected parent's
+   * package instead, and recovery stays pending so a later analysis can
+   * replace it. Only an `empty` analysis removes a package.
+   */
+  const carryParentPackageAfterFailure = (): boolean => {
+    if (!parentPackageDigest || publishedArtifactsUnchanged) return false;
+    pendingPackageDigest = parentPackageDigest;
+    pendingCommittedPackageUploadId = undefined;
+    pendingCarryParentPackage = true;
+    pendingContentHash = packageContentFingerprint(
+      artifactContentHash,
+      parentPackageDigest,
+    );
+    return true;
+  };
+  if (capabilityPackage.state === 'ready') {
+    if (pendingPackageDigest !== candidateDigest) {
+      pendingCommittedPackageUploadId = undefined;
+      pendingCarryParentPackage = false;
+    }
+    pendingPackageDigest = candidateDigest;
+    if (!pendingCommittedPackageUploadId) {
+      pendingCarryParentPackage =
+        Boolean(carryParentRevisionId) &&
+        (parentRevision?.revision.package?.digest === candidateDigest ||
+          (pendingCarryParentPackage &&
+            previous?.revisionId === carryParentRevisionId));
+      if (!pendingCarryParentPackage) {
+        try {
+          await readAndAssertTargetCurrent();
+          const ready = capabilityPackage;
+          const uploaded = await boundedPackageWork(
+            (signal) => ready.commit(signal),
+            deps.signal,
+          );
+          if (uploaded.capabilityPackage.digest !== candidateDigest) {
+            throw new Error('Shared-container prepared package digest changed');
+          }
+          pendingCommittedPackageUploadId = uploaded.committedPackageUploadId;
+        } catch (error) {
+          deps.signal?.throwIfAborted();
+          if (!canOmitFailedPackage(error)) throw error;
+          pendingPackageDigest = undefined;
+          packageRecoveryPending = true;
+          packageRecoveryAttempts =
+            (previous?.packageRecoveryAttempts ?? 0) + 1;
+          pendingContentHash = artifactContentHash;
+          const carried = carryParentPackageAfterFailure();
+          logMainProcessWarn(
+            carried
+              ? '[shared-containers] capability package upload failed; keeping the parent package'
+              : '[shared-containers] capability package upload omitted',
+          );
+        }
+      }
+    }
+  } else {
+    pendingPackageDigest = undefined;
+    pendingCommittedPackageUploadId = undefined;
+    pendingCarryParentPackage = false;
+    if (capabilityPackage.state === 'failed') carryParentPackageAfterFailure();
+  }
+
+  if (
+    !pendingPackageDigest &&
+    publishedRecord &&
+    (capabilityPackage.state === 'empty'
+      ? publishedRecord.publishedContentHash === artifactContentHash
+      : publishedArtifactsUnchanged)
+  ) {
+    return setForCurrentTarget({
+      ...publishedRecord,
+      packageRecoveryPending,
+      packageRecoveryAttempts,
+    });
+  }
 
   let idempotencyKey = previous?.idempotencyKey ?? randomUUID();
   const prepareStage = (
@@ -466,6 +750,17 @@ async function runPublishSharedContainerRevision<TInventory>(
     const request: SharedContainerStageRevisionRequest = {
       ...validated,
       title: listTitle,
+      ...(pendingPackageDigest && pendingCommittedPackageUploadId
+        ? {
+            capabilityPackage: {
+              version: 1 as const,
+              digest: pendingPackageDigest,
+            },
+            committedPackageUploadId: pendingCommittedPackageUploadId,
+          }
+        : pendingCarryParentPackage
+          ? { carryParentPackage: true as const }
+          : {}),
       artifacts: validated.artifacts.map((artifact) => ({
         ...artifact,
         ...(carriedIds.has(artifact.artifactId)
@@ -527,7 +822,7 @@ async function runPublishSharedContainerRevision<TInventory>(
     idempotencyKey = randomUUID();
     prepared = prepareStage(idempotencyKey);
   }
-  const { artifacts, request: stageRequest } = prepared;
+  let { artifacts, request: stageRequest } = prepared;
   let stageRequestHash = prepared.fingerprint;
   await deps.beforeStage?.(inventory);
   let stagedSessionId =
@@ -560,7 +855,7 @@ async function runPublishSharedContainerRevision<TInventory>(
   );
   try {
     let staged: Awaited<ReturnType<typeof stageSharedContainerRevision>>;
-    const carriedArtifactIds = new Set(
+    let carriedArtifactIds = new Set(
       stageRequest.artifacts.flatMap((artifact) =>
         artifact.carriedFromParentRevision === true
           ? [artifact.artifactId]
@@ -569,31 +864,145 @@ async function runPublishSharedContainerRevision<TInventory>(
     );
     try {
       await readAndAssertTargetCurrent();
-      try {
-        staged = await deps.stage(input.containerId, stageRequest);
-      } catch (error) {
-        if (
-          !canRetryWithoutCarryForward(error) ||
-          !stageRequest.artifacts.some(
-            (artifact) => artifact.carriedFromParentRevision === true,
-          )
-        ) {
-          throw error;
+      let retriedArtifactCarry = false;
+      let retriedPackageUpload = false;
+      for (;;) {
+        try {
+          await readAndAssertTargetCurrent();
+          staged = deps.signal
+            ? await deps.stage(input.containerId, stageRequest, deps.signal)
+            : await deps.stage(input.containerId, stageRequest);
+          break;
+        } catch (error) {
+          if (
+            canRetryWithoutCarryForward(error) &&
+            !retriedArtifactCarry &&
+            stageRequest.artifacts.some(
+              (artifact) => artifact.carriedFromParentRevision === true,
+            )
+          ) {
+            retriedArtifactCarry = true;
+            stageRequest = {
+              ...stageRequest,
+              artifacts: stageRequest.artifacts.map((artifact) => {
+                const withoutCarry = { ...artifact };
+                delete withoutCarry.carriedFromParentRevision;
+                return withoutCarry;
+              }),
+            };
+            stageRequestHash = stageRequestFingerprint(stageRequest);
+            carriedArtifactIds.clear();
+            continue;
+          }
+          const packageRefusal =
+            error instanceof CanopyCloudClientError &&
+            (error.status === 400 ||
+              error.status === 422 ||
+              error.status === 426);
+          if (
+            !packageRefusal ||
+            (!stageRequest.capabilityPackage &&
+              !stageRequest.carryParentPackage)
+          ) {
+            throw error;
+          }
+          const ready = capabilityPackage;
+          const expired =
+            error.serverCode ===
+            SHARED_CONTAINER_PACKAGE_UPLOAD_EXPIRED_ERROR_CODE;
+          if (
+            ready.state === 'ready' &&
+            (stageRequest.carryParentPackage ||
+              (expired && !retriedPackageUpload))
+          ) {
+            if (expired) retriedPackageUpload = true;
+            try {
+              await readAndAssertTargetCurrent();
+              const uploaded = await boundedPackageWork(
+                (signal) => ready.commit(signal),
+                deps.signal,
+              );
+              if (uploaded.capabilityPackage.digest !== candidateDigest) {
+                throw new Error(
+                  'Shared-container prepared package digest changed',
+                );
+              }
+              pendingPackageDigest = candidateDigest;
+              pendingCommittedPackageUploadId =
+                uploaded.committedPackageUploadId;
+              pendingCarryParentPackage = false;
+            } catch (uploadError) {
+              deps.signal?.throwIfAborted();
+              if (!canOmitFailedPackage(uploadError)) throw uploadError;
+              pendingPackageDigest = undefined;
+              pendingCommittedPackageUploadId = undefined;
+              pendingCarryParentPackage = false;
+              // An expired upload that cannot be replaced still keeps the
+              // parent's package; a refused carry is never requested again.
+              if (
+                !stageRequest.carryParentPackage &&
+                carryParentPackageAfterFailure()
+              ) {
+                packageRecoveryPending = true;
+                packageRecoveryAttempts =
+                  (previous?.packageRecoveryAttempts ?? 0) + 1;
+              }
+            }
+          } else {
+            pendingPackageDigest = undefined;
+            pendingCommittedPackageUploadId = undefined;
+            pendingCarryParentPackage = false;
+          }
+          if (!pendingPackageDigest) {
+            pendingContentHash = artifactContentHash;
+            packageRecoveryPending = true;
+            packageRecoveryAttempts =
+              (previous?.packageRecoveryAttempts ?? 0) + 1;
+            logMainProcessWarn(
+              '[shared-containers] capability package stage omitted',
+            );
+            if (publishedRecord && publishedArtifactsUnchanged) {
+              return setForCurrentTarget({
+                ...publishedRecord,
+                packageRecoveryPending,
+                packageRecoveryAttempts,
+              });
+            }
+          }
+          // A changed attachment is a new declaration. An ambiguous failure
+          // instead keeps the original key and persisted attachment for replay.
+          idempotencyKey = randomUUID();
+          prepared = prepareStage(idempotencyKey);
+          artifacts = prepared.artifacts;
+          stageRequest = prepared.request;
+          if (retriedArtifactCarry) {
+            stageRequest = {
+              ...stageRequest,
+              artifacts: stageRequest.artifacts.map((artifact) => {
+                const withoutCarry = { ...artifact };
+                delete withoutCarry.carriedFromParentRevision;
+                return withoutCarry;
+              }),
+            };
+          }
+          stageRequestHash = stageRequestFingerprint(stageRequest);
+          carriedArtifactIds = new Set(
+            stageRequest.artifacts.flatMap((artifact) =>
+              artifact.carriedFromParentRevision ? [artifact.artifactId] : [],
+            ),
+          );
+          stagedSessionId = undefined;
+          stagedRevisionId = undefined;
+          await setForCurrentTarget({
+            ...input,
+            status: 'publishing',
+            updatedAt: new Date().toISOString(),
+            idempotencyKey,
+            stageRequestHash,
+            pendingContentHash,
+            ...lastCommitted,
+          });
         }
-        const fullUploadRequest: SharedContainerStageRevisionRequest = {
-          ...stageRequest,
-          artifacts: stageRequest.artifacts.map((artifact) => {
-            const withoutCarry = { ...artifact };
-            delete withoutCarry.carriedFromParentRevision;
-            return withoutCarry;
-          }),
-        };
-        // Record the declaration the server actually holds for this key, so a
-        // retry after a later failure does not replay the carried request
-        // under the same idempotency key (the server answers 409).
-        stageRequestHash = stageRequestFingerprint(fullUploadRequest);
-        staged = await deps.stage(input.containerId, fullUploadRequest);
-        carriedArtifactIds.clear();
       }
     } catch (error) {
       if (!isCommittedStageReplay(error)) throw error;

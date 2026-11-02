@@ -119,9 +119,8 @@ export async function runBranchOwnerFlow(options = {}) {
         )
         .click();
     }
-    await auxiliary
-      .getByRole('button', { name: 'Branch Chat into new worktree' })
-      .click();
+    await auxiliary.getByTestId('turn-more-actions').last().click();
+    await auxiliary.getByTestId('turn-more-branch').click();
     const selected = window
       .locator('[data-sidebar-selected-item] [data-testid="worktree-row"]')
       .first();

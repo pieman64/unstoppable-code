@@ -1,30 +1,63 @@
 import type { JSX, ReactNode } from 'react';
+import { ToggleSwitch } from '../ToggleSwitch';
 
 /**
- * The first-level settings-card shell shared by the organization Settings
- * subtabs and the personal account surface: an accent icon medallion beside a
- * title, an optional one-line subtitle, and the card body.
+ * One section of an account or organization settings page, drawn the way
+ * desktop Settings draws its own pages (Linear's settings): a text-only
+ * heading with an optional one-line explanation, over one grouped box whose
+ * rows are split by hairlines. Whitespace alone separates sections.
  *
  * Hosted account and organization settings render on web and inside the
- * desktop Settings overlay, so this shell lives with the shared display
- * components. Desktop's own local settings panels keep their idiom
- * (`SettingsTabBar`, `PanelSection`).
+ * desktop Settings overlay, so this section lives with the shared display
+ * components. Desktop's local pages compose `SettingsSection` and
+ * `SettingsGroup` from its `SettingsLayout`; the two draw the same heading
+ * and box, and should converge on this module.
  */
-export const SETTINGS_CARD_CLASS = 'rounded-xl bg-card p-5 shadow-sm';
-export const SETTINGS_CARD_ICON_CLASS =
-  'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent';
+export const SETTINGS_CARD_CLASS = 'flex flex-col gap-3';
 /**
- * The card title style. Exported so the bespoke-layout cards that hand-roll
- * their own heading row (and the suites that assert on it) share one literal
- * with the component instead of copying the class string.
+ * The settings box: the secondary surface with a hairline edge and the side
+ * inset its rows and dividers share. Every grouped box in Settings, desktop
+ * pages and the shared account and organization pages, draws this one.
  */
-export const SETTINGS_CARD_TITLE_CLASS = 'text-m font-semibold fg-primary';
-/** The card subtitle style, exported for the same reason as the title. */
-export const SETTINGS_CARD_SUBTITLE_CLASS = 'mt-1 text-s fg-secondary';
+export const SETTINGS_GROUP_SURFACE_CLASS =
+  'rounded-lg bg-secondary px-4 ring-[length:var(--border-hairline)] ring-line-base';
+/**
+ * A box whose direct children are its rows: each row gets the 12px vertical
+ * inset, and an inset hairline splits it from the next. Desktop's
+ * `SettingsGroup` draws this, and so does any list of rows on an account or
+ * organization page (members, teams, API keys, projects).
+ */
+export const SETTINGS_GROUP_CLASS = `flex flex-col divide-y ${SETTINGS_GROUP_SURFACE_CLASS} *:py-3`;
+/**
+ * {@link SETTINGS_GROUP_CLASS} laid out as one grid, for a list whose rows end
+ * in controls (a role dropdown, a Remove or Leave action). The caller sets
+ * the columns (`grid-cols-[minmax(0,1fr)_auto_auto]`) and each row takes
+ * {@link SETTINGS_GROUP_GRID_ROW_CLASS}, a subgrid of the box, so every
+ * trailing column is as wide as its widest entry across all rows: the
+ * controls line up down the list and a row's action fills its column.
+ */
+export const SETTINGS_GROUP_GRID_CLASS = `grid divide-y ${SETTINGS_GROUP_SURFACE_CLASS} *:py-3`;
+/** One row of a {@link SETTINGS_GROUP_GRID_CLASS} list. */
+export const SETTINGS_GROUP_GRID_ROW_CLASS =
+  'col-span-full grid grid-cols-subgrid items-center gap-y-3';
+/**
+ * The grouped box under a section heading. A box that holds rows
+ * ({@link SETTINGS_CARD_ROW_CLASS}, or a host's own rows under a
+ * `data-settings-card-rows` element) lets the rows set its vertical rhythm;
+ * any other content gets the box's own 16px inset.
+ */
+export const SETTINGS_CARD_GROUP_CLASS = `${SETTINGS_GROUP_SURFACE_CLASS} py-4 has-[.settings-card-row,[data-settings-card-rows]]:py-0 [&>*:first-child]:mt-0`;
+/**
+ * The section heading style. Exported so a section whose heading row carries
+ * extra inline chrome (a plan pill) can hand-roll the row and still share one
+ * literal with the component.
+ */
+export const SETTINGS_CARD_TITLE_CLASS =
+  'text-m font-medium text-balance fg-primary';
+/** The section explanation style, exported for the same reason. */
+export const SETTINGS_CARD_SUBTITLE_CLASS = 'text-xs text-pretty fg-secondary';
 
 export interface SettingsCardProps {
-  /** Glyph for the accent medallion, e.g. `<CreditCard size={18} />`. */
-  icon: ReactNode;
   /**
    * A string renders the canonical `<h2>`. Pass a node only when the heading
    * row carries extra inline chrome (pills, badges) and still owns its own
@@ -37,7 +70,6 @@ export interface SettingsCardProps {
 }
 
 export function SettingsCard({
-  icon,
   title,
   subtitle,
   children,
@@ -45,30 +77,37 @@ export function SettingsCard({
 }: SettingsCardProps): JSX.Element {
   return (
     <section className={SETTINGS_CARD_CLASS} data-testid={testId}>
-      <div className="flex items-start gap-3">
-        <span className={SETTINGS_CARD_ICON_CLASS}>{icon}</span>
-        <div className="min-w-0 flex-1">
-          {typeof title === 'string' ? (
-            <h2 className={SETTINGS_CARD_TITLE_CLASS}>{title}</h2>
-          ) : (
-            title
-          )}
-          {subtitle ? (
-            <p className={SETTINGS_CARD_SUBTITLE_CLASS}>{subtitle}</p>
-          ) : null}
-          {children ? <div className="mt-4">{children}</div> : null}
-        </div>
+      <div className="flex min-w-0 flex-col gap-1">
+        {typeof title === 'string' ? (
+          <h2 className={SETTINGS_CARD_TITLE_CLASS}>{title}</h2>
+        ) : (
+          title
+        )}
+        {subtitle ? (
+          <p className={SETTINGS_CARD_SUBTITLE_CLASS}>{subtitle}</p>
+        ) : null}
       </div>
+      {children ? (
+        <div className={SETTINGS_CARD_GROUP_CLASS}>{children}</div>
+      ) : null}
     </section>
   );
 }
 
 /**
- * The bordered row a settings card lists its controls in, matching the Work
- * digests and Push notifications rows.
+ * One row in a section's grouped box: the label and explanation on the
+ * leading side, one control on the trailing side. Consecutive rows are split
+ * by a hairline; the box supplies the side inset.
+ *
+ * The row keeps desktop's rhythm: at least 40px of content inside a 12px
+ * vertical inset (64px), with the hairline outside that height, so a row
+ * here and a desktop `SettingsRow` stand exactly as tall.
+ *
+ * `settings-card-row` is a structural marker, not styling: the box reads it
+ * (`has-[.settings-card-row]`) to hand its vertical inset to the rows.
  */
 export const SETTINGS_CARD_ROW_CLASS =
-  'flex min-h-16 items-center justify-between gap-4 rounded-lg border px-4 py-3';
+  'settings-card-row box-content flex min-h-10 items-center justify-between gap-4 py-3 [&+&]:border-t [ul+&]:border-t';
 
 export interface SettingsCardSwitchProps {
   readonly id?: string;
@@ -86,9 +125,9 @@ export interface SettingsCardSwitchProps {
 }
 
 /**
- * The on/off switch in a settings card row. Pure display: it reports the
- * requested next value, so the caller owns the async work and the `disabled`
- * window around it.
+ * The on/off switch in a settings row: the app's shared 32x18 switch. Pure
+ * display: it reports the requested next value, so the caller owns the async
+ * work and the `disabled` window around it.
  */
 export function SettingsCardSwitch({
   id,
@@ -100,27 +139,14 @@ export function SettingsCardSwitch({
   dataTestId,
 }: SettingsCardSwitchProps): JSX.Element {
   return (
-    <button
+    <ToggleSwitch
       id={id}
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-busy={busy || undefined}
-      aria-label={label}
+      checked={checked}
       disabled={disabled}
-      data-testid={dataTestId}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-        checked
-          ? 'bg-accent hover:bg-accent/90'
-          : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
-      }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
-          checked ? 'translate-x-6' : 'translate-x-1'
-        }`}
-      />
-    </button>
+      busy={busy}
+      label={label}
+      onChange={onChange}
+      dataTestId={dataTestId}
+    />
   );
 }

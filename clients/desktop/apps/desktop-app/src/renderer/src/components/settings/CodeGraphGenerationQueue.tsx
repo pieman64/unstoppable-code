@@ -11,7 +11,6 @@ import {
   SettingsLoading,
   SettingsSection,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const REORDER_CONFLICT_MESSAGE =
   'The generation queue changed. Review the latest order and try again.';
@@ -90,7 +89,6 @@ function EntryText({ entry }: { entry: CodeGraphQueueEntry }): JSX.Element {
  * runner keys, or paths — only the safe snapshot from the build runner.
  */
 export function CodeGraphGenerationQueue(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [snapshot, setSnapshot] =
     useState<CodeGraphGenerationQueueSnapshot | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -308,10 +306,10 @@ export function CodeGraphGenerationQueue(): JSX.Element {
             <EntryText entry={entry} />
             <div className="flex shrink-0 items-center gap-1">
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 iconOnly
-                // `aria-disabled` keeps the ghost surface on the first
+                // `aria-disabled` keeps the secondary surface on the first
                 // row; `disabled` would paint the shared disabled fill.
                 aria-disabled={reordering || index === 0}
                 onClick={(): void => {
@@ -323,8 +321,8 @@ export function CodeGraphGenerationQueue(): JSX.Element {
                 <ChevronUp size={14} />
               </Button>
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 iconOnly
                 aria-disabled={reordering || index === queued.length - 1}
                 onClick={(): void => {

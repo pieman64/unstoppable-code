@@ -5,14 +5,28 @@ import {
   type AgentActionResponse,
   type AgentJson,
   type AgentProjectBotPort,
+  type BotAction,
+  type ProjectAction,
 } from '@canopy/agent-actions';
-import type { AgentSendRefusalCode } from '@canopy/desktop-shared/lib/chat-send-actions';
+import type {
+  AcceptedInputReceipt,
+  AgentSendRefusalCode,
+  CreatedTaskChatReceipt,
+  SteeredInputReceipt,
+} from '@canopy/desktop-shared/lib/chat-send-actions';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 import type { ProjectDiscoveryCaller } from '../project-discovery';
 import type {
   AgentChatSendContext,
   AgentSendAdmission,
+  TrustedSendCaller,
 } from '../agent-messaging/send-orchestration';
+import type {
+  AgentSenderRuntimeSource,
+  PipelineSenderSource,
+} from '../agent-messaging/sender-context';
+import type { PipelineTrustedCaller } from '../agent-messaging/pipeline-caller';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type { DesktopEnvironmentPort } from './desktop-environment-port';
 import type { ChatSendAdmissionTab } from '../services/chat-send-admission';
 
@@ -73,10 +87,10 @@ async function desktopAgentAdmissions(): Promise<DesktopAgentAdmissions> {
   return admissionPort;
 }
 
-/** A scheduled delivery's host: no user or tool turn attends it. */
-const scheduledDeliveryHost: CanopyInjectedToolRuntime = {
+/** No user or tool turn attends a pipeline or scheduled delivery. */
+export const unattendedDeliveryHost: CanopyInjectedToolRuntime = {
   requestUserAnswers: () =>
-    Promise.reject(new Error('No user attends a scheduled delivery.')),
+    Promise.reject(new Error('No user attends this delivery.')),
   loadScriptOutput: () => Promise.resolve({ found: false, lines: [] }),
 };
 
@@ -96,7 +110,7 @@ export async function admitScheduledProjectMessage(
     await desktopAgentAdmissions()
   ).agentMessageAdmission(
     target,
-    { scope: sender, host: scheduledDeliveryHost },
+    { scope: sender, host: unattendedDeliveryHost },
     sent,
   );
 }
@@ -114,7 +128,7 @@ export async function readmitQueuedProjectMessage(
   target: { workspaceId: string; worktreeId: string; chatId: string },
   startedChat = false,
 ): Promise<void> {
-  const call = { scope: sender, host: scheduledDeliveryHost };
+  const call = { scope: sender, host: unattendedDeliveryHost };
   try {
     const admissions = await desktopAgentAdmissions();
     await (startedChat
@@ -183,6 +197,121 @@ function sendAdmissions(
         (await admissions()).agentChatStartAdmission(task, firstMessage, call),
       ),
   };
+}
+
+/**
+ * An agent-originated run's admissions (D11): the recording agent's own, as
+ * its scheduled deliveries are admitted, with no attending user or tool turn.
+ * Orchestrator agents have no project admission.
+ */
+function pipelineAgentAdmissions(
+  agentOrigin: AgentSenderRuntimeSource,
+): Pick<AgentChatSendContext, 'admission' | 'startAdmission'> {
+  if (agentOrigin.projectId === APP_ADVISOR_PROJECT_ID) return {};
+  return sendAdmissions(desktopAgentAdmissions, {
+    scope: {
+      workspaceId: agentOrigin.projectId,
+      worktreeId: agentOrigin.worktreeId,
+      chatId: agentOrigin.chatId,
+    },
+    host: unattendedDeliveryHost,
+  });
+}
+
+/** What a pipeline step or an automation's own send may pass to the orchestrations. */
+export type PipelineProjectBotOptions = Pick<
+  AgentChatSendContext,
+  | 'turnOverride'
+  | 'composition'
+  | 'fixedIds'
+  | 'newChatSeed'
+  | 'onChatResolved'
+  | 'automationDispatch'
+  | 'surfaces'
+  | 'plannedTaskId'
+  | 'reuseStarterChat'
+  | 'newChat'
+>;
+
+/**
+ * A pipeline step's project or bot write, through the same orchestrations and
+ * refusal mapping as the agent port. Not an agent action: a pipeline has no
+ * calling chat, so it is authorized by its run's owner and, when an agent
+ * started the run, that agent's admission. Never reachable from an agent
+ * surface or catalog.
+ */
+export async function dispatchPipelineProjectBotAction(
+  action: ProjectAction | BotAction,
+  caller: Extract<TrustedSendCaller, { kind: 'pipeline' }>,
+  options: PipelineProjectBotOptions = {},
+): Promise<Omit<AgentActionResponse<string>, 'requestId'>> {
+  return writeResponse(async () => ({
+    ...(await runPipelineProjectBotAction(action, caller, options)),
+  }));
+}
+
+/**
+ * The typed form of the pipeline entry: the orchestration's receipt, or an
+ * `AgentChatSendError`. `dispatchPipelineProjectBotAction` wraps it for the
+ * host step; the automations service uses it directly, so no JSON receipt is
+ * ever cast back.
+ */
+export async function runPipelineProjectBotAction(
+  action: ProjectAction | BotAction,
+  caller: Extract<TrustedSendCaller, { kind: 'pipeline' }>,
+  options: PipelineProjectBotOptions = {},
+): Promise<
+  AcceptedInputReceipt | SteeredInputReceipt | CreatedTaskChatReceipt
+> {
+  const sendContext: AgentChatSendContext = {
+    caller,
+    ...(caller.source.agentOrigin
+      ? pipelineAgentAdmissions(caller.source.agentOrigin)
+      : {}),
+    ...options,
+  };
+  switch (action.type) {
+    case 'projects.send_message':
+    case 'bots.send_message': {
+      const { dispatchAgentChatSend } =
+        await import('../agent-messaging/send-orchestration');
+      return dispatchAgentChatSend(action, sendContext);
+    }
+    case 'projects.steer_queued_message': {
+      const { dispatchAgentChatSteer } =
+        await import('../agent-messaging/steer-orchestration');
+      return dispatchAgentChatSteer(action, sendContext);
+    }
+    case 'projects.create_task_chat':
+    case 'bots.create_task_chat': {
+      const { dispatchAgentChatCreation } =
+        await import('../agent-messaging/creation-orchestration');
+      return dispatchAgentChatCreation(action, sendContext);
+    }
+    case 'projects.create_task':
+    case 'bots.create_task': {
+      // A task ID this caller has not pinned could not be found again on a
+      // replay, so a pipeline never creates a task without one.
+      const { AgentChatSendError } =
+        await import('../agent-messaging/send-orchestration');
+      if (options.plannedTaskId === undefined)
+        throw new AgentChatSendError(
+          'validation_failed',
+          'A pipeline task creation needs its planned task ID.',
+        );
+      const { dispatchAgentChatCreation } =
+        await import('../agent-messaging/creation-orchestration');
+      return dispatchAgentChatCreation(action, sendContext);
+    }
+    default: {
+      const { AgentChatSendError } =
+        await import('../agent-messaging/send-orchestration');
+      throw new AgentChatSendError(
+        'unsupported_action',
+        `A pipeline step cannot run ${action.type}.`,
+      );
+    }
+  }
 }
 
 /**
@@ -310,3 +439,80 @@ export function createDesktopProjectBotPort(
 export const desktopProjectBotPort = createDesktopProjectBotPort(
   desktopAgentAdmissions,
 );
+
+/**
+ * A creation-only host step's pipeline source. Its display fields stand in
+ * for a sender that is never built, as the port refuses a first message.
+ */
+function pipelineCreationSource(
+  caller: PipelineTrustedCaller,
+): PipelineSenderSource {
+  return {
+    executionId: caller.executionId,
+    pipelineId: caller.pipelineId ?? caller.executionId,
+    stepId: caller.stepId,
+    pipelineName: '',
+    owner: caller.owner,
+    ...(caller.agentOrigin ? { agentOrigin: caller.agentOrigin } : {}),
+  };
+}
+
+/**
+ * The explicit-target actions for a pipeline host step, bound to its trusted
+ * caller at construction; the call's own scope is ignored. In this phase only
+ * task creation is available. `plannedTaskId` is the step's journaled task ID.
+ */
+export function createDesktopPipelineProjectBotPort(
+  caller: PipelineTrustedCaller,
+  admissions: () => Promise<DesktopAgentAdmissions> = desktopAgentAdmissions,
+  plannedTaskId?: string,
+): AgentProjectBotPort<CanopyInjectedToolRuntime> {
+  return {
+    async dispatch(
+      action,
+      call,
+    ): Promise<Omit<AgentActionResponse<string>, 'requestId'>> {
+      if (
+        action.type !== 'projects.create_task' &&
+        action.type !== 'bots.create_task'
+      )
+        throw new AgentPortError(
+          'unsupported_action',
+          `${action.type} isn't available to pipelines yet.`,
+        );
+      const origin = caller.agentOrigin;
+      const originCall: DesktopAgentActionCall | undefined = origin
+        ? {
+            scope: {
+              workspaceId: origin.projectId,
+              worktreeId: origin.worktreeId,
+              chatId: origin.chatId,
+            },
+            host: call.host,
+          }
+        : undefined;
+      // No first message, so no pipeline sender is ever built from `source`.
+      if (action.initialMessage !== undefined)
+        throw new AgentPortError(
+          'unsupported_action',
+          "A pipeline's created task can't take a first message yet.",
+        );
+      const { dispatchAgentChatCreation } =
+        await import('../agent-messaging/creation-orchestration');
+      return writeResponse(async () => ({
+        ...(await dispatchAgentChatCreation(action, {
+          caller: { kind: 'pipeline', source: pipelineCreationSource(caller) },
+          ...(plannedTaskId !== undefined ? { plannedTaskId } : {}),
+          // Agent-originated runs: a created chat starts within the origin
+          // agent's approvals, so that agent's later sends to it are admitted.
+          ...(originCall
+            ? {
+                startAdmission: sendAdmissions(admissions, originCall)
+                  .startAdmission,
+              }
+            : {}),
+        })),
+      }));
+    },
+  };
+}

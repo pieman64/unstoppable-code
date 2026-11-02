@@ -246,6 +246,7 @@ const preflightCases: Record<string, PreflightCase> = {
     mutate: (raw) => raw.replace('"name":"c"', '"name":"C-foreign"'),
     run: () =>
       reorderWorkspaces({
+        source: 'projects_save',
         workspaceOrder: ['c', 'b', 'a'],
         idempotencyKey: 'r1',
       }),
@@ -336,6 +337,7 @@ function runKeyed(kind: KeyedCommand): Promise<unknown> {
   switch (kind) {
     case 'workspace-reorder':
       return reorderWorkspaces({
+        source: 'projects_save',
         workspaceOrder: ['c', 'b', 'a'],
         idempotencyKey: 'key',
       });

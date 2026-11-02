@@ -25,16 +25,15 @@ function makeFakeIpc(): {
   );
   const listeners = new Map<string, Set<IpcHandler>>();
   const ipc: ClaudeTerminalIpcRenderer = {
-    invoke: ((channel: string, ...args: unknown[]) =>
-      invoke(channel, ...args)) as ClaudeTerminalIpcRenderer['invoke'],
+    invoke: (channel: string, ...args: unknown[]) => invoke(channel, ...args),
     on(channel, handler) {
       const set = listeners.get(channel) ?? new Set<IpcHandler>();
-      set.add(handler as IpcHandler);
+      set.add(handler);
       listeners.set(channel, set);
       return this;
     },
     removeListener(channel, handler) {
-      listeners.get(channel)?.delete(handler as IpcHandler);
+      listeners.get(channel)?.delete(handler);
       return this;
     },
   };

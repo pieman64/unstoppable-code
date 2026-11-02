@@ -50,7 +50,17 @@ jest.mock('@/components/plugins/SharePluginModal', () => ({
 }));
 
 import { PluginDetailView } from '../PluginDetailView';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import {
+  CLIENT_FEATURE_FLAGS,
+  getDefaultFeatureFlagSnapshot,
+} from '@canopy/protocol/feature-flags';
 import { marketplaceSourceOperations } from '@/hooks/useMarketplaceList';
+
+const externalPluginSource: NonNullable<PluginInfo['externalSource']> = {
+  source: 'github',
+  url: 'https://example.test/plugin.git',
+};
 
 function makeFacet(
   overrides: Partial<PluginProviderFacet> = {},
@@ -207,11 +217,22 @@ describe('PluginDetailView provider toggle', () => {
   };
   const originalPlugins = (window as unknown as Record<string, unknown>)
     .plugins;
+  const originalMcpServers = Reflect.get(window, 'mcpServers');
+  let mcpServersApi: {
+    loadIndex: jest.Mock;
+    listStatus: jest.Mock;
+    testConnection: jest.Mock;
+    onAuthChanged: jest.Mock;
+  };
 
   beforeEach(() => {
     mockClaudeAuthenticated = true;
     mockCodexAuthenticated = false;
     mockCursorAvailable = false;
+    // Protocol defaults: Cursor and OpenCode on, Copilot off.
+    useFeatureFlagsStore.setState({
+      snapshot: getDefaultFeatureFlagSnapshot(),
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -235,6 +256,27 @@ describe('PluginDetailView provider toggle', () => {
       configurable: true,
       value: pluginsApi,
     });
+    mcpServersApi = {
+      loadIndex: jest.fn().mockResolvedValue({
+        version: 1,
+        servers: [
+          {
+            id: 'srv-slack',
+            name: 'slack-mcp',
+            description: '',
+            type: 'http',
+            configs: [{ id: 'cfg-1', name: 'Default' }],
+          },
+        ],
+      }),
+      listStatus: jest.fn().mockResolvedValue([]),
+      testConnection: jest.fn().mockResolvedValue({ success: true }),
+      onAuthChanged: jest.fn(() => (): void => undefined),
+    };
+    Object.defineProperty(window, 'mcpServers', {
+      configurable: true,
+      value: mcpServersApi,
+    });
   });
 
   afterEach(() => {
@@ -242,6 +284,14 @@ describe('PluginDetailView provider toggle', () => {
       root.unmount();
     });
     container.remove();
+    if (originalMcpServers === undefined) {
+      Reflect.deleteProperty(window, 'mcpServers');
+    } else {
+      Object.defineProperty(window, 'mcpServers', {
+        configurable: true,
+        value: originalMcpServers,
+      });
+    }
     if (originalPlugins === undefined) {
       Reflect.deleteProperty(window, 'plugins');
     } else {
@@ -275,7 +325,7 @@ describe('PluginDetailView provider toggle', () => {
     try {
       const plugin = {
         ...makePlugin({}),
-        externalSource: 'https://example.test/plugin.git',
+        externalSource: externalPluginSource,
       };
       await act(async () => {
         root.render(
@@ -298,7 +348,7 @@ describe('PluginDetailView provider toggle', () => {
   it('shows installed details after automatic installation completes while mounted', async () => {
     const plugin = {
       ...makePlugin({}),
-      externalSource: 'https://example.test/plugin.git',
+      externalSource: externalPluginSource,
     };
     const installed = { ...plugin, details: makeDetails() };
     let finish: (result: {
@@ -344,7 +394,7 @@ describe('PluginDetailView provider toggle', () => {
   it('shows an automatic install failure', async () => {
     const plugin = {
       ...makePlugin({}),
-      externalSource: 'https://example.test/plugin.git',
+      externalSource: externalPluginSource,
     };
     pluginsApi.installPlugin.mockResolvedValue({
       success: false,
@@ -373,7 +423,7 @@ describe('PluginDetailView provider toggle', () => {
   it('propagates a successful automatic install after leaving details', async () => {
     const plugin = {
       ...makePlugin({}),
-      externalSource: 'https://example.test/plugin.git',
+      externalSource: externalPluginSource,
     };
     const installed = { ...plugin, details: makeDetails() };
     let finishInstall: (result: {
@@ -468,7 +518,7 @@ describe('PluginDetailView provider toggle', () => {
         Partial<PluginDetails>
       > = {
         mcp: {
-          mcpServers: [{ name: 'test', type: 'stdio', command: 'test-mcp' }],
+          mcpServers: [{ name: 'test', type: 'command', command: 'test-mcp' }],
         },
         skills: {
           skills: [
@@ -542,8 +592,21 @@ describe('PluginDetailView provider toggle', () => {
     ]);
   }
 
-  it('lists the configured Claude harness without listing the app as a harness', () => {
-    renderView(makePlugin({ claude: makeFacet({ details: makeDetails() }) }));
+  it('lists every harness regardless of sign-in without listing the app as a harness', () => {
+    mockClaudeAuthenticated = false;
+    mockCodexAuthenticated = false;
+    mockCursorAvailable = false;
+    renderView(
+      makePlugin({
+        claude: makeFacet({
+          details: makeDetails({
+            skills: [
+              { name: 'triage', description: 'Triage', path: 'skills/t' },
+            ],
+          }),
+        }),
+      }),
+    );
     const table = container.querySelector(
       '[data-testid="plugin-harness-connections"] table',
     );
@@ -554,7 +617,13 @@ describe('PluginDetailView provider toggle', () => {
       ),
     ).toEqual(['Harness', 'Installation']);
     // The app is where the plugin is added, not a harness it installs into.
-    expect(harnessRows()).toEqual([['Claude', 'Installed']]);
+    // Copilot's harness gate is off by default, so it gets no row.
+    expect(harnessRows()).toEqual([
+      ['Claude', 'Installed'],
+      ['Codex', 'Not supported'],
+      ['Cursor', 'Installed'],
+      ['OpenCode', 'Installed'],
+    ]);
     expect(
       container.querySelector('[data-testid="plugin-harness-app"]'),
     ).toBeNull();
@@ -563,16 +632,12 @@ describe('PluginDetailView provider toggle', () => {
     );
     expect(status?.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     expect(status?.classList.contains('fg-success')).toBe(true);
-    expect(
-      container.querySelector('[data-testid="plugin-harness-codex"]'),
-    ).toBeNull();
   });
 
   it('shows a Codex-only plugin as installed for Codex and not supported elsewhere', () => {
     // No provider reported an install, which is the common case for plugins
     // from openai-curated, claude-plugins-official and user-added sources.
-    mockCodexAuthenticated = true;
-    mockCursorAvailable = true;
+    mockClaudeAuthenticated = false;
     renderView(
       makePlugin({
         codex: makeFacet({ provider: 'codex', details: makeDetails() }),
@@ -582,15 +647,152 @@ describe('PluginDetailView provider toggle', () => {
       ['Claude', 'Not supported'],
       ['Codex', 'Installed'],
       ['Cursor', 'Not supported'],
+      ['OpenCode', 'Not supported'],
     ]);
   });
 
-  it('shows no harness table when no harness is signed in', () => {
-    mockClaudeAuthenticated = false;
-    renderView(makePlugin({ claude: makeFacet({ details: makeDetails() }) }));
+  it('lists only the harnesses whose gates are on (CAN-4842)', () => {
+    const defaults = getDefaultFeatureFlagSnapshot();
+    const withGates = (gates: {
+      cursor: boolean;
+      copilot: boolean;
+      opencode: boolean;
+    }): void => {
+      act(() => {
+        useFeatureFlagsStore.setState({
+          snapshot: {
+            ...defaults,
+            values: {
+              ...defaults.values,
+              [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
+                gates.cursor,
+              [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]:
+                gates.copilot,
+              [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]:
+                gates.opencode,
+            },
+          },
+        });
+      });
+    };
+    renderView(
+      makePlugin({
+        codex: makeFacet({ provider: 'codex', details: makeDetails() }),
+      }),
+    );
+    withGates({ cursor: true, copilot: true, opencode: true });
+    expect(harnessRows().map(([name]) => name)).toEqual([
+      'Claude',
+      'Codex',
+      'Cursor',
+      'Copilot',
+      'OpenCode',
+    ]);
+    withGates({ cursor: false, copilot: false, opencode: false });
+    expect(harnessRows().map(([name]) => name)).toEqual(['Claude', 'Codex']);
+  });
+
+  it('shows no harness table while the plugin still needs installing', () => {
+    renderView({
+      ...makePlugin({ claude: makeFacet() }),
+      externalSource: {
+        source: 'github',
+        url: 'https://github.com/acme/plugin',
+      },
+    });
     expect(
       container.querySelector('[data-testid="plugin-harness-connections"]'),
     ).toBeNull();
+  });
+
+  it('renders statusContent between the title and the harness table (CAN-4842)', () => {
+    act(() => {
+      root.render(
+        <PluginDetailView
+          plugin={makePlugin({ claude: makeFacet({ details: makeDetails() }) })}
+          marketplace={makeMarketplace()}
+          onBack={(): void => undefined}
+          onPluginUpdated={(): void => undefined}
+          statusContent={<div data-testid="t-status" />}
+        />,
+      );
+    });
+    const title = container.querySelector('#plugin-detail-title');
+    const status = container.querySelector('[data-testid="t-status"]');
+    const harness = container.querySelector(
+      '[data-testid="plugin-harness-connections"]',
+    );
+    expect(title && status && harness).toBeTruthy();
+    expect(
+      (title?.compareDocumentPosition(status as Node) ?? 0) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      (status?.compareDocumentPosition(harness as Node) ?? 0) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('shows MCP health with Test connection for a configured bundled server (CAN-4842)', async () => {
+    const plugin = makePlugin({
+      claude: makeFacet({
+        details: makeDetails({
+          mcpServers: [
+            {
+              name: 'slack-mcp',
+              type: 'http',
+              url: 'https://mcp.slack.com/mcp',
+            },
+          ],
+        }),
+      }),
+    });
+    const render = (
+      bundledServerRows?: Parameters<
+        typeof PluginDetailView
+      >[0]['bundledServerRows'],
+    ): void => {
+      act(() => {
+        root.render(
+          <PluginDetailView
+            plugin={plugin}
+            marketplace={makeMarketplace()}
+            onBack={(): void => undefined}
+            onPluginUpdated={(): void => undefined}
+            bundledServerRows={bundledServerRows}
+          />,
+        );
+      });
+    };
+    render();
+    expect(
+      container.querySelector(
+        '[data-testid="plugin-detail-mcp-status-unavailable"]',
+      )?.textContent,
+    ).toBe('Not configured yet');
+    expect(mcpServersApi.loadIndex).not.toHaveBeenCalled();
+
+    render([
+      {
+        serverName: 'slack-mcp',
+        endpoint: 'http:mcp.slack.com',
+        entryId: 'entry-slack',
+        serverId: 'srv-slack',
+      },
+    ]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const test = container.querySelector('[data-testid="mcp-health-test"]');
+    expect(test).not.toBeNull();
+    await act(async () => {
+      if (test instanceof HTMLElement) test.click();
+      await Promise.resolve();
+    });
+    expect(mcpServersApi.testConnection).toHaveBeenCalledWith(
+      'srv-slack',
+      'cfg-1',
+    );
   });
 
   it('offers no sign-in for an installed plugin; its servers sign in from a chat', () => {
@@ -679,10 +881,18 @@ describe('PluginDetailView provider toggle', () => {
     expect(
       container.querySelector('[data-testid="plugin-detail-provider-toggle"]'),
     ).not.toBeNull();
+    // The switch sits at the top of the content it changes, not in the
+    // chrome row, which holds page actions only.
     expect(
-      container.querySelector('[data-testid="plugin-detail-provider-toggle"]')
-        ?.parentElement?.parentElement?.className,
-    ).toContain('ml-auto');
+      container.querySelector(
+        '[data-testid="plugin-detail-provider-toggle-row"] [data-testid="plugin-detail-provider-toggle"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="plugin-detail-chrome"] [data-testid="plugin-detail-provider-toggle"]',
+      ),
+    ).toBeNull();
     expect(container.textContent).toContain('Plugin Claude');
     expect(container.textContent).toContain('1.0.0');
 

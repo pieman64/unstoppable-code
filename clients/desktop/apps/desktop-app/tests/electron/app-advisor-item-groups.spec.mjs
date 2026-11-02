@@ -28,7 +28,9 @@ test('Advisor creates a named group through its row menu and retains selected co
       .click({ timeout: 5000 });
     await advisor.getByTestId('sidebar-item-group-name').fill('Investigations');
     await advisor.getByTestId('sidebar-item-group-name').press('Enter');
-    await advisor.keyboard.press('Escape');
+    await expect(advisor.getByTestId('sidebar-item-group-editor')).toHaveCount(
+      0,
+    );
     const groups = await advisor.evaluate(() =>
       window.api.sidebarItemGroups.list({ appAdvisor: true }),
     );
@@ -273,12 +275,12 @@ test('Advisor keyboard row ordering survives reload and group creation confirms 
       .poll(
         async () =>
           await group
-            .locator('[data-entry-selected="true"]')
+            .locator('[data-standalone-chat-id][aria-current="page"]')
             .getAttribute('data-standalone-chat-id'),
       )
       .not.toBeNull();
     const selectedId = await group
-      .locator('[data-entry-selected="true"]')
+      .locator('[data-standalone-chat-id][aria-current="page"]')
       .getAttribute('data-standalone-chat-id');
     const groups = await advisor.evaluate(() =>
       window.api.sidebarItemGroups.list({ appAdvisor: true }),
@@ -444,7 +446,9 @@ test('Advisor archive removes durable membership and restore returns the chat un
     await advisor
       .getByRole('menuitem', { name: 'Archive', exact: true })
       .click();
-    await first.getByRole('button', { name: 'Archive?', exact: true }).click();
+    await advisor
+      .getByTestId('app-advisor-nav-entry-advisor-first-confirm-delete')
+      .click();
     await expect(first).toHaveCount(0);
     await expect
       .poll(
@@ -531,8 +535,8 @@ for (const action of ['archive anchor', 'create first member']) {
         await advisor
           .getByRole('menuitem', { name: 'Archive', exact: true })
           .click();
-        await anchor
-          .getByRole('button', { name: 'Archive?', exact: true })
+        await advisor
+          .getByTestId('app-advisor-nav-entry-advisor-second-confirm-delete')
           .click();
         await expect(anchor).toHaveCount(0);
         await expect

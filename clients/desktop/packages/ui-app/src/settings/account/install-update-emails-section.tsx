@@ -5,13 +5,11 @@ import {
   INSTALL_UPDATE_EMAILS_TITLE,
   InstallUpdateEmailsSetting,
 } from '../InstallUpdateEmailsSetting';
-import { Mail } from '@canopy/ui-shared/icons/AppIcons';
 import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
 
 function renderCardFrame(content: ReactNode): ReactNode {
   return (
     <SettingsCard
-      icon={<Mail size={18} />}
       title={INSTALL_UPDATE_EMAILS_TITLE}
       testId="account-install-update-emails"
     >

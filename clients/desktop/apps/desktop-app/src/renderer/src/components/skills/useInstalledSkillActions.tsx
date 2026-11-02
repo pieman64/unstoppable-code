@@ -27,6 +27,9 @@ interface SkillIdentity {
   name: string;
 }
 
+/** Share needs the skill's cloud share to reopen on it instead of a first share. */
+type ShareableSkill = SkillIdentity & Pick<InstalledSkillInfo, 'remote'>;
+
 export interface InstalledSkillActionsOptions {
   /** Detail identity; changing it invalidates pending page actions. */
   updateContextKey?: string;
@@ -58,7 +61,7 @@ export interface InstalledSkillActions {
   /** The Share dialog is open (reported to App Advisor by the list). */
   shareDialogOpen: boolean;
   canShare: (skill: InstalledSkillInfo) => boolean;
-  requestShare: (skill: SkillIdentity) => void;
+  requestShare: (skill: ShareableSkill) => void;
   canRemove: (skill: InstalledSkillInfo) => boolean;
   /** Opens the Delete (custom) or Remove (installed) confirmation. */
   requestRemove: (skill: InstalledSkillInfo) => void;
@@ -143,7 +146,7 @@ export function useInstalledSkillActions({
 }: InstalledSkillActionsOptions): InstalledSkillActions {
   const { requestShare, shareGateModal } = useShareAccess();
   const refreshUpdates = onUpdateInventoryRefresh ?? onSkillsChanged;
-  const [sharingSkill, setSharingSkill] = useState<SkillIdentity | null>(null);
+  const [sharingSkill, setSharingSkill] = useState<ShareableSkill | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<{
     sourceId: string;
     name: string;
@@ -377,8 +380,8 @@ export function useInstalledSkillActions({
           onOpenAccountSettings={onOpenAccountSettings ?? ((): void => {})}
           onPublicLinkRemoved={onPublicLinkRemoved}
           onShared={(detail) => {
-            // Sharing keeps the local skill; the list keeps showing it.
-            setSharingSkill(null);
+            // Sharing keeps the local skill; the list keeps showing it. The
+            // dialog stays open on its success notice until Done.
             onShared?.(detail);
           }}
         />
@@ -416,9 +419,9 @@ export function useInstalledSkillActions({
     shareDialogOpen: sharingSkill !== null,
     canShare,
     requestShare: (skill): void => {
-      const { sourceId, name } = skill;
+      const { sourceId, name, remote } = skill;
       requestShare(SHARE_SKILL_GATE_CONTEXT, () =>
-        setSharingSkill({ sourceId, name }),
+        setSharingSkill({ sourceId, name, ...(remote ? { remote } : {}) }),
       );
     },
     canRemove,

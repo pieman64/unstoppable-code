@@ -39,6 +39,7 @@ import type {
 import type {
   DismissedSharedContainerSummary,
   SharedContainerSummary,
+  SharedContainerType,
 } from '@canopy/protocol/shared-containers';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { useSharedContainersStore } from '@/stores/sharedContainersStore';
@@ -285,6 +286,8 @@ export interface SharedContainerReplicasState {
     containerId: string;
     organizationId?: string;
     access?: SharedContainerAccess;
+    /** The listing's type, an analytics hint only; never authorization. */
+    containerType?: SharedContainerType;
     /** Rechecked after consent, before materializing the viewer. */
     shouldOpen?: () => boolean;
   }) => Promise<void>;
@@ -979,6 +982,7 @@ export const useSharedContainerReplicasStore =
       containerId,
       organizationId,
       access,
+      containerType,
       shouldOpen,
     }): Promise<void> => {
       const bridge = window.api?.sharedContainers;
@@ -987,6 +991,7 @@ export const useSharedContainerReplicasStore =
       try {
         const response = await bridge.accept({
           containerId,
+          ...(containerType ? { containerType } : {}),
           ...(organizationId ? { organizationId } : {}),
           ...(access ? { access } : {}),
         });

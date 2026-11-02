@@ -87,7 +87,7 @@ function initialSelection(
   organizations: readonly MoveProjectToOrganizationOption[],
 ): string {
   if (organizations.length !== 1) return '';
-  // eslint-disable-next-line no-restricted-syntax -- Sole membership: with exactly one organization there is no order to infer from.
+  // eslint-disable-next-line eslint-js/no-restricted-syntax -- Sole membership: with exactly one organization there is no order to infer from.
   return organizations[0]?.id ?? '';
 }
 

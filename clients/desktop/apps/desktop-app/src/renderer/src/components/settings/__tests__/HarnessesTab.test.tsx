@@ -367,11 +367,9 @@ describe('HarnessesTab display states', () => {
     await renderTab();
 
     const error = query('harness-load-error');
-    expect(error?.textContent).toContain(
-      'Harness assignments couldn’t be loaded.',
-    );
+    expect(error?.textContent).toContain("Couldn't load harness assignments.");
     const retry = requireEl('harness-retry');
-    expect(retry.textContent).toBe('Retry');
+    expect(retry.textContent).toBe('Try again');
 
     api.harnessAssignments.load.mockResolvedValue(fixtureSnapshot());
     click(retry);
@@ -514,7 +512,13 @@ describe('HarnessesTab actions menu', () => {
     await renderTab();
     const button = requireEl('harness-row-menu-alpha-model');
     expect(button.getAttribute('aria-label')).toBe('Actions for alpha-model');
-    expect(button.className).toContain('opacity-0');
+    // The 28px icon circle sits in a wrapper that hides it until the row is
+    // hovered or holds focus.
+    expect(button.className).toContain('rounded-full');
+    expect(button.parentElement?.className).toContain('opacity-0');
+    expect(button.parentElement?.className).toContain(
+      'group-focus-within:opacity-100',
+    );
     expect(button.getAttribute('tabindex')).toBeNull(); // natural tab order
   });
 

@@ -149,6 +149,7 @@ async function initializeDatadogClient(
 let disposePostHog: (() => void) | undefined;
 let reportPostHogFeatureFlagEvaluation: FeatureFlagReporter | undefined;
 let reportPostHogOperation: OperationReporter | undefined;
+let isPostHogOperationStartEligible: (() => boolean) | undefined;
 /** Bounds operations that finish while the SDK is still initializing. */
 const MAX_PENDING_POSTHOG_OPERATIONS = 50;
 let posthogInitialization:
@@ -182,6 +183,9 @@ async function initializePostHogClient(
   let unloadInstalled = false;
   let posthog: PostHog | undefined;
   let account: PostHogAccountTracker | undefined;
+  const eligibleStart = (): boolean =>
+    !disposed && (waitingForFlags || flags?.captureEnabled === true);
+  isPostHogOperationStartEligible = eligibleStart;
   const pendingEvaluations = new Map<string, FeatureFlagValue>();
   const reportedEvaluations = new Map<string, FeatureFlagValue>();
   const reportEvaluation: FeatureFlagReporter = (key, value) => {
@@ -232,6 +236,9 @@ async function initializePostHogClient(
       reportPostHogFeatureFlagEvaluation = undefined;
     if (reportPostHogOperation === reportOperation)
       reportPostHogOperation = undefined;
+    if (isPostHogOperationStartEligible === eligibleStart)
+      isPostHogOperationStartEligible = undefined;
+    posthogOperations.discardAcquisitionStarts();
     pendingEvaluations.clear();
     reportedEvaluations.clear();
     pendingOperations.length = 0;
@@ -253,6 +260,7 @@ async function initializePostHogClient(
       flags = next;
       waitingForFlags = false;
       if (next.captureEnabled !== true) {
+        posthogOperations.discardAcquisitionStarts();
         pendingEvaluations.clear();
         pendingOperations.length = 0;
       }
@@ -273,6 +281,7 @@ async function initializePostHogClient(
     }
     waitingForFlags = false;
     if (flags?.captureEnabled !== true) {
+      posthogOperations.discardAcquisitionStarts();
       pendingEvaluations.clear();
       pendingOperations.length = 0;
     }
@@ -499,7 +508,13 @@ export function startClientOperation(
   name: DesktopOperationName,
   options?: DesktopInstrumentationOperationOptions,
 ): void {
-  safelyInvoke(() => posthogOperations.start(name, options));
+  safelyInvoke(() =>
+    posthogOperations.start(
+      name,
+      options,
+      isPostHogOperationStartEligible?.() ?? false,
+    ),
+  );
   if (!initialized || !datadogRumModule) {
     return;
   }

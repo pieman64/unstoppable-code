@@ -5,10 +5,13 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import {
+  clearScenario,
+  connectMockCloudAccount,
   DEFAULT_MOCK_BASE_URL,
   registerScenario,
   seedAutomations,
   seedPipelineExecution,
+  seedStoredPipeline,
   seedWorkspaceApprovals,
   seedWatchers,
   seedWorktreeChat,
@@ -407,29 +410,27 @@ test('renders docked, deduplicated activity cards, event-backed progress, and co
     ).toBeVisible();
     await injectTurn('carry-turn-two', T + 30_000, null);
 
-    await expect(panel.getByTestId('agent-activity-active')).toBeVisible();
-    const activeActivity = panel.getByTestId('agent-activity-active');
+    // The watched run is the composer drawer's: no pinned section lists it
+    // while the streaming turn has no tiles, and no turn record does
+    // (background drawer D2 and D3).
     const composerShell = panel.locator('[data-chat-composer-root]');
-    await expect(async () => {
-      const activityBox = await activeActivity.boundingBox();
-      const composerBox = await composerShell.boundingBox();
-      expect(Math.abs(activityBox.x - composerBox.x)).toBeLessThanOrEqual(1);
-      expect(
-        Math.abs(activityBox.width - composerBox.width),
-      ).toBeLessThanOrEqual(1);
-    }).toPass({ timeout: 5_000 });
-
-    const runCard = panel.getByTestId(
-      `pipeline-run-card-${runReceipt.executionId}`,
+    const tray = panel.getByTestId('composer-work-drawer');
+    await expect(tray).toBeVisible({ timeout: 30_000 });
+    await tray.getByTestId('composer-work-drawer-toggle').click();
+    const runRow = tray.locator(
+      `[data-tray-row="run:${runReceipt.dedupeKey}"]`,
     );
-    await expect(runCard).toHaveCount(1);
-    await expect(runCard).toContainText('pending');
+    await expect(runRow).toHaveCount(1, { timeout: 30_000 });
+    await expect(panel.getByTestId('agent-activity-active')).toHaveCount(0);
     await expect(
-      panel.getByTestId(`pipeline-run-watchers-${runReceipt.executionId}`),
-    ).toBeVisible();
-    await expect(
-      panel.getByTestId(`pipeline-run-toggle-hidden-${runReceipt.executionId}`),
+      panel.getByTestId(`pipeline-run-card-${runReceipt.executionId}`),
     ).toHaveCount(0);
+    await runRow.getByTestId('background-tray-row-toggle').click();
+    await expect(
+      runRow.getByTestId(
+        `background-tray-run-watchers-${runReceipt.executionId}`,
+      ),
+    ).toBeVisible();
 
     const runningExecutionState = {
       ...pendingExecutionState,
@@ -456,10 +457,13 @@ test('renders docked, deduplicated activity cards, event-backed progress, and co
       timestamp: new Date(T + 31_000).toISOString(),
       state: runningExecutionState,
     });
-    await expect(runCard).toContainText('running');
-    await runCard.click();
-    // The chat card opens the run's own panel tab beside its chat, where
-    // the job list presents collapsed until the user expands it.
+    // The drawer follows the run's status: running, it offers Stop.
+    await expect(
+      runRow.getByTestId(`background-tray-run-${runReceipt.dedupeKey}-stop`),
+    ).toBeVisible();
+    await runRow.getByRole('button', { name: 'Open run', exact: true }).click();
+    // Open run opens the run's own panel tab beside its chat, where the job
+    // list presents collapsed until the user expands it.
     const runPanel = await expectPipelineRunPanel(
       window,
       runReceipt.executionId,
@@ -499,6 +503,14 @@ test('renders docked, deduplicated activity cards, event-backed progress, and co
     // skill keeps its state rather than reporting a removal.
     await expect(completed.getByTestId('agent-artifact-share')).toBeVisible();
     await expect(skillCard).not.toContainText('Removed');
+    // Share's hover and pressed fill is a circle.
+    const shareShape = await completed
+      .getByTestId('agent-artifact-share')
+      .evaluate((share) => ({
+        radius: parseFloat(getComputedStyle(share).borderTopRightRadius),
+        width: share.getBoundingClientRect().width,
+      }));
+    expect(shareShape.radius).toBeGreaterThanOrEqual(shareShape.width / 2);
     // CAN-3480: the hover preview must not survive the navigation that opens
     // the skill details. The chat page stays mounted but hidden, so the card
     // used to stay open and re-anchor to the top-left corner over the sidebar.
@@ -532,8 +544,8 @@ test('renders docked, deduplicated activity cards, event-backed progress, and co
     await expect(
       window
         .getByTestId('panel-content-chat')
-        .getByTestId('agent-activity-active'),
-    ).toBeVisible();
+        .getByTestId('composer-work-drawer-toggle'),
+    ).toContainText('Running');
   } catch (error) {
     const rendererDiagnostics = await window
       ?.evaluate(() => document.body.innerText)
@@ -552,7 +564,11 @@ test('renders docked, deduplicated activity cards, event-backed progress, and co
   }
 });
 
-test('recovers a pipeline-id-only watcher on the latest completed turn without summaries', async () => {
+// The chat launched the run in its first turn and a pipeline-id-only watcher
+// still watches it. The composer's background drawer lists it, so the
+// launching turn leaves it out, and no carry is written for a run the chat
+// launched, so no completed turn has a box (CAN-4690, background drawer D3).
+test('lists a pipeline-id-only watched run once, in the drawer', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-agent-activity-completed-watcher-'),
   );
@@ -635,19 +651,25 @@ test('recovers a pipeline-id-only watcher on the latest completed turn without s
 
     const panel = window.getByTestId('panel-content-chat');
     await expect(panel.getByText('The watcher is still active.')).toBeVisible();
-    const completed = panel.getByTestId('agent-activity-completed');
-    await expect(completed).toHaveCount(2);
+    const tray = panel.getByTestId('composer-work-drawer');
+    await expect(tray).toBeVisible({ timeout: 30_000 });
+    await tray.getByTestId('composer-work-drawer-toggle').click();
     await expect(
-      completed
-        .last()
-        .getByTestId(`pipeline-run-card-${runReceipt.executionId}`),
-    ).toBeVisible();
+      tray.locator(`[data-tray-row="run:${runReceipt.dedupeKey}"]`),
+    ).toHaveCount(1);
+    await expect(panel.getByTestId('agent-activity-completed')).toHaveCount(0);
+    await expect(
+      panel.getByTestId(`pipeline-run-card-${runReceipt.executionId}`),
+    ).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('retry and resume activity remain in the turn that dispatched them', async () => {
+// Both runs are still pending or running, so they are live: the drawer
+// lists each once, and neither the dispatching turn nor the later turn
+// repeats them (CAN-4690, background drawer D3).
+test('live retry and resume runs are listed once, in the drawer', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-agent-activity-execution-actions-'),
   );
@@ -714,35 +736,25 @@ test('retry and resume activity remain in the turn that dispatched them', async 
     await app.selectWorktree(WORKTREE_ID);
     const panel = window.getByTestId('panel-content-chat');
 
-    // Neither execution is watched, so the later active turn must not carry
-    // either card forward.
+    const tray = panel.getByTestId('composer-work-drawer');
+    await expect(tray).toBeVisible({ timeout: 30_000 });
+    await tray.getByTestId('composer-work-drawer-toggle').click();
+    for (const { dedupeKey, executionId } of [retryReceipt, resumeReceipt]) {
+      await expect(
+        tray.locator(`[data-tray-row="run:${dedupeKey}"]`),
+      ).toHaveCount(1);
+      await expect(
+        panel.getByTestId(`pipeline-run-card-${executionId}`),
+      ).toHaveCount(0);
+    }
     await expect(panel.getByTestId('agent-activity-active')).toHaveCount(0);
-    const completed = panel.getByTestId('agent-activity-completed').first();
-    await completed
-      .getByRole('button', { name: 'Expand agent activity' })
-      .click();
-    await expect(
-      completed.getByTestId(`pipeline-run-card-${retryReceipt.executionId}`),
-    ).toBeVisible();
-    await expect(
-      completed.getByTestId(`pipeline-run-card-${resumeReceipt.executionId}`),
-    ).toBeVisible();
-    await expect(
-      completed.getByTestId(
-        `pipeline-run-toggle-hidden-${retryReceipt.executionId}`,
-      ),
-    ).toHaveCount(0);
-    await expect(
-      completed.getByTestId(
-        `pipeline-run-toggle-hidden-${resumeReceipt.executionId}`,
-      ),
-    ).toHaveCount(0);
+    await expect(panel.getByTestId('agent-activity-completed')).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('resumes a paused execution from its chat artifact card', async () => {
+test('resumes a paused execution from its row in the drawer', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-agent-activity-resume-control-'),
   );
@@ -895,14 +907,26 @@ test('resumes a paused execution from its chat artifact card', async () => {
     await app.selectWorktree(WORKTREE_ID);
 
     const panel = window.getByTestId('panel-content-chat');
-    const card = panel.getByTestId(`pipeline-run-card-${executionId}`);
-    await expect(card).toBeVisible();
-    const resume = panel.getByTestId(`pipeline-run-resume-${executionId}`);
+    // The paused run is the drawer's, under Needs you; no turn lists it.
+    const tray = panel.getByTestId('composer-work-drawer');
+    await expect(tray).toBeVisible({ timeout: 30_000 });
+    await tray.getByTestId('composer-work-drawer-toggle').click();
+    const row = tray.locator(`[data-tray-row="run:${receipt.dedupeKey}"]`);
+    await expect(row).toContainText('Paused', { timeout: 30_000 });
+    await expect(
+      panel.getByTestId(`pipeline-run-card-${executionId}`),
+    ).toHaveCount(0);
+    const resume = row.getByTestId(
+      `background-tray-run-${receipt.dedupeKey}-resume`,
+    );
     await expect(resume).toBeEnabled();
     await resume.click();
 
-    await expect(resume).toHaveCount(0);
-    await expect(card).toContainText('success', { timeout: 30_000 });
+    // Completion leaves the live drawer and remains in completed history.
+    await expect(row).toHaveCount(0, { timeout: 30_000 });
+    await expect(
+      panel.getByTestId(`pipeline-run-card-${executionId}`),
+    ).toContainText('success', { timeout: 30_000 });
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -1054,6 +1078,7 @@ test('real worktree and App Advisor dispatches create activity cards', async () 
     // Mock provider scenarios bind to a chat's first marker. Each producer
     // needs a fresh chat so its own scenario runs.
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     // Exercise the actual injected-tool producer, rather than seeding its receipt.
     await sendToolTurn(
       panel,
@@ -1065,8 +1090,9 @@ test('real worktree and App Advisor dispatches create activity cards', async () 
     );
     await expect(recommendation).toHaveCount(2);
     const external = recommendation.filter({ hasText: 'Release formatter' });
-    await expect(external).toContainText('Recommended');
-    await expect(external).toContainText('External');
+    await expect(external).toHaveAttribute('aria-label', /Recommended/);
+    // External is an arrow on the card, named in its accessible name.
+    await expect(external).toHaveAttribute('aria-label', /External/);
     await expect(
       recommendation.filter({ hasText: 'canopy-pipeline-writing' }),
     ).toContainText('Installed');
@@ -1088,6 +1114,8 @@ test('real worktree and App Advisor dispatches create activity cards', async () 
     ).toHaveCount(0);
 
     await advisor.getByTestId('panel-add-tab-group-chat').click();
+
+    await advisor.getByTestId('panel-add-menu-item-new-chat').click();
     await sendToolTurn(
       advisorSurface,
       'Canopy-CACADVISORSKILL',
@@ -1100,6 +1128,7 @@ test('real worktree and App Advisor dispatches create activity cards', async () 
     // The tile crosses the detached Advisor -> main-window dispatcher and
     // its payload validator before the saved agent editor can open.
     await advisor.getByTestId('panel-add-tab-group-chat').click();
+    await advisor.getByTestId('panel-add-menu-item-new-chat').click();
     await sendToolTurn(
       advisorSurface,
       'Canopy-CACADVISORAGENT',
@@ -1197,6 +1226,10 @@ test('worktree SetBaseBranch uses the branded app row and summary group', async 
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    // Inspect individual steps without changing the product's Recent default.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
@@ -1209,7 +1242,7 @@ test('worktree SetBaseBranch uses the branded app row and summary group', async 
 
     const row = panel.locator('[data-tool-name="canopy_set_base_branch"]');
     await expect(row).toBeVisible();
-    await expect(row.locator('[data-tool-family="canopy"]')).toContainText(
+    await expect(row.locator('[data-step-row]')).toContainText(
       'Set base branch release/next repo repo-a',
     );
   } finally {
@@ -1304,6 +1337,10 @@ test('managed delegation tools count with the branded app summary group', async 
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    // Inspect individual steps without changing the product's Recent default.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
@@ -1321,7 +1358,7 @@ test('managed delegation tools count with the branded app summary group', async 
     for (const [toolName] of delegationTools) {
       const row = panel.locator(`[data-tool-name="${toolName}"]`);
       await expect(row).toBeVisible();
-      await expect(row.locator('[data-tool-family="canopy"]')).toBeVisible();
+      await expect(row.locator('[data-step-row]')).toBeVisible();
     }
     await expect(
       panel.locator('[data-tool-name="mcp__canopy__GetDelegateOutput"]'),
@@ -1415,7 +1452,7 @@ test('real cowork dispatch creates an activity card', async () => {
 
 for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
   const kind = variant === 'managed-paged' ? 'managed' : variant;
-  test(`pinned ${variant} background agent expands the full chat transcript`, async () => {
+  test(`a ${variant} background agent's card in its turn expands the full chat transcript`, async () => {
     const { pinnedAgentHistory } =
       await import('./seeders/pinnedAgentHistory.mjs');
     const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'pinned-agent-'));
@@ -1460,26 +1497,49 @@ for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
       const panel = window.getByTestId('panel-content-chat');
+      // No pinned section lists background agents: a live one is a row in
+      // the composer's background drawer, and its card stays in its turn,
+      // behind the turn summary's steps toggle (background drawer D2). A
+      // persisted Claude launch without its native process is historical.
       const pinned = panel.getByTestId('agent-activity-active');
-      if (kind === 'claude') {
-        // A persisted Claude launch without its native process is historical
-        // activity, so the transcript lives in the completed turn.
-        await panel
-          .getByRole('button', { name: /^Agent steps:/, expanded: false })
-          .click();
-        await expect(pinned).toHaveCount(0);
-      } else {
-        await expect(pinned).toBeVisible();
+      const drawer = panel.getByTestId('composer-work-drawer');
+      if (kind !== 'claude')
+        await drawer.getByTestId('composer-work-drawer-toggle').click();
+      await expect(drawer.getByTestId('background-tray-agent')).toHaveCount(
+        kind === 'claude' ? 0 : 1,
+      );
+      // Six hundred later replies page the agent's turn out; bring it back.
+      if (variant === 'managed-paged') {
+        // Opening the drawer resizes the transcript and may preserve its
+        // bottom anchor. Keep scrolling until the older turn is materialized.
+        await expect(async () => {
+          await panel
+            .getByTestId('chat-message-list-scroll')
+            .evaluate((element) =>
+              element.scrollTo({ top: 0, behavior: 'instant' }),
+            );
+          await expect(
+            panel.getByText('Review the source in the background.', {
+              exact: true,
+            }),
+          ).toBeVisible({ timeout: 1000 });
+        }).toPass({ timeout: 15000 });
       }
+      await panel
+        .getByRole('button', { name: /^Agent steps:/, expanded: false })
+        .click();
+      await expect(pinned).toHaveCount(0);
       const card =
         kind === 'managed'
-          ? pinned.getByTestId('chat-delegated-agent')
-          : kind === 'claude'
-            ? panel.getByTestId('agent-block')
-            : pinned.getByTestId('agent-block');
+          ? panel.getByTestId('chat-delegated-agent')
+          : panel.getByTestId('agent-block');
       await expect(card).toHaveCount(1);
       if (kind === 'managed') {
         // A direct child of this chat omits the redundant "Depth 1 · Parent:
@@ -1496,12 +1556,12 @@ for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
         ),
       ).toBeVisible();
       if (kind === 'claude') {
-        await expect(card.getByLabel('Thinking', { exact: true })).toHaveCount(
-          0,
-        );
+        await expect(
+          card.locator('[data-step-row-words].canopy-text-shimmer-strong'),
+        ).toHaveCount(0);
       } else {
         await expect(
-          card.getByLabel('Thinking', { exact: true }),
+          card.locator('[data-step-row-words].canopy-text-shimmer-strong'),
         ).toBeVisible();
       }
       await expect(card.getByText('Running', { exact: true })).toHaveCount(0);
@@ -1514,13 +1574,22 @@ for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
       // Expansion still works after a renderer reload using persisted native history.
       await window.reload();
       await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
-      if (kind === 'claude') {
+      if (variant === 'managed-paged') {
         await panel
-          .getByRole('button', { name: /^Agent steps:/, expanded: false })
-          .click();
+          .getByTestId('chat-message-list-scroll')
+          .evaluate((element) =>
+            element.scrollTo({ top: 0, behavior: 'instant' }),
+          );
       }
+      await panel
+        .getByRole('button', { name: /^Agent steps:/, expanded: false })
+        .click();
       await card.getByRole('button').first().click();
       await expect(
         card.getByText(
@@ -1626,11 +1695,17 @@ for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
           completedCard.getByText('Completed', { exact: true }),
         ).toHaveCount(0);
         await expect(
-          completedCard.getByLabel('Thinking', { exact: true }),
+          completedCard.locator(
+            '[data-step-row-words].canopy-text-shimmer-strong',
+          ),
         ).toHaveCount(0);
-        await completedCard
-          .getByRole('button', { name: 'Expand delegated task' })
-          .click();
+        // The card never moved: it was expanded in its turn while the
+        // delegate ran and stays expanded once it completes.
+        await expect(
+          completedCard.getByRole('button', {
+            name: 'Collapse delegated task',
+          }),
+        ).toBeVisible();
         await completedCard
           .getByRole('button', { name: 'Show result' })
           .click();
@@ -1640,6 +1715,10 @@ for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
         if (variant === 'managed-paged') {
           await window.reload();
           await app.waitForShell();
+          // Inspect individual steps without changing the product's Recent default.
+          await window.evaluate(() =>
+            window.api.savePreferences({ chatDetail: 'detailed' }),
+          );
           await app.openMainPage();
           await app.selectWorktree(WORKTREE_ID);
           await panel
@@ -1708,6 +1787,10 @@ for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
           });
           await window.reload();
           await app.waitForShell();
+          // Inspect individual steps without changing the product's Recent default.
+          await window.evaluate(() =>
+            window.api.savePreferences({ chatDetail: 'detailed' }),
+          );
           await app.openMainPage();
           await app.selectWorktree(WORKTREE_ID);
           await panel
@@ -1737,6 +1820,10 @@ for (const variant of ['managed', 'claude', 'codex', 'managed-paged']) {
       }
       await window.reload();
       await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
       await expect(pinned).toHaveCount(0);
@@ -1806,19 +1893,40 @@ for (const outcome of ['completed', 'error']) {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
       const panel = window.getByTestId('panel-content-chat');
       const pinned = panel.getByTestId('agent-activity-active');
       // The card's own header, not the nested card's.
       const header = (card) => card.locator(':scope > button').first();
+      const open = async (card) => {
+        if ((await header(card).getAttribute('aria-expanded')) !== 'true') {
+          await header(card).click();
+        }
+      };
+      // The turn's steps toggle, when the turn is folded.
+      const expandSteps = async () => {
+        const steps = panel.getByRole('button', {
+          name: /^Agent steps/,
+          expanded: false,
+        });
+        if ((await steps.count()) > 0) await steps.click();
+      };
 
-      // Running: the pinned card spins and carries no error.
-      await expect(pinned).toBeVisible();
-      await expect(pinned.getByTestId('agent-block')).toHaveCount(1);
-      const card = pinned.getByTestId('agent-block').first();
+      // Running: the card in its turn spins and carries no error; no pinned
+      // section lists it (background drawer D2).
+      await expect(pinned).toHaveCount(0);
+      await expandSteps();
+      await expect(panel.getByTestId('agent-block')).toHaveCount(1);
+      const card = panel.getByTestId('agent-block').first();
       await expect(
-        header(card).getByLabel('Thinking', { exact: true }),
+        header(card).locator(
+          '[data-step-row-words].canopy-text-shimmer-strong',
+        ),
       ).toBeVisible();
       await expect(
         header(card).getByText('error', { exact: true }),
@@ -1826,7 +1934,7 @@ for (const outcome of ['completed', 'error']) {
 
       // Expanding reveals the child transcript and its nested agent card,
       // which expands on its own.
-      await header(card).click();
+      await open(card);
       await expect(
         card.getByText(
           'Child transcript for codex: the original cause is preserved.',
@@ -1835,14 +1943,16 @@ for (const outcome of ['completed', 'error']) {
       const nested = card.getByTestId('agent-block');
       await expect(nested).toHaveCount(1);
       await expect(
-        header(nested).getByLabel('Thinking', { exact: true }),
+        header(nested).locator(
+          '[data-step-row-words].canopy-text-shimmer-strong',
+        ),
       ).toHaveCount(0);
-      await header(nested).click();
+      await open(nested);
       await expect(
         nested.getByText('Nested agent transcript: every contract has a spec.'),
       ).toBeVisible();
 
-      // The child settles; the card leaves the pinned list for its turn.
+      // The child settles in place.
       await injectChatEvent(electronApp, {
         projectId: PROJECT_ID,
         worktreeId: WORKTREE_ID,
@@ -1868,27 +1978,20 @@ for (const outcome of ['completed', 'error']) {
         },
       });
       await expect(pinned).toHaveCount(0);
-      // The settled card folds into its completed turn's steps row.
-      const expandSteps = async () => {
-        const steps = panel.getByRole('button', {
-          name: /^Agent steps/,
-          expanded: false,
-        });
-        await expect(steps).toHaveCount(1);
-        await steps.click();
-      };
       const expectSettled = async () => {
         const settled = panel.getByTestId('agent-block').first();
         await expect(settled).toBeVisible();
         await expect(
-          header(settled).getByLabel('Thinking', { exact: true }),
+          header(settled).locator(
+            '[data-step-row-words].canopy-text-shimmer-strong',
+          ),
         ).toHaveCount(0);
         await expect(
           header(settled).getByText('error', { exact: true }),
         ).toHaveCount(outcome === 'error' ? 1 : 0);
-        await header(settled).click();
+        await open(settled);
         await expect(settled.getByTestId('agent-block')).toHaveCount(1);
-        await header(settled.getByTestId('agent-block')).click();
+        await open(settled.getByTestId('agent-block'));
         await expect(
           settled.getByText(
             'Nested agent transcript: every contract has a spec.',
@@ -1901,6 +2004,10 @@ for (const outcome of ['completed', 'error']) {
       // The settled state is durable across a renderer reload.
       await window.reload();
       await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
       await expect(pinned).toHaveCount(0);
@@ -1912,13 +2019,24 @@ for (const outcome of ['completed', 'error']) {
   });
 }
 
-test('pinned managed agent stays expanded and left aligned while siblings settle', async () => {
+/** Opens a folded turn's steps, so its agent cards are in the DOM. */
+async function openAgentSteps(scope) {
+  const steps = scope.getByRole('button', {
+    name: /^Agent steps/,
+    expanded: false,
+  });
+  if ((await steps.count()) > 0) await steps.first().click();
+}
+
+// Background drawer D2: a live delegate is a row in the composer's drawer;
+// its card is the one in its turn, which a sibling settling never remounts.
+test('a managed agent card in its turn stays expanded and left aligned while a sibling settles', async () => {
   const { pinnedAgentHistory } =
     await import('./seeders/pinnedAgentHistory.mjs');
   const history = pinnedAgentHistory('managed');
   const first = history[1].blocks[0];
   // A second running delegate that is awaiting approval, listed after the
-  // first so the first one settling shifts it up the pinned list.
+  // first.
   const sibling = {
     ...first,
     agentBlockId: 'delegated-agent-managed-sibling',
@@ -1951,15 +2069,17 @@ test('pinned managed agent stays expanded and left aligned while siblings settle
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    // Inspect individual steps without changing the product's Recent default.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
-    const pinned = window
-      .getByTestId('panel-content-chat')
-      .getByTestId('agent-activity-active');
-    const siblingCard = pinned.locator(
-      '[data-delegation-id="managed-sibling"]',
-    );
-    await expect(pinned.getByTestId('chat-delegated-agent')).toHaveCount(2);
+    const panel = window.getByTestId('panel-content-chat');
+    await expect(panel.getByTestId('agent-activity-active')).toHaveCount(0);
+    await openAgentSteps(panel);
+    const siblingCard = panel.locator('[data-delegation-id="managed-sibling"]');
+    await expect(panel.getByTestId('chat-delegated-agent')).toHaveCount(2);
 
     // "Awaiting approval" sits at the end of the row; the agent label stays
     // at the start instead of being pushed right with it.
@@ -1968,7 +2088,7 @@ test('pinned managed agent stays expanded and left aligned while siblings settle
     });
     const status = siblingCard.getByRole('status');
     await expect(status).toHaveText('Awaiting approval');
-    const label = header.getByText(/^Agent/);
+    const label = header.locator('[data-step-row-words]');
     const [headerBox, labelBox, statusBox] = await Promise.all([
       header.boundingBox(),
       label.boundingBox(),
@@ -2017,7 +2137,7 @@ test('pinned managed agent stays expanded and left aligned while siblings settle
         },
       },
     });
-    await expect(pinned.getByTestId('chat-delegated-agent')).toHaveCount(1);
+    await expect(panel.getByTestId('chat-delegated-agent')).toHaveCount(2);
     await expect(
       siblingCard.getByRole('button', { name: 'Collapse delegated task' }),
     ).toBeVisible();
@@ -2027,7 +2147,7 @@ test('pinned managed agent stays expanded and left aligned while siblings settle
 });
 
 for (const matching of [true, false]) {
-  test(`pinned patch uses edit display and ${matching ? 'deduplicates' : 'preserves different'} route details`, async () => {
+  test(`a delegate's patch uses edit display and ${matching ? 'deduplicates' : 'preserves different'} route details`, async () => {
     const { pinnedPatchHistory } =
       await import('./seeders/pinnedAgentHistory.mjs');
     const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'pinned-patch-'));
@@ -2049,18 +2169,26 @@ for (const matching of [true, false]) {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
-      const card = window
-        .getByTestId('agent-activity-active')
-        .getByTestId('chat-delegated-agent');
+      const panel = window.getByTestId('panel-content-chat');
+      const card = panel.getByTestId('chat-delegated-agent');
       for (const reload of [false, true]) {
         if (reload) {
           await window.reload();
           await app.waitForShell();
+          // Inspect individual steps without changing the product's Recent default.
+          await window.evaluate(() =>
+            window.api.savePreferences({ chatDetail: 'detailed' }),
+          );
           await app.openMainPage();
           await app.selectWorktree(WORKTREE_ID);
         }
+        await openAgentSteps(panel);
         await card
           .getByRole('button', { name: 'Expand delegated task' })
           .click();
@@ -2077,13 +2205,13 @@ for (const matching of [true, false]) {
           card.locator('dt', { hasText: /^Effective thinking$/ }),
         ).toHaveCount(matching ? 0 : 1);
         const legacy = card.locator('[data-tool-name="apply_patch"]');
-        await expect(legacy.locator('[data-tool-family="edit"]')).toContainText(
+        await expect(legacy.locator('[data-step-row]')).toContainText(
           'File change',
         );
         await expect(legacy).not.toContainText('Apply Patch');
         await expect(
           card.locator('[data-tool-name="file_change"]'),
-        ).toContainText('Edit index.ts');
+        ).toContainText('Edited index.ts');
       }
     } finally {
       await closeCanopy(electronApp, userDataDir);
@@ -2091,7 +2219,7 @@ for (const matching of [true, false]) {
   });
 }
 
-test('expanded pinned subagent unwraps POSIX and Windows Bash commands after reload', async () => {
+test('an expanded delegate card unwraps POSIX and Windows Bash commands after reload', async () => {
   const { pinnedShellHistory } =
     await import('./seeders/pinnedAgentHistory.mjs');
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'pinned-shell-'));
@@ -2111,11 +2239,15 @@ test('expanded pinned subagent unwraps POSIX and Windows Bash commands after rel
     for (const reload of [false, true]) {
       if (reload) await window.reload();
       await app.waitForShell();
+      // Inspect individual steps without changing the product's Recent default.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(WORKTREE_ID);
-      const card = window
-        .getByTestId('agent-activity-active')
-        .getByTestId('chat-delegated-agent');
+      const panel = window.getByTestId('panel-content-chat');
+      await openAgentSteps(panel);
+      const card = panel.getByTestId('chat-delegated-agent');
       await card.getByRole('button', { name: 'Expand delegated task' }).click();
       for (const command of [
         'printf hello && pwd',
@@ -2182,6 +2314,205 @@ const externalReferenceReceipt = {
   reason: 'Matches the release checklist you asked about',
   navigationTarget: { kind: 'external_url', url: EXTERNAL_SKILL_URL },
 };
+
+const FOUND_PIPELINE_ID = 'found-pipeline';
+const FOUND_EXECUTION_ID = 'found-exec';
+const FOUND_ACTIVITY_ID = 'found-nightly';
+const FOUND_RUN_ID = 'found-run-1';
+const UNMATCHED_ACTIVITY_ID = 'found-other';
+
+function foundPipelineReference(offset) {
+  return {
+    version: 1,
+    kind: 'capability_reference',
+    operation: 'pipeline.get',
+    dedupeKey: `canopy:capability_reference:user:pipeline:${FOUND_PIPELINE_ID}`,
+    createdAt: new Date(T + offset).toISOString(),
+    itemKind: 'pipeline',
+    source: 'user',
+    sourceId: FOUND_PIPELINE_ID,
+    name: 'Found pipeline',
+    sourceLabel: 'Local',
+    state: 'installed',
+    relation: 'found',
+    navigationTarget: {
+      kind: 'pipeline_editor',
+      pipelineId: FOUND_PIPELINE_ID,
+      source: 'user',
+    },
+  };
+}
+
+function foundAutomationReference(activityId, name, offset) {
+  return {
+    version: 1,
+    kind: 'capability_reference',
+    operation: 'automation.get',
+    dedupeKey: `canopy:capability_reference:local:automation:${activityId}`,
+    createdAt: new Date(T + offset).toISOString(),
+    itemKind: 'automation',
+    source: 'local',
+    sourceId: activityId,
+    name,
+    sourceLabel: 'Local',
+    state: 'installed',
+    relation: 'found',
+    navigationTarget: { kind: 'automation_editor', activityId },
+  };
+}
+
+const FOUND_SHARED_SKILL_ID = 'found-shared-skill-release-notes';
+
+function foundSharedSkillReference(offset) {
+  return {
+    version: 1,
+    kind: 'capability_reference',
+    operation: 'skills.read_shared',
+    dedupeKey: `canopy:capability_reference:skill:shared:${FOUND_SHARED_SKILL_ID}`,
+    createdAt: new Date(T + offset).toISOString(),
+    itemKind: 'skill',
+    source: 'shared',
+    sourceId: FOUND_SHARED_SKILL_ID,
+    name: 'Release notes writer',
+    sourceLabel: 'Team',
+    state: 'available',
+    relation: 'found',
+    navigationTarget: { kind: 'shared_skill', skillId: FOUND_SHARED_SKILL_ID },
+  };
+}
+
+function createdSharedSkillReceipt(offset) {
+  return {
+    version: 1,
+    kind: 'skill',
+    operation: 'skills.share_custom',
+    dedupeKey: `canopy:skill:shared:${FOUND_SHARED_SKILL_ID}`,
+    createdAt: new Date(T + offset).toISOString(),
+    source: 'shared',
+    sharedSkillId: FOUND_SHARED_SKILL_ID,
+    name: 'Release notes writer',
+    canUpdate: false,
+    navigationTarget: { kind: 'shared_skill', skillId: FOUND_SHARED_SKILL_ID },
+  };
+}
+
+function foundPipelineRunReceipt(offset) {
+  const timestamp = new Date(T + offset).toISOString();
+  return {
+    ...runReceipt,
+    dedupeKey: `canopy:pipeline_run:execution:${FOUND_EXECUTION_ID}`,
+    createdAt: timestamp,
+    executionId: FOUND_EXECUTION_ID,
+    pipelineId: FOUND_PIPELINE_ID,
+    pipelineName: 'Found pipeline',
+    initialStatus: 'running',
+    queuedAt: timestamp,
+    startedAt: timestamp,
+    navigationTarget: {
+      ...runReceipt.navigationTarget,
+      executionId: FOUND_EXECUTION_ID,
+    },
+  };
+}
+
+// One turn that gets and runs a pipeline, gets and triggers an automation,
+// gets a second automation it never runs, and finds a team-shared skill it
+// then creates. The pipeline and both automations exist, so their Found
+// tiles render in their normal state.
+function seedFoundTileFixture(userDataDir) {
+  const runStartedAt = new Date(T + 1_000).toISOString();
+  const activity = (id, name) => ({
+    version: 1,
+    id,
+    name,
+    enabled: true,
+    schedule: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+    action: { type: 'app_advisor_prompt', prompt: 'Triage new issues.' },
+    createdAt: new Date(T - 60_000).toISOString(),
+    updatedAt: new Date(T - 60_000).toISOString(),
+    failureCount: 0,
+  });
+  seedAutomations({
+    userDataDir,
+    activities: [
+      activity(FOUND_ACTIVITY_ID, 'Nightly triage'),
+      activity(UNMATCHED_ACTIVITY_ID, 'Weekly digest'),
+    ],
+    recentRuns: [
+      {
+        id: FOUND_RUN_ID,
+        activityId: FOUND_ACTIVITY_ID,
+        activityName: 'Nightly triage',
+        scheduledFor: runStartedAt,
+        manual: true,
+        trigger: 'manual',
+        status: 'success',
+        startedAt: runStartedAt,
+        completedAt: new Date(T + 5_000).toISOString(),
+        durationMs: 4_000,
+      },
+    ],
+  });
+  seedStoredPipeline({
+    userDataDir,
+    id: FOUND_PIPELINE_ID,
+    name: 'Found pipeline',
+    yaml: 'name: Found pipeline\non: dispatch\njobs:\n  build:\n    steps:\n      - run: echo ok\n',
+  });
+  seedPipelineExecution({
+    userDataDir,
+    workspaceId: PROJECT_ID,
+    worktreeId: WORKTREE_ID,
+    execution: {
+      id: FOUND_EXECUTION_ID,
+      pipelineId: FOUND_PIPELINE_ID,
+      pipelineName: 'Found pipeline',
+      status: 'running',
+      startedAt: runStartedAt,
+    },
+  });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: PROJECT_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      {
+        id: CHAT_ID,
+        title: 'Found tiles',
+        messages: dispatchMessages(
+          'found-turn',
+          'found-tool',
+          [
+            foundPipelineReference(1_000),
+            foundPipelineRunReceipt(2_000),
+            foundAutomationReference(
+              FOUND_ACTIVITY_ID,
+              'Nightly triage',
+              3_000,
+            ),
+            automationRunReceipt(
+              FOUND_ACTIVITY_ID,
+              FOUND_RUN_ID,
+              'Nightly triage',
+              'success',
+              4_000,
+            ),
+            foundAutomationReference(
+              UNMATCHED_ACTIVITY_ID,
+              'Weekly digest',
+              5_000,
+            ),
+            foundSharedSkillReference(5_500),
+            createdSharedSkillReceipt(5_800),
+          ],
+          T,
+          T + 6_000,
+        ),
+      },
+    ],
+  });
+}
 
 function longCapabilityTurn(messages) {
   return messages.flatMap((message) =>
@@ -2324,6 +2655,20 @@ test('capability tiles show live run outcomes, open the run, and keep deleted hi
     });
     await expect(failedRun).toBeVisible();
     await expect(failedRun).toContainText('Manual run · 4 s');
+    // Short content still runs to the card's right padding: the state ends
+    // as far from the right edge as the icon starts from the left.
+    const runInsets = await failedRun.evaluate((card) => {
+      const box = card.getBoundingClientRect();
+      const icon = card.querySelector('[aria-hidden="true"]');
+      const state = card.querySelector('[data-testid="capability-tile-state"]');
+      if (!icon || !state) return null;
+      return {
+        left: icon.getBoundingClientRect().left - box.left,
+        stateRight: box.right - state.getBoundingClientRect().right,
+      };
+    });
+    expect(runInsets).not.toBeNull();
+    expect(runInsets.stateRight).toBeCloseTo(runInsets.left, 0);
 
     // The deleted automation keeps its outcome but offers no navigation.
     const deletedRun = section.getByRole('group', {
@@ -2338,8 +2683,9 @@ test('capability tiles show live run outcomes, open the run, and keep deleted hi
       'agent-artifact-capability_reference',
     );
     await expect(reference).toHaveCount(1);
-    await expect(reference).toContainText('Recommended');
-    await expect(reference).toContainText('External');
+    // The turn verb is read out, not drawn on the card.
+    await expect(reference).toHaveAttribute('aria-label', /Recommended/);
+    await expect(reference).toHaveAttribute('aria-label', /External/);
     await expect(reference).toContainText(externalReferenceReceipt.reason);
 
     await window.reload();
@@ -2380,5 +2726,222 @@ test('capability tiles show live run outcomes, open the run, and keep deleted hi
     throw error;
   } finally {
     await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('one row per item: found tiles yield to runs and to created receipts', async ({}, testInfo) => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-found-tiles-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedFoundTileFixture(userDataDir);
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  let window;
+  try {
+    window = await electronApp.firstWindow();
+    await window.setViewportSize({ width: 1600, height: 1000 });
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+
+    const panel = window.getByTestId('panel-content-chat');
+    // The run is still running, so the composer's background drawer lists
+    // it and the turn's box keeps its tiles (CAN-4690, background drawer D3).
+    const section = panel.getByTestId('agent-activity-completed').first();
+    await expect(section).toBeVisible({ timeout: 30_000 });
+    const expand = section.getByRole('button', {
+      name: 'Expand agent activity',
+    });
+    if (await expand.isVisible()) await expand.click();
+
+    // The automation run tile renders for the turn; the run card does not.
+    await expect(
+      section.getByTestId(`pipeline-run-card-${FOUND_EXECUTION_ID}`),
+    ).toHaveCount(0);
+    const drawer = panel.getByTestId('composer-work-drawer');
+    await drawer.getByTestId('composer-work-drawer-toggle').click();
+    await expect(drawer.locator('[data-tray-row^="run:"]')).toHaveCount(1, {
+      timeout: 30_000,
+    });
+    await expect(
+      section.getByTestId('agent-artifact-automation_run'),
+    ).toHaveCount(1);
+
+    // Only the Found tile for the automation the turn never ran remains.
+    const references = section.getByTestId(
+      'agent-artifact-capability_reference',
+    );
+    await expect(references).toHaveCount(1);
+    await expect(references).toContainText('Weekly digest');
+    await expect(references).toHaveAttribute('aria-label', /Found/);
+    // Tile accessible names read "name, kind, operation, state".
+    await expect(
+      section.getByRole('button', { name: /^Found pipeline, Pipeline, Found/ }),
+    ).toHaveCount(0);
+    await expect(
+      section.getByRole('button', {
+        name: /^Nightly triage, Automation, Found/,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      section.getByRole('button', {
+        name: /^Nightly triage, Automation run, Triggered, Succeeded/,
+      }),
+    ).toBeVisible();
+
+    // A skill the turn found and then created shows once, as Created. Its
+    // state suffix depends on the desktop's shared-skill lookup, so only the
+    // name and operation are asserted.
+    const skill = section.getByTestId('agent-artifact-skill');
+    await expect(skill).toHaveCount(1);
+    await expect(skill).toContainText('Release notes writer');
+    await expect(skill).toContainText('Created');
+    await expect(references).not.toContainText('Release notes writer');
+  } catch (error) {
+    const body = await window
+      ?.evaluate(() => document.body.innerText)
+      .catch(() => '<renderer unavailable>');
+    await testInfo.attach('found-tile-failure', {
+      body: `${String(error)}\n\n${body}`,
+      contentType: 'text/plain',
+    });
+    throw error;
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-4267: Customize lists shared skills filtered by its search, and it
+// restores that search when it remounts. A shared-skill link reads the skill
+// by id, so it still opens the detail the search hides.
+test('a shared skill tile opens its detail while the Customize search hides it', async ({}, testInfo) => {
+  test.setTimeout(150_000);
+  const key = 'csk_can4267_shared_skill_link';
+  await registerScenario(DEFAULT_MOCK_BASE_URL, key, {
+    cloud: {
+      filterSharedSkillsByQuery: true,
+      sharedSkills: [
+        {
+          id: FOUND_SHARED_SKILL_ID,
+          name: 'Release notes writer',
+          description: 'Drafts release notes from merged pull requests',
+          contentHash: 'sha256:release-notes-writer',
+          shareScope: 'organization',
+          owner: { type: 'organization', id: 'org-e2e', name: 'Acme' },
+          createdBy: { id: 'author', name: 'Lena Park', email: null },
+          createdAt: new Date(T).toISOString(),
+          updatedAt: new Date(T).toISOString(),
+          canUpdate: false,
+          canDelete: false,
+          publicShare: null,
+          rawSkill:
+            '---\nname: Release notes writer\ndescription: Drafts release notes from merged pull requests\n---\n\n# Release notes\n',
+        },
+      ],
+    },
+  });
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-shared-skill-link-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: PROJECT_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      {
+        id: CHAT_ID,
+        title: 'Shared skill link',
+        messages: dispatchMessages(
+          'link-turn',
+          'link-tool',
+          createdSharedSkillReceipt(1_000),
+          T,
+          T + 2_000,
+        ),
+      },
+    ],
+  });
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  let window;
+  try {
+    window = await electronApp.firstWindow();
+    await window.setViewportSize({ width: 1600, height: 1000 });
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await connectMockCloudAccount(window, key);
+
+    const row = window.getByTestId(
+      `plugins-entry-skill:shared:${FOUND_SHARED_SKILL_ID}`,
+    );
+    await app.openPluginsPage();
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await row.click();
+    const browseMeta = window.getByTestId('plugins-entry-detail-header-meta');
+    await expect(
+      browseMeta.getByTestId('shared-skill-detail-audience-author'),
+    ).toHaveText('By Lena Park');
+    await expect(
+      browseMeta.getByTestId('shared-skill-detail-audience-organization'),
+    ).toHaveText('Acme');
+    await expect(
+      browseMeta.getByTestId('shared-skill-detail-audience'),
+    ).toHaveText('Organization');
+    const browseProvenance = await browseMeta.textContent();
+    await window.getByTestId('plugins-entry-detail-breadcrumb-root').click();
+    await window.getByTestId('plugins-search').fill('deployment checklist');
+    await expect(row).toHaveCount(0);
+
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const panel = window.getByTestId('panel-content-chat');
+    const completed = panel.getByTestId('agent-activity-completed').first();
+    await expect(completed).toBeVisible({ timeout: 30_000 });
+    const expand = completed.getByRole('button', {
+      name: 'Expand agent activity',
+    });
+    if (await expand.isVisible()) await expand.click();
+    await completed.getByTestId('agent-artifact-skill').click();
+
+    const detail = window.getByTestId('plugins-entry-detail-page');
+    await expect(detail).toBeVisible({ timeout: 30_000 });
+    await expect(
+      detail.getByRole('heading', { name: /release notes writer/i }),
+    ).toBeVisible();
+    // CAN-5016: the tile opens the same header Browse does.
+    await expect(
+      detail.getByTestId('shared-skill-detail-audience-author'),
+    ).toHaveText('By Lena Park');
+    await expect(
+      detail.getByTestId('shared-skill-detail-audience-organization'),
+    ).toHaveText('Acme');
+    await expect(detail.getByTestId('shared-skill-detail-audience')).toHaveText(
+      'Organization',
+    );
+    await expect(
+      detail.getByTestId('plugins-entry-detail-header-meta'),
+    ).toHaveText(browseProvenance ?? '');
+    // The restored search still hides the skill from the list itself.
+    await window.getByTestId('plugins-entry-detail-breadcrumb-root').click();
+    await expect(window.getByTestId('plugins-search')).toHaveValue(
+      'deployment checklist',
+    );
+    await expect(row).toHaveCount(0);
+  } catch (error) {
+    const body = await window
+      ?.evaluate(() => document.body.innerText)
+      .catch(() => '<renderer unavailable>');
+    await testInfo.attach('shared-skill-link-failure', {
+      body: `${String(error)}\n\n${body}`,
+      contentType: 'text/plain',
+    });
+    throw error;
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, key);
   }
 });

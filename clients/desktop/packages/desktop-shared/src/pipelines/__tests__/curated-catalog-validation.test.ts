@@ -73,6 +73,26 @@ describe('curated publication validation', () => {
       code: 'unsupported_reference',
     });
   });
+  it('rejects file assets as unsupported in curated definitions', () => {
+    expect(
+      issues(
+        valid.replace(
+          'jobs:',
+          'assets:\n  - id: specialists\n    path: ~/specialists\njobs:',
+        ),
+      )[0],
+    ).toMatchObject({ path: 'assets', code: 'unsupported_reference' });
+  });
+  it('accepts local_state and reports a malformed entry statically', () => {
+    expect(
+      validateCuratedPipeline(
+        valid.replace('jobs:', 'local_state:\n  - ~/state.db\njobs:'),
+      ).name,
+    ).toBe('Test');
+    expect(
+      issues(valid.replace('jobs:', 'local_state:\n  - 4\njobs:'))[0],
+    ).toMatchObject({ path: 'local_state', code: 'invalid_pipeline' });
+  });
   it('rejects nonportable child references', () => {
     expect(
       issues(valid.replace('run: echo hello', 'uses: builtin/run-pipeline'))[0]

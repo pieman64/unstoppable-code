@@ -219,7 +219,7 @@ test('off-screen updates stay off IPC, the next focused update catches up, and c
     await expect(
       window
         .getByTestId(`panel-tab-panel-chat-${chatId}`)
-        .locator('[data-unread]'),
+        .locator('[data-testid^="panel-tab-unread-dot-"]'),
     ).toBeVisible({ timeout: 30_000 });
     await app.openOverviewPage();
     await expect(window.getByTestId('overview-notification-card')).toBeVisible({

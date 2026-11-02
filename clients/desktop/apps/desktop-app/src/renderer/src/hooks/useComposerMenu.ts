@@ -371,6 +371,18 @@ export function useComposerMenu(
       const suggestions = buttons.filter((button) =>
         button.hasAttribute('data-completion-row'),
       );
+      // Tab never activates Show all, and is consumed on it so the open
+      // menu stays put instead of completing a different row.
+      const highlighted =
+        buttons.find((button) => button.id === activeId) ??
+        buttons.find((button) => button.id === hoveredIdRef.current);
+      if (
+        fromEditor.current &&
+        highlighted?.hasAttribute('data-show-all-row')
+      ) {
+        event.preventDefault();
+        return true;
+      }
       if (
         fromEditor.current &&
         suggestions.length > 0 &&

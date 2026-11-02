@@ -168,7 +168,7 @@ function AdvisorCostRow({
   const segments = [
     {
       key: 'background',
-      label: 'Pipeline Advisor',
+      label: 'Workflow Advisor',
       value: advisor.usd,
       color: COST_SOURCE_COLORS.background,
     },
@@ -180,7 +180,7 @@ function AdvisorCostRow({
     >
       <span className="flex min-w-0 items-baseline gap-3">
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate fg-primary">Pipeline Advisor</span>
+          <span className="truncate fg-primary">Workflow Advisor</span>
           <span className="truncate tabular-nums fg-tertiary">{details}</span>
         </span>
         <span className="ml-auto shrink-0 tabular-nums fg-secondary">
@@ -189,7 +189,7 @@ function AdvisorCostRow({
       </span>
       <CostSplitBar
         segments={segments}
-        label="Pipeline Advisor cost"
+        label="Workflow Advisor cost"
         scale={costBarScale(advisor.usd, maxTotal)}
       />
     </div>
@@ -227,7 +227,7 @@ function ChildRunCostRow({
         segments={[
           {
             key: 'pipeline',
-            label: 'Pipeline steps',
+            label: 'Workflow steps',
             value: child.usd,
             color: COST_SOURCE_COLORS.pipeline,
           },

@@ -1,0 +1,37 @@
+{
+  "invocation": {
+    "ok": true,
+    "value": {
+      "delegationId": "00000000-0000-4000-8000-000000000001",
+      "currentRunGeneration": 1,
+      "currentStatus": "completed",
+      "latestResultIndex": 1,
+      "result": {
+        "resultIndex": 1,
+        "runGeneration": 1,
+        "status": "completed",
+        "finalText": "",
+        "outputTruncated": false
+      },
+      "currentPhase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default",
+        "running": 0,
+        "waiting": 0,
+        "limit": 2
+      }
+    }
+  },
+  "serializedInvocation": "{\"ok\":true,\"value\":{\"delegationId\":\"00000000-0000-4000-8000-000000000001\",\"currentRunGeneration\":1,\"currentStatus\":\"completed\",\"latestResultIndex\":1,\"result\":{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"finalText\":\"\",\"outputTruncated\":false},\"currentPhase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\",\"running\":0,\"waiting\":0,\"limit\":2}}}",
+  "codexResponse": {
+    "success": true,
+    "contentItems": [
+      {
+        "type": "inputText",
+        "text": "{\"ok\":true,\"value\":{\"delegationId\":\"00000000-0000-4000-8000-000000000001\",\"currentRunGeneration\":1,\"currentStatus\":\"completed\",\"latestResultIndex\":1,\"result\":{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"finalText\":\"\",\"outputTruncated\":false},\"currentPhase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\",\"running\":0,\"waiting\":0,\"limit\":2}}}"
+      }
+    ]
+  },
+  "serializedCodexResponse": "{\"success\":true,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"{\\\"ok\\\":true,\\\"value\\\":{\\\"delegationId\\\":\\\"00000000-0000-4000-8000-000000000001\\\",\\\"currentRunGeneration\\\":1,\\\"currentStatus\\\":\\\"completed\\\",\\\"latestResultIndex\\\":1,\\\"result\\\":{\\\"resultIndex\\\":1,\\\"runGeneration\\\":1,\\\"status\\\":\\\"completed\\\",\\\"finalText\\\":\\\"\\\",\\\"outputTruncated\\\":false},\\\"currentPhase\\\":\\\"idle\\\",\\\"queue\\\":{\\\"id\\\":\\\"default\\\",\\\"name\\\":\\\"Default\\\",\\\"running\\\":0,\\\"waiting\\\":0,\\\"limit\\\":2}}}\"}]}"
+}

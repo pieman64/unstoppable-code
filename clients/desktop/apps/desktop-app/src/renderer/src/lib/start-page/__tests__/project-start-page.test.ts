@@ -12,7 +12,7 @@ import {
 } from '../project-start-page';
 
 function root(repoId: string, absolutePath: string): FileTreeRoot {
-  return { repoId, repoName: repoId, absolutePath, rootKind: 'repo' };
+  return { repoId, repoName: repoId, absolutePath, rootKind: 'git-repo' };
 }
 
 describe('project start page helpers', () => {

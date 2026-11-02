@@ -1,4 +1,7 @@
-import type { LedgerErrorReason } from '@canopy/protocol/canopy-core';
+import type {
+  LedgerContainer,
+  LedgerErrorReason,
+} from '@canopy/protocol/canopy-core';
 
 import {
   LEDGER_SCOPE_LIFECYCLE_STATES,
@@ -20,6 +23,11 @@ import {
  * `retirement_pending → purged`. Requesting the state a scope is already in
  * changes nothing. Every other move is refused: a retiring scope never comes
  * back, and a live scope is never removed without being retired first.
+ *
+ * A global scope has no container to follow: it is always `active`, and the
+ * repository refuses every lifecycle command for it (`FORBIDDEN` on
+ * `container.kind`), changing nothing. Startup reconciliation, deletion and
+ * retention must skip it; `hasLedgerContainerLifecycle` tells them apart.
  *
  * The repository applies these rules inside its transaction.
  */
@@ -93,6 +101,17 @@ export function ledgerScopeLifecycleRejection(
   from: LedgerScopeLifecycleState,
 ): Extract<LedgerErrorReason, 'SCOPE_RETIRED' | 'FORBIDDEN'> {
   return from === 'retirement_pending' ? 'SCOPE_RETIRED' : 'FORBIDDEN';
+}
+
+/**
+ * True for a scope that follows its container's lifecycle: every container
+ * except `global`, which no archive, deletion, retention, run deletion or
+ * account change ever retires.
+ */
+export function hasLedgerContainerLifecycle(
+  container: LedgerContainer,
+): boolean {
+  return container.kind !== 'global';
 }
 
 export function isLedgerScopeLifecycleState(

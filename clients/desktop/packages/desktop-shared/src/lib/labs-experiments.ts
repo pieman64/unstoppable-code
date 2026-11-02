@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import {
-  CLEAN_CHAT_EXPERIMENT,
   EARLY_ACCESS_EXPERIMENT_ID,
   isLabsExperimentId,
   isLabsExperimentAvailability,
   LABS_EXPERIMENT_AVAILABILITIES,
+  LABS_EXPERIMENT_AVAILABILITY_SOURCES,
   labsExperimentIdSchema,
   resolveLabsExperiment,
 } from '@canopy/protocol/experiments';
@@ -60,80 +60,24 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
     requiresEarlyAccess: false,
   },
   {
-    id: 'minimal-layout',
-    name: 'Minimal workspace layout',
+    id: 'daemon-files-reads',
+    name: 'Files reads',
     description:
-      'Use the simplified panel defaults in Minimal mode without changing saved workspace modes.',
+      'Use a local background service to list files and folders. Saving files is unchanged.',
     pages: [],
     sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsMinimalLayout.key,
+    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key,
     requiresEarlyAccess: false,
   },
   {
-    id: 'comet-spinners',
-    name: 'Comet spinners',
-    description: 'Use comet rings for thinking and progress indicators.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsCometSpinners.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    id: 'chat-tab-previews',
-    name: 'Chat tab previews',
+    // CAN-4551: desktop only, so not in WEB_LABS_EXPERIMENTS.
+    id: 'chat-automation-pipelines',
+    name: 'Chat automations as workflows',
     description:
-      'Rest on a chat tab to see its last prompt, latest reply and status.',
+      'Save chat automations you edit as workflows. Turn it off and save again to undo.',
     pages: [],
     sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatTabPreviews.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    id: 'subagents-view',
-    name: 'Subagents view',
-    description:
-      'Show running subagents in the top bar and manage them in a simpler Subagents panel.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsSubagentsView.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    id: 'archived-chats-card',
-    name: 'Archived chats card',
-    description:
-      'Show archived chats on a quieter card that matches the app’s menus.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    // Shared with web's account Labs page.
-    ...CLEAN_CHAT_EXPERIMENT,
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    id: 'proxy-account-cards',
-    name: 'Proxy account cards',
-    description:
-      'Show each account proxy account as a card in the usage popover, folded to its 7-day usage.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    id: 'pr-hover-cards',
-    name: 'Pull request cards',
-    description:
-      'Rest on a pull request link to see its status, author and size of change.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key,
+    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
     requiresEarlyAccess: false,
   },
 
@@ -274,6 +218,10 @@ export const labsExperimentsSnapshotSchema = z
       .array(
         experimentMetadataSchema.extend({
           availability: z.enum(LABS_EXPERIMENT_AVAILABILITIES),
+          // Older snapshots lack provenance; main always emits it now.
+          availabilitySource: z
+            .enum(LABS_EXPERIMENT_AVAILABILITY_SOURCES)
+            .optional(),
           choice: z.boolean().nullable(),
           listed: z.boolean(),
           enabled: z.boolean(),

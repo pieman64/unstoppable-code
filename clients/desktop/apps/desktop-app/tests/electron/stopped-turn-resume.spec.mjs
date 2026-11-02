@@ -1,3 +1,4 @@
+import { expandTurnSteps } from './turnSteps.mjs';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,6 +63,10 @@ function bashToolCard(window) {
 async function startAndStopTurn(window, marker, prompt) {
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
+  // Individual-step assertions use the Detailed preference.
+  await window.evaluate(() =>
+    window.api.savePreferences({ chatDetail: 'detailed' }),
+  );
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_ID);
   await window.getByTestId('approval-mode-picker').click();
@@ -100,14 +105,11 @@ test('a stopped turn resumes once in the same chat without repeating the prompt'
       timeout: 90_000,
     });
     await expect(notice).toHaveCount(0);
+    await expect(window.getByTestId('chat-stop-generation')).toHaveCount(0);
     // Completed turns collapse intermediate steps. Expanding the retained
     // summary proves the stopped turn's partial tool output stayed attached
     // to the same turn rather than being replaced by the continuation.
-    const retainedSteps = window.getByRole('button', {
-      name: /Agent steps: 1 bash/i,
-    });
-    await expect(retainedSteps).toBeVisible();
-    await retainedSteps.click();
+    await expandTurnSteps(window);
     await expect(bashToolCard(window)).toBeVisible();
     await expect(
       window.getByText(`[${marker}] ${prompt}`, { exact: true }),

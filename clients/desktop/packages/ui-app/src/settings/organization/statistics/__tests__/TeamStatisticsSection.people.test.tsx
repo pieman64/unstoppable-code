@@ -677,8 +677,10 @@ describe('TeamStatisticsSection People tab', () => {
       trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(
-      container.querySelector('[data-testid="usage-user-select"]')?.classList,
-    ).toContain('replay-block');
+      container.querySelector(
+        '[data-testid="usage-user-select"] .replay-block',
+      ),
+    ).toBeInstanceOf(HTMLElement);
   });
 
   it('adds no stray class token to member links without replay privacy', async () => {

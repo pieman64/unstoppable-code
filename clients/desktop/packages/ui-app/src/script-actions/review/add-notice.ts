@@ -122,8 +122,8 @@ export interface UseScriptActionsAddNoticesOptions {
 /**
  * For hosts without a found event (Portal): `track` an add operation's
  * receipt and report one notice when its scan completes with pending
- * scripts. Polls stop on unmount and scope changes; timeouts and failed
- * scans report nothing.
+ * scripts. Polls stop on unmount and scope changes, and move to a new client
+ * for the same scope; timeouts and failed scans report nothing.
  */
 export function useScriptActionsAddNotices({
   client,
@@ -136,22 +136,20 @@ export function useScriptActionsAddNotices({
   useEffect(() => {
     onNoticeRef.current = onNotice;
   });
-  const controllers = useRef(new Set<AbortController>());
+  const controllers = useRef(
+    new Map<AbortController, ScriptActionsAddNoticeRequest>(),
+  );
   const deduper = useRef(createScriptActionsNoticeDeduper());
+  const carried = useRef<{
+    readonly scopeKey: string;
+    readonly requests: readonly ScriptActionsAddNoticeRequest[];
+  }>({ scopeKey, requests: [] });
 
-  useEffect(() => {
-    const active = controllers.current;
-    return (): void => {
-      for (const controller of active) controller.abort();
-      active.clear();
-    };
-  }, [client, scopeKey]);
-
-  return useCallback(
+  const track = useCallback(
     (request: ScriptActionsAddNoticeRequest): void => {
       if (client === null || client.capabilities.scriptActions !== true) return;
       const controller = new AbortController();
-      controllers.current.add(controller);
+      controllers.current.set(controller, request);
       const { targetName, ...receiptRequest } = request;
       void pollScriptActionsReceipt(client, receiptRequest, {
         signal: controller.signal,
@@ -165,4 +163,21 @@ export function useScriptActionsAddNotices({
     },
     [client],
   );
+
+  useEffect(() => {
+    const active = controllers.current;
+    // The Portal rebuilds its client as capabilities and its event cursor
+    // settle; scans still running in the same scope move to the new client.
+    const resumed =
+      carried.current.scopeKey === scopeKey ? carried.current.requests : [];
+    carried.current = { scopeKey, requests: [] };
+    for (const request of resumed) track(request);
+    return (): void => {
+      carried.current = { scopeKey, requests: [...active.values()] };
+      for (const controller of active.keys()) controller.abort();
+      active.clear();
+    };
+  }, [track, scopeKey]);
+
+  return track;
 }

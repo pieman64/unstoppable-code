@@ -222,6 +222,11 @@ describe('PipelineHostRefusal', () => {
 describe('isPipelineHostActionId', () => {
   it('accepts only known host actions', () => {
     expect(isPipelineHostActionId('move-to-group')).toBe(true);
-    expect(isPipelineHostActionId('create-worktree')).toBe(false);
+    expect(isPipelineHostActionId('create-worktree')).toBe(true);
+    expect(isPipelineHostActionId('create-project-entry')).toBe(true);
+    expect(isPipelineHostActionId('create-bot-entry')).toBe(true);
+    expect(isPipelineHostActionId('send-agent-message')).toBe(true);
+    expect(isPipelineHostActionId('wait-for-agent-reply')).toBe(true);
+    expect(isPipelineHostActionId('agent-prompt')).toBe(false);
   });
 });

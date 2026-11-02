@@ -9,6 +9,7 @@ import type {
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import { McpServerLogo, type McpServerLogoProps } from '@canopy/ui-shared';
 import {
+  Button,
   PluginConnectionRouteSection,
   RefreshSpinner,
 } from '@canopy/ui-shared/components';
@@ -146,16 +147,16 @@ export function ProviderConnectorDetail({
           ? 'Checking with your providers…'
           : 'Just linked one? Re-check to pick it up.'}
       </span>
-      <button
+      <Button
         type="button"
+        size="compact"
         data-testid="provider-connector-detail-refresh"
         disabled={loading}
         onClick={onConnected}
-        className="focus-ring inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs fg-primary transition-colors hover:bg-secondary/60 disabled:opacity-50"
       >
         <RefreshSpinner spinning={loading} />
         {loading ? 'Checking…' : 'Re-check'}
-      </button>
+      </Button>
     </div>
   );
 
@@ -261,15 +262,16 @@ function ProviderRow({
             <CheckIcon />
             Already available
           </span>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="compact"
             data-testid={testId}
             disabled={busy}
             onClick={() => void onConnect(entry.provider, entry.installUrl)}
-            className="focus-ring rounded-md px-2 py-1 text-xs fg-secondary transition-colors hover:bg-secondary/60 hover:fg-primary disabled:opacity-50"
           >
             Connect anyway
-          </button>
+          </Button>
         </span>
       ) : entry.pending ? (
         // The read has not answered. Rendering a Connect button here would
@@ -286,15 +288,16 @@ function ProviderRow({
             <CheckIcon />
             Connected
           </span>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="compact"
             data-testid={testId}
             disabled={busy}
             onClick={() => void onConnect(entry.provider, entry.installUrl)}
-            className="focus-ring rounded-md px-2 py-1 text-xs fg-secondary transition-colors hover:bg-secondary/60 hover:fg-primary disabled:opacity-50"
           >
             Manage
-          </button>
+          </Button>
         </span>
       ) : (
         <span className="flex items-center gap-2">
@@ -313,15 +316,15 @@ function ProviderRow({
               Status may be out of date
             </span>
           ) : null}
-          <button
+          <Button
             type="button"
+            size="compact"
             data-testid={testId}
             disabled={busy}
             onClick={() => void onConnect(entry.provider, entry.installUrl)}
-            className="focus-ring shrink-0 rounded-md border px-2.5 py-1.5 text-xs fg-primary transition-colors hover:bg-secondary/60 disabled:opacity-50"
           >
             Connect with {label}
-          </button>
+          </Button>
         </span>
       )}
     </li>

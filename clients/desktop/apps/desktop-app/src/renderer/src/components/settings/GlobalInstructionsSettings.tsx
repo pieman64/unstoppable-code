@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { type JSX, type ReactNode, useMemo } from 'react';
 import type {
   GlobalInstructionHarness,
@@ -18,7 +19,7 @@ import {
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import type { GlobalInstructionOverlapWarning } from '@canopy/desktop-shared/lib/global-instructions';
 import { computeGlobalInstructionOverlapWarnings } from '@canopy/desktop-shared/lib/global-instructions';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import { Button, Checkbox, Notice } from '@canopy/ui-shared/components';
 import {
   ChevronDown,
   ChevronUp,
@@ -32,8 +33,6 @@ import {
   SettingsSegmentedControl,
   SettingsTextArea,
 } from './SettingsLayout';
-import { SETTINGS_CHECK_INPUT_CLASS_NAME } from './settings-classes';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 type SectionKind = 'chats' | 'pipelines';
 
@@ -57,7 +56,7 @@ const WORKSPACE_TYPE_OPTIONS: ReadonlyArray<{
 }> = [
   { value: 'cowork', label: 'Cowork' },
   { value: 'code', label: 'Code' },
-  { value: 'app-advisor', label: 'App Advisor' },
+  { value: 'app-advisor', label: ORCHESTRATOR_LABEL },
 ];
 
 function visibleHarnessOptions(): ReadonlyArray<{
@@ -160,13 +159,7 @@ function ScopeCheckbox({
 }: ScopeCheckboxProps): JSX.Element {
   return (
     <label className="flex items-center gap-2 text-s fg-primary">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onToggle}
-        data-testid={testId}
-        className={SETTINGS_CHECK_INPUT_CLASS_NAME}
-      />
+      <Checkbox checked={checked} onChange={onToggle} data-testid={testId} />
       {label}
     </label>
   );
@@ -225,7 +218,6 @@ function ScopedInstructionItem({
   onDelete,
   onMove,
 }: ScopedInstructionItemProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const idPrefix = `global-instructions-${kind}-item-${index}`;
   const title = `Scoped instruction #${index + 1}`;
   return (
@@ -249,10 +241,10 @@ function ScopedInstructionItem({
           />
           <div className="flex items-center gap-1">
             <Button
-              size={settingsButtonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               iconOnly
-              // `aria-disabled` keeps the ghost surface; `disabled` would paint
+              // `aria-disabled` keeps the secondary surface; `disabled` would paint
               // the shared disabled fill on the first row's arrow.
               aria-disabled={index === 0}
               onClick={(): void => {
@@ -264,8 +256,8 @@ function ScopedInstructionItem({
               <ChevronUp width={14} height={14} aria-hidden="true" />
             </Button>
             <Button
-              size={settingsButtonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               iconOnly
               aria-disabled={index === count - 1}
               onClick={(): void => {
@@ -277,8 +269,8 @@ function ScopedInstructionItem({
               <ChevronDown width={14} height={14} aria-hidden="true" />
             </Button>
             <Button
-              size={settingsButtonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               iconOnly
               onClick={onDelete}
               data-testid={`${idPrefix}-delete`}
@@ -405,7 +397,6 @@ function SubSection({
   section,
   onChange,
 }: SubSectionProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const warnings = useMemo(
     () => computeGlobalInstructionOverlapWarnings(section, modelsByHarness()),
     [section],
@@ -452,7 +443,7 @@ function SubSection({
           description="Added only when a session matches."
           control={
             <Button
-              size={settingsButtonSize}
+              size="compact"
               variant="secondary"
               aria-label="Add scoped instruction"
               onClick={(): void =>
@@ -528,7 +519,7 @@ export function GlobalInstructionsSettings({
       <SubSection
         kind="chats"
         title="Chats"
-        description="Chat sessions in Cowork, Code, and App Advisor."
+        description={`Chat sessions in Cowork, Code, and ${ORCHESTRATOR_LABEL}.`}
         overallDescription="Applied to every chat session."
         section={config.chats}
         onChange={(chats): void => onChange({ ...config, chats })}
@@ -536,9 +527,9 @@ export function GlobalInstructionsSettings({
 
       <SubSection
         kind="pipelines"
-        title="Pipelines"
-        description="Pipeline agent steps: agent prompts and Codex pipeline turns."
-        overallDescription="Applied to every pipeline agent step."
+        title="Workflows"
+        description="Workflow agent steps: agent prompts and Codex workflow turns."
+        overallDescription="Applied to every workflow agent step."
         section={config.pipelines}
         onChange={(pipelines): void => onChange({ ...config, pipelines })}
       />

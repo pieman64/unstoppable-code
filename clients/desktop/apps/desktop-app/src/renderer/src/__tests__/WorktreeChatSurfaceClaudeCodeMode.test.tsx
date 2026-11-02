@@ -20,7 +20,7 @@ import type {
 import type * as ClaudeTerminalStoreModule from '@/stores/claudeTerminalStore';
 import { WorktreeChatSurface } from '@/components/chat/WorktreeChatSurface';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { useOnboardingSuggestionSurfaces } from '@/stores/onboardingSuggestionSurfacesStore';
+
 import { registerCoworkWorkspaceIds } from '@/lib/cowork-registry';
 import type * as ChatRenderStoresTestUtils from '@/test-utils/chatRenderStores';
 
@@ -33,10 +33,6 @@ let mockTransientRetryState: {
   nextRetryAt: number | null;
   exhausted: boolean;
 } | null;
-let mockOnboardingState: {
-  visible: boolean;
-  queueStatus: 'loading' | 'has-rows' | 'exhausted';
-} = { visible: false, queueStatus: 'loading' };
 
 jest.mock('@/stores/chatStore', () => ({
   useChatStore: (selector: (state: unknown) => unknown): unknown =>
@@ -79,30 +75,6 @@ jest.mock('@/stores/transientRetryBannerStore', () => ({
   useTransientRetryState: (): typeof mockTransientRetryState =>
     mockTransientRetryState,
 }));
-
-jest.mock('@/stores/onboardingSuggestionSurfacesStore', () => {
-  const useOnboardingSuggestionSurfaces = Object.assign(
-    (selector: (state: typeof mockOnboardingState) => unknown): unknown =>
-      selector(mockOnboardingState),
-    {
-      setState: (
-        update:
-          | Partial<typeof mockOnboardingState>
-          | ((
-              state: typeof mockOnboardingState,
-            ) => Partial<typeof mockOnboardingState>),
-      ): void => {
-        mockOnboardingState = {
-          ...mockOnboardingState,
-          ...(typeof update === 'function'
-            ? update(mockOnboardingState)
-            : update),
-        };
-      },
-    },
-  );
-  return { useOnboardingSuggestionSurfaces };
-});
 
 jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
   useCurrentUiStateReporter: jest.fn(),
@@ -208,6 +180,7 @@ function mockCanopyClient(): CanopyClient {
     settingsScope: 'full',
     pipelines: 'execute',
     routing: 'in-memory',
+    overviewNotifications: true,
   };
   return {
     capabilities,
@@ -364,10 +337,7 @@ describe('WorktreeChatSurface Claude Code mode (per-tab surface)', () => {
     mockSetChatInterfaceMode.mockReset();
     mockedUseCurrentUiStateReporter.mockClear();
     mockTransientRetryState = null;
-    useOnboardingSuggestionSurfaces.setState({
-      visible: false,
-      queueStatus: 'loading',
-    });
+
     registerCoworkWorkspaceIds(['cowork-project']);
   });
 
@@ -439,7 +409,7 @@ describe('WorktreeChatSurface Claude Code mode (per-tab surface)', () => {
     );
   });
 
-  it('replaces Work-chat example prompts with the active getting-started checklist', () => {
+  it('keeps ordinary Work-chat example prompts after checklist retirement', () => {
     mockChatState = {
       ...buildChatState({ providerType: 'codex', interfaceMode: 'canopy' }),
       worktreeChats: {
@@ -461,18 +431,59 @@ describe('WorktreeChatSurface Claude Code mode (per-tab surface)', () => {
         },
       },
     };
-    useOnboardingSuggestionSurfaces.setState({
-      visible: true,
-      queueStatus: 'has-rows',
-    });
 
     const html = renderCoworkSurface();
 
-    expect(html).toContain('data-has-onboarding="true"');
-    expect(html).toContain('data-testid="chat-onboarding-checklist-host"');
-    expect(html).toContain('data-has-suggestions="false"');
-    expect(html).not.toContain('data-testid="suggested-prompt-chips"');
+    expect(html).toContain('data-has-onboarding="false"');
+    expect(html).not.toContain('data-testid="chat-onboarding-checklist-host"');
+    expect(html).toContain('data-has-suggestions="true"');
+    expect(html).toContain('data-testid="suggested-prompt-chips"');
   });
+
+  it.each(['preparing', 'queued'] as const)(
+    'suppresses empty-state content for a %s first send (CAN-4742)',
+    (phase) => {
+      mockChatState = {
+        ...buildChatState({ providerType: 'codex', interfaceMode: 'canopy' }),
+        worktreeChats: {
+          'cowork-project/home': {
+            activeTabId: 'chat',
+            tabs: [
+              {
+                ...codexTab('Question'),
+                messages:
+                  phase === 'preparing'
+                    ? [
+                        {
+                          id: 'first',
+                          role: 'user',
+                          timestamp: 1,
+                          blocks: [{ type: 'text', text: 'Question' }],
+                        },
+                      ]
+                    : [],
+                queuedMessages:
+                  phase === 'queued' ? [{ text: 'Question' }] : [],
+                provisionalFirstSend: {
+                  userMessageId: 'first',
+                  submittedAt: 1,
+                  phase,
+                },
+              },
+            ],
+          },
+        },
+      };
+
+      const html = renderCoworkSurface();
+      expect(html).toContain('data-has-onboarding="false"');
+      expect(html).toContain('data-has-suggestions="false"');
+      expect(html).not.toContain(
+        'data-testid="chat-onboarding-checklist-host"',
+      );
+      expect(html).not.toContain('data-testid="suggested-prompt-chips"');
+    },
+  );
 
   it('returns Work-chat example prompts after the checklist is exhausted', () => {
     mockChatState = {
@@ -496,10 +507,6 @@ describe('WorktreeChatSurface Claude Code mode (per-tab surface)', () => {
         },
       },
     };
-    useOnboardingSuggestionSurfaces.setState({
-      visible: true,
-      queueStatus: 'exhausted',
-    });
 
     const html = renderCoworkSurface();
 

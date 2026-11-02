@@ -26,6 +26,7 @@ import * as sourceControl from '../workspace-source-control';
 import * as windowSend from '../window-send';
 import { inspectWorktreeCreationRecovery } from '../worktree-create-recovery';
 import * as workspacePersistence from '../workspace-persistence';
+import * as registrationRemoval from '../worktree-registration-removal';
 import {
   readWorkspaceConfig,
   updateWorkspaceWorktrees,
@@ -34,8 +35,17 @@ import {
 import { getWorkspaceWorktreeRepoDir } from '../paths';
 import { reconcileGitPendingWorktrees } from '../worktree-boot-recovery';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-worker-threads';
 jest.mock('node:worker_threads', () =>
   jest
@@ -48,6 +58,8 @@ const mockRepairHandlers = new Map<
   string,
   (event: unknown, request: unknown) => Promise<unknown>
 >();
+const unsupportedDispatcherRoute = (): Promise<never> =>
+  Promise.reject(new Error('Unexpected workspace repair dispatcher route'));
 jest.mock('../../ipc/register', () => ({
   registerIpcHandler: (
     channel: string,
@@ -388,6 +400,414 @@ it('reports an orphan checkout with repository, branch and path without adopting
   expect(existsSync(checkoutPath)).toBe(true);
 });
 
+const canonicalTempDir = realpathSync(tmpdir());
+describe.each([
+  { pathKind: 'canonical', available: true },
+  { pathKind: 'symlink', available: true },
+  {
+    pathKind: 'macOS-var',
+    // Custom TMPDIRs need not live under /var. Keep native alias skips visible
+    // while the portable symlink cases still run on every platform.
+    available:
+      process.platform === 'darwin' &&
+      (canonicalTempDir === '/private/var' ||
+        canonicalTempDir.startsWith('/private/var/')),
+  },
+])(
+  'orphan diagnostics through a $pathKind data root',
+  ({ pathKind, available }) => {
+    const itForRoot = available ? it : it.skip;
+    function useDataRoot(): void {
+      const canonical = join(dir, 'data');
+      let alias = canonical;
+      if (pathKind === 'symlink') {
+        alias = join(dir, 'data-alias');
+        symlinkSync(canonical, alias, 'junction');
+      } else if (pathKind === 'macOS-var') {
+        expect(canonical.startsWith('/private/var/')).toBe(true);
+        alias = canonical.slice('/private'.length);
+      }
+      expect(realpathSync(alias)).toBe(canonical);
+      process.env.CANOPY_DATA_DIR = alias;
+    }
+
+    itForRoot.each([false, true])(
+      'reports only the unknown registration, including when its checkout is missing: %s',
+      async (missing) => {
+        const created = await invoke('owned');
+        const rows = await readWorkspaceWorktrees('a');
+        const config = await readWorkspaceConfig('a');
+        const checkoutPath = getWorktreeDir('a', 'unknown');
+        execFileSync('git', [
+          '-C',
+          repo,
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'unknown',
+          checkoutPath,
+        ]);
+        const sentinel = join(checkoutPath, 'keep.txt');
+        writeFileSync(sentinel, 'unknown files');
+        if (missing) rmSync(checkoutPath, { recursive: true });
+        const listing = (): string =>
+          execFileSync('git', ['-C', repo, 'worktree', 'list', '--porcelain'], {
+            encoding: 'utf8',
+          });
+        const before = listing();
+        const registry = join(root, 'a', 'worktrees.json');
+        const registryBefore = readFileSync(registry, 'utf8');
+        useDataRoot();
+        const issues = await inspectWorktreeCreationRecovery('a', config, rows);
+        expect(issues).toMatchObject([
+          {
+            fixPrompt: null,
+            recovery: {
+              phase: 'orphan-checkout',
+              repositoryPath: repo,
+              branchName: 'unknown',
+              checkoutPath,
+            },
+          },
+        ]);
+        expect(issues).toHaveLength(1);
+        expect(await inspectWorktreeCreationRecovery('a', config)).toEqual(
+          issues,
+        );
+        expect(listing()).toBe(before);
+        expect(readFileSync(registry, 'utf8')).toBe(registryBefore);
+        expect(existsSync(getWorktreeDir('a', created.record.worktreeId))).toBe(
+          true,
+        );
+        expect(existsSync(checkoutPath)).toBe(!missing);
+        if (!missing)
+          expect(readFileSync(sentinel, 'utf8')).toBe('unknown files');
+      },
+    );
+
+    itForRoot.each([
+      ['excluded child', ['first'], 'middle'],
+      ['root-only', [], 'first'],
+    ] as const)(
+      'reports an %s checkout without broadening row ownership',
+      async (_case, includedRepoIds, strayRepoId) => {
+        const repos = configureMulti();
+        const stray = repos.find((entry) => entry.id === strayRepoId);
+        if (!stray) throw new Error('Missing fixture repository');
+        const row: WorktreeData = {
+          id: 'scoped',
+          branchName: 'scoped',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          includedRepoIds: [...includedRepoIds],
+        };
+        const config = await readWorkspaceConfig('a');
+        const checkoutPath = getWorkspaceWorktreeRepoDir(
+          'a',
+          row.id,
+          strayRepoId,
+        );
+        execFileSync('git', [
+          '-C',
+          stray.repoPath,
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'stray',
+          checkoutPath,
+        ]);
+        const before = await git.listRegisteredWorktreePaths(stray.repoPath);
+        useDataRoot();
+        const issues = await inspectWorktreeCreationRecovery('a', config, [
+          row,
+        ]);
+        expect(issues).toMatchObject([
+          {
+            fixPrompt: null,
+            recovery: {
+              phase: 'orphan-checkout',
+              repositoryPath: stray.repoPath,
+              branchName: 'stray',
+              checkoutPath,
+            },
+          },
+        ]);
+        expect(issues).toHaveLength(1);
+        expect(await git.listRegisteredWorktreePaths(stray.repoPath)).toEqual(
+          before,
+        );
+        expect(existsSync(checkoutPath)).toBe(true);
+      },
+    );
+
+    itForRoot.each([false, true])(
+      'does not report an owned legacy checkout when missing: %s',
+      async (missing) => {
+        const row: WorktreeData = {
+          id: 'legacy',
+          branchName: 'legacy',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        };
+        const checkoutPath = getWorktreeDir('a', row.id);
+        execFileSync('git', [
+          '-C',
+          repo,
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'legacy',
+          checkoutPath,
+        ]);
+        if (missing) rmSync(checkoutPath, { recursive: true });
+        const config = await readWorkspaceConfig('a');
+        useDataRoot();
+        expect(
+          await inspectWorktreeCreationRecovery('a', config, [row]),
+        ).toEqual([]);
+        expect(await git.listRegisteredWorktreePaths(repo)).toContain(
+          checkoutPath,
+        );
+        expect(existsSync(checkoutPath)).toBe(!missing);
+      },
+    );
+
+    itForRoot(
+      'keeps explicit recovery paths owned and returns their original evidence',
+      async () => {
+        const checkoutPath = getWorktreeDir('a', 'retained');
+        execFileSync('git', [
+          '-C',
+          repo,
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'retained',
+          checkoutPath,
+        ]);
+        const config = await readWorkspaceConfig('a');
+        useDataRoot();
+        const row: WorktreeData = {
+          id: 'different-id',
+          branchName: 'retained',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          creation: {
+            operationId: 'retained-operation',
+            state: 'recovery-required',
+            phase: 'git-setup',
+            checkouts: [
+              {
+                repositoryPath: repo,
+                checkoutPath: getWorktreeDir('a', 'retained'),
+              },
+            ],
+          },
+        };
+        const issues = await inspectWorktreeCreationRecovery('a', config, [
+          row,
+        ]);
+        expect(issues).toHaveLength(1);
+        expect(issues[0].recovery).toMatchObject({
+          phase: 'git-setup',
+          operationId: 'retained-operation',
+          checkoutPath: getWorktreeDir('a', 'retained'),
+          repositoryPath: repo,
+          branchName: 'retained',
+        });
+      },
+    );
+
+    itForRoot(
+      'does not report the root itself or checkouts outside its physical boundary',
+      async () => {
+        const worktreesRoot = paths.getWorkspaceWorktreesRootDir('a');
+        const outside = `${worktreesRoot}-outside`;
+        execFileSync('git', [
+          '-C',
+          repo,
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'root',
+          worktreesRoot,
+        ]);
+        execFileSync('git', [
+          '-C',
+          repo,
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'outside',
+          outside,
+        ]);
+        const escape = join(worktreesRoot, 'escape');
+        symlinkSync(outside, escape, 'junction');
+        const config = await readWorkspaceConfig('a');
+        const registered = await git.listRegisteredWorktreePaths(repo);
+        // Include an alternate spelling of the external checkout, as well as
+        // Git's canonical path; neither is physically inside the workspace.
+        jest
+          .spyOn(git, 'listRegisteredWorktreePaths')
+          .mockResolvedValue(new Set([...registered, escape]));
+        useDataRoot();
+        expect(await inspectWorktreeCreationRecovery('a', config, [])).toEqual(
+          [],
+        );
+        expect(existsSync(outside)).toBe(true);
+      },
+    );
+
+    itForRoot(
+      'matches branch evidence with an aliased checkout path',
+      async () => {
+        const checkoutPath = getWorktreeDir('a', 'branch-alias');
+        execFileSync('git', [
+          '-C',
+          repo,
+          'worktree',
+          'add',
+          '-q',
+          '-b',
+          'branch-alias',
+          checkoutPath,
+        ]);
+        const config = await readWorkspaceConfig('a');
+        useDataRoot();
+        jest
+          .spyOn(git, 'listCheckedOutBranches')
+          .mockResolvedValue(
+            new Map([['branch-alias', getWorktreeDir('a', 'branch-alias')]]),
+          );
+        const issues = await inspectWorktreeCreationRecovery('a', config, []);
+        expect(issues).toHaveLength(1);
+        expect(issues[0].recovery).toMatchObject({
+          checkoutPath,
+          branchName: 'branch-alias',
+          repositoryPath: repo,
+        });
+      },
+    );
+  },
+);
+
+it('retains persisted diagnostics when filesystem identity cannot be read', async () => {
+  const config = await readWorkspaceConfig('a');
+  const row: WorktreeData = {
+    id: 'uncertain',
+    branchName: 'uncertain',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    creation: {
+      operationId: 'uncertain-operation',
+      state: 'recovery-required',
+      phase: 'reserved',
+      checkouts: [],
+    },
+  };
+  jest
+    .spyOn(registrationRemoval, 'canonicalizePossiblyMissingPath')
+    .mockRejectedValue(
+      Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+    );
+  const list = jest.spyOn(git, 'listRegisteredWorktreePaths');
+  const issues = await inspectWorktreeCreationRecovery('a', config, [row]);
+  expect(issues).toHaveLength(1);
+  expect(issues[0].recovery).toMatchObject({
+    operationId: 'uncertain-operation',
+    phase: 'reserved',
+  });
+  expect(list).not.toHaveBeenCalled();
+});
+
+it.each(['root', 'owned', 'registered'] as const)(
+  'handles a selective %s identity failure without losing persisted evidence',
+  async (failedIdentity) => {
+    const config = await readWorkspaceConfig('a');
+    const ownedPath = getWorktreeDir('a', 'owned');
+    const uncertainPath = getWorktreeDir('a', 'uncertain');
+    const unknownPath = getWorktreeDir('a', 'unknown');
+    for (const branch of ['uncertain', 'unknown']) {
+      execFileSync('git', [
+        '-C',
+        repo,
+        'worktree',
+        'add',
+        '-q',
+        '-b',
+        branch,
+        getWorktreeDir('a', branch),
+      ]);
+    }
+    const row: WorktreeData = {
+      id: 'owned',
+      branchName: 'owned',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      creation: {
+        operationId: 'owned-operation',
+        state: 'recovery-required',
+        phase: 'reserved',
+        checkouts: [{ repositoryPath: repo, checkoutPath: ownedPath }],
+      },
+    };
+    const failurePath = {
+      root: paths.getWorkspaceWorktreesRootDir('a'),
+      owned: ownedPath,
+      registered: uncertainPath,
+    }[failedIdentity];
+    const canonicalize = registrationRemoval.canonicalizePossiblyMissingPath;
+    const identities = jest
+      .spyOn(registrationRemoval, 'canonicalizePossiblyMissingPath')
+      .mockImplementation(async (path) => {
+        if (path === failurePath)
+          throw Object.assign(new Error('permission denied'), {
+            code: 'EACCES',
+          });
+        return canonicalize(path);
+      });
+    const before = await git.listRegisteredWorktreePaths(repo);
+    const issues = await inspectWorktreeCreationRecovery('a', config, [row]);
+    expect(issues[0].recovery).toMatchObject({
+      phase: 'reserved',
+      operationId: 'owned-operation',
+      checkoutPath: ownedPath,
+    });
+    if (failedIdentity === 'registered') {
+      expect(issues).toHaveLength(2);
+      expect(issues[1].recovery).toMatchObject({
+        phase: 'orphan-checkout',
+        checkoutPath: unknownPath,
+        branchName: 'unknown',
+        repositoryPath: repo,
+      });
+    } else {
+      expect(issues).toHaveLength(1);
+    }
+    expect(await git.listRegisteredWorktreePaths(repo)).toEqual(before);
+    expect(existsSync(uncertainPath)).toBe(true);
+    expect(existsSync(unknownPath)).toBe(true);
+    // A failed observation is shared by branch and registration matching,
+    // but is retried on the next inspection rather than cached indefinitely.
+    expect(
+      identities.mock.calls.filter(([path]) => path === failurePath),
+    ).toHaveLength(1);
+    const observedPaths = identities.mock.calls.map(([path]) => path);
+    expect(observedPaths).toHaveLength(new Set(observedPaths).size);
+    identities.mockImplementation(canonicalize);
+    const retry = await inspectWorktreeCreationRecovery('a', config, [row]);
+    expect(retry.map((entry) => entry.recovery?.checkoutPath)).toEqual([
+      ownedPath,
+      uncertainPath,
+      unknownPath,
+    ]);
+    expect(
+      identities.mock.calls.filter(([path]) => path === failurePath),
+    ).toHaveLength(2);
+  },
+);
+
 it('preserves every concurrent create row and unrelated fields', async () => {
   await updateWorkspaceWorktrees('a', (rows) => [
     {
@@ -710,6 +1130,8 @@ it('completes a retained creation through approved source-root repair before ack
   const before = (await readWorkspaceWorktrees('a'))[0];
   registerWorkspaceHandlers(() => null, {
     dispatcher: {
+      query: unsupportedDispatcherRoute,
+      instruction: unsupportedDispatcherRoute,
       queryWorktreeListForLegacyIpc: async ({
         scope,
       }: {
@@ -899,6 +1321,8 @@ it.each([
     );
     registerWorkspaceHandlers(() => null, {
       dispatcher: {
+        query: unsupportedDispatcherRoute,
+        instruction: unsupportedDispatcherRoute,
         queryWorktreeListForLegacyIpc: async ({
           scope,
         }: {
@@ -948,6 +1372,8 @@ it('refuses repair when a replacement incarnation appears during root repair', a
     throw new Error('Expected retained repair');
   registerWorkspaceHandlers(() => null, {
     dispatcher: {
+      query: unsupportedDispatcherRoute,
+      instruction: unsupportedDispatcherRoute,
       queryWorktreeListForLegacyIpc: async ({
         scope,
       }: {
@@ -1023,6 +1449,8 @@ it('does not treat an unregistered child directory as repaired', async () => {
   mkdirSync(child, { recursive: true });
   registerWorkspaceHandlers(() => null, {
     dispatcher: {
+      query: unsupportedDispatcherRoute,
+      instruction: unsupportedDispatcherRoute,
       queryWorktreeListForLegacyIpc: async ({
         scope,
       }: {
@@ -1072,11 +1500,11 @@ it('announces readiness once when an approved repair completes a retained creati
   const created = await invokeMulti(false);
   if (created.status !== 'needs-repair')
     throw new Error('Expected retained repair');
-  const sends = jest
-    .spyOn(windowSend, 'sendToWindow')
-    .mockReturnValue({ delivered: true });
+  const sends = jest.spyOn(windowSend, 'sendToWindow').mockReturnValue(true);
   registerWorkspaceHandlers(() => null, {
     dispatcher: {
+      query: unsupportedDispatcherRoute,
+      instruction: unsupportedDispatcherRoute,
       queryWorktreeListForLegacyIpc: async ({
         scope,
       }: {

@@ -299,6 +299,51 @@ describe('PanelTabBar live reorder', () => {
     );
   });
 
+  it('reads the pointer against the row as it scrolls under the drag', () => {
+    const onReorderTab = jest.fn();
+    render([tab('a'), tab('b'), tab('c'), tab('d')], { onReorderTab });
+    fireDrag(tabElement('a'), 'dragstart', { clientX: 54, clientY: 20 });
+    // The strip scrolls one tab under the drag; the pointer stays put.
+    const strip = tabElement('a').parentElement;
+    if (strip === null) throw new Error('No strip');
+    act(() => {
+      strip.scrollLeft = 104;
+      strip.dispatchEvent(new Event('scroll'));
+    });
+    fireDrag(document.body, 'dragover', { clientX: 164, clientY: 20 });
+    // 164px on screen is 268px along the row: `a` is drawn under the
+    // pointer, past `b` and `c`, and lands third.
+    expect(tabElement('a').style.transform).toBe('translateX(214px)');
+    fireDrag(document.body, 'drop', { clientX: 164, clientY: 20 });
+    expect(onReorderTab).toHaveBeenCalledWith('group-1', 'a', 2);
+    fireDrag(tabElement('a'), 'dragend');
+  });
+
+  it('follows a scrolling strip for a pinned tab too', () => {
+    const onReorderTab = jest.fn();
+    const pinned = ['p1', 'p2', 'p3', 'p4'];
+    render(
+      pinned.map((id) => tab(id, true)),
+      { onReorderTab },
+    );
+    fireDrag(tabElement('p1'), 'dragstart', { clientX: 54, clientY: 20 });
+    // A pinned tab sits in a wrapper inside its strip; the strip scrolls.
+    const strip = tabElement('p1').closest<HTMLElement>(
+      '.canopy-panel-tab-strip',
+    );
+    if (strip === null) throw new Error('No strip');
+    expect(tabElement('p1').parentElement).not.toBe(strip);
+    act(() => {
+      strip.scrollLeft = 104;
+      strip.dispatchEvent(new Event('scroll'));
+    });
+    fireDrag(document.body, 'dragover', { clientX: 164, clientY: 20 });
+    expect(tabElement('p1').style.transform).toBe('translateX(214px)');
+    fireDrag(document.body, 'drop', { clientX: 164, clientY: 20 });
+    expect(onReorderTab).toHaveBeenCalledWith('group-1', 'p1', 2);
+    fireDrag(tabElement('p1'), 'dragend');
+  });
+
   it('does not reorder when the tab is dropped back in its own place', () => {
     const onReorderTab = jest.fn();
     render([tab('a'), tab('b'), tab('c')], { onReorderTab });

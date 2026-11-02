@@ -39,7 +39,13 @@ import type {
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { getAutomationTriggerLabel } from '@canopy/desktop-shared/lib/automations';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
-import { Notice, NoticeButton, Tooltip } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  NoticeButton,
+  SegmentedControl,
+  Tooltip,
+} from '@canopy/ui-shared/components';
 import {
   AutomationsIcon,
   BranchIcon,
@@ -124,7 +130,7 @@ function PanelSectionShell({
         onClick={(): void => onToggle(id)}
         aria-expanded={!collapsed}
         data-testid={`automations-panel-section-${id}`}
-        className="focus-ring flex w-full shrink-0 items-center gap-1.5 px-3 py-2 text-xs font-medium fg-secondary transition hover:fg-primary"
+        className="focus-ring flex w-full shrink-0 items-center gap-1.5 px-3 py-2 text-xs font-medium fg-secondary transition-colors hover:fg-primary"
       >
         {collapsed ? (
           <ChevronRightIcon width={12} height={12} aria-hidden="true" />
@@ -173,7 +179,7 @@ function UpcomingSection({
             type="button"
             onClick={(): void => onOpen(entry.activity)}
             data-testid={`automations-panel-upcoming-${entry.key}`}
-            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left transition hover:bg-fg-primary/[0.04]"
+            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
           >
             <span
               className={`inline-flex shrink-0 rounded-full px-1.5 py-0.5 text-2xs font-medium ${
@@ -222,32 +228,18 @@ function OverviewSection({
   return (
     <div className="flex min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 pb-2">
-        <div
-          role="radiogroup"
-          aria-label="Overview type filter"
-          className="inline-flex items-center gap-0.5 rounded-md border bg-base p-0.5"
-        >
-          {filters.map((filter) => {
-            const active = typeFilter === filter.value;
-            return (
-              <button
-                key={filter.value}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={(): void => onTypeFilterChange(filter.value)}
-                data-testid={`automations-panel-filter-${filter.value}`}
-                className={`focus-ring rounded px-1.5 py-0.5 text-2xs transition ${
-                  active
-                    ? 'bg-accent-subtle fg-accent'
-                    : 'fg-secondary hover:fg-primary'
-                }`}
-              >
-                {filter.label}
-              </button>
-            );
-          })}
-        </div>
+        <SegmentedControl
+          value={typeFilter}
+          options={filters.map((filter) => ({
+            value: filter.value,
+            label: filter.label,
+            dataTestId: `automations-panel-filter-${filter.value}`,
+          }))}
+          onChange={onTypeFilterChange}
+          label="Overview type filter"
+          shape="capsule"
+          width="content"
+        />
         <input
           type="text"
           value={search}
@@ -279,7 +271,7 @@ function OverviewSection({
                     key={`automation-${activity.id}`}
                     data-testid={`automations-panel-overview-automation-${activity.id}`}
                     onClick={(): void => onOpenActivity(activity)}
-                    className="cursor-pointer border-b transition hover:bg-fg-primary/[0.04]"
+                    className="cursor-pointer border-b transition-colors hover:bg-fg-primary/[0.04]"
                   >
                     <td className="truncate px-3 py-1.5 fg-primary">
                       {activity.name || 'Untitled automation'}
@@ -313,7 +305,7 @@ function OverviewSection({
                   key={`watcher-${watcher.id}`}
                   data-testid={`automations-panel-overview-watcher-${watcher.id}`}
                   onClick={(): void => onOpenWatcher(watcher)}
-                  className="cursor-pointer border-b transition hover:bg-fg-primary/[0.04]"
+                  className="cursor-pointer border-b transition-colors hover:bg-fg-primary/[0.04]"
                 >
                   <td
                     className="truncate px-3 py-1.5 fg-primary"
@@ -394,7 +386,7 @@ function CompletedSection({
                   onOpenWatcher(entry.watcher);
                 }
               }}
-              className="cursor-pointer border-b transition hover:bg-fg-primary/[0.04]"
+              className="cursor-pointer border-b transition-colors hover:bg-fg-primary/[0.04]"
             >
               <td className="truncate px-3 py-1.5 fg-primary">{entry.name}</td>
               <td className="px-1 py-1.5 fg-secondary">
@@ -674,7 +666,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
                 aria-label={worktreeToggleLabel}
                 onClick={(): void => setWorktreeOnly((prev) => !prev)}
                 data-testid="automations-panel-worktree-toggle"
-                className={`focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md transition ${
+                className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
                   worktreeOnly
                     ? 'bg-accent-subtle fg-accent'
                     : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
@@ -686,15 +678,16 @@ export const AutomationsPanel = memo(function AutomationsPanel({
           )}
           {projectId !== APP_ADVISOR_PROJECT_ID && (
             <Tooltip label="New automation">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 aria-label="New automation"
                 onClick={openCreate}
                 data-testid="automations-panel-add"
-                className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
               >
                 <PlusIcon width={14} height={14} aria-hidden="true" />
-              </button>
+              </Button>
             </Tooltip>
           )}
         </div>

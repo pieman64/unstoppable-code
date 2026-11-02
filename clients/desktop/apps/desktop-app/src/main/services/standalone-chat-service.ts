@@ -1,7 +1,12 @@
+import {
+  hasChatContinuationSession,
+  resolveChatModelChangeHarness,
+  supportsChatHarnessChoice,
+} from '@canopy/desktop-shared/lib/chat-model-selection';
+import { assertOpenCodeSelectionAvailable } from '../opencode/selection';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
 import { resolvePresentationSource } from '../canopy-tools/presentation-state';
 import { chatLastMessageRole } from '../lib/chat-last-message-role';
-import { assertOpenCodeModelAvailable } from '../opencode/connection';
 import { isOpenCodeRuntimeAvailable } from '../opencode/runtime-availability';
 import { assertCopilotModelAvailable } from '../copilot/connection';
 import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
@@ -15,6 +20,7 @@ import {
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
   getExecutionHarnessForModel,
   getModelDisplayName,
+  getProviderForChatModel,
   getProviderForModel,
   resolvePersistedChatExecutionHarness,
   resolveKnownModel,
@@ -54,6 +60,7 @@ import type {
   PortalStandaloneChatCreateResult,
 } from '@canopy/protocol/portal';
 import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { TurnDispatchTiming } from '../lib/turn-dispatch-timing';
 import { validateId } from '../lib/validation';
 import {
   isModelBlockedByStoredPolicy,
@@ -84,6 +91,7 @@ import {
 } from '../lib/default-model-lane-resolver';
 import { writeChatTabsFile } from '../lib/chat-tabs';
 import {
+  chatHasNativeBackgroundWork,
   getActiveChatIds,
   getActiveSessionInfos,
   getSession,
@@ -92,6 +100,13 @@ import {
 } from '../agents/session-manager';
 import { projectPortalQuestionStates } from '../lib/portal-question-states';
 import { projectPortalLastTurnEnd } from '../lib/portal-turn-end';
+import {
+  adoptPreparingSendSession,
+  cancelChatTurn,
+  captureChatTurnStopsForChat,
+  isChatTurnStopCurrent,
+  type ChatTurnStopContext,
+} from '../lib/chat-turn-cancel';
 import {
   createAiCreditsScopeOwnerResolver,
   resolveAiCreditsScopeOwner,
@@ -108,7 +123,6 @@ import {
 } from '../portal/portal-event-bus';
 import { scheduleDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 import {
-  createPortalTurnTimer,
   limitPortalChatTranscriptForSeedWithMetadata,
   type PortalChatTranscriptSeed,
   projectPersistedChatTranscript,
@@ -137,6 +151,10 @@ import { clearUsageLimitedChat } from '../lib/usage-limited-chats-registry';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { notificationSpaceIdFor } from '../lib/space-notification-gate';
 import { getChatStateService } from './chat-state-service';
+import {
+  backgroundTaskCount,
+  summaryTurnActive,
+} from '@canopy/desktop-shared/lib/background-work';
 import { PortalServiceError } from './portal-service-error';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
 
@@ -227,14 +245,15 @@ function capturedExecutionHarnessForStandaloneTab(
   tab: PersistedChatTab | undefined,
   workspaceId: string,
   entryId: string,
+  allowEmptySelectionChange = false,
 ): ModelHarness | undefined {
   if (!tab) return undefined;
   const hasCapturedHarness =
-    tab.executionHarness !== undefined ||
+    (!allowEmptySelectionChange && tab.executionHarness !== undefined) ||
     (tab.transcript?.messageCount ??
       tab.transcript?.committedMessageCount ??
       tab.messages.length) > 0 ||
-    Boolean(tab.sdkSessionId) ||
+    hasChatContinuationSession(tab) ||
     getActiveChatIds(workspaceId, entryId).includes(tab.id);
   return hasCapturedHarness
     ? resolvePersistedChatExecutionHarness(tab)
@@ -690,6 +709,29 @@ function buildStandaloneChatSummary(
   },
 ): PortalStandaloneChatSummary {
   const workEntryId = options?.workEntry?.entryId;
+  // The canonical turn decides, as for worktree chats (turn-state phase 41b).
+  const chatState = getChatStateService();
+  const canonicalTurn =
+    workEntryId !== undefined
+      ? chatState.getTurnState({
+          projectId,
+          worktreeId: workEntryId,
+          chatId: tab.id,
+        })
+      : undefined;
+  const hasActiveChat =
+    options?.hasActiveChat === undefined && canonicalTurn === undefined
+      ? undefined
+      : summaryTurnActive(
+          options?.hasActiveChat === true ||
+            (workEntryId !== undefined &&
+              getChatQueueService().isTurnActive({
+                projectId,
+                worktreeId: workEntryId,
+                chatId: tab.id,
+              })),
+          canonicalTurn?.phase,
+        );
   const lastTurnEnd = projectPortalLastTurnEnd(tab);
   const lastMessageAt = tab.transcript
     ? tab.transcript.lastMessageAt
@@ -703,30 +745,43 @@ function buildStandaloneChatSummary(
   const capabilities = workEntryId
     ? getSession(projectId, workEntryId, tab.id)?.getSteeringCapabilities?.()
     : undefined;
-  const queuedMessages = workEntryId
-    ? (getChatQueueService()
+  const queueSnapshot = workEntryId
+    ? getChatQueueService()
         .getWorktreeSnapshots(projectId, workEntryId)
         .find((snapshot) => snapshot.chatId === tab.id)
-        ?.queue.map((message) => ({
-          id: message.id,
-          text: message.text,
-          origin: message.origin,
-          promptSource: message.promptSource,
-          supersedesUserMessageId: message.supersedesUserMessageId,
-          enqueuedAtMs: message.enqueuedAtMs,
-          attachmentEditsPreservePayload: true,
-          ...(message.editLocked ? { editLocked: true } : {}),
-          ...(message.canSteer === true ? { canSteer: true } : {}),
-          ...(message.agentSent ? { agentSent: message.agentSent } : {}),
-          ...(message.steerBlockedByCapabilityChange === true
-            ? { steerBlockedByCapabilityChange: true }
-            : {}),
-          ...(message.attachmentPaths?.length ||
-          message.fileReferences?.length ||
-          message.attachmentPromptContexts?.length
-            ? { hasAttachments: true }
-            : {}),
-        })) ?? [])
+    : undefined;
+  const queuedMessages = queueSnapshot
+    ? queueSnapshot.queue.map((message) => ({
+        id: message.id,
+        text: message.text,
+        origin: message.origin,
+        promptSource: message.promptSource,
+        ...(message.autoResume ? { autoResume: message.autoResume } : {}),
+        supersedesUserMessageId: message.supersedesUserMessageId,
+        enqueuedAtMs: message.enqueuedAtMs,
+        attachmentEditsPreservePayload: true,
+        ...(message.turnPhase !== undefined
+          ? { turnPhase: message.turnPhase }
+          : {}),
+        ...(message.retryable === true ? { retryable: true } : {}),
+        ...(message.retryBlockedReason
+          ? { retryBlockedReason: message.retryBlockedReason }
+          : {}),
+        ...(message.editLocked ? { editLocked: true } : {}),
+        ...(message.canSteer === true ? { canSteer: true } : {}),
+        ...(message.agentSent ? { agentSent: message.agentSent } : {}),
+        ...(message.steerBlockedByCapabilityChange === true
+          ? { steerBlockedByCapabilityChange: true }
+          : {}),
+        ...(message.waitingReason !== undefined
+          ? { waitingReason: message.waitingReason }
+          : {}),
+        ...(message.attachmentPaths?.length ||
+        message.fileReferences?.length ||
+        message.attachmentPromptContexts?.length
+          ? { hasAttachments: true }
+          : {}),
+      }))
     : [];
   return {
     ...(options?.includeDelivery === false
@@ -739,6 +794,9 @@ function buildStandaloneChatSummary(
     projectLocalId: projectId,
     projectId,
     chatId: tab.id,
+    ...(queueSnapshot?.waitingDelegationIds === undefined
+      ? {}
+      : { waitingDelegationIds: queueSnapshot.waitingDelegationIds }),
     title: tab.title || projectName,
     ...(tab.customTitle !== undefined ? { customTitle: tab.customTitle } : {}),
     description: tab.description,
@@ -758,16 +816,13 @@ function buildStandaloneChatSummary(
     // tree projected through a different service. Surface `false`
     // here so the wire shape stays deterministic.
     archived: false,
-    ...(options?.hasActiveChat !== undefined
+    ...(hasActiveChat !== undefined ? { hasActiveChat } : {}),
+    ...(canonicalTurn
       ? {
-          hasActiveChat:
-            options.hasActiveChat ||
-            (workEntryId !== undefined &&
-              getChatQueueService().isTurnActive({
-                projectId,
-                worktreeId: workEntryId,
-                chatId: tab.id,
-              })),
+          backgroundTasks: backgroundTaskCount(
+            canonicalTurn.background.managed,
+            canonicalTurn.background.native,
+          ),
         }
       : {}),
     hasUnread: tab.unread === true,
@@ -782,6 +837,14 @@ function buildStandaloneChatSummary(
         }
       : {}),
     executionHarness: tab.executionHarness,
+    modelHarnessLocked:
+      hasChatContinuationSession(tab) ||
+      (tab.transcript?.messageCount ??
+        tab.transcript?.committedMessageCount ??
+        tab.messages.length) > 0 ||
+      queuedMessages.length > 0 ||
+      options?.hasActiveChat === true,
+
     // Projected composer state (CAN-1219) so the portal's standalone model
     // picker seeds from and reconciles against the desktop.
     model: tab.model,
@@ -944,6 +1007,7 @@ export function projectStandaloneChatSnapshot(
     localId: chat.chatId,
     queuedMessages: chat.queuedMessages,
     inputDelivery: chat.inputDelivery,
+    waitingDelegationIds: chat.waitingDelegationIds,
     steeringCapabilities: chat.steeringCapabilities,
     projectLocalId: chat.projectLocalId,
     title: chat.title,
@@ -966,9 +1030,13 @@ export function projectStandaloneChatSnapshot(
     createdAt: chat.createdAt,
     archived: chat.archived,
     hasActiveChat: chat.hasActiveChat,
+    ...(chat.backgroundTasks === undefined
+      ? {}
+      : { backgroundTasks: chat.backgroundTasks }),
     hasUnread: chat.hasUnread,
     providerType: chat.providerType,
     executionHarness: chat.executionHarness,
+    modelHarnessLocked: chat.modelHarnessLocked,
     model: chat.model,
     ...(chat.usage !== undefined ? { usage: chat.usage } : {}),
     availableModels: chat.availableModels,
@@ -1133,49 +1201,69 @@ export async function emitStandaloneWorkEntrySummary(
     pendingQuestions?: readonly PersistedPendingQuestion[];
   },
 ): Promise<void> {
-  scheduleDesktopSessionSnapshotInvalidation();
-  if (!isCanopyPortalActive()) return;
   try {
-    const entry = (await listWorkEntryChatSummaries(workspaceId)).find(
-      (candidate) => candidate.entryId === entryId,
+    await emitStandaloneWorkEntrySummaryStrict(
+      workspaceId,
+      entryId,
+      materialized,
     );
-    if (!entry) return;
-    const resolveOwner = createAiCreditsScopeOwnerResolver();
-    const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
-    for (const chat of entry.chats) {
-      const owner = await resolveOwner(
-        standaloneSummaryOwnerScope(workspaceId, entryId, chat.id),
-      );
-      const tab = materialized?.tabs.find(
-        (candidate) => candidate.id === chat.id,
-      );
-      const deferredToolsAllowed = tab
-        ? await resolveStandaloneDeferredToolsAllowed(tab.deferredToolsAllowed)
-        : undefined;
-      await emitStandaloneChatSummaryEntity(
-        tab
-          ? buildStandaloneChatSummary(workspaceId, entry.title, tab, {
-              hasActiveChat: getActiveChatIds(workspaceId, entryId).includes(
-                tab.id,
-              ),
-              deferredToolsAllowed,
-              workEntry: entry,
-              owner,
-              agentDefaultModel,
-              pendingQuestions: materialized?.pendingQuestions ?? [],
-            })
-          : buildCompactStandaloneChatSummary(
-              workspaceId,
-              entry.title,
-              entry,
-              chat,
-              owner,
-              agentDefaultModel,
-            ),
-      );
-    }
   } catch {
     // The registry remains authoritative if remote projection fails.
+  }
+}
+
+/**
+ * {@link emitStandaloneWorkEntrySummary} that rejects on failure, for the
+ * post-commit projection, which retries failed runs.
+ */
+export async function emitStandaloneWorkEntrySummaryStrict(
+  workspaceId: string,
+  entryId: string,
+  materialized?: {
+    tabs: readonly PersistedChatTab[];
+    pendingQuestions?: readonly PersistedPendingQuestion[];
+  },
+): Promise<void> {
+  scheduleDesktopSessionSnapshotInvalidation();
+  if (!isCanopyPortalActive()) return;
+  const entry = (
+    await listWorkEntryChatSummaries(workspaceId, { strictRead: true })
+  ).find((candidate) => candidate.entryId === entryId);
+  // A deleted entry has nothing left to project.
+  if (!entry) return;
+  const resolveOwner = createAiCreditsScopeOwnerResolver();
+  const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
+  for (const chat of entry.chats) {
+    const owner = await resolveOwner(
+      standaloneSummaryOwnerScope(workspaceId, entryId, chat.id),
+    );
+    const tab = materialized?.tabs.find(
+      (candidate) => candidate.id === chat.id,
+    );
+    const deferredToolsAllowed = tab
+      ? await resolveStandaloneDeferredToolsAllowed(tab.deferredToolsAllowed)
+      : undefined;
+    await emitStandaloneChatSummaryEntity(
+      tab
+        ? buildStandaloneChatSummary(workspaceId, entry.title, tab, {
+            hasActiveChat: getActiveChatIds(workspaceId, entryId).includes(
+              tab.id,
+            ),
+            deferredToolsAllowed,
+            workEntry: entry,
+            owner,
+            agentDefaultModel,
+            pendingQuestions: materialized?.pendingQuestions ?? [],
+          })
+        : buildCompactStandaloneChatSummary(
+            workspaceId,
+            entry.title,
+            entry,
+            chat,
+            owner,
+            agentDefaultModel,
+          ),
+    );
   }
 }
 
@@ -1279,20 +1367,8 @@ export async function setStandaloneChatModel(
     knownModel,
     (await resolveStandaloneChatTarget(payload)).workspaceId,
   );
-  if (
-    getExecutionHarnessForModel(model) === 'copilot' &&
-    !(await isCopilotRuntimeAvailable())
-  )
-    throw new Error('Connect Copilot in Settings > Labs.');
-  if (getExecutionHarnessForModel(model) === 'opencode')
-    await assertOpenCodeModelAvailable(model);
-  if (getExecutionHarnessForModel(model) === 'cursor') {
-    await assertCursorRuntimeForCowork();
-  }
   const { workspaceId, entryId } = await resolveStandaloneChatTarget(payload);
-  if (!entryId) {
-    throw new Error('standalone chat not found.');
-  }
+  if (!entryId) throw new Error('standalone chat not found.');
   const workOwner = await resolveAiCreditsScopeOwner({
     kind: 'work',
     projectId: workspaceId,
@@ -1312,7 +1388,14 @@ export async function setStandaloneChatModel(
     if (!existing) {
       throw new Error('standalone chat not found.');
     }
-    const targetHarness = getExecutionHarnessForModel(model);
+    const targetHarness = resolveChatModelChangeHarness(
+      existing,
+      model,
+      payload.executionHarness,
+    );
+    if (targetHarness && !supportsChatHarnessChoice(model, targetHarness)) {
+      throw new Error('This model does not support the selected harness.');
+    }
     if (!targetHarness) {
       throw new Error(
         `No execution harness is available for model "${model}".`,
@@ -1322,24 +1405,26 @@ export async function setStandaloneChatModel(
       existing,
       workspaceId,
       entryId,
+      true,
     );
-    if (
-      existing.model !== model &&
-      capturedHarness !== undefined &&
-      capturedHarness !== targetHarness
-    ) {
+    if (capturedHarness !== undefined && capturedHarness !== targetHarness) {
       throw new Error(
         `Cannot change a started standalone chat from the "${capturedHarness}" execution harness to "${targetHarness}".`,
       );
     }
-    // Keep the model/provider pair consistent: runtime resolution gives an
-    // explicit provider precedence over the model's own provider. The same
-    // canonical command as desktop model changes owns retaining and restoring
-    // Codex speed, clearing foreign continuation state, and durable publication.
-    const providerType =
-      existing.model === model && existing.providerType
-        ? existing.providerType
-        : getProviderForModel(model);
+    if (targetHarness === 'copilot' && !(await isCopilotRuntimeAvailable()))
+      throw new Error('Connect Copilot in Settings.');
+    if (targetHarness === 'cursor') await assertCursorRuntimeForCowork();
+    if (targetHarness === 'opencode')
+      await assertOpenCodeSelectionAvailable({
+        model,
+        session: {
+          projectId: workspaceId,
+          worktreeId: entryId,
+          chatId: payload.chatId,
+        },
+      });
+    const providerType = getProviderForChatModel(model, targetHarness);
     if (providerType === undefined) {
       throw new Error(`No provider is available for model "${model}".`);
     }
@@ -1640,6 +1725,7 @@ export async function sendStandaloneChatMessage(
   /** Whether the message started its turn or waits behind the running one. */
   delivery: 'accepted' | 'queued';
 }> {
+  const turnDispatchTiming = new TurnDispatchTiming();
   validateId(request.chatId, 'chatId');
   if (request.workEntryId !== undefined) {
     validateId(request.workEntryId, 'workEntryId');
@@ -1649,7 +1735,9 @@ export async function sendStandaloneChatMessage(
     request.executionHarness === 'cursor' ||
     (request.model && getExecutionHarnessForModel(request.model) === 'cursor')
   ) {
-    await assertCursorRuntimeForCowork();
+    await turnDispatchTiming.measure('auth_preflight', () =>
+      assertCursorRuntimeForCowork(),
+    );
   }
 
   if (
@@ -1657,9 +1745,11 @@ export async function sendStandaloneChatMessage(
       request.executionHarness === 'copilot' ||
       (request.model &&
         getExecutionHarnessForModel(request.model) === 'copilot')) &&
-    !(await isCopilotRuntimeAvailable())
+    !(await turnDispatchTiming.measure('auth_preflight', () =>
+      isCopilotRuntimeAvailable(),
+    ))
   )
-    throw new Error('Connect Copilot in Settings > Labs.');
+    throw new Error('Connect Copilot in Settings.');
   if (
     (request.providerType === 'opencode' ||
       request.executionHarness === 'opencode' ||
@@ -1667,7 +1757,7 @@ export async function sendStandaloneChatMessage(
         getExecutionHarnessForModel(request.model) === 'opencode')) &&
     !(await isOpenCodeRuntimeAvailable())
   )
-    throw new Error('Connect OpenCode in Settings > Labs.');
+    throw new Error('Connect OpenCode in Settings.');
   const explicitProjectId = request.projectLocalId ?? request.projectId;
   if (explicitProjectId) {
     const explicitWorkspaceId = resolveCoworkWorkspaceId(
@@ -1816,35 +1906,48 @@ export async function sendStandaloneChatMessage(
         );
       }
       if (accountHarness === 'opencode')
-        await assertOpenCodeModelAvailable(dispatchableModel);
+        await assertOpenCodeSelectionAvailable({
+          model: dispatchableModel,
+          session: {
+            projectId: workspaceId,
+            worktreeId: entryId,
+            chatId: request.chatId,
+          },
+        });
       if (accountHarness === 'copilot')
-        await assertCopilotModelAvailable(dispatchableModel);
+        await turnDispatchTiming.measure('auth_preflight', () =>
+          assertCopilotModelAvailable(dispatchableModel),
+        );
       // Re-check the policy HERE, at the durable-write boundary, not only in
       // the Portal adapter. Automations call this service directly without an
       // adapter preflight. Refusal must precede Work Entry creation and user
       // message persistence so a prompt that cannot run leaves no partial
       // durable state.
-      const policy = await resolveStandaloneChatPolicyModels({
-        ...(request.projectId === undefined
-          ? {}
-          : { projectId: request.projectId }),
-        ...(request.projectLocalId === undefined
-          ? {}
-          : { projectLocalId: request.projectLocalId }),
-        chatId: request.chatId,
-        ...(dispatchableModel === undefined
-          ? {}
-          : { model: dispatchableModel }),
-        ...(request.providerType === undefined
-          ? {}
-          : { providerType: request.providerType }),
-      });
-      const workOwner = await resolveAiCreditsScopeOwner({
-        kind: 'work',
-        projectId: workspaceId,
-        worktreeId: entryId,
-        chatId: request.chatId,
-      });
+      const policy = await turnDispatchTiming.measure('auth_preflight', () =>
+        resolveStandaloneChatPolicyModels({
+          ...(request.projectId === undefined
+            ? {}
+            : { projectId: request.projectId }),
+          ...(request.projectLocalId === undefined
+            ? {}
+            : { projectLocalId: request.projectLocalId }),
+          chatId: request.chatId,
+          ...(dispatchableModel === undefined
+            ? {}
+            : { model: dispatchableModel }),
+          ...(request.providerType === undefined
+            ? {}
+            : { providerType: request.providerType }),
+        }),
+      );
+      const workOwner = await turnDispatchTiming.measure('auth_preflight', () =>
+        resolveAiCreditsScopeOwner({
+          kind: 'work',
+          projectId: workspaceId,
+          worktreeId: entryId,
+          chatId: request.chatId,
+        }),
+      );
       if (
         policy.cursorModelRequired ||
         policy.copilotModelRequired ||
@@ -1869,14 +1972,20 @@ export async function sendStandaloneChatMessage(
       }
       if (
         !policy.readable &&
-        (await isOrgModelPolicyActiveForStoredAccount(workOwner))
+        (await turnDispatchTiming.measure('auth_preflight', () =>
+          isOrgModelPolicyActiveForStoredAccount(workOwner),
+        ))
       ) {
         throw new Error(
           'Your organization policy could not be applied to this message. Try again.',
         );
       }
       for (const candidate of policy.models) {
-        if (await isModelBlockedByStoredPolicy(candidate, workOwner)) {
+        const modelBlocked = await turnDispatchTiming.measure(
+          'auth_preflight',
+          () => isModelBlockedByStoredPolicy(candidate, workOwner),
+        );
+        if (modelBlocked) {
           throw new Error('This model is blocked by your organization policy.');
         }
       }
@@ -1889,7 +1998,9 @@ export async function sendStandaloneChatMessage(
           (model) => getExecutionHarnessForModel(model) === 'cursor',
         )
       ) {
-        await assertCursorRuntimeForCowork();
+        await turnDispatchTiming.measure('auth_preflight', () =>
+          assertCursorRuntimeForCowork(),
+        );
       }
       if (
         (existingTab?.providerType === 'copilot' ||
@@ -1897,9 +2008,11 @@ export async function sendStandaloneChatMessage(
           policy.models.some(
             (model) => getExecutionHarnessForModel(model) === 'copilot',
           )) &&
-        !(await isCopilotRuntimeAvailable())
+        !(await turnDispatchTiming.measure('auth_preflight', () =>
+          isCopilotRuntimeAvailable(),
+        ))
       )
-        throw new Error('Connect Copilot in Settings > Labs.');
+        throw new Error('Connect Copilot in Settings.');
       if (!resolved.entryId && request.workEntryId === undefined) {
         const createdEntry = await createWorkEntry(workspaceId, {
           sidebarItemGroupId: request.sidebarItemGroupId,
@@ -1960,12 +2073,19 @@ export async function sendStandaloneChatMessage(
         chatId: request.chatId,
       };
       const queue = getChatQueueService();
-      if (
-        existingTab &&
+      const busy =
+        existingTab !== undefined &&
         (queue.isTurnActive(queueTarget) ||
           liveSession?.hasPendingSteeringInput?.() === true ||
-          getActiveChatIds(workspaceId, entryId).includes(request.chatId))
-      ) {
+          chatHasNativeBackgroundWork(workspaceId, entryId, request.chatId) ||
+          getActiveChatIds(workspaceId, entryId).includes(request.chatId));
+      // An idle send still takes ordinary admission before its prompt effects
+      // (contracts §6); one that canonical ownership blocks is queued instead,
+      // even into a chat a concurrent first send is still creating.
+      const admission = busy
+        ? undefined
+        : await queue.admitDirectDispatch(queueTarget, userMessageId);
+      if (!admission) {
         await queue.submit(
           {
             ...queueTarget,
@@ -1974,27 +2094,28 @@ export async function sendStandaloneChatMessage(
             fileReferences: request.fileReferences,
             inputMode: request.inputMode,
             model: dispatchableModel,
-            providerType: request.providerType ?? existingTab.providerType,
+            providerType: request.providerType ?? existingTab?.providerType,
             executionHarness:
-              request.executionHarness ?? existingTab.executionHarness,
+              request.executionHarness ?? existingTab?.executionHarness,
             modelConfig:
               request.modelConfig == null
-                ? existingTab.modelConfig
+                ? existingTab?.modelConfig
                 : mergeAgentModelConfig(
-                    existingTab.modelConfig,
+                    existingTab?.modelConfig,
                     request.modelConfig,
                   ),
-            thinkingLevel: request.thinkingLevel ?? existingTab.thinkingLevel,
+            thinkingLevel: request.thinkingLevel ?? existingTab?.thinkingLevel,
             pluginSelections:
-              request.pluginSelections ?? existingTab.pluginSelections,
+              request.pluginSelections ?? existingTab?.pluginSelections,
             deferredToolsAllowed,
             planMode: request.planMode === true,
             approvalMode,
             sessionApprovalRules:
-              request.sessionApprovalRules ?? existingTab.sessionApprovalRules,
-            sdkSessionId: existingTab.sdkSessionId,
-            globalInstructionsSnapshot: existingTab.globalInstructionsSnapshot,
+              request.sessionApprovalRules ?? existingTab?.sessionApprovalRules,
+            sdkSessionId: existingTab?.sdkSessionId,
+            globalInstructionsSnapshot: existingTab?.globalInstructionsSnapshot,
             initiationSource: resolvePresentationSource(request, 'portal'),
+            automationName: request.automationName,
             ...(request.agentSent ? { agentSent: request.agentSent } : {}),
           },
           'portal',
@@ -2007,224 +2128,226 @@ export async function sendStandaloneChatMessage(
           delivery: 'queued',
         };
       }
-      const now = Date.now();
-      const userMessage: PersistedChatMessage = {
-        id: userMessageId,
-        role: 'user',
-        timestamp: now,
-        blocks: [
-          ...(request.fileReferences?.length
-            ? [
-                {
-                  type: 'file_references' as const,
-                  references: request.fileReferences,
-                },
-              ]
-            : []),
-          { type: 'text', text: request.message },
-        ],
-        inputMode: request.inputMode ?? 'typed',
-        ...(request.agentSent ? { agentSent: request.agentSent } : {}),
-      };
-      // No history lookup: `userMessageId` was minted above, so no existing
-      // banner can match it, and `existingTab` is a metadata-only read whose
-      // `messages` throws because this chat's transcript was not selected.
-      const automationInfoMessage = buildAutomationInfoMessage(
-        request,
-        userMessageId,
-      );
-      const sentTab = await upsertStandaloneMessages({
-        executionContext: options.executionContext,
-        workspaceId,
-        entryId,
-        chatId: request.chatId,
-        messages: automationInfoMessage
-          ? [automationInfoMessage, userMessage]
-          : [userMessage],
-        model: request.model,
-        providerType: request.providerType,
-        executionHarness: request.executionHarness,
-        modelConfig: request.modelConfig,
-        thinkingLevel: request.thinkingLevel,
-        planMode: request.planMode,
-        pluginSelections: request.pluginSelections,
-        deferredToolsAllowed,
-        approvalMode,
-        sessionApprovalRules:
-          request.sessionApprovalRules ?? existingTab?.sessionApprovalRules,
-        ...(startsNewTrackedChat
-          ? { newChatStartedWatcherFiredAt: newChatStartedAt }
-          : {}),
-      });
-      // Main-owned sends create their Work Entry and durable tab without going
-      // through the renderer store. Nudge every desktop surface immediately so
-      // the cowork sidebar sees the new entry, even when this workspace/chat is
-      // not currently mounted.
-      sendToWindow(getWindow(), IPC_CHANNELS.standaloneChatMetaUpdated, {
-        projectId: workspaceId,
-        chatId: request.chatId,
-      });
-
-      scheduleChatSummary({
-        projectId: workspaceId,
-        worktreeId: entryId,
-        chatId: request.chatId,
-        cwd: getCoworkWorkspaceRootDir(workspaceId),
-        getWindow,
-        standaloneChatProjectId: workspaceId,
-        persistDescription: (description) =>
-          persistStandaloneChatDescription({
+      let dispatchStarted = false;
+      try {
+        const now = Date.now();
+        const userMessage: PersistedChatMessage = {
+          id: userMessageId,
+          role: 'user',
+          timestamp: now,
+          blocks: [
+            ...(request.fileReferences?.length
+              ? [
+                  {
+                    type: 'file_references' as const,
+                    references: request.fileReferences,
+                  },
+                ]
+              : []),
+            { type: 'text', text: request.message },
+          ],
+          inputMode: request.inputMode ?? 'typed',
+          ...(request.agentSent ? { agentSent: request.agentSent } : {}),
+        };
+        // No history lookup: `userMessageId` was minted above, so no existing
+        // banner can match it, and `existingTab` is a metadata-only read whose
+        // `messages` throws because this chat's transcript was not selected.
+        const automationInfoMessage = buildAutomationInfoMessage(
+          request,
+          userMessageId,
+        );
+        const sentTab = await turnDispatchTiming.measure('prompt_commit', () =>
+          upsertStandaloneMessages({
+            executionContext: options.executionContext,
             workspaceId,
             entryId,
             chatId: request.chatId,
-            description,
-          }),
-      });
-
-      const emitMessage = (message: PortalChatMessage): void => {
-        enqueuePortalEvent(
-          createPortalEvent('portal.chat.event', {
-            scope: 'standalone',
-            projectLocalId: workspaceId,
-            projectId: workspaceId,
-            workEntryId: entryId,
-            chatId: request.chatId,
-            message,
+            messages: automationInfoMessage
+              ? [automationInfoMessage, userMessage]
+              : [userMessage],
+            model: request.model,
+            providerType: request.providerType,
+            executionHarness: request.executionHarness,
+            modelConfig: request.modelConfig,
+            thinkingLevel: request.thinkingLevel,
+            planMode: request.planMode,
+            pluginSelections: request.pluginSelections,
+            deferredToolsAllowed,
+            approvalMode,
+            sessionApprovalRules:
+              request.sessionApprovalRules ?? existingTab?.sessionApprovalRules,
+            ...(startsNewTrackedChat
+              ? { newChatStartedWatcherFiredAt: newChatStartedAt }
+              : {}),
           }),
         );
-      };
-      emitMessage({
-        messageId: userMessageId,
-        chatId: request.chatId,
-        role: 'user',
-        promptSource: 'human',
-        parts: [{ kind: 'prompt_source', data: { source: 'human' } }],
-        status: 'complete',
-        text: request.message,
-        createdAtMs: now,
-        ...(request.agentSent ? { agentSent: request.agentSent } : {}),
-      });
-      // Portal-initiated turns have no desktop renderer driving them, so this
-      // path owns the turn timer: a streaming row at turn start (the browser's
-      // "agent is working" signal) finalized — and persisted — on the terminal
-      // event.
-      let executionUserMessageId: string = userMessageId;
-      let turnTimer = createPortalTurnTimer({
-        chatId: request.chatId,
-        userMessageId,
-      });
-      emitMessage(turnTimer.startMessage);
-      // Native cowork keying: (workspaceId, workEntryId, chatId).
-      sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
-        projectId: workspaceId,
-        worktreeId: entryId,
-        chatId: request.chatId,
-        data: {
-          type: 'canopy_user_prompt',
-          original_text: request.message,
-          canopy_turn_user_message_id: userMessageId,
-          canopy_persisted_messages: automationInfoMessage
-            ? [automationInfoMessage, userMessage]
-            : [userMessage],
-        },
-      });
-      await emitStandaloneChatSummaryForTab(
-        workspaceId,
-        entryId,
-        sentTab,
-        true,
-        { value: workOwner },
-      );
-      if (startsNewTrackedChat) {
-        await notifyCanonicalChatStarted(
-          {
-            projectId: workspaceId,
-            worktreeId: entryId,
-            chatId: request.chatId,
-          },
-          userMessageId,
-          newChatStartedAt,
-        ).catch(() => undefined);
-      }
-      const acceptanceCleanupTasks: Promise<void>[] = [];
-      try {
-        const selectedTurnModel =
-          request.model ?? sentTab.model ?? liveSessionModel;
-        const selectedTurnProviderType = request.model
-          ? request.providerType
-          : sentTab.model
-            ? undefined
-            : (request.providerType ?? sentTab.providerType);
-        const runtimeProviderType =
-          selectedTurnProviderType ??
-          (selectedTurnModel
-            ? getProviderForModel(selectedTurnModel)
-            : undefined) ??
-          'claude';
-        await dispatchWorktreeChatTurn({
-          countsTowardSkillUsage:
-            request.initiationSource === 'user' ||
-            request.initiationSource === 'portal',
+        // Main-owned sends create their Work Entry and durable tab without going
+        // through the renderer store. Nudge every desktop surface immediately so
+        // the cowork sidebar sees the new entry, even when this workspace/chat is
+        // not currently mounted.
+        sendToWindow(getWindow(), IPC_CHANNELS.standaloneChatMetaUpdated, {
+          projectId: workspaceId,
+          chatId: request.chatId,
+        });
+
+        scheduleChatSummary({
           projectId: workspaceId,
           worktreeId: entryId,
-          ...(sentTab.executionContext !== undefined
-            ? { executionContext: sentTab.executionContext }
-            : {}),
           chatId: request.chatId,
-          ...(sentTab.executionContext === undefined
-            ? {}
-            : { executionContext: sentTab.executionContext }),
-          userMessageId,
-          text: request.message,
-          fileReferences: request.fileReferences,
-          inputMode: request.inputMode,
-          ...(request.agentSent ? { agentSent: request.agentSent } : {}),
-          // Honor the chat's persisted selection when the caller names none.
-          // `sentTab` is the tab AFTER the upsert, so this is exactly what the
-          // composer shows. Without it, a cowork chat dispatched the provider
-          // DEFAULT even though the user had picked a model — mobile persists its
-          // pick via `set_model` and then sends neither `model` nor
-          // `providerType`, so the picker never affected what actually ran.
-          //
-          // This also makes the policy preflight sound. The preflight judges the
-          // tab's model, and judging something dispatch would not run is the same
-          // over-refusal removed for the tab's provider default: a user who picked
-          // a PERMITTED model would be refused because an unrelated default was
-          // blocked. Now the judged model and the dispatched model are the same
-          // value, resolved by the same precedence.
-          model: selectedTurnModel,
-          // The provider travels with whoever supplied the model, because
-          // `resolveAgentModelRuntime` gives an explicit `providerType` precedence
-          // over the model's own provider — so any mismatched pair starts a
-          // session for one provider running another provider's model id.
-          //   - caller supplied the model  -> caller's provider (its own pair)
-          //   - tab supplied the model     -> none, derive it from that model
-          //   - live Cursor session holds it -> that model, under the tab's
-          //                                     provider (the tab never persisted one)
-          //   - no model at all            -> a provider only selects the default
-          // `setStandaloneChatModel` now keeps the tab's pair in sync, but
-          // deriving here keeps tabs persisted before that fix correct too.
-          providerType: selectedTurnProviderType,
-          executionHarness: sentTab.executionHarness,
-          modelConfig: sentTab.modelConfig,
-          thinkingLevel: request.thinkingLevel,
-          // Like the model above and worktree sends, a send that names no
-          // selections runs on the ones saved for the chat.
-          pluginSelections:
-            request.pluginSelections ?? sentTab.pluginSelections,
-          ...(request.packageOverlay
-            ? { packageOverlay: request.packageOverlay }
-            : {}),
-          deferredToolsAllowed,
-          planMode: request.planMode === true,
-          approvalMode,
-          sessionApprovalRules:
-            request.sessionApprovalRules ?? existingTab?.sessionApprovalRules,
-          initiationSource: resolvePresentationSource(request, 'portal'),
+          cwd: getCoworkWorkspaceRootDir(workspaceId),
           getWindow,
-          onBeforeChatEvent: async (event) => {
-            const outcome =
-              await getChatStateService().ingestProviderEventWithOutcome({
+          standaloneChatProjectId: workspaceId,
+          persistDescription: (description) =>
+            persistStandaloneChatDescription({
+              workspaceId,
+              entryId,
+              chatId: request.chatId,
+              description,
+            }),
+        });
+
+        const emitMessage = (message: PortalChatMessage): void => {
+          enqueuePortalEvent(
+            createPortalEvent('portal.chat.event', {
+              scope: 'standalone',
+              projectLocalId: workspaceId,
+              projectId: workspaceId,
+              workEntryId: entryId,
+              chatId: request.chatId,
+              message,
+            }),
+          );
+        };
+        emitMessage({
+          messageId: userMessageId,
+          chatId: request.chatId,
+          role: 'user',
+          promptSource: 'human',
+          parts: [{ kind: 'prompt_source', data: { source: 'human' } }],
+          status: 'complete',
+          text: request.message,
+          createdAtMs: now,
+          ...(request.agentSent ? { agentSent: request.agentSent } : {}),
+        });
+        let executionUserMessageId: string = userMessageId;
+        // Canonical turn state publishes committed timer rows to the portal.
+        // Native cowork keying: (workspaceId, workEntryId, chatId).
+        sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
+          projectId: workspaceId,
+          worktreeId: entryId,
+          chatId: request.chatId,
+          data: {
+            type: 'canopy_user_prompt',
+            original_text: request.message,
+            canopy_turn_user_message_id: userMessageId,
+            canopy_persisted_messages: automationInfoMessage
+              ? [automationInfoMessage, userMessage]
+              : [userMessage],
+          },
+        });
+        await emitStandaloneChatSummaryForTab(
+          workspaceId,
+          entryId,
+          sentTab,
+          true,
+          { value: workOwner },
+        );
+        if (startsNewTrackedChat) {
+          await notifyCanonicalChatStarted(
+            {
+              projectId: workspaceId,
+              worktreeId: entryId,
+              ...(sentTab.executionContext !== undefined
+                ? { executionContext: sentTab.executionContext }
+                : {}),
+              chatId: request.chatId,
+            },
+            userMessageId,
+            newChatStartedAt,
+          ).catch(() => undefined);
+        }
+        const acceptanceCleanupTasks: Promise<void>[] = [];
+        try {
+          const selectedTurnModel =
+            request.model ?? sentTab.model ?? liveSessionModel;
+          const selectedTurnProviderType = request.model
+            ? request.providerType
+            : sentTab.model
+              ? undefined
+              : (request.providerType ?? sentTab.providerType);
+          const runtimeProviderType =
+            selectedTurnProviderType ??
+            (selectedTurnModel
+              ? getProviderForModel(selectedTurnModel)
+              : undefined) ??
+            'claude';
+          await dispatchWorktreeChatTurn({
+            ...(admission.authorization
+              ? { authorization: admission.authorization }
+              : {}),
+            countsTowardSkillUsage:
+              request.initiationSource === 'user' ||
+              request.initiationSource === 'portal',
+            projectId: workspaceId,
+            worktreeId: entryId,
+            ...(sentTab.executionContext !== undefined
+              ? { executionContext: sentTab.executionContext }
+              : {}),
+            chatId: request.chatId,
+            ...(sentTab.executionContext === undefined
+              ? {}
+              : { executionContext: sentTab.executionContext }),
+            userMessageId,
+            text: request.message,
+            fileReferences: request.fileReferences,
+            inputMode: request.inputMode,
+            ...(request.agentSent ? { agentSent: request.agentSent } : {}),
+            // Honor the chat's persisted selection when the caller names none.
+            // `sentTab` is the tab AFTER the upsert, so this is exactly what the
+            // composer shows. Without it, a cowork chat dispatched the provider
+            // DEFAULT even though the user had picked a model — mobile persists its
+            // pick via `set_model` and then sends neither `model` nor
+            // `providerType`, so the picker never affected what actually ran.
+            //
+            // This also makes the policy preflight sound. The preflight judges the
+            // tab's model, and judging something dispatch would not run is the same
+            // over-refusal removed for the tab's provider default: a user who picked
+            // a PERMITTED model would be refused because an unrelated default was
+            // blocked. Now the judged model and the dispatched model are the same
+            // value, resolved by the same precedence.
+            model: selectedTurnModel,
+            // The provider travels with whoever supplied the model, because
+            // `resolveAgentModelRuntime` gives an explicit `providerType` precedence
+            // over the model's own provider — so any mismatched pair starts a
+            // session for one provider running another provider's model id.
+            //   - caller supplied the model  -> caller's provider (its own pair)
+            //   - tab supplied the model     -> none, derive it from that model
+            //   - live Cursor session holds it -> that model, under the tab's
+            //                                     provider (the tab never persisted one)
+            //   - no model at all            -> a provider only selects the default
+            // `setStandaloneChatModel` now keeps the tab's pair in sync, but
+            // deriving here keeps tabs persisted before that fix correct too.
+            providerType: selectedTurnProviderType,
+            executionHarness: sentTab.executionHarness,
+            modelConfig: sentTab.modelConfig,
+            thinkingLevel: request.thinkingLevel,
+            // Like the model above and worktree sends, a send that names no
+            // selections runs on the ones saved for the chat.
+            pluginSelections:
+              request.pluginSelections ?? sentTab.pluginSelections,
+            ...(request.packageOverlay
+              ? { packageOverlay: request.packageOverlay }
+              : {}),
+            deferredToolsAllowed,
+            planMode: request.planMode === true,
+            approvalMode,
+            sessionApprovalRules:
+              request.sessionApprovalRules ?? existingTab?.sessionApprovalRules,
+            initiationSource: resolvePresentationSource(request, 'portal'),
+            getWindow,
+            turnDispatchTiming,
+            onBeforeChatEvent: (event) =>
+              getChatStateService().ingestProviderEventWithResult({
                 projectId: event.projectId,
                 worktreeId: event.worktreeId,
                 chatId: event.chatId,
@@ -2244,149 +2367,124 @@ export async function sendStandaloneChatMessage(
                 ...(event.onCommitQueued
                   ? { onCommitQueued: event.onCommitQueued }
                   : {}),
-              });
-            // Activity-only events carry no durable change but are live.
-            return outcome !== 'not-applied';
-          },
-          onTurnAccepted: () => {
-            const acceptedData = {
-              type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
-              canopy_turn_user_message_id: userMessageId,
-            };
-            const acceptedPromptTask = getChatStateService()
-              .ingestProviderEvent({
-                projectId: workspaceId,
-                worktreeId: entryId,
-                chatId: request.chatId,
-                data: acceptedData,
-                mutationId: `${request.chatId}:${userMessageId}:accepted`,
-                ...(request.providerType
-                  ? { providerType: request.providerType }
-                  : {}),
-                turnUserMessageId: userMessageId,
-              })
-              .then(() => {
-                sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
+              }),
+            onTurnAccepted: () => {
+              const acceptedData = {
+                type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
+                canopy_turn_user_message_id: userMessageId,
+              };
+              const acceptedPromptTask = getChatStateService()
+                .ingestProviderEvent({
                   projectId: workspaceId,
                   worktreeId: entryId,
                   chatId: request.chatId,
                   data: acceptedData,
-                });
-              })
-              .catch((error: unknown) => {
-                logMainProcessWarn(
-                  '[standalone-chat-service] Failed to commit accepted turn state',
-                  error,
-                );
-              });
-            acceptanceCleanupTasks.push(acceptedPromptTask);
-            const cleanupTask = Promise.all([
-              clearPersistedUsageLimitBanner({
-                projectId: workspaceId,
-                worktreeId: entryId,
-                chatId: request.chatId,
-                expectedBannerState: usageLimitBannerBeforeDispatch,
-              }),
-              clearUsageLimitedChat({
-                projectId: workspaceId,
-                worktreeId: entryId,
-                chatId: request.chatId,
-              }),
-            ])
-              .then(() => undefined)
-              .catch((error: unknown) => {
-                logMainProcessWarn(
-                  '[standalone-chat-service] Failed to clear accepted turn recovery state',
-                  {
+                  mutationId: `${request.chatId}:${userMessageId}:accepted`,
+                  ...(request.providerType
+                    ? { providerType: request.providerType }
+                    : {}),
+                  turnUserMessageId: userMessageId,
+                })
+                .then(() => {
+                  sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
                     projectId: workspaceId,
                     worktreeId: entryId,
                     chatId: request.chatId,
+                    data: acceptedData,
+                  });
+                })
+                .catch((error: unknown) => {
+                  logMainProcessWarn(
+                    '[standalone-chat-service] Failed to commit accepted turn state',
                     error,
-                  },
-                );
-              });
-            acceptanceCleanupTasks.push(cleanupTask);
-          },
-          onChatEvent: (event) => {
-            if (
-              isRecordValue(event.data) &&
-              event.data.type === 'canopy_input_delivery' &&
-              event.data.phase === 'picked-up' &&
-              event.data.startsTurn === true &&
-              event.data.turnRootAccepted !== false &&
-              typeof event.data.userMessageId === 'string'
-            ) {
-              executionUserMessageId = event.data.userMessageId;
-              turnTimer = createPortalTurnTimer({
-                chatId: request.chatId,
-                userMessageId: executionUserMessageId,
-              });
-              emitMessage(turnTimer.startMessage);
-            }
-            const eventTimerUpdate = turnTimer.updateForEvent(event.data);
-            if (eventTimerUpdate) {
-              emitMessage(eventTimerUpdate);
-            }
-            const message = runtimeChatEventToPortalMessage({
-              scope: 'standalone',
-              chatId: event.chatId,
-              data: event.data,
-              fallbackMessageId: `${executionUserMessageId}:assistant`,
-            });
-            if (message) {
-              // Canonical provider-event ingestion owns durable transcript
-              // state. This display projection can truncate tool output and
-              // must not overwrite canonical Cowork history or completed
-              // timers during retries and automated continuations.
-              emitMessage(message);
-              const timerUpdate = turnTimer.updateForMessage(message);
-              if (timerUpdate) {
-                emitMessage(timerUpdate);
+                  );
+                });
+              acceptanceCleanupTasks.push(acceptedPromptTask);
+              const cleanupTask = Promise.all([
+                clearPersistedUsageLimitBanner({
+                  projectId: workspaceId,
+                  worktreeId: entryId,
+                  chatId: request.chatId,
+                  expectedBannerState: usageLimitBannerBeforeDispatch,
+                }),
+                clearUsageLimitedChat({
+                  projectId: workspaceId,
+                  worktreeId: entryId,
+                  chatId: request.chatId,
+                }),
+              ])
+                .then(() => undefined)
+                .catch((error: unknown) => {
+                  logMainProcessWarn(
+                    '[standalone-chat-service] Failed to clear accepted turn recovery state',
+                    {
+                      projectId: workspaceId,
+                      worktreeId: entryId,
+                      chatId: request.chatId,
+                      error,
+                    },
+                  );
+                });
+              acceptanceCleanupTasks.push(cleanupTask);
+            },
+            onChatEvent: (event) => {
+              if (
+                isRecordValue(event.data) &&
+                event.data.type === 'canopy_input_delivery' &&
+                event.data.phase === 'picked-up' &&
+                event.data.startsTurn === true &&
+                event.data.turnRootAccepted !== false &&
+                typeof event.data.userMessageId === 'string'
+              ) {
+                executionUserMessageId = event.data.userMessageId;
               }
-            }
-            // Live-emit only — never persisted. The desktop renderer mirrors this
-            // turn and persists its OWN timer message; the browser dedupes the
-            // overlap between this live row and the renderer's persisted one.
-            const completedTimer = event.isTerminalEvent
-              ? turnTimer.completeForEvent(event.data)
-              : null;
-            if (completedTimer) {
-              emitMessage(completedTimer);
-            }
-            if (event.isTerminalEvent) {
-              void emitStandaloneChatSummary(
-                workspaceId,
-                entryId,
-                request.chatId,
-                { value: workOwner },
-              );
-            }
-          },
-        });
-        await Promise.all(acceptanceCleanupTasks);
-      } catch (error: unknown) {
-        await Promise.allSettled(acceptanceCleanupTasks);
-        await emitStandaloneChatSummary(workspaceId, entryId, request.chatId, {
-          value: workOwner,
-        });
-        // Dispatch resolves once the provider accepts the send, before the turn
-        // ends. Only a rejected dispatch proves that no terminal event will
-        // arrive; completing on every resolution lowers the portal timer while
-        // the accepted turn is still running. Live-emit only — a rejected turn
-        // should not mint a persisted timer artifact.
-        const fallbackTimer = turnTimer.finalize();
-        if (fallbackTimer) {
-          emitMessage(fallbackTimer);
+              const message = runtimeChatEventToPortalMessage({
+                scope: 'standalone',
+                chatId: event.chatId,
+                data: event.data,
+                fallbackMessageId: `${executionUserMessageId}:assistant`,
+              });
+              if (message) {
+                // Canonical provider-event ingestion owns durable transcript
+                // state. This display projection can truncate tool output and
+                // must not overwrite canonical Cowork history or completed
+                // timers during retries and automated continuations.
+                emitMessage(message);
+              }
+              if (event.isTerminalEvent) {
+                void emitStandaloneChatSummary(
+                  workspaceId,
+                  entryId,
+                  request.chatId,
+                  { value: workOwner },
+                );
+              }
+            },
+          });
+          dispatchStarted = true;
+          await Promise.all(acceptanceCleanupTasks);
+        } catch (error: unknown) {
+          await Promise.allSettled(acceptanceCleanupTasks);
+          await emitStandaloneChatSummary(
+            workspaceId,
+            entryId,
+            request.chatId,
+            {
+              value: workOwner,
+            },
+          );
+          throw error;
         }
-        throw error;
+        return {
+          ok: true,
+          chatId: request.chatId,
+          userMessageId,
+          workEntryId: entryId,
+          delivery: 'accepted',
+        };
+      } finally {
+        if (!dispatchStarted) admission.release();
       }
-      return {
-        ok: true,
-        chatId: request.chatId,
-        userMessageId,
-        workEntryId: entryId,
-        delivery: 'accepted',
-      };
     },
   );
 }
@@ -2395,6 +2493,10 @@ export async function cancelStandaloneChat(
   request: PortalStandaloneChatCancelPayload,
 ): Promise<{ ok: true }> {
   validateId(request.chatId, 'chatId');
+  // Target resolution is asynchronous for unscoped Cowork chats. Snapshot all
+  // live sessions and preparing sends for this chat before it can yield, then
+  // select only that old candidate after the owning Work Entry is known.
+  const capturedSessionCandidates = captureChatTurnStopsForChat(request.chatId);
   const explicitProjectId = request.projectLocalId ?? request.projectId;
   if (explicitProjectId) {
     const explicitWorkspaceId = resolveCoworkWorkspaceId(
@@ -2417,6 +2519,44 @@ export async function cancelStandaloneChat(
     cancelTransientRetriesForChatId(request.chatId, 'stop');
   }
   const { workspaceId, entryId } = await resolveStandaloneChatTarget(request);
+  const legacyTarget = {
+    projectId: STANDALONE_CHAT_PROJECT_ID,
+    worktreeId: workspaceId,
+    chatId: request.chatId,
+  };
+  const canonicalTarget = entryId
+    ? { projectId: workspaceId, worktreeId: entryId, chatId: request.chatId }
+    : undefined;
+  const candidateFor = (
+    candidateTarget: typeof legacyTarget,
+  ): ChatTurnStopContext | undefined =>
+    capturedSessionCandidates.find(
+      (candidate) =>
+        candidate.target.projectId === candidateTarget.projectId &&
+        candidate.target.worktreeId === candidateTarget.worktreeId &&
+        candidate.target.chatId === candidateTarget.chatId,
+    );
+  const canonicalContext = canonicalTarget
+    ? candidateFor(canonicalTarget)
+    : undefined;
+  const legacyContext = candidateFor(legacyTarget);
+  const target =
+    canonicalTarget &&
+    (canonicalContext !== undefined || legacyContext === undefined)
+      ? canonicalTarget
+      : legacyTarget;
+  // A first send can register its session while the target resolves.
+  const stopContext = adoptPreparingSendSession(
+    candidateFor(target) ??
+      ({
+        target,
+        session: undefined,
+        fence: undefined,
+      } satisfies ChatTurnStopContext),
+  );
+  // Resolution could have overlapped a newer send/wake in the captured
+  // session. Do not cancel its retry or state after that replacement.
+  if (!isChatTurnStopCurrent(stopContext)) return { ok: true };
   if (entryId) {
     cancelTransientRetryForChat(
       { projectId: workspaceId, worktreeId: entryId, chatId: request.chatId },
@@ -2433,41 +2573,31 @@ export async function cancelStandaloneChat(
       'stop',
     );
   }
-  const legacyTarget = {
-    projectId: STANDALONE_CHAT_PROJECT_ID,
-    worktreeId: workspaceId,
-    chatId: request.chatId,
-  };
-  const canonicalTarget = entryId
-    ? { projectId: workspaceId, worktreeId: entryId, chatId: request.chatId }
-    : undefined;
-  const target =
-    canonicalTarget &&
-    (getSession(workspaceId, canonicalTarget.worktreeId, request.chatId) ||
-      !getSession(
-        legacyTarget.projectId,
-        legacyTarget.worktreeId,
-        legacyTarget.chatId,
-      ))
-      ? canonicalTarget
-      : legacyTarget;
-  // Lazy by design: chat-turn-cancel imports chat-state and chat-queue, which
-  // participate in the standalone service graph. Deferring this reverse edge
-  // breaks that initialization cycle; the packaged Electron main build
-  // exercises this local import path.
-  const { cancelChatTurn } = await import('../lib/chat-turn-cancel');
-  await cancelChatTurn(target);
-  getChatQueueService().onTurnTerminal(target, 'cancelled');
+  await cancelChatTurn(target, 'stop', stopContext);
+  const userMessageId = stopContext.fence?.userMessageId;
+  // A native idle session has no captured turn to release or persist. Do not
+  // manufacture an untagged terminal (or a Portal cancellation frame) that
+  // could be applied to a newer send which replaced this fence during Stop.
+  if (stopContext.fence !== undefined && userMessageId === undefined) {
+    return { ok: true };
+  }
+  getChatQueueService().onTurnTerminal(target, 'cancelled', userMessageId);
   const cancelledData = {
     type: 'result',
     is_error: false,
     result: 'Cancelled',
+    ...(userMessageId ? { canopy_turn_user_message_id: userMessageId } : {}),
   };
   await getChatStateService().ingestProviderEvent({
     ...target,
     data: cancelledData,
+    ...(userMessageId ? { turnUserMessageId: userMessageId } : {}),
     mutationId: `manual-cancellation:${request.chatId}:${randomUUID()}`,
   });
+  // A terminal/new turn may have replaced the Portal projection while native
+  // Stop awaited its root receipt. The canonical event is ID-fenced above;
+  // only close the Portal frame while the original presentation is still live.
+  if (!isChatTurnStopCurrent(stopContext)) return { ok: true };
   enqueuePortalEvent(
     createPortalEvent('portal.chat.event', {
       scope: 'standalone',
@@ -2529,6 +2659,7 @@ export async function getStandaloneChatTranscriptSeed(input?: {
       autoRoutedModels: tab.autoRoutedModels,
       turnEnds: tab.turnEnds,
       unacceptedTurnEnds: tab.unacceptedTurnEnds,
+      interruptedTurns: tab.interruptedTurns,
     }),
   );
 }

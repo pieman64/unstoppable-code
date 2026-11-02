@@ -12,8 +12,13 @@ import type {
   AgentProviderType,
   AgentUsageOverview,
   ProviderAuthState,
+  ScheduledActivity,
   UsageLimitedSessionGroup,
+  UsageLimitedSessionItem,
+  PersistedChatMessage,
+  AutomationsListResponse,
 } from '@canopy/desktop-shared/types';
+import { CODE_REVIEW_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { formatUsageLimitTimeLabel } from '@/lib/usage-limit-time-label';
@@ -22,14 +27,52 @@ import {
   outermostReplayBlock,
 } from '@/test-utils/replay';
 import { useNavigationStore } from '@/stores/navigationStore';
+import type * as WorkspaceAccessModule from '@/lib/workspace-access';
 import { useAccountProxyStore } from '@/stores/accountProxyStore';
 import { invalidateAiCreditsUsageCache } from '@/hooks/useAiCreditsUsage';
 import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-proxy';
 import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
-import {
-  ProviderUsageCards,
-  ShutdownResumeButton,
-} from '../ProviderUsageCards';
+import { useAutomationsStore } from '@/stores/automationsStore';
+import { ProviderUsageCard, ProviderUsageCards } from '../ProviderUsageCards';
+
+const mockNavigateToLiveChat = jest.fn<Promise<void>, [unknown]>();
+const mockOpenPipelineExecutionFromUi = jest.fn<Promise<unknown>, [unknown]>();
+
+jest.mock('@/components/chat/ChatMessageList', () => {
+  const { useWorkspaceIsReadOnly } = jest.requireActual<
+    typeof WorkspaceAccessModule
+  >('@/lib/workspace-access');
+  return {
+    ChatMessageList: ({
+      messages,
+    }: {
+      messages: PersistedChatMessage[];
+    }): JSX.Element => (
+      <div
+        data-testid="review-transcript-messages"
+        data-read-only={String(useWorkspaceIsReadOnly())}
+      >
+        {messages.flatMap((message) =>
+          message.blocks.map((block, index) =>
+            block.type === 'text' ? (
+              <span key={`${message.id}-${index}`}>{block.text}</span>
+            ) : null,
+          ),
+        )}
+      </div>
+    ),
+  };
+});
+
+jest.mock('@/lib/navigation/live-chat-navigation', () => ({
+  navigateToLiveChat: (target: unknown): Promise<void> =>
+    mockNavigateToLiveChat(target),
+}));
+
+jest.mock('@/lib/panels/open-pipeline-execution', () => ({
+  openPipelineExecutionFromUi: (request: unknown): Promise<unknown> =>
+    mockOpenPipelineExecutionFromUi(request),
+}));
 
 let mockClaudeStatus: AgentProviderAuthStatus | null = null;
 let mockCodexStatus: AgentProviderAuthStatus | null = null;
@@ -144,17 +187,63 @@ describe('ProviderUsageCards', () => {
     );
     expect(container.textContent).toContain('copilot-fixture');
     expect(container.textContent).toContain('Premium requests');
-    expect(container.textContent).toContain('25.0%');
-    act(() =>
-      container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Refresh GitHub Copilot usage"]',
-        )
-        ?.click(),
-    );
-    expect(refreshProviderUsage).toHaveBeenCalledWith('copilot');
+    expect(container.textContent).toContain('25%');
+    // The surface owns refresh: the group has no refresh of its own.
+    expect(
+      container.querySelector('[aria-label="Refresh GitHub Copilot usage"]'),
+    ).toBeNull();
     act(() => root.unmount());
   });
+
+  it.each([
+    { released: false, section: 'experiments' },
+    { released: true, section: 'account' },
+  ])(
+    'routes Manage Copilot to $section when released=$released',
+    ({ released, section }) => {
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...originalFlags,
+          values: {
+            ...originalFlags.values,
+            'canopy-desktop-copilot-harness': true,
+            'canopy-desktop-copilot-harness-released': released,
+          },
+        },
+      });
+      useNavigationStore.setState({ settingsOpen: false });
+      const { container, root } = render(
+        <ProviderUsageCards
+          nowMs={Date.now()}
+          usage={{
+            updatedAt: new Date().toISOString(),
+            providers: [
+              {
+                provider: 'copilot',
+                authState: 'authenticated',
+                hasRemainingLimits: true,
+                accountLabel: 'copilot-fixture',
+                rateLimits: [],
+              },
+            ],
+          }}
+          refreshingProviders={new Set()}
+          refreshProviderUsage={refreshProviderUsage}
+          refreshProviderUsageDetails={refreshProviderUsageDetails}
+        />,
+      );
+      const manage = container.querySelector<HTMLButtonElement>(
+        '[data-testid="usage-provider-copilot-manage"]',
+      );
+      expect(manage?.textContent).toBe('Manage GitHub Copilot');
+      act(() => manage?.click());
+      expect(useNavigationStore.getState().settingsInitialSection).toBe(
+        section,
+      );
+      expect(useNavigationStore.getState().settingsOpen).toBe(true);
+      act(() => root.unmount());
+    },
+  );
 
   it('renders Cursor account usage and routes account management to Cursor settings', () => {
     mockCodexStatus = {
@@ -214,7 +303,7 @@ describe('ProviderUsageCards', () => {
     expect(container.textContent).toContain('cursor@example.com');
     expect(container.textContent).not.toContain('unrelated-codex');
     expect(container.textContent).toContain('Included usage');
-    expect(container.textContent).toContain('24.0%');
+    expect(container.textContent).toContain('24%');
     expect(container.textContent).toContain('$15.20');
     expect(container.textContent).toContain('Auto');
     expect(container.textContent).toContain('API');
@@ -222,11 +311,10 @@ describe('ProviderUsageCards', () => {
     // Unlimited/on-demand entries retain their credit data without a fake meter.
     expect(container.querySelectorAll('[role="progressbar"]')).toHaveLength(3);
     expect(container.textContent).toContain('$45.00');
-    const refresh = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Refresh Cursor usage"]',
-    );
-    act(() => refresh?.click());
-    expect(refreshProviderUsage).toHaveBeenCalledWith('cursor');
+    // The surface owns refresh: the group has no refresh of its own.
+    expect(
+      container.querySelector('[aria-label="Refresh Cursor usage"]'),
+    ).toBeNull();
     const manage = container.querySelector<HTMLButtonElement>(
       '[data-testid="usage-provider-cursor-manage"]',
     );
@@ -268,7 +356,7 @@ describe('ProviderUsageCards', () => {
     expect(
       container.querySelector('[data-testid="usage-provider-card-cursor"]'),
     ).not.toBeNull();
-    expect(container.textContent).not.toContain('0.0%');
+    expect(container.textContent).not.toMatch(/(^|[^0-9])0%/);
     expect(container.querySelector('[role="progressbar"]')).toBeNull();
     expect(
       container.querySelector('[data-testid="usage-provider-cursor-error"]'),
@@ -410,7 +498,7 @@ describe('ProviderUsageCards', () => {
       '[data-testid="usage-provider-claude-connect"]',
     );
 
-    expect(container.textContent).toContain('Account: current@example.com');
+    expect(container.textContent).toContain('Accountcurrent@example.com');
     expect(container.textContent).not.toContain('stale@example.com');
     expect(button?.textContent).toBe('Change account');
     // Session replay blocks the account label, not "Account:" or the action.
@@ -471,7 +559,7 @@ describe('ProviderUsageCards', () => {
       '[data-testid="usage-provider-codex-connect"]',
     );
 
-    expect(container.textContent).toContain('Account: Sign in to see usage');
+    expect(container.textContent).toContain('AccountSign in to see usage');
     expect(container.textContent).not.toContain('stale@example.com');
     expect(button?.textContent).toBe('Sign in');
     // Status copy is not an identity, so nothing on the row is blocked.
@@ -516,8 +604,8 @@ describe('ProviderUsageCards', () => {
       '[data-testid="usage-provider-claude-connect"]',
     );
 
-    expect(container.textContent).toContain('Account: Sign in to see usage');
-    expect(container.textContent).not.toContain('Account: Signed in');
+    expect(container.textContent).toContain('AccountSign in to see usage');
+    expect(container.textContent).not.toContain('AccountSigned in');
     expect(button?.textContent).toBe('Sign in');
 
     act(() => {
@@ -551,7 +639,7 @@ describe('ProviderUsageCards', () => {
       '[data-testid="usage-provider-codex-connect"]',
     );
 
-    expect(container.textContent).toContain('Account: Sign in to see usage');
+    expect(container.textContent).toContain('AccountSign in to see usage');
     expect(container.textContent).not.toContain('Checking account…');
     expect(button?.textContent).toBe('Sign in');
     expect(button?.disabled).toBe(false);
@@ -587,7 +675,7 @@ describe('ProviderUsageCards', () => {
       '[data-testid="usage-provider-codex-connect"]',
     );
 
-    expect(container.textContent).toContain('Account: Checking account…');
+    expect(container.textContent).toContain('AccountChecking account…');
     expect(button?.disabled).toBe(true);
 
     act(() => {
@@ -678,7 +766,7 @@ describe('ProviderUsageCard error notice', () => {
     );
 
     expect(container.textContent).toContain('5-hour window');
-    expect(container.textContent).toContain('42.0%');
+    expect(container.textContent).toContain('42%');
     expect(notice?.textContent).toContain('Usage checks paused');
     expect(notice?.textContent).toContain('limiting usage checks');
     expect(notice?.textContent).toContain(
@@ -950,7 +1038,7 @@ describe('ProviderUsageCard error notice', () => {
   });
 });
 
-describe('ProviderUsageCards usage-limited resume button', () => {
+describe('ProviderUsageCards waiting sessions', () => {
   const NOW_MS = Date.parse('2026-07-23T12:00:00.000Z');
   const FUTURE_ISO = '2026-07-23T14:00:00.000Z';
   const PAST_ISO = '2026-07-23T10:00:00.000Z';
@@ -1065,7 +1153,7 @@ describe('ProviderUsageCards usage-limited resume button', () => {
     jest.clearAllMocks();
   });
 
-  it('shows the button with a session count and opens the resume modal store', async () => {
+  it('leaves resuming to the interrupted-sessions notice while no window blocks', async () => {
     const { container, root } = await renderCards(
       buildUsage([
         {
@@ -1075,27 +1163,157 @@ describe('ProviderUsageCards usage-limited resume button', () => {
       ]),
     );
 
-    const button = resumeButton(container);
-    expect(button).not.toBeNull();
-    expect(button?.textContent).toContain('Resume 2 interrupted sessions');
     expect(listUsageLimitedIdleSessionsMock).toHaveBeenCalledWith({
       provider: 'claude',
     });
-
-    act(() => {
-      button?.click();
-    });
-    const state = useUsageLimitResumePromptStore.getState();
-    expect(state.isOpen).toBe(true);
-    expect(state.provider).toBe('claude');
-    expect(state.origin).toBe('usage-review');
+    // The surface's one notice offers the resume; the group adds no control.
+    expect(resumeButton(container)).toBeNull();
+    expect(waitingRow(container)).toBeNull();
 
     act(() => {
       root.unmount();
     });
   });
 
-  it('hides the button while a rate-limit window is confirmed at 100%', async () => {
+  function waitingRow(container: HTMLElement): HTMLElement | null {
+    return container.querySelector<HTMLElement>(
+      '[data-testid="usage-provider-claude-waiting"]',
+    );
+  }
+
+  const chatSessionCandidate = sessionGroups[0]?.sessions[0];
+  if (!chatSessionCandidate || chatSessionCandidate.kind !== 'chat') {
+    throw new Error('Expected the first usage-limited session to be a chat.');
+  }
+  const chatSession = chatSessionCandidate;
+  const pipelineSession = sessionGroups[0].sessions[1];
+
+  function groupWith(
+    sessions: UsageLimitedSessionGroup['sessions'],
+  ): UsageLimitedSessionGroup[] {
+    return [{ ...sessionGroups[0], sessions }];
+  }
+
+  it.each(['available', 'missing', 'failed'])(
+    'opens a retained review transcript or explains an %s result without resuming',
+    async (result) => {
+      listUsageLimitedIdleSessionsMock.mockResolvedValue(
+        groupWith([
+          {
+            ...chatSession,
+            kind: 'chat',
+            projectId: CODE_REVIEW_CHAT_PROJECT_ID,
+            worktreeId: 'review-scope',
+            chatId: 'retained-review',
+            chatTitle: 'Interrupted review',
+          },
+        ]),
+      );
+      const getState =
+        result === 'failed'
+          ? jest.fn().mockRejectedValue(new Error('unavailable'))
+          : jest.fn().mockResolvedValue({
+              tabsFile: {
+                tabs:
+                  result === 'missing'
+                    ? []
+                    : [
+                        {
+                          id: 'retained-review',
+                          title: 'Interrupted review',
+                          messages: [],
+                        },
+                      ],
+              },
+            });
+      const getTranscriptPage = jest.fn().mockResolvedValue({
+        messages: [
+          {
+            id: 'review-message',
+            role: 'assistant',
+            timestamp: 1,
+            blocks: [{ type: 'text', text: 'Retained review transcript' }],
+          },
+        ],
+        totalMessages: 1,
+        transcriptRevision: 1,
+      });
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        value: {
+          listUsageLimitedIdleSessions: listUsageLimitedIdleSessionsMock,
+          chat: { getState, getTranscriptPage },
+        },
+      });
+      const usage = buildUsage([
+        {
+          limitId: 'codex',
+          secondary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        },
+      ]);
+      const { container, root } = await renderCards(usage);
+      try {
+        await act(async () => {
+          container
+            .querySelector<HTMLButtonElement>(
+              '[data-testid="usage-provider-claude-waiting-open"]',
+            )
+            ?.click();
+          await Promise.resolve();
+        });
+        const dialog = document.querySelector(
+          '[data-testid="usage-retained-review-chat"]',
+        );
+        expect(dialog).not.toBeNull();
+        if (result === 'available') {
+          expect(dialog?.textContent).toContain('Retained review transcript');
+          expect(
+            dialog
+              ?.querySelector('[data-testid="review-transcript-messages"]')
+              ?.getAttribute('data-read-only'),
+          ).toBe('true');
+        } else {
+          expect(dialog?.textContent).toContain("Couldn't open the chat");
+          expect(dialog?.textContent).not.toContain(
+            'Retained review transcript',
+          );
+        }
+        expect(getState).toHaveBeenCalledWith({
+          projectId: CODE_REVIEW_CHAT_PROJECT_ID,
+          worktreeId: 'review-scope',
+        });
+        expect(getTranscriptPage).toHaveBeenCalledWith({
+          projectId: CODE_REVIEW_CHAT_PROJECT_ID,
+          worktreeId: 'review-scope',
+          chatId: 'retained-review',
+        });
+        await act(async () => {
+          root.render(
+            <ProviderUsageCards
+              nowMs={Date.parse(FUTURE_ISO) + 1}
+              usage={usage}
+              refreshingProviders={new Set()}
+              refreshProviderUsage={refreshProviderUsage}
+              refreshProviderUsageDetails={refreshProviderUsageDetails}
+            />,
+          );
+          await Promise.resolve();
+        });
+        expect(waitingRow(container)).toBeNull();
+        expect(
+          document.querySelector('[data-testid="usage-retained-review-chat"]'),
+        ).toBe(dialog);
+        expect(getState).toHaveBeenCalledTimes(1);
+        expect(getTranscriptPage).toHaveBeenCalledTimes(1);
+        expect(mockNavigateToLiveChat).not.toHaveBeenCalled();
+        expect(useUsageLimitResumePromptStore.getState().isOpen).toBe(false);
+      } finally {
+        act(() => root.unmount());
+      }
+    },
+  );
+
+  it('shows the waiting sessions while a window is confirmed at 100%', async () => {
     const { container, root } = await renderCards(
       buildUsage([
         {
@@ -1106,13 +1324,401 @@ describe('ProviderUsageCards usage-limited resume button', () => {
     );
 
     expect(resumeButton(container)).toBeNull();
+    expect(waitingRow(container)?.textContent).toContain(
+      `2 interrupted sessionsLimit resets at ${formatUsageLimitTimeLabel(Date.parse(FUTURE_ISO))}`,
+    );
+
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="usage-provider-claude-waiting-view"]',
+        )
+        ?.click();
+    });
+    const pipelineRow = document.querySelector<HTMLButtonElement>(
+      '[data-testid="usage-provider-claude-waiting-session-pipeline-exec-1"]',
+    );
+    expect(
+      document.querySelector(
+        '[data-testid="usage-provider-claude-waiting-session-chat-ws-a-wt-c1"]',
+      ),
+    ).not.toBeNull();
+    act(() => {
+      pipelineRow?.click();
+    });
+
+    expect(mockOpenPipelineExecutionFromUi).toHaveBeenCalledWith({
+      executionId: 'exec-1',
+    });
+    expect(mockNavigateToLiveChat).not.toHaveBeenCalled();
+    // Navigation never opens the resume prompt.
+    expect(useUsageLimitResumePromptStore.getState().isOpen).toBe(false);
 
     act(() => {
       root.unmount();
     });
   });
 
-  it('shows the button when the 100% window is stale (reset passed)', async () => {
+  it('routes every mixed chooser entry without opening the resume prompt', async () => {
+    const { container, root } = await renderCards(
+      buildUsage([
+        {
+          limitId: 'weekly',
+          secondary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        },
+      ]),
+    );
+    try {
+      const view = container.querySelector<HTMLButtonElement>(
+        '[data-testid="usage-provider-claude-waiting-view"]',
+      );
+      act(() => view?.click());
+      act(() =>
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="usage-provider-claude-waiting-session-chat-ws-a-wt-c1"]',
+          )
+          ?.click(),
+      );
+      expect(mockNavigateToLiveChat).toHaveBeenCalledWith({
+        projectId: 'ws-a',
+        worktreeId: 'wt',
+        chatId: 'c1',
+        workspaceId: 'ws-a',
+      });
+      act(() => view?.click());
+      act(() =>
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="usage-provider-claude-waiting-session-pipeline-exec-1"]',
+          )
+          ?.click(),
+      );
+      expect(mockOpenPipelineExecutionFromUi).toHaveBeenCalledWith({
+        executionId: 'exec-1',
+      });
+      expect(useUsageLimitResumePromptStore.getState().isOpen).toBe(false);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('lists both chats with their complete identities', async () => {
+    listUsageLimitedIdleSessionsMock.mockResolvedValue([
+      {
+        ...sessionGroups[0],
+        sessions: [
+          sessionGroups[0]?.sessions[0],
+          {
+            ...sessionGroups[0]?.sessions[0],
+            chatId: 'c2',
+            chatTitle: 'Chat two',
+          },
+        ],
+      },
+    ]);
+    const { container, root } = await renderCards(
+      buildUsage([{ limitId: 'weekly', secondary: { usedPercent: 100 } }]),
+    );
+    try {
+      expect(container.textContent).toContain('2 interrupted sessions');
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="usage-provider-claude-waiting-view"]',
+          )
+          ?.click(),
+      );
+      act(() =>
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="usage-provider-claude-waiting-session-chat-ws-a-wt-c2"]',
+          )
+          ?.click(),
+      );
+      expect(mockNavigateToLiveChat).toHaveBeenCalledWith({
+        projectId: 'ws-a',
+        worktreeId: 'wt',
+        chatId: 'c2',
+        workspaceId: 'ws-a',
+      });
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('uses native blocking windows even when proxy display windows are below limit', async () => {
+    const proxy: AccountProxyStatus = {
+      available: true,
+      connection: {
+        id: 'conn',
+        kind: 'server',
+        url: 'https://proxy.example.com',
+      },
+      state: 'connected',
+      error: null,
+      version: '8.0.28',
+      accounts: [
+        {
+          authIndex: 'native-proxy-test',
+          provider: 'claude',
+          label: 'proxy@example.test',
+          source: 'sign-in',
+          fileName: 'claude-test.json',
+          planType: 'max',
+          status: 'active',
+          statusMessage: null,
+          availableAt: null,
+          limits: [{ id: 'five-hour', usedPercent: 10, resetsAt: null }],
+        },
+      ],
+      routing: null,
+      keepChatOnOneAccount: true,
+      routeClaude: true,
+      routeCodex: false,
+      refreshedAt: NOW_MS,
+      local: {
+        phase: 'not-installed',
+        version: '8.0.28',
+        install: null,
+        port: null,
+        startWithApp: true,
+        message: null,
+      },
+      signIn: null,
+    };
+    useAccountProxyStore.setState({ status: proxy });
+    const { container, root } = await renderCards(
+      buildUsage([
+        {
+          limitId: 'native',
+          secondary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        },
+      ]),
+    );
+    try {
+      expect(container.textContent).toContain('Account proxy');
+      expect(
+        container.querySelector(
+          '[data-testid="usage-provider-claude-waiting"]',
+        ),
+      ).not.toBeNull();
+      expect(resumeButton(container)).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      useAccountProxyStore.setState({ status: null });
+    }
+  });
+
+  it('opens the one waiting chat without resuming it', async () => {
+    listUsageLimitedIdleSessionsMock.mockResolvedValue(
+      groupWith([chatSession]),
+    );
+    const { container, root } = await renderCards(
+      buildUsage([
+        {
+          limitId: 'five_hour',
+          primary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        },
+      ]),
+    );
+
+    expect(waitingRow(container)?.textContent).toContain(
+      '1 interrupted session',
+    );
+    const open = container.querySelector<HTMLButtonElement>(
+      '[data-testid="usage-provider-claude-waiting-open"]',
+    );
+    expect(open?.textContent).toBe('Open chat');
+    act(() => {
+      open?.click();
+    });
+    expect(mockNavigateToLiveChat).toHaveBeenCalledWith({
+      projectId: 'ws-a',
+      worktreeId: 'wt',
+      chatId: 'c1',
+      workspaceId: 'ws-a',
+    });
+    expect(useUsageLimitResumePromptStore.getState().isOpen).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('opens the one waiting pipeline in its owning worktree', async () => {
+    listUsageLimitedIdleSessionsMock.mockResolvedValue(
+      groupWith([{ ...pipelineSession, projectId: 'ws-a', worktreeId: 'wt' }]),
+    );
+    const { container, root } = await renderCards(
+      buildUsage([
+        {
+          limitId: 'five_hour',
+          primary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        },
+      ]),
+    );
+
+    const open = container.querySelector<HTMLButtonElement>(
+      '[data-testid="usage-provider-claude-waiting-open"]',
+    );
+    expect(open?.textContent).toBe('Open pipeline');
+    act(() => {
+      open?.click();
+    });
+    expect(mockOpenPipelineExecutionFromUi).toHaveBeenCalledWith({
+      executionId: 'exec-1',
+      owner: { projectId: 'ws-a', worktreeId: 'wt' },
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('says the reset time is unavailable when any blocking window has no reset', async () => {
+    const { container, root } = await renderCards(
+      buildUsage([
+        {
+          limitId: 'five_hour',
+          primary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+          secondary: { usedPercent: 100 },
+        },
+      ]),
+    );
+
+    expect(waitingRow(container)?.textContent).toContain(
+      '2 interrupted sessionsReset time unavailable',
+    );
+    expect(waitingRow(container)?.textContent).not.toContain('expected');
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('drops the waiting row when the clock passes the last known reset', async () => {
+    const usage = buildUsage([
+      {
+        limitId: 'five_hour',
+        primary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+      },
+    ]);
+    const { container, root } = await renderCards(usage);
+    expect(waitingRow(container)).not.toBeNull();
+
+    act(() => {
+      root.render(
+        <ProviderUsageCards
+          nowMs={Date.parse(FUTURE_ISO) + 1}
+          usage={usage}
+          refreshingProviders={new Set()}
+          refreshProviderUsage={refreshProviderUsage}
+          refreshProviderUsageDetails={refreshProviderUsageDetails}
+        />,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(waitingRow(container)).toBeNull();
+    expect(resumeButton(container)).toBeNull();
+    expect(container.textContent).toContain('Reset time has passed');
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('keeps waiting past a known reset while another blocker has no reset', async () => {
+    const usage = buildUsage([
+      {
+        limitId: 'five_hour',
+        primary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        secondary: { usedPercent: 100 },
+      },
+    ]);
+    const { container, root } = await renderCards(usage);
+
+    act(() => {
+      root.render(
+        <ProviderUsageCards
+          nowMs={Date.parse(FUTURE_ISO) + 1}
+          usage={usage}
+          refreshingProviders={new Set()}
+          refreshProviderUsage={refreshProviderUsage}
+          refreshProviderUsageDetails={refreshProviderUsageDetails}
+        />,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(resumeButton(container)).toBeNull();
+    expect(waitingRow(container)?.textContent).toContain(
+      'Reset time unavailable',
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('shows the waiting row for an exhausted Codex weekly window in the panel', async () => {
+    listUsageLimitedIdleSessionsMock.mockResolvedValue(
+      groupWith([{ ...chatSession, provider: 'codex' }]),
+    );
+    const { container, root } = render(
+      <ProviderUsageCard
+        provider={{
+          provider: 'codex',
+          authState: 'authenticated',
+          hasRemainingLimits: false,
+          rateLimits: [
+            {
+              limitId: 'codex',
+              primary: { usedPercent: 40, resetsAt: FUTURE_ISO },
+              secondary: {
+                usedPercent: 100,
+                resetsAt: FUTURE_ISO,
+                windowDurationMins: 10_080,
+              },
+            },
+          ],
+        }}
+        nowMs={NOW_MS}
+        snapshots={[]}
+        refreshingProviders={new Set()}
+        refreshProviderUsage={refreshProviderUsage}
+        refreshProviderUsageDetails={refreshProviderUsageDetails}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const row = container.querySelector<HTMLElement>(
+      '[data-testid="usage-provider-codex-waiting"]',
+    );
+    expect(row?.textContent).toContain('1 interrupted session');
+    // A row of the group's card, before the account row.
+    const box = row?.parentElement;
+    expect(box?.className).toContain('@container/usage-group');
+    const rows = Array.from(box?.children ?? []);
+    expect(rows.indexOf(row as Element)).toBe(rows.length - 2);
+    expect(
+      container.querySelector('[data-testid="usage-provider-codex-resume"]'),
+    ).toBeNull();
+    expect(container.textContent).toContain('Limit reached');
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('shows no waiting row when the 100% window is stale (reset passed)', async () => {
     const { container, root } = await renderCards(
       buildUsage([
         {
@@ -1122,73 +1728,297 @@ describe('ProviderUsageCards usage-limited resume button', () => {
       ]),
     );
 
-    expect(resumeButton(container)).not.toBeNull();
-
-    act(() => {
-      root.unmount();
-    });
-  });
-
-  it('hides the button when there are no usage-limited sessions', async () => {
-    listUsageLimitedIdleSessionsMock.mockResolvedValue([]);
-    const { container, root } = await renderCards(buildUsage(undefined));
-
+    expect(waitingRow(container)).toBeNull();
     expect(resumeButton(container)).toBeNull();
 
     act(() => {
       root.unmount();
     });
   });
-});
 
-describe('ShutdownResumeButton', () => {
-  afterEach(() => {
-    Reflect.deleteProperty(window, 'api');
-    document.body.innerHTML = '';
-    jest.clearAllMocks();
+  it('shows no waiting row when there are no usage-limited sessions', async () => {
+    listUsageLimitedIdleSessionsMock.mockResolvedValue([]);
+    const { container, root } = await renderCards(
+      buildUsage([
+        {
+          limitId: 'five_hour',
+          primary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        },
+      ]),
+    );
+
+    expect(waitingRow(container)).toBeNull();
+    expect(resumeButton(container)).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
   });
 
-  it('uses the themed ring utility for its visible outline', async () => {
-    Object.defineProperty(window, 'api', {
-      configurable: true,
-      value: {
-        listUsageLimitedIdleSessions: jest.fn().mockResolvedValue([
-          {
-            groupId: 'ws-a',
-            groupKind: 'workspace',
-            workspaceId: 'ws-a',
-            workspaceName: 'Workspace A',
-            workspaceType: 'single-repo',
-            sessions: [
-              {
-                kind: 'chat',
-                projectId: 'ws-a',
-                worktreeId: 'wt',
-                chatId: 'shutdown-chat',
-                provider: 'claude',
-                chatTitle: 'Interrupted chat',
-                detectedAt: 1,
-                worktreeName: 'main',
-                resumeReason: 'app_shutdown',
-              },
-            ],
+  describe('with scheduled usage-limit resumes (CAN-5014)', () => {
+    function chat(chatId: string): UsageLimitedSessionItem {
+      return {
+        kind: 'chat',
+        projectId: 'ws-a',
+        worktreeId: 'wt',
+        chatId,
+        provider: 'claude',
+        chatTitle: `Chat ${chatId}`,
+        detectedAt: 1,
+        worktreeName: 'main',
+      };
+    }
+
+    function resumeFor(chatId: string): ScheduledActivity {
+      return {
+        version: 1,
+        id: `resume-${chatId}`,
+        name: 'Resume',
+        enabled: true,
+        schedule: { kind: 'one_time', runAt: FUTURE_ISO, timezone: 'local' },
+        action: {
+          type: 'worktree_session_prompt',
+          workspaceId: 'ws-a',
+          worktreeId: 'wt',
+          chatId,
+          prompt: 'continue',
+          purpose: 'usage_limit_resume',
+        },
+        createdAt: PAST_ISO,
+        updatedAt: PAST_ISO,
+        nextRunAt: FUTURE_ISO,
+        failureCount: 0,
+      };
+    }
+
+    function listChats(...chatIds: string[]): void {
+      listUsageLimitedIdleSessionsMock.mockResolvedValue([
+        { ...sessionGroups[0], sessions: chatIds.map(chat) },
+      ]);
+    }
+
+    function schedule(...chatIds: string[]): void {
+      useAutomationsStore.setState({ activities: chatIds.map(resumeFor) });
+    }
+
+    const blocked = (): AgentUsageOverview =>
+      buildUsage([
+        {
+          limitId: 'weekly',
+          secondary: { usedPercent: 100, resetsAt: FUTURE_ISO },
+        },
+      ]);
+
+    function chooserChatIds(): string[] {
+      return Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid^="usage-provider-claude-waiting-session-chat-"]',
+        ),
+        (row) =>
+          row.dataset.testid?.replace(
+            'usage-provider-claude-waiting-session-chat-ws-a-wt-',
+            '',
+          ) ?? '',
+      );
+    }
+
+    beforeEach(() => {
+      useAutomationsStore.setState({
+        activities: [],
+        hydrated: true,
+        loading: false,
+        error: null,
+      });
+    });
+
+    afterEach(() => {
+      useAutomationsStore.setState({
+        activities: [],
+        hydrated: false,
+        loading: false,
+        error: null,
+      });
+    });
+
+    it('counts and opens only the chat that is not scheduled', async () => {
+      listChats('c1', 'c2');
+      schedule('c1');
+      const { container, root } = await renderCards(blocked());
+      try {
+        expect(waitingRow(container)?.textContent).toContain(
+          '1 interrupted session',
+        );
+        expect(
+          container.querySelector(
+            '[data-testid="usage-provider-claude-waiting-view"]',
+          ),
+        ).toBeNull();
+        act(() =>
+          container
+            .querySelector<HTMLButtonElement>(
+              '[data-testid="usage-provider-claude-waiting-open"]',
+            )
+            ?.click(),
+        );
+        expect(mockNavigateToLiveChat).toHaveBeenCalledWith({
+          projectId: 'ws-a',
+          worktreeId: 'wt',
+          chatId: 'c2',
+          workspaceId: 'ws-a',
+        });
+      } finally {
+        act(() => root.unmount());
+      }
+    });
+
+    it('hides the waiting row when every chat is scheduled', async () => {
+      listChats('c1', 'c2');
+      schedule('c1', 'c2');
+      const { container, root } = await renderCards(blocked());
+      try {
+        expect(waitingRow(container)).toBeNull();
+        expect(resumeButton(container)).toBeNull();
+      } finally {
+        act(() => root.unmount());
+      }
+    });
+
+    it('withholds the waiting row until automations have loaded', async () => {
+      listChats('c1', 'c2');
+      useAutomationsStore.setState({ hydrated: false, loading: true });
+      const { container, root } = await renderCards(blocked());
+      try {
+        expect(waitingRow(container)).toBeNull();
+        act(() =>
+          useAutomationsStore.setState({
+            activities: [resumeFor('c1')],
+            hydrated: true,
+            loading: false,
+          }),
+        );
+        expect(waitingRow(container)?.textContent).toContain(
+          '1 interrupted session',
+        );
+      } finally {
+        act(() => root.unmount());
+      }
+    });
+
+    it('drops a chat from the open chooser once it is scheduled', async () => {
+      listChats('c1', 'c2', 'c3');
+      schedule('c1');
+      const { container, root } = await renderCards(blocked());
+      try {
+        expect(waitingRow(container)?.textContent).toContain(
+          '2 interrupted sessions',
+        );
+        act(() =>
+          container
+            .querySelector<HTMLButtonElement>(
+              '[data-testid="usage-provider-claude-waiting-view"]',
+            )
+            ?.click(),
+        );
+        expect(chooserChatIds()).toEqual(['c2', 'c3']);
+
+        act(() => schedule('c1', 'c2'));
+        expect(chooserChatIds()).not.toContain('c2');
+        expect(waitingRow(container)?.textContent).toContain(
+          '1 interrupted session',
+        );
+
+        act(() => schedule());
+        expect(waitingRow(container)?.textContent).toContain(
+          '3 interrupted sessions',
+        );
+        expect(listUsageLimitedIdleSessionsMock).toHaveBeenCalledTimes(1);
+      } finally {
+        act(() => root.unmount());
+      }
+    });
+
+    it('keeps the chooser open without stale actions across a broadcast reload', async () => {
+      listChats('c1', 'c2', 'c3');
+      schedule('c1');
+      const originalFlags = useFeatureFlagsStore.getState().snapshot;
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...originalFlags,
+          values: {
+            ...originalFlags.values,
+            'canopy-shared-org-projects-enabled': true,
           },
-        ]),
-      },
+        },
+      });
+      let broadcast: (snapshot: AutomationsListResponse) => void = () =>
+        undefined;
+      let completeReload: (snapshot: AutomationsListResponse) => void = () =>
+        undefined;
+      const reload = new Promise<AutomationsListResponse>((resolve) => {
+        completeReload = resolve;
+      });
+      const list = jest.fn(() => reload);
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        value: {
+          listUsageLimitedIdleSessions: listUsageLimitedIdleSessionsMock,
+          automations: {
+            list,
+            onChanged: (listener: typeof broadcast): (() => void) => {
+              broadcast = listener;
+              return () => undefined;
+            },
+          },
+        },
+      });
+      const { container, root } = await renderCards(blocked());
+      try {
+        act(() =>
+          container
+            .querySelector<HTMLButtonElement>(
+              '[data-testid="usage-provider-claude-waiting-view"]',
+            )
+            ?.click(),
+        );
+        expect(chooserChatIds()).toEqual(['c2', 'c3']);
+        act(() => broadcast({ activities: [], recentRuns: [] }));
+        expect(list).toHaveBeenCalledTimes(1);
+        expect(
+          document.querySelector(
+            '[data-testid="usage-provider-claude-waiting-chooser"]',
+          ),
+        ).not.toBeNull();
+        expect(chooserChatIds()).toEqual([]);
+        expect(waitingRow(container)).toBeNull();
+        await act(async () => {
+          completeReload({
+            activities: [resumeFor('c1'), resumeFor('c2')],
+            recentRuns: [],
+          });
+          await reload;
+        });
+        expect(chooserChatIds()).toEqual(['c3']);
+        expect(waitingRow(container)?.textContent).toContain(
+          '1 interrupted session',
+        );
+        act(() =>
+          document
+            .querySelector<HTMLButtonElement>(
+              '[data-testid="usage-provider-claude-waiting-session-chat-ws-a-wt-c3"]',
+            )
+            ?.click(),
+        );
+        expect(mockNavigateToLiveChat).toHaveBeenCalledWith({
+          projectId: 'ws-a',
+          worktreeId: 'wt',
+          chatId: 'c3',
+          workspaceId: 'ws-a',
+        });
+      } finally {
+        act(() => root.unmount());
+        useFeatureFlagsStore.setState({ snapshot: originalFlags });
+      }
     });
-    const { container, root } = render(<ShutdownResumeButton nowMs={1} />);
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    const button = container.querySelector<HTMLButtonElement>(
-      '[data-testid="usage-shutdown-resume"]',
-    );
-    expect(button?.className).toContain('ring-1');
-    expect(button?.className).toContain('ring-fg-info/30');
-    expect(button?.className).not.toContain('border-fg-info/30');
-
-    act(() => root.unmount());
   });
 });
 
@@ -1216,7 +2046,7 @@ describe('ProviderUsageCard plan pill', () => {
 
   function renderClaude(
     // Typed to the real union rather than `string`: this file is not covered by
-    // `tsconfig.web.json` and ts-jest runs transpile-only, so a `string` here
+    // `tsconfig.web.json` and Jest's SWC transform does not type-check, so a `string` here
     // would silently accept invalid states and defeat the narrowing on
     // `UsageCardHeaderProps.authState`.
     authState: ProviderAuthState,
@@ -1249,41 +2079,88 @@ describe('ProviderUsageCard plan pill', () => {
     );
   }
 
-  it('renders the subscription label as a green pill when authenticated', () => {
-    const { container, root } = renderClaude('authenticated', 'Claude Max 20x');
+  it('leads the group with the Claude mark and marks window progress', () => {
+    const nowMs = Date.now();
+    const { container, root } = render(
+      <ProviderUsageCards
+        nowMs={nowMs}
+        usage={{
+          updatedAt: '2026-06-05T12:00:00.000Z',
+          providers: [
+            {
+              provider: 'claude',
+              authState: 'authenticated',
+              hasRemainingLimits: true,
+              rateLimits: [
+                {
+                  limitId: 'five_hour',
+                  primary: {
+                    usedPercent: 30,
+                    resetsAt: new Date(nowMs + 2 * 60 * 60_000).toISOString(),
+                    windowDurationMins: 300,
+                  },
+                },
+              ],
+            },
+          ],
+        }}
+        refreshingProviders={new Set()}
+        refreshProviderUsage={refreshProviderUsage}
+        refreshProviderUsageDetails={refreshProviderUsageDetails}
+      />,
+    );
 
-    const chip = planChip(container);
-    expect(chip?.textContent).toBe('Claude Max 20x');
-    expect(chip?.className).toContain('bg-success-subtle');
-    // The auth word stays plain text outside the pill.
-    expect(container.textContent).toContain('authenticated');
+    expect(
+      container.querySelector(
+        '[data-testid="usage-provider-card-claude"] h2 [data-testid="usage-group-provider-mark"]',
+      ),
+    ).toBeInstanceOf(SVGElement);
+    const triangle = container.querySelector<SVGElement>(
+      '[data-testid="usage-window-elapsed"]',
+    );
+    expect(triangle).toBeInstanceOf(SVGElement);
+    expect(Number.parseFloat(triangle?.style.left ?? '')).toBeCloseTo(60, 0);
 
     act(() => {
       root.unmount();
     });
   });
 
-  it('renders a grey pill when not authenticated', () => {
+  it('names the plan in the group heading, without the provider prefix', () => {
+    const { container, root } = renderClaude('authenticated', 'Claude Max 20x');
+
+    expect(planChip(container)?.textContent).toBe('Max 20x');
+    expect(container.querySelector('h2')?.textContent).toBe('Claude · Max 20x');
+    // No auth word and no per-group clock or refresh.
+    expect(container.textContent).not.toContain('authenticated');
+    expect(
+      container.querySelector('[aria-label="Refresh Claude usage"]'),
+    ).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('names no plan while the provider is not signed in', () => {
     const { container, root } = renderClaude(
       'unauthenticated',
       'Claude Max 20x',
     );
 
-    const chip = planChip(container);
-    expect(chip?.textContent).toBe('Claude Max 20x');
-    expect(chip?.className).toContain('bg-fg-secondary/16');
-    expect(chip?.className).not.toContain('fg-success-strong');
+    expect(planChip(container)).toBeNull();
+    expect(container.querySelector('h2')?.textContent).toBe('Claude');
 
     act(() => {
       root.unmount();
     });
   });
 
-  it('omits the pill entirely when there is no subscription label', () => {
+  it('names no plan when there is no subscription label', () => {
     const { container, root } = renderClaude('authenticated', undefined);
 
     expect(planChip(container)).toBeNull();
-    expect(container.textContent).toContain('authenticated');
+    expect(container.textContent).not.toContain('authenticated');
 
     act(() => {
       root.unmount();
@@ -1382,7 +2259,7 @@ describe('ProviderUsageCard with the account proxy', () => {
       '[data-testid="usage-provider-card-codex"]',
     );
     const text = codex?.textContent ?? '';
-    expect(text).toContain('via account proxy');
+    expect(text).toContain('Account proxy');
     expect(text).toContain(
       'Codex runs through the account proxy on this device.',
     );
@@ -1399,8 +2276,11 @@ describe('ProviderUsageCard with the account proxy', () => {
     const manage = codex?.querySelector<HTMLButtonElement>(
       '[data-testid="usage-provider-codex-account-proxy-manage"]',
     );
-    // Names the Settings page it opens.
-    expect(manage?.textContent).toBe('Manage Multi-account proxy');
+    // Names the Settings page it opens; the row already names it on screen.
+    expect(manage?.textContent).toBe('Manage');
+    expect(manage?.getAttribute('aria-label')).toBe(
+      'Manage Multi-account proxy',
+    );
     act(() => {
       manage?.click();
     });
@@ -1516,11 +2396,11 @@ describe('ProviderUsageCard with the account proxy', () => {
     ).toHaveLength(1);
     expect(card?.textContent).toContain('claude-proxy@example.com');
     expect(card?.textContent).toContain('7-day Opus');
-    expect(card?.textContent).toContain('Usage: 42.0%');
-    expect(card?.textContent).toContain('Resets: ');
+    expect(card?.textContent).toContain('42%');
+    expect(card?.textContent).toContain('Resets ');
     expect(card?.textContent).toContain('Updated ');
     expect(card?.textContent).not.toContain('Weekly limit');
-    expect(card?.textContent).not.toContain('88.0%');
+    expect(card?.textContent).not.toContain('88%');
     expectReplayBlocksOnlyValue(container, 'claude-proxy@example.com');
 
     act(() => {
@@ -1618,21 +2498,21 @@ describe('ProviderUsageCard with the account proxy', () => {
 
     expect(accountSections).toHaveLength(4);
     expect(cachedText).toContain('5-hour window');
-    expect(cachedText).toContain('Usage: 14.0%');
+    expect(cachedText).toContain('14%');
     expect(cachedText).toContain(
       'Check your connection, then try reaching Claude again.',
     );
     expect(cachedText).toContain('Showing last known usage.');
     expect(cachedText).toContain('Try again after ');
     expect(cachedText).not.toContain('Bearer private-value');
-    expect(cachedText).not.toContain('90.0%');
+    expect(cachedText).not.toContain('90%');
     expect(emptyUsageText).toContain('Usage unavailable');
     expect(emptyUsageText).not.toContain('Weekly limit');
-    expect(emptyUsageText).not.toContain('88.0%');
+    expect(emptyUsageText).not.toContain('88%');
     expect(legacyText).toContain('Weekly limit');
-    expect(legacyText).toContain('Usage: 40.0%');
+    expect(legacyText).toContain('40%');
     expect(unavailableText).toContain('Usage unavailable');
-    expect(unavailableText).not.toContain('0.0%');
+    expect(unavailableText).not.toMatch(/(^|[^0-9])0%/);
 
     act(() => {
       root.unmount();
@@ -1690,7 +2570,7 @@ describe('ProviderUsageCard with the account proxy', () => {
       // Main sends every session to AI Credits in `on`, so Codex does not
       // run through the account proxy.
       const { text, root } = await renderWithMode('on');
-      expect(text).not.toContain('via account proxy');
+      expect(text).not.toContain('Account proxy');
       expect(text).not.toContain('runs through the account proxy');
       expect(text).not.toContain('sam@example.com');
       act(() => {
@@ -1700,7 +2580,7 @@ describe('ProviderUsageCard with the account proxy', () => {
 
     it('keeps the proxy card for on-quota', async () => {
       const { text, root } = await renderWithMode('on-quota');
-      expect(text).toContain('via account proxy');
+      expect(text).toContain('Account proxy');
       expect(text).toContain('sam@example.com');
       act(() => {
         root.unmount();

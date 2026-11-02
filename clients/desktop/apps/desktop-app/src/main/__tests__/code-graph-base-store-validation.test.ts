@@ -16,7 +16,7 @@ import * as path from 'node:path';
 
 const readPublishedCodeGraphBase = jest.fn();
 
-jest.mock('@canopy/desktop-shared/node/code-graph/base-graph', () => ({
+jest.mock('@canopy/code-graph/base-graph', () => ({
   readPublishedCodeGraphBase: (input: unknown): unknown =>
     readPublishedCodeGraphBase(input),
   codeGraphBaseVariantHash: (): string => 'variant-hash',
